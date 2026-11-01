@@ -543,6 +543,14 @@ fn profiling() -> bool {
     *ON.get_or_init(|| {
         let on = std::env::var_os("VNVM_JIT_PROFILE").is_some();
         jit::PROFILE.store(on, std::sync::atomic::Ordering::Relaxed);
+        // VNVM_JIT_PROFILE=<seconds> (> 1): print the counts that long after the first region
+        // (under node, where no page asks for them)
+        if let Some(secs) = std::env::var("VNVM_JIT_PROFILE").ok().and_then(|v| v.parse::<u64>().ok()).filter(|&s| s > 1) {
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(secs));
+                vnhost_jit_profile();
+            });
+        }
         on
     })
 }
@@ -598,6 +606,16 @@ pub extern "C" fn vnhost_jit_profile() {
     }
     for (n, a, len) in blocks.iter().take(40) {
         o += &format!("PROF block {a:08x} {len} {n}\n");
+    }
+    // per 64KB of guest address space (to attribute to modules offline)
+    let mut areas: HashMap<u32, u64> = HashMap::new();
+    for (n, a, _) in &blocks {
+        *areas.entry(a >> 16).or_default() += n;
+    }
+    let mut areas: Vec<_> = areas.into_iter().collect();
+    areas.sort_unstable();
+    for (a, n) in areas {
+        o += &format!("PROF area {:08x} {n}\n", a << 16);
     }
     o += "PROF end\n";
     eprint!("{o}");

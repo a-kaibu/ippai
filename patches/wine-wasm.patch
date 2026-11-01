@@ -172,7 +172,7 @@
  
 --- /dev/null
 +++ b/dlls/ntdll/unix/signal_wasm.c
-@@ -0,0 +1,901 @@
+@@ -0,0 +1,963 @@
 +/*
 + * wasm32 signal and syscall layer (vnvm Hangover-style runtime)
 + *
@@ -225,6 +225,12 @@
 +extern int vnhost_cpu_run( struct vnhost_cpu *cpu, UINT *info );
 +extern void vnhost_cpuid( UINT leaf, UINT sub, UINT regs[4] );
 +extern int vnhost_signal_pending( int sig );
++/* PE DLLs compiled to wasm (crates/vnhost/src/wasmdll.rs) */
++extern void vnhost_wasm_enter( struct vnhost_cpu *cpu );
++extern void vnhost_wasm_thread( struct vnhost_cpu *cpu, UINT teb, UINT64 (*call_x86)( UINT target, UINT argp ) );
++extern int vnhost_wasmdll_probe( UINT base, UINT size );
++extern UINT vnhost_wasmdll_mem_size( int id );
++extern void vnhost_wasmdll_attach( int id, UINT base, UINT mem );
 +
 +/* stack layout when calling KiUserExceptionDispatcher */
 +struct exc_stack_layout
@@ -587,12 +593,11 @@
 + *
 + * Runs PE code from the state in the frame until a callback returns (if one is active).
 + */
-+static void run_guest( struct thread_data *data, struct callback_result *result )
++static void run_loop( struct thread_data *data, struct callback_result *result, BOOL nested )
 +{
 +    struct vnhost_cpu *cpu = thread_cpu;
 +    UINT info[2];
 +
-+    restore_cpu_from_frame( cpu, get_syscall_frame( data ), get_syscall_frame( data )->eax );
 +    for (;;)
 +    {
 +        struct syscall_frame *frame = get_syscall_frame( data );
@@ -603,6 +608,8 @@
 +        case VNHOST_TRAP:
 +            if (info[0] == WASM_SYSCALL_TRAP) dispatch_syscall( data, frame, cpu );
 +            else if (info[0] == WASM_UNIXCALL_TRAP) dispatch_unix_call( data, frame, cpu );
++            else if (info[0] >= WASM_DLL_BASE && info[0] < WASM_DLL_END) vnhost_wasm_enter( cpu );
++            else if (info[0] == WASM_RETURN_TRAP && nested) return;
 +            else raise_guest_exception( data, frame, cpu, VNHOST_FAULT, info );
 +            break;
 +        case VNHOST_PENDING:
@@ -614,6 +621,60 @@
 +        }
 +        if (result && result->done) return;
 +    }
++}
++
++static void run_guest( struct thread_data *data, struct callback_result *result )
++{
++    restore_cpu_from_frame( thread_cpu, get_syscall_frame( data ), get_syscall_frame( data )->eax );
++    run_loop( data, result, FALSE );
++}
++
++
++/***********************************************************************
++ *           wasm_call_x86
++ *
++ * Wasm DLL code calls x86 code (through vnhost): the arguments are on the guest stack at argp,
++ * the call returns to WASM_RETURN_TRAP. Returns EDX:EAX; the x86 state is as it was before.
++ */
++static UINT64 wasm_call_x86( UINT target, UINT argp )
++{
++    struct vnhost_cpu *cpu = thread_cpu;
++    UINT saved[R_COUNT], r[R_COUNT];
++
++    vnhost_cpu_get( cpu, saved );
++    memcpy( r, saved, sizeof(r) );
++    *(UINT *)(ULONG_PTR)(argp - 4) = WASM_RETURN_TRAP;
++    r[R_ESP] = argp - 4;
++    r[R_EIP] = target;
++    r[R_EFLAGS] &= ~0x400;  /* DF */
++    vnhost_cpu_set( cpu, r );
++    run_loop( get_thread_data(), NULL, TRUE );
++    vnhost_cpu_get( cpu, r );
++    vnhost_cpu_set( cpu, saved );
++    return r[R_EAX] | ((UINT64)r[R_EDX] << 32);
++}
++
++
++/***********************************************************************
++ *           wasm_dll_mapped
++ *
++ * A PE image was mapped: if a wasm build of it exists, load it and point the image's exports
++ * and entry point at it.
++ */
++void wasm_dll_mapped( void *base, SIZE_T size )
++{
++    SIZE_T mem_size;
++    void *mem = NULL;
++    int id = vnhost_wasmdll_probe( (UINT)(ULONG_PTR)base, size );
++
++    if (id < 0) return;
++    mem_size = vnhost_wasmdll_mem_size( id );
++    if (NtAllocateVirtualMemory( NtCurrentProcess(), &mem, 0, &mem_size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE ))
++    {
++        ERR( "no memory for the wasm build of the DLL at %p\n", base );
++        return;
++    }
++    vnhost_wasmdll_attach( id, (UINT)(ULONG_PTR)base, (UINT)(ULONG_PTR)mem );
 +}
 +
 +
@@ -1065,8 +1126,9 @@
 +        teb_data->syscall_frame = (void *)(((ULONG_PTR)buffer + 63) & ~63);
 +        memset( teb_data->syscall_frame, 0, sizeof(struct syscall_frame) );
 +    }
-+    thread_cpu = vnhost_cpu_create( WASM_SYSCALL_TRAP, WASM_TRAP_END );
++    thread_cpu = vnhost_cpu_create( WASM_DLL_BASE, WASM_TRAP_END );
 +    vnhost_cpu_set_fs( thread_cpu, (UINT)(ULONG_PTR)teb );
++    vnhost_wasm_thread( thread_cpu, (UINT)(ULONG_PTR)teb, wasm_call_x86 );
 +
 +    init_syscall_frame( entry, arg, teb );
 +    run_guest( data, NULL );
@@ -1229,7 +1291,7 @@
          status = STATUS_NO_MEMORY;
 --- a/dlls/ntdll/unix/unix_private.h
 +++ b/dlls/ntdll/unix/unix_private.h
-@@ -354,6 +354,13 @@
+@@ -354,6 +354,19 @@
  extern void signal_free_thread( TEB *teb );
  extern void signal_disable_syscall_dispatch(void);
  extern void signal_init_process( TEB *teb );
@@ -1238,6 +1300,12 @@
 +#define WASM_SYSCALL_TRAP   0xffff0000
 +#define WASM_UNIXCALL_TRAP  0xffff0010
 +#define WASM_TRAP_END       0xffff1000
++/* PE DLLs compiled to wasm (crates/vnhost/src/wasmdll.rs): their functions' x86 addresses
++ * start here; x86 code they call returns to WASM_RETURN_TRAP */
++#define WASM_DLL_BASE       0xfe000000
++#define WASM_DLL_END        0xff000000
++#define WASM_RETURN_TRAP    0xffff0020
++extern void wasm_dll_mapped( void *base, SIZE_T size );
 +extern void wasm_cpuid( unsigned int ax, unsigned int cx, unsigned int *p );
 +#endif
  extern void DECLSPEC_NORETURN signal_start_thread( PRTL_THREAD_START_ROUTINE entry, void *arg, TEB *teb );
@@ -1289,7 +1357,17 @@
  #else
      if (__builtin_frame_address(0) < address_space_limit)
      {
-@@ -3213,6 +3228,24 @@
+@@ -3112,6 +3127,9 @@
+     server_leave_uninterrupted_section( &virtual_mutex, &sigset );
+     if (needs_close) close( unix_fd );
+     if (shared_needs_close) close( shared_fd );
++#ifdef __wasm__
++    if (NT_SUCCESS(status) && !offset) wasm_dll_mapped( *addr_ptr, *size_ptr );
++#endif
+     return status;
+ }
+ 
+@@ -3213,6 +3231,24 @@
  
      if ((res = server_get_unix_fd( handle, 0, &unix_handle, &needs_close, NULL, NULL ))) return res;
  
@@ -1314,7 +1392,7 @@
      server_enter_uninterrupted_section( &virtual_mutex, &sigset );
  
      res = map_view( &view, base, size, alloc_type, vprot, limit_low, limit_high, 0 );
-@@ -3299,8 +3332,19 @@
+@@ -3299,8 +3335,19 @@
      }
      else
      {
@@ -3599,7 +3677,21 @@
  #elif defined(__MINGW32__)
  # define DECLSPEC_EXPORT __attribute__((dllexport))
  #elif defined(__GNUC__) && ((__GNUC__ > 3) || ((__GNUC__ == 3) && (__GNUC_MINOR__ >= 3))) && !defined(__sun)
-@@ -8203,8 +8206,10 @@
+@@ -2705,6 +2708,13 @@
+ # else
+ NTSYSAPI struct _TEB * WINAPI NtCurrentTeb(void);
+ # endif
++#elif defined(__vnwasm_pe__)
++/* PE code compiled to wasm (vnvm): a per-thread wasm global, read inline (see crates/vnwasm) */
++extern struct _TEB * __vnwasm_teb(void) __attribute__((const));
++static FORCEINLINE struct _TEB * WINAPI NtCurrentTeb(void)
++{
++    return __vnwasm_teb();
++}
+ #elif defined(__i386__) && defined(__GNUC__)
+ static FORCEINLINE struct _TEB * WINAPI NtCurrentTeb(void)
+ {
+@@ -8203,8 +8213,10 @@
  static FORCEINLINE LONG64 ReadAcquire64( LONG64 const volatile *src )
  {
      LONG64 value;
@@ -3611,7 +3703,7 @@
  #else
      __WINE_ATOMIC_LOAD_ACQUIRE( src, &value );
  #endif
-@@ -8235,8 +8240,10 @@
+@@ -8235,8 +8247,10 @@
  static FORCEINLINE LONG64 ReadNoFence64( LONG64 const volatile *src )
  {
      LONG64 value;
@@ -3623,7 +3715,7 @@
  #else
      __WINE_ATOMIC_LOAD_RELAXED( src, &value );
  #endif
-@@ -8260,8 +8267,10 @@
+@@ -8260,8 +8274,10 @@
  
  static FORCEINLINE void WriteRelease64( LONG64 volatile *dest, LONG64 value )
  {
@@ -3635,7 +3727,7 @@
  #else
      __WINE_ATOMIC_STORE_RELEASE( dest, &value );
  #endif
-@@ -8284,8 +8293,10 @@
+@@ -8284,8 +8300,10 @@
  
  static FORCEINLINE void WriteNoFence64( LONG64 volatile *dest, LONG64 value )
  {
@@ -3647,7 +3739,7 @@
  #else
      __WINE_ATOMIC_STORE_RELAXED( dest, &value );
  #endif
-@@ -8296,6 +8307,8 @@
+@@ -8296,6 +8314,8 @@
  #if defined(__aarch64__) || defined(__arm64ec__)
      register ULONG_PTR val __asm__("x0") = code;
      for (;;) __asm__ __volatile__( "brk #0xf003" :: "r" (val) : "memory" );
@@ -3656,7 +3748,7 @@
  #elif defined(__x86_64__) || defined(__i386__)
      for (;;) __asm__ __volatile__( "int $0x29" :: "c" ((ULONG_PTR)code) : "memory" );
  #elif defined(__arm__)
-@@ -8405,7 +8418,7 @@
+@@ -8405,7 +8425,7 @@
  #if defined(__GNUC__) || defined(__clang__)
  #if defined(__arm__) || defined(__aarch64__) || defined(__arm64ec__)
      __asm__ __volatile__( "dmb ishst\n\tyield" : : : "memory" );
@@ -3722,3 +3814,116 @@
  
  struct interface_filter
  {
+--- a/dlls/user32/sysparams.c
++++ b/dlls/user32/sysparams.c
+@@ -894,7 +894,7 @@
+     return NtUserGetMonitorInfo( monitor, info );
+ }
+ 
+-#ifdef __i386__
++#if defined(__i386__) && !defined(__vnwasm_pe__)
+ /* Some apps pass a non-stdcall callback to EnumDisplayMonitors,
+  * so we need a small assembly wrapper to call it.
+  */
+@@ -924,7 +924,7 @@
+ {
+     struct enum_display_monitor_params *params = args;
+     BOOL ret;
+-#ifdef __i386__
++#if defined(__i386__) && !defined(__vnwasm_pe__)
+     ret = enum_mon_callback_wrapper( params->proc, params->monitor, params->hdc,
+                                      &params->rect, params->lparam );
+ #else
+--- a/dlls/user32/hook.c
++++ b/dlls/user32/hook.c
+@@ -153,7 +153,7 @@
+     return NtUserSetWindowsHookEx( inst, &str, tid, id, proc, ansi );
+ }
+ 
+-#ifdef __i386__
++#if defined(__i386__) && !defined(__vnwasm_pe__)
+ /* Some apps pass a non-stdcall proc to SetWindowsHookExA,
+  * so we need a small assembly wrapper to call the proc.
+  */
+--- a/dlls/user32/winproc.c
++++ b/dlls/user32/winproc.c
+@@ -40,7 +40,7 @@
+     if (buffer != static_buffer) HeapFree( GetProcessHeap(), 0, buffer );
+ }
+ 
+-#ifdef __i386__
++#if defined(__i386__) && !defined(__vnwasm_pe__)
+ /* Some window procedures modify registers they shouldn't, or are not
+  * properly declared stdcall; so we need a small assembly wrapper to
+  * call them. */
+--- a/dlls/user32/win.c
++++ b/dlls/user32/win.c
+@@ -36,7 +36,7 @@
+     return debugstr_wn( us->Buffer, us->Length / sizeof(WCHAR) );
+ }
+ 
+-#ifdef __i386__
++#if defined(__i386__) && !defined(__vnwasm_pe__)
+ /* Some apps pass a non-stdcall proc to EnumChildWindows,
+  * so we need a small assembly wrapper to call the proc.
+  */
+@@ -856,7 +856,7 @@
+  *		GetWindowLongA (USER32.@)
+  */
+ 
+-#ifdef __i386__
++#if defined(__i386__) && !defined(__vnwasm_pe__)
+ 
+ /* This wrapper is here to workaround a ntlea quirk. First of all, ntlea
+  * checks whether GetWindowLongA starts with the Win32 hotpatchable prologue,
+--- a/include/wine/exception.h
++++ b/include/wine/exception.h
+@@ -249,6 +249,13 @@
+ 
+ #endif /* USE_COMPILER_EXCEPTIONS */
+ 
++#ifdef __vnwasm_pe__
++/* PE code compiled to wasm (vnvm): wasm code can't be unwound into, so its __TRY blocks
++ * register no handler (guest faults happen in x86 code, never in wasm code) */
++#define __wine_setjmpex(buf, frame) 0
++static inline EXCEPTION_REGISTRATION_RECORD *__wine_push_frame( EXCEPTION_REGISTRATION_RECORD *frame ) { return 0; }
++static inline EXCEPTION_REGISTRATION_RECORD *__wine_pop_frame( EXCEPTION_REGISTRATION_RECORD *frame ) { return 0; }
++#else
+ static inline EXCEPTION_REGISTRATION_RECORD *__wine_push_frame( EXCEPTION_REGISTRATION_RECORD *frame )
+ {
+ #if (defined(__GNUC__) || defined(__clang__)) && defined(__i386__)
+@@ -279,10 +286,11 @@
+     return frame->Prev;
+ #endif
+ }
++#endif /* __vnwasm_pe__ */
+ 
+ static inline EXCEPTION_REGISTRATION_RECORD *__wine_get_frame(void)
+ {
+-#if (defined(__GNUC__) || defined(__clang__)) && defined(__i386__)
++#if (defined(__GNUC__) || defined(__clang__)) && defined(__i386__) && !defined(__vnwasm_pe__)
+     EXCEPTION_REGISTRATION_RECORD *ret;
+     __asm__ __volatile__("movl %%fs:0,%0" : "=r" (ret) );
+     return ret;
+--- a/include/wine/asm.h
++++ b/include/wine/asm.h
+@@ -90,6 +90,11 @@
+ # define __ASM_BLOCK_END
+ #endif
+ 
++#ifdef __vnwasm_pe__
++/* PE code compiled to wasm (vnvm): no x86 assembly; what it defined is missing (the x86 DLL's
++ * export stays in use, or a C version is provided) */
++#define __ASM_DEFINE_FUNC(name,code)
++#else
+ #define __ASM_DEFINE_FUNC(name,code)  \
+     __ASM_BLOCK_BEGIN(__LINE__) \
+     asm( __ASM_FUNC_SECTION(name) "\n\t" \
+@@ -105,6 +110,7 @@
+          __ASM_SEH(".seh_endproc\n\t") \
+          __ASM_FUNC_SIZE(name)); \
+     __ASM_BLOCK_END
++#endif
+ 
+ #define __ASM_GLOBAL_FUNC(name,code) __ASM_DEFINE_FUNC(__ASM_NAME(#name),code)
+ 

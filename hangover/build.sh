@@ -16,6 +16,10 @@ ROOT=$(dirname "$HERE")
 . "$EMSDK4/emsdk_env.sh" >/dev/null 2>&1
 
 mkdir -p "$BUILD" "$OUT"
+# do-nothing GL functions for winebrowser.drv's WGL driver (dlls/winebrowser.drv/opengl.c; configure's
+# dependency scan needs it)
+STUBS="$WINE_SRC/dlls/winebrowser.drv/glstubs.h"
+[ "$STUBS" -nt "$WINE_SRC/include/wine/wgl.h" ] || python3 "$HERE/gen-gl-stubs.py" "$WINE_SRC" > /dev/null
 cd "$BUILD"
 if [ ! -f Makefile ] || [ "$WINE_SRC/configure" -nt Makefile ] || [ "$HERE/build.sh" -nt Makefile ]; then
   emconfigure "$WINE_SRC/configure" --host=i386-pc-linux-gnu --build=x86_64-pc-linux-gnu \
@@ -30,9 +34,6 @@ if [ ! -f Makefile ] || [ "$WINE_SRC/configure" -nt Makefile ] || [ "$HERE/build
     ac_cv_lib_soname_freetype=libfreetype.so.6 \
     CPPFLAGS="-I$HERE/include" ac_cv_func_epoll_create=yes > configure.log 2>&1
 fi
-# do-nothing GL functions for winebrowser.drv's WGL driver (dlls/winebrowser.drv/opengl.c)
-STUBS="$WINE_SRC/dlls/winebrowser.drv/glstubs.h"
-[ "$STUBS" -nt "$WINE_SRC/include/wine/wgl.h" ] || python3 "$HERE/gen-gl-stubs.py" "$WINE_SRC" > /dev/null
 make -j"$(nproc)" dlls/ntdll/ntdll.so > make.log 2>&1
 # the server objects; linking wineserver on its own fails (it lives in our module) and that's fine
 make -j"$(nproc)" -k server/wineserver >> make.log 2>&1 || true
@@ -139,7 +140,7 @@ link_main() {  # <output .js> <emcc flags...>
   shift
   emcc -O2 -pthread -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -sMAIN_MODULE=2 -Wno-undefined -o "$out" "$OUT/main.o" "$OUT/shim.o" \
     $(cd "$BUILD" && ls server/*.o | sed "s|^|$BUILD/|") "$VNHOST" "$VKD3D_OUT/libvkd3d-shader.a" $KEEP \
-    $WRAPFLAGS --pre-js "$HERE/pre.js" --js-library "$HERE/vnfs.js" --js-library "$HERE/vnjit.js" --js-library "$HERE/vndl.js" \
+    $WRAPFLAGS --pre-js "$HERE/pre.js" --js-library "$HERE/vnfs.js" --js-library "$HERE/vnjit.js" --js-library "$HERE/vndl.js" --js-library "$HERE/vnwasm.js" \
     -sPROXY_TO_PTHREAD -sEXIT_RUNTIME \
     -sGLOBAL_BASE=2147483648 -sINITIAL_MEMORY=2214592512 -sMAXIMUM_MEMORY=4GB -sALLOW_MEMORY_GROWTH=1 \
     -sSTACK_SIZE=1MB -sDEFAULT_PTHREAD_STACK_SIZE=1MB -sPTHREAD_POOL_SIZE=16 -sPTHREAD_POOL_SIZE_STRICT=0 \
