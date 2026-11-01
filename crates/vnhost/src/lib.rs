@@ -12,6 +12,7 @@
 pub mod audio;
 pub mod d3d9;
 pub mod d3d11;
+pub mod gl;
 pub mod cpu;
 pub mod jit;
 pub mod display;

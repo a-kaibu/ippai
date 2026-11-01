@@ -30,6 +30,9 @@ if [ ! -f Makefile ] || [ "$WINE_SRC/configure" -nt Makefile ] || [ "$HERE/build
     ac_cv_lib_soname_freetype=libfreetype.so.6 \
     CPPFLAGS="-I$HERE/include" ac_cv_func_epoll_create=yes > configure.log 2>&1
 fi
+# do-nothing GL functions for winebrowser.drv's WGL driver (dlls/winebrowser.drv/opengl.c)
+STUBS="$WINE_SRC/dlls/winebrowser.drv/glstubs.h"
+[ "$STUBS" -nt "$WINE_SRC/include/wine/wgl.h" ] || python3 "$HERE/gen-gl-stubs.py" "$WINE_SRC" > /dev/null
 make -j"$(nproc)" dlls/ntdll/ntdll.so > make.log 2>&1
 # the server objects; linking wineserver on its own fails (it lives in our module) and that's fine
 make -j"$(nproc)" -k server/wineserver >> make.log 2>&1 || true

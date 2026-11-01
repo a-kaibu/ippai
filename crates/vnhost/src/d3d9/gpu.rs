@@ -40,6 +40,7 @@ pub const CLEAR_VIEW: u32 = 26; // tex level layer flags c0 c1 c2 c3 depth stenc
 pub const GEN_MIPS: u32 = 27; // tex
 pub const CREATE_TEXTURE2: u32 = 28; // id w h layers_or_depth mips format dim (0 2d, 1 3d, 2 1d)
 pub const WRITE_TEXTURE2: u32 = 29; // id level layer_or_z x y w h bytes_per_row blob_offset
+pub const PRESENT_FLIP: u32 = 30; // as PRESENT, the texture bottom row first (OpenGL)
 
 /// Texture formats on the page.
 pub const FMT_BGRA8: u32 = 0;

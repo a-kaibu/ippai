@@ -1442,7 +1442,7 @@
  #define SYSCALL_ENTRY(id,name,args) args,
 --- /dev/null
 +++ b/dlls/winebrowser.drv/Makefile.in
-@@ -0,0 +1,8 @@
+@@ -0,0 +1,9 @@
 +MODULE    = winebrowser.drv
 +UNIXLIB   = winebrowser.so
 +UNIX_LIBS = -lwin32u $(PTHREAD_LIBS)
@@ -1450,7 +1450,8 @@
 +SOURCES = \
 +	audio.c \
 +	dllmain.c \
-+	driver.c
++	driver.c \
++	opengl.c
 --- /dev/null
 +++ b/dlls/winebrowser.drv/audio.c
 @@ -0,0 +1,706 @@
@@ -2190,7 +2191,7 @@
 +}
 --- /dev/null
 +++ b/dlls/winebrowser.drv/driver.c
-@@ -0,0 +1,336 @@
+@@ -0,0 +1,341 @@
 +/*
 + * Browser display driver (vnvm)
 + *
@@ -2508,6 +2509,10 @@
 +    vnhost_window_pos( handle_id( hwnd ), rect, visible, !(swp_flags & SWP_NOZORDER), handle_id( above ));
 +}
 +
++struct opengl_funcs;
++struct opengl_driver_funcs;
++extern UINT BROWSER_OpenGLInit( UINT version, const struct opengl_funcs *opengl_funcs, const struct opengl_driver_funcs **driver_funcs );
++
 +static const struct user_driver_funcs browser_driver_funcs =
 +{
 +    .pUpdateDisplayDevices = BROWSER_UpdateDisplayDevices,
@@ -2519,12 +2524,234 @@
 +    .pWindowPosChanging = BROWSER_WindowPosChanging,
 +    .pCreateWindowSurface = BROWSER_CreateWindowSurface,
 +    .pWindowPosChanged = BROWSER_WindowPosChanged,
++    .pOpenGLInit = BROWSER_OpenGLInit,
 +};
 +
 +/* called by the PE side (dllmain.c) once per process */
 +NTSTATUS browser_init_display( void *args )
 +{
 +    __wine_set_user_driver( &browser_driver_funcs, WINE_GDI_DRIVER_VERSION );
++    return STATUS_SUCCESS;
++}
+--- /dev/null
++++ b/dlls/winebrowser.drv/opengl.c
+@@ -0,0 +1,218 @@
++/*
++ * WGL driver of the browser driver: contexts and window surfaces for win32u's OpenGL, the GL
++ * functions themselves are vnhost's (crates/vnhost/src/gl, drawn with WebGPU on the page).
++ * Functions vnhost does not have get do-nothing stubs of the right type (glstubs.h).
++ */
++
++#if 0
++#pragma makedep unix
++#endif
++
++#include "config.h"
++
++#include <stdlib.h>
++#include <string.h>
++
++#include "ntstatus.h"
++#define WIN32_NO_STATUS
++#include "windef.h"
++#include "winbase.h"
++#include "ntuser.h"
++#include "wine/opengl_driver.h"
++#include "wine/debug.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(wgl);
++
++extern unsigned int vngl_context_create( unsigned int share );
++extern void vngl_context_destroy( unsigned int id );
++extern int vngl_make_current( unsigned int ctx, unsigned int hwnd, unsigned int width, unsigned int height );
++extern void vngl_swap( unsigned int hwnd, const int *rect );
++extern void vngl_flush(void);
++extern void *vngl_proc( const char *name );
++
++#include "glstubs.h"
++
++static int stub_cmp( const void *key, const void *entry )
++{
++    return strcmp( key, ((const struct gl_stub *)entry)->name );
++}
++
++static void *browser_get_proc_address( const char *name )
++{
++    const struct gl_stub *stub;
++    void *ret;
++
++    if ((ret = vngl_proc( name ))) return ret;
++    stub = bsearch( name, gl_stubs, ARRAY_SIZE(gl_stubs), sizeof(gl_stubs[0]), stub_cmp );
++    return stub ? stub->func : NULL;
++}
++
++/* color, alpha, depth, stencil, double buffered */
++static const struct { BYTE color, alpha, depth, stencil, dbl; } formats[] =
++{
++    { 32, 8, 24, 8, 1 },
++    { 32, 8, 24, 8, 0 },
++    { 32, 8, 0, 0, 1 },
++    { 24, 0, 24, 8, 1 },
++    { 24, 0, 16, 0, 1 },
++    { 32, 8, 16, 0, 1 },
++};
++
++static UINT browser_init_pixel_formats( UINT *onscreen_count )
++{
++    *onscreen_count = ARRAY_SIZE(formats);
++    return ARRAY_SIZE(formats);
++}
++
++static BOOL browser_describe_pixel_format( int format, struct wgl_pixel_format *desc )
++{
++    if (format <= 0 || format > ARRAY_SIZE(formats)) return FALSE;
++    memset( desc, 0, sizeof(*desc) );
++    desc->pfd.nSize = sizeof(desc->pfd);
++    desc->pfd.nVersion = 1;
++    desc->pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_SUPPORT_COMPOSITION;
++    if (formats[format - 1].dbl) desc->pfd.dwFlags |= PFD_DOUBLEBUFFER;
++    desc->pfd.iPixelType = PFD_TYPE_RGBA;
++    desc->pfd.cColorBits = formats[format - 1].color;
++    desc->pfd.cRedBits = desc->pfd.cGreenBits = desc->pfd.cBlueBits = 8;
++    desc->pfd.cRedShift = 16;
++    desc->pfd.cGreenShift = 8;
++    desc->pfd.cBlueShift = 0;
++    desc->pfd.cAlphaBits = formats[format - 1].alpha;
++    desc->pfd.cAlphaShift = formats[format - 1].alpha ? 24 : 0;
++    desc->pfd.cDepthBits = formats[format - 1].depth;
++    desc->pfd.cStencilBits = formats[format - 1].stencil;
++    desc->pfd.iLayerType = PFD_MAIN_PLANE;
++    desc->swap_method = WGL_SWAP_UNDEFINED_ARB;
++    desc->transparent = -1;
++    desc->pixel_type = -1;
++    desc->draw_to_pbuffer = -1;
++    desc->max_pbuffer_pixels = -1;
++    desc->max_pbuffer_width = -1;
++    desc->max_pbuffer_height = -1;
++    desc->float_components = -1;
++    desc->sample_buffers = -1;
++    desc->samples = -1;
++    desc->framebuffer_srgb_capable = -1;
++    return TRUE;
++}
++
++static void browser_init_extensions( struct opengl_funcs *funcs, BOOLEAN extensions[GL_EXTENSION_COUNT] )
++{
++}
++
++static void browser_drawable_destroy( struct opengl_drawable *base )
++{
++}
++
++static void browser_drawable_flush( struct opengl_drawable *base, UINT flags )
++{
++    if (flags & GL_FLUSH_FINISHED) vngl_flush();
++}
++
++static BOOL client_rect( HWND hwnd, RECT *rect )
++{
++    if (!NtUserGetClientRect( hwnd, rect, 0 )) return FALSE;
++    NtUserMapWindowPoints( hwnd, 0, (POINT *)rect, 2, 0 );
++    return TRUE;
++}
++
++static BOOL browser_drawable_swap( struct opengl_drawable *base )
++{
++    RECT rect;
++    int r[4];
++
++    if (!base->client || !client_rect( base->client->hwnd, &rect )) return TRUE;
++    r[0] = rect.left;
++    r[1] = rect.top;
++    r[2] = rect.right;
++    r[3] = rect.bottom;
++    vngl_swap( HandleToULong( base->client->hwnd ), r );
++    return TRUE;
++}
++
++static const struct opengl_drawable_funcs browser_drawable_funcs =
++{
++    .size = sizeof(struct opengl_drawable),
++    .destroy = browser_drawable_destroy,
++    .flush = browser_drawable_flush,
++    .swap = browser_drawable_swap,
++};
++
++static BOOL browser_surface_create( struct client_surface *client, int format, struct opengl_drawable **drawable )
++{
++    RECT rect;
++    SIZE size;
++
++    NtUserGetClientRect( client->hwnd, &rect, 0 );
++    size.cx = max( 1, rect.right - rect.left );
++    size.cy = max( 1, rect.bottom - rect.top );
++    *drawable = opengl_drawable_create( &browser_drawable_funcs, format, client, &size );
++    return !!*drawable;
++}
++
++static BOOL browser_pbuffer_create( HDC hdc, int format, SIZE size, BOOL largest, GLenum texture_format, GLenum texture_target,
++                                    GLint max_level, struct opengl_drawable **drawable )
++{
++    return FALSE;
++}
++
++static struct opengl_context *browser_context_create( const struct opengl_context_attrs *attrs, struct opengl_context *share )
++{
++    struct opengl_context *context;
++
++    if (!(context = calloc( 1, sizeof(*context) ))) return NULL;
++    context->host_context = ULongToPtr( vngl_context_create( share ? PtrToUlong( share->host_context ) : 0 ));
++    TRACE( "context %p host %p\n", context, context->host_context );
++    return context;
++}
++
++static BOOL browser_context_destroy( struct opengl_context *context )
++{
++    vngl_context_destroy( PtrToUlong( context->host_context ));
++    free( context );
++    return TRUE;
++}
++
++static BOOL browser_context_activate( struct opengl_context *context, struct opengl_drawable *draw, struct opengl_drawable *read )
++{
++    RECT rect = {0};
++    HWND hwnd = 0;
++
++    if (!context) return vngl_make_current( 0, 0, 0, 0 );
++    if (draw && draw->client)
++    {
++        hwnd = draw->client->hwnd;
++        NtUserGetClientRect( hwnd, &rect, 0 );
++    }
++    return vngl_make_current( PtrToUlong( context->host_context ), HandleToULong( hwnd ),
++                              max( 1, rect.right - rect.left ), max( 1, rect.bottom - rect.top ));
++}
++
++static BOOL browser_null_surface_create( int format, struct opengl_drawable **drawable )
++{
++    SIZE size = { 1, 1 };
++    *drawable = opengl_drawable_create( &browser_drawable_funcs, format, NULL, &size );
++    return !!*drawable;
++}
++
++static const struct opengl_driver_funcs browser_driver_funcs =
++{
++    .p_get_proc_address = browser_get_proc_address,
++    .p_init_pixel_formats = browser_init_pixel_formats,
++    .p_describe_pixel_format = browser_describe_pixel_format,
++    .p_init_extensions = browser_init_extensions,
++    .p_surface_create = browser_surface_create,
++    .p_pbuffer_create = browser_pbuffer_create,
++    .p_context_create = browser_context_create,
++    .p_context_destroy = browser_context_destroy,
++    .p_context_activate = browser_context_activate,
++    .p_null_surface_create = browser_null_surface_create,
++};
++
++UINT BROWSER_OpenGLInit( UINT version, const struct opengl_funcs *opengl_funcs, const struct opengl_driver_funcs **driver_funcs )
++{
++    if (version != WINE_OPENGL_DRIVER_VERSION) return STATUS_INVALID_PARAMETER;
++    *driver_funcs = &browser_driver_funcs;
 +    return STATUS_SUCCESS;
 +}
 --- /dev/null

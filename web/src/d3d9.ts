@@ -33,7 +33,10 @@ const CREATE_TEXTURE = 1,
   CLEAR_VIEW = 26,
   GEN_MIPS = 27,
   CREATE_TEXTURE2 = 28,
-  WRITE_TEXTURE2 = 29;
+  WRITE_TEXTURE2 = 29,
+  PRESENT_FLIP = 30;
+/** buffer id of the batch's data block (DRAW2 vertex/index/uniform sources) */
+const DATA = 0xffffffff;
 
 // (crates/vnhost/src/d3d11/format.rs P_*)
 const TEX_FORMATS: GPUTextureFormat[] = [
@@ -136,6 +139,8 @@ export interface Overlay {
   view: GPUTextureView;
   /** client area on the screen: left, top, right, bottom */
   rect: [number, number, number, number];
+  /** bottom row first (OpenGL) */
+  flip?: boolean;
 }
 
 export class D3D9 {
@@ -391,12 +396,13 @@ export class D3D9 {
         case DRAW:
           i = this.draw(c, i);
           break;
-        case PRESENT: {
+        case PRESENT:
+        case PRESENT_FLIP: {
           const [tex, l, t, r, b] = [c[i + 1]!, c[i + 2]! | 0, c[i + 3]! | 0, c[i + 4]! | 0, c[i + 5]! | 0];
           this.endPass();
           this.submit();
           const tx = this.textures.get(tex);
-          if (tx) this.overlay = { view: tx.view, rect: [l, t, r, b] };
+          if (tx) this.overlay = { view: tx.view, rect: [l, t, r, b], flip: op === PRESENT_FLIP };
           this.frames++;
           this.inflight++;
           const sent = performance.now();
@@ -1302,7 +1308,9 @@ export class D3D9 {
       const entries: GPUBindGroupEntry[] = [];
       for (let e = 0; e < g.length; e += 8) {
         const [binding, kind, a, b, cc, dd, ee, ff] = Array.from(g.subarray(e, e + 8)) as number[];
-        if (kind === 0) {
+        if (kind === 0 && a === DATA) {
+          entries.push({ binding: binding!, resource: { buffer: this.dataBuf!, offset: b!, size: Math.max(16, cc!) } });
+        } else if (kind === 0) {
           const buf = this.buffers.get(a!);
           const want = Math.max(16, Math.ceil(dd! / 16) * 16);
           entries.push({ binding: binding!, resource: buf && buf.size >= want ? { buffer: buf, offset: 0, size: Math.min(buf.size, 65536) } : { buffer: this.zero(), offset: 0, size: Math.min(65536, want) } });
@@ -1319,11 +1327,11 @@ export class D3D9 {
       pass.setBindGroup(gi, this.device.createBindGroup({ layout: p.layouts![gi]!, entries }));
     });
     vbs.forEach(([b, off], k) => {
-      const buf = this.buffers.get(b);
+      const buf = b === DATA ? this.dataBuf : this.buffers.get(b);
       pass.setVertexBuffer(k, buf ?? this.zero(), buf ? Math.min(off, buf.size) : 0);
     });
     if (indexed) {
-      const buf = this.buffers.get(ib);
+      const buf = ib === DATA ? this.dataBuf : this.buffers.get(ib);
       if (!buf) return q;
       pass.setIndexBuffer(buf, ifmt === 2 ? "uint32" : "uint16", Math.min(ioff, buf.size));
       pass.drawIndexed(count!, instances!, start!, base! | 0, first!);
@@ -1347,7 +1355,8 @@ export class D3D9 {
     await buf.mapAsync(GPUMapMode.READ);
     const src = new Uint8Array(buf.getMappedRange());
     const data = new Uint8Array(t.w * t.h * 4);
-    for (let r = 0; r < t.h; r++) data.set(src.subarray(r * bpr, r * bpr + t.w * 4), r * t.w * 4);
+    // (OpenGL frames: bottom row first)
+    for (let r = 0; r < t.h; r++) data.set(src.subarray(r * bpr, r * bpr + t.w * 4), (o.flip ? t.h - 1 - r : r) * t.w * 4);
     if (t.format.startsWith("rgba8")) {
       // (as BGRA)
       for (let p = 0; p < data.length; p += 4) [data[p], data[p + 2]] = [data[p + 2]!, data[p]!];

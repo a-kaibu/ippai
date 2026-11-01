@@ -49,7 +49,7 @@ export class Presenter {
   private readonly uvMain: GPUBuffer;
   private readonly uvOverlay: GPUBuffer;
   /** Direct3D windows drawn over the screen (web/src/d3d9.ts) */
-  overlay: { view: GPUTextureView; rect: [number, number, number, number] } | null = null;
+  overlay: { view: GPUTextureView; rect: [number, number, number, number]; flip?: boolean } | null = null;
   private overlayGroup: { view: GPUTextureView; group: GPUBindGroup } | null = null;
   private rect: Rect = { x: 0, y: 0, w: 1, h: 1 };
   private texture: GPUTexture | null = null;
@@ -223,6 +223,8 @@ export class Presenter {
         y1 = Math.min(this.canvas.height, r.y + (b - vt) * sy);
       if (x1 > x0 && y1 > y0 && or > ol && ob > ot) {
         const uv = [(l - ol) / (or - ol), (t - ot) / (ob - ot), (rr - ol) / (or - ol), (b - ot) / (ob - ot)];
+        // (OpenGL frames are stored bottom row first)
+        if (o.flip) [uv[1], uv[3]] = [1 - uv[1]!, 1 - uv[3]!];
         this.device.queue.writeBuffer(this.uvOverlay, 0, new Float32Array(uv));
         pass.setViewport(x0, y0, x1 - x0, y1 - y0, 0, 1);
         pass.setBindGroup(0, this.overlayGroup.group);

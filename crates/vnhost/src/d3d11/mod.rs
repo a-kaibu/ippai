@@ -282,7 +282,7 @@ unsafe fn rdf(p: u32, i: usize) -> f32 {
 }
 
 /// Page ids for textures and buffers (shared with d3d9's: one page)
-fn page_id() -> u32 {
+pub(crate) fn page_id() -> u32 {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x4000_0000);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }

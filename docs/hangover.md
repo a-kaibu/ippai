@@ -416,6 +416,22 @@ d3d9.dll を自前で置き換えて WebGPU で描く。d3d10/11/12 は他エン
   Map/DISCARD で毎フレーム更新して回る三角形、初期データ付きテクスチャ + サンプラー +
   アルファブレンドの四角形)。
 
+### OpenGL
+
+- winebrowser.drv の WGL ドライバー (dlls/winebrowser.drv/opengl.c、win32u の pOpenGLInit):
+  ピクセルフォーマット、コンテキスト、ウィンドウの描画先、SwapBuffers。GL 関数は vnhost の
+  crates/vnhost/src/gl。vnhost に無い関数には型の合った何もしない関数を返す
+  (hangover/gen-gl-stubs.py が wgl.h から glstubs.h を作る。wasm の間接呼び出しは型が合わないと止まるため)。
+- 描画は Direct3D 11 と同じページのコマンド: 固定機能 (ライティングとフォグ無し、テクスチャ 2 段、
+  アルファテスト、ブレンド、深度・ステンシル) は一つの WGSL、GLSL 1.10〜1.30 は Vulkan 形式の
+  GLSL 450 に書き換えて naga で WGSL にする (ユニフォームはステージごとに一つのブロック、
+  sampler2D はテクスチャ + サンプラー、gl_Vertex/gl_ModelViewProjectionMatrix/gl_FragColor などは
+  自前の入出力)。頂点は描画ごとに float の並びにしてバッチのデータ領域に置く (遅いが単純)。
+- フレームは GL と同じく下の行から持つ (頂点シェーダーで y を反転)。ビューポート・シザー・
+  glReadPixels・テクスチャへのコピーは GL の座標のまま使え、表示のときにページが上下を返す (PRESENT_FLIP)。
+- 確認: hangover/tests/gltest.c (FBO へ glBegin のテクスチャ付き四角形、それをクライアント配列で
+  ウィンドウへ、VBO + GLSL の回る三角形)。
+
 ## 現状 (2026-10-28)
 
 - crates/vnx86: i386 ユーザーモードのインタプリタ。整数・x87・MMX・SSE・SSE2 を実装し、
