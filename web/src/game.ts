@@ -16,15 +16,18 @@
 //
 //   /game.html?secs=60    story seconds to measure (default 60)
 //   /game.html?runs=1     one run only
+//   &env=VNVM_JIT_PROFILE=1  print the executed instruction counts at the end (console)
 
 const NATIVE = { title: 5.9, cores: 0.18 };
-const CLICK = [380, 622]; // the text box, in frame pixels: advances the story (and leaves the title)
+// the text box, in frame pixels: advances the story (and leaves the title); &click=x,y for another game
+const CLICK = [380, 622];
 
 const params = new URLSearchParams(location.search);
 const secs = Math.max(10, Number(params.get("secs") ?? 60) || 60);
 const runs = Math.min(5, Math.max(1, Number(params.get("runs") ?? 2) || 2));
 const round = Math.min(runs, Math.max(1, Number(params.get("round") ?? 1) || 1));
 const STORE = "vnvm-game";
+for (const [i, v] of (params.get("click") ?? "").split(",").filter(Boolean).entries()) CLICK[i] = Number(v) || 0;
 type Rows = [string, string, string][];
 /** rows of the earlier runs */
 const earlier: Rows[] = (() => {
@@ -77,6 +80,7 @@ interface Wine {
   _vnhost_input_push(k: number, x: number, y: number, d: number): number;
   _vnhost_load_busy(): number;
   _vnhost_load_slot(i: number, out: number): number;
+  _vnhost_jit_profile?(): void;
   _malloc(n: number): number;
   HEAPF64: Float64Array;
 }
@@ -187,6 +191,8 @@ async function story(): Promise<void> {
     `per second (cpu cores / fps / gap ms): ${perSec.map((p) => `${p.cpu.toFixed(2)}/${p.fps.toFixed(0)}/${p.gap.toFixed(0)}`).join(" ")}`,
     device,
   ];
+  // &env=VNVM_JIT_PROFILE=1: the executed instruction counts (to stderr, the console)
+  if (params.getAll("env").some((e) => e.startsWith("VNVM_JIT_PROFILE="))) wine()?._vnhost_jit_profile?.();
   await fetch("bench-log", { method: "PUT", body: lines.join("\n") }).catch(() => undefined);
   if (round < runs) {
     try {

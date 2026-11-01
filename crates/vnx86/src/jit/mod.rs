@@ -165,6 +165,59 @@ pub struct Region {
     /// with [`LAYOUT`] on: the blocks in order (address, inline context) and the loops, then
     /// `SZ <mnemonic> <count> <bytes>` lines and the function's size
     pub layout: String,
+    /// with [`PROFILE`] on: per block (address, address of its u32 entry counter, the
+    /// instructions as "mnemonic operands" keys)
+    pub profile: Vec<(u32, u32, Vec<String>)>,
+}
+
+/// Debugging: count block entries (a u32 per block, leaked) and fill [`Region::profile`].
+/// wasm32 only (the counter address is an i32 constant).
+pub static PROFILE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// "mnemonic operands" for profiles: operands as r8/r16/r32/mm/xmm/st/seg, m<bits>, i.
+pub fn profile_key(ins: &Instruction) -> String {
+    let mut k = alloc::format!("{:?}", ins.mnemonic()).to_lowercase();
+    for i in 0..ins.op_count() {
+        k.push(if i == 0 { ' ' } else { ',' });
+        match ins.op_kind(i) {
+            OpKind::Register => {
+                let r = ins.op_register(i);
+                k.push_str(if r.is_gpr8() {
+                    "r8"
+                } else if r.is_gpr16() {
+                    "r16"
+                } else if r.is_gpr32() {
+                    "r32"
+                } else if r.is_mm() {
+                    "mm"
+                } else if r.is_xmm() {
+                    "xmm"
+                } else if r.is_st() {
+                    "st"
+                } else if r.is_segment_register() {
+                    "seg"
+                } else {
+                    "reg"
+                });
+            }
+            OpKind::Memory => {
+                k.push('m');
+                k.push_str(&alloc::format!("{}", ins.memory_size().size() * 8));
+            }
+            OpKind::NearBranch32 | OpKind::NearBranch16 => k.push_str("rel"),
+            OpKind::MemorySegESI | OpKind::MemorySegSI | OpKind::MemoryESDI | OpKind::MemoryESEDI | OpKind::MemorySegEDI => k.push_str("str"),
+            _ => k.push('i'),
+        }
+    }
+    if ins.has_rep_prefix() || ins.has_repe_prefix() {
+        k.insert_str(0, "rep ");
+    } else if ins.has_repne_prefix() {
+        k.insert_str(0, "repne ");
+    }
+    if ins.has_lock_prefix() {
+        k.insert_str(0, "lock ");
+    }
+    k
 }
 
 /// Debugging: fill [`Region::layout`].
@@ -188,6 +241,8 @@ struct Gen<'a> {
     sizes: BTreeMap<String, (u32, u32)>,
     /// blocks done by [`Gen::hle`] instead of their guest code
     hle: BTreeMap<u32, Hle>,
+    /// with [`PROFILE`]: each block's entry counter address
+    prof: Vec<u32>,
     /// open wasm blocks inside the exit block
     depth: u32,
     flags: Flags,
@@ -2996,6 +3051,9 @@ fn emit_block<'a>(g: &mut Gen<'a>, blocks: &'a [(u32, Vec<Instruction>)], k: usi
     g.safe[4] = Some(0); // see Gen::emit
     g.flags = Flags::Entry;
     g.fc = g.fc_in.get(&k).copied().unwrap_or_default();
+    if let Some(&at) = g.prof.get(k) {
+        g.c.i32c(at as i32).i32c(at as i32).load32(0).i32c(1).add().store32(0);
+    }
     g.mm_loop = match g.mm_pre {
         Some((h, m)) if h == k => m,
         _ => 0,
@@ -3326,7 +3384,17 @@ pub fn translate_region<M: Memory>(
         fell_back: false,
         sizes: Default::default(),
         hle,
+        prof: Vec::new(),
     };
+    let mut profile = Vec::new();
+    if PROFILE.load(core::sync::atomic::Ordering::Relaxed) && cfg!(target_pointer_width = "32") {
+        let counts: &'static mut [u32] = alloc::boxed::Box::leak(alloc::vec![0u32; n as usize].into_boxed_slice());
+        for (k, (a, list)) in blocks.iter().enumerate() {
+            let at = &counts[k] as *const u32 as usize as u32;
+            g.prof.push(at);
+            profile.push((*a, at, list.iter().map(profile_key).collect()));
+        }
+    }
     g.live_out = block_liveness(&g, &blocks).1;
     g.c.get(L_ARG).i32c(ENTRY_SHIFT as i32).shr_u().set(L_BLK);
     g.c.block(); // exit
@@ -3365,5 +3433,5 @@ pub fn translate_region<M: Memory>(
         }
         let _ = writeln!(layout, "SZTOTAL {}", module.funcs.last().unwrap().code.b.len());
     }
-    Some(Region { starts, instructions: count, code, layout })
+    Some(Region { starts, instructions: count, code, layout, profile })
 }

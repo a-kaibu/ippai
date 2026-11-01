@@ -259,6 +259,9 @@ fn saved_regions() -> &'static Saved {
 /// A saved region for `roots` (any built from `roots[0]` when `exact` is off: the one with most
 /// roots) whose guest code is still there, and clear of the trap range `trap`.
 fn find_saved(mem: &mut Linear, roots: &[u32], exact: bool, trap: (u32, u32)) -> Option<usize> {
+    if profiling() {
+        return None; // saved regions have no counters
+    }
     let s = saved_regions();
     s.by_root
         .get(&roots[0])?
@@ -296,6 +299,9 @@ fn maybe_save() {
     let Some(url) = URL.get_or_init(|| std::env::var("VNVM_JIT_URL").ok().and_then(|u| std::ffi::CString::new(u).ok())) else {
         return;
     };
+    if profiling() {
+        return; // the counters' addresses are only this run's
+    }
     let Ok(mut guard) = SAVE.try_lock() else { return };
     let g = &mut *guard;
     let now = Instant::now();
@@ -397,7 +403,8 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
         jit::LAYOUT.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     let (misses, known) = (&st.misses, &st.known);
-    let Some(region) = jit::translate_region(&mut m, &mut Linear, &roots, MAX_BLOCKS, |a| {
+    profiling();
+    let Some(mut region) = jit::translate_region(&mut m, &mut Linear, &roots, MAX_BLOCKS, |a| {
         !(a >= lo && a < hi) && (roots.contains(&a) || ran(misses, known, a))
     }) else {
         return;
@@ -411,6 +418,7 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
     }
     let bytes = m.finish();
     if load(st, &bytes, roots.clone(), &region.starts) {
+        keep_profile(&mut region);
         share(&mut Linear, &roots, bytes, &region);
         maybe_save();
     }
@@ -450,7 +458,8 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         }
         let (lo, hi) = (cpu.trap_lo, cpu.trap_hi);
         let (misses, known) = (&st.misses, &st.known);
-        let Some(region) = jit::translate_region(&mut m, mem, &[eip], MAX_BLOCKS, |a| {
+        profiling();
+        let Some(mut region) = jit::translate_region(&mut m, mem, &[eip], MAX_BLOCKS, |a| {
             !(a >= lo && a < hi) && !known.contains(&a) && (a == eip || misses.contains_key(&a))
         }) else {
             st.known.insert(eip);
@@ -462,6 +471,7 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         let bytes = m.finish();
         let ok = load(st, &bytes, vec![eip], &region.starts);
         if ok {
+            keep_profile(&mut region);
             share(mem, &[eip], bytes, &region);
             maybe_save();
         } else {
@@ -497,6 +507,95 @@ pub unsafe extern "C" fn vnhost_jit_eflags(cpu: *mut Cpu) -> u32 {
 #[no_mangle]
 pub extern "C" fn vnhost_jit_status(op: u32, a: u32, b: u32, r: u32, c: u32) -> u32 {
     vnx86::lazy::Lazy { op, a, b, r, c }.status()
+}
+
+/// VNVM_JIT_PROFILE: every region's blocks (address, entry counter, instruction keys).
+static PROF: Mutex<Vec<(u32, u32, Vec<String>)>> = Mutex::new(Vec::new());
+
+fn profiling() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        let on = std::env::var_os("VNVM_JIT_PROFILE").is_some();
+        jit::PROFILE.store(on, std::sync::atomic::Ordering::Relaxed);
+        on
+    })
+}
+
+fn keep_profile(region: &mut jit::Region) {
+    if profiling() {
+        PROF.lock().unwrap().append(&mut region.profile);
+    }
+}
+
+/// Prints the executed instruction counts so far (blocks entered times their instructions:
+/// a block left early still counts whole; the interpreter's own steps are not in it).
+#[no_mangle]
+pub extern "C" fn vnhost_jit_profile() {
+    let prof = PROF.lock().unwrap();
+    let mut by_key: HashMap<&str, u64> = HashMap::new();
+    let mut by_cat: HashMap<&str, u64> = HashMap::new();
+    let mut blocks: Vec<(u64, u32, usize)> = Vec::new();
+    let mut total = 0u64;
+    for (a, at, keys) in prof.iter() {
+        let n = unsafe { (*at as usize as *const u32).read_volatile() } as u64;
+        if n == 0 {
+            continue;
+        }
+        blocks.push((n * keys.len() as u64, *a, keys.len()));
+        for k in keys {
+            *by_key.entry(k).or_default() += n;
+            *by_cat.entry(category(k)).or_default() += n;
+            total += n;
+        }
+    }
+    let mut keys: Vec<_> = by_key.into_iter().collect();
+    keys.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+    let mut mn: HashMap<&str, u64> = HashMap::new();
+    for (k, n) in &keys {
+        let m = k.trim_start_matches("lock ").trim_start_matches("rep ").trim_start_matches("repne ");
+        *mn.entry(m.split(' ').next().unwrap_or(m)).or_default() += n;
+    }
+    let mut mn: Vec<_> = mn.into_iter().collect();
+    mn.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+    let mut cats: Vec<_> = by_cat.into_iter().collect();
+    cats.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+    blocks.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    let mut o = format!("PROF total {total} blocks {}\n", prof.len());
+    for (c, n) in &cats {
+        o += &format!("PROF cat {c} {n}\n");
+    }
+    for (k, n) in mn.iter().take(80) {
+        o += &format!("PROF mn {k} {n}\n");
+    }
+    for (k, n) in keys.iter().take(200) {
+        o += &format!("PROF key {k} {n}\n");
+    }
+    for (n, a, len) in blocks.iter().take(40) {
+        o += &format!("PROF block {a:08x} {len} {n}\n");
+    }
+    o += "PROF end\n";
+    eprint!("{o}");
+}
+
+fn category(k: &str) -> &'static str {
+    let m = k.trim_start_matches("lock ").trim_start_matches("rep ").trim_start_matches("repne ");
+    let mn = m.split(' ').next().unwrap_or(m);
+    if k.contains("xmm") || mn.ends_with("ss") && mn != "cmpss" || mn.starts_with("cvt") || mn == "ldmxcsr" || mn == "stmxcsr" {
+        "sse"
+    } else if k.contains("mm") || mn == "emms" {
+        "mmx"
+    } else if mn.starts_with('f') && mn != "fxsave" || mn == "wait" {
+        "x87"
+    } else if k.contains("str") {
+        "string"
+    } else if k.starts_with("lock") || mn == "xchg" || mn.starts_with("cmpxchg") {
+        "atomic"
+    } else if matches!(mn, "call" | "ret" | "jmp" | "push" | "pop" | "leave" | "enter") || mn.starts_with('j') {
+        "control/stack"
+    } else {
+        "int"
+    }
 }
 
 fn stats() -> bool {
