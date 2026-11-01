@@ -149,6 +149,79 @@ fn tls_get_value(trap: u32) -> u32 {
     a.place()
 }
 
+// user32's RECT helpers (CatSystem2 calls IntersectRect / IsRectEmpty / SetRectEmpty ~150k
+// times a second)
+
+fn is_rect_empty() -> u32 {
+    let mut a = Asm::default();
+    a.x(&[0x8b, 0x4c, 0x24, 0x04]) // mov ecx,[esp+4]
+        .x(&[0x8b, 0x41, 0x08, 0x3b, 0x01]) // mov eax,[ecx+8]; cmp eax,[ecx]
+        .j8(0x7e, "empty")
+        .x(&[0x8b, 0x41, 0x0c, 0x3b, 0x41, 0x04]) // mov eax,[ecx+12]; cmp eax,[ecx+4]
+        .j8(0x7e, "empty")
+        .x(&[0x31, 0xc0, 0xc2, 0x04, 0x00]) // xor eax,eax; ret 4
+        .label("empty")
+        .x(&[0xb8, 1, 0, 0, 0, 0xc2, 0x04, 0x00]);
+    a.place()
+}
+
+fn set_rect_empty() -> u32 {
+    let mut a = Asm::default();
+    a.x(&[0x8b, 0x44, 0x24, 0x04, 0x31, 0xc9]) // mov eax,[esp+4]; xor ecx,ecx
+        .x(&[0x89, 0x08, 0x89, 0x48, 0x04, 0x89, 0x48, 0x08, 0x89, 0x48, 0x0c])
+        .x(&[0xb8, 1, 0, 0, 0, 0xc2, 0x04, 0x00]);
+    a.place()
+}
+
+fn set_rect() -> u32 {
+    let mut a = Asm::default();
+    a.x(&[0x8b, 0x44, 0x24, 0x04]); // mov eax,[esp+4]
+    for k in 0..4u8 {
+        a.x(&[0x8b, 0x4c, 0x24, 8 + 4 * k, 0x89, 0x48, 4 * k]); // mov ecx,[esp+8+4k]; mov [eax+4k],ecx
+    }
+    a.x(&[0xb8, 1, 0, 0, 0, 0xc2, 0x14, 0x00]);
+    a.place()
+}
+
+fn copy_rect() -> u32 {
+    let mut a = Asm::default();
+    a.x(&[0x8b, 0x44, 0x24, 0x04, 0x8b, 0x54, 0x24, 0x08]); // mov eax,[esp+4]; mov edx,[esp+8]
+    for k in 0..4u8 {
+        a.x(&[0x8b, 0x4a, 4 * k, 0x89, 0x48, 4 * k]); // mov ecx,[edx+4k]; mov [eax+4k],ecx
+    }
+    a.x(&[0xb8, 1, 0, 0, 0, 0xc2, 0x08, 0x00]);
+    a.place()
+}
+
+fn offset_rect() -> u32 {
+    let mut a = Asm::default();
+    a.x(&[0x8b, 0x44, 0x24, 0x04, 0x8b, 0x4c, 0x24, 0x08, 0x8b, 0x54, 0x24, 0x0c]) // eax=rc ecx=dx edx=dy
+        .x(&[0x01, 0x08, 0x01, 0x50, 0x04, 0x01, 0x48, 0x08, 0x01, 0x50, 0x0c]) // add [eax],ecx; [eax+4],edx; ...
+        .x(&[0xb8, 1, 0, 0, 0, 0xc2, 0x0c, 0x00]);
+    a.place()
+}
+
+fn intersect_rect() -> u32 {
+    let mut a = Asm::default();
+    a.x(&[0x56, 0x57]) // push esi; push edi
+        .x(&[0x8b, 0x7c, 0x24, 0x0c, 0x8b, 0x54, 0x24, 0x10, 0x8b, 0x4c, 0x24, 0x14]); // edi=dst edx=a ecx=b
+    for (off, max, l) in [(0u8, true, "s0"), (4, true, "s1"), (8, false, "s2"), (12, false, "s3")] {
+        a.x(&[0x8b, 0x42, off, 0x8b, 0x71, off, 0x39, 0xf0]) // mov eax,[edx+off]; mov esi,[ecx+off]; cmp eax,esi
+            .j8(if max { 0x7d } else { 0x7e }, l)
+            .x(&[0x89, 0xf0]) // mov eax,esi
+            .label(l)
+            .x(&[0x89, 0x47, off]); // mov [edi+off],eax
+    }
+    a.x(&[0x8b, 0x47, 0x08, 0x3b, 0x07]) // mov eax,[edi+8]; cmp eax,[edi]
+        .j8(0x7e, "empty")
+        .x(&[0x8b, 0x47, 0x0c, 0x3b, 0x47, 0x04])
+        .j8(0x7e, "empty")
+        .x(&[0xb8, 1, 0, 0, 0, 0x5f, 0x5e, 0xc2, 0x0c, 0x00])
+        .label("empty")
+        .x(&[0x31, 0xc0, 0x89, 0x07, 0x89, 0x47, 0x04, 0x89, 0x47, 0x08, 0x89, 0x47, 0x0c, 0x5f, 0x5e, 0xc2, 0x0c, 0x00]);
+    a.place()
+}
+
 /// msvcrt's _errno / __doserrno: per-thread words in the TEB's free page (crt::ERRNO_TEB)
 fn errno_ptr(off: u32) -> u32 {
     let mut a = Asm::default();
@@ -169,7 +242,10 @@ static STUBS: Mutex<Option<HashMap<String, u32>>> = Mutex::new(None);
 /// The address to bind for `dll!name`, whose trap is `trap`: a stub, or the trap.
 pub fn bind(dll: &str, name: &str, trap: u32) -> u32 {
     let key = crate::api::dll_key(dll);
-    if !matches!(key.as_str(), "kernel32" | "kernelbase" | "ntdll" | "msvcrt") {
+    if !matches!(key.as_str(), "kernel32" | "kernelbase" | "ntdll" | "msvcrt" | "user32") {
+        return trap;
+    }
+    if key == "user32" && !matches!(name, "IsRectEmpty" | "SetRectEmpty" | "IntersectRect" | "SetRect" | "CopyRect" | "OffsetRect") {
         return trap;
     }
     if key == "msvcrt" && !matches!(name, "_errno" | "__doserrno") {
@@ -191,6 +267,12 @@ pub fn bind(dll: &str, name: &str, trap: u32) -> u32 {
         "SetLastError" | "RtlSetLastWin32Error" => set_last_error(),
         "TlsGetValue" => tls_get_value(trap),
         "_errno" => errno_ptr(0),
+        "IsRectEmpty" => is_rect_empty(),
+        "SetRectEmpty" => set_rect_empty(),
+        "IntersectRect" => intersect_rect(),
+        "SetRect" => set_rect(),
+        "CopyRect" => copy_rect(),
+        "OffsetRect" => offset_rect(),
         "__doserrno" => errno_ptr(4),
         _ => return trap,
     };

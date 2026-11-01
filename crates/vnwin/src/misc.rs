@@ -764,6 +764,206 @@ fn CoUninitialize(_: &mut Ctx) -> u32 {
 fn OleUninitialize(_: &mut Ctx) -> u32 {
     0
 }
+
+// ---------------------------------------------------------------------------------------------
+// dxdiagn: IDxDiagProvider / IDxDiagContainer with what games check (the DirectX version,
+// the OS, the display)
+
+#[derive(Clone)]
+enum DxProp {
+    U4(u32),
+    U8(u64),
+    Str(&'static str),
+    Bool(bool),
+}
+
+/// node path -> (children, properties)
+fn dx_node(path: &str) -> Option<(Vec<&'static str>, Vec<(&'static str, DxProp)>)> {
+    use DxProp::*;
+    let (sw, sh) = crate::user::screen();
+    Some(match path {
+        "" => (vec!["DxDiag_SystemInfo", "DxDiag_DisplayDevices", "DxDiag_DirectSound"], vec![]),
+        "DxDiag_SystemInfo" => (
+            vec![],
+            vec![
+                ("dwDirectXVersionMajor", U4(9)),
+                ("dwDirectXVersionMinor", U4(0)),
+                ("szDirectXVersionLetter", Str("c")),
+                ("szDirectXVersionEnglish", Str("4.09.0000.0904")),
+                ("szDirectXVersionLongEnglish", Str("DirectX 9.0c")),
+                ("dwOSMajorVersion", U4(6)),
+                ("dwOSMinorVersion", U4(1)),
+                ("dwOSBuildNumber", U4(7601)),
+                ("dwOSPlatformID", U4(2)),
+                ("ullPhysicalMemory", U8(4 << 30)),
+                ("ullAvailPhysMem", U8(3 << 30)),
+                ("szPhysicalMemoryEnglish", Str("4096MB RAM")),
+                ("szProcessorEnglish", Str("vnvm x86")),
+                ("szOSEnglish", Str("Windows 7")),
+                ("szOSExEnglish", Str("Windows 7 Professional 32-bit (6.1, Build 7601)")),
+                ("szLanguagesEnglish", Str("Japanese")),
+                ("bDebug", Bool(false)),
+                ("bNECPC98", Bool(false)),
+            ],
+        ),
+        "DxDiag_DisplayDevices" => (vec!["0"], vec![]),
+        "DxDiag_DisplayDevices.0" => (
+            vec![],
+            vec![
+                ("szDescription", Str("vnvm WebGPU")),
+                ("szDeviceName", Str("\\\\.\\DISPLAY1")),
+                ("szManufacturer", Str("vnvm")),
+                ("szChipType", Str("WebGPU")),
+                ("szDisplayMemoryEnglish", Str("512.0 MB")),
+                ("szDisplayMemoryLocalized", Str("512.0 MB")),
+                ("dwWidth", U4(sw as u32)),
+                ("dwHeight", U4(sh as u32)),
+                ("dwBpp", U4(32)),
+                ("dwRefreshRate", U4(60)),
+                ("szDriverVersion", Str("9.18.13.0000")),
+                ("bDDAccelerationEnabled", Bool(true)),
+                ("b3DAccelerationExists", Bool(true)),
+                ("b3DAccelerationEnabled", Bool(true)),
+                ("dwVendorId", U4(0x10de)),
+                ("dwDeviceId", U4(0x0a20)),
+            ],
+        ),
+        "DxDiag_DirectSound" => (vec![], vec![]),
+        _ => return None,
+    })
+}
+
+static DX_NODES: Mutex<Option<HashMap<u32, String>>> = Mutex::new(None);
+
+fn dx_container(path: &str) -> u32 {
+    static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    let vt = *V.get_or_init(|| {
+        let m: &[(crate::api::Handler, u32)] = &[
+            (dx_qi, 12),
+            (dx_addref, 4),
+            (dx_addref, 4),
+            (dxc_num_children, 8),
+            (dxc_enum_children, 16),
+            (dxc_get_child, 12),
+            (dxc_num_props, 8),
+            (dxc_enum_props, 16),
+            (dxc_get_prop, 12),
+        ];
+        let v = mem::heap_alloc(4 * m.len() as u32, true);
+        for (i, (f, b)) in m.iter().enumerate() {
+            w32(v + 4 * i as u32, crate::api::host_fn(&format!("IDxDiagContainer::{i}"), *f, *b));
+        }
+        v
+    });
+    let o = mem::heap_alloc(8, true);
+    w32(o, vt);
+    DX_NODES.lock().unwrap().get_or_insert_with(HashMap::new).insert(o, path.to_string());
+    o
+}
+fn dx_path(o: u32) -> String {
+    DX_NODES.lock().unwrap().get_or_insert_with(HashMap::new).get(&o).cloned().unwrap_or_default()
+}
+fn dx_qi(c: &mut Ctx) -> u32 {
+    put32(c.a(2), c.a(0));
+    0
+}
+fn dx_addref(_: &mut Ctx) -> u32 {
+    1
+}
+fn dxp_initialize(_: &mut Ctx) -> u32 {
+    0
+}
+fn dxp_root(c: &mut Ctx) -> u32 {
+    put32(c.a(1), dx_container(""));
+    0
+}
+fn dxc_num_children(c: &mut Ctx) -> u32 {
+    let n = dx_node(&dx_path(c.a(0))).map_or(0, |n| n.0.len());
+    put32(c.a(1), n as u32);
+    0
+}
+fn put_wname(buf: u32, cch: u32, s: &str) -> u32 {
+    let u: Vec<u16> = s.encode_utf16().collect();
+    if (u.len() as u32) >= cch {
+        return 0x8007_007a;
+    }
+    mem::put_wstr(buf, cch, &u);
+    0
+}
+fn dxc_enum_children(c: &mut Ctx) -> u32 {
+    let Some((ch, _)) = dx_node(&dx_path(c.a(0))) else { return 0x8007_0057 };
+    match ch.get(c.a(1) as usize) {
+        Some(n) => put_wname(c.a(2), c.a(3), n),
+        None => 0x8007_0057,
+    }
+}
+fn dxc_get_child(c: &mut Ctx) -> u32 {
+    let base = dx_path(c.a(0));
+    let name = String::from_utf16_lossy(&wstr(c.a(1)));
+    let path = if base.is_empty() { name } else { format!("{base}.{name}") };
+    if dx_node(&path).is_none() {
+        put32(c.a(2), 0);
+        return 0x8007_0057;
+    }
+    put32(c.a(2), dx_container(&path));
+    0
+}
+fn dxc_num_props(c: &mut Ctx) -> u32 {
+    let n = dx_node(&dx_path(c.a(0))).map_or(0, |n| n.1.len());
+    put32(c.a(1), n as u32);
+    0
+}
+fn dxc_enum_props(c: &mut Ctx) -> u32 {
+    let Some((_, props)) = dx_node(&dx_path(c.a(0))) else { return 0x8007_0057 };
+    match props.get(c.a(1) as usize) {
+        Some((n, _)) => put_wname(c.a(2), c.a(3), n),
+        None => 0x8007_0057,
+    }
+}
+fn dxc_get_prop(c: &mut Ctx) -> u32 {
+    let name = String::from_utf16_lossy(&wstr(c.a(1)));
+    let v = c.a(2);
+    let Some((_, props)) = dx_node(&dx_path(c.a(0))) else { return 0x8007_0057 };
+    let Some((_, p)) = props.iter().find(|(n, _)| *n == name) else { return 0x8007_0057 };
+    mem::fill(v, 16, 0);
+    match p {
+        DxProp::U4(x) => {
+            w16(v, 19);
+            w32(v + 8, *x);
+        }
+        DxProp::U8(x) => {
+            w16(v, 21);
+            w32(v + 8, *x as u32);
+            w32(v + 12, (*x >> 32) as u32);
+        }
+        DxProp::Bool(b) => {
+            w16(v, 11);
+            w16(v + 8, if *b { 0xffff } else { 0 });
+        }
+        DxProp::Str(st) => {
+            w16(v, 8);
+            w32(v + 8, bstr_alloc(&st.encode_utf16().collect::<Vec<u16>>()));
+        }
+    }
+    0
+}
+
+/// CLSID_DxDiagProvider
+fn dxdiag_provider() -> u32 {
+    static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    let vt = *V.get_or_init(|| {
+        let m: &[(crate::api::Handler, u32)] = &[(dx_qi, 12), (dx_addref, 4), (dx_addref, 4), (dxp_initialize, 8), (dxp_root, 8)];
+        let v = mem::heap_alloc(4 * m.len() as u32, true);
+        for (i, (f, b)) in m.iter().enumerate() {
+            w32(v + 4 * i as u32, crate::api::host_fn(&format!("IDxDiagProvider::{i}"), *f, *b));
+        }
+        v
+    });
+    let o = mem::heap_alloc(8, true);
+    w32(o, vt);
+    o
+}
+
 fn CoCreateInstance(c: &mut Ctx) -> u32 {
     let clsid = c.a(0);
     let iid = c.a(3);
@@ -773,6 +973,10 @@ fn CoCreateInstance(c: &mut Ctx) -> u32 {
         }
         format!("{:08x}-{:04x}-{:04x}", r32(p), r16(p + 4), r16(p + 6))
     };
+    if r32(clsid) == 0xa65b_8071 {
+        put32(c.a(4), dxdiag_provider());
+        return 0;
+    }
     if let Some(obj) = crate::sound::create_instance(c, clsid, iid) {
         put32(c.a(4), obj);
         return 0;

@@ -89,7 +89,9 @@ async function shot(n) {
     }
     // what the page shows: the game window's client area
     let out = px, ow = w, oh = h;
-    const v = window.vnvmPresenter?.view;
+    const v0 = window.vnvmPresenter?.view;
+    // (clamped to the screen: a window may reach past it)
+    const v = v0 && [Math.max(0, v0[0]), Math.max(0, v0[1]), Math.min(w, v0[2]), Math.min(h, v0[3])];
     if (v && v[2] > v[0] && v[3] > v[1]) {
       ow = v[2] - v[0];
       oh = v[3] - v[1];

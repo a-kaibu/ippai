@@ -2027,6 +2027,11 @@ fn create_file(c: &mut Ctx, wide: bool) -> u32 {
         return obj::add(Obj::Other("console"));
     }
     match files::open(&name, access, disp) {
+        // a directory opens only with FILE_FLAG_BACKUP_SEMANTICS
+        Ok(f) if f.dir && c.a(5) & 0x0200_0000 == 0 => {
+            last_error(5);
+            0xffff_ffff
+        }
         Ok(f) => {
             let existed = disp == 2 || disp == 4;
             last_error(if existed { 0 } else { 0 });
