@@ -450,7 +450,7 @@ pub unsafe extern "C" fn vnhost_cpu_run(cpu: *mut Cpu, info: *mut u32) -> i32 {
         }
         // the interpreter: up to the next branch with the JIT, a batch of steps without
         for _ in 0..4096 {
-            let (e, branch) = vnx86::step_flow(cpu, &mut mem);
+            let (e, branch) = crate::jit::step(cpu, &mut mem);
             if let Some(code) = exit_code(cpu, &mut mem, e, info) {
                 return code;
             }

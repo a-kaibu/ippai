@@ -149,4 +149,8 @@ link_main "$WEB_OUT/wine.js" -sENVIRONMENT=web,worker -sMODULARIZE -sEXPORT_ES6 
   -sFORCE_FILESYSTEM -sEXPORTED_RUNTIME_METHODS=FS,ENV,HEAPU8,HEAPU32,HEAPF32,HEAPF64,wasmMemory \
   -sEXPORTED_FUNCTIONS=_main,_malloc,$EXPORTS
 cp "$OUT/wineunix.so" "$WEB_OUT/"
+# the version of the x86 translator (the page names saved regions by it): its sources and the
+# host side regions run with; any other change keeps the regions saved so far
+(cd "$ROOT" && find crates/vnx86/src crates/vnx86/Cargo.toml crates/vnhost/src/jit.rs crates/vnhost/src/cpu.rs hangover/vnjit.js -type f | sort | xargs cat) |
+  sha256sum | cut -c1-8 > "$WEB_OUT/jit-version.txt"
 echo "built $OUT/wine.js and $WEB_OUT/wine.js"

@@ -486,6 +486,19 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
     })
 }
 
+thread_local! {
+    static DECODED: RefCell<vnx86::DecodeCache> = RefCell::new(vnx86::DecodeCache::new());
+}
+
+/// One instruction in the interpreter (with this thread's cache of decoded instructions).
+pub(crate) fn step(cpu: &mut Cpu, mem: &mut Linear) -> (Exit, bool) {
+    DECODED.with(|d| match d.try_borrow_mut() {
+        Ok(mut d) => vnx86::step_cached(cpu, mem, Some(&mut d)),
+        // (an instruction that calls back into the guest: not while the cache is in use)
+        Err(_) => vnx86::step_flow(cpu, mem),
+    })
+}
+
 /// One instruction run by the interpreter for a block: 0 if it completed, else 2 with the exit
 /// kept for [`run`].
 #[no_mangle]
@@ -493,7 +506,7 @@ pub unsafe extern "C" fn vnhost_jit_step(cpu: *mut Cpu) -> i32 {
     if stats() {
         count_step(&*cpu);
     }
-    match vnx86::step_flow(&mut *cpu, &mut Linear).0 {
+    match step(&mut *cpu, &mut Linear).0 {
         Exit::Continue => 0,
         e => {
             EXIT.with(|x| x.set(Some(e)));

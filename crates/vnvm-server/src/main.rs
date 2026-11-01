@@ -11,6 +11,9 @@
 //!   per part: module, index, version; `PUT /jit-save/<name>` with (u32 module length, module,
 //!   index) adds a run's new regions as a new part (parts compiled before stay the same); `PUT /jit-save/<name>.chunks` stores the store chunks a
 //!   run read first (16-byte hashes), which the page fetches ahead next time.
+//! - `/jit/_shared-<build>.parts`, `/jit/_shared.chunks`: the regions and chunks several
+//!   programs saved (Wine's DLLs, helper processes and files): every page loads them too, so a
+//!   game's first run starts with them
 //! - `PUT /bench-log`: a result from web/bench.html, printed and appended to
 //!   `<jit>/bench-results.txt`
 //!
@@ -62,10 +65,38 @@ async fn save_jit(State(jit): State<Jit>, Path(name): Path<String>, body: Bytes)
         }
         let _g = jit.1.lock().await;
         let _ = tokio::fs::create_dir_all(&jit.0).await;
-        return match tokio::fs::write(jit.0.join(&name), &body).await {
-            Ok(()) => StatusCode::NO_CONTENT,
-            Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
-        };
+        if tokio::fs::write(jit.0.join(&name), &body).await.is_err() {
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
+        // chunks other programs read first too (Wine's own files: DLLs, fonts, the prefix) go
+        // to _shared.chunks, which every page fetches ahead as well (a game's first run too)
+        let shared_name = format!("{SHARED}.chunks");
+        let mut others = std::collections::HashSet::new();
+        if let Ok(mut d) = tokio::fs::read_dir(&jit.0).await {
+            while let Ok(Some(f)) = d.next_entry().await {
+                let f = f.file_name().to_string_lossy().into_owned();
+                let prog = |n: &str| n.rsplit_once('-').map_or(n.to_string(), |x| x.0.to_string());
+                if !f.ends_with(".chunks") || f == shared_name || prog(&f) == prog(&name) {
+                    continue;
+                }
+                if let Ok(b) = tokio::fs::read(jit.0.join(&f)).await {
+                    others.extend(b.chunks_exact(16).map(|c| <[u8; 16]>::try_from(c).unwrap()));
+                }
+            }
+        }
+        let mut shared = tokio::fs::read(jit.0.join(&shared_name)).await.unwrap_or_default();
+        let mut have: std::collections::HashSet<[u8; 16]> = shared.chunks_exact(16).map(|c| c.try_into().unwrap()).collect();
+        for c in body.chunks_exact(16) {
+            let c: [u8; 16] = c.try_into().unwrap();
+            if others.contains(&c) && shared.len() < 16 * 8192 && have.insert(c) {
+                shared.extend_from_slice(&c);
+            }
+        }
+        let tmp = jit.0.join(format!("{shared_name}.tmp"));
+        if tokio::fs::write(&tmp, &shared).await.is_err() || tokio::fs::rename(&tmp, jit.0.join(&shared_name)).await.is_err() {
+            return StatusCode::INTERNAL_SERVER_ERROR;
+        }
+        return StatusCode::NO_CONTENT;
     }
     let Some(n) = body.get(..4).map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize) else {
         return StatusCode::BAD_REQUEST;
@@ -73,25 +104,98 @@ async fn save_jit(State(jit): State<Jit>, Path(name): Path<String>, body: Bytes)
     let (Some(new_wasm), Some(new_idx)) = (body.get(4..4 + n), body.get(4 + n..).and_then(saved::decode)) else {
         return StatusCode::BAD_REQUEST;
     };
-    // (a game's regions stop growing once its code paths have run; this only bounds a runaway)
-    const MAX_BYTES: u64 = 256 << 20;
+    let n_funcs = new_idx.len();
     let _g = jit.1.lock().await;
-    let path = |ext: &str| jit.0.join(format!("{name}.{ext}"));
-    if tokio::fs::metadata(path("wasm")).await.is_ok_and(|m| m.len() > MAX_BYTES) {
-        return StatusCode::INSUFFICIENT_STORAGE;
+    // Regions another program saved too (same roots and guest code: Wine's own DLLs and helper
+    // processes, the same in every game) go to the shared bundle of this build, which every
+    // program's page loads as well: a game's first run starts with them translated (and
+    // compiled, from the browser's code cache), like Windows on ARM's per-module translation
+    // cache that "other apps can make use of on first launch".
+    let (prog, ver) = name.rsplit_once('-').unwrap_or((&name, ""));
+    let shared_name = format!("{SHARED}-{ver}");
+    let shared = read_parts(&jit.0, &shared_name).await;
+    let new_idx: Vec<(usize, saved::Entry)> = new_idx.into_iter().enumerate().filter(|(_, e)| !shared.iter().any(|(_, es)| es.iter().any(|s| same(s, e)))).collect();
+    let mut elsewhere = vec![false; new_idx.len()];
+    if prog != SHARED && !ver.is_empty() {
+        let mut dir = match tokio::fs::read_dir(&jit.0).await {
+            Ok(d) => Some(d),
+            Err(_) => None,
+        };
+        while let Some(d) = dir.as_mut() {
+            let Ok(Some(f)) = d.next_entry().await else { break };
+            let f = f.file_name().to_string_lossy().into_owned();
+            let Some(other) = f.strip_suffix(".parts") else { continue };
+            if other == name || other == shared_name || other.rsplit_once('-').map(|x| x.1) != Some(ver) {
+                continue;
+            }
+            for (_, es) in read_parts(&jit.0, other).await {
+                for (k, (_, e)) in new_idx.iter().enumerate() {
+                    elsewhere[k] |= es.iter().any(|s| same(s, e));
+                }
+            }
+        }
     }
-    // the parts so far: the base (<name>.wasm/.idx) and the later saves (<name>.<k>.wasm/.idx)
-    let mut parts: Vec<(Vec<u8>, Vec<saved::Entry>)> = Vec::new();
+    let pick = |to_shared: bool| -> Option<(Vec<u8>, Vec<saved::Entry>)> {
+        let mut keep = vec![false; n_funcs];
+        let mut idx = Vec::new();
+        for (k, (i, e)) in new_idx.iter().enumerate() {
+            if elsewhere[k] == to_shared {
+                keep[*i] = true;
+                idx.push(e.clone());
+            }
+        }
+        if idx.is_empty() {
+            return None;
+        }
+        Some((if keep.iter().all(|&k| k) { new_wasm.to_vec() } else { wasm::select(new_wasm, &keep)? }, idx))
+    };
+    let mut status = StatusCode::NO_CONTENT;
+    for (to_shared, target) in [(true, &shared_name), (false, &name)] {
+        if let Some((w, idx)) = pick(to_shared) {
+            let s = add_part(&jit.0, target, w, idx).await;
+            if s != StatusCode::NO_CONTENT {
+                status = s;
+            }
+        }
+    }
+    status
+}
+
+/// The name of the bundle of regions several programs saved (`<SHARED>-<build>`).
+const SHARED: &str = "_shared";
+
+/// Whether two saved regions are the same translation's (any thread could have built either).
+fn same(a: &saved::Entry, b: &saved::Entry) -> bool {
+    a.roots == b.roots && a.code == b.code && a.text == b.text
+}
+
+/// The parts of `name` (the base <name>.wasm/.idx, then <name>.<k>.wasm/.idx).
+async fn read_parts(dir: &std::path::Path, name: &str) -> Vec<(Vec<u8>, Vec<saved::Entry>)> {
+    let mut parts = Vec::new();
     for k in 0..PARTS_MAX {
         let stem = if k == 0 { String::new() } else { format!("{k}.") };
         let (Ok(w), Some(e)) = (
-            tokio::fs::read(path(&format!("{stem}wasm"))).await,
-            tokio::fs::read(path(&format!("{stem}idx"))).await.ok().and_then(|b| saved::decode(&b)),
+            tokio::fs::read(dir.join(format!("{name}.{stem}wasm"))).await,
+            tokio::fs::read(dir.join(format!("{name}.{stem}idx"))).await.ok().and_then(|b| saved::decode(&b)),
         ) else {
             break;
         };
         parts.push((w, e));
     }
+    parts
+}
+
+/// Adds the regions `new_idx` (the functions of `new_wasm`) to `name`'s parts, those not saved
+/// already.
+async fn add_part(dir: &std::path::Path, name: &str, new_wasm: Vec<u8>, new_idx: Vec<saved::Entry>) -> StatusCode {
+    // (a game's regions stop growing once its code paths have run; this only bounds a runaway)
+    const MAX_BYTES: u64 = 256 << 20;
+    let path = |ext: &str| dir.join(format!("{name}.{ext}"));
+    if tokio::fs::metadata(path("wasm")).await.is_ok_and(|m| m.len() > MAX_BYTES) {
+        return StatusCode::INSUFFICIENT_STORAGE;
+    }
+    let mut parts = read_parts(dir, name).await;
+    let new_wasm = &new_wasm[..];
     // the new module's functions to keep
     let keep: Vec<bool> = new_idx.iter().map(|e| !parts.iter().any(|(_, es)| es.contains(e))).collect();
     if !keep.iter().any(|&k| k) {
@@ -112,7 +216,7 @@ async fn save_jit(State(jit): State<Jit>, Path(name): Path<String>, body: Bytes)
         parts = vec![(merged, entries)];
     }
     let write = async {
-        tokio::fs::create_dir_all(&jit.0).await?;
+        tokio::fs::create_dir_all(dir).await?;
         let mut list = String::new();
         for (k, (w, e)) in parts.iter().enumerate() {
             let stem = if k == 0 { String::new() } else { format!("{k}.") };

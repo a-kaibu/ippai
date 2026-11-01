@@ -99,8 +99,23 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   // x86 regions earlier runs of this program saved (vnvm-server /jit), per build of wine.wasm
   // (which has the translator); &jit=0 for none
   const jitBase = params.get("jit") ?? run.replace(/[^A-Za-z0-9_.-]/g, "_");
-  const jitName = jitBase === "0" ? undefined : wasmVersion.then((v) => `${jitBase}-${fnv(new TextEncoder().encode(v))}`);
-  const jit = jitName ? jitName.then(loadJit) : Promise.resolve(undefined);
+  // (jit-version.txt: a hash of the translator's sources, which hangover/build.sh writes; saved
+  // regions stay good across builds that change anything else)
+  const jitVersion = fetch(`${WINE}jit-version.txt`, { cache: "no-cache" })
+    .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`))))
+    .then((t) => (/^[0-9a-f]{8}$/.test(t.trim()) ? t.trim() : Promise.reject(new Error("bad version"))))
+    .catch(() => wasmVersion.then((v) => fnv(new TextEncoder().encode(v))));
+  const jitName = jitBase === "0" ? undefined : jitVersion.then((v) => `${jitBase}-${v}`);
+  // and the regions several programs saved (Wine's DLLs and helper processes, the same in every
+  // game): a program's first run starts with those
+  const jit = jitName
+    ? jitName.then(async (name) => {
+        const shared = `_shared-${name.slice(name.lastIndexOf("-") + 1)}`;
+        const got = await Promise.all([loadJit(shared), loadJit(name)]);
+        const parts = got.flatMap((b) => b?.parts ?? []);
+        return parts.length ? { parts } : undefined;
+      })
+    : Promise.resolve(undefined);
   const ahead = jitName ? readAhead(jitName) : undefined;
   const scriptUrl = `${WINE}wine.js`;
   const factory = (await import(/* @vite-ignore */ scriptUrl)).default as (m: object) => Promise<WineModule>;
@@ -213,9 +228,25 @@ function readAhead(name: Promise<string>): (wine: WineModule) => void {
     w._vnhost_vfs_put_chunk(p, d, data.length);
   };
   (async () => {
-    const r = await fetch(`jit/${await name}.chunks`);
-    if (!r.ok) return;
-    const list = new Uint8Array(await r.arrayBuffer());
+    // this program's, then those several programs read (Wine's files: a game's first run too)
+    const lists = await Promise.all(
+      [`jit/${await name}.chunks`, "jit/_shared.chunks"].map((u) =>
+        fetch(u).then((r) => (r.ok ? r.arrayBuffer() : new ArrayBuffer(0)), () => new ArrayBuffer(0)),
+      ),
+    );
+    const seen = new Set<string>();
+    const all: number[] = [];
+    for (const l of lists.map((b) => new Uint8Array(b))) {
+      for (let i = 0; i + 16 <= l.length; i += 16) {
+        const k = l.subarray(i, i + 16).join(",");
+        if (!seen.has(k)) {
+          seen.add(k);
+          all.push(...l.subarray(i, i + 16));
+        }
+      }
+    }
+    const list = new Uint8Array(all);
+    if (!list.length) return;
     let next = 0;
     const one = async () => {
       while (next * 16 < list.length) {

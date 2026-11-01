@@ -18,7 +18,7 @@ pub mod fpu;
 pub use iced_x86;
 pub use fpu::Fpu;
 
-pub use interp::{cpuid, step, step_flow};
+pub use interp::{cpuid, step, step_cached, step_flow, DecodeCache};
 
 impl Cpu {
     /// EFLAGS with the lazy status flags worked out.

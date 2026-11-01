@@ -25,20 +25,56 @@ pub fn step<M: Memory>(cpu: &mut Cpu, mem: &mut M) -> Exit {
 /// [`step`], also telling whether the instruction could transfer control (a branch, call,
 /// return, interrupt...).
 pub fn step_flow<M: Memory>(cpu: &mut Cpu, mem: &mut M) -> (Exit, bool) {
+    step_cached(cpu, mem, None)
+}
+
+/// Instructions decoded before, by address (direct-mapped), with their bytes: the interpreter
+/// runs code below the JIT's threshold dozens of times, and decoding was ~40% of its time.
+/// An entry is used only if the bytes at its address are still the same.
+pub struct DecodeCache(alloc::boxed::Box<[(u32, [u8; 15], u8, Instruction)]>);
+
+impl DecodeCache {
+    const N: usize = 2048;
+    pub fn new() -> Self {
+        DecodeCache(alloc::vec![(u32::MAX, [0; 15], 0, Instruction::default()); Self::N].into_boxed_slice())
+    }
+}
+
+impl Default for DecodeCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// [`step_flow`] with a [`DecodeCache`].
+pub fn step_cached<M: Memory>(cpu: &mut Cpu, mem: &mut M, cache: Option<&mut DecodeCache>) -> (Exit, bool) {
     if cpu.eip >= cpu.trap_lo && cpu.eip < cpu.trap_hi {
         return (Exit::Trap(cpu.eip), true);
     }
     cpu.materialize();
     let mut buf = [0u8; 15];
     let n = mem.fetch(cpu.eip, &mut buf);
-    let mut dec = Decoder::with_ip(32, &buf[..n], cpu.eip as u64, DecoderOptions::NONE);
-    let ins = dec.decode();
-    if ins.is_invalid() {
-        if n < 15 {
-            return (Exit::Fault(Fault { addr: cpu.eip.wrapping_add(n as u32), write: false }), true);
+    let slot = cache.map(|c| {
+        let i = (cpu.eip ^ (cpu.eip >> 11)) as usize & (DecodeCache::N - 1);
+        &mut c.0[i]
+    });
+    let ins = match slot {
+        Some(e) if e.0 == cpu.eip && (e.2 as usize) <= n && e.1[..e.2 as usize] == buf[..e.2 as usize] => e.3,
+        slot => {
+            let mut dec = Decoder::with_ip(32, &buf[..n], cpu.eip as u64, DecoderOptions::NONE);
+            let ins = dec.decode();
+            if ins.is_invalid() {
+                if n < 15 {
+                    return (Exit::Fault(Fault { addr: cpu.eip.wrapping_add(n as u32), write: false }), true);
+                }
+                return (Exit::InvalidOpcode, true);
+            }
+            if let Some(e) = slot {
+                *e = (cpu.eip, buf, ins.len() as u8, ins);
+            }
+            ins
         }
-        return (Exit::InvalidOpcode, true);
-    }
+    };
     let branch = ins.flow_control() != iced_x86::FlowControl::Next;
     let has_mem = (0..ins.op_count()).any(|i| ins.op_kind(i) == OpKind::Memory);
     if !(has_mem && (ins.has_lock_prefix() || ins.mnemonic() == Mnemonic::Xchg)) {
