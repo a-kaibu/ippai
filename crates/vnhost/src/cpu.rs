@@ -470,6 +470,7 @@ pub unsafe extern "C" fn vnhost_cpu_run(cpu: *mut Cpu, info: *mut u32) -> i32 {
             #[cfg(target_os = "emscripten")]
             unsafe { _emscripten_process_dlopen_queue() };
         }
+        trace_call(cpu);
         if jit {
             match crate::jit::run(cpu, signals.pending.as_ptr() as u32) {
                 crate::jit::Ran::Stopped => {
@@ -497,8 +498,32 @@ pub unsafe extern "C" fn vnhost_cpu_run(cpu: *mut Cpu, info: *mut u32) -> i32 {
             if jit && branch {
                 break;
             }
+            trace_call(cpu);
         }
     }
+}
+
+/// VNVM_TRACE_CALL=<hex eip>: each time a thread gets to that address, print EAX ECX EDX ESI
+/// EDI ESP and a hash of the EDX..EDX+ECX bytes of its previous arrival (a register-call
+/// memcpy's destination: compare JIT and interpreter runs to find the first copy that differs).
+fn trace_call(cpu: &Cpu) {
+    static AT: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    let Some(at) = *AT.get_or_init(|| u32::from_str_radix(&std::env::var("VNVM_TRACE_CALL").ok()?, 16).ok()) else { return };
+    if cpu.eip != at {
+        return;
+    }
+    thread_local!(static PREV: std::cell::Cell<(u32, u32, u32)> = const { std::cell::Cell::new((0, 0, 0)) });
+    let (k, d, n) = PREV.with(|p| p.get());
+    let ok = |a: u32| (vnx86::jit::GUEST_LO..vnx86::jit::GUEST_HI).contains(&a);
+    let mut h = 0x811c9dc5u32;
+    if n < 1 << 20 && ok(d) && ok(d.wrapping_add(n)) {
+        for i in 0..n {
+            h = (h ^ unsafe { *((d + i) as usize as *const u8) } as u32).wrapping_mul(0x0100_0193);
+        }
+    }
+    let r = &cpu.regs;
+    eprintln!("call {k} prev-dst-hash {h:08x} | eax {:08x} ecx {:08x} edx {:08x} esi {:08x} edi {:08x} esp {:08x}", r[0], r[1], r[2], r[6], r[7], r[4]);
+    PREV.with(|p| p.set((k + 1, r[2], r[1])));
 }
 
 /// A host buffer seen as guest memory at address 0 (for FXSAVE images).

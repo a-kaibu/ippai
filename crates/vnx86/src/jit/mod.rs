@@ -364,6 +364,9 @@ struct Gen<'a> {
     fc_range: Option<(usize, usize)>,
     fc_in: BTreeMap<usize, FCache>,
     fc_out: BTreeMap<usize, FCache>,
+    /// The same across a whole function (structured): (its root, its number of blocks); the
+    /// root and the dispatch nodes start with an empty cache
+    fc_fn: Option<(usize, usize)>,
     notes: String,
     /// SETcc r8 followed by MOVZX r32, r8: emitted as one write of r32
     fuse_zx: bool,
@@ -2651,8 +2654,13 @@ impl<'a> Gen<'a> {
             self.xmm_flush();
             // (the cache stays for the code after a conditional jump)
             let fc = self.fc;
-            self.x87_flush();
-            self.fc = FCache::default();
+            let labeled = self.back[k].is_some() || self.fwd[k].is_some();
+            if labeled && self.fc_fn.is_some_and(|(root, nb)| k != root && k < nb) {
+                self.fc_to(k);
+            } else {
+                self.x87_flush();
+                self.fc = FCache::default();
+            }
             self.goto_structured(k, target);
             self.fc = fc;
             return;
@@ -4060,6 +4068,7 @@ fn translate<M: Memory>(
         xm_loop: 0,
         slots: None,
         fc_range: None,
+        fc_fn: None,
         fc_in: BTreeMap::new(),
         fc_out: BTreeMap::new(),
         notes: String::new(),
@@ -4108,13 +4117,38 @@ fn translate<M: Memory>(
             let _ = writeln!(g.notes, "IRREDUCIBLE {}", l.irreducible());
         }
         let nb = n as usize;
-        structure::emit(&mut g, &l, |g, k| {
-            if k < nb {
-                emit_block(g, &blocks, k, &mut count);
-            } else {
-                emit_dispatch(g, &tables[k - nb], k);
+        fn body<'a>(g: &mut Gen<'a>, l: &structure::Layout, blocks: &'a [(u32, Vec<Instruction>)], tables: &[structure::Table], count: &mut usize) {
+            let nb = blocks.len();
+            structure::emit(g, l, |g, k| {
+                if k < nb {
+                    emit_block(g, blocks, k, count);
+                } else {
+                    emit_dispatch(g, &tables[k - nb], k);
+                }
+            })
+        }
+        // with x87 code: emitted to see the caches its jumps come with (as in emit_level's
+        // loops), as many times as these change, then for real with those
+        if blocks.iter().any(|b| b.1.iter().any(fc_handles)) {
+            let b0 = g.c.b.len();
+            let mut fin = BTreeMap::new();
+            g.fc_fn = Some((entry, nb));
+            for _ in 0..6 {
+                g.fc_in = fin.clone();
+                g.fc_out.clear();
+                body(&mut g, &l, &blocks, &tables, &mut 0);
+                g.c.truncate(b0);
+                let out: BTreeMap<usize, FCache> = g.fc_out.iter().filter(|f| f.1.on).map(|(&k, &f)| (k, f)).collect();
+                if out == fin {
+                    break;
+                }
+                fin = out;
             }
-        });
+            g.fc_in = fin;
+        }
+        body(&mut g, &l, &blocks, &tables, &mut count);
+        g.fc_fn = None;
+        g.fc_in.clear();
     } else {
         let items = level(0, n as usize - 1, &loops);
         emit_level(&mut g, &blocks, &loops, &items, None, &mut count);

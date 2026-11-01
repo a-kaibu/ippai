@@ -1294,6 +1294,48 @@
      /* Intel says we need a zeroed 16-byte aligned buffer */
      char buffer[512 + 16];
      XSAVE_FORMAT *state = (XSAVE_FORMAT *)(((ULONG_PTR)buffer + 15) & ~15);
+@@ -1612,6 +1625,41 @@
+     return nt_status;
+ }
+ 
++#elif defined(__wasm__)
++
++/* vnvm: no sysfs in the browser. One package, a core per logical CPU, typical caches: programs
++ * (MSVC's Concurrency Runtime) throw when the query fails. */
++static NTSTATUS create_logical_proc_info(void)
++{
++    static const CACHE_DESCRIPTOR caches[] =
++    {
++        { 1, 8, 64, 32 * 1024, CacheInstruction },
++        { 1, 8, 64, 32 * 1024, CacheData },
++        { 2, 8, 64, 512 * 1024, CacheUnified },
++    };
++    CACHE_DESCRIPTOR l3 = { 3, 16, 64, 8 * 1024 * 1024, CacheUnified };
++    ULONG_PTR all = 0;
++    unsigned int i, j, n = min( cpu_count, 8 * sizeof(ULONG_PTR) );
++
++    for (i = 0; i < n; i++) all |= (ULONG_PTR)1 << i;
++    for (i = 0; i < n; i++)
++    {
++        ULONG_PTR mask = (ULONG_PTR)1 << i;
++        CACHE_DESCRIPTOR c;
++        if (!logical_proc_info_add_by_id( RelationProcessorPackage, 0, mask )) return STATUS_NO_MEMORY;
++        if (!logical_proc_info_add_by_id( RelationProcessorCore, i, mask )) return STATUS_NO_MEMORY;
++        for (j = 0; j < ARRAY_SIZE(caches); j++)
++        {
++            c = caches[j];
++            if (!logical_proc_info_add_cache( mask, &c )) return STATUS_NO_MEMORY;
++        }
++    }
++    if (!logical_proc_info_add_cache( all, &l3 )) return STATUS_NO_MEMORY;
++    if (!logical_proc_info_add_numa_node( all, 0 )) return STATUS_NO_MEMORY;
++    logical_proc_info_add_group( n, all );
++    return STATUS_SUCCESS;
++}
++
+ #else
+ 
+ static NTSTATUS create_logical_proc_info(void)
 --- a/dlls/ntdll/unix/thread.c
 +++ b/dlls/ntdll/unix/thread.c
 @@ -1302,6 +1302,14 @@
@@ -2329,7 +2371,7 @@
 +}
 --- /dev/null
 +++ b/dlls/winebrowser.drv/driver.c
-@@ -0,0 +1,341 @@
+@@ -0,0 +1,347 @@
 +/*
 + * Browser display driver (vnvm)
 + *
@@ -2559,7 +2601,13 @@
 +
 +static BOOL BROWSER_CreateWindow( HWND hwnd )
 +{
-+    if (hwnd == NtUserGetDesktopWindow()) init_input();
++    HWND desktop = NtUserGetDesktopWindow();
++
++    if (hwnd == desktop) init_input();
++    /* A new top-level window leaves a posted message in its thread's queue, as winex11's
++     * internal messages do: Softpal's PAL.dll waits for its sound thread with
++     * MsgWaitForMultipleObjects(bWaitAll) behind a hidden window, which needs input too. */
++    else if (NtUserGetAncestor( hwnd, GA_PARENT ) == desktop) NtUserPostMessage( hwnd, WM_NULL, 0, 0 );
 +    return TRUE;
 +}
 +

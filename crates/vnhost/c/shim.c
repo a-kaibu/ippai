@@ -244,13 +244,18 @@ static void *spawn_thread( void *arg )
  * Returns the new pid or -1. */
 int vnhost_spawn( char **argv, char **env, int server_fd, int app )
 {
-    int pid = vnhost_proc_create( app, 0 ), argc, i, fd;
+    /* VNVM_HELPER_EXE=<name>: a program of ours that starts the game (tests/corpus-run.py's
+     * launcher helper) takes a small slot, so the game it starts gets the low app area */
+    const char *helper = getenv( "VNVM_HELPER_EXE" );
+    int pid, argc, i, fd;
     struct spawn *sp;
     pthread_attr_t attr;
     pthread_t thread;
     struct thread_start *ts;
     char buf[32];
 
+    if (app && helper && *helper && argv[0] && argv[1] && strstr( argv[1], helper )) app = 0;
+    pid = vnhost_proc_create( app, 0 );
     if (pid < 0) return -1;
     for (argc = 0; argv[argc]; argc++) ;
     sp = malloc( sizeof(*sp) );

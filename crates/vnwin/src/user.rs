@@ -1943,7 +1943,13 @@ fn DispatchMessageA(c: &mut Ctx) -> u32 {
     if h == 0 {
         return 0;
     }
+    if (0x200..=0x20a).contains(&m) && m != 0x200 && std::env::var_os("VNWIN_TRACE_INPUT").is_some() {
+        eprintln!("vnwin input: dispatch {h:x} msg {m:x} {wp:x} {lp:x}");
+    }
     let r = send(c, h, m, wp, lp);
+    if (0x200..=0x20a).contains(&m) && m != 0x200 && std::env::var_os("VNWIN_TRACE_INPUT").is_some() {
+        eprintln!("vnwin input: dispatched {m:x} -> {r:x}");
+    }
     if m == 0xf {
         // a WM_PAINT nobody validated must not come back forever
         with(|s| {
@@ -3189,19 +3195,29 @@ fn start_input() {
                 return;
             }
             let mut buf = [0u32; 64];
+            let trace = std::env::var_os("VNWIN_TRACE_INPUT").is_some();
             loop {
                 let mut p = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
-                unsafe { libc::poll(&mut p, 1, 100) };
+                let r = unsafe { libc::poll(&mut p, 1, 100) };
                 let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, 256) };
+                if trace && n != -1 {
+                    eprintln!("vnwin input: poll {r} read {n}");
+                }
                 if n <= 0 {
                     continue;
                 }
                 for r in buf[..n as usize / 4].chunks(4) {
                     if r.len() == 4 {
                         input(r[0], r[1] as i32, r[2] as i32, r[3]);
+                        if trace {
+                            eprintln!("vnwin input: {r:?} queued");
+                        }
                     }
                 }
                 crate::obj::signal();
+                if trace {
+                    eprintln!("vnwin input: signaled");
+                }
             }
         });
     });
@@ -3218,6 +3234,12 @@ fn input(kind: u32, x: i32, y: i32, data: u32) {
                 let tid = w.tid;
                 let c = client_screen(s, target);
                 let (cx, cy) = (x - c.l, y - c.t);
+                if std::env::var_os("VNWIN_TRACE_INPUT").is_some() {
+                    eprintln!("vnwin input: {kind} at {x},{y} -> {target:x} client {cx},{cy} (client {c:?}, window {:?})", w.rect);
+                    for (h, w) in s.wins.iter() {
+                        eprintln!("  win {h:x} parent {:x} vis {} style {:x} ex {:x} rect {:?} active {}", w.parent, w.visible, w.style, w.exstyle, w.rect, s.active == *h);
+                    }
+                }
                 let mut flags = 0u32;
                 for (vk, bit) in [(1usize, 1u32), (2, 2), (0x10, 4), (0x11, 8), (4, 0x10)] {
                     if s.keys[vk] & 0x80 != 0 {

@@ -91,8 +91,15 @@ while True:
                                stdout=open(f'{od}/server.log', 'w'), stderr=subprocess.STDOUT)
         wait_port(PORT)
         winexe = 'Z:\\vnvm\\game\\' + exe.replace('/', '\\')
+        args = titles[tid].get('args', '')
+        if os.environ.get('AUTOCLICK', '1') == '1' and '_vnvm_autoclick.exe\t' in open(f'{STORES}/{tid}/trees/g.tsv', errors='replace').read():
+            # through the launcher helper (hangover/tests/autoclick.c, packed by corpus-prep.sh)
+            args = ','.join([winexe] + [a for a in args.split(',') if a])
+            winexe = 'Z:\\vnvm\\game\\_vnvm_autoclick.exe'
         qs = 'autostart&headless&load&nosave&mount=/vnvm/game=g&run=' + urllib.parse.quote(winexe)
-        if titles[tid].get('args'): qs += '&args=' + urllib.parse.quote(titles[tid]['args'])
+        if args: qs += '&args=' + urllib.parse.quote(args)
+        if winexe.endswith('_vnvm_autoclick.exe'):
+            qs += '&env=VNVM_ROOT_APP%3D0&env=VNVM_HELPER_EXE%3D_vnvm_autoclick.exe'  # small slots for the helper: the game gets the low app area
         st, at, pre = steps.get(tid, ('key:Return wait:3', '', ''))
         e2 = dict(env)
         if at: e2['STORY_AT'] = at
