@@ -40,6 +40,9 @@ body {
   background: rgb(0 0 0 / 75%);
   border-radius: 4px;
   max-width: calc(100% - 40px);
+  max-height: calc(100% - 64px);
+  overflow: auto;
+  font-variant-numeric: tabular-nums;
   z-index: 1;
 }
 #bench td,
