@@ -7,6 +7,8 @@
 //     like wine.wasm
 //   - bench.exe through Wine and the JIT, twice (the 2nd starts from the regions the 1st saved)
 //   - single kernels 5 times in a row in one run: does the JIT's code get faster as V8 tiers up?
+//   - the memcpy kernel's copies (4 MB there and back, 200 times) as wasm memory.copy and as an
+//     i64 load/store loop, on shared memory: what the JIT's memcpy (memory.copy) can do
 //
 //   /bench.html?step=N     start at step N (later steps follow)
 //   (other wine.html parameters pass through)
@@ -33,7 +35,13 @@ interface Step {
   wasm?: string;
   scale: number;
   only?: string;
+  /** an export of MICRO instead (shown as memcpy) */
+  micro?: string;
 }
+
+// (memory (import "e" "m") 256 256 shared), copy/loop(dst, src, n, repeats): memcpy(d, s, n),
+// memmove(s + 1, d, n - 1) per repeat, by memory.copy / by i64 loads and stores
+const MICRO = "AGFzbQEAAAABCAFgBH9/f38AAgsBAWUBbQIDgAKAAgMDAgAABw8CBGNvcHkAAARsb29wAAEKjwECKgADQCAAIAEgAvwKAAAgAUEBaiAAIAJBAWv8CgAAIANBAWshAyADDQALC2IBAX8DQEEAIQQDQCAAIARqIAEgBGopAwA3AwAgBEEIaiEEIAQgAkkNAAtBACEEA0AgAUEBaiAEaiAAIARqKQMANwMAIARBCGohBCAEIAJBCGtJDQALIANBAWshAyADDQALCw==";
 
 const SUITE: Step[] = [
   { label: "wasm", wasm: "bench", scale: 3 },
@@ -42,6 +50,8 @@ const SUITE: Step[] = [
   { label: "JIT 1", scale: 3 },
   { label: "JIT 2", scale: 3 },
   ...["sort", "lz", "float", "memcpy"].map((k) => ({ label: `JIT ${k} x5`, scale: 1, only: k })),
+  { label: "memory.copy x5", scale: 1, micro: "copy" },
+  { label: "i64 loop x5", scale: 1, micro: "loop" },
 ];
 
 const params = new URLSearchParams(location.search);
@@ -61,7 +71,7 @@ function loadResults(): Results {
 const results = loadResults();
 const mine: Record<string, number[]> = (results[step.label] = {});
 
-if (!step.wasm) {
+if (!step.wasm && !step.micro) {
   params.set("run", "C:\\bench.exe");
   params.set("args", step.only ? `${step.scale},${step.only}` : String(step.scale));
   params.set("autostart", "");
@@ -129,7 +139,28 @@ copy.addEventListener("click", () => {
   void navigator.clipboard.writeText(`${text}\n${device}`).catch(() => undefined);
 });
 
-if (step.wasm) {
+if (step.micro) {
+  document.querySelector<HTMLButtonElement>("#start")!.hidden = true;
+  const memory = new WebAssembly.Memory({ initial: 256, maximum: 256, shared: true });
+  const bytes = Uint8Array.from(atob(MICRO), (c) => c.charCodeAt(0));
+  const run = (await WebAssembly.instantiate(bytes, { e: { m: memory } })).instance.exports[step.micro] as (
+    d: number,
+    s: number,
+    n: number,
+    r: number,
+  ) => void;
+  setTimeout(() => {
+    let total = 0;
+    for (let i = 0; i < 5; i++) {
+      const t = performance.now();
+      run(0, 6 << 20, 4 << 20, 200);
+      const ms = performance.now() - t;
+      total += ms;
+      onLine(`memcpy ${ms.toFixed(1)} ms 0`);
+    }
+    onLine(`total ${total.toFixed(1)} ms 0`);
+  }, 100);
+} else if (step.wasm) {
   document.querySelector<HTMLButtonElement>("#start")!.hidden = true;
   const url = new URL(`benchwasm/${step.wasm}.js`, location.href).href;
   const factory = (await import(/* @vite-ignore */ url)).default as (m: object) => Promise<{
