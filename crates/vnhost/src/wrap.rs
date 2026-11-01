@@ -1067,9 +1067,14 @@ extern "C" {
 struct Load {
     busy: AtomicU64,
     woke: AtomicU64,
+    /// waits so far, and the (vnhost) process of the thread
+    waits: AtomicU64,
+    pid: std::sync::atomic::AtomicI32,
 }
 const LOAD_THREADS: usize = 256;
-static LOAD: [Load; LOAD_THREADS] = [const { Load { busy: AtomicU64::new(0), woke: AtomicU64::new(0) } }; LOAD_THREADS];
+static LOAD: [Load; LOAD_THREADS] = [const {
+    Load { busy: AtomicU64::new(0), woke: AtomicU64::new(0), waits: AtomicU64::new(0), pid: std::sync::atomic::AtomicI32::new(0) }
+}; LOAD_THREADS];
 static LOAD_N: AtomicUsize = AtomicUsize::new(0);
 /// Longest run between waits counted (ms): some thread (in the page) blocks somewhere other
 /// than emscripten_futex_wait and would otherwise look busy for good.
@@ -1119,7 +1124,12 @@ fn load_key() -> libc::pthread_key_t {
 #[no_mangle]
 pub unsafe extern "C" fn __wrap_emscripten_futex_wait(addr: *mut c_void, val: u32, max_ms: f64) -> c_int {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if !*ON.get_or_init(|| std::env::var_os("VNVM_LOAD").is_some()) {
+    extern "C" {
+        fn emscripten_is_main_browser_thread() -> c_int;
+    }
+    // (not the page's own thread: it waits in its event loop, not here, so all of its time
+    // would look busy)
+    if !*ON.get_or_init(|| std::env::var_os("VNVM_LOAD").is_some()) || emscripten_is_main_browser_thread() != 0 {
         return __real_emscripten_futex_wait(addr, val, max_ms);
     }
     thread_local!(static SLOT: LoadSlot = {
@@ -1149,13 +1159,35 @@ pub unsafe extern "C" fn __wrap_emscripten_futex_wait(addr: *mut c_void, val: u3
         });
     }
     let Ok(Some((l, woke))) = SLOT.try_with(|s| s.0.map(|l| (l, s.1.get()))) else { return __real_emscripten_futex_wait(addr, val, max_ms) };
-    add_f64(&l.busy, (emscripten_get_now() - woke).min(LOAD_RUN_MAX));
+    let idle = LOAD_IDLE.with(|c| c.replace(0.0));
+    add_f64(&l.busy, (emscripten_get_now() - woke - idle).clamp(0.0, LOAD_RUN_MAX));
+    l.waits.fetch_add(1, Ordering::Relaxed);
+    l.pid.store(crate::proc::current(), Ordering::Relaxed);
     l.woke.store(0, Ordering::Relaxed);
+    LOAD_SLOT.with(|c| c.set(Some(l)));
     let r = __real_emscripten_futex_wait(addr, val, max_ms);
     let _ = SLOT.try_with(|s| s.1.set(emscripten_get_now()));
     l.woke.store(emscripten_date_now().to_bits(), Ordering::Relaxed);
     r
 }
+
+thread_local!(static LOAD_SLOT: std::cell::Cell<Option<&'static Load>> = const { std::cell::Cell::new(None) });
+
+/// Runs `f` (a synchronous XHR) as a wait: the thread is blocked on the network, not busy.
+pub fn load_idle<R>(f: impl FnOnce() -> R) -> R {
+    let Some(l) = LOAD_SLOT.with(|c| c.get()) else { return f() };
+    let woke = f64::from_bits(l.woke.swap(0, Ordering::Relaxed));
+    let t = unsafe { emscripten_get_now() };
+    let r = f();
+    let blocked = unsafe { emscripten_get_now() } - t;
+    // the wrapper counts from its own stamp: it takes off the time blocked
+    LOAD_IDLE.with(|c| c.set(c.get() + blocked));
+    if woke != 0.0 {
+        l.woke.store((woke + blocked).to_bits(), Ordering::Relaxed);
+    }
+    r
+}
+thread_local!(static LOAD_IDLE: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) });
 
 /// CPU time (ms) all threads that ever waited used so far.
 #[no_mangle]
@@ -1171,6 +1203,26 @@ pub unsafe extern "C" fn vnhost_load_busy() -> f64 {
         }
     }
     busy
+}
+
+/// Thread `i` of vnhost_load_busy's count (in order of their first wait): its CPU time (ms) and
+/// waits so far and its process to `out[0..3]`, and the full spins of fd.rs's waits (each one
+/// 50 us of CPU without an answer) to `out[3]`; false past the last thread.
+#[no_mangle]
+pub unsafe extern "C" fn vnhost_load_slot(i: u32, out: *mut f64) -> bool {
+    let n = LOAD_N.load(Ordering::Relaxed).min(LOAD_THREADS);
+    let Some(l) = LOAD[..n].get(i as usize) else { return false };
+    let mut busy = f64::from_bits(l.busy.load(Ordering::Relaxed));
+    let woke = f64::from_bits(l.woke.load(Ordering::Relaxed));
+    if woke != 0.0 {
+        busy += (emscripten_date_now() - woke).min(LOAD_RUN_MAX);
+    }
+    let out = std::slice::from_raw_parts_mut(out, 4);
+    out[0] = busy;
+    out[1] = l.waits.load(Ordering::Relaxed) as f64;
+    out[2] = l.pid.load(Ordering::Relaxed) as f64;
+    out[3] = crate::fd::FULL_SPINS.load(Ordering::Relaxed) as f64;
+    true
 }
 
 /// Threads counted by vnhost_load_busy * 1000 + those running now (a check of the counting).

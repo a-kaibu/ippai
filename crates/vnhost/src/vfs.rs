@@ -82,7 +82,7 @@ fn fetch(name: &str) -> Option<Vec<u8>> {
     let c = CString::new(name).ok()?;
     let mut len = 0;
     unsafe {
-        let p = vnvm_fetch(c.as_ptr(), &mut len);
+        let p = crate::wrap::load_idle(|| vnvm_fetch(c.as_ptr(), &mut len));
         if trace() {
             eprintln!("vfs: fetch {name}: {}", if p.is_null() { -1 } else { len as isize });
         }

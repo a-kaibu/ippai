@@ -158,6 +158,8 @@ thread_local! {
 /// wasm thread costs tens of them.
 static WAKES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 const SPIN: Duration = Duration::from_micros(50);
+/// Spins that ended without a wake (for web/game.html)
+pub static FULL_SPINS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// How many turns of the spin loop take `SPIN`, measured once. The loop doesn't read the clock:
 /// performance.now() costs about a microsecond in a Chromium worker, and reading it while
@@ -244,11 +246,16 @@ fn wait_ex(g: Guard, keys: &[Id], deadline: Option<Instant>, spin: bool) -> Guar
     // (not for the wineserver's wait: its next request may be long in coming)
     let many = keys.len() > MANY_KEYS;
     if spin {
+        let mut woke = false;
         for _ in 0..spin_iters() {
             if WAKES.load(std::sync::atomic::Ordering::Acquire) != seen {
+                woke = true;
                 break;
             }
             std::hint::spin_loop();
+        }
+        if !woke {
+            FULL_SPINS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
     }
     let mut g = lock_raw();
