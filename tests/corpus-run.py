@@ -115,7 +115,7 @@ while True:
         if not os.path.exists(f'{od}/result.json'):
             open(f'{od}/result.json', 'w').write('{"run_error": "no result"}')
         open(f'{od}/exe.txt', 'w').write(exe + '\n')
-        open(f'{STORES}/{tid}/exe.txt', 'w').write(exe + '\n')
+        if os.path.isdir(f'{STORES}/{tid}'): open(f'{STORES}/{tid}/exe.txt', 'w').write(exe + '\n')
         print(tid, 'done', round(time.time() - t0), flush=True)
     # with --keep a failed title's packed store stays (debugging needs no download); the extracted files go
     shutil.rmtree(f'{TRIALS}/{tid}', ignore_errors=True)
