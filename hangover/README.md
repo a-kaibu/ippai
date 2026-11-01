@@ -48,6 +48,20 @@ build.sh also links an ES module build into `web/public/wine/` (with `wineunix.s
 vnvm-server at `/store`. `tests/wine.mjs` drives it in headless Chromium (screens are read
 from the wasm heap there, since headless Chromium can't present WebGPU canvases).
 
+The site's top page (`/`, same as `web/wine.html` without `?run=`) is the game list: each game
+is a tree in the store plus an entry from `vnvm-pack add-game`; vnvm-server serves them as
+`GET /games`. Clicking a card starts the game in that page (fullscreen, audio unlocked by the
+click); when the game quits the page goes back to the list. `?game=<id>` opens one game directly.
+
+```
+vnvm-pack tree /path/to/game reunion
+vnvm-pack add-game reunion --title "Reunion 体験版" --engine KiriKiri --tree reunion \
+  --exe reunion.exe --cover cover.png     # also --arg, --env NAME=value, --mount /path=tree
+vnvm-pack remove-game reunion
+```
+
+The QEMU page moved from `index.html` to `qemu.html`.
+
 `VNVM_CHUNK_CACHE_MB` (256) bounds the decompressed chunks kept; `VNVM_TRACE_VFS=1` traces paths
 and fetches.
 

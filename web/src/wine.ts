@@ -3,7 +3,9 @@
 // (crates/vnhost/src/display.rs) and shown with WebGPU, input goes back to the browser display
 // driver (dlls/winebrowser.drv).
 //
-//   /wine.html?run=C:\path\to.exe   program to start (default C:\wintest.exe)
+//   /wine.html                      the game list (web/src/launcher.ts, vnvm-pack add-game)
+//   /wine.html?game=id              a game from the list (its run, mount, args and env)
+//   /wine.html?run=C:\path\to.exe   program to start
 //   &args=a,b                       its arguments
 //   &debug=+relay,...               WINEDEBUG
 //   &mount=/vnvm/game=tree          also mount a store tree (repeatable; Z:\vnvm\game\...)
@@ -16,6 +18,7 @@ import { keepSaving, loadSaves, type SavesModule } from "./saves";
 import { linuxKeycode } from "./keymap";
 import { AudioOut } from "./wine-audio";
 import { D3D9 } from "./d3d9";
+import { applyGame, coverUrl, fetchGames, showLibrary, type GameEntry } from "./launcher";
 
 const params = new URLSearchParams(location.search);
 const status = document.querySelector<HTMLDivElement>("#status")!;
@@ -370,16 +373,61 @@ function checkSupport(): string | null {
   return null;
 }
 
-const problem = checkSupport();
-if (problem) {
-  log(problem);
-  startButton.disabled = true;
-} else {
-  const start = () => {
+// (bench.html and game.html have none)
+const library = document.querySelector<HTMLElement>("#library");
+
+const start = () => {
+  startButton.hidden = true;
+  if (library) library.hidden = true;
+  // the AudioContext comes from this click (autoplay rules)
+  boot(AudioOut.create()).catch((e) => log(`エラー: ${e instanceof Error ? e.message : e}`));
+};
+
+/** The game's cover behind the loading messages, until Wine draws. */
+function splash(g: GameEntry): void {
+  const url = coverUrl(g);
+  if (!url) return;
+  const div = document.createElement("div");
+  div.id = "splash";
+  div.style.backgroundImage = `url("${url}")`;
+  document.body.append(div);
+  addEventListener("wine-frame", () => div.remove(), { once: true });
+}
+
+async function main(): Promise<void> {
+  const problem = checkSupport();
+  if (problem) {
+    log(problem);
+    startButton.disabled = true;
+    return;
+  }
+  // the list: picking a game starts it from that click
+  if (library && !params.has("run") && !params.has("game")) {
     startButton.hidden = true;
-    // the AudioContext comes from this click (autoplay rules)
-    boot(AudioOut.create()).catch((e) => log(`エラー: ${e instanceof Error ? e.message : e}`));
-  };
+    log("");
+    const games = await fetchGames();
+    showLibrary(library, games, (g) => {
+      const url = new URL(location.href);
+      url.searchParams.set("game", g.id);
+      history.replaceState(null, "", url);
+      applyGame(params, g);
+      splash(g);
+      fullscreen();
+      start();
+    });
+    return;
+  }
+  const id = params.get("game");
+  if (id && !params.has("run")) {
+    const g = (await fetchGames()).find((x) => x.id === id);
+    if (!g) throw new Error(`ゲーム ${id} が一覧にありません`);
+    applyGame(params, g);
+    document.title = `${g.title} - vnvm`;
+    startButton.textContent = `${g.title} を起動`;
+    splash(g);
+  }
+  log("");
+  startButton.hidden = false;
   startButton.addEventListener("click", () => {
     fullscreen();
     start();
@@ -390,6 +438,8 @@ if (problem) {
     addEventListener("pointerdown", (e) => e.pointerType === "touch" && fullscreen(), { once: true });
   }
 }
+
+main().catch((e) => log(`エラー: ${e instanceof Error ? e.message : e}`));
 
 /** After the game quit: leaves fullscreen and goes back to the start screen (a fresh page). */
 let saveNow: () => Promise<void> = async () => {};
@@ -403,6 +453,8 @@ function leave(): void {
   const back = () => {
     const url = new URL(location.href);
     url.searchParams.delete("autostart");
+    // a game from the list: back to the list
+    url.searchParams.delete("game");
     location.replace(url);
   };
   if (document.fullscreenElement) document.exitFullscreen().then(back, back);

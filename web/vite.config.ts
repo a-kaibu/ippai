@@ -9,9 +9,10 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: true,
     target: "es2022",
-    // index.html: the QEMU VM; wine.html: Wine built for wasm (hangover/, files in public/wine/);
+    // index.html = wine.html: Wine built for wasm (hangover/, files in public/wine/), the game list
+    // without ?run=; qemu.html: the QEMU VM (kept as a fallback);
     // bench.html: bench.exe on wine.html with the native numbers next to it
-    rollupOptions: { input: { main: "index.html", wine: "wine.html", bench: "bench.html", game: "game.html" } },
+    rollupOptions: { input: { main: "index.html", qemu: "qemu.html", wine: "wine.html", bench: "bench.html", game: "game.html" } },
   },
   server: {
     headers: {

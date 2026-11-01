@@ -14,6 +14,8 @@
 //! - `/jit/_shared-<build>.parts`, `/jit/_shared.chunks`: the regions and chunks several
 //!   programs saved (Wine's DLLs, helper processes and files): every page loads them too, so a
 //!   game's first run starts with them
+//! - `GET /games`: the launcher's list, the store's `games/<id>.json` (vnvm-pack add-game) as
+//!   one JSON array; covers are under `/store/games/`
 //! - `PUT /bench-log`: a result from web/bench.html, printed and appended to
 //!   `<jit>/bench-results.txt`
 //! - `GET`/`PUT /saves/<name>`: saved games backed up to S3 (see saves.rs)
@@ -27,7 +29,7 @@ use axum::{
     http::{header, HeaderValue, Request, StatusCode},
     middleware::{self, Next},
     response::Response,
-    routing::put,
+    routing::{get, put},
     Router,
 };
 use clap::Parser;
@@ -281,6 +283,34 @@ async fn bench_log(State(jit): State<Jit>, body: Bytes) -> StatusCode {
     }
 }
 
+/// The store's `games/*.json` as one array, by file name.
+async fn games(State(store): State<Arc<PathBuf>>) -> Response {
+    let mut files = Vec::new();
+    if let Ok(mut dir) = tokio::fs::read_dir(store.join("games")).await {
+        while let Ok(Some(e)) = dir.next_entry().await {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.ends_with(".json") && !name.starts_with('.') {
+                files.push(e.path());
+            }
+        }
+    }
+    files.sort();
+    let mut body = String::from("[");
+    for f in files {
+        if let Ok(text) = tokio::fs::read_to_string(&f).await {
+            if body.len() > 1 {
+                body.push(',');
+            }
+            body.push_str(text.trim());
+        }
+    }
+    body.push(']');
+    Response::builder()
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(body.into())
+        .unwrap()
+}
+
 async fn headers(req: Request<axum::body::Body>, next: Next) -> Response {
     let chunk = req.uri().path().starts_with("/store/chunks/");
     // a versioned URL (?v=...) names content that never changes: the browser keeps it without
@@ -316,6 +346,7 @@ async fn main() -> anyhow::Result<()> {
         .layer(DefaultBodyLimit::max(1 << 30))
         .with_state(jit)
         .merge(saves::router()?)
+        .route("/games", get(games).with_state(Arc::new(args.store.clone())))
         .nest_service("/jit", ServeDir::new(&args.jit))
         .nest_service("/store", ServeDir::new(&args.store))
         .fallback_service(ServeDir::new(&args.web))

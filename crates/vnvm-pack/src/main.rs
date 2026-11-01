@@ -12,6 +12,9 @@
 //!
 //! `tree` packs a directory instead (the Wine install and prefix of the wasm runtime):
 //! `trees/<name>.tsv` lists its files, each as chunks in the same store (see `tree`).
+//!
+//! `add-game` puts a packed game in the launcher's list (web/wine.html without `?run=`):
+//! `games/<id>.json` (see `GameEntry`), served as one list by vnvm-server's `GET /games`.
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
@@ -78,6 +81,37 @@ enum Cmd {
         #[arg(long, default_value_t = 256)]
         chunk_kib: u64,
     },
+    /// Add a game (its files packed with `tree`) to the launcher's list, or replace it.
+    AddGame {
+        /// Short name: letters, digits, `_`, `-` (also the URL's `?game=`).
+        id: String,
+        /// Shown on the card.
+        #[arg(long)]
+        title: String,
+        /// The tree with the game folder, mounted at Z:\vnvm\game.
+        #[arg(long)]
+        tree: String,
+        /// Executable to start, relative to the game folder.
+        #[arg(long)]
+        exe: String,
+        /// Engine name, shown on the card.
+        #[arg(long)]
+        engine: Option<String>,
+        /// Cover image (png, jpg or webp), copied into the store.
+        #[arg(long)]
+        cover: Option<PathBuf>,
+        /// Argument for the program (repeatable).
+        #[arg(long = "arg")]
+        args: Vec<String>,
+        /// Environment variable NAME=value (repeatable).
+        #[arg(long)]
+        env: Vec<String>,
+        /// Another tree to mount, /path=tree (repeatable).
+        #[arg(long)]
+        mount: Vec<String>,
+    },
+    /// Remove a game from the launcher's list (its trees and chunks stay).
+    RemoveGame { id: String },
     /// An all-zero disk (the save disk; the guest formats it on first use).
     Blank {
         name: String,
@@ -86,6 +120,90 @@ enum Cmd {
         #[arg(long, default_value_t = 256)]
         chunk_kib: u64,
     },
+}
+
+/// `games/<id>.json`: what the page needs to start a game (web/src/launcher.ts reads it).
+#[derive(Serialize)]
+struct GameEntry {
+    id: String,
+    title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    engine: Option<String>,
+    /// Image file next to the entry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cover: Option<String>,
+    /// Windows path of the program.
+    run: String,
+    args: Vec<String>,
+    /// `/path=tree`, as wine.html's `&mount=`
+    mounts: Vec<String>,
+    env: Vec<String>,
+}
+
+fn valid_id(id: &str) -> bool {
+    !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+#[allow(clippy::too_many_arguments)]
+fn add_game(
+    store: &Path,
+    id: String,
+    title: String,
+    tree: String,
+    exe: String,
+    engine: Option<String>,
+    cover: Option<PathBuf>,
+    args: Vec<String>,
+    env: Vec<String>,
+    mount: Vec<String>,
+) -> Result<()> {
+    if !valid_id(&id) {
+        bail!("id {id:?}: use letters, digits, _ and -");
+    }
+    // the exe must be in the tree (a typo would only show up as Wine's "file not found")
+    let list = fs::read_to_string(store.join("trees").join(format!("{tree}.tsv")))
+        .with_context(|| format!("tree {tree} (pack it with `tree` first)"))?;
+    let exe = exe.replace('\\', "/");
+    if !list.lines().any(|l| l.starts_with("f\t") && l.split('\t').nth(3).is_some_and(|p| p.eq_ignore_ascii_case(&exe))) {
+        bail!("{exe} is not a file in tree {tree}");
+    }
+    for m in &mount {
+        if !m.starts_with('/') || !m.contains('=') {
+            bail!("--mount {m}: expected /path=tree");
+        }
+    }
+    if let Some(e) = env.iter().find(|e| !e.contains('=')) {
+        bail!("--env {e}: expected NAME=value");
+    }
+    let dir = store.join("games");
+    fs::create_dir_all(&dir)?;
+    let cover = match cover {
+        Some(src) => {
+            let ext = src.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
+            if !["png", "jpg", "jpeg", "webp"].contains(&ext.as_str()) {
+                bail!("cover {}: png, jpg or webp", src.display());
+            }
+            let name = format!("{id}.{ext}");
+            fs::copy(&src, dir.join(&name)).with_context(|| src.display().to_string())?;
+            Some(name)
+        }
+        None => None,
+    };
+    let entry = GameEntry {
+        run: format!("Z:\\vnvm\\game\\{}", exe.replace('/', "\\")),
+        mounts: [format!("/vnvm/game={tree}")].into_iter().chain(mount).collect(),
+        id: id.clone(),
+        title,
+        engine,
+        cover,
+        args,
+        env,
+    };
+    let tmp = dir.join(format!(".{id}.json.tmp"));
+    fs::write(&tmp, serde_json::to_vec_pretty(&entry)?)?;
+    fs::rename(&tmp, dir.join(format!("{id}.json")))?;
+    eprintln!("{id}: {} ({})", entry.title, entry.run);
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -142,6 +260,19 @@ fn main() -> Result<()> {
             fs::remove_dir_all(&meta)?;
         }
         Cmd::Tree { dir, name, follow, chunk_kib } => tree(&cli.store, &dir, &name, follow, chunk_kib << 10)?,
+        Cmd::AddGame { id, title, tree, exe, engine, cover, args, env, mount } => {
+            add_game(&cli.store, id, title, tree, exe, engine, cover, args, env, mount)?
+        }
+        Cmd::RemoveGame { id } => {
+            if !valid_id(&id) {
+                bail!("id {id:?}: use letters, digits, _ and -");
+            }
+            let dir = cli.store.join("games");
+            fs::remove_file(dir.join(format!("{id}.json"))).with_context(|| format!("game {id}"))?;
+            for ext in ["png", "jpg", "jpeg", "webp"] {
+                let _ = fs::remove_file(dir.join(format!("{id}.{ext}")));
+            }
+        }
         Cmd::Blank { name, size, chunk_kib } => {
             let chunk = chunk_kib << 10;
             write_manifest(

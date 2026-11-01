@@ -3,13 +3,15 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>vnvm (Wine)</title>
+    <meta name="color-scheme" content="dark" />
+    <title>vnvm</title>
     <link rel="stylesheet" href="./src/style.css" />
   </head>
   <body>
     <canvas id="screen"></canvas>
+    <main id="library" hidden></main>
     <div id="status">準備中</div>
-    <button id="start">起動</button>
+    <button id="start" hidden>起動</button>
     <script type="module" src="./src/wine.ts"></script>
   </body>
 </html>
