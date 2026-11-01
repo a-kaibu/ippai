@@ -4,10 +4,10 @@ title (download, extract, pack: tests/corpus-prep.sh) while the current one runs
 
   tests/corpus-run.py TITLES.tsv IDS_FILE OUT_DIR [--steps STEPS.tsv] [--keep]
 
-TITLES.tsv: id, url, exe_rel columns (header row). STEPS.tsv: id<TAB>steps<TAB>story_at.
+TITLES.tsv: id, url, exe_rel columns (header row). STEPS.tsv: id<TAB>steps<TAB>story_at<TAB>pre (x,y clicked before the title).
 OUT_DIR/<id>/ gets result.json + PNGs; titles whose result.json exists are skipped.
 """
-import csv, os, subprocess, sys, threading, queue, time, shutil, urllib.parse, socket
+import csv, json, os, subprocess, sys, threading, queue, time, shutil, urllib.parse, socket
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -17,7 +17,7 @@ out = sys.argv[3]
 steps = {}
 if '--steps' in sys.argv:
     for r in csv.reader(open(sys.argv[sys.argv.index('--steps') + 1]), delimiter='\t'):
-        if r and not r[0].startswith('#'): steps[r[0]] = (r[1] if len(r) > 1 else '', r[2] if len(r) > 2 else '')
+        if r and not r[0].startswith('#'): steps[r[0]] = (r[1] if len(r) > 1 else '', r[2] if len(r) > 2 else '', r[3] if len(r) > 3 else '')
 keep = '--keep' in sys.argv
 TRIALS = os.environ.get('TRIALS', '/home/user/trials')
 STORES = os.environ.get('STORES', '/home/user/runs/stores')
@@ -51,6 +51,16 @@ def producer():
 for _ in range(JOBS): threading.Thread(target=producer, daemon=True).start()
 ends = 0
 
+def pe_machine(path, store):
+    """the exe's PE machine (0x14c x86, 0x8664 x64), from the extracted file"""
+    try:
+        with open(path, 'rb') as f:
+            d = f.read(4096)
+        o = int.from_bytes(d[0x3c:0x40], 'little')
+        return int.from_bytes(d[o + 4:o + 6], 'little')
+    except Exception:
+        return 0
+
 def wait_port(p):
     for _ in range(50):
         try: socket.create_connection(('127.0.0.1', p), 0.2).close(); return True
@@ -69,6 +79,10 @@ while True:
     if not exe:
         open(f'{od}/result.json', 'w').write('{"prep_error": %s}' % __import__('json').dumps(err))
         print(tid, 'PREP', err, flush=True)
+    elif pe_machine(f"{TRIALS}/{tid}/x/{exe}", f'{STORES}/{tid}') == 0x8664:
+        open(f'{od}/result.json', 'w').write('{"x64": true}')
+        open(f'{od}/exe.txt', 'w').write(exe + '\n')
+        print(tid, 'x64', flush=True)
     else:
         jit = f'/home/user/runs/jit/{tid}'
         os.makedirs(jit, exist_ok=True)
@@ -79,9 +93,10 @@ while True:
         winexe = 'Z:\\vnvm\\game\\' + exe.replace('/', '\\')
         qs = 'autostart&headless&load&nosave&mount=/vnvm/game=g&run=' + urllib.parse.quote(winexe)
         if titles[tid].get('args'): qs += '&args=' + urllib.parse.quote(titles[tid]['args'])
-        st, at = steps.get(tid, ('key:Return wait:3', ''))
+        st, at, pre = steps.get(tid, ('key:Return wait:3', '', ''))
         e2 = dict(env)
         if at: e2['STORY_AT'] = at
+        if pre: e2['PRE'] = pre  # launcher/settings dialog button before the title
         t0 = time.time()
         try:
             subprocess.run(['node', f'{HERE}/corpus.mjs', f'http://127.0.0.1:{PORT}/wine.html?{qs}', od, st], env=e2,
@@ -95,6 +110,8 @@ while True:
         open(f'{od}/exe.txt', 'w').write(exe + '\n')
         open(f'{STORES}/{tid}/exe.txt', 'w').write(exe + '\n')
         print(tid, 'done', round(time.time() - t0), flush=True)
-    # the packed store stays (a rerun with other steps needs no download); the extracted files go
+    # with --keep a failed title's packed store stays (debugging needs no download); the extracted files go
     shutil.rmtree(f'{TRIALS}/{tid}', ignore_errors=True)
-    if not keep or shutil.disk_usage(STORES).free < 8 << 30: shutil.rmtree(f'{STORES}/{tid}', ignore_errors=True)
+    try: ok = json.load(open(f'{od}/result.json')).get('title') is not None
+    except Exception: ok = False
+    if not keep or ok or shutil.disk_usage(STORES).free < 8 << 30: shutil.rmtree(f'{STORES}/{tid}', ignore_errors=True)

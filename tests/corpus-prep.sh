@@ -33,7 +33,8 @@ if [ ! -d x ]; then
          (LC_ALL=C.UTF-8 7z x -y "../$f" >/dev/null 2>&1 && [ -n "$(ls)" ]) ||
          (LC_ALL=C.UTF-8 unrar x -y "../$f" >/dev/null 2>&1 && [ -n "$(ls)" ])) ;;
   esac
-  # nested archives (a zip holding the installer or a 7z)
+  # names some extractors leave in Shift-JIS bytes -> UTF-8
+  LC_ALL=C.UTF-8 convmv -r -f cp932 -t utf8 --notest --qfrom x.part >/dev/null 2>&1 || true
   mv x.part x
   rm -f "$f"
 fi

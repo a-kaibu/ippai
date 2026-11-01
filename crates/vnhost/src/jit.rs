@@ -30,6 +30,20 @@ fn threshold() -> u32 {
     static T: OnceLock<u32> = OnceLock::new();
     *T.get_or_init(|| std::env::var("VNVM_JIT_THRESHOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(THRESHOLD))
 }
+/// Debugging a miscompile by bisection: VNVM_JIT_ONLY=lo-hi (hex) compiles only code in [lo, hi).
+fn debug_allowed(a: u32) -> bool {
+    use std::sync::OnceLock;
+    static R: OnceLock<(u32, u32)> = OnceLock::new();
+    let (lo, hi) = *R.get_or_init(|| {
+        let v = std::env::var("VNVM_JIT_ONLY").unwrap_or_default();
+        let mut it = v.split('-').map(|x| u32::from_str_radix(x.trim_start_matches("0x"), 16).ok());
+        match (it.next().flatten(), it.next().flatten()) {
+            (Some(lo), Some(hi)) => (lo, hi),
+            _ => (0, u32::MAX),
+        }
+    });
+    a >= lo && a < hi
+}
 /// Blocks the dispatcher runs before returning to the run loop.
 const BUDGET: i32 = 1 << 14;
 /// Most blocks compiled into one module.
@@ -67,6 +81,9 @@ struct State {
     fns: HashSet<u32>,
     /// times each function was built
     fn_builds: HashMap<u32, u32>,
+    /// indirect call/jump sites of functions: the function, and the target it mostly takes
+    site_fn: HashMap<u32, Vec<u32>>,
+    hints: HashMap<u32, u32>,
 }
 
 /// Samples of the same jump between regions (out of RING_SIZE) that make them merge.
@@ -161,6 +178,8 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
                 saved: None,
                 fns: HashSet::new(),
                 fn_builds: HashMap::new(),
+                site_fn: HashMap::new(),
+                hints: HashMap::new(),
             }
         });
         f(st)
@@ -438,12 +457,49 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
         }
     }
     runs.sort_by(|a, b| b.0.cmp(&a.0));
+    if stats() {
+        thread_local! { static N: Cell<u32> = const { Cell::new(0) }; }
+        if N.with(|n| { n.set(n.get() + 1); n.get() % 4000 == 0 }) {
+            let top: Vec<String> = runs.iter().take(6).map(|(c, p)| format!("{:x}->{:x}:{c}", p >> 32, *p as u32)).collect();
+            eprintln!("vnjit ring {}", top.join(" "));
+        }
+    }
     // functions (jit::FN): a call or tail jump that found no function there, or a function
     // left often (built again with the blocks that ran since)
     for &(c, p) in &runs {
         let (from, to) = ((p >> 32) as u32, p as u32);
         if c < FN_SAMPLES {
             break;
+        }
+        // (FN_TAG | site, target): an indirect call or jump; a new hint builds its function again
+        if from & jit::FN_TAG != 0 && from != jit::FN_TAG {
+            let site = from & !jit::FN_TAG;
+            let Some(fs) = st.site_fn.get(&site).cloned() else {
+                if stats() {
+                    eprintln!("vnjit site {site:#x}: no function");
+                }
+                continue;
+            };
+            if st.hints.get(&site) == Some(&to) {
+                continue;
+            }
+            let w = st.hot.entry((from, to)).or_insert(0);
+            *w += 1;
+            if *w >= FN_WINDOWS {
+                st.hot.remove(&(from, to));
+                st.hints.insert(site, to);
+                if stats() {
+                    eprintln!("vnjit hint {site:#x} -> {to:#x} (functions {fs:x?})");
+                }
+                // every function with the site
+                for f in fs {
+                    if st.fn_builds.get(&f).copied().unwrap_or(0) < FN_BUILDS {
+                        compile_fn(st, f, (cpu.trap_lo, cpu.trap_hi), &mut Linear);
+                    }
+                }
+                return;
+            }
+            continue;
         }
         let fnish = (from == jit::FN_TAG && !st.fns.contains(&to)) || (from != jit::FN_TAG && st.fns.contains(&from) && !st.fns.contains(&to));
         if !fnish {
@@ -462,7 +518,7 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
     // regions: the most frequent pair between them
     let Some(&(c, best)) = runs.iter().find(|r| {
         let (from, to) = ((r.1 >> 32) as u32, r.1 as u32);
-        from != jit::FN_TAG && !st.fns.contains(&from) && !st.fns.contains(&to)
+        from & jit::FN_TAG == 0 && !st.fns.contains(&from) && !st.fns.contains(&to)
     }) else {
         return;
     };
@@ -499,7 +555,7 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
     let (misses, known) = (&st.misses, &st.known);
     profiling();
     let Some(mut region) = jit::translate_region(&mut m, &mut Linear, &roots, MAX_BLOCKS, |a| {
-        !(a >= lo && a < hi) && (roots.contains(&a) || ran(misses, known, a))
+        debug_allowed(a) && !(a >= lo && a < hi) && (roots.contains(&a) || ran(misses, known, a))
     }) else {
         return;
     };
@@ -521,7 +577,7 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
 /// Counts a miss at cpu.eip and compiles its block once it is warm; true if it did.
 pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
     let eip = cpu.eip;
-    if !(jit::GUEST_LO..jit::GUEST_HI).contains(&eip) || (eip >= cpu.trap_lo && eip < cpu.trap_hi) {
+    if !(jit::GUEST_LO..jit::GUEST_HI).contains(&eip) || (eip >= cpu.trap_lo && eip < cpu.trap_hi) || !debug_allowed(eip) {
         return false;
     }
     with_state(|st| {
@@ -558,7 +614,7 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         profiling();
         let t0 = std::time::Instant::now();
         let Some(mut region) = jit::translate_region(&mut m, mem, &[eip], MAX_BLOCKS, |a| {
-            !(a >= lo && a < hi) && !known.contains(&a) && (a == eip || misses.contains_key(&a))
+            debug_allowed(a) && !(a >= lo && a < hi) && !known.contains(&a) && (a == eip || misses.contains_key(&a))
         }) else {
             st.known.insert(eip);
             return false;
@@ -608,8 +664,8 @@ fn compile_fn(st: &mut State, eip: u32, (lo, hi): (u32, u32), mem: &mut Linear) 
         jit::LAYOUT.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     let mut m = Module { name: Some(format!("x86_{eip:08x}_fn")), ..Module::default() };
-    let (misses, known) = (&st.misses, &st.known);
-    let Some(region) = jit::translate_function(&mut m, mem, eip, MAX_BLOCKS, (lo, hi), |a| !(a >= lo && a < hi) && (a == eip || ran(misses, known, a))) else {
+    let (misses, known, hints) = (&st.misses, &st.known, &st.hints);
+    let Some(region) = jit::translate_function(&mut m, mem, eip, MAX_BLOCKS, (lo, hi), &|a| hints.get(&a).copied(), |a| debug_allowed(a) && !(a >= lo && a < hi) && (a == eip || ran(misses, known, a))) else {
         st.known.insert(eip);
         return false;
     };
@@ -631,7 +687,12 @@ fn compile_fn(st: &mut State, eip: u32, (lo, hi): (u32, u32), mem: &mut Linear) 
     if base < 0 {
         return false;
     }
-    // every block of it enters it (a region at one of them hands over to the function)
+    for &a in &region.sites {
+        let l = st.site_fn.entry(a).or_default();
+        if !l.contains(&eip) {
+            l.push(eip);
+        }
+    }
     for &(a, _) in &region.starts {
         st.fns.insert(a);
         st.known.insert(a);
