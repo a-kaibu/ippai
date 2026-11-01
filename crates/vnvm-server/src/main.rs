@@ -1,7 +1,7 @@
-//! Serves the vnvm web app and the disk store made by vnvm-pack.
+//! Serves the vnvm web app and the store made by vnvm-pack.
 //!
 //! - `/` the built web app (web/dist)
-//! - `/store/disks/<name>/manifest.json`
+//! - `/store/trees/<name>.tsv`: a packed tree's file list
 //! - `/store/chunks/ab/<hash>`: stored zstd-compressed, sent with
 //!   `Content-Encoding: zstd` so the browser decodes them natively, and marked
 //!   immutable so its HTTP cache keeps them.
@@ -20,7 +20,7 @@
 //!   `<jit>/bench-results.txt`
 //! - `GET`/`PUT /saves/<name>`: saved games backed up to S3 (see saves.rs)
 //!
-//! Every response carries COOP/COEP: QEMU's threads need SharedArrayBuffer,
+//! Every response carries COOP/COEP: Wine's threads (wasm pthreads) need SharedArrayBuffer,
 //! which browsers only allow on cross-origin isolated pages.
 
 use axum::{
