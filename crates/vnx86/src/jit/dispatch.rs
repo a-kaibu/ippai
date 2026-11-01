@@ -39,6 +39,8 @@ pub fn module() -> alloc::vec::Vec<u8> {
         c.get(cpu).load32(pending).load32(0).or();
         c.if_().i32c(0).ret().end();
         c.get(cpu).load32(Off::eip()).set(eip);
+        // (0 is the key of an empty slot: the interpreter faults there)
+        c.get(eip).eqz().if_().i32c(super::RET_INTERP).ret().end();
         c.get(eip).u32c(0x9e37_79b1).mul().i32c(15).shr_u().get(mask).and().set(h);
         c.block();
         c.loop_();

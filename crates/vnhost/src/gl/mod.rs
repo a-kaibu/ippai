@@ -531,7 +531,7 @@ const EXTENSIONS: &str = "GL_ARB_multitexture GL_EXT_bgra GL_ARB_texture_non_pow
 GL_ARB_framebuffer_object GL_ARB_vertex_buffer_object GL_EXT_blend_func_separate GL_EXT_blend_minmax \
 GL_EXT_blend_subtract GL_EXT_blend_color GL_ARB_texture_env_add GL_EXT_texture_env_add GL_EXT_texture_edge_clamp \
 GL_SGIS_texture_edge_clamp GL_ARB_texture_mirrored_repeat GL_SGIS_generate_mipmap GL_EXT_packed_pixels \
-GL_ARB_shader_objects GL_ARB_vertex_shader GL_ARB_fragment_shader GL_ARB_shading_language_100";
+GL_ARB_shader_objects GL_ARB_vertex_program GL_ARB_vertex_shader GL_ARB_fragment_shader GL_ARB_shading_language_100";
 
 extern "C" fn glGetString(name: u32) -> *const u8 {
     let s: &'static [u8] = match name {
@@ -543,7 +543,7 @@ extern "C" fn glGetString(name: u32) -> *const u8 {
             "GL_ARB_framebuffer_object GL_ARB_vertex_buffer_object GL_EXT_blend_func_separate GL_EXT_blend_minmax ",
             "GL_EXT_blend_subtract GL_EXT_blend_color GL_ARB_texture_env_add GL_EXT_texture_env_add GL_EXT_texture_edge_clamp ",
             "GL_SGIS_texture_edge_clamp GL_ARB_texture_mirrored_repeat GL_SGIS_generate_mipmap GL_EXT_packed_pixels ",
-            "GL_ARB_shader_objects GL_ARB_vertex_shader GL_ARB_fragment_shader GL_ARB_shading_language_100\0").as_bytes(),
+            "GL_ARB_shader_objects GL_ARB_vertex_program GL_ARB_vertex_shader GL_ARB_fragment_shader GL_ARB_shading_language_100\0").as_bytes(),
         _ => return std::ptr::null(),
     };
     s.as_ptr()

@@ -494,12 +494,18 @@ d3d9.dll を自前で置き換えて WebGPU で描く。d3d10/11/12 は他エン
   glReadPixels・テクスチャへのコピーは GL の座標のまま使え、表示のときにページが上下を返す (PRESENT_FLIP)。
 - 確認: hangover/tests/gltest.c (FBO へ glBegin のテクスチャ付き四角形、それをクライアント配列で
   ウィンドウへ、VBO + GLSL の回る三角形)。
+- 実ゲーム: Ren'Py 7.3.5 (SDK の The Question、32 ビットの lib/windows-i686) が gl レンダラーで
+  タイトル → 本編まで動く。起動は `lib\windows-i686\python.exe -O renpy.py the_question` に
+  PYTHONHOME/PYTHONPATH と RENPY_RENDERER=gl (ルートの renpy.exe はすぐ終わる)。glew は
+  glVertexAttribPointerARB を GL_ARB_vertex_program から取るので、その拡張名も出している。
 
 ### 描画 API のテスト
 
 - `node tests/gfx.mjs`: ddrawtest (ウィンドウとフル画面)、d3d8test、d3d11test、gltest を "still"
   (アニメーションを止める) で headless Chromium の wine.html で動かし、画面の決めた位置の色と
-  ログ (frame 60、glGetError 0 など、例外が無いこと) を見る。全部通れば 0 で終わる。
+  ログ (frame 60、glGetError 0、ARB 名の関数が取れること、例外が無いこと) を見る。nullcall
+  (JIT: 熱いループの null 関数ポインター呼び出しがアドレス 0 で落ちること) も同じ流れで動かす。
+  全部通れば 0 で終わる。
   準備: `hangover/tests/build-gfx.sh` で exe を /home/user/work/gfxtest に作り、
   `vnvm-pack tree /home/user/work/gfxtest gfxtest`、vnvm-server を 8090 で動かしておく (BASE で変更可)。
 - `cargo test -p vnhost gl::`: GLSL 1.10/1.30 (組み込み変数、attribute/varying、in/out) の書き換えが

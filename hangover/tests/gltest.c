@@ -86,7 +86,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     HWND hwnd;
     HDC dc;
     MSG msg;
-    int x, y, fmt;
+    int x, y, fmt, i;
 
     RegisterClassA(&wc);
     hwnd = CreateWindowA("gltest", "gltest", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 0, 0, 656, 519, 0, 0, inst, 0);
@@ -101,6 +101,18 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
 #define F(r, n, a) if (!(p_##n = (void *)wglGetProcAddress(#n))) { printf("no %s\n", #n); return 1; }
     FUNCS
 #undef F
+    {
+        /* ARB names engines load through glew (Ren'Py: glVertexAttribPointerARB comes with
+           GL_ARB_vertex_program, the shader objects with GL_ARB_shader_objects) */
+        static const char *arb[] = { "glVertexAttribPointerARB", "glEnableVertexAttribArrayARB",
+            "glCreateShaderObjectARB", "glShaderSourceARB", "glUseProgramObjectARB", "glGetObjectParameterivARB",
+            "glUniform4fARB", "glActiveTextureARB", "glGenFramebuffersEXT", "glBindBufferARB" };
+        const char *ext = (const char *)glGetString(GL_EXTENSIONS);
+        int missing = !strstr(ext, "GL_ARB_vertex_program") || !strstr(ext, "GL_ARB_shader_objects");
+        for (i = 0; i < sizeof(arb) / sizeof(arb[0]); i++)
+            if (!wglGetProcAddress(arb[i])) { printf("no %s\n", arb[i]); missing = 1; }
+        printf("ARB functions %s\n", missing ? "missing" : "ok");
+    }
     fflush(stdout);
 
     /* checkerboard texture, half transparent dark blue / opaque yellow */

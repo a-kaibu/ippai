@@ -44,8 +44,10 @@ const TESTS = {
     // glClear, glBegin quad into an FBO, its texture drawn with client arrays, GLSL triangle
     pixels: [[10, 10, 26, 77, 26], [60, 60, 102, 26, 26], [100, 90, 255, 255, 0], [170, 90, 51, 13, 77],
       [15, 475, 255, 0, 0], [320, 115, 240, 8, 7], [175, 335, 6, 9, 240], [465, 335, 6, 241, 9], [320, 280, 64, 96, 95]],
-    log: [/framebuffer status 0x8cd5/, /frame 60, glGetError 0\b/],
+    log: [/ARB functions ok/, /framebuffer status 0x8cd5/, /frame 60, glGetError 0\b/],
   },
+  // (not graphics: the JIT's dispatch must fault on a call through a null pointer)
+  nullcall: { pixels: [], log: [/nullcall: ok/] },
 };
 
 function readPng(file) {
@@ -78,7 +80,8 @@ for (const name of names) {
   const log = existsSync(`${out}/console.log`) ? readFileSync(`${out}/console.log`, "utf8") : "";
   for (const re of t.log) if (!re.test(log)) errors.push(`log lacks ${re}`);
   for (const bad of [/Unhandled exception/, /\[pageerror\]/, /\[crash\]/]) if (bad.test(log)) errors.push(`log has ${bad}`);
-  if (existsSync(`${out}/screen-001.png`)) {
+  if (!t.pixels.length) {
+  } else if (existsSync(`${out}/screen-001.png`)) {
     const png = readPng(`${out}/screen-001.png`);
     for (const [x, y, ...want] of t.pixels) {
       const got = png.at(x, y);

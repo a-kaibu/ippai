@@ -5,7 +5,7 @@ set -e
 cd "$(dirname "$0")"
 out=${1:-/home/user/work/gfxtest}
 mkdir -p "$out"
-for t in ddrawtest d3d8test d3d11test gltest; do
+for t in ddrawtest d3d8test d3d11test gltest nullcall; do
   cmd=$(sed -n 's|^ \* Build: \(.*\) \*/$|\1|p' $t.c)
   eval "$(echo "$cmd" | sed "s| -o $t.exe | -o $out/$t.exe |")"
 done

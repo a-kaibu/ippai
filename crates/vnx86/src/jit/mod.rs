@@ -2648,6 +2648,9 @@ fn emit_lookup(c: &mut Code) {
     // pending signals are noticed when the budget runs out (the dispatcher checks them)
     c.get(L_BUD).i32c(1).sub().tee(L_BUD).i32c(0).le_s();
     c.if_().i32c(RET_CONTINUE).set(L_ST).br(2).end();
+    // address 0 is the key of an empty slot: never a block (a call through a null pointer
+    // goes to the dispatcher, whose interpreter faults)
+    c.get(L_NEXT).eqz().if_().i32c(RET_CONTINUE).set(L_ST).br(2).end();
     c.get(L_NEXT).u32c(0x9e37_79b1).mul().i32c(15).shr_u().get(L_CPU).load32(maskf).and().set(h);
     c.block(); // miss: miss 0, top 1, exit 2
     c.loop_(); // probe 0, miss 1, top 2, exit 3
