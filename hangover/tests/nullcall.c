@@ -1,7 +1,7 @@
 /* JIT check for vnvm: a hot loop calls through a function pointer that ends up null. The call
  * must fault at address 0 (as on Windows), not run some other translated code: 0 is the key of
  * an empty slot in the JIT's block table. Prints "nullcall: ok" when the fault is at 0.
- * Build: i686-w64-mingw32-gcc -O2 nullcall.c -o nullcall.exe */
+ * Build: i686-w64-mingw32-gcc -O2 nullcall.c -o nullcall.exe -Wall */
 #include <windows.h>
 #include <stdio.h>
 
