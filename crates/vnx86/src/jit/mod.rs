@@ -3797,16 +3797,15 @@ fn liveness(list: &[Instruction], out: u32) -> (Vec<u32>, u32) {
         let written = ins.rflags_modified() & STATUS_BITS;
         let mut read = ins.rflags_read() & STATUS_BITS;
         let by_cl = (0..ins.op_count()).any(|o| ins.op_kind(o) == OpKind::Register && ins.op_register(o) == Register::CL);
-        if by_cl || ins.has_rep_prefix() || ins.has_repne_prefix() {
-            read |= written; // a shift by 0 or a REP with ECX 0 keeps them
-        }
+        // a shift by 0 or a REP with ECX 0 keeps them: those live after stay live
+        let keeps = by_cl || ins.has_rep_prefix() || ins.has_repne_prefix();
         if ins.mnemonic() == Mnemonic::Inc || ins.mnemonic() == Mnemonic::Dec {
             read |= RflagsBits::CF; // the lazy INC/DEC carries CF along
         }
         if ins.condition_code() != ConditionCode::None {
             read |= cc_reads(cc_index(ins.condition_code()));
         }
-        l = (l & !written) | read;
+        l = if keeps { l | read } else { (l & !written) | read };
     }
     (live, l)
 }
