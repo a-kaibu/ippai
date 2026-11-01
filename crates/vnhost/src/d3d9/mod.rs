@@ -137,8 +137,8 @@ impl D3d {
         let id = self.next;
         unsafe {
             let v8 = if self.v8 { self.vtbls.get(iface as usize + 16).copied().unwrap_or(0) } else { 0 };
-            *(addr as *mut u32) = if v8 != 0 { v8 } else { self.vtbls[iface as usize] };
-            *((addr + 4) as *mut u32) = id;
+            device::wrp(addr, 0, if v8 != 0 { v8 } else { self.vtbls[iface as usize] });
+            *((addr + device::PTR) as *mut u32) = id;
         }
         self.objs.insert(id, Obj { iface, refs: 1, binds: 0, parent, addr, data, private: Vec::new() });
         addr
@@ -149,7 +149,7 @@ impl D3d {
         if addr == 0 {
             return 0;
         }
-        let id = unsafe { *((addr + 4) as *const u32) };
+        let id = unsafe { *((addr + device::PTR) as *const u32) };
         if self.objs.get(&id).is_some_and(|o| o.addr == addr) { id } else { 0 }
     }
 
@@ -206,7 +206,7 @@ impl D3d {
     fn destroy(&mut self, id: u32) {
         let Some(o) = self.objs.remove(&id) else { return };
         self.free_blocks.push(o.addr);
-        unsafe { *((o.addr + 4) as *mut u32) = 0 };
+        unsafe { *((o.addr + device::PTR) as *mut u32) = 0 };
         match o.data {
             Data::Texture(t) => {
                 for l in t.levels {
@@ -244,7 +244,9 @@ fn with<R>(f: impl FnOnce(&mut D3d) -> R) -> R {
 
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_d3d9_init(vtbls: *const u32, count: u32) -> u32 {
-    let v = std::slice::from_raw_parts(vtbls, count as usize).to_vec();
+    // (an array of pointers: 8 bytes each in the 64-bit build, all below 4GB)
+    let k = (device::PTR / 4) as usize;
+    let v: Vec<u32> = (0..count as usize).map(|i| *vtbls.add(i * k)).collect();
     let mut g = D3D.lock().unwrap_or_else(|e| e.into_inner());
     if g.is_none() {
         *g = Some(D3d {
@@ -281,8 +283,9 @@ pub unsafe extern "C" fn vnhost_d3d9_create(sdk: u32, out: *mut u32, calls: *con
         if d.trace {
             eprintln!("d3d9: Direct3DCreate9({sdk:#x})");
         }
-        *out = d.new_obj(IF_D3D9, 0, Data::D3d);
-        if *out == 0 { E_OUTOFMEMORY } else { 0 }
+        let o = d.new_obj(IF_D3D9, 0, Data::D3d);
+        device::wrp(out as u32, 0, o);
+        if o == 0 { E_OUTOFMEMORY } else { 0 }
     })
 }
 
@@ -304,6 +307,16 @@ pub unsafe extern "C" fn vnhost_d3d9_call(id: u32, args: *const u32, calls: *con
         }
         _ => {}
     }
+    // (64-bit: the arguments are 8-byte slots; their low halves from here on)
+    let mut low = [0u32; 16];
+    let args = if device::PTR == 8 {
+        for (i, v) in low.iter_mut().enumerate() {
+            *v = *args.add(i * 2);
+        }
+        low.as_ptr()
+    } else {
+        args
+    };
     let t0 = stats::on().then(std::time::Instant::now);
     let (r, after) = {
         let mut g = D3D.lock().unwrap_or_else(|e| e.into_inner());
@@ -459,14 +472,14 @@ unsafe fn query_interface(d: &mut D3d, id: u32, iface: u32, riid: *const u8, out
         _ => false,
     };
     if !ok {
-        *out = 0;
+        device::wrp(out as u32, 0, 0);
         if d.trace {
             eprintln!("d3d9: QueryInterface({first:08x}) on interface {iface}: no");
         }
         return E_NOINTERFACE;
     }
     d.add_ref(id);
-    *out = d.addr_of(id);
+    device::wrp(out as u32, 0, d.addr_of(id));
     S_OK
 }
 

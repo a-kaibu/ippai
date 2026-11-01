@@ -3,7 +3,8 @@
 // Direct3D windows' frames are read back from the GPU)
 // as a PNG every INTERVAL seconds. After the first shot, CLICKS="x,y;x,y" clicks there (page
 // pixels; each held 200 ms) and KEYS="KeyA Enter" presses those keys; CLICK_EVERY="x,y" clicks there after every
-// shot (to page through a game). CHROME_ARGS adds browser flags; USER_DATA_DIR keeps the
+// shot (to page through a game); CLICK_SEQ="x,y;;x,y" clicks its n-th entry (if any) after shot n
+// instead, then CLICK_EVERY takes over. CHROME_ARGS adds browser flags; USER_DATA_DIR keeps the
 // browser profile (its HTTP and code caches) there across runs.
 //
 //   node tests/wine.mjs URL OUT_DIR [SECONDS] [INTERVAL]
@@ -114,7 +115,13 @@ while (Date.now() < end) {
     }
     for (const key of process.env.KEYS?.split(" ").filter(Boolean) ?? []) await page.keyboard.press(key);
   }
-  if (process.env.CLICK_EVERY) {
+  const seq = process.env.CLICK_SEQ?.split(";");
+  if (seq && n <= seq.length) {
+    if (seq[n - 1]) {
+      const [x, y] = seq[n - 1].split(",").map(Number);
+      await page.mouse.click(x, y, { delay: 200 });
+    }
+  } else if (process.env.CLICK_EVERY) {
     const [x, y] = process.env.CLICK_EVERY.split(",").map(Number);
     await page.mouse.click(x, y, { delay: 200 }); // (held: games that poll GetAsyncKeyState per frame)
   }

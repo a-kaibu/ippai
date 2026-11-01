@@ -320,6 +320,38 @@ unsafe fn wr(p: u32, i: usize, v: u32) {
     }
 }
 
+/// Size of the guest's pointers (and HWNDs): the 64-bit build runs 64-bit programs.
+pub(crate) const PTR: u32 = if cfg!(target_arch = "wasm64") { 8 } else { 4 };
+
+/// A pointer-sized output (interfaces, mapped memory): 4 or 8 bytes.
+pub(crate) unsafe fn wrp(p: u32, i: usize, v: u32) {
+    wr(p, i * (PTR / 4) as usize, v);
+    if PTR == 8 {
+        wr(p, i * 2 + 1, 0);
+    }
+}
+
+/// D3DPRESENT_PARAMETERS as 14 dwords in its 32-bit layout (hDeviceWindow at 7; 64-bit: 8-byte
+/// aligned at dword 8, the rest 2 dwords later)
+fn pp_index(i: usize) -> usize {
+    if PTR == 8 && i >= 7 { i + 1 + (i > 7) as usize } else { i }
+}
+unsafe fn read_pp(pp: u32) -> [u32; 14] {
+    let mut p = [0u32; 14];
+    for (i, v) in p.iter_mut().enumerate() {
+        *v = rd(pp, pp_index(i));
+    }
+    p
+}
+unsafe fn write_pp(pp: u32, p: &[u32; 14]) {
+    for (i, v) in p.iter().enumerate() {
+        wr(pp, pp_index(i), *v);
+    }
+    if PTR == 8 {
+        wr(pp, 9, 0);
+    }
+}
+
 fn f2u(v: f32) -> u32 {
     v.to_bits()
 }
@@ -342,7 +374,7 @@ pub unsafe fn call(d: &mut D3d, iface: u32, m: u32, this: u32, args: *const u32,
             8 => device_out(d, a(1)),
             9 => {
                 let Some(dev) = &d.dev else { return D3DERR_INVALIDCALL };
-                std::ptr::copy_nonoverlapping(dev.pp.as_ptr(), a(1) as *mut u32, 14);
+                write_pp(a(1), &dev.pp);
                 S_OK
             }
             _ => E_NOTIMPL,
@@ -451,7 +483,7 @@ unsafe fn device_out(d: &mut D3d, out: u32) -> u32 {
     let Some(dev) = &d.dev else { return D3DERR_INVALIDCALL };
     let obj = dev.obj;
     d.add_ref(obj);
-    wr(out, 0, d.addr_of(obj));
+    wrp(out, 0, d.addr_of(obj));
     S_OK
 }
 
@@ -706,8 +738,7 @@ unsafe fn create_device(d: &mut D3d, d3d: u32, ty: u32, focus: u32, behavior: u3
             eprintln!("d3d9: a second device");
         }
     }
-    let mut p = [0u32; 14];
-    std::ptr::copy_nonoverlapping(pp as *const u32, p.as_mut_ptr(), 14);
+    let mut p = read_pp(pp);
     let hwnd = if p[7] != 0 { p[7] } else { focus };
     let mut rect = [0i32; 4];
     (d.calls().client_rect)(hwnd, rect.as_mut_ptr());
@@ -724,7 +755,7 @@ unsafe fn create_device(d: &mut D3d, d3d: u32, ty: u32, focus: u32, behavior: u3
     // (no multisampling)
     p[4] = 0;
     p[5] = 0;
-    std::ptr::copy_nonoverlapping(p.as_ptr(), pp as *mut u32, 14);
+    write_pp(pp, &p);
     let obj_addr = d.new_obj(IF_DEVICE, 0, Data::Device);
     let obj = d.id_of(obj_addr);
     d.add_ref(d3d);
@@ -762,7 +793,7 @@ unsafe fn create_device(d: &mut D3d, d3d: u32, ty: u32, focus: u32, behavior: u3
     if d.trace {
         eprintln!("d3d9: CreateDevice hwnd {hwnd:#x} {}x{} fmt {} depth {}/{} behavior {behavior:#x}", p[0], p[1], p[2], p[9], p[10]);
     }
-    wr(out, 0, obj_addr);
+    wrp(out, 0, obj_addr);
     S_OK
 }
 
@@ -826,7 +857,7 @@ unsafe fn get_backbuffer(d: &mut D3d, out: u32) -> u32 {
     let Some(dev) = &d.dev else { return D3DERR_INVALIDCALL };
     let bb = dev.backbuffer;
     d.add_ref(bb);
-    wr(out, 0, d.addr_of(bb));
+    wrp(out, 0, d.addr_of(bb));
     S_OK
 }
 
@@ -860,7 +891,7 @@ unsafe fn device_call(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &mut
             let dev = dev!(d);
             let d3d = dev.d3d;
             d.add_ref(d3d);
-            wr(a(1), 0, d.addr_of(d3d));
+            wrp(a(1), 0, d.addr_of(d3d));
             S_OK
         }
         7 => {
@@ -870,10 +901,11 @@ unsafe fn device_call(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &mut
         8 => display_mode(a(2)),
         9 => {
             let dev = dev!(d);
+            // D3DDEVICE_CREATION_PARAMETERS (64-bit: the HWND 8-byte aligned)
             wr(a(1), 0, 0);
             wr(a(1), 1, 1);
-            wr(a(1), 2, dev.hwnd);
-            wr(a(1), 3, dev.behavior);
+            wrp(a(1) + 8, 0, dev.hwnd);
+            wr(a(1) + 8 + PTR, 0, dev.behavior);
             S_OK
         }
         10 => S_OK,
@@ -892,15 +924,14 @@ unsafe fn device_call(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &mut
             let dev = dev!(d);
             let sc = dev.swapchain;
             d.add_ref(sc);
-            wr(a(2), 0, d.addr_of(sc));
+            wrp(a(2), 0, d.addr_of(sc));
             S_OK
         }
         15 => 1,
         16 => {
             // Reset
             let dev = dev!(d);
-            let mut p = [0u32; 14];
-            std::ptr::copy_nonoverlapping(a(1) as *const u32, p.as_mut_ptr(), 14);
+            let mut p = read_pp(a(1));
             if p[7] != 0 {
                 dev.hwnd = p[7];
             }
@@ -918,7 +949,7 @@ unsafe fn device_call(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &mut
             }
             p[4] = 0;
             p[5] = 0;
-            std::ptr::copy_nonoverlapping(p.as_ptr(), a(1) as *mut u32, 14);
+            write_pp(a(1), &p);
             let dev = d.dev.as_mut().unwrap();
             dev.pp = p;
             // unbind everything the old state held
@@ -958,7 +989,7 @@ unsafe fn device_call(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &mut
             if d.trace {
                 eprintln!("d3d9: cube/volume textures not supported");
             }
-            wr(a(if m == 24 { 8 } else { 6 }), 0, 0);
+            wrp(a(if m == 24 { 8 } else { 6 }), 0, 0);
             D3DERR_NOTAVAILABLE
         }
         26 | 27 => {
@@ -969,7 +1000,7 @@ unsafe fn device_call(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &mut
             }
             let b = Buffer { len, usage, fmt: f, pool, mem };
             let o = d.new_obj(if m == 26 { IF_VB } else { IF_IB }, 0, Data::Buffer(b));
-            wr(out, 0, o);
+            wrp(out, 0, o);
             S_OK
         }
         28 | 29 => {
@@ -979,7 +1010,7 @@ unsafe fn device_call(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &mut
                 return D3DERR_INVALIDCALL;
             }
             let s = new_surface(d, a(1), a(2), a(3), POOL_DEFAULT, usage, 0, 0, 0);
-            wr(a(7), 0, s);
+            wrp(a(7), 0, s);
             S_OK
         }
         30 => update_surface(d, a(1), a(2), a(3), a(4)),
@@ -994,7 +1025,7 @@ unsafe fn device_call(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &mut
                 return D3DERR_INVALIDCALL;
             }
             let s = new_surface(d, a(1), a(2), a(3), a(4), 0, 0, 0, 0);
-            wr(a(5), 0, s);
+            wrp(a(5), 0, s);
             S_OK
         }
         37 => {
@@ -1026,7 +1057,7 @@ unsafe fn device_call(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &mut
                 return D3DERR_NOTFOUND;
             }
             d.add_ref(s);
-            wr(a(2), 0, d.addr_of(s));
+            wrp(a(2), 0, d.addr_of(s));
             S_OK
         }
         39 => {
@@ -1045,7 +1076,7 @@ unsafe fn device_call(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &mut
                 return D3DERR_NOTFOUND;
             }
             d.add_ref(s);
-            wr(a(1), 0, d.addr_of(s));
+            wrp(a(1), 0, d.addr_of(s));
             S_OK
         }
         41 => {
@@ -1160,7 +1191,7 @@ unsafe fn device_call(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &mut
             let dev = dev!(d);
             let st = dev.st.clone();
             let o = d.new_obj(IF_STATEBLOCK, 0, Data::StateBlock(Box::new(st)));
-            wr(a(2), 0, o);
+            wrp(a(2), 0, o);
             S_OK
         }
         60 => {
@@ -1174,7 +1205,7 @@ unsafe fn device_call(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &mut
             dev.recording = None;
             let st = dev.st.clone();
             let o = d.new_obj(IF_STATEBLOCK, 0, Data::StateBlock(Box::new(st)));
-            wr(a(1), 0, o);
+            wrp(a(1), 0, o);
             S_OK
         }
         62 | 63 => S_OK,
@@ -1184,7 +1215,7 @@ unsafe fn device_call(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &mut
             if t != 0 {
                 d.add_ref(t);
             }
-            wr(a(2), 0, d.addr_of(t));
+            wrp(a(2), 0, d.addr_of(t));
             S_OK
         }
         65 => {
@@ -1276,7 +1307,7 @@ unsafe fn device_call(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &mut
             if decl != 0 {
                 d.add_ref(decl);
             }
-            wr(a(1), 0, d.addr_of(decl));
+            wrp(a(1), 0, d.addr_of(decl));
             S_OK
         }
         89 => {
@@ -1312,7 +1343,7 @@ unsafe fn device_call(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &mut
             if s != 0 {
                 d.add_ref(s);
             }
-            wr(a(1), 0, d.addr_of(s));
+            wrp(a(1), 0, d.addr_of(s));
             S_OK
         }
         94 | 95 | 109 | 110 => {
@@ -1382,7 +1413,7 @@ unsafe fn device_call(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &mut
             if vb != 0 {
                 d.add_ref(vb);
             }
-            wr(a(2), 0, d.addr_of(vb));
+            wrp(a(2), 0, d.addr_of(vb));
             wr(a(3), 0, off);
             wr(a(4), 0, stride);
             S_OK
@@ -1413,7 +1444,7 @@ unsafe fn device_call(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &mut
             if ib != 0 {
                 d.add_ref(ib);
             }
-            wr(a(1), 0, d.addr_of(ib));
+            wrp(a(1), 0, d.addr_of(ib));
             S_OK
         }
         115..=117 => E_NOTIMPL,
@@ -1427,7 +1458,7 @@ unsafe fn device_call(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &mut
                 return S_OK;
             }
             let o = d.new_obj(IF_QUERY, 0, Data::Query(t));
-            wr(a(2), 0, o);
+            wrp(a(2), 0, o);
             S_OK
         }
         _ => {
@@ -1515,7 +1546,7 @@ unsafe fn create_texture(d: &mut D3d, w: u32, h: u32, levels: u32, usage: u32, f
     if let Some(Data::Texture(t)) = d.objs.get_mut(&id).map(|o| &mut o.data) {
         t.levels = lv;
     }
-    wr(out, 0, addr);
+    wrp(out, 0, addr);
     S_OK
 }
 
@@ -1676,7 +1707,7 @@ unsafe fn lock_surface(d: &mut D3d, s: u32, out: u32, rect: u32, flags: u32, aft
     sf.lock = Some(if flags & LOCK_READONLY != 0 { [0, 0, 0, 0] } else { r });
     let ptr = mem + (r[1] / bs) * sf.pitch + (r[0] / bs) * bpb;
     wr(out, 0, sf.pitch);
-    wr(out, 1, ptr);
+    wrp(out + PTR, 0, ptr);
     if sf.gpu_newer {
         sf.shadow = None;
     }
@@ -1724,7 +1755,7 @@ unsafe fn surface_call(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32,
                 return super::E_NOINTERFACE;
             }
             d.add_ref(c);
-            wr(a(2), 0, d.addr_of(c));
+            wrp(a(2), 0, d.addr_of(c));
             S_OK
         }
         12 => {
@@ -1743,7 +1774,7 @@ unsafe fn surface_call(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32,
                 sf.dc = a(1);
                 sf.dc_bitmap = a(2);
             } else {
-                wr(a(2), 0, sf.dc_bitmap);
+                wrp(a(2), 0, sf.dc_bitmap);
                 sf.dc = 0;
                 sf.dc_bitmap = 0;
             }
@@ -1821,7 +1852,7 @@ unsafe fn texture_call(d: &mut D3d, iface: u32, m: u32, this: u32, a: &dyn Fn(us
         18 => {
             let Some(s) = level(t, a(1)) else { return D3DERR_INVALIDCALL };
             d.add_ref(s);
-            wr(a(2), 0, d.addr_of(s));
+            wrp(a(2), 0, d.addr_of(s));
             S_OK
         }
         19 => {
@@ -1847,7 +1878,7 @@ unsafe fn buffer_call(d: &mut D3d, iface: u32, m: u32, this: u32, a: &dyn Fn(usi
         11 => {
             let Some(Data::Buffer(b)) = d.objs.get(&this).map(|o| &o.data) else { return D3DERR_INVALIDCALL };
             let off = a(1).min(b.len);
-            wr(a(3), 0, b.mem + off);
+            wrp(a(3), 0, b.mem + off);
             S_OK
         }
         12 => S_OK,
@@ -2006,7 +2037,7 @@ unsafe fn create_decl(d: &mut D3d, elems: u32, out: u32) -> u32 {
         }
     }
     let o = d.new_obj(IF_DECL, 0, Data::Decl(Decl { elems: el, raw, fvf: 0 }));
-    wr(out, 0, o);
+    wrp(out, 0, o);
     S_OK
 }
 
@@ -2093,7 +2124,7 @@ unsafe fn create_shader(d: &mut D3d, pixel: bool, code: u32, out: u32) -> u32 {
     dev.serial += 1;
     let serial = dev.serial;
     let o = d.new_obj(if pixel { IF_PS } else { IF_VS }, 0, Data::Shader(ShaderObj { code, parsed, serial }));
-    wr(out, 0, o);
+    wrp(out, 0, o);
     S_OK
 }
 

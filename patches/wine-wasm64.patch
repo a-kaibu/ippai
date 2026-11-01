@@ -21,7 +21,7 @@
  
 --- /dev/null
 +++ b/dlls/ntdll/unix/signal_wasm64.c
-@@ -0,0 +1,958 @@
+@@ -0,0 +1,959 @@
 +/*
 + * wasm signal and syscall layer for x86-64 guests (vnvm Hangover-style runtime)
 + *
@@ -388,7 +388,7 @@
 +                                   struct vnhost_cpu *cpu, int exit, const UINT *info )
 +{
 +    EXCEPTION_RECORD rec = { 0 };
-+    CONTEXT context = { CONTEXT_FULL };
++    CONTEXT context = { .ContextFlags = CONTEXT_FULL };
 +    NTSTATUS status;
 +
 +    save_cpu_to_frame( cpu, frame, TRUE );
@@ -442,6 +442,7 @@
 +        break;
 +    }
 +
++    TRACE( "exit %d code %x at %p rsp %llx info %x %x\n", exit, (int)rec.ExceptionCode, rec.ExceptionAddress, (unsigned long long)context.Rsp, info ? info[0] : 0, info ? info[1] : 0 );
 +    status = send_debug_event( data, &rec, &context, TRUE );
 +    if (status == DBG_CONTINUE || status == DBG_EXCEPTION_HANDLED)
 +    {
@@ -462,7 +463,7 @@
 +{
 +    if (vnhost_signal_pending( SIGUSR1 ))
 +    {
-+        CONTEXT context = { CONTEXT_FULL };
++        CONTEXT context = { .ContextFlags = CONTEXT_FULL };
 +
 +        save_cpu_to_frame( cpu, frame, TRUE );
 +        frame->restore_flags = 0;
