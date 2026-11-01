@@ -116,6 +116,21 @@ static BOOL CALLBACK top(HWND h, LPARAM lp)
     return FALSE;
 }
 
+/* once, at 20 s: every top-level window of ours, visible or not (what a black screen has) */
+static BOOL CALLBACK dump(HWND h, LPARAM lp)
+{
+    DWORD pid, tid = GetWindowThreadProcessId(h, &pid);
+    WCHAR title[128], cls[64];
+    RECT r;
+    if (!ours(pid)) return TRUE;
+    GetWindowTextW(h, title, 128);
+    GetClassNameW(h, cls, 64);
+    GetWindowRect(h, &r);
+    out(L"autoclick: list %p tid %04lx [%ls] \"%ls\" %ld,%ld-%ld,%ld%ls\n", h, tid, cls, title,
+        r.left, r.top, r.right, r.bottom, IsWindowVisible(h) ? L" visible" : L"");
+    return TRUE;
+}
+
 int wmain(int argc, WCHAR **argv)
 {
     if (argc < 2) { out(L"usage: autoclick game.exe [args]\n"); return 2; }
@@ -137,6 +152,7 @@ int wmain(int argc, WCHAR **argv)
     out(L"autoclick: started pid %lu\n", game_pid);
     fflush(stdout);
     /* until the game and what it started are gone */
+    int ticks = 0;
     for (;;)
     {
         Sleep(500);
@@ -149,6 +165,7 @@ int wmain(int argc, WCHAR **argv)
         }
         if (!alive) break;
         EnumWindows(top, 0);
+        if (++ticks == 40) EnumWindows(dump, 0);
         fflush(stdout);
     }
     DWORD code = 0;
