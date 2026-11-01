@@ -68,21 +68,25 @@ async function shot(n) {
     if (!m) return null;
     const p = m._malloc(20) >>> 0;
     m._vnhost_display_size(p, p + 4);
-    m.HEAPU32[(p + 8) >>> 2] = -1;
-    const w = m.HEAPU32[p >>> 2], h = m.HEAPU32[(p + 4) >>> 2];
+    // (views over the memory as it is now: another thread may have grown it)
+    const u32 = () => new Uint32Array(m.wasmMemory.buffer);
+    u32()[(p + 8) >>> 2] = -1;
+    const w = u32()[p >>> 2], h = u32()[(p + 4) >>> 2];
     const bits = m._vnhost_display_frame(p + 8) >>> 0;
-    const px = m.HEAPU8.slice(bits, bits + w * h * 4);
+    // (a frame buffer shorter than the screen size, as while a mode changes, stays black)
+    const px = new Uint8Array(w * h * 4);
+    px.set(new Uint8Array(m.wasmMemory.buffer).subarray(bits, bits + w * h * 4).subarray(0, px.length));
     // a Direct3D window's last frame goes over its client area
     const d3d = window.vnvmD3d;
     const o = d3d?.overlay;
     const cap = o ? await d3d.capture() : null;
     if (cap) {
-      const [l, t] = o.rect;
-      const cw = Math.min(cap.w, o.rect[2] - l), ch = Math.min(cap.h, o.rect[3] - t);
+      const l = Math.round(Number(o.rect[0])), t = Math.round(Number(o.rect[1]));
+      const cw = Math.min(cap.w, Math.round(Number(o.rect[2])) - l), ch = Math.min(cap.h, Math.round(Number(o.rect[3])) - t);
       for (let y = 0; y < ch; y++) {
         if (t + y < 0 || t + y >= h) continue;
         for (let x = 0; x < cw; x++) {
-          if (l + x < 0 || l + x >= w) continue;
+          if (l + x < 0 || l + x >= w || (y * cap.w + x) * 4 + 4 > cap.data.length) continue;
           px.set(cap.data.subarray((y * cap.w + x) * 4, (y * cap.w + x) * 4 + 4), ((t + y) * w + l + x) * 4);
         }
       }

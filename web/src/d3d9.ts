@@ -595,12 +595,12 @@ export class D3D9 {
     if (this.targets2) return this.beginPass2(this.targets2);
     const t = this.textures.get(this.target[0]);
     if (!t) return null;
-    const z = this.target[2] ? this.textures.get(this.target[2]) : undefined;
+    const level = Math.min(this.target[1], t.levels - 1);
+    const z = this.target[2] ? this.depthFor(this.textures.get(this.target[2]), Math.max(1, t.w >> level), Math.max(1, t.h >> level)) : undefined;
     const clear = this.pendingClear;
     this.pendingClear = null;
     this.used.add(this.target[0]);
     if (z) this.used.add(this.target[2]);
-    const level = Math.min(this.target[1], t.levels - 1);
     this.pass = this.enc().beginRenderPass({
       colorAttachments: [
         {
@@ -629,6 +629,23 @@ export class D3D9 {
       this.passInfo = `tex ${this.target[0]}.${this.target[1]} ${w}x${h} ${t.format}${z ? " +z" : ""} ${clear ? `clear ${clear.flags}` : "load"}`;
     }
     return this.pass;
+  }
+
+  /** Direct3D 9 lets a depth buffer be larger than the color target; WebGPU wants equal
+   * sizes, so such passes get a depth texture of the target's size (its contents are not
+   * shared with the real one). */
+  private depthFor(z: Tex | undefined, w: number, h: number): Tex | undefined {
+    if (!z || (z.w === w && z.h === h)) return z;
+    const key = `${w}x${h}`;
+    const zz = z as Tex & { fits?: Map<string, Tex> };
+    zz.fits ??= new Map();
+    let f = zz.fits.get(key);
+    if (!f) {
+      const tex = this.device.createTexture({ size: [w, h], format: z.format, usage: GPUTextureUsage.RENDER_ATTACHMENT });
+      f = { tex, w, h, levels: 1, format: z.format, view: tex.createView() };
+      zz.fits.set(key, f);
+    }
+    return f;
   }
 
   private targetSize(): [number, number] {
@@ -828,14 +845,16 @@ export class D3D9 {
       this.groups0.set(k0, g0);
     }
     pass.setBindGroup(0, g0, [vso, pso]);
-    const k1 = texs.map((t) => t.join(",")).join(";");
+    // (sampling the texture being drawn to is not allowed in WebGPU: it reads as white)
+    const rt = this.targets2 ? 0 : this.target[0];
+    const k1 = texs.map((t) => t.join(",")).join(";") + (rt && texs.some((t) => t[1] === rt) ? `|${rt}` : "");
     let g1 = this.groups1.get(k1);
     if (!g1) {
       const entries: GPUBindGroupEntry[] = [];
       for (let s = 0; s < 8; s++) {
         const t = texs.find((x) => x[0] === s);
         const tex = t ? this.textures.get(t[1]) : undefined;
-        const ok = tex && tex.format !== "depth24plus-stencil8";
+        const ok = tex && tex.format !== "depth24plus-stencil8" && !(rt && t![1] === rt);
         entries.push({ binding: s * 2, resource: ok ? tex.view : this.white });
         entries.push({ binding: s * 2 + 1, resource: this.sampler(t ? t[2] : 0x5) });
       }
