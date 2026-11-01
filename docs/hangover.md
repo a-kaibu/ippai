@@ -355,6 +355,31 @@ Reunion の起動からタイトル画面まで 53 秒 → 34 秒。
   20%、memmove 5%
   (ゲーム側のタイマー待ちで 0.5 秒刻みに揃うので、細かい比較は CPU 時間で見る)。
 
+## Direct3D 9 (2026-11-01)
+
+SiglusEngine など新しめの作品は Direct3D 9 で描く。wined3d (GL/Vulkan 前提) は使わず、
+d3d9.dll を自前で置き換えて WebGPU で描く。d3d10/11/12 は他エンジンの確認後に足す。
+
+- dlls/vnd3d9 (patches/wine-wasm.patch、PE 側は薄い C): COM の各メソッドは
+  `lea 4(%esp),%eax; push eax; push id; call vnd3d9_dispatch@8; ret 4*nargs` だけのスタブで、
+  id = インターフェース<<8 | vtable 番号。unix 側 (unixlib.c) が Rust の
+  `vnhost_d3d9_call` に渡す。オブジェクトは {vtbl, id} の 16 バイトをホストがゲストメモリに置く。
+  GetDC/ReleaseDC だけ PE 側で D3DKMTCreateDCFromMemory を使う。
+- crates/vnhost/src/d3d9 (Rust): デバイス状態・参照カウント (mod.rs, device.rs)、
+  フォーマット変換 (format.rs、DXT1〜5 も含めページでは BGRA8 に揃える)、SM1〜3 のバイトコード →
+  WGSL (shader.rs)、固定機能の WGSL 生成 (ff.rs)、ページへのコマンドバッチ (gpu.rs)。
+  POSITIONT (XYZRHW) の頂点は頂点シェーダーを通さない (Wine と同じ)。
+- web/src/d3d9.ts: 毎フレーム `vnhost_d3d9_poll` でバッチを取り、presenter の GPUDevice で
+  実行して、バックバッファをウィンドウのクライアント領域の位置で GDI 画面の上に重ねる。
+  GPU に積むのは 2 フレームまで (それ以上はメモリが増えてページが落ちた)。
+- Present は 60Hz に揃え、ページが 2 フレーム以上遅れていれば待つ (時計は Date.now 系。
+  performance.now() はワーカーごとに違う)。ページの無い node ではバッチを捨てる。
+  ロック時の読み戻しはページの mapAsync を待つ。
+- ヘッドレス Chromium は canvas に描くとデバイスが壊れるので `&headless` で canvas 描画を止め、
+  tests/wine.mjs が `vnvmD3d.capture()` を重ねてスクリーンショットにする。
+- 確認: ANEMOI 体験版 (SiglusEngine) のオープニング画面が swiftshader の WebGPU で描ける。
+  未対応: キューブ/ボリュームテクスチャ、動画 (wmv)。
+
 ## 現状 (2026-10-28)
 
 - crates/vnx86: i386 ユーザーモードのインタプリタ。整数・x87・MMX・SSE・SSE2 を実装し、

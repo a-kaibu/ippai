@@ -8,10 +8,13 @@
 //   &debug=+relay,...               WINEDEBUG
 //   &mount=/vnvm/game=tree          also mount a store tree (repeatable; Z:\vnvm\game\...)
 //   &env=NAME=value                 extra environment variable (repeatable, e.g. VNVM_TRACE_PROC=1)
+//   &headless                       don't draw to the canvas (tests/wine.mjs: headless Chromium
+//                                   destroys the device then, and Direct3D games need it)
 
 import { Presenter } from "./present";
 import { linuxKeycode } from "./keymap";
 import { AudioOut } from "./wine-audio";
+import { D3D9 } from "./d3d9";
 
 const params = new URLSearchParams(location.search);
 const status = document.querySelector<HTMLDivElement>("#status")!;
@@ -34,6 +37,8 @@ interface WineModule {
   _vnhost_input_push(kind: number, x: number, y: number, data: number): number;
   _vnhost_audio_take(buf: number, frames: number): number;
   _vnhost_vfs_put_chunk(hash: number, data: number, len: number): void;
+  _vnhost_d3d9_poll(out: number): number;
+  _vnhost_d3d9_readback_done(id: number): void;
   wasmMemory: WebAssembly.Memory;
 }
 
@@ -73,6 +78,7 @@ function virtualKey(code: string): number {
 
 async function boot(audio: Promise<AudioOut>): Promise<void> {
   const presenter = await Presenter.create(canvas);
+  presenter.headless = params.has("headless");
   // Keep the GPU device reachable: Chromium destroys a collected one.
   (window as unknown as { vnvmPresenter: Presenter }).vnvmPresenter = presenter;
   log("Wine を読み込み中");
@@ -223,7 +229,17 @@ function present(wine: WineModule, presenter: Presenter): void {
   const height = wine.HEAPU32[(scratch + 4) >>> 2]!;
   let shown = -1;
   const io = (scratch + 8) >>> 2;
+  // Direct3D 9 games: their commands run here, the presented frame goes over the screen
+  const d3d = new D3D9(presenter.device, wine);
+  (window as unknown as { vnvmD3d: D3D9 }).vnvmD3d = d3d;
+  let d3dFrames = 0;
   const frame = () => {
+    d3d.poll();
+    if (d3d.frames !== d3dFrames) {
+      d3dFrames = d3d.frames;
+      presenter.overlay = d3d.overlay;
+      if (shown !== -1) presenter.draw();
+    }
     wine.HEAPU32[io] = shown;
     const bits = wine._vnhost_display_frame(scratch + 8) >>> 0;
     const serial = wine.HEAPU32[io]!;

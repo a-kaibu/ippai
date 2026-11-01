@@ -40,6 +40,9 @@ export function letterbox(cw: number, ch: number, width: number, height: number)
 export class Presenter {
   width = 1;
   height = 1;
+  /** Direct3D windows drawn over the screen (web/src/d3d9.ts) */
+  overlay: { view: GPUTextureView; rect: [number, number, number, number] } | null = null;
+  private overlayGroup: { view: GPUTextureView; group: GPUBindGroup } | null = null;
   private rect: Rect = { x: 0, y: 0, w: 1, h: 1 };
   private texture: GPUTexture | null = null;
   private bindGroup: GPUBindGroup | null = null;
@@ -151,8 +154,11 @@ export class Presenter {
     this.device.queue.writeTexture(dst, this.staging, { bytesPerRow: stride }, size);
   }
 
+  /** Headless Chromium destroys a device that draws to a canvas: tests set this (&headless). */
+  headless = false;
+
   draw(): void {
-    if (!this.bindGroup) return;
+    if (!this.bindGroup || this.headless) return;
     const encoder = this.device.createCommandEncoder();
     const pass = encoder.beginRenderPass({
       colorAttachments: [
@@ -169,6 +175,33 @@ export class Presenter {
     pass.setPipeline(this.pipeline);
     pass.setBindGroup(0, this.bindGroup);
     pass.draw(3);
+    const o = this.overlay;
+    if (o) {
+      if (this.overlayGroup?.view !== o.view) {
+        this.overlayGroup = {
+          view: o.view,
+          group: this.device.createBindGroup({
+            layout: this.pipeline.getBindGroupLayout(0),
+            entries: [
+              { binding: 0, resource: o.view },
+              { binding: 1, resource: this.samplers.linear },
+            ],
+          }),
+        };
+      }
+      // the window's client area, from screen pixels to the letterboxed frame
+      const sx = r.w / this.width,
+        sy = r.h / this.height;
+      const x0 = Math.max(0, r.x + o.rect[0] * sx),
+        y0 = Math.max(0, r.y + o.rect[1] * sy);
+      const x1 = Math.min(this.canvas.width, r.x + o.rect[2] * sx),
+        y1 = Math.min(this.canvas.height, r.y + o.rect[3] * sy);
+      if (x1 > x0 && y1 > y0) {
+        pass.setViewport(x0, y0, x1 - x0, y1 - y0, 0, 1);
+        pass.setBindGroup(0, this.overlayGroup.group);
+        pass.draw(3);
+      }
+    }
     pass.end();
     this.device.queue.submit([encoder.finish()]);
   }

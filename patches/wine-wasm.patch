@@ -1,28 +1,31 @@
 --- a/configure
 +++ b/configure
-@@ -1630,6 +1630,7 @@
+@@ -1630,6 +1630,8 @@
  enable_wineusb_sys
  enable_winevulkan
  enable_winewayland_drv
 +enable_winebrowser_drv
++enable_vnd3d9
  enable_winex11_drv
  enable_winexinput_sys
  enable_wing
-@@ -22796,6 +22797,7 @@
+@@ -22796,6 +22798,8 @@
  wine_fn_config_makefile dlls/wineusb.sys enable_wineusb_sys
  wine_fn_config_makefile dlls/winevulkan enable_winevulkan
  wine_fn_config_makefile dlls/winewayland.drv enable_winewayland_drv
 +wine_fn_config_makefile dlls/winebrowser.drv enable_winebrowser_drv
++wine_fn_config_makefile dlls/vnd3d9 enable_vnd3d9
  wine_fn_config_makefile dlls/winex11.drv enable_winex11_drv
  wine_fn_config_makefile dlls/winexinput.sys enable_winexinput_sys
  wine_fn_config_makefile dlls/wing.dll16 enable_wing
 --- a/configure.ac
 +++ b/configure.ac
-@@ -3327,6 +3327,7 @@
+@@ -3327,6 +3327,8 @@
  WINE_CONFIG_MAKEFILE(dlls/wineusb.sys)
  WINE_CONFIG_MAKEFILE(dlls/winevulkan)
  WINE_CONFIG_MAKEFILE(dlls/winewayland.drv)
 +WINE_CONFIG_MAKEFILE(dlls/winebrowser.drv)
++WINE_CONFIG_MAKEFILE(dlls/vnd3d9)
  WINE_CONFIG_MAKEFILE(dlls/winex11.drv)
  WINE_CONFIG_MAKEFILE(dlls/winexinput.sys)
  WINE_CONFIG_MAKEFILE(dlls/wing.dll16)
@@ -2481,6 +2484,388 @@
 +    __wine_set_user_driver( &browser_driver_funcs, WINE_GDI_DRIVER_VERSION );
 +    return STATUS_SUCCESS;
 +}
+--- /dev/null
++++ b/dlls/vnd3d9/Makefile.in
+@@ -0,0 +1,9 @@
++MODULE    = d3d9.dll
++UNIXLIB   = d3d9.so
++IMPORTS   = user32 gdi32
++UNIX_LIBS = -lwin32u
++
++SOURCES = \
++	d3d9.spec \
++	main.c \
++	unixlib.c
+--- /dev/null
++++ b/dlls/vnd3d9/d3d9.spec
+@@ -0,0 +1,15 @@
++@ stdcall Direct3DShaderValidatorCreate9()
++@ stub PSGPError
++@ stub PSGPSampleTexture
++@ stdcall D3DPERF_BeginEvent(long wstr)
++@ stdcall D3DPERF_EndEvent()
++@ stdcall D3DPERF_GetStatus()
++@ stdcall D3DPERF_QueryRepeatFrame()
++@ stdcall D3DPERF_SetMarker(long wstr)
++@ stdcall D3DPERF_SetOptions(long)
++@ stdcall D3DPERF_SetRegion(long wstr)
++@ stub DebugSetLevel
++@ stdcall DebugSetMute()
++@ stdcall Direct3DCreate9(long)
++@ stdcall Direct3DCreate9Ex(long ptr)
++@ stdcall Direct3DCreate9On12(long ptr long)
+--- /dev/null
++++ b/dlls/vnd3d9/main.c
+@@ -0,0 +1,246 @@
++/*
++ * Direct3D 9 for vnvm, PE side
++ *
++ * Every method of every interface is a small stub that hands its stack arguments to the unix
++ * side (unixlib.c -> vnhost's d3d9 module, which keeps all state and draws with the page's
++ * WebGPU). Objects are { vtable, id } blocks the host allocates in guest memory; the vtables
++ * live here and are given to the host once.
++ *
++ * Method ids are (interface << 8 | index in the vtable); the list below is the one the host
++ * (crates/vnhost/src/d3d9/mod.rs) dispatches on, in vtable order with each method's argument
++ * count (this included).
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ */
++
++#include <stdarg.h>
++#include "windef.h"
++#include "winbase.h"
++#include "wingdi.h"
++#include "winuser.h"
++#include "ddk/d3dkmthk.h"
++#include "wine/unixlib.h"
++#include "wine/asm.h"
++#include "wine/debug.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(d3d9);
++
++enum { unix_call, unix_init, unix_create };
++
++struct call_params { UINT id; void *args; };
++
++HRESULT WINAPI vnd3d9_dispatch( UINT id, void *args )
++{
++    struct call_params p = { id, args };
++    return WINE_UNIX_CALL( unix_call, &p );
++}
++
++#define IUNKNOWN(i) M(i,0,3) M(i,1,1) M(i,2,1)
++#define RESOURCE(i) M(i,3,2) M(i,4,5) M(i,5,4) M(i,6,2) M(i,7,2) M(i,8,1) M(i,9,1) M(i,10,1)
++#define BASETEX(i)  M(i,11,2) M(i,12,1) M(i,13,1) M(i,14,2) M(i,15,1) M(i,16,1)
++
++/* 1: IDirect3D9 */
++#define IFACE_1 IUNKNOWN(1) M(1,3,2) M(1,4,1) M(1,5,4) M(1,6,3) M(1,7,5) M(1,8,3) M(1,9,6) M(1,10,7) \
++    M(1,11,7) M(1,12,6) M(1,13,5) M(1,14,4) M(1,15,2) M(1,16,7)
++/* 2: IDirect3DDevice9 */
++#define IFACE_2 IUNKNOWN(2) M(2,3,1) M(2,4,1) M(2,5,1) M(2,6,2) M(2,7,2) M(2,8,3) M(2,9,2) M(2,10,4) \
++    M(2,11,4) M(2,12,2) M(2,13,3) M(2,14,3) M(2,15,1) M(2,16,2) M(2,17,5) M(2,18,5) M(2,19,3) M(2,20,2) \
++    M(2,21,4) M(2,22,3) M(2,23,9) M(2,24,10) M(2,25,8) M(2,26,7) M(2,27,7) M(2,28,9) M(2,29,9) M(2,30,5) \
++    M(2,31,3) M(2,32,3) M(2,33,3) M(2,34,6) M(2,35,4) M(2,36,7) M(2,37,3) M(2,38,3) M(2,39,2) M(2,40,2) \
++    M(2,41,1) M(2,42,1) M(2,43,7) M(2,44,3) M(2,45,3) M(2,46,3) M(2,47,2) M(2,48,2) M(2,49,2) M(2,50,2) \
++    M(2,51,3) M(2,52,3) M(2,53,3) M(2,54,3) M(2,55,3) M(2,56,3) M(2,57,3) M(2,58,3) M(2,59,3) M(2,60,1) \
++    M(2,61,2) M(2,62,2) M(2,63,2) M(2,64,3) M(2,65,3) M(2,66,4) M(2,67,4) M(2,68,4) M(2,69,4) M(2,70,2) \
++    M(2,71,3) M(2,72,3) M(2,73,2) M(2,74,2) M(2,75,2) M(2,76,2) M(2,77,2) M(2,78,1) M(2,79,2) C(2,80) \
++    M(2,81,4) M(2,82,7) M(2,83,5) M(2,84,9) M(2,85,7) M(2,86,3) M(2,87,2) M(2,88,2) M(2,89,2) M(2,90,2) \
++    M(2,91,3) M(2,92,2) M(2,93,2) M(2,94,4) M(2,95,4) M(2,96,4) M(2,97,4) M(2,98,4) M(2,99,4) M(2,100,5) \
++    M(2,101,5) M(2,102,3) M(2,103,3) M(2,104,2) M(2,105,2) M(2,106,3) M(2,107,2) M(2,108,2) M(2,109,4) \
++    M(2,110,4) M(2,111,4) M(2,112,4) M(2,113,4) M(2,114,4) M(2,115,4) M(2,116,4) M(2,117,2) M(2,118,3)
++/* 3: IDirect3DSwapChain9 */
++#define IFACE_3 IUNKNOWN(3) M(3,3,6) M(3,4,2) M(3,5,4) M(3,6,2) M(3,7,2) M(3,8,2) M(3,9,2)
++/* 4: IDirect3DSurface9 (GetDC and ReleaseDC are here) */
++#define IFACE_4 IUNKNOWN(4) RESOURCE(4) M(4,11,3) M(4,12,2) M(4,13,4) M(4,14,1) C(4,15) C(4,16)
++/* 5: IDirect3DTexture9 */
++#define IFACE_5 IUNKNOWN(5) RESOURCE(5) BASETEX(5) M(5,17,3) M(5,18,3) M(5,19,5) M(5,20,2) M(5,21,2)
++/* 6: IDirect3DCubeTexture9 */
++#define IFACE_6 IUNKNOWN(6) RESOURCE(6) BASETEX(6) M(6,17,3) M(6,18,4) M(6,19,6) M(6,20,3) M(6,21,3)
++/* 7: IDirect3DVolumeTexture9 */
++#define IFACE_7 IUNKNOWN(7) RESOURCE(7) BASETEX(7) M(7,17,3) M(7,18,3) M(7,19,5) M(7,20,2) M(7,21,2)
++/* 8: IDirect3DVertexBuffer9, 9: IDirect3DIndexBuffer9 */
++#define IFACE_8 IUNKNOWN(8) RESOURCE(8) M(8,11,5) M(8,12,1) M(8,13,2)
++#define IFACE_9 IUNKNOWN(9) RESOURCE(9) M(9,11,5) M(9,12,1) M(9,13,2)
++/* 10: IDirect3DVertexDeclaration9, 11: IDirect3DVertexShader9, 12: IDirect3DPixelShader9 */
++#define IFACE_10 IUNKNOWN(10) M(10,3,2) M(10,4,3)
++#define IFACE_11 IUNKNOWN(11) M(11,3,2) M(11,4,3)
++#define IFACE_12 IUNKNOWN(12) M(12,3,2) M(12,4,3)
++/* 13: IDirect3DStateBlock9, 14: IDirect3DQuery9, 15: IDirect3DVolume9 */
++#define IFACE_13 IUNKNOWN(13) M(13,3,2) M(13,4,1) M(13,5,1)
++#define IFACE_14 IUNKNOWN(14) M(14,3,2) M(14,4,1) M(14,5,1) M(14,6,2) M(14,7,4)
++#define IFACE_15 IUNKNOWN(15) M(15,3,2) M(15,4,5) M(15,5,4) M(15,6,2) M(15,7,3) M(15,8,2) M(15,9,4) M(15,10,1)
++#define NUM_IFACES 15
++
++#define M(i,n,a) __ASM_GLOBAL_FUNC( vnd3d9_##i##_##n, \
++    "leal 4(%esp),%eax\n\t" \
++    "pushl %eax\n\t" \
++    "pushl $(" #i "*256+" #n ")\n\t" \
++    "call " __ASM_STDCALL("vnd3d9_dispatch",8) "\n\t" \
++    "ret $(4*" #a ")" )
++#define C(i,n)
++IFACE_1 IFACE_2 IFACE_3 IFACE_4 IFACE_5 IFACE_6 IFACE_7 IFACE_8 IFACE_9 IFACE_10 IFACE_11 IFACE_12
++IFACE_13 IFACE_14 IFACE_15
++#undef M
++#undef C
++
++#define M(i,n,a) extern void vnd3d9_##i##_##n(void);
++#define C(i,n)
++IFACE_1 IFACE_2 IFACE_3 IFACE_4 IFACE_5 IFACE_6 IFACE_7 IFACE_8 IFACE_9 IFACE_10 IFACE_11 IFACE_12
++IFACE_13 IFACE_14 IFACE_15
++#undef M
++#undef C
++
++/* IDirect3DDevice9::GetNPatchMode returns a float (on the x87 stack) */
++__ASM_GLOBAL_FUNC( vnd3d9_2_80, "fldz\n\tret $4" )
++extern void vnd3d9_2_80(void);
++
++/* IDirect3DSurface9::GetDC/ReleaseDC: a GDI DC over the locked surface (gdi32 lives here) */
++struct surface { const void *vtbl; UINT id; };
++struct locked_rect { INT pitch; void *bits; };
++struct surface_desc { UINT format, type, usage, pool, multisample, quality, width, height; };
++#define D3DFMT_A8R8G8B8 21
++#define D3DFMT_X8R8G8B8 22
++#define D3DFMT_R5G6B5 23
++#define D3DFMT_X1R5G5B5 24
++#define D3DFMT_A1R5G5B5 25
++#define D3DERR_INVALIDCALL 0x8876086c
++#define SURFACE_GETDESC (4*256+12)
++#define SURFACE_LOCK (4*256+13)
++#define SURFACE_UNLOCK (4*256+14)
++#define SURFACE_SETDC (4*256+0xf0) /* host side: remembers the DC (GetDC with the host's view) */
++
++static HRESULT WINAPI surface_GetDC( struct surface *surface, HDC *dc )
++{
++    D3DKMT_CREATEDCFROMMEMORY create = {0};
++    struct surface_desc desc;
++    struct locked_rect lr;
++    void *args[4];
++    HRESULT hr;
++
++    args[0] = surface; args[1] = &desc;
++    if ((hr = vnd3d9_dispatch( SURFACE_GETDESC, args ))) return hr;
++    switch (desc.format)
++    {
++    case D3DFMT_A8R8G8B8: case D3DFMT_X8R8G8B8: case D3DFMT_R5G6B5: case D3DFMT_X1R5G5B5:
++    case D3DFMT_A1R5G5B5: break;
++    default: return D3DERR_INVALIDCALL;
++    }
++    args[0] = surface; args[1] = &lr; args[2] = NULL; args[3] = 0;
++    if ((hr = vnd3d9_dispatch( SURFACE_LOCK, args ))) return hr;
++    create.pMemory = lr.bits;
++    create.Format = desc.format;
++    create.Width = desc.width;
++    create.Height = desc.height;
++    create.Pitch = lr.pitch;
++    if (D3DKMTCreateDCFromMemory( &create ))
++    {
++        args[0] = surface;
++        vnd3d9_dispatch( SURFACE_UNLOCK, args );
++        return D3DERR_INVALIDCALL;
++    }
++    args[0] = surface; args[1] = create.hDc; args[2] = create.hBitmap;
++    vnd3d9_dispatch( SURFACE_SETDC, args );
++    *dc = create.hDc;
++    return S_OK;
++}
++
++static HRESULT WINAPI surface_ReleaseDC( struct surface *surface, HDC dc )
++{
++    D3DKMT_DESTROYDCFROMMEMORY destroy;
++    HBITMAP bitmap = NULL;
++    void *args[3];
++
++    args[0] = surface; args[1] = NULL; args[2] = &bitmap;
++    if (vnd3d9_dispatch( SURFACE_SETDC, args ) || !bitmap) return D3DERR_INVALIDCALL;
++    destroy.hDc = dc;
++    destroy.hBitmap = bitmap;
++    D3DKMTDestroyDCFromMemory( &destroy );
++    args[0] = surface;
++    return vnd3d9_dispatch( SURFACE_UNLOCK, args );
++}
++#define vnd3d9_4_15 surface_GetDC
++#define vnd3d9_4_16 surface_ReleaseDC
++
++#define M(i,n,a) (const void *)vnd3d9_##i##_##n,
++#define C(i,n) (const void *)vnd3d9_##i##_##n,
++static const void *vtbl_1[] = { IFACE_1 };
++static const void *vtbl_2[] = { IFACE_2 };
++static const void *vtbl_3[] = { IFACE_3 };
++static const void *vtbl_4[] = { IFACE_4 };
++static const void *vtbl_5[] = { IFACE_5 };
++static const void *vtbl_6[] = { IFACE_6 };
++static const void *vtbl_7[] = { IFACE_7 };
++static const void *vtbl_8[] = { IFACE_8 };
++static const void *vtbl_9[] = { IFACE_9 };
++static const void *vtbl_10[] = { IFACE_10 };
++static const void *vtbl_11[] = { IFACE_11 };
++static const void *vtbl_12[] = { IFACE_12 };
++static const void *vtbl_13[] = { IFACE_13 };
++static const void *vtbl_14[] = { IFACE_14 };
++static const void *vtbl_15[] = { IFACE_15 };
++#undef M
++#undef C
++
++static const void *const *vtbls[NUM_IFACES + 1] =
++{
++    NULL, vtbl_1, vtbl_2, vtbl_3, vtbl_4, vtbl_5, vtbl_6, vtbl_7, vtbl_8, vtbl_9, vtbl_10, vtbl_11,
++    vtbl_12, vtbl_13, vtbl_14, vtbl_15,
++};
++
++struct init_params { const void *const *const *vtbls; UINT count; };
++struct create_params { UINT sdk; void *object; };
++
++BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
++{
++    struct init_params params = { vtbls, NUM_IFACES + 1 };
++
++    if (reason != DLL_PROCESS_ATTACH) return TRUE;
++    DisableThreadLibraryCalls( inst );
++    if (__wine_init_unix_call()) return FALSE;
++    return !WINE_UNIX_CALL( unix_init, &params );
++}
++
++void * WINAPI Direct3DCreate9( UINT sdk )
++{
++    struct create_params params = { sdk, NULL };
++
++    TRACE( "sdk %#x\n", sdk );
++    if (WINE_UNIX_CALL( unix_create, &params )) return NULL;
++    return params.object;
++}
++
++HRESULT WINAPI Direct3DCreate9Ex( UINT sdk, void **out )
++{
++    FIXME( "sdk %#x: not supported\n", sdk );
++    *out = NULL;
++    return 0x8876086a; /* D3DERR_NOTAVAILABLE */
++}
++
++void * WINAPI Direct3DCreate9On12( UINT sdk, void *override, UINT count )
++{
++    return Direct3DCreate9( sdk );
++}
++
++void * WINAPI Direct3DShaderValidatorCreate9(void)
++{
++    return NULL;
++}
++
++int WINAPI D3DPERF_BeginEvent( DWORD color, const WCHAR *name ) { return 0; }
++int WINAPI D3DPERF_EndEvent(void) { return 0; }
++DWORD WINAPI D3DPERF_GetStatus(void) { return 0; }
++BOOL WINAPI D3DPERF_QueryRepeatFrame(void) { return FALSE; }
++void WINAPI D3DPERF_SetMarker( DWORD color, const WCHAR *name ) {}
++void WINAPI D3DPERF_SetOptions( DWORD options ) {}
++void WINAPI D3DPERF_SetRegion( DWORD color, const WCHAR *name ) {}
++void WINAPI DebugSetMute(void) {}
+--- /dev/null
++++ b/dlls/vnd3d9/unixlib.c
+@@ -0,0 +1,100 @@
++/*
++ * Direct3D 9 for vnvm, unix side: hands every call to vnhost (crates/vnhost/src/d3d9), with
++ * what the host needs from Wine (guest memory, window positions).
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ */
++
++#if 0
++#pragma makedep unix
++#endif
++
++#include "config.h"
++
++#include <stdarg.h>
++
++#include "ntstatus.h"
++#define WIN32_NO_STATUS
++#include "windef.h"
++#include "winbase.h"
++#include "winternl.h"
++#include "ntuser.h"
++#include "wine/unixlib.h"
++
++/* what the host calls back */
++struct d3d9_host_calls
++{
++    void *(*alloc)( unsigned int size );
++    void (*free)( void *ptr );
++    /* the client area of a window in screen coordinates (left, top, right, bottom) */
++    int (*client_rect)( unsigned int hwnd, int *rect );
++};
++
++extern unsigned int vnhost_d3d9_call( unsigned int id, const unsigned int *args, const struct d3d9_host_calls *calls );
++extern unsigned int vnhost_d3d9_init( const void *vtbls, unsigned int count );
++extern unsigned int vnhost_d3d9_create( unsigned int sdk, void **object, const struct d3d9_host_calls *calls );
++
++static void *guest_alloc( unsigned int size )
++{
++    void *ptr = NULL;
++    SIZE_T len = size;
++
++    if (NtAllocateVirtualMemory( NtCurrentProcess(), &ptr, 0, &len, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE ))
++        return NULL;
++    return ptr;
++}
++
++static void guest_free( void *ptr )
++{
++    SIZE_T len = 0;
++
++    NtFreeVirtualMemory( NtCurrentProcess(), &ptr, &len, MEM_RELEASE );
++}
++
++static int client_rect( unsigned int hwnd, int *out )
++{
++    HWND win = ULongToHandle( hwnd );
++    RECT rect;
++
++    if (!NtUserGetClientRect( win, &rect, 0 )) return 0;
++    NtUserMapWindowPoints( win, 0, (POINT *)&rect, 2, 0 );
++    out[0] = rect.left;
++    out[1] = rect.top;
++    out[2] = rect.right;
++    out[3] = rect.bottom;
++    return 1;
++}
++
++static const struct d3d9_host_calls calls = { guest_alloc, guest_free, client_rect };
++
++struct call_params { UINT id; UINT *args; };
++struct init_params { const void *vtbls; UINT count; };
++struct create_params { UINT sdk; void *object; };
++
++static NTSTATUS d3d9_call( void *args )
++{
++    struct call_params *params = args;
++    return vnhost_d3d9_call( params->id, params->args, &calls );
++}
++
++static NTSTATUS d3d9_init( void *args )
++{
++    struct init_params *params = args;
++    return vnhost_d3d9_init( params->vtbls, params->count );
++}
++
++static NTSTATUS d3d9_create( void *args )
++{
++    struct create_params *params = args;
++    return vnhost_d3d9_create( params->sdk, &params->object, &calls );
++}
++
++const unixlib_entry_t __wine_unix_call_funcs[] =
++{
++    d3d9_call,
++    d3d9_init,
++    d3d9_create,
++};
 --- a/include/winnt.h
 +++ b/include/winnt.h
 @@ -179,6 +179,9 @@

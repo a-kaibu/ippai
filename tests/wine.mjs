@@ -1,5 +1,6 @@
 // Headless test of web/wine.html (Wine in wasm): logs the console with timestamps and saves the
-// screen vnhost composes (read from the wasm heap: headless Chromium can't show WebGPU canvases)
+// screen vnhost composes (read from the wasm heap: headless Chromium can't show WebGPU canvases;
+// Direct3D windows' frames are read back from the GPU)
 // as a PNG every INTERVAL seconds. After the first shot, CLICKS="x,y;x,y" clicks there (page
 // pixels) and KEYS="KeyA Enter" presses those keys; CLICK_EVERY="x,y" clicks there after every
 // shot (to page through a game). CHROME_ARGS adds browser flags; USER_DATA_DIR keeps the
@@ -24,6 +25,7 @@ const browser = process.env.USER_DATA_DIR
 const page = await browser.newPage(process.env.USER_DATA_DIR ? undefined : { viewport });
 page.on("console", (m) => appendFileSync(logFile, `${stamp()} [${m.type()}] ${m.text()}\n`));
 page.on("pageerror", (e) => appendFileSync(logFile, `${stamp()} [pageerror] ${e.message}\n`));
+page.on("crash", () => appendFileSync(logFile, `${stamp()} [crash] the page crashed\n`));
 await page.goto(url);
 
 const CRC = new Int32Array(256).map((_, n) => {
@@ -60,7 +62,7 @@ function png(w, h, bgra) {
 }
 
 async function shot(n) {
-  const f = await page.evaluate(() => {
+  const f = await page.evaluate(async () => {
     const m = window.vnvmWine;
     if (!m) return null;
     const p = m._malloc(20) >>> 0;
@@ -69,6 +71,21 @@ async function shot(n) {
     const w = m.HEAPU32[p >>> 2], h = m.HEAPU32[(p + 4) >>> 2];
     const bits = m._vnhost_display_frame(p + 8) >>> 0;
     const px = m.HEAPU8.slice(bits, bits + w * h * 4);
+    // a Direct3D window's last frame goes over its client area
+    const d3d = window.vnvmD3d;
+    const o = d3d?.overlay;
+    const cap = o ? await d3d.capture() : null;
+    if (cap) {
+      const [l, t] = o.rect;
+      const cw = Math.min(cap.w, o.rect[2] - l), ch = Math.min(cap.h, o.rect[3] - t);
+      for (let y = 0; y < ch; y++) {
+        if (t + y < 0 || t + y >= h) continue;
+        for (let x = 0; x < cw; x++) {
+          if (l + x < 0 || l + x >= w) continue;
+          px.set(cap.data.subarray((y * cap.w + x) * 4, (y * cap.w + x) * 4 + 4), ((t + y) * w + l + x) * 4);
+        }
+      }
+    }
     let s = "";
     for (let i = 0; i < px.length; i += 0x8000) s += String.fromCharCode(...px.subarray(i, i + 0x8000));
     return { w, h, data: btoa(s) };

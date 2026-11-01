@@ -16,8 +16,8 @@ EMSDK4=${EMSDK4:-/home/user/emsdk4}
 
 # x86_64-only in vnbox; needs i686-w64-mingw32-gcc
 PROGRAMS="conhost lsass plugplay rpcss services spoolsv termsv wineboot winemenubuilder wuauserv"
-# ours (patches/wine-wasm.patch)
-DLLS="winebrowser.drv"
+# ours (patches/wine-wasm.patch): <dir>[/<file>], the file defaulting to the dir's name
+DLLS="winebrowser.drv vnd3d9/d3d9.dll"
 
 mkdir -p "$PE_BUILD"
 cd "$PE_BUILD"
@@ -32,7 +32,7 @@ if [ ! -f Makefile ] || [ "$WINE_SRC/configure" -nt Makefile ]; then
     > configure.log 2>&1
 fi
 make -j"$(nproc)" $(for p in $PROGRAMS; do echo programs/$p/i386-windows/$p.exe; done) \
-  $(for d in $DLLS; do echo dlls/$d/i386-windows/$d; done) > make.log 2>&1
+  $(for d in $DLLS; do echo dlls/${d%%/*}/i386-windows/${d##*/}; done) > make.log 2>&1
 
 PE=$ROOT_OUT/lib/wine/i386-windows
 rm -rf "$PE" && mkdir -p "$PE" "$ROOT_OUT/lib/wine/i386-unix" "$ROOT_OUT/share"
@@ -41,7 +41,8 @@ for p in $PROGRAMS; do
   i686-w64-mingw32-strip -o "$PE/$p.exe" "$PE_BUILD/programs/$p/i386-windows/$p.exe"
 done
 for d in $DLLS; do
-  i686-w64-mingw32-strip -o "$PE/$d" "$PE_BUILD/dlls/$d/i386-windows/$d"
+  rm -f "$PE/${d##*/}"
+  i686-w64-mingw32-strip -o "$PE/${d##*/}" "$PE_BUILD/dlls/${d%%/*}/i386-windows/${d##*/}"
 done
 # ntdll looks for its own .so to find the install; the code itself is in wineunix.so
 : > "$ROOT_OUT/lib/wine/i386-unix/ntdll.so"
