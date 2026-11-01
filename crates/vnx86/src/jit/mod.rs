@@ -2428,7 +2428,8 @@ impl<'a> Gen<'a> {
             self.fc = FCache::default();
         }
         if backward {
-            // (pending signals are noticed when the budget runs out)
+            // (pending signals are noticed when the budget runs out; the exits also let a loop
+            // that V8 has optimized meanwhile continue in the optimized code: no OSR in wasm)
             self.c.get(L_BUD).i32c(1).sub().tee(L_BUD).i32c(0).le_s();
             self.c.if_();
             self.depth += 1;
@@ -2736,6 +2737,43 @@ fn rotate_loops(blocks: &mut [(u32, Vec<Instruction>)]) {
         if let Some(m) = entry.filter(|&m| one && m > h) {
             blocks[h..=e].rotate_left(m - h);
         }
+    }
+}
+
+/// A block inside a loop's range that only blocks before the loop jump to, and that jumps out
+/// of the loop itself, goes before the loop: inside, each way into it is a jump into the middle
+/// of the loop (through its dispatch), and V8 then keeps little in registers. (A compiler's
+/// `for` loop whose test sits at the bottom, entered by a jump over a block only an enclosing
+/// loop enters at the top, has its body in the middle of that enclosing loop's range.)
+fn hoist_entries(blocks: &mut [(u32, Vec<Instruction>)]) {
+    for _ in 0..8 {
+        let targets: BTreeMap<(u32, u32), u32> = blocks.iter().enumerate().map(|(i, b)| ((0, b.0), i as u32)).collect();
+        let loops = find_loops(blocks, &alloc::vec![0; blocks.len()], &targets, &[]);
+        let succ = |i: usize| -> Vec<usize> {
+            let last = blocks[i].1.last().unwrap();
+            successors(last)
+                .into_iter()
+                .filter(|&s| !(last.flow_control() == FlowControl::Call && s == last.near_branch32()))
+                .filter_map(|s| targets.get(&(0, s)).map(|&j| j as usize))
+                .collect()
+        };
+        let mut preds: Vec<Vec<usize>> = alloc::vec![Vec::new(); blocks.len()];
+        for i in 0..blocks.len() {
+            for j in succ(i) {
+                preds[j].push(i);
+            }
+        }
+        let found = loops.iter().find_map(|(&h, &e)| {
+            (h + 1..=e).find(|&m| {
+                // in no loop nested in this one
+                !loops.iter().any(|(&h2, &e2)| h2 > h && (h2..=e2).contains(&m))
+                    && !preds[m].is_empty()
+                    && preds[m].iter().all(|&p| p < h)
+                    && succ(m).iter().any(|j| !(h..=e).contains(j))
+            }).map(|m| (h, m))
+        });
+        let Some((h, m)) = found else { return };
+        blocks[h..=m].rotate_right(1);
     }
 }
 
@@ -3255,6 +3293,7 @@ pub fn translate_region<M: Memory>(
     // address order: guest loops become contiguous ranges
     blocks.sort_unstable_by_key(|b| b.0);
     rotate_loops(&mut blocks);
+    hoist_entries(&mut blocks);
     for (i, b) in blocks.iter().enumerate() {
         targets.insert(b.0, i as u32);
     }
