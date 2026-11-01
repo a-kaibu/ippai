@@ -380,6 +380,21 @@ d3d9.dll を自前で置き換えて WebGPU で描く。d3d10/11/12 は他エン
 - 確認: ANEMOI 体験版 (SiglusEngine) のオープニング画面が swiftshader の WebGPU で描ける。
   未対応: キューブ/ボリュームテクスチャ、動画 (wmv)。
 
+### DirectDraw と Direct3D 8
+
+- DirectDraw は Wine の ddraw → wined3d の no3d 経路 (GL 無し) でそのまま動く。opengl32 と wined3d の
+  unix ライブラリをビルドに入れること (無いと ddraw のロードで失敗)。ドライバーが表示モード
+  (640x480〜1920x1080、32/16/8bpp) を返し、ChangeDisplaySettings で vnhost の画面サイズを変える。
+  確認: hangover/tests/ddrawtest.c (クリッパー経由のウィンドウ表示と、排他 640x480 のフリップ)。
+- Direct3D 8 は dlls/vnd3d8 (d3d8.dll): vnd3d9 と同じスタブで、インターフェース番号は 16 + d3d9 の番号。
+  呼び出しは d3d9.dll の `vnd3d9_dispatch` 経由 (unix ライブラリは d3d9 のもの)。
+  crates/vnhost/src/d3d9/d3d8.rs が各メソッドを d3d9 の呼び出しに変換する (オブジェクトは d3d9 と
+  共通で、d3d8 の呼び出し中に作ったものに d3d8 の vtable を付ける)。構造体の違い (CAPS,
+  PRESENT_PARAMETERS, SURFACE_DESC, ADAPTER_IDENTIFIER)、テクスチャステージ → サンプラーステート、
+  SetIndices の BaseVertexIndex、ステートブロックのトークン、頂点シェーダーのハンドル (宣言 →
+  頂点宣言、コードに dcl を挿入) を変換する。確認: hangover/tests/d3d8test.c (固定機能の
+  テクスチャ付き四角形と vs.1.1/ps.1.1 の三角形)。
+
 ## 現状 (2026-10-28)
 
 - crates/vnx86: i386 ユーザーモードのインタプリタ。整数・x87・MMX・SSE・SSE2 を実装し、

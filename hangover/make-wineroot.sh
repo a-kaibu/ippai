@@ -17,7 +17,7 @@ EMSDK4=${EMSDK4:-/home/user/emsdk4}
 # x86_64-only in vnbox; needs i686-w64-mingw32-gcc
 PROGRAMS="conhost lsass plugplay rpcss services spoolsv termsv wineboot winemenubuilder wuauserv"
 # ours (patches/wine-wasm.patch): <dir>[/<file>], the file defaulting to the dir's name
-DLLS="winebrowser.drv vnd3d9/d3d9.dll"
+DLLS="winebrowser.drv vnd3d9/d3d9.dll vnd3d8/d3d8.dll"
 
 mkdir -p "$PE_BUILD"
 cd "$PE_BUILD"

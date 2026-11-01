@@ -8,6 +8,7 @@
 //! The device's state lives here; draws become WebGPU commands (`gpu`) for the page, with
 //! shaders translated to WGSL (`shader`, fixed function in `ff`).
 
+pub mod d3d8;
 pub mod device;
 pub mod ff;
 pub mod format;
@@ -89,6 +90,9 @@ pub struct D3d {
     /// guest memory to free once the page is done with a batch that reads it (mem, generation)
     pub deferred_free: Vec<(u32, u64)>,
     pub counts: HashMap<u32, u32>,
+    /// the call being run is a Direct3D 8 one: new objects get the Direct3D 8 vtables
+    pub v8: bool,
+    pub d8: d3d8::State,
 }
 
 unsafe impl Send for D3d {}
@@ -132,7 +136,8 @@ impl D3d {
         self.next += 1;
         let id = self.next;
         unsafe {
-            *(addr as *mut u32) = self.vtbls[iface as usize];
+            let v8 = if self.v8 { self.vtbls.get(iface as usize + 16).copied().unwrap_or(0) } else { 0 };
+            *(addr as *mut u32) = if v8 != 0 { v8 } else { self.vtbls[iface as usize] };
             *((addr + 4) as *mut u32) = id;
         }
         self.objs.insert(id, Obj { iface, refs: 1, binds: 0, parent, addr, data, private: Vec::new() });
@@ -252,9 +257,19 @@ pub unsafe extern "C" fn vnhost_d3d9_init(vtbls: *const u32, count: u32) -> u32 
             trace: std::env::var_os("VNVM_D3D_TRACE").is_some(),
             deferred_free: Vec::new(),
             counts: HashMap::new(),
+            v8: false,
+            d8: Default::default(),
         });
     } else if let Some(d) = g.as_mut() {
-        d.vtbls = v;
+        // (d3d8.dll registers its own after d3d9.dll's: keep both)
+        if d.vtbls.len() < v.len() {
+            d.vtbls.resize(v.len(), 0);
+        }
+        for (i, x) in v.into_iter().enumerate() {
+            if x != 0 {
+                d.vtbls[i] = x;
+            }
+        }
     }
     0
 }
@@ -273,6 +288,19 @@ pub unsafe extern "C" fn vnhost_d3d9_create(sdk: u32, out: *mut u32, calls: *con
 
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_d3d9_call(id: u32, args: *const u32, calls: *const HostCalls) -> u32 {
+    match id {
+        d3d8::INIT => return vnhost_d3d9_init(*args as *const u32, *args.add(1)),
+        d3d8::CREATE => {
+            return with(|d| {
+                d.calls = calls;
+                d.v8 = true;
+                let o = d.new_obj(IF_D3D9, 0, Data::D3d);
+                *(*args as *mut u32) = o;
+                if o == 0 { E_OUTOFMEMORY } else { 0 }
+            })
+        }
+        _ => {}
+    }
     let t0 = stats::on().then(std::time::Instant::now);
     let (r, after) = {
         let mut g = D3D.lock().unwrap_or_else(|e| e.into_inner());
@@ -287,6 +315,7 @@ pub unsafe extern "C" fn vnhost_d3d9_call(id: u32, args: *const u32, calls: *con
         }
         let iface = id >> 8;
         let method = id & 0xff;
+        d.v8 = iface > 16;
         let a = |i: usize| *args.add(i);
         let this = d.id_of(a(0));
         let mut after = After::None;
@@ -297,6 +326,7 @@ pub unsafe extern "C" fn vnhost_d3d9_call(id: u32, args: *const u32, calls: *con
             D3DERR_INVALIDCALL
         } else {
             match method {
+                _ if iface > 16 => d3d8::call(d, iface - 16, method, this, args, &mut after),
                 0 => query_interface(d, this, iface, a(1) as *const u8, a(2) as *mut u32),
                 1 => d.add_ref(this),
                 2 => d.release(this),

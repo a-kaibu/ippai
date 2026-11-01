@@ -1,30 +1,33 @@
 --- a/configure
 +++ b/configure
-@@ -1630,6 +1630,8 @@
+@@ -1630,6 +1630,9 @@
  enable_wineusb_sys
  enable_winevulkan
  enable_winewayland_drv
 +enable_winebrowser_drv
 +enable_vnd3d9
++enable_vnd3d8
  enable_winex11_drv
  enable_winexinput_sys
  enable_wing
-@@ -22796,6 +22798,8 @@
+@@ -22796,6 +22799,9 @@
  wine_fn_config_makefile dlls/wineusb.sys enable_wineusb_sys
  wine_fn_config_makefile dlls/winevulkan enable_winevulkan
  wine_fn_config_makefile dlls/winewayland.drv enable_winewayland_drv
 +wine_fn_config_makefile dlls/winebrowser.drv enable_winebrowser_drv
++wine_fn_config_makefile dlls/vnd3d8 enable_vnd3d8
 +wine_fn_config_makefile dlls/vnd3d9 enable_vnd3d9
  wine_fn_config_makefile dlls/winex11.drv enable_winex11_drv
  wine_fn_config_makefile dlls/winexinput.sys enable_winexinput_sys
  wine_fn_config_makefile dlls/wing.dll16 enable_wing
 --- a/configure.ac
 +++ b/configure.ac
-@@ -3327,6 +3327,8 @@
+@@ -3327,6 +3327,9 @@
  WINE_CONFIG_MAKEFILE(dlls/wineusb.sys)
  WINE_CONFIG_MAKEFILE(dlls/winevulkan)
  WINE_CONFIG_MAKEFILE(dlls/winewayland.drv)
 +WINE_CONFIG_MAKEFILE(dlls/winebrowser.drv)
++WINE_CONFIG_MAKEFILE(dlls/vnd3d8)
 +WINE_CONFIG_MAKEFILE(dlls/vnd3d9)
  WINE_CONFIG_MAKEFILE(dlls/winex11.drv)
  WINE_CONFIG_MAKEFILE(dlls/winexinput.sys)
@@ -1928,7 +1931,7 @@
 +    fmt->Format.nSamplesPerSec = 44100; /* most VN audio: dsound then mixes without its FIR resampler */
 +    fmt->Format.wBitsPerSample = 32;
 +    fmt->Format.nBlockAlign = 8;
-+    fmt->Format.nAvgBytesPerSec = 44100 * 8;
++    fmt->Format.nAvgBytesPerSec = 48000 * 8;
 +    fmt->Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
 +    fmt->Samples.wValidBitsPerSample = 32;
 +    fmt->dwChannelMask = KSAUDIO_SPEAKER_STEREO;
@@ -2519,6 +2522,163 @@
 +    return STATUS_SUCCESS;
 +}
 --- /dev/null
++++ b/dlls/vnd3d8/Makefile.in
+@@ -0,0 +1,5 @@
++MODULE    = d3d8.dll
++
++SOURCES = \
++	d3d8.spec \
++	main.c
+--- /dev/null
++++ b/dlls/vnd3d8/d3d8.spec
+@@ -0,0 +1,4 @@
++@ stdcall ValidatePixelShader(ptr ptr long ptr)
++@ stdcall ValidateVertexShader(ptr ptr ptr long ptr)
++@ stdcall DebugSetMute()
++@ stdcall Direct3DCreate8(long)
+--- /dev/null
++++ b/dlls/vnd3d8/main.c
+@@ -0,0 +1,139 @@
++/*
++ * Direct3D 8 for vnvm, PE side
++ *
++ * Same scheme as dlls/vnd3d9: every method is a stub handing its stack arguments to vnhost
++ * (crates/vnhost/src/d3d9/d3d8.rs), which maps Direct3D 8 onto its Direct3D 9 device. The calls
++ * go through d3d9.dll's dispatcher (and its unix library); interfaces are numbered 16 + the
++ * matching Direct3D 9 interface.
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ */
++
++#include <stdarg.h>
++#include "windef.h"
++#include "winbase.h"
++#include "wine/asm.h"
++#include "wine/debug.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(d3d8);
++
++static HRESULT (WINAPI *dispatch)( UINT id, void *args );
++
++HRESULT WINAPI vnd3d8_dispatch( UINT id, void *args )
++{
++    return dispatch( id, args );
++}
++
++/* host-side ids outside the interfaces */
++#define D3D8_INIT   0xffff0001
++#define D3D8_CREATE 0xffff0002
++
++/* 17: IDirect3D8 */
++#define IFACE_17 M(17,0,3) M(17,1,1) M(17,2,1) M(17,3,2) M(17,4,1) M(17,5,4) M(17,6,2) M(17,7,4) M(17,8,3)  \
++    M(17,9,6) M(17,10,7) M(17,11,6) M(17,12,6) M(17,13,4) M(17,14,2) M(17,15,7)
++/* 18: IDirect3DDevice8 */
++#define IFACE_18 M(18,0,3) M(18,1,1) M(18,2,1) M(18,3,1) M(18,4,1) M(18,5,2) M(18,6,2) M(18,7,2) M(18,8,2)  \
++    M(18,9,2) M(18,10,4) M(18,11,4) M(18,12,2) M(18,13,3) M(18,14,2) M(18,15,5) M(18,16,4) M(18,17,2) M(18,18,3)  \
++    M(18,19,2) M(18,20,8) M(18,21,9) M(18,22,7) M(18,23,6) M(18,24,6) M(18,25,7) M(18,26,6) M(18,27,5) M(18,28,6)  \
++    M(18,29,3) M(18,30,2) M(18,31,3) M(18,32,2) M(18,33,2) M(18,34,1) M(18,35,1) M(18,36,7) M(18,37,3) M(18,38,3)  \
++    M(18,39,3) M(18,40,2) M(18,41,2) M(18,42,2) M(18,43,2) M(18,44,3) M(18,45,3) M(18,46,3) M(18,47,3) M(18,48,3)  \
++    M(18,49,3) M(18,50,3) M(18,51,3) M(18,52,1) M(18,53,2) M(18,54,2) M(18,55,2) M(18,56,2) M(18,57,3) M(18,58,2)  \
++    M(18,59,2) M(18,60,3) M(18,61,3) M(18,62,4) M(18,63,4) M(18,64,2) M(18,65,4) M(18,66,3) M(18,67,3) M(18,68,2)  \
++    M(18,69,2) M(18,70,4) M(18,71,6) M(18,72,5) M(18,73,9) M(18,74,6) M(18,75,5) M(18,76,2) M(18,77,2) M(18,78,2)  \
++    M(18,79,4) M(18,80,4) M(18,81,4) M(18,82,4) M(18,83,4) M(18,84,4) M(18,85,3) M(18,86,3) M(18,87,3) M(18,88,2)  \
++    M(18,89,2) M(18,90,2) M(18,91,4) M(18,92,4) M(18,93,4) M(18,94,4) M(18,95,4) M(18,96,2)
++/* 19: IDirect3DSwapChain8 */
++#define IFACE_19 M(19,0,3) M(19,1,1) M(19,2,1) M(19,3,5) M(19,4,4)
++/* 20: IDirect3DSurface8 */
++#define IFACE_20 M(20,0,3) M(20,1,1) M(20,2,1) M(20,3,2) M(20,4,5) M(20,5,4) M(20,6,2) M(20,7,3) M(20,8,2)  \
++    M(20,9,4) M(20,10,1)
++/* 21: IDirect3DTexture8 */
++#define IFACE_21 M(21,0,3) M(21,1,1) M(21,2,1) M(21,3,2) M(21,4,5) M(21,5,4) M(21,6,2) M(21,7,2) M(21,8,1)  \
++    M(21,9,1) M(21,10,1) M(21,11,2) M(21,12,1) M(21,13,1) M(21,14,3) M(21,15,3) M(21,16,5) M(21,17,2) M(21,18,2)
++/* 22: IDirect3DCubeTexture8 */
++#define IFACE_22 M(22,0,3) M(22,1,1) M(22,2,1) M(22,3,2) M(22,4,5) M(22,5,4) M(22,6,2) M(22,7,2) M(22,8,1)  \
++    M(22,9,1) M(22,10,1) M(22,11,2) M(22,12,1) M(22,13,1) M(22,14,3) M(22,15,4) M(22,16,6) M(22,17,3) M(22,18,3)
++/* 23: IDirect3DVolumeTexture8 */
++#define IFACE_23 M(23,0,3) M(23,1,1) M(23,2,1) M(23,3,2) M(23,4,5) M(23,5,4) M(23,6,2) M(23,7,2) M(23,8,1)  \
++    M(23,9,1) M(23,10,1) M(23,11,2) M(23,12,1) M(23,13,1) M(23,14,3) M(23,15,3) M(23,16,5) M(23,17,2) M(23,18,2)
++/* 24: IDirect3DVertexBuffer8 */
++#define IFACE_24 M(24,0,3) M(24,1,1) M(24,2,1) M(24,3,2) M(24,4,5) M(24,5,4) M(24,6,2) M(24,7,2) M(24,8,1)  \
++    M(24,9,1) M(24,10,1) M(24,11,5) M(24,12,1) M(24,13,2)
++/* 25: IDirect3DIndexBuffer8 */
++#define IFACE_25 M(25,0,3) M(25,1,1) M(25,2,1) M(25,3,2) M(25,4,5) M(25,5,4) M(25,6,2) M(25,7,2) M(25,8,1)  \
++    M(25,9,1) M(25,10,1) M(25,11,5) M(25,12,1) M(25,13,2)
++/* 31: IDirect3DVolume8 */
++#define IFACE_31 M(31,0,3) M(31,1,1) M(31,2,1) M(31,3,2) M(31,4,5) M(31,5,4) M(31,6,2) M(31,7,3) M(31,8,2)  \
++    M(31,9,4) M(31,10,1)
++#define NUM_IFACES 31
++
++#define M(i,n,a) __ASM_GLOBAL_FUNC( vnd3d8_##i##_##n, \
++    "leal 4(%esp),%eax\n\t" \
++    "pushl %eax\n\t" \
++    "pushl $(" #i "*256+" #n ")\n\t" \
++    "call " __ASM_STDCALL("vnd3d8_dispatch",8) "\n\t" \
++    "ret $(4*" #a ")" )
++IFACE_17 IFACE_18 IFACE_19 IFACE_20 IFACE_21 IFACE_22 IFACE_23 IFACE_24 IFACE_25 IFACE_31
++#undef M
++
++#define M(i,n,a) extern void vnd3d8_##i##_##n(void);
++IFACE_17 IFACE_18 IFACE_19 IFACE_20 IFACE_21 IFACE_22 IFACE_23 IFACE_24 IFACE_25 IFACE_31
++#undef M
++
++#define M(i,n,a) (const void *)vnd3d8_##i##_##n,
++static const void *vtbl_17[] = { IFACE_17 };
++static const void *vtbl_18[] = { IFACE_18 };
++static const void *vtbl_19[] = { IFACE_19 };
++static const void *vtbl_20[] = { IFACE_20 };
++static const void *vtbl_21[] = { IFACE_21 };
++static const void *vtbl_22[] = { IFACE_22 };
++static const void *vtbl_23[] = { IFACE_23 };
++static const void *vtbl_24[] = { IFACE_24 };
++static const void *vtbl_25[] = { IFACE_25 };
++static const void *vtbl_31[] = { IFACE_31 };
++#undef M
++
++static const void *const *vtbls[NUM_IFACES + 1] =
++{
++    [17] = vtbl_17, [18] = vtbl_18, [19] = vtbl_19, [20] = vtbl_20, [21] = vtbl_21, [22] = vtbl_22,
++    [23] = vtbl_23, [24] = vtbl_24, [25] = vtbl_25, [31] = vtbl_31,
++};
++
++BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
++{
++    HMODULE d3d9;
++    void *args[2] = { (void *)vtbls, (void *)(NUM_IFACES + 1) };
++
++    if (reason != DLL_PROCESS_ATTACH) return TRUE;
++    DisableThreadLibraryCalls( inst );
++    if (!(d3d9 = LoadLibraryA( "d3d9.dll" ))) return FALSE;
++    if (!(dispatch = (void *)GetProcAddress( d3d9, "vnd3d9_dispatch" ))) return FALSE;
++    return !dispatch( D3D8_INIT, args );
++}
++
++void * WINAPI Direct3DCreate8( UINT sdk )
++{
++    void *object = NULL;
++    void *args[1] = { &object };
++
++    TRACE( "sdk %#x\n", sdk );
++    if (dispatch( D3D8_CREATE, args )) return NULL;
++    return object;
++}
++
++HRESULT WINAPI ValidateVertexShader( DWORD *code, DWORD *decl, DWORD *caps, BOOL errors, char **out )
++{
++    if (out) *out = NULL;
++    return code ? S_OK : E_FAIL;
++}
++
++HRESULT WINAPI ValidatePixelShader( DWORD *code, DWORD *caps, BOOL errors, char **out )
++{
++    if (out) *out = NULL;
++    return code ? S_OK : E_FAIL;
++}
++
++void WINAPI DebugSetMute(void) {}
+--- /dev/null
 +++ b/dlls/vnd3d9/Makefile.in
 @@ -0,0 +1,9 @@
 +MODULE    = d3d9.dll
@@ -2532,7 +2692,7 @@
 +	unixlib.c
 --- /dev/null
 +++ b/dlls/vnd3d9/d3d9.spec
-@@ -0,0 +1,15 @@
+@@ -0,0 +1,16 @@
 +@ stdcall Direct3DShaderValidatorCreate9()
 +@ stub PSGPError
 +@ stub PSGPSampleTexture
@@ -2548,6 +2708,7 @@
 +@ stdcall Direct3DCreate9(long)
 +@ stdcall Direct3DCreate9Ex(long ptr)
 +@ stdcall Direct3DCreate9On12(long ptr long)
++@ stdcall vnd3d9_dispatch(long ptr)
 --- /dev/null
 +++ b/dlls/vnd3d9/main.c
 @@ -0,0 +1,246 @@

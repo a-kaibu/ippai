@@ -549,7 +549,7 @@ unsafe fn d3d9_call(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32) ->
             if p.is_null() {
                 return D3DERR_INVALIDCALL;
             }
-            std::ptr::write_bytes(p, 0, 1132);
+            std::ptr::write_bytes(p, 0, 1100);
             let put = |off: usize, s: &[u8]| std::ptr::copy_nonoverlapping(s.as_ptr(), p.add(off), s.len());
             put(0, b"vnvm.dll");
             put(512, b"vnvm WebGPU");
