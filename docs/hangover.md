@@ -395,6 +395,27 @@ d3d9.dll を自前で置き換えて WebGPU で描く。d3d10/11/12 は他エン
   頂点宣言、コードに dcl を挿入) を変換する。確認: hangover/tests/d3d8test.c (固定機能の
   テクスチャ付き四角形と vs.1.1/ps.1.1 の三角形)。
 
+### Direct3D 11 と DXGI
+
+- dlls/vnd3d11 (d3d11.dll) と dlls/vndxgi (dxgi.dll)。スタブは hangover/gen-d3d11-stubs.py が
+  mingw のヘッダーから作る (stubs.h と crates/vnhost/src/d3d11/names.rs)。インターフェース番号は
+  64〜93。呼び出しは d3d9.dll の `vnd3d9_dispatch` 経由で crates/vnhost/src/d3d11 に届く。
+  dxgi.dll の CreateDXGIFactory* は d3d11.dll の `vnd3d11_create_factory` を呼ぶ。
+- 一つのオブジェクトが複数のインターフェース (面) を持つ: デバイス ↔ IDXGIDevice、Texture2D ↔
+  IDXGISurface。
+- シェーダー: DXBC → vkd3d-shader (Wine の libs/vkd3d を hangover/build-vkd3d.sh で静的ライブラリに
+  する。入口は hangover/vkd3d/vnshader.c) → SPIR-V → naga → WGSL。ディスクリプタセット = ステージ
+  (0 VS, 1 PS)、バインディングは b<n> → n、t<n> → 16+n、s<n> → 160+n。VS の出力は PS の入力
+  シグネチャに合わせる (varying map)。WGSL に無い PointSize の出力は消す。
+- ページ側 (web/src/d3d9.ts): バッファはページの GPU バッファ (書き換えのたびに新しく作る)、
+  パイプラインは最初の描画で作る (バインドグループのレイアウトは描画が持つ種類から)、MRT、
+  ClearView、GenerateMips、配列・3D・1D テクスチャ。
+- 未対応: GS/HS/DS/CS、UAV、ストリームアウト、遅延コンテキスト、マルチサンプル、
+  ステージ間の型の違い。最適化は別スレッド。
+- 確認: hangover/tests/d3d11test.c (スワップチェーン、実行時 D3DCompile の HLSL、定数バッファを
+  Map/DISCARD で毎フレーム更新して回る三角形、初期データ付きテクスチャ + サンプラー +
+  アルファブレンドの四角形)。
+
 ## 現状 (2026-10-28)
 
 - crates/vnx86: i386 ユーザーモードのインタプリタ。整数・x87・MMX・SSE・SSE2 を実装し、

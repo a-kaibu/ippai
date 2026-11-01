@@ -22,9 +22,44 @@ const CREATE_TEXTURE = 1,
   COPY = 10,
   READBACK = 11,
   FILL = 12,
-  WRITE_TEXTURE_MEM = 13;
+  WRITE_TEXTURE_MEM = 13,
+  // Direct3D 11 (crates/vnhost/src/d3d11)
+  CREATE_BUFFER = 20,
+  DESTROY_BUFFER = 21,
+  WRITE_BUFFER = 22,
+  CREATE_PIPELINE2 = 23,
+  SET_TARGETS2 = 24,
+  DRAW2 = 25,
+  CLEAR_VIEW = 26,
+  GEN_MIPS = 27,
+  CREATE_TEXTURE2 = 28,
+  WRITE_TEXTURE2 = 29;
 
-const TEX_FORMATS: GPUTextureFormat[] = ["bgra8unorm", "depth24plus-stencil8", "rgba16float", "rgba16float"];
+// (crates/vnhost/src/d3d11/format.rs P_*)
+const TEX_FORMATS: GPUTextureFormat[] = [
+  "bgra8unorm", "depth24plus-stencil8", "rgba16float", "rgba16float", "rgba8unorm", "r8unorm", "rg8unorm",
+  "depth32float", "r16float", "rg16float", "rgb10a2unorm", "rg11b10ufloat", "rgba8unorm-srgb", "bgra8unorm-srgb",
+  "depth16unorm", "r32float", "rg32float", "rgba8uint", "rgba8snorm", "rgba8sint", "r32uint", "r32sint",
+];
+const TEX_BPP: Record<string, number> = { r8unorm: 1, rg8unorm: 2, r16float: 2, depth16unorm: 2, rgba16float: 8, rg32float: 8 };
+const isDepth = (f: GPUTextureFormat) => f.startsWith("depth");
+// (crates/vnhost/src/d3d11/format.rs vertex_format)
+const VERTEX_FORMATS2: GPUVertexFormat[] = [
+  "float32", "float32x2", "float32x3", "float32x4", "uint32", "uint32x2", "uint32x3", "uint32x4",
+  "sint32", "sint32x2", "sint32x3", "sint32x4", "unorm8x4", "snorm8x4", "uint8x4", "sint8x4",
+  "unorm16x2", "unorm16x4", "snorm16x2", "snorm16x4", "uint16x2", "uint16x4", "sint16x2", "sint16x4",
+  "float16x2", "float16x4", "unorm8x2", "uint8x2", "unorm10-10-10-2", "unorm8x4-bgra", "snorm8x2", "sint8x2",
+];
+const BLEND2: GPUBlendFactor[] = [
+  "zero", "one", "src", "one-minus-src", "src-alpha", "one-minus-src-alpha", "dst-alpha", "one-minus-dst-alpha",
+  "dst", "one-minus-dst", "src-alpha-saturated", "constant", "one-minus-constant",
+];
+const STENCIL_OP: GPUStencilOperation[] = [
+  "keep", "keep", "zero", "replace", "increment-clamp", "decrement-clamp", "invert", "increment-wrap", "decrement-wrap",
+];
+const ADDRESS2: GPUAddressMode[] = ["repeat", "mirror-repeat", "clamp-to-edge", "clamp-to-edge"];
+const VIEW_DIM: GPUTextureViewDimension[] = ["1d", "2d", "2d-array", "cube", "cube-array", "3d"];
+const f32of = (u: number) => new Float32Array(new Uint32Array([u]).buffer)[0]!;
 const VERTEX_FORMATS: GPUVertexFormat[] = [
   "float32", "float32x2", "float32x3", "float32x4", "unorm8x4", "uint8x4", "sint16x2", "sint16x4",
   "snorm16x2", "snorm16x4", "unorm16x2", "unorm16x4", "float16x2", "float16x4",
@@ -76,6 +111,19 @@ interface Tex {
   levels: number;
   format: GPUTextureFormat;
   view: GPUTextureView;
+  /** Direct3D 11: array layers (depth of 3D textures), dimension, views made */
+  layers?: number;
+  dim?: GPUTextureDimension;
+  views?: Map<string, GPUTextureView>;
+}
+
+/** Direct3D 11 pipeline: made at its first draw (the bind group layouts come from the draw) */
+interface Pipe2 {
+  key: Uint32Array;
+  pipeline?: GPURenderPipeline;
+  layouts?: GPUBindGroupLayout[];
+  /** entries kinds of each group, to find a draw that binds differently */
+  kinds?: string;
 }
 
 interface Pipe {
@@ -122,6 +170,14 @@ export class D3D9 {
   private target: [number, number, number] = [0, 0, 0];
   private pendingClear: { flags: number; color: GPUColor; z: number; stencil: number } | null = null;
   private used = new Set<number>();
+  // Direct3D 11
+  private buffers = new Map<number, GPUBuffer>();
+  private doomed: (GPUBuffer | GPUTexture)[] = [];
+  private pipelines2 = new Map<number, Pipe2>();
+  private targets2: number[] | null = null;
+  private dummies = new Map<string, GPUTextureView>();
+  private zeroBuf: GPUBuffer | null = null;
+  private samplers2 = new Map<string, GPUSampler>();
 
   constructor(
     private readonly device: GPUDevice,
@@ -303,6 +359,10 @@ export class D3D9 {
         }
         case SET_TARGET: {
           const t: [number, number, number] = [c[i + 1]!, c[i + 2]!, c[i + 3]!];
+          if (this.targets2) {
+            this.endPass();
+            this.targets2 = null;
+          }
           if (t[0] !== this.target[0] || t[1] !== this.target[1] || t[2] !== this.target[2]) {
             this.endPass();
             this.target = t;
@@ -377,6 +437,100 @@ export class D3D9 {
           i += 8;
           break;
         }
+        case CREATE_TEXTURE2:
+          this.createTexture2(c.subarray(i + 1, i + 8));
+          i += 8;
+          break;
+        case WRITE_TEXTURE2: {
+          const [id, level, layer, x, y, w, h, bpr, off] = Array.from(c.subarray(i + 1, i + 10));
+          const t = this.textures.get(id!);
+          if (t && !isDepth(t.format)) {
+            this.flushIfUsed(id!);
+            const lw = Math.max(1, t.w >> level!),
+              lh = Math.max(1, t.h >> level!);
+            const cw = Math.min(w!, lw - x!),
+              ch = Math.min(h!, lh - y!);
+            if (cw > 0 && ch > 0 && level! < t.levels) {
+              const bytes = blob.subarray(off!, off! + bpr! * h!);
+              this.stat.uploaded += bytes.length;
+              d.queue.writeTexture(
+                { texture: t.tex, mipLevel: level!, origin: { x: x!, y: y!, z: layer! } },
+                this.copy(bytes),
+                { bytesPerRow: bpr!, rowsPerImage: h! },
+                [cw, ch, 1],
+              );
+            }
+          }
+          i += 10;
+          break;
+        }
+        case CREATE_BUFFER: {
+          const [id, size] = [c[i + 1]!, c[i + 2]!];
+          this.buffers.set(
+            id,
+            d.createBuffer({
+              size: Math.ceil(size / 4) * 4,
+              usage: GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX | GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+            }),
+          );
+          i += 3;
+          break;
+        }
+        case DESTROY_BUFFER: {
+          const b = this.buffers.get(c[i + 1]!);
+          if (b) {
+            this.doomed.push(b);
+            this.buffers.delete(c[i + 1]!);
+          }
+          i += 2;
+          break;
+        }
+        case WRITE_BUFFER: {
+          const [id, at, off, len] = Array.from(c.subarray(i + 1, i + 5));
+          const b = this.buffers.get(id!);
+          if (b) {
+            const n = Math.min(Math.ceil(len! / 4) * 4, b.size - at!);
+            const src = new Uint8Array(n);
+            src.set(blob.subarray(off!, off! + Math.min(len!, n)));
+            d.queue.writeBuffer(b, at!, src);
+          }
+          i += 5;
+          break;
+        }
+        case CREATE_PIPELINE2: {
+          const id = c[i + 1]!,
+            n = c[i + 2]!;
+          this.pipelines2.set(id, { key: c.slice(i + 3, i + 3 + n) });
+          i += 3 + n;
+          break;
+        }
+        case SET_TARGETS2: {
+          const n = c[i + 1]!;
+          const t = [n, ...Array.from(c.subarray(i + 2, i + 2 + n * 3 + 3))];
+          const cur = this.targets2;
+          if (!cur || cur.length !== t.length || cur.some((v, k) => v !== t[k])) {
+            this.endPass();
+            this.target = [0, 0, 0];
+            this.pendingClear = null;
+            this.targets2 = t;
+          }
+          i += 2 + n * 3 + 3;
+          break;
+        }
+        case DRAW2:
+          i = this.draw2(c, i);
+          break;
+        case CLEAR_VIEW: {
+          const [tex, level, layer, flags] = Array.from(c.subarray(i + 1, i + 5));
+          const f = new Float32Array(c.buffer, c.byteOffset + (i + 5) * 4, 5);
+          this.clearView(tex!, level!, layer!, flags!, { r: f[0]!, g: f[1]!, b: f[2]!, a: f[3]! }, f[4]!, c[i + 10]!);
+          i += 11;
+          break;
+        }
+        case GEN_MIPS:
+          this.genMips(c[i + 1]!);
+          i += 2;
+          break;
         default:
           throw new Error(`unknown command ${op} at ${i}`);
       }
@@ -397,6 +551,9 @@ export class D3D9 {
       this.encoder = null;
       this.used.clear();
     }
+    // (after the commands that use them are submitted)
+    for (const x of this.doomed) x.destroy();
+    this.doomed.length = 0;
   }
 
   /** Before writing a texture the open commands use: submits them first (queue order). */
@@ -429,6 +586,7 @@ export class D3D9 {
 
   private beginPass(): GPURenderPassEncoder | null {
     if (this.pass) return this.pass;
+    if (this.targets2) return this.beginPass2(this.targets2);
     const t = this.textures.get(this.target[0]);
     if (!t) return null;
     const z = this.target[2] ? this.textures.get(this.target[2]) : undefined;
@@ -755,12 +913,13 @@ export class D3D9 {
   private readback(req: number, id: number, level: number, x: number, y: number, w: number, h: number, dst: number, pitch: number): void {
     const t = this.textures.get(id);
     const done = () => this.wine._vnhost_d3d9_readback_done(req);
-    if (!t || t.format !== "bgra8unorm") {
+    if (!t || isDepth(t.format)) {
       done();
       return;
     }
     this.endPass();
-    const bpr = Math.ceil((w * 4) / 256) * 256;
+    const bpp = TEX_BPP[t.format] ?? 4;
+    const bpr = Math.ceil((w * bpp) / 256) * 256;
     const buf = this.device.createBuffer({ size: bpr * h, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
     this.enc().copyTextureToBuffer({ texture: t.tex, mipLevel: level, origin: { x, y } }, { buffer: buf, bytesPerRow: bpr }, [w, h]);
     this.submit();
@@ -768,13 +927,410 @@ export class D3D9 {
       () => {
         const src = new Uint8Array(buf.getMappedRange());
         const heap = new Uint8Array(this.wine.wasmMemory.buffer);
-        for (let r = 0; r < h; r++) heap.set(src.subarray(r * bpr, r * bpr + w * 4), dst + r * pitch);
+        for (let r = 0; r < h; r++) heap.set(src.subarray(r * bpr, r * bpr + w * bpp), dst + r * pitch);
         buf.unmap();
         buf.destroy();
         done();
       },
       () => done(),
     );
+  }
+
+  // ---- Direct3D 11 ----
+
+  private createTexture2(a: Uint32Array): void {
+    const [id, w, h, layers, mips, format, dimCode] = Array.from(a) as [number, number, number, number, number, number, number];
+    const fmt = TEX_FORMATS[format] ?? "bgra8unorm";
+    const dim: GPUTextureDimension = dimCode === 1 ? "3d" : dimCode === 2 ? "1d" : "2d";
+    const depth = isDepth(fmt);
+    const renderable =
+      dim === "2d" && !fmt.endsWith("snorm") && (fmt !== "rg11b10ufloat" || this.device.features.has("rg11b10ufloat-renderable"));
+    const levels = dim === "1d" ? 1 : mips;
+    const tex = this.device.createTexture({
+      size: [w, dim === "1d" ? 1 : h, layers],
+      dimension: dim,
+      format: fmt,
+      mipLevelCount: levels,
+      usage:
+        GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.COPY_DST |
+        GPUTextureUsage.COPY_SRC |
+        (renderable || depth ? GPUTextureUsage.RENDER_ATTACHMENT : 0),
+    });
+    const old = this.textures.get(id);
+    if (old) this.doomed.push(old.tex);
+    this.stat.created++;
+    const view = tex.createView({ dimension: dim === "2d" ? "2d" : dim, arrayLayerCount: dim === "2d" ? 1 : undefined, aspect: depth ? "depth-only" : "all" });
+    this.textures.set(id, { tex, w, h, levels, format: fmt, view, layers, dim, views: new Map() });
+  }
+
+  /** A view of `t` for binding or rendering (cached on the texture). */
+  private view2(t: Tex, dim: GPUTextureViewDimension, mip: number, mips: number, layer: number, layers: number, aspect: GPUTextureAspect = "all"): GPUTextureView {
+    const k = `${dim}/${mip}/${mips}/${layer}/${layers}/${aspect}`;
+    t.views ??= new Map();
+    let v = t.views.get(k);
+    if (!v) {
+      const all = t.layers ?? 1;
+      const base = Math.min(layer, all - 1);
+      let count = dim === "2d" || dim === "1d" || dim === "3d" ? 1 : Math.max(1, Math.min(layers, all - base));
+      if (dim === "cube") count = 6;
+      if (dim === "cube-array") count = Math.max(6, Math.floor(count / 6) * 6);
+      const m = Math.min(mip, t.levels - 1);
+      v = t.tex.createView({
+        dimension: dim,
+        baseMipLevel: m,
+        mipLevelCount: Math.max(1, Math.min(mips, t.levels - m)),
+        baseArrayLayer: dim === "3d" ? 0 : base,
+        arrayLayerCount: dim === "3d" ? 1 : count,
+        aspect,
+      });
+      t.views.set(k, v);
+    }
+    return v;
+  }
+
+  private beginPass2(tg: number[]): GPURenderPassEncoder | null {
+    const n = tg[0]!;
+    const colors: GPURenderPassColorAttachment[] = [];
+    for (let k = 0; k < n; k++) {
+      const t = this.textures.get(tg[1 + k * 3]!);
+      if (!t) return null;
+      this.used.add(tg[1 + k * 3]!);
+      colors.push({ view: this.view2(t, "2d", tg[2 + k * 3]!, 1, tg[3 + k * 3]!, 1), loadOp: "load", storeOp: "store" });
+    }
+    const zi = 1 + n * 3;
+    const z = tg[zi] ? this.textures.get(tg[zi]!) : undefined;
+    if (z) this.used.add(tg[zi]!);
+    if (!colors.length && !z) return null;
+    const stencil = z?.format === "depth24plus-stencil8";
+    this.pass = this.enc().beginRenderPass({
+      colorAttachments: colors,
+      depthStencilAttachment: z
+        ? {
+            view: this.view2(z, "2d", tg[zi + 1]!, 1, tg[zi + 2]!, 1),
+            depthLoadOp: "load",
+            depthStoreOp: "store",
+            ...(stencil ? { stencilLoadOp: "load" as const, stencilStoreOp: "store" as const } : {}),
+          }
+        : undefined,
+    });
+    this.passDraws = 0;
+    this.stat.passes++;
+    return this.pass;
+  }
+
+  /** The size of the Direct3D 11 targets' first level. */
+  private targetSize2(): [number, number] {
+    const tg = this.targets2;
+    if (!tg) return [0, 0];
+    const n = tg[0]!;
+    const [id, level] = n ? [tg[1]!, tg[2]!] : [tg[1 + n * 3]!, tg[2 + n * 3]!];
+    const t = this.textures.get(id);
+    if (!t) return [0, 0];
+    return [Math.max(1, t.w >> level), Math.max(1, t.h >> level)];
+  }
+
+  private clearView(tex: number, level: number, layer: number, flags: number, color: GPUColorDict, depth: number, stencil: number): void {
+    const t = this.textures.get(tex);
+    if (!t) return;
+    this.endPass();
+    this.used.add(tex);
+    const view = this.view2(t, "2d", level, 1, layer, 1);
+    if (isDepth(t.format)) {
+      const s = t.format === "depth24plus-stencil8";
+      this.enc()
+        .beginRenderPass({
+          colorAttachments: [],
+          depthStencilAttachment: {
+            view,
+            depthLoadOp: flags & 2 ? "clear" : "load",
+            depthClearValue: Math.min(1, Math.max(0, depth)),
+            depthStoreOp: "store",
+            ...(s ? { stencilLoadOp: flags & 4 ? ("clear" as const) : ("load" as const), stencilClearValue: stencil, stencilStoreOp: "store" as const } : {}),
+          },
+        })
+        .end();
+    } else if (flags & 1) {
+      this.enc().beginRenderPass({ colorAttachments: [{ view, loadOp: "clear", clearValue: color, storeOp: "store" }] }).end();
+    }
+    this.stat.passes++;
+  }
+
+  private genMips(tex: number): void {
+    const t = this.textures.get(tex);
+    if (!t || t.levels < 2 || t.dim !== "2d" || isDepth(t.format)) return;
+    this.endPass();
+    let pipe = this.blitPipes.get(t.format);
+    if (!pipe) {
+      const module = this.device.createShaderModule({ code: BLIT_SHADER });
+      pipe = this.device.createRenderPipeline({
+        layout: "auto",
+        vertex: { module, entryPoint: "vs" },
+        fragment: { module, entryPoint: "fs", targets: [{ format: t.format }] },
+        primitive: { topology: "triangle-list" },
+      });
+      this.blitPipes.set(t.format, pipe);
+    }
+    const slot = (this.clearSlot = (this.clearSlot + 1) % 64);
+    this.device.queue.writeBuffer(this.clearUniform, slot * 256, new Float32Array([0, 0, 1, 1]));
+    const smp = this.sampler2(1 << 9 | 1 << 10 | 2 | 2 << 3 | 2 << 6, 0, 0);
+    for (let layer = 0; layer < (t.layers ?? 1); layer++) {
+      for (let l = 1; l < t.levels; l++) {
+        const group = this.device.createBindGroup({
+          layout: pipe.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: this.view2(t, "2d", l - 1, 1, layer, 1) },
+            { binding: 1, resource: smp },
+            { binding: 2, resource: { buffer: this.clearUniform, offset: slot * 256, size: 16 } },
+          ],
+        });
+        const pass = this.enc().beginRenderPass({
+          colorAttachments: [{ view: this.view2(t, "2d", l, 1, layer, 1), loadOp: "clear", storeOp: "store" }],
+        });
+        pass.setPipeline(pipe);
+        pass.setBindGroup(0, group);
+        pass.draw(3);
+        pass.end();
+      }
+    }
+    this.used.add(tex);
+    if (slot === 63) this.submit();
+  }
+
+  /** sampler key: crates/vnhost/src/d3d11 sampler_key; LOD clamps as f32 bits */
+  private sampler2(key: number, minLod: number, maxLod: number): GPUSampler {
+    const k = `${key}/${minLod}/${maxLod}`;
+    let s = this.samplers2.get(k);
+    if (!s) {
+      const aniso = (key >> 12) & 1;
+      const lin = (b: number): GPUFilterMode => (aniso || (key >> b) & 1 ? "linear" : "nearest");
+      const func = (key >> 13) & 15;
+      const lo = Math.min(32, Math.max(0, f32of(minLod) || 0));
+      const hi = Math.min(32, Math.max(lo, f32of(maxLod) || 0));
+      s = this.device.createSampler({
+        addressModeU: ADDRESS2[key & 7] ?? "repeat",
+        addressModeV: ADDRESS2[(key >> 3) & 7] ?? "repeat",
+        addressModeW: ADDRESS2[(key >> 6) & 7] ?? "repeat",
+        magFilter: lin(9),
+        minFilter: lin(10),
+        mipmapFilter: aniso || (key >> 11) & 1 ? "linear" : "nearest",
+        lodMinClamp: lo,
+        lodMaxClamp: hi,
+        maxAnisotropy: aniso ? Math.max(1, Math.min(16, (key >> 17) & 31)) : 1,
+        compare: func ? COMPARE[func] : undefined,
+      });
+      this.samplers2.set(k, s);
+    }
+    return s;
+  }
+
+  /** A 1x1 texture of zeros for unbound slots: view dimension, kind (1 float, 4 uint, 5 sint, 6 depth). */
+  private dummy(vdim: number, kind: number): GPUTextureView {
+    const k = `${vdim}/${kind}`;
+    let v = this.dummies.get(k);
+    if (!v) {
+      const dim = VIEW_DIM[vdim] ?? "2d";
+      const format: GPUTextureFormat = kind === 4 ? "rgba8uint" : kind === 5 ? "rgba8sint" : kind === 6 ? "depth32float" : "rgba8unorm";
+      const layers = dim === "cube" || dim === "cube-array" ? 6 : 1;
+      const tex = this.device.createTexture({
+        size: [1, 1, layers],
+        dimension: dim === "1d" ? "1d" : dim === "3d" ? "3d" : "2d",
+        format,
+        usage: GPUTextureUsage.TEXTURE_BINDING | (kind === 6 ? GPUTextureUsage.RENDER_ATTACHMENT : GPUTextureUsage.COPY_DST),
+      });
+      v = tex.createView({ dimension: dim });
+      this.dummies.set(k, v);
+    }
+    return v;
+  }
+
+  private zero(): GPUBuffer {
+    return (this.zeroBuf ??= this.device.createBuffer({ size: 65536, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX }));
+  }
+
+  /** The pipeline of `p` with bind group layouts for `groups` (entries of 8 words). */
+  private pipeline2(p: Pipe2, groups: Uint32Array[]): boolean {
+    const kinds = groups.map((g) => Array.from({ length: g.length / 8 }, (_, e) => `${g[e * 8]}:${g[e * 8 + 1]}:${g[e * 8 + 1] === 1 || g[e * 8 + 1]! >= 4 ? g[e * 8 + 3] : ""}`).join(",")).join("|");
+    if (p.pipeline && p.kinds === kinds) return true;
+    const k = p.key;
+    const layouts = groups.map((g, stage) => {
+      const entries: GPUBindGroupLayoutEntry[] = [];
+      const visibility = stage === 0 ? GPUShaderStage.VERTEX : GPUShaderStage.FRAGMENT;
+      for (let e = 0; e < g.length; e += 8) {
+        const [binding, kind, , vdim] = [g[e]!, g[e + 1]!, g[e + 2]!, g[e + 3]!];
+        const viewDimension = VIEW_DIM[vdim] ?? "2d";
+        if (kind === 0) entries.push({ binding, visibility, buffer: { type: "uniform" } });
+        else if (kind === 2) entries.push({ binding, visibility, sampler: { type: "filtering" } });
+        else if (kind === 3) entries.push({ binding, visibility, sampler: { type: "comparison" } });
+        else {
+          const sampleType: GPUTextureSampleType = kind === 4 ? "uint" : kind === 5 ? "sint" : kind === 6 ? "depth" : "float";
+          entries.push({ binding, visibility, texture: { sampleType, viewDimension } });
+        }
+      }
+      return this.device.createBindGroupLayout({ entries });
+    });
+    // key: crates/vnhost/src/d3d11 draw()
+    let q = 0;
+    const vs = k[q++]!,
+      ps = k[q++]!,
+      topo = k[q++]!,
+      strip = k[q++]!;
+    const cull = k[q++]!,
+      ccw = k[q++]!,
+      bias = k[q++]! | 0,
+      slope = f32of(k[q++]!),
+      clamp = f32of(k[q++]!);
+    let depthStencil: GPUDepthStencilState | undefined;
+    if (k[q] === 0xffff) q++;
+    else {
+      const [fmt, en, write, func, sen, masks] = Array.from(k.subarray(q, q + 6));
+      const face = (o: number): GPUStencilFaceState =>
+        sen ? { failOp: STENCIL_OP[k[o]!]!, depthFailOp: STENCIL_OP[k[o + 1]!]!, passOp: STENCIL_OP[k[o + 2]!]!, compare: COMPARE[k[o + 3]!]! } : {};
+      const format = TEX_FORMATS[fmt!] ?? "depth24plus-stencil8";
+      const tri = topo >= 3;
+      depthStencil = {
+        format,
+        depthWriteEnabled: en !== 0 && write !== 0,
+        depthCompare: en ? (COMPARE[func!] ?? "less") : "always",
+        ...(format === "depth24plus-stencil8"
+          ? { stencilFront: face(q + 6), stencilBack: face(q + 10), stencilReadMask: sen ? masks! & 0xff : 0xff, stencilWriteMask: sen ? (masks! >> 8) & 0xff : 0 }
+          : {}),
+        depthBias: tri ? bias : 0,
+        depthBiasSlopeScale: tri ? slope : 0,
+        depthBiasClamp: tri ? clamp : 0,
+      };
+      q += 14;
+    }
+    const buffers: GPUVertexBufferLayout[] = [];
+    const nvb = k[q++]!;
+    for (let b = 0; b < nvb; b++) {
+      const stride = k[q++]!,
+        step = k[q++]!,
+        n = k[q++]!;
+      const attributes: GPUVertexAttribute[] = [];
+      for (let a = 0; a < n; a++, q += 3) attributes.push({ format: VERTEX_FORMATS2[k[q]!] ?? "float32x4", offset: k[q + 1]!, shaderLocation: k[q + 2]! });
+      buffers.push({ arrayStride: Math.ceil(stride / 4) * 4, stepMode: step ? "instance" : "vertex", attributes });
+    }
+    const targets: GPUColorTargetState[] = [];
+    const nt = k[q++]!;
+    for (let t = 0; t < nt; t++, q += 9) {
+      const [fmt, en, src, dst, op, srcA, dstA, opA, mask] = Array.from(k.subarray(q, q + 9)) as number[];
+      const format = TEX_FORMATS[fmt!] ?? "bgra8unorm";
+      const comp = (s: number, d: number, o: number): GPUBlendComponent => {
+        const operation = BLEND_OP[o] ?? "add";
+        return operation === "min" || operation === "max" ? { operation, srcFactor: "one", dstFactor: "one" } : { operation, srcFactor: BLEND2[s] ?? "one", dstFactor: BLEND2[d] ?? "zero" };
+      };
+      const blendable = !format.endsWith("uint") && !format.endsWith("sint") && format !== "r32float" && format !== "rg32float";
+      targets.push({
+        format,
+        blend: en && blendable ? { color: comp(src!, dst!, op!), alpha: comp(srcA!, dstA!, opA!) } : undefined,
+        writeMask: ps ? mask! : 0,
+      });
+    }
+    const fragment = ps ? this.shaders.get(ps) : (this.noPs ??= this.device.createShaderModule({ code: "@fragment fn main() {}" }));
+    const vertex = this.shaders.get(vs);
+    if (!vertex || !fragment) return false;
+    p.pipeline = this.device.createRenderPipeline({
+      layout: this.device.createPipelineLayout({ bindGroupLayouts: layouts }),
+      vertex: { module: vertex, entryPoint: "main", buffers },
+      fragment: { module: fragment, entryPoint: "main", targets },
+      primitive: {
+        topology: TOPOLOGY[topo] ?? "triangle-list",
+        stripIndexFormat: strip === 1 ? "uint16" : strip === 2 ? "uint32" : undefined,
+        cullMode: cull === 2 ? "front" : cull === 3 ? "back" : "none",
+        frontFace: ccw ? "ccw" : "cw",
+      },
+      depthStencil,
+    });
+    p.layouts = layouts;
+    p.kinds = kinds;
+    return true;
+  }
+  private noPs: GPUShaderModule | undefined;
+
+  private draw2(c: Uint32Array, i: number): number {
+    let q = i + 1;
+    const p = this.pipelines2.get(c[q++]!);
+    const f = new Float32Array(c.buffer, c.byteOffset + q * 4, 6);
+    const [vx, vy, vw, vh, minz, maxz] = Array.from(f) as number[];
+    q += 6;
+    const [sx, sy, sw, sh, sOn] = Array.from(c.subarray(q, q + 5)) as number[];
+    q += 5;
+    const bf = new Float32Array(c.buffer, c.byteOffset + q * 4, 4);
+    const blendConst = { r: bf[0]!, g: bf[1]!, b: bf[2]!, a: bf[3]! };
+    q += 4;
+    const stencilRef = c[q++]!;
+    const nvb = c[q++]!;
+    const vbs: [number, number][] = [];
+    for (let b = 0; b < nvb; b++, q += 2) vbs.push([c[q]!, c[q + 1]!]);
+    const [ib, ioff, ifmt] = [c[q]!, c[q + 1]!, c[q + 2]!];
+    q += 3;
+    const groups: Uint32Array[] = [];
+    for (let g = 0; g < 2; g++) {
+      const n = c[q++]!;
+      groups.push(c.subarray(q, q + n * 8));
+      q += n * 8;
+    }
+    const [indexed, count, instances, start, base, first] = Array.from(c.subarray(q, q + 6)) as number[];
+    q += 6;
+    if (!p || !count || !instances) return q;
+    if (!this.pipeline2(p, groups)) return q;
+    const pass = this.beginPass();
+    if (!pass) return q;
+    const [tw, th] = this.targetSize2();
+    // viewport inside the target (WebGPU wants it there)
+    let [x0, y0, x1, y1] = vw! > 0 && vh! > 0 ? [vx!, vy!, vx! + vw!, vy! + vh!] : [0, 0, tw, th];
+    x0 = Math.max(0, x0);
+    y0 = Math.max(0, y0);
+    x1 = Math.min(tw, x1);
+    y1 = Math.min(th, y1);
+    if (x1 <= x0 || y1 <= y0) return q;
+    const z0 = Math.min(1, Math.max(0, Math.min(minz!, maxz!))),
+      z1 = Math.min(1, Math.max(0, Math.max(minz!, maxz!)));
+    pass.setPipeline(p.pipeline!);
+    pass.setViewport(x0, y0, x1 - x0, y1 - y0, z0, z1);
+    let [rx0, ry0, rx1, ry1] = sOn ? [sx!, sy!, sx! + sw!, sy! + sh!] : [0, 0, tw, th];
+    rx0 = Math.max(rx0, Math.floor(x0));
+    ry0 = Math.max(ry0, Math.floor(y0));
+    rx1 = Math.min(rx1, Math.ceil(x1), tw);
+    ry1 = Math.min(ry1, Math.ceil(y1), th);
+    if (rx1 <= rx0 || ry1 <= ry0) return q;
+    pass.setScissorRect(rx0, ry0, rx1 - rx0, ry1 - ry0);
+    pass.setBlendConstant(blendConst);
+    pass.setStencilReference(stencilRef);
+    groups.forEach((g, gi) => {
+      const entries: GPUBindGroupEntry[] = [];
+      for (let e = 0; e < g.length; e += 8) {
+        const [binding, kind, a, b, cc, dd, ee, ff] = Array.from(g.subarray(e, e + 8)) as number[];
+        if (kind === 0) {
+          const buf = this.buffers.get(a!);
+          const want = Math.max(16, Math.ceil(dd! / 16) * 16);
+          entries.push({ binding: binding!, resource: buf && buf.size >= want ? { buffer: buf, offset: 0, size: Math.min(buf.size, 65536) } : { buffer: this.zero(), offset: 0, size: Math.min(65536, want) } });
+        } else if (kind === 2 || kind === 3) {
+          entries.push({ binding: binding!, resource: this.sampler2(a!, b!, cc!) });
+        } else {
+          const t = this.textures.get(a!);
+          const depth = t ? isDepth(t.format) : false;
+          const ok = t && depth === (kind === 6) && (kind !== 1 || !t.format.match(/int$/)) && (kind !== 4 || t.format.endsWith("uint")) && (kind !== 5 || t.format.endsWith("sint"));
+          if (ok) this.used.add(a!);
+          entries.push({ binding: binding!, resource: ok ? this.view2(t, VIEW_DIM[b!] ?? "2d", cc!, dd!, ee!, ff!, depth ? "depth-only" : "all") : this.dummy(b!, kind!) });
+        }
+      }
+      pass.setBindGroup(gi, this.device.createBindGroup({ layout: p.layouts![gi]!, entries }));
+    });
+    vbs.forEach(([b, off], k) => {
+      const buf = this.buffers.get(b);
+      pass.setVertexBuffer(k, buf ?? this.zero(), buf ? Math.min(off, buf.size) : 0);
+    });
+    if (indexed) {
+      const buf = this.buffers.get(ib);
+      if (!buf) return q;
+      pass.setIndexBuffer(buf, ifmt === 2 ? "uint32" : "uint16", Math.min(ioff, buf.size));
+      pass.drawIndexed(count!, instances!, start!, base! | 0, first!);
+    } else pass.draw(count!, instances!, start!, first!);
+    this.passDraws++;
+    this.draws++;
+    return q;
   }
 
   /** The last presented frame as BGRA rows (for tests). */
@@ -792,6 +1348,10 @@ export class D3D9 {
     const src = new Uint8Array(buf.getMappedRange());
     const data = new Uint8Array(t.w * t.h * 4);
     for (let r = 0; r < t.h; r++) data.set(src.subarray(r * bpr, r * bpr + t.w * 4), r * t.w * 4);
+    if (t.format.startsWith("rgba8")) {
+      // (as BGRA)
+      for (let p = 0; p < data.length; p += 4) [data[p], data[p + 2]] = [data[p + 2]!, data[p]!];
+    }
     buf.unmap();
     buf.destroy();
     return { w: t.w, h: t.h, data };

@@ -38,6 +38,9 @@ cd "$ROOT"
 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-globals -C relocation-model=pic -C panic=abort" \
   cargo build --release -p vnhost --target wasm32-unknown-emscripten -Zbuild-std=std,panic_abort
 VNHOST=$ROOT/target/wasm32-unknown-emscripten/release/libvnhost.a
+# vkd3d-shader for Direct3D 11 shaders (crates/vnhost/src/d3d11/shader.rs)
+VKD3D_OUT=${VKD3D_OUT:-/home/user/work/vkd3d-wasm}
+VKD3D_OUT=$VKD3D_OUT WINE_SRC=$WINE_SRC BUILD=$BUILD WINE_BUILD=$WINE_TOOLS bash "$HERE/build-vkd3d.sh" > /dev/null
 
 WRAP="socket socketpair pipe pipe2 bind listen accept accept4 connect shutdown setsockopt getsockopt
   getsockname getpeername sendmsg recvmsg send recv sendto recvfrom read write readv writev close dup dup2
@@ -132,7 +135,7 @@ link_main() {  # <output .js> <emcc flags...>
   local out=$1
   shift
   emcc -O2 -pthread -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -sMAIN_MODULE=2 -Wno-undefined -o "$out" "$OUT/main.o" "$OUT/shim.o" \
-    $(cd "$BUILD" && ls server/*.o | sed "s|^|$BUILD/|") "$VNHOST" $KEEP \
+    $(cd "$BUILD" && ls server/*.o | sed "s|^|$BUILD/|") "$VNHOST" "$VKD3D_OUT/libvkd3d-shader.a" $KEEP \
     $WRAPFLAGS --pre-js "$HERE/pre.js" --js-library "$HERE/vnfs.js" --js-library "$HERE/vnjit.js" --js-library "$HERE/vndl.js" \
     -sPROXY_TO_PTHREAD -sEXIT_RUNTIME \
     -sGLOBAL_BASE=2147483648 -sINITIAL_MEMORY=2214592512 -sMAXIMUM_MEMORY=4GB -sALLOW_MEMORY_GROWTH=1 \

@@ -1,33 +1,39 @@
 --- a/configure
 +++ b/configure
-@@ -1630,6 +1630,9 @@
+@@ -1630,6 +1630,11 @@
  enable_wineusb_sys
  enable_winevulkan
  enable_winewayland_drv
 +enable_winebrowser_drv
 +enable_vnd3d9
 +enable_vnd3d8
++enable_vnd3d11
++enable_vndxgi
  enable_winex11_drv
  enable_winexinput_sys
  enable_wing
-@@ -22796,6 +22799,9 @@
+@@ -22796,6 +22801,11 @@
  wine_fn_config_makefile dlls/wineusb.sys enable_wineusb_sys
  wine_fn_config_makefile dlls/winevulkan enable_winevulkan
  wine_fn_config_makefile dlls/winewayland.drv enable_winewayland_drv
 +wine_fn_config_makefile dlls/winebrowser.drv enable_winebrowser_drv
 +wine_fn_config_makefile dlls/vnd3d8 enable_vnd3d8
++wine_fn_config_makefile dlls/vnd3d11 enable_vnd3d11
++wine_fn_config_makefile dlls/vndxgi enable_vndxgi
 +wine_fn_config_makefile dlls/vnd3d9 enable_vnd3d9
  wine_fn_config_makefile dlls/winex11.drv enable_winex11_drv
  wine_fn_config_makefile dlls/winexinput.sys enable_winexinput_sys
  wine_fn_config_makefile dlls/wing.dll16 enable_wing
 --- a/configure.ac
 +++ b/configure.ac
-@@ -3327,6 +3327,9 @@
+@@ -3327,6 +3327,11 @@
  WINE_CONFIG_MAKEFILE(dlls/wineusb.sys)
  WINE_CONFIG_MAKEFILE(dlls/winevulkan)
  WINE_CONFIG_MAKEFILE(dlls/winewayland.drv)
 +WINE_CONFIG_MAKEFILE(dlls/winebrowser.drv)
 +WINE_CONFIG_MAKEFILE(dlls/vnd3d8)
++WINE_CONFIG_MAKEFILE(dlls/vnd3d11)
++WINE_CONFIG_MAKEFILE(dlls/vndxgi)
 +WINE_CONFIG_MAKEFILE(dlls/vnd3d9)
  WINE_CONFIG_MAKEFILE(dlls/winex11.drv)
  WINE_CONFIG_MAKEFILE(dlls/winexinput.sys)
@@ -2520,6 +2526,299 @@
 +{
 +    __wine_set_user_driver( &browser_driver_funcs, WINE_GDI_DRIVER_VERSION );
 +    return STATUS_SUCCESS;
++}
+--- /dev/null
++++ b/dlls/vnd3d11/Makefile.in
+@@ -0,0 +1,5 @@
++MODULE    = d3d11.dll
++
++SOURCES = \
++	d3d11.spec \
++	main.c
+--- /dev/null
++++ b/dlls/vnd3d11/d3d11.spec
+@@ -0,0 +1,8 @@
++@ stdcall D3D11CoreCreateDevice(ptr ptr long ptr long ptr)
++@ stub D3D11CoreCreateLayeredDevice
++@ stub D3D11CoreGetLayeredDeviceSize
++@ stub D3D11CoreRegisterLayers
++@ stdcall D3D11CreateDevice(ptr long ptr long ptr long long ptr ptr ptr)
++@ stdcall D3D11CreateDeviceAndSwapChain(ptr long ptr long ptr long long ptr ptr ptr ptr ptr)
++@ stdcall D3D11On12CreateDevice(ptr long ptr long ptr long long ptr ptr ptr)
++@ stdcall vnd3d11_create_factory(long ptr ptr)
+--- /dev/null
++++ b/dlls/vnd3d11/main.c
+@@ -0,0 +1,123 @@
++/*
++ * Direct3D 11 and DXGI for vnvm, PE side (d3d11.dll; dxgi.dll's factories come here too)
++ *
++ * Same scheme as dlls/vnd3d9: every method of every interface is a stub handing its stack
++ * arguments to vnhost (crates/vnhost/src/d3d11), which keeps the state and draws with the page's
++ * WebGPU. The calls go through d3d9.dll's dispatcher and unix library. Interface numbers start
++ * at 64; the stubs are generated (stubs.h, hangover/gen-d3d11-stubs.py).
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ */
++
++#include <stdarg.h>
++#include "windef.h"
++#include "winbase.h"
++#include "wine/asm.h"
++#include "wine/debug.h"
++#include "stubs.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(d3d11);
++
++static HRESULT (WINAPI *dispatch)( UINT id, void *args );
++
++HRESULT WINAPI vnd3d11_dispatch( UINT id, void *args )
++{
++    return dispatch( id, args );
++}
++
++/* host-side ids outside the interfaces */
++#define D3D11_INIT           0xffff0011
++#define D3D11_CREATE_DEVICE  0xffff0012
++#define D3D11_CREATE_FACTORY 0xffff0013
++
++#define FIRST_IFACE 64
++#define LAST_IFACE 93
++
++#define M(i,n,a) __ASM_GLOBAL_FUNC( vnd3d11_##i##_##n, \
++    "leal 4(%esp),%eax\n\t" \
++    "pushl %eax\n\t" \
++    "pushl $(" #i "*256+" #n ")\n\t" \
++    "call " __ASM_STDCALL("vnd3d11_dispatch",8) "\n\t" \
++    "ret $(4*" #a ")" )
++/* (returns a float: 0.0) */
++#define F(i,n) __ASM_GLOBAL_FUNC( vnd3d11_##i##_##n, "fldz\n\tret $8" )
++ALL_IFACES
++#undef M
++#undef F
++
++#define M(i,n,a) extern void vnd3d11_##i##_##n(void);
++#define F(i,n) M(i,n,0)
++ALL_IFACES
++#undef M
++#undef F
++
++#define M(i,n,a) (const void *)vnd3d11_##i##_##n,
++#define F(i,n) M(i,n,0)
++#define V(i) static const void *vtbl_##i[] = { IFACE_##i };
++V(64) V(65) V(66) V(67) V(68) V(69) V(70) V(71) V(72) V(73) V(74) V(75) V(76) V(77) V(78) V(79)
++V(80) V(81) V(82) V(83) V(84) V(85) V(86) V(87) V(88) V(89) V(90) V(91) V(92) V(93)
++#undef V
++#undef M
++#undef F
++
++static const void *const *vtbls[LAST_IFACE + 1] =
++{
++#define V(i) [i] = vtbl_##i,
++V(64) V(65) V(66) V(67) V(68) V(69) V(70) V(71) V(72) V(73) V(74) V(75) V(76) V(77) V(78) V(79)
++V(80) V(81) V(82) V(83) V(84) V(85) V(86) V(87) V(88) V(89) V(90) V(91) V(92) V(93)
++#undef V
++};
++
++BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
++{
++    HMODULE d3d9;
++    void *args[2] = { (void *)vtbls, (void *)(LAST_IFACE + 1) };
++
++    if (reason != DLL_PROCESS_ATTACH) return TRUE;
++    DisableThreadLibraryCalls( inst );
++    if (!(d3d9 = LoadLibraryA( "d3d9.dll" ))) return FALSE;
++    if (!(dispatch = (void *)GetProcAddress( d3d9, "vnd3d9_dispatch" ))) return FALSE;
++    return !dispatch( D3D11_INIT, args );
++}
++
++/* D3D11CreateDeviceAndSwapChain(adapter, driver type, software, flags, levels, count, sdk,
++ * swapchain desc, swapchain, device, feature level, context): the host takes the arguments */
++HRESULT WINAPI D3D11CreateDeviceAndSwapChain( void *adapter, UINT driver_type, HMODULE swrast, UINT flags,
++        const UINT *levels, UINT count, UINT sdk, const void *desc, void **swapchain, void **device,
++        UINT *level, void **context )
++{
++    void *args[12] = { adapter, (void *)driver_type, swrast, (void *)flags, (void *)levels, (void *)count,
++                       (void *)sdk, (void *)desc, swapchain, device, level, context };
++
++    TRACE( "flags %#x, levels %p/%u\n", flags, levels, count );
++    return dispatch( D3D11_CREATE_DEVICE, args );
++}
++
++HRESULT WINAPI D3D11CreateDevice( void *adapter, UINT driver_type, HMODULE swrast, UINT flags,
++        const UINT *levels, UINT count, UINT sdk, void **device, UINT *level, void **context )
++{
++    return D3D11CreateDeviceAndSwapChain( adapter, driver_type, swrast, flags, levels, count, sdk,
++                                          NULL, NULL, device, level, context );
++}
++
++HRESULT WINAPI D3D11On12CreateDevice( void *device, UINT flags, const UINT *levels, UINT count,
++        void *queues, UINT queue_count, UINT node_mask, void **out, void **context, UINT *level )
++{
++    return E_NOTIMPL;
++}
++
++HRESULT WINAPI D3D11CoreCreateDevice( void *factory, void *adapter, UINT flags, const UINT *levels,
++        UINT count, void **device )
++{
++    return D3D11CreateDevice( adapter, 0, NULL, flags, levels, count, 7, device, NULL, NULL );
++}
++
++/* dxgi.dll's CreateDXGIFactory*(flags, riid, out) */
++HRESULT WINAPI vnd3d11_create_factory( UINT flags, const GUID *riid, void **out )
++{
++    void *args[3] = { (void *)flags, (void *)riid, out };
++    return dispatch( D3D11_CREATE_FACTORY, args );
++}
+--- /dev/null
++++ b/dlls/vnd3d11/stubs.h
+@@ -0,0 +1,63 @@
++/* generated by hangover/gen-d3d11-stubs.py: do not edit */
++
++/* 64: IDXGIFactory2 */
++#define IFACE_64 M(64,0,3) M(64,1,1) M(64,2,1) M(64,3,4) M(64,4,3) M(64,5,4) M(64,6,3) M(64,7,3) M(64,8,3) M(64,9,2) M(64,10,4) M(64,11,3) M(64,12,3) M(64,13,1) M(64,14,1) M(64,15,7) M(64,16,6) M(64,17,3) M(64,18,4) M(64,19,3) M(64,20,2) M(64,21,4) M(64,22,3) M(64,23,2) M(64,24,5)
++/* 65: IDXGIAdapter1 */
++#define IFACE_65 M(65,0,3) M(65,1,1) M(65,2,1) M(65,3,4) M(65,4,3) M(65,5,4) M(65,6,3) M(65,7,3) M(65,8,2) M(65,9,3) M(65,10,2)
++/* 66: IDXGIOutput */
++#define IFACE_66 M(66,0,3) M(66,1,1) M(66,2,1) M(66,3,4) M(66,4,3) M(66,5,4) M(66,6,3) M(66,7,2) M(66,8,5) M(66,9,4) M(66,10,1) M(66,11,3) M(66,12,1) M(66,13,2) M(66,14,2) M(66,15,2) M(66,16,2) M(66,17,2) M(66,18,2)
++/* 67: IDXGISwapChain1 */
++#define IFACE_67 M(67,0,3) M(67,1,1) M(67,2,1) M(67,3,4) M(67,4,3) M(67,5,4) M(67,6,3) M(67,7,3) M(67,8,3) M(67,9,4) M(67,10,3) M(67,11,3) M(67,12,2) M(67,13,6) M(67,14,2) M(67,15,2) M(67,16,2) M(67,17,2) M(67,18,2) M(67,19,2) M(67,20,2) M(67,21,3) M(67,22,4) M(67,23,1) M(67,24,2) M(67,25,2) M(67,26,2) M(67,27,2) M(67,28,2)
++/* 68: IDXGIDevice1 */
++#define IFACE_68 M(68,0,3) M(68,1,1) M(68,2,1) M(68,3,4) M(68,4,3) M(68,5,4) M(68,6,3) M(68,7,2) M(68,8,6) M(68,9,4) M(68,10,2) M(68,11,2) M(68,12,2) M(68,13,2)
++/* 69: IDXGISurface1 */
++#define IFACE_69 M(69,0,3) M(69,1,1) M(69,2,1) M(69,3,4) M(69,4,3) M(69,5,4) M(69,6,3) M(69,7,3) M(69,8,2) M(69,9,3) M(69,10,1) M(69,11,3) M(69,12,2)
++/* 70: ID3D11Device */
++#define IFACE_70 M(70,0,3) M(70,1,1) M(70,2,1) M(70,3,4) M(70,4,4) M(70,5,4) M(70,6,4) M(70,7,4) M(70,8,4) M(70,9,4) M(70,10,4) M(70,11,6) M(70,12,5) M(70,13,5) M(70,14,10) M(70,15,5) M(70,16,5) M(70,17,5) M(70,18,5) M(70,19,2) M(70,20,3) M(70,21,3) M(70,22,3) M(70,23,3) M(70,24,3) M(70,25,3) M(70,26,3) M(70,27,3) M(70,28,4) M(70,29,3) M(70,30,4) M(70,31,2) M(70,32,10) M(70,33,4) M(70,34,4) M(70,35,4) M(70,36,3) M(70,37,1) M(70,38,1) M(70,39,1) M(70,40,2) M(70,41,2) M(70,42,1)
++/* 71: ID3D11DeviceContext */
++#define IFACE_71 M(71,0,3) M(71,1,1) M(71,2,1) M(71,3,2) M(71,4,4) M(71,5,4) M(71,6,3) M(71,7,4) M(71,8,4) M(71,9,4) M(71,10,4) M(71,11,4) M(71,12,4) M(71,13,3) M(71,14,6) M(71,15,3) M(71,16,4) M(71,17,2) M(71,18,6) M(71,19,4) M(71,20,6) M(71,21,5) M(71,22,4) M(71,23,4) M(71,24,2) M(71,25,4) M(71,26,4) M(71,27,2) M(71,28,2) M(71,29,5) M(71,30,3) M(71,31,4) M(71,32,4) M(71,33,4) M(71,34,8) M(71,35,4) M(71,36,3) M(71,37,4) M(71,38,1) M(71,39,3) M(71,40,3) M(71,41,4) M(71,42,3) M(71,43,2) M(71,44,3) M(71,45,3) M(71,46,9) M(71,47,3) M(71,48,7) M(71,49,4) M(71,50,3) M(71,51,3) M(71,52,3) M(71,53,5) M(71,54,2) M(71,55,3) F(71,56) M(71,57,6) M(71,58,3) M(71,59,4) M(71,60,4) M(71,61,4) M(71,62,4) M(71,63,4) M(71,64,4) M(71,65,4) M(71,66,4) M(71,67,4) M(71,68,5) M(71,69,4) M(71,70,4) M(71,71,4) M(71,72,4) M(71,73,4) M(71,74,4) M(71,75,4) M(71,76,4) M(71,77,4) M(71,78,2) M(71,79,6) M(71,80,4) M(71,81,4) M(71,82,4) M(71,83,2) M(71,84,4) M(71,85,4) M(71,86,3) M(71,87,4) M(71,88,4) M(71,89,4) M(71,90,7) M(71,91,4) M(71,92,3) M(71,93,3) M(71,94,2) M(71,95,3) M(71,96,3) M(71,97,4) M(71,98,4) M(71,99,4) M(71,100,4) M(71,101,4) M(71,102,4) M(71,103,4) M(71,104,4) M(71,105,4) M(71,106,4) M(71,107,4) M(71,108,4) M(71,109,4) M(71,110,1) M(71,111,1) M(71,112,1) M(71,113,1) M(71,114,3)
++/* 72: ID3D11Buffer */
++#define IFACE_72 M(72,0,3) M(72,1,1) M(72,2,1) M(72,3,2) M(72,4,4) M(72,5,4) M(72,6,3) M(72,7,2) M(72,8,2) M(72,9,1) M(72,10,2)
++/* 73: ID3D11Texture1D */
++#define IFACE_73 M(73,0,3) M(73,1,1) M(73,2,1) M(73,3,2) M(73,4,4) M(73,5,4) M(73,6,3) M(73,7,2) M(73,8,2) M(73,9,1) M(73,10,2)
++/* 74: ID3D11Texture2D */
++#define IFACE_74 M(74,0,3) M(74,1,1) M(74,2,1) M(74,3,2) M(74,4,4) M(74,5,4) M(74,6,3) M(74,7,2) M(74,8,2) M(74,9,1) M(74,10,2)
++/* 75: ID3D11Texture3D */
++#define IFACE_75 M(75,0,3) M(75,1,1) M(75,2,1) M(75,3,2) M(75,4,4) M(75,5,4) M(75,6,3) M(75,7,2) M(75,8,2) M(75,9,1) M(75,10,2)
++/* 76: ID3D11ShaderResourceView */
++#define IFACE_76 M(76,0,3) M(76,1,1) M(76,2,1) M(76,3,2) M(76,4,4) M(76,5,4) M(76,6,3) M(76,7,2) M(76,8,2)
++/* 77: ID3D11RenderTargetView */
++#define IFACE_77 M(77,0,3) M(77,1,1) M(77,2,1) M(77,3,2) M(77,4,4) M(77,5,4) M(77,6,3) M(77,7,2) M(77,8,2)
++/* 78: ID3D11DepthStencilView */
++#define IFACE_78 M(78,0,3) M(78,1,1) M(78,2,1) M(78,3,2) M(78,4,4) M(78,5,4) M(78,6,3) M(78,7,2) M(78,8,2)
++/* 79: ID3D11UnorderedAccessView */
++#define IFACE_79 M(79,0,3) M(79,1,1) M(79,2,1) M(79,3,2) M(79,4,4) M(79,5,4) M(79,6,3) M(79,7,2) M(79,8,2)
++/* 80: ID3D11VertexShader */
++#define IFACE_80 M(80,0,3) M(80,1,1) M(80,2,1) M(80,3,2) M(80,4,4) M(80,5,4) M(80,6,3)
++/* 81: ID3D11PixelShader */
++#define IFACE_81 M(81,0,3) M(81,1,1) M(81,2,1) M(81,3,2) M(81,4,4) M(81,5,4) M(81,6,3)
++/* 82: ID3D11GeometryShader */
++#define IFACE_82 M(82,0,3) M(82,1,1) M(82,2,1) M(82,3,2) M(82,4,4) M(82,5,4) M(82,6,3)
++/* 83: ID3D11HullShader */
++#define IFACE_83 M(83,0,3) M(83,1,1) M(83,2,1) M(83,3,2) M(83,4,4) M(83,5,4) M(83,6,3)
++/* 84: ID3D11DomainShader */
++#define IFACE_84 M(84,0,3) M(84,1,1) M(84,2,1) M(84,3,2) M(84,4,4) M(84,5,4) M(84,6,3)
++/* 85: ID3D11ComputeShader */
++#define IFACE_85 M(85,0,3) M(85,1,1) M(85,2,1) M(85,3,2) M(85,4,4) M(85,5,4) M(85,6,3)
++/* 86: ID3D11InputLayout */
++#define IFACE_86 M(86,0,3) M(86,1,1) M(86,2,1) M(86,3,2) M(86,4,4) M(86,5,4) M(86,6,3)
++/* 87: ID3D11SamplerState */
++#define IFACE_87 M(87,0,3) M(87,1,1) M(87,2,1) M(87,3,2) M(87,4,4) M(87,5,4) M(87,6,3) M(87,7,2)
++/* 88: ID3D11BlendState */
++#define IFACE_88 M(88,0,3) M(88,1,1) M(88,2,1) M(88,3,2) M(88,4,4) M(88,5,4) M(88,6,3) M(88,7,2)
++/* 89: ID3D11DepthStencilState */
++#define IFACE_89 M(89,0,3) M(89,1,1) M(89,2,1) M(89,3,2) M(89,4,4) M(89,5,4) M(89,6,3) M(89,7,2)
++/* 90: ID3D11RasterizerState */
++#define IFACE_90 M(90,0,3) M(90,1,1) M(90,2,1) M(90,3,2) M(90,4,4) M(90,5,4) M(90,6,3) M(90,7,2)
++/* 91: ID3D11Query */
++#define IFACE_91 M(91,0,3) M(91,1,1) M(91,2,1) M(91,3,2) M(91,4,4) M(91,5,4) M(91,6,3) M(91,7,1) M(91,8,2)
++/* 92: ID3D11ClassLinkage */
++#define IFACE_92 M(92,0,3) M(92,1,1) M(92,2,1) M(92,3,2) M(92,4,4) M(92,5,4) M(92,6,3) M(92,7,4) M(92,8,7)
++/* 93: ID3D11CommandList */
++#define IFACE_93 M(93,0,3) M(93,1,1) M(93,2,1) M(93,3,2) M(93,4,4) M(93,5,4) M(93,6,3) M(93,7,1)
++#define ALL_IFACES IFACE_64 IFACE_65 IFACE_66 IFACE_67 IFACE_68 IFACE_69 IFACE_70 IFACE_71 IFACE_72 IFACE_73 IFACE_74 IFACE_75 IFACE_76 IFACE_77 IFACE_78 IFACE_79 IFACE_80 IFACE_81 IFACE_82 IFACE_83 IFACE_84 IFACE_85 IFACE_86 IFACE_87 IFACE_88 IFACE_89 IFACE_90 IFACE_91 IFACE_92 IFACE_93
+--- /dev/null
++++ b/dlls/vndxgi/Makefile.in
+@@ -0,0 +1,5 @@
++MODULE    = dxgi.dll
++
++SOURCES = \
++	dxgi.spec \
++	main.c
+--- /dev/null
++++ b/dlls/vndxgi/dxgi.spec
+@@ -0,0 +1,7 @@
++@ stdcall CreateDXGIFactory(ptr ptr)
++@ stdcall CreateDXGIFactory1(ptr ptr)
++@ stdcall CreateDXGIFactory2(long ptr ptr)
++@ stdcall DXGID3D10CreateDevice(ptr ptr ptr long ptr long ptr)
++@ stdcall DXGID3D10RegisterLayers(ptr long)
++@ stdcall DXGIGetDebugInterface1(long ptr ptr)
++@ stdcall DXGIDeclareAdapterRemovalSupport()
+--- /dev/null
++++ b/dlls/vndxgi/main.c
+@@ -0,0 +1,61 @@
++/*
++ * DXGI for vnvm: the factories are d3d11.dll's (dlls/vnd3d11, crates/vnhost/src/d3d11).
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ */
++
++#include <stdarg.h>
++#include "windef.h"
++#include "winbase.h"
++#include "objbase.h"
++
++static HRESULT vnd3d11_create_factory( UINT flags, const GUID *riid, void **out )
++{
++    static HRESULT (WINAPI *create)( UINT flags, const GUID *riid, void **out );
++    HMODULE d3d11;
++
++    if (!create && (d3d11 = LoadLibraryA( "d3d11.dll" )))
++        create = (void *)GetProcAddress( d3d11, "vnd3d11_create_factory" );
++    if (!out) return E_INVALIDARG;
++    *out = NULL;
++    return create ? create( flags, riid, out ) : E_FAIL;
++}
++
++HRESULT WINAPI CreateDXGIFactory2( UINT flags, REFIID riid, void **out )
++{
++    return vnd3d11_create_factory( flags, riid, out );
++}
++
++HRESULT WINAPI CreateDXGIFactory1( REFIID riid, void **out )
++{
++    return vnd3d11_create_factory( 0, riid, out );
++}
++
++HRESULT WINAPI CreateDXGIFactory( REFIID riid, void **out )
++{
++    return vnd3d11_create_factory( 0, riid, out );
++}
++
++HRESULT WINAPI DXGID3D10CreateDevice( HMODULE d3d10core, void *factory, void *adapter, UINT flags,
++        const void *levels, UINT count, void **device )
++{
++    return E_NOTIMPL;
++}
++
++HRESULT WINAPI DXGID3D10RegisterLayers( const void *layers, UINT count )
++{
++    return E_NOTIMPL;
++}
++
++HRESULT WINAPI DXGIGetDebugInterface1( UINT flags, REFIID riid, void **out )
++{
++    return E_NOINTERFACE;
++}
++
++HRESULT WINAPI DXGIDeclareAdapterRemovalSupport(void)
++{
++    return S_OK;
 +}
 --- /dev/null
 +++ b/dlls/vnd3d8/Makefile.in

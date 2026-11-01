@@ -74,7 +74,9 @@ export class Presenter {
   static async create(canvas: HTMLCanvasElement): Promise<Presenter> {
     const adapter = await navigator.gpu?.requestAdapter();
     if (!adapter) throw new Error("WebGPU が使えません");
-    const device = await adapter.requestDevice();
+    // (Direct3D 11 games sample 32-bit float textures with linear filters)
+    const want: GPUFeatureName[] = ["float32-filterable", "rg11b10ufloat-renderable"];
+    const device = await adapter.requestDevice({ requiredFeatures: want.filter((f) => adapter.features.has(f)) });
     const context = canvas.getContext("webgpu")!;
     const format = navigator.gpu.getPreferredCanvasFormat();
     context.configure({ device, format, alphaMode: "opaque" });
