@@ -16,6 +16,8 @@
 //
 //   /game.html?secs=60    story seconds to measure (default 60)
 //   /game.html?runs=1     one run only
+//   &titleafter=N         the title counts as shown after N s (Direct3D games)
+//   &pre=x,y              clicked every 3 s before the title (a first-start dialog)
 //   &env=VNVM_JIT_PROFILE=1  print the executed instruction counts at the end (console)
 
 const NATIVE = { title: 5.9, cores: 0.18 };
@@ -130,12 +132,28 @@ const raf = (t: number) => {
 };
 requestAnimationFrame(raf);
 
-function click(): void {
+function click(at = CLICK): void {
   const w = wine();
   if (!w) return;
-  w._vnhost_input_push(1, CLICK[0]!, CLICK[1]!, 0);
-  w._vnhost_input_push(2, CLICK[0]!, CLICK[1]!, 0);
-  w._vnhost_input_push(3, CLICK[0]!, CLICK[1]!, 0);
+  w._vnhost_input_push(1, at[0]!, at[1]!, 0);
+  w._vnhost_input_push(2, at[0]!, at[1]!, 0);
+  w._vnhost_input_push(3, at[0]!, at[1]!, 0);
+}
+// &titleafter=N: the title counts as shown after N s (a Direct3D game: its frames don't come
+// through wine-frame)
+const TITLE_AFTER = Number(params.get("titleafter") ?? 0);
+if (TITLE_AFTER > 0) {
+  setTimeout(() => {
+    if (!title) {
+      title = now();
+      void story();
+    }
+  }, TITLE_AFTER * 1000);
+}
+// &pre=x,y: clicked every 3 s until the title shows (a first-start dialog's OK button)
+const PRE = params.get("pre")?.split(",").map(Number);
+if (PRE?.length === 2) {
+  const t = setInterval(() => (title ? clearInterval(t) : click(PRE)), 3000);
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
