@@ -217,6 +217,8 @@ pub struct Region {
     /// with [`PROFILE`] on: per block (address, address of its u32 entry counter, the
     /// instructions as "mnemonic operands" keys)
     pub profile: Vec<(u32, u32, Vec<String>)>,
+    /// functions: the indirect calls and jumps (addresses) whose targets the ring samples
+    pub sites: Vec<u32>,
 }
 
 /// Debugging: count block entries (a u32 per block, leaked) and fill [`Region::profile`].
@@ -2442,16 +2444,16 @@ impl<'a> Gen<'a> {
                 self.c.set(t);
                 self.c.u32c(next).set(ret);
                 self.push32(ret);
-                if self.fnm {
-                    self.call_fn(t, next);
-                    return false;
-                }
                 if let Some(&(entry, Some(f))) = self.inlined.get(&(self.block_index as usize)) {
                     self.c.get(t).u32c(f).eq().if_();
                     self.depth += 1;
                     self.goto_block(entry, f);
                     self.depth -= 1;
                     self.c.end();
+                }
+                if self.fnm {
+                    self.call_fn(t, next);
+                    return false;
                 }
                 if CALLS.load(core::sync::atomic::Ordering::Relaxed) && INDIRECT_CALLS.load(core::sync::atomic::Ordering::Relaxed) {
                     self.call_out(t, next);
@@ -2488,8 +2490,13 @@ impl<'a> Gen<'a> {
                 }
                 if self.fnm && !(ins.op0_kind() == OpKind::Memory && ins.memory_index() != Register::None) {
                     // a tail jump (an import thunk's `jmp [iat]`): a target without a function
-                    // gets one (see emit_fn_lookup)
+                    // gets one (see emit_fn_lookup); where it goes is sampled (see call_fn)
                     self.c.i32c(1).set(L_ST);
+                    let (h, e) = (self.temp(), self.temp());
+                    let site = ins.ip32();
+                    ring_write_with(&mut self.c, h, e, t, |c| {
+                        c.u32c(FN_TAG | site);
+                    });
                 }
                 self.c.get(t);
                 self.jump_dyn();
@@ -2867,6 +2874,13 @@ impl<'a> Gen<'a> {
         let hash = offset_of!(Cpu, jit_hash) as u32;
         let maskf = offset_of!(Cpu, jit_mask) as u32;
         let (h, v) = (self.temp(), self.temp());
+        if self.ins.flow_control() == FlowControl::IndirectCall {
+            // where it goes, sampled by the host (a hint to inline it next time)
+            let site = self.ins.ip32();
+            ring_write_with(&mut self.c, h, v, t, |c| {
+                c.u32c(FN_TAG | site);
+            });
+        }
         for i in 0..8 {
             self.c.get(L_CPU).get(L_REG + i).store32(Off::reg(i as usize));
         }
@@ -3097,13 +3111,17 @@ fn emit_fn_lookup(c: &mut Code, entry: u32) {
 
 /// Writes (from, L_NEXT) to the ring (`from` pushes the first; uses L_T and L_T + 1).
 fn ring_write(c: &mut Code, from: impl FnOnce(&mut Code)) {
-    let (h, e) = (L_T, L_T + 1);
+    ring_write_with(c, L_T, L_T + 1, L_NEXT, from);
+}
+
+/// [`ring_write`] with temporaries `h`, `e` and the target in local `to`.
+fn ring_write_with(c: &mut Code, h: u32, e: u32, to: u32, from: impl FnOnce(&mut Code)) {
     let ring = offset_of!(Cpu, jit_ring) as u32;
     c.get(L_CPU).load32(ring).tee(h).get(h).load32(0).tee(e).i32c(1).add().store32(0);
     c.get(h).get(e).i32c(RING_SIZE as i32 - 1).and().i32c(3).shl().add().tee(h);
     from(c);
     c.store32(4);
-    c.get(h).get(L_NEXT).store32(8);
+    c.get(h).get(to).store32(8);
 }
 
 /// Decodes the block at `eip` and flag liveness for it.
@@ -3206,7 +3224,7 @@ fn callee(blocks: &[(u32, Vec<Instruction>)], targets: &BTreeMap<u32, u32>, f: u
 
 /// The blocks of the function at `f` if it is small enough to inline (MAX_INLINE instructions
 /// over the blocks its jumps reach, no calls, ending in RET).
-fn small_callee<M: Memory>(mem: &mut M, f: u32, trap: (u32, u32)) -> Option<Vec<u32>> {
+fn small_callee<M: Memory>(mem: &mut M, f: u32, trap: (u32, u32), hints: &dyn Fn(u32) -> Option<u32>) -> Option<Vec<u32>> {
     let (mut seen, mut queue, mut size, mut ret) = (Vec::new(), alloc::vec![f], 0, false);
     while let Some(a) = queue.pop() {
         if seen.contains(&a) {
@@ -3219,8 +3237,13 @@ fn small_callee<M: Memory>(mem: &mut M, f: u32, trap: (u32, u32)) -> Option<Vec<
         let list = decode(mem, a);
         size += list.len();
         let last = list.last()?;
-        if size > MAX_INLINE || matches!(last.flow_control(), FlowControl::Call | FlowControl::IndirectCall | FlowControl::IndirectBranch) {
+        if size > MAX_INLINE || matches!(last.flow_control(), FlowControl::Call | FlowControl::IndirectCall) {
             return None;
+        }
+        if last.flow_control() == FlowControl::IndirectBranch {
+            // a wrapper's tail jump: to where it mostly goes
+            queue.push(hints(last.ip32())?);
+            continue;
         }
         ret |= last.mnemonic() == Mnemonic::Ret;
         queue.extend(successors(last));
@@ -3789,15 +3812,17 @@ fn block_liveness(g: &Gen, blocks: &[(u32, Vec<Instruction>)]) -> (Vec<u32>, Vec
 /// taking at most `max_blocks` blocks whose start `accept` agrees to. None if not even the
 /// entry block can be translated.
 pub fn translate_region<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u32], max_blocks: usize, accept: impl FnMut(u32) -> bool) -> Option<Region> {
-    translate(module, mem, roots, max_blocks, accept, None)
+    translate(module, mem, roots, max_blocks, accept, None, &|_| None)
 }
 
 /// Adds the function at `entry` (see [`FN`]) to `module`: its adapter for the region calling
 /// convention ("f<n>", entered by the dispatcher and by regions' jumps), then the function
 /// ("f<n+1>"), entered at any of `starts` (table index | block << ENTRY_SHIFT | FN_TAG).
 /// Small callees are inlined whether they ran or not (if outside `trap`).
-pub fn translate_function<M: Memory>(module: &mut Module, mem: &mut M, entry: u32, max_blocks: usize, trap: (u32, u32), accept: impl FnMut(u32) -> bool) -> Option<Region> {
-    translate(module, mem, &[entry], max_blocks, accept, Some(trap))
+/// `hints` gives the target an indirect call or jump at an address mostly goes to (a small one
+/// is inlined behind a check).
+pub fn translate_function<M: Memory>(module: &mut Module, mem: &mut M, entry: u32, max_blocks: usize, trap: (u32, u32), hints: &dyn Fn(u32) -> Option<u32>, accept: impl FnMut(u32) -> bool) -> Option<Region> {
+    translate(module, mem, &[entry], max_blocks, accept, Some(trap), hints)
 }
 
 fn translate<M: Memory>(
@@ -3807,6 +3832,7 @@ fn translate<M: Memory>(
     max_blocks: usize,
     mut accept: impl FnMut(u32) -> bool,
     fn_trap: Option<(u32, u32)>,
+    hints: &dyn Fn(u32) -> Option<u32>,
 ) -> Option<Region> {
     let fnm = fn_trap.is_some();
     // blocks of small callees to inline (functions)
@@ -3831,13 +3857,15 @@ fn translate<M: Memory>(
             None => decode(mem, a),
         };
         let Some(last) = list.last() else { continue };
-        if fn_on() && last.flow_control() == FlowControl::Call {
+        if fn_on() && matches!(last.flow_control(), FlowControl::Call | FlowControl::IndirectCall) {
             queue.push_back(last.next_ip32());
             // a small callee comes along to be inlined (see `inline` below)
-            if let (Some(trap), OpKind::NearBranch32) = (fn_trap, last.op0_kind()) {
-                if let Some(b) = small_callee(mem, last.near_branch32(), trap) {
+            let f = if last.op0_kind() == OpKind::NearBranch32 { Some(last.near_branch32()) } else { hints(last.ip32()) };
+            if let (Some(trap), Some(f)) = (fn_trap, f) {
+                if let Some(b) = small_callee(mem, f, trap, hints) {
+                    // (all of them: a wrapper's tail jump has no static successor)
+                    queue.extend(b.iter().copied());
                     forced.extend(b);
-                    queue.push_back(last.near_branch32());
                 }
             }
         } else {
@@ -3887,8 +3915,10 @@ fn translate<M: Memory>(
     // small callees get a copy after each call (an indirect one checking for the target the
     // region was merged for), so the call and return are plain jumps inside a loop
     // (a wrapper's tail jump goes to one of the other roots: the first that fits)
+    // where an indirect call or jump goes: for functions the hints, for regions the roots
+    let cands: Vec<u32> = if fnm { blocks.iter().filter_map(|b| hints(b.1.last().unwrap().ip32())).collect() } else { roots.to_vec() };
     let inline = |f: u32| {
-        roots.iter().filter(|&&h| h != f).find_map(|&h| callee(&blocks, &targets, f, Some(h)).filter(|b| b.1.is_some()).map(|b| (b, Some(h)))).or_else(|| callee(&blocks, &targets, f, None).map(|b| (b, None)))
+        cands.iter().filter(|&&h| h != f).find_map(|&h| callee(&blocks, &targets, f, Some(h)).filter(|b| b.1.is_some()).map(|b| (b, Some(h)))).or_else(|| callee(&blocks, &targets, f, None).map(|b| (b, None)))
     };
     let mut order = Vec::new();
     let mut ctxs = Vec::new();
@@ -3908,6 +3938,7 @@ fn translate<M: Memory>(
             // the target of an indirect call: one of the roots merged in
             // (a wrapper that tail-jumps to the latest root first: qsort calls its comparison
             // through one, and the latest root is then what the wrapper jumps to)
+            FlowControl::IndirectCall if fnm => hints(last.ip32()).and_then(|f| inline(f).map(|(b, h)| (f, Some(f), b, h))),
             FlowControl::IndirectCall => {
                 let found: Vec<_> = roots.iter().rev().filter_map(|&f| inline(f).map(|(b, h)| (f, Some(f), b, h))).collect();
                 let pick = found.iter().position(|c| c.2 .1.is_some()).unwrap_or(0);
@@ -4135,5 +4166,10 @@ fn translate<M: Memory>(
         }
         let _ = writeln!(layout, "SZTOTAL {}", module.funcs.last().unwrap().code.b.len());
     }
-    Some(Region { starts, instructions: count, code, layout, profile })
+    let sites = if fnm {
+        blocks.iter().map(|b| b.1.last().unwrap()).filter(|l| matches!(l.flow_control(), FlowControl::IndirectCall | FlowControl::IndirectBranch)).map(|l| l.ip32()).collect()
+    } else {
+        Vec::new()
+    };
+    Some(Region { starts, instructions: count, code, layout, profile, sites })
 }
