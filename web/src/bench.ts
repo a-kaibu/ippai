@@ -81,6 +81,8 @@ if (!step.wasm && !step.micro) {
 const table = document.querySelector<HTMLTableElement>("#result")!;
 const env = document.querySelector<HTMLDivElement>("#env")!;
 const copy = document.querySelector<HTMLButtonElement>("#copy")!;
+const phase = document.querySelector<HTMLDivElement>("#phase")!;
+phase.textContent = `計測中… ${index + 1} / ${SUITE.length} (${step.label})。閉じずにお待ちください`;
 const device = `${navigator.userAgent} / ${navigator.hardwareConcurrency} cores`;
 const lines: string[] = [];
 const t0 = performance.now();
@@ -124,6 +126,8 @@ function onLine(line: string): void {
     .then(() => {
       if (index + 1 >= SUITE.length) {
         env.textContent = `${device} / 完了`;
+        phase.textContent = "✓ 計測完了。結果はサーバに保存しました";
+        phase.className = "done";
         copy.hidden = false;
         return;
       }

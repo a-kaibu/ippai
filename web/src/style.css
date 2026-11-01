@@ -58,3 +58,18 @@ body {
   opacity: 0.7;
   overflow-wrap: anywhere;
 }
+#phase {
+  font-size: 18px;
+  font-weight: bold;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+  border-radius: 4px;
+}
+#phase.running {
+  background: #8a5a00;
+  color: #fff;
+}
+#phase.done {
+  background: #1f7a4a;
+  color: #fff;
+}
