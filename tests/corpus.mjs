@@ -128,7 +128,10 @@ async function input(kind, x, y, d) {
   await page.evaluate(([k, x, y, d]) => window.vnvmWine?._vnhost_input_push(k, x, y, d), [kind, x, y, d]).catch(() => {});
 }
 let view = [0, 0, 640, 480];
+// x, y in client pixels, or below 1: a fraction of the client size (dialogs whose size varies)
 async function click(x, y) {
+  if (x < 1) x = Math.round(x * (view[2] - view[0]));
+  if (y < 1) y = Math.round(y * (view[3] - view[1]));
   const X = view[0] + x, Y = view[1] + y;
   await input(1, X, Y, 0); await input(2, X, Y, 0); await input(3, X, Y, 0);
 }
