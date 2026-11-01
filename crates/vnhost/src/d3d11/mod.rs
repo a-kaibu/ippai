@@ -924,7 +924,7 @@ unsafe fn output_call(d: &mut D11, m: u32, a: &dyn Fn(usize) -> u32) -> u32 {
             wr(p + 64, 3, h as u32);
             wr(p + 64, 4, 1);
             wr(p + 64, 5, 1);
-            wr(p + 64, 6, 0x0001_0001);
+            wr(p + 64, 6, 1); // HMONITOR: win32u numbers monitors from 1
             S_OK
         }
         8 => {

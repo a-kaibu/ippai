@@ -77,7 +77,9 @@ fn with<R>(f: impl FnOnce(&mut Display) -> R) -> R {
                 let (w, h) = s.split_once('x')?;
                 Some((w.parse().ok()?, h.parse().ok()?))
             })
-            .unwrap_or((1280, 720));
+            // the commonest laptop screen: games that need a 1280x720 window with its frame
+            // (AdvHD: "screen smaller than 1280x720") fit; Siglus takes 75% of the width
+            .unwrap_or((1366, 768));
         Display {
             w,
             h,

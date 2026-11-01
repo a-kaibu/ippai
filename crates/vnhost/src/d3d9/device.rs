@@ -455,6 +455,24 @@ unsafe fn device_out(d: &mut D3d, out: u32) -> u32 {
     S_OK
 }
 
+/// The modes the adapter lists: the usual ones that fit the screen, and the screen's own (games
+/// pick a window size from these; AdvHD's settings dialog wants more than one).
+unsafe fn adapter_modes() -> Vec<(u32, u32)> {
+    let (mut w, mut h) = (0, 0);
+    crate::display::vnhost_display_size(&mut w, &mut h);
+    let (w, h) = (w.max(640) as u32, h.max(480) as u32);
+    let mut v: Vec<(u32, u32)> = [(640, 480), (800, 600), (1024, 768), (1280, 720), (1280, 768), (1280, 800), (1280, 960),
+        (1280, 1024), (1366, 768), (1600, 900), (1920, 1080)]
+        .into_iter()
+        .filter(|&(x, y)| x <= w && y <= h)
+        .collect();
+    if !v.contains(&(w, h)) {
+        v.push((w, h));
+    }
+    v.sort_unstable();
+    v
+}
+
 unsafe fn display_mode(out: u32) -> u32 {
     let (mut w, mut h) = (0, 0);
     crate::display::vnhost_display_size(&mut w, &mut h);
@@ -484,7 +502,9 @@ const CAPS: [u32; 76] = {
     c[12] = 0x1fff; // DestBlendCaps
     c[13] = 0xff; // AlphaCmpCaps
     c[14] = 0x8 | 0x80 | 0x200 | 0x4000 | 0x8_0000; // ShadeCaps
-    c[15] = 0x1 | 0x2 | 0x4 | 0x40 | 0x800 | 0x4000 | 0x8000 | 0x2_0000; // TextureCaps: PERSPECTIVE POW2? ALPHA ...
+    // TextureCaps: PERSPECTIVE, ALPHA, TEXREPEATNOTSCALEDBYSIZE, CUBEMAP, MIPMAP, MIPVOLUMEMAP; no POW2 or
+    // CUBEMAP_POW2: WebGPU textures have any size (AdvHD refuses to start without that)
+    c[15] = 0x1 | 0x4 | 0x40 | 0x800 | 0x4000 | 0x8000;
     c[16] = 0x0300_0000 | 0x0001_0000 | 0x0002_0000 | 0x0100 | 0x0200 | 0x0400; // TextureFilterCaps
     c[17] = c[16];
     c[18] = c[16];
@@ -567,13 +587,19 @@ unsafe fn d3d9_call(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32) ->
             S_OK
         }
         6 => {
-            if a(2) == fmt::X8R8G8B8 || a(2) == fmt::A8R8G8B8 { 1 } else { 0 }
+            if a(2) == fmt::X8R8G8B8 || a(2) == fmt::A8R8G8B8 { adapter_modes().len() as u32 } else { 0 }
         }
         7 => {
-            if a(3) != 0 || (a(2) != fmt::X8R8G8B8 && a(2) != fmt::A8R8G8B8) {
+            let modes = adapter_modes();
+            let Some(&(w, h)) = modes.get(a(3) as usize) else { return D3DERR_INVALIDCALL };
+            if a(2) != fmt::X8R8G8B8 && a(2) != fmt::A8R8G8B8 {
                 return D3DERR_INVALIDCALL;
             }
-            display_mode(a(4))
+            wr(a(4), 0, w);
+            wr(a(4), 1, h);
+            wr(a(4), 2, 60);
+            wr(a(4), 3, a(2));
+            S_OK
         }
         8 => display_mode(a(2)),
         9 => {
@@ -608,7 +634,8 @@ unsafe fn d3d9_call(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32) ->
             std::ptr::copy_nonoverlapping(c.as_ptr(), a(3) as *mut u32, c.len());
             S_OK
         }
-        15 => 0x0001_0001, // GetAdapterMonitor
+        // GetAdapterMonitor: win32u numbers monitors from 1 (sysparams.c), the only one is 1
+        15 => 1,
         16 => create_device(d, this, a(2), a(3), a(4), a(5), a(6)),
         _ => E_NOTIMPL,
     }
