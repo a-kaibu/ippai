@@ -1006,6 +1006,10 @@ fn activate(c: &mut Ctx, h: u32) {
             send(c, old, 0x6, 0, h);
             send(c, old, 0x86, 0, h);
         }
+        // the app becomes active with its first active window (games run only while it is)
+        if old == 0 || !is_window(old) {
+            send(c, h, 0x1c, 1, 0);
+        }
         send(c, h, 0x86, 1, old);
         send(c, h, 0x6, 1, old);
         let f = with(|s| s.focus);

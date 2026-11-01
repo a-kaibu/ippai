@@ -997,6 +997,57 @@ fn CoTaskMemFree(c: &mut Ctx) -> u32 {
     }
     0
 }
+/// The task allocator as an IMalloc object (one, shared).
+fn malloc_obj() -> u32 {
+    static O: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *O.get_or_init(|| {
+        fn qi(c: &mut Ctx) -> u32 {
+            put32(c.a(2), c.a(0));
+            0
+        }
+        fn one(_: &mut Ctx) -> u32 {
+            1
+        }
+        fn alloc(c: &mut Ctx) -> u32 {
+            mem::heap_alloc(c.a(1), false)
+        }
+        fn realloc(c: &mut Ctx) -> u32 {
+            mem::heap_realloc(c.a(1), c.a(2), false)
+        }
+        fn free(c: &mut Ctx) -> u32 {
+            if c.a(1) != 0 {
+                mem::heap_free(c.a(1));
+            }
+            0
+        }
+        fn size(c: &mut Ctx) -> u32 {
+            if c.a(1) == 0 { u32::MAX } else { mem::heap_size(c.a(1)) }
+        }
+        fn did(c: &mut Ctx) -> u32 {
+            mem::heap_owns(c.a(1)) as u32
+        }
+        fn nothing(_: &mut Ctx) -> u32 {
+            0
+        }
+        let m: [(crate::api::Handler, u32); 9] =
+            [(qi, 12), (one, 4), (one, 4), (alloc, 8), (realloc, 12), (free, 8), (size, 8), (did, 8), (nothing, 4)];
+        let v = mem::heap_alloc(4 * m.len() as u32, true);
+        for (i, (f, n)) in m.iter().enumerate() {
+            w32(v + 4 * i as u32, crate::api::host_fn(&format!("IMalloc::{i}"), *f, *n));
+        }
+        let o = mem::heap_alloc(4, true);
+        w32(o, v);
+        o
+    })
+}
+fn SHGetMalloc(c: &mut Ctx) -> u32 {
+    put32(c.a(0), malloc_obj());
+    0
+}
+fn CoGetMalloc(c: &mut Ctx) -> u32 {
+    put32(c.a(1), malloc_obj());
+    0
+}
 fn CoCreateGuid(c: &mut Ctx) -> u32 {
     let p = c.a(0);
     static SEED: AtomicU32 = AtomicU32::new(0x1234_5678);
@@ -1887,13 +1938,13 @@ pub fn init() {
     reg!("version"; GetFileVersionInfoSizeA, GetFileVersionInfoSizeW, GetFileVersionInfoA, GetFileVersionInfoW,
         VerQueryValueA, VerQueryValueW);
     reg!("ole32"; CoInitialize, CoInitializeEx, OleInitialize, CoUninitialize, OleUninitialize, CoCreateInstance,
-        CoTaskMemAlloc, CoTaskMemRealloc, CoTaskMemFree, CoCreateGuid, IsEqualGUID, StringFromGUID2,
+        CoTaskMemAlloc, CoTaskMemRealloc, CoTaskMemFree, CoGetMalloc, CoCreateGuid, IsEqualGUID, StringFromGUID2,
         RegisterDragDrop, RevokeDragDrop);
     reg!("oleaut32"; SysAllocString, SysAllocStringLen, SysAllocStringByteLen, SysReAllocString,
         SysReAllocStringLen, SysFreeString, SysStringLen, SysStringByteLen, VariantInit, VariantClear, VariantCopy,
         VariantCopyInd, VariantChangeTypeEx, VariantChangeType, GetErrorInfo, SetErrorInfo);
     reg!("shell32"; SHGetSpecialFolderPathA, SHGetSpecialFolderPathW, SHGetFolderPathA, SHGetFolderPathW,
-        SHGetSpecialFolderLocation, SHGetFolderLocation, SHGetPathFromIDListA, SHGetPathFromIDListW, ILFree,
+        SHGetSpecialFolderLocation, SHGetFolderLocation, SHGetPathFromIDListA, SHGetPathFromIDListW, ILFree, SHGetMalloc,
         ShellExecuteA, ShellExecuteW, ShellExecuteExA, ShellExecuteExW, DragAcceptFiles, DragFinish,
         DragQueryFileA, DragQueryFileW, CommandLineToArgvW);
     reg!("comctl32"; InitCommonControls, InitCommonControlsEx, ImageList_Create, ImageList_Read, ImageList_Destroy, ImageList_Add,

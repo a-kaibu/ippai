@@ -2581,21 +2581,6 @@ fn SearchPathA(c: &mut Ctx) -> u32 {
     last_error(2);
     0
 }
-fn GetProfileStringA(c: &mut Ctx) -> u32 {
-    let d = arg_str(c.a(2), false);
-    ret_str(c.a(3), c.a(4), &d, false)
-}
-fn GetPrivateProfileStringA(c: &mut Ctx) -> u32 {
-    let d = arg_str(c.a(2), false);
-    ret_str(c.a(3), c.a(4), &d, false)
-}
-fn GetPrivateProfileIntA(c: &mut Ctx) -> u32 {
-    c.a(2)
-}
-fn WritePrivateProfileStringA(_: &mut Ctx) -> u32 {
-    1
-}
-
 // file mappings: views are copies (read-only use: archives)
 fn CreateFileMappingA(c: &mut Ctx) -> u32 {
     let f = obj::file(c.a(0));
@@ -2799,7 +2784,7 @@ pub fn init() {
         GetTempFileNameA, GetTempFileNameW, GetWindowsDirectoryA, GetWindowsDirectoryW, GetSystemDirectoryA,
         GetSystemDirectoryW, GetSystemWindowsDirectoryA, GetDriveTypeA, GetDriveTypeW, GetLogicalDrives,
         GetDiskFreeSpaceA, GetDiskFreeSpaceExA, GetDiskFreeSpaceExW, GetVolumeInformationA, GetVolumeInformationW,
-        SearchPathA, GetProfileStringA, GetPrivateProfileStringA, GetPrivateProfileIntA, WritePrivateProfileStringA,
+        SearchPathA,
         CreateFileMappingA, CreateFileMappingW, MapViewOfFile, MapViewOfFileEx, UnmapViewOfFile, CreatePipe,
         CreateProcessA, CreateProcessW, WinExec, OpenProcess, GetStartupInfoA, GetStartupInfoW, SetHandleCount,
         FormatMessageA, FormatMessageW, Beep, GetComputerNameA, InitializeSListHead, GetCurrentPackageId,
