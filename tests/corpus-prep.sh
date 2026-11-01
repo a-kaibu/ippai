@@ -23,9 +23,9 @@ fi
 if [ ! -d x ]; then
   rm -rf x.part; mkdir x.part
   case "${f,,}" in
-    *.zip) (cd x.part && LC_ALL=C.UTF-8 unar -q -e cp932 -o . ../$f >/dev/null) ;;
-    *.lzh) (cd x.part && LC_ALL=C.UTF-8 unar -q -e cp932 -o . ../$f >/dev/null) ;;
-    *.rar|*.7z) (cd x.part && LC_ALL=C.UTF-8 unar -q -o . ../$f >/dev/null) ;;
+    # (a file or two failing, e.g. a damaged Thumbs.db, still leaves a game)
+    *.zip|*.lzh) (cd x.part && LC_ALL=C.UTF-8 unar -q -e cp932 -o . ../$f >/dev/null 2>&1 || [ -n "$(ls)" ]) ;;
+    *.rar|*.7z) (cd x.part && LC_ALL=C.UTF-8 unar -q -o . ../$f >/dev/null 2>&1 || [ -n "$(ls)" ]) ;;
     *.exe)
       # self-extracting archive or Inno Setup installer
       (cd x.part && (LC_ALL=C.UTF-8 innoextract -s -q -e "../$f" 2>/dev/null && [ -n "$(ls)" ]) ||
@@ -41,7 +41,7 @@ cd x
 # the exe: vnbox's path (Games/<id>/...), else the biggest .exe that's not a tool
 if [ -n "$exe" ] && [ -f "$exe" ]; then e=$exe
 else
-  e=$(find . -iname '*.exe' -printf '%s\t%P\n' | grep -viE 'unins|setup|install|config|vcredist|directx|dxsetup|tool|設定|update|DXWeb|dotnet' | sort -rn | head -1 | cut -f2)
+  e=$(find . -iname '*.exe' -printf '%s\t%P\n' | grep -aviE 'unins|setup|install|config|vcredist|directx|dxsetup|tool|設定|update|DXWeb|dotnet' | sort -rn | head -1 | cut -f2)
 fi
 [ -n "$e" ] || { echo "no exe" >&2; exit 3; }
 if [ ! -d "$store" ]; then
