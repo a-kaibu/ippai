@@ -391,7 +391,7 @@ fn resolve_import(dll: &str, imp: Import) -> u32 {
             Import::Ordinal(o) => api::ordinal_name(dll, o).unwrap_or_else(|| format!("#{o}")),
         };
         hle_module(dll);
-        return api::export(dll, &name);
+        return crate::fast::bind(dll, &name, api::export(dll, &name));
     }
     let base = match by_name(dll) {
         Some(b) => b,
@@ -436,7 +436,7 @@ pub fn proc_address(base: u32, imp: Import) -> Option<u32> {
         Import::Ordinal(o) => api::ordinal_name(&name, o)?,
     };
     let a = api::export(&name, &n);
-    (api::implemented(a) || std::env::var_os("VNWIN_ALL_EXPORTS").is_some()).then_some(a)
+    (api::implemented(a) || std::env::var_os("VNWIN_ALL_EXPORTS").is_some()).then(|| crate::fast::bind(&name, &n, a))
 }
 
 fn load_dll_file(dll: &str) -> Result<u32, String> {

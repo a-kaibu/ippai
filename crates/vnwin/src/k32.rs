@@ -552,6 +552,11 @@ pub fn cs_leave(cs: u32) {
         CS_CV.notify_all();
     }
 }
+/// Wakes the waiters of `cs` (fast::leave_cs found some after releasing it).
+pub fn cs_wake(_cs: u32) {
+    let _g = CS_LOCK.lock().unwrap();
+    CS_CV.notify_all();
+}
 fn InitializeCriticalSection(c: &mut Ctx) -> u32 {
     cs_init(c.a(0));
     0

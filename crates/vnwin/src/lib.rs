@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use vnx86::{Cpu, EAX, ESP};
 
 pub mod api;
+pub mod fast;
 pub mod files;
 pub mod gdi;
 pub mod k32;
