@@ -5,7 +5,6 @@
 use std::io::SeekFrom;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
-use std::time::Instant;
 
 use vnx86::{EAX, ESP};
 
@@ -59,10 +58,18 @@ pub fn ret_str(dst: u32, cap: u32, s: &str, wide: bool) -> u32 {
 // ---------------------------------------------------------------------------------------------
 // process, threads
 
-static START: OnceLock<Instant> = OnceLock::new();
+/// Nanoseconds since the first call, by the wall clock: in the browser every worker has its own
+/// performance.now() (Instant), so a time taken on one thread (an input message's) and compared
+/// on another (GetTickCount) would disagree by seconds; Date.now() is shared.
+pub fn clock_ns() -> u64 {
+    static START: OnceLock<u128> = OnceLock::new();
+    let now = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let t0 = *START.get_or_init(now);
+    now().saturating_sub(t0) as u64
+}
 
 pub fn ticks_ms() -> u32 {
-    (START.get_or_init(Instant::now).elapsed().as_millis() as u64 + 60_000) as u32
+    (clock_ns() / 1_000_000 + 60_000) as u32
 }
 
 static CMDLINE: Mutex<(u32, u32)> = Mutex::new((0, 0));
@@ -1607,7 +1614,7 @@ fn GetTickCount64(c: &mut Ctx) -> u32 {
     c.ret64(v)
 }
 fn qpc() -> u64 {
-    (START.get_or_init(Instant::now).elapsed().as_nanos() / 100) as u64 + 600_000_000
+    clock_ns() / 100 + 600_000_000
 }
 fn QueryPerformanceCounter(c: &mut Ctx) -> u32 {
     put64(c.a(0), qpc());

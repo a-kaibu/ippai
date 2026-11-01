@@ -17,12 +17,15 @@
 //   /game.html?secs=60    story seconds to measure (default 60)
 //   /game.html?runs=1     one run only
 //   &titleafter=N         the title counts as shown after N s (Direct3D games)
-//   &pre=x,y              clicked every 3 s before the title (a first-start dialog)
+//   &pre=x,y              clicked every 3 s before the title (a first-start dialog; client pixels)
 //   &env=VNVM_JIT_PROFILE=1  print the executed instruction counts at the end (console)
+//   &engine=vnwin         vnwin (crates/vnwin, the from-scratch Win32 layer) instead of Wine
 
 const NATIVE = { title: 5.9, cores: 0.18 };
-// the text box, in frame pixels: advances the story (and leaves the title); &click=x,y for another game
-const CLICK = [380, 622];
+// in the game window's client pixels (the main window's, which the screen shows): on the
+// title a stroke of "Start" (its button takes only clicks on the letters), then the text box,
+// which advances the story; &click=x,y for another game
+const CLICK = [142, 545];
 
 const params = new URLSearchParams(location.search);
 const secs = Math.max(10, Number(params.get("secs") ?? 60) || 60);
@@ -44,6 +47,9 @@ if (!params.has("run")) {
   params.set("mount", "/vnvm/game=reunion");
   params.set("autostart", "");
   params.set("load", "");
+  // the screen the numbers were taken on: on vnhost's 1366x768 default Reunion's title ignores
+  // clicks (under Wine and vnwin alike)
+  params.append("env", "VNVM_SCREEN=1280x720");
   history.replaceState(null, "", `?${params}`);
 }
 
@@ -83,6 +89,8 @@ interface Wine {
   _vnhost_load_busy(): number;
   _vnhost_load_slot(i: number, out: number): number;
   _vnhost_jit_profile?(): void;
+  _vnhost_display_view(out: number): void;
+  wasmMemory: WebAssembly.Memory;
   _malloc(n: number): number;
   HEAPF64: Float64Array;
 }
@@ -132,12 +140,18 @@ const raf = (t: number) => {
 };
 requestAnimationFrame(raf);
 
+/** clicks at `at` in the game window's client area (where the screen shows it) */
+let viewBuf = 0;
 function click(at = CLICK): void {
   const w = wine();
   if (!w) return;
-  w._vnhost_input_push(1, at[0]!, at[1]!, 0);
-  w._vnhost_input_push(2, at[0]!, at[1]!, 0);
-  w._vnhost_input_push(3, at[0]!, at[1]!, 0);
+  viewBuf ||= w._malloc(16) >>> 0;
+  w._vnhost_display_view(viewBuf);
+  const v = new Int32Array(w.wasmMemory.buffer, viewBuf, 4);
+  const [x, y] = [v[0]! + at[0]!, v[1]! + at[1]!];
+  w._vnhost_input_push(1, x, y, 0);
+  w._vnhost_input_push(2, x, y, 0);
+  w._vnhost_input_push(3, x, y, 0);
 }
 // &titleafter=N: the title counts as shown after N s (a Direct3D game: its frames don't come
 // through wine-frame)
@@ -199,7 +213,7 @@ async function story(): Promise<void> {
   threads.forEach((t, k) => row(`忙しいスレッド ${k + 1} 位`, `${t.cores.toFixed(2)} コア, 待ち ${t.waits.toFixed(0)}/秒 (#${t.i}, pid ${t.pid})`));
   row("空振りのスピン (回/秒)", `${spins.toFixed(0)} (約 ${((spins * 50) / 1e6).toFixed(2)} コア)`);
   const lines = [
-    `game Reunion (story ${secs} s, run ${round} of ${runs})`,
+    `game Reunion on ${params.get("engine") ?? "wine"} (story ${secs} s, run ${round} of ${runs})`,
     `title ${title.toFixed(1)} s`,
     `cpu ${cpu.toFixed(3)} cores (native ${NATIVE.cores})`,
     `fps ${avg("fps").toFixed(1)}`,
