@@ -10,6 +10,7 @@ usage: make-prefix32.py SRC_PREFIX DST_PREFIX [WINE_ROOT (default /opt/wine-vnbo
 
 --win64: SRC_PREFIX is a win64 prefix booted by vnvm's 64-bit build (for 64-bit programs); only the
 tuning below and the browser drivers are applied (WINE_ROOT: the x86_64 tree, for winebrowser.drv).
+--fonts=DIR: font files to add to C:\\windows\\Fonts (e.g. the Japanese ones of a 32-bit prefix).
 """
 import os, re, shutil, subprocess, sys
 
@@ -22,7 +23,8 @@ MANUAL = ("Eventlog", "NDIS", "nsiproxy", "MountMgr")
 DROP = re.compile(r"\[System\\\\ControlSet001\\\\Enum\\\\ROOT\\\\WINE\\\\(winebus|wineusb|winebth)[]\\\\]")
 
 win64 = "--win64" in sys.argv
-args = [a for a in sys.argv[1:] if a != "--win64"]
+fonts = next((a[8:] for a in sys.argv if a.startswith("--fonts=")), None)
+args = [a for a in sys.argv[1:] if not a.startswith("--")]
 src, dst = args[0], args[1]
 wine_root = args[2] if len(args) > 2 else "/opt/wine-vnbox"
 if os.path.exists(dst):
@@ -35,6 +37,10 @@ if win64:
     if os.path.exists(drv):
         os.unlink(drv)
     shutil.copy(os.path.join(wine_root, "lib", "wine", "x86_64-windows", "winebrowser.drv"), drv)
+if fonts:
+    for name in os.listdir(fonts):
+        if not os.path.exists(os.path.join(win, "Fonts", name)):
+            shutil.copy(os.path.join(fonts, name), os.path.join(win, "Fonts", name))
 if not win64:
     drivers64 = os.listdir(os.path.join(win, "system32", "drivers"))
     shutil.rmtree(os.path.join(win, "system32"))

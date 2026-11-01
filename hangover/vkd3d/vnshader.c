@@ -97,10 +97,19 @@ int vn_shader_to_spirv( const void *code, size_t size, int source, int stage, co
             scan.next = &ps_sig;
             if (!vkd3d_shader_scan( &scan, NULL ) && vs_sig.output.element_count <= 64)
             {
+                int same = 1;
                 vkd3d_shader_build_varying_map( &vs_sig.output, &ps_sig.input, &count, varyings );
-                varying_info.varying_map = varyings;
-                varying_info.varying_count = count;
-                target.next = &varying_info;
+                /* the same registers already (outputs packed in a register, such as TEXCOORD0 .xy and
+                 * TEXCOORD1 .zw, lose all but one element through a map): no map */
+                for (i = 0; i < count; i++)
+                    if (vs_sig.output.elements[varyings[i].output_signature_index].register_index
+                        != varyings[i].input_register_index) same = 0;
+                if (!same)
+                {
+                    varying_info.varying_map = varyings;
+                    varying_info.varying_count = count;
+                    target.next = &varying_info;
+                }
             }
         }
     }

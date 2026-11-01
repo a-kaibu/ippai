@@ -1047,7 +1047,32 @@
  static void * const syscalls[] =
 --- a/dlls/ntdll/unix/virtual.c
 +++ b/dlls/ntdll/unix/virtual.c
-@@ -1949,6 +1949,8 @@
+@@ -191,6 +191,16 @@
+ static void *proc_area_start = (void *)0x10000, *proc_area_end = (void *)0x80000000;
+ #endif
+ 
++#if defined(__wasm__) && defined(_WIN64)
++/* Guest memory is the bottom of the wasm memory and guest addresses wrap at 4G (vnx86 and
++ * the memory64-lowered unix side both truncate them). An image that has to sit at its base
++ * above 4G (relocations stripped) lives at the base's low half, and the program keeps using
++ * the high addresses: the functions taking guest addresses look them up modulo 4G. */
++static inline void *wasm_alias( const void *ptr ) { return (void *)((ULONG_PTR)ptr & 0xffffffff); }
++#else
++static inline void *wasm_alias( const void *ptr ) { return (void *)ptr; }
++#endif
++
+ static struct file_view *arm64ec_view;
+ 
+ ULONG_PTR user_space_wow_limit = 0;
+@@ -1198,6 +1208,7 @@
+ {
+     struct wine_rb_entry *ptr = views_tree.root;
+ 
++    addr = wasm_alias( addr );
+     if ((const char *)addr + size < (const char *)addr) return NULL; /* overflow */
+ 
+     while (ptr)
+@@ -1949,6 +1960,8 @@
          if (limit_low && (void *)limit_low > start) start = (void *)limit_low;
          if (limit_high && (void *)limit_high < end) end = (char *)limit_high + 1;
  #ifdef __wasm__
@@ -1056,7 +1081,7 @@
          if (start < proc_area_start) start = proc_area_start;
          if (end > proc_area_end) end = proc_area_end;
          if (start >= end) return STATUS_NO_MEMORY;
-@@ -2401,7 +2403,7 @@
+@@ -2401,7 +2414,7 @@
  #ifdef __APPLE__
      /* See MACH_VM_MAX_ADDRESS_RAW in xnu osfmk/mach/arm/vm_param.h */
      return (void *)0x7ffffe000000;
@@ -1065,7 +1090,51 @@
      UINT_PTR addr = (UINT_PTR)1 << 63;
  
      while (addr >> 32)
-@@ -3329,10 +3331,12 @@
+@@ -3018,6 +3031,15 @@
+         status = map_view( view_ret, base, size, alloc_type, vprot, limit_low, limit_high, 0 );
+         if (!status) return status;
+     }
++#if defined(__wasm__) && defined(_WIN64)
++    /* above 4G: at the low half of its base, no relocation needed (see wasm_alias) */
++    if (image_info->base >> 32 && !image_info->map_addr)
++    {
++        status = map_view( view_ret, wasm_alias( (void *)(ULONG_PTR)image_info->base ), size, alloc_type,
++                           vprot, limit_low, limit_high, 0 );
++        if (!status) return status;
++    }
++#endif
+ 
+     /* then some appropriate address range */
+ 
+@@ -3059,6 +3081,7 @@
+     struct file_view *view;
+     unsigned int status;
+     sigset_t sigset;
++    ULONG_PTR image_base = pe_mapping->image.base;
+ 
+     if (offset >= size)
+         return STATUS_INVALID_PARAMETER;
+@@ -3102,6 +3125,10 @@
+         }
+ 
+         pe_mapping->image.base = wine_server_client_ptr( view->base );
++#if defined(__wasm__) && defined(_WIN64)
++        if (pe_mapping->image.base == (ULONG_PTR)wasm_alias( (void *)(ULONG_PTR)image_base ))
++            pe_mapping->image.base = image_base;  /* the program sees its own base */
++#endif
+         SERVER_START_REQ( map_image_view )
+         {
+             req->mapping = wine_server_obj_handle( mapping );
+@@ -3117,7 +3144,7 @@
+     if (NT_SUCCESS(status))
+     {
+         if (is_builtin && !offset) add_builtin_module( view->base, NULL );
+-        *addr_ptr = view->base;
++        *addr_ptr = wine_server_get_ptr( pe_mapping->image.base );
+         *size_ptr = size;
+         VIRTUAL_DEBUG_DUMP_VIEW( view );
+     }
+@@ -3329,10 +3356,12 @@
          }
          set_mem_area_state( addr, size, AREA_RESERVED );
      }
@@ -1078,7 +1147,7 @@
      else
      {
  #ifdef __wasm__
-@@ -3350,7 +3354,11 @@
+@@ -3350,7 +3379,11 @@
  #endif
      }
  
@@ -1090,7 +1159,7 @@
      {
          void *start = (void *)0x7ff000000000;
          void *end = (void *)0x7ff600000000;
-@@ -3729,7 +3737,11 @@
+@@ -3729,7 +3762,11 @@
          if (end > start) map_fixed_area( start, end - start, PROT_READ | PROT_WRITE );
      }
  
@@ -1102,6 +1171,87 @@
      {
          if (main_image_info.ImageCharacteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE)
          {
+@@ -4674,6 +4711,7 @@
+ 
+     if (!size) return 0;
+ 
++    addr = wasm_alias( addr );
+     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
+     if ((view = find_view( addr, size )))
+     {
+@@ -4709,6 +4747,7 @@
+     NTSTATUS ret;
+ 
+     if (!size) return STATUS_SUCCESS;
++    addr = wasm_alias( addr );
+ 
+     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
+     if (!(ret = check_write_access( addr, size, &has_write_watch )))
+@@ -4920,6 +4959,7 @@
+ 
+     TRACE("%p %p %08lx %x %08x\n", process, *ret, *size_ptr, type, protect );
+ 
++    if (*ret) *ret = wasm_alias( *ret );
+     if (!*size_ptr) return STATUS_INVALID_PARAMETER;
+     if (zero_bits > 21 && zero_bits < 32) return STATUS_INVALID_PARAMETER_3;
+     if (zero_bits > 32 && zero_bits < granularity_mask) return STATUS_INVALID_PARAMETER_3;
+@@ -5069,6 +5109,7 @@
+                                   &align, &attributes, &machine );
+     if (status) return status;
+ 
++    if (*ret) *ret = wasm_alias( *ret );
+     if (type & ~type_mask) return STATUS_INVALID_PARAMETER;
+     if (*ret && (align || limit_low || limit_high)) return STATUS_INVALID_PARAMETER;
+     if (!*size_ptr) return STATUS_INVALID_PARAMETER;
+@@ -5117,7 +5158,7 @@
+     char *base;
+     sigset_t sigset;
+     unsigned int status = STATUS_SUCCESS;
+-    LPVOID addr = *addr_ptr;
++    LPVOID addr = wasm_alias( *addr_ptr );
+     SIZE_T size = *size_ptr;
+ 
+     TRACE("%p %p %08lx %x\n", process, addr, size, type );
+@@ -5212,7 +5253,7 @@
+     char *base;
+     BYTE vprot;
+     SIZE_T size = *size_ptr;
+-    LPVOID addr = *addr_ptr;
++    LPVOID addr = wasm_alias( *addr_ptr );
+     DWORD old;
+ 
+     TRACE("%p %p %08lx %08x\n", process, addr, size, new_prot );
+@@ -5826,6 +5867,22 @@
+     switch(info_class)
+     {
+         case MemoryBasicInformation:
++#if defined(__wasm__) && defined(_WIN64)
++            if ((ULONG_PTR)addr >> 32)
++            {
++                /* an image above 4G: its addresses as the program sees them */
++                ULONG_PTR high = (ULONG_PTR)addr & ~(ULONG_PTR)0xffffffff;
++                MEMORY_BASIC_INFORMATION *info = buffer;
++
++                status = get_basic_memory_info( process, wasm_alias( addr ), buffer, len, res_len );
++                if (!status && len >= sizeof(*info))
++                {
++                    info->BaseAddress = (char *)info->BaseAddress + high;
++                    if (info->AllocationBase) info->AllocationBase = (char *)info->AllocationBase + high;
++                }
++                return status;
++            }
++#endif
+             return get_basic_memory_info( process, addr, buffer, len, res_len );
+ 
+         case MemoryWorkingSetExInformation:
+@@ -6140,6 +6197,7 @@
+     unsigned int status = STATUS_NOT_MAPPED_VIEW;
+     sigset_t sigset;
+ 
++    addr = wasm_alias( addr );
+     if (process != NtCurrentProcess())
+     {
+         union apc_call call;
 --- a/dlls/vnd3d11/main.c
 +++ b/dlls/vnd3d11/main.c
 @@ -36,6 +36,22 @@
