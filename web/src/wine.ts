@@ -120,7 +120,11 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       },
     ],
     vnvmJit: await jit,
-    print: (line: string) => console.log(line),
+    print: (line: string) => {
+      console.log(line);
+      // bench.html shows the program's output
+      dispatchEvent(new CustomEvent("wine-print", { detail: line }));
+    },
     printErr: (line: string) => console.warn(line),
   };
   log(`${run} を起動中`);
