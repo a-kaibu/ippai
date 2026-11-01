@@ -16,6 +16,7 @@
 //!   game's first run starts with them
 //! - `PUT /bench-log`: a result from web/bench.html, printed and appended to
 //!   `<jit>/bench-results.txt`
+//! - `GET`/`PUT /saves/<name>`: saved games backed up to S3 (see saves.rs)
 //!
 //! Every response carries COOP/COEP: QEMU's threads need SharedArrayBuffer,
 //! which browsers only allow on cross-origin isolated pages.
@@ -30,6 +31,8 @@ use axum::{
     Router,
 };
 use clap::Parser;
+
+mod saves;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use vnx86::jit::{saved, wasm};
 use tower_http::services::ServeDir;
@@ -312,6 +315,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/bench-log", put(bench_log))
         .layer(DefaultBodyLimit::max(1 << 30))
         .with_state(jit)
+        .merge(saves::router()?)
         .nest_service("/jit", ServeDir::new(&args.jit))
         .nest_service("/store", ServeDir::new(&args.store))
         .fallback_service(ServeDir::new(&args.web))

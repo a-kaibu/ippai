@@ -2,6 +2,8 @@
 // The files written under the game's folders and the prefix's user folders go to the browser's
 // origin private file system (OPFS) as one blob per game, whenever they change (checked every
 // few seconds, and when the page is hidden); the next start puts them back before Wine runs (VNVM_SAVES, crates/vnhost/src/vfs.rs).
+// Each new blob is also backed up through vnvm-server to S3 (`/saves/<name>`, when the server
+// has a bucket set up); a browser without a blob of its own starts from that backup.
 
 export interface SavesModule {
   wasmMemory: WebAssembly.Memory;
@@ -20,12 +22,22 @@ async function file(name: string, create: boolean): Promise<FileSystemFileHandle
   }
 }
 
-/** The blob an earlier session saved for `name` (null: none). */
+const backup = (name: string) => new URL(`saves/${encodeURIComponent(name)}`, location.href).href;
+
+/** The blob an earlier session saved for `name`: this browser's, else the server's backup (null: none). */
 export async function loadSaves(name: string): Promise<Uint8Array | null> {
   const f = await file(name, false);
-  if (!f) return null;
-  const data = new Uint8Array(await (await f.getFile()).arrayBuffer());
-  return data.length ? data : null;
+  const data = f ? new Uint8Array(await (await f.getFile()).arrayBuffer()) : null;
+  if (data?.length) return data;
+  try {
+    const r = await fetch(backup(name));
+    if (!r.ok) return null;
+    const b = new Uint8Array(await r.arrayBuffer());
+    console.log(`saves: ${name} from the backup (${b.length} bytes)`);
+    return b.length ? b : null;
+  } catch {
+    return null;
+  }
 }
 
 function exportSaves(m: SavesModule, roots: string[]): Uint8Array<ArrayBuffer> {
@@ -67,6 +79,10 @@ export function keepSaving(m: SavesModule, name: string, roots: string[], last: 
       await w.close();
       last = data;
       console.log(`saves: ${name} ${data.length} bytes`);
+      // (keepalive: it still goes out when the page is closing)
+      void fetch(backup(name), { method: "PUT", body: data, keepalive: data.length < 60000 })
+        .then((r) => r.ok || r.status === 404 || console.warn(`saves: backup: HTTP ${r.status}`))
+        .catch((e) => console.warn(`saves: backup: ${e}`));
     } catch (e) {
       console.warn(`saves: ${e}`);
     } finally {
