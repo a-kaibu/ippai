@@ -160,6 +160,10 @@ static WAKES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0
 const SPIN: Duration = Duration::from_micros(50);
 /// Spins that ended without a wake (for web/game.html)
 pub static FULL_SPINS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+thread_local! {
+    /// Spins in a row that ended without a wake, per first key (mod 16)
+    static SPIN_FAILS: std::cell::Cell<[u8; 16]> = const { std::cell::Cell::new([0; 16]) };
+}
 
 /// How many turns of the spin loop take `SPIN`, measured once. The loop doesn't read the clock:
 /// performance.now() costs about a microsecond in a Chromium worker, and reading it while
@@ -245,6 +249,18 @@ fn wait_ex(g: Guard, keys: &[Id], deadline: Option<Instant>, spin: bool) -> Guar
     drop(g);
     // (not for the wineserver's wait: its next request may be long in coming)
     let many = keys.len() > MANY_KEYS;
+    // per thread and first key: after 3 spins in a row that ended without a wake (a wait on
+    // input or a timer, not on a reply) spin only every 16th time, until one wins again
+    let slot = keys.first().map_or(0, |&k| k as usize % 16);
+    let fails = SPIN_FAILS.with(|f| f.get()[slot]);
+    let spin = spin && (fails < 3 || fails % 16 == 0);
+    if !spin && fails >= 3 {
+        SPIN_FAILS.with(|f| {
+            let mut a = f.get();
+            a[slot] = a[slot].wrapping_add(1).max(3);
+            f.set(a);
+        });
+    }
     if spin {
         let mut woke = false;
         for _ in 0..spin_iters() {
@@ -257,6 +273,11 @@ fn wait_ex(g: Guard, keys: &[Id], deadline: Option<Instant>, spin: bool) -> Guar
         if !woke {
             FULL_SPINS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
+        SPIN_FAILS.with(|f| {
+            let mut a = f.get();
+            a[slot] = if woke { 0 } else { a[slot].wrapping_add(1).max(1) };
+            f.set(a);
+        });
     }
     let mut g = lock_raw();
     if WAKES.load(std::sync::atomic::Ordering::Acquire) != seen {
