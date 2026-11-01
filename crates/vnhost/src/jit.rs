@@ -209,9 +209,7 @@ fn init_flags() {
         jit::CALLS.store(calls == "1" || calls == "2", std::sync::atomic::Ordering::Relaxed);
         jit::INDIRECT_CALLS.store(calls == "2", std::sync::atomic::Ordering::Relaxed);
         jit::FN.store(std::env::var("VNVM_JIT_FN").is_ok_and(|v| v == "1"), std::sync::atomic::Ordering::Relaxed);
-        if let Some(n) = std::env::var("VNVM_JIT_FN_INS").ok().and_then(|v| v.parse().ok()) {
-            jit::FN_MAX_INS.store(n, std::sync::atomic::Ordering::Relaxed);
-        }
+
     });
 }
 
@@ -669,12 +667,18 @@ fn called(cpu: &Cpu, mem: &mut Linear) -> bool {
 }
 
 /// Compiles the function at cpu.eip (jit::FN): its adapter and itself, the hash entry tagged.
+static FN_INS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
 fn compile_fn(st: &mut State, eip: u32, (lo, hi): (u32, u32), mem: &mut Linear) -> bool {
     *st.fn_builds.entry(eip).or_insert(0) += 1;
     if std::env::var_os("VNVM_JIT_LAYOUT").is_some() {
         jit::LAYOUT.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     let mut m = Module { name: Some(format!("x86_{eip:08x}_fn")), ..Module::default() };
+    // a function built again (it left its blocks often) may take more: twice per build
+    // (big interpreters' loops, a C library's long switch), from VNVM_JIT_FN_INS
+    let base = *FN_INS.get_or_init(|| std::env::var("VNVM_JIT_FN_INS").ok().and_then(|v| v.parse().ok()).unwrap_or(1000));
+    jit::FN_MAX_INS.store(base << (st.fn_builds[&eip].min(4) - 1), std::sync::atomic::Ordering::Relaxed);
     let (misses, known, hints) = (&st.misses, &st.known, &st.hints);
     let Some(region) = jit::translate_function(&mut m, mem, eip, jit::MAX_BLOCKS, (lo, hi), &|a| hints.get(&a).copied(), |a| debug_allowed(a) && !(a >= lo && a < hi) && (a == eip || ran(misses, known, a))) else {
         st.known.insert(eip);

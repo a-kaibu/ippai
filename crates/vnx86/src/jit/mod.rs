@@ -79,7 +79,7 @@ fn fn_on() -> bool {
 }
 /// A jump's target that is in L_NEXT (`Gen::push_target`).
 const TARGET_NEXT: u32 = u32::MAX;
-/// The type of functions: (cpu, block) -> status.
+/// The type of functions: (cpu, call depth) -> status.
 const T_FN: u32 = 4;
 /// A function's RET (EIP in the Cpu).
 pub const RET_FN: i32 = 0x5245_5446;
@@ -97,7 +97,7 @@ const F_X87: u32 = 3; // (cpu, TOP, info, 8 f64): see x87_out
 
 // parameters of a region function: what a jump between regions hands over
 const L_CPU: u32 = 0;
-const L_ARG: u32 = 1; // entry: table index | block << ENTRY_SHIFT
+const L_ARG: u32 = 1; // entry: table index | block << ENTRY_SHIFT (functions: the call depth)
 const L_REG: u32 = 2; // 8 registers
 const L_OP: u32 = 10; // lazy flags (L_OP -1: in the Cpu)
 const L_FA: u32 = 11;
@@ -2955,7 +2955,8 @@ impl<'a> Gen<'a> {
         self.c.block(); // found 0, slow 1
         self.depth += 2;
         self.c.get(L_BUD).i32c(1).sub().tee(L_BUD).i32c(0).le_s();
-        self.c.get(L_CPU).load32(Off::calls()).u32c(MAX_DEPTH).ge_u().or().br_if(1);
+        // (a function's L_ARG is its call depth)
+        self.c.get(L_ARG).u32c(MAX_DEPTH).ge_u().or().br_if(1);
         self.c.get(t).u32c(0x9e37_79b1).mul().i32c(15).shr_u().get(L_CPU).load32(maskf).and().set(h);
         self.c.loop_(); // probe 0, found 1, slow 2
         self.depth += 1;
@@ -2969,10 +2970,8 @@ impl<'a> Gen<'a> {
         self.c.get(v).load32(4).tee(v).u32c(FN_TAG).and().eqz().br_if(0);
         bump(&mut self.c, 0);
         self.c.get(L_CPU).get(L_BUD).store32(Off::budget());
-        self.c.get(L_CPU).get(L_CPU).load32(Off::calls()).i32c(1).add().store32(Off::calls());
-        self.c.get(L_CPU).get(v).i32c(ENTRY_SHIFT as i32).shr_u().u32c(0x7ff).and();
+        self.c.get(L_CPU).get(L_ARG).i32c(1).add();
         self.c.get(v).u32c((1 << ENTRY_SHIFT) - 1).and().i32c(1).add().call_indirect(T_FN, 0).set(h);
-        self.c.get(L_CPU).get(L_CPU).load32(Off::calls()).i32c(1).sub().store32(Off::calls());
         // left another way (the state is in the Cpu): pass it on
         self.c.get(h).i32c(RET_FN).ne().if_().get(h).ret().end();
         self.c.get(L_CPU).load32(Off::eip()).u32c(next).ne().if_();
@@ -3065,7 +3064,7 @@ fn fn_adapter(f: u32) -> Func {
     c.get(L_CPU).get(L_BUD).store32(Off::budget());
     lazy_to_cpu(&mut c);
     c.end();
-    c.get(L_CPU).get(L_ARG).i32c(ENTRY_SHIFT as i32).shr_u().u32c(0x7ff).and().call(f).tee(L_ARG).i32c(RET_CONTINUE).get(L_ARG).i32c(RET_FN).ne().select();
+    c.get(L_CPU).get(L_CPU).load32(Off::calls()).call(f).tee(L_ARG).i32c(RET_CONTINUE).get(L_ARG).i32c(RET_FN).ne().select();
     for _ in 1..N_PARAMS {
         c.i32c(0);
     }
@@ -3164,7 +3163,7 @@ fn emit_fn_lookup(c: &mut Code, entry: u32, wregs: u8) {
     c.get(e).load32(4).tee(v).u32c(FN_TAG).and().eqz().br_if(2);
     bump(c, 7);
     writeback(c, wregs);
-    c.get(L_CPU).get(v).i32c(ENTRY_SHIFT as i32).shr_u().u32c(0x7ff).and();
+    c.get(L_CPU).get(L_ARG);
     c.get(v).u32c((1 << ENTRY_SHIFT) - 1).and().i32c(1).add();
     c.op(0x13).op(T_FN as u8).op(0); // return_call_indirect, table 0
     c.end();
@@ -4198,7 +4197,6 @@ fn translate<M: Memory>(
         g.load_regs();
         g.c.get(L_CPU).load32(Off::budget()).set(L_BUD);
         g.c.i32c(-1).set(L_OP);
-        g.c.get(L_ARG).set(L_BLK);
     } else {
         g.c.get(L_ARG).i32c(ENTRY_SHIFT as i32).shr_u().set(L_BLK);
     }
