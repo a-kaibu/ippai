@@ -11,6 +11,8 @@
 //!   (vnx86::jit::saved); `PUT /jit-save/<name>` with (u32 module length, module, index)
 //!   merges a run's new regions in; `PUT /jit-save/<name>.chunks` stores the store chunks a
 //!   run read first (16-byte hashes), which the page fetches ahead next time.
+//! - `PUT /bench-log`: a result from web/bench.html, printed and appended to
+//!   `<jit>/bench-results.txt`
 //!
 //! Every response carries COOP/COEP: QEMU's threads need SharedArrayBuffer,
 //! which browsers only allow on cross-origin isolated pages.
@@ -117,6 +119,22 @@ async fn save_jit(State(jit): State<Jit>, Path(name): Path<String>, body: Bytes)
     }
 }
 
+/// Prints a bench.html result and appends it to `<jit>/bench-results.txt`.
+async fn bench_log(State(jit): State<Jit>, body: Bytes) -> StatusCode {
+    use tokio::io::AsyncWriteExt;
+    let text = String::from_utf8_lossy(&body);
+    eprintln!("{text}");
+    let _lock = jit.1.lock().await;
+    let path = jit.0.join("bench-results.txt");
+    match tokio::fs::OpenOptions::new().create(true).append(true).open(path).await {
+        Ok(mut f) => match f.write_all(format!("{text}\n\n").as_bytes()).await {
+            Ok(()) => StatusCode::NO_CONTENT,
+            Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        },
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
 async fn headers(req: Request<axum::body::Body>, next: Next) -> Response {
     let chunk = req.uri().path().starts_with("/store/chunks/");
     // a versioned URL (?v=...) names content that never changes: the browser keeps it without
@@ -148,6 +166,7 @@ async fn main() -> anyhow::Result<()> {
     let jit: Jit = Arc::new((args.jit.clone(), tokio::sync::Mutex::new(())));
     let app = Router::new()
         .route("/jit-save/{name}", put(save_jit))
+        .route("/bench-log", put(bench_log))
         .layer(DefaultBodyLimit::max(1 << 30))
         .with_state(jit)
         .nest_service("/jit", ServeDir::new(&args.jit))
