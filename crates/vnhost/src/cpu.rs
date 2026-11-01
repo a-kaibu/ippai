@@ -352,6 +352,17 @@ fn exit_code(cpu: &Cpu, mem: &mut Linear, exit: Exit, info: &mut [u32]) -> Optio
             Some(EXIT_TRAP)
         }
         Exit::Fault(f) => {
+            // VNVM_TRACE_FAULT: where the interpreter (or a region's step) faulted
+            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            if *ON.get_or_init(|| std::env::var_os("VNVM_TRACE_FAULT").is_some()) {
+                let r = &cpu.regs;
+                let ok = (vnx86::jit::GUEST_LO..vnx86::jit::GUEST_HI - 8).contains(&cpu.eip);
+                let code: Vec<String> = (0..if ok { 8 } else { 0 }).map(|i| unsafe { *((cpu.eip as usize + i) as *const u8) }).map(|b| format!("{b:02x}")).collect();
+                eprintln!(
+                    "fault {} {:08x} at eip {:08x} [{}] | eax {:08x} ecx {:08x} edx {:08x} ebx {:08x} esp {:08x} ebp {:08x} esi {:08x} edi {:08x} eflags {:08x}",
+                    if f.write { "write" } else { "read" }, f.addr, cpu.eip, code.join(" "), r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], cpu.eflags
+                );
+            }
             info[0] = f.addr;
             info[1] = f.write as u32;
             Some(EXIT_FAULT)

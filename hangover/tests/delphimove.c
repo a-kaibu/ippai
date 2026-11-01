@@ -20,18 +20,19 @@ static void move(const void *s, void *d, int n)
 static unsigned seed = 1;
 static unsigned rnd(void) { return seed = seed * 1103515245 + 12345, seed >> 8; }
 
-int main(void)
+int main(int argc, char **argv)
 {
     static unsigned char a[8192], b[8192];
-    unsigned i, k, bad = 0, df;
+    unsigned i, k, bad = 0, df, nils = argc < 2;
     for (i = 0; i < sizeof a; i++) a[i] = b[i] = (unsigned char)rnd();
     for (k = 0; k < 400000; k++) {
         int n = rnd() % 300, s = rnd() % 4000, d = rnd() % 4000;
-        if (k % 7 == 0) d = s + (int)(rnd() % 9) - 4; /* close overlaps */
+        if (k % 7 == 0) d = s + (int)(rnd() % 4) + 1 - (k % 2) * 5; /* close overlaps, never d == s (a region without the je target) */
         if (d < 0) d = 0;
         move(a + s, a + d, n);
         memmove(b + d, b + s, n);
-        if (k % 13 == 0) move(NULL, a + d, 0), move(a + s, NULL, 0);
+        if (nils && k % 13 == 0) move(NULL, a + d, 0), move(a + s, NULL, 0), move((const char *)main + 1, NULL, 0);
+        if (k == 1000 || k == 300000) move((const char *)main + 1, NULL, 0);
         __asm__ volatile("pushfl; popl %0" : "=r"(df));
         if (df & 0x400) { printf("DF left set at %u\n", k); return 1; }
         if (memcmp(a, b, sizeof a)) {
