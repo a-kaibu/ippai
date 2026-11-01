@@ -43,6 +43,29 @@ const MAX_INS: usize = 200;
 // block return codes
 pub const RET_CONTINUE: i32 = 0;
 pub const RET_INTERP: i32 = 1;
+/// A RET left the region with the state in the function's results (status, next EIP,
+/// registers, lazy flags, budget: the parameters' layout) instead of in the Cpu: a CALL that
+/// made a wasm call continues right after it when EIP is its return address.
+pub const RET_VALUES: i32 = 0x5245_5456;
+/// Guest CALLs to other regions become wasm calls (returning through RET_VALUES) instead of
+/// tail calls through the hash table (VNVM_JIT_CALLS=1; off by default, see
+/// docs/translator.md).
+pub static CALLS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// Debugging (VNVM_JIT_COUNT): counters of control transfers the generated code bumps
+/// (wasm32 only: their addresses are i32 constants). See [`COUNTER_NAMES`].
+pub static COUNT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+pub static COUNTERS: [core::sync::atomic::AtomicU32; 15] = [const { core::sync::atomic::AtomicU32::new(0) }; 15];
+pub const COUNTER_NAMES: [&str; 15] = ["call", "call-slow", "call-back", "call-elsewhere", "call-exit", "ret-values", "lookup", "lookup-other", "lookup-own", "lookup-miss", "entry", "ret-ra1", "top", "side", "block"];
+fn bump(c: &mut Code, i: usize) {
+    if COUNT.load(core::sync::atomic::Ordering::Relaxed) && cfg!(target_pointer_width = "32") {
+        let at = COUNTERS[i].as_ptr() as usize as i32;
+        c.i32c(at).i32c(at).load32(0).i32c(1).add().store32(0);
+    }
+}
+/// Indirect CALLs as wasm calls too (VNVM_JIT_CALLS=2)
+pub static INDIRECT_CALLS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// Most guest calls nested as wasm calls (deeper ones are tail calls: the wasm stack is small).
+const MAX_DEPTH: u32 = 200;
 
 // function indices in a block module
 const F_STEP: u32 = 0;
@@ -69,7 +92,7 @@ const L_BLK: u32 = 18;
 const L_RA1: u32 = 19;
 const L_RK1: u32 = 20;
 const L_T: u32 = 21; // 6 temporaries
-const N_T: u32 = 8;
+const N_T: u32 = 10;
 const L_W: u32 = L_T + N_T; // i64 temporary
 const L_F0: u32 = L_W + 1; // two f64 temporaries
 const L_F1: u32 = L_W + 2;
@@ -124,6 +147,9 @@ impl Off {
     }
     fn budget() -> u32 {
         offset_of!(Cpu, jit_budget) as u32
+    }
+    fn calls() -> u32 {
+        offset_of!(Cpu, jit_depth) as u32
     }
     fn fpu(field: usize) -> u32 {
         (offset_of!(Cpu, fpu) + field) as u32
@@ -330,6 +356,17 @@ struct FCache {
 
 /// See [`Gen::safe`].
 const SAFE_MARGIN: i32 = 0x8000;
+/// Measuring only (VNVM_JIT_NOCHECK=1): no range checks on memory accesses (unsafe).
+pub static NOCHECK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// Pushes what a jump to another region hands over (registers, lazy flags, budget).
+fn push_state(c: &mut Code) {
+    for l in L_REG..N_PARAMS {
+        c.get(l);
+    }
+}
+fn nocheck() -> bool {
+    NOCHECK.load(core::sync::atomic::Ordering::Relaxed)
+}
 
 const STATUS_BITS: u32 =
     RflagsBits::OF | RflagsBits::SF | RflagsBits::ZF | RflagsBits::AF | RflagsBits::CF | RflagsBits::PF;
@@ -855,6 +892,9 @@ impl<'a> Gen<'a> {
                 return t;
             }
         }
+        if nocheck() {
+            return t;
+        }
         // checked as t - GUEST_LO, which the access then uses with GUEST_LO as its offset
         // (V8 folds the subtraction into the address arithmetic: one instruction less)
         self.c.get(t).u32c(GUEST_LO).sub().tee(L_AB).u32c(GUEST_HI - GUEST_LO - size).gt_u().if_();
@@ -886,7 +926,7 @@ impl<'a> Gen<'a> {
             self.c.i32c(key.2 as i32).shl();
         }
         self.c.add().set(L_AB);
-        if !self.safe2.contains(&key) {
+        if !self.safe2.contains(&key) && !nocheck() {
             self.c.get(L_AB).u32c(GUEST_LO + SAFE_MARGIN as u32).sub().u32c(GUEST_HI - GUEST_LO - 2 * SAFE_MARGIN as u32).gt_u().if_();
             self.depth += 1;
             self.bail();
@@ -908,6 +948,9 @@ impl<'a> Gen<'a> {
     /// Whether [reg + disp, + size) is inside the guest range by what is known of `reg`,
     /// checking `reg` itself (once) when nothing is known yet.
     fn near_safe(&mut self, reg: usize, disp: i32, size: u32) -> bool {
+        if nocheck() {
+            return true;
+        }
         if disp.unsigned_abs() >= SAFE_MARGIN as u32 / 2 {
             return false;
         }
@@ -942,6 +985,9 @@ impl<'a> Gen<'a> {
 
     /// Leaves the block unless [addr, addr + size) is inside the guest range.
     fn check(&mut self, t: u32, size: u32) {
+        if nocheck() {
+            return;
+        }
         self.c.get(t).u32c(GUEST_LO).sub().u32c(GUEST_HI - GUEST_LO - size).gt_u().if_();
         self.depth += 1;
         self.bail();
@@ -2335,8 +2381,15 @@ impl<'a> Gen<'a> {
                     self.goto_block(entry, ins.near_branch32());
                     return false;
                 }
+                let f = ins.near_branch32();
+                if self.block_of(f).is_none() && CALLS.load(core::sync::atomic::Ordering::Relaxed) {
+                    let t = self.temp();
+                    self.c.u32c(f).set(t);
+                    self.call_out(t, next);
+                    return false;
+                }
                 self.ras_push(next);
-                self.goto(ins.near_branch32());
+                self.goto(f);
                 return false;
             }
             Call if simple && op_bits(ins, 0) == 32 => {
@@ -2352,6 +2405,10 @@ impl<'a> Gen<'a> {
                     self.goto_block(entry, f);
                     self.depth -= 1;
                     self.c.end();
+                }
+                if CALLS.load(core::sync::atomic::Ordering::Relaxed) && INDIRECT_CALLS.load(core::sync::atomic::Ordering::Relaxed) {
+                    self.call_out(t, next);
+                    return false;
                 }
                 self.ras_push(next);
                 self.c.get(t);
@@ -2403,6 +2460,7 @@ impl<'a> Gen<'a> {
                 self.exit_with(RET_CONTINUE);
                 self.depth -= 1;
                 self.c.end();
+                bump(&mut self.c, 11);
                 self.c.get(L_RK1).set(L_BLK);
                 self.c.br(self.depth - 1);
                 self.depth -= 1;
@@ -2413,6 +2471,17 @@ impl<'a> Gen<'a> {
                     self.goto(r);
                     self.depth -= 1;
                     self.c.end();
+                }
+                if CALLS.load(core::sync::atomic::Ordering::Relaxed) {
+                    // back to the wasm caller (a CALL's call_out, or the dispatcher)
+                    self.mmx_flush();
+                    self.xmm_flush();
+                    self.x87_flush_out();
+                    bump(&mut self.c, 5);
+                    self.c.i32c(RET_VALUES).get(t);
+                    push_state(&mut self.c);
+                    self.c.ret();
+                    return false;
                 }
                 self.c.get(t);
                 self.jump_dyn();
@@ -2526,6 +2595,9 @@ impl<'a> Gen<'a> {
                 self.c.br(self.depth - p);
             }
             Some((Some(b), p)) => {
+                if b >= 0 {
+                    bump(&mut self.c, 13);
+                }
                 self.c.i32c(b).set(L_BLK).br(self.depth - p);
             }
             None => {
@@ -2533,6 +2605,7 @@ impl<'a> Gen<'a> {
                     use core::fmt::Write;
                     let _ = writeln!(self.notes, "TOP {} -> {k}{}", self.block_index, if backward { " back" } else { "" });
                 }
+                bump(&mut self.c, 12);
                 self.c.i32c(k as i32).set(L_BLK).br(self.depth - 1);
             }
         }
@@ -2597,6 +2670,73 @@ impl<'a> Gen<'a> {
         self.loops.range(..k).rev().filter(|&(_, &e)| e >= k).find_map(|(&h, _)| self.fwd[h])
     }
 
+    /// CALL to the address in local `t` (the return address `next` is pushed) as a wasm call
+    /// of the target's region; its RET comes back here with the state as results
+    /// (RET_VALUES). Continues at `next` when that is where it returned, else wherever it went.
+    /// Without a translation, or nested too deep, a tail call as before.
+    fn call_out(&mut self, t: u32, next: u32) {
+        self.mmx_flush();
+        self.xmm_flush();
+        self.x87_flush();
+        self.fc = FCache::default();
+        let hash = offset_of!(Cpu, jit_hash) as u32;
+        let maskf = offset_of!(Cpu, jit_mask) as u32;
+        let (h, e) = (self.temp(), self.temp());
+        self.c.block(); // found 0
+        self.c.block(); // slow 0, found 1
+        self.depth += 2;
+        self.c.get(L_CPU).load32(Off::calls()).u32c(MAX_DEPTH).ge_u().br_if(0);
+        self.c.get(t).u32c(0x9e37_79b1).mul().i32c(15).shr_u().get(L_CPU).load32(maskf).and().set(h);
+        self.c.loop_(); // probe 0, slow 1, found 2
+        self.depth += 1;
+        self.c.get(L_CPU).load32(hash).get(h).i32c(3).shl().add().tee(e).load32(0).tee(L_NEXT);
+        self.c.get(t).eq().br_if(2);
+        self.c.get(L_NEXT).eqz().br_if(1);
+        self.c.get(h).i32c(1).add().get(L_CPU).load32(maskf).and().set(h).br(0);
+        self.depth -= 1;
+        self.c.end(); // probe
+        self.depth -= 1;
+        self.c.end(); // slow: the dispatcher's way
+        bump(&mut self.c, 1);
+        self.c.get(t);
+        self.jump_dyn();
+        self.depth -= 1;
+        self.c.end(); // found: entry at e + 4
+        bump(&mut self.c, 0);
+        // into the ring like a jump between regions (a hot callee gets merged in, see emit_lookup)
+        let ring = offset_of!(Cpu, jit_ring) as u32;
+        self.c.get(L_CPU).load32(ring).tee(h).get(h).load32(0).tee(L_NEXT).i32c(1).add().store32(0);
+        self.c.get(h).get(L_NEXT).i32c(RING_SIZE as i32 - 1).and().i32c(3).shl().add().tee(h);
+        self.c.get(L_ARG).u32c((1 << ENTRY_SHIFT) - 1).and().store32(4);
+        self.c.get(h).get(t).store32(8);
+        self.c.get(L_CPU).get(L_CPU).load32(Off::calls()).i32c(1).add().store32(Off::calls());
+        self.c.get(L_CPU).get(e).load32(4).tee(h);
+        push_state(&mut self.c);
+        self.c.get(h).u32c((1 << ENTRY_SHIFT) - 1).and().call_indirect(2, 0);
+        for l in (L_REG..N_PARAMS).rev() {
+            self.c.set(l);
+        }
+        self.c.set(L_NEXT).set(L_ST);
+        self.c.get(L_CPU).get(L_CPU).load32(Off::calls()).i32c(1).sub().store32(Off::calls());
+        // left another way (the state is in the Cpu): pass it on as it is
+        self.c.get(L_ST).i32c(RET_VALUES).ne().if_();
+        bump(&mut self.c, 4);
+        self.c.get(L_ST);
+        for _ in 1..N_PARAMS {
+            self.c.i32c(0);
+        }
+        self.c.ret().end();
+        self.c.get(L_NEXT).u32c(next).eq().if_();
+        self.depth += 1;
+        bump(&mut self.c, 2);
+        self.goto(next);
+        self.depth -= 1;
+        self.c.end();
+        bump(&mut self.c, 3);
+        self.c.get(L_NEXT);
+        self.jump_dyn();
+    }
+
     /// Notes the return address of a call for RET, if it is one of the region's blocks.
     fn ras_push(&mut self, ret: u32) {
         let Some(k) = self.block_of(ret) else { return };
@@ -2646,6 +2786,7 @@ fn emit_lookup(c: &mut Code) {
     let (h, e, v) = (L_T, L_T + 1, L_T + 2);
     // depth here: top 0, exit 1
     // pending signals are noticed when the budget runs out (the dispatcher checks them)
+    bump(c, 6);
     c.get(L_BUD).i32c(1).sub().tee(L_BUD).i32c(0).le_s();
     c.if_().i32c(RET_CONTINUE).set(L_ST).br(2).end();
     // address 0 is the key of an empty slot: never a block (a call through a null pointer
@@ -2662,23 +2803,24 @@ fn emit_lookup(c: &mut Code) {
     // no dispatcher round trip). The jump goes into the ring the host reads to merge regions
     // that call each other a lot: ring[0] counts, then RING_SIZE (from, to) pairs.
     let ring = offset_of!(Cpu, jit_ring) as u32;
+    bump(c, 7);
     c.get(L_CPU).load32(ring).tee(h).get(h).load32(0).tee(e).i32c(1).add().store32(0);
     c.get(h).get(e).i32c(RING_SIZE as i32 - 1).and().i32c(3).shl().add().tee(h);
     c.get(L_ARG).u32c((1 << ENTRY_SHIFT) - 1).and().store32(4);
     c.get(h).get(L_NEXT).store32(8);
     c.get(L_CPU).get(v);
-    for l in L_REG..N_PARAMS {
-        c.get(l);
-    }
+    push_state(c);
     c.get(v).u32c((1 << ENTRY_SHIFT) - 1).and();
     c.op(0x13).op(2).op(0); // return_call_indirect table 0
     c.end();
+    bump(c, 8);
     c.get(v).i32c(ENTRY_SHIFT as i32).shr_u().set(L_BLK).br(3);
     c.end();
     c.get(v).eqz().br_if(1);
     c.get(h).i32c(1).add().get(L_CPU).load32(maskf).and().set(h).br(0);
     c.end();
     c.end();
+    bump(c, 9);
     c.i32c(RET_CONTINUE).set(L_ST).br(1);
 }
 
@@ -3160,6 +3302,7 @@ fn emit_block<'a>(g: &mut Gen<'a>, blocks: &'a [(u32, Vec<Instruction>)], k: usi
     g.safe[4] = Some(0); // see Gen::emit
     g.flags = Flags::Entry;
     g.fc = g.fc_in.get(&k).copied().unwrap_or_default();
+    bump(&mut g.c, 14);
     if let Some(&at) = g.prof.get(k) {
         g.c.i32c(at as i32).i32c(at as i32).load32(0).i32c(1).add().store32(0);
     }
@@ -3364,6 +3507,24 @@ pub fn translate_region<M: Memory>(
         };
         let Some(last) = list.last() else { continue };
         queue.extend(successors(last));
+        // `jmp [index*4 + table]` (switch statements, interpreters' opcode dispatch): the
+        // table's targets that ran join the region, so the jump stays inside it
+        if last.flow_control() == FlowControl::IndirectBranch && last.op0_kind() == OpKind::Memory
+            && last.memory_base() == Register::None && last.memory_index().is_gpr32() && last.memory_index_scale() == 4
+        {
+            let (t, near) = (last.memory_displacement32(), last.ip32());
+            for i in 0..1024u32 {
+                let mut b = [0u8; 4];
+                if mem.fetch(t.wrapping_add(4 * i), &mut b) < 4 {
+                    break;
+                }
+                let v = u32::from_le_bytes(b);
+                if v.abs_diff(near) > 0x10_0000 {
+                    break;
+                }
+                queue.push_back(v);
+            }
+        }
         total += list.len();
         targets.insert(a, blocks.len() as u32);
         blocks.push((a, list));
@@ -3448,7 +3609,7 @@ pub fn translate_region<M: Memory>(
     if module.types.is_empty() {
         module.types.push(FuncType { params: alloc::vec![I32], results: alloc::vec![I32] });
         module.types.push(FuncType { params: alloc::vec![I32; 5], results: alloc::vec![I32] });
-        module.types.push(FuncType { params: alloc::vec![I32; N_PARAMS as usize], results: alloc::vec![I32] });
+        module.types.push(FuncType { params: alloc::vec![I32; N_PARAMS as usize], results: alloc::vec![I32; N_PARAMS as usize] });
         module.imports.push(Import::Memory);
         module.imports.push(Import::Func("step", 0));
         module.imports.push(Import::Func("eflags", 0));
@@ -3530,6 +3691,7 @@ pub fn translate_region<M: Memory>(
         }
     }
     g.live_out = block_liveness(&g, &blocks).1;
+    bump(&mut g.c, 10);
     g.c.get(L_ARG).i32c(ENTRY_SHIFT as i32).shr_u().set(L_BLK);
     g.c.block(); // exit
     g.c.loop_(); // top
@@ -3544,6 +3706,9 @@ pub fn translate_region<M: Memory>(
     g.c.end(); // exit
     writeback(&mut g.c);
     g.c.get(L_ST);
+    for _ in 1..N_PARAMS {
+        g.c.i32c(0);
+    }
 
     let mut locals = alloc::vec![I32; N_LOCALS_I32 as usize];
     locals.extend_from_slice(&[I64, F64, F64, V128, V128, I32]);

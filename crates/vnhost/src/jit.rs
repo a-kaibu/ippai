@@ -156,7 +156,30 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
     })
 }
 
+/// Switches read once: VNVM_JIT_COUNT=<secs> (transfer counters), VNVM_JIT_CALLS=1|2,
+/// VNVM_JIT_NOCHECK=1 (measuring only: no range checks).
+fn init_flags() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        if let Some(secs) = std::env::var("VNVM_JIT_COUNT").ok().and_then(|v| v.parse::<u64>().ok()) {
+            use std::sync::atomic::Ordering::Relaxed;
+            if !jit::COUNT.swap(true, Relaxed) {
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_secs(secs.max(1)));
+                    let v: Vec<String> = jit::COUNTERS.iter().zip(jit::COUNTER_NAMES).map(|(c, n)| format!("{n}={}", c.swap(0, Relaxed))).collect();
+                    eprintln!("vnjit count/{secs}s {}", v.join(" "));
+                });
+            }
+        }
+        // CALL/RET as wasm calls: 1 direct calls, 2 indirect ones too
+        let calls = std::env::var("VNVM_JIT_CALLS").unwrap_or_default();
+        jit::CALLS.store(calls == "1" || calls == "2", std::sync::atomic::Ordering::Relaxed);
+        jit::INDIRECT_CALLS.store(calls == "2", std::sync::atomic::Ordering::Relaxed);
+    });
+}
+
 pub fn run(cpu: &mut Cpu, pending: u32) -> Ran {
+    init_flags();
     with_state(|st| {
         if st.ring[0] >= jit::RING_SIZE {
             merge_hot(st, cpu);
@@ -167,8 +190,10 @@ pub fn run(cpu: &mut Cpu, pending: u32) -> Ran {
     });
     cpu.jit_pending = pending;
     cpu.jit_budget = BUDGET;
+    let depth = cpu.jit_depth;
     #[cfg(target_os = "emscripten")]
     let r = unsafe { vnvm_jit_run(cpu) };
+    cpu.jit_depth = depth;
     #[cfg(not(target_os = "emscripten"))]
     let r = jit::RET_INTERP;
     match r {
@@ -361,6 +386,31 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
     let mut jumps = [0u64; N];
     for (i, j) in jumps.iter_mut().enumerate() {
         *j = (st.ring[1 + 2 * i] as u64) << 32 | st.ring[2 + 2 * i] as u64;
+    }
+    if stats() {
+        thread_local! { static HOPS: std::cell::Cell<(u64, u64, Option<std::time::Instant>)> = const { std::cell::Cell::new((0, 0, None)) }; }
+        HOPS.with(|h| {
+            let (mut n, mut last, t) = h.get();
+            let t = t.unwrap_or_else(std::time::Instant::now);
+            n += st.ring[0] as u64;
+            thread_local! { static PAIRS: RefCell<HashMap<(u32, u32), u64>> = RefCell::new(HashMap::new()); }
+            PAIRS.with(|p| {
+                let mut p = p.borrow_mut();
+                for j in &jumps {
+                    let from = st.roots.get(&((j >> 32) as u32)).map_or(0, |r| r[0]);
+                    *p.entry((from, *j as u32)).or_default() += 1;
+                }
+                if n - last > 50_000_000 {
+                    let mut v: Vec<_> = p.iter().collect();
+                    v.sort_by(|a, b| b.1.cmp(a.1));
+                    let top: Vec<String> = v.iter().take(16).map(|((f, t), c)| format!("{f:x}->{t:x}:{c}")).collect();
+                    eprintln!("vnjit hop pairs {}", top.join(" "));
+                    p.clear();
+                }
+            });
+            if n - last > 50_000_000 { eprintln!("vnjit hops {n} in {:?}", t.elapsed()); last = n; }
+            h.set((n, last, Some(t)));
+        });
     }
     st.ring[0] = 0;
     // the most frequent pair (runs of equal ones once sorted)
