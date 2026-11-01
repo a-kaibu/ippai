@@ -150,6 +150,13 @@ pub fn enabled() -> bool {
     *ON.get_or_init(|| cfg!(target_os = "emscripten") && std::env::var("VNVM_JIT").map_or(true, |v| v != "0"))
 }
 
+pub fn enabled64() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    // (opt-in while a crash in セレクトオブリージュ is open)
+    *ON.get_or_init(|| std::env::var("VNVM_JIT64").is_ok_and(|v| v == "1"))
+}
+
 pub enum Ran {
     /// budget used up or a signal pending
     Stopped,
@@ -262,6 +269,16 @@ fn init_flags() {
         let calls = std::env::var("VNVM_JIT_CALLS").unwrap_or_default();
         jit::CALLS.store(calls == "1" || calls == "2", std::sync::atomic::Ordering::Relaxed);
         jit::INDIRECT_CALLS.store(calls == "2", std::sync::atomic::Ordering::Relaxed);
+        // debugging the long-mode translator: VNVM_JIT64_INS / _BLOCKS (limits), VNVM_JIT64_OFF
+        // (mnemonics, as iced names them, left to the interpreter)
+        let num = |k: &str| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+        jit::long::DEBUG_INS.store(num("VNVM_JIT64_INS"), std::sync::atomic::Ordering::Relaxed);
+        jit::long::DEBUG_BLOCKS.store(num("VNVM_JIT64_BLOCKS"), std::sync::atomic::Ordering::Relaxed);
+        for name in std::env::var("VNVM_JIT64_OFF").unwrap_or_default().split(',').filter(|s| !s.is_empty()) {
+            if !jit::long::debug_off_named(name) {
+                eprintln!("VNVM_JIT64_OFF: no mnemonic {name}");
+            }
+        }
         jit::FN.store(std::env::var("VNVM_JIT_FN").is_ok_and(|v| v == "1"), std::sync::atomic::Ordering::Relaxed);
 
     });
@@ -654,7 +671,9 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
                 mark_code(&r.code);
                 return load(st, &r.bytes, vec![eip], &r.starts);
             }
-            if let Some(i) = find_saved(mem, &[eip], false, (cpu.trap_lo, cpu.trap_hi)) {
+            // (saved regions: 32-bit ones only for now)
+            if cpu.mode64 != 0 {
+            } else if let Some(i) = find_saved(mem, &[eip], false, (cpu.trap_lo, cpu.trap_hi)) {
                 if load_saved(st, i) {
                     return true;
                 }
@@ -666,6 +685,9 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
             return false;
         }
         st.misses.remove(&eip);
+        if cpu.mode64 != 0 {
+            return compile_long(st, cpu, mem);
+        }
         if jit::FN.load(std::sync::atomic::Ordering::Relaxed) && (called(cpu, mem) || std::env::var_os("VNVM_JIT_FN_CALLED").is_none()) {
             return compile_fn(st, eip, (cpu.trap_lo, cpu.trap_hi), mem);
         }
@@ -706,6 +728,35 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         }
         ok
     })
+}
+
+/// Compiles the long-mode region at cpu.eip (jit::long; no FN mode, saves or merges yet).
+fn compile_long(st: &mut State, cpu: &Cpu, mem: &mut Linear) -> bool {
+    let eip = cpu.eip;
+    let mut m = Module { name: Some(format!("x64_{:x}{eip:08x}", cpu.rip_hi)), ..Module::default() };
+    let (lo, hi) = (cpu.trap_lo, cpu.trap_hi);
+    let (misses, known) = (&st.misses, &st.known);
+    let entry = eip as u64 | (cpu.rip_hi as u64) << 32;
+    let t0 = std::time::Instant::now();
+    let Some(region) = jit::long::translate_region64(&mut m, mem, entry, (lo, hi), |a| {
+        debug_allowed(a) && !(a >= lo && a < hi) && !known.contains(&a) && (a == eip || misses.contains_key(&a))
+    }) else {
+        st.known.insert(eip);
+        return false;
+    };
+    let bytes = m.finish();
+    let t1 = std::time::Instant::now();
+    let ok = load(st, &bytes, vec![eip], &region.starts);
+    if std::env::var_os("VNVM_JIT_TIME").is_some() {
+        eprintln!("vnjit time {eip:#x}: {} ins, translate {:?}, load {:?}", region.instructions, t1 - t0, t1.elapsed());
+    }
+    if ok {
+        mark_code(&region.code);
+        share(mem, &[eip], bytes, &region);
+    } else {
+        st.known.insert(eip);
+    }
+    ok
 }
 
 /// Whether cpu.eip looks like a function's entry: the return address on the stack follows a
@@ -805,7 +856,9 @@ pub(crate) fn step(cpu: &mut Cpu, mem: &mut Linear) -> (Exit, bool) {
 /// One instruction run by the interpreter for a block: 0 if it completed, else 2 with the exit
 /// kept for [`run`].
 #[no_mangle]
-pub unsafe extern "C" fn vnhost_jit_step(cpu: *mut Cpu) -> i32 {
+pub unsafe extern "C" fn vnhost_jit_step(cpu: u32) -> i32 {
+    // (u32: an i32 in the region modules' imports, the 64-bit build too)
+    let cpu = cpu as usize as *mut Cpu;
     if stats() {
         count_step(&*cpu);
     }
@@ -819,8 +872,8 @@ pub unsafe extern "C" fn vnhost_jit_step(cpu: *mut Cpu) -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn vnhost_jit_eflags(cpu: *mut Cpu) -> u32 {
-    let cpu = &mut *cpu;
+pub unsafe extern "C" fn vnhost_jit_eflags(cpu: u32) -> u32 {
+    let cpu = &mut *(cpu as usize as *mut Cpu);
     cpu.materialize();
     cpu.eflags
 }
@@ -828,7 +881,8 @@ pub unsafe extern "C" fn vnhost_jit_eflags(cpu: *mut Cpu) -> u32 {
 /// A region leaving with its x87 cache (vnx86::jit::x87_out).
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
-pub unsafe extern "C" fn vnhost_jit_x87(cpu: *mut Cpu, top: u32, info: u32, a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, g: f64, h: f64) {
+pub unsafe extern "C" fn vnhost_jit_x87(cpu: u32, top: u32, info: u32, a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, g: f64, h: f64) {
+    let cpu = cpu as usize as *mut Cpu;
     jit::x87_out(&mut (*cpu).fpu, top, info, [a, b, c, d, e, f, g, h]);
 }
 
