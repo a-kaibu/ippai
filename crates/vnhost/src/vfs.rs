@@ -63,6 +63,76 @@ struct Fs {
 
 static FS: Mutex<Option<Fs>> = Mutex::new(None);
 
+/// Records as `Fs::export` makes them.
+fn parse_records(mut b: &[u8]) -> Vec<(String, Vec<u8>, i64)> {
+    let mut files = Vec::new();
+    let u32_at = |b: &[u8]| u32::from_le_bytes(b[..4].try_into().unwrap()) as usize;
+    while b.len() >= 4 {
+        let n = u32_at(b);
+        if b.len() < 16 + n {
+            break;
+        }
+        let path = String::from_utf8_lossy(&b[4..4 + n]).into_owned();
+        let mtime = i64::from_le_bytes(b[4 + n..12 + n].try_into().unwrap());
+        let size = u32_at(&b[12 + n..]);
+        if b.len() < 16 + n + size {
+            break;
+        }
+        files.push((path, b[16 + n..16 + n + size].to_vec(), mtime));
+        b = &b[16 + n + size..];
+    }
+    files
+}
+
+/// A whole file from emscripten's file system (not through our wrappers).
+fn read_real(path: &str) -> Option<Vec<u8>> {
+    extern "C" {
+        fn __real_openat(dirfd: c_int, path: *const c_char, flags: c_int, mode: libc::mode_t) -> c_int;
+        fn __real_read(fd: c_int, buf: *mut c_void, len: size_t) -> ssize_t;
+        fn __real_close(fd: c_int) -> c_int;
+    }
+    let c = CString::new(path).ok()?;
+    unsafe {
+        let fd = __real_openat(libc::AT_FDCWD, c.as_ptr(), libc::O_RDONLY, 0);
+        if fd < 0 {
+            return None;
+        }
+        let mut out = Vec::new();
+        let mut buf = vec![0u8; 1 << 16];
+        loop {
+            let n = __real_read(fd, buf.as_mut_ptr() as *mut c_void, buf.len());
+            if n <= 0 {
+                break;
+            }
+            out.extend_from_slice(&buf[..n as usize]);
+        }
+        __real_close(fd);
+        Some(out)
+    }
+}
+
+/// The page: the files written under each of `roots` (":"-separated paths) as records (see
+/// `Fs::export`), in a malloc'ed buffer the caller frees; its length goes to `len`.
+#[no_mangle]
+pub unsafe extern "C" fn vnhost_vfs_export(roots: *const c_char, len: *mut size_t) -> *mut u8 {
+    let roots = CStr::from_ptr(roots).to_string_lossy().into_owned();
+    let mut out = Vec::new();
+    {
+        let g = FS.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(fs) = g.as_ref() {
+            for r in roots.split(':').filter(|r| !r.is_empty()) {
+                fs.export(&normalize(r), &mut out);
+            }
+        }
+    }
+    *len = out.len();
+    let p = libc::malloc(out.len().max(1)) as *mut u8;
+    if !p.is_null() {
+        std::ptr::copy_nonoverlapping(out.as_ptr(), p, out.len());
+    }
+    p
+}
+
 fn with<R>(f: impl FnOnce(&mut Fs) -> R) -> R {
     let mut g = FS.lock().unwrap_or_else(|e| e.into_inner());
     f(g.get_or_insert_with(Fs::load))
@@ -150,7 +220,84 @@ impl Fs {
             unsafe { crate::wrap::real_mkdir_p(&c) };
             fs.mounts.push((at, root));
         }
+        // saved games the page put back (see web/src/saves.ts)
+        if let Some(blob) = std::env::var("VNVM_SAVES").ok().and_then(|p| read_real(&p)) {
+            for (path, data, mtime) in parse_records(&blob) {
+                fs.put_file(&path, data, mtime);
+            }
+        }
         fs
+    }
+
+    /// The mount holding `path` (the longest one) and the rest of the path.
+    fn split_mount<'a>(&self, path: &'a str) -> Option<(Ino, &'a str)> {
+        self.mounts
+            .iter()
+            .filter(|(at, _)| path == at || path.starts_with(&format!("{}/", at.trim_end_matches('/'))))
+            .max_by_key(|(at, _)| at.len())
+            .map(|(at, ino)| (*ino, &path[at.len()..]))
+    }
+
+    /// Writes a whole file (and its directories) into a mounted tree.
+    fn put_file(&mut self, path: &str, data: Vec<u8>, mtime: i64) {
+        let Some((mut at, rel)) = self.split_mount(path) else { return };
+        let parts: Vec<&str> = rel.split('/').filter(|c| !c.is_empty()).collect();
+        let Some((name, dirs)) = parts.split_last() else { return };
+        for d in dirs {
+            let next = match &self.node(at).map(|n| &n.data) {
+                Some(Data::Dir(ch)) => ch.get(*d).copied(),
+                _ => return,
+            };
+            at = match next {
+                Some(i) => i,
+                None => {
+                    let i = self.add(Data::Dir(BTreeMap::new()), 0o755, mtime);
+                    if let Some(Data::Dir(ch)) = self.data_mut(at) {
+                        ch.insert(d.to_string(), i);
+                    }
+                    i
+                }
+            };
+        }
+        let old = match &self.node(at).map(|n| &n.data) {
+            Some(Data::Dir(ch)) => ch.get(*name).copied(),
+            _ => return,
+        };
+        match old.and_then(|i| self.node_mut(i).map(|n| (i, n))) {
+            Some((_, n)) if matches!(n.data, Data::File(_)) => {
+                n.data = Data::File(Content::Upper(data));
+                n.mtime = mtime;
+            }
+            Some(_) => {}
+            None => {
+                let i = self.add(Data::File(Content::Upper(data)), 0o644, mtime);
+                if let Some(Data::Dir(ch)) = self.data_mut(at) {
+                    ch.insert(name.to_string(), i);
+                }
+            }
+        }
+    }
+
+    /// The files written here (in memory) under `path`, as records: path length (u32), path,
+    /// mtime (i64), size (u32), bytes; little-endian.
+    fn export(&self, path: &str, out: &mut Vec<u8>) {
+        let Some((at, rel)) = self.split_mount(path) else { return };
+        let Some(ino) = self.walk(at, rel) else { return };
+        let mut todo = vec![(ino, path.trim_end_matches('/').to_string())];
+        while let Some((ino, p)) = todo.pop() {
+            let Some(n) = self.node(ino) else { continue };
+            match &n.data {
+                Data::Dir(ch) => todo.extend(ch.iter().map(|(name, &i)| (i, format!("{p}/{name}")))),
+                Data::File(Content::Upper(v)) => {
+                    out.extend_from_slice(&(p.len() as u32).to_le_bytes());
+                    out.extend_from_slice(p.as_bytes());
+                    out.extend_from_slice(&n.mtime.to_le_bytes());
+                    out.extend_from_slice(&(v.len() as u32).to_le_bytes());
+                    out.extend_from_slice(v);
+                }
+                _ => {}
+            }
+        }
     }
 
     fn load_tree(&mut self, root: Ino, tsv: &str) {
@@ -1169,4 +1316,10 @@ pub unsafe fn closedir(d: *mut c_void) -> c_int {
     DIRS.lock().unwrap_or_else(|e| e.into_inner()).retain(|&p| p != d as usize);
     let d = Box::from_raw(d as *mut Dir);
     crate::fd::close(d.fd)
+}
+
+/// The page: frees what `vnhost_vfs_export` returned.
+#[no_mangle]
+pub unsafe extern "C" fn vnhost_free(p: *mut c_void) {
+    libc::free(p)
 }

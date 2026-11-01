@@ -12,6 +12,7 @@
 //                                   destroys the device then, and Direct3D games need it)
 
 import { Presenter } from "./present";
+import { keepSaving, loadSaves, type SavesModule } from "./saves";
 import { linuxKeycode } from "./keymap";
 import { AudioOut } from "./wine-audio";
 import { D3D9 } from "./d3d9";
@@ -104,6 +105,11 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   const factory = (await import(/* @vite-ignore */ scriptUrl)).default as (m: object) => Promise<WineModule>;
   const unix = await unixModule;
   const version = await wasmVersion;
+  // saved games: per program and mounts; what it writes in its folders and the user folders
+  const mounts = params.getAll("mount");
+  const saveName = `${run.replace(/[^A-Za-z0-9_.-]/g, "_")}-${fnv(new TextEncoder().encode(mounts.join(":")))}`;
+  const saveRoots = [...mounts.map((m) => m.slice(0, m.indexOf("="))), "/vnvm/prefix/drive_c/users", "/vnvm/prefix/user.reg"];
+  const saved = await loadSaves(saveName).catch(() => null);
   const moduleArg = {
     arguments: [run, ...(params.get("args")?.split(",").filter(Boolean) ?? [])],
     mainScriptUrlOrBlob: scriptUrl,
@@ -118,6 +124,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       ...(jitName ? { VNVM_JIT_URL: new URL(`jit-save/${await jitName}`, location.href).href } : {}),
       // game.html: count the threads' waits (vnhost_load_busy)
       ...(params.has("load") ? { VNVM_LOAD: "1" } : {}),
+      ...(saved ? { VNVM_SAVES: "/vnvm/saves.bin" } : {}),
       HOME: "/home/web",
       USER: "web",
       ...Object.fromEntries(params.getAll("env").map((e) => [e.slice(0, e.indexOf("=")), e.slice(e.indexOf("=") + 1)])),
@@ -127,6 +134,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
         m.FS.mkdir("/vnvm");
         m.FS.mkdir("/home/web");
         m.FS.writeFile("/vnvm/wineunix.so", unix);
+        if (saved) m.FS.writeFile("/vnvm/saves.bin", saved);
       },
     ],
     vnvmJit: await jit,
@@ -142,6 +150,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   };
   log(`${run} を起動中`);
   const wine = await factory(moduleArg);
+  saveNow = keepSaving(wine as unknown as SavesModule, saveName, saveRoots, saved);
   // for tests/wine.mjs (headless Chromium can't present WebGPU canvases)
   (window as unknown as { vnvmWine: WineModule }).vnvmWine = wine;
   ahead?.(wine);
@@ -351,8 +360,14 @@ if (problem) {
 }
 
 /** After the game quit: leaves fullscreen and goes back to the start screen (a fresh page). */
+let saveNow: () => Promise<void> = async () => {};
+
 function closeGame(): void {
   log("ゲームが終了しました");
+  void saveNow().finally(leave);
+}
+
+function leave(): void {
   const back = () => {
     const url = new URL(location.href);
     url.searchParams.delete("autostart");
