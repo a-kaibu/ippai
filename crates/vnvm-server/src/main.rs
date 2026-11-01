@@ -21,6 +21,8 @@
 //!   minute in a headless Chromium (VNVM_CHROME or one on the PATH; `--no-prerun` for none),
 //!   saving its regions like any run: the first real run starts like a second one.
 //!   `<jit>/<name>.prerun` marks it done
+//! - saved regions are optimized on the server after each save (binaryen wasm-opt, when there
+//!   is one: see optimize); `.parts` then lists the optimized copies
 //! - `PUT /bench-log`: a result from web/bench.html, printed and appended to
 //!   `<jit>/bench-results.txt`
 //! - `GET`/`PUT /saves/<name>`: saved games backed up to S3 (see saves.rs)
@@ -163,6 +165,7 @@ async fn save_jit(State(jit): State<Jit>, Path(name): Path<String>, body: Bytes)
         Some((if keep.iter().all(|&k| k) { new_wasm.to_vec() } else { wasm::select(new_wasm, &keep)? }, idx))
     };
     let mut status = StatusCode::NO_CONTENT;
+    tokio::spawn(optimize(jit.clone(), vec![shared_name.clone(), name.clone()]));
     for (to_shared, target) in [(true, &shared_name), (false, &name)] {
         if let Some((w, idx)) = pick(to_shared) {
             let s = add_part(&jit.0, target, w, idx).await;
@@ -172,6 +175,86 @@ async fn save_jit(State(jit): State<Jit>, Path(name): Path<String>, body: Bytes)
         }
     }
     status
+}
+
+/// Optimizes the saved regions of `names` on the server, where there is time to (binaryen's
+/// `wasm-opt -O2`, VNVM_WASM_OPT or on the PATH; nothing without it): each part's module gets
+/// an optimized copy `<name>.<k.><version>.opt.wasm` that `<name>.parts` lists instead. The
+/// translator's own module stays the part (merges and selections read it: wasm-opt renumbers
+/// types and folds identical functions). Reunion's pre-run regions: 7.6 -> 5.4 MB, title
+/// 12.6 -> 11.9 s in Chromium, 22.8 -> 21.4 s Android-like; the story's CPU is the same
+/// (V8's optimizing tier already does what binaryen does inside a function).
+async fn optimize(jit: Jit, names: Vec<String>) {
+    static ONE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _one = ONE.lock().await;
+    let Some(opt) = std::env::var_os("VNVM_WASM_OPT").map(PathBuf::from).or_else(|| find_on_path(&["wasm-opt"])) else { return };
+    for name in names {
+        let Ok(list) = tokio::fs::read_to_string(jit.0.join(format!("{name}.parts"))).await else { continue };
+        let mut made = false;
+        for line in list.lines() {
+            let f: Vec<&str> = line.split(' ').collect();
+            let [wasm, _, v] = f[..] else { continue };
+            let Some(stem) = wasm.strip_suffix("wasm") else { continue };
+            if wasm.ends_with(".opt.wasm") {
+                continue;
+            }
+            let (out, tmp) = (jit.0.join(format!("{stem}{v}.opt.wasm")), jit.0.join(format!("{stem}{v}.opt.tmp")));
+            let t0 = std::time::Instant::now();
+            let ok = tokio::process::Command::new(&opt)
+                .args(["--enable-threads", "--enable-simd", "--enable-bulk-memory", "--enable-tail-call", "--enable-sign-ext"])
+                .args(["--enable-nontrapping-float-to-int", "--enable-mutable-globals", "-O2"])
+                .arg(jit.0.join(wasm))
+                .arg("-o")
+                .arg(&tmp)
+                .stdout(std::process::Stdio::null())
+                .status()
+                .await
+                .is_ok_and(|s| s.success());
+            if ok && tokio::fs::rename(&tmp, &out).await.is_ok() {
+                eprintln!("jit {wasm}: optimized in {:?}", t0.elapsed());
+                made = true;
+            } else {
+                let _ = tokio::fs::remove_file(&tmp).await;
+                eprintln!("jit {wasm}: {} failed", opt.display());
+                return;
+            }
+        }
+        if !made {
+            continue;
+        }
+        // list the copies (the parts may have changed meanwhile: list what is there now)
+        let _g = jit.1.lock().await;
+        let parts = read_parts(&jit.0, &name).await;
+        let mut list = String::new();
+        let mut keep = std::collections::HashSet::new();
+        for (k, (_, e)) in parts.iter().enumerate() {
+            let stem = if k == 0 { String::new() } else { format!("{k}.") };
+            let v = fnv(&saved::encode(e));
+            let o = format!("{name}.{stem}{v:08x}.opt.wasm");
+            let wasm = if tokio::fs::metadata(jit.0.join(&o)).await.is_ok() { o } else { format!("{name}.{stem}wasm") };
+            keep.insert(wasm.clone());
+            list.push_str(&format!("{wasm} {name}.{stem}idx {v:08x}\n"));
+        }
+        let tl = jit.0.join(format!("{name}.parts.tmp"));
+        if tokio::fs::write(&tl, list).await.is_ok() {
+            let _ = tokio::fs::rename(&tl, jit.0.join(format!("{name}.parts"))).await;
+        }
+        // copies of parts that are gone
+        if let Ok(mut d) = tokio::fs::read_dir(&jit.0).await {
+            while let Ok(Some(e)) = d.next_entry().await {
+                let f = e.file_name().to_string_lossy().into_owned();
+                if f.starts_with(&format!("{name}.")) && f.ends_with(".opt.wasm") && !keep.contains(&f) {
+                    let _ = tokio::fs::remove_file(e.path()).await;
+                }
+            }
+        }
+    }
+}
+
+/// The first of `names` found on the PATH.
+fn find_on_path(names: &[&str]) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    names.iter().flat_map(|n| std::env::split_paths(&path).map(move |d| d.join(n))).find(|f| f.is_file())
 }
 
 /// The name of the bundle of regions several programs saved (`<SHARED>-<build>`).
@@ -242,7 +325,11 @@ async fn add_part(dir: &std::path::Path, name: &str, new_wasm: Vec<u8>, new_idx:
                 tokio::fs::rename(&tw, path(&format!("{stem}wasm"))).await?;
                 tokio::fs::rename(&ti, path(&format!("{stem}idx"))).await?;
             }
-            list.push_str(&format!("{name}.{stem}wasm {name}.{stem}idx {:08x}\n", fnv(&idx)));
+            // (the optimized copy of the module, when there is one: see optimize)
+            let v = fnv(&idx);
+            let opt = format!("{name}.{stem}{v:08x}.opt.wasm");
+            let wasm = if tokio::fs::metadata(dir.join(&opt)).await.is_ok() { opt } else { format!("{name}.{stem}wasm") };
+            list.push_str(&format!("{wasm} {name}.{stem}idx {v:08x}\n"));
         }
         for k in parts.len()..=PARTS_MAX {
             for ext in ["wasm", "idx"] {
@@ -383,11 +470,7 @@ fn chrome() -> Option<PathBuf> {
     if let Some(c) = std::env::var_os("VNVM_CHROME") {
         return Some(c.into());
     }
-    let path = std::env::var_os("PATH")?;
-    ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable", "chrome"]
-        .iter()
-        .flat_map(|n| std::env::split_paths(&path).map(move |d| d.join(n)))
-        .find(|f| f.is_file())
+    find_on_path(&["chromium", "chromium-browser", "google-chrome", "google-chrome-stable", "chrome"])
 }
 
 /// The store's `games/*.json` as one array, by file name; and a pre-run of the games without
