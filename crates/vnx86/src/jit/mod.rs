@@ -80,6 +80,11 @@ const L_FREG: u32 = L_V1 + 2; // 8 f64: the cached x87 registers, by slot (see F
 const L_MMX: u32 = L_FREG + 8; // 8 v128: the cached MMX registers (see Gen::mmx)
 const L_XMM: u32 = L_MMX + 8; // 8 v128: the cached XMM registers (see Gen::xmm)
 const L_AB: u32 = L_XMM + 8; // i32: the base register of the instruction's memory operand (see Gen::folded)
+const L_SLOT: u32 = L_AB + 1; // N_SLOTS i32: stack slots kept in locals in a loop (see Gen::slots)
+const N_SLOTS: u32 = 6;
+/// How many slots a loop keeps (at most N_SLOTS; VNVM_JIT_SLOTS, default 0: slower on x64,
+/// where the extra live locals spill)
+pub static SLOTS_MAX: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// Pairs in the ring of jumps between regions (`Cpu::jit_ring`).
 pub const RING_SIZE: u32 = 64;
@@ -232,6 +237,11 @@ struct Gen<'a> {
     /// The same for XMM registers (when the loop names them only in 128-bit moves and logic ops)
     xm_pre: Option<(usize, u8)>,
     xm_loop: u8,
+    /// Stack slots kept in locals through the loop being emitted: 32-bit [base + disp] (base a
+    /// register the loop doesn't write), slot i in L_SLOT + i, loaded before the loop. Stores
+    /// write memory too, so it is always current; any other store in the loop that touches
+    /// them reloads them (see `slot_loops`).
+    slots: Option<(Register, Vec<i32>)>,
     /// The x87 cache across a loop with x87 code (its blocks): the cache each block starts with
     /// (`fc_in`, none: empty); jumps between them change the cache in place to the target's,
     /// or keep it when it is the same. `fc_out` gets the cache each jump came with (the first
@@ -866,6 +876,10 @@ impl<'a> Gen<'a> {
         match ins.op_kind(i) {
             OpKind::Register => self.get_reg(ins.op_register(i)),
             OpKind::Memory => {
+                if let Some(k) = self.slot_of(i) {
+                    self.c.get(L_SLOT + k);
+                    return;
+                }
                 let off = self.mem_at(addr.unwrap());
                 self.load_at(op_bits(ins, i), off);
             }
@@ -885,8 +899,46 @@ impl<'a> Gen<'a> {
                 let off = self.mem_at(addr.unwrap());
                 self.c.get(v);
                 self.store_at(op_bits(ins, i), off);
+                if let Some(k) = self.slot_of(i) {
+                    self.c.get(v).set(L_SLOT + k);
+                } else if self.slots.is_some() {
+                    self.slots_reload_if(addr.unwrap(), op_bits(ins, i) / 8);
+                }
             }
         }
+    }
+
+    /// The kept stack slot operand `i` is, if any.
+    fn slot_of(&self, i: u32) -> Option<u32> {
+        let (base, list) = self.slots.as_ref()?;
+        slot_operand(self.ins, i, *base).and_then(|d| list.iter().position(|&x| x == d)).map(|k| k as u32)
+    }
+
+    /// Loads the kept slots (when they are inside the guest range; otherwise every access to
+    /// them leaves the block anyway).
+    fn slots_load(&mut self) {
+        let Some((base, list)) = self.slots.clone() else { return };
+        let (lo, hi) = (*list.iter().min().unwrap(), *list.iter().max().unwrap() + 4);
+        let b = L_REG + reg_index(base).unwrap().0;
+        self.c.get(b).i32c(lo).add().u32c(GUEST_LO).sub().u32c(GUEST_HI - GUEST_LO - (hi - lo) as u32).le_u().if_();
+        for (k, &d) in list.iter().enumerate() {
+            self.c.get(b).i32c(d).add().load32(0).set(L_SLOT + k as u32);
+        }
+        self.c.end();
+    }
+
+    /// After a store of `size` bytes at the address in local `a`: reloads the kept slots if
+    /// it touched them.
+    fn slots_reload_if(&mut self, a: u32, size: u32) {
+        let Some((base, list)) = self.slots.clone() else { return };
+        let (lo, hi) = (*list.iter().min().unwrap(), *list.iter().max().unwrap() + 4);
+        let b = L_REG + reg_index(base).unwrap().0;
+        // a + size > base + lo && a < base + hi
+        self.c.get(a).get(b).i32c(lo - size as i32 + 1).add().sub().u32c((hi - lo) as u32 + size - 1).lt_u().if_();
+        self.depth += 1;
+        self.slots_load();
+        self.depth -= 1;
+        self.c.end();
     }
 
     /// The checked address of the instruction's memory operand, if it has one.
@@ -2814,6 +2866,11 @@ fn emit_level<'a>(
                         continue;
                     }
                 }
+                let outer = g.slots.is_none();
+                if outer {
+                    g.slots = slot_loop(&blocks[h..=e]);
+                    g.slots_load();
+                }
                 let m = if h == e { mm_names(&blocks[h].1) } else { 0 };
                 for i in 0..8 {
                     if m & (1 << i) != 0 {
@@ -2831,10 +2888,56 @@ fn emit_level<'a>(
                 emit_loop(g, blocks, loops, h, e, count);
                 g.mm_pre = None;
                 g.xm_pre = None;
+                if outer {
+                    g.slots = None;
+                }
             }
         }
         debug_assert_eq!(g.depth + 1, label[t]);
     }
+}
+
+/// The displacement of operand `i` if it is a 32-bit [base + disp] slot.
+fn slot_operand(ins: &Instruction, i: u32, base: Register) -> Option<i32> {
+    (ins.op_kind(i) == OpKind::Memory
+        && ins.memory_base() == base
+        && ins.memory_index() == Register::None
+        && matches!(ins.memory_segment(), Register::SS | Register::DS)
+        && ins.memory_size().size() == 4)
+        .then(|| ins.memory_displacement32() as i32)
+}
+
+/// The stack slots a loop keeps in locals (Gen::slots): the most used 32-bit [EBP + d] (or
+/// [ESP + d]) of a loop of plain integer instructions that doesn't write that register (so
+/// every store goes through Gen::write_op, and nothing outside the loop's code runs).
+fn slot_loop(blocks: &[(u32, Vec<Instruction>)]) -> Option<(Register, Vec<i32>)> {
+    use Mnemonic::*;
+    let all = || blocks.iter().flat_map(|b| b.1.iter());
+    for ins in all() {
+        let plain = matches!(
+            ins.mnemonic(),
+            Mov | Movzx | Movsx | Add | Sub | Adc | Sbb | And | Or | Xor | Cmp | Test | Inc | Dec | Neg | Not | Lea | Shl | Shr | Sar | Rol | Ror | Imul | Mul | Div | Idiv | Cdq | Nop
+        ) || alloc::format!("{:?}", ins.mnemonic()).starts_with("Set")
+            || alloc::format!("{:?}", ins.mnemonic()).starts_with("Cmov")
+            || matches!(ins.flow_control(), FlowControl::ConditionalBranch | FlowControl::UnconditionalBranch) && ins.op0_kind() == OpKind::NearBranch32;
+        if !plain || ins.has_lock_prefix() || ins.has_rep_prefix() || ins.has_repne_prefix() {
+            return None;
+        }
+    }
+    let writes = |r: Register| all().any(|ins| ins.op_count() > 0 && ins.op0_kind() == OpKind::Register && ins.op0_register().full_register32() == r && !matches!(ins.mnemonic(), Cmp | Test) && ins.flow_control() == FlowControl::Next);
+    let base = [Register::EBP, Register::ESP].into_iter().find(|&r| !writes(r))?;
+    let mut uses: BTreeMap<i32, u32> = BTreeMap::new();
+    for ins in all() {
+        for i in 0..ins.op_count() {
+            if let Some(d) = slot_operand(ins, i, base) {
+                *uses.entry(d).or_default() += 1;
+            }
+        }
+    }
+    let mut list: Vec<(i32, u32)> = uses.into_iter().filter(|u| u.1 >= 2).collect();
+    list.sort_by_key(|u| core::cmp::Reverse(u.1));
+    list.truncate(SLOTS_MAX.load(core::sync::atomic::Ordering::Relaxed) as usize);
+    (!list.is_empty()).then(|| (base, list.into_iter().map(|u| u.0).collect()))
 }
 
 fn emit_loop<'a>(g: &mut Gen<'a>, blocks: &'a [(u32, Vec<Instruction>)], loops: &BTreeMap<usize, usize>, h: usize, e: usize, count: &mut usize) {
@@ -3214,6 +3317,7 @@ pub fn translate_region<M: Memory>(
         mm_loop: 0,
         xm_pre: None,
         xm_loop: 0,
+        slots: None,
         fc_range: None,
         fc_in: BTreeMap::new(),
         fc_out: BTreeMap::new(),
@@ -3244,6 +3348,7 @@ pub fn translate_region<M: Memory>(
     locals.extend_from_slice(&[F64; 8]);
     locals.extend_from_slice(&[V128; 16]);
     locals.push(I32); // L_AB
+    locals.extend_from_slice(&[I32; N_SLOTS as usize]);
     module.funcs.push(Func { ty: 2, locals, code: g.c });
     let mut layout = String::new();
     if LAYOUT.load(core::sync::atomic::Ordering::Relaxed) {

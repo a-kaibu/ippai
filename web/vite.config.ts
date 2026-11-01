@@ -11,7 +11,7 @@ export default defineConfig({
     target: "es2022",
     // index.html: the QEMU VM; wine.html: Wine built for wasm (hangover/, files in public/wine/);
     // bench.html: bench.exe on wine.html with the native numbers next to it
-    rollupOptions: { input: { main: "index.html", wine: "wine.html", bench: "bench.html" } },
+    rollupOptions: { input: { main: "index.html", wine: "wine.html", bench: "bench.html", game: "game.html" } },
   },
   server: {
     headers: {

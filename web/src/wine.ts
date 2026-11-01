@@ -108,6 +108,8 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       WINEPREFIX: "/vnvm/prefix",
       WINEDEBUG: params.get("debug") ?? "",
       ...(jitName ? { VNVM_JIT_URL: new URL(`jit-save/${await jitName}`, location.href).href } : {}),
+      // game.html: count the threads' waits (vnhost_load_busy)
+      ...(params.has("load") ? { VNVM_LOAD: "1" } : {}),
       HOME: "/home/web",
       USER: "web",
       ...Object.fromEntries(params.getAll("env").map((e) => [e.slice(0, e.indexOf("=")), e.slice(e.indexOf("=") + 1)])),
@@ -216,6 +218,8 @@ function present(wine: WineModule, presenter: Presenter): void {
     if (serial !== shown) {
       shown = serial;
       presenter.update(wine.HEAPU8, bits, width, height, width * 4, wine.HEAPU32[io + 1]!, wine.HEAPU32[io + 2]!);
+      // game.html looks at the frames
+      dispatchEvent(new CustomEvent("wine-frame", { detail: { heap: wine.HEAPU8, bits, width, height } }));
       if (status.textContent) log("");
     }
     requestAnimationFrame(frame);

@@ -35,6 +35,8 @@ interface Step {
   wasm?: string;
   scale: number;
   only?: string;
+  /** extra environment variable for Wine (its own saved regions: they depend on it) */
+  env?: string;
   /** an export of MICRO instead (shown as memcpy) */
   micro?: string;
 }
@@ -50,6 +52,8 @@ const SUITE: Step[] = [
   { label: "JIT 1", scale: 3 },
   { label: "JIT 2", scale: 3 },
   ...["sort", "lz", "float", "memcpy"].map((k) => ({ label: `JIT ${k} x5`, scale: 1, only: k })),
+  // stack slots in locals (crates/vnx86 Gen::slots): slower on x64, maybe not on ARM
+  ...["lz", "sort"].map((k) => ({ label: `JIT ${k} x5 slots`, scale: 1, only: k, env: "VNVM_JIT_SLOTS=4" })),
   { label: "memory.copy x5", scale: 1, micro: "copy" },
   { label: "i64 loop x5", scale: 1, micro: "loop" },
 ];
@@ -74,6 +78,10 @@ const mine: Record<string, number[]> = (results[step.label] = {});
 if (!step.wasm && !step.micro) {
   params.set("run", "C:\\bench.exe");
   params.set("args", step.only ? `${step.scale},${step.only}` : String(step.scale));
+  if (step.env) {
+    params.set("env", step.env);
+    params.set("jit", `bench-${step.env.replace(/[^A-Za-z0-9]/g, "_")}`);
+  }
   params.set("autostart", "");
   history.replaceState(null, "", `?${params}`);
 }

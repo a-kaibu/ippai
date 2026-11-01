@@ -390,6 +390,9 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
     }
     let (lo, hi) = (cpu.trap_lo, cpu.trap_hi);
     let mut m = Module { name: Some(format!("x86_{:08x}_{}", roots[0], roots.len())), ..Module::default() };
+    if let Some(n) = std::env::var("VNVM_JIT_SLOTS").ok().and_then(|v| v.parse::<u32>().ok()) {
+        jit::SLOTS_MAX.store(n.min(6), std::sync::atomic::Ordering::Relaxed);
+    }
     if std::env::var_os("VNVM_JIT_LAYOUT").is_some() {
         jit::LAYOUT.store(true, std::sync::atomic::Ordering::Relaxed);
     }
