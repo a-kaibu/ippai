@@ -1475,6 +1475,147 @@ fn PathIsRelativeW(c: &mut Ctx) -> u32 {
 
 // ---------------------------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------------------------
+// advapi32 hashing (CryptoAPI): MD5, SHA-1, SHA-256
+
+enum Hasher {
+    Md5(md5::Context),
+    Sha1(Sha1),
+    Sha256(sha2::Sha256),
+}
+
+static HASHES: Mutex<Option<HashMap<u32, Hasher>>> = Mutex::new(None);
+static NEXT_HASH: AtomicU32 = AtomicU32::new(0x4a00_0000);
+
+fn CryptAcquireContextA(c: &mut Ctx) -> u32 {
+    put32(c.a(0), 0x4a7f_0001);
+    1
+}
+fn CryptAcquireContextW(c: &mut Ctx) -> u32 {
+    CryptAcquireContextA(c)
+}
+fn CryptReleaseContext(_: &mut Ctx) -> u32 {
+    1
+}
+fn CryptGenRandom(c: &mut Ctx) -> u32 {
+    let (n, p) = (c.a(1), c.a(2));
+    let mut x = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64) | 1;
+    for i in 0..n {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        mem::w8(p + i, x as u8);
+    }
+    1
+}
+fn CryptCreateHash(c: &mut Ctx) -> u32 {
+    let h = match c.a(1) {
+        0x8003 => Hasher::Md5(md5::Context::new()),
+        0x8004 => Hasher::Sha1(Sha1::default()),
+        0x800c => Hasher::Sha256(<sha2::Sha256 as sha2::Digest>::new()),
+        alg => {
+            eprintln!("vnwin: CryptCreateHash: algorithm {alg:#x}");
+            return 0;
+        }
+    };
+    let id = NEXT_HASH.fetch_add(1, Ordering::Relaxed);
+    HASHES.lock().unwrap().get_or_insert_with(HashMap::new).insert(id, h);
+    put32(c.a(4), id);
+    1
+}
+fn CryptHashData(c: &mut Ctx) -> u32 {
+    let data = mem::slice(c.a(1), c.a(2));
+    let mut g = HASHES.lock().unwrap();
+    match g.get_or_insert_with(HashMap::new).get_mut(&c.a(0)) {
+        Some(Hasher::Md5(h)) => h.consume(data),
+        Some(Hasher::Sha1(h)) => h.update(data),
+        Some(Hasher::Sha256(h)) => sha2::Digest::update(h, data),
+        None => return 0,
+    }
+    1
+}
+fn CryptGetHashParam(c: &mut Ctx) -> u32 {
+    let (h, param, out, plen) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    let mut g = HASHES.lock().unwrap();
+    let Some(hs) = g.get_or_insert_with(HashMap::new).get(&h) else { return 0 };
+    let (alg, digest): (u32, Vec<u8>) = match hs {
+        Hasher::Md5(x) => (0x8003, x.clone().finalize().0.to_vec()),
+        Hasher::Sha1(x) => (0x8004, x.clone().finish().to_vec()),
+        Hasher::Sha256(x) => (0x800c, sha2::Digest::finalize(x.clone()).to_vec()),
+    };
+    let val: Vec<u8> = match param {
+        1 => alg.to_le_bytes().to_vec(),
+        2 => digest,
+        4 => (digest.len() as u32).to_le_bytes().to_vec(),
+        _ => return 0,
+    };
+    if out != 0 {
+        if r32(plen) < val.len() as u32 {
+            put32(plen, val.len() as u32);
+            w32(crate::cur().teb + 0x34, 234);
+            return 0;
+        }
+        mem::write(out, &val);
+    }
+    put32(plen, val.len() as u32);
+    1
+}
+fn CryptDestroyHash(c: &mut Ctx) -> u32 {
+    HASHES.lock().unwrap().get_or_insert_with(HashMap::new).remove(&c.a(0)).is_some() as u32
+}
+
+/// SHA-1 (no crate for it here; small enough to keep).
+#[derive(Clone, Default)]
+struct Sha1 {
+    buf: Vec<u8>,
+}
+impl Sha1 {
+    fn update(&mut self, d: &[u8]) {
+        self.buf.extend_from_slice(d);
+    }
+    fn finish(mut self) -> [u8; 20] {
+        let bits = (self.buf.len() as u64) * 8;
+        self.buf.push(0x80);
+        while self.buf.len() % 64 != 56 {
+            self.buf.push(0);
+        }
+        self.buf.extend_from_slice(&bits.to_be_bytes());
+        let mut h: [u32; 5] = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0];
+        for chunk in self.buf.chunks(64) {
+            let mut w = [0u32; 80];
+            for i in 0..16 {
+                w[i] = u32::from_be_bytes(chunk[4 * i..4 * i + 4].try_into().unwrap());
+            }
+            for i in 16..80 {
+                w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+            }
+            let [mut a, mut b, mut c, mut d, mut e] = h;
+            for (i, &wi) in w.iter().enumerate() {
+                let (f, k) = match i {
+                    0..=19 => ((b & c) | (!b & d), 0x5A827999),
+                    20..=39 => (b ^ c ^ d, 0x6ED9EBA1),
+                    40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1BBCDC),
+                    _ => (b ^ c ^ d, 0xCA62C1D6),
+                };
+                let t = a.rotate_left(5).wrapping_add(f).wrapping_add(e).wrapping_add(k).wrapping_add(wi);
+                e = d;
+                d = c;
+                c = b.rotate_left(30);
+                b = a;
+                a = t;
+            }
+            for (x, y) in h.iter_mut().zip([a, b, c, d, e]) {
+                *x = x.wrapping_add(y);
+            }
+        }
+        let mut out = [0u8; 20];
+        for (i, v) in h.iter().enumerate() {
+            out[4 * i..4 * i + 4].copy_from_slice(&v.to_be_bytes());
+        }
+        out
+    }
+}
+
 pub fn init() {
     let _ = (s2a, r8);
     reg!("advapi32";
@@ -1482,7 +1623,8 @@ pub fn init() {
         RegCreateKeyW, RegCloseKey, RegFlushKey, RegQueryValueExA, RegQueryValueExW, RegQueryValueA,
         RegSetValueExA, RegSetValueExW, RegSetValueA, RegDeleteValueA, RegDeleteValueW, RegDeleteKeyA,
         RegDeleteKeyW, RegEnumKeyExA, RegEnumKeyExW, RegEnumKeyA, RegEnumKeyW, RegEnumValueA, RegEnumValueW,
-        RegQueryInfoKeyA, RegQueryInfoKeyW,
+        RegQueryInfoKeyA, RegQueryInfoKeyW, CryptAcquireContextA, CryptAcquireContextW, CryptReleaseContext,
+        CryptGenRandom, CryptCreateHash, CryptHashData, CryptGetHashParam, CryptDestroyHash,
     );
     reg!("version"; GetFileVersionInfoSizeA, GetFileVersionInfoSizeW, GetFileVersionInfoA, GetFileVersionInfoW,
         VerQueryValueA, VerQueryValueW);

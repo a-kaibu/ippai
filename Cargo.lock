@@ -2246,6 +2246,9 @@ dependencies = [
  "dlmalloc",
  "encoding_rs",
  "libc",
+ "md5",
+ "sha2",
+ "ttf-parser",
  "vnhost",
  "vnx86",
 ]

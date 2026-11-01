@@ -338,6 +338,11 @@ fn toplevel_offset(s: &State, mut h: u32) -> Option<(u32, i32, i32)> {
 }
 
 /// Where a window's client area is in screen coordinates.
+/// A window's client area in screen coordinates (None: no such window).
+pub fn client_rect_screen(h: u32) -> Option<Rect> {
+    with(|s| s.wins.contains_key(&h).then(|| client_screen(s, h)))
+}
+
 pub fn client_screen(s: &State, h: u32) -> Rect {
     if h == DESKTOP || h == 0 {
         return Rect { l: 0, t: 0, r: s.screen.0, b: s.screen.1 };

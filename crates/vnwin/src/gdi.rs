@@ -958,7 +958,47 @@ const FACES: &[Face] = &[
 
 static FILES: OnceLock<Mutex<HashMap<usize, Option<Arc<FontVec>>>>> = OnceLock::new();
 
+/// Fonts the game added (AddFontResource*, AddFontMemResourceEx): (family names, font).
+/// Their face indices follow FACES'.
+static ADDED: Mutex<Vec<(Vec<String>, Arc<FontVec>)>> = Mutex::new(Vec::new());
+
+/// Registers a TrueType font file's data; returns how many fonts it held (0 if none).
+fn add_font(data: Vec<u8>) -> u32 {
+    let mut names: Vec<String> = Vec::new();
+    if let Ok(face) = ttf_parser::Face::parse(&data, 0) {
+        for n in face.names() {
+            if matches!(n.name_id, 1 | 4 | 16) {
+                if let Some(s) = n.to_string() {
+                    if !s.is_empty() && !names.contains(&s) {
+                        names.push(s);
+                    }
+                }
+            }
+        }
+    }
+    let Ok(f) = FontVec::try_from_vec(data) else { return 0 };
+    if names.is_empty() {
+        return 0;
+    }
+    let mut g = ADDED.lock().unwrap();
+    if !g.iter().any(|(n, _)| n == &names) {
+        g.push((names, Arc::new(f)));
+    }
+    1
+}
+
+/// A face's name (as GetTextFace reports it).
+fn face_name(i: usize) -> String {
+    match FACES.get(i) {
+        Some(f) => f.names[0].to_string(),
+        None => ADDED.lock().unwrap().get(i - FACES.len()).map_or_else(String::new, |(n, _)| n[0].clone()),
+    }
+}
+
 fn font_file(i: usize) -> Option<Arc<FontVec>> {
+    if i >= FACES.len() {
+        return ADDED.lock().unwrap().get(i - FACES.len()).map(|(_, f)| f.clone());
+    }
     let m = FILES.get_or_init(|| Mutex::new(HashMap::new()));
     let mut g = m.lock().unwrap();
     g.entry(i)
@@ -981,6 +1021,11 @@ fn font_file(i: usize) -> Option<Arc<FontVec>> {
 /// The face for a LOGFONT face name (the Japanese and English names, '@' for vertical).
 fn face_index(lf: &LogFont) -> usize {
     let name = lf.face.trim_start_matches('@');
+    for (i, (names, _)) in ADDED.lock().unwrap().iter().enumerate() {
+        if names.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+            return FACES.len() + i;
+        }
+    }
     for (i, f) in FACES.iter().enumerate() {
         if f.names.iter().any(|n| n.eq_ignore_ascii_case(name)) {
             return i;
@@ -2796,7 +2841,11 @@ fn CreateFontIndirectA(c: &mut Ctx) -> u32 {
     add(G::Font(read_logfont(c.a(0), false)))
 }
 fn CreateFontIndirectW(c: &mut Ctx) -> u32 {
-    add(G::Font(read_logfont(c.a(0), true)))
+    let lf = read_logfont(c.a(0), true);
+    if std::env::var_os("VNWIN_TRACE_FONT").is_some() {
+        eprintln!("vnwin font: {} h {} w {} weight {} q {}", lf.face, lf.height, lf.width, lf.weight, lf.quality);
+    }
+    add(G::Font(lf))
 }
 fn CreateFontIndirectExW(c: &mut Ctx) -> u32 {
     add(G::Font(read_logfont(c.a(0), true)))
@@ -2836,12 +2885,15 @@ fn GetTextMetricsA(c: &mut Ctx) -> u32 {
 fn GetTextMetricsW(c: &mut Ctx) -> u32 {
     let Some((r, lf, _)) = real_of(c.a(0)) else { return 0 };
     write_tm(c.a(1), &r, &lf, true);
+    if std::env::var_os("VNWIN_TRACE_FONT").is_some() {
+        eprintln!("vnwin font: tm face {} h {} asc {} em {}", face_name(r.face), r32(c.a(1)), r32(c.a(1) + 4), r.em);
+    }
     1
 }
 fn GetTextFaceA(c: &mut Ctx) -> u32 {
     let (dc, n, p) = (c.a(0), c.a(1), c.a(2));
     let Some((r, _, _)) = real_of(dc) else { return 0 };
-    let name = crate::text::s2a(FACES[r.face].names[0]);
+    let name = crate::text::s2a(&face_name(r.face));
     if p == 0 {
         return name.len() as u32 + 1;
     }
@@ -2850,7 +2902,7 @@ fn GetTextFaceA(c: &mut Ctx) -> u32 {
 fn GetTextFaceW(c: &mut Ctx) -> u32 {
     let (dc, n, p) = (c.a(0), c.a(1), c.a(2));
     let Some((r, _, _)) = real_of(dc) else { return 0 };
-    let name: Vec<u16> = FACES[r.face].names[0].encode_utf16().collect();
+    let name: Vec<u16> = face_name(r.face).encode_utf16().collect();
     if p == 0 {
         return name.len() as u32 + 1;
     }
@@ -2965,7 +3017,19 @@ fn mbcs_char(code: u32) -> u32 {
 
 fn glyph_outline(c: &mut Ctx, wide: bool) -> u32 {
     let (dc, code, fmt, gm, size, buf) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5));
-    let Some((r, _, _)) = real_of(dc) else { return 0xffff_ffff };
+    let Some((mut r, _, _)) = real_of(dc) else { return 0xffff_ffff };
+    // MAT2: scaling only (eM11, eM22 as 16.16 fixed; shear and rotation are not done)
+    let mat = c.a(6);
+    if mat != 0 {
+        let fixed = |p: u32| r32(p) as i32 as f32 / 65536.0;
+        let (sx, sy) = (fixed(mat), fixed(mat + 12));
+        let s = if sy != 0.0 { sy.abs() } else { sx.abs() };
+        if s > 0.0 && (s - 1.0).abs() > 1e-3 {
+            r.em *= s;
+            r.ascent = (r.ascent as f32 * s).round() as i32;
+            r.descent = (r.descent as f32 * s).round() as i32;
+        }
+    }
     let ch = if fmt & 0x80 != 0 || wide { code } else { mbcs_char(code) };
     let g = glyph(&r, ch);
     let blank = g.w == 0 || g.h == 0;
@@ -3046,17 +3110,20 @@ fn GetOutlineTextMetricsA(_: &mut Ctx) -> u32 {
 fn GetOutlineTextMetricsW(_: &mut Ctx) -> u32 {
     0
 }
-fn AddFontResourceA(_: &mut Ctx) -> u32 {
-    1
+fn add_font_file(name: &str) -> u32 {
+    crate::files::resolve(name).and_then(|h| std::fs::read(h).ok()).map_or(0, add_font)
 }
-fn AddFontResourceW(_: &mut Ctx) -> u32 {
-    1
+fn AddFontResourceA(c: &mut Ctx) -> u32 {
+    add_font_file(&crate::k32::arg_str(c.a(0), false))
 }
-fn AddFontResourceExA(_: &mut Ctx) -> u32 {
-    1
+fn AddFontResourceW(c: &mut Ctx) -> u32 {
+    add_font_file(&crate::k32::arg_str(c.a(0), true))
 }
-fn AddFontResourceExW(_: &mut Ctx) -> u32 {
-    1
+fn AddFontResourceExA(c: &mut Ctx) -> u32 {
+    add_font_file(&crate::k32::arg_str(c.a(0), false))
+}
+fn AddFontResourceExW(c: &mut Ctx) -> u32 {
+    add_font_file(&crate::k32::arg_str(c.a(0), true))
 }
 fn RemoveFontResourceA(_: &mut Ctx) -> u32 {
     1
@@ -3064,7 +3131,14 @@ fn RemoveFontResourceA(_: &mut Ctx) -> u32 {
 fn RemoveFontResourceExA(_: &mut Ctx) -> u32 {
     1
 }
+fn RemoveFontResourceW(_: &mut Ctx) -> u32 {
+    1
+}
+fn RemoveFontResourceExW(_: &mut Ctx) -> u32 {
+    1
+}
 fn AddFontMemResourceEx(c: &mut Ctx) -> u32 {
+    add_font(mem::slice(c.a(0), c.a(1)).to_vec());
     put32(c.a(3), 1);
     0x0a7f_0000
 }
@@ -3141,6 +3215,9 @@ fn enum_fonts(c: &mut Ctx, filter: Option<String>, proc_: u32, lp: u32, wide: bo
         if f.names[0].starts_with('Ｍ') {
             names.push(format!("@{}", f.names[0]));
         }
+    }
+    for (n, _) in ADDED.lock().unwrap().iter() {
+        names.push(n[0].clone());
     }
     for name in names {
         if let Some(fl) = &filter {
@@ -3317,7 +3394,7 @@ fn register() {
         GetCharWidth32W, GetCharABCWidthsA, GetCharABCWidthsW, GetGlyphOutlineA, GetGlyphOutlineW,
         GetGlyphIndicesW, GetFontData, GetKerningPairsA, GetKerningPairsW, GetFontLanguageInfo,
         GetOutlineTextMetricsA, GetOutlineTextMetricsW, AddFontResourceA, AddFontResourceW, AddFontResourceExA,
-        AddFontResourceExW, RemoveFontResourceA, RemoveFontResourceExA, AddFontMemResourceEx,
+        AddFontResourceExW, RemoveFontResourceA, RemoveFontResourceExA, RemoveFontResourceW, RemoveFontResourceExW, AddFontMemResourceEx,
         RemoveFontMemResourceEx, TextOutA, TextOutW, ExtTextOutA, ExtTextOutW,
         EnumFontsA, EnumFontsW, EnumFontFamiliesA, EnumFontFamiliesW, EnumFontFamiliesExA, EnumFontFamiliesExW,
         GdiFlush, GdiSetBatchLimit, GetPixelFormat, SetICMMode,

@@ -391,6 +391,9 @@ fn resolve_import(dll: &str, imp: Import) -> u32 {
             Import::Ordinal(o) => api::ordinal_name(dll, o).unwrap_or_else(|| format!("#{o}")),
         };
         hle_module(dll);
+        if let Some(d) = hle_data(dll, &name) {
+            return d;
+        }
         return crate::fast::bind(dll, &name, api::export(dll, &name));
     }
     let base = match by_name(dll) {
@@ -435,8 +438,16 @@ pub fn proc_address(base: u32, imp: Import) -> Option<u32> {
         Import::Name(n) => n.to_string(),
         Import::Ordinal(o) => api::ordinal_name(&name, o)?,
     };
+    if let Some(d) = hle_data(&name, &n) {
+        return Some(d);
+    }
     let a = api::export(&name, &n);
     (api::implemented(a) || std::env::var_os("VNWIN_ALL_EXPORTS").is_some()).then(|| crate::fast::bind(&name, &n, a))
+}
+
+/// A data export of a DLL we implement (msvcrt's variables).
+fn hle_data(dll: &str, name: &str) -> Option<u32> {
+    (api::dll_key(dll) == "msvcrt").then(|| crate::crt::data(name)).flatten()
 }
 
 fn load_dll_file(dll: &str) -> Result<u32, String> {

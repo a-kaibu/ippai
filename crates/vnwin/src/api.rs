@@ -30,6 +30,8 @@ pub struct Ctx<'a> {
     pub jumped: bool,
     /// a double for ST0 (functions returning floating point)
     pub st0: Option<f64>,
+    /// the trap address called (handlers shared by many entries tell them apart by it)
+    pub trap: u32,
 }
 
 impl Ctx<'_> {
@@ -208,6 +210,12 @@ fn stats_on() -> bool {
 
 /// VNWIN_TRACE_FILTER=a,b: trace only functions whose name contains one of these.
 fn trace_match(i: u32) -> bool {
+    // VNWIN_TRACE_AFTER=<ms>: only from then on
+    static AFTER: OnceLock<u32> = OnceLock::new();
+    let after = *AFTER.get_or_init(|| std::env::var("VNWIN_TRACE_AFTER").ok().and_then(|s| s.parse().ok()).unwrap_or(0));
+    if after > 0 && crate::k32::ticks_ms() - 60_000 < after {
+        return false;
+    }
     static F: OnceLock<Vec<String>> = OnceLock::new();
     let f = F.get_or_init(|| std::env::var("VNWIN_TRACE_FILTER").map(|s| s.split(',').map(String::from).collect()).unwrap_or_default());
     if f.is_empty() {
@@ -269,7 +277,7 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
             eprintln!("{line}");
         }
     }
-    let mut c = Ctx { cpu, esp, edx: None, jumped: false, st0: None };
+    let mut c = Ctx { cpu, esp, edx: None, jumped: false, st0: None, trap: addr };
     let r = match f {
         Some(f) => f(&mut c),
         None => {

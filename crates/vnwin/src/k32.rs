@@ -89,6 +89,11 @@ pub fn set_command_line(exe: &str, args: &[String]) {
     *CMDLINE.lock().unwrap() = (pa, pw);
 }
 
+/// (ANSI, UTF-16) command line
+pub fn cmdline() -> (u32, u32) {
+    *CMDLINE.lock().unwrap()
+}
+
 fn GetCommandLineA(_: &mut Ctx) -> u32 {
     CMDLINE.lock().unwrap().0
 }
@@ -1101,6 +1106,25 @@ fn GetUserDefaultLCID(_: &mut Ctx) -> u32 {
 }
 fn GetSystemDefaultLCID(_: &mut Ctx) -> u32 {
     lcid()
+}
+/// EnumSystemLocales: the one locale we have, as "%08x".
+fn enum_locales(c: &mut Ctx, wide: bool) -> u32 {
+    let s = format!("{:08x}", lcid());
+    let p = mem::heap_alloc(32, true);
+    if wide {
+        put_wstr(p, 16, &s.encode_utf16().collect::<Vec<u16>>());
+    } else {
+        mem::write(p, s.as_bytes());
+    }
+    c.call(c.a(0), &[p]);
+    mem::heap_free(p);
+    1
+}
+fn EnumSystemLocalesA(c: &mut Ctx) -> u32 {
+    enum_locales(c, false)
+}
+fn EnumSystemLocalesW(c: &mut Ctx) -> u32 {
+    enum_locales(c, true)
 }
 fn GetUserDefaultLangID(_: &mut Ctx) -> u32 {
     lcid()
@@ -2558,7 +2582,7 @@ pub fn init() {
         LocalAlloc, LocalFree, LocalReAlloc, LocalLock, LocalUnlock, LocalSize, LocalHandle,
         GlobalMemoryStatus, GlobalMemoryStatusEx, GetSystemInfo, GetNativeSystemInfo, IsProcessorFeaturePresent,
         IsWow64Process, GetVersion, GetVersionExA, GetVersionExW, VerifyVersionInfoW, VerSetConditionMask,
-        GetACP, GetOEMCP, IsValidCodePage, GetThreadLocale, SetThreadLocale, GetUserDefaultLCID, GetSystemDefaultLCID,
+        GetACP, GetOEMCP, IsValidCodePage, GetThreadLocale, SetThreadLocale, GetUserDefaultLCID, GetSystemDefaultLCID, EnumSystemLocalesA, EnumSystemLocalesW,
         GetUserDefaultLangID, GetSystemDefaultLangID, GetUserDefaultUILanguage, GetSystemDefaultUILanguage,
         IsValidLocale, GetLocaleInfoA, GetLocaleInfoW, EnumCalendarInfoA, GetCPInfo, GetCPInfoExA, IsDBCSLeadByte,
         IsDBCSLeadByteEx, MultiByteToWideChar, WideCharToMultiByte, GetStringTypeA, GetStringTypeExA, GetStringTypeW,

@@ -11,6 +11,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use vnx86::{Cpu, EAX, ESP};
 
 pub mod api;
+pub mod d3d9;
+pub mod crt;
 pub mod fast;
 pub mod files;
 pub mod gdi;
@@ -255,7 +257,9 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     user::init();
     gdi::init();
     misc::init();
+    crt::init();
     sound::init();
+    d3d9::register();
     let peb = mem::reserve(0, 0x2000, 4, 0x20000, true).expect("PEB");
     mem::commit(peb, 4);
     PEB.store(peb, Ordering::Relaxed);
