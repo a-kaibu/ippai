@@ -2,7 +2,7 @@
 // screen vnhost composes (read from the wasm heap: headless Chromium can't show WebGPU canvases;
 // Direct3D windows' frames are read back from the GPU)
 // as a PNG every INTERVAL seconds. After the first shot, CLICKS="x,y;x,y" clicks there (page
-// pixels) and KEYS="KeyA Enter" presses those keys; CLICK_EVERY="x,y" clicks there after every
+// pixels; each held 200 ms) and KEYS="KeyA Enter" presses those keys; CLICK_EVERY="x,y" clicks there after every
 // shot (to page through a game). CHROME_ARGS adds browser flags; USER_DATA_DIR keeps the
 // browser profile (its HTTP and code caches) there across runs.
 //
@@ -110,13 +110,13 @@ while (Date.now() < end) {
   if (n === 1) {
     for (const xy of process.env.CLICKS?.split(";") ?? []) {
       const [x, y] = xy.split(",").map(Number);
-      await page.mouse.click(x, y);
+      await page.mouse.click(x, y, { delay: 200 }); // (held: games that poll GetAsyncKeyState per frame)
     }
     for (const key of process.env.KEYS?.split(" ").filter(Boolean) ?? []) await page.keyboard.press(key);
   }
   if (process.env.CLICK_EVERY) {
     const [x, y] = process.env.CLICK_EVERY.split(",").map(Number);
-    await page.mouse.click(x, y);
+    await page.mouse.click(x, y, { delay: 200 }); // (held: games that poll GetAsyncKeyState per frame)
   }
 }
 await browser.close();
