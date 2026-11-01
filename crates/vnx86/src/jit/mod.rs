@@ -181,6 +181,8 @@ struct Gen<'a> {
     /// ("*" marking those) the count and wasm bytes
     fell_back: bool,
     sizes: BTreeMap<String, (u32, u32)>,
+    /// blocks done by [`Gen::hle`] instead of their guest code
+    hle: BTreeMap<u32, Hle>,
     /// open wasm blocks inside the exit block
     depth: u32,
     flags: Flags,
@@ -462,6 +464,34 @@ impl<'a> Gen<'a> {
     fn exit_with(&mut self, st: i32) {
         self.fc_flush();
         self.c.set(L_NEXT).i32c(st).set(L_ST).br(self.depth);
+    }
+
+    /// The C library function `h` at the block's address (its arguments on the stack; the
+    /// block's RET returns). The guest code runs instead (in the interpreter) when a range is
+    /// outside the guest's.
+    fn hle(&mut self, h: Hle) {
+        let (sp, d, s, n) = (L_REG + 4, self.temp(), self.temp(), self.temp());
+        self.check(sp, 16);
+        self.c.get(sp).load32(4).set(d).get(sp).load32(8).set(s).get(sp).load32(12).set(n);
+        let span = GUEST_HI - GUEST_LO;
+        self.c.get(n).u32c(span).gt_u();
+        self.c.get(d).u32c(GUEST_LO).sub().u32c(span).get(n).sub().gt_u().or();
+        if h == Hle::Move {
+            self.c.get(s).u32c(GUEST_LO).sub().u32c(span).get(n).sub().gt_u().or();
+        }
+        self.c.if_();
+        self.depth += 1;
+        self.bail();
+        self.depth -= 1;
+        self.c.end();
+        self.c.get(d).get(s).get(n);
+        match h {
+            // wasm's memory.copy is a memmove
+            Hle::Move => self.c.memory_copy(),
+            Hle::Set => self.c.memory_fill(),
+        };
+        self.c.get(d).set(L_REG);
+        self.temps -= 3;
     }
 
     /// Leaves the block so the interpreter runs the current instruction.
@@ -2496,6 +2526,37 @@ fn decode<M: Memory>(mem: &mut M, eip: u32) -> Vec<Instruction> {
     out
 }
 
+/// C library functions done in wasm (by [`Gen::hle`]) where the guest has them: the start of
+/// their code in Wine's PE C runtimes (msvcrt, ucrtbase and the msvcr*), "??" for an absolute
+/// address.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Hle {
+    /// memmove(dst, src, n) (also what memcpy jumps to)
+    Move,
+    /// memset(dst, c, n)
+    Set,
+}
+
+const HLE: &[(Hle, &str)] = &[
+    (Hle::Move, "5589e557565383ec208b45088b750c8945ec8b45108945f0a1????????85c00f85db0000008b45f085c00f84bf000000"),
+    (Hle::Set, "55ba0101010189e5565383e4f083ec100fb6450c8b4d108b5d0869f001010101f7e201f283f90f767789442408895424"),
+];
+
+fn hle_at<M: Memory>(mem: &mut M, a: u32) -> Option<Hle> {
+    let mut buf = [0u8; 48];
+    if mem.fetch(a, &mut buf) < buf.len() {
+        return None;
+    }
+    HLE.iter().find(|(_, sig)| {
+        sig.as_bytes().chunks(2).zip(buf).all(|(h, b)| h == b"??" || u8::from_str_radix(core::str::from_utf8(h).unwrap(), 16) == Ok(b))
+    }).map(|&(h, _)| h)
+}
+
+/// A RET at `a`.
+fn ret_at(a: u32) -> Instruction {
+    Decoder::with_ip(32, &[0xc3], a as u64, DecoderOptions::NONE).decode()
+}
+
 /// Guest loops: (first block, last block) ranges, from the backward jumps between blocks in
 /// address order. Overlapping ranges are widened so they nest.
 /// The blocks of a small function at `f` (all in the region, not following its calls), if it
@@ -2850,6 +2911,10 @@ fn emit_block<'a>(g: &mut Gen<'a>, blocks: &'a [(u32, Vec<Instruction>)], k: usi
             g.c.i32c(0).set(l);
         }
     }
+    if let Some(&h) = g.hle.get(&blocks[k].0) {
+        g.ins = &list[0];
+        g.hle(h);
+    }
     let m = list.len();
     let mut skip = false;
     for (i, ins) in list.iter().enumerate() {
@@ -2993,6 +3058,7 @@ pub fn translate_region<M: Memory>(
     let mut targets = BTreeMap::new();
     let mut queue: VecDeque<u32> = roots.iter().copied().collect();
     let mut total = 0;
+    let mut hle = BTreeMap::new();
     while let Some(a) = queue.pop_front() {
         if blocks.len() >= max_blocks.min(MAX_BLOCKS) || total >= MAX_REGION_INS {
             break;
@@ -3000,7 +3066,13 @@ pub fn translate_region<M: Memory>(
         if targets.contains_key(&a) || !(GUEST_LO..GUEST_HI).contains(&a) || !accept(a) {
             continue;
         }
-        let list = decode(mem, a);
+        let list = match hle_at(mem, a) {
+            Some(h) => {
+                hle.insert(a, h);
+                alloc::vec![ret_at(a)]
+            }
+            None => decode(mem, a),
+        };
         let Some(last) = list.last() else { continue };
         queue.extend(successors(last));
         total += list.len();
@@ -3149,6 +3221,7 @@ pub fn translate_region<M: Memory>(
         fuse_zx: false,
         fell_back: false,
         sizes: Default::default(),
+        hle,
     };
     g.live_out = block_liveness(&g, &blocks).1;
     g.c.get(L_ARG).i32c(ENTRY_SHIFT as i32).shr_u().set(L_BLK);
@@ -3177,6 +3250,9 @@ pub fn translate_region<M: Memory>(
         use core::fmt::Write;
         for (k, (a, list)) in blocks.iter().enumerate() {
             let _ = writeln!(layout, "{k} {a:08x}-{:08x} ctx {} {}", list.last().unwrap().ip32(), ctxs[k], loops.get(&k).map_or(String::new(), |e| alloc::format!("loop ..{e}")));
+        }
+        for (a, h) in &g.hle {
+            let _ = writeln!(layout, "HLE {a:08x} {h:?}");
         }
         layout.push_str(&g.notes);
         for (k, v) in &g.sizes {
