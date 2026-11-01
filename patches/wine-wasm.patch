@@ -1336,6 +1336,19 @@
  #else
  
  static NTSTATUS create_logical_proc_info(void)
+@@ -2709,6 +2757,12 @@
+         }
+ #endif
+     }
++#elif defined(__wasm__)
++    /* no host memory statistics in the browser; report a 4 GB machine with 3 GB free
++     * (BGI quits on 0 bytes available) */
++    totalram = 4ull << 30;
++    freeram = 3ull << 30;
++    totalswap = freeswap = 4ull << 30;
+ #endif
+ 
+     /* Titan Quest refuses to run if TotalPageFile <= TotalPhys */
 --- a/dlls/ntdll/unix/thread.c
 +++ b/dlls/ntdll/unix/thread.c
 @@ -1302,6 +1302,14 @@
@@ -1501,6 +1514,17 @@
      }
  
      if (is_win64) /* top-down area */
+@@ -3345,7 +3392,9 @@
+  */
+ void virtual_get_system_info( SYSTEM_BASIC_INFORMATION *info, BOOL wow64 )
+ {
+-#if defined(HAVE_SYSINFO) \
++#if defined(__wasm__)
++    info->MmHighestPhysicalPage = (4ull << 30) / page_size;  /* matches get_performance_info */
++#elif defined(HAVE_SYSINFO) \
+     && defined(HAVE_STRUCT_SYSINFO_TOTALRAM) && defined(HAVE_STRUCT_SYSINFO_MEM_UNIT)
+     struct sysinfo sinfo;
+ 
 --- a/dlls/win32u/dibdrv/primitives.c
 +++ b/dlls/win32u/dibdrv/primitives.c
 @@ -246,7 +246,7 @@

@@ -365,11 +365,7 @@ pub unsafe fn call(d: &mut D3d, iface: u32, m: u32, this: u32, args: *const u32,
             3 => present(d, after),
             4 => D3DERR_INVALIDCALL,
             5 => get_backbuffer(d, a(3)),
-            6 => {
-                wr(a(1), 0, 0);
-                wr(a(1), 1, 0);
-                S_OK
-            }
+            6 => raster_status(d, a(1)),
             7 => display_mode(a(1)),
             8 => device_out(d, a(1)),
             9 => {
@@ -489,6 +485,24 @@ unsafe fn device_out(d: &mut D3d, out: u32) -> u32 {
 
 /// The modes the adapter lists: the usual ones that fit the screen, and the screen's own (games
 /// pick a window size from these; AdvHD's settings dialog wants more than one).
+/// GetRasterStatus: a 60 Hz beam from the clock (games pace frames on it: BGI waits for the
+/// scanline to pass mid-screen, and a beam that never moves hangs it).
+unsafe fn raster_status(d: &D3d, out: u32) -> u32 {
+    use std::sync::OnceLock;
+    static T0: OnceLock<std::time::Instant> = OnceLock::new();
+    if out == 0 {
+        return D3DERR_INVALIDCALL;
+    }
+    let h = d.dev.as_ref().map_or(768, |dev| dev.pp[1].max(1));
+    let total = h + h / 20 + 1; // ~5% of the lines in vertical blank
+    let phase = (T0.get_or_init(std::time::Instant::now).elapsed().as_secs_f64() * 60.0).fract();
+    let line = (phase * total as f64) as u32;
+    let vblank = line >= h;
+    wr(out, 0, vblank as u32);
+    wr(out, 1, if vblank { 0 } else { line });
+    S_OK
+}
+
 unsafe fn adapter_modes() -> Vec<(u32, u32)> {
     let (mut w, mut h) = (0, 0);
     crate::display::vnhost_display_size(&mut w, &mut h);
@@ -965,11 +979,7 @@ unsafe fn device_call(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &mut
         }
         17 => present(d, after),
         18 => get_backbuffer(d, a(4)),
-        19 => {
-            wr(a(2), 0, 0);
-            wr(a(2), 1, 0);
-            S_OK
-        }
+        19 => raster_status(d, a(2)),
         20 => S_OK,
         21 => S_OK,
         22 => {
