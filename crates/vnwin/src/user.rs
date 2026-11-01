@@ -7,7 +7,7 @@
 #![allow(non_snake_case)]
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::api::{implement, Ctx};
@@ -441,6 +441,192 @@ fn builtin_proc() -> u32 {
     crate::api::export("user32", "DefWindowProcA")
 }
 
+// ---------------------------------------------------------------------------------------------
+// the Button and Static controls (launcher and settings dialogs): drawn with GDI, clicks
+// reach the parent as WM_COMMAND
+
+#[derive(Default, Clone, Copy)]
+struct Ctl {
+    font: u32,
+    check: u32,
+    pressed: bool,
+}
+
+static CTLS: Mutex<Option<HashMap<u32, Ctl>>> = Mutex::new(None);
+
+fn ctl(h: u32) -> Ctl {
+    CTLS.lock().unwrap().get_or_insert_with(HashMap::new).get(&h).copied().unwrap_or_default()
+}
+fn set_ctl(h: u32, f: impl FnOnce(&mut Ctl)) {
+    f(CTLS.lock().unwrap().get_or_insert_with(HashMap::new).entry(h).or_default());
+}
+
+fn control_proc() -> u32 {
+    static P: OnceLock<u32> = OnceLock::new();
+    *P.get_or_init(|| crate::api::host_fn("control_proc", control_proc_fn, 16))
+}
+
+fn gcall(c: &mut Ctx, dll: &str, name: &str, args: &[u32]) -> u32 {
+    let f = crate::api::export(dll, name);
+    c.call(f, args)
+}
+
+fn ctl_paint(c: &mut Ctx, h: u32, button: bool) {
+    let (style, text, id, parent, (w, hh), enabled) = with(|s| {
+        let w = &s.wins[&h];
+        (w.style, w.text.clone(), w.id, w.parent, (w.client.w(), w.client.h()), w.enabled)
+    });
+    let st = ctl(h);
+    let ps = mem::heap_alloc(64 + 16, true);
+    let rc = ps + 64;
+    let dc = gcall(c, "user32", "BeginPaint", &[h, ps]);
+    if st.font != 0 {
+        gcall(c, "gdi32", "SelectObject", &[dc, st.font]);
+    }
+    gcall(c, "gdi32", "SetBkMode", &[dc, 1]);
+    gcall(c, "gdi32", "SetTextColor", &[dc, if enabled { 0 } else { 0x6d6d6d }]);
+    // the parent may give the background (WM_CTLCOLORSTATIC / WM_CTLCOLORBTN)
+    let mut bg = if parent != 0 { send(c, parent, if button { 0x135 } else { 0x138 }, dc, h) } else { 0 };
+    if bg == 0 {
+        bg = crate::gdi::solid_brush(0xf0f0f0);
+    }
+    let full = Rect { l: 0, t: 0, r: w, b: hh };
+    crate::gdi::fill_rect_brush(dc, full, bg);
+    let kind = style & 0xf;
+    let fill = |r: Rect, color: u32| crate::gdi::fill_rect_brush(dc, r, crate::gdi::solid_brush(color));
+    let frame = |r: Rect, color: u32| {
+        fill(Rect { l: r.l, t: r.t, r: r.r, b: r.t + 1 }, color);
+        fill(Rect { l: r.l, t: r.b - 1, r: r.r, b: r.b }, color);
+        fill(Rect { l: r.l, t: r.t, r: r.l + 1, b: r.b }, color);
+        fill(Rect { l: r.r - 1, t: r.t, r: r.r, b: r.b }, color);
+    };
+    let mut tr = full;
+    let mut flags;
+    if !button {
+        flags = match style & 3 {
+            1 => 0x1,
+            2 => 0x2,
+            _ => 0,
+        } | 0x10;
+        if style & 0x200 != 0 {
+            flags |= 0x4 | 0x20;
+        }
+    } else if matches!(kind, 2 | 3 | 4 | 5 | 6 | 9) && kind != 7 {
+        // check box / radio button: a box, then the text
+        let by = (hh - 13) / 2;
+        let b = Rect { l: 0, t: by, r: 13, b: by + 13 };
+        fill(b, 0xffffff);
+        frame(b, 0x333333);
+        if st.check == 1 {
+            fill(Rect { l: 3, t: by + 3, r: 10, b: by + 10 }, 0x202020);
+        }
+        tr.l = 17;
+        flags = 0x4 | 0x20;
+    } else if kind == 7 {
+        // group box
+        frame(Rect { l: 0, t: 7, r: w, b: hh }, 0xdcdcdc);
+        tr = Rect { l: 8, t: 0, r: w - 8, b: 16 };
+        flags = 0x20;
+    } else {
+        fill(Rect { l: 1, t: 1, r: w - 1, b: hh - 1 }, if st.pressed { 0xf7e4cc } else { 0xe1e1e1 });
+        frame(full, if st.pressed { 0xd77800 } else { 0xadadad });
+        flags = 0x1 | 0x4 | 0x20;
+    }
+    let _ = id;
+    tr.write(rc);
+    crate::gdi::draw_text(dc, &text, rc, flags);
+    gcall(c, "user32", "EndPaint", &[h, ps]);
+    mem::heap_free(ps);
+}
+
+fn ctl_click(c: &mut Ctx, h: u32) {
+    let (style, id, parent) = with(|s| s.wins.get(&h).map_or((0, 0, 0), |w| (w.style, w.id, w.parent)));
+    match style & 0xf {
+        3 | 6 => set_ctl(h, |t| t.check = if t.check == 1 { 0 } else { 1 }),
+        5 => set_ctl(h, |t| t.check = (t.check + 1) % 3),
+        9 => {
+            // auto radio: this one on, its siblings off
+            let sibs: Vec<u32> = with(|s| s.wins.get(&parent).map(|p| p.children.clone()).unwrap_or_default());
+            for k in sibs {
+                let radio = with(|s| s.wins.get(&k).is_some_and(|w| w.style & 0xf == 9));
+                if radio && k != h {
+                    set_ctl(k, |t| t.check = 0);
+                    invalidate(k, None, true);
+                }
+            }
+            set_ctl(h, |t| t.check = 1);
+        }
+        _ => {}
+    }
+    invalidate(h, None, true);
+    if parent != 0 {
+        send(c, parent, 0x111, id & 0xffff, h);
+    }
+}
+
+fn control_proc_fn(c: &mut Ctx) -> u32 {
+    let (h, m, wp, lp) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    let button = with(|s| s.wins.get(&h).is_some_and(|w| s.classes[w.class].name.eq_ignore_ascii_case("button")));
+    match m {
+        0xf => {
+            ctl_paint(c, h, button);
+            0
+        }
+        0x14 => 1,
+        0x30 => {
+            set_ctl(h, |t| t.font = wp);
+            if lp != 0 {
+                invalidate(h, None, true);
+            }
+            0
+        }
+        0x31 => ctl(h).font,
+        0x87 => if button { 0x2000 } else { 0x100 },
+        0x201 | 0x203 if button => {
+            set_ctl(h, |t| t.pressed = true);
+            with(|s| s.capture = h);
+            invalidate(h, None, true);
+            0
+        }
+        0x202 if button => {
+            let was = ctl(h).pressed;
+            set_ctl(h, |t| t.pressed = false);
+            with(|s| {
+                if s.capture == h {
+                    s.capture = 0
+                }
+            });
+            invalidate(h, None, true);
+            let (x, y) = ((lp & 0xffff) as i16 as i32, (lp >> 16) as i16 as i32);
+            let inside = with(|s| s.wins.get(&h).is_some_and(|w| x >= 0 && y >= 0 && x < w.client.w() && y < w.client.h()));
+            if was && inside {
+                ctl_click(c, h);
+            }
+            0
+        }
+        0xf0 => ctl(h).check,
+        0xf1 => {
+            set_ctl(h, |t| t.check = wp);
+            invalidate(h, None, true);
+            0
+        }
+        0xf5 => {
+            ctl_click(c, h);
+            0
+        }
+        0xc | 0xa => {
+            let r = def_proc(c, false);
+            invalidate(h, None, true);
+            r
+        }
+        0x2 => {
+            CTLS.lock().unwrap().get_or_insert_with(HashMap::new).remove(&h);
+            def_proc(c, false)
+        }
+        _ => def_proc(c, false),
+    }
+}
+
 /// Classes every program finds registered.
 fn system_classes(s: &mut State) {
     if !s.classes.is_empty() {
@@ -451,7 +637,7 @@ fn system_classes(s: &mut State) {
         s.classes.push(Class {
             name: n.into(),
             style: 0,
-            proc_: builtin_proc(),
+            proc_: if matches!(n, "Button" | "Static") { control_proc() } else { builtin_proc() },
             cls_extra: 0,
             wnd_extra: 32,
             inst: 0,
@@ -723,9 +909,13 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
     if !is_window(h) {
         return 0;
     }
-    let (cw, ch) = with(|s| s.wins.get(&h).map_or((0, 0), |w| (w.client.w(), w.client.h())));
-    send(c, h, 0x5, 0, (ch as u32) << 16 | (cw as u32 & 0xffff));
-    send(c, h, 0x3, 0, (y as u32) << 16 | (x as u32 & 0xffff));
+    // top-level windows get WM_SIZE / WM_MOVE when first shown (games keep the window in a
+    // global only once CreateWindowEx returns), child windows now
+    if child {
+        let (cw, ch) = with(|s| s.wins.get(&h).map_or((0, 0), |w| (w.client.w(), w.client.h())));
+        send(c, h, 0x5, 0, (ch as u32) << 16 | (cw as u32 & 0xffff));
+        send(c, h, 0x3, 0, (y as u32) << 16 | (x as u32 & 0xffff));
+    }
     if child {
         send(c, parent, 0x210, 1 | (menu & 0xffff) << 16, h); // WM_PARENTNOTIFY
     }
@@ -1626,6 +1816,13 @@ fn DefWindowProcW(c: &mut Ctx) -> u32 {
     def_proc(c, true)
 }
 fn DefDlgProcA(c: &mut Ctx) -> u32 {
+    let (h, m, wp) = (c.a(0), c.a(1), c.a(2));
+    if m == 0x14 {
+        // dialogs erase with the 3D face colour
+        let r = with(|s| s.wins.get(&h).map(|w| Rect { l: 0, t: 0, r: w.client.w(), b: w.client.h() })).unwrap_or_default();
+        crate::gdi::fill_rect_brush(wp, r, crate::gdi::solid_brush(0xf0f0f0));
+        return 1;
+    }
     def_proc(c, false)
 }
 fn DefFrameProcA(c: &mut Ctx) -> u32 {
@@ -2203,6 +2400,16 @@ fn ShowCursor(c: &mut Ctx) -> u32 {
 }
 fn ClipCursor(_: &mut Ctx) -> u32 {
     1
+}
+/// The key states (GetKeyboardState's), for DirectInput.
+pub fn key_states() -> [u8; 256] {
+    with(|s| s.keys)
+}
+pub fn cursor_pos() -> (i32, i32) {
+    with(|s| s.cursor)
+}
+pub fn vk_scan(vk: u32) -> u32 {
+    vk_to_scan(vk)
 }
 fn GetKeyState(c: &mut Ctx) -> u32 {
     let k = c.a(0) as usize & 0xff;

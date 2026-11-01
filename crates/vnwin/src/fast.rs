@@ -149,6 +149,16 @@ fn tls_get_value(trap: u32) -> u32 {
     a.place()
 }
 
+/// msvcrt's _errno / __doserrno: per-thread words in the TEB's free page (crt::ERRNO_TEB)
+fn errno_ptr(off: u32) -> u32 {
+    let mut a = Asm::default();
+    a.x(&[0x64, 0xa1, 0x18, 0, 0, 0]) // mov eax,fs:[0x18]
+        .x(&[0x05])
+        .u32(crate::crt::ERRNO_TEB + off) // add eax,imm32
+        .x(&[0xc3]);
+    a.place()
+}
+
 fn cs_wake(c: &mut Ctx) -> u32 {
     crate::k32::cs_wake(c.a(0));
     0
@@ -158,7 +168,11 @@ static STUBS: Mutex<Option<HashMap<String, u32>>> = Mutex::new(None);
 
 /// The address to bind for `dll!name`, whose trap is `trap`: a stub, or the trap.
 pub fn bind(dll: &str, name: &str, trap: u32) -> u32 {
-    if !matches!(crate::api::dll_key(dll).as_str(), "kernel32" | "kernelbase" | "ntdll") {
+    let key = crate::api::dll_key(dll);
+    if !matches!(key.as_str(), "kernel32" | "kernelbase" | "ntdll" | "msvcrt") {
+        return trap;
+    }
+    if key == "msvcrt" && !matches!(name, "_errno" | "__doserrno") {
         return trap;
     }
     if std::env::var_os("VNWIN_NO_FAST").is_some() {
@@ -176,6 +190,8 @@ pub fn bind(dll: &str, name: &str, trap: u32) -> u32 {
         "GetLastError" | "RtlGetLastWin32Error" => get_last_error(),
         "SetLastError" | "RtlSetLastWin32Error" => set_last_error(),
         "TlsGetValue" => tls_get_value(trap),
+        "_errno" => errno_ptr(0),
+        "__doserrno" => errno_ptr(4),
         _ => return trap,
     };
     m.insert(name.to_string(), a);

@@ -14130,3 +14130,7 @@ xinput1_3 XInputGetDSoundAudioDeviceGuids stdcall 12 6
 xinput1_3 XInputGetBatteryInformation stdcall 12 7
 xinput1_3 XInputGetKeystroke stdcall 12 8
 xinput1_3 XInputGetStateEx stdcall 8 100
+wintrust WinVerifyTrust stdcall 12 -
+sensapi IsNetworkAlive stdcall 4 -
+sensapi IsDestinationReachableA stdcall 8 -
+sensapi IsDestinationReachableW stdcall 8 -

@@ -374,6 +374,14 @@ fn find_dll_file(dll: &str) -> Option<(String, String)> {
     let exe_dir = MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.path.rsplit_once('\\').map_or(String::new(), |x| x.0.to_string()));
     let mut dirs: Vec<String> = exe_dir.into_iter().collect();
     dirs.push(crate::files::cwd().trim_end_matches('\\').to_string());
+    // the folders of DLLs loaded by path (LOAD_WITH_ALTERED_SEARCH_PATH finds their dependencies there)
+    for m in MODULES.read().unwrap().iter().filter(|m| m.dll && !m.hle) {
+        if let Some((d, _)) = m.path.rsplit_once('\\') {
+            if !dirs.iter().any(|x| x.eq_ignore_ascii_case(d)) {
+                dirs.push(d.to_string());
+            }
+        }
+    }
     for d in dirs {
         let w = format!("{d}\\{name}");
         if let Some(h) = crate::files::resolve(&w) {

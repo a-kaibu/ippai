@@ -2,6 +2,7 @@
 
 #![allow(non_snake_case)]
 
+use std::collections::HashMap;
 use std::io::SeekFrom;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
@@ -223,6 +224,21 @@ pub fn exit_thread(code: u32) -> ! {
 }
 fn ExitThread(c: &mut Ctx) -> u32 {
     exit_thread(c.a(0))
+}
+fn FreeLibraryAndExitThread(c: &mut Ctx) -> u32 {
+    exit_thread(c.a(1))
+}
+/// PROCESS_MEMORY_COUNTERS: a modest working set
+fn K32GetProcessMemoryInfo(c: &mut Ctx) -> u32 {
+    let (p, cb) = (c.a(1), c.a(2));
+    mem::fill(p, cb.min(44), 0);
+    w32(p, cb.min(44));
+    for off in [8, 12, 16, 20, 32, 36, 40] {
+        if off + 4 <= cb {
+            w32(p + off, 64 << 20);
+        }
+    }
+    1
 }
 
 /// Threads created suspended wait here: tid -> suspend count.
@@ -605,6 +621,173 @@ fn RtlEnterCriticalSection(c: &mut Ctx) -> u32 {
 }
 fn RtlLeaveCriticalSection(c: &mut Ctx) -> u32 {
     cs_leave(c.a(0));
+    0
+}
+
+// slim reader/writer locks (word: bit 0 exclusive, the rest 2 x readers), condition variables
+// (a generation per address) and one-time init, all waiting on one Condvar
+static SYNC: Mutex<Option<HashMap<u32, u32>>> = Mutex::new(None);
+static SYNC_CV: Condvar = Condvar::new();
+
+fn srw_try(l: u32, shared: bool) -> bool {
+    let a = atomic(l);
+    let v = a.load(Ordering::SeqCst);
+    if shared {
+        v & 1 == 0 && a.compare_exchange(v, v + 2, Ordering::SeqCst, Ordering::Relaxed).is_ok()
+    } else {
+        a.compare_exchange(0, 1, Ordering::SeqCst, Ordering::Relaxed).is_ok()
+    }
+}
+fn srw_acquire(l: u32, shared: bool) {
+    for _ in 0..50 {
+        if srw_try(l, shared) {
+            return;
+        }
+        std::hint::spin_loop();
+    }
+    let mut g = SYNC.lock().unwrap();
+    while !srw_try(l, shared) {
+        g = SYNC_CV.wait_timeout(g, std::time::Duration::from_millis(20)).unwrap().0;
+    }
+}
+fn srw_release(l: u32, shared: bool) {
+    let a = atomic(l);
+    if shared {
+        a.fetch_sub(2, Ordering::SeqCst);
+    } else {
+        a.store(0, Ordering::SeqCst);
+    }
+    let _g = SYNC.lock().unwrap();
+    SYNC_CV.notify_all();
+}
+fn InitializeSRWLock(c: &mut Ctx) -> u32 {
+    w32(c.a(0), 0);
+    0
+}
+fn AcquireSRWLockExclusive(c: &mut Ctx) -> u32 {
+    srw_acquire(c.a(0), false);
+    0
+}
+fn AcquireSRWLockShared(c: &mut Ctx) -> u32 {
+    srw_acquire(c.a(0), true);
+    0
+}
+fn ReleaseSRWLockExclusive(c: &mut Ctx) -> u32 {
+    srw_release(c.a(0), false);
+    0
+}
+fn ReleaseSRWLockShared(c: &mut Ctx) -> u32 {
+    srw_release(c.a(0), true);
+    0
+}
+fn TryAcquireSRWLockExclusive(c: &mut Ctx) -> u32 {
+    srw_try(c.a(0), false) as u32
+}
+fn TryAcquireSRWLockShared(c: &mut Ctx) -> u32 {
+    srw_try(c.a(0), true) as u32
+}
+fn InitializeConditionVariable(c: &mut Ctx) -> u32 {
+    w32(c.a(0), 0);
+    0
+}
+/// Waits for a wake of `cv` (after `release`, before `reacquire`); false on timeout.
+fn cv_wait(cv: u32, ms: u32, release: impl FnOnce(), reacquire: impl FnOnce()) -> bool {
+    let mut g = SYNC.lock().unwrap();
+    let gen0 = *g.get_or_insert_with(HashMap::new).entry(cv).or_insert(0);
+    release();
+    let end = (ms != u32::MAX).then(|| std::time::Instant::now() + std::time::Duration::from_millis(ms as u64));
+    let mut woke = true;
+    while g.as_ref().unwrap().get(&cv).copied() == Some(gen0) {
+        let left = match end {
+            Some(e) => match e.checked_duration_since(std::time::Instant::now()) {
+                Some(d) => d.min(std::time::Duration::from_millis(50)),
+                None => {
+                    woke = false;
+                    break;
+                }
+            },
+            None => std::time::Duration::from_millis(50),
+        };
+        g = SYNC_CV.wait_timeout(g, left).unwrap().0;
+    }
+    drop(g);
+    reacquire();
+    if !woke {
+        last_error(1460);
+    }
+    woke
+}
+fn cv_wake(cv: u32) {
+    let mut g = SYNC.lock().unwrap();
+    let e = g.get_or_insert_with(HashMap::new).entry(cv).or_insert(0);
+    *e = e.wrapping_add(1);
+    SYNC_CV.notify_all();
+}
+fn SleepConditionVariableSRW(c: &mut Ctx) -> u32 {
+    let (cv, l, ms, shared) = (c.a(0), c.a(1), c.a(2), c.a(3) & 1 != 0);
+    cv_wait(cv, ms, || srw_release(l, shared), || srw_acquire(l, shared)) as u32
+}
+fn SleepConditionVariableCS(c: &mut Ctx) -> u32 {
+    let (cv, cs, ms) = (c.a(0), c.a(1), c.a(2));
+    // a recursively entered section is left and entered again as a whole
+    let depth = r32(cs + 8).max(1);
+    cv_wait(
+        cv,
+        ms,
+        || {
+            w32(cs + 8, 1);
+            cs_leave(cs)
+        },
+        || {
+            cs_enter(cs);
+            w32(cs + 8, depth)
+        },
+    ) as u32
+}
+fn WakeConditionVariable(c: &mut Ctx) -> u32 {
+    cv_wake(c.a(0));
+    0
+}
+fn WakeAllConditionVariable(c: &mut Ctx) -> u32 {
+    cv_wake(c.a(0));
+    0
+}
+/// InitOnceExecuteOnce(once, fn, param, context): the word is 0 (new), 1 (running), 2 (done).
+fn InitOnceExecuteOnce(c: &mut Ctx) -> u32 {
+    let (once, f, param, ctx) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    let a = atomic(once);
+    loop {
+        match a.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => {
+                let r = c.call(f, &[once, param, ctx]);
+                a.store(if r != 0 { 2 } else { 0 }, Ordering::SeqCst);
+                let _g = SYNC.lock().unwrap();
+                SYNC_CV.notify_all();
+                return r;
+            }
+            Err(2) => return 1,
+            Err(_) => {
+                let g = SYNC.lock().unwrap();
+                if a.load(Ordering::SeqCst) == 1 {
+                    let _ = SYNC_CV.wait_timeout(g, std::time::Duration::from_millis(20));
+                }
+            }
+        }
+    }
+}
+/// No debugger: the debug registers read as zero (games check them against hooks).
+fn GetThreadContext(c: &mut Ctx) -> u32 {
+    let ctx = c.a(1);
+    for i in 1..7 {
+        w32(ctx + 4 * i, 0);
+    }
+    1
+}
+fn SetThreadContext(_: &mut Ctx) -> u32 {
+    1
+}
+fn InitOnceInitialize(c: &mut Ctx) -> u32 {
+    w32(c.a(0), 0);
     0
 }
 
@@ -2557,6 +2740,7 @@ fn SetFileApisToANSI(_: &mut Ctx) -> u32 {
 }
 
 pub fn init() {
+    implement("psapi", "GetProcessMemoryInfo", K32GetProcessMemoryInfo);
     reg!("kernel32";
         GetCommandLineA, GetCommandLineW, GetEnvironmentStrings, GetEnvironmentStringsA, GetEnvironmentStringsW,
         FreeEnvironmentStringsA, FreeEnvironmentStringsW, GetEnvironmentVariableA, GetEnvironmentVariableW,
@@ -2618,7 +2802,11 @@ pub fn init() {
     );
     reg!("advapi32"; GetUserNameA);
     reg!("ntdll"; RtlZeroMemory, RtlMoveMemory, RtlFillMemory, RtlAllocateHeap, RtlFreeHeap, RtlEnterCriticalSection,
-        RtlLeaveCriticalSection);
+        RtlLeaveCriticalSection, InitializeSRWLock, AcquireSRWLockExclusive, AcquireSRWLockShared,
+        ReleaseSRWLockExclusive, ReleaseSRWLockShared, TryAcquireSRWLockExclusive, TryAcquireSRWLockShared,
+        InitializeConditionVariable, SleepConditionVariableSRW, SleepConditionVariableCS, WakeConditionVariable,
+        WakeAllConditionVariable, InitOnceExecuteOnce, InitOnceInitialize, GetThreadContext, SetThreadContext, FreeLibraryAndExitThread,
+        K32GetProcessMemoryInfo);
     let _ = (EAX, ESP);
 }
 

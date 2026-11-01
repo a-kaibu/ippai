@@ -1398,6 +1398,55 @@ fn remove_spec(s: &str) -> Option<String> {
     let k = s.rfind('\\')?;
     Some(if k == 2 && s.as_bytes().get(1) == Some(&b':') { s[..3].to_string() } else { s[..k].to_string() })
 }
+fn unquote(s: &str) -> Option<String> {
+    (s.len() >= 2 && s.starts_with('"') && s.ends_with('"')).then(|| s[1..s.len() - 1].to_string())
+}
+fn PathUnquoteSpacesA(c: &mut Ctx) -> u32 {
+    path_op(c, false, unquote)
+}
+fn PathUnquoteSpacesW(c: &mut Ctx) -> u32 {
+    path_op(c, true, unquote)
+}
+fn add_backslash(s: &str) -> Option<String> {
+    Some(if s.ends_with('\\') || s.is_empty() { s.to_string() } else { format!("{s}\\") })
+}
+fn PathAddBackslashA(c: &mut Ctx) -> u32 {
+    path_op(c, false, add_backslash);
+    c.a(0) + crate::mem::cstr(c.a(0)).len() as u32
+}
+fn PathAddBackslashW(c: &mut Ctx) -> u32 {
+    path_op(c, true, add_backslash);
+    c.a(0) + 2 * wstr(c.a(0)).len() as u32
+}
+fn strip_path(s: &str) -> Option<String> {
+    Some(s.rsplit(['\\', '/']).next().unwrap_or(s).to_string())
+}
+fn PathStripPathA(c: &mut Ctx) -> u32 {
+    path_op(c, false, strip_path);
+    0
+}
+fn PathStripPathW(c: &mut Ctx) -> u32 {
+    path_op(c, true, strip_path);
+    0
+}
+fn path_add_extension(c: &mut Ctx, wide: bool) -> u32 {
+    let ext = if c.a(1) == 0 { ".exe".to_string() } else { arg_str(c.a(1), wide) };
+    path_op(c, wide, |s| {
+        let name = s.rsplit('\\').next().unwrap_or(s);
+        (!name.contains('.')).then(|| format!("{s}{ext}"))
+    });
+    1
+}
+fn PathAddExtensionA(c: &mut Ctx) -> u32 {
+    path_add_extension(c, false)
+}
+fn PathAddExtensionW(c: &mut Ctx) -> u32 {
+    path_add_extension(c, true)
+}
+fn IsNetworkAlive(c: &mut Ctx) -> u32 {
+    put32(c.a(0), 1);
+    1
+}
 fn PathRemoveFileSpecA(c: &mut Ctx) -> u32 {
     path_op(c, false, remove_spec)
 }
@@ -1616,6 +1665,10 @@ impl Sha1 {
     }
 }
 
+fn WinVerifyTrust(_: &mut Ctx) -> u32 {
+    0
+}
+
 pub fn init() {
     let _ = (s2a, r8);
     reg!("advapi32";
@@ -1626,6 +1679,7 @@ pub fn init() {
         RegQueryInfoKeyA, RegQueryInfoKeyW, CryptAcquireContextA, CryptAcquireContextW, CryptReleaseContext,
         CryptGenRandom, CryptCreateHash, CryptHashData, CryptGetHashParam, CryptDestroyHash,
     );
+    reg!("wintrust"; WinVerifyTrust);
     reg!("version"; GetFileVersionInfoSizeA, GetFileVersionInfoSizeW, GetFileVersionInfoA, GetFileVersionInfoW,
         VerQueryValueA, VerQueryValueW);
     reg!("ole32"; CoInitialize, CoInitializeEx, OleInitialize, CoUninitialize, OleUninitialize, CoCreateInstance,
@@ -1646,5 +1700,7 @@ pub fn init() {
         mciSendStringW, mciSendCommandA, waveOutGetNumDevs, midiOutGetNumDevs, auxGetNumDevs, mixerGetNumDevs);
     reg!("shlwapi"; PathRemoveFileSpecA, PathRemoveFileSpecW, PathFileExistsA, PathFileExistsW, PathIsDirectoryA,
         PathIsDirectoryW, PathAppendA, PathAppendW, PathCombineA, PathCombineW, PathFindFileNameA,
-        PathFindFileNameW, PathFindExtensionA, PathFindExtensionW, PathIsRelativeA, PathIsRelativeW);
+        PathFindFileNameW, PathFindExtensionA, PathFindExtensionW, PathIsRelativeA, PathIsRelativeW, PathUnquoteSpacesA,
+        PathUnquoteSpacesW, PathAddBackslashA, PathAddBackslashW, PathStripPathA, PathStripPathW, PathAddExtensionA, PathAddExtensionW);
+    reg!("sensapi"; IsNetworkAlive);
 }

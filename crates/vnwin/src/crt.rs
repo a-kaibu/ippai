@@ -4,7 +4,6 @@
 
 #![allow(non_snake_case)]
 
-use std::cell::Cell;
 use std::collections::HashMap;
 use std::io::SeekFrom;
 use std::sync::{Arc, Mutex};
@@ -284,25 +283,17 @@ fn _unlock(_: &mut Ctx) -> u32 {
     0
 }
 
-thread_local! {
-    static ERRNO: Cell<u32> = const { Cell::new(0) };
-}
+/// errno (and _doserrno after it) live in the TEB's free page, so fast::errno_ptr can find them
+pub const ERRNO_TEB: u32 = 0x1000;
+
 fn _errno(_: &mut Ctx) -> u32 {
-    ERRNO.with(|e| {
-        if e.get() == 0 {
-            e.set(mem::heap_alloc(8, true));
-        }
-        e.get()
-    })
+    crate::cur().teb + ERRNO_TEB
+}
+fn __doserrno(_: &mut Ctx) -> u32 {
+    crate::cur().teb + ERRNO_TEB + 4
 }
 fn set_errno(v: u32) {
-    let p = ERRNO.with(|e| {
-        if e.get() == 0 {
-            e.set(mem::heap_alloc(8, true));
-        }
-        e.get()
-    });
-    w32(p, v);
+    w32(crate::cur().teb + ERRNO_TEB, v);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1108,7 +1099,7 @@ pub fn init() {
     reg!(_initterm, _initterm_e, _onexit, atexit, __dllonexit, exit, _exit, abort, __getmainargs, __set_app_type,
         __p__fmode, __p__commode, __p___argc, __p___argv, __p__environ, __p___initenv, __p__acmdln,
         __p___mb_cur_max, ___mb_cur_max_func, __pctype_func, _controlfp, _control87, _clearfp, _purecall,
-        _XcptFilter, signal, _lock, _unlock, _errno,
+        _XcptFilter, signal, _lock, _unlock, _errno, __doserrno,
         malloc, calloc, realloc, free, _msize,
         memcpy, memmove, memset, memcmp, memchr, strlen, strcpy, strncpy, strcat, strncat, strcmp, strncmp,
         _stricmp, _strnicmp, strchr, strrchr, strstr, _strdup, _strlwr, _strupr, wcslen, wcscpy, wcscmp,

@@ -13,6 +13,7 @@ use vnx86::{Cpu, EAX, ESP};
 pub mod api;
 pub mod d3d9;
 pub mod crt;
+pub mod dinput;
 pub mod fast;
 pub mod files;
 pub mod gdi;
@@ -258,6 +259,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     gdi::init();
     misc::init();
     crt::init();
+    dinput::init();
     sound::init();
     d3d9::register();
     let peb = mem::reserve(0, 0x2000, 4, 0x20000, true).expect("PEB");
@@ -283,6 +285,26 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     w32(peb + 0xa8, 1);
     w32(peb + 0xac, 7601);
     w32(peb + 0xb0, 2);
+    // RTL_USER_PROCESS_PARAMETERS (the CRT reads its flags; image path and command line)
+    let pp = peb + 0x1000;
+    w32(peb + 0x10, pp);
+    w32(pp, 0x2a0);
+    w32(pp + 4, 0x2a0);
+    w32(pp + 8, 1);
+    let (_, wcmd) = k32::cmdline();
+    let wpath16: Vec<u16> = wpath.encode_utf16().collect();
+    let wp = mem::heap_alloc(2 * wpath16.len() as u32 + 2, true);
+    for (i, &u) in wpath16.iter().enumerate() {
+        mem::w16(wp + 2 * i as u32, u);
+    }
+    let cmdlen = mem::wstr(wcmd).len() as u32 * 2;
+    let ustr = |at: u32, len: u32, buf: u32| {
+        mem::w16(at, len as u16);
+        mem::w16(at + 2, len as u16 + 2);
+        w32(at + 4, buf);
+    };
+    ustr(pp + 0x38, 2 * wpath16.len() as u32, wp);
+    ustr(pp + 0x40, cmdlen, wcmd);
     let entry = pe::with(base, |m| m.entry).unwrap();
     pe::init_dlls(cpu);
     let sp = cpu.regs[ESP] - 8;
