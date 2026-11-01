@@ -4,7 +4,7 @@ title (download, extract, pack: tests/corpus-prep.sh) while the current one runs
 
   tests/corpus-run.py TITLES.tsv IDS_FILE OUT_DIR [--steps STEPS.tsv] [--keep]
 
-TITLES.tsv: id, url, exe_rel columns (header row). STEPS.tsv: id<TAB>steps<TAB>story_at.
+TITLES.tsv: id, url, exe_rel columns (header row). STEPS.tsv: id<TAB>steps<TAB>story_at<TAB>pre (x,y clicked before the title).
 OUT_DIR/<id>/ gets result.json + PNGs; titles whose result.json exists are skipped.
 """
 import csv, json, os, subprocess, sys, threading, queue, time, shutil, urllib.parse, socket
@@ -17,7 +17,7 @@ out = sys.argv[3]
 steps = {}
 if '--steps' in sys.argv:
     for r in csv.reader(open(sys.argv[sys.argv.index('--steps') + 1]), delimiter='\t'):
-        if r and not r[0].startswith('#'): steps[r[0]] = (r[1] if len(r) > 1 else '', r[2] if len(r) > 2 else '')
+        if r and not r[0].startswith('#'): steps[r[0]] = (r[1] if len(r) > 1 else '', r[2] if len(r) > 2 else '', r[3] if len(r) > 3 else '')
 keep = '--keep' in sys.argv
 TRIALS = os.environ.get('TRIALS', '/home/user/trials')
 STORES = os.environ.get('STORES', '/home/user/runs/stores')
@@ -93,9 +93,10 @@ while True:
         winexe = 'Z:\\vnvm\\game\\' + exe.replace('/', '\\')
         qs = 'autostart&headless&load&nosave&mount=/vnvm/game=g&run=' + urllib.parse.quote(winexe)
         if titles[tid].get('args'): qs += '&args=' + urllib.parse.quote(titles[tid]['args'])
-        st, at = steps.get(tid, ('key:Return wait:3', ''))
+        st, at, pre = steps.get(tid, ('key:Return wait:3', '', ''))
         e2 = dict(env)
         if at: e2['STORY_AT'] = at
+        if pre: e2['PRE'] = pre  # launcher/settings dialog button before the title
         t0 = time.time()
         try:
             subprocess.run(['node', f'{HERE}/corpus.mjs', f'http://127.0.0.1:{PORT}/wine.html?{qs}', od, st], env=e2,
