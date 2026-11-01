@@ -60,8 +60,6 @@ vnvm-pack add-game reunion --title "Reunion 体験版" --engine KiriKiri --tree 
 vnvm-pack remove-game reunion
 ```
 
-The QEMU page moved from `index.html` to `qemu.html`.
-
 `VNVM_CHUNK_CACHE_MB` (256) bounds the decompressed chunks kept; `VNVM_TRACE_VFS=1` traces paths
 and fetches.
 

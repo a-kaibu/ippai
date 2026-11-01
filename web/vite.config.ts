@@ -1,8 +1,7 @@
 import { defineConfig } from "vite-plus";
 
-// Built into web/dist and served by vnvm-server next to the disk store. QEMU's
-// own files (public/qemu/) are copied as-is by build/qemu.sh, Wine's (public/wine/) by
-// hangover/build.sh.
+// Built into web/dist and served by vnvm-server next to the store. Wine's files
+// (public/wine/) are copied as-is by hangover/build.sh.
 export default defineConfig({
   base: "./",
   build: {
@@ -10,9 +9,9 @@ export default defineConfig({
     emptyOutDir: true,
     target: "es2022",
     // index.html = wine.html: Wine built for wasm (hangover/, files in public/wine/), the game list
-    // without ?run=; qemu.html: the QEMU VM (kept as a fallback);
+    // without ?run=;
     // bench.html: bench.exe on wine.html with the native numbers next to it
-    rollupOptions: { input: { main: "index.html", qemu: "qemu.html", wine: "wine.html", bench: "bench.html", game: "game.html" } },
+    rollupOptions: { input: { main: "index.html", wine: "wine.html", bench: "bench.html", game: "game.html" } },
   },
   server: {
     headers: {

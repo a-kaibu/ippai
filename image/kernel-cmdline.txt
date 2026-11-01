@@ -1,1 +1,0 @@
-root=/dev/vda rw console=ttyS0 loglevel=3 mitigations=off tsc=reliable

@@ -1,11 +1,13 @@
 #!/bin/bash
 # Build vnbox's Wine (same version, patches and configure options as vnbox's
-# release, new WoW64) against the guest's Ubuntu 26.04 libraries.
+# release, new WoW64) in an Ubuntu 26.04 chroot.
 #
-#   VNBOX_BIN=path/to/vnbox image/build-wine.sh BUILDROOT
+#   VNBOX_BIN=path/to/vnbox hangover/build-wine.sh BUILDROOT
 #
-# BUILDROOT is a throwaway copy of the guest rootfs (build deps get installed
-# into it). Result: BUILDROOT/opt/wine-vnbox, to be copied into the guest.
+# BUILDROOT is a throwaway Ubuntu 26.04 rootfs (e.g. debootstrap resolute; build deps
+# get installed into it). Results: BUILDROOT/opt/wine-vnbox (the i386 PE DLLs that
+# hangover/make-wineroot.sh takes) and the native build tree under
+# BUILDROOT/tmp/vnbox-build/wine-build-src/build (WINE_TOOLS for hangover/build.sh).
 # vnbox's prebuilt release links Ubuntu 24.04's ffmpeg (libavcodec60), which
 # 26.04 does not ship, so video playback needs this rebuild.
 set -euo pipefail

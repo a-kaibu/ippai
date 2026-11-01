@@ -1,6 +1,4 @@
 /target
 /web/node_modules
 /web/dist
-/web/public/qemu
-/third_party
 /web/public/wine

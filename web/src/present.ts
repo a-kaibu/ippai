@@ -1,5 +1,5 @@
 // Shows the guest framebuffer on the page's canvas with WebGPU, letterboxed.
-// Only the rows QEMU reported dirty are uploaded each frame. Wine's screen can be cropped to a
+// Only the rows reported dirty are uploaded each frame. Wine's screen can be cropped to a
 // part of it (`view`: the game window's client area, without title bar or desktop).
 
 const SHADER = /* wgsl */ `

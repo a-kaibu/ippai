@@ -1,5 +1,5 @@
-// KeyboardEvent.code -> Linux input keycode (linux/input-event-codes.h), which
-// QEMU turns into its own key codes (qemu_input_linux_to_qcode).
+// KeyboardEvent.code -> Linux input keycode (linux/input-event-codes.h); below 89 these are
+// also the PC scan codes (set 1) that wine.ts sends with each key.
 
 const MAP: Record<string, number> = {
   Escape: 1, Digit1: 2, Digit2: 3, Digit3: 4, Digit4: 5, Digit5: 6, Digit6: 7, Digit7: 8, Digit8: 9,
