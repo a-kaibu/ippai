@@ -1,5 +1,6 @@
 // Shows the guest framebuffer on the page's canvas with WebGPU, letterboxed.
-// Only the rows QEMU reported dirty are uploaded each frame.
+// Only the rows QEMU reported dirty are uploaded each frame. Wine's screen can be cropped to a
+// part of it (`view`: the game window's client area, without title bar or desktop).
 
 const SHADER = /* wgsl */ `
 struct Out { @builtin(position) position: vec4f, @location(0) uv: vec2f };
@@ -8,12 +9,14 @@ struct Out { @builtin(position) position: vec4f, @location(0) uv: vec2f };
   let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
   var out: Out;
   out.position = vec4f(p * 2.0 - 1.0, 0.0, 1.0);
-  out.uv = vec2f(p.x, 1.0 - p.y);
+  out.uv = mix(uv.xy, uv.zw, vec2f(p.x, 1.0 - p.y));
   return out;
 }
 
 @group(0) @binding(0) var frame: texture_2d<f32>;
 @group(0) @binding(1) var smp: sampler;
+/** the part of the texture drawn: u0 v0 u1 v1 */
+@group(0) @binding(2) var<uniform> uv: vec4f;
 
 @fragment fn fs(in: Out) -> @location(0) vec4f {
   return vec4f(textureSample(frame, smp, in.uv).rgb, 1.0);
@@ -40,6 +43,11 @@ export function letterbox(cw: number, ch: number, width: number, height: number)
 export class Presenter {
   width = 1;
   height = 1;
+  /** the part of the frame shown (l t r b in frame pixels); null: all of it */
+  view: [number, number, number, number] | null = null;
+  private shown: [number, number, number, number] = [0, 0, 1, 1];
+  private readonly uvMain: GPUBuffer;
+  private readonly uvOverlay: GPUBuffer;
   /** Direct3D windows drawn over the screen (web/src/d3d9.ts) */
   overlay: { view: GPUTextureView; rect: [number, number, number, number] } | null = null;
   private overlayGroup: { view: GPUTextureView; group: GPUBindGroup } | null = null;
@@ -57,7 +65,11 @@ export class Presenter {
     private readonly context: GPUCanvasContext,
     private readonly pipeline: GPURenderPipeline,
     private readonly samplers: { nearest: GPUSampler; linear: GPUSampler },
-  ) {}
+  ) {
+    const uv = () => device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.uvMain = uv();
+    this.uvOverlay = uv();
+  }
 
   static async create(canvas: HTMLCanvasElement): Promise<Presenter> {
     const adapter = await navigator.gpu?.requestAdapter();
@@ -87,8 +99,9 @@ export class Presenter {
     const bounds = this.canvas.getBoundingClientRect();
     const dpr = this.canvas.width / Math.max(1, bounds.width);
     const r = this.rect;
-    const x = Math.floor((((event.clientX - bounds.left) * dpr - r.x) * this.width) / Math.max(1, r.w));
-    const y = Math.floor((((event.clientY - bounds.top) * dpr - r.y) * this.height) / Math.max(1, r.h));
+    const [l, t, vr, vb] = this.shown;
+    const x = l + Math.floor((((event.clientX - bounds.left) * dpr - r.x) * (vr - l)) / Math.max(1, r.w));
+    const y = t + Math.floor((((event.clientY - bounds.top) * dpr - r.y) * (vb - t)) / Math.max(1, r.h));
     return [Math.max(0, Math.min(this.width - 1, x)), Math.max(0, Math.min(this.height - 1, y))];
   }
 
@@ -96,7 +109,8 @@ export class Presenter {
     const dpr = window.devicePixelRatio || 1;
     const cw = Math.max(1, Math.floor(this.canvas.clientWidth * dpr));
     const ch = Math.max(1, Math.floor(this.canvas.clientHeight * dpr));
-    let changed = width !== this.width || height !== this.height;
+    const v = this.view && this.view[2] > this.view[0] && this.view[3] > this.view[1] ? this.view : [0, 0, width, height];
+    let changed = width !== this.width || height !== this.height || v.some((x, i) => x !== this.shown[i]);
     if (this.canvas.width !== cw || this.canvas.height !== ch) {
       this.canvas.width = cw;
       this.canvas.height = ch;
@@ -104,7 +118,9 @@ export class Presenter {
     }
     this.width = width;
     this.height = height;
-    this.rect = letterbox(cw, ch, width, height);
+    this.shown = [v[0]!, v[1]!, v[2]!, v[3]!];
+    this.rect = letterbox(cw, ch, v[2]! - v[0]!, v[3]! - v[1]!);
+    if (changed) this.device.queue.writeBuffer(this.uvMain, 0, new Float32Array([v[0]! / width, v[1]! / height, v[2]! / width, v[3]! / height]));
     return changed;
   }
 
@@ -115,7 +131,7 @@ export class Presenter {
   update(heap: Uint8Array, offset: number, width: number, height: number, stride: number, y0: number, y1: number): void {
     if (!width || !height) return;
     const resized = this.layout(width, height);
-    const nearest = this.rect.w % width === 0 && this.rect.h % height === 0;
+    const nearest = this.rect.w % (this.shown[2] - this.shown[0]) === 0 && this.rect.h % (this.shown[3] - this.shown[1]) === 0;
     if (!this.texture || this.texture.width !== width || this.texture.height !== height || resized) {
       this.texture?.destroy();
       this.texture = this.device.createTexture({
@@ -128,6 +144,7 @@ export class Presenter {
         entries: [
           { binding: 0, resource: this.texture.createView() },
           { binding: 1, resource: nearest ? this.samplers.nearest : this.samplers.linear },
+          { binding: 2, resource: { buffer: this.uvMain } },
         ],
       });
       y0 = 0;
@@ -159,6 +176,8 @@ export class Presenter {
 
   draw(): void {
     if (!this.bindGroup || this.headless) return;
+    // (the canvas or the view may have changed without a new frame)
+    this.layout(this.width, this.height);
     const encoder = this.device.createCommandEncoder();
     const pass = encoder.beginRenderPass({
       colorAttachments: [
@@ -185,18 +204,24 @@ export class Presenter {
             entries: [
               { binding: 0, resource: o.view },
               { binding: 1, resource: this.samplers.linear },
+              { binding: 2, resource: { buffer: this.uvOverlay } },
             ],
           }),
         };
       }
-      // the window's client area, from screen pixels to the letterboxed frame
-      const sx = r.w / this.width,
-        sy = r.h / this.height;
-      const x0 = Math.max(0, r.x + o.rect[0] * sx),
-        y0 = Math.max(0, r.y + o.rect[1] * sy);
-      const x1 = Math.min(this.canvas.width, r.x + o.rect[2] * sx),
-        y1 = Math.min(this.canvas.height, r.y + o.rect[3] * sy);
-      if (x1 > x0 && y1 > y0) {
+      // the window's client area within the view, from frame pixels to the canvas
+      const [vl, vt, vr, vb] = this.shown;
+      const [ol, ot, or, ob] = o.rect;
+      const l = Math.max(ol, vl), t = Math.max(ot, vt), rr = Math.min(or, vr), b = Math.min(ob, vb);
+      const sx = r.w / (vr - vl),
+        sy = r.h / (vb - vt);
+      const x0 = r.x + (l - vl) * sx,
+        y0 = r.y + (t - vt) * sy;
+      const x1 = Math.min(this.canvas.width, r.x + (rr - vl) * sx),
+        y1 = Math.min(this.canvas.height, r.y + (b - vt) * sy);
+      if (x1 > x0 && y1 > y0 && or > ol && ob > ot) {
+        const uv = [(l - ol) / (or - ol), (t - ot) / (ob - ot), (rr - ol) / (or - ol), (b - ot) / (ob - ot)];
+        this.device.queue.writeBuffer(this.uvOverlay, 0, new Float32Array(uv));
         pass.setViewport(x0, y0, x1 - x0, y1 - y0, 0, 1);
         pass.setBindGroup(0, this.overlayGroup.group);
         pass.draw(3);

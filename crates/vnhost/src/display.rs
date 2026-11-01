@@ -48,6 +48,8 @@ impl Rect {
 struct Win {
     /// screen position of the window's surface
     rect: Rect,
+    /// its client area on the screen
+    client: Rect,
     visible: bool,
     pixels: Vec<u32>,
 }
@@ -156,6 +158,31 @@ fn start_scripted_input() {
 }
 
 impl Display {
+    /// What the page shows: the client area of the game's window (the shown window with the
+    /// biggest one: no title bar, frame or desktop around it), widened by the windows above it
+    /// that stick out (dialogs, menus); the whole screen without windows.
+    fn view(&self) -> Rect {
+        let screen = self.screen_rect();
+        let shown = |id: &u32| self.wins[id].visible && !self.wins[id].pixels.is_empty();
+        let area = |id: &u32| {
+            let c = self.wins[id].client.and(&screen);
+            if c.empty() { 0 } else { c.w() as i64 * c.h() as i64 }
+        };
+        let Some(main) = self.order.iter().filter(|id| shown(id)).max_by_key(|id| area(id)) else { return screen };
+        if area(main) == 0 {
+            return screen;
+        }
+        let at = self.order.iter().position(|id| id == main).unwrap();
+        let mut v = self.wins[main].client.and(&screen);
+        for id in self.order[at + 1..].iter().filter(|id| shown(id)) {
+            let r = self.wins[id].rect.and(&screen);
+            if !r.empty() {
+                v = v.or(&r);
+            }
+        }
+        v
+    }
+
     fn screen_rect(&self) -> Rect {
         Rect { l: 0, t: 0, r: self.w, b: self.h }
     }
@@ -199,6 +226,13 @@ impl Display {
     }
 }
 
+/// The part of the screen the page shows (see `Display::view`): `out` gets l, t, r, b.
+#[no_mangle]
+pub unsafe extern "C" fn vnhost_display_view(out: *mut i32) {
+    let v = with(|d| d.view());
+    std::slice::from_raw_parts_mut(out, 4).copy_from_slice(&[v.l, v.t, v.r, v.b]);
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_display_size(w: *mut c_int, h: *mut c_int) {
     with(|d| {
@@ -208,20 +242,23 @@ pub unsafe extern "C" fn vnhost_display_size(w: *mut c_int, h: *mut c_int) {
 }
 
 /// A top-level window moved, resized, was shown/hidden or changed its z-order. `rect` is where
-/// its surface is on the screen; with `restack`, it goes just below `above` (0: on top).
+/// its surface is on the screen, then its client area; with `restack`, it goes just below
+/// `above` (0: on top).
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_window_pos(hwnd: u32, rect: *const i32, visible: c_int, restack: c_int, above: u32) {
     start_screenshots();
     start_scripted_input();
-    let r = std::slice::from_raw_parts(rect, 4);
+    let r = std::slice::from_raw_parts(rect, 8);
     let rect = Rect { l: r[0], t: r[1], r: r[2], b: r[3] };
+    let client = Rect { l: r[4], t: r[5], r: r[6], b: r[7] };
     with(|d| {
         let old = d.wins.get(&hwnd).map(|w| if w.visible { w.rect } else { Rect::default() }).unwrap_or_default();
-        let win = d.wins.entry(hwnd).or_insert_with(|| Win { rect: Rect::default(), visible: false, pixels: Vec::new() });
+        let win = d.wins.entry(hwnd).or_insert_with(|| Win { rect: Rect::default(), client, visible: false, pixels: Vec::new() });
         if win.rect.w() != rect.w() || win.rect.h() != rect.h() {
             win.pixels = vec![0xff00_0000; (rect.w().max(0) * rect.h().max(0)) as usize];
         }
         win.rect = rect;
+        win.client = client;
         win.visible = visible != 0;
         if restack != 0 || !d.order.contains(&hwnd) {
             d.order.retain(|&h| h != hwnd);

@@ -33,6 +33,7 @@ interface WineModule {
   HEAPF32: Float32Array;
   _malloc(size: number): number;
   _vnhost_display_size(w: number, h: number): void;
+  _vnhost_display_view(out: number): void;
   _vnhost_display_frame(io: number): number;
   _vnhost_input_push(kind: number, x: number, y: number, data: number): number;
   _vnhost_audio_take(buf: number, frames: number): number;
@@ -223,7 +224,7 @@ function readAhead(name: Promise<string>): (wine: WineModule) => void {
 
 /** Shows the screen whenever it changes. */
 function present(wine: WineModule, presenter: Presenter): void {
-  const scratch = wine._malloc(20) >>> 0;
+  const scratch = wine._malloc(36) >>> 0;
   wine._vnhost_display_size(scratch, scratch + 4);
   const width = wine.HEAPU32[scratch >>> 2]!;
   const height = wine.HEAPU32[(scratch + 4) >>> 2]!;
@@ -233,7 +234,15 @@ function present(wine: WineModule, presenter: Presenter): void {
   const d3d = new D3D9(presenter.device, wine);
   (window as unknown as { vnvmD3d: D3D9 }).vnvmD3d = d3d;
   let d3dFrames = 0;
+  const view = (scratch + 20) >>> 2;
   const frame = () => {
+    // only the game window's client area is shown
+    wine._vnhost_display_view(view * 4);
+    const v = [0, 1, 2, 3].map((i) => wine.HEAPU32[view + i]! | 0) as [number, number, number, number];
+    if (!presenter.view || v.some((x, i) => x !== presenter.view![i])) {
+      presenter.view = v;
+      shown = -1;
+    }
     d3d.poll();
     if (d3d.frames !== d3dFrames) {
       d3dFrames = d3d.frames;
@@ -307,6 +316,22 @@ if (problem) {
     // the AudioContext comes from this click (autoplay rules)
     boot(AudioOut.create()).catch((e) => log(`エラー: ${e instanceof Error ? e.message : e}`));
   };
-  startButton.addEventListener("click", start);
-  if (params.has("autostart")) start();
+  startButton.addEventListener("click", () => {
+    fullscreen();
+    start();
+  });
+  if (params.has("autostart")) {
+    start();
+    // (fullscreen needs a user gesture: a phone's first touch)
+    addEventListener("pointerdown", (e) => e.pointerType === "touch" && fullscreen(), { once: true });
+  }
+}
+
+/** The whole display for the game (landscape on phones); refusals are fine. */
+function fullscreen(): void {
+  if (document.fullscreenElement) return;
+  document.documentElement
+    .requestFullscreen?.({ navigationUI: "hide" })
+    .then(() => (screen.orientation as unknown as { lock?(o: string): Promise<void> }).lock?.("landscape"))
+    .catch(() => {});
 }

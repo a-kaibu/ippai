@@ -86,9 +86,18 @@ async function shot(n) {
         }
       }
     }
+    // what the page shows: the game window's client area
+    let out = px, ow = w, oh = h;
+    const v = window.vnvmPresenter?.view;
+    if (v && v[2] > v[0] && v[3] > v[1]) {
+      ow = v[2] - v[0];
+      oh = v[3] - v[1];
+      out = new Uint8Array(ow * oh * 4);
+      for (let y = 0; y < oh; y++) out.set(px.subarray(((v[1] + y) * w + v[0]) * 4, ((v[1] + y) * w + v[2]) * 4), y * ow * 4);
+    }
     let s = "";
-    for (let i = 0; i < px.length; i += 0x8000) s += String.fromCharCode(...px.subarray(i, i + 0x8000));
-    return { w, h, data: btoa(s) };
+    for (let i = 0; i < out.length; i += 0x8000) s += String.fromCharCode(...out.subarray(i, i + 0x8000));
+    return { w: ow, h: oh, data: btoa(s) };
   });
   if (f) writeFileSync(`${out}/screen-${String(n).padStart(3, "0")}.png`, png(f.w, f.h, Buffer.from(f.data, "base64")));
 }
