@@ -244,7 +244,7 @@ fn saved_regions() -> &'static Saved {
             if n > 0 {
                 vnvm_jit_bundle_idx(b.as_mut_ptr(), b.len());
             }
-            jit::saved::decode(&b).unwrap_or_default()
+            jit::saved::decode_all(&b).unwrap_or_default()
         };
         #[cfg(not(target_os = "emscripten"))]
         let entries = Vec::new();

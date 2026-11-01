@@ -59,11 +59,28 @@ impl Reader<'_> {
 }
 
 pub fn decode(b: &[u8]) -> Option<Vec<Entry>> {
+    let (e, n) = decode_one(b)?;
+    (n == b.len()).then_some(e)
+}
+
+/// Indexes one after another (the parts of a bundle), as one list.
+pub fn decode_all(mut b: &[u8]) -> Option<Vec<Entry>> {
+    let mut all = Vec::new();
+    while !b.is_empty() {
+        let (e, n) = decode_one(b)?;
+        all.extend(e);
+        b = &b[n..];
+    }
+    Some(all)
+}
+
+/// An index at the start of `b`, and its length.
+fn decode_one(b: &[u8]) -> Option<(Vec<Entry>, usize)> {
     if b.get(..4)? != b"VNJ1" {
         return None;
     }
     let mut r = Reader(b, 4);
-    (0..r.u()?)
+    let e = (0..r.u()?)
         .map(|_| {
             let roots = (0..r.u()?).map(|_| r.u()).collect::<Option<Vec<_>>>()?;
             let (starts, code) = (r.pairs()?, r.pairs()?);
@@ -72,5 +89,6 @@ pub fn decode(b: &[u8]) -> Option<Vec<Entry>> {
             r.1 += n;
             Some(Entry { roots, starts, code, text })
         })
-        .collect()
+        .collect::<Option<Vec<_>>>()?;
+    Some((e, r.1))
 }

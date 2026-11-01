@@ -18,7 +18,7 @@ Module.preInit = [].concat(Module.preInit || [], () => {
   if (f && !Module.vnvmJit) {
     try {
       const fs = require('fs');
-      Module.vnvmJit = { module: new WebAssembly.Module(fs.readFileSync(f + '.wasm')), idx: new Uint8Array(fs.readFileSync(f + '.idx')) };
+      Module.vnvmJit = { parts: [{ module: new WebAssembly.Module(fs.readFileSync(f + '.wasm')), idx: new Uint8Array(fs.readFileSync(f + '.idx')) }] };
     } catch (e) {
       if (e.code != 'ENOENT') err(`vnjit: ${f}: ${e}`);
     }

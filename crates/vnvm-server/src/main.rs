@@ -7,9 +7,9 @@
 //!   immutable so its HTTP cache keeps them.
 //! - `?v=...` on any URL: kept by the browser for good (the page changes the version when
 //!   the content changes)
-//! - `/jit/<name>.wasm`, `/jit/<name>.idx`: the x86 regions runs of a game saved
-//!   (vnx86::jit::saved); `PUT /jit-save/<name>` with (u32 module length, module, index)
-//!   merges a run's new regions in; `PUT /jit-save/<name>.chunks` stores the store chunks a
+//! - `/jit/<name>.parts`: the x86 regions runs of a game saved (vnx86::jit::saved), one line
+//!   per part: module, index, version; `PUT /jit-save/<name>` with (u32 module length, module,
+//!   index) adds a run's new regions as a new part (parts compiled before stay the same); `PUT /jit-save/<name>.chunks` stores the store chunks a
 //!   run read first (16-byte hashes), which the page fetches ahead next time.
 //! - `PUT /bench-log`: a result from web/bench.html, printed and appended to
 //!   `<jit>/bench-results.txt`
@@ -77,39 +77,70 @@ async fn save_jit(State(jit): State<Jit>, Path(name): Path<String>, body: Bytes)
     const MAX_BYTES: u64 = 256 << 20;
     let _g = jit.1.lock().await;
     let path = |ext: &str| jit.0.join(format!("{name}.{ext}"));
-    let (wasm_path, idx_path) = (path("wasm"), path("idx"));
-    if tokio::fs::metadata(&wasm_path).await.is_ok_and(|m| m.len() > MAX_BYTES) {
+    if tokio::fs::metadata(path("wasm")).await.is_ok_and(|m| m.len() > MAX_BYTES) {
         return StatusCode::INSUFFICIENT_STORAGE;
     }
-    let old_wasm = tokio::fs::read(&wasm_path).await.ok();
-    let old_idx = tokio::fs::read(&idx_path).await.ok().and_then(|b| saved::decode(&b));
-    let mut entries = old_idx.clone().unwrap_or_default();
+    // the parts so far: the base (<name>.wasm/.idx) and the later saves (<name>.<k>.wasm/.idx)
+    let mut parts: Vec<(Vec<u8>, Vec<saved::Entry>)> = Vec::new();
+    for k in 0..PARTS_MAX {
+        let stem = if k == 0 { String::new() } else { format!("{k}.") };
+        let (Ok(w), Some(e)) = (
+            tokio::fs::read(path(&format!("{stem}wasm"))).await,
+            tokio::fs::read(path(&format!("{stem}idx"))).await.ok().and_then(|b| saved::decode(&b)),
+        ) else {
+            break;
+        };
+        parts.push((w, e));
+    }
     // the new module's functions to keep
-    let keep: Vec<bool> = new_idx.iter().map(|e| !entries.contains(e)).collect();
+    let keep: Vec<bool> = new_idx.iter().map(|e| !parts.iter().any(|(_, es)| es.contains(e))).collect();
     if !keep.iter().any(|&k| k) {
         return StatusCode::NO_CONTENT;
     }
-    let all = keep.iter().all(|&k| k);
-    let fresh = if all { Some(new_wasm.to_vec()) } else { wasm::select(new_wasm, &keep) };
+    let fresh = if keep.iter().all(|&k| k) { Some(new_wasm.to_vec()) } else { wasm::select(new_wasm, &keep) };
     let Some(fresh) = fresh else { return StatusCode::BAD_REQUEST };
-    entries.extend(new_idx.into_iter().zip(&keep).filter(|x| *x.1).map(|x| x.0));
-    let names: Vec<String> = entries.iter().map(|e| e.name()).collect();
-    let mods: Vec<&[u8]> = match (&old_wasm, &old_idx) {
-        (Some(w), Some(_)) => vec![w, &fresh],
-        _ => vec![&fresh],
-    };
-    let Some(merged) = wasm::merge(&mods, &names) else { return StatusCode::BAD_REQUEST };
+    let fresh_idx: Vec<saved::Entry> = new_idx.into_iter().zip(&keep).filter(|x| *x.1).map(|x| x.0).collect();
+    // A save goes in a part of its own: the parts the browser has already compiled stay as
+    // they are (and their compiled code in its cache). Past PARTS_MAX they become one again.
+    let old_parts = parts.len();
+    parts.push((fresh, fresh_idx));
+    if parts.len() > PARTS_MAX {
+        let entries: Vec<saved::Entry> = parts.iter().flat_map(|(_, e)| e.iter().cloned()).collect();
+        let names: Vec<String> = entries.iter().map(|e| e.name()).collect();
+        let mods: Vec<&[u8]> = parts.iter().map(|(w, _)| &w[..]).collect();
+        let Some(merged) = wasm::merge(&mods, &names) else { return StatusCode::BAD_REQUEST };
+        parts = vec![(merged, entries)];
+    }
     let write = async {
         tokio::fs::create_dir_all(&jit.0).await?;
-        let (tw, ti) = (path("wasm.tmp"), path("idx.tmp"));
-        tokio::fs::write(&tw, &merged).await?;
-        tokio::fs::write(&ti, saved::encode(&entries)).await?;
-        tokio::fs::rename(&tw, &wasm_path).await?;
-        tokio::fs::rename(&ti, &idx_path).await
+        let mut list = String::new();
+        for (k, (w, e)) in parts.iter().enumerate() {
+            let stem = if k == 0 { String::new() } else { format!("{k}.") };
+            let idx = saved::encode(e);
+            // parts the browser has already compiled stay as they are
+            if parts.len() > old_parts || k + 1 == parts.len() {
+                let (tw, ti) = (path(&format!("{stem}wasm.tmp")), path(&format!("{stem}idx.tmp")));
+                tokio::fs::write(&tw, w).await?;
+                tokio::fs::write(&ti, &idx).await?;
+                tokio::fs::rename(&tw, path(&format!("{stem}wasm"))).await?;
+                tokio::fs::rename(&ti, path(&format!("{stem}idx"))).await?;
+            }
+            list.push_str(&format!("{name}.{stem}wasm {name}.{stem}idx {:08x}\n", fnv(&idx)));
+        }
+        for k in parts.len()..=PARTS_MAX {
+            for ext in ["wasm", "idx"] {
+                let _ = tokio::fs::remove_file(path(&format!("{k}.{ext}"))).await;
+            }
+        }
+        let tl = path("parts.tmp");
+        tokio::fs::write(&tl, list).await?;
+        tokio::fs::rename(&tl, path("parts")).await
     };
     match write.await {
         Ok(()) => {
-            eprintln!("jit {name}: {} regions, {} bytes", entries.len(), merged.len());
+            let n: usize = parts.iter().map(|(_, e)| e.len()).sum();
+            let bytes: usize = parts.iter().map(|(w, _)| w.len()).sum();
+            eprintln!("jit {name}: {n} regions, {bytes} bytes, {} parts", parts.len());
             StatusCode::NO_CONTENT
         }
         Err(e) => {
@@ -117,6 +148,14 @@ async fn save_jit(State(jit): State<Jit>, Path(name): Path<String>, body: Bytes)
             StatusCode::INTERNAL_SERVER_ERROR
         }
     }
+}
+
+/// Saved-region parts of a program at most (see save_jit)
+const PARTS_MAX: usize = 8;
+
+/// FNV-1a: a part's version in `<name>.parts` (its index changes with its module)
+fn fnv(b: &[u8]) -> u32 {
+    b.iter().fold(0x811c9dc5u32, |h, &x| (h ^ x as u32).wrapping_mul(0x01000193))
 }
 
 /// Prints a bench.html result and appends it to `<jit>/bench-results.txt`.

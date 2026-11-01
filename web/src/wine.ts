@@ -146,14 +146,26 @@ function fnv(bytes: Uint8Array): string {
   return (h >>> 0).toString(16);
 }
 
-/** The saved regions `name` (compiled while they download: the browser caches the code), if any. */
-async function loadJit(name: string): Promise<{ module: WebAssembly.Module; idx: Uint8Array } | undefined> {
+/**
+ * The saved regions `name`, its parts compiled while they download (the browser caches each
+ * part's code: a run's save adds a part, the others stay the same), if any.
+ */
+async function loadJit(name: string): Promise<{ parts: { module: WebAssembly.Module; idx: Uint8Array }[] } | undefined> {
   const ok = (r: Response) => (r.ok ? r : Promise.reject(new Error(`HTTP ${r.status}`)));
   try {
-    // the index changes with the module: its hash versions the module's URL
-    const idx = new Uint8Array(await (await fetch(`jit/${name}.idx`).then(ok)).arrayBuffer());
-    const module = await WebAssembly.compileStreaming(fetch(`jit/${name}.wasm?v=${fnv(idx)}`).then(ok));
-    return { module, idx };
+    // "<module> <index> <version>" per part
+    const list = (await (await fetch(`jit/${name}.parts`).then(ok)).text()).split("\n").filter(Boolean);
+    const parts = await Promise.all(
+      list.map(async (line) => {
+        const [wasm, idx, v] = line.split(" ");
+        const [module, bytes] = await Promise.all([
+          WebAssembly.compileStreaming(fetch(`jit/${wasm}?v=${v}`).then(ok)),
+          fetch(`jit/${idx}?v=${v}`).then(ok).then((r) => r.arrayBuffer()),
+        ]);
+        return { module, idx: new Uint8Array(bytes) };
+      }),
+    );
+    return parts.length ? { parts } : undefined;
   } catch (e) {
     console.log(`no saved regions for ${name}: ${e}`);
     return undefined;

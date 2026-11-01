@@ -41,33 +41,47 @@ addToLibrary({
     return base;
   },
 
-  // the index of the saved regions (see pre.js): its length, copied to `ptr` if it fits
+  // the index of the saved regions (see pre.js; the parts' indexes one after another): its
+  // length, copied to `ptr` if it fits
   vnvm_jit_bundle_idx__sig: 'ipp',
   vnvm_jit_bundle_idx: (ptr, cap) => {
     const b = sharedModules['@vnjit'];
     if (!b) return 0;
-    if (cap >= b.idx.length) HEAPU8.set(b.idx, ptr >>> 0);
-    return b.idx.length;
+    const n = b.parts.reduce((n, p) => n + p.idx.length, 0);
+    if (cap >= n) {
+      let at = ptr >>> 0;
+      for (const p of b.parts) {
+        HEAPU8.set(p.idx, at);
+        at += p.idx.length;
+      }
+    }
+    return n;
   },
 
-  // the saved regions on this thread: the table index of their first function, or -1
+  // the saved regions on this thread, every part's functions in a row: the table index of the
+  // first, or -1
   vnvm_jit_bundle_load__deps: ['$VNJIT'],
   vnvm_jit_bundle_load__sig: 'i',
   vnvm_jit_bundle_load: () => {
     const b = sharedModules['@vnjit'];
     if (!b) return -1;
-    let inst;
+    let insts;
     try {
-      inst = new WebAssembly.Instance(b.module, { env: VNJIT.env });
+      insts = b.parts.map((p) => new WebAssembly.Instance(p.module, { env: VNJIT.env }));
     } catch (e) {
       err(`vnjit: saved regions: ${e}`);
       return -1;
     }
-    const n = Object.keys(inst.exports).length;
+    const n = insts.reduce((n, i) => n + Object.keys(i.exports).length, 0);
     const base = VNJIT.used;
     if (base + n > VNJIT.table.length) VNJIT.table.grow(Math.max(n, VNJIT.table.length >> 1, 256));
     VNJIT.used += n;
-    for (let i = 0; i < n; i++) VNJIT.table.set(base + i, inst.exports['f' + i]);
+    let at = base;
+    for (const inst of insts) {
+      const k = Object.keys(inst.exports).length;
+      for (let i = 0; i < k; i++) VNJIT.table.set(at + i, inst.exports['f' + i]);
+      at += k;
+    }
     return base;
   },
 
