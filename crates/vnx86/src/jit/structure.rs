@@ -18,6 +18,53 @@ pub(super) fn jump_table(ins: &Instruction) -> Option<u32> {
         .then(|| ins.memory_displacement32())
 }
 
+/// The jump table of a block's last jump: `jmp [index*4 + table]` (true: the index register
+/// is there at the jump) or `mov r, [index*4 + table]; jmp r` (false: dispatched by the target).
+pub(super) fn block_table(list: &[Instruction]) -> Option<(u32, bool)> {
+    let last = list.last()?;
+    if let Some(t) = jump_table(last) {
+        return Some((t, true));
+    }
+    let prev = list.len().checked_sub(2).map(|i| &list[i])?;
+    (last.flow_control() == FlowControl::IndirectBranch
+        && last.op0_kind() == OpKind::Register
+        && last.op0_register().is_gpr32()
+        && prev.mnemonic() == Mnemonic::Mov
+        && prev.op0_kind() == OpKind::Register
+        && prev.op0_register() == last.op0_register()
+        && prev.op1_kind() == OpKind::Memory
+        && prev.memory_base() == Register::None
+        && prev.memory_index().is_gpr32()
+        && prev.memory_index_scale() == 4)
+        .then(|| (prev.memory_displacement32(), false))
+}
+
+/// A perfect hash of addresses `keys` for a dispatch by target: (multiplier, shift, slot ->
+/// key's index or keys.len()), slot = (address * multiplier) >> shift.
+pub(super) fn perfect_hash(keys: &[u32]) -> (u32, u32, Vec<u32>) {
+    let mut bits = 1;
+    while (1usize << bits) < 2 * keys.len() {
+        bits += 1;
+    }
+    loop {
+        let mut m = 0x9e37_79b1u32;
+        for _ in 0..64 {
+            let shift = 32 - bits;
+            let mut slots = alloc::vec![keys.len() as u32; 1 << bits];
+            if keys.iter().enumerate().all(|(i, &k)| {
+                let s = (k.wrapping_mul(m) >> shift) as usize;
+                let free = slots[s] == keys.len() as u32;
+                slots[s] = i as u32;
+                free
+            }) {
+                return (m, shift, slots);
+            }
+            m = m.wrapping_mul(0x2545_f491).wrapping_add(0x6a09_e667) | 1;
+        }
+        bits += 1;
+    }
+}
+
 /// The entries of the jump table at `t` (of a jump at `near`): while they look like code
 /// addresses near it.
 pub(super) fn table_entries<M: Memory>(mem: &mut M, t: u32, near: u32) -> Vec<u32> {
@@ -36,10 +83,12 @@ pub(super) fn table_entries<M: Memory>(mem: &mut M, t: u32, near: u32) -> Vec<u3
     out
 }
 
-/// A dispatch node: (context, table) and the table's entries.
+/// A dispatch node: (context, table) and the table's entries; `hash`: dispatched by the target
+/// (see `perfect_hash`) instead of the index.
 pub(super) struct Table {
     pub ctx: u32,
     pub entries: Vec<u32>,
+    pub hash: Option<(u32, u32, Vec<u32>)>,
 }
 
 pub(super) struct Layout {
@@ -53,7 +102,7 @@ pub(super) struct Layout {
 }
 
 /// Builds the graph of blocks `blocks` (contexts `ctxs`, found by `targets`) and dispatch
-/// nodes `tables` (by (context, table address) in `jtab`), from block `entry`.
+/// nodes `tables` (each block's in `jnode`), from block `entry`.
 pub(super) fn layout(
     blocks: &[(u32, Vec<Instruction>)],
     ctxs: &[u32],
@@ -61,7 +110,7 @@ pub(super) fn layout(
     inlined: &BTreeMap<usize, (usize, Option<u32>)>,
     ret_to: &[u32],
     tables: &[Table],
-    jtab: &BTreeMap<(u32, u32), usize>,
+    jnode: &BTreeMap<usize, usize>,
     entry: usize,
 ) -> Layout {
     let n = blocks.len();
@@ -89,7 +138,7 @@ pub(super) fn layout(
                 if let Some(&(e, _)) = inlined.get(&k) {
                     s.push(e);
                 }
-                if let Some(&d) = jump_table(last).and_then(|t| jtab.get(&(ctx, t))) {
+                if let Some(&d) = jnode.get(&k) {
                     s.push(d);
                 }
             }

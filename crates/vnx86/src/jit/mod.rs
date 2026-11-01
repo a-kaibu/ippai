@@ -291,7 +291,7 @@ struct Gen<'a> {
     /// laid out by `structure` (jumps go to open labels or leave)
     structured: bool,
     /// dispatch nodes of jump tables: (context, table) -> node (after the blocks)
-    jtab: BTreeMap<(u32, u32), usize>,
+    jnode: BTreeMap<usize, usize>,
     /// with [`LAYOUT`]: whether the instruction went to the interpreter, and per mnemonic
     /// ("*" marking those) the count and wasm bytes
     fell_back: bool,
@@ -2512,14 +2512,19 @@ impl<'a> Gen<'a> {
                 self.jump_dyn();
                 return false;
             }
-            Jmp if self.structured && structure::jump_table(ins).is_some_and(|t| self.jtab.contains_key(&(self.ctx, t))) => {
+            Jmp if self.structured && self.jnode.contains_key(&(self.block_index as usize)) => {
                 // to the table's dispatch node: the index in L_BLK, the target in L_NEXT
-                let d = self.jtab[&(self.ctx, structure::jump_table(ins).unwrap())];
-                let addr = self.mem_addr();
-                self.read_op(0, addr);
-                self.c.set(L_NEXT);
-                self.get_reg(ins.memory_index());
-                self.c.set(L_BLK);
+                let d = self.jnode[&(self.block_index as usize)];
+                if ins.op0_kind() == OpKind::Register {
+                    self.get_reg(ins.op0_register());
+                    self.c.set(L_NEXT);
+                } else {
+                    let addr = self.mem_addr();
+                    self.read_op(0, addr);
+                    self.c.set(L_NEXT);
+                    self.get_reg(ins.memory_index());
+                    self.c.set(L_BLK);
+                }
                 self.goto_block(d, TARGET_NEXT);
                 return false;
             }
@@ -3012,10 +3017,18 @@ fn emit_dispatch(g: &mut Gen<'_>, t: &structure::Table, node: usize) {
         g.c.block();
     }
     g.depth += m as u32;
-    g.c.get(L_BLK).op(0x0e);
-    wasm::uleb(&mut g.c.b, m as u64);
-    for i in 0..m {
-        wasm::uleb(&mut g.c.b, i as u64);
+    if let Some((mul, shift, slots)) = &t.hash {
+        g.c.get(L_NEXT).u32c(*mul).mul().i32c(*shift as i32).shr_u().op(0x0e);
+        wasm::uleb(&mut g.c.b, slots.len() as u64);
+        for &i in slots {
+            wasm::uleb(&mut g.c.b, i as u64);
+        }
+    } else {
+        g.c.get(L_BLK).op(0x0e);
+        wasm::uleb(&mut g.c.b, m as u64);
+        for i in 0..m {
+            wasm::uleb(&mut g.c.b, i as u64);
+        }
     }
     wasm::uleb(&mut g.c.b, m as u64);
     for &a in &t.entries {
@@ -3925,10 +3938,9 @@ fn translate<M: Memory>(
         }
         // `jmp [index*4 + table]` (switch statements, interpreters' opcode dispatch): the
         // table's targets that ran join the region, so the jump stays inside it
-        if last.flow_control() == FlowControl::IndirectBranch && last.op0_kind() == OpKind::Memory
-            && last.memory_base() == Register::None && last.memory_index().is_gpr32() && last.memory_index_scale() == 4
-        {
-            let (t, near) = (last.memory_displacement32(), last.ip32());
+        let table = if fnm { structure::block_table(&list).map(|t| t.0) } else { structure::jump_table(last) };
+        if let Some(t) = table {
+            let near = last.ip32();
             for i in 0..1024u32 {
                 let mut b = [0u8; 4];
                 if mem.fetch(t.wrapping_add(4 * i), &mut b) < 4 {
@@ -4064,15 +4076,24 @@ fn translate<M: Memory>(
         head[h] = true;
     }
     // a function's jump tables: one dispatch node each
+    // (by the target if one of its jumps has the index no more)
     let mut tables: Vec<structure::Table> = Vec::new();
     let mut jtab = BTreeMap::new();
+    let mut jnode = BTreeMap::new();
     if fnm {
         for (k, (_, list)) in blocks.iter().enumerate() {
             let last = list.last().unwrap();
-            if let Some(t) = structure::jump_table(last) {
-                if !jtab.contains_key(&(ctxs[k], t)) {
-                    jtab.insert((ctxs[k], t), n as usize + tables.len());
-                    tables.push(structure::Table { ctx: ctxs[k], entries: structure::table_entries(mem, t, last.ip32()) });
+            if let Some((t, by_index)) = structure::block_table(list) {
+                let d = *jtab.entry((ctxs[k], t)).or_insert_with(|| {
+                    tables.push(structure::Table { ctx: ctxs[k], entries: structure::table_entries(mem, t, last.ip32()), hash: None });
+                    n as usize + tables.len() - 1
+                });
+                jnode.insert(k, d);
+                let tab = &mut tables[d - n as usize];
+                if !by_index && tab.hash.is_none() {
+                    tab.entries.sort_unstable();
+                    tab.entries.dedup();
+                    tab.hash = Some(structure::perfect_hash(&tab.entries));
                 }
             }
         }
@@ -4082,7 +4103,7 @@ fn translate<M: Memory>(
         c: Code::default(),
         fnm,
         structured: fnm,
-        jtab,
+        jnode,
         depth: 0,
         flags: Flags::Entry,
         targets: &targets,
@@ -4155,7 +4176,7 @@ fn translate<M: Memory>(
     let mut count = 0;
     if fnm {
         let entry = starts[0].1 as usize;
-        let l = structure::layout(&blocks, &ctxs, &targets, &inlined, &ret_to, &tables, &g.jtab, entry);
+        let l = structure::layout(&blocks, &ctxs, &targets, &inlined, &ret_to, &tables, &g.jnode, entry);
         if LAYOUT.load(core::sync::atomic::Ordering::Relaxed) {
             use core::fmt::Write;
             let _ = writeln!(g.notes, "IRREDUCIBLE {}", l.irreducible());

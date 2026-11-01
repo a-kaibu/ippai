@@ -84,6 +84,8 @@ struct State {
     /// indirect call/jump sites of functions: the function, and the target it mostly takes
     site_fn: HashMap<u32, Vec<u32>>,
     hints: HashMap<u32, u32>,
+    /// sites whose hint changed (a site going to several targets keeps its second hint)
+    rehinted: HashSet<u32>,
 }
 
 /// Samples of the same jump between regions (out of RING_SIZE) that make them merge.
@@ -180,6 +182,7 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
                 fn_builds: HashMap::new(),
                 site_fn: HashMap::new(),
                 hints: HashMap::new(),
+                rehinted: HashSet::new(),
             }
         });
         f(st)
@@ -480,14 +483,16 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
                 }
                 continue;
             };
-            if st.hints.get(&site) == Some(&to) {
+            if st.hints.get(&site) == Some(&to) || st.rehinted.contains(&site) {
                 continue;
             }
             let w = st.hot.entry((from, to)).or_insert(0);
             *w += 1;
             if *w >= FN_WINDOWS {
                 st.hot.remove(&(from, to));
-                st.hints.insert(site, to);
+                if st.hints.insert(site, to).is_some() {
+                    st.rehinted.insert(site);
+                }
                 if stats() {
                     eprintln!("vnjit hint {site:#x} -> {to:#x} (functions {fs:x?})");
                 }
