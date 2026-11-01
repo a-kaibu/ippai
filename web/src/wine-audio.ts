@@ -1,9 +1,9 @@
-// Plays what vnhost's sound card mixed (crates/vnhost/src/audio.rs: 48 kHz stereo f32).
+// Plays what vnhost's sound card mixed (crates/vnhost/src/audio.rs: 44.1 kHz stereo f32).
 // The page drains it every few milliseconds and hands the chunks to an AudioWorklet, which
 // plays them in order and keeps its queue short (vnhost's wall clock and the audio clock
 // drift a little apart).
 
-const RATE = 48000;
+const RATE = 44100;
 /** frames the worklet may hold before dropping the oldest */
 const MAX_QUEUE = RATE / 5;
 

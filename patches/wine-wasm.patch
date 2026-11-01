@@ -1922,10 +1922,10 @@
 +    }
 +    fmt->Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
 +    fmt->Format.nChannels = 2;
-+    fmt->Format.nSamplesPerSec = 48000;
++    fmt->Format.nSamplesPerSec = 44100; /* most VN audio: dsound then mixes without its FIR resampler */
 +    fmt->Format.wBitsPerSample = 32;
 +    fmt->Format.nBlockAlign = 8;
-+    fmt->Format.nAvgBytesPerSec = 48000 * 8;
++    fmt->Format.nAvgBytesPerSec = 44100 * 8;
 +    fmt->Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
 +    fmt->Samples.wValidBitsPerSample = 32;
 +    fmt->dwChannelMask = KSAUDIO_SPEAKER_STEREO;

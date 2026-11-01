@@ -1,7 +1,7 @@
 //! The sound card behind the browser audio driver (dlls/winebrowser.drv/audio.c in the Wine patch).
 //!
 //! Each render stream of a Wine process queues its frames here. The wall clock plays them: on
-//! every call the elapsed time is mixed (resampled to 48 kHz stereo f32) into `out`, which the
+//! every call the elapsed time is mixed (resampled to 44.1 kHz stereo f32) into `out`, which the
 //! page drains with `vnhost_audio_take` into WebAudio. Under node nobody drains it and `out` just
 //! stays capped, so the timing games wait on is the same in both.
 
@@ -10,7 +10,9 @@ use std::ffi::c_int;
 use std::sync::Mutex;
 use std::time::Instant;
 
-pub const RATE: u32 = 48000;
+/// the driver's mix format too: most VN audio is 44.1 kHz, which dsound then mixes without
+/// its FIR resampler (costly in x87 code); the browser converts to the device's rate
+pub const RATE: u32 = 44100;
 /// frames kept for the page at most (older ones are dropped)
 const OUT_CAP: usize = RATE as usize / 4;
 
