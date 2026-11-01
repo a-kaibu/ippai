@@ -1,6 +1,8 @@
 // bench.exe (hangover/tests/bench.c) in wine.html, with native Wine's numbers next to ours.
 //
 //   /bench.html?scale=3    repeat count (default 3); times are shown per repeat
+//   &wasm                  bench.c compiled straight to wasm instead (hangover/tests/bench-wasm.sh):
+//                          the device's own speed with the same kernels, no x86 or Wine
 //   &passes=2              runs (default 2): the page reloads itself after each, so later runs
 //                          start from the regions earlier ones saved
 //   (other wine.html parameters pass through)
@@ -24,7 +26,8 @@ const params = new URLSearchParams(location.search);
 const scale = Math.max(1, Number(params.get("scale") ?? 3) || 1);
 const passes = Math.max(1, Number(params.get("passes") ?? 2) || 1);
 const pass = Math.max(1, Number(params.get("pass") ?? 1) || 1);
-if (!params.has("run")) {
+const direct = params.has("wasm");
+if (!direct && !params.has("run")) {
   params.set("run", "C:\\bench.exe");
   params.set("args", String(scale));
   params.set("autostart", "");
@@ -35,12 +38,11 @@ const table = document.querySelector<HTMLTableElement>("#result")!;
 const env = document.querySelector<HTMLDivElement>("#env")!;
 const copy = document.querySelector<HTMLButtonElement>("#copy")!;
 table.innerHTML = "<tr><th></th><th>ms</th><th>native</th><th>倍</th></tr>";
-env.textContent = `${navigator.userAgent} / ${navigator.hardwareConcurrency} cores / scale ${scale} / run ${pass} of ${passes}`;
+env.textContent = `${navigator.userAgent} / ${navigator.hardwareConcurrency} cores / scale ${scale} / run ${pass} of ${passes}${direct ? " / wasm direct" : ""}`;
 const lines: string[] = [];
 const t0 = performance.now();
 
-addEventListener("wine-print", (e) => {
-  const line = (e as CustomEvent<string>).detail;
+function onLine(line: string): void {
   const m = /^(\w+)\s+([\d.]+) ms\s+([0-9a-f]+)/.exec(line);
   if (!m) return;
   const [, name, ms, crc] = m as unknown as [string, string, string, string];
@@ -61,9 +63,20 @@ addEventListener("wine-print", (e) => {
         location.search = `?${params}`;
       });
   }
-});
+}
+
+addEventListener("wine-print", (e) => onLine((e as CustomEvent<string>).detail));
 copy.addEventListener("click", () => void navigator.clipboard.writeText(lines.join("\n")));
 
-await import("./wine");
+if (direct) {
+  document.querySelector<HTMLButtonElement>("#start")!.hidden = true;
+  const url = new URL("benchwasm/bench.js", location.href).href;
+  const factory = (await import(/* @vite-ignore */ url)).default as (m: object) => Promise<{
+    callMain(args: string[]): void;
+  }>;
+  const m = await factory({ print: onLine, printErr: (l: string) => console.warn(l) });
+  // after the page has painted, so the table is there while it runs
+  setTimeout(() => m.callMain([String(scale)]), 100);
+} else await import("./wine");
 
 export {};
