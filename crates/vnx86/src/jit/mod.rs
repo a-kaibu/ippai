@@ -1906,6 +1906,51 @@ impl<'a> Gen<'a> {
                     self.set_lazy(lazy::SUB, bits, Some(z), Some(a), r, None);
                 }
             }
+            // (their flags go through the interpreter when anything reads them)
+            Tzcnt | Lzcnt | Popcnt | Bsf | Bsr if simple && op_bits(ins, 0) == 32 && !self.flags_live(STATUS_BITS) => {
+                let addr = self.mem_addr();
+                let (v, r) = (self.temp(), self.temp());
+                self.read_op(1, addr);
+                self.c.set(v);
+                match ins.mnemonic() {
+                    Tzcnt | Bsf => {
+                        self.c.get(v).op(0x68);
+                    }
+                    Lzcnt => {
+                        self.c.get(v).op(0x67);
+                    }
+                    Bsr => {
+                        self.c.i32c(31).get(v).op(0x67).sub();
+                    }
+                    _ => {
+                        self.c.get(v).op(0x69);
+                    }
+                }
+                if matches!(ins.mnemonic(), Bsf | Bsr) {
+                    // (a zero source leaves the destination as it was)
+                    self.read_op(0, addr);
+                    self.c.get(v).select();
+                }
+                self.c.set(r);
+                self.write_op(0, addr, r);
+            }
+            // BT: CF is bit n of the value, as SHR by n + 1 has it (the other flags are undefined
+            // or unchanged: through the interpreter when anything reads them)
+            Bt if simple && (ins.op_kind(0) == OpKind::Register || ins.op_kind(1) != OpKind::Register) && !self.flags_live(STATUS_BITS & !RflagsBits::CF) => {
+                let bits = op_bits(ins, 0);
+                let addr = self.mem_addr();
+                let (a, n, r) = (self.temp(), self.temp(), self.temp());
+                self.read_op(0, addr);
+                self.c.set(a);
+                if ins.op_kind(1) == OpKind::Register {
+                    self.read_op(1, addr);
+                } else {
+                    self.c.u32c(ins.immediate(1) as u32);
+                }
+                self.c.i32c(bits as i32 - 1).and().i32c(1).add().set(n);
+                self.c.get(a).get(n).shr_u().set(r);
+                self.set_lazy(lazy::SHR, bits, Some(a), Some(n), r, None);
+            }
             Shl | Sal | Shr | Sar | Rol | Ror if simple && ins.op_count() == 2 => {
                 let bits = op_bits(ins, 0);
                 let imm = ins.op_kind(1) != OpKind::Register;

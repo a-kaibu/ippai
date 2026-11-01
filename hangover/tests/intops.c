@@ -309,6 +309,28 @@ static unsigned rotates(void)
     return sum;
 }
 
+/* bit scans and counts (zero sources too; BSF/BSR keep the destination then) and BT's CF */
+static unsigned bitops(void)
+{
+    sum = 0;
+    for (int i = 0; i < 20000; i++)
+    {
+        unsigned a = rnd(), b = rnd(), n = rnd();
+        if (i % 7 == 0) a = 0;
+        if (i % 5 == 0) a &= 0xff000;
+        unsigned t, l, p, f = b, r = n, c1, c2;
+        __asm__ volatile("tzcnt %1, %0" : "=r"(t) : "rm"(a));
+        __asm__ volatile("lzcnt %1, %0" : "=r"(l) : "rm"(a));
+        __asm__ volatile("popcnt %1, %0" : "=r"(p) : "rm"(a));
+        __asm__ volatile("bsf %1, %0" : "+r"(f) : "rm"(a));
+        __asm__ volatile("bsr %1, %0" : "+r"(r) : "rm"(a));
+        __asm__ volatile("bt %2, %1\n\tsetc %b0" : "=q"(c1) : "r"(b), "r"(n) : "cc");
+        __asm__ volatile("btl $13, %1\n\tsbb %0, %0" : "=r"(c2) : "rm"(b) : "cc");
+        mix(t); mix(l); mix(p); mix(f); mix(r); mix(c1 & 1); mix(c2);
+    }
+    return sum;
+}
+
 int main(void)
 {
     printf("shifts %08x\n", shifts());
@@ -320,5 +342,6 @@ int main(void)
     printf("string %08x\n", strings());
     printf("locked %08x\n", locked());
     printf("rotate %08x\n", rotates());
+    printf("bitops %08x\n", bitops());
     return 0;
 }
