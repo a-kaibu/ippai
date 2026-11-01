@@ -273,6 +273,9 @@ struct Gen<'a> {
     /// Registers whose value was checked to be at least SAFE_MARGIN inside the guest range,
     /// with how far they moved since (push/pop): accesses near them need no check.
     safe: [Option<i32>; 8],
+    /// The same for base + index << scale sums (base, index, scale shift; neither ESP): checked
+    /// once, accesses near the sum need no check until one of the two registers changes
+    safe2: Vec<(u8, u8, u8)>,
     fc: FCache,
     /// MMX registers whose value is in L_MMX + i (low half; the high half is anything), and those changed: kept
     /// until the block leaves or calls the interpreter, like the x87 ones
@@ -813,6 +816,9 @@ impl<'a> Gen<'a> {
     fn addr(&mut self, size: u32) -> u32 {
         let ins = self.ins;
         let t = self.temp();
+        if let Some(t) = self.addr_pair(t, size) {
+            return t;
+        }
         self.c.u32c(ins.memory_displacement32());
         if ins.memory_base() != Register::None {
             self.c.get(L_REG + ins.memory_base().number() as u32).add();
@@ -858,6 +864,45 @@ impl<'a> Gen<'a> {
         self.c.end();
         self.folded = Some((t, GUEST_LO));
         t
+    }
+
+    /// [base + index << scale + disp] with a small displacement: the sum is checked to be
+    /// SAFE_MARGIN inside the guest range (once per block until base or index changes; V8
+    /// can't merge the checks itself, every one has its own exit), then the access needs none.
+    /// The sum is in L_AB, a positive displacement folded into the access (see `folded`).
+    fn addr_pair(&mut self, t: u32, size: u32) -> Option<u32> {
+        let ins = self.ins;
+        let (base, index) = (ins.memory_base(), ins.memory_index());
+        let disp = ins.memory_displacement32() as i32;
+        if !base.is_gpr32() || !index.is_gpr32() || base == Register::ESP || index == Register::ESP
+            || matches!(ins.memory_segment(), Register::FS | Register::GS)
+            || disp.unsigned_abs() >= SAFE_MARGIN as u32 / 2
+        {
+            return None;
+        }
+        let key = (base.number() as u8, index.number() as u8, ins.memory_index_scale().trailing_zeros() as u8);
+        self.c.get(L_REG + key.0 as u32).get(L_REG + key.1 as u32);
+        if key.2 != 0 {
+            self.c.i32c(key.2 as i32).shl();
+        }
+        self.c.add().set(L_AB);
+        if !self.safe2.contains(&key) {
+            self.c.get(L_AB).u32c(GUEST_LO + SAFE_MARGIN as u32).sub().u32c(GUEST_HI - GUEST_LO - 2 * SAFE_MARGIN as u32).gt_u().if_();
+            self.depth += 1;
+            self.bail();
+            self.depth -= 1;
+            self.c.end();
+            if self.safe2.len() >= 4 {
+                self.safe2.remove(0);
+            }
+            self.safe2.push(key);
+        }
+        self.c.get(L_AB).i32c(disp).add().set(t);
+        if disp > 0 {
+            self.folded = Some((t, disp as u32));
+        }
+        let _ = size;
+        Some(t)
     }
 
     /// Whether [reg + disp, + size) is inside the guest range by what is known of `reg`,
@@ -1324,6 +1369,7 @@ impl<'a> Gen<'a> {
 
     fn reload(&mut self) {
         self.safe = [None; 8];
+        self.safe2.clear();
         for i in 0..8 {
             self.c.get(L_CPU).load32(Off::reg(i as usize)).set(L_REG + i);
         }
@@ -1375,6 +1421,7 @@ impl<'a> Gen<'a> {
                 self.safe[i] = None;
             }
         }
+        self.safe2.retain(|&(b, x, _)| written & (1 << b | 1 << x) == 0);
         // ESP is taken to point into a stack at every block start (as on real hardware,
         // running off the stack needs a broken program), so an instruction that sets it to
         // something new has it checked here, before the next block relies on that
@@ -2933,7 +2980,7 @@ fn emit_level<'a>(
                         g.fc_in = fin.clone();
                         g.fc_out.clear();
                         emit_loop(g, blocks, loops, h, e, &mut 0);
-                        g.c.b.truncate(b0);
+                        g.c.truncate(b0);
                         let out: BTreeMap<usize, FCache> = g.fc_out.iter().filter(|f| f.1.on).map(|(&k, &f)| (k, f)).collect();
                         if out == fin {
                             break;
@@ -3106,6 +3153,7 @@ fn emit_block<'a>(g: &mut Gen<'a>, blocks: &'a [(u32, Vec<Instruction>)], k: usi
     g.block_index = k as u32;
     g.ctx = g.ctxs[k];
     g.safe = [None; 8];
+    g.safe2.clear();
     g.safe[4] = Some(0); // see Gen::emit
     g.flags = Flags::Entry;
     g.fc = g.fc_in.get(&k).copied().unwrap_or_default();
@@ -3449,6 +3497,7 @@ pub fn translate_region<M: Memory>(
         live_after: 0,
         temps: 0,
         safe: [None; 8],
+        safe2: Vec::new(),
         fc: FCache::default(),
         mmx: (0, 0),
         xmm: (0, 0),
@@ -3499,7 +3548,8 @@ pub fn translate_region<M: Memory>(
     locals.extend_from_slice(&[V128; 16]);
     locals.push(I32); // L_AB
     locals.extend_from_slice(&[I32; N_SLOTS as usize]);
-    module.funcs.push(Func { ty: 2, locals, code: g.c });
+    let (locals, body) = wasm::compact_locals(N_PARAMS, &locals, core::mem::take(&mut g.c));
+    module.funcs.push(Func { ty: 2, locals, code: body });
     let mut layout = String::new();
     if LAYOUT.load(core::sync::atomic::Ordering::Relaxed) {
         use core::fmt::Write;

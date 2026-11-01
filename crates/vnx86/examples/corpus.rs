@@ -29,7 +29,9 @@ fn main() {
     vnx86::jit::LAYOUT.store(true, core::sync::atomic::Ordering::Relaxed);
     let mut sizes: BTreeMap<String, (u64, u64)> = BTreeMap::new();
     let (mut mods, mut names, mut ins) = (Vec::new(), Vec::new(), 0);
-    for e in &entries {
+    // VNVM_CORPUS_ROOT=<hex>: only the regions whose first root is that address
+    let only = std::env::var("VNVM_CORPUS_ROOT").ok().and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok());
+    for e in entries.iter().filter(|e| only.is_none_or(|a| e.roots[0] == a)) {
         let mut mem = Sparse(BTreeMap::new());
         let mut at = 0;
         for &(a, n) in &e.code {

@@ -11,6 +11,8 @@ pub const V128: u8 = 0x7b;
 #[derive(Default)]
 pub struct Code {
     pub b: Vec<u8>,
+    /// where each local.get/set/tee is (its opcode's offset in `b`), for `compact_locals`
+    pub locs: Vec<u32>,
 }
 
 pub fn uleb(out: &mut Vec<u8>, mut v: u64) {
@@ -50,6 +52,14 @@ fn section(out: &mut Vec<u8>, id: u8, body: &[u8]) {
 
 #[allow(dead_code)]
 impl Code {
+    /// Drops what was written from offset `n` on.
+    pub fn truncate(&mut self, n: usize) {
+        self.b.truncate(n);
+        while self.locs.last().is_some_and(|&p| p as usize >= n) {
+            self.locs.pop();
+        }
+    }
+
     #[inline]
     pub fn op(&mut self, o: u8) -> &mut Self {
         self.b.push(o);
@@ -74,16 +84,19 @@ impl Code {
         self
     }
     pub fn get(&mut self, l: u32) -> &mut Self {
+        self.locs.push(self.b.len() as u32);
         self.b.push(0x20);
         uleb(&mut self.b, l as u64);
         self
     }
     pub fn set(&mut self, l: u32) -> &mut Self {
+        self.locs.push(self.b.len() as u32);
         self.b.push(0x21);
         uleb(&mut self.b, l as u64);
         self
     }
     pub fn tee(&mut self, l: u32) -> &mut Self {
+        self.locs.push(self.b.len() as u32);
         self.b.push(0x22);
         uleb(&mut self.b, l as u64);
         self
@@ -639,4 +652,68 @@ pub fn select(module: &[u8], keep: &[bool]) -> Option<Vec<u8>> {
     }
     let funcs: Vec<(u64, &[u8])> = p.funcs.iter().zip(keep).filter(|x| *x.1).map(|x| *x.0).collect();
     Some(assemble(p.types, p.imports, p.nimp, &funcs, &[]))
+}
+
+/// Leaves out the locals `code` never names (beyond the `params`), numbering the rest anew.
+/// Liftoff zeroes every declared local on each entry and V8's optimizing compiler makes a phi
+/// for each at every loop: a region declares ~50 (16 of them v128) and uses a few.
+pub fn compact_locals(params: u32, locals: &[u8], code: Code) -> (Vec<u8>, Code) {
+    let read = |b: &[u8], mut at: usize| {
+        let (mut v, mut shift) = (0u32, 0);
+        loop {
+            let c = b[at];
+            v |= ((c & 0x7f) as u32) << shift;
+            at += 1;
+            shift += 7;
+            if c & 0x80 == 0 {
+                return (v, at);
+            }
+        }
+    };
+    let n = params as usize + locals.len();
+    let mut used = alloc::vec![false; n];
+    for &p in &code.locs {
+        used[read(&code.b, p as usize + 1).0 as usize] = true;
+    }
+    let mut map: Vec<u32> = (0..n as u32).collect();
+    let mut kept = Vec::new();
+    for (i, &t) in locals.iter().enumerate() {
+        let l = params as usize + i;
+        if used[l] {
+            map[l] = params + kept.len() as u32;
+            kept.push(t);
+        }
+    }
+    let mut out = Code { b: Vec::with_capacity(code.b.len()), locs: Vec::with_capacity(code.locs.len()) };
+    let mut from = 0;
+    for &p in &code.locs {
+        let p = p as usize;
+        out.b.extend_from_slice(&code.b[from..=p]);
+        let (l, end) = read(&code.b, p + 1);
+        out.locs.push(p as u32);
+        uleb(&mut out.b, map[l as usize] as u64);
+        from = end;
+    }
+    out.b.extend_from_slice(&code.b[from..]);
+    (kept, out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compact_locals_renumbers_the_used_ones() {
+        let mut c = Code::default();
+        // params 0..2; locals 2 (i32, unused), 3 (f64), 4 (i32, unused), 200 (v128)
+        c.get(0).set(3).i32c(200).get(200).tee(200).get(1);
+        c.truncate(c.b.len());
+        let mut locals = alloc::vec![I32, F64, I32];
+        locals.extend_from_slice(&[V128; 198]);
+        let (kept, out) = compact_locals(2, &locals, c);
+        assert_eq!(kept, [F64, V128]);
+        let mut want = Code::default();
+        want.get(0).set(2).i32c(200).get(3).tee(3).get(1);
+        assert_eq!(out.b, want.b);
+    }
 }
