@@ -222,6 +222,47 @@ Reunion、保存なし・ブラウザのキャッシュなし。タイトルま�
     - FEX と同じく「スタック以外への store を release にする」などを、Android で問題が出たら
       入れる。
 
+## AOT と JIT はどちらが速いか (2026-11-01)
+
+vnvm で静的 AOT を試すと JIT より遅かった (docs/hangover.md「初回起動の前の翻訳」)。
+先行研究と照らし合わせると、「AOT が遅い」のではなく、条件が 3 つ合わなかった。
+
+1. **出力が最終の機械語ではない**。Rosetta 2 の AOT は arm64 の機械語を作ってそのまま
+   マップする (足りない飛び先、たとえば switch のときだけ JIT)。Windows の XTA キャッシュも
+   arm64 のコードを保存する。vnvm の出力は wasm で、ブラウザの V8 が毎回それを
+   機械語にコンパイルし直す。V8 は関数を最初の呼び出しで Liftoff でコンパイルし、
+   熱い関数を TurboFan でコンパイルし直す。キャッシュされるのは TurboFan のコードだけで、
+   それも 2 回目の起動から。だから送るバイト数とコンパイルの量がそのまま初回の費用になり、
+   x86 → wasm の翻訳を省いても得は小さい。
+2. **静的にはどこが走るか分からない**。静的な二進翻訳はコード発見 (データとコードの混在、
+   可変長命令、間接分岐) が根本の難しさで、実際の翻訳器は実行時の補助に頼る
+   (NCTU の SBT/DBT ハイブリッド、feedback SBT)。FEX の AOTIR は入口の約 9 割を見つけ、
+   IR を 3.4GB 保存して clang の起動を 1.3 → 0.38 秒にした (ネイティブの機械語を出す
+   ので大きさは問題にならない)。vnvm は 99.7% を見つけたが、起動で走るのは全体の 14%
+   (Reunion: 352k / 250 万命令)。全部送ると 7 倍のコードをコンパイルさせることになる。
+3. **関数まるごとは JIT の形より重い**。JIT のリージョンは走ったブロックだけ。Dynamo
+   (PLDI 2000) 以来、熱い経路だけを最適化する方が静的な全体最適化に並ぶか勝つ、という結果がある。
+
+ほかの処理系も同じところに落ち着いている。
+
+- **Android ART**: Android 5 はインストール時に全部 AOT したが、容量とインストール時間が
+  重く、7 から JIT + プロファイルで熱いところだけ AOT に変えた。9 からはクラウドで集めた
+  プロファイルを配り、初回から AOT 済みにする (平均でメソッドの約 2 割だけをコンパイル)。
+- **HHVM Jump-Start** (CGO 2021): 先に動いたサーバーの JIT プロファイルを後のサーバーに配る。
+  ウォームアップで失う容量が 54.9% 減った。
+- **Java Project Leyden** (JEP 483/515、JDK 24/25): 訓練実行 (training run) でクラスと
+  メソッドのプロファイルを取って AOT キャッシュに入れ、本番の起動とウォームアップを短くする。
+- **.NET ReadyToRun**: 事前コンパイルしたコードで起動し、熱いメソッドは段階コンパイルで
+  JIT し直す (R2R のコードは JIT の Tier1 より質が低い)。
+- **x86 → wasm の静的翻訳 elfconv** (FOSDEM 2026): AOT でエミュレータ (v86、container2wasm)
+  の 30〜70 倍。比べている相手がインタプリタ型で、vnvm の JIT とは比べていない。
+
+vnvm の事前実行 (vnvm-server prerun_games) は ART のクラウドプロファイルや Leyden の
+訓練実行と同じ形で、「どこが走るか」をサーバーでの 1 回の実行から得て、JIT の形の
+リージョンを初回から配る。AOT が JIT に勝てる余地が残っているのは、サーバーで時間をかけて
+良いコードを作るところ (関数全体を見たレジスタ割り当てやフラグの削除、binaryen の最適化)
+で、配る量は事前実行で決めたまま、中身だけを重い最適化にかける形になる。
+
 ## 出典
 
 - Box64: https://github.com/ptitSeb/box64/blob/main/docs/USAGE.md 、
@@ -244,3 +285,14 @@ Reunion、保存なし・ブラウザのキャッシュなし。タイトルま�
   Hiser et al. CGO'07、Lasagne PLDI'22、Risotto ASPLOS'23
 - V8: https://v8.dev/blog/wasm-speculative-optimizations 、https://v8.dev/blog/wasm-code-caching 、
   https://v8.dev/blog/wasm-dynamic-tiering
+- Android ART のプロファイル: https://android-developers.googleblog.com/2019/04/improving-app-performance-with-art.html
+- Rosetta 2 (Apple Platform Security): https://support.apple.com/guide/security/secebb113be1/web
+- Windows on Arm の x86 エミュレーション: https://learn.microsoft.com/windows/arm/apps-on-arm-x86-emulation
+- FEX AOTIR: https://skmp-dev.pages.dev/blog/fex-aotir
+- HHVM Jump-Start: https://research.facebook.com/publications/hhvm-jump-start-boosting-both-warmup-and-steady-state-performance-at-scale/
+- JEP 515: https://openjdk.org/jeps/515
+- .NET の段階コンパイル: https://github.com/dotnet/runtime/blob/main/docs/design/features/tiered-compilation.md
+- V8 の wasm コンパイル: https://v8.dev/docs/wasm-compilation-pipeline 、https://v8.dev/blog/wasm-code-caching
+- Dynamo (PLDI 2000): https://www.cse.iitm.ac.in/~krishna/courses/2022/odd-cs6013/BalaDusterwaldBanerjiaPLDI2000.pdf
+- HQEMU (CGO 2012): https://cs.nthu.edu.tw/~ychung/conference/2012-CGO-HQEMU.pdf
+- elfconv: https://github.com/yomaytk/elfconv 、https://archive.fosdem.org/2026/schedule/event/NABRSD-high-speed_linux_application_execution_in_the_browser_with_binary_translation/
