@@ -2,7 +2,8 @@
 //
 //   /bench.html?scale=3    repeat count (default 3); times are shown per repeat
 //   &wasm                  bench.c compiled straight to wasm instead (hangover/tests/bench-wasm.sh):
-//                          the device's own speed with the same kernels, no x86 or Wine
+//                          the device's own speed with the same kernels, no x86 or Wine;
+//                          &wasm=shared with shared memory, &wasm=big shared and 2.1 GB like wine.wasm
 //   &passes=2              runs (default 2): the page reloads itself after each, so later runs
 //                          start from the regions earlier ones saved
 //   (other wine.html parameters pass through)
@@ -27,6 +28,7 @@ const scale = Math.max(1, Number(params.get("scale") ?? 3) || 1);
 const passes = Math.max(1, Number(params.get("passes") ?? 2) || 1);
 const pass = Math.max(1, Number(params.get("pass") ?? 1) || 1);
 const direct = params.has("wasm");
+const variant = ({ shared: "shared", big: "big" } as Record<string, string>)[params.get("wasm") ?? ""] ?? "bench";
 if (!direct && !params.has("run")) {
   params.set("run", "C:\\bench.exe");
   params.set("args", String(scale));
@@ -38,7 +40,7 @@ const table = document.querySelector<HTMLTableElement>("#result")!;
 const env = document.querySelector<HTMLDivElement>("#env")!;
 const copy = document.querySelector<HTMLButtonElement>("#copy")!;
 table.innerHTML = "<tr><th></th><th>ms</th><th>native</th><th>倍</th></tr>";
-env.textContent = `${navigator.userAgent} / ${navigator.hardwareConcurrency} cores / scale ${scale} / run ${pass} of ${passes}${direct ? " / wasm direct" : ""}`;
+env.textContent = `${navigator.userAgent} / ${navigator.hardwareConcurrency} cores / scale ${scale} / run ${pass} of ${passes}${direct ? ` / wasm direct (${variant})` : ""}`;
 const lines: string[] = [];
 const t0 = performance.now();
 
@@ -70,7 +72,7 @@ copy.addEventListener("click", () => void navigator.clipboard.writeText(lines.jo
 
 if (direct) {
   document.querySelector<HTMLButtonElement>("#start")!.hidden = true;
-  const url = new URL("benchwasm/bench.js", location.href).href;
+  const url = new URL(`benchwasm/${variant}.js`, location.href).href;
   const factory = (await import(/* @vite-ignore */ url)).default as (m: object) => Promise<{
     callMain(args: string[]): void;
   }>;
