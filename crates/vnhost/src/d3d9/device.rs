@@ -44,6 +44,10 @@ pub struct Surface {
     /// an upload the page reads from `mem` (batch generation, rect): `mem` must not change
     /// until that batch is done
     pub pending: Option<(u64, [u32; 4])>,
+    /// whole-surface locks so far, and from the second on, the pixels as last uploaded: an
+    /// unlock then uploads only the box that changed (see changed_box)
+    pub full_locks: u32,
+    pub shadow: Option<Box<[u8]>>,
 }
 
 pub struct Texture {
@@ -658,6 +662,8 @@ fn new_surface(d: &mut D3d, w: u32, h: u32, f: u32, pool: u32, usage: u32, conta
         container,
         multisample: 0,
         pending: None,
+        full_locks: 0,
+        shadow: None,
     };
     d.new_obj(IF_SURFACE, container, Data::Surface(s))
 }
@@ -1501,8 +1507,77 @@ unsafe fn surface_mem(d: &mut D3d, s: u32) -> Option<u32> {
     (mem != 0).then_some(mem)
 }
 
+/// The box (x0, y0, x1, y1 in pixels) where `rows` (h rows of `row` bytes, `pitch` apart)
+/// differ from `shadow` (packed rows), which takes the new rows. None: all the same.
+fn changed_box(rows: &[u8], pitch: usize, row: usize, h: usize, bpp: usize, shadow: &mut [u8]) -> Option<[u32; 4]> {
+    let mut b: Option<[usize; 4]> = None;
+    for y in 0..h {
+        let (a, s) = (&rows[y * pitch..y * pitch + row], &mut shadow[y * row..(y + 1) * row]);
+        // 8 bytes at a time from each end (the tail bytes by themselves)
+        let words = row / 8;
+        let w = |x: &[u8], i: usize| u64::from_ne_bytes(x[i * 8..i * 8 + 8].try_into().unwrap());
+        let l = (0..words).find(|&i| w(a, i) != w(s, i)).map_or(words * 8, |i| i * 8);
+        let Some(l) = (l..row).find(|&i| a[i] != s[i]) else { continue };
+        let r = match (words * 8..row).rev().find(|&i| a[i] != s[i]) {
+            Some(i) => i + 1,
+            None => {
+                let wi = (0..words).rev().find(|&i| w(a, i) != w(s, i)).unwrap();
+                (wi * 8..wi * 8 + 8).rev().find(|&i| a[i] != s[i]).unwrap() + 1
+            }
+        };
+        s[l..r].copy_from_slice(&a[l..r]);
+        b = Some(match b {
+            None => [l, y, r, y + 1],
+            Some(o) => [o[0].min(l), o[1], o[2].max(r), y + 1],
+        });
+    }
+    b.map(|b| [(b[0] / bpp) as u32, b[1] as u32, b[2].div_ceil(bpp) as u32, b[3] as u32])
+}
+
+/// After a whole-surface lock: uploads only what changed since the last upload (a movie frame
+/// written into the corner of a bigger texture: ANEMOI's 1920x1080 frames in 2048x2048, every
+/// frame). From the second such lock on (the first makes the copy); big surfaces only.
+unsafe fn upload_changed(d: &mut D3d, s: u32) {
+    let Some(Data::Surface(sf)) = d.objs.get_mut(&s).map(|o| &mut o.data) else { return };
+    let (bpb, bs) = fmt::layout(sf.fmt).unwrap_or((4, 1));
+    let (w, h) = (sf.w, sf.h);
+    let row = (w * bpb) as usize;
+    if bs != 1 || sf.mem == 0 || sf.gpu == 0 || row * (h as usize) < 1 << 18 || fmt::is_depth(sf.fmt) {
+        return upload(d, s, [0, 0, w, h]);
+    }
+    sf.full_locks += 1;
+    let rows = std::slice::from_raw_parts(sf.mem as *const u8, sf.pitch as usize * (h as usize - 1) + row);
+    let r = match sf.shadow.as_mut() {
+        Some(sh) => changed_box(rows, sf.pitch as usize, row, h as usize, bpb as usize, sh),
+        None => {
+            if sf.full_locks >= 2 {
+                let mut sh = vec![0u8; row * h as usize].into_boxed_slice();
+                for y in 0..h as usize {
+                    sh[y * row..(y + 1) * row].copy_from_slice(&rows[y * sf.pitch as usize..][..row]);
+                }
+                sf.shadow = Some(sh);
+            }
+            Some([0, 0, w, h])
+        }
+    };
+    if super::stats::on() {
+        eprintln!("d3d9: whole lock of {w}x{h} surface {s}: changed {r:?}");
+    }
+    if let Some(r) = r {
+        upload_keep(d, s, r);
+    }
+}
+
 /// Uploads rect `r` of a surface's guest copy to its page texture.
 unsafe fn upload(d: &mut D3d, s: u32, r: [u32; 4]) {
+    if let Some(Data::Surface(sf)) = d.objs.get_mut(&s).map(|o| &mut o.data) {
+        // (the texture now has pixels the copy may not: see upload_changed)
+        sf.shadow = None;
+    }
+    upload_keep(d, s, r);
+}
+
+unsafe fn upload_keep(d: &mut D3d, s: u32, r: [u32; 4]) {
     let Some(Data::Surface(sf)) = d.objs.get_mut(&s).map(|o| &mut o.data) else { return };
     if sf.gpu == 0 || sf.mem == 0 || fmt::is_depth(sf.fmt) {
         return;
@@ -1575,6 +1650,9 @@ unsafe fn lock_surface(d: &mut D3d, s: u32, out: u32, rect: u32, flags: u32, aft
     let ptr = mem + (r[1] / bs) * sf.pitch + (r[0] / bs) * bpb;
     wr(out, 0, sf.pitch);
     wr(out, 1, ptr);
+    if sf.gpu_newer {
+        sf.shadow = None;
+    }
     if sf.gpu_newer && flags & LOCK_DISCARD == 0 {
         // the page has the pixels: read them back first
         sf.gpu_newer = false;
@@ -1596,7 +1674,9 @@ fn readback(d: &mut D3d, gpu: u32, level: u32, w: u32, h: u32, mem: u32, pitch: 
 unsafe fn unlock_surface(d: &mut D3d, s: u32) -> u32 {
     let Some(Data::Surface(sf)) = d.objs.get_mut(&s).map(|o| &mut o.data) else { return D3DERR_INVALIDCALL };
     let Some(r) = sf.lock.take() else { return D3DERR_INVALIDCALL };
-    if r[2] > r[0] {
+    if r == [0, 0, sf.w, sf.h] {
+        upload_changed(d, s);
+    } else if r[2] > r[0] {
         upload(d, s, r);
     }
     S_OK
@@ -1827,6 +1907,7 @@ fn surface_gpu(d: &D3d, s: u32) -> Option<(u32, u32, u32, u32, u32)> {
 fn mark_rendered(d: &mut D3d, s: u32) {
     if let Some(Data::Surface(sf)) = d.objs.get_mut(&s).map(|o| &mut o.data) {
         sf.gpu_newer = true;
+        sf.shadow = None;
     }
 }
 
@@ -2556,4 +2637,26 @@ fn blend_state(st: &State) -> ([u32; 7], u32) {
         (s, d, rs[171])
     };
     ([1, s, d, rs[171], sa, da, opa], rs[168] & 0xf)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn changed_box_finds_the_written_corner() {
+        // 64x8 pixels of 4 bytes, pitch 300 bytes; the frame writes x 3..41, y 2..5
+        let (w, h, pitch) = (64usize, 8usize, 300usize);
+        let mut mem = vec![0u8; pitch * h];
+        let mut shadow = vec![0u8; w * 4 * h];
+        assert_eq!(super::changed_box(&mem, pitch, w * 4, h, 4, &mut shadow), None);
+        for y in 2..5 {
+            for x in 3..41 {
+                mem[y * pitch + x * 4 + 1] = 7;
+            }
+        }
+        assert_eq!(super::changed_box(&mem, pitch, w * 4, h, 4, &mut shadow), Some([3, 2, 41, 5]));
+        // the shadow took the new rows: nothing changed now
+        assert_eq!(super::changed_box(&mem, pitch, w * 4, h, 4, &mut shadow), None);
+        mem[7 * pitch + 63 * 4 + 3] = 1;
+        assert_eq!(super::changed_box(&mem, pitch, w * 4, h, 4, &mut shadow), Some([63, 7, 64, 8]));
+    }
 }
