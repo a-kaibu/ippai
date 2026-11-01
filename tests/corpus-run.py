@@ -7,7 +7,7 @@ title (download, extract, pack: tests/corpus-prep.sh) while the current one runs
 TITLES.tsv: id, url, exe_rel columns (header row). STEPS.tsv: id<TAB>steps<TAB>story_at.
 OUT_DIR/<id>/ gets result.json + PNGs; titles whose result.json exists are skipped.
 """
-import csv, os, subprocess, sys, threading, queue, time, shutil, urllib.parse, socket
+import csv, json, os, subprocess, sys, threading, queue, time, shutil, urllib.parse, socket
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -109,6 +109,8 @@ while True:
         open(f'{od}/exe.txt', 'w').write(exe + '\n')
         open(f'{STORES}/{tid}/exe.txt', 'w').write(exe + '\n')
         print(tid, 'done', round(time.time() - t0), flush=True)
-    # the packed store stays (a rerun with other steps needs no download); the extracted files go
+    # with --keep a failed title's packed store stays (debugging needs no download); the extracted files go
     shutil.rmtree(f'{TRIALS}/{tid}', ignore_errors=True)
-    if not keep or shutil.disk_usage(STORES).free < 8 << 30: shutil.rmtree(f'{STORES}/{tid}', ignore_errors=True)
+    try: ok = json.load(open(f'{od}/result.json')).get('title') is not None
+    except Exception: ok = False
+    if not keep or ok or shutil.disk_usage(STORES).free < 8 << 30: shutil.rmtree(f'{STORES}/{tid}', ignore_errors=True)
