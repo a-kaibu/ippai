@@ -170,10 +170,22 @@ pub fn may_map(lo: usize, hi: usize) -> bool {
 }
 
 /// Marks the process dead: its fds close and its threads stop at their next chance.
+/// Set when the first process (the program the page started) has ended.
+static ROOT_EXITED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The page: whether the program it started has ended (it then closes the game).
+#[no_mangle]
+pub extern "C" fn vnhost_root_exited() -> c_int {
+    ROOT_EXITED.load(std::sync::atomic::Ordering::Relaxed) as c_int
+}
+
 pub fn kill(pid: i32) {
     let tids = with(|p| match p.list.get_mut(&pid) {
         Some(q) if !q.dead => {
             q.dead = true;
+            if q.root {
+                ROOT_EXITED.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
             q.tids.clone()
         }
         _ => Vec::new(),

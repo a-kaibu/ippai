@@ -266,6 +266,7 @@ pub unsafe extern "C" fn vnhost_d3d9_create(sdk: u32, out: *mut u32, calls: *con
 
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_d3d9_call(id: u32, args: *const u32, calls: *const HostCalls) -> u32 {
+    let t0 = stats::on().then(std::time::Instant::now);
     let (r, after) = {
         let mut g = D3D.lock().unwrap_or_else(|e| e.into_inner());
         let d = g.as_mut().expect("d3d9 not initialized");
@@ -305,7 +306,77 @@ pub unsafe extern "C" fn vnhost_d3d9_call(id: u32, args: *const u32, calls: *con
             gpu::wait_readback(req);
         }
     }
+    if let Some(t0) = t0 {
+        stats::add(id, t0.elapsed());
+    }
     r
+}
+
+/// `VNVM_D3D_STATS`: every 5 s, the methods that took the most time (presents include their
+/// waits) and what the batches carried.
+pub mod stats {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    struct S {
+        start: Instant,
+        calls: HashMap<u32, (u64, Duration)>,
+        batches: u64,
+        data: u64,
+        blob: u64,
+    }
+    static S: Mutex<Option<S>> = Mutex::new(None);
+
+    pub fn on() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var_os("VNVM_D3D_STATS").is_some())
+    }
+
+    fn with(f: impl FnOnce(&mut S)) {
+        let mut g = S.lock().unwrap_or_else(|e| e.into_inner());
+        let s = g.get_or_insert_with(|| S { start: Instant::now(), calls: HashMap::new(), batches: 0, data: 0, blob: 0 });
+        f(s);
+        let el = s.start.elapsed();
+        if el >= Duration::from_secs(5) {
+            let mut v: Vec<_> = s.calls.iter().map(|(&id, &(n, t))| (t, n, id)).collect();
+            v.sort_by(|a, b| b.0.cmp(&a.0));
+            let busy: Duration = v.iter().map(|x| x.0).sum();
+            let top: Vec<String> = v
+                .iter()
+                .take(8)
+                .map(|&(t, n, id)| format!("{} {n}x {:.0}ms", super::name(id >> 8, id & 0xff), t.as_secs_f64() * 1e3))
+                .collect();
+            let secs = el.as_secs_f64();
+            eprintln!(
+                "d3d9 stats/{secs:.1}s: calls {:.0}ms; batches {}/s data {:.1}MB/s blob {:.1}MB/s; {}",
+                busy.as_secs_f64() * 1e3,
+                (s.batches as f64 / secs) as u64,
+                s.data as f64 / secs / 1e6,
+                s.blob as f64 / secs / 1e6,
+                top.join(", ")
+            );
+            *s = S { start: Instant::now(), calls: HashMap::new(), batches: 0, data: 0, blob: 0 };
+        }
+    }
+
+    pub fn add(id: u32, t: Duration) {
+        with(|s| {
+            let e = s.calls.entry(id).or_default();
+            e.0 += 1;
+            e.1 += t;
+        })
+    }
+
+    pub fn batch(data: usize, blob: usize) {
+        if on() {
+            with(|s| {
+                s.batches += 1;
+                s.data += data as u64;
+                s.blob += blob as u64;
+            })
+        }
+    }
 }
 
 // IIDs by their first 32 bits

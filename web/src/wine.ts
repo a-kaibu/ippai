@@ -34,6 +34,7 @@ interface WineModule {
   _malloc(size: number): number;
   _vnhost_display_size(w: number, h: number): void;
   _vnhost_display_view(out: number): void;
+  _vnhost_root_exited(): number;
   _vnhost_display_frame(io: number): number;
   _vnhost_input_push(kind: number, x: number, y: number, data: number): number;
   _vnhost_audio_take(buf: number, frames: number): number;
@@ -134,7 +135,10 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       // bench.html shows the program's output
       dispatchEvent(new CustomEvent("wine-print", { detail: line }));
     },
-    printErr: (line: string) => console.warn(line),
+    printErr: (line: string) => {
+      console.warn(line);
+      if (line.startsWith("d3d9 stats")) statsLine(1, line);
+    },
   };
   log(`${run} を起動中`);
   const wine = await factory(moduleArg);
@@ -235,7 +239,24 @@ function present(wine: WineModule, presenter: Presenter): void {
   (window as unknown as { vnvmD3d: D3D9 }).vnvmD3d = d3d;
   let d3dFrames = 0;
   const view = (scratch + 20) >>> 2;
+  // &d3dstats: every 5 s, page frames, slow ones (>34 ms apart), Direct3D frames and batch time
+  const stats = params.has("d3dstats") ? { t0: performance.now(), last: 0, frames: 0, slow: 0, d3d: 0 } : null;
   const frame = () => {
+    if (stats) {
+      const t = performance.now();
+      if (stats.last && t - stats.last > 34) stats.slow++;
+      stats.last = t;
+      stats.frames++;
+      if (t - stats.t0 >= 5000) {
+        const s = (t - stats.t0) / 1000;
+        const line = `page stats/${s.toFixed(1)}s: rAF ${(stats.frames / s).toFixed(1)}/s, slow ${stats.slow}, d3d frames ${((d3d.frames - stats.d3d) / s).toFixed(1)}/s, batches ${d3d.runMs.toFixed(0)}ms, gpu ${d3d.stat.gpuMs.toFixed(0)}ms (max ${d3d.stat.gpuMax.toFixed(0)}), passes ${d3d.stat.passes}, submits ${d3d.stat.submits}, textures ${d3d.stat.created}, upload ${(d3d.stat.uploaded / 1e6).toFixed(1)}MB`;
+        console.log(line);
+        statsLine(0, line);
+        d3d.stat = { passes: 0, submits: 0, created: 0, uploaded: 0, gpuMs: 0, gpuMax: 0 };
+        Object.assign(stats, { t0: t, frames: 0, slow: 0, d3d: d3d.frames });
+        d3d.runMs = 0;
+      }
+    }
     // only the game window's client area is shown
     wine._vnhost_display_view(view * 4);
     const v = [0, 1, 2, 3].map((i) => wine.HEAPU32[view + i]! | 0) as [number, number, number, number];
@@ -259,6 +280,8 @@ function present(wine: WineModule, presenter: Presenter): void {
       dispatchEvent(new CustomEvent("wine-frame", { detail: { heap: wine.HEAPU8, bits, width, height } }));
       if (status.textContent) log("");
     }
+    // the game quit: so does the page
+    if (wine._vnhost_root_exited()) return closeGame();
     requestAnimationFrame(frame);
   };
   requestAnimationFrame(frame);
@@ -325,6 +348,33 @@ if (problem) {
     // (fullscreen needs a user gesture: a phone's first touch)
     addEventListener("pointerdown", (e) => e.pointerType === "touch" && fullscreen(), { once: true });
   }
+}
+
+/** After the game quit: leaves fullscreen and goes back to the start screen (a fresh page). */
+function closeGame(): void {
+  log("ゲームが終了しました");
+  const back = () => {
+    const url = new URL(location.href);
+    url.searchParams.delete("autostart");
+    location.replace(url);
+  };
+  if (document.fullscreenElement) document.exitFullscreen().then(back, back);
+  else back();
+}
+
+/** &d3dstats: the latest stats lines over the screen (to read them on a phone) */
+function statsLine(n: number, line: string): void {
+  let box = document.querySelector<HTMLPreElement>("#stats");
+  if (!box) {
+    box = document.createElement("pre");
+    box.id = "stats";
+    box.style.cssText =
+      "position:fixed;left:4px;top:4px;margin:0;padding:4px 6px;background:rgb(0 0 0/70%);color:#fff;font:11px/1.3 monospace;white-space:pre-wrap;max-width:calc(100% - 16px);pointer-events:none;z-index:2";
+    document.body.append(box);
+  }
+  const lines = (box.textContent ?? "").split("\n");
+  lines[n] = line;
+  box.textContent = lines.join("\n");
 }
 
 /** The whole display for the game (landscape on phones); refusals are fine. */

@@ -156,6 +156,7 @@ export class D3D9 {
       const heap = this.wine.wasmMemory.buffer;
       const u32 = new Uint32Array(heap, this.io, 6);
       const [cmds, ncmd, data, ndata, blob, nblob] = Array.from(u32, (x) => x >>> 0);
+      const t0 = performance.now();
       try {
         this.run(new Uint32Array(heap, cmds!, ncmd!), new Uint8Array(heap, data!, ndata!), new Uint8Array(heap, blob!, nblob!));
       } catch (e) {
@@ -163,8 +164,14 @@ export class D3D9 {
         this.endPass();
         this.submit();
       }
+      this.runMs += performance.now() - t0;
     }
   }
+
+  /** time spent running batches (ms, for stats) */
+  runMs = 0;
+  /** counts for stats (reset by the reader) */
+  stat = { passes: 0, submits: 0, created: 0, uploaded: 0, gpuMs: 0, gpuMax: 0 };
 
   private copy(src: Uint8Array): Uint8Array<ArrayBuffer> {
     if (this.staging.length < src.length) this.staging = new Uint8Array(Math.max(src.length, this.staging.length * 2));
@@ -215,6 +222,7 @@ export class D3D9 {
               (depth ? 0 : GPUTextureUsage.RENDER_ATTACHMENT),
           });
           this.textures.get(id)?.tex.destroy();
+          this.stat.created++;
           this.textures.set(id, { tex, w, h, levels: depth ? 1 : levels, format: fmt, view: tex.createView() });
           i += 7;
           break;
@@ -236,6 +244,7 @@ export class D3D9 {
           if (t && t.format !== "depth24plus-stencil8") {
             this.flushIfUsed(id!);
             const bytes = blob.subarray(off!, off! + bpr! * h!);
+            this.stat.uploaded += bytes.length;
             const lw = Math.max(1, t.w >> level!),
               lh = Math.max(1, t.h >> level!);
             const cw = Math.min(w!, lw - x!),
@@ -306,7 +315,14 @@ export class D3D9 {
           if (tx) this.overlay = { view: tx.view, rect: [l, t, r, b] };
           this.frames++;
           this.inflight++;
-          void this.device.queue.onSubmittedWorkDone().then(() => this.inflight--);
+          const sent = performance.now();
+          void this.device.queue.onSubmittedWorkDone().then(() => {
+            this.inflight--;
+            // how long the GPU took to finish the frame (queue wait included)
+            const ms = performance.now() - sent;
+            this.stat.gpuMs += ms;
+            this.stat.gpuMax = Math.max(this.stat.gpuMax, ms);
+          });
           this.onPresent?.();
           i += 10;
           break;
@@ -350,6 +366,7 @@ export class D3D9 {
 
   private submit(): void {
     if (this.encoder) {
+      this.stat.submits++;
       this.device.queue.submit([this.encoder.finish()]);
       this.encoder = null;
       this.used.clear();
@@ -411,6 +428,7 @@ export class D3D9 {
         : undefined,
     });
     this.passDraws = 0;
+    this.stat.passes++;
     return this.pass;
   }
 

@@ -194,6 +194,7 @@ pub unsafe extern "C" fn vnhost_d3d9_poll(out: *mut u32) -> u32 {
         q.last_poll = Some(now());
         q.reading = q.closed.pop_front();
         let Some(b) = &q.reading else { return 0 };
+        super::stats::batch(b.data.len(), b.blob.len());
         q.shown += b.presents as u64;
         out[0] = b.cmds.as_ptr() as u32;
         out[1] = b.cmds.len() as u32;
