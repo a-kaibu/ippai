@@ -35,14 +35,21 @@ def prep(tid):
     return r.stdout.strip().splitlines()[-1], None
 
 todo = [i for i in ids if not os.path.exists(f'{out}/{i}/result.json')]
-q = queue.Queue(maxsize=2)
+# several downloads at once (the hosts are slow per connection); a few titles ready ahead
+JOBS = int(os.environ.get('PREP_JOBS', '4'))
+q = queue.Queue(maxsize=JOBS)
+work = queue.Queue()
+for tid in todo: work.put(tid)
 def producer():
-    for tid in todo:
+    while True:
+        try: tid = work.get_nowait()
+        except queue.Empty: break
         try: exe, err = prep(tid)
         except Exception as e: exe, err = None, str(e)
         q.put((tid, exe, err))
     q.put(None)
-threading.Thread(target=producer, daemon=True).start()
+for _ in range(JOBS): threading.Thread(target=producer, daemon=True).start()
+ends = 0
 
 def wait_port(p):
     for _ in range(50):
@@ -52,7 +59,10 @@ def wait_port(p):
 
 while True:
     item = q.get()
-    if item is None: break
+    if item is None:
+        ends += 1
+        if ends == JOBS: break
+        continue
     tid, exe, err = item
     od = f'{out}/{tid}'
     os.makedirs(od, exist_ok=True)

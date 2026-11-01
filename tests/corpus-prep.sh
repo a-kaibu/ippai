@@ -11,7 +11,13 @@ mkdir -p "$T"
 cd "$T"
 f=dl.${url##*.}
 if [ ! -s "$f" ]; then
-  curl -sSfL --retry 3 --max-time 3600 -o "$f.part" "$url"
+  # the proxy sometimes cuts long transfers: resume
+  ok=
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    curl -sSfL --max-time 3600 -C - -o "$f.part" "$url" && { ok=1; break; }
+    sleep $((i * 2))
+  done
+  [ -n "$ok" ] || { echo "download failed" >&2; exit 4; }
   mv "$f.part" "$f"
 fi
 if [ ! -d x ]; then
