@@ -334,6 +334,94 @@ unsafe impl dlmalloc::Allocator for Sys {
 static HEAP: Mutex<dlmalloc::Dlmalloc<Sys>> = Mutex::new(dlmalloc::Dlmalloc::new_with_allocator(Sys));
 
 const HDR: u32 = 8;
+const MAGIC: u32 = 0x6e69_7776;
+/// a small block whose size class (16-byte steps up to SLAB_MAX) bounds its capacity: freed
+/// ones go to fast.rs's per-class lists in guest memory (marked SLAB_FREE while there)
+pub const SLAB: u32 = 0x6e69_7777;
+pub const SLAB_FREE: u32 = 0x6e69_7778;
+pub const SLAB_MAX: u32 = 512;
+
+/// The free lists of small blocks: a spin lock word, then the head of class k (k*16 bytes)
+/// at +4k for k in 1..=32. The x86 stubs in fast.rs pop and push them.
+pub fn slab_table() -> u32 {
+    static T: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *T.get_or_init(|| heap_alloc(4 * (1 + SLAB_MAX / 16), true))
+}
+
+fn slab_class(size: u32) -> u32 {
+    ((size + 15) / 16).max(1)
+}
+
+fn slab_lock(t: u32) -> &'static std::sync::atomic::AtomicU32 {
+    unsafe { std::sync::atomic::AtomicU32::from_ptr(slice_mut(t, 4).as_mut_ptr() as *mut u32) }
+}
+
+/// heap_alloc for HeapAlloc/malloc: small sizes come from the class lists (refilled here when
+/// empty, a few blocks at a time), so the x86 fast path can serve the next ones.
+pub fn heap_alloc_small(size: u32, zero: bool) -> u32 {
+    if size > SLAB_MAX {
+        return heap_alloc(size, zero);
+    }
+    use std::sync::atomic::Ordering;
+    let k = slab_class(size);
+    let t = slab_table();
+    let lock = slab_lock(t);
+    while lock.swap(1, Ordering::Acquire) != 0 {
+        std::hint::spin_loop();
+    }
+    let head = r32(t + 4 * k);
+    let p = if head != 0 {
+        w32(t + 4 * k, r32(head));
+        head
+    } else {
+        // a new block for the caller and a few for the list
+        let n = (8192 / (k * 16)).clamp(2, 256);
+        let mut first = 0;
+        for i in 0..n {
+            let b = heap_alloc(k * 16, false);
+            if b == 0 {
+                break;
+            }
+            if i == 0 {
+                first = b;
+            } else {
+                w32(b - 4, SLAB_FREE);
+                w32(b, r32(t + 4 * k));
+                w32(t + 4 * k, b);
+            }
+        }
+        first
+    };
+    lock.store(0, Ordering::Release);
+    if p == 0 {
+        return 0;
+    }
+    w32(p - 8, size);
+    w32(p - 4, SLAB);
+    if zero {
+        fill(p, size, 0);
+    }
+    p
+}
+
+/// heap_free for HeapFree/free: small blocks back to their class list.
+pub fn heap_free_small(p: u32) -> bool {
+    if p < LO + HDR || r32(p - 4) != SLAB {
+        return heap_free(p);
+    }
+    use std::sync::atomic::Ordering;
+    let k = slab_class(r32(p - 8));
+    let t = slab_table();
+    let lock = slab_lock(t);
+    while lock.swap(1, Ordering::Acquire) != 0 {
+        std::hint::spin_loop();
+    }
+    w32(p - 4, SLAB_FREE);
+    w32(p, r32(t + 4 * k));
+    w32(t + 4 * k, p);
+    lock.store(0, Ordering::Release);
+    true
+}
 
 pub fn heap_alloc(size: u32, zero: bool) -> u32 {
     let p = unsafe { HEAP.lock().unwrap().malloc((size + HDR) as usize, 8) } as usize as u32;
@@ -341,7 +429,7 @@ pub fn heap_alloc(size: u32, zero: bool) -> u32 {
         return 0;
     }
     w32(p, size);
-    w32(p + 4, 0x6e69_7776);
+    w32(p + 4, MAGIC);
     if zero {
         fill(p + HDR, size, 0);
     }
@@ -358,7 +446,7 @@ pub fn heap_size(p: u32) -> u32 {
 /// Whether `p` came from heap_alloc (games free pointers of other heaps through ours rarely,
 /// but GlobalFree of a handle and the like do happen).
 pub fn heap_owns(p: u32) -> bool {
-    p >= LO + HDR && r32(p - 4) == 0x6e69_7776
+    p >= LO + HDR && matches!(r32(p - 4), MAGIC | SLAB)
 }
 
 pub fn heap_free(p: u32) -> bool {
@@ -367,16 +455,27 @@ pub fn heap_free(p: u32) -> bool {
     }
     let size = r32(p - HDR);
     w32(p - 4, 0);
-    unsafe { HEAP.lock().unwrap().free((p - HDR) as usize as *mut u8, (size + HDR) as usize, 8) };
+    // (c_free: the header's size may be below the chunk's after an in-place shrink)
+    let _ = size;
+    unsafe { HEAP.lock().unwrap().c_free((p - HDR) as usize as *mut u8) };
     true
 }
 
 pub fn heap_realloc(p: u32, size: u32, zero: bool) -> u32 {
     if p == 0 {
-        return heap_alloc(size, zero);
+        return heap_alloc_small(size, zero);
     }
     let old = heap_size(p);
-    let n = heap_alloc(size, false);
+    // in place: a small block within its class, or any block shrinking
+    let fits = if r32(p - 4) == SLAB { size <= SLAB_MAX && slab_class(size) <= slab_class(old) } else { size <= old };
+    if fits {
+        if zero && size > old {
+            fill(p + old, size - old, 0);
+        }
+        w32(p - 8, size);
+        return p;
+    }
+    let n = heap_alloc_small(size, false);
     if n == 0 {
         return 0;
     }
@@ -384,6 +483,6 @@ pub fn heap_realloc(p: u32, size: u32, zero: bool) -> u32 {
     if zero && size > old {
         fill(n + old, size - old, 0);
     }
-    heap_free(p);
+    heap_free_small(p);
     n
 }

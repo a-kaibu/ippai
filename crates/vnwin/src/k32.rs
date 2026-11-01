@@ -1063,7 +1063,7 @@ fn HeapDestroy(_: &mut Ctx) -> u32 {
     1
 }
 fn HeapAlloc(c: &mut Ctx) -> u32 {
-    let p = mem::heap_alloc(c.a(2), c.a(1) & 8 != 0);
+    let p = mem::heap_alloc_small(c.a(2), c.a(1) & 8 != 0);
     if p == 0 && c.a(1) & 4 != 0 {
         let ret = r32(c.esp);
         c.cpu.eip = ret;
@@ -1074,7 +1074,7 @@ fn HeapAlloc(c: &mut Ctx) -> u32 {
 }
 fn HeapFree(c: &mut Ctx) -> u32 {
     let p = c.a(2);
-    ok(p == 0 || mem::heap_free(p))
+    ok(p == 0 || mem::heap_free_small(p))
 }
 fn HeapReAlloc(c: &mut Ctx) -> u32 {
     let (flags, p, size) = (c.a(1), c.a(2), c.a(3));

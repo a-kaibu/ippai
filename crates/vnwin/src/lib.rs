@@ -13,6 +13,7 @@ use vnx86::{Cpu, EAX, ESP};
 pub mod api;
 pub mod d3d9;
 pub mod crt;
+pub mod ddraw;
 pub mod ini;
 pub mod dinput;
 pub mod fast;
@@ -261,6 +262,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     misc::init();
     crt::init();
     ini::init();
+    ddraw::init();
     dinput::init();
     sound::init();
     d3d9::register();

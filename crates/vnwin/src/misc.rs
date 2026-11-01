@@ -977,6 +977,14 @@ fn CoCreateInstance(c: &mut Ctx) -> u32 {
         put32(c.a(4), dxdiag_provider());
         return 0;
     }
+    if let Some(obj) = crate::ddraw::create_instance(clsid, iid) {
+        put32(c.a(4), obj);
+        return 0;
+    }
+    if let Some(obj) = crate::dinput::create_instance(clsid) {
+        put32(c.a(4), obj);
+        return 0;
+    }
     if let Some(obj) = crate::sound::create_instance(c, clsid, iid) {
         put32(c.a(4), obj);
         return 0;
@@ -1039,6 +1047,9 @@ fn malloc_obj() -> u32 {
         w32(o, v);
         o
     })
+}
+fn IsUserAnAdmin(_: &mut Ctx) -> u32 {
+    1
 }
 fn SHGetMalloc(c: &mut Ctx) -> u32 {
     put32(c.a(0), malloc_obj());
@@ -1944,7 +1955,7 @@ pub fn init() {
         SysReAllocStringLen, SysFreeString, SysStringLen, SysStringByteLen, VariantInit, VariantClear, VariantCopy,
         VariantCopyInd, VariantChangeTypeEx, VariantChangeType, GetErrorInfo, SetErrorInfo);
     reg!("shell32"; SHGetSpecialFolderPathA, SHGetSpecialFolderPathW, SHGetFolderPathA, SHGetFolderPathW,
-        SHGetSpecialFolderLocation, SHGetFolderLocation, SHGetPathFromIDListA, SHGetPathFromIDListW, ILFree, SHGetMalloc,
+        SHGetSpecialFolderLocation, SHGetFolderLocation, SHGetPathFromIDListA, SHGetPathFromIDListW, ILFree, SHGetMalloc, IsUserAnAdmin,
         ShellExecuteA, ShellExecuteW, ShellExecuteExA, ShellExecuteExW, DragAcceptFiles, DragFinish,
         DragQueryFileA, DragQueryFileW, CommandLineToArgvW);
     reg!("comctl32"; InitCommonControls, InitCommonControlsEx, ImageList_Create, ImageList_Read, ImageList_Destroy, ImageList_Add,

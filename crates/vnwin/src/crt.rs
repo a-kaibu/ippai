@@ -300,7 +300,7 @@ fn set_errno(v: u32) {
 // heap
 
 fn malloc(c: &mut Ctx) -> u32 {
-    mem::heap_alloc(c.a(0).max(1), false)
+    mem::heap_alloc_small(c.a(0).max(1), false)
 }
 fn calloc(c: &mut Ctx) -> u32 {
     mem::heap_alloc(c.a(0).saturating_mul(c.a(1)).max(1), true)
@@ -318,7 +318,7 @@ fn realloc(c: &mut Ctx) -> u32 {
 }
 fn free(c: &mut Ctx) -> u32 {
     if c.a(0) != 0 {
-        mem::heap_free(c.a(0));
+        mem::heap_free_small(c.a(0));
     }
     0
 }

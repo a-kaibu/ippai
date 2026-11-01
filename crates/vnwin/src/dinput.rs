@@ -37,9 +37,30 @@ fn no_interface(c: &mut Ctx) -> u32 {
     0x8000_4002
 }
 
-fn di_vtbl() -> u32 {
-    static V: OnceLock<u32> = OnceLock::new();
-    *V.get_or_init(|| {
+/// IDirectInput8, or (`v7`) IDirectInput7, whose slot 9 is CreateDeviceEx.
+fn di_vtbl(v7: bool) -> u32 {
+    static V8: OnceLock<u32> = OnceLock::new();
+    static V7: OnceLock<u32> = OnceLock::new();
+    if v7 {
+        return *V7.get_or_init(|| {
+            vtable(
+                "IDirectInput7",
+                &[
+                    (no_interface, 12),
+                    (add_ref, 4),
+                    (release, 4),
+                    (CreateDevice, 16),
+                    (EnumDevices, 20),
+                    (GetDeviceStatus, 8),
+                    (ok, 8),
+                    (ok, 12),
+                    (FindDevice, 16),
+                    (CreateDeviceEx, 20),
+                ],
+            )
+        });
+    }
+    *V8.get_or_init(|| {
         vtable(
             "IDirectInput8",
             &[
@@ -105,25 +126,46 @@ fn unsupported(_: &mut Ctx) -> u32 {
     0x8000_4001
 }
 
-fn create_di(out: u32) -> u32 {
+fn create_di(out: u32, v7: bool) -> u32 {
     let o = mem::heap_alloc(8, true);
-    w32(o, di_vtbl());
+    w32(o, di_vtbl(v7));
     put32(out, o);
     0
 }
 
 fn DirectInput8Create(c: &mut Ctx) -> u32 {
-    create_di(c.a(3))
+    create_di(c.a(3), false)
 }
 fn DirectInputCreateA(c: &mut Ctx) -> u32 {
-    create_di(c.a(2))
+    create_di(c.a(2), true)
 }
 fn DirectInputCreateEx(c: &mut Ctx) -> u32 {
-    create_di(c.a(3))
+    create_di(c.a(3), true)
+}
+
+/// CoCreateInstance of CLSID_DirectInput / CLSID_DirectInput8 (then Initialize).
+pub fn create_instance(clsid: u32) -> Option<u32> {
+    let v7 = match mem::r32(clsid) {
+        0x25e6_09e0 => true,
+        0x25e6_09e4 => false,
+        _ => return None,
+    };
+    let out = mem::heap_alloc(4, true);
+    create_di(out, v7);
+    let o = mem::r32(out);
+    mem::heap_free(out);
+    Some(o)
+}
+
+fn CreateDeviceEx(c: &mut Ctx) -> u32 {
+    let (guid, out) = (c.a(1), c.a(3));
+    create_device(guid, out)
 }
 
 fn CreateDevice(c: &mut Ctx) -> u32 {
-    let (guid, out) = (c.a(1), c.a(2));
+    create_device(c.a(1), c.a(2))
+}
+fn create_device(guid: u32, out: u32) -> u32 {
     let kind = r32(guid);
     if kind != KEYBOARD && kind != MOUSE {
         put32(out, 0);

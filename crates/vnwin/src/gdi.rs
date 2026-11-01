@@ -257,6 +257,21 @@ fn new_bitmap_raw(w: i32, h: i32, bpp: u16, init: u32) -> Bitmap {
     Bitmap { w, h, bpp, bits, stride, bottom_up: false, pal, r565: false, dib: false, own: 1 }
 }
 
+/// A top-down bitmap over pixels someone else owns (ddraw surfaces).
+pub fn bitmap_over(w: i32, h: i32, bpp: u16, bits: u32, stride: u32, r565: bool) -> u32 {
+    let pal = if bpp <= 8 { halftone_palette() } else { Vec::new() };
+    add(G::Bitmap(Bitmap { w, h, bpp, bits, stride, bottom_up: false, pal, r565, dib: true, own: 0 }))
+}
+
+/// Replaces a bitmap's color table (0xRRGGBB entries).
+pub fn set_bitmap_palette(h: u32, pal: &[u32]) {
+    with(|t| {
+        if let Some(G::Bitmap(b)) = t.m.get_mut(&h) {
+            b.pal = pal.to_vec();
+        }
+    });
+}
+
 /// A new zeroed DDB (for user32: icon and cursor masks).
 pub fn new_bitmap(w: i32, h: i32, bpp: u16) -> u32 {
     add(G::Bitmap(new_bitmap_raw(w, h, bpp, 0)))
