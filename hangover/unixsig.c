@@ -16,7 +16,11 @@ static void syscall_signal( int sig )
 {
     if (sig == SIGUSR1)
     {
+#ifdef CONTEXT_EXTENDED_REGISTERS
         CONTEXT context = { CONTEXT_FULL | CONTEXT_FLOATING_POINT | CONTEXT_EXTENDED_REGISTERS };
+#else  /* x86-64 */
+        CONTEXT context = { CONTEXT_FULL | CONTEXT_FLOATING_POINT };
+#endif
 
         NtGetContextThread( NtCurrentThread(), &context );
         wait_suspend( &context );

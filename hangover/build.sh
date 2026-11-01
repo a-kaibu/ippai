@@ -7,10 +7,20 @@ set -e
 EMSDK4=${EMSDK4:-/home/user/emsdk4}
 WINE_SRC=${WINE_SRC:-/home/user/work/wine-src}
 WINE_TOOLS=${WINE_TOOLS:-/home/user/img/buildroot/tmp/vnbox-build/wine-build-src/build}
-BUILD=${BUILD:-/home/user/work/wine-wb4}
-OUT=${OUT:-/home/user/work/hangover-out}
+# VNVM_ARCH=x86_64: the build for 64-bit (PE32+) programs. Wine's unix side, wineserver and
+# vnhost are compiled with 64-bit pointers (-sMEMORY64=2, LP64 like Wine's x86_64 unix side) and
+# lowered to the same 32-bit wasm memory: all guest memory stays below 4GB (docs/hangover.md).
+VNVM_ARCH=${VNVM_ARCH:-i386}
+if [ "$VNVM_ARCH" = x86_64 ]; then
+  SFX=64 M64="-sMEMORY64=2" DARCH=-D__x86_64__ HOST=x86_64-pc-linux-gnu
+  CONF_EXTRA="--enable-win64 ac_cv_mabi_ms=yes"
+else
+  SFX= M64= DARCH=-D__i386__ HOST=i386-pc-linux-gnu CONF_EXTRA=
+fi
+BUILD=${BUILD:-/home/user/work/wine-wb4$SFX}
+OUT=${OUT:-/home/user/work/hangover-out$SFX}
 # FreeType built with emscripten (static, -fPIC; see the README)
-FREETYPE=${FREETYPE:-/home/user/work/freetype-wasm}
+FREETYPE=${FREETYPE:-/home/user/work/freetype-wasm$SFX}
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(dirname "$HERE")
 . "$EMSDK4/emsdk_env.sh" >/dev/null 2>&1
@@ -22,14 +32,14 @@ STUBS="$WINE_SRC/dlls/winebrowser.drv/glstubs.h"
 [ "$STUBS" -nt "$WINE_SRC/include/wine/wgl.h" ] || python3 "$HERE/gen-gl-stubs.py" "$WINE_SRC" > /dev/null
 cd "$BUILD"
 if [ ! -f Makefile ] || [ "$WINE_SRC/configure" -nt Makefile ] || [ "$HERE/build.sh" -nt Makefile ]; then
-  emconfigure "$WINE_SRC/configure" --host=i386-pc-linux-gnu --build=x86_64-pc-linux-gnu \
+  emconfigure "$WINE_SRC/configure" --host=$HOST --build=x86_64-pc-linux-gnu $CONF_EXTRA \
     --with-wine-tools="$WINE_TOOLS" --prefix=/opt/wine-vnbox --disable-tests --without-mingw \
     --without-x --without-wayland --without-vulkan --without-opengl \
     --without-pulse --without-alsa --without-oss --without-gstreamer --without-ffmpeg \
     --without-cups --without-dbus --without-gnutls --without-krb5 --without-netapi --without-sdl \
     --without-udev --without-usb --without-v4l2 --without-capi --without-pcap --without-pcsclite \
     --without-sane --without-gphoto --without-inotify --without-fontconfig --without-xinput2 \
-    CFLAGS="-O2 -D__i386__ -pthread -fPIC -sSUPPORT_LONGJMP=wasm" \
+    CFLAGS="-O2 $DARCH $M64 -pthread -fPIC -sSUPPORT_LONGJMP=wasm" LDFLAGS="$M64" \
     FREETYPE_CFLAGS="-I$FREETYPE/include/freetype2" FREETYPE_LIBS="-L$FREETYPE/lib -lfreetype" \
     ac_cv_lib_soname_freetype=libfreetype.so.6 \
     CPPFLAGS="-I$HERE/include" ac_cv_func_epoll_create=yes > configure.log 2>&1
@@ -42,9 +52,23 @@ cd "$ROOT"
 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-globals -C relocation-model=pic -C panic=abort" \
   cargo build --release -p vnhost --target wasm32-unknown-emscripten -Zbuild-std=std,panic_abort
 VNHOST=$ROOT/target/wasm32-unknown-emscripten/release/libvnhost.a
+if [ "$VNVM_ARCH" = x86_64 ]; then
+  # Rust has no wasm64 emscripten target: hangover/wasm64-unknown-emscripten.json is
+  # wasm32-unknown-emscripten with 64-bit pointers; std needs one cfg (a copy of its sources)
+  RSRC=${RSRC:-/home/user/work/rust-src64}
+  if [ ! -d "$RSRC/library" ]; then
+    mkdir -p "$RSRC" && cp -a "$(rustc --print sysroot)/lib/rustlib/src/rust/library" "$RSRC/"
+    sed -i 's/#\[cfg(all(target_arch = "wasm32", target_os = "emscripten"))\]/#[cfg(all(any(target_arch = "wasm32", target_arch = "wasm64"), target_os = "emscripten"))]/' \
+      "$RSRC/library/unwind/src/libunwind.rs"
+  fi
+  __CARGO_TESTS_ONLY_SRC_ROOT=$RSRC/library RUSTC_BOOTSTRAP=1 \
+    RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-globals -C relocation-model=pic -C panic=abort" \
+    cargo build --release -p vnhost --target "$HERE/wasm64-unknown-emscripten.json" -Zbuild-std=std,panic_abort -Zjson-target-spec
+  VNHOST=$ROOT/target/wasm64-unknown-emscripten/release/libvnhost.a
+fi
 # vkd3d-shader for Direct3D 11 shaders (crates/vnhost/src/d3d11/shader.rs)
-VKD3D_OUT=${VKD3D_OUT:-/home/user/work/vkd3d-wasm}
-VKD3D_OUT=$VKD3D_OUT WINE_SRC=$WINE_SRC BUILD=$BUILD WINE_BUILD=$WINE_TOOLS bash "$HERE/build-vkd3d.sh" > /dev/null
+VKD3D_OUT=${VKD3D_OUT:-/home/user/work/vkd3d-wasm$SFX}
+ARCH="$DARCH $M64" VKD3D_OUT=$VKD3D_OUT WINE_SRC=$WINE_SRC BUILD=$BUILD WINE_BUILD=$WINE_TOOLS bash "$HERE/build-vkd3d.sh" > /dev/null
 
 WRAP="socket socketpair pipe pipe2 bind listen accept accept4 connect shutdown setsockopt getsockopt
   getsockname getpeername sendmsg recvmsg send recv sendto recvfrom read write readv writev close dup dup2
@@ -108,13 +132,13 @@ printf 'static const struct sym freetype_syms[] = { %s{ 0 } };\n' "$(for s in $F
 REG_CALLS="$REG_CALLS    vnhost_register_unixlib( \"libfreetype.so.6\", freetype_syms );\n"
 printf 'static void __attribute__((constructor)) register_unixlibs( void )\n{\n%b}\n' "$REG_CALLS" >> "$REG"
 cd "$ROOT"
-emcc -O2 -pthread -fPIC -c "$REG" -o "$OUT/unixlibs.o"
-emcc -O2 -pthread -fPIC -sSUPPORT_LONGJMP=wasm -D__i386__ -DWINE_UNIX_LIB -I"$BUILD/include" -I"$WINE_SRC/include" \
+emcc -O2 $M64 -pthread -fPIC -c "$REG" -o "$OUT/unixlibs.o"
+emcc -O2 $M64 -pthread -fPIC -sSUPPORT_LONGJMP=wasm $DARCH -DWINE_UNIX_LIB -I"$BUILD/include" -I"$WINE_SRC/include" \
   -c "$HERE/unixsig.c" -o "$OUT/unixsig.o"
 
 # Wine's unix side: one instance per Wine process (see crates/vnhost/src/proc.rs)
 # (wasm-ld's --wrap crashes on side modules, so its imports are renamed afterwards)
-emcc -O2 -pthread -sSUPPORT_LONGJMP=wasm -sSIDE_MODULE=1 $SIDE_EXTRA -Wl,-Bsymbolic -Wl,--export=__wine_main -o "$OUT/wineunix.so" "$BUILD"/dlls/ntdll/unix/*.o \
+emcc -O2 $M64 -pthread -sSUPPORT_LONGJMP=wasm -sSIDE_MODULE=1 $SIDE_EXTRA -Wl,-Bsymbolic -Wl,--export=__wine_main -o "$OUT/wineunix.so" "$BUILD"/dlls/ntdll/unix/*.o \
   $LIB_OBJS "$OUT/unixlibs.o" "$OUT/unixsig.o" "$FREETYPE/lib/libfreetype.a" \
   2> "$OUT/side.log" || { cat "$OUT/side.log"; exit 1; }
 python3 "$HERE/wrap-imports.py" "$OUT/wineunix.so" $WRAP
@@ -133,12 +157,12 @@ EXPORTS=$( (echo "$KEEP" | tr ' ' '\n' | sed -n 's/^-Wl,-u,/_/p'
   node -e 'for (const i of WebAssembly.Module.imports(new WebAssembly.Module(require("fs").readFileSync(process.argv[1]))))
     if ((i.module == "env" && i.kind == "function") || i.module == "GOT.mem") console.log("_" + i.name)' "$OUT/wineunix.so"
   ) | sort -u | paste -sd, -)
-emcc -O2 -pthread -fPIC -c "$HERE/main.c" -o "$OUT/main.o"
-emcc -O2 -pthread -fPIC -c "$ROOT/crates/vnhost/c/shim.c" -o "$OUT/shim.o"
+emcc -O2 $M64 -pthread -fPIC -c "$HERE/main.c" -o "$OUT/main.o"
+emcc -O2 $M64 -pthread -fPIC -c "$ROOT/crates/vnhost/c/shim.c" -o "$OUT/shim.o"
 link_main() {  # <output .js> <emcc flags...>
   local out=$1
   shift
-  emcc -O2 -pthread -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -sMAIN_MODULE=2 -Wno-undefined -o "$out" "$OUT/main.o" "$OUT/shim.o" \
+  emcc -O2 $M64 -pthread -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -sMAIN_MODULE=2 -Wno-undefined -o "$out" "$OUT/main.o" "$OUT/shim.o" \
     $(cd "$BUILD" && ls server/*.o | sed "s|^|$BUILD/|") "$VNHOST" "$VKD3D_OUT/libvkd3d-shader.a" $KEEP \
     $WRAPFLAGS --pre-js "$HERE/pre.js" --js-library "$HERE/vnfs.js" --js-library "$HERE/vnjit.js" --js-library "$HERE/vndl.js" --js-library "$HERE/vnwasm.js" \
     -sPROXY_TO_PTHREAD -sEXIT_RUNTIME \
@@ -150,7 +174,7 @@ link_main() {  # <output .js> <emcc flags...>
 # node: the host's files through NODERAWFS
 link_main "$OUT/wine.js" -sNODERAWFS=1 -sENVIRONMENT=node -sEXPORTED_FUNCTIONS=_main,$EXPORTS
 # the page (web/wine.html): an ES module factory; files come from the store (vfs) and MEMFS
-WEB_OUT=${WEB_OUT:-$ROOT/web/public/wine}
+WEB_OUT=${WEB_OUT:-$ROOT/web/public/wine$SFX}
 mkdir -p "$WEB_OUT"
 link_main "$WEB_OUT/wine.js" -sENVIRONMENT=web,worker -sMODULARIZE -sEXPORT_ES6 -sEXPORT_NAME=createWine \
   -sFORCE_FILESYSTEM -sEXPORTED_RUNTIME_METHODS=FS,ENV,HEAPU8,HEAPU32,HEAPF32,HEAPF64,wasmMemory \

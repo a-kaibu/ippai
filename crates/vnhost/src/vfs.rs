@@ -87,13 +87,13 @@ fn parse_records(mut b: &[u8]) -> Vec<(String, Vec<u8>, i64)> {
 /// A whole file from emscripten's file system (not through our wrappers).
 fn read_real(path: &str) -> Option<Vec<u8>> {
     extern "C" {
-        fn __real_openat(dirfd: c_int, path: *const c_char, flags: c_int, mode: libc::mode_t) -> c_int;
+        fn __real_openat(dirfd: c_int, path: *const c_char, flags: c_int, ...) -> c_int;
         fn __real_read(fd: c_int, buf: *mut c_void, len: size_t) -> ssize_t;
         fn __real_close(fd: c_int) -> c_int;
     }
     let c = CString::new(path).ok()?;
     unsafe {
-        let fd = __real_openat(libc::AT_FDCWD, c.as_ptr(), libc::O_RDONLY, 0);
+        let fd = __real_openat(libc::AT_FDCWD, c.as_ptr(), libc::O_RDONLY, 0 as c_int);
         if fd < 0 {
             return None;
         }

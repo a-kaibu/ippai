@@ -9,6 +9,8 @@
 //! * `display` – the screen behind Wine's browser display driver
 //! * `wrap` – the libc entry points (`-Wl,--wrap=...`) that route to the above
 
+#![cfg_attr(target_arch = "wasm64", feature(simd_wasm64))]
+
 pub mod audio;
 pub mod d3d9;
 pub mod d3d11;

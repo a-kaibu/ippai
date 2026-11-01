@@ -23,7 +23,7 @@ else
   . "${EMSDK4:-/home/user/emsdk4}/emsdk_env.sh" >/dev/null 2>&1
   CC="emcc -O2 -pthread -fPIC"
   AR=emar
-  ARCH=-D__i386__
+  ARCH=${ARCH:--D__i386__}
 fi
 mkdir -p "$OUT/cfg"
 grep -v STRTOF "$V/config.h" > "$OUT/cfg/config.h"  # (no _strtof_l outside Windows)
@@ -38,7 +38,7 @@ for f in $V/libs/vkd3d-common/{blob,debug,error,memory,utf8}.c \
   o=$(basename "$f" .c).o
   [ "$o" -nt "$f" ] || $CC $FLAGS -c "$f" -o "$o"
 done
-$CC -I"$V/include" -c "$HERE/vkd3d/vnshader.c" -o vnshader.o
+$CC $ARCH -I"$V/include" -c "$HERE/vkd3d/vnshader.c" -o vnshader.o
 rm -f libvkd3d-shader.a
 $AR rcs libvkd3d-shader.a *.o
 echo "built $OUT/libvkd3d-shader.a"

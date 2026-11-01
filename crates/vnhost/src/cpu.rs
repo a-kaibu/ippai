@@ -27,9 +27,13 @@ pub(crate) struct Linear;
 
 #[inline(always)]
 fn mem_end() -> u64 {
-    #[cfg(target_family = "wasm")]
+    #[cfg(target_arch = "wasm32")]
     {
         core::arch::wasm32::memory_size(0) as u64 * 65536
+    }
+    #[cfg(target_arch = "wasm64")]
+    {
+        core::arch::wasm64::memory_size(0) as u64 * 65536
     }
     #[cfg(not(target_family = "wasm"))]
     {
@@ -272,6 +276,38 @@ pub unsafe extern "C" fn vnhost_cpu_set(cpu: *mut Cpu, regs: *const u32) {
     c.regs.copy_from_slice(&r[..8]);
     c.eip = r[8];
     c.eflags = r[9] | 0x2;
+    c.lazy.op = 0;
+}
+
+/// x86-64 guests (signal_wasm64.c): long mode, GS = the TEB.
+#[no_mangle]
+pub unsafe extern "C" fn vnhost_cpu_set_long_mode(cpu: *mut Cpu, gs_base: u32) {
+    (*cpu).mode64 = 1;
+    (*cpu).gs_base = gs_base;
+}
+
+/// regs: rax rcx rdx rbx rsp rbp rsi rdi r8-r15 rip rflags
+#[no_mangle]
+pub unsafe extern "C" fn vnhost_cpu_get64(cpu: *const Cpu, regs: *mut u64) {
+    let c = &*cpu;
+    let r = std::slice::from_raw_parts_mut(regs, 18);
+    for (i, v) in r[..16].iter_mut().enumerate() {
+        *v = c.gpr(i);
+    }
+    r[16] = c.eip as u64;
+    r[17] = c.flags() as u64;
+}
+
+/// RIP must be below 4GB (all guest code is).
+#[no_mangle]
+pub unsafe extern "C" fn vnhost_cpu_set64(cpu: *mut Cpu, regs: *const u64) {
+    let c = &mut *cpu;
+    let r = std::slice::from_raw_parts(regs, 18);
+    for (i, v) in r[..16].iter().enumerate() {
+        c.set_gpr(i, *v);
+    }
+    c.eip = r[16] as u32;
+    c.eflags = r[17] as u32 | 0x2;
     c.lazy.op = 0;
 }
 

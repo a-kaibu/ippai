@@ -19,6 +19,13 @@ process creation, exits and thread starts.
 Wine source: vnbox's Wine 11.20 tree with `patches/wine-wasm.patch` applied. The PE side is
 vnbox's `lib/wine/i386-windows` as is.
 
+64-bit (PE32+) games: `patches/wine-wasm64.patch` on top (signal_wasm64.c, 8-byte syscall args), then
+`VNVM_ARCH=x86_64 BUILD=~/wine-wb464 hangover/build.sh`. It links with emscripten `-sMEMORY64=2` (C/Rust
+pointers 64-bit as in Wine's x86_64 unix side, memory still wasm32 so all guest memory stays < 4GB). Needs
+FreeType and vkd3d built the same way (`FREETYPE`, `VKD3D` dirs) and Rust std with the wasm64 target
+(`hangover/wasm64-unknown-emscripten.json`, nightly `-Zbuild-std`, std copy with libunwind.rs cfg + wasm64).
+Output in web/public/wine64.
+
 ```
 EMSDK4=~/emsdk4 WINE_SRC=~/wine-src WINE_TOOLS=<native wine build tree> hangover/build.sh
 # the Wine root (hangover/make-wineroot.sh) must hold lib/wine/i386-windows, lib/wine/i386-unix/ntdll.so (empty file) and share/wine

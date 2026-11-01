@@ -365,3 +365,20 @@ int __wrap_sched_yield( void )
     last = now;
     return 0;
 }
+
+#if defined(__wasm64__)
+/* InterlockedCompareExchange128 for the 64-bit unix side (include/winnt.h): wasm has no 16-byte
+ * atomics, so all of them go through one lock */
+#include <pthread.h>
+static pthread_mutex_t cmpxchg128_lock = PTHREAD_MUTEX_INITIALIZER;
+unsigned char vnwasm_cmpxchg128( volatile long long *dest, long long xchg_high, long long xchg_low, long long *compare )
+{
+    unsigned char ret;
+    pthread_mutex_lock( &cmpxchg128_lock );
+    ret = dest[0] == compare[0] && dest[1] == compare[1];
+    if (ret) { dest[0] = xchg_low; dest[1] = xchg_high; }
+    else { compare[0] = dest[0]; compare[1] = dest[1]; }
+    pthread_mutex_unlock( &cmpxchg128_lock );
+    return ret;
+}
+#endif

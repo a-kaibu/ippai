@@ -604,7 +604,7 @@ pub extern "C" fn flistxattr(_fd: c_int, _list: *mut c_char, _size: size_t) -> s
 // files (see vfs): calls by path, and by fd for what the fd section above doesn't cover
 
 extern "C" {
-    fn __real_openat(dirfd: c_int, path: *const c_char, flags: c_int, mode: libc::mode_t) -> c_int;
+    fn __real_openat(dirfd: c_int, path: *const c_char, flags: c_int, ...) -> c_int;
     fn __real_stat(path: *const c_char, st: *mut libc::stat) -> c_int;
     fn __real_lstat(path: *const c_char, st: *mut libc::stat) -> c_int;
     fn __real_fstatat(dirfd: c_int, path: *const c_char, st: *mut libc::stat, flags: c_int) -> c_int;
@@ -694,9 +694,9 @@ pub unsafe extern "C" fn vnhost_openat(dirfd: c_int, path: *const c_char, flags:
         return fd::ntsync_open(flags);
     }
     match vfs::open(dirfd, path, flags, mode) {
-        vfs::Route::Done(-2) => __real_openat(dirfd, path, flags, mode),
+        vfs::Route::Done(-2) => __real_openat(dirfd, path, flags, mode as c_int),
         vfs::Route::Done(v) => v,
-        vfs::Route::Real(c) => __real_openat(libc::AT_FDCWD, c.as_ptr(), flags, mode),
+        vfs::Route::Real(c) => __real_openat(libc::AT_FDCWD, c.as_ptr(), flags, mode as c_int),
     }
 }
 
