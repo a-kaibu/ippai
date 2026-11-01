@@ -1436,6 +1436,25 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// The lazy flags into the Cpu if they are live after this instruction (L_OP -1 after).
+    fn flags_to_cpu(&mut self) {
+        if !self.flags_live(STATUS_BITS) {
+            return;
+        }
+        match self.flags {
+            Flags::Known(op) => {
+                self.c.u32c(op).set(L_OP);
+                lazy_store(&mut self.c);
+            }
+            Flags::Entry => {
+                lazy_to_cpu(&mut self.c);
+                self.c.end();
+            }
+        }
+        self.c.i32c(-1).set(L_OP);
+        self.flags = Flags::Entry;
+    }
+
     /// Writes registers, EIP and the lazy flags back to the Cpu.
     fn spill(&mut self, eip: u32) {
         self.store_regs();
@@ -2589,7 +2608,8 @@ impl<'a> Gen<'a> {
                     self.c.end();
                 }
                 if self.fnm {
-                    // the state into the Cpu (status flags dead), back to the wasm caller
+                    // the state into the Cpu, back to the wasm caller
+                    self.flags_to_cpu();
                     self.mmx_flush();
                     self.xmm_flush();
                     self.x87_flush_out();
@@ -2951,6 +2971,7 @@ impl<'a> Gen<'a> {
             let site = self.ins.ip32();
             ring_sample(&mut self.c, h, v, t, site);
         }
+        self.flags_to_cpu();
         self.store_regs();
         self.c.block(); // slow 0
         self.c.block(); // found 0, slow 1
@@ -3847,15 +3868,19 @@ fn block_liveness(g: &Gen, blocks: &[(u32, Vec<Instruction>)]) -> (Vec<u32>, Vec
     let succ: Vec<Option<Vec<usize>>> = (0..n)
         .map(|k| {
             let last = blocks[k].1.last().unwrap();
-            if g.fnm && matches!(last.flow_control(), FlowControl::Call | FlowControl::IndirectCall | FlowControl::Return) {
-                return Some(Vec::new());
+            let ctx = g.ctxs[k];
+            let find = |a: u32| g.targets.get(&(ctx, a)).or_else(|| g.targets.get(&(0, a))).map(|&b| b as usize);
+            // a function's call (not inlined) goes on at the return address with the flags
+            // the callee left, or those from before when it kept them (some hand-written code
+            // returns a result in ZF): the callee stores them at its RET, which can return to
+            // any caller (everything live there)
+            if g.fnm && matches!(last.flow_control(), FlowControl::Call | FlowControl::IndirectCall) && !g.inlined.contains_key(&k) {
+                return find(last.next_ip32()).map(|b| alloc::vec![b]);
             }
             let direct = last.op0_kind() == OpKind::NearBranch32 || last.flow_control() == FlowControl::Next;
             if !direct {
                 return None;
             }
-            let ctx = g.ctxs[k];
-            let find = |a: u32| g.targets.get(&(ctx, a)).or_else(|| g.targets.get(&(0, a))).map(|&b| b as usize);
             match last.flow_control() {
                 FlowControl::Call => match g.inlined.get(&k) {
                     Some(&(entry, _)) => Some(alloc::vec![entry]),

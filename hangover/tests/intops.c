@@ -331,6 +331,35 @@ static unsigned bitops(void)
     return sum;
 }
 
+/* flags across CALL/RET, as hand-written code (Delphi's RTL) uses them: a callee that returns its
+ * result in ZF (small, then big enough not to be inlined), and one that keeps the caller's CF */
+__attribute__((naked)) static void zf_small(void)
+{
+    __asm__("cmpl $7, %eax\n\tret");
+}
+#define NOP8 "nop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\tnop\n\t"
+__attribute__((naked)) static void zf_big(void)
+{
+    __asm__(NOP8 NOP8 NOP8 NOP8 NOP8 NOP8 NOP8 NOP8 NOP8 NOP8 "testl $3, %eax\n\tret");
+}
+__attribute__((naked)) static void keep(void)
+{
+    __asm__("movl %eax, %edx\n\tret");
+}
+static unsigned flagret(void)
+{
+    unsigned n = 0;
+    for (int i = 0; i < 200000; i++) {
+        unsigned a = rnd() & 15, z1, z2, c;
+        __asm__ volatile("call *%3\n\tsetz %b0" : "=q"(z1), "+a"(a) : "0"(0), "r"(zf_small) : "cc", "edx", "memory");
+        __asm__ volatile("call *%3\n\tsetz %b0" : "=q"(z2), "+a"(a) : "0"(0), "r"(zf_big) : "cc", "edx", "memory");
+        __asm__ volatile("cmpl $8, %%eax\n\tcall *%3\n\tsetc %b0" : "=q"(c), "+a"(a) : "0"(0), "r"(keep) : "cc", "edx", "memory");
+        n = n * 7 + (z1 & 1) * 4 + (z2 & 1) * 2 + (c & 1);
+        mix(n);
+    }
+    return sum;
+}
+
 int main(void)
 {
     printf("shifts %08x\n", shifts());
@@ -343,5 +372,6 @@ int main(void)
     printf("locked %08x\n", locked());
     printf("rotate %08x\n", rotates());
     printf("bitops %08x\n", bitops());
+    printf("flgret %08x\n", flagret());
     return 0;
 }

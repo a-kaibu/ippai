@@ -45,6 +45,20 @@ fn debug_allowed(a: u32) -> bool {
     });
     a >= lo && a < hi
 }
+/// VNVM_JIT_FN_ONLY=lo-hi (hex): function mode only for entries in [lo, hi), regions elsewhere.
+fn fn_allowed(a: u32) -> bool {
+    use std::sync::OnceLock;
+    static R: OnceLock<(u32, u32)> = OnceLock::new();
+    let (lo, hi) = *R.get_or_init(|| {
+        let v = std::env::var("VNVM_JIT_FN_ONLY").unwrap_or_default();
+        let mut it = v.split('-').map(|x| u32::from_str_radix(x.trim_start_matches("0x"), 16).ok());
+        match (it.next().flatten(), it.next().flatten()) {
+            (Some(lo), Some(hi)) => (lo, hi),
+            _ => (0, u32::MAX),
+        }
+    });
+    a >= lo && a < hi
+}
 /// Blocks the dispatcher runs before returning to the run loop.
 const BUDGET: i32 = 1 << 14;
 /// Most blocks compiled into one module.
@@ -688,7 +702,7 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         if cpu.mode64 != 0 {
             return compile_long(st, cpu, mem);
         }
-        if jit::FN.load(std::sync::atomic::Ordering::Relaxed) && (called(cpu, mem) || std::env::var_os("VNVM_JIT_FN_CALLED").is_none()) {
+        if jit::FN.load(std::sync::atomic::Ordering::Relaxed) && fn_allowed(eip) && (called(cpu, mem) || std::env::var_os("VNVM_JIT_FN_CALLED").is_none()) {
             return compile_fn(st, eip, (cpu.trap_lo, cpu.trap_hi), mem);
         }
         // the block and what it statically reaches, as one function
@@ -781,6 +795,9 @@ fn called(cpu: &Cpu, mem: &mut Linear) -> bool {
 static FN_INS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
 
 fn compile_fn(st: &mut State, eip: u32, (lo, hi): (u32, u32), mem: &mut Linear) -> bool {
+    if !fn_allowed(eip) {
+        return false;
+    }
     *st.fn_builds.entry(eip).or_insert(0) += 1;
     if std::env::var_os("VNVM_JIT_LAYOUT").is_some() {
         jit::LAYOUT.store(true, std::sync::atomic::Ordering::Relaxed);
