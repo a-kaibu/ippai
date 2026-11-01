@@ -28,6 +28,7 @@ pub const PRESENT: u32 = 9; // tex l t r b (screen rect of the window's client a
 pub const COPY: u32 = 10; // src_tex src_level sx sy sw sh dst_tex dst_level dx dy dw dh filter
 pub const READBACK: u32 = 11; // request tex level x y w h dst_ptr pitch
 pub const FILL: u32 = 12; // tex level x y w h color(bgra u32)
+pub const WRITE_TEXTURE_MEM: u32 = 13; // id level x y w h pitch ptr: rows straight from guest memory
 
 /// Texture formats on the page.
 pub const FMT_BGRA8: u32 = 0;
@@ -43,6 +44,7 @@ pub struct Batch {
     /// the rest (texture pixels, shader text)
     pub blob: Vec<u8>,
     presents: u32,
+    gen: u64,
 }
 
 impl Batch {
@@ -84,6 +86,8 @@ struct Queue {
     last_poll: Option<f64>,
     readbacks_done: Vec<u32>,
     gen: u64,
+    /// batches up to this one are done (the page ran them, or nobody will)
+    done: u64,
 }
 
 static QUEUE: Mutex<Option<Queue>> = Mutex::new(None);
@@ -100,12 +104,18 @@ fn with<R>(f: impl FnOnce(&mut Queue) -> R) -> R {
         last_poll: None,
         readbacks_done: Vec::new(),
         gen: 0,
+        done: 0,
     }))
 }
 
 /// Records into the open batch.
 pub fn record<R>(f: impl FnOnce(&mut Batch) -> R) -> R {
     with(|q| f(&mut q.open))
+}
+
+/// Records into the open batch; also returns its generation (see `wait_done`).
+pub fn record_gen<R>(f: impl FnOnce(&mut Batch) -> R) -> (R, u64) {
+    with(|q| (f(&mut q.open), q.gen))
 }
 
 fn page_attached(q: &Queue) -> bool {
@@ -121,7 +131,8 @@ pub fn batch_gen() -> u64 {
 pub fn flush() {
     with(|q| {
         if !q.open.cmds.is_empty() {
-            let b = std::mem::take(&mut q.open);
+            let mut b = std::mem::take(&mut q.open);
+            b.gen = q.gen;
             q.closed.push_back(b);
             q.gen += 1;
         }
@@ -136,14 +147,16 @@ pub fn present() {
         let q = g.as_mut().unwrap();
         q.open.presents += 1;
         q.presented += 1;
+        let mut b = std::mem::take(&mut q.open);
+        b.gen = q.gen;
         q.gen += 1;
-        let b = std::mem::take(&mut q.open);
         q.closed.push_back(b);
         if !page_attached(q) {
             if q.last_poll.is_none() {
                 // node: nobody draws
                 q.closed.clear();
                 q.shown = q.presented;
+                q.done = q.gen;
             }
             return;
         }
@@ -161,6 +174,46 @@ pub fn present() {
         }
         g = WAKE.wait_timeout(g, Duration::from_millis(20)).unwrap_or_else(|e| e.into_inner()).0;
     }
+}
+
+/// Waits until the batch recorded in generation `gen` (see `batch_gen`) is done: guest memory
+/// its commands read (WRITE_TEXTURE_MEM) may change after that.
+pub fn wait_done(gen: u64) {
+    let mut g = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
+    let deadline = now() + 1000.0;
+    loop {
+        let q = g.as_mut().unwrap();
+        if q.done > gen || q.last_poll.is_none() || !page_attached(q) || now() >= deadline {
+            if q.last_poll.is_none() {
+                q.done = q.done.max(gen + 1);
+            }
+            return;
+        }
+        if q.gen == gen && !q.open.cmds.is_empty() {
+            // still open: close it
+            let mut b = std::mem::take(&mut q.open);
+            b.gen = q.gen;
+            q.closed.push_back(b);
+            q.gen += 1;
+        }
+        g = WAKE.wait_timeout(g, Duration::from_millis(5)).unwrap_or_else(|e| e.into_inner()).0;
+    }
+}
+
+/// Whether the batch of generation `gen` is done (see `wait_done`).
+pub fn is_done(gen: u64) -> bool {
+    with(|q| q.done > gen || q.last_poll.is_none())
+}
+
+/// The page ran the batch it took last.
+#[no_mangle]
+pub extern "C" fn vnhost_d3d9_done() {
+    with(|q| {
+        if let Some(b) = &q.reading {
+            q.done = q.done.max(b.gen + 1);
+        }
+    });
+    WAKE.notify_all();
 }
 
 /// Waits until the page has done readback `id` (or gave up).

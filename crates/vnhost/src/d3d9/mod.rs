@@ -86,6 +86,8 @@ pub struct D3d {
     pub dev: Option<Box<device::Device>>,
     pub calls: *const HostCalls,
     pub trace: bool,
+    /// guest memory to free once the page is done with a batch that reads it (mem, generation)
+    pub deferred_free: Vec<(u32, u64)>,
     pub counts: HashMap<u32, u32>,
 }
 
@@ -210,7 +212,11 @@ impl D3d {
                 }
             }
             Data::Surface(s) => {
-                self.guest_free(s.mem);
+                match s.pending {
+                    // the page still reads it
+                    Some((g, _)) if !gpu::is_done(g) => self.deferred_free.push((s.mem, g)),
+                    _ => self.guest_free(s.mem),
+                }
                 if s.gpu != 0 && s.own_gpu {
                     gpu::record(|b| b.cmd(&[gpu::DESTROY_TEXTURE, s.gpu]));
                 }
@@ -244,6 +250,7 @@ pub unsafe extern "C" fn vnhost_d3d9_init(vtbls: *const u32, count: u32) -> u32 
             dev: None,
             calls: std::ptr::null(),
             trace: std::env::var_os("VNVM_D3D_TRACE").is_some(),
+            deferred_free: Vec::new(),
             counts: HashMap::new(),
         });
     } else if let Some(d) = g.as_mut() {
@@ -271,6 +278,13 @@ pub unsafe extern "C" fn vnhost_d3d9_call(id: u32, args: *const u32, calls: *con
         let mut g = D3D.lock().unwrap_or_else(|e| e.into_inner());
         let d = g.as_mut().expect("d3d9 not initialized");
         d.calls = calls;
+        if !d.deferred_free.is_empty() {
+            let (done, keep): (Vec<_>, Vec<_>) = d.deferred_free.drain(..).partition(|&(_, g)| gpu::is_done(g));
+            d.deferred_free = keep;
+            for (mem, _) in done {
+                d.guest_free(mem);
+            }
+        }
         let iface = id >> 8;
         let method = id & 0xff;
         let a = |i: usize| *args.add(i);

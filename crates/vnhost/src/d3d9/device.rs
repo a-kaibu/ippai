@@ -41,6 +41,9 @@ pub struct Surface {
     pub dc: u32,
     pub container: u32,
     pub multisample: u32,
+    /// an upload the page reads from `mem` (batch generation, rect): `mem` must not change
+    /// until that batch is done
+    pub pending: Option<(u64, [u32; 4])>,
 }
 
 pub struct Texture {
@@ -654,6 +657,7 @@ fn new_surface(d: &mut D3d, w: u32, h: u32, f: u32, pool: u32, usage: u32, conta
         dc: 0,
         container,
         multisample: 0,
+        pending: None,
     };
     d.new_obj(IF_SURFACE, container, Data::Surface(s))
 }
@@ -1498,12 +1502,12 @@ unsafe fn surface_mem(d: &mut D3d, s: u32) -> Option<u32> {
 }
 
 /// Uploads rect `r` of a surface's guest copy to its page texture.
-unsafe fn upload(d: &D3d, s: u32, r: [u32; 4]) {
-    let Some(Data::Surface(sf)) = d.objs.get(&s).map(|o| &o.data) else { return };
+unsafe fn upload(d: &mut D3d, s: u32, r: [u32; 4]) {
+    let Some(Data::Surface(sf)) = d.objs.get_mut(&s).map(|o| &mut o.data) else { return };
     if sf.gpu == 0 || sf.mem == 0 || fmt::is_depth(sf.fmt) {
         return;
     }
-    let (_, bs) = fmt::layout(sf.fmt).unwrap_or((4, 1));
+    let (bpb, bs) = fmt::layout(sf.fmt).unwrap_or((4, 1));
     // whole blocks
     let x0 = r[0] / bs * bs;
     let y0 = r[1] / bs * bs;
@@ -1512,11 +1516,29 @@ unsafe fn upload(d: &D3d, s: u32, r: [u32; 4]) {
     if x1 <= x0 || y1 <= y0 {
         return;
     }
-    let (bpb, _) = fmt::layout(sf.fmt).unwrap_or((4, 1));
     let src = sf.mem + (y0 / bs) * sf.pitch + (x0 / bs) * bpb;
     let (w, h) = (x1 - x0, y1 - y0);
     let bpp = fmt::page_bpp(sf.fmt);
     let (gpu, level, f, pitch) = (sf.gpu, sf.level, sf.fmt, sf.pitch);
+    if super::stats::on() && w * h >= 1 << 20 {
+        eprintln!("d3d9: upload {w}x{h} at {x0},{y0} of {}x{} format {f:#x} level {level} (page texture {gpu}, surface {s})", sf.w, sf.h);
+    }
+    if fmt::same_on_page(f) {
+        // the page reads the rows from guest memory itself (no copy here); `mem` stays as it
+        // is until the page has run the batch (see lock_surface)
+        let r = [x0, y0, x1, y1];
+        if let Some((g, p)) = sf.pending {
+            if g == gpu::batch_gen() && p[0] <= x0 && p[1] <= y0 && p[2] >= x1 && p[3] >= y1 {
+                return; // already in this batch (it reads the newest pixels)
+            }
+        }
+        let ((), g) = gpu::record_gen(|b: &mut Batch| b.cmd(&[gpu::WRITE_TEXTURE_MEM, gpu, level, x0, y0, w, h, pitch, src]));
+        sf.pending = Some(match sf.pending {
+            Some((pg, p)) if pg == g => (g, [p[0].min(x0), p[1].min(y0), p[2].max(x1), p[3].max(y1)]),
+            _ => (g, r),
+        });
+        return;
+    }
     gpu::record(|b: &mut Batch| {
         let at = b.blob.len().next_multiple_of(4);
         b.blob.resize(at, 0);
@@ -1525,8 +1547,20 @@ unsafe fn upload(d: &D3d, s: u32, r: [u32; 4]) {
     });
 }
 
+/// Before the guest copy of a surface changes: waits for the page to read a pending upload.
+fn settle(d: &mut D3d, s: u32) {
+    if let Some(Data::Surface(sf)) = d.objs.get_mut(&s).map(|o| &mut o.data) {
+        if let Some((g, _)) = sf.pending.take() {
+            gpu::wait_done(g);
+        }
+    }
+}
+
 unsafe fn lock_surface(d: &mut D3d, s: u32, out: u32, rect: u32, flags: u32, after: &mut After) -> u32 {
     let Some(mem) = surface_mem(d, s) else { return D3DERR_INVALIDCALL };
+    if flags & LOCK_READONLY == 0 {
+        settle(d, s);
+    }
     let Some(Data::Surface(sf)) = d.objs.get_mut(&s).map(|o| &mut o.data) else { return D3DERR_INVALIDCALL };
     if sf.lock.is_some() {
         return D3DERR_INVALIDCALL;
@@ -1729,6 +1763,7 @@ unsafe fn buffer_call(d: &mut D3d, iface: u32, m: u32, this: u32, a: &dyn Fn(usi
 unsafe fn update_surface(d: &mut D3d, src: u32, srect: u32, dst: u32, dpoint: u32) -> u32 {
     let (s, t) = (d.id_of(src), d.id_of(dst));
     let (Some(sm), Some(tm)) = (surface_mem(d, s), surface_mem(d, t)) else { return D3DERR_INVALIDCALL };
+    settle(d, t);
     let (Some(Data::Surface(a)), Some(Data::Surface(b))) = (d.objs.get(&s).map(|o| &o.data), d.objs.get(&t).map(|o| &o.data))
     else {
         return D3DERR_INVALIDCALL;

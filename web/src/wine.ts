@@ -42,6 +42,7 @@ interface WineModule {
   _vnhost_vfs_put_chunk(hash: number, data: number, len: number): void;
   _vnhost_d3d9_poll(out: number): number;
   _vnhost_d3d9_readback_done(id: number): void;
+  _vnhost_d3d9_done(): void;
   wasmMemory: WebAssembly.Memory;
 }
 

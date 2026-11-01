@@ -6,6 +6,7 @@ export interface D3DWine {
   _malloc(size: number): number;
   _vnhost_d3d9_poll(out: number): number;
   _vnhost_d3d9_readback_done(id: number): void;
+  _vnhost_d3d9_done(): void;
   wasmMemory: WebAssembly.Memory;
 }
 
@@ -20,7 +21,8 @@ const CREATE_TEXTURE = 1,
   PRESENT = 9,
   COPY = 10,
   READBACK = 11,
-  FILL = 12;
+  FILL = 12,
+  WRITE_TEXTURE_MEM = 13;
 
 const TEX_FORMATS: GPUTextureFormat[] = ["bgra8unorm", "depth24plus-stencil8", "rgba16float", "rgba16float"];
 const VERTEX_FORMATS: GPUVertexFormat[] = [
@@ -164,6 +166,8 @@ export class D3D9 {
         this.endPass();
         this.submit();
       }
+      // (guest memory the batch read may change now)
+      this.wine._vnhost_d3d9_done();
       this.runMs += performance.now() - t0;
     }
   }
@@ -258,6 +262,26 @@ export class D3D9 {
           i += 9;
           break;
         }
+        case WRITE_TEXTURE_MEM: {
+          // rows straight from guest memory (the guest leaves them alone until this batch ran)
+          const [id, level, x, y, w, h, pitch, ptr] = Array.from(c.subarray(i + 1, i + 9), (v) => v >>> 0);
+          const t = this.textures.get(id!);
+          if (t && t.format !== "depth24plus-stencil8") {
+            this.flushIfUsed(id!);
+            const lw = Math.max(1, t.w >> level!),
+              lh = Math.max(1, t.h >> level!);
+            const cw = Math.min(w!, lw - x!),
+              ch = Math.min(h!, lh - y!);
+            const bpp = t.format === "bgra8unorm" ? 4 : 8;
+            if (cw > 0 && ch > 0) {
+              const bytes = new Uint8Array(this.wine.wasmMemory.buffer, ptr!, pitch! * (ch - 1) + cw * bpp);
+              this.stat.uploaded += bytes.length;
+              d.queue.writeTexture({ texture: t.tex, mipLevel: level!, origin: { x: x!, y: y! } }, this.copy(bytes), { bytesPerRow: pitch! }, [cw, ch]);
+            }
+          }
+          i += 9;
+          break;
+        }
         case CREATE_SHADER: {
           const [id, off, len] = [c[i + 1]!, c[i + 2]!, c[i + 3]!];
           const code = new TextDecoder().decode(blob.slice(off, off + len));
@@ -324,6 +348,8 @@ export class D3D9 {
             this.stat.gpuMax = Math.max(this.stat.gpuMax, ms);
           });
           this.onPresent?.();
+          if (this.dump > 0 && --this.dump === 0) console.log("d3d9 dump done");
+          else if (this.dump > 0) console.log("d3d9 ---- present");
           i += 10;
           break;
         }
@@ -383,8 +409,13 @@ export class D3D9 {
     }
   }
 
+  /** frames whose passes go to the console (window.vnvmD3d.dump = n, for debugging) */
+  dump = 0;
+  private passInfo = "";
+
   private endPass(): void {
     if (this.pass) {
+      if (this.dump > 0) console.log(`d3d9 pass ${this.passInfo} draws ${this.passDraws}`);
       this.pass.end();
       this.pass = null;
     }
@@ -429,6 +460,10 @@ export class D3D9 {
     });
     this.passDraws = 0;
     this.stat.passes++;
+    if (this.dump > 0) {
+      const [w, h] = this.targetSize();
+      this.passInfo = `tex ${this.target[0]}.${this.target[1]} ${w}x${h} ${t.format}${z ? " +z" : ""} ${clear ? `clear ${clear.flags}` : "load"}`;
+    }
     return this.pass;
   }
 
@@ -665,6 +700,7 @@ export class D3D9 {
 
   private copyRect(a: number[]): void {
     const [st, sl, sx, sy, sw, sh, dt, dl, dx, dy, dw, dh, filter] = a as [number, number, number, number, number, number, number, number, number, number, number, number, number];
+    if (this.dump > 0) console.log(`d3d9 copy ${st}.${sl} ${sx},${sy} ${sw}x${sh} -> ${dt}.${dl} ${dx},${dy} ${dw}x${dh}`);
     const s = this.textures.get(st),
       t = this.textures.get(dt);
     if (!s || !t || sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) return;

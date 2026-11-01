@@ -116,6 +116,11 @@ fn rgb565(c: u16) -> [u8; 3] {
 
 /// One w x h region of `fmt` (rows `pitch` bytes apart; for block formats, block rows and a
 /// region aligned to blocks) as BGRA8 (or the float formats as they are), `w*bpp` bytes a row.
+/// Formats whose pixels the page takes as they are (convert() only copies them).
+pub fn same_on_page(fmt: u32) -> bool {
+    matches!(fmt, A8R8G8B8 | X8R8G8B8 | A16B16G16R16F)
+}
+
 pub unsafe fn convert(fmt: u32, src: *const u8, pitch: usize, w: u32, h: u32, out: &mut Vec<u8>) {
     let (w, h) = (w as usize, h as usize);
     let page = page_bpp(fmt) as usize;
