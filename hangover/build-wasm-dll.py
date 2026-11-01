@@ -71,6 +71,27 @@ def lib_objects(cmds, lib):
     pre = os.path.dirname(lib) + '/'
     return sorted(o for o in cmds if o.startswith(pre) and o.endswith('.o'))
 
+def libm(out):
+    """musl's math functions (from emscripten's copy) for what the x86 build got from gcc's
+    builtins or x87 instructions (exp2, ...); only pulled in where a DLL needs them"""
+    musl = EMSDK + '/upstream/emscripten/system/lib/libc/musl'
+    srcs = sorted(f for f in os.listdir(musl + '/src/math') if f.endswith('.c'))
+    objdir = os.path.join(out, 'obj', 'libm')
+    os.makedirs(objdir, exist_ok=True)
+    inc = ['-I' + musl + d for d in ('/src/include', '/src/internal', '/arch/emscripten', '/arch/generic', '/include')] + \
+          ['-I' + EMSDK + '/upstream/emscripten/system/lib/libc', '-I' + EMSDK + '/upstream/emscripten/cache/sysroot/include']
+    def one(f):
+        dst = os.path.join(objdir, f[:-2] + '.o')
+        if not os.path.exists(dst):
+            r = subprocess.run([CLANG, '--target=wasm32-unknown-unknown', '-fPIC', '-matomics', '-mbulk-memory',
+                                '-O2', '-w', '-nostdlibinc', '-c', '-o', dst, musl + '/src/math/' + f] + inc,
+                               capture_output=True, text=True)
+            if r.returncode:
+                return None
+        return dst
+    with ThreadPoolExecutor(os.cpu_count()) as ex:
+        return [o for o in ex.map(one, srcs) if o]
+
 def build(dll, out, cmds):
     target, spec, objs, libs = link_rule(dll)
     name = os.path.basename(target)
@@ -98,7 +119,7 @@ def build(dll, out, cmds):
     subprocess.run([CLANG] + WASM_FLAGS + ['-O2', '-fno-builtin', '-c', '-o', libc, HERE + '/wasmdll/libc.c'], check=True)
     raw = os.path.join(out, 'obj', name + '.raw.wasm')
     # static libraries' objects only where something needs them
-    libobjs = ofiles[len(objs):] + [libc]
+    libobjs = ofiles[len(objs):] + [libc] + libm(out)
     r = subprocess.run([WASMLD, '--experimental-pic', '-shared', '--shared-memory', '--import-memory',
                         '--max-memory=4294967296', '-Bsymbolic', '--allow-undefined', '--no-entry',
                         '--export-all', '-o', raw] + ofiles[:len(objs)] + [crt] +

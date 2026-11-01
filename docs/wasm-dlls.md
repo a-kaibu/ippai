@@ -49,6 +49,14 @@ Wine 側の変更 (patches/wine-wasm.patch): NtCurrentTeb、`__ASM_DEFINE_FUNC` 
 
 - user32: cmd、GUI テスト (hangover/tests の wintest)、Reunion の本編まで node で動く。
   Reunion のタイトルまで 18.4〜19.5 秒 (wasm なし 19.7〜20.6 秒、node、2 回ずつ)。
+- dsound: Reunion の本編まで動き、ストリームに書かれる音の大きさ (`VNVM_AUDIO_STATS=1`、5 秒ごとの
+  RMS) は x86 版と同じ。x86 版が gcc の組み込みや x87 で済ませていた数学関数 (exp2 など) は
+  emscripten 同梱の musl から必要な分だけリンクする。
+- どこに効くか (Reunion、node、`VNVM_JIT_PROFILE` の 64KB ごとの集計を DLL ごとに): タイトルまでは
+  ゲーム本体 95%、Wine の DLL は kernelbase 1.7%・ntdll 1.6% など合計 4% ほど。本編 100 秒では
+  ゲーム本体 85%、wuvorbis (ゲームのプラグイン) 10%、dsound 2.2%、ntdll 1.0%、kernelbase 0.8%、
+  user32 0.1%。user32+dsound を wasm にしても node の CPU 時間 (100 秒、本編を進める) は
+  18.8〜19.5 秒で変わらない (なし 18.8〜18.9 秒)。この種のゲームでは差が出ない。
 - 制限: wasm のフレームをまたぐ x86 例外の巻き戻し、wasm 内の `__TRY` は何も捕まえない、
   setjmp/longjmp は未対応。
 - 次: gdi32 など、wasm からの直接システムコール (今は x86 の ntdll/win32u スタブを経由)。

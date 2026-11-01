@@ -90,6 +90,9 @@ pub extern "C" fn vnhost_audio_open(rate: u32, channels: u32, bits: u32, is_floa
     if rate == 0 || !(1..=2).contains(&channels) || !matches!((bits, is_float != 0), (8 | 16, false) | (32, true)) {
         return -1;
     }
+    if stats() {
+        eprintln!("vnvm audio: open {rate} Hz, {channels} ch, {bits} bits");
+    }
     with(|c| {
         let id = c.next_id;
         c.next_id += 1;
@@ -131,9 +134,27 @@ pub unsafe extern "C" fn vnhost_audio_write(id: c_int, data: *const u8, frames: 
             let l = sample(f * ch);
             [l, if ch == 2 { sample(f * ch + 1) } else { l }]
         }));
+        if stats() {
+            let tail = q.len() - frames as usize;
+            let (sum, n) = q.range(tail..).fold((0f64, 0usize), |(a, n), f| (a + (f[0] * f[0]) as f64, n + 1));
+            static ACC: Mutex<(f64, usize)> = Mutex::new((0.0, 0));
+            let mut acc = ACC.lock().unwrap_or_else(|e| e.into_inner());
+            acc.0 += sum;
+            acc.1 += n;
+            if acc.1 >= RATE as usize * 5 {
+                eprintln!("vnvm audio: rms {:.4} over {} frames", (acc.0 / acc.1 as f64).sqrt(), acc.1);
+                *acc = (0.0, 0);
+            }
+        }
         s.q = q;
         frames
     })
+}
+
+/// VNVM_AUDIO_STATS=1: the level of what the streams write, every 5 s of frames
+fn stats() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VNVM_AUDIO_STATS").is_some())
 }
 
 /// Moves up to `frames` mixed 48 kHz stereo frames (interleaved f32) to `buf`; returns how many.
