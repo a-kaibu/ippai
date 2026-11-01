@@ -172,7 +172,7 @@
  
 --- /dev/null
 +++ b/dlls/ntdll/unix/signal_wasm.c
-@@ -0,0 +1,963 @@
+@@ -0,0 +1,998 @@
 +/*
 + * wasm32 signal and syscall layer (vnvm Hangover-style runtime)
 + *
@@ -227,7 +227,8 @@
 +extern int vnhost_signal_pending( int sig );
 +/* PE DLLs compiled to wasm (crates/vnhost/src/wasmdll.rs) */
 +extern void vnhost_wasm_enter( struct vnhost_cpu *cpu );
-+extern void vnhost_wasm_thread( struct vnhost_cpu *cpu, UINT teb, UINT64 (*call_x86)( UINT target, UINT argp ) );
++extern void vnhost_wasm_thread( struct vnhost_cpu *cpu, UINT teb, UINT64 (*call_x86)( UINT target, UINT argp ),
++                                UINT (*syscall)( UINT id, UINT argp ) );
 +extern int vnhost_wasmdll_probe( UINT base, UINT size );
 +extern UINT vnhost_wasmdll_mem_size( int id );
 +extern void vnhost_wasmdll_attach( int id, UINT base, UINT mem );
@@ -652,6 +653,40 @@
 +    vnhost_cpu_get( cpu, r );
 +    vnhost_cpu_set( cpu, saved );
 +    return r[R_EAX] | ((UINT64)r[R_EDX] << 32);
++}
++
++
++/***********************************************************************
++ *           wasm_syscall
++ *
++ * Wasm DLL code makes a syscall (crates/vnwasm: calls of syscall thunks): the arguments are on
++ * the guest stack at argp. The guest state is set up as if an x86 thunk had called the
++ * dispatcher from WASM_RETURN_TRAP; if the syscall leaves elsewhere (a user APC), the x86 code
++ * runs until it gets back there. Returns EAX; the x86 state is as it was before.
++ */
++static UINT wasm_syscall( UINT id, UINT argp )
++{
++    struct thread_data *data = get_thread_data();
++    struct vnhost_cpu *cpu = thread_cpu;
++    UINT saved[R_COUNT], r[R_COUNT];
++
++    vnhost_cpu_get( cpu, saved );
++    memcpy( r, saved, sizeof(r) );
++    *(UINT *)(ULONG_PTR)(argp - 4) = WASM_RETURN_TRAP;  /* the thunk's caller */
++    *(UINT *)(ULONG_PTR)(argp - 8) = WASM_RETURN_TRAP;  /* into the thunk */
++    r[R_ESP] = argp - 8;
++    r[R_EAX] = id;
++    r[R_EFLAGS] &= ~0x400;  /* DF */
++    vnhost_cpu_set( cpu, r );
++    dispatch_syscall( data, get_syscall_frame( data ), cpu );
++    vnhost_cpu_get( cpu, r );
++    if (r[R_EIP] != WASM_RETURN_TRAP)
++    {
++        run_loop( data, NULL, TRUE );
++        vnhost_cpu_get( cpu, r );
++    }
++    vnhost_cpu_set( cpu, saved );
++    return r[R_EAX];
 +}
 +
 +
@@ -1128,7 +1163,7 @@
 +    }
 +    thread_cpu = vnhost_cpu_create( WASM_DLL_BASE, WASM_TRAP_END );
 +    vnhost_cpu_set_fs( thread_cpu, (UINT)(ULONG_PTR)teb );
-+    vnhost_wasm_thread( thread_cpu, (UINT)(ULONG_PTR)teb, wasm_call_x86 );
++    vnhost_wasm_thread( thread_cpu, (UINT)(ULONG_PTR)teb, wasm_call_x86, wasm_syscall );
 +
 +    init_syscall_frame( entry, arg, teb );
 +    run_guest( data, NULL );
@@ -3814,6 +3849,39 @@
  
  struct interface_filter
  {
+--- a/dlls/ntdll/large_int.c
++++ b/dlls/ntdll/large_int.c
+@@ -255,7 +255,7 @@
+  */
+ UINT WINAPI RtlEnlargedUnsignedDivide( ULONGLONG a, UINT b, UINT *remptr )
+ {
+-#ifdef __i386__
++#if defined(__i386__) && !defined(__vnwasm_pe__)
+     UINT ret, rem;
+ 
+     __asm__("divl %4"
+--- a/dlls/ntdll/math.c
++++ b/dlls/ntdll/math.c
+@@ -37,7 +37,7 @@
+     return i >= 0 ? i : -i;
+ }
+ 
+-#ifdef __i386__
++#if defined(__i386__) && !defined(__vnwasm_pe__)
+ 
+ #define FPU_DOUBLE(var) double var; \
+     __asm__ __volatile__( "fstpl %0;fwait" : "=m" (var) : )
+--- a/dlls/user32/hook.c
++++ b/dlls/user32/hook.c
+@@ -153,7 +153,7 @@
+     return NtUserSetWindowsHookEx( inst, &str, tid, id, proc, ansi );
+ }
+ 
+-#ifdef __i386__
++#if defined(__i386__) && !defined(__vnwasm_pe__)
+ /* Some apps pass a non-stdcall proc to SetWindowsHookExA,
+  * so we need a small assembly wrapper to call the proc.
+  */
 --- a/dlls/user32/sysparams.c
 +++ b/dlls/user32/sysparams.c
 @@ -894,7 +894,7 @@
@@ -3834,28 +3902,6 @@
      ret = enum_mon_callback_wrapper( params->proc, params->monitor, params->hdc,
                                       &params->rect, params->lparam );
  #else
---- a/dlls/user32/hook.c
-+++ b/dlls/user32/hook.c
-@@ -153,7 +153,7 @@
-     return NtUserSetWindowsHookEx( inst, &str, tid, id, proc, ansi );
- }
- 
--#ifdef __i386__
-+#if defined(__i386__) && !defined(__vnwasm_pe__)
- /* Some apps pass a non-stdcall proc to SetWindowsHookExA,
-  * so we need a small assembly wrapper to call the proc.
-  */
---- a/dlls/user32/winproc.c
-+++ b/dlls/user32/winproc.c
-@@ -40,7 +40,7 @@
-     if (buffer != static_buffer) HeapFree( GetProcessHeap(), 0, buffer );
- }
- 
--#ifdef __i386__
-+#if defined(__i386__) && !defined(__vnwasm_pe__)
- /* Some window procedures modify registers they shouldn't, or are not
-  * properly declared stdcall; so we need a small assembly wrapper to
-  * call them. */
 --- a/dlls/user32/win.c
 +++ b/dlls/user32/win.c
 @@ -36,7 +36,7 @@
@@ -3876,6 +3922,66 @@
  
  /* This wrapper is here to workaround a ntlea quirk. First of all, ntlea
   * checks whether GetWindowLongA starts with the Win32 hotpatchable prologue,
+--- a/dlls/user32/winproc.c
++++ b/dlls/user32/winproc.c
+@@ -40,7 +40,7 @@
+     if (buffer != static_buffer) HeapFree( GetProcessHeap(), 0, buffer );
+ }
+ 
+-#ifdef __i386__
++#if defined(__i386__) && !defined(__vnwasm_pe__)
+ /* Some window procedures modify registers they shouldn't, or are not
+  * properly declared stdcall; so we need a small assembly wrapper to
+  * call them. */
+--- a/include/msvcrt/intrin.h
++++ b/include/msvcrt/intrin.h
+@@ -7,7 +7,7 @@
+ #ifndef _INC_INTRIN
+ #define _INC_INTRIN
+ 
+-#if defined(__i386__) || (defined(__x86_64__) && !defined(__arm64ec__))
++#if (defined(__i386__) && !defined(__vnwasm_pe__)) || (defined(__x86_64__) && !defined(__arm64ec__))
+ # include <x86intrin.h>
+ #endif
+ 
+@@ -30,7 +30,7 @@
+ void __stlr32(volatile unsigned int *, unsigned int);
+ void __stlr64(volatile unsigned __int64 *, unsigned __int64);
+ 
+-#elif defined(__i386__) || defined(__x86_64__)
++#elif (defined(__i386__) && !defined(__vnwasm_pe__)) || defined(__x86_64__)
+ 
+ #if __has_builtin(__cpuidex) || (defined(_MSC_VER) && !defined(__clang__))
+ void __cpuidex(int info[4], int ax, int cx);
+--- a/include/wine/asm.h
++++ b/include/wine/asm.h
+@@ -90,6 +90,11 @@
+ # define __ASM_BLOCK_END
+ #endif
+ 
++#ifdef __vnwasm_pe__
++/* PE code compiled to wasm (vnvm): no x86 assembly; what it defined is missing (the x86 DLL's
++ * export stays in use, or a C version is provided) */
++#define __ASM_DEFINE_FUNC(name,code)
++#else
+ #define __ASM_DEFINE_FUNC(name,code)  \
+     __ASM_BLOCK_BEGIN(__LINE__) \
+     asm( __ASM_FUNC_SECTION(name) "\n\t" \
+@@ -105,10 +110,13 @@
+          __ASM_SEH(".seh_endproc\n\t") \
+          __ASM_FUNC_SIZE(name)); \
+     __ASM_BLOCK_END
++#endif
+ 
+ #define __ASM_GLOBAL_FUNC(name,code) __ASM_DEFINE_FUNC(__ASM_NAME(#name),code)
+ 
+-#ifdef _WIN64
++#ifdef __vnwasm_pe__
++#define __ASM_DEFINE_POINTER(sec,decl,value)
++#elif defined(_WIN64)
+ #define __ASM_DEFINE_POINTER(sec,decl,value)  \
+     __ASM_BLOCK_BEGIN(__LINE__) \
+     asm( sec "\n\t" \
 --- a/include/wine/exception.h
 +++ b/include/wine/exception.h
 @@ -249,6 +249,13 @@
@@ -3905,25 +4011,3 @@
      EXCEPTION_REGISTRATION_RECORD *ret;
      __asm__ __volatile__("movl %%fs:0,%0" : "=r" (ret) );
      return ret;
---- a/include/wine/asm.h
-+++ b/include/wine/asm.h
-@@ -90,6 +90,11 @@
- # define __ASM_BLOCK_END
- #endif
- 
-+#ifdef __vnwasm_pe__
-+/* PE code compiled to wasm (vnvm): no x86 assembly; what it defined is missing (the x86 DLL's
-+ * export stays in use, or a C version is provided) */
-+#define __ASM_DEFINE_FUNC(name,code)
-+#else
- #define __ASM_DEFINE_FUNC(name,code)  \
-     __ASM_BLOCK_BEGIN(__LINE__) \
-     asm( __ASM_FUNC_SECTION(name) "\n\t" \
-@@ -105,6 +110,7 @@
-          __ASM_SEH(".seh_endproc\n\t") \
-          __ASM_FUNC_SIZE(name)); \
-     __ASM_BLOCK_END
-+#endif
- 
- #define __ASM_GLOBAL_FUNC(name,code) __ASM_DEFINE_FUNC(__ASM_NAME(#name),code)
- 

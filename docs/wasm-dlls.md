@@ -27,6 +27,19 @@ Wine の PE 側 DLL (user32 など) を、x86 として JIT するのではな�
   割り当て、各スレッドは wasm に入るときに足りないモジュールを作る。データの再配置と
   コンストラクタは最初の呼び出しで 1 回だけ。
 
+- 直接システムコール: ntdll/win32u の syscall スタブ (`mov $id,%eax; mov $helper,%edx; call *%edx;
+  ret $n`) を呼ぶインポートは、vnwasm がスタブのバイト列から番号を読み、`vn.syscall(id, argp)` を
+  呼ぶ関数に置き換える。signal_wasm.c の `wasm_syscall` が x86 のスタブが呼んだときと同じ形
+  (戻り番地 0xffff0020) を作って dispatch_syscall を呼ぶ。APC などでよそへ行ったときだけ x86 の
+  実行ループを回す。NtContinue / NtRaiseException / NtSetContextThread は x86 のスタブのまま。
+- 境界は JS を通らない: 入口 (`__vn_in<k>(slot, argp, ecx, edx, sp)`) は main モジュールの
+  関数テーブルの予約スロット (crates/vnhost/src/wasmdll_slots.rs のダミー関数、全 worker で同じ
+  番号) に各スレッドが自分のインスタンスのものを置き、vnhost が関数ポインタで呼ぶ。`vn.x86_call`
+  と `vn.syscall` は main モジュールの関数をそのままインポートする。入口ごとのロックもない
+  (プロセスの世代番号を atomic で見るだけ)。
+- x86 の DLL にしかない関数 (アセンブリ、外したソース) を wasm から呼ぶときは x86 の
+  エクスポートの元のアドレスを呼ぶ。転送エクスポートは転送先のインポートを使う。
+
 ## ビルド
 
 ```

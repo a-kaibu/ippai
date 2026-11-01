@@ -17,10 +17,11 @@ addToLibrary({
     };
   },
 
-  // instance `id` (the process's id-th wasm DLL) on this thread; 0 or -1
+  // instance `id` (the process's id-th wasm DLL) on this thread; its entries go into this
+  // worker's own function table at `slots` (n of them), where vnhost calls them; 0 or -1
   vnvm_wasm_instantiate__deps: ['$VNWASM'],
-  vnvm_wasm_instantiate__sig: 'iipiiiii',
-  vnvm_wasm_instantiate: (id, ptr, len, mem, slot, image, size) => {
+  vnvm_wasm_instantiate__sig: 'iipiiiiipi',
+  vnvm_wasm_instantiate: (id, ptr, len, mem, slot, image, size, slots, n) => {
     const t = VNWASM.t;
     ptr >>>= 0;
     mem >>>= 0;
@@ -47,6 +48,7 @@ addToLibrary({
           limit: t.limit,
           x86_call: wasmExports.vnhost_wasm_x86_call,
           x86_call_f: wasmExports.vnhost_wasm_x86_call_f,
+          syscall: wasmExports.vnhost_wasm_syscall,
         },
         'GOT.mem': got,
         'GOT.func': got,
@@ -56,8 +58,11 @@ addToLibrary({
       const inst = new WebAssembly.Instance(module, imports);
       const entries = [];
       for (let k = 0; inst.exports['__vn_in' + k]; k++) entries.push(inst.exports['__vn_in' + k]);
-      t.insts[id] = { inst, got, entries };
+      t.insts[id] = { inst, got };
       t.limit.value = Math.max(t.limit.value, slot + size);
+      // over placeholders at the same indices on every worker (crates/vnhost/src/wasmdll_slots.rs)
+      if (entries.length != n) throw new Error(`${entries.length} entries, ${n} slots`);
+      entries.forEach((f, k) => wasmTable.set(HEAPU32[(slots >>> 2) + k], f));
       return 0;
     } catch (e) {
       err(`vnwasm: ${e}`);
@@ -79,31 +84,5 @@ addToLibrary({
     const e = VNWASM.t.insts[id].inst.exports;
     e.__wasm_apply_data_relocs?.();
     e.__wasm_call_ctors?.();
-  },
-
-  vnvm_wasm_call__deps: ['$VNWASM'],
-  vnvm_wasm_call__sig: 'jiiiiiii',
-  vnvm_wasm_call: (id, kind, slot, argp, ecx, edx, sp) => {
-    const t = VNWASM.t;
-    const old = t.sp.value;
-    t.sp.value = sp;
-    try {
-      return t.insts[id].entries[kind](slot, argp, ecx, edx);
-    } finally {
-      t.sp.value = old;
-    }
-  },
-
-  vnvm_wasm_call_f__deps: ['$VNWASM'],
-  vnvm_wasm_call_f__sig: 'diiiiiii',
-  vnvm_wasm_call_f: (id, kind, slot, argp, ecx, edx, sp) => {
-    const t = VNWASM.t;
-    const old = t.sp.value;
-    t.sp.value = sp;
-    try {
-      return t.insts[id].entries[kind](slot, argp, ecx, edx);
-    } finally {
-      t.sp.value = old;
-    }
   },
 });

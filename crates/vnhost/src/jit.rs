@@ -604,7 +604,9 @@ pub extern "C" fn vnhost_jit_profile() {
     for (k, n) in keys.iter().take(200) {
         o += &format!("PROF key {k} {n}\n");
     }
-    for (n, a, len) in blocks.iter().take(40) {
+    // VNVM_PROF_BLOCKS=<n>: more of the hottest blocks (default 40)
+    let nblocks = std::env::var("VNVM_PROF_BLOCKS").ok().and_then(|v| v.parse().ok()).unwrap_or(40);
+    for (n, a, len) in blocks.iter().take(nblocks) {
         o += &format!("PROF block {a:08x} {len} {n}\n");
     }
     // per 64KB of guest address space (to attribute to modules offline)

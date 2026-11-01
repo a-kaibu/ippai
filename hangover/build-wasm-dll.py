@@ -29,8 +29,12 @@ VNWASM = os.environ.get('VNWASM', ROOT + '/target/release/vnwasm')
 DROP = {'-mpreferred-stack-boundary=2', '-mlong-double-64', '-msse2', '-fno-omit-frame-pointer'}
 WASM_FLAGS = ['--target=wasm32-unknown-unknown', '-D__i386__', '-D__vnwasm_pe__', '-DDECLSPEC_IMPORT=', '-D_WIN32', '-DWIN32',
               '-fshort-wchar', '-fPIC', '-matomics', '-mbulk-memory', '-mmutable-globals', '-msign-ext',
-              '-mnontrapping-fptoint', '-fms-extensions', '-fdeclspec', '-nostdlibinc', '-fno-builtin-printf',
+              '-mnontrapping-fptoint', '-fms-extensions', '-fdeclspec', '-nostdlibinc', '-fno-builtin-printf', '-D__builtin_return_address(x)=((void *)0)', '-DSYMCRYPT_IGNORE_PLATFORM',
               '-w']
+
+# sources left out (x86 through and through: exception dispatch, contexts, x87 ABI helpers);
+# their exports stay x86
+EXCLUDE = {'ntdll': {'signal_i386.o'}}
 
 def link_rule(dll):
     """(spec, objects, static libraries) of dlls/.../i386-windows/<dll>.dll in the Makefile"""
@@ -40,7 +44,7 @@ def link_rule(dll):
         sys.exit('no link rule for %s' % dll)
     deps = m.group(2).replace('\\\n', ' ').split()
     spec = next(d for d in deps if d.endswith('.spec'))
-    objs = [d for d in deps if d.endswith('.o')]
+    objs = [d for d in deps if d.endswith('.o') and os.path.basename(d) not in EXCLUDE.get(dll, ())]
     libs = [d for d in deps if d.endswith('.a') and d.startswith('libs/')
             and not any(x in d for x in ('winecrt0', 'compiler-rt'))]
     return m.group(1), spec, objs, libs
@@ -64,12 +68,14 @@ def compile_one(cmds, obj, outdir):
     args[args.index('-o') + 1] = dst
     r = subprocess.run([CLANG] + WASM_FLAGS + args, cwd=d, capture_output=True, text=True)
     if r.returncode:
-        return dst, '%s:\n%s' % (obj, '\n'.join(l for l in r.stderr.split('\n') if 'error' in l)[:2000])
+        return dst, '%s:\n%s' % (obj, '\n'.join(l for l in r.stderr.split('\n') if 'error' in l and not l.startswith(' #'))[:3000])
     return dst, None
 
 def lib_objects(cmds, lib):
     pre = os.path.dirname(lib) + '/'
-    return sorted(o for o in cmds if o.startswith(pre) and o.endswith('.o'))
+    # not the x86 assembly versions (symcrypt's; the C ones are used, SYMCRYPT_IGNORE_PLATFORM)
+    return sorted(o for o in cmds if o.startswith(pre) and o.endswith('.o')
+                  and not cmds[o][2].endswith(('.S', '.s', '.cppasm')) and '/i386/' not in cmds[o][2])
 
 def libm(out):
     """musl's math functions (from emscripten's copy) for what the x86 build got from gcc's

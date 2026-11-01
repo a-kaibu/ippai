@@ -15,8 +15,12 @@ pub struct Pe {
     pub nfuncs: u32,
     /// name -> index into the export address table
     pub exports: Vec<(String, u32)>,
+    /// the export address table's RVAs (0 for forwarders and holes)
+    pub eat: Vec<u32>,
     /// (dll, symbol, IAT slot RVA); symbol "#<n>" for imports by ordinal
     pub imports: Vec<(String, String, u32)>,
+    /// exported syscall thunks ("mov $id,%eax; mov $helper,%edx; call *%edx; ret $n"): name -> id
+    pub syscalls: Vec<(String, u32)>,
 }
 
 struct Image<'a> {
@@ -79,14 +83,18 @@ pub fn parse(b: &[u8]) -> Result<Pe> {
     }
     let img = Image { b, sections };
 
-    let (erva, _) = dir(0);
-    let (mut name, mut ordinal_base, mut nfuncs, mut exports) = (String::new(), 1, 0, Vec::new());
+    let (erva, esize) = dir(0);
+    let (mut name, mut ordinal_base, mut nfuncs, mut exports, mut eat) = (String::new(), 1, 0, Vec::new(), Vec::new());
     if erva != 0 {
         name = img.cstr(img.u32(erva + 12)?)?;
         ordinal_base = img.u32(erva + 16)?;
         nfuncs = img.u32(erva + 20)?;
         let nnames = img.u32(erva + 24)?;
-        let (names, ords) = (img.u32(erva + 32)?, img.u32(erva + 36)?);
+        let (funcs, names, ords) = (img.u32(erva + 28)?, img.u32(erva + 32)?, img.u32(erva + 36)?);
+        for i in 0..nfuncs {
+            let r = img.u32(funcs + i * 4)?;
+            eat.push(if r >= erva && r < erva + esize { 0 } else { r });
+        }
         for i in 0..nnames {
             exports.push((img.cstr(img.u32(names + i * 4)?)?, img.u16(ords + i * 2)? as u32));
         }
@@ -172,5 +180,15 @@ pub fn parse(b: &[u8]) -> Result<Pe> {
             }
         }
     }
-    Ok(Pe { size_of_image, timestamp, name, ordinal_base, nfuncs, exports, imports })
+    let mut syscalls = Vec::new();
+    for (n, i) in &exports {
+        let Some(&r) = eat.get(*i as usize) else { continue };
+        let Ok(o) = img.off(r) else { continue };
+        if let Some(c) = b.get(o..o + 15) {
+            if c[0] == 0xb8 && c[5] == 0xba && c[10] == 0xff && c[11] == 0xd2 && c[12] == 0xc2 {
+                syscalls.push((n.clone(), u32::from_le_bytes(c[1..5].try_into().unwrap())));
+            }
+        }
+    }
+    Ok(Pe { size_of_image, timestamp, name, ordinal_base, nfuncs, exports, eat, imports, syscalls })
 }

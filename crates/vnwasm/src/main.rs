@@ -183,6 +183,8 @@ fn main() -> Result<()> {
     let x86_call_f_ty = m.types.add(&[ValType::I32, ValType::I32], &[ValType::F64]);
     let (x86_call, _) = m.add_import_func("vn", "x86_call", x86_call_ty);
     let (x86_call_f, _) = m.add_import_func("vn", "x86_call_f", x86_call_f_ty);
+    let syscall_ty = m.types.add(&[ValType::I32, ValType::I32], &[ValType::I32]);
+    let (syscall, _) = m.add_import_func("vn", "syscall", syscall_ty);
 
     // 1. indirect calls -> icall<type>
     let mut icalls: BTreeMap<TypeId, FunctionId> = BTreeMap::new();
@@ -222,6 +224,64 @@ fn main() -> Result<()> {
 
     // 2. imported functions -> IAT stubs (or teb)
     let iat: HashMap<&str, u32> = pe.imports.iter().map(|(_, s, rva)| (s.as_str(), *rva)).collect();
+    enum Target {
+        Iat(u32),
+        Own(u32),
+        Syscall(u32),
+    }
+    // syscall thunks of ntdll and win32u (this DLL's own, or imported from them), called
+    // straight from wasm (signal_wasm.c wasm_syscall) unless they change the thread's context
+    let dir = std::path::Path::new(&a.pe).parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    let mut syscall_ids: HashMap<(String, String), u32> = HashMap::new();
+    for dll in ["ntdll.dll", "win32u.dll"] {
+        let table = if pe.name.eq_ignore_ascii_case(dll) {
+            pe.syscalls.clone()
+        } else {
+            match std::fs::read(dir.join(dll)).ok().and_then(|b| pe::parse(&b).ok()) {
+                Some(p) => p.syscalls,
+                None => continue,
+            }
+        };
+        for (n, id) in table {
+            if !matches!(n.as_str(), "NtContinue" | "NtContinueEx" | "NtRaiseException" | "NtSetContextThread" | "ZwContinue"
+                | "ZwContinueEx" | "ZwRaiseException" | "ZwSetContextThread")
+            {
+                syscall_ids.insert((dll.to_string(), n), id);
+            }
+        }
+    }
+    let import_dll: HashMap<&str, String> = pe.imports.iter().map(|(d, s, _)| (s.as_str(), d.to_ascii_lowercase())).collect();
+    let own_dll = pe.name.to_ascii_lowercase();
+    // (`syscalls`: a direct syscall where the target is a syscall thunk; not for addresses)
+    let resolve = |name: &str, syscalls: bool| -> Option<Target> {
+        let dll = import_dll.get(name).cloned().unwrap_or_else(|| own_dll.clone());
+        if let Some(&id) = syscall_ids.get(&(dll, name.to_string())).filter(|_| syscalls) {
+            return Some(Target::Syscall(id));
+        }
+        if let Some(&rva) = iat.get(name) {
+            return Some(Target::Iat(rva));
+        }
+        // the asm-label spelling of stdcall helpers ("__alldiv" for "_alldiv")
+        let names = [name, name.strip_prefix('_').unwrap_or(name)];
+        for n in names {
+            // forwarded exports: the import of the target
+            if let Some((_, to)) = spec.forwards.iter().find(|(e, _)| e == n) {
+                let sym = to.rsplit('.').next().unwrap_or("");
+                if let Some(&rva) = iat.get(sym) {
+                    return Some(Target::Iat(rva));
+                }
+            }
+            // exports of this DLL implemented in x86 only
+            for e in spec.funcs.iter().filter(|e| e.symbol == n || e.name == n) {
+                let idx = if !e.name.is_empty() { pe.exports.iter().find(|(x, _)| *x == e.name).map(|(_, i)| *i) } else { None }
+                    .or_else(|| e.ordinal.map(|o| o - pe.ordinal_base));
+                if let Some(rva) = idx.and_then(|i| pe.eat.get(i as usize)).copied().filter(|&r| r != 0) {
+                    return Some(Target::Own(rva));
+                }
+            }
+        }
+        None
+    };
     let mut missing = Vec::new();
     let fimports: Vec<(FunctionId, String, String)> = m
         .imports
@@ -241,29 +301,50 @@ fn main() -> Result<()> {
             })?;
             continue;
         }
-        let Some(&rva) = iat.get(name.as_str()) else {
-            missing.push(name);
-            continue;
-        };
         let ty = match &m.funcs.get(fid).kind {
             walrus::FunctionKind::Import(i) => i.ty,
             _ => unreachable!(),
         };
         let icall = icalls[&ty];
-        m.replace_imported_func(fid, |(b, args)| {
-            for &l in args {
-                b.local_get(l);
+        match resolve(&name, true) {
+            // through the IAT slot
+            Some(Target::Iat(rva)) => m.replace_imported_func(fid, |(b, args)| {
+                for &l in args {
+                    b.local_get(l);
+                }
+                b.global_get(image_base)
+                    .i32_const(rva as i32)
+                    .binop(BinaryOp::I32Add)
+                    .load(memory, LoadKind::I32 { atomic: false }, MemArg { align: 4, offset: 0 })
+                    .call(icall);
+            })?,
+            // the x86 DLL's own function (assembly, or a source left out)
+            Some(Target::Own(rva)) => m.replace_imported_func(fid, |(b, args)| {
+                for &l in args {
+                    b.local_get(l);
+                }
+                b.global_get(image_base).i32_const(rva as i32).binop(BinaryOp::I32Add).call(icall);
+            })?,
+            Some(Target::Syscall(id)) => {
+                let f = make_syscall_stub(&mut m, ty, id, memory, stack_pointer, syscall);
+                m.replace_imported_func(fid, |(b, args)| {
+                    for &l in args {
+                        b.local_get(l);
+                    }
+                    b.call(f);
+                })?
             }
-            b.global_get(image_base)
-                .i32_const(rva as i32)
-                .binop(BinaryOp::I32Add)
-                .load(memory, LoadKind::I32 { atomic: false }, MemArg { align: 4, offset: 0 })
-                .call(icall);
-        })?;
+            None => {
+                missing.push(name);
+                m.replace_imported_func(fid, |(b, _)| {
+                    b.unreachable();
+                })?
+            }
+        };
     }
     if !missing.is_empty() {
         missing.sort();
-        bail!("functions neither defined nor imported by {}: {}", a.pe, missing.join(" "));
+        eprintln!("vnwasm: {}: calls to {} trap (neither defined, imported nor x86 exports): {}", a.pe, missing.len(), missing.join(" "));
     }
 
     // GOT entries: from the IAT
@@ -274,8 +355,11 @@ fn main() -> Result<()> {
                 got.push((2, imp.name.clone(), 0));
                 continue;
             }
-            let rva = *iat.get(imp.name.as_str()).with_context(|| format!("{} {} is not imported by {}", imp.module, imp.name, a.pe))?;
-            got.push(((imp.module == "GOT.func") as u32, imp.name.clone(), rva));
+            match resolve(&imp.name, false) {
+                Some(Target::Iat(rva)) => got.push(((imp.module == "GOT.func") as u32, imp.name.clone(), rva)),
+                Some(Target::Own(rva)) => got.push((2, imp.name.clone(), rva)),
+                _ => bail!("{} {} is not imported by {}", imp.module, imp.name, a.pe),
+            }
         }
     }
 
@@ -392,7 +476,7 @@ fn main() -> Result<()> {
     }
     let mut entry_flags = Vec::new();
     for (k, kind) in kinds.iter().enumerate() {
-        let float = make_entry(&mut m, k, kind, table, memory)?;
+        let float = make_entry(&mut m, k, kind, table, memory, stack_pointer)?;
         entry_flags.push(float as u32);
     }
 
@@ -563,6 +647,38 @@ fn store_kind(t: ValType) -> StoreKind {
 /// icall<ty>(params..., ptr): a wasm DLL function (ptr - BIAS below vn.limit) through the
 /// table, anything else as x86 code with the parameters on the x86 stack.
 #[allow(clippy::too_many_arguments)]
+/// A syscall made from wasm: the arguments at sp - nbytes as the x86 thunk would have them.
+fn make_syscall_stub(m: &mut Module, ty: TypeId, id: u32, memory: MemoryId, sp: GlobalId, syscall: FunctionId) -> FunctionId {
+    let t = m.types.get(ty);
+    let (params, results) = (t.params().to_vec(), t.results().to_vec());
+    let mut b = FunctionBuilder::new(&mut m.types, &params, &results);
+    b.name(format!("syscall{id:x}"));
+    let args: Vec<_> = params.iter().map(|&t| m.locals.add(t)).collect();
+    let argp = m.locals.add(ValType::I32);
+    let nbytes: u32 = params.iter().map(|&t| size(t)).sum();
+    let mut body = b.func_body();
+    body.global_get(sp).i32_const(nbytes as i32).binop(BinaryOp::I32Sub).local_set(argp);
+    let mut off = 0;
+    for (i, &t) in params.iter().enumerate() {
+        body.local_get(argp).local_get(args[i]).store(memory, store_kind(t), MemArg { align: 1, offset: off });
+        off += size(t);
+    }
+    body.i32_const(id as i32).local_get(argp).call(syscall);
+    match results.first() {
+        None => {
+            body.drop();
+        }
+        Some(ValType::I32) => {}
+        Some(ValType::I64) => {
+            body.unop(UnaryOp::I64ExtendUI32);
+        }
+        Some(_) => {
+            body.unreachable();
+        }
+    }
+    b.finish(args, &mut m.funcs)
+}
+
 fn make_icall(
     m: &mut Module,
     ty: TypeId,
@@ -625,16 +741,21 @@ fn make_icall(
 
 /// __vn_in<k>(slot, argp, ecx, edx) -> i64 (EDX:EAX) or f64 (ST0): calls `slot` with the
 /// arguments as `kind` says. Returns whether it returns f64.
-fn make_entry(m: &mut Module, k: usize, kind: &EntryKind, table: TableId, memory: MemoryId) -> Result<bool> {
+/// `__vn_in<k>(slot, argp, ecx, edx, sp)`: calls the function at `slot` with the x86 arguments at
+/// `argp`, the wasm stack below `sp` (vnhost calls it through its own table, crates/vnhost/src/wasmdll.rs).
+fn make_entry(m: &mut Module, k: usize, kind: &EntryKind, table: TableId, memory: MemoryId, stack_pointer: GlobalId) -> Result<bool> {
     let t = m.types.get(kind.ty);
     let results = t.results().to_vec();
     let float = matches!(results.first(), Some(ValType::F32 | ValType::F64));
     let ret = if float { ValType::F64 } else { ValType::I64 };
-    let ps = [ValType::I32; 4];
+    let ps = [ValType::I32; 5];
     let mut b = FunctionBuilder::new(&mut m.types, &ps, &[ret]);
     let locals: Vec<_> = ps.iter().map(|&t| m.locals.add(t)).collect();
-    let (slot, argp, ecx, edx) = (locals[0], locals[1], locals[2], locals[3]);
+    let (slot, argp, ecx, edx, sp) = (locals[0], locals[1], locals[2], locals[3], locals[4]);
+    let old_sp = m.locals.add(ValType::I32);
+    let res = m.locals.add(ret);
     let mut body = b.func_body();
+    body.global_get(stack_pointer).local_set(old_sp).local_get(sp).global_set(stack_pointer);
     let mut off = 0;
     for a in &kind.args {
         match *a {
@@ -671,6 +792,7 @@ fn make_entry(m: &mut Module, k: usize, kind: &EntryKind, table: TableId, memory
         }
         Some(t) => bail!("entry returning {t:?}"),
     }
+    body.local_set(res).local_get(old_sp).global_set(stack_pointer).local_get(res);
     let f = b.finish(locals, &mut m.funcs);
     m.exports.add(&format!("__vn_in{k}"), f);
     Ok(float)

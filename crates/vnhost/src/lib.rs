@@ -22,6 +22,7 @@ pub mod mem;
 pub mod proc;
 pub mod vfs;
 pub mod wasmdll;
+mod wasmdll_slots;
 mod wrap;
 
 pub(crate) fn set_errno(e: libc::c_int) {

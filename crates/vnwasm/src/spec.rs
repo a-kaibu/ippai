@@ -32,6 +32,8 @@ pub struct Data {
 pub struct Spec {
     pub funcs: Vec<Entry>,
     pub data: Vec<Data>,
+    /// exported name -> "dll.symbol" it forwards to
+    pub forwards: Vec<(String, String)>,
 }
 
 /// Parses the entries that matter on i386 (functions implemented in this DLL and data exports).
@@ -112,7 +114,8 @@ pub fn parse(text: &str) -> Spec {
             .collect();
         let symbol = toks.get(1).cloned().unwrap_or_else(|| name.clone());
         if symbol.contains('.') {
-            continue; // forwarded
+            spec.forwards.push((name, symbol));
+            continue;
         }
         spec.funcs.push(Entry { name: if noname { String::new() } else { name }, ordinal, conv, args, symbol });
     }

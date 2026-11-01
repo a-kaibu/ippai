@@ -18,7 +18,7 @@
 use crate::cpu::Linear;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use vnx86::{Cpu, Memory};
 
@@ -29,27 +29,19 @@ const SLOTS: u32 = 0x0100_0000;
 #[cfg(target_os = "emscripten")]
 extern "C" {
     fn vnvm_wasm_thread_init(teb: u32);
-    fn vnvm_wasm_instantiate(id: u32, bytes: *const u8, len: usize, mem: u32, slot: u32, image: u32, size: u32) -> i32;
+    fn vnvm_wasm_instantiate(id: u32, bytes: *const u8, len: usize, mem: u32, slot: u32, image: u32, size: u32, entries: *const u32, n: u32) -> i32;
     fn vnvm_wasm_got(id: u32, name: *const u8, len: usize, value: u32);
     fn vnvm_wasm_fixup(id: u32);
-    fn vnvm_wasm_call(id: u32, kind: u32, slot: u32, argp: u32, ecx: u32, edx: u32, sp: u32) -> u64;
-    fn vnvm_wasm_call_f(id: u32, kind: u32, slot: u32, argp: u32, ecx: u32, edx: u32, sp: u32) -> f64;
 }
 
 #[cfg(not(target_os = "emscripten"))]
 mod nojs {
     pub unsafe fn vnvm_wasm_thread_init(_: u32) {}
-    pub unsafe fn vnvm_wasm_instantiate(_: u32, _: *const u8, _: usize, _: u32, _: u32, _: u32, _: u32) -> i32 {
+    pub unsafe fn vnvm_wasm_instantiate(_: u32, _: *const u8, _: usize, _: u32, _: u32, _: u32, _: u32, _: *const u32, _: u32) -> i32 {
         -1
     }
     pub unsafe fn vnvm_wasm_got(_: u32, _: *const u8, _: usize, _: u32) {}
     pub unsafe fn vnvm_wasm_fixup(_: u32) {}
-    pub unsafe fn vnvm_wasm_call(_: u32, _: u32, _: u32, _: u32, _: u32, _: u32, _: u32) -> u64 {
-        0
-    }
-    pub unsafe fn vnvm_wasm_call_f(_: u32, _: u32, _: u32, _: u32, _: u32, _: u32, _: u32) -> f64 {
-        0.0
-    }
 }
 #[cfg(not(target_os = "emscripten"))]
 use nojs::*;
@@ -168,8 +160,8 @@ struct Process {
     dlls: Vec<Loaded>,
     /// slots given out
     slots: u32,
-    /// bumped whenever a thread has something to catch up on
-    generation: u32,
+    /// bumped whenever a thread has something to catch up on (read without the lock)
+    generation: Arc<AtomicU32>,
 }
 
 static MODULES: Mutex<Vec<(String, Option<Arc<Module>>)>> = Mutex::new(Vec::new());
@@ -181,6 +173,7 @@ struct Thread {
     cpu: *mut Cpu,
     teb: u32,
     call_x86: Option<extern "C" fn(u32, u32) -> u64>,
+    syscall: Option<extern "C" fn(u32, u32) -> u32>,
     /// JS state set up
     init: bool,
     /// modules instantiated on this thread (a prefix of the process's list)
@@ -188,11 +181,18 @@ struct Thread {
     /// whose GOT entries are set
     got_set: Vec<bool>,
     generation: u32,
+    /// the process's generation counter
+    proc_generation: Option<Arc<AtomicU32>>,
+    /// the modules instantiated here: (first slot, slots, module, its entries' indices in this
+    /// worker's function table)
+    mods: Vec<(u32, u32, Arc<Module>, Vec<u32>)>,
+    /// entry table slots used (crate::wasmdll_slots)
+    used: usize,
 }
 
 thread_local! {
     static THREAD: RefCell<Thread> = const { RefCell::new(Thread {
-        cpu: std::ptr::null_mut(), teb: 0, call_x86: None, init: false, have: 0, got_set: Vec::new(), generation: u32::MAX,
+        cpu: std::ptr::null_mut(), teb: 0, call_x86: None, syscall: None, init: false, have: 0, got_set: Vec::new(), generation: u32::MAX, proc_generation: None, mods: Vec::new(), used: 0,
     }) };
 }
 
@@ -303,7 +303,7 @@ pub extern "C" fn vnhost_wasmdll_attach(id: i32, base: u32, mem_at: u32) {
     }
     let _ = mem.write32(opt + 16, (BIAS + slot + m.entry_point).wrapping_sub(base));
     proc.dlls.push(Loaded { module: m, image: base, mem: data, slot, fixed: false });
-    proc.generation += 1;
+    proc.generation.fetch_add(1, Ordering::Release);
     if std::env::var_os("VNVM_TRACE_WASM").is_some() {
         eprintln!("vnwasm: pid {pid}: image {base:#x} data {data:#x} slots {slot}+{}", proc.dlls.last().unwrap().module.table_size);
     }
@@ -311,13 +311,29 @@ pub extern "C" fn vnhost_wasmdll_attach(id: i32, base: u32, mem_at: u32) {
 
 /// signal_wasm.c, when a thread starts.
 #[no_mangle]
-pub extern "C" fn vnhost_wasm_thread(cpu: *mut Cpu, teb: u32, call_x86: extern "C" fn(u32, u32) -> u64) {
+pub extern "C" fn vnhost_wasm_thread(
+    cpu: *mut Cpu,
+    teb: u32,
+    call_x86: extern "C" fn(u32, u32) -> u64,
+    syscall: extern "C" fn(u32, u32) -> u32,
+) {
     THREAD.with(|t| {
         let mut t = t.borrow_mut();
         t.cpu = cpu;
         t.teb = teb;
         t.call_x86 = Some(call_x86);
+        t.syscall = Some(syscall);
     });
+}
+
+static SYSCALLS: AtomicU64 = AtomicU64::new(0);
+
+/// Wasm DLL code makes syscall `id` with its arguments at `argp` (imported as `vn.syscall`).
+#[no_mangle]
+pub extern "C" fn vnhost_wasm_syscall(id: u32, argp: u32) -> u32 {
+    count_at(&SYSCALLS, id);
+    let f = THREAD.with(|t| t.borrow().syscall).expect("syscall on a thread without a CPU");
+    f(id, argp)
 }
 
 /// Instantiates what this thread lacks and sets GOT entries; the module whose first entry this
@@ -326,10 +342,15 @@ pub extern "C" fn vnhost_wasm_thread(cpu: *mut Cpu, teb: u32, call_x86: extern "
 fn sync(need: Option<u32>) {
     let fixup = THREAD.with(|t| {
         let mut t = t.borrow_mut();
+        if t.proc_generation.as_ref().is_some_and(|g| g.load(Ordering::Acquire) == t.generation) {
+            return None;
+        }
         let pid = crate::proc::current();
         let mut procs = PROCS.lock().unwrap();
         let proc = procs.get_or_insert_with(HashMap::new).get_mut(&pid)?;
-        if t.generation == proc.generation {
+        t.proc_generation = Some(proc.generation.clone());
+        let generation = proc.generation.load(Ordering::Acquire);
+        if t.generation == generation {
             return None;
         }
         if !t.init {
@@ -340,11 +361,22 @@ fn sync(need: Option<u32>) {
         while t.have < proc.dlls.len() {
             let d = &proc.dlls[t.have];
             let m = &d.module;
-            let r = unsafe { vnvm_wasm_instantiate(t.have as u32, m.bytes.as_ptr(), m.bytes.len(), d.mem, d.slot, d.image, m.table_size) };
+            let slots = &crate::wasmdll_slots::SLOTS;
+            let n = m.float.len();
+            if t.used + n > slots.len() {
+                eprintln!("vnwasm: out of entry table slots");
+                std::process::abort();
+            }
+            let entries: Vec<u32> = slots[t.used..t.used + n].iter().map(|&f| f as usize as u32).collect();
+            t.used += n;
+            let r = unsafe {
+                vnvm_wasm_instantiate(t.have as u32, m.bytes.as_ptr(), m.bytes.len(), d.mem, d.slot, d.image, m.table_size, entries.as_ptr(), n as u32)
+            };
             if r < 0 {
                 eprintln!("vnwasm: cannot instantiate the wasm DLL at {:#x}", d.image);
                 std::process::abort();
             }
+            t.mods.push((d.slot, m.table_size, m.clone(), entries));
             t.have += 1;
             t.got_set.push(false);
         }
@@ -360,12 +392,13 @@ fn sync(need: Option<u32>) {
             }
             if first {
                 d.fixed = true;
-                proc.generation += 1;
+                proc.generation.fetch_add(1, Ordering::Release);
                 fixup = Some(i as u32);
             }
         }
         // (a module some other thread fixes later: its GOT is set at the next sync)
-        t.generation = if proc.dlls.iter().all(|d| d.fixed) { proc.generation } else { proc.generation.wrapping_sub(1) };
+        let generation = proc.generation.load(Ordering::Acquire);
+        t.generation = if proc.dlls.iter().all(|d| d.fixed) { generation } else { generation.wrapping_sub(1) };
         fixup
     });
     if let Some(i) = fixup {
@@ -373,26 +406,29 @@ fn sync(need: Option<u32>) {
     }
 }
 
-/// (module index, entry kind, bytes popped, returns f64) of a slot
-fn lookup(slot: u32) -> Option<(u32, u32, u32, bool)> {
-    let pid = crate::proc::current();
-    let procs = PROCS.lock().unwrap();
-    let proc = procs.as_ref()?.get(&pid)?;
-    let (i, d) = proc.dlls.iter().enumerate().find(|(_, d)| slot >= d.slot && slot < d.slot + d.module.table_size)?;
-    let (k, pop) = *d.module.slots.get((slot - d.slot) as usize)?;
-    Some((i as u32, k as u32, pop as u32, d.module.float[k as usize]))
+/// (entry function's index in this worker's table, bytes popped, returns f64) of a slot
+fn lookup(slot: u32) -> Option<(u32, u32, bool)> {
+    THREAD.with(|t| {
+        let t = t.borrow();
+        let (s0, _, m, entries) = t.mods.iter().find(|(s0, n, _, _)| slot >= *s0 && slot < s0 + n)?;
+        let (k, pop) = *m.slots.get((slot - s0) as usize)?;
+        Some((entries[k as usize], pop as u32, m.float[k as usize]))
+    })
 }
 
 /// Calls the wasm function at `slot` with x86 arguments at `argp` (and ECX/EDX), the wasm
 /// stack below `sp`. EDX:EAX or ST0 (the f64).
 fn call(slot: u32, argp: u32, ecx: u32, edx: u32, sp: u32) -> Option<(u32, Result<u64, f64>)> {
     sync(Some(slot));
-    let (i, k, pop, float) = lookup(slot)?;
+    let (f, pop, float) = lookup(slot)?;
+    // (the entry `__vn_in<k>` of the module's instance on this thread, crates/vnwasm)
     let r = unsafe {
         if float {
-            Err(vnvm_wasm_call_f(i, k, slot, argp, ecx, edx, sp))
+            let f: extern "C" fn(u32, u32, u32, u32, u32) -> f64 = std::mem::transmute(f as usize);
+            Err(f(slot, argp, ecx, edx, sp))
         } else {
-            Ok(vnvm_wasm_call(i, k, slot, argp, ecx, edx, sp))
+            let f: extern "C" fn(u32, u32, u32, u32, u32) -> u64 = std::mem::transmute(f as usize);
+            Ok(f(slot, argp, ecx, edx, sp))
         }
     };
     Some((pop, r))
@@ -407,16 +443,42 @@ fn stats() -> bool {
     *ON.get_or_init(|| std::env::var_os("VNVM_WASM_STATS").is_some())
 }
 
+static TARGETS: Mutex<Option<HashMap<u32, u64>>> = Mutex::new(None);
+
 fn count(c: &AtomicU64) {
-    if stats() && (c.fetch_add(1, Ordering::Relaxed) + 1).is_power_of_two() {
-        eprintln!("vnwasm: {} entries, {} x86 calls", ENTRIES.load(Ordering::Relaxed), X86_CALLS.load(Ordering::Relaxed));
+    count_at(c, 0)
+}
+
+/// (with the x86 address called or entered, to list the busiest at 2^16 and up)
+fn count_at(c: &AtomicU64, at: u32) {
+    if !stats() {
+        return;
+    }
+    let n = c.fetch_add(1, Ordering::Relaxed) + 1;
+    let mut t = TARGETS.lock().unwrap();
+    let t = t.get_or_insert_with(HashMap::new);
+    *t.entry(at).or_default() += 1;
+    if n.is_power_of_two() {
+        eprintln!(
+            "vnwasm: {} entries, {} x86 calls, {} syscalls",
+            ENTRIES.load(Ordering::Relaxed),
+            X86_CALLS.load(Ordering::Relaxed),
+            SYSCALLS.load(Ordering::Relaxed)
+        );
+        if n >= 1 << 16 {
+            let mut v: Vec<_> = t.iter().map(|(a, n)| (*n, *a)).collect();
+            v.sort_unstable_by(|a, b| b.cmp(a));
+            for (n, a) in v.iter().take(40) {
+                eprintln!("vnwasm: target {a:08x} {n}");
+            }
+        }
     }
 }
 
 /// The x86 core reached `BIAS + slot`: x86 code called a wasm DLL function.
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_wasm_enter(cpu: *mut Cpu) {
-    count(&ENTRIES);
+    count_at(&ENTRIES, (*cpu).eip);
     let c = &mut *cpu;
     let mut mem = Linear;
     let slot = c.eip - BIAS;
@@ -456,7 +518,7 @@ pub extern "C" fn vnhost_wasm_x86_call(target: u32, argp: u32) -> u64 {
             }
         };
     }
-    count(&X86_CALLS);
+    count_at(&X86_CALLS, target);
     let f = THREAD.with(|t| t.borrow().call_x86).expect("x86 call on a thread without a CPU");
     f(target, argp)
 }
@@ -471,7 +533,7 @@ pub extern "C" fn vnhost_wasm_x86_call_f(target: u32, argp: u32) -> f64 {
             None => std::process::abort(),
         };
     }
-    count(&X86_CALLS);
+    count_at(&X86_CALLS, target);
     let (f, cpu) = THREAD.with(|t| {
         let t = t.borrow();
         (t.call_x86.expect("x86 call on a thread without a CPU"), t.cpu)
