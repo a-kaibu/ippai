@@ -45,6 +45,10 @@ else
   e=$(find . -iname '*.exe' -printf '%s\t%P\n' | grep -aviE 'unins|setup|install|config|vcredist|directx|dxsetup|tool|設定|update|DXWeb|dotnet' | sort -rn | head -1 | cut -f2)
 fi
 [ -n "$e" ] || { echo "no exe" >&2; exit 3; }
+# launchers that start the game as a second process: run the game exe itself (vnvm's processes
+# share one address space, so the game can't get 0x400000 while the launcher holds it)
+g=$(find . -iname cs2.exe -printf '%P\n' | head -1)
+[ -n "$g" ] && e=$g
 # the launcher helper (hangover/tests/autoclick.c) goes in the tree root: corpus-run.py starts the
 # game through it so launcher dialogs get pressed and every dialog's text gets logged
 AC=${AUTOCLICK_EXE:-$HOME/.cache/vnvm/autoclick.exe}
