@@ -587,6 +587,28 @@ impl<'a, M: Memory> X<'a, M> {
                 self.cpu.regs[ESP] = sp.wrapping_add(32);
                 self.done()
             }
+            // PUSHA/POPA with an operand-size prefix (66 60 / 66 61): the low 16 bits only
+            Pusha => {
+                let sp = self.cpu.regs[ESP];
+                let r = self.cpu.regs;
+                for (k, &v) in [r[0], r[1], r[2], r[3], sp, r[5], r[6], r[7]].iter().enumerate() {
+                    tryf!(self.mem.write16(sp.wrapping_sub(2 * (k as u32 + 1)), v as u16));
+                }
+                self.cpu.regs[ESP] = sp.wrapping_sub(16);
+                self.done()
+            }
+            Popa => {
+                let sp = self.cpu.regs[ESP];
+                let mut v = [0u16; 8];
+                for (k, slot) in v.iter_mut().enumerate() {
+                    *slot = tryf!(self.mem.read16(sp.wrapping_add(2 * k as u32)));
+                }
+                for (reg, k) in [(EDI, 0), (ESI, 1), (EBP, 2), (3, 4), (EDX, 5), (ECX, 6), (EAX, 7)] {
+                    self.cpu.regs[reg] = (self.cpu.regs[reg] & 0xffff_0000) | v[k] as u32;
+                }
+                self.cpu.regs[ESP] = sp.wrapping_add(16);
+                self.done()
+            }
             Pushfd | Pushf | Pushfq => {
                 let bits = match ins.mnemonic() { Pushf => 16, Pushfq => 64, _ => 32 };
                 let v = self.cpu.eflags & !(0x3 << 16); // VM and RF read as 0
