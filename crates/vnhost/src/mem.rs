@@ -68,6 +68,17 @@ unsafe fn zero(addr: usize, len: usize) {
     }
 }
 
+/// Zeroes the clean pages of a guest range that is becoming accessible: nothing should be in
+/// them, but wasm has no page protection, so a write to a reserved (inaccessible) page lands
+/// anyway, and Windows code expects newly committed memory to read as zero.
+unsafe fn zero_clean(addr: usize, len: usize) {
+    for p in addr / PAGE..(addr + len).div_ceil(PAGE) {
+        if DIRTY[p / 64].load(Ordering::Relaxed) & (1 << (p % 64)) == 0 {
+            std::ptr::write_bytes((p * PAGE) as *mut u8, 0, PAGE);
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct FileKey(u64, u64);
 
@@ -157,6 +168,15 @@ unsafe fn mmap_(addr: *mut c_void, len: size_t, prot: c_int, flags: c_int, fd: c
             // a reservation or decommit: discard contents, but leave shared file mappings alone
             // (wineserver maps some of them, like the user shared data, before Wine reserves
             // the surrounding address space)
+            // a process's own file views there go away (Wine unmaps a view in its reserved
+            // area by mapping PROT_NONE over it, not with munmap): forget and zero them, or the
+            // next allocation there starts with the file's bytes (a heap header full of a
+            // manifest's text: msacm32's DllMain crashed)
+            if want < SHARED_LO {
+                unmap_shared(want, len.min(SHARED_LO - want));
+            }
+            // (what is left: the shared window, views still mapped elsewhere, views starting
+            // below the range)
             let mut keep = shared_ranges(want, len);
             keep.extend(usd_overlap(want, len));
             keep.sort_unstable();
@@ -174,7 +194,7 @@ unsafe fn mmap_(addr: *mut c_void, len: size_t, prot: c_int, flags: c_int, fd: c
         // first and the file over it, which must not wipe what is already in it
         for (lo, hi) in outside_usd(want, len) {
             unmap_shared(lo, hi - lo);
-            zero(lo, hi - lo);
+            std::ptr::write_bytes(lo as *mut u8, 0, hi - lo);
         }
         mark(want, len, true);
         return addr;
@@ -382,7 +402,9 @@ pub unsafe fn munmap(addr: *mut c_void, len: size_t) -> c_int {
 pub unsafe fn mprotect(addr: *mut c_void, len: size_t, prot: c_int) -> c_int {
     let a = addr as usize;
     if in_guest(a, len) && prot != libc::PROT_NONE {
-        mark(a & !(PAGE - 1), len + (a & (PAGE - 1)), true);
+        let (lo, n) = (a & !(PAGE - 1), len + (a & (PAGE - 1)));
+        zero_clean(lo, n);
+        mark(lo, n, true);
     }
     0
 }
