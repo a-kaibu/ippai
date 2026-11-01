@@ -1,6 +1,6 @@
 # Hangover 方式 (QEMU なし) の設計
 
-2026-10-28 に方針転換した。フルシステム QEMU (vnvm 本体) はゲストカーネル・ソフトウェア TLB・
+2026-10-28 に方針転換した。フルシステム QEMU (当時の vnvm 本体、今は a-kaibu/vnqemu) はゲストカーネル・ソフトウェア TLB・
 TCG 中間表現の膨張という天井があり、ネイティブ並みの速度に届かない。そこで Hangover
 (ARM64 Linux 上で x86 Windows アプリを動かす Wine 派生) と同じ考え方で、
 
@@ -79,7 +79,7 @@ TCG 中間表現の膨張という天井があり、ネイティブ並みの速�
 7. **配信と保存**: Wine プレフィックスとゲームのストリーミング (vnvm の chunk store を流用)、
    OPFS キャッシュ、セーブデータの永続化。
 
-QEMU 版 vnvm (Ubuntu + Wine をそのまま起動) は互換性の確認用として残す。
+QEMU 版 vnvm (Ubuntu + Wine をそのまま起動) は記録用に [a-kaibu/vnqemu](https://github.com/a-kaibu/vnqemu) へ移した (2026-11-01)。
 
 ## 複数プロセス
 
