@@ -20,6 +20,7 @@
 
 pub mod wasm;
 pub mod dispatch;
+mod structure;
 pub mod saved;
 mod packed;
 
@@ -64,6 +65,27 @@ fn bump(c: &mut Code, i: usize) {
 }
 /// Indirect CALLs as wasm calls too (VNVM_JIT_CALLS=2)
 pub static INDIRECT_CALLS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// Function-level translation (VNVM_JIT_FN=1): a guest function (an address CALLs go to)
+/// becomes one wasm function `(cpu) -> status` with the guest state in the Cpu at its entry
+/// and exits. Its blocks are the ones its own jumps reach (never a call's target); a CALL is a
+/// wasm call of the callee's function when it has one (found in the hash table, entries
+/// tagged FN_TAG), and RET returns RET_FN with EIP in the Cpu. The caller goes on after the
+/// call when EIP is its return address, else passes the status up (longjmp, SEH, too deep, a
+/// callee that left for the dispatcher): the dispatcher continues at EIP. Status flags are
+/// dead across CALL and RET (C calling conventions). Regions stop following calls too.
+pub static FN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+fn fn_on() -> bool {
+    FN.load(core::sync::atomic::Ordering::Relaxed)
+}
+/// A jump's target that is in L_NEXT (`Gen::push_target`).
+const TARGET_NEXT: u32 = u32::MAX;
+/// The type of functions: (cpu, block) -> status.
+const T_FN: u32 = 4;
+/// A function's RET (EIP in the Cpu).
+pub const RET_FN: i32 = 0x5245_5446;
+/// Hash table entries of functions: the table index of the function's adapter for the
+/// region calling convention (the function itself is at the next index) | FN_TAG.
+pub const FN_TAG: u32 = 1 << 31;
 /// Most guest calls nested as wasm calls (deeper ones are tail calls: the wasm stack is small).
 const MAX_DEPTH: u32 = 200;
 
@@ -262,6 +284,12 @@ enum Flags {
 
 struct Gen<'a> {
     c: Code,
+    /// a function (FN), not a region
+    fnm: bool,
+    /// laid out by `structure` (jumps go to open labels or leave)
+    structured: bool,
+    /// dispatch nodes of jump tables: (context, table) -> node (after the blocks)
+    jtab: BTreeMap<(u32, u32), usize>,
     /// with [`LAYOUT`]: whether the instruction went to the interpreter, and per mnemonic
     /// ("*" marking those) the count and wasm bytes
     fell_back: bool,
@@ -1884,8 +1912,6 @@ impl<'a> Gen<'a> {
                     // no-op, flags unchanged
                 } else if rot && self.flags_live(STATUS_BITS) {
                     self.fallback(false);
-                } else if rot && bits < 32 {
-                    self.fallback(false);
                 } else {
                     let addr = self.mem_addr();
                     let (a, n, r) = (self.temp(), self.temp(), self.temp());
@@ -1921,6 +1947,17 @@ impl<'a> Gen<'a> {
                             self.c.get(n).shr_s();
                             if bits < 32 {
                                 self.c.u32c(m).and();
+                            }
+                        }
+                        // 8/16 bits: the operand repeated over 32 bits rotates the same (the result
+                        // in the top bits for ROL, the bottom for ROR); the count mod the width
+                        Rol | Ror if bits < 32 => {
+                            self.c.get(a).u32c(m).and().u32c(if bits == 8 { 0x0101_0101 } else { 0x0001_0001 }).mul();
+                            self.c.get(n).u32c(bits - 1).and();
+                            if ins.mnemonic() == Rol {
+                                self.c.rotl().u32c(32 - bits).shr_u();
+                            } else {
+                                self.c.rotr().u32c(m).and();
                             }
                         }
                         Rol => {
@@ -2381,6 +2418,12 @@ impl<'a> Gen<'a> {
                     self.goto_block(entry, ins.near_branch32());
                     return false;
                 }
+                if self.fnm {
+                    let t = self.temp();
+                    self.c.u32c(ins.near_branch32()).set(t);
+                    self.call_fn(t, next);
+                    return false;
+                }
                 let f = ins.near_branch32();
                 if self.block_of(f).is_none() && CALLS.load(core::sync::atomic::Ordering::Relaxed) {
                     let t = self.temp();
@@ -2399,6 +2442,10 @@ impl<'a> Gen<'a> {
                 self.c.set(t);
                 self.c.u32c(next).set(ret);
                 self.push32(ret);
+                if self.fnm {
+                    self.call_fn(t, next);
+                    return false;
+                }
                 if let Some(&(entry, Some(f))) = self.inlined.get(&(self.block_index as usize)) {
                     self.c.get(t).u32c(f).eq().if_();
                     self.depth += 1;
@@ -2415,6 +2462,17 @@ impl<'a> Gen<'a> {
                 self.jump_dyn();
                 return false;
             }
+            Jmp if self.structured && structure::jump_table(ins).is_some_and(|t| self.jtab.contains_key(&(self.ctx, t))) => {
+                // to the table's dispatch node: the index in L_BLK, the target in L_NEXT
+                let d = self.jtab[&(self.ctx, structure::jump_table(ins).unwrap())];
+                let addr = self.mem_addr();
+                self.read_op(0, addr);
+                self.c.set(L_NEXT);
+                self.get_reg(ins.memory_index());
+                self.c.set(L_BLK);
+                self.goto_block(d, TARGET_NEXT);
+                return false;
+            }
             Jmp if simple && op_bits(ins, 0) == 32 => {
                 let addr = self.mem_addr();
                 self.read_op(0, addr);
@@ -2427,6 +2485,11 @@ impl<'a> Gen<'a> {
                     self.goto_block(entry, f);
                     self.depth -= 1;
                     self.c.end();
+                }
+                if self.fnm && !(ins.op0_kind() == OpKind::Memory && ins.memory_index() != Register::None) {
+                    // a tail jump (an import thunk's `jmp [iat]`): a target without a function
+                    // gets one (see emit_fn_lookup)
+                    self.c.i32c(1).set(L_ST);
                 }
                 self.c.get(t);
                 self.jump_dyn();
@@ -2448,6 +2511,20 @@ impl<'a> Gen<'a> {
                     self.ctx = ctx;
                     self.depth -= 1;
                     self.c.end();
+                }
+                if self.fnm {
+                    // the state into the Cpu (status flags dead), back to the wasm caller
+                    self.mmx_flush();
+                    self.xmm_flush();
+                    self.x87_flush_out();
+                    bump(&mut self.c, 5);
+                    for i in 0..8 {
+                        self.c.get(L_CPU).get(L_REG + i).store32(Off::reg(i as usize));
+                    }
+                    self.c.get(L_CPU).get(L_BUD).store32(Off::budget());
+                    self.c.get(L_CPU).get(t).store32(Off::eip());
+                    self.c.i32c(RET_FN).ret();
+                    return false;
                 }
                 // most returns go back to the latest call in the region (through the dispatch,
                 // so the x87/MMX cache goes back to the Cpu first like any jump's)
@@ -2530,8 +2607,49 @@ impl<'a> Gen<'a> {
         k.map(|&k| k as usize)
     }
 
+    /// Pushes jump target `target`: TARGET_NEXT is the one in L_NEXT (a jump table's).
+    fn push_target(&mut self, target: u32) {
+        if target == TARGET_NEXT {
+            self.c.get(L_NEXT);
+        } else {
+            self.c.u32c(target);
+        }
+    }
+
+    /// [`Self::goto_block`] in a structured layout: to the open label, else out.
+    fn goto_structured(&mut self, k: usize, target: u32) {
+        if let Some(p) = self.back[k] {
+            // (pending signals are noticed when the budget runs out)
+            self.c.get(L_BUD).i32c(1).sub().tee(L_BUD).i32c(0).le_s();
+            self.c.if_();
+            self.depth += 1;
+            self.push_target(target);
+            self.exit_with(RET_CONTINUE);
+            self.depth -= 1;
+            self.c.end();
+            self.c.br(self.depth - p);
+        } else if let Some(p) = self.fwd[k] {
+            self.c.br(self.depth - p);
+        } else {
+            // not a way the layout has (irreducible): leave the function
+            self.push_target(target);
+            self.jump_dyn();
+        }
+    }
+
     /// Jumps to block `k` (at address `target`).
     fn goto_block(&mut self, k: usize, target: u32) {
+        if self.structured {
+            self.mmx_flush();
+            self.xmm_flush();
+            // (the cache stays for the code after a conditional jump)
+            let fc = self.fc;
+            self.x87_flush();
+            self.fc = FCache::default();
+            self.goto_structured(k, target);
+            self.fc = fc;
+            return;
+        }
         // around a single-block loop the MMX locals stay (see emit_level)
         let again = k as u32 == self.block_index && self.back[k].is_some();
         let keep = self.mm_loop != 0 && again;
@@ -2737,6 +2855,67 @@ impl<'a> Gen<'a> {
         self.jump_dyn();
     }
 
+    /// A function's CALL of the address in local `t` (the return address `next` pushed): a
+    /// wasm call of the target's function (the state through the Cpu), continuing at `next`
+    /// when it returned there. Without a function there, nested too deep or out of budget,
+    /// the dispatcher's way (leaving for `t`).
+    fn call_fn(&mut self, t: u32, next: u32) {
+        self.mmx_flush();
+        self.xmm_flush();
+        self.x87_flush();
+        self.fc = FCache::default();
+        let hash = offset_of!(Cpu, jit_hash) as u32;
+        let maskf = offset_of!(Cpu, jit_mask) as u32;
+        let (h, v) = (self.temp(), self.temp());
+        for i in 0..8 {
+            self.c.get(L_CPU).get(L_REG + i).store32(Off::reg(i as usize));
+        }
+        self.c.block(); // slow 0
+        self.c.block(); // found 0, slow 1
+        self.depth += 2;
+        self.c.get(L_BUD).i32c(1).sub().tee(L_BUD).i32c(0).le_s();
+        self.c.get(L_CPU).load32(Off::calls()).u32c(MAX_DEPTH).ge_u().or().br_if(1);
+        self.c.get(t).u32c(0x9e37_79b1).mul().i32c(15).shr_u().get(L_CPU).load32(maskf).and().set(h);
+        self.c.loop_(); // probe 0, found 1, slow 2
+        self.depth += 1;
+        self.c.get(L_CPU).load32(hash).get(h).i32c(3).shl().add().tee(v).load32(0).get(t).eq().br_if(1);
+        self.c.get(v).load32(0).eqz().br_if(2);
+        self.c.get(h).i32c(1).add().get(L_CPU).load32(maskf).and().set(h).br(0);
+        self.depth -= 1;
+        self.c.end(); // probe
+        self.depth -= 1;
+        self.c.end(); // found: entry at v + 4
+        self.c.get(v).load32(4).tee(v).u32c(FN_TAG).and().eqz().br_if(0);
+        bump(&mut self.c, 0);
+        self.c.get(L_CPU).get(L_BUD).store32(Off::budget());
+        self.c.get(L_CPU).get(L_CPU).load32(Off::calls()).i32c(1).add().store32(Off::calls());
+        self.c.get(L_CPU).get(v).i32c(ENTRY_SHIFT as i32).shr_u().u32c(0x7ff).and();
+        self.c.get(v).u32c((1 << ENTRY_SHIFT) - 1).and().i32c(1).add().call_indirect(T_FN, 0).set(h);
+        self.c.get(L_CPU).get(L_CPU).load32(Off::calls()).i32c(1).sub().store32(Off::calls());
+        // left another way (the state is in the Cpu): pass it on
+        self.c.get(h).i32c(RET_FN).ne().if_().get(h).ret().end();
+        self.c.get(L_CPU).load32(Off::eip()).u32c(next).ne().if_();
+        bump(&mut self.c, 4);
+        self.c.i32c(RET_CONTINUE).ret().end();
+        for i in 0..8 {
+            self.c.get(L_CPU).load32(Off::reg(i as usize)).set(L_REG + i);
+        }
+        self.c.get(L_CPU).load32(Off::budget()).set(L_BUD);
+        self.c.i32c(-1).set(L_OP);
+        self.goto(next);
+        self.depth -= 1;
+        self.c.end(); // slow
+        bump(&mut self.c, 1);
+        // (FN_TAG, target) in the ring: the host makes the callee a function
+        self.c.get(t).set(L_NEXT);
+        ring_write(&mut self.c, |c| {
+            c.u32c(FN_TAG);
+        });
+        self.c.get(L_NEXT);
+        self.exit_with(RET_CONTINUE);
+        self.temps -= 2;
+    }
+
     /// Notes the return address of a call for RET, if it is one of the region's blocks.
     fn ras_push(&mut self, ret: u32) {
         let Some(k) = self.block_of(ret) else { return };
@@ -2749,6 +2928,61 @@ impl<'a> Gen<'a> {
         self.c.set(L_NEXT);
         self.c.br(self.depth - 2);
     }
+}
+
+/// A jump table's dispatch node (`structure`): `br_table` on the index (L_BLK) to a case per
+/// entry that goes on to the entry's block if the loaded target (L_NEXT) is that entry, else
+/// (the table changed, or an index out of range) jumps there the dynamic way.
+fn emit_dispatch(g: &mut Gen<'_>, t: &structure::Table, node: usize) {
+    g.ctx = t.ctx;
+    g.block_index = node as u32;
+    g.flags = Flags::Entry;
+    let m = t.entries.len();
+    g.c.block(); // miss
+    g.depth += 1;
+    let miss = g.depth;
+    for _ in 0..m {
+        g.c.block();
+    }
+    g.depth += m as u32;
+    g.c.get(L_BLK).op(0x0e);
+    wasm::uleb(&mut g.c.b, m as u64);
+    for i in 0..m {
+        wasm::uleb(&mut g.c.b, i as u64);
+    }
+    wasm::uleb(&mut g.c.b, m as u64);
+    for &a in &t.entries {
+        g.c.end();
+        g.depth -= 1;
+        g.c.get(L_NEXT).u32c(a).eq().if_();
+        g.depth += 1;
+        g.goto(a);
+        g.depth -= 1;
+        g.c.end();
+        g.c.br(g.depth - miss);
+    }
+    g.c.end(); // miss
+    g.depth -= 1;
+    g.c.get(L_NEXT);
+    g.jump_dyn();
+}
+
+/// A function's adapter to the region calling convention (what the dispatcher and regions'
+/// jumps call): the state into the Cpu, the function (wasm function index `f`), and its RET
+/// as RET_CONTINUE (on at EIP).
+fn fn_adapter(f: u32) -> Func {
+    let mut c = Code::default();
+    for i in 0..8 {
+        c.get(L_CPU).get(L_REG + i).store32(Off::reg(i as usize));
+    }
+    c.get(L_CPU).get(L_BUD).store32(Off::budget());
+    lazy_to_cpu(&mut c);
+    c.end();
+    c.get(L_CPU).get(L_ARG).i32c(ENTRY_SHIFT as i32).shr_u().u32c(0x7ff).and().call(f).tee(L_ARG).i32c(RET_CONTINUE).get(L_ARG).i32c(RET_FN).ne().select();
+    for _ in 1..N_PARAMS {
+        c.i32c(0);
+    }
+    Func { ty: 2, locals: Vec::new(), code: c }
 }
 
 /// Stores the lazy operation in the locals to the Cpu (L_OP holds it).
@@ -2822,6 +3056,54 @@ fn emit_lookup(c: &mut Code) {
     c.end();
     bump(c, 9);
     c.i32c(RET_CONTINUE).set(L_ST).br(1);
+}
+
+/// [`emit_lookup`] of a function: a function's entry is a tail call of it (`jmp` to another
+/// function), anything else leaves for the dispatcher.
+fn emit_fn_lookup(c: &mut Code, entry: u32) {
+    let hash = offset_of!(Cpu, jit_hash) as u32;
+    let maskf = offset_of!(Cpu, jit_mask) as u32;
+    let (h, e, v) = (L_T, L_T + 1, L_T + 2);
+    // depth here: top 0, exit 1
+    bump(c, 6);
+    c.get(L_BUD).i32c(1).sub().tee(L_BUD).i32c(0).le_s();
+    c.if_().i32c(RET_CONTINUE).set(L_ST).br(2).end();
+    c.get(L_NEXT).eqz().if_().i32c(RET_CONTINUE).set(L_ST).br(2).end();
+    c.get(L_NEXT).u32c(0x9e37_79b1).mul().i32c(15).shr_u().get(L_CPU).load32(maskf).and().set(h);
+    c.block(); // miss: miss 0, top 1, exit 2
+    c.loop_(); // probe 0, miss 1, top 2, exit 3
+    c.get(L_CPU).load32(hash).get(h).i32c(3).shl().add().tee(e).load32(0).set(v);
+    c.get(v).get(L_NEXT).eq().if_();
+    c.get(e).load32(4).tee(v).u32c(FN_TAG).and().eqz().br_if(2);
+    bump(c, 7);
+    writeback(c);
+    c.get(L_CPU).get(v).i32c(ENTRY_SHIFT as i32).shr_u().u32c(0x7ff).and();
+    c.get(v).u32c((1 << ENTRY_SHIFT) - 1).and().i32c(1).add();
+    c.op(0x13).op(T_FN as u8).op(0); // return_call_indirect, table 0
+    c.end();
+    c.get(v).eqz().br_if(1);
+    c.get(h).i32c(1).add().get(L_CPU).load32(maskf).and().set(h).br(0);
+    c.end();
+    c.end();
+    bump(c, 9);
+    // leaving the function: into the ring as (entry, target), for the host to build the
+    // function again with the blocks that ran since
+    // (FN_TAG for a tail jump: the target becomes a function)
+    ring_write(c, |c| {
+        c.u32c(FN_TAG).u32c(entry).get(L_ST).select();
+    });
+    c.i32c(RET_CONTINUE).set(L_ST).br(1);
+}
+
+/// Writes (from, L_NEXT) to the ring (`from` pushes the first; uses L_T and L_T + 1).
+fn ring_write(c: &mut Code, from: impl FnOnce(&mut Code)) {
+    let (h, e) = (L_T, L_T + 1);
+    let ring = offset_of!(Cpu, jit_ring) as u32;
+    c.get(L_CPU).load32(ring).tee(h).get(h).load32(0).tee(e).i32c(1).add().store32(0);
+    c.get(h).get(e).i32c(RING_SIZE as i32 - 1).and().i32c(3).shl().add().tee(h);
+    from(c);
+    c.store32(4);
+    c.get(h).get(L_NEXT).store32(8);
 }
 
 /// Decodes the block at `eip` and flag liveness for it.
@@ -2920,6 +3202,30 @@ fn callee(blocks: &[(u32, Vec<Instruction>)], targets: &BTreeMap<u32, u32>, f: u
     own.extend(then);
     let body = own;
     ret.then_some((body, tail))
+}
+
+/// The blocks of the function at `f` if it is small enough to inline (MAX_INLINE instructions
+/// over the blocks its jumps reach, no calls, ending in RET).
+fn small_callee<M: Memory>(mem: &mut M, f: u32, trap: (u32, u32)) -> Option<Vec<u32>> {
+    let (mut seen, mut queue, mut size, mut ret) = (Vec::new(), alloc::vec![f], 0, false);
+    while let Some(a) = queue.pop() {
+        if seen.contains(&a) {
+            continue;
+        }
+        if !(GUEST_LO..GUEST_HI).contains(&a) || (trap.0..trap.1).contains(&a) {
+            return None;
+        }
+        seen.push(a);
+        let list = decode(mem, a);
+        size += list.len();
+        let last = list.last()?;
+        if size > MAX_INLINE || matches!(last.flow_control(), FlowControl::Call | FlowControl::IndirectCall | FlowControl::IndirectBranch) {
+            return None;
+        }
+        ret |= last.mnemonic() == Mnemonic::Ret;
+        queue.extend(successors(last));
+    }
+    ret.then_some(seen)
 }
 
 /// A loop the code around enters only in the middle (a jump to the condition at its end) starts
@@ -3436,6 +3742,9 @@ fn block_liveness(g: &Gen, blocks: &[(u32, Vec<Instruction>)]) -> (Vec<u32>, Vec
     let succ: Vec<Option<Vec<usize>>> = (0..n)
         .map(|k| {
             let last = blocks[k].1.last().unwrap();
+            if g.fnm && matches!(last.flow_control(), FlowControl::Call | FlowControl::IndirectCall | FlowControl::Return) {
+                return Some(Vec::new());
+            }
             let direct = last.op0_kind() == OpKind::NearBranch32 || last.flow_control() == FlowControl::Next;
             if !direct {
                 return None;
@@ -3479,13 +3788,29 @@ fn block_liveness(g: &Gen, blocks: &[(u32, Vec<Instruction>)]) -> (Vec<u32>, Vec
 /// Adds a region starting at `roots` to `module` (one function, exported as "f<n>"),
 /// taking at most `max_blocks` blocks whose start `accept` agrees to. None if not even the
 /// entry block can be translated.
-pub fn translate_region<M: Memory>(
+pub fn translate_region<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u32], max_blocks: usize, accept: impl FnMut(u32) -> bool) -> Option<Region> {
+    translate(module, mem, roots, max_blocks, accept, None)
+}
+
+/// Adds the function at `entry` (see [`FN`]) to `module`: its adapter for the region calling
+/// convention ("f<n>", entered by the dispatcher and by regions' jumps), then the function
+/// ("f<n+1>"), entered at any of `starts` (table index | block << ENTRY_SHIFT | FN_TAG).
+/// Small callees are inlined whether they ran or not (if outside `trap`).
+pub fn translate_function<M: Memory>(module: &mut Module, mem: &mut M, entry: u32, max_blocks: usize, trap: (u32, u32), accept: impl FnMut(u32) -> bool) -> Option<Region> {
+    translate(module, mem, &[entry], max_blocks, accept, Some(trap))
+}
+
+fn translate<M: Memory>(
     module: &mut Module,
     mem: &mut M,
     roots: &[u32],
     max_blocks: usize,
     mut accept: impl FnMut(u32) -> bool,
+    fn_trap: Option<(u32, u32)>,
 ) -> Option<Region> {
+    let fnm = fn_trap.is_some();
+    // blocks of small callees to inline (functions)
+    let mut forced: Vec<u32> = Vec::new();
     let mut blocks: Vec<(u32, Vec<Instruction>)> = Vec::new();
     let mut targets = BTreeMap::new();
     let mut queue: VecDeque<u32> = roots.iter().copied().collect();
@@ -3495,7 +3820,7 @@ pub fn translate_region<M: Memory>(
         if blocks.len() >= max_blocks.min(MAX_BLOCKS) || total >= MAX_REGION_INS {
             break;
         }
-        if targets.contains_key(&a) || !(GUEST_LO..GUEST_HI).contains(&a) || !accept(a) {
+        if targets.contains_key(&a) || !(GUEST_LO..GUEST_HI).contains(&a) || !(forced.contains(&a) || accept(a)) {
             continue;
         }
         let list = match hle_at(mem, a) {
@@ -3506,7 +3831,18 @@ pub fn translate_region<M: Memory>(
             None => decode(mem, a),
         };
         let Some(last) = list.last() else { continue };
-        queue.extend(successors(last));
+        if fn_on() && last.flow_control() == FlowControl::Call {
+            queue.push_back(last.next_ip32());
+            // a small callee comes along to be inlined (see `inline` below)
+            if let (Some(trap), OpKind::NearBranch32) = (fn_trap, last.op0_kind()) {
+                if let Some(b) = small_callee(mem, last.near_branch32(), trap) {
+                    forced.extend(b);
+                    queue.push_back(last.near_branch32());
+                }
+            }
+        } else {
+            queue.extend(successors(last));
+        }
         // `jmp [index*4 + table]` (switch statements, interpreters' opcode dispatch): the
         // table's targets that ran join the region, so the jump stays inside it
         if last.flow_control() == FlowControl::IndirectBranch && last.op0_kind() == OpKind::Memory
@@ -3601,7 +3937,7 @@ pub fn translate_region<M: Memory>(
     let mut targets = BTreeMap::new();
     for (k, &b) in order.iter().enumerate() {
         targets.insert((ctxs[k], blocks[b].0), k as u32);
-        if ctxs[k] == 0 {
+        if ctxs[k] == 0 && (!fnm || blocks[b].0 == roots[0]) {
             starts.push((blocks[b].0, k as u32));
         }
     }
@@ -3619,6 +3955,9 @@ pub fn translate_region<M: Memory>(
         module.types.push(FuncType { params: x87, results: alloc::vec![] });
         module.imports.push(Import::Func("x87", 3));
         module.imports.push(Import::Table("table"));
+    }
+    if fnm && module.types.len() == T_FN as usize {
+        module.types.push(FuncType { params: alloc::vec![I32; 2], results: alloc::vec![I32] });
     }
 
     let n = blocks.len() as u32;
@@ -3641,8 +3980,26 @@ pub fn translate_region<M: Memory>(
     for &h in loops.keys() {
         head[h] = true;
     }
+    // a function's jump tables: one dispatch node each
+    let mut tables: Vec<structure::Table> = Vec::new();
+    let mut jtab = BTreeMap::new();
+    if fnm {
+        for (k, (_, list)) in blocks.iter().enumerate() {
+            let last = list.last().unwrap();
+            if let Some(t) = structure::jump_table(last) {
+                if !jtab.contains_key(&(ctxs[k], t)) {
+                    jtab.insert((ctxs[k], t), n as usize + tables.len());
+                    tables.push(structure::Table { ctx: ctxs[k], entries: structure::table_entries(mem, t, last.ip32()) });
+                }
+            }
+        }
+    }
+    let nodes = n as usize + tables.len();
     let mut g = Gen {
         c: Code::default(),
+        fnm,
+        structured: fnm,
+        jtab,
         depth: 0,
         flags: Flags::Entry,
         targets: &targets,
@@ -3653,8 +4010,8 @@ pub fn translate_region<M: Memory>(
         inlined: &inlined,
         live_out: Vec::new(),
         loops: &loops,
-        fwd: alloc::vec![None; n as usize],
-        back: alloc::vec![None; n as usize],
+        fwd: alloc::vec![None; nodes],
+        back: alloc::vec![None; nodes],
         head,
         returns: &returns,
         ins: &blocks[0].1[0],
@@ -3692,32 +4049,77 @@ pub fn translate_region<M: Memory>(
     }
     g.live_out = block_liveness(&g, &blocks).1;
     bump(&mut g.c, 10);
-    g.c.get(L_ARG).i32c(ENTRY_SHIFT as i32).shr_u().set(L_BLK);
+    if fnm {
+        // the state from the Cpu; status flags dead (a call's target)
+        for i in 0..8 {
+            g.c.get(L_CPU).load32(Off::reg(i as usize)).set(L_REG + i);
+        }
+        g.c.get(L_CPU).load32(Off::budget()).set(L_BUD);
+        g.c.i32c(-1).set(L_OP);
+        g.c.get(L_ARG).set(L_BLK);
+    } else {
+        g.c.get(L_ARG).i32c(ENTRY_SHIFT as i32).shr_u().set(L_BLK);
+    }
     g.c.block(); // exit
-    g.c.loop_(); // top
+    if fnm {
+        g.c.block(); // (where regions have the top loop)
+    } else {
+        g.c.loop_(); // top
+    }
     g.c.block(); // dyn: returns and indirect jumps
     g.depth = 2;
     let mut count = 0;
-    let items = level(0, n as usize - 1, &loops);
-    emit_level(&mut g, &blocks, &loops, &items, None, &mut count);
+    if fnm {
+        let entry = starts[0].1 as usize;
+        let l = structure::layout(&blocks, &ctxs, &targets, &inlined, &ret_to, &tables, &g.jtab, entry);
+        if LAYOUT.load(core::sync::atomic::Ordering::Relaxed) {
+            use core::fmt::Write;
+            let _ = writeln!(g.notes, "IRREDUCIBLE {}", l.irreducible());
+        }
+        let nb = n as usize;
+        structure::emit(&mut g, &l, |g, k| {
+            if k < nb {
+                emit_block(g, &blocks, k, &mut count);
+            } else {
+                emit_dispatch(g, &tables[k - nb], k);
+            }
+        });
+    } else {
+        let items = level(0, n as usize - 1, &loops);
+        emit_level(&mut g, &blocks, &loops, &items, None, &mut count);
+    }
     g.c.end(); // dyn
-    emit_lookup(&mut g.c);
+    if fnm {
+        emit_fn_lookup(&mut g.c, roots[0]);
+    } else {
+        emit_lookup(&mut g.c);
+    }
     g.c.end(); // top
     g.c.end(); // exit
     writeback(&mut g.c);
     g.c.get(L_ST);
-    for _ in 1..N_PARAMS {
-        g.c.i32c(0);
+    if !fnm {
+        for _ in 1..N_PARAMS {
+            g.c.i32c(0);
+        }
     }
 
-    let mut locals = alloc::vec![I32; N_LOCALS_I32 as usize];
+    let mut locals = alloc::vec![I32; if fnm { N_PARAMS as usize - 2 } else { 0 } + N_LOCALS_I32 as usize];
     locals.extend_from_slice(&[I64, F64, F64, V128, V128, I32]);
     locals.extend_from_slice(&[F64; 8]);
     locals.extend_from_slice(&[V128; 16]);
     locals.push(I32); // L_AB
     locals.extend_from_slice(&[I32; N_SLOTS as usize]);
-    let (locals, body) = wasm::compact_locals(N_PARAMS, &locals, core::mem::take(&mut g.c));
-    module.funcs.push(Func { ty: 2, locals, code: body });
+    if fnm {
+        let (locals, body) = wasm::compact_locals(2, &locals, core::mem::take(&mut g.c));
+        let at = module.funcs.len() as u32;
+        module.funcs.push(fn_adapter(module.imported_funcs() + at + 1));
+        module.funcs.push(Func { ty: T_FN, locals, code: body });
+        module.name_at = at + 1;
+    } else {
+        let (locals, body) = wasm::compact_locals(N_PARAMS, &locals, core::mem::take(&mut g.c));
+        module.funcs.push(Func { ty: 2, locals, code: body });
+    }
     let mut layout = String::new();
     if LAYOUT.load(core::sync::atomic::Ordering::Relaxed) {
         use core::fmt::Write;

@@ -392,6 +392,8 @@ pub struct Module {
     pub funcs: Vec<Func>,
     /// name of the first function, for profilers ("name" section)
     pub name: Option<alloc::string::String>,
+    /// which function `name` names
+    pub name_at: u32,
 }
 
 impl Module {
@@ -496,7 +498,7 @@ impl Module {
             name(&mut s, "name");
             let mut names = Vec::new();
             uleb(&mut names, 1);
-            uleb(&mut names, base as u64);
+            uleb(&mut names, base as u64 + self.name_at as u64);
             name(&mut names, n);
             s.push(1); // function names
             uleb(&mut s, names.len() as u64);

@@ -292,6 +292,23 @@ static unsigned locked(void)
     return sum;
 }
 
+/* 8/16-bit rotates (byte swaps of 16-bit values, hashes), by an immediate and by CL */
+static unsigned rotates(void)
+{
+    sum = 0;
+    for (int i = 0; i < 20000; i++)
+    {
+        unsigned a = rnd(), b = rnd(), c = rnd() & 31;
+        __asm__ volatile("rolw $8, %w0\n\trorb $3, %b1\n\trolb %%cl, %h0\n\trorw %%cl, %w1" : "+Q"(a), "+Q"(b) : "c"(c));
+        mix(a);
+        mix(b);
+        __asm__ volatile("rolw %%cl, %w0\n\trolb $1, %b1\n\trorw $15, %w0" : "+r"(a), "+q"(b) : "c"(c));
+        mix(a);
+        mix(b);
+    }
+    return sum;
+}
+
 int main(void)
 {
     printf("shifts %08x\n", shifts());
@@ -302,5 +319,6 @@ int main(void)
     printf("fists  %08x\n", fists());
     printf("string %08x\n", strings());
     printf("locked %08x\n", locked());
+    printf("rotate %08x\n", rotates());
     return 0;
 }

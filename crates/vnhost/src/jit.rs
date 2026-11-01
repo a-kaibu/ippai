@@ -63,6 +63,10 @@ struct State {
     merges: u32,
     /// table index of the saved regions' first function on this thread, once instantiated
     saved: Option<i32>,
+    /// entries of functions (jit::FN): regions never take their hash entry
+    fns: HashSet<u32>,
+    /// times each function was built
+    fn_builds: HashMap<u32, u32>,
 }
 
 /// Samples of the same jump between regions (out of RING_SIZE) that make them merge.
@@ -70,6 +74,11 @@ const MERGE_SAMPLES: usize = 12;
 /// Ring windows a jump must top that way before the merge: startup code has jumps that are
 /// hot for a moment only, and each merge is a new region V8 compiles again.
 const MERGE_WINDOWS: u32 = 8;
+/// The same for functions (a function built again, or a callee becoming one).
+const FN_SAMPLES: usize = 6;
+const FN_WINDOWS: u32 = 2;
+/// Builds of one function, at most.
+const FN_BUILDS: u32 = 8;
 /// Merges per thread, at most (each compiles a new region).
 const MAX_MERGES: u32 = 512;
 
@@ -150,6 +159,8 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
                 hot: HashMap::new(),
                 merges: 0,
                 saved: None,
+                fns: HashSet::new(),
+                fn_builds: HashMap::new(),
             }
         });
         f(st)
@@ -175,6 +186,7 @@ fn init_flags() {
         let calls = std::env::var("VNVM_JIT_CALLS").unwrap_or_default();
         jit::CALLS.store(calls == "1" || calls == "2", std::sync::atomic::Ordering::Relaxed);
         jit::INDIRECT_CALLS.store(calls == "2", std::sync::atomic::Ordering::Relaxed);
+        jit::FN.store(std::env::var("VNVM_JIT_FN").is_ok_and(|v| v == "1"), std::sync::atomic::Ordering::Relaxed);
     });
 }
 
@@ -245,6 +257,9 @@ fn enter(st: &mut State, base: u32, roots: Vec<u32>, starts: &[(u32, u32)]) {
         st.hash = bigger;
     }
     for &(a, i) in starts {
+        if st.fns.contains(&a) {
+            continue;
+        }
         if insert(&mut st.hash, a, base | i << jit::ENTRY_SHIFT) {
             st.used += 1;
         }
@@ -413,17 +428,46 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
         });
     }
     st.ring[0] = 0;
-    // the most frequent pair (runs of equal ones once sorted)
+    // pairs by frequency (runs of equal ones once sorted)
     jumps.sort_unstable();
-    let (mut best, mut c, mut run) = (jumps[0], 0, 0);
+    let mut runs: Vec<(usize, u64)> = Vec::new();
     for i in 0..N {
-        run = if i > 0 && jumps[i] == jumps[i - 1] { run + 1 } else { 1 };
-        if run > c {
-            (best, c) = (jumps[i], run);
+        match runs.last_mut() {
+            Some(r) if r.1 == jumps[i] => r.0 += 1,
+            _ => runs.push((1, jumps[i])),
         }
     }
+    runs.sort_by(|a, b| b.0.cmp(&a.0));
+    // functions (jit::FN): a call or tail jump that found no function there, or a function
+    // left often (built again with the blocks that ran since)
+    for &(c, p) in &runs {
+        let (from, to) = ((p >> 32) as u32, p as u32);
+        if c < FN_SAMPLES {
+            break;
+        }
+        let fnish = (from == jit::FN_TAG && !st.fns.contains(&to)) || (from != jit::FN_TAG && st.fns.contains(&from) && !st.fns.contains(&to));
+        if !fnish {
+            continue;
+        }
+        let f = if from == jit::FN_TAG { to } else { from };
+        let w = st.hot.entry((from, to)).or_insert(0);
+        *w += 1;
+        let n = st.fn_builds.get(&f).copied().unwrap_or(0);
+        if *w >= FN_WINDOWS && n < FN_BUILDS {
+            st.hot.remove(&(from, to));
+            compile_fn(st, f, (cpu.trap_lo, cpu.trap_hi), &mut Linear);
+            return;
+        }
+    }
+    // regions: the most frequent pair between them
+    let Some(&(c, best)) = runs.iter().find(|r| {
+        let (from, to) = ((r.1 >> 32) as u32, r.1 as u32);
+        from != jit::FN_TAG && !st.fns.contains(&from) && !st.fns.contains(&to)
+    }) else {
+        return;
+    };
     let (from, to) = ((best >> 32) as u32, best as u32);
-    if c < MERGE_SAMPLES || st.merges >= MAX_MERGES {
+    if c < MERGE_SAMPLES || st.merges >= MAX_MERGES || st.fns.contains(&to) {
         return;
     }
     let w = st.hot.entry((from, to)).or_insert(0);
@@ -501,6 +545,9 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
             return false;
         }
         st.misses.remove(&eip);
+        if jit::FN.load(std::sync::atomic::Ordering::Relaxed) && (called(cpu, mem) || std::env::var_os("VNVM_JIT_FN_CALLED").is_none()) {
+            return compile_fn(st, eip, (cpu.trap_lo, cpu.trap_hi), mem);
+        }
         // the block and what it statically reaches, as one function
         let mut m = Module { name: Some(format!("x86_{eip:08x}")), ..Module::default() };
         if std::env::var_os("VNVM_JIT_LAYOUT").is_some() {
@@ -534,6 +581,75 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         }
         ok
     })
+}
+
+/// Whether cpu.eip looks like a function's entry: the return address on the stack follows a
+/// CALL of it (or an indirect CALL). Only a guess: a wrong one costs speed, not correctness.
+fn called(cpu: &Cpu, mem: &mut Linear) -> bool {
+    let mut b = [0u8; 4];
+    if vnx86::Memory::fetch(mem, cpu.regs[4], &mut b) < 4 {
+        return false;
+    }
+    let ra = u32::from_le_bytes(b);
+    let mut c = [0u8; 7];
+    if ra < 7 || vnx86::Memory::fetch(mem, ra - 7, &mut c) < 7 {
+        return false;
+    }
+    if c[2] == 0xe8 && ra.wrapping_add(u32::from_le_bytes([c[3], c[4], c[5], c[6]])) == cpu.eip {
+        return true;
+    }
+    [2usize, 3, 4, 6, 7].iter().any(|&k| c[7 - k] == 0xff && (c[8 - k] >> 3) & 7 == 2)
+}
+
+/// Compiles the function at cpu.eip (jit::FN): its adapter and itself, the hash entry tagged.
+fn compile_fn(st: &mut State, eip: u32, (lo, hi): (u32, u32), mem: &mut Linear) -> bool {
+    *st.fn_builds.entry(eip).or_insert(0) += 1;
+    if std::env::var_os("VNVM_JIT_LAYOUT").is_some() {
+        jit::LAYOUT.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    let mut m = Module { name: Some(format!("x86_{eip:08x}_fn")), ..Module::default() };
+    let (misses, known) = (&st.misses, &st.known);
+    let Some(region) = jit::translate_function(&mut m, mem, eip, MAX_BLOCKS, (lo, hi), |a| !(a >= lo && a < hi) && (a == eip || ran(misses, known, a))) else {
+        st.known.insert(eip);
+        return false;
+    };
+    if std::env::var_os("VNVM_JIT_LAYOUT").is_some() {
+        eprintln!("vnjit fn {eip:#x}\n{}", region.layout);
+    }
+    if stats() {
+        eprintln!("vnjit fn {eip:#x} build {}: {} instructions", st.fn_builds[&eip], region.instructions);
+    }
+    let bytes = m.finish();
+    if let Some(dir) = std::env::var_os("VNVM_JIT_DUMP") {
+        let _ = std::fs::write(std::path::Path::new(&dir).join(format!("{eip:08x}-fn.wasm")), &bytes);
+    }
+    #[cfg(target_os = "emscripten")]
+    let base = unsafe { vnvm_jit_load(bytes.as_ptr(), bytes.len(), 2) };
+    #[cfg(not(target_os = "emscripten"))]
+    let base = -1;
+    st.known.insert(eip);
+    if base < 0 {
+        return false;
+    }
+    // every block of it enters it (a region at one of them hands over to the function)
+    for &(a, _) in &region.starts {
+        st.fns.insert(a);
+        st.known.insert(a);
+    }
+    enter(st, base as u32, vec![eip], &[]);
+    while (st.used + region.starts.len()) * 2 > st.hash.len() {
+        let mut bigger = vec![[0u32; 2]; st.hash.len() * 2];
+        for e in st.hash.iter().filter(|e| e[0] != 0) {
+            insert(&mut bigger, e[0], e[1]);
+        }
+        st.hash = bigger;
+    }
+    for &(a, k) in &region.starts {
+        if insert(&mut st.hash, a, base as u32 | k << jit::ENTRY_SHIFT | jit::FN_TAG) {
+            st.used += 1;
+        }
+    }
+    true
 }
 
 thread_local! {
