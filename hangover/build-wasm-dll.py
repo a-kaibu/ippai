@@ -34,7 +34,7 @@ WASM_FLAGS = ['--target=wasm32-unknown-unknown', '-D__i386__', '-D__vnwasm_pe__'
 
 # sources left out (x86 through and through: exception dispatch, contexts, x87 ABI helpers);
 # their exports stay x86
-EXCLUDE = {'ntdll': {'signal_i386.o'}}
+EXCLUDE = {}
 
 def link_rule(dll):
     """(spec, objects, static libraries) of dlls/.../i386-windows/<dll>.dll in the Makefile"""
@@ -81,16 +81,19 @@ def libm(out):
     """musl's math functions (from emscripten's copy) for what the x86 build got from gcc's
     builtins or x87 instructions (exp2, ...); only pulled in where a DLL needs them"""
     musl = EMSDK + '/upstream/emscripten/system/lib/libc/musl'
-    srcs = sorted(f for f in os.listdir(musl + '/src/math') if f.endswith('.c'))
+    rt = EMSDK + '/upstream/emscripten/system/lib/compiler-rt/lib/builtins'
+    srcs = sorted(musl + '/src/math/' + f for f in os.listdir(musl + '/src/math') if f.endswith('.c'))
+    # and compiler-rt's helpers (__multi3, ...)
+    srcs += sorted(rt + '/' + f for f in os.listdir(rt) if f.endswith('.c') and f.endswith(('ti3.c', 'ti4.c', 'di3.c', 'di4.c')))
     objdir = os.path.join(out, 'obj', 'libm')
     os.makedirs(objdir, exist_ok=True)
     inc = ['-I' + musl + d for d in ('/src/include', '/src/internal', '/arch/emscripten', '/arch/generic', '/include')] + \
           ['-I' + EMSDK + '/upstream/emscripten/system/lib/libc', '-I' + EMSDK + '/upstream/emscripten/cache/sysroot/include']
     def one(f):
-        dst = os.path.join(objdir, f[:-2] + '.o')
+        dst = os.path.join(objdir, os.path.basename(f)[:-2] + ('.rt.o' if '/builtins/' in f else '.o'))
         if not os.path.exists(dst):
             r = subprocess.run([CLANG, '--target=wasm32-unknown-unknown', '-fPIC', '-matomics', '-mbulk-memory',
-                                '-O2', '-w', '-nostdlibinc', '-c', '-o', dst, musl + '/src/math/' + f] + inc,
+                                '-O2', '-w', '-nostdlibinc', '-c', '-o', dst, f] + inc,
                                capture_output=True, text=True)
             if r.returncode:
                 return None
@@ -105,7 +108,8 @@ def build(dll, out, cmds):
     os.makedirs(objdir, exist_ok=True)
     # winecrt0's portable parts (debug channels, unix calls); its entry point and the x86
     # helpers are replaced by hangover/wasmdll/crt.c
-    crt0 = ['libs/winecrt0/i386-windows/%s.o' % n for n in ('debug', 'unix_lib')]
+    # (not for ntdll: it has its own, and the x86 image's unix call dispatcher is the one set up)
+    crt0 = [] if dll == 'ntdll' else ['libs/winecrt0/i386-windows/%s.o' % n for n in ('debug', 'unix_lib')]
     units = objs + [o for l in libs for o in lib_objects(cmds, l)] + crt0
     with ThreadPoolExecutor(os.cpu_count()) as ex:
         res = list(ex.map(lambda o: compile_one(cmds, o, objdir), units))

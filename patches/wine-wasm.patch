@@ -1324,6 +1324,18 @@
      {
          InterlockedDecrement( &nb_threads );
          status = STATUS_NO_MEMORY;
+@@ -1679,6 +1692,11 @@
+     else
+         ERR_(seh)("Unhandled exception code %x flags %x addr %p\n",
+                   rec->ExceptionCode, rec->ExceptionFlags, rec->ExceptionAddress );
++#ifdef __wasm__
++    if (rec->ExceptionCode == EXCEPTION_WINE_STUB && rec->NumberParameters >= 2)
++        ERR_(seh)("unimplemented function %s.%s\n", (const char *)rec->ExceptionInformation[0],
++                  (const char *)rec->ExceptionInformation[1] );
++#endif
+ 
+     NtTerminateProcess( NtCurrentProcess(), rec->ExceptionCode );
+     return STATUS_SUCCESS;
 --- a/dlls/ntdll/unix/unix_private.h
 +++ b/dlls/ntdll/unix/unix_private.h
 @@ -354,6 +354,19 @@
@@ -3860,6 +3872,76 @@
      UINT ret, rem;
  
      __asm__("divl %4"
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -70,6 +70,14 @@
+ 
+ static void __fastcall default_thread_init_func( DWORD unknown, LPTHREAD_START_ROUTINE entry, void *arg );
+ void (FASTCALL *pBaseThreadInitThunk)(DWORD,LPTHREAD_START_ROUTINE,void *) = default_thread_init_func;
++#ifdef __vnwasm_pe__
++/* data exports the unix side fills: the x86 image's copies (crates/vnwasm resolves them) */
++extern NTSTATUS (WINAPI *__wine_unix_call_dispatcher)( unixlib_handle_t, unsigned int, void * );
++extern SYSTEM_DLL_INIT_BLOCK LdrSystemDllInitBlock;
++extern void *__wine_syscall_dispatcher;
++extern unixlib_handle_t __wine_unixlib_handle;
++static DWORD (WINAPI *pCtrlRoutine)(void *);
++#else
+ NTSTATUS (WINAPI *__wine_unix_call_dispatcher)( unixlib_handle_t, unsigned int, void * ) = NULL;
+ 
+ static DWORD (WINAPI *pCtrlRoutine)(void *);
+@@ -78,6 +86,7 @@
+ 
+ void *__wine_syscall_dispatcher = NULL;
+ unixlib_handle_t __wine_unixlib_handle = 0;
++#endif
+ 
+ /* windows directory */
+ const WCHAR windows_dir[] = L"C:\\windows";
+@@ -2359,9 +2368,14 @@
+     WINE_MODREF *wm;
+     void *module;
+ 
++#ifdef __vnwasm_pe__
++    /* function addresses are wasm table slots, not addresses in the image */
++    { extern IMAGE_DOS_HEADER __ImageBase; module = &__ImageBase; (void)meminfo; }
++#else
+     NtQueryVirtualMemory( GetCurrentProcess(), LdrInitializeThunk, MemoryBasicInformation,
+                           &meminfo, sizeof(meminfo), NULL );
+     module = meminfo.AllocationBase;
++#endif
+     wm = alloc_module( module, &nt_name, TRUE );
+     assert( wm );
+     wm->ldr.Flags &= ~LDR_DONT_RESOLVE_REFS;
+@@ -4372,7 +4386,11 @@
+ 
+ #else
+ 
++#ifdef __vnwasm_pe__
++extern void *Wow64Transition;
++#else
+ void *Wow64Transition = NULL;
++#endif
+ 
+ static void map_wow64cpu(void)
+ {
+--- a/dlls/ntdll/locale.c
++++ b/dlls/ntdll/locale.c
+@@ -32,9 +32,15 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(nls);
+ 
++#ifdef __vnwasm_pe__
++extern UINT NlsAnsiCodePage;  /* the x86 image's (exported) */
++extern BYTE NlsMbCodePageTag;
++extern BYTE NlsMbOemCodePageTag;
++#else
+ UINT NlsAnsiCodePage = 0;
+ BYTE NlsMbCodePageTag = 0;
+ BYTE NlsMbOemCodePageTag = 0;
++#endif
+ 
+ static LCID system_lcid;
+ static NLSTABLEINFO nls_info = { { CP_UTF8 }, { CP_UTF8 } };
 --- a/dlls/ntdll/math.c
 +++ b/dlls/ntdll/math.c
 @@ -37,7 +37,7 @@
@@ -3871,6 +3953,64 @@
  
  #define FPU_DOUBLE(var) double var; \
      __asm__ __volatile__( "fstpl %0;fwait" : "=m" (var) : )
+--- a/dlls/ntdll/signal_i386.c
++++ b/dlls/ntdll/signal_i386.c
+@@ -199,12 +199,14 @@
+ /*******************************************************************
+  *		KiUserCallbackDispatcher (NTDLL.@)
+  */
++#ifndef __vnwasm_pe__  /* the x86 one: its NtCallbackReturn ends the callback's run loop */
+ void WINAPI KiUserCallbackDispatcher( ULONG id, void *args, ULONG len )
+ {
+     NTSTATUS status = dispatch_user_callback( args, len, id );
+     status = NtCallbackReturn( NULL, 0, status );
+     for (;;) RtlRaiseStatus( status );
+ }
++#endif
+ 
+ 
+ /***********************************************************************
+@@ -227,13 +229,18 @@
+     float_status;
+ 
+     context->ContextFlags |= CONTEXT_FLOATING_POINT;
++#ifdef __vnwasm_pe__
++    return;  /* (no x87 state in wasm code) */
++#endif
+     __asm__ __volatile__( "fnsave %0; fwait" : "=m" (context->FloatSave) );
+ 
+     /* Reset unmasked exceptions status to avoid firing an exception. */
+     memcpy(&float_status, &context->FloatSave, sizeof(float_status));
+     float_status.StatusWord &= float_status.ControlWord | 0xffffff80;
+ 
++#ifndef __vnwasm_pe__
+     __asm__ __volatile__( "fldenv %0" : : "m" (float_status) );
++#endif
+ }
+ 
+ 
+@@ -249,7 +256,9 @@
+     XSAVE_FORMAT *state = (XSAVE_FORMAT *)(((ULONG_PTR)buffer + 15) & ~15);
+ 
+     context->ContextFlags |= CONTEXT_EXTENDED_REGISTERS;
++#ifndef __vnwasm_pe__
+     __asm__ __volatile__( "fxsave %0" : "=m" (*state) );
++#endif
+     memcpy( context->ExtendedRegisters, state, sizeof(*state) );
+ }
+ 
+@@ -547,7 +556,11 @@
+ {
+     __TRY
+     {
++#ifdef __vnwasm_pe__
++        DbgBreakPoint();
++#else
+         __asm__ volatile("int $3");
++#endif
+     }
+     __EXCEPT_ALL
+     {
 --- a/dlls/user32/hook.c
 +++ b/dlls/user32/hook.c
 @@ -153,7 +153,7 @@
@@ -3984,21 +4124,104 @@
      asm( sec "\n\t" \
 --- a/include/wine/exception.h
 +++ b/include/wine/exception.h
-@@ -249,6 +249,13 @@
+@@ -148,7 +148,7 @@
+ 
+ #define __EXCEPT(func) \
+              } while(0); \
+-             __wine_pop_frame( &__f.frame ); \
++             __wine_try_pop( &__f.frame ); \
+              break; \
+          } else { \
+              __f.frame.Handler = __wine_exception_handler; \
+@@ -159,7 +159,7 @@
+ 
+ #define __EXCEPT_CTX(func, context) \
+              } while(0); \
+-             __wine_pop_frame( &__f.frame ); \
++             __wine_try_pop( &__f.frame ); \
+              break; \
+          } else { \
+              __f.frame.Handler = __wine_exception_ctx_handler; \
+@@ -171,7 +171,7 @@
+ 
+ #define __EXCEPT_HANDLER(handler) \
+              } while(0); \
+-             __wine_pop_frame( &__f.frame ); \
++             __wine_try_pop( &__f.frame ); \
+              break; \
+          } else { \
+              __f.frame.Handler = (handler); \
+@@ -186,34 +186,34 @@
+                  } while (0); \
+                  break; \
+              } \
+-             __wine_push_frame( &__f.frame ); \
++             __wine_try_push( &__f.frame ); \
+              __first = 0; \
+          } \
+     } while (0);
+ 
+ #define __FINALLY(func) \
+              } while(0); \
+-             __wine_pop_frame( &__f.frame ); \
++             __wine_try_pop( &__f.frame ); \
+              (func)(1); \
+              break; \
+          } else { \
+              __f.frame.Handler = __wine_finally_handler; \
+              __f.u.finally_func = (func); \
+-             __wine_push_frame( &__f.frame ); \
++             __wine_try_push( &__f.frame ); \
+              __first = 0; \
+          } \
+     } while (0);
+ 
+ #define __FINALLY_CTX(func, context) \
+              } while(0); \
+-             __wine_pop_frame( &__f.frame ); \
++             __wine_try_pop( &__f.frame ); \
+              (func)(1, context); \
+              break; \
+          } else { \
+              __f.frame.Handler = __wine_finally_ctx_handler; \
+              __f.u.finally_func_ctx = (func); \
+              __f.ctx = context; \
+-             __wine_push_frame( &__f.frame ); \
++             __wine_try_push( &__f.frame ); \
+              __first = 0; \
+          } \
+     } while (0);
+@@ -249,6 +249,29 @@
  
  #endif /* USE_COMPILER_EXCEPTIONS */
  
 +#ifdef __vnwasm_pe__
 +/* PE code compiled to wasm (vnvm): wasm code can't be unwound into, so its __TRY blocks
-+ * register no handler (guest faults happen in x86 code, never in wasm code) */
++ * register no handler (guest faults happen in x86 code, never in wasm code); frames pushed
++ * explicitly (ntdll's exception dispatcher) are real */
 +#define __wine_setjmpex(buf, frame) 0
-+static inline EXCEPTION_REGISTRATION_RECORD *__wine_push_frame( EXCEPTION_REGISTRATION_RECORD *frame ) { return 0; }
-+static inline EXCEPTION_REGISTRATION_RECORD *__wine_pop_frame( EXCEPTION_REGISTRATION_RECORD *frame ) { return 0; }
++#define __wine_try_push(frame) ((void)(frame))
++#define __wine_try_pop(frame) ((void)(frame))
++static inline EXCEPTION_REGISTRATION_RECORD *__wine_push_frame( EXCEPTION_REGISTRATION_RECORD *frame )
++{
++    NT_TIB *teb = (NT_TIB *)NtCurrentTeb();
++    frame->Prev = teb->ExceptionList;
++    teb->ExceptionList = frame;
++    return frame->Prev;
++}
++static inline EXCEPTION_REGISTRATION_RECORD *__wine_pop_frame( EXCEPTION_REGISTRATION_RECORD *frame )
++{
++    NT_TIB *teb = (NT_TIB *)NtCurrentTeb();
++    teb->ExceptionList = frame->Prev;
++    return frame->Prev;
++}
 +#else
++#define __wine_try_push(frame) __wine_push_frame(frame)
++#define __wine_try_pop(frame) __wine_pop_frame(frame)
  static inline EXCEPTION_REGISTRATION_RECORD *__wine_push_frame( EXCEPTION_REGISTRATION_RECORD *frame )
  {
  #if (defined(__GNUC__) || defined(__clang__)) && defined(__i386__)
-@@ -279,10 +286,11 @@
+@@ -279,10 +302,11 @@
      return frame->Prev;
  #endif
  }

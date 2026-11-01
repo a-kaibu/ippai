@@ -20,8 +20,8 @@ addToLibrary({
   // instance `id` (the process's id-th wasm DLL) on this thread; its entries go into this
   // worker's own function table at `slots` (n of them), where vnhost calls them; 0 or -1
   vnvm_wasm_instantiate__deps: ['$VNWASM'],
-  vnvm_wasm_instantiate__sig: 'iipiiiiipi',
-  vnvm_wasm_instantiate: (id, ptr, len, mem, slot, image, size, slots, n) => {
+  vnvm_wasm_instantiate__sig: 'iipiiiiipii',
+  vnvm_wasm_instantiate: (id, ptr, len, mem, slot, image, size, slots, n, tags) => {
     const t = VNWASM.t;
     ptr >>>= 0;
     mem >>>= 0;
@@ -46,6 +46,7 @@ addToLibrary({
           image_base: new WebAssembly.Global({ value: 'i32', mutable: false }, image),
           teb: t.teb,
           limit: t.limit,
+          tags: new WebAssembly.Global({ value: 'i32', mutable: false }, tags),
           x86_call: wasmExports.vnhost_wasm_x86_call,
           x86_call_f: wasmExports.vnhost_wasm_x86_call_f,
           syscall: wasmExports.vnhost_wasm_syscall,

@@ -19,6 +19,9 @@ pub struct Pe {
     pub eat: Vec<u32>,
     /// (dll, symbol, IAT slot RVA); symbol "#<n>" for imports by ordinal
     pub imports: Vec<(String, String, u32)>,
+    /// global functions of the COFF symbol table (Wine's DLLs aren't stripped): (symbol as the
+    /// linker spells it, "_name@8"; RVA)
+    pub functions: Vec<(String, u32)>,
     /// exported syscall thunks ("mov $id,%eax; mov $helper,%edx; call *%edx; ret $n"): name -> id
     pub syscalls: Vec<(String, u32)>,
 }
@@ -182,7 +185,9 @@ pub fn parse(b: &[u8]) -> Result<Pe> {
     }
     let mut syscalls = Vec::new();
     for (n, i) in &exports {
-        let Some(&r) = eat.get(*i as usize) else { continue };
+        let Some(&r) = eat.get(*i as usize) else {
+            continue;
+        };
         let Ok(o) = img.off(r) else { continue };
         if let Some(c) = b.get(o..o + 15) {
             if c[0] == 0xb8 && c[5] == 0xba && c[10] == 0xff && c[11] == 0xd2 && c[12] == 0xc2 {
@@ -190,5 +195,29 @@ pub fn parse(b: &[u8]) -> Result<Pe> {
             }
         }
     }
-    Ok(Pe { size_of_image, timestamp, name, ordinal_base, nfuncs, exports, eat, imports, syscalls })
+    let mut functions = Vec::new();
+    let (symtab, nsyms) = (rd32(b, nt + 12) as usize, rd32(b, nt + 16) as usize);
+    if symtab != 0 && symtab + nsyms * 18 + 4 <= b.len() {
+        let strtab = symtab + nsyms * 18;
+        let secs: Vec<u32> = (0..nsect).map(|i| rd32(b, opt + opt_size + i * 40 + 12)).collect();
+        let mut i = 0;
+        while i < nsyms {
+            let e = symtab + i * 18;
+            let (value, sect, ty, class, naux) = (rd32(b, e + 8), rd16(b, e + 12) as i16, rd16(b, e + 14), b[e + 16], b[e + 17] as usize);
+            if class == 2 && sect > 0 && ty == 0x20 && (sect as usize) <= secs.len() {
+                let raw = &b[e..e + 8];
+                let name = if raw[..4] == [0; 4] {
+                    let o = strtab + u32::from_le_bytes(raw[4..8].try_into().unwrap()) as usize;
+                    let end = b[o..].iter().position(|&c| c == 0).unwrap_or(0);
+                    String::from_utf8_lossy(&b[o..o + end]).into_owned()
+                } else {
+                    let end = raw.iter().position(|&c| c == 0).unwrap_or(8);
+                    String::from_utf8_lossy(&raw[..end]).into_owned()
+                };
+                functions.push((name, secs[sect as usize - 1] + value));
+            }
+            i += 1 + naux;
+        }
+    }
+    Ok(Pe { size_of_image, timestamp, name, ordinal_base, nfuncs, exports, eat, imports, functions, syscalls })
 }

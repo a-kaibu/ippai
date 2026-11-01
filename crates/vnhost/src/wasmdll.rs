@@ -24,12 +24,13 @@ use vnx86::{Cpu, Memory};
 
 /// x86 address of slot 0 (crates/vnwasm, signal_wasm.c's WASM_DLL_BASE)
 pub const BIAS: u32 = 0xfe00_0000;
-const SLOTS: u32 = 0x0100_0000;
+/// slots per process (the size of [`Process::tags`])
+const SLOTS: u32 = 0x1_0000;
 
 #[cfg(target_os = "emscripten")]
 extern "C" {
     fn vnvm_wasm_thread_init(teb: u32);
-    fn vnvm_wasm_instantiate(id: u32, bytes: *const u8, len: usize, mem: u32, slot: u32, image: u32, size: u32, entries: *const u32, n: u32) -> i32;
+    fn vnvm_wasm_instantiate(id: u32, bytes: *const u8, len: usize, mem: u32, slot: u32, image: u32, size: u32, entries: *const u32, n: u32, tags: u32) -> i32;
     fn vnvm_wasm_got(id: u32, name: *const u8, len: usize, value: u32);
     fn vnvm_wasm_fixup(id: u32);
 }
@@ -37,7 +38,7 @@ extern "C" {
 #[cfg(not(target_os = "emscripten"))]
 mod nojs {
     pub unsafe fn vnvm_wasm_thread_init(_: u32) {}
-    pub unsafe fn vnvm_wasm_instantiate(_: u32, _: *const u8, _: usize, _: u32, _: u32, _: u32, _: u32, _: *const u32, _: u32) -> i32 {
+    pub unsafe fn vnvm_wasm_instantiate(_: u32, _: *const u8, _: usize, _: u32, _: u32, _: u32, _: u32, _: *const u32, _: u32, _: u32) -> i32 {
         -1
     }
     pub unsafe fn vnvm_wasm_got(_: u32, _: *const u8, _: usize, _: u32) {}
@@ -63,6 +64,10 @@ struct Module {
     exports: Vec<(u32, bool, u32)>,
     /// (name, RVA, image-relative address rather than the IAT slot there)
     got: Vec<(String, u32, bool)>,
+    /// x86 functions that jump to the module's: (RVA, slot)
+    patches: Vec<(u32, u32)>,
+    /// per slot: its function type's tag (crates/vnwasm type_tag)
+    tags: Vec<u32>,
 }
 
 struct Cursor<'a> {
@@ -115,7 +120,7 @@ fn parse(bytes: Vec<u8>) -> Option<Module> {
         at += size;
     }
     let mut c = Cursor { b: &bytes, p: meta? };
-    if c.u32()? != u32::from_le_bytes(*b"VNW1") {
+    if c.u32()? != u32::from_le_bytes(*b"VNW2") {
         return None;
     }
     let size_of_image = c.u32()?;
@@ -141,7 +146,18 @@ fn parse(bytes: Vec<u8>) -> Option<Module> {
         let name = c.str()?;
         got.push((name, c.u32()?, kind == 2));
     }
-    Some(Module { bytes, size_of_image, timestamp, mem_size, mem_align, table_size, entry_point, slots, float, exports, got })
+    let mut patches = Vec::new();
+    for _ in 0..c.u32()? {
+        patches.push((c.u32()?, c.u32()?));
+    }
+    let mut tags = Vec::new();
+    for _ in 0..c.u32()? {
+        tags.push(c.u32()?);
+    }
+    if tags.len() != table_size as usize {
+        return None;
+    }
+    Some(Module { bytes, size_of_image, timestamp, mem_size, mem_align, table_size, entry_point, slots, float, exports, got, patches, tags })
 }
 
 /// A module loaded into a process.
@@ -160,6 +176,8 @@ struct Process {
     dlls: Vec<Loaded>,
     /// slots given out
     slots: u32,
+    /// the type tag of every slot given out, read by the modules' indirect calls (vn.tags)
+    tags: Option<Box<[u32]>>,
     /// bumped whenever a thread has something to catch up on (read without the lock)
     generation: Arc<AtomicU32>,
 }
@@ -290,6 +308,8 @@ pub extern "C" fn vnhost_wasmdll_attach(id: i32, base: u32, mem_at: u32) {
     }
     let slot = proc.slots;
     proc.slots += m.table_size;
+    let tags = proc.tags.get_or_insert_with(|| vec![0; SLOTS as usize].into_boxed_slice());
+    tags[slot as usize..(slot + m.table_size) as usize].copy_from_slice(&m.tags);
     let align = (1u32 << m.mem_align) - 1;
     let data = (mem_at + align) & !align;
     // exports and entry point
@@ -302,6 +322,12 @@ pub extern "C" fn vnhost_wasmdll_attach(id: i32, base: u32, mem_at: u32) {
         let _ = mem.write32(funcs + index * 4, addr.wrapping_sub(base));
     }
     let _ = mem.write32(opt + 16, (BIAS + slot + m.entry_point).wrapping_sub(base));
+    // x86 functions: jmp to the wasm one
+    for &(rva, s) in &m.patches {
+        let at = base + rva;
+        let _ = mem.write8(at, 0xe9);
+        let _ = mem.write32(at + 1, (BIAS + slot + s).wrapping_sub(at + 5));
+    }
     proc.dlls.push(Loaded { module: m, image: base, mem: data, slot, fixed: false });
     proc.generation.fetch_add(1, Ordering::Release);
     if std::env::var_os("VNVM_TRACE_WASM").is_some() {
@@ -311,12 +337,7 @@ pub extern "C" fn vnhost_wasmdll_attach(id: i32, base: u32, mem_at: u32) {
 
 /// signal_wasm.c, when a thread starts.
 #[no_mangle]
-pub extern "C" fn vnhost_wasm_thread(
-    cpu: *mut Cpu,
-    teb: u32,
-    call_x86: extern "C" fn(u32, u32) -> u64,
-    syscall: extern "C" fn(u32, u32) -> u32,
-) {
+pub extern "C" fn vnhost_wasm_thread(cpu: *mut Cpu, teb: u32, call_x86: extern "C" fn(u32, u32) -> u64, syscall: extern "C" fn(u32, u32) -> u32) {
     THREAD.with(|t| {
         let mut t = t.borrow_mut();
         t.cpu = cpu;
@@ -369,8 +390,9 @@ fn sync(need: Option<u32>) {
             }
             let entries: Vec<u32> = slots[t.used..t.used + n].iter().map(|&f| f as usize as u32).collect();
             t.used += n;
+            let tags = proc.tags.as_ref().map_or(0, |t| t.as_ptr() as usize as u32);
             let r = unsafe {
-                vnvm_wasm_instantiate(t.have as u32, m.bytes.as_ptr(), m.bytes.len(), d.mem, d.slot, d.image, m.table_size, entries.as_ptr(), n as u32)
+                vnvm_wasm_instantiate(t.have as u32, m.bytes.as_ptr(), m.bytes.len(), d.mem, d.slot, d.image, m.table_size, entries.as_ptr(), n as u32, tags)
             };
             if r < 0 {
                 eprintln!("vnwasm: cannot instantiate the wasm DLL at {:#x}", d.image);

@@ -31,8 +31,8 @@ use anyhow::{bail, Context, Result};
 use std::collections::{BTreeMap, HashMap};
 use walrus::ir::{BinaryOp, Instr, InstrLocId, InstrSeq, LoadKind, MemArg, StoreKind, UnaryOp};
 use walrus::{
-    ConstExpr, ElementItems, ElementKind, ExportItem, FunctionBuilder, FunctionId, GlobalId, ImportKind,
-    LocalFunction, MemoryId, Module, RawCustomSection, TableId, TypeId, ValType,
+    ConstExpr, ElementItems, ElementKind, ExportItem, FunctionBuilder, FunctionId, GlobalId, ImportKind, LocalFunction, MemoryId, Module, RawCustomSection,
+    TableId, TypeId, ValType,
 };
 
 /// x86 addresses of the wasm DLLs' functions start here (vnhost: wasmdll::BIAS)
@@ -179,6 +179,7 @@ fn main() -> Result<()> {
     let (image_base, _) = m.add_import_global("vn", "image_base", ValType::I32, false, false);
     let (teb, _) = m.add_import_global("vn", "teb", ValType::I32, false, false);
     let (limit, _) = m.add_import_global("vn", "limit", ValType::I32, true, false);
+    let (tags, _) = m.add_import_global("vn", "tags", ValType::I32, false, false);
     let x86_call_ty = m.types.add(&[ValType::I32, ValType::I32], &[ValType::I64]);
     let x86_call_f_ty = m.types.add(&[ValType::I32, ValType::I32], &[ValType::F64]);
     let (x86_call, _) = m.add_import_func("vn", "x86_call", x86_call_ty);
@@ -208,7 +209,7 @@ fn main() -> Result<()> {
         types.sort();
         types.dedup();
         for ty in types {
-            let f = make_icall(&mut m, ty, table, memory, limit, stack_pointer, x86_call, x86_call_f);
+            let f = make_icall(&mut m, ty, table, memory, limit, tags, stack_pointer, x86_call, x86_call_f);
             icalls.insert(ty, f);
         }
     }
@@ -243,13 +244,36 @@ fn main() -> Result<()> {
             }
         };
         for (n, id) in table {
-            if !matches!(n.as_str(), "NtContinue" | "NtContinueEx" | "NtRaiseException" | "NtSetContextThread" | "ZwContinue"
-                | "ZwContinueEx" | "ZwRaiseException" | "ZwSetContextThread")
-            {
+            if !matches!(
+                n.as_str(),
+                "NtContinue"
+                    | "NtContinueEx"
+                    | "NtRaiseException"
+                    | "NtSetContextThread"
+                    | "ZwContinue"
+                    | "ZwContinueEx"
+                    | "ZwRaiseException"
+                    | "ZwSetContextThread"
+            ) {
                 syscall_ids.insert((dll.to_string(), n), id);
             }
         }
     }
+    // the x86 DLL's global functions by C name: (calling convention, stack bytes, RVA)
+    let decode = |sym: &str| -> Option<(String, spec::Conv, Option<u32>)> {
+        let (conv, rest) = if let Some(r) = sym.strip_prefix('@') { (spec::Conv::Fastcall, r) } else { (spec::Conv::Cdecl, sym.strip_prefix('_')?) };
+        match rest.rsplit_once('@') {
+            Some((n, b)) if b.chars().all(|c| c.is_ascii_digit()) && !b.is_empty() => {
+                let conv = if conv == spec::Conv::Cdecl { spec::Conv::Stdcall } else { conv };
+                Some((n.to_string(), conv, b.parse().ok()))
+            }
+            _ if conv == spec::Conv::Cdecl => Some((rest.to_string(), conv, None)),
+            _ => None,
+        }
+    };
+    let coff_funcs: Vec<(String, spec::Conv, Option<u32>, u32)> =
+        pe.functions.iter().filter_map(|(sym, rva)| decode(sym).map(|(n, c, b)| (n, c, b, *rva))).collect();
+    let coff: HashMap<&str, u32> = coff_funcs.iter().map(|(n, _, _, rva)| (n.as_str(), *rva)).collect();
     let import_dll: HashMap<&str, String> = pe.imports.iter().map(|(d, s, _)| (s.as_str(), d.to_ascii_lowercase())).collect();
     let own_dll = pe.name.to_ascii_lowercase();
     // (`syscalls`: a direct syscall where the target is a syscall thunk; not for addresses)
@@ -270,6 +294,18 @@ fn main() -> Result<()> {
                 if let Some(&rva) = iat.get(sym) {
                     return Some(Target::Iat(rva));
                 }
+            }
+            // data exports this build leaves to the x86 image (extern under __vnwasm_pe__)
+            if let Some(d) = spec.data.iter().find(|d| d.symbol == n) {
+                let idx = if !d.name.is_empty() { pe.exports.iter().find(|(x, _)| *x == d.name).map(|(_, i)| *i) } else { None }
+                    .or_else(|| d.ordinal.map(|o| o - pe.ordinal_base));
+                if let Some(rva) = idx.and_then(|i| pe.eat.get(i as usize)).copied().filter(|&r| r != 0) {
+                    return Some(Target::Own(rva));
+                }
+            }
+            // functions of this DLL implemented in x86 only: by the COFF symbol table
+            if let Some(&rva) = coff.get(n) {
+                return Some(Target::Own(rva));
             }
             // exports of this DLL implemented in x86 only
             for e in spec.funcs.iter().filter(|e| e.symbol == n || e.name == n) {
@@ -376,10 +412,7 @@ fn main() -> Result<()> {
         }
         match found {
             Some(id) => id,
-            None => m.elements.add(
-                ElementKind::Active { table, offset: ConstExpr::Global(table_slot) },
-                ElementItems::Functions(Vec::new()),
-            ),
+            None => m.elements.add(ElementKind::Active { table, offset: ConstExpr::Global(table_slot) }, ElementItems::Functions(Vec::new())),
         }
     };
     let mut slot_of: HashMap<FunctionId, u32> = HashMap::new();
@@ -417,7 +450,9 @@ fn main() -> Result<()> {
     };
     let mut unimpl = Vec::new();
     for e in &spec.funcs {
-        let Some(index) = eat_index(&e.name, e.ordinal) else { continue };
+        let Some(index) = eat_index(&e.name, e.ordinal) else {
+            continue;
+        };
         let Some(ExportItem::Function(f)) = exported.get(&e.symbol) else {
             unimpl.push(e.symbol.clone());
             continue;
@@ -434,7 +469,9 @@ fn main() -> Result<()> {
     }
     let mut data = Vec::new();
     for d in &spec.data {
-        let Some(index) = eat_index(&d.name, d.ordinal) else { continue };
+        let Some(index) = eat_index(&d.name, d.ordinal) else {
+            continue;
+        };
         match exported.get(&d.symbol) {
             Some(ExportItem::Global(g)) => match m.globals.get(*g).kind {
                 walrus::GlobalKind::Local(ConstExpr::Value(walrus::ir::Value::I32(v))) => data.push((index, 1u32, v as u32)),
@@ -447,6 +484,32 @@ fn main() -> Result<()> {
     if !unimpl.is_empty() {
         eprintln!("vnwasm: {}: {} exports stay x86: {}", a.pe, unimpl.len(), unimpl.join(" "));
     }
+    // every global function the wasm build has: its x86 code jumps there (so x86 code left in
+    // the DLL, assembly, never runs the x86 copy of C code and its separate static data)
+    let mut patches = Vec::new();
+    for (name, conv, bytes, rva) in &coff_funcs {
+        let Some(ExportItem::Function(f)) = exported.get(name.as_str()) else {
+            continue;
+        };
+        let ty = match &m.funcs.get(*f).kind {
+            walrus::FunctionKind::Local(l) => l.ty(),
+            _ => continue,
+        };
+        let params = m.types.get(ty).params().to_vec();
+        let sizes: Vec<u32> = params.iter().map(|&t| size(t)).collect();
+        if let Some(b) = bytes {
+            if sizes.iter().sum::<u32>() != *b {
+                continue; // structs by value or returned through a pointer: not the same shape
+            }
+        }
+        let e = spec::Entry { name: String::new(), ordinal: None, conv: *conv, args: sizes, symbol: name.clone() };
+        let Ok((args, pop)) = spec_args(&e, &params) else {
+            continue;
+        };
+        let s = slot(*f, &mut slots);
+        slot_info.entry(s).or_insert((EntryKind { ty, args }, pop));
+        patches.push((*rva, s));
+    }
     if let ElementItems::Functions(v) = &mut m.elements.get_mut(elem_id).items {
         *v = slots.clone();
     }
@@ -454,6 +517,7 @@ fn main() -> Result<()> {
 
     // every slot's entry (the default: stdcall with the wasm parameters)
     let mut slot_kind = Vec::new();
+    let mut slot_tags = Vec::new();
     for (i, f) in slots.iter().enumerate() {
         let (kind, pop) = match slot_info.get(&(i as u32)) {
             Some(k) => k.clone(),
@@ -473,6 +537,13 @@ fn main() -> Result<()> {
             kinds.len() as u16 - 1
         });
         slot_kind.push((k, pop as u16));
+        let ty = match &m.funcs.get(*f).kind {
+            walrus::FunctionKind::Local(l) => l.ty(),
+            walrus::FunctionKind::Import(i) => i.ty,
+            walrus::FunctionKind::Uninitialized(t) => *t,
+        };
+        let t = m.types.get(ty);
+        slot_tags.push(type_tag(t.params(), t.results()));
     }
     let mut entry_flags = Vec::new();
     for (k, kind) in kinds.iter().enumerate() {
@@ -482,19 +553,14 @@ fn main() -> Result<()> {
 
     // exports: only what vnhost calls
     let keep = ["__wasm_apply_data_relocs", "__wasm_call_ctors"];
-    let drop: Vec<_> = m
-        .exports
-        .iter()
-        .filter(|e| !keep.contains(&e.name.as_str()) && !e.name.starts_with("__vn_in"))
-        .map(|e| e.id())
-        .collect();
+    let drop: Vec<_> = m.exports.iter().filter(|e| !keep.contains(&e.name.as_str()) && !e.name.starts_with("__vn_in")).map(|e| e.id()).collect();
     for e in drop {
         m.exports.delete(e);
     }
     walrus::passes::gc::run(&mut m);
 
     let mut meta = Meta::default();
-    meta.b.extend_from_slice(b"VNW1");
+    meta.b.extend_from_slice(b"VNW2");
     meta.u32(pe.size_of_image);
     meta.u32(pe.timestamp);
     meta.str(&pe.name);
@@ -523,6 +589,15 @@ fn main() -> Result<()> {
         meta.str(name);
         meta.u32(*rva);
     }
+    meta.u32(patches.len() as u32);
+    for (rva, s) in &patches {
+        meta.u32(*rva);
+        meta.u32(*s);
+    }
+    meta.u32(slot_tags.len() as u32);
+    for t in &slot_tags {
+        meta.u32(*t);
+    }
     // drop dylink.0 (vnhost loads the module itself) and debug names
     let customs: Vec<_> = m.customs.iter().map(|(id, _)| id).collect();
     for id in customs {
@@ -531,12 +606,13 @@ fn main() -> Result<()> {
     m.customs.add(RawCustomSection { name: "vnwasm".into(), data: meta.b });
     m.emit_wasm_file(&a.output)?;
     eprintln!(
-        "vnwasm: {} -> {}: {} slots, {} entries, {} exports, {} GOT, {} KB data",
+        "vnwasm: {} -> {}: {} slots, {} entries, {} exports, {} x86 functions redirected, {} GOT, {} KB data",
         a.input,
         a.output,
         table_size,
         kinds.len(),
         eat.len(),
+        patches.len(),
         got.len(),
         mem_size / 1024
     );
@@ -679,12 +755,29 @@ fn make_syscall_stub(m: &mut Module, ty: TypeId, id: u32, memory: MemoryId, sp: 
     b.finish(args, &mut m.funcs)
 }
 
+/// A function type's tag (nonzero) for icall's check, the same in every module.
+fn type_tag(params: &[ValType], results: &[ValType]) -> u32 {
+    let code = |t: &ValType| match t {
+        ValType::I32 => 1u8,
+        ValType::I64 => 2,
+        ValType::F32 => 3,
+        ValType::F64 => 4,
+        _ => 5,
+    };
+    let mut h = 0x811c9dc5u32;
+    for b in params.iter().map(code).chain([0]).chain(results.iter().map(code)) {
+        h = (h ^ b as u32).wrapping_mul(0x01000193);
+    }
+    h | 1
+}
+
 fn make_icall(
     m: &mut Module,
     ty: TypeId,
     table: TableId,
     memory: MemoryId,
     limit: GlobalId,
+    tags: GlobalId,
     sp: GlobalId,
     x86_call: FunctionId,
     x86_call_f: FunctionId,
@@ -700,8 +793,27 @@ fn make_icall(
     let idx = m.locals.add(ValType::I32);
     let argp = m.locals.add(ValType::I32);
     let nbytes: u32 = params.iter().map(|&t| size(t)).sum();
+    let tag = type_tag(&params, &results);
     let mut body = b.func_body();
+    // a wasm function of this type (vn.tags: the process's type tag per slot); one of another
+    // type (prototypes differing between DLLs, void vs NTSTATUS) is called as x86 code would
     body.local_get(ptr).i32_const(BIAS as i32).binop(BinaryOp::I32Sub).local_tee(idx).global_get(limit).binop(BinaryOp::I32LtU);
+    body.if_else(
+        ValType::I32,
+        |then| {
+            then.global_get(tags)
+                .local_get(idx)
+                .i32_const(2)
+                .binop(BinaryOp::I32Shl)
+                .binop(BinaryOp::I32Add)
+                .load(memory, LoadKind::I32 { atomic: false }, MemArg { align: 4, offset: 0 })
+                .i32_const(tag as i32)
+                .binop(BinaryOp::I32Eq);
+        },
+        |els| {
+            els.i32_const(0);
+        },
+    );
     body.if_else(
         walrus::ir::InstrSeqType::Simple(None),
         |then| {
