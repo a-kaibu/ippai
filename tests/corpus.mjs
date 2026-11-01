@@ -7,7 +7,7 @@
 //
 // STEPS (client-area pixels of the game window, run once the title shows):
 //   "click:x,y wait:3 key:Return wait:5" ; default: nothing (story clicks start right away)
-// env: STORY=60 (story seconds), TITLE_MAX=120 (give up on the title), STORY_AT=x,y (story clicks,
+// env: PRE=x,y / PRE_KEYS=0 (see below), STORY=60 (story seconds), TITLE_MAX=120 (give up on the title), STORY_AT=x,y (story clicks,
 // default centre of the bottom fifth), CHROME_ARGS, PLAYWRIGHT
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
 const { chromium } = pw.default ?? pw;
@@ -138,13 +138,18 @@ async function key(name) {
 }
 
 // 1. the title
-let last = null, firstFrame = null;
+// before the title: a launcher or settings dialog (PRE=x,y clicks there every 3 s; otherwise
+// Return every 6 s from 12 s on, which takes a dialog's default button)
+let last = null, firstFrame = null, lastPre = 0;
+const PRE = process.env.PRE?.split(",").map(Number);
 while (now() < TITLE_MAX && !crashed) {
   await sleep(1);
   const f = await frame(false);
   if (!f || f.err) continue;
   last = f;
   view = f.view;
+  if (PRE?.length === 2 && now() - lastPre >= 3) { lastPre = now(); await click(PRE[0], PRE[1]); }
+  else if (!PRE && process.env.PRE_KEYS !== "0" && now() > 12 && now() - lastPre >= 6 && f.colors <= 300) { lastPre = now(); await key("Return"); }
   if (firstFrame === null && f.w > 32) firstFrame = now();
   if (f.colors > 300) { res.title = now(); break; }
 }

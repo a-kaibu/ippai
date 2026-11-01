@@ -60,6 +60,9 @@ int main( int argc, char *argv[] )
     pthread_create( &server, NULL, server_thread, NULL );
     pthread_detach( server );
 
+    /* the page starts a game in its folder (vnhost's file system has it, so after init) */
+    if (getenv( "VNVM_CWD" ) && chdir( getenv( "VNVM_CWD" ) ))
+        fprintf( stderr, "vnvm: can't enter %s\n", getenv( "VNVM_CWD" ) );
     /* we are the loader: don't let ntdll try to re-exec one */
     setenv( "WINELOADERNOEXEC", "1", 1 );
     wine_argv[0] = "wine";

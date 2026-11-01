@@ -148,6 +148,8 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       ...(saved ? { VNVM_SAVES: "/vnvm/saves.bin" } : {}),
       HOME: "/home/web",
       USER: "web",
+      // the game starts in its own folder (as from Explorer): many open their data relatively
+      ...(/^z:\\/i.test(run) ? { VNVM_CWD: run.slice(2, run.lastIndexOf("\\")).replaceAll("\\", "/") || "/" } : {}),
       ...Object.fromEntries(params.getAll("env").map((e) => [e.slice(0, e.indexOf("=")), e.slice(e.indexOf("=") + 1)])),
     },
     preRun: [
