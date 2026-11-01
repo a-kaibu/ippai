@@ -226,6 +226,25 @@ impl Display {
     }
 }
 
+/// A display mode change (ChangeDisplaySettings): the screen takes the new size.
+#[no_mangle]
+pub extern "C" fn vnhost_display_set_size(w: c_int, h: c_int) {
+    if w <= 0 || h <= 0 || w > 8192 || h > 8192 {
+        return;
+    }
+    with(|d| {
+        if (d.w, d.h) == (w, h) {
+            return;
+        }
+        d.w = w;
+        d.h = h;
+        d.screen = vec![0xff00_0000; (w * h) as usize];
+        d.bands.clear();
+        let all = d.screen_rect();
+        d.compose(all);
+    })
+}
+
 /// The part of the screen the page shows (see `Display::view`): `out` gets l, t, r, b.
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_display_view(out: *mut i32) {

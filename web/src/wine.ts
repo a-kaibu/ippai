@@ -274,8 +274,8 @@ function readAhead(name: Promise<string>): (wine: WineModule) => void {
 function present(wine: WineModule, presenter: Presenter): void {
   const scratch = wine._malloc(36) >>> 0;
   wine._vnhost_display_size(scratch, scratch + 4);
-  const width = wine.HEAPU32[scratch >>> 2]!;
-  const height = wine.HEAPU32[(scratch + 4) >>> 2]!;
+  let width = wine.HEAPU32[scratch >>> 2]!;
+  let height = wine.HEAPU32[(scratch + 4) >>> 2]!;
   let shown = -1;
   const io = (scratch + 8) >>> 2;
   // Direct3D 9 games: their commands run here, the presented frame goes over the screen
@@ -300,6 +300,13 @@ function present(wine: WineModule, presenter: Presenter): void {
         Object.assign(stats, { t0: t, frames: 0, slow: 0, d3d: d3d.frames });
         d3d.runMs = 0;
       }
+    }
+    // (a game may change the display mode: the screen's size)
+    wine._vnhost_display_size(scratch, scratch + 4);
+    if (wine.HEAPU32[scratch >>> 2] !== width || wine.HEAPU32[(scratch + 4) >>> 2] !== height) {
+      width = wine.HEAPU32[scratch >>> 2]!;
+      height = wine.HEAPU32[(scratch + 4) >>> 2]!;
+      shown = -1;
     }
     // only the game window's client area is shown
     wine._vnhost_display_view(view * 4);

@@ -53,7 +53,7 @@ WRAPFLAGS=$(for w in $WRAP; do printf -- "-Wl,--wrap=%s -Wl,-u,%s " "$w" "$w"; d
 # exports by name are renamed (<lib>__wine_unix_call_funcs, ...) and registered under the
 # library's file name for dlopen()/dlsym() (crates/vnhost/src/dl.rs).
 # dlls/<dir>/<name>.so; <dir> defaults to <name>
-UNIXLIBS="ws2_32 win32u winebrowser.drv/winebrowser dnsapi nsiproxy.sys/nsiproxy mountmgr.sys/mountmgr winebus.sys/winebus crypt32 secur32 msv1_0 netapi32 localspl winspool.drv/winspool vnd3d9/d3d9"
+UNIXLIBS="ws2_32 win32u winebrowser.drv/winebrowser dnsapi nsiproxy.sys/nsiproxy mountmgr.sys/mountmgr winebus.sys/winebus crypt32 secur32 msv1_0 netapi32 localspl winspool.drv/winspool vnd3d9/d3d9 opengl32 wined3d"
 UNIXSYMS="__wine_unix_call_funcs __wine_unix_call_wow64_funcs __wine_unix_lib_init"
 LIB_OBJS=
 REG="$OUT/unixlibs.c"

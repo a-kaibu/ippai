@@ -2181,7 +2181,7 @@
 +}
 --- /dev/null
 +++ b/dlls/winebrowser.drv/driver.c
-@@ -0,0 +1,304 @@
+@@ -0,0 +1,336 @@
 +/*
 + * Browser display driver (vnvm)
 + *
@@ -2218,6 +2218,7 @@
 +
 +/* crates/vnhost/src/display.rs */
 +extern void vnhost_display_size( int *width, int *height );
++extern void vnhost_display_set_size( int width, int height );
 +extern void vnhost_window_pos( UINT hwnd, const int *rect, int visible, int restack, UINT above );
 +/* (rect: the visible rect, then the client rect, both on the screen) */
 +extern void vnhost_window_draw( UINT hwnd, const int *dirty, const void *bits, int stride, int x, int y );
@@ -2271,10 +2272,33 @@
 +                    DM_DISPLAYFLAGS | DM_DISPLAYFREQUENCY,
 +        .dmBitsPerPel = 32, .dmDisplayFrequency = 60,
 +    };
-+    DEVMODEW current;
-+    int width, height;
++    /* the usual sizes (old games switch to 640x480 or 800x600), each in 32, 16 and 8 bits */
++    static const int sizes[][2] = { {640, 480}, {800, 600}, {1024, 768}, {1280, 720}, {1280, 960},
++                                    {1280, 1024}, {1366, 768}, {1600, 900}, {1920, 1080} };
++    static const int depths[] = { 32, 16, 8 };
++    DEVMODEW current, modes[ARRAY_SIZE(sizes) * ARRAY_SIZE(depths) + 3];
++    int width, height, count = 0, i, j;
 +
 +    vnhost_display_size( &width, &height );
++    for (j = 0; j < ARRAY_SIZE(depths); j++)
++    {
++        BOOL have = FALSE;
++        for (i = 0; i < ARRAY_SIZE(sizes); i++)
++        {
++            modes[count] = mode;
++            modes[count].dmPelsWidth = sizes[i][0];
++            modes[count].dmPelsHeight = sizes[i][1];
++            modes[count++].dmBitsPerPel = depths[j];
++            if (sizes[i][0] == width && sizes[i][1] == height) have = TRUE;
++        }
++        if (!have)
++        {
++            modes[count] = mode;
++            modes[count].dmPelsWidth = width;
++            modes[count].dmPelsHeight = height;
++            modes[count++].dmBitsPerPel = depths[j];
++        }
++    }
 +    mode.dmPelsWidth = width;
 +    mode.dmPelsHeight = height;
 +    SetRect( &monitor.rc_monitor, 0, 0, width, height );
@@ -2285,13 +2309,21 @@
 +    device_manager->add_gpu( "vnvm", &pci_id, NULL, param );
 +    device_manager->add_source( "Default", source_flags, NtUserGetSystemDpiForProcess( NULL ), param );
 +    device_manager->add_monitor( &monitor, param );
-+    device_manager->add_modes( &current, 1, &mode, param );
++    device_manager->add_modes( &current, count, modes, param );
 +    return STATUS_SUCCESS;
 +}
 +
 +static LONG BROWSER_ChangeDisplaySettings( LPDEVMODEW displays, LPCWSTR primary_name, HWND hwnd, DWORD flags,
 +                                           LPVOID lparam )
 +{
++    /* one source: its mode is the first; the screen takes its size (the page shows the game's
++     * window whatever size the screen is) */
++    if (displays && displays->dmSize && (displays->dmFields & (DM_PELSWIDTH | DM_PELSHEIGHT)) ==
++        (DM_PELSWIDTH | DM_PELSHEIGHT))
++    {
++        TRACE( "%ux%u\n", (UINT)displays->dmPelsWidth, (UINT)displays->dmPelsHeight );
++        vnhost_display_set_size( displays->dmPelsWidth, displays->dmPelsHeight );
++    }
 +    return DISP_CHANGE_SUCCESSFUL;
 +}
 +
