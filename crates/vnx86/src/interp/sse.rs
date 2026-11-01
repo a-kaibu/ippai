@@ -99,7 +99,7 @@ impl<'a, M: Memory> X<'a, M> {
         match self.ins.op_kind(i) {
             OpKind::Register => {
                 let r = self.ins.op_register(i);
-                if r.is_xmm() { 128 } else if r.is_mm() { 64 } else { 32 }
+                if r.is_xmm() { 128 } else if r.is_mm() || r.is_gpr64() { 64 } else { 32 }
             }
             OpKind::Memory => self.ins.memory_size().size() as u32 * 8,
             _ => 8,
@@ -111,7 +111,7 @@ impl<'a, M: Memory> X<'a, M> {
             OpKind::Register => {
                 let r = self.ins.op_register(i);
                 Ok(if r.is_xmm() {
-                    self.cpu.xmm[r as usize - Register::XMM0 as usize]
+                    self.cpu.xmm(r as usize - Register::XMM0 as usize)
                 } else if r.is_mm() {
                     self.cpu.mm[r as usize - Register::MM0 as usize] as u128
                 } else {
@@ -137,11 +137,11 @@ impl<'a, M: Memory> X<'a, M> {
             OpKind::Register => {
                 let r = self.ins.op_register(i);
                 if r.is_xmm() {
-                    self.cpu.xmm[r as usize - Register::XMM0 as usize] = v;
+                    self.cpu.set_xmm(r as usize - Register::XMM0 as usize, v);
                 } else if r.is_mm() {
                     self.cpu.mm[r as usize - Register::MM0 as usize] = v as u64;
                 } else {
-                    self.set_reg(r, v as u32);
+                    self.set_reg(r, v as u64);
                 }
                 Ok(())
             }
@@ -181,6 +181,11 @@ impl<'a, M: Memory> X<'a, M> {
     fn to_i32(&self, v: f64, trunc: bool) -> u32 {
         let r = if trunc { fpu::trunc(v) } else { self.round_mx(v) };
         if r >= -2147483648.0 && r <= 2147483647.0 { r as i32 as u32 } else { 0x8000_0000 }
+    }
+
+    fn to_i64(&self, v: f64, trunc: bool) -> u64 {
+        let r = if trunc { fpu::trunc(v) } else { self.round_mx(v) };
+        if r >= -9223372036854775808.0 && r < 9223372036854775808.0 { r as i64 as u64 } else { 1 << 63 }
     }
 
     pub(super) fn sse(&mut self) -> Exit {
@@ -537,17 +542,26 @@ impl<'a, M: Memory> X<'a, M> {
 
             // ---- conversions
             Cvtsi2ss | Cvtsi2sd => {
-                let v = tryf!(self.read_v(1)) as u32 as i32;
+                let raw = tryf!(self.read_v(1));
                 let a = tryf!(self.read_v(0));
-                let r = if mn == Cvtsi2ss { set32(a, 0, (v as f32).to_bits()) } else { set64(a, 0, (v as f64).to_bits()) };
+                // a 64-bit source (REX.W) converts with one rounding, like the hardware
+                let (f, d) = if self.vbits(1) == 64 {
+                    let v = raw as u64 as i64;
+                    (v as f32, v as f64)
+                } else {
+                    let v = raw as u32 as i32;
+                    (v as f32, v as f64)
+                };
+                let r = if mn == Cvtsi2ss { set32(a, 0, f.to_bits()) } else { set64(a, 0, d.to_bits()) };
                 tryf!(self.write_v(0, r));
                 self.done()
             }
             Cvttss2si | Cvtss2si | Cvttsd2si | Cvtsd2si => {
                 let v = tryf!(self.read_v(1));
                 let x = if matches!(mn, Cvttss2si | Cvtss2si) { f32x(v, 0) as f64 } else { f64x(v, 0) };
-                let r = self.to_i32(x, matches!(mn, Cvttss2si | Cvttsd2si));
-                tryf!(self.write_v(0, r as u128));
+                let t = matches!(mn, Cvttss2si | Cvttsd2si);
+                let r = if self.vbits(0) == 64 { self.to_i64(x, t) as u128 } else { self.to_i32(x, t) as u128 };
+                tryf!(self.write_v(0, r));
                 self.done()
             }
             Cvtss2sd => {

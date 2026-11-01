@@ -19,6 +19,8 @@ const EXIT_INVALID: i32 = 4;
 const EXIT_INT: i32 = 5;
 const EXIT_HALT: i32 = 6;
 const EXIT_PENDING: i32 = 7;
+/// SYSCALL in long mode (x86-64 guests)
+const EXIT_SYSCALL: i32 = 8;
 
 /// The linear memory as the guest sees it.
 pub(crate) struct Linear;
@@ -333,6 +335,7 @@ fn exit_code(cpu: &Cpu, mem: &mut Linear, exit: Exit, info: &mut [u32]) -> Optio
             Some(EXIT_INT)
         }
         Exit::Halt => Some(EXIT_HALT),
+        Exit::Syscall => Some(EXIT_SYSCALL),
     }
 }
 

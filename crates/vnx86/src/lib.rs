@@ -27,6 +27,33 @@ impl Cpu {
         if self.lazy.op == 0 { self.eflags } else { (self.eflags & !flags::STATUS) | self.lazy.status() }
     }
 
+    /// 64-bit general register `i` (0..16, encoding order).
+    #[inline]
+    pub fn gpr(&self, i: usize) -> u64 {
+        if i < 8 { self.regs[i] as u64 | (self.hi[i] as u64) << 32 } else { self.r8[i - 8] }
+    }
+
+    #[inline]
+    pub fn set_gpr(&mut self, i: usize, v: u64) {
+        if i < 8 {
+            self.regs[i] = v as u32;
+            self.hi[i] = (v >> 32) as u32;
+        } else {
+            self.r8[i - 8] = v;
+        }
+    }
+
+    /// XMM register `i` (0..16).
+    #[inline]
+    pub fn xmm(&self, i: usize) -> u128 {
+        if i < 8 { self.xmm[i] } else { self.xmm8[i - 8] }
+    }
+
+    #[inline]
+    pub fn set_xmm(&mut self, i: usize, v: u128) {
+        if i < 8 { self.xmm[i] = v } else { self.xmm8[i - 8] = v }
+    }
+
     /// Makes `eflags` exact again.
     #[inline]
     pub fn materialize(&mut self) {
@@ -156,6 +183,13 @@ pub struct Cpu {
     pub mm: [u64; 8],
     pub xmm: [u128; 8],
     pub mxcsr: u32,
+    /// x86-64 (long mode) state. In 32-bit mode none of it is used; RIP, RSP and the FS/GS
+    /// bases always fit in 32 bits (all guest memory is below 4GB), so they stay in `eip`,
+    /// `regs` and `fs_base`/`gs_base`. `hi` holds the upper halves of RAX..RDI.
+    pub mode64: u32,
+    pub hi: [u32; 8],
+    pub r8: [u64; 8],
+    pub xmm8: [u128; 8],
 }
 
 impl Default for Cpu {
@@ -164,6 +198,7 @@ impl Default for Cpu {
             regs: [0; 8], eip: 0, eflags: 0x202, lazy: lazy::Lazy::default(), jit_hash: 0, jit_mask: 0,
             jit_pending: 0, jit_budget: 0, jit_ring: 0, fs_base: 0, gs_base: 0, trap_lo: 0, trap_hi: 0, tsc: 0,
             fpu: Fpu::default(), mm: [0; 8], xmm: [0; 8], mxcsr: 0x1f80,
+            mode64: 0, hi: [0; 8], r8: [0; 8], xmm8: [0; 8],
         }
     }
 }
@@ -184,6 +219,8 @@ pub enum Exit {
     InvalidOpcode,
     /// INT n (INT3 = 3).
     Interrupt(u8),
+    /// SYSCALL (long mode); EIP is past it, RCX and R11 are set as the instruction sets them.
+    Syscall,
     /// HLT (privileged in user mode; the embedder decides).
     Halt,
 }
@@ -210,8 +247,8 @@ pub fn fxsave<M: Memory + ?Sized>(cpu: &Cpu, mem: &mut M, a: u32) -> Result<(), 
             mem.write8(a + 32 + 16 * i + k, 0)?;
         }
     }
-    for i in 0..8u32 {
-        let x = cpu.xmm[i as usize];
+    for i in 0..if cpu.mode64 != 0 { 16 } else { 8 } {
+        let x = cpu.xmm(i as usize);
         mem.write64(a + 160 + 16 * i, x as u64)?;
         mem.write64(a + 168 + 16 * i, (x >> 64) as u64)?;
     }
@@ -232,8 +269,8 @@ pub fn fxrstor<M: Memory + ?Sized>(cpu: &mut Cpu, mem: &mut M, a: u32) -> Result
         }
         *r = fpu::from_f80(&b);
     }
-    let mut xmm = [0u128; 8];
-    for (i, x) in xmm.iter_mut().enumerate() {
+    let mut xmm = [0u128; 16];
+    for (i, x) in xmm.iter_mut().enumerate().take(if cpu.mode64 != 0 { 16 } else { 8 }) {
         let lo = mem.read64(a + 160 + 16 * i as u32)?;
         let hi = mem.read64(a + 168 + 16 * i as u32)?;
         *x = lo as u128 | (hi as u128) << 64;
@@ -248,6 +285,8 @@ pub fn fxrstor<M: Memory + ?Sized>(cpu: &mut Cpu, mem: &mut M, a: u32) -> Result
         f.regs[p] = *r;
     }
     cpu.mxcsr = mxcsr;
-    cpu.xmm = xmm;
+    for (i, x) in xmm.iter().enumerate().take(if cpu.mode64 != 0 { 16 } else { 8 }) {
+        cpu.set_xmm(i, *x);
+    }
     Ok(())
 }
