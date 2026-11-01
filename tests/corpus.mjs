@@ -27,7 +27,8 @@ const save = () => writeFileSync(`${out}/result.json`, JSON.stringify(res, null,
 const args = ["--enable-unsafe-webgpu", "--use-webgpu-adapter=swiftshader", "--enable-features=Vulkan",
   ...(process.env.CHROME_ARGS ?? "").split(" ").filter(Boolean)];
 const browser = await chromium.launch({ args });
-const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+// Japanese games check the time zone (Siglus: "Japan only")
+const page = await browser.newPage({ viewport: { width: 1280, height: 720 }, timezoneId: process.env.TZ_ID ?? "Asia/Tokyo", locale: "ja-JP" });
 let crashed = false, exited = false;
 page.on("console", (m) => {
   const t = m.text();

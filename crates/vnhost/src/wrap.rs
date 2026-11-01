@@ -1092,18 +1092,11 @@ fn add_f64(a: &AtomicU64, v: f64) {
 }
 
 /// A thread's slot and when it last woke by its own clock; its time goes to LOAD_RETIRED when
-/// the thread ends.
+/// the thread ends (load_key).
 struct LoadSlot(Option<&'static Load>, std::cell::Cell<f64>);
-impl Drop for LoadSlot {
-    fn drop(&mut self) {
-        let Some(l) = self.0 else { return };
-        if l.woke.swap(0, Ordering::Relaxed) == 0 {
-            return; // retired by load_key's destructor
-        }
-        let busy = f64::from_bits(l.busy.swap(0, Ordering::Relaxed)) + unsafe { emscripten_get_now() } - self.1.get();
-        add_f64(&LOAD_RETIRED, busy);
-    }
-}
+// No Drop: the first wait of a thread can come from inside malloc (its lock), where registering
+// a thread-local destructor aborts ("the System allocator may not use TLS with destructors");
+// load_key's pthread destructor retires the slot instead (it runs for every thread).
 
 /// The pthread key whose destructor retires a thread's slot (value: slot + 1).
 fn load_key() -> libc::pthread_key_t {
