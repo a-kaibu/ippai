@@ -93,6 +93,19 @@ struct GameEntry {
     /// `/path=tree`, as wine.html's `&mount=`
     mounts: Vec<String>,
     env: Vec<String>,
+    /// "x86_64" for a 64-bit (PE32+) program: wine.html runs it with the 64-bit build
+    #[serde(skip_serializing_if = "Option::is_none")]
+    arch: Option<String>,
+}
+
+/// Whether the file's first chunk is a PE32+ (64-bit) image.
+fn is_pe64(store: &Path, chunks: &str) -> Result<bool> {
+    let Some(h) = chunks.split(',').next().filter(|h| h.len() >= 2) else { return Ok(false) };
+    let raw = fs::read(store.join("chunks").join(&h[..2]).join(h))?;
+    let b = zstd::decode_all(&raw[..])?;
+    let u32_at = |o: usize| b.get(o..o + 4).map(|s| u32::from_le_bytes(s.try_into().unwrap()));
+    let Some(pe) = u32_at(0x3c).map(|v| v as usize) else { return Ok(false) };
+    Ok(u32_at(pe) == Some(0x4550) && b.get(pe + 24..pe + 26) == Some(&[0x0b, 0x02]))
 }
 
 fn valid_id(id: &str) -> bool {
@@ -119,9 +132,13 @@ fn add_game(
     let list = fs::read_to_string(store.join("trees").join(format!("{tree}.tsv")))
         .with_context(|| format!("tree {tree} (pack it with `tree` first)"))?;
     let exe = exe.replace('\\', "/");
-    if !list.lines().any(|l| l.starts_with("f\t") && l.split('\t').nth(3).is_some_and(|p| p.eq_ignore_ascii_case(&exe))) {
+    let Some(line) = list.lines().find(|l| l.starts_with("f\t") && l.split('\t').nth(3).is_some_and(|p| p.eq_ignore_ascii_case(&exe)))
+    else {
         bail!("{exe} is not a file in tree {tree}");
-    }
+    };
+    let arch = is_pe64(store, line.split('\t').nth(5).unwrap_or(""))
+        .with_context(|| format!("reading {exe}"))?
+        .then(|| "x86_64".to_string());
     for m in &mount {
         if !m.starts_with('/') || !m.contains('=') {
             bail!("--mount {m}: expected /path=tree");
@@ -153,11 +170,12 @@ fn add_game(
         cover,
         args,
         env,
+        arch,
     };
     let tmp = dir.join(format!(".{id}.json.tmp"));
     fs::write(&tmp, serde_json::to_vec_pretty(&entry)?)?;
     fs::rename(&tmp, dir.join(format!("{id}.json")))?;
-    eprintln!("{id}: {} ({})", entry.title, entry.run);
+    eprintln!("{id}: {} ({}{})", entry.title, entry.run, if entry.arch.is_some() { ", 64-bit" } else { "" });
     Ok(())
 }
 

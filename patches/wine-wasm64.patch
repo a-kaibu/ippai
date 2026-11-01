@@ -1065,7 +1065,7 @@
      UINT_PTR addr = (UINT_PTR)1 << 63;
  
      while (addr >> 32)
-@@ -3326,10 +3328,12 @@
+@@ -3329,10 +3331,12 @@
          }
          set_mem_area_state( addr, size, AREA_RESERVED );
      }
@@ -1078,7 +1078,7 @@
      else
      {
  #ifdef __wasm__
-@@ -3347,7 +3351,11 @@
+@@ -3350,7 +3354,11 @@
  #endif
      }
  
@@ -1090,7 +1090,7 @@
      {
          void *start = (void *)0x7ff000000000;
          void *end = (void *)0x7ff600000000;
-@@ -3726,7 +3734,11 @@
+@@ -3729,7 +3737,11 @@
          if (end > start) map_fixed_area( start, end - start, PROT_READ | PROT_WRITE );
      }
  
@@ -1102,6 +1102,82 @@
      {
          if (main_image_info.ImageCharacteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE)
          {
+--- a/dlls/vnd3d11/main.c
++++ b/dlls/vnd3d11/main.c
+@@ -36,6 +36,22 @@
+ #define FIRST_IFACE 64
+ #define LAST_IFACE 93
+ 
++#ifdef __x86_64__
++/* the register arguments go to their home slots: args is an array of 8-byte slots (float
++ * arguments, passed in xmm registers, are not seen; no method the host handles takes one) */
++#define M(i,n,a) __ASM_GLOBAL_FUNC( vnd3d11_##i##_##n, \
++    "movq %rcx,8(%rsp)\n\t" \
++    "movq %rdx,16(%rsp)\n\t" \
++    "movq %r8,24(%rsp)\n\t" \
++    "movq %r9,32(%rsp)\n\t" \
++    "leaq 8(%rsp),%rdx\n\t" \
++    "movl $(" #i "*256+" #n "),%ecx\n\t" \
++    "subq $40,%rsp\n\t" \
++    "call " __ASM_NAME("vnd3d11_dispatch") "\n\t" \
++    "addq $40,%rsp\n\t" \
++    "ret" )
++#define F(i,n) __ASM_GLOBAL_FUNC( vnd3d11_##i##_##n, "xorps %xmm0,%xmm0\n\tret" )
++#else
+ #define M(i,n,a) __ASM_GLOBAL_FUNC( vnd3d11_##i##_##n, \
+     "leal 4(%esp),%eax\n\t" \
+     "pushl %eax\n\t" \
+@@ -44,6 +60,7 @@
+     "ret $(4*" #a ")" )
+ /* (returns a float: 0.0) */
+ #define F(i,n) __ASM_GLOBAL_FUNC( vnd3d11_##i##_##n, "fldz\n\tret $8" )
++#endif
+ ALL_IFACES
+ #undef M
+ #undef F
+--- a/dlls/vnd3d9/main.c
++++ b/dlls/vnd3d9/main.c
+@@ -81,12 +81,28 @@
+ #define IFACE_15 IUNKNOWN(15) M(15,3,2) M(15,4,5) M(15,5,4) M(15,6,2) M(15,7,3) M(15,8,2) M(15,9,4) M(15,10,1)
+ #define NUM_IFACES 15
+ 
++#ifdef __x86_64__
++/* the register arguments go to their home slots: args is an array of 8-byte slots (float
++ * arguments, passed in xmm registers, are not seen) */
++#define M(i,n,a) __ASM_GLOBAL_FUNC( vnd3d9_##i##_##n, \
++    "movq %rcx,8(%rsp)\n\t" \
++    "movq %rdx,16(%rsp)\n\t" \
++    "movq %r8,24(%rsp)\n\t" \
++    "movq %r9,32(%rsp)\n\t" \
++    "leaq 8(%rsp),%rdx\n\t" \
++    "movl $(" #i "*256+" #n "),%ecx\n\t" \
++    "subq $40,%rsp\n\t" \
++    "call " __ASM_NAME("vnd3d9_dispatch") "\n\t" \
++    "addq $40,%rsp\n\t" \
++    "ret" )
++#else
+ #define M(i,n,a) __ASM_GLOBAL_FUNC( vnd3d9_##i##_##n, \
+     "leal 4(%esp),%eax\n\t" \
+     "pushl %eax\n\t" \
+     "pushl $(" #i "*256+" #n ")\n\t" \
+     "call " __ASM_STDCALL("vnd3d9_dispatch",8) "\n\t" \
+     "ret $(4*" #a ")" )
++#endif
+ #define C(i,n)
+ IFACE_1 IFACE_2 IFACE_3 IFACE_4 IFACE_5 IFACE_6 IFACE_7 IFACE_8 IFACE_9 IFACE_10 IFACE_11 IFACE_12
+ IFACE_13 IFACE_14 IFACE_15
+@@ -101,7 +117,11 @@
+ #undef C
+ 
+ /* IDirect3DDevice9::GetNPatchMode returns a float (on the x87 stack) */
++#ifdef __x86_64__
++__ASM_GLOBAL_FUNC( vnd3d9_2_80, "xorps %xmm0,%xmm0\n\tret" )
++#else
+ __ASM_GLOBAL_FUNC( vnd3d9_2_80, "fldz\n\tret $4" )
++#endif
+ extern void vnd3d9_2_80(void);
+ 
+ /* IDirect3DSurface9::GetDC/ReleaseDC: a GDI DC over the locked surface (gdi32 lives here) */
 --- a/dlls/win32u/syscall.c
 +++ b/dlls/win32u/syscall.c
 @@ -147,6 +147,30 @@
@@ -1159,7 +1235,7 @@
  #undef NtUserNotifyIMEStatus
 --- a/include/winnt.h
 +++ b/include/winnt.h
-@@ -8328,9 +8328,15 @@
+@@ -8335,9 +8335,15 @@
  
  #else
  

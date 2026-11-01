@@ -281,6 +281,51 @@ unsafe fn rdf(p: u32, i: usize) -> f32 {
     f32::from_bits(rd(p, i))
 }
 
+/// Size of the guest's pointers (and HWNDs, SIZE_Ts): the 64-bit build runs 64-bit programs.
+/// Guest addresses are below 4G either way.
+const PTR: u32 = if cfg!(target_arch = "wasm64") { 8 } else { 4 };
+
+/// Pointer `i` of an array of pointers.
+unsafe fn rdp(p: u32, i: usize) -> u32 {
+    rd(p, i * (PTR / 4) as usize)
+}
+
+unsafe fn wrp(p: u32, i: usize, v: u32) {
+    wr(p, i * (PTR / 4) as usize, v);
+    if PTR == 8 {
+        wr(p, i * 2 + 1, 0);
+    }
+}
+
+/// DXGI_SWAP_CHAIN_DESC as 15 dwords in its 32-bit layout (OutputWindow at 11)
+unsafe fn swap_desc(desc: u32) -> [u32; 15] {
+    let mut p = [0u32; 15];
+    for (i, v) in p.iter_mut().enumerate() {
+        // (64-bit: OutputWindow is 8-byte aligned, at dword 12)
+        let k = if PTR == 8 && i >= 11 { i + 1 + (i > 11) as usize } else { i };
+        *v = rd(desc, k);
+    }
+    p
+}
+
+unsafe fn put_swap_desc(desc: u32, p: [u32; 15]) {
+    for (i, v) in p.into_iter().enumerate() {
+        let k = if PTR == 8 && i >= 11 { i + 1 + (i > 11) as usize } else { i };
+        wr(desc, k, v);
+    }
+    if PTR == 8 {
+        wr(desc, 11, 0);
+        wr(desc, 13, 0);
+    }
+}
+
+/// D3D11_MAPPED_SUBRESOURCE { pData, RowPitch, DepthPitch }
+unsafe fn put_mapped(out: u32, mem: u32, row: u32, depth: u32) {
+    wrp(out, 0, mem);
+    wr(out + PTR, 0, row);
+    wr(out + PTR, 1, depth);
+}
+
 /// Page ids for textures and buffers (shared with d3d9's: one page)
 pub(crate) fn page_id() -> u32 {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x4000_0000);
@@ -314,8 +359,8 @@ impl D11 {
         }
         let addr = self.free_blocks.pop().unwrap();
         unsafe {
-            *(addr as *mut u32) = self.vtbls.get(iface as usize).copied().unwrap_or(0);
-            *((addr + 4) as *mut u32) = id;
+            wrp(addr, 0, self.vtbls.get(iface as usize).copied().unwrap_or(0));
+            *((addr + PTR) as *mut u32) = id;
         }
         addr
     }
@@ -344,7 +389,7 @@ impl D11 {
         if addr == 0 {
             return 0;
         }
-        let id = unsafe { *((addr + 4) as *const u32) };
+        let id = unsafe { *((addr + PTR) as *const u32) };
         if self.objs.get(&id).is_some_and(|o| o.faces.iter().any(|f| f.1 == addr)) { id } else { 0 }
     }
 
@@ -403,7 +448,7 @@ impl D11 {
         }
         let o = self.objs.remove(&id).unwrap();
         for (_, a) in &o.faces {
-            unsafe { *((a + 4) as *mut u32) = 0 };
+            unsafe { *((a + PTR) as *mut u32) = 0 };
             self.free_blocks.push(*a);
         }
         match o.data {
@@ -434,7 +479,7 @@ impl D11 {
 
 /// d3d11.dll's DllMain: its vtables.
 pub unsafe fn init(vtbls: *const u32, count: u32) -> u32 {
-    let v = std::slice::from_raw_parts(vtbls, count as usize).to_vec();
+    let v: Vec<u32> = (0..count as usize).map(|i| rdp(vtbls as u32, i)).collect();
     let mut g = D11S.lock().unwrap_or_else(|e| e.into_inner());
     match g.as_mut() {
         Some(d) => d.vtbls = v,
@@ -464,6 +509,16 @@ pub unsafe fn init(vtbls: *const u32, count: u32) -> u32 {
 
 /// Entry from d3d9's dispatcher: ids INIT.. and interfaces 64+.
 pub unsafe fn call(id: u32, args: *const u32, calls: *const HostCalls) -> u32 {
+    // (64-bit: the arguments are 8-byte slots; their low halves from here on)
+    let mut low = [0u32; 16];
+    let args = if PTR == 8 {
+        for (i, v) in low.iter_mut().enumerate() {
+            *v = *args.add(i * 2);
+        }
+        low.as_ptr()
+    } else {
+        args
+    };
     if id == INIT {
         return init(*args as *const u32, *args.add(1));
     }
@@ -549,11 +604,11 @@ unsafe fn query_interface(d: &mut D11, id: u32, iface: u32, riid: u32, out: u32)
         if d.trace {
             eprintln!("d3d11: QueryInterface({first:08x}) on {}: no", name(iface, 0));
         }
-        wr(out, 0, 0);
+        wrp(out, 0, 0);
         return E_NOINTERFACE;
     }
     d.add_ref(id);
-    wr(out, 0, d.face(id, want));
+    wrp(out, 0, d.face(id, want));
     S_OK
 }
 
@@ -597,19 +652,18 @@ unsafe fn create_device(d: &mut D11, args: *const u32) -> u32 {
     }
     wr(level_out, 0, level);
     if dev_out != 0 {
-        wr(dev_out, 0, d.addr_of(d.device));
+        wrp(dev_out, 0, d.addr_of(d.device));
     } else {
         d.release(d.device);
     }
     if ctx_out != 0 {
         d.add_ref(d.context);
-        wr(ctx_out, 0, d.addr_of(d.context));
+        wrp(ctx_out, 0, d.addr_of(d.context));
     }
     if desc != 0 && sc_out != 0 {
-        let mut p = [0u32; 15];
-        std::ptr::copy_nonoverlapping(desc as *const u32, p.as_mut_ptr(), 15);
+        let p = swap_desc(desc);
         let sc = new_swapchain(d, p[11], p[0], p[1], p[4], p[9]);
-        wr(sc_out, 0, sc);
+        wrp(sc_out, 0, sc);
         if sc == 0 {
             return E_FAIL;
         }
@@ -734,24 +788,29 @@ unsafe fn method(d: &mut D11, iface: u32, m: u32, this: u32, args: *const u32, a
             7 => {
                 // EnumOutputs
                 if a(1) != 0 {
-                    wr(a(2), 0, 0);
+                    wrp(a(2), 0, 0);
                     return DXGI_ERROR_NOT_FOUND;
                 }
                 d.add_ref(d.output);
-                wr(a(2), 0, d.addr_of(d.output));
+                wrp(a(2), 0, d.addr_of(d.output));
                 S_OK
             }
             8 | 10 => {
                 // GetDesc/GetDesc1: Description[128] WCHAR, ids, memory sizes
-                let n = if m == 8 { 292 } else { 296 };
+                let n = match (m, PTR) {
+                    (8, 4) => 292,
+                    (_, 4) => 296,
+                    (8, _) => 304,
+                    _ => 312,
+                };
                 std::ptr::write_bytes(a(1) as *mut u8, 0, n);
                 for (i, c) in "vnvm WebGPU".encode_utf16().enumerate() {
                     *((a(1) + i as u32 * 2) as *mut u16) = c;
                 }
                 wr(a(1) + 256, 0, 0x10de); // VendorId
                 wr(a(1) + 256, 1, 0x1c82);
-                wr(a(1) + 256, 4, 512 << 20); // DedicatedVideoMemory
-                wr(a(1) + 256, 6, 1024 << 20); // SharedSystemMemory
+                wrp(a(1) + 272, 0, 512 << 20); // DedicatedVideoMemory (SIZE_T)
+                wrp(a(1) + 272, 2, 1024 << 20); // SharedSystemMemory
                 S_OK
             }
             9 => S_OK,
@@ -766,7 +825,7 @@ unsafe fn method(d: &mut D11, iface: u32, m: u32, this: u32, args: *const u32, a
                     return parent(d, d.adapter, a(1), a(2));
                 }
                 d.add_ref(d.adapter);
-                wr(a(1), 0, d.addr_of(d.adapter));
+                wrp(a(1), 0, d.addr_of(d.adapter));
                 S_OK
             }
             10 | 12 => S_OK,
@@ -805,16 +864,16 @@ unsafe fn factory_call(d: &mut D11, m: u32, _this: u32, a: &dyn Fn(usize) -> u32
         6 => E_NOINTERFACE,
         7 | 12 => {
             if a(1) != 0 {
-                wr(a(2), 0, 0);
+                wrp(a(2), 0, 0);
                 return DXGI_ERROR_NOT_FOUND;
             }
             d.add_ref(d.adapter);
-            wr(a(2), 0, d.addr_of(d.adapter));
+            wrp(a(2), 0, d.addr_of(d.adapter));
             S_OK
         }
         8 => S_OK,
         9 => {
-            wr(a(1), 0, 0);
+            wrp(a(1), 0, 0);
             S_OK
         }
         10 => {
@@ -823,9 +882,9 @@ unsafe fn factory_call(d: &mut D11, m: u32, _this: u32, a: &dyn Fn(usize) -> u32
             if desc == 0 || a(3) == 0 {
                 return E_INVALIDARG;
             }
-            let p: Vec<u32> = (0..15).map(|i| rd(desc, i)).collect();
+            let p = swap_desc(desc);
             let sc = new_swapchain(d, p[11], p[0], p[1], p[4], p[9]);
-            wr(a(3), 0, sc);
+            wrp(a(3), 0, sc);
             if sc == 0 { E_FAIL } else { S_OK }
         }
         11 => DXGI_ERROR_UNSUPPORTED,
@@ -838,7 +897,7 @@ unsafe fn factory_call(d: &mut D11, m: u32, _this: u32, a: &dyn Fn(usize) -> u32
                 return E_INVALIDARG;
             }
             let sc = new_swapchain(d, a(2), rd(desc, 0), rd(desc, 1), rd(desc, 2), rd(desc, 7));
-            wr(a(6), 0, sc);
+            wrp(a(6), 0, sc);
             if sc == 0 { E_FAIL } else { S_OK }
         }
         16 | 24 => DXGI_ERROR_UNSUPPORTED,
@@ -942,14 +1001,11 @@ unsafe fn swapchain_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u3
         10 => S_OK,
         11 => {
             wr(a(1), 0, 0);
-            wr(a(2), 0, 0);
+            wrp(a(2), 0, 0);
             S_OK
         }
         12 => {
-            let p = a(1);
-            for (k, v) in [w, h, 60, 1, fmt, 0, 0, 1, 0, 0x20, 1, hwnd, 1, 0, 0].into_iter().enumerate() {
-                wr(p, k, v);
-            }
+            put_swap_desc(a(1), [w, h, 60, 1, fmt, 0, 0, 1, 0, 0x20, 1, hwnd, 1, 0, 0]);
             S_OK
         }
         13 => {
@@ -973,7 +1029,7 @@ unsafe fn swapchain_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u3
         14 => S_OK,
         15 => {
             d.add_ref(d.output);
-            wr(a(1), 0, d.addr_of(d.output));
+            wrp(a(1), 0, d.addr_of(d.output));
             S_OK
         }
         16 => DXGI_ERROR_UNSUPPORTED,
@@ -999,7 +1055,7 @@ unsafe fn swapchain_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u3
             S_OK
         }
         20 => {
-            wr(a(1), 0, hwnd);
+            wrp(a(1), 0, hwnd);
             S_OK
         }
         23 => 0,
@@ -1029,10 +1085,10 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             }
             std::ptr::write_bytes(mem as *mut u8, 0, size as usize);
             if a(2) != 0 {
-                std::ptr::copy_nonoverlapping(rd(a(2), 0) as *const u8, mem as *mut u8, size as usize);
+                std::ptr::copy_nonoverlapping(rdp(a(2), 0) as *const u8, mem as *mut u8, size as usize);
             }
             let o = d.new_obj(IF_BUFFER, Data::Buffer(Buffer { size, usage, bind, mem, gpu: 0, dirty: true }));
-            wr(a(3), 0, o);
+            wrp(a(3), 0, o);
             S_OK
         }
         4..=6 => {
@@ -1060,11 +1116,12 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             if a(2) != 0 {
                 let Some(Data::Texture(t)) = d.objs.get(&id).map(|o| &o.data) else { return E_FAIL };
                 for sub in 0..t.mips * if dim == 3 { 1 } else { t.layers } {
-                    let init = a(2) + sub * 12;
-                    upload_texture(t, sub, rd(init, 0), rd(init, 1), None);
+                    // D3D11_SUBRESOURCE_DATA { pSysMem, SysMemPitch, SysMemSlicePitch }
+                    let init = a(2) + sub * (PTR + 8);
+                    upload_texture(t, sub, rdp(init, 0), rd(init + PTR, 0), None);
                 }
             }
-            wr(a(3), 0, o);
+            wrp(a(3), 0, o);
             S_OK
         }
         7..=10 => create_view(d, m, a(1), a(2), a(3)),
@@ -1073,9 +1130,11 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             let mut v = Vec::new();
             let mut next = [0u32; 16];
             for i in 0..a(2) {
-                let e = a(1) + i * 28;
-                let name = std::ffi::CStr::from_ptr(rd(e, 0) as *const std::ffi::c_char).to_string_lossy().into_owned();
-                let (index, fmt, slot, off, class) = (rd(e, 1), rd(e, 2), rd(e, 3) & 15, rd(e, 4), rd(e, 5));
+                // D3D11_INPUT_ELEMENT_DESC { SemanticName, then six UINTs }
+                let e = a(1) + i * (PTR + 24);
+                let name = std::ffi::CStr::from_ptr(rdp(e, 0) as *const std::ffi::c_char).to_string_lossy().into_owned();
+                let f = e + PTR;
+                let (index, fmt, slot, off, class) = (rd(f, 0), rd(f, 1), rd(f, 2) & 15, rd(f, 3), rd(f, 4));
                 let off = if off == 0xffff_ffff { next[slot as usize] } else { off };
                 let size = format::vertex_format(fmt).map_or(4, vertex_size);
                 next[slot as usize] = off + size;
@@ -1085,7 +1144,7 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
                 return S_FALSE;
             }
             let o = d.new_obj(IF_LAYOUT, Data::Layout(v));
-            wr(a(5), 0, o);
+            wrp(a(5), 0, o);
             S_OK
         }
         12 | 13 | 15..=18 => {
@@ -1103,18 +1162,18 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
                 return S_FALSE;
             }
             let o = d.new_obj(iface, Data::Shader(Shader { code, pixel: iface == IF_PS, wgsl: HashMap::new() }));
-            wr(a(4), 0, o);
+            wrp(a(4), 0, o);
             S_OK
         }
         14 => {
             // CreateGeometryShaderWithStreamOutput(..., out at 9)
             let o = d.new_obj(IF_GS, Data::Other);
-            wr(a(9), 0, o);
+            wrp(a(9), 0, o);
             S_OK
         }
         19 => {
             let o = d.new_obj(IF_LINKAGE, Data::Other);
-            wr(a(1), 0, o);
+            wrp(a(1), 0, o);
             S_OK
         }
         20..=23 => {
@@ -1133,7 +1192,7 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
                 return S_FALSE;
             }
             let o = d.new_obj(iface, Data::State(desc));
-            wr(a(2), 0, o);
+            wrp(a(2), 0, o);
             S_OK
         }
         24 | 25 => {
@@ -1142,7 +1201,7 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
                 return S_FALSE;
             }
             let o = d.new_obj(IF_QUERY, Data::Query(t));
-            wr(a(2), 0, o);
+            wrp(a(2), 0, o);
             S_OK
         }
         26 => E_INVALIDARG,
@@ -1174,7 +1233,7 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
         39 => S_OK,
         40 => {
             d.add_ref(d.context);
-            wr(a(1), 0, d.addr_of(d.context));
+            wrp(a(1), 0, d.addr_of(d.context));
             S_OK
         }
         41 => S_OK,
@@ -1243,7 +1302,7 @@ unsafe fn create_view(d: &mut D11, m: u32, res: u32, desc: u32, out: u32) -> u32
         // (buffer views are not supported)
         if out != 0 {
             let o = d.new_obj([IF_SRV, IF_UAV, IF_RTV, IF_DSV][m as usize - 7], Data::Other);
-            wr(out, 0, o);
+            wrp(out, 0, o);
             return S_OK;
         }
         return E_INVALIDARG;
@@ -1324,7 +1383,7 @@ unsafe fn create_view(d: &mut D11, m: u32, res: u32, desc: u32, out: u32) -> u32
     }
     d.add_ref(rid);
     let o = d.new_obj([IF_SRV, IF_UAV, IF_RTV, IF_DSV][m as usize - 7], Data::View(v));
-    wr(out, 0, o);
+    wrp(out, 0, o);
     S_OK
 }
 
@@ -1333,7 +1392,7 @@ unsafe fn child_call(d: &mut D11, iface: u32, m: u32, this: u32, a: &dyn Fn(usiz
     match m {
         3 => {
             d.add_ref(d.device);
-            wr(a(1), 0, d.addr_of(d.device));
+            wrp(a(1), 0, d.addr_of(d.device));
             return S_OK;
         }
         4..=6 => return private_data(d, m, this, a),
@@ -1375,7 +1434,7 @@ unsafe fn child_call(d: &mut D11, iface: u32, m: u32, this: u32, a: &dyn Fn(usiz
         (IF_SRV | IF_RTV | IF_DSV | IF_UAV, 7, Some(Data::View(v))) => {
             let r = v.res;
             d.add_ref(r);
-            wr(a(1), 0, d.addr_of(r));
+            wrp(a(1), 0, d.addr_of(r));
             S_OK
         }
         (IF_SRV | IF_RTV | IF_DSV | IF_UAV, 8, Some(Data::View(v))) => {
@@ -1440,7 +1499,7 @@ unsafe fn set_slots(d: &mut D11, slots: &mut [u32], start: u32, n: u32, p: u32) 
         if s >= slots.len() {
             break;
         }
-        let new = if p == 0 { 0 } else { d.id_of(rd(p, i as usize)) };
+        let new = if p == 0 { 0 } else { d.id_of(rdp(p, i as usize)) };
         let old = slots[s];
         slots[s] = new;
         d.rebind(new, old);
@@ -1454,7 +1513,7 @@ unsafe fn get_slots(d: &mut D11, slots: &[u32], start: u32, n: u32, p: u32) {
         if id != 0 {
             d.add_ref(id);
         }
-        wr(p, i as usize, d.addr_of(id));
+        wrp(p, i as usize, d.addr_of(id));
     }
 }
 
@@ -1469,7 +1528,7 @@ unsafe fn get_one(d: &mut D11, id: u32, out: u32) {
     if id != 0 {
         d.add_ref(id);
     }
-    wr(out, 0, d.addr_of(id));
+    wrp(out, 0, d.addr_of(id));
 }
 
 unsafe fn context_call(d: &mut D11, m: u32, a: &dyn Fn(usize) -> u32, after: &mut After) -> u32 {
@@ -1483,7 +1542,7 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
     match m {
         3 => {
             d.add_ref(d.device);
-            wr(a(1), 0, d.addr_of(d.device));
+            wrp(a(1), 0, d.addr_of(d.device));
         }
         4..=6 => {
             let ctx = d.context;
@@ -1506,7 +1565,7 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
                 if s >= 16 {
                     break;
                 }
-                let new = if a(3) == 0 { 0 } else { d.id_of(rd(a(3), i as usize)) };
+                let new = if a(3) == 0 { 0 } else { d.id_of(rdp(a(3), i as usize)) };
                 let old = st.vbs[s].0;
                 st.vbs[s] = (new, if a(4) != 0 { rd(a(4), i as usize) } else { 0 }, if a(5) != 0 { rd(a(5), i as usize) } else { 0 });
                 d.rebind(new, old);
@@ -1629,7 +1688,7 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
                 let s = (a(1) + i) as usize;
                 let (b, stride, off) = st.vbs.get(s).copied().unwrap_or_default();
                 if a(3) != 0 {
-                    get_one(d, b, a(3) + i * 4);
+                    get_one(d, b, a(3) + i * PTR);
                 }
                 wr(a(4), i as usize, stride);
                 wr(a(5), i as usize, off);
@@ -1642,7 +1701,7 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
         }
         82 | 98 | 102 | 107 => {
             // other stages' shaders: none
-            wr(a(1), 0, 0);
+            wrp(a(1), 0, 0);
             if a(3) != 0 {
                 wr(a(3), 0, 0);
             }
@@ -1650,12 +1709,12 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
         81 | 87 | 88 | 97..=109 => {
             // other stages: nothing bound
             for i in 0..a(2) {
-                wr(a(3), i as usize, 0);
+                wrp(a(3), i as usize, 0);
             }
         }
         83 => wr(a(1), 0, st.topology),
         86 => {
-            wr(a(1), 0, 0);
+            wrp(a(1), 0, 0);
             wr(a(2), 0, 0);
         }
         89 | 90 => {
@@ -1681,7 +1740,7 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
         }
         93 => {
             for i in 0..a(1) {
-                wr(a(2), i as usize, 0);
+                wrp(a(2), i as usize, 0);
             }
         }
         94 => get_one(d, st.raster, a(1)),
@@ -1750,9 +1809,7 @@ unsafe fn map(d: &mut D11, res: u32, sub: u32, ty: u32, out: u32, after: &mut Af
     let r = match d.objs.get_mut(&id).map(|o| &mut o.data) {
         Some(Data::Buffer(b)) => {
             b.dirty = true;
-            wr(out, 0, b.mem);
-            wr(out, 1, b.size);
-            wr(out, 2, b.size);
+            put_mapped(out, b.mem, b.size, b.size);
             S_OK
         }
         Some(Data::Texture(t)) => {
@@ -1788,9 +1845,7 @@ unsafe fn map(d: &mut D11, res: u32, sub: u32, ty: u32, out: u32, after: &mut Af
                     gpu::record(|q| q.cmd(&[gpu::READBACK, req, g, l, 0, 0, lw, lh, mem, pitch]));
                 }
             }
-            wr(out, 0, mem);
-            wr(out, 1, pitch);
-            wr(out, 2, pitch * rows);
+            put_mapped(out, mem, pitch, pitch * rows);
             S_OK
         }
         _ => E_INVALIDARG,

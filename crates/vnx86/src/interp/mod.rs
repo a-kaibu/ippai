@@ -48,7 +48,7 @@ impl Default for DecodeCache {
 
 /// [`step_flow`] with a [`DecodeCache`].
 pub fn step_cached<M: Memory>(cpu: &mut Cpu, mem: &mut M, cache: Option<&mut DecodeCache>) -> (Exit, bool) {
-    if cpu.eip >= cpu.trap_lo && cpu.eip < cpu.trap_hi {
+    if cpu.eip >= cpu.trap_lo && cpu.eip < cpu.trap_hi && cpu.rip_hi == 0 {
         return (Exit::Trap(cpu.eip), true);
     }
     cpu.materialize();
@@ -59,10 +59,11 @@ pub fn step_cached<M: Memory>(cpu: &mut Cpu, mem: &mut M, cache: Option<&mut Dec
         &mut c.0[i]
     });
     let ins = match slot {
-        Some(e) if e.0 == cpu.eip && (e.2 as usize) <= n && e.1[..e.2 as usize] == buf[..e.2 as usize] => e.3,
+        Some(e) if e.0 == cpu.eip && e.3.ip() >> 32 == cpu.rip_hi as u64 && (e.2 as usize) <= n && e.1[..e.2 as usize] == buf[..e.2 as usize] => e.3,
         slot => {
             let bitness = if cpu.mode64 != 0 { 64 } else { 32 };
-            let mut dec = Decoder::with_ip(bitness, &buf[..n], cpu.eip as u64, DecoderOptions::NONE);
+            let rip = cpu.eip as u64 | (cpu.rip_hi as u64) << 32;
+            let mut dec = Decoder::with_ip(bitness, &buf[..n], rip, DecoderOptions::NONE);
             let ins = dec.decode();
             if ins.is_invalid() {
                 if n < 15 {
@@ -109,11 +110,10 @@ pub(crate) struct Lock {
 
 /// What a long-mode address above 4GB becomes (see [`X::addr`]): the last bytes of the 32-bit
 /// space, never guest memory.
-pub const BAD_ADDR: u32 = 0xffff_fff0;
-
 #[inline]
-fn lin(a: u64, m64: bool) -> u32 {
-    if m64 && a >> 32 != 0 { BAD_ADDR } else { a as u32 }
+fn lin(a: u64, _m64: bool) -> u32 {
+    // (modulo 4GB: see Cpu::rip_hi)
+    a as u32
 }
 
 /// reg_info's index for segment registers: flat 32-bit user mode, they read as Wine's
@@ -246,8 +246,7 @@ impl<'a, M: Memory> X<'a, M> {
         }) as u64
     }
 
-    /// Linear address of the memory operand. All guest memory is below 4GB: in long mode an
-    /// address above that becomes [`BAD_ADDR`], which no mapping covers.
+    /// Linear address of the memory operand: modulo 4GB in long mode (see `Cpu::rip_hi`).
     #[inline]
     fn addr(&self) -> u32 {
         lin(self.offset().wrapping_add(self.seg_base()), self.m64())
@@ -366,11 +365,8 @@ impl<'a, M: Memory> X<'a, M> {
     }
 
     fn jump(&mut self, target: u64) -> Exit {
-        if target >> 32 != 0 {
-            // a code address above 4GB: nothing is mapped there
-            return Exit::Fault(Fault { addr: BAD_ADDR, write: false });
-        }
         self.cpu.eip = target as u32;
+        self.cpu.rip_hi = (target >> 32) as u32;
         Exit::Continue
     }
 

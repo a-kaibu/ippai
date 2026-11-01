@@ -10,6 +10,8 @@
 //   &debug=+relay,...               WINEDEBUG
 //   &mount=/vnvm/game=tree          also mount a store tree (repeatable; Z:\vnvm\game\...)
 //   &env=NAME=value                 extra environment variable (repeatable, e.g. VNVM_TRACE_PROC=1)
+//   &arch=x86_64                    a 64-bit (PE32+) program: the 64-bit build (public/wine64/) with
+//                                   the wineroot64 and prefix64 trees
 //   &nosave                         no saved games (vnvm-server's pre-run: its x86 regions only)
 //   &headless                       don't draw to the canvas (tests/wine.mjs: headless Chromium
 //                                   destroys the device then, and Direct3D games need it)
@@ -26,7 +28,8 @@ const status = document.querySelector<HTMLDivElement>("#status")!;
 const canvas = document.querySelector<HTMLCanvasElement>("#screen")!;
 const startButton = document.querySelector<HTMLButtonElement>("#start")!;
 
-const WINE = new URL("wine/", location.href).href;
+// (read when a game starts: the launcher sets &arch)
+const arch64 = () => params.get("arch") === "x86_64";
 
 interface WineModule {
   FS: {
@@ -90,6 +93,8 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   // Keep the GPU device reachable: Chromium destroys a collected one.
   (window as unknown as { vnvmPresenter: Presenter }).vnvmPresenter = presenter;
   log("Wine を読み込み中");
+  const ARCH64 = arch64();
+  const WINE = new URL(ARCH64 ? "wine64/" : "wine/", location.href).href;
   const unixModule = fetch(`${WINE}wineunix.so`).then(async (r) => {
     if (!r.ok) throw new Error(`wineunix.so: HTTP ${r.status}`);
     return new Uint8Array(await r.arrayBuffer());
@@ -137,7 +142,11 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     locateFile: (path: string) =>
       path === "wine.wasm" && version ? `${WINE}${path}?v=${encodeURIComponent(version)}` : `${WINE}${path}`,
     vnvmEnv: {
-      VNVM_MOUNTS: ["/opt/wine-vnbox=wineroot", "/vnvm/prefix=prefix32", ...params.getAll("mount")].join(":"),
+      VNVM_MOUNTS: [
+        ARCH64 ? "/opt/wine-vnbox=wineroot64" : "/opt/wine-vnbox=wineroot",
+        ARCH64 ? "/vnvm/prefix=prefix64" : "/vnvm/prefix=prefix32",
+        ...params.getAll("mount"),
+      ].join(":"),
       LANG: "ja_JP.UTF-8",
       VNVM_UNIX_MODULE: "/vnvm/wineunix.so",
       WINEPREFIX: "/vnvm/prefix",
@@ -221,7 +230,7 @@ async function loadJit(name: string): Promise<{ parts: { module: WebAssembly.Mod
  * 2 s of the start (fonts are read whole). Returns the function that hands them to Wine.
  */
 function readAhead(name: Promise<string>): (wine: WineModule) => void {
-  const store = new URL("../store/", WINE).href;
+  const store = new URL("store/", location.href).href;
   const got: [Uint8Array, Uint8Array][] = [];
   let wine: WineModule | undefined;
   let p = 0;

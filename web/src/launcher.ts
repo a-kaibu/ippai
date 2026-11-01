@@ -16,6 +16,8 @@ export interface GameEntry {
   mounts: string[];
   /** NAME=value */
   env: string[];
+  /** "x86_64": a 64-bit program */
+  arch?: string;
 }
 
 const PLAYED = "vnvm-played";
@@ -55,6 +57,8 @@ export function applyGame(params: URLSearchParams, g: GameEntry): void {
   if (g.args.length) params.set("args", g.args.join(","));
   else params.delete("args");
   for (const e of g.env) params.append("env", e);
+  if (g.arch) params.set("arch", g.arch);
+  else params.delete("arch");
   markPlayed(g.id);
 }
 

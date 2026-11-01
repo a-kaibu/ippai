@@ -294,11 +294,10 @@ pub unsafe extern "C" fn vnhost_cpu_get64(cpu: *const Cpu, regs: *mut u64) {
     for (i, v) in r[..16].iter_mut().enumerate() {
         *v = c.gpr(i);
     }
-    r[16] = c.eip as u64;
+    r[16] = c.eip as u64 | (c.rip_hi as u64) << 32;
     r[17] = c.flags() as u64;
 }
 
-/// RIP must be below 4GB (all guest code is).
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_cpu_set64(cpu: *mut Cpu, regs: *const u64) {
     let c = &mut *cpu;
@@ -307,6 +306,7 @@ pub unsafe extern "C" fn vnhost_cpu_set64(cpu: *mut Cpu, regs: *const u64) {
         c.set_gpr(i, *v);
     }
     c.eip = r[16] as u32;
+    c.rip_hi = (r[16] >> 32) as u32;
     c.eflags = r[17] as u32 | 0x2;
     c.lazy.op = 0;
 }
@@ -451,7 +451,8 @@ pub unsafe extern "C" fn vnhost_cpu_run(cpu: *mut Cpu, info: *mut u32) -> i32 {
     let signals = SELF.with(|s| s.1.clone());
     let mut mem = Linear;
     let mut rounds = 0u32;
-    let jit = crate::jit::enabled();
+    // (no translator for long mode yet)
+    let jit = crate::jit::enabled() && cpu.mode64 == 0;
     crate::jit::count_entry(cpu.eip);
     loop {
         let pending = signals.pending.load(Ordering::Relaxed);
