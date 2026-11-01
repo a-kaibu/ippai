@@ -101,7 +101,7 @@ impl Code {
         uleb(&mut self.b, l as u64);
         self
     }
-    fn mem(&mut self, o: u8, align: u32, off: u32) -> &mut Self {
+    pub fn mem(&mut self, o: u8, align: u32, off: u32) -> &mut Self {
         self.b.push(o);
         uleb(&mut self.b, align as u64);
         uleb(&mut self.b, off as u64);
