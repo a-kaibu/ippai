@@ -7,7 +7,10 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-pub const LO: u32 = 0x1_0000;
+/// (not Windows' 0x10000: vnx86's JIT range-checks accesses with a 32 KB margin above its
+/// GUEST_LO of 0x10000, and a block whose address is below that bails to the interpreter on
+/// every access: Borland's memory manager put its table at 0x10000)
+pub const LO: u32 = 0x3_0000;
 pub const HI: u32 = 0x7ff0_0000;
 const GRAN: u32 = 0x1_0000;
 pub const PAGE: u32 = 0x1000;

@@ -1019,7 +1019,7 @@ fn GetNativeSystemInfo(c: &mut Ctx) -> u32 {
 }
 fn IsProcessorFeaturePresent(c: &mut Ctx) -> u32 {
     // MMX 3, XMMI 6, RDTSC 8, XMMI64 10, NX 12, SSE3 13
-    ok(matches!(c.a(0), 3 | 6 | 8 | 10))
+    ok(matches!(c.a(0), 3 | 8) || (matches!(c.a(0), 6 | 10) && std::env::var_os("VNWIN_SSE").is_some()))
 }
 fn IsWow64Process(c: &mut Ctx) -> u32 {
     put32(c.a(1), 0);

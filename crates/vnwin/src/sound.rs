@@ -175,19 +175,43 @@ fn start_mixer() {
     STARTED.get_or_init(|| {
         let id = vnhost::audio::vnhost_audio_open(RATE, 2, 32, 1);
         with(|d| d.stream = id);
+        if std::env::var_os("VNWIN_NO_MIXER").is_some() {
+            return;
+        }
         std::thread::Builder::new()
             .name("dsound mixer".into())
             .spawn(move || {
                 let mut out = vec![0f32; STEP * 2];
+                let stats = std::env::var_os("VNWIN_MIX_STATS").is_some();
+                let (mut t_mix, mut t_q, mut t_w, mut t_all, mut n) = (0f64, 0f64, 0f64, std::time::Instant::now(), 0);
+                // (a condvar's timed wait, not thread::sleep: in the browser emscripten's sleep
+                // cost the thread about 0.15 cores)
+                let (lock, cv) = (Mutex::new(()), std::sync::Condvar::new());
                 loop {
-                    std::thread::sleep(Duration::from_millis(10));
-                    while vnhost::audio::vnhost_audio_queued(id) < AHEAD {
+                    drop(cv.wait_timeout(lock.lock().unwrap(), Duration::from_millis(10)).unwrap());
+                    loop {
+                        let t0 = std::time::Instant::now();
+                        let q = vnhost::audio::vnhost_audio_queued(id);
+                        t_q += t0.elapsed().as_secs_f64();
+                        if q >= AHEAD {
+                            break;
+                        }
+                        let t0 = std::time::Instant::now();
                         out.iter_mut().for_each(|x| *x = 0.0);
                         let ev = with(|d| mix(d, &mut out));
                         for e in ev {
                             crate::k32::set_event(e);
                         }
+                        t_mix += t0.elapsed().as_secs_f64();
+                        let t0 = std::time::Instant::now();
                         unsafe { vnhost::audio::vnhost_audio_write(id, out.as_ptr() as *const u8, STEP as u32) };
+                        t_w += t0.elapsed().as_secs_f64();
+                        n += 1;
+                    }
+                    if stats && t_all.elapsed().as_secs() >= 5 {
+                        let s = t_all.elapsed().as_secs_f64();
+                        eprintln!("vnwin mixer: {n} chunks/{s:.1}s, mix {:.1} ms/s, queued {:.1} ms/s, write {:.1} ms/s", t_mix * 1e3 / s, t_q * 1e3 / s, t_w * 1e3 / s);
+                        (t_mix, t_q, t_w, t_all, n) = (0.0, 0.0, 0.0, std::time::Instant::now(), 0);
                     }
                 }
             })

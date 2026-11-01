@@ -616,6 +616,9 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         let Some(mut region) = jit::translate_region(&mut m, mem, &[eip], MAX_BLOCKS, |a| {
             debug_allowed(a) && !(a >= lo && a < hi) && !known.contains(&a) && (a == eip || misses.contains_key(&a))
         }) else {
+            if stats() {
+                eprintln!("vnjit refused {eip:#x}");
+            }
             st.known.insert(eip);
             return false;
         };

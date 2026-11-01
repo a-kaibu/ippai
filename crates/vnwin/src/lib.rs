@@ -55,9 +55,13 @@ pub static PEB: AtomicU32 = AtomicU32::new(0);
 fn new_teb(tid: u32, stack: u32) -> (u32, u32) {
     let teb = mem::reserve(0, 0x3000, 4, 0x20000, true).expect("TEB");
     mem::commit(teb, 4);
-    let st = mem::reserve(0, stack.max(0x10000), 4, 0x20000, false).expect("stack");
+    // (at least Windows' usual 1 MB, and from the top: a stack near the bottom of the address
+    // space, within the JIT's safety margin of GUEST_LO, makes every block that touches ESP
+    // bail to the interpreter; KiriKiri's audio thread asked for 64 KB and got 0x10000)
+    let size = stack.max(0x10_0000);
+    let st = mem::reserve(0, size, 4, 0x20000, true).expect("stack");
     mem::commit(st, 4);
-    let top = st + stack.max(0x10000);
+    let top = st + size;
     w32(teb, 0xffff_ffff); // ExceptionList
     w32(teb + 4, top);
     w32(teb + 8, st);
