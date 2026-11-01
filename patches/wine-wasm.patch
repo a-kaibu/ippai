@@ -1525,6 +1525,19 @@
      && defined(HAVE_STRUCT_SYSINFO_TOTALRAM) && defined(HAVE_STRUCT_SYSINFO_MEM_UNIT)
      struct sysinfo sinfo;
  
+@@ -6616,7 +6665,11 @@
+  */
+ NTSTATUS WINAPI NtFlushInstructionCache( HANDLE handle, const void *addr, SIZE_T size )
+ {
+-#if defined(__x86_64__) || defined(__i386__)
++#ifdef __wasm__
++    /* code translated from there is dropped (vnhost's x86 JIT) */
++    extern void vnhost_jit_code_changed( const void *addr, SIZE_T size );
++    if (handle == GetCurrentProcess()) vnhost_jit_code_changed( addr, size );
++#elif defined(__x86_64__) || defined(__i386__)
+     /* no-op */
+ #elif defined(HAVE___CLEAR_CACHE)
+     if (handle == GetCurrentProcess())
 --- a/dlls/win32u/dibdrv/primitives.c
 +++ b/dlls/win32u/dibdrv/primitives.c
 @@ -246,7 +246,7 @@
@@ -4319,18 +4332,45 @@
      EXCEPTION_REGISTRATION_RECORD *ret;
      __asm__ __volatile__("movl %%fs:0,%0" : "=r" (ret) );
      return ret;
---- a/dlls/ntdll/unix/virtual.c
-+++ b/dlls/ntdll/unix/virtual.c
-@@ -6660,7 +6660,11 @@
-  */
- NTSTATUS WINAPI NtFlushInstructionCache( HANDLE handle, const void *addr, SIZE_T size )
- {
--#if defined(__x86_64__) || defined(__i386__)
+--- a/dlls/ntdll/unix/sync.c
++++ b/dlls/ntdll/unix/sync.c
+@@ -96,10 +96,17 @@
+     return mach_continuous_time() * timebase.numer / timebase.denom / 100;
+ #elif defined(HAVE_CLOCK_GETTIME)
+     struct timespec ts;
+-#ifdef CLOCK_BOOTTIME
++#if defined(CLOCK_BOOTTIME) && !defined(__wasm__)
+     if (!clock_gettime( CLOCK_BOOTTIME, &ts ))
+         return ts.tv_sec * (ULONGLONG)TICKSPERSEC + ts.tv_nsec / 100;
+ #endif
 +#ifdef __wasm__
-+    /* code translated from there is dropped (vnhost's x86 JIT) */
-+    extern void vnhost_jit_code_changed( const void *addr, SIZE_T size );
-+    if (handle == GetCurrentProcess()) vnhost_jit_code_changed( addr, size );
-+#elif defined(__x86_64__) || defined(__i386__)
-     /* no-op */
- #elif defined(HAVE___CLEAR_CACHE)
-     if (handle == GetCurrentProcess())
++    {
++        extern unsigned long long vnhost_uptime_base(void);  /* emscripten's clock is epoch-based */
++        if (!clock_gettime( CLOCK_MONOTONIC, &ts ))
++            return (ULONGLONG)ts.tv_sec * (ULONGLONG)TICKSPERSEC + ts.tv_nsec / 100 - vnhost_uptime_base();
++    }
++#endif
+     if (!clock_gettime( CLOCK_MONOTONIC, &ts ))
+         return ts.tv_sec * (ULONGLONG)TICKSPERSEC + ts.tv_nsec / 100;
+ #endif
+--- a/server/request.c
++++ b/server/request.c
+@@ -494,10 +494,17 @@
+     return mach_continuous_time() * timebase.numer / timebase.denom / 100;
+ #elif defined(HAVE_CLOCK_GETTIME)
+     struct timespec ts;
+-#ifdef CLOCK_BOOTTIME
++#if defined(CLOCK_BOOTTIME) && !defined(__wasm__)
+     if (!clock_gettime( CLOCK_BOOTTIME, &ts ))
+         return (timeout_t)ts.tv_sec * TICKS_PER_SEC + ts.tv_nsec / 100;
+ #endif
++#ifdef __wasm__
++    {
++        extern unsigned long long vnhost_uptime_base(void);  /* emscripten's clock is epoch-based */
++        if (!clock_gettime( CLOCK_MONOTONIC, &ts ))
++            return (timeout_t)ts.tv_sec * TICKS_PER_SEC + ts.tv_nsec / 100 - vnhost_uptime_base();
++    }
++#endif
+     if (!clock_gettime( CLOCK_MONOTONIC, &ts ))
+         return (timeout_t)ts.tv_sec * TICKS_PER_SEC + ts.tv_nsec / 100;
+ #endif

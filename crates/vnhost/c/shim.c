@@ -139,6 +139,25 @@ static double now_secs(void)
     return ts.tv_sec + ts.tv_nsec / 1e9;
 }
 
+/* Wine's monotonic clock reads CLOCK_MONOTONIC, which emscripten bases on the Unix epoch in
+ * workers (timeOrigin + now), so QueryPerformanceCounter and GetTickCount looked like a machine
+ * up for 56 years: GetTickCount64 ~1.8e12 ms, and the common QuadPart * 1000 / freq overflowed
+ * 64 bits. ntdll and wineserver (one module, one memory) subtract this base, taken once so every
+ * process agrees, to look like a machine booted an hour before vnvm started. In 100 ns ticks. */
+unsigned long long vnhost_uptime_base(void)
+{
+    static volatile unsigned long long base;
+    unsigned long long b = base, now;
+    struct timespec ts;
+
+    if (b) return b;
+    clock_gettime( CLOCK_MONOTONIC, &ts );
+    now = (unsigned long long)ts.tv_sec * 10000000 + ts.tv_nsec / 100;
+    b = now - 3600ull * 10000000;
+    __sync_bool_compare_and_swap( &base, 0, b );
+    return base;
+}
+
 static void *thread_trampoline( void *arg )
 {
     struct thread_start ts = *(struct thread_start *)arg;
