@@ -51,6 +51,16 @@ def producer():
 for _ in range(JOBS): threading.Thread(target=producer, daemon=True).start()
 ends = 0
 
+def pe_machine(path, store):
+    """the exe's PE machine (0x14c x86, 0x8664 x64), from the extracted file"""
+    try:
+        with open(path, 'rb') as f:
+            d = f.read(4096)
+        o = int.from_bytes(d[0x3c:0x40], 'little')
+        return int.from_bytes(d[o + 4:o + 6], 'little')
+    except Exception:
+        return 0
+
 def wait_port(p):
     for _ in range(50):
         try: socket.create_connection(('127.0.0.1', p), 0.2).close(); return True
@@ -69,6 +79,10 @@ while True:
     if not exe:
         open(f'{od}/result.json', 'w').write('{"prep_error": %s}' % __import__('json').dumps(err))
         print(tid, 'PREP', err, flush=True)
+    elif pe_machine(f"{TRIALS}/{tid}/x/{exe}", f'{STORES}/{tid}') == 0x8664:
+        open(f'{od}/result.json', 'w').write('{"x64": true}')
+        open(f'{od}/exe.txt', 'w').write(exe + '\n')
+        print(tid, 'x64', flush=True)
     else:
         jit = f'/home/user/runs/jit/{tid}'
         os.makedirs(jit, exist_ok=True)

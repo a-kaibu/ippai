@@ -24,6 +24,7 @@ import { D3D9 } from "./d3d9";
 import { applyGame, coverUrl, fetchGames, showLibrary, type GameEntry } from "./launcher";
 
 const params = new URLSearchParams(location.search);
+const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Tokyo";
 const status = document.querySelector<HTMLDivElement>("#status")!;
 const canvas = document.querySelector<HTMLCanvasElement>("#screen")!;
 const startButton = document.querySelector<HTMLButtonElement>("#start")!;
@@ -33,8 +34,9 @@ const arch64 = () => params.get("arch") === "x86_64";
 
 interface WineModule {
   FS: {
+    mkdirTree(path: string): void;
     mkdir(path: string): void;
-    writeFile(path: string, data: Uint8Array): void;
+    writeFile(path: string, data: Uint8Array | string): void;
   };
   HEAPU8: Uint8Array;
   HEAPU32: Uint32Array;
@@ -157,6 +159,10 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       ...(saved ? { VNVM_SAVES: "/vnvm/saves.bin" } : {}),
       HOME: "/home/web",
       USER: "web",
+      // Wine names the zone from TZ (needs a file under TZDIR): by offset alone Tokyo matches Korea first,
+      // and Siglus etc. refuse to run outside Japan
+      TZ: tz,
+      TZDIR: "/vnvm/tz",
       // the game starts in its own folder (as from Explorer): many open their data relatively
       ...(/^z:\\/i.test(run) ? { VNVM_CWD: run.slice(2, run.lastIndexOf("\\")).replaceAll("\\", "/") || "/" } : {}),
       ...Object.fromEntries(params.getAll("env").map((e) => [e.slice(0, e.indexOf("=")), e.slice(e.indexOf("=") + 1)])),
@@ -165,6 +171,8 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       (m: WineModule) => {
         m.FS.mkdir("/vnvm");
         m.FS.mkdir("/home/web");
+        m.FS.mkdirTree(`/vnvm/tz/${tz.slice(0, tz.lastIndexOf("/") + 1)}`);
+        m.FS.writeFile(`/vnvm/tz/${tz}`, "");
         m.FS.writeFile("/vnvm/wineunix.so", unix);
         if (saved) m.FS.writeFile("/vnvm/saves.bin", saved);
       },
