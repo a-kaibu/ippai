@@ -10,6 +10,7 @@
 //   &debug=+relay,...               WINEDEBUG
 //   &mount=/vnvm/game=tree          also mount a store tree (repeatable; Z:\vnvm\game\...)
 //   &env=NAME=value                 extra environment variable (repeatable, e.g. VNVM_TRACE_PROC=1)
+//   &nosave                         no saved games (vnvm-server's pre-run: its x86 regions only)
 //   &headless                       don't draw to the canvas (tests/wine.mjs: headless Chromium
 //                                   destroys the device then, and Direct3D games need it)
 
@@ -128,7 +129,8 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   const mounts = params.getAll("mount");
   const saveName = `${run.replace(/[^A-Za-z0-9_.-]/g, "_")}-${fnv(new TextEncoder().encode(mounts.join(":")))}`;
   const saveRoots = [...mounts.map((m) => m.slice(0, m.indexOf("="))), "/vnvm/prefix/drive_c/users", "/vnvm/prefix/user.reg"];
-  const saved = await loadSaves(saveName).catch(() => null);
+  const nosave = params.has("nosave");
+  const saved = nosave ? null : await loadSaves(saveName).catch(() => null);
   const moduleArg = {
     arguments: [run, ...(params.get("args")?.split(",").filter(Boolean) ?? [])],
     mainScriptUrlOrBlob: scriptUrl,
@@ -169,7 +171,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   };
   log(`${run} を起動中`);
   const wine = await factory(moduleArg);
-  saveNow = keepSaving(wine as unknown as SavesModule, saveName, saveRoots, saved);
+  if (!nosave) saveNow = keepSaving(wine as unknown as SavesModule, saveName, saveRoots, saved);
   // for tests/wine.mjs (headless Chromium can't present WebGPU canvases)
   (window as unknown as { vnvmWine: WineModule }).vnvmWine = wine;
   ahead?.(wine);

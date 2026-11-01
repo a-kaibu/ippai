@@ -16,6 +16,11 @@
 //!   game's first run starts with them
 //! - `GET /games`: the launcher's list, the store's `games/<id>.json` (vnvm-pack add-game) as
 //!   one JSON array; covers are under `/store/games/`
+//! - pre-runs: at the start and when the launcher lists the games, each listed game with no
+//!   saved regions for this build's translator (`web/wine/jit-version.txt`) runs once for a
+//!   minute in a headless Chromium (VNVM_CHROME or one on the PATH; `--no-prerun` for none),
+//!   saving its regions like any run: the first real run starts like a second one.
+//!   `<jit>/<name>.prerun` marks it done
 //! - `PUT /bench-log`: a result from web/bench.html, printed and appended to
 //!   `<jit>/bench-results.txt`
 //! - `GET`/`PUT /saves/<name>`: saved games backed up to S3 (see saves.rs)
@@ -52,6 +57,9 @@ struct Args {
     jit: PathBuf,
     #[arg(long, default_value = "127.0.0.1:8080")]
     listen: SocketAddr,
+    /// No pre-runs (see prerun_games): a game's first run translates its code itself.
+    #[arg(long)]
+    no_prerun: bool,
 }
 
 /// The jit directory; the lock keeps merges one at a time.
@@ -283,8 +291,110 @@ async fn bench_log(State(jit): State<Jit>, body: Bytes) -> StatusCode {
     }
 }
 
-/// The store's `games/*.json` as one array, by file name.
-async fn games(State(store): State<Arc<PathBuf>>) -> Response {
+/// What a pre-run needs, and the lock that keeps them one at a time.
+struct Prerun {
+    store: PathBuf,
+    web: PathBuf,
+    jit: PathBuf,
+    /// where the page is served (the browser opens it here)
+    listen: SocketAddr,
+    off: bool,
+    lock: tokio::sync::Mutex<()>,
+}
+
+/// How long a pre-run lasts: past the title, and past the second save of regions (a run saves
+/// 20 s after its start and then every 30 s, vnhost jit.rs maybe_save).
+const PRERUN_SECS: u64 = 60;
+
+/// Runs each listed game that has no saved regions for this build of the translator once, in a
+/// headless browser, before anyone plays it: the run saves its regions (and the store chunks it
+/// read first) as any run does, so the first real run starts the way a second one would.
+///
+/// This is the translation ahead of time: a static translation of a game's exe (every function
+/// found from its entry, exports, pointers in its data and jump tables, docs/hangover.md) was
+/// 7x more code than runs and slower to start even when cut to the functions that ran, because
+/// it holds whole functions where the JIT's regions hold the blocks that ran.
+async fn prerun_games(p: Arc<Prerun>) {
+    if p.off {
+        return;
+    }
+    let Ok(_one) = p.lock.try_lock() else { return };
+    let Ok(ver) = tokio::fs::read_to_string(p.web.join("wine/jit-version.txt")).await else { return };
+    let ver = ver.trim().to_string();
+    let Ok(mut dir) = tokio::fs::read_dir(p.store.join("games")).await else { return };
+    let mut todo = Vec::new();
+    while let Ok(Some(e)) = dir.next_entry().await {
+        let Ok(text) = tokio::fs::read_to_string(e.path()).await else { continue };
+        let Ok(g) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+        let (Some(id), Some(run)) = (g["id"].as_str(), g["run"].as_str()) else { continue };
+        // (named as the page names the regions it saves: wine.ts jitName)
+        let prog: String = run.chars().map(|c| if c.is_ascii_alphanumeric() || "_.-".contains(c) { c } else { '_' }).collect();
+        let name = format!("{prog}-{ver}");
+        let seen = |ext: &str| tokio::fs::metadata(p.jit.join(format!("{name}.{ext}")));
+        if seen("parts").await.is_err() && seen("prerun").await.is_err() {
+            todo.push((id.to_string(), name));
+        }
+    }
+    if todo.is_empty() {
+        return;
+    }
+    let Some(chrome) = chrome() else {
+        eprintln!("prerun: no Chromium found (set VNVM_CHROME): {} games start without saved regions", todo.len());
+        return;
+    };
+    let host = if p.listen.ip().is_unspecified() { SocketAddr::from(([127, 0, 0, 1], p.listen.port())) } else { p.listen };
+    for (id, name) in todo {
+        let profile = p.jit.join(".prerun-profile");
+        let _ = tokio::fs::remove_dir_all(&profile).await;
+        let url = format!("http://{host}/wine.html?game={id}&autostart&nosave&headless");
+        let mut cmd = tokio::process::Command::new(&chrome);
+        cmd.args(["--headless=new", "--mute-audio", "--enable-unsafe-webgpu", "--autoplay-policy=no-user-gesture-required"])
+            .arg(format!("--user-data-dir={}", profile.display()))
+            .arg(&url)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+        // (Chromium's sandbox refuses to run as root)
+        if std::fs::metadata("/proc/self").is_ok_and(|m| std::os::unix::fs::MetadataExt::uid(&m) == 0) {
+            cmd.arg("--no-sandbox");
+        }
+        eprintln!("prerun {id}: {} for {PRERUN_SECS} s", url);
+        let t0 = std::time::Instant::now();
+        match cmd.spawn() {
+            Ok(mut child) => {
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(PRERUN_SECS), child.wait()).await;
+                let _ = child.kill().await;
+            }
+            Err(e) => {
+                eprintln!("prerun {id}: {}: {e}", chrome.display());
+                return;
+            }
+        }
+        let _ = tokio::fs::remove_dir_all(&profile).await;
+        let saved = tokio::fs::metadata(p.jit.join(format!("{name}.parts"))).await.is_ok();
+        eprintln!("prerun {id}: done in {:?}, regions saved: {saved}", t0.elapsed());
+        // (once per build: a game that saves nothing in a minute is not tried again and again)
+        let _ = tokio::fs::write(p.jit.join(format!("{name}.prerun")), format!("{} s, regions saved: {saved}\n", t0.elapsed().as_secs())).await;
+    }
+}
+
+/// The browser for pre-runs: VNVM_CHROME, else the first Chromium or Chrome on the PATH.
+fn chrome() -> Option<PathBuf> {
+    if let Some(c) = std::env::var_os("VNVM_CHROME") {
+        return Some(c.into());
+    }
+    let path = std::env::var_os("PATH")?;
+    ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable", "chrome"]
+        .iter()
+        .flat_map(|n| std::env::split_paths(&path).map(move |d| d.join(n)))
+        .find(|f| f.is_file())
+}
+
+/// The store's `games/*.json` as one array, by file name; and a pre-run of the games without
+/// saved regions (one added since the start: before it is clicked, usually).
+async fn games(State(p): State<Arc<Prerun>>) -> Response {
+    tokio::spawn(prerun_games(p.clone()));
+    let store = &p.store;
     let mut files = Vec::new();
     if let Ok(mut dir) = tokio::fs::read_dir(store.join("games")).await {
         while let Ok(Some(e)) = dir.next_entry().await {
@@ -340,13 +450,21 @@ use axum::serve::ListenerExt;
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let jit: Jit = Arc::new((args.jit.clone(), tokio::sync::Mutex::new(())));
+    let pre = Arc::new(Prerun {
+        store: args.store.clone(),
+        web: args.web.clone(),
+        jit: args.jit.clone(),
+        listen: args.listen,
+        off: args.no_prerun,
+        lock: Default::default(),
+    });
     let app = Router::new()
         .route("/jit-save/{name}", put(save_jit))
         .route("/bench-log", put(bench_log))
         .layer(DefaultBodyLimit::max(1 << 30))
         .with_state(jit)
         .merge(saves::router()?)
-        .route("/games", get(games).with_state(Arc::new(args.store.clone())))
+        .route("/games", get(games).with_state(pre.clone()))
         .nest_service("/jit", ServeDir::new(&args.jit))
         .nest_service("/store", ServeDir::new(&args.store))
         .fallback_service(ServeDir::new(&args.web))
@@ -357,6 +475,7 @@ async fn main() -> anyhow::Result<()> {
         let _ = tcp.set_nodelay(true);
     });
     eprintln!("vnvm-server on http://{}", args.listen);
+    tokio::spawn(prerun_games(pre));
     axum::serve(listener, app).await?;
     Ok(())
 }
