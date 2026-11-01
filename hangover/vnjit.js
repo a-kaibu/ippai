@@ -18,6 +18,7 @@ addToLibrary({
       step: wasmExports.vnhost_jit_step,
       eflags: wasmExports.vnhost_jit_eflags,
       status: wasmExports.vnhost_jit_status,
+      x87: wasmExports.vnhost_jit_x87,
       table: VNJIT.table,
     };
   },

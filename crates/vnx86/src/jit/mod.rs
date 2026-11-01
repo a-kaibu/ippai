@@ -48,6 +48,7 @@ pub const RET_INTERP: i32 = 1;
 const F_STEP: u32 = 0;
 const F_EFLAGS: u32 = 1;
 const F_STATUS: u32 = 2;
+const F_X87: u32 = 3; // (cpu, TOP, info, 8 f64): see x87_out
 
 // parameters of a region function: what a jump between regions hands over
 const L_CPU: u32 = 0;
@@ -527,7 +528,9 @@ impl<'a> Gen<'a> {
 
     /// Leaves the block: continue at the address on top of the stack with status `st`.
     fn exit_with(&mut self, st: i32) {
-        self.fc_flush();
+        self.mmx_flush();
+        self.xmm_flush();
+        self.x87_flush_out();
         self.c.set(L_NEXT).i32c(st).set(L_ST).br(self.depth);
     }
 
@@ -682,6 +685,23 @@ impl<'a> Gen<'a> {
                 self.c.get(L_CPU).get(L_MMX + i).low64().store64(Off::mm(Register::MM0 + i));
             }
         }
+    }
+
+    /// [`Self::x87_flush`] when leaving: by a call to [`x87_out`] unless it is a store or two.
+    /// (Inline, V8 computed the tag masks of all the exits in a loop ahead of it, in the hot
+    /// path, and kept them in spilled registers; the code is smaller too.)
+    fn x87_flush_out(&mut self) {
+        let fc = self.fc;
+        if !fc.on || fc.dirty.count_ones() + if fc.valid | fc.empty != 0 { 4 } else { 0 } <= 2 {
+            return self.x87_flush();
+        }
+        self.c.get(L_CPU).get(L_FTOP);
+        let info = fc.dirty as u32 | (fc.valid as u32) << 8 | (fc.empty as u32) << 16 | (fc.delta.rem_euclid(8) as u32) << 24;
+        self.c.u32c(info);
+        for r in 0..8 {
+            self.c.get(L_FREG + r);
+        }
+        self.c.call(F_X87);
     }
 
     fn x87_flush(&mut self) {
@@ -3140,6 +3160,25 @@ fn emit_block<'a>(g: &mut Gen<'a>, blocks: &'a [(u32, Vec<Instruction>)], k: usi
     }
 }
 
+/// What [`Gen::x87_flush`] does, for a block leaving with its x87 cache (`info`: dirty slots,
+/// valid << 8, empty << 16, TOP change << 24; `top`: L_FTOP; `v`: the slots' locals).
+pub fn x87_out(f: &mut crate::Fpu, top: u32, info: u32, v: [f64; 8]) {
+    let (dirty, valid, empty, delta) = (info as u8, (info >> 8) as u8, (info >> 16) as u8, (info >> 24) & 7);
+    for r in 0..8 {
+        if dirty & (1 << r) != 0 {
+            f.regs[((top + r) & 7) as usize] = v[r as usize];
+        }
+    }
+    if valid | empty != 0 {
+        let rot = |m: u8| ((m as u32 * 0x101) << (top & 31) >> 8) as u8;
+        f.empty = f.empty & !rot(valid) | rot(empty);
+        f.exact &= !rot(valid | empty);
+    }
+    if delta != 0 {
+        f.top = (top + delta) & 7;
+    }
+}
+
 /// SETcc of a low byte register followed by MOVZX of it into its own 32-bit register.
 fn set_movzx(a: &Instruction, b: &Instruction) -> bool {
     a.condition_code() != ConditionCode::None
@@ -3363,6 +3402,10 @@ pub fn translate_region<M: Memory>(
         module.imports.push(Import::Func("step", 0));
         module.imports.push(Import::Func("eflags", 0));
         module.imports.push(Import::Func("status", 1));
+        let mut x87 = alloc::vec![I32; 3];
+        x87.extend_from_slice(&[F64; 8]);
+        module.types.push(FuncType { params: x87, results: alloc::vec![] });
+        module.imports.push(Import::Func("x87", 3));
         module.imports.push(Import::Table("table"));
     }
 

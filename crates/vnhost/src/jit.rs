@@ -459,6 +459,7 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         let (lo, hi) = (cpu.trap_lo, cpu.trap_hi);
         let (misses, known) = (&st.misses, &st.known);
         profiling();
+        let t0 = std::time::Instant::now();
         let Some(mut region) = jit::translate_region(&mut m, mem, &[eip], MAX_BLOCKS, |a| {
             !(a >= lo && a < hi) && !known.contains(&a) && (a == eip || misses.contains_key(&a))
         }) else {
@@ -469,7 +470,11 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
             eprintln!("vnjit fresh {eip:#x}\n{}", region.layout);
         }
         let bytes = m.finish();
+        let t1 = std::time::Instant::now();
         let ok = load(st, &bytes, vec![eip], &region.starts);
+        if std::env::var_os("VNVM_JIT_TIME").is_some() {
+            eprintln!("vnjit time {eip:#x}: {} ins, translate {:?}, load {:?}", region.instructions, t1 - t0, t1.elapsed());
+        }
         if ok {
             keep_profile(&mut region);
             share(mem, &[eip], bytes, &region);
@@ -502,6 +507,13 @@ pub unsafe extern "C" fn vnhost_jit_eflags(cpu: *mut Cpu) -> u32 {
     let cpu = &mut *cpu;
     cpu.materialize();
     cpu.eflags
+}
+
+/// A region leaving with its x87 cache (vnx86::jit::x87_out).
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn vnhost_jit_x87(cpu: *mut Cpu, top: u32, info: u32, a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, g: f64, h: f64) {
+    jit::x87_out(&mut (*cpu).fpu, top, info, [a, b, c, d, e, f, g, h]);
 }
 
 #[no_mangle]
