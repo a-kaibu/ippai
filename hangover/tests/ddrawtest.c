@@ -1,7 +1,7 @@
 /* DirectDraw check for vnvm: draws moving color bars into an offscreen surface (Lock), writes text
  * on it (GetDC) and blits it to the window through a clipper; with "full" as the argument it
  * switches to exclusive 640x480x32 with a flip chain instead (how old VN engines draw). Prints
- * each step and quits after 60 s.
+ * each step and quits after 60 s. With "still" every frame is frame 0 (tests/gfx.mjs checks the screen).
  * Build: i686-w64-mingw32-gcc -O2 ddrawtest.c -o ddrawtest.exe -mwindows -lddraw -ldxguid -lgdi32 */
 #include <windows.h>
 #include <ddraw.h>
@@ -15,6 +15,8 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 }
 
 #define CHECK(x) do { HRESULT hr_ = (x); printf("%s -> %#lx\n", #x, (unsigned long)hr_); fflush(stdout); if (FAILED(hr_)) return 1; } while (0)
+
+static int still;
 
 static void paint(IDirectDrawSurface7 *s, int w, int h, int t)
 {
@@ -47,6 +49,7 @@ static void paint(IDirectDrawSurface7 *s, int w, int h, int t)
 
 int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
 {
+    still = strstr(cmd, "still") != NULL;
     BOOL full = strstr(cmd, "full") != NULL;
     WNDCLASSA wc = { 0, wndproc, 0, 0, inst, 0, LoadCursor(0, IDC_ARROW), 0, 0, "ddrawtest" };
     IDirectDraw7 *dd;
@@ -104,7 +107,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
             if (msg.message == WM_QUIT) return 0;
             DispatchMessageA(&msg);
         }
-        paint(off, w, h, t);
+        paint(off, w, h, still ? 0 : t);
         if (full)
         {
             IDirectDrawSurface7_BltFast(back, 0, 0, off, NULL, DDBLTFAST_WAIT);

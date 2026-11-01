@@ -1006,3 +1006,62 @@ pub(crate) fn draw_from(g: &mut Gl, c: &mut Ctx, mode: u32, src: Src) {
         q.cmd(&wds);
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Both stages through rewrite and naga, as link does: (vertex WGSL, fragment WGSL, samplers, attributes)
+    fn translate(vs: &str, ps: &str) -> (String, String, Vec<String>, Vec<(String, u32)>) {
+        let (mut attribs, mut varyings) = (Vec::new(), Vec::new());
+        let (vsrc, mut samp) = rewrite(vs, false, &mut attribs, &HashMap::new(), &mut varyings);
+        let (psrc, psamp) = rewrite(ps, true, &mut attribs, &HashMap::new(), &mut varyings);
+        let (vw, _) = compile(&vsrc, false).unwrap_or_else(|e| panic!("vertex shader: {e}\n{vsrc}"));
+        let (pw, _) = compile(&psrc, true).unwrap_or_else(|e| panic!("fragment shader: {e}\n{psrc}"));
+        samp.extend(psamp);
+        (vw, pw, samp, attribs)
+    }
+
+    #[test]
+    fn fixed_function_builtins() {
+        // GLSL 1.10 the old way: built-in attributes, matrices and varyings
+        let (vw, pw, samp, _) = translate(
+            "void main() { gl_TexCoord[0] = gl_MultiTexCoord0; gl_FrontColor = gl_Color;\n\
+             gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex; }",
+            "uniform sampler2D tex; uniform vec4 tint;\n\
+             void main() { gl_FragColor = texture2D(tex, gl_TexCoord[0].st) * gl_Color * tint; }",
+        );
+        assert!(vw.contains("@vertex") && pw.contains("@fragment"));
+        assert_eq!(samp, ["tex"]);
+    }
+
+    #[test]
+    fn attributes_varyings_uniforms() {
+        // what gltest.c and engines with their own shaders write (Ren'Py's gl renderer looks like this)
+        let (vw, pw, samp, attribs) = translate(
+            "#ifdef GL_ES\nprecision highp float;\n#endif\n\
+             uniform mat4 Projection; attribute vec4 Vertex; attribute vec2 VertexTexCoord0;\n\
+             varying vec2 vTexCoord0; // comment\n\
+             void main() { vTexCoord0 = VertexTexCoord0; gl_Position = Projection * Vertex; }",
+            "#ifdef GL_ES\nprecision mediump float;\n#endif\n\
+             uniform sampler2D tex0; uniform float Alpha; varying vec2 vTexCoord0;\n\
+             /* block\n comment */ void main() { vec4 c = texture2D(tex0, vTexCoord0); gl_FragColor = c * Alpha; }",
+        );
+        assert!(vw.contains("@vertex") && pw.contains("@fragment"));
+        assert_eq!(samp, ["tex0"]);
+        let names: Vec<&str> = attribs.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"Vertex") && names.contains(&"VertexTexCoord0"), "{attribs:?}");
+    }
+
+    #[test]
+    fn glsl_130_in_out() {
+        let (vw, pw, _, attribs) = translate(
+            "#version 130\nin vec2 pos; in vec3 col; out vec3 v_col; uniform mat4 rot;\n\
+             void main() { v_col = col; gl_Position = rot * vec4(pos, 0.0, 1.0); }",
+            "#version 130\nin vec3 v_col; uniform vec4 tint; out vec4 color;\n\
+             void main() { color = vec4(v_col, 1.0) * tint; }",
+        );
+        assert!(vw.contains("@vertex") && pw.contains("@fragment"));
+        assert_eq!(attribs.len(), 2, "{attribs:?}");
+    }
+}

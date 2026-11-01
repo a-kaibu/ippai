@@ -247,7 +247,7 @@ fn saved_regions() -> &'static Saved {
             jit::saved::decode_all(&b).unwrap_or_default()
         };
         #[cfg(not(target_os = "emscripten"))]
-        let entries = Vec::new();
+        let entries: Vec<jit::saved::Entry> = Vec::new();
         let mut by_root: HashMap<u32, Vec<usize>> = HashMap::new();
         for (i, e) in entries.iter().enumerate() {
             by_root.entry(e.roots[0]).or_default().push(i);

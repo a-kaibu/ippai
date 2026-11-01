@@ -1,11 +1,13 @@
 /* Direct3D 8 check for vnvm: a textured quad with fixed function (XYZRHW, texture written with
  * LockRect, Clear) and a spinning triangle drawn with a vs.1.1 vertex shader (with its own
- * declaration) and a ps.1.1 pixel shader. Prints each step and quits after 60 s.
+ * declaration) and a ps.1.1 pixel shader. Prints each step and quits after 60 s. With "still"
+ * every frame is frame 0 (tests/gfx.mjs checks the screen).
  * Build: i686-w64-mingw32-gcc -O2 d3d8test.c -o d3d8test.exe -mwindows -ld3d8 */
 #include <windows.h>
 #include <d3d8.h>
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
@@ -27,6 +29,7 @@ static const DWORD vs_decl[] = { D3DVSD_STREAM(0), D3DVSD_REG(0, D3DVSDT_FLOAT3)
 
 int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
 {
+    int still = strstr(cmd, "still") != NULL;
     WNDCLASSA wc = { 0, wndproc, 0, 0, inst, 0, LoadCursor(0, IDC_ARROW), 0, 0, "d3d8test" };
     D3DPRESENT_PARAMETERS pp = { 0 };
     D3DDISPLAYMODE mode;
@@ -75,7 +78,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
             { 40, 40, 0.5f, 1, 0xffffffff, 0, 0 }, { 280, 40, 0.5f, 1, 0xffffffff, 4, 0 },
             { 40, 280, 0.5f, 1, 0xffffffff, 0, 4 }, { 280, 280, 0.5f, 1, 0xffffffff, 4, 4 },
         };
-        float a = t * 0.03f, c[16] = { cosf(a) * 0.6f, -sinf(a) * 0.6f, 0, 0.4f, sinf(a) * 0.6f, cosf(a) * 0.6f, 0, -0.2f, 0, 0, 1, 0, 0, 0, 0, 1 };
+        float a = still ? 0 : t * 0.03f, c[16] = { cosf(a) * 0.6f, -sinf(a) * 0.6f, 0, 0.4f, sinf(a) * 0.6f, cosf(a) * 0.6f, 0, -0.2f, 0, 0, 1, 0, 0, 0, 0, 1 };
         HRESULT hr;
 
         while (PeekMessageA(&msg, 0, 0, 0, PM_REMOVE))
@@ -83,7 +86,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
             if (msg.message == WM_QUIT) return 0;
             DispatchMessageA(&msg);
         }
-        IDirect3DDevice8_Clear(dev, 0, NULL, D3DCLEAR_TARGET, D3DCOLOR_XRGB(32, 32, 64 + (t % 128)), 1.0f, 0);
+        IDirect3DDevice8_Clear(dev, 0, NULL, D3DCLEAR_TARGET, D3DCOLOR_XRGB(32, 32, 64 + (still ? 0 : t % 128)), 1.0f, 0);
         IDirect3DDevice8_BeginScene(dev);
         /* fixed function, textured */
         IDirect3DDevice8_SetVertexShader(dev, D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);

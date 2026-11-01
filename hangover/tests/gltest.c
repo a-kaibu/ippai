@@ -2,11 +2,13 @@
  * framebuffer object (glBegin/glEnd, glTexImage2D, alpha blending), that texture drawn on the
  * window with client arrays, and a spinning triangle from a vertex buffer drawn by a GLSL 1.10
  * program (attributes, a uniform matrix and color). Prints each step and quits after 60 s.
+ * With "still" the triangle stays put (tests/gfx.mjs checks the screen).
  * Build: i686-w64-mingw32-gcc -O2 gltest.c -o gltest.exe -mwindows -lopengl32 -lgdi32 */
 #include <windows.h>
 #include <GL/gl.h>
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 typedef char GLchar;
 typedef ptrdiff_t GLsizeiptr;
@@ -71,6 +73,7 @@ static GLuint shader(GLenum type, const char *src)
 
 int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
 {
+    int still = strstr(cmd, "still") != NULL;
     WNDCLASSA wc = { CS_OWNDC, wndproc, 0, 0, inst, 0, LoadCursor(0, IDC_ARROW), 0, 0, "gltest" };
     PIXELFORMATDESCRIPTOR pfd = { sizeof(pfd), 1, PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER, PFD_TYPE_RGBA, 32 };
     static const float tri[] = { 0.0f, 0.6f, 1, 0, 0, 0.5f, -0.4f, 0, 1, 0, -0.5f, -0.4f, 0, 0, 1 };
@@ -139,7 +142,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
 
     while (GetTickCount() - start < 60000)
     {
-        float a = (GetTickCount() - start) / 1000.0f;
+        float a = still ? 0 : (GetTickCount() - start) / 1000.0f;
         float m[16] = { cosf(a), sinf(a), 0, 0, -sinf(a), cosf(a), 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
         while (PeekMessageA(&msg, 0, 0, 0, PM_REMOVE))
         {

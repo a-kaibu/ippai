@@ -1,7 +1,7 @@
 /* Direct3D 11 check for vnvm: a swap chain, HLSL compiled at run time (D3DCompile), a spinning
  * colored triangle (vertex buffer, constant buffer updated with Map/DISCARD every frame) over a
  * textured quad (texture from initial data, sampler, alpha blending), cleared every frame.
- * Prints each step and quits after 60 s.
+ * Prints each step and quits after 60 s. With "still" the triangle stays put (tests/gfx.mjs).
  * Build: i686-w64-mingw32-gcc -O2 d3d11test.c -o d3d11test.exe -mwindows -ld3d11 -ld3dcompiler_47 -ldxguid */
 #define COBJMACROS
 #include <windows.h>
@@ -9,6 +9,7 @@
 #include <d3dcompiler.h>
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
@@ -44,6 +45,7 @@ struct quad { float x, y, u, v; };
 
 int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
 {
+    int still = strstr(cmd, "still") != NULL;
     WNDCLASSA wc = { 0, wndproc, 0, 0, inst, 0, LoadCursor(0, IDC_ARROW), 0, 0, "d3d11test" };
     DXGI_SWAP_CHAIN_DESC sd = { 0 };
     D3D_FEATURE_LEVEL level;
@@ -145,7 +147,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
         static const float clear[4] = { 0.1f, 0.3f, 0.1f, 1 };
         D3D11_VIEWPORT vp = { 0, 0, 640, 480, 0, 1 };
         D3D11_MAPPED_SUBRESOURCE m;
-        float a = (GetTickCount() - start) / 1000.0f, *f;
+        float a = still ? 0 : (GetTickCount() - start) / 1000.0f, *f;
         while (PeekMessageA(&msg, 0, 0, 0, PM_REMOVE))
         {
             if (msg.message == WM_QUIT) return 0;
