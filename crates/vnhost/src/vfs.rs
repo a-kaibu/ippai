@@ -436,7 +436,7 @@ impl Fs {
         node
     }
 
-    fn stat(&self, ino: Ino, st: &mut libc::stat) {
+    fn stat(&self, ino: Ino, st: &mut crate::sys::stat) {
         let n = self.node(ino).unwrap();
         let (kind, size) = match &n.data {
             Data::Dir(_) => (libc::S_IFDIR, 4096),
@@ -801,7 +801,7 @@ pub fn release(h: u32) {
     })
 }
 
-pub unsafe fn stat(dirfd: c_int, path: *const c_char, st: *mut libc::stat, follow: bool) -> Route<c_int> {
+pub unsafe fn stat(dirfd: c_int, path: *const c_char, st: *mut crate::sys::stat, follow: bool) -> Route<c_int> {
     if dirfd != libc::AT_FDCWD && !CStr::from_ptr(path).to_bytes().starts_with(b"/") && crate::fd::vfs_handle(dirfd).is_none() {
         return Route::Done(-2);
     }
@@ -821,7 +821,7 @@ pub unsafe fn stat(dirfd: c_int, path: *const c_char, st: *mut libc::stat, follo
 }
 
 pub unsafe fn access(dirfd: c_int, path: *const c_char) -> Route<c_int> {
-    let mut st: libc::stat = std::mem::zeroed();
+    let mut st: crate::sys::stat = std::mem::zeroed();
     stat(dirfd, path, &mut st, true)
 }
 
@@ -1054,7 +1054,7 @@ pub unsafe fn chdir(path: *const c_char) -> c_int {
         Ok(Found::Node { .. }) => Err(libc::ENOTDIR),
         // (not under the lock: libc's stat() comes back through our fstatat)
         Ok(Found::Outside(p)) => {
-            let mut st: libc::stat = std::mem::zeroed();
+            let mut st: crate::sys::stat = std::mem::zeroed();
             let c = real(p.clone());
             if crate::wrap::real_stat(&c, &mut st) != 0 {
                 Err(crate::errno())
@@ -1162,7 +1162,7 @@ pub fn lseek(h: u32, off: off_t, whence: c_int) -> off_t {
     })
 }
 
-pub fn fstat(h: u32, st: &mut libc::stat) -> c_int {
+pub fn fstat(h: u32, st: &mut crate::sys::stat) -> c_int {
     with(|fs| match fs.handles.get(&h) {
         Some(x) => {
             let ino = x.ino;
@@ -1233,7 +1233,7 @@ pub fn fstatfs(st: &mut libc::statfs) -> c_int {
     0
 }
 
-pub fn fstatvfs(st: &mut libc::statvfs) -> c_int {
+pub fn fstatvfs(st: &mut crate::sys::statvfs) -> c_int {
     *st = unsafe { std::mem::zeroed() };
     st.f_bsize = 4096;
     st.f_frsize = 4096;

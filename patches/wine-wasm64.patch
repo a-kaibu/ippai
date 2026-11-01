@@ -19,17 +19,6 @@
  
  #include "config.h"
  
---- a/dlls/ntdll/unix/signal_x86_64.c
-+++ b/dlls/ntdll/unix/signal_x86_64.c
-@@ -22,7 +22,7 @@
- #pragma makedep unix
- #endif
- 
--#ifdef __x86_64__
-+#if defined(__x86_64__) && !defined(__wasm__)
- 
- #include "config.h"
- 
 --- /dev/null
 +++ b/dlls/ntdll/unix/signal_wasm64.c
 @@ -0,0 +1,958 @@
@@ -991,6 +980,17 @@
 +}
 +
 +#endif /* __wasm__ && __x86_64__ */
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -22,7 +22,7 @@
+ #pragma makedep unix
+ #endif
+ 
+-#ifdef __x86_64__
++#if defined(__x86_64__) && !defined(__wasm__)
+ 
+ #include "config.h"
+ 
 --- a/dlls/ntdll/unix/syscall.c
 +++ b/dlls/ntdll/unix/syscall.c
 @@ -41,7 +41,7 @@
@@ -1045,6 +1045,63 @@
  #pragma clang diagnostic pop
  
  static void * const syscalls[] =
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -1949,6 +1949,8 @@
+         if (limit_low && (void *)limit_low > start) start = (void *)limit_low;
+         if (limit_high && (void *)limit_high < end) end = (char *)limit_high + 1;
+ #ifdef __wasm__
++        /* (64-bit: "above 4G" for TEBs, stacks and high images means anywhere here) */
++        if (start >= proc_area_end) start = proc_area_start;
+         if (start < proc_area_start) start = proc_area_start;
+         if (end > proc_area_end) end = proc_area_end;
+         if (start >= end) return STATUS_NO_MEMORY;
+@@ -2401,7 +2403,7 @@
+ #ifdef __APPLE__
+     /* See MACH_VM_MAX_ADDRESS_RAW in xnu osfmk/mach/arm/vm_param.h */
+     return (void *)0x7ffffe000000;
+-#elif defined _WIN64
++#elif defined _WIN64 && !defined(__wasm__)
+     UINT_PTR addr = (UINT_PTR)1 << 63;
+ 
+     while (addr >> 32)
+@@ -3326,10 +3328,12 @@
+         }
+         set_mem_area_state( addr, size, AREA_RESERVED );
+     }
++#ifndef __wasm__
+     else if (is_win64)
+     {
+         reserve_area( (void *)0x00010000, (void *)0x200000000 );
+     }
++#endif
+     else
+     {
+ #ifdef __wasm__
+@@ -3347,7 +3351,11 @@
+ #endif
+     }
+ 
++#ifndef __wasm__
+     if (is_win64) /* top-down area */
++#else
++    if (0)  /* everything is below 2G */
++#endif
+     {
+         void *start = (void *)0x7ff000000000;
+         void *end = (void *)0x7ff600000000;
+@@ -3726,7 +3734,11 @@
+         if (end > start) map_fixed_area( start, end - start, PROT_READ | PROT_WRITE );
+     }
+ 
++#ifndef __wasm__
+     if (is_win64)
++#else
++    if (0)
++#endif
+     {
+         if (main_image_info.ImageCharacteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE)
+         {
 --- a/dlls/win32u/syscall.c
 +++ b/dlls/win32u/syscall.c
 @@ -147,6 +147,30 @@

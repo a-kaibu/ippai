@@ -170,6 +170,10 @@ link_main() {  # <output .js> <emcc flags...>
     -sSTACK_SIZE=1MB -sDEFAULT_PTHREAD_STACK_SIZE=1MB -sPTHREAD_POOL_SIZE=16 -sPTHREAD_POOL_SIZE_STRICT=0 \
     -sERROR_ON_UNDEFINED_SYMBOLS=1 -sDEFAULT_LIBRARY_FUNCS_TO_INCLUDE=__assert_fail "$@" $EXTRA_LDFLAGS \
     2> "$OUT/link.log" || { grep -i "undefined\|error" "$OUT/link.log" | sort -u | head -80; exit 1; }
+  # MEMORY64=2 glue indexes the heap with signed shifts (Emscripten sets CAN_ADDRESS_2GB only for
+  # wasm32), wrong for our pointers above 2GB: make them unsigned
+  [ -n "$M64" ] && perl -pi -e 's/(?<![>])>>([1-3])(?![>0-9=])/>>>$1/g' "$out"
+  true
 }
 # node: the host's files through NODERAWFS
 link_main "$OUT/wine.js" -sNODERAWFS=1 -sENVIRONMENT=node -sEXPORTED_FUNCTIONS=_main,$EXPORTS

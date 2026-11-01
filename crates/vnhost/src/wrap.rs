@@ -6,7 +6,8 @@
 use std::ffi::{c_char, c_int, c_void};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use libc::{iovec, msghdr, off_t, pollfd, size_t, sockaddr, socklen_t, ssize_t};
+use crate::sys::msghdr;
+use libc::{iovec, off_t, pollfd, size_t, sockaddr, socklen_t, ssize_t};
 
 use crate::fd::{self, is_ours};
 use crate::{dl, mem, proc, set_errno, vfs};
@@ -39,7 +40,7 @@ extern "C" {
     fn __real_dup2(fd: c_int, to: c_int) -> c_int;
     fn __real_poll(fds: *mut pollfd, n: libc::nfds_t, timeout: c_int) -> c_int;
     fn __real_select(n: c_int, r: *mut libc::fd_set, w: *mut libc::fd_set, e: *mut libc::fd_set, tv: *mut libc::timeval) -> c_int;
-    fn __real_fstat(fd: c_int, st: *mut libc::stat) -> c_int;
+    fn __real_fstat(fd: c_int, st: *mut crate::sys::stat) -> c_int;
     fn __real_lseek(fd: c_int, off: off_t, whence: c_int) -> off_t;
     fn __real_getpid() -> libc::pid_t;
     fn __real_exit(code: c_int) -> !;
@@ -349,7 +350,7 @@ pub unsafe extern "C" fn __wrap_poll(fds: *mut pollfd, n: libc::nfds_t, timeout:
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn __wrap_fstat(f: c_int, st: *mut libc::stat) -> c_int {
+pub unsafe extern "C" fn __wrap_fstat(f: c_int, st: *mut crate::sys::stat) -> c_int {
     if let Some(h) = fd::vfs_handle(f) {
         return vfs::fstat(h, &mut *st);
     }
@@ -605,9 +606,9 @@ pub extern "C" fn flistxattr(_fd: c_int, _list: *mut c_char, _size: size_t) -> s
 
 extern "C" {
     fn __real_openat(dirfd: c_int, path: *const c_char, flags: c_int, ...) -> c_int;
-    fn __real_stat(path: *const c_char, st: *mut libc::stat) -> c_int;
-    fn __real_lstat(path: *const c_char, st: *mut libc::stat) -> c_int;
-    fn __real_fstatat(dirfd: c_int, path: *const c_char, st: *mut libc::stat, flags: c_int) -> c_int;
+    fn __real_stat(path: *const c_char, st: *mut crate::sys::stat) -> c_int;
+    fn __real_lstat(path: *const c_char, st: *mut crate::sys::stat) -> c_int;
+    fn __real_fstatat(dirfd: c_int, path: *const c_char, st: *mut crate::sys::stat, flags: c_int) -> c_int;
     fn __real_access(path: *const c_char, mode: c_int) -> c_int;
     fn __real_faccessat(dirfd: c_int, path: *const c_char, mode: c_int, flags: c_int) -> c_int;
     fn __real_readlink(path: *const c_char, buf: *mut c_char, size: size_t) -> ssize_t;
@@ -635,7 +636,7 @@ extern "C" {
     fn __real_fchdir(fd: c_int) -> c_int;
     fn __real_futimens(fd: c_int, times: *const libc::timespec) -> c_int;
     fn __real_fstatfs(fd: c_int, st: *mut libc::statfs) -> c_int;
-    fn __real_fstatvfs(fd: c_int, st: *mut libc::statvfs) -> c_int;
+    fn __real_fstatvfs(fd: c_int, st: *mut crate::sys::statvfs) -> c_int;
     fn __real_posix_fallocate(fd: c_int, off: off_t, len: off_t) -> c_int;
     fn __real_fgetxattr(fd: c_int, name: *const c_char, val: *mut c_void, size: size_t) -> ssize_t;
     fn __real_fsetxattr(fd: c_int, name: *const c_char, val: *const c_void, size: size_t, flags: c_int) -> c_int;
@@ -653,7 +654,7 @@ pub(crate) fn real_getcwd() -> Option<String> {
     }
 }
 
-pub(crate) unsafe fn real_stat(path: &std::ffi::CStr, st: *mut libc::stat) -> c_int {
+pub(crate) unsafe fn real_stat(path: &std::ffi::CStr, st: *mut crate::sys::stat) -> c_int {
     __real_stat(path.as_ptr(), st)
 }
 
@@ -701,17 +702,17 @@ pub unsafe extern "C" fn vnhost_openat(dirfd: c_int, path: *const c_char, flags:
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn __wrap_stat(path: *const c_char, st: *mut libc::stat) -> c_int {
+pub unsafe extern "C" fn __wrap_stat(path: *const c_char, st: *mut crate::sys::stat) -> c_int {
     route!(vfs::stat(libc::AT_FDCWD, path, st, true), |p| __real_stat(p, st))
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn __wrap_lstat(path: *const c_char, st: *mut libc::stat) -> c_int {
+pub unsafe extern "C" fn __wrap_lstat(path: *const c_char, st: *mut crate::sys::stat) -> c_int {
     route!(vfs::stat(libc::AT_FDCWD, path, st, false), |p| __real_lstat(p, st))
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn __wrap_fstatat(dirfd: c_int, path: *const c_char, st: *mut libc::stat, flags: c_int) -> c_int {
+pub unsafe extern "C" fn __wrap_fstatat(dirfd: c_int, path: *const c_char, st: *mut crate::sys::stat, flags: c_int) -> c_int {
     if flags & libc::AT_EMPTY_PATH != 0 && *path == 0 {
         return __wrap_fstat(dirfd, st);
     }
@@ -781,7 +782,11 @@ pub unsafe extern "C" fn __wrap_chmod(path: *const c_char, mode: libc::mode_t) -
 #[no_mangle]
 pub unsafe extern "C" fn __wrap_utimensat(dirfd: c_int, path: *const c_char, times: *const libc::timespec, flags: c_int) -> c_int {
     if path.is_null() {
-        return __wrap_futimens(dirfd, times);
+        // (libc's futimens is this call: not back to __real_futimens)
+        if let Some(h) = fd::vfs_handle(dirfd) {
+            return vfs::futimens(h, times);
+        }
+        return __real_utimensat(dirfd, path, times, flags);
     }
     match vfs::utimensat(dirfd, path, times, flags) {
         vfs::Route::Done(-2) => __real_utimensat(dirfd, path, times, flags),
@@ -972,7 +977,7 @@ pub unsafe extern "C" fn __wrap_fstatfs(f: c_int, st: *mut libc::statfs) -> c_in
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn __wrap_fstatvfs(f: c_int, st: *mut libc::statvfs) -> c_int {
+pub unsafe extern "C" fn __wrap_fstatvfs(f: c_int, st: *mut crate::sys::statvfs) -> c_int {
     if is_ours(f) {
         return vfs::fstatvfs(&mut *st);
     }
@@ -1018,7 +1023,7 @@ pub unsafe extern "C" fn __wrap_fremovexattr(f: c_int, name: *const c_char) -> c
 
 #[no_mangle]
 pub unsafe extern "C" fn __wrap_getxattr(path: *const c_char, name: *const c_char, val: *mut c_void, size: size_t) -> ssize_t {
-    let mut st: libc::stat = std::mem::zeroed();
+    let mut st: crate::sys::stat = std::mem::zeroed();
     route!(
         match vfs::stat(libc::AT_FDCWD, path, &mut st, true) {
             vfs::Route::Done(0) => {

@@ -104,7 +104,8 @@ pub unsafe fn dladdr(info: *mut libc::Dl_info) -> i32 {
     let mut p = PATH.lock().unwrap();
     if p.is_none() {
         let root = std::env::var("VNVM_WINE_ROOT").unwrap_or_else(|_| "/opt/wine-vnbox".into());
-        *p = CString::new(format!("{root}/lib/wine/i386-unix/ntdll.so")).ok();
+        let arch = if cfg!(target_arch = "wasm64") { "x86_64" } else { "i386" };
+        *p = CString::new(format!("{root}/lib/wine/{arch}-unix/ntdll.so")).ok();
     }
     (*info).dli_fname = p.as_ref().unwrap().as_ptr();
     (*info).dli_fbase = std::ptr::null_mut();

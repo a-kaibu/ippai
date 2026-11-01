@@ -97,10 +97,10 @@ addToLibrary({
       if (isInternalSym(symName)) continue;
       const value = exports[symName];
       if (VNDL.unix && typeof value == 'function') continue;
-      GOT[symName] ||= new WebAssembly.Global({ value: 'i32', mutable: true });
+      GOT[symName] ||= new WebAssembly.Global({ value: '{{{ POINTER_WASM_TYPE }}}', mutable: true });
       if (replace || GOT[symName].value == 0) {
-        if (typeof value == 'function') GOT[symName].value = addFunction(value);
-        else if (typeof value == 'number') GOT[symName].value = value;
+        if (typeof value == 'function') GOT[symName].value = {{{ to64('addFunction(value)') }}};
+        else if (typeof value == {{{ POINTER_JS_TYPE }}}) GOT[symName].value = value;
         else err(`unhandled export type for '${symName}': ${typeof value}`);
       }
     }

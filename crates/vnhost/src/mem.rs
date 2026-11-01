@@ -200,8 +200,8 @@ unsafe fn mmap_(addr: *mut c_void, len: size_t, prot: c_int, flags: c_int, fd: c
         return addr;
     }
 
-    let mut st: libc::stat = std::mem::zeroed();
-    if libc::fstat(fd, &mut st) != 0 {
+    let mut st: crate::sys::stat = std::mem::zeroed();
+    if crate::sys::fstat(fd, &mut st) != 0 {
         return libc::MAP_FAILED;
     }
     let key = FileKey(st.st_dev as u64, st.st_ino as u64);
@@ -312,8 +312,8 @@ unsafe fn window_map(key: FileKey, fd: c_int, len: usize, off: off_t, prot: c_in
 /// window (NULL if it hasn't).
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_shared_view(fd: c_int, off: u64, len: size_t) -> *mut c_void {
-    let mut st: libc::stat = std::mem::zeroed();
-    if libc::fstat(fd, &mut st) != 0 {
+    let mut st: crate::sys::stat = std::mem::zeroed();
+    if crate::sys::fstat(fd, &mut st) != 0 {
         return std::ptr::null_mut();
     }
     let key = FileKey(st.st_dev as u64, st.st_ino as u64);

@@ -13,7 +13,8 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use libc::{c_int, c_void, iovec, msghdr, pollfd, size_t, sockaddr, socklen_t, ssize_t};
+use crate::sys::msghdr;
+use libc::{c_int, c_void, iovec, pollfd, size_t, sockaddr, socklen_t, ssize_t};
 
 use crate::set_errno;
 
@@ -851,17 +852,17 @@ pub unsafe fn sendto(fd: c_int, buf: *const c_void, len: size_t) -> ssize_t {
 pub unsafe fn sendmsg(fd: c_int, msg: *const msghdr) -> ssize_t {
     let m = &*msg;
     let mut passed = Vec::new();
-    if !m.msg_control.is_null() && m.msg_controllen as usize >= std::mem::size_of::<libc::cmsghdr>() {
-        let mut c = libc::CMSG_FIRSTHDR(m);
+    if !m.msg_control.is_null() && m.msg_controllen as usize >= std::mem::size_of::<crate::sys::cmsghdr>() {
+        let mut c = crate::sys::CMSG_FIRSTHDR(m);
         while !c.is_null() {
             if (*c).cmsg_level == libc::SOL_SOCKET && (*c).cmsg_type == libc::SCM_RIGHTS {
-                let n = ((*c).cmsg_len as usize - libc::CMSG_LEN(0) as usize) / 4;
-                let data = libc::CMSG_DATA(c) as *const c_int;
+                let n = ((*c).cmsg_len as usize - crate::sys::CMSG_LEN(0) as usize) / 4;
+                let data = crate::sys::CMSG_DATA(c) as *const c_int;
                 for i in 0..n {
                     passed.push(data.add(i).read_unaligned());
                 }
             }
-            c = libc::CMSG_NXTHDR(m, c);
+            c = crate::sys::CMSG_NXTHDR(m, c);
         }
     }
     send(fd, std::slice::from_raw_parts(m.msg_iov, m.msg_iovlen as usize), &passed)
@@ -875,7 +876,7 @@ pub unsafe fn recvmsg(fd: c_int, msg: *mut msghdr, flags: c_int) -> ssize_t {
     let space = m.msg_controllen as usize;
     m.msg_controllen = 0;
     if n >= 0 && !fds.is_empty() {
-        let need = libc::CMSG_SPACE((fds.len() * 4) as u32) as usize;
+        let need = crate::sys::CMSG_SPACE((fds.len() * 4) as u32) as usize;
         if m.msg_control.is_null() || space < need {
             m.msg_flags |= libc::MSG_CTRUNC;
             let mut k = lock();
@@ -888,11 +889,11 @@ pub unsafe fn recvmsg(fd: c_int, msg: *mut msghdr, flags: c_int) -> ssize_t {
             }
         } else {
             m.msg_controllen = need as _;
-            let c = libc::CMSG_FIRSTHDR(m);
+            let c = crate::sys::CMSG_FIRSTHDR(m);
             (*c).cmsg_level = libc::SOL_SOCKET;
             (*c).cmsg_type = libc::SCM_RIGHTS;
-            (*c).cmsg_len = libc::CMSG_LEN((fds.len() * 4) as u32) as _;
-            let data = libc::CMSG_DATA(c) as *mut c_int;
+            (*c).cmsg_len = crate::sys::CMSG_LEN((fds.len() * 4) as u32) as _;
+            let data = crate::sys::CMSG_DATA(c) as *mut c_int;
             for (i, f) in fds.iter().enumerate() {
                 data.add(i).write_unaligned(*f);
             }
