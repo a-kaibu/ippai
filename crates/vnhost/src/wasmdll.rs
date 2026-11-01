@@ -209,9 +209,12 @@ struct Thread {
 }
 
 thread_local! {
-    static THREAD: RefCell<Thread> = const { RefCell::new(Thread {
+    // (never dropped: a thread-local with a destructor registers it when first used, and that
+    // aborted once at thread start in Chromium, "the System allocator may not use TLS with
+    // destructors"; workers run one thread after another, so nothing leaks per thread)
+    static THREAD: RefCell<std::mem::ManuallyDrop<Thread>> = const { RefCell::new(std::mem::ManuallyDrop::new(Thread {
         cpu: std::ptr::null_mut(), teb: 0, call_x86: None, syscall: None, init: false, have: 0, got_set: Vec::new(), generation: u32::MAX, proc_generation: None, mods: Vec::new(), used: 0,
-    }) };
+    })) };
 }
 
 fn enabled(name: &str) -> bool {

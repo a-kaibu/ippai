@@ -38,7 +38,22 @@ Wine の PE 側 DLL (user32 など) を、x86 として JIT するのではな�
   と `vn.syscall` は main モジュールの関数をそのままインポートする。入口ごとのロックもない
   (プロセスの世代番号を atomic で見るだけ)。
 - x86 の DLL にしかない関数 (アセンブリ、外したソース) を wasm から呼ぶときは x86 の
-  エクスポートの元のアドレスを呼ぶ。転送エクスポートは転送先のインポートを使う。
+  エクスポートの元のアドレス、またはシンボル表 (COFF) のアドレスを呼ぶ。転送エクスポートは
+  転送先のインポートを使う。どれでもなければ trap するスタブ (警告を出す)。
+- x86 側の大域関数は wasm に飛ばす: Wine の DLL はシンボル表を残しているので、wasm 側にも
+  ある大域関数 (`_name@N` / `@name@N` / `_name`) の先頭に `jmp 0xfe000000+スロット` を書く
+  (メタデータの patches)。x86 のまま残るアセンブリから呼ばれても C の x86 版は走らず、静的
+  データが二重にならない。static 関数は regparm なので対象外。
+- モジュールをまたぐ間接呼び出しは型を確かめる: スロットごとの型タグ (vnwasm の type_tag) を
+  プロセスごとの配列 (`vn.tags`) に置き、icall はタグが合うときだけテーブルを直接呼ぶ。合わない
+  とき (DLL によってプロトタイプが違う。kernel32 の void EnterCriticalSection → ntdll の NTSTATUS
+  RtlEnterCriticalSection など) は x86 の呼び方で入口を通る。
+- ntdll: データのエクスポート (`__wine_syscall_dispatcher`、`__wine_unix_call_dispatcher`、
+  `LdrSystemDllInitBlock`、`Wow64Transition`、`Nls*`) は x86 イメージのものを使う (unix 側が
+  そこに書く)。winecrt0 はリンクしない。`build_ntdll_module` は `__ImageBase` を使う (関数の
+  アドレスはテーブルのスロットなので)。KiUserCallbackDispatcher は x86 のまま (その
+  NtCallbackReturn でコールバックの実行ループが終わる)。`__wine_push_frame`/`__wine_pop_frame`
+  は本物で、`__TRY` だけがフレームを作らない。
 
 ## ビルド
 
@@ -52,8 +67,12 @@ build-wasm-dll.py は PE ビルドツリー (`$WINE_TOOLS`) の Makefile と com
 から DLL のソースと静的ライブラリを集め、`--target=wasm32-unknown-unknown -D__i386__
 -D__vnwasm_pe__` でコンパイルして `wasm-ld -shared` でリンクし、crates/vnwasm で後処理する
 (インポートの差し替え、エントリの生成、メタデータ節 `vnwasm`)。`__vnwasm_pe__` のときの
-Wine 側の変更 (patches/wine-wasm.patch): NtCurrentTeb、`__ASM_DEFINE_FUNC` を空に、
-`__TRY` は SEH フレームを作らない、user32 の i386 専用アセンブリを使わない。
+Wine 側の変更 (patches/wine-wasm.patch): NtCurrentTeb、`__ASM_DEFINE_FUNC` と
+`__ASM_DEFINE_POINTER` を空に、`__TRY` は SEH フレームを作らない、x86 の組み込み関数と
+i386 専用アセンブリ (user32、ntdll の x87/fxsave) を使わない、ntdll のデータエクスポートを extern に。
+compiler-rt の 64/128 ビット演算と musl の libm は build-wasm-dll.py がコンパイルして入れる。
+ntdll、kernelbase、kernel32、user32、gdi32、dsound がビルドできる (msvcrt/ucrtbase はまだ:
+cpp.c、except_i386.c、math.c の x87 アセンブリ)。
 
 環境変数: `VNVM_WASM_DLLS=0` (使わない) / `user32,gdi32` (これだけ使う)、`VNVM_WASM_DIR`、
 `VNVM_WASM_STATS=1` (wasm への入口と x86 呼び出しの回数)、`VNVM_TRACE_WASM=1`。
@@ -79,6 +98,13 @@ Wine 側の変更 (patches/wine-wasm.patch): NtCurrentTeb、`__ASM_DEFINE_FUNC` 
   このため既定ではオフのまま (ストアに i386-wasm を入れない)。効果を出すには、境界を
   ほとんど越えない単位 (ntdll まで含めて丸ごと、直接システムコール) が必要で、Reunion の
   ような処理の 9 割がゲーム本体のゲームでは、それでも数 % の上限しかない。
+- ntdll まで (ntdll、kernelbase、kernel32、user32、gdi32、dsound の 6 つ、直接システムコール、JS を
+  通らない境界、x86 関数の飛ばし先の書き換え): node では本編 100 秒の CPU が 9.5〜10.0 秒 (wasm なし
+  18.0〜18.2 秒) だが、Chromium (Android 相当、同じ手順) では本編 0.274〜0.331 コア (平均 0.293、
+  6 回) に対し wasm なし 0.264〜0.294 (平均 0.282、4 回)、タイトルは 17.0〜33.1 秒 (中央値 19.6) に
+  対し 18.5〜21.8 秒 (19.8)。user32+dsound だけのとき (+11%) より差は縮んだが、良くはならない。
+  本編 1 分の境界は入口 320 万回、x86 呼び出し 6.5 万回、直接システムコール 35 万回 (node)。
+  既定はオフのまま (ストアに i386-wasm を入れたときだけ使う)。
 - 制限: wasm のフレームをまたぐ x86 例外の巻き戻し、wasm 内の `__TRY` は何も捕まえない、
   setjmp/longjmp は未対応。
-- 次: gdi32 など、wasm からの直接システムコール (今は x86 の ntdll/win32u スタブを経由)。
+- 次: msvcrt/ucrtbase。Reunion のように処理の大半がゲーム本体のゲームでは上限は数 %。
