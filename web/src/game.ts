@@ -10,13 +10,30 @@
 // Native Wine on the x86-64 dev machine for comparison: title 5.9 s, story 0.18 cores (9 s of
 // CPU in 50 s). The result goes to vnvm-server's `PUT /bench-log` (bench-results.txt).
 //
+// It runs twice (the page reloads itself, Wine can't start twice in a page): the first run
+// translates what isn't saved yet (after a new build, all of it), the second starts from the
+// regions the first saved. The table shows both.
+//
 //   /game.html?secs=60    story seconds to measure (default 60)
+//   /game.html?runs=1     one run only
 
 const NATIVE = { title: 5.9, cores: 0.18 };
 const CLICK = [380, 622]; // the text box, in frame pixels: advances the story (and leaves the title)
 
 const params = new URLSearchParams(location.search);
 const secs = Math.max(10, Number(params.get("secs") ?? 60) || 60);
+const runs = Math.min(5, Math.max(1, Number(params.get("runs") ?? 2) || 2));
+const round = Math.min(runs, Math.max(1, Number(params.get("round") ?? 1) || 1));
+const STORE = "vnvm-game";
+type Rows = [string, string, string][];
+/** rows of the earlier runs */
+const earlier: Rows[] = (() => {
+  try {
+    return round === 1 ? [] : (JSON.parse(sessionStorage.getItem(STORE) ?? "[]") as Rows[]).slice(0, round - 1);
+  } catch {
+    return [];
+  }
+})();
 if (!params.has("run")) {
   params.set("run", "Z:\\vnvm\\game\\reunion.exe");
   params.set("mount", "/vnvm/game=reunion");
@@ -33,11 +50,28 @@ env.textContent = device;
 const t0 = performance.now();
 const now = () => (performance.now() - t0) / 1000;
 
-function row(name: string, value: string, native = ""): void {
-  const r = table.insertRow();
-  for (const t of [name, value, native]) r.insertCell().textContent = t;
+/** this run's rows; the table has a column per run */
+const mine: Rows = [];
+function render(): void {
+  table.innerHTML = "";
+  const head = table.insertRow();
+  for (const t of ["", ...Array.from({ length: runs }, (_, i) => `${i + 1} 回目`), "native"]) head.insertCell().textContent = t;
+  const all = [...earlier, mine];
+  const names: string[] = [];
+  for (const rows of all) for (const [n] of rows) if (!names.includes(n)) names.push(n);
+  for (const n of names) {
+    const r = table.insertRow();
+    r.insertCell().textContent = n;
+    for (let i = 0; i < runs; i++) r.insertCell().textContent = all[i]?.find((x) => x[0] === n)?.[1] ?? "";
+    r.insertCell().textContent = all.flat().find((x) => x[0] === n && x[2])?.[2] ?? "";
+  }
 }
-table.innerHTML = "<tr><th></th><th>vnvm</th><th>native</th></tr>";
+function row(name: string, value: string, native = ""): void {
+  mine.push([name, value, native]);
+  render();
+}
+render();
+const runLabel = runs > 1 ? `${round} / ${runs} 回目: ` : "";
 
 interface Wine {
   _vnhost_input_push(k: number, x: number, y: number, d: number): number;
@@ -114,7 +148,7 @@ async function story(): Promise<void> {
   let t = performance.now();
   for (let s = 0; s < secs; s++) {
     if (s % 2 === 0) click();
-    phase.textContent = `計測中… 本編 ${s} / ${secs} 秒。閉じずにお待ちください`;
+    phase.textContent = `計測中… ${runLabel}本編 ${s} / ${secs} 秒。閉じずにお待ちください`;
     worstGap = 0;
     await sleep(1000);
     const nb = totalBusy();
@@ -140,12 +174,10 @@ async function story(): Promise<void> {
   row("描画 fps (平均)", avg("fps").toFixed(1));
   row("コマ落ち: 最長の空き (ms)", gaps[gaps.length - 1]!.toFixed(0));
   row("コマ落ち: 95% の秒の空き (ms)", gaps[Math.floor(gaps.length * 0.95)]!.toFixed(0));
-  for (const t of threads) row(`スレッド ${t.i} (pid ${t.pid})`, `${t.cores.toFixed(2)} コア, 待ち ${t.waits.toFixed(0)}/秒`);
+  threads.forEach((t, k) => row(`忙しいスレッド ${k + 1} 位`, `${t.cores.toFixed(2)} コア, 待ち ${t.waits.toFixed(0)}/秒 (#${t.i}, pid ${t.pid})`));
   row("空振りのスピン (回/秒)", `${spins.toFixed(0)} (約 ${((spins * 50) / 1e6).toFixed(2)} コア)`);
-  phase.textContent = "✓ 計測完了。結果はサーバに保存しました";
-  phase.className = "done";
   const lines = [
-    `game Reunion (story ${secs} s)`,
+    `game Reunion (story ${secs} s, run ${round} of ${runs})`,
     `title ${title.toFixed(1)} s`,
     `cpu ${cpu.toFixed(3)} cores (native ${NATIVE.cores})`,
     `fps ${avg("fps").toFixed(1)}`,
@@ -155,12 +187,27 @@ async function story(): Promise<void> {
     `per second (cpu cores / fps / gap ms): ${perSec.map((p) => `${p.cpu.toFixed(2)}/${p.fps.toFixed(0)}/${p.gap.toFixed(0)}`).join(" ")}`,
     device,
   ];
-  void fetch("bench-log", { method: "PUT", body: lines.join("\n") }).catch(() => undefined);
+  await fetch("bench-log", { method: "PUT", body: lines.join("\n") }).catch(() => undefined);
+  if (round < runs) {
+    try {
+      sessionStorage.setItem(STORE, JSON.stringify([...earlier, mine]));
+    } catch {
+      // the next run's table then lacks this one
+    }
+    phase.textContent = `計測中… ${round} 回目が終わりました。${round + 1} 回目を始めます`;
+    // (the regions this run translated go to the server every 30 s; the last ones with this)
+    await sleep(1000);
+    params.set("round", String(round + 1));
+    location.search = `?${params}`;
+    return;
+  }
+  phase.textContent = "✓ 計測完了。結果はサーバに保存しました";
+  phase.className = "done";
 }
 
-phase.textContent = "計測中… 起動してタイトル画面を待っています";
+phase.textContent = `計測中… ${runLabel}起動してタイトル画面を待っています`;
 setInterval(() => {
-  if (!title) phase.textContent = `計測中… 起動してタイトル画面を待っています (${now().toFixed(0)} 秒)`;
+  if (!title) phase.textContent = `計測中… ${runLabel}起動してタイトル画面を待っています (${now().toFixed(0)} 秒)`;
 }, 1000);
 
 await import("./wine");
