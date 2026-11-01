@@ -120,14 +120,42 @@ fn with<R>(f: impl FnOnce(&mut Queue) -> R) -> R {
     }))
 }
 
+/// A batch whose blob grew past this is closed after the command that grew it: a game loading
+/// its images before the first Present put them all in one batch (Artemis: a 1 GB blob, out of
+/// memory).
+const BLOB_MAX: usize = 64 << 20;
+
+fn close_if_big(q: &mut Queue) {
+    if q.open.blob.len() < BLOB_MAX || q.open.cmds.is_empty() {
+        return;
+    }
+    let mut b = std::mem::take(&mut q.open);
+    b.gen = q.gen;
+    q.gen += 1;
+    if q.last_poll.is_none() {
+        // node: nobody draws
+        q.done = q.gen;
+    } else {
+        q.closed.push_back(b);
+    }
+}
+
 /// Records into the open batch.
 pub fn record<R>(f: impl FnOnce(&mut Batch) -> R) -> R {
-    with(|q| f(&mut q.open))
+    with(|q| {
+        let r = f(&mut q.open);
+        close_if_big(q);
+        r
+    })
 }
 
 /// Records into the open batch; also returns its generation (see `wait_done`).
 pub fn record_gen<R>(f: impl FnOnce(&mut Batch) -> R) -> (R, u64) {
-    with(|q| (f(&mut q.open), q.gen))
+    with(|q| {
+        let r = (f(&mut q.open), q.gen);
+        close_if_big(q);
+        r
+    })
 }
 
 fn page_attached(q: &Queue) -> bool {
