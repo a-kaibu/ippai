@@ -45,6 +45,14 @@ else
   e=$(find . -iname '*.exe' -printf '%s\t%P\n' | grep -aviE 'unins|setup|install|config|vcredist|directx|dxsetup|tool|設定|update|DXWeb|dotnet' | sort -rn | head -1 | cut -f2)
 fi
 [ -n "$e" ] || { echo "no exe" >&2; exit 3; }
+# the launcher helper (hangover/tests/autoclick.c) goes in the tree root: corpus-run.py starts the
+# game through it so launcher dialogs get pressed and every dialog's text gets logged
+AC=${AUTOCLICK_EXE:-$HOME/.cache/vnvm/autoclick.exe}
+if [ ! -f "$AC" ] && command -v i686-w64-mingw32-gcc >/dev/null; then
+  mkdir -p "$(dirname "$AC")"
+  i686-w64-mingw32-gcc -O2 "$(dirname "$0")/../hangover/tests/autoclick.c" -o "$AC.tmp" -municode && mv "$AC.tmp" "$AC"
+fi
+[ -f "$AC" ] && cp "$AC" ./_vnvm_autoclick.exe
 if [ ! -d "$store" ]; then
   rm -rf "$store.part"
   cp -al "$BASE" "$store.part"
