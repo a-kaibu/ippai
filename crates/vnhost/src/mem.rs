@@ -137,6 +137,9 @@ unsafe fn fill_from_file(fd: c_int, dst: usize, len: usize, off: off_t) {
 }
 
 pub unsafe fn mmap(addr: *mut c_void, len: size_t, prot: c_int, flags: c_int, fd: c_int, off: off_t) -> *mut c_void {
+    if flags & libc::MAP_FIXED != 0 && in_guest(addr as usize, len) {
+        crate::jit::code_changed(addr as usize, len);
+    }
     let r = mmap_(addr, len, prot, flags, fd, off);
     if flags & libc::MAP_SHARED != 0 && fd >= 0 {
         crate::proc::trace(format_args!("pid {} mmap shared {:p} len {:#x} prot {} fd {} off {:#x} -> {:p}", crate::proc::current(), addr, len, prot, fd, off, r));
@@ -394,6 +397,7 @@ pub unsafe fn munmap(addr: *mut c_void, len: size_t) -> c_int {
         }
     }
     if in_guest(a, len) {
+        crate::jit::code_changed(a, len);
         return 0;
     }
     __real_munmap(addr, len)
@@ -401,6 +405,10 @@ pub unsafe fn munmap(addr: *mut c_void, len: size_t) -> c_int {
 
 pub unsafe fn mprotect(addr: *mut c_void, len: size_t, prot: c_int) -> c_int {
     let a = addr as usize;
+    if in_guest(a, len) && prot & libc::PROT_WRITE != 0 {
+        // (code made writable may be written: what was translated from it goes)
+        crate::jit::code_changed(a, len);
+    }
     if in_guest(a, len) && prot != libc::PROT_NONE {
         let (lo, n) = (a & !(PAGE - 1), len + (a & (PAGE - 1)));
         zero_clean(lo, n);

@@ -4319,3 +4319,18 @@
      EXCEPTION_REGISTRATION_RECORD *ret;
      __asm__ __volatile__("movl %%fs:0,%0" : "=r" (ret) );
      return ret;
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -6660,7 +6660,11 @@
+  */
+ NTSTATUS WINAPI NtFlushInstructionCache( HANDLE handle, const void *addr, SIZE_T size )
+ {
+-#if defined(__x86_64__) || defined(__i386__)
++#ifdef __wasm__
++    /* code translated from there is dropped (vnhost's x86 JIT) */
++    extern void vnhost_jit_code_changed( const void *addr, SIZE_T size );
++    if (handle == GetCurrentProcess()) vnhost_jit_code_changed( addr, size );
++#elif defined(__x86_64__) || defined(__i386__)
+     /* no-op */
+ #elif defined(HAVE___CLEAR_CACHE)
+     if (handle == GetCurrentProcess())

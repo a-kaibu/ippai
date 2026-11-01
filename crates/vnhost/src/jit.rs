@@ -18,6 +18,7 @@ use crate::cpu::Linear;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 use vnx86::jit::{self, wasm::Module};
 use vnx86::{Cpu, Exit};
@@ -157,6 +158,59 @@ pub enum Ran {
     Missed,
 }
 
+/// Pages (of 4 KB) that translated code was made from, any thread's.
+static CODE_PAGES: [AtomicU32; 1 << 14] = [const { AtomicU32::new(0) }; 1 << 14];
+/// Changed when code that was translated may have changed: every thread then drops its
+/// translations (at its next entry into the run loop).
+static GENERATION: AtomicU32 = AtomicU32::new(0);
+
+thread_local! {
+    static SEEN: Cell<u32> = const { Cell::new(0) };
+}
+
+fn mark_code(code: &[(u32, u32)]) {
+    for &(a, n) in code {
+        for p in (a >> 12)..=(a.saturating_add(n.max(1) - 1) >> 12) {
+            if let Some(w) = CODE_PAGES.get(p as usize >> 5) {
+                w.fetch_or(1 << (p & 31), Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+/// The guest's pages `addr..addr + len` may get new code (made writable, unmapped, mapped over,
+/// or the instruction cache flushed): translations of code there are dropped, everyone's.
+pub fn code_changed(addr: usize, len: usize) {
+    if len == 0 || addr >= 1 << 31 {
+        return;
+    }
+    let (lo, hi) = (addr >> 12, (addr.saturating_add(len - 1) >> 12).min((1 << 19) - 1));
+    let mut hit = false;
+    for p in lo..=hi {
+        if CODE_PAGES[p >> 5].load(Ordering::Relaxed) & (1 << (p & 31)) != 0 {
+            hit = true;
+            break;
+        }
+    }
+    if hit {
+        for w in &CODE_PAGES {
+            w.store(0, Ordering::Relaxed);
+        }
+        GENERATION.fetch_add(1, Ordering::SeqCst);
+        if stats() {
+            eprintln!("vnjit code changed at {addr:#x}+{len:#x}: translations dropped");
+        }
+    }
+}
+
+/// Drops this thread's translations if code changed since it made them.
+fn check_generation() {
+    let g = GENERATION.load(Ordering::Relaxed);
+    if SEEN.with(|s| s.replace(g)) != g {
+        STATE.with(|s| *s.borrow_mut() = None);
+    }
+}
+
 fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
     STATE.with(|s| {
         let mut s = s.borrow_mut();
@@ -215,6 +269,7 @@ fn init_flags() {
 
 pub fn run(cpu: &mut Cpu, pending: u32) -> Ran {
     init_flags();
+    check_generation();
     with_state(|st| {
         if st.ring[0] >= jit::RING_SIZE {
             merge_hot(st, cpu);
@@ -346,6 +401,7 @@ fn load_saved(st: &mut State, i: usize) -> bool {
         return false;
     }
     let e = &saved_regions().entries[i];
+    mark_code(&e.code);
     enter(st, base as u32 + i as u32, e.roots.clone(), &e.starts);
     true
 }
@@ -542,6 +598,7 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
     roots.push(to);
     if let Some(r) = shared(&mut Linear, &roots) {
         st.merges += 1;
+        mark_code(&r.code);
         load(st, &r.bytes, roots, &r.starts);
         return;
     }
@@ -573,6 +630,7 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
         eprintln!("vnjit merge {from:#x} -> {to:#x}: {} blocks, roots {:x?}\n{}", region.starts.len(), roots, region.layout);
     }
     let bytes = m.finish();
+    mark_code(&region.code);
     if load(st, &bytes, roots.clone(), &region.starts) {
         keep_profile(&mut region);
         share(&mut Linear, &roots, bytes, &region);
@@ -593,6 +651,7 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         // another thread's region from the same code goes in at once
         if st.misses.get(&eip).is_none() {
             if let Some(r) = shared(mem, &[eip]) {
+                mark_code(&r.code);
                 return load(st, &r.bytes, vec![eip], &r.starts);
             }
             if let Some(i) = find_saved(mem, &[eip], false, (cpu.trap_lo, cpu.trap_hi)) {
@@ -633,6 +692,7 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         }
         let bytes = m.finish();
         let t1 = std::time::Instant::now();
+        mark_code(&region.code);
         let ok = load(st, &bytes, vec![eip], &region.starts);
         if std::env::var_os("VNVM_JIT_TIME").is_some() {
             eprintln!("vnjit time {eip:#x}: {} ins, translate {:?}, load {:?}", region.instructions, t1 - t0, t1.elapsed());
@@ -702,6 +762,7 @@ fn compile_fn(st: &mut State, eip: u32, (lo, hi): (u32, u32), mem: &mut Linear) 
     if base < 0 {
         return false;
     }
+    mark_code(&region.code);
     for &a in &region.sites {
         let l = st.site_fn.entry(a).or_default();
         if !l.contains(&eip) {
@@ -963,4 +1024,10 @@ pub(crate) fn count_entry(eip: u32) {
             eprintln!("vnjit pid {} thread {:?}: {} entries in {:?}: {}", crate::proc::current(), std::thread::current().id(), c.0, t0.elapsed(), top.join(" "));
         }
     });
+}
+
+/// Wine's NtFlushInstructionCache: the guest wrote code there (see `code_changed`).
+#[no_mangle]
+pub extern "C" fn vnhost_jit_code_changed(addr: *const std::ffi::c_void, size: usize) {
+    code_changed(addr as usize, size);
 }
