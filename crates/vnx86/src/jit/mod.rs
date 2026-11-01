@@ -294,6 +294,11 @@ struct Gen<'a> {
     structured: bool,
     /// dispatch nodes of jump tables: (context, table) -> node (after the blocks)
     jnode: BTreeMap<usize, usize>,
+    /// The guest registers the code names (the others stay in the Cpu: never loaded or
+    /// stored) and those it writes (the only ones that can differ from the Cpu's after a load);
+    /// all for regions
+    regs: u8,
+    wregs: u8,
     /// with [`LAYOUT`]: whether the instruction went to the interpreter, and per mnemonic
     /// ("*" marking those) the count and wasm bytes
     fell_back: bool,
@@ -1432,9 +1437,7 @@ impl<'a> Gen<'a> {
 
     /// Writes registers, EIP and the lazy flags back to the Cpu.
     fn spill(&mut self, eip: u32) {
-        for i in 0..8 {
-            self.c.get(L_CPU).get(L_REG + i).store32(Off::reg(i as usize));
-        }
+        self.store_regs();
         self.c.get(L_CPU).u32c(eip).store32(Off::eip());
         match self.flags {
             Flags::Known(op) => {
@@ -1451,7 +1454,19 @@ impl<'a> Gen<'a> {
     fn reload(&mut self) {
         self.safe = [None; 8];
         self.safe2.clear();
-        for i in 0..8 {
+        self.load_regs();
+    }
+
+    /// The registers that can differ from the Cpu's into it.
+    fn store_regs(&mut self) {
+        for i in (0..8).filter(|i| self.wregs & (1 << i) != 0) {
+            self.c.get(L_CPU).get(L_REG + i).store32(Off::reg(i as usize));
+        }
+    }
+
+    /// The registers the code names from the Cpu.
+    fn load_regs(&mut self) {
+        for i in (0..8).filter(|i| self.regs & (1 << i) != 0) {
             self.c.get(L_CPU).load32(Off::reg(i as usize)).set(L_REG + i);
         }
     }
@@ -2578,9 +2593,7 @@ impl<'a> Gen<'a> {
                     self.xmm_flush();
                     self.x87_flush_out();
                     bump(&mut self.c, 5);
-                    for i in 0..8 {
-                        self.c.get(L_CPU).get(L_REG + i).store32(Off::reg(i as usize));
-                    }
+                    self.store_regs();
                     self.c.get(L_CPU).get(L_BUD).store32(Off::budget());
                     self.c.get(L_CPU).get(t).store32(Off::eip());
                     self.c.i32c(RET_FN).ret();
@@ -2937,9 +2950,7 @@ impl<'a> Gen<'a> {
             let site = self.ins.ip32();
             ring_sample(&mut self.c, h, v, t, site);
         }
-        for i in 0..8 {
-            self.c.get(L_CPU).get(L_REG + i).store32(Off::reg(i as usize));
-        }
+        self.store_regs();
         self.c.block(); // slow 0
         self.c.block(); // found 0, slow 1
         self.depth += 2;
@@ -2967,9 +2978,7 @@ impl<'a> Gen<'a> {
         self.c.get(L_CPU).load32(Off::eip()).u32c(next).ne().if_();
         bump(&mut self.c, 4);
         self.c.i32c(RET_CONTINUE).ret().end();
-        for i in 0..8 {
-            self.c.get(L_CPU).load32(Off::reg(i as usize)).set(L_REG + i);
-        }
+        self.load_regs();
         self.c.get(L_CPU).load32(Off::budget()).set(L_BUD);
         self.c.i32c(-1).set(L_OP);
         self.goto(next);
@@ -3080,8 +3089,8 @@ fn lazy_to_cpu(c: &mut Code) {
 }
 
 /// Writes registers, EIP (L_NEXT), the budget and lazy flags back to the Cpu.
-fn writeback(c: &mut Code) {
-    for i in 0..8 {
+fn writeback(c: &mut Code, wregs: u8) {
+    for i in (0..8).filter(|i| wregs & (1 << i) != 0) {
         c.get(L_CPU).get(L_REG + i).store32(Off::reg(i as usize));
     }
     c.get(L_CPU).get(L_NEXT).store32(Off::eip());
@@ -3138,7 +3147,7 @@ fn emit_lookup(c: &mut Code) {
 
 /// [`emit_lookup`] of a function: a function's entry is a tail call of it (`jmp` to another
 /// function), anything else leaves for the dispatcher.
-fn emit_fn_lookup(c: &mut Code, entry: u32) {
+fn emit_fn_lookup(c: &mut Code, entry: u32, wregs: u8) {
     let hash = offset_of!(Cpu, jit_hash) as u32;
     let maskf = offset_of!(Cpu, jit_mask) as u32;
     let (h, e, v) = (L_T, L_T + 1, L_T + 2);
@@ -3154,7 +3163,7 @@ fn emit_fn_lookup(c: &mut Code, entry: u32) {
     c.get(v).get(L_NEXT).eq().if_();
     c.get(e).load32(4).tee(v).u32c(FN_TAG).and().eqz().br_if(2);
     bump(c, 7);
-    writeback(c);
+    writeback(c, wregs);
     c.get(L_CPU).get(v).i32c(ENTRY_SHIFT as i32).shr_u().u32c(0x7ff).and();
     c.get(v).u32c((1 << ENTRY_SHIFT) - 1).and().i32c(1).add();
     c.op(0x13).op(T_FN as u8).op(0); // return_call_indirect, table 0
@@ -4108,11 +4117,32 @@ fn translate<M: Memory>(
         }
     }
     let nodes = n as usize + tables.len();
+    let (mut regs, mut wregs) = (0xffu8, 0xffu8);
+    if fnm {
+        // (an HLE'd C function returns in EAX)
+        (regs, wregs) = if hle.is_empty() { (1 << 4, 1 << 4) } else { (0x11, 0x11) };
+        let mut info = iced_x86::InstructionInfoFactory::new();
+        for ins in blocks.iter().flat_map(|b| b.1.iter()) {
+            for u in info.info(ins).used_registers() {
+                use iced_x86::OpAccess::*;
+                let r = u.register();
+                if r.is_gpr() {
+                    let b = 1u8 << r.full_register32().number();
+                    regs |= b;
+                    if matches!(u.access(), Write | CondWrite | ReadWrite | ReadCondWrite) {
+                        wregs |= b;
+                    }
+                }
+            }
+        }
+    }
     let mut g = Gen {
         c: Code::default(),
         fnm,
         structured: fnm,
         jnode,
+        regs,
+        wregs,
         depth: 0,
         flags: Flags::Entry,
         targets: &targets,
@@ -4165,9 +4195,7 @@ fn translate<M: Memory>(
     bump(&mut g.c, 10);
     if fnm {
         // the state from the Cpu; status flags dead (a call's target)
-        for i in 0..8 {
-            g.c.get(L_CPU).load32(Off::reg(i as usize)).set(L_REG + i);
-        }
+        g.load_regs();
         g.c.get(L_CPU).load32(Off::budget()).set(L_BUD);
         g.c.i32c(-1).set(L_OP);
         g.c.get(L_ARG).set(L_BLK);
@@ -4229,13 +4257,13 @@ fn translate<M: Memory>(
     }
     g.c.end(); // dyn
     if fnm {
-        emit_fn_lookup(&mut g.c, roots[0]);
+        emit_fn_lookup(&mut g.c, roots[0], g.wregs);
     } else {
         emit_lookup(&mut g.c);
     }
     g.c.end(); // top
     g.c.end(); // exit
-    writeback(&mut g.c);
+    writeback(&mut g.c, g.wregs);
     g.c.get(L_ST);
     if !fnm {
         for _ in 1..N_PARAMS {
