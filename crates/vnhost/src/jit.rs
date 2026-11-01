@@ -209,6 +209,9 @@ fn init_flags() {
         jit::CALLS.store(calls == "1" || calls == "2", std::sync::atomic::Ordering::Relaxed);
         jit::INDIRECT_CALLS.store(calls == "2", std::sync::atomic::Ordering::Relaxed);
         jit::FN.store(std::env::var("VNVM_JIT_FN").is_ok_and(|v| v == "1"), std::sync::atomic::Ordering::Relaxed);
+        if let Some(n) = std::env::var("VNVM_JIT_FN_INS").ok().and_then(|v| v.parse().ok()) {
+            jit::FN_MAX_INS.store(n, std::sync::atomic::Ordering::Relaxed);
+        }
     });
 }
 
@@ -673,7 +676,7 @@ fn compile_fn(st: &mut State, eip: u32, (lo, hi): (u32, u32), mem: &mut Linear) 
     }
     let mut m = Module { name: Some(format!("x86_{eip:08x}_fn")), ..Module::default() };
     let (misses, known, hints) = (&st.misses, &st.known, &st.hints);
-    let Some(region) = jit::translate_function(&mut m, mem, eip, MAX_BLOCKS, (lo, hi), &|a| hints.get(&a).copied(), |a| debug_allowed(a) && !(a >= lo && a < hi) && (a == eip || ran(misses, known, a))) else {
+    let Some(region) = jit::translate_function(&mut m, mem, eip, jit::MAX_BLOCKS, (lo, hi), &|a| hints.get(&a).copied(), |a| debug_allowed(a) && !(a >= lo && a < hi) && (a == eip || ran(misses, known, a))) else {
         st.known.insert(eip);
         return false;
     };

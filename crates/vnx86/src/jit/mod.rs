@@ -142,6 +142,8 @@ pub const MAX_BLOCKS: usize = 1 << 11;
 /// Most instructions in one region: V8's optimizing compiler takes superlinear time on big
 /// functions (and runs the code in its baseline tier until it is done).
 const MAX_REGION_INS: usize = 1000;
+/// The same for functions (jit::FN; VNVM_JIT_FN_INS)
+pub static FN_MAX_INS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(1000);
 /// Inlined callees: at most this many instructions each, and in all in a region.
 const MAX_INLINE: usize = 64;
 const MAX_INLINE_TOTAL: usize = 400;
@@ -2547,9 +2549,7 @@ impl<'a> Gen<'a> {
                     self.c.i32c(1).set(L_ST);
                     let (h, e) = (self.temp(), self.temp());
                     let site = ins.ip32();
-                    ring_write_with(&mut self.c, h, e, t, |c| {
-                        c.u32c(FN_TAG | site);
-                    });
+                    ring_sample(&mut self.c, h, e, t, site);
                 }
                 self.c.get(t);
                 self.jump_dyn();
@@ -2935,9 +2935,7 @@ impl<'a> Gen<'a> {
         if self.ins.flow_control() == FlowControl::IndirectCall {
             // where it goes, sampled by the host (a hint to inline it next time)
             let site = self.ins.ip32();
-            ring_write_with(&mut self.c, h, v, t, |c| {
-                c.u32c(FN_TAG | site);
-            });
+            ring_sample(&mut self.c, h, v, t, site);
         }
         for i in 0..8 {
             self.c.get(L_CPU).get(L_REG + i).store32(Off::reg(i as usize));
@@ -3178,6 +3176,16 @@ fn emit_fn_lookup(c: &mut Code, entry: u32) {
 /// Writes (from, L_NEXT) to the ring (`from` pushes the first; uses L_T and L_T + 1).
 fn ring_write(c: &mut Code, from: impl FnOnce(&mut Code)) {
     ring_write_with(c, L_T, L_T + 1, L_NEXT, from);
+}
+
+/// Where the indirect call or jump at `site` goes (to local `to`), into the ring one time in
+/// eight (by a hash of the budget: any stride of it): the host's hints (see call_fn).
+fn ring_sample(c: &mut Code, h: u32, e: u32, to: u32, site: u32) {
+    c.get(L_BUD).u32c(0x9e37_79b1).mul().i32c(29).shr_u().eqz().if_();
+    ring_write_with(c, h, e, to, |c| {
+        c.u32c(FN_TAG | site);
+    });
+    c.end();
 }
 
 /// [`ring_write`] with temporaries `h`, `e` and the target in local `to`.
@@ -3908,7 +3916,8 @@ fn translate<M: Memory>(
     let mut total = 0;
     let mut hle = BTreeMap::new();
     while let Some(a) = queue.pop_front() {
-        if blocks.len() >= max_blocks.min(MAX_BLOCKS) || total >= MAX_REGION_INS {
+        let max_ins = if fnm { FN_MAX_INS.load(core::sync::atomic::Ordering::Relaxed) } else { MAX_REGION_INS };
+        if blocks.len() >= max_blocks.min(MAX_BLOCKS) || total >= max_ins {
             break;
         }
         if targets.contains_key(&a) || !(GUEST_LO..GUEST_HI).contains(&a) || !(forced.contains(&a) || accept(a)) {
