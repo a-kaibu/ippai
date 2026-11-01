@@ -1565,6 +1565,19 @@
  static BYTE arguments[ARRAY_SIZE(syscalls)] =
  {
  #define SYSCALL_ENTRY(id,name,args) args,
+--- a/dlls/win32u/winstation.c
++++ b/dlls/win32u/winstation.c
+@@ -894,7 +894,9 @@
+         {
+             NtResumeThread( thread, NULL );
+             TRACE_(win)( "started explorer\n" );
+-            NtUserWaitForInputIdle( process, 10000, FALSE );
++            /* vnvm: a slow browser (Android, a busy machine) may need more than 10 s for explorer's
++             * desktop; without it the game's windows get no graphics driver */
++            NtUserWaitForInputIdle( process, 60000, FALSE );
+             NtClose( thread );
+             NtClose( process );
+         }
 --- /dev/null
 +++ b/dlls/winebrowser.drv/Makefile.in
 @@ -0,0 +1,9 @@

@@ -30,6 +30,20 @@ fn threshold() -> u32 {
     static T: OnceLock<u32> = OnceLock::new();
     *T.get_or_init(|| std::env::var("VNVM_JIT_THRESHOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(THRESHOLD))
 }
+/// Debugging a miscompile by bisection: VNVM_JIT_ONLY=lo-hi (hex) compiles only code in [lo, hi).
+fn debug_allowed(a: u32) -> bool {
+    use std::sync::OnceLock;
+    static R: OnceLock<(u32, u32)> = OnceLock::new();
+    let (lo, hi) = *R.get_or_init(|| {
+        let v = std::env::var("VNVM_JIT_ONLY").unwrap_or_default();
+        let mut it = v.split('-').map(|x| u32::from_str_radix(x.trim_start_matches("0x"), 16).ok());
+        match (it.next().flatten(), it.next().flatten()) {
+            (Some(lo), Some(hi)) => (lo, hi),
+            _ => (0, u32::MAX),
+        }
+    });
+    a >= lo && a < hi
+}
 /// Blocks the dispatcher runs before returning to the run loop.
 const BUDGET: i32 = 1 << 14;
 /// Most blocks compiled into one module.
@@ -499,7 +513,7 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
     let (misses, known) = (&st.misses, &st.known);
     profiling();
     let Some(mut region) = jit::translate_region(&mut m, &mut Linear, &roots, MAX_BLOCKS, |a| {
-        !(a >= lo && a < hi) && (roots.contains(&a) || ran(misses, known, a))
+        debug_allowed(a) && !(a >= lo && a < hi) && (roots.contains(&a) || ran(misses, known, a))
     }) else {
         return;
     };
@@ -521,7 +535,7 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
 /// Counts a miss at cpu.eip and compiles its block once it is warm; true if it did.
 pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
     let eip = cpu.eip;
-    if !(jit::GUEST_LO..jit::GUEST_HI).contains(&eip) || (eip >= cpu.trap_lo && eip < cpu.trap_hi) {
+    if !(jit::GUEST_LO..jit::GUEST_HI).contains(&eip) || (eip >= cpu.trap_lo && eip < cpu.trap_hi) || !debug_allowed(eip) {
         return false;
     }
     with_state(|st| {
@@ -558,7 +572,7 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         profiling();
         let t0 = std::time::Instant::now();
         let Some(mut region) = jit::translate_region(&mut m, mem, &[eip], MAX_BLOCKS, |a| {
-            !(a >= lo && a < hi) && !known.contains(&a) && (a == eip || misses.contains_key(&a))
+            debug_allowed(a) && !(a >= lo && a < hi) && !known.contains(&a) && (a == eip || misses.contains_key(&a))
         }) else {
             st.known.insert(eip);
             return false;
@@ -609,7 +623,7 @@ fn compile_fn(st: &mut State, eip: u32, (lo, hi): (u32, u32), mem: &mut Linear) 
     }
     let mut m = Module { name: Some(format!("x86_{eip:08x}_fn")), ..Module::default() };
     let (misses, known) = (&st.misses, &st.known);
-    let Some(region) = jit::translate_function(&mut m, mem, eip, MAX_BLOCKS, (lo, hi), |a| !(a >= lo && a < hi) && (a == eip || ran(misses, known, a))) else {
+    let Some(region) = jit::translate_function(&mut m, mem, eip, MAX_BLOCKS, (lo, hi), |a| debug_allowed(a) && !(a >= lo && a < hi) && (a == eip || ran(misses, known, a))) else {
         st.known.insert(eip);
         return false;
     };
