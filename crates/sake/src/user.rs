@@ -2472,8 +2472,9 @@ fn is_dialog_message(c: &mut Ctx, wide: bool) -> u32 {
     if !inside {
         return 0;
     }
+    let id = if key == 0x0d { default_id(dlg) } else { 2 };
     let f = crate::api::export("user32", if wide { "SendMessageW" } else { "SendMessageA" });
-    c.call(f, &[dlg, 0x111, if key == 0x0d { 1 } else { 2 }, 0]);
+    c.call(f, &[dlg, 0x111, id, dlg_item(dlg, id)]);
     1
 }
 fn IsDialogMessageA(c: &mut Ctx) -> u32 {
@@ -2970,11 +2971,19 @@ fn ChangeDisplaySettingsA(c: &mut Ctx) -> u32 {
         let fields = r32(p + 40);
         if fields & 0x180000 == 0x180000 {
             let (w, h) = (r32(p + 108) as i32, r32(p + 112) as i32);
-            vnhost::display::vnhost_display_set_size(w, h);
-            with(|s| s.screen = (w, h));
+            set_display(c, w, h);
         }
     }
     0
+}
+
+/// A new screen size; top-level windows get WM_DISPLAYCHANGE (CatSystem2 goes on from there)
+fn set_display(c: &mut Ctx, w: i32, h: i32) {
+    vnhost::display::vnhost_display_set_size(w, h);
+    if with(|s| std::mem::replace(&mut s.screen, (w, h))) != (w, h) {
+        let f = crate::api::export("user32", "SendMessageA");
+        c.call(f, &[0xffff, 0x7e, 32, (h as u32) << 16 | (w as u32 & 0xffff)]);
+    }
 }
 fn ChangeDisplaySettingsW(c: &mut Ctx) -> u32 {
     let p = c.a(0);
@@ -2982,8 +2991,7 @@ fn ChangeDisplaySettingsW(c: &mut Ctx) -> u32 {
         let fields = r32(p + 72);
         if fields & 0x180000 == 0x180000 {
             let (w, h) = (r32(p + 172) as i32, r32(p + 176) as i32);
-            vnhost::display::vnhost_display_set_size(w, h);
-            with(|s| s.screen = (w, h));
+            set_display(c, w, h);
         }
     }
     0
@@ -3955,6 +3963,24 @@ fn dlg_wndproc_fn(c: &mut Ctx) -> u32 {
     }
 }
 
+/// The control Enter presses in a dialog: a focused push button, else the default push button
+/// (BS_DEFPUSHBUTTON), else IDOK.
+fn default_id(dlg: u32) -> u32 {
+    with(|s| {
+        let push = |h: u32, def: bool| {
+            s.wins.get(&h).filter(|w| s.classes.get(w.class).is_some_and(|c| c.name.eq_ignore_ascii_case("Button")) && w.visible && w.enabled).is_some_and(|w| {
+                let k = w.style & 0xf;
+                if def { k == 1 } else { k <= 1 }
+            })
+        };
+        let kids = s.wins.get(&dlg).map(|w| w.children.clone()).unwrap_or_default();
+        if kids.contains(&s.focus) && push(s.focus, false) {
+            return s.wins[&s.focus].id & 0xffff;
+        }
+        kids.iter().find(|&&k| push(k, true)).map_or(1, |k| s.wins[k].id & 0xffff)
+    })
+}
+
 fn dlg_item(h: u32, id: u32) -> u32 {
     with(|s| s.wins.get(&h).and_then(|w| w.children.iter().copied().find(|ch| s.wins.get(ch).is_some_and(|x| x.id & 0xffff == id & 0xffff))).unwrap_or(0))
 }
@@ -4120,7 +4146,7 @@ fn dialog_box(c: &mut Ctx, inst: u32, t: u32, owner: u32, proc_: u32, param: u32
             Some(m) => {
                 let mine = m.hwnd == dlg || with(|s| s.wins.get(&m.hwnd).is_some_and(|w| w.parent == dlg));
                 if m.msg == 0x100 && mine && (m.w == 0x0d || m.w == 0x1b) {
-                    let id = if m.w == 0x0d { 1 } else { 2 };
+                    let id = if m.w == 0x0d { default_id(dlg) } else { 2 };
                     let b = dlg_item(dlg, id);
                     send(c, dlg, 0x111, id, b);
                 } else {
