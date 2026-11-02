@@ -1,5 +1,7 @@
 /* Code in the exe's own W|X section (like ASProtect) rewritten in place by code in the same
- * section, with no protection change or cache flush, after both ran hot. */
+ * section, with no protection change or cache flush, after both ran hot.
+ * Build: i686-w64-mingw32-gcc -O1 -o smcx.exe smcx.c, then set the .rwx section's
+ * characteristics to 0xE0000060 (RWX code) in the PE header. Prints "ok" when right. */
 #include <stdio.h>
 #include <string.h>
 #include <windows.h>
