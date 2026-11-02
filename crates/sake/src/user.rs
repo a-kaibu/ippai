@@ -2030,6 +2030,20 @@ fn DefWindowProcW(c: &mut Ctx) -> u32 {
 }
 fn DefDlgProcA(c: &mut Ctx) -> u32 {
     let (h, m, wp) = (c.a(0), c.a(1), c.a(2));
+    if m == 0x7 {
+        // WM_SETFOCUS: on to the control that had it (or the first tab stop)
+        let to = with(|s| {
+            let kids = s.wins.get(&h).map(|w| w.children.clone()).unwrap_or_default();
+            if kids.contains(&wp) {
+                return wp;
+            }
+            kids.into_iter().find(|k| s.wins.get(k).is_some_and(|w| w.visible && w.enabled && w.style & 0x1_0000 != 0)).unwrap_or(0)
+        });
+        if to != 0 {
+            set_focus(c, to);
+        }
+        return 0;
+    }
     if m == 0x14 {
         // dialogs erase with the 3D face colour
         let r = with(|s| s.wins.get(&h).map(|w| Rect { l: 0, t: 0, r: w.client.w(), b: w.client.h() })).unwrap_or_default();
@@ -2472,9 +2486,9 @@ fn is_dialog_message(c: &mut Ctx, wide: bool) -> u32 {
     if !inside {
         return 0;
     }
-    let id = if key == 0x0d { default_id(dlg) } else { 2 };
+    let (id, b) = if key == 0x0d { default_button(dlg) } else { (2, dlg_item(dlg, 2)) };
     let f = crate::api::export("user32", if wide { "SendMessageW" } else { "SendMessageA" });
-    c.call(f, &[dlg, 0x111, id, dlg_item(dlg, id)]);
+    c.call(f, &[dlg, 0x111, id, b]);
     1
 }
 fn IsDialogMessageA(c: &mut Ctx) -> u32 {
@@ -3964,9 +3978,9 @@ fn dlg_wndproc_fn(c: &mut Ctx) -> u32 {
 }
 
 /// The control Enter presses in a dialog: a focused push button, else the default push button
-/// (BS_DEFPUSHBUTTON), else IDOK.
-fn default_id(dlg: u32) -> u32 {
-    with(|s| {
+/// (BS_DEFPUSHBUTTON), else IDOK. (id, its window)
+fn default_button(dlg: u32) -> (u32, u32) {
+    let found = with(|s| {
         let push = |h: u32, def: bool| {
             s.wins.get(&h).filter(|w| s.classes.get(w.class).is_some_and(|c| c.name.eq_ignore_ascii_case("Button")) && w.visible && w.enabled).is_some_and(|w| {
                 let k = w.style & 0xf;
@@ -3975,10 +3989,11 @@ fn default_id(dlg: u32) -> u32 {
         };
         let kids = s.wins.get(&dlg).map(|w| w.children.clone()).unwrap_or_default();
         if kids.contains(&s.focus) && push(s.focus, false) {
-            return s.wins[&s.focus].id & 0xffff;
+            return Some((s.wins[&s.focus].id & 0xffff, s.focus));
         }
-        kids.iter().find(|&&k| push(k, true)).map_or(1, |k| s.wins[k].id & 0xffff)
-    })
+        kids.iter().find(|&&k| push(k, true)).map(|&k| (s.wins[&k].id & 0xffff, k))
+    });
+    found.unwrap_or_else(|| (1, dlg_item(dlg, 1)))
 }
 
 fn dlg_item(h: u32, id: u32) -> u32 {
@@ -4146,8 +4161,7 @@ fn dialog_box(c: &mut Ctx, inst: u32, t: u32, owner: u32, proc_: u32, param: u32
             Some(m) => {
                 let mine = m.hwnd == dlg || with(|s| s.wins.get(&m.hwnd).is_some_and(|w| w.parent == dlg));
                 if m.msg == 0x100 && mine && (m.w == 0x0d || m.w == 0x1b) {
-                    let id = if m.w == 0x0d { default_id(dlg) } else { 2 };
-                    let b = dlg_item(dlg, id);
+                    let (id, b) = if m.w == 0x0d { default_button(dlg) } else { (2, dlg_item(dlg, 2)) };
                     send(c, dlg, 0x111, id, b);
                 } else {
                     dispatch_msg(c, &m);
