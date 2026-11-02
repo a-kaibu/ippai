@@ -53,6 +53,23 @@ WebGPU D3D9 を使うので、A/B 比較ができる。`wine.html` / `game.html`
 触るコードをインタープリタに回していたこと (sake は 0x30000 より下を使わない) と、
 トラップを x86 スタブに置き換えたこと。
 
+## V8 向けの調整 (2026-11-02、docs/v8-wasm-shape.md を受けて)
+
+- メモリは 65535 ページ固定 (`INITIAL_MEMORY=4294901760`、伸長なし)。wine.wasm と JIT のモジュールの
+  import (最小 = 最大 = `MEMORY_MIN_PAGES`) と同じでないと JIT のモジュールが link できない。
+  Android ではメモリサイズの読み直しが関数ごとに 1 回になる。4GB を最初からコミットするので、
+  実機で確保できるかは最後の確認項目 (docs/translator.md)。
+- ウィンドウの面は表示側 (vnhost display) が直接読む (`vnhost_window_draw_shared`)。
+  前は 1 フレームごとに面を表示側のバッファへコピーしていて、Reunion の本編でゲームスレッドの
+  17% が memmove だった。
+- ハンドルの表 (ウィンドウ、GDI オブジェクトなど) は SipHash ではなく Fx ハッシュ (lib.rs `Fx`)。
+- Reunion の本編 (Chromium、perf): ゲームスレッドの 57% がゲストのコード、sake の API 実装は数 %。
+  BGI のタイトルでは sake 側は 1% 未満で、残りは JIT とその補助関数。範囲チェック強制
+  (`--js-flags=--wasm-enforce-bounds-checks`、Android と同じ) で本編の CPU は約 11% 増える。
+- 測り方: `perf record -a` + `CHROME_ARGS="--no-sandbox --no-zygote --js-flags=--perf-basic-prof"`、
+  名前付きの sake.wasm は `SAKE_LDEXTRA=--profiling-funcs bash crates/sake/build.sh`。
+  game.html の CPU (コア) は待ちの外の時間で、`secs` が違うと場面が違うので比べられない。
+
 ## 動作確認したゲーム (体験版)
 
 | ゲーム (エンジン) | 状態 | 確認した場所 |
