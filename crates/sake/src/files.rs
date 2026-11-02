@@ -270,9 +270,13 @@ pub fn find(w: &str) -> Option<Find> {
         return Some(Find { entries: vec![(name, m)], at: 0 });
     }
     if let Ok(m) = std::fs::metadata(&hd) {
+        // ("." and ".." as listed entries: only where the pattern takes them, as "*", not "*.ttf")
         if dir.len() > 3 {
-            entries.push((".".into(), m.clone()));
-            entries.push(("..".into(), m));
+            for d in [".", ".."] {
+                if wild(pat, d) {
+                    entries.push((d.into(), m.clone()));
+                }
+            }
         }
     }
     for e in std::fs::read_dir(&hd).ok()?.flatten() {

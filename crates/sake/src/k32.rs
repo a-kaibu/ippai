@@ -319,7 +319,26 @@ fn ResumeThread(c: &mut Ctx) -> u32 {
     GATE_CV.notify_all();
     r
 }
-fn SuspendThread(_: &mut Ctx) -> u32 {
+/// SuspendThread: a thread suspending itself (WOLF RPG's workers) waits for ResumeThread; other
+/// threads can't be stopped from outside here and go on (0)
+fn SuspendThread(c: &mut Ctx) -> u32 {
+    let tid = crate::cur().tid;
+    let h = match c.a(0) {
+        0xffff_fffe => obj::with(|t| {
+            t.objs.iter().find_map(|(&h, (o, _))| matches!(o, Obj::Thread { tid: x, .. } if *x == tid).then_some(h))
+        }),
+        h => obj::with(|t| matches!(t.objs.get(&h), Some((Obj::Thread { tid: x, .. }, _)) if *x == tid).then_some(h)),
+    };
+    let Some(h) = h else { return 0 };
+    let mut g = GATE.lock().unwrap();
+    match g.iter_mut().find(|(x, _)| *x == h) {
+        Some((_, n)) => *n += 1,
+        None => g.push((h, 1)),
+    }
+    while g.iter().any(|&(x, n)| x == h && n > 0) {
+        g = GATE_CV.wait(g).unwrap();
+    }
+    g.retain(|&(x, _)| x != h);
     0
 }
 fn GetExitCodeThread(c: &mut Ctx) -> u32 {
@@ -2952,6 +2971,10 @@ fn write_find_data(p: u32, name: &str, m: &std::fs::Metadata, wide: bool) {
 }
 fn find_first(c: &mut Ctx, wide: bool) -> u32 {
     let pat = arg_str(c.a(0), wide);
+    if std::env::var_os("SAKE_TRACE_FILES").is_some() {
+        let r = files::find(&pat).map(|f| f.entries.iter().map(|e| e.0.clone()).collect::<Vec<_>>().join(" "));
+        eprintln!("sake: FindFirstFile({pat}) -> {r:?}");
+    }
     match files::find(&pat) {
         Some(f) => {
             let (n, m) = &f.entries[0];
