@@ -316,6 +316,9 @@ struct Gen<'a> {
     /// functions: per block, those that can be dirty at its start (see [`dirty_in`]; all of
     /// `wregs` if absent)
     dirty_in: Vec<u8>,
+    /// per register, the largest value it can have here if known (since an `and r32, imm` or
+    /// a movzx in the block): an access to [table + r * scale] then needs no check
+    small: [Option<u32>; 8],
     /// with [`LAYOUT`]: whether the instruction went to the interpreter, and per mnemonic
     /// ("*" marking those) the count and wasm bytes
     fell_back: bool,
@@ -939,6 +942,16 @@ impl<'a> Gen<'a> {
         self.c.set(t);
         let base = ins.memory_base();
         let seg = ins.memory_segment();
+        // [table + r * scale] with r known small: in the guest range whatever r is
+        if base == Register::None && ins.memory_index().is_gpr32() && seg != Register::FS && seg != Register::GS {
+            if let Some(m) = self.small[ins.memory_index().number()] {
+                let lo = ins.memory_displacement32() as u64;
+                let hi = lo + m as u64 * ins.memory_index_scale() as u64 + size as u64;
+                if lo >= GUEST_LO as u64 && hi <= GUEST_HI as u64 {
+                    return t;
+                }
+            }
+        }
         if base.is_gpr32() && ins.memory_index() == Register::None && seg != Register::FS && seg != Register::GS {
             let disp = ins.memory_displacement32() as i32;
             if self.near_safe(base.number(), disp, size) {
@@ -3771,6 +3784,29 @@ fn mm_names(list: &[Instruction]) -> u8 {
     m
 }
 
+/// What `ins` leaves in [`Gen::small`].
+fn small_after(small: &mut [Option<u32>; 8], ins: &Instruction) {
+    let mut info = iced_x86::InstructionInfoFactory::new();
+    for u in info.info(ins).used_registers() {
+        use iced_x86::OpAccess::*;
+        if matches!(u.access(), Write | CondWrite | ReadWrite | ReadCondWrite) && u.register().is_gpr() {
+            small[u.register().full_register32().number()] = Option::None;
+        }
+    }
+    if ins.op_count() == 2 && ins.op_kind(0) == OpKind::Register && ins.op_register(0).is_gpr32() {
+        let r = ins.op_register(0).number();
+        let m = match ins.mnemonic() {
+            Mnemonic::And if matches!(ins.op_kind(1), OpKind::Immediate32 | OpKind::Immediate8to32) && (ins.immediate32() as i32) >= 0 => Some(ins.immediate32()),
+            Mnemonic::Movzx if op_bits(ins, 1) == 8 => Some(0xff),
+            Mnemonic::Movzx if op_bits(ins, 1) == 16 => Some(0xffff),
+            _ => None,
+        };
+        if m.is_some() {
+            small[r] = m;
+        }
+    }
+}
+
 fn emit_block<'a>(g: &mut Gen<'a>, blocks: &'a [(u32, Vec<Instruction>)], k: usize, count: &mut usize) {
     let list = &blocks[k].1;
     g.block_index = k as u32;
@@ -3780,6 +3816,7 @@ fn emit_block<'a>(g: &mut Gen<'a>, blocks: &'a [(u32, Vec<Instruction>)], k: usi
     g.safe[4] = Some(0); // see Gen::emit
     g.flags = Flags::Entry;
     g.dirty = g.dirty_in.get(k).copied().unwrap_or(g.wregs);
+    g.small = [None; 8];
     g.fc = g.fc_in.get(&k).copied().unwrap_or_default();
     bump(&mut g.c, 14);
     if let Some(&at) = g.prof.get(k) {
@@ -3810,6 +3847,9 @@ fn emit_block<'a>(g: &mut Gen<'a>, blocks: &'a [(u32, Vec<Instruction>)], k: usi
     let m = list.len();
     let mut skip = false;
     for (i, ins) in list.iter().enumerate() {
+        if i > 0 {
+            small_after(&mut g.small, &list[i - 1]);
+        }
         if core::mem::take(&mut skip) {
             continue;
         }
@@ -4303,6 +4343,7 @@ fn translate<M: Memory>(
         live_after: 0,
         dirty: 0xff,
         dirty_in: Vec::new(),
+        small: [None; 8],
         temps: 0,
         safe: [None; 8],
         safe2: Vec::new(),
