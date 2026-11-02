@@ -180,6 +180,14 @@ pub fn set_watch(f: fn(u32) -> bool) {
     WATCH.set(f);
 }
 
+/// Code never translated, inlined callees' too (the host's: pages the interpreter keeps, see
+/// vnhost's jit::debug_allowed).
+static DENY: spin_once::Once = spin_once::Once::new();
+
+pub fn set_deny(f: fn(u32) -> bool) {
+    DENY.set(f);
+}
+
 /// The same for functions (jit::FN; VNVM_JIT_FN_INS)
 pub static FN_MAX_INS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(1000);
 /// Inlined callees: at most this many instructions each, and in all in a region.
@@ -4489,7 +4497,7 @@ fn translate<M: Memory>(
         if blocks.len() >= max_blocks.min(MAX_BLOCKS) || total >= max_ins {
             break;
         }
-        if targets.contains_key(&a) || !(GUEST_LO..GUEST_HI).contains(&a) || !(forced.contains(&a) || accept(a)) {
+        if targets.contains_key(&a) || !(GUEST_LO..GUEST_HI).contains(&a) || !(forced.contains(&a) || accept(a)) || DENY.get().is_some_and(|d| d(a)) {
             continue;
         }
         let list = match hle_at(mem, a) {

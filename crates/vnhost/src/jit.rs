@@ -16,7 +16,7 @@
 
 use crate::cpu::Linear;
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -83,11 +83,22 @@ static SMC_PAGES: [AtomicU32; 1 << 14] = [const { AtomicU32::new(0) }; 1 << 14];
 /// A store to `a`, a page with translated code: the translations go (everyone's), and so
 /// does the JIT for that page.
 pub(crate) fn smc_hit(a: u32) {
+    // (data beside the code on its page: nothing to drop)
+    if !in_code(a) {
+        return;
+    }
     set_pages(&SMC_PAGES, a as usize, 1, true);
     if stats() {
         eprintln!("vnjit: code at {a:#x} rewritten");
     }
     code_changed(a as usize, 1);
+}
+
+/// Whether code built from `code` may run (none of it on a page the interpreter keeps since
+/// a store rewrote translated code there): shared and saved builds are checked by their
+/// bytes, which data stores beside the code leave alone.
+fn code_kept(code: &[(u32, u32)]) -> bool {
+    code.iter().all(|&(a, n)| !page_set(&SMC_PAGES, a) && !page_set(&SMC_PAGES, a.saturating_add(n.max(1) - 1)))
 }
 
 /// The interpreter's store to `a` (cpu.rs Linear): whether it hit translated code (then
@@ -236,7 +247,7 @@ fn code_bytes(mem: &mut Linear, code: &[(u32, u32)]) -> Option<Vec<u8>> {
 /// A region for `roots` some thread built from the same code as ours.
 fn shared(mem: &mut Linear, roots: &[u32]) -> Option<Arc<Shared>> {
     let list = SHARED.lock().unwrap().as_ref()?.get(roots)?.clone();
-    list.into_iter().rev().find(|r| code_bytes(mem, &r.code).is_some_and(|t| t == r.text))
+    list.into_iter().rev().find(|r| code_kept(&r.code) && code_bytes(mem, &r.code).is_some_and(|t| t == r.text))
 }
 
 fn share(mem: &mut Linear, roots: &[u32], bytes: Vec<u8>, region: &jit::Region) {
@@ -289,7 +300,23 @@ thread_local! {
     static SEEN: Cell<u32> = const { Cell::new(0) };
 }
 
+/// The translated code's byte ranges (start -> end), for telling a store into code from one
+/// into data on the same page ([`smc_hit`]); dropped with the translations.
+static CODE_RANGES: Mutex<BTreeMap<u32, u32>> = Mutex::new(BTreeMap::new());
+
+fn in_code(a: u32) -> bool {
+    // (blocks are short: those starting up to 4 KB below)
+    CODE_RANGES.lock().unwrap().range(a.saturating_sub(0x1000)..=a).any(|(_, &e)| a < e)
+}
+
 fn mark_code(code: &[(u32, u32)]) {
+    {
+        let mut r = CODE_RANGES.lock().unwrap();
+        for &(a, n) in code {
+            let e = r.entry(a).or_insert(0);
+            *e = (*e).max(a.saturating_add(n.max(1)));
+        }
+    }
     for &(a, n) in code {
         for p in (a >> 12)..=(a.saturating_add(n.max(1) - 1) >> 12) {
             if let Some(w) = CODE_PAGES.get(p as usize >> 5) {
@@ -317,6 +344,7 @@ pub fn code_changed(addr: usize, len: usize) {
         for w in &CODE_PAGES {
             w.store(0, Ordering::Relaxed);
         }
+        CODE_RANGES.lock().unwrap().clear();
         GENERATION.fetch_add(1, Ordering::SeqCst);
         if stats() {
             eprintln!("vnjit code changed at {addr:#x}+{len:#x}: translations dropped");
@@ -413,6 +441,7 @@ fn init_flags() {
             }
         }
         jit::set_watch(exe_wx_page);
+        jit::set_deny(|a| wx_page(a) || page_set(&SMC_PAGES, a));
         // function mode by default (VNVM_JIT_FN=0: regions)
         jit::FN.store(std::env::var("VNVM_JIT_FN").map_or(true, |v| v != "0"), std::sync::atomic::Ordering::Relaxed);
 
@@ -666,7 +695,7 @@ fn find_saved(mem: &mut Linear, roots: &[u32], exact: bool, trap: (u32, u32)) ->
         .copied()
         .filter(|&i| !exact || s.entries[i].roots == roots)
         .filter(|&i| s.entries[i].code.iter().all(|&(a, n)| a.saturating_add(n) <= trap.0 || a >= trap.1))
-        .filter(|&i| code_bytes(mem, &s.entries[i].code).is_some_and(|t| t == s.entries[i].text))
+        .filter(|&i| code_kept(&s.entries[i].code) && code_bytes(mem, &s.entries[i].code).is_some_and(|t| t == s.entries[i].text))
         .max_by_key(|&i| s.entries[i].roots.len())
 }
 
@@ -696,7 +725,7 @@ fn find_saved_fn(mem: &mut Linear, eip: u32) -> Option<usize> {
         .get(&eip)?
         .iter()
         .copied()
-        .filter(|&i| code_bytes(mem, &s.entries[i].code).is_some_and(|t| t == s.entries[i].text))
+        .filter(|&i| code_kept(&s.entries[i].code) && code_bytes(mem, &s.entries[i].code).is_some_and(|t| t == s.entries[i].text))
         .max_by_key(|&i| s.entries[i].build)
 }
 
