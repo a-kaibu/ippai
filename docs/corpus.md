@@ -58,15 +58,13 @@ Direct3D 11 は全滅 (d3d11.dll の vnhost 実装は未検証の段階)。
 | 天冥のコンキスタ (Eushully, D3D11) が C0000005 | 設定ファイル (SYS4REG.INI) を MSI の LocalAppData から配置、ID3D10Multithread、大きさの違う深度バッファに代替 | 084c468, fd3dc82 |
 | 天冥の台詞が出ない | Wine の dwrite の Unix 側 (FreeType) が wasm に入っていなかった。Direct2D が使う IDXGISurface::Map | 8c8135e |
 | QLIE barista_lab が黒画面 (0x0eedfade) | FBSTP が無く #UD を Delphi が握りつぶしていた (FBSTP/FBLD を追加)。FVF の要素がストライドを超えてパイプラインが無効 | 9958164 |
+| 百千・戦女神VERITA (ASProtect で exe を自己復号) が JIT のときだけ落ちる | exe の W\|X ページで翻訳済みコードへの書き込みを検出し、翻訳を捨ててそのページは解釈実行 (翻訳器スレッド) | 6b2f6c5 |
 | こすぷれえっち (Cyberworks) が消失点状に崩れる | 固定機能パイプラインの変換行列を転置して渡していた | e125e26 |
 
 ## 残っている失敗のグループ
 
 2 周目 (2026-11-02、上の表の修正後) の時点。
 
-- **ASProtect で自己復号する Eushully の exe (百千、戦女神VERITA)**: JIT のときだけ落ちる (`VNVM_JIT=0` なら起動する)。
-  全セクションが RWX で、.data のコードを実行時に書き換える。百千は 0x7e9450〜0x7e9478 を解釈実行にすると直る。
-  翻訳器側で調査中。
 - **AdvHD (6 本)**: 描画は進むが出力が真っ黒のまま (500 秒待ってもタイトルが出ない)。GetRenderTargetData で読み戻した
   画素も RGB が全部 0。毎フレームの読み戻しが 1 回 110ms かかり 2〜3fps しか出ない (このコンテナはソフトウェア GPU)。
 - **FVP (いたずら極)**: 告知画面とタイトルは出るが、3D の本編に入ると黒画面。
@@ -268,10 +266,10 @@ Chromium 全体の平均使用コア数。
 | Escude | 2012 | 紅蓮華 - 体験版 | s2012_escude_gurenka |  | title | 17 | 0.12 |  |
 | Escude | 2014 | Re;Lord ～ヘルフォルトの魔女とぬいぐるみ～ - 体験版 Ver. | b2014_escude | D3D (dynamic) | title | 10 | 0.25 |  |
 | Escude | 2014 | 花嫁と魔王 - 体験版 Ver. | s2014_escude_hanaou | D3D (dynamic) | title | 15 | 0.25 |  |
-| Eushully AGE | 2010 | 戦女神VERITA体験版 | s2010_eushully_ikusa_verita |  | no title |  |  | JIT だけで 0x617655 に書き込みフォールト (ASProtect の自己復号)。VNVM_JIT=0 なら起動 |
+| Eushully AGE | 2010 | 戦女神VERITA体験版 | s2010_eushully_ikusa_verita |  | title | 112 |  | 本編の台詞まで (Game Start 185,325)。ASProtect の自己復号は 6b2f6c5 で対応 |
 | Eushully AGE | 2016 | 珊海王の円環体験版 | s2016_eushully_sankaio |  | no title |  |  |  |
 | Eushully AGE | 2020 | 天冥のコンキスタ体験版 | s2020_eushully_tenmei |  | title | 66 | 0.32 | 本編の台詞まで (VNVM_SCREEN=1920x1080、8c8135e) |
-| Eushully AGE | 2024 | 百千の定にかわたれし剋 体験版 | s2024_eushully_hyakusen |  | no title |  |  | JIT だけで 0x7e92bf でクラッシュ (ASProtect)。VNVM_JIT=0 で 349 秒でタイトル |
+| Eushully AGE | 2024 | 百千の定にかわたれし剋 体験版 | s2024_eushully_hyakusen |  | title | 106 |  | タイトルまで (解釈実行だけだと 349 秒)。6b2f6c5 |
 | FVP | 2008 | いたずら極―リアル―　体験版 | b2008_interheart | d3d9, ddraw, dsound | title | 21 |  | 告知画面とタイトルまで。本編 (3D) は黒画面 |
 | FVP | 2009 | らぶでれーしょん！ Ver1.00 | b2009_smee | d3d8 | title | 14 | 0.05 |  |
 | FVP | 2016 | 小悪魔発育チュ～！（体験版） | b2016_kaguya | D3D (dynamic) | title | 19 | 0.08 |  |
