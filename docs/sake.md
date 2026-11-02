@@ -90,9 +90,17 @@ WebGPU D3D9 を使う。いまはページ (`wine.html` / `game.html`) が動か
 - 動画: Media Foundation は MFStartup が失敗する (動画を飛ばす)。DirectShow のグラフに足される
   EVR (CLSID_EnhancedVideoRenderer) は何もしないフィルタ。
 - 確認: Artemis x64 の 3 本 (遥かなるニライカナイ、GALS FICTION、セレクトオブリージュ) が
-  Chromium でタイトル → 本編。SakanaGL x64 (でか乳巫女) は sakanagl.dll が /arch:AVX2 で、
-  vnx86 に VEX がないので止まる。
-- 未対応: XAudio2 (32 ビットのみ)、gl.rs、多くの構造体 (PAINTSTRUCT、BITMAP、SYSTEM_INFO、
+  Chromium でタイトル → 本編。SakanaGL x64 (でか乳巫女) もタイトル (約 30 秒) → 本編。
+- SakanaGL の sakanagl.dll は /arch:AVX2。vnx86 のインタプリタが VEX の 128 ビット形
+  (AVX/AVX2)、FMA3、SSE3/SSSE3/SSE4.1 を実行する (interp/vex.rs: VEX のコードを名前で
+  旧来のコードに写し、NDS は Cpu::vex_tmp (xmm16) に src1 を写してから実行)。ymm (256 ビット)
+  は #UD、CPUID は AVX を報告しない。JIT は VEX 命令でインタプリタに落ちる。
+  `tools/jit64test native` で実 CPU と照合済み (rcp/rsqrt の近似値を除き一致)。
+  未実装: dpps/dppd、mpsadbw、phminposuw、pcmpXstrX。
+- gl.rs: x64 では引数を位置で並べる ('d'/'f' は xmm、他は a64 の下位)。glShaderSource の
+  ポインタ配列は 8 バイト刻み。拡張関数名は ARB/EXT を外した名前でも探す。
+- user: DPI API (GetDpiForWindow など 96 固定)、ShowWindow(SW_MAXIMIZE) で画面いっぱいに広げる。
+- 未対応: XAudio2 (32 ビットのみ)、多くの構造体 (PAINTSTRUCT、BITMAP、SYSTEM_INFO、
   MEMORY_BASIC_INFORMATION など)、16 ビット。
 
 ## 動作確認したゲーム (体験版)

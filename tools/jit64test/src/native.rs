@@ -50,7 +50,7 @@ impl Rng {
 
 fn ok_feature(f: CpuidFeature) -> bool {
     use CpuidFeature as F;
-    matches!(f, F::INTEL8086 | F::INTEL186 | F::INTEL286 | F::INTEL386 | F::INTEL486 | F::X64 | F::CMOV | F::SSE | F::SSE2 | F::CX8 | F::CMPXCHG16B)
+    matches!(f, F::INTEL8086 | F::INTEL186 | F::INTEL286 | F::INTEL386 | F::INTEL486 | F::X64 | F::CMOV | F::SSE | F::SSE2 | F::CX8 | F::CMPXCHG16B | F::SSSE3 | F::SSE4_1 | F::AVX | F::AVX2 | F::FMA)
 }
 
 /// Codes to test: legacy-encoded, 64-bit mode, plain flow, operands we can make.
@@ -60,7 +60,7 @@ fn codes() -> Vec<Code> {
         .filter(|&c| {
             let op = c.op_code();
             let ins = Instruction::with(c);
-            op.encoding() == iced_x86::EncodingKind::Legacy
+            matches!(op.encoding(), iced_x86::EncodingKind::Legacy | iced_x86::EncodingKind::VEX)
                 && op.mode64()
                 && !op.is_instruction() == false
                 && ins.cpuid_features().iter().all(|&f| ok_feature(f))
@@ -76,7 +76,7 @@ fn codes() -> Vec<Code> {
                         | M::Movntpd | M::Movntps | M::Bound | M::Lahf | M::Sahf | M::Wait | M::Lar | M::Lsl
                         | M::Verr | M::Verw | M::Rdpid | M::Ud0 | M::Ud1 | M::Ud2 | M::Int | M::Int3 | M::Into | M::Hlt
                         | M::Syscall | M::Sysret | M::Iret | M::Leave | M::Enter | M::Popf | M::Popfq | M::Popfd | M::Cwd
-                        | M::Smsw | M::Str | M::Sldt | M::Sgdt | M::Sidt | M::Cbw
+                        | M::Smsw | M::Str | M::Sldt | M::Sgdt | M::Sidt | M::Cbw | M::Vzeroupper | M::Vzeroall | M::Vldmxcsr | M::Vstmxcsr | M::Vmaskmovdqu
                 )
                 && (0..op.op_count()).all(|i| maker(op.op_kind(i)).is_some())
                 && (0..op.op_count()).all(|i| !matches!(op.op_kind(i), K::seg_reg | K::mm_reg | K::mm_or_mem | K::mm_rm | K::st0 | K::sti_opcode | K::cr_reg | K::dr_reg | K::tr_reg | K::bnd_reg | K::bnd_or_mem_mpx | K::k_reg))
@@ -107,7 +107,7 @@ fn maker(k: K) -> Option<Mk> {
         K::r32_or_mem => Mk::GprRm(32),
         K::r64_or_mem => Mk::GprRm(64),
         K::mem => Mk::Mem,
-        K::xmm_reg | K::xmm_rm => Mk::Xmm,
+        K::xmm_reg | K::xmm_rm | K::xmm_vvvv => Mk::Xmm,
         K::xmm_or_mem => Mk::XmmRm,
         K::imm8 | K::imm8sex16 | K::imm8sex32 | K::imm8sex64 => Mk::Imm(8),
         K::imm16 => Mk::Imm(16),

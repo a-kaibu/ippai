@@ -628,7 +628,8 @@ fn trace_call(cpu: &Cpu) {
         c = (c ^ unsafe { *((at + i) as usize as *const u8) } as u32).wrapping_mul(0x0100_0193);
     }
     let r = &cpu.regs;
-    eprintln!("call {k} prev-dst-hash {h:08x} code {c:08x} | eax {:08x} ecx {:08x} edx {:08x} esi {:08x} edi {:08x} esp {:08x}", r[0], r[1], r[2], r[6], r[7], r[4]);
+    let ret = if ok(r[4]) { unsafe { *(r[4] as usize as *const u32) } } else { 0 };
+    eprintln!("call {k} prev-dst-hash {h:08x} code {c:08x} | eax {:08x} ecx {:08x} edx {:08x} esi {:08x} edi {:08x} esp {:08x} [esp] {ret:08x} r8 {:x} r9 {:x}", r[0], r[1], r[2], r[6], r[7], r[4], cpu.r8[0], cpu.r8[1]);
     PREV.with(|p| p.set((k + 1, r[2], r[1])));
 }
 

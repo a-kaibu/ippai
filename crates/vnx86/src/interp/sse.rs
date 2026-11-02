@@ -1,4 +1,4 @@
-//! MMX, SSE and SSE2.
+//! MMX, SSE, SSE2, SSE3, SSSE3 and SSE4.1 (all but DPPS/DPPD, MPSADBW, PHMINPOSUW).
 
 use super::X;
 use crate::flags::STATUS;
@@ -106,7 +106,7 @@ impl<'a, M: Memory> X<'a, M> {
         }
     }
 
-    fn read_v(&mut self, i: u32) -> Result<u128, Fault> {
+    pub(super) fn read_v(&mut self, i: u32) -> Result<u128, Fault> {
         match self.ins.op_kind(i) {
             OpKind::Register => {
                 let r = self.ins.op_register(i);
@@ -132,7 +132,7 @@ impl<'a, M: Memory> X<'a, M> {
         }
     }
 
-    fn write_v(&mut self, i: u32, v: u128) -> Result<(), Fault> {
+    pub(super) fn write_v(&mut self, i: u32, v: u128) -> Result<(), Fault> {
         match self.ins.op_kind(i) {
             OpKind::Register => {
                 let r = self.ins.op_register(i);
@@ -148,6 +148,8 @@ impl<'a, M: Memory> X<'a, M> {
             _ => {
                 let a = self.addr();
                 match self.ins.memory_size().size() {
+                    1 => self.mem.write8(a, v as u8),
+                    2 => self.mem.write16(a, v as u16),
                     4 => self.mem.write32(a, v as u32),
                     8 => self.mem.write64(a, v as u64),
                     _ => {
@@ -641,6 +643,258 @@ impl<'a, M: Memory> X<'a, M> {
                 let v = tryf!(self.read_v(1));
                 let t = mn == Cvttps2pi;
                 let r = set32(set32(0, 0, self.to_i32(f32x(v, 0) as f64, t)), 1, self.to_i32(f32x(v, 1) as f64, t));
+                tryf!(self.write_v(0, r));
+                self.done()
+            }
+            // ---- SSE3
+            Movshdup | Movsldup => {
+                let v = tryf!(self.read_v(1));
+                let o = if mn == Movshdup { 1 } else { 0 };
+                let r = (0..4).fold(0, |r, i| set32(r, i, (v >> (32 * ((i & !1) + o))) as u32));
+                tryf!(self.write_v(0, r));
+                self.done()
+            }
+            Movddup => {
+                let v = tryf!(self.read_v(1)) as u64;
+                tryf!(self.write_v(0, set64(v as u128, 1, v)));
+                self.done()
+            }
+            Haddps | Hsubps => {
+                let sub = mn == Hsubps;
+                binop(self, &|a, b| {
+                    let h = |v: u128, i: u32| {
+                        let (x, y) = (f32x(v, 2 * i), f32x(v, 2 * i + 1));
+                        (if sub { x - y } else { x + y }).to_bits()
+                    };
+                    set32(set32(set32(set32(0, 0, h(a, 0)), 1, h(a, 1)), 2, h(b, 0)), 3, h(b, 1))
+                })
+            }
+            Haddpd | Hsubpd => {
+                let sub = mn == Hsubpd;
+                binop(self, &|a, b| {
+                    let h = |v: u128| {
+                        let (x, y) = (f64x(v, 0), f64x(v, 1));
+                        (if sub { x - y } else { x + y }).to_bits()
+                    };
+                    set64(set64(0, 0, h(a)), 1, h(b))
+                })
+            }
+            Addsubps => binop(self, &|a, b| {
+                (0..4).fold(0, |r, i| {
+                    let (x, y) = (f32x(a, i), f32x(b, i));
+                    set32(r, i, (if i % 2 == 0 { x - y } else { x + y }).to_bits())
+                })
+            }),
+            Addsubpd => binop(self, &|a, b| set64(set64(0, 0, (f64x(a, 0) - f64x(b, 0)).to_bits()), 1, (f64x(a, 1) + f64x(b, 1)).to_bits())),
+            // (SSE4.2)
+            Pcmpgtq => binop(self, &|a, b| lanes(a, b, 64, |x, y| if (x as i64) > (y as i64) { u64::MAX } else { 0 })),
+
+            // ---- SSSE3
+            Pshufb => binop(self, &|a, b| {
+                let n = w / 8;
+                let mut r = 0u128;
+                for i in 0..n {
+                    let c = (b >> (8 * i)) as u8;
+                    if c & 0x80 == 0 {
+                        r |= ((a >> (8 * (c as u32 % n))) & 0xff) << (8 * i);
+                    }
+                }
+                r
+            }),
+            Pabsb => binop(self, &|_, b| lanes(b, 0, 8, |x, _| sx(x, 8).unsigned_abs())),
+            Pabsw => binop(self, &|_, b| lanes(b, 0, 16, |x, _| sx(x, 16).unsigned_abs())),
+            Pabsd => binop(self, &|_, b| lanes(b, 0, 32, |x, _| sx(x, 32).unsigned_abs())),
+            Psignb | Psignw | Psignd => {
+                let lane = match mn { Psignb => 8, Psignw => 16, _ => 32 };
+                binop(self, &|a, b| {
+                    lanes(a, b, lane, |x, y| match sx(y, lane) {
+                        0 => 0,
+                        v if v < 0 => (sx(x, lane).wrapping_neg()) as u64,
+                        _ => x,
+                    })
+                })
+            }
+            Pmulhrsw => binop(self, &|a, b| lanes(a, b, 16, |x, y| (((sx(x, 16) * sx(y, 16) >> 14) + 1) >> 1) as u64)),
+            Pmaddubsw => binop(self, &|a, b| {
+                lanes(a, b, 16, |x, y| {
+                    let p0 = (x & 0xff) as i64 * sx(y & 0xff, 8);
+                    let p1 = (x >> 8 & 0xff) as i64 * sx(y >> 8 & 0xff, 8);
+                    sat_s(p0 + p1, 16)
+                })
+            }),
+            Phaddw | Phaddd | Phsubw | Phsubd | Phaddsw | Phsubsw => {
+                let lane = if matches!(mn, Phaddd | Phsubd) { 32 } else { 16 };
+                let sub = matches!(mn, Phsubw | Phsubd | Phsubsw);
+                let sat = matches!(mn, Phaddsw | Phsubsw);
+                binop(self, &|a, b| {
+                    let n = w / lane / 2; // pairs per source
+                    let m = (1u128 << lane) - 1;
+                    let mut r = 0u128;
+                    for (k, v) in [a, b].into_iter().enumerate() {
+                        for i in 0..n {
+                            let x = (v >> (2 * i * lane)) & m;
+                            let y = (v >> ((2 * i + 1) * lane)) & m;
+                            let s = if sat {
+                                let (p, q) = (sx(x as u64, 16), sx(y as u64, 16));
+                                sat_s(if sub { p - q } else { p + q }, 16) as u128
+                            } else if sub {
+                                x.wrapping_sub(y)
+                            } else {
+                                x.wrapping_add(y)
+                            } & m;
+                            r |= s << ((k as u32 * n + i) * lane);
+                        }
+                    }
+                    r
+                })
+            }
+            Palignr => {
+                let n = ins.immediate8() as u32;
+                binop(self, &|a, b| {
+                    // (a:b) >> 8n, over 2w bits
+                    let mut r = 0u128;
+                    for i in 0..w / 8 {
+                        let k = i + n;
+                        let byte = if k < w / 8 { (b >> (8 * k)) & 0xff } else if k < 2 * w / 8 { (a >> (8 * (k - w / 8))) & 0xff } else { 0 };
+                        r |= byte << (8 * i);
+                    }
+                    r
+                })
+            }
+
+            // ---- SSE4.1
+            Pmulld => binop(self, &|a, b| lanes(a, b, 32, |x, y| x.wrapping_mul(y))),
+            Pmuldq => binop(self, &|a, b| lanes(a, b, 64, |x, y| (sx(x & 0xffff_ffff, 32) * sx(y & 0xffff_ffff, 32)) as u64)),
+            Pcmpeqq => binop(self, &|a, b| lanes(a, b, 64, |x, y| if x == y { u64::MAX } else { 0 })),
+            Pminsb => binop(self, &|a, b| lanes(a, b, 8, |x, y| if sx(x, 8) < sx(y, 8) { x } else { y })),
+            Pmaxsb => binop(self, &|a, b| lanes(a, b, 8, |x, y| if sx(x, 8) > sx(y, 8) { x } else { y })),
+            Pminsd => binop(self, &|a, b| lanes(a, b, 32, |x, y| if sx(x, 32) < sx(y, 32) { x } else { y })),
+            Pmaxsd => binop(self, &|a, b| lanes(a, b, 32, |x, y| if sx(x, 32) > sx(y, 32) { x } else { y })),
+            Pminuw => binop(self, &|a, b| lanes(a, b, 16, |x, y| x.min(y))),
+            Pmaxuw => binop(self, &|a, b| lanes(a, b, 16, |x, y| x.max(y))),
+            Pminud => binop(self, &|a, b| lanes(a, b, 32, |x, y| x.min(y))),
+            Pmaxud => binop(self, &|a, b| lanes(a, b, 32, |x, y| x.max(y))),
+            Packusdw => binop(self, &|a, b| {
+                let mut r = 0u128;
+                for (k, v) in [a, b].into_iter().enumerate() {
+                    for i in 0..4u32 {
+                        let x = sat_u(sx((v >> (32 * i)) as u64 & 0xffff_ffff, 32), 16) as u128;
+                        r |= x << (16 * (4 * k as u32 + i));
+                    }
+                }
+                r
+            }),
+            Pmovzxbw | Pmovzxbd | Pmovzxbq | Pmovzxwd | Pmovzxwq | Pmovzxdq | Pmovsxbw | Pmovsxbd | Pmovsxbq
+            | Pmovsxwd | Pmovsxwq | Pmovsxdq => {
+                let (from, to) = match mn {
+                    Pmovzxbw | Pmovsxbw => (8, 16),
+                    Pmovzxbd | Pmovsxbd => (8, 32),
+                    Pmovzxbq | Pmovsxbq => (8, 64),
+                    Pmovzxwd | Pmovsxwd => (16, 32),
+                    Pmovzxwq | Pmovsxwq => (16, 64),
+                    _ => (32, 64),
+                };
+                let signed = matches!(mn, Pmovsxbw | Pmovsxbd | Pmovsxbq | Pmovsxwd | Pmovsxwq | Pmovsxdq);
+                let v = tryf!(self.read_v(1));
+                let mut r = 0u128;
+                for i in 0..128 / to {
+                    let x = (v >> (from * i)) as u64 & ((1u64 << from) - 1);
+                    let x = if signed { sx(x, from) as u64 } else { x };
+                    let m = if to == 64 { u64::MAX } else { (1u64 << to) - 1 };
+                    r |= ((x & m) as u128) << (to * i);
+                }
+                tryf!(self.write_v(0, r));
+                self.done()
+            }
+            Pinsrb | Pinsrd | Pinsrq => {
+                let lane = match mn { Pinsrb => 8, Pinsrd => 32, _ => 64 };
+                let a = tryf!(self.read_v(0));
+                let v = tryf!(self.read_v(1));
+                let n = (ins.immediate8() as u32) & (128 / lane - 1);
+                let m: u128 = if lane == 64 { u64::MAX as u128 } else { (1u128 << lane) - 1 };
+                tryf!(self.write_v(0, (a & !(m << (lane * n))) | (v & m) << (lane * n)));
+                self.done()
+            }
+            Pextrb | Pextrd | Pextrq | Extractps => {
+                let lane = match mn { Pextrb => 8, Pextrq => 64, _ => 32 };
+                let v = tryf!(self.read_v(1));
+                let n = (ins.immediate8() as u32) & (128 / lane - 1);
+                let m: u128 = if lane == 64 { u64::MAX as u128 } else { (1u128 << lane) - 1 };
+                tryf!(self.write_v(0, (v >> (lane * n)) & m));
+                self.done()
+            }
+            Insertps => {
+                let a = tryf!(self.read_v(0));
+                let imm = ins.immediate8() as u32;
+                let src = if ins.op_kind(1) == OpKind::Memory { tryf!(self.read_v(1)) as u32 } else { (tryf!(self.read_v(1)) >> (32 * (imm >> 6))) as u32 };
+                let mut r = set32(a, (imm >> 4) & 3, src);
+                for i in 0..4 {
+                    if imm & (1 << i) != 0 {
+                        r = set32(r, i, 0);
+                    }
+                }
+                tryf!(self.write_v(0, r));
+                self.done()
+            }
+            Pblendw | Blendps | Blendpd => {
+                let lane = match mn { Pblendw => 16, Blendps => 32, _ => 64 };
+                let imm = ins.immediate8() as u32;
+                binop(self, &|a, b| {
+                    let m: u128 = if lane == 64 { u64::MAX as u128 } else { (1u128 << lane) - 1 };
+                    let mut r = a;
+                    for i in 0..128 / lane {
+                        if imm & (1 << i) != 0 {
+                            r = (r & !(m << (lane * i))) | (b & (m << (lane * i)));
+                        }
+                    }
+                    r
+                })
+            }
+            // (legacy forms: the mask is XMM0)
+            Pblendvb | Blendvps | Blendvpd => {
+                let lane = match mn { Pblendvb => 8, Blendvps => 32, _ => 64 };
+                let mask = self.cpu.xmm(0);
+                binop(self, &|a, b| {
+                    let m: u128 = if lane == 64 { u64::MAX as u128 } else { (1u128 << lane) - 1 };
+                    let mut r = a;
+                    for i in 0..128 / lane {
+                        if (mask >> (lane * i + lane - 1)) & 1 != 0 {
+                            r = (r & !(m << (lane * i))) | (b & (m << (lane * i)));
+                        }
+                    }
+                    r
+                })
+            }
+            Ptest => {
+                let a = tryf!(self.read_v(0));
+                let b = tryf!(self.read_v(1));
+                let mut f = self.cpu.eflags & !STATUS;
+                if a & b == 0 {
+                    f |= crate::flags::ZF;
+                }
+                if !a & b == 0 {
+                    f |= crate::flags::CF;
+                }
+                self.cpu.eflags = f;
+                self.done()
+            }
+            Roundss | Roundsd | Roundps | Roundpd => {
+                let imm = ins.immediate8() as u32;
+                let mode = if imm & 4 != 0 { (self.cpu.mxcsr >> 13) & 3 } else { imm & 3 };
+                let rnd = |v: f64| match mode {
+                    0 => fpu::libm_round_even(v),
+                    1 => fpu::floor(v),
+                    2 => fpu::ceil(v),
+                    _ => fpu::trunc(v),
+                };
+                let a = tryf!(self.read_v(0));
+                let v = tryf!(self.read_v(1));
+                let r = match mn {
+                    Roundss => set32(a, 0, (rnd(f32x(v, 0) as f64) as f32).to_bits()),
+                    Roundsd => set64(a, 0, rnd(f64x(v, 0)).to_bits()),
+                    Roundps => (0..4).fold(0, |r, i| set32(r, i, (rnd(f32x(v, i) as f64) as f32).to_bits())),
+                    _ => (0..2).fold(0, |r, i| set64(r, i, rnd(f64x(v, i)).to_bits())),
+                };
                 tryf!(self.write_v(0, r));
                 self.done()
             }

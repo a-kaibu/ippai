@@ -7,6 +7,7 @@ use iced_x86::{ConditionCode, Decoder, DecoderOptions, Instruction, Mnemonic, Op
 
 mod x87;
 mod sse;
+mod vex;
 
 macro_rules! tryf {
     ($e:expr) => {
@@ -396,9 +397,15 @@ impl<'a, M: Memory> X<'a, M> {
     fn exec(&mut self) -> Exit {
         use Mnemonic::*;
         let ins = self.ins;
+        if ins.encoding() == iced_x86::EncodingKind::VEX {
+            return self.vex();
+        }
         match ins.mnemonic() {
             Nop | Pause | Wait | Endbr32 | Endbr64 | Prefetchnta | Prefetcht0 | Prefetcht1 | Prefetcht2 | Prefetchw
             | Lfence | Mfence | Sfence => self.done(),
+            // CET shadow stack instructions are NOPs without CET (RDSSP leaves its register, so
+            // code sees no shadow stack)
+            Rdsspd | Rdsspq | Incsspd | Incsspq => self.done(),
 
             Mov | Movzx => {
                 let v = tryf!(self.read_op(1));

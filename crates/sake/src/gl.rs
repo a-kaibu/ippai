@@ -27,12 +27,13 @@ fn sig_of(name: &str) -> Option<u16> {
 
 /// vnhost's function (by its name or the ARB/EXT one's core name) and signature
 fn host_proc(name: &str) -> Option<(usize, u16)> {
-    let c = std::ffi::CString::new(name).ok()?;
-    let f = unsafe { vnhost::gl::vngl_proc(c.as_ptr()) } as usize;
-    if f == 0 {
-        return None;
-    }
     let base = name.strip_suffix("ARB").or_else(|| name.strip_suffix("EXT")).unwrap_or(name);
+    let proc = |n: &str| {
+        let c = std::ffi::CString::new(n).ok()?;
+        let f = unsafe { vnhost::gl::vngl_proc(c.as_ptr()) } as usize;
+        (f != 0).then_some(f)
+    };
+    let f = proc(name).or_else(|| proc(base))?;
     Some((f, sig_of(name).or_else(|| sig_of(base))?))
 }
 
@@ -50,8 +51,25 @@ fn dispatch(c: &mut Ctx) -> u32 {
         Some(e)
     });
     let Some((f, sig)) = entry else { return 0 };
-    let n = stack_bytes(sig) / 4;
-    let w: Vec<u32> = (0..n).map(|i| r32(c.esp + 4 + 4 * i)).collect();
+    let w: Vec<u32> = if mem::x64() {
+        // x64: argument i in RCX/RDX/R8/R9 or XMM0-3 by position, then the stack; pointers
+        // and GLsizeiptr pass their low half
+        let mut w = Vec::new();
+        for (i, k) in gl_sigs::SIGS[sig as usize].0.chars().enumerate() {
+            match k {
+                'd' => {
+                    let v = c.xmm(i as u32);
+                    w.extend([v as u32, (v >> 32) as u32]);
+                }
+                'f' => w.push(c.xmm(i as u32) as u32),
+                _ => w.push(c.a64(i as u32) as u32),
+            }
+        }
+        w
+    } else {
+        let n = stack_bytes(sig) / 4;
+        (0..n).map(|i| r32(c.esp + 4 + 4 * i)).collect()
+    };
     match unsafe { gl_sigs::call(sig, f as *const (), &w) } {
         Ret::V => 0,
         Ret::I(v) => {

@@ -518,8 +518,10 @@ extern "C" fn glCreateShaderObject(ty: u32) -> u32 {
 }
 unsafe extern "C" fn glShaderSource(sh: u32, count: i32, strings: *const *const c_char, lengths: *const i32) {
     let mut s = String::new();
+    // (a 64-bit guest's array holds 8-byte pointers: their low halves are the addresses)
+    let stride = crate::d3d9::device::ptr() as usize / 4;
     for k in 0..count.max(0) as usize {
-        let p = *strings.add(k);
+        let p = *(strings as *const u32).add(k * stride) as usize as *const c_char;
         if p.is_null() {
             continue;
         }

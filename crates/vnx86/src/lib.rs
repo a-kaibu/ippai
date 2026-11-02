@@ -43,15 +43,15 @@ impl Cpu {
         }
     }
 
-    /// XMM register `i` (0..16).
+    /// XMM register `i` (0..16; 16 is the interpreter's scratch, `vex_tmp`).
     #[inline]
     pub fn xmm(&self, i: usize) -> u128 {
-        if i < 8 { self.xmm[i] } else { self.xmm8[i - 8] }
+        if i < 8 { self.xmm[i] } else if i < 16 { self.xmm8[i - 8] } else { self.vex_tmp }
     }
 
     #[inline]
     pub fn set_xmm(&mut self, i: usize, v: u128) {
-        if i < 8 { self.xmm[i] = v } else { self.xmm8[i - 8] = v }
+        if i < 8 { self.xmm[i] = v } else if i < 16 { self.xmm8[i - 8] = v } else { self.vex_tmp = v }
     }
 
     /// Makes `eflags` exact again.
@@ -216,6 +216,9 @@ pub struct Cpu {
     /// translations, see vnhost's jit::smc_hit)
     pub jit_code_pages: u32,
     pub jit_smc: u32,
+    /// The interpreter's scratch vector register (XMM16 to it): a VEX instruction's
+    /// non-destructive source runs its legacy form on a copy here (interp/vex.rs)
+    pub vex_tmp: u128,
 }
 
 impl Default for Cpu {
@@ -225,6 +228,7 @@ impl Default for Cpu {
             jit_pending: 0, jit_budget: 0, jit_ring: 0, fs_base: 0, gs_base: 0, trap_lo: 0, trap_hi: 0, tsc: 0,
             fpu: Fpu::default(), mm: [0; 8], xmm: [0; 8], mxcsr: 0x1f80,
             mode64: 0, hi: [0; 8], r8: [0; 8], xmm8: [0; 8], jit_depth: 0, rip_hi: 0, jit_calls: 0, jit_code_pages: 0, jit_smc: 0,
+            vex_tmp: 0,
         }
     }
 }

@@ -1044,6 +1044,9 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
         cx = if plain { 0 } else { sw * 3 / 4 };
         cy = if plain { 0 } else { sh * 3 / 4 };
     }
+    // (negative sizes are empty windows, as on Windows)
+    cx = cx.max(0);
+    cy = cy.max(0);
     if !child && style & 0x8000_0000 == 0 {
         // overlapped: a caption
         style |= 0x00c0_0000;
@@ -1213,6 +1216,14 @@ fn DestroyWindow(c: &mut Ctx) -> u32 {
 fn show(c: &mut Ctx, h: u32, cmd: u32) -> u32 {
     let was = with(|s| s.wins.get(&h).map(|w| w.visible));
     let Some(was) = was else { return 0 };
+    // SW_(SHOW)MAXIMIZE: a top-level window's client area covers the screen (its frame
+    // outside it)
+    let top = with(|s| s.wins.get(&h).filter(|w| w.parent == 0 && w.style & 0x4000_0000 == 0).map(|w| (w.style, w.exstyle, w.menu != 0)));
+    if let (3, Some((style, ex, menu))) = (cmd, top) {
+        let (l, t, r, b) = frame(style, ex, menu);
+        let (sw, sh) = screen();
+        set_pos(c, h, 0, -l, -t, sw + l + r, sh + t + b, 0x14);
+    }
     let vis = !matches!(cmd, 0);
     if vis != was {
         send(c, h, 0x18, vis as u32, 0);
@@ -4480,6 +4491,14 @@ pub fn init() {
     reg!("user32"; DdeInitializeA, DdeCreateStringHandleA, DdeCreateStringHandleW, DdeConnect, DdeGetLastError,
         DdeQueryStringA, DdeQueryStringW, DdeCmpStringHandles);
     implement("user32", "DdeInitializeW", DdeInitializeA);
+    // per-monitor DPI: everything is 96 dpi
+    implement("user32", "AdjustWindowRectExForDpi", AdjustWindowRectEx);
+    for n in ["GetDpiForSystem", "GetDpiForWindow", "GetSystemDpiForProcess"] {
+        implement("user32", n, |_| 96);
+    }
+    for n in ["SetProcessDpiAwarenessContext", "EnableNonClientDpiScaling"] {
+        implement("user32", n, |_| 1);
+    }
     for n in ["DdeNameService", "DdeFreeStringHandle", "DdeUninitialize", "DdeKeepStringHandle", "DdeDisconnect", "DdeFreeDataHandle", "DdeEnableCallback"] {
         implement("user32", n, dde_true);
     }

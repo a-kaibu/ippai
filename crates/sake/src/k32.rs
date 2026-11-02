@@ -3743,6 +3743,7 @@ fn wine_dbg_output(c: &mut Ctx) -> u32 {
 }
 
 pub fn init() {
+    implement("kernel32", "SetThreadDescription", |_| 0);
     implement("msvcrt", "_beginthreadex", CreateThread);
     implement("msvcrt", "_beginthread", _beginthread);
     implement("msvcrt", "_endthreadex", _endthreadex);
