@@ -3041,24 +3041,31 @@ fn EnumDisplaySettingsExA(c: &mut Ctx) -> u32 {
 fn EnumDisplaySettingsExW(c: &mut Ctx) -> u32 {
     display_mode(c.a(1), c.a(2), true)
 }
-/// One display adapter (and one monitor on it, when `device` names the adapter).
+/// One display adapter (and one monitor on it, when `device` names the adapter). Only the
+/// first `cb` bytes are written: programs pass shorter (older) DISPLAY_DEVICE layouts.
 fn display_device(device: u32, n: u32, p: u32, wide: bool) -> u32 {
     if n != 0 || p == 0 {
         return 0;
     }
     let (name, desc) = if device == 0 { ("\\\\.\\DISPLAY1", "vnvm display") } else { ("\\\\.\\DISPLAY1\\Monitor0", "Generic PnP Monitor") };
     let u = if wide { 2 } else { 1 };
-    mem::fill(p + 4, (32 + 128 + 128 + 128) * u + 4, 0);
-    let put = |at: u32, s: &str, cap: u32| {
+    let mut b = vec![0u8; ((32 + 128 + 128 + 128) * u + 4) as usize];
+    let put = |b: &mut [u8], at: usize, s: &str, cap: usize| {
         if wide {
-            mem::put_wstr(at, cap, &s.encode_utf16().collect::<Vec<_>>());
+            for (i, ch) in s.encode_utf16().take(cap - 1).enumerate() {
+                b[at + 2 * i..at + 2 * i + 2].copy_from_slice(&ch.to_le_bytes());
+            }
         } else {
-            mem::put_cstr(at, cap, s.as_bytes());
+            let s = &s.as_bytes()[..s.len().min(cap - 1)];
+            b[at..at + s.len()].copy_from_slice(s);
         }
     };
-    put(p + 4, name, 32);
-    put(p + 4 + 32 * u, desc, 128);
-    w32(p + 4 + 160 * u, if device == 0 { 5 } else { 3 }); // attached (+ primary) / active
+    put(&mut b, 0, name, 32);
+    put(&mut b, (32 * u) as usize, desc, 128);
+    let flags_at = (160 * u) as usize;
+    b[flags_at..flags_at + 4].copy_from_slice(&(if device == 0 { 5u32 } else { 3 }).to_le_bytes()); // attached (+ primary) / active
+    let cb = (r32(p) as usize).clamp(4, b.len() + 4);
+    mem::write(p + 4, &b[..cb - 4]);
     1
 }
 fn EnumDisplayDevicesA(c: &mut Ctx) -> u32 {
