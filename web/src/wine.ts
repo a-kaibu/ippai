@@ -19,14 +19,17 @@ import { keepSaving, loadSaves, type SavesModule } from "./saves";
 import { linuxKeycode } from "./keymap";
 import { AudioOut } from "./wine-audio";
 import { D3D9 } from "./d3d9";
-import { applyGame, coverUrl, fetchGames, showLibrary, type GameEntry } from "./launcher";
+import { applyGame, coverUrl, fetchGames, type GameEntry } from "./launcher";
+import { getUi, setStart, setUi } from "./ui/store";
+import { renderShell } from "./ui/Shell";
+import { showLibrary } from "./ui/Library";
 import { FlightRecorder, sendLeftovers } from "./crashlog";
 
 const params = new URLSearchParams(location.search);
 const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Tokyo";
-const status = document.querySelector<HTMLDivElement>("#status")!;
 const canvas = document.querySelector<HTMLCanvasElement>("#screen")!;
-const startButton = document.querySelector<HTMLButtonElement>("#start")!;
+// the status line, start button, cover and stats over the screen (React: ui/Shell.tsx)
+renderShell();
 
 interface WineModule {
   FS: {
@@ -69,7 +72,7 @@ const MOUSE_MOVE = 1,
 function log(line: string): void {
   console.log(line);
   if (line) recorder?.note(`status: ${line}`);
-  status.textContent = line;
+  setUi({ status: line });
 }
 
 /** KeyboardEvent.code -> Windows virtual-key code. */
@@ -452,7 +455,7 @@ function present(wine: WineModule, presenter: Presenter): void {
       );
       // game.html looks at the frames
       dispatchEvent(new CustomEvent("wine-frame", { detail: { heap: wine.HEAPU8, bits, width, height } }));
-      if (status.textContent) log("");
+      if (getUi().status) log("");
     }
     // the game quit: so does the page
     if (wine._vnhost_root_exited()) return closeGame();
@@ -504,12 +507,12 @@ function checkSupport(): string | null {
   return null;
 }
 
-// (bench.html and game.html have none)
-const library = document.querySelector<HTMLElement>("#library");
+// the game list: wine.html / index.html only (bench.html and game.html have none)
+const library = !!document.querySelector("#ui[data-library]");
 
 const start = () => {
-  startButton.hidden = true;
-  if (library) library.hidden = true;
+  setStart({ shown: false });
+  if (library) renderShell();
   // the AudioContext comes from this click (autoplay rules)
   boot(AudioOut.create()).catch((e) => {
     recorder?.note(`boot failed: ${e instanceof Error ? (e.stack ?? e.message) : e}`);
@@ -521,11 +524,8 @@ const start = () => {
 function splash(g: GameEntry): void {
   const url = coverUrl(g);
   if (!url) return;
-  const div = document.createElement("div");
-  div.id = "splash";
-  div.style.backgroundImage = `url("${url}")`;
-  document.body.append(div);
-  addEventListener("wine-frame", () => div.remove(), { once: true });
+  setUi({ splash: url });
+  addEventListener("wine-frame", () => setUi({ splash: null }), { once: true });
 }
 
 async function main(): Promise<void> {
@@ -534,15 +534,15 @@ async function main(): Promise<void> {
   const problem = checkSupport();
   if (problem) {
     log(problem);
-    startButton.disabled = true;
+    setStart({ disabled: true });
     return;
   }
   // the list: picking a game starts it from that click
   if (library && !params.has("run") && !params.has("game")) {
-    startButton.hidden = true;
+    setStart({ shown: false });
     log("");
     const games = await fetchGames();
-    showLibrary(library, games, (g) => {
+    showLibrary(games, (g) => {
       const url = new URL(location.href);
       url.searchParams.set("game", g.id);
       history.replaceState(null, "", url);
@@ -559,14 +559,16 @@ async function main(): Promise<void> {
     if (!g) throw new Error(`ゲーム ${id} が一覧にありません`);
     applyGame(params, g);
     document.title = `${g.title} - vnvm`;
-    startButton.textContent = `${g.title} を起動`;
+    setStart({ label: `${g.title} を起動` });
     splash(g);
   }
   log("");
-  startButton.hidden = false;
-  startButton.addEventListener("click", () => {
-    fullscreen();
-    start();
+  setStart({
+    shown: true,
+    onClick: () => {
+      fullscreen();
+      start();
+    },
   });
   if (params.has("autostart")) {
     start();
@@ -602,17 +604,11 @@ function leave(): void {
 
 /** &d3dstats: the latest stats lines over the screen (to read them on a phone) */
 function statsLine(n: number, line: string): void {
-  let box = document.querySelector<HTMLPreElement>("#stats");
-  if (!box) {
-    box = document.createElement("pre");
-    box.id = "stats";
-    box.style.cssText =
-      "position:fixed;left:4px;top:4px;margin:0;padding:4px 6px;background:rgb(0 0 0/70%);color:#fff;font:11px/1.3 monospace;white-space:pre-wrap;max-width:calc(100% - 16px);pointer-events:none;z-index:2";
-    document.body.append(box);
-  }
-  const lines = (box.textContent ?? "").split("\n");
-  lines[n] = line;
-  box.textContent = lines.join("\n");
+  setUi((s) => {
+    const stats = [...s.stats];
+    stats[n] = line;
+    return { stats: Array.from(stats, (l) => l ?? "") };
+  });
 }
 
 /** The whole display for the game (landscape on phones); refusals are fine. */

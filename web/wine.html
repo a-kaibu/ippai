@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ja">
+<html lang="ja" class="dark">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
@@ -9,9 +9,7 @@
   </head>
   <body>
     <canvas id="screen"></canvas>
-    <main id="library" hidden></main>
-    <div id="status">準備中</div>
-    <button id="start" hidden>起動</button>
+    <div id="ui" data-library></div>
     <script type="module" src="./src/wine.ts"></script>
   </body>
 </html>

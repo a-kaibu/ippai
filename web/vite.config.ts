@@ -1,10 +1,14 @@
 declare const process: { env: Record<string, string | undefined> }; // (node runs this file; no @types/node here)
 import { defineConfig } from "vite-plus";
+import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 
-// Built into web/dist and served by vnvm serve next to the store. Wine's files
-// (public/wine/) are copied as-is by vnvm-wine hangover/build.sh.
+// Built into web/dist and served by vnvm serve next to the store. The UI is React with
+// Tailwind CSS and shadcn/ui (src/components/ui); sake's files (public/sake/) are copied as-is.
 export default defineConfig({
   base: "./",
+  plugins: [react(), tailwindcss()],
+  resolve: { alias: { "@": new URL("./src", import.meta.url).pathname } },
   build: {
     outDir: "dist",
     emptyOutDir: true,

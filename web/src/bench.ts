@@ -17,6 +17,8 @@
 // to bench-results.txt.
 
 // native Wine on the x86-64 dev machine, bench.exe 1 (vnvm-wine docs/hangover.md)
+import { getUi, setBench, setStart } from "./ui/store";
+import { renderShell } from "./ui/Shell";
 const NATIVE: Record<string, number> = {
   crc32: 53,
   lz: 30,
@@ -87,31 +89,23 @@ if (!step.wasm && !step.micro) {
   history.replaceState(null, "", `?${params}`);
 }
 
-const table = document.querySelector<HTMLTableElement>("#result")!;
-const env = document.querySelector<HTMLDivElement>("#env")!;
-const copy = document.querySelector<HTMLButtonElement>("#copy")!;
-const phase = document.querySelector<HTMLDivElement>("#phase")!;
-phase.textContent = `計測中… ${index + 1} / ${SUITE.length} (${step.label})。閉じずにお待ちください`;
+renderShell();
+setBench({ phase: `計測中… ${index + 1} / ${SUITE.length} (${step.label})。閉じずにお待ちください` });
 const device = `${navigator.userAgent} / ${navigator.hardwareConcurrency} cores`;
 const lines: string[] = [];
 const t0 = performance.now();
 
 /** All steps so far: one row per step, one column per kernel (ms per repeat). */
 function render(): void {
-  table.innerHTML = "";
-  const head = table.insertRow();
-  for (const k of ["", ...KERNELS]) head.insertCell().textContent = k;
-  const native = table.insertRow();
-  for (const v of ["native x86", ...KERNELS.map((k) => String(NATIVE[k]))])
-    native.insertCell().textContent = v;
+  const rows = [
+    ["", ...KERNELS],
+    ["native x86", ...KERNELS.map((k) => String(NATIVE[k]))],
+  ];
   for (const s of SUITE) {
     const r = results[s.label];
-    if (!r) continue;
-    const row = table.insertRow();
-    row.insertCell().textContent = s.label;
-    for (const k of KERNELS) row.insertCell().textContent = r[k]?.map((v) => v.toFixed(0)).join(" / ") ?? "";
+    if (r) rows.push([s.label, ...KERNELS.map((k) => r[k]?.map((v) => v.toFixed(0)).join(" / ") ?? "")]);
   }
-  env.textContent = `${device} / step ${index + 1} of ${SUITE.length}: ${step.label}`;
+  setBench({ rows, env: `${device} / step ${index + 1} of ${SUITE.length}: ${step.label}` });
 }
 render();
 
@@ -135,10 +129,17 @@ function onLine(line: string): void {
     .catch(() => undefined)
     .then(() => {
       if (index + 1 >= SUITE.length) {
-        env.textContent = `${device} / 完了`;
-        phase.textContent = "✓ 計測完了。結果はサーバに保存しました";
-        phase.className = "done";
-        copy.hidden = false;
+        setBench({
+          env: `${device} / 完了`,
+          phase: "✓ 計測完了。結果はサーバに保存しました",
+          done: true,
+          copy: () => {
+            const text = getUi()
+              .bench!.rows.map((r) => r.join("\t"))
+              .join("\n");
+            void navigator.clipboard.writeText(`${text}\n${device}`).catch(() => undefined);
+          },
+        });
         return;
       }
       const next = new URLSearchParams();
@@ -148,13 +149,9 @@ function onLine(line: string): void {
 }
 
 addEventListener("wine-print", (e) => onLine((e as CustomEvent<string>).detail));
-copy.addEventListener("click", () => {
-  const text = [...table.rows].map((r) => [...r.cells].map((c) => c.textContent).join("\t")).join("\n");
-  void navigator.clipboard.writeText(`${text}\n${device}`).catch(() => undefined);
-});
 
 if (step.micro) {
-  document.querySelector<HTMLButtonElement>("#start")!.hidden = true;
+  setStart({ shown: false });
   const memory = new WebAssembly.Memory({ initial: 256, maximum: 256, shared: true });
   const bytes = Uint8Array.from(atob(MICRO), (c) => c.charCodeAt(0));
   const run = (await WebAssembly.instantiate(bytes, { e: { m: memory } })).instance.exports[step.micro] as (
@@ -175,7 +172,7 @@ if (step.micro) {
     onLine(`total ${total.toFixed(1)} ms 0`);
   }, 100);
 } else if (step.wasm) {
-  document.querySelector<HTMLButtonElement>("#start")!.hidden = true;
+  setStart({ shown: false });
   const url = new URL(`benchwasm/${step.wasm}.js`, location.href).href;
   const factory = (await import(/* @vite-ignore */ url)).default as (m: object) => Promise<{
     callMain(args: string[]): void;
@@ -184,5 +181,3 @@ if (step.micro) {
   // after the page has painted, so the table is there while it runs
   setTimeout(() => m.callMain([String(step.scale)]), 100);
 } else await import("./wine");
-
-export {};

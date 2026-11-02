@@ -19,6 +19,7 @@
 //
 // logs.html lists the server's and this browser's logs.
 
+import { toast as sonner } from "sonner";
 const DIR = "vnvm-logs";
 /** OPFS files kept (the oldest go). */
 const KEEP = 40;
@@ -373,16 +374,6 @@ export class FlightRecorder {
 }
 
 function toast(text: string): void {
-  let box = document.querySelector<HTMLDivElement>("#crashlog-toast");
-  if (!box) {
-    box = document.createElement("div");
-    box.id = "crashlog-toast";
-    box.style.cssText =
-      "position:fixed;left:50%;bottom:16px;transform:translateX(-50%);max-width:calc(100% - 32px);padding:8px 12px;border-radius:6px;background:rgb(0 0 0/80%);color:#fff;font:13px/1.4 system-ui,sans-serif;z-index:10;pointer-events:none;word-break:break-all";
-    document.body.append(box);
-  }
-  box.textContent = text;
-  box.hidden = false;
-  clearTimeout(Number(box.dataset.t ?? 0));
-  box.dataset.t = String(setTimeout(() => (box!.hidden = true), 8000));
+  // (shown by the page's <Toaster>: ui/Shell.tsx)
+  sonner(text, { duration: 8000 });
 }

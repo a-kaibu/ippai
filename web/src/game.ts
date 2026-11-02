@@ -20,6 +20,8 @@
 //   &pre=x,y              clicked every 3 s before the title (a first-start dialog; client pixels)
 //   &env=VNVM_JIT_PROFILE=1  print the executed instruction counts at the end (console)
 
+import { setBench } from "./ui/store";
+import { renderShell } from "./ui/Shell";
 const NATIVE = { title: 5.9, cores: 0.18 };
 // in the game window's client pixels (the main window's, which the screen shows): on the
 // title a stroke of "Start" (its button takes only clicks on the letters), then the text box,
@@ -55,30 +57,27 @@ if (!params.has("run")) {
   history.replaceState(null, "", `?${params}`);
 }
 
-const table = document.querySelector<HTMLTableElement>("#result")!;
-const env = document.querySelector<HTMLDivElement>("#env")!;
-const phase = document.querySelector<HTMLDivElement>("#phase")!;
 const device = `${navigator.userAgent} / ${navigator.hardwareConcurrency} cores`;
-env.textContent = device;
+renderShell();
+setBench({ env: device });
 const t0 = performance.now();
 const now = () => (performance.now() - t0) / 1000;
 
 /** this run's rows; the table has a column per run */
 const mine: Rows = [];
 function render(): void {
-  table.innerHTML = "";
-  const head = table.insertRow();
-  for (const t of ["", ...Array.from({ length: runs }, (_, i) => `${i + 1} 回目`), "native"])
-    head.insertCell().textContent = t;
+  const rows = [["", ...Array.from({ length: runs }, (_, i) => `${i + 1} 回目`), "native"]];
   const all = [...earlier, mine];
   const names: string[] = [];
-  for (const rows of all) for (const [n] of rows) if (!names.includes(n)) names.push(n);
+  for (const r of all) for (const [n] of r) if (!names.includes(n)) names.push(n);
   for (const n of names) {
-    const r = table.insertRow();
-    r.insertCell().textContent = n;
-    for (let i = 0; i < runs; i++) r.insertCell().textContent = all[i]?.find((x) => x[0] === n)?.[1] ?? "";
-    r.insertCell().textContent = all.flat().find((x) => x[0] === n && x[2])?.[2] ?? "";
+    rows.push([
+      n,
+      ...Array.from({ length: runs }, (_, i) => all[i]?.find((x) => x[0] === n)?.[1] ?? ""),
+      all.flat().find((x) => x[0] === n && x[2])?.[2] ?? "",
+    ]);
   }
+  setBench({ rows });
 }
 function row(name: string, value: string, native = ""): void {
   mine.push([name, value, native]);
@@ -189,7 +188,7 @@ async function story(): Promise<void> {
   let t = performance.now();
   for (let s = 0; s < secs; s++) {
     if (s % 2 === 0) click();
-    phase.textContent = `計測中… ${runLabel}本編 ${s} / ${secs} 秒。閉じずにお待ちください`;
+    setBench({ phase: `計測中… ${runLabel}本編 ${s} / ${secs} 秒。閉じずにお待ちください` });
     worstGap = 0;
     await sleep(1000);
     const nb = totalBusy();
@@ -247,23 +246,20 @@ async function story(): Promise<void> {
     } catch {
       // the next run's table then lacks this one
     }
-    phase.textContent = `計測中… ${round} 回目が終わりました。${round + 1} 回目を始めます`;
+    setBench({ phase: `計測中… ${round} 回目が終わりました。${round + 1} 回目を始めます` });
     // (the regions this run translated go to the server every 30 s; the last ones with this)
     await sleep(1000);
     params.set("round", String(round + 1));
     location.search = `?${params}`;
     return;
   }
-  phase.textContent = "✓ 計測完了。結果はサーバに保存しました";
-  phase.className = "done";
+  setBench({ phase: "✓ 計測完了。結果はサーバに保存しました", done: true });
 }
 
-phase.textContent = `計測中… ${runLabel}起動してタイトル画面を待っています`;
+setBench({ phase: `計測中… ${runLabel}起動してタイトル画面を待っています` });
 setInterval(() => {
   if (!title)
-    phase.textContent = `計測中… ${runLabel}起動してタイトル画面を待っています (${now().toFixed(0)} 秒)`;
+    setBench({ phase: `計測中… ${runLabel}起動してタイトル画面を待っています (${now().toFixed(0)} 秒)` });
 }, 1000);
 
 await import("./wine");
-
-export {};

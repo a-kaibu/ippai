@@ -1,0 +1,243 @@
+// The game list (wine.html without ?run=): cards with cover, brand, year and score from
+// `vnvm meta`, a filter, and a dialog with the game's details. Picking a game starts it from
+// that click (audio and fullscreen need the user gesture).
+
+import { useMemo, useState } from "react";
+import { ExternalLink, Gamepad2, Info, Play, ScrollText, Search, Star } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
+import { coverUrl, played, type GameEntry } from "../launcher";
+import { renderShell } from "./Shell";
+
+function when(t: number): string {
+  const d = new Date(t);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getMonth() + 1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function Cover({ game, className }: { game: GameEntry; className?: string }) {
+  const url = coverUrl(game);
+  return url ? (
+    <img src={url} alt="" loading="lazy" className={cn("size-full object-cover", className)} />
+  ) : (
+    <div className="grid size-full place-items-center bg-gradient-to-br from-secondary to-background p-3 text-center font-semibold text-balance text-muted-foreground">
+      {game.title}
+    </div>
+  );
+}
+
+function GameCard({
+  game,
+  last,
+  onPick,
+  onInfo,
+}: {
+  game: GameEntry;
+  last?: number;
+  onPick: () => void;
+  onInfo: () => void;
+}) {
+  const m = game.meta;
+  const sub = [m?.brand, m?.release?.slice(0, 4)].filter(Boolean).join(" · ");
+  return (
+    <li className="group relative">
+      <button
+        type="button"
+        onClick={onPick}
+        className="block w-full rounded-xl text-left outline-none focus-visible:ring-[3px] focus-visible:ring-ring/60"
+      >
+        <div className="relative aspect-[4/3] overflow-hidden rounded-xl border bg-card shadow-sm transition duration-200 group-hover:-translate-y-0.5 group-hover:shadow-lg group-hover:ring-2 group-hover:ring-primary/70">
+          <Cover game={game} className="transition duration-300 group-hover:scale-[1.03]" />
+          <div className="absolute inset-0 grid place-items-center bg-black/0 opacity-0 transition group-hover:bg-black/35 group-hover:opacity-100">
+            <span className="grid size-12 place-items-center rounded-full bg-primary text-primary-foreground shadow-lg">
+              <Play className="size-5 fill-current" />
+            </span>
+          </div>
+        </div>
+        <div className="px-0.5 pt-2">
+          <div className="line-clamp-2 text-sm leading-snug font-semibold">{game.title}</div>
+          {sub && <div className="mt-0.5 truncate text-xs text-muted-foreground">{sub}</div>}
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+            {game.engine && <Badge variant="secondary">{game.engine}</Badge>}
+            {!!m?.score && (
+              <span className="inline-flex items-center gap-0.5 font-medium text-star">
+                <Star className="size-3 fill-current" />
+                {m.score}
+              </span>
+            )}
+            {last && <span>前回 {when(last)}</span>}
+          </div>
+        </div>
+      </button>
+      {m && (
+        <Button
+          size="icon-sm"
+          variant="secondary"
+          onClick={onInfo}
+          aria-label={`${game.title} の情報`}
+          title="ゲーム情報"
+          className="absolute top-2 right-2 rounded-full bg-black/60 text-white backdrop-blur hover:bg-primary hover:text-primary-foreground"
+        >
+          <Info />
+        </Button>
+      )}
+    </li>
+  );
+}
+
+function GameInfo({ game, onPick, onClose }: { game: GameEntry; onPick: () => void; onClose: () => void }) {
+  const m = game.meta!;
+  const url = coverUrl(game);
+  const facts: [string, string | undefined][] = [
+    ["ブランド", m.brand],
+    ["発売日", m.release],
+    ["シリーズ", m.series],
+    [
+      m.source === "vndb" ? "VNDB 評価" : "批評空間 中央値",
+      m.score ? `${m.score}${m.votes ? `（${m.votes} 票）` : ""}` : undefined,
+    ],
+    ["エンジン", game.engine],
+  ];
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="gap-0 p-0">
+        {url && <img src={url} alt="" className="max-h-80 w-full bg-black object-contain" />}
+        <div className="grid gap-4 p-5">
+          <DialogHeader>
+            <DialogTitle className="pr-8">{m.title || game.title}</DialogTitle>
+            <DialogDescription>{m.furigana || game.title}</DialogDescription>
+          </DialogHeader>
+          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
+            {facts
+              .filter(([, v]) => v)
+              .map(([k, v]) => (
+                <div key={k} className="contents">
+                  <dt className="text-muted-foreground">{k}</dt>
+                  <dd>{v}</dd>
+                </div>
+              ))}
+          </dl>
+          {!!m.tags?.length && (
+            <div className="flex flex-wrap gap-1.5">
+              {m.tags.map((t) => (
+                <Badge key={t} variant="secondary" className="rounded-full font-normal">
+                  {t}
+                </Badge>
+              ))}
+            </div>
+          )}
+          {m.description && (
+            <p className="text-sm leading-relaxed whitespace-pre-line text-muted-foreground">
+              {m.description}
+            </p>
+          )}
+          {!!m.links?.length && (
+            <div className="flex flex-wrap gap-2">
+              {m.links.map((l) => (
+                <Button key={l.url} asChild size="sm" variant="outline">
+                  <a href={l.url} target="_blank" rel="noopener noreferrer">
+                    {l.label} <ExternalLink className="size-3" />
+                  </a>
+                </Button>
+              ))}
+            </div>
+          )}
+          <Button size="lg" className="w-full" onClick={onPick}>
+            <Play className="fill-current" /> 起動
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+export function Library({ games, onPick }: { games: GameEntry[]; onPick: (g: GameEntry) => void }) {
+  const [query, setQuery] = useState("");
+  const [info, setInfo] = useState<GameEntry | null>(null);
+  const last = useMemo(played, []);
+  const sorted = useMemo(
+    () =>
+      [...games].sort(
+        (a, b) => (last[b.id] ?? 0) - (last[a.id] ?? 0) || a.title.localeCompare(b.title, "ja"),
+      ),
+    [games, last],
+  );
+  const q = query.trim().toLowerCase();
+  const shown = q
+    ? sorted.filter((g) => {
+        const m = g.meta;
+        const key = [g.title, g.engine, g.id, m?.title, m?.furigana, m?.brand, m?.series, ...(m?.tags ?? [])];
+        return key.filter(Boolean).join(" ").toLowerCase().includes(q);
+      })
+    : sorted;
+  return (
+    <main className="fixed inset-0 z-40 overflow-y-auto bg-background">
+      <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur">
+        <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-3">
+          <Gamepad2 className="size-5 shrink-0 text-primary" />
+          <h1 className="text-lg font-bold tracking-tight">vnvm</h1>
+          <Badge variant="secondary">{games.length} 本</Badge>
+          <div className="relative ml-auto w-full max-w-72">
+            {games.length > 6 && (
+              <>
+                <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  type="search"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="タイトル・ブランド・タグ"
+                  aria-label="タイトル・ブランド・タグで絞り込み"
+                  className="pl-8"
+                />
+              </>
+            )}
+          </div>
+          <Button asChild variant="ghost" size="sm">
+            <a href="logs.html">
+              <ScrollText /> <span className="max-sm:hidden">ログ</span>
+            </a>
+          </Button>
+        </div>
+      </header>
+      <div className="mx-auto max-w-7xl px-4 pt-5 pb-10">
+        {!games.length ? (
+          <div className="mx-auto mt-16 max-w-xl rounded-xl border border-dashed p-8 text-center text-sm leading-relaxed text-muted-foreground">
+            <p className="mb-3 text-base font-medium text-foreground">ゲームがまだありません</p>
+            ゲームのフォルダを{" "}
+            <code className="rounded bg-muted px-1.5 py-0.5">vnvm pack &lt;dir&gt; &lt;tree&gt;</code>{" "}
+            で入れて、
+            <code className="rounded bg-muted px-1.5 py-0.5">
+              vnvm add-game &lt;id&gt; --title ... --tree &lt;tree&gt; --exe &lt;exe&gt;
+            </code>{" "}
+            で一覧に追加します。
+          </div>
+        ) : !shown.length ? (
+          <p className="mt-16 text-center text-sm text-muted-foreground">
+            「{query}」に合うゲームはありません
+          </p>
+        ) : (
+          <ul className="grid grid-cols-2 gap-x-3 gap-y-5 sm:grid-cols-[repeat(auto-fill,minmax(200px,1fr))] sm:gap-x-4">
+            {shown.map((g) => (
+              <GameCard
+                key={g.id}
+                game={g}
+                last={last[g.id]}
+                onPick={() => onPick(g)}
+                onInfo={() => setInfo(g)}
+              />
+            ))}
+          </ul>
+        )}
+      </div>
+      {info && <GameInfo game={info} onClose={() => setInfo(null)} onPick={() => onPick(info)} />}
+    </main>
+  );
+}
+
+/** Shows the list over the page; `pick` runs in the click that chose a game. */
+export function showLibrary(games: GameEntry[], pick: (g: GameEntry) => void): void {
+  renderShell(<Library games={games} onPick={pick} />);
+}

@@ -1,20 +1,15 @@
 <!doctype html>
-<html lang="ja">
+<html lang="ja" class="dark">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
     <title>vnvm game bench</title>
     <link rel="stylesheet" href="./src/style.css" />
   </head>
   <body>
     <canvas id="screen"></canvas>
-    <div id="bench">
-      <div id="phase" class="running">準備中</div>
-      <table id="result"></table>
-      <div id="env"></div>
-    </div>
-    <div id="status">準備中</div>
-    <button id="start">起動</button>
+    <div id="ui"></div>
     <script type="module" src="./src/game.ts"></script>
   </body>
 </html>

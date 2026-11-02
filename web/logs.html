@@ -1,101 +1,14 @@
 <!doctype html>
-<html lang="ja">
+<html lang="ja" class="dark">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
     <title>vnvm ログ</title>
-    <style>
-      body {
-        margin: 0;
-        padding: 12px max(16px, env(safe-area-inset-right)) 32px max(16px, env(safe-area-inset-left));
-        background: #101114;
-        color: #e6e6e6;
-        font:
-          14px/1.5 system-ui,
-          sans-serif;
-      }
-      h1 {
-        font-size: 20px;
-        margin: 4px 0 4px;
-      }
-      h2 {
-        font-size: 15px;
-        margin: 22px 0 6px;
-        color: #c8ccd3;
-      }
-      p.note {
-        color: #8a8f98;
-        font-size: 13px;
-        margin: 0 0 8px;
-      }
-      a {
-        color: #8ab4f8;
-      }
-      ul {
-        list-style: none;
-        margin: 0;
-        padding: 0;
-      }
-      li {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: baseline;
-        gap: 4px 10px;
-        padding: 7px 0;
-        border-bottom: 1px solid #22252b;
-      }
-      li .name {
-        overflow-wrap: anywhere;
-        flex: 1 1 280px;
-      }
-      li .meta {
-        color: #8a8f98;
-        font-size: 12px;
-      }
-      li.crash .name,
-      li.unclean .name {
-        color: #ff9b8a;
-      }
-      button {
-        padding: 3px 9px;
-        border: 1px solid #2c2f36;
-        border-radius: 5px;
-        background: #1a1c21;
-        color: inherit;
-        font: inherit;
-        font-size: 12px;
-      }
-      pre {
-        white-space: pre-wrap;
-        overflow-wrap: anywhere;
-        font:
-          12px/1.4 ui-monospace,
-          monospace;
-        background: #16181c;
-        padding: 10px;
-        border-radius: 6px;
-      }
-      .empty {
-        color: #8a8f98;
-      }
-    </style>
+    <link rel="stylesheet" href="./src/style.css" />
   </head>
   <body>
-    <h1>vnvm ログ</h1>
-    <p class="note">
-      ゲームの実行ごとの詳細ログです。クラッシュ時・バックグラウンド移行時・終了時に保存され、サーバーにも送られます。プレイ中は
-      Ctrl+Shift+L か 3 本指タップで手動保存できます。<a href="./">ゲーム一覧へ</a>
-    </p>
-    <h2>サーバー</h2>
-    <ul id="server">
-      <li class="empty">読み込み中</li>
-    </ul>
-    <h2>このブラウザ (OPFS)</h2>
-    <ul id="local">
-      <li class="empty">読み込み中</li>
-    </ul>
-    <pre id="view" hidden></pre>
-    <script type="module" src="./src/logs.ts"></script>
+    <div id="ui"></div>
+    <script type="module" src="./src/logs.tsx"></script>
   </body>
 </html>
