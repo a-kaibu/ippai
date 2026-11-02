@@ -473,6 +473,12 @@ pub unsafe extern "C" fn vnhost_cpu_run(cpu: *mut Cpu, info: *mut u32) -> i32 {
                 crate::proc::check_alive();
                 continue;
             }
+            if pending & (1 << libc::SIGSTOP) != 0 {
+                // the process is being frozen (see `proc::create`)
+                signals.pending.fetch_and(!(1 << libc::SIGSTOP), Ordering::SeqCst);
+                crate::proc::park_if_frozen();
+                continue;
+            }
             return EXIT_PENDING;
         }
         rounds = rounds.wrapping_add(1);

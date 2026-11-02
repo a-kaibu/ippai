@@ -12,7 +12,9 @@
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::ffi::{c_char, c_int, CStr, CString};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::mem::GUEST_END;
 
@@ -37,6 +39,18 @@ struct Proc {
     /// None = unset
     env: BTreeMap<String, Option<CString>>,
     cwd: String,
+    /// stopped while a child it started has its range (see `create`); `parked` of its threads
+    /// have stopped so far
+    frozen: bool,
+    parked: usize,
+    /// a child took its range: it freezes once its CreateProcess has let the child go
+    /// (`vnhost_proc_freeze`)
+    freeze_pending: bool,
+    /// its memory while frozen
+    saved: Option<crate::mem::Saved>,
+    /// (the child) the process whose range it took, and whether that one is swapped out yet
+    swap_from: Option<i32>,
+    swapped: bool,
 }
 
 #[derive(Default)]
@@ -46,6 +60,9 @@ struct Procs {
 }
 
 static PROCS: Mutex<Option<Procs>> = Mutex::new(None);
+/// Signalled when a process freezes, a thread parks, or a process thaws.
+static PARK: Condvar = Condvar::new();
+static ANY_FROZEN: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
     static PID: Cell<i32> = const { Cell::new(HOST_PID) };
@@ -81,11 +98,32 @@ fn find_area(p: &Procs, size: usize, low: bool) -> Option<(usize, usize)> {
 }
 
 /// Creates a process slot; `app` asks for the big low partition.
+///
+/// Processes share one address space, so a launcher (or installer) holding the low partition
+/// can't start the game next to it: the game's exe wants 0x400000 too. Then the child gets the
+/// launcher's partition and the launcher is swapped out until the child is gone: its threads
+/// stop at their next wait or guest entry (`park_if_frozen`), the child's first thread saves
+/// its memory and clears the range (`swap_out_parent`), and the child's end puts it back.
 pub fn create(app: bool, root: bool) -> Option<i32> {
     let parent_env = current_env();
     let parent_cwd = cwd();
+    let me = current();
     with(|p| {
         let mut size = if app { APP_SIZE } else { HELPER_SIZE };
+        let low_free = find_area(p, APP_SIZE, true).is_some_and(|a| a.0 == AREA_LO);
+        let swap = app && !low_free && p.list.get(&me).is_some_and(|q| q.lo == AREA_LO && !q.frozen && !q.dead);
+        if swap {
+            let q = p.list.get_mut(&me).unwrap();
+            q.freeze_pending = true;
+            let area = (q.lo, q.hi);
+            let pid = p.next;
+            p.next += 1;
+            trace(format_args!("process {pid}: {:#x}-{:#x}, taken from {me}", area.0, area.1));
+            let mut c = new_proc(area, root, parent_env.clone(), parent_cwd.clone());
+            c.swap_from = Some(me);
+            p.list.insert(pid, c);
+            return Some(pid);
+        }
         let area = loop {
             if let Some(a) = find_area(p, size, app) {
                 break a;
@@ -98,9 +136,163 @@ pub fn create(app: bool, root: bool) -> Option<i32> {
         let pid = p.next;
         p.next += 1;
         trace(format_args!("process {pid}: {:#x}-{:#x}{}", area.0, area.1, if root { " (root)" } else { "" }));
-        p.list.insert(pid, Proc { lo: area.0, hi: area.1, root, dead: false, tids: Vec::new(), env: parent_env, cwd: parent_cwd });
+        p.list.insert(pid, new_proc(area, root, parent_env, parent_cwd));
         Some(pid)
     })
+}
+
+/// Wine's process creation, after the spawn: whether the new process took the caller's range
+/// (the caller then resumes the child itself and calls `vnhost_proc_freeze`).
+#[no_mangle]
+pub extern "C" fn vnhost_proc_swap_pending() -> c_int {
+    let pid = current();
+    with(|p| p.list.get(&pid).is_some_and(|q| q.freeze_pending)) as c_int
+}
+
+/// Freezes the calling process: its threads stop at their next wait or guest entry, and the
+/// child that took its range starts once they all have.
+#[no_mangle]
+pub extern "C" fn vnhost_proc_freeze() {
+    let pid = current();
+    let kick = with(|p| match p.list.get_mut(&pid) {
+        Some(q) if q.freeze_pending => {
+            q.freeze_pending = false;
+            q.frozen = true;
+            q.parked = 0;
+            ANY_FROZEN.store(true, Ordering::SeqCst);
+            q.tids.clone()
+        }
+        _ => Vec::new(),
+    });
+    trace(format_args!("process {pid}: freezing"));
+    PARK.notify_all();
+    for t in kick {
+        // (out of guest code and waits, to `park_if_frozen`)
+        crate::cpu::vnhost_tkill(t, libc::SIGSTOP);
+    }
+}
+
+fn new_proc(area: (usize, usize), root: bool, env: BTreeMap<String, Option<CString>>, cwd: String) -> Proc {
+    Proc {
+        lo: area.0,
+        hi: area.1,
+        root,
+        dead: false,
+        tids: Vec::new(),
+        env,
+        cwd,
+        frozen: false,
+        parked: 0,
+        freeze_pending: false,
+        saved: None,
+        swap_from: None,
+        swapped: false,
+    }
+}
+
+/// Whether the calling thread's process is frozen (`park_if_frozen` would block).
+pub fn self_frozen() -> bool {
+    if !ANY_FROZEN.load(Ordering::Relaxed) {
+        return false;
+    }
+    let pid = current();
+    pid != HOST_PID && with(|p| p.list.get(&pid).is_some_and(|q| q.frozen && !q.dead))
+}
+
+/// Blocks the calling thread while its process is frozen (a no-op otherwise). Called where a
+/// thread touches no guest memory: entering guest code, entering or leaving a wait.
+pub fn park_if_frozen() {
+    if !ANY_FROZEN.load(Ordering::Relaxed) {
+        return;
+    }
+    let pid = current();
+    if pid == HOST_PID {
+        return;
+    }
+    let mut g = PROCS.lock().unwrap_or_else(|e| e.into_inner());
+    let mut counted = false;
+    loop {
+        match g.as_mut().and_then(|p| p.list.get_mut(&pid)) {
+            Some(q) if q.frozen && !q.dead => {
+                if !counted {
+                    q.parked += 1;
+                    counted = true;
+                    PARK.notify_all();
+                }
+            }
+            _ => break,
+        }
+        g = PARK.wait_timeout(g, Duration::from_millis(50)).unwrap_or_else(|e| e.into_inner()).0;
+        // a new process's dlopen waits until every thread has loaded it
+        #[cfg(target_os = "emscripten")]
+        {
+            drop(g);
+            unsafe { _emscripten_process_dlopen_queue() };
+            g = PROCS.lock().unwrap_or_else(|e| e.into_inner());
+        }
+    }
+    if counted {
+        if let Some(q) = g.as_mut().and_then(|p| p.list.get_mut(&pid)) {
+            q.parked = q.parked.saturating_sub(1);
+        }
+    }
+    drop(g);
+    check_alive();
+}
+
+#[cfg(target_os = "emscripten")]
+extern "C" {
+    fn _emscripten_process_dlopen_queue();
+}
+
+/// The first thread of a child that took its parent's range: waits until the parent's threads
+/// have stopped, then saves the parent's memory and clears the range.
+fn swap_out_parent(pid: i32) {
+    let Some(parent) = with(|p| p.list.get(&pid).filter(|q| !q.swapped).and_then(|q| q.swap_from)) else {
+        return;
+    };
+    let start = Instant::now();
+    let mut warned = false;
+    let mut g = PROCS.lock().unwrap_or_else(|e| e.into_inner());
+    loop {
+        let q = g.as_ref().and_then(|p| p.list.get(&parent));
+        match q {
+            Some(q) if (q.freeze_pending || q.frozen && q.parked < q.tids.len()) && !q.dead => {}
+            _ => break,
+        }
+        if !warned && start.elapsed() > Duration::from_secs(10) {
+            warned = true;
+            eprintln!("vnhost: process {parent}: still not stopped after 10 s (process {pid} waits for its range)");
+        }
+        g = PARK.wait_timeout(g, Duration::from_millis(20)).unwrap_or_else(|e| e.into_inner()).0;
+    }
+    let range = g.as_ref().and_then(|p| p.list.get(&parent)).filter(|q| q.frozen && !q.dead).map(|q| (q.lo, q.hi));
+    drop(g);
+    let saved = range.map(|(lo, hi)| crate::mem::swap_out(lo, hi, parent));
+    with(|p| {
+        if let Some(c) = p.list.get_mut(&pid) {
+            c.swapped = true;
+        }
+        match p.list.get_mut(&parent) {
+            Some(q) if q.frozen => q.saved = saved,
+            // (the parent died meanwhile: what was saved goes)
+            _ => {}
+        }
+    });
+}
+
+/// After child `child` (which held `parent`'s range) is gone: puts the parent back and lets it
+/// run again.
+fn thaw(p: &mut Procs, parent: i32) {
+    if let Some(q) = p.list.get_mut(&parent) {
+        if let Some(saved) = q.saved.take() {
+            crate::mem::swap_in(q.lo, q.hi, saved);
+        }
+        q.frozen = false;
+        trace(format_args!("process {parent}: thawed"));
+    }
+    ANY_FROZEN.store(p.list.values().any(|q| q.frozen), Ordering::SeqCst);
+    PARK.notify_all();
 }
 
 pub(crate) fn trace(args: std::fmt::Arguments) {
@@ -201,9 +393,12 @@ pub fn kill(pid: i32) {
 fn reap(pid: i32) {
     with(|p| {
         if p.list.get(&pid).is_some_and(|q| q.dead && q.tids.is_empty()) {
-            p.list.remove(&pid);
+            let q = p.list.remove(&pid).unwrap();
             crate::mem::forget_process(pid);
             trace(format_args!("process {pid}: gone"));
+            if let Some(parent) = q.swap_from {
+                thaw(p, parent);
+            }
         }
     });
 }
@@ -255,11 +450,18 @@ pub extern "C" fn vnhost_proc_enter(pid: i32) {
         return;
     }
     let tid = crate::cpu::vnhost_gettid();
-    with(|p| {
-        if let Some(q) = p.list.get_mut(&pid) {
+    let first = with(|p| match p.list.get_mut(&pid) {
+        Some(q) => {
             q.tids.push(tid);
+            q.tids.len() == 1
         }
+        None => false,
     });
+    if first {
+        swap_out_parent(pid);
+    }
+    // (a thread its frozen process started on the way to stopping)
+    park_if_frozen();
 }
 
 /// The calling thread is going away.

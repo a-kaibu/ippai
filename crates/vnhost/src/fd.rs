@@ -241,6 +241,12 @@ fn wait(g: Guard, keys: &[Id], deadline: Option<Instant>) -> Guard {
 }
 
 fn wait_ex(g: Guard, keys: &[Id], deadline: Option<Instant>, spin: bool) -> Guard {
+    // a frozen process's threads stop here (and the caller sees a spurious wake-up)
+    if crate::proc::self_frozen() {
+        drop(g);
+        crate::proc::park_if_frozen();
+        return lock();
+    }
     if crate::proc::is_dead(crate::proc::current()) {
         drop(g);
         crate::proc::check_alive();
@@ -311,8 +317,9 @@ fn wait_ex(g: Guard, keys: &[Id], deadline: Option<Instant>, spin: bool) -> Guar
             }
         }
     }
-    if crate::proc::is_dead(crate::proc::current()) {
+    if crate::proc::is_dead(crate::proc::current()) || crate::proc::self_frozen() {
         drop(g);
+        crate::proc::park_if_frozen();
         crate::proc::check_alive();
         return lock();
     }

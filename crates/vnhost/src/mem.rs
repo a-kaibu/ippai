@@ -344,6 +344,65 @@ pub fn forget_process(pid: i32) {
     });
 }
 
+/// What a process swapped out of its range held (see `proc::create`): its pages with data and
+/// its shared file mappings there.
+pub struct Saved {
+    pages: Vec<(usize, Vec<u8>)>,
+    maps: Vec<(usize, Mapping)>,
+    backings: Vec<(FileKey, Backing)>,
+}
+
+fn is_dirty(p: usize) -> bool {
+    DIRTY[p / 64].load(Ordering::Relaxed) & (1 << (p % 64)) != 0
+}
+
+/// Takes process `pid`'s memory out of [lo, hi) (which another process gets meanwhile).
+pub fn swap_out(lo: usize, hi: usize, pid: i32) -> Saved {
+    let mut pages = Vec::new();
+    let (mut p, end) = (lo / PAGE, hi / PAGE);
+    while p < end {
+        if !is_dirty(p) {
+            p += 1;
+            continue;
+        }
+        let start = p;
+        while p < end && is_dirty(p) {
+            p += 1;
+        }
+        let (a, n) = (start * PAGE, (p - start) * PAGE);
+        pages.push((a, unsafe { std::slice::from_raw_parts(a as *const u8, n) }.to_vec()));
+    }
+    let (maps, backings) = with(|s| {
+        let at: Vec<usize> = s.maps.range(lo..hi).map(|(&a, _)| a).collect();
+        let maps: Vec<(usize, Mapping)> = at.into_iter().map(|a| (a, s.maps.remove(&a).unwrap())).collect();
+        let keys: Vec<FileKey> = s.backings.iter().filter(|(_, b)| b.pid == pid && b.addr >= lo && b.addr < hi).map(|(&k, _)| k).collect();
+        let backings = keys.into_iter().map(|k| (k, s.backings.remove(&k).unwrap())).collect();
+        (maps, backings)
+    });
+    unsafe { zero(lo, hi - lo) };
+    mark(lo, hi - lo, false);
+    crate::jit::code_changed(lo, hi - lo);
+    let bytes: usize = pages.iter().map(|p| p.1.len()).sum();
+    crate::proc::trace(format_args!("process {pid}: swapped out {:#x}-{:#x}, {} MB", lo, hi, bytes >> 20));
+    Saved { pages, maps, backings }
+}
+
+/// Puts back what `swap_out` took (the process that had the range meanwhile is gone).
+pub fn swap_in(lo: usize, hi: usize, saved: Saved) {
+    unmap_shared(lo, hi - lo);
+    unsafe { zero(lo, hi - lo) };
+    mark(lo, hi - lo, false);
+    for (a, d) in saved.pages {
+        unsafe { std::ptr::copy_nonoverlapping(d.as_ptr(), a as *mut u8, d.len()) };
+        mark(a, d.len(), true);
+    }
+    with(|s| {
+        s.maps.extend(saved.maps);
+        s.backings.extend(saved.backings);
+    });
+    crate::jit::code_changed(lo, hi - lo);
+}
+
 /// Shared file mappings overlapping [addr, addr+len), sorted, clipped to the range.
 /// The part of [addr, addr+len) that is the user shared data page.
 fn usd_overlap(addr: usize, len: usize) -> Option<(usize, usize)> {

@@ -112,6 +112,28 @@
      if (wine_server_handle_to_fd( params->hStdInput, FILE_READ_DATA, &stdin_fd, NULL ) &&
          isatty(0) && is_unix_console_handle( params->hStdInput ))
          stdin_fd = 0;
+@@ -889,6 +907,21 @@
+     close( socketfd[0] );
+     socketfd[0] = -1;
+ 
++#ifdef __wasm__
++    {
++        /* processes share one address space: a child that needed our range (a launcher
++         * starting the game) runs while we are swapped out, until it ends; so it can't wait
++         * for our resume, and we stop (at the next wait) for it to start */
++        extern int vnhost_proc_swap_pending(void);
++        extern void vnhost_proc_freeze(void);
++        if (vnhost_proc_swap_pending())
++        {
++            NtResumeThread( thread_handle, NULL );
++            vnhost_proc_freeze();
++        }
++    }
++#endif
++
+     /* wait for the new process info to be ready */
+ 
+     NtWaitForSingleObject( process_info, FALSE, NULL );
 --- a/dlls/ntdll/unix/server.c
 +++ b/dlls/ntdll/unix/server.c
 @@ -1407,6 +1407,20 @@
