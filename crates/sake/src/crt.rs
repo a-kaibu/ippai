@@ -4,7 +4,7 @@
 
 #![allow(non_snake_case)]
 
-use std::collections::HashMap;
+use crate::HashMap;
 use std::io::SeekFrom;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -32,7 +32,7 @@ pub fn data(name: &str) -> Option<u32> {
         return None;
     }
     let mut g = DATA.lock().unwrap();
-    let m = g.get_or_insert_with(HashMap::new);
+    let m = g.get_or_insert_with(HashMap::default);
     if let Some(&a) = m.get(name) {
         return Some(a);
     }
@@ -1059,7 +1059,7 @@ static FILES: Mutex<Option<HashMap<u32, Stream>>> = Mutex::new(None);
 fn iob() -> u32 {
     let p = mem::heap_alloc(FILE_SIZE * 20, true);
     let mut g = FILES.lock().unwrap();
-    let m = g.get_or_insert_with(HashMap::new);
+    let m = g.get_or_insert_with(HashMap::default);
     for i in 0..3 {
         m.insert(p + FILE_SIZE * i, Stream { f: None, eof: true, unget: None });
     }
@@ -1067,7 +1067,7 @@ fn iob() -> u32 {
 }
 
 fn with_file<R>(fp: u32, f: impl FnOnce(&mut Stream) -> R) -> Option<R> {
-    FILES.lock().unwrap().get_or_insert_with(HashMap::new).get_mut(&fp).map(f)
+    FILES.lock().unwrap().get_or_insert_with(HashMap::default).get_mut(&fp).map(f)
 }
 
 fn fopen_mode(path: &str, mode: &[u8]) -> Option<File> {
@@ -1086,7 +1086,7 @@ fn fopen_mode(path: &str, mode: &[u8]) -> Option<File> {
 }
 fn new_stream(f: File) -> u32 {
     let fp = mem::heap_alloc(FILE_SIZE, true);
-    FILES.lock().unwrap().get_or_insert_with(HashMap::new).insert(fp, Stream { f: Some(Arc::new(f)), eof: false, unget: None });
+    FILES.lock().unwrap().get_or_insert_with(HashMap::default).insert(fp, Stream { f: Some(Arc::new(f)), eof: false, unget: None });
     fp
 }
 fn fopen(c: &mut Ctx) -> u32 {
@@ -1112,7 +1112,7 @@ fn _wfopen(c: &mut Ctx) -> u32 {
 }
 fn fclose(c: &mut Ctx) -> u32 {
     let fp = c.a(0);
-    let had = FILES.lock().unwrap().get_or_insert_with(HashMap::new).remove(&fp).is_some();
+    let had = FILES.lock().unwrap().get_or_insert_with(HashMap::default).remove(&fp).is_some();
     if had {
         mem::heap_free(fp);
         0
@@ -1316,7 +1316,7 @@ fn getenv(c: &mut Ctx) -> u32 {
         return 0;
     }
     let mut g = VALS.lock().unwrap();
-    let m = g.get_or_insert_with(HashMap::new);
+    let m = g.get_or_insert_with(HashMap::default);
     if let Some(&p) = m.get(&name) {
         mem::heap_free(p);
     }

@@ -8,7 +8,7 @@
 
 #![allow(non_snake_case)]
 
-use std::collections::HashMap;
+use crate::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use ab_glyph::{Font as _, FontVec, PxScale, ScaleFont as _};
@@ -137,7 +137,7 @@ fn objs() -> MutexGuard<'static, Option<Objs>> {
 
 fn with<R>(f: impl FnOnce(&mut Objs) -> R) -> R {
     let mut g = objs();
-    f(g.get_or_insert_with(|| Objs { m: HashMap::new(), next: 0x0a00_0100, solid: HashMap::new() }))
+    f(g.get_or_insert_with(|| Objs { m: HashMap::default(), next: 0x0a00_0100, solid: HashMap::default() }))
 }
 
 fn add(o: G) -> u32 {
@@ -1014,7 +1014,7 @@ fn font_file(i: usize) -> Option<Arc<FontVec>> {
     if i >= FACES.len() {
         return ADDED.lock().unwrap().get(i - FACES.len()).map(|(_, f)| f.clone());
     }
-    let m = FILES.get_or_init(|| Mutex::new(HashMap::new()));
+    let m = FILES.get_or_init(|| Mutex::new(HashMap::default()));
     let mut g = m.lock().unwrap();
     g.entry(i)
         .or_insert_with(|| {
@@ -1102,7 +1102,7 @@ const GLYPH_INDEX: u32 = 0x8000_0000;
 
 fn glyph(r: &Real, ch: u32) -> Arc<Glyph> {
     let key = (r.face, r.em.to_bits(), ch, r.bold);
-    let m = GLYPHS.get_or_init(|| Mutex::new(HashMap::new()));
+    let m = GLYPHS.get_or_init(|| Mutex::new(HashMap::default()));
     if let Some(g) = m.lock().unwrap().get(&key) {
         return g.clone();
     }

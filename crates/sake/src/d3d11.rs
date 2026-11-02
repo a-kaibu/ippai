@@ -5,7 +5,7 @@
 
 #![allow(non_snake_case)]
 
-use std::collections::HashMap;
+use crate::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use crate::api::{host_fn, implement, Ctx};
@@ -46,7 +46,7 @@ fn init() {
     DONE.get_or_init(|| {
         let n = FIRST + METHODS.len() as u32;
         let table = mem::heap_alloc(4 * n, true);
-        let mut ids = HashMap::new();
+        let mut ids = HashMap::default();
         for (k, m) in METHODS.iter().enumerate() {
             let i = FIRST + k as u32;
             let v = mem::heap_alloc(4 * m.len() as u32, true);

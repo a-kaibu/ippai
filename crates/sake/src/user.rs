@@ -6,7 +6,8 @@
 
 #![allow(non_snake_case)]
 
-use std::collections::{HashMap, VecDeque};
+use crate::HashMap;
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -74,6 +75,27 @@ pub struct Surface {
     pub w: i32,
     pub h: i32,
     pub px: Vec<u32>,
+    /// the top-level window whose display shows `px` directly (`flush`), 0 for none
+    pub shown_by: u32,
+}
+
+impl Surface {
+    fn new(w: i32, h: i32) -> Surface {
+        Surface { w, h, px: vec![0xff00_0000; (w * h) as usize], shown_by: 0 }
+    }
+    /// before `px` is freed or moved: the display stops reading it
+    fn unshare(&mut self) {
+        if self.shown_by != 0 {
+            vnhost::display::vnhost_window_unshare(self.shown_by);
+            self.shown_by = 0;
+        }
+    }
+}
+
+impl Drop for Surface {
+    fn drop(&mut self) {
+        self.unshare();
+    }
 }
 
 pub struct Class {
@@ -216,10 +238,10 @@ pub fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
         unsafe { vnhost::display::vnhost_display_size(&mut s, &mut h) };
         State {
             classes: Vec::new(),
-            wins: HashMap::new(),
+            wins: HashMap::default(),
             next: 0x10020,
-            queues: HashMap::new(),
-            menus: HashMap::new(),
+            queues: HashMap::default(),
+            menus: HashMap::default(),
             focus: 0,
             active: 0,
             capture: 0,
@@ -229,7 +251,7 @@ pub fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
             screen: (s, h),
             cursor_handle: 0,
             cursor_count: 0,
-            msgnames: HashMap::new(),
+            msgnames: HashMap::default(),
             last_msg_pos: (0, 0),
             last_msg_time: 0,
         }
@@ -390,13 +412,18 @@ pub fn target(h: u32) -> Option<Target> {
 /// Sends part of a top-level window's surface to the display.
 pub fn flush(top: u32, r: Rect) {
     let Some(surf) = with(|s| s.wins.get(&top).and_then(|w| w.surface.clone())) else { return };
-    let g = surf.lock().unwrap();
+    let mut g = surf.lock().unwrap();
     let r = r.and(&Rect { l: 0, t: 0, r: g.w, b: g.h });
     if r.empty() {
         return;
     }
     let d = [r.l, r.t, r.r, r.b];
-    unsafe { vnhost::display::vnhost_window_draw(top, d.as_ptr(), g.px.as_ptr(), g.w, 0, 0) };
+    // the display shows the surface itself (no copy per frame)
+    if g.shown_by != top {
+        g.unshare();
+        g.shown_by = top;
+    }
+    unsafe { vnhost::display::vnhost_window_draw_shared(top, d.as_ptr(), g.px.as_ptr(), g.w, g.h) };
 }
 
 /// Tells the display where a top-level window is (its client area is what it shows).
@@ -429,6 +456,7 @@ fn resize_surface(w: &mut Window) {
         Some(s) => {
             let mut g = s.lock().unwrap();
             if g.w != cw || g.h != ch {
+                g.unshare();
                 let mut px = vec![0xff00_0000u32; (cw * ch) as usize];
                 for y in 0..g.h.min(ch) {
                     let n = g.w.min(cw) as usize;
@@ -439,7 +467,7 @@ fn resize_surface(w: &mut Window) {
                 g.h = ch;
             }
         }
-        None => w.surface = Some(Arc::new(Mutex::new(Surface { w: cw, h: ch, px: vec![0xff00_0000; (cw * ch) as usize] }))),
+        None => w.surface = Some(Arc::new(Mutex::new(Surface::new(cw, ch)))),
     }
 }
 
@@ -469,10 +497,10 @@ struct Ctl {
 static CTLS: Mutex<Option<HashMap<u32, Ctl>>> = Mutex::new(None);
 
 fn ctl(h: u32) -> Ctl {
-    CTLS.lock().unwrap().get_or_insert_with(HashMap::new).get(&h).copied().unwrap_or_default()
+    CTLS.lock().unwrap().get_or_insert_with(HashMap::default).get(&h).copied().unwrap_or_default()
 }
 fn set_ctl(h: u32, f: impl FnOnce(&mut Ctl)) {
-    f(CTLS.lock().unwrap().get_or_insert_with(HashMap::new).entry(h).or_default());
+    f(CTLS.lock().unwrap().get_or_insert_with(HashMap::default).entry(h).or_default());
 }
 
 fn control_proc() -> u32 {
@@ -671,7 +699,7 @@ fn control_proc_fn(c: &mut Ctx) -> u32 {
             r
         }
         0x2 => {
-            CTLS.lock().unwrap().get_or_insert_with(HashMap::new).remove(&h);
+            CTLS.lock().unwrap().get_or_insert_with(HashMap::default).remove(&h);
             def_proc(c, false)
         }
         _ => def_proc(c, false),
@@ -3821,7 +3849,7 @@ fn create_dialog(c: &mut Ctx, inst: u32, t: u32, owner: u32, proc_: u32, param: 
     if send(c, dlg, 0x110, first, param) != 0 && first != 0 {
         set_focus(c, first);
     }
-    if is_window(dlg) && (modal || style & 0x1000_0000 != 0) && !DLG_END.lock().unwrap().get_or_insert_with(HashMap::new).contains_key(&dlg) {
+    if is_window(dlg) && (modal || style & 0x1000_0000 != 0) && !DLG_END.lock().unwrap().get_or_insert_with(HashMap::default).contains_key(&dlg) {
         show(c, dlg, 5);
     }
     dlg
@@ -3859,7 +3887,7 @@ fn dialog_box(c: &mut Ctx, inst: u32, t: u32, owner: u32, proc_: u32, param: u32
     }
     let was_enabled = with(|s| s.wins.get_mut(&owner).map(|w| std::mem::replace(&mut w.enabled, false))).unwrap_or(false);
     let r = loop {
-        if let Some(r) = DLG_END.lock().unwrap().get_or_insert_with(HashMap::new).remove(&dlg) {
+        if let Some(r) = DLG_END.lock().unwrap().get_or_insert_with(HashMap::default).remove(&dlg) {
             break r;
         }
         if !is_window(dlg) {
@@ -3949,7 +3977,7 @@ fn CreateDialogIndirectParamW(c: &mut Ctx) -> u32 {
 }
 fn EndDialog(c: &mut Ctx) -> u32 {
     let (h, r) = (c.a(0), c.a(1));
-    DLG_END.lock().unwrap().get_or_insert_with(HashMap::new).insert(h, r);
+    DLG_END.lock().unwrap().get_or_insert_with(HashMap::default).insert(h, r);
     show(c, h, 0);
     1
 }

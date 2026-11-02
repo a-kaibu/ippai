@@ -52,6 +52,21 @@ struct Win {
     client: Rect,
     visible: bool,
     pixels: Vec<u32>,
+    /// sake: the surface the window shows instead of `pixels` (rect-sized rows, owned by the
+    /// caller; see `vnhost_window_draw_shared`), 0 for none
+    shared: usize,
+}
+
+impl Win {
+    /// the window's pixels, rect-sized rows
+    fn px(&self) -> &[u32] {
+        if self.shared != 0 {
+            let n = self.rect.w().max(0) as usize * self.rect.h().max(0) as usize;
+            unsafe { std::slice::from_raw_parts(self.shared as *const u32, n) }
+        } else {
+            &self.pixels
+        }
+    }
 }
 
 struct Display {
@@ -165,7 +180,7 @@ impl Display {
     /// that stick out (dialogs, menus); the whole screen without windows.
     fn view(&self) -> Rect {
         let screen = self.screen_rect();
-        let shown = |id: &u32| self.wins[id].visible && !self.wins[id].pixels.is_empty();
+        let shown = |id: &u32| self.wins[id].visible && !self.wins[id].px().is_empty();
         let area = |id: &u32| {
             let c = self.wins[id].client.and(&screen);
             if c.empty() { 0 } else { c.w() as i64 * c.h() as i64 }
@@ -197,7 +212,7 @@ impl Display {
         }
         let sw = self.w as usize;
         // from the topmost window that covers the whole area (the black background otherwise)
-        let shown = |w: &Win| w.visible && !w.pixels.is_empty();
+        let shown = |w: &Win| w.visible && !w.px().is_empty();
         let covers = |w: &Win| shown(w) && w.rect.and(&area) == area;
         let first = self.order.iter().rposition(|id| covers(&self.wins[id]));
         if first.is_none() {
@@ -209,7 +224,7 @@ impl Display {
         for id in &self.order[first.unwrap_or(0)..] {
             let win = &self.wins[id];
             let r = win.rect.and(&area);
-            if !win.visible || r.empty() || win.pixels.is_empty() {
+            if !win.visible || r.empty() || win.px().is_empty() {
                 continue;
             }
             let ww = win.rect.w() as usize;
@@ -217,7 +232,7 @@ impl Display {
                 let src = (y - win.rect.t) as usize * ww + (r.l - win.rect.l) as usize;
                 let dst = y as usize * sw + r.l as usize;
                 let n = r.w() as usize;
-                self.screen[dst..dst + n].copy_from_slice(&win.pixels[src..src + n]);
+                self.screen[dst..dst + n].copy_from_slice(&win.px()[src..src + n]);
             }
         }
         self.serial = self.serial.wrapping_add(1);
@@ -296,8 +311,9 @@ pub unsafe extern "C" fn vnhost_window_pos(hwnd: u32, rect: *const i32, visible:
     let client = Rect { l: r[4], t: r[5], r: r[6], b: r[7] };
     with(|d| {
         let old = d.wins.get(&hwnd).map(|w| if w.visible { w.rect } else { Rect::default() }).unwrap_or_default();
-        let win = d.wins.entry(hwnd).or_insert_with(|| Win { rect: Rect::default(), client, visible: false, pixels: Vec::new() });
+        let win = d.wins.entry(hwnd).or_insert_with(|| Win { rect: Rect::default(), client, visible: false, pixels: Vec::new(), shared: 0 });
         if win.rect.w() != rect.w() || win.rect.h() != rect.h() {
+            win.shared = 0;
             win.pixels = vec![0xff00_0000; (rect.w().max(0) * rect.h().max(0)) as usize];
         }
         win.rect = rect;
@@ -355,11 +371,16 @@ pub unsafe extern "C" fn vnhost_window_draw(hwnd: u32, dirty: *const i32, bits: 
     with(|d| {
         let Some(win) = d.wins.get_mut(&hwnd) else { return };
         let dirty = dirty.and(&Rect { l: 0, t: 0, r: win.rect.w(), b: win.rect.h() });
-        if dirty.empty() || win.pixels.is_empty() {
+        if dirty.empty() || win.px().is_empty() {
             return;
         }
+        if win.shared != 0 && win.shared != bits as usize {
+            win.pixels = win.px().to_vec();
+            win.shared = 0;
+        }
         let ww = win.rect.w() as usize;
-        for y in dirty.t..dirty.b {
+        // (nothing to copy when the window shows these very pixels)
+        for y in (dirty.t..dirty.b).filter(|_| win.shared == 0) {
             let src = bits.offset(((y - oy) * stride + (dirty.l - ox)) as isize);
             let dst = y as usize * ww + dirty.l as usize;
             let n = dirty.w() as usize;
@@ -369,6 +390,36 @@ pub unsafe extern "C" fn vnhost_window_draw(hwnd: u32, dirty: *const i32, bits: 
         let at = Rect { l: dirty.l + win.rect.l, t: dirty.t + win.rect.t, r: dirty.r + win.rect.l, b: dirty.b + win.rect.t };
         if win.visible {
             d.compose(at);
+        }
+    })
+}
+
+/// sake: like `vnhost_window_draw`, but `bits` is the window's whole surface (`w`*`h` pixels),
+/// which the window then shows directly instead of copying it (one copy of each frame less).
+/// The caller keeps `bits` alive and unmoved until `vnhost_window_unshare`.
+#[no_mangle]
+pub unsafe extern "C" fn vnhost_window_draw_shared(hwnd: u32, dirty: *const i32, bits: *const u32, w: c_int, h: c_int) {
+    with(|d| {
+        if let Some(win) = d.wins.get_mut(&hwnd) {
+            if win.rect.w() == w && win.rect.h() == h {
+                win.shared = bits as usize;
+            }
+        }
+    });
+    vnhost_window_draw(hwnd, dirty, bits, w, 0, 0)
+}
+
+/// sake: the window stops showing the surface `vnhost_window_draw_shared` gave it (about to be
+/// freed or moved): it keeps a copy of it. When this returns, nothing reads the surface.
+#[no_mangle]
+pub extern "C" fn vnhost_window_unshare(hwnd: u32) {
+    with(|d| {
+        if let Some(win) = d.wins.get_mut(&hwnd) {
+            if win.shared != 0 {
+                let px = win.px().to_vec();
+                win.pixels = px;
+                win.shared = 0;
+            }
         }
     })
 }

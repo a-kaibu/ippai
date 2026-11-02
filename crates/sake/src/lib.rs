@@ -345,3 +345,51 @@ pub unsafe extern "C" fn sake_main(argc: i32, argv: *const *const libc::c_char) 
     }
     main(&args[1], &args[2..])
 }
+
+/// The hash for sake's maps: their keys are handles and addresses (u32), looked up on every
+/// API call, where std's SipHash costs more than the lookup (FxHash, as in rustc-hash 2).
+#[derive(Default, Clone, Copy)]
+pub struct Fx(u64);
+impl Fx {
+    #[inline]
+    fn add(&mut self, x: u64) {
+        self.0 = (self.0 ^ x).wrapping_mul(0xf135_7aea_2e62_a9c5);
+    }
+}
+impl std::hash::Hasher for Fx {
+    #[inline]
+    fn finish(&self) -> u64 {
+        // the product's high bits are the mixed ones; hashbrown indexes with the low ones
+        self.0.rotate_left(26)
+    }
+    fn write(&mut self, b: &[u8]) {
+        for c in b.chunks(8) {
+            let mut a = [0u8; 8];
+            a[..c.len()].copy_from_slice(c);
+            self.add(u64::from_le_bytes(a));
+        }
+        self.add(b.len() as u64);
+    }
+    #[inline]
+    fn write_u8(&mut self, n: u8) {
+        self.add(n as u64)
+    }
+    #[inline]
+    fn write_u16(&mut self, n: u16) {
+        self.add(n as u64)
+    }
+    #[inline]
+    fn write_u32(&mut self, n: u32) {
+        self.add(n as u64)
+    }
+    #[inline]
+    fn write_u64(&mut self, n: u64) {
+        self.add(n)
+    }
+    #[inline]
+    fn write_usize(&mut self, n: usize) {
+        self.add(n as u64)
+    }
+}
+pub type HashMap<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<Fx>>;
+pub type HashSet<K> = std::collections::HashSet<K, std::hash::BuildHasherDefault<Fx>>;

@@ -2,7 +2,7 @@
 //! there leaves the translated code; `dispatch` runs the Rust implementation with the
 //! arguments still on the guest stack and returns to the caller as stdcall/cdecl would.
 
-use std::collections::{HashMap, HashSet};
+use crate::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock, RwLock};
 
 use vnx86::{Cpu, EAX, EDX, ESP};
@@ -78,7 +78,7 @@ struct Spec {
 fn specs() -> &'static Spec {
     static S: OnceLock<Spec> = OnceLock::new();
     S.get_or_init(|| {
-        let mut s = Spec { by_name: HashMap::new(), by_ord: HashMap::new(), dlls: HashSet::new() };
+        let mut s = Spec { by_name: HashMap::default(), by_ord: HashMap::default(), dlls: HashSet::default() };
         for l in include_str!("specs.txt").lines() {
             let v: Vec<&str> = l.split(' ').collect();
             if v.len() < 5 {
@@ -128,7 +128,7 @@ pub fn is_core(dll: &str) -> bool {
 }
 
 pub fn implement(dll: &str, name: &str, f: Handler) {
-    IMPLS.write().unwrap().get_or_insert_with(HashMap::new).insert(format!("{dll}!{name}"), f);
+    IMPLS.write().unwrap().get_or_insert_with(HashMap::default).insert(format!("{dll}!{name}"), f);
 }
 
 fn find_impl(dll: &str, name: &str) -> Option<Handler> {
@@ -156,7 +156,7 @@ pub fn export(dll: &str, name: &str) -> u32 {
     let d = dll_key(dll);
     let key = (d.clone(), name.to_string());
     let mut idx = INDEX.lock().unwrap();
-    let idx = idx.get_or_insert_with(HashMap::new);
+    let idx = idx.get_or_insert_with(HashMap::default);
     if let Some(&i) = idx.get(&key) {
         return TRAP_LO + 4 * i;
     }
@@ -231,7 +231,7 @@ fn trace_match(i: u32) -> bool {
     }
     static HIT: Mutex<Option<HashMap<u32, bool>>> = Mutex::new(None);
     let mut g = HIT.lock().unwrap();
-    *g.get_or_insert_with(HashMap::new).entry(i).or_insert_with(|| {
+    *g.get_or_insert_with(HashMap::default).entry(i).or_insert_with(|| {
         let n = name_of(TRAP_LO + 4 * i).unwrap_or_default();
         f.iter().any(|x| n.contains(x.as_str()))
     })
@@ -265,7 +265,7 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
         (e.f, e.bytes, e.cdecl, e.known)
     };
     if stats_on() {
-        *COUNTS.lock().unwrap().get_or_insert_with(HashMap::new).entry(i).or_default() += 1;
+        *COUNTS.lock().unwrap().get_or_insert_with(HashMap::default).entry(i).or_default() += 1;
     }
     let esp = cpu.regs[ESP];
     {
@@ -305,7 +305,7 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
                 crate::fatal(c.cpu, &format!("call to {n}, which we neither implement nor know the arguments of"));
             }
             static SEEN: Mutex<Option<HashSet<u32>>> = Mutex::new(None);
-            if SEEN.lock().unwrap().get_or_insert_with(HashSet::new).insert(i) {
+            if SEEN.lock().unwrap().get_or_insert_with(HashSet::default).insert(i) {
                 eprintln!("sake: unimplemented {n} (returns 0), from {:#x}", r32(esp));
             }
             0

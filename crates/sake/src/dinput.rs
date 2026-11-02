@@ -3,7 +3,7 @@
 
 #![allow(non_snake_case)]
 
-use std::collections::HashMap;
+use crate::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use crate::api::{host_fn, implement, Ctx, Handler};
@@ -173,7 +173,7 @@ fn create_device(guid: u32, out: u32) -> u32 {
     }
     let o = mem::heap_alloc(8, true);
     w32(o, dev_vtbl());
-    DEVICES.lock().unwrap().get_or_insert_with(HashMap::new).insert(o, (kind, crate::user::cursor_pos()));
+    DEVICES.lock().unwrap().get_or_insert_with(HashMap::default).insert(o, (kind, crate::user::cursor_pos()));
     put32(out, o);
     0
 }
@@ -231,7 +231,7 @@ fn FindDevice(_: &mut Ctx) -> u32 {
 }
 
 fn kind_of(o: u32) -> u32 {
-    DEVICES.lock().unwrap().get_or_insert_with(HashMap::new).get(&o).map_or(0, |d| d.0)
+    DEVICES.lock().unwrap().get_or_insert_with(HashMap::default).get(&o).map_or(0, |d| d.0)
 }
 
 /// DIDEVCAPS
@@ -305,7 +305,7 @@ fn GetDeviceState(c: &mut Ctx) -> u32 {
             let now = crate::user::cursor_pos();
             let last = {
                 let mut g = DEVICES.lock().unwrap();
-                let d = g.get_or_insert_with(HashMap::new).get_mut(&o).unwrap();
+                let d = g.get_or_insert_with(HashMap::default).get_mut(&o).unwrap();
                 std::mem::replace(&mut d.1, now)
             };
             if n >= 12 {

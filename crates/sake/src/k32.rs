@@ -2,7 +2,7 @@
 
 #![allow(non_snake_case)]
 
-use std::collections::HashMap;
+use crate::HashMap;
 use std::io::SeekFrom;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
@@ -761,7 +761,7 @@ fn InitializeConditionVariable(c: &mut Ctx) -> u32 {
 /// Waits for a wake of `cv` (after `release`, before `reacquire`); false on timeout.
 fn cv_wait(cv: u32, ms: u32, release: impl FnOnce(), reacquire: impl FnOnce()) -> bool {
     let mut g = SYNC.lock().unwrap();
-    let gen0 = *g.get_or_insert_with(HashMap::new).entry(cv).or_insert(0);
+    let gen0 = *g.get_or_insert_with(HashMap::default).entry(cv).or_insert(0);
     release();
     let end = (ms != u32::MAX).then(|| std::time::Instant::now() + std::time::Duration::from_millis(ms as u64));
     let mut woke = true;
@@ -787,7 +787,7 @@ fn cv_wait(cv: u32, ms: u32, release: impl FnOnce(), reacquire: impl FnOnce()) -
 }
 fn cv_wake(cv: u32) {
     let mut g = SYNC.lock().unwrap();
-    let e = g.get_or_insert_with(HashMap::new).entry(cv).or_insert(0);
+    let e = g.get_or_insert_with(HashMap::default).entry(cv).or_insert(0);
     *e = e.wrapping_add(1);
     SYNC_CV.notify_all();
 }

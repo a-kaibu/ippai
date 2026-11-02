@@ -4,7 +4,7 @@
 //! DLL's base and the backends are Rust: dwrite.dll's font backend (Wine's dlls/dwrite/freetype.c,
 //! done with ttf-parser outlines and ab_glyph_rasterizer).
 
-use std::collections::HashMap;
+use crate::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use ab_glyph_rasterizer::{point, Point, Rasterizer};
@@ -220,13 +220,13 @@ fn dwrite(code: u32, p: u32) -> u32 {
                 *n += 1;
                 *n
             };
-            FONTS.lock().unwrap().get_or_insert_with(HashMap::new).insert(id, (bytes, index));
+            FONTS.lock().unwrap().get_or_insert_with(HashMap::default).insert(id, (bytes, index));
             w32(out, id);
             w32(out + 4, 0);
             0
         }
         3 => {
-            FONTS.lock().unwrap().get_or_insert_with(HashMap::new).remove(&r32(p));
+            FONTS.lock().unwrap().get_or_insert_with(HashMap::default).remove(&r32(p));
             0
         }
         4 => get_glyph_outline(p),

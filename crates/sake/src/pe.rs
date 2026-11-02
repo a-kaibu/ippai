@@ -1,6 +1,6 @@
 //! PE images: mapping, relocations, imports, exports, resources, TLS.
 
-use std::collections::HashMap;
+use crate::HashMap;
 use std::sync::{Mutex, RwLock};
 
 use crate::mem::{self, r16, r32, w32};
@@ -132,8 +132,8 @@ pub fn load(data: &[u8], path: &str, resolve: &mut dyn FnMut(&str, Import) -> u3
     }
     let name = base_name(path);
     // exports
-    let mut exports = HashMap::new();
-    let mut ordinals = HashMap::new();
+    let mut exports = HashMap::default();
+    let mut ordinals = HashMap::default();
     let (erva, esize) = dir(0);
     if erva != 0 {
         let e = base + erva;
@@ -352,8 +352,8 @@ pub fn hle_module(dll: &str) -> u32 {
         entry: 0,
         name: name.clone(),
         path: format!("C:\\windows\\system32\\{name}"),
-        exports: HashMap::new(),
-        ordinals: HashMap::new(),
+        exports: HashMap::default(),
+        ordinals: HashMap::default(),
         dll: true,
         tls: None,
         resources: 0,

@@ -5,7 +5,7 @@
 
 #![allow(non_snake_case)]
 
-use std::collections::HashMap;
+use crate::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use crate::api::{host_fn, implement, Ctx};
@@ -100,14 +100,14 @@ fn surface_get_dc(c: &mut Ctx) -> u32 {
     let dc = c.call(f, &[0]);
     let f = crate::api::export("gdi32", "SelectObject");
     let old = c.call(f, &[dc, hbm]);
-    DCS.lock().unwrap().get_or_insert_with(HashMap::new).insert(dc, (this, hbm, old));
+    DCS.lock().unwrap().get_or_insert_with(HashMap::default).insert(dc, (this, hbm, old));
     put32(out, dc);
     0
 }
 
 fn surface_release_dc(c: &mut Ctx) -> u32 {
     let (this, dc) = (c.a(0), c.a(1));
-    let Some((s, hbm, old)) = DCS.lock().unwrap().get_or_insert_with(HashMap::new).remove(&dc) else { return 0x8876_086c };
+    let Some((s, hbm, old)) = DCS.lock().unwrap().get_or_insert_with(HashMap::default).remove(&dc) else { return 0x8876_086c };
     let _ = this;
     for (dll, name, args) in [("gdi32", "SelectObject", vec![dc, old]), ("gdi32", "DeleteDC", vec![dc]), ("gdi32", "DeleteObject", vec![hbm])] {
         let f = crate::api::export(dll, name);
@@ -122,7 +122,7 @@ fn init() {
     static DONE: OnceLock<()> = OnceLock::new();
     DONE.get_or_init(|| {
         let table = mem::heap_alloc(4 * (NUM_IFACES + 1), true);
-        let mut ids = HashMap::new();
+        let mut ids = HashMap::default();
         for i in 1..=NUM_IFACES {
             let m = METHODS[i as usize - 1];
             let v = mem::heap_alloc(4 * m.len() as u32, true);

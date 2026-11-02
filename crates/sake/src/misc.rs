@@ -3,7 +3,7 @@
 
 #![allow(non_snake_case)]
 
-use std::collections::HashMap;
+use crate::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -323,7 +323,7 @@ static REG: Mutex<Option<HashMap<String, KeyData>>> = Mutex::new(None);
 fn with_reg<R>(f: impl FnOnce(&mut HashMap<String, KeyData>) -> R) -> R {
     let mut g = REG.lock().unwrap();
     let m = g.get_or_insert_with(|| {
-        let mut m = HashMap::new();
+        let mut m = HashMap::default();
         let mut set = |k: &str, n: &str, v: &str| {
             let e: &mut KeyData = m.entry(k.to_lowercase()).or_default();
             let mut data: Vec<u8> = v.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
@@ -933,11 +933,11 @@ fn dx_container(path: &str) -> u32 {
     });
     let o = mem::heap_alloc(8, true);
     w32(o, vt);
-    DX_NODES.lock().unwrap().get_or_insert_with(HashMap::new).insert(o, path.to_string());
+    DX_NODES.lock().unwrap().get_or_insert_with(HashMap::default).insert(o, path.to_string());
     o
 }
 fn dx_path(o: u32) -> String {
-    DX_NODES.lock().unwrap().get_or_insert_with(HashMap::new).get(&o).cloned().unwrap_or_default()
+    DX_NODES.lock().unwrap().get_or_insert_with(HashMap::default).get(&o).cloned().unwrap_or_default()
 }
 fn dx_qi(c: &mut Ctx) -> u32 {
     put32(c.a(2), c.a(0));
@@ -2013,14 +2013,14 @@ fn CryptCreateHash(c: &mut Ctx) -> u32 {
         }
     };
     let id = NEXT_HASH.fetch_add(1, Ordering::Relaxed);
-    HASHES.lock().unwrap().get_or_insert_with(HashMap::new).insert(id, h);
+    HASHES.lock().unwrap().get_or_insert_with(HashMap::default).insert(id, h);
     put32(c.a(4), id);
     1
 }
 fn CryptHashData(c: &mut Ctx) -> u32 {
     let data = mem::slice(c.a(1), c.a(2));
     let mut g = HASHES.lock().unwrap();
-    match g.get_or_insert_with(HashMap::new).get_mut(&c.a(0)) {
+    match g.get_or_insert_with(HashMap::default).get_mut(&c.a(0)) {
         Some(Hasher::Md5(h)) => h.consume(data),
         Some(Hasher::Sha1(h)) => h.update(data),
         Some(Hasher::Sha256(h)) => sha2::Digest::update(h, data),
@@ -2031,7 +2031,7 @@ fn CryptHashData(c: &mut Ctx) -> u32 {
 fn CryptGetHashParam(c: &mut Ctx) -> u32 {
     let (h, param, out, plen) = (c.a(0), c.a(1), c.a(2), c.a(3));
     let mut g = HASHES.lock().unwrap();
-    let Some(hs) = g.get_or_insert_with(HashMap::new).get(&h) else { return 0 };
+    let Some(hs) = g.get_or_insert_with(HashMap::default).get(&h) else { return 0 };
     let (alg, digest): (u32, Vec<u8>) = match hs {
         Hasher::Md5(x) => (0x8003, x.clone().finalize().0.to_vec()),
         Hasher::Sha1(x) => (0x8004, x.clone().finish().to_vec()),
@@ -2055,7 +2055,7 @@ fn CryptGetHashParam(c: &mut Ctx) -> u32 {
     1
 }
 fn CryptDestroyHash(c: &mut Ctx) -> u32 {
-    HASHES.lock().unwrap().get_or_insert_with(HashMap::new).remove(&c.a(0)).is_some() as u32
+    HASHES.lock().unwrap().get_or_insert_with(HashMap::default).remove(&c.a(0)).is_some() as u32
 }
 
 /// SHA-1 (no crate for it here; small enough to keep).

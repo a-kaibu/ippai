@@ -4,7 +4,7 @@
 
 #![allow(non_snake_case)]
 
-use std::collections::HashMap;
+use crate::HashMap;
 use std::sync::Mutex;
 
 use crate::api::{implement, Ctx};
@@ -288,15 +288,15 @@ fn acmStreamOpen(c: &mut Ctx) -> u32 {
         *n += 1;
         *n
     };
-    STREAMS.lock().unwrap().get_or_insert_with(HashMap::new).insert(h, Stream { src: s, dst: d });
+    STREAMS.lock().unwrap().get_or_insert_with(HashMap::default).insert(h, Stream { src: s, dst: d });
     put32(ph, h);
     0
 }
 fn with<R>(h: u32, f: impl FnOnce(&Stream) -> R) -> Option<R> {
-    STREAMS.lock().unwrap().get_or_insert_with(HashMap::new).get(&h).map(f)
+    STREAMS.lock().unwrap().get_or_insert_with(HashMap::default).get(&h).map(f)
 }
 fn acmStreamClose(c: &mut Ctx) -> u32 {
-    STREAMS.lock().unwrap().get_or_insert_with(HashMap::new).remove(&c.a(0));
+    STREAMS.lock().unwrap().get_or_insert_with(HashMap::default).remove(&c.a(0));
     0
 }
 /// acmStreamSize(has, cbInput, pdwOutputBytes, flags): SOURCE (0) or DESTINATION (1)

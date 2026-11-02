@@ -5,7 +5,7 @@
 
 #![allow(non_snake_case)]
 
-use std::collections::HashMap;
+use crate::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -79,7 +79,7 @@ static DEV: Mutex<Option<Dev>> = Mutex::new(None);
 
 fn with<R>(f: impl FnOnce(&mut Dev) -> R) -> R {
     let mut g = DEV.lock().unwrap_or_else(|e| e.into_inner());
-    f(g.get_or_insert_with(|| Dev { bufs: HashMap::new(), stream: -1 }))
+    f(g.get_or_insert_with(|| Dev { bufs: HashMap::default(), stream: -1 }))
 }
 
 fn gains(volume: i32, pan: i32) -> (f32, f32) {
@@ -307,7 +307,7 @@ static DS_REFS: Mutex<Option<HashMap<u32, u32>>> = Mutex::new(None);
 fn create_device() -> u32 {
     start_mixer();
     let o = new_object(ds_vtbl(), 0);
-    DS_REFS.lock().unwrap().get_or_insert_with(HashMap::new).insert(o, 1);
+    DS_REFS.lock().unwrap().get_or_insert_with(HashMap::default).insert(o, 1);
     o
 }
 
@@ -379,13 +379,13 @@ fn DS_QueryInterface(c: &mut Ctx) -> u32 {
 }
 fn DS_AddRef(c: &mut Ctx) -> u32 {
     let mut g = DS_REFS.lock().unwrap();
-    let r = g.get_or_insert_with(HashMap::new).entry(c.a(0)).or_insert(1);
+    let r = g.get_or_insert_with(HashMap::default).entry(c.a(0)).or_insert(1);
     *r += 1;
     *r
 }
 fn DS_Release(c: &mut Ctx) -> u32 {
     let mut g = DS_REFS.lock().unwrap();
-    let r = g.get_or_insert_with(HashMap::new).entry(c.a(0)).or_insert(1);
+    let r = g.get_or_insert_with(HashMap::default).entry(c.a(0)).or_insert(1);
     *r = r.saturating_sub(1);
     *r
 }

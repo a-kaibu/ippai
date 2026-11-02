@@ -4,7 +4,7 @@
 //! threads, message queues): any change wakes all waiters, which then recheck. Simple, and
 //! games have few threads.
 
-use std::collections::HashMap;
+use crate::HashMap;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -40,7 +40,7 @@ pub fn lock() -> MutexGuard<'static, Option<Table>> {
 
 pub fn with<R>(f: impl FnOnce(&mut Table) -> R) -> R {
     let mut g = lock();
-    f(g.get_or_insert_with(|| Table { objs: HashMap::new(), next: 0x100, names: HashMap::new(), gen: 0 }))
+    f(g.get_or_insert_with(|| Table { objs: HashMap::default(), next: 0x100, names: HashMap::default(), gen: 0 }))
 }
 
 pub const CURRENT_PROCESS: u32 = 0xffff_ffff;
@@ -161,7 +161,7 @@ pub fn wait(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> bool
     let deadline = (ms != 0xffff_ffff).then(|| Instant::now() + Duration::from_millis(ms as u64));
     let mut g = lock();
     loop {
-        let t = g.get_or_insert_with(|| Table { objs: HashMap::new(), next: 0x100, names: HashMap::new(), gen: 0 });
+        let t = g.get_or_insert_with(|| Table { objs: HashMap::default(), next: 0x100, names: HashMap::default(), gen: 0 });
         if let Some(x) = extra {
             if x() {
                 return handles.len() as u32;

@@ -7,7 +7,7 @@
 
 #![allow(non_snake_case)]
 
-use std::collections::HashMap;
+use crate::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use crate::api::{host_fn, implement, Ctx, Handler};
@@ -75,10 +75,10 @@ static ST: Mutex<Option<State>> = Mutex::new(None);
 fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
     let mut g = ST.lock().unwrap_or_else(|e| e.into_inner());
     f(g.get_or_insert_with(|| State {
-        surfs: HashMap::new(),
-        blocks: HashMap::new(),
-        clippers: HashMap::new(),
-        palettes: HashMap::new(),
+        surfs: HashMap::default(),
+        blocks: HashMap::default(),
+        clippers: HashMap::default(),
+        palettes: HashMap::default(),
         next: 1,
         hwnd: 0,
         exclusive: false,

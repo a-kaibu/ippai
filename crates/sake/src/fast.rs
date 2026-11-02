@@ -7,7 +7,7 @@
 //!
 //! SAKE_NO_FAST=1 binds the traps instead.
 
-use std::collections::HashMap;
+use crate::HashMap;
 use std::sync::Mutex;
 
 use crate::api::Ctx;
@@ -384,7 +384,7 @@ pub fn bind(dll: &str, name: &str, trap: u32) -> u32 {
         return trap;
     }
     let mut g = STUBS.lock().unwrap();
-    let m = g.get_or_insert_with(HashMap::new);
+    let m = g.get_or_insert_with(HashMap::default);
     if let Some(&a) = m.get(name) {
         return a;
     }
