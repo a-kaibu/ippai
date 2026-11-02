@@ -1392,17 +1392,48 @@ impl<'a> Gen<'a> {
             self.c.get(L_OP).u32c(op).eq().if_i32();
             self.cond_known(op, cc);
             self.c.else_();
-            self.cond_eflags(cc);
+            self.cond_entry(cc);
             self.c.end();
             if neg {
                 self.c.eqz();
             }
             return;
         }
-        self.cond_eflags(cc);
+        if self.flags == Flags::Entry {
+            self.cond_entry(cc);
+        } else {
+            self.cond_eflags(cc);
+        }
         if neg {
             self.c.eqz();
         }
+    }
+
+    /// Condition `cc` (no negation) from flags not known statically (C.1 of
+    /// docs/v8-wasm-shape.md): ZF, SF and PF come from the lazy result alone, whatever the
+    /// operation (every kind's are those of its result at its size), so those need EFLAGS only
+    /// when the flags are in the Cpu.
+    fn cond_entry(&mut self, cc: u32) {
+        let k = cc >> 1;
+        if !matches!(k, 2 | 4 | 5) {
+            return self.cond_eflags(cc);
+        }
+        self.c.get(L_OP).i32c(-1).eq().if_i32();
+        self.cond_eflags(cc & !1);
+        self.c.else_();
+        if k == 5 {
+            // PF: the low byte has an even number of ones
+            self.c.get(L_FR).i32c(0xff).and().op(0x69).i32c(1).and().eqz();
+        } else {
+            // the result's bits at the operation's size at the top: << 32 - (8 << size)
+            self.c.get(L_FR).i32c(32).i32c(8).get(L_OP).i32c(3).and().shl().sub().shl();
+            if k == 2 {
+                self.c.eqz();
+            } else {
+                self.c.i32c(31).shr_u();
+            }
+        }
+        self.c.end();
     }
 
     /// An operation the blocks leading here (functions) left their flags from, for which
