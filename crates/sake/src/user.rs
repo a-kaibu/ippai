@@ -2081,8 +2081,51 @@ fn DdeInitializeA(c: &mut Ctx) -> u32 {
     put32(c.a(0), DDE_NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
     0
 }
-fn DdeCreateStringHandleA(_: &mut Ctx) -> u32 {
-    0x100 + DDE_NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+static DDE_STR: Mutex<Vec<(u32, Vec<u16>)>> = Mutex::new(Vec::new());
+fn dde_string(c: &mut Ctx, wide: bool) -> u32 {
+    let h = 0x100 + DDE_NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let p = c.a(1);
+    let t = if p == 0 { Vec::new() } else if wide { wstr(p) } else { a2w(&cstr(p)) };
+    DDE_STR.lock().unwrap().push((h, t));
+    h
+}
+fn DdeCreateStringHandleA(c: &mut Ctx) -> u32 {
+    dde_string(c, false)
+}
+fn DdeCreateStringHandleW(c: &mut Ctx) -> u32 {
+    dde_string(c, true)
+}
+/// DdeQueryString(inst, hsz, buffer, cch, codepage): the length without the NUL
+fn dde_query(c: &mut Ctx, wide: bool) -> u32 {
+    let (h, buf, cch) = (c.a(1), c.a(2), c.a(3));
+    let Some(t) = DDE_STR.lock().unwrap().iter().find(|x| x.0 == h).map(|x| x.1.clone()) else { return 0 };
+    if wide {
+        if buf != 0 && cch != 0 {
+            mem::put_wstr(buf, cch, &t);
+        }
+        t.len() as u32
+    } else {
+        let a = w2a(&t);
+        if buf != 0 && cch != 0 {
+            mem::put_cstr(buf, cch, &a);
+        }
+        a.len() as u32
+    }
+}
+fn DdeQueryStringA(c: &mut Ctx) -> u32 {
+    dde_query(c, false)
+}
+fn DdeQueryStringW(c: &mut Ctx) -> u32 {
+    dde_query(c, true)
+}
+fn DdeCmpStringHandles(c: &mut Ctx) -> u32 {
+    let g = DDE_STR.lock().unwrap();
+    let get = |h: u32| g.iter().find(|x| x.0 == h).map(|x| x.1.iter().map(|&ch| crate::text::lower16(ch)).collect::<Vec<_>>());
+    match get(c.a(0)).cmp(&get(c.a(1))) {
+        std::cmp::Ordering::Less => u32::MAX,
+        std::cmp::Ordering::Equal => 0,
+        _ => 1,
+    }
 }
 fn dde_true(_: &mut Ctx) -> u32 {
     1
@@ -4235,9 +4278,9 @@ pub fn init() {
         AttachThreadInput, FlashWindow, GetProcessWindowStation, GetUserObjectInformationA, SetProcessDPIAware,
         IsWindowUnicode, RegisterHotKey, UnregisterHotKey,
     );
-    reg!("user32"; DdeInitializeA, DdeCreateStringHandleA, DdeConnect, DdeGetLastError);
+    reg!("user32"; DdeInitializeA, DdeCreateStringHandleA, DdeCreateStringHandleW, DdeConnect, DdeGetLastError,
+        DdeQueryStringA, DdeQueryStringW, DdeCmpStringHandles);
     implement("user32", "DdeInitializeW", DdeInitializeA);
-    implement("user32", "DdeCreateStringHandleW", DdeCreateStringHandleA);
     for n in ["DdeNameService", "DdeFreeStringHandle", "DdeUninitialize", "DdeKeepStringHandle", "DdeDisconnect", "DdeFreeDataHandle", "DdeEnableCallback"] {
         implement("user32", n, dde_true);
     }
