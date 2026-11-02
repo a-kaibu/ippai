@@ -2579,14 +2579,14 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         let get = |s: u32| st.transforms.get(&s).copied().unwrap_or(IDENT);
         let wvp = mul(&mul(&get(256), &get(2)), &get(3));
         let mut regs = vec![[0f32; 4]; ff::VS_CONSTS as usize];
-        // (WGSL: mat4x4f(c0..c3) * p with D3D's rows as columns = p * M)
+        // WGSL: mat4x4f(c0..c3) * p with D3D's rows as the columns = transpose(M) * p = p * M
         for r in 0..4 {
-            regs[r] = [wvp[r], wvp[4 + r], wvp[8 + r], wvp[12 + r]];
+            regs[r] = [wvp[4 * r], wvp[4 * r + 1], wvp[4 * r + 2], wvp[4 * r + 3]];
         }
         for t in 0..2 {
             let m = get(16 + t as u32);
             for r in 0..4 {
-                regs[4 + t * 4 + r] = [m[r], m[4 + r], m[8 + r], m[12 + r]];
+                regs[4 + t * 4 + r] = [m[4 * r], m[4 * r + 1], m[4 * r + 2], m[4 * r + 3]];
             }
         }
         regs[12] = [st.material[0], st.material[1], st.material[2], st.material[3]];
