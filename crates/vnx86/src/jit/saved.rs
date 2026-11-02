@@ -7,8 +7,7 @@
 //! Index: "VNJ2", count, then per entry: roots, starts (address, block), code (address,
 //! length) as u32-counted lists of u32s, the code bytes (u32 length first), then the build
 //! (0: a region, else a function's) and the function's indirect call sites (counted list).
-//! "VNJ1" is the same without the last two (regions only). "VNJ3" adds the number of callee
-//! functions a function's module holds after it (its direct calls' targets), last.
+//! "VNJ1" is the same without the last two (regions only).
 
 use alloc::vec::Vec;
 
@@ -23,8 +22,6 @@ pub struct Entry {
     pub build: u32,
     /// a function's indirect call sites
     pub sites: Vec<u32>,
-    /// callee functions after it (see [`super::Region::extra`])
-    pub extra: u32,
 }
 
 impl Entry {
@@ -38,12 +35,12 @@ impl Entry {
 
     /// Module functions (table entries) it takes.
     pub fn width(&self) -> u32 {
-        if self.build > 0 { 2 + self.extra } else { 1 }
+        if self.build > 0 { 2 } else { 1 }
     }
 }
 
 pub fn encode(entries: &[Entry]) -> Vec<u8> {
-    let mut out = Vec::from(&b"VNJ3"[..]);
+    let mut out = Vec::from(&b"VNJ2"[..]);
     let u = |out: &mut Vec<u8>, v: u32| out.extend_from_slice(&v.to_le_bytes());
     u(&mut out, entries.len() as u32);
     for e in entries {
@@ -65,7 +62,6 @@ pub fn encode(entries: &[Entry]) -> Vec<u8> {
         for &a in &e.sites {
             u(&mut out, a);
         }
-        u(&mut out, e.extra);
     }
     out
 }
@@ -101,10 +97,9 @@ pub fn decode_all(mut b: &[u8]) -> Option<Vec<Entry>> {
 
 /// An index at the start of `b`, and its length.
 fn decode_one(b: &[u8]) -> Option<(Vec<Entry>, usize)> {
-    let (v2, v3) = match b.get(..4)? {
-        b"VNJ1" => (false, false),
-        b"VNJ2" => (true, false),
-        b"VNJ3" => (true, true),
+    let v2 = match b.get(..4)? {
+        b"VNJ1" => false,
+        b"VNJ2" => true,
         _ => return None,
     };
     let mut r = Reader(b, 4);
@@ -116,8 +111,7 @@ fn decode_one(b: &[u8]) -> Option<(Vec<Entry>, usize)> {
             let text = b.get(r.1..r.1 + n)?.to_vec();
             r.1 += n;
             let (build, sites) = if v2 { (r.u()?, (0..r.u()?).map(|_| r.u()).collect::<Option<Vec<_>>>()?) } else { (0, Vec::new()) };
-            let extra = if v3 { r.u()? } else { 0 };
-            Some(Entry { roots, starts, code, text, build, sites, extra })
+            Some(Entry { roots, starts, code, text, build, sites })
         })
         .collect::<Option<Vec<_>>>()?;
     Some((e, r.1))
@@ -134,12 +128,7 @@ pub fn func_names(entries: &[Entry]) -> Vec<alloc::string::String> {
         .iter()
         .flat_map(|e| {
             let n = e.name();
-            if e.build == 0 {
-                return alloc::vec![n];
-            }
-            let mut v = alloc::vec![alloc::format!("{n}_adapter"), n.clone()];
-            v.extend((0..e.extra).map(|i| alloc::format!("{n}_callee{i}")));
-            v
+            if e.width() == 2 { alloc::vec![alloc::format!("{n}_adapter"), n] } else { alloc::vec![n] }
         })
         .collect()
 }

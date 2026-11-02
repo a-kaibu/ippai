@@ -279,9 +279,6 @@ pub struct Region {
     pub profile: Vec<(u32, u32, Vec<String>)>,
     /// functions: the indirect calls and jumps (addresses) whose targets the ring samples
     pub sites: Vec<u32>,
-    /// functions: the callees after it in the module (each one function, no adapter; see
-    /// [`EMBED`])
-    pub extra: u32,
 }
 
 /// Debugging: count block entries (a u32 per block, leaked) and fill [`Region::profile`].
@@ -349,8 +346,6 @@ enum Flags {
 
 struct Gen<'a> {
     c: Code,
-    /// direct calls' targets that are functions of this module: their module index
-    direct: &'a BTreeMap<u32, u32>,
     /// a function (FN), not a region
     fnm: bool,
     /// laid out by `structure` (jumps go to open labels or leave)
@@ -3293,23 +3288,14 @@ impl<'a> Gen<'a> {
         self.c.get(L_ARG).u32c(MAX_DEPTH).ge_u().or().br_if(0);
         // the call cache: this site's slot (by its address) holds (target, hash table entry)
         // of the latest function it called; a miss asks the host (which fills it)
-        // (a callee in this module: called as it is)
-        let local = if self.ins.op0_kind() == OpKind::NearBranch32 { self.direct.get(&self.ins.near_branch32()).copied() } else { None };
-        if local.is_none() {
-            let slot = (site.wrapping_mul(0x9e37_79b1) >> 20) & (CALL_CACHE - 1);
-            self.c.get(L_CPU).load32(Off::call_cache()).u32c(slot * 8).add().tee(h).load32(0).get(t).eq();
-            self.c.if_i32().get(h).load32(4).else_().get(L_CPU).get(h).get(t).call(F_CALLMISS).end().tee(v).eqz().br_if(0);
-        }
+        let slot = (site.wrapping_mul(0x9e37_79b1) >> 20) & (CALL_CACHE - 1);
+        self.c.get(L_CPU).load32(Off::call_cache()).u32c(slot * 8).add().tee(h).load32(0).get(t).eq();
+        self.c.if_i32().get(h).load32(4).else_().get(L_CPU).get(h).get(t).call(F_CALLMISS).end().tee(v).eqz().br_if(0);
         bump(&mut self.c, 0);
         self.c.get(L_CPU).get(L_BUD).store32(Off::budget());
         self.c.get(L_CPU).get(L_ARG).i32c(1).add();
         self.c.get(L_REG + 4);
-        match local {
-            Some(f) => self.c.call_local(f),
-            None => self.c.get(v).u32c((1 << ENTRY_SHIFT) - 1).and().i32c(1).add().call_indirect(T_FN, 0),
-        }
-        .set(v)
-        .set(h);
+        self.c.get(v).u32c((1 << ENTRY_SHIFT) - 1).and().i32c(1).add().call_indirect(T_FN, 0).set(v).set(h);
         // left another way (the state is in the Cpu): pass it on
         self.c.get(h).i32c(RET_FN).ne().if_().get(h).i32c(0).ret().end();
         self.c.get(L_CPU).load32(Off::eip()).u32c(next).ne().if_();
@@ -4597,7 +4583,7 @@ pub static HOIST: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBoo
 /// taking at most `max_blocks` blocks whose start `accept` agrees to. None if not even the
 /// entry block can be translated.
 pub fn translate_region<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u32], max_blocks: usize, accept: impl FnMut(u32) -> bool) -> Option<Region> {
-    translate(module, mem, roots, max_blocks, accept, None, &|_| None, &|_| false, false)
+    translate(module, mem, roots, max_blocks, accept, None, &|_| None, &|_| false)
 }
 
 /// Adds the function at `entry` (see [`FN`]) to `module`: its adapter for the region calling
@@ -4607,22 +4593,7 @@ pub fn translate_region<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u3
 /// `hints` gives the target an indirect call or jump at an address mostly goes to (a small one
 /// is inlined behind a check).
 pub fn translate_function<M: Memory>(module: &mut Module, mem: &mut M, entry: u32, max_blocks: usize, trap: (u32, u32), hints: &dyn Fn(u32) -> Option<u32>, ran: &dyn Fn(u32) -> bool, accept: impl FnMut(u32) -> bool) -> Option<Region> {
-    translate(module, mem, &[entry], max_blocks, accept, Some(trap), hints, ran, EMBED.load(core::sync::atomic::Ordering::Relaxed) > 0)
-}
-
-/// Callees a function's module holds after it, at most (VNVM_JIT_EMBED; 0: none): the
-/// targets of its direct calls that ran, translated as functions of their own, called with a
-/// plain `call` (V8 inlines a small callee of the same module and needs no table or cache).
-/// Off by default: flatbench in Chromium the same once warm (2.2-2.4 s per rep either way)
-/// and its first rep 0.5 s slower (the callees are translated again in each caller); the
-/// translator inlines the small callees itself already, and the call cache costs little.
-pub static EMBED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-/// Instructions an embedded callee may have, at most.
-const EMBED_INS: usize = 400;
-
-/// A callee to embed (see [`EMBED`]): its blocks that ran, itself embedding none.
-fn translate_callee<M: Memory>(module: &mut Module, mem: &mut M, f: u32, max_blocks: usize, trap: (u32, u32), hints: &dyn Fn(u32) -> Option<u32>, ran: &dyn Fn(u32) -> bool) -> Option<Region> {
-    translate(module, mem, &[f], max_blocks, |a| !(trap.0..trap.1).contains(&a) && (a == f || ran(a)), Some(trap), hints, ran, false)
+    translate(module, mem, &[entry], max_blocks, accept, Some(trap), hints, ran)
 }
 
 fn translate<M: Memory>(
@@ -4634,7 +4605,6 @@ fn translate<M: Memory>(
     fn_trap: Option<(u32, u32)>,
     hints: &dyn Fn(u32) -> Option<u32>,
     ran: &dyn Fn(u32) -> bool,
-    embed: bool,
 ) -> Option<Region> {
     let fnm = fn_trap.is_some();
     // blocks of small callees to inline (functions)
@@ -4705,7 +4675,7 @@ fn translate<M: Memory>(
     if blocks.is_empty() {
         return None;
     }
-    let code: Vec<(u32, u32)> = blocks
+    let code = blocks
         .iter()
         .map(|(a, list)| {
             let last = list.last().unwrap();
@@ -4805,44 +4775,6 @@ fn translate<M: Memory>(
         module.imports.push(Import::Func("callmiss", T_CALLMISS));
     }
 
-    // direct calls' targets that ran (not inlined): functions of this module after this one
-    let mut direct = BTreeMap::new();
-    let mut embedded: Vec<(Func, Region)> = Vec::new();
-    if let (true, Some(trap)) = (embed, fn_trap) {
-        let mut count: BTreeMap<u32, u32> = BTreeMap::new();
-        for (k, (_, list)) in blocks.iter().enumerate() {
-            let last = list.last().unwrap();
-            if last.flow_control() == FlowControl::Call && last.op0_kind() == OpKind::NearBranch32 && !inlined.contains_key(&k) {
-                let f = last.near_branch32();
-                if (GUEST_LO..GUEST_HI).contains(&f) && !(trap.0..trap.1).contains(&f) && ran(f) {
-                    *count.entry(f).or_insert(0) += 1;
-                }
-            }
-        }
-        let mut list: Vec<(u32, u32)> = count.into_iter().collect();
-        list.sort_by_key(|&(f, n)| (core::cmp::Reverse(n), f));
-        let at = module.imported_funcs() + module.funcs.len() as u32;
-        let max = EMBED.load(core::sync::atomic::Ordering::Relaxed) as usize;
-        for (f, _) in list {
-            if f == roots[0] {
-                // (recursion: itself)
-                direct.insert(f, at + 1);
-                continue;
-            }
-            if embedded.len() >= max {
-                continue;
-            }
-            let mut m = Module::default();
-            let Some(r) = translate_callee(&mut m, mem, f, max_blocks, trap, hints, ran) else { continue };
-            if r.instructions > EMBED_INS || m.types != module.types || m.imports != module.imports {
-                continue;
-            }
-            let func = m.funcs.pop().unwrap();
-            direct.insert(f, at + 2 + embedded.len() as u32);
-            embedded.push((func, r));
-        }
-    }
-
     let n = blocks.len() as u32;
     let mut returns: Vec<u32> = blocks
         .iter()
@@ -4921,7 +4853,6 @@ fn translate<M: Memory>(
         ctxs: &ctxs,
         ret_to: &ret_to,
         inlined: &inlined,
-        direct: &direct,
         live_out: Vec::new(),
         loops: &loops,
         fwd: alloc::vec![None; nodes],
@@ -5134,13 +5065,5 @@ fn translate<M: Memory>(
     } else {
         Vec::new()
     };
-    let (mut code, mut sites, mut count) = (code, sites, count);
-    let extra = embedded.len() as u32;
-    for (f, r) in embedded {
-        code.extend(r.code);
-        sites.extend(r.sites);
-        count += r.instructions;
-        module.funcs.push(f);
-    }
-    Some(Region { starts, instructions: count, code, layout, profile, sites, extra })
+    Some(Region { starts, instructions: count, code, layout, profile, sites })
 }

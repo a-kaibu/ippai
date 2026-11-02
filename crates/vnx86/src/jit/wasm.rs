@@ -13,9 +13,6 @@ pub struct Code {
     pub b: Vec<u8>,
     /// where each local.get/set/tee is (its opcode's offset in `b`), for `compact_locals`
     pub locs: Vec<u32>,
-    /// where each `call` of a function of the same module is (its opcode's offset): its index
-    /// is a 5-byte LEB that merges and selections renumber (see the "vnrel" section)
-    pub calls: Vec<u32>,
 }
 
 /// wine.wasm's (and sake's) memory in pages, which never grows (vnvm-wine hangover/build.sh
@@ -35,18 +32,6 @@ pub fn uleb(out: &mut Vec<u8>, mut v: u64) {
         }
         out.push(c | 0x80);
     }
-}
-
-/// `v` as a 5-byte (padded) LEB, rewritable in place.
-fn leb5(out: &mut Vec<u8>, v: u32) {
-    for i in 0..5 {
-        let b = ((v >> (7 * i)) & 0x7f) as u8;
-        out.push(if i < 4 { b | 0x80 } else { b });
-    }
-}
-
-fn read_leb5(b: &[u8]) -> u32 {
-    (0..5).fold(0, |v, i| v | ((b[i] & 0x7f) as u32) << (7 * i))
 }
 
 pub fn sleb(out: &mut Vec<u8>, mut v: i64) {
@@ -79,9 +64,6 @@ impl Code {
         self.b.truncate(n);
         while self.locs.last().is_some_and(|&p| p as usize >= n) {
             self.locs.pop();
-        }
-        while self.calls.last().is_some_and(|&p| p as usize >= n) {
-            self.calls.pop();
         }
     }
 
@@ -220,13 +202,6 @@ impl Code {
     pub fn call(&mut self, f: u32) -> &mut Self {
         self.b.push(0x10);
         uleb(&mut self.b, f as u64);
-        self
-    }
-    /// A call of function `f` (module index) of this module, relocatable.
-    pub fn call_local(&mut self, f: u32) -> &mut Self {
-        self.calls.push(self.b.len() as u32);
-        self.b.push(0x10);
-        leb5(&mut self.b, f);
         self
     }
     pub fn call_indirect(&mut self, ty: u32, table: u32) -> &mut Self {
@@ -396,13 +371,11 @@ impl Code {
     }
 }
 
-#[derive(PartialEq)]
 pub struct FuncType {
     pub params: Vec<u8>,
     pub results: Vec<u8>,
 }
 
-#[derive(PartialEq)]
 pub enum Import {
     /// env.memory: shared, up to 4GB
     Memory,
@@ -505,9 +478,8 @@ impl Module {
         section(&mut out, 7, &s);
 
         s.clear();
-        let mut rel: Vec<(u32, u32)> = Vec::new();
         uleb(&mut s, self.funcs.len() as u64);
-        for (i, f) in self.funcs.iter().enumerate() {
+        for f in &self.funcs {
             let mut body = Vec::new();
             // locals, run-length encoded
             let mut groups: Vec<(u32, u8)> = Vec::new();
@@ -522,21 +494,12 @@ impl Module {
                 uleb(&mut body, n as u64);
                 body.push(t);
             }
-            let at = body.len();
             body.extend_from_slice(&f.code.b);
             body.push(0x0b);
-            let mut size = Vec::new();
-            uleb(&mut size, body.len() as u64);
-            for &c in &f.code.calls {
-                rel.push((i as u32, (size.len() + at) as u32 + c + 1));
-            }
-            s.extend_from_slice(&size);
+            uleb(&mut s, body.len() as u64);
             s.extend_from_slice(&body);
         }
         section(&mut out, 10, &s);
-        if !rel.is_empty() {
-            rel_section(&mut out, &rel);
-        }
 
         if let Some(n) = &self.name {
             s.clear();
@@ -594,37 +557,6 @@ struct Parts<'a> {
     imports: &'a [u8],
     nimp: u64,
     funcs: Vec<(u64, &'a [u8])>,
-    /// calls of this module's functions: (function, offset of the 5-byte index in its body
-    /// as `funcs` has it, with its size)
-    rel: Vec<(u32, u32)>,
-}
-
-/// The custom section "vnrel": count, then (function, offset) pairs as ulebs.
-fn rel_section(out: &mut Vec<u8>, rel: &[(u32, u32)]) {
-    let mut s = Vec::new();
-    name(&mut s, "vnrel");
-    uleb(&mut s, rel.len() as u64);
-    for &(f, o) in rel {
-        uleb(&mut s, f as u64);
-        uleb(&mut s, o as u64);
-    }
-    section(out, 0, &s);
-}
-
-fn read_rel(s: &[(u8, &[u8])]) -> Option<Vec<(u32, u32)>> {
-    for &(id, b) in s {
-        if id != 0 {
-            continue;
-        }
-        let mut p = 0;
-        let n = read_uleb(b, &mut p)? as usize;
-        if b.get(p..p + n) != Some(&b"vnrel"[..]) {
-            continue;
-        }
-        p += n;
-        return (0..read_uleb(b, &mut p)?).map(|_| Some((read_uleb(b, &mut p)? as u32, read_uleb(b, &mut p)? as u32))).collect();
-    }
-    Some(Vec::new())
 }
 
 fn parts(m: &[u8]) -> Option<Parts<'_>> {
@@ -669,13 +601,11 @@ fn parts(m: &[u8]) -> Option<Parts<'_>> {
         q += n;
         funcs.push((ty, c.get(at..q)?));
     }
-    let rel = read_rel(&s)?;
-    Some(Parts { types, imports, nimp, funcs, rel })
+    Some(Parts { types, imports, nimp, funcs })
 }
 
-/// A module of `funcs` (exported as "f0", "f1", ... and named `names` if there is one each),
-/// with `rel` its calls of its own functions.
-fn assemble(types: &[u8], imports: &[u8], nimp: u64, funcs: &[(u64, Vec<u8>)], names: &[alloc::string::String], rel: &[(u32, u32)]) -> Vec<u8> {
+/// A module of `funcs` (exported as "f0", "f1", ... and named `names` if there is one each).
+fn assemble(types: &[u8], imports: &[u8], nimp: u64, funcs: &[(u64, &[u8])], names: &[alloc::string::String]) -> Vec<u8> {
     let n = funcs.len() as u64;
     let mut out = Vec::from(&b"\0asm\x01\0\0\0"[..]);
     section(&mut out, 1, types);
@@ -697,7 +627,7 @@ fn assemble(types: &[u8], imports: &[u8], nimp: u64, funcs: &[(u64, Vec<u8>)], n
     s.clear();
     uleb(&mut s, n);
     for f in funcs {
-        s.extend_from_slice(&f.1);
+        s.extend_from_slice(f.1);
     }
     section(&mut out, 10, &s);
     if names.len() as u64 == n {
@@ -714,36 +644,7 @@ fn assemble(types: &[u8], imports: &[u8], nimp: u64, funcs: &[(u64, Vec<u8>)], n
         s.extend_from_slice(&list);
         section(&mut out, 0, &s);
     }
-    if !rel.is_empty() {
-        rel_section(&mut out, rel);
-    }
     out
-}
-
-/// The functions of `p` moved to new positions (`to`: old position -> new, None if left out),
-/// their calls of each other renumbered; with the relocations at their new places. None if a
-/// kept function calls one left out.
-fn moved(p: &Parts, to: &dyn Fn(u32) -> Option<u32>, funcs: &mut Vec<(u64, Vec<u8>)>, rel: &mut Vec<(u32, u32)>) -> Option<()> {
-    for (i, f) in p.funcs.iter().enumerate() {
-        if to(i as u32).is_some() {
-            funcs.push((f.0, f.1.to_vec()));
-        }
-    }
-    for &(f, o) in &p.rel {
-        let Some(nf) = to(f) else { continue };
-        let body = &mut funcs[nf as usize].1;
-        let o = o as usize;
-        if o == 0 || body.get(o - 1) != Some(&0x10) {
-            return None;
-        }
-        let target = read_leb5(body.get(o..o + 5)?) as u64;
-        let nt = to(target.checked_sub(p.nimp)? as u32)? as u64 + p.nimp;
-        let mut b = Vec::new();
-        leb5(&mut b, nt as u32);
-        body[o..o + 5].copy_from_slice(&b);
-        rel.push((nf, o as u32));
-    }
-    Some(())
 }
 
 /// One module holding the functions of `modules` (as [`Module::finish`] built them, with the
@@ -754,12 +655,8 @@ pub fn merge(modules: &[&[u8]], names: &[alloc::string::String]) -> Option<Vec<u
     if all.iter().any(|p| p.types != first.types || p.imports != first.imports) {
         return None;
     }
-    let (mut funcs, mut rel) = (Vec::new(), Vec::new());
-    for p in &all {
-        let base = funcs.len() as u32;
-        moved(p, &|i| Some(base + i), &mut funcs, &mut rel)?;
-    }
-    Some(assemble(first.types, first.imports, first.nimp, &funcs, names, &rel))
+    let funcs: Vec<(u64, &[u8])> = all.iter().flat_map(|p| p.funcs.iter().copied()).collect();
+    Some(assemble(first.types, first.imports, first.nimp, &funcs, names))
 }
 
 /// `module` with only the functions `keep` says (unnamed).
@@ -768,15 +665,8 @@ pub fn select(module: &[u8], keep: &[bool]) -> Option<Vec<u8>> {
     if keep.len() != p.funcs.len() {
         return None;
     }
-    let mut at = Vec::with_capacity(keep.len());
-    let mut n = 0;
-    for &k in keep {
-        at.push(k.then_some(n));
-        n += k as u32;
-    }
-    let (mut funcs, mut rel) = (Vec::new(), Vec::new());
-    moved(&p, &|i| at.get(i as usize).copied().flatten(), &mut funcs, &mut rel)?;
-    Some(assemble(p.types, p.imports, p.nimp, &funcs, &[], &rel))
+    let funcs: Vec<(u64, &[u8])> = p.funcs.iter().zip(keep).filter(|x| *x.1).map(|x| *x.0).collect();
+    Some(assemble(p.types, p.imports, p.nimp, &funcs, &[]))
 }
 
 /// Leaves out the locals `code` never names (beyond the `params`), numbering the rest anew.
@@ -821,24 +711,15 @@ fn compact(params: u32, param: Option<u32>, locals: &[u8], code: Code) -> (Vec<u
             kept.push(t);
         }
     }
-    let mut out = Code { b: Vec::with_capacity(code.b.len()), locs: Vec::with_capacity(code.locs.len()), calls: Vec::with_capacity(code.calls.len()) };
+    let mut out = Code { b: Vec::with_capacity(code.b.len()), locs: Vec::with_capacity(code.locs.len()) };
     let mut from = 0;
-    let mut calls = code.calls.iter().peekable();
     for &p in &code.locs {
         let p = p as usize;
-        // (calls before this local: moved by what the renumbering changed so far)
-        while let Some(&&c) = calls.peek().filter(|&&&c| (c as usize) < p) {
-            out.calls.push((out.b.len() + c as usize - from) as u32);
-            calls.next();
-        }
         out.b.extend_from_slice(&code.b[from..=p]);
         let (l, end) = read(&code.b, p + 1);
-        out.locs.push((out.b.len() - 1) as u32);
+        out.locs.push(p as u32);
         uleb(&mut out.b, map[l as usize] as u64);
         from = end;
-    }
-    for &c in calls {
-        out.calls.push((out.b.len() + c as usize - from) as u32);
     }
     out.b.extend_from_slice(&code.b[from..]);
     (kept, out)
@@ -847,34 +728,6 @@ fn compact(params: u32, param: Option<u32>, locals: &[u8], code: Code) -> (Vec<u
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn merge_renumbers_calls_of_own_functions() {
-        let module = |k: i32| {
-            let mut m = Module::default();
-            m.types.push(FuncType { params: alloc::vec![I32], results: alloc::vec![I32] });
-            let mut a = Code::default();
-            a.get(0).i32c(k).add().set(0).get(0).call_local(1);
-            let (locals, a) = compact_locals(1, &[I32, I32], a);
-            m.funcs.push(Func { ty: 0, locals, code: a });
-            let mut b = Code::default();
-            b.get(0);
-            m.funcs.push(Func { ty: 0, locals: Vec::new(), code: b });
-            m.finish()
-        };
-        let (x, y) = (module(1), module(2));
-        let m = merge(&[&x, &y], &[]).unwrap();
-        let p = parts(&m).unwrap();
-        assert_eq!(p.rel.len(), 2);
-        let target = |f: usize| {
-            let (g, o) = p.rel[f];
-            read_leb5(&p.funcs[g as usize].1[o as usize..])
-        };
-        assert_eq!((target(0), target(1)), (1, 3));
-        let s = select(&m, &[false, false, true, true]).unwrap();
-        let q = parts(&s).unwrap();
-        assert_eq!(read_leb5(&q.funcs[q.rel[0].0 as usize].1[q.rel[0].1 as usize..]), 1);
-    }
 
     #[test]
     fn compact_locals_renumbers_the_used_ones() {

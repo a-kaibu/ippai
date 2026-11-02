@@ -233,8 +233,6 @@ struct Shared {
     /// a function's (jit::FN): its build (1 up; 0 for a region) and indirect call sites
     build: u32,
     sites: Vec<u32>,
-    /// a function's callees after it in the module (jit::Region::extra)
-    extra: u32,
 }
 
 /// Shared regions by their roots.
@@ -264,7 +262,7 @@ fn share(mem: &mut Linear, roots: &[u32], bytes: Vec<u8>, region: &jit::Region) 
 
 fn share_build(mem: &mut Linear, key: Vec<u32>, bytes: Vec<u8>, region: &jit::Region, build: u32) {
     let Some(text) = code_bytes(mem, &region.code) else { return };
-    let r = Arc::new(Shared { bytes, starts: region.starts.clone(), code: region.code.clone(), text, build, sites: region.sites.clone(), extra: region.extra });
+    let r = Arc::new(Shared { bytes, starts: region.starts.clone(), code: region.code.clone(), text, build, sites: region.sites.clone() });
     SHARED.lock().unwrap().get_or_insert_with(HashMap::new).entry(key).or_default().push(r);
 }
 
@@ -428,9 +426,6 @@ fn init_flags() {
     ONCE.call_once(|| {
         if std::env::var("VNVM_JIT_HOIST").is_ok_and(|v| v == "0") {
             jit::HOIST.store(false, Ordering::Relaxed);
-        }
-        if let Some(n) = std::env::var("VNVM_JIT_EMBED").ok().and_then(|v| v.parse().ok()) {
-            jit::EMBED.store(n, Ordering::Relaxed);
         }
         if let Some(secs) = std::env::var("VNVM_JIT_COUNT").ok().and_then(|v| v.parse::<u64>().ok()) {
             use std::sync::atomic::Ordering::Relaxed;
@@ -818,7 +813,6 @@ fn maybe_save() {
             text: s.text.clone(),
             build: s.build,
             sites: s.sites.clone(),
-            extra: s.extra,
         })
         .collect();
     let mods: Vec<&[u8]> = new.iter().map(|(_, s)| &s.bytes[..]).collect();
@@ -1286,7 +1280,7 @@ fn build_fn(mem: &mut Linear, eip: u32, (lo, hi): (u32, u32), part: bool, build:
         eprintln!("vnjit fn {eip:#x}\n{}", region.layout);
     }
     if stats() {
-        eprintln!("vnjit fn {eip:#x} build {build}: {} instructions, {} callees", region.instructions, region.extra);
+        eprintln!("vnjit fn {eip:#x} build {build}: {} instructions", region.instructions);
     }
     let bytes = m.finish();
     if let Some(dir) = std::env::var_os("VNVM_JIT_DUMP") {
@@ -1315,7 +1309,7 @@ fn finish_fn(st: &mut State, eip: u32, build: u32, built: Built, t0: Instant) ->
         count_compile(2, t0);
     }
     if ok {
-        let r = Arc::new(Shared { bytes, starts: region.starts, code: region.code, text, build, sites: region.sites, extra: region.extra });
+        let r = Arc::new(Shared { bytes, starts: region.starts, code: region.code, text, build, sites: region.sites });
         SHARED.lock().unwrap().get_or_insert_with(HashMap::new).entry(fn_key(eip).to_vec()).or_default().push(r);
         maybe_save();
     }
