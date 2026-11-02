@@ -120,6 +120,7 @@ async fn save_jit(State(jit): State<Jit>, Path(name): Path<String>, body: Bytes)
         return StatusCode::BAD_REQUEST;
     };
     let n_funcs = new_idx.len();
+    let all_idx = new_idx.clone();
     let _g = jit.1.lock().await;
     // Regions another program saved too (same roots and guest code: Wine's own DLLs and helper
     // processes, the same in every game) go to the shared bundle of this build, which every
@@ -162,7 +163,7 @@ async fn save_jit(State(jit): State<Jit>, Path(name): Path<String>, body: Bytes)
         if idx.is_empty() {
             return None;
         }
-        Some((if keep.iter().all(|&k| k) { new_wasm.to_vec() } else { wasm::select(new_wasm, &keep)? }, idx))
+        Some((if keep.iter().all(|&k| k) { new_wasm.to_vec() } else { wasm::select(new_wasm, &saved::keep_funcs(&all_idx, &keep))? }, idx))
     };
     let mut status = StatusCode::NO_CONTENT;
     tokio::spawn(optimize(jit.clone(), vec![shared_name.clone(), name.clone()]));
@@ -262,7 +263,7 @@ const SHARED: &str = "_shared";
 
 /// Whether two saved regions are the same translation's (any thread could have built either).
 fn same(a: &saved::Entry, b: &saved::Entry) -> bool {
-    a.roots == b.roots && a.code == b.code && a.text == b.text
+    a.roots == b.roots && a.code == b.code && a.text == b.text && (a.build > 0) == (b.build > 0)
 }
 
 /// The parts of `name` (the base <name>.wasm/.idx, then <name>.<k>.wasm/.idx).
@@ -297,7 +298,7 @@ async fn add_part(dir: &std::path::Path, name: &str, new_wasm: Vec<u8>, new_idx:
     if !keep.iter().any(|&k| k) {
         return StatusCode::NO_CONTENT;
     }
-    let fresh = if keep.iter().all(|&k| k) { Some(new_wasm.to_vec()) } else { wasm::select(new_wasm, &keep) };
+    let fresh = if keep.iter().all(|&k| k) { Some(new_wasm.to_vec()) } else { wasm::select(new_wasm, &saved::keep_funcs(&new_idx, &keep)) };
     let Some(fresh) = fresh else { return StatusCode::BAD_REQUEST };
     let fresh_idx: Vec<saved::Entry> = new_idx.into_iter().zip(&keep).filter(|x| *x.1).map(|x| x.0).collect();
     // A save goes in a part of its own: the parts the browser has already compiled stay as
@@ -306,7 +307,7 @@ async fn add_part(dir: &std::path::Path, name: &str, new_wasm: Vec<u8>, new_idx:
     parts.push((fresh, fresh_idx));
     if parts.len() > PARTS_MAX {
         let entries: Vec<saved::Entry> = parts.iter().flat_map(|(_, e)| e.iter().cloned()).collect();
-        let names: Vec<String> = entries.iter().map(|e| e.name()).collect();
+        let names = saved::func_names(&entries);
         let mods: Vec<&[u8]> = parts.iter().map(|(w, _)| &w[..]).collect();
         let Some(merged) = wasm::merge(&mods, &names) else { return StatusCode::BAD_REQUEST };
         parts = vec![(merged, entries)];

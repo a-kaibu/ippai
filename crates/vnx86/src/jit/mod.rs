@@ -3076,9 +3076,9 @@ fn emit_dispatch(g: &mut Gen<'_>, t: &structure::Table, node: usize) {
 }
 
 /// A function's adapter to the region calling convention (what the dispatcher and regions'
-/// jumps call): the state into the Cpu, the function (wasm function index `f`), and its RET
-/// as RET_CONTINUE (on at EIP).
-fn fn_adapter(f: u32) -> Func {
+/// jumps call): the state into the Cpu, the function (the next table entry: the module may be
+/// merged with others, see `saved`), and its RET as RET_CONTINUE (on at EIP).
+fn fn_adapter() -> Func {
     let mut c = Code::default();
     for i in 0..8 {
         c.get(L_CPU).get(L_REG + i).store32(Off::reg(i as usize));
@@ -3086,7 +3086,8 @@ fn fn_adapter(f: u32) -> Func {
     c.get(L_CPU).get(L_BUD).store32(Off::budget());
     lazy_to_cpu(&mut c);
     c.end();
-    c.get(L_CPU).get(L_CPU).load32(Off::calls()).call(f).tee(L_ARG).i32c(RET_CONTINUE).get(L_ARG).i32c(RET_FN).ne().select();
+    c.get(L_CPU).get(L_CPU).load32(Off::calls());
+    c.get(L_ARG).u32c((1 << ENTRY_SHIFT) - 1).and().i32c(1).add().call_indirect(T_FN, 0).tee(L_ARG).i32c(RET_CONTINUE).get(L_ARG).i32c(RET_FN).ne().select();
     for _ in 1..N_PARAMS {
         c.i32c(0);
     }
@@ -4304,7 +4305,7 @@ fn translate<M: Memory>(
     if fnm {
         let (locals, body) = wasm::compact_locals(2, &locals, core::mem::take(&mut g.c));
         let at = module.funcs.len() as u32;
-        module.funcs.push(fn_adapter(module.imported_funcs() + at + 1));
+        module.funcs.push(fn_adapter());
         module.funcs.push(Func { ty: T_FN, locals, code: body });
         module.name_at = at + 1;
     } else {

@@ -519,8 +519,12 @@ fn enter(st: &mut State, base: u32, roots: Vec<u32>, starts: &[(u32, u32)]) {
 /// The saved regions (empty without any).
 struct Saved {
     entries: Vec<jit::saved::Entry>,
-    /// entries by their first root
+    /// each entry's table index past the bundle's first
+    offsets: Vec<u32>,
+    /// regions by their first root
     by_root: HashMap<u32, Vec<usize>>,
+    /// functions by their entry (all builds)
+    by_fn: HashMap<u32, Vec<usize>>,
 }
 
 fn saved_regions() -> &'static Saved {
@@ -537,11 +541,11 @@ fn saved_regions() -> &'static Saved {
         };
         #[cfg(not(target_os = "emscripten"))]
         let entries: Vec<jit::saved::Entry> = Vec::new();
-        let mut by_root: HashMap<u32, Vec<usize>> = HashMap::new();
+        let (mut by_root, mut by_fn): (HashMap<u32, Vec<usize>>, HashMap<u32, Vec<usize>>) = (HashMap::new(), HashMap::new());
         for (i, e) in entries.iter().enumerate() {
-            by_root.entry(e.roots[0]).or_default().push(i);
+            if e.build > 0 { &mut by_fn } else { &mut by_root }.entry(e.roots[0]).or_default().push(i);
         }
-        Saved { entries, by_root }
+        Saved { offsets: jit::saved::offsets(&entries), entries, by_root, by_fn }
     })
 }
 
@@ -571,9 +575,40 @@ fn load_saved(st: &mut State, i: usize) -> bool {
     if base < 0 {
         return false;
     }
-    let e = &saved_regions().entries[i];
+    let s = saved_regions();
+    let e = &s.entries[i];
     mark_code(&e.code);
-    enter(st, base as u32 + i as u32, e.roots.clone(), &e.starts);
+    enter(st, base as u32 + s.offsets[i], e.roots.clone(), &e.starts);
+    true
+}
+
+/// A saved function at `eip` (its newest build) whose guest code is still there.
+fn find_saved_fn(mem: &mut Linear, eip: u32) -> Option<usize> {
+    if profiling() {
+        return None;
+    }
+    let s = saved_regions();
+    s.by_fn
+        .get(&eip)?
+        .iter()
+        .copied()
+        .filter(|&i| code_bytes(mem, &s.entries[i].code).is_some_and(|t| t == s.entries[i].text))
+        .max_by_key(|&i| s.entries[i].build)
+}
+
+/// Puts saved function `i` in.
+fn load_saved_fn(st: &mut State, i: usize) -> bool {
+    #[cfg(target_os = "emscripten")]
+    let base = *st.saved.get_or_insert_with(|| unsafe { vnvm_jit_bundle_load() });
+    #[cfg(not(target_os = "emscripten"))]
+    let base = -1;
+    if base < 0 {
+        return false;
+    }
+    let s = saved_regions();
+    let e = &s.entries[i];
+    st.fn_builds.insert(e.roots[0], e.build);
+    enter_fn(st, base as u32 + s.offsets[i], e.roots[0], &e.starts, &e.sites, &e.code);
     true
 }
 
@@ -585,7 +620,7 @@ fn maybe_save() {
     const SAVE_EVERY: Duration = Duration::from_secs(30);
     const SAVE_MIN: usize = 32;
     static URL: std::sync::OnceLock<Option<std::ffi::CString>> = std::sync::OnceLock::new();
-    static SAVE: Mutex<(Option<Instant>, Option<Instant>, Option<HashSet<Vec<u32>>>, bool)> = Mutex::new((None, None, None, false));
+    static SAVE: Mutex<(Option<Instant>, Option<Instant>, Option<HashMap<Vec<u32>, u32>>, bool)> = Mutex::new((None, None, None, false));
     let Some(url) = URL.get_or_init(|| std::env::var("VNVM_JIT_URL").ok().and_then(|u| std::ffi::CString::new(u).ok())) else {
         return;
     };
@@ -599,11 +634,17 @@ fn maybe_save() {
     if now - start < SAVE_AFTER || g.1.is_some_and(|t| now - t < SAVE_EVERY) {
         return;
     }
-    let done = g.2.get_or_insert_with(HashSet::new);
+    // (a function's newest build; a newer one than saved goes again)
+    let done = g.2.get_or_insert_with(HashMap::new);
     let new: Vec<(Vec<u32>, Arc<Shared>)> = {
         let sh = SHARED.lock().unwrap();
         let Some(sh) = sh.as_ref() else { return };
-        sh.iter().filter(|(r, l)| l[0].build == 0 && !done.contains(*r)).map(|(r, l)| (r.clone(), l[0].clone())).collect()
+        sh.iter()
+            .filter_map(|(r, l)| {
+                let s = l.iter().max_by_key(|s| s.build)?;
+                (done.get(r).is_none_or(|&b| s.build > b)).then(|| (r.clone(), s.clone()))
+            })
+            .collect()
     };
     if new.len() < SAVE_MIN {
         return;
@@ -611,13 +652,20 @@ fn maybe_save() {
     g.1 = Some(now);
     let entries: Vec<jit::saved::Entry> = new
         .iter()
-        .map(|(r, s)| jit::saved::Entry { roots: r.clone(), starts: s.starts.clone(), code: s.code.clone(), text: s.text.clone() })
+        .map(|(r, s)| jit::saved::Entry {
+            roots: if s.build > 0 { r[..1].to_vec() } else { r.clone() },
+            starts: s.starts.clone(),
+            code: s.code.clone(),
+            text: s.text.clone(),
+            build: s.build,
+            sites: s.sites.clone(),
+        })
         .collect();
     let mods: Vec<&[u8]> = new.iter().map(|(_, s)| &s.bytes[..]).collect();
-    let names: Vec<String> = entries.iter().map(|e| e.name()).collect();
+    let names = jit::saved::func_names(&entries);
     let Some(wasm) = jit::wasm::merge(&mods, &names) else { return };
-    for (r, _) in new {
-        done.insert(r);
+    for (r, s) in new {
+        done.insert(r, s.build);
     }
     let idx = jit::saved::encode(&entries);
     let mut body = (wasm.len() as u32).to_le_bytes().to_vec();
@@ -826,6 +874,13 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
                     st.fn_builds.insert(eip, r.build);
                     return install_fn(st, eip, &r.bytes, &r.starts, &r.sites, &r.code);
                 }
+                if cpu.mode64 == 0 {
+                    if let Some(i) = find_saved_fn(mem, eip) {
+                        if load_saved_fn(st, i) {
+                            return true;
+                        }
+                    }
+                }
             }
             if let Some(r) = shared(mem, &[eip]) {
                 mark_code(&r.code);
@@ -984,6 +1039,7 @@ fn compile_fn(st: &mut State, eip: u32, (lo, hi): (u32, u32), mem: &mut Linear) 
     }
     if ok {
         share_build(mem, fn_key(eip).to_vec(), bytes, &region, st.fn_builds[&eip]);
+        maybe_save();
     }
     ok
 }
@@ -998,6 +1054,13 @@ fn install_fn(st: &mut State, eip: u32, bytes: &[u8], starts: &[(u32, u32)], sit
     if base < 0 {
         return false;
     }
+    enter_fn(st, base as u32, eip, starts, sites, code);
+    true
+}
+
+/// Points the hash table at the function (adapter at table index `base`, itself next).
+fn enter_fn(st: &mut State, base: u32, eip: u32, starts: &[(u32, u32)], sites: &[u32], code: &[(u32, u32)]) {
+    st.known.insert(eip);
     mark_code(code);
     for &a in sites {
         let l = st.site_fn.entry(a).or_default();
@@ -1022,7 +1085,6 @@ fn install_fn(st: &mut State, eip: u32, bytes: &[u8], starts: &[(u32, u32)], sit
             st.used += 1;
         }
     }
-    true
 }
 
 thread_local! {
