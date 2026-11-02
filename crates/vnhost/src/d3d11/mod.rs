@@ -79,11 +79,20 @@ const IIDS: &[(u32, &[u32])] = &[
     (0x790a45f7, &[IF_SWAPCHAIN]),
     (0x54ec77fa, &[IF_DXGIDEVICE]),
     (0x77db970f, &[IF_DXGIDEVICE]),
+    (0x05008617, &[IF_DXGIDEVICE]), // IDXGIDevice2
+    (0x6007896c, &[IF_DXGIDEVICE]), // IDXGIDevice3
     (0xcafcb56c, &[IF_SURFACE]),
     (0x4ae63092, &[IF_SURFACE]),
     (0x035f3ab4, &[IF_SURFACE]), // IDXGIResource (close enough: GetParent/GetDevice)
     (0x3d3e0379, &[IF_SWAPCHAIN, IF_SURFACE]),
     (0xdb6f6ddb, &[IF_DEVICE]),
+    (0xa04bfb29, &[IF_DEVICE]), // ID3D11Device1
+    (0x9d06dffa, &[IF_DEVICE]), // ID3D11Device2
+    (0xbb2c6faa, &[IF_CONTEXT]), // ID3D11DeviceContext1
+    (0x420d5b32, &[IF_CONTEXT]), // ID3D11DeviceContext2
+    (0xcc86fabe, &[IF_BLEND]), // ID3D11BlendState1
+    (0x1217d7a6, &[IF_RASTER]), // ID3D11RasterizerState1
+    (0x5c1e0d8a, &[IF_LINKAGE]), // ID3DDeviceContextState (a device child like the linkage)
     (0xc0bfa96c, &[IF_CONTEXT]),
     (0x1841e5c8, &[IF_CONTEXT, IF_BUFFER, IF_TEX1D, IF_TEX2D, IF_TEX3D, IF_SRV, IF_RTV, IF_DSV, IF_UAV, IF_VS, IF_PS, IF_GS, IF_HS, IF_DS, IF_CS, IF_LAYOUT, IF_SAMPLER, IF_BLEND, IF_DEPTH, IF_RASTER, IF_QUERY, IF_LINKAGE, IF_CMDLIST]),
     (0xdc8e63f3, &[IF_BUFFER, IF_TEX1D, IF_TEX2D, IF_TEX3D]),
@@ -201,6 +210,8 @@ pub enum Data {
     /// state objects: their description's dwords
     State(Vec<u32>),
     Query(u32),
+    /// ID3DDeviceContextState: the context state it holds while another one is current
+    CtxState(Option<Box<State>>),
     Other,
 }
 
@@ -215,7 +226,7 @@ pub struct Obj {
 }
 
 #[derive(Clone)]
-struct State {
+pub struct State {
     vbs: [(u32, u32, u32); 16],
     ib: (u32, u32, u32),
     layout: u32,
@@ -250,6 +261,8 @@ pub struct D11 {
     adapter: u32,
     output: u32,
     st: State,
+    /// the ID3DDeviceContextState whose state `st` is (0: the context's own)
+    st_owner: u32,
     pipelines: HashMap<Vec<u32>, u32>,
     /// page targets set in this batch generation
     targets: Option<(u64, Vec<u32>)>,
@@ -498,6 +511,7 @@ pub unsafe fn init(vtbls: *const u32, count: u32) -> u32 {
                 adapter: 0,
                 output: 0,
                 st: default_state(),
+                st_owner: 0,
                 pipelines: HashMap::new(),
                 targets: None,
                 next_gpu: 0,
@@ -831,6 +845,14 @@ unsafe fn method(d: &mut D11, iface: u32, m: u32, this: u32, args: *const u32, a
             10 | 12 => S_OK,
             11 | 13 => {
                 wr(a(1), 0, if m == 13 { 3 } else { 0 });
+                S_OK
+            }
+            // IDXGIDevice2/3: OfferResources, ReclaimResources(n, res, discarded), Trim
+            14 | 17 => S_OK,
+            15 => {
+                if a(3) != 0 {
+                    std::ptr::write_bytes(a(3) as *mut u8, 0, 4 * a(1) as usize);
+                }
                 S_OK
             }
             _ => E_NOTIMPL,
@@ -1238,6 +1260,49 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
         }
         41 => S_OK,
         42 => 0,
+        // ID3D11Device1/2 (Direct2D uses these)
+        43 | 50 => device_call(d, 40, this, a),
+        44 | 51 => DXGI_ERROR_INVALID_CALL, // deferred contexts
+        45 => {
+            // CreateBlendState1(desc, out): render targets of 10 dwords (LogicOpEnable, LogicOp)
+            // to the 8 of D3D11_BLEND_DESC
+            if a(1) == 0 {
+                return E_INVALIDARG;
+            }
+            let mut desc = vec![rd(a(1), 0), rd(a(1), 1)];
+            for t in 0..8 {
+                let b = 2 + t * 10;
+                desc.push(rd(a(1), b));
+                desc.extend((3..9).map(|i| rd(a(1), b + i - 1)));
+                desc.push(rd(a(1), b + 9));
+            }
+            if a(2) == 0 {
+                return S_FALSE;
+            }
+            let o = d.new_obj(IF_BLEND, Data::State(desc));
+            wrp(a(2), 0, o);
+            S_OK
+        }
+        46 => device_call(d, 22, this, a), // CreateRasterizerState1 (ForcedSampleCount ignored)
+        47 => {
+            // CreateDeviceContextState(flags, levels, count, sdk, iid, level_out, state_out)
+            if a(6) != 0 {
+                wr(a(6), 0, 0xb000);
+            }
+            if a(7) == 0 {
+                return S_FALSE;
+            }
+            let o = d.new_obj(IF_LINKAGE, Data::CtxState(Some(Box::new(default_state()))));
+            wrp(a(7), 0, o);
+            S_OK
+        }
+        48 | 49 => E_NOTIMPL,
+        52 => 0,
+        53 => {
+            // CheckMultisampleQualityLevels1(format, count, flags, out)
+            wr(a(4), 0, if a(2) == 1 { 1 } else { 0 });
+            S_OK
+        }
         _ => E_NOTIMPL,
     }
 }
@@ -1784,9 +1849,48 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
         112 => return 0, // immediate
         113 => return 0,
         114 => return DXGI_ERROR_INVALID_CALL,
+        // ID3D11DeviceContext1
+        115 => return context_call2(d, st, 46, a, after), // CopySubresourceRegion1 (flags ignored)
+        116 => return context_call2(d, st, 48, a, after), // UpdateSubresource1
+        117 | 118 | 133 => {}                           // Discard*
+        // *SetConstantBuffers1(start, n, buffers, first, count): whole buffers (offsets ignored)
+        119..=124 => return context_call2(d, st, [7, 62, 66, 22, 16, 71][m as usize - 119], a, after),
+        125..=130 => return context_call2(d, st, [72, 100, 104, 81, 77, 109][m as usize - 125], a, after),
+        131 => swap_state(d, st, a(1), a(2)),
+        132 => {} // ClearView
+        // ID3D11DeviceContext2: tiled resources and annotations
+        134..=139 | 141..=143 => {}
+        140 => return 0, // IsAnnotationEnabled
         _ => return E_NOTIMPL,
     }
     S_OK
+}
+
+/// SwapDeviceContextState(state, prev_out): `st` (the current state) goes back into the object
+/// it came from (or a new one for the context's own state) and `state`'s is loaded.
+unsafe fn swap_state(d: &mut D11, st: &mut State, state: u32, prev_out: u32) {
+    let new = d.id_of(state);
+    let Some(Data::CtxState(slot)) = d.objs.get_mut(&new).map(|o| &mut o.data) else { return };
+    let Some(loaded) = slot.take() else { return }; // (already current)
+    let cur = std::mem::replace(st, *loaded);
+    let old = d.st_owner;
+    d.st_owner = new;
+    if let Some(Data::CtxState(slot)) = d.objs.get_mut(&old).map(|o| &mut o.data) {
+        *slot = Some(Box::new(cur));
+        if prev_out != 0 {
+            d.add_ref(old);
+            wrp(prev_out, 0, d.addr_of(old));
+        }
+    } else {
+        // the context's own state (or one whose object is gone): a new object
+        let o = d.new_obj(IF_LINKAGE, Data::CtxState(Some(Box::new(cur))));
+        if prev_out != 0 {
+            wrp(prev_out, 0, o);
+        } else {
+            let id = d.id_of(o);
+            d.release(id);
+        }
+    }
 }
 
 fn view_size(d: &D11, v: u32) -> Option<(u32, u32)> {
