@@ -1,9 +1,9 @@
 /* SSE2 conversions and compares the JIT translates (CVTTSD2SI, CVTSS2SD, COMISS, MOVSD, BT...):
    edge values (NaN, out of range, -0, halves) folded into a checksum; the same with
-   VNVM_JIT=0 (and natively). */
+   VNVM_JIT=0 (and natively). Build with -msse2 -mssse3 (PSHUFB). */
 #include <stdio.h>
 #include <string.h>
-#include <emmintrin.h>
+#include <tmmintrin.h>
 
 static unsigned h = 2166136261u;
 static void mix(unsigned v) { h = (h ^ v) * 16777619u; }
@@ -63,6 +63,17 @@ int main(void) {
                 __asm__ volatile("cmp %1, %2; bt %2, %1; setz %b0; movzbl %b0, %0" : "=&q"(bit) : "r"(v), "r"(k) : "cc");
                 mix(bit);
             }
+        }
+        /* PSHUFB (SSSE3): index bytes with the high bit set give 0 */
+        for (int k = 0; k < 16; k++) {
+            unsigned seed = (unsigned)(rep * 16 + k) * 2654435761u;
+            __m128i a = _mm_set_epi32((int)seed, (int)(seed * 3), (int)(seed ^ 0x5a5a5a5a), (int)(seed * 7));
+            __m128i b = _mm_set_epi32((int)(seed * 11), (int)(seed * 13 + 0x80808080u), (int)(seed >> 3), (int)(seed * 17));
+            __m128i r = _mm_shuffle_epi8(a, b);
+            mix(_mm_cvtsi128_si32(r)); mix(_mm_extract_epi16(r, 3)); mix(_mm_extract_epi16(r, 7)); mix(_mm_extract_epi16(r, 5));
+            unsigned long long ma = (unsigned long long)seed * 0x9e3779b97f4a7c15ull, mb = ma * 31 ^ 0x8000800080008000ull;
+            __asm__ volatile("movq %1, %%mm0; movq %2, %%mm1; pshufb %%mm1, %%mm0; movq %%mm0, %0; emms" : "=m"(ma) : "m"(ma), "m"(mb) : "mm0", "mm1");
+            mix((unsigned)ma); mix((unsigned)(ma >> 32));
         }
         unsigned mx;
         __asm__ volatile("stmxcsr %0" : "=m"(mx));

@@ -172,7 +172,6 @@ async fn save_jit(State(jit): State<Jit>, Path(name): Path<String>, body: Bytes)
         Some((if keep.iter().all(|&k| k) { new_wasm.to_vec() } else { wasm::select(new_wasm, &saved::keep_funcs(&all_idx, &keep))? }, idx))
     };
     let mut status = StatusCode::NO_CONTENT;
-    tokio::spawn(optimize(jit.clone(), vec![shared_name.clone(), name.clone()]));
     for (to_shared, target) in [(true, &shared_name), (false, &name)] {
         if let Some((w, idx)) = pick(to_shared) {
             let s = add_part(&jit.0, target, w, idx).await;
@@ -181,6 +180,9 @@ async fn save_jit(State(jit): State<Jit>, Path(name): Path<String>, body: Bytes)
             }
         }
     }
+    // (after the parts are written: before, it read the old lists, and a game's first save
+    // stayed unoptimized until the next)
+    tokio::spawn(optimize(jit.clone(), vec![shared_name.clone(), name.clone()]));
     status
 }
 

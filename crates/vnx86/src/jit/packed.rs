@@ -189,7 +189,7 @@ pub(super) fn supported(ins: &Instruction) -> bool {
         }
         Movhlps | Movlhps => d.is_xmm() && ins.op_kind(1) == OpKind::Register && ins.op_register(1).is_xmm(),
         _ if !vreg(d) || ins.op_count() < 2 => false,
-        Pandn | Pmulhw | Pmulhuw | Packsswb | Packuswb | Packssdw => ins.op_count() == 2 && src(1, width),
+        Pandn | Pmulhw | Pmulhuw | Packsswb | Packuswb | Packssdw | Pshufb => ins.op_count() == 2 && src(1, width),
         _ if binop(m).is_some() || unpack(m).is_some() => ins.op_count() == 2 && src(1, width),
         _ if shift(m).is_some() => ins.op_count() == 2 && (ins.op_kind(1) == OpKind::Immediate8 || src(1, width)),
         Pshufw => d.is_mm() && ins.op_count() == 3 && src(1, 8),
@@ -398,6 +398,13 @@ impl Gen<'_> {
             self.vread(0, None, false);
             self.vread(1, a, false);
             self.c.shuffle(l);
+        } else if m == Pshufb {
+            // i8x16.swizzle gives 0 for indexes past 15: the high bit kept, the rest of the
+            // index cut to the register's bytes
+            self.vread(0, None, mm);
+            self.vread(1, a, mm);
+            self.c.i32c(if mm { 0x87 } else { 0x8f }).simd(0x0f).simd(0x4e); // i8x16.splat, v128.and
+            self.c.simd(0x0e);
         } else if m == Pandn {
             // ~dst & src = andnot(src, dst)
             self.vread(1, a, mm);
