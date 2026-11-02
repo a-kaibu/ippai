@@ -6,6 +6,8 @@
 //! VNVM_JIT=0 turns the JIT off (the interpreter runs everything). VNVM_JIT_DUMP=dir writes every
 //! region module to dir/<first root>-<roots>.wasm. VNVM_JIT_LAYOUT=1 prints the block order, loops
 //! and wasm bytes per mnemonic of new regions (of merged ones too with VNVM_JIT_STATS).
+//! Functions (jit::FN) are translated on a compiler thread while the interpreter goes on;
+//! only loading the module stays on the guest thread (VNVM_JIT_ASYNC=0: all of it there).
 //!
 //! Regions are kept across runs: with VNVM_JIT_URL set, the regions built since the last save are
 //! sent there now and then (see [`maybe_save`]; vnvm-server merges them into what it has), and the
@@ -199,6 +201,10 @@ struct State {
     /// indirect call/jump sites of functions: the function, and the target it mostly takes
     site_fn: HashMap<u32, Vec<u32>>,
     hints: HashMap<u32, u32>,
+    /// functions the compiler thread is translating, and where it says it is done
+    pending: HashSet<u32>,
+    done_tx: std::sync::mpsc::Sender<(u32, u32, Built)>,
+    done_rx: std::sync::mpsc::Receiver<(u32, u32, Built)>,
     /// sites whose hint changed (a site going to several targets keeps its second hint)
     rehinted: HashSet<u32>,
 }
@@ -370,7 +376,11 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
                 vnvm_jit_init(d.as_ptr(), d.len())
             };
             let _ = d;
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
             State {
+                pending: HashSet::new(),
+                done_tx,
+                done_rx,
                 hash: vec![[0; 2]; 1 << 12],
                 used: 0,
                 misses: HashMap::new(),
@@ -452,6 +462,9 @@ pub fn run(cpu: &mut Cpu, pending: u32) -> Ran {
     init_flags();
     check_generation();
     with_state(|st| {
+        if !st.pending.is_empty() {
+            take_built(st, &mut Linear);
+        }
         if st.ring[0] >= jit::RING_SIZE {
             merge_hot(st, cpu);
         }
@@ -1010,6 +1023,9 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         return false;
     }
     with_state(|st| {
+        if !st.pending.is_empty() {
+            take_built(st, mem);
+        }
         if st.known.contains(&eip) {
             return false;
         }
@@ -1044,14 +1060,21 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         if *n < threshold() {
             return false;
         }
+        let fnm = jit::FN.load(std::sync::atomic::Ordering::Relaxed) && cpu.mode64 == 0 && fn_allowed(eip);
+        let part = fnm && !called(cpu, mem);
+        // a block inside a function the compiler thread has yet to finish: most likely in it
+        // (the interpreter runs its blocks meanwhile, each reaching the threshold), so not
+        // built on its own unless it is still missing after
+        if part && !st.pending.is_empty() {
+            return false;
+        }
         st.misses.remove(&eip);
         if cpu.mode64 != 0 {
             return compile_long(st, cpu, mem);
         }
-        if jit::FN.load(std::sync::atomic::Ordering::Relaxed) && fn_allowed(eip) {
-            // (not a function's entry, as where a function's blocks that had not run yet
+        if fnm {
+            // (part: not a function's entry, as where a function's blocks that had not run yet
             // go on: without the blocks compiled already, which it enters through the dispatcher)
-            let part = !called(cpu, mem);
             return compile_fn(st, eip, (cpu.trap_lo, cpu.trap_hi), mem, part);
         }
         // the block and what it statically reaches, as one function
@@ -1155,7 +1178,7 @@ fn called(cpu: &Cpu, mem: &mut Linear) -> bool {
 static FN_INS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
 
 fn compile_fn(st: &mut State, eip: u32, (lo, hi): (u32, u32), mem: &mut Linear, part: bool) -> bool {
-    if !fn_allowed(eip) {
+    if st.pending.contains(&eip) {
         return false;
     }
     // another thread's build (as new as the one this would be, or newer)
@@ -1166,6 +1189,75 @@ fn compile_fn(st: &mut State, eip: u32, (lo, hi): (u32, u32), mem: &mut Linear, 
         }
     }
     *st.fn_builds.entry(eip).or_insert(0) += 1;
+    let build = st.fn_builds[&eip];
+    if let Some(jobs) = compiler() {
+        // translated on the compiler thread; the interpreter goes on meanwhile (a build takes
+        // a few ms here, several times that on a phone: a dropped frame each, in the story's
+        // scene changes)
+        let job = Job { eip, lo, hi, part, build, misses: st.misses.clone(), known: st.known.clone(), hints: st.hints.clone(), done: st.done_tx.clone() };
+        if jobs.send(job).is_ok() {
+            st.pending.insert(eip);
+            return false;
+        }
+    }
+    let t0 = Instant::now();
+    let built = build_fn(mem, eip, (lo, hi), part, build, &st.misses, &st.known, &st.hints);
+    finish_fn(st, eip, build, built, t0)
+}
+
+/// A function translated (on the compiler thread or not): (module, region, its code bytes).
+type Built = Option<(Vec<u8>, jit::Region, Vec<u8>)>;
+
+/// A function for the compiler thread to translate, with this thread's view of what ran.
+struct Job {
+    eip: u32,
+    lo: u32,
+    hi: u32,
+    part: bool,
+    build: u32,
+    misses: HashMap<u32, u32>,
+    known: HashSet<u32>,
+    hints: HashMap<u32, u32>,
+    done: std::sync::mpsc::Sender<(u32, u32, Built)>,
+}
+
+/// The compiler thread's queue (VNVM_JIT_ASYNC=0: none, functions are translated where they
+/// are needed).
+fn compiler() -> Option<&'static std::sync::mpsc::Sender<Job>> {
+    static Q: std::sync::OnceLock<Option<std::sync::mpsc::Sender<Job>>> = std::sync::OnceLock::new();
+    Q.get_or_init(|| {
+        if std::env::var("VNVM_JIT_ASYNC").is_ok_and(|v| v == "0") {
+            return None;
+        }
+        let (tx, rx) = std::sync::mpsc::channel::<Job>();
+        std::thread::Builder::new()
+            .name("vnjit".into())
+            .spawn(move || {
+                for j in rx {
+                    let built = build_fn(&mut Linear, j.eip, (j.lo, j.hi), j.part, j.build, &j.misses, &j.known, &j.hints);
+                    let _ = j.done.send((j.eip, j.build, built));
+                }
+            })
+            .ok()?;
+        Some(tx)
+    })
+    .as_ref()
+}
+
+/// Installs the functions the compiler thread finished for this thread.
+fn take_built(st: &mut State, mem: &mut Linear) {
+    while let Ok((eip, build, built)) = st.done_rx.try_recv() {
+        st.pending.remove(&eip);
+        // (the code changed since: dropped, as if it had not been translated; it is again
+        // when hot)
+        if built.as_ref().is_some_and(|(_, r, text)| !(code_kept(&r.code) && code_bytes(mem, &r.code).is_some_and(|t| t == *text))) {
+            continue;
+        }
+        finish_fn(st, eip, build, built, Instant::now());
+    }
+}
+
+fn build_fn(mem: &mut Linear, eip: u32, (lo, hi): (u32, u32), part: bool, build: u32, misses: &HashMap<u32, u32>, known: &HashSet<u32>, hints: &HashMap<u32, u32>) -> Built {
     let t0 = Instant::now();
     if std::env::var_os("VNVM_JIT_LAYOUT").is_some() {
         jit::LAYOUT.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1174,33 +1266,43 @@ fn compile_fn(st: &mut State, eip: u32, (lo, hi): (u32, u32), mem: &mut Linear, 
     // a function built again (it left its blocks often) may take more: twice per build
     // (big interpreters' loops, a C library's long switch), from VNVM_JIT_FN_INS
     let base = *FN_INS.get_or_init(|| std::env::var("VNVM_JIT_FN_INS").ok().and_then(|v| v.parse().ok()).unwrap_or(1000));
-    jit::FN_MAX_INS.store(base << (st.fn_builds[&eip].min(4) - 1), std::sync::atomic::Ordering::Relaxed);
-    let (misses, known, hints) = (&st.misses, &st.known, &st.hints);
-    let Some(region) = jit::translate_function(&mut m, mem, eip, jit::MAX_BLOCKS, (lo, hi), &|a| hints.get(&a).copied(), &|a| debug_allowed(a) && ran(misses, known, a), |a| debug_allowed(a) && !(a >= lo && a < hi) && (a == eip || if part { !known.contains(&a) && misses.contains_key(&a) } else { ran(misses, known, a) })) else {
-        st.known.insert(eip);
-        return false;
-    };
+    jit::FN_MAX_INS.store(base << (build.min(4) - 1), std::sync::atomic::Ordering::Relaxed);
+    let region = jit::translate_function(&mut m, mem, eip, jit::MAX_BLOCKS, (lo, hi), &|a| hints.get(&a).copied(), &|a| debug_allowed(a) && ran(misses, known, a), |a| debug_allowed(a) && !(a >= lo && a < hi) && (a == eip || if part { !known.contains(&a) && misses.contains_key(&a) } else { ran(misses, known, a) }))?;
     if std::env::var_os("VNVM_JIT_LAYOUT").is_some() {
         eprintln!("vnjit fn {eip:#x}\n{}", region.layout);
     }
     if stats() {
-        eprintln!("vnjit fn {eip:#x} build {}: {} instructions", st.fn_builds[&eip], region.instructions);
+        eprintln!("vnjit fn {eip:#x} build {build}: {} instructions", region.instructions);
     }
     let bytes = m.finish();
     if let Some(dir) = std::env::var_os("VNVM_JIT_DUMP") {
         let _ = std::fs::write(std::path::Path::new(&dir).join(format!("{eip:08x}-fn.wasm")), &bytes);
     }
+    if std::env::var_os("VNVM_JIT_TIME").is_some() {
+        eprintln!("vnjit time {eip:#x}: {} ins, translate {:?} build {build} part {part}", region.instructions, t0.elapsed());
+    }
+    let text = code_bytes(mem, &region.code)?;
+    Some((bytes, region, text))
+}
+
+/// Loads a translated function (or notes that it could not be).
+fn finish_fn(st: &mut State, eip: u32, build: u32, built: Built, t0: Instant) -> bool {
+    let Some((bytes, region, text)) = built else {
+        st.known.insert(eip);
+        return false;
+    };
     let t1 = Instant::now();
     let ok = install_fn(st, eip, &bytes, &region.starts, &region.sites, &region.code);
     if std::env::var_os("VNVM_JIT_TIME").is_some() {
-        eprintln!("vnjit time {eip:#x}: {} ins, translate {:?}, load {:?} ra {} part {part} build {}", region.instructions, t1 - t0, t1.elapsed(), after_call(&mut Linear, eip), st.fn_builds[&eip]);
+        eprintln!("vnjit time {eip:#x}: {} ins, load {:?}", region.instructions, t1.elapsed());
     }
     count_compile(1, t0);
-    if st.fn_builds[&eip] > 1 {
+    if build > 1 {
         count_compile(2, t0);
     }
     if ok {
-        share_build(mem, fn_key(eip).to_vec(), bytes, &region, st.fn_builds[&eip]);
+        let r = Arc::new(Shared { bytes, starts: region.starts, code: region.code, text, build, sites: region.sites });
+        SHARED.lock().unwrap().get_or_insert_with(HashMap::new).entry(fn_key(eip).to_vec()).or_default().push(r);
         maybe_save();
     }
     ok
