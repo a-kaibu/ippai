@@ -3478,6 +3478,9 @@ fn LoadCursorW(_: &mut Ctx) -> u32 {
 fn LoadCursorFromFileA(_: &mut Ctx) -> u32 {
     fake_handle()
 }
+fn LoadCursorFromFileW(_: &mut Ctx) -> u32 {
+    fake_handle()
+}
 fn LoadIconA(_: &mut Ctx) -> u32 {
     fake_handle()
 }
@@ -4269,7 +4272,7 @@ pub fn init() {
         GetMenuState, GetMenuStringA, CheckMenuItem, EnableMenuItem, DeleteMenu, RemoveMenu, ModifyMenuA, GetMenu,
         SetMenu, GetSystemMenu, DrawMenuBar, TrackPopupMenu, TrackPopupMenuEx, GetMenuItemRect,
         SetMenuItemBitmaps, GetMenuCheckMarkDimensions,
-        LoadStringA, LoadStringW, LoadCursorA, LoadCursorW, LoadCursorFromFileA, LoadIconA, LoadIconW, LoadImageA,
+        LoadStringA, LoadStringW, LoadCursorA, LoadCursorW, LoadCursorFromFileA, LoadCursorFromFileW, LoadIconA, LoadIconW, LoadImageA,
         LoadImageW, CreateIcon, CreateIconIndirect, CreateCursor, CopyIcon, DestroyCursor, DestroyIcon,
         GetIconInfo, LoadBitmapA, LoadBitmapW, LoadAcceleratorsA, LoadMenuA, LoadMenuW,
         CharLowerA, CharUpperA, CharLowerW, CharUpperW, CharLowerBuffA, CharUpperBuffA, CharNextA, CharNextW,
