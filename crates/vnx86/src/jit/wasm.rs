@@ -15,9 +15,12 @@ pub struct Code {
     pub locs: Vec<u32>,
 }
 
-/// wine.wasm's initial memory in pages (hangover/build.sh -sINITIAL_MEMORY=2214592512): every
-/// module the JIT makes (saved ones too) can declare it as its memory's minimum.
-pub const MEMORY_MIN_PAGES: u32 = 2214592512 / 65536;
+/// wine.wasm's (and sake's) memory in pages, which never grows (hangover/build.sh
+/// -sINITIAL_MEMORY=4294901760 -sALLOW_MEMORY_GROWTH=0): every module the JIT makes declares it
+/// as its memory's minimum and maximum. Without V8's trap handler (Android) every access is
+/// checked against the memory's size: a growable shared memory's size is loaded again for each
+/// access, a fixed one's once per function.
+pub const MEMORY_MIN_PAGES: u32 = 65535;
 
 pub fn uleb(out: &mut Vec<u8>, mut v: u64) {
     loop {
@@ -426,12 +429,10 @@ impl Module {
             match i {
                 Import::Memory => {
                     name(&mut s, "memory");
-                    // memory, shared with a maximum: MEMORY_MIN_PAGES..65536 pages (without
-                    // V8's trap handler, as on Android, a minimum of 0 costs a compare more on
-                    // every access)
+                    // memory, shared, MEMORY_MIN_PAGES fixed
                     s.extend_from_slice(&[0x02, 0x03]);
                     uleb(&mut s, MEMORY_MIN_PAGES as u64);
-                    uleb(&mut s, 65536);
+                    uleb(&mut s, MEMORY_MIN_PAGES as u64);
                 }
                 Import::Table(n) => {
                     name(&mut s, n);

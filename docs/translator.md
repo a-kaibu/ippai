@@ -150,3 +150,22 @@ crc32 が遅い。チェックサムは全部同じ。
   世代を上げ、各スレッドの表を捨てる。`tests/smc.c`。
 - 誤翻訳の二分探索: `VNVM_JIT_ONLY=lo-hi` (範囲外はインタプリタ)、`VNVM_JIT_FN_ONLY=lo-hi`
   (範囲外はリージョン)。初回だけ壊れる不具合は、保存済みの `_shared-<版>` を消してから試す。
+
+## Android: V8's bounds checks (2026-11-02)
+
+Android's Chrome cannot enable V8's trap handler, so every wasm load and store gets an explicit
+bounds check (docs/v8-wasm-shape.md). Measured on desktop Chromium with
+`--js-flags=--wasm-enforce-bounds-checks` (flatbench, FN mode, median rep):
+
+| | bounds checks | desktop |
+|---|---|---|
+| before | 7.05 s | 3.5 s |
+| JIT modules import memory with minimum = wine.wasm's initial size (9527650) | 5.1 s | same |
+| memory never grows: 65535 pages fixed, modules import min = max | 3.8-4.1 s | same |
+
+A growable shared memory's size is loaded again for every access; a fixed one's once per function.
+wine.wasm (and sake) now start with the whole 4 GB (-sINITIAL_MEMORY=4294901760
+-sALLOW_MEMORY_GROWTH=0). **To check on a real Android device at the final check**: V8 commits the
+initial memory read-write up front; Android's overcommit heuristics could refuse 4 GB on a device
+with little RAM (2.06 GB worked before). If it does, go back to a growable memory with the minimum
+at 33792 pages (5.1 s above).

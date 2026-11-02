@@ -170,7 +170,7 @@ link_main() {  # <output .js> <emcc flags...>
     $(cd "$BUILD" && ls server/*.o | sed "s|^|$BUILD/|") "$VNHOST" "$VKD3D_OUT/libvkd3d-shader.a" $KEEP \
     $WRAPFLAGS --pre-js "$HERE/pre.js" --js-library "$HERE/vnfs.js" --js-library "$HERE/vnjit.js" --js-library "$HERE/vndl.js" --js-library "$HERE/vnwasm.js" \
     -sPROXY_TO_PTHREAD -sEXIT_RUNTIME \
-    -sGLOBAL_BASE=2147483648 -sINITIAL_MEMORY=2214592512 -sMAXIMUM_MEMORY=4GB -sALLOW_MEMORY_GROWTH=1 \
+    -sGLOBAL_BASE=2147483648 -sINITIAL_MEMORY=4294901760 -sALLOW_MEMORY_GROWTH=0 \
     -sSTACK_SIZE=1MB -sDEFAULT_PTHREAD_STACK_SIZE=1MB -sPTHREAD_POOL_SIZE=16 -sPTHREAD_POOL_SIZE_STRICT=0 \
     -sERROR_ON_UNDEFINED_SYMBOLS=1 -sDEFAULT_LIBRARY_FUNCS_TO_INCLUDE=__assert_fail $M64_LINK "$@" $EXTRA_LDFLAGS \
     2> "$OUT/link.log" || { grep -i "undefined\|error" "$OUT/link.log" | sort -u | head -80; exit 1; }
