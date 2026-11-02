@@ -376,3 +376,50 @@ Ramsey ICFP'22 "Beyond Relooper" (https://dl.acm.org/doi/10.1145/3547621)。
 
 vnvm の内部の記録: docs/translator.md、docs/prior-work.md、docs/hangover.md、
 project memory の vnvm-v8、vnvm-calls、vnvm-perf-notes、vnvm-perf-notes2、vnvm-perf-notes3、vnvm-aot。
+
+## 6. 外部の調査報告との突き合わせ (2026-11-02、こたが共有)
+
+こたが別に用意した報告「V8向けWebAssembly動的変換系を高速化するための調査報告」(CheerpX、v86、
+flycast-wasm を比べて、ホットなリージョンを 1 つの wasm 関数にし、guest の状態を locals に閉じ込める
+方向を勧めるもの) を、vnvm の今の実装と上のソースの確認に照らした。
+
+### 結論
+
+報告の主な方針は正しいが、**vnvm ではほとんど入っている**。報告の前提 (「2〜3 倍の差」「CPUState を
+毎命令読み書き」「基本ブロックごとのディスパッチ」「メモリアクセスごとの helper」) は、vnvm の現状とは
+合わない。残っている差は、報告が扱っていない 2 点にある。Android の範囲チェック (4 章 A) と、
+呼び出しの多いフラットなコード (flatbench はネイティブの約 5 倍、本編はデスクトップで 1.2〜1.4 倍)。
+
+### 項目ごとの対応
+
+| 報告の提案 | vnvm の今 | コメント |
+|---|---|---|
+| guest のレジスタを locals にキャッシュし、書いたものだけ出口で書き戻す | 済み。GPR は L_REG、MMX/XMM はブロック内とループで locals (`jit/packed.rs` `mm_get`、`mod.rs` の `mm_loop`/`xm_loop`)、x87 は関数全体でキャッシュ (420b307)。呼び出しで書き戻すのは前回以降に書いたものだけ (5187716) | 報告が言う 3〜5 倍は flycast-wasm の改善の幅で、vnvm は最初の JIT から locals を使っている |
+| ホットな direct edge を同じ関数の br に、巨大な br_table にしない | 済み。リージョン、FN モード (支配木から構造化、`jit/structure.rs`)。入口の br_table は戻り先とループ先頭だけ (f5e06e1) | v86 の失敗を避ける形はもう取っている |
+| メモリは software TLB の fast path を inline に | **不要**。vnvm はユーザーモードで、ゲストのアドレスがそのまま wasm のアドレス。TLB は無く、範囲チェック 1 つだけ (同じ基底では 1 回、`addr_pair`/`near_safe`) | v86 と flycast-wasm はシステムエミュレータなので TLB が要る。vnvm はそれより一段軽い |
+| EFLAGS を遅延にし、生存解析で必要なものだけ作る | 済み (遅延フラグ + 生存解析、CALL/RET でフラグは死んでいる扱い、cmp+jcc の融合) | 残りは 4 章 C.1 (合流点で L_OP が実行時の値になる所) |
+| indirect edge を guard 付きで特殊化する | 済み (リングのヒントで間接呼び出しと末尾ジャンプを guard 付きでインライン化、`jmp [i*4+T]` は br_table、ハッシュ分岐) | V8 の投機的インライン化は同じインスタンスでしか効かないので、翻訳器側でやっているのが正しい (4 章 E) |
+| SSE を v128 に直接 | 済み (MMX と SSE2 の整数命令、`jit/packed.rs`) | relaxed SIMD はビット単位で同じ結果が要るので使い所は少ない。PSHUFB は普通の swizzle で足りる (4 章 G) |
+| slow path に分岐ヒント | 試して差なし (Chromium 153、vnvm-games7) | C を入れた後で測り直す価値はある (4 章 D.5) |
+| x87 は実際の命令頻度で方針を分ける | 計測済み: Reunion は MMX 50%、整数 37%、x87 1.3%。NScripter は整数 80% (vnvm-games7) | 今のゲームでは浮動小数点の割合は小さい。効くのは MMX のブレンドのループ |
+| 1 フレームあたりのカウンタで測る | `VNVM_JIT_COUNT` (ブロック、入口、ハッシュ表、乗り換え、コンパイル回数) と `VNVM_JIT_STATS` がある | 報告のリストのうち、範囲チェックの出口 (bail) の回数と Wine 境界の回数は足すとよい |
+| リージョンの大きさを live GPR/XMM 数・入口数・バイト数の cost function で切る | 一部 (大きさの上限、入口の制限)。生きている値の数では切っていない | 4 章 C の「合流点の値 9 個以下」を切る基準にも使える。採り入れる価値がある |
+
+### 報告の中で直すべき点
+
+1. **「ARM64 Linux の Chromium で測れば Android の原因を分解しやすい」は、範囲チェックについては成り立たない**。
+   V8 は ARM64 Linux では trap handler を使い、Android では使えない (`trap-handler.h:18-60`)。ARM64 Linux で
+   測ると、Android で一番重いかもしれないコストが消える。代わりに `--wasm-enforce-bounds-checks` を付ける。
+2. ARM64 の整数の引数レジスタ x7, x0, x2–x6 のうち、**x7 はインスタンス**。wasm の引数としてレジスタで
+   渡せるのは 6 個 (x64 は 5 個)。
+3. Branch Hinting の出荷は、prior-work.md の確認では M136 (報告は 137)。どちらにしても今の Chrome では有効。
+4. 報告は「Wine の処理は Wasm ネイティブに早く抜ける」と書いている。vnvm では Wine の Unix 側はもう
+   wasm で、PE の DLL を直接 wasm にする作業は別のスレッドにある (docs/wasm-dlls.md)。
+
+### 報告から新しく採るもの
+
+- flycast-wasm (https://github.com/nasomers/flycast-wasm 、SH4 → wasm JIT、2026): レジスタは locals、
+  ホットなコードを複数ブロックのモジュールにまとめる、RAM アクセスを inline にして import の往復を
+  1 フレーム約 50 万回から 9 千回にした (作者自身の計測)。残課題に FPU レジスタのキャッシュを挙げている。
+  vnvm と同じ方向で、vnvm より 1 段手前にいる。
+- リージョンを切る基準に「生きている値の数」を入れる (上の表)。
