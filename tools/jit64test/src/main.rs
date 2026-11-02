@@ -16,17 +16,22 @@ const DATA: u32 = 0x20_0000;
 const DATA_LEN: u32 = 0x1000;
 const STACK: u32 = 0x30_0000;
 const MEM: usize = 0x40_0000;
+/// accessible guest memory (bigger for `exe`)
+static LIMIT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(MEM as u32);
+fn limit() -> u32 {
+    LIMIT.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 struct Mem(*mut u8);
 impl vnx86::Memory for Mem {
     fn read8(&mut self, a: u32) -> Result<u8, Fault> {
-        if !(0x10000..MEM as u32).contains(&a) {
+        if !(0x10000..limit()).contains(&a) {
             return Err(Fault { addr: a, write: false });
         }
         Ok(unsafe { *self.0.add(a as usize) })
     }
     fn write8(&mut self, a: u32, v: u8) -> Result<(), Fault> {
-        if !(0x10000..MEM as u32).contains(&a) {
+        if !(0x10000..limit()).contains(&a) {
             return Err(Fault { addr: a, write: true });
         }
         unsafe { *self.0.add(a as usize) = v };
@@ -427,6 +432,8 @@ struct Jit {
     linker: Linker<()>,
     /// eip -> (function, block)
     entries: HashMap<u32, (Func, u32)>,
+    /// blocks a region may take in
+    range: (u32, u32),
 }
 
 impl Jit {
@@ -466,13 +473,14 @@ impl Jit {
         linker
             .func_wrap("env", "x87", |_: i32, _: i32, _: i32, _: f64, _: f64, _: f64, _: f64, _: f64, _: f64, _: f64, _: f64| {})
             .unwrap();
-        Jit { engine: engine.clone(), store, linker, entries: HashMap::new() }
+        Jit { engine: engine.clone(), store, linker, entries: HashMap::new(), range: (0, u32::MAX) }
     }
 
     fn translate(&mut self, base: usize, eip: u32, rip_hi: u32) -> Result<(), String> {
         let mut m = vnx86::jit::wasm::Module::default();
         let full = eip as u64 | (rip_hi as u64) << 32;
-        let region = vnx86::jit::long::translate_region64(&mut m, &mut Mem(base as *mut u8), full, (END, END + 16), |a| a != END).ok_or("refused")?;
+        let (lo, hi) = self.range;
+        let region = vnx86::jit::long::translate_region64(&mut m, &mut Mem(base as *mut u8), full, (END, END + 16), |a| a != END && a >= lo && a < hi).ok_or("refused")?;
         let bytes = m.finish();
         if std::env::var("JDUMP").is_ok() { std::fs::write("/tmp/jit64-last.wasm", &bytes).ok(); eprintln!("module {} bytes", bytes.len()); }
         let module = Module::new(&self.engine, &bytes).map_err(|e| {
@@ -606,8 +614,173 @@ fn run_case(engine: &Engine, memory: &SharedMemory, base: usize, list0: &[Instru
     (diffs, code)
 }
 
+/// `exe <file.exe> <lo> <hi> [count] [seed]`: the exe's code in [lo, hi) (low-32 addresses of the
+/// image mapped at its 4 GB alias) from random instruction boundaries and random states
+/// (registers small or pointing into DATA), interpreter against JIT until the code leaves the range.
+fn exe_mode(args: &[String]) {
+    let image = std::fs::read(&args[2]).unwrap();
+    let lo = u32::from_str_radix(args[3].trim_start_matches("0x"), 16).unwrap();
+    let hi = u32::from_str_radix(args[4].trim_start_matches("0x"), 16).unwrap();
+    let count: usize = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(1000);
+    let seed: u64 = args.get(6).and_then(|s| s.parse().ok()).unwrap_or(1);
+    // PE: sections at their RVAs
+    let pe = u32::from_le_bytes(image[0x3c..0x40].try_into().unwrap()) as usize;
+    let nsec = u16::from_le_bytes(image[pe + 6..pe + 8].try_into().unwrap()) as usize;
+    let opt = u16::from_le_bytes(image[pe + 20..pe + 22].try_into().unwrap()) as usize;
+    let base64 = u64::from_le_bytes(image[pe + 24 + 24..pe + 24 + 32].try_into().unwrap());
+    let size = u32::from_le_bytes(image[pe + 24 + 56..pe + 24 + 60].try_into().unwrap());
+    let alias = base64 as u32;
+    let rip_hi = (base64 >> 32) as u32;
+    let mut mapped = vec![0u8; size as usize];
+    let headers = u32::from_le_bytes(image[pe + 24 + 60..pe + 24 + 64].try_into().unwrap()) as usize;
+    mapped[..headers].copy_from_slice(&image[..headers]);
+    for i in 0..nsec {
+        let sh = pe + 24 + opt + i * 40;
+        let va = u32::from_le_bytes(image[sh + 12..sh + 16].try_into().unwrap()) as usize;
+        let raw = u32::from_le_bytes(image[sh + 16..sh + 20].try_into().unwrap()) as usize;
+        let ptr = u32::from_le_bytes(image[sh + 20..sh + 24].try_into().unwrap()) as usize;
+        let n = raw.min(mapped.len() - va).min(image.len() - ptr);
+        mapped[va..va + n].copy_from_slice(&image[ptr..ptr + n]);
+    }
+    let top = alias as usize + size as usize;
+    LIMIT.store(top as u32, std::sync::atomic::Ordering::Relaxed);
+    let mut config = Config::new();
+    config.wasm_threads(true);
+    let engine = Engine::new(&config).unwrap();
+    let pages = (top + 0xffff) / 65536;
+    let memory = SharedMemory::new(&engine, MemoryType::shared(pages as u32, 65536)).unwrap();
+    let base = memory.data().as_ptr() as *mut u8 as usize;
+    let m = base as *mut u8;
+    // instruction boundaries in the range
+    let mut starts = Vec::new();
+    {
+        let off = (lo - alias) as usize;
+        let mut dec = iced_x86::Decoder::with_ip(64, &mapped[off..(hi - alias) as usize], lo as u64 | (rip_hi as u64) << 32, iced_x86::DecoderOptions::NONE);
+        for ins in &mut dec {
+            if !ins.is_invalid() && ins.mnemonic() != iced_x86::Mnemonic::Int3 {
+                starts.push(ins.ip() as u32);
+            }
+        }
+    }
+    let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+    let (mut fails, mut compared) = (0, 0);
+    let outside = |c: &Cpu| c.rip_hi != rip_hi || c.eip < lo || c.eip >= hi;
+    for t in 0..count {
+        let start = starts[rng.below(starts.len() as u64) as usize];
+        let data: Vec<u8> = (0..0x10000).map(|_| rng.next() as u8).collect();
+        let mut cpu0 = initial(&mut rng, rip_hi);
+        cpu0.eip = start;
+        for i in [0usize, 1, 2, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15] {
+            match rng.below(3) {
+                0 => cpu0.set_gpr(i, DATA as u64 + rng.below(0xf000)),
+                1 => cpu0.set_gpr(i, rng.below(64)),
+                _ => {}
+            }
+        }
+        cpu0.set_gpr(3, DATA as u64 + rng.below(0xf000));
+        cpu0.set_gpr(5, DATA as u64 + rng.below(0xf000));
+        let setup = || unsafe {
+            std::ptr::write_bytes(m.add(0x10000), 0, MEM - 0x10000);
+            std::ptr::copy_nonoverlapping(data.as_ptr(), m.add(DATA as usize), data.len());
+            std::ptr::copy_nonoverlapping(mapped.as_ptr(), m.add(alias as usize), mapped.len());
+            put_cpu(m, &cpu0);
+        };
+        setup();
+        let mut c = cpu0.clone();
+        let mut ok = false;
+        for _ in 0..20000 {
+            if vnx86::step(&mut c, &mut Mem(m)) != Exit::Continue {
+                break;
+            }
+            if outside(&c) {
+                ok = true;
+                break;
+            }
+        }
+        if !ok {
+            continue;
+        }
+        let snap = |m: *mut u8| unsafe { (std::slice::from_raw_parts(m.add(DATA as usize), 0x10000).to_vec(), std::slice::from_raw_parts(m.add(STACK as usize - 0x1000), 0x1000).to_vec(), std::slice::from_raw_parts(m.add(alias as usize), mapped.len()).to_vec()) };
+        let want_mem = snap(m);
+        let want = c;
+        setup();
+        let mut jit = Jit::new(&engine, &memory, base);
+        jit.range = (lo, hi);
+        let mut done = false;
+        for _ in 0..20000 {
+            let c = unsafe { get_cpu(m) };
+            if outside(&c) {
+                done = true;
+                break;
+            }
+            if !jit.entries.contains_key(&c.eip) && jit.translate(base, c.eip, c.rip_hi).is_err() {
+                break;
+            }
+            let (f, k) = jit.entries[&c.eip];
+            let mut params = vec![Val::I32(0); 16];
+            params[0] = Val::I32(CPU as i32);
+            params[1] = Val::I32((k << vnx86::jit::ENTRY_SHIFT) as i32);
+            let mut results = vec![Val::I32(0); 16];
+            if f.call(&mut jit.store, &params, &mut results).is_err() {
+                break;
+            }
+            match results[0].unwrap_i32() {
+                0 => {}
+                1 => {
+                    let mut c = unsafe { get_cpu(m) };
+                    let r = vnx86::step(&mut c, &mut Mem(m));
+                    unsafe { put_cpu(m, &c) };
+                    if r != Exit::Continue {
+                        break;
+                    }
+                }
+                _ => break,
+            }
+        }
+        if !done {
+            continue;
+        }
+        compared += 1;
+        let mut got = unsafe { get_cpu(m) };
+        let got_mem = snap(m);
+        let mut w = want.clone();
+        w.materialize();
+        got.materialize();
+        let mut d = Vec::new();
+        for i in 0..16 {
+            if w.gpr(i) != got.gpr(i) {
+                d.push(format!("r{i}: want {:#x} got {:#x}", w.gpr(i), got.gpr(i)));
+            }
+        }
+        if (w.eip, w.rip_hi) != (got.eip, got.rip_hi) {
+            d.push(format!("rip want {:#x} got {:#x}", w.eip, got.eip));
+        }
+        if w.eflags & 0x8d5 != got.eflags & 0x8d5 {
+            d.push(format!("flags want {:#x} got {:#x}", w.eflags & 0x8d5, got.eflags & 0x8d5));
+        }
+        for (name, a, b) in [("data", &want_mem.0, &got_mem.0), ("stack", &want_mem.1, &got_mem.1), ("image", &want_mem.2, &got_mem.2)] {
+            if a != b {
+                let i = a.iter().zip(b.iter()).position(|(x, y)| x != y).unwrap();
+                d.push(format!("{name} differs at +{i:#x}"));
+            }
+        }
+        if !d.is_empty() {
+            fails += 1;
+            if fails <= 10 {
+                let mut c0 = cpu0.clone();
+                c0.materialize();
+                println!("test {t} from {start:#x}: {}\n    init {:x?} flags {:#x}", d.join("; "), (0..16).map(|i| c0.gpr(i)).collect::<Vec<_>>(), c0.eflags);
+            }
+        }
+    }
+    println!("{count} tests, {compared} compared, {fails} failed");
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(|s| s.as_str()) == Some("exe") {
+        return exe_mode(&args);
+    }
     let count: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(500);
     let seed: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(1);
     let mut config = Config::new();

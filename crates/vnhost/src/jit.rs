@@ -181,8 +181,7 @@ pub fn enabled() -> bool {
 pub fn enabled64() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
-    // (opt-in while a crash in セレクトオブリージュ is open)
-    *ON.get_or_init(|| std::env::var("VNVM_JIT64").is_ok_and(|v| v == "1"))
+    *ON.get_or_init(|| std::env::var("VNVM_JIT64").map_or(true, |v| v != "0"))
 }
 
 pub enum Ran {
@@ -342,7 +341,7 @@ pub fn run(cpu: &mut Cpu, pending: u32) -> Ran {
     // now and then, checked against the interpreter
     thread_local! { static VN: Cell<u32> = const { Cell::new(0) }; }
     let mode = if cpu.mode64 != 0 { verify64() } else { 0 };
-    let verify = mode != 0 && VN.with(|v| { v.set(v.get().wrapping_add(1)); v.get() % match mode { 1 => 4, 2 => 32, _ => 1 } == 0 });
+    let verify = mode != 0 && debug_allowed(cpu.eip) && VN.with(|v| { v.set(v.get().wrapping_add(1)); v.get() % match mode { 1 => 4, 2 => 32, _ => 1 } == 0 });
     let expect = verify.then(|| {
         cpu.jit_budget = 2;
         let mut c = cpu.clone();

@@ -462,7 +462,7 @@ pub unsafe extern "C" fn vnhost_cpu_run(cpu: *mut Cpu, info: *mut u32) -> i32 {
     let signals = SELF.with(|s| s.1.clone());
     let mut mem = Linear;
     let mut rounds = 0u32;
-    // long mode: only with VNVM_JIT64=1 for now
+    // long mode: VNVM_JIT64=0 leaves it to the interpreter
     let jit = crate::jit::enabled() && (cpu.mode64 == 0 || crate::jit::enabled64());
     crate::jit::count_entry(cpu.eip);
     loop {
