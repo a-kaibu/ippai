@@ -2249,6 +2249,7 @@ name = "vnwin"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
+ "ab_glyph_rasterizer",
  "dlmalloc",
  "encoding_rs",
  "jpeg-decoder",
