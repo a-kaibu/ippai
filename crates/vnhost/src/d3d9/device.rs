@@ -2338,6 +2338,12 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     if d.trace {
         let tex0 = st.textures[0];
         eprintln!("d3d9: draw prim {prim} x{prims} first {first} count {count} fvf {:#x} decl {} ps {} tex0 {tex0} blend {} {} {} tss0 {:?}", st.fvf, st.decl, st.ps, st.rs[27], st.rs[19], st.rs[20], &st.tss[0][1..7]);
+        if st.fvf & 0xe == 2 {
+            for k in [256u32, 2, 3] {
+                eprintln!("d3d9:   transform {k} {:?}", st.transforms.get(&k));
+            }
+            eprintln!("d3d9:   viewport {:?}", st.viewport);
+        }
         if let Some(&(_, ptr, stride)) = streams.first() {
             eprintln!("d3d9:   data {ptr:#x} stride {stride}");
             for v in 0..count.min(6) {

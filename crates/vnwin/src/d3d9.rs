@@ -61,10 +61,57 @@ fn method(c: &mut Ctx) -> u32 {
             c.st0 = Some(0.0);
             0
         }
-        // (no GDI DC over a surface yet)
-        SURFACE_GETDC | SURFACE_RELEASEDC => 0x8876_086c,
+        SURFACE_GETDC => surface_get_dc(c),
+        SURFACE_RELEASEDC => surface_release_dc(c),
         _ => unsafe { vnhost::d3d9::vnhost_d3d9_call(id, (c.esp + 4) as usize as *const u32, &CALLS) },
     }
+}
+
+/// Open surface DCs: dc -> (surface, bitmap, previous bitmap)
+static DCS: Mutex<Option<HashMap<u32, (u32, u32, u32)>>> = Mutex::new(None);
+
+fn d3d_call(id: u32, args: &[u32]) -> u32 {
+    unsafe { vnhost::d3d9::vnhost_d3d9_call(id, args.as_ptr(), &CALLS) }
+}
+
+/// IDirect3DSurface9::GetDC: the surface locked, a DIB section over its pixels in a memory DC.
+fn surface_get_dc(c: &mut Ctx) -> u32 {
+    let (this, out) = (c.a(0), c.a(1));
+    let mut desc = [0u32; 8];
+    if d3d_call(4 << 8 | 12, &[this, desc.as_mut_ptr() as usize as u32]) != 0 {
+        return 0x8876_086c;
+    }
+    let (fmt, w, h) = (desc[0], desc[6], desc[7]);
+    let (bpp, r565) = match fmt {
+        0x15 | 0x16 => (32, false),
+        0x17 => (16, true),
+        0x18 | 0x19 => (16, false),
+        _ => return 0x8876_086c,
+    };
+    let mut lr = [0u32; 2];
+    if d3d_call(4 << 8 | 13, &[this, lr.as_mut_ptr() as usize as u32, 0, 0]) != 0 {
+        return 0x8876_086c;
+    }
+    let hbm = crate::gdi::bitmap_over(w as i32, h as i32, bpp, lr[1], lr[0], r565);
+    let f = crate::api::export("gdi32", "CreateCompatibleDC");
+    let dc = c.call(f, &[0]);
+    let f = crate::api::export("gdi32", "SelectObject");
+    let old = c.call(f, &[dc, hbm]);
+    DCS.lock().unwrap().get_or_insert_with(HashMap::new).insert(dc, (this, hbm, old));
+    put32(out, dc);
+    0
+}
+
+fn surface_release_dc(c: &mut Ctx) -> u32 {
+    let (this, dc) = (c.a(0), c.a(1));
+    let Some((s, hbm, old)) = DCS.lock().unwrap().get_or_insert_with(HashMap::new).remove(&dc) else { return 0x8876_086c };
+    let _ = this;
+    for (dll, name, args) in [("gdi32", "SelectObject", vec![dc, old]), ("gdi32", "DeleteDC", vec![dc]), ("gdi32", "DeleteObject", vec![hbm])] {
+        let f = crate::api::export(dll, name);
+        c.call(f, &args);
+    }
+    d3d_call(4 << 8 | 14, &[s]);
+    0
 }
 
 /// The vtables, given to the host once.
