@@ -169,9 +169,37 @@ fn SetEnvironmentVariableA(_: &mut Ctx) -> u32 {
 fn SetEnvironmentVariableW(_: &mut Ctx) -> u32 {
     1
 }
+/// %NAME% replaced by its value (unknown names stay as written)
+fn expand_env(s: &str) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(i) = rest.find('%') {
+        out += &rest[..i];
+        let after = &rest[i + 1..];
+        match after.find('%').and_then(|j| env_get(&after[..j]).map(|v| (j, v))) {
+            Some((j, v)) => {
+                out += &v;
+                rest = &after[j + 1..];
+            }
+            None => {
+                out.push('%');
+                rest = after;
+            }
+        }
+    }
+    out + rest
+}
+/// ExpandEnvironmentStrings(src, dst, size): characters with the terminator, needed or written
+fn expand_env_strings(c: &mut Ctx, wide: bool) -> u32 {
+    let s = expand_env(&arg_str(c.a(0), wide));
+    let n = ret_str(c.a(1), c.a(2), &s, wide);
+    if n >= c.a(2) { n } else { n + 1 }
+}
 fn ExpandEnvironmentStringsA(c: &mut Ctx) -> u32 {
-    let s = arg_str(c.a(0), false);
-    ret_str(c.a(1), c.a(2), &s, false) + 1
+    expand_env_strings(c, false)
+}
+fn ExpandEnvironmentStringsW(c: &mut Ctx) -> u32 {
+    expand_env_strings(c, true)
 }
 
 fn GetCurrentProcess(_: &mut Ctx) -> u32 {
@@ -3581,7 +3609,7 @@ pub fn init() {
     reg!("kernel32";
         GetCommandLineA, GetCommandLineW, GetEnvironmentStrings, GetEnvironmentStringsA, GetEnvironmentStringsW,
         FreeEnvironmentStringsA, FreeEnvironmentStringsW, GetEnvironmentVariableA, GetEnvironmentVariableW,
-        SetEnvironmentVariableA, SetEnvironmentVariableW, ExpandEnvironmentStringsA,
+        SetEnvironmentVariableA, SetEnvironmentVariableW, ExpandEnvironmentStringsA, ExpandEnvironmentStringsW,
         GetCurrentProcess, GetCurrentProcessId, GetCurrentThread, GetCurrentThreadId, ExitProcess, TerminateProcess,
         FatalAppExitA, ExitThread, CreateThread, ResumeThread, SuspendThread, GetExitCodeThread, GetExitCodeProcess,
         TerminateThread, GetThreadPriority, SetThreadPriority, SetPriorityClass, GetPriorityClass, SetThreadAffinityMask,

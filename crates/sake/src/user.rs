@@ -811,7 +811,7 @@ fn system_classes(s: &mut State) {
     if !s.classes.is_empty() {
         return;
     }
-    for n in ["Button", "Edit", "Static", "ListBox", "ComboBox", "ScrollBar", "#32770", "MDIClient", "ComboLBox", "#32768", "msctls_progress32", "SysListView32", "SysTreeView32", "msctls_statusbar32", "ToolbarWindow32", "tooltips_class32", "RichEdit20A", "IME", "SysTabControl32"] {
+    for n in ["Button", "Edit", "Static", "ListBox", "ComboBox", "ScrollBar", "#32770", "MDIClient", "ComboLBox", "#32768", "msctls_progress32", "SysListView32", "SysTreeView32", "msctls_statusbar32", "ToolbarWindow32", "tooltips_class32", "RichEdit20A", "RichEdit20W", "RICHEDIT50W", "IME", "SysTabControl32"] {
         let atom = crate::k32::atom(n);
         s.classes.push(Class {
             name: n.into(),
@@ -1628,6 +1628,9 @@ fn FindWindowW(c: &mut Ctx) -> u32 {
 }
 fn FindWindowExA(c: &mut Ctx) -> u32 {
     find_window(c.a(2), c.a(3), false)
+}
+fn FindWindowExW(c: &mut Ctx) -> u32 {
+    find_window(c.a(2), c.a(3), true)
 }
 fn window_at(s: &State, x: i32, y: i32) -> u32 {
     let mut tops: Vec<u32> = s.wins.iter().filter(|(_, w)| w.parent == 0 && w.visible).map(|(&h, _)| h).collect();
@@ -4261,7 +4264,7 @@ pub fn init() {
         ClientToScreen, ScreenToClient, MapWindowPoints, AdjustWindowRect, AdjustWindowRectEx, GetParent,
         GetAncestor, SetParent, GetDesktopWindow, GetShellWindow, GetWindow, GetTopWindow, GetLastActivePopup,
         GetDlgItem, GetDlgCtrlID, SendDlgItemMessageA, GetWindowThreadProcessId, EnumWindows, EnumThreadWindows,
-        EnumChildWindows, FindWindowA, FindWindowW, FindWindowExA, WindowFromPoint, ChildWindowFromPoint,
+        EnumChildWindows, FindWindowA, FindWindowW, FindWindowExA, FindWindowExW, WindowFromPoint, ChildWindowFromPoint,
         GetWindowLongA, GetWindowLongW, SetWindowLongA, SetWindowLongW, GetClassLongA, GetClassLongW,
         SetClassLongA, SetClassLongW, GetClassNameA, GetClassNameW, SetPropA, SetPropW, GetPropA, GetPropW,
         RemovePropA, RemovePropW, SetWindowTextA, SetWindowTextW, GetWindowTextA, GetWindowTextW,
