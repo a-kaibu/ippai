@@ -334,6 +334,15 @@ fn with_reg<R>(f: impl FnOnce(&mut HashMap<String, KeyData>) -> R) -> R {
         set("hklm\\software\\microsoft\\windows nt\\currentversion", "ProductName", "Microsoft Windows 7");
         set("hklm\\software\\microsoft\\windows\\currentversion", "ProgramFilesDir", "C:\\Program Files");
         set("hklm\\software\\microsoft\\directx", "Version", "4.09.00.0904");
+        // the installed fonts (DirectWrite's system collection reads this list)
+        if let Some(dir) = crate::files::resolve("C:\\windows\\Fonts\\") {
+            let mut files: Vec<String> = std::fs::read_dir(dir).into_iter().flatten().flatten().filter_map(|e| e.file_name().into_string().ok()).collect();
+            files.sort();
+            for f in files.iter().filter(|f| [".ttf", ".ttc", ".otf"].iter().any(|x| f.to_ascii_lowercase().ends_with(x))) {
+                let stem = f.rsplit_once('.').map_or(f.as_str(), |x| x.0);
+                set("hklm\\software\\microsoft\\windows nt\\currentversion\\fonts", &format!("{stem} (TrueType)"), f);
+            }
+        }
         m.entry("hkcu\\software".into()).or_default();
         m
     });

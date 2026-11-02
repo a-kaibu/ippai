@@ -443,6 +443,77 @@ fn _strupr(c: &mut Ctx) -> u32 {
     mem::write(c.a(0), &s);
     c.a(0)
 }
+fn _wcsdup(c: &mut Ctx) -> u32 {
+    if c.a(0) == 0 {
+        return 0;
+    }
+    let s = wstr(c.a(0));
+    let p = mem::heap_alloc(2 * s.len() as u32 + 2, true);
+    for (i, &u) in s.iter().enumerate() {
+        w16(p + 2 * i as u32, u);
+    }
+    p
+}
+fn wcs_map(c: &mut Ctx, f: fn(char) -> char) -> u32 {
+    let s = wstr(c.a(0));
+    for (i, &u) in s.iter().enumerate() {
+        let m = char::from_u32(u as u32).map_or(u, |ch| {
+            let m = f(ch) as u32;
+            if m < 0x10000 { m as u16 } else { u }
+        });
+        w16(c.a(0) + 2 * i as u32, m);
+    }
+    c.a(0)
+}
+fn _wcslwr(c: &mut Ctx) -> u32 {
+    wcs_map(c, |ch| ch.to_lowercase().next().unwrap_or(ch))
+}
+fn _wcsupr(c: &mut Ctx) -> u32 {
+    wcs_map(c, |ch| ch.to_uppercase().next().unwrap_or(ch))
+}
+/// strtok/wcstok (with or without a context): `w` is the character size
+fn tok(w: u32, s: u32, delim: u32, ctx: u32) -> u32 {
+    let rd = |a: u32| if w == 2 { r16(a) as u32 } else { r8(a) as u32 };
+    let wr = |a: u32| if w == 2 { w16(a, 0) } else { w8(a, 0) };
+    let ds: Vec<u32> = (0..).map(|i| rd(delim + w * i)).take_while(|&ch| ch != 0).collect();
+    let mut p = if s != 0 { s } else { r32(ctx) };
+    if p == 0 {
+        return 0;
+    }
+    while rd(p) != 0 && ds.contains(&rd(p)) {
+        p += w;
+    }
+    if rd(p) == 0 {
+        w32(ctx, p);
+        return 0;
+    }
+    let start = p;
+    while rd(p) != 0 && !ds.contains(&rd(p)) {
+        p += w;
+    }
+    if rd(p) != 0 {
+        wr(p);
+        p += w;
+    }
+    w32(ctx, p);
+    start
+}
+static TOK_CTX: OnceLock<u32> = OnceLock::new();
+fn tok_ctx() -> u32 {
+    *TOK_CTX.get_or_init(|| mem::heap_alloc(8, true))
+}
+fn strtok(c: &mut Ctx) -> u32 {
+    tok(1, c.a(0), c.a(1), tok_ctx())
+}
+fn strtok_s(c: &mut Ctx) -> u32 {
+    tok(1, c.a(0), c.a(1), c.a(2))
+}
+fn wcstok(c: &mut Ctx) -> u32 {
+    tok(2, c.a(0), c.a(1), tok_ctx() + 4)
+}
+fn wcstok_s(c: &mut Ctx) -> u32 {
+    tok(2, c.a(0), c.a(1), c.a(2))
+}
 fn wcslen(c: &mut Ctx) -> u32 {
     wstr(c.a(0)).len() as u32
 }
@@ -452,6 +523,17 @@ fn wcscpy(c: &mut Ctx) -> u32 {
         w16(c.a(0) + 2 * i as u32, u);
     }
     c.a(0)
+}
+fn wlower(s: Vec<u16>) -> Vec<u16> {
+    s.into_iter().map(|u| if (b'A' as u16..=b'Z' as u16).contains(&u) { u + 32 } else { u }).collect()
+}
+fn _wcsicmp(c: &mut Ctx) -> u32 {
+    wlower(wstr(c.a(0))).cmp(&wlower(wstr(c.a(1)))) as i32 as u32
+}
+fn _wcsnicmp(c: &mut Ctx) -> u32 {
+    let n = c.a(2) as usize;
+    let t = |a: u32| wlower(wstr(a).into_iter().take(n).collect());
+    t(c.a(0)).cmp(&t(c.a(1))) as i32 as u32
 }
 fn wcscmp(c: &mut Ctx) -> u32 {
     wstr(c.a(0)).cmp(&wstr(c.a(1))) as i32 as u32
@@ -1296,6 +1378,10 @@ pub fn init() {
     implement("msvcrt", "_strtof_l", strtod);
     implement("msvcrt", "_strtod_l", strtod);
     implement("msvcrt", "strtof", strtod);
+    reg!(_wcsicmp, _wcsnicmp);
+    reg!(_wcsdup, _wcslwr, _wcsupr, wcstok_s, strtok_s, strtok, wcstok);
+    // (ucrtbase's wcstok takes a context)
+    implement("ucrtbase", "wcstok", wcstok_s);
     reg!(_putenv, fputc, __acrt_iob_func, _create_locale, _free_locale, _fdclass, _dclass, _fdsign, _dsign, strnlen);
     implement("ucrtbase", "__stdio_common_vsprintf", __stdio_common_vsprintf);
     implement("ucrtbase", "__stdio_common_vswprintf", __stdio_common_vswprintf);
