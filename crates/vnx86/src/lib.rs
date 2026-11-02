@@ -219,6 +219,23 @@ pub struct Cpu {
     /// The interpreter's scratch vector register (XMM16 to it): a VEX instruction's
     /// non-destructive source runs its legacy form on a copy here (interp/vex.rs)
     pub vex_tmp: u128,
+    /// 16-bit protected mode (Win16): code, stack and addresses are 16-bit, and memory
+    /// operands add the base of their segment. `eip` is IP (an offset in CS).
+    pub mode16: u32,
+    /// Selectors and bases of ES CS SS DS FS GS (16-bit mode only)
+    pub sreg: [u16; 6],
+    pub sbase: [u32; 6],
+    /// 16-bit mode: a table of segment bases (u32 per selector index, sel >> 3) that loading
+    /// a segment register reads
+    pub ldt: u32,
+}
+
+impl Cpu {
+    /// 16-bit mode: the linear address of CS:IP.
+    #[inline]
+    pub fn pc16(&self) -> u32 {
+        self.sbase[1].wrapping_add(self.eip & 0xffff)
+    }
 }
 
 impl Default for Cpu {
@@ -228,7 +245,7 @@ impl Default for Cpu {
             jit_pending: 0, jit_budget: 0, jit_ring: 0, fs_base: 0, gs_base: 0, trap_lo: 0, trap_hi: 0, tsc: 0,
             fpu: Fpu::default(), mm: [0; 8], xmm: [0; 8], mxcsr: 0x1f80,
             mode64: 0, hi: [0; 8], r8: [0; 8], xmm8: [0; 8], jit_depth: 0, rip_hi: 0, jit_calls: 0, jit_code_pages: 0, jit_smc: 0,
-            vex_tmp: 0,
+            vex_tmp: 0, mode16: 0, sreg: [0; 6], sbase: [0; 6], ldt: 0,
         }
     }
 }

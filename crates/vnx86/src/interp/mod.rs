@@ -49,31 +49,33 @@ impl Default for DecodeCache {
 
 /// [`step_flow`] with a [`DecodeCache`].
 pub fn step_cached<M: Memory>(cpu: &mut Cpu, mem: &mut M, cache: Option<&mut DecodeCache>) -> (Exit, bool) {
-    if cpu.eip >= cpu.trap_lo && cpu.eip < cpu.trap_hi && cpu.rip_hi == 0 {
-        return (Exit::Trap(cpu.eip), true);
+    // (16-bit mode: the linear address of CS:IP)
+    let pc = if cpu.mode16 != 0 { cpu.pc16() } else { cpu.eip };
+    if pc >= cpu.trap_lo && pc < cpu.trap_hi && cpu.rip_hi == 0 {
+        return (Exit::Trap(pc), true);
     }
     cpu.materialize();
     let mut buf = [0u8; 15];
-    let n = mem.fetch(cpu.eip, &mut buf);
+    let n = mem.fetch(pc, &mut buf);
     let slot = cache.map(|c| {
-        let i = (cpu.eip ^ (cpu.eip >> 11)) as usize & (DecodeCache::N - 1);
+        let i = (pc ^ (pc >> 11)) as usize & (DecodeCache::N - 1);
         &mut c.0[i]
     });
     let ins = match slot {
-        Some(e) if e.0 == cpu.eip && e.3.ip() >> 32 == cpu.rip_hi as u64 && (e.2 as usize) <= n && e.1[..e.2 as usize] == buf[..e.2 as usize] => e.3,
+        Some(e) if e.0 == pc && e.3.ip() >> 32 == cpu.rip_hi as u64 && e.3.ip() as u32 == cpu.eip && (e.2 as usize) <= n && e.1[..e.2 as usize] == buf[..e.2 as usize] => e.3,
         slot => {
-            let bitness = if cpu.mode64 != 0 { 64 } else { 32 };
+            let bitness = if cpu.mode64 != 0 { 64 } else if cpu.mode16 != 0 { 16 } else { 32 };
             let rip = cpu.eip as u64 | (cpu.rip_hi as u64) << 32;
             let mut dec = Decoder::with_ip(bitness, &buf[..n], rip, DecoderOptions::NONE);
             let ins = dec.decode();
             if ins.is_invalid() {
                 if n < 15 {
-                    return (Exit::Fault(Fault { addr: cpu.eip.wrapping_add(n as u32), write: false }), true);
+                    return (Exit::Fault(Fault { addr: pc.wrapping_add(n as u32), write: false }), true);
                 }
                 return (Exit::InvalidOpcode, true);
             }
             if let Some(e) = slot {
-                *e = (cpu.eip, buf, ins.len() as u8, ins);
+                *e = (pc, buf, ins.len() as u8, ins);
             }
             ins
         }
@@ -130,6 +132,19 @@ fn selector(r: Register, m64: bool) -> u64 {
     }
 }
 
+/// Index of a segment register in `Cpu::sreg` (ES CS SS DS FS GS); DS for none.
+#[inline]
+fn sidx(r: Register) -> usize {
+    match r {
+        Register::ES => 0,
+        Register::CS => 1,
+        Register::SS => 2,
+        Register::FS => 4,
+        Register::GS => 5,
+        _ => 3,
+    }
+}
+
 /// Register -> (index, bits, high byte)
 #[inline]
 fn reg_info(r: Register) -> (usize, u32, bool) {
@@ -164,9 +179,31 @@ impl<'a, M: Memory> X<'a, M> {
     }
 
     #[inline]
+    pub(crate) fn m16(&self) -> bool {
+        self.cpu.mode16 != 0
+    }
+
+    /// 16-bit mode: loads segment register `i` (ES CS SS DS FS GS) with `sel`; its base comes
+    /// from the embedder's table at `Cpu::ldt`.
+    pub(crate) fn load_seg(&mut self, i: usize, sel: u16) {
+        let base = if sel >> 3 == 0 { 0 } else { self.mem.read32(self.cpu.ldt.wrapping_add((sel as u32 >> 3) * 4)).unwrap_or(0) };
+        self.cpu.sreg[i] = sel;
+        self.cpu.sbase[i] = base;
+    }
+
+    /// Linear address of the stack slot at `sp`.
+    #[inline]
+    fn stk(&self, sp: u64) -> u32 {
+        if self.m16() { self.cpu.sbase[2].wrapping_add(sp as u32 & 0xffff) } else { lin(sp, self.m64()) }
+    }
+
+    #[inline]
     fn get_reg(&self, r: Register) -> u64 {
         let (i, bits, high) = reg_info(r);
         if i == SEG {
+            if self.m16() {
+                return self.cpu.sreg[sidx(r)] as u64;
+            }
             return selector(r, self.m64());
         }
         if bits == 64 || i >= 8 {
@@ -188,6 +225,9 @@ impl<'a, M: Memory> X<'a, M> {
     fn set_reg(&mut self, r: Register, val: u64) {
         let (i, bits, high) = reg_info(r);
         if i == SEG {
+            if self.m16() {
+                self.load_seg(sidx(r), val as u16);
+            }
             return;
         }
         let old = self.cpu.gpr(i);
@@ -204,17 +244,23 @@ impl<'a, M: Memory> X<'a, M> {
     /// Stack pointer and its width.
     #[inline]
     fn sp(&self) -> u64 {
-        if self.m64() { self.cpu.gpr(ESP) } else { self.cpu.regs[ESP] as u64 }
+        if self.m64() { self.cpu.gpr(ESP) } else if self.m16() { self.cpu.regs[ESP] as u64 & 0xffff } else { self.cpu.regs[ESP] as u64 }
     }
 
     #[inline]
     fn set_sp(&mut self, v: u64) {
-        if self.m64() { self.cpu.set_gpr(ESP, v) } else { self.cpu.regs[ESP] = v as u32 }
+        if self.m64() {
+            self.cpu.set_gpr(ESP, v)
+        } else if self.m16() {
+            self.cpu.regs[ESP] = (self.cpu.regs[ESP] & 0xffff_0000) | (v as u32 & 0xffff)
+        } else {
+            self.cpu.regs[ESP] = v as u32
+        }
     }
 
     #[inline]
     fn stack_bits(&self) -> u32 {
-        if self.m64() { 64 } else { 32 }
+        if self.m64() { 64 } else if self.m16() { 16 } else { 32 }
     }
 
     /// Effective address (offset only, no segment base): LEA.
@@ -226,7 +272,7 @@ impl<'a, M: Memory> X<'a, M> {
         }
         let index = ins.memory_index();
         let mut a = ins.memory_displacement64();
-        let mut asz = if self.m64() { 64 } else { 32 };
+        let mut asz = if self.m64() { 64 } else if self.m16() && ins.memory_displ_size() < 4 { 16 } else { 32 };
         if base != Register::None {
             asz = reg_info(base).1;
             a = a.wrapping_add(self.get_reg(base));
@@ -240,6 +286,9 @@ impl<'a, M: Memory> X<'a, M> {
 
     #[inline]
     fn seg_base(&self) -> u64 {
+        if self.m16() {
+            return self.cpu.sbase[sidx(self.ins.memory_segment())] as u64;
+        }
         (match self.ins.memory_segment() {
             Register::FS => self.cpu.fs_base,
             Register::GS => self.cpu.gs_base,
@@ -338,26 +387,32 @@ impl<'a, M: Memory> X<'a, M> {
 
     fn push(&mut self, v: u64, bits: u32) -> Result<(), Fault> {
         let sp = self.sp().wrapping_sub(bits as u64 / 8);
-        self.write_mem(lin(sp, self.m64()), bits, v)?;
+        self.write_mem(self.stk(sp), bits, v)?;
         self.set_sp(sp);
         Ok(())
     }
 
     fn pop(&mut self, bits: u32) -> Result<u64, Fault> {
         let sp = self.sp();
-        let v = self.read_mem(lin(sp, self.m64()), bits)?;
+        let v = self.read_mem(self.stk(sp), bits)?;
         self.set_sp(sp.wrapping_add(bits as u64 / 8));
         Ok(v)
     }
 
     #[inline]
     fn next(&self) -> u64 {
-        if self.m64() { self.ins.next_ip() } else { self.ins.next_ip32() as u64 }
+        if self.m64() { self.ins.next_ip() } else if self.m16() { self.ins.next_ip16() as u64 } else { self.ins.next_ip32() as u64 }
     }
 
     #[inline]
     fn branch(&self) -> u64 {
-        if self.m64() { self.ins.near_branch_target() } else { self.ins.near_branch32() as u64 }
+        if self.m64() {
+            self.ins.near_branch_target()
+        } else if self.m16() {
+            self.ins.near_branch_target() & 0xffff
+        } else {
+            self.ins.near_branch32() as u64
+        }
     }
 
     fn done(&mut self) -> Exit {
@@ -366,9 +421,46 @@ impl<'a, M: Memory> X<'a, M> {
     }
 
     fn jump(&mut self, target: u64) -> Exit {
+        if self.m16() {
+            self.cpu.eip = target as u32 & 0xffff;
+            return Exit::Continue;
+        }
         self.cpu.eip = target as u32;
         self.cpu.rip_hi = (target >> 32) as u32;
         Exit::Continue
+    }
+
+    /// A far JMP/CALL (ptr16:16, or m16:16 / m16:32)?
+    fn far(&self) -> bool {
+        match self.ins.op_kind(0) {
+            OpKind::FarBranch16 | OpKind::FarBranch32 => true,
+            OpKind::Memory => matches!(self.ins.memory_size(), iced_x86::MemorySize::SegPtr16 | iced_x86::MemorySize::SegPtr32),
+            _ => false,
+        }
+    }
+
+    /// 16-bit mode: far JMP/CALL.
+    fn far_transfer(&mut self) -> Exit {
+        let ins = self.ins;
+        let (sel, ip, w) = match ins.op_kind(0) {
+            OpKind::FarBranch16 => (ins.far_branch_selector(), ins.far_branch16() as u64, 16),
+            OpKind::FarBranch32 => (ins.far_branch_selector(), ins.far_branch32() as u64, 32),
+            _ => {
+                let w = if ins.memory_size() == iced_x86::MemorySize::SegPtr32 { 32 } else { 16 };
+                let a = self.addr();
+                let ip = tryf!(self.read_mem(a, w));
+                let sel = tryf!(self.read_mem(a.wrapping_add(w / 8), 16)) as u16;
+                (sel, ip, w)
+            }
+        };
+        if ins.mnemonic() == Mnemonic::Call {
+            let cs = self.cpu.sreg[1] as u64;
+            let ret = self.next();
+            tryf!(self.push(cs, w));
+            tryf!(self.push(ret, w));
+        }
+        self.load_seg(1, sel);
+        self.jump(ip)
     }
 
     fn cc(&self) -> bool {
@@ -555,7 +647,7 @@ impl<'a, M: Memory> X<'a, M> {
             Pop => {
                 let bits = self.op_bits(0);
                 let sp = self.sp();
-                let v = tryf!(self.read_mem(lin(sp, self.m64()), bits));
+                let v = tryf!(self.read_mem(self.stk(sp), bits));
                 self.set_sp(sp.wrapping_add(bits as u64 / 8));
                 // POP [ESP+x] uses ESP after the increment
                 if let Err(f) = self.write_op(0, v) {
@@ -565,19 +657,19 @@ impl<'a, M: Memory> X<'a, M> {
                 self.done()
             }
             Pushad => {
-                let sp = self.cpu.regs[ESP];
+                let sp = self.sp();
                 let r = self.cpu.regs;
-                for (k, &v) in [r[0], r[1], r[2], r[3], sp, r[5], r[6], r[7]].iter().enumerate() {
-                    tryf!(self.mem.write32(sp.wrapping_sub(4 * (k as u32 + 1)), v));
+                for (k, &v) in [r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]].iter().enumerate() {
+                    tryf!(self.mem.write32(self.stk(sp.wrapping_sub(4 * (k as u64 + 1))), v));
                 }
-                self.cpu.regs[ESP] = sp.wrapping_sub(32);
+                self.set_sp(sp.wrapping_sub(32));
                 self.done()
             }
             Popad => {
-                let sp = self.cpu.regs[ESP];
+                let sp = self.sp();
                 let mut v = [0u32; 8];
                 for (k, slot) in v.iter_mut().enumerate() {
-                    *slot = tryf!(self.mem.read32(sp.wrapping_add(4 * k as u32)));
+                    *slot = tryf!(self.mem.read32(self.stk(sp.wrapping_add(4 * k as u64))));
                 }
                 // memory order: EDI ESI EBP (ESP) EBX EDX ECX EAX
                 self.cpu.regs[EDI] = v[0];
@@ -587,29 +679,29 @@ impl<'a, M: Memory> X<'a, M> {
                 self.cpu.regs[EDX] = v[5];
                 self.cpu.regs[ECX] = v[6];
                 self.cpu.regs[EAX] = v[7];
-                self.cpu.regs[ESP] = sp.wrapping_add(32);
+                self.set_sp(sp.wrapping_add(32));
                 self.done()
             }
             // PUSHA/POPA with an operand-size prefix (66 60 / 66 61): the low 16 bits only
             Pusha => {
-                let sp = self.cpu.regs[ESP];
+                let sp = self.sp();
                 let r = self.cpu.regs;
-                for (k, &v) in [r[0], r[1], r[2], r[3], sp, r[5], r[6], r[7]].iter().enumerate() {
-                    tryf!(self.mem.write16(sp.wrapping_sub(2 * (k as u32 + 1)), v as u16));
+                for (k, &v) in [r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]].iter().enumerate() {
+                    tryf!(self.mem.write16(self.stk(sp.wrapping_sub(2 * (k as u64 + 1))), v as u16));
                 }
-                self.cpu.regs[ESP] = sp.wrapping_sub(16);
+                self.set_sp(sp.wrapping_sub(16));
                 self.done()
             }
             Popa => {
-                let sp = self.cpu.regs[ESP];
+                let sp = self.sp();
                 let mut v = [0u16; 8];
                 for (k, slot) in v.iter_mut().enumerate() {
-                    *slot = tryf!(self.mem.read16(sp.wrapping_add(2 * k as u32)));
+                    *slot = tryf!(self.mem.read16(self.stk(sp.wrapping_add(2 * k as u64))));
                 }
                 for (reg, k) in [(EDI, 0), (ESI, 1), (EBP, 2), (3, 4), (EDX, 5), (ECX, 6), (EAX, 7)] {
                     self.cpu.regs[reg] = (self.cpu.regs[reg] & 0xffff_0000) | v[k] as u32;
                 }
-                self.cpu.regs[ESP] = sp.wrapping_add(16);
+                self.set_sp(sp.wrapping_add(16));
                 self.done()
             }
             Pushfd | Pushf | Pushfq => {
@@ -646,33 +738,65 @@ impl<'a, M: Memory> X<'a, M> {
                 let level = ins.immediate8_2nd() as u64 & 31;
                 let (w, sb) = (self.stack_bits(), self.stack_bits() as u64 / 8);
                 let m64 = self.m64();
-                let bp = self.get_reg(if m64 { Register::RBP } else { Register::EBP });
+                let rbp = if m64 { Register::RBP } else if self.m16() { Register::BP } else { Register::EBP };
+                let bp = self.get_reg(rbp);
                 let mut sp = self.sp().wrapping_sub(sb);
-                tryf!(self.write_mem(lin(sp, m64), w, bp));
+                tryf!(self.write_mem(self.stk(sp), w, bp));
                 let frame = sp;
                 for l in 1..level {
-                    let v = tryf!(self.read_mem(lin(bp.wrapping_sub(sb * l), m64), w));
+                    let v = tryf!(self.read_mem(self.stk(bp.wrapping_sub(sb * l)), w));
                     sp = sp.wrapping_sub(sb);
-                    tryf!(self.write_mem(lin(sp, m64), w, v));
+                    tryf!(self.write_mem(self.stk(sp), w, v));
                 }
                 if level > 0 {
                     sp = sp.wrapping_sub(sb);
-                    tryf!(self.write_mem(lin(sp, m64), w, frame));
+                    tryf!(self.write_mem(self.stk(sp), w, frame));
                 }
-                self.set_reg(if m64 { Register::RBP } else { Register::EBP }, frame);
+                self.set_reg(rbp, frame);
                 self.set_sp(sp.wrapping_sub(size));
                 self.done()
             }
             Leave => {
                 let m64 = self.m64();
-                let rbp = if m64 { Register::RBP } else { Register::EBP };
+                let rbp = if m64 { Register::RBP } else if self.m16() { Register::BP } else { Register::EBP };
                 let bp = self.get_reg(rbp);
-                let v = tryf!(self.read_mem(lin(bp, m64), self.stack_bits()));
+                let v = tryf!(self.read_mem(self.stk(bp), self.stack_bits()));
                 self.set_sp(bp.wrapping_add(self.stack_bits() as u64 / 8));
                 self.set_reg(rbp, v);
                 self.done()
             }
 
+            Jmp | Call if self.m16() && self.far() => self.far_transfer(),
+            Retf if self.m16() => {
+                let ip = tryf!(self.pop(16));
+                let cs = tryf!(self.pop(16));
+                let extra = if ins.op_count() == 1 { ins.immediate16() as u64 } else { 0 };
+                let sp = self.sp();
+                self.set_sp(sp.wrapping_add(extra));
+                self.load_seg(1, cs as u16);
+                self.jump(ip)
+            }
+            Iret if self.m16() => {
+                let ip = tryf!(self.pop(16));
+                let cs = tryf!(self.pop(16));
+                let f = tryf!(self.pop(16)) as u32;
+                let which = USER_WRITABLE & 0xffff;
+                self.cpu.eflags = (self.cpu.eflags & !which) | (f & which) | 2;
+                self.load_seg(1, cs as u16);
+                self.jump(ip)
+            }
+            Lds | Les | Lss | Lfs | Lgs => {
+                let bits = self.op_bits(0);
+                let a = self.addr();
+                let off = tryf!(self.read_mem(a, bits));
+                let sel = tryf!(self.read_mem(a.wrapping_add(bits / 8), 16));
+                if self.m16() {
+                    let i = match ins.mnemonic() { Les => 0, Lss => 2, Lds => 3, Lfs => 4, _ => 5 };
+                    self.load_seg(i, sel as u16);
+                }
+                self.set_reg(ins.op_register(0), off);
+                self.done()
+            }
             Jmp => match ins.op_kind(0) {
                 OpKind::NearBranch32 | OpKind::NearBranch16 | OpKind::NearBranch64 => self.jump(self.branch()),
                 _ => {
@@ -692,7 +816,7 @@ impl<'a, M: Memory> X<'a, M> {
             Ret => {
                 let sp = self.sp();
                 let w = self.stack_bits();
-                let t = tryf!(self.read_mem(lin(sp, self.m64()), w));
+                let t = tryf!(self.read_mem(self.stk(sp), w));
                 let extra = if ins.op_count() == 1 { ins.immediate16() as u64 } else { 0 };
                 self.set_sp(sp.wrapping_add(w as u64 / 8 + extra));
                 self.jump(t)
@@ -856,7 +980,7 @@ impl<'a, M: Memory> X<'a, M> {
             Xlatb => {
                 let m64 = self.m64() && ins.memory_base() == Register::RBX;
                 let b = if m64 { self.cpu.gpr(3) } else { self.cpu.regs[3] as u64 };
-                let a = b.wrapping_add(self.get_reg(Register::AL)) & if m64 { u64::MAX } else { 0xffff_ffff };
+                let a = b.wrapping_add(self.get_reg(Register::AL)) & if m64 { u64::MAX } else if self.m16() { 0xffff } else { 0xffff_ffff };
                 let v = tryf!(self.mem.read8(lin(a.wrapping_add(self.seg_base()), self.m64())));
                 self.set_reg(Register::AL, v as u64);
                 self.done()
@@ -1303,7 +1427,7 @@ impl<'a, M: Memory> X<'a, M> {
             let si = self.get_reg(rs);
             let di = self.get_reg(rd);
             let sa = lin(si.wrapping_add(src_seg) & if m64 { u64::MAX } else { 0xffff_ffff }, m64);
-            let da = lin(di, m64);
+            let da = if self.m16() { self.cpu.sbase[0].wrapping_add(di as u32) } else { lin(di, m64) };
             match mn {
                 Movsb | Movsw | Movsd | Movsq => {
                     let v = tryf!(self.read_mem(sa, bits));

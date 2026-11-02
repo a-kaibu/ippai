@@ -101,7 +101,28 @@ WebGPU D3D9 を使う。いまはページ (`wine.html` / `game.html`) が動か
   ポインタ配列は 8 バイト刻み。拡張関数名は ARB/EXT を外した名前でも探す。
 - user: DPI API (GetDpiForWindow など 96 固定)、ShowWindow(SW_MAXIMIZE) で画面いっぱいに広げる。
 - 未対応: XAudio2 (32 ビットのみ)、多くの構造体 (PAINTSTRUCT、BITMAP、SYSTEM_INFO、
-  MEMORY_BASIC_INFORMATION など)、16 ビット。
+  MEMORY_BASIC_INFORMATION など)。
+
+## 16 ビット (Win16)
+
+- NE 形式の exe (Windows 3.x) は `w16::start` が読む (w16.rs)。vnx86 のインタプリタに 16 ビット
+  保護モード (`Cpu::mode16`) があり、セグメントレジスタの値とベース (`sreg`/`sbase`)、far
+  call/jmp/retf/iret、lds/les を扱う。セレクタは `Cpu::ldt` の表 (セレクタ番号ごとに u32 のベース)
+  の添字で、ベースはゲストメモリのブロックなので far ポインタの線形アドレスはベース + オフセット。
+  16 ビットのコードは JIT にかけない (インタプリタだけ)。
+- インポートはトラップ範囲 (0xffc00000) をベースにしたサンクセグメントへの far ポインタ。呼ばれると
+  pascal の引数を 16 ビットのスタックから読み (型は Wine の .spec から作った specs16.txt)、
+  ほとんどは引数を変換して sake の 32 ビットのハンドラを直接呼ぶ (w16api.rs の `SIMPLE` 表)。
+  16 ビットのハンドルは 0x10000 以上の sake のハンドルに小さい番号を割り当てる (`h16`/`h32`)。
+- ウィンドウプロシージャ: RegisterClass の 16 ビットのプロシージャは 32 ビットのトラップ (host_fn)
+  に包み、`call16` で 16 ビットのスタックに積んで呼ぶ。メッセージは `to16`/`to32` で変換する
+  (CREATESTRUCT、MINMAXINFO、NCCALCSIZE、WINDOWPOS、WM_COMMAND などの詰め直し)。Win16 の
+  プログラムの中では `crate::call` は 32 ビットのコードを走らせず、トラップのハンドラを直接呼ぶ。
+- KERNEL: InitTask、Global/Local メモリ (Global はセレクタ、64KB を超えるものは __AHINCR=8 刻み)、
+  ファイル (_lopen など)、DOS3Call / INT 21h の主な機能。USER: ウィンドウ、メッセージ、メニューと
+  ダイアログのリソース (NE の形式から 32 ビットに作り直す)、wsprintf。GDI: 文字、DIB、パレット。
+- 確認: Vector の Win3.1 フリーソフト「ガルシアの髑髏」(ハイパーリンク・ゲームブック、
+  SHOW.EXE + GALCIA.IV) が Chromium でタイトル → 本編。
 
 ## 動作確認したゲーム (体験版)
 

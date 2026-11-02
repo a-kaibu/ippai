@@ -1,0 +1,2108 @@
+KERNEL 1 FatalExit stub
+KERNEL 2 ExitKernel pascal -
+KERNEL 3 GetVersion pascal -
+KERNEL 4 LocalInit pascal www
+KERNEL 5 LocalAlloc pascal ww
+KERNEL 6 LocalReAlloc pascal www
+KERNEL 7 LocalFree pascal w
+KERNEL 8 LocalLock pascal w
+KERNEL 9 LocalUnlock pascal w
+KERNEL 10 LocalSize pascal w
+KERNEL 11 LocalHandle pascal w
+KERNEL 12 LocalFlags pascal w
+KERNEL 13 LocalCompact pascal w
+KERNEL 14 LocalNotify pascal l
+KERNEL 15 GlobalAlloc pascal wl
+KERNEL 16 GlobalReAlloc pascal wlw
+KERNEL 17 GlobalFree pascal w
+KERNEL 18 GlobalLock pascal w
+KERNEL 19 GlobalUnlock pascal w
+KERNEL 20 GlobalSize pascal w
+KERNEL 21 GlobalHandle pascal w
+KERNEL 22 GlobalFlags pascal w
+KERNEL 23 LockSegment pascal w
+KERNEL 24 UnlockSegment pascal w
+KERNEL 25 GlobalCompact pascal l
+KERNEL 26 GlobalFreeAll pascal w
+KERNEL 27 GetModuleName pascal wpw
+KERNEL 28 GlobalMasterHandle pascal -
+KERNEL 29 Yield pascal -
+KERNEL 30 WaitEvent pascal w
+KERNEL 31 PostEvent pascal w
+KERNEL 32 SetPriority pascal ws
+KERNEL 33 LockCurrentTask pascal w
+KERNEL 34 SetTaskQueue pascal ww
+KERNEL 35 GetTaskQueue pascal w
+KERNEL 36 GetCurrentTask pascal -
+KERNEL 37 GetCurrentPDB pascal -
+KERNEL 38 SetTaskSignalProc pascal wg
+KERNEL 39 SetTaskSwitchProc stub
+KERNEL 40 SetTaskInterchange stub
+KERNEL 41 EnableDos pascal -
+KERNEL 42 DisableDos pascal -
+KERNEL 43 IsScreenGrab stub
+KERNEL 44 BuildPDB stub
+KERNEL 45 LoadModule pascal pp
+KERNEL 46 FreeModule pascal w
+KERNEL 47 GetModuleHandle pascal g
+KERNEL 48 GetModuleUsage pascal w
+KERNEL 49 GetModuleFileName pascal wps
+KERNEL 50 GetProcAddress pascal wp
+KERNEL 51 MakeProcInstance pascal gw
+KERNEL 52 FreeProcInstance pascal g
+KERNEL 53 CallProcInstance stub
+KERNEL 54 GetInstanceData pascal www
+KERNEL 55 Catch register p
+KERNEL 56 Throw register pw
+KERNEL 57 GetProfileInt pascal pps
+KERNEL 58 GetProfileString pascal ppppw
+KERNEL 59 WriteProfileString pascal ppp
+KERNEL 60 FindResource pascal wpp
+KERNEL 61 LoadResource pascal ww
+KERNEL 62 LockResource pascal w
+KERNEL 63 FreeResource pascal w
+KERNEL 64 AccessResource pascal ww
+KERNEL 65 SizeofResource pascal ww
+KERNEL 66 AllocResource pascal wwl
+KERNEL 67 SetResourceHandler pascal wpg
+KERNEL 68 InitAtomTable pascal w
+KERNEL 69 FindAtom pascal p
+KERNEL 70 AddAtom pascal p
+KERNEL 71 DeleteAtom pascal w
+KERNEL 72 GetAtomName pascal wpw
+KERNEL 73 GetAtomHandle pascal w
+KERNEL 74 OpenFile pascal ppw
+KERNEL 75 OpenPathName stub
+KERNEL 76 DeletePathName stub
+KERNEL 77 Reserved1 pascal g
+KERNEL 78 Reserved2 pascal gg
+KERNEL 79 Reserved3 pascal g
+KERNEL 80 Reserved4 pascal g
+KERNEL 81 _lclose pascal w
+KERNEL 82 _lread pascal wgw
+KERNEL 83 _lcreat pascal pw
+KERNEL 84 _llseek pascal wlw
+KERNEL 85 _lopen pascal pw
+KERNEL 86 _lwrite pascal wpw
+KERNEL 87 Reserved5 pascal pp
+KERNEL 88 lstrcpy pascal gp
+KERNEL 89 lstrcat pascal gp
+KERNEL 90 lstrlen pascal p
+KERNEL 91 InitTask register -
+KERNEL 92 GetTempDrive pascal w
+KERNEL 93 GetCodeHandle pascal g
+KERNEL 94 DefineHandleTable pascal w
+KERNEL 95 LoadLibrary pascal p
+KERNEL 96 FreeLibrary pascal w
+KERNEL 97 GetTempFileName pascal wpwp
+KERNEL 98 GetLastDiskChange pascal -
+KERNEL 99 GetLPErrMode pascal -
+KERNEL 100 ValidateCodeSegments pascal -
+KERNEL 101 NoHookDosCall stub
+KERNEL 102 DOS3Call register -
+KERNEL 103 NetBIOSCall register -
+KERNEL 104 GetCodeInfo pascal gp
+KERNEL 105 GetExeVersion pascal -
+KERNEL 106 SetSwapAreaSize pascal w
+KERNEL 107 SetErrorMode pascal w
+KERNEL 108 SwitchStackTo pascal www
+KERNEL 109 SwitchStackBack register -
+KERNEL 110 PatchCodeHandle pascal w
+KERNEL 111 GlobalWire pascal w
+KERNEL 112 GlobalUnWire pascal w
+KERNEL 113 __AHSHIFT = 3
+KERNEL 114 __AHINCR = 8
+KERNEL 115 OutputDebugString pascal p
+KERNEL 116 InitLib stub
+KERNEL 117 OldYield pascal -
+KERNEL 118 GetTaskQueueDS pascal -
+KERNEL 119 GetTaskQueueES pascal -
+KERNEL 120 UndefDynLink stub
+KERNEL 121 LocalShrink pascal ww
+KERNEL 122 IsTaskLocked pascal -
+KERNEL 123 KbdRst pascal -
+KERNEL 124 EnableKernel pascal -
+KERNEL 125 DisableKernel pascal -
+KERNEL 126 MemoryFreed stub
+KERNEL 127 GetPrivateProfileInt pascal ppsp
+KERNEL 128 GetPrivateProfileString pascal ppppwp
+KERNEL 129 WritePrivateProfileString pascal pppp
+KERNEL 130 FileCDR pascal p
+KERNEL 131 GetDOSEnvironment pascal -
+KERNEL 132 GetWinFlags pascal -
+KERNEL 133 GetExePtr pascal w
+KERNEL 134 GetWindowsDirectory pascal pw
+KERNEL 135 GetSystemDirectory pascal pw
+KERNEL 136 GetDriveType pascal w
+KERNEL 137 FatalAppExit pascal wp
+KERNEL 138 GetHeapSpaces pascal w
+KERNEL 139 DoSignal stub
+KERNEL 140 SetSigHandler pascal gppww
+KERNEL 141 InitTask1 stub
+KERNEL 142 GetProfileSectionNames pascal pw
+KERNEL 143 GetPrivateProfileSectionNames pascal pwp
+KERNEL 144 CreateDirectory pascal pp
+KERNEL 145 RemoveDirectory pascal p
+KERNEL 146 DeleteFile pascal p
+KERNEL 147 SetLastError pascal l
+KERNEL 148 GetLastError pascal -
+KERNEL 149 GetVersionEx pascal p
+KERNEL 150 DirectedYield pascal w
+KERNEL 151 WinOldApCall stub
+KERNEL 152 GetNumTasks pascal -
+KERNEL 154 GlobalNotify pascal g
+KERNEL 155 GetTaskDS pascal -
+KERNEL 156 LimitEMSPages pascal l
+KERNEL 157 GetCurPID pascal l
+KERNEL 158 IsWinOldApTask pascal w
+KERNEL 159 GlobalHandleNoRIP pascal w
+KERNEL 160 EMSCopy stub
+KERNEL 161 LocalCountFree pascal -
+KERNEL 162 LocalHeapSize pascal -
+KERNEL 163 GlobalLRUOldest pascal w
+KERNEL 164 GlobalLRUNewest pascal w
+KERNEL 165 A20Proc pascal w
+KERNEL 166 WinExec pascal pw
+KERNEL 167 GetExpWinVer pascal w
+KERNEL 168 DirectResAlloc pascal www
+KERNEL 169 GetFreeSpace pascal w
+KERNEL 170 AllocCStoDSAlias pascal w
+KERNEL 171 AllocDStoCSAlias pascal w
+KERNEL 172 AllocAlias pascal w
+KERNEL 173 __ROMBIOS = 0
+KERNEL 174 __A000H = 0
+KERNEL 175 AllocSelector pascal w
+KERNEL 176 FreeSelector pascal w
+KERNEL 177 PrestoChangoSelector pascal ww
+KERNEL 178 __WINFLAGS = 0x413
+KERNEL 179 __D000H = 0
+KERNEL 180 LongPtrAdd pascal ll
+KERNEL 181 __B000H = 0
+KERNEL 182 __B800H = 0
+KERNEL 183 __0000H = 0
+KERNEL 184 GlobalDOSAlloc pascal l
+KERNEL 185 GlobalDOSFree pascal w
+KERNEL 186 GetSelectorBase pascal w
+KERNEL 187 SetSelectorBase pascal wl
+KERNEL 188 GetSelectorLimit pascal w
+KERNEL 189 SetSelectorLimit pascal wl
+KERNEL 190 __E000H = 0
+KERNEL 191 GlobalPageLock pascal w
+KERNEL 192 GlobalPageUnlock pascal w
+KERNEL 193 __0040H = 0
+KERNEL 194 __F000H = 0
+KERNEL 195 __C000H = 0
+KERNEL 196 SelectorAccessRights pascal www
+KERNEL 197 GlobalFix pascal w
+KERNEL 198 GlobalUnfix pascal w
+KERNEL 199 SetHandleCount pascal w
+KERNEL 200 ValidateFreeSpaces pascal -
+KERNEL 201 ReplaceInst stub
+KERNEL 202 RegisterPtrace stub
+KERNEL 203 DebugBreak register -
+KERNEL 204 SwapRecording stub
+KERNEL 205 CVWBreak stub
+KERNEL 206 AllocSelectorArray pascal w
+KERNEL 207 IsDBCSLeadByte pascal w
+KERNEL 208 K208 pascal wlll
+KERNEL 209 K209 pascal llwl
+KERNEL 210 K210 pascal llwll
+KERNEL 211 K211 pascal llw
+KERNEL 213 K213 pascal llww
+KERNEL 214 K214 pascal llw
+KERNEL 215 K215 pascal lw
+KERNEL 216 RegEnumKey pascal llpl
+KERNEL 217 RegOpenKey pascal lpp
+KERNEL 218 RegCreateKey pascal lpp
+KERNEL 219 RegDeleteKey pascal lp
+KERNEL 220 RegCloseKey pascal l
+KERNEL 221 RegSetValue pascal lplpl
+KERNEL 222 RegDeleteValue pascal lp
+KERNEL 223 RegEnumValue pascal llpppppp
+KERNEL 224 RegQueryValue pascal lppp
+KERNEL 225 RegQueryValueEx pascal lppppp
+KERNEL 226 RegSetValueEx pascal lpllpl
+KERNEL 227 RegFlushKey pascal l
+KERNEL 228 K228 pascal w
+KERNEL 229 K229 pascal l
+KERNEL 230 GlobalSmartPageLock pascal w
+KERNEL 231 GlobalSmartPageUnlock pascal w
+KERNEL 232 RegLoadKey stub
+KERNEL 233 RegUnloadKey stub
+KERNEL 234 RegSaveKey stub
+KERNEL 235 InvalidateNlsCache stub
+KERNEL 236 GetProductName stub
+KERNEL 237 K237 pascal -
+KERNEL 262 WOWWaitForMsgAndEvent stub
+KERNEL 263 WOWMsgBox stub
+KERNEL 273 K273 stub
+KERNEL 274 GetShortPathName pascal ppw
+KERNEL 310 LocalHandleDelta pascal w
+KERNEL 311 GetSetKernelDOSProc pascal p
+KERNEL 314 DebugDefineSegment stub
+KERNEL 315 WriteOutProfiles pascal -
+KERNEL 316 GetFreeMemInfo pascal -
+KERNEL 318 FatalExitHook stub
+KERNEL 319 FlushCachedFileHandle stub
+KERNEL 320 IsTask pascal w
+KERNEL 323 IsRomModule pascal w
+KERNEL 324 LogError pascal wp
+KERNEL 325 LogParamError pascal wpp
+KERNEL 326 IsRomFile pascal w
+KERNEL 327 K327 register -
+KERNEL 328 _DebugOutput varargs wp
+KERNEL 329 K329 pascal pw
+KERNEL 334 IsBadReadPtr pascal gw
+KERNEL 335 IsBadWritePtr pascal gw
+KERNEL 336 IsBadCodePtr pascal g
+KERNEL 337 IsBadStringPtr pascal gw
+KERNEL 338 HasGPHandler pascal g
+KERNEL 339 DiagQuery pascal -
+KERNEL 340 DiagOutput pascal p
+KERNEL 341 ToolHelpHook pascal p
+KERNEL 343 RegisterWinOldApHook stub
+KERNEL 344 GetWinOldApHooks stub
+KERNEL 345 IsSharedSelector pascal w
+KERNEL 346 IsBadHugeReadPtr pascal gl
+KERNEL 347 IsBadHugeWritePtr pascal gl
+KERNEL 348 hmemcpy pascal ppl
+KERNEL 349 _hread pascal wgl
+KERNEL 350 _hwrite pascal wpl
+KERNEL 351 BUNNY_351 pascal -
+KERNEL 352 lstrcatn pascal gpw
+KERNEL 353 lstrcpyn pascal gpw
+KERNEL 354 GetAppCompatFlags pascal w
+KERNEL 355 GetWinDebugInfo pascal pw
+KERNEL 356 SetWinDebugInfo pascal p
+KERNEL 357 MapSL pascal g
+KERNEL 358 MapLS pascal l
+KERNEL 359 UnMapLS pascal g
+KERNEL 360 OpenFileEx pascal ppw
+KERNEL 361 PIGLET_361 pascal -
+KERNEL 362 ThunkTerminateProcess stub
+KERNEL 365 GlobalChangeLockCount register ww
+KERNEL 403 FarSetOwner pascal ww
+KERNEL 404 FarGetOwner pascal w
+KERNEL 406 WritePrivateProfileStruct pascal pppwp
+KERNEL 407 GetPrivateProfileStruct pascal pppwp
+KERNEL 408 KERNEL_408 stub
+KERNEL 409 KERNEL_409 stub
+KERNEL 410 CreateProcessFromWinExec stub
+KERNEL 411 GetCurrentDirectory pascal lp
+KERNEL 412 SetCurrentDirectory pascal p
+KERNEL 413 FindFirstFile pascal pp
+KERNEL 414 FindNextFile pascal wp
+KERNEL 415 FindClose pascal w
+KERNEL 416 WritePrivateProfileSection pascal ppp
+KERNEL 417 WriteProfileSection pascal pp
+KERNEL 418 GetPrivateProfileSection pascal ppwp
+KERNEL 419 GetProfileSection pascal ppw
+KERNEL 420 GetFileAttributes pascal p
+KERNEL 421 SetFileAttributes pascal pl
+KERNEL 422 GetDiskFreeSpace pascal ppppp
+KERNEL 423 LogApiThk pascal p
+KERNEL 431 IsPeFormat pascal pw
+KERNEL 432 FileTimeToLocalFileTime stub
+KERNEL 434 UnicodeToAnsi pascal ppw
+KERNEL 435 GetTaskFlags stub
+KERNEL 436 _ConfirmSysLevel pascal p
+KERNEL 437 _CheckNotSysLevel pascal p
+KERNEL 438 _CreateSysLevel pascal pl
+KERNEL 439 _EnterSysLevel pascal p
+KERNEL 440 _LeaveSysLevel pascal p
+KERNEL 441 CreateThread16 pascal plgglp
+KERNEL 442 VWin32_EventCreate pascal -
+KERNEL 443 VWin32_EventDestroy pascal l
+KERNEL 444 Local32Info pascal pw
+KERNEL 445 Local32First pascal pw
+KERNEL 446 Local32Next pascal p
+KERNEL 447 WIN32_OldYield pascal -
+KERNEL 448 KERNEL_448 stub
+KERNEL 449 GetpWin16Lock pascal -
+KERNEL 450 VWin32_EventWait pascal l
+KERNEL 451 VWin32_EventSet pascal l
+KERNEL 452 LoadLibrary32 pascal p
+KERNEL 453 GetProcAddress32 pascal lp
+KERNEL 454 __FLATCS = 0
+KERNEL 455 __FLATDS = 0
+KERNEL 456 DefResourceHandler pascal www
+KERNEL 457 CreateW32Event pascal ll
+KERNEL 458 SetW32Event pascal l
+KERNEL 459 ResetW32Event pascal l
+KERNEL 460 WaitForSingleObject pascal ll
+KERNEL 461 WaitForMultipleObjects pascal lpll
+KERNEL 462 GetCurrentThreadId pascal -
+KERNEL 463 SetThreadQueue pascal lw
+KERNEL 464 GetThreadQueue pascal l
+KERNEL 465 NukeProcess stub
+KERNEL 466 ExitProcess pascal w
+KERNEL 467 WOACreateConsole stub
+KERNEL 468 WOASpawnConApp stub
+KERNEL 469 WOAGimmeTitle stub
+KERNEL 470 WOADestroyConsole stub
+KERNEL 471 GetCurrentProcessId pascal -
+KERNEL 472 MapHInstLS register -
+KERNEL 473 MapHInstSL register -
+KERNEL 474 CloseW32Handle pascal l
+KERNEL 475 GetTEBSelectorFS pascal -
+KERNEL 476 ConvertToGlobalHandle pascal l
+KERNEL 477 WOAFullScreen stub
+KERNEL 478 WOATerminateProcess stub
+KERNEL 479 KERNEL_479 pascal l
+KERNEL 480 _EnterWin16Lock pascal -
+KERNEL 481 _LeaveWin16Lock pascal -
+KERNEL 482 LoadSystemLibrary32 pascal p
+KERNEL 483 MapProcessHandle pascal l
+KERNEL 484 SetProcessDword pascal lsl
+KERNEL 485 GetProcessDword pascal ls
+KERNEL 486 FreeLibrary32 pascal l
+KERNEL 487 GetModuleFileName32 pascal lpw
+KERNEL 488 GetModuleHandle32 pascal p
+KERNEL 489 KERNEL_489 stub
+KERNEL 490 KERNEL_490 pascal w
+KERNEL 491 RegisterServiceProcess pascal ll
+KERNEL 492 WOAAbort stub
+KERNEL 493 UTInit pascal llll
+KERNEL 494 KERNEL_494 stub
+KERNEL 495 WaitForMultipleObjectsEx pascal lplll
+KERNEL 500 WOW16Call varargs www
+KERNEL 501 KDDBGOUT stub
+KERNEL 502 WOWGETNEXTVDMCOMMAND stub
+KERNEL 503 WOWREGISTERSHELLWINDOWHANDLE stub
+KERNEL 504 WOWLOADMODULE stub
+KERNEL 505 WOWQUERYPERFORMANCECOUNTER stub
+KERNEL 506 WOWCURSORICONOP stub
+KERNEL 507 WOWFAILEDEXEC stub
+KERNEL 508 WOWCLOSECOMPORT stub
+KERNEL 511 WOWKILLREMOTETASK stub
+KERNEL 512 WOWQUERYDEBUG stub
+KERNEL 513 LoadLibraryEx32W pascal pll
+KERNEL 514 FreeLibrary32W pascal l
+KERNEL 515 GetProcAddress32W pascal lp
+KERNEL 516 GetVDMPointer32W pascal gw
+KERNEL 517 CallProc32W varargs lll
+KERNEL 518 _CallProcEx32W varargs lll
+KERNEL 519 EXITKERNELTHUNK stub
+KERNEL 520 __MOD_KERNEL = 4200
+KERNEL 521 __MOD_DKERNEL = 4201
+KERNEL 522 __MOD_USER = 4203
+KERNEL 523 __MOD_DUSER = 4204
+KERNEL 524 __MOD_GDI = 4205
+KERNEL 525 __MOD_DGDI = 4206
+KERNEL 526 __MOD_KEYBOARD = 4207
+KERNEL 527 __MOD_SOUND = 4208
+KERNEL 528 __MOD_SHELL = 4209
+KERNEL 529 __MOD_WINSOCK = 4210
+KERNEL 530 __MOD_TOOLHELP = 4211
+KERNEL 531 __MOD_MMEDIA = 4212
+KERNEL 532 __MOD_COMMDLG = 4213
+KERNEL 541 WOWSETEXITONLASTAPP stub
+KERNEL 544 WOWSETCOMPATHANDLE stub
+KERNEL 533 ConvertDDEHandleLS stub
+KERNEL 534 ConvertDDEHandleSL stub
+KERNEL 535 VWin32_BoostThreadGroup pascal ll
+KERNEL 536 VWin32_BoostThreadStatic pascal ll
+KERNEL 537 KERNEL_537 stub
+KERNEL 538 ThunkTheTemplateHandle stub
+KERNEL 540 KERNEL_540 stub
+KERNEL 542 KERNEL_542 stub
+KERNEL 543 KERNEL_543 stub
+KERNEL 560 SetThunkletCallbackGlue pascal lg
+KERNEL 561 AllocLSThunkletCallback pascal gl
+KERNEL 562 AllocSLThunkletCallback pascal ll
+KERNEL 563 FindLSThunkletCallback pascal gl
+KERNEL 564 FindSLThunkletCallback pascal ll
+KERNEL 566 KERNEL_566 stub
+KERNEL 567 AllocLSThunkletCallbackEx pascal glw
+KERNEL 568 AllocSLThunkletCallbackEx pascal llw
+KERNEL 600 AllocCodeAlias stub
+KERNEL 601 FreeCodeAlias stub
+KERNEL 602 GetDummyModuleHandleDS pascal -
+KERNEL 603 KERNEL_603 stub
+KERNEL 604 CBClientGlueSL register -
+KERNEL 605 AllocSLThunkletCallback_dup pascal ll
+KERNEL 606 AllocLSThunkletCallback_dup pascal gl
+KERNEL 607 AllocLSThunkletSysthunk pascal gll
+KERNEL 608 AllocSLThunkletSysthunk pascal lgl
+KERNEL 609 FindLSThunkletCallback_dup pascal gl
+KERNEL 610 FindSLThunkletCallback_dup pascal ll
+KERNEL 611 FreeThunklet pascal ll
+KERNEL 612 IsSLThunklet pascal p
+KERNEL 613 HugeMapLS stub
+KERNEL 614 HugeUnMapLS stub
+KERNEL 615 ConvertDialog32To16 pascal lll
+KERNEL 616 ConvertMenu32To16 pascal lll
+KERNEL 617 GetMenu32Size pascal p
+KERNEL 618 GetDialog32Size pascal p
+KERNEL 619 RegisterCBClient pascal wgl
+KERNEL 620 CBClientThunkSL register -
+KERNEL 621 CBClientThunkSLEx register -
+KERNEL 622 UnRegisterCBClient pascal wgl
+KERNEL 623 InitCBClient pascal l
+KERNEL 624 SetFastQueue pascal ll
+KERNEL 625 GetFastQueue pascal -
+KERNEL 626 SmashEnvironment stub
+KERNEL 627 IsBadFlatReadWritePtr pascal glw
+KERNEL 630 C16ThkSL register -
+KERNEL 631 C16ThkSL01 register -
+KERNEL 651 ThunkConnect16 pascal ppwlppw
+KERNEL 652 IsThreadId stub
+KERNEL 653 OkWithKernelToChangeUsers stub
+KERNEL 666 UTGlue16 pascal plpl
+KERNEL 667 EntryAddrProc pascal ww
+KERNEL 668 MyAlloc pascal www
+KERNEL 669 DllEntryPoint pascal lwwwlw
+KERNEL 700 SSInit pascal -
+KERNEL 701 SSOnBigStack stub
+KERNEL 702 SSCall stub
+KERNEL 703 CallProc32WFix stub
+KERNEL 704 SSConfirmSmallStack register -
+KERNEL 901 __wine_vxd_vmm register -
+KERNEL 905 __wine_vxd_timer register -
+KERNEL 909 __wine_vxd_reboot register -
+KERNEL 910 __wine_vxd_vdd register -
+KERNEL 912 __wine_vxd_vmd register -
+KERNEL 914 __wine_vxd_comm register -
+KERNEL 923 __wine_vxd_shell register -
+KERNEL 933 __wine_vxd_pagefile register -
+KERNEL 938 __wine_vxd_apm register -
+KERNEL 939 __wine_vxd_vxdloader register -
+KERNEL 945 __wine_vxd_win32s register -
+KERNEL 951 __wine_vxd_configmg register -
+KERNEL 955 __wine_vxd_enable register -
+KERNEL 1990 __wine_vxd_timerapi register -
+KERNEL 2000 __wine_call_int_handler register w
+KERNEL 2001 __wine_snoop_entry register -
+KERNEL 2002 __wine_snoop_return register -
+USER 1 MessageBox pascal wppw
+USER 2 OldExitWindows pascal -
+USER 3 EnableOEMLayer stub
+USER 4 DisableOEMLayer stub
+USER 5 InitApp pascal w
+USER 6 PostQuitMessage pascal w
+USER 7 ExitWindows pascal lw
+USER 10 SetTimer pascal wwwg
+USER 11 SetSystemTimer pascal wwwg
+USER 12 KillTimer pascal ww
+USER 13 GetTickCount pascal -
+USER 14 GetTimerResolution pascal -
+USER 15 GetCurrentTime pascal -
+USER 16 ClipCursor pascal p
+USER 17 GetCursorPos pascal p
+USER 18 SetCapture pascal w
+USER 19 ReleaseCapture pascal -
+USER 20 SetDoubleClickTime pascal w
+USER 21 GetDoubleClickTime pascal -
+USER 22 SetFocus pascal w
+USER 23 GetFocus pascal -
+USER 24 RemoveProp pascal wp
+USER 25 GetProp pascal wp
+USER 26 SetProp pascal wpw
+USER 27 EnumProps pascal wg
+USER 28 ClientToScreen pascal wp
+USER 29 ScreenToClient pascal wp
+USER 30 WindowFromPoint pascal l
+USER 31 IsIconic pascal w
+USER 32 GetWindowRect pascal wp
+USER 33 GetClientRect pascal wp
+USER 34 EnableWindow pascal ww
+USER 35 IsWindowEnabled pascal w
+USER 36 GetWindowText pascal wgw
+USER 37 SetWindowText pascal wg
+USER 38 GetWindowTextLength pascal w
+USER 39 BeginPaint pascal wp
+USER 40 EndPaint pascal wp
+USER 41 CreateWindow pascal pplsssswwwg
+USER 42 ShowWindow pascal ww
+USER 43 CloseWindow pascal w
+USER 44 OpenIcon pascal w
+USER 45 BringWindowToTop pascal w
+USER 46 GetParent pascal w
+USER 47 IsWindow pascal w
+USER 48 IsChild pascal ww
+USER 49 IsWindowVisible pascal w
+USER 50 FindWindow pascal pp
+USER 51 BEAR51 stub
+USER 52 AnyPopup pascal -
+USER 53 DestroyWindow pascal w
+USER 54 EnumWindows pascal gl
+USER 55 EnumChildWindows pascal wgl
+USER 56 MoveWindow pascal wwwwww
+USER 57 RegisterClass pascal p
+USER 58 GetClassName pascal wpw
+USER 59 SetActiveWindow pascal w
+USER 60 GetActiveWindow pascal -
+USER 61 ScrollWindow pascal wsspp
+USER 62 SetScrollPos pascal wwsw
+USER 63 GetScrollPos pascal ww
+USER 64 SetScrollRange pascal wwssw
+USER 65 GetScrollRange pascal wwpp
+USER 66 GetDC pascal w
+USER 67 GetWindowDC pascal w
+USER 68 ReleaseDC pascal ww
+USER 69 SetCursor pascal w
+USER 70 SetCursorPos pascal ww
+USER 71 ShowCursor pascal w
+USER 72 SetRect pascal pssss
+USER 73 SetRectEmpty pascal p
+USER 74 CopyRect pascal pp
+USER 75 IsRectEmpty pascal p
+USER 76 PtInRect pascal pl
+USER 77 OffsetRect pascal pss
+USER 78 InflateRect pascal pss
+USER 79 IntersectRect pascal ppp
+USER 80 UnionRect pascal ppp
+USER 81 FillRect pascal wpw
+USER 82 InvertRect pascal wp
+USER 83 FrameRect pascal wpw
+USER 84 DrawIcon pascal wssw
+USER 85 DrawText pascal wpspw
+USER 86 IconSize pascal -
+USER 87 DialogBox pascal wpwg
+USER 88 EndDialog pascal ws
+USER 89 CreateDialog pascal wpwg
+USER 90 IsDialogMessage pascal wp
+USER 91 GetDlgItem pascal ww
+USER 92 SetDlgItemText pascal wwg
+USER 93 GetDlgItemText pascal wwgw
+USER 94 SetDlgItemInt pascal wwww
+USER 95 GetDlgItemInt pascal wspw
+USER 96 CheckRadioButton pascal wwww
+USER 97 CheckDlgButton pascal www
+USER 98 IsDlgButtonChecked pascal ww
+USER 99 DlgDirSelect pascal wpw
+USER 100 DlgDirList pascal wpwww
+USER 101 SendDlgItemMessage pascal wwwwl
+USER 102 AdjustWindowRect pascal plw
+USER 103 MapDialogRect pascal wp
+USER 104 MessageBeep pascal w
+USER 105 FlashWindow pascal ww
+USER 106 GetKeyState pascal w
+USER 107 DefWindowProc pascal wwwl
+USER 108 GetMessage pascal pwww
+USER 109 PeekMessage pascal pwwww
+USER 110 PostMessage pascal wwwl
+USER 111 SendMessage pascal wwwl
+USER 112 WaitMessage pascal -
+USER 113 TranslateMessage pascal p
+USER 114 DispatchMessage pascal p
+USER 115 ReplyMessage pascal l
+USER 116 PostAppMessage pascal wwwl
+USER 117 WindowFromDC pascal w
+USER 118 RegisterWindowMessage pascal p
+USER 119 GetMessagePos pascal -
+USER 120 GetMessageTime pascal -
+USER 121 SetWindowsHook pascal sg
+USER 122 CallWindowProc pascal gwwwl
+USER 123 CallMsgFilter pascal ps
+USER 124 UpdateWindow pascal w
+USER 125 InvalidateRect pascal wpw
+USER 126 InvalidateRgn pascal www
+USER 127 ValidateRect pascal wp
+USER 128 ValidateRgn pascal ww
+USER 129 GetClassWord pascal ws
+USER 130 SetClassWord pascal wsw
+USER 131 GetClassLong pascal ws
+USER 132 SetClassLong pascal wsl
+USER 133 GetWindowWord pascal ws
+USER 134 SetWindowWord pascal wsw
+USER 135 GetWindowLong pascal ws
+USER 136 SetWindowLong pascal wsl
+USER 137 OpenClipboard pascal w
+USER 138 CloseClipboard pascal -
+USER 139 EmptyClipboard pascal -
+USER 140 GetClipboardOwner pascal -
+USER 141 SetClipboardData pascal ww
+USER 142 GetClipboardData pascal w
+USER 143 CountClipboardFormats pascal -
+USER 144 EnumClipboardFormats pascal w
+USER 145 RegisterClipboardFormat pascal p
+USER 146 GetClipboardFormatName pascal wps
+USER 147 SetClipboardViewer pascal w
+USER 148 GetClipboardViewer pascal -
+USER 149 ChangeClipboardChain pascal ww
+USER 150 LoadMenu pascal wp
+USER 151 CreateMenu pascal -
+USER 152 DestroyMenu pascal w
+USER 153 ChangeMenu pascal wwgww
+USER 154 CheckMenuItem pascal www
+USER 155 EnableMenuItem pascal www
+USER 156 GetSystemMenu pascal ww
+USER 157 GetMenu pascal w
+USER 158 SetMenu pascal ww
+USER 159 GetSubMenu pascal ww
+USER 160 DrawMenuBar pascal w
+USER 161 GetMenuString pascal wwpsw
+USER 162 HiliteMenuItem pascal wwww
+USER 163 CreateCaret pascal wwww
+USER 164 DestroyCaret pascal -
+USER 165 SetCaretPos pascal ww
+USER 166 HideCaret pascal w
+USER 167 ShowCaret pascal w
+USER 168 SetCaretBlinkTime pascal w
+USER 169 GetCaretBlinkTime pascal -
+USER 170 ArrangeIconicWindows pascal w
+USER 171 WinHelp pascal wpwl
+USER 172 SwitchToThisWindow pascal ww
+USER 173 LoadCursor pascal wp
+USER 174 LoadIcon pascal wp
+USER 175 LoadBitmap pascal wp
+USER 176 LoadString pascal wwps
+USER 177 LoadAccelerators pascal wp
+USER 178 TranslateAccelerator pascal wwp
+USER 179 GetSystemMetrics pascal s
+USER 180 GetSysColor pascal w
+USER 181 SetSysColors pascal wpp
+USER 182 KillSystemTimer pascal ww
+USER 183 GetCaretPos pascal p
+USER 184 QuerySendMessage stub
+USER 185 GrayString pascal wwggsssss
+USER 186 SwapMouseButton pascal w
+USER 187 EndMenu pascal -
+USER 188 SetSysModalWindow pascal w
+USER 189 GetSysModalWindow pascal -
+USER 190 GetUpdateRect pascal wpw
+USER 191 ChildWindowFromPoint pascal wl
+USER 192 InSendMessage pascal -
+USER 193 IsClipboardFormatAvailable pascal w
+USER 194 DlgDirSelectComboBox pascal wpw
+USER 195 DlgDirListComboBox pascal wpwww
+USER 196 TabbedTextOut pascal wsspssps
+USER 197 GetTabbedTextExtent pascal wpwwp
+USER 198 CascadeChildWindows pascal ww
+USER 199 TileChildWindows pascal ww
+USER 200 OpenComm pascal pww
+USER 201 SetCommState pascal p
+USER 202 GetCommState pascal wp
+USER 203 GetCommError pascal wp
+USER 204 ReadComm pascal wpw
+USER 205 WriteComm pascal wpw
+USER 206 TransmitCommChar pascal ww
+USER 207 CloseComm pascal w
+USER 208 SetCommEventMask pascal ww
+USER 209 GetCommEventMask pascal ww
+USER 210 SetCommBreak pascal w
+USER 211 ClearCommBreak pascal w
+USER 212 UngetCommChar pascal ww
+USER 213 BuildCommDCB pascal pp
+USER 214 EscapeCommFunction pascal ww
+USER 215 FlushComm pascal ww
+USER 216 UserSeeUserDo pascal wwww
+USER 217 LookupMenuHandle pascal ws
+USER 218 DialogBoxIndirect pascal wwwg
+USER 219 CreateDialogIndirect pascal wpwg
+USER 220 LoadMenuIndirect pascal p
+USER 221 ScrollDC pascal wssppwp
+USER 222 GetKeyboardState pascal p
+USER 223 SetKeyboardState pascal p
+USER 224 GetWindowTask pascal w
+USER 225 EnumTaskWindows pascal wgl
+USER 226 LockInput stub
+USER 227 GetNextDlgGroupItem pascal www
+USER 228 GetNextDlgTabItem pascal www
+USER 229 GetTopWindow pascal w
+USER 230 GetNextWindow pascal ww
+USER 231 GetSystemDebugState pascal -
+USER 232 SetWindowPos pascal wwwwwww
+USER 233 SetParent pascal ww
+USER 234 UnhookWindowsHook pascal sg
+USER 235 DefHookProc pascal swlp
+USER 236 GetCapture pascal -
+USER 237 GetUpdateRgn pascal www
+USER 238 ExcludeUpdateRgn pascal ww
+USER 239 DialogBoxParam pascal wpwgl
+USER 240 DialogBoxIndirectParam pascal wwwgl
+USER 241 CreateDialogParam pascal wpwgl
+USER 242 CreateDialogIndirectParam pascal wpwgl
+USER 243 GetDialogBaseUnits pascal -
+USER 244 EqualRect pascal pp
+USER 245 EnableCommNotification pascal swss
+USER 246 ExitWindowsExec pascal pp
+USER 247 GetCursor pascal -
+USER 248 GetOpenClipboardWindow pascal -
+USER 249 GetAsyncKeyState pascal w
+USER 250 GetMenuState pascal www
+USER 251 SendDriverMessage pascal wwll
+USER 252 OpenDriver pascal ppl
+USER 253 CloseDriver pascal wll
+USER 254 GetDriverModuleHandle pascal w
+USER 255 DefDriverProc pascal lwwll
+USER 256 GetDriverInfo pascal wp
+USER 257 GetNextDriver pascal wl
+USER 258 MapWindowPoints pascal wwpw
+USER 259 BeginDeferWindowPos pascal s
+USER 260 DeferWindowPos pascal wwwssssw
+USER 261 EndDeferWindowPos pascal w
+USER 262 GetWindow pascal ww
+USER 263 GetMenuItemCount pascal w
+USER 264 GetMenuItemID pascal ww
+USER 265 ShowOwnedPopups pascal ww
+USER 266 SetMessageQueue pascal w
+USER 267 ShowScrollBar pascal www
+USER 268 GlobalAddAtom pascal p
+USER 269 GlobalDeleteAtom pascal w
+USER 270 GlobalFindAtom pascal p
+USER 271 GlobalGetAtomName pascal wps
+USER 272 IsZoomed pascal w
+USER 273 ControlPanelInfo pascal wwp
+USER 274 GetNextQueueWindow stub
+USER 275 RepaintScreen stub
+USER 276 LockMyTask stub
+USER 277 GetDlgCtrlID pascal w
+USER 278 GetDesktopHwnd pascal -
+USER 279 OldSetDeskPattern pascal -
+USER 280 SetSystemMenu pascal ww
+USER 281 GetSysColorBrush pascal w
+USER 282 SelectPalette pascal www
+USER 283 RealizePalette pascal w
+USER 284 GetFreeSystemResources pascal w
+USER 285 SetDeskWallpaper pascal p
+USER 286 GetDesktopWindow pascal -
+USER 287 GetLastActivePopup pascal w
+USER 288 GetMessageExtraInfo pascal -
+USER 289 keybd_event register -
+USER 290 RedrawWindow pascal wpww
+USER 291 SetWindowsHookEx pascal sgww
+USER 292 UnhookWindowsHookEx pascal g
+USER 293 CallNextHookEx pascal gswl
+USER 294 LockWindowUpdate pascal w
+USER 299 mouse_event register -
+USER 300 UnloadInstalledDrivers stub
+USER 301 EDITWNDPROC stub
+USER 302 STATICWNDPROC stub
+USER 303 BUTTONWNDPROC stub
+USER 304 SBWNDPROC stub
+USER 305 DESKTOPWNDPROC stub
+USER 306 MENUWNDPROC stub
+USER 307 LBOXCTLWNDPROC stub
+USER 308 DefDlgProc pascal wwwl
+USER 309 GetClipCursor pascal p
+USER 314 SignalProc pascal wwwww
+USER 319 ScrollWindowEx pascal wssppwpw
+USER 320 SysErrorBox stub
+USER 321 SetEventHook pascal g
+USER 322 WinOldAppHackOMatic stub
+USER 323 GetMessage2 stub
+USER 324 FillWindow pascal wwww
+USER 325 PaintRect pascal wwwwp
+USER 326 GetControlBrush pascal www
+USER 331 EnableHardwareInput pascal w
+USER 332 UserYield pascal -
+USER 333 IsUserIdle pascal -
+USER 334 GetQueueStatus pascal w
+USER 335 GetInputState pascal -
+USER 336 LoadCursorIconHandler pascal www
+USER 337 GetMouseEventProc pascal -
+USER 338 ECGETDS stub
+USER 343 GetFilePortName stub
+USER 344 COMBOBOXCTLWNDPROC stub
+USER 345 BEAR345 stub
+USER 356 LoadDIBCursorHandler pascal www
+USER 357 LoadDIBIconHandler pascal www
+USER 358 IsMenu pascal w
+USER 359 GetDCEx pascal wwl
+USER 362 DCHook pascal wwll
+USER 364 LookupIconIdFromDirectoryEx pascal pwwww
+USER 368 CopyIcon pascal ww
+USER 369 CopyCursor pascal ww
+USER 370 GetWindowPlacement pascal wp
+USER 371 SetWindowPlacement pascal wp
+USER 372 GetInternalIconHeader stub
+USER 373 SubtractRect pascal ppp
+USER 374 DllEntryPoint pascal lwwwlw
+USER 375 DrawTextEx stub
+USER 376 SetMessageExtraInfo stub
+USER 378 SetPropEx stub
+USER 379 GetPropEx stub
+USER 380 RemovePropEx stub
+USER 382 SetWindowContextHelpID stub
+USER 383 GetWindowContextHelpID stub
+USER 384 SetMenuContextHelpId pascal ww
+USER 385 GetMenuContextHelpId pascal w
+USER 389 LoadImage pascal wpwwww
+USER 390 CopyImage pascal wwwww
+USER 391 SignalProc32 pascal lllw
+USER 394 DrawIconEx pascal wwwwwwwww
+USER 395 GetIconInfo pascal wp
+USER 397 RegisterClassEx pascal p
+USER 398 GetClassInfoEx pascal wgp
+USER 399 ChildWindowFromPointEx pascal wlw
+USER 400 FinalUserInit pascal -
+USER 402 GetPriorityClipboardFormat pascal ps
+USER 403 UnregisterClass pascal pw
+USER 404 GetClassInfo pascal wgp
+USER 406 CreateCursor pascal wwwwwpp
+USER 407 CreateIcon pascal wwwwwpp
+USER 408 CreateCursorIconIndirect pascal wppp
+USER 409 InitThreadInput pascal ww
+USER 410 InsertMenu pascal wwwwg
+USER 411 AppendMenu pascal wwwg
+USER 412 RemoveMenu pascal www
+USER 413 DeleteMenu pascal www
+USER 414 ModifyMenu pascal wwwwg
+USER 415 CreatePopupMenu pascal -
+USER 416 TrackPopupMenu pascal wwssswp
+USER 417 GetMenuCheckMarkDimensions pascal -
+USER 418 SetMenuItemBitmaps pascal wwwww
+USER 420 _wsprintf varargs pp
+USER 421 wvsprintf pascal ppp
+USER 422 DlgDirSelectEx pascal wpww
+USER 423 DlgDirSelectComboBoxEx pascal wpww
+USER 427 FindWindowEx pascal wwpp
+USER 428 TileWindows stub
+USER 429 CascadeWindows stub
+USER 430 lstrcmp pascal pp
+USER 431 AnsiUpper pascal g
+USER 432 AnsiLower pascal g
+USER 433 IsCharAlpha pascal w
+USER 434 IsCharAlphaNumeric pascal w
+USER 435 IsCharUpper pascal w
+USER 436 IsCharLower pascal w
+USER 437 AnsiUpperBuff pascal pw
+USER 438 AnsiLowerBuff pascal pw
+USER 441 InsertMenuItem pascal wwwp
+USER 443 GetMenuItemInfo stub
+USER 445 DefFrameProc pascal wwwwl
+USER 446 SetMenuItemInfo stub
+USER 447 DefMDIChildProc pascal wwwl
+USER 448 DrawAnimatedRects pascal wwpp
+USER 449 DrawState pascal wwglwssssw
+USER 450 CreateIconFromResourceEx pascal plwlwww
+USER 451 TranslateMDISysAccel pascal wp
+USER 452 CreateWindowEx pascal lpplsssswwwg
+USER 454 AdjustWindowRectEx pascal plwl
+USER 455 GetIconID pascal wl
+USER 456 LoadIconHandler pascal ww
+USER 457 DestroyIcon pascal w
+USER 458 DestroyCursor pascal w
+USER 459 DumpIcon pascal gppp
+USER 460 GetInternalWindowPos pascal wpp
+USER 461 SetInternalWindowPos pascal wwpp
+USER 462 CalcChildScroll pascal ww
+USER 463 ScrollChildren pascal wwwl
+USER 464 DragObject pascal wwwwww
+USER 465 DragDetect pascal wl
+USER 466 DrawFocusRect pascal wp
+USER 470 StringFunc stub
+USER 471 lstrcmpi pascal pp
+USER 472 AnsiNext pascal g
+USER 473 AnsiPrev pascal pg
+USER 475 SetScrollInfo pascal wspw
+USER 476 GetScrollInfo pascal wsp
+USER 477 GetKeyboardLayoutName pascal p
+USER 478 LoadKeyboardLayout stub
+USER 479 MenuItemFromPoint stub
+USER 480 GetUserLocalObjType stub
+USER 482 EnableScrollBar pascal www
+USER 483 SystemParametersInfo pascal wwpw
+USER 489 USER_489 pascal -
+USER 490 USER_490 pascal -
+USER 492 USER_492 pascal -
+USER 496 USER_496 pascal -
+USER 498 BEAR498 stub
+USER 499 WNetErrorText pascal wpw
+USER 500 FARCALLNETDRIVER stub
+USER 501 WNetOpenJob pascal ppwp
+USER 502 WNetCloseJob pascal wpp
+USER 503 WNetAbortJob pascal pw
+USER 504 WNetHoldJob pascal pw
+USER 505 WNetReleaseJob pascal pw
+USER 506 WNetCancelJob pascal pw
+USER 507 WNetSetJobCopies pascal pww
+USER 508 WNetWatchQueue pascal wppw
+USER 509 WNetUnwatchQueue pascal p
+USER 510 WNetLockQueueData pascal ppp
+USER 511 WNetUnlockQueueData pascal p
+USER 512 WNetGetConnection pascal ppp
+USER 513 WNetGetCaps pascal w
+USER 514 WNetDeviceMode pascal w
+USER 515 WNetBrowseDialog pascal wwp
+USER 516 WNetGetUser pascal pp
+USER 517 WNetAddConnection pascal ppp
+USER 518 WNetCancelConnection pascal pw
+USER 519 WNetGetError pascal p
+USER 520 WNetGetErrorText pascal wpp
+USER 521 WNetEnable stub
+USER 522 WNetDisable stub
+USER 523 WNetRestoreConnection pascal wp
+USER 524 WNetWriteJob pascal wpp
+USER 525 WNetConnectDialog pascal ww
+USER 526 WNetDisconnectDialog pascal ww
+USER 527 WNetConnectionDialog pascal ww
+USER 528 WNetViewQueueDialog pascal wp
+USER 529 WNetPropertyDialog pascal wwwpw
+USER 530 WNetGetDirectoryType pascal pp
+USER 531 WNetDirectoryNotify pascal wpw
+USER 532 WNetGetPropertyText pascal wwppww
+USER 533 WNetInitialize stub
+USER 534 WNetLogon stub
+USER 535 WOWWORDBREAKPROC stub
+USER 537 MOUSEEVENT stub
+USER 538 KEYBDEVENT stub
+USER 595 OLDEXITWINDOWS stub
+USER 600 GetShellWindow pascal -
+USER 601 DoHotkeyStuff stub
+USER 602 SetCheckCursorTimer stub
+USER 604 BroadcastSystemMessage stub
+USER 605 HackTaskMonitor stub
+USER 606 FormatMessage pascal lgwwpwp
+USER 608 GetForegroundWindow pascal -
+USER 609 SetForegroundWindow pascal w
+USER 610 DestroyIcon32 pascal ww
+USER 620 ChangeDisplaySettings pascal pl
+USER 621 EnumDisplaySettings pascal plp
+USER 640 MsgWaitForMultipleObjects pascal lplll
+USER 650 ActivateKeyboardLayout stub
+USER 651 GetKeyboardLayout stub
+USER 652 GetKeyboardLayoutList stub
+USER 654 UnloadKeyboardLayout stub
+USER 655 PostPostedMessages stub
+USER 656 DrawFrameControl pascal wpww
+USER 657 DrawCaptionTemp pascal wwpwwpw
+USER 658 DispatchInput stub
+USER 659 DrawEdge pascal wpww
+USER 660 DrawCaption pascal wwpw
+USER 661 SetSysColorsTemp stub
+USER 662 DrawMenubarTemp stub
+USER 663 GetMenuDefaultItem stub
+USER 664 SetMenuDefaultItem stub
+USER 665 GetMenuItemRect pascal wwwp
+USER 666 CheckMenuRadioItem pascal wwwww
+USER 667 TrackPopupMenuEx stub
+USER 668 SetWindowRgn pascal www
+USER 669 GetWindowRgn stub
+USER 800 CHOOSEFONT_CALLBACK16 stub
+USER 801 FINDREPLACE_CALLBACK16 stub
+USER 802 OPENFILENAME_CALLBACK16 stub
+USER 803 PRINTDLG_CALLBACK16 stub
+USER 804 CHOOSECOLOR_CALLBACK16 stub
+USER 819 PeekMessage32 pascal pwwwww
+USER 820 GetMessage32 pascal pwwww
+USER 821 TranslateMessage32 pascal pw
+USER 822 DispatchMessage32 pascal pw
+USER 823 CallMsgFilter32 pascal pww
+USER 825 PostMessage32 stub
+USER 826 PostThreadMessage32 stub
+USER 827 MessageBoxIndirect pascal p
+USER 851 MsgThkConnectionDataLS stub
+USER 853 FT_USRFTHKTHKCONNECTIONDATA stub
+USER 854 FT__USRF2THKTHKCONNECTIONDATA stub
+USER 855 Usr32ThkConnectionDataSL stub
+USER 890 InstallIMT stub
+USER 891 UninstallIMT stub
+USER 902 LoadSystemLanguageString pascal wwpww
+USER 905 ChangeDialogTemplate pascal -
+USER 906 GetNumLanguages pascal -
+USER 907 GetLanguageName pascal wwpw
+USER 909 SetWindowTextEx pascal wpw
+USER 910 BiDiMessageBoxEx pascal -
+USER 911 SetDlgItemTextEx pascal wwpw
+USER 912 ChangeKeyboardLanguage pascal ww
+USER 913 GetCodePageSystemFont pascal ww
+USER 914 QueryCodePage pascal wwwl
+USER 915 GetAppCodePage pascal w
+USER 916 CreateDialogIndirectParamML pascal wpwplwwpw
+USER 918 DialogBoxIndirectParamML pascal wwwplwwpw
+USER 919 LoadLanguageString pascal wwwpw
+USER 920 SetAppCodePage pascal wwww
+USER 922 GetBaseCodePage pascal -
+USER 923 FindLanguageResource pascal wppw
+USER 924 ChangeKeyboardCodePage pascal ww
+USER 930 MessageBoxEx pascal wppww
+USER 1000 SetProcessDefaultLayout pascal l
+USER 1001 GetProcessDefaultLayout pascal p
+USER 1010 __wine_call_wndproc pascal wwwll
+GDI 1 SetBkColor pascal wl
+GDI 2 SetBkMode pascal ww
+GDI 3 SetMapMode pascal ww
+GDI 4 SetROP2 pascal ww
+GDI 5 SetRelAbs pascal ww
+GDI 6 SetPolyFillMode pascal ww
+GDI 7 SetStretchBltMode pascal ww
+GDI 8 SetTextCharacterExtra pascal ws
+GDI 9 SetTextColor pascal wl
+GDI 10 SetTextJustification pascal wss
+GDI 11 SetWindowOrg pascal wss
+GDI 12 SetWindowExt pascal wss
+GDI 13 SetViewportOrg pascal wss
+GDI 14 SetViewportExt pascal wss
+GDI 15 OffsetWindowOrg pascal wss
+GDI 16 ScaleWindowExt pascal wssss
+GDI 17 OffsetViewportOrg pascal wss
+GDI 18 ScaleViewportExt pascal wssss
+GDI 19 LineTo pascal wss
+GDI 20 MoveTo pascal wss
+GDI 21 ExcludeClipRect pascal wssss
+GDI 22 IntersectClipRect pascal wssss
+GDI 23 Arc pascal wssssssss
+GDI 24 Ellipse pascal wssss
+GDI 25 FloodFill pascal wssl
+GDI 26 Pie pascal wssssssss
+GDI 27 Rectangle pascal wssss
+GDI 28 RoundRect pascal wssssss
+GDI 29 PatBlt pascal wssssl
+GDI 30 SaveDC pascal w
+GDI 31 SetPixel pascal wssl
+GDI 32 OffsetClipRgn pascal wss
+GDI 33 TextOut pascal wsspw
+GDI 34 BitBlt pascal wsssswssl
+GDI 35 StretchBlt pascal wsssswssssl
+GDI 36 Polygon pascal wpw
+GDI 37 Polyline pascal wpw
+GDI 38 Escape pascal wwwgp
+GDI 39 RestoreDC pascal ws
+GDI 40 FillRgn pascal www
+GDI 41 FrameRgn pascal wwwww
+GDI 42 InvertRgn pascal ww
+GDI 43 PaintRgn pascal ww
+GDI 44 SelectClipRgn pascal ww
+GDI 45 SelectObject pascal ww
+GDI 46 BITMAPBITS stub
+GDI 47 CombineRgn pascal wwws
+GDI 48 CreateBitmap pascal wwwwp
+GDI 49 CreateBitmapIndirect pascal p
+GDI 50 CreateBrushIndirect pascal p
+GDI 51 CreateCompatibleBitmap pascal www
+GDI 52 CreateCompatibleDC pascal w
+GDI 53 CreateDC pascal pppp
+GDI 54 CreateEllipticRgn pascal ssss
+GDI 55 CreateEllipticRgnIndirect pascal p
+GDI 56 CreateFont pascal ssssswwwwwwwwp
+GDI 57 CreateFontIndirect pascal p
+GDI 58 CreateHatchBrush pascal wl
+GDI 60 CreatePatternBrush pascal w
+GDI 61 CreatePen pascal ssl
+GDI 62 CreatePenIndirect pascal p
+GDI 63 CreatePolygonRgn pascal pww
+GDI 64 CreateRectRgn pascal ssss
+GDI 65 CreateRectRgnIndirect pascal p
+GDI 66 CreateSolidBrush pascal l
+GDI 67 DPtoLP pascal wps
+GDI 68 DeleteDC pascal w
+GDI 69 DeleteObject pascal w
+GDI 70 EnumFonts pascal wpgl
+GDI 71 EnumObjects pascal wwgl
+GDI 72 EqualRgn pascal ww
+GDI 73 ExcludeVisRect pascal wssss
+GDI 74 GetBitmapBits pascal wlp
+GDI 75 GetBkColor pascal w
+GDI 76 GetBkMode pascal w
+GDI 77 GetClipBox pascal wp
+GDI 78 GetCurrentPosition pascal w
+GDI 79 GetDCOrg pascal w
+GDI 80 GetDeviceCaps pascal ws
+GDI 81 GetMapMode pascal w
+GDI 82 GetObject pascal wsp
+GDI 83 GetPixel pascal wss
+GDI 84 GetPolyFillMode pascal w
+GDI 85 GetROP2 pascal w
+GDI 86 GetRelAbs pascal w
+GDI 87 GetStockObject pascal w
+GDI 88 GetStretchBltMode pascal w
+GDI 89 GetTextCharacterExtra pascal w
+GDI 90 GetTextColor pascal w
+GDI 91 GetTextExtent pascal wps
+GDI 92 GetTextFace pascal wsp
+GDI 93 GetTextMetrics pascal wp
+GDI 94 GetViewportExt pascal w
+GDI 95 GetViewportOrg pascal w
+GDI 96 GetWindowExt pascal w
+GDI 97 GetWindowOrg pascal w
+GDI 98 IntersectVisRect pascal wssss
+GDI 99 LPtoDP pascal wps
+GDI 100 LineDDA pascal ssssgl
+GDI 101 OffsetRgn pascal wss
+GDI 102 OffsetVisRgn pascal wss
+GDI 103 PtVisible pascal wss
+GDI 104 RectVisibleOld pascal wp
+GDI 105 SelectVisRgn pascal ww
+GDI 106 SetBitmapBits pascal wlp
+GDI 117 SetDCOrg pascal wss
+GDI 118 InternalCreateDC stub
+GDI 119 AddFontResource pascal p
+GDI 120 GetContinuingTextExtent stub
+GDI 121 Death pascal w
+GDI 122 Resurrection pascal wwwwwww
+GDI 123 PlayMetaFile pascal ww
+GDI 124 GetMetaFile pascal p
+GDI 125 CreateMetaFile pascal p
+GDI 126 CloseMetaFile pascal w
+GDI 127 DeleteMetaFile pascal w
+GDI 128 MulDiv pascal sss
+GDI 129 SaveVisRgn pascal w
+GDI 130 RestoreVisRgn pascal w
+GDI 131 InquireVisRgn pascal w
+GDI 132 SetEnvironment pascal ppw
+GDI 133 GetEnvironment pascal ppw
+GDI 134 GetRgnBox pascal wp
+GDI 136 RemoveFontResource pascal p
+GDI 137 GSV stub
+GDI 138 DPXlate stub
+GDI 139 SetWinViewExt stub
+GDI 140 ScaleExt stub
+GDI 141 WordSet stub
+GDI 142 RectStuff stub
+GDI 143 OffsetOrg stub
+GDI 144 LockDC stub
+GDI 145 UnlockDC stub
+GDI 146 LockUnlock stub
+GDI 147 GDI_FarFrame stub
+GDI 148 SetBrushOrg pascal wss
+GDI 149 GetBrushOrg pascal w
+GDI 150 UnrealizeObject pascal w
+GDI 151 CopyMetaFile pascal wp
+GDI 152 GDIInitApp stub
+GDI 153 CreateIC pascal pppp
+GDI 154 GetNearestColor pascal wl
+GDI 155 QueryAbort pascal ww
+GDI 156 CreateDiscardableBitmap pascal www
+GDI 157 CompatibleBitmap stub
+GDI 158 EnumCallback stub
+GDI 159 GetMetaFileBits pascal w
+GDI 160 SetMetaFileBits pascal w
+GDI 161 PtInRegion pascal wss
+GDI 162 GetBitmapDimension pascal w
+GDI 163 SetBitmapDimension pascal wss
+GDI 164 PixToLine stub
+GDI 169 IsDCDirty stub
+GDI 170 SetDCStatus stub
+GDI 171 LVBUNION stub
+GDI 172 SetRectRgn pascal wssss
+GDI 173 GetClipRgn pascal w
+GDI 174 BLOAT stub
+GDI 175 EnumMetaFile pascal wwgl
+GDI 176 PlayMetaFileRecord pascal wppw
+GDI 177 RCOS stub
+GDI 178 RSIN stub
+GDI 179 GetDCState pascal w
+GDI 180 SetDCState pascal ww
+GDI 181 RectInRegionOld pascal wp
+GDI 182 REQUESTSEM stub
+GDI 183 CLEARSEM stub
+GDI 184 STUFFVISIBLE stub
+GDI 185 STUFFINREGION stub
+GDI 186 DELETEABOVELINEFONTS stub
+GDI 188 GetTextExtentEx stub
+GDI 190 SetDCHook pascal wgl
+GDI 191 GetDCHook pascal wp
+GDI 192 SetHookFlags pascal ww
+GDI 193 SetBoundsRect pascal wpw
+GDI 194 GetBoundsRect pascal wpw
+GDI 195 SelectBitmap stub
+GDI 196 SetMetaFileBitsBetter pascal w
+GDI 201 DMBITBLT stub
+GDI 202 DMCOLORINFO stub
+GDI 206 dmEnumDFonts stub
+GDI 207 DMENUMOBJ stub
+GDI 208 DMOUTPUT stub
+GDI 209 DMPIXEL stub
+GDI 210 dmRealizeObject stub
+GDI 211 DMSTRBLT stub
+GDI 212 DMSCANLR stub
+GDI 213 BRUTE stub
+GDI 214 DMEXTTEXTOUT stub
+GDI 215 DMGETCHARWIDTH stub
+GDI 216 DMSTRETCHBLT stub
+GDI 217 DMDIBBITS stub
+GDI 218 DMSTRETCHDIBITS stub
+GDI 219 DMSETDIBTODEV stub
+GDI 220 DMTRANSPOSE stub
+GDI 230 CreatePQ pascal w
+GDI 231 MinPQ pascal w
+GDI 232 ExtractPQ pascal w
+GDI 233 InsertPQ pascal www
+GDI 234 SizePQ pascal ww
+GDI 235 DeletePQ pascal w
+GDI 240 OpenJob pascal ppw
+GDI 241 WriteSpool pascal wpw
+GDI 242 WriteDialog pascal wpw
+GDI 243 CloseJob pascal w
+GDI 244 DeleteJob pascal ww
+GDI 245 GetSpoolJob pascal wp
+GDI 246 StartSpoolPage pascal w
+GDI 247 EndSpoolPage pascal w
+GDI 248 QueryJob stub
+GDI 250 Copy pascal ppw
+GDI 253 DeleteSpoolPage stub
+GDI 254 SpoolFile stub
+GDI 267 StartDocPrintEra stub
+GDI 268 StartPagePrinter stub
+GDI 269 WritePrinter stub
+GDI 270 EndPagePrinter stub
+GDI 271 AbortPrinter stub
+GDI 272 EndDocPrinter stub
+GDI 274 ClosePrinter stub
+GDI 280 GetRealDriverInfo stub
+GDI 281 DrvSetPrinterData pascal pplpl
+GDI 282 DrvGetPrinterData pascal pppplp
+GDI 299 ENGINEGETCHARWIDTHEX stub
+GDI 300 EngineEnumerateFont pascal pgl
+GDI 301 EngineDeleteFont pascal p
+GDI 302 EngineRealizeFont pascal ppp
+GDI 303 EngineGetCharWidth pascal pwwp
+GDI 304 EngineSetFontContext pascal pw
+GDI 305 EngineGetGlyphBMP pascal wpwwplp
+GDI 306 EngineMakeFontDir pascal wpp
+GDI 307 GetCharABCWidths pascal wwwp
+GDI 308 GetOutlineTextMetrics pascal wwp
+GDI 309 GetGlyphOutline pascal wwwplpp
+GDI 310 CreateScalableFontResource pascal wppp
+GDI 311 GetFontData pascal wllpl
+GDI 312 ConvertOutLineFontFile stub
+GDI 313 GetRasterizerCaps pascal pw
+GDI 314 EngineExtTextOut stub
+GDI 315 EngineRealizeFontExt pascal llll
+GDI 316 EngineGetCharWidthStr stub
+GDI 317 EngineGetGlyphBmpExt stub
+GDI 330 EnumFontFamilies pascal wpgl
+GDI 332 GetKerningPairs pascal wwp
+GDI 345 GetTextAlign pascal w
+GDI 346 SetTextAlign pascal ww
+GDI 347 MFDRAWTEXT stub
+GDI 348 Chord pascal wssssssss
+GDI 349 SetMapperFlags pascal wl
+GDI 350 GetCharWidth pascal wwwp
+GDI 351 ExtTextOut pascal wsswppwp
+GDI 352 GetPhysicalFontHandle stub
+GDI 353 GetAspectRatioFilter stub
+GDI 354 ShrinkGDIHeap stub
+GDI 355 FTrapping0 stub
+GDI 360 CreatePalette pascal p
+GDI 361 GDISelectPalette pascal www
+GDI 362 GDIRealizePalette pascal w
+GDI 363 GetPaletteEntries pascal wwwp
+GDI 364 SetPaletteEntries pascal wwwp
+GDI 365 RealizeDefaultPalette pascal w
+GDI 366 UpdateColors pascal w
+GDI 367 AnimatePalette pascal wwwp
+GDI 368 ResizePalette pascal ww
+GDI 370 GetNearestPaletteIndex pascal wl
+GDI 372 ExtFloodFill pascal wsslw
+GDI 373 SetSystemPaletteUse pascal ww
+GDI 374 GetSystemPaletteUse pascal w
+GDI 375 GetSystemPaletteEntries pascal wwwp
+GDI 376 ResetDC pascal wp
+GDI 377 StartDoc pascal wp
+GDI 378 EndDoc pascal w
+GDI 379 StartPage pascal w
+GDI 380 EndPage pascal w
+GDI 381 SetAbortProc pascal wg
+GDI 382 AbortDoc pascal w
+GDI 400 FastWindowFrame pascal wpssl
+GDI 401 GDIMOVEBITMAP stub
+GDI 402 GDIGETBITSGLOBAL stub
+GDI 403 GdiInit2 pascal ww
+GDI 404 GetTTGlyphIndexMap stub
+GDI 405 FinalGdiInit pascal w
+GDI 406 CREATEREALBITMAPINDIRECT stub
+GDI 407 CreateUserBitmap pascal wwwwp
+GDI 408 CREATEREALBITMAP stub
+GDI 409 CreateUserDiscardableBitmap pascal www
+GDI 410 IsValidMetaFile pascal w
+GDI 411 GetCurLogFont pascal w
+GDI 412 IsDCCurrentPalette pascal w
+GDI 439 StretchDIBits pascal wssssssssppwl
+GDI 440 SetDIBits pascal wwwwppw
+GDI 441 GetDIBits pascal wwwwppw
+GDI 442 CreateDIBitmap pascal wplppw
+GDI 443 SetDIBitsToDevice pascal wsssssswwppw
+GDI 444 CreateRoundRectRgn pascal ssssss
+GDI 445 CreateDIBPatternBrush pascal ww
+GDI 449 DEVICECOLORMATCH stub
+GDI 450 PolyPolygon pascal wppw
+GDI 451 CreatePolyPolygonRgn pascal ppww
+GDI 452 GdiSeeGdiDo pascal wwww
+GDI 460 GDITASKTERMINATION stub
+GDI 461 SetObjectOwner pascal ww
+GDI 462 IsGDIObject pascal w
+GDI 463 MakeObjectPrivate pascal ww
+GDI 464 FIXUPBOGUSPUBLISHERMETAFILE stub
+GDI 465 RectVisible pascal wp
+GDI 466 RectInRegion pascal wp
+GDI 467 UNICODETOANSI stub
+GDI 468 GetBitmapDimensionEx pascal wp
+GDI 469 GetBrushOrgEx pascal wp
+GDI 470 GetCurrentPositionEx pascal wp
+GDI 471 GetTextExtentPoint pascal wpsp
+GDI 472 GetViewportExtEx pascal wp
+GDI 473 GetViewportOrgEx pascal wp
+GDI 474 GetWindowExtEx pascal wp
+GDI 475 GetWindowOrgEx pascal wp
+GDI 476 OffsetViewportOrgEx pascal wssp
+GDI 477 OffsetWindowOrgEx pascal wssp
+GDI 478 SetBitmapDimensionEx pascal wssp
+GDI 479 SetViewportExtEx pascal wssp
+GDI 480 SetViewportOrgEx pascal wssp
+GDI 481 SetWindowExtEx pascal wssp
+GDI 482 SetWindowOrgEx pascal wssp
+GDI 483 MoveToEx pascal wssp
+GDI 484 ScaleViewportExtEx pascal wssssp
+GDI 485 ScaleWindowExtEx pascal wssssp
+GDI 486 GetAspectRatioFilterEx pascal wp
+GDI 489 CreateDIBSection pascal wpwpll
+GDI 490 CloseEnhMetafile stub
+GDI 491 CopyEnhMetafile stub
+GDI 492 CreateEnhMetafile stub
+GDI 493 DeleteEnhMetafile stub
+GDI 495 GDIComment stub
+GDI 496 GetEnhMetafile stub
+GDI 497 GetEnhMetafileBits stub
+GDI 498 GetEnhMetafileDescription stub
+GDI 499 GetEnhMetafileHeader stub
+GDI 501 GetEnhMetafilePaletteEntries stub
+GDI 502 PolyBezier pascal wpw
+GDI 503 PolyBezierTo pascal wpw
+GDI 504 PlayEnhMetafileRecord stub
+GDI 505 SetEnhMetafileBits stub
+GDI 506 SetMetaRgn stub
+GDI 508 ExtSelectClipRgn pascal www
+GDI 511 AbortPath pascal w
+GDI 512 BeginPath pascal w
+GDI 513 CloseFigure pascal w
+GDI 514 EndPath pascal w
+GDI 515 FillPath pascal w
+GDI 516 FlattenPath pascal w
+GDI 517 GetPath pascal wppw
+GDI 518 PathToRegion pascal w
+GDI 519 SelectClipPath pascal ww
+GDI 520 StrokeAndFillPath pascal w
+GDI 521 StrokePath pascal w
+GDI 522 WidenPath pascal w
+GDI 523 ExtCreatePen stub
+GDI 524 GetArcDirection pascal w
+GDI 525 SetArcDirection pascal ww
+GDI 526 GetMiterLimit stub
+GDI 527 SetMiterLimit stub
+GDI 528 GDIParametersInfo stub
+GDI 529 CreateHalftonePalette pascal w
+GDI 530 RawTextOut pascal -
+GDI 531 RawExtTextOut pascal -
+GDI 532 RawGetTextExtent pascal wpw
+GDI 536 BiDiLayout pascal -
+GDI 538 BiDiCreateTabString pascal -
+GDI 540 BiDiGlyphOut pascal -
+GDI 543 BiDiGetStringExtent pascal -
+GDI 555 BiDiDeleteString pascal -
+GDI 556 BiDiSetDefaults pascal -
+GDI 558 BiDiGetDefaults pascal -
+GDI 560 BiDiShape pascal -
+GDI 561 BiDiFontComplement pascal -
+GDI 564 BiDiSetKashida pascal -
+GDI 565 BiDiKExtTextOut pascal -
+GDI 566 BiDiShapeEx pascal -
+GDI 569 BiDiCreateStringEx pascal -
+GDI 571 GetTextExtentRtoL pascal -
+GDI 572 GetHDCCharSet pascal -
+GDI 573 BiDiLayoutEx pascal -
+GDI 602 SetDIBColorTable pascal wwwp
+GDI 603 GetDIBColorTable pascal wwwp
+GDI 604 SetSolidBrush pascal wl
+GDI 605 SysDeleteObject pascal w
+GDI 606 SetMagicColors pascal wlw
+GDI 607 GetRegionData pascal wlp
+GDI 608 ExtCreateRegion stub
+GDI 609 GdiFreeResources pascal l
+GDI 610 GdiSignalProc32 pascal lllw
+GDI 611 GetRandomRgn stub
+GDI 612 GetTextCharset pascal w
+GDI 613 EnumFontFamiliesEx pascal wpgll
+GDI 614 AddLpkToGDI stub
+GDI 615 GetCharacterPlacement stub
+GDI 616 GetFontLanguageInfo pascal w
+GDI 650 BuildInverseTableDIB stub
+GDI 701 GDITHKCONNECTIONDATALS stub
+GDI 702 FT_GDIFTHKTHKCONNECTIONDATA stub
+GDI 703 FDTHKCONNECTIONDATASL stub
+GDI 704 ICMTHKCONNECTIONDATASL stub
+GDI 820 ICMCreateTransform stub
+GDI 821 ICMDeleteTransform stub
+GDI 822 ICMTranslateRGB stub
+GDI 823 ICMTranslateRGBs stub
+GDI 824 ICMCheckColorsInGamut stub
+GDI 1000 SetLayout pascal wl
+GDI 1001 GetLayout stub
+COMMDLG 1 GetOpenFileName pascal g
+COMMDLG 2 GetSaveFileName pascal g
+COMMDLG 5 ChooseColor pascal p
+COMMDLG 6 FileOpenDlgProc pascal wwwl
+COMMDLG 7 FileSaveDlgProc pascal wwwl
+COMMDLG 8 ColorDlgProc pascal wwwl
+COMMDLG 11 FindText pascal g
+COMMDLG 12 ReplaceText pascal g
+COMMDLG 13 FindTextDlgProc pascal wwwl
+COMMDLG 14 ReplaceTextDlgProc pascal wwwl
+COMMDLG 15 ChooseFont pascal p
+COMMDLG 16 FormatCharDlgProc pascal wwwl
+COMMDLG 18 FontStyleEnumProc pascal ppwl
+COMMDLG 19 FontFamilyEnumProc pascal ppwl
+COMMDLG 20 PrintDlg pascal p
+COMMDLG 21 PrintDlgProc pascal wwwl
+COMMDLG 22 PrintSetupDlgProc pascal wwwl
+COMMDLG 26 CommDlgExtendedError pascal -
+COMMDLG 27 GetFileTitle pascal ppw
+MMSYSTEM 1 WEP pascal wwwp
+MMSYSTEM 2 sndPlaySound pascal pw
+MMSYSTEM 3 PlaySound pascal pwl
+MMSYSTEM 4 DllEntryPoint pascal lwwwlw
+MMSYSTEM 5 mmsystemGetVersion pascal -
+MMSYSTEM 6 DriverProc pascal lwwll
+MMSYSTEM 8 WMMMidiRunOnce pascal -
+MMSYSTEM 30 OutputDebugStr pascal p
+MMSYSTEM 31 DriverCallback pascal lwwwlll
+MMSYSTEM 32 StackEnter pascal -
+MMSYSTEM 33 StackLeave pascal -
+MMSYSTEM 34 MMDRVINSTALL stub
+MMSYSTEM 101 joyGetNumDevs pascal -
+MMSYSTEM 102 joyGetDevCaps pascal wpw
+MMSYSTEM 103 joyGetPos pascal wp
+MMSYSTEM 104 joyGetThreshold pascal wp
+MMSYSTEM 105 joyReleaseCapture pascal w
+MMSYSTEM 106 joySetCapture pascal wwww
+MMSYSTEM 107 joySetThreshold pascal ww
+MMSYSTEM 109 joySetCalibration pascal w
+MMSYSTEM 110 joyGetPosEx pascal wp
+MMSYSTEM 111 JOYCONFIGCHANGED stub
+MMSYSTEM 201 midiOutGetNumDevs pascal -
+MMSYSTEM 202 midiOutGetDevCaps pascal wpw
+MMSYSTEM 203 midiOutGetErrorText pascal wpw
+MMSYSTEM 204 midiOutOpen pascal pwlll
+MMSYSTEM 205 midiOutClose pascal w
+MMSYSTEM 206 midiOutPrepareHeader pascal wgw
+MMSYSTEM 207 midiOutUnprepareHeader pascal wgw
+MMSYSTEM 208 midiOutShortMsg pascal wl
+MMSYSTEM 209 midiOutLongMsg pascal wgw
+MMSYSTEM 210 midiOutReset pascal w
+MMSYSTEM 211 midiOutGetVolume pascal wp
+MMSYSTEM 212 midiOutSetVolume pascal wl
+MMSYSTEM 213 midiOutCachePatches pascal wwpw
+MMSYSTEM 214 midiOutCacheDrumPatches pascal wwpw
+MMSYSTEM 215 midiOutGetID pascal wp
+MMSYSTEM 216 midiOutMessage pascal wwll
+MMSYSTEM 250 midiStreamProperty pascal wpl
+MMSYSTEM 251 midiStreamOpen pascal ppllll
+MMSYSTEM 252 midiStreamClose pascal w
+MMSYSTEM 253 midiStreamPosition pascal wpw
+MMSYSTEM 254 midiStreamOut pascal wpw
+MMSYSTEM 255 midiStreamPause pascal w
+MMSYSTEM 256 midiStreamRestart pascal w
+MMSYSTEM 257 midiStreamStop pascal w
+MMSYSTEM 301 midiInGetNumDevs pascal -
+MMSYSTEM 302 midiInGetDevCaps pascal wpw
+MMSYSTEM 303 midiInGetErrorText pascal wpw
+MMSYSTEM 304 midiInOpen pascal pwlll
+MMSYSTEM 305 midiInClose pascal w
+MMSYSTEM 306 midiInPrepareHeader pascal wgw
+MMSYSTEM 307 midiInUnprepareHeader pascal wgw
+MMSYSTEM 308 midiInAddBuffer pascal wgw
+MMSYSTEM 309 midiInStart pascal w
+MMSYSTEM 310 midiInStop pascal w
+MMSYSTEM 311 midiInReset pascal w
+MMSYSTEM 312 midiInGetID pascal wp
+MMSYSTEM 313 midiInMessage pascal wwll
+MMSYSTEM 350 auxGetNumDevs pascal -
+MMSYSTEM 351 auxGetDevCaps pascal wpw
+MMSYSTEM 352 auxGetVolume pascal wp
+MMSYSTEM 353 auxSetVolume pascal wl
+MMSYSTEM 354 auxOutMessage pascal wwll
+MMSYSTEM 401 waveOutGetNumDevs pascal -
+MMSYSTEM 402 waveOutGetDevCaps pascal wpw
+MMSYSTEM 403 waveOutGetErrorText pascal wpw
+MMSYSTEM 404 waveOutOpen pascal pwplll
+MMSYSTEM 405 waveOutClose pascal w
+MMSYSTEM 406 waveOutPrepareHeader pascal wgw
+MMSYSTEM 407 waveOutUnprepareHeader pascal wgw
+MMSYSTEM 408 waveOutWrite pascal wgw
+MMSYSTEM 409 waveOutPause pascal w
+MMSYSTEM 410 waveOutRestart pascal w
+MMSYSTEM 411 waveOutReset pascal w
+MMSYSTEM 412 waveOutGetPosition pascal wpw
+MMSYSTEM 413 waveOutGetPitch pascal wp
+MMSYSTEM 414 waveOutSetPitch pascal wl
+MMSYSTEM 415 waveOutGetVolume pascal wp
+MMSYSTEM 416 waveOutSetVolume pascal wl
+MMSYSTEM 417 waveOutGetPlaybackRate pascal wp
+MMSYSTEM 418 waveOutSetPlaybackRate pascal wl
+MMSYSTEM 419 waveOutBreakLoop pascal w
+MMSYSTEM 420 waveOutGetID pascal wp
+MMSYSTEM 421 waveOutMessage pascal wwll
+MMSYSTEM 501 waveInGetNumDevs pascal -
+MMSYSTEM 502 waveInGetDevCaps pascal wpw
+MMSYSTEM 503 waveInGetErrorText pascal wpw
+MMSYSTEM 504 waveInOpen pascal pwplll
+MMSYSTEM 505 waveInClose pascal w
+MMSYSTEM 506 waveInPrepareHeader pascal wgw
+MMSYSTEM 507 waveInUnprepareHeader pascal wgw
+MMSYSTEM 508 waveInAddBuffer pascal wgw
+MMSYSTEM 509 waveInStart pascal w
+MMSYSTEM 510 waveInStop pascal w
+MMSYSTEM 511 waveInReset pascal w
+MMSYSTEM 512 waveInGetPosition pascal wpw
+MMSYSTEM 513 waveInGetID pascal wp
+MMSYSTEM 514 waveInMessage pascal wwll
+MMSYSTEM 601 timeGetSystemTime pascal pw
+MMSYSTEM 602 timeSetEvent pascal wwglw
+MMSYSTEM 603 timeKillEvent pascal w
+MMSYSTEM 604 timeGetDevCaps pascal pw
+MMSYSTEM 605 timeBeginPeriod pascal w
+MMSYSTEM 606 timeEndPeriod pascal w
+MMSYSTEM 607 timeGetTime pascal -
+MMSYSTEM 701 mciSendCommand pascal wwll
+MMSYSTEM 702 mciSendString pascal ppww
+MMSYSTEM 703 mciGetDeviceID pascal p
+MMSYSTEM 705 mciLoadCommandResource pascal wpw
+MMSYSTEM 706 mciGetErrorString pascal lpw
+MMSYSTEM 707 mciSetDriverData pascal wl
+MMSYSTEM 708 mciGetDriverData pascal w
+MMSYSTEM 710 mciDriverYield pascal w
+MMSYSTEM 711 mciDriverNotify pascal www
+MMSYSTEM 712 mciExecute pascal p
+MMSYSTEM 713 mciFreeCommandResource pascal w
+MMSYSTEM 714 mciSetYieldProc pascal wpl
+MMSYSTEM 715 mciGetDeviceIDFromElementID pascal lp
+MMSYSTEM 716 mciGetYieldProc pascal wp
+MMSYSTEM 717 mciGetCreatorTask pascal w
+MMSYSTEM 800 mixerGetNumDevs pascal -
+MMSYSTEM 801 mixerGetDevCaps pascal wpw
+MMSYSTEM 802 mixerOpen pascal pwlll
+MMSYSTEM 803 mixerClose pascal w
+MMSYSTEM 804 mixerMessage pascal wwll
+MMSYSTEM 805 mixerGetLineInfo pascal wpl
+MMSYSTEM 806 mixerGetID pascal wpl
+MMSYSTEM 807 mixerGetLineControls pascal wpl
+MMSYSTEM 808 mixerGetControlDetails pascal wpl
+MMSYSTEM 809 mixerSetControlDetails pascal wpl
+MMSYSTEM 900 mmTaskCreate pascal lpl
+MMSYSTEM 902 mmTaskBlock pascal w
+MMSYSTEM 903 mmTaskSignal pascal w
+MMSYSTEM 904 mmGetCurrentTask pascal -
+MMSYSTEM 905 mmTaskYield pascal -
+MMSYSTEM 1100 DrvOpen pascal ppl
+MMSYSTEM 1101 DrvClose pascal wll
+MMSYSTEM 1102 DrvSendMessage pascal wwll
+MMSYSTEM 1103 DrvGetModuleHandle pascal w
+MMSYSTEM 1104 DrvDefDriverProc pascal lwwll
+MMSYSTEM 1120 mmThreadCreate pascal gpll
+MMSYSTEM 1121 mmThreadSignal pascal w
+MMSYSTEM 1122 mmThreadBlock pascal w
+MMSYSTEM 1123 mmThreadIsCurrent pascal w
+MMSYSTEM 1124 mmThreadIsValid pascal w
+MMSYSTEM 1125 mmThreadGetTask pascal w
+MMSYSTEM 1150 mmShowMMCPLPropertySheet pascal wppp
+MMSYSTEM 1210 mmioOpen pascal ppl
+MMSYSTEM 1211 mmioClose pascal ww
+MMSYSTEM 1212 mmioRead pascal wpl
+MMSYSTEM 1213 mmioWrite pascal wpl
+MMSYSTEM 1214 mmioSeek pascal wlw
+MMSYSTEM 1215 mmioGetInfo pascal wpw
+MMSYSTEM 1216 mmioSetInfo pascal wpw
+MMSYSTEM 1217 mmioSetBuffer pascal wglw
+MMSYSTEM 1218 mmioFlush pascal ww
+MMSYSTEM 1219 mmioAdvance pascal wpw
+MMSYSTEM 1220 mmioStringToFOURCC pascal pw
+MMSYSTEM 1221 mmioInstallIOProc pascal lpl
+MMSYSTEM 1222 mmioSendMessage pascal wwll
+MMSYSTEM 1223 mmioDescend pascal wppw
+MMSYSTEM 1224 mmioAscend pascal wpw
+MMSYSTEM 1225 mmioCreateChunk pascal wpw
+MMSYSTEM 1226 mmioRename pascal pppl
+MMSYSTEM 2047 __wine_mmThreadEntryPoint pascal l
+WIN87EM 1 __fpMath register -
+WIN87EM 3 __WinEm87Info pascal pw
+WIN87EM 4 __WinEm87Restore pascal pw
+WIN87EM 5 __WinEm87Save pascal pw
+SOUND 1 OpenSound pascal -
+SOUND 2 CloseSound pascal -
+SOUND 3 SetVoiceQueueSize pascal ww
+SOUND 4 SetVoiceNote pascal wwww
+SOUND 5 SetVoiceAccent pascal wwwww
+SOUND 6 SetVoiceEnvelope pascal www
+SOUND 7 SetSoundNoise pascal ww
+SOUND 8 SetVoiceSound pascal wlw
+SOUND 9 StartSound pascal -
+SOUND 10 StopSound pascal -
+SOUND 11 WaitSoundState pascal w
+SOUND 12 SyncAllVoices pascal -
+SOUND 13 CountVoiceNotes pascal w
+SOUND 14 GetThresholdEvent pascal -
+SOUND 15 GetThresholdStatus pascal -
+SOUND 16 SetVoiceThreshold pascal ww
+SOUND 17 DoBeep pascal -
+SOUND 18 MYOPENSOUND stub
+SHELL 1 RegOpenKey pascal lpp
+SHELL 2 RegCreateKey pascal lpp
+SHELL 3 RegCloseKey pascal l
+SHELL 4 RegDeleteKey pascal lp
+SHELL 5 RegSetValue pascal lplpl
+SHELL 6 RegQueryValue pascal lppp
+SHELL 7 RegEnumKey pascal llpl
+SHELL 9 DragAcceptFiles pascal ww
+SHELL 11 DragQueryFile pascal wsps
+SHELL 12 DragFinish pascal w
+SHELL 13 DragQueryPoint pascal wp
+SHELL 20 ShellExecute pascal wpppps
+SHELL 21 FindExecutable pascal ppp
+SHELL 22 ShellAbout pascal wppw
+SHELL 33 AboutDlgProc pascal wwwl
+SHELL 34 ExtractIcon pascal wps
+SHELL 36 ExtractAssociatedIcon pascal wpp
+SHELL 37 DoEnvironmentSubst pascal pw
+SHELL 38 FindEnvironmentString pascal p
+SHELL 39 InternalExtractIcon pascal wpsw
+SHELL 40 ExtractIconEx pascal pwppw
+SHELL 101 DllEntryPoint pascal lwwwlw
+SHELL 102 RegisterShellHook pascal ww
+SHELL 103 ShellHookProc pascal wwl
+SHELL 157 RESTARTDIALOG stub
+SHELL 262 DriveType pascal l
+SHELL 401 SHCHECKDRIVE stub
+TOOLHELP 50 GlobalHandleToSel pascal w
+TOOLHELP 51 GlobalFirst pascal pw
+TOOLHELP 52 GlobalNext pascal pw
+TOOLHELP 53 GlobalInfo pascal p
+TOOLHELP 54 GlobalEntryHandle pascal pw
+TOOLHELP 55 GlobalEntryModule pascal pww
+TOOLHELP 56 LocalInfo pascal pw
+TOOLHELP 57 LocalFirst pascal pw
+TOOLHELP 58 LocalNext pascal p
+TOOLHELP 59 ModuleFirst pascal p
+TOOLHELP 60 ModuleNext pascal p
+TOOLHELP 61 ModuleFindName pascal pp
+TOOLHELP 62 ModuleFindHandle pascal pw
+TOOLHELP 63 TaskFirst pascal p
+TOOLHELP 64 TaskNext pascal p
+TOOLHELP 65 TaskFindHandle pascal pw
+TOOLHELP 66 StackTraceFirst pascal pw
+TOOLHELP 67 StackTraceCSIPFirst pascal pwwww
+TOOLHELP 68 StackTraceNext pascal p
+TOOLHELP 69 ClassFirst stub
+TOOLHELP 70 ClassNext stub
+TOOLHELP 71 SystemHeapInfo pascal p
+TOOLHELP 72 MemManInfo pascal p
+TOOLHELP 73 NotifyRegister pascal wgw
+TOOLHELP 74 NotifyUnregister pascal w
+TOOLHELP 75 InterruptRegister pascal wg
+TOOLHELP 76 InterruptUnRegister pascal w
+TOOLHELP 77 TerminateApp pascal ww
+TOOLHELP 78 MemoryRead pascal wlpl
+TOOLHELP 79 MemoryWrite pascal wlpl
+TOOLHELP 80 TimerCount pascal p
+TOOLHELP 81 TASKSETCSIP stub
+TOOLHELP 82 TASKGETCSIP stub
+TOOLHELP 83 TASKSWITCH stub
+TOOLHELP 84 Local32Info pascal pw
+TOOLHELP 85 Local32First pascal pw
+TOOLHELP 86 Local32Next pascal p
+LZEXPAND 1 LZCopy pascal ww
+LZEXPAND 2 LZOpenFile pascal ppw
+LZEXPAND 3 LZInit pascal w
+LZEXPAND 4 LZSeek pascal wlw
+LZEXPAND 5 LZRead pascal wpw
+LZEXPAND 6 LZClose pascal w
+LZEXPAND 7 LZStart pascal -
+LZEXPAND 8 CopyLZFile pascal ww
+LZEXPAND 9 LZDone pascal -
+LZEXPAND 10 GetExpandedName pascal pp
+VER 2 GetFileResourceSize pascal pppp
+VER 3 GetFileResource pascal pppllp
+VER 6 GetFileVersionInfoSize pascal pp
+VER 7 GetFileVersionInfo pascal pllp
+VER 8 VerFindFile pascal wppppppp
+VER 9 VerInstallFile pascal wppppppp
+VER 10 VerLanguageName pascal wpw
+VER 11 VerQueryValue pascal gppp
+VER 20 GETFILEVERSIONINFORAW stub
+WING 1001 WinGCreateDC pascal -
+WING 1002 WinGRecommendDIBFormat pascal p
+WING 1003 WinGCreateBitmap pascal wpp
+WING 1004 WinGGetDIBPointer pascal wp
+WING 1005 WinGGetDIBColorTable pascal wwwp
+WING 1006 WinGSetDIBColorTable pascal wwwp
+WING 1007 WinGCreateHalfTonePalette pascal -
+WING 1008 WinGCreateHalfToneBrush pascal www
+WING 1009 WinGStretchBlt pascal wwwwwwwwww
+WING 1010 WinGBitBlt pascal wwwwwwww
+SYSTEM 1 InquireSystem pascal ww
+SYSTEM 2 CreateSystemTimer pascal wg
+SYSTEM 3 KillSystemTimer pascal w
+SYSTEM 4 EnableSystemTimers pascal -
+SYSTEM 5 DisableSystemTimers pascal -
+SYSTEM 6 GetSystemMSecCount pascal -
+SYSTEM 7 Get80x87SaveSize pascal -
+SYSTEM 8 Save80x87State pascal p
+SYSTEM 9 Restore80x87State pascal p
+SYSTEM 13 INQUIRELONGINTS stub
+SYSTEM 20 A20_Proc pascal w
+DDEML 2 DdeInitialize pascal pgll
+DDEML 3 DdeUninitialize pascal l
+DDEML 4 DdeConnectList pascal llllp
+DDEML 5 DdeQueryNextServer pascal ll
+DDEML 6 DdeDisconnectList pascal l
+DDEML 7 DdeConnect pascal lllp
+DDEML 8 DdeDisconnect pascal l
+DDEML 9 DdeQueryConvInfo pascal llp
+DDEML 10 DdeSetUserHandle pascal lll
+DDEML 11 DdeClientTransaction pascal llllwwlp
+DDEML 12 DdeAbandonTransaction pascal lll
+DDEML 13 DdePostAdvise pascal lll
+DDEML 14 DdeCreateDataHandle pascal lplllww
+DDEML 15 DdeAddData pascal lpll
+DDEML 16 DdeGetData pascal lpll
+DDEML 17 DdeAccessData pascal lp
+DDEML 18 DdeUnaccessData pascal l
+DDEML 19 DdeFreeDataHandle pascal l
+DDEML 20 DdeGetLastError pascal l
+DDEML 21 DdeCreateStringHandle pascal lps
+DDEML 22 DdeFreeStringHandle pascal ll
+DDEML 23 DdeQueryString pascal llpls
+DDEML 24 DdeKeepStringHandle pascal ll
+DDEML 26 DdeEnableCallback pascal llw
+DDEML 27 DdeNameService pascal lllw
+DDEML 36 DdeCmpStringHandles pascal ll
+DDEML 37 DdeReconnect pascal l
+WINSOCK 1 accept pascal wpp
+WINSOCK 2 bind pascal wpw
+WINSOCK 3 closesocket pascal w
+WINSOCK 4 connect pascal wpw
+WINSOCK 5 getpeername pascal wpp
+WINSOCK 6 getsockname pascal wpp
+WINSOCK 7 getsockopt pascal wwwpp
+WINSOCK 8 htonl pascal l
+WINSOCK 9 htons pascal w
+WINSOCK 10 inet_addr pascal p
+WINSOCK 11 inet_ntoa pascal l
+WINSOCK 12 ioctlsocket pascal wlp
+WINSOCK 13 listen pascal ww
+WINSOCK 14 ntohl pascal l
+WINSOCK 15 ntohs pascal w
+WINSOCK 16 recv pascal wpww
+WINSOCK 17 recvfrom pascal wpwwpp
+WINSOCK 18 select pascal wpppp
+WINSOCK 19 send pascal wpww
+WINSOCK 20 sendto pascal wpwwpw
+WINSOCK 21 setsockopt pascal wwwpw
+WINSOCK 22 shutdown pascal ww
+WINSOCK 23 socket pascal www
+WINSOCK 51 gethostbyaddr pascal pww
+WINSOCK 52 gethostbyname pascal p
+WINSOCK 53 getprotobyname pascal p
+WINSOCK 54 getprotobynumber pascal w
+WINSOCK 55 getservbyname pascal pp
+WINSOCK 56 getservbyport pascal wp
+WINSOCK 57 gethostname pascal pw
+WINSOCK 101 WSAAsyncSelect pascal wwwl
+WINSOCK 102 WSAAsyncGetHostByAddr pascal wwpwwgw
+WINSOCK 103 WSAAsyncGetHostByName pascal wwpgw
+WINSOCK 104 WSAAsyncGetProtoByNumber pascal wwwgw
+WINSOCK 105 WSAAsyncGetProtoByName pascal wwpgw
+WINSOCK 106 WSAAsyncGetServByPort pascal wwwpgw
+WINSOCK 107 WSAAsyncGetServByName pascal wwppgw
+WINSOCK 108 WSACancelAsyncRequest pascal w
+WINSOCK 109 WSASetBlockingHook pascal g
+WINSOCK 110 WSAUnhookBlockingHook pascal -
+WINSOCK 111 WSAGetLastError pascal -
+WINSOCK 112 WSASetLastError pascal w
+WINSOCK 113 WSACancelBlockingCall pascal -
+WINSOCK 114 WSAIsBlocking pascal -
+WINSOCK 115 WSAStartup pascal wp
+WINSOCK 116 WSACleanup pascal -
+WINSOCK 151 __WSAFDIsSet pascal wp
+WINSOCK 1107 WSARecvEx pascal wpwp
+COMPOBJ 1 CoBuildVersion pascal -
+COMPOBJ 2 CoInitialize pascal g
+COMPOBJ 3 CoUninitialize pascal -
+COMPOBJ 4 CoGetMalloc pascal lp
+COMPOBJ 5 CoRegisterClassObject pascal ppllp
+COMPOBJ 6 CoRevokeClassObject pascal l
+COMPOBJ 7 CoGetClassObject pascal glpgg
+COMPOBJ 8 COMARSHALINTERFACE stub
+COMPOBJ 9 COUNMARSHALINTERFACE stub
+COMPOBJ 10 COLOADLIBRARY stub
+COMPOBJ 11 COFREELIBRARY stub
+COMPOBJ 12 COFREEALLLIBRARIES stub
+COMPOBJ 13 CoCreateInstance pascal pplpp
+COMPOBJ 14 StringFromIID pascal pp
+COMPOBJ 15 CoDisconnectObject pascal pl
+COMPOBJ 16 CORELEASEMARSHALDATA stub
+COMPOBJ 17 CoFreeUnusedLibraries pascal -
+COMPOBJ 18 IsEqualGUID pascal pp
+COMPOBJ 19 StringFromCLSID pascal pp
+COMPOBJ 20 CLSIDFromString pascal pp
+COMPOBJ 21 ISVALIDPTRIN stub
+COMPOBJ 22 ISVALIDPTROUT stub
+COMPOBJ 23 IsValidInterface pascal g
+COMPOBJ 24 ISVALIDIID stub
+COMPOBJ 25 RESULTFROMSCODE stub
+COMPOBJ 26 GETSCODE stub
+COMPOBJ 27 CoRegisterMessageFilter pascal pp
+COMPOBJ 28 COISHANDLERCONNECTED stub
+COMPOBJ 29 SHRADDREF stub
+COMPOBJ 30 CoFileTimeToDosDateTime pascal ppp
+COMPOBJ 31 CoDosDateTimeToFileTime pascal wwp
+COMPOBJ 32 COMARSHALHRESULT stub
+COMPOBJ 33 COUNMARSHALHRESULT stub
+COMPOBJ 34 CoGetCurrentProcess pascal -
+COMPOBJ 35 SHRCREATE stub
+COMPOBJ 36 COISOLE1CLASS stub
+COMPOBJ 61 CLSIDFromProgID pascal pp
+COMPOBJ 62 ProgIDFromCLSID pascal pp
+COMPOBJ 63 CoLockObjectExternal pascal gww
+COMPOBJ 65 COGETTREATASCLASS stub
+COMPOBJ 66 COTREATASCLASS stub
+COMPOBJ 67 COGETSTANDARDMARSHAL stub
+COMPOBJ 68 PROPAGATERESULT stub
+COMPOBJ 69 IIDFROMSTRING stub
+COMPOBJ 71 CoCreateStandardMalloc pascal lp
+COMPOBJ 73 CoCreateGuid pascal p
+COMPOBJ 75 FNASSERT stub
+COMPOBJ 76 StringFromGUID2 pascal ppw
+COMPOBJ 77 COGETCLASSEXT stub
+COMPOBJ 78 OLE1CLASSFROMCLSID2 stub
+COMPOBJ 79 CLSIDFROMOLE1CLASS stub
+COMPOBJ 80 COOPENCLASSKEY stub
+COMPOBJ 81 GUIDFROMSTRING stub
+COMPOBJ 82 CoFileTimeNow pascal p
+COMPOBJ 83 REMALLOCOID stub
+COMPOBJ 84 REMFREEOID stub
+COMPOBJ 85 REMCREATEREMOTEHANDLER stub
+COMPOBJ 86 REMCONNECTTOOBJECT stub
+COMPOBJ 87 REMGETINFOFORCID stub
+COMPOBJ 88 LRPCCALL stub
+COMPOBJ 89 LRPCDISPATCH stub
+COMPOBJ 90 LRPCREGISTERMONITOR stub
+COMPOBJ 91 LRPCREVOKEMONITOR stub
+COMPOBJ 92 LRPCGETTHREADWINDOW stub
+COMPOBJ 93 TIMERCALLBACKPROC stub
+COMPOBJ 94 LookupETask pascal pp
+COMPOBJ 95 SetETask pascal wp
+COMPOBJ 96 LRPCFREEMONITORDATA stub
+COMPOBJ 97 REMLOOKUPSHUNK stub
+COMPOBJ 98 SHRGETSIZE stub
+COMPOBJ 99 CALLTHKMGRUNINITIALIZE stub
+COMPOBJ 100 ??0CARRAYFVALUE@@REC@KI@Z stub
+COMPOBJ 101 ??1CARRAYFVALUE@@REC@XZ stub
+COMPOBJ 102 ?ASSERTVALID@CARRAYFVALUE@@RFCXXZ stub
+COMPOBJ 103 ?FREEEXTRA@CARRAYFVALUE@@RECXXZ stub
+COMPOBJ 104 ?_GETAT@CARRAYFVALUE@@RFCPEXH@Z stub
+COMPOBJ 105 ?GETSIZE@CARRAYFVALUE@@RFCHXZ stub
+COMPOBJ 106 ?REMOVEALL@CARRAYFVALUE@@RECXXZ stub
+COMPOBJ 107 SHRDESTROY stub
+COMPOBJ 108 ?INDEXOF@CARRAYFVALUE@@RECHPEXII@Z stub
+COMPOBJ 109 ?INSERTAT@CARRAYFVALUE@@RECHHPEXH@Z stub
+COMPOBJ 110 COSETSTATE stub
+COMPOBJ 111 ?REMOVEAT@CARRAYFVALUE@@RECXHH@Z stub
+COMPOBJ 112 ?SETAT@CARRAYFVALUE@@RECXHPEX@Z stub
+COMPOBJ 113 ?SETATGROW@CARRAYFVALUE@@RECHHPEX@Z stub
+COMPOBJ 114 ?SETSIZE@CARRAYFVALUE@@RECHHH@Z stub
+COMPOBJ 115 CoGetState pascal p
+COMPOBJ 116 DllEntryPoint pascal lwwwlw
+COMPOBJ 117 ?RELEASE@CSTDMALLOC@@VEAKXZ stub
+COMPOBJ 118 ?ALLOC@CSTDMALLOC@@VEAPEXK@Z stub
+COMPOBJ 119 SHRRELEASE stub
+COMPOBJ 120 ?GETASSOCAT@CMAPKEYTOVALUE@@BFCPEUCASSOC@1@PEXIAEI@Z stub
+COMPOBJ 121 ?SETASSOCKEY@CMAPKEYTOVALUE@@BFCHPEUCASSOC@1@PEXI@Z stub
+COMPOBJ 122 ??1CMAPKEYTOVALUE@@REC@XZ stub
+COMPOBJ 123 ?GETASSOCKEYPTR@CMAPKEYTOVALUE@@BFCXPEUCASSOC@1@PEPEXPEI@Z stub
+COMPOBJ 124 ?NEWASSOC@CMAPKEYTOVALUE@@BECPEUCASSOC@1@IPEXI0@Z stub
+COMPOBJ 125 ?SIZEASSOC@CMAPKEYTOVALUE@@BFCIXZ stub
+COMPOBJ 126 ?FREEASSOC@CMAPKEYTOVALUE@@BECXPEUCASSOC@1@@Z stub
+COMPOBJ 127 ?GETSTARTPOSITION@CMAPKEYTOVALUE@@RFCPEXXZ stub
+COMPOBJ 128 ?GETNEXTASSOC@CMAPKEYTOVALUE@@RFCXPEPEXPEXPEI1@Z stub
+COMPOBJ 129 ?COMPAREASSOCKEY@CMAPKEYTOVALUE@@BFCHPEUCASSOC@1@PEXI@Z stub
+COMPOBJ 130 ?REMOVEHKEY@CMAPKEYTOVALUE@@RECHK@Z stub
+COMPOBJ 131 ?GETHKEY@CMAPKEYTOVALUE@@RFCKPEXI@Z stub
+COMPOBJ 132 ?GETCOUNT@CMAPKEYTOVALUE@@RFCHXZ stub
+COMPOBJ 133 ?LOOKUP@CMAPKEYTOVALUE@@RFCHPEXI0@Z stub
+COMPOBJ 134 ?GETASSOCVALUE@CMAPKEYTOVALUE@@BFCXPEUCASSOC@1@PEX@Z stub
+COMPOBJ 135 ?REMOVEKEY@CMAPKEYTOVALUE@@RECHPEXI@Z stub
+COMPOBJ 136 ?REMOVEALL@CMAPKEYTOVALUE@@RECXXZ stub
+COMPOBJ 137 SHRALLOC stub
+COMPOBJ 138 ?FREEASSOCKEY@CMAPKEYTOVALUE@@BFCXPEUCASSOC@1@@Z stub
+COMPOBJ 139 ?SETAT@CMAPKEYTOVALUE@@RECHPEXI0@Z stub
+COMPOBJ 140 ?LOOKUPHKEY@CMAPKEYTOVALUE@@RFCHKPEX@Z stub
+COMPOBJ 141 ?ASSERTVALID@CMAPKEYTOVALUE@@RFCXXZ stub
+COMPOBJ 142 ?SETASSOCVALUE@CMAPKEYTOVALUE@@BFCXPEUCASSOC@1@PEX@Z stub
+COMPOBJ 143 ?SETATHKEY@CMAPKEYTOVALUE@@RECHKPEX@Z stub
+COMPOBJ 144 ??0CMAPKEYTOVALUE@@REC@KIIHP7CIPEXI@ZI@Z stub
+COMPOBJ 145 ?INITHASHTABLE@CMAPKEYTOVALUE@@BECHXZ stub
+COMPOBJ 146 ?GETASSOCVALUEPTR@CMAPKEYTOVALUE@@BFCXPEUCASSOC@1@PEPEX@Z stub
+COMPOBJ 147 ?LOOKUPADD@CMAPKEYTOVALUE@@RFCHPEXI0@Z stub
+COMPOBJ 148 MKVDEFAULTHASHKEY stub
+COMPOBJ 149 DELETE16 stub
+COMPOBJ 150 COMEMCTXOF stub
+COMPOBJ 151 CoMemAlloc pascal lll
+COMPOBJ 152 COMEMFREE stub
+COMPOBJ 153 SHRREALLOC stub
+COMPOBJ 154 ___EXPORTEDSTUB stub
+COMPOBJ 155 LRPCREGISTERWIN32SMONITOR stub
+COMPOBJ 156 MYREMGETINFOFORCID stub
+COMPOBJ 157 SHRFREE stub
+COMPOBJ 158 OPNEW16 stub
+COMPOBJ 159 ADDCOINFO stub
+COMPOBJ 160 CORUNMODALLOOP stub
+COMPOBJ 161 COHANDLEINCOMINGCALL stub
+COMPOBJ 162 COSETACKSTATE stub
+COMPOBJ 163 SHRDIDALLOC stub
+COMPOBJ 164 ?GETAT@CARRAYFVALUE@@RFCPEXH@Z stub
+COMPOBJ 165 ?GETUPPERBOUND@CARRAYFVALUE@@RFCHXZ stub
+COMPOBJ 166 OPDELETE16 stub
+COMPOBJ 167 ?GETSIZEVALUE@CARRAYFVALUE@@RFCHXZ stub
+COMPOBJ 168 ?PROXY1632ADDREF@@ZAKPEVCPROXY1632@@@Z stub
+COMPOBJ 169 REMLOOKUPSHUNK_dup stub
+COMPOBJ 170 ?ISEMPTY@CMAPKEYTOVALUE@@RFCHXZ stub
+COMPOBJ 171 ?FREE@CSTDMALLOC@@VEAXPEX@Z stub
+COMPOBJ 172 CALLTHKMGRINITIALIZE stub
+COMPOBJ 173 ?REALLOC@CSTDMALLOC@@VEAPEXPEXK@Z stub
+COMPOBJ 174 ?SM16RHQI@@ZAPEXPEVCSM16RELEASEHANDLER@@AFUGUID@@PEPEX@Z stub
+COMPOBJ 175 ?PROXY1632METHOD10@@ZAKPEVCPROXY1632@@@Z stub
+COMPOBJ 176 ___EXPORTEDSTUB_dup stub
+COMPOBJ 177 ?PROXY1632METHOD20@@ZAKPEVCPROXY1632@@@Z stub
+COMPOBJ 178 ?PROXY1632METHOD11@@ZAKPEVCPROXY1632@@@Z stub
+COMPOBJ 179 ?PROXY1632METHOD30@@ZAKPEVCPROXY1632@@@Z stub
+COMPOBJ 180 ?PROXY1632METHOD21@@ZAKPEVCPROXY1632@@@Z stub
+COMPOBJ 181 ?PROXY1632METHOD12@@ZAKPEVCPROXY1632@@@Z stub
+COMPOBJ 182 ?PROXY1632METHOD31@@ZAKPEVCPROXY1632@@@Z stub
+COMPOBJ 183 ?PROXY1632METHOD22@@ZAKPEVCPROXY1632@@@Z stub
+COMPOBJ 184 ?PROXY1632METHOD13@@ZAKPEVCPROXY1632@@@Z stub
+COMPOBJ 185 ?GETSIZE@CSTDMALLOC@@VEAKPEX@Z stub
+COMPOBJ 186 ?PROXY1632METHOD23@@ZAKPEVCPROXY1632@@@Z stub
+COMPOBJ 187 ?PROXY1632METHOD14@@ZAKPEVCPROXY1632@@@Z stub
+COMPOBJ 188 ?PROXY1632METHOD24@@ZAKPEVCPROXY1632@@@Z stub
+COMPOBJ 189 ?PROXY1632METHOD15@@ZAKPEVCPROXY1632@@@Z stub
+COMPOBJ 190 ?PROXY1632METHOD25@@ZAKPEVCPROXY1632@@@Z stub
+COMPOBJ 191 ?PROXY1632METHOD16@@ZAKPEVCPROXY1632@@@Z stub
+COMPOBJ 192 ?PROXY1632METHOD26@@ZAKPEVCPROXY1632@@@Z stub
+COMPOBJ 193 ?PROXY1632METHOD17@@ZAKPEVCPROXY1632@@@Z stub
+COMPOBJ 194 ?PROXY1632METHOD27@@ZAKPEVCPROXY1632@@@Z stub
+COMPOBJ 195 ?PROXY1632METHOD18@@ZAKPEVCPROXY1632@@@Z stub
+COMPOBJ 196 ?PROXY1632METHOD28@@ZAKPEVCPROXY1632@@@Z stub
+COMPOBJ 197 ?ADDREF@CSTDMALLOC@@VEAKXZ stub
+COMPOBJ 198 ?PROXY1632METHOD19@@ZAKPEVCPROXY1632@@@Z stub
+COMPOBJ 199 ?PROXY1632METHOD29@@ZAKPEVCPROXY1632@@@Z stub
+COMPOBJ 200 CALL32INITIALIZE stub
+COMPOBJ 201 CALLOBJECTINWOW pascal pp
+COMPOBJ 203 CALLOBJECTINWOWCHECKINIT stub
+COMPOBJ 204 CALLOBJECTINWOWCHECKTHKMGR stub
+COMPOBJ 205 CONVERTHR1632 stub
+COMPOBJ 206 CONVERTHR3216 stub
+COMPOBJ 207 ADDAPPCOMPATFLAG stub
+COMPOBJ 500 IMalloc16_QueryInterface cdecl ppp
+COMPOBJ 501 IMalloc16_AddRef cdecl p
+COMPOBJ 502 IMalloc16_Release cdecl g
+COMPOBJ 503 IMalloc16_Alloc cdecl pl
+COMPOBJ 504 IMalloc16_Realloc cdecl pgl
+COMPOBJ 505 IMalloc16_Free cdecl pg
+COMPOBJ 506 IMalloc16_GetSize cdecl pg
+COMPOBJ 507 IMalloc16_DidAlloc cdecl pg
+COMPOBJ 508 IMalloc16_HeapMinimize cdecl p
+OLE2 1 OleBuildVersion pascal -
+OLE2 2 OleInitialize pascal p
+OLE2 3 OleUninitialize pascal -
+OLE2 4 DllGetClassObject pascal ppp
+OLE2 6 OLEQUERYLINKFROMDATA stub
+OLE2 7 OLEQUERYCREATEFROMDATA stub
+OLE2 8 OLECREATEFROMDATA stub
+OLE2 9 OLECREATELINKFROMDATA stub
+OLE2 10 OLECREATE stub
+OLE2 11 OLECREATELINK stub
+OLE2 12 OleLoad pascal gpgp
+OLE2 13 OLESAVE stub
+OLE2 14 OLERUN stub
+OLE2 16 OLEISRUNNING stub
+OLE2 17 OLELOCKRUNNING stub
+OLE2 18 ReadClassStg pascal gp
+OLE2 19 WriteClassStg pascal gp
+OLE2 20 ReadClassStm pascal gp
+OLE2 21 WRITECLASSSTM stub
+OLE2 22 BINDMONIKER stub
+OLE2 23 MKPARSEDISPLAYNAME stub
+OLE2 24 OLESAVETOSTREAM stub
+OLE2 25 OLELOADFROMSTREAM stub
+OLE2 26 CREATEBINDCTX stub
+OLE2 27 CreateItemMoniker pascal ppp
+OLE2 28 CreateFileMoniker pascal pp
+OLE2 29 CREATEGENERICCOMPOSITE stub
+OLE2 30 GetRunningObjectTable pascal lp
+OLE2 31 OLEGETMALLOC stub
+OLE2 32 ReleaseStgMedium pascal p
+OLE2 33 READSTRINGSTREAM stub
+OLE2 34 WRITESTRINGSTREAM stub
+OLE2 35 RegisterDragDrop pascal wg
+OLE2 36 RevokeDragDrop pascal w
+OLE2 37 DODRAGDROP stub
+OLE2 38 CREATEOLEADVISEHOLDER stub
+OLE2 39 CREATEDATAADVISEHOLDER stub
+OLE2 40 OLECREATEMENUDESCRIPTOR stub
+OLE2 41 OleSetMenuDescriptor pascal wwwpp
+OLE2 42 OLEDESTROYMENUDESCRIPTOR stub
+OLE2 43 OPENORCREATESTREAM stub
+OLE2 44 CREATEANTIMONIKER stub
+OLE2 45 CREATEPOINTERMONIKER stub
+OLE2 46 MONIKERRELATIVEPATHTO stub
+OLE2 47 MONIKERCOMMONPREFIXWITH stub
+OLE2 48 ISACCELERATOR stub
+OLE2 49 OleSetClipboard pascal p
+OLE2 50 OleGetClipboard pascal p
+OLE2 51 OLEDUPLICATEDATA stub
+OLE2 52 OLEGETICONOFFILE stub
+OLE2 53 OLEGETICONOFCLASS stub
+OLE2 54 CreateILockBytesOnHGlobal pascal wwp
+OLE2 55 GETHGLOBALFROMILOCKBYTES stub
+OLE2 56 OleMetafilePictFromIconAndLabel pascal wppw
+OLE2 57 GETCLASSFILE stub
+OLE2 58 OLEDRAW stub
+OLE2 59 OLECREATEDEFAULTHANDLER stub
+OLE2 60 OLECREATEEMBEDDINGHELPER stub
+OLE2 61 OLECONVERTISTORAGETOOLESTREAMEX stub
+OLE2 62 OLECONVERTOLESTREAMTOISTORAGEEX stub
+OLE2 63 SETDOCUMENTBITSTG stub
+OLE2 64 GETDOCUMENTBITSTG stub
+OLE2 65 WRITEOLESTG stub
+OLE2 66 READOLESTG stub
+OLE2 67 OLECREATEFROMFILE stub
+OLE2 68 OLECREATELINKTOFILE stub
+OLE2 69 CREATEDATACACHE stub
+OLE2 70 OLECONVERTISTORAGETOOLESTREAM stub
+OLE2 71 OLECONVERTOLESTREAMTOISTORAGE stub
+OLE2 74 READFMTUSERTYPESTG stub
+OLE2 75 WRITEFMTUSERTYPESTG stub
+OLE2 76 OleFlushClipboard pascal -
+OLE2 77 OleIsCurrentClipboard pascal p
+OLE2 78 OLETRANSLATEACCELERATOR stub
+OLE2 79 OleDoAutoConvert pascal pp
+OLE2 80 OLEGETAUTOCONVERT stub
+OLE2 81 OLESETAUTOCONVERT stub
+OLE2 82 GetConvertStg pascal p
+OLE2 83 SETCONVERTSTG stub
+OLE2 84 CREATESTREAMONHGLOBAL stub
+OLE2 85 GETHGLOBALFROMSTREAM stub
+OLE2 86 OLESETCONTAINEDOBJECT stub
+OLE2 87 OLENOTEOBJECTVISIBLE stub
+OLE2 88 OLECREATESTATICFROMDATA stub
+OLE2 89 OLEREGGETUSERTYPE stub
+OLE2 90 OLEREGGETMISCSTATUS stub
+OLE2 91 OLEREGENUMFORMATETC stub
+OLE2 92 OLEREGENUMVERBS stub
+OLE2 93 OLEGETENUMFORMATETC stub
+OLE2 100 MAKEDEBUGSTREAM stub
+OLE2 104 DBGLOGOPEN stub
+OLE2 105 DBGLOGCLOSE stub
+OLE2 106 DBGLOGOUTPUTDEBUGSTRING stub
+OLE2 107 DBGLOGWRITE stub
+OLE2 108 DBGLOGTIMESTAMP stub
+OLE2 109 DBGLOGWRITEBANNER stub
+OLE2 110 DBGDUMPOBJECT stub
+OLE2 111 DBGISOBJECTVALID stub
+OLE2 112 DUMPALLOBJECTS stub
+OLE2 113 VALIDATEALLOBJECTS stub
+OLE2 114 DBGDUMPCLASSNAME stub
+OLE2 115 DBGDUMPEXTERNALOBJECT stub
+OLE2 500 HGLOBALLockBytesImpl16_QueryInterface cdecl gpp
+OLE2 501 HGLOBALLockBytesImpl16_AddRef cdecl p
+OLE2 502 HGLOBALLockBytesImpl16_Release cdecl p
+OLE2 503 HGLOBALLockBytesImpl16_ReadAt cdecl p?plp
+OLE2 504 HGLOBALLockBytesImpl16_WriteAt cdecl p?plp
+OLE2 505 HGLOBALLockBytesImpl16_Flush cdecl p
+OLE2 506 HGLOBALLockBytesImpl16_SetSize cdecl p?
+OLE2 507 HGLOBALLockBytesImpl16_LockRegion cdecl p??l
+OLE2 508 HGLOBALLockBytesImpl16_UnlockRegion cdecl p??l
+OLE2 509 HGLOBALLockBytesImpl16_Stat cdecl ppl

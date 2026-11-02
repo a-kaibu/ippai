@@ -42,6 +42,8 @@ pub mod gl;
 pub mod gl_sigs;
 pub mod text;
 pub mod user;
+pub mod w16;
+pub mod w16api;
 
 use mem::{r32, w32};
 
@@ -148,6 +150,12 @@ pub fn run(cpu: &mut Cpu, until: u32) {
     loop {
         let code = unsafe { vnhost::cpu::vnhost_cpu_run(cpu, info.as_mut_ptr()) };
         match code {
+            X_TRAP if (w16::TRAP..w16::TRAP + 0x10000).contains(&info[0]) => {
+                if w16::dispatch(cpu, info[0]) {
+                    return;
+                }
+            }
+            X_FAULT | X_DIVIDE | X_INVALID | X_INT | X_HALT if cpu.mode16 != 0 => w16::exception(cpu, code, &info),
             X_TRAP => {
                 let a = info[0];
                 if a == api::RET_TRAP {
@@ -229,6 +237,9 @@ fn raise(cpu: &mut Cpu, code: u32, addr: u32, params: &[u32]) {
 /// Calls guest code at `f` with `args` pushed right to left; returns EAX. The registers
 /// (but EAX/EDX) come back as they were.
 pub fn call(cpu: &mut Cpu, f: u32, args: &[u32]) -> u32 {
+    if w16::on() {
+        return w16::call_trap(cpu, f, args);
+    }
     if mem::x64() {
         // (addresses in an image above 4G get their upper half: callbacks' module handles,
         // objects in its data)
@@ -410,6 +421,9 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     k32::set_command_line(&wpath, args);
     let dir = wpath.rsplit_once('\\').map_or(String::from("C:\\"), |(d, _)| format!("{d}\\"));
     files::set_cwd(&dir);
+    if w16::is_ne(exe) {
+        w16::start(cpu, exe, &wpath, args);
+    }
     let base = match pe::load_exe(cpu, exe, &wpath) {
         Ok(b) => b,
         Err(e) => {

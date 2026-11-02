@@ -162,7 +162,7 @@ pub fn implement(dll: &str, name: &str, f: Handler) {
     IMPLS.write().unwrap().get_or_insert_with(HashMap::default).insert(format!("{dll}!{name}"), f);
 }
 
-fn find_impl(dll: &str, name: &str) -> Option<Handler> {
+pub fn find_impl(dll: &str, name: &str) -> Option<Handler> {
     let g = IMPLS.read().unwrap();
     let m = g.as_ref()?;
     if let Some(f) = m.get(&format!("{dll}!{name}")) {
@@ -222,6 +222,12 @@ pub fn is_known(addr: u32) -> bool {
     let i = (addr.wrapping_sub(TRAP_LO) / 4) as usize;
     ENTRIES.read().unwrap().get(i).is_some_and(|e| e.known)
 }
+/// The handler of a trap address.
+pub fn handler_of(addr: u32) -> Option<Handler> {
+    let i = (addr.wrapping_sub(TRAP_LO) / 4) as usize;
+    ENTRIES.read().unwrap().get(i).and_then(|e| e.f)
+}
+
 pub fn implemented(addr: u32) -> bool {
     let i = (addr.wrapping_sub(TRAP_LO) / 4) as usize;
     ENTRIES.read().unwrap().get(i).is_some_and(|e| e.f.is_some())
