@@ -2009,6 +2009,9 @@ fn PostMessageA(c: &mut Ctx) -> u32 {
 fn PostMessageW(c: &mut Ctx) -> u32 {
     PostMessageA(c)
 }
+pub fn post_thread_msg(tid: u32, msg: u32, w: u32, l: u32) {
+    post_thread(tid, Msg { hwnd: 0, msg, w, l, time: now_ms(), x: 0, y: 0 });
+}
 fn PostThreadMessageA(c: &mut Ctx) -> u32 {
     post_thread(c.a(0), Msg { hwnd: 0, msg: c.a(1), w: c.a(2), l: c.a(3), time: now_ms(), x: 0, y: 0 });
     1

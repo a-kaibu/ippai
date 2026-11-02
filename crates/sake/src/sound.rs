@@ -72,6 +72,7 @@ struct Buf {
 
 struct Dev {
     bufs: HashMap<u32, Buf>,
+    waves: HashMap<u32, Wave>,
     stream: i32,
 }
 
@@ -79,7 +80,7 @@ static DEV: Mutex<Option<Dev>> = Mutex::new(None);
 
 fn with<R>(f: impl FnOnce(&mut Dev) -> R) -> R {
     let mut g = DEV.lock().unwrap_or_else(|e| e.into_inner());
-    f(g.get_or_insert_with(|| Dev { bufs: HashMap::default(), stream: -1 }))
+    f(g.get_or_insert_with(|| Dev { bufs: HashMap::default(), waves: HashMap::default(), stream: -1 }))
 }
 
 fn gains(volume: i32, pan: i32) -> (f32, f32) {
@@ -94,8 +95,10 @@ fn gains(volume: i32, pan: i32) -> (f32, f32) {
 // the mixer
 
 fn sample(b: &Buf, frame: usize) -> (f32, f32) {
-    let f = &b.fmt;
-    let at = b.data + frame as u32 * f.block();
+    sample_at(b.data, &b.fmt, frame)
+}
+fn sample_at(data: u32, f: &Fmt, frame: usize) -> (f32, f32) {
+    let at = data + frame as u32 * f.block();
     let one = |a: u32| -> f32 {
         match (f.bits, f.float) {
             (8, _) => (mem::r8(a) as f32 - 128.0) / 128.0,
@@ -114,6 +117,9 @@ fn sample(b: &Buf, frame: usize) -> (f32, f32) {
 /// Mixes STEP frames of every playing buffer into `out`; fires notifications.
 fn mix(d: &mut Dev, out: &mut [f32]) -> Vec<u32> {
     let mut events = Vec::new();
+    if mix_waves(d, out) {
+        WAVE_CV.notify_all();
+    }
     for b in d.bufs.values_mut() {
         if !b.playing || b.primary || b.size == 0 {
             continue;
@@ -168,6 +174,254 @@ fn mix(d: &mut Dev, out: &mut [f32]) -> Vec<u32> {
         }
     }
     events
+}
+
+// ---------------------------------------------------------------------------------------------
+// winmm waveOut: a queue of WAVEHDRs the mixer plays in order; a guest thread per device
+// reports the finished ones (WOM_DONE to a function, window, thread or event)
+
+const WHDR_DONE: u32 = 1;
+const WHDR_PREPARED: u32 = 2;
+const WHDR_INQUEUE: u32 = 0x10;
+const WOM_OPEN: u32 = 0x3bb;
+const WOM_CLOSE: u32 = 0x3bc;
+const WOM_DONE: u32 = 0x3bd;
+
+struct Wave {
+    fmt: Fmt,
+    queue: std::collections::VecDeque<u32>,
+    /// play position in frames inside the first queued header
+    pos: f64,
+    done: Vec<u32>,
+    paused: bool,
+    closing: bool,
+    /// bytes played since open/reset (waveOutGetPosition)
+    played: u64,
+    cb: (u32, u32, u32),
+    volume: u32,
+}
+
+static WAVE_CV: std::sync::Condvar = std::sync::Condvar::new();
+static WAVE_LOCK: Mutex<()> = Mutex::new(());
+static NEXT_WAVE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x5a00);
+
+/// Mixes the waveOut devices; true when a header finished.
+fn mix_waves(d: &mut Dev, out: &mut [f32]) -> bool {
+    let mut finished = false;
+    for w in d.waves.values_mut() {
+        if w.paused {
+            continue;
+        }
+        let block = w.fmt.block().max(1);
+        let step = w.fmt.rate as f64 / RATE as f64;
+        let (gl, gr) = ((w.volume & 0xffff) as f32 / 65535.0, (w.volume >> 16) as f32 / 65535.0);
+        for o in out.chunks_exact_mut(2) {
+            let Some(&h) = w.queue.front() else { break };
+            let frames = (r32(h + 4) / block) as usize;
+            let i = w.pos as usize;
+            if i >= frames {
+                w.queue.pop_front();
+                w32(h + 16, (r32(h + 16) | WHDR_DONE) & !WHDR_INQUEUE);
+                w.done.push(h);
+                w.played += (frames as u32 * block) as u64;
+                w.pos = 0.0;
+                finished = true;
+                continue;
+            }
+            let (l, r) = sample_at(r32(h), &w.fmt, i);
+            o[0] += l * gl;
+            o[1] += r * gr;
+            w.pos += step;
+        }
+        // a header that ended exactly on this step
+        if let Some(&h) = w.queue.front() {
+            if w.pos as usize >= (r32(h + 4) / block) as usize {
+                w.queue.pop_front();
+                w32(h + 16, (r32(h + 16) | WHDR_DONE) & !WHDR_INQUEUE);
+                w.done.push(h);
+                w.played += r32(h + 4) as u64;
+                w.pos = 0.0;
+                finished = true;
+            }
+        }
+    }
+    finished
+}
+
+fn wave_notify(c: &mut Ctx, hwo: u32, (kind, cb, inst): (u32, u32, u32), msg: u32, p1: u32) {
+    match kind {
+        0x30000 if cb != 0 => {
+            c.call(cb, &[hwo, msg, inst, p1, 0]);
+        }
+        0x10000 if cb != 0 => {
+            crate::user::post(cb, msg, hwo, p1);
+        }
+        0x20000 if cb != 0 => crate::user::post_thread_msg(cb, msg, hwo, p1),
+        0x50000 if cb != 0 => crate::k32::set_event(cb),
+        _ => {}
+    }
+}
+
+/// The device's guest thread: delivers WOM_DONE for finished headers until the device closes.
+fn wave_thread(c: &mut Ctx) -> u32 {
+    let hwo = c.a(0);
+    loop {
+        let (done, cb, closing) = with(|d| match d.waves.get_mut(&hwo) {
+            Some(w) => (std::mem::take(&mut w.done), w.cb, w.closing),
+            None => (Vec::new(), (0, 0, 0), true),
+        });
+        for h in &done {
+            wave_notify(c, hwo, cb, WOM_DONE, *h);
+        }
+        if closing {
+            with(|d| d.waves.remove(&hwo));
+            break;
+        }
+        if done.is_empty() {
+            drop(WAVE_CV.wait_timeout(WAVE_LOCK.lock().unwrap(), Duration::from_millis(20)).unwrap());
+        }
+    }
+    crate::k32::exit_thread(0)
+}
+
+fn waveOutGetNumDevs(_: &mut Ctx) -> u32 {
+    1
+}
+fn wave_caps(c: &mut Ctx, wide: bool) -> u32 {
+    let p = c.a(1);
+    let name = "sake WebAudio";
+    let o = if wide { 8 + 64 } else { 8 + 32 };
+    for i in 0..o + 12 {
+        mem::w8(p + i, 0);
+    }
+    w16(p, 1);
+    w16(p + 2, 2);
+    w32(p + 4, 0x100);
+    for (i, b) in name.bytes().enumerate() {
+        if wide {
+            w16(p + 8 + 2 * i as u32, b as u16);
+        } else {
+            mem::w8(p + 8 + i as u32, b);
+        }
+    }
+    w32(p + o, 0xfff);
+    w16(p + o + 4, 2);
+    w32(p + o + 8, 0xc);
+    0
+}
+fn waveOutGetDevCapsA(c: &mut Ctx) -> u32 {
+    wave_caps(c, false)
+}
+fn waveOutGetDevCapsW(c: &mut Ctx) -> u32 {
+    wave_caps(c, true)
+}
+/// waveOutOpen(phwo, device, format, callback, instance, flags)
+fn waveOutOpen(c: &mut Ctx) -> u32 {
+    let (ph, fmtp, cb, inst, flags) = (c.a(0), c.a(2), c.a(3), c.a(4), c.a(5));
+    let fmt = Fmt::read(fmtp);
+    if !matches!(fmt.bits, 8 | 16 | 24 | 32) || fmt.rate == 0 {
+        return 32; // WAVERR_BADFORMAT
+    }
+    if flags & 1 != 0 {
+        return 0;
+    }
+    start_mixer();
+    let hwo = NEXT_WAVE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let cbk = (flags & 0x70000, cb, inst);
+    with(|d| {
+        d.waves.insert(hwo, Wave { fmt, queue: Default::default(), pos: 0.0, done: Vec::new(), paused: false, closing: false, played: 0, cb: cbk, volume: 0xffff_ffff })
+    });
+    put32(ph, hwo);
+    static ENTRY: OnceLock<u32> = OnceLock::new();
+    let entry = *ENTRY.get_or_init(|| host_fn("wave_thread", wave_thread, 4));
+    crate::spawn_gated(entry, hwo, 0x10000, crate::obj::new_thread_obj(0), false);
+    wave_notify(c, hwo, cbk, WOM_OPEN, 0);
+    0
+}
+fn waveOutClose(c: &mut Ctx) -> u32 {
+    let hwo = c.a(0);
+    let Some(cb) = with(|d| d.waves.get_mut(&hwo).map(|w| {
+        w.closing = true;
+        w.cb
+    })) else { return 5 };
+    WAVE_CV.notify_all();
+    wave_notify(c, hwo, cb, WOM_CLOSE, 0);
+    // (the device thread drops it on its next look)
+    0
+}
+fn waveOutPrepareHeader(c: &mut Ctx) -> u32 {
+    let h = c.a(1);
+    w32(h + 16, r32(h + 16) | WHDR_PREPARED);
+    0
+}
+fn waveOutUnprepareHeader(c: &mut Ctx) -> u32 {
+    let h = c.a(1);
+    if r32(h + 16) & WHDR_INQUEUE != 0 {
+        return 33; // WAVERR_STILLPLAYING
+    }
+    w32(h + 16, r32(h + 16) & !WHDR_PREPARED);
+    0
+}
+fn waveOutWrite(c: &mut Ctx) -> u32 {
+    let (hwo, h) = (c.a(0), c.a(1));
+    w32(h + 16, (r32(h + 16) & !WHDR_DONE) | WHDR_INQUEUE);
+    if with(|d| d.waves.get_mut(&hwo).map(|w| w.queue.push_back(h))).is_none() {
+        return 5; // MMSYSERR_INVALHANDLE
+    }
+    0
+}
+fn waveOutReset(c: &mut Ctx) -> u32 {
+    let hwo = c.a(0);
+    with(|d| {
+        if let Some(w) = d.waves.get_mut(&hwo) {
+            for h in w.queue.drain(..) {
+                w32(h + 16, (r32(h + 16) | WHDR_DONE) & !WHDR_INQUEUE);
+                w.done.push(h);
+            }
+            w.pos = 0.0;
+            w.played = 0;
+            w.paused = false;
+        }
+    });
+    WAVE_CV.notify_all();
+    0
+}
+fn waveOutPause(c: &mut Ctx) -> u32 {
+    with(|d| d.waves.get_mut(&c.a(0)).map(|w| w.paused = true));
+    0
+}
+fn waveOutRestart(c: &mut Ctx) -> u32 {
+    with(|d| d.waves.get_mut(&c.a(0)).map(|w| w.paused = false));
+    0
+}
+/// waveOutGetPosition(hwo, MMTIME*, size): bytes, samples or ms
+fn waveOutGetPosition(c: &mut Ctx) -> u32 {
+    let (hwo, t) = (c.a(0), c.a(1));
+    let Some((bytes, fmt)) = with(|d| d.waves.get(&hwo).map(|w| (w.played + (w.pos as u64) * w.fmt.block() as u64, w.fmt))) else { return 5 };
+    let frames = bytes / fmt.block().max(1) as u64;
+    match r32(t) {
+        2 => w32(t + 4, frames as u32),
+        1 => w32(t + 4, (frames * 1000 / fmt.rate as u64) as u32),
+        _ => {
+            w32(t, 4);
+            w32(t + 4, bytes as u32)
+        }
+    }
+    0
+}
+fn waveOutSetVolume(c: &mut Ctx) -> u32 {
+    let (hwo, v) = (c.a(0), c.a(1));
+    // a handle, or a device id: every open device
+    with(|d| match d.waves.get_mut(&hwo) {
+        Some(w) => w.volume = v,
+        None => d.waves.values_mut().for_each(|w| w.volume = v),
+    });
+    0
+}
+fn waveOutGetVolume(c: &mut Ctx) -> u32 {
+    let v = with(|d| d.waves.get(&c.a(0)).map_or(0xffff_ffff, |w| w.volume));
+    put32(c.a(1), v);
+    0
 }
 
 fn start_mixer() {
@@ -724,6 +978,24 @@ fn N_SetNotificationPositions(c: &mut Ctx) -> u32 {
 }
 
 pub fn init() {
+    for (n, f) in [
+        ("waveOutGetNumDevs", waveOutGetNumDevs as crate::api::Handler),
+        ("waveOutGetDevCapsA", waveOutGetDevCapsA),
+        ("waveOutGetDevCapsW", waveOutGetDevCapsW),
+        ("waveOutOpen", waveOutOpen),
+        ("waveOutClose", waveOutClose),
+        ("waveOutPrepareHeader", waveOutPrepareHeader),
+        ("waveOutUnprepareHeader", waveOutUnprepareHeader),
+        ("waveOutWrite", waveOutWrite),
+        ("waveOutReset", waveOutReset),
+        ("waveOutPause", waveOutPause),
+        ("waveOutRestart", waveOutRestart),
+        ("waveOutGetPosition", waveOutGetPosition),
+        ("waveOutSetVolume", waveOutSetVolume),
+        ("waveOutGetVolume", waveOutGetVolume),
+    ] {
+        implement("winmm", n, f);
+    }
     implement("dsound", "DirectSoundCreate", DirectSoundCreate);
     implement("dsound", "DirectSoundCreate8", DirectSoundCreate8);
     implement("dsound", "DirectSoundEnumerateA", DirectSoundEnumerateA);

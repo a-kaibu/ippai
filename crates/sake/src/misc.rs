@@ -1789,9 +1789,6 @@ fn mciSendStringW(_: &mut Ctx) -> u32 {
 fn mciSendCommandA(_: &mut Ctx) -> u32 {
     263
 }
-fn waveOutGetNumDevs(_: &mut Ctx) -> u32 {
-    0
-}
 fn midiOutGetNumDevs(_: &mut Ctx) -> u32 {
     0
 }
@@ -2182,7 +2179,7 @@ pub fn init() {
         ImageList_SetIconSize, ImageList_Remove, ImageList_Draw, ImageList_DrawEx, ImageList_ReplaceIcon);
     reg!("winmm"; timeGetTime, timeBeginPeriod, timeEndPeriod, timeGetDevCaps, timeGetSystemTime, timeSetEvent,
         timeKillEvent, joyGetNumDevs, joyGetPosEx, joyGetPos, joyGetDevCapsA, joyGetDevCapsW, mciSendStringA,
-        mciSendStringW, mciSendCommandA, waveOutGetNumDevs, midiOutGetNumDevs, auxGetNumDevs, mixerGetNumDevs);
+        mciSendStringW, mciSendCommandA, midiOutGetNumDevs, auxGetNumDevs, mixerGetNumDevs);
     reg!("shlwapi"; PathStripToRootA, PathStripToRootW, PathIsUNCA, PathIsUNCW);
     reg!("shlwapi"; PathRemoveFileSpecA, PathRemoveFileSpecW, PathFileExistsA, PathFileExistsW, PathIsDirectoryA,
         PathIsDirectoryW, PathAppendA, PathAppendW, PathCombineA, PathCombineW, PathFindFileNameA,
