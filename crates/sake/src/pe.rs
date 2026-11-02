@@ -218,6 +218,24 @@ pub fn load(data: &[u8], path: &str, resolve: &mut dyn FnMut(&str, Import) -> u3
             d += 20;
         }
     }
+    // each section's protection from its characteristics (the image was mapped read-write-execute
+    // to be written): the JIT translates only pages that are not both writable and executable
+    mem::protect(base, hdr_size.max(1), 0x02);
+    for i in 0..nsec {
+        let s = secs + 40 * i;
+        let (vsize, va, ch) = (rd32(s + 8), rd32(s + 12), rd32(s + 36));
+        let n = if vsize != 0 { vsize } else { rd32(s + 16) };
+        let (x, w) = (ch & 0x2000_0000 != 0, ch & 0x8000_0000 != 0);
+        let prot = match (x, w) {
+            (true, true) => 0x40,
+            (true, false) => 0x20,
+            (false, true) => 0x04,
+            (false, false) => 0x02,
+        };
+        if n != 0 {
+            mem::protect(base + va, n, prot);
+        }
+    }
     vnhost::crashlog::add_module(base, path);
     Ok(base)
 }
@@ -515,6 +533,9 @@ pub fn load_library(cpu: &mut Cpu, name: &str) -> u32 {
 pub fn load_exe(_cpu: &mut Cpu, host: &str, win: &str) -> Result<u32, String> {
     let data = std::fs::read(host).map_err(|e| e.to_string())?;
     let base = load(&data, win, &mut resolve_import)?;
+    // the main exe: the JIT translates its writable code too, checking stores into it
+    let size = with(base, |m| m.size).unwrap_or(0);
+    vnhost::jit::vnhost_jit_exe_image(base as usize as *const std::ffi::c_void, size as usize);
     tls_module(base);
     Ok(base)
 }

@@ -190,6 +190,14 @@ pub fn reserve(want: u32, size: u32, prot: u32, kind: u32, top: bool) -> Option<
 static PAGES: Mutex<BTreeMap<u32, Vec<u32>>> = Mutex::new(BTreeMap::new());
 const COMMITTED: u32 = 0x8000_0000;
 
+/// Tells the JIT which pages are writable and executable (Windows protection `prot`, 0: none):
+/// it interprets W|X pages outside the main exe and checks stores on the main exe's.
+fn jit_prot(a: u32, n: u32, prot: u32) {
+    let wx = prot & (0x40 | 0x80) != 0;
+    let p = if prot == 0 { 0 } else if wx { libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC } else { libc::PROT_READ };
+    vnhost::jit::pages_protected(a as usize, n as usize, p);
+}
+
 /// Commits a whole allocation.
 pub fn commit(base: u32, prot: u32) {
     let size = SPACE.lock().unwrap().get(&base).map(|r| r.size);
@@ -212,6 +220,7 @@ pub fn commit_range(a: u32, n: u32, prot: u32) -> bool {
         r.state = 0x1000;
         r.prot = prot;
     }
+    jit_prot(b + first * PAGE, (last - first) * PAGE, prot);
     true
 }
 
@@ -229,6 +238,8 @@ pub fn decommit_range(a: u32, n: u32) -> bool {
             }
         }
     }
+    drop(g);
+    jit_prot(b + first * PAGE, (last - first) * PAGE, 0);
     true
 }
 
@@ -261,6 +272,7 @@ pub fn protect(a: u32, n: u32, prot: u32) -> Option<u32> {
         }
     }
     drop(g);
+    jit_prot(b + first * PAGE, (last - first) * PAGE, prot);
     // writable code may be rewritten: the JIT drops what it translated there (QLIE patches its
     // code with VirtualProtect)
     if prot & 0xcc != 0 {
@@ -282,6 +294,7 @@ pub fn release(base: u32) -> bool {
     let mut sp = SPACE.lock().unwrap();
     let Some(r) = sp.get(&base).copied() else { return false };
     vnhost::jit::code_changed(base as usize, r.size as usize);
+    jit_prot(base, r.size, 0);
     fill(base, r.size, 0);
     sp.remove(&base);
     PAGES.lock().unwrap().remove(&base);
