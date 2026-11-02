@@ -188,6 +188,9 @@ impl Off {
     fn call_cache() -> u32 {
         offset_of!(Cpu, jit_calls) as u32
     }
+    fn mxcsr() -> u32 {
+        offset_of!(Cpu, mxcsr) as u32
+    }
     fn fpu(field: usize) -> u32 {
         (offset_of!(Cpu, fpu) + field) as u32
     }

@@ -135,6 +135,15 @@ pub(super) fn supported(ins: &Instruction) -> bool {
         _ => false,
     };
     match m {
+        // MMX from the low two floats of an XMM register or m64
+        Cvtps2pi | Cvttps2pi => {
+            d.is_mm()
+                && match ins.op_kind(1) {
+                    OpKind::Register => ins.op_register(1).is_xmm(),
+                    OpKind::Memory => super::mem_ok(ins) && ins.memory_size().size() == 8,
+                    _ => false,
+                }
+        }
         Movd => {
             let s = ins.op_kind(1) == OpKind::Register;
             (vreg(d) && ((s && ins.op_register(1).is_gpr32()) || (!s && super::mem_ok(ins))))
@@ -219,6 +228,38 @@ impl Gen<'_> {
         }
     }
 
+    /// CVTPS2PI / CVTTPS2PI: two floats to MMX ints, rounded by MXCSR.RC (truncated), out of
+    /// range and NaN giving 0x80000000 as on x86 (wasm's conversion saturates instead).
+    /// (KiriKiri's Ogg Vorbis decoder runs these in its inner loop.)
+    fn cvtps2pi(&mut self) {
+        use Mnemonic::*;
+        let a = self.mem_addr_sized(8);
+        self.c.get(L_CPU);
+        self.vread(1, a, true);
+        self.c.set(L_V0);
+        if self.ins.mnemonic() == Cvttps2pi {
+            self.c.get(L_V0).simd(0x69); // f32x4.trunc
+        } else {
+            let rc = self.temp();
+            self.c.get(L_CPU).load32(Off::mxcsr()).i32c(13).shr_u().i32c(3).and().set(rc);
+            self.c.get(L_V0).simd(0x6a); // f32x4.nearest (RC 0)
+            // RC 1 floor, 2 ceil, 3 truncate: bitselect(kept, this, splat(-(rc != k)))
+            for (k, op) in [(1, 0x68), (2, 0x67), (3, 0x69)] {
+                self.c.get(L_V0).simd(op);
+                self.c.i32c(0).get(rc).i32c(k).ne().sub().simd(0x11);
+                self.c.simd(0x52);
+            }
+        }
+        self.c.set(L_V1);
+        self.c.get(L_V1).simd(0xf8); // i32x4.trunc_sat_f32x4_s
+        self.c.i32c(i32::MIN).simd(0x11);
+        // in range: -2^31 <= r < 2^31 (false for NaN)
+        self.c.get(L_V1).i32c((-2147483648.0f32).to_bits() as i32).simd(0x11).simd(0x46); // f32x4.ge
+        self.c.get(L_V1).i32c(2147483648.0f32.to_bits() as i32).simd(0x11).simd(0x43); // f32x4.lt
+        self.c.simd(0x4e).simd(0x52); // v128.and, bitselect
+        self.vstore(self.ins.op_register(0));
+    }
+
     /// Translates an instruction [`supported`] says it can.
     pub(super) fn packed(&mut self) {
         use Mnemonic::*;
@@ -239,6 +280,9 @@ impl Gen<'_> {
         }
         if m == Movss || farith(m).is_some_and(|f| !f.1) {
             return self.scalar();
+        }
+        if matches!(m, Cvtps2pi | Cvttps2pi) {
+            return self.cvtps2pi();
         }
         let d = ins.op_register(0);
         let mm = d.is_mm();
