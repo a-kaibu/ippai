@@ -1629,7 +1629,13 @@ unsafe fn child_call(d: &mut D11, iface: u32, m: u32, this: u32, a: &dyn Fn(usiz
             if iface == IF_DSV {
                 w.push(0);
             }
-            w.extend_from_slice(&[v.mip, if iface == IF_SRV { v.mips } else { v.layer }, v.layer, v.layers]);
+            // (the union: SRV MostDetailedMip MipLevels FirstArraySlice ArraySize; RTV DSV UAV
+            // MipSlice FirstArraySlice ArraySize. RTV and UAV descs are 20 bytes, DSV 24, SRV 24)
+            if iface == IF_SRV {
+                w.extend_from_slice(&[v.mip, v.mips, v.layer, v.layers]);
+            } else {
+                w.extend_from_slice(&[v.mip, v.layer, v.layers]);
+            }
             for (i, x) in w.into_iter().enumerate() {
                 wr(a(1), i, x);
             }
