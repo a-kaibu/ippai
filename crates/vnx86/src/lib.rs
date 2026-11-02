@@ -210,6 +210,12 @@ pub struct Cpu {
     /// JIT: the thread's call cache (function mode: a direct-mapped table of (target, hash
     /// table entry) pairs that call sites index by their own address, see jit::Gen::call_fn)
     pub jit_calls: u32,
+    /// JIT: the host's bitmap of pages with translated code (a bit per 4 KB page), which
+    /// translations of code that may rewrite code test their stores against
+    /// (jit::set_watch), and the address such a store hit (0: none; the host drops the
+    /// translations, see vnhost's jit::smc_hit)
+    pub jit_code_pages: u32,
+    pub jit_smc: u32,
 }
 
 impl Default for Cpu {
@@ -218,7 +224,7 @@ impl Default for Cpu {
             regs: [0; 8], eip: 0, eflags: 0x202, lazy: lazy::Lazy::default(), jit_hash: 0, jit_mask: 0,
             jit_pending: 0, jit_budget: 0, jit_ring: 0, fs_base: 0, gs_base: 0, trap_lo: 0, trap_hi: 0, tsc: 0,
             fpu: Fpu::default(), mm: [0; 8], xmm: [0; 8], mxcsr: 0x1f80,
-            mode64: 0, hi: [0; 8], r8: [0; 8], xmm8: [0; 8], jit_depth: 0, rip_hi: 0, jit_calls: 0,
+            mode64: 0, hi: [0; 8], r8: [0; 8], xmm8: [0; 8], jit_depth: 0, rip_hi: 0, jit_calls: 0, jit_code_pages: 0, jit_smc: 0,
         }
     }
 }

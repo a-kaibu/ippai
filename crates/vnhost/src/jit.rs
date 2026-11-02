@@ -34,7 +34,7 @@ fn threshold() -> u32 {
 /// Debugging a miscompile by bisection: VNVM_JIT_ONLY=lo-hi (hex) compiles only code in [lo, hi),
 /// VNVM_JIT_ONLY=!lo-hi all but that.
 fn debug_allowed(a: u32) -> bool {
-    if wx_page(a) {
+    if wx_page(a) || page_set(&SMC_PAGES, a) {
         return false;
     }
     debug_range(a)
@@ -68,6 +68,38 @@ fn page_set(map: &[AtomicU32], a: u32) -> bool {
 
 fn wx_page(a: u32) -> bool {
     page_set(&WX_PAGES, a) && !page_set(&EXE_PAGES, a)
+}
+
+/// A main executable's W|X pages: packers (ASProtect) decrypt code there in place, also code
+/// that already ran, so translations of code there test their stores (jit::set_watch), and
+/// the interpreter tests its own (`interp_write`).
+fn exe_wx_page(a: u32) -> bool {
+    page_set(&WX_PAGES, a) && page_set(&EXE_PAGES, a)
+}
+
+/// Pages whose translated code was written over: the interpreter runs them from then on.
+static SMC_PAGES: [AtomicU32; 1 << 14] = [const { AtomicU32::new(0) }; 1 << 14];
+
+/// A store to `a`, a page with translated code: the translations go (everyone's), and so
+/// does the JIT for that page.
+pub(crate) fn smc_hit(a: u32) {
+    set_pages(&SMC_PAGES, a as usize, 1, true);
+    if stats() {
+        eprintln!("vnjit: code at {a:#x} rewritten");
+    }
+    code_changed(a as usize, 1);
+}
+
+/// The interpreter's store to `a` (cpu.rs Linear): whether it hit translated code (then
+/// handled by [`smc_hit`]).
+#[inline(always)]
+pub(crate) fn interp_write(a: u32) -> bool {
+    let p = (a >> 12) as usize;
+    if p >= 1 << 19 || CODE_PAGES[p >> 5].load(Ordering::Relaxed) & (1 << (p & 31)) == 0 {
+        return false;
+    }
+    smc_hit(a);
+    true
 }
 
 /// The guest's pages `addr..addr + len` got protection `prot` (mmap, mprotect; unmapped: 0).
@@ -380,6 +412,7 @@ fn init_flags() {
                 eprintln!("VNVM_JIT64_OFF: no mnemonic {name}");
             }
         }
+        jit::set_watch(exe_wx_page);
         // function mode by default (VNVM_JIT_FN=0: regions)
         jit::FN.store(std::env::var("VNVM_JIT_FN").map_or(true, |v| v != "0"), std::sync::atomic::Ordering::Relaxed);
 
@@ -400,6 +433,7 @@ pub fn run(cpu: &mut Cpu, pending: u32) -> Ran {
     });
     cpu.jit_pending = pending;
     cpu.jit_budget = BUDGET;
+    cpu.jit_code_pages = CODE_PAGES.as_ptr() as usize as u32;
     let depth = cpu.jit_depth;
     // VNVM_JIT64_VERIFY=1: single-instruction regions, =2: whole regions; one region per call
     // now and then, checked against the interpreter
@@ -428,6 +462,9 @@ pub fn run(cpu: &mut Cpu, pending: u32) -> Ran {
         }
     }
     cpu.jit_depth = depth;
+    if cpu.jit_smc != 0 {
+        smc_hit(std::mem::take(&mut cpu.jit_smc));
+    }
     #[cfg(not(target_os = "emscripten"))]
     let r = jit::RET_INTERP;
     match r {
@@ -1242,7 +1279,10 @@ pub unsafe extern "C" fn vnhost_jit_step(cpu: u32) -> i32 {
     if stats() {
         count_step(&*cpu);
     }
+    let g = GENERATION.load(Ordering::Relaxed);
     match step(&mut *cpu, &mut Linear).0 {
+        // (it rewrote translated code: the block leaves)
+        Exit::Continue if GENERATION.load(Ordering::Relaxed) != g => 2,
         Exit::Continue => 0,
         e => {
             EXIT.with(|x| x.set(Some(e)));

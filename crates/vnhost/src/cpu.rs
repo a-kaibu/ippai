@@ -46,6 +46,9 @@ fn check(addr: u32, len: u32, write: bool) -> Result<*mut u8, Fault> {
     if addr < NULL_PAGES || addr as u64 + len as u64 > mem_end() {
         return Err(Fault { addr, write });
     }
+    if write {
+        crate::jit::interp_write(addr);
+    }
     Ok(addr as usize as *mut u8)
 }
 

@@ -152,6 +152,34 @@ pub const MAX_BLOCKS: usize = 1 << 11;
 /// Most instructions in one region: V8's optimizing compiler takes superlinear time on big
 /// functions (and runs the code in its baseline tier until it is done).
 const MAX_REGION_INS: usize = 1000;
+/// Where code may be rewritten without a protection change while translated (the host's
+/// choice: a main executable's W|X pages, which packers decrypt in place): translations of
+/// code there test each store against the pages with translated code (Cpu::jit_code_pages)
+/// and leave at the next instruction with Cpu::jit_smc set when one hits.
+static WATCH: spin_once::Once = spin_once::Once::new();
+
+mod spin_once {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    pub struct Once(AtomicUsize);
+    impl Once {
+        pub const fn new() -> Self {
+            Once(AtomicUsize::new(0))
+        }
+        pub fn set(&self, f: fn(u32) -> bool) {
+            self.0.store(f as usize, Ordering::Relaxed);
+        }
+        pub fn get(&self) -> Option<fn(u32) -> bool> {
+            let v = self.0.load(Ordering::Relaxed);
+            // SAFETY: only ever set from a `fn(u32) -> bool`
+            (v != 0).then(|| unsafe { core::mem::transmute::<usize, fn(u32) -> bool>(v) })
+        }
+    }
+}
+
+pub fn set_watch(f: fn(u32) -> bool) {
+    WATCH.set(f);
+}
+
 /// The same for functions (jit::FN; VNVM_JIT_FN_INS)
 pub static FN_MAX_INS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(1000);
 /// Inlined callees: at most this many instructions each, and in all in a region.
@@ -184,6 +212,12 @@ impl Off {
     }
     fn calls() -> u32 {
         offset_of!(Cpu, jit_depth) as u32
+    }
+    fn code_pages() -> u32 {
+        offset_of!(Cpu, jit_code_pages) as u32
+    }
+    fn smc() -> u32 {
+        offset_of!(Cpu, jit_smc) as u32
     }
     fn call_cache() -> u32 {
         offset_of!(Cpu, jit_calls) as u32
@@ -331,6 +365,8 @@ struct Gen<'a> {
     /// emitted so far ends with (see [`Gen::predict`])
     preds: Vec<Vec<u32>>,
     flags_out: Vec<Option<u32>>,
+    /// the block's stores are tested for rewriting translated code (see [`WATCH`])
+    smc: bool,
     /// with [`LAYOUT`]: whether the instruction went to the interpreter, and per mnemonic
     /// ("*" marking those) the count and wasm bytes
     fell_back: bool,
@@ -675,6 +711,22 @@ impl<'a> Gen<'a> {
         };
         self.c.get(d).set(L_REG);
         self.temps -= 3;
+    }
+
+    /// After a store to `e` (see [`WATCH`]): when its page has translated code, leaves for the
+    /// host at the next instruction with Cpu::jit_smc = e.
+    fn smc_check(&mut self, e: u32) {
+        self.c.get(L_CPU).load32(Off::code_pages());
+        self.c.get(e).i32c(17).shr_u().i32c(2).shl().add().load32(0);
+        self.c.get(e).i32c(12).shr_u().shr_u().i32c(1).and();
+        self.c.if_();
+        self.depth += 1;
+        self.c.get(L_CPU).get(e).store32(Off::smc());
+        let next = self.ins.next_ip32();
+        self.c.u32c(next);
+        self.exit_with(RET_INTERP);
+        self.depth -= 1;
+        self.c.end();
     }
 
     /// Leaves the block so the interpreter runs the current instruction.
@@ -1154,6 +1206,13 @@ impl<'a> Gen<'a> {
                     self.c.get(v).set(L_SLOT + k);
                 } else if self.slots.is_some() {
                     self.slots_reload_if(addr.unwrap(), op_bits(ins, i) / 8);
+                }
+                if self.smc {
+                    let off = self.mem_at(addr.unwrap());
+                    let e = self.temp();
+                    self.c.u32c(off).add().set(e);
+                    self.smc_check(e);
+                    self.temps -= 1;
                 }
             }
         }
@@ -1751,6 +1810,7 @@ impl<'a> Gen<'a> {
             // ---- string ops (DS:ESI without a segment override, ES:EDI)
             Movsb | Movsw | Movsd | Stosb | Stosw | Stosd | Lodsb | Lodsw | Lodsd
                 if is_string(ins)
+                    && !(self.smc && !matches!(ins.mnemonic(), Lodsb | Lodsw | Lodsd))
                     && ins.segment_prefix() == Register::None
                     && !ins.has_repne_prefix()
                     && !(ins.has_rep_prefix() && matches!(ins.mnemonic(), Lodsb | Lodsw | Lodsd)) =>
@@ -4055,6 +4115,7 @@ fn emit_block<'a>(g: &mut Gen<'a>, blocks: &'a [(u32, Vec<Instruction>)], k: usi
     g.safe2.clear();
     g.safe[4] = Some(0); // see Gen::emit
     g.flags = Flags::Entry;
+    g.smc = WATCH.get().is_some_and(|w| w(blocks[k].0));
     g.dirty = g.dirty_in.get(k).copied().unwrap_or(g.wregs);
     g.small = [None; 8];
     if let Some(&m) = g.safe_in.get(k) {
@@ -4675,6 +4736,7 @@ fn translate<M: Memory>(
         safe_in: Vec::new(),
         preds: Vec::new(),
         flags_out: Vec::new(),
+        smc: false,
         temps: 0,
         safe: [None; 8],
         safe2: Vec::new(),
