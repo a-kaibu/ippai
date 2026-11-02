@@ -260,6 +260,12 @@ pub fn protect(a: u32, n: u32, prot: u32) -> Option<u32> {
             *x = COMMITTED | prot;
         }
     }
+    drop(g);
+    // writable code may be rewritten: the JIT drops what it translated there (QLIE patches its
+    // code with VirtualProtect)
+    if prot & 0xcc != 0 {
+        vnhost::jit::code_changed(a as usize, n as usize);
+    }
     Some(if old == 0 { r.prot } else { old })
 }
 
@@ -271,15 +277,15 @@ pub fn find(a: u32) -> Option<(u32, Region)> {
 }
 
 pub fn release(base: u32) -> bool {
-    let r = SPACE.lock().unwrap().remove(&base);
+    // zeroed before it leaves the map: once out, another thread may reserve it (a new thread's
+    // stack was zeroed under it)
+    let mut sp = SPACE.lock().unwrap();
+    let Some(r) = sp.get(&base).copied() else { return false };
+    vnhost::jit::code_changed(base as usize, r.size as usize);
+    fill(base, r.size, 0);
+    sp.remove(&base);
     PAGES.lock().unwrap().remove(&base);
-    match r {
-        Some(r) => {
-            fill(base, r.size, 0);
-            true
-        }
-        None => false,
-    }
+    true
 }
 
 /// The free range at `a` (for VirtualQuery): (start, size).

@@ -1098,7 +1098,10 @@ fn VirtualLock(_: &mut Ctx) -> u32 {
 fn VirtualUnlock(_: &mut Ctx) -> u32 {
     1
 }
-fn FlushInstructionCache(_: &mut Ctx) -> u32 {
+fn FlushInstructionCache(c: &mut Ctx) -> u32 {
+    if c.a(1) != 0 {
+        vnhost::jit::code_changed(c.a(1) as usize, c.a(2).max(1) as usize);
+    }
     1
 }
 fn is_bad(p: u32, n: u32) -> bool {

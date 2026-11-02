@@ -460,7 +460,13 @@ pub fn proc_address(base: u32, imp: Import) -> Option<u32> {
         return Some(g);
     }
     let a = api::export(&name, &n);
-    (api::implemented(a) || std::env::var_os("SAKE_ALL_EXPORTS").is_some()).then(|| crate::fast::bind(&name, &n, a))
+    // an unimplemented export of a system DLL resolves to its trap (logged, returns 0) as a static
+    // import does: programs that look up a whole API by name call some unchecked (騎士見習いと村娘).
+    // kernel32/ntdll keep answering NULL: the CRT looks up newer functions there and falls back
+    // to older ones when they are missing
+    let kernel = matches!(api::dll_key(&name).as_str(), "kernel32" | "kernelbase" | "ntdll");
+    let known = api::is_known(a);
+    (api::implemented(a) || (known && !kernel) || std::env::var_os("SAKE_ALL_EXPORTS").is_some()).then(|| crate::fast::bind(&name, &n, a))
 }
 
 /// A data export of a DLL we implement (msvcrt's variables).

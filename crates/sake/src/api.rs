@@ -186,6 +186,11 @@ pub fn name_of(addr: u32) -> Option<String> {
 }
 
 /// Whether the API at trap address `addr` has an implementation.
+/// The trap is a function of the DLL's spec (implemented or not).
+pub fn is_known(addr: u32) -> bool {
+    let i = (addr.wrapping_sub(TRAP_LO) / 4) as usize;
+    ENTRIES.read().unwrap().get(i).is_some_and(|e| e.known)
+}
 pub fn implemented(addr: u32) -> bool {
     let i = (addr.wrapping_sub(TRAP_LO) / 4) as usize;
     ENTRIES.read().unwrap().get(i).is_some_and(|e| e.f.is_some())

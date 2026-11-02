@@ -522,6 +522,67 @@ fn control_proc() -> u32 {
     *P.get_or_init(|| crate::api::host_fn("control_proc", control_proc_fn, 16))
 }
 
+// the tab control: keeps the item count and the selection (Delphi's TPageControl checks what
+// TCM_INSERTITEM / TCM_DELETEITEM return); draws nothing
+static TABS: Mutex<Option<HashMap<u32, (u32, i32)>>> = Mutex::new(None);
+fn tab_proc() -> u32 {
+    static P: OnceLock<u32> = OnceLock::new();
+    *P.get_or_init(|| crate::api::host_fn("tab_proc", tab_proc_fn, 16))
+}
+fn tab_proc_fn(c: &mut Ctx) -> u32 {
+    let (h, m, wp) = (c.a(0), c.a(1), c.a(2));
+    let mut g = TABS.lock().unwrap();
+    let t = g.get_or_insert_with(HashMap::default).entry(h).or_insert((0, -1));
+    match m {
+        0x1304 => t.0,
+        // TCM_INSERTITEMA/W: at min(index, count)
+        0x1307 | 0x133e => {
+            let i = wp.min(t.0);
+            t.0 += 1;
+            if t.1 < 0 {
+                t.1 = 0;
+            }
+            i
+        }
+        0x1308 => {
+            if wp >= t.0 {
+                return 0;
+            }
+            t.0 -= 1;
+            if t.1 >= t.0 as i32 {
+                t.1 = t.0 as i32 - 1;
+            }
+            1
+        }
+        0x1309 => {
+            *t = (0, -1);
+            1
+        }
+        0x130b => t.1 as u32,
+        0x130c => {
+            let old = t.1;
+            if wp < t.0 {
+                t.1 = wp as i32;
+            }
+            old as u32
+        }
+        0x132c => 1,
+        0x1305 | 0x1306 | 0x133c | 0x133d | 0x130a | 0x1328 | 0x1303 | 0x1302 => {
+            // get/set item, item rect, adjust rect, image list: nothing to report
+            if m == 0x1306 || m == 0x133d { 1 } else { 0 }
+        }
+        0x2 => {
+            g.as_mut().unwrap().remove(&h);
+            drop(g);
+            def_proc(c, msg_wide())
+        }
+        _ => {
+            drop(g);
+            def_proc(c, msg_wide())
+        }
+    }
+}
+
 fn gcall(c: &mut Ctx, dll: &str, name: &str, args: &[u32]) -> u32 {
     let f = crate::api::export(dll, name);
     c.call(f, args)
@@ -725,12 +786,16 @@ fn system_classes(s: &mut State) {
     if !s.classes.is_empty() {
         return;
     }
-    for n in ["Button", "Edit", "Static", "ListBox", "ComboBox", "ScrollBar", "#32770", "MDIClient", "ComboLBox", "#32768", "msctls_progress32", "SysListView32", "SysTreeView32", "msctls_statusbar32", "ToolbarWindow32", "tooltips_class32", "RichEdit20A", "IME"] {
+    for n in ["Button", "Edit", "Static", "ListBox", "ComboBox", "ScrollBar", "#32770", "MDIClient", "ComboLBox", "#32768", "msctls_progress32", "SysListView32", "SysTreeView32", "msctls_statusbar32", "ToolbarWindow32", "tooltips_class32", "RichEdit20A", "IME", "SysTabControl32"] {
         let atom = crate::k32::atom(n);
         s.classes.push(Class {
             name: n.into(),
             style: 0,
-            proc_: if matches!(n, "Button" | "Static" | "Edit") { control_proc() } else { builtin_proc() },
+            proc_: match n {
+                "Button" | "Static" | "Edit" => control_proc(),
+                "SysTabControl32" => tab_proc(),
+                _ => builtin_proc(),
+            },
             cls_extra: 0,
             wnd_extra: 32,
             inst: 0,
