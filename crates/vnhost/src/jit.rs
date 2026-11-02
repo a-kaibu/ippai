@@ -325,7 +325,8 @@ fn init_flags() {
                 eprintln!("VNVM_JIT64_OFF: no mnemonic {name}");
             }
         }
-        jit::FN.store(std::env::var("VNVM_JIT_FN").is_ok_and(|v| v == "1"), std::sync::atomic::Ordering::Relaxed);
+        // function mode by default (VNVM_JIT_FN=0: regions)
+        jit::FN.store(std::env::var("VNVM_JIT_FN").map_or(true, |v| v != "0"), std::sync::atomic::Ordering::Relaxed);
 
     });
 }

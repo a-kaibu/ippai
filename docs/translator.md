@@ -79,7 +79,7 @@ SQLite のメモリ上 DB に 3 万行入れて検索・集計) を同じソー�
    flatbench と bench.exe で比べる。次に関数単位の呼び出し。各段で V8 の機械語の移動・退避の割合を
    測って次を決める。
 
-## 関数単位の翻訳 (`VNVM_JIT_FN=1`、2026-11-01、既定はまだ切)
+## 関数単位の翻訳 (`VNVM_JIT_FN`、2026-11-01、2026-11-02 から既定で有効。`VNVM_JIT_FN=0` で従来のリージョン)
 
 - 翻訳の単位をゲストの関数 (呼び出し先、または入口がミスしたアドレス) にした。1 単位が wasm の
   関数 `(cpu, block) -> status` 1 つで、状態は入口と出口で Cpu にある。表には単位ごとに
@@ -169,3 +169,9 @@ wine.wasm (and sake) now start with the whole 4 GB (-sINITIAL_MEMORY=4294901760
 initial memory read-write up front; Android's overcommit heuristics could refuse 4 GB on a device
 with little RAM (2.06 GB worked before). If it does, go back to a growable memory with the minimum
 at 33792 pages (5.1 s above).
+
+## FN モードを既定に (2026-11-02)
+
+flatbench (Chromium、中央値): FN 3.4 s / リージョン 9.0 s。範囲チェックあり (Android 相当) で 4.6 / 10.8 s。
+Reunion (キャッシュなし): FN タイトル 15〜17 s・本編 0.35〜0.37 コア、リージョン 14〜16 s・0.32〜0.36 コア (ノイズの範囲で
+ほぼ同じ)。直接呼び出しだけの合成ベンチ (cb.exe) はリージョンの方が速い (リージョンは呼び先を合併する)。
