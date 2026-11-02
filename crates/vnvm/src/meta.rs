@@ -162,7 +162,7 @@ fn egs_search(keyword: &str) -> Result<Vec<Candidate>> {
     let rows = egs_query(&format!(
         "SELECT g.id, g.gamename, g.sellday, g.count2, b.brandname
 FROM gamelist g LEFT JOIN brandlist b ON g.brandname = b.id
-WHERE g.gamename LIKE '%' || {} || '%' ESCAPE '!'
+WHERE g.gamename ILIKE '%' || {} || '%' ESCAPE '!'
 ORDER BY g.count2 DESC NULLS LAST LIMIT 30",
         literal(&esc)
     ))?;
