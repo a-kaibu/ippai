@@ -86,7 +86,9 @@ SQLite のメモリ上 DB に 3 万行入れて検索・集計) を同じソー�
   リージョンの呼び出し規約のアダプタ (f0) と本体 (f1) を置き、ハッシュ表の項目に `FN_TAG` を付ける。
 - CALL はハッシュ表を引いて `call_indirect` (呼び出し先も関数)、RET は `RET_FN` を返す。呼んだ側は
   EIP が戻りアドレスなら続け、違えば (longjmp、SEH、深すぎ、途中で抜けた) 状態をそのまま上へ返す。
-  CALL と RET の前後ではステータスフラグは死んでいるとみなす。
+  RET はステータスフラグを Cpu に書く。CALL は戻り先がフラグを読むときだけ先に書く (手書きの
+  コードは結果をフラグで返す: Delphi RTL の GetDynaMethod は ZF。これを死んでいるとみなして
+  Reunion が初回起動で壊れた。intops.c の flgret)。
 - 小さい直接の呼び出し先 (64 命令まで、call なし) は、走ったかに関係なく展開する。
 - ブロックの並べ方は支配木から作る (Ramsey "Beyond Relooper"、`jit/structure.rs`): ジャンプは
   すべて開いているラベルへの `br`。`jmp [index*4 + 表]` は表ごとの分岐ノード 1 つ (`br_table`、
@@ -100,3 +102,16 @@ flatbench (node、1 回あたり、3 回の 1/2/3 回目): リージョン 9.1 /
 関数単位 8.3 / 5.5 / 5.2 秒。1 回目は V8 のコンパイル待ちと作り直しが重い。bench.exe は
 calls が同じ (0.12 秒)、sort (qsort の比較関数を関数ポインタで呼ぶ) が 0.84 → 2.2 秒、
 crc32 が遅い。チェックサムは全部同じ。
+
+その後 (Chromium): レジスタのマスク、呼び出しの深さを引数に、`mov r,[i*4+T]; jmp r` の
+ハッシュ分岐、BSF/TZCNT/BT、x87 キャッシュを関数全体に、リングの間引き。呼び出し 1 回
+15.5 → 7.1 ns (node)、flatbench は 1 回目 6.2–7 秒、2 回目以降 3.2–3.8 秒 (リージョンは
+6.8–7.5 秒、ネイティブ 0.6–0.73 秒)。ただし実ゲームでは負ける: game.html (Reunion、
+40 秒、Chromium) で関数単位はタイトル 13.3–13.5 秒 / ストーリー 0.35 コア、リージョンは
+12.3–12.7 秒 / 0.29–0.31 コア。既定にするのはこれを逆転させてから。
+
+- 自己書き換え: JIT したページを `CODE_PAGES` に記録し、mprotect (PROT_WRITE)、munmap、
+  MAP_FIXED の mmap、NtFlushInstructionCache (`vnhost_jit_code_changed`) がそこに触れたら
+  世代を上げ、各スレッドの表を捨てる。`tests/smc.c`。
+- 誤翻訳の二分探索: `VNVM_JIT_ONLY=lo-hi` (範囲外はインタプリタ)、`VNVM_JIT_FN_ONLY=lo-hi`
+  (範囲外はリージョン)。初回だけ壊れる不具合は、保存済みの `_shared-<版>` を消してから試す。
