@@ -78,9 +78,8 @@ jobs:
       matrix:
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     steps:
+      # (the harness and titles.tsv as they are now; the build is the CI run's)
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.plan.outputs.sha }}
       - uses: actions/download-artifact@v4
         with:
           name: vnvm
@@ -125,8 +124,6 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.plan.outputs.sha }}
       - uses: actions/download-artifact@v4
         with:
           pattern: corpus-*
