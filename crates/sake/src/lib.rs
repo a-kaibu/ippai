@@ -34,6 +34,7 @@ pub mod pe;
 pub mod seh;
 pub mod cxx;
 pub mod sound;
+pub mod xaudio2;
 pub mod mmio;
 pub mod gl;
 pub mod gl_sigs;

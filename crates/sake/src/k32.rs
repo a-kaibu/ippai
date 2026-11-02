@@ -257,6 +257,27 @@ pub fn exit_thread(code: u32) -> ! {
 fn ExitThread(c: &mut Ctx) -> u32 {
     exit_thread(c.a(0))
 }
+/// _beginthread(start, stack, arg): a CRT thread (start is cdecl, returning ends it)
+fn _beginthread(c: &mut Ctx) -> u32 {
+    let (start, stack, arg) = (c.a(0), c.a(1), c.a(2));
+    let h = obj::add(Obj::Thread { tid: 0, done: false, code: 0x103 });
+    let tid = crate::spawn_gated(start, arg, if stack == 0 { 0x10_0000 } else { stack.max(0x10000) }, h, false);
+    obj::with(|t| {
+        if let Some((Obj::Thread { tid: x, .. }, _)) = t.objs.get_mut(&h) {
+            *x = tid;
+        }
+    });
+    h
+}
+fn _endthreadex(c: &mut Ctx) -> u32 {
+    exit_thread(c.a(0))
+}
+fn SetThreadExecutionState(_: &mut Ctx) -> u32 {
+    0x8000_0000 // ES_CONTINUOUS
+}
+fn _endthread(_: &mut Ctx) -> u32 {
+    exit_thread(0)
+}
 fn FreeLibraryAndExitThread(c: &mut Ctx) -> u32 {
     exit_thread(c.a(1))
 }
@@ -3080,7 +3101,7 @@ fn SetFileAttributesA(_: &mut Ctx) -> u32 {
 fn SetFileAttributesW(_: &mut Ctx) -> u32 {
     1
 }
-fn mkdir(name: &str) -> u32 {
+pub fn mkdir(name: &str) -> u32 {
     let h = files::resolve_new(name);
     match std::fs::create_dir(&h) {
         Ok(()) => 1,
@@ -3625,6 +3646,11 @@ fn wine_dbg_output(c: &mut Ctx) -> u32 {
 }
 
 pub fn init() {
+    implement("msvcrt", "_beginthreadex", CreateThread);
+    implement("msvcrt", "_beginthread", _beginthread);
+    implement("msvcrt", "_endthreadex", _endthreadex);
+    implement("msvcrt", "_endthread", _endthread);
+    implement("kernel32", "SetThreadExecutionState", SetThreadExecutionState);
     implement("psapi", "GetProcessMemoryInfo", K32GetProcessMemoryInfo);
     implement("ntdll", "__wine_dbg_header", wine_dbg_header);
     implement("kernel32", "ResolveDelayLoadedAPI", ResolveDelayLoadedAPI);

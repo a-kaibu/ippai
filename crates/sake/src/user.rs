@@ -3463,6 +3463,18 @@ fn CheckMenuItem(c: &mut Ctx) -> u32 {
     let (h, item, f) = (c.a(0), c.a(1), c.a(2));
     modify_flags(h, item, f, f & 8, 8 & !f)
 }
+/// CheckMenuRadioItem(menu, first, last, check, flags): checks `check`, unchecks the rest
+fn CheckMenuRadioItem(c: &mut Ctx) -> u32 {
+    let (h, first, last, check, f) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4) & 0x400);
+    for i in first..=last.min(first + 256) {
+        if i == check {
+            modify_flags(h, i, f, 8, 0);
+        } else {
+            modify_flags(h, i, f, 0, 8);
+        }
+    }
+    1
+}
 fn EnableMenuItem(c: &mut Ctx) -> u32 {
     let (h, item, f) = (c.a(0), c.a(1), c.a(2));
     modify_flags(h, item, f, f & 3, 3 & !f)
@@ -4384,7 +4396,7 @@ pub fn init() {
         EnumClipboardFormats, GetPriorityClipboardFormat, RegisterClipboardFormatA, RegisterClipboardFormatW,
         CreateMenu, CreatePopupMenu, DestroyMenu, InsertMenuA, AppendMenuA, AppendMenuW, InsertMenuItemA,
         InsertMenuItemW, SetMenuItemInfoA, GetMenuItemInfoA, GetMenuItemCount, GetMenuItemID, GetSubMenu,
-        GetMenuState, GetMenuStringA, CheckMenuItem, EnableMenuItem, DeleteMenu, RemoveMenu, ModifyMenuA, GetMenu,
+        GetMenuState, GetMenuStringA, CheckMenuItem, CheckMenuRadioItem, EnableMenuItem, DeleteMenu, RemoveMenu, ModifyMenuA, GetMenu,
         SetMenu, GetSystemMenu, DrawMenuBar, TrackPopupMenu, TrackPopupMenuEx, GetMenuItemRect,
         SetMenuItemBitmaps, GetMenuCheckMarkDimensions,
         LoadStringA, LoadStringW, LoadCursorA, LoadCursorW, LoadCursorFromFileA, LoadCursorFromFileW, LoadIconA, LoadIconW, LoadImageA,

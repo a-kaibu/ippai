@@ -12,25 +12,25 @@ use std::time::Duration;
 use crate::api::{host_fn, implement, Ctx};
 use crate::mem::{self, put32, r16, r32, w16, w32};
 
-const RATE: u32 = 44100;
+pub(crate) const RATE: u32 = 44100;
 /// output frames per mixing step (10 ms)
-const STEP: usize = 441;
+pub(crate) const STEP: usize = 441;
 /// frames kept queued in the output stream (the play cursor's lead over what is heard)
-const AHEAD: u32 = 3 * STEP as u32;
+pub(crate) const AHEAD: u32 = 3 * STEP as u32;
 
 const E_NOINTERFACE: u32 = 0x8000_4002;
 const DSERR_INVALIDPARAM: u32 = 0x8007_0057;
 
 #[derive(Clone, Copy)]
-struct Fmt {
-    rate: u32,
-    channels: u32,
-    bits: u32,
-    float: bool,
+pub(crate) struct Fmt {
+    pub rate: u32,
+    pub channels: u32,
+    pub bits: u32,
+    pub float: bool,
 }
 
 impl Fmt {
-    fn block(&self) -> u32 {
+    pub fn block(&self) -> u32 {
         self.channels * self.bits / 8
     }
     fn read(p: u32) -> Fmt {
@@ -97,7 +97,7 @@ fn gains(volume: i32, pan: i32) -> (f32, f32) {
 fn sample(b: &Buf, frame: usize) -> (f32, f32) {
     sample_at(b.data, &b.fmt, frame)
 }
-fn sample_at(data: u32, f: &Fmt, frame: usize) -> (f32, f32) {
+pub(crate) fn sample_at(data: u32, f: &Fmt, frame: usize) -> (f32, f32) {
     let at = data + frame as u32 * f.block();
     let one = |a: u32| -> f32 {
         match (f.bits, f.float) {
@@ -110,7 +110,7 @@ fn sample_at(data: u32, f: &Fmt, frame: usize) -> (f32, f32) {
         }
     };
     let l = one(at);
-    let r = if f.channels == 2 { one(at + f.bits / 8) } else { l };
+    let r = if f.channels >= 2 { one(at + f.bits / 8) } else { l };
     (l, r)
 }
 
@@ -284,6 +284,14 @@ fn wave_thread(c: &mut Ctx) -> u32 {
     crate::k32::exit_thread(0)
 }
 
+/// no mixer devices (MMSYSERR_BADDEVICEID)
+fn mixerOpen(c: &mut Ctx) -> u32 {
+    put32(c.a(0), 0);
+    2
+}
+fn mixerGetDevCaps(_: &mut Ctx) -> u32 {
+    2
+}
 fn waveOutGetNumDevs(_: &mut Ctx) -> u32 {
     1
 }
@@ -476,7 +484,7 @@ fn start_mixer() {
 // ---------------------------------------------------------------------------------------------
 // COM plumbing
 
-fn vtable(name: &str, methods: &[(Handler, u32)]) -> u32 {
+pub(crate) fn vtable(name: &str, methods: &[(Handler, u32)]) -> u32 {
     let v = mem::heap_alloc(4 * methods.len() as u32, true);
     for (i, (f, bytes)) in methods.iter().enumerate() {
         w32(v + 4 * i as u32, host_fn(&format!("{name}::{i}"), *f, *bytes));
@@ -1037,6 +1045,9 @@ pub fn init() {
     ] {
         implement("winmm", n, f);
     }
+    implement("winmm", "mixerOpen", mixerOpen);
+    implement("winmm", "mixerGetDevCapsA", mixerGetDevCaps);
+    implement("winmm", "mixerGetDevCapsW", mixerGetDevCaps);
     implement("dsound", "DirectSoundCreate", DirectSoundCreate);
     implement("dsound", "DirectSoundCreate8", DirectSoundCreate8);
     implement("dsound", "DirectSoundEnumerateA", DirectSoundEnumerateA);

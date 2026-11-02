@@ -322,6 +322,52 @@ fn free(c: &mut Ctx) -> u32 {
     }
     0
 }
+/// _aligned_malloc(size, align): the block's start and size sit in the 8 bytes before it
+fn aligned_alloc(n: u32, align: u32) -> u32 {
+    let align = align.max(8).next_power_of_two();
+    let raw = mem::heap_alloc(n.saturating_add(align + 8), false);
+    if raw == 0 {
+        return 0;
+    }
+    let p = (raw + 8 + align - 1) & !(align - 1);
+    w32(p - 8, raw);
+    w32(p - 4, n);
+    p
+}
+fn _aligned_malloc(c: &mut Ctx) -> u32 {
+    aligned_alloc(c.a(0), c.a(1))
+}
+fn _aligned_free(c: &mut Ctx) -> u32 {
+    if c.a(0) != 0 {
+        mem::heap_free(r32(c.a(0) - 8));
+    }
+    0
+}
+fn _aligned_realloc(c: &mut Ctx) -> u32 {
+    let (p, n, align) = (c.a(0), c.a(1), c.a(2));
+    if p == 0 {
+        return aligned_alloc(n, align);
+    }
+    if n == 0 {
+        mem::heap_free(r32(p - 8));
+        return 0;
+    }
+    let q = aligned_alloc(n, align);
+    if q != 0 {
+        mem::copy(q, p, n.min(r32(p - 4)));
+        mem::heap_free(r32(p - 8));
+    }
+    q
+}
+fn _aligned_msize(c: &mut Ctx) -> u32 {
+    r32(c.a(0) - 4)
+}
+fn _mkdir(c: &mut Ctx) -> u32 {
+    if crate::k32::mkdir(&crate::k32::arg_str(c.a(0), false)) != 0 { 0 } else { set_errno(17); u32::MAX }
+}
+fn _wmkdir(c: &mut Ctx) -> u32 {
+    if crate::k32::mkdir(&crate::k32::arg_str(c.a(0), true)) != 0 { 0 } else { set_errno(17); u32::MAX }
+}
 fn _msize(c: &mut Ctx) -> u32 {
     mem::heap_size(c.a(0))
 }
@@ -1093,6 +1139,25 @@ macro_rules! ci1 {
 ci1!(_CIsqrt = f64::sqrt, _CIsin = f64::sin, _CIcos = f64::cos, _CItan = f64::tan, _CIasin = f64::asin,
     _CIacos = f64::acos, _CIatan = f64::atan, _CIexp = f64::exp, _CIlog = f64::ln, _CIlog10 = f64::log10,
     _CIsinh = f64::sinh, _CIcosh = f64::cosh, _CItanh = f64::tanh);
+/// _libm_sse2_*_precise: the argument and result are in xmm0 (pow: xmm0, xmm1)
+fn xmm_f64(c: &mut Ctx, i: usize) -> f64 {
+    f64::from_bits(c.cpu.xmm[i] as u64)
+}
+fn xmm_ret(c: &mut Ctx, v: f64) -> u32 {
+    c.cpu.xmm[0] = (c.cpu.xmm[0] & !(u64::MAX as u128)) | v.to_bits() as u128;
+    0
+}
+macro_rules! sse1 {
+    ($($name:ident = $f:expr),* $(,)?) => { $( fn $name(c: &mut Ctx) -> u32 { let x = xmm_f64(c, 0); xmm_ret(c, $f(x)) } )* };
+}
+sse1!(_libm_sse2_sin_precise = f64::sin, _libm_sse2_cos_precise = f64::cos, _libm_sse2_tan_precise = f64::tan,
+    _libm_sse2_asin_precise = f64::asin, _libm_sse2_acos_precise = f64::acos, _libm_sse2_atan_precise = f64::atan,
+    _libm_sse2_exp_precise = f64::exp, _libm_sse2_log_precise = f64::ln, _libm_sse2_log10_precise = f64::log10,
+    _libm_sse2_sqrt_precise = f64::sqrt);
+fn _libm_sse2_pow_precise(c: &mut Ctx) -> u32 {
+    let (x, y) = (xmm_f64(c, 0), xmm_f64(c, 1));
+    xmm_ret(c, x.powf(y))
+}
 fn _CIpow(c: &mut Ctx) -> u32 {
     let y = st_pop(c);
     let x = st_pop(c);
@@ -1159,6 +1224,17 @@ fn new_stream(f: File) -> u32 {
     let fp = mem::heap_alloc(FILE_SIZE, true);
     FILES.lock().unwrap().get_or_insert_with(HashMap::default).insert(fp, Stream { f: Some(Arc::new(f)), eof: false, unget: None });
     fp
+}
+/// _get_stream_buffer_pointers(stream, &base, &ptr, &cnt): the FILE's buffer fields (UCRT
+/// order _ptr, _base, _cnt); they stay 0, so std::basic_filebuf always reads through the CRT
+fn _get_stream_buffer_pointers(c: &mut Ctx) -> u32 {
+    let fp = c.a(0);
+    for (out, off) in [(c.a(1), 4), (c.a(2), 0), (c.a(3), 8)] {
+        if out != 0 {
+            w32(out, fp + off);
+        }
+    }
+    0
 }
 fn fopen(c: &mut Ctx) -> u32 {
     let path = a2s(&cstr(c.a(0)));
@@ -1262,6 +1338,121 @@ fn ftell(c: &mut Ctx) -> u32 {
     })
     .unwrap_or(u32::MAX)
 }
+/// fgetpos(stream, fpos_t*) / fsetpos: the position as a 64-bit offset
+fn fgetpos(c: &mut Ctx) -> u32 {
+    let p = ftell(c);
+    if p == u32::MAX {
+        return u32::MAX;
+    }
+    w32(c.a(1), p);
+    w32(c.a(1) + 4, 0);
+    0
+}
+fn fsetpos(c: &mut Ctx) -> u32 {
+    let (fp, off) = (c.a(0), r32(c.a(1)) as u64);
+    with_file(fp, |s| {
+        let Some(f) = &s.f else { return u32::MAX };
+        s.unget = None;
+        s.eof = false;
+        if f.seek(SeekFrom::Start(off)).is_some() { 0 } else { u32::MAX }
+    })
+    .unwrap_or(u32::MAX)
+}
+/// strerror(errno): one fixed message
+fn strerror(_: &mut Ctx) -> u32 {
+    static S: OnceLock<u32> = OnceLock::new();
+    *S.get_or_init(|| {
+        let p = mem::heap_alloc(16, true);
+        mem::write(p, b"Unknown error\0");
+        p
+    })
+}
+fn ___lc_collate_cp_func(_: &mut Ctx) -> u32 {
+    932
+}
+// ---------------------------------------------------------------------------------------------
+// _findfirst / _findnext: a FindFirstFile handle; the data's layout by time and size widths
+
+/// (time 64-bit, size 64-bit, wide)
+fn find_write(p: u32, (t64, s64, wide): (bool, bool, bool), name: &str, m: &std::fs::Metadata) {
+    let t = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
+    let size = if m.is_dir() { 0 } else { m.len() };
+    w32(p, crate::files::attrs(m) & 0x37);
+    let mut o = if t64 { 8 } else { 4 };
+    for _ in 0..3 {
+        w32(p + o, t as u32);
+        if t64 {
+            w32(p + o + 4, (t >> 32) as u32);
+        }
+        o += if t64 { 8 } else { 4 };
+    }
+    if s64 {
+        o = (o + 7) & !7;
+        w32(p + o, size as u32);
+        w32(p + o + 4, (size >> 32) as u32);
+        o += 8;
+    } else {
+        w32(p + o, size as u32);
+        o += 4;
+    }
+    if wide {
+        let w: Vec<u16> = name.encode_utf16().collect();
+        mem::put_wstr(p + o, 260, &w);
+    } else {
+        mem::put_cstr(p + o, 260, &crate::text::s2a(name));
+    }
+}
+fn find_first(c: &mut Ctx, kind: (bool, bool, bool)) -> u32 {
+    let pat = if kind.2 { String::from_utf16_lossy(&wstr(c.a(0))) } else { a2s(&cstr(c.a(0))) };
+    match crate::files::find(&pat) {
+        Some(mut f) if !f.entries.is_empty() => {
+            let (n, m) = &f.entries[0];
+            find_write(c.a(1), kind, n, m);
+            f.at = 1;
+            crate::obj::add(crate::obj::Obj::Find(Arc::new(Mutex::new(f))))
+        }
+        _ => {
+            set_errno(2);
+            u32::MAX
+        }
+    }
+}
+fn find_next(c: &mut Ctx, kind: (bool, bool, bool)) -> u32 {
+    let f = crate::obj::with(|t| match t.objs.get(&c.a(0)) {
+        Some((crate::obj::Obj::Find(f), _)) => Some(f.clone()),
+        _ => None,
+    });
+    let Some(f) = f else { return u32::MAX };
+    let mut f = f.lock().unwrap();
+    if f.at >= f.entries.len() {
+        set_errno(2);
+        return u32::MAX;
+    }
+    let (n, m) = &f.entries[f.at];
+    find_write(c.a(1), kind, n, m);
+    f.at += 1;
+    0
+}
+fn _findclose(c: &mut Ctx) -> u32 {
+    if crate::obj::close(c.a(0)) { 0 } else { u32::MAX }
+}
+macro_rules! finds {
+    ($($first:ident, $next:ident = $k:expr;)*) => { $(
+        fn $first(c: &mut Ctx) -> u32 { find_first(c, $k) }
+        fn $next(c: &mut Ctx) -> u32 { find_next(c, $k) }
+    )* };
+}
+finds! {
+    _findfirst32, _findnext32 = (false, false, false);
+    _findfirst32i64, _findnext32i64 = (false, true, false);
+    _findfirst64i32, _findnext64i32 = (true, false, false);
+    _findfirst64, _findnext64 = (true, true, false);
+    _wfindfirst32, _wfindnext32 = (false, false, true);
+    _wfindfirst32i64, _wfindnext32i64 = (false, true, true);
+    _wfindfirst64i32, _wfindnext64i32 = (true, false, true);
+    _wfindfirst64, _wfindnext64 = (true, true, true);
+}
+
 fn rewind(c: &mut Ctx) -> u32 {
     with_file(c.a(0), |s| {
         s.unget = None;
@@ -1699,6 +1890,26 @@ pub fn init() {
     reg!(strncpy_s, ___lc_codepage_func, ___lc_locale_name_func, _seh_filter_exe);
     implement("ucrtbase", "__stdio_common_vsprintf_s", __stdio_common_vsprintf_s);
     implement("ucrtbase", "__stdio_common_vswprintf_s", __stdio_common_vswprintf_s);
+    reg!(_libm_sse2_sin_precise, _libm_sse2_cos_precise, _libm_sse2_tan_precise, _libm_sse2_asin_precise,
+        _libm_sse2_acos_precise, _libm_sse2_atan_precise, _libm_sse2_exp_precise, _libm_sse2_log_precise,
+        _libm_sse2_log10_precise, _libm_sse2_sqrt_precise, _libm_sse2_pow_precise);
+    reg!(_findclose, _findfirst32, _findnext32, _findfirst32i64, _findnext32i64, _findfirst64i32, _findnext64i32,
+        _findfirst64, _findnext64, _wfindfirst32, _wfindnext32, _wfindfirst32i64, _wfindnext32i64,
+        _wfindfirst64i32, _wfindnext64i32, _wfindfirst64, _wfindnext64);
+    // (msvcrt's old names: 32-bit time)
+    implement("msvcrt", "_findfirst", _findfirst32);
+    implement("msvcrt", "_findnext", _findnext32);
+    implement("msvcrt", "_findfirsti64", _findfirst32i64);
+    implement("msvcrt", "_findnexti64", _findnext32i64);
+    implement("msvcrt", "_wfindfirst", _wfindfirst32);
+    implement("msvcrt", "_wfindnext", _wfindnext32);
+    implement("msvcrt", "_wfindfirsti64", _wfindfirst32i64);
+    implement("msvcrt", "_wfindnexti64", _wfindnext32i64);
+    reg!(_get_stream_buffer_pointers);
+    reg!(fgetpos, fsetpos, strerror, ___lc_collate_cp_func);
+    implement("msvcrt", "_fsopen", fopen);
+    implement("msvcrt", "_wfsopen", _wfopen);
+    reg!(_aligned_malloc, _aligned_free, _aligned_realloc, _aligned_msize, _mkdir, _wmkdir);
     reg!(fread_s, _time64, _splitpath, _wsplitpath, _splitpath_s, _wsplitpath_s);
     reg!(_get_narrow_winmain_command_line, _get_wide_winmain_command_line);
     implement("msvcrt", "_time32", time);

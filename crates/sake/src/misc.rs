@@ -1065,6 +1065,10 @@ fn CoCreateInstance(c: &mut Ctx) -> u32 {
         put32(c.a(4), obj);
         return 0;
     }
+    if let Some(obj) = crate::xaudio2::create_instance(clsid) {
+        put32(c.a(4), obj);
+        return 0;
+    }
     if let Some(obj) = crate::sound::create_instance(c, clsid, iid) {
         put32(c.a(4), obj);
         return 0;
