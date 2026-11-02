@@ -119,6 +119,7 @@ pub fn create(app: bool, root: bool) -> Option<i32> {
             let pid = p.next;
             p.next += 1;
             trace(format_args!("process {pid}: {:#x}-{:#x}, taken from {me}", area.0, area.1));
+            crate::crashlog::event(format_args!("process {pid} created: {:#x}-{:#x}, taken from {me}", area.0, area.1));
             let mut c = new_proc(area, root, parent_env.clone(), parent_cwd.clone());
             c.swap_from = Some(me);
             p.list.insert(pid, c);
