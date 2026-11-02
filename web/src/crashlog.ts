@@ -5,7 +5,8 @@
 // exception with registers, code, stack, frames resolved to module!export+off, the thread's last
 // syscalls / API calls and JIT state; processes; panics), every guest thread's state at the time
 // of the report, all of Wine's stdout/stderr lately, and the page's own log (JS errors, Emscripten
-// aborts, worker errors, memory, visibility).
+// aborts, worker errors, memory, visibility) with a performance line every 10 s (see Perf) and
+// a summary of them.
 //
 // When it is written:
 // - every 10 s, to OPFS (vnvm-logs/session-<id>.txt): if the tab dies (Android kills it when
@@ -26,8 +27,156 @@ const KEEP = 40;
 
 interface Wasm {
   wasmMemory: WebAssembly.Memory;
+  HEAPF64?: Float64Array;
+  _malloc?(n: number): number;
   _vnhost_crashlog_info?(): number;
   _vnhost_crashlog_snapshot?(): number;
+  _vnhost_load_busy?(): number;
+  _vnhost_load_slot?(i: number, out: number): number;
+}
+
+/** One 10 s window of the run. */
+interface PerfSample {
+  /** seconds since the start */
+  t: number;
+  /** frames the game drew per second (wine-frame) */
+  fps: number;
+  /** the page's own frames per second (requestAnimationFrame) and its longest gap */
+  rafFps: number;
+  longestFrame: number;
+  /** page frames over 50 ms */
+  janks: number;
+  /** main thread tasks over 50 ms (PerformanceObserver longtask) and their total */
+  longTasks: number;
+  longTaskMs: number;
+  /** guest CPU, in cores (vnhost_load_busy), and the busiest threads */
+  cpu: number;
+  threads: number[];
+  /** wasm and JS heap, MB */
+  wasmMb: number;
+  heapMb: number;
+}
+
+/** Performance of the running game, sampled every 10 s: drawn fps, the page's frame pacing,
+ *  main-thread long tasks, the guest's CPU (whole and per thread) and memory. */
+class Perf {
+  readonly samples: PerfSample[] = [];
+  private t0 = performance.now();
+  private last = performance.now();
+  private frames = 0;
+  private raf = 0;
+  private rafLast = 0;
+  private longest = 0;
+  private janks = 0;
+  private longTasks = 0;
+  private longTaskMs = 0;
+  private busy = -1;
+  private slots: number[] = [];
+  private slotBuf = 0;
+
+  constructor() {
+    addEventListener("wine-frame", () => this.frames++);
+    const loop = (t: number) => {
+      if (this.rafLast) {
+        const d = t - this.rafLast;
+        this.longest = Math.max(this.longest, d);
+        if (d > 50) this.janks++;
+      }
+      this.rafLast = t;
+      this.raf++;
+      requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
+    try {
+      new PerformanceObserver((l) => {
+        for (const e of l.getEntries()) {
+          this.longTasks++;
+          this.longTaskMs += e.duration;
+        }
+      }).observe({ type: "longtask", buffered: false });
+    } catch {
+      // (no longtask entries in this browser)
+    }
+    // a page in the background has no frames: don't count its gap as a stall
+    document.addEventListener("visibilitychange", () => (this.rafLast = 0));
+  }
+
+  /** The window since the last call. */
+  sample(wasm: Wasm | null): PerfSample {
+    const now = performance.now();
+    const secs = (now - this.last) / 1000;
+    let cpu = 0;
+    let threads: number[] = [];
+    try {
+      const b = wasm?._vnhost_load_busy?.();
+      if (b !== undefined) {
+        if (this.busy >= 0) cpu = (b - this.busy) / 1000 / secs;
+        this.busy = b;
+      }
+      if (wasm?._vnhost_load_slot && wasm._malloc && wasm.HEAPF64) {
+        this.slotBuf ||= wasm._malloc(32) >>> 0;
+        const cur: number[] = [];
+        for (let i = 0; wasm._vnhost_load_slot(i, this.slotBuf); i++)
+          cur.push(wasm.HEAPF64[this.slotBuf >>> 3]!);
+        threads = cur
+          .map((v, i) => (v - (this.slots[i] ?? 0)) / 1000 / secs)
+          .sort((a, b) => b - a)
+          .slice(0, 4);
+        this.slots = cur;
+      }
+    } catch {
+      // (the runtime is gone: after an abort or exit)
+    }
+    const pm = (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory;
+    const s: PerfSample = {
+      t: (now - this.t0) / 1000,
+      fps: this.frames / secs,
+      rafFps: this.raf / secs,
+      longestFrame: this.longest,
+      janks: this.janks,
+      longTasks: this.longTasks,
+      longTaskMs: this.longTaskMs,
+      cpu,
+      threads,
+      wasmMb: wasm ? wasm.wasmMemory.buffer.byteLength / 2 ** 20 : 0,
+      heapMb: pm ? pm.usedJSHeapSize / 2 ** 20 : 0,
+    };
+    this.last = now;
+    this.frames = this.raf = this.janks = this.longTasks = this.longTaskMs = this.longest = 0;
+    this.samples.push(s);
+    if (this.samples.length > 2000) this.samples.splice(0, 500);
+    return s;
+  }
+
+  static line(s: PerfSample): string {
+    const f = (n: number, d = 1) => n.toFixed(d);
+    return (
+      `perf: game ${f(s.fps)} fps, page ${f(s.rafFps)} fps (longest frame ${f(s.longestFrame, 0)} ms, ` +
+      `${s.janks} over 50 ms), long tasks ${s.longTasks} (${f(s.longTaskMs, 0)} ms), ` +
+      `guest CPU ${f(s.cpu, 2)} cores${s.threads.length ? ` [${s.threads.map((v) => f(v, 2)).join(" ")}]` : ""}, ` +
+      `wasm ${f(s.wasmMb, 0)} MB${s.heapMb ? `, js heap ${f(s.heapMb, 0)} MB` : ""}`
+    );
+  }
+
+  /** Over the whole run: averages and the worst windows. */
+  summary(): string {
+    const all = this.samples.filter((s) => s.t > 15); // (past the start)
+    if (!all.length) return "(less than 15 s of samples)";
+    const avg = (k: (s: PerfSample) => number) => all.reduce((a, s) => a + k(s), 0) / all.length;
+    const fpsSorted = all.map((s) => s.fps).sort((a, b) => a - b);
+    const worst = [...all].sort((a, b) => a.fps - b.fps).slice(0, 5);
+    return [
+      `windows: ${all.length} x 10 s`,
+      `game fps: avg ${avg((s) => s.fps).toFixed(1)}, min ${fpsSorted[0]!.toFixed(1)}, ` +
+        `p10 ${fpsSorted[Math.floor(fpsSorted.length / 10)]!.toFixed(1)}`,
+      `page frames over 50 ms: ${all.reduce((a, s) => a + s.janks, 0)}, longest ${Math.max(...all.map((s) => s.longestFrame)).toFixed(0)} ms`,
+      `main thread long tasks: ${all.reduce((a, s) => a + s.longTasks, 0)} (${all.reduce((a, s) => a + s.longTaskMs, 0).toFixed(0)} ms)`,
+      `guest CPU: avg ${avg((s) => s.cpu).toFixed(2)} cores, max ${Math.max(...all.map((s) => s.cpu)).toFixed(2)}`,
+      `wasm memory: max ${Math.max(...all.map((s) => s.wasmMb)).toFixed(0)} MB`,
+      "lowest-fps windows:",
+      ...worst.map((s) => `  at ${s.t.toFixed(0)} s: ${Perf.line(s).slice(6)}`),
+    ].join("\n");
+  }
 }
 
 function two(n: number, w = 2): string {
@@ -141,6 +290,7 @@ export class FlightRecorder {
   private ended = false;
   private aborted = false;
   private t0 = Date.now();
+  private perf = new Perf();
 
   constructor(game: string, meta: Record<string, string>) {
     const rand = Math.random().toString(36).slice(2, 6);
@@ -196,6 +346,9 @@ export class FlightRecorder {
     setInterval(() => this.tick(), 500);
     setInterval(() => void this.persist(), 10_000);
     setInterval(() => this.memory(), 30_000);
+    setInterval(() => {
+      if (this.wasm && !this.ended) this.note(Perf.line(this.perf.sample(this.wasm)));
+    }, 10_000);
     this.note("page started");
   }
 
@@ -336,6 +489,7 @@ export class FlightRecorder {
       );
       parts.push("", "--- Wine stdout/stderr ---", this.ring(i[5]!, i[6]!, i[7]!));
     }
+    parts.push("", "--- performance (every 10 s in the page log as perf:) ---", this.perf.summary());
     parts.push("", "--- page ---", ...this.page, "");
     return parts.join("\n");
   }
