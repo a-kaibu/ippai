@@ -92,12 +92,14 @@ while True:
         wait_port(PORT)
         winexe = 'Z:\\vnvm\\game\\' + exe.replace('/', '\\')
         args = titles[tid].get('args', '')
-        if os.environ.get('AUTOCLICK', '1') == '1' and '_vnvm_autoclick.exe\t' in open(f'{STORES}/{tid}/trees/g.tsv', errors='replace').read():
+        engine = os.environ.get('ENGINE', '')  # ENGINE=sake: sake instead of Wine (no launcher helper: sake starts no 2nd process)
+        if not engine and os.environ.get('AUTOCLICK', '1') == '1' and '_vnvm_autoclick.exe\t' in open(f'{STORES}/{tid}/trees/g.tsv', errors='replace').read():
             # through the launcher helper (hangover/tests/autoclick.c, packed by corpus-prep.sh)
             args = ','.join([winexe] + [a for a in args.split(',') if a])
             winexe = 'Z:\\vnvm\\game\\_vnvm_autoclick.exe'
         qs = 'autostart&headless&load&nosave&mount=/vnvm/game=g&run=' + urllib.parse.quote(winexe)
         if args: qs += '&args=' + urllib.parse.quote(args)
+        if engine: qs += '&engine=' + engine
         if winexe.endswith('_vnvm_autoclick.exe'):
             qs += '&env=VNVM_ROOT_APP%3D0&env=VNVM_HELPER_EXE%3D_vnvm_autoclick.exe'  # small slots for the helper: the game gets the low app area
         st, at, pre = steps.get(tid, ('key:Return wait:3', '', ''))
