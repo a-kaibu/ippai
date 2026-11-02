@@ -220,6 +220,10 @@ pub fn exit_thread(code: u32) -> ! {
         // the main thread: the process
         unsafe { libc::exit(code as i32) }
     }
+    // the guest stack and TEB go back to the address space (a game starting a thread per
+    // file load ran out of it after ~600)
+    mem::release(t.stack);
+    mem::release(t.teb);
     unsafe { libc::pthread_exit(std::ptr::null_mut()) }
 }
 fn ExitThread(c: &mut Ctx) -> u32 {

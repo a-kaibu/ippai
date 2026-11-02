@@ -44,6 +44,8 @@ pub struct Thread {
     pub teb: u32,
     /// the thread's own handle object (signaled when it ends)
     pub obj: u32,
+    /// the guest stack's reservation (released when the thread ends)
+    pub stack: u32,
 }
 
 thread_local! {
@@ -64,8 +66,8 @@ static NEXT_TID: AtomicU32 = AtomicU32::new(0x20);
 pub const PID: u32 = 0x10;
 pub static PEB: AtomicU32 = AtomicU32::new(0);
 
-/// A TEB and a stack for a new thread; returns (teb, stack top).
-fn new_teb(tid: u32, stack: u32) -> (u32, u32) {
+/// A TEB and a stack for a new thread; returns (teb, stack top, stack base).
+fn new_teb(tid: u32, stack: u32) -> (u32, u32, u32) {
     let teb = mem::reserve(0, 0x3000, 4, 0x20000, true).expect("TEB");
     mem::commit(teb, 4);
     // (at least Windows' usual 1 MB, and from the top: a stack near the bottom of the address
@@ -83,19 +85,19 @@ fn new_teb(tid: u32, stack: u32) -> (u32, u32) {
     w32(teb + 0x24, tid);
     w32(teb + 0x2c, teb + 0x2000); // ThreadLocalStoragePointer (static TLS blocks)
     w32(teb + 0x30, PEB.load(Ordering::Relaxed));
-    (teb, top)
+    (teb, top, st)
 }
 
 /// Makes the calling host thread a guest thread.
 fn enter(stack: u32) -> &'static mut Thread {
     let tid = NEXT_TID.fetch_add(4, Ordering::Relaxed);
-    let (teb, top) = new_teb(tid, stack);
+    let (teb, top, st) = new_teb(tid, stack);
     let cpu = vnhost::cpu::vnhost_cpu_create(api::TRAP_LO, api::TRAP_HI);
     unsafe {
         (*cpu).fs_base = teb;
         (*cpu).regs[ESP] = top - 16;
     }
-    let t = Box::leak(Box::new(Thread { cpu, tid, teb, obj: 0 }));
+    let t = Box::leak(Box::new(Thread { cpu, tid, teb, obj: 0, stack: st }));
     CUR.with(|c| c.set(t));
     k32::tls_thread_init(teb);
     t
