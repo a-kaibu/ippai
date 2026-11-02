@@ -3480,7 +3480,7 @@ fn callee(blocks: &[(u32, Vec<Instruction>)], targets: &BTreeMap<u32, u32>, f: u
         let last = list.last().unwrap();
         ret |= last.mnemonic() == Mnemonic::Ret;
         if last.mnemonic() == Mnemonic::Jmp && last.op0_kind() != OpKind::NearBranch32 && tail.is_none() {
-            if let Some(h) = hint.filter(|&h| h != f) {
+            if let Some(h) = hint.filter(|&h| h != f && targets.contains_key(&h)) {
                 tail = Some(k as usize);
                 queue.insert(0, h); // (last: after the wrapper's own blocks)
             }
