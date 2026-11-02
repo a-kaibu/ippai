@@ -48,7 +48,7 @@ WebGPU D3D9 を使うので、A/B 比較ができる。`wine.html` / `game.html`
 | 裏教師 (Bishop) | 本編まで | node |
 | 痴覚過敏 (EntisGLS) | 本編まで | node |
 | ヴェルディア幻奏曲 (Escude) | 本編まで | node |
-| こんな安楽椅子探偵は嫌だ (YU-RIS) | タイトル → オープニング | node (GDI で描く) |
+| こんな安楽椅子探偵は嫌だ (YU-RIS) | 本編まで | node、Chromium (GDI で描く) |
 | 爆乳遊廓 (Softpal) | タイトル | Chromium (D3D9) |
 | アマカノ (CatSystem2) | タイトル | Chromium (D3D9) |
 | つぼい君のスイッチ (DxLib) | タイトル、ロード画面 | Chromium (D3D9)。D3D9 の SHADEMODE flat に対応して表示が正しくなった |

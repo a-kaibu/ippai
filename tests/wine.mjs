@@ -109,6 +109,13 @@ async function shot(n) {
   if (f) writeFileSync(`${out}/screen-${String(n).padStart(3, "0")}.png`, png(f.w, f.h, Buffer.from(f.data, "base64")));
 }
 
+// (hovered first: many games only take a click on a button they saw the cursor over)
+async function click(x, y) {
+  await page.mouse.move(x, y);
+  await page.waitForTimeout(300);
+  await page.mouse.click(x, y, { delay: 200 }); // (held: games that poll GetAsyncKeyState per frame)
+}
+
 const end = t0 + Number(seconds) * 1000;
 let n = 0;
 while (Date.now() < end) {
@@ -117,7 +124,7 @@ while (Date.now() < end) {
   if (n === 1) {
     for (const xy of process.env.CLICKS?.split(";") ?? []) {
       const [x, y] = xy.split(",").map(Number);
-      await page.mouse.click(x, y, { delay: 200 }); // (held: games that poll GetAsyncKeyState per frame)
+      await click(x, y);
     }
     for (const key of process.env.KEYS?.split(" ").filter(Boolean) ?? []) await page.keyboard.press(key);
   }
@@ -125,11 +132,11 @@ while (Date.now() < end) {
   if (seq && n <= seq.length) {
     if (seq[n - 1]) {
       const [x, y] = seq[n - 1].split(",").map(Number);
-      await page.mouse.click(x, y, { delay: 200 });
+      await click(x, y);
     }
   } else if (process.env.CLICK_EVERY) {
     const [x, y] = process.env.CLICK_EVERY.split(",").map(Number);
-    await page.mouse.click(x, y, { delay: 200 }); // (held: games that poll GetAsyncKeyState per frame)
+    await click(x, y);
   }
 }
 await browser.close();
