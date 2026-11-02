@@ -70,6 +70,31 @@ WebGPU D3D9 を使う。いまはページ (`wine.html` / `game.html`) が動か
   名前付きの sake.wasm は `SAKE_LDEXTRA=--profiling-funcs bash crates/sake/build.sh`。
   game.html の CPU (コア) は待ちの外の時間で、`secs` が違うと場面が違うので比べられない。
 
+## 64 ビット (PE32+、2026-11-02)
+
+- sake.wasm は 1 つのまま。exe が PE32+ なら起動時に `mem::set_x64()` で x64 モードにし、vnx86 を
+  long mode で動かす。ゲストのアドレスは 32 ビットのまま (メモリは 4GB で折り返す)。
+- ローダー (pe.rs): ImageBase が 4GB より上で再配置のない exe (0x140000000 など) は下位半分
+  (0x40000000) に置き、上位半分は vnx86 の `rip_hi` が持つ (`pe::ALIAS`)。プログラムに返す
+  その範囲のアドレスは `mem::widen` で上位を戻す。DIR64 再配置、8 バイト IAT、TLS、.pdata。
+- 呼び出し規約: 引数は rcx/rdx/r8/r9 とスタック (`Ctx::a64`)、浮動小数は xmm0-3、戻り値は
+  rax/xmm0。ゲストへの呼び出しは `call64` (16 バイト境界、ホーム領域)。COM の vtable は 8 バイト
+  (`api::vtable`)。TEB64/PEB64、MSG/WNDCLASS(EX)/CREATESTRUCT/OVERLAPPED などの x64 配置。
+- 例外 (seh64.rs): .pdata/UNWIND_INFO による仮想巻き戻し、例外ディスパッチ (VEH → フレームの
+  ハンドラ)、RtlUnwindEx (STATUS_UNWIND_CONSOLIDATE、STATUS_LONGJUMP)、RtlCaptureContext、
+  RtlLookupFunctionEntry、RtlVirtualUnwind、RtlAddFunctionTable、setjmp/longjmp。
+- C/C++ ランタイム (msvcrt、ucrtbase、msvcp*/vcruntime*) は crt.rs ではなく、プレフィックスの
+  `C:\windows\system64` に置いた Wine の x86_64 PE ビルドを読む。system32 にない DLL も
+  system64 から読み、アーキテクチャの違うファイル (ゲスト同梱の 32 ビット d3dcompiler_47 など)
+  は飛ばす。
+- 動画: Media Foundation は MFStartup が失敗する (動画を飛ばす)。DirectShow のグラフに足される
+  EVR (CLSID_EnhancedVideoRenderer) は何もしないフィルタ。
+- 確認: Artemis x64 の 3 本 (遥かなるニライカナイ、GALS FICTION、セレクトオブリージュ) が
+  Chromium でタイトル → 本編。SakanaGL x64 (でか乳巫女) は sakanagl.dll が /arch:AVX2 で、
+  vnx86 に VEX がないので止まる。
+- 未対応: XAudio2 (32 ビットのみ)、gl.rs、多くの構造体 (PAINTSTRUCT、BITMAP、SYSTEM_INFO、
+  MEMORY_BASIC_INFORMATION など)、16 ビット。
+
 ## 動作確認したゲーム (体験版)
 
 | ゲーム (エンジン) | 状態 | 確認した場所 |

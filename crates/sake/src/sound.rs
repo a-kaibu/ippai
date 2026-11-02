@@ -484,13 +484,7 @@ fn start_mixer() {
 // ---------------------------------------------------------------------------------------------
 // COM plumbing
 
-pub(crate) fn vtable(name: &str, methods: &[(Handler, u32)]) -> u32 {
-    let v = mem::heap_alloc(4 * methods.len() as u32, true);
-    for (i, (f, bytes)) in methods.iter().enumerate() {
-        w32(v + 4 * i as u32, host_fn(&format!("{name}::{i}"), *f, *bytes));
-    }
-    v
-}
+pub(crate) use crate::api::vtable;
 
 type Handler = crate::api::Handler;
 

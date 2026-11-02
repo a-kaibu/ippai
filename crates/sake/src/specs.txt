@@ -16878,3 +16878,12 @@ dxgi DXGID3D10CreateDevice stdcall 28 -
 dxgi DXGID3D10RegisterLayers stdcall 8 -
 dxgi DXGIGetDebugInterface1 stdcall 12 -
 dxgi DXGIDeclareAdapterRemovalSupport stdcall 0 -
+mfplat MFStartup stdcall 8 -
+mfplat MFShutdown stdcall 0 -
+mfplat MFCreateSourceResolver stdcall 4 -
+mf MFCreateMediaSession stdcall 8 -
+mf MFCreateTopology stdcall 4 -
+mf MFCreateTopologyNode stdcall 8 -
+mf MFGetService stdcall 16 -
+mf MFCreateVideoRendererActivate stdcall 8 -
+mf MFCreateAudioRendererActivate stdcall 4 -

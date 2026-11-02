@@ -383,7 +383,8 @@ pub fn bind(dll: &str, name: &str, trap: u32) -> u32 {
     if key == "msvcrt" && !matches!(name, "_errno" | "__doserrno" | "malloc" | "free") {
         return trap;
     }
-    if std::env::var_os("SAKE_NO_FAST").is_some() {
+    // (the stubs are 32-bit code)
+    if std::env::var_os("SAKE_NO_FAST").is_some() || crate::mem::x64() {
         return trap;
     }
     let mut g = STUBS.lock().unwrap();

@@ -28,10 +28,12 @@ pub mod mem;
 pub mod misc;
 pub mod obj;
 pub mod dshow;
+pub mod mf;
 pub mod usp;
 pub mod ole;
 pub mod pe;
 pub mod seh;
+pub mod seh64;
 pub mod cxx;
 pub mod sound;
 pub mod xaudio2;
@@ -71,6 +73,16 @@ static NEXT_TID: AtomicU32 = AtomicU32::new(0x20);
 pub const PID: u32 = 0x10;
 pub static PEB: AtomicU32 = AtomicU32::new(0);
 
+/// TEB offsets that differ between 32 and 64-bit programs.
+#[inline]
+pub fn teb_last_error() -> u32 {
+    if mem::x64() { 0x68 } else { 0x34 }
+}
+#[inline]
+pub fn teb_tls_pointer() -> u32 {
+    if mem::x64() { 0x58 } else { 0x2c }
+}
+
 /// A TEB and a stack for a new thread; returns (teb, stack top, stack base).
 fn new_teb(tid: u32, stack: u32) -> (u32, u32, u32) {
     let teb = mem::reserve(0, 0x3000, 4, 0x20000, true).expect("TEB");
@@ -82,6 +94,16 @@ fn new_teb(tid: u32, stack: u32) -> (u32, u32, u32) {
     let st = mem::reserve(0, size, 4, 0x20000, true).expect("stack");
     mem::commit(st, 4);
     let top = st + size;
+    if mem::x64() {
+        mem::w64(teb + 8, top as u64);
+        mem::w64(teb + 0x10, st as u64);
+        mem::w64(teb + 0x30, teb as u64);
+        mem::w64(teb + 0x40, PID as u64);
+        mem::w64(teb + 0x48, tid as u64);
+        mem::w64(teb + 0x58, teb as u64 + 0x2000); // ThreadLocalStoragePointer (static TLS blocks)
+        mem::w64(teb + 0x60, PEB.load(Ordering::Relaxed) as u64);
+        return (teb, top, st);
+    }
     w32(teb, 0xffff_ffff); // ExceptionList
     w32(teb + 4, top);
     w32(teb + 8, st);
@@ -101,6 +123,9 @@ fn enter(stack: u32) -> &'static mut Thread {
     unsafe {
         (*cpu).fs_base = teb;
         (*cpu).regs[ESP] = top - 16;
+        if mem::x64() {
+            vnhost::cpu::vnhost_cpu_set_long_mode(cpu, teb);
+        }
     }
     let t = Box::leak(Box::new(Thread { cpu, tid, teb, obj: 0, stack: st }));
     CUR.with(|c| c.set(t));
@@ -135,6 +160,10 @@ pub fn run(cpu: &mut Cpu, until: u32) {
                 } else if a == api::EXIT_TRAP {
                     let code = cpu.regs[EAX];
                     k32::exit_thread(code);
+                } else if a == api::SEH64_TRAP {
+                    seh64::handler_done(cpu);
+                } else if a == seh64::CONSOLIDATE_TRAP {
+                    seh64::consolidated(cpu);
                 } else {
                     api::dispatch(cpu, a);
                 }
@@ -146,23 +175,28 @@ pub fn run(cpu: &mut Cpu, until: u32) {
                 if info[0] >= api::TRAP_LO && cpu.eip == info[0] {
                     fatal(cpu, "fault at a trap address");
                 }
+                if mem::x64() {
+                    let e = cpu.eip;
+                    seh64::raise(cpu, 0xc000_0005, 0, e, &[info[1] as u64, info[0] as u64]);
+                    continue;
+                }
                 seh::raise_fault(cpu, info[0], info[1] != 0)
             }
             X_DIVIDE => {
                 let e = cpu.eip;
-                seh::raise(cpu, 0xc000_0094, 0, e, &[])
+                raise(cpu, 0xc000_0094, e, &[])
             }
             X_INVALID => {
                 let e = cpu.eip;
                 let mut b = [0u8; 8];
                 b.copy_from_slice(mem::slice(e, 8));
                 eprintln!("sake: illegal instruction at {e:#x}: {b:02x?}");
-                seh::raise(cpu, 0xc000_001d, 0, e, &[])
+                raise(cpu, 0xc000_001d, e, &[])
             }
             X_INT => {
                 let e = cpu.eip;
                 if info[0] == 3 {
-                    seh::raise(cpu, 0x8000_0003, 0, e, &[0])
+                    raise(cpu, 0x8000_0003, e, &[0])
                 } else {
                     // int 2d etc.: skip it
                     cpu.eip += 2;
@@ -170,7 +204,7 @@ pub fn run(cpu: &mut Cpu, until: u32) {
             }
             X_HALT => {
                 let e = cpu.eip;
-                seh::raise(cpu, 0xc000_0096, 0, e, &[])
+                raise(cpu, 0xc000_0096, e, &[])
             }
             X_PENDING => {
                 for s in 1..32 {
@@ -182,9 +216,25 @@ pub fn run(cpu: &mut Cpu, until: u32) {
     }
 }
 
+/// An exception at `addr` (32 or 64-bit dispatch).
+fn raise(cpu: &mut Cpu, code: u32, addr: u32, params: &[u32]) {
+    if mem::x64() {
+        let p: Vec<u64> = params.iter().map(|&x| x as u64).collect();
+        seh64::raise(cpu, code, 0, addr, &p)
+    } else {
+        seh::raise(cpu, code, 0, addr, params)
+    }
+}
+
 /// Calls guest code at `f` with `args` pushed right to left; returns EAX. The registers
 /// (but EAX/EDX) come back as they were.
 pub fn call(cpu: &mut Cpu, f: u32, args: &[u32]) -> u32 {
+    if mem::x64() {
+        // (addresses in an image above 4G get their upper half: callbacks' module handles,
+        // objects in its data)
+        let a: Vec<u64> = args.iter().map(|&x| mem::widen(x)).collect();
+        return call64(cpu, mem::widen(f), &a) as u32;
+    }
     let regs = cpu.regs;
     let eip = cpu.eip;
     cpu.materialize();
@@ -208,6 +258,41 @@ pub fn call(cpu: &mut Cpu, f: u32, args: &[u32]) -> u32 {
     cpu.eflags = eflags;
     cpu.lazy.op = 0;
     r
+}
+
+/// x64: calls guest code at `f` with the Windows x64 convention (RCX, RDX, R8, R9, then the
+/// stack above 32 bytes of home space); returns RAX. The registers but RAX/RDX come back.
+pub fn call64(cpu: &mut Cpu, f: u64, args: &[u64]) -> u64 {
+    let (regs, hi, r8) = (cpu.regs, cpu.hi, cpu.r8);
+    let (eip, rip_hi) = (cpu.eip, cpu.rip_hi);
+    cpu.materialize();
+    let eflags = cpu.eflags;
+    let nstack = args.len().saturating_sub(4) as u32;
+    // (at the callee's entry RSP+8 is 16-byte aligned)
+    let sp = ((regs[ESP] - 0x30 - 8 * nstack) & !15) - 8;
+    mem::w64(sp, api::RET_TRAP as u64);
+    for (i, &a) in args.iter().enumerate() {
+        if i < 4 {
+            cpu.set_gpr([1, 2, 8, 9][i], a);
+        }
+        mem::w64(sp + 8 + 8 * i as u32, a);
+    }
+    cpu.set_gpr(ESP, sp as u64);
+    cpu.eip = f as u32;
+    cpu.rip_hi = (f >> 32) as u32;
+    run(cpu, sp + 8);
+    let rax = cpu.gpr(EAX);
+    let rdx = cpu.gpr(vnx86::EDX);
+    cpu.regs = regs;
+    cpu.hi = hi;
+    cpu.r8 = r8;
+    cpu.set_gpr(EAX, rax);
+    cpu.set_gpr(vnx86::EDX, rdx);
+    cpu.eip = eip;
+    cpu.rip_hi = rip_hi;
+    cpu.eflags = eflags;
+    cpu.lazy.op = 0;
+    rax
 }
 
 pub fn fatal(cpu: &mut Cpu, msg: &str) -> ! {
@@ -260,6 +345,9 @@ pub fn spawn_gated(start: u32, param: u32, stack: u32, obj: u32, gated: bool) ->
             }
             let cpu = unsafe { &mut *t.cpu };
             pe::thread_attach(cpu);
+            if mem::x64() {
+                start64(cpu, start, param);
+            }
             let sp = cpu.regs[ESP] - 8;
             w32(sp, api::EXIT_TRAP);
             w32(sp + 4, param);
@@ -271,8 +359,24 @@ pub fn spawn_gated(start: u32, param: u32, stack: u32, obj: u32, gated: bool) ->
     rx.recv().unwrap()
 }
 
+/// x64: runs `start(param)` as the thread's first function (returning to EXIT_TRAP).
+fn start64(cpu: &mut Cpu, start: u32, param: u32) -> ! {
+    let sp = ((cpu.regs[ESP] - 0x40) & !15) - 8;
+    mem::w64(sp, api::EXIT_TRAP as u64);
+    cpu.set_gpr(ESP, sp as u64);
+    cpu.set_gpr(1, mem::widen(param));
+    let f = mem::widen(start);
+    cpu.eip = f as u32;
+    cpu.rip_hi = (f >> 32) as u32;
+    run(cpu, 0);
+    unsafe { libc::exit(0) }
+}
+
 /// The program: `exe` is its host path.
 pub fn main(exe: &str, args: &[String]) -> ! {
+    if pe::is_64bit_file(exe) {
+        mem::set_x64();
+    }
     guest::init();
     k32::init();
     user::init();
@@ -285,11 +389,13 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     usp::init();
     acm::init();
     dinput::init();
+    mf::init();
     sound::init();
     mmio::init();
     gl::init();
     d3d9::register();
     seh::register();
+    seh64::register();
     cxx::init();
     d3d11::register();
     guest::bind_host();
@@ -311,17 +417,30 @@ pub fn main(exe: &str, args: &[String]) -> ! {
             unsafe { libc::exit(2) }
         }
     };
-    w32(peb + 8, base);
-    w32(peb + 0x18, k32::PROCESS_HEAP);
-    w32(peb + 0xa4, 6);
-    w32(peb + 0xa8, 1);
-    w32(peb + 0xac, 7601);
-    w32(peb + 0xb0, 2);
-    // RTL_USER_PROCESS_PARAMETERS (the CRT reads its flags; image path and command line)
+    let x64 = mem::x64();
     let pp = peb + 0x1000;
-    w32(peb + 0x10, pp);
-    w32(pp, 0x2a0);
-    w32(pp + 4, 0x2a0);
+    if x64 {
+        mem::w64(peb + 0x10, mem::widen(base));
+        mem::w64(peb + 0x20, pp as u64);
+        mem::w64(peb + 0x30, k32::PROCESS_HEAP as u64);
+        w32(peb + 0x118, 6);
+        w32(peb + 0x11c, 1);
+        w32(peb + 0x120, 7601);
+        w32(peb + 0x124, 2);
+        w32(pp, 0x400);
+        w32(pp + 4, 0x400);
+    } else {
+        w32(peb + 8, base);
+        w32(peb + 0x18, k32::PROCESS_HEAP);
+        w32(peb + 0xa4, 6);
+        w32(peb + 0xa8, 1);
+        w32(peb + 0xac, 7601);
+        w32(peb + 0xb0, 2);
+        // RTL_USER_PROCESS_PARAMETERS (the CRT reads its flags; image path and command line)
+        w32(peb + 0x10, pp);
+        w32(pp, 0x2a0);
+        w32(pp + 4, 0x2a0);
+    }
     w32(pp + 8, 1);
     let (_, wcmd) = k32::cmdline();
     let wpath16: Vec<u16> = wpath.encode_utf16().collect();
@@ -333,12 +452,16 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     let ustr = |at: u32, len: u32, buf: u32| {
         mem::w16(at, len as u16);
         mem::w16(at + 2, len as u16 + 2);
-        w32(at + 4, buf);
+        mem::wp(at + mem::ps(), buf);
     };
-    ustr(pp + 0x38, 2 * wpath16.len() as u32, wp);
-    ustr(pp + 0x40, cmdlen, wcmd);
+    let (img, cmd) = if x64 { (0x60, 0x70) } else { (0x38, 0x40) };
+    ustr(pp + img, 2 * wpath16.len() as u32, wp);
+    ustr(pp + cmd, cmdlen, wcmd);
     let entry = pe::with(base, |m| m.entry).unwrap();
     pe::init_dlls(cpu);
+    if x64 {
+        start64(cpu, entry, peb);
+    }
     let sp = cpu.regs[ESP] - 8;
     w32(sp, api::EXIT_TRAP);
     w32(sp + 4, peb);

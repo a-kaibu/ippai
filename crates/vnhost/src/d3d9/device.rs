@@ -324,12 +324,18 @@ unsafe fn wr(p: u32, i: usize, v: u32) {
 }
 
 /// Size of the guest's pointers (and HWNDs): the 64-bit build runs 64-bit programs.
-pub(crate) const PTR: u32 = if cfg!(target_arch = "wasm64") { 8 } else { 4 };
+pub(crate) static PTR_SIZE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(if cfg!(target_arch = "wasm64") { 8 } else { 4 });
+
+/// Size of the guest's pointers (4, or 8 for 64-bit programs: set by the embedder).
+#[inline(always)]
+pub(crate) fn ptr() -> u32 {
+    PTR_SIZE.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// A pointer-sized output (interfaces, mapped memory): 4 or 8 bytes.
 pub(crate) unsafe fn wrp(p: u32, i: usize, v: u32) {
-    wr(p, i * (PTR / 4) as usize, v);
-    if PTR == 8 {
+    wr(p, i * (ptr() / 4) as usize, v);
+    if ptr() == 8 {
         wr(p, i * 2 + 1, 0);
     }
 }
@@ -337,7 +343,7 @@ pub(crate) unsafe fn wrp(p: u32, i: usize, v: u32) {
 /// D3DPRESENT_PARAMETERS as 14 dwords in its 32-bit layout (hDeviceWindow at 7; 64-bit: 8-byte
 /// aligned at dword 8, the rest 2 dwords later)
 fn pp_index(i: usize) -> usize {
-    if PTR == 8 && i >= 7 { i + 1 + (i > 7) as usize } else { i }
+    if ptr() == 8 && i >= 7 { i + 1 + (i > 7) as usize } else { i }
 }
 unsafe fn read_pp(pp: u32) -> [u32; 14] {
     let mut p = [0u32; 14];
@@ -350,7 +356,7 @@ unsafe fn write_pp(pp: u32, p: &[u32; 14]) {
     for (i, v) in p.iter().enumerate() {
         wr(pp, pp_index(i), *v);
     }
-    if PTR == 8 {
+    if ptr() == 8 {
         wr(pp, 9, 0);
     }
 }
@@ -926,7 +932,7 @@ unsafe fn device_call(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &mut
             wr(a(1), 0, 0);
             wr(a(1), 1, 1);
             wrp(a(1) + 8, 0, dev.hwnd);
-            wr(a(1) + 8 + PTR, 0, dev.behavior);
+            wr(a(1) + 8 + ptr(), 0, dev.behavior);
             S_OK
         }
         10 => S_OK,
@@ -1722,9 +1728,9 @@ unsafe fn lock_surface(d: &mut D3d, s: u32, out: u32, rect: u32, flags: u32, aft
     };
     let (bpb, bs) = fmt::layout(sf.fmt).unwrap_or((4, 1));
     sf.lock = Some(if flags & LOCK_READONLY != 0 { [0, 0, 0, 0] } else { r });
-    let ptr = mem + (r[1] / bs) * sf.pitch + (r[0] / bs) * bpb;
+    let bits = mem + (r[1] / bs) * sf.pitch + (r[0] / bs) * bpb;
     wr(out, 0, sf.pitch);
-    wrp(out + PTR, 0, ptr);
+    wrp(out + ptr(), 0, bits);
     if sf.gpu_newer {
         sf.shadow = None;
     }

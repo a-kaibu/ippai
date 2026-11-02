@@ -1,15 +1,16 @@
 //! DirectShow's filter graph (CLSID_FilterGraph) without playback: a movie "plays" to its end
 //! at once (Run posts EC_COMPLETE), so games that show an opening or logo movie go on past it.
 //!
-//! One guest block holds every interface: word k is interface k's vtable (so an interface
-//! pointer is block + 4k), then the refcount and the playback state.
+//! One guest block holds every interface: pointer-sized word k is interface k's vtable (so an
+//! interface pointer is block + k * pointer size), then the refcount and the playback state.
+//! CLSID_EnhancedVideoRenderer is a filter that does nothing, for games that add it to the graph.
 
 #![allow(non_snake_case)]
 
 use std::sync::OnceLock;
 
-use crate::api::{host_fn, Ctx, Handler};
-use crate::mem::{self, put32, r32, w32};
+use crate::api::{Ctx, Handler};
+use crate::mem::{self, ps, put32, putp, r32, w32, wp};
 
 const E_NOINTERFACE: u32 = 0x8000_4002;
 const E_ABORT: u32 = 0x8000_4004;
@@ -24,8 +25,8 @@ const MP: u32 = 4; // IMediaPosition
 const BA: u32 = 5; // IBasicAudio
 const VW: u32 = 6; // IVideoWindow
 const NI: u32 = 7;
-// fields after the vtables
-const REFS: u32 = 4 * NI;
+// fields after the vtables (room for 8-byte ones)
+const REFS: u32 = 8 * NI;
 const EVENT: u32 = REFS + 4;
 const HWND: u32 = EVENT + 4;
 const MSG: u32 = HWND + 4;
@@ -49,7 +50,7 @@ fn slot_of(iid: u32) -> Option<u32> {
 
 /// The block an interface pointer of slot `k` belongs to.
 fn base(c: &Ctx, k: u32) -> u32 {
-    c.a(0) - 4 * k
+    c.a(0) - ps() * k
 }
 
 fn qi_k(c: &mut Ctx, k: u32) -> u32 {
@@ -57,14 +58,14 @@ fn qi_k(c: &mut Ctx, k: u32) -> u32 {
     match slot_of(c.a(1)) {
         Some(s) => {
             w32(b + REFS, r32(b + REFS) + 1);
-            put32(c.a(2), b + 4 * s);
+            putp(c.a(2), b + ps() * s);
             0
         }
         None => {
             if std::env::var_os("SAKE_TRACE_COM").is_some() {
                 eprintln!("sake: FilterGraph QueryInterface {:08x}: no", r32(c.a(1)));
             }
-            put32(c.a(2), 0);
+            putp(c.a(2), 0);
             E_NOINTERFACE
         }
     }
@@ -110,8 +111,9 @@ fn enum_filters(c: &mut Ctx) -> u32 {
     static E: OnceLock<u32> = OnceLock::new();
     let e = *E.get_or_init(|| {
         fn qi(c: &mut Ctx) -> u32 {
-            put32(c.a(2), if r32(c.a(1)) == 0x56a8_6893 || r32(c.a(1)) == 0 { c.a(0) } else { 0 });
-            if r32(c.a(2)) != 0 { 0 } else { E_NOINTERFACE }
+            let ok = r32(c.a(1)) == 0x56a8_6893 || r32(c.a(1)) == 0;
+            putp(c.a(2), if ok { c.a(0) } else { 0 });
+            if ok { 0 } else { E_NOINTERFACE }
         }
         fn one(_: &mut Ctx) -> u32 {
             1
@@ -121,16 +123,21 @@ fn enum_filters(c: &mut Ctx) -> u32 {
             1 // S_FALSE
         }
         let v = vtable("IEnumFilters", &[(qi, 12), (one, 4), (one, 4), (next, 16), (one, 8), (ok, 4), (notimpl, 8)]);
-        let o = mem::heap_alloc(4, true);
-        w32(o, v);
+        let o = mem::heap_alloc(8, true);
+        wp(o, v);
         o
     });
-    put32(c.a(1), e);
+    putp(c.a(1), e);
     0
 }
 /// a getter: zero its out parameter
 fn get0(c: &mut Ctx) -> u32 {
     put32(c.a(1), 0);
+    0
+}
+/// a pointer-sized getter (a window handle, a BSTR)
+fn get0p(c: &mut Ctx) -> u32 {
+    putp(c.a(1), 0);
     0
 }
 fn get0_64(c: &mut Ctx) -> u32 {
@@ -188,7 +195,7 @@ fn get_state(c: &mut Ctx) -> u32 {
 }
 
 fn get_event_handle(c: &mut Ctx) -> u32 {
-    put32(c.a(1), r32(base(c, ME) + EVENT));
+    putp(c.a(1), r32(base(c, ME) + EVENT));
     0
 }
 fn get_event(c: &mut Ctx) -> u32 {
@@ -199,8 +206,8 @@ fn get_event(c: &mut Ctx) -> u32 {
     w32(b + PENDING, 0);
     crate::k32::event_set(r32(b + EVENT), false);
     put32(c.a(1), EC_COMPLETE);
-    put32(c.a(2), 0);
-    put32(c.a(3), 0);
+    putp(c.a(2), 0);
+    putp(c.a(3), 0);
     0
 }
 fn wait_for_completion(c: &mut Ctx) -> u32 {
@@ -215,13 +222,7 @@ fn set_notify_window(c: &mut Ctx) -> u32 {
     0
 }
 
-fn vtable(name: &str, m: &[(Handler, u32)]) -> u32 {
-    let v = mem::heap_alloc(4 * m.len() as u32, true);
-    for (i, (f, n)) in m.iter().enumerate() {
-        w32(v + 4 * i as u32, host_fn(&format!("{name}::{i}"), *f, *n));
-    }
-    v
-}
+use crate::api::vtable;
 
 fn vtables() -> &'static [u32; NI as usize] {
     static V: OnceLock<[u32; NI as usize]> = OnceLock::new();
@@ -322,7 +323,8 @@ fn vtables() -> &'static [u32; NI as usize] {
         for i in 0..30 {
             // (put_* first in each pair, except BorderColor and FullScreenMode where get_ is first)
             let get = if (26..30).contains(&i) { i % 2 == 0 } else { i % 2 == 1 };
-            vw.push((if get { get0 } else { ok }, 8));
+            // get_Caption, get_Owner and get_MessageDrain return pointer-sized values
+            vw.push((if !get { ok } else if matches!(i, 1 | 23 | 25) { get0p } else { get0 }, 8));
         }
         vw.extend([
             (ok as Handler, 8), // SetWindowForeground
@@ -350,15 +352,91 @@ fn vtables() -> &'static [u32; NI as usize] {
 /// CoCreateInstance(CLSID_FilterGraph, ...)
 pub fn create_instance(clsid: u32, iid: u32) -> Option<u32> {
     // CLSID_FilterGraph {e436ebb3-524f-11ce-9f53-0020af0ba770}, FilterGraphNoThread {e436ebb8-...}
+    if r32(clsid) == 0xfa10_746c && r32(clsid + 4) == 0x4b6c_9b63 {
+        return evr(iid);
+    }
     if !matches!(r32(clsid), 0xe436_ebb3 | 0xe436_ebb8) || r32(clsid + 4) != 0x11ce_524f {
         return None;
     }
     let s = slot_of(iid)?;
     let b = mem::heap_alloc(SIZE, true);
     for (k, v) in vtables().iter().enumerate() {
-        w32(b + 4 * k as u32, *v);
+        wp(b + ps() * k as u32, *v);
     }
     w32(b + REFS, 1);
     w32(b + EVENT, crate::obj::add(crate::obj::Obj::Event { manual: true, set: false }));
-    Some(b + 4 * s)
+    Some(b + ps() * s)
+}
+
+// The EVR: IBaseFilter, IMFGetService and IMFVideoDisplayControl (what GetService hands out),
+// each one word of the block like the graph's interfaces; every method succeeds and does nothing.
+fn evr_slot(iid: u32) -> Option<u32> {
+    Some(match r32(iid) {
+        0 | 0x56a8_6895 | 0x0000_010c | 0x56a8_6899 => 0, // IBaseFilter, IPersist, IMediaFilter
+        0xfa99_3888 => 1,                                 // IMFGetService
+        0xa490_b1e4 => 2,                                 // IMFVideoDisplayControl
+        _ => return None,
+    })
+}
+fn evr_qi(c: &mut Ctx, k: u32) -> u32 {
+    let b = c.a(0) - ps() * k;
+    match evr_slot(c.a(1)) {
+        Some(s) => {
+            putp(c.a(2), b + ps() * s);
+            0
+        }
+        None => {
+            putp(c.a(2), 0);
+            E_NOINTERFACE
+        }
+    }
+}
+/// IMFGetService::GetService(service, iid, out)
+fn evr_get_service(c: &mut Ctx) -> u32 {
+    let b = c.a(0) - ps();
+    match evr_slot(c.a(2)) {
+        Some(s) => {
+            putp(c.a(3), b + ps() * s);
+            0
+        }
+        None => {
+            putp(c.a(3), 0);
+            E_NOINTERFACE
+        }
+    }
+}
+fn one(_: &mut Ctx) -> u32 {
+    1
+}
+
+fn evr(iid: u32) -> Option<u32> {
+    static V: OnceLock<[u32; 3]> = OnceLock::new();
+    let s = evr_slot(iid)?;
+    let v = V.get_or_init(|| {
+        fn q0(c: &mut Ctx) -> u32 {
+            evr_qi(c, 0)
+        }
+        fn q1(c: &mut Ctx) -> u32 {
+            evr_qi(c, 1)
+        }
+        fn q2(c: &mut Ctx) -> u32 {
+            evr_qi(c, 2)
+        }
+        let rest = |q: Handler, n: usize| -> Vec<(Handler, u32)> {
+            [(q, 12), (one as Handler, 4), (one as Handler, 4)].into_iter().chain((0..n).map(|_| (ok as Handler, 4))).collect()
+        };
+        let mut gs = rest(q1, 0);
+        gs.push((evr_get_service, 16));
+        // IBaseFilter: GetClassID, Stop, Pause, Run, GetState, SetSyncSource, GetSyncSource,
+        // EnumPins, FindPin, QueryFilterInfo, JoinFilterGraph, QueryVendorInfo
+        let mut bf = rest(q0, 0);
+        bf.extend([(notimpl as Handler, 8), (ok, 4), (ok, 4), (ok, 12), (notimpl, 12), (ok, 8), (notimpl, 8)]);
+        bf.extend([(notimpl as Handler, 8), (notimpl, 12), (notimpl, 8), (ok, 12), (notimpl, 8)]);
+        [vtable("EVR::IBaseFilter", &bf), vtable("EVR::IMFGetService", &gs), vtable("EVR::IMFVideoDisplayControl", &rest(q2, 20))]
+    });
+    let b = mem::heap_alloc(8 * 3, true);
+    for (k, t) in v.iter().enumerate() {
+        wp(b + ps() * k as u32, *t);
+    }
+    Some(b + ps() * s)
 }

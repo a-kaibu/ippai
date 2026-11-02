@@ -315,16 +315,16 @@ unsafe fn rdf(p: u32, i: usize) -> f32 {
 
 /// Size of the guest's pointers (and HWNDs, SIZE_Ts): the 64-bit build runs 64-bit programs.
 /// Guest addresses are below 4G either way.
-const PTR: u32 = if cfg!(target_arch = "wasm64") { 8 } else { 4 };
+use crate::d3d9::device::ptr;
 
 /// Pointer `i` of an array of pointers.
 unsafe fn rdp(p: u32, i: usize) -> u32 {
-    rd(p, i * (PTR / 4) as usize)
+    rd(p, i * (ptr() / 4) as usize)
 }
 
 unsafe fn wrp(p: u32, i: usize, v: u32) {
-    wr(p, i * (PTR / 4) as usize, v);
-    if PTR == 8 {
+    wr(p, i * (ptr() / 4) as usize, v);
+    if ptr() == 8 {
         wr(p, i * 2 + 1, 0);
     }
 }
@@ -334,7 +334,7 @@ unsafe fn swap_desc(desc: u32) -> [u32; 15] {
     let mut p = [0u32; 15];
     for (i, v) in p.iter_mut().enumerate() {
         // (64-bit: OutputWindow is 8-byte aligned, at dword 12)
-        let k = if PTR == 8 && i >= 11 { i + 1 + (i > 11) as usize } else { i };
+        let k = if ptr() == 8 && i >= 11 { i + 1 + (i > 11) as usize } else { i };
         *v = rd(desc, k);
     }
     p
@@ -342,10 +342,10 @@ unsafe fn swap_desc(desc: u32) -> [u32; 15] {
 
 unsafe fn put_swap_desc(desc: u32, p: [u32; 15]) {
     for (i, v) in p.into_iter().enumerate() {
-        let k = if PTR == 8 && i >= 11 { i + 1 + (i > 11) as usize } else { i };
+        let k = if ptr() == 8 && i >= 11 { i + 1 + (i > 11) as usize } else { i };
         wr(desc, k, v);
     }
-    if PTR == 8 {
+    if ptr() == 8 {
         wr(desc, 11, 0);
         wr(desc, 13, 0);
     }
@@ -356,12 +356,12 @@ unsafe fn put_mapped(out: u32, mem: u32, row: u32, depth: u32, dxgi: bool) {
     if dxgi {
         // DXGI_MAPPED_RECT: Pitch, pBits
         wr(out, 0, row);
-        wrp(out + PTR, 0, mem);
+        wrp(out + ptr(), 0, mem);
         return;
     }
     wrp(out, 0, mem);
-    wr(out + PTR, 0, row);
-    wr(out + PTR, 1, depth);
+    wr(out + ptr(), 0, row);
+    wr(out + ptr(), 1, depth);
 }
 
 /// Page ids for textures and buffers (shared with d3d9's: one page)
@@ -398,7 +398,7 @@ impl D11 {
         let addr = self.free_blocks.pop().unwrap();
         unsafe {
             wrp(addr, 0, self.vtbls.get(iface as usize).copied().unwrap_or(0));
-            *((addr + PTR) as *mut u32) = id;
+            *((addr + ptr()) as *mut u32) = id;
         }
         addr
     }
@@ -427,7 +427,7 @@ impl D11 {
         if addr == 0 {
             return 0;
         }
-        let id = unsafe { *((addr + PTR) as *const u32) };
+        let id = unsafe { *((addr + ptr()) as *const u32) };
         if self.objs.get(&id).is_some_and(|o| o.faces.iter().any(|f| f.1 == addr)) { id } else { 0 }
     }
 
@@ -486,7 +486,7 @@ impl D11 {
         }
         let o = self.objs.remove(&id).unwrap();
         for (_, a) in &o.faces {
-            unsafe { *((a + PTR) as *mut u32) = 0 };
+            unsafe { *((a + ptr()) as *mut u32) = 0 };
             self.free_blocks.push(*a);
         }
         match o.data {
@@ -554,7 +554,7 @@ pub unsafe fn init(vtbls: *const u32, count: u32) -> u32 {
 pub unsafe fn call(id: u32, args: *const u32, calls: *const HostCalls) -> u32 {
     // (64-bit: the arguments are 8-byte slots; their low halves from here on)
     let mut low = [0u32; 16];
-    let args = if PTR == 8 {
+    let args = if ptr() == 8 {
         for (i, v) in low.iter_mut().enumerate() {
             *v = *args.add(i * 2);
         }
@@ -848,7 +848,7 @@ unsafe fn method(d: &mut D11, iface: u32, m: u32, this: u32, args: *const u32, a
             }
             8 | 10 => {
                 // GetDesc/GetDesc1: Description[128] WCHAR, ids, memory sizes
-                let n = match (m, PTR) {
+                let n = match (m, ptr()) {
                     (8, 4) => 292,
                     (_, 4) => 296,
                     (8, _) => 304,
@@ -1192,8 +1192,8 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
                 let Some(Data::Texture(t)) = d.objs.get(&id).map(|o| &o.data) else { return E_FAIL };
                 for sub in 0..t.mips * if dim == 3 { 1 } else { t.layers } {
                     // D3D11_SUBRESOURCE_DATA { pSysMem, SysMemPitch, SysMemSlicePitch }
-                    let init = a(2) + sub * (PTR + 8);
-                    upload_texture(t, sub, rdp(init, 0), rd(init + PTR, 0), None);
+                    let init = a(2) + sub * (ptr() + 8);
+                    upload_texture(t, sub, rdp(init, 0), rd(init + ptr(), 0), None);
                 }
             }
             wrp(a(3), 0, o);
@@ -1206,9 +1206,9 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             let mut next = [0u32; 16];
             for i in 0..a(2) {
                 // D3D11_INPUT_ELEMENT_DESC { SemanticName, then six UINTs }
-                let e = a(1) + i * (PTR + 24);
+                let e = a(1) + i * (ptr() + 24);
                 let name = std::ffi::CStr::from_ptr(rdp(e, 0) as *const std::ffi::c_char).to_string_lossy().into_owned();
-                let f = e + PTR;
+                let f = e + ptr();
                 let (index, fmt, slot, off, class) = (rd(f, 0), rd(f, 1), rd(f, 2) & 15, rd(f, 3), rd(f, 4));
                 let off = if off == 0xffff_ffff { next[slot as usize] } else { off };
                 let size = format::vertex_format(fmt).map_or(4, vertex_size);
@@ -1868,7 +1868,7 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
                 let s = (a(1) + i) as usize;
                 let (b, stride, off) = st.vbs.get(s).copied().unwrap_or_default();
                 if a(3) != 0 {
-                    get_one(d, b, a(3) + i * PTR);
+                    get_one(d, b, a(3) + i * ptr());
                 }
                 wr(a(4), i as usize, stride);
                 wr(a(5), i as usize, off);

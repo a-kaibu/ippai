@@ -6,19 +6,13 @@
 
 use std::sync::OnceLock;
 
-use crate::api::{host_fn, implement, Ctx, Handler};
+use crate::api::{implement, Ctx};
 use crate::mem::{self, put32, r32, w32};
 
 const E_NOTIMPL: u32 = 0x8000_4001;
 const E_FAIL: u32 = 0x8000_4005;
 
-fn vtable(name: &str, m: &[(Handler, u32)]) -> u32 {
-    let v = mem::heap_alloc(4 * m.len() as u32, true);
-    for (i, (f, n)) in m.iter().enumerate() {
-        w32(v + 4 * i as u32, host_fn(&format!("{name}::{i}"), *f, *n));
-    }
-    v
-}
+use crate::api::vtable;
 
 fn gcall(c: &mut Ctx, dll: &str, name: &str, args: &[u32]) -> u32 {
     let f = crate::api::export(dll, name);

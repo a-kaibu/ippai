@@ -961,7 +961,7 @@ fn clock(_: &mut Ctx) -> u32 {
 // printf
 
 fn sprintf(c: &mut Ctx) -> u32 {
-    let s = format(&cstr(c.a(1)), &mut VaArgs::stack(c.esp + 12), false);
+    let s = format(&cstr(c.a(1)), &mut VaArgs::arg(c, 2), false);
     mem::write(c.a(0), &s);
     w8(c.a(0) + s.len() as u32, 0);
     s.len() as u32
@@ -983,7 +983,7 @@ fn snprintf_into(out: u32, cap: u32, s: &[u8]) -> u32 {
     }
 }
 fn _snprintf(c: &mut Ctx) -> u32 {
-    let s = format(&cstr(c.a(2)), &mut VaArgs::stack(c.esp + 16), false);
+    let s = format(&cstr(c.a(2)), &mut VaArgs::arg(c, 3), false);
     snprintf_into(c.a(0), c.a(1), &s)
 }
 fn _vsnprintf(c: &mut Ctx) -> u32 {
@@ -991,14 +991,14 @@ fn _vsnprintf(c: &mut Ctx) -> u32 {
     snprintf_into(c.a(0), c.a(1), &s)
 }
 fn swprintf(c: &mut Ctx) -> u32 {
-    let s = format_w(&wstr(c.a(1)), &mut VaArgs::stack(c.esp + 12));
+    let s = format_w(&wstr(c.a(1)), &mut VaArgs::arg(c, 2));
     for (i, &u) in s.iter().chain([0u16].iter()).enumerate() {
         w16(c.a(0) + 2 * i as u32, u);
     }
     s.len() as u32
 }
 fn printf(c: &mut Ctx) -> u32 {
-    let s = format(&cstr(c.a(0)), &mut VaArgs::stack(c.esp + 8), false);
+    let s = format(&cstr(c.a(0)), &mut VaArgs::arg(c, 1), false);
     eprint!("{}", a2s(&s));
     s.len() as u32
 }
@@ -1006,7 +1006,7 @@ fn sscanf(c: &mut Ctx) -> u32 {
     // the integer/string subset (%d %x %s %c %f)
     let s = cstr(c.a(0));
     let f = cstr(c.a(1));
-    let mut va = VaArgs::stack(c.esp + 12);
+    let mut va = VaArgs::arg(c, 2);
     let (mut i, mut k, mut n) = (0, 0, 0u32);
     while k < f.len() {
         let ch = f[k];
@@ -1541,7 +1541,7 @@ fn fputs(c: &mut Ctx) -> u32 {
     0
 }
 fn fprintf(c: &mut Ctx) -> u32 {
-    let s = format(&cstr(c.a(1)), &mut VaArgs::stack(c.esp + 12), false);
+    let s = format(&cstr(c.a(1)), &mut VaArgs::arg(c, 2), false);
     let tmp = mem::heap_alloc(s.len() as u32 + 1, false);
     mem::write(tmp, &s);
     with_file(c.a(0), |st| match &st.f {

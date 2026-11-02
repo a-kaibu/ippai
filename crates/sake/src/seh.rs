@@ -200,6 +200,11 @@ pub fn add_veh(c: &mut Ctx) -> u32 {
     h
 }
 
+/// The vectored handlers' functions, in calling order.
+pub fn veh_list() -> Vec<u32> {
+    VEH.lock().unwrap().iter().map(|&(_, f)| f).collect()
+}
+
 /// RemoveVectoredExceptionHandler(handle)
 pub fn remove_veh(c: &mut Ctx) -> u32 {
     let mut v = VEH.lock().unwrap();

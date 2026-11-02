@@ -138,7 +138,7 @@ impl D3d {
         unsafe {
             let v8 = if self.v8 { self.vtbls.get(iface as usize + 16).copied().unwrap_or(0) } else { 0 };
             device::wrp(addr, 0, if v8 != 0 { v8 } else { self.vtbls[iface as usize] });
-            *((addr + device::PTR) as *mut u32) = id;
+            *((addr + device::ptr()) as *mut u32) = id;
         }
         self.objs.insert(id, Obj { iface, refs: 1, binds: 0, parent, addr, data, private: Vec::new() });
         addr
@@ -149,7 +149,7 @@ impl D3d {
         if addr == 0 {
             return 0;
         }
-        let id = unsafe { *((addr + device::PTR) as *const u32) };
+        let id = unsafe { *((addr + device::ptr()) as *const u32) };
         if self.objs.get(&id).is_some_and(|o| o.addr == addr) { id } else { 0 }
     }
 
@@ -206,7 +206,7 @@ impl D3d {
     fn destroy(&mut self, id: u32) {
         let Some(o) = self.objs.remove(&id) else { return };
         self.free_blocks.push(o.addr);
-        unsafe { *((o.addr + device::PTR) as *mut u32) = 0 };
+        unsafe { *((o.addr + device::ptr()) as *mut u32) = 0 };
         match o.data {
             Data::Texture(t) => {
                 for l in t.levels {
@@ -245,7 +245,7 @@ fn with<R>(f: impl FnOnce(&mut D3d) -> R) -> R {
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_d3d9_init(vtbls: *const u32, count: u32) -> u32 {
     // (an array of pointers: 8 bytes each in the 64-bit build, all below 4GB)
-    let k = (device::PTR / 4) as usize;
+    let k = (device::ptr() / 4) as usize;
     let v: Vec<u32> = (0..count as usize).map(|i| *vtbls.add(i * k)).collect();
     let mut g = D3D.lock().unwrap_or_else(|e| e.into_inner());
     if g.is_none() {
@@ -309,7 +309,7 @@ pub unsafe extern "C" fn vnhost_d3d9_call(id: u32, args: *const u32, calls: *con
     }
     // (64-bit: the arguments are 8-byte slots; their low halves from here on)
     let mut low = [0u32; 16];
-    let args = if device::PTR == 8 {
+    let args = if device::ptr() == 8 {
         for (i, v) in low.iter_mut().enumerate() {
             *v = *args.add(i * 2);
         }
@@ -547,4 +547,9 @@ pub fn name(iface: u32, m: u32) -> String {
         }
     };
     format!("{}::{}", ifname, n.map_or(format!("#{m}"), |s| s.to_string()))
+}
+
+/// The guest's pointer size (sake runs 64-bit programs in the same build: 8).
+pub fn set_ptr_size(n: u32) {
+    device::PTR_SIZE.store(n, std::sync::atomic::Ordering::Relaxed);
 }

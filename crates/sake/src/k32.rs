@@ -22,7 +22,7 @@ macro_rules! reg {
 }
 
 fn last_error(e: u32) {
-    w32(crate::cur().teb + 0x34, e);
+    w32(crate::cur().teb + crate::teb_last_error(), e);
 }
 
 fn ok(b: bool) -> u32 {
@@ -956,15 +956,16 @@ pub fn tls_thread_init(_teb: u32) {}
 
 fn tls_slot(i: u32) -> u32 {
     let teb = crate::cur().teb;
+    let (slots, exp, k) = if mem::x64() { (0x1480, 0x1780, 8) } else { (0xe10, 0xf94, 4) };
     if i < 64 {
-        return teb + 0xe10 + 4 * i;
+        return teb + slots + k * i;
     }
-    let mut ex = r32(teb + 0xf94);
+    let mut ex = r32(teb + exp);
     if ex == 0 {
-        ex = mem::heap_alloc(4096, true);
-        w32(teb + 0xf94, ex);
+        ex = mem::heap_alloc(1024 * k, true);
+        mem::wp(teb + exp, ex);
     }
-    ex + 4 * (i - 64)
+    ex + k * (i - 64)
 }
 fn TlsAlloc(_: &mut Ctx) -> u32 {
     let mut u = TLS_USED.lock().unwrap();
@@ -999,7 +1000,7 @@ fn TlsSetValue(c: &mut Ctx) -> u32 {
     if i >= 1088 {
         return 0;
     }
-    w32(tls_slot(i), c.a(1));
+    mem::wp(tls_slot(i), c.a(1));
     1
 }
 fn FlsAlloc(c: &mut Ctx) -> u32 {
@@ -1016,7 +1017,7 @@ fn FlsSetValue(c: &mut Ctx) -> u32 {
 }
 
 fn GetLastError(_: &mut Ctx) -> u32 {
-    r32(crate::cur().teb + 0x34)
+    r32(crate::cur().teb + crate::teb_last_error())
 }
 fn SetLastError(c: &mut Ctx) -> u32 {
     last_error(c.a(0));
@@ -1975,7 +1976,7 @@ fn VerifyVersionInfoA(_: &mut Ctx) -> u32 {
     1
 }
 fn VerSetConditionMask(c: &mut Ctx) -> u32 {
-    let v = c.a(0) as u64 | (c.a(1) as u64) << 32;
+    let v = if mem::x64() { c.a64(0) } else { c.a(0) as u64 | (c.a(1) as u64) << 32 };
     c.ret64(v)
 }
 
@@ -2847,16 +2848,18 @@ fn ReadFile(c: &mut Ctx) -> u32 {
         last_error(6);
         return 0;
     };
+    // OVERLAPPED: Internal, InternalHigh (ULONG_PTRs), Offset, OffsetHigh, hEvent
+    let k = mem::ps();
     if ov != 0 {
-        f.seek(SeekFrom::Start(r32(ov + 8) as u64 | (r32(ov + 12) as u64) << 32));
+        f.seek(SeekFrom::Start(r32(ov + 2 * k) as u64 | (r32(ov + 2 * k + 4) as u64) << 32));
     }
     let got = f.read_into(buf, n);
     put32(pread, got);
     if ov != 0 {
-        w32(ov, 0);
-        w32(ov + 4, got);
-        if r32(ov + 16) != 0 {
-            event_set(r32(ov + 16), true);
+        mem::wp(ov, 0);
+        mem::wp(ov + k, got);
+        if r32(ov + 2 * k + 8) != 0 {
+            event_set(r32(ov + 2 * k + 8), true);
         }
     }
     1
@@ -2904,9 +2907,13 @@ fn SetFilePointer(c: &mut Ctx) -> u32 {
     }
 }
 fn SetFilePointerEx(c: &mut Ctx) -> u32 {
-    let (h, lo, hi, out, how) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
+    // (x64: the LARGE_INTEGER is one argument)
+    let (h, off, out, how) = if mem::x64() {
+        (c.a(0), c.a64(1) as i64, c.a(2), c.a(3))
+    } else {
+        (c.a(0), (c.a(1) as u64 | (c.a(2) as u64) << 32) as i64, c.a(3), c.a(4))
+    };
     let Some(f) = obj::file(h) else { return 0 };
-    let off = (lo as u64 | (hi as u64) << 32) as i64;
     let pos = match how {
         0 => SeekFrom::Start(off as u64),
         1 => SeekFrom::Current(off),

@@ -15,6 +15,78 @@ pub const HI: u32 = 0x7ff0_0000;
 const GRAN: u32 = 0x1_0000;
 pub const PAGE: u32 = 0x1000;
 
+// ---------------------------------------------------------------------------------------------
+// 64-bit programs (PE32+): pointers, handles and SIZE_Ts are 8 bytes in their structures. Guest
+// addresses are still below 4G (and below HI): the upper halves are written as zero and ignored
+// when read.
+
+static X64: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the program is a 64-bit one (set by the loader before anything runs).
+#[inline(always)]
+pub fn x64() -> bool {
+    X64.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn set_x64() {
+    X64.store(true, std::sync::atomic::Ordering::Relaxed);
+    vnhost::d3d9::set_ptr_size(8);
+}
+
+/// Size of a pointer (4 or 8).
+#[inline(always)]
+pub fn ps() -> u32 {
+    if x64() { 8 } else { 4 }
+}
+
+/// Reads a pointer-sized field (its low half on x64).
+#[inline(always)]
+pub fn rp(a: u32) -> u32 {
+    r32(a)
+}
+
+/// Writes a pointer-sized field (zero-extended on x64; INVALID_HANDLE_VALUE and other small
+/// negative values sign-extended).
+#[inline(always)]
+pub fn wp(a: u32, v: u32) {
+    w32(a, v);
+    if x64() {
+        w32(a + 4, if v >= 0xffff_f000 { 0xffff_ffff } else { 0 });
+    }
+}
+
+/// wp if `a` is not NULL.
+#[inline]
+pub fn putp(a: u32, v: u32) {
+    if a != 0 {
+        wp(a, v)
+    }
+}
+
+/// The 64-bit value of guest address `a` as code sees it: the low alias of a module mapped
+/// above 4G (see pe::ALIAS) gets its upper half back.
+#[inline]
+pub fn widen(a: u32) -> u64 {
+    let (lo, hi, n) = crate::pe::alias();
+    if n != 0 && a.wrapping_sub(lo) < n { a as u64 | (hi as u64) << 32 } else { a as u64 }
+}
+
+/// Writes `v` if `a` is not NULL.
+#[inline]
+pub fn put64(a: u32, v: u64) {
+    if a != 0 {
+        w64(a, v)
+    }
+}
+#[inline(always)]
+pub fn r64(a: u32) -> u64 {
+    unsafe { (a as usize as *const u64).read_unaligned() }
+}
+#[inline(always)]
+pub fn w64(a: u32, v: u64) {
+    unsafe { (a as usize as *mut u64).write_unaligned(v) }
+}
+
 #[inline(always)]
 pub fn r8(a: u32) -> u8 {
     unsafe { *(a as usize as *const u8) }
@@ -352,7 +424,9 @@ unsafe impl dlmalloc::Allocator for Sys {
 
 static HEAP: Mutex<dlmalloc::Dlmalloc<Sys>> = Mutex::new(dlmalloc::Dlmalloc::new_with_allocator(Sys));
 
-const HDR: u32 = 8;
+/// (16: x64 code keeps SSE values in heap blocks and expects them 16-byte aligned; the size the
+/// caller asked for is at p-8, the magic at p-4)
+const HDR: u32 = 16;
 const MAGIC: u32 = 0x6e69_7776;
 /// a small block whose size class (16-byte steps up to SLAB_MAX) bounds its capacity: freed
 /// ones go to fast.rs's per-class lists in guest memory (marked SLAB_FREE while there)
@@ -443,12 +517,12 @@ pub fn heap_free_small(p: u32) -> bool {
 }
 
 pub fn heap_alloc(size: u32, zero: bool) -> u32 {
-    let p = unsafe { HEAP.lock().unwrap().malloc((size + HDR) as usize, 8) } as usize as u32;
+    let p = unsafe { HEAP.lock().unwrap().malloc((size + HDR) as usize, 16) } as usize as u32;
     if p == 0 {
         return 0;
     }
-    w32(p, size);
-    w32(p + 4, MAGIC);
+    w32(p + HDR - 8, size);
+    w32(p + HDR - 4, MAGIC);
     if zero {
         fill(p + HDR, size, 0);
     }
@@ -459,7 +533,7 @@ pub fn heap_size(p: u32) -> u32 {
     if p == 0 {
         return u32::MAX;
     }
-    r32(p - HDR)
+    r32(p - 8)
 }
 
 /// Whether `p` came from heap_alloc (games free pointers of other heaps through ours rarely,
@@ -472,7 +546,7 @@ pub fn heap_free(p: u32) -> bool {
     if !heap_owns(p) {
         return false;
     }
-    let size = r32(p - HDR);
+    let size = r32(p - 8);
     w32(p - 4, 0);
     // (c_free: the header's size may be below the chunk's after an in-place shrink)
     let _ = size;

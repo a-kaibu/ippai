@@ -156,6 +156,18 @@ pub struct Msg {
 
 impl Msg {
     fn write(&self, p: u32) {
+        if mem::x64() {
+            // hwnd, message, wParam, lParam (8-byte aligned), time, pt, lPrivate: 48 bytes
+            mem::wp(p, self.hwnd);
+            mem::w64(p + 8, self.msg as u64);
+            mem::w64(p + 16, self.w as u64);
+            mem::w64(p + 24, self.l as i32 as i64 as u64);
+            w32(p + 32, self.time);
+            w32(p + 36, self.x as u32);
+            w32(p + 40, self.y as u32);
+            w32(p + 44, 0);
+            return;
+        }
         w32(p, self.hwnd);
         w32(p + 4, self.msg);
         w32(p + 8, self.w);
@@ -164,6 +176,11 @@ impl Msg {
         w32(p + 20, self.x as u32);
         w32(p + 24, self.y as u32);
     }
+}
+
+/// A MSG's (hwnd, message, wParam, lParam).
+fn msg_at(p: u32) -> (u32, u32, u32, u32) {
+    if mem::x64() { (r32(p), r32(p + 8), r32(p + 16), r32(p + 24)) } else { (r32(p), r32(p + 4), r32(p + 8), r32(p + 12)) }
 }
 
 struct Timer {
@@ -838,25 +855,36 @@ fn system_classes(s: &mut State) {
     }
 }
 
+/// Offsets of WNDCLASS(EX)'s style, lpfnWndProc, cbClsExtra, cbWndExtra, hInstance, hIcon,
+/// hCursor, hbrBackground, lpszMenuName, lpszClassName (and hIconSm after them in EX).
+fn wndclass_offsets(ex: bool) -> [u32; 11] {
+    if mem::x64() {
+        [if ex { 4 } else { 0 }, 8, 16, 20, 24, 32, 40, 48, 56, 64, 72]
+    } else {
+        let o = if ex { 4 } else { 0 };
+        std::array::from_fn(|i| o + 4 * i as u32)
+    }
+}
+
 fn register_class(c: &mut Ctx, p: u32, wide: bool, ex: bool) -> u32 {
-    let o = if ex { 4 } else { 0 };
-    let name_p = r32(p + o + 36);
+    let f = wndclass_offsets(ex);
+    let name_p = r32(p + f[9]);
     let name = if name_p < 0x10000 { format!("#{name_p}") } else { arg_str(name_p, wide) };
     let atom = crate::k32::atom(&name);
     let cls = Class {
         name: name.clone(),
-        style: r32(p + o),
-        proc_: r32(p + o + 4),
-        cls_extra: r32(p + o + 8),
-        wnd_extra: r32(p + o + 12),
-        inst: r32(p + o + 16),
-        icon: r32(p + o + 20),
-        cursor: r32(p + o + 24),
-        brush: r32(p + o + 28),
-        menu: r32(p + o + 32),
+        style: r32(p + f[0]),
+        proc_: r32(p + f[1]),
+        cls_extra: r32(p + f[2]),
+        wnd_extra: r32(p + f[3]),
+        inst: r32(p + f[4]),
+        icon: r32(p + f[5]),
+        cursor: r32(p + f[6]),
+        brush: r32(p + f[7]),
+        menu: r32(p + f[8]),
         unicode: wide,
         atom,
-        extra: vec![0; r32(p + o + 8) as usize],
+        extra: vec![0; r32(p + f[2]) as usize],
     };
     let _ = c;
     with(|s| {
@@ -901,21 +929,25 @@ fn class_info(c: &mut Ctx, wide: bool, ex: bool) -> u32 {
         Some((k.style, k.proc_, k.cls_extra, k.wnd_extra, k.inst, k.icon, k.cursor, k.brush, k.menu, k.atom))
     });
     let Some((style, proc_, ce, we, inst, icon, cursor, brush, menu, atom)) = r else {
-        w32(crate::cur().teb + 0x34, 1411);
+        w32(crate::cur().teb + crate::teb_last_error(), 1411);
         return 0;
     };
-    let o = if ex { 4 } else { 0 };
+    let f = wndclass_offsets(ex);
     if ex {
-        w32(out, 48);
+        w32(out, if mem::x64() { 80 } else { 48 });
     }
     for (k, v) in [style, proc_, ce, we, inst, icon, cursor, brush, menu, if name < 0x10000 { name } else { 0 }].iter().enumerate() {
-        w32(out + o + 4 * k as u32, *v);
+        if k == 0 || k == 2 || k == 3 {
+            w32(out + f[k], *v);
+        } else {
+            mem::wp(out + f[k], *v);
+        }
     }
     if name >= 0x10000 {
-        w32(out + o + 36, name);
+        mem::wp(out + f[9], name);
     }
     if ex {
-        w32(out + 44, 0);
+        mem::wp(out + f[10], 0);
     }
     atom
 }
@@ -1060,7 +1092,7 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
     });
     let Some((h, cname)) = made else {
         eprintln!("sake: CreateWindowEx: no class {}", if cls_p < 0x10000 { format!("#{cls_p}") } else { arg_str(cls_p, wide) });
-        w32(crate::cur().teb + 0x34, 1407);
+        w32(crate::cur().teb + crate::teb_last_error(), 1407);
         return 0;
     };
     if std::env::var_os("SAKE_TRACE_WIN").is_some() {
@@ -1068,22 +1100,32 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
     }
     // CREATESTRUCT on the guest stack (below the caller's)
     let save = c.cpu.regs[vnx86::ESP];
-    let cs = (save - 0x80) & !15;
+    let x64 = mem::x64();
+    let cs = (save - if x64 { 0x100 } else { 0x80 }) & !15;
     c.cpu.regs[vnx86::ESP] = cs - 16;
-    for (k, v) in [param, inst, menu, parent, cy as u32, cx as u32, y as u32, x as u32, style, name_p, cls_p, ex].iter().enumerate() {
-        w32(cs + 4 * k as u32, *v);
+    let fields = [param, inst, menu, parent, cy as u32, cx as u32, y as u32, x as u32, style, name_p, cls_p, ex];
+    if x64 {
+        // (lpCreateParams, hInstance, hMenu, hwndParent: 8 bytes; cy cx y x style; name and
+        // class: 8 bytes; dwExStyle)
+        for (k, o) in [0u32, 8, 16, 24, 32, 36, 40, 44, 48, 56, 64, 72].iter().enumerate() {
+            if matches!(k, 0..=3 | 9 | 10) { mem::wp(cs + o, fields[k]) } else { w32(cs + o, fields[k]) }
+        }
+    } else {
+        for (k, v) in fields.iter().enumerate() {
+            w32(cs + 4 * k as u32, *v);
+        }
     }
     // HCBT_CREATEWND (CBT_CREATEWND: CREATESTRUCT, insert after)
-    let cbtw = cs + 0x70;
-    w32(cbtw, cs);
-    w32(cbtw + 4, 0);
+    let cbtw = cs + if x64 { 0xb0 } else { 0x70 };
+    mem::wp(cbtw, cs);
+    mem::wp(cbtw + mem::ps(), 0);
     if cbt(c, 3, h, cbtw) {
         c.cpu.regs[vnx86::ESP] = save;
         destroy(c, h);
         return 0;
     }
     // MINMAXINFO for WM_GETMINMAXINFO
-    let mmi = cs + 0x40;
+    let mmi = cs + if x64 { 0x60 } else { 0x40 };
     if !child {
         let (sw, sh) = screen();
         for (k, v) in [0, 0, sw, sh, 0, 0, 112, 27, sw + 12, sh + 12].iter().enumerate() {
@@ -1803,6 +1845,31 @@ fn SetClassLongA(c: &mut Ctx) -> u32 {
 fn SetClassLongW(c: &mut Ctx) -> u32 {
     SetClassLongA(c)
 }
+// (64-bit programs' names for them)
+fn GetWindowLongPtrA(c: &mut Ctx) -> u32 {
+    GetWindowLongA(c)
+}
+fn GetWindowLongPtrW(c: &mut Ctx) -> u32 {
+    GetWindowLongW(c)
+}
+fn SetWindowLongPtrA(c: &mut Ctx) -> u32 {
+    SetWindowLongA(c)
+}
+fn SetWindowLongPtrW(c: &mut Ctx) -> u32 {
+    SetWindowLongW(c)
+}
+fn GetClassLongPtrA(c: &mut Ctx) -> u32 {
+    GetClassLongA(c)
+}
+fn GetClassLongPtrW(c: &mut Ctx) -> u32 {
+    GetClassLongW(c)
+}
+fn SetClassLongPtrA(c: &mut Ctx) -> u32 {
+    SetClassLongA(c)
+}
+fn SetClassLongPtrW(c: &mut Ctx) -> u32 {
+    SetClassLongW(c)
+}
 fn GetClassNameA(c: &mut Ctx) -> u32 {
     let n = with(|s| s.wins.get(&c.a(0)).map(|w| s.classes[w.class].name.clone())).unwrap_or_default();
     let r = ret_str(c.a(1), c.a(2), &n, false);
@@ -2418,7 +2485,7 @@ fn GetInputState(_: &mut Ctx) -> u32 {
 }
 fn TranslateMessage(c: &mut Ctx) -> u32 {
     let p = c.a(0);
-    let (h, m, wp, lp) = (r32(p), r32(p + 4), r32(p + 8), r32(p + 12));
+    let (h, m, wp, lp) = msg_at(p);
     if m == 0x100 || m == 0x104 {
         let shift = with(|s| s.keys[0x10] & 0x80 != 0);
         let ch = match wp {
@@ -2436,7 +2503,7 @@ fn TranslateMessage(c: &mut Ctx) -> u32 {
 }
 fn DispatchMessageA(c: &mut Ctx) -> u32 {
     let p = c.a(0);
-    let (h, m, wp, lp) = (r32(p), r32(p + 4), r32(p + 8), r32(p + 12));
+    let (h, m, wp, lp) = msg_at(p);
     if m == 0x113 && lp != 0 {
         return c.call(lp, &[h, m, wp, now_ms()]);
     }
@@ -2467,7 +2534,7 @@ fn DispatchMessageW(c: &mut Ctx) -> u32 {
 /// rest is left to the caller's TranslateMessage / DispatchMessage.
 fn is_dialog_message(c: &mut Ctx, wide: bool) -> u32 {
     let (dlg, msg) = (c.a(0), c.a(1));
-    let (h, m, key) = (r32(msg), r32(msg + 4), r32(msg + 8));
+    let (h, m, key, _) = msg_at(msg);
     if m != 0x100 || !(key == 0x0d || key == 0x1b) || dlg == 0 {
         return 0;
     }
@@ -3778,7 +3845,7 @@ fn IsCharAlphaW(c: &mut Ctx) -> u32 {
 }
 fn wsprintfA(c: &mut Ctx) -> u32 {
     let (dst, fmt) = (c.a(0), c.a(1));
-    let out = crate::misc::format(&cstr(fmt), &mut crate::misc::VaArgs::stack(c.esp + 12), false);
+    let out = crate::misc::format(&cstr(fmt), &mut crate::misc::VaArgs::arg(c, 2), false);
     let out: Vec<u8> = out.into_iter().take(1023).collect();
     mem::write(dst, &out);
     mem::w8(dst + out.len() as u32, 0);
@@ -3795,7 +3862,7 @@ fn wvsprintfA(c: &mut Ctx) -> u32 {
 fn wsprintfW(c: &mut Ctx) -> u32 {
     let (dst, fmt) = (c.a(0), c.a(1));
     let f: Vec<u16> = wstr(fmt);
-    let out = crate::misc::format_w(&f, &mut crate::misc::VaArgs::stack(c.esp + 12));
+    let out = crate::misc::format_w(&f, &mut crate::misc::VaArgs::arg(c, 2));
     mem::put_wstr(dst, 1024, &out)
 }
 fn GetGUIThreadInfo(_: &mut Ctx) -> u32 {
@@ -4365,6 +4432,8 @@ pub fn init() {
         GetDlgItem, GetDlgCtrlID, SendDlgItemMessageA, GetWindowThreadProcessId, EnumWindows, EnumThreadWindows,
         EnumChildWindows, FindWindowA, FindWindowW, FindWindowExA, FindWindowExW, WindowFromPoint, ChildWindowFromPoint,
         GetWindowLongA, GetWindowLongW, SetWindowLongA, SetWindowLongW, GetClassLongA, GetClassLongW,
+        GetWindowLongPtrA, GetWindowLongPtrW, SetWindowLongPtrA, SetWindowLongPtrW, GetClassLongPtrA, GetClassLongPtrW,
+        SetClassLongPtrA, SetClassLongPtrW,
         SetClassLongA, SetClassLongW, GetClassNameA, GetClassNameW, SetPropA, SetPropW, GetPropA, GetPropW,
         RemovePropA, RemovePropW, SetWindowTextA, SetWindowTextW, GetWindowTextA, GetWindowTextW,
         GetWindowTextLengthA, GetWindowTextLengthW, SetWindowRgn, DefWindowProcA, DefWindowProcW, DefDlgProcA,

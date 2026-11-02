@@ -21,6 +21,20 @@ pub struct Module {
     pub refs: u32,
     /// one of ours (no code: GetProcAddress gives trap addresses)
     pub hle: bool,
+    /// x64: the exception directory (RUNTIME_FUNCTION array, count)
+    pub pdata: (u32, u32),
+}
+
+/// The module mapped at the low alias of a base above 4G: (low base, upper half, size).
+static ALIAS: RwLock<(u32, u32, u32)> = RwLock::new((0, 0, 0));
+
+pub fn alias() -> (u32, u32, u32) {
+    *ALIAS.read().unwrap()
+}
+
+/// The 64-bit address an image mapped at `base` (preferring `pref`) has.
+fn widen_base(base: u32, pref: u64) -> u64 {
+    if base as u64 != pref && base == pref as u32 { pref } else { base as u64 }
 }
 
 #[derive(Clone, Copy)]
@@ -66,6 +80,13 @@ pub enum Import<'a> {
     Ordinal(u32),
 }
 
+/// Whether the file at host path `path` is a 64-bit (x86-64) PE.
+pub fn is_64bit_file(path: &str) -> bool {
+    let Ok(d) = std::fs::read(path) else { return false };
+    let pe = d.get(0x3c..0x40).map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])) as usize;
+    d.get(pe + 4..pe + 6) == Some(&[0x64, 0x86])
+}
+
 /// Maps the image in `data`; `resolve(dll, import)` gives import addresses.
 pub fn load(data: &[u8], path: &str, resolve: &mut dyn FnMut(&str, Import) -> u32) -> Result<u32, String> {
     let rd16 = |o: usize| -> u32 { data.get(o..o + 2).map_or(0, |b| u16::from_le_bytes([b[0], b[1]]) as u32) };
@@ -74,28 +95,42 @@ pub fn load(data: &[u8], path: &str, resolve: &mut dyn FnMut(&str, Import) -> u3
         return Err("not an MZ file".into());
     }
     let pe = rd32(0x3c) as usize;
-    if rd32(pe) != 0x4550 || rd16(pe + 4) != 0x14c {
-        return Err("not a 32-bit x86 PE".into());
+    let machine = rd16(pe + 4);
+    if rd32(pe) != 0x4550 || (machine != 0x14c && machine != 0x8664) {
+        return Err("not an x86 or x86-64 PE".into());
+    }
+    let wide = machine == 0x8664;
+    if wide != mem::x64() {
+        return Err(if wide { "a 64-bit image in a 32-bit process".into() } else { "a 32-bit image in a 64-bit process".into() });
     }
     let nsec = rd16(pe + 6) as usize;
     let chars = rd16(pe + 22);
     let opt = pe + 24;
     let optsize = rd16(pe + 20) as usize;
-    if rd16(opt) != 0x10b {
-        return Err("not PE32".into());
+    if rd16(opt) != if wide { 0x20b } else { 0x10b } {
+        return Err("bad optional header".into());
     }
     let entry_rva = rd32(opt + 16);
-    let pref = rd32(opt + 28);
+    let pref: u64 = if wide { rd32(opt + 24) as u64 | (rd32(opt + 28) as u64) << 32 } else { rd32(opt + 28) as u64 };
     let size = rd32(opt + 56);
     let hdr_size = rd32(opt + 60);
-    let dir = |i: usize| (rd32(opt + 96 + 8 * i), rd32(opt + 100 + 8 * i));
+    let dirs = opt + if wide { 112 } else { 96 };
+    let dir = |i: usize| (rd32(dirs + 8 * i), rd32(dirs + 4 + 8 * i));
     let dll = chars & 0x2000 != 0;
     let relocs = dir(5);
-    let base = match mem::reserve(pref, size, 0x80, 0x100_0000, false) {
+    let can_move = relocs.0 != 0 && chars & 1 == 0;
+    let low = pref as u32;
+    let base = match (pref >> 32 == 0).then(|| mem::reserve(low, size, 0x80, 0x100_0000, false)).flatten() {
         Some(b) => b,
         // (elsewhere when it can move: relocations, or a resource-only DLL with no code to fix)
-        None if (relocs.0 != 0 && chars & 1 == 0) || (dll && entry_rva == 0) => {
-            mem::reserve(0, size, 0x80, 0x100_0000, false).ok_or("no room for the image")?
+        None if can_move || (dll && entry_rva == 0) => mem::reserve(0, size, 0x80, 0x100_0000, false).ok_or("no room for the image")?,
+        // above 4G and fixed: memory is addressed modulo 4G, so the image lives at its base's
+        // low half and RIP keeps the upper one (vnx86 Cpu::rip_hi); addresses handed to the
+        // program in that range get it back (mem::widen)
+        None if pref >> 32 != 0 && alias().2 == 0 => {
+            let b = mem::reserve(low, size, 0x80, 0x100_0000, false).ok_or_else(|| format!("cannot map at {pref:#x} (its low alias {low:#x} is taken)"))?;
+            *ALIAS.write().unwrap() = (b, (pref >> 32) as u32, size);
+            b
         }
         None => return Err(format!("cannot map at {pref:#x} (no relocations)")),
     };
@@ -114,7 +149,7 @@ pub fn load(data: &[u8], path: &str, resolve: &mut dyn FnMut(&str, Import) -> u3
         }
     }
     // relocations
-    let delta = base.wrapping_sub(pref);
+    let delta = (widen_base(base, pref)).wrapping_sub(pref);
     if delta != 0 && relocs.0 != 0 {
         let (mut at, end) = (base + relocs.0, base + relocs.0 + relocs.1);
         while at + 8 <= end {
@@ -125,9 +160,11 @@ pub fn load(data: &[u8], path: &str, resolve: &mut dyn FnMut(&str, Import) -> u3
             }
             for k in 0..(len - 8) / 2 {
                 let e = r16(at + 8 + 2 * k);
-                if e >> 12 == 3 {
-                    let a = base + page + (e & 0xfff) as u32;
-                    w32(a, r32(a).wrapping_add(delta));
+                let a = base + page + (e & 0xfff) as u32;
+                match e >> 12 {
+                    3 => w32(a, r32(a).wrapping_add(delta as u32)),
+                    10 => mem::w64(a, mem::r64(a).wrapping_add(delta)),
+                    _ => {}
                 }
             }
             at += len;
@@ -179,7 +216,8 @@ pub fn load(data: &[u8], path: &str, resolve: &mut dyn FnMut(&str, Import) -> u3
     let (trva, _) = dir(9);
     let tls = (trva != 0).then(|| {
         let t = base + trva;
-        Tls { start: r32(t), end: r32(t + 4), index_addr: r32(t + 8), callbacks: r32(t + 12), zero_fill: r32(t + 16), index: 0 }
+        let k = mem::ps();
+        Tls { start: r32(t), end: r32(t + k), index_addr: r32(t + 2 * k), callbacks: r32(t + 3 * k), zero_fill: r32(t + 4 * k), index: 0 }
     });
     MODULES.write().unwrap().push(Module {
         base,
@@ -194,6 +232,7 @@ pub fn load(data: &[u8], path: &str, resolve: &mut dyn FnMut(&str, Import) -> u3
         resources: if dir(2).0 != 0 { base + dir(2).0 } else { 0 },
         refs: 1,
         hle: false,
+        pdata: if dir(3).0 != 0 { (base + dir(3).0, dir(3).1 / 12) } else { (0, 0) },
     });
     // imports (after the module is listed: a DLL importing from itself, or a cycle)
     let (irva, _) = dir(1);
@@ -204,18 +243,24 @@ pub fn load(data: &[u8], path: &str, resolve: &mut dyn FnMut(&str, Import) -> u3
             let lookup = if r32(d) != 0 { r32(d) } else { r32(d + 16) };
             let iat = base + r32(d + 16);
             let mut k = 0;
+            let ps = mem::ps();
             loop {
-                let v = r32(base + lookup + 4 * k);
-                if v == 0 {
+                let v = r32(base + lookup + ps * k);
+                let ordinal = if wide { r32(base + lookup + ps * k + 4) & 0x8000_0000 != 0 } else { v & 0x8000_0000 != 0 };
+                if v == 0 && !ordinal {
                     break;
                 }
-                let a = if v & 0x8000_0000 != 0 {
+                let a = if ordinal {
                     resolve(&dll_name, Import::Ordinal(v & 0xffff))
                 } else {
                     let n = String::from_utf8_lossy(&mem::cstr(base + v + 2)).into_owned();
                     resolve(&dll_name, Import::Name(&n))
                 };
-                w32(iat + 4 * k, a);
+                if wide {
+                    mem::w64(iat + 8 * k, mem::widen(a));
+                } else {
+                    w32(iat + 4 * k, a);
+                }
                 k += 1;
             }
             d += 20;
@@ -361,11 +406,19 @@ pub fn hle_module(dll: &str) -> u32 {
     w16(base, 0x5a4d);
     w32(base + 0x3c, 0x40);
     w32(base + 0x40, 0x4550);
-    w16(base + 0x44, 0x14c);
-    w16(base + 0x54, 0xe0);
-    w16(base + 0x56, 0x2102);
-    w16(base + 0x58, 0x10b);
-    w32(base + 0x58 + 28, base);
+    if mem::x64() {
+        w16(base + 0x44, 0x8664);
+        w16(base + 0x54, 0xf0);
+        w16(base + 0x56, 0x2022);
+        w16(base + 0x58, 0x20b);
+        w32(base + 0x58 + 24, base);
+    } else {
+        w16(base + 0x44, 0x14c);
+        w16(base + 0x54, 0xe0);
+        w16(base + 0x56, 0x2102);
+        w16(base + 0x58, 0x10b);
+        w32(base + 0x58 + 28, base);
+    }
     w32(base + 0x58 + 56, 0x1000);
     MODULES.write().unwrap().push(Module {
         base,
@@ -380,6 +433,7 @@ pub fn hle_module(dll: &str) -> u32 {
         resources: 0,
         refs: 1,
         hle: true,
+        pdata: (0, 0),
     });
     base
 }
@@ -391,6 +445,13 @@ fn find_dll_file(dll: &str) -> Option<(String, String)> {
     let name = if dll.contains('.') { dll.to_string() } else { format!("{dll}.dll") };
     if name.contains('\\') || name.contains('/') || name.contains(':') {
         let w = crate::files::full_path(&name);
+        // (x64: system32's 64-bit DLLs are C:\windows\system64 in the 32-bit prefix)
+        if mem::x64() && w.len() > 20 && w[..20].eq_ignore_ascii_case("C:\\windows\\system32\\") {
+            let w64 = format!("{}{}", SYSDIR64, &w[19..]);
+            if let Some(h) = crate::files::resolve(&w64) {
+                return Some((h, w));
+            }
+        }
         return crate::files::resolve(&w).map(|h| (h, w));
     }
     let exe_dir = MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.path.rsplit_once('\\').map_or(String::new(), |x| x.0.to_string()));
@@ -400,7 +461,7 @@ fn find_dll_file(dll: &str) -> Option<(String, String)> {
     for m in MODULES.read().unwrap().iter().filter(|m| m.dll && !m.hle) {
         if let Some((d, _)) = m.path.rsplit_once('\\') {
             // (not system32, where Wine's own builds of the DLLs we implement also are)
-            if !dirs.iter().any(|x| x.eq_ignore_ascii_case(d)) && !d.eq_ignore_ascii_case("C:\\windows\\system32") {
+            if !dirs.iter().any(|x| x.eq_ignore_ascii_case(d)) && !d.eq_ignore_ascii_case("C:\\windows\\system32") && !d.eq_ignore_ascii_case(SYSDIR64) {
                 dirs.push(d.to_string());
             }
         }
@@ -408,18 +469,31 @@ fn find_dll_file(dll: &str) -> Option<(String, String)> {
     // then the Wine prefix's system32 for DLLs we do not implement at all (msvcr90 and other
     // side-by-side runtimes, d3dx9_43...: Wine's PE builds)
     if !api::is_system(dll) {
-        dirs.push("C:\\windows\\system32".into());
+        dirs.push(if mem::x64() { SYSDIR64 } else { "C:\\windows\\system32" }.into());
     }
     for d in dirs {
         let w = format!("{d}\\{name}");
         if let Some(h) = crate::files::resolve(&w) {
-            return Some((h, w));
+            // (as Windows' loader, one of the other architecture is passed over: a 64-bit game
+            // shipping a 32-bit d3dcompiler_47.dll gets the system's)
+            if is_64bit_file(&h) == mem::x64() {
+                return Some((h, w));
+            }
         }
     }
     None
 }
 
+/// Where a 64-bit program's system DLLs (Wine's x86_64 PE builds) are.
+const SYSDIR64: &str = "C:\\windows\\system64";
+
+/// The C runtime's API sets are ucrtbase, which a 64-bit program loads from the prefix.
+fn canon(dll: &str) -> &str {
+    if mem::x64() && api::dll_key(dll) == "ucrtbase" { "ucrtbase.dll" } else { dll }
+}
+
 fn resolve_import(dll: &str, imp: Import) -> u32 {
+    let dll = canon(dll);
     let hle = api::is_core(dll) || (api::is_system(dll) && find_dll_file(dll).is_none());
     if hle {
         let name = match imp {
@@ -506,6 +580,7 @@ fn load_dll_file(dll: &str) -> Result<u32, String> {
 
 /// LoadLibrary: an existing module, one of ours, or a DLL file (initialized here).
 pub fn load_library(cpu: &mut Cpu, name: &str) -> u32 {
+    let name = canon(name);
     let _g = LOADER.lock().unwrap();
     let key = api::dll_key(name);
     if let Some(b) = by_name(name) {
@@ -561,7 +636,7 @@ fn tls_block(teb: u32, t: &Tls) {
     let n = t.end.saturating_sub(t.start);
     let b = mem::heap_alloc(n + t.zero_fill + 16, true);
     mem::copy(b, t.start, n);
-    w32(r32(teb + 0x2c) + 4 * t.index, b);
+    mem::wp(r32(teb + crate::teb_tls_pointer()) + mem::ps() * t.index, b);
 }
 
 fn tls_callbacks(cpu: &mut Cpu, base: u32, reason: u32) {
@@ -573,7 +648,7 @@ fn tls_callbacks(cpu: &mut Cpu, base: u32, reason: u32) {
     while r32(p) != 0 {
         let f = r32(p);
         crate::call(cpu, f, &[base, reason, 0]);
-        p += 4;
+        p += mem::ps();
     }
 }
 

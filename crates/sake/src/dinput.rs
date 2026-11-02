@@ -6,19 +6,13 @@
 use crate::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use crate::api::{host_fn, implement, Ctx, Handler};
+use crate::api::{implement, Ctx, Handler};
 use crate::mem::{self, put32, r32, w32};
 
 const KEYBOARD: u32 = 0x6F1D_2B61;
 const MOUSE: u32 = 0x6F1D_2B60;
 
-fn vtable(name: &str, methods: &[(Handler, u32)]) -> u32 {
-    let v = mem::heap_alloc(4 * methods.len() as u32, true);
-    for (i, (f, bytes)) in methods.iter().enumerate() {
-        w32(v + 4 * i as u32, host_fn(&format!("{name}::{i}"), *f, *bytes));
-    }
-    v
-}
+use crate::api::vtable;
 
 /// device object -> (kind, last cursor for relative mouse motion)
 static DEVICES: Mutex<Option<HashMap<u32, (u32, (i32, i32))>>> = Mutex::new(None);

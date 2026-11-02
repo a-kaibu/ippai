@@ -9,7 +9,7 @@ use crate::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use crate::api::{host_fn, implement, Ctx};
-use crate::mem::{self, put32, w32};
+use crate::mem;
 use vnhost::d3d11::{CREATE_DEVICE, CREATE_FACTORY};
 
 #[path = "d3d11_methods.rs"]
@@ -32,11 +32,23 @@ fn method(c: &mut Ctx) -> u32 {
         c.st0 = Some(0.0);
         return 0;
     }
+    if mem::x64() {
+        // (the host reads 8-byte slots)
+        let a: [u64; 16] = std::array::from_fn(|i| c.a64(i as u32));
+        return unsafe { vnhost::d3d11::call(id, a.as_ptr() as *const u32, calls()) };
+    }
     unsafe { vnhost::d3d11::call(id, (c.esp + 4) as usize as *const u32, calls()) }
 }
 
 fn host(id: u32, args: &[u32]) -> u32 {
     init();
+    if mem::x64() {
+        let mut a = [0u64; 16];
+        for (d, &s) in a.iter_mut().zip(args) {
+            *d = s as u64;
+        }
+        return unsafe { vnhost::d3d11::call(id, a.as_ptr() as *const u32, calls()) };
+    }
     unsafe { vnhost::d3d11::call(id, args.as_ptr(), calls()) }
 }
 
@@ -45,19 +57,20 @@ fn init() {
     static DONE: OnceLock<()> = OnceLock::new();
     DONE.get_or_init(|| {
         let n = FIRST + METHODS.len() as u32;
-        let table = mem::heap_alloc(4 * n, true);
+        let ps = mem::ps();
+        let table = mem::heap_alloc(ps * n, true);
         let mut ids = HashMap::default();
         for (k, m) in METHODS.iter().enumerate() {
             let i = FIRST + k as u32;
-            let v = mem::heap_alloc(4 * m.len() as u32, true);
+            let v = mem::heap_alloc(ps * m.len() as u32, true);
             for (j, &args) in m.iter().enumerate() {
                 let float = args == 0;
                 let bytes = if float { 8 } else { 4 * args as u32 };
                 let a = host_fn(&format!("d3d11:{i}:{j}"), method, bytes);
                 ids.insert(a, (i << 8 | j as u32, float));
-                w32(v + 4 * j as u32, a);
+                mem::wp(v + ps * j as u32, a);
             }
-            w32(table + 4 * i, v);
+            mem::wp(table + ps * i, v);
         }
         *IDS.lock().unwrap() = Some(ids);
         unsafe { vnhost::d3d11::init(table as usize as *const u32, n) };
@@ -89,7 +102,7 @@ fn CreateDXGIFactory2(c: &mut Ctx) -> u32 {
     host(CREATE_FACTORY, &[c.a(0), c.a(1), c.a(2)])
 }
 fn DXGIGetDebugInterface1(c: &mut Ctx) -> u32 {
-    put32(c.a(2), 0);
+    mem::putp(c.a(2), 0);
     E_NOTIMPL
 }
 fn not_impl(_: &mut Ctx) -> u32 {

@@ -27,15 +27,32 @@ pub struct VaArgs {
 }
 
 impl VaArgs {
+    /// A va_list (x64: 8-byte slots).
     pub fn stack(at: u32) -> VaArgs {
         VaArgs { at }
     }
+    /// The variable arguments from argument `i` of the call in `c` on (x64: the register ones
+    /// go to their home space first, as va_start does).
+    pub fn arg(c: &crate::api::Ctx, i: u32) -> VaArgs {
+        if crate::mem::x64() {
+            for k in 0..4 {
+                crate::mem::w64(c.esp + 8 + 8 * k, c.a64(k));
+            }
+            return VaArgs { at: c.esp + 8 + 8 * i };
+        }
+        VaArgs { at: c.esp + 4 + 4 * i }
+    }
     pub fn u32(&mut self) -> u32 {
         let v = r32(self.at);
-        self.at += 4;
+        self.at += crate::mem::ps();
         v
     }
     pub fn u64(&mut self) -> u64 {
+        if crate::mem::x64() {
+            let v = crate::mem::r64(self.at);
+            self.at += 8;
+            return v;
+        }
         let lo = self.u32() as u64;
         lo | (self.u32() as u64) << 32
     }
@@ -1054,15 +1071,15 @@ fn CoCreateInstance(c: &mut Ctx) -> u32 {
         return 0;
     }
     if let Some(obj) = crate::ddraw::create_instance(clsid, iid) {
-        put32(c.a(4), obj);
+        mem::putp(c.a(4), obj);
         return 0;
     }
     if let Some(obj) = crate::dshow::create_instance(clsid, iid) {
-        put32(c.a(4), obj);
+        mem::putp(c.a(4), obj);
         return 0;
     }
     if let Some(obj) = crate::dinput::create_instance(clsid) {
-        put32(c.a(4), obj);
+        mem::putp(c.a(4), obj);
         return 0;
     }
     if let Some(obj) = crate::xaudio2::create_instance(clsid) {
@@ -1070,11 +1087,11 @@ fn CoCreateInstance(c: &mut Ctx) -> u32 {
         return 0;
     }
     if let Some(obj) = crate::sound::create_instance(c, clsid, iid) {
-        put32(c.a(4), obj);
+        mem::putp(c.a(4), obj);
         return 0;
     }
     eprintln!("sake: CoCreateInstance {{{}}} iid {{{}}}: not registered", g(clsid), g(iid));
-    put32(c.a(4), 0);
+    mem::putp(c.a(4), 0);
     0x8004_0154
 }
 fn CoTaskMemAlloc(c: &mut Ctx) -> u32 {
@@ -2072,7 +2089,7 @@ fn CryptGetHashParam(c: &mut Ctx) -> u32 {
     if out != 0 {
         if r32(plen) < val.len() as u32 {
             put32(plen, val.len() as u32);
-            w32(crate::cur().teb + 0x34, 234);
+            w32(crate::cur().teb + crate::teb_last_error(), 234);
             return 0;
         }
         mem::write(out, &val);

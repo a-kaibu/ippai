@@ -18,6 +18,8 @@ pub const RET_TRAP: u32 = 0xffff_0000;
 pub const SEH_TRAP: u32 = 0xffff_0010;
 /// Threads end by returning here.
 pub const EXIT_TRAP: u32 = 0xffff_0020;
+/// x64: where a language-specific exception handler returns to the dispatcher (seh64.rs).
+pub const SEH64_TRAP: u32 = 0xffff_0030;
 
 pub type Handler = fn(&mut Ctx) -> u32;
 
@@ -37,12 +39,27 @@ pub struct Ctx<'a> {
 impl Ctx<'_> {
     #[inline]
     pub fn a(&self, i: u32) -> u32 {
+        if crate::mem::x64() {
+            return self.a64(i) as u32;
+        }
         r32(self.esp + 4 + 4 * i)
+    }
+    /// x64: the whole argument `i` (RCX, RDX, R8, R9, then the stack past the home space).
+    pub fn a64(&self, i: u32) -> u64 {
+        if i < 4 { self.cpu.gpr([1, 2, 8, 9][i as usize]) } else { crate::mem::r64(self.esp + 8 + 8 * i) }
+    }
+    /// x64: floating-point argument `i` (XMM0-3, then the stack), as a double's bits.
+    pub fn xmm(&self, i: u32) -> u64 {
+        if i < 4 { self.cpu.xmm(i as usize) as u64 } else { crate::mem::r64(self.esp + 8 + 8 * i) }
     }
     pub fn i(&self, i: u32) -> i32 {
         self.a(i) as i32
     }
+    /// The double at 32-bit stack slots i, i+1 (x64: argument i/2, the double's register)
     pub fn f64(&self, i: u32) -> f64 {
+        if crate::mem::x64() {
+            return f64::from_bits(self.xmm(i / 2));
+        }
         f64::from_bits(self.a(i) as u64 | (self.a(i + 1) as u64) << 32)
     }
     /// Calls guest code at `f` with `args` (stdcall or cdecl alike); returns EAX.
@@ -115,11 +132,25 @@ pub fn dll_key(dll: &str) -> String {
 
 /// Whether `dll` is one we implement (or at least know the exports of).
 pub fn is_system(dll: &str) -> bool {
-    specs().dlls.contains(&dll_key(dll))
+    let k = dll_key(dll);
+    !(crate::mem::x64() && is_crt(&k)) && specs().dlls.contains(&k)
+}
+
+/// The C/C++ runtimes: a 64-bit program gets Wine's PE builds of them (their structures,
+/// FILE, va_lists... are all 64-bit ones there) instead of crt.rs.
+pub fn is_crt(key: &str) -> bool {
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit() || b == b'_');
+    matches!(key, "msvcrt" | "ucrtbase" | "crtdll")
+        || key.strip_prefix("msvcr").is_some_and(digits)
+        || key.strip_prefix("msvcp").is_some_and(digits)
+        || key.starts_with("vcruntime")
 }
 
 /// DLLs we implement even when the game ships its own copy.
 pub fn is_core(dll: &str) -> bool {
+    if crate::mem::x64() && is_crt(&dll_key(dll)) {
+        return false;
+    }
     matches!(
         dll_key(dll).as_str(),
         "kernel32" | "kernelbase" | "ntdll" | "user32" | "gdi32" | "advapi32" | "ole32" | "oleaut32" | "comctl32"
@@ -287,8 +318,13 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
     let tr = trace();
     if tr > 0 && trace_match(i) {
         let n = name_of(addr).unwrap_or_default();
-        let args: Vec<String> = (0..(bytes / 4).min(8)).map(|k| format!("{:x}", r32(esp + 4 + 4 * k))).collect();
-        let line = format!("sake {:04x} {}: {n}({}) from {:x}", crate::cur().tid, crate::k32::ticks_ms() - 60_000, args.join(","), r32(esp));
+        let x64 = crate::mem::x64();
+        let nargs = if x64 { 4.max(bytes / 4).min(8) } else { (bytes / 4).min(8) };
+        let args: Vec<String> = (0..nargs)
+            .map(|k| if x64 { format!("{:x}", Ctx { cpu: &mut *cpu, esp, edx: None, jumped: false, st0: None, trap: addr }.a64(k)) } else { format!("{:x}", r32(esp + 4 + 4 * k)) })
+            .collect();
+        let from = if x64 { crate::mem::r64(esp) } else { r32(esp) as u64 };
+        let line = format!("sake {:04x} {}: {n}({}) from {:x}", crate::cur().tid, crate::k32::ticks_ms() - 60_000, args.join(","), from);
         if tr == 3 {
             RING.with(|r| {
                 let mut r = r.borrow_mut();
@@ -322,6 +358,24 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
     let (edx, st0) = (c.edx, c.st0);
     if tr == 2 {
         eprintln!("sake {:04x}:   -> {r:x}", crate::cur().tid);
+    }
+    if crate::mem::x64() {
+        // RAX: a 64-bit result (ret64), a small negative one (INVALID_HANDLE_VALUE,
+        // pseudo-handles) sign-extended, an address in an image above 4G widened
+        let rax = match edx {
+            Some(d) => (d as u64) << 32 | r as u64,
+            None if r >= 0xffff_f000 => r as i32 as i64 as u64,
+            None => crate::mem::widen(r),
+        };
+        cpu.set_gpr(EAX, rax);
+        if let Some(v) = st0 {
+            cpu.set_xmm(0, v.to_bits() as u128);
+        }
+        let ret = crate::mem::r64(esp);
+        cpu.eip = ret as u32;
+        cpu.rip_hi = (ret >> 32) as u32;
+        cpu.set_gpr(ESP, esp as u64 + 8);
+        return;
     }
     cpu.regs[EAX] = r;
     if let Some(d) = edx {
@@ -361,4 +415,14 @@ pub fn host_fn(name: &str, f: Handler, bytes: u32) -> u32 {
     e[i as usize].known = true;
     let _ = w32;
     a
+}
+
+/// A COM vtable of traps (x64: 8-byte entries).
+pub fn vtable(name: &str, methods: &[(Handler, u32)]) -> u32 {
+    let k = crate::mem::ps();
+    let v = crate::mem::heap_alloc(k * methods.len() as u32, true);
+    for (i, (f, bytes)) in methods.iter().enumerate() {
+        crate::mem::wp(v + k * i as u32, host_fn(&format!("{name}::{i}"), *f, *bytes));
+    }
+    v
 }
