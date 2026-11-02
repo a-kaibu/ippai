@@ -1,6 +1,35 @@
 //! DXGI formats: what the page keeps them as, and how texels get there.
 
 /// page texture formats (d3d9.ts TEX_FORMATS)
+/// Format::conv for 32-bit float texels stored as halves (d3d9's converters copy those as they are)
+pub const F32_TO_F16: u32 = 0xf32;
+
+/// f32 to f16 bits (rounded to nearest; out of range to infinity, NaN kept)
+pub fn f16_bits(v: f32) -> u16 {
+    let b = v.to_bits();
+    let sign = ((b >> 16) & 0x8000) as u16;
+    let e = ((b >> 23) & 0xff) as i32;
+    let m = b & 0x7f_ffff;
+    if e == 0xff {
+        return sign | 0x7c00 | if m != 0 { 0x200 } else { 0 };
+    }
+    let e16 = e - 127 + 15;
+    if e16 >= 31 {
+        return sign | 0x7c00;
+    }
+    if e16 <= 0 {
+        if e16 < -10 {
+            return sign;
+        }
+        let m = m | 0x80_0000;
+        let shift = (14 - e16) as u32;
+        let h = (m >> shift) + ((m >> (shift - 1)) & 1);
+        return sign | h as u16;
+    }
+    let h = ((e16 as u32) << 10 | m >> 13) + ((m >> 12) & 1);
+    sign | h as u16
+}
+
 pub const P_BGRA8: u32 = 0;
 pub const P_D24S8: u32 = 1;
 pub const P_RGBA16F: u32 = 2;
@@ -47,7 +76,8 @@ const fn c(bpp: u32, block: u32, conv: u32) -> Format {
 pub fn info(dxgi: u32) -> Option<Format> {
     use crate::d3d9::format as f9;
     Some(match dxgi {
-        1 | 2 => Format { page: P_RGBA16F, bpp: 16, block: 1, conv: f9::A32B32G32R32F, no_alpha: false },
+        // (no rgba32float page textures: halves, see F32_TO_F16)
+        1 | 2 => Format { page: P_RGBA16F, bpp: 16, block: 1, conv: F32_TO_F16, no_alpha: false },
         9 | 10 => f(P_RGBA16F, 8),
         15 | 16 => f(P_RG32F, 8),
         23 | 24 => f(P_RGB10A2, 4),

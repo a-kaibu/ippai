@@ -41,6 +41,13 @@ const TESTS = {
       [320, 90, 239, 9, 8], [150, 352, 7, 12, 237], [490, 352, 7, 237, 11], [320, 280, 70, 93, 92]],
     log: [/frame 60\b/],
   },
+  d2dtest: {
+    // Direct2D on the D3D11 swap chain: clear, filled rectangle, ellipse outline, gradient bar,
+    // DirectWrite text (its metrics in the log)
+    pixels: [[10, 10, 26, 77, 26], [100, 100, 255, 0, 0], [341, 100, 0, 0, 255], [460, 100, 26, 77, 26],
+      [45, 420, 252, 255, 3], [320, 420, 127, 255, 128], [595, 420, 2, 255, 253]],
+    log: [/text metrics \d/, /EndDraw -> 0\b/, /frame 60\b/],
+  },
   gltest: {
     // glClear, glBegin quad into an FBO, its texture drawn with client arrays, GLSL triangle
     pixels: [[10, 10, 26, 77, 26], [60, 60, 102, 26, 26], [100, 90, 255, 255, 0], [170, 90, 51, 13, 77],

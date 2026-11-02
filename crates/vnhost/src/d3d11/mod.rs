@@ -167,6 +167,20 @@ pub struct View {
     pub mips: u32,
     pub layer: u32,
     pub layers: u32,
+    /// a buffer view (shader resource view of a buffer): `res` is then a one-row texture of
+    /// its elements, copied from the buffer when they change (WGSL has no texel buffers; the
+    /// shaders fetch from that texture, see shader::buffers_to_2d)
+    pub buf: Option<BufSrc>,
+}
+
+#[derive(Clone)]
+pub struct BufSrc {
+    pub buf: u32,
+    /// first byte, bytes
+    pub off: u32,
+    pub bytes: u32,
+    /// what the texture holds
+    pub last: Vec<u8>,
 }
 
 pub struct Shader {
@@ -480,6 +494,9 @@ impl D11 {
                 }
             }
             Data::View(v) => {
+                if let Some(b) = &v.buf {
+                    self.release(b.buf);
+                }
                 self.release(v.res);
             }
             Data::SwapChain(s) => {
@@ -765,7 +782,15 @@ unsafe fn upload_texture(t: &Texture, sub: u32, mem: u32, pitch: u32, bx: Option
     let src = mem as *const u8;
     let mut out = Vec::new();
     let bpr;
-    if f.conv != 0 {
+    if f.conv == format::F32_TO_F16 {
+        for y in 0..h {
+            let p = src.add((y * pitch) as usize) as *const f32;
+            for x in 0..(w * 4) as usize {
+                out.extend_from_slice(&format::f16_bits(p.add(x).read_unaligned()).to_le_bytes());
+            }
+        }
+        bpr = w * 8;
+    } else if f.conv != 0 {
         crate::d3d9::format::convert(f.conv, src, pitch as usize, w, h, &mut out);
         bpr = w * format::page_bpp(t.page);
     } else {
@@ -1363,8 +1388,13 @@ unsafe fn private_data(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32)
 /// Create{ShaderResource, UnorderedAccess, RenderTarget, DepthStencil}View(resource, desc, out)
 unsafe fn create_view(d: &mut D11, m: u32, res: u32, desc: u32, out: u32) -> u32 {
     let rid = d.id_of(res);
+    if m == 7 && desc != 0 && matches!(rd(desc, 1), 1 | 11) {
+        if let Some(Data::Buffer(b)) = d.objs.get(&rid).map(|o| &o.data) {
+            return create_buffer_srv(d, rid, b.size, desc, out);
+        }
+    }
     let Some(Data::Texture(t)) = d.objs.get(&rid).map(|o| &o.data) else {
-        // (buffer views are not supported)
+        // (other buffer views are not supported)
         if out != 0 {
             let o = d.new_obj([IF_SRV, IF_UAV, IF_RTV, IF_DSV][m as usize - 7], Data::Other);
             wrp(out, 0, o);
@@ -1387,6 +1417,7 @@ unsafe fn create_view(d: &mut D11, m: u32, res: u32, desc: u32, out: u32) -> u32
         mips: tmips,
         layer: 0,
         layers: tlayers,
+        buf: None,
     };
     if desc != 0 {
         let fmt = rd(desc, 0);
@@ -1450,6 +1481,51 @@ unsafe fn create_view(d: &mut D11, m: u32, res: u32, desc: u32, out: u32) -> u32
     let o = d.new_obj([IF_SRV, IF_UAV, IF_RTV, IF_DSV][m as usize - 7], Data::View(v));
     wrp(out, 0, o);
     S_OK
+}
+
+/// CreateShaderResourceView of a buffer (BUFFER or BUFFEREX: format, dimension, first element,
+/// elements): a view of a one-row texture with the elements (at most 8192, WebGPU's width limit)
+unsafe fn create_buffer_srv(d: &mut D11, rid: u32, size: u32, desc: u32, out: u32) -> u32 {
+    let (fmt, first, n) = (rd(desc, 0), rd(desc, 2), rd(desc, 3));
+    let Some(f) = format::info(fmt).filter(|f| f.block == 1) else { return E_INVALIDARG };
+    let n = n.min(size.saturating_sub(first * f.bpp) / f.bpp.max(1)).clamp(1, 8192);
+    if out == 0 {
+        return S_FALSE;
+    }
+    let tex = new_texture(d, 2, n, 1, 1, 1, fmt, 0, 8, false);
+    let tid = d.id_of(tex);
+    d.add_ref(rid);
+    let buf = Some(BufSrc { buf: rid, off: first * f.bpp, bytes: n * f.bpp, last: Vec::new() });
+    let v = View { res: tid, fmt, vdim: 1, mip: 0, mips: 1, layer: 0, layers: 1, buf };
+    let o = d.new_obj(IF_SRV, Data::View(v));
+    wrp(out, 0, o);
+    S_OK
+}
+
+/// A buffer view's texture, brought up to date with its buffer.
+fn buffer_view_sync(d: &mut D11, view: u32) {
+    let Some(Data::View(v)) = d.objs.get(&view).map(|o| &o.data) else { return };
+    let Some(b) = &v.buf else { return };
+    let Some(Data::Buffer(buf)) = d.objs.get(&b.buf).map(|o| &o.data) else { return };
+    if buf.mem == 0 {
+        return;
+    }
+    let now = unsafe { std::slice::from_raw_parts((buf.mem + b.off) as *const u8, b.bytes as usize) };
+    if now == b.last.as_slice() {
+        return;
+    }
+    let now = now.to_vec();
+    if d.trace {
+        eprintln!("d3d11: buffer view {view} <- {} bytes of buffer {}", now.len(), b.buf);
+    }
+    if let Some(Data::Texture(t)) = d.objs.get(&v.res).map(|o| &o.data) {
+        unsafe { upload_texture(t, 0, now.as_ptr() as u32, b.bytes, None) };
+    }
+    if let Some(Data::View(v)) = d.objs.get_mut(&view).map(|o| &mut o.data) {
+        if let Some(b) = v.buf.as_mut() {
+            b.last = now;
+        }
+    }
 }
 
 /// Methods of device children: views, shaders, states, resources.
@@ -2314,6 +2390,7 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
                 shader::Binding::Texture(vdim, sample) => {
                     let t = bi - 16;
                     let sv = st.srvs[stage].get(t as usize).copied().unwrap_or(0);
+                    buffer_view_sync(d, sv);
                     let e = match d.objs.get(&sv).map(|o| &o.data) {
                         Some(Data::View(v)) => match d.objs.get(&v.res).map(|o| &o.data) {
                             Some(Data::Texture(tx)) => [*bi, 1, tx.gpu, *vdim, v.mip, v.mips.min(tx.mips - v.mip.min(tx.mips - 1)).max(1), v.layer, v.layers.max(1)],
