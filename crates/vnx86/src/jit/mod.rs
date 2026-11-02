@@ -155,7 +155,7 @@ const MAX_REGION_INS: usize = 1000;
 /// The same for functions (jit::FN; VNVM_JIT_FN_INS)
 pub static FN_MAX_INS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(1000);
 /// Inlined callees: at most this many instructions each, and in all in a region.
-const MAX_INLINE: usize = 64;
+const MAX_INLINE: usize = 128;
 const MAX_INLINE_TOTAL: usize = 400;
 
 /// Field offsets in [`Cpu`].
