@@ -2054,16 +2054,24 @@ fn IsValidLocale(_: &mut Ctx) -> u32 {
 }
 fn locale_info(ty: u32) -> String {
     let ja = crate::text::acp() == 932;
+    let pick = |j: &str, e: &str| if ja { j } else { e }.to_string();
     match ty & 0xffff {
-        0x1 => format!("{:04x}", lcid()),
-        0x2 | 0x3 | 0x4 => if ja { "Japanese" } else { "English" }.into(),
-        0x5 | 0x6 => if ja { "Japan" } else { "United States" }.into(),
-        0x7 => if ja { "JPN" } else { "USA" }.into(),
-        0x59 => if ja { "ja" } else { "en" }.into(),
-        0x5a => if ja { "JP" } else { "US" }.into(),
-        0xb => crate::text::acp().to_string(),
+        0x1 | 0x9 => format!("{:04x}", lcid()),
+        0x2 | 0x73 => pick("日本語 (日本)", "English (United States)"),
+        0x3 => pick("JPN", "ENU"),
+        0x4 => pick("日本語", "English"),
+        0x5 | 0xa => pick("81", "1"),
+        0x6 | 0x8 => pick("日本", "United States"),
+        0x7 | 0x68 => pick("JPN", "USA"),
+        0x59 | 0x6d => pick("ja", "en"),
+        0x5a => pick("JP", "US"),
+        0x5c => pick("ja-JP", "en-US"),
+        0x67 => pick("jpn", "eng"),
+        0x72 => pick("Japanese (Japan)", "English (United States)"),
+        0xb => pick("932", "437"),
         0x1004 => crate::text::acp().to_string(),
-        0x1001 | 0x1002 => if ja { "Japan" } else { "United States" }.into(),
+        0x1001 => pick("Japanese", "English"),
+        0x1002 => pick("Japan", "United States"),
         0x0c => ",".into(),
         0x0d => "1".into(),
         0x0e => ".".into(),
@@ -2108,7 +2116,27 @@ fn locale_info(ty: u32) -> String {
         _ => "".into(),
     }
 }
+/// LOCALE_RETURN_NUMBER: the value as a DWORD (A: 4 bytes, W: 2 WCHARs)
+fn locale_number(c: &mut Ctx, wide: bool) -> Option<u32> {
+    if c.a(1) & 0x2000_0000 == 0 {
+        return None;
+    }
+    let n = if wide { 2 } else { 4 };
+    let v = u32::from_str_radix(&locale_info(c.a(1)), if c.a(1) & 0xffff == 1 { 16 } else { 10 }).unwrap_or(0);
+    if c.a(3) == 0 {
+        return Some(n);
+    }
+    if c.a(3) < n {
+        last_error(122);
+        return Some(0);
+    }
+    w32(c.a(2), v);
+    Some(n)
+}
 fn GetLocaleInfoA(c: &mut Ctx) -> u32 {
+    if let Some(n) = locale_number(c, false) {
+        return n;
+    }
     let s = locale_info(c.a(1));
     if c.a(3) == 0 {
         return crate::text::s2a(&s).len() as u32 + 1;
@@ -2116,6 +2144,9 @@ fn GetLocaleInfoA(c: &mut Ctx) -> u32 {
     ret_str(c.a(2), c.a(3), &s, false) + 1
 }
 fn GetLocaleInfoW(c: &mut Ctx) -> u32 {
+    if let Some(n) = locale_number(c, true) {
+        return n;
+    }
     let s = locale_info(c.a(1));
     if c.a(3) == 0 {
         return s.encode_utf16().count() as u32 + 1;
@@ -2196,13 +2227,15 @@ fn ctype1(ch: u16) -> u16 {
         if x.is_lowercase() {
             t |= 2;
         }
-        if x.is_ascii_digit() {
+        // (full-width digits are digits too)
+        if x.is_ascii_digit() || (0xff10..=0xff19).contains(&c) {
             t |= 4;
         }
         if x.is_whitespace() {
             t |= 8;
         }
-        if x.is_ascii_punctuation() {
+        // (and the non-ASCII marks: 、。「」・ー and full-width ！？)
+        if x.is_ascii_punctuation() || (c >= 0x80 && !x.is_alphanumeric() && !x.is_whitespace() && !x.is_control()) {
             t |= 0x10;
         }
         if x.is_control() {
@@ -2211,7 +2244,7 @@ fn ctype1(ch: u16) -> u16 {
         if x == ' ' || x == '\t' {
             t |= 0x40;
         }
-        if x.is_ascii_hexdigit() {
+        if x.is_ascii_hexdigit() || matches!(c, 0xff10..=0xff19 | 0xff21..=0xff26 | 0xff41..=0xff46) {
             t |= 0x80;
         }
         if x.is_alphabetic() {
@@ -2220,11 +2253,68 @@ fn ctype1(ch: u16) -> u16 {
     }
     t
 }
+/// CT_CTYPE2: the bidi class (left to right for letters, CJK included)
+fn ctype2(ch: u16) -> u16 {
+    let t = ctype1(ch);
+    match ch {
+        _ if t & 0x100 != 0 => 1,             // C2_LEFTTORIGHT
+        _ if t & 4 != 0 => 3,                 // C2_EUROPENUMBER
+        0x2b | 0x2d => 4,                     // C2_EUROPESEPARATOR
+        0x23..=0x25 => 5,                     // C2_EUROPETERMINATOR
+        0x2c | 0x2e | 0x2f | 0x3a => 7,       // C2_COMMONSEPARATOR
+        0x0a | 0x0d | 0x1c..=0x1e => 8,       // C2_BLOCKSEPARATOR
+        0x09 | 0x0b | 0x1f => 9,              // C2_SEGMENTSEPARATOR
+        _ if t & 8 != 0 => 10,                // C2_WHITESPACE
+        _ if t & 0x20 != 0 => 0,              // C2_NOTAPPLICABLE
+        _ => 11,                              // C2_OTHERNEUTRAL
+    }
+}
+
+/// CT_CTYPE3: Japanese text layout reads C3_FULLWIDTH / C3_HALFWIDTH (SiglusEngine spaces a
+/// character by half the font size without C3_FULLWIDTH), C3_HIRAGANA, C3_KATAKANA, C3_IDEOGRAPH.
+fn ctype3(ch: u16) -> u16 {
+    const NONSPACING: u16 = 1;
+    const DIACRITIC: u16 = 2;
+    const SYMBOL: u16 = 8;
+    const KATAKANA: u16 = 0x10;
+    const HIRAGANA: u16 = 0x20;
+    const HALFWIDTH: u16 = 0x40;
+    const FULLWIDTH: u16 = 0x80;
+    const IDEOGRAPH: u16 = 0x100;
+    const ALPHA: u16 = 0x8000;
+    let c = ch as u32;
+    let t1 = ctype1(ch);
+    let alpha = if t1 & 0x100 != 0 { ALPHA } else { 0 };
+    let symbol = if t1 & 0x10 != 0 { SYMBOL } else { 0 };
+    match c {
+        0x3099..=0x309a => NONSPACING | DIACRITIC | HIRAGANA | FULLWIDTH,
+        0x309b..=0x309c => DIACRITIC | SYMBOL | FULLWIDTH,
+        0x3041..=0x309f => HIRAGANA | FULLWIDTH | ALPHA,
+        0x30fb => SYMBOL | FULLWIDTH,
+        0x30a0..=0x30ff | 0x31f0..=0x31ff => KATAKANA | FULLWIDTH | ALPHA,
+        0x3005..=0x3007 | 0x3021..=0x3029 | 0x3400..=0x4dbf | 0x4e00..=0x9fff | 0xf900..=0xfaff => IDEOGRAPH | FULLWIDTH | ALPHA,
+        0xd800..=0xdfff => FULLWIDTH, // (supplementary ideographs come as surrogate pairs)
+        0x3000..=0x303f | 0x3200..=0x33ff | 0xfe30..=0xfe4f => symbol | FULLWIDTH,
+        0xff61..=0xff65 => SYMBOL | HALFWIDTH,
+        0xff9e..=0xff9f => DIACRITIC | SYMBOL | KATAKANA | HALFWIDTH,
+        0xff66..=0xff9d => KATAKANA | HALFWIDTH | ALPHA,
+        0xffa0..=0xffdc | 0xffe8..=0xffee => alpha | symbol | HALFWIDTH,
+        0xff01..=0xff60 | 0xffe0..=0xffe6 => alpha | symbol | FULLWIDTH,
+        0x1100..=0x115f | 0xac00..=0xd7a3 | 0x3130..=0x318f => FULLWIDTH | ALPHA,
+        // (box drawing, arrows, math, Greek and Cyrillic are full width in the Japanese fonts,
+        // but Windows marks them by script: only symbols, letters)
+        0x0300..=0x036f => NONSPACING | DIACRITIC,
+        0..=0x7f => alpha | symbol | HALFWIDTH,
+        _ => alpha | symbol,
+    }
+}
+
 fn string_type(ty: u32, w: &[u16], out: u32) {
     for (i, ch) in w.iter().enumerate() {
         let v = match ty {
             1 => ctype1(*ch),
-            2 => if *ch < 0x80 { 1 } else { 0 },
+            2 => ctype2(*ch),
+            4 => ctype3(*ch),
             _ => 0,
         };
         w16(out + 2 * i as u32, v);

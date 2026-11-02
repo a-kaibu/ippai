@@ -779,6 +779,9 @@ unsafe fn create_device(d: &mut D3d, d3d: u32, ty: u32, focus: u32, behavior: u3
     p[4] = 0;
     p[5] = 0;
     write_pp(pp, &p);
+    if d.trace {
+        eprintln!("d3d9: device {}x{} format {:#x} window {:?}", p[0], p[1], p[2], rect);
+    }
     let obj_addr = d.new_obj(IF_DEVICE, 0, Data::Device);
     let obj = d.id_of(obj_addr);
     d.add_ref(d3d);
@@ -2217,6 +2220,10 @@ fn ensure_target(d: &mut D3d, rt: u32, ds: u32) {
 }
 
 unsafe fn present(d: &mut D3d, after: &mut After) -> u32 {
+    // VNVM_D3D_TRACE_EVERY=n: trace one whole frame in n
+    if let (Some(n), Some(dev)) = (std::env::var("VNVM_D3D_TRACE_EVERY").ok().and_then(|v| v.parse::<u64>().ok()), d.dev.as_ref()) {
+        d.trace = (dev.frames + 1) % n == 0;
+    }
     let Some(dev) = d.dev.as_mut() else { return D3DERR_INVALIDCALL };
     let (bb, hwnd) = (dev.backbuffer, dev.hwnd);
     dev.frames += 1;
@@ -2383,7 +2390,8 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         }
         if let Some(&(_, ptr, stride)) = streams.first() {
             eprintln!("d3d9:   data {ptr:#x} stride {stride}");
-            for v in 0..count.min(6) {
+            let max = std::env::var("VNVM_D3D_TRACE_VERTS").ok().and_then(|v| v.parse().ok()).unwrap_or(6);
+            for v in 0..count.min(max) {
                 let p = ptr + (first + v) * stride;
                 let w: Vec<String> = (0..stride / 4).map(|k| format!("{:08x}", *((p + 4 * k) as *const u32))).collect();
                 eprintln!("d3d9:   v{v} {}", w.join(" "));

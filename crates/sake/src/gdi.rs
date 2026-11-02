@@ -1065,23 +1065,77 @@ struct Real {
     ascent: i32,
     descent: i32,
     bold: bool,
+    /// TEXTMETRIC's average and maximum widths and external leading
+    ave: i32,
+    max_w: i32,
+    ext_leading: i32,
+}
+
+/// A font's metrics as Windows reads them (font units): the cell from OS/2's usWinAscent and
+/// usWinDescent, the average width from xAvgCharWidth (half the em in MS Gothic, nearly all
+/// of it in Noto Sans CJK: SiglusEngine spaces text by it), hhea for the rest.
+#[derive(Clone, Copy)]
+struct FontMetrics {
+    upem: f32,
+    win_asc: f32,
+    win_desc: f32,
+    hhea_asc: f32,
+    hhea_desc: f32,
+    line_gap: f32,
+    avg: f32,
+    max_adv: f32,
+}
+
+fn font_metrics(face: usize, font: &FontVec) -> FontMetrics {
+    static M: Mutex<Vec<Option<FontMetrics>>> = Mutex::new(Vec::new());
+    if let Some(Some(m)) = M.lock().unwrap().get(face) {
+        return *m;
+    }
+    let upem = font.units_per_em().unwrap_or(1000.0);
+    let (asc, desc) = (font.ascent_unscaled(), -font.descent_unscaled());
+    let mut m = FontMetrics { upem, win_asc: asc, win_desc: desc, hhea_asc: asc, hhea_desc: desc, line_gap: font.line_gap_unscaled(), avg: upem / 2.0, max_adv: upem };
+    if let Ok(t) = ttf_parser::Face::parse(font.as_slice(), 0) {
+        let hhea = t.tables().hhea;
+        (m.hhea_asc, m.hhea_desc, m.line_gap) = (hhea.ascender as f32, -(hhea.descender as f32), hhea.line_gap as f32);
+        let raw = |tag: &[u8; 4]| t.raw_face().table(ttf_parser::Tag::from_bytes(tag));
+        if let Some(h) = raw(b"hhea").filter(|h| h.len() >= 12) {
+            m.max_adv = u16::from_be_bytes([h[10], h[11]]) as f32;
+        }
+        let avg = raw(b"OS/2").filter(|o| o.len() >= 4).map_or(0, |o| i16::from_be_bytes([o[2], o[3]]));
+        if let Some(os2) = t.tables().os2 {
+            let (wa, wd) = (os2.windows_ascender() as f32, os2.windows_descender().unsigned_abs() as f32);
+            if wa + wd > 0.0 {
+                (m.win_asc, m.win_desc) = (wa, wd);
+            }
+            if avg > 0 {
+                m.avg = avg as f32;
+            }
+        }
+    }
+    let mut g = M.lock().unwrap();
+    if g.len() <= face {
+        g.resize(face + 1, None);
+    }
+    g[face] = Some(m);
+    m
 }
 
 fn realize(lf: &LogFont) -> Option<Real> {
     let face = face_index(lf);
     let font = font_file(face)?;
-    let upem = font.units_per_em().unwrap_or(1000.0);
-    let (asc, desc) = (font.ascent_unscaled(), -font.descent_unscaled());
+    let m = font_metrics(face, &font);
     let em = if lf.height < 0 {
         -lf.height as f32
     } else if lf.height > 0 {
-        lf.height as f32 * upem / (asc + desc)
+        lf.height as f32 * m.upem / (m.win_asc + m.win_desc)
     } else {
         12.0
     };
-    let ascent = (asc * em / upem).round() as i32;
-    let descent = (desc * em / upem).round() as i32;
-    Some(Real { face, font, em, ascent, descent, bold: lf.weight >= 600 })
+    let px = |v: f32| (v * em / m.upem).round() as i32;
+    let (ascent, descent) = (px(m.win_asc), px(m.win_desc));
+    // (Windows: the hhea line gap less what the OS/2 cell already adds over hhea's)
+    let ext_leading = px((m.line_gap - ((m.win_asc + m.win_desc) - (m.hhea_asc + m.hhea_desc))).max(0.0));
+    Some(Real { face, font, em, ascent, descent, bold: lf.weight >= 600, ave: px(m.avg).max(1), max_w: px(m.max_adv).max(1), ext_leading })
 }
 
 pub struct Glyph {
@@ -1321,8 +1375,7 @@ fn write_tm(p: u32, r: &Real, lf: &LogFont, wide: bool) {
     let f = FACES.get(r.face);
     let height = r.ascent + r.descent;
     let full = r.em.round() as i32;
-    let ave = (full + 1) / 2;
-    let vals = [height, r.ascent, r.descent, (height - full).max(0), 0, ave, full, if r.bold { 700 } else { 400 }, 0, 96, 96];
+    let vals = [height, r.ascent, r.descent, (height - full).max(0), r.ext_leading, r.ave, r.max_w, if r.bold { 700 } else { 400 }, 0, 96, 96];
     for (i, v) in vals.iter().enumerate() {
         w32(p + 4 * i as u32, *v as u32);
     }
@@ -3052,6 +3105,9 @@ fn extent(c: &mut Ctx, s: &[u16], out: u32) -> u32 {
     let Some((r, _, st)) = real_of(c.a(0)) else { return 0 };
     let w = text_width(&r, s, st.char_extra);
     put_pt(out, (w, r.ascent + r.descent));
+    if std::env::var_os("SAKE_TRACE_FONT").is_some() {
+        eprintln!("sake font: extent {:?} em {} -> {w}x{}", String::from_utf16_lossy(s), r.em, r.ascent + r.descent);
+    }
     1
 }
 fn GetTextExtentPoint32A(c: &mut Ctx) -> u32 {
@@ -3180,6 +3236,9 @@ fn glyph_outline(c: &mut Ctx, wide: bool) -> u32 {
     }
     let ch = if fmt & 0x80 != 0 { code & 0xffff | GLYPH_INDEX } else if wide { code } else { mbcs_char(code) };
     let g = glyph(&r, ch);
+    if std::env::var_os("SAKE_TRACE_FONT").is_some() {
+        eprintln!("sake font: glyph {ch:#x} fmt {fmt} em {} mat {mat:#x} -> {}x{} at {},{} adv {}", r.em, g.w, g.h, g.x0, g.top, g.adv);
+    }
     let blank = g.w == 0 || g.h == 0;
     if gm != 0 {
         w32(gm, if blank { 1 } else { g.w as u32 });
@@ -3491,7 +3550,7 @@ fn enum_fonts(c: &mut Ctx, filter: Option<String>, proc_: u32, lp: u32, wide: bo
             let tmsize = if wide { 60 } else { 56 };
             w32(tm + tmsize + 4, 2048);
             w32(tm + tmsize + 8, (r.ascent + r.descent) as u32);
-            w32(tm + tmsize + 12, (r.em / 2.0) as u32);
+            w32(tm + tmsize + 12, r.ave as u32);
         }
         ret = c.call(proc_, &[buf, tm, 4, lp]);
         if ret == 0 {

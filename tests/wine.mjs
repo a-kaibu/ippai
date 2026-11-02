@@ -145,9 +145,10 @@ while (Date.now() < end) {
       await click(x, y);
     }
     for (const key of process.env.KEYS?.split(" ").filter(Boolean) ?? []) await page.keyboard.press(key);
-    // D3D_DUMP=n: the next n frames' GPU passes go to the console
-    if (process.env.D3D_DUMP) await page.evaluate((k) => window.vnvmD3d && (window.vnvmD3d.dump = k), Number(process.env.D3D_DUMP));
   }
+  // D3D_DUMP=n: the next n frames' GPU passes go to the console (after shot D3D_DUMP_AT, default 1)
+  if (process.env.D3D_DUMP && n === Number(process.env.D3D_DUMP_AT ?? 1))
+    await page.evaluate((k) => window.vnvmD3d && (window.vnvmD3d.dump = k), Number(process.env.D3D_DUMP));
   const seq = process.env.CLICK_SEQ?.split(";");
   if (seq && n <= seq.length) {
     if (seq[n - 1]) {
