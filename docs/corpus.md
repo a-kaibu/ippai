@@ -75,6 +75,9 @@ Direct3D 11 は全滅 (d3d11.dll の vnhost 実装は未検証の段階)。
   rikuzendo (SRPG Studio の起動失敗)、engagekinks (動画、quartz のフィルタが無い)。
 - **動画全般**: Media Foundation の動画は GStreamer が無いので再生されない (天冥は飛ばして進む)。WMA も同じ。
 
+関数単位 JIT (FN) が既定になったあとの回帰確認 (2026-11-02、c0e1aa5 前後): 1 周目にタイトルまで行った各エンジン代表 43 本のうち、
+準備できた 42 本すべてがタイトルに到達 (b2006_alcot は体験版の取得に失敗して未実行)。
+
 Eushully の 1600x900 ウィンドウは既定の 1366x768 画面に収まらないので `VNVM_SCREEN=1920x1080` で動かす。
 
 ## ベンチマーク
