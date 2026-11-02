@@ -352,7 +352,13 @@ unsafe fn put_swap_desc(desc: u32, p: [u32; 15]) {
 }
 
 /// D3D11_MAPPED_SUBRESOURCE { pData, RowPitch, DepthPitch }
-unsafe fn put_mapped(out: u32, mem: u32, row: u32, depth: u32) {
+unsafe fn put_mapped(out: u32, mem: u32, row: u32, depth: u32, dxgi: bool) {
+    if dxgi {
+        // DXGI_MAPPED_RECT: Pitch, pBits
+        wr(out, 0, row);
+        wrp(out + PTR, 0, mem);
+        return;
+    }
     wrp(out, 0, mem);
     wr(out + PTR, 0, row);
     wr(out + PTR, 1, depth);
@@ -902,6 +908,16 @@ unsafe fn method(d: &mut D11, iface: u32, m: u32, this: u32, args: *const u32, a
                 for (i, v) in [t.w, t.h, t.fmt, 1, 0].into_iter().enumerate() {
                     wr(a(1), i, v);
                 }
+                S_OK
+            }
+            // Map(rect, flags): DXGI_MAP_READ 1 / WRITE 2 / DISCARD 4 as D3D11_MAP 1 / 2 / 3 / 4
+            9 => {
+                let f = a(2);
+                let ty = if f & 4 != 0 { 4 } else if f & 3 == 3 { 3 } else if f & 2 != 0 { 2 } else { 1 };
+                return map(d, d.addr_of(this), 0, ty, a(1), true, after);
+            }
+            10 => {
+                unmap(d, d.addr_of(this), 0);
                 S_OK
             }
             _ => E_NOTIMPL,
@@ -1713,7 +1729,7 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
         11 => set_one(d, &mut st.vs, a(1)),
         12 => draw(d, st, true, a(1), 1, a(2), a(3) as i32, 0),
         13 => draw(d, st, false, a(1), 1, a(2), 0, 0),
-        14 => return map(d, a(1), a(2), a(3), a(5), after),
+        14 => return map(d, a(1), a(2), a(3), a(5), false, after),
         15 => unmap(d, a(1), a(2)),
         17 => set_one(d, &mut st.layout, a(1)),
         18 => {
@@ -1999,14 +2015,14 @@ fn view_target(d: &D11, v: u32) -> Option<(u32, u32, u32)> {
     Some((t.gpu, v.mip, v.layer))
 }
 
-/// Map(resource, subresource, type, flags, out)
-unsafe fn map(d: &mut D11, res: u32, sub: u32, ty: u32, out: u32, after: &mut After) -> u32 {
+/// Map(resource, subresource, type, flags, out); `dxgi`: IDXGISurface::Map's DXGI_MAPPED_RECT
+unsafe fn map(d: &mut D11, res: u32, sub: u32, ty: u32, out: u32, dxgi: bool, after: &mut After) -> u32 {
     let id = d.id_of(res);
     let mut req = 0;
     let r = match d.objs.get_mut(&id).map(|o| &mut o.data) {
         Some(Data::Buffer(b)) => {
             b.dirty = true;
-            put_mapped(out, b.mem, b.size, b.size);
+            put_mapped(out, b.mem, b.size, b.size, dxgi);
             S_OK
         }
         Some(Data::Texture(t)) => {
@@ -2044,7 +2060,7 @@ unsafe fn map(d: &mut D11, res: u32, sub: u32, ty: u32, out: u32, after: &mut Af
                     gpu::record(|q| q.cmd(&[gpu::READBACK, req, g, l, 0, 0, lw, lh, mem, pitch]));
                 }
             }
-            put_mapped(out, mem, pitch, pitch * rows);
+            put_mapped(out, mem, pitch, pitch * rows, dxgi);
             S_OK
         }
         _ => E_INVALIDARG,

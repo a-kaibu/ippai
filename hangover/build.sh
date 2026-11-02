@@ -88,7 +88,7 @@ WRAPFLAGS=$(for w in $WRAP; do printf -- "-Wl,--wrap=%s -Wl,-u,%s " "$w" "$w"; d
 # exports by name are renamed (<lib>__wine_unix_call_funcs, ...) and registered under the
 # library's file name for dlopen()/dlsym() (crates/vnhost/src/dl.rs).
 # dlls/<dir>/<name>.so; <dir> defaults to <name>
-UNIXLIBS="ws2_32 win32u winebrowser.drv/winebrowser dnsapi nsiproxy.sys/nsiproxy mountmgr.sys/mountmgr winebus.sys/winebus crypt32 secur32 msv1_0 netapi32 localspl winspool.drv/winspool vnd3d9/d3d9 opengl32 wined3d"
+UNIXLIBS="ws2_32 win32u winebrowser.drv/winebrowser dnsapi nsiproxy.sys/nsiproxy mountmgr.sys/mountmgr winebus.sys/winebus crypt32 secur32 msv1_0 netapi32 localspl winspool.drv/winspool vnd3d9/d3d9 opengl32 wined3d dwrite"
 UNIXSYMS="__wine_unix_call_funcs __wine_unix_call_wow64_funcs __wine_unix_lib_init"
 LIB_OBJS=
 REG="$OUT/unixlibs.c"
@@ -129,8 +129,8 @@ for ent in $UNIXLIBS; do
   printf 'static const struct sym %s_syms[] = { %s{ 0 } };\n' "$lib" "$entries" >> "$REG"
   REG_CALLS="$REG_CALLS    vnhost_register_unixlib( \"$lib.so\", ${lib}_syms );\n"
 done
-# FreeType: win32u dlopen()s it and looks up what freetype.c loads with LOAD_FUNCPTR
-FT_SYMS=$(sed -n 's/^ *LOAD_FUNCPTR(\(FT_[A-Za-z_]*\)).*/\1/p' "$WINE_SRC/dlls/win32u/freetype.c" | sort -u)
+# FreeType: win32u and dwrite dlopen() it and looks up what freetype.c loads with LOAD_FUNCPTR
+FT_SYMS=$(sed -n 's/^ *LOAD_FUNCPTR(\(FT_[A-Za-z_]*\)).*/\1/p' "$WINE_SRC/dlls/win32u/freetype.c" "$WINE_SRC/dlls/dwrite/freetype.c" | sort -u)
 for s in $FT_SYMS; do printf 'extern void %s(void);\n' "$s" >> "$REG"; done
 printf 'static const struct sym freetype_syms[] = { %s{ 0 } };\n' "$(for s in $FT_SYMS; do printf '{ "%s", %s }, ' "$s" "$s"; done)" >> "$REG"
 REG_CALLS="$REG_CALLS    vnhost_register_unixlib( \"libfreetype.so.6\", freetype_syms );\n"
