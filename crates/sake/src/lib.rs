@@ -34,6 +34,8 @@ pub mod pe;
 pub mod seh;
 pub mod sound;
 pub mod mmio;
+pub mod gl;
+pub mod gl_sigs;
 pub mod text;
 pub mod user;
 
@@ -283,6 +285,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     dinput::init();
     sound::init();
     mmio::init();
+    gl::init();
     d3d9::register();
     seh::register();
     d3d11::register();

@@ -998,8 +998,13 @@ fn RaiseException(c: &mut Ctx) -> u32 {
 fn SetUnhandledExceptionFilter(c: &mut Ctx) -> u32 {
     crate::seh::TOP_FILTER.swap(c.a(0), Ordering::Relaxed)
 }
-fn UnhandledExceptionFilter(_: &mut Ctx) -> u32 {
-    1
+/// UnhandledExceptionFilter(EXCEPTION_POINTERS*): the program's top-level filter decides (the
+/// CRT's _XcptFilter reaches here); none: execute the handler (terminate)
+fn UnhandledExceptionFilter(c: &mut Ctx) -> u32 {
+    match crate::seh::TOP_FILTER.load(Ordering::Relaxed) {
+        0 => 1,
+        f => c.call(f, &[c.a(0)]),
+    }
 }
 fn IsDebuggerPresent(_: &mut Ctx) -> u32 {
     0

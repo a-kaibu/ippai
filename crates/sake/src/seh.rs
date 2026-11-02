@@ -326,4 +326,91 @@ pub fn register() {
         implement(d, &format!("{p}AddVectoredContinueHandler"), continue_handler);
         implement(d, &format!("{p}RemoveVectoredContinueHandler"), remove_veh);
     }
+    for d in ["msvcrt", "ucrtbase"] {
+        implement(d, "_except_handler3", except_handler3);
+        implement(d, "_except_handler4_common", except_handler4);
+    }
+}
+
+// ---- the MSVC CRT's frame handlers (_except_handler3 / _except_handler4_common) ----
+//
+// A frame: [next, handler, scope table (EH4: xor the cookie), try level, the function's EBP];
+// frame - 4 gets the EXCEPTION_POINTERS for GetExceptionInformation. Scope table entries:
+// (enclosing level, filter or 0 for __finally, handler / __finally body); EH4's start after a
+// 16-byte cookie header. Filters and __finally bodies run with the function's EBP.
+
+/// stdcall (fn, ebp): calls fn with EBP = ebp, keeping the callee-saved registers
+fn call_ebp() -> u32 {
+    static S: OnceLock<u32> = OnceLock::new();
+    *S.get_or_init(|| {
+        crate::api::stub(&[
+            0x55, 0x53, 0x56, 0x57, //         push ebp, ebx, esi, edi
+            0x8b, 0x44, 0x24, 0x14, //         mov eax, [esp+20]
+            0x8b, 0x6c, 0x24, 0x18, //         mov ebp, [esp+24]
+            0xff, 0xd0, //                     call eax
+            0x5f, 0x5e, 0x5b, 0x5d, //         pop edi, esi, ebx, ebp
+            0xc2, 0x08, 0x00, //               ret 8
+        ])
+    })
+}
+
+/// runs the __finally bodies from the frame's try level down to `to`
+fn local_unwind(c: &mut Ctx, frame: u32, table: u32, first: u32, none: u32, to: u32) {
+    loop {
+        let level = r32(frame + 12);
+        if level == none || level == to {
+            break;
+        }
+        let e = table + first + 12 * level;
+        w32(frame + 12, r32(e));
+        if r32(e + 4) == 0 {
+            let body = r32(e + 8);
+            c.call(call_ebp(), &[body, frame + 16]);
+        }
+    }
+}
+
+fn except_handler(c: &mut Ctx, v4: bool) -> u32 {
+    let k = if v4 { 2 } else { 0 };
+    let (rec, frame, ctx) = (c.a(k), c.a(k + 1), c.a(k + 2));
+    let (table, first, none) = if v4 { (r32(frame + 8) ^ r32(c.a(0)), 16, 0xffff_fffe) } else { (r32(frame + 8), 0, 0xffff_ffff) };
+    if r32(rec + 4) & 6 != 0 {
+        // unwinding: this frame's __finally bodies
+        local_unwind(c, frame, table, first, none, none);
+        return 1;
+    }
+    let ptrs = c.esp - 0x40;
+    w32(ptrs, rec);
+    w32(ptrs + 4, ctx);
+    w32(frame - 4, ptrs);
+    let mut level = r32(frame + 12);
+    while level != none {
+        let e = table + first + 12 * level;
+        let filter = r32(e + 4);
+        if filter != 0 {
+            let v = c.call(call_ebp(), &[filter, frame + 16]) as i32;
+            if v < 0 {
+                return 0; // continue execution
+            }
+            if v > 0 {
+                // global unwind of the frames above, ours down to this level, then the handler
+                let unwind = crate::api::export("kernel32", "RtlUnwind");
+                c.call(unwind, &[frame, 0, rec, 0]);
+                local_unwind(c, frame, table, first, none, level);
+                w32(frame + 12, r32(e));
+                c.cpu.regs[EBP] = frame + 16;
+                c.cpu.eip = r32(e + 8);
+                c.jumped = true;
+                return 0;
+            }
+        }
+        level = r32(e);
+    }
+    1
+}
+pub fn except_handler3(c: &mut Ctx) -> u32 {
+    except_handler(c, false)
+}
+pub fn except_handler4(c: &mut Ctx) -> u32 {
+    except_handler(c, true)
 }

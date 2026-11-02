@@ -730,7 +730,7 @@ fn control_proc_fn(c: &mut Ctx) -> u32 {
             0
         }
         0x31 => ctl(h).font,
-        0x87 => if button { 0x2000 } else { 0x100 },
+        0x87 if button => 0x2000,
         0x201 | 0x203 if button => {
             set_ctl(h, |t| t.pressed = true);
             with(|s| s.capture = h);
@@ -783,6 +783,7 @@ fn control_proc_fn(c: &mut Ctx) -> u32 {
             }
             0
         }
+        0x87 => 0x100,
         0xf0 => ctl(h).check,
         0xf1 => {
             set_ctl(h, |t| t.check = wp);
