@@ -43,3 +43,8 @@ vnx86 を静的に含む)。互換性 (コーパスで何本動くか) は sake 
   再配置) が無いため。Android 相当でも同じ傾向。
 - 選択の残りの条件は互換性。Wine はコーパス 240 本中 143 本がタイトルまで
   (`/mnt/project-files/vnvm-corpus/corpus.md`)。sake の数字が出たら同じ表に並べる。
+
+## 結論 (2026-11-02)
+
+こた: Wine は廃止予定 (64bit スレッドで)。性能でも sake が全項目で同じか速いので、以後は sake を
+主にする。JIT の計測 (flatbench の 2 秒目標など) も sake 上で行う (Chromium で 2.46 秒が出発点)。
