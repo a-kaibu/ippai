@@ -792,12 +792,19 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
     st.ring[0] = 0;
     // pairs by frequency (runs of equal ones once sorted)
     jumps.sort_unstable();
+    // (only the runs that could matter: both users below need FN_SAMPLES or more; this runs
+    // every RING_SIZE hops, so no allocation for the usual none)
     let mut runs: Vec<(usize, u64)> = Vec::new();
-    for i in 0..N {
-        match runs.last_mut() {
-            Some(r) if r.1 == jumps[i] => r.0 += 1,
-            _ => runs.push((1, jumps[i])),
+    let mut i = 0;
+    while i < N {
+        let mut k = i + 1;
+        while k < N && jumps[k] == jumps[i] {
+            k += 1;
         }
+        if k - i >= FN_SAMPLES.min(MERGE_SAMPLES) {
+            runs.push((k - i, jumps[i]));
+        }
+        i = k;
     }
     runs.sort_by(|a, b| b.0.cmp(&a.0));
     if stats() {
