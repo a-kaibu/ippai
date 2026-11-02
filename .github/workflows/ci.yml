@@ -42,7 +42,7 @@ jobs:
       - name: Tools
         run: |
           sudo apt-get update -q
-          sudo apt-get install -yq --no-install-recommends bison flex spirv-headers libvulkan-dev mingw-w64 zstd
+          sudo apt-get install -yq --no-install-recommends mingw-w64 zstd
           rustup component add rust-src
           rustup target add wasm32-unknown-emscripten
       - uses: actions/setup-node@v4
@@ -52,11 +52,10 @@ jobs:
         with:
           path: |
             ~/emsdk4
-            ~/.cache/vnvm
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: build-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'tools/ci/build.sh', 'host/build-vkd3d.sh') }}
+          key: build-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'tools/ci/build.sh') }}
           restore-keys: build-${{ runner.os }}-
       - name: Web check
         working-directory: web

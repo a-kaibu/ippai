@@ -11,4 +11,4 @@ crate-type = ["staticlib", "rlib"]
 [dependencies]
 vnx86 = { path = "../vnx86" }
 libc = "0.2"
-naga = { version = "30", features = ["spv-in", "glsl-in", "wgsl-out"] }
+naga = { version = "30", features = ["glsl-in", "wgsl-in", "wgsl-out"] }  # (naga 30's glsl-in needs spv-in or wgsl-in)

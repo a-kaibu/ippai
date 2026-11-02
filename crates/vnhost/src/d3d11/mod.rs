@@ -9,9 +9,12 @@
 //! shaders go DXBC -> SPIR-V -> WGSL (`shader`), buffers are guest memory copied into a new page
 //! buffer whenever a draw needs them after the guest wrote them.
 
+pub mod dxbc;
 pub mod format;
 pub mod names;
 pub mod shader;
+pub mod tpf;
+pub mod wgsl;
 
 use crate::d3d9::gpu;
 use crate::d3d9::HostCalls;
@@ -172,7 +175,7 @@ pub struct View {
     pub layers: u32,
     /// a buffer view (shader resource view of a buffer): `res` is then a one-row texture of
     /// its elements, copied from the buffer when they change (WGSL has no texel buffers; the
-    /// shaders fetch from that texture, see shader::buffers_to_2d)
+    /// shaders fetch from that texture, see wgsl.rs)
     pub buf: Option<BufSrc>,
 }
 

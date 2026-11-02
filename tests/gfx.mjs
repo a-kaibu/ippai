@@ -4,7 +4,8 @@
 // vnvm serve on BASE (default http://127.0.0.1:8090); exits 1 when anything fails.
 //
 //   node tests/gfx.mjs ["name" ...]    (default: all; OUT=dir keeps the screens and logs;
-//                                       ENGINE=sake runs them on sake instead of Wine)
+//                                       ENGINE=sake runs them on sake instead of Wine;
+//                                       ENV="A=1 B=2" sets environment variables)
 import { execFileSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import { inflateSync } from "node:zlib";
@@ -79,7 +80,9 @@ for (const name of names) {
   const t = TESTS[name];
   const [exe, ...args] = name.split(" ");
   const out = `${outDir}/${name.replace(" ", "-")}`;
-  const engine = process.env.ENGINE ? `engine=${process.env.ENGINE}&` : "";
+  const engine =
+    (process.env.ENGINE ? `engine=${process.env.ENGINE}&` : "") +
+    (process.env.ENV ?? "").split(" ").filter(Boolean).map((e) => `env=${encodeURIComponent(e)}&`).join("");
   const url = `${base}/wine.html?${engine}autostart&headless&mount=/vnvm/game=gfxtest&args=${["still", ...args]}&run=Z:\\vnvm\\game\\${exe}.exe`;
   execFileSync("rm", ["-rf", out]);
   try {

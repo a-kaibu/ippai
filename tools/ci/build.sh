@@ -1,8 +1,8 @@
 #!/bin/bash
-# Builds a release of vnvm from a fresh checkout: sake.wasm (with vkd3d-shader), the page, and
+# Builds a release of vnvm from a fresh checkout: sake.wasm, the page, and
 # the vnvm binary (serve / pack / add-game / meta), then packs them into $DIST/vnvm-<version>.tar.zst (+ .sha256).
 # Used by .github/workflows/ci.yml and runnable anywhere with the same tools:
-#   apt: bison flex spirv-headers libvulkan-dev mingw-w64 zstd; rustup (rust-src,
+#   apt: mingw-w64 zstd; rustup (rust-src,
 #   wasm32-unknown-emscripten); node 20+. Emscripten is downloaded into $EMSDK4.
 #
 #   tools/ci/build.sh [version]          (default: git describe)
@@ -11,7 +11,6 @@ ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 VERSION=${1:-$(git -C "$ROOT" describe --tags --always)}
 export EMSDK4=${EMSDK4:-$HOME/emsdk4}
 export OUT=${OUT:-$ROOT/target/sake-out}
-export VKD3D_OUT=${VKD3D_OUT:-$ROOT/target/vkd3d-wasm}
 DIST=${DIST:-$ROOT/target/dist}
 # the emscripten release the project builds with (4.0.15)
 EMSCRIPTEN_HASH=b412b6307e541b93dd93f01b61181e15c17302ec
@@ -25,7 +24,6 @@ if [ ! -f "$EMSDK4/emsdk_env.sh" ]; then
 fi
 
 cd "$ROOT"
-bash host/build-vkd3d.sh
 WEB_OUT=$ROOT/web/public/sake bash crates/sake/build.sh
 (cd web && npm ci --no-audit --no-fund && npx vp build)
 cargo build --release -p vnvm
