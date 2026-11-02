@@ -2174,6 +2174,9 @@ pub fn init() {
         }
         implement(d, "XInputEnable", xinput_ok);
     }
+    for n in ["XInputGetAudioDeviceIds", "XInputWaitForGuideButton", "XInputCancelGuideButtonWait", "XInputPowerOffController", "XInputGetBaseBusInformation", "XInputGetCapabilitiesEx"] {
+        implement("xinput1_4", n, xinput_none);
+    }
     reg!("advapi32";
         RegOpenKeyExA, RegOpenKeyExW, RegOpenKeyA, RegOpenKeyW, RegCreateKeyExA, RegCreateKeyExW, RegCreateKeyA,
         RegCreateKeyW, RegCloseKey, RegFlushKey, RegQueryValueExA, RegQueryValueExW, RegQueryValueA,

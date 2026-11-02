@@ -477,6 +477,10 @@ fn find_dll_file(dll: &str) -> Option<(String, String)> {
             // (as Windows' loader, one of the other architecture is passed over: a 64-bit game
             // shipping a 32-bit d3dcompiler_47.dll gets the system's)
             if is_64bit_file(&h) == mem::x64() {
+                // (the DLLs still taken from the prefix: what sake has yet to implement)
+                if d.eq_ignore_ascii_case("C:\\windows\\system32") || d.eq_ignore_ascii_case(SYSDIR64) {
+                    eprintln!("sake: prefix DLL {w}");
+                }
                 return Some((h, w));
             }
         }
