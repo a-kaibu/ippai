@@ -23,7 +23,8 @@ WebGPU D3D9 を使うので、A/B 比較ができる。`wine.html` / `game.html`
   FreeType ではなく ab_glyph と ttf-parser、AddFontResource)、msvcrt (crt.rs)、dsound
   (Rust でミックス)、DirectInput 7/8、DirectDraw 1〜7 (ソフトウェア、ddraw.rs)、
   d3d9 (vnhost の WebGPU D3D9 に橋渡し)、CryptoAPI のハッシュ、DxDiag、レジストリ、
-  shell32/shlwapi の一部。
+  shell32/shlwapi の一部、Uniscribe の一部 (usp.rs)、DirectShow のフィルタグラフ (dshow.rs: 動画は
+  すぐ終わったことにする)。
 - DirectDraw: サーフェスはゲストメモリの画素と、その上に被せた GDI ビットマップ。Blt/BltFast
   (カラーキー、拡大縮小、塗りつぶし)、フリップ、Lock、GetDC。プライマリに描いたとき・
   Unlock・ReleaseDC・Flip でウィンドウに BitBlt する。Direct3D は出さないので、
@@ -52,6 +53,10 @@ WebGPU D3D9 を使うので、A/B 比較ができる。`wine.html` / `game.html`
 | 爆乳遊廓 (Softpal) | タイトル (メニューのボタンが描かれない。押すことはできる) | Chromium (D3D9) |
 | アマカノ (CatSystem2) | 本編まで (名前入力ダイアログ → マップ) | Chromium (D3D9) |
 | つぼい君のスイッチ (DxLib) | 本編まで | Chromium (D3D9)。D3D9 の SHADEMODE flat に対応して表示が正しくなった |
+| ナルキッソス SIDE 2nd (NScripter) | プロローグまで | node |
+| ろーらいず!!! (SiglusEngine) | 本編まで | Chromium (D3D9)。日本語版 Windows とタイムゾーンの確認、静的リンクの D3DX フォント用に Uniscribe (usp.rs) |
+| 3Ping Lovers! (RealLive) | 本編まで (「はじめから」の後に Enter が要る。確認の表示が見えない) | node、Chromium (GDI。画面が 1280x720 以外だと rl_d3d.dll の D3D9 で拡大する) |
+| クダンノフォークロア (BGI) | タイトル (クリックに反応しない) | Chromium (D3D9)。待機可能タイマー、D3DXCreateEffect のため Wine の d3dx9_43.dll (PE) をゲームの横に置く。体験版の印のファイル KudanNoFolkloreTV を消す (インストール後の状態) |
 | WolfRPG | 起動しない | 保護付き exe。アンチデバッグの後で止まる。追っていない |
 
 node では D3D9 は描かれない (WebGPU がない) ので、D3D9 のゲームは Chromium で見る。

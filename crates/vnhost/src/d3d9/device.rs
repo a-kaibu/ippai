@@ -2344,6 +2344,11 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
             }
             eprintln!("d3d9:   viewport {:?}", st.viewport);
         }
+        eprintln!("d3d9:   rt {rt} ds {ds} viewport {:?} cull {} z {} {}", st.viewport, st.rs[22], st.rs[7], st.rs[14]);
+        if let Some((iptr, isize, _)) = index {
+            let ix: Vec<u32> = (0..nverts.min(12)).map(|k| if isize == 4 { *((iptr + 4 * k) as *const u32) } else { *((iptr + 2 * k) as *const u16) as u32 }).collect();
+            eprintln!("d3d9:   indices {ix:?}");
+        }
         if let Some(&(_, ptr, stride)) = streams.first() {
             eprintln!("d3d9:   data {ptr:#x} stride {stride}");
             for v in 0..count.min(6) {
@@ -2469,9 +2474,12 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     let ps_mod = shader_module(dev, ps_wgsl);
     let st = &dev.st;
     let (blend, wmask) = blend_state(st);
+    // WebGPU decides facing in framebuffer coordinates (y down) as D3D does on screen, so with
+    // frontFace "ccw" (1 = cull "front", 2 = cull "back"): D3DCULL_CW culls the clockwise
+    // faces ("back"), D3DCULL_CCW the counterclockwise ones ("front")
     let cull = match st.rs[22] {
-        2 => 1, // CW: front faces (as D3D sees them) are culled... see below
-        3 => 2,
+        2 => 2,
+        3 => 1,
         _ => 0,
     };
     let topo = PRIM_TOPOLOGY[prim as usize];
