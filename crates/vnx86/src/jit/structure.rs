@@ -146,6 +146,13 @@ pub(super) fn layout(
             }
             _ => {}
         }
+        // an inlined callee can leave anywhere to a function call of its rest, which returns
+        // to the call's return address (Gen::call_rest)
+        if ctx != 0 {
+            s.extend(find(0, ret_to[ctx as usize]));
+            s.sort_unstable();
+            s.dedup();
+        }
         succ[k] = s;
     }
     for (i, t) in tables.iter().enumerate() {

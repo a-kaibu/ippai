@@ -57,7 +57,7 @@ pub static CALLS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBoo
 /// (wasm32 only: their addresses are i32 constants). See [`COUNTER_NAMES`].
 pub static COUNT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 pub static COUNTERS: [core::sync::atomic::AtomicU32; 15] = [const { core::sync::atomic::AtomicU32::new(0) }; 15];
-pub const COUNTER_NAMES: [&str; 15] = ["call", "call-slow", "call-back", "call-elsewhere", "call-exit", "ret-values", "lookup", "lookup-other", "lookup-own", "lookup-miss", "entry", "ret-ra1", "top", "side", "block"];
+pub const COUNTER_NAMES: [&str; 15] = ["call", "call-slow", "call-back|rest", "call-elsewhere", "call-exit", "ret-values", "lookup", "lookup-other", "lookup-own", "lookup-miss", "entry", "ret-ra1", "top", "side", "block"];
 fn bump(c: &mut Code, i: usize) {
     if COUNT.load(core::sync::atomic::Ordering::Relaxed) && cfg!(target_pointer_width = "32") {
         let at = COUNTERS[i].as_ptr() as usize as i32;
@@ -3074,7 +3074,66 @@ impl<'a> Gen<'a> {
     fn jump_dyn(&mut self) {
         self.fc_flush();
         self.c.set(L_NEXT);
+        if self.fnm && self.ctx != 0 {
+            self.call_rest();
+        }
         self.c.br(self.depth - 2);
+    }
+
+    /// Leaving an inlined callee (to L_NEXT: a block of it that was left out, or where its
+    /// tail jump goes): a wasm call of the function there, going on at the call's return
+    /// address when it returns there, as if the callee had been called (else the function
+    /// would be left with the callee's frame on the guest stack, and its RET would return to
+    /// this function's caller, which then has to leave too). Without a function there, on
+    /// the way out as before.
+    fn call_rest(&mut self) {
+        let r = self.ret_to[self.ctx as usize];
+        let (h, v) = (self.temp(), self.temp());
+        let hash = offset_of!(Cpu, jit_hash) as u32;
+        let maskf = offset_of!(Cpu, jit_mask) as u32;
+        self.c.block(); // slow 0
+        self.depth += 1;
+        self.c.get(L_BUD).i32c(1).sub().tee(L_BUD).i32c(0).le_s();
+        self.c.get(L_ARG).u32c(MAX_DEPTH).ge_u().or().br_if(0);
+        // the hash table entry of L_NEXT (as emit_fn_lookup), a function's
+        self.c.get(L_NEXT).u32c(0x9e37_79b1).mul().i32c(15).shr_u().get(L_CPU).load32(maskf).and().set(h);
+        self.c.block(); // found 0, slow 1
+        self.c.loop_(); // probe 0, found 1, slow 2
+        self.c.get(L_CPU).load32(hash).get(h).i32c(3).shl().add().tee(v).load32(0).get(L_NEXT).eq().if_();
+        self.c.get(v).load32(4).tee(v).u32c(FN_TAG).and().eqz().br_if(3).br(2);
+        self.c.end();
+        self.c.get(v).load32(0).eqz().br_if(2);
+        self.c.get(h).i32c(1).add().get(L_CPU).load32(maskf).and().set(h).br(0);
+        self.c.end();
+        self.c.end();
+        // the state into the Cpu (all of it: this can be in the middle of a block)
+        for i in (0..8).filter(|i| self.wregs & (1 << i) != 0) {
+            self.c.get(L_CPU).get(L_REG + i).store32(Off::reg(i as usize));
+        }
+        lazy_to_cpu(&mut self.c);
+        self.c.end();
+        bump(&mut self.c, 2);
+        self.c.get(L_CPU).get(L_BUD).store32(Off::budget());
+        self.c.get(L_CPU).get(L_ARG).i32c(1).add();
+        self.c.get(v).i32c(ENTRY_SHIFT as i32).shr_u().u32c(0x7ff).and().i32c(16).shl().or();
+        self.c.get(v).u32c((1 << ENTRY_SHIFT) - 1).and().i32c(1).add().call_indirect(T_FN, 0).set(h);
+        self.c.get(h).i32c(RET_FN).ne().if_().get(h).ret().end();
+        self.c.get(L_CPU).load32(Off::eip()).u32c(r).ne().if_();
+        bump(&mut self.c, 4);
+        self.c.i32c(RET_CONTINUE).ret().end();
+        let (dirty, fc, flags) = (self.dirty, self.fc, self.flags);
+        self.load_regs();
+        self.c.get(L_CPU).load32(Off::budget()).set(L_BUD);
+        self.c.i32c(-1).set(L_OP);
+        self.fc = FCache::default();
+        self.flags = Flags::Entry;
+        let ctx = core::mem::replace(&mut self.ctx, 0);
+        self.goto(r);
+        self.ctx = ctx;
+        (self.dirty, self.fc, self.flags) = (dirty, fc, flags);
+        self.depth -= 1;
+        self.c.end(); // slow
+        self.temps -= 2;
     }
 }
 
@@ -3433,6 +3492,7 @@ fn hot_callee<M: Memory>(mem: &mut M, f: u32, trap: (u32, u32), ran: &dyn Fn(u32
         size += list.len();
         let last = list.last()?;
         // (with calls inside it was slower: Wine's heap 210 -> 350 ns per HeapAlloc + HeapFree)
+        // (with calls inside it was slower: Wine's heap 210 -> 350 ns per HeapAlloc + HeapFree)
         if size > MAX_INLINE || matches!(last.flow_control(), FlowControl::Call | FlowControl::IndirectCall | FlowControl::IndirectBranch) {
             return None;
         }
@@ -3441,6 +3501,7 @@ fn hot_callee<M: Memory>(mem: &mut M, f: u32, trap: (u32, u32), ran: &dyn Fn(u32
     }
     ret.then_some(seen)
 }
+
 
 /// The blocks of the function at `f` if it is small enough to inline (MAX_INLINE instructions
 /// over the blocks its jumps reach, no calls, ending in RET).
@@ -4185,7 +4246,8 @@ fn safe_in(g: &Gen, blocks: &[(u32, Vec<Instruction>)], l: &structure::Layout) -
             let call = v < n && matches!(blocks[v].1.last().unwrap().flow_control(), FlowControl::Call | FlowControl::IndirectCall);
             let inl = g.inlined.get(&v).map(|x| x.0);
             for &w in &l.succ[v] {
-                let o = if call && inl != Some(w) { 0 } else { out };
+                // (out of an inlined callee: maybe by call_rest, which loads them again)
+                let o = if (call && inl != Some(w)) || (v < n && w < n && g.ctxs[v] != 0 && g.ctxs[w] == 0) { 0 } else { out };
                 if sin[w] & o != sin[w] {
                     sin[w] &= o;
                     changed = true;
