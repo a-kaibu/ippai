@@ -286,6 +286,39 @@ impl Layout {
         (0..n.min(total)).filter(|&k| self.order[k] != usize::MAX && !inside[k] && want(k)).collect()
     }
 
+    /// Each loop header's natural loop: the nodes in it (the header too).
+    pub(super) fn loop_bodies(&self) -> BTreeMap<usize, Vec<bool>> {
+        let total = self.succ.len();
+        let mut preds: Vec<Vec<usize>> = alloc::vec![Vec::new(); total];
+        for &v in &self.rpo {
+            for &w in &self.succ[v] {
+                preds[w].push(v);
+            }
+        }
+        let mut out: BTreeMap<usize, Vec<bool>> = BTreeMap::new();
+        for &u in &self.rpo {
+            for &h in &self.succ[u] {
+                if !self.back(u, h) {
+                    continue;
+                }
+                let seen = out.entry(h).or_insert_with(|| {
+                    let mut v = alloc::vec![false; total];
+                    v[h] = true;
+                    v
+                });
+                let mut stack = alloc::vec![u];
+                while let Some(v) = stack.pop() {
+                    if seen[v] {
+                        continue;
+                    }
+                    seen[v] = true;
+                    stack.extend(preds[v].iter().copied());
+                }
+            }
+        }
+        out
+    }
+
     /// The first node.
     pub(super) fn entry(&self) -> usize {
         self.rpo[0]
@@ -357,6 +390,8 @@ pub(super) fn emit<'a>(g: &mut Gen<'a>, l: &Layout, mut emit_node: impl FnMut(&m
         match a {
             Act::Tree(x) => {
                 if l.header[x] {
+                    // (the checks hoisted out of it, on the way in: see Gen::loop_checks)
+                    g.loop_checks(x);
                     g.c.loop_();
                     g.depth += 1;
                     g.back[x] = Some(g.depth);

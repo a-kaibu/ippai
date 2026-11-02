@@ -374,6 +374,9 @@ struct Gen<'a> {
     /// functions: per block, the registers checked to be in the guest range on every way in
     /// (see [`safe_in`])
     safe_in: Vec<u8>,
+    /// loop headers (functions) whose registers in the mask are checked on the way into the
+    /// loop instead of in it (see [`safe_in`])
+    hoist: BTreeMap<usize, (u8, u32)>,
     /// functions: per block, the blocks with an edge to it, and the lazy operation each block
     /// emitted so far ends with (see [`Gen::predict`])
     preds: Vec<Vec<u32>>,
@@ -1093,6 +1096,30 @@ impl<'a> Gen<'a> {
         }
         let _ = size;
         Some(t)
+    }
+
+    /// On the way into loop `x`: the checks [`safe_in`] moved out of it, leaving for the
+    /// interpreter at the loop's first block when one fails (as that block's own check would).
+    fn loop_checks(&mut self, x: usize) {
+        let Some(&(m, at)) = self.hoist.get(&x) else { return };
+        let saved = (self.flags, self.fc, self.mmx, self.xmm, self.dirty, self.block_index, self.ctx);
+        // (the state as the block starts)
+        self.flags = Flags::Entry;
+        self.fc = self.fc_in.get(&x).copied().unwrap_or_default();
+        self.mmx = (0, 0);
+        self.xmm = (0, 0);
+        self.dirty = self.dirty_in.get(x).copied().unwrap_or(self.wregs);
+        self.block_index = x as u32;
+        self.ctx = self.ctxs[x];
+        for r in (0..8).filter(|r| m & (1 << r) != 0) {
+            self.c.get(L_REG + r).u32c(GUEST_LO + SAFE_MARGIN as u32).sub().u32c(GUEST_HI - GUEST_LO - 2 * SAFE_MARGIN as u32).gt_u().if_();
+            self.depth += 1;
+            self.c.u32c(at);
+            self.exit_with(RET_INTERP);
+            self.depth -= 1;
+            self.c.end();
+        }
+        (self.flags, self.fc, self.mmx, self.xmm, self.dirty, self.block_index, self.ctx) = saved;
     }
 
     /// Whether [reg + disp, + size) is inside the guest range by what is known of `reg`,
@@ -4413,9 +4440,13 @@ fn dirty_in(g: &Gen, blocks: &[(u32, Vec<Instruction>)], l: &structure::Layout) 
 /// SAFE_MARGIN to spare at each block's start: checked by an access [r + small] since last
 /// written, on every way there. None at the entries, nor after a call (a callee could change
 /// any).
-fn safe_in(g: &Gen, blocks: &[(u32, Vec<Instruction>)], l: &structure::Layout) -> Vec<u8> {
+///
+/// Loops (D.1 of docs/v8-wasm-shape.md; V8 has no LICM): a register the loop's first block
+/// uses as a base before writing it, that nothing in the loop writes (no calls in it), is
+/// checked once on the way in (`hoist`), and is safe in the whole loop.
+fn safe_in(g: &Gen, blocks: &[(u32, Vec<Instruction>)], l: &structure::Layout) -> (Vec<u8>, BTreeMap<usize, (u8, u32)>) {
     if nocheck() {
-        return Vec::new();
+        return (Vec::new(), BTreeMap::new());
     }
     let n = blocks.len();
     let total = l.succ.len();
@@ -4453,6 +4484,51 @@ fn safe_in(g: &Gen, blocks: &[(u32, Vec<Instruction>)], l: &structure::Layout) -
             (gen & !(1 << 4), kill)
         })
         .collect();
+    let check_base = |ins: &Instruction| {
+        let base = ins.memory_base();
+        (0..ins.op_count()).any(|i| ins.op_kind(i) == OpKind::Memory)
+            && !matches!(ins.mnemonic(), Mnemonic::Lea | Mnemonic::Nop | Mnemonic::Xchg)
+            && !ins.has_lock_prefix()
+            && base.is_gpr32()
+            && base != Register::ESP
+            && ins.memory_index() == Register::None
+            && !matches!(ins.memory_segment(), Register::FS | Register::GS)
+            && (ins.memory_displacement32() as i32).unsigned_abs() < SAFE_MARGIN as u32 / 2
+    };
+    let mut hoist: BTreeMap<usize, (u8, Vec<bool>)> = BTreeMap::new();
+    if HOIST.load(core::sync::atomic::Ordering::Relaxed) {
+        for (h, body) in l.loop_bodies() {
+            if h >= n {
+                continue;
+            }
+            // read as a base in the first block before it writes them
+            let (mut cand, mut wrote) = (0u8, 0u8);
+            for ins in &blocks[h].1 {
+                if check_base(ins) && wrote & (1 << ins.memory_base().number()) == 0 {
+                    cand |= 1 << ins.memory_base().number();
+                }
+                for u in info.info(ins).used_registers() {
+                    use iced_x86::OpAccess::*;
+                    if matches!(u.access(), Write | CondWrite | ReadWrite | ReadCondWrite) && u.register().is_gpr() {
+                        wrote |= 1 << u.register().full_register32().number();
+                    }
+                }
+            }
+            cand &= !(1 << 4);
+            for v in (0..n).filter(|&v| body[v]) {
+                let last = blocks[v].1.last().unwrap();
+                let call = matches!(last.flow_control(), FlowControl::Call | FlowControl::IndirectCall) && !g.inlined.contains_key(&v);
+                let leaves_callee = g.ctxs[v] != 0 && l.succ[v].iter().any(|&w| w < n && g.ctxs[w] == 0);
+                if call || leaves_callee || g.hle.contains_key(&blocks[v].0) {
+                    cand = 0;
+                }
+                cand &= !tr[v].1;
+            }
+            if cand != 0 {
+                hoist.insert(h, (cand, body));
+            }
+        }
+    }
     let mut sin = alloc::vec![0xffu8; total];
     // (entries: the function's first node, else the root)
     sin[l.entry()] = 0;
@@ -4464,7 +4540,13 @@ fn safe_in(g: &Gen, blocks: &[(u32, Vec<Instruction>)], l: &structure::Layout) -
             let inl = g.inlined.get(&v).map(|x| x.0);
             for &w in &l.succ[v] {
                 // (out of an inlined callee: maybe by call_rest, which loads them again)
-                let o = if (call && inl != Some(w)) || (v < n && w < n && g.ctxs[v] != 0 && g.ctxs[w] == 0) { 0 } else { out };
+                let mut o = if (call && inl != Some(w)) || (v < n && w < n && g.ctxs[v] != 0 && g.ctxs[w] == 0) { 0 } else { out };
+                // (into a loop: through its hoisted checks)
+                if let Some((m, body)) = hoist.get(&w) {
+                    if !body[v] {
+                        o |= m;
+                    }
+                }
                 if sin[w] & o != sin[w] {
                     sin[w] &= o;
                     changed = true;
@@ -4472,10 +4554,13 @@ fn safe_in(g: &Gen, blocks: &[(u32, Vec<Instruction>)], l: &structure::Layout) -
             }
         }
         if !changed {
-            return sin;
+            return (sin, hoist.into_iter().map(|(h, (m, _))| (h, (m, blocks[h].0))).collect());
         }
     }
 }
+
+/// Hoisting range checks out of loops (VNVM_JIT_HOIST=0: off; see [`safe_in`]).
+pub static HOIST: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
 
 /// Adds a region starting at `roots` to `module` (one function, exported as "f<n>"),
 /// taking at most `max_blocks` blocks whose start `accept` agrees to. None if not even the
@@ -4818,6 +4903,7 @@ fn translate<M: Memory>(
         dirty_in: Vec::new(),
         small: [None; 8],
         safe_in: Vec::new(),
+        hoist: BTreeMap::new(),
         preds: Vec::new(),
         flags_out: Vec::new(),
         smc: false,
@@ -4908,7 +4994,7 @@ fn translate<M: Memory>(
         let entry = starts[0].1 as usize;
         let l = fl.unwrap();
         g.dirty_in = dirty_in(&g, &blocks, &l);
-        g.safe_in = safe_in(&g, &blocks, &l);
+        (g.safe_in, g.hoist) = safe_in(&g, &blocks, &l);
         g.preds = alloc::vec![Vec::new(); blocks.len()];
         for (v, ws) in l.succ.iter().enumerate().take(blocks.len()) {
             for &w in ws.iter().filter(|&&w| w < blocks.len()) {

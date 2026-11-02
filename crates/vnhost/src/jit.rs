@@ -426,6 +426,9 @@ fn count_compile(k: usize, t0: Instant) {
 fn init_flags() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
+        if std::env::var("VNVM_JIT_HOIST").is_ok_and(|v| v == "0") {
+            jit::HOIST.store(false, Ordering::Relaxed);
+        }
         if let Some(n) = std::env::var("VNVM_JIT_EMBED").ok().and_then(|v| v.parse().ok()) {
             jit::EMBED.store(n, Ordering::Relaxed);
         }
