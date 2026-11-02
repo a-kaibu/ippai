@@ -1531,6 +1531,8 @@ fn SetThreadGroupAffinity(c: &mut Ctx) -> u32 {
 struct Tp {
     cb: u32,
     ctx: u32,
+    /// callbacks started and not finished (WaitForThreadpoolWorkCallbacks)
+    running: u32,
     /// bumped by every Set / cancel / close: a thread whose generation is stale calls nothing
     gen: u32,
 }
@@ -1542,7 +1544,7 @@ fn tp_with<R>(f: impl FnOnce(&mut HashMap<u32, Tp>) -> R) -> R {
 fn tp_new(c: &mut Ctx) -> u32 {
     let h = mem::heap_alloc(16, true);
     let (cb, ctx) = (c.a(0), c.a(1));
-    tp_with(|m| m.insert(h, Tp { cb, ctx, gen: 0 }));
+    tp_with(|m| m.insert(h, Tp { cb, ctx, gen: 0, running: 0 }));
     h
 }
 fn tp_bump(h: u32) -> Option<(u32, u32, u32)> {
@@ -1600,10 +1602,17 @@ fn tp_timer_thread(c: &mut Ctx) -> u32 {
                 break;
             }
             let Some((cb, ctx)) = tp_with(|m| m.get(&h).map(|t| (t.cb, t.ctx))) else { break };
-            if mode == 0 {
-                c.call(cb, &[0, ctx, h]);
-            } else {
-                c.call(cb, &[ctx, 1]);
+            tp_with(|m| m.get_mut(&h).map(|t| t.running += 1));
+            match mode {
+                0 => c.call(cb, &[0, ctx, h]),
+                1 => c.call(cb, &[ctx, 1]),
+                3 => c.call(cb, &[0, ctx]),
+                _ => c.call(cb, &[ctx]),
+            };
+            tp_with(|m| m.get_mut(&h).map(|t| t.running -= 1));
+            if mode >= 2 {
+                // QueueUserWorkItem's one-off entry
+                tp_with(|m| m.remove(&h));
             }
             if period == 0 {
                 break;
@@ -1640,7 +1649,7 @@ fn tp_wait_thread(c: &mut Ctx) -> u32 {
 fn RegisterWaitForSingleObject(c: &mut Ctx) -> u32 {
     let (out, obj_h, cb, ctx, ms, flags) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5));
     let h = mem::heap_alloc(16, true);
-    tp_with(|m| m.insert(h, Tp { cb, ctx, gen: 0 }));
+    tp_with(|m| m.insert(h, Tp { cb, ctx, gen: 0, running: 0 }));
     put32(out, h);
     tp_spawn(false, h, 0, (obj_h, ms, flags | 0x8000_0000));
     1
@@ -1659,7 +1668,7 @@ fn DeleteTimerQueue(_: &mut Ctx) -> u32 {
 fn CreateTimerQueueTimer(c: &mut Ctx) -> u32 {
     let (out, cb, param, due, period) = (c.a(0), c.a(2), c.a(3), c.a(4), c.a(5));
     let h = mem::heap_alloc(16, true);
-    tp_with(|m| m.insert(h, Tp { cb, ctx: param, gen: 0 }));
+    tp_with(|m| m.insert(h, Tp { cb, ctx: param, gen: 0, running: 0 }));
     put32(out, h);
     tp_spawn(true, h, 0, (due, period, 1));
     1
@@ -1678,6 +1687,47 @@ fn DeleteTimerQueueTimer(c: &mut Ctx) -> u32 {
         set_event(ev);
     }
     1
+}
+/// QueueUserWorkItem(function, context, flags): function(context) on a new guest thread
+fn QueueUserWorkItem(c: &mut Ctx) -> u32 {
+    let (cb, ctx) = (c.a(0), c.a(1));
+    let h = mem::heap_alloc(16, true);
+    tp_with(|m| m.insert(h, Tp { cb, ctx, gen: 0, running: 0 }));
+    tp_spawn(true, h, 0, (0, 0, 2));
+    1
+}
+fn CreateThreadpoolWork(c: &mut Ctx) -> u32 {
+    tp_new(c)
+}
+fn SubmitThreadpoolWork(c: &mut Ctx) -> u32 {
+    let h = c.a(0);
+    if let Some(gen) = tp_with(|m| m.get(&h).map(|t| t.gen)) {
+        tp_spawn(true, h, gen, (0, 0, 0));
+    }
+    0
+}
+/// TrySubmitThreadpoolCallback(callback(instance, ctx), ctx, env)
+fn TrySubmitThreadpoolCallback(c: &mut Ctx) -> u32 {
+    let (cb, ctx) = (c.a(0), c.a(1));
+    let h = mem::heap_alloc(16, true);
+    tp_with(|m| m.insert(h, Tp { cb, ctx, gen: 0, running: 0 }));
+    tp_spawn(true, h, 0, (0, 0, 3));
+    1
+}
+/// WaitForThreadpoolWorkCallbacks(work, cancel pending)
+fn WaitForThreadpoolWorkCallbacks(c: &mut Ctx) -> u32 {
+    let h = c.a(0);
+    if c.a(1) != 0 {
+        TP_ARGS.lock().unwrap().retain(|x| x.0 != h);
+    }
+    while TP_ARGS.lock().unwrap().iter().any(|x| x.0 == h) || tp_with(|m| m.get(&h).is_some_and(|t| t.running > 0)) {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    0
+}
+fn CloseThreadpoolWork(c: &mut Ctx) -> u32 {
+    tp_with(|m| m.remove(&c.a(0)));
+    0
 }
 fn UnregisterWait(c: &mut Ctx) -> u32 {
     tp_with(|m| m.remove(&c.a(0)));
@@ -3399,6 +3449,56 @@ fn InterlockedPushListSListEx(c: &mut Ctx) -> u32 {
 fn RtlFirstEntrySList(c: &mut Ctx) -> u32 {
     r32(c.a(0))
 }
+// tool help snapshots: the process list holds this process only (single-instance checks)
+fn CreateToolhelp32Snapshot(_: &mut Ctx) -> u32 {
+    create_named(None, Obj::Semaphore { count: 0, max: 1 })
+}
+fn process_entry(c: &mut Ctx, wide: bool) -> u32 {
+    let p = c.a(1);
+    let exe = crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.name.clone()).unwrap_or_default();
+    let size = if wide { 36 + 520 } else { 36 + 260 };
+    mem::fill(p + 4, size - 4, 0);
+    w32(p + 8, crate::PID);
+    w32(p + 20, 1);
+    w32(p + 28, 8);
+    ret_str(p + 36, 260, &exe, wide);
+    1
+}
+fn Process32First(c: &mut Ctx) -> u32 {
+    process_entry(c, false)
+}
+fn Process32FirstW(c: &mut Ctx) -> u32 {
+    process_entry(c, true)
+}
+fn no_more(_: &mut Ctx) -> u32 {
+    last_error(18);
+    0
+}
+/// ConvertDefaultLocale(lcid): the default locales become the user's
+fn ConvertDefaultLocale(c: &mut Ctx) -> u32 {
+    match c.a(0) {
+        0 | 0x400 | 0x800 => lcid(),
+        l => l,
+    }
+}
+fn MakeSureDirectoryPathExists(c: &mut Ctx) -> u32 {
+    let s = arg_str(c.a(0), false);
+    let dir = &s[..s.rfind('\\').unwrap_or(0)];
+    let mut at = 0;
+    while let Some(i) = dir[at..].find('\\').map(|i| i + at) {
+        if i > 2 {
+            mkdir(&dir[..i]);
+        }
+        at = i + 1;
+    }
+    if !dir.is_empty() {
+        mkdir(dir);
+    }
+    ok(dir.is_empty() || files::resolve(dir).is_some_and(|h| std::path::Path::new(&h).is_dir()))
+}
+fn WNetGetUniversalNameA(_: &mut Ctx) -> u32 {
+    2250 // ERROR_NOT_CONNECTED: a local drive
+}
 fn GetCurrentPackageId(_: &mut Ctx) -> u32 {
     15700
 }
@@ -3503,6 +3603,8 @@ pub fn init() {
         WaitForThreadpoolTimerCallbacks, CloseThreadpoolTimer, CreateThreadpoolWait, SetThreadpoolWait,
         WaitForThreadpoolWaitCallbacks, CloseThreadpoolWait, FreeLibraryWhenCallbackReturns, CreateSemaphoreExW,
         SetThreadStackGuarantee, FlushProcessWriteBuffers, RegisterWaitForSingleObject, UnregisterWait, UnregisterWaitEx,
+        QueueUserWorkItem, CreateThreadpoolWork, SubmitThreadpoolWork, TrySubmitThreadpoolCallback,
+        WaitForThreadpoolWorkCallbacks, CloseThreadpoolWork,
         CreateTimerQueue, DeleteTimerQueueEx, DeleteTimerQueue, CreateTimerQueueTimer, ChangeTimerQueueTimer, DeleteTimerQueueTimer,
         IsWow64Process, GetVersion, GetVersionExA, GetVersionExW, VerifyVersionInfoW, VerifyVersionInfoA, VerSetConditionMask,
         GetACP, GetOEMCP, IsValidCodePage, GetThreadLocale, SetThreadLocale, GetUserDefaultLCID, GetSystemDefaultLCID, EnumSystemLocalesA, EnumSystemLocalesW,
@@ -3537,10 +3639,17 @@ pub fn init() {
         CreateFileMappingA, CreateFileMappingW, MapViewOfFile, MapViewOfFileEx, UnmapViewOfFile, CreatePipe,
         CreateProcessA, CreateProcessW, WinExec, OpenProcess, GetStartupInfoA, GetStartupInfoW, SetHandleCount,
         FormatMessageA, FormatMessageW, Beep, GetComputerNameA, InitializeSListHead, GetCurrentPackageId,
+        CreateToolhelp32Snapshot, Process32First, Process32FirstW, ConvertDefaultLocale,
         InterlockedPushEntrySList, InterlockedPopEntrySList, InterlockedFlushSList, QueryDepthSList, InterlockedPushListSListEx,
         AreFileApisANSI, SetFileApisToANSI,
     );
     reg!("advapi32"; GetUserNameA);
+    for n in ["Process32Next", "Process32NextW", "Module32First", "Module32FirstW", "Module32Next", "Module32NextW", "Thread32First", "Thread32Next"] {
+        implement("kernel32", n, no_more);
+    }
+    reg!("dbghelp"; MakeSureDirectoryPathExists);
+    reg!("mpr"; WNetGetUniversalNameA);
+    implement("mpr", "WNetGetUniversalNameW", WNetGetUniversalNameA);
     reg!("advapi32"; RegisterTraceGuidsW, UnregisterTraceGuids, TraceEvent, GetTraceLoggerHandle, GetTraceEnableFlags, GetTraceEnableLevel);
     reg!("ntdll"; RtlGetVersion, RtlGetNtVersionNumbers, RtlFirstEntrySList);
     implement("ntdll", "RtlInterlockedPushEntrySList", InterlockedPushEntrySList);

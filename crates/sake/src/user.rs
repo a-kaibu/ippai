@@ -2009,6 +2009,25 @@ fn PostMessageA(c: &mut Ctx) -> u32 {
 fn PostMessageW(c: &mut Ctx) -> u32 {
     PostMessageA(c)
 }
+// DDE: an instance and string handles, no other program to talk to (single-instance checks
+// connect, find nobody and go on as the server)
+static DDE_NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+fn DdeInitializeA(c: &mut Ctx) -> u32 {
+    put32(c.a(0), DDE_NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    0
+}
+fn DdeCreateStringHandleA(_: &mut Ctx) -> u32 {
+    0x100 + DDE_NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+fn dde_true(_: &mut Ctx) -> u32 {
+    1
+}
+fn DdeConnect(_: &mut Ctx) -> u32 {
+    0
+}
+fn DdeGetLastError(_: &mut Ctx) -> u32 {
+    0x400a // DMLERR_NO_CONV_ESTABLISHED
+}
 pub fn post_thread_msg(tid: u32, msg: u32, w: u32, l: u32) {
     post_thread(tid, Msg { hwnd: 0, msg, w, l, time: now_ms(), x: 0, y: 0 });
 }
@@ -4151,6 +4170,12 @@ pub fn init() {
         AttachThreadInput, FlashWindow, GetProcessWindowStation, GetUserObjectInformationA, SetProcessDPIAware,
         IsWindowUnicode, RegisterHotKey, UnregisterHotKey,
     );
+    reg!("user32"; DdeInitializeA, DdeCreateStringHandleA, DdeConnect, DdeGetLastError);
+    implement("user32", "DdeInitializeW", DdeInitializeA);
+    implement("user32", "DdeCreateStringHandleW", DdeCreateStringHandleA);
+    for n in ["DdeNameService", "DdeFreeStringHandle", "DdeUninitialize", "DdeKeepStringHandle", "DdeDisconnect", "DdeFreeDataHandle", "DdeEnableCallback"] {
+        implement("user32", n, dde_true);
+    }
     reg!("user32";
         DialogBoxParamA, DialogBoxParamW, DialogBoxIndirectParamA, DialogBoxIndirectParamW, CreateDialogParamA,
         CreateDialogParamW, CreateDialogIndirectParamA, CreateDialogIndirectParamW, EndDialog, SendDlgItemMessageW,
