@@ -1396,6 +1396,386 @@ fn GetSystemInfo(c: &mut Ctx) -> u32 {
     w16(p + 34, 0x0f01);
     0
 }
+// CPU topology: one group, one package, one NUMA node, one core per processor (the MSVC
+// concurrency runtime asks before it starts; without it the game throws at startup)
+fn cpu_mask() -> u32 {
+    (1u32 << ncpu()) - 1
+}
+fn group_affinity(p: u32, mask: u32) {
+    mem::fill(p, 12, 0);
+    w32(p, mask);
+}
+/// GetLogicalProcessorInformationEx(relation, buffer, length*)
+fn GetLogicalProcessorInformationEx(c: &mut Ctx) -> u32 {
+    let (rel, buf, lenp) = (c.a(0), c.a(1), c.a(2));
+    let all = rel == 0xffff;
+    // (relationship, size, filler)
+    let mut items: Vec<(u32, u32, Box<dyn Fn(u32)>)> = Vec::new();
+    if all || rel == 0 {
+        for i in 0..ncpu() {
+            items.push((0, 44, Box::new(move |p| {
+                w16(p + 8 + 22, 1);
+                group_affinity(p + 8 + 24, 1 << i);
+            })));
+        }
+    }
+    if all || rel == 1 {
+        items.push((1, 44, Box::new(|p| {
+            w16(p + 8 + 22, 1);
+            group_affinity(p + 8 + 24, cpu_mask());
+        })));
+    }
+    if all || rel == 3 {
+        items.push((3, 44, Box::new(|p| {
+            w16(p + 8 + 22, 1);
+            group_affinity(p + 8 + 24, cpu_mask());
+        })));
+    }
+    if all || rel == 4 {
+        items.push((4, 76, Box::new(|p| {
+            w16(p + 8, 1);
+            w16(p + 10, 1);
+            w8(p + 8 + 24, ncpu() as u8);
+            w8(p + 8 + 25, ncpu() as u8);
+            w32(p + 8 + 24 + 40, cpu_mask());
+        })));
+    }
+    let need: u32 = items.iter().map(|x| x.1).sum();
+    if lenp == 0 || r32(lenp) < need || buf == 0 {
+        if lenp != 0 {
+            w32(lenp, need);
+        }
+        last_error(122);
+        return 0;
+    }
+    let mut p = buf;
+    for (r, size, fill) in &items {
+        mem::fill(p, *size, 0);
+        w32(p, *r);
+        w32(p + 4, *size);
+        fill(p);
+        p += size;
+    }
+    w32(lenp, need);
+    1
+}
+/// GetLogicalProcessorInformation(buffer, length*): 24-byte entries
+fn GetLogicalProcessorInformation(c: &mut Ctx) -> u32 {
+    let (buf, lenp) = (c.a(0), c.a(1));
+    let n = ncpu() + 2;
+    let need = 24 * n;
+    if r32(lenp) < need || buf == 0 {
+        w32(lenp, need);
+        last_error(122);
+        return 0;
+    }
+    mem::fill(buf, need, 0);
+    for i in 0..ncpu() {
+        w32(buf + 24 * i, 1 << i);
+    }
+    let q = buf + 24 * ncpu();
+    w32(q, cpu_mask());
+    w32(q + 4, 1);
+    w32(q + 24, cpu_mask());
+    w32(q + 28, 3);
+    w32(lenp, need);
+    1
+}
+fn GetNumaHighestNodeNumber(c: &mut Ctx) -> u32 {
+    put32(c.a(0), 0);
+    1
+}
+fn GetCurrentProcessorNumber(_: &mut Ctx) -> u32 {
+    0
+}
+fn GetCurrentProcessorNumberEx(c: &mut Ctx) -> u32 {
+    put32(c.a(0), 0);
+    0
+}
+fn GetNumaNodeProcessorMaskEx(c: &mut Ctx) -> u32 {
+    group_affinity(c.a(1), if c.a(0) & 0xffff == 0 { cpu_mask() } else { 0 });
+    1
+}
+fn GetNumaNodeProcessorMask(c: &mut Ctx) -> u32 {
+    let p = c.a(1);
+    w32(p, if c.a(0) & 0xff == 0 { cpu_mask() } else { 0 });
+    w32(p + 4, 0);
+    1
+}
+fn GetActiveProcessorCount(c: &mut Ctx) -> u32 {
+    if matches!(c.a(0) & 0xffff, 0 | 0xffff) { ncpu() } else { 0 }
+}
+fn GetMaximumProcessorCount(c: &mut Ctx) -> u32 {
+    GetActiveProcessorCount(c)
+}
+fn GetActiveProcessorGroupCount(_: &mut Ctx) -> u32 {
+    1
+}
+fn GetMaximumProcessorGroupCount(_: &mut Ctx) -> u32 {
+    1
+}
+fn GetThreadGroupAffinity(c: &mut Ctx) -> u32 {
+    group_affinity(c.a(1), cpu_mask());
+    1
+}
+fn SetThreadGroupAffinity(c: &mut Ctx) -> u32 {
+    if c.a(2) != 0 {
+        group_affinity(c.a(2), cpu_mask());
+    }
+    1
+}
+// ---------------------------------------------------------------------------------------------
+// thread pool timers and waits (the MSVC concurrency runtime looks them up and calls them
+// unchecked): each Set starts a guest thread that runs the callback once due / signalled
+
+struct Tp {
+    cb: u32,
+    ctx: u32,
+    /// bumped by every Set / cancel / close: a thread whose generation is stale calls nothing
+    gen: u32,
+}
+static TPS: Mutex<Option<HashMap<u32, Tp>>> = Mutex::new(None);
+
+fn tp_with<R>(f: impl FnOnce(&mut HashMap<u32, Tp>) -> R) -> R {
+    f(TPS.lock().unwrap().get_or_insert_with(HashMap::default))
+}
+fn tp_new(c: &mut Ctx) -> u32 {
+    let h = mem::heap_alloc(16, true);
+    let (cb, ctx) = (c.a(0), c.a(1));
+    tp_with(|m| m.insert(h, Tp { cb, ctx, gen: 0 }));
+    h
+}
+fn tp_bump(h: u32) -> Option<(u32, u32, u32)> {
+    tp_with(|m| {
+        m.get_mut(&h).map(|t| {
+            t.gen = t.gen.wrapping_add(1);
+            (t.cb, t.ctx, t.gen)
+        })
+    })
+}
+fn tp_current(h: u32, gen: u32) -> bool {
+    tp_with(|m| m.get(&h).is_some_and(|t| t.gen == gen))
+}
+/// FILETIME* due time -> ms from now (negative: relative 100 ns units)
+fn due_ms(p: u32) -> u64 {
+    let v = get64(p) as i64;
+    if v < 0 {
+        (-v / 10_000) as u64
+    } else {
+        let now = files::filetime(std::time::SystemTime::now()) as i64;
+        ((v - now).max(0) / 10_000) as u64
+    }
+}
+fn tp_spawn(timer: bool, h: u32, gen: u32, arg: (u32, u32, u32)) {
+    static T: OnceLock<u32> = OnceLock::new();
+    static W: OnceLock<u32> = OnceLock::new();
+    TP_ARGS.lock().unwrap().push((h, gen, arg));
+    let entry = if timer {
+        *T.get_or_init(|| crate::api::host_fn("tp_timer_thread", tp_timer_thread, 4))
+    } else {
+        *W.get_or_init(|| crate::api::host_fn("tp_wait_thread", tp_wait_thread, 4))
+    };
+    crate::spawn_gated(entry, h, 0x10000, obj::new_thread_obj(0), false);
+}
+static TP_ARGS: Mutex<Vec<(u32, u32, (u32, u32, u32))>> = Mutex::new(Vec::new());
+fn tp_take(h: u32) -> Option<(u32, (u32, u32, u32))> {
+    let mut v = TP_ARGS.lock().unwrap();
+    let i = v.iter().position(|x| x.0 == h)?;
+    let (_, gen, a) = v.remove(i);
+    Some((gen, a))
+}
+fn tp_timer_thread(c: &mut Ctx) -> u32 {
+    let h = c.a(0);
+    if let Some((gen, (delay, period, mode))) = tp_take(h) {
+        let mut next = std::time::Instant::now() + std::time::Duration::from_millis(delay as u64);
+        loop {
+            let now = std::time::Instant::now();
+            if next > now {
+                std::thread::sleep((next - now).min(std::time::Duration::from_millis(50)));
+                if tp_current(h, gen) {
+                    continue;
+                }
+            }
+            if !tp_current(h, gen) {
+                break;
+            }
+            let Some((cb, ctx)) = tp_with(|m| m.get(&h).map(|t| (t.cb, t.ctx))) else { break };
+            if mode == 0 {
+                c.call(cb, &[0, ctx, h]);
+            } else {
+                c.call(cb, &[ctx, 1]);
+            }
+            if period == 0 {
+                break;
+            }
+            next += std::time::Duration::from_millis(period as u64);
+        }
+    }
+    exit_thread(0)
+}
+/// mode 0: a thread pool wait (one call: instance, ctx, wait, result); otherwise
+/// RegisterWaitForSingleObject's flags (callback(ctx, timed out), again unless WT_EXECUTEONLYONCE)
+fn tp_wait_thread(c: &mut Ctx) -> u32 {
+    let h = c.a(0);
+    if let Some((gen, (obj_h, ms, mode))) = tp_take(h) {
+        loop {
+            let r = obj::wait(&[obj_h], false, ms, None);
+            if !tp_current(h, gen) {
+                break;
+            }
+            let Some((cb, ctx)) = tp_with(|m| m.get(&h).map(|t| (t.cb, t.ctx))) else { break };
+            if mode == 0 {
+                c.call(cb, &[0, ctx, h, if r == 0 { 0 } else { 0x102 }]);
+                break;
+            }
+            c.call(cb, &[ctx, (r != 0) as u32]);
+            if mode & 8 != 0 {
+                break;
+            }
+        }
+    }
+    exit_thread(0)
+}
+/// RegisterWaitForSingleObject(phandle*, object, callback, ctx, ms, flags)
+fn RegisterWaitForSingleObject(c: &mut Ctx) -> u32 {
+    let (out, obj_h, cb, ctx, ms, flags) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5));
+    let h = mem::heap_alloc(16, true);
+    tp_with(|m| m.insert(h, Tp { cb, ctx, gen: 0 }));
+    put32(out, h);
+    tp_spawn(false, h, 0, (obj_h, ms, flags | 0x8000_0000));
+    1
+}
+// timer queues: one implicit queue, each timer a thread pool timer calling callback(param, TRUE)
+fn CreateTimerQueue(_: &mut Ctx) -> u32 {
+    mem::heap_alloc(16, true)
+}
+fn DeleteTimerQueueEx(_: &mut Ctx) -> u32 {
+    1
+}
+fn DeleteTimerQueue(_: &mut Ctx) -> u32 {
+    1
+}
+/// CreateTimerQueueTimer(phandle*, queue, callback, param, due ms, period ms, flags)
+fn CreateTimerQueueTimer(c: &mut Ctx) -> u32 {
+    let (out, cb, param, due, period) = (c.a(0), c.a(2), c.a(3), c.a(4), c.a(5));
+    let h = mem::heap_alloc(16, true);
+    tp_with(|m| m.insert(h, Tp { cb, ctx: param, gen: 0 }));
+    put32(out, h);
+    tp_spawn(true, h, 0, (due, period, 1));
+    1
+}
+/// ChangeTimerQueueTimer(queue, timer, due ms, period ms)
+fn ChangeTimerQueueTimer(c: &mut Ctx) -> u32 {
+    let (h, due, period) = (c.a(1), c.a(2), c.a(3));
+    let Some((_, _, gen)) = tp_bump(h) else { return 0 };
+    tp_spawn(true, h, gen, (due, period, 1));
+    1
+}
+fn DeleteTimerQueueTimer(c: &mut Ctx) -> u32 {
+    tp_with(|m| m.remove(&c.a(1)));
+    let ev = c.a(2);
+    if ev != 0 && ev != u32::MAX {
+        set_event(ev);
+    }
+    1
+}
+fn UnregisterWait(c: &mut Ctx) -> u32 {
+    tp_with(|m| m.remove(&c.a(0)));
+    1
+}
+fn UnregisterWaitEx(c: &mut Ctx) -> u32 {
+    tp_with(|m| m.remove(&c.a(0)));
+    if c.a(1) != 0 && c.a(1) != u32::MAX {
+        set_event(c.a(1));
+    }
+    1
+}
+fn CreateThreadpoolTimer(c: &mut Ctx) -> u32 {
+    tp_new(c)
+}
+/// SetThreadpoolTimer(timer, due FILETIME* or NULL (cancel), period ms, window)
+fn SetThreadpoolTimer(c: &mut Ctx) -> u32 {
+    let (h, due, period) = (c.a(0), c.a(1), c.a(2));
+    let Some((_, _, gen)) = tp_bump(h) else { return 0 };
+    if due != 0 {
+        tp_spawn(true, h, gen, (due_ms(due) as u32, period, 0));
+    }
+    0
+}
+fn IsThreadpoolTimerSet(c: &mut Ctx) -> u32 {
+    TP_ARGS.lock().unwrap().iter().any(|x| x.0 == c.a(0)) as u32
+}
+fn WaitForThreadpoolTimerCallbacks(c: &mut Ctx) -> u32 {
+    if c.a(1) != 0 {
+        tp_bump(c.a(0));
+    }
+    0
+}
+fn CloseThreadpoolTimer(c: &mut Ctx) -> u32 {
+    tp_with(|m| m.remove(&c.a(0)));
+    0
+}
+fn CreateThreadpoolWait(c: &mut Ctx) -> u32 {
+    tp_new(c)
+}
+/// SetThreadpoolWait(wait, handle or NULL (cancel), timeout FILETIME* or NULL (infinite))
+fn SetThreadpoolWait(c: &mut Ctx) -> u32 {
+    let (h, obj_h, due) = (c.a(0), c.a(1), c.a(2));
+    let Some((_, _, gen)) = tp_bump(h) else { return 0 };
+    if obj_h != 0 {
+        let ms = if due == 0 { u32::MAX } else { due_ms(due).min(u32::MAX as u64 - 1) as u32 };
+        tp_spawn(false, h, gen, (obj_h, ms, 0));
+    }
+    0
+}
+fn WaitForThreadpoolWaitCallbacks(c: &mut Ctx) -> u32 {
+    if c.a(1) != 0 {
+        tp_bump(c.a(0));
+    }
+    0
+}
+fn CloseThreadpoolWait(c: &mut Ctx) -> u32 {
+    tp_with(|m| m.remove(&c.a(0)));
+    0
+}
+fn FreeLibraryWhenCallbackReturns(_: &mut Ctx) -> u32 {
+    0
+}
+fn CreateSemaphoreExW(c: &mut Ctx) -> u32 {
+    create_named(named(c.a(3), true), Obj::Semaphore { count: c.i(1), max: c.i(2) })
+}
+fn SetThreadStackGuarantee(_: &mut Ctx) -> u32 {
+    1
+}
+fn FlushProcessWriteBuffers(_: &mut Ctx) -> u32 {
+    std::sync::atomic::fence(Ordering::SeqCst);
+    0
+}
+// event tracing: nobody listens
+fn RegisterTraceGuidsW(c: &mut Ctx) -> u32 {
+    put32(c.a(5), 0);
+    0
+}
+fn UnregisterTraceGuids(_: &mut Ctx) -> u32 {
+    0
+}
+fn TraceEvent(_: &mut Ctx) -> u32 {
+    0
+}
+fn GetTraceLoggerHandle(_: &mut Ctx) -> u32 {
+    last_error(6);
+    0
+}
+fn GetTraceEnableFlags(_: &mut Ctx) -> u32 {
+    0
+}
+fn GetTraceEnableLevel(_: &mut Ctx) -> u32 {
+    0
+}
+fn LCMapStringEx(c: &mut Ctx) -> u32 {
+    // (locale name, flags, src, n, dst, cap, ..): the same slots as LCMapStringW's
+    LCMapStringW(c)
+}
 fn GetNativeSystemInfo(c: &mut Ctx) -> u32 {
     GetSystemInfo(c)
 }
@@ -2973,6 +3353,52 @@ fn InitializeSListHead(c: &mut Ctx) -> u32 {
     mem::fill(c.a(0), 8, 0);
     0
 }
+// interlocked singly linked lists (SLIST_HEADER: next, depth u16, sequence u16), under one lock
+static SLIST: Mutex<()> = Mutex::new(());
+fn slist_set(h: u32, next: u32, depth: u32) {
+    w32(h, next);
+    w16(h + 4, depth as u16);
+    w16(h + 6, r16(h + 6).wrapping_add(1));
+}
+fn InterlockedPushEntrySList(c: &mut Ctx) -> u32 {
+    let (h, e) = (c.a(0), c.a(1));
+    let _g = SLIST.lock().unwrap();
+    let old = r32(h);
+    w32(e, old);
+    slist_set(h, e, r16(h + 4) as u32 + 1);
+    old
+}
+fn InterlockedPopEntrySList(c: &mut Ctx) -> u32 {
+    let h = c.a(0);
+    let _g = SLIST.lock().unwrap();
+    let e = r32(h);
+    if e != 0 {
+        slist_set(h, r32(e), (r16(h + 4) as u32).saturating_sub(1));
+    }
+    e
+}
+fn InterlockedFlushSList(c: &mut Ctx) -> u32 {
+    let h = c.a(0);
+    let _g = SLIST.lock().unwrap();
+    let e = r32(h);
+    slist_set(h, 0, 0);
+    e
+}
+fn QueryDepthSList(c: &mut Ctx) -> u32 {
+    r16(c.a(0) + 4) as u32
+}
+/// InterlockedPushListSListEx(head, first, last, count)
+fn InterlockedPushListSListEx(c: &mut Ctx) -> u32 {
+    let (h, first, last, n) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    let _g = SLIST.lock().unwrap();
+    let old = r32(h);
+    w32(last, old);
+    slist_set(h, first, r16(h + 4) as u32 + n);
+    old
+}
+fn RtlFirstEntrySList(c: &mut Ctx) -> u32 {
+    r32(c.a(0))
+}
 fn GetCurrentPackageId(_: &mut Ctx) -> u32 {
     15700
 }
@@ -3070,6 +3496,14 @@ pub fn init() {
         GlobalAlloc, GlobalFree, GlobalReAlloc, GlobalLock, GlobalUnlock, GlobalHandle, GlobalSize, GlobalFlags,
         LocalAlloc, LocalFree, LocalReAlloc, LocalLock, LocalUnlock, LocalSize, LocalHandle,
         GlobalMemoryStatus, GlobalMemoryStatusEx, GetSystemInfo, GetNativeSystemInfo, IsProcessorFeaturePresent,
+        GetLogicalProcessorInformationEx, GetLogicalProcessorInformation, GetNumaHighestNodeNumber, GetCurrentProcessorNumber,
+        GetCurrentProcessorNumberEx, GetNumaNodeProcessorMaskEx, GetNumaNodeProcessorMask, GetActiveProcessorCount,
+        GetMaximumProcessorCount, GetActiveProcessorGroupCount, GetMaximumProcessorGroupCount, GetThreadGroupAffinity,
+        SetThreadGroupAffinity, LCMapStringEx, CreateThreadpoolTimer, SetThreadpoolTimer, IsThreadpoolTimerSet,
+        WaitForThreadpoolTimerCallbacks, CloseThreadpoolTimer, CreateThreadpoolWait, SetThreadpoolWait,
+        WaitForThreadpoolWaitCallbacks, CloseThreadpoolWait, FreeLibraryWhenCallbackReturns, CreateSemaphoreExW,
+        SetThreadStackGuarantee, FlushProcessWriteBuffers, RegisterWaitForSingleObject, UnregisterWait, UnregisterWaitEx,
+        CreateTimerQueue, DeleteTimerQueueEx, DeleteTimerQueue, CreateTimerQueueTimer, ChangeTimerQueueTimer, DeleteTimerQueueTimer,
         IsWow64Process, GetVersion, GetVersionExA, GetVersionExW, VerifyVersionInfoW, VerifyVersionInfoA, VerSetConditionMask,
         GetACP, GetOEMCP, IsValidCodePage, GetThreadLocale, SetThreadLocale, GetUserDefaultLCID, GetSystemDefaultLCID, EnumSystemLocalesA, EnumSystemLocalesW,
         GetUserDefaultLangID, GetSystemDefaultLangID, GetUserDefaultUILanguage, GetSystemDefaultUILanguage,
@@ -3103,10 +3537,17 @@ pub fn init() {
         CreateFileMappingA, CreateFileMappingW, MapViewOfFile, MapViewOfFileEx, UnmapViewOfFile, CreatePipe,
         CreateProcessA, CreateProcessW, WinExec, OpenProcess, GetStartupInfoA, GetStartupInfoW, SetHandleCount,
         FormatMessageA, FormatMessageW, Beep, GetComputerNameA, InitializeSListHead, GetCurrentPackageId,
+        InterlockedPushEntrySList, InterlockedPopEntrySList, InterlockedFlushSList, QueryDepthSList, InterlockedPushListSListEx,
         AreFileApisANSI, SetFileApisToANSI,
     );
     reg!("advapi32"; GetUserNameA);
-    reg!("ntdll"; RtlGetVersion, RtlGetNtVersionNumbers);
+    reg!("advapi32"; RegisterTraceGuidsW, UnregisterTraceGuids, TraceEvent, GetTraceLoggerHandle, GetTraceEnableFlags, GetTraceEnableLevel);
+    reg!("ntdll"; RtlGetVersion, RtlGetNtVersionNumbers, RtlFirstEntrySList);
+    implement("ntdll", "RtlInterlockedPushEntrySList", InterlockedPushEntrySList);
+    implement("ntdll", "RtlInterlockedPopEntrySList", InterlockedPopEntrySList);
+    implement("ntdll", "RtlInterlockedFlushSList", InterlockedFlushSList);
+    implement("ntdll", "RtlQueryDepthSList", QueryDepthSList);
+    implement("ntdll", "RtlInitializeSListHead", InitializeSListHead);
     reg!("ntdll"; RtlZeroMemory, RtlMoveMemory, RtlFillMemory, RtlAllocateHeap, RtlFreeHeap, RtlEnterCriticalSection,
         RtlLeaveCriticalSection, InitializeSRWLock, AcquireSRWLockExclusive, AcquireSRWLockShared,
         ReleaseSRWLockExclusive, ReleaseSRWLockShared, TryAcquireSRWLockExclusive, TryAcquireSRWLockShared,
