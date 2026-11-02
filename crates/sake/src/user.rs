@@ -522,55 +522,80 @@ fn control_proc() -> u32 {
     *P.get_or_init(|| crate::api::host_fn("control_proc", control_proc_fn, 16))
 }
 
-// the tab control: keeps the item count and the selection (Delphi's TPageControl checks what
-// TCM_INSERTITEM / TCM_DELETEITEM return); draws nothing
-static TABS: Mutex<Option<HashMap<u32, (u32, i32)>>> = Mutex::new(None);
+/// Tab controls: hwnd -> (each item's lParam, selection). Delphi's TPageControl checks what
+/// TCM_INSERTITEM / TCM_DELETEITEM return and reads its page objects back with TCM_GETITEM;
+/// nothing is drawn.
+static TABS: Mutex<Option<HashMap<u32, (Vec<u32>, i32)>>> = Mutex::new(None);
 fn tab_proc() -> u32 {
     static P: OnceLock<u32> = OnceLock::new();
     *P.get_or_init(|| crate::api::host_fn("tab_proc", tab_proc_fn, 16))
 }
 fn tab_proc_fn(c: &mut Ctx) -> u32 {
-    let (h, m, wp) = (c.a(0), c.a(1), c.a(2));
+    let (h, m, wp, lp) = (c.a(0), c.a(1), c.a(2), c.a(3));
     let mut g = TABS.lock().unwrap();
-    let t = g.get_or_insert_with(HashMap::default).entry(h).or_insert((0, -1));
+    let t = g.get_or_insert_with(HashMap::default).entry(h).or_insert((Vec::new(), -1));
+    let n = t.0.len() as u32;
+    // TCITEM: mask, state, state mask, text, text max, image, lParam (TCIF_PARAM = 8)
+    let param = |lp: u32| if lp != 0 && mem::r32(lp) & 8 != 0 { mem::r32(lp + 24) } else { 0 };
     match m {
-        0x1304 => t.0,
+        0x1304 => n,
         // TCM_INSERTITEMA/W: at min(index, count)
         0x1307 | 0x133e => {
-            let i = wp.min(t.0);
-            t.0 += 1;
+            let i = wp.min(n);
+            t.0.insert(i as usize, param(lp));
             if t.1 < 0 {
                 t.1 = 0;
             }
             i
         }
         0x1308 => {
-            if wp >= t.0 {
+            if wp >= n {
                 return 0;
             }
-            t.0 -= 1;
-            if t.1 >= t.0 as i32 {
-                t.1 = t.0 as i32 - 1;
+            t.0.remove(wp as usize);
+            if t.1 >= t.0.len() as i32 {
+                t.1 = t.0.len() as i32 - 1;
             }
             1
         }
         0x1309 => {
-            *t = (0, -1);
+            *t = (Vec::new(), -1);
             1
         }
         0x130b => t.1 as u32,
         0x130c => {
             let old = t.1;
-            if wp < t.0 {
+            if wp < n {
                 t.1 = wp as i32;
             }
             old as u32
         }
         0x132c => 1,
-        0x1305 | 0x1306 | 0x133c | 0x133d | 0x130a | 0x1328 | 0x1303 | 0x1302 => {
-            // get/set item, item rect, adjust rect, image list: nothing to report
-            if m == 0x1306 || m == 0x133d { 1 } else { 0 }
+        // TCM_GETITEMA/W: lParam; the text is not kept (an empty string)
+        0x1305 | 0x133c => {
+            if wp >= n || lp == 0 {
+                return 0;
+            }
+            let mask = mem::r32(lp);
+            if mask & 8 != 0 {
+                w32(lp + 24, t.0[wp as usize]);
+            }
+            if mask & 1 != 0 && mem::r32(lp + 12) != 0 && mem::r32(lp + 16) != 0 {
+                if m == 0x133c { mem::w16(mem::r32(lp + 12), 0) } else { mem::w8(mem::r32(lp + 12), 0) }
+            }
+            1
         }
+        // TCM_SETITEMA/W
+        0x1306 | 0x133d => {
+            if wp >= n {
+                return 0;
+            }
+            if lp != 0 && mem::r32(lp) & 8 != 0 {
+                t.0[wp as usize] = mem::r32(lp + 24);
+            }
+            1
+        }
+        0x130a | 0x1328 | 0x1303 | 0x1302 => 0,
         0x2 => {
             g.as_mut().unwrap().remove(&h);
             drop(g);

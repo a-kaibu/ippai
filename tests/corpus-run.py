@@ -124,5 +124,5 @@ while True:
     try: ok = json.load(open(f'{od}/result.json')).get('title') is not None
     except Exception: ok = False
     # KEEP_STORES=1: keep every store (benchmark passes run the same titles again)
-    if os.environ.get('KEEP_STORES') != '1' and (not keep or ok or shutil.disk_usage(STORES).free < 8 << 30):
+    if os.environ.get('KEEP_STORES') != '1' and (not keep or ok or shutil.disk_usage(STORES).free < int(os.environ.get('KEEP_MIN_GB', '8')) << 30):
         shutil.rmtree(f'{STORES}/{tid}', ignore_errors=True)
