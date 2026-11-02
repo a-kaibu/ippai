@@ -187,7 +187,7 @@ trap_if(index >= メモリサイズ - (offset + size - 1))
 | **v86** | 熱いページとそこから届く数ページを 1 関数 | 全入口を巨大な br_table で受け、残りを stackifier | レジスタは線形メモリ、遅延フラグ | 「深い br_table と関数全体で使うローカルの形を、ブラウザはうまく扱えない」(how-it-works.md)。MAX_PAGES を小さくせざるを得なかった。v86 の負の結果がそのまま vnvm の region モードの問題 |
 | **QEMU-wasm** (ktock、TCG wasm backend パッチ) | TB 1 つを 1 モジュール | TCI で走らせ、多く走った TB だけ wasm に | QEMU の env | 「ブラウザは数千のモジュールを作れない」。vnvm の QEMU 版でも 1 TB 1 モジュールは遅く、まとめて 1 関数にして改善した (vnvm-perf-notes) |
 | **elfconv** | ELF 全体を AOT (LLVM 経由) | LLVM → wasm | | AOT で関数単位にすれば LLVM と Binaryen の最適化が全部効く。動的コードには使えない |
-| **wemu** (44670) | インタプリタ + HLE | | ゲストのアドレスを wasm のアドレスとしてそのまま使う (fastmem) | Win32 を Rust で直接実装。vnvm の vnwin と同じ発想。CPU 側の参考は少ない (以前の調査どおり) |
+| **wemu** (44670) | インタプリタ + HLE | | ゲストのアドレスを wasm のアドレスとしてそのまま使う (fastmem) | Win32 を Rust で直接実装。vnvm の sake (フルスクラッチの Win32 層、旧称 vnwin) と同じ発想。CPU 側の参考は少ない (以前の調査どおり) |
 | **Box64** | 動的ブロック (BIGBLOCK で大きく) | ネイティブのジャンプ | ゲストのレジスタをホストのレジスタに固定、遅延フラグ (DF)、ネイティブのフラグ (NATIVEFLAGS) | CALLRET (ジャンプ表を飛ばす call/ret)、SAFEFLAGS (CALL/RET でフラグは死んでいるとみなす。既定は「RET の多くはフラグが要る、CALL は要らない」)。vnvm が Delphi の RTL で踏んだ問題と同じ所に既定値を置いている |
 | **FEX / Rosetta 2** | 関数・複数ブロック | ネイティブ | ホストのレジスタに固定 | wasm ではレジスタを固定できないので、そのままは使えない。代わりに「生きている値の数を減らす」ことで同じ効果を狙う |
 | **Emscripten / Binaryen / Cheerp** | C の関数 | Relooper / Stackifier | ローカル | 直接 wasm が速いのは、関数が小さく、生きている値が少なく、呼び出しが直接の call で、V8 がインライン化できるから |
