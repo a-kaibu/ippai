@@ -764,11 +764,52 @@ fn B_QueryInterface(c: &mut Ctx) -> u32 {
             put32(out, new_object(notify_vtbl(), this));
             0
         }
+        // IDirectSound3DListener (the primary buffer) / IDirectSound3DBuffer: accepted, the sound
+        // is not positioned
+        0x279a_fa84 => {
+            put32(out, new_object(listener3d_vtbl(), this));
+            0
+        }
+        0x279a_fa86 => {
+            put32(out, new_object(buffer3d_vtbl(), this));
+            0
+        }
         _ => {
             put32(out, 0);
             E_NOINTERFACE
         }
     }
+}
+
+fn listener3d_vtbl() -> u32 {
+    static V: OnceLock<u32> = OnceLock::new();
+    *V.get_or_init(|| {
+        let mut m: Vec<(Handler, u32)> = vec![(N_QueryInterface, 12), (N_AddRef, 4), (N_Release, 4)];
+        // Get{AllParameters,DistanceFactor,DopplerFactor,Orientation,Position,RolloffFactor,Velocity},
+        // Set{AllParameters,DistanceFactor,DopplerFactor,Orientation,Position,RolloffFactor,Velocity},
+        // CommitDeferredSettings
+        for b in [8, 8, 8, 12, 8, 8, 8, 12, 12, 12, 32, 20, 12, 20, 4] {
+            m.push((ok3d, b));
+        }
+        vtable("IDirectSound3DListener", &m)
+    })
+}
+
+fn buffer3d_vtbl() -> u32 {
+    static V: OnceLock<u32> = OnceLock::new();
+    *V.get_or_init(|| {
+        let mut m: Vec<(Handler, u32)> = vec![(N_QueryInterface, 12), (N_AddRef, 4), (N_Release, 4)];
+        // Get{AllParameters,ConeAngles,ConeOrientation,ConeOutsideVolume,MaxDistance,MinDistance,
+        // Mode,Position,Velocity}, Set{the same}
+        for b in [8, 12, 8, 8, 8, 8, 8, 8, 8, 12, 16, 20, 12, 12, 12, 12, 20, 20] {
+            m.push((ok3d, b));
+        }
+        vtable("IDirectSound3DBuffer", &m)
+    })
+}
+
+fn ok3d(_: &mut Ctx) -> u32 {
+    0
 }
 fn B_AddRef(c: &mut Ctx) -> u32 {
     with_buf(c.a(0), |b| {

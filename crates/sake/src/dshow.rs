@@ -104,6 +104,30 @@ fn ok(_: &mut Ctx) -> u32 {
 fn notimpl(_: &mut Ctx) -> u32 {
     0x8000_4001
 }
+
+/// IFilterGraph::EnumFilters: an IEnumFilters with nothing in it (there are no filters)
+fn enum_filters(c: &mut Ctx) -> u32 {
+    static E: OnceLock<u32> = OnceLock::new();
+    let e = *E.get_or_init(|| {
+        fn qi(c: &mut Ctx) -> u32 {
+            put32(c.a(2), if r32(c.a(1)) == 0x56a8_6893 || r32(c.a(1)) == 0 { c.a(0) } else { 0 });
+            if r32(c.a(2)) != 0 { 0 } else { E_NOINTERFACE }
+        }
+        fn one(_: &mut Ctx) -> u32 {
+            1
+        }
+        fn next(c: &mut Ctx) -> u32 {
+            put32(c.a(3), 0);
+            1 // S_FALSE
+        }
+        let v = vtable("IEnumFilters", &[(qi, 12), (one, 4), (one, 4), (next, 16), (one, 8), (ok, 4), (notimpl, 8)]);
+        let o = mem::heap_alloc(4, true);
+        w32(o, v);
+        o
+    });
+    put32(c.a(1), e);
+    0
+}
 /// a getter: zero its out parameter
 fn get0(c: &mut Ctx) -> u32 {
     put32(c.a(1), 0);
@@ -207,7 +231,7 @@ fn vtables() -> &'static [u32; NI as usize] {
             .chain([
                 (ok as Handler, 12), // AddFilter
                 (ok, 8),             // RemoveFilter
-                (notimpl, 8),        // EnumFilters
+                (enum_filters, 8),   // EnumFilters
                 (notimpl, 12),       // FindFilterByName
                 (ok, 16),            // ConnectDirect
                 (ok, 8),             // Reconnect
