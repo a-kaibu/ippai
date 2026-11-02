@@ -49,9 +49,9 @@ WebGPU D3D9 を使うので、A/B 比較ができる。`wine.html` / `game.html`
 | 痴覚過敏 (EntisGLS) | 本編まで | node |
 | ヴェルディア幻奏曲 (Escude) | 本編まで | node |
 | こんな安楽椅子探偵は嫌だ (YU-RIS) | 本編まで | node、Chromium (GDI で描く) |
-| 爆乳遊廓 (Softpal) | タイトル | Chromium (D3D9) |
+| 爆乳遊廓 (Softpal) | タイトル (メニューのボタンが描かれない。押すことはできる) | Chromium (D3D9) |
 | アマカノ (CatSystem2) | 本編まで (名前入力ダイアログ → マップ) | Chromium (D3D9) |
-| つぼい君のスイッチ (DxLib) | タイトル、ロード画面 | Chromium (D3D9)。D3D9 の SHADEMODE flat に対応して表示が正しくなった |
+| つぼい君のスイッチ (DxLib) | 本編まで | Chromium (D3D9)。D3D9 の SHADEMODE flat に対応して表示が正しくなった |
 | WolfRPG | 起動しない | 保護付き exe。アンチデバッグの後で止まる。追っていない |
 
 node では D3D9 は描かれない (WebGPU がない) ので、D3D9 のゲームは Chromium で見る。
