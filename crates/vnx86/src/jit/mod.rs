@@ -1344,6 +1344,18 @@ impl<'a> Gen<'a> {
                     true
                 }
                 // CF of a 32-bit shift by 1..31: the last bit shifted out
+                // SBB (a 64-bit comparison's high half): the exact difference a - b - carry
+                // as i64, unsigned for B/BE, signed for L/LE
+                (lazy::SBB, 1 | 3 | 6 | 7) if bits == 32 => {
+                    let ext = if matches!(cc >> 1, 1 | 3) { 0xad } else { 0xac }; // i64.extend_i32_u/s
+                    self.c.get(L_FA).op(ext).get(L_FB).op(ext).op(0x7d).get(L_FC).op(0xad).op(0x7d).i64c(0);
+                    self.c.op(if matches!(cc >> 1, 1 | 6) { 0x53 } else { 0x57 }); // i64.lt_s / le_s
+                    true
+                }
+                (lazy::ADC, 1) if bits == 32 => {
+                    self.c.get(L_FA).op(0xad).get(L_FB).op(0xad).op(0x7c).get(L_FC).op(0xad).op(0x7c).i64c(1 << 32).op(0x5a);
+                    true
+                }
                 (lazy::SHR, 1) if bits == 32 => {
                     self.c.get(L_FA).get(L_FB).i32c(1).sub().shr_u().i32c(1).and();
                     true
@@ -1384,6 +1396,12 @@ impl<'a> Gen<'a> {
             }
         }
         // from EFLAGS
+        if LAYOUT.load(core::sync::atomic::Ordering::Relaxed) {
+            if let Flags::Known(op) = self.flags {
+                let e = self.sizes.entry(alloc::format!("CONDFB_k{}_b{}_cc{}", op >> 2, 8 << (op & 3), cc)).or_insert((0, 0));
+                e.0 += 1;
+            }
+        }
         let t = self.temp();
         self.eflags();
         self.c.set(t);
