@@ -124,6 +124,9 @@ struct Shared {
     code: Vec<(u32, u32)>,
     /// the guest code bytes of `code`, concatenated
     text: Vec<u8>,
+    /// a function's (jit::FN): its build (1 up; 0 for a region) and indirect call sites
+    build: u32,
+    sites: Vec<u32>,
 }
 
 /// Shared regions by their roots.
@@ -144,13 +147,22 @@ fn code_bytes(mem: &mut Linear, code: &[(u32, u32)]) -> Option<Vec<u8>> {
 /// A region for `roots` some thread built from the same code as ours.
 fn shared(mem: &mut Linear, roots: &[u32]) -> Option<Arc<Shared>> {
     let list = SHARED.lock().unwrap().as_ref()?.get(roots)?.clone();
-    list.into_iter().find(|r| code_bytes(mem, &r.code).is_some_and(|t| t == r.text))
+    list.into_iter().rev().find(|r| code_bytes(mem, &r.code).is_some_and(|t| t == r.text))
 }
 
 fn share(mem: &mut Linear, roots: &[u32], bytes: Vec<u8>, region: &jit::Region) {
+    share_build(mem, roots.to_vec(), bytes, region, 0);
+}
+
+fn share_build(mem: &mut Linear, key: Vec<u32>, bytes: Vec<u8>, region: &jit::Region, build: u32) {
     let Some(text) = code_bytes(mem, &region.code) else { return };
-    let r = Arc::new(Shared { bytes, starts: region.starts.clone(), code: region.code.clone(), text });
-    SHARED.lock().unwrap().get_or_insert_with(HashMap::new).entry(roots.to_vec()).or_default().push(r);
+    let r = Arc::new(Shared { bytes, starts: region.starts.clone(), code: region.code.clone(), text, build, sites: region.sites.clone() });
+    SHARED.lock().unwrap().get_or_insert_with(HashMap::new).entry(key).or_default().push(r);
+}
+
+/// The key of the function at `eip` among the shared modules (regions use their roots).
+fn fn_key(eip: u32) -> [u32; 2] {
+    [eip, jit::FN_TAG]
 }
 
 thread_local! {
@@ -264,6 +276,14 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
     })
 }
 
+/// Compiles and their time (µs) for VNVM_JIT_COUNT: regions, functions.
+static COMPILES: [AtomicU32; 6] = [const { AtomicU32::new(0) }; 6];
+
+fn count_compile(k: usize, t0: Instant) {
+    COMPILES[2 * k].fetch_add(1, Ordering::Relaxed);
+    COMPILES[2 * k + 1].fetch_add(t0.elapsed().as_micros() as u32, Ordering::Relaxed);
+}
+
 /// Switches read once: VNVM_JIT_COUNT=<secs> (transfer counters), VNVM_JIT_CALLS=1|2,
 /// VNVM_JIT_NOCHECK=1 (measuring only: no range checks).
 fn init_flags() {
@@ -275,7 +295,8 @@ fn init_flags() {
                 std::thread::spawn(move || loop {
                     std::thread::sleep(std::time::Duration::from_secs(secs.max(1)));
                     let v: Vec<String> = jit::COUNTERS.iter().zip(jit::COUNTER_NAMES).map(|(c, n)| format!("{n}={}", c.swap(0, Relaxed))).collect();
-                    eprintln!("vnjit count/{secs}s {}", v.join(" "));
+                    let c: Vec<u32> = COMPILES.iter().map(|c| c.swap(0, Relaxed)).collect();
+                    eprintln!("vnjit count/{secs}s {} | regions {} {} ms, functions {} {} ms (rebuilt {}, {} ms)", v.join(" "), c[0], c[1] / 1000, c[2], c[3] / 1000, c[4], c[5] / 1000);
                 });
             }
         }
@@ -582,7 +603,7 @@ fn maybe_save() {
     let new: Vec<(Vec<u32>, Arc<Shared>)> = {
         let sh = SHARED.lock().unwrap();
         let Some(sh) = sh.as_ref() else { return };
-        sh.iter().filter(|(r, _)| !done.contains(*r)).map(|(r, l)| (r.clone(), l[0].clone())).collect()
+        sh.iter().filter(|(r, l)| l[0].build == 0 && !done.contains(*r)).map(|(r, l)| (r.clone(), l[0].clone())).collect()
     };
     if new.len() < SAVE_MIN {
         return;
@@ -800,6 +821,12 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         }
         // another thread's region from the same code goes in at once
         if st.misses.get(&eip).is_none() {
+            if jit::FN.load(std::sync::atomic::Ordering::Relaxed) {
+                if let Some(r) = shared(mem, &fn_key(eip)) {
+                    st.fn_builds.insert(eip, r.build);
+                    return install_fn(st, eip, &r.bytes, &r.starts, &r.sites, &r.code);
+                }
+            }
             if let Some(r) = shared(mem, &[eip]) {
                 mark_code(&r.code);
                 return load(st, &r.bytes, vec![eip], &r.starts);
@@ -849,6 +876,7 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         let t1 = std::time::Instant::now();
         mark_code(&region.code);
         let ok = load(st, &bytes, vec![eip], &region.starts);
+        count_compile(0, t0);
         if std::env::var_os("VNVM_JIT_TIME").is_some() {
             eprintln!("vnjit time {eip:#x}: {} ins, translate {:?}, load {:?}", region.instructions, t1 - t0, t1.elapsed());
         }
@@ -917,7 +945,15 @@ fn compile_fn(st: &mut State, eip: u32, (lo, hi): (u32, u32), mem: &mut Linear) 
     if !fn_allowed(eip) {
         return false;
     }
+    // another thread's build (as new as the one this would be, or newer)
+    if let Some(r) = shared(mem, &fn_key(eip)) {
+        if r.build > st.fn_builds.get(&eip).copied().unwrap_or(0) {
+            st.fn_builds.insert(eip, r.build);
+            return install_fn(st, eip, &r.bytes, &r.starts, &r.sites, &r.code);
+        }
+    }
     *st.fn_builds.entry(eip).or_insert(0) += 1;
+    let t0 = Instant::now();
     if std::env::var_os("VNVM_JIT_LAYOUT").is_some() {
         jit::LAYOUT.store(true, std::sync::atomic::Ordering::Relaxed);
     }
@@ -941,34 +977,47 @@ fn compile_fn(st: &mut State, eip: u32, (lo, hi): (u32, u32), mem: &mut Linear) 
     if let Some(dir) = std::env::var_os("VNVM_JIT_DUMP") {
         let _ = std::fs::write(std::path::Path::new(&dir).join(format!("{eip:08x}-fn.wasm")), &bytes);
     }
+    let ok = install_fn(st, eip, &bytes, &region.starts, &region.sites, &region.code);
+    count_compile(1, t0);
+    if st.fn_builds[&eip] > 1 {
+        count_compile(2, t0);
+    }
+    if ok {
+        share_build(mem, fn_key(eip).to_vec(), bytes, &region, st.fn_builds[&eip]);
+    }
+    ok
+}
+
+/// Compiles a function's module (adapter, function) and points the hash table at its blocks.
+fn install_fn(st: &mut State, eip: u32, bytes: &[u8], starts: &[(u32, u32)], sites: &[u32], code: &[(u32, u32)]) -> bool {
     #[cfg(target_os = "emscripten")]
     let base = unsafe { vnvm_jit_load(bytes.as_ptr(), bytes.len(), 2) };
     #[cfg(not(target_os = "emscripten"))]
-    let base = -1;
+    let base = { let _ = bytes; -1 };
     st.known.insert(eip);
     if base < 0 {
         return false;
     }
-    mark_code(&region.code);
-    for &a in &region.sites {
+    mark_code(code);
+    for &a in sites {
         let l = st.site_fn.entry(a).or_default();
         if !l.contains(&eip) {
             l.push(eip);
         }
     }
-    for &(a, _) in &region.starts {
+    for &(a, _) in starts {
         st.fns.insert(a);
         st.known.insert(a);
     }
     enter(st, base as u32, vec![eip], &[]);
-    while (st.used + region.starts.len()) * 2 > st.hash.len() {
+    while (st.used + starts.len()) * 2 > st.hash.len() {
         let mut bigger = vec![[0u32; 2]; st.hash.len() * 2];
         for e in st.hash.iter().filter(|e| e[0] != 0) {
             insert(&mut bigger, e[0], e[1]);
         }
         st.hash = bigger;
     }
-    for &(a, k) in &region.starts {
+    for &(a, k) in starts {
         if insert(&mut st.hash, a, base as u32 | k << jit::ENTRY_SHIFT | jit::FN_TAG) {
             st.used += 1;
         }
