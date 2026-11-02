@@ -1356,6 +1356,16 @@ pub fn cpuid(leaf: u32, _sub: u32) -> (u32, u32, u32, u32) {
         0 => (1, u32::from_le_bytes(*b"Genu"), u32::from_le_bytes(*b"ntel"), u32::from_le_bytes(*b"ineI")),
         // family 6 model 15; FPU TSC CX8 CMOV MMX FXSR SSE SSE2
         1 => (0x0000_06f1, 0, 0, (1 << 0) | (1 << 4) | (1 << 8) | (1 << 15) | (1 << 23) | (1 << 24) | (1 << 25) | (1 << 26)),
+        // the extended leaves exist on every x86 since the Pentium 4: programs loop from
+        // 0x80000000 up to the highest one with a signed compare (AdvHD: 0 there meant 2^31
+        // rounds, appending each result to a vector until memory ran out)
+        0x8000_0000 => (0x8000_0004, 0, 0, 0),
+        0x8000_0002..=0x8000_0004 => {
+            const BRAND: &[u8; 48] = b"vnvm virtual x86 processor\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
+            let o = (leaf - 0x8000_0002) as usize * 16;
+            let w = |i: usize| u32::from_le_bytes(BRAND[o + i * 4..o + i * 4 + 4].try_into().unwrap());
+            (w(0), w(1), w(2), w(3))
+        }
         _ => (0, 0, 0, 0),
     }
 }
