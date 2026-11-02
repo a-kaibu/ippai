@@ -800,7 +800,12 @@ impl<'a> Gen<'a> {
         let m = ins.mnemonic();
         let n = ins.op_count();
         match m {
-            Nop | Endbr64 | Endbr32 | Pause | Lfence | Sfence | Mfence | Prefetchnta | Prefetcht0 | Prefetcht1 | Prefetcht2 | Prefetchw => true,
+            // (MFENCE: store-load ordering, which wasm on ARM64 doesn't give by itself)
+            Mfence => {
+                self.c.op(0xfe).op(0x03).op(0x00); // atomic.fence
+                true
+            }
+            Nop | Endbr64 | Endbr32 | Pause | Lfence | Sfence | Prefetchnta | Prefetcht0 | Prefetcht1 | Prefetcht2 | Prefetchw => true,
             Mov => {
                 let bits = self.op_bits(0).max(self.op_bits(1));
                 if bits == 0 || (self.has_mem() && !self.addr(bits / 8)) {
