@@ -779,7 +779,7 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
                 // every function with the site
                 for f in fs {
                     if st.fn_builds.get(&f).copied().unwrap_or(0) < FN_BUILDS {
-                        compile_fn(st, f, (cpu.trap_lo, cpu.trap_hi), &mut Linear);
+                        compile_fn(st, f, (cpu.trap_lo, cpu.trap_hi), &mut Linear, false);
                     }
                 }
                 return;
@@ -796,7 +796,7 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
         let n = st.fn_builds.get(&f).copied().unwrap_or(0);
         if *w >= FN_WINDOWS && n < FN_BUILDS {
             st.hot.remove(&(from, to));
-            compile_fn(st, f, (cpu.trap_lo, cpu.trap_hi), &mut Linear);
+            compile_fn(st, f, (cpu.trap_lo, cpu.trap_hi), &mut Linear, false);
             return;
         }
     }
@@ -907,8 +907,11 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         if cpu.mode64 != 0 {
             return compile_long(st, cpu, mem);
         }
-        if jit::FN.load(std::sync::atomic::Ordering::Relaxed) && fn_allowed(eip) && (called(cpu, mem) || std::env::var_os("VNVM_JIT_FN_CALLED").is_none()) {
-            return compile_fn(st, eip, (cpu.trap_lo, cpu.trap_hi), mem);
+        if jit::FN.load(std::sync::atomic::Ordering::Relaxed) && fn_allowed(eip) {
+            // (not a function's entry, as where a function's blocks that had not run yet
+            // go on: without the blocks compiled already, which it enters through the dispatcher)
+            let part = !called(cpu, mem);
+            return compile_fn(st, eip, (cpu.trap_lo, cpu.trap_hi), mem, part);
         }
         // the block and what it statically reaches, as one function
         let mut m = Module { name: Some(format!("x86_{eip:08x}")), ..Module::default() };
@@ -1000,7 +1003,7 @@ fn called(cpu: &Cpu, mem: &mut Linear) -> bool {
 /// Compiles the function at cpu.eip (jit::FN): its adapter and itself, the hash entry tagged.
 static FN_INS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
 
-fn compile_fn(st: &mut State, eip: u32, (lo, hi): (u32, u32), mem: &mut Linear) -> bool {
+fn compile_fn(st: &mut State, eip: u32, (lo, hi): (u32, u32), mem: &mut Linear, part: bool) -> bool {
     if !fn_allowed(eip) {
         return false;
     }
@@ -1022,7 +1025,7 @@ fn compile_fn(st: &mut State, eip: u32, (lo, hi): (u32, u32), mem: &mut Linear) 
     let base = *FN_INS.get_or_init(|| std::env::var("VNVM_JIT_FN_INS").ok().and_then(|v| v.parse().ok()).unwrap_or(1000));
     jit::FN_MAX_INS.store(base << (st.fn_builds[&eip].min(4) - 1), std::sync::atomic::Ordering::Relaxed);
     let (misses, known, hints) = (&st.misses, &st.known, &st.hints);
-    let Some(region) = jit::translate_function(&mut m, mem, eip, jit::MAX_BLOCKS, (lo, hi), &|a| hints.get(&a).copied(), |a| debug_allowed(a) && !(a >= lo && a < hi) && (a == eip || ran(misses, known, a))) else {
+    let Some(region) = jit::translate_function(&mut m, mem, eip, jit::MAX_BLOCKS, (lo, hi), &|a| hints.get(&a).copied(), |a| debug_allowed(a) && !(a >= lo && a < hi) && (a == eip || if part { !known.contains(&a) && misses.contains_key(&a) } else { ran(misses, known, a) })) else {
         st.known.insert(eip);
         return false;
     };
