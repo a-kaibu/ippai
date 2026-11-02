@@ -11,11 +11,15 @@
 //!
 //! `add-game` puts a packed game in the launcher's list (web/wine.html without `?run=`):
 //! `games/<id>.json` (see `GameEntry`), served as one list by vnvm-server's `GET /games`.
+//! It also looks the game up on ErogameScape (批評空間) / VNDB (see meta.rs) for the card's
+//! brand, release date, score, tags, story and cover; `meta` does that again or for older entries.
+
+mod meta;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use rayon::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::Read;
 use std::os::unix::fs::FileExt;
@@ -72,13 +76,36 @@ enum Cmd {
         /// Another tree to mount, /path=tree (repeatable).
         #[arg(long)]
         mount: Vec<String>,
+        /// Pin the metadata entry: egs:<n> (ErogameScape game id) or vndb:v<n>.
+        #[arg(long = "meta-id")]
+        meta_id: Option<String>,
+        /// Do not look the game up (an entry being replaced keeps its metadata).
+        #[arg(long)]
+        no_meta: bool,
+    },
+    /// Fetch the metadata (and a cover when the game has none) from ErogameScape / VNDB.
+    Meta {
+        /// Games to look up (default with --all: every game without metadata).
+        ids: Vec<String>,
+        /// Every game that has no metadata yet.
+        #[arg(long)]
+        all: bool,
+        /// Pin the entry for the one game given: egs:<n> or vndb:v<n>.
+        #[arg(long = "meta-id")]
+        meta_id: Option<String>,
+        /// Look up by this title instead of the game's.
+        #[arg(long)]
+        title: Option<String>,
+        /// List the candidates for a keyword (to find an id for --meta-id); changes nothing.
+        #[arg(long)]
+        search: Option<String>,
     },
     /// Remove a game from the launcher's list (its trees and chunks stay).
     RemoveGame { id: String },
 }
 
 /// `games/<id>.json`: what the page needs to start a game (web/src/launcher.ts reads it).
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct GameEntry {
     id: String,
     title: String,
@@ -96,6 +123,60 @@ struct GameEntry {
     /// "x86_64" for a 64-bit (PE32+) program: wine.html runs it with the 64-bit build
     #[serde(skip_serializing_if = "Option::is_none")]
     arch: Option<String>,
+    /// From ErogameScape / VNDB (meta.rs)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    meta: Option<meta::Info>,
+}
+
+fn game_path(store: &Path, id: &str) -> PathBuf {
+    store.join("games").join(format!("{id}.json"))
+}
+
+fn read_game(store: &Path, id: &str) -> Result<GameEntry> {
+    let p = game_path(store, id);
+    serde_json::from_slice(&fs::read(&p).with_context(|| format!("game {id}"))?).with_context(|| p.display().to_string())
+}
+
+fn write_game(store: &Path, g: &GameEntry) -> Result<()> {
+    let tmp = store.join("games").join(format!(".{}.json.tmp", g.id));
+    fs::write(&tmp, serde_json::to_vec_pretty(g)?)?;
+    fs::rename(&tmp, game_path(store, &g.id))?;
+    Ok(())
+}
+
+/// Looks `g` up (by `title`, or the pinned `id`) and stores the result in it, with the cover
+/// downloaded when the game has none. A failed lookup only warns.
+fn fetch_meta(store: &Path, g: &mut GameEntry, title: Option<&str>, id: Option<&str>) {
+    let title = title.unwrap_or(&g.title).to_string();
+    let info = match meta::lookup(&title, id) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("{}: no metadata: {e:#}", g.id);
+            return;
+        }
+    };
+    eprintln!(
+        "{}: {} / {} / {} ({}{})",
+        g.id,
+        info.title,
+        info.brand,
+        info.release,
+        info.source,
+        info.egs_id.map(|n| format!(" {n}")).or(info.vndb_id.as_ref().map(|v| format!(" {v}"))).unwrap_or_default()
+    );
+    if g.cover.is_none() && !info.cover_url.is_empty() {
+        match meta::download_cover(&info.cover_url) {
+            Ok((b, ext)) => {
+                let name = format!("{}.{ext}", g.id);
+                match fs::write(store.join("games").join(&name), b) {
+                    Ok(()) => g.cover = Some(name),
+                    Err(e) => eprintln!("{}: cover: {e}", g.id),
+                }
+            }
+            Err(e) => eprintln!("{}: cover: {e:#}", g.id),
+        }
+    }
+    g.meta = Some(info);
 }
 
 /// Whether the file's first chunk is a PE32+ (64-bit) image.
@@ -124,6 +205,8 @@ fn add_game(
     args: Vec<String>,
     env: Vec<String>,
     mount: Vec<String>,
+    meta_id: Option<String>,
+    no_meta: bool,
 ) -> Result<()> {
     if !valid_id(&id) {
         bail!("id {id:?}: use letters, digits, _ and -");
@@ -149,6 +232,8 @@ fn add_game(
     }
     let dir = store.join("games");
     fs::create_dir_all(&dir)?;
+    // a replaced entry keeps its metadata and cover
+    let old = read_game(store, &id).ok();
     let cover = match cover {
         Some(src) => {
             let ext = src.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
@@ -159,9 +244,9 @@ fn add_game(
             fs::copy(&src, dir.join(&name)).with_context(|| src.display().to_string())?;
             Some(name)
         }
-        None => None,
+        None => old.as_ref().and_then(|o| o.cover.clone()),
     };
-    let entry = GameEntry {
+    let mut entry = GameEntry {
         run: format!("Z:\\vnvm\\game\\{}", exe.replace('/', "\\")),
         mounts: [format!("/vnvm/game={tree}")].into_iter().chain(mount).collect(),
         id: id.clone(),
@@ -171,10 +256,12 @@ fn add_game(
         args,
         env,
         arch,
+        meta: old.and_then(|o| o.meta),
     };
-    let tmp = dir.join(format!(".{id}.json.tmp"));
-    fs::write(&tmp, serde_json::to_vec_pretty(&entry)?)?;
-    fs::rename(&tmp, dir.join(format!("{id}.json")))?;
+    if !no_meta && (entry.meta.is_none() || meta_id.is_some()) {
+        fetch_meta(store, &mut entry, None, meta_id.as_deref());
+    }
+    write_game(store, &entry)?;
     eprintln!("{id}: {} ({}{})", entry.title, entry.run, if entry.arch.is_some() { ", 64-bit" } else { "" });
     Ok(())
 }
@@ -183,8 +270,41 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::Tree { dir, name, follow, chunk_kib } => tree(&cli.store, &dir, &name, follow, chunk_kib << 10)?,
-        Cmd::AddGame { id, title, tree, exe, engine, cover, args, env, mount } => {
-            add_game(&cli.store, id, title, tree, exe, engine, cover, args, env, mount)?
+        Cmd::AddGame { id, title, tree, exe, engine, cover, args, env, mount, meta_id, no_meta } => {
+            add_game(&cli.store, id, title, tree, exe, engine, cover, args, env, mount, meta_id, no_meta)?
+        }
+        Cmd::Meta { ids, all, meta_id, title, search } => {
+            if let Some(k) = search {
+                for c in meta::search(&k)? {
+                    let id = if c.source == "vndb" { format!("vndb:{}", c.id) } else { format!("egs:{}", c.id) };
+                    println!("{id}\t{}\t{}\t{}\t{} votes", c.title, c.brand, c.release, c.votes);
+                }
+                return Ok(());
+            }
+            let ids = if all && ids.is_empty() {
+                let mut v: Vec<String> = fs::read_dir(cli.store.join("games"))?
+                    .filter_map(|e| e.ok()?.file_name().to_str()?.strip_suffix(".json").map(String::from))
+                    .filter(|id| !id.starts_with('.'))
+                    .collect();
+                v.sort();
+                v
+            } else {
+                ids
+            };
+            if ids.is_empty() {
+                bail!("give game ids or --all");
+            }
+            if ids.len() > 1 && (meta_id.is_some() || title.is_some()) {
+                bail!("--meta-id and --title are for one game");
+            }
+            for id in &ids {
+                let mut g = read_game(&cli.store, id)?;
+                if all && g.meta.is_some() {
+                    continue;
+                }
+                fetch_meta(&cli.store, &mut g, title.as_deref(), meta_id.as_deref());
+                write_game(&cli.store, &g)?;
+            }
         }
         Cmd::RemoveGame { id } => {
             if !valid_id(&id) {

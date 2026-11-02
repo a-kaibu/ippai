@@ -3,6 +3,25 @@
 // (run, mount, args, env) and starts it in the same page, from the same click (the audio and
 // fullscreen need a user gesture).
 
+/** From ErogameScape (批評空間) / VNDB: `vnvm-pack meta` (crates/vnvm-pack/src/meta.rs, Info) */
+export interface GameMeta {
+  source: string;
+  egs_id?: number;
+  vndb_id?: string;
+  title: string;
+  furigana?: string;
+  brand?: string;
+  /** yyyy-mm-dd */
+  release?: string;
+  /** 0-100 */
+  score?: number;
+  votes?: number;
+  tags?: string[];
+  series?: string;
+  description?: string;
+  links?: { label: string; url: string }[];
+}
+
 /** store/games/<id>.json (crates/vnvm-pack, GameEntry) */
 export interface GameEntry {
   id: string;
@@ -18,6 +37,7 @@ export interface GameEntry {
   env: string[];
   /** "x86_64": a 64-bit program */
   arch?: string;
+  meta?: GameMeta;
 }
 
 const PLAYED = "vnvm-played";
@@ -91,8 +111,8 @@ export function showLibrary(root: HTMLElement, games: GameEntry[], pick: (g: Gam
   head.append(el("h1", undefined, "vnvm"), el("span", "count", `${games.length} 本`));
   const search = el("input");
   search.type = "search";
-  search.placeholder = "タイトルで絞り込み";
-  search.setAttribute("aria-label", "タイトルで絞り込み");
+  search.placeholder = "タイトル・ブランド・タグで絞り込み";
+  search.setAttribute("aria-label", "タイトル・ブランド・タグで絞り込み");
   if (games.length > 6) head.append(search);
   // the runs' logs (crash reports: web/src/crashlog.ts)
   const logs = el("a", "logs", "ログ");
@@ -127,17 +147,31 @@ export function showLibrary(root: HTMLElement, games: GameEntry[], pick: (g: Gam
       art.classList.add("blank");
       art.append(el("span", undefined, g.title));
     }
+    const m = g.meta;
     const meta = el("div", "meta");
     meta.append(el("div", "title", g.title));
+    if (m?.brand || m?.release) {
+      meta.append(el("div", "brand", [m.brand, m.release?.slice(0, 4)].filter(Boolean).join(" · ")));
+    }
     const sub = el("div", "sub");
     if (g.engine) sub.append(el("span", "engine", g.engine));
+    if (m?.score) sub.append(el("span", "score", `★${m.score}`));
     if (last[g.id]) sub.append(el("span", "played", `前回 ${when(last[g.id]!)}`));
     meta.append(sub);
     b.append(art, meta);
     b.addEventListener("click", () => pick(g));
     li.append(b);
+    if (m) {
+      const info = el("button", "info", "i");
+      info.type = "button";
+      info.title = "ゲーム情報";
+      info.setAttribute("aria-label", `${g.title} の情報`);
+      info.addEventListener("click", () => showInfo(g, pick));
+      li.append(info);
+    }
     grid.append(li);
-    return { li, key: `${g.title} ${g.engine ?? ""} ${g.id}`.toLowerCase() };
+    const key = [g.title, g.engine, g.id, m?.title, m?.furigana, m?.brand, m?.series, ...(m?.tags ?? [])];
+    return { li, key: key.filter(Boolean).join(" ").toLowerCase() };
   });
   search.addEventListener("input", () => {
     const q = search.value.trim().toLowerCase();
@@ -145,4 +179,67 @@ export function showLibrary(root: HTMLElement, games: GameEntry[], pick: (g: Gam
   });
   root.append(grid);
   root.hidden = false;
+}
+
+/** A game's metadata (cover, brand, release, score, tags, story, links) with a start button. */
+function showInfo(g: GameEntry, pick: (g: GameEntry) => void): void {
+  const m = g.meta!;
+  const d = el("dialog", "gameinfo");
+  const close = el("button", "close", "×");
+  close.type = "button";
+  close.setAttribute("aria-label", "閉じる");
+  close.addEventListener("click", () => d.close());
+  const url = coverUrl(g);
+  if (url) {
+    const img = el("img", "art");
+    img.src = url;
+    img.alt = "";
+    d.append(img);
+  }
+  const body = el("div", "body");
+  body.append(el("h2", undefined, m.title || g.title));
+  if (m.furigana) body.append(el("div", "furigana", m.furigana));
+  const facts = el("dl");
+  const fact = (k: string, v?: string) => {
+    if (v) facts.append(el("dt", undefined, k), el("dd", undefined, v));
+  };
+  fact("ブランド", m.brand);
+  fact("発売日", m.release);
+  fact("シリーズ", m.series);
+  if (m.score)
+    fact(m.source === "vndb" ? "VNDB評価" : "中央値", `${m.score}${m.votes ? `（${m.votes}票）` : ""}`);
+  fact("エンジン", g.engine);
+  body.append(facts);
+  if (m.tags?.length) {
+    const tags = el("ul", "tags");
+    for (const t of m.tags) tags.append(el("li", undefined, t));
+    body.append(tags);
+  }
+  if (m.description) body.append(el("p", "story", m.description));
+  if (m.links?.length) {
+    const links = el("div", "links");
+    for (const l of m.links) {
+      const a = el("a", undefined, l.label);
+      a.href = l.url;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      links.append(a);
+    }
+    body.append(links);
+  }
+  const start = el("button", "start", "起動");
+  start.type = "button";
+  start.addEventListener("click", () => {
+    d.close();
+    pick(g);
+  });
+  body.append(start);
+  d.append(close, body);
+  d.addEventListener("close", () => d.remove());
+  // a click on the backdrop closes it
+  d.addEventListener("click", (e) => {
+    if (e.target === d) d.close();
+  });
+  document.body.append(d);
+  d.showModal();
 }

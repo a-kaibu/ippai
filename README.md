@@ -21,7 +21,7 @@ Wine 11.20 の Unix 側を wasm にする Hangover 方式の経路は 2026-11-02
 | `crates/vnx86` | i386 CPU コア: インタプリタと x86→wasm JIT (ネイティブ CPU との差分テスト付き) |
 | `crates/vnhost` | ブラウザ側のホスト: メモリ、スレッド、fd、ファイルシステム、表示、音声、Direct3D 9/11・OpenGL (WebGPU) |
 | `crates/sake` | Win32 層 (kernel32、user32、gdi32、d3d9 など)。`build.sh` が sake.js / sake.wasm を作る |
-| `crates/vnvm-pack` | ディレクトリをチャンク (256KiB、zstd) のストアにする CLI (`tree` / `add-game` / `remove-game`) |
+| `crates/vnvm-pack` | ディレクトリをチャンク (256KiB、zstd) のストアにする CLI (`tree` / `add-game` / `remove-game` / `meta`: 批評空間・VNDB からブランド・発売日・評価・タグ・紹介文・カバーを取得) |
 | `crates/vnvm-server` | web/dist とストアを COOP/COEP 付きで配信、JIT リージョンの保存、ゲーム一覧、セーブの S3 バックアップ、実行ログの保存 (`--logs`) |
 | `host/` | emscripten の JS ライブラリ (`pre.js`、`vnfs.js`、`vnjit.js`、`vndl.js`)、vkd3d-shader のビルド (`build-vkd3d.sh`)、生成スクリプト、テスト用プログラム (`tests/`) |
 | `web/` | Vite+ (`vp`) のフロントエンド (TypeScript): `index.html` (= `wine.html`、ゲーム一覧)、`game.html`、`bench.html`、`logs.html` (実行ログ) |
