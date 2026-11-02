@@ -24,6 +24,7 @@ if [ ! -f "$EMSDK4/emsdk_env.sh" ]; then
 fi
 
 cd "$ROOT"
+rm -rf "$DIST"  # (a cached target/ would carry older builds into the artifact)
 WEB_OUT=$ROOT/web/public/sake bash crates/sake/build.sh
 (cd web && npm ci --no-audit --no-fund && npx vp build)
 cargo build --release -p vnvm
