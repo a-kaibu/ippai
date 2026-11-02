@@ -1813,7 +1813,12 @@ impl<'a> Gen<'a> {
         use Mnemonic::*;
         let ins = self.ins;
         match ins.mnemonic() {
-            Nop | Pause | Wait | Endbr32 | Prefetchnta | Prefetcht0 | Prefetcht1 | Prefetcht2 | Prefetchw | Lfence | Mfence | Sfence => {}
+            Nop | Pause | Wait | Endbr32 | Prefetchnta | Prefetcht0 | Prefetcht1 | Prefetcht2 | Prefetchw | Lfence | Sfence => {}
+            // (x86 orders other accesses itself, TSO; wasm on ARM64 doesn't: MFENCE, which code
+            // uses for store-load ordering, becomes a full fence there)
+            Mfence => {
+                self.c.op(0xfe).op(0x03).op(0x00); // atomic.fence
+            }
 
             // ---- string ops (DS:ESI without a segment override, ES:EDI)
             Movsb | Movsw | Movsd | Stosb | Stosw | Stosd | Lodsb | Lodsw | Lodsd
