@@ -172,7 +172,40 @@ pub fn raise(cpu: &mut Cpu, code: u32, flags: u32, addr: u32, params: &[u32]) {
     w32(block + 12, 0);
     cpu.regs[EBX] = block;
     cpu.regs[ESP] = block - 16;
+    // vectored handlers first (AddVectoredExceptionHandler): -1 continues at the context
+    let veh: Vec<u32> = VEH.lock().unwrap().iter().map(|&(_, f)| f).collect();
+    if !veh.is_empty() {
+        let ptrs = block - 8;
+        w32(ptrs, rec);
+        w32(ptrs + 4, ctx);
+        for f in veh {
+            if crate::call(cpu, f, &[ptrs]) == 0xffff_ffff {
+                load_context(cpu, ctx);
+                return;
+            }
+        }
+    }
     cpu.eip = stub();
+}
+
+/// Vectored exception handlers: (handle, function), called in order.
+static VEH: std::sync::Mutex<Vec<(u32, u32)>> = std::sync::Mutex::new(Vec::new());
+
+/// AddVectoredExceptionHandler(first, handler) -> handle
+pub fn add_veh(c: &mut Ctx) -> u32 {
+    static NEXT: AtomicU32 = AtomicU32::new(0x7e00);
+    let h = NEXT.fetch_add(1, Ordering::Relaxed);
+    let mut v = VEH.lock().unwrap();
+    if c.a(0) != 0 { v.insert(0, (h, c.a(1))) } else { v.push((h, c.a(1))) }
+    h
+}
+
+/// RemoveVectoredExceptionHandler(handle)
+pub fn remove_veh(c: &mut Ctx) -> u32 {
+    let mut v = VEH.lock().unwrap();
+    let n = v.len();
+    v.retain(|&(h, _)| h != c.a(0));
+    (v.len() != n) as u32
 }
 
 pub fn raise_fault(cpu: &mut Cpu, addr: u32, write: bool) {
@@ -277,4 +310,20 @@ pub fn raise_exception(c: &mut Ctx) -> u32 {
     raise(c.cpu, code, flags & 1, ret, &params);
     c.jumped = true;
     0
+}
+
+fn continue_handler(c: &mut Ctx) -> u32 {
+    // (vectored continue handlers: kept nowhere; a handle the program can remove)
+    c.a(1)
+}
+
+pub fn register() {
+    use crate::api::implement;
+    for d in ["kernel32", "ntdll"] {
+        let p = if d == "ntdll" { "Rtl" } else { "" };
+        implement(d, &format!("{p}AddVectoredExceptionHandler"), add_veh);
+        implement(d, &format!("{p}RemoveVectoredExceptionHandler"), remove_veh);
+        implement(d, &format!("{p}AddVectoredContinueHandler"), continue_handler);
+        implement(d, &format!("{p}RemoveVectoredContinueHandler"), remove_veh);
+    }
 }

@@ -282,6 +282,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     dinput::init();
     sound::init();
     d3d9::register();
+    seh::register();
     d3d11::register();
     guest::bind_host();
     vnhost::crashlog::set_trap_namer(api::name_of);
