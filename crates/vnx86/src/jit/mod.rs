@@ -1333,7 +1333,9 @@ impl<'a> Gen<'a> {
                 lazy_to_cpu(&mut self.c);
                 self.c.i32c(-1).set(L_OP);
                 self.c.end();
-                self.c.get(L_CPU).call(F_EFLAGS);
+                // exact in the Cpu already (after COMISS, a host call, ...): no call
+                self.c.get(L_CPU).load32(Off::lazy()).eqz().if_i32();
+                self.c.get(L_CPU).load32(Off::eflags()).else_().get(L_CPU).call(F_EFLAGS).end();
             }
             Flags::Known(op) => {
                 self.c.u32c(op).get(L_FA).get(L_FB).get(L_FR).get(L_FC).call(F_STATUS);

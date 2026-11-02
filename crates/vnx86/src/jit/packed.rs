@@ -2,7 +2,7 @@
 //! (loaded with v128.load64_zero, stored as its low i64): lane-wise operations give the same
 //! low half either way; packs, unpacks and shuffles pick their lanes for the 8-byte width.
 
-use super::{Gen, Off, L_CPU, L_MMX, L_V0, L_V1};
+use super::{Flags, Gen, Off, L_CPU, L_F0, L_MMX, L_OP, L_V0, L_V1, STATUS_BITS};
 use iced_x86::{Instruction, Mnemonic, OpKind, Register};
 
 /// Lane-wise binary operations: the wasm SIMD opcode.
@@ -121,7 +121,9 @@ pub(super) fn supported(ins: &Instruction) -> bool {
     let m = ins.mnemonic();
     if ins.op_count() == 0 || ins.op_kind(0) != OpKind::Register {
         let from = ins.op_count() == 2 && ins.op_kind(1) == OpKind::Register && super::mem_ok(ins);
-        return (matches!(m, Movd | Movq) && from && vreg(ins.op_register(1))) || (m == Movss && from && ins.op_register(1).is_xmm());
+        return (matches!(m, Movd | Movq) && from && vreg(ins.op_register(1)))
+            || (matches!(m, Movss | Movsd) && from && ins.op_register(1).is_xmm())
+            || (m == Stmxcsr && ins.op_count() == 1 && ins.op_kind(0) == OpKind::Memory && super::mem_ok(ins));
     }
     let d = ins.op_register(0);
     let width = if d.is_mm() { 8 } else { 16 };
@@ -157,6 +159,34 @@ pub(super) fn supported(ins: &Instruction) -> bool {
         }
         Minps | Maxps | Minpd | Maxpd | Shufps | Cmpps => d.is_xmm() && src(1, 16),
         Movss => d.is_xmm() && src(1, 4),
+        // (SSE2 MOVSD: the string MOVSD has no register operand)
+        Movsd | Cvtps2pd | Cvtdq2pd | Cvtsd2ss | Comisd | Ucomisd => d.is_xmm() && ins.op_count() == 2 && src(1, 8),
+        Cvtdq2ps | Cvtpd2ps => d.is_xmm() && src(1, 16),
+        Cvtss2sd | Comiss | Ucomiss => d.is_xmm() && src(1, 4),
+        Cvtsi2sd | Cvtsi2ss => {
+            d.is_xmm()
+                && match ins.op_kind(1) {
+                    OpKind::Register => ins.op_register(1).is_gpr32(),
+                    OpKind::Memory => super::mem_ok(ins) && ins.memory_size().size() == 4,
+                    _ => false,
+                }
+        }
+        Cvttsd2si | Cvttss2si => {
+            d.is_gpr32()
+                && match ins.op_kind(1) {
+                    OpKind::Register => ins.op_register(1).is_xmm(),
+                    OpKind::Memory => super::mem_ok(ins) && ins.memory_size().size() == if m == Cvttsd2si { 8 } else { 4 },
+                    _ => false,
+                }
+        }
+        Bt => {
+            d.is_gpr32()
+                && ins.op_count() == 2
+                && match ins.op_kind(1) {
+                    OpKind::Register => ins.op_register(1).is_gpr32(),
+                    k => k == OpKind::Immediate8,
+                }
+        }
         Movhlps | Movlhps => d.is_xmm() && ins.op_kind(1) == OpKind::Register && ins.op_register(1).is_xmm(),
         _ if !vreg(d) || ins.op_count() < 2 => false,
         Pandn | Pmulhw | Pmulhuw | Packsswb | Packuswb | Packssdw => ins.op_count() == 2 && src(1, width),
@@ -283,6 +313,28 @@ impl Gen<'_> {
         }
         if matches!(m, Cvtps2pi | Cvttps2pi) {
             return self.cvtps2pi();
+        }
+        if matches!(
+            m,
+            Stmxcsr
+                | Movsd
+                | Cvtps2pd
+                | Cvtdq2pd
+                | Cvtdq2ps
+                | Cvtpd2ps
+                | Cvtss2sd
+                | Cvtsd2ss
+                | Cvtsi2sd
+                | Cvtsi2ss
+                | Cvttsd2si
+                | Cvttss2si
+                | Comiss
+                | Ucomiss
+                | Comisd
+                | Ucomisd
+                | Bt
+        ) {
+            return self.convert();
         }
         let d = ins.op_register(0);
         let mm = d.is_mm();
@@ -516,6 +568,174 @@ impl Gen<'_> {
         }
         self.c.lane(extract, 0).op(op as u8).lane(replace, 0);
         self.vstore(d);
+    }
+
+    /// After a store of `size` bytes at local `a` (+ offset `off`): kept stack slots, and
+    /// the check for code written in a self-modifying block (as write_op).
+    fn stored(&mut self, a: u32, size: u32) {
+        if self.slots.is_some() {
+            self.slots_reload_if(a, size);
+        }
+        if self.smc {
+            let off = self.mem_at(a);
+            let e = self.temp();
+            self.c.u32c(off).add().set(e);
+            self.smc_check(e);
+            self.temps -= 1;
+        }
+    }
+
+    /// Pushes operand 1 as a v128 whose low `size` bytes are the operand (memory: zeros above).
+    fn vlow(&mut self, a: Option<u32>, size: u32) {
+        match a {
+            Some(a) => {
+                let o = self.mem_at(a);
+                match size {
+                    4 => self.c.v128load32(o),
+                    8 => self.c.v128load64(o),
+                    _ => self.c.v128load(o),
+                };
+            }
+            None => self.vread(1, None, false),
+        }
+    }
+
+    /// Exact status flags `f` (an i32 on the stack, other bits 0) into the Cpu, all the
+    /// status flags replaced.
+    fn set_status(&mut self) {
+        let t = self.temp();
+        self.c.set(t);
+        self.c.get(L_CPU).get(L_CPU).load32(Off::eflags()).u32c(!crate::flags::STATUS).and().get(t).or().store32(Off::eflags());
+        self.status_written();
+    }
+
+    fn status_written(&mut self) {
+        self.c.get(L_CPU).i32c(0).store32(Off::lazy());
+        self.c.i32c(-1).set(L_OP);
+        self.flags = Flags::Entry;
+    }
+
+    /// SSE2 moves and conversions of scalars and pairs, COMISS/COMISD and friends, BT reg,
+    /// STMXCSR (the instructions ANEMOI's story sent to the interpreter most).
+    fn convert(&mut self) {
+        use Mnemonic::*;
+        let ins = self.ins;
+        let m = ins.mnemonic();
+        let size = match m {
+            Stmxcsr | Cvtss2sd | Comiss | Ucomiss | Cvtsi2sd | Cvtsi2ss | Cvttss2si => 4,
+            Cvtdq2ps | Cvtpd2ps => 16,
+            _ => 8,
+        };
+        let a = if m == Bt { None } else { self.mem_addr_sized(size) };
+        match m {
+            Stmxcsr => {
+                let o = self.mem_at(a.unwrap());
+                self.c.get(L_CPU).load32(Off::mxcsr()).store32(o);
+                self.stored(a.unwrap(), 4);
+            }
+            Movsd if ins.op_kind(0) == OpKind::Memory => {
+                let o = self.mem_at(a.unwrap());
+                self.c.get(L_CPU).load64(Off::xmm(ins.op_register(1))).store64(o);
+                self.stored(a.unwrap(), 8);
+            }
+            Movsd | Cvtps2pd | Cvtdq2pd | Cvtdq2ps | Cvtpd2ps => {
+                let d = ins.op_register(0);
+                self.c.get(L_CPU);
+                if m == Movsd && a.is_none() {
+                    // the low quadword replaced
+                    self.vread(0, None, false);
+                    self.vread(1, None, false);
+                    self.c.lane(0x1d, 0).lane(0x1e, 0); // i64x2.extract_lane 0, replace_lane 0
+                } else {
+                    self.vlow(a, size);
+                    match m {
+                        Cvtps2pd => self.c.simd(0x5f), // f64x2.promote_low_f32x4
+                        Cvtdq2pd => self.c.simd(0xfe), // f64x2.convert_low_i32x4_s
+                        Cvtdq2ps => self.c.simd(0xfa), // f32x4.convert_i32x4_s
+                        Cvtpd2ps => self.c.simd(0x5e), // f32x4.demote_f64x2_zero
+                        _ => &mut self.c,              // MOVSD xmm, m64
+                    };
+                }
+                self.vstore(d);
+            }
+            Cvtss2sd | Cvtsd2ss | Cvtsi2sd | Cvtsi2ss => {
+                // lane 0 replaced, the rest kept
+                let d = ins.op_register(0);
+                self.c.get(L_CPU);
+                self.vread(0, None, false);
+                match m {
+                    Cvtss2sd => {
+                        self.vlow(a, 4);
+                        self.c.lane(0x1f, 0).op(0xbb).lane(0x22, 0); // f64.promote_f32
+                    }
+                    Cvtsd2ss => {
+                        self.vlow(a, 8);
+                        self.c.lane(0x21, 0).op(0xb6).lane(0x20, 0); // f32.demote_f64
+                    }
+                    Cvtsi2sd => {
+                        self.read_op(1, a);
+                        self.c.op(0xb7).lane(0x22, 0); // f64.convert_i32_s
+                    }
+                    _ => {
+                        self.read_op(1, a);
+                        self.c.op(0xb2).lane(0x20, 0); // f32.convert_i32_s
+                    }
+                }
+                self.vstore(d);
+            }
+            Cvttsd2si | Cvttss2si => {
+                self.vlow(a, size);
+                if m == Cvttss2si {
+                    self.c.lane(0x1f, 0).op(0xbb);
+                } else {
+                    self.c.lane(0x21, 0);
+                }
+                self.c.set(L_F0);
+                // out of range or NaN: 0x80000000 (wasm saturates)
+                let t = self.temp();
+                self.c.get(L_F0).op(0xfc).op(0x02).i32c(i32::MIN); // i32.trunc_sat_f64_s
+                self.c.get(L_F0).f64c(-2147483649.0).op(0x64).get(L_F0).f64c(2147483648.0).op(0x63).and().select(); // f64.gt, f64.lt
+                self.c.set(t);
+                self.set_reg_from(ins.op_register(0), t);
+            }
+            Comiss | Ucomiss | Comisd | Ucomisd => {
+                // ZF PF CF: unordered 111, less 001, equal 100, greater 000; OF SF AF 0
+                if !self.flags_live(STATUS_BITS) {
+                    return;
+                }
+                let (eq, lt, ne) = if size == 4 { (0x41, 0x43, 0x42) } else { (0x47, 0x49, 0x48) };
+                self.vread(0, None, false);
+                self.c.set(L_V0);
+                self.vlow(a, size);
+                self.c.set(L_V1);
+                let (x, y) = (L_V0, L_V1);
+                self.c.get(x).get(y).simd(lt).lane(0x1b, 0).i32c(1).and();
+                self.c.get(x).get(y).simd(eq).lane(0x1b, 0).i32c(0x40).and().or();
+                self.c.get(x).get(x).simd(ne).get(y).get(y).simd(ne).simd(0x50).lane(0x1b, 0).i32c(0x45).and().or();
+                self.set_status();
+            }
+            _ => {
+                // BT r32, r32/imm8: CF the bit (the other status flags are undefined; kept)
+                if !self.flags_live(STATUS_BITS) {
+                    return;
+                }
+                let b = self.temp();
+                self.read_op(0, None);
+                self.read_op(1, None);
+                self.c.shr_u().i32c(1).and().set(b);
+                if !self.flags_live(STATUS_BITS & !1) {
+                    // only CF read: as SUB 0 - bit, which borrows exactly when the bit is set
+                    let (z, r) = (self.temp(), self.temp());
+                    self.c.i32c(0).set(z).i32c(0).get(b).sub().set(r);
+                    self.set_lazy(crate::lazy::SUB, 32, Some(z), Some(b), r, None);
+                } else {
+                    self.c.get(L_CPU);
+                    self.eflags();
+                    self.c.i32c(!1).and().get(b).or().store32(Off::eflags());
+                    self.status_written();
+                }
+            }
+        }
     }
 
     /// MOVD / MOVQ between MMX/XMM registers, general registers and memory.
