@@ -80,7 +80,7 @@ pub enum Data {
 
 pub struct D3d {
     pub vtbls: Vec<u32>,
-    pub objs: HashMap<u32, Obj>,
+    pub objs: HashMap<u32, Obj, FastHash>,
     next: u32,
     /// free 16-byte object blocks in guest memory
     free_blocks: Vec<u32>,
@@ -251,7 +251,7 @@ pub unsafe extern "C" fn vnhost_d3d9_init(vtbls: *const u32, count: u32) -> u32 
     if g.is_none() {
         *g = Some(D3d {
             vtbls: v,
-            objs: HashMap::new(),
+            objs: HashMap::default(),
             next: 0,
             free_blocks: Vec::new(),
             dev: None,
@@ -553,3 +553,30 @@ pub fn name(iface: u32, m: u32) -> String {
 pub fn set_ptr_size(n: u32) {
     device::PTR_SIZE.store(n, std::sync::atomic::Ordering::Relaxed);
 }
+
+/// A fast hasher for the maps looked up on every call (object ids, pipeline keys): SipHash was
+/// a few percent of a game's thread (Siglus: hundreds of state blocks and draws a frame).
+#[derive(Default)]
+pub struct Fast(u64);
+impl std::hash::Hasher for Fast {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for c in bytes.chunks(8) {
+            let mut b = [0u8; 8];
+            b[..c.len()].copy_from_slice(c);
+            self.write_u64(u64::from_le_bytes(b));
+        }
+    }
+    fn write_u32(&mut self, v: u32) {
+        self.write_u64(v as u64);
+    }
+    fn write_u64(&mut self, v: u64) {
+        self.0 = (self.0.rotate_left(5) ^ v).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+    fn write_usize(&mut self, v: usize) {
+        self.write_u64(v as u64);
+    }
+}
+pub type FastHash = std::hash::BuildHasherDefault<Fast>;

@@ -146,6 +146,39 @@ while (Date.now() < end) {
     }
     for (const key of process.env.KEYS?.split(" ").filter(Boolean) ?? []) await page.keyboard.press(key);
   }
+  // PROFILE_AT=n: a CPU profile of the page's main thread from shot n for PROFILE_SECS (10) s
+  if (process.env.PROFILE_AT && n === Number(process.env.PROFILE_AT)) {
+    // (and the workers': attached through the page's session, PROFILE_WORKERS=1)
+    const cdp = await page.context().newCDPSession(page);
+    const workers = [];
+    if (process.env.PROFILE_WORKERS) {
+      let id = 0;
+      const pending = new Map();
+      cdp.on("Target.attachedToTarget", (e) => workers.push({ session: e.sessionId, title: e.targetInfo.title || e.targetInfo.url }));
+      cdp.on("Target.receivedMessageFromTarget", (e) => {
+        const m = JSON.parse(e.message);
+        if (m.id && pending.has(m.id)) pending.get(m.id)(m.result), pending.delete(m.id);
+      });
+      const send = (w, method, params = {}) =>
+        new Promise((res) => {
+          pending.set(++id, res);
+          cdp.send("Target.sendMessageToTarget", { sessionId: w.session, message: JSON.stringify({ id, method, params }) });
+        });
+      await cdp.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: false });
+      await page.waitForTimeout(500);
+      for (const w of workers) (w.send = (m, p) => send(w, m, p)), await w.send("Profiler.enable"), await w.send("Profiler.start");
+    }
+    await cdp.send("Profiler.enable");
+    await cdp.send("Profiler.start");
+    await page.waitForTimeout(Number(process.env.PROFILE_SECS ?? 10) * 1000);
+    const { profile } = await cdp.send("Profiler.stop");
+    writeFileSync(`${out}/page.cpuprofile`, JSON.stringify(profile));
+    for (const [i, w] of workers.entries()) {
+      const r = await w.send("Profiler.stop");
+      if (r?.profile) writeFileSync(`${out}/worker-${i}.cpuprofile`, JSON.stringify(r.profile));
+      appendFileSync(logFile, `${stamp()} [profile] worker-${i}: ${w.title}\n`);
+    }
+  }
   // D3D_DUMP=n: the next n frames' GPU passes go to the console (after shot D3D_DUMP_AT, default 1)
   if (process.env.D3D_DUMP && n === Number(process.env.D3D_DUMP_AT ?? 1))
     await page.evaluate((k) => window.vnvmD3d && (window.vnvmD3d.dump = k), Number(process.env.D3D_DUMP));

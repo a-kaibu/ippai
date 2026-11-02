@@ -85,6 +85,14 @@ pub struct Decl {
     pub fvf: u32,
 }
 
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum ModKey {
+    Vs(u32, Vec<(u32, u32, u32)>),
+    Ps(u32, u32, Option<u32>),
+    FfVs(ff::VsKey),
+    FfPs(ff::PsKey),
+}
+
 pub struct ShaderObj {
     pub code: Vec<u32>,
     pub parsed: Option<Shader>,
@@ -135,8 +143,10 @@ pub struct Device {
     pub recording: Option<u32>,
     /// draw state the page has (per batch)
     batch_target: Option<(u32, u32, u32)>,
-    pipelines: HashMap<Vec<u32>, u32>,
+    pipelines: HashMap<Vec<u32>, u32, super::FastHash>,
     shaders: HashMap<String, u32>,
+    /// shader modules by what their WGSL is made from (no WGSL generated for a draw that has one)
+    modules: HashMap<ModKey, u32, super::FastHash>,
     next_gpu: u32,
     serial: u32,
     readbacks: u32,
@@ -423,16 +433,16 @@ pub unsafe fn call(d: &mut D3d, iface: u32, m: u32, this: u32, args: *const u32,
             4 => {
                 // Capture
                 let Some(dev) = &d.dev else { return D3DERR_INVALIDCALL };
-                let st = dev.st.clone();
                 if let Some(Data::StateBlock(sb)) = d.objs.get_mut(&this).map(|o| &mut o.data) {
-                    **sb = st;
+                    copy_state(sb, &dev.st);
                 }
                 S_OK
             }
             5 => {
-                let Some(Data::StateBlock(sb)) = d.objs.get(&this).map(|o| &o.data) else { return D3DERR_INVALIDCALL };
-                let st = (**sb).clone();
-                apply_state(d, st);
+                if !matches!(d.objs.get(&this).map(|o| &o.data), Some(Data::StateBlock(_))) {
+                    return D3DERR_INVALIDCALL;
+                }
+                apply_state(d, this);
                 S_OK
             }
             _ => E_NOTIMPL,
@@ -799,8 +809,9 @@ unsafe fn create_device(d: &mut D3d, d3d: u32, ty: u32, focus: u32, behavior: u3
         st: default_state(),
         recording: None,
         batch_target: None,
-        pipelines: HashMap::new(),
+        pipelines: HashMap::default(),
         shaders: HashMap::new(),
+        modules: HashMap::default(),
         next_gpu: 0,
         serial: 0,
         readbacks: 0,
@@ -1511,20 +1522,56 @@ fn mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
     r
 }
 
-fn apply_state(d: &mut D3d, st: State) {
-    let Some(dev) = d.dev.as_mut() else { return };
-    let old = std::mem::replace(&mut dev.st, st);
-    let new = &d.dev.as_ref().unwrap().st;
-    let mut bind: Vec<u32> = new.textures.iter().copied().collect();
-    bind.extend(new.streams.iter().map(|s| s.0));
-    bind.extend([new.indices, new.decl, new.vs, new.ps]);
-    let mut unbind: Vec<u32> = old.textures.iter().copied().collect();
-    unbind.extend(old.streams.iter().map(|s| s.0));
-    unbind.extend([old.indices, old.decl, old.vs, old.ps]);
+/// `dst = src` reusing dst's allocations (state blocks are captured and applied hundreds of
+/// times a frame: Siglus around every draw)
+fn copy_state(dst: &mut State, src: &State) {
+    dst.rs.clone_from(&src.rs);
+    dst.tss = src.tss;
+    dst.ss = src.ss;
+    dst.textures = src.textures;
+    dst.streams = src.streams;
+    dst.freq = src.freq;
+    dst.indices = src.indices;
+    dst.fvf = src.fvf;
+    dst.decl = src.decl;
+    dst.vs = src.vs;
+    dst.ps = src.ps;
+    dst.vsf.clone_from(&src.vsf);
+    dst.psf.clone_from(&src.psf);
+    dst.vsi = src.vsi;
+    dst.psi = src.psi;
+    dst.vsb = src.vsb;
+    dst.psb = src.psb;
+    dst.transforms.clone_from(&src.transforms);
+    dst.viewport = src.viewport;
+    dst.scissor = src.scissor;
+    dst.material = src.material;
+    dst.lights.clone_from(&src.lights);
+    dst.clip = src.clip;
+}
+
+/// the objects a state holds a binding on
+fn state_binds(st: &State) -> [u32; 36] {
+    let mut b = [0u32; 36];
+    b[..16].copy_from_slice(&st.textures);
+    for (i, s) in st.streams.iter().enumerate() {
+        b[16 + i] = s.0;
+    }
+    b[32..].copy_from_slice(&[st.indices, st.decl, st.vs, st.ps]);
+    b
+}
+
+/// the device state = state block `sb`'s
+fn apply_state(d: &mut D3d, sb: u32) {
+    let (Some(dev), Some(Data::StateBlock(st))) = (d.dev.as_mut(), d.objs.get(&sb).map(|o| &o.data)) else { return };
+    let unbind = state_binds(&dev.st);
+    copy_state(&mut dev.st, st);
+    let bind = state_binds(&dev.st);
     // (objects released since the capture are gone: drop them from the state)
-    let alive: Vec<u32> = bind.iter().copied().filter(|&x| x != 0 && d.objs.contains_key(&x)).collect();
-    for b in alive {
-        d.bind(b);
+    for b in bind {
+        if b != 0 && d.objs.contains_key(&b) {
+            d.bind(b);
+        }
     }
     let dev = d.dev.as_mut().unwrap();
     for t in dev.st.textures.iter_mut() {
@@ -1532,8 +1579,10 @@ fn apply_state(d: &mut D3d, st: State) {
             *t = 0;
         }
     }
-    for u in unbind.into_iter().filter(|&x| x != 0) {
-        d.unbind(u);
+    for u in unbind {
+        if u != 0 {
+            d.unbind(u);
+        }
     }
 }
 
@@ -2221,7 +2270,9 @@ fn ensure_target(d: &mut D3d, rt: u32, ds: u32) {
 
 unsafe fn present(d: &mut D3d, after: &mut After) -> u32 {
     // VNVM_D3D_TRACE_EVERY=n: trace one whole frame in n
-    if let (Some(n), Some(dev)) = (std::env::var("VNVM_D3D_TRACE_EVERY").ok().and_then(|v| v.parse::<u64>().ok()), d.dev.as_ref()) {
+    static EVERY: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    let every = *EVERY.get_or_init(|| std::env::var("VNVM_D3D_TRACE_EVERY").ok().and_then(|v| v.parse().ok()));
+    if let (Some(n), Some(dev)) = (every, d.dev.as_ref()) {
         d.trace = (dev.frames + 1) % n == 0;
     }
     let Some(dev) = d.dev.as_mut() else { return D3DERR_INVALIDCALL };
@@ -2459,10 +2510,23 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     let rhw = vs.is_none() && elems.iter().any(|e| e.usage == shader::USAGE_POSITIONT);
 
     // WGSL
-    let (vs_wgsl, vs_consts, writes) = match vs_shader {
+    let serial_of = |id: Option<u32>| match id.and_then(|v| d.objs.get(&v)).map(|o| &o.data) {
+        Some(Data::Shader(s)) => s.serial,
+        _ => 0,
+    };
+    let (vs_serial, ps_serial) = (serial_of(vs), serial_of(ps));
+    let (vs_mod, vs_consts, writes) = match vs_shader {
         Some(sh) => {
-            let opts = shader::Options { link: 0, vs_inputs: vs_inputs.clone(), alpha_test: None, fog: false };
-            (shader::Gen::new(sh).vertex(&opts), sh.max_const, sh.writes)
+            let key = ModKey::Vs(vs_serial, vs_inputs.clone());
+            let m = match d.dev.as_ref().unwrap().modules.get(&key) {
+                Some(&m) => Ok(m),
+                None => {
+                    let opts = shader::Options { link: 0, vs_inputs: vs_inputs.clone(), alpha_test: None, fog: false };
+                    let w = shader::Gen::new(sh).vertex(&opts);
+                    Err((key, w))
+                }
+            };
+            (m, sh.max_const, sh.writes)
         }
         None => {
             let mut tci = [(0u8, 0u8); 8];
@@ -2470,8 +2534,16 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
                 let ttff = st.tss[i][24] & 0xff;
                 *t = ((st.tss[i][11] & 0xff) as u8, if ttff == 0 { 0 } else { ttff as u8 });
             }
-            let key = ff::VsKey { inputs: ff_inputs.clone(), rhw, lighting: st.rs[137] != 0, tci, flat: st.rs[9] == 1 && st.vs == 0 && st.ps == 0 };
-            (ff::vertex(&key), ff::VS_CONSTS, 0xfffu32 & !0)
+            let key = ModKey::FfVs(ff::VsKey { inputs: ff_inputs.clone(), rhw, lighting: st.rs[137] != 0, tci, flat: st.rs[9] == 1 && st.vs == 0 && st.ps == 0 });
+            let m = match d.dev.as_ref().unwrap().modules.get(&key) {
+                Some(&m) => Ok(m),
+                None => {
+                    let ModKey::FfVs(k) = &key else { unreachable!() };
+                    let w = ff::vertex(k);
+                    Err((key, w))
+                }
+            };
+            (m, ff::VS_CONSTS, 0xfffu32 & !0)
         }
     };
     let alpha_test = (st.rs[15] != 0 && st.rs[25] != 8).then_some(st.rs[25]);
@@ -2481,7 +2553,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     });
     // textures by sampler
     let mut samplers: Vec<u32> = Vec::new();
-    let (ps_wgsl, ps_consts) = match ps_shader {
+    let (ps_mod, ps_consts) = match ps_shader {
         Some(sh) => {
             for &(r, ty) in &sh.samplers {
                 if ty == 2 || ty == 0 {
@@ -2489,8 +2561,16 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
                 }
             }
             let link = if vs_shader.is_some() { writes } else { 0x3ff };
-            let opts = shader::Options { link, vs_inputs: Vec::new(), alpha_test, fog: false };
-            (shader::Gen::new(sh).pixel(&opts), sh.max_const)
+            let key = ModKey::Ps(ps_serial, link, alpha_test);
+            let m = match d.dev.as_ref().unwrap().modules.get(&key) {
+                Some(&m) => Ok(m),
+                None => {
+                    let opts = shader::Options { link, vs_inputs: Vec::new(), alpha_test, fog: false };
+                    let w = shader::Gen::new(sh).pixel(&opts);
+                    Err((key, w))
+                }
+            };
+            (m, sh.max_const)
         }
         None => {
             let mut stages = Vec::new();
@@ -2509,15 +2589,30 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
                 let projected = (st.tss[i][24] & 0x100 != 0) as u32;
                 stages.push([s[1], s[2], s[3], s[26], s[4], s[5], s[6], s[27], s[28], projected]);
             }
-            let key = ff::PsKey { stages, specular: st.rs[29] != 0, alpha_test, tex, flat: st.rs[9] == 1 && st.vs == 0 && st.ps == 0 };
-            (ff::pixel(&key), ff::PS_CONSTS)
+            let key = ModKey::FfPs(ff::PsKey { stages, specular: st.rs[29] != 0, alpha_test, tex, flat: st.rs[9] == 1 && st.vs == 0 && st.ps == 0 });
+            let m = match d.dev.as_ref().unwrap().modules.get(&key) {
+                Some(&m) => Ok(m),
+                None => {
+                    let ModKey::FfPs(k) = &key else { unreachable!() };
+                    let w = ff::pixel(k);
+                    Err((key, w))
+                }
+            };
+            (m, ff::PS_CONSTS)
         }
     };
 
     // pipeline
     let dev = d.dev.as_mut().unwrap();
-    let vs_mod = shader_module(dev, vs_wgsl);
-    let ps_mod = shader_module(dev, ps_wgsl);
+    let mut module = |m: Result<u32, (ModKey, String)>| match m {
+        Ok(m) => m,
+        Err((key, w)) => {
+            let m = shader_module(dev, w);
+            dev.modules.insert(key, m);
+            m
+        }
+    };
+    let (vs_mod, ps_mod) = (module(vs_mod), module(ps_mod));
     let st = &dev.st;
     let (blend, wmask) = blend_state(st);
     // WebGPU decides facing in framebuffer coordinates (y down) as D3D does on screen, so with
