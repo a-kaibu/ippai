@@ -97,6 +97,11 @@ struct Queue {
     shown: u64,
     last_poll: Option<f64>,
     readbacks_done: Vec<u32>,
+    /// readbacks the page is copying into guest memory right now
+    readbacks_writing: Vec<u32>,
+    /// readbacks whose waiter gave up: the page must not write their pixels any more (the
+    /// guest may have freed that memory already)
+    readbacks_dropped: Vec<u32>,
     gen: u64,
     /// batches up to this one are done (the page ran them, or nobody will)
     done: u64,
@@ -115,6 +120,8 @@ fn with<R>(f: impl FnOnce(&mut Queue) -> R) -> R {
         shown: 0,
         last_poll: None,
         readbacks_done: Vec::new(),
+        readbacks_writing: Vec::new(),
+        readbacks_dropped: Vec::new(),
         gen: 0,
         done: 0,
     }))
@@ -260,9 +267,6 @@ pub extern "C" fn vnhost_d3d9_done() {
 pub fn wait_readback(id: u32) -> bool {
     flush();
     let mut g = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
-    if !page_attached(g.as_ref().unwrap()) {
-        return false;
-    }
     let deadline = now() + 3000.0;
     loop {
         let q = g.as_mut().unwrap();
@@ -270,7 +274,11 @@ pub fn wait_readback(id: u32) -> bool {
             q.readbacks_done.swap_remove(i);
             return true;
         }
-        if now() >= deadline {
+        // giving up (the page is gone or stalled): the page must not write the pixels later,
+        // into memory the guest may have freed and reused by then
+        if (now() >= deadline || !page_attached(q)) && !q.readbacks_writing.contains(&id) {
+            eprintln!("vnhost: readback {id:#x} given up ({})", if page_attached(q) { "timed out" } else { "page not polling" });
+            q.readbacks_dropped.push(id);
             return false;
         }
         g = WAKE.wait_timeout(g, Duration::from_millis(5)).unwrap_or_else(|e| e.into_inner()).0;
@@ -304,8 +312,29 @@ pub unsafe extern "C" fn vnhost_d3d9_poll(out: *mut u32) -> u32 {
 /// The page wrote the pixels of readback `id`.
 #[no_mangle]
 pub extern "C" fn vnhost_d3d9_readback_done(id: u32) {
-    with(|q| q.readbacks_done.push(id));
+    with(|q| {
+        q.readbacks_writing.retain(|&r| r != id);
+        if let Some(i) = q.readbacks_dropped.iter().position(|&r| r == id) {
+            q.readbacks_dropped.swap_remove(i);
+        } else {
+            q.readbacks_done.push(id);
+        }
+    });
     WAKE.notify_all();
+}
+
+/// The page: whether it may now write readback `id`'s pixels into guest memory (0: its waiter
+/// gave up, skip the copy). Until readback_done, the waiter keeps waiting.
+#[no_mangle]
+pub extern "C" fn vnhost_d3d9_readback_begin(id: u32) -> u32 {
+    with(|q| {
+        if q.readbacks_dropped.contains(&id) {
+            0
+        } else {
+            q.readbacks_writing.push(id);
+            1
+        }
+    })
 }
 
 fn pace() {

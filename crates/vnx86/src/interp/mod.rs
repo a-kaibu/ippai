@@ -807,19 +807,15 @@ impl<'a, M: Memory> X<'a, M> {
                 self.done()
             }
             Cmpxchg16b => {
-                // not atomic as a whole: the low half is swapped atomically, then the high half
-                // (VNs use it only for lock-free lists that also tolerate this)
                 let a = self.addr();
-                let (cl, ch) = (self.cpu.gpr(EAX), self.cpu.gpr(EDX));
-                let (nl, nh) = (self.cpu.gpr(3), self.cpu.gpr(ECX));
-                let dh = tryf!(self.mem.read64(a.wrapping_add(8)));
-                let dl = if dh == ch { tryf!(self.mem.cmpxchg(a, 8, cl, nl)) } else { tryf!(self.mem.read64(a)) };
-                if dl == cl && dh == ch {
-                    tryf!(self.mem.write64(a.wrapping_add(8), nh));
+                let cmp = self.cpu.gpr(EAX) as u128 | (self.cpu.gpr(EDX) as u128) << 64;
+                let n = self.cpu.gpr(3) as u128 | (self.cpu.gpr(ECX) as u128) << 64;
+                let d = tryf!(self.mem.cmpxchg16(a, cmp, n));
+                if d == cmp {
                     self.cpu.eflags |= ZF;
                 } else {
-                    self.cpu.set_gpr(EAX, dl);
-                    self.cpu.set_gpr(EDX, dh);
+                    self.cpu.set_gpr(EAX, d as u64);
+                    self.cpu.set_gpr(EDX, (d >> 64) as u64);
                     self.cpu.eflags &= !ZF;
                 }
                 self.done()

@@ -130,6 +130,32 @@ impl Memory for Linear {
             }
         })
     }
+    fn cmpxchg16(&mut self, addr: u32, old: u128, new: u128) -> Result<u128, Fault> {
+        use std::sync::atomic::AtomicU64;
+        // no 128-bit atomics in wasm: all 16-byte swaps take one lock, and each half is stored
+        // atomically, so a plain reader sees a torn pair at worst (and its own swap then fails)
+        static WIDE: Mutex<()> = Mutex::new(());
+        let p = check(addr, 16, true)?;
+        let _g = WIDE.lock().unwrap_or_else(|e| e.into_inner());
+        let ord = Ordering::SeqCst;
+        unsafe {
+            if p as usize % 8 == 0 {
+                let (lo, hi) = (&*(p as *const AtomicU64), &*(p.add(8) as *const AtomicU64));
+                let cur = lo.load(ord) as u128 | (hi.load(ord) as u128) << 64;
+                if cur == old {
+                    lo.store(new as u64, ord);
+                    hi.store((new >> 64) as u64, ord);
+                }
+                Ok(cur)
+            } else {
+                let cur = (p as *const u128).read_unaligned();
+                if cur == old {
+                    (p as *mut u128).write_unaligned(new);
+                }
+                Ok(cur)
+            }
+        }
+    }
     fn host_range(&mut self, addr: u32, len: u32) -> Option<*mut u8> {
         check(addr, len, true).ok()
     }
@@ -368,6 +394,32 @@ fn exit_code(cpu: &Cpu, mem: &mut Linear, exit: Exit, info: &mut [u32], from_jit
                     "fault {} {:08x} at eip {:08x} [{}] | eax {:08x} ecx {:08x} edx {:08x} ebx {:08x} esp {:08x} ebp {:08x} esi {:08x} edi {:08x} eflags {:08x}",
                     if f.write { "write" } else { "read" }, f.addr, cpu.eip, code.join(" "), r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], cpu.eflags
                 );
+            }
+            // VNVM_DUMP_FAULT=<eip, hex>: 64-bit registers and the memory they point at when a
+            // fault happens there
+            // ("null": any fault below 64K)
+            static AT: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+            let at = *AT.get_or_init(|| {
+                std::env::var("VNVM_DUMP_FAULT").ok().and_then(|v| if v == "null" { Some(0) } else { u32::from_str_radix(v.trim_start_matches("0x"), 16).ok() })
+            });
+            if at == Some(cpu.eip) || (at == Some(0) && (f.addr < 0x10000 || f.addr >= 0x8000_0000)) {
+                eprintln!("vnfault at {:x}:{:08x} addr {:x} write {}", cpu.rip_hi, cpu.eip, f.addr, f.write);
+                let names = ["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"];
+                for (i, n) in names.iter().enumerate() {
+                    let v = cpu.gpr(i);
+                    let a = v as u32;
+                    let mut line = format!("vnfault {n} {v:016x}");
+                    if (vnx86::jit::GUEST_LO..vnx86::jit::GUEST_HI - 0x80).contains(&a) {
+                        for k in 0..12u32 {
+                            let w = mem.read64(a.wrapping_add(k * 8)).unwrap_or(0xdead);
+                            line += &format!(" {w:x}");
+                        }
+                    }
+                    eprintln!("{line}");
+                }
+                let rsp = cpu.gpr(4) as u32;
+                let st: Vec<String> = (0..48u32).map(|k| format!("{:x}", mem.read64(rsp.wrapping_add(k * 8)).unwrap_or(0xdead))).collect();
+                eprintln!("vnfault stack {}", st.join(" "));
             }
             info[0] = f.addr;
             info[1] = f.write as u32;

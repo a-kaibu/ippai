@@ -122,6 +122,16 @@ pub trait Memory {
         }
         Ok(cur)
     }
+    /// CMPXCHG16B: compare-and-swap of the 16 bytes at `addr`, atomic with respect to other
+    /// threads' 16-byte swaps; returns what the memory held.
+    fn cmpxchg16(&mut self, addr: u32, old: u128, new: u128) -> Result<u128, Fault> {
+        let cur = self.read64(addr)? as u128 | (self.read64(addr.wrapping_add(8))? as u128) << 64;
+        if cur == old {
+            self.write64(addr, new as u64)?;
+            self.write64(addr.wrapping_add(8), (new >> 64) as u64)?;
+        }
+        Ok(cur)
+    }
     /// Host pointer to [addr, addr + len) if all of it is plain accessible memory (bulk
     /// string operations); None to go byte by byte.
     fn host_range(&mut self, _addr: u32, _len: u32) -> Option<*mut u8> {

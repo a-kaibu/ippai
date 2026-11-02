@@ -10,6 +10,7 @@ description = "Differential test of vnx86's long-mode JIT (jit/long.rs) against 
 
 [dependencies]
 vnx86 = { path = "../../crates/vnx86" }
-iced-x86 = { version = "1.21", default-features = false, features = ["std", "decoder", "instr_info", "encoder", "code_asm"] }
+iced-x86 = { version = "1.21", default-features = false, features = ["std", "decoder", "instr_info", "encoder", "code_asm", "op_code_info", "fast_fmt"] }
 wasmtime = { version = "29", default-features = false, features = ["cranelift", "runtime", "threads"] }
 anyhow = "1"
+libc = "0.2"

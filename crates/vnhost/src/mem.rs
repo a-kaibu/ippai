@@ -49,6 +49,12 @@ fn mark(addr: usize, len: usize, dirty: bool) {
     }
 }
 
+/// VNVM_TRACE_ZERO: log what wipes guest memory (and clean pages that weren't empty).
+fn trace_zero() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("VNVM_TRACE_ZERO").is_some())
+}
+
 /// Zeroes the dirty pages of a guest range.
 unsafe fn zero(addr: usize, len: usize) {
     let mut p = addr / PAGE;
@@ -64,6 +70,9 @@ unsafe fn zero(addr: usize, len: usize) {
         }
         let a = (start * PAGE).max(addr);
         let b = (p * PAGE).min(addr + len);
+        if trace_zero() {
+            eprintln!("vnzero zero {a:#x}-{b:#x} pid {}", crate::proc::current());
+        }
         std::ptr::write_bytes(a as *mut u8, 0, b - a);
     }
 }
@@ -74,6 +83,12 @@ unsafe fn zero(addr: usize, len: usize) {
 unsafe fn zero_clean(addr: usize, len: usize) {
     for p in addr / PAGE..(addr + len).div_ceil(PAGE) {
         if DIRTY[p / 64].load(Ordering::Relaxed) & (1 << (p % 64)) == 0 {
+            if trace_zero() {
+                let page = std::slice::from_raw_parts((p * PAGE) as *const u64, PAGE / 8);
+                if let Some(i) = page.iter().position(|&w| w != 0) {
+                    eprintln!("vnzero clean page {:#x} had data at +{:#x} ({:#x}) pid {}", p * PAGE, i * 8, page[i], crate::proc::current());
+                }
+            }
             std::ptr::write_bytes((p * PAGE) as *mut u8, 0, PAGE);
         }
     }
@@ -196,6 +211,9 @@ unsafe fn mmap_(addr: *mut c_void, len: size_t, prot: c_int, flags: c_int, fd: c
         // the user shared data page belongs to wineserver: Wine maps anonymous memory there
         // first and the file over it, which must not wipe what is already in it
         for (lo, hi) in outside_usd(want, len) {
+            if trace_zero() {
+                eprintln!("vnzero anon {lo:#x}-{hi:#x} pid {}", crate::proc::current());
+            }
             unmap_shared(lo, hi - lo);
             std::ptr::write_bytes(lo as *mut u8, 0, hi - lo);
         }

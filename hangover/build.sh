@@ -15,7 +15,7 @@ if [ "$VNVM_ARCH" = x86_64 ]; then
   SFX=64 M64="-sMEMORY64=2" DARCH=-D__x86_64__ HOST=x86_64-pc-linux-gnu
   # the page's calls with pointers (web/src): numbers to and from the module's i64
   SIGS=vnhost_audio_take:_p_,vnhost_d3d9_poll:_p,vnhost_display_frame:pp,vnhost_display_size:_pp
-  SIGS=$SIGS,vnhost_display_view:_p,vnhost_free:_p,vnhost_load_slot:__p,vnhost_vfs_export:ppp
+  SIGS=$SIGS,vnhost_display_view:_p,vnhost_display_windows:_p_,vnhost_free:_p,vnhost_load_slot:__p,vnhost_vfs_export:ppp
   M64_LINK="-sSIGNATURE_CONVERSIONS=$SIGS,vnhost_vfs_put_chunk:_ppp"
   CONF_EXTRA="--enable-win64 ac_cv_mabi_ms=yes"
 else

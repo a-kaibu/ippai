@@ -4,6 +4,7 @@
 //! match.
 //!
 //!   cargo run --release -- [count] [seed]
+mod native;
 use iced_x86::{BlockEncoder, BlockEncoderOptions, Code, Instruction, InstructionBlock, MemoryOperand, Register};
 use std::collections::HashMap;
 use vnx86::{Cpu, Exit, Fault};
@@ -780,6 +781,9 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(|s| s.as_str()) == Some("exe") {
         return exe_mode(&args);
+    }
+    if args.get(1).map(|s| s.as_str()) == Some("native") {
+        return native::run(&args);
     }
     let count: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(500);
     let seed: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(1);

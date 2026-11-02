@@ -6,6 +6,7 @@ export interface D3DWine {
   _malloc(size: number): number;
   _vnhost_d3d9_poll(out: number): number;
   _vnhost_d3d9_readback_done(id: number): void;
+  _vnhost_d3d9_readback_begin(id: number): number;
   _vnhost_d3d9_done(): void;
   wasmMemory: WebAssembly.Memory;
 }
@@ -951,9 +952,12 @@ export class D3D9 {
     this.submit();
     void buf.mapAsync(GPUMapMode.READ).then(
       () => {
-        const src = new Uint8Array(buf.getMappedRange());
-        const heap = new Uint8Array(this.wine.wasmMemory.buffer);
-        for (let r = 0; r < h; r++) heap.set(src.subarray(r * bpr, r * bpr + w * bpp), dst + r * pitch);
+        // (not after the guest stopped waiting: it may have freed dst)
+        if (this.wine._vnhost_d3d9_readback_begin(req)) {
+          const src = new Uint8Array(buf.getMappedRange());
+          const heap = new Uint8Array(this.wine.wasmMemory.buffer);
+          for (let r = 0; r < h; r++) heap.set(src.subarray(r * bpr, r * bpr + w * bpp), dst + r * pitch);
+        }
         buf.unmap();
         buf.destroy();
         done();

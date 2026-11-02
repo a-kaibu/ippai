@@ -27,6 +27,11 @@ const page = await browser.newPage(process.env.USER_DATA_DIR ? undefined : { vie
 page.on("console", (m) => appendFileSync(logFile, `${stamp()} [${m.type()}] ${m.text()}\n`));
 page.on("pageerror", (e) => appendFileSync(logFile, `${stamp()} [pageerror] ${e.message}\n`));
 page.on("crash", () => appendFileSync(logFile, `${stamp()} [crash] the page crashed\n`));
+if (process.env.THROTTLE) {
+  // Android-like CPU: Chromium's CPU throttling (DevTools), rate = slowdown factor
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Emulation.setCPUThrottlingRate', { rate: Number(process.env.THROTTLE) });
+}
 await page.goto(url);
 
 const CRC = new Int32Array(256).map((_, n) => {
