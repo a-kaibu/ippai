@@ -2608,6 +2608,14 @@ fn BeginPaint(c: &mut Ctx) -> u32 {
     if erase {
         send(c, h, 0x14, dc, 0);
     }
+    // without WS_CLIPCHILDREN the parent paints over its children: they paint again after it
+    let kids: Vec<u32> = with(|s| {
+        let Some(w) = s.wins.get(&h).filter(|w| w.style & 0x0200_0000 == 0) else { return Vec::new() };
+        w.children.iter().copied().filter(|k| s.wins.get(k).is_some_and(|x| x.visible && !x.rect.and(&upd).empty())).collect()
+    });
+    for k in kids {
+        invalidate(k, None, true);
+    }
     mem::fill(ps, 64, 0);
     w32(ps, dc);
     w32(ps + 4, 0);
