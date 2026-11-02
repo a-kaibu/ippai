@@ -33,6 +33,22 @@ const METHODS: [&[u32]; 15] = [
 ];
 
 const NUM_IFACES: u32 = 15;
+
+/// Direct3D 8 (vnhost's d3d8.rs on the same device): interface 16 + the Direct3D 9 one, each
+/// method's argument count with `this` (from Wine's dlls/vnd3d8/main.c).
+const METHODS8: [(u32, &[u32]); 10] = [
+    (17, &[3, 1, 1, 2, 1, 4, 2, 4, 3, 6, 7, 6, 6, 4, 2, 7]),
+    (18, &[3, 1, 1, 1, 1, 2, 2, 2, 2, 2, 4, 4, 2, 3, 2, 5, 4, 2, 3, 2, 8, 9, 7, 6, 6, 7, 6, 5, 6, 3, 2, 3, 2, 2, 1, 1, 7, 3, 3, 3, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 1, 2, 2, 2, 2, 3, 2, 2, 3, 3, 4, 4, 2, 4, 3, 3, 2, 2, 4, 6, 5, 9, 6, 5, 2, 2, 2, 4, 4, 4, 4, 4, 4, 3, 3, 3, 2, 2, 2, 4, 4, 4, 4, 4, 2]),
+    (19, &[3, 1, 1, 5, 4]),
+    (20, &[3, 1, 1, 2, 5, 4, 2, 3, 2, 4, 1]),
+    (21, &[3, 1, 1, 2, 5, 4, 2, 2, 1, 1, 1, 2, 1, 1, 3, 3, 5, 2, 2]),
+    (22, &[3, 1, 1, 2, 5, 4, 2, 2, 1, 1, 1, 2, 1, 1, 3, 4, 6, 3, 3]),
+    (23, &[3, 1, 1, 2, 5, 4, 2, 2, 1, 1, 1, 2, 1, 1, 3, 3, 5, 2, 2]),
+    (24, &[3, 1, 1, 2, 5, 4, 2, 2, 1, 1, 1, 5, 1, 2]),
+    (25, &[3, 1, 1, 2, 5, 4, 2, 2, 1, 1, 1, 5, 1, 2]),
+    (31, &[3, 1, 1, 2, 5, 4, 2, 3, 2, 4, 1]),
+];
+const NUM_IFACES8: u32 = 31;
 const GETNPATCHMODE: u32 = 2 << 8 | 80;
 const SURFACE_GETDC: u32 = 4 << 8 | 15;
 const SURFACE_RELEASEDC: u32 = 4 << 8 | 16;
@@ -139,6 +155,48 @@ fn init() {
     });
 }
 
+/// d3d8.dll's vtables, merged into the host's after d3d9's.
+fn init8() {
+    init();
+    static DONE: OnceLock<()> = OnceLock::new();
+    DONE.get_or_init(|| {
+        let table = mem::heap_alloc(4 * (NUM_IFACES8 + 1), true);
+        let mut g = IDS.lock().unwrap();
+        let ids = g.get_or_insert_with(HashMap::default);
+        for &(i, m) in METHODS8.iter() {
+            let v = mem::heap_alloc(4 * m.len() as u32, true);
+            for (n, &args) in m.iter().enumerate() {
+                let a = host_fn(&format!("d3d8:{i}:{n}"), method, 4 * args);
+                ids.insert(a, i << 8 | n as u32);
+                w32(v + 4 * n as u32, a);
+            }
+            w32(table + 4 * i, v);
+        }
+        drop(g);
+        unsafe { vnhost::d3d9::vnhost_d3d9_init(table as usize as *const u32, NUM_IFACES8 + 1) };
+    });
+}
+
+fn Direct3DCreate8(_: &mut Ctx) -> u32 {
+    init8();
+    let out = mem::heap_alloc(4, true);
+    let r = d3d_call(vnhost::d3d9::d3d8::CREATE, &[out]);
+    let o = mem::r32(out);
+    mem::heap_free(out);
+    if r != 0 { 0 } else { o }
+}
+/// Validate{Vertex,Pixel}Shader: any code passes; the error text out-pointer is the last argument.
+fn validate8(c: &mut Ctx, out: u32) -> u32 {
+    put32(out, 0);
+    if c.a(0) != 0 { 0 } else { 0x8000_4005 }
+}
+fn ValidateVertexShader(c: &mut Ctx) -> u32 {
+    validate8(c, c.a(4))
+}
+fn ValidatePixelShader(c: &mut Ctx) -> u32 {
+    validate8(c, c.a(3))
+}
+
 fn Direct3DCreate9(c: &mut Ctx) -> u32 {
     init();
     let out = mem::heap_alloc(4, true);
@@ -162,6 +220,10 @@ pub fn register() {
     implement("d3d9", "Direct3DCreate9", Direct3DCreate9);
     implement("d3d9", "Direct3DCreate9Ex", Direct3DCreate9Ex);
     implement("d3d9", "Direct3DCreate9On12", Direct3DCreate9On12);
+    implement("d3d8", "Direct3DCreate8", Direct3DCreate8);
+    implement("d3d8", "ValidateVertexShader", ValidateVertexShader);
+    implement("d3d8", "ValidatePixelShader", ValidatePixelShader);
+    implement("d3d8", "DebugSetMute", zero);
     for n in ["D3DPERF_BeginEvent", "D3DPERF_EndEvent", "D3DPERF_GetStatus", "D3DPERF_QueryRepeatFrame", "D3DPERF_SetMarker",
         "D3DPERF_SetOptions", "D3DPERF_SetRegion", "DebugSetMute", "Direct3DShaderValidatorCreate9"]
     {
