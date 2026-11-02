@@ -1111,6 +1111,69 @@ fn glyph(r: &Real, ch: u32) -> Arc<Glyph> {
     g
 }
 
+/// A glyph's outline even when ttf-parser rejects the charstring after drawing it: CFF glyphs
+/// with bytes after `endchar` (FOT-Chiaro's う and a, as Windows and FreeType draw them).
+fn lenient_outline(f: &FontVec, id: ab_glyph::GlyphId) -> Option<ab_glyph::Outline> {
+    #[derive(Default)]
+    struct B {
+        last: ab_glyph::Point,
+        start: Option<ab_glyph::Point>,
+        curves: Vec<ab_glyph::OutlineCurve>,
+    }
+    impl ttf_parser::OutlineBuilder for B {
+        fn move_to(&mut self, x: f32, y: f32) {
+            self.close();
+            self.last = ab_glyph::point(x, y);
+            self.start = Some(self.last);
+        }
+        fn line_to(&mut self, x: f32, y: f32) {
+            let p = ab_glyph::point(x, y);
+            self.curves.push(ab_glyph::OutlineCurve::Line(self.last, p));
+            self.last = p;
+        }
+        fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+            let p = ab_glyph::point(x, y);
+            self.curves.push(ab_glyph::OutlineCurve::Quad(self.last, ab_glyph::point(x1, y1), p));
+            self.last = p;
+        }
+        fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+            let p = ab_glyph::point(x, y);
+            self.curves.push(ab_glyph::OutlineCurve::Cubic(self.last, ab_glyph::point(x1, y1), ab_glyph::point(x2, y2), p));
+            self.last = p;
+        }
+        fn close(&mut self) {
+            if let Some(s) = self.start.take() {
+                if s != self.last {
+                    self.curves.push(ab_glyph::OutlineCurve::Line(self.last, s));
+                }
+                self.last = s;
+            }
+        }
+    }
+    let face = ttf_parser::Face::parse(f.as_slice(), 0).ok()?;
+    let mut b = B::default();
+    face.outline_glyph(ttf_parser::GlyphId(id.0), &mut b);
+    ttf_parser::OutlineBuilder::close(&mut b);
+    if b.curves.is_empty() {
+        return None;
+    }
+    let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for c in &b.curves {
+        let pts: &[ab_glyph::Point] = match c {
+            ab_glyph::OutlineCurve::Line(a, b) => &[*a, *b],
+            ab_glyph::OutlineCurve::Quad(a, b, c) => &[*a, *b, *c],
+            ab_glyph::OutlineCurve::Cubic(a, b, c, d) => &[*a, *b, *c, *d],
+        };
+        for p in pts {
+            (x0, y0, x1, y1) = (x0.min(p.x), y0.min(p.y), x1.max(p.x), y1.max(p.y));
+        }
+    }
+    if x0 >= x1 || y0 >= y1 {
+        return None;
+    }
+    Some(ab_glyph::Outline { bounds: ab_glyph::Rect { min: ab_glyph::point(x0, y1), max: ab_glyph::point(x1, y0) }, curves: b.curves })
+}
+
 fn raster(r: &Real, ch: u32) -> Glyph {
     let f = &*r.font;
     let upem = f.units_per_em().unwrap_or(1000.0);
@@ -1120,7 +1183,11 @@ fn raster(r: &Real, ch: u32) -> Glyph {
     let id = if ch & GLYPH_INDEX != 0 { ab_glyph::GlyphId(ch as u16) } else { f.glyph_id(char::from_u32(ch).unwrap_or('?')) };
     let adv = f.as_scaled(scale).h_advance(id).round() as i32;
     let mut g = Glyph { x0: 0, top: 0, w: 0, h: 0, cov: Vec::new(), adv };
-    if let Some(o) = f.outline_glyph(id.with_scale_and_position(scale, ab_glyph::point(0.0, 0.0))) {
+    let glyph = id.with_scale_and_position(scale, ab_glyph::point(0.0, 0.0));
+    let outlined = f.outline_glyph(glyph.clone()).or_else(|| {
+        lenient_outline(f, id).map(|o| ab_glyph::OutlinedGlyph::new(glyph, o, f.as_scaled(scale).scale_factor()))
+    });
+    if let Some(o) = outlined {
         let b = o.px_bounds();
         let (w, h) = (b.width() as i32, b.height() as i32);
         if w > 0 && h > 0 {
