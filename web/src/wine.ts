@@ -241,7 +241,16 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       // bench.html shows the program's output
       dispatchEvent(new CustomEvent("wine-print", { detail: line }));
     },
-    onAbort: (what: unknown) => recorder?.abort(what),
+    onAbort: (what: unknown) => {
+      recorder?.abort(what);
+      // a crash: the way back to the list
+      setUi({ back: leave });
+    },
+    // sake's ExitProcess / exit() end the runtime itself (it is the root process): the
+    // frame loop then goes back to the list (closeGame)
+    onExit: () => {
+      exited = true;
+    },
     printErr: (line: string) => {
       console.warn(line);
       recorder?.printErr(line);
@@ -379,6 +388,8 @@ function present(wine: WineModule, presenter: Presenter): void {
     ? { t0: performance.now(), last: 0, frames: 0, slow: 0, d3d: 0 }
     : null;
   const frame = () => {
+    // the game quit: so does the page (before touching the module, whose runtime may be gone)
+    if (exited) return closeGame();
     if (stats) {
       const t = performance.now();
       if (stats.last && t - stats.last > 34) stats.slow++;
@@ -457,7 +468,6 @@ function present(wine: WineModule, presenter: Presenter): void {
       dispatchEvent(new CustomEvent("wine-frame", { detail: { heap: wine.HEAPU8, bits, width, height } }));
       if (getUi().status) log("");
     }
-    // the game quit: so does the page
     if (wine._vnhost_root_exited()) return closeGame();
     requestAnimationFrame(frame);
   };
@@ -517,6 +527,7 @@ const start = () => {
   boot(AudioOut.create()).catch((e) => {
     recorder?.note(`boot failed: ${e instanceof Error ? (e.stack ?? e.message) : e}`);
     log(`エラー: ${e instanceof Error ? e.message : e}`);
+    setUi({ back: leave });
   });
 };
 
@@ -577,13 +588,18 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((e) => log(`エラー: ${e instanceof Error ? e.message : e}`));
+main().catch((e) => {
+  log(`エラー: ${e instanceof Error ? e.message : e}`);
+  setUi({ back: leave });
+});
 
 /** After the game quit: leaves fullscreen and goes back to the start screen (a fresh page). */
 let saveNow: () => Promise<void> = async () => {};
+/** The program ended the runtime (Module.onExit). */
+let exited = false;
 
 function closeGame(): void {
-  log("ゲームが終了しました");
+  log("ゲームが終了しました。一覧に戻ります");
   const ended = recorder
     ? Promise.race([recorder.end(), new Promise((r) => setTimeout(r, 4000))])
     : Promise.resolve();

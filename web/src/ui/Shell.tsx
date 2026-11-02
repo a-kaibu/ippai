@@ -2,7 +2,7 @@
 // and the bench panel (state in ui/store.ts), plus toasts (sonner).
 
 import { createRoot } from "react-dom/client";
-import { Copy, Loader2, Play } from "lucide-react";
+import { ArrowLeft, Copy, Loader2, Play } from "lucide-react";
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Toaster } from "@/components/ui/sonner";
@@ -82,7 +82,7 @@ function Shell({ children }: { children?: ReactNode }) {
       )}
       {ui.status && (
         <div className="pointer-events-none fixed bottom-3 left-3 z-30 flex max-w-[calc(100%-1.5rem)] items-center gap-2 rounded-full border bg-background/80 px-3 py-1.5 text-sm shadow backdrop-blur">
-          {!/^エラー|ません|終了/.test(ui.status) && <Loader2 className="size-3.5 shrink-0 animate-spin" />}
+          {!/^エラー|ません/.test(ui.status) && <Loader2 className="size-3.5 shrink-0 animate-spin" />}
           <span className="truncate">{ui.status}</span>
         </div>
       )}
@@ -92,6 +92,18 @@ function Shell({ children }: { children?: ReactNode }) {
         </pre>
       )}
       {ui.bench && <BenchPanel bench={ui.bench} />}
+      {ui.back && (
+        <div className="fixed inset-0 z-30 grid place-items-center">
+          <Button
+            size="lg"
+            variant="secondary"
+            className="h-12 rounded-full px-6 shadow-xl"
+            onClick={ui.back}
+          >
+            <ArrowLeft /> 一覧に戻る
+          </Button>
+        </div>
+      )}
       <Toaster position="bottom-center" />
     </>
   );

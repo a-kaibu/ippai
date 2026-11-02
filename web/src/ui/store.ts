@@ -22,6 +22,8 @@ export interface UiState {
   splash: string | null;
   stats: string[];
   bench: BenchView | null;
+  /** a "back to the list" button (after a crash or an error) */
+  back: (() => void) | null;
 }
 
 let state: UiState = {
@@ -30,6 +32,7 @@ let state: UiState = {
   splash: null,
   stats: [],
   bench: null,
+  back: null,
 };
 const listeners = new Set<() => void>();
 
