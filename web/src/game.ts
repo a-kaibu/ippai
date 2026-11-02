@@ -19,7 +19,7 @@
 //   &titleafter=N         the title counts as shown after N s (Direct3D games)
 //   &pre=x,y              clicked every 3 s before the title (a first-start dialog; client pixels)
 //   &env=VNVM_JIT_PROFILE=1  print the executed instruction counts at the end (console)
-//   &engine=vnwin         vnwin (crates/vnwin, the from-scratch Win32 layer) instead of Wine
+//   &engine=sake         sake (crates/sake, the from-scratch Win32 layer) instead of Wine
 
 const NATIVE = { title: 5.9, cores: 0.18 };
 // in the game window's client pixels (the main window's, which the screen shows): on the
@@ -48,7 +48,7 @@ if (!params.has("run")) {
   params.set("autostart", "");
   params.set("load", "");
   // the screen the numbers were taken on: on vnhost's 1366x768 default Reunion's title ignores
-  // clicks (under Wine and vnwin alike)
+  // clicks (under Wine and sake alike)
   params.append("env", "VNVM_SCREEN=1280x720");
   history.replaceState(null, "", `?${params}`);
 }

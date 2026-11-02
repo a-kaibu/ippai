@@ -26,15 +26,15 @@ worker2 では `/home/kota/vnvm/vnvm-bench/logs/`) に `<名前>.txt` で置き�
 
 ## 中身
 
-1. 実行の情報: ゲーム、exe、引数、マウント、環境変数、Wine / vnwin、x86 / x86_64、ビルド
+1. 実行の情報: ゲーム、exe、引数、マウント、環境変数、Wine / sake、x86 / x86_64、ビルド
    (wine.wasm の日付とサイズ、トランスレータの版)、ブラウザ、コア数、メモリ、画面、URL。
-2. 理由: `wine: Unhandled page fault on write access to ...`、vnwin の致命的エラー、panic、
+2. 理由: `wine: Unhandled page fault on write access to ...`、sake の致命的エラー、panic、
    wasm の abort / trap、Worker のエラー、捕まらなかった JS のエラーなど。
 3. その時点の全ゲストスレッド: ゲストコード中か syscall 中か、レジスタ (x64 は r8-r15 と rip 上位も)、
    EIP のコード、スタック、EBP チェーン、スタック上のコードアドレス (`module+rva (export+off)` に解決)、
    直近の syscall / API 呼び出し、JIT の最近のリージョン間ジャンプ、モジュール一覧。
 4. vnhost のイベント: ゲスト例外 (アクセス違反、不正命令、int3、ゼロ除算、hlt) は x86 コアが止まった
-   時点で、Wine や vnwin の SEH に渡る前に、3 と同じ詳しさで記録します (スレッドごとに最初の 16 回と
+   時点で、Wine や sake の SEH に渡る前に、3 と同じ詳しさで記録します (スレッドごとに最初の 16 回と
    その後 100 回に 1 回。それ以外は 1 行)。それが JIT 中かインタプリタ中かも書きます。プロセスの生成と終了も。
 5. Wine の stdout / stderr の全部 (err: / fixme: など。時刻とプロセス・スレッド付き)。
 6. ページのログ: 状態表示、メモリ (wasm / JS ヒープ、30 秒ごと)、表示状態の変化、エラー。

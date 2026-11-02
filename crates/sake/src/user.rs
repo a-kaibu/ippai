@@ -809,14 +809,14 @@ pub fn send_cpu(cpu: &mut vnx86::Cpu, hwnd: u32, msg: u32, wp: u32, lp: u32) -> 
         return send_other_thread(cpu, tid, Msg { hwnd, msg, w: wp, l: lp, ..Default::default() });
     }
     if trace_msgs() {
-        eprintln!("vnwin msg {hwnd:x} {msg:04x} {wp:x} {lp:x}");
+        eprintln!("sake msg {hwnd:x} {msg:04x} {wp:x} {lp:x}");
     }
     crate::call(cpu, proc_, &[hwnd, msg, wp, lp])
 }
 
 fn trace_msgs() -> bool {
     static T: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *T.get_or_init(|| std::env::var_os("VNWIN_TRACE_MSG").is_some())
+    *T.get_or_init(|| std::env::var_os("SAKE_TRACE_MSG").is_some())
 }
 
 fn send_other_thread(cpu: &mut vnx86::Cpu, tid: u32, msg: Msg) -> u32 {
@@ -922,12 +922,12 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
         Some((h, s.classes[ci].name.clone()))
     });
     let Some((h, cname)) = made else {
-        eprintln!("vnwin: CreateWindowEx: no class {}", if cls_p < 0x10000 { format!("#{cls_p}") } else { arg_str(cls_p, wide) });
+        eprintln!("sake: CreateWindowEx: no class {}", if cls_p < 0x10000 { format!("#{cls_p}") } else { arg_str(cls_p, wide) });
         w32(crate::cur().teb + 0x34, 1407);
         return 0;
     };
-    if std::env::var_os("VNWIN_TRACE_WIN").is_some() {
-        eprintln!("vnwin: CreateWindowEx {h:x} class {cname} style {style:x} ex {ex:x} {x},{y} {cx}x{cy} parent {parent:x}");
+    if std::env::var_os("SAKE_TRACE_WIN").is_some() {
+        eprintln!("sake: CreateWindowEx {h:x} class {cname} style {style:x} ex {ex:x} {x},{y} {cx}x{cy} parent {parent:x}");
     }
     // CREATESTRUCT on the guest stack (below the caller's)
     let save = c.cpu.regs[vnx86::ESP];
@@ -2217,12 +2217,12 @@ fn DispatchMessageA(c: &mut Ctx) -> u32 {
     if h == 0 {
         return 0;
     }
-    if (0x200..=0x20a).contains(&m) && m != 0x200 && std::env::var_os("VNWIN_TRACE_INPUT").is_some() {
-        eprintln!("vnwin input: dispatch {h:x} msg {m:x} {wp:x} {lp:x}");
+    if (0x200..=0x20a).contains(&m) && m != 0x200 && std::env::var_os("SAKE_TRACE_INPUT").is_some() {
+        eprintln!("sake input: dispatch {h:x} msg {m:x} {wp:x} {lp:x}");
     }
     let r = send(c, h, m, wp, lp);
-    if (0x200..=0x20a).contains(&m) && m != 0x200 && std::env::var_os("VNWIN_TRACE_INPUT").is_some() {
-        eprintln!("vnwin input: dispatched {m:x} -> {r:x}");
+    if (0x200..=0x20a).contains(&m) && m != 0x200 && std::env::var_os("SAKE_TRACE_INPUT").is_some() {
+        eprintln!("sake input: dispatched {m:x} -> {r:x}");
     }
     if m == 0xf {
         // a WM_PAINT nobody validated must not come back forever
@@ -2584,7 +2584,7 @@ fn MessageBeep(_: &mut Ctx) -> u32 {
 fn message_box(c: &mut Ctx, wide: bool) -> u32 {
     let t = arg_str(c.a(1), wide);
     let cap = arg_str(c.a(2), wide);
-    eprintln!("vnwin: MessageBox [{cap}] {t}");
+    eprintln!("sake: MessageBox [{cap}] {t}");
     match c.a(3) & 0xf {
         1 | 3 => 1,
         4 => 6,
@@ -2602,7 +2602,7 @@ fn MessageBoxExA(c: &mut Ctx) -> u32 {
 }
 fn MessageBoxIndirectA(c: &mut Ctx) -> u32 {
     let p = c.a(0);
-    eprintln!("vnwin: MessageBox [{}] {}", arg_str(r32(p + 12), false), arg_str(r32(p + 8), false));
+    eprintln!("sake: MessageBox [{}] {}", arg_str(r32(p + 12), false), arg_str(r32(p + 8), false));
     1
 }
 /// CBT hooks (MFC's CWnd::CreateEx attaches the window and subclasses it in HCBT_CREATEWND):
@@ -3543,13 +3543,13 @@ fn start_input() {
                 return;
             }
             let mut buf = [0u32; 64];
-            let trace = std::env::var_os("VNWIN_TRACE_INPUT").is_some();
+            let trace = std::env::var_os("SAKE_TRACE_INPUT").is_some();
             loop {
                 let mut p = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
                 let r = unsafe { libc::poll(&mut p, 1, 100) };
                 let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, 256) };
                 if trace && n != -1 {
-                    eprintln!("vnwin input: poll {r} read {n}");
+                    eprintln!("sake input: poll {r} read {n}");
                 }
                 if n <= 0 {
                     continue;
@@ -3558,13 +3558,13 @@ fn start_input() {
                     if r.len() == 4 {
                         input(r[0], r[1] as i32, r[2] as i32, r[3]);
                         if trace {
-                            eprintln!("vnwin input: {r:?} queued");
+                            eprintln!("sake input: {r:?} queued");
                         }
                     }
                 }
                 crate::obj::signal();
                 if trace {
-                    eprintln!("vnwin input: signaled");
+                    eprintln!("sake input: signaled");
                 }
             }
         });
@@ -3582,8 +3582,8 @@ fn input(kind: u32, x: i32, y: i32, data: u32) {
                 let tid = w.tid;
                 let c = client_screen(s, target);
                 let (cx, cy) = (x - c.l, y - c.t);
-                if std::env::var_os("VNWIN_TRACE_INPUT").is_some() {
-                    eprintln!("vnwin input: {kind} at {x},{y} -> {target:x} client {cx},{cy} (client {c:?}, window {:?})", w.rect);
+                if std::env::var_os("SAKE_TRACE_INPUT").is_some() {
+                    eprintln!("sake input: {kind} at {x},{y} -> {target:x} client {cx},{cy} (client {c:?}, window {:?})", w.rect);
                     for (h, w) in s.wins.iter() {
                         eprintln!("  win {h:x} parent {:x} vis {} style {:x} ex {:x} rect {:?} active {}", w.parent, w.visible, w.style, w.exstyle, w.rect, s.active == *h);
                     }

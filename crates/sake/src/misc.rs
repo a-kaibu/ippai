@@ -390,8 +390,8 @@ fn join(base: &str, sub: &str) -> String {
 fn open_key(h: u32, sub: &str, create: bool, out: u32) -> u32 {
     let Some(base) = key_path(h) else { return 6 };
     let path = join(&base, sub);
-    if std::env::var_os("VNWIN_TRACE_REG").is_some() {
-        eprintln!("vnwin reg: open {path}");
+    if std::env::var_os("SAKE_TRACE_REG").is_some() {
+        eprintln!("sake reg: open {path}");
     }
     let exists = with_reg(|m| {
         if m.contains_key(&path) || root_name(h).is_some() && sub.trim_matches('\\').is_empty() {
@@ -471,8 +471,8 @@ fn query_value(c: &mut Ctx, key: u32, name: &str, pty: u32, data: u32, plen: u32
     let lname = name.to_lowercase();
     let v = with_reg(|m| m.get(&path).and_then(|k| k.values.iter().find(|v| v.0.to_lowercase() == lname).map(|v| (v.1, v.2.clone()))));
     let _ = c;
-    if std::env::var_os("VNWIN_TRACE_REG").is_some() {
-        eprintln!("vnwin reg: query {path}\\{name}: {:?}", v.as_ref().map(|x| x.1.len()));
+    if std::env::var_os("SAKE_TRACE_REG").is_some() {
+        eprintln!("sake reg: query {path}\\{name}: {:?}", v.as_ref().map(|x| x.1.len()));
     }
     let Some((ty, mut bytes)) = v else { return 2 };
     if is_str(ty) && !wide {
@@ -1069,7 +1069,7 @@ fn CoCreateInstance(c: &mut Ctx) -> u32 {
         put32(c.a(4), obj);
         return 0;
     }
-    eprintln!("vnwin: CoCreateInstance {{{}}} iid {{{}}}: not registered", g(clsid), g(iid));
+    eprintln!("sake: CoCreateInstance {{{}}} iid {{{}}}: not registered", g(clsid), g(iid));
     put32(c.a(4), 0);
     0x8004_0154
 }
@@ -1523,11 +1523,11 @@ fn ILFree(c: &mut Ctx) -> u32 {
     0
 }
 fn ShellExecuteA(c: &mut Ctx) -> u32 {
-    eprintln!("vnwin: ShellExecute {} {}", arg_str(c.a(1), false), arg_str(c.a(2), false));
+    eprintln!("sake: ShellExecute {} {}", arg_str(c.a(1), false), arg_str(c.a(2), false));
     42
 }
 fn ShellExecuteW(c: &mut Ctx) -> u32 {
-    eprintln!("vnwin: ShellExecute {} {}", arg_str(c.a(1), true), arg_str(c.a(2), true));
+    eprintln!("sake: ShellExecute {} {}", arg_str(c.a(1), true), arg_str(c.a(2), true));
     42
 }
 fn ShellExecuteExA(_: &mut Ctx) -> u32 {
@@ -2008,7 +2008,7 @@ fn CryptCreateHash(c: &mut Ctx) -> u32 {
         0x8004 => Hasher::Sha1(Sha1::default()),
         0x800c => Hasher::Sha256(<sha2::Sha256 as sha2::Digest>::new()),
         alg => {
-            eprintln!("vnwin: CryptCreateHash: algorithm {alg:#x}");
+            eprintln!("sake: CryptCreateHash: algorithm {alg:#x}");
             return 0;
         }
     };

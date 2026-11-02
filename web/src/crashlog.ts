@@ -10,7 +10,7 @@
 // When it is written:
 // - every 10 s, to OPFS (vnvm-logs/session-<id>.txt): if the tab dies (Android kills it when
 //   memory runs out) the next page load uploads it as "<id>-unclean"
-// - at a crash (Wine's "Unhandled exception", a vnwin fatal error, a panic, a wasm trap, an abort,
+// - at a crash (Wine's "Unhandled exception", a sake fatal error, a panic, a wasm trap, an abort,
 //   an uncaught JS error): "<id>-crashN", to OPFS and to the server (PUT /log-save/<name>, kept in
 //   vnvm-server's --logs directory)
 // - when the page goes to the background (the way out of a hung game on a phone): "<id>-hidden"

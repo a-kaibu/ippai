@@ -1184,8 +1184,8 @@ fn D_GetSurfaceFromDC(c: &mut Ctx) -> u32 {
 fn D_GetDeviceIdentifier(c: &mut Ctx) -> u32 {
     let p = c.a(1);
     mem::fill(p, 0x448, 0);
-    mem::write(p, b"vnwin");
-    mem::write(p + 512, b"vnwin DirectDraw");
+    mem::write(p, b"sake");
+    mem::write(p + 512, b"sake DirectDraw");
     DD_OK
 }
 

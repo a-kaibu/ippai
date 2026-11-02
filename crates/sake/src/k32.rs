@@ -103,7 +103,7 @@ fn GetCommandLineW(_: &mut Ctx) -> u32 {
 }
 
 fn env_block(wide: bool) -> u32 {
-    let vars = ["PATH=C:\\windows\\system32;C:\\windows", "TEMP=C:\\windows\\temp", "TMP=C:\\windows\\temp", "windir=C:\\windows", "SystemRoot=C:\\windows", "OS=Windows_NT", "COMPUTERNAME=VNWIN", "USERNAME=user"];
+    let vars = ["PATH=C:\\windows\\system32;C:\\windows", "TEMP=C:\\windows\\temp", "TMP=C:\\windows\\temp", "windir=C:\\windows", "SystemRoot=C:\\windows", "OS=Windows_NT", "COMPUTERNAME=SAKE", "USERNAME=user"];
     let s = vars.join("\0") + "\0\0";
     if wide {
         let w: Vec<u16> = s.encode_utf16().collect();
@@ -189,8 +189,8 @@ fn GetCurrentThreadId(_: &mut Ctx) -> u32 {
 
 fn ExitProcess(c: &mut Ctx) -> u32 {
     let code = c.a(0);
-    if std::env::var_os("VNWIN_TRACE_EXIT").is_some() {
-        eprintln!("vnwin: ExitProcess({code}) from {:#x}", r32(c.esp));
+    if std::env::var_os("SAKE_TRACE_EXIT").is_some() {
+        eprintln!("sake: ExitProcess({code}) from {:#x}", r32(c.esp));
     }
     unsafe { libc::exit(code as i32) }
 }
@@ -201,7 +201,7 @@ fn TerminateProcess(c: &mut Ctx) -> u32 {
     0
 }
 fn FatalAppExitA(c: &mut Ctx) -> u32 {
-    eprintln!("vnwin: FatalAppExit: {}", arg_str(c.a(1), false));
+    eprintln!("sake: FatalAppExit: {}", arg_str(c.a(1), false));
     unsafe { libc::exit(1) }
 }
 
@@ -971,14 +971,14 @@ fn IsDebuggerPresent(_: &mut Ctx) -> u32 {
     0
 }
 fn OutputDebugStringA(c: &mut Ctx) -> u32 {
-    if std::env::var_os("VNWIN_DEBUGSTR").is_some() {
-        eprintln!("vnwin: debug: {}", arg_str(c.a(0), false).trim_end());
+    if std::env::var_os("SAKE_DEBUGSTR").is_some() {
+        eprintln!("sake: debug: {}", arg_str(c.a(0), false).trim_end());
     }
     0
 }
 fn OutputDebugStringW(c: &mut Ctx) -> u32 {
-    if std::env::var_os("VNWIN_DEBUGSTR").is_some() {
-        eprintln!("vnwin: debug: {}", arg_str(c.a(0), true).trim_end());
+    if std::env::var_os("SAKE_DEBUGSTR").is_some() {
+        eprintln!("sake: debug: {}", arg_str(c.a(0), true).trim_end());
     }
     0
 }
@@ -1399,7 +1399,7 @@ fn GetNativeSystemInfo(c: &mut Ctx) -> u32 {
 }
 fn IsProcessorFeaturePresent(c: &mut Ctx) -> u32 {
     // MMX 3, XMMI 6, RDTSC 8, XMMI64 10, NX 12, SSE3 13
-    ok(matches!(c.a(0), 3 | 8) || (matches!(c.a(0), 6 | 10) && std::env::var_os("VNWIN_SSE").is_some()))
+    ok(matches!(c.a(0), 3 | 8) || (matches!(c.a(0), 6 | 10) && std::env::var_os("SAKE_SSE").is_some()))
 }
 fn IsWow64Process(c: &mut Ctx) -> u32 {
     put32(c.a(1), 0);
@@ -2131,8 +2131,8 @@ fn GetProcAddress(c: &mut Ctx) -> u32 {
     let (h, p) = (c.a(0), c.a(1));
     let imp = if p < 0x10000 { crate::pe::Import::Ordinal(p) } else { crate::pe::Import::Name(Box::leak(a2s(&cstr(p)).into_boxed_str())) };
     let r = crate::pe::proc_address(h, imp).unwrap_or(0);
-    if std::env::var_os("VNWIN_TRACE_LOAD").is_some() {
-        eprintln!("vnwin: GetProcAddress({h:#x}, {}) = {r:#x}", if p < 0x10000 { format!("#{p}") } else { a2s(&cstr(p)) });
+    if std::env::var_os("SAKE_TRACE_LOAD").is_some() {
+        eprintln!("sake: GetProcAddress({h:#x}, {}) = {r:#x}", if p < 0x10000 { format!("#{p}") } else { a2s(&cstr(p)) });
     }
     if r == 0 {
         last_error(127);
@@ -2162,7 +2162,7 @@ fn ResolveDelayLoadedAPI(c: &mut Ctx) -> u32 {
         crate::pe::proc_address(h, crate::pe::Import::Name(&n)).unwrap_or(0)
     };
     if r == 0 {
-        eprintln!("vnwin: delay-load import from {name} failed");
+        eprintln!("sake: delay-load import from {name} failed");
     }
     w32(thunk, r);
     r
@@ -2245,8 +2245,8 @@ fn GetConsoleMode(_: &mut Ctx) -> u32 {
 fn create_file(c: &mut Ctx, wide: bool) -> u32 {
     let name = arg_str(c.a(0), wide);
     let (access, disp) = (c.a(1), c.a(4));
-    if std::env::var_os("VNWIN_TRACE_FILES").is_some() {
-        eprintln!("vnwin: CreateFile({name}, {access:#x}, {disp})");
+    if std::env::var_os("SAKE_TRACE_FILES").is_some() {
+        eprintln!("sake: CreateFile({name}, {access:#x}, {disp})");
     }
     if name.eq_ignore_ascii_case("CONOUT$") || name.eq_ignore_ascii_case("CONIN$") {
         return obj::add(Obj::Other("console"));
@@ -2508,8 +2508,8 @@ fn FindClose(c: &mut Ctx) -> u32 {
     ok(obj::close(c.a(0)))
 }
 fn file_attrs(name: &str) -> u32 {
-    if std::env::var_os("VNWIN_TRACE_FILES").is_some() {
-        eprintln!("vnwin: GetFileAttributes({name})");
+    if std::env::var_os("SAKE_TRACE_FILES").is_some() {
+        eprintln!("sake: GetFileAttributes({name})");
     }
     match files::resolve(name).and_then(|h| std::fs::metadata(h).ok()) {
         Some(m) => files::attrs(&m),
@@ -2767,7 +2767,7 @@ fn GetDiskFreeSpaceExW(c: &mut Ctx) -> u32 {
 }
 fn GetVolumeInformationA(c: &mut Ctx) -> u32 {
     if c.a(1) != 0 {
-        put_cstr(c.a(1), c.a(2), b"VNWIN");
+        put_cstr(c.a(1), c.a(2), b"SAKE");
     }
     put32(c.a(3), 0x1234_5678);
     put32(c.a(4), 255);
@@ -2779,7 +2779,7 @@ fn GetVolumeInformationA(c: &mut Ctx) -> u32 {
 }
 fn GetVolumeInformationW(c: &mut Ctx) -> u32 {
     if c.a(1) != 0 {
-        put_wstr(c.a(1), c.a(2), &"VNWIN".encode_utf16().collect::<Vec<_>>());
+        put_wstr(c.a(1), c.a(2), &"SAKE".encode_utf16().collect::<Vec<_>>());
     }
     put32(c.a(3), 0x1234_5678);
     put32(c.a(4), 255);
@@ -2866,12 +2866,12 @@ fn CreatePipe(_: &mut Ctx) -> u32 {
     0
 }
 fn CreateProcessA(c: &mut Ctx) -> u32 {
-    eprintln!("vnwin: CreateProcess({}, {}) refused", arg_str(c.a(0), false), arg_str(c.a(1), false));
+    eprintln!("sake: CreateProcess({}, {}) refused", arg_str(c.a(0), false), arg_str(c.a(1), false));
     last_error(2);
     0
 }
 fn CreateProcessW(c: &mut Ctx) -> u32 {
-    eprintln!("vnwin: CreateProcess({}, {}) refused", arg_str(c.a(0), true), arg_str(c.a(1), true));
+    eprintln!("sake: CreateProcess({}, {}) refused", arg_str(c.a(0), true), arg_str(c.a(1), true));
     last_error(2);
     0
 }
@@ -2922,7 +2922,7 @@ fn Beep(_: &mut Ctx) -> u32 {
     1
 }
 fn GetComputerNameA(c: &mut Ctx) -> u32 {
-    put_cstr(c.a(0), r32(c.a(1)), b"VNWIN");
+    put_cstr(c.a(0), r32(c.a(1)), b"SAKE");
     w32(c.a(1), 5);
     1
 }
@@ -2958,12 +2958,12 @@ fn SetFileApisToANSI(_: &mut Ctx) -> u32 {
 }
 
 // Wine's PE DLLs (msvcr90, d3dx9...) log through these: their ERR lines go to stderr.
-// VNWIN_WINEDEBUG=<flags>[:channel,...] shows more (FIXME 1, ERR 2, WARN 4, TRACE 8), for
+// SAKE_WINEDEBUG=<flags>[:channel,...] shows more (FIXME 1, ERR 2, WARN 4, TRACE 8), for
 // the listed channels only when given ("15:dwrite,d2d").
 fn wine_dbg_flags(ch: u32) -> u8 {
     static CFG: OnceLock<(u8, Vec<String>)> = OnceLock::new();
     let (flags, chans) = CFG.get_or_init(|| {
-        let v = std::env::var("VNWIN_WINEDEBUG").unwrap_or_default();
+        let v = std::env::var("SAKE_WINEDEBUG").unwrap_or_default();
         let (f, c) = v.split_once(':').unwrap_or((&v, ""));
         let chans = c.split(',').filter(|s| !s.is_empty()).map(String::from).collect();
         (f.parse().unwrap_or(0), chans)
@@ -2983,7 +2983,7 @@ fn wine_dbg_header(c: &mut Ctx) -> u32 {
     }
     let name = if ch != 0 { crate::text::a2s(&cstr(ch + 1)) } else { String::new() };
     let class = ["fixme", "err", "warn", "trace"].get(c.a(0) as usize).copied().unwrap_or("?");
-    eprint!("vnwin wine {class}:{name}:{} ", crate::text::a2s(&cstr(c.a(2))));
+    eprint!("sake wine {class}:{name}:{} ", crate::text::a2s(&cstr(c.a(2))));
     0
 }
 /// Stored in the channel too: the DLLs check its flags inline before every message (they

@@ -32,8 +32,8 @@ const startButton = document.querySelector<HTMLButtonElement>("#start")!;
 
 // (read when a game starts: the launcher sets &arch)
 const arch64 = () => params.get("arch") === "x86_64";
-// &engine=vnwin: vnwin.wasm (crates/vnwin, a from-scratch Win32 layer) instead of Wine, for A/B
-const vnwin = () => params.get("engine") === "vnwin";
+// &engine=sake: sake.wasm (crates/sake, a from-scratch Win32 layer) instead of Wine, for A/B
+const sake = () => params.get("engine") === "sake";
 
 interface WineModule {
   FS: {
@@ -107,10 +107,10 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   (window as unknown as { vnvmPresenter: Presenter }).vnvmPresenter = presenter;
   log("Wine を読み込み中");
   const ARCH64 = arch64();
-  const VNWIN = vnwin();
-  const WINE = new URL(VNWIN ? "vnwin/" : ARCH64 ? "wine64/" : "wine/", location.href).href;
-  const WASM = VNWIN ? "vnwin.wasm" : "wine.wasm";
-  const unixModule = VNWIN
+  const SAKE = sake();
+  const WINE = new URL(SAKE ? "sake/" : ARCH64 ? "wine64/" : "wine/", location.href).href;
+  const WASM = SAKE ? "sake.wasm" : "wine.wasm";
+  const unixModule = SAKE
     ? Promise.resolve(new Uint8Array())
     : fetch(`${WINE}wineunix.so`).then(async (r) => {
         if (!r.ok) throw new Error(`wineunix.so: HTTP ${r.status}`);
@@ -123,7 +123,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     args: params.get("args") ?? "",
     mounts: params.getAll("mount").join(" "),
     env: params.getAll("env").join(" "),
-    engine: VNWIN ? "vnwin" : "wine",
+    engine: SAKE ? "sake" : "wine",
     arch: ARCH64 ? "x86_64" : "x86",
   });
   // the browser keeps a versioned wine.wasm with its compiled code (see vnvm-server)
@@ -133,7 +133,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   );
   // x86 regions earlier runs of this program saved (vnvm-server /jit), per build of wine.wasm
   // (which has the translator); &jit=0 for none
-  const jitBase = params.get("jit") ?? `${VNWIN ? "vnwin-" : ""}${run.replace(/[^A-Za-z0-9_.-]/g, "_")}`;
+  const jitBase = params.get("jit") ?? `${SAKE ? "sake-" : ""}${run.replace(/[^A-Za-z0-9_.-]/g, "_")}`;
   // (jit-version.txt: a hash of the translator's sources, which hangover/build.sh writes; saved
   // regions stay good across builds that change anything else)
   const jitVersion = fetch(`${WINE}jit-version.txt`, { cache: "no-cache" })
@@ -146,13 +146,13 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   const jit = jitName
     ? jitName.then(async (name) => {
         const shared = `_shared-${name.slice(name.lastIndexOf("-") + 1)}`;
-        const got = await Promise.all([VNWIN ? undefined : loadJit(shared), loadJit(name)]);
+        const got = await Promise.all([SAKE ? undefined : loadJit(shared), loadJit(name)]);
         const parts = got.flatMap((b) => b?.parts ?? []);
         return parts.length ? { parts } : undefined;
       })
     : Promise.resolve(undefined);
   const ahead = jitName ? readAhead(jitName) : undefined;
-  const scriptUrl = `${WINE}${VNWIN ? "vnwin.js" : "wine.js"}`;
+  const scriptUrl = `${WINE}${SAKE ? "sake.js" : "wine.js"}`;
   const factory = (await import(/* @vite-ignore */ scriptUrl)).default as (m: object) => Promise<WineModule>;
   const unix = await unixModule;
   const version = await wasmVersion;
@@ -164,9 +164,9 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   const nosave = params.has("nosave");
   const saved = nosave ? null : await loadSaves(saveName).catch(() => null);
   const moduleArg = {
-    // (vnwin takes the host path: Z:\\x\\y.exe is /x/y.exe)
+    // (sake takes the host path: Z:\\x\\y.exe is /x/y.exe)
     arguments: [
-      VNWIN ? run.replace(/^z:/i, "").replaceAll("\\", "/") : run,
+      SAKE ? run.replace(/^z:/i, "").replaceAll("\\", "/") : run,
       ...(params.get("args")?.split(",").filter(Boolean) ?? []),
     ],
     mainScriptUrlOrBlob: scriptUrl,
@@ -174,15 +174,15 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       path === WASM && version ? `${WINE}${path}?v=${encodeURIComponent(version)}` : `${WINE}${path}`,
     vnvmEnv: {
       VNVM_MOUNTS: [
-        ...(VNWIN ? [] : [ARCH64 ? "/opt/wine-vnbox=wineroot64" : "/opt/wine-vnbox=wineroot"]),
+        ...(SAKE ? [] : [ARCH64 ? "/opt/wine-vnbox=wineroot64" : "/opt/wine-vnbox=wineroot"]),
         ARCH64 ? "/vnvm/prefix=prefix64" : "/vnvm/prefix=prefix32",
         ...params.getAll("mount"),
       ].join(":"),
       LANG: "ja_JP.UTF-8",
       VNVM_UNIX_MODULE: "/vnvm/wineunix.so",
       WINEPREFIX: "/vnvm/prefix",
-      // vnwin's C:\ (the prefix's fonts)
-      ...(VNWIN ? { VNWIN_C: "/vnvm/prefix/drive_c" } : {}),
+      // sake's C:\ (the prefix's fonts)
+      ...(SAKE ? { SAKE_C: "/vnvm/prefix/drive_c" } : {}),
       WINEDEBUG: params.get("debug") ?? "",
       ...(jitName ? { VNVM_JIT_URL: new URL(`jit-save/${await jitName}`, location.href).href } : {}),
       // game.html: count the threads' waits (vnhost_load_busy)
@@ -204,7 +204,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
         m.FS.mkdir("/home/web");
         m.FS.mkdirTree(`/vnvm/tz/${tz.slice(0, tz.lastIndexOf("/") + 1)}`);
         m.FS.writeFile(`/vnvm/tz/${tz}`, "");
-        if (!VNWIN) m.FS.writeFile("/vnvm/wineunix.so", unix);
+        if (!SAKE) m.FS.writeFile("/vnvm/wineunix.so", unix);
         if (saved) m.FS.writeFile("/vnvm/saves.bin", saved);
       },
     ],

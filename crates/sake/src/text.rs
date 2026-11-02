@@ -1,11 +1,11 @@
 //! Code pages: the ANSI code page is 932 (Shift_JIS, as WHATWG's = Windows-31J), the one
-//! Japanese VNs are written for; VNWIN_ACP=1252 for Western games.
+//! Japanese VNs are written for; SAKE_ACP=1252 for Western games.
 
 use std::sync::OnceLock;
 
 pub fn acp() -> u32 {
     static ACP: OnceLock<u32> = OnceLock::new();
-    *ACP.get_or_init(|| std::env::var("VNWIN_ACP").ok().and_then(|s| s.parse().ok()).unwrap_or(932))
+    *ACP.get_or_init(|| std::env::var("SAKE_ACP").ok().and_then(|s| s.parse().ok()).unwrap_or(932))
 }
 
 fn enc(cp: u32) -> &'static encoding_rs::Encoding {

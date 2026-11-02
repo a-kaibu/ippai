@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Argument sizes of Win32 exports from Wine's .spec files -> specs.txt (dll name conv bytes).
-Unimplemented imports still get the right stack cleanup (crates/vnwin/src/api.rs).
+Unimplemented imports still get the right stack cleanup (crates/sake/src/api.rs).
 usage: gen-specs.py <wine-src> > specs.txt"""
 import re, sys, os
 DLLS = """kernel32 kernelbase ntdll user32 gdi32 advapi32 ole32 oleaut32 comctl32 comdlg32 shell32 shlwapi version

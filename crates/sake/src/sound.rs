@@ -175,14 +175,14 @@ fn start_mixer() {
     STARTED.get_or_init(|| {
         let id = vnhost::audio::vnhost_audio_open(RATE, 2, 32, 1);
         with(|d| d.stream = id);
-        if std::env::var_os("VNWIN_NO_MIXER").is_some() {
+        if std::env::var_os("SAKE_NO_MIXER").is_some() {
             return;
         }
         std::thread::Builder::new()
             .name("dsound mixer".into())
             .spawn(move || {
                 let mut out = vec![0f32; STEP * 2];
-                let stats = std::env::var_os("VNWIN_MIX_STATS").is_some();
+                let stats = std::env::var_os("SAKE_MIX_STATS").is_some();
                 let (mut t_mix, mut t_q, mut t_w, mut t_all, mut n) = (0f64, 0f64, 0f64, std::time::Instant::now(), 0);
                 // (a condvar's timed wait, not thread::sleep: in the browser emscripten's sleep
                 // cost the thread about 0.15 cores)
@@ -210,7 +210,7 @@ fn start_mixer() {
                     }
                     if stats && t_all.elapsed().as_secs() >= 5 {
                         let s = t_all.elapsed().as_secs_f64();
-                        eprintln!("vnwin mixer: {n} chunks/{s:.1}s, mix {:.1} ms/s, queued {:.1} ms/s, write {:.1} ms/s", t_mix * 1e3 / s, t_q * 1e3 / s, t_w * 1e3 / s);
+                        eprintln!("sake mixer: {n} chunks/{s:.1}s, mix {:.1} ms/s, queued {:.1} ms/s, write {:.1} ms/s", t_mix * 1e3 / s, t_q * 1e3 / s, t_w * 1e3 / s);
                         (t_mix, t_q, t_w, t_all, n) = (0.0, 0.0, 0.0, std::time::Instant::now(), 0);
                     }
                 }
@@ -312,7 +312,7 @@ fn create_device() -> u32 {
 }
 
 fn no_sound() -> bool {
-    std::env::var_os("VNWIN_NO_SOUND").is_some()
+    std::env::var_os("SAKE_NO_SOUND").is_some()
 }
 
 fn DirectSoundCreate(c: &mut Ctx) -> u32 {

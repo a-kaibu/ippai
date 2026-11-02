@@ -127,11 +127,11 @@ pub fn load_context(cpu: &mut Cpu, ctx: u32) {
 /// Raises an exception with `cpu` as the context (EIP = where it happened) and runs the
 /// handlers from the next instruction the guest executes.
 pub fn raise(cpu: &mut Cpu, code: u32, flags: u32, addr: u32, params: &[u32]) {
-    if std::env::var_os("VNWIN_TRACE_SEH").is_some() {
+    if std::env::var_os("SAKE_TRACE_SEH").is_some() {
         crate::api::dump_ring("the exception");
         let st: Vec<String> = (0..8).map(|k| format!("{:x}", r32(cpu.regs[ESP] + 4 * k))).collect();
         eprintln!(
-            "vnwin: exception {code:08x} at {addr:#x} params {params:x?} (esp {:#x}: {}; ebp {:#x})",
+            "sake: exception {code:08x} at {addr:#x} params {params:x?} (esp {:#x}: {}; ebp {:#x})",
             cpu.regs[ESP],
             st.join(" "),
             cpu.regs[5]
@@ -145,11 +145,11 @@ pub fn raise(cpu: &mut Cpu, code: u32, flags: u32, addr: u32, params: &[u32]) {
             chain += &format!(" {f:x}:{:x}", r32(f + 4));
             f = r32(f);
         }
-        eprintln!("vnwin:   frames{chain}");
+        eprintln!("sake:   frames{chain}");
         if code == 0x0eef_face && params.len() >= 3 {
             let o = params[2];
             let w: Vec<String> = (0..8).map(|k| format!("{:x}", r32(o + 4 * k))).collect();
-            eprintln!("vnwin:   object {}", w.join(" "));
+            eprintln!("sake:   object {}", w.join(" "));
         }
     }
     let mut sp = (cpu.regs[ESP] - 0x100) & !15;
@@ -219,8 +219,8 @@ pub fn handler_done(cpu: &mut Cpu) {
         load_context(cpu, ctx);
         crate::fatal(cpu, &msg);
     }
-    if std::env::var_os("VNWIN_TRACE_SEH").is_some() {
-        eprintln!("vnwin: handler of frame {frame:#x} says {verdict}");
+    if std::env::var_os("SAKE_TRACE_SEH").is_some() {
+        eprintln!("sake: handler of frame {frame:#x} says {verdict}");
     }
     match verdict {
         0 => load_context(cpu, ctx),
@@ -234,8 +234,8 @@ pub fn handler_done(cpu: &mut Cpu) {
 /// RtlUnwind(TargetFrame, TargetIp, ExceptionRecord, ReturnValue)
 pub fn rtl_unwind(c: &mut Ctx) -> u32 {
     let (target, _ip, rec_in, retval) = (c.a(0), c.a(1), c.a(2), c.a(3));
-    if std::env::var_os("VNWIN_TRACE_SEH").is_some() {
-        eprintln!("vnwin: RtlUnwind to {target:#x} ip {_ip:#x} rec {rec_in:#x} from {:#x}, esp {:#x} ebp {:#x}", r32(c.esp), c.esp, c.cpu.regs[EBP]);
+    if std::env::var_os("SAKE_TRACE_SEH").is_some() {
+        eprintln!("sake: RtlUnwind to {target:#x} ip {_ip:#x} rec {rec_in:#x} from {:#x}, esp {:#x} ebp {:#x}", r32(c.esp), c.esp, c.cpu.regs[EBP]);
     }
     let teb = crate::cur().teb;
     // scratch below the caller's stack: a record and a context for the handlers

@@ -9,12 +9,12 @@
 //!   last syscalls / API calls and the JIT's recent region jumps; process starts and ends;
 //!   panics.
 //! - `OUT`: everything written to stdout/stderr (Wine's err:/fixme: lines, its "Unhandled
-//!   exception" message, vnwin's messages).
+//!   exception" message, sake's messages).
 //! - `SNAP`: every guest thread's state now ([`vnhost_crashlog_snapshot`]), rewritten each time.
 //!
 //! The rings are plain text; a writer reserves its bytes with one `fetch_add`, so lines from
 //! different threads never interleave. Nothing on these paths allocates (the page may ask for a
-//! snapshot while another thread died holding the allocator's lock), except the vnwin API-name
+//! snapshot while another thread died holding the allocator's lock), except the sake API-name
 //! lookup in a guest thread's own exception record.
 //!
 //! The cost while nothing goes wrong: four stores per syscall (the thread's trap ring), two per
@@ -236,7 +236,7 @@ struct ThreadLog {
     tid: i32,
     pid: AtomicI32,
     cpu: AtomicUsize,
-    /// 1 while it runs guest code, 0 in Wine's unix side / vnwin (a syscall, an API call)
+    /// 1 while it runs guest code, 0 in Wine's unix side / sake (a syscall, an API call)
     guest: AtomicU32,
     /// (trap address, EAX, [ESP], [ESP+4]) of its last syscalls / API calls
     traps: UnsafeCell<[[u32; 4]; TRAPS]>,
@@ -306,7 +306,7 @@ pub fn in_guest(on: bool) {
     });
 }
 
-/// The guest got to a trap address (a syscall, a unix call, a vnwin API).
+/// The guest got to a trap address (a syscall, a unix call, a sake API).
 #[inline]
 pub fn trap(cpu: &Cpu, addr: u32) {
     CUR.with(|c| {
@@ -368,7 +368,7 @@ impl Module {
 
 const MAX_MODULES: usize = 128;
 
-/// Modules vnwin loaded (it keeps no loader list in the PEB).
+/// Modules sake loaded (it keeps no loader list in the PEB).
 static EXTRA: Mutex<Vec<Module>> = Mutex::new(Vec::new());
 
 fn make_module(base: u32, size: u32, name: impl Iterator<Item = u8>) -> Module {
@@ -380,7 +380,7 @@ fn make_module(base: u32, size: u32, name: impl Iterator<Item = u8>) -> Module {
     m
 }
 
-/// vnwin: an image it mapped at `base` from `path`.
+/// sake: an image it mapped at `base` from `path`.
 pub fn add_module(base: u32, path: &str) {
     let size = rd32(base.wrapping_add(rd32(base + 0x3c).unwrap_or(0)).wrapping_add(0x50)).unwrap_or(0x1000);
     let name = path.rsplit(['\\', '/']).next().unwrap_or(path);
@@ -469,7 +469,7 @@ fn sym(w: &mut impl Write, mods: &[Module], addr: u32) {
     }
 }
 
-/// vnwin: the API at a trap address (crates/vnwin api::name_of).
+/// sake: the API at a trap address (crates/sake api::name_of).
 static NAMER: std::sync::OnceLock<fn(u32) -> Option<String>> = std::sync::OnceLock::new();
 
 pub fn set_trap_namer(f: fn(u32) -> Option<String>) {
@@ -671,7 +671,7 @@ fn module_list(w: &mut impl Write, mods: &[Module], always: bool) {
     }
 }
 
-/// A guest exception as the x86 core stops on it (before Wine's / vnwin's SEH sees it).
+/// A guest exception as the x86 core stops on it (before Wine's / sake's SEH sees it).
 /// `what` names it, `access` is (address, write) for access violations.
 pub fn exception(cpu: &Cpu, what: &str, access: Option<(u32, bool)>, from_jit: bool) {
     let t = CUR.with(|c| c.get());

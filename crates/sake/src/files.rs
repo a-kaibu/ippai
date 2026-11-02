@@ -1,6 +1,6 @@
 //! Files: Windows paths over the host's (node's) or the page's (vnhost vfs) file system.
 //!
-//! Z:\ is the host root (as in Wine), C:\ is VNWIN_C (default /tmp/vnwin-c). Names are
+//! Z:\ is the host root (as in Wine), C:\ is SAKE_C (default /tmp/sake-c). Names are
 //! matched without case when the exact one is missing.
 
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -37,7 +37,7 @@ pub fn set_cwd(d: &str) {
 }
 
 fn c_root() -> String {
-    std::env::var("VNWIN_C").unwrap_or_else(|_| "/tmp/vnwin-c".into())
+    std::env::var("SAKE_C").unwrap_or_else(|_| "/tmp/sake-c".into())
 }
 
 /// Host path of a host file as a Windows path.

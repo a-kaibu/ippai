@@ -5,7 +5,7 @@
 //! a critical section's OwningThread is its lock word (CAS), +16 counts waiters; the last
 //! error at TEB+0x34, TLS slots at TEB+0xE10.
 //!
-//! VNWIN_NO_FAST=1 binds the traps instead.
+//! SAKE_NO_FAST=1 binds the traps instead.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -380,7 +380,7 @@ pub fn bind(dll: &str, name: &str, trap: u32) -> u32 {
     if key == "msvcrt" && !matches!(name, "_errno" | "__doserrno" | "malloc" | "free") {
         return trap;
     }
-    if std::env::var_os("VNWIN_NO_FAST").is_some() {
+    if std::env::var_os("SAKE_NO_FAST").is_some() {
         return trap;
     }
     let mut g = STUBS.lock().unwrap();

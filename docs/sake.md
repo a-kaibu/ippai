@@ -1,8 +1,8 @@
-# vnwin: Rust で一から書いた Win32 層
+# sake: Rust で一から書いた Win32 層 (旧名 vnwin)
 
 Wine を使わずに、ゲームの x86 コードを vnhost の JIT で動かし、Windows API を Rust
-(crates/vnwin、wasm) で実装する。Wine 経路 (hangover/) と同じページ・同じ JIT・同じ
-WebGPU D3D9 を使うので、A/B 比較ができる。`wine.html` / `game.html` に `&engine=vnwin`。
+(crates/sake、wasm) で実装する。Wine 経路 (hangover/) と同じページ・同じ JIT・同じ
+WebGPU D3D9 を使うので、A/B 比較ができる。`wine.html` / `game.html` に `&engine=sake`。
 
 ## 仕組み
 
@@ -13,7 +13,7 @@ WebGPU D3D9 を使うので、A/B 比較ができる。`wine.html` / `game.html`
 - 速い経路 (fast.rs): 呼び出しの多い関数は x86 のスタブをゲストメモリに置き、よくある場合は
   JIT のコードの中で済ませて、残りだけトラップに飛ぶ。Enter/LeaveCriticalSection、
   TlsGetValue、Get/SetLastError、IsDBCSLeadByte、RECT 関数、msvcrt の `_errno`、
-  小さいヒープブロック (下記)。`VNWIN_NO_FAST=1` で全部トラップに戻る。
+  小さいヒープブロック (下記)。`SAKE_NO_FAST=1` で全部トラップに戻る。
 - ヒープ (mem.rs): dlmalloc。512 バイト以下は 16 バイト刻みのクラスごとに空きリストを
   ゲストメモリに持ち、HeapAlloc/HeapFree/HeapReAlloc と msvcrt の malloc/free の x86
   スタブがスピンロックの下で取り出し・戻しをする。空のときだけ Rust が数十個まとめて補充する。
@@ -44,13 +44,13 @@ WebGPU D3D9 を使うので、A/B 比較ができる。`wine.html` / `game.html`
 
 ## A/B (Chromium、Reunion、KiriKiri)
 
-| | Wine | vnwin |
+| | Wine | sake |
 |---|---|---|
 | タイトルまで (game.html) | 10.1 s | 8.0 s |
 | 本編の CPU | 0.26 コア | 0.24 コア |
 
 数字は 868d37e のときのもの。差が出た主な理由は、JIT が GUEST_LO (0x10000) の上 32 KB に
-触るコードをインタープリタに回していたこと (vnwin は 0x30000 より下を使わない) と、
+触るコードをインタープリタに回していたこと (sake は 0x30000 より下を使わない) と、
 トラップを x86 スタブに置き換えたこと。
 
 ## 動作確認したゲーム (体験版)
@@ -76,19 +76,19 @@ node では D3D9 は描かれない (WebGPU がない) ので、D3D9 のゲー�
 
 ## 動かし方
 
-- ビルド: `bash crates/vnwin/build.sh` → node 用 `/home/user/work/vnwin-out/vnwin.js` と
-  ページ用 `web/public/vnwin/` (dist に使うときは `web/dist/vnwin/` にコピー)。
-- node: ゲームのフォルダで `VNWIN_C=<prefix>/drive_c node vnwin.js /abs/game.exe`。
+- ビルド: `bash crates/sake/build.sh` → node 用 `/home/user/work/sake-out/sake.js` と
+  ページ用 `web/public/sake/` (dist に使うときは `web/dist/sake/` にコピー)。
+- node: ゲームのフォルダで `SAKE_C=<prefix>/drive_c node sake.js /abs/game.exe`。
   `VNVM_SCREENSHOT=out.ppm`、`VNVM_INPUT="秒:種類,x,y,データ;..."` (1 移動、2/3 ボタン、
   5/6 キー)。ボタンはホバーの移動を先に送らないと反応しないゲームが多い。
 - ページ: `vnvm-pack tree <dir> <name>` してから
-  `wine.html?engine=vnwin&autostart&run=Z%3A%5Cvnvm%5Cgame%5C<exe>&mount=/vnvm/game=<name>`。
+  `wine.html?engine=sake&autostart&run=Z%3A%5Cvnvm%5Cgame%5C<exe>&mount=/vnvm/game=<name>`。
   `tests/wine.mjs` でヘッドレスのスクリーンショット。
-- 調べるとき: `VNWIN_WATCH=<16進番地>` (API 呼び出しごとにその番地の値を見て、変わったら表示)、`VNVM_D3D_TRACE=1` (描画ごとの頂点も表示)、`VNWIN_TRACE=1` (+ `VNWIN_TRACE_FILTER=a,b`、`VNWIN_TRACE_AFTER=ms`)、
-  `VNWIN_TRACE=3` (落ちたときにスレッドごとの直前の呼び出し)、`VNWIN_API_STATS=秒`、
-  `VNWIN_TRACE_FAULT`、`VNWIN_TRACE_FILES`、`VNWIN_TRACE_LOAD`、`VNWIN_TRACE_MSG`、
-  `VNWIN_TRACE_INPUT`、`VNWIN_TRACE_FONT`、`VNVM_JIT_STATS` (JIT が実行ループに戻る場所)、
-  `VNWIN_WINEDEBUG=<flags>[:chan,...]` (Wine の PE DLL のデバッグ出力。1 FIXME、2 ERR、4 WARN、8 TRACE)、
+- 調べるとき: `SAKE_WATCH=<16進番地>` (API 呼び出しごとにその番地の値を見て、変わったら表示)、`VNVM_D3D_TRACE=1` (描画ごとの頂点も表示)、`SAKE_TRACE=1` (+ `SAKE_TRACE_FILTER=a,b`、`SAKE_TRACE_AFTER=ms`)、
+  `SAKE_TRACE=3` (落ちたときにスレッドごとの直前の呼び出し)、`SAKE_API_STATS=秒`、
+  `SAKE_TRACE_FAULT`、`SAKE_TRACE_FILES`、`SAKE_TRACE_LOAD`、`SAKE_TRACE_MSG`、
+  `SAKE_TRACE_INPUT`、`SAKE_TRACE_FONT`、`VNVM_JIT_STATS` (JIT が実行ループに戻る場所)、
+  `SAKE_WINEDEBUG=<flags>[:chan,...]` (Wine の PE DLL のデバッグ出力。1 FIXME、2 ERR、4 WARN、8 TRACE)、
   `VNVM_D3D_SPV=<dir>` (D3D11 シェーダの SPIR-V を書き出す)。
-- 確認用の小さなテスト: `ENGINE=vnwin node tests/gfx.mjs` (d3d11test、d2dtest、ddrawtest が通る。
-  d3d8test は vnwin に D3D8 が無いので落ちる)。
+- 確認用の小さなテスト: `ENGINE=sake node tests/gfx.mjs` (d3d11test、d2dtest、ddrawtest が通る。
+  d3d8test は sake に D3D8 が無いので落ちる)。

@@ -1,5 +1,5 @@
-//! vnwin: a Win32 layer written from scratch for running 32-bit Windows games on the vnx86
-//! core in the browser, without Wine (docs/vnwin.md).
+//! sake: a Win32 layer written from scratch for running 32-bit Windows games on the vnx86
+//! core in the browser, without Wine (docs/sake.md).
 //!
 //! One process, one address space: the guest's 2 GiB are the low half of the wasm memory
 //! (guest address = host address), the game's x86 code runs on the JIT (crates/vnhost), and
@@ -51,7 +51,7 @@ thread_local! {
 
 pub fn cur() -> &'static mut Thread {
     let p = CUR.with(|c| c.get());
-    assert!(!p.is_null(), "vnwin: not a guest thread");
+    assert!(!p.is_null(), "sake: not a guest thread");
     unsafe { &mut *p }
 }
 
@@ -132,8 +132,8 @@ pub fn run(cpu: &mut Cpu, until: u32) {
                 }
             }
             X_FAULT => {
-                if std::env::var_os("VNWIN_TRACE_FAULT").is_some() {
-                    eprintln!("vnwin: fault at {:#x} reading {:#x} (write {})", cpu.eip, info[0], info[1]);
+                if std::env::var_os("SAKE_TRACE_FAULT").is_some() {
+                    eprintln!("sake: fault at {:#x} reading {:#x} (write {})", cpu.eip, info[0], info[1]);
                 }
                 if info[0] >= api::TRAP_LO && cpu.eip == info[0] {
                     fatal(cpu, "fault at a trap address");
@@ -148,7 +148,7 @@ pub fn run(cpu: &mut Cpu, until: u32) {
                 let e = cpu.eip;
                 let mut b = [0u8; 8];
                 b.copy_from_slice(mem::slice(e, 8));
-                eprintln!("vnwin: illegal instruction at {e:#x}: {b:02x?}");
+                eprintln!("sake: illegal instruction at {e:#x}: {b:02x?}");
                 seh::raise(cpu, 0xc000_001d, 0, e, &[])
             }
             X_INT => {
@@ -205,11 +205,11 @@ pub fn call(cpu: &mut Cpu, f: u32, args: &[u32]) -> u32 {
 pub fn fatal(cpu: &mut Cpu, msg: &str) -> ! {
     api::dump_ring("the fatal error");
     // the page saves a crash report (with this thread's registers, stack and last API calls)
-    vnhost::crashlog::exception(cpu, &format!("vnwin fatal: {msg}"), None, false);
-    vnhost::crashlog::crash(&format!("vnwin: {msg}"));
+    vnhost::crashlog::exception(cpu, &format!("sake fatal: {msg}"), None, false);
+    vnhost::crashlog::crash(&format!("sake: {msg}"));
     let r = &cpu.regs;
     eprintln!(
-        "vnwin: {msg}\n  eip {:08x} eax {:08x} ecx {:08x} edx {:08x} ebx {:08x} esp {:08x} ebp {:08x} esi {:08x} edi {:08x}",
+        "sake: {msg}\n  eip {:08x} eax {:08x} ecx {:08x} edx {:08x} ebx {:08x} esp {:08x} ebp {:08x} esi {:08x} edi {:08x}",
         cpu.eip, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]
     );
     let mut s = String::new();
@@ -293,7 +293,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     let base = match pe::load_exe(cpu, exe, &wpath) {
         Ok(b) => b,
         Err(e) => {
-            eprintln!("vnwin: {exe}: {e}");
+            eprintln!("sake: {exe}: {e}");
             unsafe { libc::exit(2) }
         }
     };
@@ -334,13 +334,13 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     unsafe { libc::exit(0) }
 }
 
-/// C entry: `vnwin_main(argc, argv)`; argv[1] is the exe's host path.
+/// C entry: `sake_main(argc, argv)`; argv[1] is the exe's host path.
 #[no_mangle]
-pub unsafe extern "C" fn vnwin_main(argc: i32, argv: *const *const libc::c_char) -> i32 {
+pub unsafe extern "C" fn sake_main(argc: i32, argv: *const *const libc::c_char) -> i32 {
     let args: Vec<String> =
         (0..argc as usize).map(|i| std::ffi::CStr::from_ptr(*argv.add(i)).to_string_lossy().into_owned()).collect();
     if args.len() < 2 {
-        eprintln!("usage: vnwin <program.exe> [args]");
+        eprintln!("usage: sake <program.exe> [args]");
         return 1;
     }
     main(&args[1], &args[2..])

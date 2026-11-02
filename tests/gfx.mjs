@@ -4,7 +4,7 @@
 // vnvm-server on BASE (default http://127.0.0.1:8090); exits 1 when anything fails.
 //
 //   node tests/gfx.mjs ["name" ...]    (default: all; OUT=dir keeps the screens and logs;
-//                                       ENGINE=vnwin runs them on vnwin instead of Wine)
+//                                       ENGINE=sake runs them on sake instead of Wine)
 import { execFileSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import { inflateSync } from "node:zlib";

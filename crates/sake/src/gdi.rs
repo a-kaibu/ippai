@@ -1018,7 +1018,7 @@ fn font_file(i: usize) -> Option<Arc<FontVec>> {
     let mut g = m.lock().unwrap();
     g.entry(i)
         .or_insert_with(|| {
-            let dirs = [std::env::var("VNWIN_FONTS").ok(), crate::files::resolve("C:\\windows\\Fonts\\")];
+            let dirs = [std::env::var("SAKE_FONTS").ok(), crate::files::resolve("C:\\windows\\Fonts\\")];
             for d in dirs.into_iter().flatten() {
                 let p = format!("{}/{}", d.trim_end_matches('/'), FACES[i].file);
                 if let Ok(data) = std::fs::read(&p) {
@@ -1027,7 +1027,7 @@ fn font_file(i: usize) -> Option<Arc<FontVec>> {
                     }
                 }
             }
-            eprintln!("vnwin: font {} not found", FACES[i].file);
+            eprintln!("sake: font {} not found", FACES[i].file);
             None
         })
         .clone()
@@ -2897,8 +2897,8 @@ fn CreateFontIndirectA(c: &mut Ctx) -> u32 {
 }
 fn CreateFontIndirectW(c: &mut Ctx) -> u32 {
     let lf = read_logfont(c.a(0), true);
-    if std::env::var_os("VNWIN_TRACE_FONT").is_some() {
-        eprintln!("vnwin font: {} h {} w {} weight {} q {}", lf.face, lf.height, lf.width, lf.weight, lf.quality);
+    if std::env::var_os("SAKE_TRACE_FONT").is_some() {
+        eprintln!("sake font: {} h {} w {} weight {} q {}", lf.face, lf.height, lf.width, lf.weight, lf.quality);
     }
     add(G::Font(lf))
 }
@@ -2940,8 +2940,8 @@ fn GetTextMetricsA(c: &mut Ctx) -> u32 {
 fn GetTextMetricsW(c: &mut Ctx) -> u32 {
     let Some((r, lf, _)) = real_of(c.a(0)) else { return 0 };
     write_tm(c.a(1), &r, &lf, true);
-    if std::env::var_os("VNWIN_TRACE_FONT").is_some() {
-        eprintln!("vnwin font: tm face {} h {} asc {} em {}", face_name(r.face), r32(c.a(1)), r32(c.a(1) + 4), r.em);
+    if std::env::var_os("SAKE_TRACE_FONT").is_some() {
+        eprintln!("sake font: tm face {} h {} asc {} em {}", face_name(r.face), r32(c.a(1)), r32(c.a(1) + 4), r.em);
     }
     1
 }

@@ -416,7 +416,7 @@ fn resolve_import(dll: &str, imp: Import) -> u32 {
         None => match load_dll_file(dll) {
             Ok(b) => b,
             Err(e) => {
-                eprintln!("vnwin: import from {dll}: {e}");
+                eprintln!("sake: import from {dll}: {e}");
                 let name = match imp {
                     Import::Name(n) => n.to_string(),
                     Import::Ordinal(o) => format!("#{o}"),
@@ -430,7 +430,7 @@ fn resolve_import(dll: &str, imp: Import) -> u32 {
             Import::Name(n) => n.to_string(),
             Import::Ordinal(o) => format!("#{o}"),
         };
-        eprintln!("vnwin: {dll} has no export {name}");
+        eprintln!("sake: {dll} has no export {name}");
         api::export(dll, &name)
     })
 }
@@ -457,7 +457,7 @@ pub fn proc_address(base: u32, imp: Import) -> Option<u32> {
         return Some(d);
     }
     let a = api::export(&name, &n);
-    (api::implemented(a) || std::env::var_os("VNWIN_ALL_EXPORTS").is_some()).then(|| crate::fast::bind(&name, &n, a))
+    (api::implemented(a) || std::env::var_os("SAKE_ALL_EXPORTS").is_some()).then(|| crate::fast::bind(&name, &n, a))
 }
 
 /// A data export of a DLL we implement (msvcrt's variables).
@@ -495,8 +495,8 @@ pub fn load_library(cpu: &mut Cpu, name: &str) -> u32 {
             b
         }
         Err(e) => {
-            if std::env::var_os("VNWIN_TRACE_LOAD").is_some() {
-                eprintln!("vnwin: LoadLibrary({name}): {e}");
+            if std::env::var_os("SAKE_TRACE_LOAD").is_some() {
+                eprintln!("sake: LoadLibrary({name}): {e}");
             }
             0
         }
@@ -560,12 +560,12 @@ pub fn init_dlls(cpu: &mut Cpu) {
         tls_callbacks(cpu, base, 1);
         let entry = with(base, |m| m.entry).unwrap_or(0);
         if entry != 0 {
-            if std::env::var_os("VNWIN_TRACE_LOAD").is_some() {
-                eprintln!("vnwin: DllMain of {:#x} {} ...", base, with(base, |m| m.path.clone()).unwrap_or_default());
+            if std::env::var_os("SAKE_TRACE_LOAD").is_some() {
+                eprintln!("sake: DllMain of {:#x} {} ...", base, with(base, |m| m.path.clone()).unwrap_or_default());
             }
             let ok = crate::call(cpu, entry, &[base, 1, 0]);
-            if std::env::var_os("VNWIN_TRACE_LOAD").is_some() {
-                eprintln!("vnwin: DllMain of {:#x} {}: {ok}", base, with(base, |m| m.name.clone()).unwrap_or_default());
+            if std::env::var_os("SAKE_TRACE_LOAD").is_some() {
+                eprintln!("sake: DllMain of {:#x} {}: {ok}", base, with(base, |m| m.name.clone()).unwrap_or_default());
             }
         }
     }

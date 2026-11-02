@@ -355,7 +355,7 @@ fn OleLoadPicture(c: &mut Ctx) -> u32 {
     mem::heap_free(buf);
     mem::heap_free(got);
     let Some((w, h, px)) = decode(&data) else {
-        eprintln!("vnwin: OleLoadPicture: can't decode {} bytes ({:02x?})", data.len(), &data[..data.len().min(4)]);
+        eprintln!("sake: OleLoadPicture: can't decode {} bytes ({:02x?})", data.len(), &data[..data.len().min(4)]);
         return E_FAIL;
     };
     let Some(bits) = mem::alloc(w * h * 4) else { return E_FAIL };

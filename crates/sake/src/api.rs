@@ -92,7 +92,7 @@ fn specs() -> &'static Spec {
                 s.by_ord.insert((v[0].to_string(), o), v[1].to_string());
             }
         }
-        for d in ["vnwin"] {
+        for d in ["sake"] {
             s.dlls.insert(d.into());
         }
         s
@@ -193,16 +193,16 @@ pub fn implemented(addr: u32) -> bool {
 
 fn trace() -> u32 {
     static T: OnceLock<u32> = OnceLock::new();
-    *T.get_or_init(|| std::env::var("VNWIN_TRACE").ok().and_then(|s| s.parse().ok()).unwrap_or(0))
+    *T.get_or_init(|| std::env::var("SAKE_TRACE").ok().and_then(|s| s.parse().ok()).unwrap_or(0))
 }
 
-/// Counting API calls by name (VNWIN_API_STATS=<seconds>).
+/// Counting API calls by name (SAKE_API_STATS=<seconds>).
 static COUNTS: Mutex<Option<HashMap<u32, u64>>> = Mutex::new(None);
 
 fn stats_on() -> bool {
     static T: OnceLock<bool> = OnceLock::new();
     *T.get_or_init(|| {
-        let Some(s) = std::env::var("VNWIN_API_STATS").ok().and_then(|s| s.parse::<f64>().ok()) else { return false };
+        let Some(s) = std::env::var("SAKE_API_STATS").ok().and_then(|s| s.parse::<f64>().ok()) else { return false };
         std::thread::spawn(move || loop {
             std::thread::sleep(std::time::Duration::from_secs_f64(s));
             let m = COUNTS.lock().unwrap().take().unwrap_or_default();
@@ -210,22 +210,22 @@ fn stats_on() -> bool {
             v.sort_by(|a, b| b.1.cmp(&a.1));
             let total: u64 = v.iter().map(|x| x.1).sum();
             let top: Vec<String> = v.iter().take(40).map(|(i, n)| format!("{}={n}", name_of(TRAP_LO + 4 * i).unwrap_or_default())).collect();
-            eprintln!("vnwin api {total} calls/{s}s: {}", top.join(" "));
+            eprintln!("sake api {total} calls/{s}s: {}", top.join(" "));
         });
         true
     })
 }
 
-/// VNWIN_TRACE_FILTER=a,b: trace only functions whose name contains one of these.
+/// SAKE_TRACE_FILTER=a,b: trace only functions whose name contains one of these.
 fn trace_match(i: u32) -> bool {
-    // VNWIN_TRACE_AFTER=<ms>: only from then on
+    // SAKE_TRACE_AFTER=<ms>: only from then on
     static AFTER: OnceLock<u32> = OnceLock::new();
-    let after = *AFTER.get_or_init(|| std::env::var("VNWIN_TRACE_AFTER").ok().and_then(|s| s.parse().ok()).unwrap_or(0));
+    let after = *AFTER.get_or_init(|| std::env::var("SAKE_TRACE_AFTER").ok().and_then(|s| s.parse().ok()).unwrap_or(0));
     if after > 0 && crate::k32::ticks_ms() - 60_000 < after {
         return false;
     }
     static F: OnceLock<Vec<String>> = OnceLock::new();
-    let f = F.get_or_init(|| std::env::var("VNWIN_TRACE_FILTER").map(|s| s.split(',').map(String::from).collect()).unwrap_or_default());
+    let f = F.get_or_init(|| std::env::var("SAKE_TRACE_FILTER").map(|s| s.split(',').map(String::from).collect()).unwrap_or_default());
     if f.is_empty() {
         return true;
     }
@@ -241,14 +241,14 @@ thread_local! {
     static RING: std::cell::RefCell<std::collections::VecDeque<String>> = const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
 }
 
-/// Prints (and clears) this thread's last API calls (VNWIN_TRACE=3).
+/// Prints (and clears) this thread's last API calls (SAKE_TRACE=3).
 pub fn dump_ring(why: &str) {
     RING.with(|r| {
         let mut r = r.borrow_mut();
         if r.is_empty() {
             return;
         }
-        eprintln!("vnwin: last API calls before {why}:");
+        eprintln!("sake: last API calls before {why}:");
         for l in r.drain(..) {
             eprintln!("  {l}");
         }
@@ -271,11 +271,11 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
     {
         static W: OnceLock<u32> = OnceLock::new();
         static LAST: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let w = *W.get_or_init(|| std::env::var("VNWIN_WATCH").ok().and_then(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok()).unwrap_or(0));
+        let w = *W.get_or_init(|| std::env::var("SAKE_WATCH").ok().and_then(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok()).unwrap_or(0));
         if w != 0 {
             let v = r32(w);
             if LAST.swap(v, std::sync::atomic::Ordering::Relaxed) != v {
-                eprintln!("vnwin watch {w:#x} = {v:#x} before {}, from {:x}", name_of(addr).unwrap_or_default(), r32(esp));
+                eprintln!("sake watch {w:#x} = {v:#x} before {}, from {:x}", name_of(addr).unwrap_or_default(), r32(esp));
             }
         }
     }
@@ -283,7 +283,7 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
     if tr > 0 && trace_match(i) {
         let n = name_of(addr).unwrap_or_default();
         let args: Vec<String> = (0..(bytes / 4).min(8)).map(|k| format!("{:x}", r32(esp + 4 + 4 * k))).collect();
-        let line = format!("vnwin {:04x} {}: {n}({}) from {:x}", crate::cur().tid, crate::k32::ticks_ms() - 60_000, args.join(","), r32(esp));
+        let line = format!("sake {:04x} {}: {n}({}) from {:x}", crate::cur().tid, crate::k32::ticks_ms() - 60_000, args.join(","), r32(esp));
         if tr == 3 {
             RING.with(|r| {
                 let mut r = r.borrow_mut();
@@ -306,7 +306,7 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
             }
             static SEEN: Mutex<Option<HashSet<u32>>> = Mutex::new(None);
             if SEEN.lock().unwrap().get_or_insert_with(HashSet::new).insert(i) {
-                eprintln!("vnwin: unimplemented {n} (returns 0), from {:#x}", r32(esp));
+                eprintln!("sake: unimplemented {n} (returns 0), from {:#x}", r32(esp));
             }
             0
         }
@@ -316,7 +316,7 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
     }
     let (edx, st0) = (c.edx, c.st0);
     if tr == 2 {
-        eprintln!("vnwin {:04x}:   -> {r:x}", crate::cur().tid);
+        eprintln!("sake {:04x}:   -> {r:x}", crate::cur().tid);
     }
     cpu.regs[EAX] = r;
     if let Some(d) = edx {
@@ -348,8 +348,8 @@ pub fn stub(code: &[u8]) -> u32 {
 
 /// A guest "function" that is a trap: an address code can call (callbacks we hand out).
 pub fn host_fn(name: &str, f: Handler, bytes: u32) -> u32 {
-    implement("vnwin", name, f);
-    let a = export("vnwin", name);
+    implement("sake", name, f);
+    let a = export("sake", name);
     let i = (a - TRAP_LO) / 4;
     let mut e = ENTRIES.write().unwrap();
     e[i as usize].bytes = bytes;

@@ -1,4 +1,4 @@
-//! The Unix side of Wine's own PE DLLs that vnwin loads from the prefix's system32. Such a DLL
+//! The Unix side of Wine's own PE DLLs that sake loads from the prefix's system32. Such a DLL
 //! asks ntdll for `__wine_unix_call_dispatcher` and for its handle (NtQueryVirtualMemory with
 //! MemoryWineUnixFuncs), then calls `dispatcher(handle, code, params)`. Here the handle is the
 //! DLL's base and the backends are Rust: dwrite.dll's font backend (Wine's dlls/dwrite/freetype.c,

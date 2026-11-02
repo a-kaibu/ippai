@@ -61,8 +61,8 @@ fn qi_k(c: &mut Ctx, k: u32) -> u32 {
             0
         }
         None => {
-            if std::env::var_os("VNWIN_TRACE_COM").is_some() {
-                eprintln!("vnwin: FilterGraph QueryInterface {:08x}: no", r32(c.a(1)));
+            if std::env::var_os("SAKE_TRACE_COM").is_some() {
+                eprintln!("sake: FilterGraph QueryInterface {:08x}: no", r32(c.a(1)));
             }
             put32(c.a(2), 0);
             E_NOINTERFACE

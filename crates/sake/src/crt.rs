@@ -214,7 +214,7 @@ fn _exit(c: &mut Ctx) -> u32 {
     unsafe { libc::exit(c.a(0) as i32) }
 }
 fn abort(_: &mut Ctx) -> u32 {
-    eprintln!("vnwin: abort()");
+    eprintln!("sake: abort()");
     unsafe { libc::exit(3) }
 }
 fn __getmainargs(c: &mut Ctx) -> u32 {
@@ -267,7 +267,7 @@ fn _clearfp(_: &mut Ctx) -> u32 {
     0
 }
 fn _purecall(_: &mut Ctx) -> u32 {
-    eprintln!("vnwin: pure virtual call");
+    eprintln!("sake: pure virtual call");
     unsafe { libc::exit(3) }
 }
 fn _XcptFilter(_: &mut Ctx) -> u32 {
