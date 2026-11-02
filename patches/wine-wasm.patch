@@ -1448,7 +1448,20 @@
  
  static struct file_view *arm64ec_view;
  
-@@ -1397,7 +1401,9 @@
+@@ -1101,7 +1105,11 @@
+  */
+ static BOOL is_private_copy( const void *addr )
+ {
+-#ifdef __linux__
++#ifdef __wasm__
++    /* no page faults to see the first write: a write-copy page a program asks about has almost
++     * always been written (ChakraCore checks its data page reads back as PAGE_READWRITE) */
++    return TRUE;
++#elif defined(__linux__)
+     static int pagemap_fd = -2;
+     UINT64 entry;
+ 
+@@ -1397,7 +1405,9 @@
   */
  static void virtual_release_address_space(void)
  {
@@ -1458,7 +1471,7 @@
  }
  
  #endif  /* _WIN64 */
-@@ -1942,6 +1948,11 @@
+@@ -1942,6 +1952,11 @@
  
          if (limit_low && (void *)limit_low > start) start = (void *)limit_low;
          if (limit_high && (void *)limit_high < end) end = (char *)limit_high + 1;
@@ -1470,7 +1483,7 @@
  
          if ((ptr = map_reserved_area( start, end, host_size, top_down, unix_prot, align_mask )))
          {
-@@ -2405,6 +2416,10 @@
+@@ -2405,6 +2420,10 @@
          addr >>= 1;
      }
      return (void *)((addr << 1) - (granularity_mask + 1));
@@ -1481,7 +1494,7 @@
  #else
      if (__builtin_frame_address(0) < address_space_limit)
      {
-@@ -3112,6 +3127,9 @@
+@@ -3112,6 +3131,9 @@
      server_leave_uninterrupted_section( &virtual_mutex, &sigset );
      if (needs_close) close( unix_fd );
      if (shared_needs_close) close( shared_fd );
@@ -1491,7 +1504,7 @@
      return status;
  }
  
-@@ -3213,6 +3231,24 @@
+@@ -3213,6 +3235,24 @@
  
      if ((res = server_get_unix_fd( handle, 0, &unix_handle, &needs_close, NULL, NULL ))) return res;
  
@@ -1516,7 +1529,7 @@
      server_enter_uninterrupted_section( &virtual_mutex, &sigset );
  
      res = map_view( &view, base, size, alloc_type, vprot, limit_low, limit_high, 0 );
-@@ -3299,8 +3335,19 @@
+@@ -3299,8 +3339,19 @@
      }
      else
      {
@@ -1536,7 +1549,7 @@
      }
  
      if (is_win64) /* top-down area */
-@@ -3345,7 +3392,9 @@
+@@ -3345,7 +3396,9 @@
   */
  void virtual_get_system_info( SYSTEM_BASIC_INFORMATION *info, BOOL wow64 )
  {
@@ -1547,7 +1560,7 @@
      && defined(HAVE_STRUCT_SYSINFO_TOTALRAM) && defined(HAVE_STRUCT_SYSINFO_MEM_UNIT)
      struct sysinfo sinfo;
  
-@@ -6616,7 +6665,11 @@
+@@ -6616,7 +6669,11 @@
   */
  NTSTATUS WINAPI NtFlushInstructionCache( HANDLE handle, const void *addr, SIZE_T size )
  {
