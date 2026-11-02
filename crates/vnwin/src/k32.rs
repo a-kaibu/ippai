@@ -1149,14 +1149,48 @@ fn GetUserDefaultLocaleName(c: &mut Ctx) -> u32 {
     }
     w.len() as u32
 }
+const LOCALES: [(u32, &str); 16] = [
+    (0x409, "en-US"), (0x411, "ja-JP"), (0x804, "zh-CN"), (0x404, "zh-TW"), (0x412, "ko-KR"), (0x809, "en-GB"),
+    (0x407, "de-DE"), (0x40c, "fr-FR"), (0x410, "it-IT"), (0xc0a, "es-ES"), (0x419, "ru-RU"), (0x416, "pt-BR"),
+    (0x816, "pt-PT"), (0x413, "nl-NL"), (0x41d, "sv-SE"), (0x7f, ""),
+];
 fn LocaleNameToLCID(c: &mut Ctx) -> u32 {
     let n = if c.a(0) == 0 { locale_name().to_string() } else { String::from_utf16_lossy(&wstr(c.a(0))) };
-    match n.to_ascii_lowercase().as_str() {
-        "ja-jp" | "ja" => 0x411,
+    let n = n.to_ascii_lowercase();
+    match n.as_str() {
         "" | "!x-sys-default-locale" => if crate::text::acp() == 932 { 0x411 } else { 0x409 },
-        "en-us" | "en" => 0x409,
-        _ => 0x409,
+        _ => LOCALES.iter().find(|l| l.1.eq_ignore_ascii_case(&n) || l.1.split('-').next() == Some(n.as_str()) && !n.is_empty()).map_or(0x409, |l| l.0),
     }
+}
+/// GetLocaleInfoEx(name, type, buffer, count): GetLocaleInfoW of the name's LCID
+fn GetLocaleInfoEx(c: &mut Ctx) -> u32 {
+    let f = crate::api::export("kernel32", "LocaleNameToLCID");
+    let lcid = c.call(f, &[c.a(0), 0]);
+    let f = crate::api::export("kernel32", "GetLocaleInfoW");
+    c.call(f, &[lcid, c.a(1), c.a(2), c.a(3)])
+}
+/// (lcid, name, count, flags)
+fn LCIDToLocaleName(c: &mut Ctx) -> u32 {
+    let lcid = match c.a(0) & 0xffff {
+        0x400 | 0x800 | 0 => if crate::text::acp() == 932 { 0x411 } else { 0x409 },
+        l => l,
+    };
+    let Some(&(_, name)) = LOCALES.iter().find(|l| l.0 == lcid) else {
+        last_error(87);
+        return 0;
+    };
+    let w: Vec<u16> = name.encode_utf16().chain([0]).collect();
+    if c.a(2) == 0 {
+        return w.len() as u32;
+    }
+    if (c.a(2) as usize) < w.len() {
+        last_error(122);
+        return 0;
+    }
+    for (i, &u) in w.iter().enumerate() {
+        w16(c.a(1) + 2 * i as u32, u);
+    }
+    w.len() as u32
 }
 fn wine_dbg_strdup(c: &mut Ctx) -> u32 {
     c.a(0)
@@ -2977,6 +3011,9 @@ pub fn init() {
     implement("ntdll", "LdrGetDllHandle", LdrGetDllHandle);
     implement("ntdll", "RtlFindExportedRoutineByName", RtlFindExportedRoutineByName);
     implement("ntdll", "NtQueryVirtualMemory", NtQueryVirtualMemory);
+    implement("kernel32", "LCIDToLocaleName", LCIDToLocaleName);
+    implement("kernel32", "GetLocaleInfoEx", GetLocaleInfoEx);
+    implement("kernel32", "GetSystemDefaultLocaleName", GetUserDefaultLocaleName);
     implement("ntdll", "__wine_dbg_get_channel_flags", wine_dbg_channel_flags);
     implement("ntdll", "__wine_dbg_output", wine_dbg_output);
     reg!("kernel32";

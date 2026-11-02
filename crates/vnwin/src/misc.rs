@@ -334,6 +334,14 @@ fn with_reg<R>(f: impl FnOnce(&mut HashMap<String, KeyData>) -> R) -> R {
         set("hklm\\software\\microsoft\\windows nt\\currentversion", "ProductName", "Microsoft Windows 7");
         set("hklm\\software\\microsoft\\windows\\currentversion", "ProgramFilesDir", "C:\\Program Files");
         set("hklm\\software\\microsoft\\directx", "Version", "4.09.00.0904");
+        // stand-ins for the usual Windows faces, used by DirectWrite when they are missing (its
+        // last-resort font is Tahoma)
+        for (face, with) in [("Tahoma", "MS UI Gothic"), ("Segoe UI", "MS UI Gothic"), ("Microsoft Sans Serif", "MS UI Gothic"),
+            ("Arial", "MS PGothic"), ("Meiryo", "MS PGothic"), ("Meiryo UI", "MS UI Gothic"), ("Yu Gothic", "MS PGothic"),
+            ("Yu Gothic UI", "MS UI Gothic"), ("Times New Roman", "MS PMincho"), ("Yu Mincho", "MS PMincho"), ("Courier New", "MS Gothic")]
+        {
+            set("hkcu\\software\\wine\\fonts\\replacements", face, with);
+        }
         // the installed fonts (DirectWrite's system collection reads this list)
         if let Some(dir) = crate::files::resolve("C:\\windows\\Fonts\\") {
             let mut files: Vec<String> = std::fs::read_dir(dir).into_iter().flatten().flatten().filter_map(|e| e.file_name().into_string().ok()).collect();
@@ -647,8 +655,10 @@ fn query_info(c: &mut Ctx) -> u32 {
     put32(c.a(9), maxd as u32);
     put32(c.a(10), 0);
     if c.a(11) != 0 {
+        // a fixed last-write time, not 0 (DirectWrite builds its font set only when the Fonts
+        // key is newer than what it has: zero at first)
         w32(c.a(11), 0);
-        w32(c.a(11) + 4, 0);
+        w32(c.a(11) + 4, 0x01d6_0000);
     }
     0
 }

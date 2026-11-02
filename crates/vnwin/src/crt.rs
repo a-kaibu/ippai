@@ -524,6 +524,111 @@ fn wcscpy(c: &mut Ctx) -> u32 {
     }
     c.a(0)
 }
+fn wcschr(c: &mut Ctx) -> u32 {
+    let (p, ch) = (c.a(0), c.a(1) as u16);
+    let s = wstr(p);
+    if ch == 0 {
+        return p + 2 * s.len() as u32;
+    }
+    s.iter().position(|&u| u == ch).map_or(0, |i| p + 2 * i as u32)
+}
+fn wcsrchr(c: &mut Ctx) -> u32 {
+    let (p, ch) = (c.a(0), c.a(1) as u16);
+    let s = wstr(p);
+    if ch == 0 {
+        return p + 2 * s.len() as u32;
+    }
+    s.iter().rposition(|&u| u == ch).map_or(0, |i| p + 2 * i as u32)
+}
+fn wput(dst: u32, s: &[u16]) {
+    for (i, &u) in s.iter().chain([0u16].iter()).enumerate() {
+        w16(dst + 2 * i as u32, u);
+    }
+}
+fn wcscat(c: &mut Ctx) -> u32 {
+    let d = c.a(0);
+    wput(d + 2 * wstr(d).len() as u32, &wstr(c.a(1)));
+    d
+}
+fn wcsncat(c: &mut Ctx) -> u32 {
+    let d = c.a(0);
+    let src: Vec<u16> = wstr(c.a(1)).into_iter().take(c.a(2) as usize).collect();
+    wput(d + 2 * wstr(d).len() as u32, &src);
+    d
+}
+fn wcsncpy(c: &mut Ctx) -> u32 {
+    let (d, n) = (c.a(0), c.a(2));
+    let src = wstr(c.a(1));
+    for i in 0..n {
+        w16(d + 2 * i, src.get(i as usize).copied().unwrap_or(0));
+    }
+    d
+}
+fn wcsstr(c: &mut Ctx) -> u32 {
+    let (h, n) = (wstr(c.a(0)), wstr(c.a(1)));
+    if n.is_empty() {
+        return c.a(0);
+    }
+    h.windows(n.len()).position(|w| w == n.as_slice()).map_or(0, |i| c.a(0) + 2 * i as u32)
+}
+fn wcsspn(c: &mut Ctx) -> u32 {
+    let set = wstr(c.a(1));
+    wstr(c.a(0)).iter().take_while(|u| set.contains(u)).count() as u32
+}
+fn wcscspn(c: &mut Ctx) -> u32 {
+    let set = wstr(c.a(1));
+    wstr(c.a(0)).iter().take_while(|u| !set.contains(u)).count() as u32
+}
+fn wcspbrk(c: &mut Ctx) -> u32 {
+    let set = wstr(c.a(1));
+    wstr(c.a(0)).iter().position(|u| set.contains(u)).map_or(0, |i| c.a(0) + 2 * i as u32)
+}
+fn towlower(c: &mut Ctx) -> u32 {
+    let u = c.a(0) & 0xffff;
+    char::from_u32(u).and_then(|ch| ch.to_lowercase().next()).map_or(u, |l| if (l as u32) < 0x10000 { l as u32 } else { u })
+}
+fn towupper(c: &mut Ctx) -> u32 {
+    let u = c.a(0) & 0xffff;
+    char::from_u32(u).and_then(|ch| ch.to_uppercase().next()).map_or(u, |l| if (l as u32) < 0x10000 { l as u32 } else { u })
+}
+fn iswspace(c: &mut Ctx) -> u32 {
+    char::from_u32(c.a(0) & 0xffff).is_some_and(|ch| ch.is_whitespace()) as u32
+}
+fn iswdigit(c: &mut Ctx) -> u32 {
+    (b'0' as u32..=b'9' as u32).contains(&(c.a(0) & 0xffff)) as u32
+}
+fn iswalpha(c: &mut Ctx) -> u32 {
+    char::from_u32(c.a(0) & 0xffff).is_some_and(|ch| ch.is_alphabetic()) as u32
+}
+/// a wide string as bytes for parse_int (one byte per character, non-ASCII as 0xff)
+fn wbytes(p: u32) -> Vec<u8> {
+    wstr(p).into_iter().map(|u| if u < 0x80 { u as u8 } else { 0xff }).collect()
+}
+fn wcstol(c: &mut Ctx) -> u32 {
+    let (v, n, _) = parse_int(&wbytes(c.a(0)), c.a(2));
+    if c.a(1) != 0 {
+        w32(c.a(1), c.a(0) + 2 * n as u32);
+    }
+    v.clamp(i32::MIN as i64, i32::MAX as i64) as i32 as u32
+}
+fn wcstoul(c: &mut Ctx) -> u32 {
+    let (v, n, _) = parse_int(&wbytes(c.a(0)), c.a(2));
+    if c.a(1) != 0 {
+        w32(c.a(1), c.a(0) + 2 * n as u32);
+    }
+    v as u32
+}
+fn _wtoi(c: &mut Ctx) -> u32 {
+    parse_int(&wbytes(c.a(0)), 10).0 as i32 as u32
+}
+fn wcstod(c: &mut Ctx) -> u32 {
+    let (v, n) = parse_float(&wbytes(c.a(0)));
+    if c.a(1) != 0 {
+        w32(c.a(1), c.a(0) + 2 * n as u32);
+    }
+    c.st0 = Some(v);
+    0
+}
 fn wlower(s: Vec<u16>) -> Vec<u16> {
     s.into_iter().map(|u| if (b'A' as u16..=b'Z' as u16).contains(&u) { u + 32 } else { u }).collect()
 }
@@ -1318,6 +1423,33 @@ fn __stdio_common_vswprintf(c: &mut Ctx) -> u32 {
     })
 }
 
+/// setlocale: only "C"
+fn setlocale(_: &mut Ctx) -> u32 {
+    static C: OnceLock<u32> = OnceLock::new();
+    *C.get_or_init(|| {
+        let p = mem::heap_alloc(2, true);
+        w8(p, b'C');
+        p
+    })
+}
+/// the "C" locale's struct lconv
+fn localeconv(_: &mut Ctx) -> u32 {
+    static L: OnceLock<u32> = OnceLock::new();
+    *L.get_or_init(|| {
+        let l = mem::heap_alloc(64, true);
+        let (dot, empty) = (mem::heap_alloc(2, true), mem::heap_alloc(2, true));
+        w8(dot, b'.');
+        w32(l, dot);
+        for i in 1..10 {
+            w32(l + 4 * i, empty);
+        }
+        // int_frac_digits.. n_sign_posn: CHAR_MAX
+        for i in 40..48 {
+            w8(l + i, 127);
+        }
+        l
+    })
+}
 fn _putenv(_: &mut Ctx) -> u32 {
     0
 }
@@ -1378,10 +1510,13 @@ pub fn init() {
     implement("msvcrt", "_strtof_l", strtod);
     implement("msvcrt", "_strtod_l", strtod);
     implement("msvcrt", "strtof", strtod);
-    reg!(_wcsicmp, _wcsnicmp);
+    reg!(_wcsicmp, _wcsnicmp, wcschr, wcsrchr, wcscat, wcsncat, wcsncpy, wcsstr, wcsspn, wcscspn, wcspbrk);
+    reg!(towlower, towupper, iswspace, iswdigit, iswalpha, wcstol, wcstoul, _wtoi, wcstod);
+    implement("msvcrt", "_wtol", _wtoi);
     reg!(_wcsdup, _wcslwr, _wcsupr, wcstok_s, strtok_s, strtok, wcstok);
     // (ucrtbase's wcstok takes a context)
     implement("ucrtbase", "wcstok", wcstok_s);
+    reg!(localeconv, setlocale);
     reg!(_putenv, fputc, __acrt_iob_func, _create_locale, _free_locale, _fdclass, _dclass, _fdsign, _dsign, strnlen);
     implement("ucrtbase", "__stdio_common_vsprintf", __stdio_common_vsprintf);
     implement("ucrtbase", "__stdio_common_vswprintf", __stdio_common_vswprintf);
