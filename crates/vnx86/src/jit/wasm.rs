@@ -668,6 +668,15 @@ pub fn select(module: &[u8], keep: &[bool]) -> Option<Vec<u8>> {
 /// Liftoff zeroes every declared local on each entry and V8's optimizing compiler makes a phi
 /// for each at every loop: a region declares ~50 (16 of them v128) and uses a few.
 pub fn compact_locals(params: u32, locals: &[u8], code: Code) -> (Vec<u8>, Code) {
+    compact(params, None, locals, code)
+}
+
+/// [`compact_locals`] with local `param` (an i32) made one more parameter, after the others.
+pub fn compact_locals_param(params: u32, param: u32, locals: &[u8], code: Code) -> (Vec<u8>, Code) {
+    compact(params, Some(param), locals, code)
+}
+
+fn compact(params: u32, param: Option<u32>, locals: &[u8], code: Code) -> (Vec<u8>, Code) {
     let read = |b: &[u8], mut at: usize| {
         let (mut v, mut shift) = (0u32, 0);
         loop {
@@ -687,10 +696,13 @@ pub fn compact_locals(params: u32, locals: &[u8], code: Code) -> (Vec<u8>, Code)
     }
     let mut map: Vec<u32> = (0..n as u32).collect();
     let mut kept = Vec::new();
+    let first = params + param.is_some() as u32;
     for (i, &t) in locals.iter().enumerate() {
         let l = params as usize + i;
-        if used[l] {
-            map[l] = params + kept.len() as u32;
+        if Some(l as u32) == param {
+            map[l] = params;
+        } else if used[l] {
+            map[l] = first + kept.len() as u32;
             kept.push(t);
         }
     }

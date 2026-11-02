@@ -132,6 +132,8 @@ const L_MMX: u32 = L_FREG + 8; // 8 v128: the cached MMX registers (see Gen::mmx
 const L_XMM: u32 = L_MMX + 8; // 8 v128: the cached XMM registers (see Gen::xmm)
 const L_AB: u32 = L_XMM + 8; // i32: the base register of the instruction's memory operand (see Gen::folded)
 const L_SLOT: u32 = L_AB + 1; // N_SLOTS i32: stack slots kept in locals in a loop (see Gen::slots)
+/// functions: ESP as the caller passed it (the third parameter once the locals are compacted)
+const L_ESPIN: u32 = L_SLOT + N_SLOTS;
 const N_SLOTS: u32 = 6;
 /// How many slots a loop keeps (at most N_SLOTS; VNVM_JIT_SLOTS, default 0: slower on x64,
 /// where the extra live locals spill)
@@ -1543,6 +1545,18 @@ impl<'a> Gen<'a> {
         self.dirty = 0;
     }
 
+    /// [`Self::load_regs`] but ESP from local `esp` (a function's call returned it).
+    fn load_regs_esp(&mut self, esp: u32) {
+        self.dirty = 0;
+        for i in (0..8).filter(|i| self.regs & (1 << i) != 0) {
+            if i == 4 {
+                self.c.get(esp).set(L_REG + 4);
+            } else {
+                self.c.get(L_CPU).load32(Off::reg(i as usize)).set(L_REG + i);
+            }
+        }
+    }
+
     /// The registers the code names from the Cpu.
     fn load_regs(&mut self) {
         self.dirty = 0;
@@ -2678,7 +2692,7 @@ impl<'a> Gen<'a> {
                     self.store_dirty();
                     self.c.get(L_CPU).get(L_BUD).store32(Off::budget());
                     self.c.get(L_CPU).get(t).store32(Off::eip());
-                    self.c.i32c(RET_FN).ret();
+                    self.c.i32c(RET_FN).get(L_REG + 4).ret();
                     return false;
                 }
                 // most returns go back to the latest call in the region (through the dispatch,
@@ -3045,13 +3059,14 @@ impl<'a> Gen<'a> {
         bump(&mut self.c, 0);
         self.c.get(L_CPU).get(L_BUD).store32(Off::budget());
         self.c.get(L_CPU).get(L_ARG).i32c(1).add();
-        self.c.get(v).u32c((1 << ENTRY_SHIFT) - 1).and().i32c(1).add().call_indirect(T_FN, 0).set(h);
+        self.c.get(L_REG + 4);
+        self.c.get(v).u32c((1 << ENTRY_SHIFT) - 1).and().i32c(1).add().call_indirect(T_FN, 0).set(v).set(h);
         // left another way (the state is in the Cpu): pass it on
-        self.c.get(h).i32c(RET_FN).ne().if_().get(h).ret().end();
+        self.c.get(h).i32c(RET_FN).ne().if_().get(h).i32c(0).ret().end();
         self.c.get(L_CPU).load32(Off::eip()).u32c(next).ne().if_();
         bump(&mut self.c, 4);
-        self.c.i32c(RET_CONTINUE).ret().end();
-        self.load_regs();
+        self.c.i32c(RET_CONTINUE).i32c(0).ret().end();
+        self.load_regs_esp(v);
         self.c.get(L_CPU).load32(Off::budget()).set(L_BUD);
         self.c.i32c(-1).set(L_OP);
         self.goto(next);
@@ -3116,13 +3131,15 @@ impl<'a> Gen<'a> {
         self.c.get(L_CPU).get(L_BUD).store32(Off::budget());
         self.c.get(L_CPU).get(L_ARG).i32c(1).add();
         self.c.get(v).i32c(ENTRY_SHIFT as i32).shr_u().u32c(0x7ff).and().i32c(16).shl().or();
-        self.c.get(v).u32c((1 << ENTRY_SHIFT) - 1).and().i32c(1).add().call_indirect(T_FN, 0).set(h);
-        self.c.get(h).i32c(RET_FN).ne().if_().get(h).ret().end();
+        self.c.get(L_REG + 4);
+        self.c.get(v).u32c((1 << ENTRY_SHIFT) - 1).and().i32c(1).add().call_indirect(T_FN, 0).set(v).set(h);
+        // left another way (the state is in the Cpu): pass it on
+        self.c.get(h).i32c(RET_FN).ne().if_().get(h).i32c(0).ret().end();
         self.c.get(L_CPU).load32(Off::eip()).u32c(r).ne().if_();
         bump(&mut self.c, 4);
-        self.c.i32c(RET_CONTINUE).ret().end();
+        self.c.i32c(RET_CONTINUE).i32c(0).ret().end();
         let (dirty, fc, flags) = (self.dirty, self.fc, self.flags);
-        self.load_regs();
+        self.load_regs_esp(v);
         self.c.get(L_CPU).load32(Off::budget()).set(L_BUD);
         self.c.i32c(-1).set(L_OP);
         self.fc = FCache::default();
@@ -3225,7 +3242,8 @@ fn fn_adapter() -> Func {
     c.end();
     // (the entry in the depth's high half)
     c.get(L_CPU).get(L_CPU).load32(Off::calls()).get(L_ARG).i32c(ENTRY_SHIFT as i32).shr_u().u32c(0x7ff).and().i32c(16).shl().or();
-    c.get(L_ARG).u32c((1 << ENTRY_SHIFT) - 1).and().i32c(1).add().call_indirect(T_FN, 0).tee(L_ARG).i32c(RET_CONTINUE).get(L_ARG).i32c(RET_FN).ne().select();
+    c.get(L_REG + 4);
+    c.get(L_ARG).u32c((1 << ENTRY_SHIFT) - 1).and().i32c(1).add().call_indirect(T_FN, 0).set(L_REG + 4).tee(L_ARG).i32c(RET_CONTINUE).get(L_ARG).i32c(RET_FN).ne().select();
     for _ in 1..N_PARAMS {
         c.i32c(0);
     }
@@ -3325,6 +3343,7 @@ fn emit_fn_lookup(c: &mut Code, entry: u32, wregs: u8) {
     bump(c, 7);
     writeback(c, wregs);
     c.get(L_CPU).get(L_ARG).get(v).i32c(ENTRY_SHIFT as i32).shr_u().u32c(0x7ff).and().i32c(16).shl().or();
+    c.get(L_REG + 4);
     c.get(v).u32c((1 << ENTRY_SHIFT) - 1).and().i32c(1).add();
     c.op(0x13).op(T_FN as u8).op(0); // return_call_indirect, table 0
     c.end();
@@ -4443,7 +4462,8 @@ fn translate<M: Memory>(
     // (in every module: saved bundles merge regions and functions, which needs the same
     // types and imports)
     if module.types.len() == T_FN as usize {
-        module.types.push(FuncType { params: alloc::vec![I32; 2], results: alloc::vec![I32] });
+        // T_FN: (cpu, depth | entry << 16, esp) -> (status, esp): ESP in V8's registers both ways
+        module.types.push(FuncType { params: alloc::vec![I32; 3], results: alloc::vec![I32; 2] });
         module.types.push(FuncType { params: alloc::vec![I32; 3], results: alloc::vec![I32] });
         module.imports.push(Import::Func("callmiss", T_CALLMISS));
     }
@@ -4599,8 +4619,8 @@ fn translate<M: Memory>(
     }
     bump(&mut g.c, 10);
     if fnm {
-        // the state from the Cpu; status flags dead (a call's target)
-        g.load_regs();
+        // the state from the Cpu (ESP from the caller); status flags dead (a call's target)
+        g.load_regs_esp(L_ESPIN);
         g.c.get(L_CPU).load32(Off::budget()).set(L_BUD);
         g.c.i32c(-1).set(L_OP);
         if !extra.is_empty() {
@@ -4680,7 +4700,9 @@ fn translate<M: Memory>(
     g.c.end(); // exit
     writeback(&mut g.c, g.wregs);
     g.c.get(L_ST);
-    if !fnm {
+    if fnm {
+        g.c.get(L_REG + 4);
+    } else {
         for _ in 1..N_PARAMS {
             g.c.i32c(0);
         }
@@ -4693,7 +4715,9 @@ fn translate<M: Memory>(
     locals.push(I32); // L_AB
     locals.extend_from_slice(&[I32; N_SLOTS as usize]);
     if fnm {
-        let (locals, body) = wasm::compact_locals(2, &locals, core::mem::take(&mut g.c));
+        assert_eq!(2 + locals.len() as u32, L_ESPIN);
+        locals.push(I32); // L_ESPIN
+        let (locals, body) = wasm::compact_locals_param(2, L_ESPIN, &locals, core::mem::take(&mut g.c));
         let at = module.funcs.len() as u32;
         module.funcs.push(fn_adapter());
         module.funcs.push(Func { ty: T_FN, locals, code: body });
