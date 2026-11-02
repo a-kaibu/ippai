@@ -93,7 +93,10 @@ pub fn load(data: &[u8], path: &str, resolve: &mut dyn FnMut(&str, Import) -> u3
     let relocs = dir(5);
     let base = match mem::reserve(pref, size, 0x80, 0x100_0000, false) {
         Some(b) => b,
-        None if relocs.0 != 0 && chars & 1 == 0 => mem::reserve(0, size, 0x80, 0x100_0000, false).ok_or("no room for the image")?,
+        // (elsewhere when it can move: relocations, or a resource-only DLL with no code to fix)
+        None if (relocs.0 != 0 && chars & 1 == 0) || (dll && entry_rva == 0) => {
+            mem::reserve(0, size, 0x80, 0x100_0000, false).ok_or("no room for the image")?
+        }
         None => return Err(format!("cannot map at {pref:#x} (no relocations)")),
     };
     mem::commit(base, 0x40);
