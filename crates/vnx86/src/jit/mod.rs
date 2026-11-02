@@ -3365,12 +3365,18 @@ fn ret_at(a: u32) -> Instruction {
 /// address order. Overlapping ranges are widened so they nest.
 /// The blocks of a small function at `f` (all in the region, not following its calls), if it
 /// returns somewhere; an indirect tail jump may go on to `hint`'s blocks (then in `tail`).
-fn callee(blocks: &[(u32, Vec<Instruction>)], targets: &BTreeMap<u32, u32>, f: u32, hint: Option<u32>) -> Option<(Vec<usize>, Option<usize>)> {
+fn callee(blocks: &[(u32, Vec<Instruction>)], targets: &BTreeMap<u32, u32>, f: u32, hint: Option<u32>, fnm: bool) -> Option<(Vec<usize>, Option<usize>)> {
     let mut body = Vec::new();
     let mut queue = alloc::vec![f];
     let (mut size, mut ret, mut tail, mut split) = (0, false, None, usize::MAX);
     while let Some(a) = queue.pop() {
-        let &k = targets.get(&a)?;
+        // (a block of a hot path's callee that never ran is left out: jumps there leave)
+        let Some(&k) = targets.get(&a) else {
+            if fnm && a != f {
+                continue;
+            }
+            return None;
+        };
         if body.contains(&(k as usize)) {
             continue;
         }
@@ -3404,6 +3410,36 @@ fn callee(blocks: &[(u32, Vec<Instruction>)], targets: &BTreeMap<u32, u32>, f: u
     own.extend(then);
     let body = own;
     ret.then_some((body, tail))
+}
+
+/// The blocks of the function at `f` that ran (`ran`), if those are few enough to inline
+/// (MAX_INLINE instructions, no calls, a RET among them): the hot path of a bigger function
+/// (Wine's heap helpers check and log in blocks that never run). A jump to a block left out
+/// leaves the function there.
+fn hot_callee<M: Memory>(mem: &mut M, f: u32, trap: (u32, u32), ran: &dyn Fn(u32) -> bool) -> Option<Vec<u32>> {
+    let (mut seen, mut queue, mut size, mut ret) = (Vec::new(), alloc::vec![f], 0, false);
+    while let Some(a) = queue.pop() {
+        if seen.contains(&a) {
+            continue;
+        }
+        if !(GUEST_LO..GUEST_HI).contains(&a) || (trap.0..trap.1).contains(&a) || !ran(a) {
+            if a == f {
+                return None;
+            }
+            continue;
+        }
+        seen.push(a);
+        let list = decode(mem, a);
+        size += list.len();
+        let last = list.last()?;
+        // (with calls inside it was slower: Wine's heap 210 -> 350 ns per HeapAlloc + HeapFree)
+        if size > MAX_INLINE || matches!(last.flow_control(), FlowControl::Call | FlowControl::IndirectCall | FlowControl::IndirectBranch) {
+            return None;
+        }
+        ret |= last.mnemonic() == Mnemonic::Ret;
+        queue.extend(successors(last));
+    }
+    ret.then_some(seen)
 }
 
 /// The blocks of the function at `f` if it is small enough to inline (MAX_INLINE instructions
@@ -4166,7 +4202,7 @@ fn safe_in(g: &Gen, blocks: &[(u32, Vec<Instruction>)], l: &structure::Layout) -
 /// taking at most `max_blocks` blocks whose start `accept` agrees to. None if not even the
 /// entry block can be translated.
 pub fn translate_region<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u32], max_blocks: usize, accept: impl FnMut(u32) -> bool) -> Option<Region> {
-    translate(module, mem, roots, max_blocks, accept, None, &|_| None)
+    translate(module, mem, roots, max_blocks, accept, None, &|_| None, &|_| false)
 }
 
 /// Adds the function at `entry` (see [`FN`]) to `module`: its adapter for the region calling
@@ -4175,8 +4211,8 @@ pub fn translate_region<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u3
 /// Small callees are inlined whether they ran or not (if outside `trap`).
 /// `hints` gives the target an indirect call or jump at an address mostly goes to (a small one
 /// is inlined behind a check).
-pub fn translate_function<M: Memory>(module: &mut Module, mem: &mut M, entry: u32, max_blocks: usize, trap: (u32, u32), hints: &dyn Fn(u32) -> Option<u32>, accept: impl FnMut(u32) -> bool) -> Option<Region> {
-    translate(module, mem, &[entry], max_blocks, accept, Some(trap), hints)
+pub fn translate_function<M: Memory>(module: &mut Module, mem: &mut M, entry: u32, max_blocks: usize, trap: (u32, u32), hints: &dyn Fn(u32) -> Option<u32>, ran: &dyn Fn(u32) -> bool, accept: impl FnMut(u32) -> bool) -> Option<Region> {
+    translate(module, mem, &[entry], max_blocks, accept, Some(trap), hints, ran)
 }
 
 fn translate<M: Memory>(
@@ -4187,6 +4223,7 @@ fn translate<M: Memory>(
     mut accept: impl FnMut(u32) -> bool,
     fn_trap: Option<(u32, u32)>,
     hints: &dyn Fn(u32) -> Option<u32>,
+    ran: &dyn Fn(u32) -> bool,
 ) -> Option<Region> {
     let fnm = fn_trap.is_some();
     // blocks of small callees to inline (functions)
@@ -4217,7 +4254,7 @@ fn translate<M: Memory>(
             // a small callee comes along to be inlined (see `inline` below)
             let f = if last.op0_kind() == OpKind::NearBranch32 { Some(last.near_branch32()) } else { hints(last.ip32()) };
             if let (Some(trap), Some(f)) = (fn_trap, f) {
-                if let Some(b) = small_callee(mem, f, trap, hints) {
+                if let Some(b) = small_callee(mem, f, trap, hints).or_else(|| hot_callee(mem, f, trap, ran)) {
                     // (all of them: a wrapper's tail jump has no static successor)
                     queue.extend(b.iter().copied());
                     forced.extend(b);
@@ -4272,7 +4309,7 @@ fn translate<M: Memory>(
     // where an indirect call or jump goes: for functions the hints, for regions the roots
     let cands: Vec<u32> = if fnm { blocks.iter().filter_map(|b| hints(b.1.last().unwrap().ip32())).collect() } else { roots.to_vec() };
     let inline = |f: u32| {
-        cands.iter().filter(|&&h| h != f).find_map(|&h| callee(&blocks, &targets, f, Some(h)).filter(|b| b.1.is_some()).map(|b| (b, Some(h)))).or_else(|| callee(&blocks, &targets, f, None).map(|b| (b, None)))
+        cands.iter().filter(|&&h| h != f).find_map(|&h| callee(&blocks, &targets, f, Some(h), fnm).filter(|b| b.1.is_some()).map(|b| (b, Some(h)))).or_else(|| callee(&blocks, &targets, f, None, fnm).map(|b| (b, None)))
     };
     let mut order = Vec::new();
     let mut ctxs = Vec::new();
