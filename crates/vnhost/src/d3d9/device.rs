@@ -2365,6 +2365,16 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
             let ix: Vec<u32> = (0..nverts.min(12)).map(|k| if isize == 4 { *((iptr + 4 * k) as *const u32) } else { *((iptr + 2 * k) as *const u16) as u32 }).collect();
             eprintln!("d3d9:   indices {ix:?}");
         }
+        if st.vs != 0 {
+            eprintln!("d3d9:   vs c0..13 {:?}", &st.vsf[..st.vsf.len().min(13)]);
+        }
+        if st.ps != 0 {
+            eprintln!("d3d9:   ps c0..3 {:?}", &st.psf[..st.psf.len().min(3)]);
+        }
+        for &(s, ptr, stride) in streams.iter().skip(1) {
+            let w: Vec<String> = (0..stride).map(|k| format!("{:08x}", *((ptr + 4 * k) as *const u32))).collect();
+            eprintln!("d3d9:   stream {s} {ptr:#x} stride {stride}: {}", w.join(" "));
+        }
         if let Some(&(_, ptr, stride)) = streams.first() {
             eprintln!("d3d9:   data {ptr:#x} stride {stride}");
             for v in 0..count.min(6) {
