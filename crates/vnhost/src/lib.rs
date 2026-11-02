@@ -9,8 +9,18 @@
 //! * `vfs` – the browser's file system: packed trees read lazily from the chunk store
 //! * `display` – the screen behind Wine's browser display driver
 //! * `wrap` – the libc entry points (`-Wl,--wrap=...`) that route to the above
-
 #![cfg_attr(target_arch = "wasm64", feature(simd_wasm64))]
+
+/// Whether environment variable `$name` is set, read once (std::env::var takes a lock and walks
+/// the environment on every call).
+#[macro_export]
+macro_rules! env_on {
+    ($name:literal) => {{
+        static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *V.get_or_init(|| std::env::var_os($name).is_some())
+    }};
+}
+
 
 pub mod audio;
 pub mod d3d9;

@@ -825,7 +825,7 @@ fn maybe_save() {
         done.insert(r, s.build);
     }
     let idx = jit::saved::encode(&entries);
-    if stats() || std::env::var_os("VNVM_JIT_SAVE_LOG").is_some() {
+    if stats() || crate::env_on!("VNVM_JIT_SAVE_LOG") {
         eprintln!("vnjit: saving {} regions ({} bytes)", entries.len(), wasm.len());
     }
     let mut body = (wasm.len() as u32).to_le_bytes().to_vec();
@@ -998,7 +998,7 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
     if let Some(n) = std::env::var("VNVM_JIT_SLOTS").ok().and_then(|v| v.parse::<u32>().ok()) {
         jit::SLOTS_MAX.store(n.min(6), std::sync::atomic::Ordering::Relaxed);
     }
-    if std::env::var_os("VNVM_JIT_LAYOUT").is_some() {
+    if crate::env_on!("VNVM_JIT_LAYOUT") {
         jit::LAYOUT.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     let (misses, known) = (&st.misses, &st.known);
@@ -1087,7 +1087,7 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         }
         // the block and what it statically reaches, as one function
         let mut m = Module { name: Some(format!("x86_{eip:08x}")), ..Module::default() };
-        if std::env::var_os("VNVM_JIT_LAYOUT").is_some() {
+        if crate::env_on!("VNVM_JIT_LAYOUT") {
             jit::LAYOUT.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         let (lo, hi) = (cpu.trap_lo, cpu.trap_hi);
@@ -1103,7 +1103,7 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
             st.known.insert(eip);
             return false;
         };
-        if std::env::var_os("VNVM_JIT_LAYOUT").is_some() {
+        if crate::env_on!("VNVM_JIT_LAYOUT") {
             eprintln!("vnjit fresh {eip:#x}\n{}", region.layout);
         }
         let bytes = m.finish();
@@ -1111,7 +1111,7 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         mark_code(&region.code);
         let ok = load(st, &bytes, vec![eip], &region.starts);
         count_compile(0, t0);
-        if std::env::var_os("VNVM_JIT_TIME").is_some() {
+        if crate::env_on!("VNVM_JIT_TIME") {
             eprintln!("vnjit time {eip:#x}: {} ins, translate {:?}, load {:?}", region.instructions, t1 - t0, t1.elapsed());
         }
         if ok {
@@ -1142,7 +1142,7 @@ fn compile_long(st: &mut State, cpu: &Cpu, mem: &mut Linear) -> bool {
     let bytes = m.finish();
     let t1 = std::time::Instant::now();
     let ok = load(st, &bytes, vec![eip], &region.starts);
-    if std::env::var_os("VNVM_JIT_TIME").is_some() {
+    if crate::env_on!("VNVM_JIT_TIME") {
         eprintln!("vnjit time {eip:#x}: {} ins, translate {:?}, load {:?}", region.instructions, t1 - t0, t1.elapsed());
     }
     if ok {
@@ -1267,7 +1267,7 @@ fn take_built(st: &mut State, mem: &mut Linear) {
 
 fn build_fn(mem: &mut Linear, eip: u32, (lo, hi): (u32, u32), part: bool, build: u32, misses: &HashMap<u32, u32>, known: &HashSet<u32>, hints: &HashMap<u32, u32>) -> Built {
     let t0 = Instant::now();
-    if std::env::var_os("VNVM_JIT_LAYOUT").is_some() {
+    if crate::env_on!("VNVM_JIT_LAYOUT") {
         jit::LAYOUT.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     let mut m = Module { name: Some(format!("x86_{eip:08x}_fn")), ..Module::default() };
@@ -1276,7 +1276,7 @@ fn build_fn(mem: &mut Linear, eip: u32, (lo, hi): (u32, u32), part: bool, build:
     let base = *FN_INS.get_or_init(|| std::env::var("VNVM_JIT_FN_INS").ok().and_then(|v| v.parse().ok()).unwrap_or(1000));
     jit::FN_MAX_INS.store(base << (build.min(4) - 1), std::sync::atomic::Ordering::Relaxed);
     let region = jit::translate_function(&mut m, mem, eip, jit::MAX_BLOCKS, (lo, hi), &|a| hints.get(&a).copied(), &|a| debug_allowed(a) && ran(misses, known, a), |a| debug_allowed(a) && !(a >= lo && a < hi) && (a == eip || if part { !known.contains(&a) && misses.contains_key(&a) } else { ran(misses, known, a) }))?;
-    if std::env::var_os("VNVM_JIT_LAYOUT").is_some() {
+    if crate::env_on!("VNVM_JIT_LAYOUT") {
         eprintln!("vnjit fn {eip:#x}\n{}", region.layout);
     }
     if stats() {
@@ -1286,7 +1286,7 @@ fn build_fn(mem: &mut Linear, eip: u32, (lo, hi): (u32, u32), part: bool, build:
     if let Some(dir) = std::env::var_os("VNVM_JIT_DUMP") {
         let _ = std::fs::write(std::path::Path::new(&dir).join(format!("{eip:08x}-fn.wasm")), &bytes);
     }
-    if std::env::var_os("VNVM_JIT_TIME").is_some() {
+    if crate::env_on!("VNVM_JIT_TIME") {
         eprintln!("vnjit time {eip:#x}: {} ins, translate {:?} build {build} part {part}", region.instructions, t0.elapsed());
     }
     let text = code_bytes(mem, &region.code)?;
@@ -1301,7 +1301,7 @@ fn finish_fn(st: &mut State, eip: u32, build: u32, built: Built, t0: Instant) ->
     };
     let t1 = Instant::now();
     let ok = install_fn(st, eip, &bytes, &region.starts, &region.sites, &region.code);
-    if std::env::var_os("VNVM_JIT_TIME").is_some() {
+    if crate::env_on!("VNVM_JIT_TIME") {
         eprintln!("vnjit time {eip:#x}: {} ins, load {:?}", region.instructions, t1.elapsed());
     }
     count_compile(1, t0);
@@ -1462,7 +1462,7 @@ fn profiling() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| {
-        let on = std::env::var_os("VNVM_JIT_PROFILE").is_some();
+        let on = crate::env_on!("VNVM_JIT_PROFILE");
         jit::PROFILE.store(on, std::sync::atomic::Ordering::Relaxed);
         // VNVM_JIT_PROFILE=<seconds> (> 1): print the counts that long after the first region
         // (under node, where no page asks for them)

@@ -37,7 +37,8 @@ pub fn set_cwd(d: &str) {
 }
 
 fn c_root() -> String {
-    std::env::var("SAKE_C").unwrap_or_else(|_| "/tmp/sake-c".into())
+    static C: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    C.get_or_init(|| std::env::var("SAKE_C").unwrap_or_else(|_| "/tmp/sake-c".into())).clone()
 }
 
 /// Host path of a host file as a Windows path.

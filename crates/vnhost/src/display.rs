@@ -77,8 +77,12 @@ struct Display {
     order: Vec<u32>,
     screen: Vec<u32>,
     serial: u32,
-    /// the rows each of the last few serials redrew, newest last
-    bands: std::collections::VecDeque<(i32, i32)>,
+    /// the rows each of the last few serials redrew, newest last, and the window whose own
+    /// pixels they are when `screen` was not updated (see `direct`)
+    bands: std::collections::VecDeque<(i32, i32, u32)>,
+    /// where `screen` is behind its windows: the areas drawn `direct`ly since it was last made
+    /// whole (see `sync`)
+    stale: Rect,
 }
 
 static DISPLAY: Mutex<Option<Display>> = Mutex::new(None);
@@ -103,6 +107,7 @@ fn with<R>(f: impl FnOnce(&mut Display) -> R) -> R {
             screen: vec![0xff00_0000; (w * h) as usize],
             serial: 0,
             bands: Default::default(),
+            stale: Rect::default(),
         }
     }))
 }
@@ -117,6 +122,7 @@ fn start_screenshots() {
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(1));
                 let shot = with(|d| {
+                    d.sync();
                     (d.serial != written).then(|| {
                         written = d.serial;
                         let mut out = format!("P6\n{} {}\n255\n", d.w, d.h).into_bytes();
@@ -152,7 +158,7 @@ fn start_scripted_input() {
                 let wait = std::time::Duration::from_secs_f64(at).saturating_sub(t0.elapsed());
                 std::thread::sleep(wait);
                 vnhost_input_push(kind as u32, x as i32, y as i32, data as u32);
-                if std::env::var_os("VNVM_INPUT_TRACE").is_some() {
+                if crate::env_on!("VNVM_INPUT_TRACE") {
                     let mut n: c_int = 0;
                     unsafe { libc::ioctl(vnhost_input_fd(), libc::FIONREAD, &mut n) };
                     // and the windows there, top first
@@ -205,11 +211,49 @@ impl Display {
     }
 
     /// Redraws part of the screen from the windows.
+    /// The window that shows all of `area` with nothing above it there, when its pixels are its
+    /// surface (sake): the page uploads `area` from that surface itself.
+    fn direct(&self, area: &Rect) -> Option<u32> {
+        let shown = |w: &Win| w.visible && !w.px().is_empty();
+        let &top = self.order.iter().rev().find(|id| shown(&self.wins[id]) && !self.wins[id].rect.and(area).empty())?;
+        let w = &self.wins[&top];
+        (w.shared != 0 && w.rect.and(area) == *area).then_some(top)
+    }
+
+    /// Makes `screen` whole where direct draws left it behind.
+    fn sync(&mut self) {
+        let stale = std::mem::take(&mut self.stale);
+        if !stale.empty() {
+            self.copy_in(stale);
+        }
+    }
+
     fn compose(&mut self, area: Rect) {
         let area = area.and(&self.screen_rect());
         if area.empty() {
             return;
         }
+        // the common case, a game window redrawing itself: no copy into `screen`
+        if let Some(id) = self.direct(&area) {
+            self.stale = self.stale.or(&area);
+            self.band(area, id);
+            return;
+        }
+        self.sync();
+        self.copy_in(area);
+        self.band(area, 0);
+    }
+
+    fn band(&mut self, area: Rect, direct: u32) {
+        self.serial = self.serial.wrapping_add(1);
+        if self.bands.len() == 64 {
+            self.bands.pop_front();
+        }
+        self.bands.push_back((area.t, area.b, direct));
+    }
+
+    /// Composes `area` of `screen` from the windows.
+    fn copy_in(&mut self, area: Rect) {
         let sw = self.w as usize;
         // from the topmost window that covers the whole area (the black background otherwise)
         let shown = |w: &Win| w.visible && !w.px().is_empty();
@@ -235,11 +279,6 @@ impl Display {
                 self.screen[dst..dst + n].copy_from_slice(&win.px()[src..src + n]);
             }
         }
-        self.serial = self.serial.wrapping_add(1);
-        if self.bands.len() == 64 {
-            self.bands.pop_front();
-        }
-        self.bands.push_back((area.t, area.b));
     }
 }
 
@@ -257,6 +296,7 @@ pub extern "C" fn vnhost_display_set_size(w: c_int, h: c_int) {
         d.h = h;
         d.screen = vec![0xff00_0000; (w * h) as usize];
         d.bands.clear();
+        d.stale = Rect::default();
         let all = d.screen_rect();
         d.compose(all);
     })
@@ -331,12 +371,23 @@ pub unsafe extern "C" fn vnhost_window_pos(hwnd: u32, rect: *const i32, visible:
 
 /// New pixels for part of a window: `dirty` in window coordinates, `bits` (BGRA rows of
 /// `stride` pixels) start at window coordinates (`ox`, `oy`).
-/// Big redraws reach the screen at most this often. KiriKiri and the like redraw in a busy loop
-/// (and DirectDraw's WaitForVerticalBlank is a stub in Wine), which composes frames nobody sees
-/// at a few hundred per second; held to the display's rate, as a vsync would, the guest spends
-/// that CPU elsewhere. Animations go by the clock, so they last as long as before.
+/// Frames with big redraws end at most this often. KiriKiri and the like redraw in a busy loop,
+/// which composes frames nobody sees at a few hundred per second; held to the display's rate, as
+/// a vsync would, the guest spends that CPU elsewhere. Animations go by the clock, so they last
+/// as long as before. The wait is at the end of a frame (`pace_frame`, from the message loop),
+/// not at each draw: a game that blits its background and its message window separately would
+/// get half the rate.
 const FRAME: std::time::Duration = std::time::Duration::from_micros(16_667);
 const BIG: i32 = 256 * 256;
+
+static DREW_BIG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The end of a frame (a message loop turn): after big redraws, waits for the display's rate.
+pub fn pace_frame() {
+    if DREW_BIG.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        pace();
+    }
+}
 
 fn pace() {
     #[cfg(target_os = "emscripten")]
@@ -366,7 +417,7 @@ pub unsafe extern "C" fn vnhost_window_draw(hwnd: u32, dirty: *const i32, bits: 
     let r = std::slice::from_raw_parts(dirty, 4);
     let dirty = Rect { l: r[0], t: r[1], r: r[2], b: r[3] };
     if dirty.w() * dirty.h() >= BIG {
-        pace();
+        DREW_BIG.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     with(|d| {
         let Some(win) = d.wins.get_mut(&hwnd) else { return };
@@ -440,19 +491,46 @@ pub extern "C" fn vnhost_window_destroy(hwnd: u32) {
 /// serial of the frame the caller shows (anything else, such as -1, for none); stores the
 /// current serial there, which changes whenever the screen does, and in `io[1]..io[2]` the
 /// rows that changed since (so a text cursor's blink doesn't upload the whole screen).
+///
+/// With `io[3]` = 1 the caller can take the changed rows from a window's own surface: when all
+/// of them are one window's (a game redrawing its window; `screen` was not updated for them),
+/// `io[3]` stays 1 and `io[4..10]` = the surface's address, its row length in pixels and the
+/// window's rect on the screen (l t r b). Otherwise `io[3]` = 0 and `screen` has them.
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_display_frame(io: *mut u32) -> *const u32 {
-    let io = std::slice::from_raw_parts_mut(io, 3);
+    let direct_ok = *io.add(3) == 1;
+    let io = std::slice::from_raw_parts_mut(io, if direct_ok { 10 } else { 3 });
     with(|d| {
         let n = d.serial.wrapping_sub(io[0]) as usize;
+        let mut one = None;
         let (t, b) = if n <= d.bands.len() {
-            d.bands.iter().rev().take(n).fold((d.h, 0), |(t, b), &(t2, b2)| (t.min(t2), b.max(b2)))
+            one = d.bands.iter().rev().take(n).next().map(|x| x.2).filter(|&id| id != 0);
+            if d.bands.iter().rev().take(n).any(|x| Some(x.2) != one) {
+                one = None;
+            }
+            d.bands.iter().rev().take(n).fold((d.h, 0), |(t, b), &(t2, b2, _)| (t.min(t2), b.max(b2)))
         } else {
             (0, d.h)
         };
         io[0] = d.serial;
         io[1] = t.max(0) as u32;
         io[2] = b.max(t).min(d.h) as u32;
+        let win = one.filter(|_| direct_ok).and_then(|id| d.wins.get(&id)).filter(|w| w.shared != 0);
+        match win {
+            Some(w) => {
+                io[3] = 1;
+                io[4] = w.shared as u32;
+                io[5] = w.rect.w() as u32;
+                io[6..10].copy_from_slice(&[w.rect.l as u32, w.rect.t as u32, w.rect.r as u32, w.rect.b as u32]);
+            }
+            None => {
+                // (rows a direct draw changed may be among them)
+                d.sync();
+                if direct_ok {
+                    io[3] = 0;
+                }
+            }
+        }
         d.screen.as_ptr()
     })
 }

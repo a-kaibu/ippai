@@ -57,11 +57,46 @@ pub struct Batch {
     pub blob: Vec<u8>,
     presents: u32,
     gen: u64,
+    /// where its WRITE_TEXTURE_MEM commands are in `cmds`
+    mems: Vec<usize>,
 }
 
 impl Batch {
     pub fn cmd(&mut self, words: &[u32]) {
         self.cmds.extend_from_slice(words);
+    }
+
+    /// WRITE_TEXTURE_MEM id level x y w h pitch ptr (see `detach_mem`).
+    pub fn cmd_mem(&mut self, words: &[u32; 9]) {
+        self.mems.push(self.cmds.len());
+        self.cmds.extend_from_slice(words);
+    }
+
+    /// Guest memory [lo, hi) is about to change: the WRITE_TEXTURE_MEM commands that read it get
+    /// a copy of their rows in the blob (WRITE_TEXTURE with the same pitch) instead.
+    fn detach(&mut self, lo: u32, hi: u32) {
+        let mut i = 0;
+        while i < self.mems.len() {
+            let at = self.mems[i];
+            let c = &self.cmds[at..at + 9];
+            let (h, pitch, ptr) = (c[6], c[7], c[8]);
+            let len = pitch as usize * h as usize;
+            if (ptr as u64) < hi as u64 && ptr as u64 + len as u64 > lo as u64 {
+                let off = self.blob(unsafe { std::slice::from_raw_parts(ptr as usize as *const u8, len) });
+                self.cmds[at] = WRITE_TEXTURE;
+                self.cmds[at + 8] = off;
+                self.mems.swap_remove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    fn reads(&self, lo: u32, hi: u32) -> bool {
+        self.mems.iter().any(|&at| {
+            let c = &self.cmds[at..at + 9];
+            (c[8] as u64) < hi as u64 && c[8] as u64 + c[7] as u64 * c[6] as u64 > lo as u64
+        })
     }
 
     /// Appends data aligned to `align` bytes; returns its offset.
@@ -245,6 +280,20 @@ pub fn wait_done(gen: u64) {
         }
         g = WAKE.wait_timeout(g, Duration::from_millis(5)).unwrap_or_else(|e| e.into_inner()).0;
     }
+}
+
+/// Guest memory [lo, hi) is about to change: the batches not taken by the page yet copy what
+/// their WRITE_TEXTURE_MEM commands read of it (a copy instead of waiting up to a frame for the
+/// page). Returns the generation to wait for when the page is running such a batch right now.
+pub fn detach_mem(lo: u32, hi: u32) -> Option<u64> {
+    with(|q| {
+        for b in q.closed.iter_mut() {
+            b.detach(lo, hi);
+        }
+        q.open.detach(lo, hi);
+        let done = q.done;
+        q.reading.as_ref().filter(|b| b.gen >= done && b.reads(lo, hi)).map(|b| b.gen)
+    })
 }
 
 /// Whether the batch of generation `gen` is done (see `wait_done`).

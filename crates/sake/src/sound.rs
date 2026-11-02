@@ -437,14 +437,14 @@ fn start_mixer() {
     STARTED.get_or_init(|| {
         let id = vnhost::audio::vnhost_audio_open(RATE, 2, 32, 1);
         with(|d| d.stream = id);
-        if std::env::var_os("SAKE_NO_MIXER").is_some() {
+        if crate::env_on!("SAKE_NO_MIXER") {
             return;
         }
         std::thread::Builder::new()
             .name("dsound mixer".into())
             .spawn(move || {
                 let mut out = vec![0f32; STEP * 2];
-                let stats = std::env::var_os("SAKE_MIX_STATS").is_some();
+                let stats = crate::env_on!("SAKE_MIX_STATS");
                 let (mut t_mix, mut t_q, mut t_w, mut t_all, mut n) = (0f64, 0f64, 0f64, std::time::Instant::now(), 0);
                 // (a condvar's timed wait, not thread::sleep: in the browser emscripten's sleep
                 // cost the thread about 0.15 cores)
@@ -568,7 +568,7 @@ fn create_device() -> u32 {
 }
 
 fn no_sound() -> bool {
-    std::env::var_os("SAKE_NO_SOUND").is_some()
+    crate::env_on!("SAKE_NO_SOUND")
 }
 
 fn DirectSoundCreate(c: &mut Ctx) -> u32 {

@@ -1098,7 +1098,7 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
         w32(crate::cur().teb + crate::teb_last_error(), 1407);
         return 0;
     };
-    if std::env::var_os("SAKE_TRACE_WIN").is_some() {
+    if crate::env_on!("SAKE_TRACE_WIN") {
         eprintln!("sake: CreateWindowEx {h:x} class {cname} style {style:x} ex {ex:x} {x},{y} {cx}x{cy} parent {parent:x}");
     }
     // CREATESTRUCT on the guest stack (below the caller's)
@@ -2429,6 +2429,8 @@ fn GetMessageW(c: &mut Ctx) -> u32 {
 fn peek(c: &mut Ctx) -> u32 {
     let (p, h, lo, hi, flags) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
     start_input();
+    // a turn of the game loop: the frame's big redraws wait for the display here
+    vnhost::display::pace_frame();
     process_sent(c.cpu);
     match next_msg(h, lo, hi, flags & 1 != 0) {
         Some(m) => {
@@ -2521,11 +2523,11 @@ fn DispatchMessageA(c: &mut Ctx) -> u32 {
     if h == 0 {
         return 0;
     }
-    if (0x200..=0x20a).contains(&m) && m != 0x200 && std::env::var_os("SAKE_TRACE_INPUT").is_some() {
+    if (0x200..=0x20a).contains(&m) && m != 0x200 && crate::env_on!("SAKE_TRACE_INPUT") {
         eprintln!("sake input: dispatch {h:x} msg {m:x} {wp:x} {lp:x}");
     }
     let r = send(c, h, m, wp, lp);
-    if (0x200..=0x20a).contains(&m) && m != 0x200 && std::env::var_os("SAKE_TRACE_INPUT").is_some() {
+    if (0x200..=0x20a).contains(&m) && m != 0x200 && crate::env_on!("SAKE_TRACE_INPUT") {
         eprintln!("sake input: dispatched {m:x} -> {r:x}");
     }
     if m == 0xf {
@@ -3916,7 +3918,7 @@ fn start_input() {
                 return;
             }
             let mut buf = [0u32; 64];
-            let trace = std::env::var_os("SAKE_TRACE_INPUT").is_some();
+            let trace = crate::env_on!("SAKE_TRACE_INPUT");
             loop {
                 let mut p = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
                 let r = unsafe { libc::poll(&mut p, 1, 100) };
@@ -3956,7 +3958,7 @@ fn input(kind: u32, x: i32, y: i32, data: u32) {
                 let tid = w.tid;
                 let c = client_screen(s, target);
                 let (cx, cy) = (x - c.l, y - c.t);
-                if std::env::var_os("SAKE_TRACE_INPUT").is_some() {
+                if crate::env_on!("SAKE_TRACE_INPUT") {
                     eprintln!("sake input: {kind} at {x},{y} -> {target:x} client {cx},{cy} (client {c:?}, window {:?})", w.rect);
                     for (h, w) in s.wins.iter() {
                         eprintln!("  win {h:x} parent {:x} vis {} style {:x} ex {:x} rect {:?} active {}", w.parent, w.visible, w.style, w.exstyle, w.rect, s.active == *h);

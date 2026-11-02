@@ -127,7 +127,7 @@ pub fn load_context(cpu: &mut Cpu, ctx: u32) {
 /// Raises an exception with `cpu` as the context (EIP = where it happened) and runs the
 /// handlers from the next instruction the guest executes.
 pub fn raise(cpu: &mut Cpu, code: u32, flags: u32, addr: u32, params: &[u32]) {
-    if std::env::var_os("SAKE_TRACE_SEH").is_some() {
+    if crate::env_on!("SAKE_TRACE_SEH") {
         crate::api::dump_ring("the exception");
         let st: Vec<String> = (0..8).map(|k| format!("{:x}", r32(cpu.regs[ESP] + 4 * k))).collect();
         eprintln!(
@@ -257,7 +257,7 @@ pub fn handler_done(cpu: &mut Cpu) {
         load_context(cpu, ctx);
         crate::fatal(cpu, &msg);
     }
-    if std::env::var_os("SAKE_TRACE_SEH").is_some() {
+    if crate::env_on!("SAKE_TRACE_SEH") {
         eprintln!("sake: handler of frame {frame:#x} says {verdict}");
     }
     match verdict {
@@ -272,7 +272,7 @@ pub fn handler_done(cpu: &mut Cpu) {
 /// RtlUnwind(TargetFrame, TargetIp, ExceptionRecord, ReturnValue)
 pub fn rtl_unwind(c: &mut Ctx) -> u32 {
     let (target, _ip, rec_in, retval) = (c.a(0), c.a(1), c.a(2), c.a(3));
-    if std::env::var_os("SAKE_TRACE_SEH").is_some() {
+    if crate::env_on!("SAKE_TRACE_SEH") {
         eprintln!("sake: RtlUnwind to {target:#x} ip {_ip:#x} rec {rec_in:#x} from {:#x}, esp {:#x} ebp {:#x}", r32(c.esp), c.esp, c.cpu.regs[EBP]);
     }
     let teb = crate::cur().teb;

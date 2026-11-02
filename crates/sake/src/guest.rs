@@ -14,7 +14,7 @@ static PLACED: AtomicBool = AtomicBool::new(false);
 /// Maps the code (read+execute: the JIT translates no writable code).
 pub fn init() {
     // (32-bit code)
-    if std::env::var_os("SAKE_NO_GUEST_CRT").is_some() || mem::x64() {
+    if crate::env_on!("SAKE_NO_GUEST_CRT") || mem::x64() {
         return;
     }
     let size = (code::CODE.len() as u32 + 0xfff) & !0xfff;

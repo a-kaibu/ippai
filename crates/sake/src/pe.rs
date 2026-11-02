@@ -565,7 +565,7 @@ pub fn proc_address(base: u32, imp: Import) -> Option<u32> {
     // to older ones when they are missing
     let kernel = matches!(api::dll_key(&name).as_str(), "kernel32" | "kernelbase" | "ntdll");
     let known = api::is_known(a);
-    (api::implemented(a) || (known && !kernel) || std::env::var_os("SAKE_ALL_EXPORTS").is_some()).then(|| crate::fast::bind(&name, &n, a))
+    (api::implemented(a) || (known && !kernel) || crate::env_on!("SAKE_ALL_EXPORTS")).then(|| crate::fast::bind(&name, &n, a))
 }
 
 /// A data export of a DLL we implement (msvcrt's variables).
@@ -604,7 +604,7 @@ pub fn load_library(cpu: &mut Cpu, name: &str) -> u32 {
             b
         }
         Err(e) => {
-            if std::env::var_os("SAKE_TRACE_LOAD").is_some() {
+            if crate::env_on!("SAKE_TRACE_LOAD") {
                 eprintln!("sake: LoadLibrary({name}): {e}");
             }
             0
@@ -672,11 +672,11 @@ pub fn init_dlls(cpu: &mut Cpu) {
         tls_callbacks(cpu, base, 1);
         let entry = with(base, |m| m.entry).unwrap_or(0);
         if entry != 0 {
-            if std::env::var_os("SAKE_TRACE_LOAD").is_some() {
+            if crate::env_on!("SAKE_TRACE_LOAD") {
                 eprintln!("sake: DllMain of {:#x} {} ...", base, with(base, |m| m.path.clone()).unwrap_or_default());
             }
             let ok = crate::call(cpu, entry, &[base, 1, 0]);
-            if std::env::var_os("SAKE_TRACE_LOAD").is_some() {
+            if crate::env_on!("SAKE_TRACE_LOAD") {
                 eprintln!("sake: DllMain of {:#x} {}: {ok}", base, with(base, |m| m.name.clone()).unwrap_or_default());
             }
         }

@@ -10,6 +10,8 @@ export interface SavesModule {
   _malloc(size: number): number;
   _vnhost_free(p: number): void;
   _vnhost_vfs_export(roots: number, len: number): number;
+  /** changes whenever the file system may have changed */
+  _vnhost_vfs_changes?(): number;
 }
 
 async function file(name: string, create: boolean): Promise<FileSystemFileHandle | null> {
@@ -71,10 +73,15 @@ export function keepSaving(
   last: Uint8Array | null,
 ): () => Promise<void> {
   let busy = false;
+  let seen = -1;
   const save = async () => {
     if (busy) return;
+    // (nothing written since the last look: no export)
+    const changes = m._vnhost_vfs_changes?.() ?? -2;
+    if (changes === seen && changes !== -2) return;
     busy = true;
     try {
+      seen = changes;
       const data = exportSaves(m, roots);
       if (same(last, data)) return;
       const f = await file(name, true);

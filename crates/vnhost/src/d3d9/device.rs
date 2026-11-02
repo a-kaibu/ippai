@@ -1740,7 +1740,7 @@ unsafe fn upload_keep(d: &mut D3d, s: u32, r: [u32; 4]) {
                 return; // already in this batch (it reads the newest pixels)
             }
         }
-        let ((), g) = gpu::record_gen(|b: &mut Batch| b.cmd(&[gpu::WRITE_TEXTURE_MEM, gpu, level, x0, y0, w, h, pitch, src]));
+        let ((), g) = gpu::record_gen(|b: &mut Batch| b.cmd_mem(&[gpu::WRITE_TEXTURE_MEM, gpu, level, x0, y0, w, h, pitch, src]));
         sf.pending = Some(match sf.pending {
             Some((pg, p)) if pg == g => (g, [p[0].min(x0), p[1].min(y0), p[2].max(x1), p[3].max(y1)]),
             _ => (g, r),
@@ -1755,11 +1755,18 @@ unsafe fn upload_keep(d: &mut D3d, s: u32, r: [u32; 4]) {
     });
 }
 
-/// Before the guest copy of a surface changes: waits for the page to read a pending upload.
+/// Before the guest copy of a surface changes: the uploads the page has not read yet take a
+/// copy of its rows (waiting only if the page is reading them right now).
 fn settle(d: &mut D3d, s: u32) {
     if let Some(Data::Surface(sf)) = d.objs.get_mut(&s).map(|o| &mut o.data) {
         if let Some((g, _)) = sf.pending.take() {
-            gpu::wait_done(g);
+            if !gpu::is_done(g) {
+                let lo = sf.mem;
+                let hi = sf.mem.saturating_add(sf.pitch.saturating_mul(sf.h));
+                if let Some(r) = gpu::detach_mem(lo, hi) {
+                    gpu::wait_done(r);
+                }
+            }
         }
     }
 }
@@ -2846,7 +2853,7 @@ fn shader_module(dev: &mut Device, wgsl: String) -> u32 {
         let off = b.blob(wgsl.as_bytes());
         b.cmd(&[gpu::CREATE_SHADER, id, off, wgsl.len() as u32]);
     });
-    if std::env::var_os("VNVM_D3D_WGSL").is_some() {
+    if crate::env_on!("VNVM_D3D_WGSL") {
         eprintln!("d3d9: shader {id}:\n{wgsl}");
     }
     dev.shaders.insert(wgsl, id);

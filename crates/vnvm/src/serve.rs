@@ -30,6 +30,10 @@
 //!   sessions a killed tab left, ...), kept as `<logs>/<name>.txt`; `GET /log-list` lists them
 //!   (JSON, newest first), `/logs/<name>.txt` serves one; web/logs.html shows them
 //!
+//! - the web app's files are sent zstd-compressed to browsers that accept it: at the start the
+//!   server writes `<file>.zst` beside each script, wasm, page and style sheet of `--web` (again
+//!   when the file is newer), and `ServeDir` picks it (see `precompress`)
+//!
 //! Every response carries COOP/COEP: Wine's threads (wasm pthreads) need SharedArrayBuffer,
 //! which browsers only allow on cross-origin isolated pages.
 
@@ -591,6 +595,39 @@ async fn headers(req: Request<axum::body::Body>, next: Next) -> Response {
     res
 }
 
+/// Writes `<file>.zst` beside every compressible file under `dir` that has none or an older one
+/// (sake.wasm: 8.1 MB, 2.3 MB compressed).
+fn precompress(dir: &std::path::Path) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let p = e.path();
+        let Ok(meta) = e.metadata() else { continue };
+        if meta.is_dir() {
+            precompress(&p);
+            continue;
+        }
+        let ext = p.extension().and_then(|x| x.to_str()).unwrap_or("");
+        if !matches!(ext, "wasm" | "js" | "mjs" | "html" | "css" | "json" | "txt" | "svg") || meta.len() < 1024 {
+            continue;
+        }
+        let zst = p.with_file_name(format!("{}.zst", p.file_name().unwrap().to_string_lossy()));
+        let fresh = std::fs::metadata(&zst).and_then(|z| Ok(z.modified()? >= meta.modified()?)).unwrap_or(false);
+        if fresh {
+            continue;
+        }
+        let Ok(data) = std::fs::read(&p) else { continue };
+        match zstd::encode_all(&data[..], 19) {
+            Ok(z) if z.len() < data.len() => {
+                let tmp = zst.with_extension("zst.tmp");
+                if std::fs::write(&tmp, &z).and_then(|_| std::fs::rename(&tmp, &zst)).is_ok() {
+                    eprintln!("vnvm-server: {} {} -> {} bytes", zst.display(), data.len(), z.len());
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 use axum::serve::ListenerExt;
 
 #[tokio::main]
@@ -605,6 +642,8 @@ pub async fn run(store: PathBuf, args: Args) -> anyhow::Result<()> {
         lock: Default::default(),
     });
     let logs = Arc::new(args.logs.clone());
+    let web = args.web.clone();
+    tokio::task::spawn_blocking(move || precompress(&web)).await?;
     let app = Router::new()
         .route("/log-save/{name}", put(save_log).with_state(logs.clone()))
         .route("/log-list", get(log_list).with_state(logs))
@@ -617,7 +656,7 @@ pub async fn run(store: PathBuf, args: Args) -> anyhow::Result<()> {
         .route("/games", get(games).with_state(pre.clone()))
         .nest_service("/jit", ServeDir::new(&args.jit))
         .nest_service("/store", ServeDir::new(&store))
-        .fallback_service(ServeDir::new(&args.web))
+        .fallback_service(ServeDir::new(&args.web).precompressed_zstd())
         .layer(middleware::from_fn(headers));
     // without TCP_NODELAY a kept-alive connection waits out the peer's delayed ACK (~40ms) on
     // every small response; the page reads the store one chunk at a time

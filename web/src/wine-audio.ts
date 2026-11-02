@@ -1,42 +1,44 @@
 // Plays what vnhost's sound card mixed (crates/vnhost/src/audio.rs: 44.1 kHz stereo f32).
-// The page drains it every few milliseconds and hands the chunks to an AudioWorklet, which
-// plays them in order and keeps its queue short (vnhost's wall clock and the audio clock
-// drift a little apart).
+// The AudioWorklet reads the card's ring straight from the shared wasm memory (no copies, and
+// nothing on the page's own thread, where a long frame would make the sound stutter). It keeps
+// its lag short: vnhost's wall clock and the audio clock drift a little apart.
 
 const RATE = 44100;
-/** frames the worklet may hold before dropping the oldest */
+/** frames the worklet may lag behind before it skips ahead */
 const MAX_QUEUE = RATE / 5;
+/** how far behind it starts, and lands when it skips */
+const TARGET = RATE / 20;
 
 const worklet = `
 class Sink extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.chunks = [];
-    this.offset = 0;
-    this.queued = 0;
+    this.read = -1;
     this.port.onmessage = (e) => {
-      this.chunks.push(e.data);
-      this.queued += e.data.length / 2;
-      while (this.queued > ${MAX_QUEUE} && this.chunks.length > 1) {
-        const c = this.chunks.shift();
-        this.queued -= c.length / 2 - this.offset;
-        this.offset = 0;
-      }
+      const { mem, ptr, frames } = e.data;
+      this.head = new Uint32Array(mem, ptr, 1);
+      this.data = new Float32Array(mem, ptr + 8, frames * 2);
+      this.mask = frames - 1;
     };
   }
   process(_inputs, outputs) {
     const [l, r] = outputs[0];
-    for (let i = 0; i < l.length; i++) {
-      const c = this.chunks[0];
-      if (!c) break;
-      l[i] = c[this.offset * 2];
-      r[i] = c[this.offset * 2 + 1];
-      this.queued--;
-      if (++this.offset * 2 >= c.length) {
-        this.chunks.shift();
-        this.offset = 0;
-      }
+    if (!this.head) return true;
+    const head = Atomics.load(this.head, 0);
+    if (this.read < 0) this.read = (head - ${TARGET}) >>> 0;
+    let avail = (head - this.read) >>> 0;
+    if (avail > ${MAX_QUEUE}) {
+      this.read = (head - ${TARGET}) >>> 0;
+      avail = ${TARGET};
     }
+    const n = Math.min(avail, l.length);
+    const d = this.data;
+    for (let i = 0; i < n; i++) {
+      const at = ((this.read + i) & this.mask) * 2;
+      l[i] = d[at];
+      r[i] = d[at + 1];
+    }
+    this.read = (this.read + n) >>> 0;
     return true;
   }
 }
@@ -44,12 +46,13 @@ registerProcessor("vnvm-sink", Sink);
 `;
 
 export interface AudioSource {
-  HEAPF32: Float32Array;
+  HEAPU32: Uint32Array;
+  wasmMemory: WebAssembly.Memory;
   _malloc(size: number): number;
-  _vnhost_audio_take(buf: number, frames: number): number;
+  _vnhost_audio_ring(frames: number): number;
 }
 
-/** Created from a user gesture (autoplay rules); `attach` starts draining a running Wine. */
+/** Created from a user gesture (autoplay rules); `attach` starts playing a running game. */
 export class AudioOut {
   private constructor(
     private ctx: AudioContext,
@@ -67,14 +70,12 @@ export class AudioOut {
   }
 
   attach(wine: AudioSource): void {
-    const frames = 4096;
-    const buf = wine._malloc(frames * 8) >>> 0;
     // autoplay: the context can only start on a user gesture
     for (const ev of ["pointerdown", "keydown"])
       addEventListener(ev, () => void (this.ctx.state === "suspended" && this.ctx.resume()), true);
-    setInterval(() => {
-      const n = wine._vnhost_audio_take(buf, frames);
-      if (n) this.node.port.postMessage(wine.HEAPF32.slice(buf >>> 2, (buf >>> 2) + n * 2));
-    }, 10);
+    const p = wine._malloc(4) >>> 0;
+    const ptr = wine._vnhost_audio_ring(p) >>> 0;
+    const frames = new Uint32Array(wine.wasmMemory.buffer, p, 1)[0]!;
+    this.node.port.postMessage({ mem: wine.wasmMemory.buffer, ptr, frames });
   }
 }

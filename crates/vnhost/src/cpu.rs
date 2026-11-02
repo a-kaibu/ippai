@@ -435,7 +435,7 @@ fn exit_code(cpu: &Cpu, mem: &mut Linear, exit: Exit, info: &mut [u32], from_jit
         Exit::InvalidOpcode => {
             exception(cpu, "invalid opcode", None, from_jit);
             info[0] = cpu.eip;
-            if std::env::var_os("VNVM_TRACE_UD").is_some() {
+            if crate::env_on!("VNVM_TRACE_UD") {
                 let mut b = [0u8; 16];
                 let n = mem.fetch(cpu.eip, &mut b);
                 eprintln!("vnhost: invalid opcode at {:#x}: {:02x?}", cpu.eip, &b[..n]);

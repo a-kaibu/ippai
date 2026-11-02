@@ -217,7 +217,7 @@ fn GetCurrentThreadId(_: &mut Ctx) -> u32 {
 
 fn ExitProcess(c: &mut Ctx) -> u32 {
     let code = c.a(0);
-    if std::env::var_os("SAKE_TRACE_EXIT").is_some() {
+    if crate::env_on!("SAKE_TRACE_EXIT") {
         eprintln!("sake: ExitProcess({code}) from {:#x}", r32(c.esp));
     }
     unsafe { libc::exit(code as i32) }
@@ -1051,13 +1051,13 @@ fn IsDebuggerPresent(_: &mut Ctx) -> u32 {
     0
 }
 fn OutputDebugStringA(c: &mut Ctx) -> u32 {
-    if std::env::var_os("SAKE_DEBUGSTR").is_some() {
+    if crate::env_on!("SAKE_DEBUGSTR") {
         eprintln!("sake: debug: {}", arg_str(c.a(0), false).trim_end());
     }
     0
 }
 fn OutputDebugStringW(c: &mut Ctx) -> u32 {
-    if std::env::var_os("SAKE_DEBUGSTR").is_some() {
+    if crate::env_on!("SAKE_DEBUGSTR") {
         eprintln!("sake: debug: {}", arg_str(c.a(0), true).trim_end());
     }
     0
@@ -1912,7 +1912,7 @@ fn GetNativeSystemInfo(c: &mut Ctx) -> u32 {
 }
 fn IsProcessorFeaturePresent(c: &mut Ctx) -> u32 {
     // MMX 3, XMMI 6, RDTSC 8, XMMI64 10, NX 12, SSE3 13
-    ok(matches!(c.a(0), 3 | 8) || (matches!(c.a(0), 6 | 10) && std::env::var_os("SAKE_SSE").is_some()))
+    ok(matches!(c.a(0), 3 | 8) || (matches!(c.a(0), 6 | 10) && crate::env_on!("SAKE_SSE")))
 }
 fn IsWow64Process(c: &mut Ctx) -> u32 {
     put32(c.a(1), 0);
@@ -2759,7 +2759,7 @@ fn GetProcAddress(c: &mut Ctx) -> u32 {
     let (h, p) = (c.a(0), c.a(1));
     let imp = if p < 0x10000 { crate::pe::Import::Ordinal(p) } else { crate::pe::Import::Name(Box::leak(a2s(&cstr(p)).into_boxed_str())) };
     let r = crate::pe::proc_address(h, imp).unwrap_or(0);
-    if std::env::var_os("SAKE_TRACE_LOAD").is_some() {
+    if crate::env_on!("SAKE_TRACE_LOAD") {
         eprintln!("sake: GetProcAddress({h:#x}, {}) = {r:#x}", if p < 0x10000 { format!("#{p}") } else { a2s(&cstr(p)) });
     }
     if r == 0 {
@@ -2880,7 +2880,7 @@ fn GetConsoleMode(_: &mut Ctx) -> u32 {
 fn create_file(c: &mut Ctx, wide: bool) -> u32 {
     let name = arg_str(c.a(0), wide);
     let (access, disp) = (c.a(1), c.a(4));
-    if std::env::var_os("SAKE_TRACE_FILES").is_some() {
+    if crate::env_on!("SAKE_TRACE_FILES") {
         eprintln!("sake: CreateFile({name}, {access:#x}, {disp})");
     }
     if name.eq_ignore_ascii_case("CONOUT$") || name.eq_ignore_ascii_case("CONIN$") {
@@ -3097,7 +3097,7 @@ fn write_find_data(p: u32, name: &str, m: &std::fs::Metadata, wide: bool) {
 }
 fn find_first(c: &mut Ctx, wide: bool) -> u32 {
     let pat = arg_str(c.a(0), wide);
-    if std::env::var_os("SAKE_TRACE_FILES").is_some() {
+    if crate::env_on!("SAKE_TRACE_FILES") {
         let r = files::find(&pat).map(|f| f.entries.iter().map(|e| e.0.clone()).collect::<Vec<_>>().join(" "));
         eprintln!("sake: FindFirstFile({pat}) -> {r:?}");
     }
@@ -3153,7 +3153,7 @@ fn FindClose(c: &mut Ctx) -> u32 {
     ok(obj::close(c.a(0)))
 }
 fn file_attrs(name: &str) -> u32 {
-    if std::env::var_os("SAKE_TRACE_FILES").is_some() {
+    if crate::env_on!("SAKE_TRACE_FILES") {
         eprintln!("sake: GetFileAttributes({name})");
     }
     match files::resolve(name).and_then(|h| std::fs::metadata(h).ok()) {

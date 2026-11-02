@@ -384,7 +384,7 @@ pub fn bind(dll: &str, name: &str, trap: u32) -> u32 {
         return trap;
     }
     // (the stubs are 32-bit code)
-    if std::env::var_os("SAKE_NO_FAST").is_some() || crate::mem::x64() {
+    if crate::env_on!("SAKE_NO_FAST") || crate::mem::x64() {
         return trap;
     }
     let mut g = STUBS.lock().unwrap();

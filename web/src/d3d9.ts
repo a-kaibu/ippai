@@ -286,6 +286,8 @@ export class D3D9 {
   private samplers = new Map<number, GPUSampler>();
   private groups1 = new Map<string, GPUBindGroup>();
   private groups0 = new Map<string, GPUBindGroup>();
+  /** Direct3D 11 bind groups by pipeline, group and binding words (cleared when a texture or buffer comes or goes) */
+  private groups2 = new Map<string, { layout: GPUBindGroupLayout; group: GPUBindGroup; used: number[] }>();
   private layout0: GPUBindGroupLayout;
   private layout1: GPUBindGroupLayout;
   private layout: GPUPipelineLayout;
@@ -390,6 +392,39 @@ export class D3D9 {
   /** counts for stats (reset by the reader) */
   stat = { passes: 0, submits: 0, created: 0, uploaded: 0, gpuMs: 0, gpuMax: 0 };
 
+  /** WebGPU takes views of the shared wasm memory as they are (no copy); if it ever refuses, copied first */
+  private sharedOk = true;
+
+  private writeTex(
+    dst: GPUTexelCopyTextureInfo,
+    bytes: Uint8Array,
+    layout: GPUTexelCopyBufferLayout,
+    size: GPUExtent3DStrict,
+  ): void {
+    if (this.sharedOk) {
+      try {
+        this.device.queue.writeTexture(dst, bytes as Uint8Array<ArrayBuffer>, layout, size);
+        return;
+      } catch {
+        this.sharedOk = false;
+      }
+    }
+    this.device.queue.writeTexture(dst, this.copy(bytes), layout, size);
+  }
+
+  /** `bytes.length` a multiple of 4 */
+  private writeBuf(buf: GPUBuffer, at: number, bytes: Uint8Array): void {
+    if (this.sharedOk) {
+      try {
+        this.device.queue.writeBuffer(buf, at, bytes as Uint8Array<ArrayBuffer>);
+        return;
+      } catch {
+        this.sharedOk = false;
+      }
+    }
+    this.device.queue.writeBuffer(buf, at, this.copy(bytes));
+  }
+
   private copy(src: Uint8Array): Uint8Array<ArrayBuffer> {
     if (this.staging.length < src.length)
       this.staging = new Uint8Array(Math.max(src.length, this.staging.length * 2));
@@ -409,14 +444,11 @@ export class D3D9 {
             GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX | GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         });
         this.groups0.clear();
+        this.groups2.clear();
       }
+      // (rounded up to 4 bytes: what follows the data in memory goes along, unused)
       const n = Math.ceil(data.length / 4) * 4;
-      const src = this.copy(data);
-      if (n !== src.length) {
-        const padded = new Uint8Array(n);
-        padded.set(src);
-        d.queue.writeBuffer(this.dataBuf, 0, padded);
-      } else d.queue.writeBuffer(this.dataBuf, 0, src);
+      this.writeBuf(this.dataBuf, 0, new Uint8Array(data.buffer, data.byteOffset, n));
     }
     this.target = [0, 0, 0];
     this.pendingClear = null;
@@ -448,6 +480,7 @@ export class D3D9 {
               (depth ? 0 : GPUTextureUsage.RENDER_ATTACHMENT),
           });
           this.textures.get(id)?.tex.destroy();
+          this.groups2.clear();
           this.stat.created++;
           this.textures.set(id, {
             tex,
@@ -467,6 +500,7 @@ export class D3D9 {
             t.tex.destroy();
             this.textures.delete(c[i + 1]!);
             this.groups1.clear();
+            this.groups2.clear();
           }
           i += 2;
           break;
@@ -483,16 +517,16 @@ export class D3D9 {
             const cw = Math.min(w!, lw - x!),
               ch = Math.min(h!, lh - y!);
             if (cw > 0 && ch > 0 && t.format === "bgra8unorm") {
-              d.queue.writeTexture(
+              this.writeTex(
                 { texture: t.tex, mipLevel: level!, origin: { x: x!, y: y! } },
-                this.copy(bytes),
+                bytes,
                 { bytesPerRow: bpr! },
                 [cw, ch],
               );
             } else if (cw > 0 && ch > 0 && bpr! === w! * 8) {
-              d.queue.writeTexture(
+              this.writeTex(
                 { texture: t.tex, mipLevel: level!, origin: { x: x!, y: y! } },
-                this.copy(bytes),
+                bytes,
                 { bytesPerRow: bpr! },
                 [cw, ch],
               );
@@ -515,9 +549,9 @@ export class D3D9 {
             if (cw > 0 && ch > 0) {
               const bytes = new Uint8Array(this.wine.wasmMemory.buffer, ptr!, pitch! * (ch - 1) + cw * bpp);
               this.stat.uploaded += bytes.length;
-              d.queue.writeTexture(
+              this.writeTex(
                 { texture: t.tex, mipLevel: level!, origin: { x: x!, y: y! } },
-                this.copy(bytes),
+                bytes,
                 { bytesPerRow: pitch! },
                 [cw, ch],
               );
@@ -635,6 +669,7 @@ export class D3D9 {
           break;
         }
         case CREATE_TEXTURE2:
+          this.groups2.clear();
           this.createTexture2(c.subarray(i + 1, i + 8));
           i += 8;
           break;
@@ -650,9 +685,9 @@ export class D3D9 {
             if (cw > 0 && ch > 0 && level! < t.levels) {
               const bytes = blob.subarray(off!, off! + bpr! * h!);
               this.stat.uploaded += bytes.length;
-              d.queue.writeTexture(
+              this.writeTex(
                 { texture: t.tex, mipLevel: level!, origin: { x: x!, y: y!, z: layer! } },
-                this.copy(bytes),
+                bytes,
                 { bytesPerRow: bpr!, rowsPerImage: h! },
                 [cw, ch, 1],
               );
@@ -663,6 +698,7 @@ export class D3D9 {
         }
         case CREATE_BUFFER: {
           const [id, size] = [c[i + 1]!, c[i + 2]!];
+          this.groups2.clear();
           this.buffers.set(
             id,
             d.createBuffer({
@@ -683,6 +719,7 @@ export class D3D9 {
           if (b) {
             this.doomed.push(b);
             this.buffers.delete(c[i + 1]!);
+            this.groups2.clear();
           }
           i += 2;
           break;
@@ -692,9 +729,7 @@ export class D3D9 {
           const b = this.buffers.get(id!);
           if (b) {
             const n = Math.min(Math.ceil(len! / 4) * 4, b.size - at!);
-            const src = new Uint8Array(n);
-            src.set(blob.subarray(off!, off! + Math.min(len!, n)));
-            d.queue.writeBuffer(b, at!, src);
+            if (n > 0) this.writeBuf(b, at!, new Uint8Array(blob.buffer, blob.byteOffset + off!, n));
           }
           i += 5;
           break;
@@ -1737,6 +1772,22 @@ export class D3D9 {
     pass.setBlendConstant(blendConst);
     pass.setStencilReference(stencilRef);
     groups.forEach((g, gi) => {
+      const layout = p.layouts![gi]!;
+      // (the same resources as an earlier draw: its bind group; not when it binds the batch's
+      // data block, whose offsets change every draw)
+      let key = "";
+      let hasData = false;
+      for (let e = 0; e < g.length; e += 8) if (g[e + 1] === 0 && g[e + 2] === DATA) hasData = true;
+      if (!hasData) {
+        key = `${c[i + 1]}/${gi}/${g.join(",")}`;
+        const hit = this.groups2.get(key);
+        if (hit && hit.layout === layout) {
+          for (const t of hit.used) this.used.add(t);
+          pass.setBindGroup(gi, hit.group);
+          return;
+        }
+      }
+      const used: number[] = [];
       const entries: GPUBindGroupEntry[] = [];
       for (let e = 0; e < g.length; e += 8) {
         const [binding, kind, a, b, cc, dd, ee, ff] = Array.from(g.subarray(e, e + 8)) as number[];
@@ -1766,7 +1817,10 @@ export class D3D9 {
             (kind !== 1 || !t.format.match(/int$/)) &&
             (kind !== 4 || t.format.endsWith("uint")) &&
             (kind !== 5 || t.format.endsWith("sint"));
-          if (ok) this.used.add(a!);
+          if (ok) {
+            this.used.add(a!);
+            used.push(a!);
+          }
           entries.push({
             binding: binding!,
             resource: ok
@@ -1775,7 +1829,12 @@ export class D3D9 {
           });
         }
       }
-      pass.setBindGroup(gi, this.device.createBindGroup({ layout: p.layouts![gi]!, entries }));
+      const group = this.device.createBindGroup({ layout, entries });
+      if (key) {
+        if (this.groups2.size > 4096) this.groups2.clear();
+        this.groups2.set(key, { layout, group, used });
+      }
+      pass.setBindGroup(gi, group);
     });
     vbs.forEach(([b, off], k) => {
       const buf = b === DATA ? this.dataBuf : this.buffers.get(b);

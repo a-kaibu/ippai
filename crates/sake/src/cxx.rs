@@ -205,7 +205,7 @@ fn frame_handler(c: &mut Ctx) -> u32 {
         if handler == 0 {
             continue;
         }
-        if std::env::var_os("SAKE_TRACE_SEH").is_some() {
+        if crate::env_on!("SAKE_TRACE_SEH") {
             eprintln!("sake: C++ catch in frame {frame:#x} (level {level}, try {start}..{end}) at {handler:#x}");
         }
         // unwind the frames above, this one down to the try block, then call the catch

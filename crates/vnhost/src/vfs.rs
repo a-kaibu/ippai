@@ -113,6 +113,16 @@ fn read_real(path: &str) -> Option<Vec<u8>> {
 
 /// The page: the files written under each of `roots` (":"-separated paths) as records (see
 /// `Fs::export`), in a malloc'ed buffer the caller frees; its length goes to `len`.
+/// Bumped by everything that may change the tree (see `vnhost_vfs_changes`).
+static CHANGES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// A number that changes whenever the file system may have changed: the page exports the saves
+/// only then (an export holds the file system's lock and copies every written file).
+#[no_mangle]
+pub extern "C" fn vnhost_vfs_changes() -> u32 {
+    CHANGES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_vfs_export(roots: *const c_char, len: *mut size_t) -> *mut u8 {
     let roots = CStr::from_ptr(roots).to_string_lossy().into_owned();
@@ -346,6 +356,7 @@ impl Fs {
     }
 
     fn add(&mut self, data: Data, mode: u32, mtime: i64) -> Ino {
+        CHANGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let n = Node { nlink: if matches!(data, Data::Dir(_)) { 2 } else { 1 }, data, mode, mtime };
         if let Some(i) = self.free.pop() {
             self.nodes[i as usize] = Some(n);
@@ -359,6 +370,7 @@ impl Fs {
         self.nodes.get(ino as usize)?.as_ref()
     }
     fn node_mut(&mut self, ino: Ino) -> Option<&mut Node> {
+        CHANGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.nodes.get_mut(ino as usize)?.as_mut()
     }
     fn data_mut(&mut self, ino: Ino) -> Option<&mut Data> {
@@ -550,7 +562,7 @@ static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
 
 fn cache_limit() -> usize {
     static LIMIT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *LIMIT.get_or_init(|| std::env::var("VNVM_CHUNK_CACHE_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(256usize) << 20)
+    *LIMIT.get_or_init(|| std::env::var("VNVM_CHUNK_CACHE_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(128usize) << 20)
 }
 
 /// The chunks this run fetched, in order (the first FETCHED_MAX): the next run's page fetches
@@ -563,29 +575,105 @@ pub fn fetched() -> Vec<u8> {
     FETCHED.lock().unwrap_or_else(|e| e.into_inner()).concat()
 }
 
+// ---------------------------------------------------------------------------------------------
+// fetching ahead: a read of several chunks (a CG or a voice read whole) used to fetch them one
+// synchronous request after another on the game's thread; the ones after the first now go to
+// a few fetcher threads at once, and so does the chunk after the read.
+
+const FETCHERS: usize = 3;
+
+struct Ahead {
+    queue: VecDeque<Hash>,
+    /// queued or being fetched
+    busy: std::collections::HashSet<Hash>,
+    started: bool,
+}
+
+static AHEAD: Mutex<Option<Ahead>> = Mutex::new(None);
+static AHEAD_WORK: std::sync::Condvar = std::sync::Condvar::new();
+static AHEAD_DONE: std::sync::Condvar = std::sync::Condvar::new();
+
+fn cached(h: &Hash) -> bool {
+    CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|c| c.map.contains_key(h))
+}
+
+/// Has chunk `h` fetched by a fetcher thread unless it is here already.
+fn fetch_ahead(h: &Hash) {
+    if cached(h) {
+        return;
+    }
+    let mut g = AHEAD.lock().unwrap_or_else(|e| e.into_inner());
+    let a = g.get_or_insert_with(|| Ahead { queue: VecDeque::new(), busy: Default::default(), started: false });
+    if !a.busy.insert(*h) {
+        return;
+    }
+    a.queue.push_back(*h);
+    if !a.started {
+        a.started = true;
+        for i in 0..FETCHERS {
+            let _ = std::thread::Builder::new().name(format!("vfs fetch {i}")).spawn(fetcher);
+        }
+    }
+    AHEAD_WORK.notify_one();
+}
+
+fn fetcher() {
+    loop {
+        let h = {
+            let mut g = AHEAD.lock().unwrap_or_else(|e| e.into_inner());
+            loop {
+                if let Some(h) = g.as_mut().and_then(|a| a.queue.pop_front()) {
+                    break h;
+                }
+                g = AHEAD_WORK.wait(g).unwrap_or_else(|e| e.into_inner());
+            }
+        };
+        if let Some(data) = fetch_chunk(&h) {
+            cache_put(&h, Arc::new(data));
+        }
+        if let Some(a) = AHEAD.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            a.busy.remove(&h);
+        }
+        AHEAD_DONE.notify_all();
+    }
+}
+
+/// Waits while a fetcher has chunk `h` (queued or on its way).
+fn wait_ahead(h: &Hash) {
+    let mut g = AHEAD.lock().unwrap_or_else(|e| e.into_inner());
+    while g.as_ref().is_some_and(|a| a.busy.contains(h)) {
+        g = AHEAD_DONE.wait(g).unwrap_or_else(|e| e.into_inner());
+    }
+}
+
+fn fetch_chunk(h: &Hash) -> Option<Vec<u8>> {
+    let hex: String = h.iter().map(|b| format!("{b:02x}")).collect();
+    let data = fetch(&format!("chunks/{}/{hex}", &hex[..2]))?;
+    let mut f = FETCHED.lock().unwrap_or_else(|e| e.into_inner());
+    if f.len() < FETCHED_MAX {
+        f.push(*h);
+    }
+    Some(data)
+}
+
 fn chunk_data(h: &Hash, len: usize) -> Result<Arc<Vec<u8>>, c_int> {
+    wait_ahead(h);
     {
         let mut g = CACHE.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(c) = g.as_mut().and_then(|c| c.map.get(h)) {
             if c.len() == len {
                 return Ok(c.clone());
             }
-            // fetched ahead, as stored
-            let mut d = c.to_vec();
+            // fetched ahead, as stored: padded in place (a copy only if someone holds it)
+            let c = g.as_mut().unwrap().map.remove(h).unwrap();
+            let mut d = Arc::try_unwrap(c).unwrap_or_else(|c| c.to_vec());
             d.resize(len, 0);
             let d = Arc::new(d);
             g.as_mut().unwrap().map.insert(*h, d.clone());
             return Ok(d);
         }
     }
-    let hex: String = h.iter().map(|b| format!("{b:02x}")).collect();
-    let mut data = fetch(&format!("chunks/{}/{hex}", &hex[..2])).ok_or(libc::EIO)?;
-    {
-        let mut f = FETCHED.lock().unwrap_or_else(|e| e.into_inner());
-        if f.len() < FETCHED_MAX {
-            f.push(*h);
-        }
-    }
+    let mut data = fetch_chunk(h).ok_or(libc::EIO)?;
     data.resize(len, 0);
     Ok(cache_put(h, Arc::new(data)))
 }
@@ -635,6 +723,14 @@ fn read_at(ino: Ino, buf: &mut [u8], off: u64) -> Result<usize, c_int> {
         return Ok(0);
     }
     let end = (off + buf.len() as u64).min(size);
+    // the read's other chunks and the one after it: fetched at once by the fetcher threads while
+    // this one fetches the first
+    let (first, last) = ((off / chunk) as usize, ((end - 1) / chunk) as usize + 1);
+    for i in first + 1..=last.min(chunks.len().saturating_sub(1)) {
+        if let Some(h) = chunks.get(i).copied().flatten() {
+            fetch_ahead(&h);
+        }
+    }
     let mut at = off;
     while at < end {
         let i = (at / chunk) as usize;

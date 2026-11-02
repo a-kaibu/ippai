@@ -47,7 +47,8 @@ interface WineModule {
   _vnhost_root_exited(): number;
   _vnhost_display_frame(io: number): number;
   _vnhost_input_push(kind: number, x: number, y: number, data: number): number;
-  _vnhost_audio_take(buf: number, frames: number): number;
+  _vnhost_audio_ring(frames: number): number;
+  _vnhost_vfs_changes(): number;
   _vnhost_vfs_put_chunk(hash: number, data: number, len: number): void;
   _vnhost_d3d9_poll(out: number): number;
   _vnhost_d3d9_readback_done(id: number): void;
@@ -377,7 +378,10 @@ function present(wine: WineModule, presenter: Presenter): void {
   let width = wine.HEAPU32[scratch >>> 2]!;
   let height = wine.HEAPU32[(scratch + 4) >>> 2]!;
   let shown = -1;
-  const io = (scratch + 8) >>> 2;
+  // vnhost_display_frame's io: serial, rows, then (direct) the window surface's address,
+  // row length and rect
+  const fio = wine._malloc(40) >>> 0;
+  const io = fio >>> 2;
   // Direct3D 9 games: their commands run here, the presented frame goes over the screen
   const d3d = new D3D9(presenter.device, wine);
   (window as unknown as { vnvmD3d: D3D9 }).vnvmD3d = d3d;
@@ -450,22 +454,40 @@ function present(wine: WineModule, presenter: Presenter): void {
       presenter.above = above;
       if (shown !== -1) presenter.draw();
     }
-    wine.HEAPU32[io] = shown;
-    const bits = wine._vnhost_display_frame(scratch + 8) >>> 0;
-    const serial = wine.HEAPU32[io]!;
+    const u32 = wine.HEAPU32;
+    u32[io] = shown;
+    // (the changed rows straight from the game window's surface when only it changed)
+    u32[io + 3] = shown === -1 ? 0 : 1;
+    const bits = wine._vnhost_display_frame(fio) >>> 0;
+    const serial = u32[io]!;
     if (serial !== shown) {
       shown = serial;
-      presenter.update(
-        wine.HEAPU8,
-        bits,
-        width,
-        height,
-        width * 4,
-        wine.HEAPU32[io + 1]!,
-        wine.HEAPU32[io + 2]!,
-      );
-      // game.html looks at the frames
-      dispatchEvent(new CustomEvent("wine-frame", { detail: { heap: wine.HEAPU8, bits, width, height } }));
+      const [y0, y1] = [u32[io + 1]!, u32[io + 2]!];
+      const win =
+        u32[io + 3] === 1
+          ? {
+              ptr: u32[io + 4]!,
+              stride: u32[io + 5]!,
+              l: u32[io + 6]! | 0,
+              t: u32[io + 7]! | 0,
+              r: u32[io + 8]! | 0,
+              b: u32[io + 9]! | 0,
+            }
+          : null;
+      if (!win || !presenter.updateFrom(wine.HEAPU8, width, height, win, y0, y1)) {
+        if (win) {
+          // (the texture had to be made again: everything, from the screen)
+          shown = -1;
+          requestAnimationFrame(frame);
+          return;
+        }
+        presenter.update(wine.HEAPU8, bits, width, height, width * 4, y0, y1);
+      }
+      // game.html looks at the frames (the window's own pixels when they came from there)
+      const detail = win
+        ? { heap: wine.HEAPU8, bits: win.ptr, width: win.stride, height: win.b - win.t }
+        : { heap: wine.HEAPU8, bits, width, height };
+      dispatchEvent(new CustomEvent("wine-frame", { detail }));
       if (getUi().status) log("");
     }
     if (wine._vnhost_root_exited()) return closeGame();

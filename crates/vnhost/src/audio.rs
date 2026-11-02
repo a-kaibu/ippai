@@ -7,6 +7,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::ffi::c_int;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -77,6 +78,9 @@ impl Card {
             if s.q.is_empty() {
                 s.phase = 0.0;
             }
+        }
+        if RING_ON.load(Ordering::Relaxed) {
+            ring_put(&mut self.out);
         }
         if self.out.len() > OUT_CAP {
             let extra = self.out.len() - OUT_CAP;
@@ -155,6 +159,46 @@ pub unsafe extern "C" fn vnhost_audio_write(id: c_int, data: *const u8, frames: 
 fn stats() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("VNVM_AUDIO_STATS").is_some())
+}
+
+/// Frames in the ring the page's AudioWorklet reads (a power of two; 0.74 s).
+const RING_FRAMES: usize = 1 << 15;
+
+/// What the page plays: mixed frames (interleaved stereo f32) at `head % RING_FRAMES`, `head`
+/// counting every frame written. The AudioWorklet reads it straight from the shared wasm memory
+/// with its own read position (web/src/wine-audio.ts), so nothing goes through the page's own
+/// thread, where a long frame would make the sound stutter.
+#[repr(C)]
+struct Ring {
+    head: AtomicU32,
+    _pad: u32,
+    data: std::cell::UnsafeCell<[f32; RING_FRAMES * 2]>,
+}
+unsafe impl Sync for Ring {}
+
+static RING: Ring = Ring { head: AtomicU32::new(0), _pad: 0, data: std::cell::UnsafeCell::new([0.0; RING_FRAMES * 2]) };
+static RING_ON: AtomicBool = AtomicBool::new(false);
+
+fn ring_put(out: &mut VecDeque<[f32; 2]>) {
+    let head = RING.head.load(Ordering::Relaxed);
+    let data = unsafe { &mut *RING.data.get() };
+    let n = out.len() as u32;
+    for (i, f) in out.drain(..).enumerate() {
+        let at = (head.wrapping_add(i as u32) as usize & (RING_FRAMES - 1)) * 2;
+        data[at] = f[0];
+        data[at + 1] = f[1];
+    }
+    // (after the frames: the worklet reads up to head)
+    RING.head.store(head.wrapping_add(n), Ordering::Release);
+}
+
+/// The page: from now on mixed frames go to the ring; returns its address (head at +0, frames
+/// from +8) and writes its size in frames to `frames`.
+#[no_mangle]
+pub unsafe extern "C" fn vnhost_audio_ring(frames: *mut u32) -> *const u8 {
+    *frames = RING_FRAMES as u32;
+    RING_ON.store(true, Ordering::Relaxed);
+    &RING as *const Ring as *const u8
 }
 
 /// Moves up to `frames` mixed 48 kHz stereo frames (interleaved f32) to `buf`; returns how many.

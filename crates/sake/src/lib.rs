@@ -5,6 +5,17 @@
 //! (guest address = host address), the game's x86 code runs on the JIT (crates/vnhost), and
 //! every imported API is a trap into Rust (api.rs). Windows threads are host threads.
 
+/// Whether environment variable `$name` is set, read once (std::env::var takes a lock and walks
+/// the environment on every call).
+#[macro_export]
+macro_rules! env_on {
+    ($name:literal) => {{
+        static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *V.get_or_init(|| std::env::var_os($name).is_some())
+    }};
+}
+
+
 use std::cell::Cell;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -177,7 +188,7 @@ pub fn run(cpu: &mut Cpu, until: u32) {
                 }
             }
             X_FAULT => {
-                if std::env::var_os("SAKE_TRACE_FAULT").is_some() {
+                if crate::env_on!("SAKE_TRACE_FAULT") {
                     eprintln!("sake: fault at {:#x} reading {:#x} (write {})", cpu.eip, info[0], info[1]);
                 }
                 if info[0] >= api::TRAP_LO && cpu.eip == info[0] {

@@ -256,7 +256,7 @@ pub unsafe extern "C" fn vnhost_d3d9_init(vtbls: *const u32, count: u32) -> u32 
             free_blocks: Vec::new(),
             dev: None,
             calls: std::ptr::null(),
-            trace: std::env::var_os("VNVM_D3D_TRACE").is_some(),
+            trace: crate::env_on!("VNVM_D3D_TRACE"),
             deferred_free: Vec::new(),
             counts: HashMap::new(),
             v8: false,

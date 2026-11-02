@@ -589,6 +589,10 @@ fn draw(dc: u32, f: impl FnOnce(&Objs, &DcState, &mut Canvas) -> Rect) -> bool {
     true
 }
 
+thread_local! {
+    static WIN_SOURCES: std::cell::RefCell<Vec<Vec<u32>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// A copy of a DC's pixels in `r` (device coordinates) as a source for blits; with the
 /// offset of the copy. Memory DCs are used in place.
 fn source(t: &Objs, dc: u32) -> Option<(View, i32, i32, DcState)> {
@@ -599,12 +603,18 @@ fn source(t: &Objs, dc: u32) -> Option<(View, i32, i32, DcState)> {
         Tgt::Bmp(v) => Some((v, org.0, org.1, s)),
         Tgt::Win { surf, x, y, .. } => {
             let g = surf.lock().unwrap();
-            let mut px = g.px.clone();
             let (w, h) = (g.w, g.h);
+            // a copy (the blit may draw into the same surface), kept until this thread's
+            // source after next: one blit reads two sources at most
+            let v = WIN_SOURCES.with(|k| {
+                let mut k = k.borrow_mut();
+                let mut px = if k.len() >= 2 { k.remove(0) } else { Vec::new() };
+                px.clear();
+                px.extend_from_slice(&g.px);
+                k.push(px);
+                View::surface(k.last_mut().unwrap(), w, h)
+            });
             drop(g);
-            let v = View::surface(&mut px, w, h);
-            // the copy lives as long as the process: sources from windows are rare
-            std::mem::forget(px);
             Some((v, org.0 + x, org.1 + y, s))
         }
         Tgt::None => {
@@ -3017,7 +3027,7 @@ fn CreateFontIndirectA(c: &mut Ctx) -> u32 {
 }
 fn CreateFontIndirectW(c: &mut Ctx) -> u32 {
     let lf = read_logfont(c.a(0), true);
-    if std::env::var_os("SAKE_TRACE_FONT").is_some() {
+    if crate::env_on!("SAKE_TRACE_FONT") {
         eprintln!("sake font: {} h {} w {} weight {} q {}", lf.face, lf.height, lf.width, lf.weight, lf.quality);
     }
     add(G::Font(lf))
@@ -3060,7 +3070,7 @@ fn GetTextMetricsA(c: &mut Ctx) -> u32 {
 fn GetTextMetricsW(c: &mut Ctx) -> u32 {
     let Some((r, lf, _)) = real_of(c.a(0)) else { return 0 };
     write_tm(c.a(1), &r, &lf, true);
-    if std::env::var_os("SAKE_TRACE_FONT").is_some() {
+    if crate::env_on!("SAKE_TRACE_FONT") {
         eprintln!("sake font: tm face {} h {} asc {} em {}", face_name(r.face), r32(c.a(1)), r32(c.a(1) + 4), r.em);
     }
     1
@@ -3105,7 +3115,7 @@ fn extent(c: &mut Ctx, s: &[u16], out: u32) -> u32 {
     let Some((r, _, st)) = real_of(c.a(0)) else { return 0 };
     let w = text_width(&r, s, st.char_extra);
     put_pt(out, (w, r.ascent + r.descent));
-    if std::env::var_os("SAKE_TRACE_FONT").is_some() {
+    if crate::env_on!("SAKE_TRACE_FONT") {
         eprintln!("sake font: extent {:?} em {} -> {w}x{}", String::from_utf16_lossy(s), r.em, r.ascent + r.descent);
     }
     1
@@ -3236,7 +3246,7 @@ fn glyph_outline(c: &mut Ctx, wide: bool) -> u32 {
     }
     let ch = if fmt & 0x80 != 0 { code & 0xffff | GLYPH_INDEX } else if wide { code } else { mbcs_char(code) };
     let g = glyph(&r, ch);
-    if std::env::var_os("SAKE_TRACE_FONT").is_some() {
+    if crate::env_on!("SAKE_TRACE_FONT") {
         eprintln!("sake font: glyph {ch:#x} fmt {fmt} em {} mat {mat:#x} -> {}x{} at {},{} adv {}", r.em, g.w, g.h, g.x0, g.top, g.adv);
     }
     let blank = g.w == 0 || g.h == 0;

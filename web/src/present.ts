@@ -184,6 +184,53 @@ export class Presenter {
     this.draw();
   }
 
+  /**
+   * As `update`, rows [y0, y1) taken from a window's own surface (`ptr`, `stride` pixels a row)
+   * whose rect on the frame is l t r b: only that rect's part of them changed.
+   */
+  updateFrom(
+    heap: Uint8Array,
+    width: number,
+    height: number,
+    win: { ptr: number; stride: number; l: number; t: number; r: number; b: number },
+    y0: number,
+    y1: number,
+  ): boolean {
+    if (!width || !height) return true;
+    if (!this.texture || this.texture.width !== width || this.texture.height !== height) return false;
+    if (this.layout(width, height)) return false;
+    const x0 = Math.max(0, win.l),
+      x1 = Math.min(width, win.r);
+    const t = Math.max(y0, win.t, 0),
+      b = Math.min(y1, win.b, height);
+    if (x1 > x0 && b > t) {
+      const off = win.ptr + ((t - win.t) * win.stride + (x0 - win.l)) * 4;
+      const bpr = win.stride * 4;
+      const rows = heap.subarray(off, off + (b - t - 1) * bpr + (x1 - x0) * 4);
+      const dst = { texture: this.texture, origin: { x: x0, y: t } };
+      const size = [x1 - x0, b - t];
+      if (this.sharedOk) {
+        try {
+          this.device.queue.writeTexture(dst, rows as Uint8Array<ArrayBuffer>, { bytesPerRow: bpr }, size);
+        } catch {
+          this.sharedOk = false;
+        }
+      }
+      if (!this.sharedOk) {
+        if (!this.staging || this.staging.length < rows.length) this.staging = new Uint8Array(rows.length);
+        this.staging.set(rows);
+        this.device.queue.writeTexture(
+          dst,
+          this.staging.subarray(0, rows.length),
+          { bytesPerRow: bpr },
+          size,
+        );
+      }
+    }
+    this.draw();
+    return true;
+  }
+
   private upload(
     heap: Uint8Array,
     offset: number,

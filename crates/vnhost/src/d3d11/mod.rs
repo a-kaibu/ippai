@@ -534,7 +534,7 @@ pub unsafe fn init(vtbls: *const u32, count: u32) -> u32 {
                 next: 0,
                 free_blocks: Vec::new(),
                 calls: std::ptr::null(),
-                trace: std::env::var_os("VNVM_D3D_TRACE").is_some(),
+                trace: crate::env_on!("VNVM_D3D_TRACE"),
                 mt_protected: false,
                 counts: HashMap::new(),
                 device: 0,

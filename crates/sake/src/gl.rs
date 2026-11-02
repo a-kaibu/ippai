@@ -176,7 +176,7 @@ fn wglGetCurrentDC(_: &mut Ctx) -> u32 {
 fn wglGetProcAddress(c: &mut Ctx) -> u32 {
     let name = String::from_utf8_lossy(&mem::cstr(c.a(0))).into_owned();
     let t = proc_trap(&name);
-    if std::env::var_os("SAKE_TRACE_GL").is_some() && host_proc(&name).is_none() {
+    if crate::env_on!("SAKE_TRACE_GL") && host_proc(&name).is_none() {
         eprintln!("sake: wglGetProcAddress({name}): {}", if t == 0 { "none" } else { "does nothing" });
     }
     t

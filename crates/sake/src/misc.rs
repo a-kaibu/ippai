@@ -407,7 +407,7 @@ fn join(base: &str, sub: &str) -> String {
 fn open_key(h: u32, sub: &str, create: bool, out: u32) -> u32 {
     let Some(base) = key_path(h) else { return 6 };
     let path = join(&base, sub);
-    if std::env::var_os("SAKE_TRACE_REG").is_some() {
+    if crate::env_on!("SAKE_TRACE_REG") {
         eprintln!("sake reg: open {path}");
     }
     let exists = with_reg(|m| {
@@ -488,7 +488,7 @@ fn query_value(c: &mut Ctx, key: u32, name: &str, pty: u32, data: u32, plen: u32
     let lname = name.to_lowercase();
     let v = with_reg(|m| m.get(&path).and_then(|k| k.values.iter().find(|v| v.0.to_lowercase() == lname).map(|v| (v.1, v.2.clone()))));
     let _ = c;
-    if std::env::var_os("SAKE_TRACE_REG").is_some() {
+    if crate::env_on!("SAKE_TRACE_REG") {
         eprintln!("sake reg: query {path}\\{name}: {:?}", v.as_ref().map(|x| x.1.len()));
     }
     let Some((ty, mut bytes)) = v else { return 2 };
