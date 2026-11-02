@@ -383,6 +383,11 @@ fn find_dll_file(dll: &str) -> Option<(String, String)> {
             }
         }
     }
+    // then the Wine prefix's system32 for DLLs we do not implement at all (msvcr90 and other
+    // side-by-side runtimes, d3dx9_43...: Wine's PE builds)
+    if !api::is_system(dll) {
+        dirs.push("C:\\windows\\system32".into());
+    }
     for d in dirs {
         let w = format!("{d}\\{name}");
         if let Some(h) = crate::files::resolve(&w) {

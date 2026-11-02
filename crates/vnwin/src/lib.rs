@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use vnx86::{Cpu, EAX, ESP};
 
+pub mod acm;
 pub mod api;
 pub mod d3d9;
 pub mod crt;
@@ -271,6 +272,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     ddraw::init();
     ole::init();
     usp::init();
+    acm::init();
     dinput::init();
     sound::init();
     d3d9::register();

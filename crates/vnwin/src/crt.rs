@@ -1095,7 +1095,153 @@ fn fprintf(c: &mut Ctx) -> u32 {
     s.len() as u32
 }
 
+// the VC8+ CRT's pointer encoding (identity: nothing to protect here) and debug hooks
+fn _encode_pointer(c: &mut Ctx) -> u32 {
+    c.a(0)
+}
+fn _encoded_null(_: &mut Ctx) -> u32 {
+    0
+}
+fn _crt_debugger_hook(_: &mut Ctx) -> u32 {
+    0
+}
+fn _configthreadlocale(_: &mut Ctx) -> u32 {
+    // _DISABLE_PER_THREAD_LOCALE
+    2
+}
+fn ___mb_cur_max_l_func(_: &mut Ctx) -> u32 {
+    if crate::text::acp() == 932 { 2 } else { 1 }
+}
+
+fn wcsncmp(c: &mut Ctx) -> u32 {
+    let n = c.a(2) as usize;
+    let a: Vec<u16> = wstr(c.a(0)).into_iter().chain([0]).take(n).collect();
+    let b: Vec<u16> = wstr(c.a(1)).into_iter().chain([0]).take(n).collect();
+    a.cmp(&b) as i32 as u32
+}
+fn getenv(c: &mut Ctx) -> u32 {
+    // the process environment (GetEnvironmentVariableA), kept in a guest buffer per name
+    static VALS: Mutex<Option<HashMap<Vec<u8>, u32>>> = Mutex::new(None);
+    let name = cstr(c.a(0));
+    let f = crate::api::export("kernel32", "GetEnvironmentVariableA");
+    let n = c.call(f, &[c.a(0), 0, 0]);
+    if n == 0 {
+        return 0;
+    }
+    let mut g = VALS.lock().unwrap();
+    let m = g.get_or_insert_with(HashMap::new);
+    if let Some(&p) = m.get(&name) {
+        mem::heap_free(p);
+    }
+    let p = mem::heap_alloc(n + 1, true);
+    m.insert(name, p);
+    drop(g);
+    c.call(f, &[c.a(0), p, n + 1]);
+    p
+}
+fn _ismbblead(c: &mut Ctx) -> u32 {
+    let b = c.a(0) & 0xff;
+    (crate::text::acp() == 932 && matches!(b, 0x81..=0x9f | 0xe0..=0xfc)) as u32
+}
+fn memcpy_s(c: &mut Ctx) -> u32 {
+    let (d, dn, s, n) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    if n == 0 {
+        return 0;
+    }
+    if d == 0 || s == 0 || dn < n {
+        if d != 0 {
+            mem::fill(d, dn, 0);
+        }
+        return 22;
+    }
+    mem::copy(d, s, n);
+    0
+}
+fn _controlfp_s(c: &mut Ctx) -> u32 {
+    if c.a(0) != 0 {
+        w32(c.a(0), 0x9001f);
+    }
+    0
+}
+fn __iob_func(_: &mut Ctx) -> u32 {
+    data("_iob").unwrap_or(0)
+}
+fn fopen_s(c: &mut Ctx) -> u32 {
+    let (pf, path, mode) = (c.a(0), a2s(&cstr(c.a(1))), cstr(c.a(2)));
+    let fp = fopen_mode(&path, &mode).map_or(0, new_stream);
+    mem::put32(pf, fp);
+    if fp == 0 { 2 } else { 0 }
+}
+fn _wfopen_s(c: &mut Ctx) -> u32 {
+    let path = String::from_utf16_lossy(&wstr(c.a(1)));
+    let mode: Vec<u8> = wstr(c.a(2)).iter().map(|&u| u as u8).collect();
+    let fp = fopen_mode(&path, &mode).map_or(0, new_stream);
+    mem::put32(c.a(0), fp);
+    if fp == 0 { 2 } else { 0 }
+}
+
+// setjmp/longjmp: jmp_buf = ebp, ebx, edi, esi, esp, SEH frame, eip (as msvcrt's first fields)
+fn _setjmp3(c: &mut Ctx) -> u32 {
+    let b = c.a(0);
+    let r = &c.cpu.regs;
+    for (i, v) in [r[vnx86::EBP], r[vnx86::EBX], r[vnx86::EDI], r[vnx86::ESI], c.esp + 4, r32(crate::cur().teb), r32(c.esp)].into_iter().enumerate() {
+        w32(b + 4 * i as u32, v);
+    }
+    0
+}
+fn longjmp(c: &mut Ctx) -> u32 {
+    let (b, v) = (c.a(0), c.a(1));
+    let g = |i: u32| r32(b + 4 * i);
+    c.cpu.regs[vnx86::EBP] = g(0);
+    c.cpu.regs[vnx86::EBX] = g(1);
+    c.cpu.regs[vnx86::EDI] = g(2);
+    c.cpu.regs[vnx86::ESI] = g(3);
+    c.cpu.regs[vnx86::ESP] = g(4);
+    w32(crate::cur().teb, g(5));
+    c.cpu.regs[vnx86::EAX] = if v == 0 { 1 } else { v };
+    c.cpu.eip = g(6);
+    c.jumped = true;
+    0
+}
+
+// ucrtbase's printf core: (options (u64), buf, len, format, locale, va_list)
+fn common_out(opts: u32, buf: u32, len: u32, n: usize, put: impl Fn(u32, usize)) -> u32 {
+    if buf == 0 {
+        return n as u32;
+    }
+    if n < len as usize {
+        put(buf, n);
+        return n as u32;
+    }
+    if len == 0 {
+        return u32::MAX;
+    }
+    // _CRT_INTERNAL_PRINTF_STANDARD_SNPRINTF_BEHAVIOR: C99 snprintf, else _snprintf's -1
+    put(buf, len as usize - 1);
+    if opts & 2 != 0 { n as u32 } else { u32::MAX }
+}
+fn __stdio_common_vsprintf(c: &mut Ctx) -> u32 {
+    let s = format(&cstr(c.a(4)), &mut VaArgs::stack(c.a(6)), false);
+    common_out(c.a(0), c.a(2), c.a(3), s.len(), |b, n| {
+        mem::write(b, &s[..n]);
+        w8(b + n as u32, 0);
+    })
+}
+fn __stdio_common_vswprintf(c: &mut Ctx) -> u32 {
+    let s = format_w(&wstr(c.a(4)), &mut VaArgs::stack(c.a(6)));
+    common_out(c.a(0), c.a(2), c.a(3), s.len(), |b, n| {
+        for (i, &u) in s[..n].iter().chain([0u16].iter()).enumerate() {
+            w16(b + 2 * i as u32, u);
+        }
+    })
+}
+
 pub fn init() {
+    implement("ucrtbase", "__stdio_common_vsprintf", __stdio_common_vsprintf);
+    implement("ucrtbase", "__stdio_common_vswprintf", __stdio_common_vswprintf);
+    reg!(wcsncmp, getenv, _ismbblead, memcpy_s, _controlfp_s, __iob_func, fopen_s, _wfopen_s, _setjmp3, longjmp);
+    implement("msvcrt", "_setjmp", _setjmp3);
+    reg!(_encode_pointer, _encoded_null, _crt_debugger_hook, _configthreadlocale, ___mb_cur_max_l_func);
     reg!(_initterm, _initterm_e, _onexit, atexit, __dllonexit, exit, _exit, abort, __getmainargs, __set_app_type,
         __p__fmode, __p__commode, __p___argc, __p___argv, __p__environ, __p___initenv, __p__acmdln,
         __p___mb_cur_max, ___mb_cur_max_func, __pctype_func, _controlfp, _control87, _clearfp, _purecall,
@@ -1120,6 +1266,13 @@ pub fn init() {
         ("getc", fgetc),
         ("_ltoa", _itoa),
         ("_ftol2", _ftol),
+        ("_decode_pointer", _encode_pointer),
+        ("_malloc_crt", malloc),
+        ("_calloc_crt", calloc),
+        ("_realloc_crt", realloc),
+        ("_invalid_parameter_noinfo", _crt_debugger_hook),
+        ("_invoke_watson", _crt_debugger_hook),
+        ("__clean_type_info_names_internal", _crt_debugger_hook),
         ("_ftol2_sse", _ftol),
         ("_mbscmp", strcmp),
         ("_mbsicmp", _stricmp),

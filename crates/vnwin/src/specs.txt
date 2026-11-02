@@ -16849,3 +16849,18 @@ msftedit REExtendedRegisterClass stdcall 0 8
 msftedit RichEdit10ANSIWndProc stdcall 16 9
 msftedit RichEditANSIWndProc stdcall 16 10
 msftedit DllGetVersion stdcall 4 12
+xinput9_1_0 XInputGetCapabilities stdcall 12 -
+xinput9_1_0 XInputGetDSoundAudioDeviceGuids stdcall 12 -
+xinput9_1_0 XInputSetState stdcall 8 -
+xinput9_1_0 XInputGetState stdcall 8 -
+
+xinput1_2 XInputEnable stdcall 4 -
+xinput1_2 XInputGetCapabilities stdcall 12 -
+xinput1_2 XInputGetDSoundAudioDeviceGuids stdcall 12 -
+xinput1_2 XInputSetState stdcall 8 -
+xinput1_2 XInputGetState stdcall 8 -
+xinput1_1 XInputEnable stdcall 4 -
+xinput1_1 XInputGetCapabilities stdcall 12 -
+xinput1_1 XInputGetDSoundAudioDeviceGuids stdcall 12 -
+xinput1_1 XInputSetState stdcall 8 -
+xinput1_1 XInputGetState stdcall 8 -

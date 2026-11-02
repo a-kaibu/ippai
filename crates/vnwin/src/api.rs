@@ -102,7 +102,15 @@ fn specs() -> &'static Spec {
 /// "KERNEL32.dll" -> "kernel32"
 pub fn dll_key(dll: &str) -> String {
     let d = crate::pe::base_name(dll);
-    d.strip_suffix(".dll").or_else(|| d.strip_suffix(".drv")).unwrap_or(&d).to_string()
+    let k = d.strip_suffix(".dll").or_else(|| d.strip_suffix(".drv")).unwrap_or(&d);
+    // API sets (Wine's PE DLLs and VC++ 2015+ programs import these)
+    if k.starts_with("api-ms-win-crt-") {
+        return "ucrtbase".into();
+    }
+    if k.starts_with("api-ms-win-core-") {
+        return "kernelbase".into();
+    }
+    k.to_string()
 }
 
 /// Whether `dll` is one we implement (or at least know the exports of).

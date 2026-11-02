@@ -269,5 +269,7 @@ pub fn init() {
         ("ScriptStringFree", ScriptStringFree),
     ] {
         implement("usp10", n, f);
+        // (D3DX's font code looks them up in gdi32 too, where Windows also exports them)
+        implement("gdi32", n, f);
     }
 }

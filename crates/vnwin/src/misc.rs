@@ -373,6 +373,9 @@ fn join(base: &str, sub: &str) -> String {
 fn open_key(h: u32, sub: &str, create: bool, out: u32) -> u32 {
     let Some(base) = key_path(h) else { return 6 };
     let path = join(&base, sub);
+    if std::env::var_os("VNWIN_TRACE_REG").is_some() {
+        eprintln!("vnwin reg: open {path}");
+    }
     let exists = with_reg(|m| {
         if m.contains_key(&path) || root_name(h).is_some() && sub.trim_matches('\\').is_empty() {
             return true;
@@ -451,6 +454,9 @@ fn query_value(c: &mut Ctx, key: u32, name: &str, pty: u32, data: u32, plen: u32
     let lname = name.to_lowercase();
     let v = with_reg(|m| m.get(&path).and_then(|k| k.values.iter().find(|v| v.0.to_lowercase() == lname).map(|v| (v.1, v.2.clone()))));
     let _ = c;
+    if std::env::var_os("VNWIN_TRACE_REG").is_some() {
+        eprintln!("vnwin reg: query {path}\\{name}: {:?}", v.as_ref().map(|x| x.1.len()));
+    }
     let Some((ty, mut bytes)) = v else { return 2 };
     if is_str(ty) && !wide {
         let u: Vec<u16> = bytes.chunks(2).map(|b| u16::from_le_bytes([b[0], *b.get(1).unwrap_or(&0)])).collect();
@@ -1403,6 +1409,41 @@ fn SHGetFolderPathA(c: &mut Ctx) -> u32 {
         None => 0x8000_4005,
     }
 }
+/// SHGetKnownFolderPath(rfid, flags, token, PWSTR *out): the known folders that have a CSIDL.
+fn SHGetKnownFolderPath(c: &mut Ctx) -> u32 {
+    let (id, out) = (c.a(0), c.a(3));
+    let path = match r32(id) {
+        0x3eb6_85db => folder_path(0x1a, true),
+        0xf1b3_2785 | 0xa520_a1a4 => folder_path(0x1c, true),
+        0xfdd3_9ad0 => folder_path(5, true),
+        0x62ab_5d82 => folder_path(0x23, true),
+        0xb4bf_cc3a => folder_path(0x10, true),
+        0x5e6c_858f => folder_path(0x28, true),
+        0xfd22_8cb7 => folder_path(0x14, true),
+        0x1ac1_4e77 => folder_path(0x25, true),
+        0xf38b_f404 => folder_path(0x24, true),
+        0x905e_63b6 => folder_path(0x26, true),
+        0x33e2_8130 => folder_path(0x27, true),
+        // Saved Games
+        0x4c5c_32ff => folder_path(0x28, true).map(|p| {
+            let p = format!("{p}\\Saved Games");
+            let _ = std::fs::create_dir_all(crate::files::to_host(&p));
+            p
+        }),
+        _ => None,
+    };
+    let Some(p) = path else {
+        put32(out, 0);
+        return 0x8007_0002;
+    };
+    let w: Vec<u16> = p.encode_utf16().chain([0]).collect();
+    let b = mem::heap_alloc(2 * w.len() as u32, false);
+    for (i, &u) in w.iter().enumerate() {
+        w16(b + 2 * i as u32, u);
+    }
+    put32(out, b);
+    0
+}
 fn SHGetFolderPathW(c: &mut Ctx) -> u32 {
     let (csidl, out) = (c.a(1), c.a(4));
     match folder_path(csidl, true) {
@@ -2031,8 +2072,23 @@ fn WinVerifyTrust(_: &mut Ctx) -> u32 {
     0
 }
 
+/// XInput: no controller is ever connected.
+fn xinput_none(_: &mut Ctx) -> u32 {
+    1167 // ERROR_DEVICE_NOT_CONNECTED
+}
+fn xinput_ok(_: &mut Ctx) -> u32 {
+    0
+}
+
 pub fn init() {
     let _ = (s2a, r8);
+    implement("shell32", "SHGetKnownFolderPath", SHGetKnownFolderPath);
+    for d in ["xinput1_1", "xinput1_2", "xinput1_3", "xinput1_4", "xinput9_1_0"] {
+        for n in ["XInputGetState", "XInputGetStateEx", "XInputSetState", "XInputGetCapabilities", "XInputGetKeystroke", "XInputGetBatteryInformation", "XInputGetDSoundAudioDeviceGuids"] {
+            implement(d, n, xinput_none);
+        }
+        implement(d, "XInputEnable", xinput_ok);
+    }
     reg!("advapi32";
         RegOpenKeyExA, RegOpenKeyExW, RegOpenKeyA, RegOpenKeyW, RegCreateKeyExA, RegCreateKeyExW, RegCreateKeyA,
         RegCreateKeyW, RegCloseKey, RegFlushKey, RegQueryValueExA, RegQueryValueExW, RegQueryValueA,

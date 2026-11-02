@@ -573,6 +573,12 @@ fn atomic(a: u32) -> &'static AtomicU32 {
     unsafe { &*(a as usize as *const AtomicU32) }
 }
 
+/// An RTL_CRITICAL_SECTION_DEBUG for `cs` (Wine's msvcr90 names its locks in DebugInfo->Spare).
+fn cs_debug_info(cs: u32) {
+    let d = mem::heap_alloc(32, true);
+    w32(d + 4, cs);
+    w32(cs, d);
+}
 fn cs_init(cs: u32) {
     w32(cs, 0);
     w32(cs + 4, 0xffff_ffff);
@@ -631,17 +637,28 @@ pub fn cs_wake(_cs: u32) {
 }
 fn InitializeCriticalSection(c: &mut Ctx) -> u32 {
     cs_init(c.a(0));
+    cs_debug_info(c.a(0));
     0
 }
 fn InitializeCriticalSectionAndSpinCount(c: &mut Ctx) -> u32 {
     cs_init(c.a(0));
+    cs_debug_info(c.a(0));
     1
 }
 fn InitializeCriticalSectionEx(c: &mut Ctx) -> u32 {
     cs_init(c.a(0));
+    // (unless RTL_CRITICAL_SECTION_FLAG_NO_DEBUG_INFO)
+    if c.a(2) & 0x0100_0000 == 0 {
+        cs_debug_info(c.a(0));
+    }
     1
 }
-fn DeleteCriticalSection(_: &mut Ctx) -> u32 {
+fn DeleteCriticalSection(c: &mut Ctx) -> u32 {
+    let d = r32(c.a(0));
+    if d != 0 && d != u32::MAX && r32(d + 4) == c.a(0) {
+        w32(c.a(0), 0);
+        mem::heap_free(d);
+    }
     0
 }
 fn EnterCriticalSection(c: &mut Ctx) -> u32 {
@@ -1101,6 +1118,59 @@ fn IsBadCodePtr(c: &mut Ctx) -> u32 {
 }
 fn IsBadStringPtrA(c: &mut Ctx) -> u32 {
     ok(is_bad(c.a(0), 1))
+}
+fn IsBadStringPtrW(c: &mut Ctx) -> u32 {
+    ok(is_bad(c.a(0), 2))
+}
+fn NtQuerySystemTime(c: &mut Ctx) -> u32 {
+    put64(c.a(0), files::filetime(std::time::SystemTime::now()));
+    0
+}
+fn RtlTimeToSecondsSince1970(c: &mut Ctx) -> u32 {
+    let s = (get64(c.a(0)) / 10_000_000) as i64 - 11_644_473_600;
+    if !(0..=u32::MAX as i64).contains(&s) {
+        return 0;
+    }
+    put32(c.a(1), s as u32);
+    1
+}
+fn locale_name() -> &'static str {
+    if crate::text::acp() == 932 { "ja-JP" } else { "en-US" }
+}
+fn GetUserDefaultLocaleName(c: &mut Ctx) -> u32 {
+    let (out, n) = (c.a(0), c.a(1));
+    let w: Vec<u16> = locale_name().encode_utf16().chain([0]).collect();
+    if (n as usize) < w.len() {
+        last_error(122);
+        return 0;
+    }
+    for (i, &u) in w.iter().enumerate() {
+        w16(out + 2 * i as u32, u);
+    }
+    w.len() as u32
+}
+fn LocaleNameToLCID(c: &mut Ctx) -> u32 {
+    let n = if c.a(0) == 0 { locale_name().to_string() } else { String::from_utf16_lossy(&wstr(c.a(0))) };
+    match n.to_ascii_lowercase().as_str() {
+        "ja-jp" | "ja" => 0x411,
+        "" | "!x-sys-default-locale" => if crate::text::acp() == 932 { 0x411 } else { 0x409 },
+        "en-us" | "en" => 0x409,
+        _ => 0x409,
+    }
+}
+fn wine_dbg_strdup(c: &mut Ctx) -> u32 {
+    c.a(0)
+}
+/// LdrGetDllHandle(path, flags, UNICODE_STRING *name, HMODULE *out)
+fn LdrGetDllHandle(c: &mut Ctx) -> u32 {
+    let us = c.a(2);
+    let h = if us == 0 { 0 } else { module_handle(r32(us + 4), true) };
+    put32(c.a(3), h);
+    if h == 0 { 0xc000_0135 } else { 0 }
+}
+fn RtlFindExportedRoutineByName(c: &mut Ctx) -> u32 {
+    let n = a2s(&cstr(c.a(1)));
+    crate::pe::proc_address(c.a(0), crate::pe::Import::Name(&n)).unwrap_or(0)
 }
 
 fn GetProcessHeap(_: &mut Ctx) -> u32 {
@@ -2000,6 +2070,34 @@ fn GetProcAddress(c: &mut Ctx) -> u32 {
     }
     r
 }
+/// ResolveDelayLoadedAPI(base, IMAGE_DELAYLOAD_DESCRIPTOR, hooks.., thunk, flags): loads the
+/// DLL on first use and binds one delay-load IAT slot.
+fn ResolveDelayLoadedAPI(c: &mut Ctx) -> u32 {
+    let (base, d, thunk) = (c.a(0), c.a(1), c.a(4));
+    let rva = |i: u32| if r32(d) & 1 != 0 { base + r32(d + 4 * i) } else { r32(d + 4 * i) };
+    let name = a2s(&cstr(rva(1)));
+    let hmod_at = rva(2);
+    let mut h = r32(hmod_at);
+    if h == 0 {
+        h = crate::pe::load_library(c.cpu, &name);
+        w32(hmod_at, h);
+    }
+    let i = (thunk - rva(3)) / 4;
+    let e = r32(rva(4) + 4 * i);
+    let r = if h == 0 {
+        0
+    } else if e & 0x8000_0000 != 0 {
+        crate::pe::proc_address(h, crate::pe::Import::Ordinal(e & 0xffff)).unwrap_or(0)
+    } else {
+        let n = a2s(&cstr(base + e + 2));
+        crate::pe::proc_address(h, crate::pe::Import::Name(&n)).unwrap_or(0)
+    };
+    if r == 0 {
+        eprintln!("vnwin: delay-load import from {name} failed");
+    }
+    w32(thunk, r);
+    r
+}
 fn find_res(c: &mut Ctx, m: u32, name: u32, ty: u32, wide: bool) -> u32 {
     let _ = c;
     let m = if m == 0 { module_handle(0, false) } else { m };
@@ -2790,8 +2888,50 @@ fn SetFileApisToANSI(_: &mut Ctx) -> u32 {
     0
 }
 
+// Wine's PE DLLs (msvcr90, d3dx9...) log through these: their ERR/FIXME lines go to stderr
+fn wine_dbg_header(c: &mut Ctx) -> u32 {
+    // ERR only: -1 makes the caller skip the message (their channels default to everything on)
+    let ch = c.a(1);
+    if ch != 0 {
+        w8(ch, WINE_DBG_FLAGS);
+    }
+    if WINE_DBG_FLAGS & 1 << c.a(0).min(7) == 0 {
+        return u32::MAX;
+    }
+    let name = if ch != 0 { crate::text::a2s(&cstr(ch + 1)) } else { String::new() };
+    let class = ["fixme", "err", "warn", "trace"].get(c.a(0) as usize).copied().unwrap_or("?");
+    eprint!("vnwin wine {class}:{name}:{} ", crate::text::a2s(&cstr(c.a(2))));
+    0
+}
+/// ERR only (FIXME is 1, ERR 2, WARN 4, TRACE 8). Stored in the channel too: the DLLs check its
+/// flags inline before every message (they start as 0xff, "everything, not looked up yet").
+const WINE_DBG_FLAGS: u8 = 2;
+fn wine_dbg_channel_flags(c: &mut Ctx) -> u32 {
+    if c.a(0) != 0 {
+        w8(c.a(0), WINE_DBG_FLAGS);
+    }
+    WINE_DBG_FLAGS as u32
+}
+fn wine_dbg_output(c: &mut Ctx) -> u32 {
+    let s = cstr(c.a(0));
+    eprint!("{}", crate::text::a2s(&s));
+    s.len() as u32
+}
+
 pub fn init() {
     implement("psapi", "GetProcessMemoryInfo", K32GetProcessMemoryInfo);
+    implement("ntdll", "__wine_dbg_header", wine_dbg_header);
+    implement("kernel32", "ResolveDelayLoadedAPI", ResolveDelayLoadedAPI);
+    implement("kernel32", "IsBadStringPtrW", IsBadStringPtrW);
+    implement("kernel32", "GetUserDefaultLocaleName", GetUserDefaultLocaleName);
+    implement("kernel32", "LocaleNameToLCID", LocaleNameToLCID);
+    implement("ntdll", "NtQuerySystemTime", NtQuerySystemTime);
+    implement("ntdll", "RtlTimeToSecondsSince1970", RtlTimeToSecondsSince1970);
+    implement("ntdll", "__wine_dbg_strdup", wine_dbg_strdup);
+    implement("ntdll", "LdrGetDllHandle", LdrGetDllHandle);
+    implement("ntdll", "RtlFindExportedRoutineByName", RtlFindExportedRoutineByName);
+    implement("ntdll", "__wine_dbg_get_channel_flags", wine_dbg_channel_flags);
+    implement("ntdll", "__wine_dbg_output", wine_dbg_output);
     reg!("kernel32";
         GetCommandLineA, GetCommandLineW, GetEnvironmentStrings, GetEnvironmentStringsA, GetEnvironmentStringsW,
         FreeEnvironmentStringsA, FreeEnvironmentStringsW, GetEnvironmentVariableA, GetEnvironmentVariableW,

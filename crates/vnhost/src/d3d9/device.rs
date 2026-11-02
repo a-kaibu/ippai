@@ -1742,6 +1742,11 @@ fn readback(d: &mut D3d, gpu: u32, level: u32, w: u32, h: u32, mem: u32, pitch: 
 unsafe fn unlock_surface(d: &mut D3d, s: u32) -> u32 {
     let Some(Data::Surface(sf)) = d.objs.get_mut(&s).map(|o| &mut o.data) else { return D3DERR_INVALIDCALL };
     let Some(r) = sf.lock.take() else { return D3DERR_INVALIDCALL };
+    if d.trace && sf.mem != 0 {
+        let n = (sf.pitch * sf.h) as usize;
+        let nz = std::slice::from_raw_parts(sf.mem as *const u8, n).iter().filter(|&&b| b != 0).count();
+        eprintln!("d3d9: unlock surface {s} {}x{} fmt {} pool {} rect {r:?}: {nz} of {n} bytes non-zero", sf.w, sf.h, sf.fmt, sf.pool);
+    }
     if r == [0, 0, sf.w, sf.h] {
         upload_changed(d, s);
     } else if r[2] > r[0] {
@@ -2201,6 +2206,9 @@ unsafe fn present(d: &mut D3d, after: &mut After) -> u32 {
     let Some(dev) = d.dev.as_mut() else { return D3DERR_INVALIDCALL };
     let (bb, hwnd) = (dev.backbuffer, dev.hwnd);
     dev.frames += 1;
+    if d.trace && dev.frames % 100 == 1 {
+        eprintln!("d3d9: present #{} backbuffer {bb} hwnd {hwnd:#x}", dev.frames);
+    }
     let mut rect = [0i32; 4];
     (d.calls().client_rect)(hwnd, rect.as_mut_ptr());
     if let Some(g) = surface_gpu(d, bb) {

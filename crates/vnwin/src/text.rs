@@ -51,8 +51,31 @@ pub fn w2mb(cp: u32, s: &[u16]) -> Vec<u8> {
     if cp == 65001 {
         return st.into_bytes();
     }
-    let (cow, _, _) = enc(cp).encode(&st);
-    cow.into_owned()
+    let e = enc(cp);
+    if st.is_ascii() {
+        return st.into_bytes();
+    }
+    // (unmappable characters become '?', the default character, as on Windows; encoding_rs's
+    // encode() would write HTML character references)
+    let mut encoder = e.new_encoder();
+    let src: Vec<u16> = st.encode_utf16().collect();
+    let mut out = vec![0u8; src.len() * 4 + 16];
+    let (mut read, mut written) = (0, 0);
+    loop {
+        let (r, n, w) = encoder.encode_from_utf16_without_replacement(&src[read..], &mut out[written..], true);
+        read += n;
+        written += w;
+        match r {
+            encoding_rs::EncoderResult::InputEmpty => break,
+            encoding_rs::EncoderResult::Unmappable(_) => {
+                out[written] = b'?';
+                written += 1;
+            }
+            encoding_rs::EncoderResult::OutputFull => out.resize(out.len() * 2, 0),
+        }
+    }
+    out.truncate(written);
+    out
 }
 
 pub fn a2w(s: &[u8]) -> Vec<u16> {
