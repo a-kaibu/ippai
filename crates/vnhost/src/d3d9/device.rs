@@ -2335,6 +2335,18 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         };
         streams.push((s, ptr, stride));
     }
+    if d.trace {
+        let tex0 = st.textures[0];
+        eprintln!("d3d9: draw prim {prim} x{prims} first {first} count {count} fvf {:#x} decl {} ps {} tex0 {tex0} blend {} {} {} tss0 {:?}", st.fvf, st.decl, st.ps, st.rs[27], st.rs[19], st.rs[20], &st.tss[0][1..7]);
+        if let Some(&(_, ptr, stride)) = streams.first() {
+            eprintln!("d3d9:   data {ptr:#x} stride {stride}");
+            for v in 0..count.min(6) {
+                let p = ptr + (first + v) * stride;
+                let w: Vec<String> = (0..stride / 4).map(|k| format!("{:08x}", *((p + 4 * k) as *const u32))).collect();
+                eprintln!("d3d9:   v{v} {}", w.join(" "));
+            }
+        }
+    }
     // the shaders (pretransformed vertices skip the vertex shader, as on Windows)
     let pretransformed = elems.iter().any(|e| e.usage == shader::USAGE_POSITIONT);
     let vs = if st.vs != 0 && !pretransformed {
@@ -2401,7 +2413,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
                 let ttff = st.tss[i][24] & 0xff;
                 *t = ((st.tss[i][11] & 0xff) as u8, if ttff == 0 { 0 } else { ttff as u8 });
             }
-            let key = ff::VsKey { inputs: ff_inputs.clone(), rhw, lighting: st.rs[137] != 0, tci };
+            let key = ff::VsKey { inputs: ff_inputs.clone(), rhw, lighting: st.rs[137] != 0, tci, flat: st.rs[9] == 1 && st.vs == 0 && st.ps == 0 };
             (ff::vertex(&key), ff::VS_CONSTS, 0xfffu32 & !0)
         }
     };
@@ -2440,7 +2452,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
                 let projected = (st.tss[i][24] & 0x100 != 0) as u32;
                 stages.push([s[1], s[2], s[3], s[26], s[4], s[5], s[6], s[27], s[28], projected]);
             }
-            let key = ff::PsKey { stages, specular: st.rs[29] != 0, alpha_test, tex };
+            let key = ff::PsKey { stages, specular: st.rs[29] != 0, alpha_test, tex, flat: st.rs[9] == 1 && st.vs == 0 && st.ps == 0 };
             (ff::pixel(&key), ff::PS_CONSTS)
         }
     };

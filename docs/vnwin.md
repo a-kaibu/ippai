@@ -51,7 +51,7 @@ WebGPU D3D9 を使うので、A/B 比較ができる。`wine.html` / `game.html`
 | こんな安楽椅子探偵は嫌だ (YU-RIS) | タイトル → オープニング | node (GDI で描く) |
 | 爆乳遊廓 (Softpal) | タイトル | Chromium (D3D9) |
 | アマカノ (CatSystem2) | タイトル | Chromium (D3D9) |
-| つぼい君のスイッチ (DxLib) | タイトル、ロード画面 | Chromium (D3D9)。タイトルに斜めの暗い帯が残る |
+| つぼい君のスイッチ (DxLib) | タイトル、ロード画面 | Chromium (D3D9)。D3D9 の SHADEMODE flat に対応して表示が正しくなった |
 | WolfRPG | 起動しない | 保護付き exe。アンチデバッグの後で止まる。追っていない |
 
 node では D3D9 は描かれない (WebGPU がない) ので、D3D9 のゲームは Chromium で見る。
@@ -66,7 +66,7 @@ node では D3D9 は描かれない (WebGPU がない) ので、D3D9 のゲー�
 - ページ: `vnvm-pack tree <dir> <name>` してから
   `wine.html?engine=vnwin&autostart&run=Z%3A%5Cvnvm%5Cgame%5C<exe>&mount=/vnvm/game=<name>`。
   `tests/wine.mjs` でヘッドレスのスクリーンショット。
-- 調べるとき: `VNWIN_TRACE=1` (+ `VNWIN_TRACE_FILTER=a,b`、`VNWIN_TRACE_AFTER=ms`)、
+- 調べるとき: `VNWIN_WATCH=<16進番地>` (API 呼び出しごとにその番地の値を見て、変わったら表示)、`VNVM_D3D_TRACE=1` (描画ごとの頂点も表示)、`VNWIN_TRACE=1` (+ `VNWIN_TRACE_FILTER=a,b`、`VNWIN_TRACE_AFTER=ms`)、
   `VNWIN_TRACE=3` (落ちたときにスレッドごとの直前の呼び出し)、`VNWIN_API_STATS=秒`、
   `VNWIN_TRACE_FAULT`、`VNWIN_TRACE_FILES`、`VNWIN_TRACE_LOAD`、`VNWIN_TRACE_MSG`、
   `VNWIN_TRACE_INPUT`、`VNWIN_TRACE_FONT`、`VNVM_JIT_STATS` (JIT が実行ループに戻る場所)。

@@ -260,6 +260,17 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
         *COUNTS.lock().unwrap().get_or_insert_with(HashMap::new).entry(i).or_default() += 1;
     }
     let esp = cpu.regs[ESP];
+    {
+        static W: OnceLock<u32> = OnceLock::new();
+        static LAST: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let w = *W.get_or_init(|| std::env::var("VNWIN_WATCH").ok().and_then(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok()).unwrap_or(0));
+        if w != 0 {
+            let v = r32(w);
+            if LAST.swap(v, std::sync::atomic::Ordering::Relaxed) != v {
+                eprintln!("vnwin watch {w:#x} = {v:#x} before {}, from {:x}", name_of(addr).unwrap_or_default(), r32(esp));
+            }
+        }
+    }
     let tr = trace();
     if tr > 0 && trace_match(i) {
         let n = name_of(addr).unwrap_or_default();

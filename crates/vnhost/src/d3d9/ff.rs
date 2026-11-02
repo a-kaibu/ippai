@@ -23,6 +23,8 @@ pub struct VsKey {
     /// per stage: texcoord index (low bits of TEXCOORDINDEX), and the texture transform
     /// (TEXTURETRANSFORMFLAGS count, 0 off) for stages 0-1
     pub tci: [(u8, u8); 8],
+    /// SHADEMODE flat: the colors come from each triangle's first vertex
+    pub flat: bool,
 }
 
 pub fn vertex(k: &VsKey) -> String {
@@ -35,7 +37,8 @@ pub fn vertex(k: &VsKey) -> String {
     if k.inputs.is_empty() {
         h.push_str("  @builtin(vertex_index) vid: u32,\n");
     }
-    h.push_str("}\nstruct Out {\n  @builtin(position) pos: vec4f,\n  @location(0) l0: vec4f,\n  @location(1) l1: vec4f,\n");
+    let f = if k.flat { "@interpolate(flat) " } else { "" };
+    let _ = write!(h, "}}\nstruct Out {{\n  @builtin(position) pos: vec4f,\n  @location(0) {f}l0: vec4f,\n  @location(1) {f}l1: vec4f,\n");
     for t in 0..8 {
         let _ = writeln!(h, "  @location({}) l{}: vec4f,", 2 + t, 2 + t);
     }
@@ -118,6 +121,8 @@ pub struct PsKey {
     pub alpha_test: Option<u32>,
     /// texture types per stage (2: 2D, 0: none bound)
     pub tex: [u8; 8],
+    /// SHADEMODE flat (must match the vertex shader's)
+    pub flat: bool,
 }
 
 const TOP_DISABLE: u32 = 1;
@@ -179,7 +184,8 @@ pub fn pixel(k: &PsKey) -> String {
             let _ = writeln!(h, "@group(1) @binding({}) var smp{}: sampler;", t * 2 + 1, t);
         }
     }
-    h.push_str("struct In {\n  @builtin(position) fragpos: vec4f,\n  @location(0) l0: vec4f,\n  @location(1) l1: vec4f,\n");
+    let f = if k.flat { "@interpolate(flat) " } else { "" };
+    let _ = write!(h, "struct In {{\n  @builtin(position) fragpos: vec4f,\n  @location(0) {f}l0: vec4f,\n  @location(1) {f}l1: vec4f,\n");
     for t in 0..8 {
         let _ = writeln!(h, "  @location({}) l{}: vec4f,", 2 + t, 2 + t);
     }
