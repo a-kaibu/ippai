@@ -1,4 +1,4 @@
-//! Direct3D 10/11 shaders (DXBC) to WGSL: vkd3d-shader makes SPIR-V (hangover/vkd3d/vnshader.c,
+//! Direct3D 10/11 shaders (DXBC) to WGSL: vkd3d-shader makes SPIR-V (host/vkd3d/vnshader.c,
 //! descriptor set = stage, bindings by register: b<n> n, t<n> 16 + n, s<n> 160 + n), naga makes
 //! WGSL of it. What the page needs to bind comes from naga's module.
 

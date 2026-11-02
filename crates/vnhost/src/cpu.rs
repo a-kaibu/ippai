@@ -237,7 +237,7 @@ pub fn forget_thread(tid: i32) {
 }
 
 /// Each process's handler for signals that arrive while a thread is blocked in a syscall
-/// (hangover/unixsig.c), by pid.
+/// (vnvm-wine hangover/unixsig.c), by pid.
 static SIGNAL_HOOKS: Mutex<Option<HashMap<i32, extern "C" fn(i32)>>> = Mutex::new(None);
 
 #[no_mangle]

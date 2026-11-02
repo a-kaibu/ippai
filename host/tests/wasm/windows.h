@@ -1,4 +1,4 @@
-/* Just enough of windows.h for bench.c built straight to wasm (hangover/tests/bench-wasm.sh): the
+/* Just enough of windows.h for bench.c built straight to wasm (host/tests/bench-wasm.sh): the
  * phone's own speed, without the x86 translation, for web/bench.html?wasm */
 #include <emscripten.h>
 typedef union { long long QuadPart; } LARGE_INTEGER;

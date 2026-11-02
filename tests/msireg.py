@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """msireg.py PACKAGE.msi INSTALLDIR: prints a Windows Installer package's registry entries
 (its Registry table) as root<TAB>key<TAB>name<TAB>value lines for the corpus launcher helper
-(hangover/tests/autoclick.c writes them before starting the game). INSTALLDIR is the Windows
+(host/tests/autoclick.c writes them before starting the game). INSTALLDIR is the Windows
 path the package's files ended up in (corpus-prep.sh unpacks them with msiextract). Games read
 their install path back from there (Eushully: HKCU\\Software\\Eushully\\<title>\\ExePath)."""
 import re, subprocess, sys

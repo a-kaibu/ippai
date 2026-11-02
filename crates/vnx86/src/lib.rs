@@ -1,5 +1,5 @@
 //! i386 user-mode CPU core for running Windows code under a wasm-built Wine
-//! (see docs/hangover.md).
+//! (see vnvm-wine docs/hangover.md).
 //!
 //! The guest address space is flat 32-bit; segment registers other than FS/GS
 //! (Windows' TEB) are ignored. The CPU never owns memory: everything goes

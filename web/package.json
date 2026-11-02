@@ -1,7 +1,7 @@
 {
   "name": "vnvm-web",
   "private": true,
-  "description": "Runs Wine built for wasm (hangover/) in the page: game list, WebGPU display and Direct3D 9, input, audio, streamed file trees.",
+  "description": "Runs Wine built for wasm (host/) in the page: game list, WebGPU display and Direct3D 9, input, audio, streamed file trees.",
   "type": "module",
   "scripts": {
     "dev": "vp dev",

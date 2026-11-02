@@ -144,7 +144,7 @@ fn err<T: From<i8>>(e: c_int) -> T {
 }
 
 extern "C" {
-    /// hangover/vnfs.js: reads `name` from the store into a malloc'ed buffer (NULL if missing)
+    /// host/vnfs.js: reads `name` from the store into a malloc'ed buffer (NULL if missing)
     fn vnvm_fetch(name: *const c_char, len: *mut size_t) -> *mut u8;
 }
 

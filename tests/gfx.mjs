@@ -1,4 +1,4 @@
-// Graphics API tests: runs each check of hangover/tests (built by build-gfx.sh, packed as store
+// Graphics API tests: runs each check of host/tests (built by build-gfx.sh, packed as store
 // tree "gfxtest") with "still" in headless Chromium through tests/wine.mjs, then compares pixels
 // of the screen against what the check draws, and its log against what it prints. Needs
 // vnvm-server on BASE (default http://127.0.0.1:8090); exits 1 when anything fails.

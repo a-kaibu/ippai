@@ -5,7 +5,7 @@
 
 V8 の性質はブログや記憶ではなく **V8 main のソース (commit b685385、2026-11-01)** で確かめた。
 ファイル名と行番号はこのコミットのもの (`src/` から)。vnvm の計測値は docs/translator.md、
-docs/prior-work.md、docs/hangover.md と、これまでのスレッドの記録から引いた。
+docs/prior-work.md、vnvm-wine docs/hangover.md と、これまでのスレッドの記録から引いた。
 
 ## 要約
 
@@ -374,7 +374,7 @@ compilation hints (https://github.com/WebAssembly/compilation-hints)。
 論文: Jangda ら ATC'19 (https://arxiv.org/abs/1901.09056)、Titzer CGO'24 (https://arxiv.org/abs/2305.13241)、
 Ramsey ICFP'22 "Beyond Relooper" (https://dl.acm.org/doi/10.1145/3547621)。
 
-vnvm の内部の記録: docs/translator.md、docs/prior-work.md、docs/hangover.md、
+vnvm の内部の記録: docs/translator.md、docs/prior-work.md、vnvm-wine docs/hangover.md、
 project memory の vnvm-v8、vnvm-calls、vnvm-perf-notes、vnvm-perf-notes2、vnvm-perf-notes3、vnvm-aot。
 
 ## 6. 外部の調査報告との突き合わせ (2026-11-02、こたが共有)
@@ -414,7 +414,7 @@ flycast-wasm を比べて、ホットなリージョンを 1 つの wasm 関数�
    渡せるのは 6 個 (x64 は 5 個)。
 3. Branch Hinting の出荷は、prior-work.md の確認では M136 (報告は 137)。どちらにしても今の Chrome では有効。
 4. 報告は「Wine の処理は Wasm ネイティブに早く抜ける」と書いている。vnvm では Wine の Unix 側はもう
-   wasm で、PE の DLL を直接 wasm にする作業は別のスレッドにある (docs/wasm-dlls.md)。
+   wasm で、PE の DLL を直接 wasm にする作業は別のスレッドにある (vnvm-wine docs/wasm-dlls.md)。
 
 ### 報告から新しく採るもの
 

@@ -1,8 +1,8 @@
 # sake: Rust で一から書いた Win32 層 (旧名 vnwin)
 
 Wine を使わずに、ゲームの x86 コードを vnhost の JIT で動かし、Windows API を Rust
-(crates/sake、wasm) で実装する。Wine 経路 (hangover/) と同じページ・同じ JIT・同じ
-WebGPU D3D9 を使うので、A/B 比較ができる。`wine.html` / `game.html` に `&engine=sake`。
+(crates/sake、wasm) で実装する。Wine 経路 (2026-11-02 に [a-kaibu/vnvm-wine](https://github.com/a-kaibu/vnvm-wine) へ移した) と同じページ・同じ JIT・同じ
+WebGPU D3D9 を使う。いまはページ (`wine.html` / `game.html`) が動かすのは sake だけ (`&engine=` は無視)。
 
 ## 仕組み
 
@@ -31,7 +31,7 @@ WebGPU D3D9 を使うので、A/B 比較ができる。`wine.html` / `game.html`
   ゲームはソフトウェア描画に回る。
 - D3D11 / DXGI (d3d11.rs): vnhost の WebGPU D3D11 (Wine 経路と同じ実装) に橋渡し。vtable の
   各メソッドはトラップで、`vnhost::d3d11::call` に引数を渡すだけ。メソッド表は
-  `hangover/gen-d3d11-stubs.py` が d3d11_methods.rs として生成する。
+  `host/gen-d3d11-stubs.py` が d3d11_methods.rs として生成する。
 - specs.txt にない DLL (d2d1、dwrite、d3dcompiler_47 など) はプレフィックスの
   `C:\windows\system32` から Wine の PE ビルドを x86 として読む。Direct2D はこの Wine の d2d1 が
   D3D11 の上で描く。

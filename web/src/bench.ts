@@ -1,11 +1,11 @@
-// bench.exe (hangover/tests/bench.c) on a device, with everything needed to tell where the time
+// bench.exe (host/tests/bench.c) on a device, with everything needed to tell where the time
 // goes, from one URL: /bench.html runs the steps of SUITE one after another (the page reloads
 // itself between them; Wine can't start twice in a page) and ends with a table of all of them.
 //
-//   - bench.c compiled straight to wasm (hangover/tests/bench-wasm.sh): the device's own speed
+//   - bench.c compiled straight to wasm (host/tests/bench-wasm.sh): the device's own speed
 //     with the same kernels, no x86 or Wine; also with shared memory, and shared and 2.1 GB
 //     like wine.wasm
-//   - bench.exe through Wine and the JIT, twice (the 2nd starts from the regions the 1st saved)
+//   - bench.exe through sake and the JIT, twice (the 2nd starts from the regions the 1st saved)
 //   - single kernels 5 times in a row in one run: does the JIT's code get faster as V8 tiers up?
 //   - the memcpy kernel's copies (4 MB there and back, 200 times) as wasm memory.copy and as an
 //     i64 load/store loop, on shared memory: what the JIT's memcpy (memory.copy) can do
@@ -16,7 +16,7 @@
 // Each step's result also goes to vnvm-server's `PUT /bench-log`, which prints it and appends it
 // to bench-results.txt.
 
-// native Wine on the x86-64 dev machine, bench.exe 1 (docs/hangover.md)
+// native Wine on the x86-64 dev machine, bench.exe 1 (vnvm-wine docs/hangover.md)
 const NATIVE: Record<string, number> = {
   crc32: 53,
   lz: 30,

@@ -164,7 +164,7 @@ Reunion、保存なし・ブラウザのキャッシュなし。タイトルま�
    - bench.exe と Reunion の間だけで 715 リージョンが共通 (Wine の起動と DLL)。
    - 初めてのゲームを想定した測定 (Reunion を共有だけで起動): タイトルまで 13.3 秒が、
      コードキャッシュありで 10.0 秒、なしで 11.1〜12.5 秒になった。
-2. **保存の版を翻訳器のソースのハッシュに** (`wine/jit-version.txt`、hangover/build.sh が書く)。
+2. **保存の版を翻訳器のソースのハッシュに** (`wine/jit-version.txt`、vnvm-wine hangover/build.sh が書く)。
    - これまでは wine.wasm の Last-Modified が版だったので、web だけのビルドでも保存が全部
      無駄になっていた。
    - いまは vnx86 と vnhost の jit.rs/cpu.rs、vnjit.js が変わったときだけ作り直す。
@@ -224,7 +224,7 @@ Reunion、保存なし・ブラウザのキャッシュなし。タイトルま�
 
 ## AOT と JIT はどちらが速いか (2026-11-01)
 
-vnvm で静的 AOT を試すと JIT より遅かった (docs/hangover.md「初回起動の前の翻訳」)。
+vnvm で静的 AOT を試すと JIT より遅かった (vnvm-wine docs/hangover.md「初回起動の前の翻訳」)。
 先行研究と照らし合わせると、「AOT が遅い」のではなく、条件が 3 つ合わなかった。
 
 1. **出力が最終の機械語ではない**。Rosetta 2 の AOT は arm64 の機械語を作ってそのまま

@@ -19,7 +19,6 @@
 //   &titleafter=N         the title counts as shown after N s (Direct3D games)
 //   &pre=x,y              clicked every 3 s before the title (a first-start dialog; client pixels)
 //   &env=VNVM_JIT_PROFILE=1  print the executed instruction counts at the end (console)
-//   &engine=sake         sake (crates/sake, the from-scratch Win32 layer) instead of Wine
 
 const NATIVE = { title: 5.9, cores: 0.18 };
 // in the game window's client pixels (the main window's, which the screen shows): on the
@@ -213,7 +212,7 @@ async function story(): Promise<void> {
   threads.forEach((t, k) => row(`忙しいスレッド ${k + 1} 位`, `${t.cores.toFixed(2)} コア, 待ち ${t.waits.toFixed(0)}/秒 (#${t.i}, pid ${t.pid})`));
   row("空振りのスピン (回/秒)", `${spins.toFixed(0)} (約 ${((spins * 50) / 1e6).toFixed(2)} コア)`);
   const lines = [
-    `game Reunion on ${params.get("engine") ?? "wine"} (story ${secs} s, run ${round} of ${runs})`,
+    `game Reunion on sake (story ${secs} s, run ${round} of ${runs})`,
     `title ${title.toFixed(1)} s`,
     `cpu ${cpu.toFixed(3)} cores (native ${NATIVE.cores})`,
     `fps ${avg("fps").toFixed(1)}`,

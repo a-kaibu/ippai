@@ -455,7 +455,7 @@ const PRERUN_SECS: u64 = 60;
 /// read first) as any run does, so the first real run starts the way a second one would.
 ///
 /// This is the translation ahead of time: a static translation of a game's exe (every function
-/// found from its entry, exports, pointers in its data and jump tables, docs/hangover.md) was
+/// found from its entry, exports, pointers in its data and jump tables, vnvm-wine docs/hangover.md) was
 /// 7x more code than runs and slower to start even when cut to the functions that ran, because
 /// it holds whole functions where the JIT's regions hold the blocks that ran.
 async fn prerun_games(p: Arc<Prerun>) {

@@ -1,14 +1,14 @@
 import { defineConfig } from "vite-plus";
 
 // Built into web/dist and served by vnvm-server next to the store. Wine's files
-// (public/wine/) are copied as-is by hangover/build.sh.
+// (public/wine/) are copied as-is by vnvm-wine hangover/build.sh.
 export default defineConfig({
   base: "./",
   build: {
     outDir: "dist",
     emptyOutDir: true,
     target: "es2022",
-    // index.html = wine.html: Wine built for wasm (hangover/, files in public/wine/), the game list
+    // index.html = wine.html: Wine built for wasm (host/, files in public/wine/), the game list
     // without ?run=;
     // bench.html: bench.exe on wine.html with the native numbers next to it; logs.html: the runs'
     // logs (crash reports)

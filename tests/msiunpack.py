@@ -37,7 +37,7 @@ def main(msi, out):
         if d == 'TARGETDIR' or not parent or parent == d:
             return ''
         # the system folders, named as msiextract names them (the launcher helper installs the
-        # user ones: hangover/tests/autoclick.c)
+        # user ones: host/tests/autoclick.c)
         if d in SYSTEM:
             return SYSTEM[d]
         p = path(parent, seen + (d,))

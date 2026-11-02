@@ -1,7 +1,7 @@
 //! dlopen over statically linked unix libraries.
 //!
 //! Each Wine unix library (ntdll.so, win32u.so, ...) is linked into the unix side module that
-//! every Wine process loads an instance of; a generated table (hangover/build.sh) registers the
+//! every Wine process loads an instance of; a generated table (vnvm-wine hangover/build.sh) registers the
 //! symbols Wine looks up by name (`__wine_unix_call_funcs` and friends) under the library's
 //! file name when the instance starts, so lookups find the calling process's own copy.
 

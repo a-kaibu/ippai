@@ -1,17 +1,15 @@
-// Runs Wine compiled to wasm (hangover/build.sh → public/wine/) in the page: the Wine root and
-// the prefix are streamed from the store, windows are composed by vnhost
-// (crates/vnhost/src/display.rs) and shown with WebGPU, input goes back to the browser display
-// driver (dlls/winebrowser.drv).
+// Runs sake (crates/sake, the from-scratch Win32 layer, built by crates/sake/build.sh → public/sake/)
+// in the page: the prefix (its C:\ fonts) and the games are streamed from the store, windows are
+// composed by vnhost (crates/vnhost/src/display.rs) and shown with WebGPU. (The Wine path that this
+// page also ran until 2026-11-02 is in a-kaibu/vnvm-wine.)
 //
 //   /wine.html                      the game list (web/src/launcher.ts, vnvm-pack add-game)
 //   /wine.html?game=id              a game from the list (its run, mount, args and env)
 //   /wine.html?run=C:\path\to.exe   program to start
 //   &args=a,b                       its arguments
-//   &debug=+relay,...               WINEDEBUG
+//   &debug=<flags>[:channel,...]    SAKE_WINEDEBUG (crates/sake/src/k32.rs)
 //   &mount=/vnvm/game=tree          also mount a store tree (repeatable; Z:\vnvm\game\...)
 //   &env=NAME=value                 extra environment variable (repeatable, e.g. VNVM_TRACE_PROC=1)
-//   &arch=x86_64                    a 64-bit (PE32+) program: the 64-bit build (public/wine64/) with
-//                                   the wineroot64 and prefix64 trees
 //   &nosave                         no saved games (vnvm-server's pre-run: its x86 regions only)
 //   &headless                       don't draw to the canvas (tests/wine.mjs: headless Chromium
 //                                   destroys the device then, and Direct3D games need it)
@@ -30,10 +28,6 @@ const status = document.querySelector<HTMLDivElement>("#status")!;
 const canvas = document.querySelector<HTMLCanvasElement>("#screen")!;
 const startButton = document.querySelector<HTMLButtonElement>("#start")!;
 
-// (read when a game starts: the launcher sets &arch)
-const arch64 = () => params.get("arch") === "x86_64";
-// &engine=sake: sake.wasm (crates/sake, a from-scratch Win32 layer) instead of Wine, for A/B
-const sake = () => params.get("engine") === "sake";
 
 interface WineModule {
   FS: {
@@ -105,17 +99,9 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   presenter.headless = params.has("headless");
   // Keep the GPU device reachable: Chromium destroys a collected one.
   (window as unknown as { vnvmPresenter: Presenter }).vnvmPresenter = presenter;
-  log("Wine を読み込み中");
-  const ARCH64 = arch64();
-  const SAKE = sake();
-  const WINE = new URL(SAKE ? "sake/" : ARCH64 ? "wine64/" : "wine/", location.href).href;
-  const WASM = SAKE ? "sake.wasm" : "wine.wasm";
-  const unixModule = SAKE
-    ? Promise.resolve(new Uint8Array())
-    : fetch(`${WINE}wineunix.so`).then(async (r) => {
-        if (!r.ok) throw new Error(`wineunix.so: HTTP ${r.status}`);
-        return new Uint8Array(await r.arrayBuffer());
-      });
+  log("sake を読み込み中");
+  const WINE = new URL("sake/", location.href).href;
+  const WASM = "sake.wasm";
   const run = params.get("run") ?? "C:\\wintest.exe";
   recorder = new FlightRecorder(params.get("game") ?? run.slice(run.lastIndexOf("\\") + 1), {
     game: params.get("game") ?? "",
@@ -123,8 +109,8 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     args: params.get("args") ?? "",
     mounts: params.getAll("mount").join(" "),
     env: params.getAll("env").join(" "),
-    engine: SAKE ? "sake" : "wine",
-    arch: ARCH64 ? "x86_64" : "x86",
+    engine: "sake",
+    arch: "x86",
   });
   // the browser keeps a versioned wine.wasm with its compiled code (see vnvm-server)
   const wasmVersion = fetch(`${WINE}${WASM}`, { method: "HEAD" }).then(
@@ -133,28 +119,23 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   );
   // x86 regions earlier runs of this program saved (vnvm-server /jit), per build of wine.wasm
   // (which has the translator); &jit=0 for none
-  const jitBase = params.get("jit") ?? `${SAKE ? "sake-" : ""}${run.replace(/[^A-Za-z0-9_.-]/g, "_")}`;
-  // (jit-version.txt: a hash of the translator's sources, which hangover/build.sh writes; saved
+  const jitBase = params.get("jit") ?? `sake-${run.replace(/[^A-Za-z0-9_.-]/g, "_")}`;
+  // (jit-version.txt: a hash of the translator's sources, which vnvm-wine hangover/build.sh writes; saved
   // regions stay good across builds that change anything else)
   const jitVersion = fetch(`${WINE}jit-version.txt`, { cache: "no-cache" })
     .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`))))
     .then((t) => (/^[0-9a-f]{8}$/.test(t.trim()) ? t.trim() : Promise.reject(new Error("bad version"))))
     .catch(() => wasmVersion.then((v) => fnv(new TextEncoder().encode(v))));
   const jitName = jitBase === "0" ? undefined : jitVersion.then((v) => `${jitBase}-${v}`);
-  // and the regions several programs saved (Wine's DLLs and helper processes, the same in every
-  // game): a program's first run starts with those
   const jit = jitName
     ? jitName.then(async (name) => {
-        const shared = `_shared-${name.slice(name.lastIndexOf("-") + 1)}`;
-        const got = await Promise.all([SAKE ? undefined : loadJit(shared), loadJit(name)]);
-        const parts = got.flatMap((b) => b?.parts ?? []);
+        const parts = (await loadJit(name))?.parts ?? [];
         return parts.length ? { parts } : undefined;
       })
     : Promise.resolve(undefined);
   const ahead = jitName ? readAhead(jitName) : undefined;
-  const scriptUrl = `${WINE}${SAKE ? "sake.js" : "wine.js"}`;
+  const scriptUrl = `${WINE}sake.js`;
   const factory = (await import(/* @vite-ignore */ scriptUrl)).default as (m: object) => Promise<WineModule>;
-  const unix = await unixModule;
   const version = await wasmVersion;
   recorder.note(`build: ${WASM} ${version}, translator ${await jitVersion}`);
   // saved games: per program and mounts; what it writes in its folders and the user folders
@@ -166,7 +147,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   const moduleArg = {
     // (sake takes the host path: Z:\\x\\y.exe is /x/y.exe)
     arguments: [
-      SAKE ? run.replace(/^z:/i, "").replaceAll("\\", "/") : run,
+      run.replace(/^z:/i, "").replaceAll("\\", "/"),
       ...(params.get("args")?.split(",").filter(Boolean) ?? []),
     ],
     mainScriptUrlOrBlob: scriptUrl,
@@ -174,16 +155,13 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       path === WASM && version ? `${WINE}${path}?v=${encodeURIComponent(version)}` : `${WINE}${path}`,
     vnvmEnv: {
       VNVM_MOUNTS: [
-        ...(SAKE ? [] : [ARCH64 ? "/opt/wine-vnbox=wineroot64" : "/opt/wine-vnbox=wineroot"]),
-        ARCH64 ? "/vnvm/prefix=prefix64" : "/vnvm/prefix=prefix32",
+        "/vnvm/prefix=prefix32",
         ...params.getAll("mount"),
       ].join(":"),
       LANG: "ja_JP.UTF-8",
-      VNVM_UNIX_MODULE: "/vnvm/wineunix.so",
-      WINEPREFIX: "/vnvm/prefix",
       // sake's C:\ (the prefix's fonts)
-      ...(SAKE ? { SAKE_C: "/vnvm/prefix/drive_c" } : {}),
-      WINEDEBUG: params.get("debug") ?? "",
+      SAKE_C: "/vnvm/prefix/drive_c",
+      SAKE_WINEDEBUG: params.get("debug") ?? "",
       ...(jitName ? { VNVM_JIT_URL: new URL(`jit-save/${await jitName}`, location.href).href } : {}),
       // game.html: count the threads' waits (vnhost_load_busy)
       ...(params.has("load") ? { VNVM_LOAD: "1" } : {}),
@@ -204,7 +182,6 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
         m.FS.mkdir("/home/web");
         m.FS.mkdirTree(`/vnvm/tz/${tz.slice(0, tz.lastIndexOf("/") + 1)}`);
         m.FS.writeFile(`/vnvm/tz/${tz}`, "");
-        if (!SAKE) m.FS.writeFile("/vnvm/wineunix.so", unix);
         if (saved) m.FS.writeFile("/vnvm/saves.bin", saved);
       },
     ],

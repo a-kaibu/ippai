@@ -54,4 +54,4 @@ wasm インスタンスが abort / trap しても読めます。書き込みは 
 ページは 0.5 秒ごとにカウンタを 1 回読み、10 秒ごとに OPFS へ書くだけです (スナップショットは
 保存のときだけ)。
 
-確認用: `hangover/tests/crashtest.c` (null 書き込み、`ud`、`div`、`throw`、`handled`)。
+確認用: `host/tests/crashtest.c` (null 書き込み、`ud`、`div`、`throw`、`handled`)。

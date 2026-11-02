@@ -75,12 +75,12 @@ fi
 # share one address space, so the game can't get 0x400000 while the launcher holds it)
 g=$(find . -iname cs2.exe -printf '%P\n' | head -1)
 [ -n "$g" ] && e=$g
-# the launcher helper (hangover/tests/autoclick.c) goes in the tree root: corpus-run.py starts the
+# the launcher helper (host/tests/autoclick.c) goes in the tree root: corpus-run.py starts the
 # game through it so launcher dialogs get pressed and every dialog's text gets logged
 AC=${AUTOCLICK_EXE:-$HOME/.cache/vnvm/autoclick.exe}
 if [ ! -f "$AC" ] && command -v i686-w64-mingw32-gcc >/dev/null; then
   mkdir -p "$(dirname "$AC")"
-  i686-w64-mingw32-gcc -O2 "$(dirname "$0")/../hangover/tests/autoclick.c" -o "$AC.tmp" -municode && mv "$AC.tmp" "$AC"
+  i686-w64-mingw32-gcc -O2 "$(dirname "$0")/../host/tests/autoclick.c" -o "$AC.tmp" -municode && mv "$AC.tmp" "$AC"
 fi
 [ -f "$AC" ] && cp "$AC" ./_vnvm_autoclick.exe
 if [ ! -d "$store" ]; then

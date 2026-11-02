@@ -1,6 +1,6 @@
 #!/bin/bash
 # vkd3d-shader (Wine's copy in libs/vkd3d) as a static library for vnhost's Direct3D 11:
-# shader bytecode -> SPIR-V (hangover/vkd3d/vnshader.c), then naga makes WGSL.
+# shader bytecode -> SPIR-V (host/vkd3d/vnshader.c), then naga makes WGSL.
 # With NATIVE=1 it builds for this machine (tests) instead of wasm.
 #
 # env: WINE_SRC (patched Wine source), BUILD (the wasm Wine build: generated headers),

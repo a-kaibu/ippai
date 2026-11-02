@@ -25,8 +25,6 @@ pub mod fd;
 pub mod mem;
 pub mod proc;
 pub mod vfs;
-pub mod wasmdll;
-mod wasmdll_slots;
 mod sys;
 mod wrap;
 

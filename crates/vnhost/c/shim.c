@@ -109,7 +109,7 @@ void *__wrap_mremap( void *old, unsigned long old_len, unsigned long new_len, in
 extern int vnhost_getpid( void );
 extern void vnhost_proc_enter( int pid );
 extern void vnhost_proc_leave( void );
-extern void vnvm_dl_enter( int pid );  /* hangover/vndl.js */
+extern void vnvm_dl_enter( int pid );  /* host/vndl.js */
 extern int vnhost_proc_create( int app, int root );
 extern void vnhost_proc_setenv( int pid, const char *name, const char *val );
 extern void vnhost_fd_give( int fd, int pid );
@@ -389,20 +389,3 @@ int __wrap_sched_yield( void )
     last = now;
     return 0;
 }
-
-#if defined(__wasm64__)
-/* InterlockedCompareExchange128 for the 64-bit unix side (include/winnt.h): wasm has no 16-byte
- * atomics, so all of them go through one lock */
-#include <pthread.h>
-static pthread_mutex_t cmpxchg128_lock = PTHREAD_MUTEX_INITIALIZER;
-unsigned char vnwasm_cmpxchg128( volatile long long *dest, long long xchg_high, long long xchg_low, long long *compare )
-{
-    unsigned char ret;
-    pthread_mutex_lock( &cmpxchg128_lock );
-    ret = dest[0] == compare[0] && dest[1] == compare[1];
-    if (ret) { dest[0] = xchg_low; dest[1] = xchg_high; }
-    else { compare[0] = dest[0]; compare[1] = dest[1]; }
-    pthread_mutex_unlock( &cmpxchg128_lock );
-    return ret;
-}
-#endif

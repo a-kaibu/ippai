@@ -15,7 +15,7 @@ pub struct Code {
     pub locs: Vec<u32>,
 }
 
-/// wine.wasm's (and sake's) memory in pages, which never grows (hangover/build.sh
+/// wine.wasm's (and sake's) memory in pages, which never grows (vnvm-wine hangover/build.sh
 /// -sINITIAL_MEMORY=4294901760 -sALLOW_MEMORY_GROWTH=0): every module the JIT makes declares it
 /// as its memory's minimum and maximum. Without V8's trap handler (Android) every access is
 /// checked against the memory's size: a growable shared memory's size is loaded again for each

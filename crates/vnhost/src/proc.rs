@@ -415,7 +415,7 @@ pub fn check_alive() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// C interface (hangover/main.c, c/shim.c, Wine's process creation)
+// C interface (vnvm-wine hangover/main.c, c/shim.c, Wine's process creation)
 
 #[no_mangle]
 pub extern "C" fn vnhost_getpid() -> i32 {

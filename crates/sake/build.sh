@@ -8,16 +8,16 @@ EMSDK4=${EMSDK4:-/home/user/emsdk4}
 OUT=${OUT:-/home/user/work/sake-out}
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
-HO=$ROOT/hangover
+HO=$ROOT/host
 . "$EMSDK4/emsdk_env.sh" >/dev/null 2>&1
 mkdir -p "$OUT"
 cd "$ROOT"
 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-globals -C relocation-model=pic -C panic=abort" \
   cargo build --release -p sake --target wasm32-unknown-emscripten -Zbuild-std=std,panic_abort
 LIB=$ROOT/target/wasm32-unknown-emscripten/release/libsake.a
-# vkd3d-shader for Direct3D 11 shaders (vnhost's d3d11, the library hangover/build.sh builds)
+# vkd3d-shader for Direct3D 11 shaders (vnhost's d3d11), built by host/build-vkd3d.sh
 VKD3D=${VKD3D_OUT:-/home/user/work/vkd3d-wasm}/libvkd3d-shader.a
-[ -f "$VKD3D" ] || { echo "no $VKD3D: run hangover/build.sh (or hangover/build-vkd3d.sh) first"; exit 1; }
+[ -f "$VKD3D" ] || { echo "no $VKD3D: run host/build-vkd3d.sh first"; exit 1; }
 emcc -O2 -pthread -fPIC -c "$HERE/c/main.c" -o "$OUT/main.o"
 emcc -O2 -pthread -fPIC -c "$ROOT/crates/vnhost/c/shim.c" -o "$OUT/shim.o"
 # the libc entry points vnhost routes to its fd layer and the page's file system (not mmap:
@@ -36,7 +36,7 @@ link() {  # <output .js> <emcc flags...>
   local out=$1
   shift
   emcc -O2 ${SAKE_LDEXTRA:-} -pthread -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -sMAIN_MODULE=2 -Wno-undefined -o "$out" "$OUT/main.o" "$OUT/shim.o" "$LIB" "$VKD3D" \
-    $WRAPFLAGS --pre-js "$HO/pre.js" --js-library "$HO/vnfs.js" --js-library "$HO/vnjit.js" --js-library "$HO/vndl.js" --js-library "$HO/vnwasm.js" \
+    $WRAPFLAGS --pre-js "$HO/pre.js" --js-library "$HO/vnfs.js" --js-library "$HO/vnjit.js" --js-library "$HO/vndl.js" \
     -sPROXY_TO_PTHREAD -sEXIT_RUNTIME \
     -sGLOBAL_BASE=2147483648 -sINITIAL_MEMORY=4294901760 -sALLOW_MEMORY_GROWTH=0 \
     -sSTACK_SIZE=1MB -sDEFAULT_PTHREAD_STACK_SIZE=1MB -sPTHREAD_POOL_SIZE=16 -sPTHREAD_POOL_SIZE_STRICT=0 \
@@ -50,6 +50,6 @@ mkdir -p "$WEB_OUT"
 link "$WEB_OUT/sake.js" -sENVIRONMENT=web,worker -sMODULARIZE -sEXPORT_ES6 -sEXPORT_NAME=createSake \
   -sFORCE_FILESYSTEM -sEXPORTED_RUNTIME_METHODS=FS,ENV,HEAPU8,HEAPU32,HEAPF32,HEAPF64,wasmMemory \
   -sEXPORTED_FUNCTIONS=_main,_malloc,_free,$EXPORTS
-(cd "$ROOT" && find crates/vnx86/src crates/vnx86/Cargo.toml crates/vnhost/src/jit.rs crates/vnhost/src/cpu.rs hangover/vnjit.js -type f | sort | xargs cat) |
+(cd "$ROOT" && find crates/vnx86/src crates/vnx86/Cargo.toml crates/vnhost/src/jit.rs crates/vnhost/src/cpu.rs host/vnjit.js -type f | sort | xargs cat) |
   sha256sum | cut -c1-8 > "$WEB_OUT/jit-version.txt"
 echo "built $OUT/sake.js and $WEB_OUT/sake.js"

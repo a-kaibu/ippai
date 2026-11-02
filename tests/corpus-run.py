@@ -94,7 +94,7 @@ while True:
         args = titles[tid].get('args', '')
         engine = os.environ.get('ENGINE', '')  # ENGINE=sake: sake instead of Wine (no launcher helper: sake starts no 2nd process)
         if not engine and os.environ.get('AUTOCLICK', '1') == '1' and '_vnvm_autoclick.exe\t' in open(f'{STORES}/{tid}/trees/g.tsv', errors='replace').read():
-            # through the launcher helper (hangover/tests/autoclick.c, packed by corpus-prep.sh)
+            # through the launcher helper (host/tests/autoclick.c, packed by corpus-prep.sh)
             args = ','.join([winexe] + [a for a in args.split(',') if a])
             winexe = 'Z:\\vnvm\\game\\_vnvm_autoclick.exe'
         qs = 'autostart&headless&load&nosave&mount=/vnvm/game=g&run=' + urllib.parse.quote(winexe)
