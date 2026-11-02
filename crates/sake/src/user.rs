@@ -819,6 +819,8 @@ fn system_classes(s: &mut State) {
             proc_: match n {
                 "Button" | "Static" | "Edit" => control_proc(),
                 "SysTabControl32" => tab_proc(),
+                // (the class's own: a CBT hook subclassing a new dialog keeps it as the super proc)
+                "#32770" => dlg_wndproc(),
                 _ => builtin_proc(),
             },
             cls_extra: 0,
@@ -2444,11 +2446,41 @@ fn DispatchMessageA(c: &mut Ctx) -> u32 {
 fn DispatchMessageW(c: &mut Ctx) -> u32 {
     DispatchMessageA(c)
 }
-fn IsDialogMessageA(_: &mut Ctx) -> u32 {
-    0
+/// IsDialogMessage(dlg, msg): Enter / Escape pressed in the dialog become IDOK / IDCANCEL; the
+/// rest is left to the caller's TranslateMessage / DispatchMessage.
+fn is_dialog_message(c: &mut Ctx, wide: bool) -> u32 {
+    let (dlg, msg) = (c.a(0), c.a(1));
+    let (h, m, key) = (r32(msg), r32(msg + 4), r32(msg + 8));
+    if m != 0x100 || !(key == 0x0d || key == 0x1b) || dlg == 0 {
+        return 0;
+    }
+    let inside = h == dlg
+        || with(|s| {
+            let mut h = h;
+            loop {
+                match s.wins.get(&h) {
+                    Some(w) if w.style & 0x4000_0000 != 0 => {
+                        if w.parent == dlg {
+                            return true;
+                        }
+                        h = w.parent;
+                    }
+                    _ => return false,
+                }
+            }
+        });
+    if !inside {
+        return 0;
+    }
+    let f = crate::api::export("user32", if wide { "SendMessageW" } else { "SendMessageA" });
+    c.call(f, &[dlg, 0x111, if key == 0x0d { 1 } else { 2 }, 0]);
+    1
 }
-fn IsDialogMessageW(_: &mut Ctx) -> u32 {
-    0
+fn IsDialogMessageA(c: &mut Ctx) -> u32 {
+    is_dialog_message(c, false)
+}
+fn IsDialogMessageW(c: &mut Ctx) -> u32 {
+    is_dialog_message(c, true)
 }
 fn TranslateMDISysAccel(_: &mut Ctx) -> u32 {
     0
@@ -3968,7 +4000,6 @@ fn create_dialog(c: &mut Ctx, inst: u32, t: u32, owner: u32, proc_: u32, param: 
         });
         (r.l + (r.w() - ww) / 2, r.t + (r.h() - wh) / 2)
     };
-    let dialog_class = cls_s.is_none() && cls_o == 0;
     let cls = match (cls_s, cls_o) {
         (Some(s), _) => s,
         (None, 0) => crate::k32::atom("#32770"),
@@ -3981,9 +4012,6 @@ fn create_dialog(c: &mut Ctx, inst: u32, t: u32, owner: u32, proc_: u32, param: 
     if let Some(t) = title {
         let s = wstr(t);
         with(|st| st.wins.get_mut(&dlg).map(|w| w.text = s));
-    }
-    if dialog_class {
-        with(|s| s.wins.get_mut(&dlg).map(|w| w.proc_ = dlg_wndproc()));
     }
     set_extra32(dlg, 4, proc_);
     if font != 0 {
