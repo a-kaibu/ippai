@@ -1,0 +1,11 @@
+shifts 5d291e34
+carry  cd6231e4
+filds  f0322f10
+dshift 038a43e6
+halves 66ec1144
+fists  ab956a5d
+string 3357fae7
+locked 09eeffb9
+rotate e420f5f5
+bitops 1d60c720
+flgret b552ae67

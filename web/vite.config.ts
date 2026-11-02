@@ -1,3 +1,4 @@
+declare const process: { env: Record<string, string | undefined> }; // (node runs this file; no @types/node here)
 import { defineConfig } from "vite-plus";
 
 // Built into web/dist and served by vnvm-server next to the store. Wine's files
@@ -12,7 +13,15 @@ export default defineConfig({
     // without ?run=;
     // bench.html: bench.exe on wine.html with the native numbers next to it; logs.html: the runs'
     // logs (crash reports)
-    rollupOptions: { input: { main: "index.html", wine: "wine.html", bench: "bench.html", game: "game.html", logs: "logs.html" } },
+    rollupOptions: {
+      input: {
+        main: "index.html",
+        wine: "wine.html",
+        bench: "bench.html",
+        game: "game.html",
+        logs: "logs.html",
+      },
+    },
   },
   server: {
     headers: {

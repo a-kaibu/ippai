@@ -31,12 +31,15 @@ const secs = Math.max(10, Number(params.get("secs") ?? 60) || 60);
 const runs = Math.min(5, Math.max(1, Number(params.get("runs") ?? 2) || 2));
 const round = Math.min(runs, Math.max(1, Number(params.get("round") ?? 1) || 1));
 const STORE = "vnvm-game";
-for (const [i, v] of (params.get("click") ?? "").split(",").filter(Boolean).entries()) CLICK[i] = Number(v) || 0;
+for (const [i, v] of (params.get("click") ?? "").split(",").filter(Boolean).entries())
+  CLICK[i] = Number(v) || 0;
 type Rows = [string, string, string][];
 /** rows of the earlier runs */
 const earlier: Rows[] = (() => {
   try {
-    return round === 1 ? [] : (JSON.parse(sessionStorage.getItem(STORE) ?? "[]") as Rows[]).slice(0, round - 1);
+    return round === 1
+      ? []
+      : (JSON.parse(sessionStorage.getItem(STORE) ?? "[]") as Rows[]).slice(0, round - 1);
   } catch {
     return [];
   }
@@ -65,7 +68,8 @@ const mine: Rows = [];
 function render(): void {
   table.innerHTML = "";
   const head = table.insertRow();
-  for (const t of ["", ...Array.from({ length: runs }, (_, i) => `${i + 1} 回目`), "native"]) head.insertCell().textContent = t;
+  for (const t of ["", ...Array.from({ length: runs }, (_, i) => `${i + 1} 回目`), "native"])
+    head.insertCell().textContent = t;
   const all = [...earlier, mine];
   const names: string[] = [];
   for (const rows of all) for (const [n] of rows) if (!names.includes(n)) names.push(n);
@@ -118,7 +122,9 @@ addEventListener("wine-frame", (e) => {
   frames++;
   if (title || performance.now() - lastLook < 250) return;
   lastLook = performance.now();
-  const { heap, bits, width, height } = (e as CustomEvent<{ heap: Uint8Array; bits: number; width: number; height: number }>).detail;
+  const { heap, bits, width, height } = (
+    e as CustomEvent<{ heap: Uint8Array; bits: number; width: number; height: number }>
+  ).detail;
   const colors = new Set<number>();
   const from = bits + Math.floor(height / 3) * width * 4;
   const to = bits + Math.floor((2 * height) / 3) * width * 4;
@@ -197,7 +203,12 @@ async function story(): Promise<void> {
   const s1 = slots();
   const span = performance.now() - st0;
   const threads = s1
-    .map((x, i) => ({ i, pid: x.pid, cores: (x.busy - (s0[i]?.busy ?? 0)) / span, waits: ((x.waits - (s0[i]?.waits ?? 0)) * 1000) / span }))
+    .map((x, i) => ({
+      i,
+      pid: x.pid,
+      cores: (x.busy - (s0[i]?.busy ?? 0)) / span,
+      waits: ((x.waits - (s0[i]?.waits ?? 0)) * 1000) / span,
+    }))
     .sort((x, y) => y.cores - x.cores)
     .slice(0, 8);
   const spins = s1.length && s0.length ? ((s1[0]!.spins - s0[0]!.spins) * 1000) / span : 0;
@@ -209,7 +220,12 @@ async function story(): Promise<void> {
   row("描画 fps (平均)", avg("fps").toFixed(1));
   row("コマ落ち: 最長の空き (ms)", gaps[gaps.length - 1]!.toFixed(0));
   row("コマ落ち: 95% の秒の空き (ms)", gaps[Math.floor(gaps.length * 0.95)]!.toFixed(0));
-  threads.forEach((t, k) => row(`忙しいスレッド ${k + 1} 位`, `${t.cores.toFixed(2)} コア, 待ち ${t.waits.toFixed(0)}/秒 (#${t.i}, pid ${t.pid})`));
+  threads.forEach((t, k) =>
+    row(
+      `忙しいスレッド ${k + 1} 位`,
+      `${t.cores.toFixed(2)} コア, 待ち ${t.waits.toFixed(0)}/秒 (#${t.i}, pid ${t.pid})`,
+    ),
+  );
   row("空振りのスピン (回/秒)", `${spins.toFixed(0)} (約 ${((spins * 50) / 1e6).toFixed(2)} コア)`);
   const lines = [
     `game Reunion on sake (story ${secs} s, run ${round} of ${runs})`,
@@ -244,7 +260,8 @@ async function story(): Promise<void> {
 
 phase.textContent = `計測中… ${runLabel}起動してタイトル画面を待っています`;
 setInterval(() => {
-  if (!title) phase.textContent = `計測中… ${runLabel}起動してタイトル画面を待っています (${now().toFixed(0)} 秒)`;
+  if (!title)
+    phase.textContent = `計測中… ${runLabel}起動してタイトル画面を待っています (${now().toFixed(0)} 秒)`;
 }, 1000);
 
 await import("./wine");

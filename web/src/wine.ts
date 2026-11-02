@@ -28,7 +28,6 @@ const status = document.querySelector<HTMLDivElement>("#status")!;
 const canvas = document.querySelector<HTMLCanvasElement>("#screen")!;
 const startButton = document.querySelector<HTMLButtonElement>("#start")!;
 
-
 interface WineModule {
   FS: {
     mkdirTree(path: string): void;
@@ -81,15 +80,58 @@ function virtualKey(code: string): number {
   if ((m = /^Numpad(\d)$/.exec(code))) return 0x60 + Number(m[1]);
   if ((m = /^F(\d+)$/.exec(code))) return 0x6f + Number(m[1]);
   const keys: Record<string, number> = {
-    Backspace: 0x08, Tab: 0x09, Enter: 0x0d, NumpadEnter: 0x0d, ShiftLeft: 0xa0, ShiftRight: 0xa1,
-    ControlLeft: 0xa2, ControlRight: 0xa3, AltLeft: 0xa4, AltRight: 0xa5, Pause: 0x13, CapsLock: 0x14,
-    Escape: 0x1b, Space: 0x20, PageUp: 0x21, PageDown: 0x22, End: 0x23, Home: 0x24, ArrowLeft: 0x25,
-    ArrowUp: 0x26, ArrowRight: 0x27, ArrowDown: 0x28, PrintScreen: 0x2c, Insert: 0x2d, Delete: 0x2e,
-    MetaLeft: 0x5b, MetaRight: 0x5c, ContextMenu: 0x5d, NumpadMultiply: 0x6a, NumpadAdd: 0x6b,
-    NumpadSubtract: 0x6d, NumpadDecimal: 0x6e, NumpadDivide: 0x6f, NumLock: 0x90, ScrollLock: 0x91,
-    Semicolon: 0xba, Equal: 0xbb, Comma: 0xbc, Minus: 0xbd, Period: 0xbe, Slash: 0xbf, Backquote: 0xc0,
-    BracketLeft: 0xdb, Backslash: 0xdc, BracketRight: 0xdd, Quote: 0xde, IntlBackslash: 0xe2,
-    IntlRo: 0xc1, IntlYen: 0xdc, Convert: 0x1c, NonConvert: 0x1d, KanaMode: 0x15,
+    Backspace: 0x08,
+    Tab: 0x09,
+    Enter: 0x0d,
+    NumpadEnter: 0x0d,
+    ShiftLeft: 0xa0,
+    ShiftRight: 0xa1,
+    ControlLeft: 0xa2,
+    ControlRight: 0xa3,
+    AltLeft: 0xa4,
+    AltRight: 0xa5,
+    Pause: 0x13,
+    CapsLock: 0x14,
+    Escape: 0x1b,
+    Space: 0x20,
+    PageUp: 0x21,
+    PageDown: 0x22,
+    End: 0x23,
+    Home: 0x24,
+    ArrowLeft: 0x25,
+    ArrowUp: 0x26,
+    ArrowRight: 0x27,
+    ArrowDown: 0x28,
+    PrintScreen: 0x2c,
+    Insert: 0x2d,
+    Delete: 0x2e,
+    MetaLeft: 0x5b,
+    MetaRight: 0x5c,
+    ContextMenu: 0x5d,
+    NumpadMultiply: 0x6a,
+    NumpadAdd: 0x6b,
+    NumpadSubtract: 0x6d,
+    NumpadDecimal: 0x6e,
+    NumpadDivide: 0x6f,
+    NumLock: 0x90,
+    ScrollLock: 0x91,
+    Semicolon: 0xba,
+    Equal: 0xbb,
+    Comma: 0xbc,
+    Minus: 0xbd,
+    Period: 0xbe,
+    Slash: 0xbf,
+    Backquote: 0xc0,
+    BracketLeft: 0xdb,
+    Backslash: 0xdc,
+    BracketRight: 0xdd,
+    Quote: 0xde,
+    IntlBackslash: 0xe2,
+    IntlRo: 0xc1,
+    IntlYen: 0xdc,
+    Convert: 0x1c,
+    NonConvert: 0x1d,
+    KanaMode: 0x15,
   };
   return keys[code] ?? 0;
 }
@@ -141,7 +183,11 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   // saved games: per program and mounts; what it writes in its folders and the user folders
   const mounts = params.getAll("mount");
   const saveName = `${run.replace(/[^A-Za-z0-9_.-]/g, "_")}-${fnv(new TextEncoder().encode(mounts.join(":")))}`;
-  const saveRoots = [...mounts.map((m) => m.slice(0, m.indexOf("="))), "/vnvm/prefix/drive_c/users", "/vnvm/prefix/user.reg"];
+  const saveRoots = [
+    ...mounts.map((m) => m.slice(0, m.indexOf("="))),
+    "/vnvm/prefix/drive_c/users",
+    "/vnvm/prefix/user.reg",
+  ];
   const nosave = params.has("nosave");
   const saved = nosave ? null : await loadSaves(saveName).catch(() => null);
   const moduleArg = {
@@ -154,10 +200,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     locateFile: (path: string) =>
       path === WASM && version ? `${WINE}${path}?v=${encodeURIComponent(version)}` : `${WINE}${path}`,
     vnvmEnv: {
-      VNVM_MOUNTS: [
-        "/vnvm/prefix=prefix32",
-        ...params.getAll("mount"),
-      ].join(":"),
+      VNVM_MOUNTS: ["/vnvm/prefix=prefix32", ...params.getAll("mount")].join(":"),
       LANG: "ja_JP.UTF-8",
       // sake's C:\ (the prefix's fonts)
       SAKE_C: "/vnvm/prefix/drive_c",
@@ -173,8 +216,12 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       TZ: tz,
       TZDIR: "/vnvm/tz",
       // the game starts in its own folder (as from Explorer): many open their data relatively
-      ...(/^z:\\/i.test(run) ? { VNVM_CWD: run.slice(2, run.lastIndexOf("\\")).replaceAll("\\", "/") || "/" } : {}),
-      ...Object.fromEntries(params.getAll("env").map((e) => [e.slice(0, e.indexOf("=")), e.slice(e.indexOf("=") + 1)])),
+      ...(/^z:\\/i.test(run)
+        ? { VNVM_CWD: run.slice(2, run.lastIndexOf("\\")).replaceAll("\\", "/") || "/" }
+        : {}),
+      ...Object.fromEntries(
+        params.getAll("env").map((e) => [e.slice(0, e.indexOf("=")), e.slice(e.indexOf("=") + 1)]),
+      ),
     },
     preRun: [
       (m: WineModule) => {
@@ -221,7 +268,9 @@ function fnv(bytes: Uint8Array): string {
  * The saved regions `name`, its parts compiled while they download (the browser caches each
  * part's code: a run's save adds a part, the others stay the same), if any.
  */
-async function loadJit(name: string): Promise<{ parts: { module: WebAssembly.Module; idx: Uint8Array }[] } | undefined> {
+async function loadJit(
+  name: string,
+): Promise<{ parts: { module: WebAssembly.Module; idx: Uint8Array }[] } | undefined> {
   const ok = (r: Response) => (r.ok ? r : Promise.reject(new Error(`HTTP ${r.status}`)));
   try {
     // "<module> <index> <version>" per part
@@ -231,7 +280,9 @@ async function loadJit(name: string): Promise<{ parts: { module: WebAssembly.Mod
         const [wasm, idx, v] = line.split(" ");
         const [module, bytes] = await Promise.all([
           WebAssembly.compileStreaming(fetch(`jit/${wasm}?v=${v}`).then(ok)),
-          fetch(`jit/${idx}?v=${v}`).then(ok).then((r) => r.arrayBuffer()),
+          fetch(`jit/${idx}?v=${v}`)
+            .then(ok)
+            .then((r) => r.arrayBuffer()),
         ]);
         return { module, idx: new Uint8Array(bytes) };
       }),
@@ -266,7 +317,10 @@ function readAhead(name: Promise<string>): (wine: WineModule) => void {
     // this program's, then those several programs read (Wine's files: a game's first run too)
     const lists = await Promise.all(
       [`jit/${await name}.chunks`, "jit/_shared.chunks"].map((u) =>
-        fetch(u).then((r) => (r.ok ? r.arrayBuffer() : new ArrayBuffer(0)), () => new ArrayBuffer(0)),
+        fetch(u).then(
+          (r) => (r.ok ? r.arrayBuffer() : new ArrayBuffer(0)),
+          () => new ArrayBuffer(0),
+        ),
       ),
     );
     const seen = new Set<string>();
@@ -318,7 +372,9 @@ function present(wine: WineModule, presenter: Presenter): void {
   let d3dFrames = 0;
   const view = (scratch + 20) >>> 2;
   // &d3dstats: every 5 s, page frames, slow ones (>34 ms apart), Direct3D frames and batch time
-  const stats = params.has("d3dstats") ? { t0: performance.now(), last: 0, frames: 0, slow: 0, d3d: 0 } : null;
+  const stats = params.has("d3dstats")
+    ? { t0: performance.now(), last: 0, frames: 0, slow: 0, d3d: 0 }
+    : null;
   const frame = () => {
     if (stats) {
       const t = performance.now();
@@ -360,7 +416,16 @@ function present(wine: WineModule, presenter: Presenter): void {
     let above: [number, number, number, number][] = [];
     if (o && wine._vnhost_display_windows) {
       const n = wine._vnhost_display_windows(winBuf, 8);
-      const rs = Array.from({ length: n }, (_, k) => [0, 1, 2, 3].map((j) => wine.HEAPU32[(winBuf >>> 2) + 4 * k + j]! | 0) as [number, number, number, number]);
+      const rs = Array.from(
+        { length: n },
+        (_, k) =>
+          [0, 1, 2, 3].map((j) => wine.HEAPU32[(winBuf >>> 2) + 4 * k + j]! | 0) as [
+            number,
+            number,
+            number,
+            number,
+          ],
+      );
       const [ol, ot, or, ob] = o.rect;
       const i = rs.findIndex(([l, t, r, b]) => l <= ol && t <= ot && r >= or && b >= ob);
       if (i > 0) above = rs.slice(0, i);
@@ -376,7 +441,15 @@ function present(wine: WineModule, presenter: Presenter): void {
     const serial = wine.HEAPU32[io]!;
     if (serial !== shown) {
       shown = serial;
-      presenter.update(wine.HEAPU8, bits, width, height, width * 4, wine.HEAPU32[io + 1]!, wine.HEAPU32[io + 2]!);
+      presenter.update(
+        wine.HEAPU8,
+        bits,
+        width,
+        height,
+        width * 4,
+        wine.HEAPU32[io + 1]!,
+        wine.HEAPU32[io + 2]!,
+      );
       // game.html looks at the frames
       dispatchEvent(new CustomEvent("wine-frame", { detail: { heap: wine.HEAPU8, bits, width, height } }));
       if (status.textContent) log("");
@@ -389,7 +462,8 @@ function present(wine: WineModule, presenter: Presenter): void {
 }
 
 function attachInput(wine: WineModule, presenter: Presenter): void {
-  const push = (kind: number, x: number, y: number, data: number) => wine._vnhost_input_push(kind, x, y, data);
+  const push = (kind: number, x: number, y: number, data: number) =>
+    wine._vnhost_input_push(kind, x, y, data);
   // DOM button -> 0 left, 1 right, 2 middle
   const button = (b: number) => [0, 2, 1][b] ?? -1;
   canvas.addEventListener("pointermove", (e) => {
@@ -508,7 +582,9 @@ let saveNow: () => Promise<void> = async () => {};
 
 function closeGame(): void {
   log("ゲームが終了しました");
-  const ended = recorder ? Promise.race([recorder.end(), new Promise((r) => setTimeout(r, 4000))]) : Promise.resolve();
+  const ended = recorder
+    ? Promise.race([recorder.end(), new Promise((r) => setTimeout(r, 4000))])
+    : Promise.resolve();
   void Promise.all([saveNow(), ended]).finally(leave);
 }
 

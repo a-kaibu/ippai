@@ -64,7 +64,12 @@ function same(a: Uint8Array | null, b: Uint8Array): boolean {
  * Keeps saving what the game writes under `roots` for `name`. Returns a function that saves now
  * (when the game quits).
  */
-export function keepSaving(m: SavesModule, name: string, roots: string[], last: Uint8Array | null): () => Promise<void> {
+export function keepSaving(
+  m: SavesModule,
+  name: string,
+  roots: string[],
+  last: Uint8Array | null,
+): () => Promise<void> {
   let busy = false;
   const save = async () => {
     if (busy) return;

@@ -1,0 +1,5 @@
+mmx_arith   7f7c976b
+mmx_shuffle 42feb264
+mmx_chain   d7dc2925
+sse2_int    91c996de
+sse_float   0128bff2

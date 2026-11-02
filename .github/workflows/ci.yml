@@ -1,0 +1,88 @@
+# CI: every push to main and every pull request runs the Rust tests and builds the whole
+# release (sake.wasm, the page, the server), then runs host/tests on sake. A tag v* also
+# publishes that build on GitHub Releases (tools/ci/build.sh makes vnvm-<tag>.tar.zst).
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: test-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: test-${{ runner.os }}-
+      - name: cargo test
+        run: cargo test --workspace --release
+
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # (git describe names the build)
+      - name: Tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq --no-install-recommends bison flex spirv-headers libvulkan-dev mingw-w64 zstd
+          rustup component add rust-src
+          rustup target add wasm32-unknown-emscripten
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/emsdk4
+            ~/.cache/vnvm
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: build-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'tools/ci/build.sh', 'host/build-vkd3d.sh') }}
+          restore-keys: build-${{ runner.os }}-
+      - name: Web check
+        working-directory: web
+        run: npm ci --no-audit --no-fund && npx vp check
+      - name: Build
+        run: tools/ci/build.sh
+      - name: host/tests on sake
+        run: SAKE=$PWD/target/sake-out/sake.js tests/host-tests.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vnvm
+          path: target/dist/*
+          retention-days: 14
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: vnvm
+          path: dist
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes

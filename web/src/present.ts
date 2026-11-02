@@ -70,7 +70,8 @@ export class Presenter {
     private readonly pipeline: GPURenderPipeline,
     private readonly samplers: { nearest: GPUSampler; linear: GPUSampler },
   ) {
-    const uv = () => device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const uv = () =>
+      device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.uvMain = uv();
     this.uvOverlay = uv();
   }
@@ -80,7 +81,9 @@ export class Presenter {
     if (!adapter) throw new Error("WebGPU が使えません");
     // (Direct3D 11 games sample 32-bit float textures with linear filters)
     const want: GPUFeatureName[] = ["float32-filterable", "rg11b10ufloat-renderable"];
-    const device = await adapter.requestDevice({ requiredFeatures: want.filter((f) => adapter.features.has(f)) });
+    const device = await adapter.requestDevice({
+      requiredFeatures: want.filter((f) => adapter.features.has(f)),
+    });
     const context = canvas.getContext("webgpu")!;
     const format = navigator.gpu.getPreferredCanvasFormat();
     context.configure({ device, format, alphaMode: "opaque" });
@@ -96,7 +99,9 @@ export class Presenter {
       linear: device.createSampler({ magFilter: "linear", minFilter: "linear" }),
     };
     void device.lost.then((info) => console.error(`WebGPU device lost (${info.reason}): ${info.message}`));
-    device.addEventListener("uncapturederror", (e) => console.error(`WebGPU: ${(e as GPUUncapturedErrorEvent).error.message}`));
+    device.addEventListener("uncapturederror", (e) =>
+      console.error(`WebGPU: ${(e as GPUUncapturedErrorEvent).error.message}`),
+    );
     return new Presenter(canvas, adapter, device, context, pipeline, samplers);
   }
 
@@ -115,7 +120,10 @@ export class Presenter {
     const dpr = window.devicePixelRatio || 1;
     const cw = Math.max(1, Math.floor(this.canvas.clientWidth * dpr));
     const ch = Math.max(1, Math.floor(this.canvas.clientHeight * dpr));
-    const v = this.view && this.view[2] > this.view[0] && this.view[3] > this.view[1] ? this.view : [0, 0, width, height];
+    const v =
+      this.view && this.view[2] > this.view[0] && this.view[3] > this.view[1]
+        ? this.view
+        : [0, 0, width, height];
     let changed = width !== this.width || height !== this.height || v.some((x, i) => x !== this.shown[i]);
     if (this.canvas.width !== cw || this.canvas.height !== ch) {
       this.canvas.width = cw;
@@ -126,7 +134,12 @@ export class Presenter {
     this.height = height;
     this.shown = [v[0]!, v[1]!, v[2]!, v[3]!];
     this.rect = letterbox(cw, ch, v[2]! - v[0]!, v[3]! - v[1]!);
-    if (changed) this.device.queue.writeBuffer(this.uvMain, 0, new Float32Array([v[0]! / width, v[1]! / height, v[2]! / width, v[3]! / height]));
+    if (changed)
+      this.device.queue.writeBuffer(
+        this.uvMain,
+        0,
+        new Float32Array([v[0]! / width, v[1]! / height, v[2]! / width, v[3]! / height]),
+      );
     return changed;
   }
 
@@ -134,10 +147,20 @@ export class Presenter {
    * Uploads rows [y0, y1) of a BGRX frame that lives in `heap` at `offset`
    * (`stride` bytes per row) and draws it.
    */
-  update(heap: Uint8Array, offset: number, width: number, height: number, stride: number, y0: number, y1: number): void {
+  update(
+    heap: Uint8Array,
+    offset: number,
+    width: number,
+    height: number,
+    stride: number,
+    y0: number,
+    y1: number,
+  ): void {
     if (!width || !height) return;
     const resized = this.layout(width, height);
-    const nearest = this.rect.w % (this.shown[2] - this.shown[0]) === 0 && this.rect.h % (this.shown[3] - this.shown[1]) === 0;
+    const nearest =
+      this.rect.w % (this.shown[2] - this.shown[0]) === 0 &&
+      this.rect.h % (this.shown[3] - this.shown[1]) === 0;
     if (!this.texture || this.texture.width !== width || this.texture.height !== height || resized) {
       this.texture?.destroy();
       this.texture = this.device.createTexture({
@@ -161,7 +184,14 @@ export class Presenter {
     this.draw();
   }
 
-  private upload(heap: Uint8Array, offset: number, width: number, stride: number, y0: number, y1: number): void {
+  private upload(
+    heap: Uint8Array,
+    offset: number,
+    width: number,
+    stride: number,
+    y0: number,
+    y1: number,
+  ): void {
     const rows = heap.subarray(offset + y0 * stride, offset + y1 * stride);
     const dst = { texture: this.texture!, origin: { x: 0, y: y0 } };
     const size = [width, y1 - y0];
@@ -219,7 +249,10 @@ export class Presenter {
       // the window's client area within the view, from frame pixels to the canvas
       const [vl, vt, vr, vb] = this.shown;
       const [ol, ot, or, ob] = o.rect;
-      const l = Math.max(ol, vl), t = Math.max(ot, vt), rr = Math.min(or, vr), b = Math.min(ob, vb);
+      const l = Math.max(ol, vl),
+        t = Math.max(ot, vt),
+        rr = Math.min(or, vr),
+        b = Math.min(ob, vb);
       const sx = r.w / (vr - vl),
         sy = r.h / (vb - vt);
       const x0 = r.x + (l - vl) * sx,
@@ -238,14 +271,27 @@ export class Presenter {
       // dialogs and other windows above it
       const [vl2, vt2, vr2, vb2] = this.shown;
       this.above.slice(0, 8).forEach(([al, at, ar, ab], k) => {
-        const l = Math.max(al, vl2), t = Math.max(at, vt2), rr = Math.min(ar, vr2), b = Math.min(ab, vb2);
+        const l = Math.max(al, vl2),
+          t = Math.max(at, vt2),
+          rr = Math.min(ar, vr2),
+          b = Math.min(ab, vb2);
         if (rr <= l || b <= t || !this.texView) return;
-        const sx = r.w / (vr2 - vl2), sy = r.h / (vb2 - vt2);
-        const x0 = r.x + (l - vl2) * sx, y0 = r.y + (t - vt2) * sy;
-        const x1 = Math.min(this.canvas.width, r.x + (rr - vl2) * sx), y1 = Math.min(this.canvas.height, r.y + (b - vt2) * sy);
+        const sx = r.w / (vr2 - vl2),
+          sy = r.h / (vb2 - vt2);
+        const x0 = r.x + (l - vl2) * sx,
+          y0 = r.y + (t - vt2) * sy;
+        const x1 = Math.min(this.canvas.width, r.x + (rr - vl2) * sx),
+          y1 = Math.min(this.canvas.height, r.y + (b - vt2) * sy);
         if (x1 <= x0 || y1 <= y0) return;
-        this.uvAbove[k] ??= this.device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-        this.device.queue.writeBuffer(this.uvAbove[k]!, 0, new Float32Array([l / this.width, t / this.height, rr / this.width, b / this.height]));
+        this.uvAbove[k] ??= this.device.createBuffer({
+          size: 16,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+        this.device.queue.writeBuffer(
+          this.uvAbove[k]!,
+          0,
+          new Float32Array([l / this.width, t / this.height, rr / this.width, b / this.height]),
+        );
         const group = this.device.createBindGroup({
           layout: this.pipeline.getBindGroupLayout(0),
           entries: [

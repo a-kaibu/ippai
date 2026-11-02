@@ -43,7 +43,8 @@ interface Step {
 
 // (memory (import "e" "m") 256 256 shared), copy/loop(dst, src, n, repeats): memcpy(d, s, n),
 // memmove(s + 1, d, n - 1) per repeat, by memory.copy / by i64 loads and stores
-const MICRO = "AGFzbQEAAAABCAFgBH9/f38AAgsBAWUBbQIDgAKAAgMDAgAABw8CBGNvcHkAAARsb29wAAEKjwECKgADQCAAIAEgAvwKAAAgAUEBaiAAIAJBAWv8CgAAIANBAWshAyADDQALC2IBAX8DQEEAIQQDQCAAIARqIAEgBGopAwA3AwAgBEEIaiEEIAQgAkkNAAtBACEEA0AgAUEBaiAEaiAAIARqKQMANwMAIARBCGohBCAEIAJBCGtJDQALIANBAWshAyADDQALCw==";
+const MICRO =
+  "AGFzbQEAAAABCAFgBH9/f38AAgsBAWUBbQIDgAKAAgMDAgAABw8CBGNvcHkAAARsb29wAAEKjwECKgADQCAAIAEgAvwKAAAgAUEBaiAAIAJBAWv8CgAAIANBAWshAyADDQALC2IBAX8DQEEAIQQDQCAAIARqIAEgBGopAwA3AwAgBEEIaiEEIAQgAkkNAAtBACEEA0AgAUEBaiAEaiAAIARqKQMANwMAIARBCGohBCAEIAJBCGtJDQALIANBAWshAyADDQALCw==";
 
 const SUITE: Step[] = [
   { label: "wasm", wasm: "bench", scale: 3 },
@@ -101,7 +102,8 @@ function render(): void {
   const head = table.insertRow();
   for (const k of ["", ...KERNELS]) head.insertCell().textContent = k;
   const native = table.insertRow();
-  for (const v of ["native x86", ...KERNELS.map((k) => String(NATIVE[k]))]) native.insertCell().textContent = v;
+  for (const v of ["native x86", ...KERNELS.map((k) => String(NATIVE[k]))])
+    native.insertCell().textContent = v;
   for (const s of SUITE) {
     const r = results[s.label];
     if (!r) continue;

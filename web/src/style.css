@@ -4,7 +4,9 @@ body {
   height: 100%;
   background: #000;
   color: #ddd;
-  font: 14px/1.4 system-ui, sans-serif;
+  font:
+    14px/1.4 system-ui,
+    sans-serif;
   overflow: hidden;
 }
 #screen {
@@ -166,7 +168,9 @@ body {
   background: #1c1f25;
   outline: 2px solid transparent;
   outline-offset: 2px;
-  transition: outline-color 0.12s, transform 0.12s;
+  transition:
+    outline-color 0.12s,
+    transform 0.12s;
 }
 #library .cover img {
   width: 100%;

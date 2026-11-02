@@ -187,7 +187,7 @@ async fn save_jit(State(jit): State<Jit>, Path(name): Path<String>, body: Bytes)
 }
 
 /// Optimizes the saved regions of `names` on the server, where there is time to (binaryen's
-/// `wasm-opt -O2`, VNVM_WASM_OPT or on the PATH; nothing without it): each part's module gets
+/// `wasm-opt -O2`, VNVM_WASM_OPT, beside the server or on the PATH; nothing without it): each part's module gets
 /// an optimized copy `<name>.<k.><version>.opt.wasm` that `<name>.parts` lists instead. The
 /// translator's own module stays the part (merges and selections read it: wasm-opt renumbers
 /// types and folds identical functions). Reunion's pre-run regions: 7.6 -> 5.4 MB, title
@@ -196,7 +196,9 @@ async fn save_jit(State(jit): State<Jit>, Path(name): Path<String>, body: Bytes)
 async fn optimize(jit: Jit, names: Vec<String>) {
     static ONE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _one = ONE.lock().await;
-    let Some(opt) = std::env::var_os("VNVM_WASM_OPT").map(PathBuf::from).or_else(|| find_on_path(&["wasm-opt"])) else { return };
+    // (a release has its own next to the server)
+    let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("wasm-opt"))).filter(|p| p.is_file());
+    let Some(opt) = std::env::var_os("VNVM_WASM_OPT").map(PathBuf::from).or(beside).or_else(|| find_on_path(&["wasm-opt"])) else { return };
     for name in names {
         let Ok(list) = tokio::fs::read_to_string(jit.0.join(format!("{name}.parts"))).await else { continue };
         let mut made = false;

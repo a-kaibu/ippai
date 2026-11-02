@@ -41,46 +41,181 @@ const DATA = 0xffffffff;
 
 // (crates/vnhost/src/d3d11/format.rs P_*)
 const TEX_FORMATS: GPUTextureFormat[] = [
-  "bgra8unorm", "depth24plus-stencil8", "rgba16float", "rgba16float", "rgba8unorm", "r8unorm", "rg8unorm",
-  "depth32float", "r16float", "rg16float", "rgb10a2unorm", "rg11b10ufloat", "rgba8unorm-srgb", "bgra8unorm-srgb",
-  "depth16unorm", "r32float", "rg32float", "rgba8uint", "rgba8snorm", "rgba8sint", "r32uint", "r32sint",
+  "bgra8unorm",
+  "depth24plus-stencil8",
+  "rgba16float",
+  "rgba16float",
+  "rgba8unorm",
+  "r8unorm",
+  "rg8unorm",
+  "depth32float",
+  "r16float",
+  "rg16float",
+  "rgb10a2unorm",
+  "rg11b10ufloat",
+  "rgba8unorm-srgb",
+  "bgra8unorm-srgb",
+  "depth16unorm",
+  "r32float",
+  "rg32float",
+  "rgba8uint",
+  "rgba8snorm",
+  "rgba8sint",
+  "r32uint",
+  "r32sint",
 ];
-const TEX_BPP: Record<string, number> = { r8unorm: 1, rg8unorm: 2, r16float: 2, depth16unorm: 2, rgba16float: 8, rg32float: 8 };
+const TEX_BPP: Record<string, number> = {
+  r8unorm: 1,
+  rg8unorm: 2,
+  r16float: 2,
+  depth16unorm: 2,
+  rgba16float: 8,
+  rg32float: 8,
+};
 const isDepth = (f: GPUTextureFormat) => f.startsWith("depth");
 // (crates/vnhost/src/d3d11/format.rs vertex_format)
 const VERTEX_FORMATS2: GPUVertexFormat[] = [
-  "float32", "float32x2", "float32x3", "float32x4", "uint32", "uint32x2", "uint32x3", "uint32x4",
-  "sint32", "sint32x2", "sint32x3", "sint32x4", "unorm8x4", "snorm8x4", "uint8x4", "sint8x4",
-  "unorm16x2", "unorm16x4", "snorm16x2", "snorm16x4", "uint16x2", "uint16x4", "sint16x2", "sint16x4",
-  "float16x2", "float16x4", "unorm8x2", "uint8x2", "unorm10-10-10-2", "unorm8x4-bgra", "snorm8x2", "sint8x2",
+  "float32",
+  "float32x2",
+  "float32x3",
+  "float32x4",
+  "uint32",
+  "uint32x2",
+  "uint32x3",
+  "uint32x4",
+  "sint32",
+  "sint32x2",
+  "sint32x3",
+  "sint32x4",
+  "unorm8x4",
+  "snorm8x4",
+  "uint8x4",
+  "sint8x4",
+  "unorm16x2",
+  "unorm16x4",
+  "snorm16x2",
+  "snorm16x4",
+  "uint16x2",
+  "uint16x4",
+  "sint16x2",
+  "sint16x4",
+  "float16x2",
+  "float16x4",
+  "unorm8x2",
+  "uint8x2",
+  "unorm10-10-10-2",
+  "unorm8x4-bgra",
+  "snorm8x2",
+  "sint8x2",
 ];
 const BLEND2: GPUBlendFactor[] = [
-  "zero", "one", "src", "one-minus-src", "src-alpha", "one-minus-src-alpha", "dst-alpha", "one-minus-dst-alpha",
-  "dst", "one-minus-dst", "src-alpha-saturated", "constant", "one-minus-constant",
+  "zero",
+  "one",
+  "src",
+  "one-minus-src",
+  "src-alpha",
+  "one-minus-src-alpha",
+  "dst-alpha",
+  "one-minus-dst-alpha",
+  "dst",
+  "one-minus-dst",
+  "src-alpha-saturated",
+  "constant",
+  "one-minus-constant",
 ];
 const STENCIL_OP: GPUStencilOperation[] = [
-  "keep", "keep", "zero", "replace", "increment-clamp", "decrement-clamp", "invert", "increment-wrap", "decrement-wrap",
+  "keep",
+  "keep",
+  "zero",
+  "replace",
+  "increment-clamp",
+  "decrement-clamp",
+  "invert",
+  "increment-wrap",
+  "decrement-wrap",
 ];
 const ADDRESS2: GPUAddressMode[] = ["repeat", "mirror-repeat", "clamp-to-edge", "clamp-to-edge"];
 const VIEW_DIM: GPUTextureViewDimension[] = ["1d", "2d", "2d-array", "cube", "cube-array", "3d"];
 const f32of = (u: number) => new Float32Array(new Uint32Array([u]).buffer)[0]!;
 const VERTEX_FORMATS: GPUVertexFormat[] = [
-  "float32", "float32x2", "float32x3", "float32x4", "unorm8x4", "uint8x4", "sint16x2", "sint16x4",
-  "snorm16x2", "snorm16x4", "unorm16x2", "unorm16x4", "float16x2", "float16x4",
+  "float32",
+  "float32x2",
+  "float32x3",
+  "float32x4",
+  "unorm8x4",
+  "uint8x4",
+  "sint16x2",
+  "sint16x4",
+  "snorm16x2",
+  "snorm16x4",
+  "unorm16x2",
+  "unorm16x4",
+  "float16x2",
+  "float16x4",
 ];
-const TOPOLOGY: GPUPrimitiveTopology[] = ["point-list", "line-list", "line-strip", "triangle-list", "triangle-strip"];
-const COMPARE: GPUCompareFunction[] = ["always", "never", "less", "equal", "less-equal", "greater", "not-equal", "greater-equal", "always"];
+const TOPOLOGY: GPUPrimitiveTopology[] = [
+  "point-list",
+  "line-list",
+  "line-strip",
+  "triangle-list",
+  "triangle-strip",
+];
+const COMPARE: GPUCompareFunction[] = [
+  "always",
+  "never",
+  "less",
+  "equal",
+  "less-equal",
+  "greater",
+  "not-equal",
+  "greater-equal",
+  "always",
+];
 const BLEND: GPUBlendFactor[] = [
-  "one", "zero", "one", "src", "one-minus-src", "src-alpha", "one-minus-src-alpha", "dst-alpha", "one-minus-dst-alpha",
-  "dst", "one-minus-dst", "src-alpha-saturated", "src-alpha", "one-minus-src-alpha", "constant", "one-minus-constant",
+  "one",
+  "zero",
+  "one",
+  "src",
+  "one-minus-src",
+  "src-alpha",
+  "one-minus-src-alpha",
+  "dst-alpha",
+  "one-minus-dst-alpha",
+  "dst",
+  "one-minus-dst",
+  "src-alpha-saturated",
+  "src-alpha",
+  "one-minus-src-alpha",
+  "constant",
+  "one-minus-constant",
 ];
 const BLEND_ALPHA: GPUBlendFactor[] = [
-  "one", "zero", "one", "src-alpha", "one-minus-src-alpha", "src-alpha", "one-minus-src-alpha", "dst-alpha",
-  "one-minus-dst-alpha", "dst-alpha", "one-minus-dst-alpha", "one", "src-alpha", "one-minus-src-alpha", "constant",
+  "one",
+  "zero",
+  "one",
+  "src-alpha",
+  "one-minus-src-alpha",
+  "src-alpha",
+  "one-minus-src-alpha",
+  "dst-alpha",
+  "one-minus-dst-alpha",
+  "dst-alpha",
+  "one-minus-dst-alpha",
+  "one",
+  "src-alpha",
+  "one-minus-src-alpha",
+  "constant",
   "one-minus-constant",
 ];
 const BLEND_OP: GPUBlendOperation[] = ["add", "add", "subtract", "reverse-subtract", "min", "max"];
-const ADDRESS: GPUAddressMode[] = ["repeat", "repeat", "mirror-repeat", "clamp-to-edge", "clamp-to-edge", "mirror-repeat"];
+const ADDRESS: GPUAddressMode[] = [
+  "repeat",
+  "repeat",
+  "mirror-repeat",
+  "clamp-to-edge",
+  "clamp-to-edge",
+  "mirror-repeat",
+];
 
 const CLEAR_SHADER = /* wgsl */ `
 struct C { color: vec4f, z: vec4f };
@@ -204,10 +339,22 @@ export class D3D9 {
     }
     this.layout1 = d.createBindGroupLayout({ entries: e1 });
     this.layout = d.createPipelineLayout({ bindGroupLayouts: [this.layout0, this.layout1] });
-    const white = d.createTexture({ size: [1, 1], format: "bgra8unorm", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
-    d.queue.writeTexture({ texture: white }, new Uint8Array([255, 255, 255, 255]), { bytesPerRow: 4 }, [1, 1]);
+    const white = d.createTexture({
+      size: [1, 1],
+      format: "bgra8unorm",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    d.queue.writeTexture(
+      { texture: white },
+      new Uint8Array([255, 255, 255, 255]),
+      { bytesPerRow: 4 },
+      [1, 1],
+    );
     this.white = white.createView();
-    this.clearUniform = d.createBuffer({ size: 256 * 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.clearUniform = d.createBuffer({
+      size: 256 * 64,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
   }
 
   /** Runs what Wine sent since the last call. */
@@ -222,7 +369,11 @@ export class D3D9 {
       const [cmds, ncmd, data, ndata, blob, nblob] = Array.from(u32, (x) => x >>> 0);
       const t0 = performance.now();
       try {
-        this.run(new Uint32Array(heap, cmds!, ncmd!), new Uint8Array(heap, data!, ndata!), new Uint8Array(heap, blob!, nblob!));
+        this.run(
+          new Uint32Array(heap, cmds!, ncmd!),
+          new Uint8Array(heap, data!, ndata!),
+          new Uint8Array(heap, blob!, nblob!),
+        );
       } catch (e) {
         console.error("d3d9:", e);
         this.endPass();
@@ -240,7 +391,8 @@ export class D3D9 {
   stat = { passes: 0, submits: 0, created: 0, uploaded: 0, gpuMs: 0, gpuMax: 0 };
 
   private copy(src: Uint8Array): Uint8Array<ArrayBuffer> {
-    if (this.staging.length < src.length) this.staging = new Uint8Array(Math.max(src.length, this.staging.length * 2));
+    if (this.staging.length < src.length)
+      this.staging = new Uint8Array(Math.max(src.length, this.staging.length * 2));
     this.staging.set(src);
     return this.staging.subarray(0, src.length);
   }
@@ -253,7 +405,8 @@ export class D3D9 {
         this.dataBuf?.destroy();
         this.dataBuf = d.createBuffer({
           size: Math.max(size, (this.dataBuf?.size ?? 0) * 2, 1 << 20),
-          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX | GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+          usage:
+            GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX | GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         });
         this.groups0.clear();
       }
@@ -272,7 +425,14 @@ export class D3D9 {
       const op = c[i]!;
       switch (op) {
         case CREATE_TEXTURE: {
-          const [id, w, h, levels, format, rt] = [c[i + 1]!, c[i + 2]!, c[i + 3]!, c[i + 4]!, c[i + 5]!, c[i + 6]!];
+          const [id, w, h, levels, format, rt] = [
+            c[i + 1]!,
+            c[i + 2]!,
+            c[i + 3]!,
+            c[i + 4]!,
+            c[i + 5]!,
+            c[i + 6]!,
+          ];
           const fmt = TEX_FORMATS[format] ?? "bgra8unorm";
           const depth = fmt === "depth24plus-stencil8";
           const tex = d.createTexture({
@@ -289,7 +449,14 @@ export class D3D9 {
           });
           this.textures.get(id)?.tex.destroy();
           this.stat.created++;
-          this.textures.set(id, { tex, w, h, levels: depth ? 1 : levels, format: fmt, view: tex.createView() });
+          this.textures.set(id, {
+            tex,
+            w,
+            h,
+            levels: depth ? 1 : levels,
+            format: fmt,
+            view: tex.createView(),
+          });
           i += 7;
           break;
         }
@@ -316,9 +483,19 @@ export class D3D9 {
             const cw = Math.min(w!, lw - x!),
               ch = Math.min(h!, lh - y!);
             if (cw > 0 && ch > 0 && t.format === "bgra8unorm") {
-              d.queue.writeTexture({ texture: t.tex, mipLevel: level!, origin: { x: x!, y: y! } }, this.copy(bytes), { bytesPerRow: bpr! }, [cw, ch]);
+              d.queue.writeTexture(
+                { texture: t.tex, mipLevel: level!, origin: { x: x!, y: y! } },
+                this.copy(bytes),
+                { bytesPerRow: bpr! },
+                [cw, ch],
+              );
             } else if (cw > 0 && ch > 0 && bpr! === w! * 8) {
-              d.queue.writeTexture({ texture: t.tex, mipLevel: level!, origin: { x: x!, y: y! } }, this.copy(bytes), { bytesPerRow: bpr! }, [cw, ch]);
+              d.queue.writeTexture(
+                { texture: t.tex, mipLevel: level!, origin: { x: x!, y: y! } },
+                this.copy(bytes),
+                { bytesPerRow: bpr! },
+                [cw, ch],
+              );
             }
           }
           i += 9;
@@ -338,7 +515,12 @@ export class D3D9 {
             if (cw > 0 && ch > 0) {
               const bytes = new Uint8Array(this.wine.wasmMemory.buffer, ptr!, pitch! * (ch - 1) + cw * bpp);
               this.stat.uploaded += bytes.length;
-              d.queue.writeTexture({ texture: t.tex, mipLevel: level!, origin: { x: x!, y: y! } }, this.copy(bytes), { bytesPerRow: pitch! }, [cw, ch]);
+              d.queue.writeTexture(
+                { texture: t.tex, mipLevel: level!, origin: { x: x!, y: y! } },
+                this.copy(bytes),
+                { bytesPerRow: pitch! },
+                [cw, ch],
+              );
             }
           }
           i += 9;
@@ -350,7 +532,10 @@ export class D3D9 {
           const module = d.createShaderModule({ code });
           void module.getCompilationInfo().then((info) => {
             const errors = info.messages.filter((m) => m.type === "error");
-            if (errors.length) console.error(`d3d9: shader ${id}: ${errors.map((m) => `${m.lineNum}: ${m.message}`).join("; ")}\n${code}`);
+            if (errors.length)
+              console.error(
+                `d3d9: shader ${id}: ${errors.map((m) => `${m.lineNum}: ${m.message}`).join("; ")}\n${code}`,
+              );
           });
           this.shaders.set(id, module);
           i += 4;
@@ -437,7 +622,12 @@ export class D3D9 {
           const saved = this.target;
           this.endPass();
           this.target = [tex!, level!, 0];
-          const col = { r: ((color! >> 16) & 255) / 255, g: ((color! >> 8) & 255) / 255, b: (color! & 255) / 255, a: (color! >>> 24) / 255 };
+          const col = {
+            r: ((color! >> 16) & 255) / 255,
+            g: ((color! >> 8) & 255) / 255,
+            b: (color! & 255) / 255,
+            a: (color! >>> 24) / 255,
+          };
           this.clearRect(1, col, 0, x!, y!, w!, h!);
           this.endPass();
           this.target = saved;
@@ -477,7 +667,12 @@ export class D3D9 {
             id,
             d.createBuffer({
               size: Math.ceil(size / 4) * 4,
-              usage: GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX | GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+              usage:
+                GPUBufferUsage.VERTEX |
+                GPUBufferUsage.INDEX |
+                GPUBufferUsage.UNIFORM |
+                GPUBufferUsage.COPY_DST |
+                GPUBufferUsage.COPY_SRC,
             }),
           );
           i += 3;
@@ -530,7 +725,15 @@ export class D3D9 {
         case CLEAR_VIEW: {
           const [tex, level, layer, flags] = Array.from(c.subarray(i + 1, i + 5));
           const f = new Float32Array(c.buffer, c.byteOffset + (i + 5) * 4, 5);
-          this.clearView(tex!, level!, layer!, flags!, { r: f[0]!, g: f[1]!, b: f[2]!, a: f[3]! }, f[4]!, c[i + 10]!);
+          this.clearView(
+            tex!,
+            level!,
+            layer!,
+            flags!,
+            { r: f[0]!, g: f[1]!, b: f[2]!, a: f[3]! },
+            f[4]!,
+            c[i + 10]!,
+          );
           i += 11;
           break;
         }
@@ -598,7 +801,9 @@ export class D3D9 {
     const t = this.textures.get(this.target[0]);
     if (!t) return null;
     const level = Math.min(this.target[1], t.levels - 1);
-    const z = this.target[2] ? this.depthFor(this.textures.get(this.target[2]), Math.max(1, t.w >> level), Math.max(1, t.h >> level)) : undefined;
+    const z = this.target[2]
+      ? this.depthFor(this.textures.get(this.target[2]), Math.max(1, t.w >> level), Math.max(1, t.h >> level))
+      : undefined;
     const clear = this.pendingClear;
     this.pendingClear = null;
     this.used.add(this.target[0]);
@@ -643,7 +848,11 @@ export class D3D9 {
     zz.fits ??= new Map();
     let f = zz.fits.get(key);
     if (!f) {
-      const tex = this.device.createTexture({ size: [w, h], format: z.format, usage: GPUTextureUsage.RENDER_ATTACHMENT });
+      const tex = this.device.createTexture({
+        size: [w, h],
+        format: z.format,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT,
+      });
       f = { tex, w, h, levels: 1, format: z.format, view: tex.createView() };
       zz.fits.set(key, f);
       // starts as the depth buffer was last cleared (not 0, which fails every LESS test)
@@ -658,7 +867,13 @@ export class D3D9 {
             depthLoadOp: "clear",
             depthClearValue: depth,
             depthStoreOp: "store",
-            ...(s ? { stencilLoadOp: "clear" as const, stencilClearValue: stencil, stencilStoreOp: "store" as const } : {}),
+            ...(s
+              ? {
+                  stencilLoadOp: "clear" as const,
+                  stencilClearValue: stencil,
+                  stencilStoreOp: "store" as const,
+                }
+              : {}),
           },
         })
         .end();
@@ -672,7 +887,15 @@ export class D3D9 {
     return [Math.max(1, t.w >> this.target[1]), Math.max(1, t.h >> this.target[1])];
   }
 
-  private clearRect(flags: number, color: GPUColor, z: number, x: number, y: number, w: number, h: number): void {
+  private clearRect(
+    flags: number,
+    color: GPUColor,
+    z: number,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+  ): void {
     const [tw, th] = this.targetSize();
     const x0 = Math.min(x, tw),
       y0 = Math.min(y, th);
@@ -695,7 +918,11 @@ export class D3D9 {
       pipe = this.device.createRenderPipeline({
         layout: "auto",
         vertex: { module, entryPoint: "vs" },
-        fragment: { module, entryPoint: "fs", targets: [{ format: t.format, writeMask: flags & 1 ? 0xf : 0 }] },
+        fragment: {
+          module,
+          entryPoint: "fs",
+          targets: [{ format: t.format, writeMask: flags & 1 ? 0xf : 0 }],
+        },
         primitive: { topology: "triangle-list" },
         depthStencil: depth
           ? { format: "depth24plus-stencil8", depthWriteEnabled: (flags & 2) !== 0, depthCompare: "always" }
@@ -705,7 +932,11 @@ export class D3D9 {
     }
     const c = color as GPUColorDict;
     const slot = (this.clearSlot = (this.clearSlot + 1) % 64);
-    this.device.queue.writeBuffer(this.clearUniform, slot * 256, new Float32Array([c.r, c.g, c.b, c.a, z, 0, 0, 0]));
+    this.device.queue.writeBuffer(
+      this.clearUniform,
+      slot * 256,
+      new Float32Array([c.r, c.g, c.b, c.a, z, 0, 0, 0]),
+    );
     const group = this.device.createBindGroup({
       layout: pipe.getBindGroupLayout(0),
       entries: [{ binding: 0, resource: { buffer: this.clearUniform, offset: slot * 256, size: 32 } }],
@@ -725,7 +956,9 @@ export class D3D9 {
   private clearSlot = 0;
 
   private createPipeline(k: Uint32Array): Pipe {
-    const [vs, ps, topo, strip, cull, colorFmt, depthFmt, depthWrite, depthCmp] = Array.from(k.subarray(0, 9));
+    const [vs, ps, topo, strip, cull, colorFmt, depthFmt, depthWrite, depthCmp] = Array.from(
+      k.subarray(0, 9),
+    );
     const blend = Array.from(k.subarray(9, 16));
     const wmask = k[16]!;
     let p = 17;
@@ -745,7 +978,11 @@ export class D3D9 {
     const depth = depthFmt !== 0xff;
     const blendState: GPUBlendState | undefined = blend[0]
       ? {
-          color: { srcFactor: BLEND[blend[1]!] ?? "one", dstFactor: BLEND[blend[2]!] ?? "zero", operation: BLEND_OP[blend[3]!] ?? "add" },
+          color: {
+            srcFactor: BLEND[blend[1]!] ?? "one",
+            dstFactor: BLEND[blend[2]!] ?? "zero",
+            operation: BLEND_OP[blend[3]!] ?? "add",
+          },
           alpha: {
             srcFactor: BLEND_ALPHA[blend[4]!] ?? "one",
             dstFactor: BLEND_ALPHA[blend[5]!] ?? "zero",
@@ -765,7 +1002,11 @@ export class D3D9 {
     const pipeline = this.device.createRenderPipeline({
       layout: this.layout,
       vertex: { module: this.shaders.get(vs!)!, entryPoint: "main", buffers },
-      fragment: { module: this.shaders.get(ps!)!, entryPoint: "main", targets: [{ format, blend: blendState, writeMask: wmask }] },
+      fragment: {
+        module: this.shaders.get(ps!)!,
+        entryPoint: "main",
+        targets: [{ format, blend: blendState, writeMask: wmask }],
+      },
       primitive: {
         topology: TOPOLOGY[topo!] ?? "triangle-list",
         stripIndexFormat: strip === 2 ? "uint16" : strip === 4 ? "uint32" : undefined,
@@ -842,7 +1083,14 @@ export class D3D9 {
     const cx1 = Math.min(tw, vpx + vpw),
       cy1 = Math.min(th, vpy + vph);
     if (cx1 <= cx0 || cy1 <= cy0) return p;
-    pass.setViewport(vpx === cx0 ? vpx : cx0, vpy === cy0 ? vpy : cy0, cx1 - cx0, cy1 - cy0, Math.min(minz!, maxz!), Math.max(minz!, maxz!));
+    pass.setViewport(
+      vpx === cx0 ? vpx : cx0,
+      vpy === cy0 ? vpy : cy0,
+      cx1 - cx0,
+      cy1 - cy0,
+      Math.min(minz!, maxz!),
+      Math.max(minz!, maxz!),
+    );
     pass.setScissorRect(Math.max(x0, Math.floor(cx0)), Math.max(y0, Math.floor(cy0)), 0, 0);
     const sx0 = Math.max(x0, Math.floor(cx0)),
       sy0 = Math.max(y0, Math.floor(cy0));
@@ -900,8 +1148,23 @@ export class D3D9 {
   }
 
   private copyRect(a: number[]): void {
-    const [st, sl, sx, sy, sw, sh, dt, dl, dx, dy, dw, dh, filter] = a as [number, number, number, number, number, number, number, number, number, number, number, number, number];
-    if (this.dump > 0) console.log(`d3d9 copy ${st}.${sl} ${sx},${sy} ${sw}x${sh} -> ${dt}.${dl} ${dx},${dy} ${dw}x${dh}`);
+    const [st, sl, sx, sy, sw, sh, dt, dl, dx, dy, dw, dh, filter] = a as [
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+    ];
+    if (this.dump > 0)
+      console.log(`d3d9 copy ${st}.${sl} ${sx},${sy} ${sw}x${sh} -> ${dt}.${dl} ${dx},${dy} ${dw}x${dh}`);
     const s = this.textures.get(st),
       t = this.textures.get(dt);
     if (!s || !t || sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) return;
@@ -932,12 +1195,16 @@ export class D3D9 {
     const slot = (this.clearSlot = (this.clearSlot + 1) % 64);
     const lw = Math.max(1, s.w >> sl),
       lh = Math.max(1, s.h >> sl);
-    this.device.queue.writeBuffer(this.clearUniform, slot * 256, new Float32Array([sx / lw, sy / lh, sw / lw, sh / lh]));
+    this.device.queue.writeBuffer(
+      this.clearUniform,
+      slot * 256,
+      new Float32Array([sx / lw, sy / lh, sw / lw, sh / lh]),
+    );
     const group = this.device.createBindGroup({
       layout: pipe.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: s.tex.createView({ baseMipLevel: sl, mipLevelCount: 1 }) },
-        { binding: 1, resource: this.sampler(filter ? 0x3 << 0 | 3 << 3 | 2 << 6 | 2 << 8 : 0x1b) },
+        { binding: 1, resource: this.sampler(filter ? (0x3 << 0) | (3 << 3) | (2 << 6) | (2 << 8) : 0x1b) },
         { binding: 2, resource: { buffer: this.clearUniform, offset: slot * 256, size: 16 } },
       ],
     });
@@ -953,7 +1220,17 @@ export class D3D9 {
     if (slot === 63) this.submit();
   }
 
-  private readback(req: number, id: number, level: number, x: number, y: number, w: number, h: number, dst: number, pitch: number): void {
+  private readback(
+    req: number,
+    id: number,
+    level: number,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    dst: number,
+    pitch: number,
+  ): void {
     const t = this.textures.get(id);
     const done = () => this.wine._vnhost_d3d9_readback_done(req);
     if (!t || isDepth(t.format)) {
@@ -963,8 +1240,15 @@ export class D3D9 {
     this.endPass();
     const bpp = TEX_BPP[t.format] ?? 4;
     const bpr = Math.ceil((w * bpp) / 256) * 256;
-    const buf = this.device.createBuffer({ size: bpr * h, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-    this.enc().copyTextureToBuffer({ texture: t.tex, mipLevel: level, origin: { x, y } }, { buffer: buf, bytesPerRow: bpr }, [w, h]);
+    const buf = this.device.createBuffer({
+      size: bpr * h,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    this.enc().copyTextureToBuffer(
+      { texture: t.tex, mipLevel: level, origin: { x, y } },
+      { buffer: buf, bytesPerRow: bpr },
+      [w, h],
+    );
     this.submit();
     void buf.mapAsync(GPUMapMode.READ).then(
       () => {
@@ -985,12 +1269,22 @@ export class D3D9 {
   // ---- Direct3D 11 ----
 
   private createTexture2(a: Uint32Array): void {
-    const [id, w, h, layers, mips, format, dimCode] = Array.from(a) as [number, number, number, number, number, number, number];
+    const [id, w, h, layers, mips, format, dimCode] = Array.from(a) as [
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+    ];
     const fmt = TEX_FORMATS[format] ?? "bgra8unorm";
     const dim: GPUTextureDimension = dimCode === 1 ? "3d" : dimCode === 2 ? "1d" : "2d";
     const depth = isDepth(fmt);
     const renderable =
-      dim === "2d" && !fmt.endsWith("snorm") && (fmt !== "rg11b10ufloat" || this.device.features.has("rg11b10ufloat-renderable"));
+      dim === "2d" &&
+      !fmt.endsWith("snorm") &&
+      (fmt !== "rg11b10ufloat" || this.device.features.has("rg11b10ufloat-renderable"));
     const levels = dim === "1d" ? 1 : mips;
     const tex = this.device.createTexture({
       size: [w, dim === "1d" ? 1 : h, layers],
@@ -1006,19 +1300,32 @@ export class D3D9 {
     const old = this.textures.get(id);
     if (old) this.doomed.push(old.tex);
     this.stat.created++;
-    const view = tex.createView({ dimension: dim === "2d" ? "2d" : dim, arrayLayerCount: dim === "2d" ? 1 : undefined, aspect: depth ? "depth-only" : "all" });
+    const view = tex.createView({
+      dimension: dim === "2d" ? "2d" : dim,
+      arrayLayerCount: dim === "2d" ? 1 : undefined,
+      aspect: depth ? "depth-only" : "all",
+    });
     this.textures.set(id, { tex, w, h, levels, format: fmt, view, layers, dim, views: new Map() });
   }
 
   /** A view of `t` for binding or rendering (cached on the texture). */
-  private view2(t: Tex, dim: GPUTextureViewDimension, mip: number, mips: number, layer: number, layers: number, aspect: GPUTextureAspect = "all"): GPUTextureView {
+  private view2(
+    t: Tex,
+    dim: GPUTextureViewDimension,
+    mip: number,
+    mips: number,
+    layer: number,
+    layers: number,
+    aspect: GPUTextureAspect = "all",
+  ): GPUTextureView {
     const k = `${dim}/${mip}/${mips}/${layer}/${layers}/${aspect}`;
     t.views ??= new Map();
     let v = t.views.get(k);
     if (!v) {
       const all = t.layers ?? 1;
       const base = Math.min(layer, all - 1);
-      let count = dim === "2d" || dim === "1d" || dim === "3d" ? 1 : Math.max(1, Math.min(layers, all - base));
+      let count =
+        dim === "2d" || dim === "1d" || dim === "3d" ? 1 : Math.max(1, Math.min(layers, all - base));
       if (dim === "cube") count = 6;
       if (dim === "cube-array") count = Math.max(6, Math.floor(count / 6) * 6);
       const m = Math.min(mip, t.levels - 1);
@@ -1042,7 +1349,11 @@ export class D3D9 {
       const t = this.textures.get(tg[1 + k * 3]!);
       if (!t) return null;
       this.used.add(tg[1 + k * 3]!);
-      colors.push({ view: this.view2(t, "2d", tg[2 + k * 3]!, 1, tg[3 + k * 3]!, 1), loadOp: "load", storeOp: "store" });
+      colors.push({
+        view: this.view2(t, "2d", tg[2 + k * 3]!, 1, tg[3 + k * 3]!, 1),
+        loadOp: "load",
+        storeOp: "store",
+      });
     }
     const zi = 1 + n * 3;
     const z = tg[zi] ? this.textures.get(tg[zi]!) : undefined;
@@ -1085,7 +1396,15 @@ export class D3D9 {
     return [Math.max(1, t.w >> level), Math.max(1, t.h >> level)];
   }
 
-  private clearView(tex: number, level: number, layer: number, flags: number, color: GPUColorDict, depth: number, stencil: number): void {
+  private clearView(
+    tex: number,
+    level: number,
+    layer: number,
+    flags: number,
+    color: GPUColorDict,
+    depth: number,
+    stencil: number,
+  ): void {
     const t = this.textures.get(tex);
     if (!t) return;
     this.endPass();
@@ -1107,13 +1426,23 @@ export class D3D9 {
               depthLoadOp: flags & 2 ? "clear" : "load",
               depthClearValue: Math.min(1, Math.max(0, depth)),
               depthStoreOp: "store",
-              ...(s ? { stencilLoadOp: flags & 4 ? ("clear" as const) : ("load" as const), stencilClearValue: stencil, stencilStoreOp: "store" as const } : {}),
+              ...(s
+                ? {
+                    stencilLoadOp: flags & 4 ? ("clear" as const) : ("load" as const),
+                    stencilClearValue: stencil,
+                    stencilStoreOp: "store" as const,
+                  }
+                : {}),
             },
           })
           .end();
       }
     } else if (flags & 1) {
-      this.enc().beginRenderPass({ colorAttachments: [{ view, loadOp: "clear", clearValue: color, storeOp: "store" }] }).end();
+      this.enc()
+        .beginRenderPass({
+          colorAttachments: [{ view, loadOp: "clear", clearValue: color, storeOp: "store" }],
+        })
+        .end();
     }
     this.stat.passes++;
   }
@@ -1135,7 +1464,7 @@ export class D3D9 {
     }
     const slot = (this.clearSlot = (this.clearSlot + 1) % 64);
     this.device.queue.writeBuffer(this.clearUniform, slot * 256, new Float32Array([0, 0, 1, 1]));
-    const smp = this.sampler2(1 << 9 | 1 << 10 | 2 | 2 << 3 | 2 << 6, 0, 0);
+    const smp = this.sampler2((1 << 9) | (1 << 10) | 2 | (2 << 3) | (2 << 6), 0, 0);
     for (let layer = 0; layer < (t.layers ?? 1); layer++) {
       for (let l = 1; l < t.levels; l++) {
         const group = this.device.createBindGroup({
@@ -1147,7 +1476,9 @@ export class D3D9 {
           ],
         });
         const pass = this.enc().beginRenderPass({
-          colorAttachments: [{ view: this.view2(t, "2d", l, 1, layer, 1), loadOp: "clear", storeOp: "store" }],
+          colorAttachments: [
+            { view: this.view2(t, "2d", l, 1, layer, 1), loadOp: "clear", storeOp: "store" },
+          ],
         });
         pass.setPipeline(pipe);
         pass.setBindGroup(0, group);
@@ -1192,13 +1523,16 @@ export class D3D9 {
     let v = this.dummies.get(k);
     if (!v) {
       const dim = VIEW_DIM[vdim] ?? "2d";
-      const format: GPUTextureFormat = kind === 4 ? "rgba8uint" : kind === 5 ? "rgba8sint" : kind === 6 ? "depth32float" : "rgba8unorm";
+      const format: GPUTextureFormat =
+        kind === 4 ? "rgba8uint" : kind === 5 ? "rgba8sint" : kind === 6 ? "depth32float" : "rgba8unorm";
       const layers = dim === "cube" || dim === "cube-array" ? 6 : 1;
       const tex = this.device.createTexture({
         size: [1, 1, layers],
         dimension: dim === "1d" ? "1d" : dim === "3d" ? "3d" : "2d",
         format,
-        usage: GPUTextureUsage.TEXTURE_BINDING | (kind === 6 ? GPUTextureUsage.RENDER_ATTACHMENT : GPUTextureUsage.COPY_DST),
+        usage:
+          GPUTextureUsage.TEXTURE_BINDING |
+          (kind === 6 ? GPUTextureUsage.RENDER_ATTACHMENT : GPUTextureUsage.COPY_DST),
       });
       v = tex.createView({ dimension: dim });
       this.dummies.set(k, v);
@@ -1207,12 +1541,23 @@ export class D3D9 {
   }
 
   private zero(): GPUBuffer {
-    return (this.zeroBuf ??= this.device.createBuffer({ size: 65536, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX }));
+    return (this.zeroBuf ??= this.device.createBuffer({
+      size: 65536,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX,
+    }));
   }
 
   /** The pipeline of `p` with bind group layouts for `groups` (entries of 8 words). */
   private pipeline2(p: Pipe2, groups: Uint32Array[]): boolean {
-    const kinds = groups.map((g) => Array.from({ length: g.length / 8 }, (_, e) => `${g[e * 8]}:${g[e * 8 + 1]}:${g[e * 8 + 1] === 1 || g[e * 8 + 1]! >= 4 ? g[e * 8 + 3] : ""}`).join(",")).join("|");
+    const kinds = groups
+      .map((g) =>
+        Array.from(
+          { length: g.length / 8 },
+          (_, e) =>
+            `${g[e * 8]}:${g[e * 8 + 1]}:${g[e * 8 + 1] === 1 || g[e * 8 + 1]! >= 4 ? g[e * 8 + 3] : ""}`,
+        ).join(","),
+      )
+      .join("|");
     if (p.pipeline && p.kinds === kinds) return true;
     const k = p.key;
     const layouts = groups.map((g, stage) => {
@@ -1225,7 +1570,8 @@ export class D3D9 {
         else if (kind === 2) entries.push({ binding, visibility, sampler: { type: "filtering" } });
         else if (kind === 3) entries.push({ binding, visibility, sampler: { type: "comparison" } });
         else {
-          const sampleType: GPUTextureSampleType = kind === 4 ? "uint" : kind === 5 ? "sint" : kind === 6 ? "depth" : "float";
+          const sampleType: GPUTextureSampleType =
+            kind === 4 ? "uint" : kind === 5 ? "sint" : kind === 6 ? "depth" : "float";
           entries.push({ binding, visibility, texture: { sampleType, viewDimension } });
         }
       }
@@ -1247,7 +1593,14 @@ export class D3D9 {
     else {
       const [fmt, en, write, func, sen, masks] = Array.from(k.subarray(q, q + 6));
       const face = (o: number): GPUStencilFaceState =>
-        sen ? { failOp: STENCIL_OP[k[o]!]!, depthFailOp: STENCIL_OP[k[o + 1]!]!, passOp: STENCIL_OP[k[o + 2]!]!, compare: COMPARE[k[o + 3]!]! } : {};
+        sen
+          ? {
+              failOp: STENCIL_OP[k[o]!]!,
+              depthFailOp: STENCIL_OP[k[o + 1]!]!,
+              passOp: STENCIL_OP[k[o + 2]!]!,
+              compare: COMPARE[k[o + 3]!]!,
+            }
+          : {};
       const format = TEX_FORMATS[fmt!] ?? "depth24plus-stencil8";
       const tri = topo >= 3;
       depthStencil = {
@@ -1255,7 +1608,12 @@ export class D3D9 {
         depthWriteEnabled: en !== 0 && write !== 0,
         depthCompare: en ? (COMPARE[func!] ?? "less") : "always",
         ...(format === "depth24plus-stencil8"
-          ? { stencilFront: face(q + 6), stencilBack: face(q + 10), stencilReadMask: sen ? masks! & 0xff : 0xff, stencilWriteMask: sen ? (masks! >> 8) & 0xff : 0 }
+          ? {
+              stencilFront: face(q + 6),
+              stencilBack: face(q + 10),
+              stencilReadMask: sen ? masks! & 0xff : 0xff,
+              stencilWriteMask: sen ? (masks! >> 8) & 0xff : 0,
+            }
           : {}),
         depthBias: tri ? bias : 0,
         depthBiasSlopeScale: tri ? slope : 0,
@@ -1270,8 +1628,17 @@ export class D3D9 {
         step = k[q++]!,
         n = k[q++]!;
       const attributes: GPUVertexAttribute[] = [];
-      for (let a = 0; a < n; a++, q += 3) attributes.push({ format: VERTEX_FORMATS2[k[q]!] ?? "float32x4", offset: k[q + 1]!, shaderLocation: k[q + 2]! });
-      buffers.push({ arrayStride: Math.ceil(stride / 4) * 4, stepMode: step ? "instance" : "vertex", attributes });
+      for (let a = 0; a < n; a++, q += 3)
+        attributes.push({
+          format: VERTEX_FORMATS2[k[q]!] ?? "float32x4",
+          offset: k[q + 1]!,
+          shaderLocation: k[q + 2]!,
+        });
+      buffers.push({
+        arrayStride: Math.ceil(stride / 4) * 4,
+        stepMode: step ? "instance" : "vertex",
+        attributes,
+      });
     }
     const targets: GPUColorTargetState[] = [];
     const nt = k[q++]!;
@@ -1280,16 +1647,25 @@ export class D3D9 {
       const format = TEX_FORMATS[fmt!] ?? "bgra8unorm";
       const comp = (s: number, d: number, o: number): GPUBlendComponent => {
         const operation = BLEND_OP[o] ?? "add";
-        return operation === "min" || operation === "max" ? { operation, srcFactor: "one", dstFactor: "one" } : { operation, srcFactor: BLEND2[s] ?? "one", dstFactor: BLEND2[d] ?? "zero" };
+        return operation === "min" || operation === "max"
+          ? { operation, srcFactor: "one", dstFactor: "one" }
+          : { operation, srcFactor: BLEND2[s] ?? "one", dstFactor: BLEND2[d] ?? "zero" };
       };
-      const blendable = !format.endsWith("uint") && !format.endsWith("sint") && format !== "r32float" && format !== "rg32float";
+      const blendable =
+        !format.endsWith("uint") &&
+        !format.endsWith("sint") &&
+        format !== "r32float" &&
+        format !== "rg32float";
       targets.push({
         format,
-        blend: en && blendable ? { color: comp(src!, dst!, op!), alpha: comp(srcA!, dstA!, opA!) } : undefined,
+        blend:
+          en && blendable ? { color: comp(src!, dst!, op!), alpha: comp(srcA!, dstA!, opA!) } : undefined,
         writeMask: ps ? mask! : 0,
       });
     }
-    const fragment = ps ? this.shaders.get(ps) : (this.noPs ??= this.device.createShaderModule({ code: "@fragment fn main() {}" }));
+    const fragment = ps
+      ? this.shaders.get(ps)
+      : (this.noPs ??= this.device.createShaderModule({ code: "@fragment fn main() {}" }));
     const vertex = this.shaders.get(vs);
     if (!vertex || !fragment) return false;
     p.pipeline = this.device.createRenderPipeline({
@@ -1365,19 +1741,38 @@ export class D3D9 {
       for (let e = 0; e < g.length; e += 8) {
         const [binding, kind, a, b, cc, dd, ee, ff] = Array.from(g.subarray(e, e + 8)) as number[];
         if (kind === 0 && a === DATA) {
-          entries.push({ binding: binding!, resource: { buffer: this.dataBuf!, offset: b!, size: Math.max(16, cc!) } });
+          entries.push({
+            binding: binding!,
+            resource: { buffer: this.dataBuf!, offset: b!, size: Math.max(16, cc!) },
+          });
         } else if (kind === 0) {
           const buf = this.buffers.get(a!);
           const want = Math.max(16, Math.ceil(dd! / 16) * 16);
-          entries.push({ binding: binding!, resource: buf && buf.size >= want ? { buffer: buf, offset: 0, size: Math.min(buf.size, 65536) } : { buffer: this.zero(), offset: 0, size: Math.min(65536, want) } });
+          entries.push({
+            binding: binding!,
+            resource:
+              buf && buf.size >= want
+                ? { buffer: buf, offset: 0, size: Math.min(buf.size, 65536) }
+                : { buffer: this.zero(), offset: 0, size: Math.min(65536, want) },
+          });
         } else if (kind === 2 || kind === 3) {
           entries.push({ binding: binding!, resource: this.sampler2(a!, b!, cc!) });
         } else {
           const t = this.textures.get(a!);
           const depth = t ? isDepth(t.format) : false;
-          const ok = t && depth === (kind === 6) && (kind !== 1 || !t.format.match(/int$/)) && (kind !== 4 || t.format.endsWith("uint")) && (kind !== 5 || t.format.endsWith("sint"));
+          const ok =
+            t &&
+            depth === (kind === 6) &&
+            (kind !== 1 || !t.format.match(/int$/)) &&
+            (kind !== 4 || t.format.endsWith("uint")) &&
+            (kind !== 5 || t.format.endsWith("sint"));
           if (ok) this.used.add(a!);
-          entries.push({ binding: binding!, resource: ok ? this.view2(t, VIEW_DIM[b!] ?? "2d", cc!, dd!, ee!, ff!, depth ? "depth-only" : "all") : this.dummy(b!, kind!) });
+          entries.push({
+            binding: binding!,
+            resource: ok
+              ? this.view2(t, VIEW_DIM[b!] ?? "2d", cc!, dd!, ee!, ff!, depth ? "depth-only" : "all")
+              : this.dummy(b!, kind!),
+          });
         }
       }
       pass.setBindGroup(gi, this.device.createBindGroup({ layout: p.layouts![gi]!, entries }));
@@ -1404,7 +1799,10 @@ export class D3D9 {
     const t = [...this.textures.values()].find((x) => x.view === o.view);
     if (!t) return null;
     const bpr = Math.ceil((t.w * 4) / 256) * 256;
-    const buf = this.device.createBuffer({ size: bpr * t.h, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const buf = this.device.createBuffer({
+      size: bpr * t.h,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
     const enc = this.device.createCommandEncoder();
     enc.copyTextureToBuffer({ texture: t.tex }, { buffer: buf, bytesPerRow: bpr }, [t.w, t.h]);
     this.device.queue.submit([enc.finish()]);
@@ -1412,7 +1810,8 @@ export class D3D9 {
     const src = new Uint8Array(buf.getMappedRange());
     const data = new Uint8Array(t.w * t.h * 4);
     // (OpenGL frames: bottom row first)
-    for (let r = 0; r < t.h; r++) data.set(src.subarray(r * bpr, r * bpr + t.w * 4), (o.flip ? t.h - 1 - r : r) * t.w * 4);
+    for (let r = 0; r < t.h; r++)
+      data.set(src.subarray(r * bpr, r * bpr + t.w * 4), (o.flip ? t.h - 1 - r : r) * t.w * 4);
     if (t.format.startsWith("rgba8")) {
       // (as BGRA)
       for (let p = 0; p < data.length; p += 4) [data[p], data[p + 2]] = [data[p + 2]!, data[p]!];
