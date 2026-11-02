@@ -17,7 +17,7 @@
 //! - `GET /games`: the launcher's list, the store's `games/<id>.json` (`vnvm add-game`) as
 //!   one JSON array; covers are under `/store/games/`
 //! - pre-runs: at the start and when the launcher lists the games, each listed game with no
-//!   saved regions for this build's translator (`web/wine/jit-version.txt`) runs once for a
+//!   saved regions for this build's translator (`web/sake/jit-version.txt`) runs once for a
 //!   minute in a headless Chromium (VNVM_CHROME or one on the PATH; `--no-prerun` for none),
 //!   saving its regions like any run: the first real run starts like a second one.
 //!   `<jit>/<name>.prerun` marks it done
@@ -466,7 +466,7 @@ async fn prerun_games(p: Arc<Prerun>) {
         return;
     }
     let Ok(_one) = p.lock.try_lock() else { return };
-    let Ok(ver) = tokio::fs::read_to_string(p.web.join("wine/jit-version.txt")).await else { return };
+    let Ok(ver) = tokio::fs::read_to_string(p.web.join("sake/jit-version.txt")).await else { return };
     let ver = ver.trim().to_string();
     let Ok(mut dir) = tokio::fs::read_dir(p.store.join("games")).await else { return };
     let mut todo = Vec::new();
