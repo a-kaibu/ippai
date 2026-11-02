@@ -649,7 +649,7 @@ fn exe_mode(args: &[String]) {
     config.wasm_threads(true);
     let engine = Engine::new(&config).unwrap();
     let pages = (top + 0xffff) / 65536;
-    let memory = SharedMemory::new(&engine, MemoryType::shared(pages as u32, 65536)).unwrap();
+    let memory = SharedMemory::new(&engine, MemoryType::shared(vnx86::jit::wasm::MEMORY_MIN_PAGES.max(pages as u32), vnx86::jit::wasm::MEMORY_MIN_PAGES.max(pages as u32))).unwrap();
     let base = memory.data().as_ptr() as *mut u8 as usize;
     let m = base as *mut u8;
     // instruction boundaries in the range
@@ -790,7 +790,7 @@ fn main() {
     let mut config = Config::new();
     config.wasm_threads(true);
     let engine = Engine::new(&config).unwrap();
-    let memory = SharedMemory::new(&engine, MemoryType::shared(MEM as u32 / 65536, 65536)).unwrap();
+    let memory = SharedMemory::new(&engine, MemoryType::shared(vnx86::jit::wasm::MEMORY_MIN_PAGES, vnx86::jit::wasm::MEMORY_MIN_PAGES)).unwrap();
     let base = memory.data().as_ptr() as *mut u8 as usize;
     let m = base as *mut u8;
     let mut fails = 0;
