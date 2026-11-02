@@ -87,6 +87,8 @@ jobs:
           run-id: ${{ needs.plan.outputs.run_id }}
           github-token: ${{ github.token }}
       - name: Tools
+        env:
+          SHA: ${{ needs.plan.outputs.sha }}
         run: |
           sudo apt-get update -q
           sudo apt-get install -yq --no-install-recommends unar innoextract convmv p7zip-full msitools zstd \
@@ -95,7 +97,8 @@ jobs:
           npm install -g playwright@1.56.1
           npx -y playwright@1.56.1 install --with-deps chromium
           mkdir -p "$RUNNER_TEMP/dist"
-          tar -I zstd -xf dist/vnvm-*.tar.zst -C "$RUNNER_TEMP/dist" --strip-components=1
+          # (the artifact can hold older builds from CI's cache too: the one of that commit)
+          tar -I zstd -xf "$(ls dist/vnvm-"${SHA:0:7}"*.tar.zst | head -1)" -C "$RUNNER_TEMP/dist" --strip-components=1
           python3 tools/ci/sake-fonts.py "$RUNNER_TEMP/fonts"
       - name: Corpus shard ${{ matrix.shard }}
         env:
@@ -129,7 +132,12 @@ jobs:
           pattern: corpus-*
           path: results
       - name: Grade
-        run: python3 tests/corpus/check.py tests/corpus/titles.tsv results --summary "$GITHUB_STEP_SUMMARY" --summary report.md
+        env:
+          RUN: ${{ needs.run.result }}
+        run: |
+          python3 tests/corpus/check.py tests/corpus/titles.tsv results --summary "$GITHUB_STEP_SUMMARY" --summary report.md
+          # (a shard that broke before grading its titles fails the run too)
+          [ "$RUN" = success ] || { echo "a corpus job failed: $RUN"; exit 1; }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
