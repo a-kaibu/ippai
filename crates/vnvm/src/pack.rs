@@ -1,4 +1,4 @@
-//! Turns directory trees (the Wine root, the prefix, games) into what the browser streams:
+//! `vnvm pack` turns directory trees (the Wine root, the prefix, games) into what the browser streams:
 //! `trees/<name>.tsv` lists a tree's files, each as content-addressed, zstd-compressed chunks.
 //!
 //! ```text
@@ -9,15 +9,15 @@
 //!
 //! Identical chunks (across trees too) are stored once, all-zero chunks not at all.
 //!
-//! `add-game` puts a packed game in the launcher's list (web/wine.html without `?run=`):
-//! `games/<id>.json` (see `GameEntry`), served as one list by vnvm-server's `GET /games`.
+//! `vnvm add-game` puts a packed game in the launcher's list (web/wine.html without `?run=`):
+//! `games/<id>.json` (see `GameEntry`), served as one list by vnvm serve's `GET /games`.
 //! It also looks the game up on ErogameScape (批評空間) / VNDB (see meta.rs) for the card's
-//! brand, release date, score, tags, story and cover; `meta` does that again or for older entries.
+//! brand, release date, score, tags, story and cover; `vnvm meta` does that again or for older entries.
 
-mod meta;
+use crate::meta;
 
 use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand};
+use clap::Subcommand;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
@@ -25,20 +25,10 @@ use std::io::Read;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 
-#[derive(Parser)]
-#[command(about)]
-struct Cli {
-    /// Output store (shared by all trees so chunks dedupe across them).
-    #[arg(long, default_value = "store")]
-    store: PathBuf,
-    #[command(subcommand)]
-    cmd: Cmd,
-}
-
 #[derive(Subcommand)]
-enum Cmd {
+pub enum Cmd {
     /// Pack a directory tree for the wasm runtime's file system (crates/vnhost/src/vfs.rs).
-    Tree {
+    Pack {
         dir: PathBuf,
         name: String,
         /// Store symlinks that point outside DIR as what they point to (files and directories),
@@ -48,7 +38,7 @@ enum Cmd {
         #[arg(long, default_value_t = 256)]
         chunk_kib: u64,
     },
-    /// Add a game (its files packed with `tree`) to the launcher's list, or replace it.
+    /// Add a game (its files packed with `vnvm pack`) to the launcher's list, or replace it.
     AddGame {
         /// Short name: letters, digits, `_`, `-` (also the URL's `?game=`).
         id: String,
@@ -266,12 +256,11 @@ fn add_game(
     Ok(())
 }
 
-fn main() -> Result<()> {
-    let cli = Cli::parse();
-    match cli.cmd {
-        Cmd::Tree { dir, name, follow, chunk_kib } => tree(&cli.store, &dir, &name, follow, chunk_kib << 10)?,
+pub fn run(store: &Path, cmd: Cmd) -> Result<()> {
+    match cmd {
+        Cmd::Pack { dir, name, follow, chunk_kib } => tree(store, &dir, &name, follow, chunk_kib << 10)?,
         Cmd::AddGame { id, title, tree, exe, engine, cover, args, env, mount, meta_id, no_meta } => {
-            add_game(&cli.store, id, title, tree, exe, engine, cover, args, env, mount, meta_id, no_meta)?
+            add_game(store, id, title, tree, exe, engine, cover, args, env, mount, meta_id, no_meta)?
         }
         Cmd::Meta { ids, all, meta_id, title, search } => {
             if let Some(k) = search {
@@ -282,7 +271,7 @@ fn main() -> Result<()> {
                 return Ok(());
             }
             let ids = if all && ids.is_empty() {
-                let mut v: Vec<String> = fs::read_dir(cli.store.join("games"))?
+                let mut v: Vec<String> = fs::read_dir(store.join("games"))?
                     .filter_map(|e| e.ok()?.file_name().to_str()?.strip_suffix(".json").map(String::from))
                     .filter(|id| !id.starts_with('.'))
                     .collect();
@@ -298,19 +287,19 @@ fn main() -> Result<()> {
                 bail!("--meta-id and --title are for one game");
             }
             for id in &ids {
-                let mut g = read_game(&cli.store, id)?;
+                let mut g = read_game(store, id)?;
                 if all && g.meta.is_some() {
                     continue;
                 }
-                fetch_meta(&cli.store, &mut g, title.as_deref(), meta_id.as_deref());
-                write_game(&cli.store, &g)?;
+                fetch_meta(store, &mut g, title.as_deref(), meta_id.as_deref());
+                write_game(store, &g)?;
             }
         }
         Cmd::RemoveGame { id } => {
             if !valid_id(&id) {
                 bail!("id {id:?}: use letters, digits, _ and -");
             }
-            let dir = cli.store.join("games");
+            let dir = store.join("games");
             fs::remove_file(dir.join(format!("{id}.json"))).with_context(|| format!("game {id}"))?;
             for ext in ["png", "jpg", "jpeg", "webp"] {
                 let _ = fs::remove_file(dir.join(format!("{id}.{ext}")));
@@ -333,7 +322,7 @@ fn put_chunk(store: &Path, buf: &[u8]) -> Result<String> {
 const ZSTD_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
 
 /// Writes chunk `h` zstd-compressed into `dir`, unless it is there already (a chunk left by
-/// an older, brotli-compressing vnvm-pack is rewritten).
+/// an older, brotli-compressing vnvm pack is rewritten).
 fn write_chunk(dir: &Path, h: &str, buf: &[u8]) -> Result<()> {
     let path = dir.join(h);
     let mut magic = [0u8; 4];

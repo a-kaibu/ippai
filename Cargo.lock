@@ -2341,34 +2341,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "vnvm-pack"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "blake3",
- "clap",
- "rayon",
- "regex",
- "serde",
- "serde_json",
- "unicode-normalization",
- "ureq",
- "zstd",
-]
-
-[[package]]
-name = "vnvm-server"
+name = "vnvm"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "blake3",
  "clap",
+ "rayon",
+ "regex",
  "rust-s3",
+ "serde",
  "serde_json",
  "tokio",
  "tower",
  "tower-http",
+ "unicode-normalization",
+ "ureq",
  "vnx86",
+ "zstd",
 ]
 
 [[package]]

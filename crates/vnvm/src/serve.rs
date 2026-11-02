@@ -1,4 +1,4 @@
-//! Serves the vnvm web app and the store made by vnvm-pack.
+//! `vnvm serve`: the web app and the store made by `vnvm pack`.
 //!
 //! - `/` the built web app (web/dist)
 //! - `/store/trees/<name>.tsv`: a packed tree's file list
@@ -14,7 +14,7 @@
 //! - `/jit/_shared-<build>.parts`, `/jit/_shared.chunks`: the regions and chunks several
 //!   programs saved (Wine's DLLs, helper processes and files): every page loads them too, so a
 //!   game's first run starts with them
-//! - `GET /games`: the launcher's list, the store's `games/<id>.json` (vnvm-pack add-game) as
+//! - `GET /games`: the launcher's list, the store's `games/<id>.json` (`vnvm add-game`) as
 //!   one JSON array; covers are under `/store/games/`
 //! - pre-runs: at the start and when the launcher lists the games, each listed game with no
 //!   saved regions for this build's translator (`web/wine/jit-version.txt`) runs once for a
@@ -42,21 +42,16 @@ use axum::{
     routing::{get, put},
     Router,
 };
-use clap::Parser;
-
-mod saves;
+use crate::saves;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use vnx86::jit::{saved, wasm};
 use tower_http::services::ServeDir;
 
-#[derive(Parser)]
-struct Args {
+#[derive(clap::Args)]
+pub struct Args {
     /// The built web app.
     #[arg(long, default_value = "web/dist")]
     web: PathBuf,
-    /// The vnvm-pack store.
-    #[arg(long, default_value = "store")]
-    store: PathBuf,
     /// Saved x86 regions, per game.
     #[arg(long, default_value = "jit")]
     jit: PathBuf,
@@ -599,11 +594,10 @@ async fn headers(req: Request<axum::body::Body>, next: Next) -> Response {
 use axum::serve::ListenerExt;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
+pub async fn run(store: PathBuf, args: Args) -> anyhow::Result<()> {
     let jit: Jit = Arc::new((args.jit.clone(), tokio::sync::Mutex::new(())));
     let pre = Arc::new(Prerun {
-        store: args.store.clone(),
+        store: store.clone(),
         web: args.web.clone(),
         jit: args.jit.clone(),
         listen: args.listen,
@@ -622,7 +616,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(saves::router()?)
         .route("/games", get(games).with_state(pre.clone()))
         .nest_service("/jit", ServeDir::new(&args.jit))
-        .nest_service("/store", ServeDir::new(&args.store))
+        .nest_service("/store", ServeDir::new(&store))
         .fallback_service(ServeDir::new(&args.web))
         .layer(middleware::from_fn(headers));
     // without TCP_NODELAY a kept-alive connection waits out the peer's delayed ACK (~40ms) on
@@ -630,7 +624,7 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(args.listen).await?.tap_io(|tcp| {
         let _ = tcp.set_nodelay(true);
     });
-    eprintln!("vnvm-server on http://{}", args.listen);
+    eprintln!("vnvm serve on http://{}", args.listen);
     tokio::spawn(prerun_games(pre));
     axum::serve(listener, app).await?;
     Ok(())

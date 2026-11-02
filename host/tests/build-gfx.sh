@@ -1,6 +1,6 @@
 #!/bin/sh
 # Builds the graphics checks (each file's "Build:" line) into $1 (default /home/user/work/gfxtest),
-# which tests/gfx.mjs runs after `vnvm-pack tree $1 gfxtest`.
+# which tests/gfx.mjs runs after `vnvm pack $1 gfxtest`.
 set -e
 cd "$(dirname "$0")"
 out=${1:-/home/user/work/gfxtest}

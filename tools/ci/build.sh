@@ -1,6 +1,6 @@
 #!/bin/bash
 # Builds a release of vnvm from a fresh checkout: sake.wasm (with vkd3d-shader), the page, and
-# vnvm-server / vnvm-pack, then packs them into $DIST/vnvm-<version>.tar.zst (+ .sha256).
+# the vnvm binary (serve / pack / add-game / meta), then packs them into $DIST/vnvm-<version>.tar.zst (+ .sha256).
 # Used by .github/workflows/ci.yml and runnable anywhere with the same tools:
 #   apt: bison flex spirv-headers libvulkan-dev mingw-w64 zstd; rustup (rust-src,
 #   wasm32-unknown-emscripten); node 20+. Emscripten is downloaded into $EMSDK4.
@@ -28,14 +28,14 @@ cd "$ROOT"
 bash host/build-vkd3d.sh
 WEB_OUT=$ROOT/web/public/sake bash crates/sake/build.sh
 (cd web && npm ci --no-audit --no-fund && npx vp build)
-cargo build --release -p vnvm-server -p vnvm-pack
+cargo build --release -p vnvm
 
 mkdir -p "$DIST"
 STAGE=$(mktemp -d)
 P=$STAGE/vnvm-$VERSION
 mkdir -p "$P"
 cp -r web/dist "$P/web"
-cp target/release/vnvm-server target/release/vnvm-pack "$P/"
+cp target/release/vnvm "$P/"
 cp "$EMSDK4/upstream/bin/wasm-opt" "$P/"  # (the server optimizes saved translations with it)
 echo "$VERSION $(git rev-parse HEAD)" > "$P/VERSION"
 tar -C "$STAGE" -cf - "vnvm-$VERSION" | zstd -19 -T0 -q -o "$DIST/vnvm-$VERSION.tar.zst" -f

@@ -1,7 +1,7 @@
 declare const process: { env: Record<string, string | undefined> }; // (node runs this file; no @types/node here)
 import { defineConfig } from "vite-plus";
 
-// Built into web/dist and served by vnvm-server next to the store. Wine's files
+// Built into web/dist and served by vnvm serve next to the store. Wine's files
 // (public/wine/) are copied as-is by vnvm-wine hangover/build.sh.
 export default defineConfig({
   base: "./",

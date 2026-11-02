@@ -10,7 +10,7 @@
 //! only loading the module stays on the guest thread (VNVM_JIT_ASYNC=0: all of it there).
 //!
 //! Regions are kept across runs: with VNVM_JIT_URL set, the regions built since the last save are
-//! sent there now and then (see [`maybe_save`]; vnvm-server merges them into what it has), and the
+//! sent there now and then (see [`maybe_save`]; vnvm serve merges them into what it has), and the
 //! page (or pre.js under node) hands the next run that module and index (`jit::saved`). A
 //! saved region goes in when its first root first misses, if the guest code is still the same:
 //! no interpreter warm-up and no translation, and in Chromium the browser's code cache of the

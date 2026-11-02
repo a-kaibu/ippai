@@ -1,4 +1,4 @@
-//! The file system Wine sees in the browser: directory trees packed by `vnvm-pack tree`
+//! The file system Wine sees in the browser: directory trees packed by `vnvm pack`
 //! (`trees/<name>.tsv` plus chunks in the store) mounted where `VNVM_MOUNTS` says
 //! ("/opt/wine-vnbox=wineroot:/prefix=prefix32"), read lazily chunk by chunk. Whatever is
 //! written stays in memory. Paths outside the mounts go to emscripten's file system.

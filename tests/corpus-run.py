@@ -86,7 +86,7 @@ while True:
     else:
         jit = f'/home/user/runs/jit/{tid}'
         os.makedirs(jit, exist_ok=True)
-        srv = subprocess.Popen([f'{ROOT}/target/release/vnvm-server', '--web', f'{ROOT}/web/dist', '--store', f'{STORES}/{tid}',
+        srv = subprocess.Popen([f'{ROOT}/target/release/vnvm', 'serve', '--web', f'{ROOT}/web/dist', '--store', f'{STORES}/{tid}',
                                 '--jit', jit, '--listen', f'127.0.0.1:{PORT}', '--no-prerun'],
                                stdout=open(f'{od}/server.log', 'w'), stderr=subprocess.STDOUT)
         wait_port(PORT)

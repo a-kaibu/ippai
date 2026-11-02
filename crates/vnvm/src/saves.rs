@@ -38,7 +38,7 @@ fn setup() -> anyhow::Result<Option<S3>> {
         bucket = bucket.with_path_style();
     }
     let prefix = std::env::var("VNVM_S3_PREFIX").unwrap_or_else(|_| "vnvm/saves/".into());
-    eprintln!("vnvm-server: saved games go to s3://{name}/{prefix}");
+    eprintln!("vnvm serve: saved games go to s3://{name}/{prefix}");
     Ok(Some(S3 { bucket, prefix }))
 }
 
@@ -56,11 +56,11 @@ async fn put_save(State(s3): State<St>, Path(name): Path<String>, body: Bytes) -
     match s3.bucket.put_object(format!("{}{name}.bin", s3.prefix), &body).await {
         Ok(r) if r.status_code() / 100 == 2 => StatusCode::NO_CONTENT,
         Ok(r) => {
-            eprintln!("vnvm-server: saving {name} to S3: HTTP {}", r.status_code());
+            eprintln!("vnvm serve: saving {name} to S3: HTTP {}", r.status_code());
             StatusCode::BAD_GATEWAY
         }
         Err(e) => {
-            eprintln!("vnvm-server: saving {name} to S3: {e}");
+            eprintln!("vnvm serve: saving {name} to S3: {e}");
             StatusCode::BAD_GATEWAY
         }
     }
@@ -75,13 +75,13 @@ async fn get_save(State(s3): State<St>, Path(name): Path<String>) -> Response {
         Ok(r) if r.status_code() == 200 => r.bytes().clone().into_response(),
         Ok(r) if r.status_code() == 404 => StatusCode::NOT_FOUND.into_response(),
         Ok(r) => {
-            eprintln!("vnvm-server: reading {name} from S3: HTTP {}", r.status_code());
+            eprintln!("vnvm serve: reading {name} from S3: HTTP {}", r.status_code());
             StatusCode::BAD_GATEWAY.into_response()
         }
         // (rust-s3 reports 404 as an error)
         Err(s3::error::S3Error::HttpFailWithBody(404, _)) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
-            eprintln!("vnvm-server: reading {name} from S3: {e}");
+            eprintln!("vnvm serve: reading {name} from S3: {e}");
             StatusCode::BAD_GATEWAY.into_response()
         }
     }

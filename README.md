@@ -21,8 +21,7 @@ Wine 11.20 の Unix 側を wasm にする Hangover 方式の経路は 2026-11-02
 | `crates/vnx86` | i386 CPU コア: インタプリタと x86→wasm JIT (ネイティブ CPU との差分テスト付き) |
 | `crates/vnhost` | ブラウザ側のホスト: メモリ、スレッド、fd、ファイルシステム、表示、音声、Direct3D 9/11・OpenGL (WebGPU) |
 | `crates/sake` | Win32 層 (kernel32、user32、gdi32、d3d9 など)。`build.sh` が sake.js / sake.wasm を作る |
-| `crates/vnvm-pack` | ディレクトリをチャンク (256KiB、zstd) のストアにする CLI (`tree` / `add-game` / `remove-game` / `meta`: 批評空間・VNDB からブランド・発売日・評価・タグ・紹介文・カバーを取得) |
-| `crates/vnvm-server` | web/dist とストアを COOP/COEP 付きで配信、JIT リージョンの保存、ゲーム一覧、セーブの S3 バックアップ、実行ログの保存 (`--logs`) |
+| `crates/vnvm` | `vnvm` 1本のCLI。`serve`: web/dist とストアを COOP/COEP 付きで配信、JIT リージョンの保存、ゲーム一覧、セーブの S3 バックアップ、実行ログの保存 (`--logs`)。`pack`: ディレクトリをチャンク (256KiB、zstd) のストアにする。`add-game` / `remove-game` / `meta`: ランチャーの一覧と、批評空間・VNDB からのブランド・発売日・評価・タグ・紹介文・カバー |
 | `host/` | emscripten の JS ライブラリ (`pre.js`、`vnfs.js`、`vnjit.js`、`vndl.js`)、vkd3d-shader のビルド (`build-vkd3d.sh`)、生成スクリプト、テスト用プログラム (`tests/`) |
 | `web/` | Vite+ (`vp`) のフロントエンド (TypeScript): `index.html` (= `wine.html`、ゲーム一覧)、`game.html`、`bench.html`、`logs.html` (実行ログ) |
 | `tests/` | ヘッドレス Chromium での確認 (`wine.mjs`)、Android 相当に遅くして測る (`android-like.sh`)、コーパス |
@@ -32,10 +31,10 @@ Wine 11.20 の Unix 側を wasm にする Hangover 方式の経路は 2026-11-02
 ```sh
 host/build-vkd3d.sh               # vkd3d-shader (Wine のソースの libs/vkd3d) を wasm に
 crates/sake/build.sh              # sake.js / sake.wasm と web/public/sake/
-cargo build --release -p vnvm-pack -p vnvm-server
+cargo build --release -p vnvm
 (cd web && vp install && vp build)
-target/release/vnvm-pack --store store tree ~/prefix32 prefix32   # sake の C:\ (フォント)
-target/release/vnvm-server --web web/dist --store store --listen 127.0.0.1:8080
+target/release/vnvm --store store pack ~/prefix32 prefix32   # sake の C:\ (フォント)
+target/release/vnvm serve --web web/dist --store store --listen 127.0.0.1:8080
 ```
 
 sake は今のところ、Wine で作った 32bit prefix (`prefix32`、作り方は vnvm-wine の

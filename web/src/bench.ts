@@ -13,7 +13,7 @@
 //   /bench.html?step=N     start at step N (later steps follow)
 //   (other wine.html parameters pass through)
 //
-// Each step's result also goes to vnvm-server's `PUT /bench-log`, which prints it and appends it
+// Each step's result also goes to vnvm serve's `PUT /bench-log`, which prints it and appends it
 // to bench-results.txt.
 
 // native Wine on the x86-64 dev machine, bench.exe 1 (vnvm-wine docs/hangover.md)

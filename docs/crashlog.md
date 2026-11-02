@@ -14,7 +14,7 @@
 | ゲームが終了したとき | `<id>-end` | OPFS とサーバー |
 | 前のページがゲームの途中で消えていた (Android がメモリ不足でタブを落とした、閉じた) | `<id>-unclean` | 次にページを開いたときにサーバーへ |
 
-`<id>` は `日付-時刻-ゲーム-乱数` です。サーバーは `vnvm-server --logs <dir>` (既定 `logs/`、
+`<id>` は `日付-時刻-ゲーム-乱数` です。サーバーは `vnvm serve --logs <dir>` (既定 `logs/`、
 worker2 では `/home/kota/vnvm/vnvm-bench/logs/`) に `<名前>.txt` で置き、新しい 2000 件を残します。
 
 見るには:

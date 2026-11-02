@@ -1,9 +1,9 @@
-// The game list (wine.html without ?run=): the games vnvm-pack add-game put in the store,
-// served as one list by vnvm-server (GET /games). Picking one fills wine.html's parameters
+// The game list (wine.html without ?run=): the games vnvm add-game put in the store,
+// served as one list by vnvm serve (GET /games). Picking one fills wine.html's parameters
 // (run, mount, args, env) and starts it in the same page, from the same click (the audio and
 // fullscreen need a user gesture).
 
-/** From ErogameScape (批評空間) / VNDB: `vnvm-pack meta` (crates/vnvm-pack/src/meta.rs, Info) */
+/** From ErogameScape (批評空間) / VNDB: `vnvm meta` (crates/vnvm/src/meta.rs, Info) */
 export interface GameMeta {
   source: string;
   egs_id?: number;
@@ -22,7 +22,7 @@ export interface GameMeta {
   links?: { label: string; url: string }[];
 }
 
-/** store/games/<id>.json (crates/vnvm-pack, GameEntry) */
+/** store/games/<id>.json (crates/vnvm/src/pack.rs, GameEntry) */
 export interface GameEntry {
   id: string;
   title: string;
@@ -123,9 +123,9 @@ export function showLibrary(root: HTMLElement, games: GameEntry[], pick: (g: Gam
     const empty = el("p", "empty");
     empty.append(
       "ゲームがまだありません。ゲームのフォルダを ",
-      el("code", undefined, "vnvm-pack tree <dir> <tree>"),
+      el("code", undefined, "vnvm pack <dir> <tree>"),
       " で入れて、",
-      el("code", undefined, "vnvm-pack add-game <id> --title ... --tree <tree> --exe <exe>"),
+      el("code", undefined, "vnvm add-game <id> --title ... --tree <tree> --exe <exe>"),
       " で一覧に追加します。",
     );
     root.append(empty);

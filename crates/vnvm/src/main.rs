@@ -1,0 +1,44 @@
+//! vnvm: the server and the store tool in one binary.
+//!
+//! ```text
+//! vnvm serve [--web web/dist --jit jit --logs logs --listen 127.0.0.1:8080]
+//! vnvm pack <dir> <name>                  pack a directory tree into the store
+//! vnvm add-game <id> --title --tree --exe  put a packed game in the launcher's list
+//! vnvm remove-game <id>
+//! vnvm meta <id>... | --all | --search kw  game metadata from ErogameScape / VNDB
+//! ```
+//! `--store` (default `store`) goes before the command.
+
+mod meta;
+mod pack;
+mod saves;
+mod serve;
+
+use clap::{Parser, Subcommand};
+use std::path::PathBuf;
+
+#[derive(Parser)]
+#[command(about, version)]
+struct Cli {
+    /// The store: packed trees (trees/, chunks/) and the game list (games/).
+    #[arg(long, default_value = "store", global = true)]
+    store: PathBuf,
+    #[command(subcommand)]
+    cmd: Cmd,
+}
+
+#[derive(Subcommand)]
+enum Cmd {
+    /// Serve the web app, the store, saved x86 regions, saves and logs.
+    Serve(serve::Args),
+    #[command(flatten)]
+    Pack(pack::Cmd),
+}
+
+fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+    match cli.cmd {
+        Cmd::Serve(a) => serve::run(cli.store, a),
+        Cmd::Pack(c) => pack::run(&cli.store, c),
+    }
+}

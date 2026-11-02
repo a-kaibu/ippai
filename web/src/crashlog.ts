@@ -12,7 +12,7 @@
 //   memory runs out) the next page load uploads it as "<id>-unclean"
 // - at a crash (Wine's "Unhandled exception", a sake fatal error, a panic, a wasm trap, an abort,
 //   an uncaught JS error): "<id>-crashN", to OPFS and to the server (PUT /log-save/<name>, kept in
-//   vnvm-server's --logs directory)
+//   vnvm serve's --logs directory)
 // - when the page goes to the background (the way out of a hung game on a phone): "<id>-hidden"
 // - Ctrl+Shift+L or a three-finger tap: "<id>-manual"
 // - when the game ends: "<id>-end"
@@ -87,7 +87,7 @@ async function removeLocal(name: string): Promise<void> {
   await (await dir())?.removeEntry(name).catch(() => {});
 }
 
-/** Sends a log to vnvm-server (its --logs directory); true if it took it. */
+/** Sends a log to vnvm serve (its --logs directory); true if it took it. */
 export async function upload(name: string, text: string): Promise<boolean> {
   try {
     const r = await fetch(new URL(`log-save/${encodeURIComponent(name)}`, location.href), {

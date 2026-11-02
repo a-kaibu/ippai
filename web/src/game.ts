@@ -8,7 +8,7 @@
 //   - frames per second the game draws, and the longest gap between animation frames (stalls)
 //
 // Native Wine on the x86-64 dev machine for comparison: title 5.9 s, story 0.18 cores (9 s of
-// CPU in 50 s). The result goes to vnvm-server's `PUT /bench-log` (bench-results.txt).
+// CPU in 50 s). The result goes to vnvm serve's `PUT /bench-log` (bench-results.txt).
 //
 // It runs twice (the page reloads itself, Wine can't start twice in a page): the first run
 // translates what isn't saved yet (after a new build, all of it), the second starts from the

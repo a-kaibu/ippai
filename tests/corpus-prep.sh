@@ -86,7 +86,7 @@ fi
 if [ ! -d "$store" ]; then
   rm -rf "$store.part"
   cp -al "$BASE" "$store.part"
-  vnvm-pack --store "$store.part" tree . g >/dev/null
+  vnvm --store "$store.part" pack . g >/dev/null
   mv "$store.part" "$store"
 fi
 echo "$e"

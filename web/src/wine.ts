@@ -3,14 +3,14 @@
 // composed by vnhost (crates/vnhost/src/display.rs) and shown with WebGPU. (The Wine path that this
 // page also ran until 2026-11-02 is in a-kaibu/vnvm-wine.)
 //
-//   /wine.html                      the game list (web/src/launcher.ts, vnvm-pack add-game)
+//   /wine.html                      the game list (web/src/launcher.ts, vnvm add-game)
 //   /wine.html?game=id              a game from the list (its run, mount, args and env)
 //   /wine.html?run=C:\path\to.exe   program to start
 //   &args=a,b                       its arguments
 //   &debug=<flags>[:channel,...]    SAKE_WINEDEBUG (crates/sake/src/k32.rs)
 //   &mount=/vnvm/game=tree          also mount a store tree (repeatable; Z:\vnvm\game\...)
 //   &env=NAME=value                 extra environment variable (repeatable, e.g. VNVM_TRACE_PROC=1)
-//   &nosave                         no saved games (vnvm-server's pre-run: its x86 regions only)
+//   &nosave                         no saved games (vnvm serve's pre-run: its x86 regions only)
 //   &headless                       don't draw to the canvas (tests/wine.mjs: headless Chromium
 //                                   destroys the device then, and Direct3D games need it)
 
@@ -154,12 +154,12 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     engine: "sake",
     arch: "x86",
   });
-  // the browser keeps a versioned wine.wasm with its compiled code (see vnvm-server)
+  // the browser keeps a versioned wine.wasm with its compiled code (see vnvm serve)
   const wasmVersion = fetch(`${WINE}${WASM}`, { method: "HEAD" }).then(
     (r) => `${r.headers.get("last-modified") ?? ""}-${r.headers.get("content-length") ?? ""}`,
     () => "",
   );
-  // x86 regions earlier runs of this program saved (vnvm-server /jit), per build of wine.wasm
+  // x86 regions earlier runs of this program saved (vnvm serve /jit), per build of wine.wasm
   // (which has the translator); &jit=0 for none
   const jitBase = params.get("jit") ?? `sake-${run.replace(/[^A-Za-z0-9_.-]/g, "_")}`;
   // (jit-version.txt: a hash of the translator's sources, which vnvm-wine hangover/build.sh writes; saved
