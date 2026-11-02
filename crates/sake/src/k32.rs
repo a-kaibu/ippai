@@ -2153,16 +2153,23 @@ fn ResolveDelayLoadedAPI(c: &mut Ctx) -> u32 {
     }
     let i = (thunk - rva(3)) / 4;
     let e = r32(rva(4) + 4 * i);
+    let what = if e & 0x8000_0000 != 0 { format!("#{}", e & 0xffff) } else { a2s(&cstr(base + e + 2)) };
     let r = if h == 0 {
         0
     } else if e & 0x8000_0000 != 0 {
         crate::pe::proc_address(h, crate::pe::Import::Ordinal(e & 0xffff)).unwrap_or(0)
     } else {
-        let n = a2s(&cstr(base + e + 2));
-        crate::pe::proc_address(h, crate::pe::Import::Name(&n)).unwrap_or(0)
+        crate::pe::proc_address(h, crate::pe::Import::Name(&what)).unwrap_or(0)
+    };
+    // a system DLL's function we know but don't implement: bound like a static import (its
+    // trap returns 0), as Windows would have it
+    let r = if r == 0 && h != 0 && e & 0x8000_0000 == 0 && crate::api::is_system(&name) {
+        crate::fast::bind(&name, &what, crate::api::export(&name, &what))
+    } else {
+        r
     };
     if r == 0 {
-        eprintln!("sake: delay-load import from {name} failed");
+        eprintln!("sake: delay-load import {name}!{what} failed ({})", if h == 0 { "no DLL" } else { "no export" });
     }
     w32(thunk, r);
     r
