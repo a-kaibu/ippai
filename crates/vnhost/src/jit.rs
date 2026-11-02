@@ -991,6 +991,15 @@ fn compile_long(st: &mut State, cpu: &Cpu, mem: &mut Linear) -> bool {
 
 /// Whether cpu.eip looks like a function's entry: the return address on the stack follows a
 /// CALL of it (or an indirect CALL). Only a guess: a wrong one costs speed, not correctness.
+/// Whether `a` follows a CALL (a return address).
+fn after_call(mem: &mut Linear, a: u32) -> bool {
+    let mut c = [0u8; 7];
+    if a < 7 || vnx86::Memory::fetch(mem, a - 7, &mut c) < 7 {
+        return false;
+    }
+    c[2] == 0xe8 || [2usize, 3, 4, 6, 7].iter().any(|&k| c[7 - k] == 0xff && (c[8 - k] >> 3) & 7 == 2)
+}
+
 fn called(cpu: &Cpu, mem: &mut Linear) -> bool {
     let mut b = [0u8; 4];
     if vnx86::Memory::fetch(mem, cpu.regs[4], &mut b) < 4 {
@@ -1046,7 +1055,11 @@ fn compile_fn(st: &mut State, eip: u32, (lo, hi): (u32, u32), mem: &mut Linear, 
     if let Some(dir) = std::env::var_os("VNVM_JIT_DUMP") {
         let _ = std::fs::write(std::path::Path::new(&dir).join(format!("{eip:08x}-fn.wasm")), &bytes);
     }
+    let t1 = Instant::now();
     let ok = install_fn(st, eip, &bytes, &region.starts, &region.sites, &region.code);
+    if std::env::var_os("VNVM_JIT_TIME").is_some() {
+        eprintln!("vnjit time {eip:#x}: {} ins, translate {:?}, load {:?} ra {} part {part} build {}", region.instructions, t1 - t0, t1.elapsed(), after_call(&mut Linear, eip), st.fn_builds[&eip]);
+    }
     count_compile(1, t0);
     if st.fn_builds[&eip] > 1 {
         count_compile(2, t0);
@@ -1082,8 +1095,8 @@ fn enter_fn(st: &mut State, base: u32, eip: u32, starts: &[(u32, u32)], sites: &
             l.push(eip);
         }
     }
+    st.fns.insert(eip);
     for &(a, _) in starts {
-        st.fns.insert(a);
         st.known.insert(a);
     }
     enter(st, base as u32, vec![eip], &[]);
@@ -1094,14 +1107,17 @@ fn enter_fn(st: &mut State, base: u32, eip: u32, starts: &[(u32, u32)], sites: &
         }
         st.hash = bigger;
     }
-    for &(a, k) in starts {
-        let v = base as u32 | k << jit::ENTRY_SHIFT | jit::FN_TAG;
+    for (i, &(a, _)) in starts.iter().enumerate() {
+        // (which entry: 0 the root, the first start)
+        let v = base as u32 | (i as u32) << jit::ENTRY_SHIFT | jit::FN_TAG;
         if insert(&mut st.hash, a, v) {
             st.used += 1;
         }
         // call sites that cached an earlier build go to this one
-        for c in st.calls.iter_mut().filter(|c| c[0] == a) {
-            c[1] = v;
+        if i == 0 {
+            for c in st.calls.iter_mut().filter(|c| c[0] == a) {
+                c[1] = v;
+            }
         }
     }
 }
@@ -1130,7 +1146,8 @@ pub unsafe extern "C" fn vnhost_jit_callmiss(cpu: u32, slot: u32, target: u32) -
     while hash[h as usize][0] != 0 {
         if hash[h as usize][0] == target {
             let v = hash[h as usize][1];
-            if v & jit::FN_TAG == 0 {
+            // (a call goes to a function's root only)
+            if v & jit::FN_TAG == 0 || v >> jit::ENTRY_SHIFT & 0x7ff != 0 {
                 break;
             }
             *(slot as usize as *mut [u32; 2]) = [target, v];

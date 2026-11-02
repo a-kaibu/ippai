@@ -142,6 +142,9 @@ pub const RING_SIZE: u32 = 64;
 
 /// A hash table entry's value: the function's table index | the block's index << ENTRY_SHIFT.
 pub const ENTRY_SHIFT: u32 = 20;
+/// A function's blocks it can be entered at are below this (hash entries: the entry's index in
+/// `starts` << ENTRY_SHIFT, 0 the root).
+const MAX_ENTRY: usize = 0x7fe;
 /// Most blocks in one region.
 pub const MAX_BLOCKS: usize = 1 << 11;
 /// Most instructions in one region: V8's optimizing compiler takes superlinear time on big
@@ -3085,6 +3088,36 @@ fn emit_dispatch(g: &mut Gen<'_>, t: &structure::Table, node: usize) {
     g.jump_dyn();
 }
 
+/// A function's first node with more entries than its root (`entries[0]`): `br_table` on
+/// L_BLK (0 the root, i the i-th other) to the block.
+fn emit_entries<'a>(g: &mut Gen<'a>, blocks: &'a [(u32, Vec<Instruction>)], entries: &[usize], node: usize) {
+    g.ctx = 0;
+    g.block_index = node as u32;
+    g.flags = Flags::Entry;
+    g.fc = FCache::default();
+    g.dirty = 0;
+    g.mm_loop = 0;
+    g.mmx = (0, 0);
+    g.xm_loop = 0;
+    g.xmm = (0, 0);
+    let m = entries.len();
+    for _ in 0..m {
+        g.c.block();
+    }
+    g.depth += m as u32;
+    g.c.get(L_BLK).op(0x0e);
+    wasm::uleb(&mut g.c.b, m as u64);
+    for i in 0..m {
+        wasm::uleb(&mut g.c.b, i as u64);
+    }
+    wasm::uleb(&mut g.c.b, 0);
+    for &k in entries {
+        g.c.end();
+        g.depth -= 1;
+        g.goto_block(k, blocks[k].0);
+    }
+}
+
 /// A function's adapter to the region calling convention (what the dispatcher and regions'
 /// jumps call): the state into the Cpu, the function (the next table entry: the module may be
 /// merged with others, see `saved`), and its RET as RET_CONTINUE (on at EIP).
@@ -3096,7 +3129,8 @@ fn fn_adapter() -> Func {
     c.get(L_CPU).get(L_BUD).store32(Off::budget());
     lazy_to_cpu(&mut c);
     c.end();
-    c.get(L_CPU).get(L_CPU).load32(Off::calls());
+    // (the entry in the depth's high half)
+    c.get(L_CPU).get(L_CPU).load32(Off::calls()).get(L_ARG).i32c(ENTRY_SHIFT as i32).shr_u().u32c(0x7ff).and().i32c(16).shl().or();
     c.get(L_ARG).u32c((1 << ENTRY_SHIFT) - 1).and().i32c(1).add().call_indirect(T_FN, 0).tee(L_ARG).i32c(RET_CONTINUE).get(L_ARG).i32c(RET_FN).ne().select();
     for _ in 1..N_PARAMS {
         c.i32c(0);
@@ -3196,7 +3230,7 @@ fn emit_fn_lookup(c: &mut Code, entry: u32, wregs: u8) {
     c.get(e).load32(4).tee(v).u32c(FN_TAG).and().eqz().br_if(2);
     bump(c, 7);
     writeback(c, wregs);
-    c.get(L_CPU).get(L_ARG);
+    c.get(L_CPU).get(L_ARG).get(v).i32c(ENTRY_SHIFT as i32).shr_u().u32c(0x7ff).and().i32c(16).shl().or();
     c.get(v).u32c((1 << ENTRY_SHIFT) - 1).and().i32c(1).add();
     c.op(0x13).op(T_FN as u8).op(0); // return_call_indirect, table 0
     c.end();
@@ -4219,7 +4253,7 @@ fn translate<M: Memory>(
             }
         }
     }
-    let nodes = n as usize + tables.len();
+    let nodes = n as usize + tables.len() + 1; // (+ a function's node for more entries)
     let (mut regs, mut wregs) = (0xffu8, 0xffu8);
     if fnm {
         // (an HLE'd C function returns in EAX)
@@ -4297,12 +4331,43 @@ fn translate<M: Memory>(
         }
     }
     g.live_out = block_liveness(&g, &blocks).1;
+    // functions: the layout, entered at the root and (when the dispatcher comes back to the
+    // middle, as at a return address after the call left, or a loop's head after the budget
+    // ran out) at blocks outside loops but the outermost's heads
+    let mut extra = Vec::new();
+    let fl = fnm.then(|| {
+        let entry = starts[0].1 as usize;
+        let l0 = structure::layout(&blocks, &ctxs, &targets, &inlined, &ret_to, &tables, &g.jnode, entry, &[]);
+        let find = |a: u32| targets.get(&(0, a)).map(|&b| b as usize);
+        let rets: Vec<usize> = (0..blocks.len())
+            .filter(|&k| ctxs[k] == 0 && !inlined.contains_key(&k) && matches!(blocks[k].1.last().unwrap().flow_control(), FlowControl::Call | FlowControl::IndirectCall))
+            .filter_map(|k| find(blocks[k].1.last().unwrap().next_ip32()))
+            .collect();
+        extra = l0.entries(blocks.len(), |k| k != entry && k < MAX_ENTRY && ctxs[k] == 0 && (rets.contains(&k) || l0.header(k)));
+        if extra.is_empty() {
+            return l0;
+        }
+        let l = structure::layout(&blocks, &ctxs, &targets, &inlined, &ret_to, &tables, &g.jnode, entry, &extra);
+        if l.irreducible() > l0.irreducible() {
+            extra.clear();
+            return l0;
+        }
+        l
+    });
+    for &k in &extra {
+        starts.push((blocks[k].0, k as u32));
+    }
     bump(&mut g.c, 10);
     if fnm {
         // the state from the Cpu; status flags dead (a call's target)
         g.load_regs();
         g.c.get(L_CPU).load32(Off::budget()).set(L_BUD);
         g.c.i32c(-1).set(L_OP);
+        if !extra.is_empty() {
+            // (the entry: 0 the root, else one past an `extra`)
+            g.c.get(L_ARG).i32c(16).shr_u().set(L_BLK);
+            g.c.get(L_ARG).u32c(0xffff).and().set(L_ARG);
+        }
     } else {
         g.c.get(L_ARG).i32c(ENTRY_SHIFT as i32).shr_u().set(L_BLK);
     }
@@ -4317,23 +4382,27 @@ fn translate<M: Memory>(
     let mut count = 0;
     if fnm {
         let entry = starts[0].1 as usize;
-        let l = structure::layout(&blocks, &ctxs, &targets, &inlined, &ret_to, &tables, &g.jnode, entry);
+        let l = fl.unwrap();
         g.dirty_in = dirty_in(&g, &blocks, &l);
         if LAYOUT.load(core::sync::atomic::Ordering::Relaxed) {
             use core::fmt::Write;
             let _ = writeln!(g.notes, "IRREDUCIBLE {}", l.irreducible());
+            let _ = writeln!(g.notes, "ENTRIES {:x?}", extra.iter().map(|&k| (k, blocks[k].0)).collect::<Vec<_>>());
         }
         let nb = n as usize;
-        fn body<'a>(g: &mut Gen<'a>, l: &structure::Layout, blocks: &'a [(u32, Vec<Instruction>)], tables: &[structure::Table], count: &mut usize) {
+        fn body<'a>(g: &mut Gen<'a>, l: &structure::Layout, blocks: &'a [(u32, Vec<Instruction>)], tables: &[structure::Table], entries: &[usize], count: &mut usize) {
             let nb = blocks.len();
             structure::emit(g, l, |g, k| {
                 if k < nb {
                     emit_block(g, blocks, k, count);
-                } else {
+                } else if k < nb + tables.len() {
                     emit_dispatch(g, &tables[k - nb], k);
+                } else {
+                    emit_entries(g, blocks, entries, k);
                 }
             })
         }
+        let entries: Vec<usize> = core::iter::once(entry).chain(extra.iter().copied()).collect();
         // with x87 code: emitted to see the caches its jumps come with (as in emit_level's
         // loops), as many times as these change, then for real with those
         if blocks.iter().any(|b| b.1.iter().any(fc_handles)) {
@@ -4343,7 +4412,7 @@ fn translate<M: Memory>(
             for _ in 0..6 {
                 g.fc_in = fin.clone();
                 g.fc_out.clear();
-                body(&mut g, &l, &blocks, &tables, &mut 0);
+                body(&mut g, &l, &blocks, &tables, &entries, &mut 0);
                 g.c.truncate(b0);
                 let out: BTreeMap<usize, FCache> = g.fc_out.iter().filter(|f| f.1.on).map(|(&k, &f)| (k, f)).collect();
                 if out == fin {
@@ -4353,7 +4422,7 @@ fn translate<M: Memory>(
             }
             g.fc_in = fin;
         }
-        body(&mut g, &l, &blocks, &tables, &mut count);
+        body(&mut g, &l, &blocks, &tables, &entries, &mut count);
         g.fc_fn = None;
         g.fc_in.clear();
     } else {

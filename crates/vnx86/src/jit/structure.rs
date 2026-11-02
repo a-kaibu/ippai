@@ -112,9 +112,11 @@ pub(super) fn layout(
     tables: &[Table],
     jnode: &BTreeMap<usize, usize>,
     entry: usize,
+    extra: &[usize],
 ) -> Layout {
     let n = blocks.len();
-    let total = n + tables.len();
+    // (more entries: a node before them all, the last, going to each)
+    let total = n + tables.len() + !extra.is_empty() as usize;
     let find = |ctx: u32, a: u32| targets.get(&(ctx, a)).or_else(|| targets.get(&(0, a))).map(|&b| b as usize);
     let mut succ: Vec<Vec<usize>> = alloc::vec![Vec::new(); total];
     for k in 0..n {
@@ -152,6 +154,12 @@ pub(super) fn layout(
         s.dedup();
         succ[n + i] = s;
     }
+    let entry = if extra.is_empty() {
+        entry
+    } else {
+        succ[total - 1] = core::iter::once(entry).chain(extra.iter().copied()).collect();
+        total - 1
+    };
     // reverse postorder (iterative DFS)
     let mut post = Vec::with_capacity(total);
     let mut seen = alloc::vec![false; total];
@@ -238,6 +246,44 @@ pub(super) fn layout(
 }
 
 impl Layout {
+    /// The blocks (below `n`) for which `want` holds that the function can also be entered at:
+    /// reached, and in no loop but as the header of the outermost.
+    pub(super) fn entries(&self, n: usize, want: impl Fn(usize) -> bool) -> Vec<usize> {
+        let total = self.succ.len();
+        let mut preds: Vec<Vec<usize>> = alloc::vec![Vec::new(); total];
+        for &v in &self.rpo {
+            for &w in &self.succ[v] {
+                preds[w].push(v);
+            }
+        }
+        // natural loops' bodies but their headers
+        let mut inside = alloc::vec![false; total];
+        for &u in &self.rpo {
+            for &h in &self.succ[u] {
+                if !self.back(u, h) {
+                    continue;
+                }
+                let mut seen = alloc::vec![false; total];
+                seen[h] = true;
+                let mut stack = alloc::vec![u];
+                while let Some(v) = stack.pop() {
+                    if seen[v] {
+                        continue;
+                    }
+                    seen[v] = true;
+                    inside[v] = true;
+                    stack.extend(preds[v].iter().copied());
+                }
+            }
+        }
+        (0..n.min(total)).filter(|&k| self.order[k] != usize::MAX && !inside[k] && want(k)).collect()
+    }
+
+    /// Whether node `k` heads a loop.
+    pub(super) fn header(&self, k: usize) -> bool {
+        self.header[k]
+    }
+
     /// Whether the edge u -> v is a back edge (to a loop header dominating u).
     fn back(&self, u: usize, v: usize) -> bool {
         if self.order[v] > self.order[u] {
