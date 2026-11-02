@@ -279,6 +279,16 @@ impl Layout {
         (0..n.min(total)).filter(|&k| self.order[k] != usize::MAX && !inside[k] && want(k)).collect()
     }
 
+    /// The first node.
+    pub(super) fn entry(&self) -> usize {
+        self.rpo[0]
+    }
+
+    /// The reached nodes, in reverse postorder.
+    pub(super) fn order_iter(&self) -> core::slice::Iter<'_, usize> {
+        self.rpo.iter()
+    }
+
     /// Whether node `k` heads a loop.
     pub(super) fn header(&self, k: usize) -> bool {
         self.header[k]

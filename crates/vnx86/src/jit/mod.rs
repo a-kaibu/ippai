@@ -319,6 +319,9 @@ struct Gen<'a> {
     /// per register, the largest value it can have here if known (since an `and r32, imm` or
     /// a movzx in the block): an access to [table + r * scale] then needs no check
     small: [Option<u32>; 8],
+    /// functions: per block, the registers checked to be in the guest range on every way in
+    /// (see [`safe_in`])
+    safe_in: Vec<u8>,
     /// with [`LAYOUT`]: whether the instruction went to the interpreter, and per mnemonic
     /// ("*" marking those) the count and wasm bytes
     fell_back: bool,
@@ -1397,10 +1400,11 @@ impl<'a> Gen<'a> {
         }
         // from EFLAGS
         if LAYOUT.load(core::sync::atomic::Ordering::Relaxed) {
-            if let Flags::Known(op) = self.flags {
-                let e = self.sizes.entry(alloc::format!("CONDFB_k{}_b{}_cc{}", op >> 2, 8 << (op & 3), cc)).or_insert((0, 0));
-                e.0 += 1;
-            }
+            let k = match self.flags {
+                Flags::Known(op) => alloc::format!("CONDFB_k{}_b{}_cc{}", op >> 2, 8 << (op & 3), cc),
+                Flags::Entry => alloc::format!("CONDFB_entry_cc{cc}"),
+            };
+            self.sizes.entry(k).or_insert((0, 0)).0 += 1;
         }
         let t = self.temp();
         self.eflags();
@@ -3835,6 +3839,11 @@ fn emit_block<'a>(g: &mut Gen<'a>, blocks: &'a [(u32, Vec<Instruction>)], k: usi
     g.flags = Flags::Entry;
     g.dirty = g.dirty_in.get(k).copied().unwrap_or(g.wregs);
     g.small = [None; 8];
+    if let Some(&m) = g.safe_in.get(k) {
+        for r in (0..8).filter(|r| m & (1 << r) != 0) {
+            g.safe[r] = Some(0);
+        }
+    }
     g.fc = g.fc_in.get(&k).copied().unwrap_or_default();
     bump(&mut g.c, 14);
     if let Some(&at) = g.prof.get(k) {
@@ -4082,6 +4091,73 @@ fn dirty_in(g: &Gen, blocks: &[(u32, Vec<Instruction>)], l: &structure::Layout) 
         }
         if !changed {
             return din;
+        }
+    }
+}
+
+/// A function's registers (but ESP, see Gen::emit) known to be in the guest range with
+/// SAFE_MARGIN to spare at each block's start: checked by an access [r + small] since last
+/// written, on every way there. None at the entries, nor after a call (a callee could change
+/// any).
+fn safe_in(g: &Gen, blocks: &[(u32, Vec<Instruction>)], l: &structure::Layout) -> Vec<u8> {
+    if nocheck() {
+        return Vec::new();
+    }
+    let n = blocks.len();
+    let total = l.succ.len();
+    let mut info = iced_x86::InstructionInfoFactory::new();
+    // per block: (registers it leaves checked, registers it writes without checking after)
+    let tr: Vec<(u8, u8)> = (0..n)
+        .map(|k| {
+            if g.hle.contains_key(&blocks[k].0) {
+                return (0, 0xff);
+            }
+            let (mut gen, mut kill) = (0u8, 0u8);
+            for ins in &blocks[k].1 {
+                let base = ins.memory_base();
+                let checks = (0..ins.op_count()).any(|i| ins.op_kind(i) == OpKind::Memory)
+                    && !matches!(ins.mnemonic(), Mnemonic::Lea | Mnemonic::Nop | Mnemonic::Xchg)
+                    && !ins.has_lock_prefix()
+                    && base.is_gpr32()
+                    && base != Register::ESP
+                    && ins.memory_index() == Register::None
+                    && !matches!(ins.memory_segment(), Register::FS | Register::GS)
+                    && (ins.memory_displacement32() as i32).unsigned_abs() < SAFE_MARGIN as u32 / 2;
+                if checks {
+                    gen |= 1 << base.number();
+                    kill &= !(1 << base.number());
+                }
+                for u in info.info(ins).used_registers() {
+                    use iced_x86::OpAccess::*;
+                    if matches!(u.access(), Write | CondWrite | ReadWrite | ReadCondWrite) && u.register().is_gpr() {
+                        let b = 1u8 << u.register().full_register32().number();
+                        gen &= !b;
+                        kill |= b;
+                    }
+                }
+            }
+            (gen & !(1 << 4), kill)
+        })
+        .collect();
+    let mut sin = alloc::vec![0xffu8; total];
+    // (entries: the function's first node, else the root)
+    sin[l.entry()] = 0;
+    loop {
+        let mut changed = false;
+        for &v in l.order_iter() {
+            let out = if v < n { (sin[v] & !tr[v].1) | tr[v].0 } else { sin[v] };
+            let call = v < n && matches!(blocks[v].1.last().unwrap().flow_control(), FlowControl::Call | FlowControl::IndirectCall);
+            let inl = g.inlined.get(&v).map(|x| x.0);
+            for &w in &l.succ[v] {
+                let o = if call && inl != Some(w) { 0 } else { out };
+                if sin[w] & o != sin[w] {
+                    sin[w] &= o;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            return sin;
         }
     }
 }
@@ -4362,6 +4438,7 @@ fn translate<M: Memory>(
         dirty: 0xff,
         dirty_in: Vec::new(),
         small: [None; 8],
+        safe_in: Vec::new(),
         temps: 0,
         safe: [None; 8],
         safe2: Vec::new(),
@@ -4448,6 +4525,7 @@ fn translate<M: Memory>(
         let entry = starts[0].1 as usize;
         let l = fl.unwrap();
         g.dirty_in = dirty_in(&g, &blocks, &l);
+        g.safe_in = safe_in(&g, &blocks, &l);
         if LAYOUT.load(core::sync::atomic::Ordering::Relaxed) {
             use core::fmt::Write;
             let _ = writeln!(g.notes, "IRREDUCIBLE {}", l.irreducible());
