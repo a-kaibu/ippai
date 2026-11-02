@@ -584,8 +584,9 @@ export class D3D9 {
     }
     // a whole-target clear nobody drew after still has to happen
     if (this.pendingClear && this.target[0]) {
-      this.beginPass();
-      this.pass!.end();
+      // (no pass when the target is gone: the clear goes with it)
+      this.beginPass()?.end();
+      this.pendingClear = null;
       this.pass = null;
     }
   }
