@@ -19,6 +19,10 @@ def long_name(n):
     return n.split('|')[-1]
 
 
+SYSTEM = {'ProgramFilesFolder': 'Program Files', 'LocalAppDataFolder': 'LocalAppData',
+          'AppDataFolder': 'AppData', 'CommonAppDataFolder': 'CommonAppData'}
+
+
 def main(msi, out):
     dirs = {r[0]: (r[1], r[2]) for r in table(msi, 'Directory') if len(r) >= 3}
     comps = {r[0]: r[2] for r in table(msi, 'Component') if len(r) >= 3}
@@ -32,6 +36,10 @@ def main(msi, out):
         name = long_name(default.split(':')[0])
         if d == 'TARGETDIR' or not parent or parent == d:
             return ''
+        # the system folders, named as msiextract names them (the launcher helper installs the
+        # user ones: hangover/tests/autoclick.c)
+        if d in SYSTEM:
+            return SYSTEM[d]
         p = path(parent, seen + (d,))
         return p if name in ('.', 'SourceDir') else os.path.join(p, name)
 
