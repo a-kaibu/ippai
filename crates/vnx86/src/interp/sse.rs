@@ -307,6 +307,20 @@ impl<'a, M: Memory> X<'a, M> {
             Pmaxub => binop(self, &|a, b| lanes(a, b, 8, |x, y| x.max(y))),
             Pminsw => binop(self, &|a, b| lanes(a, b, 16, |x, y| if sx(x, 16) < sx(y, 16) { x } else { y })),
             Pmaxsw => binop(self, &|a, b| lanes(a, b, 16, |x, y| if sx(x, 16) > sx(y, 16) { x } else { y })),
+            Maskmovq | Maskmovdqu => {
+                // store the bytes of the first register whose mask byte (second register) has
+                // its top bit set, at DS:EDI
+                let n = ins.op_count();
+                let v = tryf!(self.read_v(n - 2));
+                let m = tryf!(self.read_v(n - 1));
+                let a = self.get_reg(Register::EDI).wrapping_add(self.seg_base()) as u32;
+                for k in 0..(if mn == Maskmovq { 8 } else { 16 }) {
+                    if (m >> (8 * k + 7)) & 1 != 0 {
+                        tryf!(self.mem.write8(a.wrapping_add(k), (v >> (8 * k)) as u8));
+                    }
+                }
+                self.done()
+            }
             Psadbw => binop(self, &|a, b| {
                 lanes(a, b, 64, |x, y| {
                     let mut s = 0u64;
