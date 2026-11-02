@@ -399,6 +399,57 @@ fn CreateEventW(c: &mut Ctx) -> u32 {
 fn CreateEventExW(c: &mut Ctx) -> u32 {
     create_named(named(c.a(1), true), Obj::Event { manual: c.a(2) & 1 != 0, set: c.a(2) & 2 != 0 })
 }
+fn new_timer(manual: bool) -> Obj {
+    Obj::Timer { manual, set: false, due: None, period: std::time::Duration::ZERO }
+}
+fn CreateWaitableTimerA(c: &mut Ctx) -> u32 {
+    create_named(named(c.a(2), false), new_timer(c.a(1) != 0))
+}
+fn CreateWaitableTimerW(c: &mut Ctx) -> u32 {
+    create_named(named(c.a(2), true), new_timer(c.a(1) != 0))
+}
+fn CreateWaitableTimerExW(c: &mut Ctx) -> u32 {
+    create_named(named(c.a(1), true), new_timer(c.a(2) & 1 != 0))
+}
+fn OpenWaitableTimerA(c: &mut Ctx) -> u32 {
+    open_named(c.a(2), false)
+}
+fn OpenWaitableTimerW(c: &mut Ctx) -> u32 {
+    open_named(c.a(2), true)
+}
+/// SetWaitableTimer(h, due, period ms, apc, arg, resume): `due` in 100 ns, negative = from now,
+/// positive = an absolute FILETIME. (The completion routine is not called.)
+fn SetWaitableTimer(c: &mut Ctx) -> u32 {
+    use std::time::{Duration, Instant, SystemTime};
+    let v = get64(c.a(1)) as i64;
+    let after = if v < 0 {
+        Duration::from_nanos(v.unsigned_abs() * 100)
+    } else {
+        let now = files::filetime(SystemTime::now()) as i64;
+        Duration::from_nanos((v - now).max(0) as u64 * 100)
+    };
+    let period = Duration::from_millis(c.a(2) as u64);
+    let r = obj::with(|t| match t.objs.get_mut(&c.a(0)) {
+        Some((Obj::Timer { set, due, period: p, .. }, _)) => {
+            *set = false;
+            *due = Some(Instant::now() + after);
+            *p = period;
+            true
+        }
+        _ => false,
+    });
+    obj::signal();
+    ok(r)
+}
+fn CancelWaitableTimer(c: &mut Ctx) -> u32 {
+    ok(obj::with(|t| match t.objs.get_mut(&c.a(0)) {
+        Some((Obj::Timer { due, .. }, _)) => {
+            *due = None;
+            true
+        }
+        _ => false,
+    }))
+}
 fn OpenEventA(c: &mut Ctx) -> u32 {
     open_named(c.a(2), false)
 }
@@ -1816,6 +1867,13 @@ fn GetTimeZoneInformation(c: &mut Ctx) -> u32 {
     let p = c.a(0);
     mem::fill(p, 172, 0);
     w32(p, (-tz_bias() / 60) as i32 as u32);
+    // (Japanese Windows' names: RealLive and Siglus refuse to run elsewhere)
+    if tz_bias() == 9 * 3600 {
+        for (off, name) in [(4, "東京 (標準時)"), (88, "東京 (夏時間)")] {
+            let w: Vec<u16> = name.encode_utf16().collect();
+            mem::put_wstr(p + off, 32, &w);
+        }
+    }
     0
 }
 fn GetTickCount(_: &mut Ctx) -> u32 {
@@ -2283,6 +2341,9 @@ fn FindClose(c: &mut Ctx) -> u32 {
     ok(obj::close(c.a(0)))
 }
 fn file_attrs(name: &str) -> u32 {
+    if std::env::var_os("VNWIN_TRACE_FILES").is_some() {
+        eprintln!("vnwin: GetFileAttributes({name})");
+    }
     match files::resolve(name).and_then(|h| std::fs::metadata(h).ok()) {
         Some(m) => files::attrs(&m),
         None => {
@@ -2739,7 +2800,8 @@ pub fn init() {
         FatalAppExitA, ExitThread, CreateThread, ResumeThread, SuspendThread, GetExitCodeThread, GetExitCodeProcess,
         TerminateThread, GetThreadPriority, SetThreadPriority, SetPriorityClass, GetPriorityClass, SetThreadAffinityMask,
         SetProcessAffinityMask, GetProcessAffinityMask, SetThreadIdealProcessor, Sleep, SleepEx, SwitchToThread,
-        CreateEventA, CreateEventW, CreateEventExW, OpenEventA, OpenEventW, SetEvent, ResetEvent, PulseEvent,
+        CreateEventA, CreateEventW, CreateEventExW, CreateWaitableTimerA, CreateWaitableTimerW, CreateWaitableTimerExW,
+        OpenWaitableTimerA, OpenWaitableTimerW, SetWaitableTimer, CancelWaitableTimer, OpenEventA, OpenEventW, SetEvent, ResetEvent, PulseEvent,
         CreateMutexA, CreateMutexW, OpenMutexA, ReleaseMutex, CreateSemaphoreA, CreateSemaphoreW, ReleaseSemaphore,
         WaitForSingleObject, WaitForSingleObjectEx, WaitForMultipleObjects, WaitForMultipleObjectsEx, CloseHandle,
         DuplicateHandle, InitializeCriticalSection, InitializeCriticalSectionAndSpinCount, InitializeCriticalSectionEx,

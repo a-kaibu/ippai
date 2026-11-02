@@ -123,6 +123,7 @@ async function click(x, y) {
       const fx = Math.max(0, p.view?.[0] ?? 0) + sx + 0.5, fy = Math.max(0, p.view?.[1] ?? 0) + sy + 0.5;
       return [b.left + (r.x + ((fx - l) * r.w) / (vr - l)) / dpr, b.top + (r.y + ((fy - t) * r.h) / (vb - t)) / dpr];
     }, [x, y]);
+  appendFileSync(logFile, `${stamp()} [click] page ${x.toFixed(1)},${y.toFixed(1)}\n`);
   await page.mouse.move(x, y);
   await page.waitForTimeout(300);
   await page.mouse.click(x, y, { delay: 200 }); // (held: games that poll GetAsyncKeyState per frame)

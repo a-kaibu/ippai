@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 
 pub enum Obj {
     Event { manual: bool, set: bool },
+    /// a waitable timer: becomes set at `due`, then again every `period` if nonzero
+    Timer { manual: bool, set: bool, due: Option<Instant>, period: Duration },
     Mutex { owner: u32, count: u32 },
     Semaphore { count: i32, max: i32 },
     Thread { tid: u32, done: bool, code: u32 },
@@ -106,6 +108,19 @@ fn try_take(t: &mut Table, h: u32, tid: u32, take: bool) -> Option<bool> {
             }
             s
         }
+        Obj::Timer { manual, set, due, period } => {
+            if let Some(d) = *due {
+                if Instant::now() >= d {
+                    *set = true;
+                    *due = (!period.is_zero()).then(|| d + *period);
+                }
+            }
+            let s = *set;
+            if s && take && !*manual {
+                *set = false;
+            }
+            s
+        }
         Obj::Mutex { owner, count } => {
             if *owner == 0 || *owner == tid {
                 if take {
@@ -174,6 +189,18 @@ pub fn wait(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> bool
             }
         }
         let gen = t.gen;
+        // (timers turn set by themselves: wake when the first one is due)
+        let timer = handles
+            .iter()
+            .filter_map(|h| match t.objs.get(h) {
+                Some((Obj::Timer { due, .. }, _)) => *due,
+                _ => None,
+            })
+            .min();
+        let deadline = match (deadline, timer) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
         match deadline {
             None => {
                 while g.as_ref().unwrap().gen == gen {
@@ -183,6 +210,9 @@ pub fn wait(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> bool
             Some(d) => {
                 let now = Instant::now();
                 if now >= d {
+                    if timer == Some(d) {
+                        continue;
+                    }
                     return WAIT_TIMEOUT;
                 }
                 g = WAKE.wait_timeout(g, d - now).unwrap_or_else(|e| e.into_inner()).0;

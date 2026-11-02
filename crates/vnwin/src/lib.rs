@@ -23,6 +23,8 @@ pub mod k32;
 pub mod mem;
 pub mod misc;
 pub mod obj;
+pub mod dshow;
+pub mod usp;
 pub mod ole;
 pub mod pe;
 pub mod seh;
@@ -265,6 +267,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     ini::init();
     ddraw::init();
     ole::init();
+    usp::init();
     dinput::init();
     sound::init();
     d3d9::register();

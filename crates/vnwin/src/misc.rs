@@ -656,11 +656,62 @@ fn version_resource(path: &str) -> Option<Vec<u8>> {
         .unwrap()
         .iter()
         .find(|m| m.path.to_lowercase() == full || (!path.contains('\\') && m.name == name))
-        .map(|m| m.base)?;
-    let e = crate::pe::find_resource(base, &crate::pe::ResId::Int(16), &crate::pe::ResId::Int(1))
-        .or_else(|| crate::pe::first_resource(base, 16))?;
+        .map(|m| m.base);
+    // a DLL we implement (no resources): a Japanese Windows 7 one (RealLive checks kernel32's
+    // language)
+    let ours = || name.strip_suffix(".dll").filter(|d| crate::api::is_system(d)).map(|_| system_version_info(&name));
+    let Some(base) = base else { return ours() };
+    let Some(e) = crate::pe::find_resource(base, &crate::pe::ResId::Int(16), &crate::pe::ResId::Int(1))
+        .or_else(|| crate::pe::first_resource(base, 16))
+    else {
+        return ours();
+    };
     let (p, n) = crate::pe::resource_data(base, e);
     Some(mem::slice(p, n).to_vec())
+}
+
+/// One VS_VERSIONINFO node: header, key, value (`text`: UTF-16 string), children.
+fn ver_node(key: &str, value: &[u8], text: bool, children: &[Vec<u8>]) -> Vec<u8> {
+    let mut v = vec![0u8; 6];
+    for u in key.encode_utf16().chain([0]) {
+        v.extend(u.to_le_bytes());
+    }
+    let pad = |v: &mut Vec<u8>| v.resize((v.len() + 3) & !3, 0);
+    pad(&mut v);
+    v.extend(value);
+    for ch in children {
+        pad(&mut v);
+        v.extend(ch);
+    }
+    let vlen = if text { value.len() / 2 } else { value.len() };
+    let len = v.len() as u16;
+    v[0..2].copy_from_slice(&len.to_le_bytes());
+    v[2..4].copy_from_slice(&(vlen as u16).to_le_bytes());
+    v[4..6].copy_from_slice(&(text as u16).to_le_bytes());
+    v
+}
+fn system_version_info(file: &str) -> Vec<u8> {
+    let w = |s: &str| -> Vec<u8> { s.encode_utf16().chain([0]).flat_map(|u| u.to_le_bytes()).collect() };
+    // VS_FIXEDFILEINFO, version 6.1.7601.17514
+    let mut fixed = Vec::new();
+    for d in [0xfeef04bdu32, 0x10000, 0x60001, 7601 << 16 | 17514, 0x60001, 7601 << 16 | 17514, 0x3f, 0, 0x40004, 2, 0, 0, 0] {
+        fixed.extend(d.to_le_bytes());
+    }
+    let strings = ver_node(
+        "041104b0",
+        &[],
+        true,
+        &[
+            ver_node("CompanyName", &w("Microsoft Corporation"), true, &[]),
+            ver_node("FileVersion", &w("6.1.7601.17514"), true, &[]),
+            ver_node("OriginalFilename", &w(file), true, &[]),
+            ver_node("ProductVersion", &w("6.1.7601.17514"), true, &[]),
+        ],
+    );
+    let sfi = ver_node("StringFileInfo", &[], true, &[strings]);
+    let tr = ver_node("Translation", &[0x11, 0x04, 0xb0, 0x04], false, &[]);
+    let vfi = ver_node("VarFileInfo", &[], true, &[tr]);
+    ver_node("VS_VERSION_INFO", &fixed, false, &[sfi, vfi])
 }
 
 fn GetFileVersionInfoSizeA(c: &mut Ctx) -> u32 {
@@ -981,6 +1032,10 @@ fn CoCreateInstance(c: &mut Ctx) -> u32 {
         put32(c.a(4), obj);
         return 0;
     }
+    if let Some(obj) = crate::dshow::create_instance(clsid, iid) {
+        put32(c.a(4), obj);
+        return 0;
+    }
     if let Some(obj) = crate::dinput::create_instance(clsid) {
         put32(c.a(4), obj);
         return 0;
@@ -1098,6 +1153,30 @@ fn StringFromGUID2(c: &mut Ctx) -> u32 {
         return 0;
     }
     mem::put_wstr(out, n, &s) + 1
+}
+/// CLSIDFromString / IIDFromString: "{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}" (ProgIDs are not
+/// registered: CO_E_CLASSSTRING).
+fn guid_from_string(c: &mut Ctx) -> u32 {
+    let (s, out) = (c.a(0), c.a(1));
+    let t: String = crate::k32::arg_str(s, true).chars().filter(|ch| ch.is_ascii_hexdigit()).collect();
+    if t.len() != 32 || !crate::k32::arg_str(s, true).starts_with('{') {
+        mem::fill(out, 16, 0);
+        return 0x8004_01f3;
+    }
+    let hex = |a: usize, n: usize| u32::from_str_radix(&t[a..a + n], 16).unwrap_or(0);
+    w32(out, hex(0, 8));
+    w16(out + 4, hex(8, 4) as u16);
+    w16(out + 6, hex(12, 4) as u16);
+    for i in 0..8 {
+        mem::w8(out + 8 + i as u32, hex(16 + 2 * i, 2) as u8);
+    }
+    0
+}
+fn CLSIDFromString(c: &mut Ctx) -> u32 {
+    guid_from_string(c)
+}
+fn IIDFromString(c: &mut Ctx) -> u32 {
+    guid_from_string(c)
 }
 fn RegisterDragDrop(_: &mut Ctx) -> u32 {
     0
@@ -1277,6 +1356,23 @@ fn folder_path(csidl: u32, create: bool) -> Option<String> {
     Some(p.to_string())
 }
 
+/// SHCreateDirectoryEx: the folder and any missing parents (ERROR_ALREADY_EXISTS if there).
+fn sh_mkdir(path: &str) -> u32 {
+    if crate::files::resolve(path).is_some() {
+        return 183;
+    }
+    let h = crate::files::resolve_new(path);
+    if std::fs::create_dir_all(&h).is_ok() { 0 } else { 3 }
+}
+fn SHCreateDirectoryExA(c: &mut Ctx) -> u32 {
+    sh_mkdir(&arg_str(c.a(1), false))
+}
+fn SHCreateDirectoryExW(c: &mut Ctx) -> u32 {
+    sh_mkdir(&arg_str(c.a(1), true))
+}
+fn SHCreateDirectory(c: &mut Ctx) -> u32 {
+    sh_mkdir(&arg_str(c.a(1), true))
+}
 fn SHGetSpecialFolderPathA(c: &mut Ctx) -> u32 {
     let (out, csidl, create) = (c.a(1), c.a(2), c.a(3));
     match folder_path(csidl, create != 0) {
@@ -1949,12 +2045,12 @@ pub fn init() {
     reg!("version"; GetFileVersionInfoSizeA, GetFileVersionInfoSizeW, GetFileVersionInfoA, GetFileVersionInfoW,
         VerQueryValueA, VerQueryValueW);
     reg!("ole32"; CoInitialize, CoInitializeEx, OleInitialize, CoUninitialize, OleUninitialize, CoCreateInstance,
-        CoTaskMemAlloc, CoTaskMemRealloc, CoTaskMemFree, CoGetMalloc, CoCreateGuid, IsEqualGUID, StringFromGUID2,
+        CoTaskMemAlloc, CoTaskMemRealloc, CoTaskMemFree, CoGetMalloc, CoCreateGuid, IsEqualGUID, StringFromGUID2, CLSIDFromString, IIDFromString,
         RegisterDragDrop, RevokeDragDrop);
     reg!("oleaut32"; SysAllocString, SysAllocStringLen, SysAllocStringByteLen, SysReAllocString,
         SysReAllocStringLen, SysFreeString, SysStringLen, SysStringByteLen, VariantInit, VariantClear, VariantCopy,
         VariantCopyInd, VariantChangeTypeEx, VariantChangeType, GetErrorInfo, SetErrorInfo);
-    reg!("shell32"; SHGetSpecialFolderPathA, SHGetSpecialFolderPathW, SHGetFolderPathA, SHGetFolderPathW,
+    reg!("shell32"; SHCreateDirectoryExA, SHCreateDirectoryExW, SHCreateDirectory, SHGetSpecialFolderPathA, SHGetSpecialFolderPathW, SHGetFolderPathA, SHGetFolderPathW,
         SHGetSpecialFolderLocation, SHGetFolderLocation, SHGetPathFromIDListA, SHGetPathFromIDListW, ILFree, SHGetMalloc, IsUserAnAdmin,
         ShellExecuteA, ShellExecuteW, ShellExecuteExA, ShellExecuteExW, DragAcceptFiles, DragFinish,
         DragQueryFileA, DragQueryFileW, CommandLineToArgvW);

@@ -190,6 +190,9 @@ pub struct State {
     pub capture: u32,
     pub cursor: (i32, i32),
     pub keys: [u8; 256],
+    /// pressed since GetAsyncKeyState last asked (a game polling once a frame still sees a
+    /// click shorter than its frame)
+    pub pressed: [bool; 256],
     pub screen: (i32, i32),
     pub cursor_handle: u32,
     pub cursor_count: i32,
@@ -221,6 +224,7 @@ pub fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
             capture: 0,
             cursor: (s / 2, h / 2),
             keys: [0; 256],
+            pressed: [false; 256],
             screen: (s, h),
             cursor_handle: 0,
             cursor_count: 0,
@@ -2465,7 +2469,12 @@ fn GetKeyState(c: &mut Ctx) -> u32 {
 }
 fn GetAsyncKeyState(c: &mut Ctx) -> u32 {
     let k = c.a(0) as usize & 0xff;
-    if with(|s| s.keys[k] & 0x80 != 0) { 0x8000 } else { 0 }
+    with(|s| {
+        let down = s.keys[k] & 0x80 != 0;
+        let pressed = std::mem::take(&mut s.pressed[k]);
+        // (a press already released counts as down once)
+        if down || pressed { 0x8000 | pressed as u32 } else { 0 }
+    })
 }
 fn GetKeyboardState(c: &mut Ctx) -> u32 {
     let k = with(|s| s.keys);
@@ -2692,21 +2701,58 @@ fn ChangeDisplaySettingsW(c: &mut Ctx) -> u32 {
     }
     0
 }
-fn EnumDisplaySettingsA(c: &mut Ctx) -> u32 {
-    let (n, p) = (c.a(1), c.a(2));
+/// DEVMODE of mode `n` (ENUM_CURRENT_SETTINGS/ENUM_REGISTRY_SETTINGS: the screen's); `w`: the
+/// W layout (a 64-byte device name: every field 32 bytes later).
+fn display_mode(n: u32, p: u32, wide: bool) -> u32 {
     let modes = [(640, 480), (800, 600), (1024, 768), (1280, 720), (1280, 960)];
     let (w, h) = if n == 0xffff_ffff || n == 0xffff_fffe { screen() } else if (n as usize) < modes.len() { modes[n as usize] } else { return 0 };
-    mem::fill(p + 36, 120, 0);
-    w16(p + 36, 156);
-    w32(p + 40, 0x5c0000);
-    w32(p + 104, 32);
-    w32(p + 108, w as u32);
-    w32(p + 112, h as u32);
-    w32(p + 120, 60);
+    let d = if wide { 32 } else { 0 };
+    mem::fill(p + 36 + d, 120, 0);
+    w16(p + 36 + d, 156 + d as u16 * 2);
+    w32(p + 40 + d, 0x5c0000);
+    w32(p + 104 + d, 32);
+    w32(p + 108 + d, w as u32);
+    w32(p + 112 + d, h as u32);
+    w32(p + 120 + d, 60);
     1
 }
-fn EnumDisplayDevicesA(_: &mut Ctx) -> u32 {
-    0
+fn EnumDisplaySettingsA(c: &mut Ctx) -> u32 {
+    display_mode(c.a(1), c.a(2), false)
+}
+fn EnumDisplaySettingsW(c: &mut Ctx) -> u32 {
+    display_mode(c.a(1), c.a(2), true)
+}
+fn EnumDisplaySettingsExA(c: &mut Ctx) -> u32 {
+    display_mode(c.a(1), c.a(2), false)
+}
+fn EnumDisplaySettingsExW(c: &mut Ctx) -> u32 {
+    display_mode(c.a(1), c.a(2), true)
+}
+/// One display adapter (and one monitor on it, when `device` names the adapter).
+fn display_device(device: u32, n: u32, p: u32, wide: bool) -> u32 {
+    if n != 0 || p == 0 {
+        return 0;
+    }
+    let (name, desc) = if device == 0 { ("\\\\.\\DISPLAY1", "vnvm display") } else { ("\\\\.\\DISPLAY1\\Monitor0", "Generic PnP Monitor") };
+    let u = if wide { 2 } else { 1 };
+    mem::fill(p + 4, (32 + 128 + 128 + 128) * u + 4, 0);
+    let put = |at: u32, s: &str, cap: u32| {
+        if wide {
+            mem::put_wstr(at, cap, &s.encode_utf16().collect::<Vec<_>>());
+        } else {
+            mem::put_cstr(at, cap, s.as_bytes());
+        }
+    };
+    put(p + 4, name, 32);
+    put(p + 4 + 32 * u, desc, 128);
+    w32(p + 4 + 160 * u, if device == 0 { 5 } else { 3 }); // attached (+ primary) / active
+    1
+}
+fn EnumDisplayDevicesA(c: &mut Ctx) -> u32 {
+    display_device(c.a(0), c.a(1), c.a(2), false)
+}
+fn EnumDisplayDevicesW(c: &mut Ctx) -> u32 {
+    display_device(c.a(0), c.a(1), c.a(2), true)
 }
 fn MonitorFromWindow(_: &mut Ctx) -> u32 {
     0x10001
@@ -3514,6 +3560,7 @@ fn input(kind: u32, x: i32, y: i32, data: u32) {
                             _ => (4, 0x207),
                         };
                         if kind == 2 {
+                            s.pressed[vk] = true;
                             s.keys[vk] = 0x80 | (s.keys[vk] ^ 1) & 1;
                         } else {
                             s.keys[vk] &= 1;
@@ -3546,6 +3593,7 @@ fn input(kind: u32, x: i32, y: i32, data: u32) {
                 let vk = (data & 0xff) as usize;
                 let scan = (data >> 16) & 0xff;
                 if kind == 5 {
+                    s.pressed[vk] = true;
                     s.keys[vk] = 0x80 | (s.keys[vk] ^ 1) & 1;
                 } else {
                     s.keys[vk] &= 1;
@@ -3985,7 +4033,7 @@ pub fn init() {
         GetDoubleClickTime, MessageBeep, MessageBoxA, MessageBoxW, MessageBoxExA, MessageBoxIndirectA,
         SetWindowsHookExA, SetWindowsHookExW, UnhookWindowsHookEx, CallNextHookEx, WinHelpA, GetSysColor,
         GetSysColorBrush, GetSystemMetrics, SystemParametersInfoA, SystemParametersInfoW, ChangeDisplaySettingsA,
-        ChangeDisplaySettingsW, EnumDisplaySettingsA, EnumDisplayDevicesA, MonitorFromWindow, MonitorFromPoint,
+        ChangeDisplaySettingsW, EnumDisplaySettingsA, EnumDisplaySettingsW, EnumDisplaySettingsExA, EnumDisplaySettingsExW, EnumDisplayDevicesA, EnumDisplayDevicesW, MonitorFromWindow, MonitorFromPoint,
         MonitorFromRect, GetMonitorInfoA, GetMonitorInfoW, EnumDisplayMonitors,
         SetRect, SetRectEmpty, CopyRect, IsRectEmpty, EqualRect, PtInRect, OffsetRect, InflateRect, IntersectRect,
         UnionRect, SubtractRect, FillRect, FrameRect, InvertRect, DrawFocusRect, DrawEdge, DrawFrameControl,

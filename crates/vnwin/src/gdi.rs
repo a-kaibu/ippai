@@ -1098,6 +1098,8 @@ pub struct Glyph {
 type GlyphKey = (usize, u32, u32, bool);
 static GLYPHS: OnceLock<Mutex<HashMap<GlyphKey, Arc<Glyph>>>> = OnceLock::new();
 
+const GLYPH_INDEX: u32 = 0x8000_0000;
+
 fn glyph(r: &Real, ch: u32) -> Arc<Glyph> {
     let key = (r.face, r.em.to_bits(), ch, r.bold);
     let m = GLYPHS.get_or_init(|| Mutex::new(HashMap::new()));
@@ -1114,8 +1116,8 @@ fn raster(r: &Real, ch: u32) -> Glyph {
     let upem = f.units_per_em().unwrap_or(1000.0);
     let height = f.ascent_unscaled() - f.descent_unscaled();
     let scale = PxScale::from(r.em * height / upem);
-    let c = char::from_u32(ch).unwrap_or('?');
-    let id = f.glyph_id(c);
+    // (GLYPH_INDEX marks a glyph index, as from GetGlyphIndices)
+    let id = if ch & GLYPH_INDEX != 0 { ab_glyph::GlyphId(ch as u16) } else { f.glyph_id(char::from_u32(ch).unwrap_or('?')) };
     let adv = f.as_scaled(scale).h_advance(id).round() as i32;
     let mut g = Glyph { x0: 0, top: 0, w: 0, h: 0, cov: Vec::new(), adv };
     if let Some(o) = f.outline_glyph(id.with_scale_and_position(scale, ab_glyph::point(0.0, 0.0))) {
@@ -1155,6 +1157,42 @@ fn dc_font(t: &Objs, s: &DcState) -> LogFont {
         Some(G::Font(f)) => f.clone(),
         _ => stock_font(SYS_FACE, -12),
     }
+}
+
+/// For Uniscribe (usp.rs): the font selected into `dc`.
+pub fn dc_font_handle(dc: u32) -> u32 {
+    with(|t| match t.m.get(&dc) {
+        Some(G::Dc(d)) => d.s.font,
+        _ => 0,
+    })
+}
+/// For Uniscribe: the glyph indices of `s` and each glyph's ABC widths in font `hfont` (the
+/// DC's when 0).
+pub fn font_glyphs(dc: u32, hfont: u32, s: &[u16]) -> Option<Vec<u16>> {
+    let r = font_real(dc, hfont)?;
+    Some(s.iter().map(|&c| r.font.glyph_id(char::from_u32(c as u32).unwrap_or('?')).0).collect())
+}
+pub fn font_abc(dc: u32, hfont: u32, glyphs: &[u16]) -> Option<Vec<(i32, i32, i32)>> {
+    let r = font_real(dc, hfont)?;
+    Some(
+        glyphs
+            .iter()
+            .map(|&gi| {
+                let g = glyph(&r, gi as u32 | GLYPH_INDEX);
+                (g.x0, g.w.max(0), g.adv - g.x0 - g.w.max(0))
+            })
+            .collect(),
+    )
+}
+fn font_real(dc: u32, hfont: u32) -> Option<Real> {
+    if hfont == 0 {
+        return real_of(dc).map(|x| x.0);
+    }
+    let lf = with(|t| match t.m.get(&hfont) {
+        Some(G::Font(f)) => Some(f.clone()),
+        _ => None,
+    })?;
+    realize(&lf)
 }
 
 fn real_of(dc: u32) -> Option<(Real, LogFont, DcState)> {
@@ -1246,7 +1284,9 @@ fn text_width(r: &Real, s: &[u16], extra: i32) -> i32 {
 /// Draws text with the DC's font: `x`,`y` logical, `dx` explicit advances.
 fn text_out(dc: u32, x: i32, y: i32, opts: u32, rect: Option<Rect>, s: &[u16], dx: Option<Vec<i32>>) -> bool {
     let Some((r, lf, st)) = real_of(dc) else { return false };
-    let glyphs: Vec<Arc<Glyph>> = s.iter().map(|&c| glyph(&r, c as u32)).collect();
+    // (ETO_GLYPH_INDEX: glyph indices, not characters)
+    let gi = if opts & 0x10 != 0 { GLYPH_INDEX } else { 0 };
+    let glyphs: Vec<Arc<Glyph>> = s.iter().map(|&c| glyph(&r, c as u32 | gi)).collect();
     let advs: Vec<i32> = match &dx {
         Some(d) => d.clone(),
         None => glyphs.iter().map(|g| g.adv + st.char_extra).collect(),
@@ -2988,13 +3028,27 @@ fn GetTextExtentExPointW(c: &mut Ctx) -> u32 {
     let s = wide_chars(c.a(1), c.a(2));
     ext_ex(c, &s)
 }
+/// GetCharWidth / GetCharABCWidths (`float`: the Float variants, FLOATs instead of ints)
 fn char_widths(c: &mut Ctx, wide: bool, abc: bool) -> u32 {
+    char_widths_as(c, wide, abc, false)
+}
+fn char_widths_as(c: &mut Ctx, wide: bool, abc: bool, float: bool) -> u32 {
     let (dc, first, last, p) = (c.a(0), c.a(1), c.a(2), c.a(3));
     let Some((r, _, _)) = real_of(dc) else { return 0 };
     for (i, code) in (first..=last).enumerate() {
         let ch = if wide { code } else { mbcs_char(code) };
         let g = glyph(&r, ch);
-        if abc {
+        if float {
+            let f = |v: i32| (v as f32).to_bits();
+            if abc {
+                let a = p + 12 * i as u32;
+                w32(a, f(g.x0));
+                w32(a + 4, f(g.w.max(0)));
+                w32(a + 8, f(g.adv - g.x0 - g.w));
+            } else {
+                w32(p + 4 * i as u32, f(g.adv));
+            }
+        } else if abc {
             let a = p + 12 * i as u32;
             w32(a, g.x0 as u32);
             w32(a + 4, g.w.max(0) as u32);
@@ -3023,6 +3077,18 @@ fn GetCharABCWidthsA(c: &mut Ctx) -> u32 {
 fn GetCharABCWidthsW(c: &mut Ctx) -> u32 {
     char_widths(c, true, true)
 }
+fn GetCharABCWidthsFloatA(c: &mut Ctx) -> u32 {
+    char_widths_as(c, false, true, true)
+}
+fn GetCharABCWidthsFloatW(c: &mut Ctx) -> u32 {
+    char_widths_as(c, true, true, true)
+}
+fn GetCharWidthFloatA(c: &mut Ctx) -> u32 {
+    char_widths_as(c, false, false, true)
+}
+fn GetCharWidthFloatW(c: &mut Ctx) -> u32 {
+    char_widths_as(c, true, false, true)
+}
 
 /// A code from the A functions (one byte, or lead<<8|trail) as a UTF-16 unit.
 fn mbcs_char(code: u32) -> u32 {
@@ -3045,7 +3111,7 @@ fn glyph_outline(c: &mut Ctx, wide: bool) -> u32 {
             r.descent = (r.descent as f32 * s).round() as i32;
         }
     }
-    let ch = if fmt & 0x80 != 0 || wide { code } else { mbcs_char(code) };
+    let ch = if fmt & 0x80 != 0 { code & 0xffff | GLYPH_INDEX } else if wide { code } else { mbcs_char(code) };
     let g = glyph(&r, ch);
     let blank = g.w == 0 || g.h == 0;
     if gm != 0 {
@@ -3098,6 +3164,43 @@ fn GetGlyphOutlineA(c: &mut Ctx) -> u32 {
 fn GetGlyphOutlineW(c: &mut Ctx) -> u32 {
     glyph_outline(c, true)
 }
+/// GetCharABCWidthsI / GetCharWidthI: by glyph index (`pgi`, or `first`.. when null)
+fn widths_i(c: &mut Ctx, abc: bool) -> u32 {
+    let (dc, first, n, pgi, out) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
+    let Some((r, _, _)) = real_of(dc) else { return 0 };
+    for i in 0..n {
+        let gi = if pgi != 0 { r16(pgi + 2 * i) as u32 } else { first + i };
+        let g = glyph(&r, gi & 0xffff | GLYPH_INDEX);
+        if abc {
+            let a = out + 12 * i;
+            w32(a, g.x0 as u32);
+            w32(a + 4, g.w.max(0) as u32);
+            w32(a + 8, (g.adv - g.x0 - g.w) as u32);
+        } else {
+            w32(out + 4 * i, g.adv as u32);
+        }
+    }
+    1
+}
+/// GLYPHSET: one range over the whole BMP (the font's real coverage is not looked up)
+fn GetFontUnicodeRanges(c: &mut Ctx) -> u32 {
+    let p = c.a(1);
+    if p != 0 {
+        w32(p, 20);
+        w32(p + 4, 0);
+        w32(p + 8, 0xffff);
+        w32(p + 12, 1);
+        w16(p + 16, 0);
+        w16(p + 18, 0xffff);
+    }
+    20
+}
+fn GetCharABCWidthsI(c: &mut Ctx) -> u32 {
+    widths_i(c, true)
+}
+fn GetCharWidthI(c: &mut Ctx) -> u32 {
+    widths_i(c, false)
+}
 fn GetGlyphIndicesW(c: &mut Ctx) -> u32 {
     let (dc, s, n, out) = (c.a(0), c.a(1), c.a(2), c.a(3));
     let Some((r, _, _)) = real_of(dc) else { return 0xffff_ffff };
@@ -3119,11 +3222,73 @@ fn GetKerningPairsW(_: &mut Ctx) -> u32 {
 fn GetFontLanguageInfo(_: &mut Ctx) -> u32 {
     0
 }
-fn GetOutlineTextMetricsA(_: &mut Ctx) -> u32 {
-    0
+/// OUTLINETEXTMETRIC: the TEXTMETRIC, then the outline numbers, then the family, face, style
+/// and full names (their offsets from the struct in the otmp* fields). Size asked with p == 0.
+fn outline_metrics(c: &mut Ctx, wide: bool) -> u32 {
+    let (dc, cap, p) = (c.a(0), c.a(1), c.a(2));
+    let Some((r, lf, _)) = real_of(dc) else { return 0 };
+    let face = face_name(r.face);
+    let enc = |s: &str| -> Vec<u8> {
+        if wide {
+            s.encode_utf16().chain([0]).flat_map(|u| u.to_le_bytes()).collect()
+        } else {
+            let mut v = crate::text::s2a(s);
+            v.push(0);
+            v
+        }
+    };
+    let names = [enc(&face), enc(&face), enc(if r.bold { "Bold" } else { "Regular" }), enc(&face)];
+    // (TEXTMETRICA is 4 bytes shorter: its characters are bytes)
+    let d = if wide { 0 } else { 4u32 };
+    let base = 216 - d;
+    let size = base + names.iter().map(|n| n.len() as u32).sum::<u32>();
+    if p == 0 {
+        return size;
+    }
+    if cap < base {
+        return 0;
+    }
+    let mut buf = vec![0u8; size as usize];
+    let put = |b: &mut Vec<u8>, off: u32, v: i32| b[(off - d) as usize..(off - d + 4) as usize].copy_from_slice(&v.to_le_bytes());
+    buf[0..4].copy_from_slice(&size.to_le_bytes());
+    let em = r.em.round() as i32;
+    let (asc, desc) = (r.ascent, r.descent);
+    put(&mut buf, 84, 1); // slope rise
+    put(&mut buf, 96, em); // em square (in pixels: the font is realized at this size)
+    put(&mut buf, 100, asc);
+    put(&mut buf, 104, -desc);
+    put(&mut buf, 108, (asc + desc - em).max(0));
+    put(&mut buf, 112, asc * 7 / 10);
+    put(&mut buf, 116, asc / 2);
+    for (i, v) in [0, asc, em, -desc].into_iter().enumerate() {
+        put(&mut buf, 120 + 4 * i as u32, v);
+    }
+    put(&mut buf, 136, asc);
+    put(&mut buf, 140, -desc);
+    put(&mut buf, 148, 9);
+    for (o, v) in [(152, em / 2), (156, em / 2), (164, desc / 2), (168, em / 2), (172, em / 2), (180, asc / 2)] {
+        put(&mut buf, o, v);
+    }
+    put(&mut buf, 184, (em / 20).max(1));
+    put(&mut buf, 188, asc / 3);
+    put(&mut buf, 192, -(em / 20).max(1));
+    put(&mut buf, 196, -(desc / 2).max(1));
+    let mut off = base;
+    for (i, n) in names.iter().enumerate() {
+        put(&mut buf, 200 + 4 * i as u32, off as i32);
+        buf[off as usize..off as usize + n.len()].copy_from_slice(n);
+        off += n.len() as u32;
+    }
+    let n = size.min(cap);
+    mem::write(p, &buf[..n as usize]);
+    write_tm(p + 4, &r, &lf, wide);
+    n
 }
-fn GetOutlineTextMetricsW(_: &mut Ctx) -> u32 {
-    0
+fn GetOutlineTextMetricsA(c: &mut Ctx) -> u32 {
+    outline_metrics(c, false)
+}
+fn GetOutlineTextMetricsW(c: &mut Ctx) -> u32 {
+    outline_metrics(c, true)
 }
 fn add_font_file(name: &str) -> u32 {
     crate::files::resolve(name).and_then(|h| std::fs::read(h).ok()).map_or(0, add_font)
@@ -3406,7 +3571,7 @@ fn register() {
         GetTextMetricsA, GetTextMetricsW, GetTextFaceA, GetTextFaceW, GetTextCharset, GetTextCharsetInfo,
         GetTextExtentPoint32A, GetTextExtentPointA, GetTextExtentPoint32W, GetTextExtentPointW,
         GetTextExtentExPointA, GetTextExtentExPointW, GetCharWidthA, GetCharWidthW, GetCharWidth32A,
-        GetCharWidth32W, GetCharABCWidthsA, GetCharABCWidthsW, GetGlyphOutlineA, GetGlyphOutlineW,
+        GetCharWidth32W, GetCharABCWidthsA, GetCharABCWidthsW, GetCharABCWidthsFloatA, GetCharABCWidthsFloatW, GetCharABCWidthsI, GetCharWidthI, GetFontUnicodeRanges, GetCharWidthFloatA, GetCharWidthFloatW, GetGlyphOutlineA, GetGlyphOutlineW,
         GetGlyphIndicesW, GetFontData, GetKerningPairsA, GetKerningPairsW, GetFontLanguageInfo,
         GetOutlineTextMetricsA, GetOutlineTextMetricsW, AddFontResourceA, AddFontResourceW, AddFontResourceExA,
         AddFontResourceExW, RemoveFontResourceA, RemoveFontResourceExA, RemoveFontResourceW, RemoveFontResourceExW, AddFontMemResourceEx,
