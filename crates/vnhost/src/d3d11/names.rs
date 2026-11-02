@@ -32,4 +32,5 @@ pub const NAMES: &[(&str, &[&str])] = &[
     ("ID3D11Query", &["QueryInterface", "AddRef", "Release", "GetDevice", "GetPrivateData", "SetPrivateData", "SetPrivateDataInterface", "GetDataSize", "GetDesc"]),
     ("ID3D11ClassLinkage", &["QueryInterface", "AddRef", "Release", "GetDevice", "GetPrivateData", "SetPrivateData", "SetPrivateDataInterface", "GetClassInstance", "CreateClassInstance"]),
     ("ID3D11CommandList", &["QueryInterface", "AddRef", "Release", "GetDevice", "GetPrivateData", "SetPrivateData", "SetPrivateDataInterface", "GetContextFlags"]),
+    ("ID3D10Multithread", &["QueryInterface", "AddRef", "Release", "Enter", "Leave", "SetMultithreadProtected", "GetMultithreadProtected"]),
 ];

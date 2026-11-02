@@ -180,10 +180,53 @@ static void write_registry(void)
     fclose(f);
 }
 
+/* copies the tree at src into dst, keeping files that are there already (saves, settings) */
+static void copy_tree(const WCHAR *src, const WCHAR *dst)
+{
+    WCHAR pat[MAX_PATH], s[MAX_PATH], d[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    swprintf(pat, MAX_PATH, L"%ls\\*", src);
+    HANDLE h = FindFirstFileW(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    CreateDirectoryW(dst, NULL);
+    do
+    {
+        if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
+        swprintf(s, MAX_PATH, L"%ls\\%ls", src, fd.cFileName);
+        swprintf(d, MAX_PATH, L"%ls\\%ls", dst, fd.cFileName);
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) copy_tree(s, d);
+        else if (CopyFileW(s, d, TRUE)) out(L"autoclick: installed %ls\n", d);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+}
+
+/* an unpacked Windows Installer package (corpus-prep.sh: <name>.msi.x, folders named as
+ * msiextract does) also puts files in the user's folders: Eushully's settings
+ * (LocalAppData\Eushully\<title>\sys4reg.ini) are read from there */
+static void install_user_files(const WCHAR *exe)
+{
+    static const struct { const WCHAR *name, *env; } dirs[] = {
+        { L"LocalAppData", L"LOCALAPPDATA" }, { L"AppData", L"APPDATA" }, { L"CommonAppData", L"ProgramData" },
+    };
+    WCHAR base[MAX_PATH], src[MAX_PATH], dst[MAX_PATH];
+    const WCHAR *x = wcsstr(exe, L".msi.x\\");
+    if (!x || x - exe + 6 >= MAX_PATH) return;
+    wcsncpy(base, exe, x - exe + 6);
+    base[x - exe + 6] = 0;
+    for (int i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++)
+    {
+        swprintf(src, MAX_PATH, L"%ls\\%ls", base, dirs[i].name);
+        if (GetFileAttributesW(src) == INVALID_FILE_ATTRIBUTES) continue;
+        if (!GetEnvironmentVariableW(dirs[i].env, dst, MAX_PATH)) continue;
+        copy_tree(src, dst);
+    }
+}
+
 int wmain(int argc, WCHAR **argv)
 {
     if (argc < 2) { out(L"usage: autoclick game.exe [args]\n"); return 2; }
     write_registry();
+    install_user_files(argv[1]);
     WCHAR cmd[4096], dir[MAX_PATH];
     swprintf(cmd, 4096, L"\"%ls\"", argv[1]);
     for (int i = 2; i < argc; i++) { wcscat(cmd, L" "); wcscat(cmd, argv[i]); }

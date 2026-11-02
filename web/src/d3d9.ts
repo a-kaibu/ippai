@@ -646,6 +646,22 @@ export class D3D9 {
       const tex = this.device.createTexture({ size: [w, h], format: z.format, usage: GPUTextureUsage.RENDER_ATTACHMENT });
       f = { tex, w, h, levels: 1, format: z.format, view: tex.createView() };
       zz.fits.set(key, f);
+      // starts as the depth buffer was last cleared (not 0, which fails every LESS test)
+      const [depth, stencil] = (z as Tex & { zclear?: [number, number] }).zclear ?? [1, 0];
+      const s = z.format === "depth24plus-stencil8";
+      this.endPass();
+      this.enc()
+        .beginRenderPass({
+          colorAttachments: [],
+          depthStencilAttachment: {
+            view: f.view,
+            depthLoadOp: "clear",
+            depthClearValue: depth,
+            depthStoreOp: "store",
+            ...(s ? { stencilLoadOp: "clear" as const, stencilClearValue: stencil, stencilStoreOp: "store" as const } : {}),
+          },
+        })
+        .end();
     }
     return f;
   }
@@ -1033,11 +1049,20 @@ export class D3D9 {
     if (z) this.used.add(tg[zi]!);
     if (!colors.length && !z) return null;
     const stencil = z?.format === "depth24plus-stencil8";
+    // a depth buffer of another size than the targets (Eushully makes a 0x0 one) is invalid in
+    // WebGPU: a stand-in of the targets' size
+    let zview: GPUTextureView | undefined;
+    if (z && n) {
+      const t0 = this.textures.get(tg[1]!)!;
+      const [w, h] = [Math.max(1, t0.w >> tg[2]!), Math.max(1, t0.h >> tg[2]!)];
+      const zl = tg[zi + 1]!;
+      if (Math.max(1, z.w >> zl) !== w || Math.max(1, z.h >> zl) !== h) zview = this.depthFor(z, w, h)!.view;
+    }
     this.pass = this.enc().beginRenderPass({
       colorAttachments: colors,
       depthStencilAttachment: z
         ? {
-            view: this.view2(z, "2d", tg[zi + 1]!, 1, tg[zi + 2]!, 1),
+            view: zview ?? this.view2(z, "2d", tg[zi + 1]!, 1, tg[zi + 2]!, 1),
             depthLoadOp: "load",
             depthStoreOp: "store",
             ...(stencil ? { stencilLoadOp: "load" as const, stencilStoreOp: "store" as const } : {}),
@@ -1068,18 +1093,25 @@ export class D3D9 {
     const view = this.view2(t, "2d", level, 1, layer, 1);
     if (isDepth(t.format)) {
       const s = t.format === "depth24plus-stencil8";
-      this.enc()
-        .beginRenderPass({
-          colorAttachments: [],
-          depthStencilAttachment: {
-            view,
-            depthLoadOp: flags & 2 ? "clear" : "load",
-            depthClearValue: Math.min(1, Math.max(0, depth)),
-            depthStoreOp: "store",
-            ...(s ? { stencilLoadOp: flags & 4 ? ("clear" as const) : ("load" as const), stencilClearValue: stencil, stencilStoreOp: "store" as const } : {}),
-          },
-        })
-        .end();
+      // (and the stand-ins of other sizes, see depthFor)
+      const zt = t as Tex & { fits?: Map<string, Tex>; zclear?: [number, number] };
+      if (flags & 2) zt.zclear = [Math.min(1, Math.max(0, depth)), zt.zclear?.[1] ?? 0];
+      if (flags & 4) zt.zclear = [zt.zclear?.[0] ?? 1, stencil];
+      const fits = zt.fits;
+      for (const v of [view, ...(fits ? [...fits.values()].map((f) => f.view) : [])]) {
+        this.enc()
+          .beginRenderPass({
+            colorAttachments: [],
+            depthStencilAttachment: {
+              view: v,
+              depthLoadOp: flags & 2 ? "clear" : "load",
+              depthClearValue: Math.min(1, Math.max(0, depth)),
+              depthStoreOp: "store",
+              ...(s ? { stencilLoadOp: flags & 4 ? ("clear" as const) : ("load" as const), stencilClearValue: stencil, stencilStoreOp: "store" as const } : {}),
+            },
+          })
+          .end();
+      }
     } else if (flags & 1) {
       this.enc().beginRenderPass({ colorAttachments: [{ view, loadOp: "clear", clearValue: color, storeOp: "store" }] }).end();
     }

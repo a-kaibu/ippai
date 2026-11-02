@@ -64,6 +64,8 @@ pub const IF_RASTER: u32 = 90;
 pub const IF_QUERY: u32 = 91;
 pub const IF_LINKAGE: u32 = 92;
 pub const IF_CMDLIST: u32 = 93;
+/// ID3D10Multithread, on the device and the immediate context (Media Foundation asks for it)
+pub const IF_MULTITHREAD: u32 = 94;
 
 // IIDs (first dword) and the interfaces that answer them
 const IIDS: &[(u32, &[u32])] = &[
@@ -120,12 +122,13 @@ const IIDS: &[(u32, &[u32])] = &[
     (0xd6c00747, &[IF_QUERY]),
     (0xddf57cba, &[IF_LINKAGE]),
     (0xa24bc4d1, &[IF_CMDLIST]),
+    (0x9b7e4e00, &[IF_MULTITHREAD]),
 ];
 
 /// Interfaces another face of the same object can answer (device <-> IDXGIDevice, 2D textures
 /// <-> IDXGISurface)
 fn other_face(primary: u32, want: u32) -> bool {
-    matches!((primary, want), (IF_DEVICE, IF_DXGIDEVICE) | (IF_TEX2D, IF_SURFACE))
+    matches!((primary, want), (IF_DEVICE, IF_DXGIDEVICE) | (IF_TEX2D, IF_SURFACE) | (IF_DEVICE | IF_CONTEXT, IF_MULTITHREAD))
 }
 
 pub struct Buffer {
@@ -268,6 +271,8 @@ pub struct D11 {
     free_blocks: Vec<u32>,
     calls: *const HostCalls,
     trace: bool,
+    /// ID3D10Multithread::SetMultithreadProtected (only reported back)
+    mt_protected: bool,
     counts: HashMap<u32, u32>,
     device: u32,
     context: u32,
@@ -521,6 +526,7 @@ pub unsafe fn init(vtbls: *const u32, count: u32) -> u32 {
                 free_blocks: Vec::new(),
                 calls: std::ptr::null(),
                 trace: std::env::var_os("VNVM_D3D_TRACE").is_some(),
+                mt_protected: false,
                 counts: HashMap::new(),
                 device: 0,
                 context: 0,
@@ -857,6 +863,12 @@ unsafe fn method(d: &mut D11, iface: u32, m: u32, this: u32, args: *const u32, a
         },
         IF_OUTPUT => output_call(d, m, &a),
         IF_SWAPCHAIN => swapchain_call(d, m, this, &a, after),
+        // Enter/Leave: every call already runs under the host's lock
+        IF_MULTITHREAD => match m {
+            5 => std::mem::replace(&mut d.mt_protected, a(1) != 0) as u32,
+            6 => d.mt_protected as u32,
+            _ => 0,
+        },
         IF_DXGIDEVICE => match m {
             6 | 7 => {
                 // GetParent(riid, out) / GetAdapter(out)

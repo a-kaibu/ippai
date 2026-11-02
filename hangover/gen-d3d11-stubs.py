@@ -16,12 +16,13 @@ IFACES = [  # (number, interface whose vtable is used)
     (85, 'ID3D11ComputeShader'), (86, 'ID3D11InputLayout'), (87, 'ID3D11SamplerState'),
     (88, 'ID3D11BlendState1'), (89, 'ID3D11DepthStencilState'), (90, 'ID3D11RasterizerState1'),
     (91, 'ID3D11Query'), (92, 'ID3D11ClassLinkage'), (93, 'ID3D11CommandList'),
+    (94, 'ID3D10Multithread'),
 ]
 # methods returning a float (x87): their own stub returns 0.0
 FLOAT = {('ID3D11DeviceContext2', 'GetResourceMinLOD')}
 
 wine, inc = sys.argv[1], (sys.argv[2] if len(sys.argv) > 2 else '/usr/share/mingw-w64/include')
-src = ''.join(open(f'{inc}/{f}').read() for f in ['dxgi.h', 'dxgi1_2.h', 'dxgi1_3.h', 'd3d11.h', 'd3d11_1.h', 'd3d11_2.h'])
+src = ''.join(open(f'{inc}/{f}').read() for f in ['d3d10.h', 'dxgi.h', 'dxgi1_2.h', 'dxgi1_3.h', 'd3d11.h', 'd3d11_1.h', 'd3d11_2.h'])
 vt = {}
 for m in re.finditer(r'typedef struct (\w+)Vtbl \{\s*BEGIN_INTERFACE(.*?)END_INTERFACE', src, re.S):
     name, body = m.groups()
