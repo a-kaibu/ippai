@@ -29,6 +29,18 @@ WebGPU D3D9 を使うので、A/B 比較ができる。`wine.html` / `game.html`
   (カラーキー、拡大縮小、塗りつぶし)、フリップ、Lock、GetDC。プライマリに描いたとき・
   Unlock・ReleaseDC・Flip でウィンドウに BitBlt する。Direct3D は出さないので、
   ゲームはソフトウェア描画に回る。
+- D3D11 / DXGI (d3d11.rs): vnhost の WebGPU D3D11 (Wine 経路と同じ実装) に橋渡し。vtable の
+  各メソッドはトラップで、`vnhost::d3d11::call` に引数を渡すだけ。メソッド表は
+  `hangover/gen-d3d11-stubs.py` が d3d11_methods.rs として生成する。
+- specs.txt にない DLL (d2d1、dwrite、d3dcompiler_47 など) はプレフィックスの
+  `C:\windows\system32` から Wine の PE ビルドを x86 として読む。Direct2D はこの Wine の d2d1 が
+  D3D11 の上で描く。
+- Wine の unix 側呼び出し (unixlib.rs): `__wine_unix_call_dispatcher` と
+  `NtQueryVirtualMemory(MemoryWineUnixFuncs)` を受けて、dwrite のフォント処理 (アウトライン、
+  ビットマップ、メトリクス) を ttf-parser と ab_glyph_rasterizer で返す。フォント一覧はレジストリの
+  Fonts キー、無い書体は Wine の Fonts\Replacements で MS ゴシック系に置き換える。
+- WH_CBT フック (HCBT_CREATEWND): MFC はこれでウィンドウを結び付けるので、無いと LiveMaker が
+  ウィンドウを作れずに終わる。
 
 ## A/B (Chromium、Reunion、KiriKiri)
 
@@ -57,6 +69,7 @@ WebGPU D3D9 を使うので、A/B 比較ができる。`wine.html` / `game.html`
 | ろーらいず!!! (SiglusEngine) | 本編まで | Chromium (D3D9)。日本語版 Windows とタイムゾーンの確認、静的リンクの D3DX フォント用に Uniscribe (usp.rs) |
 | 3Ping Lovers! (RealLive) | 本編まで (「はじめから」の後に Enter が要る。確認の表示が見えない) | node、Chromium (GDI。画面が 1280x720 以外だと rl_d3d.dll の D3D9 で拡大する) |
 | クダンノフォークロア (BGI) | タイトル (クリックに反応しない) | Chromium (D3D9)。待機可能タイマー、D3DXCreateEffect のため Wine の d3dx9_43.dll (PE) をゲームの横に置く。体験版の印のファイル KudanNoFolkloreTV を消す (インストール後の状態) |
+| 俺嫁 (LiveMaker、D3D11 + Direct2D) | 本編まで | Chromium。注意画面、タイトル、本編の文字 (DirectWrite) |
 | WolfRPG | 起動しない | 保護付き exe。アンチデバッグの後で止まる。追っていない |
 
 node では D3D9 は描かれない (WebGPU がない) ので、D3D9 のゲームは Chromium で見る。
@@ -74,4 +87,8 @@ node では D3D9 は描かれない (WebGPU がない) ので、D3D9 のゲー�
 - 調べるとき: `VNWIN_WATCH=<16進番地>` (API 呼び出しごとにその番地の値を見て、変わったら表示)、`VNVM_D3D_TRACE=1` (描画ごとの頂点も表示)、`VNWIN_TRACE=1` (+ `VNWIN_TRACE_FILTER=a,b`、`VNWIN_TRACE_AFTER=ms`)、
   `VNWIN_TRACE=3` (落ちたときにスレッドごとの直前の呼び出し)、`VNWIN_API_STATS=秒`、
   `VNWIN_TRACE_FAULT`、`VNWIN_TRACE_FILES`、`VNWIN_TRACE_LOAD`、`VNWIN_TRACE_MSG`、
-  `VNWIN_TRACE_INPUT`、`VNWIN_TRACE_FONT`、`VNVM_JIT_STATS` (JIT が実行ループに戻る場所)。
+  `VNWIN_TRACE_INPUT`、`VNWIN_TRACE_FONT`、`VNVM_JIT_STATS` (JIT が実行ループに戻る場所)、
+  `VNWIN_WINEDEBUG=<flags>[:chan,...]` (Wine の PE DLL のデバッグ出力。1 FIXME、2 ERR、4 WARN、8 TRACE)、
+  `VNVM_D3D_SPV=<dir>` (D3D11 シェーダの SPIR-V を書き出す)。
+- 確認用の小さなテスト: `ENGINE=vnwin node tests/gfx.mjs` (d3d11test、d2dtest、ddrawtest が通る。
+  d3d8test は vnwin に D3D8 が無いので落ちる)。
