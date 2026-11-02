@@ -2185,6 +2185,44 @@ pub fn init() {
         PathIsDirectoryW, PathAppendA, PathAppendW, PathCombineA, PathCombineW, PathFindFileNameA,
         PathFindFileNameW, PathFindExtensionA, PathFindExtensionW, PathIsRelativeA, PathIsRelativeW, PathUnquoteSpacesA,
         PathUnquoteSpacesW, PathAddBackslashA, PathAddBackslashW, PathStripPathA, PathStripPathW, PathAddExtensionA, PathAddExtensionW);
+    reg!("shlwapi"; StrStrA, StrStrW, StrStrIA, StrStrIW);
     reg!("sensapi"; IsNetworkAlive);
     reg!("ws2_32"; WSAStartup, WSACleanup);
+}
+
+/// StrStr(I)A/W(haystack, needle): the first match (by UTF-16 unit, case folded for I), or 0
+fn str_str(c: &mut Ctx, wide: bool, fold: bool) -> u32 {
+    let (h, n) = (c.a(0), c.a(1));
+    if h == 0 || n == 0 {
+        return 0;
+    }
+    let get = |p: u32| if wide { wstr(p) } else { cstr(p).into_iter().map(|b| b as u16).collect() };
+    let low = |v: Vec<u16>| -> Vec<u16> {
+        if fold { v.into_iter().map(|u| if (b'A' as u16..=b'Z' as u16).contains(&u) { u + 32 } else { u }).collect() } else { v }
+    };
+    let (hs, ns) = (low(get(h)), low(get(n)));
+    if ns.is_empty() {
+        return h;
+    }
+    // (A: byte-wise, a DBCS trail byte can't start a match)
+    let mut i = 0;
+    while i + ns.len() <= hs.len() {
+        if hs[i..i + ns.len()] == ns[..] {
+            return h + i as u32 * if wide { 2 } else { 1 };
+        }
+        i += if !wide && crate::text::is_lead(hs[i] as u8) { 2 } else { 1 };
+    }
+    0
+}
+fn StrStrA(c: &mut Ctx) -> u32 {
+    str_str(c, false, false)
+}
+fn StrStrW(c: &mut Ctx) -> u32 {
+    str_str(c, true, false)
+}
+fn StrStrIA(c: &mut Ctx) -> u32 {
+    str_str(c, false, true)
+}
+fn StrStrIW(c: &mut Ctx) -> u32 {
+    str_str(c, true, true)
 }

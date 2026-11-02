@@ -2007,6 +2007,14 @@ fn EnumSystemLocalesA(c: &mut Ctx) -> u32 {
 fn EnumSystemLocalesW(c: &mut Ctx) -> u32 {
     enum_locales(c, true)
 }
+/// EnumSystemLocalesEx(proc(name, flags, lparam), flags, lparam, reserved): ja-JP
+fn EnumSystemLocalesEx(c: &mut Ctx) -> u32 {
+    let p = mem::heap_alloc(16, true);
+    put_wstr(p, 8, &"ja-JP".encode_utf16().collect::<Vec<u16>>());
+    c.call(c.a(0), &[p, 2, c.a(2)]);
+    mem::heap_free(p);
+    1
+}
 fn GetUserDefaultLangID(_: &mut Ctx) -> u32 {
     lcid()
 }
@@ -3670,7 +3678,7 @@ pub fn init() {
         WaitForThreadpoolWorkCallbacks, CloseThreadpoolWork,
         CreateTimerQueue, DeleteTimerQueueEx, DeleteTimerQueue, CreateTimerQueueTimer, ChangeTimerQueueTimer, DeleteTimerQueueTimer,
         IsWow64Process, GetVersion, GetVersionExA, GetVersionExW, VerifyVersionInfoW, VerifyVersionInfoA, VerSetConditionMask,
-        GetACP, GetOEMCP, IsValidCodePage, GetThreadLocale, SetThreadLocale, GetUserDefaultLCID, GetSystemDefaultLCID, EnumSystemLocalesA, EnumSystemLocalesW,
+        GetACP, GetOEMCP, IsValidCodePage, GetThreadLocale, SetThreadLocale, GetUserDefaultLCID, GetSystemDefaultLCID, EnumSystemLocalesA, EnumSystemLocalesW, EnumSystemLocalesEx,
         GetUserDefaultLangID, GetSystemDefaultLangID, GetUserDefaultUILanguage, GetSystemDefaultUILanguage,
         IsValidLocale, GetLocaleInfoA, GetLocaleInfoW, EnumCalendarInfoA, GetCPInfo, GetCPInfoExA, IsDBCSLeadByte,
         IsDBCSLeadByteEx, MultiByteToWideChar, WideCharToMultiByte, GetStringTypeA, GetStringTypeExA, GetStringTypeW,

@@ -836,6 +836,77 @@ fn time(c: &mut Ctx) -> u32 {
     }
     t
 }
+fn _time64(c: &mut Ctx) -> u32 {
+    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    if c.a(0) != 0 {
+        w32(c.a(0), t as u32);
+        w32(c.a(0) + 4, (t >> 32) as u32);
+    }
+    c.ret64(t)
+}
+
+/// _splitpath(_s) / _wsplitpath(_s): path -> drive, dir, fname, ext (each pointer may be 0;
+/// the _s forms give each one's size after it)
+fn splitpath(c: &mut Ctx, wide: bool, sized: bool) -> u32 {
+    let path: Vec<u16> = if wide { wstr(c.a(0)) } else { crate::text::a2w(&cstr(c.a(0))) };
+    let is_sep = |ch: u16| ch == b'\\' as u16 || ch == b'/' as u16;
+    let drive = if path.len() >= 2 && path[1] == b':' as u16 { 2 } else { 0 };
+    let rest = &path[drive..];
+    let dir_end = rest.iter().rposition(|&ch| is_sep(ch)).map_or(0, |i| i + 1);
+    let name = &rest[dir_end..];
+    let dot = name.iter().rposition(|&ch| ch == b'.' as u16).unwrap_or(name.len());
+    let parts: [&[u16]; 4] = [&path[..drive], &rest[..dir_end], &name[..dot], &name[dot..]];
+    for (k, part) in parts.iter().enumerate() {
+        let (ptr, cap) = if sized { (c.a(1 + 2 * k as u32), c.a(2 + 2 * k as u32)) } else { (c.a(1 + k as u32), 260) };
+        if ptr == 0 {
+            continue;
+        }
+        if wide {
+            mem::put_wstr(ptr, cap, part);
+        } else {
+            mem::put_cstr(ptr, cap, &crate::text::w2a(part));
+        }
+    }
+    0
+}
+fn _splitpath(c: &mut Ctx) -> u32 {
+    splitpath(c, false, false)
+}
+fn _wsplitpath(c: &mut Ctx) -> u32 {
+    splitpath(c, true, false)
+}
+fn _splitpath_s(c: &mut Ctx) -> u32 {
+    splitpath(c, false, true)
+}
+fn _wsplitpath_s(c: &mut Ctx) -> u32 {
+    splitpath(c, true, true)
+}
+
+/// _get_narrow/wide_winmain_command_line: the command line after the program name
+fn winmain_cmdline(wide: bool) -> u32 {
+    let (a, w) = crate::k32::cmdline();
+    let (p, step) = if wide { (w, 2) } else { (a, 1) };
+    let ch = |at: u32| if wide { r16(at) as u32 } else { r8(at) as u32 };
+    let mut at = p;
+    let mut quoted = false;
+    while ch(at) != 0 && (quoted || ch(at) > b' ' as u32) {
+        if ch(at) == b'"' as u32 {
+            quoted = !quoted;
+        }
+        at += step;
+    }
+    while ch(at) != 0 && ch(at) <= b' ' as u32 {
+        at += step;
+    }
+    at
+}
+fn _get_narrow_winmain_command_line(_: &mut Ctx) -> u32 {
+    winmain_cmdline(false)
+}
+fn _get_wide_winmain_command_line(_: &mut Ctx) -> u32 {
+    winmain_cmdline(true)
+}
+
 fn clock(_: &mut Ctx) -> u32 {
     crate::k32::ticks_ms().wrapping_sub(60_000)
 }
@@ -1121,7 +1192,17 @@ fn fclose(c: &mut Ctx) -> u32 {
     }
 }
 fn fread(c: &mut Ctx) -> u32 {
-    let (buf, size, n, fp) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    fread_to(c.a(0), c.a(1), c.a(2), c.a(3))
+}
+/// fread_s(buf, bufsize, size, n, fp): fread of what fits in bufsize
+fn fread_s(c: &mut Ctx) -> u32 {
+    let (buf, cap, size, n, fp) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
+    if size == 0 {
+        return 0;
+    }
+    fread_to(buf, size, n.min(cap / size), fp)
+}
+fn fread_to(buf: u32, size: u32, n: u32, fp: u32) -> u32 {
     let total = size.saturating_mul(n);
     if total == 0 {
         return 0;
@@ -1414,6 +1495,103 @@ fn __stdio_common_vsprintf(c: &mut Ctx) -> u32 {
         w8(b + n as u32, 0);
     })
 }
+/// the _s forms: a result that doesn't fit leaves an empty string and returns -1
+fn __stdio_common_vsprintf_s(c: &mut Ctx) -> u32 {
+    let (buf, len) = (c.a(2), c.a(3));
+    let s = format(&cstr(c.a(4)), &mut VaArgs::stack(c.a(6)), false);
+    if buf == 0 || s.len() >= len as usize {
+        if buf != 0 && len != 0 {
+            w8(buf, 0);
+        }
+        return u32::MAX;
+    }
+    mem::write(buf, &s);
+    w8(buf + s.len() as u32, 0);
+    s.len() as u32
+}
+fn __stdio_common_vswprintf_s(c: &mut Ctx) -> u32 {
+    let (buf, len) = (c.a(2), c.a(3));
+    let s = format_w(&wstr(c.a(4)), &mut VaArgs::stack(c.a(6)));
+    if buf == 0 || s.len() >= len as usize {
+        if buf != 0 && len != 0 {
+            w16(buf, 0);
+        }
+        return u32::MAX;
+    }
+    mem::put_wstr(buf, len, &s);
+    s.len() as u32
+}
+/// strncpy_s(dst, size, src, count): count _TRUNCATE (-1) copies what fits
+fn strncpy_s(c: &mut Ctx) -> u32 {
+    let (d, size, src, n) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    if d == 0 || size == 0 {
+        return 22;
+    }
+    let s = mem::cstrn(src, n);
+    if s.len() >= size as usize && n != u32::MAX {
+        w8(d, 0);
+        return 34;
+    }
+    mem::put_cstr(d, size, &s);
+    if s.len() >= size as usize { 80 } else { 0 }
+}
+/// strcpy_s / wcscpy_s / strcat_s / wcscat_s / wcsncpy_s (dst, size, src[, count]): 0, or 22 /
+/// 34 (ERANGE) with an empty dst when it doesn't fit
+fn copy_s(d: u32, size: u32, src: Vec<u16>, wide: bool, append: bool, truncate: bool) -> u32 {
+    if d == 0 || size == 0 {
+        return 22;
+    }
+    let mut v: Vec<u16> = if append { if wide { wstr(d) } else { cstr(d).into_iter().map(|b| b as u16).collect() } } else { Vec::new() };
+    v.extend(src);
+    if v.len() >= size as usize && !truncate {
+        if wide { w16(d, 0) } else { w8(d, 0) }
+        return 34;
+    }
+    if wide {
+        mem::put_wstr(d, size, &v);
+    } else {
+        let b: Vec<u8> = v.into_iter().map(|u| u as u8).collect();
+        mem::put_cstr(d, size, &b);
+    }
+    0
+}
+fn strcpy_s(c: &mut Ctx) -> u32 {
+    copy_s(c.a(0), c.a(1), cstr(c.a(2)).into_iter().map(|b| b as u16).collect(), false, false, false)
+}
+fn wcscpy_s(c: &mut Ctx) -> u32 {
+    copy_s(c.a(0), c.a(1), wstr(c.a(2)), true, false, false)
+}
+fn strcat_s(c: &mut Ctx) -> u32 {
+    copy_s(c.a(0), c.a(1), cstr(c.a(2)).into_iter().map(|b| b as u16).collect(), false, true, false)
+}
+fn wcscat_s(c: &mut Ctx) -> u32 {
+    copy_s(c.a(0), c.a(1), wstr(c.a(2)), true, true, false)
+}
+fn wcsncpy_s(c: &mut Ctx) -> u32 {
+    let n = c.a(3);
+    let mut s = wstr(c.a(2));
+    s.truncate(n as usize);
+    copy_s(c.a(0), c.a(1), s, true, false, n == u32::MAX)
+}
+fn ___lc_codepage_func(_: &mut Ctx) -> u32 {
+    932
+}
+/// the locale names by category (LC_ALL..LC_TIME): all "ja-JP"
+fn ___lc_locale_name_func(_: &mut Ctx) -> u32 {
+    static P: OnceLock<u32> = OnceLock::new();
+    *P.get_or_init(|| {
+        let p = mem::heap_alloc(6 * 4 + 16, true);
+        mem::put_wstr(p + 24, 8, &"ja-JP".encode_utf16().collect::<Vec<u16>>());
+        for i in 0..6 {
+            w32(p + 4 * i, p + 24);
+        }
+        p
+    })
+}
+/// _seh_filter_exe(code, pointers): no signal handlers here: search on
+fn _seh_filter_exe(_: &mut Ctx) -> u32 {
+    0
+}
 fn __stdio_common_vswprintf(c: &mut Ctx) -> u32 {
     let s = format_w(&wstr(c.a(4)), &mut VaArgs::stack(c.a(6)));
     common_out(c.a(0), c.a(2), c.a(3), s.len(), |b, n| {
@@ -1517,6 +1695,13 @@ pub fn init() {
     // (ucrtbase's wcstok takes a context)
     implement("ucrtbase", "wcstok", wcstok_s);
     reg!(localeconv, setlocale);
+    reg!(strcpy_s, wcscpy_s, strcat_s, wcscat_s, wcsncpy_s);
+    reg!(strncpy_s, ___lc_codepage_func, ___lc_locale_name_func, _seh_filter_exe);
+    implement("ucrtbase", "__stdio_common_vsprintf_s", __stdio_common_vsprintf_s);
+    implement("ucrtbase", "__stdio_common_vswprintf_s", __stdio_common_vswprintf_s);
+    reg!(fread_s, _time64, _splitpath, _wsplitpath, _splitpath_s, _wsplitpath_s);
+    reg!(_get_narrow_winmain_command_line, _get_wide_winmain_command_line);
+    implement("msvcrt", "_time32", time);
     reg!(_putenv, fputc, __acrt_iob_func, _create_locale, _free_locale, _fdclass, _dclass, _fdsign, _dsign, strnlen);
     implement("ucrtbase", "__stdio_common_vsprintf", __stdio_common_vsprintf);
     implement("ucrtbase", "__stdio_common_vswprintf", __stdio_common_vswprintf);
