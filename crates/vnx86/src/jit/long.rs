@@ -1382,5 +1382,5 @@ pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, entry: u6
         let end = b.ins.last().unwrap().next_ip();
         (b.start as u32, (end - b.start) as u32)
     }).collect();
-    Some(Region { starts, instructions: count, code, layout, profile: Vec::new(), sites: Vec::new() })
+    Some(Region { starts, instructions: count, code, layout, profile: Vec::new(), sites: Vec::new(), extra: 0 })
 }
