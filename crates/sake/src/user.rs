@@ -1001,14 +1001,16 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
     let tid = crate::cur().tid;
     let child = style & 0x4000_0000 != 0;
     let (sw, sh) = screen();
-    const DEF: i32 = 0x8000_0000u32 as i32;
-    if x == DEF {
-        x = if child { 0 } else { 40 };
-        y = if child { 0 } else { 40 };
+    // (as Wine's fix_cs_coordinates: popups and children take 0, overlapped windows a default)
+    let def = |v: i32| v == 0x8000_0000u32 as i32 || v == 0x8000;
+    let plain = child || style & 0x8000_0000 != 0;
+    if def(x) {
+        x = if plain { 0 } else { 40 };
+        y = if plain { 0 } else { 40 };
     }
-    if cx == DEF {
-        cx = if child { 0 } else { sw * 3 / 4 };
-        cy = if child { 0 } else { sh * 3 / 4 };
+    if def(cx) {
+        cx = if plain { 0 } else { sw * 3 / 4 };
+        cy = if plain { 0 } else { sh * 3 / 4 };
     }
     if !child && style & 0x8000_0000 == 0 {
         // overlapped: a caption
@@ -3011,19 +3013,20 @@ fn ChangeDisplaySettingsW(c: &mut Ctx) -> u32 {
     }
     0
 }
-/// DEVMODE of mode `n` (ENUM_CURRENT_SETTINGS/ENUM_REGISTRY_SETTINGS: the screen's); `w`: the
-/// W layout (a 64-byte device name: every field 32 bytes later).
+/// DEVMODE of mode `n` (ENUM_CURRENT_SETTINGS/ENUM_REGISTRY_SETTINGS: the screen's). The W
+/// layout has a 64-byte device name and a 64-byte form name: fields before dmFormName are 32
+/// bytes later, those after it 64.
 fn display_mode(n: u32, p: u32, wide: bool) -> u32 {
     let modes = [(640, 480), (800, 600), (1024, 768), (1280, 720), (1280, 960)];
     let (w, h) = if n == 0xffff_ffff || n == 0xffff_fffe { screen() } else if (n as usize) < modes.len() { modes[n as usize] } else { return 0 };
-    let d = if wide { 32 } else { 0 };
-    mem::fill(p + 36 + d, 120, 0);
-    w16(p + 36 + d, 156 + d as u16 * 2);
+    let (d, e) = if wide { (32, 64) } else { (0, 0) };
+    mem::fill(p + 36 + d, 120 + e - d, 0);
+    w16(p + 36 + d, 156 + e as u16);
     w32(p + 40 + d, 0x5c0000);
-    w32(p + 104 + d, 32);
-    w32(p + 108 + d, w as u32);
-    w32(p + 112 + d, h as u32);
-    w32(p + 120 + d, 60);
+    w32(p + 104 + e, 32);
+    w32(p + 108 + e, w as u32);
+    w32(p + 112 + e, h as u32);
+    w32(p + 120 + e, 60);
     1
 }
 fn EnumDisplaySettingsA(c: &mut Ctx) -> u32 {
