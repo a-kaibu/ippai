@@ -333,6 +333,9 @@ struct Gen<'a> {
     sizes: BTreeMap<String, (u32, u32)>,
     /// blocks done by [`Gen::hle`] instead of their guest code
     hle: BTreeMap<u32, Hle>,
+    /// functions: import thunks (`jmp [slot]`) calls go to: thunk -> slot (the call goes where
+    /// the slot points, one wasm call instead of two)
+    thunks: BTreeMap<u32, u32>,
     /// with [`PROFILE`]: each block's entry counter address
     prof: Vec<u32>,
     /// open wasm blocks inside the exit block
@@ -2585,7 +2588,11 @@ impl<'a> Gen<'a> {
                 }
                 if self.fnm {
                     let t = self.temp();
-                    self.c.u32c(ins.near_branch32()).set(t);
+                    match self.thunks.get(&ins.near_branch32()) {
+                        // an import thunk's: to where its slot points
+                        Some(&slot) if (GUEST_LO..GUEST_HI).contains(&slot) => self.c.u32c(slot).load32(0).set(t),
+                        _ => self.c.u32c(ins.near_branch32()).set(t),
+                    };
                     self.call_fn(t, next);
                     return false;
                 }
@@ -4317,6 +4324,7 @@ fn translate<M: Memory>(
     let mut queue: VecDeque<u32> = roots.iter().copied().collect();
     let mut total = 0;
     let mut hle = BTreeMap::new();
+    let mut thunks = BTreeMap::new();
     while let Some(a) = queue.pop_front() {
         let max_ins = if fnm { FN_MAX_INS.load(core::sync::atomic::Ordering::Relaxed) } else { MAX_REGION_INS };
         if blocks.len() >= max_blocks.min(MAX_BLOCKS) || total >= max_ins {
@@ -4335,6 +4343,12 @@ fn translate<M: Memory>(
         let Some(last) = list.last() else { continue };
         if fn_on() && matches!(last.flow_control(), FlowControl::Call | FlowControl::IndirectCall) {
             queue.push_back(last.next_ip32());
+            if fnm && last.op0_kind() == OpKind::NearBranch32 {
+                let f = last.near_branch32();
+                if let Some(j) = decode(mem, f).first().filter(|j| j.mnemonic() == Mnemonic::Jmp && j.op0_kind() == OpKind::Memory && j.memory_base() == Register::None && j.memory_index() == Register::None && j.memory_segment() == Register::DS) {
+                    thunks.insert(f, j.memory_displacement32());
+                }
+            }
             // a small callee comes along to be inlined (see `inline` below)
             let f = if last.op0_kind() == OpKind::NearBranch32 { Some(last.near_branch32()) } else { hints(last.ip32()) };
             if let (Some(trap), Some(f)) = (fn_trap, f) {
@@ -4582,6 +4596,7 @@ fn translate<M: Memory>(
         fell_back: false,
         sizes: Default::default(),
         hle,
+        thunks,
         prof: Vec::new(),
     };
     let mut profile = Vec::new();
