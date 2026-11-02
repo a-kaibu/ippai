@@ -50,7 +50,9 @@ if [ ! -d x ]; then
     find "$(dirname "$b")" -maxdepth 1 -type f -size 16c -exec grep -lx -m1 0123456789ABCDEF {} + 2>/dev/null | xargs -r -d '\n' rm -f
   done
   find x.part -type f -iname '*.msi' -print0 | while IFS= read -r -d '' m; do
-    if mkdir -p "$m.x" && (cd "$m.x" && LC_ALL=C.UTF-8 msiextract "$OLDPWD/$m" >/dev/null 2>&1); then
+    # (msiextract can't do packages split over several cabinets: tests/msiunpack.py)
+    if mkdir -p "$m.x" && { (cd "$m.x" && LC_ALL=C.UTF-8 msiextract "$OLDPWD/$m" >/dev/null 2>&1) ||
+        { rm -rf "$m.x" && mkdir "$m.x" && python3 -I "$(dirname "$0")/msiunpack.py" "$m" "$m.x" >/dev/null 2>&1; }; }; then
       # its registry entries, for the launcher helper to write (install paths the game reads);
       # INSTALLDIR: where its biggest exe went
       d=$(find "$m.x" -iname '*.exe' -printf '%s\t%h\n' | sort -rn | head -1 | cut -f2)

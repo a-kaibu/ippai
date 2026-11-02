@@ -118,7 +118,18 @@ static BOOL CALLBACK top(HWND h, LPARAM lp)
     return FALSE;
 }
 
-/* once, at 20 s: every top-level window of ours, visible or not (what a black screen has) */
+static BOOL CALLBACK dump_child(HWND h, LPARAM lp)
+{
+    WCHAR raw[256], text[256], cls[64];
+    GetWindowTextW(h, raw, 256);
+    clean(raw, text, 256);
+    GetClassNameW(h, cls, 64);
+    if (text[0]) out(L"autoclick:   [%ls] %ls\n", cls, text);
+    return TRUE;
+}
+
+/* once, at 20 s: every top-level window of ours, visible or not (what a black screen has), with
+ * its controls' texts (a hidden error dialog says what went wrong) */
 static BOOL CALLBACK dump(HWND h, LPARAM lp)
 {
     DWORD pid, tid = GetWindowThreadProcessId(h, &pid);
@@ -130,6 +141,7 @@ static BOOL CALLBACK dump(HWND h, LPARAM lp)
     GetWindowRect(h, &r);
     out(L"autoclick: list %p tid %04lx [%ls] \"%ls\" %ld,%ld-%ld,%ld%ls\n", h, tid, cls, title,
         r.left, r.top, r.right, r.bottom, IsWindowVisible(h) ? L" visible" : L"");
+    EnumChildWindows(h, dump_child, 0);
     return TRUE;
 }
 

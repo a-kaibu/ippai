@@ -1190,6 +1190,11 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             if a(5) == 0 {
                 return S_FALSE;
             }
+            if d.trace {
+                for e in &v {
+                    eprintln!("d3d11:   layout {}{} format {} slot {} offset {}{}", e.name, e.index, e.fmt, e.slot, e.offset, if e.instance { " instance" } else { "" });
+                }
+            }
             let o = d.new_obj(IF_LAYOUT, Data::Layout(v));
             wrp(a(5), 0, o);
             S_OK
@@ -2153,6 +2158,9 @@ fn shader_for(d: &mut D11, sh: u32, ps: u32) -> Option<(u32, Vec<(u32, shader::B
             });
             if trace {
                 eprintln!("d3d11: {} shader {sh} -> {} bindings {:?}", if s.pixel { "pixel" } else { "vertex" }, id, w.bindings);
+                if std::env::var("VNVM_D3D_TRACE").as_deref() == Ok("2") {
+                    eprintln!("{}", w.code);
+                }
             }
             Some((id, w.bindings))
         }
@@ -2223,6 +2231,20 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
     }
     let Some((vs, vb)) = shader_for(d, st.vs, st.ps) else { return };
     let ps = if st.ps != 0 { shader_for(d, st.ps, 0) } else { None };
+    if std::env::var("VNVM_D3D_TRACE").as_deref() == Ok("2") {
+        // the first vertices and the vertex shader's constants
+        let words = |id: u32, from: u32, n: u32| -> Vec<String> {
+            match d.objs.get(&id).map(|o| &o.data) {
+                Some(Data::Buffer(b)) => (0..n).filter(|i| from + i * 4 + 4 <= b.size).map(|i| format!("{:08x}", rd(b.mem + from, i as usize))).collect(),
+                _ => Vec::new(),
+            }
+        };
+        let (vb0, stride, off) = st.vbs[0];
+        eprintln!("d3d11: draw {count} from {start} vb stride {stride} offset {off}: {}", words(vb0, off + start * stride, (stride / 4) * 2).join(" "));
+        for (i, &c) in st.cbs[0].iter().enumerate().filter(|c| *c.1 != 0).take(4) {
+            eprintln!("d3d11:   vs cb{i}: {}", words(c, 0, 16).join(" "));
+        }
+    }
     // targets
     let mut colors = Vec::new();
     let mut formats = Vec::new();

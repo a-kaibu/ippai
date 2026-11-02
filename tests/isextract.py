@@ -35,8 +35,12 @@ def main(path, out):
     sig = h[:14]
     n = struct.unpack_from('<H', h, 14)[0]
     if sig == b'ISSetupStream\0':
+        ver = struct.unpack_from('<H', h, 16)[0]
         for _ in range(n):
-            nl, flags, _x, ln = struct.unpack('<IIHI', f.read(14)); f.read(10)
+            if ver >= 4:  # (newer setups: 64-bit sizes, 48-byte entry headers)
+                nl, flags, _x, ln = struct.unpack('<IIHQ', f.read(18)); f.read(30)
+            else:
+                nl, flags, _x, ln = struct.unpack('<IIHI', f.read(14)); f.read(10)
             name = f.read(nl).decode('utf-16le')
             data = f.read(ln)
             if flags & 6:
