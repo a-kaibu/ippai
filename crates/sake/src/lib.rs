@@ -32,6 +32,7 @@ pub mod usp;
 pub mod ole;
 pub mod pe;
 pub mod seh;
+pub mod cxx;
 pub mod sound;
 pub mod mmio;
 pub mod gl;
@@ -288,6 +289,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     gl::init();
     d3d9::register();
     seh::register();
+    cxx::init();
     d3d11::register();
     guest::bind_host();
     vnhost::crashlog::set_trap_namer(api::name_of);
