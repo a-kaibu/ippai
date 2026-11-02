@@ -760,9 +760,11 @@ fn InitializeConditionVariable(c: &mut Ctx) -> u32 {
 }
 /// Waits for a wake of `cv` (after `release`, before `reacquire`); false on timeout.
 fn cv_wait(cv: u32, ms: u32, release: impl FnOnce(), reacquire: impl FnOnce()) -> bool {
-    let mut g = SYNC.lock().unwrap();
-    let gen0 = *g.get_or_insert_with(HashMap::default).entry(cv).or_insert(0);
+    // the generation is read before the lock is released (a wake in between is seen), but SYNC is
+    // not held across `release` (srw_release takes it to notify: holding it deadlocked)
+    let gen0 = *SYNC.lock().unwrap().get_or_insert_with(HashMap::default).entry(cv).or_insert(0);
     release();
+    let mut g = SYNC.lock().unwrap();
     let end = (ms != u32::MAX).then(|| std::time::Instant::now() + std::time::Duration::from_millis(ms as u64));
     let mut woke = true;
     while g.as_ref().unwrap().get(&cv).copied() == Some(gen0) {
@@ -1438,6 +1440,23 @@ fn GetVersionExA(c: &mut Ctx) -> u32 {
 }
 fn GetVersionExW(c: &mut Ctx) -> u32 {
     version_info(c.a(0), true)
+}
+/// RtlGetVersion(RTL_OSVERSIONINFOW*): Artemis asks ntdll directly (GetVersionEx lies on 8.1+)
+fn RtlGetVersion(c: &mut Ctx) -> u32 {
+    let p = c.a(0);
+    version_info(p, true);
+    // the real version, as Windows 10 gives it to programs without a manifest
+    w32(p + 4, 10);
+    w32(p + 8, 0);
+    w32(p + 12, 19045);
+    put_wstr(p + 20, 128, &[]);
+    0
+}
+fn RtlGetNtVersionNumbers(c: &mut Ctx) -> u32 {
+    put32(c.a(0), 10);
+    put32(c.a(1), 0);
+    put32(c.a(2), 0xf000_0000 | 19045);
+    0
 }
 fn VerifyVersionInfoW(_: &mut Ctx) -> u32 {
     1
@@ -3087,6 +3106,7 @@ pub fn init() {
         AreFileApisANSI, SetFileApisToANSI,
     );
     reg!("advapi32"; GetUserNameA);
+    reg!("ntdll"; RtlGetVersion, RtlGetNtVersionNumbers);
     reg!("ntdll"; RtlZeroMemory, RtlMoveMemory, RtlFillMemory, RtlAllocateHeap, RtlFreeHeap, RtlEnterCriticalSection,
         RtlLeaveCriticalSection, InitializeSRWLock, AcquireSRWLockExclusive, AcquireSRWLockShared,
         ReleaseSRWLockExclusive, ReleaseSRWLockShared, TryAcquireSRWLockExclusive, TryAcquireSRWLockShared,

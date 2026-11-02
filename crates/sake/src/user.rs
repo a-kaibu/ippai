@@ -480,7 +480,21 @@ fn class_index(s: &State, name: u32, wide: bool) -> Option<usize> {
 }
 
 fn builtin_proc() -> u32 {
-    crate::api::export("user32", "DefWindowProcA")
+    static P: OnceLock<u32> = OnceLock::new();
+    *P.get_or_init(|| crate::api::host_fn("builtin_proc", |c| def_proc(c, msg_wide()), 16))
+}
+
+// whether the message being sent came through a W function (SendMessageW, CreateWindowExW): the
+// built-in classes' procedures read text parameters with it (no A/W message translation)
+thread_local!(static WIDE_MSG: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+fn msg_wide() -> bool {
+    WIDE_MSG.with(|w| w.get())
+}
+fn as_wide<R>(wide: bool, f: impl FnOnce() -> R) -> R {
+    let old = WIDE_MSG.with(|w| w.replace(wide));
+    let r = f();
+    WIDE_MSG.with(|w| w.set(old));
+    r
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -694,15 +708,15 @@ fn control_proc_fn(c: &mut Ctx) -> u32 {
             0
         }
         0xc | 0xa => {
-            let r = def_proc(c, false);
+            let r = def_proc(c, msg_wide());
             invalidate(h, None, true);
             r
         }
         0x2 => {
             CTLS.lock().unwrap().get_or_insert_with(HashMap::default).remove(&h);
-            def_proc(c, false)
+            def_proc(c, msg_wide())
         }
-        _ => def_proc(c, false),
+        _ => def_proc(c, msg_wide()),
     }
 }
 
@@ -1013,10 +1027,10 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
     h
 }
 fn CreateWindowExA(c: &mut Ctx) -> u32 {
-    create_window(c, false)
+    as_wide(false, || create_window(c, false))
 }
 fn CreateWindowExW(c: &mut Ctx) -> u32 {
-    create_window(c, true)
+    as_wide(true, || create_window(c, true))
 }
 
 fn destroy(c: &mut Ctx, h: u32) -> bool {
@@ -1756,28 +1770,29 @@ fn RemovePropW(c: &mut Ctx) -> u32 {
 }
 fn SetWindowTextA(c: &mut Ctx) -> u32 {
     let (h, t) = (c.a(0), c.a(1));
-    send(c, h, 0xc, 0, t);
+    as_wide(false, || send(c, h, 0xc, 0, t));
     1
 }
 fn SetWindowTextW(c: &mut Ctx) -> u32 {
     let (h, t) = (c.a(0), c.a(1));
-    send(c, h, 0xc, 0, t);
+    as_wide(true, || send(c, h, 0xc, 0, t));
     1
 }
 fn GetWindowTextA(c: &mut Ctx) -> u32 {
     let (h, b, n) = (c.a(0), c.a(1), c.a(2));
-    send(c, h, 0xd, n, b)
+    as_wide(false, || send(c, h, 0xd, n, b))
 }
 fn GetWindowTextW(c: &mut Ctx) -> u32 {
     let (h, b, n) = (c.a(0), c.a(1), c.a(2));
-    send(c, h, 0xd, n, b)
+    as_wide(true, || send(c, h, 0xd, n, b))
 }
 fn GetWindowTextLengthA(c: &mut Ctx) -> u32 {
     let h = c.a(0);
-    send(c, h, 0xe, 0, 0)
+    as_wide(false, || send(c, h, 0xe, 0, 0))
 }
 fn GetWindowTextLengthW(c: &mut Ctx) -> u32 {
-    GetWindowTextLengthA(c)
+    let h = c.a(0);
+    as_wide(true, || send(c, h, 0xe, 0, 0))
 }
 fn SetWindowRgn(_: &mut Ctx) -> u32 {
     1
@@ -1786,8 +1801,11 @@ fn SetWindowRgn(_: &mut Ctx) -> u32 {
 // ---------------------------------------------------------------------------------------------
 // DefWindowProc
 
-fn def_proc(c: &mut Ctx, wide: bool) -> u32 {
+fn def_proc(c: &mut Ctx, proc_wide: bool) -> u32 {
     let (h, m, wp, lp) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    // text parameters are in the sender's encoding (sake translates no messages), whichever of
+    // DefWindowProcA/W the window procedure calls
+    let wide = msg_wide();
     match m {
         0x81 => {
             // WM_NCCREATE: the title
@@ -1893,7 +1911,7 @@ fn def_proc(c: &mut Ctx, wide: bool) -> u32 {
             0
         }
         0x7f => 0,
-        0x55 => if wide { 2 } else { 1 },
+        0x55 => if proc_wide { 2 } else { 1 },
         0x7b | 0x205 => {
             let p = GetParent_raw(h);
             if p != 0 && m == 0x7b {
@@ -2004,7 +2022,7 @@ fn PostQuitMessage(c: &mut Ctx) -> u32 {
     crate::obj::signal();
     0
 }
-fn SendMessageA(c: &mut Ctx) -> u32 {
+fn send_message(c: &mut Ctx) -> u32 {
     let (h, m, wp, lp) = (c.a(0), c.a(1), c.a(2), c.a(3));
     if h == 0xffff {
         let v: Vec<u32> = with(|s| s.wins.iter().filter(|(_, w)| w.parent == 0).map(|(&h, _)| h).collect());
@@ -2015,8 +2033,11 @@ fn SendMessageA(c: &mut Ctx) -> u32 {
     }
     send(c, h, m, wp, lp)
 }
+fn SendMessageA(c: &mut Ctx) -> u32 {
+    as_wide(false, || send_message(c))
+}
 fn SendMessageW(c: &mut Ctx) -> u32 {
-    SendMessageA(c)
+    as_wide(true, || send_message(c))
 }
 fn SendMessageTimeoutA(c: &mut Ctx) -> u32 {
     let (h, m, wp, lp, res) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(6));
@@ -3982,7 +4003,7 @@ fn EndDialog(c: &mut Ctx) -> u32 {
     1
 }
 fn SendDlgItemMessageW(c: &mut Ctx) -> u32 {
-    SendDlgItemMessageA(c)
+    as_wide(true, || SendDlgItemMessageA(c))
 }
 fn set_item_text(c: &mut Ctx, h: u32, id: u32, t: Vec<u16>) -> u32 {
     let ch = dlg_item(h, id);
