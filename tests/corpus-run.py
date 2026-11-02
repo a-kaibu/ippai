@@ -4,17 +4,22 @@ title (download, extract, pack: tests/corpus-prep.sh) while the current one runs
 
   tests/corpus-run.py TITLES.tsv IDS_FILE OUT_DIR [--steps STEPS.tsv] [--keep]
 
-TITLES.tsv: id, url, exe_rel columns (header row). STEPS.tsv: id<TAB>steps<TAB>story_at<TAB>pre (x,y clicked before the title).
+TITLES.tsv: id, url, exe_rel columns (header row); optional steps, story_at, pre, args columns.
+STEPS.tsv: id<TAB>steps<TAB>story_at<TAB>pre (x,y clicked before the title), wins over the columns.
+IDS_FILE "-": every title of TITLES.tsv.
 OUT_DIR/<id>/ gets result.json + PNGs; titles whose result.json exists are skipped.
+env: VNVM_DIST (a release directory: vnvm, web/; default the checkout's
+target/release + web/dist), JIT_DIR, SKIP_X64=0 (run x64 exes too: sake runs them), PORT,
+TRIALS, STORES, BASE_STORE (corpus-prep.sh), ENGINE, PREP_JOBS, CORPUS_QS (appended to the page's query).
 """
 import csv, json, os, subprocess, sys, threading, queue, time, shutil, urllib.parse, socket
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 titles = {r['id']: r for r in csv.DictReader(open(sys.argv[1]), delimiter='\t')}
-ids = [l.split()[0] for l in open(sys.argv[2]) if l.strip() and not l.startswith('#')]
+ids = list(titles) if sys.argv[2] == '-' else [l.split()[0] for l in open(sys.argv[2]) if l.strip() and not l.startswith('#')]
 out = sys.argv[3]
-steps = {}
+steps = {i: (r.get('steps') or 'key:Return wait:3', r.get('story_at') or '', r.get('pre') or '') for i, r in titles.items() if r.get('steps') or r.get('story_at') or r.get('pre')}
 if '--steps' in sys.argv:
     for r in csv.reader(open(sys.argv[sys.argv.index('--steps') + 1]), delimiter='\t'):
         if r and not r[0].startswith('#'): steps[r[0]] = (r[1] if len(r) > 1 else '', r[2] if len(r) > 2 else '', r[3] if len(r) > 3 else '')
@@ -23,7 +28,12 @@ TRIALS = os.environ.get('TRIALS', '/home/user/trials')
 STORES = os.environ.get('STORES', '/home/user/runs/stores')
 os.makedirs(STORES, exist_ok=True)
 PORT = int(os.environ.get('PORT', '8092'))
-env = dict(os.environ, PATH=f"{ROOT}/target/release:{os.environ['PATH']}")
+DIST = os.environ.get('VNVM_DIST')
+BIN = DIST or f'{ROOT}/target/release'
+WEB = f'{DIST}/web' if DIST else f'{ROOT}/web/dist'
+JIT_DIR = os.environ.get('JIT_DIR', '/home/user/runs/jit')
+SKIP_X64 = os.environ.get('SKIP_X64', '1') == '1'
+env = dict(os.environ, PATH=f"{BIN}:{os.environ['PATH']}")
 
 def prep(tid):
     t = titles[tid]
@@ -79,14 +89,14 @@ while True:
     if not exe:
         open(f'{od}/result.json', 'w').write('{"prep_error": %s}' % __import__('json').dumps(err))
         print(tid, 'PREP', err, flush=True)
-    elif pe_machine(f"{TRIALS}/{tid}/x/{exe}", f'{STORES}/{tid}') == 0x8664:
+    elif SKIP_X64 and pe_machine(f"{TRIALS}/{tid}/x/{exe}", f'{STORES}/{tid}') == 0x8664:
         open(f'{od}/result.json', 'w').write('{"x64": true}')
         open(f'{od}/exe.txt', 'w').write(exe + '\n')
         print(tid, 'x64', flush=True)
     else:
-        jit = f'/home/user/runs/jit/{tid}'
+        jit = f'{JIT_DIR}/{tid}'
         os.makedirs(jit, exist_ok=True)
-        srv = subprocess.Popen([f'{ROOT}/target/release/vnvm', 'serve', '--web', f'{ROOT}/web/dist', '--store', f'{STORES}/{tid}',
+        srv = subprocess.Popen([f'{BIN}/vnvm', 'serve', '--web', WEB, '--store', f'{STORES}/{tid}',
                                 '--jit', jit, '--listen', f'127.0.0.1:{PORT}', '--no-prerun'],
                                stdout=open(f'{od}/server.log', 'w'), stderr=subprocess.STDOUT)
         wait_port(PORT)
@@ -100,6 +110,7 @@ while True:
         qs = 'autostart&headless&load&nosave&mount=/vnvm/game=g&run=' + urllib.parse.quote(winexe)
         if args: qs += '&args=' + urllib.parse.quote(args)
         if engine: qs += '&engine=' + engine
+        qs += os.environ.get('CORPUS_QS', '')  # (more page parameters, e.g. &env=NAME%3Dvalue)
         if winexe.endswith('_vnvm_autoclick.exe'):
             qs += '&env=VNVM_ROOT_APP%3D0&env=VNVM_HELPER_EXE%3D_vnvm_autoclick.exe'  # small slots for the helper: the game gets the low app area
         st, at, pre = steps.get(tid, ('key:Return wait:3', '', ''))

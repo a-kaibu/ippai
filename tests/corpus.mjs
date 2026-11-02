@@ -184,6 +184,7 @@ if (res.title === null) {
 const tf = await shot("title");
 if (tf?.view) view = tf.view;
 res.d3d = tf?.d3d ?? false;
+res.titleHash = tf?.hash ?? null;
 save();
 
 // 2. the title's steps
@@ -208,6 +209,8 @@ for (let s = 0; s < STORY && !crashed; s += 2) {
 const f1 = await frame(false);
 res.storyCores = f1 && !f1.err ? (f1.busy - b0) / 1000 / (now() - s0) : null;
 res.storyFrames = hashes.size;
+// the story screens left the title (the steps started the game)
+res.leftTitle = [...hashes].some((h) => h !== res.titleHash);
 res.crashed = crashed;
 res.end = now();
 save();

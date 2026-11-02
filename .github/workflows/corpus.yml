@@ -1,0 +1,141 @@
+# Trial-game corpus on sake: tests/corpus/titles.tsv (vnbox's trials, downloaded from their
+# original sites on the runner; no game file is ever stored on GitHub) run in headless Chromium
+# against the build CI made, sharded over parallel jobs. Each title must reach its `expect`
+# level (title screen / story); tests/corpus/check.py grades, lists the DLLs each title asked
+# for that sake does not have, and fails the run on a regression.
+#   - after CI succeeds on main: the smoke rows (smoke=1)
+#   - nightly and by hand (workflow_dispatch): every title
+# sake's C:\ is only fonts (tools/ci/sake-fonts.py, IPA fonts renamed), no Wine DLLs.
+name: Corpus
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  schedule:
+    - cron: "0 18 * * *" # 03:00 JST
+  workflow_dispatch:
+    inputs:
+      set:
+        description: "smoke or full"
+        default: full
+        type: choice
+        options: [smoke, full]
+      only:
+        description: "only these title ids (space-separated; overrides set)"
+        default: ""
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: corpus-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    outputs:
+      run_id: ${{ steps.p.outputs.run_id }}
+      sha: ${{ steps.p.outputs.sha }}
+      set: ${{ steps.p.outputs.set }}
+      shards: ${{ steps.p.outputs.shards }}
+    steps:
+      - id: p
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          SET: ${{ inputs.set }}
+          ONLY: ${{ inputs.only }}
+        run: |
+          if [ "$EVENT" != workflow_run ]; then
+            # the newest successful CI build of main
+            read -r RUN_ID SHA < <(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main --status success \
+              --limit 1 --json databaseId,headSha --jq '.[0] | "\(.databaseId) \(.headSha)"')
+          fi
+          if [ "$EVENT" = workflow_run ]; then SET=smoke; fi
+          SET=${SET:-full}
+          # 20 jobs for every title (GitHub's limit of parallel jobs), 4 for the smoke rows
+          if [ -n "$ONLY" ]; then N=$(echo $ONLY | wc -w); N=$(( N < 20 ? N : 20 ))
+          elif [ "$SET" = full ]; then N=20; else N=4; fi
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "set=$SET" >> "$GITHUB_OUTPUT"
+          echo "shards=$(python3 -c "import json; print(json.dumps(list(range($N))))")" >> "$GITHUB_OUTPUT"
+          echo "build: CI run $RUN_ID ($SHA), set $SET, $N shards"
+
+  run:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: vnvm
+          path: dist
+          run-id: ${{ needs.plan.outputs.run_id }}
+          github-token: ${{ github.token }}
+      - name: Tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq --no-install-recommends unar innoextract convmv p7zip-full msitools zstd \
+            fonts-ipafont-gothic fonts-ipafont-mincho
+          pip install --user -q fonttools==4.59.0
+          npm install -g playwright@1.56.1
+          npx -y playwright@1.56.1 install --with-deps chromium
+          mkdir -p "$RUNNER_TEMP/dist"
+          tar -I zstd -xf dist/vnvm-*.tar.zst -C "$RUNNER_TEMP/dist" --strip-components=1
+          python3 tools/ci/sake-fonts.py "$RUNNER_TEMP/fonts"
+      - name: Corpus shard ${{ matrix.shard }}
+        env:
+          SET: ${{ needs.plan.outputs.set }}
+          ONLY: ${{ inputs.only }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ strategy.job-total }}
+        run: |
+          export PLAYWRIGHT=$(npm root -g)/playwright/index.js
+          tests/corpus/ci.sh "$RUNNER_TEMP/dist" "$RUNNER_TEMP/fonts" results
+      # results.json, console and server logs only: no screenshots of the games on GitHub
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: corpus-${{ matrix.shard }}
+          path: |
+            results/**/*.json
+            results/**/*.log
+            results/**/*.txt
+          retention-days: 14
+          if-no-files-found: ignore
+
+  report:
+    needs: [plan, run]
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: corpus-*
+          path: results
+      - name: Grade
+        run: python3 tests/corpus/check.py tests/corpus/titles.tsv results --summary "$GITHUB_STEP_SUMMARY" --summary report.md
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: corpus-report
+          path: report.md
+          retention-days: 30
