@@ -61,8 +61,15 @@ cat > "$G/config.h" <<EOF
 EOF
 echo "#define VKD3D_VCS_ID \"\"" > "$G/vkd3d_version.h"
 
+# only the spirv/ and vulkan/ headers: -I/usr/include would put the system libc in front of
+# Emscripten's
+mkdir -p "$G/inc"
+for d in "$SPIRV_INCLUDE/spirv" "$VULKAN_INCLUDE/vulkan" "$VULKAN_INCLUDE/vk_video"; do
+  [ -d "$d" ] && ln -sfn "$d" "$G/inc/$(basename "$d")"
+done
+
 cd "$OUT"
-FLAGS="-DLIBVKD3D_SHADER_SOURCE -I$G -I$V/include -I$V/include/private -I$S -I$SPIRV_INCLUDE -I$VULKAN_INCLUDE"
+FLAGS="-DLIBVKD3D_SHADER_SOURCE -I$G -I$V/include -I$V/include/private -I$S -I$G/inc"
 for f in $V/libs/vkd3d-common/{blob,debug,error,memory,utf8}.c \
   $S/{checksum,d3d_asm,d3dbc,dxbc,dxil,fx,glsl,hlsl,hlsl_codegen,hlsl_constant_ops,ir,msl,spirv,tpf,vkd3d_shader_main}.c \
   $G/{hlsl.tab,hlsl.yy,preproc.tab,preproc.yy}.c; do
