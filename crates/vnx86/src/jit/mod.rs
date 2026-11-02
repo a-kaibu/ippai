@@ -95,6 +95,10 @@ const F_STEP: u32 = 0;
 const F_EFLAGS: u32 = 1;
 const F_STATUS: u32 = 2;
 const F_X87: u32 = 3; // (cpu, TOP, info, 8 f64): see x87_out
+const F_CALLMISS: u32 = 4; // (cpu, slot, target) -> entry: see call_fn
+const T_CALLMISS: u32 = 5;
+/// Slots of a thread's call cache (Cpu::jit_calls).
+pub const CALL_CACHE: u32 = 1 << 12;
 
 // parameters of a region function: what a jump between regions hands over
 const L_CPU: u32 = 0;
@@ -175,6 +179,9 @@ impl Off {
     }
     fn calls() -> u32 {
         offset_of!(Cpu, jit_depth) as u32
+    }
+    fn call_cache() -> u32 {
+        offset_of!(Cpu, jit_calls) as u32
     }
     fn fpu(field: usize) -> u32 {
         (offset_of!(Cpu, fpu) + field) as u32
@@ -2963,33 +2970,24 @@ impl<'a> Gen<'a> {
         self.xmm_flush();
         self.x87_flush();
         self.fc = FCache::default();
-        let hash = offset_of!(Cpu, jit_hash) as u32;
-        let maskf = offset_of!(Cpu, jit_mask) as u32;
         let (h, v) = (self.temp(), self.temp());
+        let site = self.ins.ip32();
         if self.ins.flow_control() == FlowControl::IndirectCall {
             // where it goes, sampled by the host (a hint to inline it next time)
-            let site = self.ins.ip32();
             ring_sample(&mut self.c, h, v, t, site);
         }
         self.flags_to_cpu();
         self.store_regs();
         self.c.block(); // slow 0
-        self.c.block(); // found 0, slow 1
-        self.depth += 2;
+        self.depth += 1;
         self.c.get(L_BUD).i32c(1).sub().tee(L_BUD).i32c(0).le_s();
         // (a function's L_ARG is its call depth)
-        self.c.get(L_ARG).u32c(MAX_DEPTH).ge_u().or().br_if(1);
-        self.c.get(t).u32c(0x9e37_79b1).mul().i32c(15).shr_u().get(L_CPU).load32(maskf).and().set(h);
-        self.c.loop_(); // probe 0, found 1, slow 2
-        self.depth += 1;
-        self.c.get(L_CPU).load32(hash).get(h).i32c(3).shl().add().tee(v).load32(0).get(t).eq().br_if(1);
-        self.c.get(v).load32(0).eqz().br_if(2);
-        self.c.get(h).i32c(1).add().get(L_CPU).load32(maskf).and().set(h).br(0);
-        self.depth -= 1;
-        self.c.end(); // probe
-        self.depth -= 1;
-        self.c.end(); // found: entry at v + 4
-        self.c.get(v).load32(4).tee(v).u32c(FN_TAG).and().eqz().br_if(0);
+        self.c.get(L_ARG).u32c(MAX_DEPTH).ge_u().or().br_if(0);
+        // the call cache: this site's slot (by its address) holds (target, hash table entry)
+        // of the latest function it called; a miss asks the host (which fills it)
+        let slot = (site.wrapping_mul(0x9e37_79b1) >> 20) & (CALL_CACHE - 1);
+        self.c.get(L_CPU).load32(Off::call_cache()).u32c(slot * 8).add().tee(h).load32(0).get(t).eq();
+        self.c.if_i32().get(h).load32(4).else_().get(L_CPU).get(h).get(t).call(F_CALLMISS).end().tee(v).eqz().br_if(0);
         bump(&mut self.c, 0);
         self.c.get(L_CPU).get(L_BUD).store32(Off::budget());
         self.c.get(L_CPU).get(L_ARG).i32c(1).add();
@@ -4095,8 +4093,12 @@ fn translate<M: Memory>(
         module.imports.push(Import::Func("x87", 3));
         module.imports.push(Import::Table("table"));
     }
-    if fnm && module.types.len() == T_FN as usize {
+    // (in every module: saved bundles merge regions and functions, which needs the same
+    // types and imports)
+    if module.types.len() == T_FN as usize {
         module.types.push(FuncType { params: alloc::vec![I32; 2], results: alloc::vec![I32] });
+        module.types.push(FuncType { params: alloc::vec![I32; 3], results: alloc::vec![I32] });
+        module.imports.push(Import::Func("callmiss", T_CALLMISS));
     }
 
     let n = blocks.len() as u32;

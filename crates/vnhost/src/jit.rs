@@ -85,6 +85,8 @@ struct State {
     roots: HashMap<u32, Vec<u32>>,
     /// jumps between regions, written by the regions: count, then (from, to) pairs
     ring: Box<[u32; 2 + 2 * jit::RING_SIZE as usize]>,
+    /// the call cache (Cpu::jit_calls)
+    calls: Box<[[u32; 2]; jit::CALL_CACHE as usize]>,
     /// (region, target) pairs already merged, and targets that did not fit
     merged: HashSet<(u32, u32)>,
     /// ring windows each hot jump topped so far
@@ -261,6 +263,7 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
                 known: HashSet::new(),
                 roots: HashMap::new(),
                 ring: Box::new([0; 2 + 2 * jit::RING_SIZE as usize]),
+                calls: Box::new([[0; 2]; jit::CALL_CACHE as usize]),
                 merged: HashSet::new(),
                 hot: HashMap::new(),
                 merges: 0,
@@ -330,6 +333,7 @@ pub fn run(cpu: &mut Cpu, pending: u32) -> Ran {
         cpu.jit_hash = st.hash.as_ptr() as usize as u32;
         cpu.jit_mask = st.hash.len() as u32 - 1;
         cpu.jit_ring = st.ring.as_mut_ptr() as usize as u32;
+        cpu.jit_calls = st.calls.as_mut_ptr() as usize as u32;
     });
     cpu.jit_pending = pending;
     cpu.jit_budget = BUDGET;
@@ -1081,8 +1085,13 @@ fn enter_fn(st: &mut State, base: u32, eip: u32, starts: &[(u32, u32)], sites: &
         st.hash = bigger;
     }
     for &(a, k) in starts {
-        if insert(&mut st.hash, a, base as u32 | k << jit::ENTRY_SHIFT | jit::FN_TAG) {
+        let v = base as u32 | k << jit::ENTRY_SHIFT | jit::FN_TAG;
+        if insert(&mut st.hash, a, v) {
             st.used += 1;
+        }
+        // call sites that cached an earlier build go to this one
+        for c in st.calls.iter_mut().filter(|c| c[0] == a) {
+            c[1] = v;
         }
     }
 }
@@ -1098,6 +1107,27 @@ pub(crate) fn step(cpu: &mut Cpu, mem: &mut Linear) -> (Exit, bool) {
         // (an instruction that calls back into the guest: not while the cache is in use)
         Err(_) => vnx86::step_flow(cpu, mem),
     })
+}
+
+/// A call site's miss in the call cache (function mode): the hash table's entry for `target`
+/// if it is a function's (also put in the cache slot at `slot`), else 0.
+#[no_mangle]
+pub unsafe extern "C" fn vnhost_jit_callmiss(cpu: u32, slot: u32, target: u32) -> u32 {
+    let cpu = &*(cpu as usize as *const Cpu);
+    let hash = std::slice::from_raw_parts(cpu.jit_hash as usize as *const [u32; 2], cpu.jit_mask as usize + 1);
+    let mut h = jit::dispatch::slot(target, cpu.jit_mask);
+    while hash[h as usize][0] != 0 {
+        if hash[h as usize][0] == target {
+            let v = hash[h as usize][1];
+            if v & jit::FN_TAG == 0 {
+                return 0;
+            }
+            *(slot as usize as *mut [u32; 2]) = [target, v];
+            return v;
+        }
+        h = (h + 1) & cpu.jit_mask;
+    }
+    0
 }
 
 /// One instruction run by the interpreter for a block: 0 if it completed, else 2 with the exit
