@@ -1,9 +1,11 @@
 //! dinput8.dll / dinput.dll: the system keyboard and mouse as DirectInput devices, read from
-//! user32's key state and cursor. Joysticks are not there (EnumDevices lists none).
+//! user32's key state and cursor, plus buffered data (GetDeviceData) queued from user32's input
+//! events. Joysticks are not there (EnumDevices lists none).
 
 #![allow(non_snake_case)]
 
 use crate::HashMap;
+use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
 
 use crate::api::{implement, Ctx, Handler};
@@ -14,8 +16,70 @@ const MOUSE: u32 = 0x6F1D_2B60;
 
 use crate::api::vtable;
 
-/// device object -> (kind, last cursor for relative mouse motion)
-static DEVICES: Mutex<Option<HashMap<u32, (u32, (i32, i32))>>> = Mutex::new(None);
+struct Dev {
+    kind: u32,
+    /// the cursor at the last GetDeviceState (relative motion)
+    last: (i32, i32),
+    /// wheel motion since the last GetDeviceState
+    wheel: i32,
+    /// DIPROP_BUFFERSIZE; 0: not buffered
+    cap: u32,
+    /// buffered data: (offset, data, time, sequence)
+    buf: VecDeque<[u32; 4]>,
+    /// the cursor at the last buffered motion
+    at: (i32, i32),
+}
+
+/// device object -> its state
+static DEVICES: Mutex<Option<HashMap<u32, Dev>>> = Mutex::new(None);
+static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
+fn devices<R>(f: impl FnOnce(&mut HashMap<u32, Dev>) -> R) -> R {
+    f(DEVICES.lock().unwrap().get_or_insert_with(HashMap::default))
+}
+
+/// user32's input event (its kinds: 1 move, 2/3 button down/up, 4 wheel, 5/6 key down/up),
+/// queued on the devices that buffer and counted for the mouse state's wheel.
+pub fn input(kind: u32, x: i32, y: i32, data: u32) {
+    let time = crate::k32::ticks_ms();
+    devices(|ds| {
+        for d in ds.values_mut() {
+            let mut ev: [(u32, u32); 2] = [(u32::MAX, 0); 2];
+            match (d.kind, kind) {
+                (MOUSE, 1) => {
+                    let (dx, dy) = (x - d.at.0, y - d.at.1);
+                    d.at = (x, y);
+                    if dx != 0 {
+                        ev[0] = (0, dx as u32);
+                    }
+                    if dy != 0 {
+                        ev[1] = (4, dy as u32);
+                    }
+                }
+                (MOUSE, 2 | 3) if data < 3 => ev[0] = (12 + data, if kind == 2 { 0x80 } else { 0 }),
+                (MOUSE, 4) => {
+                    d.wheel += data as i32;
+                    ev[0] = (8, data);
+                }
+                (KEYBOARD, 5 | 6) => {
+                    if let Some(k) = dik_of(data as usize & 0xff) {
+                        ev[0] = (k as u32, if kind == 5 { 0x80 } else { 0 });
+                    }
+                }
+                _ => {}
+            }
+            for (ofs, v) in ev {
+                if ofs == u32::MAX || d.cap == 0 {
+                    continue;
+                }
+                if d.buf.len() >= d.cap as usize {
+                    d.buf.pop_front();
+                }
+                d.buf.push_back([ofs, v, time, SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)]);
+            }
+        }
+    });
+}
 
 fn ok(_: &mut Ctx) -> u32 {
     0
@@ -84,8 +148,8 @@ fn dev_vtbl() -> u32 {
             (GetCapabilities, 8),
             (ok, 20),
             (GetProperty, 12),
-            (ok, 12),
-            (ok, 4),
+            (SetProperty, 12),
+            (Acquire, 4),
             (ok, 4),
             (GetDeviceState, 12),
             (GetDeviceData, 20),
@@ -167,7 +231,8 @@ fn create_device(guid: u32, out: u32) -> u32 {
     }
     let o = mem::heap_alloc(8, true);
     w32(o, dev_vtbl());
-    DEVICES.lock().unwrap().get_or_insert_with(HashMap::default).insert(o, (kind, crate::user::cursor_pos()));
+    let at = crate::user::cursor_pos();
+    devices(|ds| ds.insert(o, Dev { kind, last: at, wheel: 0, cap: 0, buf: VecDeque::new(), at }));
     put32(out, o);
     0
 }
@@ -225,7 +290,7 @@ fn FindDevice(_: &mut Ctx) -> u32 {
 }
 
 fn kind_of(o: u32) -> u32 {
-    DEVICES.lock().unwrap().get_or_insert_with(HashMap::default).get(&o).map_or(0, |d| d.0)
+    devices(|ds| ds.get(&o).map_or(0, |d| d.kind))
 }
 
 /// DIDEVCAPS
@@ -240,12 +305,38 @@ fn GetCapabilities(c: &mut Ctx) -> u32 {
     w32(p + 16, if kind == KEYBOARD { 128 } else { 3 });
     0
 }
+/// DIPROP_BUFFERSIZE (the property GUID pointer 1) in a DIPROPDWORD; others read as 0
 fn GetProperty(c: &mut Ctx) -> u32 {
-    // DIPROPDWORD: buffer size and the like read as 0
-    let p = c.a(2);
+    let (o, prop, p) = (c.a(0), c.a(1), c.a(2));
     if r32(p) >= 20 {
-        w32(p + 16, 0);
+        let v = if prop == 1 { devices(|ds| ds.get(&o).map_or(0, |d| d.cap)) } else { 0 };
+        w32(p + 16, v);
     }
+    0
+}
+fn SetProperty(c: &mut Ctx) -> u32 {
+    let (o, prop, p) = (c.a(0), c.a(1), c.a(2));
+    if prop == 1 && r32(p) >= 20 {
+        let n = r32(p + 16).min(4096);
+        devices(|ds| {
+            if let Some(d) = ds.get_mut(&o) {
+                d.cap = n;
+                d.buf.truncate(n as usize);
+            }
+        });
+    }
+    0
+}
+/// Acquire: buffered data starts from now
+fn Acquire(c: &mut Ctx) -> u32 {
+    let o = c.a(0);
+    let at = crate::user::cursor_pos();
+    devices(|ds| {
+        if let Some(d) = ds.get_mut(&o) {
+            d.buf.clear();
+            d.at = at;
+        }
+    });
     0
 }
 fn GetDeviceInfo(c: &mut Ctx) -> u32 {
@@ -297,14 +388,14 @@ fn GetDeviceState(c: &mut Ctx) -> u32 {
         }
         MOUSE => {
             let now = crate::user::cursor_pos();
-            let last = {
-                let mut g = DEVICES.lock().unwrap();
-                let d = g.get_or_insert_with(HashMap::default).get_mut(&o).unwrap();
-                std::mem::replace(&mut d.1, now)
-            };
+            let (last, wheel) = devices(|ds| {
+                let d = ds.get_mut(&o).unwrap();
+                (std::mem::replace(&mut d.last, now), std::mem::take(&mut d.wheel))
+            });
             if n >= 12 {
                 w32(p, (now.0 - last.0) as u32);
                 w32(p + 4, (now.1 - last.1) as u32);
+                w32(p + 8, wheel as u32);
             }
             for (i, vk) in [1usize, 2, 4].iter().enumerate() {
                 if 12 + i as u32 >= n {
@@ -319,9 +410,38 @@ fn GetDeviceState(c: &mut Ctx) -> u32 {
         _ => 0x8007_001e,
     }
 }
-/// buffered data: nothing queued
+/// GetDeviceData(cbObjectData, rgdod, pdwInOut, flags): DIDEVICEOBJECTDATA (20 bytes, 16 in
+/// DirectX 3's) from the queue; rgdod NULL drops them; DIGDD_PEEK (1) leaves them queued.
 fn GetDeviceData(c: &mut Ctx) -> u32 {
-    put32(c.a(3), 0);
+    let (o, size, out, inout, flags) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
+    if inout == 0 {
+        return 0x8007_0057;
+    }
+    let want = r32(inout) as usize;
+    let got = devices(|ds| {
+        let Some(d) = ds.get_mut(&o) else { return None };
+        if d.cap == 0 {
+            return None;
+        }
+        let n = want.min(d.buf.len());
+        let items: Vec<[u32; 4]> = if flags & 1 != 0 { d.buf.iter().take(n).copied().collect() } else { d.buf.drain(..n).collect() };
+        Some(items)
+    });
+    let Some(items) = got else {
+        w32(inout, 0);
+        return 0x8004_0207; // DIERR_NOTBUFFERED
+    };
+    if out != 0 {
+        let size = size.max(16);
+        for (i, e) in items.iter().enumerate() {
+            let p = out + i as u32 * size;
+            mem::fill(p, size, 0);
+            for (k, v) in e.iter().enumerate() {
+                w32(p + 4 * k as u32, *v);
+            }
+        }
+    }
+    w32(inout, items.len() as u32);
     0
 }
 

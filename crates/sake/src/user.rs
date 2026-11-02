@@ -3945,6 +3945,7 @@ fn start_input() {
 }
 
 fn input(kind: u32, x: i32, y: i32, data: u32) {
+    crate::dinput::input(kind, x, y, data);
     with(|s| {
         let t = now_ms();
         match kind {

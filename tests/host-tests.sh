@@ -9,10 +9,12 @@ set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SAKE=${SAKE:-/home/user/work/sake-out/sake.js}
 OUT=${OUT:-$(mktemp -d)}
-TESTS=${*:-nullcall intops simd atomics smc cmp64 ssecvt}
+TESTS=${*:-nullcall intops simd atomics smc cmp64 ssecvt dinputtest}
 fail=0
 for t in $TESTS; do
-  if ! i686-w64-mingw32-gcc -O2 -mmmx -msse2 -mssse3 "$ROOT/host/tests/$t.c" -o "$OUT/$t.exe"; then
+  # a "libs:" line in the source names its import libraries
+  libs=$(sed -n 's/.*libs: *\([-a-z0-9 ]*\).*/\1/p' "$ROOT/host/tests/$t.c" | head -1)
+  if ! i686-w64-mingw32-gcc -O2 -mmmx -msse2 -mssse3 "$ROOT/host/tests/$t.c" -o "$OUT/$t.exe" $libs; then
     echo "FAIL $t: build"; fail=1; continue
   fi
   run() { (cd "$(dirname "$SAKE")" && timeout 300 env "$@" node "$SAKE" "$OUT/$t.exe" 2>&1 | grep -v '^sake:'); }

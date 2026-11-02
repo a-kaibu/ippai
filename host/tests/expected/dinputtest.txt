@@ -1,0 +1,9 @@
+create 0
+keyboard 0
+mouse 0
+unbuffered 80040207 0
+set 0
+size 64
+buffered 0 0
+keys 0
+mouse state 0 0
