@@ -327,6 +327,10 @@ struct Gen<'a> {
     /// functions: per block, the registers checked to be in the guest range on every way in
     /// (see [`safe_in`])
     safe_in: Vec<u8>,
+    /// functions: per block, the blocks with an edge to it, and the lazy operation each block
+    /// emitted so far ends with (see [`Gen::predict`])
+    preds: Vec<Vec<u32>>,
+    flags_out: Vec<Option<u32>>,
     /// with [`LAYOUT`]: whether the instruction went to the interpreter, and per mnemonic
     /// ("*" marking those) the count and wasm bytes
     fell_back: bool,
@@ -1274,6 +1278,50 @@ impl<'a> Gen<'a> {
     fn cond(&mut self, cc: u32) {
         let neg = cc & 1 != 0;
         if let Flags::Known(op) = self.flags {
+            if self.cond_known(op, cc) {
+                if neg {
+                    // (eqz: TurboFan folds it into the comparison or the branch, an xor stays)
+                    self.c.eqz();
+                }
+                return;
+            }
+        } else if let Some(op) = self.predict(cc) {
+            // flags from before the block: most likely those a block leading here left (a
+            // second jcc after a cmp), checked
+            self.c.get(L_OP).u32c(op).eq().if_i32();
+            self.cond_known(op, cc);
+            self.c.else_();
+            self.cond_eflags(cc);
+            self.c.end();
+            if neg {
+                self.c.eqz();
+            }
+            return;
+        }
+        self.cond_eflags(cc);
+        if neg {
+            self.c.eqz();
+        }
+    }
+
+    /// An operation the blocks leading here (functions) left their flags from, for which
+    /// condition `cc` needs no EFLAGS.
+    fn predict(&mut self, cc: u32) -> Option<u32> {
+        let k = self.block_index as usize;
+        let ops: Vec<u32> = self.preds.get(k)?.iter().filter_map(|&p| self.flags_out[p as usize]).collect();
+        ops.into_iter().find(|&op| {
+            let (b, l) = (self.c.b.len(), self.c.locs.len());
+            let ok = self.cond_known(op, cc);
+            self.c.b.truncate(b);
+            self.c.locs.truncate(l);
+            ok
+        })
+    }
+
+    /// Pushes condition `cc` without its negation (bit 0) from the lazy operation `op` in
+    /// the locals; false (nothing pushed) if that needs EFLAGS.
+    fn cond_known(&mut self, op: u32, cc: u32) -> bool {
+        {
             let bits = 8 << (op & 3);
             let m = mask(bits);
             let kind = op >> 2;
@@ -1396,17 +1444,64 @@ impl<'a> Gen<'a> {
                     sign(&mut self.c);
                     true
                 }
+                // OF: the sign of (a ^ r) & (b ^ r) (ADD), (a ^ b) & (a ^ r) (SUB); INC
+                // overflows to the smallest value, DEC from it
+                (lazy::ADD | lazy::SUB | lazy::INC | lazy::DEC | lazy::MUL, 0 | 6 | 7) => {
+                    let sh = bits as i32 - 1;
+                    match kind {
+                        lazy::ADD => {
+                            self.c.get(L_FA).get(L_FR).xor().get(L_FB).get(L_FR).xor().and().i32c(sh).shr_u().i32c(1).and();
+                        }
+                        lazy::SUB => {
+                            self.c.get(L_FA).get(L_FB).xor().get(L_FA).get(L_FR).xor().and().i32c(sh).shr_u().i32c(1).and();
+                        }
+                        lazy::INC => {
+                            self.c.get(L_FR);
+                            and_mask(&mut self.c, m);
+                            self.c.u32c(1 << sh).eq();
+                        }
+                        lazy::DEC => {
+                            self.c.get(L_FA);
+                            and_mask(&mut self.c, m);
+                            self.c.u32c(1 << sh).eq();
+                        }
+                        _ => {
+                            self.c.get(L_FC).i32c(0).ne();
+                        }
+                    }
+                    // L: SF != OF, LE: that or ZF
+                    if cc >> 1 != 0 {
+                        sign(&mut self.c);
+                        self.c.xor();
+                    }
+                    if cc >> 1 == 7 {
+                        zero(&mut self.c);
+                        self.c.eqz().or();
+                    }
+                    true
+                }
+                (lazy::ADD, 3) => {
+                    zero(&mut self.c);
+                    self.c.eqz();
+                    zero(&mut self.c);
+                    self.c.get(L_FA);
+                    and_mask(&mut self.c, m);
+                    self.c.lt_u().or();
+                    true
+                }
+                // PF: an even number of ones in the low byte
+                (lazy::ADD | lazy::SUB | lazy::LOGIC | lazy::INC | lazy::DEC | lazy::ADC | lazy::SBB | lazy::MUL | lazy::SHL | lazy::SHR | lazy::SAR, 5) => {
+                    self.c.get(L_FR).i32c(0xff).and().op(0x69).i32c(1).and().eqz(); // i32.popcnt
+                    true
+                }
                 _ => false,
             };
-            if done {
-                if neg {
-                    // (eqz: TurboFan folds it into the comparison or the branch, an xor stays)
-                    self.c.eqz();
-                }
-                return;
-            }
+            done
         }
-        // from EFLAGS
+    }
+
+    /// Pushes condition `cc` without its negation from EFLAGS.
+    fn cond_eflags(&mut self, cc: u32) {
         if LAYOUT.load(core::sync::atomic::Ordering::Relaxed) {
             let k = match self.flags {
                 Flags::Known(op) => alloc::format!("CONDFB_k{}_b{}_cc{}", op >> 2, 8 << (op & 3), cc),
@@ -1435,9 +1530,6 @@ impl<'a> Gen<'a> {
             _ => {
                 self.c.get(t).i32c(7).shr_u().get(t).i32c(11).shr_u().xor().get(t).i32c(6).shr_u().or().i32c(1).and();
             }
-        }
-        if neg {
-            self.c.eqz();
         }
     }
 
@@ -4024,6 +4116,12 @@ fn emit_block<'a>(g: &mut Gen<'a>, blocks: &'a [(u32, Vec<Instruction>)], k: usi
             break;
         }
     }
+    if let Some(o) = g.flags_out.get_mut(k) {
+        *o = match g.flags {
+            Flags::Known(op) => Some(op),
+            Flags::Entry => None,
+        };
+    }
 }
 
 /// What [`Gen::x87_flush`] does, for a block leaving with its x87 cache (`info`: dirty slots,
@@ -4575,6 +4673,8 @@ fn translate<M: Memory>(
         dirty_in: Vec::new(),
         small: [None; 8],
         safe_in: Vec::new(),
+        preds: Vec::new(),
+        flags_out: Vec::new(),
         temps: 0,
         safe: [None; 8],
         safe2: Vec::new(),
@@ -4663,6 +4763,13 @@ fn translate<M: Memory>(
         let l = fl.unwrap();
         g.dirty_in = dirty_in(&g, &blocks, &l);
         g.safe_in = safe_in(&g, &blocks, &l);
+        g.preds = alloc::vec![Vec::new(); blocks.len()];
+        for (v, ws) in l.succ.iter().enumerate().take(blocks.len()) {
+            for &w in ws.iter().filter(|&&w| w < blocks.len()) {
+                g.preds[w].push(v as u32);
+            }
+        }
+        g.flags_out = alloc::vec![None; blocks.len()];
         if LAYOUT.load(core::sync::atomic::Ordering::Relaxed) {
             use core::fmt::Write;
             let _ = writeln!(g.notes, "IRREDUCIBLE {}", l.irreducible());
