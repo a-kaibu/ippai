@@ -31,7 +31,8 @@ fn threshold() -> u32 {
     static T: OnceLock<u32> = OnceLock::new();
     *T.get_or_init(|| std::env::var("VNVM_JIT_THRESHOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(THRESHOLD))
 }
-/// Debugging a miscompile by bisection: VNVM_JIT_ONLY=lo-hi (hex) compiles only code in [lo, hi).
+/// Debugging a miscompile by bisection: VNVM_JIT_ONLY=lo-hi (hex) compiles only code in [lo, hi),
+/// VNVM_JIT_ONLY=!lo-hi all but that.
 fn debug_allowed(a: u32) -> bool {
     if wx_page(a) {
         return false;
@@ -86,16 +87,18 @@ pub extern "C" fn vnhost_jit_exe_image(addr: *const std::ffi::c_void, size: usiz
 
 fn debug_range(a: u32) -> bool {
     use std::sync::OnceLock;
-    static R: OnceLock<(u32, u32)> = OnceLock::new();
-    let (lo, hi) = *R.get_or_init(|| {
+    static R: OnceLock<(u32, u32, bool)> = OnceLock::new();
+    let (lo, hi, not) = *R.get_or_init(|| {
+        // ("!lo-hi": everything but [lo, hi))
         let v = std::env::var("VNVM_JIT_ONLY").unwrap_or_default();
-        let mut it = v.split('-').map(|x| u32::from_str_radix(x.trim_start_matches("0x"), 16).ok());
+        let not = v.starts_with('!');
+        let mut it = v.trim_start_matches('!').split('-').map(|x| u32::from_str_radix(x.trim_start_matches("0x"), 16).ok());
         match (it.next().flatten(), it.next().flatten()) {
-            (Some(lo), Some(hi)) => (lo, hi),
-            _ => (0, u32::MAX),
+            (Some(lo), Some(hi)) => (lo, hi, not),
+            _ => (0, u32::MAX, false),
         }
     });
-    a >= lo && a < hi
+    (a >= lo && a < hi) != not
 }
 /// VNVM_JIT_FN_ONLY=lo-hi (hex): function mode only for entries in [lo, hi), regions elsewhere.
 fn fn_allowed(a: u32) -> bool {

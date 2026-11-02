@@ -140,6 +140,44 @@ impl<'a, M: Memory> X<'a, M> {
                     self.cpu.fpu.pop();
                 }
             }
+            // packed BCD (Delphi's FloatToText stores its digits with FBSTP): 9 bytes of two
+            // digits each, low digits first, then the sign byte
+            Fbstp => {
+                let f = &self.cpu.fpu;
+                let r = f.exact_int().map_or_else(|| f.round(f.st(0)), |e| e as f64);
+                let a = self.addr();
+                let mut b = [0u8; 10];
+                if r.is_nan() || r.abs() >= 1e18 {
+                    b[7] = 0xc0; // the BCD indefinite
+                    b[8] = 0xff;
+                    b[9] = 0xff;
+                } else {
+                    let mut n = r.abs() as u64;
+                    for x in b.iter_mut().take(9) {
+                        *x = (n % 10) as u8 | (((n / 10) % 10) as u8) << 4;
+                        n /= 100;
+                    }
+                    if r.is_sign_negative() {
+                        b[9] = 0x80;
+                    }
+                }
+                for (i, x) in b.iter().enumerate() {
+                    tryf!(self.mem.write8(a.wrapping_add(i as u32), *x));
+                }
+                self.cpu.fpu.pop();
+            }
+            Fbld => {
+                let a = self.addr();
+                let mut v: i64 = 0;
+                for i in (0..9).rev() {
+                    let x = tryf!(self.mem.read8(a.wrapping_add(i)));
+                    v = v * 100 + ((x >> 4) as i64) * 10 + (x & 15) as i64;
+                }
+                if tryf!(self.mem.read8(a.wrapping_add(9))) & 0x80 != 0 {
+                    v = -v;
+                }
+                self.cpu.fpu.push_int(v);
+            }
             Fxch => {
                 let i = if ins.op_count() == 0 {
                     1

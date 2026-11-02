@@ -2404,6 +2404,12 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     let mut ff_inputs: Vec<(u32, u32, u32, u32)> = Vec::new();
     for e in &elems {
         let Some((pf, kind)) = vertex_format(e.ty) else { continue };
+        // (an FVF can declare more than the stride holds: QLIE draws TEX8 vertices with a
+        // 32-byte stride; Direct3D reads past the vertex, WebGPU refuses the layout)
+        let stride = streams.iter().find(|x| x.0 == e.stream).map_or(0, |x| x.2);
+        if stride != 0 && e.offset + type_size(e.ty) > stride {
+            continue;
+        }
         let slot = used.iter().position(|&s| s == e.stream).unwrap() as u32;
         match vs_shader {
             Some(sh) => {
