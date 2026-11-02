@@ -8,6 +8,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::api::{implement, Ctx};
@@ -934,6 +935,15 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
     c.cpu.regs[vnx86::ESP] = cs - 16;
     for (k, v) in [param, inst, menu, parent, cy as u32, cx as u32, y as u32, x as u32, style, name_p, cls_p, ex].iter().enumerate() {
         w32(cs + 4 * k as u32, *v);
+    }
+    // HCBT_CREATEWND (CBT_CREATEWND: CREATESTRUCT, insert after)
+    let cbtw = cs + 0x70;
+    w32(cbtw, cs);
+    w32(cbtw + 4, 0);
+    if cbt(c, 3, h, cbtw) {
+        c.cpu.regs[vnx86::ESP] = save;
+        destroy(c, h);
+        return 0;
     }
     // MINMAXINFO for WM_GETMINMAXINFO
     let mmi = cs + 0x40;
@@ -2595,14 +2605,33 @@ fn MessageBoxIndirectA(c: &mut Ctx) -> u32 {
     eprintln!("vnwin: MessageBox [{}] {}", arg_str(r32(p + 12), false), arg_str(r32(p + 8), false));
     1
 }
-fn SetWindowsHookExA(_: &mut Ctx) -> u32 {
-    0x5000
+/// CBT hooks (MFC's CWnd::CreateEx attaches the window and subclasses it in HCBT_CREATEWND):
+/// (handle, procedure, thread). Other hooks are accepted and never called.
+static CBT_HOOKS: Mutex<Vec<(u32, u32, u32)>> = Mutex::new(Vec::new());
+static NEXT_HOOK: AtomicU32 = AtomicU32::new(0x5000);
+fn set_hook(c: &mut Ctx) -> u32 {
+    let h = NEXT_HOOK.fetch_add(4, Ordering::Relaxed);
+    if c.a(0) == 5 {
+        let tid = if c.a(3) != 0 { c.a(3) } else { crate::cur().tid };
+        CBT_HOOKS.lock().unwrap().push((h, c.a(1), tid));
+    }
+    h
 }
-fn SetWindowsHookExW(_: &mut Ctx) -> u32 {
-    0x5000
+fn SetWindowsHookExA(c: &mut Ctx) -> u32 {
+    set_hook(c)
 }
-fn UnhookWindowsHookEx(_: &mut Ctx) -> u32 {
+fn SetWindowsHookExW(c: &mut Ctx) -> u32 {
+    set_hook(c)
+}
+fn UnhookWindowsHookEx(c: &mut Ctx) -> u32 {
+    CBT_HOOKS.lock().unwrap().retain(|x| x.0 != c.a(0));
     1
+}
+/// The thread's CBT hooks with (code, wparam, lparam); true when one refuses.
+fn cbt(c: &mut Ctx, code: u32, wp: u32, lp: u32) -> bool {
+    let tid = crate::cur().tid;
+    let procs: Vec<u32> = CBT_HOOKS.lock().unwrap().iter().filter(|x| x.2 == tid).map(|x| x.1).collect();
+    procs.into_iter().rev().any(|p| c.call(p, &[code, wp, lp]) != 0)
 }
 fn CallNextHookEx(_: &mut Ctx) -> u32 {
     0
@@ -3328,6 +3357,9 @@ fn LoadAcceleratorsA(_: &mut Ctx) -> u32 {
     fake_handle()
 }
 fn LoadMenuA(_: &mut Ctx) -> u32 {
+    new_menu()
+}
+fn LoadMenuW(_: &mut Ctx) -> u32 {
     new_menu()
 }
 
@@ -4060,7 +4092,7 @@ pub fn init() {
         SetMenuItemBitmaps, GetMenuCheckMarkDimensions,
         LoadStringA, LoadStringW, LoadCursorA, LoadCursorW, LoadCursorFromFileA, LoadIconA, LoadIconW, LoadImageA,
         LoadImageW, CreateIcon, CreateIconIndirect, CreateCursor, CopyIcon, DestroyCursor, DestroyIcon,
-        GetIconInfo, LoadBitmapA, LoadBitmapW, LoadAcceleratorsA, LoadMenuA,
+        GetIconInfo, LoadBitmapA, LoadBitmapW, LoadAcceleratorsA, LoadMenuA, LoadMenuW,
         CharLowerA, CharUpperA, CharLowerW, CharUpperW, CharLowerBuffA, CharUpperBuffA, CharNextA, CharNextW,
         CharPrevA, CharToOemA, OemToCharA, OemToCharBuffA, CharToOemBuffA, IsCharAlphaA, IsCharAlphaNumericA,
         IsCharUpperA, IsCharLowerA, IsCharAlphaW, wsprintfA, wvsprintfA, wsprintfW, GetGUIThreadInfo,

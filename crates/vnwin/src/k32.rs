@@ -1442,6 +1442,9 @@ fn GetVersionExW(c: &mut Ctx) -> u32 {
 fn VerifyVersionInfoW(_: &mut Ctx) -> u32 {
     1
 }
+fn VerifyVersionInfoA(_: &mut Ctx) -> u32 {
+    1
+}
 fn VerSetConditionMask(c: &mut Ctx) -> u32 {
     let v = c.a(0) as u64 | (c.a(1) as u64) << 32;
     c.ret64(v)
@@ -3041,7 +3044,7 @@ pub fn init() {
         GlobalAlloc, GlobalFree, GlobalReAlloc, GlobalLock, GlobalUnlock, GlobalHandle, GlobalSize, GlobalFlags,
         LocalAlloc, LocalFree, LocalReAlloc, LocalLock, LocalUnlock, LocalSize, LocalHandle,
         GlobalMemoryStatus, GlobalMemoryStatusEx, GetSystemInfo, GetNativeSystemInfo, IsProcessorFeaturePresent,
-        IsWow64Process, GetVersion, GetVersionExA, GetVersionExW, VerifyVersionInfoW, VerSetConditionMask,
+        IsWow64Process, GetVersion, GetVersionExA, GetVersionExW, VerifyVersionInfoW, VerifyVersionInfoA, VerSetConditionMask,
         GetACP, GetOEMCP, IsValidCodePage, GetThreadLocale, SetThreadLocale, GetUserDefaultLCID, GetSystemDefaultLCID, EnumSystemLocalesA, EnumSystemLocalesW,
         GetUserDefaultLangID, GetSystemDefaultLangID, GetUserDefaultUILanguage, GetSystemDefaultUILanguage,
         IsValidLocale, GetLocaleInfoA, GetLocaleInfoW, EnumCalendarInfoA, GetCPInfo, GetCPInfoExA, IsDBCSLeadByte,

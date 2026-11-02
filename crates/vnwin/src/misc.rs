@@ -1820,6 +1820,29 @@ fn remove_spec(s: &str) -> Option<String> {
     let k = s.rfind('\\')?;
     Some(if k == 2 && s.as_bytes().get(1) == Some(&b':') { s[..3].to_string() } else { s[..k].to_string() })
 }
+/// "C:\\x\\y" -> "C:\\", "\\\\srv\\share\\x" -> "\\\\srv\\share"
+fn strip_to_root(s: &str) -> Option<String> {
+    if s.as_bytes().get(1) == Some(&b':') {
+        return Some(format!("{}\\", &s[..2]));
+    }
+    if let Some(rest) = s.strip_prefix("\\\\") {
+        let n = rest.match_indices('\\').nth(1).map_or(rest.len(), |x| x.0);
+        return Some(format!("\\\\{}", &rest[..n]));
+    }
+    s.starts_with('\\').then(|| "\\".to_string())
+}
+fn PathStripToRootA(c: &mut Ctx) -> u32 {
+    path_op(c, false, strip_to_root)
+}
+fn PathStripToRootW(c: &mut Ctx) -> u32 {
+    path_op(c, true, strip_to_root)
+}
+fn PathIsUNCA(c: &mut Ctx) -> u32 {
+    arg_str(c.a(0), false).starts_with("\\\\") as u32
+}
+fn PathIsUNCW(c: &mut Ctx) -> u32 {
+    arg_str(c.a(0), true).starts_with("\\\\") as u32
+}
 fn unquote(s: &str) -> Option<String> {
     (s.len() >= 2 && s.starts_with('"') && s.ends_with('"')).then(|| s[1..s.len() - 1].to_string())
 }
@@ -2135,6 +2158,7 @@ pub fn init() {
     reg!("winmm"; timeGetTime, timeBeginPeriod, timeEndPeriod, timeGetDevCaps, timeGetSystemTime, timeSetEvent,
         timeKillEvent, joyGetNumDevs, joyGetPosEx, joyGetPos, joyGetDevCapsA, joyGetDevCapsW, mciSendStringA,
         mciSendStringW, mciSendCommandA, waveOutGetNumDevs, midiOutGetNumDevs, auxGetNumDevs, mixerGetNumDevs);
+    reg!("shlwapi"; PathStripToRootA, PathStripToRootW, PathIsUNCA, PathIsUNCW);
     reg!("shlwapi"; PathRemoveFileSpecA, PathRemoveFileSpecW, PathFileExistsA, PathFileExistsW, PathIsDirectoryA,
         PathIsDirectoryW, PathAppendA, PathAppendW, PathCombineA, PathCombineW, PathFindFileNameA,
         PathFindFileNameW, PathFindExtensionA, PathFindExtensionW, PathIsRelativeA, PathIsRelativeW, PathUnquoteSpacesA,
