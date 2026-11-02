@@ -301,11 +301,14 @@ impl Device {
         for h in held {
             d.unbind(h);
         }
-        for s in [self.backbuffer, self.auto_depth, self.swapchain, self.dummy] {
+        for s in [self.backbuffer, self.auto_depth, self.swapchain] {
             if s != 0 {
                 d.unbind(s);
-                d.release(s);
             }
+        }
+        if self.dummy != 0 {
+            d.unbind(self.dummy);
+            d.release(self.dummy);
         }
     }
 }
@@ -816,19 +819,22 @@ fn reset_buffers(d: &mut D3d) {
     let dev = d.dev.as_ref().unwrap();
     let p = dev.pp;
     let (old_bb, old_ds, old_sc) = (dev.backbuffer, dev.auto_depth, dev.swapchain);
+    // (the device holds them by binding only: an application's Release of what GetBackBuffer
+    // gave it returns 0, as on Windows; QLIE checks)
     for s in [old_bb, old_ds, old_sc] {
         if s != 0 {
             d.unbind(s);
-            d.release(s);
         }
     }
     let bb = new_surface(d, p[0], p[1], p[2], POOL_DEFAULT, USAGE_RENDERTARGET, 0, 0, 0);
     let bb = d.id_of(bb);
     d.bind(bb);
+    d.release(bb);
     let ds = if p[9] != 0 {
         let s = new_surface(d, p[0], p[1], p[10], POOL_DEFAULT, USAGE_DEPTHSTENCIL, 0, 0, 0);
         let s = d.id_of(s);
         d.bind(s);
+        d.release(s);
         s
     } else {
         0
@@ -836,6 +842,7 @@ fn reset_buffers(d: &mut D3d) {
     let sc = d.new_obj(IF_SWAPCHAIN, 0, Data::SwapChain);
     let sc = d.id_of(sc);
     d.bind(sc);
+    d.release(sc);
     let dev = d.dev.as_mut().unwrap();
     for r in dev.rt {
         if r != 0 && r != old_bb {

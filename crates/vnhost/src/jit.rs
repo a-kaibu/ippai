@@ -33,6 +33,58 @@ fn threshold() -> u32 {
 }
 /// Debugging a miscompile by bisection: VNVM_JIT_ONLY=lo-hi (hex) compiles only code in [lo, hi).
 fn debug_allowed(a: u32) -> bool {
+    if wx_page(a) {
+        return false;
+    }
+    debug_range(a)
+}
+
+/// Pages mapped or protected writable and executable at once, and the main executables' pages.
+/// Code on a W|X page outside a main exe (an unpacker's or a JS engine's) may be rewritten
+/// without a protection change, which `code_changed` can't see: the interpreter runs it
+/// (UPX-style packed exes keep the JIT; their stubs unpack before the code runs).
+static WX_PAGES: [AtomicU32; 1 << 14] = [const { AtomicU32::new(0) }; 1 << 14];
+static EXE_PAGES: [AtomicU32; 1 << 14] = [const { AtomicU32::new(0) }; 1 << 14];
+
+fn set_pages(map: &[AtomicU32], addr: usize, len: usize, on: bool) {
+    if len == 0 || addr >= 1 << 31 {
+        return;
+    }
+    let (lo, hi) = (addr >> 12, (addr.saturating_add(len - 1) >> 12).min((1 << 19) - 1));
+    for p in lo..=hi {
+        if on {
+            map[p >> 5].fetch_or(1 << (p & 31), Ordering::Relaxed);
+        } else {
+            map[p >> 5].fetch_and(!(1 << (p & 31)), Ordering::Relaxed);
+        }
+    }
+}
+
+fn page_set(map: &[AtomicU32], a: u32) -> bool {
+    let p = (a >> 12) as usize;
+    p < 1 << 19 && map[p >> 5].load(Ordering::Relaxed) & (1 << (p & 31)) != 0
+}
+
+fn wx_page(a: u32) -> bool {
+    page_set(&WX_PAGES, a) && !page_set(&EXE_PAGES, a)
+}
+
+/// The guest's pages `addr..addr + len` got protection `prot` (mmap, mprotect; unmapped: 0).
+pub fn pages_protected(addr: usize, len: usize, prot: i32) {
+    let wx = prot & libc::PROT_WRITE != 0 && prot & libc::PROT_EXEC != 0;
+    set_pages(&WX_PAGES, addr, len, wx);
+    if prot == 0 {
+        set_pages(&EXE_PAGES, addr, len, false);
+    }
+}
+
+/// Wine mapped a main executable (not a DLL) there.
+#[no_mangle]
+pub extern "C" fn vnhost_jit_exe_image(addr: *const std::ffi::c_void, size: usize) {
+    set_pages(&EXE_PAGES, addr as usize, size, true);
+}
+
+fn debug_range(a: u32) -> bool {
     use std::sync::OnceLock;
     static R: OnceLock<(u32, u32)> = OnceLock::new();
     let (lo, hi) = *R.get_or_init(|| {

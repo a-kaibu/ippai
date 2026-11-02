@@ -133,7 +133,9 @@ async function click(x, y) {
   if (x < 1) x = Math.round(x * (view[2] - view[0]));
   if (y < 1) y = Math.round(y * (view[3] - view[1]));
   const X = view[0] + x, Y = view[1] + y;
-  await input(1, X, Y, 0); await input(2, X, Y, 0); await input(3, X, Y, 0);
+  // (held 0.1 s like a finger: games polling the button state at a few frames a second miss
+  // an instant press)
+  await input(1, X, Y, 0); await input(2, X, Y, 0); await sleep(0.1); await input(3, X, Y, 0);
 }
 const VK = { Return: [0x0d, 28], Space: [0x20, 57], Escape: [0x1b, 1], Down: [0x28, 0], Up: [0x26, 0], Ctrl: [0x11, 29], z: [0x5a, 44] };
 async function key(name) {

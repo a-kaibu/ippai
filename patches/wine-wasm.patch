@@ -1494,17 +1494,23 @@
  #else
      if (__builtin_frame_address(0) < address_space_limit)
      {
-@@ -3112,6 +3131,9 @@
+@@ -3112,6 +3131,15 @@
      server_leave_uninterrupted_section( &virtual_mutex, &sigset );
      if (needs_close) close( unix_fd );
      if (shared_needs_close) close( shared_fd );
 +#ifdef __wasm__
 +    if (NT_SUCCESS(status) && !offset) wasm_dll_mapped( *addr_ptr, *size_ptr );
++    if (NT_SUCCESS(status) && !(pe_mapping->image.image_charact & IMAGE_FILE_DLL))
++    {
++        /* the JIT keeps translating a main exe's write+execute sections (vnhost jit.rs) */
++        extern void vnhost_jit_exe_image( void *addr, SIZE_T size );
++        vnhost_jit_exe_image( *addr_ptr, *size_ptr );
++    }
 +#endif
      return status;
  }
  
-@@ -3213,6 +3235,24 @@
+@@ -3213,6 +3241,24 @@
  
      if ((res = server_get_unix_fd( handle, 0, &unix_handle, &needs_close, NULL, NULL ))) return res;
  
@@ -1529,7 +1535,7 @@
      server_enter_uninterrupted_section( &virtual_mutex, &sigset );
  
      res = map_view( &view, base, size, alloc_type, vprot, limit_low, limit_high, 0 );
-@@ -3299,8 +3339,19 @@
+@@ -3299,8 +3345,19 @@
      }
      else
      {
@@ -1549,7 +1555,7 @@
      }
  
      if (is_win64) /* top-down area */
-@@ -3345,7 +3396,9 @@
+@@ -3345,7 +3402,9 @@
   */
  void virtual_get_system_info( SYSTEM_BASIC_INFORMATION *info, BOOL wow64 )
  {
@@ -1560,7 +1566,7 @@
      && defined(HAVE_STRUCT_SYSINFO_TOTALRAM) && defined(HAVE_STRUCT_SYSINFO_MEM_UNIT)
      struct sysinfo sinfo;
  
-@@ -6616,7 +6669,11 @@
+@@ -6616,7 +6675,11 @@
   */
  NTSTATUS WINAPI NtFlushInstructionCache( HANDLE handle, const void *addr, SIZE_T size )
  {
