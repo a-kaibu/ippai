@@ -727,11 +727,17 @@ fn maybe_save() {
         .collect();
     let mods: Vec<&[u8]> = new.iter().map(|(_, s)| &s.bytes[..]).collect();
     let names = jit::saved::func_names(&entries);
-    let Some(wasm) = jit::wasm::merge(&mods, &names) else { return };
+    let Some(wasm) = jit::wasm::merge(&mods, &names) else {
+        eprintln!("vnjit: save: {} modules don't merge", mods.len());
+        return;
+    };
     for (r, s) in new {
         done.insert(r, s.build);
     }
     let idx = jit::saved::encode(&entries);
+    if stats() || std::env::var_os("VNVM_JIT_SAVE_LOG").is_some() {
+        eprintln!("vnjit: saving {} regions ({} bytes)", entries.len(), wasm.len());
+    }
     let mut body = (wasm.len() as u32).to_le_bytes().to_vec();
     body.extend_from_slice(&wasm);
     body.extend_from_slice(&idx);
@@ -957,9 +963,8 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
                 mark_code(&r.code);
                 return load(st, &r.bytes, vec![eip], &r.starts);
             }
-            // (saved regions: 32-bit ones only for now)
-            if cpu.mode64 != 0 {
-            } else if let Some(i) = find_saved(mem, &[eip], false, (cpu.trap_lo, cpu.trap_hi)) {
+            // (a 64-bit region checks the upper half of RIP itself on entry)
+            if let Some(i) = find_saved(mem, &[eip], false, (cpu.trap_lo, cpu.trap_hi)) {
                 if load_saved(st, i) {
                     return true;
                 }
@@ -1020,7 +1025,7 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
     })
 }
 
-/// Compiles the long-mode region at cpu.eip (jit::long; no FN mode, saves or merges yet).
+/// Compiles the long-mode region at cpu.eip (jit::long; no FN mode or merges yet).
 fn compile_long(st: &mut State, cpu: &Cpu, mem: &mut Linear) -> bool {
     let eip = cpu.eip;
     let mut m = Module { name: Some(format!("x64_{:x}{eip:08x}", cpu.rip_hi)), ..Module::default() };
@@ -1043,6 +1048,7 @@ fn compile_long(st: &mut State, cpu: &Cpu, mem: &mut Linear) -> bool {
     if ok {
         mark_code(&region.code);
         share(mem, &[eip], bytes, &region);
+        maybe_save();
     } else {
         st.known.insert(eip);
     }
@@ -1389,7 +1395,8 @@ fn count_step(cpu: &Cpu) {
     }
     let mut b = [0u8; 16];
     let n = vnx86::Memory::fetch(&mut Linear, cpu.eip, &mut b);
-    let mut d = vnx86::iced_x86::Decoder::with_ip(32, &b[..n], cpu.eip as u64, vnx86::iced_x86::DecoderOptions::NONE);
+    let bits = if cpu.mode64 != 0 { 64 } else { 32 };
+    let mut d = vnx86::iced_x86::Decoder::with_ip(bits, &b[..n], cpu.eip as u64, vnx86::iced_x86::DecoderOptions::NONE);
     let ins = d.decode();
     let pre = if ins.has_lock_prefix() {
         "lock "

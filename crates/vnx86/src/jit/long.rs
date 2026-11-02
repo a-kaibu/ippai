@@ -364,6 +364,7 @@ impl<'a> Gen<'a> {
             OpKind::Register => Self::reg(self.ins.op_register(i)).is_some(),
             OpKind::Memory => true,
             OpKind::Immediate8 | OpKind::Immediate16 | OpKind::Immediate32 | OpKind::Immediate64 | OpKind::Immediate8to16 | OpKind::Immediate8to32 | OpKind::Immediate8to64 | OpKind::Immediate32to64 => true,
+            OpKind::NearBranch64 => true,
             _ => false,
         }
     }
@@ -1189,7 +1190,8 @@ fn reads_flags(ins: &Instruction) -> (u32, u32) {
     // (iced's RflagsBits: OF 1, SF 2, ZF 4, AF 8, CF 0x10, PF 0x20)
     let all = 0x3f;
     let mut read = ins.rflags_read() & all;
-    let written = (ins.rflags_written() | ins.rflags_cleared() | ins.rflags_set() | ins.rflags_undefined()) & all;
+    // (undefined flags are not counted as written: the interpreter keeps some of them, e.g. BSR)
+    let written = (ins.rflags_written() | ins.rflags_cleared() | ins.rflags_set()) & all;
     // a shift or rotate by a count that may be 0 leaves the flags as they were: it reads them
     use Mnemonic::*;
     if matches!(ins.mnemonic(), Shl | Shr | Sar | Sal | Rol | Ror | Rcl | Rcr | Shld | Shrd) {

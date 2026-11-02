@@ -576,8 +576,13 @@ fn parts(m: &[u8]) -> Option<Parts<'_>> {
             }
             0x01 => p += 4,
             0x02 => {
-                p += 3;
+                // memory: limits flags, minimum, maximum (when flagged)
+                let flags = *imports.get(p + 1)?;
+                p += 2;
                 read_uleb(imports, &mut p)?;
+                if flags & 1 != 0 {
+                    read_uleb(imports, &mut p)?;
+                }
             }
             _ => return None,
         }
