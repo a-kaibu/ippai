@@ -307,6 +307,12 @@ struct Gen<'a> {
     /// all for regions
     regs: u8,
     wregs: u8,
+    /// registers written since they were last loaded from the Cpu, in the block so far: what
+    /// a call or RET stores
+    dirty: u8,
+    /// functions: per block, those that can be dirty at its start (see [`dirty_in`]; all of
+    /// `wregs` if absent)
+    dirty_in: Vec<u8>,
     /// with [`LAYOUT`]: whether the instruction went to the interpreter, and per mnemonic
     /// ("*" marking those) the count and wasm bytes
     fell_back: bool,
@@ -1491,8 +1497,17 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// The registers written since they were loaded into the Cpu (a call's or RET's).
+    fn store_dirty(&mut self) {
+        for i in (0..8).filter(|i| self.wregs & self.dirty & (1 << i) != 0) {
+            self.c.get(L_CPU).get(L_REG + i).store32(Off::reg(i as usize));
+        }
+        self.dirty = 0;
+    }
+
     /// The registers the code names from the Cpu.
     fn load_regs(&mut self) {
+        self.dirty = 0;
         for i in (0..8).filter(|i| self.regs & (1 << i) != 0) {
             self.c.get(L_CPU).load32(Off::reg(i as usize)).set(L_REG + i);
         }
@@ -1520,6 +1535,7 @@ impl<'a> Gen<'a> {
                 written |= 1 << u.register().full_register32().number();
             }
         }
+        self.dirty |= written as u8;
         if matches!(ins.mnemonic(), Push | Pop) {
             written &= !(1 << 4);
             if ins.mnemonic() == Pop && ins.op_kind(0) == OpKind::Register && ins.op_register(0).full_register32() == Register::ESP {
@@ -2621,7 +2637,7 @@ impl<'a> Gen<'a> {
                     self.xmm_flush();
                     self.x87_flush_out();
                     bump(&mut self.c, 5);
-                    self.store_regs();
+                    self.store_dirty();
                     self.c.get(L_CPU).get(L_BUD).store32(Off::budget());
                     self.c.get(L_CPU).get(t).store32(Off::eip());
                     self.c.i32c(RET_FN).ret();
@@ -2977,7 +2993,7 @@ impl<'a> Gen<'a> {
             ring_sample(&mut self.c, h, v, t, site);
         }
         self.flags_to_cpu();
-        self.store_regs();
+        self.store_dirty();
         self.c.block(); // slow 0
         self.depth += 1;
         self.c.get(L_BUD).i32c(1).sub().tee(L_BUD).i32c(0).le_s();
@@ -3004,12 +3020,8 @@ impl<'a> Gen<'a> {
         self.depth -= 1;
         self.c.end(); // slow
         bump(&mut self.c, 1);
-        // (FN_TAG, target) in the ring: the host makes the callee a function
-        self.c.get(t).set(L_NEXT);
-        ring_write(&mut self.c, |c| {
-            c.u32c(FN_TAG);
-        });
-        self.c.get(L_NEXT);
+        // (callmiss put (FN_TAG, target) in the ring: the host makes the callee a function)
+        self.c.get(t);
         self.exit_with(RET_CONTINUE);
         self.temps -= 2;
     }
@@ -3733,6 +3745,7 @@ fn emit_block<'a>(g: &mut Gen<'a>, blocks: &'a [(u32, Vec<Instruction>)], k: usi
     g.safe2.clear();
     g.safe[4] = Some(0); // see Gen::emit
     g.flags = Flags::Entry;
+    g.dirty = g.dirty_in.get(k).copied().unwrap_or(g.wregs);
     g.fc = g.fc_in.get(&k).copied().unwrap_or_default();
     bump(&mut g.c, 14);
     if let Some(&at) = g.prof.get(k) {
@@ -3910,6 +3923,68 @@ fn block_liveness(g: &Gen, blocks: &[(u32, Vec<Instruction>)]) -> (Vec<u32>, Vec
         }
         if !changed {
             return (live_in, live_out);
+        }
+    }
+}
+
+/// A function's registers that can be dirty (written since loaded from the Cpu) at each
+/// block's start: its entry loads them all (none), a block passes on what came in and what it
+/// writes, and a call made by [`Gen::call_fn`] none (it loads them after) but into a callee
+/// inlined behind its guard.
+fn dirty_in(g: &Gen, blocks: &[(u32, Vec<Instruction>)], l: &structure::Layout) -> Vec<u8> {
+    let n = blocks.len();
+    let total = l.succ.len();
+    let mut info = iced_x86::InstructionInfoFactory::new();
+    let writes: Vec<u8> = (0..n)
+        .map(|k| {
+            if g.hle.contains_key(&blocks[k].0) {
+                return g.wregs;
+            }
+            let mut w = 0u8;
+            for ins in &blocks[k].1 {
+                for u in info.info(ins).used_registers() {
+                    use iced_x86::OpAccess::*;
+                    if matches!(u.access(), Write | CondWrite | ReadWrite | ReadCondWrite) && u.register().is_gpr() {
+                        w |= 1 << u.register().full_register32().number();
+                    }
+                }
+            }
+            w & g.wregs
+        })
+        .collect();
+    // blocks ending in a call_fn (and the entry of a callee inlined there)
+    let calls: Vec<Option<Option<usize>>> = (0..n)
+        .map(|k| {
+            let last = blocks[k].1.last().unwrap();
+            if last.mnemonic() != Mnemonic::Call {
+                return None;
+            }
+            let inl = g.inlined.get(&k);
+            if last.op0_kind() == OpKind::NearBranch32 {
+                return if inl.is_some() { None } else { Some(None) };
+            }
+            let ok = op_bits(last, 0) == 32 && (0..last.op_count()).all(|i| simple_operand(last, i)) && !last.has_lock_prefix();
+            ok.then(|| inl.map(|&(e, _)| e))
+        })
+        .collect();
+    let mut din = alloc::vec![0u8; total];
+    loop {
+        let mut changed = false;
+        for v in 0..total {
+            let out = if v < n { din[v] | writes[v] } else { din[v] };
+            for &w in &l.succ[v] {
+                let o = match calls.get(v) {
+                    Some(Some(e)) if *e != Some(w) => 0,
+                    _ => out,
+                };
+                if din[w] | o != din[w] {
+                    din[w] |= o;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            return din;
         }
     }
 }
@@ -4187,6 +4262,8 @@ fn translate<M: Memory>(
         returns: &returns,
         ins: &blocks[0].1[0],
         live_after: 0,
+        dirty: 0xff,
+        dirty_in: Vec::new(),
         temps: 0,
         safe: [None; 8],
         safe2: Vec::new(),
@@ -4241,6 +4318,7 @@ fn translate<M: Memory>(
     if fnm {
         let entry = starts[0].1 as usize;
         let l = structure::layout(&blocks, &ctxs, &targets, &inlined, &ret_to, &tables, &g.jnode, entry);
+        g.dirty_in = dirty_in(&g, &blocks, &l);
         if LAYOUT.load(core::sync::atomic::Ordering::Relaxed) {
             use core::fmt::Write;
             let _ = writeln!(g.notes, "IRREDUCIBLE {}", l.irreducible());

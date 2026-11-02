@@ -93,7 +93,7 @@ pub(super) struct Table {
 
 pub(super) struct Layout {
     /// node -> successors (nodes 0..n are blocks, n.. tables)
-    succ: Vec<Vec<usize>>,
+    pub(super) succ: Vec<Vec<usize>>,
     rpo: Vec<usize>,
     /// node -> position in `rpo` (usize::MAX: unreachable)
     order: Vec<usize>,

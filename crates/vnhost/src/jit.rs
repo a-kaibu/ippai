@@ -1110,7 +1110,8 @@ pub(crate) fn step(cpu: &mut Cpu, mem: &mut Linear) -> (Exit, bool) {
 }
 
 /// A call site's miss in the call cache (function mode): the hash table's entry for `target`
-/// if it is a function's (also put in the cache slot at `slot`), else 0.
+/// if it is a function's (also put in the cache slot at `slot`), else 0 with (FN_TAG, target)
+/// in the ring (a callee called often becomes a function, see merge_hot).
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_jit_callmiss(cpu: u32, slot: u32, target: u32) -> u32 {
     let cpu = &*(cpu as usize as *const Cpu);
@@ -1120,13 +1121,19 @@ pub unsafe extern "C" fn vnhost_jit_callmiss(cpu: u32, slot: u32, target: u32) -
         if hash[h as usize][0] == target {
             let v = hash[h as usize][1];
             if v & jit::FN_TAG == 0 {
-                return 0;
+                break;
             }
             *(slot as usize as *mut [u32; 2]) = [target, v];
             return v;
         }
         h = (h + 1) & cpu.jit_mask;
     }
+    let ring = cpu.jit_ring as usize as *mut u32;
+    let n = *ring;
+    *ring = n.wrapping_add(1);
+    let i = (n & (jit::RING_SIZE - 1)) as usize;
+    *ring.add(1 + 2 * i) = jit::FN_TAG;
+    *ring.add(2 + 2 * i) = target;
     0
 }
 
