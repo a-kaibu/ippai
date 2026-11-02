@@ -456,6 +456,9 @@ pub fn proc_address(base: u32, imp: Import) -> Option<u32> {
     if let Some(d) = hle_data(&name, &n) {
         return Some(d);
     }
+    if let Some(g) = crate::guest::lookup(&api::dll_key(&name), &n) {
+        return Some(g);
+    }
     let a = api::export(&name, &n);
     (api::implemented(a) || std::env::var_os("SAKE_ALL_EXPORTS").is_some()).then(|| crate::fast::bind(&name, &n, a))
 }

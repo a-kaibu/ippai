@@ -15,6 +15,7 @@ pub mod api;
 pub mod d3d9;
 pub mod d3d11;
 pub mod unixlib;
+pub mod guest;
 pub mod crt;
 pub mod ddraw;
 pub mod ini;
@@ -265,6 +266,7 @@ pub fn spawn_gated(start: u32, param: u32, stack: u32, obj: u32, gated: bool) ->
 
 /// The program: `exe` is its host path.
 pub fn main(exe: &str, args: &[String]) -> ! {
+    guest::init();
     k32::init();
     user::init();
     gdi::init();
@@ -279,6 +281,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     sound::init();
     d3d9::register();
     d3d11::register();
+    guest::bind_host();
     vnhost::crashlog::set_trap_namer(api::name_of);
     let peb = mem::reserve(0, 0x2000, 4, 0x20000, true).expect("PEB");
     mem::commit(peb, 4);

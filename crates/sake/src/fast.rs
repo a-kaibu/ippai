@@ -371,6 +371,9 @@ static STUBS: Mutex<Option<HashMap<String, u32>>> = Mutex::new(None);
 /// The address to bind for `dll!name`, whose trap is `trap`: a stub, or the trap.
 pub fn bind(dll: &str, name: &str, trap: u32) -> u32 {
     let key = crate::api::dll_key(dll);
+    if let Some(a) = crate::guest::lookup(&key, name) {
+        return a;
+    }
     if !matches!(key.as_str(), "kernel32" | "kernelbase" | "ntdll" | "msvcrt" | "user32") {
         return trap;
     }
