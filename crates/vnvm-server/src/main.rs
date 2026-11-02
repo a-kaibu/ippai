@@ -207,22 +207,26 @@ async fn optimize(jit: Jit, names: Vec<String>) {
             }
             let (out, tmp) = (jit.0.join(format!("{stem}{v}.opt.wasm")), jit.0.join(format!("{stem}{v}.opt.tmp")));
             let t0 = std::time::Instant::now();
-            let ok = tokio::process::Command::new(&opt)
+            // (multivalue: the function-level translator's adapters return several values)
+            let run = tokio::process::Command::new(&opt)
                 .args(["--enable-threads", "--enable-simd", "--enable-bulk-memory", "--enable-tail-call", "--enable-sign-ext"])
-                .args(["--enable-nontrapping-float-to-int", "--enable-mutable-globals", "-O2"])
+                .args(["--enable-nontrapping-float-to-int", "--enable-mutable-globals", "--enable-multivalue", "-O2"])
                 .arg(jit.0.join(wasm))
                 .arg("-o")
                 .arg(&tmp)
                 .stdout(std::process::Stdio::null())
-                .status()
-                .await
-                .is_ok_and(|s| s.success());
+                .stderr(std::process::Stdio::piped())
+                .output()
+                .await;
+            let ok = run.as_ref().is_ok_and(|o| o.status.success());
             if ok && tokio::fs::rename(&tmp, &out).await.is_ok() {
                 eprintln!("jit {wasm}: optimized in {:?}", t0.elapsed());
                 made = true;
             } else {
                 let _ = tokio::fs::remove_file(&tmp).await;
-                eprintln!("jit {wasm}: {} failed", opt.display());
+                // (only the first lines: a validation error dumps the whole module)
+                let err = run.map(|o| String::from_utf8_lossy(&o.stderr).lines().take(3).collect::<Vec<_>>().join(" | ")).unwrap_or_default();
+                eprintln!("jit {wasm}: {} failed: {}", opt.display(), err.chars().take(400).collect::<String>());
                 return;
             }
         }
