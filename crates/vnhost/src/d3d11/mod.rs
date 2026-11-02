@@ -2034,8 +2034,10 @@ unsafe fn map(d: &mut D11, res: u32, sub: u32, ty: u32, out: u32, after: &mut Af
                 mem
             };
             if let Some(Data::Texture(t)) = d.objs.get(&id).map(|o| &o.data) {
-                // reading: the page's pixels (32-bit formats)
-                if ty != 2 && ty != 4 && format::page_bpp(t.page) == 4 && t.dim != 3 {
+                // reading: the page's pixels (32-bit formats the page keeps as they are: the page
+                // writes lw * 4 bytes a row, past the end of a smaller guest copy, e.g. A8 or BC)
+                let same = format::info(t.fmt).is_none_or(|f| f.bpp == 4 && f.block == 1 && f.conv == 0);
+                if ty != 2 && ty != 4 && format::page_bpp(t.page) == 4 && same && t.dim != 3 {
                     d.next_gpu += 1;
                     req = 0x4000_0000 | d.next_gpu;
                     let (g, l) = (t.gpu, level);

@@ -1728,8 +1728,9 @@ unsafe fn lock_surface(d: &mut D3d, s: u32, out: u32, rect: u32, flags: u32, aft
     if sf.gpu_newer {
         sf.shadow = None;
     }
-    if sf.gpu_newer && flags & LOCK_DISCARD == 0 {
-        // the page has the pixels: read them back first
+    if sf.gpu_newer && flags & LOCK_DISCARD == 0 && fmt::layout(sf.fmt) == Some((fmt::page_bpp(sf.fmt), 1)) {
+        // the page has the pixels: read them back first (only when its rows are the guest's:
+        // the page writes w * its bpp bytes a row, past the end of a smaller guest copy)
         sf.gpu_newer = false;
         let (gpu, level, w, h, pitch) = (sf.gpu, sf.level, sf.w, sf.h, sf.pitch);
         let req = readback(d, gpu, level, w, h, mem, pitch);
@@ -1964,10 +1965,10 @@ unsafe fn update_texture(d: &mut D3d, src: u32, dst: u32) -> u32 {
 unsafe fn get_rt_data(d: &mut D3d, rt: u32, dst: u32, after: &mut After) -> u32 {
     let (s, t) = (d.id_of(rt), d.id_of(dst));
     let Some(Data::Surface(a)) = d.objs.get(&s).map(|o| &o.data) else { return D3DERR_INVALIDCALL };
-    let (gpu, level, w, h) = (a.gpu, a.level, a.w, a.h);
+    let (gpu, level, w, h, page) = (a.gpu, a.level, a.w, a.h, fmt::page_bpp(a.fmt));
     let Some(mem) = surface_mem(d, t) else { return D3DERR_INVALIDCALL };
     let Some(Data::Surface(b)) = d.objs.get(&t).map(|o| &o.data) else { return D3DERR_INVALIDCALL };
-    if b.w != w || b.h != h || gpu == 0 {
+    if b.w != w || b.h != h || gpu == 0 || fmt::layout(b.fmt) != Some((page, 1)) {
         return D3DERR_INVALIDCALL;
     }
     let pitch = b.pitch;
