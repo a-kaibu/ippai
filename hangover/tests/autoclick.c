@@ -10,6 +10,8 @@
 #include <stdio.h>
 #include <wchar.h>
 #include <stdarg.h>
+#include <string.h>
+#include <wctype.h>
 
 /* the log as UTF-8 (wprintf would drop what the console code page can't show) */
 static void out(const WCHAR *fmt, ...)
@@ -131,9 +133,45 @@ static BOOL CALLBACK dump(HWND h, LPARAM lp)
     return TRUE;
 }
 
+/* _vnvm_reg.tsv next to us (tests/corpus-prep.sh, from an unpacked installer's registry
+ * table): root<TAB>key<TAB>name<TAB>value lines, UTF-8; "#<number>" values are DWORDs */
+static void write_registry(void)
+{
+    WCHAR path[MAX_PATH], *slash;
+    GetModuleFileNameW(NULL, path, MAX_PATH);
+    if ((slash = wcsrchr(path, L'\\'))) wcscpy(slash + 1, L"_vnvm_reg.tsv");
+    FILE *f = _wfopen(path, L"rb");
+    if (!f) return;
+    char line[4096];
+    while (fgets(line, sizeof(line), f))
+    {
+        WCHAR w[4096], *field[4] = { w };
+        line[strcspn(line, "\r\n")] = 0;
+        if (!MultiByteToWideChar(CP_UTF8, 0, line, -1, w, 4096)) continue;
+        int n = 1;
+        for (WCHAR *p = w; *p && n < 4; p++) if (*p == L'\t') { *p = 0; field[n++] = p + 1; }
+        if (n < 4) continue;
+        HKEY root = !wcscmp(field[0], L"HKLM") ? HKEY_LOCAL_MACHINE : !wcscmp(field[0], L"HKCR") ? HKEY_CLASSES_ROOT :
+                    !wcscmp(field[0], L"HKU") ? HKEY_USERS : HKEY_CURRENT_USER;
+        HKEY k;
+        if (RegCreateKeyExW(root, field[1], 0, NULL, 0, KEY_SET_VALUE, NULL, &k, NULL)) continue;
+        const WCHAR *name = *field[2] ? field[2] : NULL, *v = field[3];
+        if (v[0] == L'#' && (iswdigit(v[1]) || v[1] == L'-'))
+        {
+            DWORD d = wcstol(v + 1, NULL, 10);
+            RegSetValueExW(k, name, 0, REG_DWORD, (BYTE *)&d, sizeof(d));
+        }
+        else RegSetValueExW(k, name, 0, REG_SZ, (BYTE *)v, (wcslen(v) + 1) * sizeof(WCHAR));
+        RegCloseKey(k);
+        out(L"autoclick: registry %ls\\%ls %ls = %ls\n", field[0], field[1], field[2], v);
+    }
+    fclose(f);
+}
+
 int wmain(int argc, WCHAR **argv)
 {
     if (argc < 2) { out(L"usage: autoclick game.exe [args]\n"); return 2; }
+    write_registry();
     WCHAR cmd[4096], dir[MAX_PATH];
     swprintf(cmd, 4096, L"\"%ls\"", argv[1]);
     for (int i = 2; i < argc; i++) { wcscat(cmd, L" "); wcscat(cmd, argv[i]); }
