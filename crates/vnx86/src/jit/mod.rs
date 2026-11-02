@@ -3909,7 +3909,7 @@ fn liveness(list: &[Instruction], out: u32) -> (Vec<u32>, u32) {
 
 /// Status flags live at the start and at the end of each block, over the region's jumps
 /// (everything is live where it is left or jumps dynamically).
-fn block_liveness(g: &Gen, blocks: &[(u32, Vec<Instruction>)]) -> (Vec<u32>, Vec<u32>) {
+fn block_liveness(g: &Gen, blocks: &[(u32, Vec<Instruction>)], tables: &[structure::Table]) -> (Vec<u32>, Vec<u32>) {
     let n = blocks.len();
     let succ: Vec<Option<Vec<usize>>> = (0..n)
         .map(|k| {
@@ -3922,6 +3922,11 @@ fn block_liveness(g: &Gen, blocks: &[(u32, Vec<Instruction>)]) -> (Vec<u32>, Vec
             // any caller (everything live there)
             if g.fnm && matches!(last.flow_control(), FlowControl::Call | FlowControl::IndirectCall) && !g.inlined.contains_key(&k) {
                 return find(last.next_ip32()).map(|b| alloc::vec![b]);
+            }
+            // a jump table's dispatch: to its entries (compilers keep no flags across one)
+            if let Some(&d) = g.jnode.get(&k) {
+                let t = &tables[d - blocks.len()];
+                return t.entries.iter().map(|&a| g.targets.get(&(t.ctx, a)).or_else(|| g.targets.get(&(0, a))).map(|&b| b as usize)).collect();
             }
             let direct = last.op0_kind() == OpKind::NearBranch32 || last.flow_control() == FlowControl::Next;
             if !direct {
@@ -4330,7 +4335,7 @@ fn translate<M: Memory>(
             profile.push((*a, at, list.iter().map(profile_key).collect()));
         }
     }
-    g.live_out = block_liveness(&g, &blocks).1;
+    g.live_out = block_liveness(&g, &blocks, &tables).1;
     // functions: the layout, entered at the root and (when the dispatcher comes back to the
     // middle, as at a return address after the call left, or a loop's head after the budget
     // ran out) at blocks outside loops but the outermost's heads
