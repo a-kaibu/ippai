@@ -18,3 +18,4 @@ ab_glyph = "0.2"
 md5 = "0.8"
 ttf-parser = "0.25"
 sha2 = "0.10"
+jpeg-decoder = { version = "0.3", default-features = false }
