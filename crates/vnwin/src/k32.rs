@@ -1869,7 +1869,7 @@ fn GetModuleFileNameA(c: &mut Ctx) -> u32 {
 fn GetModuleFileNameW(c: &mut Ctx) -> u32 {
     module_name(c.a(0), true, c.a(1), c.a(2))
 }
-fn module_handle(name: u32, wide: bool) -> u32 {
+pub fn module_handle(name: u32, wide: bool) -> u32 {
     if name == 0 {
         return crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.base).unwrap_or(0);
     }

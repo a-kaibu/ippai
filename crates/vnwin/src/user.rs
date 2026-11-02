@@ -502,7 +502,14 @@ fn ctl_paint(c: &mut Ctx, h: u32, button: bool) {
     };
     let mut tr = full;
     let mut flags;
-    if !button {
+    let edit = with(|s| s.wins.get(&h).is_some_and(|w| s.classes[w.class].name.eq_ignore_ascii_case("edit")));
+    if edit {
+        // a white box, the text left and centred vertically
+        fill(full, 0xffffff);
+        frame(full, 0x7a7a7a);
+        tr.l = 4;
+        flags = 0x4 | 0x20;
+    } else if !button {
         flags = match style & 3 {
             1 => 0x1,
             2 => 0x2,
@@ -604,6 +611,36 @@ fn control_proc_fn(c: &mut Ctx) -> u32 {
             }
             0
         }
+        // the edit control: typed characters (no caret, no selection)
+        0x102 | 0x201 | 0x87 if with(|s| s.wins.get(&h).is_some_and(|w| s.classes[w.class].name.eq_ignore_ascii_case("edit"))) => {
+            match m {
+                0x201 => {
+                    set_focus(c, h);
+                }
+                0x87 => return 0x89,
+                _ => {
+                    let changed = with(|s| {
+                        let w = s.wins.get_mut(&h).unwrap();
+                        match wp {
+                            8 => w.text.pop().is_some(),
+                            0..=0x1f => false,
+                            ch => {
+                                w.text.push(ch as u16);
+                                true
+                            }
+                        }
+                    });
+                    if changed {
+                        invalidate(h, None, true);
+                        let (id, parent) = with(|s| s.wins.get(&h).map_or((0, 0), |w| (w.id, w.parent)));
+                        if parent != 0 {
+                            send(c, parent, 0x111, 0x300 << 16 | (id & 0xffff), h);
+                        }
+                    }
+                }
+            }
+            0
+        }
         0xf0 => ctl(h).check,
         0xf1 => {
             set_ctl(h, |t| t.check = wp);
@@ -637,7 +674,7 @@ fn system_classes(s: &mut State) {
         s.classes.push(Class {
             name: n.into(),
             style: 0,
-            proc_: if matches!(n, "Button" | "Static") { control_proc() } else { builtin_proc() },
+            proc_: if matches!(n, "Button" | "Static" | "Edit") { control_proc() } else { builtin_proc() },
             cls_extra: 0,
             wnd_extra: 32,
             inst: 0,
@@ -1742,7 +1779,13 @@ fn def_proc(c: &mut Ctx, wide: bool) -> u32 {
         }
         0x11 | 0x16 => 1,
         0xf => {
-            // validate
+            // BeginPaint/EndPaint: validates, and erases if asked to
+            if with(|s| s.wins.get(&h).is_some_and(|w| w.erase)) {
+                let ps = mem::heap_alloc(64, true);
+                gcall(c, "user32", "BeginPaint", &[h, ps]);
+                gcall(c, "user32", "EndPaint", &[h, ps]);
+                mem::heap_free(ps);
+            }
             with(|s| {
                 if let Some(w) = s.wins.get_mut(&h) {
                     w.update = Rect::default();
@@ -3526,6 +3569,389 @@ fn input(kind: u32, x: i32, y: i32, data: u32) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// dialogs: windows built from DLGTEMPLATE(EX) resources, a guest DLGPROC called from our window
+// procedure (DWL_DLGPROC = window extra +4), and DialogBox's modal loop
+
+/// Return values of ended modal dialogs (EndDialog).
+static DLG_END: Mutex<Option<HashMap<u32, u32>>> = Mutex::new(None);
+
+fn dlg_wndproc() -> u32 {
+    static P: OnceLock<u32> = OnceLock::new();
+    *P.get_or_init(|| crate::api::host_fn("dialog_proc", dlg_wndproc_fn, 16))
+}
+
+fn extra32(h: u32, off: usize) -> u32 {
+    with(|s| s.wins.get(&h).and_then(|w| w.extra.get(off..off + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap())))).unwrap_or(0)
+}
+fn set_extra32(h: u32, off: usize, v: u32) {
+    with(|s| {
+        if let Some(b) = s.wins.get_mut(&h).and_then(|w| w.extra.get_mut(off..off + 4)) {
+            b.copy_from_slice(&v.to_le_bytes());
+        }
+    });
+}
+
+fn dlg_wndproc_fn(c: &mut Ctx) -> u32 {
+    let (h, m, wp, lp) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    let p = extra32(h, 4);
+    if p != 0 {
+        let r = c.call(p, &[h, m, wp, lp]);
+        if r != 0 {
+            // (these return their value, the rest in DWL_MSGRESULT)
+            return if matches!(m, 0x110 | 0x19 | 0x2b | 0x133..=0x138 | 0x87 | 0x56 | 0x37 | 0x39) { r } else { extra32(h, 0) };
+        }
+    }
+    match m {
+        0x14 => DefDlgProcA(c),
+        0x110 => 1,
+        0x10 => {
+            // WM_CLOSE: as the Cancel button
+            let b = dlg_item(h, 2);
+            send(c, h, 0x111, 2, b);
+            0
+        }
+        _ => def_proc(c, false),
+    }
+}
+
+fn dlg_item(h: u32, id: u32) -> u32 {
+    with(|s| s.wins.get(&h).and_then(|w| w.children.iter().copied().find(|ch| s.wins.get(ch).is_some_and(|x| x.id & 0xffff == id & 0xffff))).unwrap_or(0))
+}
+
+/// A string or ordinal in a template: (Some(string address) or None, ordinal) and the next field.
+fn sz_or_ord(p: u32) -> (Option<u32>, u32, u32) {
+    match r16(p) {
+        0 => (None, 0, p + 2),
+        0xffff => (None, r16(p + 2) as u32, p + 4),
+        _ => {
+            let mut q = p;
+            while r16(q) != 0 {
+                q += 2;
+            }
+            (Some(p), 0, q + 2)
+        }
+    }
+}
+
+/// Dialog units to pixels (the base units of a 9-point UI font).
+fn du(x: i32, y: i32) -> (i32, i32) {
+    ((x * 6 + 2) / 4, (y * 13 + 4) / 8)
+}
+
+fn create_dialog(c: &mut Ctx, inst: u32, t: u32, owner: u32, proc_: u32, param: u32, modal: bool) -> u32 {
+    let ex = r16(t) == 1 && r16(t + 2) == 0xffff;
+    let (style, exstyle, n, mut p) = if ex { (r32(t + 12), r32(t + 8), r16(t + 16) as u32, t + 18) } else { (r32(t), r32(t + 4), r16(t + 8) as u32, t + 10) };
+    let (x, y, cx, cy) = (r16(p) as i16 as i32, r16(p + 2) as i16 as i32, r16(p + 4) as i16 as i32, r16(p + 6) as i16 as i32);
+    p += 8;
+    let (_, _, q) = sz_or_ord(p); // menu
+    let (cls_s, cls_o, q) = sz_or_ord(q);
+    let (title, _, mut q) = sz_or_ord(q);
+    let mut font = 0;
+    if style & 0x40 != 0 {
+        let pt = r16(q) as i32;
+        let (weight, italic, charset, face) = if ex { (r16(q + 2) as u32, r16(q + 4) as u32 & 0xff, r16(q + 4) as u32 >> 8, q + 6) } else { (400, 0, 1, q + 2) };
+        let (_, _, next) = sz_or_ord(face);
+        q = next;
+        font = gcall(c, "gdi32", "CreateFontW", &[(-(pt * 96 + 36) / 72) as u32, 0, 0, 0, weight, italic, 0, 0, charset, 0, 0, 0, 0, face]);
+    }
+    let (w, h) = du(cx, cy);
+    let (fl, ft, fr, fb) = frame(style, exstyle, false);
+    let (ww, wh) = (w + fl + fr, h + ft + fb);
+    let (ox, oy) = if style & 0x4000_0000 != 0 {
+        du(x, y)
+    } else {
+        // centred on the owner (or the screen)
+        let r = with(|s| s.wins.get(&owner).filter(|_| owner != 0).map(|w| w.rect)).unwrap_or_else(|| {
+            let (sw, sh) = screen();
+            Rect { l: 0, t: 0, r: sw, b: sh }
+        });
+        (r.l + (r.w() - ww) / 2, r.t + (r.h() - wh) / 2)
+    };
+    let dialog_class = cls_s.is_none() && cls_o == 0;
+    let cls = match (cls_s, cls_o) {
+        (Some(s), _) => s,
+        (None, 0) => crate::k32::atom("#32770"),
+        (None, o) => o,
+    };
+    let dlg = gcall(c, "user32", "CreateWindowExW", &[exstyle, cls, 0, style & !0x1000_0000, ox as u32, oy as u32, ww as u32, wh as u32, owner, 0, inst, param]);
+    if dlg == 0 {
+        return 0;
+    }
+    if let Some(t) = title {
+        let s = wstr(t);
+        with(|st| st.wins.get_mut(&dlg).map(|w| w.text = s));
+    }
+    if dialog_class {
+        with(|s| s.wins.get_mut(&dlg).map(|w| w.proc_ = dlg_wndproc()));
+    }
+    set_extra32(dlg, 4, proc_);
+    if font != 0 {
+        send(c, dlg, 0x30, font, 0);
+    }
+    // the controls
+    let mut first = 0;
+    for _ in 0..n {
+        q = (q + 3) & !3;
+        let (st, ex2, id, mut r) = if ex { (r32(q + 8), r32(q + 4), r32(q + 20), q + 24) } else { (r32(q), r32(q + 4), r16(q + 16) as u32, q + 18) };
+        let o = if ex { q + 12 } else { q + 8 };
+        let (ix, iy) = du(r16(o) as i16 as i32, r16(o + 2) as i16 as i32);
+        let (iw, ih) = du(r16(o + 4) as i16 as i32, r16(o + 6) as i16 as i32);
+        let (cs, co, r2) = sz_or_ord(r);
+        let (ts, _, r3) = sz_or_ord(r2);
+        let extra = r16(r3) as u32;
+        r = r3 + 2 + extra;
+        q = r;
+        let cls = match (cs, co) {
+            (Some(s), _) => s,
+            (None, o) => crate::k32::atom(match o {
+                0x80 => "Button",
+                0x81 => "Edit",
+                0x82 => "Static",
+                0x83 => "ListBox",
+                0x84 => "ScrollBar",
+                _ => "ComboBox",
+            }),
+        };
+        let ctl = gcall(c, "user32", "CreateWindowExW", &[ex2, cls, 0, st | 0x4000_0000, ix as u32, iy as u32, iw as u32, ih as u32, dlg, id, inst, if extra != 0 { r3 + 2 } else { 0 }]);
+        if ctl == 0 {
+            continue;
+        }
+        if let Some(t) = ts {
+            let s = wstr(t);
+            with(|stt| stt.wins.get_mut(&ctl).map(|w| w.text = s));
+        }
+        if font != 0 {
+            send(c, ctl, 0x30, font, 0);
+        }
+        if first == 0 && st & 0x0001_0000 != 0 && st & 0x0800_0000 == 0 {
+            first = ctl;
+        }
+    }
+    if send(c, dlg, 0x110, first, param) != 0 && first != 0 {
+        set_focus(c, first);
+    }
+    if is_window(dlg) && (modal || style & 0x1000_0000 != 0) && !DLG_END.lock().unwrap().get_or_insert_with(HashMap::new).contains_key(&dlg) {
+        show(c, dlg, 5);
+    }
+    dlg
+}
+
+fn dispatch_msg(c: &mut Ctx, m: &Msg) {
+    if m.msg == 0x113 && m.l != 0 {
+        c.call(m.l, &[m.hwnd, m.msg, m.w, now_ms()]);
+        return;
+    }
+    if m.hwnd == 0 {
+        return;
+    }
+    send(c, m.hwnd, m.msg, m.w, m.l);
+    if m.msg == 0xf {
+        with(|s| s.wins.get_mut(&m.hwnd).map(|w| w.update = Rect::default()));
+    }
+}
+
+fn dialog_box(c: &mut Ctx, inst: u32, t: u32, owner: u32, proc_: u32, param: u32) -> u32 {
+    // (the owner is the top-level window)
+    let owner = with(|s| {
+        let mut h = owner;
+        while let Some(w) = s.wins.get(&h) {
+            if w.parent == 0 {
+                break;
+            }
+            h = w.parent;
+        }
+        h
+    });
+    let dlg = create_dialog(c, inst, t, owner, proc_, param, true);
+    if dlg == 0 {
+        return u32::MAX;
+    }
+    let was_enabled = with(|s| s.wins.get_mut(&owner).map(|w| std::mem::replace(&mut w.enabled, false))).unwrap_or(false);
+    let r = loop {
+        if let Some(r) = DLG_END.lock().unwrap().get_or_insert_with(HashMap::new).remove(&dlg) {
+            break r;
+        }
+        if !is_window(dlg) {
+            break 0;
+        }
+        process_sent(c.cpu);
+        match next_msg(0, 0, 0, true) {
+            Some(m) if m.msg == 0x12 => {
+                with(|s| s.queues.entry(crate::cur().tid).or_default().quit = Some(m.w));
+                break 0;
+            }
+            Some(m) => {
+                let mine = m.hwnd == dlg || with(|s| s.wins.get(&m.hwnd).is_some_and(|w| w.parent == dlg));
+                if m.msg == 0x100 && mine && (m.w == 0x0d || m.w == 0x1b) {
+                    let id = if m.w == 0x0d { 1 } else { 2 };
+                    let b = dlg_item(dlg, id);
+                    send(c, dlg, 0x111, id, b);
+                } else {
+                    dispatch_msg(c, &m);
+                }
+            }
+            None => {
+                wait_msgs(&[], false, 0xffff_ffff);
+            }
+        }
+    };
+    if was_enabled {
+        with(|s| s.wins.get_mut(&owner).map(|w| w.enabled = true));
+    }
+    if is_window(dlg) {
+        destroy(c, dlg);
+    }
+    if owner != 0 && is_window(owner) {
+        activate(c, owner);
+    }
+    r
+}
+
+fn dlg_template(c: &mut Ctx, inst: u32, name: u32, wide: bool) -> Option<u32> {
+    let _ = c;
+    let m = if inst == 0 { crate::k32::module_handle(0, false) } else { inst };
+    let e = crate::pe::find_resource(m, &crate::pe::ResId::Int(5), &crate::pe::ResId::from_arg(name, wide))?;
+    Some(crate::pe::resource_data(m, e).0)
+}
+
+fn DialogBoxParamA(c: &mut Ctx) -> u32 {
+    let (inst, name, owner, proc_, param) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
+    match dlg_template(c, inst, name, false) {
+        Some(t) => dialog_box(c, inst, t, owner, proc_, param),
+        None => u32::MAX,
+    }
+}
+fn DialogBoxParamW(c: &mut Ctx) -> u32 {
+    let (inst, name, owner, proc_, param) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
+    match dlg_template(c, inst, name, true) {
+        Some(t) => dialog_box(c, inst, t, owner, proc_, param),
+        None => u32::MAX,
+    }
+}
+fn DialogBoxIndirectParamA(c: &mut Ctx) -> u32 {
+    let (inst, t, owner, proc_, param) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
+    dialog_box(c, inst, t, owner, proc_, param)
+}
+fn DialogBoxIndirectParamW(c: &mut Ctx) -> u32 {
+    DialogBoxIndirectParamA(c)
+}
+fn CreateDialogParamA(c: &mut Ctx) -> u32 {
+    let (inst, name, owner, proc_, param) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
+    match dlg_template(c, inst, name, false) {
+        Some(t) => create_dialog(c, inst, t, owner, proc_, param, false),
+        None => 0,
+    }
+}
+fn CreateDialogParamW(c: &mut Ctx) -> u32 {
+    let (inst, name, owner, proc_, param) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
+    match dlg_template(c, inst, name, true) {
+        Some(t) => create_dialog(c, inst, t, owner, proc_, param, false),
+        None => 0,
+    }
+}
+fn CreateDialogIndirectParamA(c: &mut Ctx) -> u32 {
+    let (inst, t, owner, proc_, param) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
+    create_dialog(c, inst, t, owner, proc_, param, false)
+}
+fn CreateDialogIndirectParamW(c: &mut Ctx) -> u32 {
+    CreateDialogIndirectParamA(c)
+}
+fn EndDialog(c: &mut Ctx) -> u32 {
+    let (h, r) = (c.a(0), c.a(1));
+    DLG_END.lock().unwrap().get_or_insert_with(HashMap::new).insert(h, r);
+    show(c, h, 0);
+    1
+}
+fn SendDlgItemMessageW(c: &mut Ctx) -> u32 {
+    SendDlgItemMessageA(c)
+}
+fn set_item_text(c: &mut Ctx, h: u32, id: u32, t: Vec<u16>) -> u32 {
+    let ch = dlg_item(h, id);
+    if ch == 0 {
+        return 0;
+    }
+    with(|s| s.wins.get_mut(&ch).map(|w| w.text = t));
+    invalidate(ch, None, true);
+    let _ = c;
+    1
+}
+fn SetDlgItemTextA(c: &mut Ctx) -> u32 {
+    let (h, id, t) = (c.a(0), c.a(1), c.a(2));
+    set_item_text(c, h, id, if t == 0 { Vec::new() } else { a2w(&cstr(t)) })
+}
+fn SetDlgItemTextW(c: &mut Ctx) -> u32 {
+    let (h, id, t) = (c.a(0), c.a(1), c.a(2));
+    set_item_text(c, h, id, if t == 0 { Vec::new() } else { wstr(t) })
+}
+fn item_text(h: u32, id: u32) -> Vec<u16> {
+    let ch = dlg_item(h, id);
+    with(|s| s.wins.get(&ch).map(|w| w.text.clone())).unwrap_or_default()
+}
+fn GetDlgItemTextA(c: &mut Ctx) -> u32 {
+    let (h, id, b, n) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    if n == 0 {
+        return 0;
+    }
+    mem::put_cstr(b, n, &w2a(&item_text(h, id)))
+}
+fn GetDlgItemTextW(c: &mut Ctx) -> u32 {
+    let (h, id, b, n) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    if n == 0 {
+        return 0;
+    }
+    mem::put_wstr(b, n, &item_text(h, id))
+}
+fn GetDlgItemInt(c: &mut Ctx) -> u32 {
+    let (h, id, ok, signed) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    let s = String::from_utf16_lossy(&item_text(h, id));
+    let v = s.trim().parse::<i64>().ok().filter(|v| signed != 0 || *v >= 0);
+    if ok != 0 {
+        w32(ok, v.is_some() as u32);
+    }
+    v.unwrap_or(0) as u32
+}
+fn SetDlgItemInt(c: &mut Ctx) -> u32 {
+    let (h, id, v, signed) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    let s = if signed != 0 { (v as i32).to_string() } else { v.to_string() };
+    set_item_text(c, h, id, s.encode_utf16().collect())
+}
+fn CheckDlgButton(c: &mut Ctx) -> u32 {
+    let (h, id, v) = (c.a(0), c.a(1), c.a(2));
+    let ch = dlg_item(h, id);
+    if ch != 0 {
+        send(c, ch, 0xf1, v, 0);
+    }
+    (ch != 0) as u32
+}
+fn IsDlgButtonChecked(c: &mut Ctx) -> u32 {
+    let (h, id) = (c.a(0), c.a(1));
+    let ch = dlg_item(h, id);
+    if ch == 0 { 0 } else { send(c, ch, 0xf0, 0, 0) }
+}
+fn CheckRadioButton(c: &mut Ctx) -> u32 {
+    let (h, first, last, on) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    for id in first..=last.min(first + 256) {
+        let ch = dlg_item(h, id);
+        if ch != 0 {
+            send(c, ch, 0xf1, (id == on) as u32, 0);
+        }
+    }
+    1
+}
+fn GetDialogBaseUnits(_: &mut Ctx) -> u32 {
+    13 << 16 | 6
+}
+fn MapDialogRect(c: &mut Ctx) -> u32 {
+    let p = c.a(1);
+    let (l, t) = du(r32(p) as i32, r32(p + 4) as i32);
+    let (r, b) = du(r32(p + 8) as i32, r32(p + 12) as i32);
+    for (k, v) in [l, t, r, b].iter().enumerate() {
+        w32(p + 4 * k as u32, *v as u32);
+    }
+    1
+}
+
+// ---------------------------------------------------------------------------------------------
 
 pub fn init() {
     reg!("user32";
@@ -3581,6 +4007,12 @@ pub fn init() {
         IsCharUpperA, IsCharLowerA, IsCharAlphaW, wsprintfA, wvsprintfA, wsprintfW, GetGUIThreadInfo,
         AttachThreadInput, FlashWindow, GetProcessWindowStation, GetUserObjectInformationA, SetProcessDPIAware,
         IsWindowUnicode, RegisterHotKey, UnregisterHotKey,
+    );
+    reg!("user32";
+        DialogBoxParamA, DialogBoxParamW, DialogBoxIndirectParamA, DialogBoxIndirectParamW, CreateDialogParamA,
+        CreateDialogParamW, CreateDialogIndirectParamA, CreateDialogIndirectParamW, EndDialog, SendDlgItemMessageW,
+        SetDlgItemTextA, SetDlgItemTextW, GetDlgItemTextA, GetDlgItemTextW, GetDlgItemInt, SetDlgItemInt,
+        CheckDlgButton, IsDlgButtonChecked, CheckRadioButton, GetDialogBaseUnits, MapDialogRect,
     );
     let _ = a2s;
 }

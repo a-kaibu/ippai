@@ -46,6 +46,7 @@ interface WineModule {
   _malloc(size: number): number;
   _vnhost_display_size(w: number, h: number): void;
   _vnhost_display_view(out: number): void;
+  _vnhost_display_windows?(out: number, max: number): number;
   _vnhost_root_exited(): number;
   _vnhost_display_frame(io: number): number;
   _vnhost_input_push(kind: number, x: number, y: number, data: number): number;
@@ -306,6 +307,8 @@ function readAhead(name: Promise<string>): (wine: WineModule) => void {
 /** Shows the screen whenever it changes. */
 function present(wine: WineModule, presenter: Presenter): void {
   const scratch = wine._malloc(36) >>> 0;
+  const winBuf = wine._malloc(128) >>> 0;
+  let aboveKey = "";
   wine._vnhost_display_size(scratch, scratch + 4);
   let width = wine.HEAPU32[scratch >>> 2]!;
   let height = wine.HEAPU32[(scratch + 4) >>> 2]!;
@@ -352,6 +355,22 @@ function present(wine: WineModule, presenter: Presenter): void {
     if (d3d.frames !== d3dFrames) {
       d3dFrames = d3d.frames;
       presenter.overlay = d3d.overlay;
+      if (shown !== -1) presenter.draw();
+    }
+    // windows over the Direct3D one (a dialog the game opens) are drawn from the frame on top
+    const o = d3d.overlay;
+    let above: [number, number, number, number][] = [];
+    if (o && wine._vnhost_display_windows) {
+      const n = wine._vnhost_display_windows(winBuf, 8);
+      const rs = Array.from({ length: n }, (_, k) => [0, 1, 2, 3].map((j) => wine.HEAPU32[(winBuf >>> 2) + 4 * k + j]! | 0) as [number, number, number, number]);
+      const [ol, ot, or, ob] = o.rect;
+      const i = rs.findIndex(([l, t, r, b]) => l <= ol && t <= ot && r >= or && b >= ob);
+      if (i > 0) above = rs.slice(0, i);
+    }
+    const key = above.join(";");
+    if (key !== aboveKey) {
+      aboveKey = key;
+      presenter.above = above;
       if (shown !== -1) presenter.draw();
     }
     wine.HEAPU32[io] = shown;

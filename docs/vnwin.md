@@ -19,7 +19,7 @@ WebGPU D3D9 を使うので、A/B 比較ができる。`wine.html` / `game.html`
   スタブがスピンロックの下で取り出し・戻しをする。空のときだけ Rust が数十個まとめて補充する。
   クラス内に収まる HeapReAlloc はその場で済ませる。
 - 実装しているもの: kernel32 (ファイル、スレッド、同期、SRW/条件変数、.ini)、user32
-  (ウィンドウ、メッセージ、Button/Static コントロール、入力)、gdi32 (DIB、文字は
+  (ウィンドウ、メッセージ、ダイアログ、Button/Static/Edit コントロール、入力)、gdi32 (DIB、文字は
   FreeType ではなく ab_glyph と ttf-parser、AddFontResource)、msvcrt (crt.rs)、dsound
   (Rust でミックス)、DirectInput 7/8、DirectDraw 1〜7 (ソフトウェア、ddraw.rs)、
   d3d9 (vnhost の WebGPU D3D9 に橋渡し)、CryptoAPI のハッシュ、DxDiag、レジストリ、
@@ -50,7 +50,7 @@ WebGPU D3D9 を使うので、A/B 比較ができる。`wine.html` / `game.html`
 | ヴェルディア幻奏曲 (Escude) | 本編まで | node |
 | こんな安楽椅子探偵は嫌だ (YU-RIS) | 本編まで | node、Chromium (GDI で描く) |
 | 爆乳遊廓 (Softpal) | タイトル | Chromium (D3D9) |
-| アマカノ (CatSystem2) | タイトル | Chromium (D3D9) |
+| アマカノ (CatSystem2) | 本編まで (名前入力ダイアログ → マップ) | Chromium (D3D9) |
 | つぼい君のスイッチ (DxLib) | タイトル、ロード画面 | Chromium (D3D9)。D3D9 の SHADEMODE flat に対応して表示が正しくなった |
 | WolfRPG | 起動しない | 保護付き exe。アンチデバッグの後で止まる。追っていない |
 

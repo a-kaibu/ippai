@@ -4,7 +4,7 @@
 // as a PNG every INTERVAL seconds. After the first shot, CLICKS="x,y;x,y" clicks there (page
 // pixels; each held 200 ms) and KEYS="KeyA Enter" presses those keys; CLICK_EVERY="x,y" clicks there after every
 // shot (to page through a game); CLICK_SEQ="x,y;;x,y" clicks its n-th entry (if any) after shot n
-// instead, then CLICK_EVERY takes over. CHROME_ARGS adds browser flags; USER_DATA_DIR keeps the
+// instead, then CLICK_EVERY takes over (SHOT_COORDS=1: click coordinates are screenshot pixels). CHROME_ARGS adds browser flags; USER_DATA_DIR keeps the
 // browser profile (its HTTP and code caches) there across runs.
 //
 //   node tests/wine.mjs URL OUT_DIR [SECONDS] [INTERVAL]
@@ -81,12 +81,15 @@ async function shot(n) {
     const o = d3d?.overlay;
     const cap = o ? await d3d.capture() : null;
     if (cap) {
+      const above = window.vnvmPresenter?.above ?? [];
       const l = Math.round(Number(o.rect[0])), t = Math.round(Number(o.rect[1]));
       const cw = Math.min(cap.w, Math.round(Number(o.rect[2])) - l), ch = Math.min(cap.h, Math.round(Number(o.rect[3])) - t);
       for (let y = 0; y < ch; y++) {
         if (t + y < 0 || t + y >= h) continue;
         for (let x = 0; x < cw; x++) {
           if (l + x < 0 || l + x >= w || (y * cap.w + x) * 4 + 4 > cap.data.length) continue;
+          // (windows above the Direct3D one stay on top)
+          if (above.some(([al, at, ar, ab]) => l + x >= al && l + x < ar && t + y >= at && t + y < ab)) continue;
           px.set(cap.data.subarray((y * cap.w + x) * 4, (y * cap.w + x) * 4 + 4), ((t + y) * w + l + x) * 4);
         }
       }
@@ -111,6 +114,15 @@ async function shot(n) {
 
 // (hovered first: many games only take a click on a button they saw the cursor over)
 async function click(x, y) {
+  // SHOT_COORDS=1: x,y are pixels of the screenshots (the game window's client area), not of the page
+  if (process.env.SHOT_COORDS)
+    [x, y] = await page.evaluate(([sx, sy]) => {
+      const p = window.vnvmPresenter;
+      const b = p.canvas.getBoundingClientRect(), dpr = p.canvas.width / Math.max(1, b.width);
+      const [l, t, vr, vb] = p.shown, r = p.rect;
+      const fx = Math.max(0, p.view?.[0] ?? 0) + sx + 0.5, fy = Math.max(0, p.view?.[1] ?? 0) + sy + 0.5;
+      return [b.left + (r.x + ((fx - l) * r.w) / (vr - l)) / dpr, b.top + (r.y + ((fy - t) * r.h) / (vb - t)) / dpr];
+    }, [x, y]);
   await page.mouse.move(x, y);
   await page.waitForTimeout(300);
   await page.mouse.click(x, y, { delay: 200 }); // (held: games that poll GetAsyncKeyState per frame)

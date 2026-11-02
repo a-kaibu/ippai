@@ -254,6 +254,28 @@ pub unsafe extern "C" fn vnhost_display_view(out: *mut i32) {
     std::slice::from_raw_parts_mut(out, 4).copy_from_slice(&[v.l, v.t, v.r, v.b]);
 }
 
+/// The visible top-level windows, topmost first: `out` gets l, t, r, b of up to `max` of them;
+/// returns how many. (The page draws the ones above a Direct3D window over its frames.)
+#[no_mangle]
+pub unsafe extern "C" fn vnhost_display_windows(out: *mut i32, max: c_int) -> c_int {
+    with(|d| {
+        let out = std::slice::from_raw_parts_mut(out, 4 * max.max(0) as usize);
+        let mut n = 0;
+        for id in d.order.iter().rev() {
+            let w = &d.wins[id];
+            if !w.visible || w.rect.empty() {
+                continue;
+            }
+            if n as c_int == max {
+                break;
+            }
+            out[4 * n..4 * n + 4].copy_from_slice(&[w.rect.l, w.rect.t, w.rect.r, w.rect.b]);
+            n += 1;
+        }
+        n as c_int
+    })
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_display_size(w: *mut c_int, h: *mut c_int) {
     with(|d| {

@@ -51,6 +51,10 @@ export class Presenter {
   /** Direct3D windows drawn over the screen (web/src/d3d9.ts) */
   overlay: { view: GPUTextureView; rect: [number, number, number, number]; flip?: boolean } | null = null;
   private overlayGroup: { view: GPUTextureView; group: GPUBindGroup } | null = null;
+  /** windows above the Direct3D window (frame pixels l t r b): drawn from the frame over it */
+  above: [number, number, number, number][] = [];
+  private uvAbove: GPUBuffer[] = [];
+  private texView: GPUTextureView | null = null;
   private rect: Rect = { x: 0, y: 0, w: 1, h: 1 };
   private texture: GPUTexture | null = null;
   private bindGroup: GPUBindGroup | null = null;
@@ -141,10 +145,11 @@ export class Presenter {
         format: "bgra8unorm",
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
       });
+      this.texView = this.texture.createView();
       this.bindGroup = this.device.createBindGroup({
         layout: this.pipeline.getBindGroupLayout(0),
         entries: [
-          { binding: 0, resource: this.texture.createView() },
+          { binding: 0, resource: this.texView },
           { binding: 1, resource: nearest ? this.samplers.nearest : this.samplers.linear },
           { binding: 2, resource: { buffer: this.uvMain } },
         ],
@@ -230,6 +235,29 @@ export class Presenter {
         pass.setBindGroup(0, this.overlayGroup.group);
         pass.draw(3);
       }
+      // dialogs and other windows above it
+      const [vl2, vt2, vr2, vb2] = this.shown;
+      this.above.slice(0, 8).forEach(([al, at, ar, ab], k) => {
+        const l = Math.max(al, vl2), t = Math.max(at, vt2), rr = Math.min(ar, vr2), b = Math.min(ab, vb2);
+        if (rr <= l || b <= t || !this.texView) return;
+        const sx = r.w / (vr2 - vl2), sy = r.h / (vb2 - vt2);
+        const x0 = r.x + (l - vl2) * sx, y0 = r.y + (t - vt2) * sy;
+        const x1 = Math.min(this.canvas.width, r.x + (rr - vl2) * sx), y1 = Math.min(this.canvas.height, r.y + (b - vt2) * sy);
+        if (x1 <= x0 || y1 <= y0) return;
+        this.uvAbove[k] ??= this.device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        this.device.queue.writeBuffer(this.uvAbove[k]!, 0, new Float32Array([l / this.width, t / this.height, rr / this.width, b / this.height]));
+        const group = this.device.createBindGroup({
+          layout: this.pipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: this.texView },
+            { binding: 1, resource: this.samplers.nearest },
+            { binding: 2, resource: { buffer: this.uvAbove[k]! } },
+          ],
+        });
+        pass.setViewport(x0, y0, x1 - x0, y1 - y0, 0, 1);
+        pass.setBindGroup(0, group);
+        pass.draw(3);
+      });
     }
     pass.end();
     this.device.queue.submit([encoder.finish()]);
