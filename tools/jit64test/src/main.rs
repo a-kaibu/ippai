@@ -110,6 +110,7 @@ fn random_ins(rng: &mut Rng, out: &mut Vec<Instruction>, rip_hi: u32) {
             Instruction::with2(code, sized(r(rng), b), sized(r(rng), b)).unwrap()
         }
         1 => Instruction::with2(C::Mov_r64_imm64, r(rng), rng.next()).unwrap(),
+        2 if rng.below(3) == 0 => Instruction::with2(C::Mov_r32_imm32, Register::ECX, rng.pick(&[0u32, 32, 64])).unwrap(),
         2 => Instruction::with2(C::Mov_r32_imm32, sized(r(rng), 32), rng.next() as u32).unwrap(),
         3 => {
             let b = bitsel(rng);
@@ -165,6 +166,35 @@ fn random_ins(rng: &mut Rng, out: &mut Vec<Instruction>, rip_hi: u32) {
             ];
             let bi = match b { 8 => 0, 16 => 1, 32 => 2, _ => 3 };
             let imm = match b { 8 => rng.next() as u8 as i64, 16 => rng.next() as u16 as i64, _ => rng.next() as i32 as i64 };
+            if op < 8 && b > 8 && rng.below(3) == 0 {
+                // imm8 sign-extended (0x83), or reg <- r/m (0x03 family)
+                let i8s = [
+                    [C::Add_rm16_imm8, C::Add_rm32_imm8, C::Add_rm64_imm8],
+                    [C::Or_rm16_imm8, C::Or_rm32_imm8, C::Or_rm64_imm8],
+                    [C::Adc_rm16_imm8, C::Adc_rm32_imm8, C::Adc_rm64_imm8],
+                    [C::Sbb_rm16_imm8, C::Sbb_rm32_imm8, C::Sbb_rm64_imm8],
+                    [C::And_rm16_imm8, C::And_rm32_imm8, C::And_rm64_imm8],
+                    [C::Sub_rm16_imm8, C::Sub_rm32_imm8, C::Sub_rm64_imm8],
+                    [C::Xor_rm16_imm8, C::Xor_rm32_imm8, C::Xor_rm64_imm8],
+                    [C::Cmp_rm16_imm8, C::Cmp_rm32_imm8, C::Cmp_rm64_imm8],
+                ];
+                let rm = [
+                    [C::Add_r16_rm16, C::Add_r32_rm32, C::Add_r64_rm64],
+                    [C::Or_r16_rm16, C::Or_r32_rm32, C::Or_r64_rm64],
+                    [C::Adc_r16_rm16, C::Adc_r32_rm32, C::Adc_r64_rm64],
+                    [C::Sbb_r16_rm16, C::Sbb_r32_rm32, C::Sbb_r64_rm64],
+                    [C::And_r16_rm16, C::And_r32_rm32, C::And_r64_rm64],
+                    [C::Sub_r16_rm16, C::Sub_r32_rm32, C::Sub_r64_rm64],
+                    [C::Xor_r16_rm16, C::Xor_r32_rm32, C::Xor_r64_rm64],
+                    [C::Cmp_r16_rm16, C::Cmp_r32_rm32, C::Cmp_r64_rm64],
+                ];
+                let imm8 = rng.next() as i8 as i32;
+                return out.push(match rng.below(4) {
+                    0 => Instruction::with2(i8s[op][bi - 1], sized(r(rng), b), imm8).unwrap(),
+                    1 => Instruction::with2(i8s[op][bi - 1], m(rng), imm8).unwrap(),
+                    _ => Instruction::with2(rm[op][bi - 1], sized(r(rng), b), m(rng)).unwrap(),
+                });
+            }
             match form {
                 0 => Instruction::with2(rr[op][bi], sized(r(rng), b), sized(r(rng), b)).unwrap(),
                 1 => Instruction::with2(rr[op][bi], m(rng), sized(r(rng), b)).unwrap(),
@@ -217,8 +247,8 @@ fn random_ins(rng: &mut Rng, out: &mut Vec<Instruction>, rip_hi: u32) {
         }
         19 => {
             let cc = rng.below(16) as u32;
-            let b = rng.pick(&[32u32, 64]);
-            let base = if b == 64 { C::Cmovo_r64_rm64 as u32 } else { C::Cmovo_r32_rm32 as u32 };
+            let b = rng.pick(&[16u32, 32, 64]);
+            let base = match b { 64 => C::Cmovo_r64_rm64 as u32, 32 => C::Cmovo_r32_rm32 as u32, _ => C::Cmovo_r16_rm16 as u32 };
             // (Cmovo..Cmovg are 3 apart: r16, r32, r64)
             let code: Code = unsafe { std::mem::transmute::<u16, Code>((base + cc * 3) as u16) };
             if rng.below(3) == 0 {
@@ -255,8 +285,24 @@ fn random_ins(rng: &mut Rng, out: &mut Vec<Instruction>, rip_hi: u32) {
         }
         23 => Instruction::with(rng.pick(&[C::Cdqe, C::Cqo, C::Cdq, C::Cwde, C::Cbw, C::Cwd])),
         24 => {
-            // fallback paths: bt, bsf, rol
-            match rng.below(3) {
+            // fallback paths: bt, bsf, rol, locked ops, xchg with memory
+            match rng.below(7) {
+                3 => {
+                    let mut i = Instruction::with2(C::Cmpxchg_rm64_r64, m(rng), r(rng)).unwrap();
+                    i.set_has_lock_prefix(true);
+                    i
+                }
+                4 => {
+                    let mut i = Instruction::with2(C::Xadd_rm32_r32, m(rng), sized(r(rng), 32)).unwrap();
+                    i.set_has_lock_prefix(true);
+                    i
+                }
+                5 => {
+                    let mut i = Instruction::with2(C::Add_rm64_r64, m(rng), r(rng)).unwrap();
+                    i.set_has_lock_prefix(true);
+                    i
+                }
+                6 => Instruction::with2(C::Xchg_rm64_r64, m(rng), r(rng)).unwrap(),
                 0 => Instruction::with2(C::Bt_rm64_r64, r(rng), r(rng)).unwrap(),
                 1 => Instruction::with2(C::Rol_rm32_imm8, sized(r(rng), 32), rng.below(32) as u32).unwrap(),
                 _ => Instruction::with2(C::Bsr_r64_rm64, r(rng), r(rng)).unwrap(),

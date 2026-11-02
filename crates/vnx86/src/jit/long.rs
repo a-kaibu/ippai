@@ -29,6 +29,7 @@ use iced_x86::{ConditionCode, Decoder, DecoderOptions, FlowControl, Instruction,
 
 const F_STEP: u32 = 0;
 const F_EFLAGS: u32 = 1;
+const F_STATUS: u32 = 2;
 
 const MAX_INS: usize = 120;
 const MAX_BLOCKS: usize = 64;
@@ -37,6 +38,7 @@ const MAX_BLOCKS: usize = 64;
 /// defaults), and mnemonics (by their `Mnemonic` number) left to the interpreter.
 pub static DEBUG_INS: AtomicUsize = AtomicUsize::new(0);
 pub static DEBUG_BLOCKS: AtomicUsize = AtomicUsize::new(0);
+pub static DEBUG_CHECK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 pub static DEBUG_OFF: [AtomicU64; 32] = [const { AtomicU64::new(0) }; 32];
 
 /// Leaves mnemonic `m` to the interpreter (see DEBUG_OFF).
@@ -76,7 +78,8 @@ const L_FC: u32 = L_R + N_I64; // i32: carry kept by INC/DEC
 const L_BLK: u32 = L_FC + 1; // i32
 const L_A: u32 = L_FC + 2; // i32: the instruction's memory address
 const L_ST: u32 = L_FC + 3; // i32: an exit's status
-const N_I32: u32 = 4;
+const L_DBG: u32 = L_FC + 4; // i32: debugging
+const N_I32: u32 = 5;
 
 // EFLAGS bits
 const CF: u32 = 1;
@@ -453,34 +456,52 @@ impl<'a> Gen<'a> {
         };
         if !self.cond_lazy(base) {
             self.flags_to_cpu();
-            self.c.get(L_CPU).call(F_EFLAGS);
-            let t = L_ST; // (free outside exits)
-            self.c.set(t);
-            let bit = |c: &mut Code, b: u32| {
-                c.get(t).u32c(b).and().i32c(0).ne();
-            };
-            match base {
-                C::o => bit(&mut self.c, OF),
-                C::b => bit(&mut self.c, CF),
-                C::e => bit(&mut self.c, ZF),
-                C::be => {
-                    self.c.get(t).u32c(CF | ZF).and().i32c(0).ne();
-                }
-                C::s => bit(&mut self.c, SF),
-                C::p => bit(&mut self.c, PF),
-                C::l => {
-                    // SF != OF: bit 7 vs bit 11
-                    self.c.get(t).i32c(4).shr_u().get(t).xor().u32c(SF).and().i32c(0).ne();
-                }
-                _ => {
-                    self.c.get(t).i32c(4).shr_u().get(t).xor().u32c(SF).and().i32c(0).ne();
-                    bit(&mut self.c, ZF);
-                    self.c.or();
-                }
-            }
+            self.cond_from_eflags(base);
+        } else if DEBUG_CHECK.load(Relaxed) {
+            // (debugging: the lazy condition against the materialized flags; a mismatch goes to
+            // the status import as op 0xdead)
+            let f = self.flags;
+            self.c.set(L_DBG);
+            self.flags_to_cpu();
+            self.flags = f;
+            self.cond_from_eflags(base);
+            self.c.get(L_DBG).ne().if_();
+            self.c.u32c(0xdead).u32c(self.ins.ip() as u32).u32c(base as u32).get(L_DBG).get(L_CPU).load32(cpu_off!(eflags)).call(F_STATUS).drop_();
+            self.c.end();
+            self.c.get(L_DBG);
         }
         if neg {
             self.c.eqz();
+        }
+    }
+
+    /// Pushes condition `base` from the Cpu's flags (the eflags import).
+    fn cond_from_eflags(&mut self, base: ConditionCode) {
+        use ConditionCode as C;
+        self.c.get(L_CPU).call(F_EFLAGS);
+        let t = L_ST; // (free outside exits)
+        self.c.set(t);
+        let bit = |c: &mut Code, b: u32| {
+            c.get(t).u32c(b).and().i32c(0).ne();
+        };
+        match base {
+            C::o => bit(&mut self.c, OF),
+            C::b => bit(&mut self.c, CF),
+            C::e => bit(&mut self.c, ZF),
+            C::be => {
+                self.c.get(t).u32c(CF | ZF).and().i32c(0).ne();
+            }
+            C::s => bit(&mut self.c, SF),
+            C::p => bit(&mut self.c, PF),
+            C::l => {
+                // SF != OF: bit 7 vs bit 11
+                self.c.get(t).i32c(4).shr_u().get(t).xor().u32c(SF).and().i32c(0).ne();
+            }
+            _ => {
+                self.c.get(t).i32c(4).shr_u().get(t).xor().u32c(SF).and().i32c(0).ne();
+                bit(&mut self.c, ZF);
+                self.c.or();
+            }
         }
     }
 
@@ -1167,8 +1188,21 @@ impl<'a> Gen<'a> {
 fn reads_flags(ins: &Instruction) -> (u32, u32) {
     // (iced's RflagsBits: OF 1, SF 2, ZF 4, AF 8, CF 0x10, PF 0x20)
     let all = 0x3f;
-    let read = ins.rflags_read() & all;
+    let mut read = ins.rflags_read() & all;
     let written = (ins.rflags_written() | ins.rflags_cleared() | ins.rflags_set() | ins.rflags_undefined()) & all;
+    // a shift or rotate by a count that may be 0 leaves the flags as they were: it reads them
+    use Mnemonic::*;
+    if matches!(ins.mnemonic(), Shl | Shr | Sar | Sal | Rol | Ror | Rcl | Rcr | Shld | Shrd) {
+        let c = ins.op_count() - 1;
+        let zero = match ins.op_kind(c) {
+            // (31: conservative for 64-bit operands)
+            OpKind::Immediate8 => ins.immediate8() & 31 == 0,
+            _ => true,
+        };
+        if zero {
+            read |= written;
+        }
+    }
     (read, written)
 }
 

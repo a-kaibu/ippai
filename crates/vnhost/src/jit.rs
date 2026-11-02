@@ -288,6 +288,7 @@ fn init_flags() {
         let num = |k: &str| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(0);
         jit::long::DEBUG_INS.store(num("VNVM_JIT64_INS"), std::sync::atomic::Ordering::Relaxed);
         jit::long::DEBUG_BLOCKS.store(num("VNVM_JIT64_BLOCKS"), std::sync::atomic::Ordering::Relaxed);
+        jit::long::DEBUG_CHECK.store(num("VNVM_JIT64_CHECK") != 0, std::sync::atomic::Ordering::Relaxed);
         for name in std::env::var("VNVM_JIT64_OFF").unwrap_or_default().split(',').filter(|s| !s.is_empty()) {
             if !jit::long::debug_off_named(name) {
                 eprintln!("VNVM_JIT64_OFF: no mnemonic {name}");
@@ -312,8 +313,32 @@ pub fn run(cpu: &mut Cpu, pending: u32) -> Ran {
     cpu.jit_pending = pending;
     cpu.jit_budget = BUDGET;
     let depth = cpu.jit_depth;
+    // VNVM_JIT64_VERIFY=1: single-instruction regions, =2: whole regions; one region per call
+    // now and then, checked against the interpreter
+    thread_local! { static VN: Cell<u32> = const { Cell::new(0) }; }
+    let mode = if cpu.mode64 != 0 { verify64() } else { 0 };
+    let verify = mode != 0 && VN.with(|v| { v.set(v.get().wrapping_add(1)); v.get() % match mode { 1 => 4, 2 => 32, _ => 1 } == 0 });
+    let expect = verify.then(|| {
+        cpu.jit_budget = 2;
+        let mut c = cpu.clone();
+        let mut rec = Recorder(Vec::new(), HashMap::new());
+        let mut states = vec![(c.clone(), 0)];
+        for _ in 0..if mode == 1 { 1 } else { 400 } {
+            if vnx86::step(&mut c, &mut rec) != Exit::Continue {
+                break;
+            }
+            states.push((c.clone(), rec.0.len()));
+        }
+        (cpu.clone(), states, rec.0)
+    });
     #[cfg(target_os = "emscripten")]
     let r = unsafe { vnvm_jit_run(cpu) };
+    #[cfg(target_os = "emscripten")]
+    if let Some((before, states, writes)) = expect {
+        if r == jit::RET_CONTINUE || r == jit::RET_INTERP {
+            check64(&before, &states, cpu, &writes);
+        }
+    }
     cpu.jit_depth = depth;
     #[cfg(not(target_os = "emscripten"))]
     let r = jit::RET_INTERP;
@@ -322,6 +347,100 @@ pub fn run(cpu: &mut Cpu, pending: u32) -> Ran {
         jit::RET_INTERP => Ran::Missed,
         _ => Ran::Exit(EXIT.with(|e| e.take()).unwrap_or(Exit::Continue)),
     }
+}
+
+fn verify64() -> u32 {
+    use std::sync::OnceLock;
+    static ON: OnceLock<u32> = OnceLock::new();
+    *ON.get_or_init(|| {
+        let on = std::env::var("VNVM_JIT64_VERIFY").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+        if on == 1 {
+            jit::long::DEBUG_INS.store(1, Ordering::Relaxed);
+            jit::long::DEBUG_BLOCKS.store(1, Ordering::Relaxed);
+        }
+        on
+    })
+}
+
+/// Guest memory for a dry run of one instruction: reads see its own writes, which are kept
+/// (address, byte) instead of done.
+struct Recorder(Vec<(u32, u8)>, HashMap<u32, u8>);
+
+impl vnx86::Memory for Recorder {
+    fn read8(&mut self, addr: u32) -> Result<u8, vnx86::Fault> {
+        match self.1.get(&addr) {
+            Some(&v) => Ok(v),
+            None => vnx86::Memory::read8(&mut Linear, addr),
+        }
+    }
+    fn write8(&mut self, addr: u32, v: u8) -> Result<(), vnx86::Fault> {
+        vnx86::Memory::read8(&mut Linear, addr)?;
+        self.0.push((addr, v));
+        self.1.insert(addr, v);
+        Ok(())
+    }
+}
+
+/// How `got` differs from the interpreter's `want` (its writes: `writes`).
+fn diff64(want: &Cpu, got: &Cpu, writes: &[(u32, u8)]) -> Vec<String> {
+    let (mut w, mut g) = (want.clone(), got.clone());
+    w.materialize();
+    g.materialize();
+    let mut d = Vec::new();
+    for i in 0..16 {
+        if w.gpr(i) != g.gpr(i) {
+            d.push(format!("r{i} want {:#x} got {:#x}", w.gpr(i), g.gpr(i)));
+        }
+    }
+    if w.eflags & 0x8d5 != g.eflags & 0x8d5 {
+        d.push(format!("flags want {:#x} got {:#x}", w.eflags & 0x8d5, g.eflags & 0x8d5));
+    }
+    let mut last = HashMap::new();
+    for &(a, v) in writes {
+        last.insert(a, v);
+    }
+    for (&a, &v) in &last {
+        let now = vnx86::Memory::read8(&mut Linear, a).unwrap_or(0);
+        if now != v {
+            d.push(format!("mem {a:#x} want {v:#x} got {now:#x}"));
+            break;
+        }
+    }
+    d
+}
+
+/// Reports a region run (from `before` to `got`) that no interpreter state of the same RIP
+/// matches (`states`: after each instruction, with how many of `writes` were made).
+fn check64(before: &Cpu, states: &[(Cpu, usize)], got: &Cpu, writes: &[(u32, u8)]) {
+    static N: AtomicU32 = AtomicU32::new(0);
+    if N.fetch_add(1, Ordering::Relaxed) % 100_000 == 0 {
+        eprintln!("vnjit64 verify: {} checked", N.load(Ordering::Relaxed));
+    }
+    let mut first = None;
+    let mut arrivals = 0;
+    for (c, n) in states {
+        if (c.eip, c.rip_hi) != (got.eip, got.rip_hi) {
+            continue;
+        }
+        arrivals += 1;
+        let d = diff64(c, got, &writes[..*n]);
+        if d.is_empty() {
+            return;
+        }
+        first.get_or_insert(d);
+    }
+    let d = first.unwrap_or_else(|| vec![format!("rip {:x}{:08x} not reached in {} steps", got.rip_hi, got.eip, states.len())]);
+    if arrivals == 0 && states.len() >= 400 {
+        return; // (too far)
+    }
+    static SEEN: Mutex<Option<HashSet<u32>>> = Mutex::new(None);
+    if !SEEN.lock().unwrap().get_or_insert_with(HashSet::new).insert(before.eip) {
+        return;
+    }
+    let mut bf = before.clone();
+    bf.materialize();
+    let regs: Vec<String> = (0..16).map(|i| format!("{:x}", bf.gpr(i))).collect();
+    eprintln!("vnjit64 verify {:x}{:08x} -> {:x}{:08x} ({} steps, {arrivals} arrivals): {} | before flags {:#x} regs {}", before.rip_hi, before.eip, got.rip_hi, got.eip, states.len(), d.join("; "), bf.eflags, regs.join(" "));
 }
 
 /// Sets the entry of `eip`; true if it is new.
@@ -905,6 +1024,11 @@ pub unsafe extern "C" fn vnhost_jit_x87(cpu: u32, top: u32, info: u32, a: f64, b
 
 #[no_mangle]
 pub extern "C" fn vnhost_jit_status(op: u32, a: u32, b: u32, r: u32, c: u32) -> u32 {
+    if op == 0xdead {
+        // (jit::long's VNVM_JIT64_CHECK: a lazy condition that disagrees with the flags)
+        eprintln!("vnjit64 check: condition {b} at {a:#x}: lazy {r}, eflags {c:#x}");
+        return 0;
+    }
     vnx86::lazy::Lazy { op, a, b, r, c }.status()
 }
 
