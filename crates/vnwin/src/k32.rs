@@ -1170,7 +1170,39 @@ fn LdrGetDllHandle(c: &mut Ctx) -> u32 {
 }
 fn RtlFindExportedRoutineByName(c: &mut Ctx) -> u32 {
     let n = a2s(&cstr(c.a(1)));
+    if n == "__wine_unix_call_dispatcher" {
+        return crate::unixlib::dispatcher_cell();
+    }
     crate::pe::proc_address(c.a(0), crate::pe::Import::Name(&n)).unwrap_or(0)
+}
+
+/// (process, address, class, info, length, *returned): basic information, or the handle of a
+/// Wine DLL's Unix side (MemoryWineUnixFuncs)
+fn NtQueryVirtualMemory(c: &mut Ctx) -> u32 {
+    let (a, class, info, len, ret) = (c.a(1), c.a(2), c.a(3), c.a(4), c.a(5));
+    match class {
+        0 => {
+            let f = crate::api::export("kernel32", "VirtualQuery");
+            let n = c.call(f, &[a, info, len]);
+            if ret != 0 {
+                w32(ret, n);
+            }
+            if n == 0 { 0xc000_0004 } else { 0 }
+        }
+        1000 => {
+            let base = crate::pe::containing(a).unwrap_or(a);
+            match crate::unixlib::handle_for(base) {
+                Ok(h) if len >= 8 => {
+                    w32(info, h as u32);
+                    w32(info + 4, (h >> 32) as u32);
+                    0
+                }
+                Ok(_) => 0xc000_0004,
+                Err(e) => e,
+            }
+        }
+        _ => 0xc000_0003,
+    }
 }
 
 fn GetProcessHeap(_: &mut Ctx) -> u32 {
@@ -2930,6 +2962,7 @@ pub fn init() {
     implement("ntdll", "__wine_dbg_strdup", wine_dbg_strdup);
     implement("ntdll", "LdrGetDllHandle", LdrGetDllHandle);
     implement("ntdll", "RtlFindExportedRoutineByName", RtlFindExportedRoutineByName);
+    implement("ntdll", "NtQueryVirtualMemory", NtQueryVirtualMemory);
     implement("ntdll", "__wine_dbg_get_channel_flags", wine_dbg_channel_flags);
     implement("ntdll", "__wine_dbg_output", wine_dbg_output);
     reg!("kernel32";

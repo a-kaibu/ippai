@@ -16864,3 +16864,17 @@ xinput1_1 XInputGetCapabilities stdcall 12 -
 xinput1_1 XInputGetDSoundAudioDeviceGuids stdcall 12 -
 xinput1_1 XInputSetState stdcall 8 -
 xinput1_1 XInputGetState stdcall 8 -
+d3d11 D3D11CoreCreateDevice stdcall 24 -
+d3d11 D3D11CoreCreateLayeredDevice stdcall 20 -
+d3d11 D3D11CoreGetLayeredDeviceSize stdcall 8 -
+d3d11 D3D11CoreRegisterLayers stdcall 8 -
+d3d11 D3D11CreateDevice stdcall 40 -
+d3d11 D3D11CreateDeviceAndSwapChain stdcall 48 -
+d3d11 D3D11On12CreateDevice stdcall 40 -
+dxgi CreateDXGIFactory stdcall 8 -
+dxgi CreateDXGIFactory1 stdcall 8 -
+dxgi CreateDXGIFactory2 stdcall 12 -
+dxgi DXGID3D10CreateDevice stdcall 28 -
+dxgi DXGID3D10RegisterLayers stdcall 8 -
+dxgi DXGIGetDebugInterface1 stdcall 12 -
+dxgi DXGIDeclareAdapterRemovalSupport stdcall 0 -

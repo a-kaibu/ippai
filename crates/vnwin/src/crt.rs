@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::io::SeekFrom;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::api::{implement, Ctx};
 use crate::files::File;
@@ -1236,7 +1236,67 @@ fn __stdio_common_vswprintf(c: &mut Ctx) -> u32 {
     })
 }
 
+fn _putenv(_: &mut Ctx) -> u32 {
+    0
+}
+fn fputc(c: &mut Ctx) -> u32 {
+    let ch = c.a(0) & 0xff;
+    let tmp = mem::heap_alloc(1, false);
+    mem::write(tmp, &[ch as u8]);
+    with_file(c.a(1), |st| match &st.f {
+        Some(f) => {
+            f.write_from(tmp, 1);
+        }
+        None => eprint!("{}", ch as u8 as char),
+    });
+    mem::heap_free(tmp);
+    ch
+}
+fn __acrt_iob_func(c: &mut Ctx) -> u32 {
+    data("_iob").unwrap_or(0) + FILE_SIZE * c.a(0)
+}
+/// _locale_t: only ever the "C" locale
+fn _create_locale(_: &mut Ctx) -> u32 {
+    static LOC: OnceLock<u32> = OnceLock::new();
+    *LOC.get_or_init(|| mem::heap_alloc(64, true))
+}
+fn _free_locale(_: &mut Ctx) -> u32 {
+    0
+}
+fn fp_class(bits: u64, exp_bits: u32, man_bits: u32) -> u32 {
+    let exp = (bits >> man_bits) & ((1 << exp_bits) - 1);
+    let man = bits & ((1u64 << man_bits) - 1);
+    // FP_INFINITE 1, FP_NAN 2, FP_NORMAL -1, FP_SUBNORMAL -2, FP_ZERO 0
+    match (exp, man) {
+        (0, 0) => 0,
+        (0, _) => -2i32 as u32,
+        (e, 0) if e == (1 << exp_bits) - 1 => 1,
+        (e, _) if e == (1 << exp_bits) - 1 => 2,
+        _ => -1i32 as u32,
+    }
+}
+fn _fdclass(c: &mut Ctx) -> u32 {
+    fp_class(c.a(0) as u64, 8, 23)
+}
+fn _dclass(c: &mut Ctx) -> u32 {
+    fp_class(c.a(0) as u64 | (c.a(1) as u64) << 32, 11, 52)
+}
+fn _fdsign(c: &mut Ctx) -> u32 {
+    (c.a(0) >> 31) << 15
+}
+fn _dsign(c: &mut Ctx) -> u32 {
+    (c.a(1) >> 31) << 15
+}
+fn strnlen(c: &mut Ctx) -> u32 {
+    let (p, n) = (c.a(0), c.a(1));
+    (0..n).find(|&i| mem::r8(p + i) == 0).unwrap_or(n)
+}
+
 pub fn init() {
+    implement("msvcrt", "_strtof_l", strtod);
+    implement("msvcrt", "_strtod_l", strtod);
+    implement("msvcrt", "strtof", strtod);
+    reg!(_putenv, fputc, __acrt_iob_func, _create_locale, _free_locale, _fdclass, _dclass, _fdsign, _dsign, strnlen);
     implement("ucrtbase", "__stdio_common_vsprintf", __stdio_common_vsprintf);
     implement("ucrtbase", "__stdio_common_vswprintf", __stdio_common_vswprintf);
     reg!(wcsncmp, getenv, _ismbblead, memcpy_s, _controlfp_s, __iob_func, fopen_s, _wfopen_s, _setjmp3, longjmp);

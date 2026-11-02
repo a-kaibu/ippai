@@ -15,6 +15,9 @@ cd "$ROOT"
 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-globals -C relocation-model=pic -C panic=abort" \
   cargo build --release -p vnwin --target wasm32-unknown-emscripten -Zbuild-std=std,panic_abort
 LIB=$ROOT/target/wasm32-unknown-emscripten/release/libvnwin.a
+# vkd3d-shader for Direct3D 11 shaders (vnhost's d3d11, the library hangover/build.sh builds)
+VKD3D=${VKD3D_OUT:-/home/user/work/vkd3d-wasm}/libvkd3d-shader.a
+[ -f "$VKD3D" ] || { echo "no $VKD3D: run hangover/build.sh (or hangover/build-vkd3d.sh) first"; exit 1; }
 emcc -O2 -pthread -fPIC -c "$HERE/c/main.c" -o "$OUT/main.o"
 emcc -O2 -pthread -fPIC -c "$ROOT/crates/vnhost/c/shim.c" -o "$OUT/shim.o"
 # the libc entry points vnhost routes to its fd layer and the page's file system (not mmap:
@@ -32,7 +35,7 @@ EXPORTS=$(echo "$KEEP" | sed 's/^/_/' | paste -sd, -)
 link() {  # <output .js> <emcc flags...>
   local out=$1
   shift
-  emcc -O2 ${VNWIN_LDEXTRA:-} -pthread -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -sMAIN_MODULE=2 -Wno-undefined -o "$out" "$OUT/main.o" "$OUT/shim.o" "$LIB" \
+  emcc -O2 ${VNWIN_LDEXTRA:-} -pthread -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -sMAIN_MODULE=2 -Wno-undefined -o "$out" "$OUT/main.o" "$OUT/shim.o" "$LIB" "$VKD3D" \
     $WRAPFLAGS --pre-js "$HO/pre.js" --js-library "$HO/vnfs.js" --js-library "$HO/vnjit.js" --js-library "$HO/vndl.js" --js-library "$HO/vnwasm.js" \
     -sPROXY_TO_PTHREAD -sEXIT_RUNTIME \
     -sGLOBAL_BASE=2147483648 -sINITIAL_MEMORY=2214592512 -sMAXIMUM_MEMORY=4GB -sALLOW_MEMORY_GROWTH=1 \

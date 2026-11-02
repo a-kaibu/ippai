@@ -378,7 +378,8 @@ fn find_dll_file(dll: &str) -> Option<(String, String)> {
     // the folders of DLLs loaded by path (LOAD_WITH_ALTERED_SEARCH_PATH finds their dependencies there)
     for m in MODULES.read().unwrap().iter().filter(|m| m.dll && !m.hle) {
         if let Some((d, _)) = m.path.rsplit_once('\\') {
-            if !dirs.iter().any(|x| x.eq_ignore_ascii_case(d)) {
+            // (not system32, where Wine's own builds of the DLLs we implement also are)
+            if !dirs.iter().any(|x| x.eq_ignore_ascii_case(d)) && !d.eq_ignore_ascii_case("C:\\windows\\system32") {
                 dirs.push(d.to_string());
             }
         }
@@ -559,9 +560,12 @@ pub fn init_dlls(cpu: &mut Cpu) {
         tls_callbacks(cpu, base, 1);
         let entry = with(base, |m| m.entry).unwrap_or(0);
         if entry != 0 {
+            if std::env::var_os("VNWIN_TRACE_LOAD").is_some() {
+                eprintln!("vnwin: DllMain of {:#x} {} ...", base, with(base, |m| m.path.clone()).unwrap_or_default());
+            }
             let ok = crate::call(cpu, entry, &[base, 1, 0]);
             if std::env::var_os("VNWIN_TRACE_LOAD").is_some() {
-                eprintln!("vnwin: DllMain of {:#x}: {ok}", base);
+                eprintln!("vnwin: DllMain of {:#x} {}: {ok}", base, with(base, |m| m.name.clone()).unwrap_or_default());
             }
         }
     }

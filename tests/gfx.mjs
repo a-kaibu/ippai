@@ -3,7 +3,8 @@
 // of the screen against what the check draws, and its log against what it prints. Needs
 // vnvm-server on BASE (default http://127.0.0.1:8090); exits 1 when anything fails.
 //
-//   node tests/gfx.mjs ["name" ...]    (default: all; OUT=dir keeps the screens and logs)
+//   node tests/gfx.mjs ["name" ...]    (default: all; OUT=dir keeps the screens and logs;
+//                                       ENGINE=vnwin runs them on vnwin instead of Wine)
 import { execFileSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import { inflateSync } from "node:zlib";
@@ -71,7 +72,8 @@ for (const name of names) {
   const t = TESTS[name];
   const [exe, ...args] = name.split(" ");
   const out = `${outDir}/${name.replace(" ", "-")}`;
-  const url = `${base}/wine.html?autostart&headless&mount=/vnvm/game=gfxtest&args=${["still", ...args]}&run=Z:\\vnvm\\game\\${exe}.exe`;
+  const engine = process.env.ENGINE ? `engine=${process.env.ENGINE}&` : "";
+  const url = `${base}/wine.html?${engine}autostart&headless&mount=/vnvm/game=gfxtest&args=${["still", ...args]}&run=Z:\\vnvm\\game\\${exe}.exe`;
   execFileSync("rm", ["-rf", out]);
   try {
     execFileSync("node", [`${here}/wine.mjs`, url, out, "22", "20"], { stdio: "ignore", timeout: 90000 });

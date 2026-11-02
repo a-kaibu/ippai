@@ -52,6 +52,9 @@ unsafe extern "C" fn client_rect(hwnd: u32, out: *mut i32) -> i32 {
     1
 }
 static CALLS: HostCalls = HostCalls { alloc, free, client_rect };
+pub fn host_calls() -> &'static HostCalls {
+    &CALLS
+}
 
 fn method(c: &mut Ctx) -> u32 {
     let id = IDS.lock().unwrap().as_ref().and_then(|m| m.get(&c.trap).copied()).unwrap_or(0);

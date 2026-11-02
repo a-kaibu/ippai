@@ -13,6 +13,8 @@ use vnx86::{Cpu, EAX, ESP};
 pub mod acm;
 pub mod api;
 pub mod d3d9;
+pub mod d3d11;
+pub mod unixlib;
 pub mod crt;
 pub mod ddraw;
 pub mod ini;
@@ -276,6 +278,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     dinput::init();
     sound::init();
     d3d9::register();
+    d3d11::register();
     vnhost::crashlog::set_trap_namer(api::name_of);
     let peb = mem::reserve(0, 0x2000, 4, 0x20000, true).expect("PEB");
     mem::commit(peb, 4);
