@@ -45,23 +45,39 @@ Direct3D 11 は全滅 (d3d11.dll の vnhost 実装は未検証の段階)。
 | QPC×1000 が桁あふれ、GetTickCount64 が 1.8e12 | emscripten の CLOCK_MONOTONIC がワーカーで Unix 紀元起点。起動 1 時間後に見えるよう基準を引く | 486f0d5 |
 | QLIE (かみぱに！) が JIT 有効時だけ落ちる | VirtualProtect でコードを書き換えるのに JIT が古い翻訳を実行。JIT スレッドが無効化を実装 | 39274ab |
 | Artemis (フユキス) が Aborted() | 最初の Present 前に全画像を読み込み、D3D9 バッチが 1GB に。64MB で区切る | 6ce41d5 |
+| ランチャーがゲーム本体を起動できない (c0000018) | 全プロセスが 1 つのアドレス空間を共有。子がランチャーの領域を使う間、ランチャーを退避して止める | 8403f3f |
+| Eushully などのインストーラが wasm メモリを使い切る | 準備時にインストーラを展開 (InstallShield ストリーム、MSI、入れ子の Inno)。BGI のインストール媒体マーカーを除く | faeef0b, d83d8bb |
+| MSI 版がインストール先をレジストリから読めない | MSI の Registry テーブルを起動前に書き込む | bebaddc |
+| AdvHD/WillPlus が 645MB 確保して abort | CPUID 0x80000000 が 0 を返していた。拡張リーフとブランド文字列 | b02b9aa |
+| Waffle・Majiro で描画が止まる | 対象が消えた保留中のクリアでページが例外。破棄する | 02b1da6 |
+| Direct2D を使う D3D11 タイトル (Silkys plus、Cyberworks、FG) | ID3D11Device1/2、DeviceContext1/2、デバイスコンテキスト状態を実装 | ca3b40b |
+| Lump of Sugar が不正命令 | MASKMOVQ / MASKMOVDQU | c52d222 |
+| ChakraCore (Cyberworks 2026) が fail-fast | 書き込みコピーのページを PAGE_READWRITE と報告 | 9a7683c |
+| ASProtect の DLL (Eushully AGERC.DLL) が古い翻訳を実行 | W\|X のページと DLL の W\|X セクションは JIT しない | 9768e4d |
+| QLIE が GetBackBuffer の参照数で失敗 | バックバッファ・自動深度・スワップチェーンを内部参照で保持 | 9768e4d |
+| 天冥のコンキスタ (Eushully, D3D11) が C0000005 | 設定ファイル (SYS4REG.INI) を MSI の LocalAppData から配置、ID3D10Multithread、大きさの違う深度バッファに代替 | 084c468, fd3dc82 |
+| 天冥の台詞が出ない | Wine の dwrite の Unix 側 (FreeType) が wasm に入っていなかった。Direct2D が使う IDXGISurface::Map | 8c8135e |
+| QLIE barista_lab が黒画面 (0x0eedfade) | FBSTP が無く #UD を Delphi が握りつぶしていた (FBSTP/FBLD を追加)。FVF の要素がストライドを超えてパイプラインが無効 | 9958164 |
+| こすぷれえっち (Cyberworks) が消失点状に崩れる | 固定機能パイプラインの変換行列を転置して渡していた | e125e26 |
 
 ## 残っている失敗のグループ
 
-- **ランチャーが 2 つ目のアプリプロセスを起動できない (6 本)**: 「failed to create main module」。
-  全プロセスが 1 つの wasm アドレス空間を分け合い、アプリ用の低位領域は 1 つしかない。
-  CatSystem2 は cs2.exe を直接起動して回避している。
-- **BGI のインストーラ版 (sekachu, sukerasparo など)**: 最初のフレームを描いた直後に自分で終了する。
-  インタプリタでも同じ。システムスクリプト (system.arc の ipl._bp) が SekaiToSekaiNoMannakaDeTV の存在確認の
-  直後に終わっている。インストーラ (installer.arc) は開かれない。未解明。
-- **Eushully (3 本)**: wasm 内の Rust のメモリ確保 (512MB/1GB) が失敗して Aborted()。D3D9 バッチとは別の経路。
-- **null 読み込みのページフォールト (5 本: silkys fuyukuru, tinkerbell 2021, wendybell oreyome, fg_remake ほか)**: exe の
-  0x43xxxx で 0 を読む。直前の API が失敗している可能性。
-- **AdvHD のランチャー (b2015_guilty)**: 「この環境はサポート対象外」の警告のあと、設定画面で画面解像度が 0x0、OK が押せない。
-- **Direct3D 11 (8 本)**: 全滅。グラフィックス側の作業。
-- **FVP 青画面、Cyberworks 白画面、DxLib 黒画面、WolfRPG の文字が薄い**: 描画の問題。
-- **動画**: engagekinks は quartz のフィルタ (GStreamer なし) が無くて終了。
-- その他: rikuzendo「B-Phese 2」、Cyberworks の c0000602、QLIE barista_lab の 0x0eedfade (Delphi 例外)。
+2 周目 (2026-11-02、上の表の修正後) の時点。
+
+- **ASProtect で自己復号する Eushully の exe (百千、戦女神VERITA)**: JIT のときだけ落ちる (`VNVM_JIT=0` なら起動する)。
+  全セクションが RWX で、.data のコードを実行時に書き換える。百千は 0x7e9450〜0x7e9478 を解釈実行にすると直る。
+  翻訳器側で調査中。
+- **AdvHD (6 本)**: 描画は進むが出力が真っ黒のまま (500 秒待ってもタイトルが出ない)。GetRenderTargetData で読み戻した
+  画素も RGB が全部 0。毎フレームの読み戻しが 1 回 110ms かかり 2〜3fps しか出ない (このコンテナはソフトウェア GPU)。
+- **FVP (いたずら極)**: 告知画面とタイトルは出るが、3D の本編に入ると黒画面。
+- **ランチャーが 2 つ目のアプリプロセスを起動できない**: 8403f3f で大半は解消。
+- **BGI のインストーラ版 (sekachu, sukerasparo など)**: 最初のフレームの直後に自分で終了 (インタプリタでも同じ)。未解明。
+- **null 読み込みのページフォールト (silkys fuyukuru ほか)**: exe の 0x43xxxx で 0 を読む。
+- **その他**: WolfRPG RJ01705134 (ウィンドウが出ない)、YU-RIS r1_yuris、debonosu VJ01000787 (解放済みメモリを読む)、
+  rikuzendo (SRPG Studio の起動失敗)、engagekinks (動画、quartz のフィルタが無い)。
+- **動画全般**: Media Foundation の動画は GStreamer が無いので再生されない (天冥は飛ばして進む)。WMA も同じ。
+
+Eushully の 1600x900 ウィンドウは既定の 1366x768 画面に収まらないので `VNVM_SCREEN=1920x1080` で動かす。
 
 ## ベンチマーク
 
@@ -94,6 +110,15 @@ Chromium 全体の平均使用コア数。
 - 本編の CPU は多くが 1 コア未満。ShiinaRio (Android 相当 1.05 コア)、CatSystem2・RealLive・Unity (0.7〜0.9) が重い。
 - EntisGLS の通常速度 45.5 秒は外れ値 (1 周目の同じタイトルは 14.5 秒)。LiveMaker はこの回はタイトル判定に失敗。
 - 実機 (Android) での最終確認はまだ。
+
+### 重いタイトル: ドーナドーナ (alice_0053)
+
+ユーザー指定の重めの体験版。初回起動 (保存済み翻訳なし)、main 9958164 時点。
+
+| 条件 | タイトルまで (秒) | タイトル静止まで (秒) | CPU (コア) |
+|---|---|---|---|
+| 通常速度 | 43.0 | 52.5 | 0.51 (本編) |
+| Android 相当 | 105.3 | 132.6 | 0.69 (メニュー。本編には入れず) |
 
 ## 全タイトル
 
@@ -228,12 +253,12 @@ Chromium 全体の平均使用コア数。
 | Crowd/Anim (PCK/GAX/EOG) | 2026 | ママラブ！２～俺の彼女は俺のママ☆世話焼き巨乳凛桜ママ～ - 体験版 - | b2026_anim | D3D (dynamic) | title | 39 | 0.25 |  |
 | Cyberworks (Arc0x.dat) | 2012 | 籠女の繭 体験版 | b2012_tinkerbell | D3D (dynamic) | title | 14 | 0.10 |  |
 | Cyberworks (Arc0x.dat) | 2013 | ぜったいマジラブ！あまイチャはぷにんぐ！体験版 Ver 1.0 | b2013_tinkerbell | D3D (dynamic) | title | 31 | 0.09 |  |
-| Cyberworks (Arc0x.dat) | 2014 | こすぷれえっち 体験版 | b2014_wendybell | dsound | no title |  |  |  |
+| Cyberworks (Arc0x.dat) | 2014 | こすぷれえっち 体験版 | b2014_wendybell | dsound | title | 31 |  | 本編まで (e125e26) |
 | Cyberworks (Arc0x.dat) | 2021 | 淫妖蟲 穢 ～凌蝕桃源退魔録～体験版 Version01 | b2021_tinkerbell | d3d11, dsound | no title |  |  | wine: Unhandled page fault on read access to 00000000 at address 00443D63 (threa |
 | Cyberworks (Arc0x.dat) | 2026 | 友恵の探偵物語～のぞき魔な私の天職～体験版 | b2026_wendybell |  | no title |  |  | 0068:err:seh:NtRaiseException Unhandled exception code c0000602 flags 1 addr 0x4 |
 | DxLib (MED) | 2012 | つぼい君のスイッチ！体験版 | b2012_fudegaki_soft | dsound | no title |  |  |  |
 | DxLib (MED) | 2012 | MonsterParkⅡ | b2012_trois | dsound | no title |  |  |  |
-| DxLib (MED) | 2018 | 催眠学園１年生体験版 | b2018_fudegaki_soft | dsound | no title |  |  |  |
+| DxLib (MED) | 2018 | 催眠学園１年生体験版 | b2018_fudegaki_soft | dsound | title | 41 |  | 本編まで (開始ボタン 1061,312) |
 | EntisGLS | 2007 | リリカル♪りりっく体験版 | b2007_marmalade |  | title | 14 | 0.02 |  |
 | EntisGLS | 2009 | キスと魔王と紅茶（体験版） | b2009_marmalade |  | title | 20 | 1.09 |  |
 | EntisGLS | 2024 | 狙われた優等生　身代わりの代償　体験版 | b2024_syrup_mm | opengl, video | title | 14 | 0.22 |  |
@@ -243,11 +268,11 @@ Chromium 全体の平均使用コア数。
 | Escude | 2012 | 紅蓮華 - 体験版 | s2012_escude_gurenka |  | title | 17 | 0.12 |  |
 | Escude | 2014 | Re;Lord ～ヘルフォルトの魔女とぬいぐるみ～ - 体験版 Ver. | b2014_escude | D3D (dynamic) | title | 10 | 0.25 |  |
 | Escude | 2014 | 花嫁と魔王 - 体験版 Ver. | s2014_escude_hanaou | D3D (dynamic) | title | 15 | 0.25 |  |
-| Eushully AGE | 2010 | 戦女神VERITA体験版 | s2010_eushully_ikusa_verita |  | no title |  |  | Aborted(): wasm allocation failure (not the D3D9 batch); open |
+| Eushully AGE | 2010 | 戦女神VERITA体験版 | s2010_eushully_ikusa_verita |  | no title |  |  | JIT だけで 0x617655 に書き込みフォールト (ASProtect の自己復号)。VNVM_JIT=0 なら起動 |
 | Eushully AGE | 2016 | 珊海王の円環体験版 | s2016_eushully_sankaio |  | no title |  |  |  |
-| Eushully AGE | 2020 | 天冥のコンキスタ体験版 | s2020_eushully_tenmei |  | no title |  |  | Aborted(): wasm allocation failure (not the D3D9 batch); open |
-| Eushully AGE | 2024 | 百千の定にかわたれし剋 体験版 | s2024_eushully_hyakusen |  | no title |  |  | Aborted(): wasm allocation failure (not the D3D9 batch); open |
-| FVP | 2008 | いたずら極―リアル―　体験版 | b2008_interheart | d3d9, ddraw, dsound | no title |  |  |  |
+| Eushully AGE | 2020 | 天冥のコンキスタ体験版 | s2020_eushully_tenmei |  | title | 66 | 0.32 | 本編の台詞まで (VNVM_SCREEN=1920x1080、8c8135e) |
+| Eushully AGE | 2024 | 百千の定にかわたれし剋 体験版 | s2024_eushully_hyakusen |  | no title |  |  | JIT だけで 0x7e92bf でクラッシュ (ASProtect)。VNVM_JIT=0 で 349 秒でタイトル |
+| FVP | 2008 | いたずら極―リアル―　体験版 | b2008_interheart | d3d9, ddraw, dsound | title | 21 |  | 告知画面とタイトルまで。本編 (3D) は黒画面 |
 | FVP | 2009 | らぶでれーしょん！ Ver1.00 | b2009_smee | d3d8 | title | 14 | 0.05 |  |
 | FVP | 2016 | 小悪魔発育チュ～！（体験版） | b2016_kaguya | D3D (dynamic) | title | 19 | 0.08 |  |
 | FVP | 2018 | 恋はそっと咲く花のように　体験版 | b2018_ensemble | d3d11, dxgi, d3d9, d3dx9, dsound | no title |  |  |  |
@@ -325,7 +350,7 @@ Chromium 全体の平均使用コア数。
 | Propeller (MPK) | 2007 | 『Bullet Butlers』Web体験版　ver1.1 | b2007_propeller |  | title | 12 | 0.08 |  |
 | QLIE | 2007 | かみぱに！体験版 | b2007_clochette | ddraw, dsound | title | 11 | 0.36 | fixed: game patches its code with VirtualProtect; JIT now drops stale translations (39274ab) |
 | QLIE | 2009 | シグナルハート 体験版 Ver.01 | b2009_purplesoftware |  | title | 15 | 0.69 |  |
-| QLIE | 2020 | アナベル・メイドガーデン体験版 | b2020_barista_lab |  | no title |  |  |  |
+| QLIE | 2020 | アナベル・メイドガーデン体験版 | b2020_barista_lab |  | title | 18 |  | 本編まで (9958164) |
 | QLIE | ~2021 | 天翼のアスクレイン 体験版 | r1_qlie | d3d9 | no title |  |  |  |
 | RealLive |  | 5 -ファイブ- 体験版 | r1_reallive_five |  | download/extract failed |  |  |  |
 | RealLive | 2007 | ハーレム×すくらっち体験版 | b2007_hadashi |  | title | 18 |  |  |
