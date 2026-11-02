@@ -94,6 +94,10 @@ export function showLibrary(root: HTMLElement, games: GameEntry[], pick: (g: Gam
   search.placeholder = "タイトルで絞り込み";
   search.setAttribute("aria-label", "タイトルで絞り込み");
   if (games.length > 6) head.append(search);
+  // the runs' logs (crash reports: web/src/crashlog.ts)
+  const logs = el("a", "logs", "ログ");
+  logs.href = "logs.html";
+  head.append(logs);
   root.append(head);
   if (!games.length) {
     const empty = el("p", "empty");

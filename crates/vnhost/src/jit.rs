@@ -281,7 +281,15 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
 /// Compiles and their time (µs) for VNVM_JIT_COUNT: regions, functions.
 static COMPILES: [AtomicU32; 6] = [const { AtomicU32::new(0) }; 6];
 
+/// Compiles since the start: regions, functions, rebuilt functions (the crash log).
+static COMPILED: [AtomicU32; 3] = [const { AtomicU32::new(0) }; 3];
+
+pub(crate) fn compiled_totals() -> [u32; 3] {
+    COMPILED.each_ref().map(|c| c.load(Ordering::Relaxed))
+}
+
 fn count_compile(k: usize, t0: Instant) {
+    COMPILED[k].fetch_add(1, Ordering::Relaxed);
     COMPILES[2 * k].fetch_add(1, Ordering::Relaxed);
     COMPILES[2 * k + 1].fetch_add(t0.elapsed().as_micros() as u32, Ordering::Relaxed);
 }

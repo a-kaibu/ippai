@@ -26,6 +26,9 @@
 //! - `PUT /bench-log`: a result from web/bench.html, printed and appended to
 //!   `<jit>/bench-results.txt`
 //! - `GET`/`PUT /saves/<name>`: saved games backed up to S3 (see saves.rs)
+//! - `PUT /log-save/<name>`: a run's log from the page (web/src/crashlog.ts: crash reports,
+//!   sessions a killed tab left, ...), kept as `<logs>/<name>.txt`; `GET /log-list` lists them
+//!   (JSON, newest first), `/logs/<name>.txt` serves one; web/logs.html shows them
 //!
 //! Every response carries COOP/COEP: Wine's threads (wasm pthreads) need SharedArrayBuffer,
 //! which browsers only allow on cross-origin isolated pages.
@@ -57,6 +60,9 @@ struct Args {
     /// Saved x86 regions, per game.
     #[arg(long, default_value = "jit")]
     jit: PathBuf,
+    /// The runs' logs the pages send (crash reports).
+    #[arg(long, default_value = "logs")]
+    logs: PathBuf,
     #[arg(long, default_value = "127.0.0.1:8080")]
     listen: SocketAddr,
     /// No pre-runs (see prerun_games): a game's first run translates its code itself.
@@ -379,6 +385,56 @@ async fn bench_log(State(jit): State<Jit>, body: Bytes) -> StatusCode {
     }
 }
 
+/// Logs kept at most (the oldest go).
+const LOGS_MAX: usize = 2000;
+
+/// Stores a page's log as `<logs>/<name>.txt`.
+async fn save_log(State(dir): State<Arc<PathBuf>>, Path(name): Path<String>, body: Bytes) -> StatusCode {
+    if name.is_empty() || name.len() > 200 || name.starts_with('.') || !name.chars().all(|c| c.is_ascii_alphanumeric() || "_-.".contains(c)) {
+        return StatusCode::BAD_REQUEST;
+    }
+    let _ = tokio::fs::create_dir_all(&*dir).await;
+    let path = dir.join(format!("{name}.txt"));
+    let tmp = dir.join(format!(".{name}.tmp"));
+    if tokio::fs::write(&tmp, &body).await.is_err() || tokio::fs::rename(&tmp, &path).await.is_err() {
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    }
+    // the first lines say what happened
+    let text = String::from_utf8_lossy(&body[..body.len().min(4096)]);
+    let reason = text.lines().find_map(|l| l.strip_prefix("reason: ")).unwrap_or("");
+    eprintln!("log {}: {} KB, {reason}", path.display(), body.len() / 1024);
+    let mut list = list_logs(&dir).await;
+    for (old, _, _) in list.drain(..).skip(LOGS_MAX) {
+        let _ = tokio::fs::remove_file(dir.join(old)).await;
+    }
+    StatusCode::NO_CONTENT
+}
+
+/// The logs: (file name, size, modified ms), newest first.
+async fn list_logs(dir: &std::path::Path) -> Vec<(String, u64, u64)> {
+    let mut out = Vec::new();
+    let Ok(mut d) = tokio::fs::read_dir(dir).await else { return out };
+    while let Ok(Some(e)) = d.next_entry().await {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Ok(m) = e.metadata().await else { continue };
+        if !name.ends_with(".txt") || name.starts_with('.') || !m.is_file() {
+            continue;
+        }
+        let t = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis() as u64);
+        out.push((name, m.len(), t));
+    }
+    out.sort_by(|a, b| b.2.cmp(&a.2));
+    out
+}
+
+async fn log_list(State(dir): State<Arc<PathBuf>>) -> Response {
+    let list: Vec<serde_json::Value> = list_logs(&dir).await.into_iter().map(|(name, size, time)| serde_json::json!({ "name": name, "size": size, "time": time })).collect();
+    Response::builder()
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(axum::body::Body::from(serde_json::Value::Array(list).to_string()))
+        .unwrap()
+}
+
 /// What a pre-run needs, and the lock that keeps them one at a time.
 struct Prerun {
     store: PathBuf,
@@ -507,6 +563,7 @@ async fn games(State(p): State<Arc<Prerun>>) -> Response {
 
 async fn headers(req: Request<axum::body::Body>, next: Next) -> Response {
     let chunk = req.uri().path().starts_with("/store/chunks/");
+    let log = req.uri().path().starts_with("/logs/");
     // a versioned URL (?v=...) names content that never changes: the browser keeps it without
     // asking again, and so keeps its compiled code (a revalidated .wasm loses it)
     let versioned = req.uri().query().is_some_and(|q| q.split('&').any(|p| p.starts_with("v=")));
@@ -520,6 +577,9 @@ async fn headers(req: Request<axum::body::Body>, next: Next) -> Response {
         h.insert(header::CONTENT_ENCODING, HeaderValue::from_static("zstd"));
         h.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"));
         h.insert(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=31536000, immutable"));
+    } else if log && ok {
+        h.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain; charset=utf-8"));
+        h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     } else if versioned && ok {
         h.insert(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=31536000, immutable"));
     } else {
@@ -542,7 +602,11 @@ async fn main() -> anyhow::Result<()> {
         off: args.no_prerun,
         lock: Default::default(),
     });
+    let logs = Arc::new(args.logs.clone());
     let app = Router::new()
+        .route("/log-save/{name}", put(save_log).with_state(logs.clone()))
+        .route("/log-list", get(log_list).with_state(logs))
+        .nest_service("/logs", ServeDir::new(&args.logs))
         .route("/jit-save/{name}", put(save_jit))
         .route("/bench-log", put(bench_log))
         .layer(DefaultBodyLimit::max(1 << 30))

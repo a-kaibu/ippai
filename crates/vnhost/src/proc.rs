@@ -136,6 +136,7 @@ pub fn create(app: bool, root: bool) -> Option<i32> {
         let pid = p.next;
         p.next += 1;
         trace(format_args!("process {pid}: {:#x}-{:#x}{}", area.0, area.1, if root { " (root)" } else { "" }));
+        crate::crashlog::event(format_args!("process {pid} created: {:#x}-{:#x}{}", area.0, area.1, if root { " (root)" } else { "" }));
         p.list.insert(pid, new_proc(area, root, parent_env, parent_cwd));
         Some(pid)
     })
@@ -383,6 +384,7 @@ pub fn kill(pid: i32) {
         _ => Vec::new(),
     });
     trace(format_args!("process {pid}: killed, threads {tids:?}"));
+    crate::crashlog::event(format_args!("process {pid} ended ({} threads left)", tids.len()));
     crate::fd::close_owned(pid);
     for t in tids {
         crate::cpu::vnhost_tkill(t, libc::SIGKILL);
@@ -480,6 +482,7 @@ pub extern "C" fn vnhost_proc_leave() {
         None => false,
     });
     crate::cpu::forget_thread(tid);
+    crate::crashlog::forget_tid(tid);
     if last {
         // a process whose threads all ended without calling exit()
         kill(pid);

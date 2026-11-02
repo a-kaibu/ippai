@@ -22,6 +22,7 @@ import { linuxKeycode } from "./keymap";
 import { AudioOut } from "./wine-audio";
 import { D3D9 } from "./d3d9";
 import { applyGame, coverUrl, fetchGames, showLibrary, type GameEntry } from "./launcher";
+import { FlightRecorder, sendLeftovers } from "./crashlog";
 
 const params = new URLSearchParams(location.search);
 const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Tokyo";
@@ -55,8 +56,13 @@ interface WineModule {
   _vnhost_d3d9_poll(out: number): number;
   _vnhost_d3d9_readback_done(id: number): void;
   _vnhost_d3d9_done(): void;
+  _vnhost_crashlog_info?(): number;
+  _vnhost_crashlog_snapshot?(): number;
   wasmMemory: WebAssembly.Memory;
 }
+
+/** The run's detailed log (web/src/crashlog.ts), from the start of boot(). */
+let recorder: FlightRecorder | null = null;
 
 // input record kinds (crates/vnhost/src/display.rs)
 const MOUSE_MOVE = 1,
@@ -68,6 +74,7 @@ const MOUSE_MOVE = 1,
 
 function log(line: string): void {
   console.log(line);
+  if (line) recorder?.note(`status: ${line}`);
   status.textContent = line;
 }
 
@@ -109,6 +116,15 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
         return new Uint8Array(await r.arrayBuffer());
       });
   const run = params.get("run") ?? "C:\\wintest.exe";
+  recorder = new FlightRecorder(params.get("game") ?? run.slice(run.lastIndexOf("\\") + 1), {
+    game: params.get("game") ?? "",
+    run,
+    args: params.get("args") ?? "",
+    mounts: params.getAll("mount").join(" "),
+    env: params.getAll("env").join(" "),
+    engine: VNWIN ? "vnwin" : "wine",
+    arch: ARCH64 ? "x86_64" : "x86",
+  });
   // the browser keeps a versioned wine.wasm with its compiled code (see vnvm-server)
   const wasmVersion = fetch(`${WINE}${WASM}`, { method: "HEAD" }).then(
     (r) => `${r.headers.get("last-modified") ?? ""}-${r.headers.get("content-length") ?? ""}`,
@@ -139,6 +155,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   const factory = (await import(/* @vite-ignore */ scriptUrl)).default as (m: object) => Promise<WineModule>;
   const unix = await unixModule;
   const version = await wasmVersion;
+  recorder.note(`build: ${WASM} ${version}, translator ${await jitVersion}`);
   // saved games: per program and mounts; what it writes in its folders and the user folders
   const mounts = params.getAll("mount");
   const saveName = `${run.replace(/[^A-Za-z0-9_.-]/g, "_")}-${fnv(new TextEncoder().encode(mounts.join(":")))}`;
@@ -196,13 +213,16 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       // bench.html shows the program's output
       dispatchEvent(new CustomEvent("wine-print", { detail: line }));
     },
+    onAbort: (what: unknown) => recorder?.abort(what),
     printErr: (line: string) => {
       console.warn(line);
+      recorder?.printErr(line);
       if (line.startsWith("d3d9 stats")) statsLine(1, line);
     },
   };
   log(`${run} を起動中`);
   const wine = await factory(moduleArg);
+  recorder.attach(wine);
   if (!nosave) saveNow = keepSaving(wine as unknown as SavesModule, saveName, saveRoots, saved);
   // for tests/wine.mjs (headless Chromium can't present WebGPU canvases)
   (window as unknown as { vnvmWine: WineModule }).vnvmWine = wine;
@@ -439,7 +459,10 @@ const start = () => {
   startButton.hidden = true;
   if (library) library.hidden = true;
   // the AudioContext comes from this click (autoplay rules)
-  boot(AudioOut.create()).catch((e) => log(`エラー: ${e instanceof Error ? e.message : e}`));
+  boot(AudioOut.create()).catch((e) => {
+    recorder?.note(`boot failed: ${e instanceof Error ? (e.stack ?? e.message) : e}`);
+    log(`エラー: ${e instanceof Error ? e.message : e}`);
+  });
 };
 
 /** The game's cover behind the loading messages, until Wine draws. */
@@ -454,6 +477,8 @@ function splash(g: GameEntry): void {
 }
 
 async function main(): Promise<void> {
+  // logs an earlier page left (its tab was killed mid-game) go to the server now
+  void sendLeftovers().catch(() => {});
   const problem = checkSupport();
   if (problem) {
     log(problem);
@@ -505,7 +530,8 @@ let saveNow: () => Promise<void> = async () => {};
 
 function closeGame(): void {
   log("ゲームが終了しました");
-  void saveNow().finally(leave);
+  const ended = recorder ? Promise.race([recorder.end(), new Promise((r) => setTimeout(r, 4000))]) : Promise.resolve();
+  void Promise.all([saveNow(), ended]).finally(leave);
 }
 
 function leave(): void {

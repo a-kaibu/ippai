@@ -201,6 +201,9 @@ pub fn call(cpu: &mut Cpu, f: u32, args: &[u32]) -> u32 {
 
 pub fn fatal(cpu: &mut Cpu, msg: &str) -> ! {
     api::dump_ring("the fatal error");
+    // the page saves a crash report (with this thread's registers, stack and last API calls)
+    vnhost::crashlog::exception(cpu, &format!("vnwin fatal: {msg}"), None, false);
+    vnhost::crashlog::crash(&format!("vnwin: {msg}"));
     let r = &cpu.regs;
     eprintln!(
         "vnwin: {msg}\n  eip {:08x} eax {:08x} ecx {:08x} edx {:08x} ebx {:08x} esp {:08x} ebp {:08x} esi {:08x} edi {:08x}",
@@ -271,6 +274,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     dinput::init();
     sound::init();
     d3d9::register();
+    vnhost::crashlog::set_trap_namer(api::name_of);
     let peb = mem::reserve(0, 0x2000, 4, 0x20000, true).expect("PEB");
     mem::commit(peb, 4);
     PEB.store(peb, Ordering::Relaxed);

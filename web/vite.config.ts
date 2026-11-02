@@ -10,8 +10,9 @@ export default defineConfig({
     target: "es2022",
     // index.html = wine.html: Wine built for wasm (hangover/, files in public/wine/), the game list
     // without ?run=;
-    // bench.html: bench.exe on wine.html with the native numbers next to it
-    rollupOptions: { input: { main: "index.html", wine: "wine.html", bench: "bench.html", game: "game.html" } },
+    // bench.html: bench.exe on wine.html with the native numbers next to it; logs.html: the runs'
+    // logs (crash reports)
+    rollupOptions: { input: { main: "index.html", wine: "wine.html", bench: "bench.html", game: "game.html", logs: "logs.html" } },
   },
   server: {
     headers: {

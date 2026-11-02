@@ -118,6 +118,16 @@ body {
   color: inherit;
   font: inherit;
 }
+#library .logs {
+  color: #8a8f98;
+  font-size: 13px;
+}
+#library input[type="search"] + .logs {
+  margin-left: 0;
+}
+#library .count + .logs {
+  margin-left: auto;
+}
 #library .empty {
   max-width: 640px;
   color: #a0a4ab;

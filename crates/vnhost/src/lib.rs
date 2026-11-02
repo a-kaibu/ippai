@@ -4,6 +4,7 @@
 //! * `mem` – mmap for one linear memory with the guest address space below 2 GiB
 //! * `dl`  – dlopen/dlsym over unix libraries that are statically linked in
 //! * `cpu` – the x86 run loop the signal layer drives
+//! * `crashlog` – what a run did lately (guest exceptions, stderr, threads), for the page's crash reports
 //! * `proc` – Wine processes: address partitions, environments, exit
 //! * `vfs` – the browser's file system: packed trees read lazily from the chunk store
 //! * `display` – the screen behind Wine's browser display driver
@@ -16,6 +17,7 @@ pub mod d3d9;
 pub mod d3d11;
 pub mod gl;
 pub mod cpu;
+pub mod crashlog;
 pub mod jit;
 pub mod display;
 pub mod dl;

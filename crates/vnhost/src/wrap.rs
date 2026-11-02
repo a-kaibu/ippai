@@ -259,6 +259,9 @@ pub unsafe extern "C" fn __wrap_read(f: c_int, buf: *mut c_void, len: size_t) ->
 
 #[no_mangle]
 pub unsafe extern "C" fn __wrap_write(f: c_int, buf: *const c_void, len: size_t) -> ssize_t {
+    if (f == 1 || f == 2) && !buf.is_null() && !is_ours(f) && fd::vfs_handle(f).is_none() {
+        crate::crashlog::output(f, std::slice::from_raw_parts(buf as *const u8, len));
+    }
     if let Some(h) = fd::vfs_handle(f) {
         return vfs::pwrite(h, buf, len, None);
     }
@@ -281,6 +284,16 @@ pub unsafe extern "C" fn __wrap_readv(f: c_int, iov: *const iovec, cnt: c_int) -
 
 #[no_mangle]
 pub unsafe extern "C" fn __wrap_writev(f: c_int, iov: *const iovec, cnt: c_int) -> ssize_t {
+    if (f == 1 || f == 2) && !iov.is_null() && !is_ours(f) && fd::vfs_handle(f).is_none() {
+        // (one record: Wine's debug lines come as a few pieces)
+        let mut l = crate::crashlog::Line::<4096>::new();
+        for v in std::slice::from_raw_parts(iov, cnt.max(0) as usize) {
+            if !v.iov_base.is_null() {
+                l.push(std::slice::from_raw_parts(v.iov_base as *const u8, v.iov_len));
+            }
+        }
+        crate::crashlog::output(f, l.bytes());
+    }
     if let Some(h) = fd::vfs_handle(f) {
         return each_iov(iov, cnt, |b, l| vfs::pwrite(h, b, l, None));
     }

@@ -218,6 +218,7 @@ pub fn load(data: &[u8], path: &str, resolve: &mut dyn FnMut(&str, Import) -> u3
             d += 20;
         }
     }
+    vnhost::crashlog::add_module(base, path);
     Ok(base)
 }
 

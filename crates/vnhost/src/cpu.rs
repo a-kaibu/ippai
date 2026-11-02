@@ -251,11 +251,14 @@ pub extern "C" fn vnhost_cpu_create(trap_lo: u32, trap_hi: u32) -> *mut Cpu {
     cpu.trap_lo = trap_lo;
     cpu.trap_hi = trap_hi;
     cpu.fpu.cw = 0x27f;
-    Box::into_raw(cpu)
+    let cpu = Box::into_raw(cpu);
+    crate::crashlog::register(cpu);
+    cpu
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_cpu_destroy(cpu: *mut Cpu) {
+    crate::crashlog::unregister(cpu);
     drop(Box::from_raw(cpu));
 }
 
@@ -344,14 +347,17 @@ extern "C" {
 }
 
 /// What an [`Exit`] means for signal_wasm.c; None to keep running.
-fn exit_code(cpu: &Cpu, mem: &mut Linear, exit: Exit, info: &mut [u32]) -> Option<i32> {
+fn exit_code(cpu: &Cpu, mem: &mut Linear, exit: Exit, info: &mut [u32], from_jit: bool) -> Option<i32> {
+    use crate::crashlog::exception;
     match exit {
         Exit::Continue => None,
         Exit::Trap(a) => {
+            crate::crashlog::trap(cpu, a);
             info[0] = a;
             Some(EXIT_TRAP)
         }
         Exit::Fault(f) => {
+            exception(cpu, "access violation", Some((f.addr, f.write)), from_jit);
             // VNVM_TRACE_FAULT: where the interpreter (or a region's step) faulted
             static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             if *ON.get_or_init(|| std::env::var_os("VNVM_TRACE_FAULT").is_some()) {
@@ -367,8 +373,12 @@ fn exit_code(cpu: &Cpu, mem: &mut Linear, exit: Exit, info: &mut [u32]) -> Optio
             info[1] = f.write as u32;
             Some(EXIT_FAULT)
         }
-        Exit::DivideError => Some(EXIT_DIVIDE),
+        Exit::DivideError => {
+            exception(cpu, "divide error", None, from_jit);
+            Some(EXIT_DIVIDE)
+        }
         Exit::InvalidOpcode => {
+            exception(cpu, "invalid opcode", None, from_jit);
             info[0] = cpu.eip;
             if std::env::var_os("VNVM_TRACE_UD").is_some() {
                 let mut b = [0u8; 16];
@@ -378,10 +388,22 @@ fn exit_code(cpu: &Cpu, mem: &mut Linear, exit: Exit, info: &mut [u32]) -> Optio
             Some(EXIT_INVALID)
         }
         Exit::Interrupt(n) => {
+            let what = match n {
+                3 => "int3 (breakpoint)",
+                0x29 => "int 29 (__fastfail)",
+                0x2d => "int 2d (debug service)",
+                _ => "software interrupt",
+            };
+            let mut l = crate::crashlog::Line::<32>::new();
+            let _ = std::fmt::Write::write_fmt(&mut l, format_args!("{what} {n:#x}"));
+            exception(cpu, std::str::from_utf8(l.bytes()).unwrap_or(what), None, from_jit);
             info[0] = n as u32;
             Some(EXIT_INT)
         }
-        Exit::Halt => Some(EXIT_HALT),
+        Exit::Halt => {
+            exception(cpu, "hlt (privileged instruction)", None, from_jit);
+            Some(EXIT_HALT)
+        }
         Exit::Syscall => Some(EXIT_SYSCALL),
     }
 }
@@ -457,6 +479,13 @@ fn trace_eip(cpu: *mut Cpu) -> Option<impl Drop> {
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_cpu_run(cpu: *mut Cpu, info: *mut u32) -> i32 {
     let _guest = trace_eip(cpu);
+    crate::crashlog::in_guest(true);
+    let r = cpu_run(cpu, info);
+    crate::crashlog::in_guest(false);
+    r
+}
+
+unsafe fn cpu_run(cpu: *mut Cpu, info: *mut u32) -> i32 {
     let cpu = &mut *cpu;
     let info = std::slice::from_raw_parts_mut(info, 2);
     let signals = SELF.with(|s| s.1.clone());
@@ -494,7 +523,7 @@ pub unsafe extern "C" fn vnhost_cpu_run(cpu: *mut Cpu, info: *mut u32) -> i32 {
                     crate::jit::count_entry(cpu.eip | 0x8000_0000);
                     continue;
                 }
-                crate::jit::Ran::Exit(e) => match exit_code(cpu, &mut mem, e, info) {
+                crate::jit::Ran::Exit(e) => match exit_code(cpu, &mut mem, e, info, true) {
                     Some(code) => return code,
                     None => continue,
                 },
@@ -509,7 +538,7 @@ pub unsafe extern "C" fn vnhost_cpu_run(cpu: *mut Cpu, info: *mut u32) -> i32 {
         // the interpreter: up to the next branch with the JIT, a batch of steps without
         for _ in 0..4096 {
             let (e, branch) = crate::jit::step(cpu, &mut mem);
-            if let Some(code) = exit_code(cpu, &mut mem, e, info) {
+            if let Some(code) = exit_code(cpu, &mut mem, e, info, false) {
                 return code;
             }
             if jit && branch {
