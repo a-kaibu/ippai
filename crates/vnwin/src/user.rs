@@ -408,6 +408,15 @@ fn update_display(s: &State, h: u32) {
     let r = [c.l, c.t, c.r, c.b, c.l, c.t, c.r, c.b];
     let shown = w.visible && w.style & 0x4000_0000 == 0 && c.w() > 0 && c.h() > 0;
     unsafe { vnhost::display::vnhost_window_pos(h, r.as_ptr(), shown as i32, 0, 0) };
+    // owned windows (dialogs) stay above their owner, as on Windows: RealLive's fullscreen
+    // settings dialog is shown before its topmost fullscreen owner
+    if shown {
+        for (&o, ow) in s.wins.iter().filter(|(_, ow)| ow.owner == h && ow.visible && (ow.parent == 0 || ow.parent == DESKTOP)) {
+            let c = ow.client.off(ow.rect.l, ow.rect.t);
+            let r = [c.l, c.t, c.r, c.b, c.l, c.t, c.r, c.b];
+            unsafe { vnhost::display::vnhost_window_pos(o, r.as_ptr(), 1, 1, 0) };
+        }
+    }
 }
 
 fn resize_surface(w: &mut Window) {
@@ -1480,8 +1489,10 @@ fn FindWindowExA(c: &mut Ctx) -> u32 {
 }
 fn window_at(s: &State, x: i32, y: i32) -> u32 {
     let mut tops: Vec<u32> = s.wins.iter().filter(|(_, w)| w.parent == 0 && w.visible).map(|(&h, _)| h).collect();
-    // the most recently activated first, then newest
-    tops.sort_by_key(|&h| (h == s.active, h));
+    // the most recently activated first (with the windows it owns), owned windows above their
+    // owner, then newest
+    let owners = |h: u32| std::iter::successors(Some(h), |o| s.wins.get(o).map(|w| w.owner).filter(|&o| o != 0)).take(8);
+    tops.sort_by_key(|&h| (owners(h).any(|o| o == s.active), owners(h).count(), h));
     let Some(&top) = tops.iter().rev().find(|&&h| {
         let (ox, oy) = window_origin(s, h);
         let w = &s.wins[&h];
