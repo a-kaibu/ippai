@@ -61,12 +61,12 @@ export class Video {
   /** wakes at once when the guest asks for a frame (Atomics.waitAsync on the doorbell) */
   private async watch(): Promise<void> {
     const i32 = () => new Int32Array(this.wasm.wasmMemory.buffer);
-    let seen = Atomics.load(i32(), this.doorbell >> 2);
+    let seen = Atomics.load(i32(), this.doorbell >>> 2);
     for (;;) {
       // (Atomics.waitAsync: ES2024, in Chrome since 87)
-      const w = (Atomics as unknown as { waitAsync: WaitAsync }).waitAsync(i32(), this.doorbell >> 2, seen, 1000);
+      const w = (Atomics as unknown as { waitAsync: WaitAsync }).waitAsync(i32(), this.doorbell >>> 2, seen, 1000);
       if (w.async) await w.value;
-      seen = Atomics.load(i32(), this.doorbell >> 2);
+      seen = Atomics.load(i32(), this.doorbell >>> 2);
       this.tick();
     }
   }
