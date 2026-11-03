@@ -1,16 +1,19 @@
 //! Siglus's movies (`.omv`: a header, then Ogg Theora) made playable by the browser's hardware
-//! decoder: `vnvm pack` writes `<name>.omv.vnv` next to each one (H.264, see `Vnv`), which sake
+//! decoder: `vnvm pack` writes `<name>.omv.vnv` next to each one (VP9, see below), which sake
 //! decodes with WebCodecs in place of the game's own Theora decoder (crates/sake/src/movie.rs).
 //!
 //! An `.omv` whose Theora picture is taller than the movie (1920x1440 for 1920x1080) carries an
 //! alpha channel below it: the movie's rows of alpha are split in three, stacked in the Y, U and
 //! V planes (4:4:4) of rows `h..h + (h + 2) / 3`. That does not survive 4:2:0, so it becomes a
-//! second H.264 track of its own (the alpha in the luma).
+//! second track of its own (the alpha in the luma).
+//!
+//! VP9 rather than H.264: the same picture (SSIM 0.986 on the aurora) in 18 MB instead of 22.6,
+//! as fast to decode in software, and decoded in hardware by phones since about 2015.
 //!
 //! ```text
 //! .vnv: "VNV1" w h tracks                      (u32 little endian)
 //!       per track: codec_len codec(utf-8) frames, then per frame: offset size key
-//!       the H.264 access units (Annex B), at their offsets from the start of the file
+//!       the frames (VP9, one shown frame each), at their offsets from the start of the file
 //! ```
 //! A track's frame k is the movie's frame k (gaps in the Theora stream are repeated frames).
 
@@ -19,7 +22,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-/// Whether `ffmpeg` (with libx264) can be run.
+/// Whether `ffmpeg` (with libvpx) can be run.
 pub fn available() -> bool {
     Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success())
 }
@@ -28,10 +31,10 @@ pub fn available() -> bool {
 pub fn vnv_for(store: &Path, omv: &Path) -> Result<std::path::PathBuf> {
     let h = blake3::hash(&fs::read(omv)?).to_hex()[..32].to_string();
     let dir = store.join("movies");
-    let path = dir.join(format!("{h}.vnv"));
+    let path = dir.join(format!("{h}.vp9.vnv"));
     if !path.exists() {
         fs::create_dir_all(&dir)?;
-        let tmp = dir.join(format!(".{h}.part"));
+        let tmp = dir.join(format!(".{h}.vp9.part"));
         transcode(omv, &tmp)?;
         fs::rename(&tmp, &path)?;
     }
@@ -57,10 +60,10 @@ pub fn transcode(omv: &Path, out: &Path) -> Result<()> {
             .arg(&src)
             .output()?;
         let ph: u32 = String::from_utf8_lossy(&probe.stdout).trim().parse().context("ffprobe")?;
-        // (H.264 4:2:0 wants even sizes: padded, the reader takes w x h)
+        // (4:2:0 wants even sizes: padded, the reader takes w x h)
         let pad = "pad=ceil(iw/2)*2:ceil(ih/2)*2";
         let rate = format!("1000000/{}", if frame_us == 0 { 33333 } else { frame_us });
-        let mut tracks = vec![encode(&src, &tmp.join("c.h264"), &format!("crop={w}:{h}:0:0,{pad},format=yuv420p"), &rate)?];
+        let mut tracks = vec![encode(&src, &tmp.join("c.ivf"), &format!("crop={w}:{h}:0:0,{pad},format=yuv420p"), &rate)?];
         if ph > h {
             let a = h.div_ceil(3);
             let last = h - 2 * a;
@@ -68,7 +71,7 @@ pub fn transcode(omv: &Path, out: &Path) -> Result<()> {
                 "crop={w}:{a}:0:{h},extractplanes=y+u+v[y][u][v];[y]null[y1];[u]null[u1];[v]crop={w}:{last}:0:0[v1];\
                  [y1][u1][v1]vstack=3,format=gray,{pad},format=yuv420p"
             );
-            tracks.push(encode(&src, &tmp.join("a.h264"), &f, &rate)?);
+            tracks.push(encode(&src, &tmp.join("a.ivf"), &f, &rate)?);
         }
         let n = tracks.iter().map(|t| t.1.len()).min().unwrap_or(0);
         let mut head = Vec::new();
@@ -103,47 +106,38 @@ pub fn transcode(omv: &Path, out: &Path) -> Result<()> {
 }
 
 /// Encodes the frames `filter` makes of `src` (one a movie frame, gaps repeated); returns the
-/// codec string and the access units (with whether each is a key frame).
+/// codec string and the frames (with whether each is a key frame).
 fn encode(src: &Path, out: &Path, filter: &str, rate: &str) -> Result<(String, Vec<(Vec<u8>, bool)>)> {
     let st = Command::new("ffmpeg")
         .args(["-v", "error", "-y", "-i"])
         .arg(src)
         .args(["-filter_complex", filter, "-fps_mode", "cfr", "-r", rate])
-        // no B frames (decode order = movie order), a key frame a second (seeking, loops)
-        .args(["-c:v", "libx264", "-preset", "medium", "-crf", "16", "-bf", "0", "-g", "30"])
-        .args(["-x264-params", "aud=1", "-f", "h264"])
+        // no alt-ref frames or lag (one packet = one shown frame, in movie order), a key frame
+        // at least a second (seeking, loops)
+        .args(["-c:v", "libvpx-vp9", "-crf", "24", "-b:v", "0", "-g", "30", "-row-mt", "1"])
+        .args(["-deadline", "good", "-cpu-used", "3", "-lag-in-frames", "0", "-auto-alt-ref", "0"])
+        .args(["-f", "ivf"])
         .arg(out)
         .status()?;
     if !st.success() {
         bail!("ffmpeg failed ({filter})");
     }
-    let es = fs::read(out)?;
-    // NAL units: (start of the start code, type)
-    let mut nals = Vec::new();
-    let mut i = 0;
-    while i + 3 < es.len() {
-        if es[i] == 0 && es[i + 1] == 0 && es[i + 2] == 1 {
-            let s = if i > 0 && es[i - 1] == 0 { i - 1 } else { i };
-            nals.push((s, i + 3));
-            i += 3;
-        } else {
-            i += 1;
-        }
+    let ivf = fs::read(out)?;
+    if ivf.len() < 32 || &ivf[..4] != b"DKIF" {
+        bail!("not IVF");
     }
-    let mut codec = None;
-    let mut aus: Vec<(Vec<u8>, bool)> = Vec::new();
-    for (k, &(s, p)) in nals.iter().enumerate() {
-        let end = nals.get(k + 1).map_or(es.len(), |n| n.0);
-        let t = es[p] & 31;
-        if t == 7 && codec.is_none() && p + 3 < es.len() {
-            codec = Some(format!("avc1.{:02x}{:02x}{:02x}", es[p + 1], es[p + 2], es[p + 3]));
-        }
-        if t == 9 || aus.is_empty() {
-            aus.push((Vec::new(), false));
-        }
-        let au = aus.last_mut().unwrap();
-        au.0.extend_from_slice(&es[s..end]);
-        au.1 |= t == 5;
+    let (w, h) = (u16::from_le_bytes([ivf[12], ivf[13]]) as u32, u16::from_le_bytes([ivf[14], ivf[15]]) as u32);
+    let mut frames = Vec::new();
+    let mut i = u16::from_le_bytes([ivf[6], ivf[7]]) as usize;
+    while i + 12 <= ivf.len() {
+        let size = u32::from_le_bytes(ivf[i..i + 4].try_into().unwrap()) as usize;
+        let f = ivf.get(i + 12..i + 12 + size).context("IVF cut short")?;
+        // the uncompressed header (profile 0), from the top bit: frame_marker(2) profile(2)
+        // show_existing_frame(1) frame_type(1, 0 = key)
+        frames.push((f.to_vec(), f.first().is_some_and(|b| b & 0x0c == 0)));
+        i += 12 + size;
     }
-    Ok((codec.context("no SPS")?, aus))
+    // profile 0, level (3.1 up to 720p, 4.1 up to 1080p, 5.1 above), 8 bits
+    let level = if w * h <= 1280 * 720 { 31 } else if w * h <= 2048 * 1088 { 41 } else { 51 };
+    Ok((format!("vp09.00.{level}.08"), frames))
 }

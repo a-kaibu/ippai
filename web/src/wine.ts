@@ -370,7 +370,7 @@ function watch(wine: WineModule): void {
   const info = wine._malloc(32) >>> 0;
   let serial = 0;
   // Siglus movies: decoded here for the guest (web/src/video.ts)
-  const video = typeof VideoDecoder !== "undefined" ? new Video(wine) : null;
+  const video = typeof VideoDecoder !== "undefined" ? new Video(wine, (l) => (console.log(l), recorder?.note(l))) : null;
   const frame = () => {
     if (exited || wine._vnhost_root_exited()) return closeGame();
     video?.tick();

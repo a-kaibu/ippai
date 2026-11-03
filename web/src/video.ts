@@ -1,5 +1,5 @@
 // Movies decoded with WebCodecs for the guest (crates/vnhost/src/video.rs): each stream is a
-// `.vnv` (H.264 tracks: color, and alpha when the movie has one; crates/vnvm/src/movie.rs) in
+// `.vnv` (VP9 tracks: color, and alpha when the movie has one; crates/vnvm/src/movie.rs) in
 // wasm memory. The guest asks for frame n; this decodes ahead of the newest request (hardware
 // first) and copies whole frames into the stream's slots, where the guest takes them.
 
@@ -51,7 +51,11 @@ export class Video {
   private layoutBuf: number;
   private doorbell: number;
 
-  constructor(private wasm: VideoWasm) {
+  /** `note`: a line for the run's log (the decoder chosen, errors) */
+  constructor(
+    private wasm: VideoWasm,
+    private note: (line: string) => void,
+  ) {
     this.io = wasm._malloc(4 * 6 * 16 + 4) >>> 0;
     this.layoutBuf = wasm._malloc(14 * 4) >>> 0;
     this.doorbell = wasm._vnhost_video_doorbell() >>> 0;
@@ -120,20 +124,13 @@ export class Video {
 
   private async configure(s: Stream, ptr: number): Promise<void> {
     for (const t of s.tracks) {
-      let config: VideoDecoderConfig = {
-        codec: t.codec,
-        codedWidth: s.w,
-        codedHeight: s.h,
-        hardwareAcceleration: "prefer-hardware",
-        optimizeForLatency: true,
-      };
+      // (no-preference: the hardware decoder when there is one free, else software; Android has
+      // few hardware decoders and Siglus plays several movies at once)
+      const config: VideoDecoderConfig = { codec: t.codec, codedWidth: s.w, codedHeight: s.h, optimizeForLatency: true };
       if (!(await VideoDecoder.isConfigSupported(config)).supported) {
-        config = { ...config, hardwareAcceleration: "no-preference" };
-        if (!(await VideoDecoder.isConfigSupported(config)).supported) {
-          console.error(`video ${s.id}: ${t.codec} not supported`);
-          this.fail(s);
-          return;
-        }
+        this.note(`video ${s.id}: ${t.codec} not supported`);
+        this.fail(s);
+        return;
       }
       t.dec = new VideoDecoder({
         output: (f) => {
@@ -143,13 +140,13 @@ export class Video {
           this.copyReady(s);
         },
         error: (e) => {
-          console.error(`video ${s.id}: ${e}`);
+          this.note(`video ${s.id}: ${e}`);
           this.fail(s);
         },
       });
       t.config = config;
       t.dec.configure(config);
-      console.log(`video ${s.id}: ${t.codec} ${s.w}x${s.h}, ${config.hardwareAcceleration}`);
+      this.note(`video ${s.id}: ${t.codec} ${s.w}x${s.h}`);
     }
     void ptr;
     if (s.want >= 0) this.serve(s, s.want);
@@ -179,11 +176,11 @@ export class Video {
     if (s.tracks.some((t) => !t.dec || t.dec.state !== "configured")) return;
     const end = Math.min(s.frames, want + AHEAD);
     for (const t of s.tracks) {
-      // a jump back, or far ahead of what is fed: from the track's key frame before it
-      // (the tracks' key frames need not line up)
-      if (want < t.from || want > t.fed + 30) {
-        let k = want;
-        while (k > 0 && !t.frames[k * 3 + 2]) k--;
+      // a jump back, or past a key frame not fed yet: from the track's key frame before it
+      // (resetting a hardware decoder costs; the tracks' key frames need not line up)
+      let k = want;
+      while (k > 0 && !t.frames[k * 3 + 2]) k--;
+      if (want < t.from || k > t.fed) {
         t.dec!.reset();
         t.dec!.configure(t.config!);
         for (const f of t.out.values()) f.close();
@@ -207,33 +204,36 @@ export class Video {
       const fs = s.tracks.map((t) => t.out.get(n));
       if (fs.some((f) => !f)) continue;
       if (this.wasm._vnhost_video_has(s.id, n)) continue;
+      // per track: the format, and how it copies (RGBA, converted back, when the frame is not
+      // readable as I420/NV12: an opaque or other format)
+      const how = (fs as VideoFrame[]).map((f) => {
+        const fmt = f.format ? FORMATS[f.format] : undefined;
+        const opts = (fmt === undefined ? { format: "RGBA" } : {}) as VideoFrameCopyToOptions;
+        return { fmt: fmt ?? 2, opts, need: f.allocationSize(opts) };
+      });
       const sizeAt = this.layoutBuf;
+      new Uint32Array(this.wasm.wasmMemory.buffer, sizeAt, 1)[0] = how.reduce((a, h) => a + h.need, 0);
       const buf = this.wasm._vnhost_video_begin(s.id, n, sizeAt) >>> 0;
       if (!buf) return;
-      const size = new Uint32Array(this.wasm.wasmMemory.buffer, sizeAt, 1)[0]!;
       s.copying.add(n);
-      void this.copy(s, n, fs as VideoFrame[], buf, size);
+      void this.copy(s, n, fs as VideoFrame[], how, buf);
     }
   }
 
-  private async copy(s: Stream, n: number, fs: VideoFrame[], buf: number, size: number): Promise<void> {
+  private async copy(
+    s: Stream,
+    n: number,
+    fs: VideoFrame[],
+    how: { fmt: number; opts: VideoFrameCopyToOptions; need: number }[],
+    buf: number,
+  ): Promise<void> {
     const layout = new Uint32Array(14);
     let ok = 1;
     try {
       let at = 0;
       for (let t = 0; t < fs.length; t++) {
-        const f = fs[t]!;
-        let fmt = f.format ? FORMATS[f.format] : undefined;
-        const opts: VideoFrameCopyToOptions = {};
-        if (fmt === undefined) {
-          // not readable as I420/NV12 (an opaque or other format): RGBA, converted back
-          (opts as { format?: string }).format = "RGBA";
-          fmt = 2;
-        }
-        const need = f.allocationSize(opts);
-        if (at + need > size) throw new Error(`frame too large (${need})`);
-        const dst = new Uint8Array(this.wasm.wasmMemory.buffer, buf + at, need);
-        const planes = await f.copyTo(dst, opts);
+        const { fmt, opts, need } = how[t]!;
+        const planes = await fs[t]!.copyTo(new Uint8Array(this.wasm.wasmMemory.buffer, buf + at, need), opts);
         layout[t * 7] = fmt;
         planes.forEach((p, i) => {
           if (i < 3) {
@@ -244,7 +244,7 @@ export class Video {
         at += need;
       }
     } catch (e) {
-      console.error(`video ${s.id}: copy of frame ${n}: ${e}`);
+      this.note(`video ${s.id}: copy of frame ${n}: ${e}`);
       ok = 0;
     }
     new Uint32Array(this.wasm.wasmMemory.buffer, this.layoutBuf, 14).set(layout);

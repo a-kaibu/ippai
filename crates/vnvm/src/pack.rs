@@ -352,7 +352,7 @@ fn esc(s: &str) -> String {
 ///
 /// Paths are relative to the tree, parents before children; modes in octal. A file's last
 /// chunk holds only what is left of it.
-/// Whether ffmpeg is there to make the movies' H.264 copies (said once when it is not).
+/// Whether ffmpeg is there to make the movies' VP9 copies (said once when it is not).
 static MOVIES: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
     let ok = crate::movie::available();
     if !ok {
@@ -394,7 +394,7 @@ fn tree(store: &Path, root: &Path, name: &str, follow: bool, chunk: u64) -> Resu
             } else if meta.is_file() {
                 lines.push(String::new());
                 files.push((lines.len() - 1, disk.clone(), path.clone(), mode, meta.mtime(), meta.len()));
-                // Siglus movies: an H.264 copy the browser decodes in hardware (see movie.rs)
+                // Siglus movies: a VP9 copy the browser decodes in hardware (see movie.rs)
                 if fname.to_ascii_lowercase().ends_with(".omv") && *MOVIES {
                     match crate::movie::vnv_for(store, &disk) {
                         Ok(v) => {
@@ -402,7 +402,7 @@ fn tree(store: &Path, root: &Path, name: &str, follow: bool, chunk: u64) -> Resu
                             lines.push(String::new());
                             files.push((lines.len() - 1, v, format!("{path}.vnv"), mode, meta.mtime(), len));
                         }
-                        Err(e) => eprintln!("{path}: no H.264 copy: {e:#}"),
+                        Err(e) => eprintln!("{path}: no VP9 copy: {e:#}"),
                     }
                 }
             }

@@ -5,7 +5,7 @@
 //! SiglusEngine's movie player has one method that brings a frame into a 32-bit buffer:
 //! `bool __thiscall get_frame(frame, dst, pitch, ?, force, ?)` (decoding every frame up to the
 //! one asked for). Found by its code at load, it is patched to jump to `frame` here, which hands
-//! out the frame `vnvm pack` made into H.264 (`<movie>.omv.vnv`, crates/vnvm/src/movie.rs) and
+//! out the frame `vnvm pack` made into VP9 (`<movie>.omv.vnv`, crates/vnvm/src/movie.rs) and
 //! the page decodes (crates/vnhost/src/video.rs). Movies without that file, or no page to decode
 //! (node), keep the game's decoder (the original code, through a trampoline).
 //!

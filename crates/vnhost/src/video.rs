@@ -1,7 +1,7 @@
 //! Movies the page decodes with WebCodecs (web/src/video.ts), for guest code that would decode
 //! them itself in x86 (Siglus's Theora: crates/sake/src/movie.rs, crates/vnvm/src/movie.rs).
 //!
-//! A stream holds a `.vnv` file (H.264 tracks: color, and alpha when the movie has one). The
+//! A stream holds a `.vnv` file (VP9 tracks: color, and alpha when the movie has one). The
 //! guest asks for frame n with `frame`; the page, which lists the streams every frame
 //! (`vnhost_video_list`) and wakes at once on a request (`vnhost_video_doorbell`), decodes ahead
 //! of the newest request and copies decoded frames into the stream's slots
@@ -41,6 +41,9 @@ struct Stream {
     closed: bool,
     /// the page cannot decode it (the guest gets no frames, without waiting)
     failed: bool,
+    /// the frame handed out last (-1: none yet, -2: none in time)
+    shown: i32,
+    opened: Instant,
 }
 
 static STREAMS: Mutex<Option<HashMap<u32, Stream>>> = Mutex::new(None);
@@ -70,14 +73,12 @@ pub fn open(data: Vec<u8>) -> Option<u32> {
     if w == 0 || h == 0 || w > 8192 || h > 8192 || !(1..=2).contains(&tracks) {
         return None;
     }
-    // (room for RGBA copies of every track: the page's fallback when frames are not readable as YUV)
-    let size = (w as usize + 1) * (h as usize + 1) * 4 * tracks as usize;
     static NEXT: AtomicI32 = AtomicI32::new(1);
     let id = NEXT.fetch_add(1, Ordering::Relaxed) as u32;
     let slots = (0..SLOTS)
-        .map(|_| Slot { buf: vec![0; size], frame: -1, writing: false, reading: false, layout: [[0; 7]; 2] })
+        .map(|_| Slot { buf: Vec::new(), frame: -1, writing: false, reading: false, layout: [[0; 7]; 2] })
         .collect();
-    with(|m| m.insert(id, Stream { data, w, h, tracks, want: -1, slots, closed: false, failed: false }));
+    with(|m| m.insert(id, Stream { data, w, h, tracks, want: -1, slots, closed: false, failed: false, shown: -1, opened: Instant::now() }));
     Some(id)
 }
 
@@ -113,26 +114,33 @@ pub enum Out {
     Rgb,
 }
 
-/// Writes frame `n` into `dst` (`w` x `h` 32-bit pixels, rows `pitch` bytes apart); false when
-/// the page did not deliver it within a while (the guest then keeps its old pixels).
+/// How long the guest waits for the frame it asks for once the movie shows, before it takes the
+/// newest decoded one before it (or keeps its pixels): the game paces movies by the clock, so a
+/// late frame is better skipped than waited for (a 30 fps movie has 33 ms a frame).
+const WAIT: Duration = Duration::from_millis(10);
+/// For the first frame, from the stream's opening (the decoder starting up).
+const FIRST: Duration = Duration::from_millis(500);
+
+/// Writes frame `n` (or the newest decoded frame before it, when `n` is late) into `dst` (`w` x
+/// `h` 32-bit pixels, rows `pitch` bytes apart); false when the page delivered nothing.
 ///
 /// # Safety
 /// `dst` must hold `h` rows of `pitch` bytes.
 pub unsafe fn frame(id: u32, n: i32, dst: *mut u8, pitch: usize, w: u32, h: u32, out: Out) -> bool {
     let start = Instant::now();
     let mut g = STREAMS.lock().unwrap_or_else(|e| e.into_inner());
-    let mut asked = false;
     loop {
         let Some(s) = g.get_or_insert_with(HashMap::new).get_mut(&id).filter(|s| !s.closed && !s.failed) else { return false };
-        if s.want != n || !asked {
-            if s.want != n {
-                s.want = n;
-                ring();
-            }
-            asked = true;
+        if s.want != n {
+            s.want = n;
+            ring();
         }
-        if let Some(k) = s.slots.iter().position(|sl| sl.frame == n && !sl.writing) {
-            stat(start.elapsed(), n);
+        let late = start.elapsed() > WAIT && (s.shown >= 0 || s.opened.elapsed() > FIRST);
+        let ready = |sl: &Slot| !sl.writing && sl.frame >= 0 && if late { sl.frame <= n && sl.frame > s.shown } else { sl.frame == n };
+        let k = (0..s.slots.len()).filter(|&k| ready(&s.slots[k])).max_by_key(|&k| s.slots[k].frame);
+        if let Some(k) = k {
+            stat(start.elapsed(), n, s.slots[k].frame != n);
+            s.shown = s.slots[k].frame;
             s.slots[k].reading = true;
             let (sw, sh, tracks) = (s.w, s.h, s.tracks);
             let (buf, layout) = (s.slots[k].buf.as_ptr(), s.slots[k].layout);
@@ -144,16 +152,21 @@ pub unsafe fn frame(id: u32, n: i32, dst: *mut u8, pitch: usize, w: u32, h: u32,
             }
             return true;
         }
-        if start.elapsed() > Duration::from_millis(1000) {
-            eprintln!("vnhost: video {id} frame {n} not decoded in time");
-            return false;
+        if late {
+            // nothing newer: the old pixels stay
+            if s.shown == -1 {
+                eprintln!("vnhost: video {id}: no frame decoded {FIRST:?} after it opened");
+                s.shown = -2;
+            }
+            stat(start.elapsed(), n, true);
+            return s.shown >= 0;
         }
         g = WAKE.wait_timeout(g, Duration::from_millis(2)).unwrap_or_else(|e| e.into_inner()).0;
     }
 }
 
 /// VNVM_VIDEO_STATS: frames handed out and the guest's wait for them, every 5 s.
-fn stat(waited: Duration, n: i32) {
+fn stat(waited: Duration, n: i32, late: bool) {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     if !*ON.get_or_init(|| std::env::var_os("VNVM_VIDEO_STATS").is_some()) {
         return;
@@ -167,9 +180,20 @@ fn stat(waited: Duration, n: i32) {
     if g.4 >= 0 && n != g.4 + 1 {
         g.5 += 1;
     }
+    static LATE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    if late {
+        LATE.fetch_add(1, Ordering::Relaxed);
+    }
     g.4 = n;
     if t0.elapsed() >= Duration::from_secs(5) {
-        eprintln!("vnhost: video {} frames, waited {:?} (max {:?}), {} jumps", g.1, g.2, g.3, g.5);
+        eprintln!(
+            "vnhost: video {} frames ({} late), waited {:?} (max {:?}), {} jumps",
+            g.1,
+            LATE.swap(0, Ordering::Relaxed),
+            g.2,
+            g.3,
+            g.5
+        );
         *g = (Some(Instant::now()), 0, Duration::ZERO, Duration::ZERO, n, 0);
     }
 }
@@ -305,7 +329,7 @@ pub extern "C" fn vnhost_video_has(id: u32, n: i32) -> u32 {
 }
 
 /// The page is about to copy frame `n` of stream `id`: a slot's buffer (0: none free now, or
-/// the stream is gone). `size` gets its bytes. The slot reused is the one with the oldest frame
+/// the stream is gone), of at least `*size` bytes (what the page copies). The slot reused is the one with the oldest frame
 /// (none the guest reads, none it may still want: frames before its newest request go first).
 ///
 /// # Safety
@@ -330,7 +354,10 @@ pub unsafe extern "C" fn vnhost_video_begin(id: u32, n: i32, size: *mut u32) -> 
         }
         sl.writing = true;
         sl.frame = n;
-        *size = sl.buf.len() as u32;
+        // (sized by the page's first copy: YUV, or RGBA when frames are not readable as YUV)
+        if sl.buf.len() < *size as usize {
+            sl.buf = vec![0; *size as usize];
+        }
         sl.buf.as_mut_ptr() as u32
     })
 }
