@@ -72,33 +72,20 @@ function png(w, h, bgra) {
 async function frame(full) {
   return page.evaluate(async (full) => {
     const m = window.vnvmWine;
-    if (!m || !m._vnhost_display_frame) return null;
-    const p = m._malloc(20) >>> 0;
-    m._vnhost_display_size(p, p + 4);
-    m.HEAPU32[(p + 8) >>> 2] = -1;
-    const w = m.HEAPU32[p >>> 2], h = m.HEAPU32[(p + 4) >>> 2];
-    const bits = m._vnhost_display_frame(p + 8) >>> 0;
+    if (!m || !m._vnhost_render_shot) return null;
+    // what the page shows (the game window's client area, Direct3D frames included), at the
+    // screen's pixels: crates/vnhost/src/render
+    const p = m._malloc(40) >>> 0;
+    const first = m._vnhost_render_shot(p);
+    for (let k = 0; k < 100 && m._vnhost_render_shot(p) === first; k++) await new Promise((r) => setTimeout(r, 20));
+    const [ptr, ow, oh] = Array.from(new Uint32Array(m.wasmMemory.buffer, p, 3));
+    m._vnhost_display_view(p);
+    const v = Array.from(new Int32Array(m.wasmMemory.buffer, p, 4));
+    m._vnhost_render_info(p);
+    const o = new Uint32Array(m.wasmMemory.buffer, p, 8)[4] > 0;
     m._free(p);
-    const px = m.HEAPU8.slice(bits, bits + w * h * 4);
-    const d3d = window.vnvmD3d;
-    const o = d3d?.overlay;
-    const cap = o ? await d3d.capture() : null;
-    if (cap) {
-      const [l, t] = o.rect;
-      const cw = Math.min(cap.w, o.rect[2] - l), ch = Math.min(cap.h, o.rect[3] - t);
-      for (let y = 0; y < ch; y++) {
-        if (t + y < 0 || t + y >= h) continue;
-        for (let x = 0; x < cw; x++) {
-          if (l + x < 0 || l + x >= w) continue;
-          px.set(cap.data.subarray((y * cap.w + x) * 4, (y * cap.w + x) * 4 + 4), ((t + y) * w + l + x) * 4);
-        }
-      }
-    }
-    let v = window.vnvmPresenter?.view;
-    if (!(v && v[2] > v[0] && v[3] > v[1])) v = [0, 0, w, h];
-    const ow = v[2] - v[0], oh = v[3] - v[1];
-    const outp = new Uint8Array(ow * oh * 4);
-    for (let y = 0; y < oh; y++) outp.set(px.subarray(((v[1] + y) * w + v[0]) * 4, ((v[1] + y) * w + v[2]) * 4), y * ow * 4);
+    if (!ptr || !ow || !oh) return null;
+    const outp = new Uint8Array(m.wasmMemory.buffer, ptr, ow * oh * 4).slice();
     const colors = new Set();
     // ~3000 samples of the middle third, whatever the window size
     const step = Math.max(1, Math.floor((ow * oh) / 3 / 3000)) * 4 + 4;

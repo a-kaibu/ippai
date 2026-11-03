@@ -14,11 +14,9 @@
 //   &headless                       don't draw to the canvas (tests/wine.mjs: headless Chromium
 //                                   destroys the device then, and Direct3D games need it)
 
-import { Presenter } from "./present";
 import { keepSaving, loadSaves, type SavesModule } from "./saves";
 import { linuxKeycode } from "./keymap";
 import { AudioOut } from "./wine-audio";
-import { D3D9 } from "./d3d9";
 import { Video } from "./video";
 import { applyGame, coverUrl, fetchGames, type GameEntry } from "./launcher";
 import { getUi, setStart, setUi } from "./ui/store";
@@ -37,6 +35,10 @@ interface WineModule {
   HEAPF32: Float32Array;
   _malloc(size: number): number;
   _vnhost_display_size(w: number, h: number): void;
+  _vnhost_render_start(): void;
+  _vnhost_render_resize(w: number, h: number): void;
+  _vnhost_render_input(kind: number, x: number, y: number, data: number): number;
+  _vnhost_render_info(out: number): void;
   _vnhost_display_view(out: number): void;
   _vnhost_display_windows?(out: number, max: number): number;
   _vnhost_root_exited(): number;
@@ -45,10 +47,6 @@ interface WineModule {
   _vnhost_audio_ring(frames: number): number;
   _vnhost_vfs_changes(): number;
   _vnhost_vfs_put_chunk(hash: number, data: number, len: number): void;
-  _vnhost_d3d9_poll(out: number): number;
-  _vnhost_d3d9_readback_done(id: number): void;
-  _vnhost_d3d9_readback_begin(id: number): number;
-  _vnhost_d3d9_done(): void;
   _vnhost_video_doorbell(): number;
   _vnhost_video_list(out: number, max: number): number;
   _vnhost_video_has(id: number, n: number): number;
@@ -142,10 +140,6 @@ function virtualKey(code: string): number {
 }
 
 async function boot(audio: Promise<AudioOut>): Promise<void> {
-  const presenter = await Presenter.create(canvas);
-  presenter.headless = params.has("headless");
-  // Keep the GPU device reachable: Chromium destroys a collected one.
-  (window as unknown as { vnvmPresenter: Presenter }).vnvmPresenter = presenter;
   log("sake を読み込み中");
   const WINE = new URL("sake/", location.href).href;
   const WASM = "sake.wasm";
@@ -215,6 +209,9 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       // count the threads' CPU time (vnhost_load_busy: the run log's perf lines, game.html);
       // &noload: off
       ...(params.has("noload") ? {} : { VNVM_LOAD: "1" }),
+      // (headless Chromium destroys a device that draws to a canvas: tests take shots instead)
+      ...(params.has("headless") ? { VNVM_HEADLESS: "1" } : {}),
+      ...(params.has("d3dstats") ? { VNVM_D3DSTATS: "1" } : {}),
       // the game starts in its own folder (as from Explorer): many open their data relatively
       ...(/^z:\\/i.test(run)
         ? { VNVM_CWD: run.slice(2, run.lastIndexOf("\\")).replaceAll("\\", "/") || "/" }
@@ -225,6 +222,8 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     },
     // read by vnhost's file system as "@saves" (host/vnfs.js)
     vnvmSaves: saved,
+    // the canvas: a thread of the module draws into it (crates/vnhost/src/render, host/vngpu.js)
+    vnvmCanvas: canvas.transferControlToOffscreen(),
     vnvmJit: await jit,
     print: (line: string) => {
       console.log(line);
@@ -244,6 +243,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     printErr: (line: string) => {
       console.warn(line);
       recorder?.printErr(line);
+      if (line.startsWith("page stats")) statsLine(0, line);
       if (line.startsWith("d3d9 stats")) statsLine(1, line);
     },
   };
@@ -254,8 +254,15 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   // for tests/wine.mjs (headless Chromium can't present WebGPU canvases)
   (window as unknown as { vnvmWine: WineModule }).vnvmWine = wine;
   ahead?.(wine);
-  attachInput(wine, presenter);
-  present(wine, presenter);
+  attachInput(wine);
+  const resize = () => {
+    const dpr = window.devicePixelRatio || 1;
+    wine._vnhost_render_resize(Math.floor(canvas.clientWidth * dpr), Math.floor(canvas.clientHeight * dpr));
+  };
+  resize();
+  new ResizeObserver(resize).observe(canvas);
+  wine._vnhost_render_start();
+  watch(wine);
   (await audio).attach(wine);
 }
 
@@ -358,158 +365,54 @@ function readAhead(name: Promise<string>): (wine: WineModule) => void {
   };
 }
 
-/** Shows the screen whenever it changes. */
-function present(wine: WineModule, presenter: Presenter): void {
-  const scratch = wine._malloc(36) >>> 0;
-  const winBuf = wine._malloc(128) >>> 0;
-  let aboveKey = "";
-  wine._vnhost_display_size(scratch, scratch + 4);
-  let width = wine.HEAPU32[scratch >>> 2]!;
-  let height = wine.HEAPU32[(scratch + 4) >>> 2]!;
-  let shown = -1;
-  // vnhost_display_frame's io: serial, rows, then (direct) the window surface's address,
-  // row length and rect
-  const fio = wine._malloc(40) >>> 0;
-  const io = fio >>> 2;
-  // Direct3D 9 games: their commands run here, the presented frame goes over the screen
-  const d3d = new D3D9(presenter.device, wine);
+/** With the module drawing: the page's events for its frames (wine-frame), and the exit. */
+function watch(wine: WineModule): void {
+  const info = wine._malloc(32) >>> 0;
+  let serial = 0;
+  // Siglus movies: decoded here for the guest (web/src/video.ts)
   const video = typeof VideoDecoder !== "undefined" ? new Video(wine) : null;
-  (window as unknown as { vnvmD3d: D3D9 }).vnvmD3d = d3d;
-  let d3dFrames = 0;
-  const view = (scratch + 20) >>> 2;
-  // &d3dstats: every 5 s, page frames, slow ones (>34 ms apart), Direct3D frames and batch time
-  // (d3d's counters only grow: the run log's perf lines read them too)
-  const stats = params.has("d3dstats")
-    ? { t0: performance.now(), last: 0, frames: 0, slow: 0, d3d: 0, run: 0, at: { ...d3d.stat } }
-    : null;
   const frame = () => {
-    // the game quit: so does the page (before touching the module, whose runtime may be gone)
-    if (exited) return closeGame();
-    if (stats) {
-      const t = performance.now();
-      if (stats.last && t - stats.last > 34) stats.slow++;
-      stats.last = t;
-      stats.frames++;
-      if (t - stats.t0 >= 5000) {
-        const s = (t - stats.t0) / 1000;
-        const c = d3d.stat;
-        const a = stats.at;
-        const line = `page stats/${s.toFixed(1)}s: rAF ${(stats.frames / s).toFixed(1)}/s, slow ${stats.slow}, d3d frames ${((d3d.frames - stats.d3d) / s).toFixed(1)}/s, batches ${(d3d.runMs - stats.run).toFixed(0)}ms, gpu ${(c.gpuMs - a.gpuMs).toFixed(0)}ms (max ${c.gpuMax.toFixed(0)}), passes ${c.passes - a.passes}, submits ${c.submits - a.submits}, textures ${c.created - a.created}, upload ${((c.uploaded - a.uploaded) / 1e6).toFixed(1)}MB`;
-        console.log(line);
-        statsLine(0, line);
-        c.gpuMax = 0;
-        Object.assign(stats, { t0: t, frames: 0, slow: 0, d3d: d3d.frames, run: d3d.runMs, at: { ...c } });
-      }
-    }
-    // (a game may change the display mode: the screen's size)
-    wine._vnhost_display_size(scratch, scratch + 4);
-    if (wine.HEAPU32[scratch >>> 2] !== width || wine.HEAPU32[(scratch + 4) >>> 2] !== height) {
-      width = wine.HEAPU32[scratch >>> 2]!;
-      height = wine.HEAPU32[(scratch + 4) >>> 2]!;
-      shown = -1;
-    }
-    // only the game window's client area is shown
-    wine._vnhost_display_view(view * 4);
-    const v = [0, 1, 2, 3].map((i) => wine.HEAPU32[view + i]! | 0) as [number, number, number, number];
-    if (!presenter.view || v.some((x, i) => x !== presenter.view![i])) {
-      presenter.view = v;
-      shown = -1;
-    }
-    d3d.poll();
+    if (exited || wine._vnhost_root_exited()) return closeGame();
     video?.tick();
-    if (d3d.frames !== d3dFrames) {
-      d3dFrames = d3d.frames;
-      presenter.overlay = d3d.overlay;
-      if (shown !== -1) presenter.draw();
-    }
-    // windows over the Direct3D one (a dialog the game opens) are drawn from the frame on top
-    const o = d3d.overlay;
-    let above: [number, number, number, number][] = [];
-    if (o && wine._vnhost_display_windows) {
-      const n = wine._vnhost_display_windows(winBuf, 8);
-      const rs = Array.from(
-        { length: n },
-        (_, k) =>
-          [0, 1, 2, 3].map((j) => wine.HEAPU32[(winBuf >>> 2) + 4 * k + j]! | 0) as [
-            number,
-            number,
-            number,
-            number,
-          ],
-      );
-      const [ol, ot, or, ob] = o.rect;
-      const i = rs.findIndex(([l, t, r, b]) => l <= ol && t <= ot && r >= or && b >= ob);
-      if (i > 0) above = rs.slice(0, i);
-    }
-    const key = above.join(";");
-    if (key !== aboveKey) {
-      aboveKey = key;
-      presenter.above = above;
-      if (shown !== -1) presenter.draw();
-    }
-    const u32 = wine.HEAPU32;
-    u32[io] = shown;
-    // (the changed rows straight from the game window's surface when only it changed)
-    u32[io + 3] = shown === -1 ? 0 : 1;
-    const bits = wine._vnhost_display_frame(fio) >>> 0;
-    const serial = u32[io]!;
-    if (serial !== shown) {
-      shown = serial;
-      const [y0, y1] = [u32[io + 1]!, u32[io + 2]!];
-      const win =
-        u32[io + 3] === 1
-          ? {
-              ptr: u32[io + 4]!,
-              stride: u32[io + 5]!,
-              l: u32[io + 6]! | 0,
-              t: u32[io + 7]! | 0,
-              r: u32[io + 8]! | 0,
-              b: u32[io + 9]! | 0,
-            }
-          : null;
-      if (!win || !presenter.updateFrom(wine.HEAPU8, width, height, win, y0, y1)) {
-        if (win) {
-          // (the texture had to be made again: everything, from the screen)
-          shown = -1;
-          requestAnimationFrame(frame);
-          return;
-        }
-        presenter.update(wine.HEAPU8, bits, width, height, width * 4, y0, y1);
-      }
-      // game.html looks at the frames (the window's own pixels when they came from there)
-      const detail = win
-        ? { heap: wine.HEAPU8, bits: win.ptr, width: win.stride, height: win.b - win.t }
-        : { heap: wine.HEAPU8, bits, width, height };
-      dispatchEvent(new CustomEvent("wine-frame", { detail }));
+    wine._vnhost_render_info(info);
+    const [s, bits, width, height] = Array.from(new Uint32Array(wine.wasmMemory.buffer, info, 4));
+    if (s !== serial && width && height) {
+      serial = s!;
+      // game.html looks at the frames
+      dispatchEvent(new CustomEvent("wine-frame", { detail: { heap: wine.HEAPU8, bits, width, height } }));
       if (getUi().status) log("");
     }
-    if (wine._vnhost_root_exited()) return closeGame();
     requestAnimationFrame(frame);
   };
   requestAnimationFrame(frame);
 }
 
-function attachInput(wine: WineModule, presenter: Presenter): void {
-  const push = (kind: number, x: number, y: number, data: number) =>
-    wine._vnhost_input_push(kind, x, y, data);
+function attachInput(wine: WineModule): void {
+  const push = (kind: number, x: number, y: number, data: number) => wine._vnhost_render_input(kind, x, y, data);
+  // canvas pixels: the module maps them to the screen
+  const toFrame = (e: { clientX: number; clientY: number }): [number, number] => {
+    const b = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    return [Math.round((e.clientX - b.left) * dpr), Math.round((e.clientY - b.top) * dpr)];
+  };
   // DOM button -> 0 left, 1 right, 2 middle
   const button = (b: number) => [0, 2, 1][b] ?? -1;
   canvas.addEventListener("pointermove", (e) => {
-    for (const ev of e.getCoalescedEvents?.() ?? [e]) push(MOUSE_MOVE, ...presenter.toFrame(ev), 0);
+    for (const ev of e.getCoalescedEvents?.() ?? [e]) push(MOUSE_MOVE, ...toFrame(ev), 0);
   });
   canvas.addEventListener("pointerdown", (e) => {
     canvas.setPointerCapture(e.pointerId);
-    if (button(e.button) >= 0) push(MOUSE_DOWN, ...presenter.toFrame(e), button(e.button));
+    if (button(e.button) >= 0) push(MOUSE_DOWN, ...toFrame(e), button(e.button));
     e.preventDefault();
   });
   canvas.addEventListener("pointerup", (e) => {
-    if (button(e.button) >= 0) push(MOUSE_UP, ...presenter.toFrame(e), button(e.button));
+    if (button(e.button) >= 0) push(MOUSE_UP, ...toFrame(e), button(e.button));
   });
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
   canvas.addEventListener(
     "wheel",
     (e) => {
-      push(WHEEL, ...presenter.toFrame(e), (e.deltaY < 0 ? 120 : -120) >>> 0);
+      push(WHEEL, ...toFrame(e), (e.deltaY < 0 ? 120 : -120) >>> 0);
       e.preventDefault();
     },
     { passive: false },

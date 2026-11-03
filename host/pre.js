@@ -48,3 +48,14 @@ if (!ENVIRONMENT_IS_PTHREAD) {
   if (ENVIRONMENT_IS_NODE) require('worker_threads').parentPort.on('message', take);
   else self.addEventListener('message', (e) => take(e.data));
 }
+
+// The page's canvas, for the thread that draws (crates/vnhost/src/render, host/vngpu.js): the
+// page passes `vnvmCanvas`, an OffscreenCanvas; vngpu_attach sends it to that thread's worker,
+// where this is a promise of it.
+var vnvmCanvas = null;
+if (ENVIRONMENT_IS_PTHREAD && !ENVIRONMENT_IS_NODE) {
+  let got;
+  vnvmCanvas = new Promise((r) => (got = r));
+  // (a message without cmd: emscripten's handler leaves it alone)
+  self.addEventListener('message', (e) => e.data && e.data.vnvmCanvas && got(e.data.vnvmCanvas));
+}

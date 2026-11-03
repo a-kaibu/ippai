@@ -46,7 +46,7 @@ WEB_OUT=${WEB_OUT:-$ROOT/web/public/sake}
 mkdir -p "$WEB_OUT"
 # (no emscripten file system: the page mounts a tree at "/", crates/vnhost/src/vfs.rs)
 link "$WEB_OUT/sake.js" -sENVIRONMENT=web,worker -sMODULARIZE -sEXPORT_ES6 -sEXPORT_NAME=createSake \
-  -sFILESYSTEM=0 -sEXPORTED_RUNTIME_METHODS=HEAPU8,HEAPU32,HEAPF32,HEAPF64,wasmMemory \
+  --js-library "$HO/vngpu.js" -sFILESYSTEM=0 -sEXPORTED_RUNTIME_METHODS=HEAPU8,HEAPU32,HEAPF32,HEAPF64,wasmMemory \
   -sEXPORTED_FUNCTIONS=_main,_malloc,_free,$EXPORTS
 (cd "$ROOT" && find crates/vnx86/src crates/vnx86/Cargo.toml crates/vnhost/src/jit.rs crates/vnhost/src/cpu.rs host/vnjit.js -type f | sort | xargs cat) |
   sha256sum | cut -c1-8 > "$WEB_OUT/jit-version.txt"

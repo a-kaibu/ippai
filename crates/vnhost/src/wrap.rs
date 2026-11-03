@@ -1140,7 +1140,7 @@ pub unsafe extern "C" fn __wrap_emscripten_futex_wait(addr: *mut c_void, val: u3
     }
     // (not the page's own thread: it waits in its event loop, not here, so all of its time
     // would look busy)
-    if !*ON.get_or_init(|| std::env::var_os("VNVM_LOAD").is_some()) || emscripten_is_main_browser_thread() != 0 {
+    if !*ON.get_or_init(|| std::env::var_os("VNVM_LOAD").is_some()) || emscripten_is_main_browser_thread() != 0 || NO_LOAD.with(|c| c.get()) {
         return __real_emscripten_futex_wait(addr, val, max_ms);
     }
     thread_local!(static SLOT: LoadSlot = {
@@ -1183,6 +1183,12 @@ pub unsafe extern "C" fn __wrap_emscripten_futex_wait(addr: *mut c_void, val: u3
 }
 
 thread_local!(static LOAD_SLOT: std::cell::Cell<Option<&'static Load>> = const { std::cell::Cell::new(None) });
+thread_local!(static NO_LOAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+
+/// This thread waits in its event loop (as the page's does), not in futex waits: not counted.
+pub fn load_exclude() {
+    NO_LOAD.with(|c| c.set(true));
+}
 
 /// Runs `f` (a synchronous XHR) as a wait: the thread is blocked on the network, not busy.
 pub fn load_idle<R>(f: impl FnOnce() -> R) -> R {

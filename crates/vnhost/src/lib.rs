@@ -31,6 +31,7 @@ pub mod cpu;
 pub mod crashlog;
 pub mod jit;
 pub mod display;
+pub mod render;
 pub mod dl;
 pub mod fd;
 pub mod mem;

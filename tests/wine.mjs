@@ -71,48 +71,22 @@ async function shot(n) {
   const f = await page.evaluate(async () => {
     const m = window.vnvmWine;
     if (!m) return null;
-    const p = m._malloc(20) >>> 0;
-    m._vnhost_display_size(p, p + 4);
-    // (views over the memory as it is now: another thread may have grown it)
-    const u32 = () => new Uint32Array(m.wasmMemory.buffer);
-    u32()[(p + 8) >>> 2] = -1;
-    const w = u32()[p >>> 2], h = u32()[(p + 4) >>> 2];
-    const bits = m._vnhost_display_frame(p + 8) >>> 0;
-    // (a frame buffer shorter than the screen size, as while a mode changes, stays black)
-    const px = new Uint8Array(w * h * 4);
-    px.set(new Uint8Array(m.wasmMemory.buffer).subarray(bits, bits + w * h * 4).subarray(0, px.length));
-    // a Direct3D window's last frame goes over its client area
-    const d3d = window.vnvmD3d;
-    const o = d3d?.overlay;
-    const cap = o ? await d3d.capture() : null;
-    if (cap) {
-      const above = window.vnvmPresenter?.above ?? [];
-      const l = Math.round(Number(o.rect[0])), t = Math.round(Number(o.rect[1]));
-      const cw = Math.min(cap.w, Math.round(Number(o.rect[2])) - l), ch = Math.min(cap.h, Math.round(Number(o.rect[3])) - t);
-      for (let y = 0; y < ch; y++) {
-        if (t + y < 0 || t + y >= h) continue;
-        for (let x = 0; x < cw; x++) {
-          if (l + x < 0 || l + x >= w || (y * cap.w + x) * 4 + 4 > cap.data.length) continue;
-          // (windows above the Direct3D one stay on top)
-          if (above.some(([al, at, ar, ab]) => l + x >= al && l + x < ar && t + y >= at && t + y < ab)) continue;
-          px.set(cap.data.subarray((y * cap.w + x) * 4, (y * cap.w + x) * 4 + 4), ((t + y) * w + l + x) * 4);
-        }
-      }
+    const enc = (out, w, h) => {
+      let s = "";
+      for (let i = 0; i < out.length; i += 0x8000) s += String.fromCharCode(...out.subarray(i, i + 0x8000));
+      return { w, h, data: btoa(s) };
+    };
+    // what the page shows, at the screen's pixels (crates/vnhost/src/render)
+    const p = m._malloc(12) >>> 0;
+    const first = m._vnhost_render_shot(p);
+    for (let k = 0; k < 100; k++) {
+      await new Promise((r) => setTimeout(r, 20));
+      if (m._vnhost_render_shot(p) !== first) break;
     }
-    // what the page shows: the game window's client area
-    let out = px, ow = w, oh = h;
-    const v0 = window.vnvmPresenter?.view;
-    // (clamped to the screen: a window may reach past it)
-    const v = v0 && [Math.max(0, v0[0]), Math.max(0, v0[1]), Math.min(w, v0[2]), Math.min(h, v0[3])];
-    if (v && v[2] > v[0] && v[3] > v[1]) {
-      ow = v[2] - v[0];
-      oh = v[3] - v[1];
-      out = new Uint8Array(ow * oh * 4);
-      for (let y = 0; y < oh; y++) out.set(px.subarray(((v[1] + y) * w + v[0]) * 4, ((v[1] + y) * w + v[2]) * 4), y * ow * 4);
-    }
-    let s = "";
-    for (let i = 0; i < out.length; i += 0x8000) s += String.fromCharCode(...out.subarray(i, i + 0x8000));
-    return { w: ow, h: oh, data: btoa(s) };
+    const [ptr, w, h] = Array.from(new Uint32Array(m.wasmMemory.buffer, p, 3));
+    m._free(p);
+    if (!ptr || !w || !h) return null;
+    return enc(new Uint8Array(m.wasmMemory.buffer, ptr, w * h * 4).slice(), w, h);
   });
   if (f) writeFileSync(`${out}/screen-${String(n).padStart(3, "0")}.png`, png(f.w, f.h, Buffer.from(f.data, "base64")));
 }
@@ -122,11 +96,14 @@ async function click(x, y) {
   // SHOT_COORDS=1: x,y are pixels of the screenshots (the game window's client area), not of the page
   if (process.env.SHOT_COORDS)
     [x, y] = await page.evaluate(([sx, sy]) => {
-      const p = window.vnvmPresenter;
-      const b = p.canvas.getBoundingClientRect(), dpr = p.canvas.width / Math.max(1, b.width);
-      const [l, t, vr, vb] = p.shown, r = p.rect;
-      const fx = Math.max(0, p.view?.[0] ?? 0) + sx + 0.5, fy = Math.max(0, p.view?.[1] ?? 0) + sy + 0.5;
-      return [b.left + (r.x + ((fx - l) * r.w) / (vr - l)) / dpr, b.top + (r.y + ((fy - t) * r.h) / (vb - t)) / dpr];
+      const m = window.vnvmWine;
+      const o = m._malloc(40) >>> 0;
+      m._vnhost_render_layout(o);
+      const [rx, ry, rw, rh, l, t, vr, vb] = Array.from(new Int32Array(m.wasmMemory.buffer, o, 10));
+      m._free(o);
+      const c = document.querySelector("#screen"), b = c.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+      const fx = Math.max(0, l) + sx + 0.5, fy = Math.max(0, t) + sy + 0.5;
+      return [b.left + (rx + ((fx - l) * rw) / (vr - l)) / dpr, b.top + (ry + ((fy - t) * rh) / (vb - t)) / dpr];
     }, [x, y]);
   appendFileSync(logFile, `${stamp()} [click] page ${x.toFixed(1)},${y.toFixed(1)}\n`);
   await page.mouse.move(x, y);
@@ -179,9 +156,6 @@ while (Date.now() < end) {
       appendFileSync(logFile, `${stamp()} [profile] worker-${i}: ${w.title}\n`);
     }
   }
-  // D3D_DUMP=n: the next n frames' GPU passes go to the console (after shot D3D_DUMP_AT, default 1)
-  if (process.env.D3D_DUMP && n === Number(process.env.D3D_DUMP_AT ?? 1))
-    await page.evaluate((k) => window.vnvmD3d && (window.vnvmD3d.dump = k), Number(process.env.D3D_DUMP));
   const seq = process.env.CLICK_SEQ?.split(";");
   if (seq && n <= seq.length) {
     if (seq[n - 1]) {

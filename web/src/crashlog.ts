@@ -33,6 +33,7 @@ interface Wasm {
   _vnhost_crashlog_snapshot?(): number;
   _vnhost_load_busy?(): number;
   _vnhost_load_slot?(i: number, out: number): number;
+  _vnhost_render_info?(out: number): void;
 }
 
 /** One 10 s window of the run. */
@@ -77,6 +78,7 @@ class Perf {
   private busy = -1;
   private slots: number[] = [];
   private slotBuf = 0;
+  private infoBuf = 0;
   private d3d = { frames: 0, runMs: 0, passes: 0, uploaded: 0 };
 
   constructor() {
@@ -133,15 +135,18 @@ class Perf {
       // (the runtime is gone: after an abort or exit)
     }
     const pm = (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory;
-    // Direct3D games present through web/src/d3d9.ts, not wine-frame
-    const d = (
-      window as unknown as {
-        vnvmD3d?: { frames: number; runMs: number; stat: { passes: number; uploaded: number } };
+    // Direct3D games present through crates/vnhost/src/render, not wine-frame: its counters
+    let cur = this.d3d;
+    try {
+      if (wasm?._vnhost_render_info && wasm._malloc) {
+        this.infoBuf ||= wasm._malloc(32) >>> 0;
+        wasm._vnhost_render_info(this.infoBuf);
+        const i = new Uint32Array(wasm.wasmMemory.buffer, this.infoBuf, 8);
+        cur = { frames: i[4]!, runMs: i[5]!, passes: i[6]!, uploaded: i[7]! * 2 ** 20 };
       }
-    ).vnvmD3d;
-    const cur = d
-      ? { frames: d.frames, runMs: d.runMs, passes: d.stat.passes, uploaded: d.stat.uploaded }
-      : this.d3d;
+    } catch {
+      // (the runtime is gone)
+    }
     const d3dFrames = cur.frames - this.d3d.frames;
     const s: PerfSample = {
       t: (now - this.t0) / 1000,
