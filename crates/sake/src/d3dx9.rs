@@ -379,6 +379,14 @@ fn D3DXCreateBuffer(c: &mut Ctx) -> u32 {
     0
 }
 
+/// D3DXCreateEffect(device, data, length, defines, include, flags, pool, effect, errors): not yet
+fn D3DXCreateEffect(c: &mut Ctx) -> u32 {
+    let (data, len) = (c.a(1), c.a(2));
+    eprintln!("sake: D3DXCreateEffect ({len} bytes, {:#x}): effects not implemented", if len >= 4 { mem::r32(data) } else { 0 });
+    mem::putp(c.a(7), 0);
+    0x8876086c
+}
+
 // ---- the shader assembler ----
 
 fn D3DXAssembleShader(c: &mut Ctx) -> u32 {
@@ -527,6 +535,7 @@ fn D3DXCreateFont(c: &mut Ctx) -> u32 {
 
 pub fn init() {
     let fns: &[(&str, Handler)] = &[
+        ("D3DXCreateEffect", D3DXCreateEffect),
         ("D3DXMatrixMultiply", D3DXMatrixMultiply),
         ("D3DXMatrixMultiplyTranspose", D3DXMatrixMultiplyTranspose),
         ("D3DXMatrixTranspose", D3DXMatrixTranspose),

@@ -1805,7 +1805,9 @@ fn setlocale(_: &mut Ctx) -> u32 {
 fn localeconv(_: &mut Ctx) -> u32 {
     static L: OnceLock<u32> = OnceLock::new();
     *L.get_or_init(|| {
-        let l = mem::heap_alloc(64, true);
+        // (msvcr100+ / the UCRT add 8 UTF-16 strings after the C fields: _W_decimal_point at 0x30,
+        // read by std::numpunct<wchar_t>)
+        let l = mem::heap_alloc(0x50, true);
         let (dot, empty) = (mem::heap_alloc(2, true), mem::heap_alloc(2, true));
         w8(dot, b'.');
         w32(l, dot);
@@ -1815,6 +1817,12 @@ fn localeconv(_: &mut Ctx) -> u32 {
         // int_frac_digits.. n_sign_posn: CHAR_MAX
         for i in 40..48 {
             w8(l + i, 127);
+        }
+        let (wdot, wempty) = (mem::heap_alloc(4, true), mem::heap_alloc(4, true));
+        w16(wdot, b'.' as u16);
+        w32(l + 0x30, wdot);
+        for i in 1..8 {
+            w32(l + 0x30 + 4 * i, wempty);
         }
         l
     })
@@ -1875,8 +1883,457 @@ fn strnlen(c: &mut Ctx) -> u32 {
     (0..n).find(|&i| mem::r8(p + i) == 0).unwrap_or(n)
 }
 
+// ---------------------------------------------------------------------------------------------
+// ucrtbase / vcruntime140 (VC++ 2015+): startup, onexit tables, std::exception, time
+
+fn _set_fmode(c: &mut Ctx) -> u32 {
+    w32(data("_fmode").unwrap(), c.a(0));
+    0
+}
+fn _get_initial_narrow_environment(_: &mut Ctx) -> u32 {
+    r32(data("_environ").unwrap())
+}
+fn _get_initial_wide_environment(_: &mut Ctx) -> u32 {
+    r32(data("_wenviron").unwrap())
+}
+fn ucrt_zero(_: &mut Ctx) -> u32 {
+    0
+}
+/// _onexit_table_t: { first, last, end } (plain function pointers here)
+fn _initialize_onexit_table(c: &mut Ctx) -> u32 {
+    let t = c.a(0);
+    if t == 0 {
+        return u32::MAX;
+    }
+    if r32(t) == 0 {
+        mem::fill(t, 12, 0);
+    }
+    0
+}
+fn _register_onexit_function(c: &mut Ctx) -> u32 {
+    let (t, f) = (c.a(0), c.a(1));
+    if t == 0 {
+        return u32::MAX;
+    }
+    let (first, last, end) = (r32(t), r32(t + 4), r32(t + 8));
+    if first == 0 || last >= end {
+        let n = if first == 0 { 32 } else { (end - first) / 4 * 2 };
+        let p = mem::heap_alloc(n * 4, true);
+        if first != 0 {
+            mem::write(p, &mem::slice(first, last - first).to_vec());
+            mem::heap_free(first);
+        }
+        w32(t, p);
+        w32(t + 4, p + (last - first));
+        w32(t + 8, p + n * 4);
+    }
+    let last = r32(t + 4);
+    w32(last, f);
+    w32(t + 4, last + 4);
+    0
+}
+/// runs the table's functions, last registered first, and empties it
+fn _execute_onexit_table(c: &mut Ctx) -> u32 {
+    let t = c.a(0);
+    if t == 0 {
+        return u32::MAX;
+    }
+    let (first, last) = (r32(t), r32(t + 4));
+    mem::fill(t, 12, 0);
+    let mut p = last;
+    while p > first {
+        p -= 4;
+        let f = r32(p);
+        if f != 0 {
+            c.call(f, &[]);
+        }
+    }
+    if first != 0 {
+        mem::heap_free(first);
+    }
+    0
+}
+fn _cexit(c: &mut Ctx) -> u32 {
+    loop {
+        let Some(f) = ATEXIT.lock().unwrap().pop() else { break };
+        c.call(f, &[]);
+    }
+    0
+}
+fn _invalid_parameter_noinfo_noreturn(_: &mut Ctx) -> u32 {
+    eprintln!("sake: invalid parameter (noreturn)");
+    unsafe { libc::exit(0xc0000417u32 as i32) }
+}
+fn terminate(_: &mut Ctx) -> u32 {
+    eprintln!("sake: terminate()");
+    unsafe { libc::exit(3) }
+}
+fn wcsnlen(c: &mut Ctx) -> u32 {
+    let (p, n) = (c.a(0), c.a(1));
+    (0..n).find(|&i| mem::r16(p + 2 * i) == 0).unwrap_or(n)
+}
+/// __std_exception_data: { what, do_free }
+fn __std_exception_copy(c: &mut Ctx) -> u32 {
+    let (src, dst) = (c.a(0), c.a(1));
+    let what = r32(src);
+    if mem::r8(src + 4) != 0 && what != 0 {
+        let s = cstr(what);
+        let p = mem::heap_alloc(s.len() as u32 + 1, true);
+        mem::write(p, &s);
+        w32(dst, p);
+        w32(dst + 4, 1);
+    } else {
+        w32(dst, what);
+        w32(dst + 4, 0);
+    }
+    0
+}
+fn __std_exception_destroy(c: &mut Ctx) -> u32 {
+    let d = c.a(0);
+    if mem::r8(d + 4) != 0 && r32(d) != 0 {
+        mem::heap_free(r32(d));
+    }
+    w32(d, 0);
+    w32(d + 4, 0);
+    0
+}
+/// __std_type_info_data: { undecorated name, decorated name... }
+fn __std_type_info_compare(c: &mut Ctx) -> u32 {
+    let (a, b) = (c.a(0), c.a(1));
+    if a == b {
+        return 0;
+    }
+    cstr(a + 5).cmp(&cstr(b + 5)) as i32 as u32
+}
+fn __std_type_info_hash(c: &mut Ctx) -> u32 {
+    // FNV-1a, as the UCRT
+    let mut h: u32 = 0x811c9dc5;
+    for b in cstr(c.a(0) + 5) {
+        h = (h ^ b as u32).wrapping_mul(0x01000193);
+    }
+    h
+}
+
+const DAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const MONTHS: [&str; 12] =
+    ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+/// struct tm from seconds since 1970 (UTC or local)
+fn tm_of(t: i64, local: bool) -> [i32; 9] {
+    let t = if local { t + crate::k32::tz_bias() } else { t };
+    let days = t.div_euclid(86400);
+    let rem = t.rem_euclid(86400);
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
+    let yday = days - days_from_civil(y, 1, 1);
+    [(rem % 60) as i32, (rem / 60 % 60) as i32, (rem / 3600) as i32, d as i32, (m - 1) as i32, (y - 1900) as i32,
+        (days + 4).rem_euclid(7) as i32, yday as i32, 0]
+}
+fn read_tm(p: u32) -> [i32; 9] {
+    std::array::from_fn(|i| r32(p + 4 * i as u32) as i32)
+}
+fn write_tm(p: u32, tm: &[i32; 9]) {
+    for (i, v) in tm.iter().enumerate() {
+        w32(p + 4 * i as u32, *v as u32);
+    }
+}
+/// localtime/gmtime's buffer (one, as msvcrt's per-thread one)
+fn tm_buf() -> u32 {
+    static B: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let b = B.load(std::sync::atomic::Ordering::Relaxed);
+    if b != 0 {
+        return b;
+    }
+    let p = mem::heap_alloc(36, true);
+    B.store(p, std::sync::atomic::Ordering::Relaxed);
+    p
+}
+fn time_tm(c: &mut Ctx, wide: bool, local: bool) -> u32 {
+    let p = c.a(0);
+    if p == 0 {
+        return 0;
+    }
+    let t = if wide { (r32(p) as u64 | (r32(p + 4) as u64) << 32) as i64 } else { r32(p) as i32 as i64 };
+    if t < 0 {
+        return 0;
+    }
+    let b = tm_buf();
+    write_tm(b, &tm_of(t, local));
+    b
+}
+fn localtime32(c: &mut Ctx) -> u32 {
+    time_tm(c, false, true)
+}
+fn _localtime64(c: &mut Ctx) -> u32 {
+    time_tm(c, true, true)
+}
+fn gmtime32(c: &mut Ctx) -> u32 {
+    time_tm(c, false, false)
+}
+fn _gmtime64(c: &mut Ctx) -> u32 {
+    time_tm(c, true, false)
+}
+/// the _s forms: (tm*, time_t*)
+fn time_tm_s(c: &mut Ctx, wide: bool, local: bool) -> u32 {
+    let (out, p) = (c.a(0), c.a(1));
+    if out == 0 || p == 0 {
+        return 22;
+    }
+    let t = if wide { (r32(p) as u64 | (r32(p + 4) as u64) << 32) as i64 } else { r32(p) as i32 as i64 };
+    write_tm(out, &tm_of(t, local));
+    0
+}
+fn _localtime32_s(c: &mut Ctx) -> u32 {
+    time_tm_s(c, false, true)
+}
+fn _localtime64_s(c: &mut Ctx) -> u32 {
+    time_tm_s(c, true, true)
+}
+fn _gmtime32_s(c: &mut Ctx) -> u32 {
+    time_tm_s(c, false, false)
+}
+fn _gmtime64_s(c: &mut Ctx) -> u32 {
+    time_tm_s(c, true, false)
+}
+/// mktime: normalizes the tm (local time) and gives its time
+fn mktime_of(p: u32) -> i64 {
+    let tm = read_tm(p);
+    let (mut y, mut mon) = (tm[5] as i64 + 1900, tm[4] as i64);
+    y += mon.div_euclid(12);
+    mon = mon.rem_euclid(12);
+    let days = days_from_civil(y, mon + 1, 1) + tm[3] as i64 - 1;
+    let t = days * 86400 + tm[2] as i64 * 3600 + tm[1] as i64 * 60 + tm[0] as i64 - crate::k32::tz_bias();
+    write_tm(p, &tm_of(t, true));
+    t
+}
+fn mktime32(c: &mut Ctx) -> u32 {
+    mktime_of(c.a(0)) as u32
+}
+fn _mktime64(c: &mut Ctx) -> u32 {
+    let t = mktime_of(c.a(0));
+    c.ret64(t as u64)
+}
+fn difftime32(c: &mut Ctx) -> u32 {
+    c.st0 = Some(c.a(0) as i32 as f64 - c.a(1) as i32 as f64);
+    0
+}
+fn _difftime64(c: &mut Ctx) -> u32 {
+    let a = (c.a(0) as u64 | (c.a(1) as u64) << 32) as i64;
+    let b = (c.a(2) as u64 | (c.a(3) as u64) << 32) as i64;
+    c.st0 = Some((a - b) as f64);
+    0
+}
+
+/// strftime's output for `fmt` (C locale names, as the UCRT's default)
+fn strftime_of(fmt: &[u16], tm: &[i32; 9]) -> Vec<u16> {
+    let mut o = String::new();
+    let mut i = 0;
+    let hour12 = |h: i32| if h % 12 == 0 { 12 } else { h % 12 };
+    while i < fmt.len() {
+        let ch = fmt[i];
+        i += 1;
+        if ch != b'%' as u16 || i >= fmt.len() {
+            o.push(char::from_u32(ch as u32).unwrap_or('?'));
+            continue;
+        }
+        let mut f = fmt[i];
+        // ("%#d": no leading zeros)
+        let alt = f == b'#' as u16;
+        if alt && i + 1 < fmt.len() {
+            i += 1;
+            f = fmt[i];
+        }
+        i += 1;
+        let n2 = |v: i32| if alt { format!("{v}") } else { format!("{v:02}") };
+        let (wd, mon) = (tm[6].rem_euclid(7) as usize, tm[4].rem_euclid(12) as usize);
+        match f as u8 {
+            b'a' => o += &DAYS[wd][..3],
+            b'A' => o += DAYS[wd],
+            b'b' | b'h' => o += &MONTHS[mon][..3],
+            b'B' => o += MONTHS[mon],
+            b'c' => o += &format!("{}/{}/{} {}:{}:{}", n2(tm[4] + 1), n2(tm[3]), n2(tm[5] % 100), n2(tm[2]), n2(tm[1]), n2(tm[0])),
+            b'd' => o += &n2(tm[3]),
+            b'e' => o += &format!("{:2}", tm[3]),
+            b'H' => o += &n2(tm[2]),
+            b'I' => o += &n2(hour12(tm[2])),
+            b'j' => o += &if alt { format!("{}", tm[7] + 1) } else { format!("{:03}", tm[7] + 1) },
+            b'm' => o += &n2(tm[4] + 1),
+            b'M' => o += &n2(tm[1]),
+            b'p' => o += if tm[2] < 12 { "AM" } else { "PM" },
+            b'S' => o += &n2(tm[0]),
+            b'U' => o += &n2((tm[7] + 7 - tm[6]) / 7),
+            b'W' => o += &n2((tm[7] + 7 - (tm[6] + 6) % 7) / 7),
+            b'w' => o += &format!("{}", tm[6]),
+            b'x' | b'D' => o += &format!("{}/{}/{}", n2(tm[4] + 1), n2(tm[3]), n2(tm[5] % 100)),
+            b'X' | b'T' => o += &format!("{}:{}:{}", n2(tm[2]), n2(tm[1]), n2(tm[0])),
+            b'R' => o += &format!("{}:{}", n2(tm[2]), n2(tm[1])),
+            b'F' => o += &format!("{}-{:02}-{:02}", tm[5] + 1900, tm[4] + 1, tm[3]),
+            b'y' => o += &n2(tm[5] % 100),
+            b'Y' => o += &format!("{}", tm[5] + 1900),
+            b'z' => o += if crate::k32::tz_bias() == 9 * 3600 { "+0900" } else { "+0000" },
+            b'Z' => o += if crate::k32::tz_bias() == 9 * 3600 { "Tokyo Standard Time" } else { "Coordinated Universal Time" },
+            b'n' => o.push('\n'),
+            b't' => o.push('\t'),
+            b'%' => o.push('%'),
+            _ => {}
+        }
+    }
+    o.encode_utf16().collect()
+}
+fn strftime_into(c: &mut Ctx, wide: bool) -> u32 {
+    let (buf, max, fmt, tm) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    if buf == 0 || fmt == 0 || tm == 0 {
+        return 0;
+    }
+    let f = if wide { wstr(fmt) } else { crate::text::a2w(&cstr(fmt)) };
+    let out = strftime_of(&f, &read_tm(tm));
+    if wide {
+        if out.len() >= max as usize {
+            if max != 0 {
+                w16(buf, 0);
+            }
+            return 0;
+        }
+        mem::put_wstr(buf, max, &out);
+        out.len() as u32
+    } else {
+        let a = crate::text::w2a(&out);
+        if a.len() >= max as usize {
+            if max != 0 {
+                w8(buf, 0);
+            }
+            return 0;
+        }
+        mem::put_cstr(buf, max, &a);
+        a.len() as u32
+    }
+}
+fn strftime(c: &mut Ctx) -> u32 {
+    strftime_into(c, false)
+}
+fn wcsftime(c: &mut Ctx) -> u32 {
+    strftime_into(c, true)
+}
+/// _Getdays / _Getmonths: ":Sun:Sunday:Mon:Monday..." in a malloc'd string
+fn names(list: &[&str]) -> String {
+    list.iter().map(|n| format!(":{}:{n}", &n[..3])).collect()
+}
+fn _Getdays(_: &mut Ctx) -> u32 {
+    let s = names(&DAYS);
+    let p = mem::heap_alloc(s.len() as u32 + 1, true);
+    mem::write(p, s.as_bytes());
+    p
+}
+fn _Getmonths(_: &mut Ctx) -> u32 {
+    let s = names(&MONTHS);
+    let p = mem::heap_alloc(s.len() as u32 + 1, true);
+    mem::write(p, s.as_bytes());
+    p
+}
+fn _W_Getdays(_: &mut Ctx) -> u32 {
+    let s: Vec<u16> = names(&DAYS).encode_utf16().collect();
+    let p = mem::heap_alloc(2 * s.len() as u32 + 2, true);
+    mem::put_wstr(p, s.len() as u32 + 1, &s);
+    p
+}
+fn _W_Getmonths(_: &mut Ctx) -> u32 {
+    let s: Vec<u16> = names(&MONTHS).encode_utf16().collect();
+    let p = mem::heap_alloc(2 * s.len() as u32 + 2, true);
+    mem::put_wstr(p, s.len() as u32 + 1, &s);
+    p
+}
+/// _Gettnames: a malloc'd __lc_time_data (the UCRT's: 43 names, unk, refcount, the same 43 in
+/// UTF-16, locale name), C locale
+fn _Gettnames(_: &mut Ctx) -> u32 {
+    let mut strs: Vec<String> = Vec::new();
+    strs.extend(DAYS.iter().map(|d| d[..3].to_string()));
+    strs.extend(DAYS.iter().map(|d| d.to_string()));
+    strs.extend(MONTHS.iter().map(|m| m[..3].to_string()));
+    strs.extend(MONTHS.iter().map(|m| m.to_string()));
+    strs.extend(["AM", "PM", "MM/dd/yy", "dddd, MMMM dd, yyyy", "HH:mm:ss"].map(String::from));
+    let head = 43 * 4 + 8 + 43 * 4 + 4;
+    let size = head + strs.iter().map(|s| 3 * (s.len() as u32 + 1)).sum::<u32>() + 4;
+    let p = mem::heap_alloc(size, true);
+    let mut at = p + head;
+    for (i, s) in strs.iter().enumerate() {
+        w32(p + 4 * i as u32, at);
+        mem::write(at, s.as_bytes());
+        at += s.len() as u32 + 1;
+    }
+    at = (at + 1) & !1;
+    for (i, s) in strs.iter().enumerate() {
+        w32(p + 43 * 4 + 8 + 4 * i as u32, at);
+        let u: Vec<u16> = s.encode_utf16().collect();
+        mem::put_wstr(at, u.len() as u32 + 1, &u);
+        at += 2 * (u.len() as u32 + 1);
+    }
+    w32(p + 43 * 4 + 4, 1);
+    // (locale name "C")
+    w32(p + 43 * 8 + 8, at);
+    w16(at, b'C' as u16);
+    p
+}
+
 pub fn init() {
     implement("msvcrt", "_strtof_l", strtod);
+    reg!(_set_fmode, _get_initial_narrow_environment, _get_initial_wide_environment, _initialize_onexit_table,
+        _register_onexit_function, _execute_onexit_table, _cexit, _invalid_parameter_noinfo_noreturn, terminate,
+        wcsnlen, __std_exception_copy, __std_exception_destroy, __std_type_info_compare, __std_type_info_hash,
+        _localtime64, _gmtime64, _localtime32_s, _localtime64_s, _gmtime32_s, _gmtime64_s, _mktime64, _difftime64,
+        strftime, wcsftime, _Getdays, _Getmonths, _W_Getdays, _W_Getmonths, _Gettnames);
+    for (alias, f) in [
+        ("_set_app_type", ucrt_zero as crate::api::Handler),
+        ("_set_new_mode", ucrt_zero),
+        ("_configure_narrow_argv", ucrt_zero),
+        ("_configure_wide_argv", ucrt_zero),
+        ("_initialize_narrow_environment", ucrt_zero),
+        ("_initialize_wide_environment", ucrt_zero),
+        ("_register_thread_local_exe_atexit_callback", ucrt_zero),
+        ("__setusermatherr", ucrt_zero),
+        ("_callnewh", ucrt_zero),
+        ("_lock_locales", ucrt_zero),
+        ("_unlock_locales", ucrt_zero),
+        ("_lock_file", ucrt_zero),
+        ("_unlock_file", ucrt_zero),
+        ("__uncaught_exception", ucrt_zero),
+        ("__uncaught_exceptions", ucrt_zero),
+        ("__std_type_info_destroy_list", ucrt_zero),
+        ("__telemetry_main_invoke_trigger", ucrt_zero),
+        ("__telemetry_main_return_trigger", ucrt_zero),
+        ("_c_exit", ucrt_zero),
+        ("_crt_atexit", atexit),
+        ("_seh_filter_dll", _seh_filter_exe),
+        ("__std_terminate", terminate),
+        ("__strncnt", strnlen),
+        ("localtime", localtime32),
+        ("_localtime32", localtime32),
+        ("gmtime", gmtime32),
+        ("_gmtime32", gmtime32),
+        ("mktime", mktime32),
+        ("_mktime32", mktime32),
+        ("difftime", difftime32),
+        ("_difftime32", difftime32),
+        ("_Strftime", strftime),
+        ("_Wcsftime", wcsftime),
+        ("_W_Gettnames", _Gettnames),
+    ] {
+        implement("msvcrt", alias, f);
+    }
     implement("msvcrt", "_strtod_l", strtod);
     implement("msvcrt", "strtof", strtod);
     reg!(_wcsicmp, _wcsnicmp, wcschr, wcsrchr, wcscat, wcsncat, wcsncpy, wcsstr, wcsspn, wcscspn, wcspbrk);

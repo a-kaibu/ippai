@@ -2533,7 +2533,7 @@ fn system_time(p: u32, local: bool) {
     let secs = now.as_secs() as i64 + if local { tz_bias() } else { 0 };
     write_systemtime(p, secs, now.subsec_millis());
 }
-fn tz_bias() -> i64 {
+pub fn tz_bias() -> i64 {
     if crate::text::acp() == 932 { 9 * 3600 } else { 0 }
 }
 fn write_systemtime(p: u32, secs: i64, ms: u32) {
