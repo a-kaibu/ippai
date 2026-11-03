@@ -65,10 +65,11 @@ for _ in range(JOBS): threading.Thread(target=producer, daemon=True).start()
 ends = 0
 
 def web_game(store, exe):
-    """a package.json next to the exe (NW.js, unpacked by vnvm pack): the page runs it, x64 or not"""
-    want = (exe.rsplit('/', 1)[0] + '/' if '/' in exe else '') + 'package.json'
+    """a package.json next to the exe (NW.js, unpacked by vnvm pack) or in resources/app (Electron): the page runs it, x64 or not"""
+    d = exe.rsplit('/', 1)[0] + '/' if '/' in exe else ''
+    want = {f'{d}package.json'.lower(), f'{d}resources/app/package.json'.lower()}
     try:
-        return any(l.split('\t')[3].lower() == want.lower() for l in open(f'{store}/trees/g.tsv', encoding='utf-8') if l.startswith('f\t'))
+        return any(l.split('\t')[3].lower() in want for l in open(f'{store}/trees/g.tsv', encoding='utf-8') if l.startswith('f\t'))
     except OSError:
         return False
 

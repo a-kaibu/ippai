@@ -1,5 +1,5 @@
-// Games that are web pages already (NW.js: TyranoScript, RPG Maker MV/MZ): when the program's
-// folder has a package.json (vnvm pack unpacks one appended to the exe: crates/vnvm/src/nwjs.rs),
+// Games that are web pages already (NW.js or Electron: TyranoScript, RPG Maker MV/MZ): when the
+// program's folder (or its resources/app) has a package.json (vnvm pack unpacks one appended to the exe: crates/vnvm/src/nwjs.rs),
 // the page opens the game's own start page in an iframe instead of running the exe. Its files
 // come from `/tree/<tree>/<path>` (crates/vnvm/src/treefiles.rs), which starts every page with
 // a call to parent.vnvmFrame(window): before any script of the game, that gives the page a
@@ -159,6 +159,36 @@ function nodeRequire(root: string, items: Map<string, string>, changed: () => vo
   };
 }
 
+/**
+ * TyranoScript's Electron build (configSave=file) keeps its saves as files next to the exe
+ * through the `studio_api` its preload script exposes (fs-extra, path, and an ipcRenderer that
+ * answers getAppPath and getProcess): here they are kept with the saves, by file name.
+ */
+function studioApi(items: Map<string, string>, changed: () => void) {
+  const key = (p: string) => `${FILE}studio/${String(p).split(/[\\/]/).pop() ?? ""}`;
+  const process = {
+    platform: "win32",
+    execPath: "C:\\game\\game.exe",
+    env: {},
+    __dirname: "C:\\game\\resources\\app",
+  };
+  return {
+    fs: {
+      // folders exist; of the files, only the saves
+      existsSync: (p: string) => (/\.sav$/i.test(p) ? items.has(key(p)) : !/\.[^./\\]*$/.test(String(p))),
+      mkdirSync: () => undefined,
+      readFileSync: (p: string) => items.get(key(p)) ?? "",
+      writeFileSync: (p: string, data: string) => (items.set(key(p), String(data)), changed()),
+      unlinkSync: (p: string) => void (items.delete(key(p)) && changed()),
+    },
+    path: nodePath,
+    ipcRenderer: {
+      sendSync: (channel: string) =>
+        channel === "getAppPath" ? process.__dirname : channel === "getProcess" ? process : undefined,
+    },
+  };
+}
+
 // Plugins that see `require` read process.mainModule.filename for the game folder. This
 // `process` is a function, so the RPG Maker cores' NW.js check (typeof process === "object")
 // fails and they keep to web storage.
@@ -188,7 +218,11 @@ export async function startWebGame(
   const at = where(run, mounts);
   if (!at) return false;
   const root = new URL(`tree/${encodeURIComponent(at.tree)}/`, location.href).href;
-  const page = await startPage(root + enc(at.dir));
+  // NW.js: package.json beside the exe; Electron: resources/app (its pages run without Node:
+  // contextIsolation, and a global `process` stops a PixiJS game's title buttons)
+  let page = await startPage(root + enc(at.dir));
+  const node = !!page;
+  page ??= await startPage(root + enc(`${at.dir}resources/app/`));
   if (!page) return false;
   log("Web ゲームとして開いています");
 
@@ -217,11 +251,13 @@ export async function startWebGame(
   addEventListener("pagehide", save);
 
   const localStorage = storage(items, changed);
+  const studio = studioApi(items, changed);
   const require = nodeRequire(root + enc(at.dir), items, changed);
   Object.assign(window, {
     vnvmFrame(win: Window) {
       Object.defineProperty(win, "localStorage", { value: localStorage });
-      Object.assign(win, { require, process: nodeProcess() });
+      if (node) Object.assign(win, { require, process: nodeProcess() });
+      else Object.assign(win, { studio_api: studio });
       // a plugin that throws while it loads makes RPG Maker show the error instead of the
       // game, which the release runs past: until the page has loaded, those only go to the console
       const plugin = (e: ErrorEvent) => {
