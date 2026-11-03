@@ -23,8 +23,8 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/cache@v4
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/cache@v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -38,7 +38,7 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0 # (git describe names the build)
       - name: Tools
@@ -47,10 +47,10 @@ jobs:
           sudo apt-get install -yq --no-install-recommends mingw-w64 zstd
           rustup component add rust-src
           rustup target add wasm32-unknown-emscripten
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: 22
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6.1.0
         with:
           path: |
             ~/emsdk4
@@ -66,12 +66,12 @@ jobs:
         run: tools/ci/build.sh
       - name: host/tests on sake
         run: SAKE=$PWD/target/sake-out/sake.js tests/host-tests.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: ippai
           path: target/dist/*
           retention-days: 14
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: web
           path: web/dist
