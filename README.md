@@ -14,6 +14,53 @@ Wine 11.20 の Unix 側を wasm にする Hangover 方式の経路は 2026-11-02
 以前の QEMU 版 (フルシステム QEMU で Ubuntu 26.04 + Wine を起動する方式) は
 [a-kaibu/vnqemu](https://github.com/a-kaibu/vnqemu) に移しました。
 
+## アーキテクチャ
+
+```mermaid
+flowchart TB
+  GAME["ゲームのフォルダ<br/>(Windows x86 / x64 の exe)"]
+  META["批評空間 / VNDB"]
+
+  subgraph PC["PC / サーバー: ippai (Rust の実行ファイル1本)"]
+    CLI["ippai CLI<br/>serve · stop · status · logs · add · remove · meta"]
+    SRV["HTTP サーバー (axum、COOP/COEP 付き)"]
+    EMB[("内蔵 Web 資産 (rust-embed)<br/>Web UI + sake.wasm")]
+    STORE[("ストア<br/>chunks/ trees/ games/")]
+    JITC[("JIT キャッシュ<br/>保存済みリージョン (wasm)<br/>マージは koji (ネイティブ)")]
+  end
+
+  subgraph BR["ブラウザ (Chrome: Windows / Mac / Android)"]
+    UI["Web UI (React + Vite+)<br/>ランチャー · プレイ画面 · ログ"]
+    subgraph WASM["sake.wasm (wasm pthreads)"]
+      SAKE["sake: Win32 API (Rust で実装)<br/>kernel32 · user32 · gdi32 · d3d9/11 · dsound ..."]
+      KOJI["koji: x86 インタプリタ + x86→wasm JIT"]
+      KURA["kura: メモリ · スレッド · VFS · 表示 · 音声"]
+    end
+    WEBAPI["WebGPU · WebAudio · WebCodecs · OPFS"]
+  end
+
+  GAME -- "ippai add: チャンク化 + zstd" --> CLI
+  CLI -- "作品情報" --> META
+  CLI --> STORE
+  CLI -- "制御ソケット" --> SRV
+  EMB --> SRV
+  STORE --> SRV
+  SRV <--> JITC
+  SRV -- "ページ · sake.wasm" --> UI
+  SRV -- "ゲームのファイル (チャンク)" --> KURA
+  SRV <-- "翻訳済みリージョンの保存・読込" --> KOJI
+  UI --> SAKE
+  SAKE --> KOJI
+  SAKE --> KURA
+  KURA --> WEBAPI
+```
+
+- ゲームの x86 コードは koji が wasm に翻訳してブラウザで直接実行し、Windows API の呼び出しは sake が
+  受けます。Wine は使いません。
+- ゲームのファイルはサーバーのストアにチャンクで置かれ、kura の VFS が必要な分だけ取りに行きます。
+- 翻訳したコード (リージョン) はサーバーに保存され、次回以降の起動と他のゲームの初回起動を速くします。
+  事前実行は、まだ誰も遊んでいないゲームを headless Chromium で一度動かしてリージョンを作っておく仕組みです。
+
 ## ディレクトリ
 
 | パス | 内容 |
