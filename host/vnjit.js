@@ -88,7 +88,7 @@ addToLibrary({
   },
 
   // sends new regions to be saved (PUT to `url`; the server merges them in), from the main
-  // thread: Wine's threads never return to their event loop
+  // thread: the program's threads never return to their event loop
   vnvm_jit_save__proxy: 'sync',
   vnvm_jit_save__sig: 'vppp',
   vnvm_jit_save: (url, ptr, len) => {

@@ -512,7 +512,7 @@ export class FlightRecorder {
         "--- vnhost events (guest exceptions, processes, panics) ---",
         this.ring(i[2]!, i[3]!, i[4]!),
       );
-      parts.push("", "--- Wine stdout/stderr ---", this.ring(i[5]!, i[6]!, i[7]!));
+      parts.push("", "--- stdout/stderr ---", this.ring(i[5]!, i[6]!, i[7]!));
     }
     parts.push("", "--- performance (every 10 s in the page log as perf:) ---", this.perf.summary());
     parts.push("", "--- page ---", ...this.page, "");
