@@ -3907,40 +3907,25 @@ fn UnregisterHotKey(_: &mut Ctx) -> u32 {
 }
 
 // ---------------------------------------------------------------------------------------------
-// input from the page (vnhost's input pipe)
+// input from the page (vnhost's input queue)
 
 fn start_input() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         std::thread::spawn(|| {
-            let fd = vnhost::display::vnhost_input_fd();
-            if fd < 0 {
-                return;
-            }
-            let mut buf = [0u32; 64];
             let trace = crate::env_on!("SAKE_TRACE_INPUT");
             loop {
-                let mut p = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
-                let r = unsafe { libc::poll(&mut p, 1, 100) };
-                let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, 256) };
-                if trace && n != -1 {
-                    eprintln!("sake input: poll {r} read {n}");
-                }
-                if n <= 0 {
+                let recs = vnhost::display::input_take(100);
+                if recs.is_empty() {
                     continue;
                 }
-                for r in buf[..n as usize / 4].chunks(4) {
-                    if r.len() == 4 {
-                        input(r[0], r[1] as i32, r[2] as i32, r[3]);
-                        if trace {
-                            eprintln!("sake input: {r:?} queued");
-                        }
+                for r in &recs {
+                    input(r[0], r[1] as i32, r[2] as i32, r[3]);
+                    if trace {
+                        eprintln!("sake input: {r:?} queued");
                     }
                 }
                 crate::obj::signal();
-                if trace {
-                    eprintln!("sake input: signaled");
-                }
             }
         });
     });

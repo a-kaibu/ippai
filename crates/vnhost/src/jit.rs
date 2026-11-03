@@ -1640,7 +1640,7 @@ pub(crate) fn count_entry(eip: u32) {
             let mut v: Vec<_> = c.1.iter().collect();
             v.sort_by(|a, b| b.1.cmp(a.1));
             let top: Vec<String> = v.iter().take(6).map(|(k, n)| format!("{k:#x}:{n}")).collect();
-            eprintln!("vnjit pid {} thread {:?}: {} entries in {:?}: {}", crate::proc::current(), std::thread::current().id(), c.0, t0.elapsed(), top.join(" "));
+            eprintln!("vnjit thread {:?}: {} entries in {:?}: {}", std::thread::current().id(), c.0, t0.elapsed(), top.join(" "));
         }
     });
 }

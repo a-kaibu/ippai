@@ -3,13 +3,13 @@
 //! Every Wine process shares this state: top-level windows hand their pixels here when Wine
 //! flushes their surface, and the screen is composed from them in z-order (bottom to top).
 //! The page shows `vnhost_display_frame` (one BGRA buffer of the whole screen) and sends input
-//! with `vnhost_input_push`; the driver's desktop thread reads it from `vnhost_input_fd`.
+//! with `vnhost_input_push`; the program's input thread takes them with `input_take`.
 //!
 //! Under node, `VNVM_SCREENSHOT=<file.ppm>` writes the screen out (see `start_screenshots`) and
 //! `VNVM_INPUT="<seconds>:<kind>,<x>,<y>,<data>;..."` sends input that many seconds after the
 //! first window shows up (see `start_scripted_input`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::c_int;
 use std::sync::Mutex;
 
@@ -159,8 +159,7 @@ fn start_scripted_input() {
                 std::thread::sleep(wait);
                 vnhost_input_push(kind as u32, x as i32, y as i32, data as u32);
                 if crate::env_on!("VNVM_INPUT_TRACE") {
-                    let mut n: c_int = 0;
-                    unsafe { libc::ioctl(vnhost_input_fd(), libc::FIONREAD, &mut n) };
+                    let n = input_queued() * 16;
                     // and the windows there, top first
                     let under: Vec<String> = with(|d| {
                         d.order
@@ -536,7 +535,7 @@ pub unsafe extern "C" fn vnhost_display_frame(io: *mut u32) -> *const u32 {
 }
 
 // ---------------------------------------------------------------------------------------------
-// input: 16-byte records { kind, x, y, data } through a pipe the driver's desktop thread polls
+// input: records { kind, x, y, data } queued for the program's input thread
 
 /// Input record kinds, shared with the driver.
 pub const INPUT_MOUSE_MOVE: u32 = 1;
@@ -546,35 +545,26 @@ pub const INPUT_WHEEL: u32 = 4; // data: delta (120 per notch)
 pub const INPUT_KEY_DOWN: u32 = 5; // data: vk | scan << 16
 pub const INPUT_KEY_UP: u32 = 6;
 
-static INPUT: Mutex<Option<(c_int, c_int)>> = Mutex::new(None);
+/// Input records from the page, waiting for the program's input thread.
+static INPUT: Mutex<VecDeque<[u32; 4]>> = Mutex::new(VecDeque::new());
+static INPUT_READY: std::sync::Condvar = std::sync::Condvar::new();
 
-fn input_pipe() -> Option<(c_int, c_int)> {
-    let mut g = INPUT.lock().unwrap_or_else(|e| e.into_inner());
-    if g.is_none() {
-        let mut fds = [0; 2];
-        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
-            return None;
-        }
-        unsafe { libc::fcntl(fds[0], libc::F_SETFL, libc::O_NONBLOCK) };
-        unsafe { libc::fcntl(fds[1], libc::F_SETFL, libc::O_NONBLOCK) };
-        // not the calling process's: they outlive it
-        crate::fd::give(fds[0], crate::proc::HOST_PID);
-        crate::fd::give(fds[1], crate::proc::HOST_PID);
-        *g = Some((fds[0], fds[1]));
-    }
-    *g
+/// The input records so far, waiting up to `ms` for one.
+pub fn input_take(ms: u64) -> Vec<[u32; 4]> {
+    let g = INPUT.lock().unwrap_or_else(|e| e.into_inner());
+    let (mut g, _) = INPUT_READY
+        .wait_timeout_while(g, std::time::Duration::from_millis(ms), |q| q.is_empty())
+        .unwrap_or_else(|e| e.into_inner());
+    g.drain(..).collect()
 }
 
-/// The read end of the input pipe (for the desktop process's driver).
-#[no_mangle]
-pub extern "C" fn vnhost_input_fd() -> c_int {
-    input_pipe().map_or(-1, |p| p.0)
+fn input_queued() -> usize {
+    INPUT.lock().unwrap_or_else(|e| e.into_inner()).len()
 }
 
 #[no_mangle]
 pub extern "C" fn vnhost_input_push(kind: u32, x: i32, y: i32, data: u32) -> c_int {
-    let Some((_, w)) = input_pipe() else { return -1 };
-    let rec = [kind, x as u32, y as u32, data];
-    let n = unsafe { libc::write(w, rec.as_ptr() as *const libc::c_void, 16) };
-    (n == 16) as c_int - 1
+    INPUT.lock().unwrap_or_else(|e| e.into_inner()).push_back([kind, x as u32, y as u32, data]);
+    INPUT_READY.notify_one();
+    0
 }

@@ -1,28 +1,17 @@
-//! The file system Wine sees in the browser: directory trees packed by `vnvm pack`
-//! (`trees/<name>.tsv` plus chunks in the store) mounted where `VNVM_MOUNTS` says
-//! ("/opt/wine-vnbox=wineroot:/prefix=prefix32"), read lazily chunk by chunk. Whatever is
-//! written stays in memory. Paths outside the mounts go to emscripten's file system (node; the
-//! page mounts an empty tree at "/", so there is nothing outside).
-//!
-//! The current directory is per Wine process (`proc`), for every path: relative paths are made
-//! absolute here before emscripten sees them.
-//!
-//! Open files and directories are emulated fds (`fd::Kind::Vfs`) referring to an `Handle`
-//! here, so dup, SCM_RIGHTS and per-process cleanup work as for pipes and sockets.
+//! The page's file system: directory trees packed by `vnvm pack` (`trees/<name>.tsv` plus
+//! chunks in the store) mounted where `VNVM_MOUNTS` says ("/=:/vnvm/game=reunion"), read
+//! lazily chunk by chunk. Whatever is written stays in memory. Paths outside the mounts are the
+//! host's (node; the page mounts an empty tree at "/", so there is nothing outside). Rust code
+//! reaches it through crate::fs.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::sync::{Arc, Mutex};
 
-use libc::{off_t, size_t, ssize_t};
-
-use crate::set_errno;
+use libc::size_t;
 
 type Ino = u32;
 type Hash = [u8; 16];
-
-/// st_dev of our files
-const DEV: u64 = 0x766e;
 
 enum Content {
     /// From the store; `None` chunks are all zero.
@@ -48,8 +37,6 @@ struct Handle {
     ino: Ino,
     pos: u64,
     flags: c_int,
-    /// absolute path it was opened with (for openat and fchdir)
-    path: String,
 }
 
 #[derive(Default)]
@@ -105,7 +92,7 @@ pub unsafe extern "C" fn vnhost_vfs_export(roots: *const c_char, len: *mut size_
         let g = FS.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(fs) = g.as_ref() {
             for r in roots.split(':').filter(|r| !r.is_empty()) {
-                fs.export(&normalize(r), &mut out);
+                fs.export(&clean(r), &mut out);
             }
         }
     }
@@ -120,11 +107,6 @@ pub unsafe extern "C" fn vnhost_vfs_export(roots: *const c_char, len: *mut size_
 fn with<R>(f: impl FnOnce(&mut Fs) -> R) -> R {
     let mut g = FS.lock().unwrap_or_else(|e| e.into_inner());
     f(g.get_or_insert_with(Fs::load))
-}
-
-fn err<T: From<i8>>(e: c_int) -> T {
-    set_errno(e);
-    T::from(-1)
 }
 
 extern "C" {
@@ -192,7 +174,7 @@ impl Fs {
         let mut fs = Fs { next_handle: 1, ..Default::default() };
         let Ok(spec) = std::env::var("VNVM_MOUNTS") else { return fs };
         let mut mounts: Vec<(String, &str)> =
-            spec.split(':').filter_map(|m| m.split_once('=')).map(|(at, name)| (normalize(at), name)).collect();
+            spec.split(':').filter_map(|m| m.split_once('=')).map(|(at, name)| (clean(at), name)).collect();
         // "/" first (the page mounts an empty one: then nothing is emscripten's), the others
         // inside it as directories of its tree
         mounts.sort_by_key(|(at, _)| at.len());
@@ -213,8 +195,7 @@ impl Fs {
                     }
                 } else {
                     // the mount point must exist for whoever lists its parent
-                    let c = CString::new(at.clone()).unwrap();
-                    unsafe { crate::wrap::real_mkdir_p(&c) };
+                    let _ = std::fs::create_dir_all(&at);
                 }
             }
             fs.mounts.push((at, root));
@@ -413,8 +394,7 @@ impl Fs {
             let Some(Node { data: Data::Dir(ch), .. }) = self.node(dir) else { return Err(libc::ENOTDIR) };
             let Some(&child) = ch.get(&c) else {
                 if last {
-                    let path = join_with(&cur, &c);
-                    return Ok(Found::Missing { parent: dir, name: c, path });
+                    return Ok(Found::Missing { parent: dir, name: c });
                 }
                 return Err(libc::ENOENT);
             };
@@ -459,27 +439,6 @@ impl Fs {
         node
     }
 
-    fn stat(&self, ino: Ino, st: &mut crate::sys::stat) {
-        let n = self.node(ino).unwrap();
-        let (kind, size) = match &n.data {
-            Data::Dir(_) => (libc::S_IFDIR, 4096),
-            Data::File(Content::Lower { size, .. }) => (libc::S_IFREG, *size),
-            Data::File(Content::Upper(v)) => (libc::S_IFREG, v.len() as u64),
-            Data::Link(t) => (libc::S_IFLNK, t.len() as u64),
-        };
-        *st = unsafe { std::mem::zeroed() };
-        st.st_dev = DEV as _;
-        st.st_ino = ino as u64 + 1;
-        st.st_mode = kind | n.mode;
-        st.st_nlink = n.nlink as _;
-        st.st_size = size as _;
-        st.st_blksize = 4096;
-        st.st_blocks = size.div_ceil(512) as _;
-        st.st_atime = n.mtime as _;
-        st.st_mtime = n.mtime as _;
-        st.st_ctime = n.mtime as _;
-    }
-
     fn file_size(&self, ino: Ino) -> u64 {
         match self.node(ino).map(|n| &n.data) {
             Some(Data::File(Content::Lower { size, .. })) => *size,
@@ -488,10 +447,10 @@ impl Fs {
         }
     }
 
-    fn new_handle(&mut self, ino: Ino, flags: c_int, path: String) -> u32 {
+    fn new_handle(&mut self, ino: Ino, flags: c_int) -> u32 {
         let id = self.next_handle;
         self.next_handle += 1;
-        self.handles.insert(id, Handle { ino, pos: 0, flags, path });
+        self.handles.insert(id, Handle { ino, pos: 0, flags });
         id
     }
 
@@ -518,7 +477,7 @@ impl Fs {
 
 enum Found {
     Node { ino: Ino, path: String },
-    Missing { parent: Ino, name: String, path: String },
+    Missing { parent: Ino, name: String },
     Outside(String),
 }
 
@@ -532,32 +491,6 @@ fn join(cur: &[String]) -> String {
         s.push_str(c);
     }
     s
-}
-
-fn join_with(cur: &[String], last: &str) -> String {
-    let mut s = join(cur);
-    if !s.ends_with('/') {
-        s.push('/');
-    }
-    s.push_str(last);
-    s
-}
-
-/// Makes `path` absolute (against the process's current directory) and drops "." and "//".
-pub fn normalize(path: &str) -> String {
-    if trace() {
-        eprintln!("vfs: {path}");
-    }
-    let full = if path.starts_with('/') { path.to_string() } else { format!("{}/{}", crate::proc::cwd(), path) };
-    let mut out = String::with_capacity(full.len());
-    for c in full.split('/').filter(|c| !c.is_empty() && *c != ".") {
-        out.push('/');
-        out.push_str(c);
-    }
-    if out.is_empty() {
-        out.push('/');
-    }
-    out
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -805,642 +738,7 @@ fn set_size(ino: Ino, size: u64) -> Result<(), c_int> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// the path-based calls; `None` means "not ours, ask emscripten" (with the absolute path)
-
-pub enum Route<T> {
-    Done(T),
-    Real(CString),
-}
-
-impl<T> Route<T> {
-    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Route<U> {
-        match self {
-            Route::Done(v) => Route::Done(f(v)),
-            Route::Real(c) => Route::Real(c),
-        }
-    }
-}
-
-/// Whether any tree is mounted (if not, only relative paths need our help).
-pub fn active() -> bool {
-    with(|fs| !fs.mounts.is_empty())
-}
-
-unsafe fn path_arg(dirfd: c_int, path: *const c_char) -> Result<String, c_int> {
-    let p = CStr::from_ptr(path).to_string_lossy();
-    if p.starts_with('/') || dirfd == libc::AT_FDCWD {
-        return Ok(normalize(&p));
-    }
-    let base = handle_path(dirfd).ok_or(libc::EBADF)?;
-    Ok(normalize(&format!("{base}/{p}")))
-}
-
-/// The path a directory fd was opened with (ours, or one emscripten knows by its fd).
-fn handle_path(fd: c_int) -> Option<String> {
-    let h = crate::fd::vfs_handle(fd)?;
-    with(|fs| fs.handles.get(&h).map(|h| h.path.clone()))
-}
-
-fn real(path: String) -> CString {
-    CString::new(path).unwrap_or_default()
-}
-
-pub unsafe fn open(dirfd: c_int, path: *const c_char, flags: c_int, mode: u32) -> Route<c_int> {
-    if dirfd != libc::AT_FDCWD && !CStr::from_ptr(path).to_bytes().starts_with(b"/") && crate::fd::vfs_handle(dirfd).is_none() {
-        return Route::Done(-2); // relative to a real directory fd: the caller passes it on as is
-    }
-    let p = match path_arg(dirfd, path) {
-        Ok(p) => p,
-        Err(e) => return Route::Done(err(e)),
-    };
-    match open_handle(&p, flags, mode) {
-        At::Outside(p) => Route::Real(real(p)),
-        At::Ours(Err(e)) => Route::Done(err(e)),
-        At::Ours(Ok(h)) => Route::Done(crate::fd::vfs_install(h, flags)),
-    }
-}
-
-/// Opens absolute path `p` as a handle (released with [`release`]).
-pub(crate) fn open_handle(p: &str, flags: c_int, mode: u32) -> At<u32> {
-    let follow = flags & libc::O_NOFOLLOW == 0;
-    let found = with(|fs| fs.resolve(p, follow));
-    let (ino, path) = match found {
-        Err(e) => return At::Ours(Err(e)),
-        Ok(Found::Outside(p)) => return At::Outside(p),
-        Ok(Found::Node { ino, path }) => {
-            if flags & libc::O_CREAT != 0 && flags & libc::O_EXCL != 0 {
-                return At::Ours(Err(libc::EEXIST));
-            }
-            (ino, path)
-        }
-        Ok(Found::Missing { parent, name, path }) => {
-            if flags & libc::O_CREAT == 0 {
-                return At::Ours(Err(libc::ENOENT));
-            }
-            let ino = with(|fs| {
-                let ino = fs.add(Data::File(Content::Upper(Vec::new())), mode & 0o7777, now());
-                if let Some(Data::Dir(ch)) = fs.data_mut(parent) {
-                    ch.insert(name, ino);
-                }
-                ino
-            });
-            (ino, path)
-        }
-    };
-    let kind = with(|fs| fs.node(ino).map(|n| match n.data {
-        Data::Dir(_) => 0,
-        Data::File(_) => 1,
-        Data::Link(_) => 2,
-    }));
-    match kind {
-        Some(0) if flags & libc::O_ACCMODE != libc::O_RDONLY => return At::Ours(Err(libc::EISDIR)),
-        Some(1) | Some(2) if flags & libc::O_DIRECTORY != 0 => return At::Ours(Err(libc::ENOTDIR)),
-        Some(2) => return At::Ours(Err(libc::ELOOP)),
-        None => return At::Ours(Err(libc::ENOENT)),
-        _ => {}
-    }
-    if kind == Some(1) && flags & libc::O_TRUNC != 0 && flags & libc::O_ACCMODE != libc::O_RDONLY {
-        if let Err(e) = set_size(ino, 0) {
-            return At::Ours(Err(e));
-        }
-    }
-    At::Ours(Ok(with(|fs| fs.new_handle(ino, flags, path))))
-}
-
-/// Called when the last fd of a handle is closed.
-pub fn release(h: u32) {
-    with(|fs| {
-        if let Some(handle) = fs.handles.remove(&h) {
-            fs.gc(handle.ino);
-        }
-    })
-}
-
-pub unsafe fn stat(dirfd: c_int, path: *const c_char, st: *mut crate::sys::stat, follow: bool) -> Route<c_int> {
-    if dirfd != libc::AT_FDCWD && !CStr::from_ptr(path).to_bytes().starts_with(b"/") && crate::fd::vfs_handle(dirfd).is_none() {
-        return Route::Done(-2);
-    }
-    let p = match path_arg(dirfd, path) {
-        Ok(p) => p,
-        Err(e) => return Route::Done(err(e)),
-    };
-    with(|fs| match fs.resolve(&p, follow) {
-        Err(e) => Route::Done(err(e)),
-        Ok(Found::Outside(p)) => Route::Real(real(p)),
-        Ok(Found::Missing { .. }) => Route::Done(err(libc::ENOENT)),
-        Ok(Found::Node { ino, .. }) => {
-            fs.stat(ino, &mut *st);
-            Route::Done(0)
-        }
-    })
-}
-
-pub unsafe fn access(dirfd: c_int, path: *const c_char) -> Route<c_int> {
-    let mut st: crate::sys::stat = std::mem::zeroed();
-    stat(dirfd, path, &mut st, true)
-}
-
-pub unsafe fn readlink(dirfd: c_int, path: *const c_char, buf: *mut c_char, size: size_t) -> Route<ssize_t> {
-    let p = match path_arg(dirfd, path) {
-        Ok(p) => p,
-        Err(e) => return Route::Done(err(e)),
-    };
-    with(|fs| match fs.resolve(&p, false) {
-        Err(e) => Route::Done(err(e)),
-        Ok(Found::Outside(p)) => Route::Real(real(p)),
-        Ok(Found::Missing { .. }) => Route::Done(err(libc::ENOENT)),
-        Ok(Found::Node { ino, .. }) => match &fs.node(ino).unwrap().data {
-            Data::Link(t) => {
-                let n = t.len().min(size);
-                std::ptr::copy_nonoverlapping(t.as_ptr(), buf as *mut u8, n);
-                Route::Done(n as ssize_t)
-            }
-            _ => Route::Done(err(libc::EINVAL)),
-        },
-    })
-}
-
-/// Creates a directory or symlink entry.
-unsafe fn create(path: *const c_char, data: Data, mode: u32) -> Route<c_int> {
-    let p = normalize(&CStr::from_ptr(path).to_string_lossy());
-    with(|fs| match fs.resolve(&p, false) {
-        Err(e) => Route::Done(err(e)),
-        Ok(Found::Outside(p)) => Route::Real(real(p)),
-        Ok(Found::Node { .. }) => Route::Done(err(libc::EEXIST)),
-        Ok(Found::Missing { parent, name, .. }) => {
-            let is_dir = matches!(data, Data::Dir(_));
-            let ino = fs.add(data, mode & 0o7777, now());
-            if let Some(Data::Dir(ch)) = fs.data_mut(parent) {
-                ch.insert(name, ino);
-            }
-            if is_dir {
-                if let Some(n) = fs.node_mut(parent) {
-                    n.nlink += 1;
-                }
-            }
-            Route::Done(0)
-        }
-    })
-}
-
-pub unsafe fn mkdir(path: *const c_char, mode: u32) -> Route<c_int> {
-    create(path, Data::Dir(BTreeMap::new()), mode)
-}
-
-pub unsafe fn symlink(target: *const c_char, path: *const c_char) -> Route<c_int> {
-    create(path, Data::Link(CStr::from_ptr(target).to_string_lossy().into_owned()), 0o777)
-}
-
-/// unlink (dir: false) or rmdir (dir: true)
-pub unsafe fn remove(path: *const c_char, dir: bool) -> Route<c_int> {
-    let p = normalize(&CStr::from_ptr(path).to_string_lossy());
-    let Some((parent_path, name)) = p.rsplit_once('/') else { return Route::Done(err(libc::EINVAL)) };
-    let parent_path = if parent_path.is_empty() { "/" } else { parent_path };
-    with(|fs| {
-        let parent = match fs.resolve(parent_path, true) {
-            Err(e) => return Route::Done(err(e)),
-            Ok(Found::Outside(_)) => return Route::Real(real(p.clone())),
-            Ok(Found::Missing { .. }) => return Route::Done(err(libc::ENOENT)),
-            Ok(Found::Node { ino, .. }) => ino,
-        };
-        let Some(Data::Dir(ch)) = fs.node(parent).map(|n| &n.data) else { return Route::Done(err(libc::ENOTDIR)) };
-        let Some(&ino) = ch.get(name) else { return Route::Done(err(libc::ENOENT)) };
-        match (&fs.node(ino).unwrap().data, dir) {
-            (Data::Dir(c), true) => {
-                if !c.is_empty() {
-                    return Route::Done(err(libc::ENOTEMPTY));
-                }
-                if let Some(n) = fs.node_mut(ino) {
-                    n.nlink = 0;
-                }
-                if let Some(n) = fs.node_mut(parent) {
-                    n.nlink -= 1;
-                }
-            }
-            (Data::Dir(_), false) => return Route::Done(err(libc::EISDIR)),
-            (_, true) => return Route::Done(err(libc::ENOTDIR)),
-            _ => {}
-        }
-        fs.unlink_name(parent, name);
-        Route::Done(0)
-    })
-}
-
-pub unsafe fn rename(from: *const c_char, to: *const c_char) -> Route<c_int> {
-    let a = normalize(&CStr::from_ptr(from).to_string_lossy());
-    let b = normalize(&CStr::from_ptr(to).to_string_lossy());
-    with(|fs| {
-        let src = fs.resolve(&a, false);
-        let dst = fs.resolve(&b, false);
-        let (src_ino, sp, sn) = match src {
-            Err(e) => return Route::Done(err(e)),
-            Ok(Found::Outside(_)) => {
-                return match dst {
-                    Ok(Found::Outside(_)) => Route::Real(real(a)),
-                    _ => Route::Done(err(libc::EXDEV)),
-                }
-            }
-            Ok(Found::Missing { .. }) => return Route::Done(err(libc::ENOENT)),
-            Ok(Found::Node { ino, path }) => {
-                let (d, n) = path.rsplit_once('/').unwrap();
-                let parent = match fs.resolve(if d.is_empty() { "/" } else { d }, true) {
-                    Ok(Found::Node { ino, .. }) => ino,
-                    _ => return Route::Done(err(libc::EXDEV)), // a mount point itself
-                };
-                (ino, parent, n.to_string())
-            }
-        };
-        let (dp, dn) = match dst {
-            Err(e) => return Route::Done(err(e)),
-            Ok(Found::Outside(_)) => return Route::Done(err(libc::EXDEV)),
-            Ok(Found::Missing { parent, name, .. }) => (parent, name),
-            Ok(Found::Node { ino, path }) => {
-                if ino == src_ino {
-                    return Route::Done(0);
-                }
-                if let Some(Data::Dir(c)) = fs.node(ino).map(|n| &n.data) {
-                    if !c.is_empty() {
-                        return Route::Done(err(libc::ENOTEMPTY));
-                    }
-                }
-                let (d, n) = path.rsplit_once('/').unwrap();
-                let Ok(Found::Node { ino: parent, .. }) = fs.resolve(if d.is_empty() { "/" } else { d }, true) else {
-                    return Route::Done(err(libc::EXDEV));
-                };
-                fs.unlink_name(parent, n);
-                (parent, n.to_string())
-            }
-        };
-        if let Some(Data::Dir(ch)) = fs.data_mut(sp) {
-            ch.remove(&sn);
-        }
-        if let Some(Data::Dir(ch)) = fs.data_mut(dp) {
-            ch.insert(dn, src_ino);
-        }
-        Route::Done(0)
-    })
-}
-
-pub unsafe fn link(from: *const c_char, to: *const c_char) -> Route<c_int> {
-    let a = normalize(&CStr::from_ptr(from).to_string_lossy());
-    let b = normalize(&CStr::from_ptr(to).to_string_lossy());
-    with(|fs| match (fs.resolve(&a, false), fs.resolve(&b, false)) {
-        (Ok(Found::Outside(_)), Ok(Found::Outside(_))) => Route::Real(real(a)),
-        (Ok(Found::Node { ino, .. }), Ok(Found::Missing { parent, name, .. })) => {
-            if matches!(fs.node(ino).unwrap().data, Data::Dir(_)) {
-                return Route::Done(err(libc::EPERM));
-            }
-            fs.node_mut(ino).unwrap().nlink += 1;
-            if let Some(Data::Dir(ch)) = fs.data_mut(parent) {
-                ch.insert(name, ino);
-            }
-            Route::Done(0)
-        }
-        (Ok(_), Ok(Found::Node { .. })) => Route::Done(err(libc::EEXIST)),
-        (Err(e), _) | (_, Err(e)) => Route::Done(err(e)),
-        _ => Route::Done(err(libc::EXDEV)),
-    })
-}
-
-/// Sets permission bits and/or the modification time of a path or handle.
-fn set_attr(ino: Ino, mode: Option<u32>, mtime: Option<i64>) {
-    with(|fs| {
-        if let Some(n) = fs.node_mut(ino) {
-            if let Some(m) = mode {
-                n.mode = m & 0o7777;
-            }
-            if let Some(t) = mtime {
-                n.mtime = t;
-            }
-        }
-    })
-}
-
-pub unsafe fn chmod(path: *const c_char, mode: u32) -> Route<c_int> {
-    let p = normalize(&CStr::from_ptr(path).to_string_lossy());
-    match with(|fs| fs.resolve(&p, true)) {
-        Err(e) => Route::Done(err(e)),
-        Ok(Found::Outside(p)) => Route::Real(real(p)),
-        Ok(Found::Missing { .. }) => Route::Done(err(libc::ENOENT)),
-        Ok(Found::Node { ino, .. }) => {
-            set_attr(ino, Some(mode), None);
-            Route::Done(0)
-        }
-    }
-}
-
-unsafe fn times_mtime(times: *const libc::timespec) -> Option<i64> {
-    if times.is_null() {
-        return Some(now());
-    }
-    let m = &*times.add(1);
-    match m.tv_nsec {
-        libc::UTIME_OMIT => None,
-        libc::UTIME_NOW => Some(now()),
-        _ => Some(m.tv_sec as i64),
-    }
-}
-
-pub unsafe fn utimensat(dirfd: c_int, path: *const c_char, times: *const libc::timespec, flags: c_int) -> Route<c_int> {
-    let p = match path_arg(dirfd, path) {
-        Ok(p) => p,
-        Err(e) => return Route::Done(err(e)),
-    };
-    match with(|fs| fs.resolve(&p, flags & libc::AT_SYMLINK_NOFOLLOW == 0)) {
-        Err(e) => Route::Done(err(e)),
-        Ok(Found::Outside(p)) => Route::Real(real(p)),
-        Ok(Found::Missing { .. }) => Route::Done(err(libc::ENOENT)),
-        Ok(Found::Node { ino, .. }) => {
-            set_attr(ino, None, times_mtime(times));
-            Route::Done(0)
-        }
-    }
-}
-
-pub unsafe fn chdir(path: *const c_char) -> c_int {
-    let p = normalize(&CStr::from_ptr(path).to_string_lossy());
-    let r = match with(|fs| fs.resolve(&p, true).map(|f| match f {
-        Found::Node { ino, path } => Found::Node { ino: matches!(fs.node(ino).unwrap().data, Data::Dir(_)) as Ino, path },
-        f => f,
-    })) {
-        Err(e) => Err(e),
-        Ok(Found::Missing { .. }) => Err(libc::ENOENT),
-        Ok(Found::Node { ino: 1, path }) => Ok(path),
-        Ok(Found::Node { .. }) => Err(libc::ENOTDIR),
-        // (not under the lock: libc's stat() comes back through our fstatat)
-        Ok(Found::Outside(p)) => {
-            let mut st: crate::sys::stat = std::mem::zeroed();
-            let c = real(p.clone());
-            if crate::wrap::real_stat(&c, &mut st) != 0 {
-                Err(crate::errno())
-            } else if st.st_mode & libc::S_IFMT != libc::S_IFDIR {
-                Err(libc::ENOTDIR)
-            } else {
-                Ok(p)
-            }
-        }
-    };
-    match r {
-        Ok(p) => {
-            crate::proc::set_cwd(p);
-            0
-        }
-        Err(e) => err(e),
-    }
-}
-
-pub unsafe fn realpath(path: *const c_char) -> Route<Result<String, c_int>> {
-    let p = normalize(&CStr::from_ptr(path).to_string_lossy());
-    match with(|fs| fs.resolve(&p, true)) {
-        Err(e) => Route::Done(Err(e)),
-        Ok(Found::Outside(p)) => Route::Real(real(p)),
-        Ok(Found::Missing { .. }) => Route::Done(Err(libc::ENOENT)),
-        Ok(Found::Node { path, .. }) => Route::Done(Ok(path)),
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
-// fd-based calls (fd::Kind::Vfs handles)
-
-pub fn flags(h: u32) -> c_int {
-    with(|fs| fs.handles.get(&h).map_or(0, |x| x.flags & (libc::O_ACCMODE | libc::O_APPEND | libc::O_NONBLOCK)))
-}
-
-fn handle(h: u32) -> Option<(Ino, u64, c_int)> {
-    with(|fs| fs.handles.get(&h).map(|x| (x.ino, x.pos, x.flags)))
-}
-
-fn set_pos(h: u32, pos: u64) {
-    with(|fs| {
-        if let Some(x) = fs.handles.get_mut(&h) {
-            x.pos = pos;
-        }
-    })
-}
-
-pub unsafe fn pread(h: u32, buf: *mut c_void, len: size_t, off: Option<u64>) -> ssize_t {
-    let Some((ino, pos, flags)) = handle(h) else { return err(libc::EBADF) };
-    if flags & libc::O_ACCMODE == libc::O_WRONLY {
-        return err(libc::EBADF);
-    }
-    let at = off.unwrap_or(pos);
-    if trace() {
-        eprintln!("vfs: pread {h} ino {ino} {len}@{at}");
-    }
-    match read_at(ino, std::slice::from_raw_parts_mut(buf as *mut u8, len), at) {
-        Ok(n) => {
-            if off.is_none() {
-                set_pos(h, at + n as u64);
-            }
-            n as ssize_t
-        }
-        Err(e) => err(e),
-    }
-}
-
-pub unsafe fn pwrite(h: u32, buf: *const c_void, len: size_t, off: Option<u64>) -> ssize_t {
-    let Some((ino, pos, flags)) = handle(h) else { return err(libc::EBADF) };
-    if flags & libc::O_ACCMODE == libc::O_RDONLY {
-        return err(libc::EBADF);
-    }
-    let at = match off {
-        Some(o) => o,
-        None if flags & libc::O_APPEND != 0 => with(|fs| fs.file_size(ino)),
-        None => pos,
-    };
-    match write_at(ino, std::slice::from_raw_parts(buf as *const u8, len), at) {
-        Ok(n) => {
-            if off.is_none() {
-                set_pos(h, at + n as u64);
-            }
-            n as ssize_t
-        }
-        Err(e) => err(e),
-    }
-}
-
-pub fn lseek(h: u32, off: off_t, whence: c_int) -> off_t {
-    with(|fs| {
-        let Some(x) = fs.handles.get(&h) else { return err(libc::EBADF) };
-        let base = match whence {
-            libc::SEEK_SET => 0,
-            libc::SEEK_CUR => x.pos as i64,
-            libc::SEEK_END => fs.file_size(x.ino) as i64,
-            _ => return err(libc::EINVAL),
-        };
-        let new = base + off as i64;
-        if new < 0 {
-            return err(libc::EINVAL);
-        }
-        fs.handles.get_mut(&h).unwrap().pos = new as u64;
-        new as off_t
-    })
-}
-
-pub fn fstat(h: u32, st: &mut crate::sys::stat) -> c_int {
-    with(|fs| match fs.handles.get(&h) {
-        Some(x) => {
-            let ino = x.ino;
-            fs.stat(ino, st);
-            0
-        }
-        None => err(libc::EBADF),
-    })
-}
-
-pub fn ftruncate(h: u32, size: off_t) -> c_int {
-    let Some((ino, _, _)) = handle(h) else { return err(libc::EBADF) };
-    match set_size(ino, size as u64) {
-        Ok(()) => 0,
-        Err(e) => err(e),
-    }
-}
-
-pub fn fallocate(h: u32, off: off_t, len: off_t) -> c_int {
-    let Some((ino, _, _)) = handle(h) else { return libc::EBADF };
-    let size = with(|fs| fs.file_size(ino));
-    let want = (off + len) as u64;
-    if want > size {
-        if let Err(e) = set_size(ino, want) {
-            return e;
-        }
-    }
-    0
-}
-
-pub fn fchmod(h: u32, mode: u32) -> c_int {
-    let Some((ino, _, _)) = handle(h) else { return err(libc::EBADF) };
-    set_attr(ino, Some(mode), None);
-    0
-}
-
-pub unsafe fn futimens(h: u32, times: *const libc::timespec) -> c_int {
-    let Some((ino, _, _)) = handle(h) else { return err(libc::EBADF) };
-    set_attr(ino, None, times_mtime(times));
-    0
-}
-
-pub fn fchdir(h: u32) -> c_int {
-    let path = with(|fs| {
-        let x = fs.handles.get(&h)?;
-        matches!(fs.node(x.ino)?.data, Data::Dir(_)).then(|| x.path.clone())
-    });
-    match path {
-        Some(p) => {
-            crate::proc::set_cwd(p);
-            0
-        }
-        None => err(libc::ENOTDIR),
-    }
-}
-
-pub fn fstatfs(st: &mut libc::statfs) -> c_int {
-    *st = unsafe { std::mem::zeroed() };
-    st.f_type = 0x0102_1994; // tmpfs
-    st.f_bsize = 4096;
-    st.f_frsize = 4096;
-    st.f_blocks = 1 << 20;
-    st.f_bfree = 1 << 19;
-    st.f_bavail = 1 << 19;
-    st.f_files = 1 << 20;
-    st.f_ffree = 1 << 19;
-    st.f_namelen = 255;
-    0
-}
-
-pub fn fstatvfs(st: &mut crate::sys::statvfs) -> c_int {
-    *st = unsafe { std::mem::zeroed() };
-    st.f_bsize = 4096;
-    st.f_frsize = 4096;
-    st.f_blocks = 1 << 20;
-    st.f_bfree = 1 << 19;
-    st.f_bavail = 1 << 19;
-    st.f_files = 1 << 20;
-    st.f_ffree = 1 << 19;
-    st.f_favail = 1 << 19;
-    st.f_namemax = 255;
-    0
-}
-
-// ---------------------------------------------------------------------------------------------
-// directory streams
-
-pub struct Dir {
-    fd: c_int,
-    names: Vec<(String, Ino, u8)>,
-    next: usize,
-    ent: libc::dirent,
-}
-
-/// DIR pointers we handed out (anything else is emscripten's).
-static DIRS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
-
-pub fn is_dir_stream(d: *mut c_void) -> bool {
-    DIRS.lock().unwrap_or_else(|e| e.into_inner()).contains(&(d as usize))
-}
-
-/// fdopendir for one of our fds (the stream owns the fd).
-pub fn fdopendir(fd: c_int) -> *mut c_void {
-    let Some(h) = crate::fd::vfs_handle(fd) else { return err::<i8>(libc::EBADF) as usize as *mut c_void };
-    let names = with(|fs| {
-        let x = fs.handles.get(&h)?;
-        let Data::Dir(ch) = &fs.node(x.ino)?.data else { return None };
-        let mut v = vec![(".".to_string(), x.ino, libc::DT_DIR), ("..".to_string(), x.ino, libc::DT_DIR)];
-        for (name, &ino) in ch {
-            let t = match fs.node(ino).map(|n| &n.data) {
-                Some(Data::Dir(_)) => libc::DT_DIR,
-                Some(Data::Link(_)) => libc::DT_LNK,
-                _ => libc::DT_REG,
-            };
-            v.push((name.clone(), ino, t));
-        }
-        Some(v)
-    });
-    let Some(names) = names else {
-        set_errno(libc::ENOTDIR);
-        return std::ptr::null_mut();
-    };
-    let d = Box::into_raw(Box::new(Dir { fd, names, next: 0, ent: unsafe { std::mem::zeroed() } }));
-    DIRS.lock().unwrap_or_else(|e| e.into_inner()).push(d as usize);
-    d as *mut c_void
-}
-
-pub unsafe fn readdir(d: *mut c_void) -> *mut libc::dirent {
-    let d = &mut *(d as *mut Dir);
-    let Some((name, ino, t)) = d.names.get(d.next) else { return std::ptr::null_mut() };
-    d.next += 1;
-    d.ent.d_ino = *ino as u64 + 1;
-    d.ent.d_off = d.next as _;
-    d.ent.d_type = *t;
-    d.ent.d_reclen = std::mem::size_of::<libc::dirent>() as _;
-    let n = name.len().min(255);
-    std::ptr::copy_nonoverlapping(name.as_ptr() as *const c_char, d.ent.d_name.as_mut_ptr(), n);
-    d.ent.d_name[n] = 0;
-    &mut d.ent
-}
-
-pub unsafe fn rewinddir(d: *mut c_void) {
-    (*(d as *mut Dir)).next = 0;
-}
-
-pub unsafe fn dirfd(d: *mut c_void) -> c_int {
-    (*(d as *mut Dir)).fd
-}
-
-pub unsafe fn closedir(d: *mut c_void) -> c_int {
-    DIRS.lock().unwrap_or_else(|e| e.into_inner()).retain(|&p| p != d as usize);
-    let d = Box::from_raw(d as *mut Dir);
-    crate::fd::close(d.fd)
-}
-
-/// The page: frees what `vnhost_vfs_export` returned.
-#[no_mangle]
-pub unsafe extern "C" fn vnhost_free(p: *mut c_void) {
-    libc::free(p)
-}
-
-// ---------------------------------------------------------------------------------------------
-// for crate::fs (Rust callers): absolute paths, results instead of errno
+// for crate::fs: absolute paths, results instead of errno
 
 /// A path in a tree here, or outside them all (the host's file system: node only).
 pub(crate) enum At<T> {
@@ -1466,6 +764,9 @@ impl Fs {
 
 /// `p` without ".", ".." or "//" (relative: from "/").
 pub(crate) fn clean(p: &str) -> String {
+    if trace() {
+        eprintln!("vfs: {p}");
+    }
     let mut parts: Vec<&str> = Vec::new();
     for c in p.split('/') {
         match c {
@@ -1487,25 +788,25 @@ pub(crate) fn clean(p: &str) -> String {
     out
 }
 
-pub(crate) fn info_at(p: &str, follow: bool) -> At<Info> {
+/// What `p` resolves to, as `f` makes of it (a missing name: ENOENT).
+fn at<T>(p: &str, follow: bool, f: impl FnOnce(&mut Fs, Ino) -> Result<T, c_int>) -> At<T> {
     with(|fs| match fs.resolve(p, follow) {
         Err(e) => At::Ours(Err(e)),
         Ok(Found::Outside(p)) => At::Outside(p),
         Ok(Found::Missing { .. }) => At::Ours(Err(libc::ENOENT)),
-        Ok(Found::Node { ino, .. }) => At::Ours(Ok(fs.info(ino))),
+        Ok(Found::Node { ino, .. }) => At::Ours(f(fs, ino)),
     })
+}
+
+pub(crate) fn info_at(p: &str, follow: bool) -> At<Info> {
+    at(p, follow, |fs, ino| Ok(fs.info(ino)))
 }
 
 /// The names in directory `p` and what they are.
 pub(crate) fn list_at(p: &str) -> At<Vec<(String, Info)>> {
-    with(|fs| match fs.resolve(p, true) {
-        Err(e) => At::Ours(Err(e)),
-        Ok(Found::Outside(p)) => At::Outside(p),
-        Ok(Found::Missing { .. }) => At::Ours(Err(libc::ENOENT)),
-        Ok(Found::Node { ino, .. }) => match &fs.node(ino).unwrap().data {
-            Data::Dir(ch) => At::Ours(Ok(ch.iter().map(|(n, &i)| (n.clone(), fs.info(i))).collect())),
-            _ => At::Ours(Err(libc::ENOTDIR)),
-        },
+    at(p, true, |fs, ino| match &fs.node(ino).unwrap().data {
+        Data::Dir(ch) => Ok(ch.iter().map(|(n, &i)| (n.clone(), fs.info(i))).collect()),
+        _ => Err(libc::ENOTDIR),
     })
 }
 
@@ -1513,61 +814,239 @@ pub(crate) fn list_at(p: &str) -> At<Vec<(String, Info)>> {
 /// CreateFile match without case).
 pub(crate) fn name_nocase(p: &str, name: &str) -> At<Option<String>> {
     let lc = name.to_lowercase();
-    with(|fs| match fs.resolve(p, true) {
-        Err(e) => At::Ours(Err(e)),
-        Ok(Found::Outside(p)) => At::Outside(p),
-        Ok(Found::Missing { .. }) => At::Ours(Err(libc::ENOENT)),
-        Ok(Found::Node { ino, .. }) => match &fs.node(ino).unwrap().data {
-            Data::Dir(ch) => At::Ours(Ok(ch.keys().find(|k| k.to_lowercase() == lc).cloned())),
-            _ => At::Ours(Err(libc::ENOTDIR)),
-        },
+    at(p, true, |fs, ino| match &fs.node(ino).unwrap().data {
+        Data::Dir(ch) => Ok(ch.keys().find(|k| k.to_lowercase() == lc).cloned()),
+        _ => Err(libc::ENOTDIR),
     })
 }
 
-fn done(r: Route<c_int>) -> At<()> {
-    match r {
-        Route::Real(c) => At::Outside(c.into_string().unwrap_or_default()),
-        Route::Done(0) => At::Ours(Ok(())),
-        Route::Done(_) => At::Ours(Err(crate::errno())),
+/// Opens `p` as a handle (released with [`release`]).
+pub(crate) fn open_handle(p: &str, flags: c_int, mode: u32) -> At<u32> {
+    let follow = flags & libc::O_NOFOLLOW == 0;
+    let found = with(|fs| fs.resolve(p, follow));
+    let ino = match found {
+        Err(e) => return At::Ours(Err(e)),
+        Ok(Found::Outside(p)) => return At::Outside(p),
+        Ok(Found::Node { ino, .. }) => {
+            if flags & libc::O_CREAT != 0 && flags & libc::O_EXCL != 0 {
+                return At::Ours(Err(libc::EEXIST));
+            }
+            ino
+        }
+        Ok(Found::Missing { parent, name, .. }) => {
+            if flags & libc::O_CREAT == 0 {
+                return At::Ours(Err(libc::ENOENT));
+            }
+            with(|fs| {
+                let ino = fs.add(Data::File(Content::Upper(Vec::new())), mode & 0o7777, now());
+                if let Some(Data::Dir(ch)) = fs.data_mut(parent) {
+                    ch.insert(name, ino);
+                }
+                ino
+            })
+        }
+    };
+    let kind = with(|fs| fs.node(ino).map(|n| match n.data {
+        Data::Dir(_) => 0,
+        Data::File(_) => 1,
+        Data::Link(_) => 2,
+    }));
+    match kind {
+        Some(0) if flags & libc::O_ACCMODE != libc::O_RDONLY => return At::Ours(Err(libc::EISDIR)),
+        Some(2) => return At::Ours(Err(libc::ELOOP)),
+        None => return At::Ours(Err(libc::ENOENT)),
+        _ => {}
     }
+    if kind == Some(1) && flags & libc::O_TRUNC != 0 && flags & libc::O_ACCMODE != libc::O_RDONLY {
+        if let Err(e) = set_size(ino, 0) {
+            return At::Ours(Err(e));
+        }
+    }
+    At::Ours(Ok(with(|fs| fs.new_handle(ino, flags))))
 }
 
-fn cstr(p: &str) -> CString {
-    CString::new(p).unwrap_or_default()
+/// Closes a handle.
+pub(crate) fn release(h: u32) {
+    with(|fs| {
+        if let Some(handle) = fs.handles.remove(&h) {
+            fs.gc(handle.ino);
+        }
+    })
 }
 
 pub(crate) fn mkdir_at(p: &str) -> At<()> {
-    done(unsafe { mkdir(cstr(p).as_ptr(), 0o755) })
+    with(|fs| match fs.resolve(p, false) {
+        Err(e) => At::Ours(Err(e)),
+        Ok(Found::Outside(p)) => At::Outside(p),
+        Ok(Found::Node { .. }) => At::Ours(Err(libc::EEXIST)),
+        Ok(Found::Missing { parent, name, .. }) => {
+            let ino = fs.add(Data::Dir(BTreeMap::new()), 0o755, now());
+            if let Some(Data::Dir(ch)) = fs.data_mut(parent) {
+                ch.insert(name, ino);
+            }
+            if let Some(n) = fs.node_mut(parent) {
+                n.nlink += 1;
+            }
+            At::Ours(Ok(()))
+        }
+    })
 }
 
+/// unlink (dir: false) or rmdir (dir: true)
 pub(crate) fn remove_at(p: &str, dir: bool) -> At<()> {
-    done(unsafe { remove(cstr(p).as_ptr(), dir) })
+    let Some((parent_path, name)) = p.rsplit_once('/') else { return At::Ours(Err(libc::EINVAL)) };
+    let parent_path = if parent_path.is_empty() { "/" } else { parent_path };
+    with(|fs| {
+        let parent = match fs.resolve(parent_path, true) {
+            Err(e) => return At::Ours(Err(e)),
+            Ok(Found::Outside(_)) => return At::Outside(p.to_string()),
+            Ok(Found::Missing { .. }) => return At::Ours(Err(libc::ENOENT)),
+            Ok(Found::Node { ino, .. }) => ino,
+        };
+        let Some(Data::Dir(ch)) = fs.node(parent).map(|n| &n.data) else { return At::Ours(Err(libc::ENOTDIR)) };
+        let Some(&ino) = ch.get(name) else { return At::Ours(Err(libc::ENOENT)) };
+        match (&fs.node(ino).unwrap().data, dir) {
+            (Data::Dir(c), true) => {
+                if !c.is_empty() {
+                    return At::Ours(Err(libc::ENOTEMPTY));
+                }
+                if let Some(n) = fs.node_mut(ino) {
+                    n.nlink = 0;
+                }
+                if let Some(n) = fs.node_mut(parent) {
+                    n.nlink -= 1;
+                }
+            }
+            (Data::Dir(_), false) => return At::Ours(Err(libc::EISDIR)),
+            (_, true) => return At::Ours(Err(libc::ENOTDIR)),
+            _ => {}
+        }
+        fs.unlink_name(parent, name);
+        At::Ours(Ok(()))
+    })
 }
 
+/// Outside: both paths are (one inside and one outside: EXDEV).
 pub(crate) fn rename_at(a: &str, b: &str) -> At<()> {
-    done(unsafe { rename(cstr(a).as_ptr(), cstr(b).as_ptr()) })
+    with(|fs| {
+        let src = fs.resolve(a, false);
+        let dst = fs.resolve(b, false);
+        let (src_ino, sp, sn) = match src {
+            Err(e) => return At::Ours(Err(e)),
+            Ok(Found::Outside(p)) => {
+                return match dst {
+                    Ok(Found::Outside(_)) => At::Outside(p),
+                    _ => At::Ours(Err(libc::EXDEV)),
+                }
+            }
+            Ok(Found::Missing { .. }) => return At::Ours(Err(libc::ENOENT)),
+            Ok(Found::Node { ino, path }) => {
+                let (d, n) = path.rsplit_once('/').unwrap();
+                let parent = match fs.resolve(if d.is_empty() { "/" } else { d }, true) {
+                    Ok(Found::Node { ino, .. }) => ino,
+                    _ => return At::Ours(Err(libc::EXDEV)), // a mount point itself
+                };
+                (ino, parent, n.to_string())
+            }
+        };
+        let (dp, dn) = match dst {
+            Err(e) => return At::Ours(Err(e)),
+            Ok(Found::Outside(_)) => return At::Ours(Err(libc::EXDEV)),
+            Ok(Found::Missing { parent, name, .. }) => (parent, name),
+            Ok(Found::Node { ino, path }) => {
+                if ino == src_ino {
+                    return At::Ours(Ok(()));
+                }
+                if let Some(Data::Dir(c)) = fs.node(ino).map(|n| &n.data) {
+                    if !c.is_empty() {
+                        return At::Ours(Err(libc::ENOTEMPTY));
+                    }
+                }
+                let (d, n) = path.rsplit_once('/').unwrap();
+                let Ok(Found::Node { ino: parent, .. }) = fs.resolve(if d.is_empty() { "/" } else { d }, true) else {
+                    return At::Ours(Err(libc::EXDEV));
+                };
+                fs.unlink_name(parent, n);
+                (parent, n.to_string())
+            }
+        };
+        if let Some(Data::Dir(ch)) = fs.data_mut(sp) {
+            ch.remove(&sn);
+        }
+        if let Some(Data::Dir(ch)) = fs.data_mut(dp) {
+            ch.insert(dn, src_ino);
+        }
+        At::Ours(Ok(()))
+    })
 }
+
+// handles
 
 pub(crate) fn h_info(h: u32) -> Option<Info> {
     with(|fs| fs.handles.get(&h).map(|x| x.ino).map(|i| fs.info(i)))
 }
 
+fn handle(h: u32) -> Option<(Ino, u64, c_int)> {
+    with(|fs| fs.handles.get(&h).map(|x| (x.ino, x.pos, x.flags)))
+}
+
+fn set_pos(h: u32, pos: u64) {
+    with(|fs| {
+        if let Some(x) = fs.handles.get_mut(&h) {
+            x.pos = pos;
+        }
+    })
+}
+
 pub(crate) fn h_read(h: u32, buf: &mut [u8]) -> Result<usize, c_int> {
-    let n = unsafe { pread(h, buf.as_mut_ptr() as *mut c_void, buf.len(), None) };
-    if n < 0 { Err(crate::errno()) } else { Ok(n as usize) }
+    let (ino, pos, flags) = handle(h).ok_or(libc::EBADF)?;
+    if flags & libc::O_ACCMODE == libc::O_WRONLY {
+        return Err(libc::EBADF);
+    }
+    if trace() {
+        eprintln!("vfs: read {h} ino {ino} {}@{pos}", buf.len());
+    }
+    let n = read_at(ino, buf, pos)?;
+    set_pos(h, pos + n as u64);
+    Ok(n)
 }
 
 pub(crate) fn h_write(h: u32, data: &[u8]) -> Result<usize, c_int> {
-    let n = unsafe { pwrite(h, data.as_ptr() as *const c_void, data.len(), None) };
-    if n < 0 { Err(crate::errno()) } else { Ok(n as usize) }
+    let (ino, pos, flags) = handle(h).ok_or(libc::EBADF)?;
+    if flags & libc::O_ACCMODE == libc::O_RDONLY {
+        return Err(libc::EBADF);
+    }
+    let at = if flags & libc::O_APPEND != 0 { with(|fs| fs.file_size(ino)) } else { pos };
+    let n = write_at(ino, data, at)?;
+    set_pos(h, at + n as u64);
+    Ok(n)
 }
 
 pub(crate) fn h_seek(h: u32, off: i64, whence: c_int) -> Result<u64, c_int> {
-    let r = lseek(h, off as off_t, whence);
-    if r < 0 { Err(crate::errno()) } else { Ok(r as u64) }
+    with(|fs| {
+        let x = fs.handles.get(&h).ok_or(libc::EBADF)?;
+        let base = match whence {
+            libc::SEEK_SET => 0,
+            libc::SEEK_CUR => x.pos as i64,
+            libc::SEEK_END => fs.file_size(x.ino) as i64,
+            _ => return Err(libc::EINVAL),
+        };
+        let new = base + off;
+        if new < 0 {
+            return Err(libc::EINVAL);
+        }
+        fs.handles.get_mut(&h).unwrap().pos = new as u64;
+        Ok(new as u64)
+    })
 }
 
 pub(crate) fn h_set_len(h: u32, size: u64) -> Result<(), c_int> {
-    let Some((ino, _, _)) = handle(h) else { return Err(libc::EBADF) };
+    let (ino, _, _) = handle(h).ok_or(libc::EBADF)?;
     set_size(ino, size)
+}
+
+/// The page: frees what `vnhost_vfs_export` returned.
+#[no_mangle]
+pub unsafe extern "C" fn vnhost_free(p: *mut c_void) {
+    libc::free(p)
 }

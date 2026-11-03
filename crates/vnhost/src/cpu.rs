@@ -3,7 +3,6 @@
 //! Guest and host share the linear memory, so a guest address is used as a pointer as is.
 //! The first 64 KiB stay unmapped for the guest so NULL dereferences raise access violations.
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -174,95 +173,25 @@ impl Memory for Linear {
 }
 
 // ---------------------------------------------------------------------------------------------
-// signals: wineserver and other threads mark them here; the run loop notices between blocks
+// signals: pending bits per thread the run loop and the JIT check between blocks (nothing
+// raises them since Wine's processes went; the JIT still polls the word)
 
 struct ThreadSignals {
     pending: AtomicU32,
-    pthread: libc::pthread_t,
 }
 
-static THREADS: Mutex<Option<HashMap<i32, Arc<ThreadSignals>>>> = Mutex::new(None);
 static NEXT_TID: AtomicU32 = AtomicU32::new(1000);
 
 thread_local! {
     static SELF: (i32, Arc<ThreadSignals>) = {
         let tid = NEXT_TID.fetch_add(1, Ordering::Relaxed) as i32;
-        let s = Arc::new(ThreadSignals { pending: AtomicU32::new(0), pthread: unsafe { libc::pthread_self() } });
-        THREADS.lock().unwrap().get_or_insert_with(HashMap::new).insert(tid, s.clone());
-        (tid, s)
+        (tid, Arc::new(ThreadSignals { pending: AtomicU32::new(0) }))
     };
-}
-
-/// Our tid for a pthread that has called into vnhost before.
-pub fn tid_of(t: libc::pthread_t) -> Option<i32> {
-    let g = THREADS.lock().unwrap();
-    g.as_ref()?.iter().find(|(_, s)| s.pthread == t).map(|(&tid, _)| tid)
 }
 
 #[no_mangle]
 pub extern "C" fn vnhost_gettid() -> i32 {
     SELF.with(|s| s.0)
-}
-
-/// Marks `sig` pending for thread `tid`; 0 on success, -1 (ESRCH) if there is no such thread.
-#[no_mangle]
-pub extern "C" fn vnhost_tkill(tid: i32, sig: i32) -> i32 {
-    let t = THREADS.lock().unwrap().as_ref().and_then(|m| m.get(&tid).cloned());
-    match t {
-        Some(t) => {
-            if sig > 0 && sig < 32 {
-                t.pending.fetch_or(1 << sig, Ordering::SeqCst);
-                // a thread blocked in an ntsync wait handles it there
-                crate::fd::kick();
-            }
-            0
-        }
-        None => {
-            crate::set_errno(libc::ESRCH);
-            -1
-        }
-    }
-}
-
-/// Whether the calling thread's process was killed (see `proc::kill`).
-pub fn self_killed() -> bool {
-    SELF.with(|s| s.1.pending.load(Ordering::Relaxed) & (1 << libc::SIGKILL) != 0)
-}
-
-/// Drops a thread that has ended.
-pub fn forget_thread(tid: i32) {
-    if let Some(m) = THREADS.lock().unwrap().as_mut() {
-        m.remove(&tid);
-    }
-}
-
-/// Each process's handler for signals that arrive while a thread is blocked in a syscall
-/// (vnvm-wine hangover/unixsig.c), by pid.
-static SIGNAL_HOOKS: Mutex<Option<HashMap<i32, extern "C" fn(i32)>>> = Mutex::new(None);
-
-#[no_mangle]
-pub extern "C" fn vnhost_set_signal_hook(hook: extern "C" fn(i32)) {
-    SIGNAL_HOOKS.lock().unwrap().get_or_insert_with(HashMap::new).insert(crate::proc::current(), hook);
-}
-
-/// Whether the calling thread has signals for `handle_syscall_signals` (and a handler for them).
-pub fn syscall_signals_pending() -> bool {
-    let mask = (1 << libc::SIGUSR1) | (1 << libc::SIGQUIT);
-    SELF.with(|s| s.1.pending.load(Ordering::Relaxed)) & mask != 0
-        && SIGNAL_HOOKS.lock().unwrap().as_ref().is_some_and(|m| m.contains_key(&crate::proc::current()))
-}
-
-/// Runs the calling process's syscall signal handler for the pending signals it handles
-/// (SIGUSR1, SIGQUIT).
-pub fn handle_syscall_signals() {
-    let Some(hook) = SIGNAL_HOOKS.lock().unwrap().as_ref().and_then(|m| m.get(&crate::proc::current()).copied()) else {
-        return;
-    };
-    for sig in [libc::SIGUSR1, libc::SIGQUIT] {
-        if vnhost_signal_pending(sig) != 0 {
-            hook(sig);
-        }
-    }
 }
 
 /// Takes `sig` off the calling thread's pending set; returns whether it was pending.
@@ -464,7 +393,6 @@ fn exit_code(cpu: &Cpu, mem: &mut Linear, exit: Exit, info: &mut [u32], from_jit
 fn trace_eip(cpu: *mut Cpu) -> Option<impl Drop> {
     use std::sync::atomic::AtomicBool;
     struct Entry {
-        pid: i32,
         cpu: usize,
         inside: AtomicBool,
     }
@@ -496,7 +424,7 @@ fn trace_eip(cpu: *mut Cpu) -> Option<impl Drop> {
                         ebp = next;
                     }
                     let stack: Vec<String> = stack.iter().map(|a| format!("{a:x}")).collect();
-                    format!("{}/{tid}:{eip:08x}{at}<{}>", e.pid, stack.join(","))
+                    format!("{tid}:{eip:08x}{at}<{}>", stack.join(","))
                 })
                 .collect();
             eprintln!("vnvm eip {}", line.join(" "));
@@ -509,7 +437,7 @@ fn trace_eip(cpu: *mut Cpu) -> Option<impl Drop> {
     let e = match list.iter().find(|(t, _)| *t == tid) {
         Some((_, e)) => e.clone(),
         None => {
-            let e = Arc::new(Entry { pid: crate::proc::current(), cpu: cpu as usize, inside: AtomicBool::new(false) });
+            let e = Arc::new(Entry { cpu: cpu as usize, inside: AtomicBool::new(false) });
             list.push((tid, e.clone()));
             e
         }
@@ -546,17 +474,6 @@ unsafe fn cpu_run(cpu: *mut Cpu, info: *mut u32) -> i32 {
     loop {
         let pending = signals.pending.load(Ordering::Relaxed);
         if pending != 0 {
-            if pending & (1 << libc::SIGKILL) != 0 {
-                signals.pending.fetch_and(!(1 << libc::SIGKILL), Ordering::SeqCst);
-                crate::proc::check_alive();
-                continue;
-            }
-            if pending & (1 << libc::SIGSTOP) != 0 {
-                // the process is being frozen (see `proc::create`)
-                signals.pending.fetch_and(!(1 << libc::SIGSTOP), Ordering::SeqCst);
-                crate::proc::park_if_frozen();
-                continue;
-            }
             return EXIT_PENDING;
         }
         trace_call(cpu);
