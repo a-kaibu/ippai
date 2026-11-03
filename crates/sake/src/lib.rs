@@ -28,6 +28,7 @@ pub mod d3d11;
 pub mod unixlib;
 pub mod guest;
 pub mod crt;
+pub mod com;
 pub mod ddraw;
 pub mod ini;
 pub mod dinput;

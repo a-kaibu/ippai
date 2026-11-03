@@ -1166,6 +1166,10 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
                 std::ptr::copy_nonoverlapping(rdp(a(2), 0) as *const u8, mem as *mut u8, size as usize);
             }
             let o = d.new_obj(IF_BUFFER, Data::Buffer(Buffer { size, usage, bind, mem, gpu: 0, dirty: true }));
+            if d.trace && size <= 256 {
+                let f: Vec<f32> = (0..size / 4).map(|i| *((mem + 4 * i) as *const f32)).collect();
+                eprintln!("d3d11: new buffer {o} bind {bind:#x} usage {usage} = {f:?}");
+            }
             wrp(a(3), 0, o);
             S_OK
         }
@@ -1814,6 +1818,9 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
                 for i in 0..6 {
                     st.viewport[i] = rdf(a(2), i);
                 }
+                if d.trace {
+                    eprintln!("d3d11: viewport {:?}", st.viewport);
+                }
             }
         }
         45 => {
@@ -2082,6 +2089,14 @@ unsafe fn map(d: &mut D11, res: u32, sub: u32, ty: u32, out: u32, dxgi: bool, af
 
 unsafe fn unmap(d: &mut D11, res: u32, sub: u32) {
     let id = d.id_of(res);
+    if d.trace {
+        if let Some(Data::Buffer(b)) = d.objs.get(&id).map(|o| &o.data) {
+            if b.size <= 256 {
+                let f: Vec<f32> = (0..b.size / 4).map(|i| *((b.mem + 4 * i) as *const f32)).collect();
+                eprintln!("d3d11: buffer {id} = {f:?}");
+            }
+        }
+    }
     if let Some(Data::Texture(t)) = d.objs.get(&id).map(|o| &o.data) {
         if let Some(&(_, mem, pitch, write)) = t.maps.iter().find(|m| m.0 == sub) {
             if write {
@@ -2101,6 +2116,10 @@ unsafe fn update_subresource(d: &mut D11, res: u32, sub: u32, bx: u32, data: u32
             if x1 > x0 {
                 std::ptr::copy(data as *const u8, (buf.mem + x0) as *mut u8, (x1 - x0) as usize);
                 buf.dirty = true;
+                if d.trace && buf.size <= 256 {
+                    let f: Vec<f32> = (0..buf.size / 4).map(|i| *((buf.mem + 4 * i) as *const f32)).collect();
+                    eprintln!("d3d11: buffer {id} = {f:?}");
+                }
             }
         }
         Some(Data::Texture(t)) => {
