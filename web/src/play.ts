@@ -142,10 +142,15 @@ function virtualKey(code: string): number {
 
 async function boot(audio: Promise<AudioOut>): Promise<void> {
   // a three-finger tap over the game: debug mode on/off (Ctrl+Shift+D on a phone; four fingers
-  // save the log, crashlog.ts)
-  addEventListener("touchstart", (e) => {
-    if (e.touches.length === 3) setDebug(!getUi().debug);
+  // save the log, crashlog.ts). On the last finger up: a four-finger tap has three down first.
+  let fingers = 0;
+  addEventListener("touchstart", (e) => (fingers = Math.max(fingers, e.touches.length)));
+  addEventListener("touchend", (e) => {
+    if (e.touches.length) return;
+    if (fingers === 3) setDebug(!getUi().debug);
+    fingers = 0;
   });
+  addEventListener("touchcancel", (e) => e.touches.length || (fingers = 0));
   const run = params.get("run") ?? "C:\\wintest.exe";
   // saved games: per program and mounts; what it writes in its folders and the user folders
   const mounts = params.getAll("mount");
