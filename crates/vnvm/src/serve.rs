@@ -480,7 +480,7 @@ async fn prerun_games(p: Arc<Prerun>) {
         let (Some(id), Some(run)) = (g["id"].as_str(), g["run"].as_str()) else { continue };
         // (named as the page names the regions it saves: wine.ts jitName)
         let prog: String = run.chars().map(|c| if c.is_ascii_alphanumeric() || "_.-".contains(c) { c } else { '_' }).collect();
-        let name = format!("{prog}-{ver}");
+        let name = format!("sake-{prog}-{ver}");
         let seen = |ext: &str| tokio::fs::metadata(p.jit.join(format!("{name}.{ext}")));
         if seen("parts").await.is_err() && seen("prerun").await.is_err() {
             todo.push((id.to_string(), name));
