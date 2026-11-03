@@ -615,6 +615,8 @@ fn precompress(dir: &std::path::Path) {
         if fresh {
             continue;
         }
+        // (an old one must not be served meanwhile)
+        let _ = std::fs::remove_file(&zst);
         let Ok(data) = std::fs::read(&p) else { continue };
         match zstd::encode_all(&data[..], 19) {
             Ok(z) if z.len() < data.len() => {
@@ -643,7 +645,16 @@ pub async fn run(store: PathBuf, args: Args) -> anyhow::Result<()> {
     });
     let logs = Arc::new(args.logs.clone());
     let web = args.web.clone();
-    tokio::task::spawn_blocking(move || precompress(&web)).await?;
+    tokio::task::spawn_blocking({
+        let web = web.clone();
+        move || precompress(&web)
+    })
+    .await?;
+    // (again every few seconds: a deploy that replaces files under a running server)
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        precompress(&web);
+    });
     let app = Router::new()
         .route("/log-save/{name}", put(save_log).with_state(logs.clone()))
         .route("/log-list", get(log_list).with_state(logs))

@@ -370,11 +370,6 @@ pub unsafe extern "C" fn vnhost_cpuid(leaf: u32, sub: u32, regs: *mut u32) {
     r.copy_from_slice(&[a, b, c, d]);
 }
 
-#[cfg(target_os = "emscripten")]
-extern "C" {
-    fn _emscripten_process_dlopen_queue();
-}
-
 /// What an [`Exit`] means for signal_wasm.c; None to keep running.
 fn exit_code(cpu: &Cpu, mem: &mut Linear, exit: Exit, info: &mut [u32], from_jit: bool) -> Option<i32> {
     use crate::crashlog::exception;
@@ -545,7 +540,6 @@ unsafe fn cpu_run(cpu: *mut Cpu, info: *mut u32) -> i32 {
     let info = std::slice::from_raw_parts_mut(info, 2);
     let signals = SELF.with(|s| s.1.clone());
     let mut mem = Linear;
-    let mut rounds = 0u32;
     // long mode: VNVM_JIT64=0 leaves it to the interpreter
     let jit = crate::jit::enabled() && (cpu.mode64 == 0 || crate::jit::enabled64()) && cpu.mode16 == 0;
     crate::jit::count_entry(cpu.eip);
@@ -564,12 +558,6 @@ unsafe fn cpu_run(cpu: *mut Cpu, info: *mut u32) -> i32 {
                 continue;
             }
             return EXIT_PENDING;
-        }
-        rounds = rounds.wrapping_add(1);
-        if rounds % 64 == 0 {
-            // another thread's dlopen (a new process) waits until every thread has loaded it
-            #[cfg(target_os = "emscripten")]
-            unsafe { _emscripten_process_dlopen_queue() };
         }
         trace_call(cpu);
         if jit {

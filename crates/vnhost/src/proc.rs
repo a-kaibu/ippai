@@ -225,13 +225,6 @@ pub fn park_if_frozen() {
             _ => break,
         }
         g = PARK.wait_timeout(g, Duration::from_millis(50)).unwrap_or_else(|e| e.into_inner()).0;
-        // a new process's dlopen waits until every thread has loaded it
-        #[cfg(target_os = "emscripten")]
-        {
-            drop(g);
-            unsafe { _emscripten_process_dlopen_queue() };
-            g = PROCS.lock().unwrap_or_else(|e| e.into_inner());
-        }
     }
     if counted {
         if let Some(q) = g.as_mut().and_then(|p| p.list.get_mut(&pid)) {
@@ -240,11 +233,6 @@ pub fn park_if_frozen() {
     }
     drop(g);
     check_alive();
-}
-
-#[cfg(target_os = "emscripten")]
-extern "C" {
-    fn _emscripten_process_dlopen_queue();
 }
 
 /// The first thread of a child that took its parent's range: waits until the parent's threads

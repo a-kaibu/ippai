@@ -47,7 +47,7 @@ addToLibrary({
   // length, copied to `ptr` if it fits
   vnvm_jit_bundle_idx__sig: 'ipp',
   vnvm_jit_bundle_idx: (ptr, cap) => {
-    const b = sharedModules['@vnjit'];
+    const b = vnvmJitBundle;
     if (!b) return 0;
     const n = b.parts.reduce((n, p) => n + p.idx.length, 0);
     if (cap >= n) {
@@ -65,7 +65,7 @@ addToLibrary({
   vnvm_jit_bundle_load__deps: ['$VNJIT'],
   vnvm_jit_bundle_load__sig: 'i',
   vnvm_jit_bundle_load: () => {
-    const b = sharedModules['@vnjit'];
+    const b = vnvmJitBundle;
     if (!b) return -1;
     let insts;
     try {
