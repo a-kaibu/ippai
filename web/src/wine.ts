@@ -152,15 +152,15 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     engine: "sake",
     arch: "x86",
   });
-  // the browser keeps a versioned wine.wasm with its compiled code (see vnvm serve)
+  // the browser keeps a versioned sake.wasm with its compiled code (see vnvm serve)
   const wasmVersion = fetch(`${WINE}${WASM}`, { method: "HEAD" }).then(
     (r) => `${r.headers.get("last-modified") ?? ""}-${r.headers.get("content-length") ?? ""}`,
     () => "",
   );
-  // x86 regions earlier runs of this program saved (vnvm serve /jit), per build of wine.wasm
+  // x86 regions earlier runs of this program saved (vnvm serve /jit), per build of sake.wasm
   // (which has the translator); &jit=0 for none
   const jitBase = params.get("jit") ?? `sake-${run.replace(/[^A-Za-z0-9_.-]/g, "_")}`;
-  // (jit-version.txt: a hash of the translator's sources, which vnvm-wine hangover/build.sh writes; saved
+  // (jit-version.txt: a hash of the translator's sources, which crates/sake/build.sh writes; saved
   // regions stay good across builds that change anything else)
   const jitVersion = fetch(`${WINE}jit-version.txt`, { cache: "no-cache" })
     .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`))))
@@ -188,7 +188,6 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   const saveRoots = [
     ...mounts.map((m) => m.slice(0, m.indexOf("="))),
     "/vnvm/prefix/drive_c/users",
-    "/vnvm/prefix/user.reg",
   ];
   const nosave = params.has("nosave");
   const saved = nosave ? null : await loadSaves(saveName).catch(() => null);

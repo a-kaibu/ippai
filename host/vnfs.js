@@ -3,7 +3,7 @@
 // passed (host/pre.js; node: the file $VNVM_SAVES). Returns a malloc'ed buffer, or 0.
 //
 // node: read from $VNVM_STORE. Browser (a worker, so synchronous XHR is allowed): fetch from
-// store/ beside the directory of wine.js; the server sends chunks with "Content-Encoding: zstd",
+// store/ beside the directory of sake.js; the server sends chunks with "Content-Encoding: zstd",
 // so the browser decompresses them.
 addToLibrary({
   vnvm_fetch__deps: ['malloc'],

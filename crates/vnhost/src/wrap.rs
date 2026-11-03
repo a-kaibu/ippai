@@ -207,8 +207,7 @@ pub unsafe extern "C" fn vnhost_load_busy() -> f64 {
 }
 
 /// Thread `i` of vnhost_load_busy's count (in order of their first wait): its CPU time (ms) and
-/// waits so far to `out[0..2]` (`out[2..4]`: 0, once a process and spins of Wine's waits);
-/// false past the last thread.
+/// waits so far to `out[0..2]`; false past the last thread.
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_load_slot(i: u32, out: *mut f64) -> bool {
     let n = LOAD_N.load(Ordering::Relaxed).min(LOAD_THREADS);
@@ -218,11 +217,9 @@ pub unsafe extern "C" fn vnhost_load_slot(i: u32, out: *mut f64) -> bool {
     if woke != 0.0 {
         busy += (emscripten_date_now() - woke).min(LOAD_RUN_MAX);
     }
-    let out = std::slice::from_raw_parts_mut(out, 4);
+    let out = std::slice::from_raw_parts_mut(out, 2);
     out[0] = busy;
     out[1] = l.waits.load(Ordering::Relaxed) as f64;
-    out[2] = 0.0;
-    out[3] = 0.0;
     true
 }
 
