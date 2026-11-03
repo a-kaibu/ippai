@@ -323,7 +323,8 @@ fn exp(v: f64, prec: usize) -> String {
 }
 
 // ---------------------------------------------------------------------------------------------
-// the registry (in memory)
+// the registry: in memory, what the game writes also kept in C:\users\user\sake-registry.tsv
+// (a save root of the page, so settings and flags games keep in the registry survive restarts)
 
 pub struct Key {
     pub path: String,
@@ -333,6 +334,53 @@ pub struct Key {
 struct KeyData {
     /// value name (lower case) -> (name, type, data)
     values: Vec<(String, u32, Vec<u8>)>,
+    /// made or changed by the game (saved)
+    ours: bool,
+}
+
+const REG_FILE: &str = "C:\\users\\user\\sake-registry.tsv";
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// The saved keys: "key" lines, then "key<TAB>name<TAB>type<TAB>hex" for each value.
+fn load_reg(m: &mut HashMap<String, KeyData>) {
+    let Some(h) = crate::files::resolve(REG_FILE) else { return };
+    let Ok(t) = vnhost::fs::read(h) else { return };
+    let t = String::from_utf8_lossy(&t);
+    for l in t.lines() {
+        let f: Vec<&str> = l.split('\t').collect();
+        let k = m.entry(f[0].to_string()).or_default();
+        k.ours = true;
+        if let [_, name, ty, data] = f[..] {
+            let bytes = (0..data.len() / 2).filter_map(|i| u8::from_str_radix(&data[2 * i..2 * i + 2], 16).ok()).collect();
+            let lname = name.to_lowercase();
+            k.values.retain(|v| v.0.to_lowercase() != lname);
+            k.values.push((name.to_string(), ty.parse().unwrap_or(3), bytes));
+        }
+    }
+}
+
+fn save_reg(m: &HashMap<String, KeyData>) {
+    let mut keys: Vec<&String> = m.iter().filter(|(_, k)| k.ours).map(|(p, _)| p).collect();
+    keys.sort();
+    let mut t = String::new();
+    for p in keys {
+        // (names with tabs or line breaks: not kept)
+        if p.contains(['\t', '\n']) {
+            continue;
+        }
+        t += &format!("{p}\n");
+        for (n, ty, d) in m[p].values.iter().filter(|v| !v.0.contains(['\t', '\n'])) {
+            t += &format!("{p}\t{n}\t{ty}\t{}\n", hex(d));
+        }
+    }
+    let h = crate::files::resolve_new(REG_FILE);
+    if let Some(d) = h.rsplit_once('/') {
+        let _ = vnhost::fs::create_dir_all(d.0);
+    }
+    let _ = vnhost::fs::write(h, t);
 }
 
 static REG: Mutex<Option<HashMap<String, KeyData>>> = Mutex::new(None);
@@ -369,6 +417,7 @@ fn with_reg<R>(f: impl FnOnce(&mut HashMap<String, KeyData>) -> R) -> R {
             }
         }
         m.entry("hkcu\\software".into()).or_default();
+        load_reg(&mut m);
         m
     });
     f(m)
@@ -420,6 +469,10 @@ fn open_key(h: u32, sub: &str, create: bool, out: u32) -> u32 {
             for part in path.split('\\') {
                 p = if p.is_empty() { part.into() } else { format!("{p}\\{part}") };
                 m.entry(p.clone()).or_default();
+            }
+            if let Some(k) = m.get_mut(&path).filter(|k| !k.ours) {
+                k.ours = true;
+                save_reg(m);
             }
             return true;
         }
@@ -546,6 +599,8 @@ fn set_value(key: u32, name: &str, ty: u32, data: u32, len: u32, wide: bool) -> 
         let lname = name.to_lowercase();
         k.values.retain(|v| v.0.to_lowercase() != lname);
         k.values.push((name.to_string(), ty, bytes));
+        k.ours = true;
+        save_reg(m);
     });
     0
 }
@@ -571,6 +626,8 @@ fn delete_value(key: u32, name: &str) -> u32 {
         if k.values.len() == n {
             2
         } else {
+            k.ours = true;
+            save_reg(m);
             0
         }
     })
@@ -586,7 +643,15 @@ fn RegDeleteValueW(c: &mut Ctx) -> u32 {
 fn delete_key(key: u32, sub: &str) -> u32 {
     let Some(base) = key_path(key) else { return 6 };
     let p = join(&base, sub);
-    with_reg(|m| if m.remove(&p).is_some() { 0 } else { 2 })
+    with_reg(|m| match m.remove(&p) {
+        Some(k) => {
+            if k.ours {
+                save_reg(m);
+            }
+            0
+        }
+        None => 2,
+    })
 }
 fn RegDeleteKeyA(c: &mut Ctx) -> u32 {
     let s = arg_str(c.a(1), false);
