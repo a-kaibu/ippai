@@ -6,7 +6,7 @@
 //   node tests/corpus.mjs URL OUT [STEPS]
 //
 // STEPS (client-area pixels of the game window, run once the title shows):
-//   "click:x,y wait:3 key:Return wait:5" ; default: nothing (story clicks start right away)
+//   "click:x,y wait:3 key:Return wait:5" (move:x,y: the mouse only) ; default: nothing (story clicks start right away)
 // env: PRE=x,y / PRE_KEYS=0 (see below), STORY=60 (story seconds), TITLE_MAX=120 (give up on the title), STORY_AT=x,y (story clicks,
 // default centre of the bottom fifth), CHROME_ARGS, PLAYWRIGHT
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
@@ -223,6 +223,7 @@ save();
 for (const s of steps.split(/[ ;]+/).filter(Boolean)) {
   const [op, a = ""] = s.split(":");
   if (op === "click") { const [x, y] = a.split(",").map(Number); await click(x, y); }
+  else if (op === "move") { const [x, y] = a.split(",").map(Number); await input(1, view[0] + x, view[1] + y, 0); }
   else if (op === "wait") await sleep(Number(a));
   else if (op === "key") await key(a);
   else if (op === "shot") await shot(a);
