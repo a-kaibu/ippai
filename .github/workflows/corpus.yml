@@ -72,7 +72,7 @@ jobs:
   run:
     needs: plan
     runs-on: ubuntu-24.04
-    timeout-minutes: 150
+    timeout-minutes: 360 # (GitHub's maximum: slow trial hosts are fine)
     strategy:
       fail-fast: false
       matrix:
