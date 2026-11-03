@@ -261,6 +261,10 @@ pub fn wild(pat: &str, name: &str) -> bool {
 pub fn find(w: &str) -> Option<Find> {
     let full = full_path(w);
     let (dir, pat) = full.rsplit_once('\\')?;
+    // ("" and "dir\" find nothing, as on Windows)
+    if w.is_empty() || pat.is_empty() {
+        return None;
+    }
     let hd = resolve(&format!("{dir}\\"))?;
     let mut entries = Vec::new();
     if !pat.contains(['*', '?']) {
