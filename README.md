@@ -28,7 +28,7 @@ Wine 11.20 の Unix 側を wasm にする Hangover 方式の経路は 2026-11-02
 
 ## インストールと使い方
 
-[Releases](https://github.com/a-kaibu/vnvm/releases) から `ippai_<version>_linux_<amd64|arm64>.tar.gz` を
+[Releases](https://github.com/a-kaibu/ippai/releases) から `ippai_<version>_linux_<amd64|arm64>.tar.gz` を
 取って、中の `ippai` を `~/.local/bin/` などに置くだけです (Web UI と sake.wasm は中に入っています)。
 
 ```sh
