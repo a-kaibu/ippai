@@ -178,6 +178,9 @@ struct Tex {
     fits: HashMap<(u32, u32), (Id, Id)>,
     /// depth and stencil it was last cleared to
     zclear: Option<(f32, u32)>,
+    /// depth-stencil textures: the aspects a draw has used (1 depth, 2 stencil). Until then they
+    /// hold what the last clear left, and passes clear them instead of loading and storing them.
+    zused: u32,
 }
 
 impl Tex {
@@ -203,6 +206,8 @@ struct Pipe2 {
     pipeline: Id,
     layouts: Vec<Id>,
     kinds: Vec<u32>,
+    /// what its draws do with the depth-stencil buffer: 1 depth test or write, 2 stencil
+    zuse: u32,
 }
 
 struct Pipe {
@@ -219,8 +224,12 @@ pub struct Overlay {
     pub flip: bool,
 }
 
+/// A clear of a whole view (flags 1 color, 2 depth, 4 stencil) not done yet: the next pass that
+/// draws to the view does it as its loadOp (see `D3d::clears`).
 #[derive(Clone, Copy)]
 struct Clear {
+    level: u32,
+    layer: u32,
     flags: u32,
     color: [f32; 4],
     z: f32,
@@ -273,9 +282,26 @@ pub struct D3d {
     open: bool,
     pass: bool,
     target: [u32; 3],
-    pending: Option<Clear>,
-    /// a depth/stencil-only clear of this texture not done yet: the next pass using it clears
-    pending_z: Option<(u32, Clear)>,
+    /// Clears of whole views not done yet, by texture: the next pass that draws to the view does
+    /// them as its loadOp. On a tile-based GPU (the Mali and Adreno of Android phones) a clear
+    /// pass of its own stores the whole target to memory, and the pass after it loads it all
+    /// back. They stay across batches: whatever else reads or writes the texture does them first
+    /// (`settle_for`).
+    clears: HashMap<u32, Clear>,
+    /// the last batch, when running it again draws the same (see `repeats`): commands, data, blob
+    last: Option<(Vec<u32>, Vec<u8>, Vec<u8>)>,
+    /// where its buffer commands are
+    last_bufs: Vec<usize>,
+    /// VNVM_SKIPCHECK: batches that would be skipped run anyway, and the frame they present is
+    /// compared with the one before (pixels read back by token: pair, buffer, pixels)
+    skip_check: bool,
+    checks: HashMap<u32, (u32, Id, Vec<u8>)>,
+    check_done: HashMap<u32, Vec<u8>>,
+    /// batches not run because they were the same as the last one (for stats)
+    pub skipped: Cell<u32>,
+    /// VNVM_NOPASSOPT: clears done at once as passes of their own, depth and stencil always
+    /// loaded and stored (to compare)
+    no_pass_opt: bool,
     used: Vec<u32>,
     // Direct3D 11
     buffers: HashMap<u32, (Id, u32)>,
@@ -335,8 +361,14 @@ impl D3d {
             open: false,
             pass: false,
             target: [0; 3],
-            pending: None,
-            pending_z: None,
+            clears: HashMap::new(),
+            last: None,
+            last_bufs: Vec::new(),
+            skip_check: crate::env_on!("VNVM_SKIPCHECK"),
+            checks: HashMap::new(),
+            check_done: HashMap::new(),
+            skipped: Cell::new(0),
+            no_pass_opt: crate::env_on!("VNVM_NOPASSOPT"),
             used: Vec::new(),
             buffers: HashMap::new(),
             doomed: Vec::new(),
@@ -382,6 +414,19 @@ impl D3d {
     }
 
     pub fn mapped(&mut self, token: u32, ok: bool) {
+        if let Some((pair, buf, px)) = self.checks.remove(&token) {
+            gpu::destroy(buf);
+            match self.check_done.remove(&pair) {
+                None => {
+                    self.check_done.insert(pair, px);
+                }
+                Some(a) => {
+                    let diff = a.iter().zip(&px).filter(|(x, y)| x != y).count();
+                    eprintln!("skipcheck: {} ({diff} bytes differ{})", if diff == 0 { "same" } else { "DIFFERENT" }, if ok { "" } else { ", map failed" });
+                }
+            }
+            return;
+        }
         let Some(r) = self.readbacks.remove(&token) else { return };
         // (not after the guest stopped waiting: it may have freed dst)
         if ok && vnhost_d3d9_readback_begin(r.req) != 0 {
@@ -397,6 +442,58 @@ impl D3d {
     }
 
     fn run(&mut self, c: &[u32], data: &[u8], blob: &[u8]) {
+        // A still screen: games draw the same frame again and again (a title, a message waiting
+        // for a click). The same batch as the last one, which redraws everything it draws from
+        // scratch, leaves the same pixels: not run (no GPU work at all, and the screen is not
+        // composed again).
+        if !self.no_pass_opt {
+            let norm = self.repeats(c, blob);
+            if let (Some((n, _)), Some((lc, ld, lb))) = (&norm, &self.last) {
+                if lc == n && ld.as_slice() == data && lb.as_slice() == blob && self.skip_check {
+                    let tex = if c.len() >= 9 && c[c.len() - 9] == PRESENT { c[c.len() - 8] } else { 0 };
+                    let pair = self.next_token;
+                    self.snap(tex, pair);
+                    self.run_batch(c, data, blob);
+                    self.snap(tex, pair);
+                    return;
+                }
+                if lc == n && ld.as_slice() == data && lb.as_slice() == blob {
+                    // (its buffers still come and go: later batches may draw from them)
+                    for &at in &self.last_bufs.clone() {
+                        self.buffer_cmd(&c[at..], blob);
+                    }
+                    self.submit();
+                    STATS[0].fetch_add(1, Relaxed);
+                    self.skipped.set(self.skipped.get() + 1);
+                    return;
+                }
+            }
+            self.last = norm.map(|(n, bufs)| {
+                self.last_bufs = bufs;
+                (n, data.to_vec(), blob.to_vec())
+            });
+        }
+        self.run_batch(c, data, blob);
+    }
+
+    /// VNVM_SKIPCHECK: reads texture `tex` back; the second read of a pair compares.
+    fn snap(&mut self, tex: u32, pair: u32) {
+        let Some(t) = self.textures.get(&tex) else { return };
+        let (w, h, id, bpp) = (t.w, t.h, t.tex, bpp(t.format));
+        self.end_pass();
+        let bpr = (w * bpp).div_ceil(256) * 256;
+        let buf = gpu::buffer(bpr * h, usage::COPY_DST | usage::MAP_READ);
+        self.open = true;
+        gpu::copy_to_buffer(id, 0, 0, 0, buf, bpr, w, h);
+        self.submit();
+        let mut data = vec![0u8; (bpr * h) as usize];
+        let token = self.next_token;
+        self.next_token = self.next_token.wrapping_add(1).max(1);
+        gpu::read_buffer(buf, bpr * h, data.as_mut_ptr(), token);
+        self.checks.insert(token, (pair, buf, data));
+    }
+
+    fn run_batch(&mut self, c: &[u32], data: &[u8], blob: &[u8]) {
         if !data.is_empty() {
             let size = (data.len().div_ceil(4) * 4 + 65536) as u32;
             if self.data_buf == 0 || self.data_size < size {
@@ -411,13 +508,12 @@ impl D3d {
             gpu::write_buffer(self.data_buf, 0, unsafe { std::slice::from_raw_parts(data.as_ptr(), n) });
         }
         self.target = [0; 3];
-        self.pending = None;
         let mut i = 0;
         while i < c.len() {
             let op = c[i];
             let a = |k: usize| c[i + k];
-            if !matches!(op, SET_TARGET | CLEAR | DRAW | SET_TARGETS2 | DRAW2) {
-                self.flush_z();
+            if !self.clears.is_empty() {
+                self.settle_for(op, &c[i..]);
             }
             match op {
                 CREATE_TEXTURE => {
@@ -436,7 +532,7 @@ impl D3d {
                     self.clear_groups2();
                     self.created.set(self.created.get() + 1);
                     let view = gpu::view(tex, "");
-                    self.textures.insert(id, Tex { tex, w, h, levels, format: fmt, view, layers: 1, dim: "2d", views: HashMap::new(), fits: HashMap::new(), zclear: None });
+                    self.textures.insert(id, Tex { tex, w, h, levels, format: fmt, view, layers: 1, dim: "2d", views: HashMap::new(), fits: HashMap::new(), zclear: None, zused: 0 });
                     i += 7;
                 }
                 DESTROY_TEXTURE => {
@@ -507,7 +603,6 @@ impl D3d {
                     if t != self.target {
                         self.end_pass();
                         self.target = t;
-                        self.pending = None;
                     }
                     i += 4;
                 }
@@ -519,7 +614,7 @@ impl D3d {
                     let (x, y, w, h) = (a(8), a(9), a(10), a(11));
                     if w == 0 {
                         // whole target: the next pass clears
-                        self.clear_whole(Clear { flags, color, z, stencil });
+                        self.clear_whole(flags, color, z, stencil);
                     } else {
                         self.clear_rect(flags, color, z, x, y, w, h);
                     }
@@ -593,35 +688,10 @@ impl D3d {
                     }
                     i += 10;
                 }
-                CREATE_BUFFER => {
-                    let (id, size) = (a(1), a(2).div_ceil(4) * 4);
-                    self.clear_groups2();
-                    let b = gpu::buffer(size.max(4), usage::VERTEX | usage::INDEX | usage::UNIFORM | usage::COPY_DST | usage::COPY_SRC);
-                    if let Some((old, _)) = self.buffers.insert(id, (b, size.max(4))) {
-                        self.doomed.push(old);
-                    }
-                    i += 3;
-                }
-                DESTROY_BUFFER => {
-                    if let Some((b, _)) = self.buffers.remove(&a(1)) {
-                        self.doomed.push(b);
-                        self.clear_groups2();
-                    }
-                    i += 2;
-                }
-                WRITE_BUFFER => {
-                    let (id, at, off, len) = (a(1), a(2), a(3) as usize, a(4));
-                    if let Some(&(b, size)) = self.buffers.get(&id) {
-                        let n = (len.div_ceil(4) * 4).min(size.saturating_sub(at)) as usize;
-                        if n > 0 && off + n <= blob.len().div_ceil(4) * 4 {
-                            gpu::write_buffer(b, at, unsafe { std::slice::from_raw_parts(blob.as_ptr().add(off), n) });
-                        }
-                    }
-                    i += 5;
-                }
+                CREATE_BUFFER | DESTROY_BUFFER | WRITE_BUFFER => i += self.buffer_cmd(&c[i..], blob),
                 CREATE_PIPELINE2 => {
                     let (id, n) = (a(1), a(2) as usize);
-                    if let Some(old) = self.pipelines2.insert(id, Pipe2 { key: c[i + 3..i + 3 + n].to_vec(), pipeline: 0, layouts: Vec::new(), kinds: Vec::new() }) {
+                    if let Some(old) = self.pipelines2.insert(id, Pipe2 { key: c[i + 3..i + 3 + n].to_vec(), pipeline: 0, layouts: Vec::new(), kinds: Vec::new(), zuse: 0 }) {
                         gpu::drop(old.pipeline);
                         old.layouts.iter().for_each(|&l| gpu::drop(l));
                     }
@@ -634,7 +704,6 @@ impl D3d {
                     if self.targets2.as_ref() != Some(&t) {
                         self.end_pass();
                         self.target = [0; 3];
-                        self.pending = None;
                         self.targets2 = Some(t);
                     }
                     i += 2 + n * 3 + 3;
@@ -656,9 +725,198 @@ impl D3d {
                 }
             }
         }
-        self.flush_z();
         self.end_pass();
         self.submit();
+    }
+
+    /// Whether running this batch again right after it leaves the same pixels: it only clears,
+    /// draws, presents and writes buffers it makes itself, and every texture it draws to it
+    /// clears whole first (nothing it draws depends on what the last run left; draws that read a
+    /// texture it draws to come after its clear). Unknown commands or pipelines: no.
+    /// Returns its commands with the ids of the buffers it makes or destroys numbered in order
+    /// (Direct3D 11 renames a dynamic buffer at each Map: new ids every frame), and where its
+    /// buffer commands are.
+    fn repeats(&self, c: &[u32], blob: &[u8]) -> Option<(Vec<u32>, Vec<usize>)> {
+        let mut norm = c.to_vec();
+        let mut bufs = Vec::new();
+        let mut cleared: Vec<u32> = Vec::new();
+        let mut target = [0u32; 3];
+        let mut targets2: Option<&[u32]> = None;
+        let mut drawn: Vec<u32> = Vec::new();
+        // buffers made in the batch, and others destroyed: their numbers in `norm`
+        let mut made: Vec<u32> = Vec::new();
+        let mut gone: Vec<u32> = Vec::new();
+        // what it writes to them: buffer, at, blob offset, length
+        let mut writes: Vec<(u32, u32, usize, u32)> = Vec::new();
+        // textures draws read, and whether they had been cleared then
+        let mut reads: Vec<(u32, bool)> = Vec::new();
+        let renum = |id: u32, made: &[u32]| made.iter().position(|&m| m == id).map(|k| 0x8000_0000 | k as u32);
+        let mut i = 0;
+        while i < c.len() {
+            match c[i] {
+                SET_TARGET => {
+                    target = [c[i + 1], c[i + 2], c[i + 3]];
+                    targets2 = None;
+                    i += 4;
+                }
+                SET_TARGETS2 => {
+                    let n = c[i + 1] as usize;
+                    targets2 = Some(&c[i + 1..i + 2 + n * 3 + 3]);
+                    i += 2 + n * 3 + 3;
+                }
+                CLEAR => {
+                    // (whole target only)
+                    if c[i + 10] != 0 {
+                        return None;
+                    }
+                    if c[i + 1] & 1 != 0 {
+                        cleared.push(target[0]);
+                    }
+                    if c[i + 1] & 2 != 0 && target[2] != 0 {
+                        cleared.push(target[2]);
+                    }
+                    i += 12;
+                }
+                CLEAR_VIEW => {
+                    if c[i + 4] & 3 != 0 {
+                        cleared.push(c[i + 1]);
+                    }
+                    i += 11;
+                }
+                DRAW => {
+                    if !cleared.contains(&target[0]) || (target[2] != 0 && !cleared.contains(&target[2])) {
+                        return None;
+                    }
+                    let ntex = c[i + 17] as usize;
+                    for t in 0..ntex {
+                        let tex = c[i + 18 + 3 * t + 1];
+                        reads.push((tex, cleared.contains(&tex)));
+                    }
+                    drawn.push(target[0]);
+                    let p = i + 18 + 3 * ntex;
+                    i = p + 1 + c[p] as usize + 4;
+                }
+                DRAW2 => {
+                    let tg = targets2?;
+                    let pipe = self.pipelines2.get(&c[i + 1]).filter(|p| p.pipeline != 0)?;
+                    let n = tg[0] as usize;
+                    if (0..n).any(|k| !cleared.contains(&tg[1 + k * 3])) {
+                        return None;
+                    }
+                    // (stencil: whether its clears cover it is not tracked here)
+                    if pipe.zuse & 2 != 0 || (pipe.zuse != 0 && !cleared.contains(&tg[1 + n * 3])) {
+                        return None;
+                    }
+                    let mut q = i + 2 + 6 + 5 + 4 + 1;
+                    let nvb = c[q] as usize;
+                    for b in 0..nvb {
+                        if let Some(k) = renum(c[q + 1 + 2 * b], &made) {
+                            norm[q + 1 + 2 * b] = k;
+                        }
+                    }
+                    q += 1 + 2 * nvb;
+                    let (ib, ifmt) = (c[q], c[q + 2]);
+                    if let Some(k) = renum(ib, &made) {
+                        norm[q] = k;
+                    }
+                    q += 3;
+                    for _ in 0..2 {
+                        let m = c[q] as usize;
+                        for (j, e) in c[q + 1..q + 1 + m * 8].chunks(8).enumerate() {
+                            if e[1] == 1 || e[1] >= 4 {
+                                reads.push((e[2], cleared.contains(&e[2])));
+                            }
+                            if e[1] == 0 {
+                                if let Some(k) = renum(e[2], &made) {
+                                    norm[q + 1 + j * 8 + 2] = k;
+                                }
+                            }
+                        }
+                        q += 1 + m * 8;
+                    }
+                    drawn.extend((0..n).map(|k| tg[1 + k * 3]));
+                    // Indices from a buffer it makes (a ring the game appends to: the first
+                    // index moves every frame): compared by what they are, not where
+                    let (indexed, count, start) = (c[q], c[q + 1], c[q + 3]);
+                    if indexed != 0 && made.contains(&ib) {
+                        let isz = if ifmt == 2 { 4 } else { 2 };
+                        let (lo, hi) = (start as u64 * isz, (start as u64 + count as u64) * isz);
+                        let w = writes.iter().rev().find(|w| w.0 == ib && w.1 as u64 <= lo && w.1 as u64 + w.3 as u64 >= hi);
+                        if let Some(&(_, at, off, _)) = w {
+                            let from = off + (lo - at as u64) as usize;
+                            let bytes = blob.get(from..from + (hi - lo) as usize)?;
+                            // (FNV-1a)
+                            let h = bytes.iter().fold(0x811c_9dc5u32, |h, &b| (h ^ b as u32).wrapping_mul(0x0100_0193));
+                            norm[q + 3] = h;
+                        }
+                    }
+                    i = q + 6;
+                }
+                PRESENT | PRESENT_FLIP => i += 10,
+                CREATE_BUFFER => {
+                    bufs.push(i);
+                    made.push(c[i + 1]);
+                    norm[i + 1] = renum(c[i + 1], &made)?;
+                    i += 3;
+                }
+                DESTROY_BUFFER => {
+                    bufs.push(i);
+                    norm[i + 1] = match renum(c[i + 1], &made) {
+                        Some(k) => k,
+                        None => {
+                            gone.push(c[i + 1]);
+                            0x4000_0000 | gone.len() as u32
+                        }
+                    };
+                    i += 2;
+                }
+                WRITE_BUFFER => {
+                    bufs.push(i);
+                    norm[i + 1] = renum(c[i + 1], &made)?;
+                    writes.push((c[i + 1], c[i + 2], c[i + 3] as usize, c[i + 4]));
+                    i += 5;
+                }
+                _ => return None,
+            }
+        }
+        // (a texture it draws to, read before it clears it, holds what the last run left)
+        if reads.iter().any(|&(t, clear)| !clear && drawn.contains(&t)) {
+            return None;
+        }
+        Some((norm, bufs))
+    }
+
+    /// CREATE_BUFFER, DESTROY_BUFFER or WRITE_BUFFER at the start of `c`; returns its length.
+    fn buffer_cmd(&mut self, c: &[u32], blob: &[u8]) -> usize {
+        let a = |k: usize| c[k];
+        match c[0] {
+            CREATE_BUFFER => {
+                let (id, size) = (a(1), a(2).div_ceil(4) * 4);
+                self.clear_groups2();
+                let b = gpu::buffer(size.max(4), usage::VERTEX | usage::INDEX | usage::UNIFORM | usage::COPY_DST | usage::COPY_SRC);
+                if let Some((old, _)) = self.buffers.insert(id, (b, size.max(4))) {
+                    self.doomed.push(old);
+                }
+                3
+            }
+            DESTROY_BUFFER => {
+                if let Some((b, _)) = self.buffers.remove(&a(1)) {
+                    self.doomed.push(b);
+                    self.clear_groups2();
+                }
+                2
+            }
+            _ => {
+                let (id, at, off, len) = (a(1), a(2), a(3) as usize, a(4));
+                if let Some(&(b, size)) = self.buffers.get(&id) {
+                    let n = (len.div_ceil(4) * 4).min(size.saturating_sub(at)) as usize;
+                    if n > 0 && off + n <= blob.len().div_ceil(4) * 4 {
+                        gpu::write_buffer(b, at, unsafe { std::slice::from_raw_parts(blob.as_ptr().add(off), n) });
+                    }
+                }
+                5
+            }
+        }
     }
 
     fn shown(&self) -> Id {
@@ -698,21 +956,110 @@ impl D3d {
         }
     }
 
-    /// A whole-target clear: merged into one not done yet (Siglus clears color+z+stencil, then z,
-    /// then stencil, each a pass of its own otherwise).
-    fn clear_whole(&mut self, c: Clear) {
-        if self.pass {
+    /// Direct3D 9: a clear of the whole target and its depth buffer. Each goes with its texture
+    /// (`clears`), not with this pair of targets: Siglus clears color, depth and stencil, then
+    /// depth, then stencil, and draws to the color target without the depth buffer (Z off).
+    fn clear_whole(&mut self, flags: u32, color: [f32; 4], z: f32, stencil: u32) {
+        let [rt, level, ds] = self.target;
+        if flags & 1 != 0 && rt != 0 {
+            self.defer_clear(rt, Clear { level, layer: 0, flags: 1, color, z, stencil });
+        }
+        if flags & 6 != 0 && ds != 0 {
+            self.defer_clear(ds, Clear { level: 0, layer: 0, flags: flags & 6, color, z: z.clamp(0.0, 1.0), stencil });
+        }
+    }
+
+    /// Records a clear of a whole view for the next pass that draws to it (merged with one not
+    /// done yet of the same view).
+    fn defer_clear(&mut self, tex: u32, c: Clear) {
+        if let Some(t) = self.textures.get_mut(&tex) {
+            if is_depth(t.format) {
+                if c.flags & 2 != 0 {
+                    t.zclear = Some((c.z, t.zclear.map_or(0, |z| z.1)));
+                }
+                if c.flags & 4 != 0 {
+                    t.zclear = Some((t.zclear.map_or(1.0, |z| z.0), c.stencil));
+                }
+            }
+        }
+        if self.pass && self.pass_draws_to(tex) {
             self.end_pass();
         }
-        self.pending = Some(match self.pending {
-            Some(p) => Clear {
+        let m = match self.clears.get(&tex) {
+            Some(p) if p.level == c.level && p.layer == c.layer => Clear {
                 flags: p.flags | c.flags,
                 color: if c.flags & 1 != 0 { c.color } else { p.color },
                 z: if c.flags & 2 != 0 { c.z } else { p.z },
                 stencil: if c.flags & 4 != 0 { c.stencil } else { p.stencil },
+                ..c
             },
+            Some(_) => {
+                self.settle(tex);
+                c
+            }
             None => c,
-        });
+        };
+        self.clears.insert(tex, m);
+        if self.no_pass_opt {
+            self.settle(tex);
+        }
+    }
+
+    /// The clear not done yet of this view, taken (the caller's pass does it). One of another
+    /// view of the texture is done first.
+    fn take_clear(&mut self, tex: u32, level: u32, layer: u32) -> Option<Clear> {
+        let p = *self.clears.get(&tex)?;
+        if p.level != level || p.layer != layer {
+            self.settle(tex);
+            return None;
+        }
+        self.clears.remove(&tex);
+        Some(p)
+    }
+
+    /// Does the clear not done yet of a texture now, as a pass of its own.
+    fn settle(&mut self, tex: u32) {
+        if let Some(p) = self.clears.remove(&tex) {
+            self.clear_now(tex, p.level, p.layer, p.flags, p.color, p.z, p.stencil);
+        }
+    }
+
+    /// Before a command that reads or writes textures other than as a target of its pass: their
+    /// clears not done yet.
+    fn settle_for(&mut self, op: u32, c: &[u32]) {
+        match op {
+            DESTROY_TEXTURE | CREATE_TEXTURE | CREATE_TEXTURE2 => {
+                self.clears.remove(&c[1]);
+            }
+            WRITE_TEXTURE | WRITE_TEXTURE_MEM | FILL | PRESENT | PRESENT_FLIP | GEN_MIPS | WRITE_TEXTURE2 => self.settle(c[1]),
+            READBACK => self.settle(c[2]),
+            COPY => {
+                self.settle(c[1]);
+                self.settle(c[7]);
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether the open pass draws to this texture.
+    fn pass_draws_to(&self, tex: u32) -> bool {
+        match &self.targets2 {
+            Some(tg) => (0..=tg[0] as usize).any(|k| tg[1 + k * 3] == tex),
+            None => self.target[0] == tex || self.target[2] == tex,
+        }
+    }
+
+    /// Counts a pass attachment's traffic on a tile-based GPU: what it loads into tile memory and
+    /// stores back (`&d3dstats`: tile load/store).
+    fn traffic(&self, tex: u32, level: u32, load: bool, store: bool) {
+        let Some(t) = self.textures.get(&tex) else { return };
+        let bytes = ((t.w >> level).max(1) * (t.h >> level).max(1) * bpp(t.format)) as u64;
+        if load {
+            STATS[4].fetch_add(bytes, Relaxed);
+        }
+        if store {
+            STATS[5].fetch_add(bytes, Relaxed);
+        }
     }
 
     fn end_pass(&mut self) {
@@ -720,42 +1067,6 @@ impl D3d {
             gpu::end_pass();
             self.pass = false;
         }
-        // a whole-target clear nobody drew after still has to happen
-        if let Some(p) = self.pending.take() {
-            if self.target[0] != 0 {
-                if p.flags & 1 == 0 && self.target[2] != 0 && p.flags & 6 != 0 {
-                    // depth/stencil only: done by the next pass that uses that depth buffer
-                    self.flush_z();
-                    self.pending_z = Some((self.target[2], p));
-                } else {
-                    // (no pass when the target is gone: the clear goes with it)
-                    self.pending = Some(p);
-                    if self.begin_pass() {
-                        gpu::end_pass();
-                        self.pass = false;
-                    }
-                    self.pending = None;
-                }
-            }
-        }
-    }
-
-    /// The depth-only clear waiting for a pass, as a pass of its own.
-    fn flush_z(&mut self) {
-        let Some((z, c)) = self.pending_z.take() else { return };
-        let Some(t) = self.textures.get(&z) else { return };
-        let s = t.format == DS;
-        let view = t.view;
-        self.open = true;
-        self.use_tex(z);
-        gpu::begin_pass(&format!(
-            r#"{{"colorAttachments":[],"depthStencilAttachment":{{"view":{view},"depthLoadOp":{},"depthClearValue":{},"depthStoreOp":"store"{}}}}}"#,
-            q(if c.flags & 2 != 0 { "clear" } else { "load" }),
-            num(c.z),
-            if s { format!(r#","stencilLoadOp":{},"stencilClearValue":{},"stencilStoreOp":"store""#, q(if c.flags & 4 != 0 { "clear" } else { "load" }), c.stencil) } else { String::new() }
-        ));
-        gpu::end_pass();
-        STATS[2].fetch_add(1, Relaxed);
     }
 
     fn begin_pass(&mut self) -> bool {
@@ -767,51 +1078,43 @@ impl D3d {
         }
         let Some(t) = self.textures.get(&self.target[0]) else { return false };
         let level = self.target[1].min(t.levels - 1);
-        let (tw, th, tex, format) = ((t.w >> level).max(1), (t.h >> level).max(1), t.tex, t.format);
+        let (tw, th, tex) = ((t.w >> level).max(1), (t.h >> level).max(1), t.tex);
         let z = if self.target[2] != 0 { self.depth_for(self.target[2], tw, th) } else { None };
-        let mut clear = self.pending.take();
-        // a depth clear waiting for this depth buffer
-        if let Some((zt, c)) = self.pending_z {
-            if z.is_some() && zt == self.target[2] {
-                self.pending_z = None;
-                let mut m = clear.unwrap_or(Clear { flags: 0, color: [0.0; 4], z: 1.0, stencil: 0 });
-                if m.flags & 2 == 0 && c.flags & 2 != 0 {
-                    m.z = c.z;
-                }
-                if m.flags & 4 == 0 && c.flags & 4 != 0 {
-                    m.stencil = c.stencil;
-                }
-                m.flags |= c.flags & 6;
-                clear = Some(m);
-            } else {
-                self.flush_z();
-            }
-        }
+        let cc = self.take_clear(self.target[0], self.target[1], 0);
+        let zc = if z.is_some() { self.take_clear(self.target[2], 0, 0) } else { None };
         self.use_tex(self.target[0]);
         if z.is_some() {
             self.use_tex(self.target[2]);
         }
-        let cl = clear.unwrap_or(Clear { flags: 0, color: [0.0; 4], z: 1.0, stencil: 0 });
+        let ccolor = cc.map_or([0.0; 4], |c| c.color);
         let view = gpu::view(tex, &format!(r#"{{"baseMipLevel":{level},"mipLevelCount":1}}"#));
         let color = format!(
             r#"{{"view":{view},"loadOp":{},"clearValue":[{},{},{},{}],"storeOp":"store"}}"#,
-            q(if cl.flags & 1 != 0 { "clear" } else { "load" }),
-            num(cl.color[0]),
-            num(cl.color[1]),
-            num(cl.color[2]),
-            num(cl.color[3])
+            q(if cc.is_some() { "clear" } else { "load" }),
+            num(ccolor[0]),
+            num(ccolor[1]),
+            num(ccolor[2]),
+            num(ccolor[3])
         );
+        self.traffic(self.target[0], level, cc.is_none(), true);
         let depth = match z {
-            Some(zv) => format!(
-                r#","depthStencilAttachment":{{"view":{zv},"depthLoadOp":{},"depthClearValue":{},"depthStoreOp":"store","stencilLoadOp":{},"stencilClearValue":{},"stencilStoreOp":"store"}}"#,
-                q(if cl.flags & 2 != 0 { "clear" } else { "load" }),
-                num(cl.z),
-                q(if cl.flags & 4 != 0 { "clear" } else { "load" }),
-                cl.stencil
-            ),
+            Some(zv) => {
+                let (dclear, sclear) = (zc.is_some_and(|c| c.flags & 2 != 0), zc.is_some_and(|c| c.flags & 4 != 0));
+                // Direct3D 9 draws here never use the stencil buffer (its pipelines have no
+                // stencil state): cleared, not loaded or stored
+                let fresh_s = !self.no_pass_opt;
+                self.traffic(self.target[2], 0, !dclear, true);
+                format!(
+                    r#","depthStencilAttachment":{{"view":{zv},"depthLoadOp":{},"depthClearValue":{},"depthStoreOp":"store","stencilLoadOp":{},"stencilClearValue":{},"stencilStoreOp":{}}}"#,
+                    q(if dclear { "clear" } else { "load" }),
+                    num(zc.map_or(1.0, |c| c.z)),
+                    q(if sclear || fresh_s { "clear" } else { "load" }),
+                    zc.map_or(0, |c| c.stencil),
+                    q(if fresh_s { "discard" } else { "store" })
+                )
+            }
             None => String::new(),
         };
-        let _ = format;
         self.open = true;
         gpu::begin_pass(&format!(r#"{{"colorAttachments":[{color}]{depth}}}"#));
         gpu::drop(view);
@@ -876,7 +1179,7 @@ impl D3d {
             return;
         }
         if x0 == 0 && y0 == 0 && x1 == tw && y1 == th {
-            self.clear_whole(Clear { flags, color, z, stencil: 0 });
+            self.clear_whole(flags, color, z, 0);
             return;
         }
         if !self.begin_pass() {
@@ -1034,6 +1337,11 @@ impl D3d {
         }
         let (vpx, vpy) = (vx.max(-32768.0), vy.max(-32768.0));
         let (vpw, vph) = (vw.min(32768.0).max(1.0), vh.min(32768.0).max(1.0));
+        if !self.clears.is_empty() {
+            for t in &texs {
+                self.settle(t[1]);
+            }
+        }
         if !self.begin_pass() {
             return p;
         }
@@ -1230,7 +1538,7 @@ impl D3d {
             tex,
             &format!(r#"{{"dimension":{}{},"aspect":{}}}"#, q(dim), if dim == "2d" { r#","arrayLayerCount":1"# } else { "" }, q(if depth { "depth-only" } else { "all" })),
         );
-        self.textures.insert(id, Tex { tex, w, h, levels, format: fmt, view, layers: layers.max(1), dim, views: HashMap::new(), fits: HashMap::new(), zclear: None });
+        self.textures.insert(id, Tex { tex, w, h, levels, format: fmt, view, layers: layers.max(1), dim, views: HashMap::new(), fits: HashMap::new(), zclear: None, zused: 0 });
     }
 
     /// A view of texture `id` for binding or rendering (cached on the texture).
@@ -1277,7 +1585,18 @@ impl D3d {
             }
             self.use_tex(id);
             let v = self.view2(id, 1, tg[2 + k * 3], 1, tg[3 + k * 3], 1, false);
-            colors.push(format!(r#"{{"view":{v},"loadOp":"load","storeOp":"store"}}"#));
+            let cc = self.take_clear(id, tg[2 + k * 3], tg[3 + k * 3]).filter(|c| c.flags & 1 != 0);
+            self.traffic(id, tg[2 + k * 3], cc.is_none(), true);
+            colors.push(match cc {
+                Some(c) => format!(
+                    r#"{{"view":{v},"loadOp":"clear","clearValue":[{},{},{},{}],"storeOp":"store"}}"#,
+                    num(c.color[0]),
+                    num(c.color[1]),
+                    num(c.color[2]),
+                    num(c.color[3])
+                ),
+                None => format!(r#"{{"view":{v},"loadOp":"load","storeOp":"store"}}"#),
+            });
         }
         let zi = 1 + n * 3;
         let zid = tg[zi];
@@ -1306,10 +1625,41 @@ impl D3d {
                 Some(v) => v,
                 None => self.view2(zid, 1, tg[zi + 1], 1, tg[zi + 2], 1, false),
             };
+            // A clear not done yet becomes the loadOp. An aspect no draw has used yet holds what
+            // its last clear left: cleared again rather than loaded, and not stored (on a
+            // tile-based GPU it never leaves tile memory); the first draw that uses it starts a
+            // new pass (see draw2).
+            let zc = if zview.is_some() {
+                self.settle(zid);
+                None
+            } else {
+                self.take_clear(zid, tg[zi + 1], tg[zi + 2])
+            };
+            let zt = &self.textures[&zid];
+            let (zd, zs) = zt.zclear.unwrap_or((1.0, 0));
+            let fresh = |bit: u32| !self.no_pass_opt && zview.is_none() && zt.zused & bit == 0;
+            let dclear = zc.is_some_and(|c| c.flags & 2 != 0) || fresh(1);
+            let sclear = zc.is_some_and(|c| c.flags & 4 != 0) || fresh(2);
+            let op = |b: bool, yes: &'static str, no: &'static str| q(if b { yes } else { no });
             depth = format!(
-                r#","depthStencilAttachment":{{"view":{v},"depthLoadOp":"load","depthStoreOp":"store"{}}}"#,
-                if stencil { r#","stencilLoadOp":"load","stencilStoreOp":"store""# } else { "" }
+                r#","depthStencilAttachment":{{"view":{v},"depthLoadOp":{},"depthClearValue":{},"depthStoreOp":{}{}}}"#,
+                op(dclear, "clear", "load"),
+                num(zc.filter(|c| c.flags & 2 != 0).map_or(zd, |c| c.z)),
+                op(fresh(1), "discard", "store"),
+                if stencil {
+                    format!(
+                        r#","stencilLoadOp":{},"stencilClearValue":{},"stencilStoreOp":{}"#,
+                        op(sclear, "clear", "load"),
+                        zc.filter(|c| c.flags & 4 != 0).map_or(zs, |c| c.stencil),
+                        op(fresh(2), "discard", "store")
+                    )
+                } else {
+                    String::new()
+                }
             );
+            // (depth and stencil share their memory: either one loaded or stored moves it all)
+            let (load, store) = (!dclear || (stencil && !sclear), !fresh(1) || (stencil && !fresh(2)));
+            self.traffic(zid, tg[zi + 1], load, store);
         }
         self.open = true;
         gpu::begin_pass(&format!(r#"{{"colorAttachments":[{}]{depth}}}"#, colors.join(",")));
@@ -1331,10 +1681,25 @@ impl D3d {
 
     #[allow(clippy::too_many_arguments)]
     fn clear_view(&mut self, tex: u32, level: u32, layer: u32, flags: u32, color: [f32; 4], depth: f32, stencil: u32) {
+        let Some(t) = self.textures.get(&tex) else { return };
+        let (dep, fits) = (is_depth(t.format), !t.fits.is_empty());
+        let flags = if dep { flags & 6 } else { flags & 1 };
+        // (a depth buffer with stand-ins of other sizes: all of them now, see depth_for)
+        if flags != 0 && !(dep && fits) {
+            self.defer_clear(tex, Clear { level, layer, flags, color, z: depth.clamp(0.0, 1.0), stencil });
+            return;
+        }
+        self.clear_now(tex, level, layer, flags, color, depth, stencil);
+    }
+
+    /// A clear of a whole view as a pass of its own.
+    #[allow(clippy::too_many_arguments)]
+    fn clear_now(&mut self, tex: u32, level: u32, layer: u32, flags: u32, color: [f32; 4], depth: f32, stencil: u32) {
         if !self.textures.contains_key(&tex) {
             return;
         }
         self.end_pass();
+        self.traffic(tex, level, false, true);
         self.use_tex(tex);
         let view = self.view2(tex, 1, level, 1, layer, 1, false);
         let t = self.textures.get_mut(&tex).unwrap();
@@ -1513,10 +1878,12 @@ impl D3d {
         let (cull, ccw, bias, slope, clamp) = (next(), next(), next() as i32, f32of(next()), f32of(next()));
         let mut qi = 9;
         let mut ds = String::new();
+        let mut zuse = 0;
         if k.get(qi) == Some(&0xffff) {
             qi += 1;
         } else {
             let (fmt, en, write, func, sen, masks) = (k[qi], k[qi + 1], k[qi + 2], k[qi + 3], k[qi + 4], k[qi + 5]);
+            zuse = (en != 0 || write != 0) as u32 | ((sen != 0) as u32) << 1;
             let face = |o: usize| {
                 if sen != 0 {
                     format!(
@@ -1628,6 +1995,7 @@ impl D3d {
         p.pipeline = pipeline;
         p.layouts = layouts;
         p.kinds = kinds;
+        p.zuse = zuse;
         true
     }
 
@@ -1663,6 +2031,50 @@ impl D3d {
         }
         if !self.pipeline2(pid, &groups) {
             return q_;
+        }
+        if !self.clears.is_empty() {
+            for g in &groups {
+                for e in g.chunks(8) {
+                    if e[1] == 1 || e[1] >= 4 {
+                        self.settle(e[2]);
+                    }
+                }
+            }
+        }
+        // the first draw that uses the depth buffer's depth or stencil: a pass that keeps it
+        // (it starts from what the last clear left)
+        let zuse = self.pipelines2[&pid].zuse;
+        let zid = self.targets2.as_ref().map_or(0, |tg| tg[1 + tg[0] as usize * 3]);
+        if zuse != 0 {
+            if let Some(z) = self.textures.get_mut(&zid) {
+                let new = zuse & !z.zused;
+                if new != 0 {
+                    z.zused |= zuse;
+                    let (zd, zs) = z.zclear.unwrap_or((1.0, 0));
+                    let fits = !z.fits.is_empty();
+                    self.end_pass();
+                    if !self.no_pass_opt && !fits {
+                        let tg = self.targets2.as_ref().unwrap();
+                        let zi = 1 + tg[0] as usize * 3;
+                        let c = Clear { level: tg[zi + 1], layer: tg[zi + 2], flags: new << 1, color: [0.0; 4], z: zd, stencil: zs };
+                        match self.clears.get_mut(&zid) {
+                            None => {
+                                self.clears.insert(zid, c);
+                            }
+                            Some(p) if p.level == c.level && p.layer == c.layer => {
+                                if c.flags & 2 != 0 && p.flags & 2 == 0 {
+                                    p.z = zd;
+                                }
+                                if c.flags & 4 != 0 && p.flags & 4 == 0 {
+                                    p.stencil = zs;
+                                }
+                                p.flags |= c.flags;
+                            }
+                            Some(_) => {}
+                        }
+                    }
+                }
+            }
         }
         if !self.begin_pass() {
             return q_;

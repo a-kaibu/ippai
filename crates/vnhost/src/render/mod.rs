@@ -47,8 +47,9 @@ static SHOT_WANT: AtomicU32 = AtomicU32::new(0);
 static SHOT: Mutex<(u32, usize, u32, u32)> = Mutex::new((0, 0, 0, 0));
 /// the screen's latest frame: serial, its pixels, row length, rows (for the page: vnvm-frame)
 static FRAME: Mutex<[u32; 4]> = Mutex::new([0; 4]);
-/// counters: Direct3D frames, batch time (µs), passes, bytes uploaded
-pub(crate) static STATS: [AtomicU64; 4] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
+/// counters: Direct3D frames, batch time (µs), passes, bytes uploaded, and the bytes passes
+/// would move between tile memory and memory on a tile-based GPU (loaded, stored)
+pub(crate) static STATS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
 /// time spent in frames (µs)
 static FRAME_US: AtomicU64 = AtomicU64::new(0);
 
@@ -228,7 +229,7 @@ struct Stats {
     last: f64,
     frames: u32,
     slow: u32,
-    at: [u64; 4],
+    at: [u64; 6],
     d3d_at: u64,
 }
 
@@ -256,7 +257,7 @@ impl Render {
             serial: None,
             above: Vec::new(),
             d3d_frames: 0,
-            stats: crate::env_on!("VNVM_D3DSTATS").then_some(Stats { t0: 0.0, last: 0.0, frames: 0, slow: 0, at: [0; 4], d3d_at: 0 }),
+            stats: crate::env_on!("VNVM_D3DSTATS").then_some(Stats { t0: 0.0, last: 0.0, frames: 0, slow: 0, at: [0; 6], d3d_at: 0 }),
             shot: None,
             shot_done: 0,
         }
@@ -523,11 +524,11 @@ impl Render {
         s.frames += 1;
         if t - s.t0 >= 5000.0 {
             let secs = (t - s.t0) / 1000.0;
-            let now: [u64; 4] = std::array::from_fn(|i| STATS[i].load(Relaxed));
+            let now: [u64; 6] = std::array::from_fn(|i| STATS[i].load(Relaxed));
             let d = |i: usize| now[i] - s.at[i];
             let g = self.d3d.gpu_ms.take();
             eprintln!(
-                "page stats/{secs:.1}s: rAF {:.1}/s, slow {}, render {}ms, d3d frames {:.1}/s, batches {}ms, gpu {:.0}ms (max {:.0}), passes {}, submits {}, textures {}, upload {:.1}MB",
+                "page stats/{secs:.1}s: rAF {:.1}/s, slow {}, render {}ms, d3d frames {:.1}/s, batches {}ms, gpu {:.0}ms (max {:.0}), passes {}, submits {}, textures {}, upload {:.1}MB, tile load {}MB store {}MB, same frames skipped {}",
                 s.frames as f64 / secs,
                 s.slow,
                 FRAME_US.swap(0, Relaxed) / 1000,
@@ -538,7 +539,10 @@ impl Render {
                 d(2),
                 self.d3d.submits.take(),
                 self.d3d.created.take(),
-                d(3) as f64 / 1e6
+                d(3) as f64 / 1e6,
+                d(4) >> 20,
+                d(5) >> 20,
+                self.d3d.skipped.take()
             );
             *s = Stats { t0: t, last: t, frames: 0, slow: 0, at: now, d3d_at: self.d3d.frames };
         }
