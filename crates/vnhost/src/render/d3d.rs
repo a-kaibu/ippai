@@ -331,6 +331,9 @@ pub struct D3d {
     // Direct3D 11
     buffers: HashMap<u32, (Id, u32)>,
     doomed: Vec<Id>,
+    /// Buffers the open commands use (a write to one goes to a new GPU buffer: queue writes
+    /// land before the commands are submitted).
+    bused: Vec<u32>,
     pipelines2: HashMap<u32, Pipe2>,
     targets2: Option<Vec<u32>>,
     dummies: HashMap<(u32, u32), Id>,
@@ -404,6 +407,7 @@ impl D3d {
             used: Vec::new(),
             buffers: HashMap::new(),
             doomed: Vec::new(),
+            bused: Vec::new(),
             pipelines2: HashMap::new(),
             targets2: None,
             dummies: HashMap::new(),
@@ -479,9 +483,23 @@ impl D3d {
         // scratch, leaves the same pixels: not run (no GPU work at all, and the screen is not
         // composed again).
         if !self.no_pass_opt {
-            let norm = self.repeats(c, blob);
-            if let (Some((n, _)), Some((lc, ld, lb))) = (&norm, &self.last) {
-                if lc == n && ld.as_slice() == data && lb.as_slice() == blob && self.skip_check {
+            let norm = self.repeats(c);
+            // (bytes written to buffers that every draw's hash covers: not compared)
+            let blob_cmp: std::borrow::Cow<[u8]> = match &norm {
+                Some((_, _, loose)) if !loose.is_empty() => {
+                    let mut v = blob.to_vec();
+                    for &(o, n) in loose {
+                        if let Some(r) = v.get_mut(o..(o + n).min(blob.len())) {
+                            r.fill(0);
+                        }
+                    }
+                    v.into()
+                }
+                _ => blob.into(),
+            };
+            let blob_cmp = &*blob_cmp;
+            if let (Some((n, _, _)), Some((lc, ld, lb))) = (&norm, &self.last) {
+                if lc == n && ld.as_slice() == data && lb.as_slice() == blob_cmp && self.skip_check {
                     let tex = if c.len() >= 9 && c[c.len() - 9] == PRESENT { c[c.len() - 8] } else { 0 };
                     let pair = self.next_token;
                     self.snap(tex, pair);
@@ -489,7 +507,7 @@ impl D3d {
                     self.snap(tex, pair);
                     return;
                 }
-                if lc == n && ld.as_slice() == data && lb.as_slice() == blob {
+                if lc == n && ld.as_slice() == data && lb.as_slice() == blob_cmp {
                     // (its buffers still come and go: later batches may draw from them)
                     for &at in &self.last_bufs.clone() {
                         self.buffer_cmd(&c[at..], blob);
@@ -500,9 +518,10 @@ impl D3d {
                     return;
                 }
             }
-            self.last = norm.map(|(n, bufs)| {
+            let blob_cmp = blob_cmp.to_vec();
+            self.last = norm.map(|(n, bufs, _)| {
                 self.last_bufs = bufs;
-                (n, data.to_vec(), blob.to_vec())
+                (n, data.to_vec(), blob_cmp)
             });
         }
         self.run_batch(c, data, blob);
@@ -1004,9 +1023,13 @@ impl D3d {
     /// Returns its commands with the ids of the buffers it makes or destroys numbered in order
     /// (Direct3D 11 renames a dynamic buffer at each Map: new ids every frame), and where its
     /// buffer commands are.
-    fn repeats(&self, c: &[u32], blob: &[u8]) -> Option<(Vec<u32>, Vec<usize>)> {
+    fn repeats(&self, c: &[u32]) -> Option<(Vec<u32>, Vec<usize>, Vec<(usize, usize)>)> {
         let mut norm = c.to_vec();
         let mut bufs = Vec::new();
+        // blob bytes it writes to buffers, and whether every Direct3D 11 draw's hash covers
+        // what it reads
+        let mut loose = Vec::new();
+        let mut hashed = true;
         let mut cleared: Vec<u32> = Vec::new();
         let mut target = [0u32; 3];
         let mut targets2: Option<&[u32]> = None;
@@ -1014,8 +1037,6 @@ impl D3d {
         // buffers made in the batch, and others destroyed: their numbers in `norm`
         let mut made: Vec<u32> = Vec::new();
         let mut gone: Vec<u32> = Vec::new();
-        // what it writes to them: buffer, at, blob offset, length
-        let mut writes: Vec<(u32, u32, usize, u32)> = Vec::new();
         // textures draws read, and whether they had been cleared then
         let mut reads: Vec<(u32, bool)> = Vec::new();
         let renum = |id: u32, made: &[u32]| made.iter().position(|&m| m == id).map(|k| 0x8000_0000 | k as u32);
@@ -1083,7 +1104,7 @@ impl D3d {
                         }
                     }
                     q += 1 + 2 * nvb;
-                    let (ib, ifmt) = (c[q], c[q + 2]);
+                    let ib = c[q];
                     if let Some(k) = renum(ib, &made) {
                         norm[q] = k;
                     }
@@ -1103,22 +1124,19 @@ impl D3d {
                         q += 1 + m * 8;
                     }
                     drawn.extend((0..n).map(|k| tg[1 + k * 3]));
-                    // Indices from a buffer it makes (a ring the game appends to: the first
-                    // index moves every frame): compared by what they are, not where
-                    let (indexed, count, start) = (c[q], c[q + 1], c[q + 3]);
-                    if indexed != 0 && made.contains(&ib) {
-                        let isz = if ifmt == 2 { 4 } else { 2 };
-                        let (lo, hi) = (start as u64 * isz, (start as u64 + count as u64) * isz);
-                        let w = writes.iter().rev().find(|w| w.0 == ib && w.1 as u64 <= lo && w.1 as u64 + w.3 as u64 >= hi);
-                        if let Some(&(_, at, off, _)) = w {
-                            let from = off + (lo - at as u64) as usize;
-                            let bytes = blob.get(from..from + (hi - lo) as usize)?;
-                            // (FNV-1a)
-                            let h = bytes.iter().fold(0x811c_9dc5u32, |h, &b| (h ^ b as u32).wrapping_mul(0x0100_0193));
-                            norm[q + 3] = h;
+                    // What it reads from its buffers known (a ring the game appends to: the
+                    // place moves every frame): compared by that, not where
+                    hashed &= c[q + 6] != 0;
+                    if c[q + 6] != 0 {
+                        norm[q + 3] = 0;
+                        norm[q + 4] = 0;
+                        let vq = i + 2 + 6 + 5 + 4 + 1;
+                        for b in 0..nvb {
+                            norm[vq + 2 + 2 * b] = 0;
                         }
+                        norm[vq + 1 + 2 * nvb + 1] = 0;
                     }
-                    i = q + 6;
+                    i = q + 7;
                 }
                 PRESENT | PRESENT_FLIP => i += 9,
                 CREATE_BUFFER => {
@@ -1139,9 +1157,10 @@ impl D3d {
                     i += 2;
                 }
                 WRITE_BUFFER => {
+                    // (a buffer from before: the last run wrote the same to it)
                     bufs.push(i);
-                    norm[i + 1] = renum(c[i + 1], &made)?;
-                    writes.push((c[i + 1], c[i + 2], c[i + 3] as usize, c[i + 4]));
+                    norm[i + 1] = renum(c[i + 1], &made).unwrap_or(c[i + 1]);
+                    loose.push((c[i + 3] as usize, c[i + 4] as usize));
                     i += 5;
                 }
                 _ => return None,
@@ -1151,7 +1170,10 @@ impl D3d {
         if reads.iter().any(|&(t, clear)| !clear && drawn.contains(&t)) {
             return None;
         }
-        Some((norm, bufs))
+        if !hashed {
+            loose.clear();
+        }
+        Some((norm, bufs, loose))
     }
 
     /// CREATE_BUFFER, DESTROY_BUFFER or WRITE_BUFFER at the start of `c`; returns its length.
@@ -1160,7 +1182,7 @@ impl D3d {
         match c[0] {
             CREATE_BUFFER => {
                 let (id, size) = (a(1), a(2).div_ceil(4) * 4);
-                self.clear_groups2();
+                // (ids are not used again: no cached bind group has it)
                 let b = gpu::buffer(size.max(4), usage::VERTEX | usage::INDEX | usage::UNIFORM | usage::COPY_DST | usage::COPY_SRC);
                 if let Some((old, _)) = self.buffers.insert(id, (b, size.max(4))) {
                     self.doomed.push(old);
@@ -1170,15 +1192,28 @@ impl D3d {
             DESTROY_BUFFER => {
                 if let Some((b, _)) = self.buffers.remove(&a(1)) {
                     self.doomed.push(b);
-                    self.clear_groups2();
+                    self.drop_groups_with(a(1));
                 }
                 2
             }
             _ => {
                 let (id, at, off, len) = (a(1), a(2), a(3) as usize, a(4));
-                if let Some(&(b, size)) = self.buffers.get(&id) {
+                if let Some(&(mut b, size)) = self.buffers.get(&id) {
                     let n = (len.div_ceil(4) * 4).min(size.saturating_sub(at)) as usize;
                     if n > 0 && off + n <= blob.len().div_ceil(4) * 4 {
+                        if self.bused.contains(&id) {
+                            if at == 0 && n as u32 + 16 > size {
+                                // all of it (but the padding to 16): a new GPU buffer, draws before keep the old one
+                                self.doomed.push(b);
+                                b = gpu::buffer(size, usage::VERTEX | usage::INDEX | usage::UNIFORM | usage::COPY_DST | usage::COPY_SRC);
+                                self.buffers.insert(id, (b, size));
+                                self.drop_groups_with(id);
+                                self.bused.retain(|&x| x != id);
+                            } else {
+                                self.end_pass();
+                                self.submit();
+                            }
+                        }
                         gpu::write_buffer(b, at, unsafe { std::slice::from_raw_parts(blob.as_ptr().add(off), n) });
                     }
                 }
@@ -1189,6 +1224,17 @@ impl D3d {
 
     fn shown(&self) -> Id {
         self.overlay.map_or(0, |o| o.view)
+    }
+
+    /// Drops the cached Direct3D 11 bind groups that bind buffer `id`.
+    fn drop_groups_with(&mut self, id: u32) {
+        self.groups2.retain(|k, (_, g, _)| {
+            let hit = k[2..].chunks(8).any(|e| e.len() == 8 && e[1] == 0 && e[2] == id);
+            if hit {
+                gpu::drop(*g);
+            }
+            !hit
+        });
     }
 
     fn clear_groups2(&mut self) {
@@ -1203,6 +1249,7 @@ impl D3d {
             gpu::submit();
             self.open = false;
             self.used.clear();
+            self.bused.clear();
         }
         // (after the commands that use them are submitted)
         for x in self.doomed.drain(..) {
@@ -2299,7 +2346,8 @@ impl D3d {
             q_ += n * 8;
         }
         let (indexed, count, instances, start, base, first) = (c[q_], c[q_ + 1], c[q_ + 2], c[q_ + 3], c[q_ + 4] as i32, c[q_ + 5]);
-        q_ += 6;
+        // (and the hash of what it reads from its buffers)
+        q_ += 7;
         if !self.pipelines2.contains_key(&pid) || count == 0 || instances == 0 {
             return q_;
         }
@@ -2386,6 +2434,11 @@ impl D3d {
             let layout = layouts[gi];
             // (the same resources as an earlier draw: its bind group; not when it binds the
             // batch's data block, whose offsets change every draw)
+            for e in g.chunks(8) {
+                if e[1] == 0 && e[2] != DATA && !self.bused.contains(&e[2]) {
+                    self.bused.push(e[2]);
+                }
+            }
             let has_data = g.chunks(8).any(|e| e[1] == 0 && e[2] == DATA);
             let mut key = Vec::new();
             if !has_data {
@@ -2415,6 +2468,8 @@ impl D3d {
                     match self.buffers.get(&a).copied() {
                         Some((buf, size)) if size >= want => entries.push((binding, Res::Buffer(buf, 0, size.min(65536)))),
                         _ => {
+                            // (not kept: the buffer may come later)
+                            key.clear();
                             let z = self.zero();
                             entries.push((binding, Res::Buffer(z, 0, want.min(65536))));
                         }
@@ -2457,6 +2512,9 @@ impl D3d {
             }
         }
         for (k, &(b, off)) in vbs.iter().enumerate() {
+            if b != DATA && !self.bused.contains(&b) {
+                self.bused.push(b);
+            }
             let buf = if b == DATA { Some((self.data_buf, self.data_size)) } else { self.buffers.get(&b).copied() };
             match buf {
                 Some((buf, size)) => gpu::set_vertex_buffer(k as u32, buf, off.min(size)),
@@ -2467,6 +2525,9 @@ impl D3d {
             }
         }
         if indexed != 0 {
+            if ib != DATA && !self.bused.contains(&ib) {
+                self.bused.push(ib);
+            }
             let buf = if ib == DATA { Some((self.data_buf, self.data_size)) } else { self.buffers.get(&ib).copied() };
             let Some((buf, size)) = buf else { return q_ };
             gpu::set_index_buffer(buf, ifmt == 2, ioff.min(size));

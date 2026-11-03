@@ -122,6 +122,6 @@ pub fn composite(addr: u32, x: u32, y: u32, w: u32, h: u32, px: &[u8]) {
     c.push(0);
     c.push(1);
     c.extend_from_slice(&[16, 1, sgpu, 1, 0, 1, 0, 1]);
-    c.extend_from_slice(&[0, 4, 1, 0, 0, y << 16 | x]);
+    c.extend_from_slice(&[0, 4, 1, 0, 0, y << 16 | x, 0]);
     gpu::record(|q| q.cmd(&c));
 }

@@ -1372,7 +1372,7 @@ fn draw(g: &mut Gl, c: &mut Ctx, mode: u32, v: Vec<[f32; 16]>) {
         for (u, t) in texs.iter().enumerate() {
             w.extend_from_slice(&[160 + u as u32, 2, t.2 .0, 0, t.2 .1, 0, 0, 0]);
         }
-        w.extend_from_slice(&[0, verts.len() as u32, 1, 0, 0, 0]);
+        w.extend_from_slice(&[0, verts.len() as u32, 1, 0, 0, 0, 0]);
         q.cmd(&w);
     });
 }

@@ -2265,18 +2265,18 @@ fn blend_factor(b: u32, alpha: bool) -> u32 {
 fn buffer_gpu(d: &mut D11, id: u32) -> u32 {
     let Some(Data::Buffer(b)) = d.objs.get_mut(&id).map(|o| &mut o.data) else { return 0 };
     if b.dirty || b.gpu == 0 {
-        let old = b.gpu;
-        let g = page_id();
+        // (written in place: the page moves it to a new GPU buffer when draws before use it)
+        let made = b.gpu;
+        let g = if made != 0 { made } else { page_id() };
         let (mem, size) = (b.mem, b.size);
         b.gpu = g;
         b.dirty = false;
         let bytes = unsafe { std::slice::from_raw_parts(mem as *const u8, size as usize) };
         gpu::record(|q| {
-            if old != 0 {
-                q.cmd(&[gpu::DESTROY_BUFFER, old]);
-            }
             let off = q.blob(bytes);
-            q.cmd(&[gpu::CREATE_BUFFER, g, size.next_multiple_of(16).max(16)]);
+            if made == 0 {
+                q.cmd(&[gpu::CREATE_BUFFER, g, size.next_multiple_of(16).max(16)]);
+            }
             q.cmd(&[gpu::WRITE_BUFFER, g, 0, off, size]);
         });
     }
@@ -2455,6 +2455,7 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
         w.extend_from_slice(&[0, 0, 0]);
     }
     // bindings: group 0 vertex, 1 pixel
+    let mut cbs_read = Vec::new();
     for (stage, binds) in [(0usize, &vb), (1usize, &ps.as_ref().map_or(Vec::new(), |p| p.1.clone()))] {
         let mut entries: Vec<[u32; 8]> = Vec::new();
         for (bi, kind) in binds.iter() {
@@ -2462,6 +2463,7 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
                 shader::Binding::Uniform(size) => {
                     let cb = st.cbs[stage].get(*bi as usize).copied().unwrap_or(0);
                     let g = if cb != 0 { buffer_gpu(d, cb) } else { 0 };
+                    cbs_read.push(cb);
                     let bsize = match d.objs.get(&cb).map(|o| &o.data) {
                         Some(Data::Buffer(b)) => b.size.next_multiple_of(16).max(16),
                         _ => 0,
@@ -2500,6 +2502,60 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
         }
     }
     w.extend_from_slice(&[indexed as u32, count, instances, start, base as u32, first_instance]);
+    // What it reads from its buffers (vertices, indices, constants), hashed: the page tells a
+    // frame that draws the same as the last one, though from another place in a ring buffer
+    // and with other bytes written around it (0: unknown)
+    let mem = |id: u32| match d.objs.get(&id).map(|o| &o.data) {
+        Some(Data::Buffer(b)) => Some((b.mem, b.size)),
+        _ => None,
+    };
+    let mut h = 0x811c_9dc5u32;
+    let mut add = |p: u32, n: u32| {
+        for &b in std::slice::from_raw_parts(p as *const u8, n as usize) {
+            h = (h ^ b as u32).wrapping_mul(0x0100_0193);
+        }
+    };
+    let mut known = count <= 4096;
+    let verts: Vec<u32> = if !known {
+        Vec::new()
+    } else if indexed {
+        let isz = if st.ib.1 == 42 { 4 } else { 2 };
+        match mem(st.ib.0) {
+            Some((m, size)) if st.ib.2 as u64 + (start as u64 + count as u64) * isz <= size as u64 => {
+                let p = m + st.ib.2 + start * isz as u32;
+                (0..count as usize).map(|k| if isz == 4 { rd(p, k) } else { *(p as *const u16).add(k) as u32 }.wrapping_add(base as u32)).collect()
+            }
+            _ => {
+                known = false;
+                Vec::new()
+            }
+        }
+    } else {
+        (start..start.saturating_add(count)).collect()
+    };
+    for s in &slots {
+        let (buf, stride, off) = st.vbs[s.0 as usize];
+        let Some((m, size)) = mem(buf) else {
+            known = false;
+            break;
+        };
+        let at = |v: u32| off as u64 + v as u64 * stride as u64;
+        let vs: Vec<u32> = if s.1 != 0 { (first_instance..first_instance.saturating_add(instances)).collect() } else { verts.clone() };
+        if stride == 0 || vs.iter().any(|&v| at(v) + stride as u64 > size as u64) {
+            known = false;
+            break;
+        }
+        for v in vs {
+            add(m + at(v) as u32, stride);
+        }
+    }
+    for cb in cbs_read {
+        match mem(cb) {
+            Some((m, size)) => add(m, size),
+            None => {}
+        }
+    }
+    w.push(if known { h | 1 } else { 0 });
     gpu::record(|q| q.cmd(&w));
 }
 

@@ -1004,7 +1004,7 @@ pub(crate) fn draw_from(g: &mut Gl, c: &mut Ctx, mode: u32, src: Src) {
                 wds.extend_from_slice(e);
             }
         }
-        wds.extend_from_slice(&[0, order.len() as u32, 1, 0, 0, 0]);
+        wds.extend_from_slice(&[0, order.len() as u32, 1, 0, 0, 0, 0]);
         q.cmd(&wds);
     });
 }
