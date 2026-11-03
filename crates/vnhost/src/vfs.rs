@@ -166,6 +166,13 @@ pub unsafe extern "C" fn vnhost_net_stats(out: *mut f64) {
     std::ptr::copy_nonoverlapping(v.as_ptr(), out, v.len());
 }
 
+/// Store requests on their way now (the page holds its read-ahead back meanwhile: the game's
+/// threads wait for theirs).
+#[no_mangle]
+pub extern "C" fn vnhost_net_busy() -> u32 {
+    net::INFLIGHT.load(std::sync::atomic::Ordering::Relaxed) as u32
+}
+
 /// host/vnfs.js: a store request's bytes over the network (its resource timing entry), and
 /// whether the browser's HTTP cache had it instead.
 #[no_mangle]
@@ -590,14 +597,24 @@ fn cache_limit() -> usize {
     *LIMIT.get_or_init(|| std::env::var("VNVM_CHUNK_CACHE_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(128usize) << 20)
 }
 
-/// The chunks this run fetched, in order (the first FETCHED_MAX): the next run's page fetches
-/// them ahead, several at a time (see jit::maybe_save). Here each is one synchronous request.
-static FETCHED: Mutex<Vec<Hash>> = Mutex::new(Vec::new());
+/// The chunks this run read, in the order of their first read (the first FETCHED_MAX): the
+/// next run's page fetches them ahead, several at a time (see jit::maybe_save). Here each is
+/// one synchronous request. (Chunks the page fetched ahead count too: else a run that had
+/// all it read fetched ahead would leave the next an empty list.)
+static FETCHED: Mutex<Option<(Vec<Hash>, std::collections::HashSet<Hash>)>> = Mutex::new(None);
 const FETCHED_MAX: usize = 8192;
 
 /// [`FETCHED`] as concatenated hashes.
 pub fn fetched() -> Vec<u8> {
-    FETCHED.lock().unwrap_or_else(|e| e.into_inner()).concat()
+    FETCHED.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map_or(Vec::new(), |f| f.0.concat())
+}
+
+fn note_read(h: &Hash) {
+    let mut g = FETCHED.lock().unwrap_or_else(|e| e.into_inner());
+    let (list, seen) = g.get_or_insert_with(Default::default);
+    if list.len() < FETCHED_MAX && seen.insert(*h) {
+        list.push(*h);
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -673,17 +690,15 @@ fn wait_ahead(h: &Hash) {
 
 fn fetch_chunk(h: &Hash) -> Option<Vec<u8>> {
     let hex: String = h.iter().map(|b| format!("{b:02x}")).collect();
-    let data = fetch(&format!("chunks/{}/{hex}", &hex[..2]))?;
-    let mut f = FETCHED.lock().unwrap_or_else(|e| e.into_inner());
-    if f.len() < FETCHED_MAX {
-        f.push(*h);
-    }
-    Some(data)
+    fetch(&format!("chunks/{}/{hex}", &hex[..2]))
 }
 
 fn chunk_data(h: &Hash, len: usize) -> Result<Arc<Vec<u8>>, c_int> {
     let t = std::time::Instant::now();
     let r = chunk_data_wait(h, len);
+    if r.is_ok() {
+        note_read(h);
+    }
     // (a chunk in the cache returns in a few us: only real waits count)
     if t.elapsed().as_micros() > 200 {
         net::stall(t);

@@ -40,6 +40,7 @@ interface SakeModule {
   _vnhost_render_resize(w: number, h: number): void;
   _vnhost_render_input(kind: number, x: number, y: number, data: number): number;
   _vnhost_render_info(out: number): void;
+  _vnhost_net_busy?(): number;
   _vnhost_display_view(out: number): void;
   _vnhost_display_windows?(out: number, max: number): number;
   _vnhost_display_frame(io: number): number;
@@ -182,7 +183,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
         return parts.length ? { parts } : undefined;
       })
     : Promise.resolve(undefined);
-  const ahead = jitName ? readAhead(jitName) : undefined;
+  const ahead = jitName ? readAhead(jitName, jit) : undefined;
   const scriptUrl = `${BASE}sake.js`;
   const factory = (await import(/* @vite-ignore */ scriptUrl)).default as (m: object) => Promise<SakeModule>;
   const version = await wasmVersion;
@@ -310,8 +311,12 @@ async function loadJit(
  * Fetches the store chunks the last run of `name` read first (saved with its regions), several
  * at a time: the program's threads read the store one synchronous request at a time, which took about
  * 2 s of the start (fonts are read whole). Returns the function that hands them to the module.
+ *
+ * On a slow connection these compete with what the game waits for, so they come second: they
+ * start once the saved regions are here (`after`), go at low priority, and none starts while
+ * one of the game's own requests is on its way (vnhost_net_busy).
  */
-function readAhead(name: Promise<string>): (sake: SakeModule) => void {
+function readAhead(name: Promise<string>, after: Promise<unknown>): (sake: SakeModule) => void {
   const store = new URL("store/", location.href).href;
   const got: [Uint8Array, Uint8Array][] = [];
   let sake: SakeModule | undefined;
@@ -326,15 +331,16 @@ function readAhead(name: Promise<string>): (sake: SakeModule) => void {
     w._vnhost_vfs_put_chunk(p, d, data.length);
   };
   (async () => {
-    // this program's, then those several programs read (fonts and the like: a game's first run too)
-    const lists = await Promise.all(
-      [`jit/${await name}.chunks`, "jit/_shared.chunks"].map((u) =>
-        fetch(u).then(
-          (r) => (r.ok ? r.arrayBuffer() : new ArrayBuffer(0)),
-          () => new ArrayBuffer(0),
-        ),
-      ),
-    );
+    // this program's list; for a program with none yet (a game's first run), those several
+    // programs read (fonts and the like)
+    const get = (u: string) =>
+      fetch(u).then(
+        (r) => (r.ok ? r.arrayBuffer() : new ArrayBuffer(0)),
+        () => new ArrayBuffer(0),
+      );
+    let lists = [await get(`jit/${await name}.chunks`)];
+    if (!lists[0]!.byteLength) lists = [await get("jit/_shared.chunks")];
+    await after.catch(() => undefined);
     const seen = new Set<string>();
     const all: number[] = [];
     for (const l of lists.map((b) => new Uint8Array(b))) {
@@ -351,16 +357,18 @@ function readAhead(name: Promise<string>): (sake: SakeModule) => void {
     let next = 0;
     const one = async () => {
       while (next * 16 < list.length) {
+        // (the game's requests first)
+        while (sake?._vnhost_net_busy?.()) await new Promise((r) => setTimeout(r, 25));
         const hash = list.subarray(next * 16, ++next * 16);
         const hex = Array.from(hash, (b) => b.toString(16).padStart(2, "0")).join("");
-        const c = await fetch(`${store}chunks/${hex.slice(0, 2)}/${hex}`);
+        const c = await fetch(`${store}chunks/${hex.slice(0, 2)}/${hex}`, { priority: "low" });
         if (!c.ok) continue;
         const data = new Uint8Array(await c.arrayBuffer());
         if (sake) put(sake, hash, data);
         else got.push([hash, data]);
       }
     };
-    await Promise.all(Array.from({ length: 6 }, one));
+    await Promise.all(Array.from({ length: 4 }, one));
   })().catch((e) => console.log(`read-ahead: ${e}`));
   return (w) => {
     sake = w;

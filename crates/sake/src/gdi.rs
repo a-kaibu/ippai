@@ -968,18 +968,45 @@ fn dc_palette(t: &Objs, s: &DcState) -> Vec<u32> {
 
 struct Face {
     names: &'static [&'static str],
+    /// the collection and the face in it (as Windows has them: `vnvm ttc` makes them from the
+    /// separate files, a third of their size), else the font's own file
+    ttc: (&'static str, u32),
     file: &'static str,
     fixed: bool,
     roman: bool,
 }
 
 const FACES: &[Face] = &[
-    Face { names: &["ＭＳ ゴシック", "MS Gothic"], file: "msgothic.ttf", fixed: true, roman: false },
-    Face { names: &["ＭＳ Ｐゴシック", "MS PGothic"], file: "mspgothic.ttf", fixed: false, roman: false },
-    Face { names: &["ＭＳ 明朝", "MS Mincho"], file: "msmincho.ttf", fixed: true, roman: true },
-    Face { names: &["ＭＳ Ｐ明朝", "MS PMincho"], file: "mspmincho.ttf", fixed: false, roman: true },
-    Face { names: &["MS UI Gothic"], file: "msuigothic.ttf", fixed: false, roman: false },
+    Face { names: &["ＭＳ ゴシック", "MS Gothic"], ttc: ("msgothic.ttc", 0), file: "msgothic.ttf", fixed: true, roman: false },
+    Face { names: &["ＭＳ Ｐゴシック", "MS PGothic"], ttc: ("msgothic.ttc", 1), file: "mspgothic.ttf", fixed: false, roman: false },
+    Face { names: &["ＭＳ 明朝", "MS Mincho"], ttc: ("msmincho.ttc", 0), file: "msmincho.ttf", fixed: true, roman: true },
+    Face { names: &["ＭＳ Ｐ明朝", "MS PMincho"], ttc: ("msmincho.ttc", 1), file: "mspmincho.ttf", fixed: false, roman: true },
+    Face { names: &["MS UI Gothic"], ttc: ("msgothic.ttc", 2), file: "msuigothic.ttf", fixed: false, roman: false },
 ];
+
+/// Face `index` of a TrueType collection as a font file of its own (its tables copied out),
+/// so the rest reads every font as face 0.
+fn ttc_face(d: &[u8], index: u32) -> Option<Vec<u8>> {
+    let be16 = |o: usize| d.get(o..o + 2).map(|b| u16::from_be_bytes([b[0], b[1]]));
+    let be32 = |o: usize| d.get(o..o + 4).map(|b| u32::from_be_bytes(b.try_into().unwrap()));
+    if d.get(..4)? != b"ttcf" || index >= be32(8)? {
+        return None;
+    }
+    let dir = be32(12 + 4 * index as usize)? as usize;
+    let n = be16(dir + 4)? as usize;
+    let mut out = d.get(dir..dir + 12 + 16 * n)?.to_vec();
+    for i in 0..n {
+        let r = 12 + 16 * i;
+        let (off, len) = (be32(dir + r + 8)? as usize, be32(dir + r + 12)? as usize);
+        let at = out.len() as u32;
+        out[r + 8..r + 12].copy_from_slice(&at.to_be_bytes());
+        out.extend_from_slice(d.get(off..off + len)?);
+        while out.len() % 4 != 0 {
+            out.push(0);
+        }
+    }
+    Some(out)
+}
 
 static FILES: OnceLock<Mutex<HashMap<usize, Option<Arc<FontVec>>>>> = OnceLock::new();
 
@@ -1029,12 +1056,15 @@ fn font_file(i: usize) -> Option<Arc<FontVec>> {
     g.entry(i)
         .or_insert_with(|| {
             let dirs = [std::env::var("SAKE_FONTS").ok(), crate::files::resolve("C:\\windows\\Fonts\\")];
+            let (ttc, index) = FACES[i].ttc;
             for d in dirs.into_iter().flatten() {
-                let p = format!("{}/{}", d.trim_end_matches('/'), FACES[i].file);
-                if let Ok(data) = vnhost::fs::read(&p) {
-                    if let Ok(f) = FontVec::try_from_vec(data) {
-                        return Some(Arc::new(f));
-                    }
+                let d = d.trim_end_matches('/');
+                let data = match vnhost::fs::read(format!("{d}/{ttc}")) {
+                    Ok(c) => ttc_face(&c, index),
+                    Err(_) => vnhost::fs::read(format!("{d}/{}", FACES[i].file)).ok(),
+                };
+                if let Some(f) = data.and_then(|v| FontVec::try_from_vec(v).ok()) {
+                    return Some(Arc::new(f));
                 }
             }
             eprintln!("sake: font {} not found", FACES[i].file);
@@ -3478,7 +3508,12 @@ fn GetOutlineTextMetricsW(c: &mut Ctx) -> u32 {
     outline_metrics(c, true)
 }
 fn add_font_file(name: &str) -> u32 {
-    crate::files::resolve(name).and_then(|h| vnhost::fs::read(h).ok()).map_or(0, add_font)
+    let Some(data) = crate::files::resolve(name).and_then(|h| vnhost::fs::read(h).ok()) else { return 0 };
+    if data.starts_with(b"ttcf") {
+        // a collection: each face
+        return (0..).map_while(|i| ttc_face(&data, i)).map(add_font).sum();
+    }
+    add_font(data)
 }
 fn AddFontResourceA(c: &mut Ctx) -> u32 {
     add_font_file(&crate::k32::arg_str(c.a(0), false))

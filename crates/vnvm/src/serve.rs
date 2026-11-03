@@ -13,7 +13,8 @@
 //!   index) adds a run's new regions as a new part (parts compiled before stay the same); `PUT /jit-save/<name>.chunks` stores the store chunks a
 //!   run read first (16-byte hashes), which the page fetches ahead next time.
 //! - `/jit/_shared-<build>.parts`, `/jit/_shared.chunks`: the regions and chunks several
-//!   programs saved (shared libraries and the like): every page loads them too, so a
+//!   programs saved (shared libraries and the like; the chunks only for a program with no list
+//!   of its own yet): every page loads them too, so a
 //!   game's first run starts with them
 //! - `GET /tree/<name>/<path>`: one file of a tree as itself (web games in an iframe; treefiles.rs)
 //! - `GET /games`: the launcher's list, the store's `games/<id>.json` (`vnvm add-game`) as
@@ -90,28 +91,48 @@ async fn save_jit(State(jit): State<Jit>, Path(name): Path<String>, body: Bytes)
         if tokio::fs::write(jit.0.join(&name), &body).await.is_err() {
             return StatusCode::INTERNAL_SERVER_ERROR;
         }
-        // chunks other programs read first too (fonts, the prefix) go
-        // to _shared.chunks, which every page fetches ahead as well (a game's first run too)
+        // chunks two programs or more read first (fonts, the prefix) make _shared.chunks, which
+        // a page fetches ahead when its program has no list yet (a game's first run). Made
+        // again each time from the programs' lists: what no program reads any more (fonts
+        // replaced, old DLLs) goes.
         let shared_name = format!("{SHARED}.chunks");
-        let mut others = std::collections::HashSet::new();
+        let mut lists: std::collections::BTreeMap<String, (std::time::SystemTime, Vec<u8>)> = Default::default();
         if let Ok(mut d) = tokio::fs::read_dir(&jit.0).await {
-            while let Ok(Some(f)) = d.next_entry().await {
-                let f = f.file_name().to_string_lossy().into_owned();
-                let prog = |n: &str| n.rsplit_once('-').map_or(n.to_string(), |x| x.0.to_string());
-                if !f.ends_with(".chunks") || f == shared_name || prog(&f) == prog(&name) {
+            while let Ok(Some(e)) = d.next_entry().await {
+                let f = e.file_name().to_string_lossy().into_owned();
+                if !f.ends_with(".chunks") || f == shared_name {
+                    continue;
+                }
+                let t = e.metadata().await.and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+                // (a program by its name without the build: the newest build's list)
+                let prog = f.rsplit_once('-').map_or(f.clone(), |x| x.0.to_string());
+                if lists.get(&prog).is_some_and(|l| l.0 >= t) {
                     continue;
                 }
                 if let Ok(b) = tokio::fs::read(jit.0.join(&f)).await {
-                    others.extend(b.chunks_exact(16).map(|c| <[u8; 16]>::try_from(c).unwrap()));
+                    lists.insert(prog, (t, b));
                 }
             }
         }
-        let mut shared = tokio::fs::read(jit.0.join(&shared_name)).await.unwrap_or_default();
-        let mut have: std::collections::HashSet<[u8; 16]> = shared.chunks_exact(16).map(|c| c.try_into().unwrap()).collect();
-        for c in body.chunks_exact(16) {
-            let c: [u8; 16] = c.try_into().unwrap();
-            if others.contains(&c) && shared.len() < 16 * 8192 && have.insert(c) {
-                shared.extend_from_slice(&c);
+        let lists: Vec<Vec<u8>> = lists.into_values().map(|l| l.1).collect();
+        let mut count: std::collections::HashMap<[u8; 16], u32> = Default::default();
+        for b in &lists {
+            let mut once = std::collections::HashSet::new();
+            for c in b.chunks_exact(16) {
+                let c: [u8; 16] = c.try_into().unwrap();
+                if once.insert(c) {
+                    *count.entry(c).or_default() += 1;
+                }
+            }
+        }
+        let mut shared = Vec::new();
+        let mut have = std::collections::HashSet::new();
+        for b in &lists {
+            for c in b.chunks_exact(16) {
+                let c: [u8; 16] = c.try_into().unwrap();
+                if count[&c] >= 2 && shared.len() < 16 * 8192 && have.insert(c) {
+                    shared.extend_from_slice(&c);
+                }
             }
         }
         let tmp = jit.0.join(format!("{shared_name}.tmp"));
