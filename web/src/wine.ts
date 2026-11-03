@@ -26,17 +26,11 @@ import { showLibrary } from "./ui/Library";
 import { FlightRecorder, sendLeftovers } from "./crashlog";
 
 const params = new URLSearchParams(location.search);
-const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Tokyo";
 const canvas = document.querySelector<HTMLCanvasElement>("#screen")!;
 // the status line, start button, cover and stats over the screen (React: ui/Shell.tsx)
 renderShell();
 
 interface WineModule {
-  FS: {
-    mkdirTree(path: string): void;
-    mkdir(path: string): void;
-    writeFile(path: string, data: Uint8Array | string): void;
-  };
   HEAPU8: Uint8Array;
   HEAPU32: Uint32Array;
   HEAPF32: Float32Array;
@@ -204,7 +198,8 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     locateFile: (path: string) =>
       path === WASM && version ? `${WINE}${path}?v=${encodeURIComponent(version)}` : `${WINE}${path}`,
     vnvmEnv: {
-      VNVM_MOUNTS: ["/vnvm/prefix=prefix32", ...params.getAll("mount")].join(":"),
+      // "/=": an empty tree at the root, so every path is vnhost's (no emscripten file system)
+      VNVM_MOUNTS: ["/=", "/vnvm/prefix=prefix32", ...params.getAll("mount")].join(":"),
       LANG: "ja_JP.UTF-8",
       // sake's C:\ (the prefix's fonts)
       SAKE_C: "/vnvm/prefix/drive_c",
@@ -213,13 +208,6 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       // count the threads' CPU time (vnhost_load_busy: the run log's perf lines, game.html);
       // &noload: off
       ...(params.has("noload") ? {} : { VNVM_LOAD: "1" }),
-      ...(saved ? { VNVM_SAVES: "/vnvm/saves.bin" } : {}),
-      HOME: "/home/web",
-      USER: "web",
-      // Wine names the zone from TZ (needs a file under TZDIR): by offset alone Tokyo matches Korea first,
-      // and Siglus etc. refuse to run outside Japan
-      TZ: tz,
-      TZDIR: "/vnvm/tz",
       // the game starts in its own folder (as from Explorer): many open their data relatively
       ...(/^z:\\/i.test(run)
         ? { VNVM_CWD: run.slice(2, run.lastIndexOf("\\")).replaceAll("\\", "/") || "/" }
@@ -228,15 +216,8 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
         params.getAll("env").map((e) => [e.slice(0, e.indexOf("=")), e.slice(e.indexOf("=") + 1)]),
       ),
     },
-    preRun: [
-      (m: WineModule) => {
-        m.FS.mkdir("/vnvm");
-        m.FS.mkdir("/home/web");
-        m.FS.mkdirTree(`/vnvm/tz/${tz.slice(0, tz.lastIndexOf("/") + 1)}`);
-        m.FS.writeFile(`/vnvm/tz/${tz}`, "");
-        if (saved) m.FS.writeFile("/vnvm/saves.bin", saved);
-      },
-    ],
+    // read by vnhost's file system as "@saves" (host/vnfs.js)
+    vnvmSaves: saved,
     vnvmJit: await jit,
     print: (line: string) => {
       console.log(line);

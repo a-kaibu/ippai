@@ -6,9 +6,11 @@ Module.preRun.push(() => {
 });
 
 // Regions an earlier run saved (crates/vnhost/src/jit.rs): `vnvmJit` = { parts: [{ module, idx }] }
-// from the page, or under node VNVM_JIT_FILE.wasm/.idx. Every thread gets them in the message
-// that loads it ('load', see host/vnjit.js).
+// from the page, or under node VNVM_JIT_FILE.wasm/.idx; and the page's saved games `vnvmSaves`
+// (bytes, read as "@saves" by host/vnfs.js). Every thread gets them in the message that loads it
+// ('load'): the saves as a SharedArrayBuffer, not copied per thread.
 var vnvmJitBundle = null;
+var vnvmSaves = null;
 Module.preInit = [].concat(Module.preInit || [], () => {
   if (ENVIRONMENT_IS_PTHREAD) return;
   const f = ENVIRONMENT_IS_NODE && process.env.VNVM_JIT_FILE;
@@ -21,6 +23,10 @@ Module.preInit = [].concat(Module.preInit || [], () => {
     }
   }
   vnvmJitBundle = Module.vnvmJit || null;
+  if (Module.vnvmSaves) {
+    vnvmSaves = new Uint8Array(new SharedArrayBuffer(Module.vnvmSaves.length));
+    vnvmSaves.set(Module.vnvmSaves);
+  }
 });
 if (!ENVIRONMENT_IS_PTHREAD) {
   // the main thread adds them to each worker's 'load' message
@@ -28,13 +34,16 @@ if (!ENVIRONMENT_IS_PTHREAD) {
   if (W && !W.prototype.vnvmPost) {
     W.prototype.vnvmPost = W.prototype.postMessage;
     W.prototype.postMessage = function (m, ...rest) {
-      if (m && m.cmd === 'load' && vnvmJitBundle) m = { ...m, vnvmJit: vnvmJitBundle };
+      if (m && m.cmd === 'load') m = { ...m, vnvmJit: vnvmJitBundle, vnvmSaves };
       return this.vnvmPost(m, ...rest);
     };
   }
 } else {
   const take = (d) => {
-    if (d && d.cmd === 'load' && d.vnvmJit) vnvmJitBundle = d.vnvmJit;
+    if (d && d.cmd === 'load') {
+      vnvmJitBundle = d.vnvmJit || null;
+      vnvmSaves = d.vnvmSaves || null;
+    }
   };
   if (ENVIRONMENT_IS_NODE) require('worker_threads').parentPort.on('message', take);
   else self.addEventListener('message', (e) => take(e.data));

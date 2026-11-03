@@ -1,0 +1,186 @@
+=== vnvm log 20261103-004858-nullcall.exe-o4uu (end) ===
+reason: the game ended
+state: running
+written: 2026-11-03T00:48:59.339Z (0.4 s after the start; times below are UTC)
+game: 
+run: Z:\vnvm\game\nullcall.exe
+args: still
+mounts: /vnvm/game=gfxtest
+env: 
+engine: sake
+arch: x86
+url: http://127.0.0.1:8092/wine.html?autostart&headless&mount=/vnvm/game=gfxtest&args=still&run=Z:\vnvm\game\nullcall.exe
+started: 2026-11-03T00:48:58.969Z
+browser: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.8010.12 Safari/537.36
+cores: 4
+deviceMemory: 16 GB
+screen: 1280x720 @1
+
+--- guest threads at the time of the report ---
+00:48:59.339 p42/t1001 threads now: 1
+
+thread p42/t1000 in a syscall/API (host side) at fe000020, exceptions 1
+  eax 00000000 ecx 00002000 edx 00000000 ebx 00000000 esp 7fecfaf8 ebp 7fecff88 esi 00030928 edi 00000006
+  eip fe000020 eflags 00000246 fs 7fed0000
+  fpu cw 037f sw 0000 top 0 empty ff mxcsr 00001f80
+  code @fe000020: ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ??
+  stack @7fecfaf8:
+    0040157b 00000000 00409044 c0000005 00000000 00000000 00000000 7fecfb30
+    ffff0000 7fecfb28 00000000 00000000 7fecfb40 7fecfb90 7fecfb40 7fecfb90
+    ffffffff 00000000 c0000005 00000000 00000000 00000000 00000002 00000000
+    00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+  frames (ebp chain):
+    004012de nullcall.exe+12de
+    ffff0020
+  code addresses on the stack:
+    [0] 0040157b nullcall.exe+157b
+    [8] 00409044 nullcall.exe+9044
+    [434] 00401401 nullcall.exe+1401
+    [438] 004014b0 nullcall.exe+14b0
+    [444] 004019d4 nullcall.exe+19d4
+    [454] 00401492 nullcall.exe+1492
+    [458] 004014b0 nullcall.exe+14b0
+    [464] 00401401 nullcall.exe+1401
+    [468] 00401580 nullcall.exe+1580
+    [470] 0040114d nullcall.exe+114d
+    [474] 00407f35 nullcall.exe+7f35
+    [47c] 00401520 nullcall.exe+1520
+    [484] 004015f8 nullcall.exe+15f8
+    [494] 004012de nullcall.exe+12de
+    [4a4] 004012de nullcall.exe+12de
+    [4c8] 0040171a nullcall.exe+171a
+  last syscalls/API calls (newest first, 65 in all): trap eax [esp] [esp+4]
+    fe000020 00000000 | 0040157b nullcall.exe+157b | 00000000
+    fe0000a8 000304b0 | 0040156b nullcall.exe+156b | 000304b0
+    fe000094 00030490 | 00402583 nullcall.exe+2583 | 00000011
+    fe0000b0 0000000a | 004043dc nullcall.exe+43dc | 0000000a
+    fe0000b0 00000029 | 004043dc nullcall.exe+43dc | 00000029
+    fe0000b0 00006200 | 00402d3c nullcall.exe+2d3c | 00000030
+    (repeated 7 more times)
+    fe0000b0 00000020 | 004043dc nullcall.exe+43dc | 00000020
+    fe0000b0 00000074 | 004043dc nullcall.exe+43dc | 00000074
+    fe0000b0 00000061 | 004043dc nullcall.exe+43dc | 00000061
+    fe0000b0 00000020 | 004043dc nullcall.exe+43dc | 00000020
+    fe0000b0 00006800 | 00402d3c nullcall.exe+2d3c | 00000035
+    fe0000b0 00006800 | 00402d3c nullcall.exe+2d3c | 00000030
+    (repeated 5 more times)
+    fe0000b0 00006800 | 00402d3c nullcall.exe+2d3c | 00000063
+    fe0000b0 00006800 | 00402d3c nullcall.exe+2d3c | 00000078
+    fe0000b0 00006800 | 00402d3c nullcall.exe+2d3c | 00000030
+    fe0000b0 00000020 | 004043dc nullcall.exe+43dc | 00000020
+    fe0000b0 00000065 | 004043dc nullcall.exe+43dc | 00000065
+    fe0000b0 00000064 | 004043dc nullcall.exe+43dc | 00000064
+    fe0000b0 0000006f | 004043dc nullcall.exe+43dc | 0000006f
+    fe0000b0 00000063 | 004043dc nullcall.exe+43dc | 00000063
+    fe0000b0 00000028 | 004043dc nullcall.exe+43dc | 00000028
+    fe0000b0 00000020 | 004043dc nullcall.exe+43dc | 00000020
+    fe0000b0 00006000 | 004028ef nullcall.exe+28ef | 0000006b
+    fe0000b0 00006000 | 004028ef nullcall.exe+28ef | 0000006f
+  jit: on true (x64 true), regions built 0, functions 3, rebuilt 1, call depth 0
+  modules (1):
+   00400000-0043c000 nullcall.exe
+
+
+--- vnhost events (guest exceptions, processes, panics) ---
+00:48:59.329 p42/t1000 exception #1 access violation at 00000000 [interpreter] reading 00000000
+  eax 00000000 ecx 7fecffa0 edx 00030400 ebx 00030d3f esp 7fecff6c ebp 7fecff88 esi 00030928 edi 00000006
+  eip 00000000 eflags 00000246 fs 7fed0000
+  fpu cw 037f sw 0000 top 0 empty ff mxcsr 00001f80
+  code @00000000: ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ?? ??
+  stack @7fecff6c:
+    00407f35 00030d3f 00401520 7fecff98 004015f8 7fecffa0 00030888 7fecffd8
+    004012de 00030928 00030888 7fecffd8 004012de 00000002 00030920 000308f0
+    00000000 00000000 00000008 00030920 00030888 0040171a 00400000 7fecffec
+    00000000 00000000 00000000 00000000 ffff0020 ffff0000 00400000 ffff0020
+  frames (ebp chain):
+    004012de nullcall.exe+12de
+    ffff0020
+  code addresses on the stack:
+    [0] 00407f35 nullcall.exe+7f35
+    [8] 00401520 nullcall.exe+1520
+    [10] 004015f8 nullcall.exe+15f8
+    [20] 004012de nullcall.exe+12de
+    [30] 004012de nullcall.exe+12de
+    [54] 0040171a nullcall.exe+171a
+  last syscalls/API calls (newest first, 18 in all): trap eax [esp] [esp+4]
+    fe000014 00000001 kernel32!AddVectoredExceptionHandler | 00407efe nullcall.exe+7efe | 00000001
+    fe000090 00401580 msvcrt!_onexit | 00401401 nullcall.exe+1401 | 00401580 nullcall.exe+1580
+    fe000090 004014b0 msvcrt!_onexit | 00401401 nullcall.exe+1401 | 004014b0 nullcall.exe+14b0
+    fe00002c 00000002 kernel32!GetModuleHandleA | 00401426 nullcall.exe+1426 | 00409000 nullcall.exe+9000
+    fe00000c 00000000 msvcrt!malloc | 00401283 nullcall.exe+1283 | 0000001a
+    fe00000c 00000000 msvcrt!malloc | 00401244 nullcall.exe+1244 | 0000000c
+    fe000050 00000000 kernel32!SetUnhandledExceptionFilter | 00401216 nullcall.exe+1216 | 00401cf0 nullcall.exe+1cf0
+    ffff0000 00000000 | 00401351 nullcall.exe+1351 | 0040e000 nullcall.exe+e000
+    fe000068 00000000 msvcrt!__getmainargs | 0040114d nullcall.exe+114d | 0040c01c nullcall.exe+c01c
+    fe000088 00000001 msvcrt!_initterm | 00401351 nullcall.exe+1351 | 0040e000 nullcall.exe+e000
+    ffff0000 00000000 | 004013ae nullcall.exe+13ae | 0040e00c nullcall.exe+e00c
+    fe00006c 00030810 msvcrt!__p__commode | 00401085 nullcall.exe+1085 | 00000001
+    fe000070 00000000 msvcrt!__p__fmode | 00401078 nullcall.exe+1078 | 00000001
+    fe000074 00000000 msvcrt!__set_app_type | 004010ac nullcall.exe+10ac | 00000001
+    fe000088 00000000 msvcrt!_initterm | 004013ae nullcall.exe+13ae | 0040e00c nullcall.exe+e00c
+    ffff0000 00000001 | 00000000 | 00000000
+    (repeated 1 more times)
+    fe000038 00000000 kernel32!InitializeCriticalSection | 004020ed nullcall.exe+20ed | 0040c08c nullcall.exe+c08c
+  jit: on true (x64 true), regions built 0, functions 2, rebuilt 0, call depth 0
+  modules (1):
+   00400000-0043c000 nullcall.exe
+
+
+--- Wine stdout/stderr ---
+00:48:59.332 p42/t1000 n
+00:48:59.332 p42/t1000 u
+00:48:59.332 p42/t1000 l
+00:48:59.332 p42/t1000 l
+00:48:59.332 p42/t1000 c
+00:48:59.332 p42/t1000 a
+00:48:59.332 p42/t1000 l
+00:48:59.332 p42/t1000 l
+00:48:59.332 p42/t1000 :
+00:48:59.332 p42/t1000  
+00:48:59.332 p42/t1000 o
+00:48:59.332 p42/t1000 k
+00:48:59.332 p42/t1000  
+00:48:59.332 p42/t1000 (
+00:48:59.332 p42/t1000 c
+00:48:59.332 p42/t1000 o
+00:48:59.332 p42/t1000 d
+00:48:59.332 p42/t1000 e
+00:48:59.334 p42/t1000  
+00:48:59.334 p42/t1000 0
+00:48:59.334 p42/t1000 x
+00:48:59.334 p42/t1000 c
+00:48:59.334 p42/t1000 0
+00:48:59.334 p42/t1000 0
+00:48:59.334 p42/t1000 0
+00:48:59.334 p42/t1000 0
+00:48:59.334 p42/t1000 0
+00:48:59.334 p42/t1000 0
+00:48:59.334 p42/t1000 5
+00:48:59.334 p42/t1000  
+00:48:59.334 p42/t1000 a
+00:48:59.334 p42/t1000 t
+00:48:59.334 p42/t1000  
+00:48:59.334 p42/t1000 0
+00:48:59.334 p42/t1000 0
+00:48:59.334 p42/t1000 0
+00:48:59.334 p42/t1000 0
+00:48:59.335 p42/t1000 0
+00:48:59.335 p42/t1000 0
+00:48:59.335 p42/t1000 0
+00:48:59.335 p42/t1000 0
+00:48:59.335 p42/t1000 )
+00:48:59.335 p42/t1000 
+
+
+--- performance (every 10 s in the page log as perf:) ---
+(less than 15 s of samples)
+
+--- page ---
+00:48:58.970 page started
+00:48:58.989 build: sake.wasm Tue, 03 Nov 2026 00:44:41 GMT-1639448, translator 98d04d4f
+00:48:58.996 status: Z:\vnvm\game\nullcall.exe を起動中
+00:48:59.173 crash log attached
+00:48:59.173 memory: wasm 4096 MB, js heap 10/3586 MB
+00:48:59.338 status: ゲームが終了しました。一覧に戻ります
+00:48:59.338 the game ended
+00:48:59.338 report 20261103-004858-nullcall.exe-o4uu-end: the game ended

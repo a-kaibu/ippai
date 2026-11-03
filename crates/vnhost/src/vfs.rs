@@ -1,7 +1,8 @@
 //! The file system Wine sees in the browser: directory trees packed by `vnvm pack`
 //! (`trees/<name>.tsv` plus chunks in the store) mounted where `VNVM_MOUNTS` says
 //! ("/opt/wine-vnbox=wineroot:/prefix=prefix32"), read lazily chunk by chunk. Whatever is
-//! written stays in memory. Paths outside the mounts go to emscripten's file system.
+//! written stays in memory. Paths outside the mounts go to emscripten's file system (node; the
+//! page mounts an empty tree at "/", so there is nothing outside).
 //!
 //! The current directory is per Wine process (`proc`), for every path: relative paths are made
 //! absolute here before emscripten sees them.
@@ -82,33 +83,6 @@ fn parse_records(mut b: &[u8]) -> Vec<(String, Vec<u8>, i64)> {
         b = &b[16 + n + size..];
     }
     files
-}
-
-/// A whole file from emscripten's file system (not through our wrappers).
-fn read_real(path: &str) -> Option<Vec<u8>> {
-    extern "C" {
-        fn __real_openat(dirfd: c_int, path: *const c_char, flags: c_int, ...) -> c_int;
-        fn __real_read(fd: c_int, buf: *mut c_void, len: size_t) -> ssize_t;
-        fn __real_close(fd: c_int) -> c_int;
-    }
-    let c = CString::new(path).ok()?;
-    unsafe {
-        let fd = __real_openat(libc::AT_FDCWD, c.as_ptr(), libc::O_RDONLY, 0 as c_int);
-        if fd < 0 {
-            return None;
-        }
-        let mut out = Vec::new();
-        let mut buf = vec![0u8; 1 << 16];
-        loop {
-            let n = __real_read(fd, buf.as_mut_ptr() as *mut c_void, buf.len());
-            if n <= 0 {
-                break;
-            }
-            out.extend_from_slice(&buf[..n as usize]);
-        }
-        __real_close(fd);
-        Some(out)
-    }
 }
 
 /// The page: the files written under each of `roots` (":"-separated paths) as records (see
@@ -217,21 +191,36 @@ impl Fs {
     fn load() -> Fs {
         let mut fs = Fs { next_handle: 1, ..Default::default() };
         let Ok(spec) = std::env::var("VNVM_MOUNTS") else { return fs };
-        for m in spec.split(':').filter(|m| !m.is_empty()) {
-            let Some((at, name)) = m.split_once('=') else { continue };
+        let mut mounts: Vec<(String, &str)> =
+            spec.split(':').filter_map(|m| m.split_once('=')).map(|(at, name)| (normalize(at), name)).collect();
+        // "/" first (the page mounts an empty one: then nothing is emscripten's), the others
+        // inside it as directories of its tree
+        mounts.sort_by_key(|(at, _)| at.len());
+        for (at, name) in mounts {
             let root = fs.add(Data::Dir(BTreeMap::new()), 0o755, now());
-            match fetch(&format!("trees/{name}.tsv")) {
-                Some(tsv) => fs.load_tree(root, &String::from_utf8_lossy(&tsv)),
-                None => eprintln!("vnhost: tree {name} not found in the store"),
+            if !name.is_empty() {
+                match fetch(&format!("trees/{name}.tsv")) {
+                    Some(tsv) => fs.load_tree(root, &String::from_utf8_lossy(&tsv)),
+                    None => eprintln!("vnhost: tree {name} not found in the store"),
+                }
             }
-            let at = normalize(at);
-            // the mount point must exist for whoever lists its parent
-            let c = CString::new(at.clone()).unwrap();
-            unsafe { crate::wrap::real_mkdir_p(&c) };
+            if at != "/" {
+                if let Some(top) = fs.mount_at("/") {
+                    let (dir, leaf) = at.rsplit_once('/').unwrap_or(("", &at));
+                    let parent = fs.mkdir_p(top, dir);
+                    if let Some(Data::Dir(ch)) = fs.data_mut(parent) {
+                        ch.insert(leaf.to_string(), root);
+                    }
+                } else {
+                    // the mount point must exist for whoever lists its parent
+                    let c = CString::new(at.clone()).unwrap();
+                    unsafe { crate::wrap::real_mkdir_p(&c) };
+                }
+            }
             fs.mounts.push((at, root));
         }
         // saved games the page put back (see web/src/saves.ts)
-        if let Some(blob) = std::env::var("VNVM_SAVES").ok().and_then(|p| read_real(&p)) {
+        if let Some(blob) = fetch("@saves") {
             for (path, data, mtime) in parse_records(&blob) {
                 fs.put_file(&path, data, mtime);
             }
@@ -353,6 +342,28 @@ impl Fs {
             }
         }
         Some(at)
+    }
+
+    /// The directory `rel` under `from`, made where missing.
+    fn mkdir_p(&mut self, from: Ino, rel: &str) -> Ino {
+        let mut at = from;
+        for c in rel.split('/').filter(|c| !c.is_empty()) {
+            let next = match self.node(at).map(|n| &n.data) {
+                Some(Data::Dir(ch)) => ch.get(c).copied(),
+                _ => return at,
+            };
+            at = match next {
+                Some(i) => i,
+                None => {
+                    let i = self.add(Data::Dir(BTreeMap::new()), 0o755, now());
+                    if let Some(Data::Dir(ch)) = self.data_mut(at) {
+                        ch.insert(c.to_string(), i);
+                    }
+                    i
+                }
+            };
+        }
+        at
     }
 
     fn add(&mut self, data: Data, mode: u32, mtime: i64) -> Ino {

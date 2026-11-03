@@ -1,5 +1,6 @@
 // vnvm_fetch(name, &len): one file of the store (trees/<name>.tsv or chunks/ab/<hash>, the
-// latter zstd-compressed), for crates/vnhost/src/vfs.rs. Returns a malloc'ed buffer, or 0.
+// latter zstd-compressed), for crates/vnhost/src/vfs.rs; or "@saves", the saved games the page
+// passed (host/pre.js; node: the file $VNVM_SAVES). Returns a malloc'ed buffer, or 0.
 //
 // node: read from $VNVM_STORE. Browser (a worker, so synchronous XHR is allowed): fetch from
 // store/ beside the directory of wine.js; the server sends chunks with "Content-Encoding: zstd",
@@ -18,7 +19,10 @@ addToLibrary({
 #endif
     let data;
     try {
-      if (ENVIRONMENT_IS_NODE) {
+      if (name === '@saves') {
+        data = ENVIRONMENT_IS_NODE ? (process.env.VNVM_SAVES ? require('fs').readFileSync(process.env.VNVM_SAVES) : null) : vnvmSaves;
+        if (!data) return 0;
+      } else if (ENVIRONMENT_IS_NODE) {
         data = require('fs').readFileSync(require('path').join(store, name));
         if (name.startsWith('chunks/')) data = require('zlib').zstdDecompressSync(data);
       } else {
