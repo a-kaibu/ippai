@@ -165,7 +165,9 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   // regions stay good across builds that change anything else)
   const jitVersion = fetch(`${WINE}jit-version.txt`, { cache: "no-cache" })
     .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`))))
-    .then((t) => (/^[0-9a-f]{8}$/.test(t.trim()) ? t.trim() : Promise.reject(new Error("bad version"))))
+    .then((t) =>
+      /^[0-9a-f]{8}$/.test(t.trim()) ? t.trim() : Promise.reject(new Error("bad version")),
+    )
     .catch(() => wasmVersion.then((v) => fnv(new TextEncoder().encode(v))));
   const jitName = jitBase === "0" ? undefined : jitVersion.then((v) => `${jitBase}-${v}`);
   const jit = jitName
@@ -181,7 +183,9 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   recorder.note(`build: ${WASM} ${version}, translator ${await jitVersion}`);
   // saved games: per program and mounts; what it writes in its folders and the user folders
   const mounts = params.getAll("mount");
-  const saveName = `${run.replace(/[^A-Za-z0-9_.-]/g, "_")}-${fnv(new TextEncoder().encode(mounts.join(":")))}`;
+  const saveName = `${run.replace(/[^A-Za-z0-9_.-]/g, "_")}-${fnv(
+    new TextEncoder().encode(mounts.join(":")),
+  )}`;
   const saveRoots = [
     ...mounts.map((m) => m.slice(0, m.indexOf("="))),
     "/vnvm/prefix/drive_c/users",
@@ -257,7 +261,10 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   attachInput(wine);
   const resize = () => {
     const dpr = window.devicePixelRatio || 1;
-    wine._vnhost_render_resize(Math.floor(canvas.clientWidth * dpr), Math.floor(canvas.clientHeight * dpr));
+    wine._vnhost_render_resize(
+      Math.floor(canvas.clientWidth * dpr),
+      Math.floor(canvas.clientHeight * dpr),
+    );
   };
   resize();
   new ResizeObserver(resize).observe(canvas);
@@ -370,7 +377,10 @@ function watch(wine: WineModule): void {
   const info = wine._malloc(32) >>> 0;
   let serial = 0;
   // Siglus movies: decoded here for the guest (web/src/video.ts)
-  const video = typeof VideoDecoder !== "undefined" ? new Video(wine, (l) => (console.log(l), recorder?.note(l))) : null;
+  const video =
+    typeof VideoDecoder !== "undefined"
+      ? new Video(wine, (l) => (console.log(l), recorder?.note(l)))
+      : null;
   const frame = () => {
     if (exited || wine._vnhost_root_exited()) return closeGame();
     video?.tick();
@@ -388,7 +398,8 @@ function watch(wine: WineModule): void {
 }
 
 function attachInput(wine: WineModule): void {
-  const push = (kind: number, x: number, y: number, data: number) => wine._vnhost_render_input(kind, x, y, data);
+  const push = (kind: number, x: number, y: number, data: number) =>
+    wine._vnhost_render_input(kind, x, y, data);
   // canvas pixels: the module maps them to the screen
   const toFrame = (e: { clientX: number; clientY: number }): [number, number] => {
     const b = canvas.getBoundingClientRect();
