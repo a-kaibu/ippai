@@ -5,7 +5,7 @@
 # results; they match Windows). UPDATE=1 rewrites the expected files. Exits 1 on a failure.
 #
 #   tests/host-tests.sh [name ...]      SAKE=path/to/sake.js (default /home/user/work/sake-out/sake.js)
-set -u
+set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SAKE=${SAKE:-/home/user/work/sake-out/sake.js}
 OUT=${OUT:-$(mktemp -d)}
@@ -18,8 +18,16 @@ for t in $TESTS; do
     echo "FAIL $t: build"; fail=1; continue
   fi
   run() { (cd "$(dirname "$SAKE")" && timeout 300 env "$@" node "$SAKE" "$OUT/$t.exe" 2>&1 | grep -v '^sake:'); }
-  jit=$(run VNVM_JIT=1)
-  interp=$(run VNVM_JIT=0)
+  if ! jit=$(run VNVM_JIT=1); then
+    echo "FAIL $t: JIT process failed or timed out"
+    fail=1
+    continue
+  fi
+  if ! interp=$(run VNVM_JIT=0); then
+    echo "FAIL $t: interpreter process failed or timed out"
+    fail=1
+    continue
+  fi
   want=$ROOT/host/tests/expected/$t.txt
   if [ -n "${UPDATE:-}" ]; then
     echo "$jit" > "$want"
