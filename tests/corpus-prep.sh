@@ -13,8 +13,9 @@ f=dl.${url##*.}
 if [ ! -s "$f" ]; then
   # the proxy sometimes cuts long transfers: resume
   ok=
-  for i in 1 2 3 4 5 6 7 8 9 10; do
-    curl -sSfL --max-time 3600 -C - -o "$f.part" "$url" && { ok=1; break; }
+  # (DL_TRIES / DL_MAX_TIME: CI gives a dead host less time)
+  for i in $(seq "${DL_TRIES:-10}"); do
+    curl -sSfL --connect-timeout 30 --max-time "${DL_MAX_TIME:-3600}" -C - -o "$f.part" "$url" && { ok=1; break; }
     sleep $((i * 2))
   done
   [ -n "$ok" ] || { echo "download failed" >&2; exit 4; }

@@ -40,7 +40,7 @@ def prep(tid):
     if os.path.isdir(f'{STORES}/{tid}') and os.path.exists(f'{STORES}/{tid}/exe.txt'):
         return open(f'{STORES}/{tid}/exe.txt').read().strip(), None
     r = subprocess.run(['bash', f'{HERE}/corpus-prep.sh', tid, t['url'], t.get('exe_rel', ''), f'{STORES}/{tid}'],
-                       capture_output=True, text=True, env=env, timeout=4000)
+                       capture_output=True, text=True, env=env, timeout=int(os.environ.get('PREP_TIMEOUT', '4000')))
     if r.returncode: return None, (r.stderr.strip() or f'exit {r.returncode}')[-300:]
     return r.stdout.strip().splitlines()[-1], None
 
@@ -50,12 +50,15 @@ JOBS = int(os.environ.get('PREP_JOBS', '4'))
 q = queue.Queue(maxsize=JOBS)
 work = queue.Queue()
 for tid in todo: work.put(tid)
+PREP_S = {}  # download + extract + pack seconds per title
 def producer():
     while True:
         try: tid = work.get_nowait()
         except queue.Empty: break
+        t = time.time()
         try: exe, err = prep(tid)
         except Exception as e: exe, err = None, str(e)
+        PREP_S[tid] = round(time.time() - t)
         q.put((tid, exe, err))
     q.put(None)
 for _ in range(JOBS): threading.Thread(target=producer, daemon=True).start()
@@ -130,6 +133,12 @@ while True:
         open(f'{od}/exe.txt', 'w').write(exe + '\n')
         if os.path.isdir(f'{STORES}/{tid}'): open(f'{STORES}/{tid}/exe.txt', 'w').write(exe + '\n')
         print(tid, 'done', round(time.time() - t0), flush=True)
+    # how long the title took (prep: download, extract, pack)
+    try:
+        r = json.load(open(f'{od}/result.json'))
+        r['prep_s'] = PREP_S.get(tid)
+        json.dump(r, open(f'{od}/result.json', 'w'), ensure_ascii=False, indent=1)
+    except Exception: pass
     # with --keep a failed title's packed store stays (debugging needs no download); the extracted files go
     shutil.rmtree(f'{TRIALS}/{tid}', ignore_errors=True)
     try: ok = json.load(open(f'{od}/result.json')).get('title') is not None
