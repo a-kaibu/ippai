@@ -26,6 +26,17 @@ struct Obj {
 static OBJS: Mutex<Option<HashMap<u32, Obj>>> = Mutex::new(None);
 /// trap address -> (interface, method, result kind)
 static STUBS: Mutex<Option<HashMap<u32, (&'static str, &'static str, u8)>>> = Mutex::new(None);
+/// trap address -> (method, stack argument dwords), for handlers shared by several methods
+static NAMES: Mutex<Option<HashMap<u32, (&'static str, u8)>>> = Mutex::new(None);
+
+/// The name of the method whose trap `trap` is.
+pub fn method_name(trap: u32) -> Option<&'static str> {
+    NAMES.lock().unwrap().as_ref()?.get(&trap).map(|m| m.0)
+}
+/// Its argument count (dwords, with `this` and a hidden result pointer).
+pub fn method_dwords(trap: u32) -> Option<u32> {
+    NAMES.lock().unwrap().as_ref()?.get(&trap).map(|m| m.1 as u32)
+}
 static VTBLS: Mutex<Option<HashMap<&'static str, u32>>> = Mutex::new(None);
 
 fn objs<R>(f: impl FnOnce(&mut HashMap<u32, Obj>) -> R) -> R {
@@ -142,10 +153,11 @@ pub fn vtable(iface: &'static str, impls: &[(&str, Handler)]) -> u32 {
             None if i == 2 => release,
             None => stub,
         };
-        let a = host_fn(&format!("{iface}::{name}"), f, 4 * dwords as u32);
+        let a = host_fn(&format!("{iface}::{i}:{name}"), f, 4 * dwords as u32);
         if i > 2 && !impls.iter().any(|m| m.0 == name) {
             STUBS.lock().unwrap().get_or_insert_with(HashMap::new).insert(a, (iface, name, kind));
         }
+        NAMES.lock().unwrap().get_or_insert_with(HashMap::new).insert(a, (name, dwords));
         mem::wp(v + k * i as u32, a);
     }
     VTBLS.lock().unwrap().get_or_insert_with(HashMap::new).insert(iface, v);
@@ -167,6 +179,15 @@ pub fn add_interface(obj: u32, iface: &'static str, sub: u32) {
     objs(|m| {
         if let Some(o) = m.get_mut(&obj) {
             o.extra.push((iface, sub));
+        }
+    });
+}
+
+/// AddRef from the host (an object handed out again).
+pub fn add_ref_obj(obj: u32) {
+    objs(|m| {
+        if let Some(o) = m.get_mut(&obj) {
+            o.refs += 1;
         }
     });
 }

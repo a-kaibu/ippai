@@ -9,6 +9,7 @@
 //! shaders go DXBC -> SPIR-V -> WGSL (`shader`), buffers are guest memory copied into a new page
 //! buffer whenever a draw needs them after the guest wrote them.
 
+pub mod d2d;
 pub mod dxbc;
 pub mod format;
 pub mod names;

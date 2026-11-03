@@ -1290,6 +1290,57 @@ fn dc_font(t: &Objs, s: &DcState) -> LogFont {
     }
 }
 
+/// For DirectWrite: a font by family name at an em size in pixels.
+pub struct TextFont {
+    r: Real,
+    asc: f32,
+    desc: f32,
+    gap: f32,
+}
+
+pub fn text_font(family: &str, em: f32, weight: i32) -> Option<TextFont> {
+    let lf = LogFont {
+        height: -(em.round().max(1.0) as i32),
+        width: 0,
+        esc: 0,
+        orient: 0,
+        weight,
+        italic: 0,
+        underline: 0,
+        strike: 0,
+        charset: 128,
+        out_prec: 0,
+        clip_prec: 0,
+        quality: 0,
+        pitch: 0,
+        face: family.to_string(),
+    };
+    let mut r = realize(&lf)?;
+    r.em = em;
+    let m = font_metrics(r.face, &r.font);
+    let k = em / m.upem;
+    // (DirectWrite's line metrics: the hhea ascent/descent/gap, as for fonts without typo
+    // metrics in use)
+    Some(TextFont { asc: m.win_asc * k, desc: m.win_desc * k, gap: (m.line_gap * k).max(0.0), r })
+}
+
+impl TextFont {
+    /// ascent, descent and line gap in pixels
+    pub fn metrics(&self) -> (f32, f32, f32) {
+        (self.asc, self.desc, self.gap)
+    }
+    pub fn advance(&self, ch: u32) -> f32 {
+        glyph(&self.r, ch).adv as f32
+    }
+    /// Calls `f(left, top above the baseline, w, h, coverage)` with the glyph's black box.
+    pub fn glyph(&self, ch: u32, mut f: impl FnMut(i32, i32, i32, i32, &[u8])) {
+        let g = glyph(&self.r, ch);
+        if g.w > 0 && g.h > 0 {
+            f(g.x0, g.top, g.w, g.h, &g.cov);
+        }
+    }
+}
+
 /// For Uniscribe (usp.rs): the font selected into `dc`.
 pub fn dc_font_handle(dc: u32) -> u32 {
     with(|t| match t.m.get(&dc) {
