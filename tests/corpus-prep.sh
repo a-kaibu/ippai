@@ -92,7 +92,7 @@ fi
 if [ ! -d "$store" ]; then
   rm -rf "$store.part"
   cp -al "$BASE" "$store.part"
-  vnvm --store "$store.part" pack . g >/dev/null
+  ippai --store "$store.part" pack . g >/dev/null
   mv "$store.part" "$store"
 fi
 echo "$e"

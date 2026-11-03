@@ -6,3 +6,6 @@
 /web/public/sake
 /node_modules
 /logs
+/crates/ippai/target
+/dist
+/web/public/benchwasm

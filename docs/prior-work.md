@@ -33,7 +33,7 @@ Reunion、保存なし・ブラウザのキャッシュなし。タイトルま�
 - リージョンの翻訳の約 4 割 (3056 個中 1246 個、x86 コード 720KB 中 310KB) が Wine の DLL と
   補助プロセスのもの。残りがゲーム本体とプラグイン。
 - 生成コードは x86 1 命令あたり平均 35.7 バイト。mov は 30 バイトで全体の 34% を占める。
-  オフラインの再翻訳 (`cargo run --release -p vnx86 --example corpus -- out.wasm *.idx`) で
+  オフラインの再翻訳 (`cargo run --release -p koji --example corpus -- out.wasm *.idx`) で
   全リージョンを TurboFan にかけると 10.2 秒 (1 スレッド)、Liftoff は 0.5 秒。範囲チェックの出口
   (bail) を全部 trap にすると 8.1 秒なので、出口の分岐は TurboFan の時間の約 2 割に当たる。
 
@@ -156,7 +156,7 @@ Reunion、保存なし・ブラウザのキャッシュなし。タイトルま�
 1. **Wine の DLL・補助プロセスの翻訳をゲーム間で共有** (XTA の「モジュールごとのキャッシュを
    他のアプリが初回から使う」、Pin の 59%、Box64 DynaCache の共有ライブラリ)。
    - 仕組み:
-     - vnvm serve は、あるプログラムの保存に、別のプログラムも保存したリージョン (起点と
+     - ippai serve は、あるプログラムの保存に、別のプログラムも保存したリージョン (起点と
        元のコードが同じもの) があれば `_shared-<版>` に移す。
      - どのページも自分の保存と一緒にこれを読む。
      - 読み込むファイルの先読みも `_shared.chunks` で共有する。
@@ -167,8 +167,8 @@ Reunion、保存なし・ブラウザのキャッシュなし。タイトルま�
 2. **保存の版を翻訳器のソースのハッシュに** (`wine/jit-version.txt`、vnvm-wine hangover/build.sh が書く)。
    - これまでは wine.wasm の Last-Modified が版だったので、web だけのビルドでも保存が全部
      無駄になっていた。
-   - いまは vnx86 と vnhost の jit.rs/cpu.rs、vnjit.js が変わったときだけ作り直す。
-3. **インタプリタのデコードキャッシュ** (`vnx86::DecodeCache`)。
+   - いまは koji と kura の jit.rs/cpu.rs、vnjit.js が変わったときだけ作り直す。
+3. **インタプリタのデコードキャッシュ** (`koji::DecodeCache`)。
    - スレッドごとに 2048 エントリの直接マップで、命令のバイト列が同じときだけ使う
      (自己書き換えにも安全)。
    - 1 命令 75 → 46 ns (ネイティブの計測、`--example ibench`)。
@@ -257,7 +257,7 @@ vnvm で静的 AOT を試すと JIT より遅かった (vnvm-wine docs/hangover.
 - **x86 → wasm の静的翻訳 elfconv** (FOSDEM 2026): AOT でエミュレータ (v86、container2wasm)
   の 30〜70 倍。比べている相手がインタプリタ型で、vnvm の JIT とは比べていない。
 
-vnvm の事前実行 (vnvm serve prerun_games) は ART のクラウドプロファイルや Leyden の
+vnvm の事前実行 (ippai serve prerun_games) は ART のクラウドプロファイルや Leyden の
 訓練実行と同じ形で、「どこが走るか」をサーバーでの 1 回の実行から得て、JIT の形の
 リージョンを初回から配る。AOT が JIT に勝てる余地が残っているのは、サーバーで時間をかけて
 良いコードを作るところ (関数全体を見たレジスタ割り当てやフラグの削除、binaryen の最適化)

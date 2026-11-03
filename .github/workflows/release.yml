@@ -1,0 +1,68 @@
+# Releases on a v* tag: push one (git tag v0.1.0 && git push origin v0.1.0), or on the GitHub web
+# UI open Releases → Draft a new release, type a new tag (v0.1.0) on main and publish it. This
+# runs CI (tests, sake.wasm and the page, host/tests), then GoReleaser builds ippai for Linux
+# x86-64 and ARM64 with the page built in, smoke-tests it and puts the archives, checksums.txt and
+# SBOMs on that tag's release (made when there is none; one made on the web UI keeps its notes).
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: ci
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # (GoReleaser's changelog: the commits since the previous tag)
+
+      # sake.wasm and the page CI built (the same for every target): built into the binaries
+      - uses: actions/download-artifact@v4
+        with:
+          name: web
+          path: web/dist
+
+      - name: Rust targets
+        run: rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+
+      - uses: anchore/sbom-action/download-syft@v0
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            crates/ippai/target
+          key: release-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: release-${{ runner.os }}-
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}

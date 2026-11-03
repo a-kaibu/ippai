@@ -1,16 +1,16 @@
 // Runs sake (crates/sake, the from-scratch Win32 layer, built by crates/sake/build.sh → public/sake/)
 // in the page: the prefix (its C:\ fonts) and the games are streamed from the store, windows are
-// composed by vnhost (crates/vnhost/src/display.rs) and shown with WebGPU. (The page ran Wine too
+// composed by kura (crates/kura/src/display.rs) and shown with WebGPU. (The page ran Wine too
 // until 2026-11-02: a-kaibu/vnvm-wine.)
 //
-//   /play.html                      the game list (web/src/launcher.ts, vnvm add-game)
+//   /play.html                      the game list (web/src/launcher.ts, ippai add-game)
 //   /play.html?game=id              a game from the list (its run, mount, args and env)
 //   /play.html?run=C:\path\to.exe   program to start
 //   &args=a,b                       its arguments
 //   &debug=<flags>[:channel,...]    SAKE_WINEDEBUG (crates/sake/src/k32.rs)
 //   &mount=/vnvm/game=tree          also mount a store tree (repeatable; Z:\vnvm\game\...)
 //   &env=NAME=value                 extra environment variable (repeatable, e.g. SAKE_TRACE_FILES=1)
-//   &nosave                         no saved games (vnvm serve's pre-run: its x86 regions only)
+//   &nosave                         no saved games (ippai serve's pre-run: its x86 regions only)
 //   &headless                       don't draw to the canvas (tests/play.mjs: headless Chromium
 //                                   destroys the device then, and Direct3D games need it)
 
@@ -62,7 +62,7 @@ interface SakeModule {
 /** The run's detailed log (web/src/crashlog.ts), from the start of boot(). */
 let recorder: FlightRecorder | null = null;
 
-// input record kinds (crates/vnhost/src/display.rs)
+// input record kinds (crates/kura/src/display.rs)
 const MOUSE_MOVE = 1,
   MOUSE_DOWN = 2,
   MOUSE_UP = 3,
@@ -162,12 +162,12 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     engine: "sake",
     arch: "x86",
   });
-  // the browser keeps a versioned sake.wasm with its compiled code (see vnvm serve)
+  // the browser keeps a versioned sake.wasm with its compiled code (see ippai serve)
   const wasmVersion = fetch(`${BASE}${WASM}`, { method: "HEAD" }).then(
     (r) => `${r.headers.get("last-modified") ?? ""}-${r.headers.get("content-length") ?? ""}`,
     () => "",
   );
-  // x86 regions earlier runs of this program saved (vnvm serve /jit), per build of sake.wasm
+  // x86 regions earlier runs of this program saved (ippai serve /jit), per build of sake.wasm
   // (which has the translator); &jit=0 for none
   const jitBase = params.get("jit") ?? `sake-${run.replace(/[^A-Za-z0-9_.-]/g, "_")}`;
   // (jit-version.txt: a hash of the translator's sources, which crates/sake/build.sh writes; saved
@@ -200,7 +200,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     locateFile: (path: string) =>
       path === WASM && version ? `${BASE}${path}?v=${encodeURIComponent(version)}` : `${BASE}${path}`,
     vnvmEnv: {
-      // "/=": an empty tree at the root, so every path is vnhost's (no emscripten file system)
+      // "/=": an empty tree at the root, so every path is kura's (no emscripten file system)
       VNVM_MOUNTS: ["/=", "/vnvm/prefix=prefix32", ...params.getAll("mount")].join(":"),
       LANG: "ja_JP.UTF-8",
       // sake's C:\ (the prefix's fonts)
@@ -221,9 +221,9 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
         params.getAll("env").map((e) => [e.slice(0, e.indexOf("=")), e.slice(e.indexOf("=") + 1)]),
       ),
     },
-    // read by vnhost's file system as "@saves" (host/vnfs.js)
+    // read by kura's file system as "@saves" (host/vnfs.js)
     vnvmSaves: saved,
-    // the canvas: a thread of the module draws into it (crates/vnhost/src/render, host/vngpu.js)
+    // the canvas: a thread of the module draws into it (crates/kura/src/render, host/vngpu.js)
     vnvmCanvas: canvas.transferControlToOffscreen(),
     vnvmJit: await jit,
     print: (line: string) => {

@@ -1,7 +1,7 @@
 # sake と Wine の比較 (性能)
 
-2026-11-02。同じ JIT (vnx86) のソースから両方をビルドして比べた (wine.wasm と sake.wasm は
-vnx86 を静的に含む)。互換性 (コーパスで何本動くか) は sake スレッドの担当で、
+2026-11-02。同じ JIT (koji) のソースから両方をビルドして比べた (wine.wasm と sake.wasm は
+koji を静的に含む)。互換性 (コーパスで何本動くか) は sake スレッドの担当で、
 結果は `/mnt/project-files/sake/corpus.md` に出る予定。最終的な選択はそれと合わせて決める。
 
 計測マシン: 4 コアのクラウドコンテナ、HeadlessChrome 153。「Android 相当」は

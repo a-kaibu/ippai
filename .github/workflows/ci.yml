@@ -1,20 +1,22 @@
 # CI: every push to main and every pull request runs the Rust tests and builds the whole
-# release (sake.wasm, the page, the server), then runs host/tests on sake. A tag v* also
-# publishes that build on GitHub Releases (tools/ci/build.sh makes vnvm-<tag>.tar.zst).
+# thing (sake.wasm, the page, the ippai binary with the page built in), then runs host/tests
+# on sake. The release workflow (release.yml) runs this first and makes the release from its
+# web/dist (artifact "web").
 name: CI
 
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # (github.workflow: called from Release, a run of its own beside the push's)
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
@@ -66,22 +68,12 @@ jobs:
         run: SAKE=$PWD/target/sake-out/sake.js tests/host-tests.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: vnvm
+          name: ippai
           path: target/dist/*
           retention-days: 14
-
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, build]
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: vnvm
-          path: dist
-      - name: GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+          name: web
+          path: web/dist
+          retention-days: 14
+

@@ -1,4 +1,4 @@
-//! Win16: NE programs (Windows 3.x) in vnx86's 16-bit protected mode.
+//! Win16: NE programs (Windows 3.x) in koji's 16-bit protected mode.
 //!
 //! Selectors are indexes into a table of segment bases in guest memory (`Cpu::ldt`); every
 //! segment is a block of guest memory, so a far pointer's linear address is base + offset and
@@ -13,7 +13,7 @@ use crate::mem::{r16, r32, w16, w32, w8};
 use crate::HashMap;
 use std::cell::Cell;
 use std::sync::{Mutex, OnceLock};
-use vnx86::{Cpu, EAX, ECX, EDX, ESP};
+use koji::{Cpu, EAX, ECX, EDX, ESP};
 
 /// Base of the thunk segment (in the CPU's trap range): import i is at offset 4*i.
 pub const TRAP: u32 = 0xffc0_0000;
@@ -89,7 +89,7 @@ pub fn on() -> bool {
 }
 
 pub fn is_ne(path: &str) -> bool {
-    let Ok(d) = vnhost::fs::read(path) else { return false };
+    let Ok(d) = kura::fs::read(path) else { return false };
     if d.len() < 0x40 || &d[..2] != b"MZ" {
         return false;
     }
@@ -755,7 +755,7 @@ pub fn start(cpu: &mut Cpu, exe: &str, wpath: &str, args: &[String]) -> ! {
     SCR16.with(|s| s.set((s16sel, s16, 0xfff0)));
     crate::w16api::init();
 
-    let d = vnhost::fs::read(exe).expect("read exe");
+    let d = kura::fs::read(exe).expect("read exe");
     let ne = u32::from_le_bytes(d[0x3c..0x40].try_into().unwrap()) as usize;
     let h = |o: usize| u16at(&d, ne + o);
     let (autodata, heap, mut stack) = (h(0x0e), h(0x10), h(0x12));

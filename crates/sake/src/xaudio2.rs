@@ -1,6 +1,6 @@
 //! XAudio2 2.7 (CoCreateInstance CLSID_XAudio2): source voices play queued XAUDIO2_BUFFERs
 //! from guest memory, through submix voices' volumes, into a mastering voice that is a stream
-//! of vnhost's audio output. The engine is one guest thread: each 10 ms pass it calls the
+//! of kura's audio output. The engine is one guest thread: each 10 ms pass it calls the
 //! voices' OnVoiceProcessingPassStart, mixes, delivers OnBufferStart / OnBufferEnd /
 //! OnLoopEnd / OnStreamEnd, then OnVoiceProcessingPassEnd (as XAudio2 calls them from its
 //! own thread). No effects, filters or output matrices; PCM and float formats only.
@@ -200,7 +200,7 @@ fn engine_thread(c: &mut Ctx) -> u32 {
     let lock = Mutex::new(());
     loop {
         let (stream, running) = with(|e| (e.stream, e.running));
-        if !running || vnhost::audio::vnhost_audio_queued(stream) >= AHEAD {
+        if !running || kura::audio::vnhost_audio_queued(stream) >= AHEAD {
             drop(WAKE.wait_timeout(lock.lock().unwrap(), Duration::from_millis(5)).unwrap());
             continue;
         }
@@ -225,7 +225,7 @@ fn engine_thread(c: &mut Ctx) -> u32 {
         for &cb in &engine_cbs {
             callback(c, cb, 1, None);
         }
-        unsafe { vnhost::audio::vnhost_audio_write(stream, out.as_ptr() as *const u8, STEP as u32) };
+        unsafe { kura::audio::vnhost_audio_write(stream, out.as_ptr() as *const u8, STEP as u32) };
     }
 }
 
@@ -235,7 +235,7 @@ fn start_thread() {
             return false;
         }
         e.thread = true;
-        e.stream = vnhost::audio::vnhost_audio_open(RATE, 2, 32, 1);
+        e.stream = kura::audio::vnhost_audio_open(RATE, 2, 32, 1);
         true
     });
     if spawn {

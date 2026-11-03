@@ -1374,7 +1374,7 @@ fn ___lc_collate_cp_func(_: &mut Ctx) -> u32 {
 // _findfirst / _findnext: a FindFirstFile handle; the data's layout by time and size widths
 
 /// (time 64-bit, size 64-bit, wide)
-fn find_write(p: u32, (t64, s64, wide): (bool, bool, bool), name: &str, m: &vnhost::fs::Metadata) {
+fn find_write(p: u32, (t64, s64, wide): (bool, bool, bool), name: &str, m: &kura::fs::Metadata) {
     let t = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
     let size = if m.is_dir() { 0 } else { m.len() };
     w32(p, crate::files::attrs(m) & 0x37);
@@ -1643,7 +1643,7 @@ fn _wfopen_s(c: &mut Ctx) -> u32 {
 fn _setjmp3(c: &mut Ctx) -> u32 {
     let b = c.a(0);
     let r = &c.cpu.regs;
-    for (i, v) in [r[vnx86::EBP], r[vnx86::EBX], r[vnx86::EDI], r[vnx86::ESI], c.esp + 4, r32(crate::cur().teb), r32(c.esp)].into_iter().enumerate() {
+    for (i, v) in [r[koji::EBP], r[koji::EBX], r[koji::EDI], r[koji::ESI], c.esp + 4, r32(crate::cur().teb), r32(c.esp)].into_iter().enumerate() {
         w32(b + 4 * i as u32, v);
     }
     0
@@ -1651,13 +1651,13 @@ fn _setjmp3(c: &mut Ctx) -> u32 {
 fn longjmp(c: &mut Ctx) -> u32 {
     let (b, v) = (c.a(0), c.a(1));
     let g = |i: u32| r32(b + 4 * i);
-    c.cpu.regs[vnx86::EBP] = g(0);
-    c.cpu.regs[vnx86::EBX] = g(1);
-    c.cpu.regs[vnx86::EDI] = g(2);
-    c.cpu.regs[vnx86::ESI] = g(3);
-    c.cpu.regs[vnx86::ESP] = g(4);
+    c.cpu.regs[koji::EBP] = g(0);
+    c.cpu.regs[koji::EBX] = g(1);
+    c.cpu.regs[koji::EDI] = g(2);
+    c.cpu.regs[koji::ESI] = g(3);
+    c.cpu.regs[koji::ESP] = g(4);
     w32(crate::cur().teb, g(5));
-    c.cpu.regs[vnx86::EAX] = if v == 0 { 1 } else { v };
+    c.cpu.regs[koji::EAX] = if v == 0 { 1 } else { v };
     c.cpu.eip = g(6);
     c.jumped = true;
     0

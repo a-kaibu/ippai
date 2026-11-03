@@ -1,4 +1,4 @@
-//! Files: Windows paths over the host's (node's) or the page's (vnhost vfs) file system.
+//! Files: Windows paths over the host's (node's) or the page's (kura vfs) file system.
 //!
 //! Z:\ is the host root (as in Wine), C:\ is SAKE_C (default /tmp/sake-c). Names are
 //! matched without case when the exact one is missing.
@@ -7,13 +7,13 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::Mutex;
 
 pub struct File {
-    pub f: Mutex<vnhost::fs::File>,
+    pub f: Mutex<kura::fs::File>,
     pub path: String,
     pub dir: bool,
 }
 
 pub struct Find {
-    pub entries: Vec<(String, vnhost::fs::Metadata)>,
+    pub entries: Vec<(String, kura::fs::Metadata)>,
     pub at: usize,
 }
 
@@ -50,9 +50,9 @@ pub fn host_to_win(h: &str) -> String {
     format!("Z:{}", h.replace('/', "\\"))
 }
 
-/// Whether host path `h` is a directory (vnhost's file system, not std's).
+/// Whether host path `h` is a directory (kura's file system, not std's).
 pub fn is_dir<P: AsRef<std::path::Path>>(h: P) -> bool {
-    vnhost::fs::metadata(h).is_ok_and(|m| m.is_dir())
+    kura::fs::metadata(h).is_ok_and(|m| m.is_dir())
 }
 
 /// Absolute Windows path of `p` (GetFullPathName): drive, no "." or "..", backslashes.
@@ -103,7 +103,7 @@ pub fn to_host(w: &str) -> String {
 }
 
 fn exists(h: &str) -> bool {
-    vnhost::fs::symlink_metadata(h).is_ok()
+    kura::fs::symlink_metadata(h).is_ok()
 }
 
 /// The host path of an existing file or directory `w` (case-insensitive match).
@@ -119,7 +119,7 @@ pub fn resolve(w: &str) -> Option<String> {
             at = cand;
             continue;
         }
-        let found = vnhost::fs::name_nocase(&at, comp)?;
+        let found = kura::fs::name_nocase(&at, comp)?;
         at = if at == "/" { format!("/{found}") } else { format!("{at}/{found}") };
     }
     Some(at)
@@ -149,12 +149,12 @@ pub fn open(w: &str, access: u32, disposition: u32) -> Result<File, u32> {
     let existing = resolve(w);
     let host = existing.clone().unwrap_or_else(|| resolve_new(w));
     if let Some(h) = &existing {
-        if vnhost::fs::metadata(h).is_ok_and(|m| m.is_dir()) {
-            let f = vnhost::fs::File::open(h).map_err(|_| ERROR_ACCESS_DENIED)?;
+        if kura::fs::metadata(h).is_ok_and(|m| m.is_dir()) {
+            let f = kura::fs::File::open(h).map_err(|_| ERROR_ACCESS_DENIED)?;
             return Ok(File { f: Mutex::new(f), path: h.clone(), dir: true });
         }
     }
-    let mut o = vnhost::fs::OpenOptions::new();
+    let mut o = kura::fs::OpenOptions::new();
     o.read(true);
     match disposition {
         1 => {
@@ -234,7 +234,7 @@ pub fn filetime(t: std::time::SystemTime) -> u64 {
     116_444_736_000_000_000 + d.as_nanos() as u64 / 100
 }
 
-pub fn attrs(m: &vnhost::fs::Metadata) -> u32 {
+pub fn attrs(m: &kura::fs::Metadata) -> u32 {
     if m.is_dir() {
         0x10
     } else if m.permissions().readonly() {
@@ -274,11 +274,11 @@ pub fn find(w: &str) -> Option<Find> {
     let mut entries = Vec::new();
     if !pat.contains(['*', '?']) {
         let h = resolve(&full)?;
-        let m = vnhost::fs::metadata(&h).ok()?;
+        let m = kura::fs::metadata(&h).ok()?;
         let name = h.rsplit('/').next().unwrap_or("").to_string();
         return Some(Find { entries: vec![(name, m)], at: 0 });
     }
-    if let Ok(m) = vnhost::fs::metadata(&hd) {
+    if let Ok(m) = kura::fs::metadata(&hd) {
         // ("." and ".." as listed entries: only where the pattern takes them, as "*", not "*.ttf")
         if dir.len() > 3 {
             for d in [".", ".."] {
@@ -288,7 +288,7 @@ pub fn find(w: &str) -> Option<Find> {
             }
         }
     }
-    for e in vnhost::fs::read_dir(&hd).ok()?.flatten() {
+    for e in kura::fs::read_dir(&hd).ok()?.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
         if wild(pat, &name) {
             if let Ok(m) = e.metadata() {

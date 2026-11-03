@@ -65,7 +65,7 @@ for _ in range(JOBS): threading.Thread(target=producer, daemon=True).start()
 ends = 0
 
 def web_game(store, exe):
-    """a package.json next to the exe (NW.js, unpacked by vnvm pack) or in resources/app (Electron): the page runs it, x64 or not"""
+    """a package.json next to the exe (NW.js, unpacked by ippai pack) or in resources/app (Electron): the page runs it, x64 or not"""
     d = exe.rsplit('/', 1)[0] + '/' if '/' in exe else ''
     want = {f'{d}package.json'.lower(), f'{d}resources/app/package.json'.lower()}
     try:
@@ -109,7 +109,7 @@ while True:
     else:
         jit = f'{JIT_DIR}/{tid}'
         os.makedirs(jit, exist_ok=True)
-        srv = subprocess.Popen([f'{BIN}/vnvm', 'serve', '--web', WEB, '--store', f'{STORES}/{tid}',
+        srv = subprocess.Popen([f'{BIN}/ippai', 'serve', '--foreground', '--web', WEB, '--store', f'{STORES}/{tid}',
                                 '--jit', jit, '--listen', f'127.0.0.1:{PORT}', '--no-prerun'],
                                stdout=open(f'{od}/server.log', 'w'), stderr=subprocess.STDOUT)
         wait_port(PORT)

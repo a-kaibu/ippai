@@ -6,7 +6,7 @@ use crate::mem::{cstr, r16, r32, w16, w32, w8};
 use crate::w16::{self, call16, call32, h16, h32, lin, task, C16, A};
 use crate::HashMap;
 use std::sync::Mutex;
-use vnx86::{Cpu, EAX, ECX, EDX, ESP};
+use koji::{Cpu, EAX, ECX, EDX, ESP};
 
 /// (module.name, 32-bit dll!function, argument conversions, result conversion).
 /// Arguments, in the 16-bit order: w zero-extend, s sign-extend, l as is, h handle, p linear

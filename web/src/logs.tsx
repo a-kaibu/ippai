@@ -1,4 +1,4 @@
-// logs.html: the runs' logs (web/src/crashlog.ts) on the server (vnvm serve GET /log-list,
+// logs.html: the runs' logs (web/src/crashlog.ts) on the server (ippai serve GET /log-list,
 // files under /logs/) and in this browser's OPFS, to read, download or send.
 
 import { useEffect, useState, type ReactNode } from "react";

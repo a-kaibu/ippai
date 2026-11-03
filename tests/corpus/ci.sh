@@ -6,7 +6,7 @@
 # level get one more try (a busy runner can miss a timing). Grading: tests/corpus/check.py.
 #
 #   tests/corpus/ci.sh DIST FONTS OUT
-#     DIST: an unpacked release (vnvm, web/: tools/ci/build.sh)
+#     DIST: an unpacked release (ippai, web/: tools/ci/build.sh)
 #     FONTS: sake's C:\windows\Fonts (tools/ci/sake-fonts.py). That is all of C:\: no Wine
 #     DLLs, so a title that needs a DLL sake does not implement yet fails here, and
 #     check.py lists the DLLs each title missed.
@@ -29,7 +29,7 @@ if [ ! -d "$BASE" ]; then
   set -e
   rm -rf "$WORK/prefix" "$BASE.part" && mkdir -p "$WORK/prefix/drive_c/windows/temp"
   cp -r "$FONTS" "$WORK/prefix/drive_c/windows/Fonts"
-  "$DIST/vnvm" --store "$BASE.part" pack "$WORK/prefix" prefix32 >/dev/null
+  "$DIST/ippai" --store "$BASE.part" pack "$WORK/prefix" prefix32 >/dev/null
   rm -rf "$WORK/prefix"
   mv "$BASE.part" "$BASE"
   set +e

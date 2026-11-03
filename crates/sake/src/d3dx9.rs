@@ -415,7 +415,7 @@ fn D3DXCreateEffectEx(c: &mut Ctx) -> u32 {
 fn effect_file(c: &mut Ctx, wide: bool, ex: bool) -> u32 {
     let name = crate::k32::arg_str(c.a(1), wide);
     let (out, errs) = if ex { (c.a(7), c.a(8)) } else { (c.a(6), c.a(7)) };
-    let Some(data) = crate::files::resolve(&name).and_then(|h| vnhost::fs::read(h).ok()) else {
+    let Some(data) = crate::files::resolve(&name).and_then(|h| kura::fs::read(h).ok()) else {
         mem::putp(out, 0);
         return 0x88760b59;
     };
@@ -649,7 +649,7 @@ fn D3DXCreateTextureFromFileInMemory(c: &mut Ctx) -> u32 {
 /// the in-memory Ex arguments)
 fn texture_file(c: &mut Ctx, wide: bool, ex: bool) -> u32 {
     let name = crate::k32::arg_str(c.a(1), wide);
-    let Some(data) = crate::files::resolve(&name).and_then(|h| vnhost::fs::read(h).ok()) else {
+    let Some(data) = crate::files::resolve(&name).and_then(|h| kura::fs::read(h).ok()) else {
         return 0x88760b59;
     };
     let dev = c.a(0);

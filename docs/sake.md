@@ -1,6 +1,6 @@
 # sake: Rust で一から書いた Win32 層 (旧名 vnwin)
 
-Wine を使わずに、ゲームの x86 コードを vnhost の JIT で動かし、Windows API を Rust
+Wine を使わずに、ゲームの x86 コードを kura の JIT で動かし、Windows API を Rust
 (crates/sake、wasm) で実装する。Wine 経路 (2026-11-02 に [a-kaibu/vnvm-wine](https://github.com/a-kaibu/vnvm-wine) へ移した) と同じページ・同じ JIT・同じ
 WebGPU D3D9 を使う。いまはページ (`play.html` / `game.html`) が動かすのは sake だけ (`&engine=` は無視)。
 
@@ -22,15 +22,15 @@ WebGPU D3D9 を使う。いまはページ (`play.html` / `game.html`) が動か
   (ウィンドウ、メッセージ、ダイアログ、Button/Static/Edit コントロール、入力)、gdi32 (DIB、文字は
   FreeType ではなく ab_glyph と ttf-parser、AddFontResource)、msvcrt (crt.rs)、dsound
   (Rust でミックス)、DirectInput 7/8、DirectDraw 1〜7 (ソフトウェア、ddraw.rs)、
-  d3d9 (vnhost の WebGPU D3D9 に橋渡し)、CryptoAPI のハッシュ、DxDiag、レジストリ、
+  d3d9 (kura の WebGPU D3D9 に橋渡し)、CryptoAPI のハッシュ、DxDiag、レジストリ、
   shell32/shlwapi の一部、Uniscribe の一部 (usp.rs)、DirectShow のフィルタグラフ (dshow.rs: 動画は
   すぐ終わったことにする)。
 - DirectDraw: サーフェスはゲストメモリの画素と、その上に被せた GDI ビットマップ。Blt/BltFast
   (カラーキー、拡大縮小、塗りつぶし)、フリップ、Lock、GetDC。プライマリに描いたとき・
   Unlock・ReleaseDC・Flip でウィンドウに BitBlt する。Direct3D は出さないので、
   ゲームはソフトウェア描画に回る。
-- D3D11 / DXGI (d3d11.rs): vnhost の WebGPU D3D11 (Wine 経路と同じ実装) に橋渡し。vtable の
-  各メソッドはトラップで、`vnhost::d3d11::call` に引数を渡すだけ。メソッド表は
+- D3D11 / DXGI (d3d11.rs): kura の WebGPU D3D11 (Wine 経路と同じ実装) に橋渡し。vtable の
+  各メソッドはトラップで、`kura::d3d11::call` に引数を渡すだけ。メソッド表は
   `host/gen-d3d11-stubs.py` が d3d11_methods.rs として生成する。
 - specs.txt にない DLL (d2d1、dwrite、d3dcompiler_47 など) はプレフィックスの
   `C:\windows\system32` から Wine の PE ビルドを x86 として読む。Direct2D はこの Wine の d2d1 が
@@ -59,7 +59,7 @@ WebGPU D3D9 を使う。いまはページ (`play.html` / `game.html`) が動か
   import (最小 = 最大 = `MEMORY_MIN_PAGES`) と同じでないと JIT のモジュールが link できない。
   Android ではメモリサイズの読み直しが関数ごとに 1 回になる。4GB を最初からコミットするので、
   実機で確保できるかは最後の確認項目 (docs/translator.md)。
-- ウィンドウの面は表示側 (vnhost display) が直接読む (`vnhost_window_draw_shared`)。
+- ウィンドウの面は表示側 (kura display) が直接読む (`vnhost_window_draw_shared`)。
   前は 1 フレームごとに面を表示側のバッファへコピーしていて、Reunion の本編でゲームスレッドの
   17% が memmove だった。
 - ハンドルの表 (ウィンドウ、GDI オブジェクトなど) は SipHash ではなく Fx ハッシュ (lib.rs `Fx`)。
@@ -72,10 +72,10 @@ WebGPU D3D9 を使う。いまはページ (`play.html` / `game.html`) が動か
 
 ## 64 ビット (PE32+、2026-11-02)
 
-- sake.wasm は 1 つのまま。exe が PE32+ なら起動時に `mem::set_x64()` で x64 モードにし、vnx86 を
+- sake.wasm は 1 つのまま。exe が PE32+ なら起動時に `mem::set_x64()` で x64 モードにし、koji を
   long mode で動かす。ゲストのアドレスは 32 ビットのまま (メモリは 4GB で折り返す)。
 - ローダー (pe.rs): ImageBase が 4GB より上で再配置のない exe (0x140000000 など) は下位半分
-  (0x40000000) に置き、上位半分は vnx86 の `rip_hi` が持つ (`pe::ALIAS`)。プログラムに返す
+  (0x40000000) に置き、上位半分は koji の `rip_hi` が持つ (`pe::ALIAS`)。プログラムに返す
   その範囲のアドレスは `mem::widen` で上位を戻す。DIR64 再配置、8 バイト IAT、TLS、.pdata。
 - 呼び出し規約: 引数は rcx/rdx/r8/r9 とスタック (`Ctx::a64`)、浮動小数は xmm0-3、戻り値は
   rax/xmm0。ゲストへの呼び出しは `call64` (16 バイト境界、ホーム領域)。COM の vtable は 8 バイト
@@ -91,7 +91,7 @@ WebGPU D3D9 を使う。いまはページ (`play.html` / `game.html`) が動か
   EVR (CLSID_EnhancedVideoRenderer) は何もしないフィルタ。
 - 確認: Artemis x64 の 3 本 (遥かなるニライカナイ、GALS FICTION、セレクトオブリージュ) が
   Chromium でタイトル → 本編。SakanaGL x64 (でか乳巫女) もタイトル (約 30 秒) → 本編。
-- SakanaGL の sakanagl.dll は /arch:AVX2。vnx86 のインタプリタが VEX の 128 ビット形
+- SakanaGL の sakanagl.dll は /arch:AVX2。koji のインタプリタが VEX の 128 ビット形
   (AVX/AVX2)、FMA3、SSE3/SSSE3/SSE4.1 を実行する (interp/vex.rs: VEX のコードを名前で
   旧来のコードに写し、NDS は Cpu::vex_tmp (xmm16) に src1 を写してから実行)。ymm (256 ビット)
   は #UD、CPUID は AVX を報告しない。JIT は VEX 命令でインタプリタに落ちる。
@@ -105,7 +105,7 @@ WebGPU D3D9 を使う。いまはページ (`play.html` / `game.html`) が動か
 
 ## 16 ビット (Win16)
 
-- NE 形式の exe (Windows 3.x) は `w16::start` が読む (w16.rs)。vnx86 のインタプリタに 16 ビット
+- NE 形式の exe (Windows 3.x) は `w16::start` が読む (w16.rs)。koji のインタプリタに 16 ビット
   保護モード (`Cpu::mode16`) があり、セグメントレジスタの値とベース (`sreg`/`sbase`)、far
   call/jmp/retf/iret、lds/les を扱う。セレクタは `Cpu::ldt` の表 (セレクタ番号ごとに u32 のベース)
   の添字で、ベースはゲストメモリのブロックなので far ポインタの線形アドレスはベース + オフセット。
@@ -152,7 +152,7 @@ node では D3D9 は描かれない (WebGPU がない) ので、D3D9 のゲー�
 - node: ゲームのフォルダで `SAKE_C=<prefix>/drive_c node sake.js /abs/game.exe`。
   `VNVM_SCREENSHOT=out.ppm`、`VNVM_INPUT="秒:種類,x,y,データ;..."` (1 移動、2/3 ボタン、
   5/6 キー)。ボタンはホバーの移動を先に送らないと反応しないゲームが多い。
-- ページ: `vnvm pack <dir> <name>` してから
+- ページ: `ippai pack <dir> <name>` してから
   `play.html?engine=sake&autostart&run=Z%3A%5Cvnvm%5Cgame%5C<exe>&mount=/vnvm/game=<name>`。
   `tests/play.mjs` でヘッドレスのスクリーンショット。
 - 調べるとき: `SAKE_WATCH=<16進番地>` (API 呼び出しごとにその番地の値を見て、変わったら表示)、`VNVM_D3D_TRACE=1` (描画ごとの頂点も表示)、`SAKE_TRACE=1` (+ `SAKE_TRACE_FILTER=a,b`、`SAKE_TRACE_AFTER=ms`)、

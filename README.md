@@ -1,9 +1,9 @@
-# vnvm
+# ippai
 
 ビジュアルノベルをブラウザの中で動かすためのリポジトリです。ゲームの x86 (i386) コードは
-x86→wasm JIT (`crates/vnx86`) で動かし、Windows API は Rust で一から書いた Win32 層
+x86→wasm JIT (`crates/koji`) で動かし、Windows API は Rust で一から書いた Win32 層
 sake (`crates/sake`、[docs/sake.md](docs/sake.md)) が受け持ちます。表示・音声・ファイル・
-Direct3D/OpenGL (WebGPU) はブラウザ側のホスト `crates/vnhost` です。
+Direct3D/OpenGL (WebGPU) はブラウザ側のホスト `crates/kura` です。
 
 Wine 11.20 の Unix 側を wasm にする Hangover 方式の経路は 2026-11-02 に廃止を決め、実装・設計
 メモ (docs/hangover.md など)・実験結果ごと [a-kaibu/vnvm-wine](https://github.com/a-kaibu/vnvm-wine)
@@ -18,28 +18,54 @@ Wine 11.20 の Unix 側を wasm にする Hangover 方式の経路は 2026-11-02
 
 | パス | 内容 |
 | --- | --- |
-| `crates/vnx86` | i386 CPU コア: インタプリタと x86→wasm JIT (ネイティブ CPU との差分テスト付き) |
-| `crates/vnhost` | ブラウザ側のホスト: メモリ、スレッド、fd、ファイルシステム、表示、音声、Direct3D 9/11・OpenGL (WebGPU) |
+| `crates/koji` | i386 CPU コア: インタプリタと x86→wasm JIT (ネイティブ CPU との差分テスト付き) |
+| `crates/kura` | ブラウザ側のホスト: メモリ、スレッド、fd、ファイルシステム、表示、音声、Direct3D 9/11・OpenGL (WebGPU) |
 | `crates/sake` | Win32 層 (kernel32、user32、gdi32、d3d9 など)。`build.sh` が sake.js / sake.wasm を作る |
-| `crates/vnvm` | `vnvm` 1本のCLI。`serve`: web/dist とストアを COOP/COEP 付きで配信、JIT リージョンの保存、ゲーム一覧、セーブの S3 バックアップ、実行ログの保存 (`--logs`)。`pack`: ディレクトリをチャンク (256KiB、zstd) のストアにする。`add-game` / `remove-game` / `meta`: ランチャーの一覧と、批評空間・VNDB からのブランド・発売日・評価・タグ・紹介文・カバー |
+| `crates/ippai` | `ippai` 1本のCLI (Web UI を内蔵)。`serve` / `stop` / `status` / `logs`: サーバー (COOP/COEP 付きの配信、JIT リージョンの保存、ゲーム一覧、セーブの S3 バックアップ、実行ログ)。`add`: フォルダをチャンク (256KiB、zstd) のストアにして一覧に登録。`remove` / `meta`: 一覧と、批評空間・VNDB からの作品情報。`pack` / `add-game` は `add` の前半・後半 (非表示) |
 | `host/` | emscripten の JS ライブラリ (`pre.js`、`vnfs.js`、`vnjit.js`)、生成スクリプト、テスト用プログラム (`tests/`) |
 | `web/` | Vite+ (`vp`) のフロントエンド (TypeScript、UI は React + Tailwind CSS v4 + shadcn/ui、`src/components/ui`): `index.html` (= `play.html`、ゲーム一覧)、`game.html`、`bench.html`、`logs.html` (実行ログ) |
 | `tests/` | ヘッドレス Chromium での確認 (`play.mjs`)、Android 相当に遅くして測る (`android-like.sh`)、コーパス |
 
-## ビルドと起動
+## インストールと使い方
+
+[Releases](https://github.com/a-kaibu/vnvm/releases) から `ippai_<version>_linux_<amd64|arm64>.tar.gz` を
+取って、中の `ippai` を `~/.local/bin/` などに置くだけです (Web UI と sake.wasm は中に入っています)。
+
+```sh
+ippai serve                       # バックグラウンドで起動して http://localhost:8656 を表示
+ippai status | ippai logs --follow | ippai stop
+ippai add ./games/sample --exe game.exe   # パック + 一覧に登録 + 作品情報 (--id --title --cover は任意)
+ippai remove sample
+ippai meta sample | ippai meta --all
+```
+
+`ippai serve --foreground` は systemd などから動かすとき用です。保存先 (Linux):
+ストア `~/.local/share/ippai/store`、JIT キャッシュ `~/.cache/ippai/jit`、ログ `~/.local/state/ippai/logs`、
+設定 `~/.config/ippai/config.toml` (`store` `cache` `logs` `listen`、どれも任意)、制御用ソケット
+`$XDG_RUNTIME_DIR/ippai/server.sock`。詳しくは `crates/ippai/src/dirs.rs`。
+
+## リリース
+
+`v*` タグを push するとリリースされます (`.github/workflows/release.yml`)。Web 画面だけでやるなら
+**Releases → Draft a new release** で新しいタグ (例 `v0.1.0`、対象 main) を入力して Publish します。
+CI (テスト、sake.wasm と Web のビルド、host/tests) のあと、GoReleaser (`.goreleaser.yaml`) が Linux x86-64 / ARM64 の
+バイナリ (cargo zigbuild、Web を rust-embed で内蔵) を作ってスモークテストし、アーカイブ・`checksums.txt`・SBOM を
+そのタグのリリースに載せます。ベンチ用ページ (bench.html、game.html、benchwasm/) はリリースのバイナリには入りません。
+
+## 開発時のビルド
 
 ```sh
 crates/sake/build.sh              # sake.js / sake.wasm と web/public/sake/
-cargo build --release -p vnvm
 (cd web && vp install && vp build)
-target/release/vnvm --store store pack ~/prefix32 prefix32   # sake の C:\ (フォント)
-target/release/vnvm serve --web web/dist --store store --listen 127.0.0.1:8080
+cargo build --release -p ippai    # web/dist を埋め込む (debug ビルドは web/dist を直接読む)
+target/release/ippai pack ~/prefix32 prefix32   # sake の C:\ (フォント)
+target/release/ippai serve --foreground --web web/dist --listen 127.0.0.1:8080
 ```
 
 sake は今のところ、Wine で作った 32bit prefix (`prefix32`、作り方は vnvm-wine の
 `hangover/make-prefix32.py`) の `drive_c` をフォントと、sake にまだない DLL (d2d1、dwrite、
 d3dcompiler_47 など) のために使います。ビルド済みのものが共有フォルダの `vnvm-env/` にあります。
-Direct3D 10/11 のシェーダーは DXBC から WGSL へ直接翻訳します (`crates/vnhost/src/d3d11/wgsl.rs`)。
+Direct3D 10/11 のシェーダーは DXBC から WGSL へ直接翻訳します (`crates/kura/src/d3d11/wgsl.rs`)。
 
 ## 制約
 

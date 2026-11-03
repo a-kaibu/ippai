@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds sake.wasm: the from-scratch Win32 layer (crates/sake) + vnhost's x86 run loop, JIT,
+# Builds sake.wasm: the from-scratch Win32 layer (crates/sake) + kura's x86 run loop, JIT,
 # file system, display and audio, without Wine. Outputs:
 #   $OUT/sake.js                 node (NODERAWFS): node sake.js /path/to/game.exe
 #   web/public/sake/sake.js     the page (ES module factory createSake, like wine.js)
@@ -16,8 +16,8 @@ RUSTC_BOOTSTRAP=1 RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-gl
   cargo build --release -p sake --target wasm32-unknown-emscripten -Zbuild-std=std,panic_abort
 LIB=$ROOT/target/wasm32-unknown-emscripten/release/libsake.a
 emcc -O2 -pthread -c "$HERE/c/main.c" -o "$OUT/main.o"
-emcc -O2 -pthread -c "$ROOT/crates/vnhost/c/shim.c" -o "$OUT/shim.o"
-# the libc entry points vnhost takes over (crates/vnhost/src/wrap.rs, c/shim.c)
+emcc -O2 -pthread -c "$ROOT/crates/kura/c/shim.c" -o "$OUT/shim.o"
+# the libc entry points kura takes over (crates/kura/src/wrap.rs, c/shim.c)
 WRAP="write writev clock_gettime sched_yield emscripten_futex_wait"
 WRAPFLAGS=$(for w in $WRAP; do printf -- "-Wl,--wrap=%s -Wl,-u,%s " "$w" "$w"; done)
 KEEP=$("$EMSDK/upstream/bin/llvm-nm" --defined-only -j "$LIB" 2>/dev/null | grep -E '^(vnhost_|sake_)' | sort -u)
@@ -42,10 +42,10 @@ link() {  # <output .js> <emcc flags...>
 link "$OUT/sake.js" -sNODERAWFS=1 -sENVIRONMENT=node -sEXPORTED_FUNCTIONS=_main,$EXPORTS
 WEB_OUT=${WEB_OUT:-$ROOT/web/public/sake}
 mkdir -p "$WEB_OUT"
-# (no emscripten file system: the page mounts a tree at "/", crates/vnhost/src/vfs.rs)
+# (no emscripten file system: the page mounts a tree at "/", crates/kura/src/vfs.rs)
 link "$WEB_OUT/sake.js" -sENVIRONMENT=web,worker -sMODULARIZE -sEXPORT_ES6 -sEXPORT_NAME=createSake \
   --js-library "$HO/vngpu.js" -sFILESYSTEM=0 -sEXPORTED_RUNTIME_METHODS=HEAPU8,HEAPU32,HEAPF32,HEAPF64,wasmMemory \
   -sEXPORTED_FUNCTIONS=_main,_malloc,_free,$WEB_EXPORTS
-(cd "$ROOT" && find crates/vnx86/src crates/vnx86/Cargo.toml crates/vnhost/src/jit.rs crates/vnhost/src/cpu.rs host/vnjit.js -type f | sort | xargs cat) |
+(cd "$ROOT" && find crates/koji/src crates/koji/Cargo.toml crates/kura/src/jit.rs crates/kura/src/cpu.rs host/vnjit.js -type f | sort | xargs cat) |
   sha256sum | cut -c1-8 > "$WEB_OUT/jit-version.txt"
 echo "built $OUT/sake.js and $WEB_OUT/sake.js"

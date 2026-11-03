@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-/// (not Windows' 0x10000: vnx86's JIT range-checks accesses with a 32 KB margin above its
+/// (not Windows' 0x10000: koji's JIT range-checks accesses with a 32 KB margin above its
 /// GUEST_LO of 0x10000, and a block whose address is below that bails to the interpreter on
 /// every access: Borland's memory manager put its table at 0x10000)
 pub const LO: u32 = 0x3_0000;
@@ -30,7 +30,7 @@ pub fn x64() -> bool {
 
 pub fn set_x64() {
     X64.store(true, std::sync::atomic::Ordering::Relaxed);
-    vnhost::d3d9::set_ptr_size(8);
+    kura::d3d9::set_ptr_size(8);
 }
 
 /// Size of a pointer (4 or 8).
@@ -267,7 +267,7 @@ const COMMITTED: u32 = 0x8000_0000;
 fn jit_prot(a: u32, n: u32, prot: u32) {
     let wx = prot & (0x40 | 0x80) != 0;
     let p = if prot == 0 { 0 } else if wx { libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC } else { libc::PROT_READ };
-    vnhost::jit::pages_protected(a as usize, n as usize, p);
+    kura::jit::pages_protected(a as usize, n as usize, p);
 }
 
 /// Commits a whole allocation.
@@ -348,7 +348,7 @@ pub fn protect(a: u32, n: u32, prot: u32) -> Option<u32> {
     // writable code may be rewritten: the JIT drops what it translated there (QLIE patches its
     // code with VirtualProtect)
     if prot & 0xcc != 0 {
-        vnhost::jit::code_changed(a as usize, n as usize);
+        kura::jit::code_changed(a as usize, n as usize);
     }
     Some(if old == 0 { r.prot } else { old })
 }
@@ -365,7 +365,7 @@ pub fn release(base: u32) -> bool {
     // stack was zeroed under it)
     let mut sp = SPACE.lock().unwrap();
     let Some(r) = sp.get(&base).copied() else { return false };
-    vnhost::jit::code_changed(base as usize, r.size as usize);
+    kura::jit::code_changed(base as usize, r.size as usize);
     jit_prot(base, r.size, 0);
     fill(base, r.size, 0);
     sp.remove(&base);

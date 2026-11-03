@@ -1,4 +1,4 @@
-// WebGPU for crates/vnhost/src/render: the thread that draws (one pthread, holding the page's
+// WebGPU for crates/kura/src/render: the thread that draws (one pthread, holding the page's
 // canvas as an OffscreenCanvas) calls these. Objects live in a table and go to Rust as indexes;
 // descriptors of rare objects come as JSON (numbers under REFS keys are such indexes), the
 // per-draw calls as plain arguments. Everything else (what to draw, caches, Direct3D) is Rust.

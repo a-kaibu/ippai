@@ -1,4 +1,4 @@
-//! Differential test of the long-mode JIT (vnx86 jit/long.rs): random x86-64 code (and a few
+//! Differential test of the long-mode JIT (koji jit/long.rs): random x86-64 code (and a few
 //! fixed programs) run by the interpreter alone and by translated regions (wasmtime, with the
 //! interpreter as the `step` import), from the same state; registers, flags and memory must
 //! match.
@@ -7,7 +7,7 @@
 mod native;
 use iced_x86::{BlockEncoder, BlockEncoderOptions, Code, Instruction, InstructionBlock, MemoryOperand, Register};
 use std::collections::HashMap;
-use vnx86::{Cpu, Exit, Fault};
+use koji::{Cpu, Exit, Fault};
 use wasmtime::*;
 
 const CPU: u32 = 0x2000;
@@ -24,7 +24,7 @@ fn limit() -> u32 {
 }
 
 struct Mem(*mut u8);
-impl vnx86::Memory for Mem {
+impl koji::Memory for Mem {
     fn read8(&mut self, a: u32) -> Result<u8, Fault> {
         if !(0x10000..limit()).contains(&a) {
             return Err(Fault { addr: a, write: false });
@@ -449,7 +449,7 @@ impl Jit {
                 let m = base as *mut u8;
                 assert_eq!(cpu as u32, CPU);
                 let mut c = unsafe { get_cpu(m) };
-                let r = vnx86::step(&mut c, &mut Mem(m));
+                let r = koji::step(&mut c, &mut Mem(m));
                 unsafe { put_cpu(m, &c) };
                 match r {
                     Exit::Continue => 0,
@@ -468,7 +468,7 @@ impl Jit {
             .unwrap();
         linker
             .func_wrap("env", "status", |op: i32, a: i32, b: i32, r: i32, c: i32| -> i32 {
-                vnx86::lazy::Lazy { op: op as u32, a: a as u32, b: b as u32, r: r as u32, c: c as u32 }.status() as i32
+                koji::lazy::Lazy { op: op as u32, a: a as u32, b: b as u32, r: r as u32, c: c as u32 }.status() as i32
             })
             .unwrap();
         linker
@@ -478,10 +478,10 @@ impl Jit {
     }
 
     fn translate(&mut self, base: usize, eip: u32, rip_hi: u32) -> Result<(), String> {
-        let mut m = vnx86::jit::wasm::Module::default();
+        let mut m = koji::jit::wasm::Module::default();
         let full = eip as u64 | (rip_hi as u64) << 32;
         let (lo, hi) = self.range;
-        let region = vnx86::jit::long::translate_region64(&mut m, &mut Mem(base as *mut u8), full, (END, END + 16), |a| a != END && a >= lo && a < hi).ok_or("refused")?;
+        let region = koji::jit::long::translate_region64(&mut m, &mut Mem(base as *mut u8), full, (END, END + 16), |a| a != END && a >= lo && a < hi).ok_or("refused")?;
         let bytes = m.finish();
         if std::env::var("JDUMP").is_ok() { std::fs::write("/tmp/jit64-last.wasm", &bytes).ok(); eprintln!("module {} bytes", bytes.len()); }
         let module = Module::new(&self.engine, &bytes).map_err(|e| {
@@ -511,7 +511,7 @@ impl Jit {
             let (f, k) = self.entries[&c.eip];
             let mut params = vec![Val::I32(0); 16];
             params[0] = Val::I32(CPU as i32);
-            params[1] = Val::I32((k << vnx86::jit::ENTRY_SHIFT) as i32);
+            params[1] = Val::I32((k << koji::jit::ENTRY_SHIFT) as i32);
             let mut results = vec![Val::I32(0); 16];
             f.call(&mut self.store, &params, &mut results).map_err(|e| format!("trap: {e:?}"))?;
             regions += 1;
@@ -519,7 +519,7 @@ impl Jit {
                 0 => {}
                 1 => {
                     let mut c = unsafe { get_cpu(m) };
-                    let r = vnx86::step(&mut c, &mut Mem(m));
+                    let r = koji::step(&mut c, &mut Mem(m));
                     unsafe { put_cpu(m, &c) };
                     if r != Exit::Continue {
                         return Err(format!("interpreter exit {r:?} at {:#x}", c.eip));
@@ -540,7 +540,7 @@ fn interp(base: usize) -> Result<(), String> {
             unsafe { put_cpu(m, &c) };
             return Ok(());
         }
-        let r = vnx86::step(&mut c, &mut Mem(m));
+        let r = koji::step(&mut c, &mut Mem(m));
         if r != Exit::Continue {
             return Err(format!("interpreter exit {r:?} at {:#x}", c.eip));
         }
@@ -649,7 +649,7 @@ fn exe_mode(args: &[String]) {
     config.wasm_threads(true);
     let engine = Engine::new(&config).unwrap();
     let pages = (top + 0xffff) / 65536;
-    let memory = SharedMemory::new(&engine, MemoryType::shared(vnx86::jit::wasm::MEMORY_MIN_PAGES.max(pages as u32), vnx86::jit::wasm::MEMORY_MIN_PAGES.max(pages as u32))).unwrap();
+    let memory = SharedMemory::new(&engine, MemoryType::shared(koji::jit::wasm::MEMORY_MIN_PAGES.max(pages as u32), koji::jit::wasm::MEMORY_MIN_PAGES.max(pages as u32))).unwrap();
     let base = memory.data().as_ptr() as *mut u8 as usize;
     let m = base as *mut u8;
     // instruction boundaries in the range
@@ -690,7 +690,7 @@ fn exe_mode(args: &[String]) {
         let mut c = cpu0.clone();
         let mut ok = false;
         for _ in 0..20000 {
-            if vnx86::step(&mut c, &mut Mem(m)) != Exit::Continue {
+            if koji::step(&mut c, &mut Mem(m)) != Exit::Continue {
                 break;
             }
             if outside(&c) {
@@ -720,7 +720,7 @@ fn exe_mode(args: &[String]) {
             let (f, k) = jit.entries[&c.eip];
             let mut params = vec![Val::I32(0); 16];
             params[0] = Val::I32(CPU as i32);
-            params[1] = Val::I32((k << vnx86::jit::ENTRY_SHIFT) as i32);
+            params[1] = Val::I32((k << koji::jit::ENTRY_SHIFT) as i32);
             let mut results = vec![Val::I32(0); 16];
             if f.call(&mut jit.store, &params, &mut results).is_err() {
                 break;
@@ -729,7 +729,7 @@ fn exe_mode(args: &[String]) {
                 0 => {}
                 1 => {
                     let mut c = unsafe { get_cpu(m) };
-                    let r = vnx86::step(&mut c, &mut Mem(m));
+                    let r = koji::step(&mut c, &mut Mem(m));
                     unsafe { put_cpu(m, &c) };
                     if r != Exit::Continue {
                         break;
@@ -790,7 +790,7 @@ fn main() {
     let mut config = Config::new();
     config.wasm_threads(true);
     let engine = Engine::new(&config).unwrap();
-    let memory = SharedMemory::new(&engine, MemoryType::shared(vnx86::jit::wasm::MEMORY_MIN_PAGES, vnx86::jit::wasm::MEMORY_MIN_PAGES)).unwrap();
+    let memory = SharedMemory::new(&engine, MemoryType::shared(koji::jit::wasm::MEMORY_MIN_PAGES, koji::jit::wasm::MEMORY_MIN_PAGES)).unwrap();
     let base = memory.data().as_ptr() as *mut u8 as usize;
     let m = base as *mut u8;
     let mut fails = 0;

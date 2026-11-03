@@ -1,7 +1,7 @@
 //! Direct2D on D3D11 textures: device contexts draw on the CPU (text with dwrite.rs's layout and
 //! gdi.rs's glyphs, solid rectangles) into a premultiplied BGRA layer of the target's size; at
 //! EndDraw (or Flush) the changed rectangle goes over the target texture on the GPU
-//! (vnhost::d3d11::d2d::composite). Clear clears the texture itself.
+//! (kura::d3d11::d2d::composite). Clear clears the texture itself.
 
 #![allow(non_snake_case)]
 
@@ -11,7 +11,7 @@ use crate::dwrite;
 use crate::mem::{self, r32, w32};
 use std::collections::HashMap;
 use std::sync::Mutex;
-use vnhost::d3d11::d2d as gpu2d;
+use kura::d3d11::d2d as gpu2d;
 
 type Xf = [f32; 6];
 const IDENTITY: Xf = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];

@@ -13,7 +13,7 @@
 //   /bench.html?step=N     start at step N (later steps follow)
 //   (other play.html parameters pass through)
 //
-// Each step's result also goes to vnvm serve's `PUT /bench-log`, which prints it and appends it
+// Each step's result also goes to ippai serve's `PUT /bench-log`, which prints it and appends it
 // to bench-results.txt.
 
 // natively (Wine on the x86-64 dev machine), bench.exe 1 (vnvm-wine docs/hangover.md)
@@ -55,7 +55,7 @@ const SUITE: Step[] = [
   { label: "JIT 1", scale: 3 },
   { label: "JIT 2", scale: 3 },
   ...["sort", "lz", "float", "memcpy"].map((k) => ({ label: `JIT ${k} x5`, scale: 1, only: k })),
-  // stack slots in locals (crates/vnx86 Gen::slots): slower on x64, maybe not on ARM
+  // stack slots in locals (crates/koji Gen::slots): slower on x64, maybe not on ARM
   ...["lz", "sort"].map((k) => ({ label: `JIT ${k} x5 slots`, scale: 1, only: k, env: "VNVM_JIT_SLOTS=4" })),
   { label: "memory.copy x5", scale: 1, micro: "copy" },
   { label: "i64 loop x5", scale: 1, micro: "loop" },

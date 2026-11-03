@@ -1,5 +1,5 @@
-// Movies decoded with WebCodecs for the guest (crates/vnhost/src/video.rs): each stream is a
-// `.vnv` (VP9 tracks: color, and alpha when the movie has one; crates/vnvm/src/movie.rs) in
+// Movies decoded with WebCodecs for the guest (crates/kura/src/video.rs): each stream is a
+// `.vnv` (VP9 tracks: color, and alpha when the movie has one; crates/ippai/src/movie.rs) in
 // wasm memory. The guest asks for frame n; this decodes ahead of the newest request (hardware
 // first) and copies whole frames into the stream's slots, where the guest takes them.
 

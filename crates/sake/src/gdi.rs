@@ -968,7 +968,7 @@ fn dc_palette(t: &Objs, s: &DcState) -> Vec<u32> {
 
 struct Face {
     names: &'static [&'static str],
-    /// the collection and the face in it (as Windows has them: `vnvm ttc` makes them from the
+    /// the collection and the face in it (as Windows has them: `ippai ttc` makes them from the
     /// separate files, a third of their size), else the font's own file
     ttc: (&'static str, u32),
     file: &'static str,
@@ -1059,9 +1059,9 @@ fn font_file(i: usize) -> Option<Arc<FontVec>> {
             let (ttc, index) = FACES[i].ttc;
             for d in dirs.into_iter().flatten() {
                 let d = d.trim_end_matches('/');
-                let data = match vnhost::fs::read(format!("{d}/{ttc}")) {
+                let data = match kura::fs::read(format!("{d}/{ttc}")) {
                     Ok(c) => ttc_face(&c, index),
-                    Err(_) => vnhost::fs::read(format!("{d}/{}", FACES[i].file)).ok(),
+                    Err(_) => kura::fs::read(format!("{d}/{}", FACES[i].file)).ok(),
                 };
                 if let Some(f) = data.and_then(|v| FontVec::try_from_vec(v).ok()) {
                     return Some(Arc::new(f));
@@ -3508,7 +3508,7 @@ fn GetOutlineTextMetricsW(c: &mut Ctx) -> u32 {
     outline_metrics(c, true)
 }
 fn add_font_file(name: &str) -> u32 {
-    let Some(data) = crate::files::resolve(name).and_then(|h| vnhost::fs::read(h).ok()) else { return 0 };
+    let Some(data) = crate::files::resolve(name).and_then(|h| kura::fs::read(h).ok()) else { return 0 };
     if data.starts_with(b"ttcf") {
         // a collection: each face
         return (0..).map_while(|i| ttc_face(&data, i)).map(add_font).sum();

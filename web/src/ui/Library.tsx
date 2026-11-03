@@ -1,5 +1,5 @@
 // The game list (play.html without ?run=): cards with cover, brand, year and score from
-// `vnvm meta`, a filter, and a dialog with the game's details. Picking a game starts it from
+// `ippai meta`, a filter, and a dialog with the game's details. Picking a game starts it from
 // that click (audio and fullscreen need the user gesture).
 
 import { useMemo, useState } from "react";
@@ -218,10 +218,10 @@ export function Library({ games, onPick }: { games: GameEntry[]; onPick: (g: Gam
           <div className="mx-auto mt-16 max-w-xl rounded-xl border border-dashed p-8 text-center text-sm leading-relaxed text-muted-foreground">
             <p className="mb-3 text-base font-medium text-foreground">ゲームがまだありません</p>
             ゲームのフォルダを{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5">vnvm pack &lt;dir&gt; &lt;tree&gt;</code>{" "}
+            <code className="rounded bg-muted px-1.5 py-0.5">ippai pack &lt;dir&gt; &lt;tree&gt;</code>{" "}
             で入れて、
             <code className="rounded bg-muted px-1.5 py-0.5">
-              vnvm add-game &lt;id&gt; --title ... --tree &lt;tree&gt; --exe &lt;exe&gt;
+              ippai add-game &lt;id&gt; --title ... --tree &lt;tree&gt; --exe &lt;exe&gt;
             </code>{" "}
             で一覧に追加します。
           </div>

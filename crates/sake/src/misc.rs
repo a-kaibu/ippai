@@ -347,7 +347,7 @@ fn hex(b: &[u8]) -> String {
 /// The saved keys: "key" lines, then "key<TAB>name<TAB>type<TAB>hex" for each value.
 fn load_reg(m: &mut HashMap<String, KeyData>) {
     let Some(h) = crate::files::resolve(REG_FILE) else { return };
-    let Ok(t) = vnhost::fs::read(h) else { return };
+    let Ok(t) = kura::fs::read(h) else { return };
     let t = String::from_utf8_lossy(&t);
     for l in t.lines() {
         let f: Vec<&str> = l.split('\t').collect();
@@ -378,9 +378,9 @@ fn save_reg(m: &HashMap<String, KeyData>) {
     }
     let h = crate::files::resolve_new(REG_FILE);
     if let Some(d) = h.rsplit_once('/') {
-        let _ = vnhost::fs::create_dir_all(d.0);
+        let _ = kura::fs::create_dir_all(d.0);
     }
-    let _ = vnhost::fs::write(h, t);
+    let _ = kura::fs::write(h, t);
 }
 
 static REG: Mutex<Option<HashMap<String, KeyData>>> = Mutex::new(None);
@@ -409,7 +409,7 @@ fn with_reg<R>(f: impl FnOnce(&mut HashMap<String, KeyData>) -> R) -> R {
         }
         // the installed fonts (DirectWrite's system collection reads this list)
         if let Some(dir) = crate::files::resolve("C:\\windows\\Fonts\\") {
-            let mut files: Vec<String> = vnhost::fs::read_dir(dir).into_iter().flatten().flatten().filter_map(|e| e.file_name().into_string().ok()).collect();
+            let mut files: Vec<String> = kura::fs::read_dir(dir).into_iter().flatten().flatten().filter_map(|e| e.file_name().into_string().ok()).collect();
             files.sort();
             for f in files.iter().filter(|f| [".ttf", ".ttc", ".otf"].iter().any(|x| f.to_ascii_lowercase().ends_with(x))) {
                 let stem = f.rsplit_once('.').map_or(f.as_str(), |x| x.0);
@@ -1643,7 +1643,7 @@ fn special_folder(csidl: u32) -> Option<&'static str> {
 fn folder_path(csidl: u32, create: bool) -> Option<String> {
     let p = special_folder(csidl)?;
     if create || csidl & 0x8000 != 0 || true {
-        let _ = vnhost::fs::create_dir_all(crate::files::to_host(p));
+        let _ = kura::fs::create_dir_all(crate::files::to_host(p));
     }
     Some(p.to_string())
 }
@@ -1654,7 +1654,7 @@ fn sh_mkdir(path: &str) -> u32 {
         return 183;
     }
     let h = crate::files::resolve_new(path);
-    if vnhost::fs::create_dir_all(&h).is_ok() { 0 } else { 3 }
+    if kura::fs::create_dir_all(&h).is_ok() { 0 } else { 3 }
 }
 fn SHCreateDirectoryExA(c: &mut Ctx) -> u32 {
     sh_mkdir(&arg_str(c.a(1), false))
@@ -1713,7 +1713,7 @@ fn SHGetKnownFolderPath(c: &mut Ctx) -> u32 {
         // Saved Games
         0x4c5c_32ff => folder_path(0x28, true).map(|p| {
             let p = format!("{p}\\Saved Games");
-            let _ = vnhost::fs::create_dir_all(crate::files::to_host(&p));
+            let _ = kura::fs::create_dir_all(crate::files::to_host(&p));
             p
         }),
         _ => None,

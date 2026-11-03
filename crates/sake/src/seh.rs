@@ -7,7 +7,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::OnceLock;
 
-use vnx86::{Cpu, Fault, Memory, EAX, EBP, EBX, ECX, EDI, EDX, ESI, ESP};
+use koji::{Cpu, Fault, Memory, EAX, EBP, EBX, ECX, EDI, EDX, ESI, ESP};
 
 use crate::api::{Ctx, SEH_TRAP};
 use crate::mem::{r32, w32};
@@ -15,7 +15,7 @@ use crate::mem::{r32, w32};
 pub const CONTEXT_SIZE: u32 = 0x2cc;
 const RECORD_SIZE: u32 = 0x50;
 
-/// Guest memory for vnx86's FXSAVE helpers.
+/// Guest memory for koji's FXSAVE helpers.
 pub struct Guest;
 
 impl Memory for Guest {
@@ -104,7 +104,7 @@ pub fn save_context(cpu: &mut Cpu, ctx: u32) {
     w32(ctx + 0x1c, cpu.fpu.cw as u32 | 0xffff_0000);
     w32(ctx + 0x20, cpu.fpu.status() as u32 | 0xffff_0000);
     w32(ctx + 0x24, cpu.fpu.tag_word() as u32 | 0xffff_0000);
-    let _ = vnx86::fxsave(cpu, &mut Guest, ctx + 0xcc);
+    let _ = koji::fxsave(cpu, &mut Guest, ctx + 0xcc);
 }
 
 pub fn load_context(cpu: &mut Cpu, ctx: u32) {
@@ -120,7 +120,7 @@ pub fn load_context(cpu: &mut Cpu, ctx: u32) {
     cpu.lazy.op = 0;
     cpu.regs[ESP] = r32(ctx + 0xc4);
     if flags & 0x20 != 0 {
-        let _ = vnx86::fxrstor(cpu, &mut Guest, ctx + 0xcc);
+        let _ = koji::fxrstor(cpu, &mut Guest, ctx + 0xcc);
     }
 }
 

@@ -1,7 +1,7 @@
 // Games that are web pages already (NW.js or Electron: TyranoScript, RPG Maker MV/MZ): when the
-// program's folder (or its resources/app) has a package.json (vnvm pack unpacks one appended to the exe: crates/vnvm/src/nwjs.rs),
+// program's folder (or its resources/app) has a package.json (ippai pack unpacks one appended to the exe: crates/ippai/src/nwjs.rs),
 // the page opens the game's own start page in an iframe instead of running the exe. Its files
-// come from `/tree/<tree>/<path>` (crates/vnvm/src/treefiles.rs), which starts every page with
+// come from `/tree/<tree>/<path>` (crates/ippai/src/treefiles.rs), which starts every page with
 // a call to parent.vnvmFrame(window): before any script of the game, that gives the page a
 // localStorage kept with vnvm's saved games and the Node stand-ins NW.js games reach for.
 import { loadSaves, storeSaves } from "./saves";

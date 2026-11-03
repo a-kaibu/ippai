@@ -1,4 +1,4 @@
-// The JIT's module loader (see crates/vnhost/src/jit.rs). Every thread (worker) has its own
+// The JIT's module loader (see crates/kura/src/jit.rs). Every thread (worker) has its own
 // funcref table, dispatcher instance and block instances; all share the one memory.
 addToLibrary({
   $VNJIT: { table: null, used: 0, run: null, env: null },

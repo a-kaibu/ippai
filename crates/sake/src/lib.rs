@@ -1,8 +1,8 @@
-//! sake: a Win32 layer written from scratch for running 32-bit Windows games on the vnx86
+//! sake: a Win32 layer written from scratch for running 32-bit Windows games on the koji
 //! core in the browser, without Wine (docs/sake.md).
 //!
 //! One process, one address space: the guest's 2 GiB are the low half of the wasm memory
-//! (guest address = host address), the game's x86 code runs on the JIT (crates/vnhost), and
+//! (guest address = host address), the game's x86 code runs on the JIT (crates/kura), and
 //! every imported API is a trap into Rust (api.rs). Windows threads are host threads.
 
 /// Whether environment variable `$name` is set, read once (std::env::var takes a lock and walks
@@ -19,7 +19,7 @@ macro_rules! env_on {
 use std::cell::Cell;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use vnx86::{Cpu, EAX, ESP};
+use koji::{Cpu, EAX, ESP};
 
 pub mod acm;
 pub mod api;
@@ -141,12 +141,12 @@ fn new_teb(tid: u32, stack: u32) -> (u32, u32, u32) {
 fn enter(stack: u32) -> &'static mut Thread {
     let tid = NEXT_TID.fetch_add(4, Ordering::Relaxed);
     let (teb, top, st) = new_teb(tid, stack);
-    let cpu = vnhost::cpu::vnhost_cpu_create(api::TRAP_LO, api::TRAP_HI);
+    let cpu = kura::cpu::vnhost_cpu_create(api::TRAP_LO, api::TRAP_HI);
     unsafe {
         (*cpu).fs_base = teb;
         (*cpu).regs[ESP] = top - 16;
         if mem::x64() {
-            vnhost::cpu::vnhost_cpu_set_long_mode(cpu, teb);
+            kura::cpu::vnhost_cpu_set_long_mode(cpu, teb);
         }
     }
     let t = Box::leak(Box::new(Thread { cpu, tid, teb, obj: 0, stack: st }));
@@ -168,7 +168,7 @@ const X_PENDING: i32 = 7;
 pub fn run(cpu: &mut Cpu, until: u32) {
     let mut info = [0u32; 2];
     loop {
-        let code = unsafe { vnhost::cpu::vnhost_cpu_run(cpu, info.as_mut_ptr()) };
+        let code = unsafe { kura::cpu::vnhost_cpu_run(cpu, info.as_mut_ptr()) };
         match code {
             X_TRAP if (w16::TRAP..w16::TRAP + 0x10000).contains(&info[0]) => {
                 if w16::dispatch(cpu, info[0]) {
@@ -236,7 +236,7 @@ pub fn run(cpu: &mut Cpu, until: u32) {
             }
             X_PENDING => {
                 for s in 1..32 {
-                    vnhost::cpu::vnhost_signal_pending(s);
+                    kura::cpu::vnhost_signal_pending(s);
                 }
             }
             _ => fatal(cpu, &format!("cpu run exit {code}")),
@@ -281,10 +281,10 @@ pub fn call(cpu: &mut Cpu, f: u32, args: &[u32]) -> u32 {
     cpu.eip = f;
     run(cpu, sp + 4);
     let r = cpu.regs[EAX];
-    let edx = cpu.regs[vnx86::EDX];
+    let edx = cpu.regs[koji::EDX];
     cpu.regs = regs;
     cpu.regs[EAX] = r;
-    cpu.regs[vnx86::EDX] = edx;
+    cpu.regs[koji::EDX] = edx;
     cpu.eip = eip;
     cpu.eflags = eflags;
     cpu.lazy.op = 0;
@@ -313,12 +313,12 @@ pub fn call64(cpu: &mut Cpu, f: u64, args: &[u64]) -> u64 {
     cpu.rip_hi = (f >> 32) as u32;
     run(cpu, sp + 8);
     let rax = cpu.gpr(EAX);
-    let rdx = cpu.gpr(vnx86::EDX);
+    let rdx = cpu.gpr(koji::EDX);
     cpu.regs = regs;
     cpu.hi = hi;
     cpu.r8 = r8;
     cpu.set_gpr(EAX, rax);
-    cpu.set_gpr(vnx86::EDX, rdx);
+    cpu.set_gpr(koji::EDX, rdx);
     cpu.eip = eip;
     cpu.rip_hi = rip_hi;
     cpu.eflags = eflags;
@@ -329,8 +329,8 @@ pub fn call64(cpu: &mut Cpu, f: u64, args: &[u64]) -> u64 {
 pub fn fatal(cpu: &mut Cpu, msg: &str) -> ! {
     api::dump_ring("the fatal error");
     // the page saves a crash report (with this thread's registers, stack and last API calls)
-    vnhost::crashlog::exception(cpu, &format!("sake fatal: {msg}"), None, false);
-    vnhost::crashlog::crash(&format!("sake: {msg}"));
+    kura::crashlog::exception(cpu, &format!("sake fatal: {msg}"), None, false);
+    kura::crashlog::crash(&format!("sake: {msg}"));
     let r = &cpu.regs;
     eprintln!(
         "sake: {msg}\n  eip {:08x} eax {:08x} ecx {:08x} edx {:08x} ebx {:08x} esp {:08x} ebp {:08x} esi {:08x} edi {:08x}",
@@ -435,7 +435,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     cxx::init();
     d3d11::register();
     guest::bind_host();
-    vnhost::crashlog::set_trap_namer(api::name_of);
+    kura::crashlog::set_trap_namer(api::name_of);
     let peb = mem::reserve(0, 0x2000, 4, 0x20000, true).expect("PEB");
     mem::commit(peb, 4);
     PEB.store(peb, Ordering::Relaxed);

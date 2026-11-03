@@ -1,5 +1,5 @@
 // Network and memory of the running game, polled once a second: the store's requests (counted
-// in crates/vnhost/src/vfs.rs, vnhost_net_stats: the game's threads read files chunk by chunk
+// in crates/kura/src/vfs.rs, vnhost_net_stats: the game's threads read files chunk by chunk
 // with synchronous requests), the page's own fetches (read-ahead chunks, saved regions), wasm
 // heap, JS heap and fps. The debug overlay (ui/Debug.tsx) shows the last seconds, the run log's
 // perf lines (crashlog.ts) the last 10 s.

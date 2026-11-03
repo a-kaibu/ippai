@@ -82,7 +82,7 @@ pub enum Import<'a> {
 
 /// Whether the file at host path `path` is a 64-bit (x86-64) PE.
 pub fn is_64bit_file(path: &str) -> bool {
-    let Ok(d) = vnhost::fs::read(path) else { return false };
+    let Ok(d) = kura::fs::read(path) else { return false };
     let pe = d.get(0x3c..0x40).map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])) as usize;
     d.get(pe + 4..pe + 6) == Some(&[0x64, 0x86])
 }
@@ -125,7 +125,7 @@ pub fn load(data: &[u8], path: &str, resolve: &mut dyn FnMut(&str, Import) -> u3
         // (elsewhere when it can move: relocations, or a resource-only DLL with no code to fix)
         None if can_move || (dll && entry_rva == 0) => mem::reserve(0, size, 0x80, 0x100_0000, false).ok_or("no room for the image")?,
         // above 4G and fixed: memory is addressed modulo 4G, so the image lives at its base's
-        // low half and RIP keeps the upper one (vnx86 Cpu::rip_hi); addresses handed to the
+        // low half and RIP keeps the upper one (koji Cpu::rip_hi); addresses handed to the
         // program in that range get it back (mem::widen)
         None if pref >> 32 != 0 && alias().2 == 0 => {
             let b = mem::reserve(low, size, 0x80, 0x100_0000, false).ok_or_else(|| format!("cannot map at {pref:#x} (its low alias {low:#x} is taken)"))?;
@@ -284,7 +284,7 @@ pub fn load(data: &[u8], path: &str, resolve: &mut dyn FnMut(&str, Import) -> u3
             mem::protect(base + va, n, prot);
         }
     }
-    vnhost::crashlog::add_module(base, path);
+    kura::crashlog::add_module(base, path);
     Ok(base)
 }
 
@@ -386,7 +386,7 @@ pub fn resource_data(module: u32, entry: u32) -> (u32, u32) {
 // ---------------------------------------------------------------------------------------------
 // the loader
 
-use vnx86::Cpu;
+use koji::Cpu;
 
 /// DLLs loaded but not initialized yet (DllMain), dependencies first.
 static PENDING: Mutex<Vec<u32>> = Mutex::new(Vec::new());
@@ -583,7 +583,7 @@ fn hle_data(dll: &str, name: &str) -> Option<u32> {
 
 fn load_dll_file(dll: &str) -> Result<u32, String> {
     let (host, win) = find_dll_file(dll).ok_or_else(|| format!("{dll} not found"))?;
-    let data = vnhost::fs::read(&host).map_err(|e| format!("{host}: {e}"))?;
+    let data = kura::fs::read(&host).map_err(|e| format!("{host}: {e}"))?;
     let base = load(&data, &win, &mut resolve_import)?;
     tls_module(base);
     PENDING.lock().unwrap().push(base);
@@ -621,11 +621,11 @@ pub fn load_library(cpu: &mut Cpu, name: &str) -> u32 {
 }
 
 pub fn load_exe(_cpu: &mut Cpu, host: &str, win: &str) -> Result<u32, String> {
-    let data = vnhost::fs::read(host).map_err(|e| e.to_string())?;
+    let data = kura::fs::read(host).map_err(|e| e.to_string())?;
     let base = load(&data, win, &mut resolve_import)?;
     // the main exe: the JIT translates its writable code too, checking stores into it
     let size = with(base, |m| m.size).unwrap_or(0);
-    vnhost::jit::vnhost_jit_exe_image(base as usize as *const std::ffi::c_void, size as usize);
+    kura::jit::vnhost_jit_exe_image(base as usize as *const std::ffi::c_void, size as usize);
     crate::movie::patch(base, size);
     tls_module(base);
     Ok(base)

@@ -1,6 +1,8 @@
 #!/bin/bash
-# Builds a release of vnvm from a fresh checkout: sake.wasm, the page, and
-# the vnvm binary (serve / pack / add-game / meta), then packs them into $DIST/vnvm-<version>.tar.zst (+ .sha256).
+# Builds ippai from a fresh checkout: sake.wasm, the page (web/dist), and the ippai binary
+# with the page built in, then packs them into $DIST/ippai-<version>.tar.zst (+ .sha256) for the
+# corpus runs (tests/corpus/ci.sh: they serve web/ from it). The releases are GoReleaser's
+# (.goreleaser.yaml, .github/workflows/release.yml), from the web/dist this makes.
 # Used by .github/workflows/ci.yml and runnable anywhere with the same tools:
 #   apt: mingw-w64 zstd; rustup (rust-src,
 #   wasm32-unknown-emscripten); node 20+. Emscripten is downloaded into $EMSDK4.
@@ -26,18 +28,19 @@ fi
 cd "$ROOT"
 rm -rf "$DIST"  # (a cached target/ would carry older builds into the artifact)
 WEB_OUT=$ROOT/web/public/sake bash crates/sake/build.sh
+bash host/tests/bench-wasm.sh  # (web/public/benchwasm: bench.html's direct-wasm numbers; not in releases)
 (cd web && npm ci --no-audit --no-fund && npx vp build)
-cargo build --release -p vnvm
+cargo build --release -p ippai
 
 mkdir -p "$DIST"
 STAGE=$(mktemp -d)
-P=$STAGE/vnvm-$VERSION
+P=$STAGE/ippai-$VERSION
 mkdir -p "$P"
 cp -r web/dist "$P/web"
-cp target/release/vnvm "$P/"
+cp target/release/ippai "$P/"
 cp "$EMSDK4/upstream/bin/wasm-opt" "$P/"  # (the server optimizes saved translations with it)
 echo "$VERSION $(git rev-parse HEAD)" > "$P/VERSION"
-tar -C "$STAGE" -cf - "vnvm-$VERSION" | zstd -19 -T0 -q -o "$DIST/vnvm-$VERSION.tar.zst" -f
-(cd "$DIST" && sha256sum "vnvm-$VERSION.tar.zst" > "vnvm-$VERSION.tar.zst.sha256")
+tar -C "$STAGE" -cf - "ippai-$VERSION" | zstd -19 -T0 -q -o "$DIST/ippai-$VERSION.tar.zst" -f
+(cd "$DIST" && sha256sum "ippai-$VERSION.tar.zst" > "ippai-$VERSION.tar.zst.sha256")
 rm -rf "$STAGE"
-echo "built $DIST/vnvm-$VERSION.tar.zst"
+echo "built $DIST/ippai-$VERSION.tar.zst"

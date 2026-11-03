@@ -5,8 +5,8 @@
 //! SiglusEngine's movie player has one method that brings a frame into a 32-bit buffer:
 //! `bool __thiscall get_frame(frame, dst, pitch, ?, force, ?)` (decoding every frame up to the
 //! one asked for). Found by its code at load, it is patched to jump to `frame` here, which hands
-//! out the frame `vnvm pack` made into VP9 (`<movie>.omv.vnv`, crates/vnvm/src/movie.rs) and
-//! the page decodes (crates/vnhost/src/video.rs). Movies without that file, or no page to decode
+//! out the frame `ippai pack` made into VP9 (`<movie>.omv.vnv`, crates/ippai/src/movie.rs) and
+//! the page decodes (crates/kura/src/video.rs). Movies without that file, or no page to decode
 //! (node), keep the game's decoder (the original code, through a trampoline).
 //!
 //! The player: +0xc4 how pixels go out (0: Y Cb Cr 255, 1: Y Cb Cr alpha, the game converting on
@@ -17,7 +17,7 @@ use std::sync::Mutex;
 
 use crate::api::{self, Ctx};
 use crate::mem::{r32, w32};
-use vnhost::video;
+use kura::video;
 
 /// The method's code up to its first branch on the frame (0x100: any byte).
 const SIG: &[u16] = &[
@@ -80,12 +80,12 @@ fn movie_of(this: u32) -> Option<(u32, String)> {
     open.into_iter().find(|(_, p)| {
         use std::io::Read;
         let mut head = [0u8; HEADER_LEN];
-        vnhost::fs::File::open(p).and_then(|mut f| f.read_exact(&mut head)).is_ok() && head[..] == copy[..]
+        kura::fs::File::open(p).and_then(|mut f| f.read_exact(&mut head)).is_ok() && head[..] == copy[..]
     })
 }
 
 fn frame(c: &mut Ctx) -> u32 {
-    let this = c.cpu.regs[vnx86::ECX];
+    let this = c.cpu.regs[koji::ECX];
     let (n, dst, pitch, force) = (c.a(0) as i32, c.a(1), c.a(2), c.a(4) & 0xff);
     let stream = {
         let mut g = PLAYERS.lock().unwrap();
@@ -101,7 +101,7 @@ fn frame(c: &mut Ctx) -> u32 {
                 }
                 let found = movie_of(this);
                 let s = found.as_ref().filter(|_| video::available()).and_then(|(_, p)| {
-                    let data = vnhost::fs::read(format!("{p}.vnv")).ok()?;
+                    let data = kura::fs::read(format!("{p}.vnv")).ok()?;
                     video::open(data)
                 });
                 match &found {

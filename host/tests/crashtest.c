@@ -1,4 +1,4 @@
-/* Crash-log check for vnvm (crates/vnhost/src/crashlog.rs, web/src/crashlog.ts): makes a few
+/* Crash-log check for vnvm (crates/kura/src/crashlog.rs, web/src/crashlog.ts): makes a few
  * syscalls, then crashes the way games do, with no handler, so Wine reports an unhandled
  * exception and the page saves a crash report. The report should show the faulting eip in
  * crashtest.exe, the frames through crash_deep/crash_mid, the CreateFileW/ReadFile/Sleep

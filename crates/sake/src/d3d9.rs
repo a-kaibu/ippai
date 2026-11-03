@@ -1,4 +1,4 @@
-//! d3d9.dll: vnhost's Direct3D 9 (crates/vnhost/src/d3d9, drawn with the page's WebGPU), the
+//! d3d9.dll: kura's Direct3D 9 (crates/kura/src/d3d9, drawn with the page's WebGPU), the
 //! same module Wine's dlls/vnd3d9 hands its calls to. As there, objects are { vtable, id }
 //! blocks the host allocates in guest memory; here every vtable entry is a trap whose handler
 //! passes the guest's stack arguments to `vnhost_d3d9_call(interface << 8 | index, args)`.
@@ -10,7 +10,7 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::api::{host_fn, implement, Ctx};
 use crate::mem::{self, put32, w32};
-use vnhost::d3d9::HostCalls;
+use kura::d3d9::HostCalls;
 
 /// Per interface (1..=15, Wine's vnd3d9 numbering, generated from its main.c), each method's
 /// argument count with `this`.
@@ -34,7 +34,7 @@ const METHODS: [&[u32]; 15] = [
 
 const NUM_IFACES: u32 = 15;
 
-/// Direct3D 8 (vnhost's d3d8.rs on the same device): interface 16 + the Direct3D 9 one, each
+/// Direct3D 8 (kura's d3d8.rs on the same device): interface 16 + the Direct3D 9 one, each
 /// method's argument count with `this` (from Wine's dlls/vnd3d8/main.c).
 const METHODS8: [(u32, &[u32]); 10] = [
     (17, &[3, 1, 1, 2, 1, 4, 2, 4, 3, 6, 7, 6, 6, 4, 2, 7]),
@@ -82,7 +82,7 @@ fn method(c: &mut Ctx) -> u32 {
         }
         SURFACE_GETDC => surface_get_dc(c),
         SURFACE_RELEASEDC => surface_release_dc(c),
-        _ => unsafe { vnhost::d3d9::vnhost_d3d9_call(id, (c.esp + 4) as usize as *const u32, &CALLS) },
+        _ => unsafe { kura::d3d9::vnhost_d3d9_call(id, (c.esp + 4) as usize as *const u32, &CALLS) },
     }
 }
 
@@ -90,7 +90,7 @@ fn method(c: &mut Ctx) -> u32 {
 static DCS: Mutex<Option<HashMap<u32, (u32, u32, u32)>>> = Mutex::new(None);
 
 fn d3d_call(id: u32, args: &[u32]) -> u32 {
-    unsafe { vnhost::d3d9::vnhost_d3d9_call(id, args.as_ptr(), &CALLS) }
+    unsafe { kura::d3d9::vnhost_d3d9_call(id, args.as_ptr(), &CALLS) }
 }
 
 /// IDirect3DSurface9::GetDC: the surface locked, a DIB section over its pixels in a memory DC.
@@ -151,7 +151,7 @@ fn init() {
             w32(table + 4 * i, v);
         }
         *IDS.lock().unwrap() = Some(ids);
-        unsafe { vnhost::d3d9::vnhost_d3d9_init(table as usize as *const u32, NUM_IFACES + 1) };
+        unsafe { kura::d3d9::vnhost_d3d9_init(table as usize as *const u32, NUM_IFACES + 1) };
     });
 }
 
@@ -173,14 +173,14 @@ fn init8() {
             w32(table + 4 * i, v);
         }
         drop(g);
-        unsafe { vnhost::d3d9::vnhost_d3d9_init(table as usize as *const u32, NUM_IFACES8 + 1) };
+        unsafe { kura::d3d9::vnhost_d3d9_init(table as usize as *const u32, NUM_IFACES8 + 1) };
     });
 }
 
 fn Direct3DCreate8(_: &mut Ctx) -> u32 {
     init8();
     let out = mem::heap_alloc(4, true);
-    let r = d3d_call(vnhost::d3d9::d3d8::CREATE, &[out]);
+    let r = d3d_call(kura::d3d9::d3d8::CREATE, &[out]);
     let o = mem::r32(out);
     mem::heap_free(out);
     if r != 0 { 0 } else { o }
@@ -200,7 +200,7 @@ fn ValidatePixelShader(c: &mut Ctx) -> u32 {
 fn Direct3DCreate9(c: &mut Ctx) -> u32 {
     init();
     let out = mem::heap_alloc(4, true);
-    let r = unsafe { vnhost::d3d9::vnhost_d3d9_create(c.a(0), out as usize as *mut u32, &CALLS) };
+    let r = unsafe { kura::d3d9::vnhost_d3d9_create(c.a(0), out as usize as *mut u32, &CALLS) };
     let o = mem::r32(out);
     mem::heap_free(out);
     if r != 0 { 0 } else { o }

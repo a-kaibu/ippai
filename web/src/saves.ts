@@ -1,8 +1,8 @@
-// Saved games: what the game wrote (in vnhost's in-memory file system) survives the page.
+// Saved games: what the game wrote (in kura's in-memory file system) survives the page.
 // The files written under the game's folders and the prefix's user folders go to the browser's
 // origin private file system (OPFS) as one blob per game, whenever they change (checked every
-// few seconds, and when the page is hidden); the next start puts them back before the program runs (VNVM_SAVES, crates/vnhost/src/vfs.rs).
-// Each new blob is also backed up through vnvm serve to S3 (`/saves/<name>`, when the server
+// few seconds, and when the page is hidden); the next start puts them back before the program runs (VNVM_SAVES, crates/kura/src/vfs.rs).
+// Each new blob is also backed up through ippai serve to S3 (`/saves/<name>`, when the server
 // has a bucket set up); a browser without a blob of its own starts from that backup.
 
 export interface SavesModule {

@@ -1,30 +1,35 @@
 #!/bin/bash
-# Installs a release (vnvm-<version>.tar.zst from GitHub Releases) into a server directory
-# that holds web/, vnvm (and the store, jit cache, logs, untouched), then
-# restarts the server with that directory's run-server.sh. The previous files stay as
-# web.prev, vnvm.prev, ...; `deploy.sh --rollback` puts them back.
+# Installs a release binary (ippai_<version>_linux_<arch>.tar.gz from GitHub Releases, or CI's
+# ippai-<version>.tar.zst) into a server directory and restarts the server with that
+# directory's run-server.sh. The store, jit cache and logs there are left as they are. The
+# previous binary stays as ippai.prev; `deploy.sh --rollback` puts it back.
 #
-#   tools/ci/deploy.sh vnvm-v0.1.0.tar.zst [dir]      (dir: default /home/kota/vnvm/vnvm-bench)
+#   tools/ci/deploy.sh ippai_0.1.0_linux_amd64.tar.gz [dir]   (dir: default /home/kota/vnvm/vnvm-bench)
 #   tools/ci/deploy.sh --rollback [dir]
 #
-# run-server.sh in dir starts the server in the background (its command line: ./vnvm serve
-# --web web --store store --jit ... as that machine runs it).
+# run-server.sh starts the server, e.g. `./ippai serve --store store --jit jit --logs logs
+# --listen 127.0.0.1:8080` (ippai serve goes to the background by itself and returns once it
+# serves). The web app is built into the binary: no --web unless one is to be served instead.
 set -euo pipefail
+FILES="ippai web wasm-opt VERSION"
 if [ "${1:-}" = "--rollback" ]; then
   DIR=${2:-/home/kota/vnvm/vnvm-bench}
   cd "$DIR"
-  for f in web vnvm wasm-opt VERSION; do
+  for f in $FILES; do
     [ -e "$f.prev" ] && rm -rf "$f" && mv "$f.prev" "$f"
   done
 else
   TAR=$(realpath "$1")
   DIR=${2:-/home/kota/vnvm/vnvm-bench}
-  [ -f "$TAR.sha256" ] && (cd "$(dirname "$TAR")" && sha256sum -c --quiet "$(basename "$TAR").sha256")
   cd "$DIR"
   NEW=$(mktemp -d "$DIR/.new.XXXX")
-  tar -I zstd -xf "$TAR" -C "$NEW"
-  SRC=$(echo "$NEW"/vnvm-*)
-  for f in web vnvm wasm-opt VERSION; do
+  case "$TAR" in
+    *.zst) tar -I zstd -xf "$TAR" -C "$NEW" ;;
+    *) tar -xzf "$TAR" -C "$NEW" ;;
+  esac
+  SRC=$NEW
+  [ -e "$SRC/ippai" ] || SRC=$(echo "$NEW"/ippai-*)
+  for f in $FILES; do
     [ -e "$SRC/$f" ] || continue
     rm -rf "$f.prev"
     [ -e "$f" ] && mv "$f" "$f.prev"
@@ -32,9 +37,10 @@ else
   done
   rm -rf "$NEW"
 fi
-pkill -x vnvm-server || true  # (before the single binary)
-pkill -f '^\./vnvm serve|/vnvm serve' || true
-for _ in $(seq 50); do pgrep -f 'vnvm serve' >/dev/null || break; sleep 0.1; done
+./ippai stop >/dev/null 2>&1 || true
+pkill -f '(^|/)(vnvm|ippai) serve' || true  # (older servers, and ones started without the socket)
+for _ in $(seq 50); do pgrep -f '(^|/)(vnvm|ippai) serve' >/dev/null || break; sleep 0.1; done
+grep -q -- '--web' run-server.sh && echo "note: run-server.sh passes --web: the built-in web app is not used"
 ./run-server.sh
 sleep 1
-pgrep -f 'vnvm serve' >/dev/null && echo "running $(cat VERSION 2>/dev/null)" || { echo "the server did not start"; exit 1; }
+pgrep -f 'ippai serve' >/dev/null && echo "running $(./ippai --version)" || { echo "the server did not start"; exit 1; }

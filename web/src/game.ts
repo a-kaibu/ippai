@@ -8,7 +8,7 @@
 //   - frames per second the game draws, and the longest gap between animation frames (stalls)
 //
 // Natively (Wine on the x86-64 dev machine) for comparison: title 5.9 s, story 0.18 cores (9 s of
-// CPU in 50 s). The result goes to vnvm serve's `PUT /bench-log` (bench-results.txt).
+// CPU in 50 s). The result goes to ippai serve's `PUT /bench-log` (bench-results.txt).
 //
 // It runs twice (the page reloads itself: the module can't start twice in a page): the first run
 // translates what isn't saved yet (after a new build, all of it), the second starts from the
@@ -51,7 +51,7 @@ if (!params.has("run")) {
   params.set("mount", "/vnvm/game=reunion");
   params.set("autostart", "");
   params.set("load", "");
-  // the screen the numbers were taken on: on vnhost's 1366x768 default Reunion's title ignores
+  // the screen the numbers were taken on: on kura's 1366x768 default Reunion's title ignores
   // clicks
   params.append("env", "VNVM_SCREEN=1280x720");
   history.replaceState(null, "", `?${params}`);

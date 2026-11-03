@@ -1,9 +1,9 @@
 // The game list's data (play.html without ?run=; shown by ui/Library.tsx): the games vnvm
-// add-game put in the store, served as one list by vnvm serve (GET /games). Picking one fills
+// add-game put in the store, served as one list by ippai serve (GET /games). Picking one fills
 // play.html's parameters (run, mount, args, env) and starts it in the same page, from the same
 // click (the audio and fullscreen need a user gesture).
 
-/** From ErogameScape (批評空間) / VNDB: `vnvm meta` (crates/vnvm/src/meta.rs, Info) */
+/** From ErogameScape (批評空間) / VNDB: `ippai meta` (crates/ippai/src/meta.rs, Info) */
 export interface GameMeta {
   source: string;
   egs_id?: number;
@@ -22,7 +22,7 @@ export interface GameMeta {
   links?: { label: string; url: string }[];
 }
 
-/** store/games/<id>.json (crates/vnvm/src/pack.rs, GameEntry) */
+/** store/games/<id>.json (crates/ippai/src/pack.rs, GameEntry) */
 export interface GameEntry {
   id: string;
   title: string;

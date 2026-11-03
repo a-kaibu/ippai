@@ -9,7 +9,7 @@ use std::cell::RefCell;
 
 use crate::api::{implement, Ctx};
 use crate::mem::{cstr, r32, w32};
-use vnx86::{EAX, EBP, ESP};
+use koji::{EAX, EBP, ESP};
 
 const CXX_EXCEPTION: u32 = 0xe06d_7363;
 const MAGIC_VC6: u32 = 0x1993_0520;

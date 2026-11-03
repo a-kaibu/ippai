@@ -1,4 +1,4 @@
-//! `native [count] [seed] [filter]`: vnx86's interpreter against this machine's CPU, one
+//! `native [count] [seed] [filter]`: koji's interpreter against this machine's CPU, one
 //! random instruction at a time (the long-mode instructions the JIT leaves to the
 //! interpreter: SSE/SSE2, bit operations, shifts by CL, rotates, multiplies, ...). Memory
 //! operands are [rbx + disp] into a buffer at a different address on each side (rbx is
@@ -6,7 +6,7 @@
 
 use iced_x86::code_asm::*;
 use iced_x86::{Code, CpuidFeature, Instruction, MemoryOperand, Mnemonic, OpCodeOperandKind as K, Register};
-use vnx86::{Cpu, Exit, Fault};
+use koji::{Cpu, Exit, Fault};
 
 #[repr(C)]
 #[derive(Clone, Copy, Default, PartialEq)]
@@ -22,7 +22,7 @@ const G_DATA: u32 = 0x20_0000;
 const G_MEM: usize = 0x40_0000;
 
 struct Mem(Vec<u8>);
-impl vnx86::Memory for Mem {
+impl koji::Memory for Mem {
     fn read8(&mut self, a: u32) -> Result<u8, Fault> {
         self.0.get(a as usize).copied().filter(|_| a >= 0x10000).ok_or(Fault { addr: a, write: false })
     }
@@ -412,7 +412,7 @@ pub fn run(args: &[String]) {
         cpu.eflags = s.flags as u32;
         mem.0[G_CODE as usize..G_CODE as usize + bytes.len()].copy_from_slice(&bytes);
         mem.0[G_DATA as usize..G_DATA as usize + BUF].copy_from_slice(&data);
-        let e = vnx86::step(&mut cpu, &mut mem);
+        let e = koji::step(&mut cpu, &mut mem);
         if e != Exit::Continue {
             *unimpl.entry(c).or_default() += 1;
             continue;

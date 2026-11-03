@@ -105,7 +105,7 @@ async function frame(full) {
     const m = window.vnvmSake;
     if (!m || !m._vnhost_render_shot) return null;
     // what the page shows (the game window's client area, Direct3D frames included), at the
-    // screen's pixels: crates/vnhost/src/render
+    // screen's pixels: crates/kura/src/render
     const p = m._malloc(40) >>> 0;
     const first = m._vnhost_render_shot(p);
     for (let k = 0; k < 100 && m._vnhost_render_shot(p) === first; k++) await new Promise((r) => setTimeout(r, 20));

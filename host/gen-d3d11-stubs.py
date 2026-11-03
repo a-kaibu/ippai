@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Writes dlls/vnd3d11/stubs.h (Wine tree) from mingw-w64's d3d11/dxgi headers: one stub per COM
-method (like dlls/vnd3d9), interface numbers 64+ as crates/vnhost/src/d3d11/mod.rs has them.
+method (like dlls/vnd3d9), interface numbers 64+ as crates/kura/src/d3d11/mod.rs has them.
 
 usage: gen-d3d11-stubs.py WINE_SRC [MINGW_INCLUDE] [NAMES_RS]
 Also writes crates/sake/src/d3d11_methods.rs (sake's vtables)."""

@@ -12,7 +12,7 @@
 
 use std::cell::RefCell;
 
-use vnx86::Cpu;
+use koji::Cpu;
 
 use crate::api::{implement, Ctx};
 use crate::mem::{r16, r32, r64, r8, w32, w64};
@@ -72,7 +72,7 @@ pub fn save_context(cpu: &mut Cpu, ctx: u32) {
         set_reg(ctx, i, cpu.gpr(i));
     }
     set_rip(ctx, cpu.eip as u64 | (cpu.rip_hi as u64) << 32);
-    let _ = vnx86::fxsave(cpu, &mut crate::seh::Guest, ctx + 0x100);
+    let _ = koji::fxsave(cpu, &mut crate::seh::Guest, ctx + 0x100);
     for i in 0..16 {
         let x = cpu.xmm(i);
         w64(ctx + 0x1a0 + 16 * i as u32, x as u64);
@@ -90,7 +90,7 @@ pub fn load_context(cpu: &mut Cpu, ctx: u32) {
     cpu.eflags = r32(ctx + 0x44) | 2;
     cpu.lazy.op = 0;
     if r32(ctx + 0x30) & 8 != 0 {
-        let _ = vnx86::fxrstor(cpu, &mut crate::seh::Guest, ctx + 0x100);
+        let _ = koji::fxrstor(cpu, &mut crate::seh::Guest, ctx + 0x100);
         for i in 0..16 {
             let lo = r64(ctx + 0x1a0 + 16 * i as u32) as u128;
             let hi = r64(ctx + 0x1a8 + 16 * i as u32) as u128;

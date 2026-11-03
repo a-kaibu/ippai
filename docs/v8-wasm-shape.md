@@ -148,7 +148,7 @@ trap_if(index >= メモリサイズ - (offset + size - 1))
   読み直す** (`8358` `NotLoadEliminable`)。伸長しない (最小 = 最大) メモリでは、関数の入口で 1 回読んだ
   値を使う (`6731-6755`、`wasm-module.h:161` `can_grow()`)。
 - vnvm の JIT のモジュールはメモリを「shared、最小 0、最大 65536 ページ」で import している
-  (`crates/vnx86/src/jit/wasm.rs:423-427`)。最小が 0 なので、Android では 1 アクセスに比較 2 つと
+  (`crates/koji/src/jit/wasm.rs:423-427`)。最小が 0 なので、Android では 1 アクセスに比較 2 つと
   サイズのロード 1〜2 回が付く。wine.wasm 側は `-sALLOW_MEMORY_GROWTH=1` なので同じく伸長可能。
 - memory64 は trap handler があっても上限との比較が 1 つ要る (`8252-8268`)。64 ビットのゲストでも
   wasm のメモリは memory32 のままがよい。

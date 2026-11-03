@@ -5,7 +5,7 @@ Module.preRun.push(() => {
   if (Module.vnvmEnv) Object.assign(ENV, Module.vnvmEnv);
 });
 
-// Regions an earlier run saved (crates/vnhost/src/jit.rs): `vnvmJit` = { parts: [{ module, idx }] }
+// Regions an earlier run saved (crates/kura/src/jit.rs): `vnvmJit` = { parts: [{ module, idx }] }
 // from the page, or under node VNVM_JIT_FILE.wasm/.idx; and the page's saved games `vnvmSaves`
 // (bytes, read as "@saves" by host/vnfs.js). Every thread gets them in the message that loads it
 // ('load'): the saves as a SharedArrayBuffer, not copied per thread.
@@ -49,7 +49,7 @@ if (!ENVIRONMENT_IS_PTHREAD) {
   else self.addEventListener('message', (e) => take(e.data));
 }
 
-// The page's canvas, for the thread that draws (crates/vnhost/src/render, host/vngpu.js): the
+// The page's canvas, for the thread that draws (crates/kura/src/render, host/vngpu.js): the
 // page passes `vnvmCanvas`, an OffscreenCanvas; vngpu_attach sends it to that thread's worker,
 // where this is a promise of it.
 var vnvmCanvas = null;

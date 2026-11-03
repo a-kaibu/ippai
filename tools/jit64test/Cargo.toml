@@ -3,13 +3,13 @@ name = "jit64test"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Differential test of vnx86's long-mode JIT (jit/long.rs) against its interpreter, the wasm run by wasmtime"
+description = "Differential test of koji's long-mode JIT (jit/long.rs) against its interpreter, the wasm run by wasmtime"
 
 # (its own workspace: wasmtime stays out of the main one's builds)
 [workspace]
 
 [dependencies]
-vnx86 = { path = "../../crates/vnx86" }
+koji = { path = "../../crates/koji" }
 iced-x86 = { version = "1.21", default-features = false, features = ["std", "decoder", "instr_info", "encoder", "code_asm", "op_code_info", "fast_fmt"] }
 wasmtime = { version = "29", default-features = false, features = ["cranelift", "runtime", "threads"] }
 anyhow = "1"

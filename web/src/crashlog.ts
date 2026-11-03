@@ -1,7 +1,7 @@
 // The flight recorder: every run keeps a detailed log, so that a crash can be diagnosed
-// afterwards (crates/vnhost/src/crashlog.rs has the wasm side).
+// afterwards (crates/kura/src/crashlog.rs has the wasm side).
 //
-// What a report holds: the run (game, exe, build, browser, device), vnhost's events (each guest
+// What a report holds: the run (game, exe, build, browser, device), kura's events (each guest
 // exception with registers, code, stack, frames resolved to module!export+off, the thread's last
 // syscalls / API calls and JIT state; processes; panics), every guest thread's state at the time
 // of the report, all of the program's stdout/stderr lately, and the page's own log (JS errors, Emscripten
@@ -13,7 +13,7 @@
 //   memory runs out) the next page load uploads it as "<id>-unclean"
 // - at a crash (a sake fatal error, a panic, a wasm trap, an abort,
 //   an uncaught JS error): "<id>-crashN", to OPFS and to the server (PUT /log-save/<name>, kept in
-//   vnvm serve's --logs directory)
+//   ippai serve's --logs directory)
 // - when the page goes to the background (the way out of a hung game on a phone): "<id>-hidden"
 // - Ctrl+Shift+L or a three-finger tap: "<id>-manual"
 // - when the game ends: "<id>-end"
@@ -136,7 +136,7 @@ class Perf {
       // (the runtime is gone: after an abort or exit)
     }
     const pm = (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory;
-    // Direct3D games present through crates/vnhost/src/render, not vnvm-frame: its counters
+    // Direct3D games present through crates/kura/src/render, not vnvm-frame: its counters
     let cur = this.d3d;
     try {
       if (wasm?._vnhost_render_info && wasm._malloc) {
@@ -209,7 +209,7 @@ function two(n: number, w = 2): string {
   return String(n).padStart(w, "0");
 }
 
-/** hh:mm:ss.mmm in UTC, as vnhost's records. */
+/** hh:mm:ss.mmm in UTC, as kura's records. */
 function clock(t = Date.now()): string {
   const d = new Date(t);
   return `${two(d.getUTCHours())}:${two(d.getUTCMinutes())}:${two(d.getUTCSeconds())}.${two(d.getUTCMilliseconds(), 3)}`;
@@ -263,7 +263,7 @@ async function removeLocal(name: string): Promise<void> {
   await (await dir())?.removeEntry(name).catch(() => {});
 }
 
-/** Sends a log to vnvm serve (its --logs directory); true if it took it. */
+/** Sends a log to ippai serve (its --logs directory); true if it took it. */
 export async function upload(name: string, text: string): Promise<boolean> {
   try {
     const r = await fetch(new URL(`log-save/${encodeURIComponent(name)}`, location.href), {
@@ -442,7 +442,7 @@ export class FlightRecorder {
     );
   }
 
-  /** Watches vnhost's crash counter. */
+  /** Watches kura's crash counter. */
   private tick(): void {
     const i = this.info;
     if (!i || !this.wasm) return;
@@ -485,7 +485,7 @@ export class FlightRecorder {
     return text;
   }
 
-  /** Every guest thread's state, from vnhost (not after an abort: the instance is gone). */
+  /** Every guest thread's state, from kura (not after an abort: the instance is gone). */
   private snapshot(): string {
     const i = this.info;
     if (!i || !this.wasm?._vnhost_crashlog_snapshot || this.aborted) return "";
@@ -514,7 +514,7 @@ export class FlightRecorder {
     if (i && this.wasm) {
       parts.push(
         "",
-        "--- vnhost events (guest exceptions, processes, panics) ---",
+        "--- kura events (guest exceptions, processes, panics) ---",
         this.ring(i[2]!, i[3]!, i[4]!),
       );
       parts.push("", "--- stdout/stderr ---", this.ring(i[5]!, i[6]!, i[7]!));

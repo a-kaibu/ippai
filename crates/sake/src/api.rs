@@ -5,7 +5,7 @@
 use crate::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock, RwLock};
 
-use vnx86::{Cpu, EAX, EDX, ESP};
+use koji::{Cpu, EAX, EDX, ESP};
 
 use crate::mem::{r32, w32};
 

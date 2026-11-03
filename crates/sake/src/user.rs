@@ -1,7 +1,7 @@
 //! user32: windows, message queues, input, timers, menus (kept, not drawn), resources.
 //!
 //! All USER state is behind one lock, never held while guest code runs. Top-level windows
-//! have a surface (their client area, BGRA) that GDI draws into and that goes to vnhost's
+//! have a surface (their client area, BGRA) that GDI draws into and that goes to kura's
 //! display; non-client areas are accounted for (AdjustWindowRect and friends) but not drawn.
 
 #![allow(non_snake_case)]
@@ -86,7 +86,7 @@ impl Surface {
     /// before `px` is freed or moved: the display stops reading it
     fn unshare(&mut self) {
         if self.shown_by != 0 {
-            vnhost::display::vnhost_window_unshare(self.shown_by);
+            kura::display::vnhost_window_unshare(self.shown_by);
             self.shown_by = 0;
         }
     }
@@ -252,7 +252,7 @@ pub fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
     f(g.get_or_insert_with(|| {
         let mut s = 0i32;
         let mut h = 0i32;
-        unsafe { vnhost::display::vnhost_display_size(&mut s, &mut h) };
+        unsafe { kura::display::vnhost_display_size(&mut s, &mut h) };
         State {
             classes: Vec::new(),
             wins: HashMap::default(),
@@ -440,7 +440,7 @@ pub fn flush(top: u32, r: Rect) {
         g.unshare();
         g.shown_by = top;
     }
-    unsafe { vnhost::display::vnhost_window_draw_shared(top, d.as_ptr(), g.px.as_ptr(), g.w, g.h) };
+    unsafe { kura::display::vnhost_window_draw_shared(top, d.as_ptr(), g.px.as_ptr(), g.w, g.h) };
 }
 
 /// Tells the display where a top-level window is (its client area is what it shows).
@@ -452,14 +452,14 @@ fn update_display(s: &State, h: u32) {
     let c = w.client.off(w.rect.l, w.rect.t);
     let r = [c.l, c.t, c.r, c.b, c.l, c.t, c.r, c.b];
     let shown = w.visible && w.style & 0x4000_0000 == 0 && c.w() > 0 && c.h() > 0;
-    unsafe { vnhost::display::vnhost_window_pos(h, r.as_ptr(), shown as i32, 0, 0) };
+    unsafe { kura::display::vnhost_window_pos(h, r.as_ptr(), shown as i32, 0, 0) };
     // owned windows (dialogs) stay above their owner, as on Windows: RealLive's fullscreen
     // settings dialog is shown before its topmost fullscreen owner
     if shown {
         for (&o, ow) in s.wins.iter().filter(|(_, ow)| ow.owner == h && ow.visible && (ow.parent == 0 || ow.parent == DESKTOP)) {
             let c = ow.client.off(ow.rect.l, ow.rect.t);
             let r = [c.l, c.t, c.r, c.b, c.l, c.t, c.r, c.b];
-            unsafe { vnhost::display::vnhost_window_pos(o, r.as_ptr(), 1, 1, 0) };
+            unsafe { kura::display::vnhost_window_pos(o, r.as_ptr(), 1, 1, 0) };
         }
     }
 }
@@ -968,7 +968,7 @@ pub fn send(c: &mut Ctx, hwnd: u32, msg: u32, wp: u32, lp: u32) -> u32 {
     send_cpu(c.cpu, hwnd, msg, wp, lp)
 }
 
-pub fn send_cpu(cpu: &mut vnx86::Cpu, hwnd: u32, msg: u32, wp: u32, lp: u32) -> u32 {
+pub fn send_cpu(cpu: &mut koji::Cpu, hwnd: u32, msg: u32, wp: u32, lp: u32) -> u32 {
     let info = with(|s| s.wins.get(&hwnd).map(|w| (w.proc_, w.tid)));
     let Some((proc_, tid)) = info else { return 0 };
     let me = crate::cur().tid;
@@ -986,7 +986,7 @@ fn trace_msgs() -> bool {
     *T.get_or_init(|| std::env::var_os("SAKE_TRACE_MSG").is_some())
 }
 
-fn send_other_thread(cpu: &mut vnx86::Cpu, tid: u32, msg: Msg) -> u32 {
+fn send_other_thread(cpu: &mut koji::Cpu, tid: u32, msg: Msg) -> u32 {
     let result = Arc::new((Mutex::new(None), std::sync::Condvar::new()));
     with(|s| s.queues.entry(tid).or_default().sent.push_back(Sent { msg, result: result.clone() }));
     crate::obj::signal();
@@ -1010,7 +1010,7 @@ fn send_other_thread(cpu: &mut vnx86::Cpu, tid: u32, msg: Msg) -> u32 {
 }
 
 /// Runs messages other threads sent to this one.
-fn process_sent(cpu: &mut vnx86::Cpu) {
+fn process_sent(cpu: &mut koji::Cpu) {
     let me = crate::cur().tid;
     loop {
         let s = with(|s| s.queues.get_mut(&me).and_then(|q| q.sent.pop_front()));
@@ -1102,10 +1102,10 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
         eprintln!("sake: CreateWindowEx {h:x} class {cname} style {style:x} ex {ex:x} {x},{y} {cx}x{cy} parent {parent:x}");
     }
     // CREATESTRUCT on the guest stack (below the caller's)
-    let save = c.cpu.regs[vnx86::ESP];
+    let save = c.cpu.regs[koji::ESP];
     let x64 = mem::x64();
     let cs = (save - if x64 { 0x100 } else { 0x80 }) & !15;
-    c.cpu.regs[vnx86::ESP] = cs - 16;
+    c.cpu.regs[koji::ESP] = cs - 16;
     let fields = [param, inst, menu, parent, cy as u32, cx as u32, y as u32, x as u32, style, name_p, cls_p, ex];
     if x64 {
         // (lpCreateParams, hInstance, hMenu, hwndParent: 8 bytes; cy cx y x style; name and
@@ -1123,7 +1123,7 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
     mem::wp(cbtw, cs);
     mem::wp(cbtw + mem::ps(), 0);
     if cbt(c, 3, h, cbtw) {
-        c.cpu.regs[vnx86::ESP] = save;
+        c.cpu.regs[koji::ESP] = save;
         destroy(c, h);
         return 0;
     }
@@ -1138,16 +1138,16 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
     }
     let ok = send(c, h, 0x81, 0, cs);
     if ok == 0 {
-        c.cpu.regs[vnx86::ESP] = save;
+        c.cpu.regs[koji::ESP] = save;
         destroy(c, h);
         return 0;
     }
     if send(c, h, 0x1, 0, cs) == 0xffff_ffff {
-        c.cpu.regs[vnx86::ESP] = save;
+        c.cpu.regs[koji::ESP] = save;
         destroy(c, h);
         return 0;
     }
-    c.cpu.regs[vnx86::ESP] = save;
+    c.cpu.regs[koji::ESP] = save;
     if !is_window(h) {
         return 0;
     }
@@ -1193,7 +1193,7 @@ fn destroy(c: &mut Ctx, h: u32) -> bool {
                 q.posted.retain(|m| m.hwnd != h);
             }
             if w.surface.is_some() {
-                vnhost::display::vnhost_window_destroy(h);
+                kura::display::vnhost_window_destroy(h);
             }
         }
         if s.focus == h {
@@ -1395,14 +1395,14 @@ fn set_pos(c: &mut Ctx, h: u32, after: u32, x: i32, y: i32, cx: i32, cy: i32, fl
     });
     let Some((resized, moved, cw, ch, r)) = r else { return 0 };
     // WINDOWPOS for WM_WINDOWPOSCHANGED
-    let save = c.cpu.regs[vnx86::ESP];
+    let save = c.cpu.regs[koji::ESP];
     let wp = (save - 0x40) & !15;
-    c.cpu.regs[vnx86::ESP] = wp - 16;
+    c.cpu.regs[koji::ESP] = wp - 16;
     for (k, v) in [h, after, r.l as u32, r.t as u32, r.w() as u32, r.h() as u32, flags].iter().enumerate() {
         w32(wp + 4 * k as u32, *v);
     }
     send(c, h, 0x47, 0, wp);
-    c.cpu.regs[vnx86::ESP] = save;
+    c.cpu.regs[koji::ESP] = save;
     if resized {
         send(c, h, 0x5, 0, (ch as u32) << 16 | (cw as u32 & 0xffff));
     }
@@ -2430,7 +2430,7 @@ fn peek(c: &mut Ctx) -> u32 {
     let (p, h, lo, hi, flags) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
     start_input();
     // a turn of the game loop: the frame's big redraws wait for the display here
-    vnhost::display::pace_frame();
+    kura::display::pace_frame();
     process_sent(c.cpu);
     match next_msg(h, lo, hi, flags & 1 != 0) {
         Some(m) => {
@@ -3076,7 +3076,7 @@ fn ChangeDisplaySettingsA(c: &mut Ctx) -> u32 {
 
 /// A new screen size; top-level windows get WM_DISPLAYCHANGE (CatSystem2 goes on from there)
 fn set_display(c: &mut Ctx, w: i32, h: i32) {
-    vnhost::display::vnhost_display_set_size(w, h);
+    kura::display::vnhost_display_set_size(w, h);
     if with(|s| std::mem::replace(&mut s.screen, (w, h))) != (w, h) {
         let f = crate::api::export("user32", "SendMessageA");
         c.call(f, &[0xffff, 0x7e, 32, (h as u32) << 16 | (w as u32 & 0xffff)]);
@@ -3186,13 +3186,13 @@ fn GetMonitorInfoW(c: &mut Ctx) -> u32 {
 }
 fn EnumDisplayMonitors(c: &mut Ctx) -> u32 {
     let (f, lp) = (c.a(2), c.a(3));
-    let save = c.cpu.regs[vnx86::ESP];
+    let save = c.cpu.regs[koji::ESP];
     let r = (save - 0x20) & !15;
     let (w, h) = screen();
     Rect { l: 0, t: 0, r: w, b: h }.write(r);
-    c.cpu.regs[vnx86::ESP] = r - 16;
+    c.cpu.regs[koji::ESP] = r - 16;
     c.call(f, &[0x10001, 0, r, lp]);
-    c.cpu.regs[vnx86::ESP] = save;
+    c.cpu.regs[koji::ESP] = save;
     1
 }
 
@@ -3925,7 +3925,7 @@ fn UnregisterHotKey(_: &mut Ctx) -> u32 {
 }
 
 // ---------------------------------------------------------------------------------------------
-// input from the page (vnhost's input queue)
+// input from the page (kura's input queue)
 
 fn start_input() {
     static ONCE: std::sync::Once = std::sync::Once::new();
@@ -3933,7 +3933,7 @@ fn start_input() {
         std::thread::spawn(|| {
             let trace = crate::env_on!("SAKE_TRACE_INPUT");
             loop {
-                let recs = vnhost::display::input_take(100);
+                let recs = kura::display::input_take(100);
                 if recs.is_empty() {
                     continue;
                 }

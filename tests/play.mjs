@@ -1,5 +1,5 @@
 // Headless test of web/play.html (sake in wasm): logs the console with timestamps and saves the
-// screen vnhost composes (read from the wasm heap: headless Chromium can't show WebGPU canvases;
+// screen kura composes (read from the wasm heap: headless Chromium can't show WebGPU canvases;
 // Direct3D windows' frames are read back from the GPU)
 // as a PNG every INTERVAL seconds. After the first shot, CLICKS="x,y;x,y" clicks there (page
 // pixels; each held 200 ms) and KEYS="KeyA Enter" presses those keys; CLICK_EVERY="x,y" clicks there after every
@@ -90,7 +90,7 @@ async function shot(n) {
       for (let i = 0; i < out.length; i += 0x8000) s += String.fromCharCode(...out.subarray(i, i + 0x8000));
       return { w, h, data: btoa(s) };
     };
-    // what the page shows, at the screen's pixels (crates/vnhost/src/render)
+    // what the page shows, at the screen's pixels (crates/kura/src/render)
     const p = m._malloc(12) >>> 0;
     const first = m._vnhost_render_shot(p);
     for (let k = 0; k < 100; k++) {

@@ -1,4 +1,4 @@
-//! d3d11.dll and dxgi.dll: vnhost's Direct3D 11 / DXGI (crates/vnhost/src/d3d11), the module
+//! d3d11.dll and dxgi.dll: kura's Direct3D 11 / DXGI (crates/kura/src/d3d11), the module
 //! Wine's dlls/vnd3d11 and dlls/vndxgi hand their calls to. As in d3d9.rs, every vtable entry
 //! is a trap whose handler passes the guest's stack arguments to the host as
 //! `interface << 8 | index`.
@@ -10,7 +10,7 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::api::{host_fn, implement, Ctx};
 use crate::mem;
-use vnhost::d3d11::{CREATE_DEVICE, CREATE_FACTORY};
+use kura::d3d11::{CREATE_DEVICE, CREATE_FACTORY};
 
 #[path = "d3d11_methods.rs"]
 mod methods;
@@ -22,7 +22,7 @@ const E_NOTIMPL: u32 = 0x8000_4001;
 /// trap address -> method id (0 marks a FLOAT method)
 static IDS: Mutex<Option<HashMap<u32, (u32, bool)>>> = Mutex::new(None);
 
-fn calls() -> &'static vnhost::d3d9::HostCalls {
+fn calls() -> &'static kura::d3d9::HostCalls {
     crate::d3d9::host_calls()
 }
 
@@ -35,9 +35,9 @@ fn method(c: &mut Ctx) -> u32 {
     if mem::x64() {
         // (the host reads 8-byte slots)
         let a: [u64; 16] = std::array::from_fn(|i| c.a64(i as u32));
-        return unsafe { vnhost::d3d11::call(id, a.as_ptr() as *const u32, calls()) };
+        return unsafe { kura::d3d11::call(id, a.as_ptr() as *const u32, calls()) };
     }
-    unsafe { vnhost::d3d11::call(id, (c.esp + 4) as usize as *const u32, calls()) }
+    unsafe { kura::d3d11::call(id, (c.esp + 4) as usize as *const u32, calls()) }
 }
 
 fn host(id: u32, args: &[u32]) -> u32 {
@@ -47,9 +47,9 @@ fn host(id: u32, args: &[u32]) -> u32 {
         for (d, &s) in a.iter_mut().zip(args) {
             *d = s as u64;
         }
-        return unsafe { vnhost::d3d11::call(id, a.as_ptr() as *const u32, calls()) };
+        return unsafe { kura::d3d11::call(id, a.as_ptr() as *const u32, calls()) };
     }
-    unsafe { vnhost::d3d11::call(id, args.as_ptr(), calls()) }
+    unsafe { kura::d3d11::call(id, args.as_ptr(), calls()) }
 }
 
 /// The vtables, given to the host once (Wine's d3d11.dll DllMain).
@@ -73,7 +73,7 @@ fn init() {
             mem::wp(table + ps * i, v);
         }
         *IDS.lock().unwrap() = Some(ids);
-        unsafe { vnhost::d3d11::init(table as usize as *const u32, n) };
+        unsafe { kura::d3d11::init(table as usize as *const u32, n) };
     });
 }
 

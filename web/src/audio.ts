@@ -1,7 +1,7 @@
-// Plays what vnhost's sound card mixed (crates/vnhost/src/audio.rs: 44.1 kHz stereo f32).
+// Plays what kura's sound card mixed (crates/kura/src/audio.rs: 44.1 kHz stereo f32).
 // The AudioWorklet reads the card's ring straight from the shared wasm memory (no copies, and
 // nothing on the page's own thread, where a long frame would make the sound stutter). It keeps
-// its lag short: vnhost's wall clock and the audio clock drift a little apart.
+// its lag short: kura's wall clock and the audio clock drift a little apart.
 
 const RATE = 44100;
 /** frames the worklet may lag behind before it skips ahead */

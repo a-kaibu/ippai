@@ -3,7 +3,7 @@ import { defineConfig } from "vite-plus";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
-// Built into web/dist and served by vnvm serve next to the store. The UI is React with
+// Built into web/dist and served by ippai serve next to the store. The UI is React with
 // Tailwind CSS and shadcn/ui (src/components/ui); sake's files (public/sake/) are copied as-is.
 export default defineConfig({
   base: "./",

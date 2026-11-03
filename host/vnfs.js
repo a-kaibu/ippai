@@ -1,5 +1,5 @@
 // vnvm_fetch(name, &len): one file of the store (trees/<name>.tsv or chunks/ab/<hash>, the
-// latter zstd-compressed), for crates/vnhost/src/vfs.rs; or "@saves", the saved games the page
+// latter zstd-compressed), for crates/kura/src/vfs.rs; or "@saves", the saved games the page
 // passed (host/pre.js; node: the file $VNVM_SAVES). Returns a malloc'ed buffer, or 0. The bytes
 // that came over the network (compressed; none from the browser's HTTP cache) go to vfs.rs's
 // counters (vnhost_net_wire).
