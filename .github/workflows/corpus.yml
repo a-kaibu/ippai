@@ -4,7 +4,7 @@
 # level (title screen / story); tests/corpus/check.py grades, lists the DLLs each title asked
 # for that sake does not have, and fails the run on a regression.
 #   - after CI succeeds on main: the smoke rows (smoke=1)
-#   - nightly and by hand (workflow_dispatch): every title
+#   - nightly and by hand (workflow_dispatch): every title, 10 jobs at most at once
 # sake's C:\ is only fonts (tools/ci/sake-fonts.py, IPA fonts renamed), no Wine DLLs.
 name: Corpus
 
@@ -60,9 +60,10 @@ jobs:
           fi
           if [ "$EVENT" = workflow_run ]; then SET=smoke; fi
           SET=${SET:-full}
-          # 20 jobs for every title (GitHub's limit of parallel jobs), 4 for the smoke rows
-          if [ -n "$ONLY" ]; then N=$(echo $ONLY | wc -w); N=$(( N < 20 ? N : 20 ))
-          elif [ "$SET" = full ]; then N=20; else N=4; fi
+          # 10 jobs for every title (half of GitHub's 20 parallel jobs: other CI keeps running),
+          # 4 for the smoke rows
+          if [ -n "$ONLY" ]; then N=$(echo $ONLY | wc -w); N=$(( N < 10 ? N : 10 ))
+          elif [ "$SET" = full ]; then N=10; else N=4; fi
           echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
           echo "set=$SET" >> "$GITHUB_OUTPUT"
@@ -75,6 +76,7 @@ jobs:
     timeout-minutes: 360 # (GitHub's maximum: slow trial hosts are fine)
     strategy:
       fail-fast: false
+      max-parallel: 10
       matrix:
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     steps:
