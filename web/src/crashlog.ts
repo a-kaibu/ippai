@@ -39,8 +39,12 @@ interface Wasm {
 interface PerfSample {
   /** seconds since the start */
   t: number;
-  /** frames the game drew per second (wine-frame) */
+  /** frames the game drew per second (Direct3D presents, or GDI frames: wine-frame) */
   fps: number;
+  /** Direct3D: batch time on the page (ms per second), GPU passes and texture uploads (MB) per window */
+  d3dBatchMs: number;
+  passes: number;
+  uploadMb: number;
   /** the page's own frames per second (requestAnimationFrame) and its longest gap */
   rafFps: number;
   longestFrame: number;
@@ -73,6 +77,7 @@ class Perf {
   private busy = -1;
   private slots: number[] = [];
   private slotBuf = 0;
+  private d3d = { frames: 0, runMs: 0, passes: 0, uploaded: 0 };
 
   constructor() {
     addEventListener("wine-frame", () => this.frames++);
@@ -128,9 +133,22 @@ class Perf {
       // (the runtime is gone: after an abort or exit)
     }
     const pm = (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory;
+    // Direct3D games present through web/src/d3d9.ts, not wine-frame
+    const d = (
+      window as unknown as {
+        vnvmD3d?: { frames: number; runMs: number; stat: { passes: number; uploaded: number } };
+      }
+    ).vnvmD3d;
+    const cur = d
+      ? { frames: d.frames, runMs: d.runMs, passes: d.stat.passes, uploaded: d.stat.uploaded }
+      : this.d3d;
+    const d3dFrames = cur.frames - this.d3d.frames;
     const s: PerfSample = {
       t: (now - this.t0) / 1000,
-      fps: this.frames / secs,
+      fps: (this.frames + d3dFrames) / secs,
+      d3dBatchMs: (cur.runMs - this.d3d.runMs) / secs,
+      passes: cur.passes - this.d3d.passes,
+      uploadMb: (cur.uploaded - this.d3d.uploaded) / 1e6,
       rafFps: this.raf / secs,
       longestFrame: this.longest,
       janks: this.janks,
@@ -141,6 +159,7 @@ class Perf {
       wasmMb: wasm ? wasm.wasmMemory.buffer.byteLength / 2 ** 20 : 0,
       heapMb: pm ? pm.usedJSHeapSize / 2 ** 20 : 0,
     };
+    this.d3d = cur;
     this.last = now;
     this.frames = this.raf = this.janks = this.longTasks = this.longTaskMs = this.longest = 0;
     this.samples.push(s);
@@ -151,7 +170,7 @@ class Perf {
   static line(s: PerfSample): string {
     const f = (n: number, d = 1) => n.toFixed(d);
     return (
-      `perf: game ${f(s.fps)} fps, page ${f(s.rafFps)} fps (longest frame ${f(s.longestFrame, 0)} ms, ` +
+      `perf: game ${f(s.fps)} fps${s.passes ? ` (d3d batches ${f(s.d3dBatchMs, 0)} ms/s, passes ${s.passes}, upload ${f(s.uploadMb)} MB)` : ""}, page ${f(s.rafFps)} fps (longest frame ${f(s.longestFrame, 0)} ms, ` +
       `${s.janks} over 50 ms), long tasks ${s.longTasks} (${f(s.longTaskMs, 0)} ms), ` +
       `guest CPU ${f(s.cpu, 2)} cores${s.threads.length ? ` [${s.threads.map((v) => f(v, 2)).join(" ")}]` : ""}, ` +
       `wasm ${f(s.wasmMb, 0)} MB${s.heapMb ? `, js heap ${f(s.heapMb, 0)} MB` : ""}`
@@ -172,6 +191,7 @@ class Perf {
       `page frames over 50 ms: ${all.reduce((a, s) => a + s.janks, 0)}, longest ${Math.max(...all.map((s) => s.longestFrame)).toFixed(0)} ms`,
       `main thread long tasks: ${all.reduce((a, s) => a + s.longTasks, 0)} (${all.reduce((a, s) => a + s.longTaskMs, 0).toFixed(0)} ms)`,
       `guest CPU: avg ${avg((s) => s.cpu).toFixed(2)} cores, max ${Math.max(...all.map((s) => s.cpu)).toFixed(2)}`,
+      `texture upload: total ${all.reduce((a, s) => a + s.uploadMb, 0).toFixed(0)} MB, max ${Math.max(...all.map((s) => s.uploadMb)).toFixed(0)} MB / 10 s`,
       `wasm memory: max ${Math.max(...all.map((s) => s.wasmMb)).toFixed(0)} MB`,
       "lowest-fps windows:",
       ...worst.map((s) => `  at ${s.t.toFixed(0)} s: ${Perf.line(s).slice(6)}`),

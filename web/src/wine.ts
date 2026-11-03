@@ -210,8 +210,9 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       SAKE_C: "/vnvm/prefix/drive_c",
       SAKE_WINEDEBUG: params.get("debug") ?? "",
       ...(jitName ? { VNVM_JIT_URL: new URL(`jit-save/${await jitName}`, location.href).href } : {}),
-      // game.html: count the threads' waits (vnhost_load_busy)
-      ...(params.has("load") ? { VNVM_LOAD: "1" } : {}),
+      // count the threads' CPU time (vnhost_load_busy: the run log's perf lines, game.html);
+      // &noload: off
+      ...(params.has("noload") ? {} : { VNVM_LOAD: "1" }),
       ...(saved ? { VNVM_SAVES: "/vnvm/saves.bin" } : {}),
       HOME: "/home/web",
       USER: "web",
@@ -388,8 +389,9 @@ function present(wine: WineModule, presenter: Presenter): void {
   let d3dFrames = 0;
   const view = (scratch + 20) >>> 2;
   // &d3dstats: every 5 s, page frames, slow ones (>34 ms apart), Direct3D frames and batch time
+  // (d3d's counters only grow: the run log's perf lines read them too)
   const stats = params.has("d3dstats")
-    ? { t0: performance.now(), last: 0, frames: 0, slow: 0, d3d: 0 }
+    ? { t0: performance.now(), last: 0, frames: 0, slow: 0, d3d: 0, run: 0, at: { ...d3d.stat } }
     : null;
   const frame = () => {
     // the game quit: so does the page (before touching the module, whose runtime may be gone)
@@ -401,12 +403,13 @@ function present(wine: WineModule, presenter: Presenter): void {
       stats.frames++;
       if (t - stats.t0 >= 5000) {
         const s = (t - stats.t0) / 1000;
-        const line = `page stats/${s.toFixed(1)}s: rAF ${(stats.frames / s).toFixed(1)}/s, slow ${stats.slow}, d3d frames ${((d3d.frames - stats.d3d) / s).toFixed(1)}/s, batches ${d3d.runMs.toFixed(0)}ms, gpu ${d3d.stat.gpuMs.toFixed(0)}ms (max ${d3d.stat.gpuMax.toFixed(0)}), passes ${d3d.stat.passes}, submits ${d3d.stat.submits}, textures ${d3d.stat.created}, upload ${(d3d.stat.uploaded / 1e6).toFixed(1)}MB`;
+        const c = d3d.stat;
+        const a = stats.at;
+        const line = `page stats/${s.toFixed(1)}s: rAF ${(stats.frames / s).toFixed(1)}/s, slow ${stats.slow}, d3d frames ${((d3d.frames - stats.d3d) / s).toFixed(1)}/s, batches ${(d3d.runMs - stats.run).toFixed(0)}ms, gpu ${(c.gpuMs - a.gpuMs).toFixed(0)}ms (max ${c.gpuMax.toFixed(0)}), passes ${c.passes - a.passes}, submits ${c.submits - a.submits}, textures ${c.created - a.created}, upload ${((c.uploaded - a.uploaded) / 1e6).toFixed(1)}MB`;
         console.log(line);
         statsLine(0, line);
-        d3d.stat = { passes: 0, submits: 0, created: 0, uploaded: 0, gpuMs: 0, gpuMax: 0 };
-        Object.assign(stats, { t0: t, frames: 0, slow: 0, d3d: d3d.frames });
-        d3d.runMs = 0;
+        c.gpuMax = 0;
+        Object.assign(stats, { t0: t, frames: 0, slow: 0, d3d: d3d.frames, run: d3d.runMs, at: { ...c } });
       }
     }
     // (a game may change the display mode: the screen's size)

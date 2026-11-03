@@ -389,7 +389,7 @@ export class D3D9 {
 
   /** time spent running batches (ms, for stats) */
   runMs = 0;
-  /** counts for stats (reset by the reader) */
+  /** counts for stats, since the start (gpuMax: since the reader reset it) */
   stat = { passes: 0, submits: 0, created: 0, uploaded: 0, gpuMs: 0, gpuMax: 0 };
 
   /** WebGPU takes views of the shared wasm memory as they are (no copy); if it ever refuses, copied first */
