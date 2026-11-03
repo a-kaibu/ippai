@@ -3,18 +3,17 @@
 "ISSetupStream" / "InstallShield" overlay (files obfuscated with a name-derived key, the
 ISSetupStream ones also zlib-compressed). Prints the file names."""
 import sys, struct, zlib, os
-import numpy as np
 M = [0x13, 0x35, 0x86, 0x07]
-_b = np.arange(256, dtype=np.uint16)
-T = np.array([(~(k ^ (((_b << 4) | (_b >> 4)) & 0xff))) & 0xff for k in range(256)], dtype=np.uint8)
+# T[k]: byte b -> ~(k ^ (b rotated by 4)), as bytes.translate tables
+T = [bytes((~(k ^ (((b << 4) | (b >> 4)) & 0xff))) & 0xff for b in range(256)) for k in range(256)]
 
 def decode(buf, key, start):
-    # the key restarts every 1024 bytes
+    # the key restarts every 1024 bytes: each of the 1024 positions has one table
     kl = len(key)
-    ks = np.array([key[(p % 1024) % kl] for p in range(1024)], dtype=np.uint8)
-    a = np.frombuffer(buf, dtype=np.uint8)
-    k = np.resize(ks, len(a))
-    return T[k, a].tobytes()
+    out = bytearray(buf)
+    for j in range(min(1024, len(buf))):
+        out[j::1024] = buf[j::1024].translate(T[key[j % kl]])
+    return bytes(out)
 
 def pe_end(f):
     f.seek(0); d = f.read(4096)
