@@ -30,6 +30,8 @@ pub mod guest;
 pub mod crt;
 pub mod com;
 pub mod d2d;
+pub mod d3dx9;
+pub mod d3dx9asm;
 pub mod dwrite;
 pub mod ddraw;
 pub mod ini;
@@ -416,6 +418,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     acm::init();
     dinput::init();
     d2d::init();
+    d3dx9::init();
     dwrite::init();
     mf::init();
     sound::init();
