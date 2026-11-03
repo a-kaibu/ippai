@@ -68,8 +68,39 @@ function png(w, h, bgra) {
   return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]);
 }
 
+// a web game (NW.js: web/src/html.ts) runs in an iframe, without sake: shots of the page, and
+// Playwright's mouse and keyboard
+const isWeb = () => page.$("#frame").then((e) => !!e, () => false);
+let web = false;
+async function webFrame(full) {
+  const b64 = (await page.screenshot().catch(() => null))?.toString("base64");
+  if (!b64) return null;
+  return page.evaluate(async ([b64, full]) => {
+    const img = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
+    const c = new OffscreenCanvas(img.width, img.height).getContext("2d");
+    c.drawImage(img, 0, 0);
+    const d = c.getImageData(0, 0, img.width, img.height).data;
+    const [ow, oh] = [img.width, img.height];
+    const colors = new Set();
+    for (let i = Math.floor(oh / 3) * ow * 4; i < Math.floor((2 * oh) / 3) * ow * 4; i += 4 * 97)
+      colors.add(d[i] | (d[i + 1] << 8) | (d[i + 2] << 16));
+    let hsh = 0;
+    for (let i = 0; i < d.length; i += 4093) hsh = (hsh * 31 + d[i]) | 0;
+    const r = { w: ow, h: oh, view: [0, 0, ow, oh], colors: colors.size, hash: hsh, d3d: false, busy: 0 };
+    if (full) {
+      // (BGRA, as sake's shots)
+      for (let i = 0; i < d.length; i += 4) [d[i], d[i + 2]] = [d[i + 2], d[i]];
+      let s = "";
+      for (let i = 0; i < d.length; i += 0x8000) s += String.fromCharCode(...d.subarray(i, i + 0x8000));
+      r.data = btoa(s);
+    }
+    return r;
+  }, [b64, full]).catch((e) => ({ err: String(e) }));
+}
+
 // the game window's client area as the page shows it (+ Direct3D overlay); with full=false only stats
 async function frame(full) {
+  if (web || (web = await isWeb())) return webFrame(full);
   return page.evaluate(async (full) => {
     const m = window.vnvmSake;
     if (!m || !m._vnhost_render_shot) return null;
@@ -115,7 +146,17 @@ async function shot(name) {
   return f;
 }
 const sleep = (s) => page.waitForTimeout(s * 1000);
+const WEB_KEYS = { 0x0d: "Enter", 0x20: " ", 0x1b: "Escape", 0x28: "ArrowDown", 0x26: "ArrowUp", 0x11: "Control" };
 async function input(kind, x, y, d) {
+  if (web) {
+    const k = WEB_KEYS[d & 0xffff] ?? String.fromCharCode(d & 0xffff).toLowerCase();
+    if (kind === 1) await page.mouse.move(x, y);
+    else if (kind === 2) await page.mouse.down();
+    else if (kind === 3) await page.mouse.up();
+    else if (kind === 5) await page.keyboard.down(k);
+    else if (kind === 6) await page.keyboard.up(k);
+    return;
+  }
   await page.evaluate(([k, x, y, d]) => window.vnvmSake?._vnhost_input_push(k, x, y, d), [kind, x, y, d]).catch(() => {});
 }
 let view = [0, 0, 640, 480];

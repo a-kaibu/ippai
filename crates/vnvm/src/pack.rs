@@ -368,12 +368,28 @@ fn tree(store: &Path, root: &Path, name: &str, follow: bool, chunk: u64) -> Resu
     let mut files = Vec::new();
     // (path on disk, path in the tree)
     let mut todo = vec![(root.clone(), String::new())];
+    // NW.js apps unpacked from their exe (see nwjs.rs), walked as if in the exe's folder; the
+    // first of two same paths wins
+    let unpacked = store.join("tmp").join(format!("nwjs-{name}-{}", std::process::id()));
+    let mut apps = 0;
+    let mut seen = std::collections::HashSet::new();
     while let Some((dir, rel)) = todo.pop() {
         let mut ents: Vec<_> = fs::read_dir(&dir)?.collect::<std::io::Result<_>>()?;
         ents.sort_by_key(|e| e.file_name());
+        let has_package = ents.iter().any(|e| e.file_name().eq_ignore_ascii_case("package.json"));
         for e in ents {
             let fname = e.file_name().to_string_lossy().into_owned();
             let path = if rel.is_empty() { fname.clone() } else { format!("{rel}/{fname}") };
+            let first = seen.insert(path.clone());
+            let lower = fname.to_ascii_lowercase();
+            if first && !has_package && !dir.starts_with(&unpacked) && (lower.ends_with(".exe") || lower.ends_with(".nw")) {
+                let to = unpacked.join(apps.to_string());
+                if e.metadata()?.is_file() && crate::nwjs::unpack(&e.path(), &to)? {
+                    eprintln!("{path}: NW.js app unpacked next to it");
+                    apps += 1;
+                    todo.push((to, rel.clone()));
+                }
+            }
             let mut disk = e.path();
             let mut meta = fs::symlink_metadata(&disk)?;
             if meta.file_type().is_symlink() {
@@ -389,8 +405,12 @@ fn tree(store: &Path, root: &Path, name: &str, follow: bool, chunk: u64) -> Resu
             }
             let mode = meta.mode() & 0o7777;
             if meta.is_dir() {
-                lines.push(format!("d\t{mode:o}\t{}\t{}", meta.mtime(), esc(&path)));
+                if first {
+                    lines.push(format!("d\t{mode:o}\t{}\t{}", meta.mtime(), esc(&path)));
+                }
                 todo.push((disk, path));
+            } else if !first {
+                continue;
             } else if meta.is_file() {
                 lines.push(String::new());
                 files.push((lines.len() - 1, disk.clone(), path.clone(), mode, meta.mtime(), meta.len()));
@@ -424,6 +444,10 @@ fn tree(store: &Path, root: &Path, name: &str, follow: bool, chunk: u64) -> Resu
         })
         .collect::<Result<_>>()?;
     let bytes: u64 = files.iter().map(|f| f.5).sum();
+    if apps > 0 {
+        fs::remove_dir_all(&unpacked)?;
+        let _ = fs::remove_dir(store.join("tmp"));
+    }
     for (line, text) in done {
         lines[line] = text;
     }

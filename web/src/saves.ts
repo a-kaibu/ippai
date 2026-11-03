@@ -62,6 +62,21 @@ function same(a: Uint8Array | null, b: Uint8Array): boolean {
   return true;
 }
 
+/** Writes `data` as `name`'s blob (OPFS, and the server's backup); false when OPFS fails. */
+export async function storeSaves(name: string, data: Uint8Array<ArrayBuffer>): Promise<boolean> {
+  const f = await file(name, true);
+  if (!f) return false;
+  const w = await f.createWritable();
+  await w.write(data);
+  await w.close();
+  console.log(`saves: ${name} ${data.length} bytes`);
+  // (keepalive: it still goes out when the page is closing)
+  void fetch(backup(name), { method: "PUT", body: data, keepalive: data.length < 60000 })
+    .then((r) => r.ok || r.status === 404 || console.warn(`saves: backup: HTTP ${r.status}`))
+    .catch((e) => console.warn(`saves: backup: ${e}`));
+  return true;
+}
+
 /**
  * Keeps saving what the game writes under `roots` for `name`. Returns a function that saves now
  * (when the game quits).
@@ -84,17 +99,8 @@ export function keepSaving(
       seen = changes;
       const data = exportSaves(m, roots);
       if (same(last, data)) return;
-      const f = await file(name, true);
-      if (!f) return;
-      const w = await f.createWritable();
-      await w.write(data);
-      await w.close();
+      if (!(await storeSaves(name, data))) return;
       last = data;
-      console.log(`saves: ${name} ${data.length} bytes`);
-      // (keepalive: it still goes out when the page is closing)
-      void fetch(backup(name), { method: "PUT", body: data, keepalive: data.length < 60000 })
-        .then((r) => r.ok || r.status === 404 || console.warn(`saves: backup: HTTP ${r.status}`))
-        .catch((e) => console.warn(`saves: backup: ${e}`));
     } catch (e) {
       console.warn(`saves: ${e}`);
     } finally {

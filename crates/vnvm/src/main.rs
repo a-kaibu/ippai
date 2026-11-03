@@ -11,9 +11,11 @@
 
 mod meta;
 mod movie;
+mod nwjs;
 mod pack;
 mod saves;
 mod serve;
+mod treefiles;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;

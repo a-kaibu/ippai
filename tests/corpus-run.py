@@ -64,6 +64,15 @@ def producer():
 for _ in range(JOBS): threading.Thread(target=producer, daemon=True).start()
 ends = 0
 
+def web_game(store, exe):
+    """a package.json next to the exe (NW.js, unpacked by vnvm pack): the page runs it, x64 or not"""
+    want = (exe.rsplit('/', 1)[0] + '/' if '/' in exe else '') + 'package.json'
+    try:
+        return any(l.split('\t')[3].lower() == want.lower() for l in open(f'{store}/trees/g.tsv', encoding='utf-8') if l.startswith('f\t'))
+    except OSError:
+        return False
+
+
 def pe_machine(path, store):
     """the exe's PE machine (0x14c x86, 0x8664 x64), from the extracted file"""
     try:
@@ -92,7 +101,7 @@ while True:
     if not exe:
         open(f'{od}/result.json', 'w').write('{"prep_error": %s}' % __import__('json').dumps(err))
         print(tid, 'PREP', err, flush=True)
-    elif SKIP_X64 and pe_machine(f"{TRIALS}/{tid}/x/{exe}", f'{STORES}/{tid}') == 0x8664:
+    elif SKIP_X64 and not web_game(f'{STORES}/{tid}', exe) and pe_machine(f"{TRIALS}/{tid}/x/{exe}", f'{STORES}/{tid}') == 0x8664:
         open(f'{od}/result.json', 'w').write('{"x64": true}')
         open(f'{od}/exe.txt', 'w').write(exe + '\n')
         print(tid, 'x64', flush=True)

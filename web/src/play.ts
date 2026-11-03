@@ -15,6 +15,7 @@
 //                                   destroys the device then, and Direct3D games need it)
 
 import { keepSaving, loadSaves, type SavesModule } from "./saves";
+import { startWebGame } from "./html";
 import { linuxKeycode } from "./keymap";
 import { AudioOut } from "./audio";
 import { Video } from "./video";
@@ -139,10 +140,18 @@ function virtualKey(code: string): number {
 }
 
 async function boot(audio: Promise<AudioOut>): Promise<void> {
+  const run = params.get("run") ?? "C:\\wintest.exe";
+  // saved games: per program and mounts; what it writes in its folders and the user folders
+  const mounts = params.getAll("mount");
+  const saveName = `${run.replace(/[^A-Za-z0-9_.-]/g, "_")}-${fnv(
+    new TextEncoder().encode(mounts.join(":")),
+  )}`;
+  const nosave = params.has("nosave");
+  // a web game (NW.js): its own page, no sake
+  if (await startWebGame(run, mounts, nosave ? null : saveName, log)) return;
   log("sake を読み込み中");
   const BASE = new URL("sake/", location.href).href;
   const WASM = "sake.wasm";
-  const run = params.get("run") ?? "C:\\wintest.exe";
   recorder = new FlightRecorder(params.get("game") ?? run.slice(run.lastIndexOf("\\") + 1), {
     game: params.get("game") ?? "",
     run,
@@ -178,13 +187,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   const factory = (await import(/* @vite-ignore */ scriptUrl)).default as (m: object) => Promise<SakeModule>;
   const version = await wasmVersion;
   recorder.note(`build: ${WASM} ${version}, translator ${await jitVersion}`);
-  // saved games: per program and mounts; what it writes in its folders and the user folders
-  const mounts = params.getAll("mount");
-  const saveName = `${run.replace(/[^A-Za-z0-9_.-]/g, "_")}-${fnv(
-    new TextEncoder().encode(mounts.join(":")),
-  )}`;
   const saveRoots = [...mounts.map((m) => m.slice(0, m.indexOf("="))), "/vnvm/prefix/drive_c/users"];
-  const nosave = params.has("nosave");
   const saved = nosave ? null : await loadSaves(saveName).catch(() => null);
   const moduleArg = {
     // (sake takes the host path: Z:\\x\\y.exe is /x/y.exe)

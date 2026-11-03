@@ -16,6 +16,7 @@ tower-http = { version = "0.6", features = ["fs", "set-header"] }
 rust-s3 = { version = "0.38.0", default-features = false, features = ["with-tokio", "tokio-rustls-tls"] }
 blake3 = "1"
 zstd = "0.13"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 rayon = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

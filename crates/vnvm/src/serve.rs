@@ -14,6 +14,7 @@
 //! - `/jit/_shared-<build>.parts`, `/jit/_shared.chunks`: the regions and chunks several
 //!   programs saved (shared libraries and the like): every page loads them too, so a
 //!   game's first run starts with them
+//! - `GET /tree/<name>/<path>`: one file of a tree as itself (web games in an iframe; treefiles.rs)
 //! - `GET /games`: the launcher's list, the store's `games/<id>.json` (`vnvm add-game`) as
 //!   one JSON array; covers are under `/store/games/`
 //! - pre-runs: at the start and when the launcher lists the games, each listed game with no
@@ -669,6 +670,7 @@ pub async fn run(store: PathBuf, args: Args) -> anyhow::Result<()> {
         .route("/games", get(games).with_state(pre.clone()))
         .nest_service("/jit", ServeDir::new(&args.jit))
         .nest_service("/store", ServeDir::new(&store))
+        .route("/tree/{name}/{*path}", get(crate::treefiles::file).with_state(crate::treefiles::Trees::new(store.clone())))
         .fallback_service(ServeDir::new(&args.web).precompressed_zstd())
         .layer(middleware::from_fn(headers));
     // without TCP_NODELAY a kept-alive connection waits out the peer's delayed ACK (~40ms) on
