@@ -141,8 +141,8 @@ function virtualKey(code: string): number {
 }
 
 async function boot(audio: Promise<AudioOut>): Promise<void> {
-  // a three-finger tap over the game: debug mode on/off (Ctrl+Shift+D on a phone; crashlog.ts also
-  // saves the log on it)
+  // a three-finger tap over the game: debug mode on/off (Ctrl+Shift+D on a phone; four fingers
+  // save the log, crashlog.ts)
   addEventListener("touchstart", (e) => {
     if (e.touches.length === 3) setDebug(!getUi().debug);
   });

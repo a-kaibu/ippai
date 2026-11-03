@@ -15,7 +15,7 @@
 //   an uncaught JS error): "<id>-crashN", to OPFS and to the server (PUT /log-save/<name>, kept in
 //   ippai serve's --logs directory)
 // - when the page goes to the background (the way out of a hung game on a phone): "<id>-hidden"
-// - Ctrl+Shift+L or a three-finger tap: "<id>-manual"
+// - Ctrl+Shift+L or a four-finger tap: "<id>-manual"
 // - when the game ends: "<id>-end"
 //
 // logs.html lists the server's and this browser's logs.
@@ -364,8 +364,8 @@ export class FlightRecorder {
       }
     });
     addEventListener("touchstart", (e) => {
-      if (e.touches.length === 3)
-        void this.save("manual", "saved by hand (three-finger tap)").then((n) =>
+      if (e.touches.length === 4)
+        void this.save("manual", "saved by hand (four-finger tap)").then((n) =>
           toast(`ログを保存しました: ${n}`),
         );
     });
