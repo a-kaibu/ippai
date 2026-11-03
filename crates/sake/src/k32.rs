@@ -3684,17 +3684,61 @@ fn UnmapViewOfFile(c: &mut Ctx) -> u32 {
 fn CreatePipe(_: &mut Ctx) -> u32 {
     0
 }
-fn CreateProcessA(c: &mut Ctx) -> u32 {
-    eprintln!("sake: CreateProcess({}, {}) refused", arg_str(c.a(0), false), arg_str(c.a(1), false));
+/// Splits a command line into the program and the rest.
+fn split_command(cmd: &str) -> (String, String) {
+    let cmd = cmd.trim_start();
+    if let Some(q) = cmd.strip_prefix('"') {
+        let end = q.find('"').unwrap_or(q.len());
+        (q[..end].to_string(), q.get(end + 1..).unwrap_or("").trim().to_string())
+    } else {
+        let end = cmd.find(' ').unwrap_or(cmd.len());
+        (cmd[..end].to_string(), cmd[end..].trim().to_string())
+    }
+}
+
+/// Starting another program: sake runs one process, so a program of the game's own (an .exe
+/// that exists) takes this one's place. The page reads the line and starts it once we exit
+/// (play.ts); launchers end themselves right after anyway. False for anything else.
+pub fn exec(file: &str, args: &str, dir: Option<&str>) -> bool {
+    let mut f = file.trim().to_string();
+    if !f.to_ascii_lowercase().ends_with(".exe") {
+        if files::resolve(&files::full_path(&f)).is_none() && files::resolve(&files::full_path(&format!("{f}.exe"))).is_some() {
+            f += ".exe";
+        } else {
+            return false;
+        }
+    }
+    let rel = !(f.starts_with('\\') || f.as_bytes().get(1) == Some(&b':'));
+    let full = match dir.filter(|d| rel && !d.is_empty()) {
+        Some(d) => files::full_path(&format!("{}\\{f}", files::full_path(d).trim_end_matches('\\'))),
+        None => files::full_path(&f),
+    };
+    if files::resolve(&full).is_none() {
+        eprintln!("sake: exec {full}: not found");
+        return false;
+    }
+    eprintln!("sake: exec {full}\t{args}");
+    unsafe { libc::exit(0) }
+}
+fn create_process(c: &mut Ctx, wide: bool) -> u32 {
+    let (app, cmd) = (arg_str(c.a(0), wide), arg_str(c.a(1), wide));
+    let (prog, args) = if c.a(0) != 0 { (app, split_command(&cmd).1) } else { split_command(&cmd) };
+    let dir = (c.a(7) != 0).then(|| arg_str(c.a(7), wide));
+    if !exec(&prog, &args, dir.as_deref()) {
+        eprintln!("sake: CreateProcess({prog}, {args}) refused");
+    }
     last_error(2);
     0
+}
+fn CreateProcessA(c: &mut Ctx) -> u32 {
+    create_process(c, false)
 }
 fn CreateProcessW(c: &mut Ctx) -> u32 {
-    eprintln!("sake: CreateProcess({}, {}) refused", arg_str(c.a(0), true), arg_str(c.a(1), true));
-    last_error(2);
-    0
+    create_process(c, true)
 }
-fn WinExec(_: &mut Ctx) -> u32 {
+fn WinExec(c: &mut Ctx) -> u32 {
+    let (prog, args) = split_command(&arg_str(c.a(0), false));
+    exec(&prog, &args, None);
     2
 }
 fn OpenProcess(_: &mut Ctx) -> u32 {

@@ -1712,19 +1712,36 @@ fn ILFree(c: &mut Ctx) -> u32 {
     }
     0
 }
-fn ShellExecuteA(c: &mut Ctx) -> u32 {
-    eprintln!("sake: ShellExecute {} {}", arg_str(c.a(1), false), arg_str(c.a(2), false));
+/// ShellExecute(verb, file, params, dir): "open" of one of the game's programs runs it
+/// (k32::exec); anything else (pages, documents) is only logged.
+fn shell_execute(verb: u32, file: u32, params: u32, dir: u32, wide: bool) -> u32 {
+    let verb = if verb == 0 { "open".to_string() } else { arg_str(verb, wide) };
+    let (f, p) = (arg_str(file, wide), if params == 0 { String::new() } else { arg_str(params, wide) });
+    let d = (dir != 0).then(|| arg_str(dir, wide));
+    if verb.eq_ignore_ascii_case("open") {
+        crate::k32::exec(&f, &p, d.as_deref());
+    }
+    eprintln!("sake: ShellExecute {verb} {f} {p}");
     42
+}
+fn ShellExecuteA(c: &mut Ctx) -> u32 {
+    shell_execute(c.a(1), c.a(2), c.a(3), c.a(4), false)
 }
 fn ShellExecuteW(c: &mut Ctx) -> u32 {
-    eprintln!("sake: ShellExecute {} {}", arg_str(c.a(1), true), arg_str(c.a(2), true));
-    42
+    shell_execute(c.a(1), c.a(2), c.a(3), c.a(4), true)
 }
-fn ShellExecuteExA(_: &mut Ctx) -> u32 {
+/// SHELLEXECUTEINFO: verb +12, file +16, parameters +20, directory +24, hInstApp +32
+fn shell_execute_ex(c: &mut Ctx, wide: bool) -> u32 {
+    let i = c.a(0);
+    let r = shell_execute(r32(i + 12), r32(i + 16), r32(i + 20), r32(i + 24), wide);
+    w32(i + 32, r);
     1
 }
-fn ShellExecuteExW(_: &mut Ctx) -> u32 {
-    1
+fn ShellExecuteExA(c: &mut Ctx) -> u32 {
+    shell_execute_ex(c, false)
+}
+fn ShellExecuteExW(c: &mut Ctx) -> u32 {
+    shell_execute_ex(c, true)
 }
 fn DragAcceptFiles(_: &mut Ctx) -> u32 {
     0

@@ -240,6 +240,9 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     printErr: (line: string) => {
       console.warn(line);
       recorder?.printErr(line);
+      // the program started another of the game's programs in its place (sake's k32::exec)
+      const exec = /^sake: exec (.+)\t(.*)$/.exec(line);
+      if (exec) nextRun = { run: exec[1], args: exec[2] };
       if (line.startsWith("page stats")) statsLine(0, line);
       if (line.startsWith("d3d9 stats")) statsLine(1, line);
     },
@@ -515,7 +518,20 @@ let saveNow: () => Promise<void> = async () => {};
 /** The program ended the runtime (Module.onExit). */
 let exited = false;
 
+/** The program the game started in its own place (a launcher's game), run when it exits. */
+let nextRun: { run: string; args: string } | undefined;
+
 function closeGame(): void {
+  if (nextRun) {
+    const { run, args } = nextRun;
+    log(`${run} に切り替えます`);
+    const url = new URL(location.href);
+    url.searchParams.set("run", run);
+    url.searchParams.set("args", args.split(/\s+/).filter(Boolean).join(","));
+    if (!args.trim()) url.searchParams.delete("args");
+    void saveNow().finally(() => location.replace(url));
+    return;
+  }
   log("ゲームが終了しました。一覧に戻ります");
   const ended = recorder
     ? Promise.race([recorder.end(), new Promise((r) => setTimeout(r, 4000))])
