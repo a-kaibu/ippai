@@ -19,6 +19,7 @@ import { keepSaving, loadSaves, type SavesModule } from "./saves";
 import { linuxKeycode } from "./keymap";
 import { AudioOut } from "./wine-audio";
 import { D3D9 } from "./d3d9";
+import { Video } from "./video";
 import { applyGame, coverUrl, fetchGames, type GameEntry } from "./launcher";
 import { getUi, setStart, setUi } from "./ui/store";
 import { renderShell } from "./ui/Shell";
@@ -48,6 +49,12 @@ interface WineModule {
   _vnhost_d3d9_readback_done(id: number): void;
   _vnhost_d3d9_readback_begin(id: number): number;
   _vnhost_d3d9_done(): void;
+  _vnhost_video_doorbell(): number;
+  _vnhost_video_list(out: number, max: number): number;
+  _vnhost_video_has(id: number, n: number): number;
+  _vnhost_video_begin(id: number, n: number, size: number): number;
+  _vnhost_video_ready(id: number, buf: number, layout: number, ok: number): void;
+  _vnhost_video_fail(id: number): void;
   _vnhost_crashlog_info?(): number;
   _vnhost_crashlog_snapshot?(): number;
   wasmMemory: WebAssembly.Memory;
@@ -366,6 +373,7 @@ function present(wine: WineModule, presenter: Presenter): void {
   const io = fio >>> 2;
   // Direct3D 9 games: their commands run here, the presented frame goes over the screen
   const d3d = new D3D9(presenter.device, wine);
+  const video = typeof VideoDecoder !== "undefined" ? new Video(wine) : null;
   (window as unknown as { vnvmD3d: D3D9 }).vnvmD3d = d3d;
   let d3dFrames = 0;
   const view = (scratch + 20) >>> 2;
@@ -408,6 +416,7 @@ function present(wine: WineModule, presenter: Presenter): void {
       shown = -1;
     }
     d3d.poll();
+    video?.tick();
     if (d3d.frames !== d3dFrames) {
       d3dFrames = d3d.frames;
       presenter.overlay = d3d.overlay;

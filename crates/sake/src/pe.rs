@@ -618,6 +618,7 @@ pub fn load_exe(_cpu: &mut Cpu, host: &str, win: &str) -> Result<u32, String> {
     // the main exe: the JIT translates its writable code too, checking stores into it
     let size = with(base, |m| m.size).unwrap_or(0);
     vnhost::jit::vnhost_jit_exe_image(base as usize as *const std::ffi::c_void, size as usize);
+    crate::movie::patch(base, size);
     tls_module(base);
     Ok(base)
 }

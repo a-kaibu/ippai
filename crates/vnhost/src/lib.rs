@@ -23,6 +23,7 @@ macro_rules! env_on {
 
 
 pub mod audio;
+pub mod video;
 pub mod d3d9;
 pub mod d3d11;
 pub mod gl;

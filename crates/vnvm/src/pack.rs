@@ -352,6 +352,15 @@ fn esc(s: &str) -> String {
 ///
 /// Paths are relative to the tree, parents before children; modes in octal. A file's last
 /// chunk holds only what is left of it.
+/// Whether ffmpeg is there to make the movies' H.264 copies (said once when it is not).
+static MOVIES: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+    let ok = crate::movie::available();
+    if !ok {
+        eprintln!("ffmpeg not found: Siglus movies (.omv) are left to the game's own decoder");
+    }
+    ok
+});
+
 fn tree(store: &Path, root: &Path, name: &str, follow: bool, chunk: u64) -> Result<()> {
     use std::os::unix::fs::MetadataExt;
     let root = root.canonicalize()?;
@@ -384,7 +393,18 @@ fn tree(store: &Path, root: &Path, name: &str, follow: bool, chunk: u64) -> Resu
                 todo.push((disk, path));
             } else if meta.is_file() {
                 lines.push(String::new());
-                files.push((lines.len() - 1, disk, path, mode, meta.mtime(), meta.len()));
+                files.push((lines.len() - 1, disk.clone(), path.clone(), mode, meta.mtime(), meta.len()));
+                // Siglus movies: an H.264 copy the browser decodes in hardware (see movie.rs)
+                if fname.to_ascii_lowercase().ends_with(".omv") && *MOVIES {
+                    match crate::movie::vnv_for(store, &disk) {
+                        Ok(v) => {
+                            let len = fs::metadata(&v)?.len();
+                            lines.push(String::new());
+                            files.push((lines.len() - 1, v, format!("{path}.vnv"), mode, meta.mtime(), len));
+                        }
+                        Err(e) => eprintln!("{path}: no H.264 copy: {e:#}"),
+                    }
+                }
             }
         }
     }

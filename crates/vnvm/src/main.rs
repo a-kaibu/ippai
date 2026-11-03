@@ -10,6 +10,7 @@
 //! `--store` (default `store`) goes before the command.
 
 mod meta;
+mod movie;
 mod pack;
 mod saves;
 mod serve;

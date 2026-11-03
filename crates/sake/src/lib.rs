@@ -40,6 +40,7 @@ pub mod gdi;
 pub mod k32;
 pub mod mem;
 pub mod misc;
+pub mod movie;
 pub mod obj;
 pub mod dshow;
 pub mod mf;
