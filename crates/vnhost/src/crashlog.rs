@@ -8,8 +8,8 @@
 //!   frame chain and return-address candidates resolved to `module!export+off`, the thread's
 //!   last syscalls / API calls and the JIT's recent region jumps; process starts and ends;
 //!   panics.
-//! - `OUT`: everything written to stdout/stderr (Wine's err:/fixme: lines, its "Unhandled
-//!   exception" message, sake's messages).
+//! - `OUT`: everything written to stdout/stderr (sake's messages, its "Unhandled
+//!   exception" report).
 //! - `SNAP`: every guest thread's state now ([`vnhost_crashlog_snapshot`]), rewritten each time.
 //!
 //! The rings are plain text; a writer reserves its bytes with one `fetch_add`, so lines from
@@ -173,7 +173,7 @@ pub fn crash(reason: &str) {
     CRASHES.fetch_add(1, SeqCst);
 }
 
-/// A write to stdout/stderr. Wine's own report of an unhandled exception is a crash.
+/// A write to stdout/stderr. A report of an unhandled exception is a crash.
 pub fn output(fd: i32, b: &[u8]) {
     if b.is_empty() {
         return;
@@ -188,12 +188,11 @@ pub fn output(fd: i32, b: &[u8]) {
     if b.last() != Some(&b'\n') {
         OUT.put(b"\n");
     }
-    // "wine: Unhandled page fault on read access to ...", "Unhandled exception: ..."
-    // (kernelbase's UnhandledExceptionFilter, winedbg)
+    // "Unhandled exception: ..."
     let find = |pat: &[u8]| b.windows(pat.len()).any(|w| w == pat);
-    if find(b"wine: Unhandled") || find(b"Unhandled exception: ") {
-        // the thread writing this is the one whose exception nobody handled (kernelbase's
-        // UnhandledExceptionFilter runs on it): its stack still has the code that raised it
+    if find(b"Unhandled exception: ") {
+        // the thread writing this is the one whose exception nobody handled: its stack still
+        // has the code that raised it
         thread_state("the thread reporting the unhandled exception");
         let s = String::from_utf8_lossy(&b[..b.len().min(250)]);
         crash(s.trim_end());
@@ -234,7 +233,7 @@ pub fn forget_tid(tid: i32) {
 struct ThreadLog {
     tid: i32,
     cpu: AtomicUsize,
-    /// 1 while it runs guest code, 0 in Wine's unix side / sake (a syscall, an API call)
+    /// 1 while it runs guest code, 0 in sake (a syscall, an API call)
     guest: AtomicU32,
     /// (trap address, EAX, [ESP], [ESP+4]) of its last syscalls / API calls
     traps: UnsafeCell<[[u32; 4]; TRAPS]>,
@@ -665,7 +664,7 @@ fn module_list(w: &mut impl Write, mods: &[Module], always: bool) {
     }
 }
 
-/// A guest exception as the x86 core stops on it (before Wine's / sake's SEH sees it).
+/// A guest exception as the x86 core stops on it (before sake's SEH sees it).
 /// `what` names it, `access` is (address, write) for access violations.
 pub fn exception(cpu: &Cpu, what: &str, access: Option<(u32, bool)>, from_jit: bool) {
     let t = CUR.with(|c| c.get());

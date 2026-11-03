@@ -1,4 +1,4 @@
-// Headless test of web/wine.html (Wine in wasm): logs the console with timestamps and saves the
+// Headless test of web/play.html (sake in wasm): logs the console with timestamps and saves the
 // screen vnhost composes (read from the wasm heap: headless Chromium can't show WebGPU canvases;
 // Direct3D windows' frames are read back from the GPU)
 // as a PNG every INTERVAL seconds. After the first shot, CLICKS="x,y;x,y" clicks there (page
@@ -7,7 +7,7 @@
 // instead, then CLICK_EVERY takes over (SHOT_COORDS=1: click coordinates are screenshot pixels). CHROME_ARGS adds browser flags; USER_DATA_DIR keeps the
 // browser profile (its HTTP and code caches) there across runs.
 //
-//   node tests/wine.mjs URL OUT_DIR [SECONDS] [INTERVAL]
+//   node tests/play.mjs URL OUT_DIR [SECONDS] [INTERVAL]
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
 const { chromium } = pw.default ?? pw;
 import { mkdirSync, appendFileSync, writeFileSync } from "node:fs";
@@ -69,7 +69,7 @@ function png(w, h, bgra) {
 
 async function shot(n) {
   const f = await page.evaluate(async () => {
-    const m = window.vnvmWine;
+    const m = window.vnvmSake;
     if (!m) return null;
     const enc = (out, w, h) => {
       let s = "";
@@ -96,7 +96,7 @@ async function click(x, y) {
   // SHOT_COORDS=1: x,y are pixels of the screenshots (the game window's client area), not of the page
   if (process.env.SHOT_COORDS)
     [x, y] = await page.evaluate(([sx, sy]) => {
-      const m = window.vnvmWine;
+      const m = window.vnvmSake;
       const o = m._malloc(40) >>> 0;
       m._vnhost_render_layout(o);
       const [rx, ry, rw, rh, l, t, vr, vb] = Array.from(new Int32Array(m.wasmMemory.buffer, o, 10));

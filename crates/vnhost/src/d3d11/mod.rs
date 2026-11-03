@@ -1,11 +1,11 @@
-//! Direct3D 11 and DXGI for Wine's guest programs, drawn with the page's WebGPU.
+//! Direct3D 11 and DXGI for the guest programs, drawn with the page's WebGPU.
 //!
 //! Same scheme as `d3d9`: d3d11.dll (dlls/vnd3d11) turns every COM method call into a call
 //! here with id = interface << 8 | vtable index (interfaces 64+, `names`), through d3d9.dll's
 //! dispatcher. Objects are { vtable, id } blocks in guest memory; an object answering several
 //! interfaces (the device is also an IDXGIDevice) has a block per interface ("faces").
 //!
-//! Draws become commands of the d3d9 batch queue (`d3d9::gpu`, run by web/src/d3d9.ts):
+//! Draws become commands of the d3d9 batch queue (`d3d9::gpu`, run by crates/vnhost/src/render/d3d.rs):
 //! shaders go DXBC -> SPIR-V -> WGSL (`shader`), buffers are guest memory copied into a new page
 //! buffer whenever a draw needs them after the guest wrote them.
 

@@ -1,4 +1,4 @@
-//! `vnvm pack` turns directory trees (the Wine root, the prefix, games) into what the browser streams:
+//! `vnvm pack` turns directory trees (the prefix, games) into what the browser streams:
 //! `trees/<name>.tsv` lists a tree's files, each as content-addressed, zstd-compressed chunks.
 //!
 //! ```text
@@ -9,7 +9,7 @@
 //!
 //! Identical chunks (across trees too) are stored once, all-zero chunks not at all.
 //!
-//! `vnvm add-game` puts a packed game in the launcher's list (web/wine.html without `?run=`):
+//! `vnvm add-game` puts a packed game in the launcher's list (web/play.html without `?run=`):
 //! `games/<id>.json` (see `GameEntry`), served as one list by vnvm serve's `GET /games`.
 //! It also looks the game up on ErogameScape (批評空間) / VNDB (see meta.rs) for the card's
 //! brand, release date, score, tags, story and cover; `vnvm meta` does that again or for older entries.
@@ -107,10 +107,10 @@ struct GameEntry {
     /// Windows path of the program.
     run: String,
     args: Vec<String>,
-    /// `/path=tree`, as wine.html's `&mount=`
+    /// `/path=tree`, as play.html's `&mount=`
     mounts: Vec<String>,
     env: Vec<String>,
-    /// "x86_64" for a 64-bit (PE32+) program: wine.html runs it with the 64-bit build
+    /// "x86_64" for a 64-bit (PE32+) program: play.html runs it with the 64-bit build
     #[serde(skip_serializing_if = "Option::is_none")]
     arch: Option<String>,
     /// From ErogameScape / VNDB (meta.rs)
@@ -201,7 +201,7 @@ fn add_game(
     if !valid_id(&id) {
         bail!("id {id:?}: use letters, digits, _ and -");
     }
-    // the exe must be in the tree (a typo would only show up as Wine's "file not found")
+    // the exe must be in the tree (a typo would only show up as "file not found")
     let list = fs::read_to_string(store.join("trees").join(format!("{tree}.tsv")))
         .with_context(|| format!("tree {tree} (pack it with `tree` first)"))?;
     let exe = exe.replace('\\', "/");

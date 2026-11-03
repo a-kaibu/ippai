@@ -1,22 +1,22 @@
 // Runs sake (crates/sake, the from-scratch Win32 layer, built by crates/sake/build.sh → public/sake/)
 // in the page: the prefix (its C:\ fonts) and the games are streamed from the store, windows are
-// composed by vnhost (crates/vnhost/src/display.rs) and shown with WebGPU. (The Wine path that this
-// page also ran until 2026-11-02 is in a-kaibu/vnvm-wine.)
+// composed by vnhost (crates/vnhost/src/display.rs) and shown with WebGPU. (The page ran Wine too
+// until 2026-11-02: a-kaibu/vnvm-wine.)
 //
-//   /wine.html                      the game list (web/src/launcher.ts, vnvm add-game)
-//   /wine.html?game=id              a game from the list (its run, mount, args and env)
-//   /wine.html?run=C:\path\to.exe   program to start
+//   /play.html                      the game list (web/src/launcher.ts, vnvm add-game)
+//   /play.html?game=id              a game from the list (its run, mount, args and env)
+//   /play.html?run=C:\path\to.exe   program to start
 //   &args=a,b                       its arguments
 //   &debug=<flags>[:channel,...]    SAKE_WINEDEBUG (crates/sake/src/k32.rs)
 //   &mount=/vnvm/game=tree          also mount a store tree (repeatable; Z:\vnvm\game\...)
-//   &env=NAME=value                 extra environment variable (repeatable, e.g. VNVM_TRACE_PROC=1)
+//   &env=NAME=value                 extra environment variable (repeatable, e.g. SAKE_TRACE_FILES=1)
 //   &nosave                         no saved games (vnvm serve's pre-run: its x86 regions only)
-//   &headless                       don't draw to the canvas (tests/wine.mjs: headless Chromium
+//   &headless                       don't draw to the canvas (tests/play.mjs: headless Chromium
 //                                   destroys the device then, and Direct3D games need it)
 
 import { keepSaving, loadSaves, type SavesModule } from "./saves";
 import { linuxKeycode } from "./keymap";
-import { AudioOut } from "./wine-audio";
+import { AudioOut } from "./audio";
 import { Video } from "./video";
 import { applyGame, coverUrl, fetchGames, type GameEntry } from "./launcher";
 import { getUi, setStart, setUi } from "./ui/store";
@@ -29,7 +29,7 @@ const canvas = document.querySelector<HTMLCanvasElement>("#screen")!;
 // the status line, start button, cover and stats over the screen (React: ui/Shell.tsx)
 renderShell();
 
-interface WineModule {
+interface SakeModule {
   HEAPU8: Uint8Array;
   HEAPU32: Uint32Array;
   HEAPF32: Float32Array;
@@ -140,7 +140,7 @@ function virtualKey(code: string): number {
 
 async function boot(audio: Promise<AudioOut>): Promise<void> {
   log("sake を読み込み中");
-  const WINE = new URL("sake/", location.href).href;
+  const BASE = new URL("sake/", location.href).href;
   const WASM = "sake.wasm";
   const run = params.get("run") ?? "C:\\wintest.exe";
   recorder = new FlightRecorder(params.get("game") ?? run.slice(run.lastIndexOf("\\") + 1), {
@@ -153,7 +153,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     arch: "x86",
   });
   // the browser keeps a versioned sake.wasm with its compiled code (see vnvm serve)
-  const wasmVersion = fetch(`${WINE}${WASM}`, { method: "HEAD" }).then(
+  const wasmVersion = fetch(`${BASE}${WASM}`, { method: "HEAD" }).then(
     (r) => `${r.headers.get("last-modified") ?? ""}-${r.headers.get("content-length") ?? ""}`,
     () => "",
   );
@@ -162,7 +162,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   const jitBase = params.get("jit") ?? `sake-${run.replace(/[^A-Za-z0-9_.-]/g, "_")}`;
   // (jit-version.txt: a hash of the translator's sources, which crates/sake/build.sh writes; saved
   // regions stay good across builds that change anything else)
-  const jitVersion = fetch(`${WINE}jit-version.txt`, { cache: "no-cache" })
+  const jitVersion = fetch(`${BASE}jit-version.txt`, { cache: "no-cache" })
     .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`))))
     .then((t) =>
       /^[0-9a-f]{8}$/.test(t.trim()) ? t.trim() : Promise.reject(new Error("bad version")),
@@ -176,8 +176,8 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       })
     : Promise.resolve(undefined);
   const ahead = jitName ? readAhead(jitName) : undefined;
-  const scriptUrl = `${WINE}sake.js`;
-  const factory = (await import(/* @vite-ignore */ scriptUrl)).default as (m: object) => Promise<WineModule>;
+  const scriptUrl = `${BASE}sake.js`;
+  const factory = (await import(/* @vite-ignore */ scriptUrl)).default as (m: object) => Promise<SakeModule>;
   const version = await wasmVersion;
   recorder.note(`build: ${WASM} ${version}, translator ${await jitVersion}`);
   // saved games: per program and mounts; what it writes in its folders and the user folders
@@ -199,7 +199,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     ],
     mainScriptUrlOrBlob: scriptUrl,
     locateFile: (path: string) =>
-      path === WASM && version ? `${WINE}${path}?v=${encodeURIComponent(version)}` : `${WINE}${path}`,
+      path === WASM && version ? `${BASE}${path}?v=${encodeURIComponent(version)}` : `${BASE}${path}`,
     vnvmEnv: {
       // "/=": an empty tree at the root, so every path is vnhost's (no emscripten file system)
       VNVM_MOUNTS: ["/=", "/vnvm/prefix=prefix32", ...params.getAll("mount")].join(":"),
@@ -230,7 +230,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     print: (line: string) => {
       console.log(line);
       // bench.html shows the program's output
-      dispatchEvent(new CustomEvent("wine-print", { detail: line }));
+      dispatchEvent(new CustomEvent("vnvm-print", { detail: line }));
     },
     onAbort: (what: unknown) => {
       recorder?.abort(what);
@@ -250,25 +250,22 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     },
   };
   log(`${run} を起動中`);
-  const wine = await factory(moduleArg);
-  recorder.attach(wine);
-  if (!nosave) saveNow = keepSaving(wine as unknown as SavesModule, saveName, saveRoots, saved);
-  // for tests/wine.mjs (headless Chromium can't present WebGPU canvases)
-  (window as unknown as { vnvmWine: WineModule }).vnvmWine = wine;
-  ahead?.(wine);
-  attachInput(wine);
+  const sake = await factory(moduleArg);
+  recorder.attach(sake);
+  if (!nosave) saveNow = keepSaving(sake as unknown as SavesModule, saveName, saveRoots, saved);
+  // for tests/play.mjs (headless Chromium can't present WebGPU canvases)
+  (window as unknown as { vnvmSake: SakeModule }).vnvmSake = sake;
+  ahead?.(sake);
+  attachInput(sake);
   const resize = () => {
     const dpr = window.devicePixelRatio || 1;
-    wine._vnhost_render_resize(
-      Math.floor(canvas.clientWidth * dpr),
-      Math.floor(canvas.clientHeight * dpr),
-    );
+    sake._vnhost_render_resize(Math.floor(canvas.clientWidth * dpr), Math.floor(canvas.clientHeight * dpr));
   };
   resize();
   new ResizeObserver(resize).observe(canvas);
-  wine._vnhost_render_start();
-  watch(wine);
-  (await audio).attach(wine);
+  sake._vnhost_render_start();
+  watch(sake);
+  (await audio).attach(sake);
 }
 
 /** FNV-1a of `bytes`, in hex. */
@@ -310,15 +307,15 @@ async function loadJit(
 
 /**
  * Fetches the store chunks the last run of `name` read first (saved with its regions), several
- * at a time: Wine's threads read the store one synchronous request at a time, which took about
- * 2 s of the start (fonts are read whole). Returns the function that hands them to Wine.
+ * at a time: the program's threads read the store one synchronous request at a time, which took about
+ * 2 s of the start (fonts are read whole). Returns the function that hands them to the module.
  */
-function readAhead(name: Promise<string>): (wine: WineModule) => void {
+function readAhead(name: Promise<string>): (sake: SakeModule) => void {
   const store = new URL("store/", location.href).href;
   const got: [Uint8Array, Uint8Array][] = [];
-  let wine: WineModule | undefined;
+  let sake: SakeModule | undefined;
   let p = 0;
-  const put = (w: WineModule, hash: Uint8Array, data: Uint8Array) => {
+  const put = (w: SakeModule, hash: Uint8Array, data: Uint8Array) => {
     p ||= w._malloc(16) >>> 0;
     const d = w._malloc(Math.max(data.length, 1)) >>> 0;
     // (a fresh view: the memory may have grown, and HEAPU8 is this thread's old one)
@@ -328,7 +325,7 @@ function readAhead(name: Promise<string>): (wine: WineModule) => void {
     w._vnhost_vfs_put_chunk(p, d, data.length);
   };
   (async () => {
-    // this program's, then those several programs read (Wine's files: a game's first run too)
+    // this program's, then those several programs read (fonts and the like: a game's first run too)
     const lists = await Promise.all(
       [`jit/${await name}.chunks`, "jit/_shared.chunks"].map((u) =>
         fetch(u).then(
@@ -358,36 +355,34 @@ function readAhead(name: Promise<string>): (wine: WineModule) => void {
         const c = await fetch(`${store}chunks/${hex.slice(0, 2)}/${hex}`);
         if (!c.ok) continue;
         const data = new Uint8Array(await c.arrayBuffer());
-        if (wine) put(wine, hash, data);
+        if (sake) put(sake, hash, data);
         else got.push([hash, data]);
       }
     };
     await Promise.all(Array.from({ length: 6 }, one));
   })().catch((e) => console.log(`read-ahead: ${e}`));
   return (w) => {
-    wine = w;
+    sake = w;
     for (const [hash, data] of got.splice(0)) put(w, hash, data);
   };
 }
 
-/** With the module drawing: the page's events for its frames (wine-frame), and the exit. */
-function watch(wine: WineModule): void {
-  const info = wine._malloc(32) >>> 0;
+/** With the module drawing: the page's events for its frames (vnvm-frame), and the exit. */
+function watch(sake: SakeModule): void {
+  const info = sake._malloc(32) >>> 0;
   let serial = 0;
   // Siglus movies: decoded here for the guest (web/src/video.ts)
   const video =
-    typeof VideoDecoder !== "undefined"
-      ? new Video(wine, (l) => (console.log(l), recorder?.note(l)))
-      : null;
+    typeof VideoDecoder !== "undefined" ? new Video(sake, (l) => (console.log(l), recorder?.note(l))) : null;
   const frame = () => {
     if (exited) return closeGame();
     video?.tick();
-    wine._vnhost_render_info(info);
-    const [s, bits, width, height] = Array.from(new Uint32Array(wine.wasmMemory.buffer, info, 4));
+    sake._vnhost_render_info(info);
+    const [s, bits, width, height] = Array.from(new Uint32Array(sake.wasmMemory.buffer, info, 4));
     if (s !== serial && width && height) {
       serial = s!;
       // game.html looks at the frames
-      dispatchEvent(new CustomEvent("wine-frame", { detail: { heap: wine.HEAPU8, bits, width, height } }));
+      dispatchEvent(new CustomEvent("vnvm-frame", { detail: { heap: sake.HEAPU8, bits, width, height } }));
       if (getUi().status) log("");
     }
     requestAnimationFrame(frame);
@@ -395,9 +390,9 @@ function watch(wine: WineModule): void {
   requestAnimationFrame(frame);
 }
 
-function attachInput(wine: WineModule): void {
+function attachInput(sake: SakeModule): void {
   const push = (kind: number, x: number, y: number, data: number) =>
-    wine._vnhost_render_input(kind, x, y, data);
+    sake._vnhost_render_input(kind, x, y, data);
   // canvas pixels: the module maps them to the screen
   const toFrame = (e: { clientX: number; clientY: number }): [number, number] => {
     const b = canvas.getBoundingClientRect();
@@ -444,7 +439,7 @@ function checkSupport(): string | null {
   return null;
 }
 
-// the game list: wine.html / index.html only (bench.html and game.html have none)
+// the game list: play.html / index.html only (bench.html and game.html have none)
 const library = !!document.querySelector("#ui[data-library]");
 
 const start = () => {
@@ -458,12 +453,12 @@ const start = () => {
   });
 };
 
-/** The game's cover behind the loading messages, until Wine draws. */
+/** The game's cover behind the loading messages, until the game draws. */
 function splash(g: GameEntry): void {
   const url = coverUrl(g);
   if (!url) return;
   setUi({ splash: url });
-  addEventListener("wine-frame", () => setUi({ splash: null }), { once: true });
+  addEventListener("vnvm-frame", () => setUi({ splash: null }), { once: true });
 }
 
 async function main(): Promise<void> {

@@ -1,4 +1,4 @@
-//! The x86 run loop driven by Wine's wasm signal layer (dlls/ntdll/unix/signal_wasm.c).
+//! The x86 run loop sake drives (crates/sake/src/lib.rs).
 //!
 //! Guest and host share the linear memory, so a guest address is used as a pointer as is.
 //! The first 64 KiB stay unmapped for the guest so NULL dereferences raise access violations.
@@ -389,7 +389,7 @@ fn exit_code(cpu: &Cpu, mem: &mut Linear, exit: Exit, info: &mut [u32], from_jit
 
 /// VNVM_TRACE_EIP=<seconds>: every so often, print where each thread's guest code is (the
 /// EIP of its latest exit from the JIT or interpreter step) and whether it is in guest code
-/// or in Wine's unix side. For finding what a hung or spinning program does.
+/// or in sake (a syscall, an API call). For finding what a hung or spinning program does.
 fn trace_eip(cpu: *mut Cpu) -> Option<impl Drop> {
     use std::sync::atomic::AtomicBool;
     struct Entry {

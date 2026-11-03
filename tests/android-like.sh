@@ -6,7 +6,7 @@
 # phone against this container (bench.html: phone wasm ~800 / JIT ~1000 ms; here 540 / 600,
 # with this 860-1120 / 1050-1130).
 #
-#   tests/android-like.sh node tests/wine.mjs URL OUT ...
+#   tests/android-like.sh node tests/play.mjs URL OUT ...
 HOGS=${HOGS:-1}
 pids=""
 for c in $(seq 0 $(($(nproc) - 1))); do

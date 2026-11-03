@@ -1,6 +1,6 @@
-//! Direct3D 9 for Wine's guest programs, drawn with the page's WebGPU.
+//! Direct3D 9 for the guest programs, drawn with the page's WebGPU.
 //!
-//! The PE side (dlls/vnd3d9 in the Wine patch) turns every COM method call into
+//! sake (crates/sake/src/d3d9.rs) turns every COM method call into
 //! `vnhost_d3d9_call(id, args)`: `id` is interface << 8 | vtable index, `args` points at the
 //! guest's stack arguments (`this` first). Objects are { vtable, id } blocks in guest memory that
 //! this module allocates (the PE side hands over its vtables once).

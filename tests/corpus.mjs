@@ -1,6 +1,6 @@
-// One corpus title in headless Chromium (wine.html, &load): finds the title screen (first frame
+// One corpus title in headless Chromium (play.html, &load): finds the title screen (first frame
 // whose middle band has many colours), runs the title's steps, then clicks through the story for
-// STORY seconds while measuring Wine's CPU (vnhost_load_busy, as game.html). Writes OUT/result.json,
+// STORY seconds while measuring the program's CPU (vnhost_load_busy, as game.html). Writes OUT/result.json,
 // console.log and PNGs (title, story-N, last).
 //
 //   node tests/corpus.mjs URL OUT [STEPS]
@@ -71,7 +71,7 @@ function png(w, h, bgra) {
 // the game window's client area as the page shows it (+ Direct3D overlay); with full=false only stats
 async function frame(full) {
   return page.evaluate(async (full) => {
-    const m = window.vnvmWine;
+    const m = window.vnvmSake;
     if (!m || !m._vnhost_render_shot) return null;
     // what the page shows (the game window's client area, Direct3D frames included), at the
     // screen's pixels: crates/vnhost/src/render
@@ -112,7 +112,7 @@ async function shot(name) {
 }
 const sleep = (s) => page.waitForTimeout(s * 1000);
 async function input(kind, x, y, d) {
-  await page.evaluate(([k, x, y, d]) => window.vnvmWine?._vnhost_input_push(k, x, y, d), [kind, x, y, d]).catch(() => {});
+  await page.evaluate(([k, x, y, d]) => window.vnvmSake?._vnhost_input_push(k, x, y, d), [kind, x, y, d]).catch(() => {});
 }
 let view = [0, 0, 640, 480];
 // x, y in client pixels, or below 1: a fraction of the client size (dialogs whose size varies)

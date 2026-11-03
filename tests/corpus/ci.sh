@@ -22,7 +22,7 @@ TITLES=$ROOT/tests/corpus/titles.tsv
 mkdir -p "$WORK" "$OUT"
 OUT=$(realpath "$OUT")
 
-# sake's C:\ as a store with the tree "prefix32" (what wine.html mounts); each title's store is a
+# sake's C:\ as a store with the tree "prefix32" (what play.html mounts); each title's store is a
 # hard-linked copy of it plus the game's tree
 BASE=$WORK/base-store
 if [ ! -d "$BASE" ]; then

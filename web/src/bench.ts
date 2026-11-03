@@ -1,22 +1,22 @@
 // bench.exe (host/tests/bench.c) on a device, with everything needed to tell where the time
 // goes, from one URL: /bench.html runs the steps of SUITE one after another (the page reloads
-// itself between them; Wine can't start twice in a page) and ends with a table of all of them.
+// itself between them; the module can't start twice in a page) and ends with a table of all of them.
 //
 //   - bench.c compiled straight to wasm (host/tests/bench-wasm.sh): the device's own speed
-//     with the same kernels, no x86 or Wine; also with shared memory, and shared and 2.1 GB
-//     like wine.wasm
+//     with the same kernels, no x86 or sake; also with shared memory, and shared and 2.1 GB
+//     like sake.wasm
 //   - bench.exe through sake and the JIT, twice (the 2nd starts from the regions the 1st saved)
 //   - single kernels 5 times in a row in one run: does the JIT's code get faster as V8 tiers up?
 //   - the memcpy kernel's copies (4 MB there and back, 200 times) as wasm memory.copy and as an
 //     i64 load/store loop, on shared memory: what the JIT's memcpy (memory.copy) can do
 //
 //   /bench.html?step=N     start at step N (later steps follow)
-//   (other wine.html parameters pass through)
+//   (other play.html parameters pass through)
 //
 // Each step's result also goes to vnvm serve's `PUT /bench-log`, which prints it and appends it
 // to bench-results.txt.
 
-// native Wine on the x86-64 dev machine, bench.exe 1 (vnvm-wine docs/hangover.md)
+// natively (Wine on the x86-64 dev machine), bench.exe 1 (vnvm-wine docs/hangover.md)
 import { getUi, setBench, setStart } from "./ui/store";
 import { renderShell } from "./ui/Shell";
 const NATIVE: Record<string, number> = {
@@ -33,11 +33,11 @@ const KERNELS = Object.keys(NATIVE);
 
 interface Step {
   label: string;
-  /** benchwasm/<wasm>.js instead of Wine */
+  /** benchwasm/<wasm>.js instead of sake */
   wasm?: string;
   scale: number;
   only?: string;
-  /** extra environment variable for Wine (its own saved regions: they depend on it) */
+  /** extra environment variable for sake (its own saved regions: they depend on it) */
   env?: string;
   /** an export of MICRO instead (shown as memcpy) */
   micro?: string;
@@ -148,7 +148,7 @@ function onLine(line: string): void {
     });
 }
 
-addEventListener("wine-print", (e) => onLine((e as CustomEvent<string>).detail));
+addEventListener("vnvm-print", (e) => onLine((e as CustomEvent<string>).detail));
 
 if (step.micro) {
   setStart({ shown: false });
@@ -180,4 +180,4 @@ if (step.micro) {
   const m = await factory({ print: onLine, printErr: (l: string) => console.warn(l) });
   // after the page has painted, so the table is there while it runs
   setTimeout(() => m.callMain([String(step.scale)]), 100);
-} else await import("./wine");
+} else await import("./play");

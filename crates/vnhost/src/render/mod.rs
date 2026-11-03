@@ -45,7 +45,7 @@ static STARTED: AtomicBool = AtomicBool::new(false);
 /// A test wants the picture (`vnhost_render_shot`): its serial asked for, and done.
 static SHOT_WANT: AtomicU32 = AtomicU32::new(0);
 static SHOT: Mutex<(u32, usize, u32, u32)> = Mutex::new((0, 0, 0, 0));
-/// the screen's latest frame: serial, its pixels, row length, rows (for the page: wine-frame)
+/// the screen's latest frame: serial, its pixels, row length, rows (for the page: vnvm-frame)
 static FRAME: Mutex<[u32; 4]> = Mutex::new([0; 4]);
 /// counters: Direct3D frames, batch time (µs), passes, bytes uploaded
 pub(crate) static STATS: [AtomicU64; 4] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];

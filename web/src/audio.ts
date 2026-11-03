@@ -69,13 +69,13 @@ export class AudioOut {
     return new AudioOut(ctx, node);
   }
 
-  attach(wine: AudioSource): void {
+  attach(sake: AudioSource): void {
     // autoplay: the context can only start on a user gesture
     for (const ev of ["pointerdown", "keydown"])
       addEventListener(ev, () => void (this.ctx.state === "suspended" && this.ctx.resume()), true);
-    const p = wine._malloc(4) >>> 0;
-    const ptr = wine._vnhost_audio_ring(p) >>> 0;
-    const frames = new Uint32Array(wine.wasmMemory.buffer, p, 1)[0]!;
-    this.node.port.postMessage({ mem: wine.wasmMemory.buffer, ptr, frames });
+    const p = sake._malloc(4) >>> 0;
+    const ptr = sake._vnhost_audio_ring(p) >>> 0;
+    const frames = new Uint32Array(sake.wasmMemory.buffer, p, 1)[0]!;
+    this.node.port.postMessage({ mem: sake.wasmMemory.buffer, ptr, frames });
   }
 }

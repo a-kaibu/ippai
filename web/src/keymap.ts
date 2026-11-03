@@ -1,5 +1,5 @@
 // KeyboardEvent.code -> Linux input keycode (linux/input-event-codes.h); below 89 these are
-// also the PC scan codes (set 1) that wine.ts sends with each key.
+// also the PC scan codes (set 1) that play.ts sends with each key.
 
 const MAP: Record<string, number> = {
   Escape: 1,
