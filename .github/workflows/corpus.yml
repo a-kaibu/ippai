@@ -90,6 +90,8 @@ jobs:
         env:
           SHA: ${{ needs.plan.outputs.sha }}
         run: |
+          # (room for two lanes of trials: the runner's preinstalled SDKs take ~30 GB)
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL &
           sudo apt-get update -q
           sudo apt-get install -yq --no-install-recommends unar innoextract convmv p7zip-full msitools zstd \
             fonts-ipafont-gothic fonts-ipafont-mincho
@@ -100,6 +102,7 @@ jobs:
           # (the artifact can hold older builds from CI's cache too: the one of that commit)
           tar -I zstd -xf "$(ls dist/vnvm-"${SHA:0:7}"*.tar.zst | head -1)" -C "$RUNNER_TEMP/dist" --strip-components=1
           python3 tools/ci/sake-fonts.py "$RUNNER_TEMP/fonts"
+          wait
       - name: Corpus shard ${{ matrix.shard }}
         env:
           SET: ${{ needs.plan.outputs.set }}

@@ -11,7 +11,8 @@
 #     DLLs, so a title that needs a DLL sake does not implement yet fails here, and
 #     check.py lists the DLLs each title missed.
 #   env: SET=smoke|full (default smoke: rows with smoke=1), SHARD=0 SHARDS=1, ONLY="id ..."
-#        (just those), WORK (default $RUNNER_TEMP or /tmp), STORY (story seconds, default 30)
+#        (just those), WORK (default $RUNNER_TEMP or /tmp), STORY (story seconds, default 30),
+#        LANES (titles run at once, default 2), PREP_JOBS (downloads ahead per lane, default 3)
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 DIST=$(realpath "$1") FONTS=$(realpath "$2") OUT=$3
@@ -44,10 +45,18 @@ for i, r in enumerate(rows):
 EOF
 echo "shard ${SHARD:-0}/${SHARDS:-1}: $(wc -l < "$IDS") titles"
 
-run() {
+run1() {  # ids file, port
   VNVM_DIST=$DIST BASE_STORE=$BASE TRIALS=$WORK/trials STORES=$WORK/stores JIT_DIR=$WORK/jit \
-    DL_TRIES=${DL_TRIES:-3} DL_MAX_TIME=${DL_MAX_TIME:-3600} PREP_TIMEOUT=${PREP_TIMEOUT:-11000} SKIP_X64=0 ENGINE=sake CORPUS_QS='&env=SAKE_TRACE_LOAD%3D1' STORY=${STORY:-30} PREP_JOBS=${PREP_JOBS:-3} PORT=${PORT:-8092} \
+    DL_TRIES=${DL_TRIES:-3} DL_MAX_TIME=${DL_MAX_TIME:-3600} PREP_TIMEOUT=${PREP_TIMEOUT:-11000} SKIP_X64=0 ENGINE=sake CORPUS_QS='&env=SAKE_TRACE_LOAD%3D1' STORY=${STORY:-30} PREP_JOBS=${PREP_JOBS:-3} PORT=$2 \
     python3 "$ROOT/tests/corpus-run.py" "$TITLES" "$1" "$OUT"
+}
+# LANES (default 2) queues side by side, each with its own Chromium, server and downloads: the
+# trial hosts are slow per connection and a 4-core runner has room for two games
+run() {
+  local n=${LANES:-2} i
+  for i in $(seq 0 $((n - 1))); do awk -v n="$n" -v i="$i" 'NR % n == i' "$1" > "$1.$i"; done
+  for i in $(seq 0 $((n - 1))); do run1 "$1.$i" $((8092 + i)) & done
+  wait
 }
 run "$IDS"
 # one more try for the titles below their expected level
