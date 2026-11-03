@@ -91,9 +91,13 @@ async function frame(full) {
     const step = Math.max(1, Math.floor((ow * oh) / 3 / 3000)) * 4 + 4;
     for (let i = Math.floor(oh / 3) * ow * 4; i < Math.floor((2 * oh) / 3) * ow * 4; i += step)
       colors.add(outp[i] | (outp[i + 1] << 8) | (outp[i + 2] << 16));
+    // a grey picture has at most 256 colours: count it by its greys (KAG3's demo)
+    let greys = 0;
+    for (const c of colors) if (Math.abs((c & 255) - ((c >> 8) & 255)) < 3 && Math.abs((c & 255) - (c >> 16)) < 3) greys++;
+    const ncolors = greys > 100 ? Math.max(colors.size, 301) : colors.size;
     let hsh = 0;
     for (let i = 0; i < outp.length; i += 4093) hsh = (hsh * 31 + outp[i]) | 0;
-    const r = { w: ow, h: oh, view: v, colors: colors.size, hash: hsh, d3d: !!o, busy: m._vnhost_load_busy?.() ?? 0 };
+    const r = { w: ow, h: oh, view: v, colors: ncolors, hash: hsh, d3d: !!o, busy: m._vnhost_load_busy?.() ?? 0 };
     if (full) {
       let s = "";
       for (let i = 0; i < outp.length; i += 0x8000) s += String.fromCharCode(...outp.subarray(i, i + 0x8000));
