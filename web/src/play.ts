@@ -164,9 +164,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   // regions stay good across builds that change anything else)
   const jitVersion = fetch(`${BASE}jit-version.txt`, { cache: "no-cache" })
     .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`))))
-    .then((t) =>
-      /^[0-9a-f]{8}$/.test(t.trim()) ? t.trim() : Promise.reject(new Error("bad version")),
-    )
+    .then((t) => (/^[0-9a-f]{8}$/.test(t.trim()) ? t.trim() : Promise.reject(new Error("bad version"))))
     .catch(() => wasmVersion.then((v) => fnv(new TextEncoder().encode(v))));
   const jitName = jitBase === "0" ? undefined : jitVersion.then((v) => `${jitBase}-${v}`);
   const jit = jitName
@@ -185,10 +183,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   const saveName = `${run.replace(/[^A-Za-z0-9_.-]/g, "_")}-${fnv(
     new TextEncoder().encode(mounts.join(":")),
   )}`;
-  const saveRoots = [
-    ...mounts.map((m) => m.slice(0, m.indexOf("="))),
-    "/vnvm/prefix/drive_c/users",
-  ];
+  const saveRoots = [...mounts.map((m) => m.slice(0, m.indexOf("="))), "/vnvm/prefix/drive_c/users"];
   const nosave = params.has("nosave");
   const saved = nosave ? null : await loadSaves(saveName).catch(() => null);
   const moduleArg = {

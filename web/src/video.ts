@@ -91,12 +91,7 @@ export class Video {
     const u32 = new Uint32Array(this.wasm.wasmMemory.buffer, this.io, n * 6);
     const live = new Set<number>();
     for (let k = 0; k < n; k++) {
-      const [id, ptr, len, want] = [
-        u32[k * 6]!,
-        u32[k * 6 + 1]!,
-        u32[k * 6 + 2]!,
-        u32[k * 6 + 3]! | 0,
-      ];
+      const [id, ptr, len, want] = [u32[k * 6]!, u32[k * 6 + 1]!, u32[k * 6 + 2]!, u32[k * 6 + 3]! | 0];
       live.add(id);
       let s = this.streams.get(id);
       if (!s) {
@@ -240,10 +235,7 @@ export class Video {
         return { fmt: fmt ?? 2, opts, need: f.allocationSize(opts) };
       });
       const sizeAt = this.layoutBuf;
-      new Uint32Array(this.wasm.wasmMemory.buffer, sizeAt, 1)[0] = how.reduce(
-        (a, h) => a + h.need,
-        0,
-      );
+      new Uint32Array(this.wasm.wasmMemory.buffer, sizeAt, 1)[0] = how.reduce((a, h) => a + h.need, 0);
       const buf = this.wasm._vnhost_video_begin(s.id, n, sizeAt) >>> 0;
       if (!buf) return;
       s.copying.add(n);
@@ -264,10 +256,7 @@ export class Video {
       let at = 0;
       for (let t = 0; t < fs.length; t++) {
         const { fmt, opts, need } = how[t]!;
-        const planes = await fs[t]!.copyTo(
-          new Uint8Array(this.wasm.wasmMemory.buffer, buf + at, need),
-          opts,
-        );
+        const planes = await fs[t]!.copyTo(new Uint8Array(this.wasm.wasmMemory.buffer, buf + at, need), opts);
         layout[t * 7] = fmt;
         planes.forEach((p, i) => {
           if (i < 3) {
