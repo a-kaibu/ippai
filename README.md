@@ -73,10 +73,13 @@ flowchart TB
 | `web/` | Vite+ (`vp`) のフロントエンド (TypeScript、UI は React + Tailwind CSS v4 + shadcn/ui、`src/components/ui`): `index.html` (= `play.html`、ゲーム一覧)、`game.html`、`bench.html`、`logs.html` (実行ログ) |
 | `tests/` | ヘッドレス Chromium での確認 (`play.mjs`)、Android 相当に遅くして測る (`android-like.sh`)、コーパス |
 
-## インストールと使い方
+## インストール
 
-[Releases](https://github.com/a-kaibu/ippai/releases) から `ippai_<version>_linux_<amd64|arm64>.tar.gz` を
-取って、中の `ippai` を `~/.local/bin/` などに置くだけです (Web UI と sake.wasm は中に入っています)。
+```sh
+curl -fsSL https://raw.githubusercontent.com/a-kaibu/ippai/main/install.sh | sh
+```
+
+## 使い方
 
 ```sh
 ippai serve                       # バックグラウンドで起動して http://localhost:8656 を表示
