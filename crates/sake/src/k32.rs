@@ -3324,9 +3324,20 @@ fn GetCurrentDirectoryW(c: &mut Ctx) -> u32 {
 }
 fn set_dir(d: &str) -> u32 {
     let full = files::full_path(d);
-    if files::resolve(&full).is_none() {
-        last_error(3);
-        return 0;
+    if crate::env_on!("SAKE_TRACE_FILES") {
+        eprintln!("sake: SetCurrentDirectory({d}) -> {full}");
+    }
+    match files::resolve(&full).map(|h| vnhost::fs::metadata(h).map(|m| m.is_dir())) {
+        Some(Ok(true)) => {}
+        // (a file: Majiro sets its archive's name and expects that to fail)
+        Some(_) => {
+            last_error(267);
+            return 0;
+        }
+        None => {
+            last_error(3);
+            return 0;
+        }
     }
     files::set_cwd(&full);
     1
