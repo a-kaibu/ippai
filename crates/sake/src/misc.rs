@@ -1293,6 +1293,83 @@ fn CLSIDFromString(c: &mut Ctx) -> u32 {
 fn IIDFromString(c: &mut Ctx) -> u32 {
     guid_from_string(c)
 }
+// rpcrt4's UUIDs (the same GUIDs; strings without braces, lower case)
+fn UuidCreate(c: &mut Ctx) -> u32 {
+    CoCreateGuid(c);
+    let p = c.a(0);
+    w16(p + 6, (r16(p + 6) & 0x0fff) | 0x4000);
+    mem::w8(p + 8, (mem::r8(p + 8) & 0x3f) | 0x80);
+    0
+}
+fn UuidCreateNil(c: &mut Ctx) -> u32 {
+    mem::fill(c.a(0), 16, 0);
+    0
+}
+fn uuid_text(p: u32) -> String {
+    guid_string(p).trim_matches(['{', '}']).to_ascii_lowercase()
+}
+fn uuid_to_string(c: &mut Ctx, wide: bool) -> u32 {
+    let (u, out) = (c.a(0), c.a(1));
+    let t = uuid_text(u);
+    let p = mem::heap_alloc(2 * (t.len() as u32 + 1), true);
+    for (i, b) in t.bytes().enumerate() {
+        if wide { w16(p + 2 * i as u32, b as u16) } else { mem::w8(p + i as u32, b) }
+    }
+    w32(out, p);
+    0
+}
+fn UuidToStringA(c: &mut Ctx) -> u32 {
+    uuid_to_string(c, false)
+}
+fn UuidToStringW(c: &mut Ctx) -> u32 {
+    uuid_to_string(c, true)
+}
+fn RpcStringFreeA(c: &mut Ctx) -> u32 {
+    let pp = c.a(0);
+    if pp != 0 && r32(pp) != 0 {
+        mem::heap_free(r32(pp));
+        w32(pp, 0);
+    }
+    0
+}
+fn uuid_from_string(c: &mut Ctx, wide: bool) -> u32 {
+    let (s, out) = (c.a(0), c.a(1));
+    if s == 0 {
+        mem::fill(out, 16, 0);
+        return 0;
+    }
+    let t: String = crate::k32::arg_str(s, wide).chars().filter(|ch| ch.is_ascii_hexdigit()).collect();
+    if t.len() != 32 {
+        return 1705; // RPC_S_INVALID_STRING_UUID
+    }
+    let hex = |a: usize, n: usize| u32::from_str_radix(&t[a..a + n], 16).unwrap_or(0);
+    w32(out, hex(0, 8));
+    w16(out + 4, hex(8, 4) as u16);
+    w16(out + 6, hex(12, 4) as u16);
+    for i in 0..8 {
+        mem::w8(out + 8 + i as u32, hex(16 + 2 * i, 2) as u8);
+    }
+    0
+}
+fn UuidFromStringA(c: &mut Ctx) -> u32 {
+    uuid_from_string(c, false)
+}
+fn UuidFromStringW(c: &mut Ctx) -> u32 {
+    uuid_from_string(c, true)
+}
+/// UuidEqual(a, b, &status)
+fn UuidEqual(c: &mut Ctx) -> u32 {
+    put32(c.a(2), 0);
+    let z = [0u8; 16];
+    let (a, b) = (c.a(0), c.a(1));
+    let va = if a == 0 { z.to_vec() } else { mem::slice(a, 16).to_vec() };
+    let vb = if b == 0 { z.to_vec() } else { mem::slice(b, 16).to_vec() };
+    (va == vb) as u32
+}
+fn UuidIsNil(c: &mut Ctx) -> u32 {
+    put32(c.a(1), 0);
+    (c.a(0) == 0 || mem::slice(c.a(0), 16).iter().all(|&b| b == 0)) as u32
+}
 fn RegisterDragDrop(_: &mut Ctx) -> u32 {
     0
 }
@@ -2374,6 +2451,10 @@ pub fn init() {
     reg!("wintrust"; WinVerifyTrust);
     reg!("version"; GetFileVersionInfoSizeA, GetFileVersionInfoSizeW, GetFileVersionInfoA, GetFileVersionInfoW,
         VerQueryValueA, VerQueryValueW);
+    reg!("rpcrt4"; UuidCreate, UuidCreateNil, UuidToStringA, UuidToStringW, RpcStringFreeA, UuidFromStringA, UuidFromStringW,
+        UuidEqual, UuidIsNil);
+    implement("rpcrt4", "UuidCreateSequential", UuidCreate);
+    implement("rpcrt4", "RpcStringFreeW", RpcStringFreeA);
     reg!("ole32"; CoInitialize, CoInitializeEx, OleInitialize, CoUninitialize, OleUninitialize, CoCreateInstance,
         CoTaskMemAlloc, CoTaskMemRealloc, CoTaskMemFree, CoGetMalloc, CoCreateGuid, IsEqualGUID, StringFromGUID2, CLSIDFromString, IIDFromString,
         RegisterDragDrop, RevokeDragDrop);
