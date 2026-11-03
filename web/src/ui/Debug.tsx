@@ -1,6 +1,6 @@
-// Debug mode over the game (the list's switch, ?debugmode=1 or Ctrl+Shift+D): network (bytes per
-// second, requests, how long the game's threads waited for file data), memory and fps, from
-// meter.ts. The same numbers go to the run log's perf lines every 10 s.
+// Debug mode over the game (the list's switch, ?debugmode=1, Ctrl+Shift+D or a three-finger tap):
+// network (bytes per second, requests, how long the game's threads waited for file data), memory
+// and fps, from meter.ts. The same numbers go to the run log's perf lines every 10 s.
 
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";

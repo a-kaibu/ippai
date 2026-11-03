@@ -20,7 +20,7 @@ import { linuxKeycode } from "./keymap";
 import { AudioOut } from "./audio";
 import { Video } from "./video";
 import { applyGame, coverUrl, fetchGames, type GameEntry } from "./launcher";
-import { getUi, setStart, setUi } from "./ui/store";
+import { getUi, setDebug, setStart, setUi } from "./ui/store";
 import { renderShell } from "./ui/Shell";
 import { showLibrary } from "./ui/Library";
 import { FlightRecorder, sendLeftovers } from "./crashlog";
@@ -141,6 +141,11 @@ function virtualKey(code: string): number {
 }
 
 async function boot(audio: Promise<AudioOut>): Promise<void> {
+  // a three-finger tap over the game: debug mode on/off (Ctrl+Shift+D on a phone; crashlog.ts also
+  // saves the log on it)
+  addEventListener("touchstart", (e) => {
+    if (e.touches.length === 3) setDebug(!getUi().debug);
+  });
   const run = params.get("run") ?? "C:\\wintest.exe";
   // saved games: per program and mounts; what it writes in its folders and the user folders
   const mounts = params.getAll("mount");

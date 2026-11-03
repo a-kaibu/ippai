@@ -30,7 +30,10 @@ export interface UiState {
 
 const DEBUG = "vnvm.debug";
 
-/** Debug mode: the list's switch (kept in localStorage), ?debugmode=1 or Ctrl+Shift+D. */
+/**
+ * Debug mode: the list's switch (kept in localStorage), ?debugmode=1, Ctrl+Shift+D or a
+ * three-finger tap over the game (play.ts).
+ */
 function debugAtStart(): boolean {
   const q = new URLSearchParams(location.search).get("debugmode");
   if (q !== null) return q !== "0";
