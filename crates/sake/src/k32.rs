@@ -3685,6 +3685,47 @@ fn MakeSureDirectoryPathExists(c: &mut Ctx) -> u32 {
     }
     ok(dir.is_empty() || files::resolve(dir).is_some_and(|h| std::path::Path::new(&h).is_dir()))
 }
+/// SearchTreeForFile(root, name, out): the first file called `name` under `root`, depth first.
+fn SearchTreeForFile(c: &mut Ctx) -> u32 {
+    let (root, name, out) = (arg_str(c.a(0), false), arg_str(c.a(1), false), c.a(2));
+    let base = name.rsplit(['\\', '/']).next().unwrap_or(&name).to_lowercase();
+    fn walk(host: &std::path::Path, guest: &str, base: &str, depth: u32) -> Option<String> {
+        let mut dirs = Vec::new();
+        for e in std::fs::read_dir(host).ok()?.flatten() {
+            let n = e.file_name().to_string_lossy().into_owned();
+            let g = format!("{}\\{n}", guest.trim_end_matches('\\'));
+            if e.path().is_dir() {
+                dirs.push((e.path(), g));
+            } else if n.to_lowercase() == base {
+                return Some(g);
+            }
+        }
+        if depth < 16 {
+            for (h, g) in dirs {
+                if let Some(r) = walk(&h, &g, base, depth + 1) {
+                    return Some(r);
+                }
+            }
+        }
+        None
+    }
+    let found = files::resolve(&root).and_then(|h| walk(std::path::Path::new(&h), &root, &base, 0));
+    match found {
+        Some(g) => {
+            let mut b = crate::text::s2a(&g);
+            b.truncate(259);
+            b.push(0);
+            crate::mem::write(out, &b);
+            1
+        }
+        None => {
+            if out != 0 {
+                crate::mem::w8(out, 0);
+            }
+            0
+        }
+    }
+}
 fn WNetGetUniversalNameA(_: &mut Ctx) -> u32 {
     2250 // ERROR_NOT_CONNECTED: a local drive
 }
@@ -3842,7 +3883,8 @@ pub fn init() {
     for n in ["Process32Next", "Process32NextW", "Module32First", "Module32FirstW", "Module32Next", "Module32NextW", "Thread32First", "Thread32Next"] {
         implement("kernel32", n, no_more);
     }
-    reg!("dbghelp"; MakeSureDirectoryPathExists);
+    reg!("dbghelp"; MakeSureDirectoryPathExists, SearchTreeForFile);
+    reg!("imagehlp"; MakeSureDirectoryPathExists, SearchTreeForFile);
     reg!("mpr"; WNetGetUniversalNameA);
     implement("mpr", "WNetGetUniversalNameW", WNetGetUniversalNameA);
     reg!("advapi32"; RegisterTraceGuidsW, UnregisterTraceGuids, TraceEvent, GetTraceLoggerHandle, GetTraceEnableFlags, GetTraceEnableLevel);
