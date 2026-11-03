@@ -64,6 +64,11 @@ fn bump(c: &mut Code, i: usize) {
         c.i32c(at).i32c(at).load32(0).i32c(1).add().store32(0);
     }
 }
+/// Functions entered in the middle too (VNVM_JIT_FN_ENTRIES=0: at their root only).
+pub static FN_ENTRIES: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+/// Debugging (VNVM_JIT_PROBE): instructions run by the interpreter (which prints the state
+/// before them), 0 = none.
+pub static PROBES: [core::sync::atomic::AtomicU32; 8] = [const { core::sync::atomic::AtomicU32::new(0) }; 8];
 /// Indirect CALLs as wasm calls too (VNVM_JIT_CALLS=2)
 pub static INDIRECT_CALLS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 /// Function-level translation (VNVM_JIT_FN=1): a guest function (an address CALLs go to)
@@ -1798,6 +1803,10 @@ impl<'a> Gen<'a> {
         let ins = self.ins;
         self.temps = 0;
         self.folded = None;
+        if ins.flow_control() == FlowControl::Next && PROBES.iter().any(|p| p.load(core::sync::atomic::Ordering::Relaxed) == ins.ip32()) {
+            self.fallback(false);
+            return true;
+        }
         // locked read-modify-writes (xchg with memory is one) go to the interpreter, which
         // makes them atomic
         let locked = (ins.has_lock_prefix() || ins.mnemonic() == Xchg) && (0..ins.op_count()).any(|i| ins.op_kind(i) == OpKind::Memory);
@@ -3273,6 +3282,10 @@ impl<'a> Gen<'a> {
         self.xmm_flush();
         self.x87_flush();
         self.fc = FCache::default();
+        // (the MMX/XMM locals are the Cpu's now: the callee may change the registers, and
+        // flushing them again after its return would undo that, as a vectorcall's results)
+        self.mmx = (0, 0);
+        self.xmm = (0, 0);
         let (h, v) = (self.temp(), self.temp());
         let site = self.ins.ip32();
         if self.ins.flow_control() == FlowControl::IndirectCall {
@@ -3373,16 +3386,18 @@ impl<'a> Gen<'a> {
         self.c.get(L_CPU).load32(Off::eip()).u32c(r).ne().if_();
         bump(&mut self.c, 4);
         self.c.i32c(RET_CONTINUE).i32c(0).ret().end();
-        let (dirty, fc, flags) = (self.dirty, self.fc, self.flags);
+        let (dirty, fc, flags, mmx, xmm) = (self.dirty, self.fc, self.flags, self.mmx, self.xmm);
         self.load_regs_esp(v);
         self.c.get(L_CPU).load32(Off::budget()).set(L_BUD);
         self.c.i32c(-1).set(L_OP);
         self.fc = FCache::default();
         self.flags = Flags::Entry;
+        // (the MMX/XMM locals were flushed on the way here, and are stale after the call)
+        (self.mmx, self.xmm) = ((0, 0), (0, 0));
         let ctx = core::mem::replace(&mut self.ctx, 0);
         self.goto(r);
         self.ctx = ctx;
-        (self.dirty, self.fc, self.flags) = (dirty, fc, flags);
+        (self.dirty, self.fc, self.flags, self.mmx, self.xmm) = (dirty, fc, flags, mmx, xmm);
         self.depth -= 1;
         self.c.end(); // slow
         self.temps -= 2;
@@ -4915,6 +4930,9 @@ fn translate<M: Memory>(
             .filter(|&k| ctxs[k] == 0 && !inlined.contains_key(&k) && matches!(blocks[k].1.last().unwrap().flow_control(), FlowControl::Call | FlowControl::IndirectCall))
             .filter_map(|k| find(blocks[k].1.last().unwrap().next_ip32()))
             .collect();
+        if !FN_ENTRIES.load(core::sync::atomic::Ordering::Relaxed) {
+            return l0;
+        }
         extra = l0.entries(blocks.len(), |k| k != entry && k < MAX_ENTRY && ctxs[k] == 0 && (rets.contains(&k) || l0.header(k)));
         if extra.is_empty() {
             return l0;

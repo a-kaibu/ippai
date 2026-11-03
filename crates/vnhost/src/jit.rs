@@ -145,19 +145,25 @@ fn debug_range(a: u32) -> bool {
     });
     (a >= lo && a < hi) != not
 }
-/// VNVM_JIT_FN_ONLY=lo-hi (hex): function mode only for entries in [lo, hi), regions elsewhere.
+/// VNVM_JIT_FN_ONLY=lo-hi[_lo-hi...] (hex): function mode only for entries in those ranges,
+/// regions elsewhere.
 fn fn_allowed(a: u32) -> bool {
     use std::sync::OnceLock;
-    static R: OnceLock<(u32, u32)> = OnceLock::new();
-    let (lo, hi) = *R.get_or_init(|| {
+    static R: OnceLock<Vec<(u32, u32)>> = OnceLock::new();
+    let r = R.get_or_init(|| {
         let v = std::env::var("VNVM_JIT_FN_ONLY").unwrap_or_default();
-        let mut it = v.split('-').map(|x| u32::from_str_radix(x.trim_start_matches("0x"), 16).ok());
-        match (it.next().flatten(), it.next().flatten()) {
-            (Some(lo), Some(hi)) => (lo, hi),
-            _ => (0, u32::MAX),
-        }
+        v.split('_')
+            .filter_map(|r| {
+                let mut it = r.split('-').map(|x| u32::from_str_radix(x.trim_start_matches("0x"), 16).ok());
+                Some((it.next().flatten()?, it.next().flatten()?))
+            })
+            .collect::<Vec<_>>()
     });
-    a >= lo && a < hi
+    if !r.is_empty() {
+        static SAID: std::sync::Once = std::sync::Once::new();
+        SAID.call_once(|| eprintln!("vnjit: function mode only in {r:x?}"));
+    }
+    r.is_empty() || r.iter().any(|&(lo, hi)| a >= lo && a < hi)
 }
 /// Blocks the dispatcher runs before returning to the run loop.
 const BUDGET: i32 = 1 << 14;
@@ -422,6 +428,14 @@ fn count_compile(k: usize, t0: Instant) {
 /// Switches read once: VNVM_JIT_COUNT=<secs> (transfer counters), VNVM_JIT_CALLS=1|2,
 /// VNVM_JIT_NOCHECK=1 (measuring only: no range checks).
 fn init_flags() {
+    if std::env::var("VNVM_JIT_FN_ENTRIES").is_ok_and(|v| v == "0") {
+        jit::FN_ENTRIES.store(false, Ordering::Relaxed);
+    }
+    if let Ok(v) = std::env::var("VNVM_JIT_PROBE") {
+        for (p, a) in jit::PROBES.iter().zip(v.split('_').filter_map(|a| u32::from_str_radix(a.trim_start_matches("0x"), 16).ok())) {
+            p.store(a, Ordering::Relaxed);
+        }
+    }
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         if std::env::var("VNVM_JIT_HOIST").is_ok_and(|v| v == "0") {
@@ -1417,6 +1431,11 @@ pub unsafe extern "C" fn vnhost_jit_step(cpu: u32) -> i32 {
     let cpu = cpu as usize as *mut Cpu;
     if stats() {
         count_step(&*cpu);
+    }
+    if jit::PROBES[0].load(Ordering::Relaxed) != 0 && jit::PROBES.iter().any(|p| p.load(Ordering::Relaxed) == (*cpu).eip) {
+        let c = &*cpu;
+        let f = |x: u128| (0..4).map(|i| f32::from_bits((x >> (32 * i)) as u32)).collect::<Vec<_>>();
+        eprintln!("vnjit probe {:#x}: regs {:x?} xmm0 {:?} xmm1 {:?} xmm2 {:?} xmm3 {:?}", c.eip, c.regs, f(c.xmm[0]), f(c.xmm[1]), f(c.xmm[2]), f(c.xmm[3]));
     }
     let g = GENERATION.load(Ordering::Relaxed);
     match step(&mut *cpu, &mut Linear).0 {
