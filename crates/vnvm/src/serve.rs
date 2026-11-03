@@ -570,13 +570,6 @@ async fn games(State(p): State<Arc<Prerun>>) -> Response {
         .unwrap()
 }
 
-async fn old_page(axum::extract::RawQuery(q): axum::extract::RawQuery) -> axum::response::Redirect {
-    axum::response::Redirect::permanent(&match q {
-        Some(q) => format!("play.html?{q}"),
-        None => "play.html".into(),
-    })
-}
-
 async fn headers(req: Request<axum::body::Body>, next: Next) -> Response {
     let chunk = req.uri().path().starts_with("/store/chunks/");
     let log = req.uri().path().starts_with("/logs/");
@@ -674,8 +667,6 @@ pub async fn run(store: PathBuf, args: Args) -> anyhow::Result<()> {
         .with_state(jit)
         .merge(saves::router()?)
         .route("/games", get(games).with_state(pre.clone()))
-        // (the page's old name: links and bookmarks from before 2026-11-03)
-        .route("/wine.html", get(old_page))
         .nest_service("/jit", ServeDir::new(&args.jit))
         .nest_service("/store", ServeDir::new(&store))
         .fallback_service(ServeDir::new(&args.web).precompressed_zstd())
