@@ -95,7 +95,7 @@ jobs:
           # (room for two lanes of trials: the runner's preinstalled SDKs take ~30 GB)
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL &
           sudo apt-get update -q
-          sudo apt-get install -yq --no-install-recommends unar innoextract convmv p7zip-full msitools zstd \
+          sudo apt-get install -yq --no-install-recommends unar unrar innoextract convmv p7zip-full msitools zstd \
             fonts-ipafont-gothic fonts-ipafont-mincho
           pip install --user -q fonttools==4.59.0
           npm install -g playwright@1.56.1

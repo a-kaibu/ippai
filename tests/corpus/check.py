@@ -47,7 +47,9 @@ for out in outs:
             dlls = []
             if os.path.exists(f'{root}/console.log'):
                 log = open(f'{root}/console.log', errors='replace').read()
-                dlls = sorted(set(m.lower() for m in re.findall(r'sake: (?:import from |LoadLibrary\()([^:)\s]+)', log)) |
+                names = re.findall(r'sake: import from (\S+?):', log) + re.findall(r'sake: LoadLibrary\(([^)]+)\)', log)
+                # (a LoadLibrary of a path: its file name)
+                dlls = sorted(set(re.split(r'[\\/]', m)[-1].lower() for m in names) |
                               set('prefix:' + m for m in re.findall(r'sake: prefix DLL (\S+)', log)))
                 # and the functions it called that sake has neither implemented nor declared
                 dlls += sorted(set(re.findall(r'sake: call to (\S+), which we neither implement', log)))[:10]

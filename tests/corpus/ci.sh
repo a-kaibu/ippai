@@ -12,7 +12,8 @@
 #     check.py lists the DLLs each title missed.
 #   env: SET=smoke|full (default smoke: rows with smoke=1), SHARD=0 SHARDS=1, ONLY="id ..."
 #        (just those), WORK (default $RUNNER_TEMP or /tmp), STORY (story seconds, default 30),
-#        LANES (titles run at once, default 2), PREP_JOBS (downloads ahead per lane, default 3)
+#        LANES (titles run at once, default 2), PREP_JOBS (downloads ahead per lane, default 1: most trials come from one
+#        home-run mirror, suezou.dyndns.org, which 60 parallel downloads knocked over)
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 DIST=$(realpath "$1") FONTS=$(realpath "$2") OUT=$3
@@ -47,7 +48,7 @@ echo "shard ${SHARD:-0}/${SHARDS:-1}: $(wc -l < "$IDS") titles"
 
 run1() {  # ids file, port
   VNVM_DIST=$DIST BASE_STORE=$BASE TRIALS=$WORK/trials STORES=$WORK/stores JIT_DIR=$WORK/jit \
-    DL_TRIES=${DL_TRIES:-3} DL_MAX_TIME=${DL_MAX_TIME:-3600} PREP_TIMEOUT=${PREP_TIMEOUT:-11000} SKIP_X64=0 ENGINE=sake CORPUS_QS='&env=SAKE_TRACE_LOAD%3D1' STORY=${STORY:-30} PREP_JOBS=${PREP_JOBS:-3} PORT=$2 \
+    DL_TRIES=${DL_TRIES:-3} DL_MAX_TIME=${DL_MAX_TIME:-3600} PREP_TIMEOUT=${PREP_TIMEOUT:-11000} SKIP_X64=0 ENGINE=sake CORPUS_QS='&env=SAKE_TRACE_LOAD%3D1' STORY=${STORY:-30} PREP_JOBS=${PREP_JOBS:-1} PORT=$2 \
     python3 "$ROOT/tests/corpus-run.py" "$TITLES" "$1" "$OUT"
 }
 # LANES (default 2) queues side by side, each with its own Chromium, server and downloads: the
