@@ -29,6 +29,11 @@ WRAP="socket socketpair pipe pipe2 bind listen accept accept4 connect shutdown s
 WRAPFLAGS=$(for w in $WRAP; do printf -- "-Wl,--wrap=%s -Wl,-u,%s " "$w" "$w"; done)
 KEEP=$("$EMSDK/upstream/bin/llvm-nm" --defined-only -j "$LIB" 2>/dev/null | grep -E '^(vnhost_|sake_)' | sort -u)
 EXPORTS=$(echo "$KEEP" | sed 's/^/_/' | paste -sd, -)
+# the page's: only what its scripts, host/*.js and the tests call (fewer exports, and the rest
+# can go as dead code)
+WEB_EXPORTS=$( (grep -rhoE '_(vnhost|sake)_[a-z0-9_]+' "$ROOT/web/src" "$ROOT/tests" --include='*.ts' --include='*.tsx' --include='*.mjs';
+  grep -hoE "(wasmExports\.|call\(')(vnhost|sake)_[a-z0-9_]+" "$HO"/*.js | sed -E "s/^(wasmExports\.|call\(')/_/") |
+  sort -u | grep -xF -f <(echo "$KEEP" | sed 's/^/_/') | paste -sd, -)
 link() {  # <output .js> <emcc flags...>
   local out=$1
   shift
@@ -47,7 +52,7 @@ mkdir -p "$WEB_OUT"
 # (no emscripten file system: the page mounts a tree at "/", crates/vnhost/src/vfs.rs)
 link "$WEB_OUT/sake.js" -sENVIRONMENT=web,worker -sMODULARIZE -sEXPORT_ES6 -sEXPORT_NAME=createSake \
   --js-library "$HO/vngpu.js" -sFILESYSTEM=0 -sEXPORTED_RUNTIME_METHODS=HEAPU8,HEAPU32,HEAPF32,HEAPF64,wasmMemory \
-  -sEXPORTED_FUNCTIONS=_main,_malloc,_free,$EXPORTS
+  -sEXPORTED_FUNCTIONS=_main,_malloc,_free,$WEB_EXPORTS
 (cd "$ROOT" && find crates/vnx86/src crates/vnx86/Cargo.toml crates/vnhost/src/jit.rs crates/vnhost/src/cpu.rs host/vnjit.js -type f | sort | xargs cat) |
   sha256sum | cut -c1-8 > "$WEB_OUT/jit-version.txt"
 echo "built $OUT/sake.js and $WEB_OUT/sake.js"
