@@ -34,6 +34,7 @@ pub mod d3dx9;
 pub mod d3dx9asm;
 pub mod d3dx9fx;
 pub mod vcomp;
+pub mod nt;
 pub mod dwrite;
 pub mod ddraw;
 pub mod ini;
@@ -414,6 +415,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     misc::init();
     crt::init();
     vcomp::init();
+    nt::init();
     ini::init();
     ddraw::init();
     ole::init();

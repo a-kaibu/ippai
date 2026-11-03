@@ -538,6 +538,14 @@ use crate::api;
 
 /// GetProcAddress
 pub fn proc_address(base: u32, imp: Import) -> Option<u32> {
+    lookup_proc(base, imp, false)
+}
+/// proc_address as a static import binds it: kernel32/ntdll functions we know but don't
+/// implement resolve too (to a trap returning 0). Import resolvers of packers want this.
+pub fn proc_address_static(base: u32, imp: Import) -> Option<u32> {
+    lookup_proc(base, imp, true)
+}
+fn lookup_proc(base: u32, imp: Import, bind_known: bool) -> Option<u32> {
     let (hle, name, a) = with(base, |m| {
         let a = match &imp {
             Import::Name(n) => m.exports.get(*n).copied(),
@@ -563,7 +571,7 @@ pub fn proc_address(base: u32, imp: Import) -> Option<u32> {
     // import does: programs that look up a whole API by name call some unchecked (騎士見習いと村娘).
     // kernel32/ntdll keep answering NULL: the CRT looks up newer functions there and falls back
     // to older ones when they are missing
-    let kernel = matches!(api::dll_key(&name).as_str(), "kernel32" | "kernelbase" | "ntdll");
+    let kernel = !bind_known && matches!(api::dll_key(&name).as_str(), "kernel32" | "kernelbase" | "ntdll");
     let known = api::is_known(a);
     (api::implemented(a) || (known && !kernel) || crate::env_on!("SAKE_ALL_EXPORTS")).then(|| crate::fast::bind(&name, &n, a))
 }

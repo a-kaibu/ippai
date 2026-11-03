@@ -3795,6 +3795,24 @@ fn CharUpperBuffA(c: &mut Ctx) -> u32 {
     crate::text::upper_a(s);
     n
 }
+fn char_buff_w(c: &mut Ctx, upper: bool) -> u32 {
+    let (p, n) = (c.a(0), c.a(1));
+    for i in 0..n {
+        let ch = r16(p + 2 * i);
+        let s: String = char::from_u32(ch as u32).map_or(String::new(), |x| if upper { x.to_uppercase().collect() } else { x.to_lowercase().collect() });
+        let mut u = s.encode_utf16();
+        if let (Some(v), None) = (u.next(), u.next()) {
+            w16(p + 2 * i, v);
+        }
+    }
+    n
+}
+fn CharLowerBuffW(c: &mut Ctx) -> u32 {
+    char_buff_w(c, false)
+}
+fn CharUpperBuffW(c: &mut Ctx) -> u32 {
+    char_buff_w(c, true)
+}
 fn CharNextA(c: &mut Ctx) -> u32 {
     let p = c.a(0);
     let b = mem::r8(p);
@@ -4470,7 +4488,7 @@ pub fn init() {
         LoadStringA, LoadStringW, LoadCursorA, LoadCursorW, LoadCursorFromFileA, LoadCursorFromFileW, LoadIconA, LoadIconW, LoadImageA,
         LoadImageW, CreateIcon, CreateIconIndirect, CreateCursor, CopyIcon, DestroyCursor, DestroyIcon,
         GetIconInfo, LoadBitmapA, LoadBitmapW, LoadAcceleratorsA, LoadMenuA, LoadMenuW,
-        CharLowerA, CharUpperA, CharLowerW, CharUpperW, CharLowerBuffA, CharUpperBuffA, CharNextA, CharNextW,
+        CharLowerA, CharUpperA, CharLowerW, CharUpperW, CharLowerBuffA, CharUpperBuffA, CharLowerBuffW, CharUpperBuffW, CharNextA, CharNextW,
         CharPrevA, CharToOemA, OemToCharA, OemToCharBuffA, CharToOemBuffA, IsCharAlphaA, IsCharAlphaNumericA,
         IsCharUpperA, IsCharLowerA, IsCharAlphaW, wsprintfA, wvsprintfA, wsprintfW, GetGUIThreadInfo,
         AttachThreadInput, FlashWindow, GetProcessWindowStation, GetUserObjectInformationA, SetProcessDPIAware,

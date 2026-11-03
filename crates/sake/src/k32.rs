@@ -1285,6 +1285,107 @@ fn LdrGetDllHandle(c: &mut Ctx) -> u32 {
     put32(c.a(3), h);
     if h == 0 { 0xc000_0135 } else { 0 }
 }
+// ntdll's counted strings: UNICODE_STRING / ANSI_STRING = { u16 Length, u16 MaximumLength, PTR Buffer }
+fn put_counted(us: u32, len: u32, max: u32, buf: u32) {
+    w16(us, len as u16);
+    w16(us + 2, max as u16);
+    w32(us + 4, buf);
+}
+fn RtlInitUnicodeString(c: &mut Ctx) -> u32 {
+    let (us, s) = (c.a(0), c.a(1));
+    let n = if s == 0 { 0 } else { 2 * wstr(s).len() as u32 };
+    put_counted(us, n, if s == 0 { 0 } else { n + 2 }, s);
+    0
+}
+fn RtlInitAnsiString(c: &mut Ctx) -> u32 {
+    let (us, s) = (c.a(0), c.a(1));
+    let n = if s == 0 { 0 } else { cstr(s).len() as u32 };
+    put_counted(us, n, if s == 0 { 0 } else { n + 1 }, s);
+    0
+}
+fn RtlFreeUnicodeString(c: &mut Ctx) -> u32 {
+    let us = c.a(0);
+    if us != 0 && r32(us + 4) != 0 {
+        mem::heap_free(r32(us + 4));
+        put_counted(us, 0, 0, 0);
+    }
+    0
+}
+/// Stores `v` (code units of `unit` bytes) in counted string `us`, allocating if asked.
+fn counted_out(us: u32, v: &[u16], unit: u32, alloc: bool) -> u32 {
+    let n = unit * v.len() as u32;
+    let buf = if alloc {
+        let b = mem::heap_alloc(n + unit, true);
+        put_counted(us, n, n + unit, b);
+        b
+    } else {
+        if n + unit > r16(us + 2) as u32 {
+            return 0x8000_0005; // STATUS_BUFFER_OVERFLOW
+        }
+        w16(us, n as u16);
+        r32(us + 4)
+    };
+    for (i, &x) in v.iter().enumerate() {
+        if unit == 2 { w16(buf + 2 * i as u32, x) } else { w8(buf + i as u32, x as u8) }
+    }
+    if unit == 2 { w16(buf + n, 0) } else { w8(buf + n, 0) }
+    0
+}
+fn counted_bytes(us: u32) -> Vec<u8> {
+    (0..r16(us) as u32).map(|i| mem::r8(r32(us + 4) + i)).collect()
+}
+fn counted_wide(us: u32) -> Vec<u16> {
+    (0..r16(us) as u32 / 2).map(|i| r16(r32(us + 4) + 2 * i)).collect()
+}
+fn RtlAnsiStringToUnicodeString(c: &mut Ctx) -> u32 {
+    let w = a2w(&counted_bytes(c.a(1)));
+    counted_out(c.a(0), &w, 2, c.a(2) != 0)
+}
+fn RtlUnicodeStringToAnsiString(c: &mut Ctx) -> u32 {
+    let a: Vec<u16> = crate::text::w2a(&counted_wide(c.a(1))).into_iter().map(|b| b as u16).collect();
+    counted_out(c.a(0), &a, 1, c.a(2) != 0)
+}
+/// RtlDosPathNameToNtPathName_U(dos, &nt, &filepart, reserved): "\??\" + the full path
+fn RtlDosPathNameToNtPathName_U(c: &mut Ctx) -> u32 {
+    let (dos, nt, part) = (c.a(0), c.a(1), c.a(2));
+    let full = files::full_path(&String::from_utf16_lossy(&wstr(dos)));
+    let w: Vec<u16> = format!("\\??\\{full}").encode_utf16().collect();
+    counted_out(nt, &w, 2, true);
+    if part != 0 {
+        let at = w.iter().rposition(|&x| x == b'\\' as u16).map_or(0, |i| i + 1);
+        w32(part, if at < w.len() { r32(nt + 4) + 2 * at as u32 } else { 0 });
+    }
+    1
+}
+fn RtlFormatCurrentUserKeyPath(c: &mut Ctx) -> u32 {
+    let w: Vec<u16> = "\\REGISTRY\\USER\\S-1-5-21-0-0-0-1000".encode_utf16().collect();
+    counted_out(c.a(0), &w, 2, true)
+}
+/// LdrGetProcedureAddress(module, ANSI_STRING* name, ordinal, &address)
+fn LdrGetProcedureAddress(c: &mut Ctx) -> u32 {
+    let (h, name, ord, out) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    let n;
+    let imp = if name != 0 {
+        n = a2s(&counted_bytes(name));
+        crate::pe::Import::Name(&n)
+    } else {
+        crate::pe::Import::Ordinal(ord)
+    };
+    let r = crate::pe::proc_address_static(h, imp).unwrap_or(0);
+    put32(out, r);
+    if r == 0 { 0xc000_0139 } else { 0 }
+}
+/// NtProtectVirtualMemory(process, &base, &size, protect, &old)
+fn NtProtectVirtualMemory(c: &mut Ctx) -> u32 {
+    let (pb, ps) = (c.a(1), c.a(2));
+    match mem::protect(r32(pb), r32(ps), c.a(3)) {
+        Some(old) => {
+            put32(c.a(4), old);
+            0
+        }
+        None => 0xc000_0045,
+    }
+}
 fn RtlFindExportedRoutineByName(c: &mut Ctx) -> u32 {
     let n = a2s(&cstr(c.a(1)));
     if n == "__wine_unix_call_dispatcher" {
@@ -3403,6 +3504,68 @@ fn GetDriveTypeW(c: &mut Ctx) -> u32 {
 fn GetLogicalDrives(_: &mut Ctx) -> u32 {
     (1 << 2) | (1 << 25)
 }
+/// The NT device of drive C: or Z: (QueryDosDevice), and back (for the Nt* file functions).
+pub fn drive_device(d: char) -> Option<&'static str> {
+    match d.to_ascii_uppercase() {
+        'C' => Some("\\Device\\HarddiskVolume1"),
+        'Z' => Some("\\Device\\HarddiskVolume2"),
+        _ => None,
+    }
+}
+fn query_dos_device(c: &mut Ctx, wide: bool) -> u32 {
+    let (name, out, max) = (c.a(0), c.a(1), c.a(2));
+    // the list of names: our two drives
+    let v: Vec<String> = if name == 0 {
+        vec!["C:".into(), "Z:".into()]
+    } else {
+        let n = arg_str(name, wide);
+        let dev = n.chars().next().filter(|_| n.len() == 2 && n.ends_with(':')).and_then(drive_device);
+        match dev {
+            Some(d) => vec![d.into()],
+            None => {
+                last_error(2);
+                return 0;
+            }
+        }
+    };
+    let mut units: Vec<u16> = Vec::new();
+    for x in &v {
+        if wide { units.extend(x.encode_utf16()) } else { units.extend(x.bytes().map(|b| b as u16)) }
+        units.push(0);
+    }
+    units.push(0);
+    if units.len() as u32 > max {
+        last_error(122);
+        return 0;
+    }
+    for (i, &u) in units.iter().enumerate() {
+        if wide { w16(out + 2 * i as u32, u) } else { w8(out + i as u32, u as u8) }
+    }
+    units.len() as u32
+}
+fn QueryDosDeviceA(c: &mut Ctx) -> u32 {
+    query_dos_device(c, false)
+}
+fn QueryDosDeviceW(c: &mut Ctx) -> u32 {
+    query_dos_device(c, true)
+}
+fn logical_drive_strings(c: &mut Ctx, wide: bool) -> u32 {
+    let (len, out) = (c.a(0), c.a(1));
+    let s: Vec<u8> = b"C:\\\0Z:\\\0\0".to_vec();
+    if len < s.len() as u32 {
+        return s.len() as u32;
+    }
+    for (i, &b) in s.iter().enumerate() {
+        if wide { w16(out + 2 * i as u32, b as u16) } else { w8(out + i as u32, b) }
+    }
+    s.len() as u32 - 1
+}
+fn GetLogicalDriveStringsA(c: &mut Ctx) -> u32 {
+    logical_drive_strings(c, false)
+}
+fn GetLogicalDriveStringsW(c: &mut Ctx) -> u32 {
+    logical_drive_strings(c, true)
+}
 fn GetDiskFreeSpaceA(c: &mut Ctx) -> u32 {
     put32(c.a(1), 8);
     put32(c.a(2), 512);
@@ -3900,6 +4063,13 @@ pub fn init() {
     implement("mpr", "WNetGetUniversalNameW", WNetGetUniversalNameA);
     reg!("advapi32"; RegisterTraceGuidsW, UnregisterTraceGuids, TraceEvent, GetTraceLoggerHandle, GetTraceEnableFlags, GetTraceEnableLevel);
     reg!("ntdll"; RtlGetVersion, RtlGetNtVersionNumbers, RtlFirstEntrySList);
+    reg!("kernel32"; QueryDosDeviceA, QueryDosDeviceW, GetLogicalDriveStringsA, GetLogicalDriveStringsW);
+    reg!("ntdll"; RtlInitUnicodeString, RtlInitAnsiString, RtlFreeUnicodeString, RtlAnsiStringToUnicodeString,
+        RtlUnicodeStringToAnsiString, RtlDosPathNameToNtPathName_U, RtlFormatCurrentUserKeyPath, LdrGetProcedureAddress,
+        NtProtectVirtualMemory);
+    implement("ntdll", "RtlInitString", RtlInitAnsiString);
+    implement("ntdll", "RtlFreeAnsiString", RtlFreeUnicodeString);
+    implement("ntdll", "ZwProtectVirtualMemory", NtProtectVirtualMemory);
     implement("ntdll", "RtlInterlockedPushEntrySList", InterlockedPushEntrySList);
     implement("ntdll", "RtlInterlockedPopEntrySList", InterlockedPopEntrySList);
     implement("ntdll", "RtlInterlockedFlushSList", InterlockedFlushSList);
