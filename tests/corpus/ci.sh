@@ -56,16 +56,32 @@ run1() {  # ids file, port
 run() {
   local n=${LANES:-2} i
   for i in $(seq 0 $((n - 1))); do awk -v n="$n" -v i="$i" 'NR % n == i' "$1" > "$1.$i"; done
-  for i in $(seq 0 $((n - 1))); do run1 "$1.$i" $((8092 + i)) & done
-  wait
+  local -a pids=()
+  for i in $(seq 0 $((n - 1))); do
+    run1 "$1.$i" $((8092 + i)) &
+    pids+=("$!")
+  done
+  local failed=0 pid
+  for pid in "${pids[@]}"; do
+    wait "$pid" || failed=1
+  done
+  return "$failed"
 }
-run "$IDS"
+fail=0
+run "$IDS" || fail=1
 # one more try for the titles below their expected level
 python3 "$ROOT/tests/corpus/check.py" "$TITLES" "$OUT" --regressions "$WORK/again.txt" >/dev/null
 if [ -s "$WORK/again.txt" ]; then
   echo "again: $(tr '\n' ' ' < "$WORK/again.txt")"
   while read -r id; do rm -rf "${OUT:?}/$id"; done < "$WORK/again.txt"
-  run "$WORK/again.txt"
+  run "$WORK/again.txt" || fail=1
 fi
-python3 "$ROOT/tests/corpus/check.py" "$TITLES" "$OUT" >/dev/null
-exit 0
+# Missing results must not be silently ignored by check.py.
+while IFS= read -r id; do
+  if [ ! -f "$OUT/$id/result.json" ]; then
+    echo "FAIL $id: missing result.json" >&2
+    fail=1
+  fi
+done < "$IDS"
+python3 "$ROOT/tests/corpus/check.py" "$TITLES" "$OUT" >/dev/null || fail=1
+exit "$fail"
