@@ -82,7 +82,7 @@ pub enum Import<'a> {
 
 /// Whether the file at host path `path` is a 64-bit (x86-64) PE.
 pub fn is_64bit_file(path: &str) -> bool {
-    let Ok(d) = std::fs::read(path) else { return false };
+    let Ok(d) = vnhost::fs::read(path) else { return false };
     let pe = d.get(0x3c..0x40).map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])) as usize;
     d.get(pe + 4..pe + 6) == Some(&[0x64, 0x86])
 }
@@ -575,7 +575,7 @@ fn hle_data(dll: &str, name: &str) -> Option<u32> {
 
 fn load_dll_file(dll: &str) -> Result<u32, String> {
     let (host, win) = find_dll_file(dll).ok_or_else(|| format!("{dll} not found"))?;
-    let data = std::fs::read(&host).map_err(|e| format!("{host}: {e}"))?;
+    let data = vnhost::fs::read(&host).map_err(|e| format!("{host}: {e}"))?;
     let base = load(&data, &win, &mut resolve_import)?;
     tls_module(base);
     PENDING.lock().unwrap().push(base);
@@ -613,7 +613,7 @@ pub fn load_library(cpu: &mut Cpu, name: &str) -> u32 {
 }
 
 pub fn load_exe(_cpu: &mut Cpu, host: &str, win: &str) -> Result<u32, String> {
-    let data = std::fs::read(host).map_err(|e| e.to_string())?;
+    let data = vnhost::fs::read(host).map_err(|e| e.to_string())?;
     let base = load(&data, win, &mut resolve_import)?;
     // the main exe: the JIT translates its writable code too, checking stores into it
     let size = with(base, |m| m.size).unwrap_or(0);

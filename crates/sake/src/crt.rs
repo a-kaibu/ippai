@@ -1374,7 +1374,7 @@ fn ___lc_collate_cp_func(_: &mut Ctx) -> u32 {
 // _findfirst / _findnext: a FindFirstFile handle; the data's layout by time and size widths
 
 /// (time 64-bit, size 64-bit, wide)
-fn find_write(p: u32, (t64, s64, wide): (bool, bool, bool), name: &str, m: &std::fs::Metadata) {
+fn find_write(p: u32, (t64, s64, wide): (bool, bool, bool), name: &str, m: &vnhost::fs::Metadata) {
     let t = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
     let size = if m.is_dir() { 0 } else { m.len() };
     w32(p, crate::files::attrs(m) & 0x37);

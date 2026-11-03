@@ -22,7 +22,7 @@ fn path(name: &str) -> String {
 
 fn load(name: &str) -> Ini {
     let Some(h) = files::resolve(&path(name)) else { return Vec::new() };
-    let Ok(b) = std::fs::read(h) else { return Vec::new() };
+    let Ok(b) = vnhost::fs::read(h) else { return Vec::new() };
     let text = if b.starts_with(&[0xff, 0xfe]) {
         String::from_utf16_lossy(&b[2..].chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect::<Vec<_>>())
     } else if let Some(u) = b.strip_prefix(&[0xef, 0xbb, 0xbf]) {
@@ -65,7 +65,7 @@ fn save(name: &str, ini: &Ini) -> bool {
     }
     let w = path(name);
     let h = files::resolve(&w).unwrap_or_else(|| files::resolve_new(&w));
-    std::fs::write(h, crate::text::s2a(&s)).is_ok()
+    vnhost::fs::write(h, crate::text::s2a(&s)).is_ok()
 }
 
 fn section<'a>(ini: &'a Ini, s: &str) -> Option<&'a Vec<(String, String)>> {

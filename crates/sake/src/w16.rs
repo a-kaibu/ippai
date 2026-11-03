@@ -89,7 +89,7 @@ pub fn on() -> bool {
 }
 
 pub fn is_ne(path: &str) -> bool {
-    let Ok(d) = std::fs::read(path) else { return false };
+    let Ok(d) = vnhost::fs::read(path) else { return false };
     if d.len() < 0x40 || &d[..2] != b"MZ" {
         return false;
     }
@@ -755,7 +755,7 @@ pub fn start(cpu: &mut Cpu, exe: &str, wpath: &str, args: &[String]) -> ! {
     SCR16.with(|s| s.set((s16sel, s16, 0xfff0)));
     crate::w16api::init();
 
-    let d = std::fs::read(exe).expect("read exe");
+    let d = vnhost::fs::read(exe).expect("read exe");
     let ne = u32::from_le_bytes(d[0x3c..0x40].try_into().unwrap()) as usize;
     let h = |o: usize| u16at(&d, ne + o);
     let (autodata, heap, mut stack) = (h(0x0e), h(0x10), h(0x12));

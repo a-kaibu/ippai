@@ -3079,7 +3079,7 @@ fn GetFileInformationByHandle(c: &mut Ctx) -> u32 {
     1
 }
 
-fn write_find_data(p: u32, name: &str, m: &std::fs::Metadata, wide: bool) {
+fn write_find_data(p: u32, name: &str, m: &vnhost::fs::Metadata, wide: bool) {
     let size = if wide { 592 } else { 320 };
     mem::fill(p, size, 0);
     w32(p, files::attrs(m));
@@ -3156,7 +3156,7 @@ fn file_attrs(name: &str) -> u32 {
     if crate::env_on!("SAKE_TRACE_FILES") {
         eprintln!("sake: GetFileAttributes({name})");
     }
-    match files::resolve(name).and_then(|h| std::fs::metadata(h).ok()) {
+    match files::resolve(name).and_then(|h| vnhost::fs::metadata(h).ok()) {
         Some(m) => files::attrs(&m),
         None => {
             last_error(2);
@@ -3172,7 +3172,7 @@ fn GetFileAttributesW(c: &mut Ctx) -> u32 {
 }
 fn attrs_ex(c: &mut Ctx, wide: bool) -> u32 {
     let name = arg_str(c.a(0), wide);
-    let Some(m) = files::resolve(&name).and_then(|h| std::fs::metadata(h).ok()) else {
+    let Some(m) = files::resolve(&name).and_then(|h| vnhost::fs::metadata(h).ok()) else {
         last_error(2);
         return 0;
     };
@@ -3200,7 +3200,7 @@ fn SetFileAttributesW(_: &mut Ctx) -> u32 {
 }
 pub fn mkdir(name: &str) -> u32 {
     let h = files::resolve_new(name);
-    match std::fs::create_dir(&h) {
+    match vnhost::fs::create_dir(&h) {
         Ok(()) => 1,
         Err(e) => {
             last_error(if e.kind() == std::io::ErrorKind::AlreadyExists { 183 } else { 3 });
@@ -3215,7 +3215,7 @@ fn CreateDirectoryW(c: &mut Ctx) -> u32 {
     mkdir(&arg_str(c.a(0), true))
 }
 fn rmdir(name: &str) -> u32 {
-    ok(files::resolve(name).is_some_and(|h| std::fs::remove_dir(h).is_ok()))
+    ok(files::resolve(name).is_some_and(|h| vnhost::fs::remove_dir(h).is_ok()))
 }
 fn RemoveDirectoryA(c: &mut Ctx) -> u32 {
     rmdir(&arg_str(c.a(0), false))
@@ -3225,7 +3225,7 @@ fn RemoveDirectoryW(c: &mut Ctx) -> u32 {
 }
 fn del(name: &str) -> u32 {
     match files::resolve(name) {
-        Some(h) => ok(std::fs::remove_file(h).is_ok()),
+        Some(h) => ok(vnhost::fs::remove_file(h).is_ok()),
         None => {
             last_error(2);
             0
@@ -3248,7 +3248,7 @@ fn mv(from: &str, to: &str, replace: bool) -> u32 {
         last_error(183);
         return 0;
     }
-    ok(std::fs::rename(f, t.unwrap_or_else(|| files::resolve_new(to))).is_ok())
+    ok(vnhost::fs::rename(f, t.unwrap_or_else(|| files::resolve_new(to))).is_ok())
 }
 fn MoveFileA(c: &mut Ctx) -> u32 {
     mv(&arg_str(c.a(0), false), &arg_str(c.a(1), false), false)
@@ -3272,7 +3272,7 @@ fn copy_file(from: &str, to: &str, fail: bool) -> u32 {
         last_error(80);
         return 0;
     }
-    ok(std::fs::copy(f, t.unwrap_or_else(|| files::resolve_new(to))).is_ok())
+    ok(vnhost::fs::copy(f, t.unwrap_or_else(|| files::resolve_new(to))).is_ok())
 }
 fn CopyFileA(c: &mut Ctx) -> u32 {
     copy_file(&arg_str(c.a(0), false), &arg_str(c.a(1), false), c.a(2) != 0)
@@ -3338,7 +3338,7 @@ fn SetCurrentDirectoryW(c: &mut Ctx) -> u32 {
     set_dir(&arg_str(c.a(0), true))
 }
 fn ensure_dir(w: &str) {
-    let _ = std::fs::create_dir_all(files::to_host(w));
+    let _ = vnhost::fs::create_dir_all(files::to_host(w));
 }
 fn GetTempPathA(c: &mut Ctx) -> u32 {
     ensure_dir("C:\\windows\\temp");
@@ -3355,7 +3355,7 @@ fn temp_name(c: &mut Ctx, wide: bool) -> u32 {
     let n = if c.a(2) != 0 { c.a(2) } else { TEMP_N.fetch_add(1, Ordering::Relaxed) };
     let p = format!("{}\\{}{:04X}.tmp", dir.trim_end_matches('\\'), pre.chars().take(3).collect::<String>(), n);
     if c.a(2) == 0 {
-        let _ = std::fs::File::create(files::resolve_new(&p));
+        let _ = vnhost::fs::File::create(files::resolve_new(&p));
     }
     ret_str(c.a(3), 260, &p, wide);
     n
@@ -3691,7 +3691,7 @@ fn SearchTreeForFile(c: &mut Ctx) -> u32 {
     let base = name.rsplit(['\\', '/']).next().unwrap_or(&name).to_lowercase();
     fn walk(host: &std::path::Path, guest: &str, base: &str, depth: u32) -> Option<String> {
         let mut dirs = Vec::new();
-        for e in std::fs::read_dir(host).ok()?.flatten() {
+        for e in vnhost::fs::read_dir(host).ok()?.flatten() {
             let n = e.file_name().to_string_lossy().into_owned();
             let g = format!("{}\\{n}", guest.trim_end_matches('\\'));
             if e.path().is_dir() {

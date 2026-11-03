@@ -81,7 +81,7 @@ fn open(c: &mut Ctx, wide: bool) -> u32 {
             return fail(MMIOERR_CANNOTOPEN);
         }
         let path = crate::k32::arg_str(name, wide);
-        let Some(v) = crate::files::resolve(&path).and_then(|h| std::fs::read(h).ok()) else { return fail(MMIOERR_CANNOTOPEN) };
+        let Some(v) = crate::files::resolve(&path).and_then(|h| vnhost::fs::read(h).ok()) else { return fail(MMIOERR_CANNOTOPEN) };
         Data::File(v)
     };
     let h = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

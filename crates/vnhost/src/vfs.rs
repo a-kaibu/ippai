@@ -853,20 +853,29 @@ pub unsafe fn open(dirfd: c_int, path: *const c_char, flags: c_int, mode: u32) -
         Ok(p) => p,
         Err(e) => return Route::Done(err(e)),
     };
+    match open_handle(&p, flags, mode) {
+        At::Outside(p) => Route::Real(real(p)),
+        At::Ours(Err(e)) => Route::Done(err(e)),
+        At::Ours(Ok(h)) => Route::Done(crate::fd::vfs_install(h, flags)),
+    }
+}
+
+/// Opens absolute path `p` as a handle (released with [`release`]).
+pub(crate) fn open_handle(p: &str, flags: c_int, mode: u32) -> At<u32> {
     let follow = flags & libc::O_NOFOLLOW == 0;
-    let found = with(|fs| fs.resolve(&p, follow));
+    let found = with(|fs| fs.resolve(p, follow));
     let (ino, path) = match found {
-        Err(e) => return Route::Done(err(e)),
-        Ok(Found::Outside(p)) => return Route::Real(real(p)),
+        Err(e) => return At::Ours(Err(e)),
+        Ok(Found::Outside(p)) => return At::Outside(p),
         Ok(Found::Node { ino, path }) => {
             if flags & libc::O_CREAT != 0 && flags & libc::O_EXCL != 0 {
-                return Route::Done(err(libc::EEXIST));
+                return At::Ours(Err(libc::EEXIST));
             }
             (ino, path)
         }
         Ok(Found::Missing { parent, name, path }) => {
             if flags & libc::O_CREAT == 0 {
-                return Route::Done(err(libc::ENOENT));
+                return At::Ours(Err(libc::ENOENT));
             }
             let ino = with(|fs| {
                 let ino = fs.add(Data::File(Content::Upper(Vec::new())), mode & 0o7777, now());
@@ -884,19 +893,18 @@ pub unsafe fn open(dirfd: c_int, path: *const c_char, flags: c_int, mode: u32) -
         Data::Link(_) => 2,
     }));
     match kind {
-        Some(0) if flags & libc::O_ACCMODE != libc::O_RDONLY => return Route::Done(err(libc::EISDIR)),
-        Some(1) | Some(2) if flags & libc::O_DIRECTORY != 0 => return Route::Done(err(libc::ENOTDIR)),
-        Some(2) => return Route::Done(err(libc::ELOOP)),
-        None => return Route::Done(err(libc::ENOENT)),
+        Some(0) if flags & libc::O_ACCMODE != libc::O_RDONLY => return At::Ours(Err(libc::EISDIR)),
+        Some(1) | Some(2) if flags & libc::O_DIRECTORY != 0 => return At::Ours(Err(libc::ENOTDIR)),
+        Some(2) => return At::Ours(Err(libc::ELOOP)),
+        None => return At::Ours(Err(libc::ENOENT)),
         _ => {}
     }
     if kind == Some(1) && flags & libc::O_TRUNC != 0 && flags & libc::O_ACCMODE != libc::O_RDONLY {
         if let Err(e) = set_size(ino, 0) {
-            return Route::Done(err(e));
+            return At::Ours(Err(e));
         }
     }
-    let h = with(|fs| fs.new_handle(ino, flags, path));
-    Route::Done(crate::fd::vfs_install(h, flags))
+    At::Ours(Ok(with(|fs| fs.new_handle(ino, flags, path))))
 }
 
 /// Called when the last fd of a handle is closed.
@@ -1429,4 +1437,137 @@ pub unsafe fn closedir(d: *mut c_void) -> c_int {
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_free(p: *mut c_void) {
     libc::free(p)
+}
+
+// ---------------------------------------------------------------------------------------------
+// for crate::fs (Rust callers): absolute paths, results instead of errno
+
+/// A path in a tree here, or outside them all (the host's file system: node only).
+pub(crate) enum At<T> {
+    Ours(Result<T, c_int>),
+    Outside(String),
+}
+
+/// What [`crate::fs::Metadata`] tells.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Info {
+    pub dir: bool,
+    pub len: u64,
+    pub mtime: i64,
+    pub mode: u32,
+}
+
+impl Fs {
+    fn info(&self, ino: Ino) -> Info {
+        let n = self.node(ino).unwrap();
+        Info { dir: matches!(n.data, Data::Dir(_)), len: self.file_size(ino), mtime: n.mtime, mode: n.mode }
+    }
+}
+
+/// `p` without ".", ".." or "//" (relative: from "/").
+pub(crate) fn clean(p: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for c in p.split('/') {
+        match c {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            c => parts.push(c),
+        }
+    }
+    let mut out = String::with_capacity(p.len());
+    for c in parts {
+        out.push('/');
+        out.push_str(c);
+    }
+    if out.is_empty() {
+        out.push('/');
+    }
+    out
+}
+
+pub(crate) fn info_at(p: &str, follow: bool) -> At<Info> {
+    with(|fs| match fs.resolve(p, follow) {
+        Err(e) => At::Ours(Err(e)),
+        Ok(Found::Outside(p)) => At::Outside(p),
+        Ok(Found::Missing { .. }) => At::Ours(Err(libc::ENOENT)),
+        Ok(Found::Node { ino, .. }) => At::Ours(Ok(fs.info(ino))),
+    })
+}
+
+/// The names in directory `p` and what they are.
+pub(crate) fn list_at(p: &str) -> At<Vec<(String, Info)>> {
+    with(|fs| match fs.resolve(p, true) {
+        Err(e) => At::Ours(Err(e)),
+        Ok(Found::Outside(p)) => At::Outside(p),
+        Ok(Found::Missing { .. }) => At::Ours(Err(libc::ENOENT)),
+        Ok(Found::Node { ino, .. }) => match &fs.node(ino).unwrap().data {
+            Data::Dir(ch) => At::Ours(Ok(ch.iter().map(|(n, &i)| (n.clone(), fs.info(i))).collect())),
+            _ => At::Ours(Err(libc::ENOTDIR)),
+        },
+    })
+}
+
+/// The real name of `name` in directory `p` when only its case differs (FindFirstFile and
+/// CreateFile match without case).
+pub(crate) fn name_nocase(p: &str, name: &str) -> At<Option<String>> {
+    let lc = name.to_lowercase();
+    with(|fs| match fs.resolve(p, true) {
+        Err(e) => At::Ours(Err(e)),
+        Ok(Found::Outside(p)) => At::Outside(p),
+        Ok(Found::Missing { .. }) => At::Ours(Err(libc::ENOENT)),
+        Ok(Found::Node { ino, .. }) => match &fs.node(ino).unwrap().data {
+            Data::Dir(ch) => At::Ours(Ok(ch.keys().find(|k| k.to_lowercase() == lc).cloned())),
+            _ => At::Ours(Err(libc::ENOTDIR)),
+        },
+    })
+}
+
+fn done(r: Route<c_int>) -> At<()> {
+    match r {
+        Route::Real(c) => At::Outside(c.into_string().unwrap_or_default()),
+        Route::Done(0) => At::Ours(Ok(())),
+        Route::Done(_) => At::Ours(Err(crate::errno())),
+    }
+}
+
+fn cstr(p: &str) -> CString {
+    CString::new(p).unwrap_or_default()
+}
+
+pub(crate) fn mkdir_at(p: &str) -> At<()> {
+    done(unsafe { mkdir(cstr(p).as_ptr(), 0o755) })
+}
+
+pub(crate) fn remove_at(p: &str, dir: bool) -> At<()> {
+    done(unsafe { remove(cstr(p).as_ptr(), dir) })
+}
+
+pub(crate) fn rename_at(a: &str, b: &str) -> At<()> {
+    done(unsafe { rename(cstr(a).as_ptr(), cstr(b).as_ptr()) })
+}
+
+pub(crate) fn h_info(h: u32) -> Option<Info> {
+    with(|fs| fs.handles.get(&h).map(|x| x.ino).map(|i| fs.info(i)))
+}
+
+pub(crate) fn h_read(h: u32, buf: &mut [u8]) -> Result<usize, c_int> {
+    let n = unsafe { pread(h, buf.as_mut_ptr() as *mut c_void, buf.len(), None) };
+    if n < 0 { Err(crate::errno()) } else { Ok(n as usize) }
+}
+
+pub(crate) fn h_write(h: u32, data: &[u8]) -> Result<usize, c_int> {
+    let n = unsafe { pwrite(h, data.as_ptr() as *const c_void, data.len(), None) };
+    if n < 0 { Err(crate::errno()) } else { Ok(n as usize) }
+}
+
+pub(crate) fn h_seek(h: u32, off: i64, whence: c_int) -> Result<u64, c_int> {
+    let r = lseek(h, off as off_t, whence);
+    if r < 0 { Err(crate::errno()) } else { Ok(r as u64) }
+}
+
+pub(crate) fn h_set_len(h: u32, size: u64) -> Result<(), c_int> {
+    let Some((ino, _, _)) = handle(h) else { return Err(libc::EBADF) };
+    set_size(ino, size)
 }

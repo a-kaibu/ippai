@@ -80,7 +80,7 @@ fn movie_of(this: u32) -> Option<(u32, String)> {
     open.into_iter().find(|(_, p)| {
         use std::io::Read;
         let mut head = [0u8; HEADER_LEN];
-        std::fs::File::open(p).and_then(|mut f| f.read_exact(&mut head)).is_ok() && head[..] == copy[..]
+        vnhost::fs::File::open(p).and_then(|mut f| f.read_exact(&mut head)).is_ok() && head[..] == copy[..]
     })
 }
 
@@ -101,7 +101,7 @@ fn frame(c: &mut Ctx) -> u32 {
                 }
                 let found = movie_of(this);
                 let s = found.as_ref().filter(|_| video::available()).and_then(|(_, p)| {
-                    let data = std::fs::read(format!("{p}.vnv")).ok()?;
+                    let data = vnhost::fs::read(format!("{p}.vnv")).ok()?;
                     video::open(data)
                 });
                 match &found {

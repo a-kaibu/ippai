@@ -1031,7 +1031,7 @@ fn font_file(i: usize) -> Option<Arc<FontVec>> {
             let dirs = [std::env::var("SAKE_FONTS").ok(), crate::files::resolve("C:\\windows\\Fonts\\")];
             for d in dirs.into_iter().flatten() {
                 let p = format!("{}/{}", d.trim_end_matches('/'), FACES[i].file);
-                if let Ok(data) = std::fs::read(&p) {
+                if let Ok(data) = vnhost::fs::read(&p) {
                     if let Ok(f) = FontVec::try_from_vec(data) {
                         return Some(Arc::new(f));
                     }
@@ -3478,7 +3478,7 @@ fn GetOutlineTextMetricsW(c: &mut Ctx) -> u32 {
     outline_metrics(c, true)
 }
 fn add_font_file(name: &str) -> u32 {
-    crate::files::resolve(name).and_then(|h| std::fs::read(h).ok()).map_or(0, add_font)
+    crate::files::resolve(name).and_then(|h| vnhost::fs::read(h).ok()).map_or(0, add_font)
 }
 fn AddFontResourceA(c: &mut Ctx) -> u32 {
     add_font_file(&crate::k32::arg_str(c.a(0), false))
