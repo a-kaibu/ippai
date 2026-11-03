@@ -5,7 +5,8 @@
 // pixels; each held 200 ms) and KEYS="KeyA Enter" presses those keys; CLICK_EVERY="x,y" clicks there after every
 // shot (to page through a game); CLICK_SEQ="x,y;;x,y" clicks its n-th entry (if any) after shot n
 // instead, then CLICK_EVERY takes over (SHOT_COORDS=1: click coordinates are screenshot pixels). CHROME_ARGS adds browser flags; USER_DATA_DIR keeps the
-// browser profile (its HTTP and code caches) there across runs.
+// browser profile (its HTTP and code caches) there across runs. NET="kbit/s,ms" throttles the
+// network; DEBUG_TEXT=1 logs the debug overlay (?debugmode=1) after every shot.
 //
 //   node tests/play.mjs URL OUT_DIR [SECONDS] [INTERVAL]
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
@@ -31,6 +32,19 @@ if (process.env.THROTTLE) {
   // Android-like CPU: Chromium's CPU throttling (DevTools), rate = slowdown factor
   const cdp = await page.context().newCDPSession(page);
   await cdp.send('Emulation.setCPUThrottlingRate', { rate: Number(process.env.THROTTLE) });
+}
+if (process.env.NET) {
+  // a slow connection: NET="kbit/s,latency ms" (DevTools network throttling; the page's
+  // workers' requests go through it too)
+  const [kbps, latency] = process.env.NET.split(",").map(Number);
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Network.enable");
+  await cdp.send("Network.emulateNetworkConditions", {
+    offline: false,
+    latency,
+    downloadThroughput: (kbps * 1000) / 8,
+    uploadThroughput: (kbps * 1000) / 8,
+  });
 }
 await page.goto(url);
 
@@ -116,6 +130,11 @@ let n = 0;
 while (Date.now() < end) {
   await page.waitForTimeout(Number(interval) * 1000);
   await shot(++n);
+  // the debug overlay's numbers (play.html?debugmode=1: network, memory, fps)
+  if (process.env.DEBUG_TEXT) {
+    const t = await page.evaluate(() => document.querySelector("[data-debug-overlay]")?.innerText ?? "");
+    appendFileSync(logFile, `${stamp()} [debug] ${t.replace(/\n/g, " | ")}\n`);
+  }
   if (n === 1) {
     for (const xy of process.env.CLICKS?.split(";") ?? []) {
       const [x, y] = xy.split(",").map(Number);

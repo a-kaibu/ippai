@@ -114,11 +114,92 @@ extern "C" {
     fn vnvm_fetch(name: *const c_char, len: *mut size_t) -> *mut u8;
 }
 
+// ---------------------------------------------------------------------------------------------
+// network counters (the page's debug overlay and the run log's perf lines: vnhost_net_stats)
+
+mod net {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    /// store requests, of them from the browser's HTTP cache, failed
+    pub static REQUESTS: AtomicU64 = AtomicU64::new(0);
+    pub static CACHED: AtomicU64 = AtomicU64::new(0);
+    pub static FAILED: AtomicU64 = AtomicU64::new(0);
+    /// bytes over the network (compressed) and after decoding
+    pub static WIRE: AtomicU64 = AtomicU64::new(0);
+    pub static BYTES: AtomicU64 = AtomicU64::new(0);
+    /// time in requests (us, all threads) and the requests on their way now
+    pub static REQ_US: AtomicU64 = AtomicU64::new(0);
+    pub static INFLIGHT: AtomicU64 = AtomicU64::new(0);
+    /// the game's threads waiting for chunks (us), and the longest wait since the last read
+    pub static STALL_US: AtomicU64 = AtomicU64::new(0);
+    pub static STALL_MAX_US: AtomicU64 = AtomicU64::new(0);
+    pub static REQ_MAX_US: AtomicU64 = AtomicU64::new(0);
+
+    pub fn stall(t: std::time::Instant) {
+        let us = t.elapsed().as_micros() as u64;
+        STALL_US.fetch_add(us, Relaxed);
+        STALL_MAX_US.fetch_max(us, Relaxed);
+    }
+}
+
+/// The network counters into `out` (f64 each): requests, from the HTTP cache, failed, bytes
+/// over the network, bytes decoded, request time (ms), requests on their way, the game's
+/// threads' wait for chunks (ms), the longest such wait and the longest request since the
+/// last call (ms), the chunk cache (bytes).
+#[no_mangle]
+pub unsafe extern "C" fn vnhost_net_stats(out: *mut f64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let ms = |us: u64| us as f64 / 1000.0;
+    let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map_or(0, |c| c.bytes);
+    let v = [
+        net::REQUESTS.load(Relaxed) as f64,
+        net::CACHED.load(Relaxed) as f64,
+        net::FAILED.load(Relaxed) as f64,
+        net::WIRE.load(Relaxed) as f64,
+        net::BYTES.load(Relaxed) as f64,
+        ms(net::REQ_US.load(Relaxed)),
+        net::INFLIGHT.load(Relaxed) as f64,
+        ms(net::STALL_US.load(Relaxed)),
+        ms(net::STALL_MAX_US.swap(0, Relaxed)),
+        ms(net::REQ_MAX_US.swap(0, Relaxed)),
+        cache as f64,
+    ];
+    std::ptr::copy_nonoverlapping(v.as_ptr(), out, v.len());
+}
+
+/// host/vnfs.js: a store request's bytes over the network (its resource timing entry), and
+/// whether the browser's HTTP cache had it instead.
+#[no_mangle]
+pub extern "C" fn vnhost_net_wire(bytes: u32, cached: bool) {
+    use std::sync::atomic::Ordering::Relaxed;
+    net::WIRE.fetch_add(bytes as u64, Relaxed);
+    if cached {
+        net::CACHED.fetch_add(1, Relaxed);
+    }
+}
+
 fn fetch(name: &str) -> Option<Vec<u8>> {
+    use std::sync::atomic::Ordering::Relaxed;
     let c = CString::new(name).ok()?;
     let mut len = 0;
+    let counted = !name.starts_with('@');
     unsafe {
+        let t = std::time::Instant::now();
+        if counted {
+            net::INFLIGHT.fetch_add(1, Relaxed);
+        }
         let p = crate::wrap::load_idle(|| vnvm_fetch(c.as_ptr(), &mut len));
+        if counted {
+            let us = t.elapsed().as_micros() as u64;
+            net::INFLIGHT.fetch_sub(1, Relaxed);
+            net::REQUESTS.fetch_add(1, Relaxed);
+            net::REQ_US.fetch_add(us, Relaxed);
+            net::REQ_MAX_US.fetch_max(us, Relaxed);
+            if p.is_null() {
+                net::FAILED.fetch_add(1, Relaxed);
+            } else {
+                net::BYTES.fetch_add(len as u64, Relaxed);
+            }
+        }
         if trace() {
             eprintln!("vfs: fetch {name}: {}", if p.is_null() { -1 } else { len as isize });
         }
@@ -601,6 +682,16 @@ fn fetch_chunk(h: &Hash) -> Option<Vec<u8>> {
 }
 
 fn chunk_data(h: &Hash, len: usize) -> Result<Arc<Vec<u8>>, c_int> {
+    let t = std::time::Instant::now();
+    let r = chunk_data_wait(h, len);
+    // (a chunk in the cache returns in a few us: only real waits count)
+    if t.elapsed().as_micros() > 200 {
+        net::stall(t);
+    }
+    r
+}
+
+fn chunk_data_wait(h: &Hash, len: usize) -> Result<Arc<Vec<u8>>, c_int> {
     wait_ahead(h);
     {
         let mut g = CACHE.lock().unwrap_or_else(|e| e.into_inner());

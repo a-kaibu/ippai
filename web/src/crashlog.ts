@@ -21,6 +21,7 @@
 // logs.html lists the server's and this browser's logs.
 
 import { toast as sonner } from "sonner";
+import { meter, meterLine } from "./meter";
 const DIR = "vnvm-logs";
 /** OPFS files kept (the oldest go). */
 const KEEP = 40;
@@ -372,7 +373,10 @@ export class FlightRecorder {
     setInterval(() => void this.persist(), 10_000);
     setInterval(() => this.memory(), 30_000);
     setInterval(() => {
-      if (this.wasm && !this.ended) this.note(Perf.line(this.perf.sample(this.wasm)));
+      if (this.wasm && !this.ended) {
+        const net = meterLine(meter.window(10));
+        this.note(Perf.line(this.perf.sample(this.wasm)) + (net ? `, ${net}` : ""));
+      }
     }, 10_000);
     this.note("page started");
   }
@@ -402,6 +406,7 @@ export class FlightRecorder {
 
   attach(wasm: Wasm): void {
     this.wasm = wasm;
+    meter.attach(wasm);
     const p = wasm._vnhost_crashlog_info?.();
     if (p) {
       const i = new Uint32Array(wasm.wasmMemory.buffer, p >>> 0, 16).slice();
@@ -514,7 +519,12 @@ export class FlightRecorder {
       );
       parts.push("", "--- stdout/stderr ---", this.ring(i[5]!, i[6]!, i[7]!));
     }
-    parts.push("", "--- performance (every 10 s in the page log as perf:) ---", this.perf.summary());
+    parts.push(
+      "",
+      "--- performance (every 10 s in the page log as perf:) ---",
+      this.perf.summary(),
+      `last minute: ${meterLine(meter.window(60)) || "(no counters)"}`,
+    );
     parts.push("", "--- page ---", ...this.page, "");
     return parts.join("\n");
   }

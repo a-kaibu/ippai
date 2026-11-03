@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Toaster } from "@/components/ui/sonner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
+import { DebugOverlay } from "./Debug";
 import { useUi, type BenchView } from "./store";
 
 function BenchPanel({ bench }: { bench: BenchView }) {
@@ -92,6 +93,7 @@ function Shell({ children }: { children?: ReactNode }) {
         </pre>
       )}
       {ui.bench && <BenchPanel bench={ui.bench} />}
+      {ui.debug && !children && <DebugOverlay />}
       {ui.back && (
         <div className="fixed inset-0 z-30 grid place-items-center">
           <Button

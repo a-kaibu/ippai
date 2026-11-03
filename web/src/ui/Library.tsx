@@ -3,14 +3,16 @@
 // that click (audio and fullscreen need the user gesture).
 
 import { useMemo, useState } from "react";
-import { ExternalLink, Gamepad2, Info, Play, ScrollText, Search, Star } from "lucide-react";
+import { Bug, ExternalLink, Gamepad2, Info, Play, ScrollText, Search, Star } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { coverUrl, played, type GameEntry } from "../launcher";
 import { renderShell } from "./Shell";
+import { setDebug, useUi } from "./store";
 
 function when(t: number): string {
   const d = new Date(t);
@@ -157,6 +159,7 @@ function GameInfo({ game, onPick, onClose }: { game: GameEntry; onPick: () => vo
 export function Library({ games, onPick }: { games: GameEntry[]; onPick: (g: GameEntry) => void }) {
   const [query, setQuery] = useState("");
   const [info, setInfo] = useState<GameEntry | null>(null);
+  const { debug } = useUi();
   const last = useMemo(played, []);
   const sorted = useMemo(
     () =>
@@ -195,6 +198,14 @@ export function Library({ games, onPick }: { games: GameEntry[]; onPick: (g: Gam
               </>
             )}
           </div>
+          <label
+            className="flex shrink-0 cursor-pointer items-center gap-1.5 text-sm text-muted-foreground"
+            title="プレイ中に通信量・読み込み待ち・メモリ・fpsを表示（Ctrl+Shift+Dでも切り替え）"
+          >
+            <Switch checked={debug} onCheckedChange={setDebug} aria-label="デバッグモード" />
+            <Bug className="size-4 sm:hidden" />
+            <span className="max-sm:hidden">デバッグ</span>
+          </label>
           <Button asChild variant="ghost" size="sm">
             <a href="logs.html">
               <ScrollText /> <span className="max-sm:hidden">ログ</span>

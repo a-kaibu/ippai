@@ -24,6 +24,21 @@ export interface UiState {
   bench: BenchView | null;
   /** a "back to the list" button (after a crash or an error) */
   back: (() => void) | null;
+  /** debug mode: network, memory and fps over the game (ui/Debug.tsx) */
+  debug: boolean;
+}
+
+const DEBUG = "vnvm.debug";
+
+/** Debug mode: the list's switch (kept in localStorage), ?debugmode=1 or Ctrl+Shift+D. */
+function debugAtStart(): boolean {
+  const q = new URLSearchParams(location.search).get("debugmode");
+  if (q !== null) return q !== "0";
+  try {
+    return localStorage.getItem(DEBUG) === "1";
+  } catch {
+    return false;
+  }
 }
 
 let state: UiState = {
@@ -33,6 +48,7 @@ let state: UiState = {
   stats: [],
   bench: null,
   back: null,
+  debug: debugAtStart(),
 };
 const listeners = new Set<() => void>();
 
@@ -62,3 +78,24 @@ export function useUi(): UiState {
     () => state,
   );
 }
+
+export function setDebug(on: boolean): void {
+  try {
+    localStorage.setItem(DEBUG, on ? "1" : "0");
+  } catch {
+    // (no storage: this page only)
+  }
+  setUi({ debug: on });
+}
+
+addEventListener(
+  "keydown",
+  (e) => {
+    if (e.ctrlKey && e.shiftKey && e.code === "KeyD") {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      setDebug(!state.debug);
+    }
+  },
+  true,
+);

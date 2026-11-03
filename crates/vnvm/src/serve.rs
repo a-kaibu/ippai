@@ -7,6 +7,7 @@
 //!   immutable so its HTTP cache keeps them.
 //! - `?v=...` on any URL: kept by the browser for good (the page changes the version when
 //!   the content changes)
+//! - `/jit/...`: sent zstd-compressed on the way (CompressionLayer)
 //! - `/jit/<name>.parts`: the x86 regions runs of a game saved (vnx86::jit::saved), one line
 //!   per part: module, index, version; `PUT /jit-save/<name>` with (u32 module length, module,
 //!   index) adds a run's new regions as a new part (parts compiled before stay the same); `PUT /jit-save/<name>.chunks` stores the store chunks a
@@ -668,7 +669,14 @@ pub async fn run(store: PathBuf, args: Args) -> anyhow::Result<()> {
         .with_state(jit)
         .merge(saves::router()?)
         .route("/games", get(games).with_state(pre.clone()))
-        .nest_service("/jit", ServeDir::new(&args.jit))
+        // (zstd on the way: a game's regions are ~15 MB of wasm, ~2.5 MB compressed, and on a
+        // slow connection they held the start back)
+        .nest_service(
+            "/jit",
+            tower::ServiceBuilder::new()
+                .layer(tower_http::compression::CompressionLayer::new().no_br().no_gzip().no_deflate())
+                .service(ServeDir::new(&args.jit)),
+        )
         .nest_service("/store", ServeDir::new(&store))
         .route("/tree/{name}/{*path}", get(crate::treefiles::file).with_state(crate::treefiles::Trees::new(store.clone())))
         .fallback_service(ServeDir::new(&args.web).precompressed_zstd())

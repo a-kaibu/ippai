@@ -229,3 +229,41 @@ pub unsafe extern "C" fn vnhost_load_threads() -> u32 {
     let n = LOAD_N.load(Ordering::Relaxed).min(LOAD_THREADS);
     (n * 1000 + LOAD[..n].iter().filter(|l| l.woke.load(Ordering::Relaxed) != 0).count()) as u32
 }
+
+#[cfg(target_os = "emscripten")]
+#[repr(C)]
+struct Mallinfo {
+    arena: i32,
+    ordblks: i32,
+    smblks: i32,
+    hblks: i32,
+    hblkhd: i32,
+    usmblks: i32,
+    fsmblks: i32,
+    uordblks: i32,
+    fordblks: i32,
+    keepcost: i32,
+}
+
+#[cfg(target_os = "emscripten")]
+extern "C" {
+    fn sbrk(increment: isize) -> *mut c_void;
+    fn mallinfo() -> Mallinfo;
+}
+
+/// Memory (bytes) to `out[0..2]`: the heap's top above the static data (malloc's high-water
+/// mark: the 4 GB memory is reserved at the start, so its size says nothing) and what malloc
+/// has handed out now.
+#[cfg(target_os = "emscripten")]
+#[no_mangle]
+pub unsafe extern "C" fn vnhost_mem_info(out: *mut f64) {
+    extern "C" {
+        static __heap_base: u8;
+    }
+    let top = sbrk(0) as usize;
+    let base = std::ptr::addr_of!(__heap_base) as usize;
+    let m = mallinfo();
+    let out = std::slice::from_raw_parts_mut(out, 2);
+    out[0] = top.saturating_sub(base) as f64;
+    out[1] = m.uordblks as u32 as f64;
+}
