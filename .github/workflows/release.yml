@@ -1,14 +1,27 @@
-# Releases on a v* tag: push one (git tag v0.1.0 && git push origin v0.1.0), or on the GitHub web
-# UI open Releases → Draft a new release, type a new tag (v0.1.0) on main and publish it. This
-# runs CI (tests, sake.wasm and the page, host/tests), then GoReleaser builds ippai for Linux
+# Release from the GitHub web UI: Actions → Release → Run workflow, pick patch / minor / major:
+# svu takes the next version after the last v* tag and the workflow tags main with it. A v* tag
+# pushed by hand (git tag v0.1.0 && git push origin v0.1.0) releases that tag the same way. Both
+# run CI (tests, sake.wasm and the page, host/tests), then GoReleaser builds ippai for Linux
 # x86-64 and ARM64 with the page built in, smoke-tests it and puts the archives, checksums.txt and
-# SBOMs on that tag's release (made when there is none; one made on the web UI keeps its notes).
+# SBOMs on GitHub Releases.
 name: Release
 
 on:
   push:
     tags:
       - "v*"
+
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: "Version bump type"
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
 
 permissions:
   contents: write
@@ -19,6 +32,10 @@ concurrency:
 
 jobs:
   ci:
+    # manual releases only from main
+    if: >-
+      github.event_name == 'push' ||
+      github.ref == 'refs/heads/main'
     uses: ./.github/workflows/ci.yml
 
   release:
@@ -27,13 +44,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # (GoReleaser's changelog: the commits since the previous tag)
+          fetch-depth: 0
+          fetch-tags: true
 
       # sake.wasm and the page CI built (the same for every target): built into the binaries
       - uses: actions/download-artifact@v4
         with:
           name: web
           path: web/dist
+
+      - name: Setup svu
+        if: github.event_name == 'workflow_dispatch'
+        uses: freerangebytes/setup-svu@3dcc2ead4b6be1287f9bfe2ac4764a826c110a4f # v0.2.1
+
+      - name: Create release tag
+        if: github.event_name == 'workflow_dispatch'
+        id: tag
+        shell: bash
+        env:
+          BUMP_TYPE: ${{ inputs.bump_type }}
+        run: |
+          set -euo pipefail
+
+          version="$(svu "$BUMP_TYPE")"
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git tag "$version"
+          git push origin "$version"
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Created release tag: $version"
 
       - name: Rust targets
         run: rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
@@ -65,4 +108,7 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
+          GORELEASER_CURRENT_TAG: >-
+            ${{ github.event_name == 'workflow_dispatch'
+                && steps.tag.outputs.version
+                || github.ref_name }}

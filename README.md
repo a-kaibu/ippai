@@ -93,11 +93,12 @@ ippai meta sample | ippai meta --all
 
 ## リリース
 
-`v*` タグを push するとリリースされます (`.github/workflows/release.yml`)。Web 画面だけでやるなら
-**Releases → Draft a new release** で新しいタグ (例 `v0.1.0`、対象 main) を入力して Publish します。
-CI (テスト、sake.wasm と Web のビルド、host/tests) のあと、GoReleaser (`.goreleaser.yaml`) が Linux x86-64 / ARM64 の
-バイナリ (cargo zigbuild、Web を rust-embed で内蔵) を作ってスモークテストし、アーカイブ・`checksums.txt`・SBOM を
-そのタグのリリースに載せます。ベンチ用ページ (bench.html、game.html、benchwasm/) はリリースのバイナリには入りません。
+GitHub の Web 画面だけでできます: **Actions → Release → Run workflow** で patch / minor / major を選ぶと、
+svu で次の `vX.Y.Z` を決めて main にタグを打ちます。手で `v*` タグを push しても同じようにリリースされます
+(`.github/workflows/release.yml`)。どちらも CI (テスト、sake.wasm と Web のビルド、host/tests) のあと、GoReleaser
+(`.goreleaser.yaml`) が Linux x86-64 / ARM64 のバイナリ (cargo zigbuild、Web を rust-embed で内蔵) を作って
+スモークテストし、アーカイブ・`checksums.txt`・SBOM を Releases に公開します。ベンチ用ページ (bench.html、
+game.html、benchwasm/) はリリースのバイナリには入りません。
 
 ## 開発時のビルド
 
