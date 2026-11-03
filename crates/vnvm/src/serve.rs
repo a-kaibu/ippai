@@ -499,7 +499,9 @@ async fn prerun_games(p: Arc<Prerun>) {
         let _ = tokio::fs::remove_dir_all(&profile).await;
         let url = format!("http://{host}/wine.html?game={id}&autostart&nosave&headless");
         let mut cmd = tokio::process::Command::new(&chrome);
-        cmd.args(["--headless=new", "--mute-audio", "--enable-unsafe-webgpu", "--autoplay-policy=no-user-gesture-required"])
+        // --incognito: an in-memory HTTP cache (on worker2, Ubuntu 26.04, the disk cache never
+        // opens and every page load stalls before connecting)
+        cmd.args(["--headless=new", "--incognito", "--mute-audio", "--enable-unsafe-webgpu", "--autoplay-policy=no-user-gesture-required"])
             .arg(format!("--user-data-dir={}", profile.display()))
             .arg(&url)
             .stdout(std::process::Stdio::null())
