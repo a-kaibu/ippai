@@ -2054,6 +2054,11 @@ fn GetVersionExW(c: &mut Ctx) -> u32 {
     version_info(c.a(0), true)
 }
 /// RtlGetVersion(RTL_OSVERSIONINFOW*): Artemis asks ntdll directly (GetVersionEx lies on 8.1+)
+/// GetProductInfo(major, minor, spmajor, spminor, &type): Windows 10 Pro
+fn GetProductInfo(c: &mut Ctx) -> u32 {
+    put32(c.a(4), 0x30); // PRODUCT_PROFESSIONAL
+    1
+}
 fn RtlGetVersion(c: &mut Ctx) -> u32 {
     let p = c.a(0);
     version_info(p, true);
@@ -4107,7 +4112,7 @@ pub fn init() {
     implement("mpr", "WNetGetUniversalNameW", WNetGetUniversalNameA);
     reg!("advapi32"; RegisterTraceGuidsW, UnregisterTraceGuids, TraceEvent, GetTraceLoggerHandle, GetTraceEnableFlags, GetTraceEnableLevel);
     reg!("ntdll"; RtlGetVersion, RtlGetNtVersionNumbers, RtlFirstEntrySList);
-    reg!("kernel32"; QueryDosDeviceA, QueryDosDeviceW, GetLogicalDriveStringsA, GetLogicalDriveStringsW);
+    reg!("kernel32"; QueryDosDeviceA, QueryDosDeviceW, GetLogicalDriveStringsA, GetLogicalDriveStringsW, GetProductInfo);
     reg!("ntdll"; RtlInitUnicodeString, RtlInitAnsiString, RtlFreeUnicodeString, RtlAnsiStringToUnicodeString,
         RtlUnicodeStringToAnsiString, RtlDosPathNameToNtPathName_U, RtlFormatCurrentUserKeyPath, LdrGetProcedureAddress,
         NtProtectVirtualMemory);
