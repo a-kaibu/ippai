@@ -528,7 +528,7 @@ impl Render {
             let d = |i: usize| now[i] - s.at[i];
             let g = self.d3d.gpu_ms.take();
             eprintln!(
-                "page stats/{secs:.1}s: rAF {:.1}/s, slow {}, render {}ms, d3d frames {:.1}/s, batches {}ms, gpu {:.0}ms (max {:.0}), passes {}, submits {}, textures {}, upload {:.1}MB, tile load {}MB store {}MB, same frames skipped {}",
+                "page stats/{secs:.1}s: rAF {:.1}/s, slow {}, render {}ms, d3d frames {:.1}/s, batches {}ms, gpu {:.0}ms (max {:.0}), passes {}, submits {}, textures {}, upload {:.1}MB, tile load {}MB store {}MB, same frames skipped {}, regions unchanged {} redrawn {}",
                 s.frames as f64 / secs,
                 s.slow,
                 FRAME_US.swap(0, Relaxed) / 1000,
@@ -542,7 +542,9 @@ impl Render {
                 d(3) as f64 / 1e6,
                 d(4) >> 20,
                 d(5) >> 20,
-                self.d3d.skipped.take()
+                self.d3d.skipped.take(),
+                self.d3d.seg_stats.get().0,
+                self.d3d.seg_stats.replace((0, 0)).1
             );
             *s = Stats { t0: t, last: t, frames: 0, slow: 0, at: now, d3d_at: self.d3d.frames };
         }

@@ -2757,6 +2757,39 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     let stencil_ref = st.rs[57];
     let _ = stencil_ref;
 
+    // What the draw reads from guest memory (its vertices, indices, constants), hashed, and
+    // where it draws when its vertices are in pixels already (XYZRHW): the page redraws only
+    // the parts of a target that changed since the last frame (render/d3d.rs, segments).
+    let mut h = Fnv::default();
+    for &(_, ptr, stride) in &streams {
+        h.add(std::slice::from_raw_parts((ptr + first * stride) as *const u8, (count * stride) as usize));
+    }
+    if let Some((iptr, isz, _)) = index {
+        h.add(std::slice::from_raw_parts(iptr as *const u8, (nverts * isz) as usize));
+    }
+    h.add(&vsu);
+    h.add(&psu);
+    let mut bbox = [u32::MAX; 4];
+    if let (true, Some(e)) = (pretransformed, elems.iter().find(|e| e.usage == shader::USAGE_POSITIONT && e.stream == 0)) {
+        if let Some(&(_, ptr, stride)) = streams.first() {
+            let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+            for v in 0..count {
+                let p = (ptr + (first + v) * stride + e.offset) as *const f32;
+                let (x, y) = (*p, *p.add(1));
+                x0 = x0.min(x);
+                y0 = y0.min(y);
+                x1 = x1.max(x);
+                y1 = y1.max(y);
+            }
+            if x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite() && x1 >= x0 && y1 >= y0 {
+                // (a pixel of margin: sampling and the half-pixel offset)
+                let c = |v: f32| (v.max(0.0).min(65535.0)) as u32;
+                bbox = [c(x0.floor() - 1.0), c(y0.floor() - 1.0), c(x1.ceil() + 1.0), c(y1.ceil() + 1.0)];
+            }
+        }
+    }
+    let hash = h.0 as u32 ^ (h.0 >> 32) as u32;
+
     ensure_target(d, rt, ds);
     let dev = d.dev.as_mut().unwrap();
     let same_batch = dev.batch_gen == gpu::batch_gen();
@@ -2824,6 +2857,8 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         c.push(offs.len() as u32);
         c.extend_from_slice(&offs);
         c.extend_from_slice(&[ifmt, ioff, icount, base as u32]);
+        c.push(hash);
+        c.extend_from_slice(&bbox);
         b.cmd(&c);
         ((vso, pso), true)
     });
@@ -2842,6 +2877,23 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         }
     }
     S_OK
+}
+
+/// FNV-1a, 64 bits
+struct Fnv(u64);
+
+impl Default for Fnv {
+    fn default() -> Fnv {
+        Fnv(0xcbf2_9ce4_8422_2325)
+    }
+}
+
+impl Fnv {
+    fn add(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0 ^ b as u64).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
 }
 
 fn shader_module(dev: &mut Device, wgsl: String) -> u32 {
