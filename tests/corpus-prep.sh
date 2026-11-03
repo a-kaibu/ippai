@@ -10,7 +10,8 @@ BASE=${BASE_STORE:-/home/user/work/base-store}
 mkdir -p "$T"
 cd "$T"
 f=dl.${url##*.}
-if [ ! -s "$f" ]; then
+# (already extracted: no download)
+if [ ! -d x ] && [ ! -s "$f" ]; then
   # the proxy sometimes cuts long transfers: resume
   ok=
   # (DL_TRIES / DL_MAX_TIME: CI gives a dead host less time)
