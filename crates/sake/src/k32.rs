@@ -3901,7 +3901,7 @@ fn MakeSureDirectoryPathExists(c: &mut Ctx) -> u32 {
     if !dir.is_empty() {
         mkdir(dir);
     }
-    ok(dir.is_empty() || files::resolve(dir).is_some_and(|h| std::path::Path::new(&h).is_dir()))
+    ok(dir.is_empty() || files::resolve(dir).is_some_and(|h| crate::files::is_dir(&h)))
 }
 /// SearchTreeForFile(root, name, out): the first file called `name` under `root`, depth first.
 fn SearchTreeForFile(c: &mut Ctx) -> u32 {
@@ -3912,7 +3912,7 @@ fn SearchTreeForFile(c: &mut Ctx) -> u32 {
         for e in vnhost::fs::read_dir(host).ok()?.flatten() {
             let n = e.file_name().to_string_lossy().into_owned();
             let g = format!("{}\\{n}", guest.trim_end_matches('\\'));
-            if e.path().is_dir() {
+            if crate::files::is_dir(e.path()) {
                 dirs.push((e.path(), g));
             } else if n.to_lowercase() == base {
                 return Some(g);

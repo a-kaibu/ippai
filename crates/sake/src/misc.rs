@@ -2134,10 +2134,10 @@ fn PathFileExistsW(c: &mut Ctx) -> u32 {
     crate::files::resolve(&arg_str(c.a(0), true)).is_some() as u32
 }
 fn PathIsDirectoryA(c: &mut Ctx) -> u32 {
-    crate::files::resolve(&arg_str(c.a(0), false)).is_some_and(|h| std::path::Path::new(&h).is_dir()) as u32 * 16
+    crate::files::resolve(&arg_str(c.a(0), false)).is_some_and(|h| crate::files::is_dir(&h)) as u32 * 16
 }
 fn PathIsDirectoryW(c: &mut Ctx) -> u32 {
-    crate::files::resolve(&arg_str(c.a(0), true)).is_some_and(|h| std::path::Path::new(&h).is_dir()) as u32 * 16
+    crate::files::resolve(&arg_str(c.a(0), true)).is_some_and(|h| crate::files::is_dir(&h)) as u32 * 16
 }
 fn append(a: &str, b: &str) -> String {
     if a.is_empty() {

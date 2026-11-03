@@ -50,6 +50,11 @@ pub fn host_to_win(h: &str) -> String {
     format!("Z:{}", h.replace('/', "\\"))
 }
 
+/// Whether host path `h` is a directory (vnhost's file system, not std's).
+pub fn is_dir<P: AsRef<std::path::Path>>(h: P) -> bool {
+    vnhost::fs::metadata(h).is_ok_and(|m| m.is_dir())
+}
+
 /// Absolute Windows path of `p` (GetFullPathName): drive, no "." or "..", backslashes.
 pub fn full_path(p: &str) -> String {
     let p = p.replace('/', "\\");

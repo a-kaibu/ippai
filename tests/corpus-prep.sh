@@ -42,7 +42,11 @@ if [ ! -d x ]; then
   find x.part -type f -iname '*.exe' -print0 | while IFS= read -r -d '' s; do
     if python3 -I "$(dirname "$0")/isextract.py" "$s" "$s.is" >/dev/null 2>&1; then rm -f "$s"
     elif LC_ALL=C.UTF-8 innoextract -s -q -e -d "$s.inno" "$s" >/dev/null 2>&1 && [ -n "$(ls "$s.inno")" ]; then rm -f "$s"
-    else rm -rf "$s.is" "$s.inno"
+    # a self-extracting zip of the game (kaguya's sperman_trial.exe); not a program that only
+    # carries a zip of its own data (NW.js): the zip has to hold an .exe
+    elif unzip -Z1 "$s" 2>/dev/null | grep -qi '\.exe$' &&
+        python3 -I "$(dirname "$0")/unzip-cp932.py" "$s" "$s.zip" >/dev/null 2>&1 && [ -n "$(ls "$s.zip")" ]; then rm -f "$s"
+    else rm -rf "$s.is" "$s.inno" "$s.zip"
     fi
   done
   # BGI install media: a 16-byte "0123456789ABCDEF" file next to BGIForInstalling.exe marks
