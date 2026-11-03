@@ -534,6 +534,34 @@ fn write_info(p: u32, w: u32, h: u32, ff: u32) {
         }
     }
 }
+/// D3DXCheckTextureRequirements's sizes: D3DX_DEFAULT (and 0) -> 256, else as asked
+/// (sake's devices take any size); levels D3DX_DEFAULT -> a full chain (0)
+fn tex_req(w: u32, h: u32, mips: u32) -> (u32, u32, u32) {
+    let size = |v: u32| if v == 0 || v >= 0xffff_fffd { 256 } else { v };
+    (size(w), size(h), if mips == 0xffff_ffff { 0 } else { mips })
+}
+/// D3DXCreateTexture(device, width, height, mips, usage, format, pool, &texture)
+fn D3DXCreateTexture(c: &mut Ctx) -> u32 {
+    let (w, h, mips) = tex_req(c.a(1), c.a(2), c.a(3));
+    let fmt = if c.a(5) == 0 { 21 } else { c.a(5) };
+    let (dev, usage, pool, out) = (c.a(0), c.a(4), c.a(6), c.a(7));
+    com_call(c, dev, 23, &[w, h, mips, usage, fmt, pool, out, 0])
+}
+/// D3DXCheckTextureRequirements(device, &width, &height, &mips, usage, &format, pool)
+fn D3DXCheckTextureRequirements(c: &mut Ctx) -> u32 {
+    let (pw, ph, pm, pf) = (c.a(1), c.a(2), c.a(3), c.a(5));
+    let rd = |p: u32, d: u32| if p == 0 { d } else { r32(p) };
+    let (w, h, m) = tex_req(rd(pw, 0), rd(ph, 0), rd(pm, 0xffff_ffff));
+    for (p, v) in [(pw, w), (ph, h), (pm, if m == 0 { 1 + 31 - w.max(h).leading_zeros() } else { m })] {
+        if p != 0 {
+            w32(p, v);
+        }
+    }
+    if pf != 0 && (r32(pf) == 0 || r32(pf) == 0xffff_fffd) {
+        w32(pf, 21);
+    }
+    0
+}
 /// D3DXCreateTextureFromFileInMemoryEx(device, data, length, width, height, mips, usage, format,
 /// pool, filter, mip filter, color key, &info, palette, &texture): PNG, JPEG, BMP
 fn texture_from(c: &mut Ctx, dev: u32, data: &[u8], a: [u32; 12]) -> u32 {
@@ -818,6 +846,8 @@ pub fn init() {
     let fns: &[(&str, Handler)] = &[
         ("D3DXCreateEffect", D3DXCreateEffect),
         ("D3DXCreateMatrixStack", D3DXCreateMatrixStack),
+        ("D3DXCreateTexture", D3DXCreateTexture),
+        ("D3DXCheckTextureRequirements", D3DXCheckTextureRequirements),
         ("D3DXCreateTextureFromFileInMemoryEx", D3DXCreateTextureFromFileInMemoryEx),
         ("D3DXCreateTextureFromFileInMemory", D3DXCreateTextureFromFileInMemory),
         ("D3DXCreateTextureFromFileA", D3DXCreateTextureFromFileA),
