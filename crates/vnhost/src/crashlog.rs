@@ -22,7 +22,7 @@
 
 use core::fmt::{self, Write};
 use std::cell::{Cell, UnsafeCell};
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering::*};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering::*};
 use std::sync::Mutex;
 
 use vnx86::Cpu;
@@ -145,12 +145,11 @@ fn stamp(w: &mut impl Write) {
     let s = ms / 1000;
     let _ = write!(
         w,
-        "{:02}:{:02}:{:02}.{:03} p{}/t{} ",
+        "{:02}:{:02}:{:02}.{:03} t{} ",
         (s / 3600) % 24,
         (s / 60) % 60,
         s % 60,
         ms % 1000,
-        crate::proc::current(),
         crate::cpu::vnhost_gettid()
     );
 }
@@ -234,7 +233,6 @@ pub fn forget_tid(tid: i32) {
 
 struct ThreadLog {
     tid: i32,
-    pid: AtomicI32,
     cpu: AtomicUsize,
     /// 1 while it runs guest code, 0 in Wine's unix side / sake (a syscall, an API call)
     guest: AtomicU32,
@@ -266,7 +264,6 @@ pub fn register(cpu: *mut Cpu) {
     });
     let t: &'static ThreadLog = Box::leak(Box::new(ThreadLog {
         tid: crate::cpu::vnhost_gettid(),
-        pid: AtomicI32::new(crate::proc::current()),
         cpu: AtomicUsize::new(cpu as usize),
         guest: AtomicU32::new(0),
         traps: UnsafeCell::new([[0; 4]; TRAPS]),
@@ -649,21 +646,18 @@ fn traps(w: &mut impl Write, t: &ThreadLog, mods: &[Module], name: bool, max: u3
     }
 }
 
-/// Modules already listed per process (by PEB/TEB area), with a hash of the list: a record
-/// lists them again only when they changed.
-static LISTED: Mutex<Vec<(i32, u32)>> = Mutex::new(Vec::new());
+/// A hash of the modules last listed: a record lists them again only when they changed.
+static LISTED: Mutex<u32> = Mutex::new(0);
 
 fn module_list(w: &mut impl Write, mods: &[Module], always: bool) {
     let h = mods.iter().fold(0x811c9dc5u32, |h, m| (h ^ m.base ^ m.size).wrapping_mul(0x0100_0193));
-    let pid = crate::proc::current();
     if !always {
         let mut g = LISTED.lock().unwrap_or_else(|e| e.into_inner());
-        if g.iter().any(|&(p, x)| p == pid && x == h) {
+        if *g == h {
             let _ = write!(w, "\n  modules: as listed before ({})", mods.len());
             return;
         }
-        g.retain(|&(p, _)| p != pid);
-        g.push((pid, h));
+        *g = h;
     }
     let _ = write!(w, "\n  modules ({}):", mods.len());
     for (i, m) in mods.iter().enumerate() {
@@ -733,8 +727,7 @@ pub extern "C" fn vnhost_crashlog_snapshot() -> u32 {
         let mods = &mods[..n];
         let _ = write!(
             w,
-            "\n\nthread p{}/t{} {} at {:08x}",
-            t.pid.load(Relaxed),
+            "\n\nthread t{} {} at {:08x}",
             t.tid,
             if t.guest.load(Relaxed) != 0 { "in guest code" } else { "in a syscall/API (host side)" },
             cpu.eip

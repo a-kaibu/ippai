@@ -41,7 +41,6 @@ interface WineModule {
   _vnhost_render_info(out: number): void;
   _vnhost_display_view(out: number): void;
   _vnhost_display_windows?(out: number, max: number): number;
-  _vnhost_root_exited(): number;
   _vnhost_display_frame(io: number): number;
   _vnhost_input_push(kind: number, x: number, y: number, data: number): number;
   _vnhost_audio_ring(frames: number): number;
@@ -370,9 +369,10 @@ function watch(wine: WineModule): void {
   const info = wine._malloc(32) >>> 0;
   let serial = 0;
   // Siglus movies: decoded here for the guest (web/src/video.ts)
-  const video = typeof VideoDecoder !== "undefined" ? new Video(wine, (l) => (console.log(l), recorder?.note(l))) : null;
+  const video =
+    typeof VideoDecoder !== "undefined" ? new Video(wine, (l) => (console.log(l), recorder?.note(l))) : null;
   const frame = () => {
-    if (exited || wine._vnhost_root_exited()) return closeGame();
+    if (exited) return closeGame();
     video?.tick();
     wine._vnhost_render_info(info);
     const [s, bits, width, height] = Array.from(new Uint32Array(wine.wasmMemory.buffer, info, 4));
@@ -388,7 +388,8 @@ function watch(wine: WineModule): void {
 }
 
 function attachInput(wine: WineModule): void {
-  const push = (kind: number, x: number, y: number, data: number) => wine._vnhost_render_input(kind, x, y, data);
+  const push = (kind: number, x: number, y: number, data: number) =>
+    wine._vnhost_render_input(kind, x, y, data);
   // canvas pixels: the module maps them to the screen
   const toFrame = (e: { clientX: number; clientY: number }): [number, number] => {
     const b = canvas.getBoundingClientRect();

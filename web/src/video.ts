@@ -14,7 +14,12 @@ export interface VideoWasm {
   _vnhost_video_fail(id: number): void;
 }
 
-type WaitAsync = (a: Int32Array, i: number, v: number, t: number) => { async: boolean; value: Promise<string> | string };
+type WaitAsync = (
+  a: Int32Array,
+  i: number,
+  v: number,
+  t: number,
+) => { async: boolean; value: Promise<string> | string };
 
 /** frames decoded ahead of the newest request */
 const AHEAD = 3;
@@ -68,7 +73,12 @@ export class Video {
     let seen = Atomics.load(i32(), this.doorbell >>> 2);
     for (;;) {
       // (Atomics.waitAsync: ES2024, in Chrome since 87)
-      const w = (Atomics as unknown as { waitAsync: WaitAsync }).waitAsync(i32(), this.doorbell >>> 2, seen, 1000);
+      const w = (Atomics as unknown as { waitAsync: WaitAsync }).waitAsync(
+        i32(),
+        this.doorbell >>> 2,
+        seen,
+        1000,
+      );
       if (w.async) await w.value;
       seen = Atomics.load(i32(), this.doorbell >>> 2);
       this.tick();
@@ -126,7 +136,12 @@ export class Video {
     for (const t of s.tracks) {
       // (no-preference: the hardware decoder when there is one free, else software; Android has
       // few hardware decoders and Siglus plays several movies at once)
-      const config: VideoDecoderConfig = { codec: t.codec, codedWidth: s.w, codedHeight: s.h, optimizeForLatency: true };
+      const config: VideoDecoderConfig = {
+        codec: t.codec,
+        codedWidth: s.w,
+        codedHeight: s.h,
+        optimizeForLatency: true,
+      };
       if (!(await VideoDecoder.isConfigSupported(config)).supported) {
         this.note(`video ${s.id}: ${t.codec} not supported`);
         this.fail(s);

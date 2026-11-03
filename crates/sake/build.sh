@@ -17,15 +17,8 @@ RUSTC_BOOTSTRAP=1 RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-gl
 LIB=$ROOT/target/wasm32-unknown-emscripten/release/libsake.a
 emcc -O2 -pthread -c "$HERE/c/main.c" -o "$OUT/main.o"
 emcc -O2 -pthread -c "$ROOT/crates/vnhost/c/shim.c" -o "$OUT/shim.o"
-# the libc entry points vnhost routes to its fd layer and the page's file system (not mmap:
-# guest memory is ours, the host's mmap stays emscripten's)
-WRAP="socket socketpair pipe pipe2 bind listen accept accept4 connect shutdown setsockopt getsockopt
-  getsockname getpeername sendmsg recvmsg send recv sendto recvfrom read write readv writev close dup dup2
-  poll select fstat lseek fcntl ioctl dlopen dlsym dlclose dlerror dladdr kill pthread_kill isatty getpid exit _exit
-  getenv setenv unsetenv putenv pthread_create open openat creat stat lstat fstatat access faccessat readlink mkdir
-  rmdir unlink rename symlink link chmod utimensat chdir fchdir getcwd realpath opendir fdopendir readdir closedir
-  rewinddir dirfd pread pwrite ftruncate fsync fchmod futimens fstatfs fstatvfs posix_fallocate fgetxattr fsetxattr
-  fremovexattr getxattr fopen fdopen clock_gettime sched_yield emscripten_futex_wait"
+# the libc entry points vnhost takes over (crates/vnhost/src/wrap.rs, c/shim.c)
+WRAP="write writev clock_gettime sched_yield emscripten_futex_wait"
 WRAPFLAGS=$(for w in $WRAP; do printf -- "-Wl,--wrap=%s -Wl,-u,%s " "$w" "$w"; done)
 KEEP=$("$EMSDK/upstream/bin/llvm-nm" --defined-only -j "$LIB" 2>/dev/null | grep -E '^(vnhost_|sake_)' | sort -u)
 EXPORTS=$(echo "$KEEP" | sed 's/^/_/' | paste -sd, -)

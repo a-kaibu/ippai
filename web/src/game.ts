@@ -100,7 +100,7 @@ const wine = () => (window as unknown as { vnvmWine?: Wine }).vnvmWine;
 // CPU ms all Wine threads used so far
 const totalBusy = () => wine()?._vnhost_load_busy() ?? 0;
 
-/** per thread: CPU ms, waits, process; and fd.rs's full spins (the same in every entry) */
+/** per thread: CPU ms and waits (the two other words: 0) */
 function slots(): { busy: number; waits: number; pid: number; spins: number }[] {
   const w = wine();
   if (!w) return [];
