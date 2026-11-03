@@ -64,6 +64,7 @@ jobs:
           npx vp check --fix
           git diff -- src/video.ts src/wine.ts
           npx vp check
+          exit 1 # diagnostic run: stop after recording formatter diff
       - name: Build
         run: tools/ci/build.sh
       - name: host/tests on sake
