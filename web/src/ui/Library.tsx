@@ -1,4 +1,4 @@
-// The game list (wine.html without ?run=): cards with cover, brand, year and score from
+// The game list (play.html without ?run=): cards with cover, brand, year and score from
 // `vnvm meta`, a filter, and a dialog with the game's details. Picking a game starts it from
 // that click (audio and fullscreen need the user gesture).
 

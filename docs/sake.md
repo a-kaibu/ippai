@@ -2,7 +2,7 @@
 
 Wine を使わずに、ゲームの x86 コードを vnhost の JIT で動かし、Windows API を Rust
 (crates/sake、wasm) で実装する。Wine 経路 (2026-11-02 に [a-kaibu/vnvm-wine](https://github.com/a-kaibu/vnvm-wine) へ移した) と同じページ・同じ JIT・同じ
-WebGPU D3D9 を使う。いまはページ (`wine.html` / `game.html`) が動かすのは sake だけ (`&engine=` は無視)。
+WebGPU D3D9 を使う。いまはページ (`play.html` / `game.html`) が動かすのは sake だけ (`&engine=` は無視)。
 
 ## 仕組み
 
@@ -153,8 +153,8 @@ node では D3D9 は描かれない (WebGPU がない) ので、D3D9 のゲー�
   `VNVM_SCREENSHOT=out.ppm`、`VNVM_INPUT="秒:種類,x,y,データ;..."` (1 移動、2/3 ボタン、
   5/6 キー)。ボタンはホバーの移動を先に送らないと反応しないゲームが多い。
 - ページ: `vnvm pack <dir> <name>` してから
-  `wine.html?engine=sake&autostart&run=Z%3A%5Cvnvm%5Cgame%5C<exe>&mount=/vnvm/game=<name>`。
-  `tests/wine.mjs` でヘッドレスのスクリーンショット。
+  `play.html?engine=sake&autostart&run=Z%3A%5Cvnvm%5Cgame%5C<exe>&mount=/vnvm/game=<name>`。
+  `tests/play.mjs` でヘッドレスのスクリーンショット。
 - 調べるとき: `SAKE_WATCH=<16進番地>` (API 呼び出しごとにその番地の値を見て、変わったら表示)、`VNVM_D3D_TRACE=1` (描画ごとの頂点も表示)、`SAKE_TRACE=1` (+ `SAKE_TRACE_FILTER=a,b`、`SAKE_TRACE_AFTER=ms`)、
   `SAKE_TRACE=3` (落ちたときにスレッドごとの直前の呼び出し)、`SAKE_API_STATS=秒`、
   `SAKE_TRACE_FAULT`、`SAKE_TRACE_FILES`、`SAKE_TRACE_LOAD`、`SAKE_TRACE_MSG`、

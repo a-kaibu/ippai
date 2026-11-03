@@ -13,14 +13,14 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: true,
     target: "es2022",
-    // index.html = wine.html: Wine built for wasm (host/, files in public/wine/), the game list
+    // index.html = play.html: sake (crates/sake, files in public/sake/), the game list
     // without ?run=;
-    // bench.html: bench.exe on wine.html with the native numbers next to it; logs.html: the runs'
+    // bench.html: bench.exe on play.html with the native numbers next to it; logs.html: the runs'
     // logs (crash reports)
     rollupOptions: {
       input: {
         main: "index.html",
-        wine: "wine.html",
+        play: "play.html",
         bench: "bench.html",
         game: "game.html",
         logs: "logs.html",

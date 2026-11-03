@@ -59,12 +59,7 @@ jobs:
           restore-keys: build-${{ runner.os }}-
       - name: Web check
         working-directory: web
-        run: |
-          npm ci --no-audit --no-fund
-          npx vp check --fix
-          git diff -- src/video.ts src/wine.ts
-          npx vp check
-          exit 1 # diagnostic run: stop after recording formatter diff
+        run: npm ci --no-audit --no-fund && npx vp check
       - name: Build
         run: tools/ci/build.sh
       - name: host/tests on sake

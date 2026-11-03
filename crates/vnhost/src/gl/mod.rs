@@ -1,5 +1,4 @@
-//! OpenGL for winebrowser.drv's WGL driver (dlls/winebrowser.drv/opengl.c): the GL functions
-//! win32u and opengl32's unix side call, drawn with the page's WebGPU commands (the ones Direct3D
+//! OpenGL for sake's opengl32 (crates/sake/src/gl.rs): the GL functions it calls, drawn with the page's WebGPU commands (the ones Direct3D
 //! 11 uses, crates/vnhost/src/d3d9/gpu.rs).
 //!
 //! What there is: GL 1.x fixed function without lighting or fog (immediate mode, client arrays,
@@ -392,7 +391,7 @@ fn bytes<T>(v: &[T]) -> &[u8] {
     unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, std::mem::size_of_val(v)) }
 }
 
-// ---- the WGL driver's entries (dlls/winebrowser.drv/opengl.c) ----
+// ---- the WGL entries (contexts, current context, swap) ----
 
 #[no_mangle]
 pub extern "C" fn vngl_context_create(_share: u32) -> u32 {

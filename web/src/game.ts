@@ -1,16 +1,16 @@
 // A real game as the benchmark: Reunion (KiriKiri, the trial in the store as tree "reunion")
-// started in wine.html, its story clicked through for a minute, measuring what playing costs:
+// started in play.html, its story clicked through for a minute, measuring what playing costs:
 //
 //   - seconds from start to the title screen (the first frame with a busy middle band)
-//   - CPU per second during the story: every Wine thread's time outside its waits (and its
+//   - CPU per second during the story: every thread's time outside its waits (and its
 //     synchronous XHRs), summed; not the page's own thread or the browser's (drawing, audio)
 //     (vnhost_load_busy), in cores
 //   - frames per second the game draws, and the longest gap between animation frames (stalls)
 //
-// Native Wine on the x86-64 dev machine for comparison: title 5.9 s, story 0.18 cores (9 s of
+// Natively (Wine on the x86-64 dev machine) for comparison: title 5.9 s, story 0.18 cores (9 s of
 // CPU in 50 s). The result goes to vnvm serve's `PUT /bench-log` (bench-results.txt).
 //
-// It runs twice (the page reloads itself, Wine can't start twice in a page): the first run
+// It runs twice (the page reloads itself: the module can't start twice in a page): the first run
 // translates what isn't saved yet (after a new build, all of it), the second starts from the
 // regions the first saved. The table shows both.
 //
@@ -52,7 +52,7 @@ if (!params.has("run")) {
   params.set("autostart", "");
   params.set("load", "");
   // the screen the numbers were taken on: on vnhost's 1366x768 default Reunion's title ignores
-  // clicks (under Wine and sake alike)
+  // clicks
   params.append("env", "VNVM_SCREEN=1280x720");
   history.replaceState(null, "", `?${params}`);
 }
@@ -86,7 +86,7 @@ function row(name: string, value: string, native = ""): void {
 render();
 const runLabel = runs > 1 ? `${round} / ${runs} 回目: ` : "";
 
-interface Wine {
+interface Sake {
   _vnhost_input_push(k: number, x: number, y: number, d: number): number;
   _vnhost_load_busy(): number;
   _vnhost_load_slot(i: number, out: number): number;
@@ -96,13 +96,13 @@ interface Wine {
   _malloc(n: number): number;
   HEAPF64: Float64Array;
 }
-const wine = () => (window as unknown as { vnvmWine?: Wine }).vnvmWine;
+const sake = () => (window as unknown as { vnvmSake?: Sake }).vnvmSake;
 // CPU ms all the program's threads used so far
-const totalBusy = () => wine()?._vnhost_load_busy() ?? 0;
+const totalBusy = () => sake()?._vnhost_load_busy() ?? 0;
 
 /** per thread: CPU ms and waits */
 function slots(): { busy: number; waits: number }[] {
-  const w = wine();
+  const w = sake();
   if (!w) return [];
   const out = w._malloc(16) >>> 0;
   const list = [];
@@ -117,7 +117,7 @@ function slots(): { busy: number; waits: number }[] {
 let frames = 0;
 let title = 0;
 let lastLook = 0;
-addEventListener("wine-frame", (e) => {
+addEventListener("vnvm-frame", (e) => {
   frames++;
   if (title || performance.now() - lastLook < 250) return;
   lastLook = performance.now();
@@ -147,7 +147,7 @@ requestAnimationFrame(raf);
 /** clicks at `at` in the game window's client area (where the screen shows it) */
 let viewBuf = 0;
 function click(at = CLICK): void {
-  const w = wine();
+  const w = sake();
   if (!w) return;
   viewBuf ||= w._malloc(16) >>> 0;
   w._vnhost_display_view(viewBuf);
@@ -158,7 +158,7 @@ function click(at = CLICK): void {
   w._vnhost_input_push(3, x, y, 0);
 }
 // &titleafter=N: the title counts as shown after N s (a Direct3D game: its frames don't come
-// through wine-frame)
+// through vnvm-frame)
 const TITLE_AFTER = Number(params.get("titleafter") ?? 0);
 if (TITLE_AFTER > 0) {
   setTimeout(() => {
@@ -231,7 +231,7 @@ async function story(): Promise<void> {
     device,
   ];
   // &env=VNVM_JIT_PROFILE=1: the executed instruction counts (to stderr, the console)
-  if (params.getAll("env").some((e) => e.startsWith("VNVM_JIT_PROFILE="))) wine()?._vnhost_jit_profile?.();
+  if (params.getAll("env").some((e) => e.startsWith("VNVM_JIT_PROFILE="))) sake()?._vnhost_jit_profile?.();
   await fetch("bench-log", { method: "PUT", body: lines.join("\n") }).catch(() => undefined);
   if (round < runs) {
     try {
@@ -255,4 +255,4 @@ setInterval(() => {
     setBench({ phase: `計測中… ${runLabel}起動してタイトル画面を待っています (${now().toFixed(0)} 秒)` });
 }, 1000);
 
-await import("./wine");
+await import("./play");

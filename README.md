@@ -23,8 +23,8 @@ Wine 11.20 の Unix 側を wasm にする Hangover 方式の経路は 2026-11-02
 | `crates/sake` | Win32 層 (kernel32、user32、gdi32、d3d9 など)。`build.sh` が sake.js / sake.wasm を作る |
 | `crates/vnvm` | `vnvm` 1本のCLI。`serve`: web/dist とストアを COOP/COEP 付きで配信、JIT リージョンの保存、ゲーム一覧、セーブの S3 バックアップ、実行ログの保存 (`--logs`)。`pack`: ディレクトリをチャンク (256KiB、zstd) のストアにする。`add-game` / `remove-game` / `meta`: ランチャーの一覧と、批評空間・VNDB からのブランド・発売日・評価・タグ・紹介文・カバー |
 | `host/` | emscripten の JS ライブラリ (`pre.js`、`vnfs.js`、`vnjit.js`)、生成スクリプト、テスト用プログラム (`tests/`) |
-| `web/` | Vite+ (`vp`) のフロントエンド (TypeScript、UI は React + Tailwind CSS v4 + shadcn/ui、`src/components/ui`): `index.html` (= `wine.html`、ゲーム一覧)、`game.html`、`bench.html`、`logs.html` (実行ログ) |
-| `tests/` | ヘッドレス Chromium での確認 (`wine.mjs`)、Android 相当に遅くして測る (`android-like.sh`)、コーパス |
+| `web/` | Vite+ (`vp`) のフロントエンド (TypeScript、UI は React + Tailwind CSS v4 + shadcn/ui、`src/components/ui`): `index.html` (= `play.html`、ゲーム一覧)、`game.html`、`bench.html`、`logs.html` (実行ログ) |
+| `tests/` | ヘッドレス Chromium での確認 (`play.mjs`)、Android 相当に遅くして測る (`android-like.sh`)、コーパス |
 
 ## ビルドと起動
 

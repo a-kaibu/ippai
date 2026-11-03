@@ -1,6 +1,6 @@
-// The game list's data (wine.html without ?run=; shown by ui/Library.tsx): the games vnvm
+// The game list's data (play.html without ?run=; shown by ui/Library.tsx): the games vnvm
 // add-game put in the store, served as one list by vnvm serve (GET /games). Picking one fills
-// wine.html's parameters (run, mount, args, env) and starts it in the same page, from the same
+// play.html's parameters (run, mount, args, env) and starts it in the same page, from the same
 // click (the audio and fullscreen need a user gesture).
 
 /** From ErogameScape (批評空間) / VNDB: `vnvm meta` (crates/vnvm/src/meta.rs, Info) */
@@ -69,7 +69,7 @@ export function coverUrl(g: GameEntry): string | null {
   return g.cover ? new URL(`store/games/${encodeURIComponent(g.cover)}`, location.href).href : null;
 }
 
-/** Sets wine.html's parameters for `g` (other parameters, e.g. &debug, stay). */
+/** Sets play.html's parameters for `g` (other parameters, e.g. &debug, stay). */
 export function applyGame(params: URLSearchParams, g: GameEntry): void {
   params.set("run", g.run);
   params.delete("mount");

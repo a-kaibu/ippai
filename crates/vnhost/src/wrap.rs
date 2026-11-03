@@ -46,7 +46,7 @@ extern "C" {
 
 /// The monotonic and real-time clocks straight from performance.now() / Date.now() as doubles:
 /// emscripten's clock_gettime goes through WASI's clock_time_get, whose 64-bit arguments make
-/// every call box BigInts in JS. The wineserver and every wait read the clock thousands of times
+/// every call box BigInts in JS. Every wait reads the clock, thousands of times
 /// a second.
 #[no_mangle]
 pub unsafe extern "C" fn __wrap_clock_gettime(clk: libc::clockid_t, ts: *mut libc::timespec) -> c_int {
@@ -133,7 +133,7 @@ pub unsafe extern "C" fn __wrap_emscripten_futex_wait(addr: *mut c_void, val: u3
         let l = LOAD.get(i);
         if let Some(l) = l {
             l.woke.store(unsafe { emscripten_date_now() }.to_bits(), Ordering::Relaxed);
-            // Wine's threads end without running Rust's thread-local destructors; pthread key
+            // some threads end without running Rust's thread-local destructors; pthread key
             // destructors do run
             unsafe { libc::pthread_setspecific(load_key(), (i + 1) as *const c_void) };
         }

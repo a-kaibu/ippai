@@ -1,6 +1,6 @@
-//! The sound card behind the browser audio driver (dlls/winebrowser.drv/audio.c in the Wine patch).
+//! The sound card behind sake's audio APIs (waveOut, DirectSound, XAudio2).
 //!
-//! Each render stream of a Wine process queues its frames here. The wall clock plays them: on
+//! Each render stream queues its frames here. The wall clock plays them: on
 //! every call the elapsed time is mixed (resampled to 44.1 kHz stereo f32) into `out`, which the
 //! page drains with `vnhost_audio_take` into WebAudio. Under node nobody drains it and `out` just
 //! stays capped, so the timing games wait on is the same in both.
@@ -166,7 +166,7 @@ const RING_FRAMES: usize = 1 << 15;
 
 /// What the page plays: mixed frames (interleaved stereo f32) at `head % RING_FRAMES`, `head`
 /// counting every frame written. The AudioWorklet reads it straight from the shared wasm memory
-/// with its own read position (web/src/wine-audio.ts), so nothing goes through the page's own
+/// with its own read position (web/src/audio.ts), so nothing goes through the page's own
 /// thread, where a long frame would make the sound stutter.
 #[repr(C)]
 struct Ring {

@@ -124,7 +124,7 @@ pub fn pages_protected(addr: usize, len: usize, prot: i32) {
     }
 }
 
-/// Wine mapped a main executable (not a DLL) there.
+/// the loader mapped a main executable (not a DLL) there.
 #[no_mangle]
 pub extern "C" fn vnhost_jit_exe_image(addr: *const std::ffi::c_void, size: usize) {
     set_pages(&EXE_PAGES, addr as usize, size, true);
@@ -1645,7 +1645,7 @@ pub(crate) fn count_entry(eip: u32) {
     });
 }
 
-/// Wine's NtFlushInstructionCache: the guest wrote code there (see `code_changed`).
+/// FlushInstructionCache: the guest wrote code there (see `code_changed`).
 #[no_mangle]
 pub extern "C" fn vnhost_jit_code_changed(addr: *const std::ffi::c_void, size: usize) {
     code_changed(addr as usize, size);

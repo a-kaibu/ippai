@@ -1,7 +1,6 @@
-//! The screen behind Wine's browser display driver (dlls/winebrowser.drv in the Wine patch).
+//! The screen behind sake's windows.
 //!
-//! Every Wine process shares this state: top-level windows hand their pixels here when Wine
-//! flushes their surface, and the screen is composed from them in z-order (bottom to top).
+//! Top-level windows hand their pixels here when sake flushes their surface, and the screen is composed from them in z-order (bottom to top).
 //! The page shows `vnhost_display_frame` (one BGRA buffer of the whole screen) and sends input
 //! with `vnhost_input_push`; the program's input thread takes them with `input_take`.
 //!

@@ -4,14 +4,14 @@
 // What a report holds: the run (game, exe, build, browser, device), vnhost's events (each guest
 // exception with registers, code, stack, frames resolved to module!export+off, the thread's last
 // syscalls / API calls and JIT state; processes; panics), every guest thread's state at the time
-// of the report, all of Wine's stdout/stderr lately, and the page's own log (JS errors, Emscripten
+// of the report, all of the program's stdout/stderr lately, and the page's own log (JS errors, Emscripten
 // aborts, worker errors, memory, visibility) with a performance line every 10 s (see Perf) and
 // a summary of them.
 //
 // When it is written:
 // - every 10 s, to OPFS (vnvm-logs/session-<id>.txt): if the tab dies (Android kills it when
 //   memory runs out) the next page load uploads it as "<id>-unclean"
-// - at a crash (Wine's "Unhandled exception", a sake fatal error, a panic, a wasm trap, an abort,
+// - at a crash (a sake fatal error, a panic, a wasm trap, an abort,
 //   an uncaught JS error): "<id>-crashN", to OPFS and to the server (PUT /log-save/<name>, kept in
 //   vnvm serve's --logs directory)
 // - when the page goes to the background (the way out of a hung game on a phone): "<id>-hidden"
@@ -40,7 +40,7 @@ interface Wasm {
 interface PerfSample {
   /** seconds since the start */
   t: number;
-  /** frames the game drew per second (Direct3D presents, or GDI frames: wine-frame) */
+  /** frames the game drew per second (Direct3D presents, or GDI frames: vnvm-frame) */
   fps: number;
   /** Direct3D: batch time on the page (ms per second), GPU passes and texture uploads (MB) per window */
   d3dBatchMs: number;
@@ -82,7 +82,7 @@ class Perf {
   private d3d = { frames: 0, runMs: 0, passes: 0, uploaded: 0 };
 
   constructor() {
-    addEventListener("wine-frame", () => this.frames++);
+    addEventListener("vnvm-frame", () => this.frames++);
     const loop = (t: number) => {
       if (this.rafLast) {
         const d = t - this.rafLast;
@@ -135,7 +135,7 @@ class Perf {
       // (the runtime is gone: after an abort or exit)
     }
     const pm = (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory;
-    // Direct3D games present through crates/vnhost/src/render, not wine-frame: its counters
+    // Direct3D games present through crates/vnhost/src/render, not vnvm-frame: its counters
     let cur = this.d3d;
     try {
       if (wasm?._vnhost_render_info && wasm._malloc) {
@@ -407,7 +407,7 @@ export class FlightRecorder {
       const i = new Uint32Array(wasm.wasmMemory.buffer, p >>> 0, 16).slice();
       if (i[0] === 0x4c434e56) this.info = i;
     }
-    this.note(this.info ? "crash log attached" : "this build has no crash log (old wine.wasm)");
+    this.note(this.info ? "crash log attached" : "this build has no crash log (old build)");
     this.memory();
   }
 
@@ -445,7 +445,7 @@ export class FlightRecorder {
     if (n > this.crashes) {
       this.crashes = n;
       const reason = this.cString(i[12]!, i[13]!);
-      // the faulting thread's state now; the report after Wine has printed the rest
+      // the faulting thread's state now; the report after the program has printed the rest
       const snap = this.snapshot();
       setTimeout(() => {
         void this.save(`crash${n}`, reason, snap).then((name) =>

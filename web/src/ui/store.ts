@@ -1,4 +1,4 @@
-// What the game pages (wine.ts, bench.ts, game.ts) show over the screen, as one small store the
+// What the game pages (play.ts, bench.ts, game.ts) show over the screen, as one small store the
 // React UI (ui/Shell.tsx) renders: the status line, the start button, the cover while loading,
 // &d3dstats lines and the bench panel.
 

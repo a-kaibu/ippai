@@ -12,7 +12,7 @@
 //!   index) adds a run's new regions as a new part (parts compiled before stay the same); `PUT /jit-save/<name>.chunks` stores the store chunks a
 //!   run read first (16-byte hashes), which the page fetches ahead next time.
 //! - `/jit/_shared-<build>.parts`, `/jit/_shared.chunks`: the regions and chunks several
-//!   programs saved (Wine's DLLs, helper processes and files): every page loads them too, so a
+//!   programs saved (shared libraries and the like): every page loads them too, so a
 //!   game's first run starts with them
 //! - `GET /games`: the launcher's list, the store's `games/<id>.json` (`vnvm add-game`) as
 //!   one JSON array; covers are under `/store/games/`
@@ -34,7 +34,7 @@
 //!   server writes `<file>.zst` beside each script, wasm, page and style sheet of `--web` (again
 //!   when the file is newer), and `ServeDir` picks it (see `precompress`)
 //!
-//! Every response carries COOP/COEP: Wine's threads (wasm pthreads) need SharedArrayBuffer,
+//! Every response carries COOP/COEP: the program's threads (wasm pthreads) need SharedArrayBuffer,
 //! which browsers only allow on cross-origin isolated pages.
 
 use axum::{
@@ -88,7 +88,7 @@ async fn save_jit(State(jit): State<Jit>, Path(name): Path<String>, body: Bytes)
         if tokio::fs::write(jit.0.join(&name), &body).await.is_err() {
             return StatusCode::INTERNAL_SERVER_ERROR;
         }
-        // chunks other programs read first too (Wine's own files: DLLs, fonts, the prefix) go
+        // chunks other programs read first too (fonts, the prefix) go
         // to _shared.chunks, which every page fetches ahead as well (a game's first run too)
         let shared_name = format!("{SHARED}.chunks");
         let mut others = std::collections::HashSet::new();
@@ -127,7 +127,7 @@ async fn save_jit(State(jit): State<Jit>, Path(name): Path<String>, body: Bytes)
     let n_funcs = new_idx.len();
     let all_idx = new_idx.clone();
     let _g = jit.1.lock().await;
-    // Regions another program saved too (same roots and guest code: Wine's own DLLs and helper
+    // Regions another program saved too (same roots and guest code: shared DLLs and helper
     // processes, the same in every game) go to the shared bundle of this build, which every
     // program's page loads as well: a game's first run starts with them translated (and
     // compiled, from the browser's code cache), like Windows on ARM's per-module translation
@@ -478,7 +478,7 @@ async fn prerun_games(p: Arc<Prerun>) {
         let Ok(text) = tokio::fs::read_to_string(e.path()).await else { continue };
         let Ok(g) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
         let (Some(id), Some(run)) = (g["id"].as_str(), g["run"].as_str()) else { continue };
-        // (named as the page names the regions it saves: wine.ts jitName)
+        // (named as the page names the regions it saves: play.ts jitName)
         let prog: String = run.chars().map(|c| if c.is_ascii_alphanumeric() || "_.-".contains(c) { c } else { '_' }).collect();
         let name = format!("sake-{prog}-{ver}");
         let seen = |ext: &str| tokio::fs::metadata(p.jit.join(format!("{name}.{ext}")));
@@ -497,7 +497,7 @@ async fn prerun_games(p: Arc<Prerun>) {
     for (id, name) in todo {
         let profile = p.jit.join(".prerun-profile");
         let _ = tokio::fs::remove_dir_all(&profile).await;
-        let url = format!("http://{host}/wine.html?game={id}&autostart&nosave&headless");
+        let url = format!("http://{host}/play.html?game={id}&autostart&nosave&headless");
         let mut cmd = tokio::process::Command::new(&chrome);
         // --incognito: an in-memory HTTP cache (on worker2, Ubuntu 26.04, the disk cache never
         // opens and every page load stalls before connecting)
@@ -568,6 +568,13 @@ async fn games(State(p): State<Arc<Prerun>>) -> Response {
         .header(header::CONTENT_TYPE, "application/json")
         .body(body.into())
         .unwrap()
+}
+
+async fn old_page(axum::extract::RawQuery(q): axum::extract::RawQuery) -> axum::response::Redirect {
+    axum::response::Redirect::permanent(&match q {
+        Some(q) => format!("play.html?{q}"),
+        None => "play.html".into(),
+    })
 }
 
 async fn headers(req: Request<axum::body::Body>, next: Next) -> Response {
@@ -667,6 +674,8 @@ pub async fn run(store: PathBuf, args: Args) -> anyhow::Result<()> {
         .with_state(jit)
         .merge(saves::router()?)
         .route("/games", get(games).with_state(pre.clone()))
+        // (the page's old name: links and bookmarks from before 2026-11-03)
+        .route("/wine.html", get(old_page))
         .nest_service("/jit", ServeDir::new(&args.jit))
         .nest_service("/store", ServeDir::new(&store))
         .fallback_service(ServeDir::new(&args.web).precompressed_zstd())

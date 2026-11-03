@@ -1,10 +1,10 @@
 // Graphics API tests: runs each check of host/tests (built by build-gfx.sh, packed as store
-// tree "gfxtest") with "still" in headless Chromium through tests/wine.mjs, then compares pixels
+// tree "gfxtest") with "still" in headless Chromium through tests/play.mjs, then compares pixels
 // of the screen against what the check draws, and its log against what it prints. Needs
 // vnvm serve on BASE (default http://127.0.0.1:8090); exits 1 when anything fails.
 //
 //   node tests/gfx.mjs ["name" ...]    (default: all; OUT=dir keeps the screens and logs;
-//                                       ENGINE=sake runs them on sake instead of Wine;
+//                                       ENGINE is ignored (the page runs sake only);
 //                                       ENV="A=1 B=2" sets environment variables)
 import { execFileSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
@@ -16,7 +16,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const base = process.env.BASE ?? "http://127.0.0.1:8090";
 const outDir = process.env.OUT ?? "/tmp/vnvm-gfx";
 
-// [x, y, r, g, b] on the screen wine.mjs saves (the window, its client area at 4,1); triangle
+// [x, y, r, g, b] on the screen play.mjs saves (the window, its client area at 4,1); triangle
 // pixels are interpolated colors, so all compare within 24
 const TESTS = {
   ddrawtest: {
@@ -69,7 +69,7 @@ function readPng(file) {
     if (type === "IDAT") idat.push(b.subarray(i + 8, i + 8 + n));
     i += 12 + n;
   }
-  // wine.mjs writes RGB rows with filter 0
+  // play.mjs writes RGB rows with filter 0
   const raw = inflateSync(Buffer.concat(idat));
   return { w, h, at: (x, y) => [...raw.subarray(y * (w * 3 + 1) + 1 + x * 3, y * (w * 3 + 1) + 4 + x * 3)] };
 }
@@ -83,10 +83,10 @@ for (const name of names) {
   const engine =
     (process.env.ENGINE ? `engine=${process.env.ENGINE}&` : "") +
     (process.env.ENV ?? "").split(" ").filter(Boolean).map((e) => `env=${encodeURIComponent(e)}&`).join("");
-  const url = `${base}/wine.html?${engine}autostart&headless&mount=/vnvm/game=gfxtest&args=${["still", ...args]}&run=Z:\\vnvm\\game\\${exe}.exe`;
+  const url = `${base}/play.html?${engine}autostart&headless&mount=/vnvm/game=gfxtest&args=${["still", ...args]}&run=Z:\\vnvm\\game\\${exe}.exe`;
   execFileSync("rm", ["-rf", out]);
   try {
-    execFileSync("node", [`${here}/wine.mjs`, url, out, "22", "20"], { stdio: "ignore", timeout: 90000 });
+    execFileSync("node", [`${here}/play.mjs`, url, out, "22", "20"], { stdio: "ignore", timeout: 90000 });
   } catch {}
   const errors = [];
   const log = existsSync(`${out}/console.log`) ? readFileSync(`${out}/console.log`, "utf8") : "";

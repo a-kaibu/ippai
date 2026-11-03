@@ -122,7 +122,7 @@ while True:
         if pre: e2['PRE'] = pre  # launcher/settings dialog button before the title
         t0 = time.time()
         try:
-            subprocess.run(['node', f'{HERE}/corpus.mjs', f'http://127.0.0.1:{PORT}/wine.html?{qs}', od, st], env=e2,
+            subprocess.run(['node', f'{HERE}/corpus.mjs', f'http://127.0.0.1:{PORT}/play.html?{qs}', od, st], env=e2,
                            timeout=600, stdout=open(f'{od}/run.log', 'w'), stderr=subprocess.STDOUT)
         except subprocess.TimeoutExpired:
             open(f'{od}/run.log', 'a').write('TIMEOUT\n')
