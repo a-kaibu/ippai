@@ -264,8 +264,28 @@ fn picture_vtbl() -> u32 {
     })
 }
 
-/// BGRA rows, top first.
-fn decode(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+/// BGRA rows, top first (JPEG, BMP, PNG with its alpha).
+pub(crate) fn decode(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    if data.starts_with(b"\x89PNG") {
+        let mut d = png::Decoder::new(data);
+        d.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+        let mut r = d.read_info().ok()?;
+        let mut px = vec![0; r.output_buffer_size()];
+        let info = r.next_frame(&mut px).ok()?;
+        let (w, h) = (info.width, info.height);
+        let n = (w * h) as usize;
+        let mut out = vec![0xffu8; n * 4];
+        for i in 0..n {
+            let (r, g, b, a) = match info.color_type {
+                png::ColorType::Grayscale => (px[i], px[i], px[i], 255),
+                png::ColorType::GrayscaleAlpha => (px[2 * i], px[2 * i], px[2 * i], px[2 * i + 1]),
+                png::ColorType::Rgb => (px[3 * i], px[3 * i + 1], px[3 * i + 2], 255),
+                _ => (px[4 * i], px[4 * i + 1], px[4 * i + 2], px[4 * i + 3]),
+            };
+            out[4 * i..4 * i + 4].copy_from_slice(&[b, g, r, a]);
+        }
+        return Some((w, h, out));
+    }
     if data.starts_with(&[0xff, 0xd8]) {
         let mut d = jpeg_decoder::Decoder::new(data);
         let px = d.decode().ok()?;

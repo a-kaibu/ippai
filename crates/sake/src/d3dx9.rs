@@ -345,16 +345,16 @@ fn buf_pointer(c: &mut Ctx) -> u32 {
 fn buf_size(c: &mut Ctx) -> u32 {
     r32(c.a(0) + 12)
 }
-fn qi_no(c: &mut Ctx) -> u32 {
+pub(crate) fn qi_no(c: &mut Ctx) -> u32 {
     mem::putp(c.a(2), 0);
     0x8000_4002
 }
-fn add_ref(c: &mut Ctx) -> u32 {
+pub(crate) fn add_ref(c: &mut Ctx) -> u32 {
     let n = r32(c.a(0) + 4) + 1;
     w32(c.a(0) + 4, n);
     n
 }
-fn release(c: &mut Ctx) -> u32 {
+pub(crate) fn release(c: &mut Ctx) -> u32 {
     let n = r32(c.a(0) + 4).saturating_sub(1);
     w32(c.a(0) + 4, n);
     n
@@ -379,12 +379,293 @@ fn D3DXCreateBuffer(c: &mut Ctx) -> u32 {
     0
 }
 
-/// D3DXCreateEffect(device, data, length, defines, include, flags, pool, effect, errors): not yet
+/// D3DXCreateEffect(device, data, length, defines, include, flags, pool, effect, errors) and the
+/// Ex form (.., include, skip constants, flags, ..): compiled effects only (crate::d3dx9fx)
+fn effect_from(c: &mut Ctx, dev: u32, data: &[u8], out: u32, errs: u32) -> u32 {
+    if errs != 0 {
+        mem::putp(errs, 0);
+    }
+    match crate::d3dx9fx::create(c, dev, data) {
+        Ok(e) => {
+            mem::putp(out, e);
+            0
+        }
+        Err(m) => {
+            eprintln!("sake: D3DXCreateEffect: {m}");
+            if errs != 0 {
+                mem::putp(errs, buffer(m.as_bytes()));
+            }
+            mem::putp(out, 0);
+            0x88760b59
+        }
+    }
+}
 fn D3DXCreateEffect(c: &mut Ctx) -> u32 {
-    let (data, len) = (c.a(1), c.a(2));
-    eprintln!("sake: D3DXCreateEffect ({len} bytes, {:#x}): effects not implemented", if len >= 4 { mem::r32(data) } else { 0 });
-    mem::putp(c.a(7), 0);
-    0x8876086c
+    let data = mem::slice(c.a(1), c.a(2)).to_vec();
+    let (dev, out, errs) = (c.a(0), c.a(7), c.a(8));
+    effect_from(c, dev, &data, out, errs)
+}
+fn D3DXCreateEffectEx(c: &mut Ctx) -> u32 {
+    let data = mem::slice(c.a(1), c.a(2)).to_vec();
+    let (dev, out, errs) = (c.a(0), c.a(8), c.a(9));
+    effect_from(c, dev, &data, out, errs)
+}
+/// D3DXCreateEffectFromFile{A,W}(device, file, defines, include, flags, pool, effect, errors)
+/// and the Ex forms (.., include, skip, flags, pool, effect, errors)
+fn effect_file(c: &mut Ctx, wide: bool, ex: bool) -> u32 {
+    let name = crate::k32::arg_str(c.a(1), wide);
+    let (out, errs) = if ex { (c.a(7), c.a(8)) } else { (c.a(6), c.a(7)) };
+    let Some(data) = crate::files::resolve(&name).and_then(|h| vnhost::fs::read(h).ok()) else {
+        mem::putp(out, 0);
+        return 0x88760b59;
+    };
+    let dev = c.a(0);
+    effect_from(c, dev, &data, out, errs)
+}
+fn D3DXCreateEffectFromFileA(c: &mut Ctx) -> u32 {
+    effect_file(c, false, false)
+}
+fn D3DXCreateEffectFromFileW(c: &mut Ctx) -> u32 {
+    effect_file(c, true, false)
+}
+fn D3DXCreateEffectFromFileExA(c: &mut Ctx) -> u32 {
+    effect_file(c, false, true)
+}
+fn D3DXCreateEffectFromFileExW(c: &mut Ctx) -> u32 {
+    effect_file(c, true, true)
+}
+
+// ---- ID3DXMatrixStack: the top at object + 16 (GetTop's pointer), the rest here ----
+
+static STACKS: std::sync::Mutex<Option<crate::HashMap<u32, Vec<M>>>> = std::sync::Mutex::new(None);
+
+fn axis_rot(v: [f32; 3], a: f32) -> M {
+    let [x, y, z] = norm3(v);
+    let (s, co) = a.sin_cos();
+    let t = 1.0 - co;
+    [t * x * x + co, t * x * y + s * z, t * x * z - s * y, 0.0,
+     t * x * y - s * z, t * y * y + co, t * y * z + s * x, 0.0,
+     t * x * z + s * y, t * y * z - s * x, t * z * z + co, 0.0,
+     0.0, 0.0, 0.0, 1.0]
+}
+fn ms_apply(c: &Ctx, m: M, local: bool) -> u32 {
+    let o = c.a(0);
+    let top = rm(o + 16);
+    wm(o + 16, &if local { mul(&m, &top) } else { mul(&top, &m) });
+    0
+}
+fn ms_pop(c: &mut Ctx) -> u32 {
+    let o = c.a(0);
+    let m = STACKS.lock().unwrap().get_or_insert_with(Default::default).get_mut(&o).and_then(|v| v.pop());
+    if let Some(m) = m {
+        wm(o + 16, &m);
+    }
+    0
+}
+fn ms_push(c: &mut Ctx) -> u32 {
+    let o = c.a(0);
+    STACKS.lock().unwrap().get_or_insert_with(Default::default).entry(o).or_default().push(rm(o + 16));
+    0
+}
+fn ms_identity(c: &mut Ctx) -> u32 {
+    wm(c.a(0) + 16, &ID);
+    0
+}
+fn ms_load(c: &mut Ctx) -> u32 {
+    wm(c.a(0) + 16, &rm(c.a(1)));
+    0
+}
+fn ms_mult(c: &mut Ctx) -> u32 {
+    ms_apply(c, rm(c.a(1)), false)
+}
+fn ms_mult_local(c: &mut Ctx) -> u32 {
+    ms_apply(c, rm(c.a(1)), true)
+}
+fn ms_rotate_axis(c: &mut Ctx) -> u32 {
+    ms_apply(c, axis_rot(rv(c.a(1)), fl(c, 2)), false)
+}
+fn ms_rotate_axis_local(c: &mut Ctx) -> u32 {
+    ms_apply(c, axis_rot(rv(c.a(1)), fl(c, 2)), true)
+}
+fn ypr(c: &Ctx) -> M {
+    mul(&mul(&rot(2, fl(c, 3)), &rot(0, fl(c, 2))), &rot(1, fl(c, 1)))
+}
+fn ms_ypr(c: &mut Ctx) -> u32 {
+    ms_apply(c, ypr(c), false)
+}
+fn ms_ypr_local(c: &mut Ctx) -> u32 {
+    ms_apply(c, ypr(c), true)
+}
+fn scaling(c: &Ctx) -> M {
+    let mut m = ID;
+    (m[0], m[5], m[10]) = (fl(c, 1), fl(c, 2), fl(c, 3));
+    m
+}
+fn translation(c: &Ctx) -> M {
+    let mut m = ID;
+    (m[12], m[13], m[14]) = (fl(c, 1), fl(c, 2), fl(c, 3));
+    m
+}
+fn ms_scale(c: &mut Ctx) -> u32 {
+    ms_apply(c, scaling(c), false)
+}
+fn ms_scale_local(c: &mut Ctx) -> u32 {
+    ms_apply(c, scaling(c), true)
+}
+fn ms_translate(c: &mut Ctx) -> u32 {
+    ms_apply(c, translation(c), false)
+}
+fn ms_translate_local(c: &mut Ctx) -> u32 {
+    ms_apply(c, translation(c), true)
+}
+fn ms_top(c: &mut Ctx) -> u32 {
+    c.a(0) + 16
+}
+/// D3DXIMAGE_INFO of a decoded image: (width, height, file format)
+fn image_info(data: &[u8]) -> Option<(u32, u32, Vec<u8>, u32)> {
+    let ff = if data.starts_with(b"\x89PNG") { 3 } else if data.starts_with(b"BM") { 0 } else { 1 };
+    let (w, h, px) = crate::ole::decode(data)?;
+    Some((w, h, px, ff))
+}
+fn write_info(p: u32, w: u32, h: u32, ff: u32) {
+    if p != 0 {
+        for (k, v) in [w, h, 1, 1, 21, 3, ff].iter().enumerate() {
+            w32(p + 4 * k as u32, *v);
+        }
+    }
+}
+/// D3DXCreateTextureFromFileInMemoryEx(device, data, length, width, height, mips, usage, format,
+/// pool, filter, mip filter, color key, &info, palette, &texture): PNG, JPEG, BMP
+fn texture_from(c: &mut Ctx, dev: u32, data: &[u8], a: [u32; 12]) -> u32 {
+    let [w, h, mips, usage, fmt, pool, _filter, _mipfilter, key, info, _pal, out] = a;
+    mem::putp(out, 0);
+    let Some((iw, ih, mut px, ff)) = image_info(data) else {
+        eprintln!("sake: D3DXCreateTexture: image not decoded ({:02x?})", &data[..data.len().min(8)]);
+        return 0x88760b59;
+    };
+    write_info(info, iw, ih, ff);
+    // (D3DX_DEFAULT: the next power of two; 0, D3DX_DEFAULT_NONPOW2, D3DX_FROM_FILE: the image's)
+    let size = |v: u32, i: u32| match v {
+        0xffff_ffff => i.next_power_of_two(),
+        0 | 0xffff_fffe | 0xffff_fffd => i,
+        v => v,
+    };
+    let (tw, th) = (size(w, iw), size(h, ih));
+    let fmt = if fmt == 0 || fmt == 0xffff_fffd { 21 } else { fmt };
+    let levels = match mips {
+        0xffff_fffd | 0xffff_fffe => 1,
+        v => v,
+    };
+    if key != 0 {
+        for p in px.chunks_mut(4) {
+            let argb = u32::from_le_bytes([p[0], p[1], p[2], p[3]]);
+            if argb == key {
+                p.copy_from_slice(&[0, 0, 0, 0]);
+            }
+        }
+    }
+    let pt = mem::heap_alloc(8, true);
+    let hr = com_call(c, dev, 23, &[tw, th, if levels == 0xffff_ffff { 0 } else { levels }, usage, fmt, pool, pt, 0]);
+    let tex = r32(pt);
+    mem::heap_free(pt);
+    if hr != 0 || tex == 0 {
+        return if hr != 0 { hr } else { 0x8876086c };
+    }
+    // every level: the image scaled to it (nearest), packed
+    let n = com_call(c, tex, 13, &[]).max(1);
+    let desc = mem::heap_alloc(32, true);
+    let lr = mem::heap_alloc(8, true);
+    for level in 0..n {
+        com_call(c, tex, 17, &[level, desc]);
+        let (lw, lh) = (r32(desc + 24), r32(desc + 28));
+        if com_call(c, tex, 19, &[level, lr, 0, 0]) != 0 {
+            continue;
+        }
+        let (pitch, bits) = (r32(lr), r32(lr + 4));
+        for y in 0..lh {
+            let sy = (y as u64 * ih as u64 / lh.max(1) as u64) as u32;
+            for x in 0..lw {
+                let sx = (x as u64 * iw as u64 / lw.max(1) as u64) as u32;
+                let i = 4 * (sy * iw + sx) as usize;
+                let (b, g, r, a) = (px[i], px[i + 1], px[i + 2], px[i + 3]);
+                let f = |v: u8| v as f32 / 255.0;
+                if let Some((v, bpp)) = pack(fmt, [f(r), f(g), f(b), f(a)]) {
+                    let at = bits + y * pitch + x * bpp;
+                    match bpp {
+                        4 => w32(at, v),
+                        2 => mem::w16(at, v as u16),
+                        _ => mem::w8(at, v as u8),
+                    }
+                }
+            }
+        }
+        com_call(c, tex, 20, &[level]);
+    }
+    mem::heap_free(desc);
+    mem::heap_free(lr);
+    mem::putp(out, tex);
+    0
+}
+fn D3DXCreateTextureFromFileInMemoryEx(c: &mut Ctx) -> u32 {
+    let data = mem::slice(c.a(1), c.a(2)).to_vec();
+    let a = std::array::from_fn(|k| c.a(3 + k as u32));
+    let dev = c.a(0);
+    texture_from(c, dev, &data, a)
+}
+fn D3DXCreateTextureFromFileInMemory(c: &mut Ctx) -> u32 {
+    let data = mem::slice(c.a(1), c.a(2)).to_vec();
+    let (dev, out) = (c.a(0), c.a(3));
+    texture_from(c, dev, &data, [u32::MAX, u32::MAX, u32::MAX, 0, 0, 1, 0, 0, 0, 0, 0, out])
+}
+/// D3DXCreateTextureFromFile{A,W}(device, file, &texture) and the Ex forms (device, file, then
+/// the in-memory Ex arguments)
+fn texture_file(c: &mut Ctx, wide: bool, ex: bool) -> u32 {
+    let name = crate::k32::arg_str(c.a(1), wide);
+    let Some(data) = crate::files::resolve(&name).and_then(|h| vnhost::fs::read(h).ok()) else {
+        return 0x88760b59;
+    };
+    let dev = c.a(0);
+    let a = if ex { std::array::from_fn(|k| c.a(2 + k as u32)) } else { [u32::MAX, u32::MAX, u32::MAX, 0, 0, 1, 0, 0, 0, 0, 0, c.a(2)] };
+    texture_from(c, dev, &data, a)
+}
+fn D3DXCreateTextureFromFileA(c: &mut Ctx) -> u32 {
+    texture_file(c, false, false)
+}
+fn D3DXCreateTextureFromFileW(c: &mut Ctx) -> u32 {
+    texture_file(c, true, false)
+}
+fn D3DXCreateTextureFromFileExA(c: &mut Ctx) -> u32 {
+    texture_file(c, false, true)
+}
+fn D3DXCreateTextureFromFileExW(c: &mut Ctx) -> u32 {
+    texture_file(c, true, true)
+}
+/// D3DXGetImageInfoFromFileInMemory(data, length, &info)
+fn D3DXGetImageInfoFromFileInMemory(c: &mut Ctx) -> u32 {
+    let data = mem::slice(c.a(0), c.a(1)).to_vec();
+    match image_info(&data) {
+        Some((w, h, _, ff)) => {
+            write_info(c.a(2), w, h, ff);
+            0
+        }
+        None => 0x88760b59,
+    }
+}
+/// D3DXCreateMatrixStack(flags, &stack)
+fn D3DXCreateMatrixStack(c: &mut Ctx) -> u32 {
+    static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    let vt = *V.get_or_init(|| {
+        vtable("ID3DXMatrixStack", &[(qi_no, 12), (add_ref, 4), (release, 4), (ms_pop, 4), (ms_push, 4), (ms_identity, 4),
+            (ms_load, 8), (ms_mult, 8), (ms_mult_local, 8), (ms_rotate_axis, 12), (ms_rotate_axis_local, 12),
+            (ms_ypr, 16), (ms_ypr_local, 16), (ms_scale, 16), (ms_scale_local, 16), (ms_translate, 16),
+            (ms_translate_local, 16), (ms_top, 4)])
+    });
+    let o = mem::heap_alloc(16 + 64, true);
+    w32(o, vt);
+    w32(o + 4, 1);
+    wm(o + 16, &ID);
+    mem::putp(c.a(1), o);
+    0
 }
 
 // ---- the shader assembler ----
@@ -422,7 +703,7 @@ fn D3DXAssembleShader(c: &mut Ctx) -> u32 {
 // ---- D3DXFillTexture ----
 
 /// Calls a COM method of a guest object (slot `m`).
-fn com_call(c: &mut Ctx, obj: u32, m: u32, args: &[u32]) -> u32 {
+pub(crate) fn com_call(c: &mut Ctx, obj: u32, m: u32, args: &[u32]) -> u32 {
     let f = r32(r32(obj) + 4 * m);
     let mut a = vec![obj];
     a.extend_from_slice(args);
@@ -499,7 +780,7 @@ fn font_draw(c: &mut Ctx) -> u32 {
     let _ = c;
     0
 }
-fn zero(_: &mut Ctx) -> u32 {
+pub(crate) fn zero(_: &mut Ctx) -> u32 {
     0
 }
 fn font_device(c: &mut Ctx) -> u32 {
@@ -536,6 +817,19 @@ fn D3DXCreateFont(c: &mut Ctx) -> u32 {
 pub fn init() {
     let fns: &[(&str, Handler)] = &[
         ("D3DXCreateEffect", D3DXCreateEffect),
+        ("D3DXCreateMatrixStack", D3DXCreateMatrixStack),
+        ("D3DXCreateTextureFromFileInMemoryEx", D3DXCreateTextureFromFileInMemoryEx),
+        ("D3DXCreateTextureFromFileInMemory", D3DXCreateTextureFromFileInMemory),
+        ("D3DXCreateTextureFromFileA", D3DXCreateTextureFromFileA),
+        ("D3DXCreateTextureFromFileW", D3DXCreateTextureFromFileW),
+        ("D3DXCreateTextureFromFileExA", D3DXCreateTextureFromFileExA),
+        ("D3DXCreateTextureFromFileExW", D3DXCreateTextureFromFileExW),
+        ("D3DXGetImageInfoFromFileInMemory", D3DXGetImageInfoFromFileInMemory),
+        ("D3DXCreateEffectEx", D3DXCreateEffectEx),
+        ("D3DXCreateEffectFromFileA", D3DXCreateEffectFromFileA),
+        ("D3DXCreateEffectFromFileW", D3DXCreateEffectFromFileW),
+        ("D3DXCreateEffectFromFileExA", D3DXCreateEffectFromFileExA),
+        ("D3DXCreateEffectFromFileExW", D3DXCreateEffectFromFileExW),
         ("D3DXMatrixMultiply", D3DXMatrixMultiply),
         ("D3DXMatrixMultiplyTranspose", D3DXMatrixMultiplyTranspose),
         ("D3DXMatrixTranspose", D3DXMatrixTranspose),

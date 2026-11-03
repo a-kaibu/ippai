@@ -1414,19 +1414,119 @@ fn VariantCopy(c: &mut Ctx) -> u32 {
 fn VariantCopyInd(c: &mut Ctx) -> u32 {
     variant_copy(c.a(0), c.a(1))
 }
-fn VariantChangeTypeEx(c: &mut Ctx) -> u32 {
-    let (dst, src, vt) = (c.a(0), c.a(1), c.a(4) as u16);
-    if r16(src) == vt {
+/// What a VARIANT holds, for VariantChangeType.
+enum Val {
+    Empty,
+    Int(i64),
+    F(f64),
+    Str(String),
+}
+fn variant_val(v: u32) -> Option<Val> {
+    let ty = r16(v);
+    let (ty, p) = if ty & 0x4000 != 0 { (ty & !0x4000, r32(v + 8)) } else { (ty, v + 8) };
+    Some(match ty {
+        0 | 1 => Val::Empty,
+        2 => Val::Int(r16(p) as i16 as i64),
+        3 | 10 | 22 => Val::Int(r32(p) as i32 as i64),
+        4 => Val::F(f32::from_bits(r32(p)) as f64),
+        5 | 7 => Val::F(f64::from_bits(mem::r64(p))),
+        6 => Val::F(mem::r64(p) as i64 as f64 / 10000.0),
+        8 => {
+            let b = r32(p);
+            let n = if b == 0 { 0 } else { r32(b - 4) / 2 };
+            Val::Str(String::from_utf16_lossy(&(0..n).map(|i| r16(b + 2 * i)).collect::<Vec<_>>()))
+        }
+        11 => Val::Int(if r16(p) != 0 { -1 } else { 0 }),
+        16 => Val::Int(r8(p) as i8 as i64),
+        17 => Val::Int(r8(p) as i64),
+        18 => Val::Int(r16(p) as i64),
+        19 | 23 => Val::Int(r32(p) as i64),
+        20 | 21 => Val::Int(mem::r64(p) as i64),
+        _ => return None,
+    })
+}
+/// VariantChangeType(dst, src, flags, vt): the numeric, boolean and string conversions.
+fn variant_change(dst: u32, src: u32, vt: u16) -> u32 {
+    let sty = r16(src) & !0x4000;
+    if sty == vt || vt == 0x0c {
         return variant_copy(dst, src);
     }
-    0x8002_0005
+    let Some(val) = variant_val(src) else { return 0x8002_0005 };
+    let num = |v: &Val| -> Option<f64> {
+        match v {
+            Val::Empty => Some(0.0),
+            Val::Int(i) => Some(*i as f64),
+            Val::F(f) => Some(*f),
+            Val::Str(s) => {
+                let t = s.trim();
+                match t.to_ascii_lowercase().as_str() {
+                    "true" | "#true#" => Some(-1.0),
+                    "false" | "#false#" => Some(0.0),
+                    _ => t.parse::<f64>().ok().or_else(|| {
+                        let h = t.strip_prefix("&H").or_else(|| t.strip_prefix("&h"))?;
+                        i64::from_str_radix(h, 16).ok().map(|x| x as f64)
+                    }),
+                }
+            }
+        }
+    };
+    let mut out = [0u8; 16];
+    out[0..2].copy_from_slice(&vt.to_le_bytes());
+    match vt {
+        0 | 1 => {}
+        8 => {
+            let s = match &val {
+                Val::Empty => String::new(),
+                Val::Int(i) if sty == 11 => if *i != 0 { "True".into() } else { "False".into() },
+                Val::Int(i) => i.to_string(),
+                Val::F(f) => format!("{f}"),
+                Val::Str(s) => s.clone(),
+            };
+            let w: Vec<u16> = s.encode_utf16().collect();
+            out[8..12].copy_from_slice(&bstr_alloc(&w).to_le_bytes());
+        }
+        _ => {
+            let Some(f) = num(&val) else { return 0x8002_0005 };
+            let r = |f: f64| f.round_ties_even();
+            let i = r(f) as i64;
+            let range = |lo: i64, hi: i64| (lo..=hi).contains(&i);
+            let ok = match vt {
+                2 => range(i16::MIN as i64, i16::MAX as i64),
+                3 | 22 => range(i32::MIN as i64, i32::MAX as i64),
+                16 => range(-128, 127),
+                17 => range(0, 255),
+                18 => range(0, 65535),
+                19 | 23 => range(0, u32::MAX as i64),
+                _ => true,
+            };
+            if !ok {
+                return 0x8002_000a; // DISP_E_OVERFLOW
+            }
+            match vt {
+                2 | 18 => out[8..10].copy_from_slice(&(i as u16).to_le_bytes()),
+                3 | 19 | 22 | 23 => out[8..12].copy_from_slice(&(i as u32).to_le_bytes()),
+                16 | 17 => out[8] = i as u8,
+                20 | 21 => out[8..16].copy_from_slice(&(i as u64).to_le_bytes()),
+                4 => out[8..12].copy_from_slice(&(f as f32).to_bits().to_le_bytes()),
+                5 | 7 => out[8..16].copy_from_slice(&f.to_bits().to_le_bytes()),
+                6 => out[8..16].copy_from_slice(&((f * 10000.0).round() as i64).to_le_bytes()),
+                11 => out[8..10].copy_from_slice(&(if f != 0.0 { 0xffffu16 } else { 0 }).to_le_bytes()),
+                _ => return 0x8002_0005,
+            }
+        }
+    }
+    // the old dst (which may be src) goes away only once the value was read
+    if r16(dst) == 8 {
+        bstr_free(r32(dst + 8));
+    }
+    mem::write(dst, &out);
+    0
+}
+fn VariantChangeTypeEx(c: &mut Ctx) -> u32 {
+    variant_change(c.a(0), c.a(1), c.a(4) as u16)
 }
 fn VariantChangeType(c: &mut Ctx) -> u32 {
-    let (dst, src, vt) = (c.a(0), c.a(1), c.a(3) as u16);
-    if r16(src) == vt {
-        return variant_copy(dst, src);
-    }
-    0x8002_0005
+    variant_change(c.a(0), c.a(1), c.a(3) as u16)
 }
 fn GetErrorInfo(c: &mut Ctx) -> u32 {
     put32(c.a(1), 0);

@@ -32,6 +32,7 @@ pub mod com;
 pub mod d2d;
 pub mod d3dx9;
 pub mod d3dx9asm;
+pub mod d3dx9fx;
 pub mod vcomp;
 pub mod dwrite;
 pub mod ddraw;

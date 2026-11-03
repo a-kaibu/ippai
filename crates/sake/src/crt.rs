@@ -1964,8 +1964,8 @@ fn _invalid_parameter_noinfo_noreturn(_: &mut Ctx) -> u32 {
     eprintln!("sake: invalid parameter (noreturn)");
     unsafe { libc::exit(0xc0000417u32 as i32) }
 }
-fn terminate(_: &mut Ctx) -> u32 {
-    eprintln!("sake: terminate()");
+fn terminate(c: &mut Ctx) -> u32 {
+    eprintln!("sake: terminate() from {:#x}", r32(c.esp));
     unsafe { libc::exit(3) }
 }
 fn wcsnlen(c: &mut Ctx) -> u32 {
