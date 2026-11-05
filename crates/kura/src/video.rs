@@ -37,7 +37,8 @@ struct Stream {
     tracks: u32,
     want: i32,
     slots: Vec<Slot>,
-    /// closed while the page wrote a slot: dropped when it is done
+    /// closed while the page wrote a slot or the guest read one: dropped when the last of them
+    /// is done (see `release`), and no new reads or writes start
     closed: bool,
     /// the page cannot decode it (the guest gets no frames, without waiting)
     failed: bool,
@@ -83,15 +84,21 @@ pub fn open(data: Vec<u8>) -> Option<u32> {
 }
 
 pub fn close(id: u32) {
-    // (a slot the page writes into stays until it is done: see vnhost_video_ready)
+    // (a slot the page writes into or the guest reads stays until it is done: see release)
     with(|m| {
-        if m.get(&id).is_some_and(|s| s.slots.iter().any(|sl| sl.writing)) {
-            m.get_mut(&id).unwrap().closed = true;
-        } else {
-            m.remove(&id);
+        if let Some(s) = m.get_mut(&id) {
+            s.closed = true;
         }
+        release(m, id);
     });
     WAKE.notify_all();
+}
+
+/// Drops stream `id` when it is closed and no slot of it is written or read any more.
+fn release(m: &mut HashMap<u32, Stream>, id: u32) {
+    if m.get(&id).is_some_and(|s| s.closed && !s.slots.iter().any(|sl| sl.writing || sl.reading)) {
+        m.remove(&id);
+    }
 }
 
 fn ring() {
@@ -147,9 +154,11 @@ pub unsafe fn frame(id: u32, n: i32, dst: *mut u8, pitch: usize, w: u32, h: u32,
             drop(g);
             convert(buf, &layout, tracks, sw, sh, dst, pitch, w.min(sw), h.min(sh), out);
             let mut g = STREAMS.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(s) = g.get_or_insert_with(HashMap::new).get_mut(&id) {
+            let m = g.get_or_insert_with(HashMap::new);
+            if let Some(s) = m.get_mut(&id) {
                 s.slots[k].reading = false;
             }
+            release(m, id);
             return true;
         }
         if late {
@@ -381,9 +390,78 @@ pub unsafe extern "C" fn vnhost_video_ready(id: u32, buf: u32, layout: *const u3
                 sl.layout[1].copy_from_slice(&l[7..]);
             }
         }
-        if s.closed && !s.slots.iter().any(|sl| sl.writing) {
-            m.remove(&id);
-        }
+        release(m, id);
     });
     WAKE.notify_all();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn vnv() -> Vec<u8> {
+        let mut d = b"VNV1".to_vec();
+        for v in [16u32, 16, 1, 0] {
+            d.extend_from_slice(&v.to_le_bytes());
+        }
+        d
+    }
+
+    fn exists(id: u32) -> bool {
+        with(|m| m.contains_key(&id))
+    }
+
+    #[test]
+    fn close_waits_for_the_page_writing() {
+        let id = open(vnv()).unwrap();
+        let mut size = 16 * 16 * 4;
+        let buf = unsafe { vnhost_video_begin(id, 0, &mut size) };
+        assert_ne!(buf, 0);
+        close(id);
+        assert!(exists(id), "dropped while the page writes into it");
+        assert_eq!(unsafe { vnhost_video_begin(id, 1, &mut size) }, 0, "a closed stream takes no new writes");
+        let layout = [RGBA, 0, 64, 0, 0, 0, 0, RGBA, 0, 64, 0, 0, 0, 0];
+        unsafe { vnhost_video_ready(id, buf, layout.as_ptr(), 1) };
+        assert!(!exists(id));
+    }
+
+    #[test]
+    fn close_waits_for_the_guest_reading() {
+        let id = open(vnv()).unwrap();
+        with(|m| m.get_mut(&id).unwrap().slots[0].reading = true);
+        close(id);
+        assert!(exists(id), "dropped while the guest reads a slot");
+        // the page is done writing some other slot: the read still holds the stream
+        with(|m| release(m, id));
+        assert!(exists(id));
+        let mut px = [0u8; 4];
+        assert!(!unsafe { frame(id, 0, px.as_mut_ptr(), 4, 1, 1, Out::Rgb) }, "a closed stream gives no frames");
+        with(|m| {
+            m.get_mut(&id).unwrap().slots[0].reading = false;
+            release(m, id);
+        });
+        assert!(!exists(id));
+    }
+
+    #[test]
+    fn reads_and_closes_from_threads() {
+        // the guest reads frames while another thread closes the stream: every read finishes on
+        // a live buffer (under Miri or ASan a use after free shows here)
+        for _ in 0..50 {
+            let id = open(vnv()).unwrap();
+            let mut size = 16 * 16 * 4;
+            let buf = unsafe { vnhost_video_begin(id, 0, &mut size) };
+            let layout = [RGBA, 0, 64, 0, 0, 0, 0, RGBA, 0, 64, 0, 0, 0, 0];
+            unsafe { vnhost_video_ready(id, buf, layout.as_ptr(), 1) };
+            let reader = std::thread::spawn(move || {
+                let mut px = vec![0u8; 16 * 16 * 4];
+                for _ in 0..20 {
+                    unsafe { frame(id, 0, px.as_mut_ptr(), 64, 16, 16, Out::Rgb) };
+                }
+            });
+            close(id);
+            reader.join().unwrap();
+            assert!(!exists(id));
+        }
+    }
 }
