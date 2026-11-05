@@ -15,6 +15,7 @@ axum = "0.8"
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "net", "process", "time"] }
 tower = "0.5"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 tower-http = { version = "0.6", features = ["fs", "set-header", "compression-zstd"] }
 rust-s3 = { version = "0.38.0", default-features = false, features = ["with-tokio", "tokio-rustls-tls"] }
 blake3 = "1"

@@ -1233,6 +1233,7 @@ dependencies = [
  "blake3",
  "clap",
  "directories",
+ "futures-util",
  "koji",
  "rayon",
  "regex",
