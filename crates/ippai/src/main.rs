@@ -13,10 +13,16 @@
 
 mod daemon;
 mod dirs;
+mod envelope;
+mod library;
+mod library_api;
+mod storage;
+mod store_api;
 mod meta;
 mod movie;
 mod nwjs;
 mod pack;
+mod portable;
 mod saves;
 mod serve;
 mod treefiles;
@@ -38,6 +44,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Encrypted S3 storage operations (IPPAI_STORAGE_CONFIG).
+    Storage {
+        #[command(subcommand)]
+        action: StorageCmd,
+    },
     /// Start the server in the background (`--foreground` to keep it in this process).
     Serve(serve::Args),
     /// Stop the server.
@@ -62,10 +73,39 @@ enum Cmd {
     Ttc { out: PathBuf, fonts: Vec<PathBuf> },
 }
 
+#[derive(Subcommand)]
+enum StorageCmd {
+    /// Preprocess locally with add/pack, then upload the store as encrypted UUID objects.
+    Push,
+    /// Save a consistent encrypted SQLite snapshot; prints its recovery UUID.
+    Backup,
+    /// Restore a backup to a new database path, never over an existing database.
+    Restore { backup: uuid::Uuid, output: PathBuf },
+    /// Rewrap current object keys with the configured active key.
+    Rotate,
+    /// Rewrap an existing backup envelope without rewriting its ciphertext.
+    RotateBackup { backup: uuid::Uuid },
+}
+
+fn storage_command(store: &std::path::Path, action: StorageCmd) -> anyhow::Result<()> {
+    let db = library::Library::new(store)?;
+    let storage = storage::Storage::configured(db)?.ok_or_else(|| anyhow::anyhow!("set IPPAI_STORAGE_CONFIG"))?;
+    tokio::runtime::Runtime::new()?.block_on(async {
+        match action {
+            StorageCmd::Push => storage.push_store(store).await,
+            StorageCmd::Backup => { println!("{}", storage.backup().await?); Ok(()) },
+            StorageCmd::Restore { backup, output } => storage.restore(backup, &output).await,
+            StorageCmd::Rotate => storage.rotate_objects(),
+            StorageCmd::RotateBackup { backup } => storage.rotate_backup(backup).await,
+        }
+    })
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let dirs = dirs::Dirs::load(cli.store)?;
     match cli.cmd {
+        Cmd::Storage { action } => storage_command(&dirs.store, action),
         Cmd::Serve(a) if a.foreground => serve::run(&dirs, a),
         Cmd::Serve(a) => daemon::start(&dirs, &a),
         Cmd::Stop => daemon::stop(&dirs),

@@ -7,6 +7,9 @@ description = "ippai: play visual novels in the browser. The server (web app bui
 
 [dependencies]
 anyhow = "1"
+rusqlite = { version = "0.38", features = ["bundled", "backup"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+ring = "0.17"
 koji = { path = "../koji" }
 axum = "0.8"
 clap = { version = "4", features = ["derive"] }

@@ -1,96 +1,137 @@
-//! Saved games backed up to S3 (or anything S3-compatible: RustFS, MinIO).
-//!
-//! - `PUT /saves/<name>`: the page's blob of a game's saved files (web/src/saves.ts), stored as
-//!   `<prefix><name>.bin`
-//! - `GET /saves/<name>`: that blob (404 if there is none, or no bucket is set up)
-//!
-//! Set up by environment variables: `VNVM_S3_BUCKET` (none: the routes answer 404),
-//! `VNVM_S3_ENDPOINT` (e.g. `http://127.0.0.1:9000` for RustFS; none: AWS),
-//! `VNVM_S3_REGION` (default us-east-1), `VNVM_S3_PREFIX` (default `vnvm/saves/`), and the
-//! credentials as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (or the usual AWS profile).
-
+//! Versioned saves; local SQLite or encrypted S3, with optimistic concurrency.
+use crate::{library::Library, storage::Storage};
 use axum::{
     body::Bytes,
     extract::{Path, State},
-    http::StatusCode,
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
     Router,
 };
-use s3::{creds::Credentials, Bucket, Region};
-use std::sync::Arc;
+use rusqlite::OptionalExtension;
+use std::{path::Path as FsPath, sync::Arc};
 
-struct S3 {
-    bucket: Box<Bucket>,
-    prefix: String,
+pub struct Saves {
+    pub db: Library,
+    pub remote: Option<Storage>,
+    pub lock: tokio::sync::Mutex<()>,
 }
-
-fn setup() -> anyhow::Result<Option<S3>> {
-    let Ok(name) = std::env::var("VNVM_S3_BUCKET") else { return Ok(None) };
-    let region_name = std::env::var("VNVM_S3_REGION").unwrap_or_else(|_| "us-east-1".into());
-    let region = match std::env::var("VNVM_S3_ENDPOINT") {
-        Ok(endpoint) => Region::Custom { region: region_name, endpoint },
-        Err(_) => region_name.parse()?,
-    };
-    let custom = matches!(region, Region::Custom { .. });
-    let mut bucket = Bucket::new(&name, region, Credentials::default()?)?;
-    if custom {
-        bucket = bucket.with_path_style();
+impl Saves {
+    pub fn new(store: &FsPath) -> anyhow::Result<Arc<Self>> {
+        let db = Library::new(store)?;
+        db.connect()?.execute_batch("CREATE TABLE IF NOT EXISTS saves(name TEXT PRIMARY KEY, revision INTEGER NOT NULL, data BLOB);")?;
+        let remote = Storage::configured(db.clone())?;
+        Ok(Arc::new(Self {
+            db,
+            remote,
+            lock: tokio::sync::Mutex::new(()),
+        }))
     }
-    let prefix = std::env::var("VNVM_S3_PREFIX").unwrap_or_else(|_| "vnvm/saves/".into());
-    eprintln!("ippai serve: saved games go to s3://{name}/{prefix}");
-    Ok(Some(S3 { bucket, prefix }))
+    pub async fn read(&self, name: &str) -> anyhow::Result<Option<(i64, Vec<u8>)>> {
+        let row: Option<(i64, Option<Vec<u8>>)> = self
+            .db
+            .connect()?
+            .query_row(
+                "SELECT revision,data FROM saves WHERE name=?",
+                [name],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((revision, data)) = row else {
+            return Ok(None);
+        };
+        let data = match data {
+            Some(data) => data,
+            None => self
+                .remote
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("S3 configuration required"))?
+                .get(&format!("saves/{name}/{revision}"))
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("save object missing"))?,
+        };
+        Ok(Some((revision, data)))
+    }
+    pub async fn write(&self, name: &str, expected: i64, data: &[u8]) -> anyhow::Result<bool> {
+        let _guard = self.lock.lock().await;
+        let revision: i64 = self
+            .db
+            .connect()?
+            .query_row("SELECT revision FROM saves WHERE name=?", [name], |r| {
+                r.get(0)
+            })
+            .optional()?
+            .unwrap_or(0);
+        if revision != expected {
+            return Ok(false);
+        }
+        let next = revision + 1;
+        if let Some(remote) = &self.remote {
+            remote.put(&format!("saves/{name}/{next}"), data).await?;
+        }
+        let local = self.remote.is_none().then_some(data);
+        self.db.connect()?.execute("INSERT INTO saves(name,revision,data) VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET revision=excluded.revision,data=excluded.data", rusqlite::params![name,next,local])?;
+        Ok(true)
+    }
 }
-
 fn valid(name: &str) -> bool {
-    !name.is_empty() && name.len() <= 200 && name.chars().all(|c| c.is_ascii_alphanumeric() || "_-.".contains(c)) && !name.starts_with('.')
+    !name.is_empty()
+        && name.len() <= 200
+        && !name.starts_with('.')
+        && name
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"_.-".contains(&c))
 }
-
-type St = Arc<Option<S3>>;
-
-async fn put_save(State(s3): State<St>, Path(name): Path<String>, body: Bytes) -> StatusCode {
-    let Some(s3) = s3.as_ref() else { return StatusCode::NOT_FOUND };
-    if !valid(&name) {
-        return StatusCode::BAD_REQUEST;
-    }
-    match s3.bucket.put_object(format!("{}{name}.bin", s3.prefix), &body).await {
-        Ok(r) if r.status_code() / 100 == 2 => StatusCode::NO_CONTENT,
-        Ok(r) => {
-            eprintln!("ippai serve: saving {name} to S3: HTTP {}", r.status_code());
-            StatusCode::BAD_GATEWAY
-        }
-        Err(e) => {
-            eprintln!("ippai serve: saving {name} to S3: {e}");
-            StatusCode::BAD_GATEWAY
-        }
-    }
+fn failure(e: anyhow::Error) -> Response {
+    eprintln!("saves: {e}");
+    StatusCode::BAD_GATEWAY.into_response()
 }
-
-async fn get_save(State(s3): State<St>, Path(name): Path<String>) -> Response {
-    let Some(s3) = s3.as_ref() else { return StatusCode::NOT_FOUND.into_response() };
+async fn get_save(State(s): State<Arc<Saves>>, Path(name): Path<String>) -> Response {
     if !valid(&name) {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    match s3.bucket.get_object(format!("{}{name}.bin", s3.prefix)).await {
-        Ok(r) if r.status_code() == 200 => r.bytes().clone().into_response(),
-        Ok(r) if r.status_code() == 404 => StatusCode::NOT_FOUND.into_response(),
-        Ok(r) => {
-            eprintln!("ippai serve: reading {name} from S3: HTTP {}", r.status_code());
-            StatusCode::BAD_GATEWAY.into_response()
-        }
-        // (rust-s3 reports 404 as an error)
-        Err(s3::error::S3Error::HttpFailWithBody(404, _)) => StatusCode::NOT_FOUND.into_response(),
-        Err(e) => {
-            eprintln!("ippai serve: reading {name} from S3: {e}");
-            StatusCode::BAD_GATEWAY.into_response()
-        }
+    match s.read(&name).await {
+        Ok(Some((rev, data))) => (
+            [
+                (header::ETAG, format!("\"{rev}\"")),
+                (header::CACHE_CONTROL, "no-store".into()),
+            ],
+            data,
+        )
+            .into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => failure(e),
     }
 }
-
-pub fn router() -> anyhow::Result<Router> {
-    let s3: St = Arc::new(setup()?);
-    Ok(Router::new()
+async fn put_save(
+    State(s): State<Arc<Saves>>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if !valid(&name) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let Some(expected) = headers
+        .get(header::IF_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim_matches('"').parse::<i64>().ok())
+    else {
+        return StatusCode::PRECONDITION_REQUIRED.into_response();
+    };
+    match s.write(&name, expected, &body).await {
+        Ok(true) => (
+            StatusCode::NO_CONTENT,
+            [(header::ETAG, format!("\"{}\"", expected + 1))],
+        )
+            .into_response(),
+        Ok(false) => StatusCode::PRECONDITION_FAILED.into_response(),
+        Err(e) => failure(e),
+    }
+}
+pub fn router(s: Arc<Saves>) -> Router {
+    Router::new()
         .route("/saves/{name}", get(get_save).put(put_save))
         .layer(axum::extract::DefaultBodyLimit::max(256 << 20))
-        .with_state(s3))
+        .with_state(s)
 }

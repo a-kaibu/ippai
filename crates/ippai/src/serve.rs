@@ -584,6 +584,15 @@ async fn games(State(p): State<Arc<Prerun>>) -> Response {
     let mut body = String::from("[");
     for f in files {
         if let Ok(text) = tokio::fs::read_to_string(&f).await {
+            let text = match serde_json::from_str::<serde_json::Value>(&text) {
+                Ok(mut game) => {
+                    if let Ok(db) = crate::library::Library::new(store) {
+                        if let Err(e) = db.apply_settings(&mut game) { eprintln!("game settings: {e}"); }
+                    }
+                    game.to_string()
+                }
+                Err(_) => continue,
+            };
             if body.len() > 1 {
                 body.push(',');
             }
@@ -689,6 +698,9 @@ pub fn run(dirs: &crate::dirs::Dirs, a: Args) -> anyhow::Result<()> {
 
 #[tokio::main]
 async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyhow::Result<()> {
+    if let Some(storage) = crate::storage::Storage::configured(crate::library::Library::new(&store)?)? {
+        storage.hydrate_catalog(&store).await?;
+    }
     let jit: Jit = Arc::new((args.jit.clone(), tokio::sync::Mutex::new(())));
     let pre = Arc::new(Prerun {
         store: store.clone(),
@@ -710,6 +722,7 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
         std::thread::sleep(std::time::Duration::from_secs(3));
         precompress(&web);
     });
+    let saves = saves::Saves::new(&store)?;
     let app = Router::new()
         .route("/log-save/{name}", put(save_log).with_state(logs.clone()))
         .route("/log-list", get(log_list).with_state(logs))
@@ -718,7 +731,9 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
         .route("/bench-log", put(bench_log))
         .layer(DefaultBodyLimit::max(1 << 30))
         .with_state(jit)
-        .merge(saves::router()?)
+        .merge(crate::library_api::router(crate::library::Library::new(&store)?))
+        .merge(saves::router(saves.clone()))
+        .merge(crate::portable::router(store.clone(), saves))
         .route("/games", get(games).with_state(pre.clone()))
         // (zstd on the way: a game's regions are ~15 MB of wasm, ~2.5 MB compressed, and on a
         // slow connection they held the start back)
@@ -728,8 +743,8 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
                 .layer(tower_http::compression::CompressionLayer::new().no_br().no_gzip().no_deflate())
                 .service(ServeDir::new(&args.jit)),
         )
-        .nest_service("/store", ServeDir::new(&store))
-        .route("/tree/{name}/{*path}", get(crate::treefiles::file).with_state(crate::treefiles::Trees::new(store.clone())))
+        .merge(crate::store_api::router(store.clone())?)
+        .route("/tree/{name}/{*path}", get(crate::treefiles::file).with_state(crate::treefiles::Trees::new(store.clone())?))
         .fallback_service(ServeDir::new(&args.web).precompressed_zstd())
         .layer(middleware::from_fn(headers));
     // without TCP_NODELAY a kept-alive connection waits out the peer's delayed ACK (~40ms) on

@@ -27,12 +27,14 @@ struct Tree {
 #[derive(Clone)]
 pub struct Trees {
     store: PathBuf,
+    remote: Arc<Option<crate::storage::Storage>>,
     cache: Arc<Mutex<HashMap<String, Arc<Tree>>>>,
 }
 
 impl Trees {
-    pub fn new(store: PathBuf) -> Self {
-        Trees { store, cache: Default::default() }
+    pub fn new(store: PathBuf) -> anyhow::Result<Self> {
+        let remote = Arc::new(crate::storage::Storage::configured(crate::library::Library::new(&store)?)?);
+        Ok(Trees { store, remote, cache: Default::default() })
     }
 
     fn tree(&self, name: &str) -> Option<Arc<Tree>> {
@@ -117,7 +119,7 @@ pub async fn file(State(t): State<Trees>, Path((name, path)): Path<(String, Stri
     if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.') {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    let res = tokio::task::spawn_blocking(move || -> Result<Response, StatusCode> {
+    let res: Result<Response, StatusCode> = async {
         let tree = t.tree(&name).ok_or(StatusCode::NOT_FOUND)?;
         let e = tree.files.get(&path.to_lowercase()).ok_or(StatusCode::NOT_FOUND)?;
         let part = range(&h, e.size);
@@ -130,8 +132,16 @@ pub async fn file(State(t): State<Trees>, Path((name, path)): Path<(String, Stri
                 let data = if hash.is_empty() {
                     vec![0; len]
                 } else {
-                    let raw = std::fs::read(t.store.join("chunks").join(&hash[..2]).join(hash))
-                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                    if hash.len() < 2 { return Err(StatusCode::INTERNAL_SERVER_ERROR); }
+                    let logical = format!("chunks/{}/{hash}", &hash[..2]);
+                    let remote = match t.remote.as_ref() {
+                        Some(remote) => remote.get(&logical).await.map_err(|_| StatusCode::BAD_GATEWAY)?,
+                        None => None,
+                    };
+                    let raw = match remote {
+                        Some(raw) => raw,
+                        None => tokio::fs::read(t.store.join(&logical)).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+                    };
                     zstd::decode_all(&raw[..]).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
                 };
                 let from = if i == a / tree.chunk { (a % tree.chunk) as usize } else { 0 };
@@ -149,11 +159,6 @@ pub async fn file(State(t): State<Trees>, Path((name, path)): Path<(String, Stri
             r = r.status(StatusCode::PARTIAL_CONTENT).header(header::CONTENT_RANGE, format!("bytes {a}-{b}/{}", e.size));
         }
         Ok(r.body(Body::from(out)).unwrap())
-    })
-    .await;
-    match res {
-        Ok(Ok(r)) => r,
-        Ok(Err(s)) => s.into_response(),
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    }
+    }.await;
+    match res { Ok(r) => r, Err(s) => s.into_response() }
 }
