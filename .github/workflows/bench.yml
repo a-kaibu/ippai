@@ -5,7 +5,7 @@
 # carried from run to run) keeps the medians of the last 300 commits. No game files and no
 # screenshots: only JSON and Markdown.
 #   groups: cpu-kernels, cpu-game (the x86 JIT and the Win32 layer), gdi, ddraw, d3d8, d3d9,
-#   d3d11, d2d, gl (each graphics API), js (the kernels as plain wasm in V8 and JavaScriptCore)
+#   d3d11, d2d, gl (each graphics API), scenario (a small game played through), js (the kernels as plain wasm in V8 and JavaScriptCore)
 name: Bench
 
 on:
@@ -19,8 +19,8 @@ on:
         description: "groups (space-separated; empty = all)"
         default: ""
       rounds:
-        description: "measured rounds per build"
-        default: "3"
+        description: "measured rounds per build (empty: 3, more for the noisy groups: suite.mjs)"
+        default: ""
 
 permissions:
   contents: read
@@ -62,7 +62,7 @@ jobs:
             [ -n "$id" ] && [ "$sha" != "$SHA" ] && [ "$id" -lt "$RUN_ID" ] || continue
             if has_build "$id"; then OLD_RUN_ID=$id OLD_SHA=$sha; break; fi
           done <<< "$runs"
-          ALL="cpu-kernels cpu-game gdi ddraw d3d8 d3d9 d3d11 d2d gl"
+          ALL="cpu-kernels cpu-game gdi ddraw d3d8 d3d9 d3d11 d2d gl scenario"
           G=${GROUPS:-$ALL js}
           echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
@@ -123,7 +123,7 @@ jobs:
           if [ -d dist-old ]; then unpack dist-old "$OLD_SHA" "$RUNNER_TEMP/old"; fi
       - name: Bench ${{ matrix.group }}
         env:
-          ROUNDS: ${{ inputs.rounds || '3' }}
+          ROUNDS: ${{ inputs.rounds }}
           PLAYWRIGHT: ${{ runner.temp }}/pw/node_modules/playwright/index.mjs
         run: |
           export NEW=$RUNNER_TEMP/new
@@ -155,7 +155,7 @@ jobs:
           key: emsdk-${{ runner.os }}-${{ hashFiles('tools/ci/emsdk.sh') }}
       - name: Bench js (V8 and JavaScriptCore)
         env:
-          ROUNDS: ${{ inputs.rounds || '3' }}
+          ROUNDS: ${{ inputs.rounds }}
         run: tests/bench/js.sh results/js.json
       - uses: actions/upload-artifact@v7.0.2
         if: always()

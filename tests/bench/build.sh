@@ -1,7 +1,7 @@
 #!/bin/bash
 # Builds the benchmark programs (tests/bench/src, and host/tests/bench.c) with mingw-w64 into
 # OUT (default target/bench-exe): the tree run.mjs mounts as "bench" (`ippai pack OUT bench`).
-# Each source's "Build:" line has its libraries.
+# Each source's "Build:" line has its libraries; scenario.dat is scenario.exe's archive.
 #
 #   tests/bench/build.sh [OUT]
 set -euo pipefail
@@ -15,4 +15,6 @@ for src in *.c *.cpp; do
   eval "${cmd/ -o / -Wall -Werror -o $OUT/}"
 done
 i686-w64-mingw32-gcc -O2 "$ROOT/host/tests/bench.c" -o "$OUT/bench.exe"
+# (the scenario's game data)
+node "$ROOT/tests/bench/gen-scenario.mjs" "$OUT" >/dev/null
 ls "$OUT"

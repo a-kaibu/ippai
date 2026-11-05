@@ -13,7 +13,7 @@ import { VERSION } from "./suite.mjs";
 
 const [out, dir, ...engineArgs] = process.argv.slice(2);
 const engines = engineArgs.map((e) => [e.slice(0, e.indexOf("=")), e.slice(e.indexOf("=") + 1)]);
-const ROUNDS = Number(process.env.ROUNDS ?? 3);
+const ROUNDS = Number(process.env.ROUNDS || 3);
 const CASES = ["script", "huffman", "unfilter", "yuv", "mix", "compose", "compose_sse", "transform"];
 
 function run(cmd, file, args) {

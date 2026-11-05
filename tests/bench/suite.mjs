@@ -11,8 +11,8 @@
 //   2: frames read back at the end of the timed ones; IPPAI_NOPACE (was VNVM_NOPACE)
 export const VERSION = 2;
 
-// More rounds for the groups whose cases are short and noisy (run.mjs: at least these many)
-export const MIN_ROUNDS = { "cpu-kernels": 7, "cpu-game": 5 };
+// More rounds for the groups whose cases are short and noisy (run.mjs's default when ROUNDS isn't set)
+export const MIN_ROUNDS = { "cpu-kernels": 7, "cpu-game": 5, scenario: 5 };
 
 const cases = (exe, names, extra = {}) => names.map((c) => ({ exe, args: c, ...extra }));
 
@@ -34,4 +34,6 @@ export const GROUPS = {
   d3d11: cases("d3d11.exe", ["vn", "fade", "sprites_batched", "sprites_calls", "rt", "upload", "upload_map"]),
   d2d: cases("d2d.exe", ["vn", "bitmap", "text", "shapes"]),
   gl: cases("gl.exe", ["vn", "sprites_immediate", "sprites_arrays", "upload", "fade", "rt"]),
+  // a whole (small) game played as a player plays it, paced: tests/bench/scenario.mjs
+  scenario: [{ exe: "scenario.exe", args: "play", scenario: true }],
 };

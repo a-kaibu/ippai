@@ -5,7 +5,7 @@
 //
 //   node tests/bench/run.mjs OUT.json GROUP [GROUP ...]
 //   env: BUILDS="new=http://127.0.0.1:8091 old=http://127.0.0.1:8092" (name=ippai serve URL;
-//          default "new=http://127.0.0.1:8090"), ROUNDS (measured rounds, default 3, at least the
+//          default "new=http://127.0.0.1:8090"), ROUNDS (measured rounds, default 3 or the
 //          group's MIN_ROUNDS; one more
 //          before them warms the JIT's saved translations and is not counted), SCALE (work per
 //          case, default 1), ONLY="exe:case ..." (just those), TIMEOUT (s per run, default 240),
@@ -18,6 +18,7 @@ const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
 const { chromium } = pw.default ?? pw;
 import { writeFileSync } from "node:fs";
 import { GROUPS, MIN_ROUNDS, VERSION } from "./suite.mjs";
+import { runScenario } from "./scenario.mjs";
 
 const [out, ...groups] = process.argv.slice(2);
 if (!out || !groups.length) {
@@ -28,7 +29,7 @@ const builds = (process.env.BUILDS ?? "new=http://127.0.0.1:8090").split(/\s+/).
   const i = b.indexOf("=");
   return { name: b.slice(0, i), url: b.slice(i + 1) };
 });
-const ROUNDS = Math.max(Number(process.env.ROUNDS ?? 3), ...groups.map((g) => MIN_ROUNDS[g] ?? 0));
+const ROUNDS = Number(process.env.ROUNDS || Math.max(3, ...groups.map((g) => MIN_ROUNDS[g] ?? 0)));
 const SCALE = process.env.SCALE ?? "1";
 const TIMEOUT = Number(process.env.TIMEOUT ?? 240) * 1000;
 const only = (process.env.ONLY ?? "").split(/\s+/).filter(Boolean);
@@ -38,18 +39,22 @@ const todo = groups.flatMap((g) => {
   return GROUPS[g].map((c) => ({ ...c, group: g }));
 }).filter((c) => !only.length || only.includes(`${c.exe}:${c.args}`) || only.includes(c.exe));
 
-const browser = await chromium.launch({
-  args: [
-    "--enable-unsafe-webgpu",
-    "--disable-frame-rate-limit",
-    "--disable-gpu-vsync",
-    // (a page in the background would get its timers and frames throttled)
-    "--disable-background-timer-throttling",
-    "--disable-renderer-backgrounding",
-    "--disable-backgrounding-occluded-windows",
-    ...(process.env.CHROME_ARGS ?? "").split(" ").filter(Boolean),
-  ],
-});
+// (the scenario plays paced, as players play: a browser with its display's rate; the rest
+// unlimited)
+const browserArgs = (unpaced) => [
+  "--enable-unsafe-webgpu",
+  ...(unpaced ? ["--disable-frame-rate-limit", "--disable-gpu-vsync"] : []),
+  // (a page in the background would get its timers and frames throttled)
+  "--disable-background-timer-throttling",
+  "--disable-renderer-backgrounding",
+  "--disable-backgrounding-occluded-windows",
+  // (the scenario plays sound; clicks the harness sends are no user gesture)
+  "--autoplay-policy=no-user-gesture-required",
+  ...(process.env.CHROME_ARGS ?? "").split(" ").filter(Boolean),
+];
+const unpacedCases = todo.some((c) => !c.scenario), pacedCases = todo.some((c) => c.scenario);
+const browser = unpacedCases ? await chromium.launch({ args: browserArgs(true) }) : null;
+const pacedBrowser = pacedCases ? await chromium.launch({ args: browserArgs(false) }) : null;
 
 /** One run of one case on one build: { metrics: {name: ms}, checks: {name: hex}, error? } */
 async function runOnce(build, c) {
@@ -110,7 +115,7 @@ const results = {
   scale: SCALE,
   // (what ran: the report checks that every one of them has its numbers)
   cases: todo.map((c) => `${c.group}/${c.exe}:${c.args}`),
-  env: { chromium: browser.version(), node: process.version, runner: process.env.RUNNER_NAME ?? "" },
+  env: { chromium: (browser ?? pacedBrowser).version(), node: process.version, runner: process.env.RUNNER_NAME ?? "" },
   runs: {},
   checks: {},
   errors: {},
@@ -121,7 +126,7 @@ const results = {
 };
 for (const b of builds) (results.runs[b.name] = {}), (results.checks[b.name] = {}), (results.errors[b.name] = {});
 // (graphics groups: a build that keeps its 60 fps pacing measures the vsync, not the build)
-const paced = groups.some((g) => !g.startsWith("cpu-"));
+const paced = groups.some((g) => !g.startsWith("cpu-") && g !== "scenario");
 const saidNopace = {};
 let active = builds;
 for (let round = 0; round <= ROUNDS; round++) {
@@ -131,7 +136,7 @@ for (let round = 0; round <= ROUNDS; round++) {
     const order = round % 2 ? [...active].reverse() : active;
     for (const b of order) {
       if (results.errors[b.name][key]?.fatal) continue;
-      const r = await runOnce(b, c);
+      const r = c.scenario ? await runScenario(pacedBrowser, b, c, TIMEOUT) : await runOnce(b, c);
       if (r.nopace) saidNopace[b.name] = true;
       const tag = `${round ? `round ${round}` : "warm-up"} ${b.name} ${key}`;
       if (r.error) {
@@ -171,6 +176,7 @@ for (let round = 0; round <= ROUNDS; round++) {
     for (const name of Object.keys(results.incompatible)) (results.runs[name] = {}), (results.checks[name] = {}), (results.errors[name] = {});
   }
 }
-await browser.close();
+await browser?.close();
+await pacedBrowser?.close();
 writeFileSync(out, JSON.stringify(results, null, 1));
 console.log(`wrote ${out}`);

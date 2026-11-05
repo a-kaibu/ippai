@@ -17,6 +17,7 @@ depend on how fast that runner happens to be. Every number is milliseconds, lowe
 | `d3d11` | the same set with SM4 shaders (`dxbc.py`: hand-assembled, sake has no HLSL compiler), UpdateSubresource and Map uploads |
 | `d2d` | shapes + DrawText scene, DrawBitmap scene, 30 text lines, 1000 shapes |
 | `gl` | VN scene (glBegin), 2000 sprites immediate / vertex arrays, glTexSubImage2D, GLSL crossfade, FBO blur passes |
+| `scenario` | `src/scenario.c`: a small D3D9 visual novel played through by `scenario.mjs` (paced, as players play): title, lines with voices, scene transitions (pictures read from a 70 MB archive in no useful order, unfiltered, crossfaded), a movie, a choice, a save; then the save loaded in a new page. Click to the next line p50/p95, transitions, start-up (cold: a new browser context) and restore (warm: the same context), the game's frame intervals p50/p95/p99, the browser's CPU while the game waits, peak memory, chunks fetched |
 | `js` | `cpu.c`'s computing cases and `bench.c` as plain wasm in V8 (node) and JavaScriptCore (jsvu's shell): the engines compared, and the cost of the x86 translation against `cpu-game`; `dyn.js`: wasm the way koji makes it (modules compiled at run time, instantiation, a module per block, `call` vs `call_indirect`, first tier vs optimized) |
 
 The scenes are 1280x720 and drawn from procedural pictures (`src/bench.h`): no game files.
