@@ -388,6 +388,9 @@ pub fn pace_frame() {
 }
 
 fn pace() {
+    if crate::env_on!("VNVM_NOPACE") {
+        return; // (benchmarks: as many frames as the guest can make, tests/bench)
+    }
     #[cfg(target_os = "emscripten")]
     {
         extern "C" {

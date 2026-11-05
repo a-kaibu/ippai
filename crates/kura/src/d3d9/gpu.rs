@@ -387,6 +387,9 @@ pub extern "C" fn vnhost_d3d9_readback_begin(id: u32) -> u32 {
 }
 
 fn pace() {
+    if crate::env_on!("VNVM_NOPACE") {
+        return; // (benchmarks: the page's rate only, tests/bench)
+    }
     static NEXT: Mutex<f64> = Mutex::new(0.0);
     const FRAME: f64 = 1000.0 / 60.0;
     let t = now();

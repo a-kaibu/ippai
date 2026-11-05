@@ -11663,6 +11663,10 @@ uxtheme OpenThemeDataForDpi stdcall 12 -
 uxtheme SetThemeAppProperties stdcall 4 -
 uxtheme SetWindowTheme stdcall 12 -
 uxtheme SetWindowThemeAttribute stdcall 16 -
+msimg32 AlphaBlend stdcall 44 -
+msimg32 GradientFill stdcall 24 -
+msimg32 TransparentBlt stdcall 44 -
+msimg32 vSetDdrawflag stdcall 0 -
 rpcrt4 CreateProxyFromTypeInfo stdcall 20 -
 rpcrt4 CreateStubFromTypeInfo stdcall 16 -
 rpcrt4 CStdStubBuffer_AddRef stdcall 4 -
