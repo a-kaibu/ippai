@@ -51,7 +51,7 @@ export default defineConfig({
       "cross-origin-opener-policy": "same-origin",
       "cross-origin-embedder-policy": "require-corp",
     },
-    proxy: { "/store": process.env.VNVM_SERVER ?? "http://127.0.0.1:8080" },
+    proxy: { "/store": process.env.IPPAI_SERVER ?? "http://127.0.0.1:8080" },
   },
   lint: { ignorePatterns: ["public/**"], options: { typeAware: true, typeCheck: true } },
   fmt: { printWidth: 110, ignorePatterns: ["public/**"] },
