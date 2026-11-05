@@ -1625,6 +1625,9 @@ fn _controlfp_s(c: &mut Ctx) -> u32 {
 fn __iob_func(_: &mut Ctx) -> u32 {
     data("_iob").unwrap_or(0)
 }
+fn __p__iob(c: &mut Ctx) -> u32 {
+    __iob_func(c)
+}
 fn fopen_s(c: &mut Ctx) -> u32 {
     let (pf, path, mode) = (c.a(0), a2s(&cstr(c.a(1))), cstr(c.a(2)));
     let fp = fopen_mode(&path, &mode).map_or(0, new_stream);
@@ -2373,7 +2376,7 @@ pub fn init() {
     reg!(_putenv, fputc, __acrt_iob_func, _create_locale, _free_locale, _fdclass, _dclass, _fdsign, _dsign, strnlen);
     implement("ucrtbase", "__stdio_common_vsprintf", __stdio_common_vsprintf);
     implement("ucrtbase", "__stdio_common_vswprintf", __stdio_common_vswprintf);
-    reg!(wcsncmp, getenv, _ismbblead, memcpy_s, _controlfp_s, __iob_func, fopen_s, _wfopen_s, _setjmp3, longjmp);
+    reg!(wcsncmp, getenv, _ismbblead, memcpy_s, _controlfp_s, __iob_func, __p__iob, fopen_s, _wfopen_s, _setjmp3, longjmp);
     implement("msvcrt", "_setjmp", _setjmp3);
     reg!(_encode_pointer, _encoded_null, _crt_debugger_hook, _configthreadlocale, ___mb_cur_max_l_func);
     reg!(_initterm, _initterm_e, _onexit, atexit, __dllonexit, exit, _exit, abort, __getmainargs, __set_app_type,

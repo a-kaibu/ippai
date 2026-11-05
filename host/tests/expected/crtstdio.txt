@@ -1,0 +1,3 @@
+iob stable 1
+ansi integer 123 hex abc string ok
+stdout 42
