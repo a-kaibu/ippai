@@ -58,6 +58,15 @@ static IDirectDrawSurface7 *surface(int w, int h, const unsigned *pixels, int co
     return s;
 }
 
+/* the frame the screen shows: the window's part of the primary surface, read under Lock */
+static void read_primary(RECT *r)
+{
+    DDSURFACEDESC2 sd = { sizeof(sd) };
+    BCHECK(IDirectDrawSurface7_Lock(primary, r, &sd, DDLOCK_WAIT | DDLOCK_READONLY, 0));
+    bench_frame_pixels(sd.lpSurface, W, H, sd.lPitch);
+    IDirectDrawSurface7_Unlock(primary, r);
+}
+
 static void to_screen(void)
 {
     RECT r;
@@ -66,6 +75,7 @@ static void to_screen(void)
     ClientToScreen(hwnd, &p);
     OffsetRect(&r, p.x, p.y);
     IDirectDrawSurface7_Blt(primary, &r, back, NULL, DDBLT_WAIT, NULL);
+    if (bench_capturing()) read_primary(&r);
 }
 
 static void message(IDirectDrawSurface7 *s, int f)
@@ -146,6 +156,7 @@ static void frame_flip(int f)
         IDirectDrawSurface7_BltFast(flipchain, (i * 97 + f * 3) % (640 - 64), (i * 53 + f * 2) % (480 - 64), spr, NULL,
                                     DDBLTFAST_WAIT | DDBLTFAST_SRCCOLORKEY);
     IDirectDrawSurface7_Flip(primary, NULL, DDFLIP_WAIT);
+    if (bench_capturing()) read_primary(NULL);
 }
 
 int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)

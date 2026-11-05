@@ -1205,12 +1205,12 @@ pub fn translate(code: &[u8], pixel: bool, ps: Option<&[u8]>) -> R<Wgsl> {
 
 #[cfg(test)]
 mod tests {
-    /// Every DXBC file in $VNVM_DXBC_DIR (shaders taken from games) translates to WGSL that naga
+    /// Every DXBC file in $IPPAI_DXBC_DIR (shaders taken from games) translates to WGSL that naga
     /// accepts. Pixel or vertex comes from the program type; each vertex shader is linked to
     /// every pixel shader in the directory.
     #[test]
     fn corpus() {
-        let Ok(dir) = std::env::var("VNVM_DXBC_DIR") else { return };
+        let Ok(dir) = std::env::var("IPPAI_DXBC_DIR") else { return };
         let mut shaders = Vec::new();
         for e in std::fs::read_dir(&dir).unwrap() {
             let p = e.unwrap().path();
@@ -1228,7 +1228,7 @@ mod tests {
                             eprintln!("{name}: invalid: {e:?}\n{}", w.code);
                             return false;
                         }
-                        if std::env::var_os("VNVM_DXBC_PRINT").is_some() {
+                        if std::env::var_os("IPPAI_DXBC_PRINT").is_some() {
                             eprintln!("{name}:\n{}", w.code);
                         }
                         true

@@ -4,8 +4,8 @@ HLSL compiler (games ship compiled shaders) and the CI has no fxc. Writes src/d3
 
     python3 tests/bench/dxbc.py
 
-Check what sake makes of them: VNVM_DXBC_DIR=<dir with the .dxbc files this writes with --dump>
-VNVM_DXBC_PRINT=1 cargo test -p kura --release corpus -- --nocapture"""
+Check what sake makes of them: IPPAI_DXBC_DIR=<dir with the .dxbc files this writes with --dump>
+IPPAI_DXBC_PRINT=1 cargo test -p kura --release corpus -- --nocapture"""
 import os
 import struct
 import sys

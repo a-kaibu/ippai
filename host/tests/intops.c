@@ -1,6 +1,6 @@
 /* Integer and x87 instructions the JIT does with care (shifts by CL with the flags read after, FILD of
  * every size) over pseudo-random data, with a checksum per group, to compare the JIT (default) with the
- * interpreter (VNVM_JIT=0) or native Wine.
+ * interpreter (IPPAI_JIT=0) or native Wine.
  * Build: i686-w64-mingw32-gcc -O2 intops.c -o intops.exe */
 #include <stdio.h>
 

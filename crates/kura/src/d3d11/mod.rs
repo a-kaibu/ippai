@@ -535,7 +535,7 @@ pub unsafe fn init(vtbls: *const u32, count: u32) -> u32 {
                 next: 0,
                 free_blocks: Vec::new(),
                 calls: std::ptr::null(),
-                trace: crate::env_on!("VNVM_D3D_TRACE"),
+                trace: crate::env_on!("IPPAI_D3D_TRACE"),
                 mt_protected: false,
                 counts: HashMap::new(),
                 device: 0,
@@ -2217,7 +2217,7 @@ fn shader_for(d: &mut D11, sh: u32, ps: u32) -> Option<(u32, Vec<(u32, shader::B
             });
             if trace {
                 eprintln!("d3d11: {} shader {sh} -> {} bindings {:?}", if s.pixel { "pixel" } else { "vertex" }, id, w.bindings);
-                if std::env::var("VNVM_D3D_TRACE").as_deref() == Ok("2") {
+                if std::env::var("IPPAI_D3D_TRACE").as_deref() == Ok("2") {
                     eprintln!("{}", w.code);
                 }
             }
@@ -2290,7 +2290,7 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
     }
     let Some((vs, vb)) = shader_for(d, st.vs, st.ps) else { return };
     let ps = if st.ps != 0 { shader_for(d, st.ps, 0) } else { None };
-    if std::env::var("VNVM_D3D_TRACE").as_deref() == Ok("2") {
+    if std::env::var("IPPAI_D3D_TRACE").as_deref() == Ok("2") {
         // the first vertices and the vertex shader's constants
         let words = |id: u32, from: u32, n: u32| -> Vec<String> {
             match d.objs.get(&id).map(|o| &o.data) {

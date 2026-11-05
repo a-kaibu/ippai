@@ -17,18 +17,33 @@ depend on how fast that runner happens to be. Every number is milliseconds, lowe
 | `d3d11` | the same set with SM4 shaders (`dxbc.py`: hand-assembled, sake has no HLSL compiler), UpdateSubresource and Map uploads |
 | `d2d` | shapes + DrawText scene, DrawBitmap scene, 30 text lines, 1000 shapes |
 | `gl` | VN scene (glBegin), 2000 sprites immediate / vertex arrays, glTexSubImage2D, GLSL crossfade, FBO blur passes |
-| `js` | `cpu.c`'s computing cases and `bench.c` as plain wasm in V8 (node) and JavaScriptCore (jsvu's shell): the engines compared, and the cost of the x86 translation against `cpu-game` |
+| `js` | `cpu.c`'s computing cases and `bench.c` as plain wasm in V8 (node) and JavaScriptCore (jsvu's shell): the engines compared, and the cost of the x86 translation against `cpu-game`; `dyn.js`: wasm the way koji makes it (modules compiled at run time, instantiation, a module per block, `call` vs `call_indirect`, first tier vs optimized) |
 
 The scenes are 1280x720 and drawn from procedural pictures (`src/bench.h`): no game files.
-Frames run unpaced (`VNVM_NOPACE`, Chromium without vsync); the WebGPU device on the runners is
+Frames run unpaced (`IPPAI_NOPACE`, Chromium without vsync); the WebGPU device on the runners is
 SwiftShader, so the graphics numbers are mostly CPU: translating the calls, the page's work, and
 the software rasterizer.
 
+Every graphics case reads back what it showed (GetDIBits of the window, a Lock of the primary
+surface, GetRenderTargetData / CopyRects, a staging copy, glReadPixels): the last warm-up frame's
+hash is a checksum (`<case>.frame`), a frame of one color fails the case, and the timed frames
+end with a read back, so the GPU's queue is done when the clock stops. The pages say
+`BENCH-HOST nopace` when they run unpaced (`IPPAI_NOPACE`); a previous build that doesn't is left
+out of the comparison (its numbers would be its 60 fps pacing), and this build not saying it
+fails the run.
+
 The report (job summary, artifact `bench-report`) lists every metric with the change against the
 previous commit; a change is marked when it is over 3% and every round of one build beat every
-round of the other. Cases that stop working fail the run; programs print checksums of what they
-computed, and a checksum that changes between the builds is listed too. The artifact
-`bench-history` carries the medians of the last 300 commits from run to run.
+round of the other. The run fails when the results can't be trusted or something broke: a case
+that worked before fails, a checksum differs from the previous build's (or, without one, from the
+history's), the JS engines disagree, a group left no results, a case has fewer numbers than its
+rounds, or there are none. The artifact `bench-history` carries the medians and checksums of the
+last 300 commits from run to run; `VERSION` in `suite.mjs` says how they were measured, and only
+the same version is compared with (bump it when the numbers stop being comparable). The report's
+計測条件 lists Chromium, node, Emscripten and the JavaScriptCore revision (`JSC_REV` pins one).
+
+The JavaScriptCore shell is Safari's engine on Linux, not iPhone Safari: no iOS memory limits,
+other JIT settings, another CPU.
 
 Locally (a build in `web/dist` and `target/release/ippai`, fonts from `tools/ci/sake-fonts.py`):
 

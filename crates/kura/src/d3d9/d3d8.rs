@@ -612,6 +612,10 @@ unsafe fn copy_rects(d: &mut D3d, this: u32, src: u32, rects: u32, n: u32, dst: 
         if !rendered {
             hr = c9(d, IF_DEVICE, 30, this, &[me, src, r.as_ptr() as u32, dst, p.as_ptr() as u32], after);
         }
+        if hr != S_OK && rendered && r == [0, 0, sw, sh] && p == [0, 0] {
+            // a render target to system memory (screenshots): GetRenderTargetData
+            hr = c9(d, IF_DEVICE, 32, this, &[me, src, dst], after);
+        }
         if hr != S_OK {
             let dr = [p[0], p[1], p[0] + r[2] - r[0], p[1] + r[3] - r[1]];
             hr = c9(d, IF_DEVICE, 34, this, &[me, src, r.as_ptr() as u32, dst, dr.as_ptr() as u32, 0], after);

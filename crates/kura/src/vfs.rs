@@ -1,5 +1,5 @@
 //! The page's file system: directory trees packed by `ippai pack` (`trees/<name>.tsv` plus
-//! chunks in the store) mounted where `VNVM_MOUNTS` says ("/=:/vnvm/game=reunion"), read
+//! chunks in the store) mounted where `IPPAI_MOUNTS` says ("/=:/vnvm/game=reunion"), read
 //! lazily chunk by chunk. Whatever is written stays in memory. Paths outside the mounts are the
 //! host's (node; the page mounts an empty tree at "/", so there is nothing outside). Rust code
 //! reaches it through crate::fs.
@@ -221,7 +221,7 @@ fn fetch(name: &str) -> Option<Vec<u8>> {
 
 fn trace() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("VNVM_TRACE_VFS").is_some())
+    *ON.get_or_init(|| std::env::var_os("IPPAI_TRACE_VFS").is_some())
 }
 
 fn unesc(s: &str) -> String {
@@ -260,7 +260,7 @@ fn now() -> i64 {
 impl Fs {
     fn load() -> Fs {
         let mut fs = Fs { next_handle: 1, ..Default::default() };
-        let Ok(spec) = std::env::var("VNVM_MOUNTS") else { return fs };
+        let Ok(spec) = std::env::var("IPPAI_MOUNTS") else { return fs };
         let mut mounts: Vec<(String, &str)> =
             spec.split(':').filter_map(|m| m.split_once('=')).map(|(at, name)| (clean(at), name)).collect();
         // "/" first (the page mounts an empty one: then nothing is emscripten's), the others
@@ -594,7 +594,7 @@ static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
 
 fn cache_limit() -> usize {
     static LIMIT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *LIMIT.get_or_init(|| std::env::var("VNVM_CHUNK_CACHE_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(128usize) << 20)
+    *LIMIT.get_or_init(|| std::env::var("IPPAI_CHUNK_CACHE_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(128usize) << 20)
 }
 
 /// The chunks this run read, in the order of their first read (the first FETCHED_MAX): the

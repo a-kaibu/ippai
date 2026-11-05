@@ -50,10 +50,10 @@ pub const RET_INTERP: i32 = 1;
 /// made a wasm call continues right after it when EIP is its return address.
 pub const RET_VALUES: i32 = 0x5245_5456;
 /// Guest CALLs to other regions become wasm calls (returning through RET_VALUES) instead of
-/// tail calls through the hash table (VNVM_JIT_CALLS=1; off by default, see
+/// tail calls through the hash table (IPPAI_JIT_CALLS=1; off by default, see
 /// docs/translator.md).
 pub static CALLS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-/// Debugging (VNVM_JIT_COUNT): counters of control transfers the generated code bumps
+/// Debugging (IPPAI_JIT_COUNT): counters of control transfers the generated code bumps
 /// (wasm32 only: their addresses are i32 constants). See [`COUNTER_NAMES`].
 pub static COUNT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 pub static COUNTERS: [core::sync::atomic::AtomicU32; 15] = [const { core::sync::atomic::AtomicU32::new(0) }; 15];
@@ -64,14 +64,14 @@ fn bump(c: &mut Code, i: usize) {
         c.i32c(at).i32c(at).load32(0).i32c(1).add().store32(0);
     }
 }
-/// Functions entered in the middle too (VNVM_JIT_FN_ENTRIES=0: at their root only).
+/// Functions entered in the middle too (IPPAI_JIT_FN_ENTRIES=0: at their root only).
 pub static FN_ENTRIES: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
-/// Debugging (VNVM_JIT_PROBE): instructions run by the interpreter (which prints the state
+/// Debugging (IPPAI_JIT_PROBE): instructions run by the interpreter (which prints the state
 /// before them), 0 = none.
 pub static PROBES: [core::sync::atomic::AtomicU32; 8] = [const { core::sync::atomic::AtomicU32::new(0) }; 8];
-/// Indirect CALLs as wasm calls too (VNVM_JIT_CALLS=2)
+/// Indirect CALLs as wasm calls too (IPPAI_JIT_CALLS=2)
 pub static INDIRECT_CALLS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-/// Function-level translation (VNVM_JIT_FN=1): a guest function (an address CALLs go to)
+/// Function-level translation (IPPAI_JIT_FN=1): a guest function (an address CALLs go to)
 /// becomes one wasm function `(cpu) -> status` with the guest state in the Cpu at its entry
 /// and exits. Its blocks are the ones its own jumps reach (never a call's target); a CALL is a
 /// wasm call of the callee's function when it has one (found in the hash table, entries
@@ -140,7 +140,7 @@ const L_SLOT: u32 = L_AB + 1; // N_SLOTS i32: stack slots kept in locals in a lo
 /// functions: ESP as the caller passed it (the third parameter once the locals are compacted)
 const L_ESPIN: u32 = L_SLOT + N_SLOTS;
 const N_SLOTS: u32 = 6;
-/// How many slots a loop keeps (at most N_SLOTS; VNVM_JIT_SLOTS, default 0: slower on x64,
+/// How many slots a loop keeps (at most N_SLOTS; IPPAI_JIT_SLOTS, default 0: slower on x64,
 /// where the extra live locals spill)
 pub static SLOTS_MAX: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
@@ -193,7 +193,7 @@ pub fn set_deny(f: fn(u32) -> bool) {
     DENY.set(f);
 }
 
-/// The same for functions (jit::FN; VNVM_JIT_FN_INS)
+/// The same for functions (jit::FN; IPPAI_JIT_FN_INS)
 pub static FN_MAX_INS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(1000);
 /// Inlined callees: at most this many instructions each, and in all in a region.
 const MAX_INLINE: usize = 128;
@@ -483,7 +483,7 @@ struct FCache {
 
 /// See [`Gen::safe`].
 const SAFE_MARGIN: i32 = 0x8000;
-/// Measuring only (VNVM_JIT_NOCHECK=1): no range checks on memory accesses (unsafe).
+/// Measuring only (IPPAI_JIT_NOCHECK=1): no range checks on memory accesses (unsafe).
 pub static NOCHECK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 /// Pushes what a jump to another region hands over (registers, lazy flags, budget).
 fn push_state(c: &mut Code) {
@@ -4591,7 +4591,7 @@ fn safe_in(g: &Gen, blocks: &[(u32, Vec<Instruction>)], l: &structure::Layout) -
     }
 }
 
-/// Hoisting range checks out of loops (VNVM_JIT_HOIST=0: off; see [`safe_in`]).
+/// Hoisting range checks out of loops (IPPAI_JIT_HOIST=0: off; see [`safe_in`]).
 pub static HOIST: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
 
 /// Adds a region starting at `roots` to `module` (one function, exported as "f<n>"),

@@ -6,14 +6,14 @@ Module.preRun.push(() => {
 });
 
 // Regions an earlier run saved (crates/kura/src/jit.rs): `vnvmJit` = { parts: [{ module, idx }] }
-// from the page, or under node VNVM_JIT_FILE.wasm/.idx; and the page's saved games `vnvmSaves`
+// from the page, or under node IPPAI_JIT_FILE.wasm/.idx; and the page's saved games `vnvmSaves`
 // (bytes, read as "@saves" by host/vnfs.js). Every thread gets them in the message that loads it
 // ('load'): the saves as a SharedArrayBuffer, not copied per thread.
 var vnvmJitBundle = null;
 var vnvmSaves = null;
 Module.preInit = [].concat(Module.preInit || [], () => {
   if (ENVIRONMENT_IS_PTHREAD) return;
-  const f = ENVIRONMENT_IS_NODE && process.env.VNVM_JIT_FILE;
+  const f = ENVIRONMENT_IS_NODE && process.env.IPPAI_JIT_FILE;
   if (f && !Module.vnvmJit) {
     try {
       const fs = require('fs');

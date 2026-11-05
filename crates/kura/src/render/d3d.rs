@@ -304,10 +304,10 @@ pub struct D3d {
     last: Option<(Vec<u32>, Vec<u8>, Vec<u8>)>,
     /// where its buffer commands are
     last_bufs: Vec<usize>,
-    /// VNVM_SKIPCHECK: batches that would be skipped run anyway, and the frame they present is
+    /// IPPAI_SKIPCHECK: batches that would be skipped run anyway, and the frame they present is
     /// compared with the one before (pixels read back by token: pair, buffer, pixels)
     skip_check: bool,
-    /// VNVM_NOSEG: segments are drawn whole every time (see segment()).
+    /// IPPAI_NOSEG: segments are drawn whole every time (see segment()).
     no_seg: bool,
     checks: HashMap<u32, (u32, Id, Vec<u8>)>,
     check_done: HashMap<u32, Vec<u8>>,
@@ -324,7 +324,7 @@ pub struct D3d {
     pub seg_stats: Cell<(u32, u32)>,
     /// batches not run because they were the same as the last one (for stats)
     pub skipped: Cell<u32>,
-    /// VNVM_NOPASSOPT: clears done at once as passes of their own, depth and stencil always
+    /// IPPAI_NOPASSOPT: clears done at once as passes of their own, depth and stencil always
     /// loaded and stored (to compare)
     no_pass_opt: bool,
     used: Vec<u32>,
@@ -392,8 +392,8 @@ impl D3d {
             clears: HashMap::new(),
             last: None,
             last_bufs: Vec::new(),
-            skip_check: crate::env_on!("VNVM_SKIPCHECK"),
-            no_seg: crate::env_on!("VNVM_NOSEG"),
+            skip_check: crate::env_on!("IPPAI_SKIPCHECK"),
+            no_seg: crate::env_on!("IPPAI_NOSEG"),
             checks: HashMap::new(),
             check_done: HashMap::new(),
             stamps: HashMap::new(),
@@ -403,7 +403,7 @@ impl D3d {
             clip: None,
             seg_stats: Cell::new((0, 0)),
             skipped: Cell::new(0),
-            no_pass_opt: crate::env_on!("VNVM_NOPASSOPT"),
+            no_pass_opt: crate::env_on!("IPPAI_NOPASSOPT"),
             used: Vec::new(),
             buffers: HashMap::new(),
             doomed: Vec::new(),
@@ -527,7 +527,7 @@ impl D3d {
         self.run_batch(c, data, blob);
     }
 
-    /// VNVM_SKIPCHECK: reads texture `tex` back; the second read of a pair compares.
+    /// IPPAI_SKIPCHECK: reads texture `tex` back; the second read of a pair compares.
     fn snap(&mut self, tex: u32, pair: u32) {
         let Some(t) = self.textures.get(&tex) else { return };
         let (w, h, id, bpp) = (t.w, t.h, t.tex, bpp(t.format));
@@ -932,7 +932,7 @@ impl D3d {
             }
         }
         if self.skip_check {
-            // (VNVM_SKIPCHECK: and drawn whole, to compare)
+            // (IPPAI_SKIPCHECK: and drawn whole, to compare)
             let pair = self.next_token;
             self.snap(t, pair);
             self.target = [t, level, self.target[2]];

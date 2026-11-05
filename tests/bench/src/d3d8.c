@@ -56,9 +56,26 @@ static void begin(void)
     IDirect3DDevice8_BeginScene(dev);
 }
 
+/* when asked: the back buffer copied to system memory (CopyRects) and read */
+static void read_back(void)
+{
+    static IDirect3DSurface8 *bb, *sys;
+    D3DLOCKED_RECT lr;
+    if (!sys)
+    {
+        BCHECK(IDirect3DDevice8_GetBackBuffer(dev, 0, D3DBACKBUFFER_TYPE_MONO, &bb));
+        BCHECK(IDirect3DDevice8_CreateImageSurface(dev, SCREEN_W, SCREEN_H, D3DFMT_X8R8G8B8, &sys));
+    }
+    BCHECK(IDirect3DDevice8_CopyRects(dev, bb, NULL, 0, sys, NULL));
+    BCHECK(IDirect3DSurface8_LockRect(sys, &lr, NULL, D3DLOCK_READONLY));
+    bench_frame_pixels(lr.pBits, SCREEN_W, SCREEN_H, lr.Pitch);
+    IDirect3DSurface8_UnlockRect(sys);
+}
+
 static void end(void)
 {
     IDirect3DDevice8_EndScene(dev);
+    if (bench_capturing()) read_back();
     IDirect3DDevice8_Present(dev, NULL, NULL, NULL, NULL);
 }
 

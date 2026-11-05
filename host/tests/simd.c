@@ -1,5 +1,5 @@
 /* MMX / SSE2 integer and SSE float instructions over pseudo-random data, with a checksum per group, to
- * compare the JIT (default) with the interpreter (VNVM_JIT=0) or native Wine.
+ * compare the JIT (default) with the interpreter (IPPAI_JIT=0) or native Wine.
  * Build: i686-w64-mingw32-gcc -O2 -mmmx -msse2 simd.c -o simd.exe */
 #include <stdio.h>
 #include <string.h>

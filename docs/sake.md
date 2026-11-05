@@ -150,16 +150,16 @@ node では D3D9 は描かれない (WebGPU がない) ので、D3D9 のゲー�
 - ビルド: `bash crates/sake/build.sh` → node 用 `/home/user/work/sake-out/sake.js` と
   ページ用 `web/public/sake/` (dist に使うときは `web/dist/sake/` にコピー)。
 - node: ゲームのフォルダで `SAKE_C=<prefix>/drive_c node sake.js /abs/game.exe`。
-  `VNVM_SCREENSHOT=out.ppm`、`VNVM_INPUT="秒:種類,x,y,データ;..."` (1 移動、2/3 ボタン、
+  `IPPAI_SCREENSHOT=out.ppm`、`IPPAI_INPUT="秒:種類,x,y,データ;..."` (1 移動、2/3 ボタン、
   5/6 キー)。ボタンはホバーの移動を先に送らないと反応しないゲームが多い。
 - ページ: `ippai pack <dir> <name>` してから
   `play.html?engine=sake&autostart&run=Z%3A%5Cvnvm%5Cgame%5C<exe>&mount=/vnvm/game=<name>`。
   `tests/play.mjs` でヘッドレスのスクリーンショット。
-- 調べるとき: `SAKE_WATCH=<16進番地>` (API 呼び出しごとにその番地の値を見て、変わったら表示)、`VNVM_D3D_TRACE=1` (描画ごとの頂点も表示)、`SAKE_TRACE=1` (+ `SAKE_TRACE_FILTER=a,b`、`SAKE_TRACE_AFTER=ms`)、
+- 調べるとき: `SAKE_WATCH=<16進番地>` (API 呼び出しごとにその番地の値を見て、変わったら表示)、`IPPAI_D3D_TRACE=1` (描画ごとの頂点も表示)、`SAKE_TRACE=1` (+ `SAKE_TRACE_FILTER=a,b`、`SAKE_TRACE_AFTER=ms`)、
   `SAKE_TRACE=3` (落ちたときにスレッドごとの直前の呼び出し)、`SAKE_API_STATS=秒`、
   `SAKE_TRACE_FAULT`、`SAKE_TRACE_FILES`、`SAKE_TRACE_LOAD`、`SAKE_TRACE_MSG`、
-  `SAKE_TRACE_INPUT`、`SAKE_TRACE_FONT`、`VNVM_JIT_STATS` (JIT が実行ループに戻る場所)、
+  `SAKE_TRACE_INPUT`、`SAKE_TRACE_FONT`、`IPPAI_JIT_STATS` (JIT が実行ループに戻る場所)、
   `SAKE_WINEDEBUG=<flags>[:chan,...]` (Wine の PE DLL のデバッグ出力。1 FIXME、2 ERR、4 WARN、8 TRACE)、
-  `VNVM_D3D_SPV=<dir>` (D3D11 シェーダの SPIR-V を書き出す)。
+  `IPPAI_D3D_SPV=<dir>` (D3D11 シェーダの SPIR-V を書き出す)。
 - 確認用の小さなテスト: `ENGINE=sake node tests/gfx.mjs` (d3d11test、d2dtest、ddrawtest が通る。
   d3d8test は sake に D3D8 が無いので落ちる)。

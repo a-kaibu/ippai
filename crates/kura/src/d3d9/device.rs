@@ -2271,9 +2271,9 @@ fn ensure_target(d: &mut D3d, rt: u32, ds: u32) {
 }
 
 unsafe fn present(d: &mut D3d, after: &mut After) -> u32 {
-    // VNVM_D3D_TRACE_EVERY=n: trace one whole frame in n
+    // IPPAI_D3D_TRACE_EVERY=n: trace one whole frame in n
     static EVERY: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
-    let every = *EVERY.get_or_init(|| std::env::var("VNVM_D3D_TRACE_EVERY").ok().and_then(|v| v.parse().ok()));
+    let every = *EVERY.get_or_init(|| std::env::var("IPPAI_D3D_TRACE_EVERY").ok().and_then(|v| v.parse().ok()));
     if let (Some(n), Some(dev)) = (every, d.dev.as_ref()) {
         d.trace = (dev.frames + 1) % n == 0;
     }
@@ -2443,7 +2443,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         }
         if let Some(&(_, ptr, stride)) = streams.first() {
             eprintln!("d3d9:   data {ptr:#x} stride {stride}");
-            let max = std::env::var("VNVM_D3D_TRACE_VERTS").ok().and_then(|v| v.parse().ok()).unwrap_or(6);
+            let max = std::env::var("IPPAI_D3D_TRACE_VERTS").ok().and_then(|v| v.parse().ok()).unwrap_or(6);
             for v in 0..count.min(max) {
                 let p = ptr + (first + v) * stride;
                 let w: Vec<String> = (0..stride / 4).map(|k| format!("{:08x}", *((p + 4 * k) as *const u32))).collect();
@@ -2900,7 +2900,7 @@ fn shader_module(dev: &mut Device, wgsl: String) -> u32 {
         let off = b.blob(wgsl.as_bytes());
         b.cmd(&[gpu::CREATE_SHADER, id, off, wgsl.len() as u32]);
     });
-    if crate::env_on!("VNVM_D3D_WGSL") {
+    if crate::env_on!("IPPAI_D3D_WGSL") {
         eprintln!("d3d9: shader {id}:\n{wgsl}");
     }
     dev.shaders.insert(wgsl, id);

@@ -1,10 +1,10 @@
 // vnvm_fetch(name, &len): one file of the store (trees/<name>.tsv or chunks/ab/<hash>, the
 // latter zstd-compressed), for crates/kura/src/vfs.rs; or "@saves", the saved games the page
-// passed (host/pre.js; node: the file $VNVM_SAVES). Returns a malloc'ed buffer, or 0. The bytes
+// passed (host/pre.js; node: the file $IPPAI_SAVES). Returns a malloc'ed buffer, or 0. The bytes
 // that came over the network (compressed; none from the browser's HTTP cache) go to vfs.rs's
 // counters (vnhost_net_wire).
 //
-// node: read from $VNVM_STORE. Browser: a dedicated worker uses fetch; the game pthread waits for its response from
+// node: read from $IPPAI_STORE. Browser: a dedicated worker uses fetch; the game pthread waits for its response from
 // store/ beside the directory of sake.js; the server sends chunks with "Content-Encoding: zstd",
 // so the browser decompresses them.
 addToLibrary({
@@ -17,12 +17,12 @@ addToLibrary({
 #if EXPORT_ES6
     const store = new URL('../store', import.meta.url).href;
 #else
-    const store = process.env.VNVM_STORE || 'store';
+    const store = process.env.IPPAI_STORE || 'store';
 #endif
     let data;
     try {
       if (name === '@saves') {
-        data = ENVIRONMENT_IS_NODE ? (process.env.VNVM_SAVES ? require('fs').readFileSync(process.env.VNVM_SAVES) : null) : vnvmSaves;
+        data = ENVIRONMENT_IS_NODE ? (process.env.IPPAI_SAVES ? require('fs').readFileSync(process.env.IPPAI_SAVES) : null) : vnvmSaves;
         if (!data) return 0;
       } else if (ENVIRONMENT_IS_NODE) {
         data = require('fs').readFileSync(require('path').join(store, name));

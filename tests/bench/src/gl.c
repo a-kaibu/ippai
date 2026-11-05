@@ -67,6 +67,20 @@ static void draw(GLuint t, float x, float y, float w, float h)
     glEnd();
 }
 
+/* the end of a frame: when asked, the back buffer read by glReadPixels first */
+static void swap(void)
+{
+    static unsigned *px;
+    if (bench_capturing())
+    {
+        if (!px) px = pic_alloc(SCREEN_W, SCREEN_H);
+        glReadPixels(0, 0, SCREEN_W, SCREEN_H, GL_BGRA, GL_UNSIGNED_BYTE, px);
+        if (glGetError()) bench_fail("glReadPixels");
+        bench_frame_pixels(px, SCREEN_W, SCREEN_H, SCREEN_W * 4);
+    }
+    SwapBuffers(dc);
+}
+
 static void scene(void)
 {
     int i;
@@ -88,7 +102,7 @@ static void frame_vn(int f)
     glClear(GL_COLOR_BUFFER_BIT);
     scene();
     draw(t_text, 80, 530, 1024, 64);
-    SwapBuffers(dc);
+    swap();
 }
 
 static void sprite_xy(int i, int f, float *x, float *y)
@@ -110,7 +124,7 @@ static void frame_sprites_immediate(int f)
         draw(t_spr, x, y, 32, 32);
     }
     glColor4f(1, 1, 1, 1);
-    SwapBuffers(dc);
+    swap();
 }
 
 static float sv[2000 * 4 * 2], st[2000 * 4 * 2];
@@ -134,7 +148,7 @@ static void frame_sprites_arrays(int f)
     glDrawArrays(GL_QUADS, 0, 2000 * 4);
     glDisableClientState(GL_VERTEX_ARRAY);
     glDisableClientState(GL_TEXTURE_COORD_ARRAY);
-    SwapBuffers(dc);
+    swap();
 }
 
 static void frame_upload(int f)
@@ -143,7 +157,7 @@ static void frame_upload(int f)
     glBindTexture(GL_TEXTURE_2D, t_movie);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, SCREEN_W, SCREEN_H, GL_BGRA, GL_UNSIGNED_BYTE, movie);
     draw(t_movie, 0, 0, SCREEN_W, SCREEN_H);
-    SwapBuffers(dc);
+    swap();
 }
 
 static void frame_fade(int f)
@@ -155,7 +169,7 @@ static void frame_fade(int f)
     p_glActiveTexture(GL_TEXTURE0);
     draw(t_bg, 0, 0, SCREEN_W, SCREEN_H);
     p_glUseProgram(0);
-    SwapBuffers(dc);
+    swap();
 }
 
 static void frame_rt(int f)
@@ -179,7 +193,7 @@ static void frame_rt(int f)
     p_glBindFramebuffer(GL_FRAMEBUFFER, 0);
     draw(t_rt[0], 0, SCREEN_H, SCREEN_W, -SCREEN_H);
     glEnable(GL_BLEND);
-    SwapBuffers(dc);
+    swap();
 }
 
 static GLuint program(const char *fs)

@@ -130,9 +130,23 @@ static void begin(DWORD clear)
     IDirect3DDevice9_BeginScene(dev);
 }
 
+/* when asked: the back buffer copied to system memory (GetRenderTargetData) and read */
+static void read_back(void)
+{
+    static IDirect3DSurface9 *sys;
+    D3DLOCKED_RECT lr;
+    if (!sys)
+        BCHECK(IDirect3DDevice9_CreateOffscreenPlainSurface(dev, SCREEN_W, SCREEN_H, D3DFMT_X8R8G8B8, D3DPOOL_SYSTEMMEM, &sys, NULL));
+    BCHECK(IDirect3DDevice9_GetRenderTargetData(dev, backbuf, sys));
+    BCHECK(IDirect3DSurface9_LockRect(sys, &lr, NULL, D3DLOCK_READONLY));
+    bench_frame_pixels(lr.pBits, SCREEN_W, SCREEN_H, lr.Pitch);
+    IDirect3DSurface9_UnlockRect(sys);
+}
+
 static void end(void)
 {
     IDirect3DDevice9_EndScene(dev);
+    if (bench_capturing()) read_back();
     IDirect3DDevice9_Present(dev, NULL, NULL, NULL, NULL);
 }
 

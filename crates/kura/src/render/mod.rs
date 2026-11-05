@@ -235,7 +235,7 @@ struct Stats {
 
 impl Render {
     fn new() -> Render {
-        let headless = crate::env_on!("VNVM_HEADLESS");
+        let headless = crate::env_on!("IPPAI_HEADLESS");
         let uv = (0..10).map(|_| gpu::buffer(16, usage::UNIFORM | usage::COPY_DST)).collect();
         Render {
             d3d: d3d::D3d::new(),
@@ -257,7 +257,7 @@ impl Render {
             serial: None,
             above: Vec::new(),
             d3d_frames: 0,
-            stats: crate::env_on!("VNVM_D3DSTATS").then_some(Stats { t0: 0.0, last: 0.0, frames: 0, slow: 0, at: [0; 6], d3d_at: 0 }),
+            stats: crate::env_on!("IPPAI_D3DSTATS").then_some(Stats { t0: 0.0, last: 0.0, frames: 0, slow: 0, at: [0; 6], d3d_at: 0 }),
             shot: None,
             shot_done: 0,
         }

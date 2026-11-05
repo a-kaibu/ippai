@@ -17,6 +17,7 @@
 #include "bench.h"
 #include <d3d11.h>
 #include "d3d11_shaders.h"
+#include "d3d11_read.h"
 
 typedef struct { float x, y, u, v, r, g, b, a; } V;
 #define SPRITES 2000
@@ -121,6 +122,7 @@ static void frame_vn(int f)
     clear(backbuf);
     scene();
     draw(t_text, 80, 530, 1024, 64);
+    d3d11_read_back(sc);
     IDXGISwapChain_Present(sc, 0, 0);
 }
 
@@ -130,6 +132,7 @@ static void frame_fade(int f)
     ID3D11DeviceContext_PSSetShaderResources(ctx, 1, 1, &t_bg2);
     constants(pcb, (f % 120) / 119.0f, 0, 0, 0);
     draw(t_bg, 0, 0, SCREEN_W, SCREEN_H);
+    d3d11_read_back(sc);
     IDXGISwapChain_Present(sc, 0, 0);
 }
 
@@ -160,6 +163,7 @@ static void frame_sprites_batched(int f)
     ID3D11DeviceContext_IASetPrimitiveTopology(ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     ID3D11DeviceContext_PSSetShaderResources(ctx, 0, 1, &t_spr);
     ID3D11DeviceContext_Draw(ctx, SPRITES * 6, 0);
+    d3d11_read_back(sc);
     IDXGISwapChain_Present(sc, 0, 0);
 }
 
@@ -171,6 +175,7 @@ static void frame_sprites_calls(int f)
     draw(t_bg, 0, 0, SCREEN_W, SCREEN_H);
     for (i = 0; i < SPRITES; i++)
         draw(t_spr, (float)((i * 211 + f * (1 + i % 5)) % (SCREEN_W - 32)), (float)((i * 97 + f * (1 + i % 3)) % (SCREEN_H - 32)), 32, 32);
+    d3d11_read_back(sc);
     IDXGISwapChain_Present(sc, 0, 0);
 }
 
@@ -194,6 +199,7 @@ static void frame_rt(int f)
     ID3D11DeviceContext_PSSetShaderResources(ctx, 0, 1, &none);
     setup_2d(backbuf, ps_sprite_, opaque);
     draw(srv[0], 0, 0, SCREEN_W, SCREEN_H);
+    d3d11_read_back(sc);
     IDXGISwapChain_Present(sc, 0, 0);
 }
 
@@ -203,6 +209,7 @@ static void frame_upload(int f)
     ID3D11DeviceContext_UpdateSubresource(ctx, (ID3D11Resource *)movie_tex, 0, NULL, movie, SCREEN_W * 4, 0);
     setup_2d(backbuf, ps_sprite_, opaque);
     draw(t_movie, 0, 0, SCREEN_W, SCREEN_H);
+    d3d11_read_back(sc);
     IDXGISwapChain_Present(sc, 0, 0);
 }
 
@@ -218,6 +225,7 @@ static void frame_upload_map(int f)
     }
     setup_2d(backbuf, ps_sprite_, opaque);
     draw(t_movie2, 0, 0, SCREEN_W, SCREEN_H);
+    d3d11_read_back(sc);
     IDXGISwapChain_Present(sc, 0, 0);
 }
 

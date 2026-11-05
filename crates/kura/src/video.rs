@@ -174,10 +174,10 @@ pub unsafe fn frame(id: u32, n: i32, dst: *mut u8, pitch: usize, w: u32, h: u32,
     }
 }
 
-/// VNVM_VIDEO_STATS: frames handed out and the guest's wait for them, every 5 s.
+/// IPPAI_VIDEO_STATS: frames handed out and the guest's wait for them, every 5 s.
 fn stat(waited: Duration, n: i32, late: bool) {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if !*ON.get_or_init(|| std::env::var_os("VNVM_VIDEO_STATS").is_some()) {
+    if !*ON.get_or_init(|| std::env::var_os("IPPAI_VIDEO_STATS").is_some()) {
         return;
     }
     static S: Mutex<(Option<Instant>, u32, Duration, Duration, i32, u32)> = Mutex::new((None, 0, Duration::ZERO, Duration::ZERO, -1, 0));

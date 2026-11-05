@@ -49,6 +49,18 @@ static void blend(unsigned *dst, int dw, const unsigned *src, int w, int h, int 
 
 static unsigned *scene; /* the composed scene without the message text */
 
+static HDC cap_dc;
+static unsigned *cap;
+
+/* the end of a frame: when asked, what the window shows, copied back from its DC */
+static void shown(void)
+{
+    if (!bench_capturing()) return;
+    BitBlt(cap_dc, 0, 0, SCREEN_W, SCREEN_H, wdc, 0, 0, SRCCOPY);
+    GdiFlush();
+    bench_frame_pixels(cap, SCREEN_W, SCREEN_H, SCREEN_W * 4);
+}
+
 static void message(HDC dc, int frame, int x, int y)
 {
     const WCHAR *line = bench_lines[(frame / 40) % BENCH_LINES];
@@ -67,6 +79,7 @@ static void frame_vn(int f)
     message(mdc, f, 80, 540);
     GdiFlush();
     BitBlt(wdc, 0, 0, SCREEN_W, SCREEN_H, mdc, 0, 0, SRCCOPY);
+    shown();
 }
 
 static void frame_vn_dirty(int f)
@@ -76,6 +89,7 @@ static void frame_vn_dirty(int f)
     message(mdc, f, 80, 540);
     GdiFlush();
     BitBlt(wdc, 40, 500, 1200, 200, mdc, 40, 500, SRCCOPY);
+    shown();
 }
 
 static HDC bg_dc, char_dc[3], win_dc;
@@ -89,6 +103,7 @@ static void frame_alphablend(int f)
     AlphaBlend(mdc, 40, 500, 1200, 200, win_dc, 0, 0, 1200, 200, bf);
     message(mdc, f, 80, 540);
     BitBlt(wdc, 0, 0, SCREEN_W, SCREEN_H, mdc, 0, 0, SRCCOPY);
+    shown();
 }
 
 static unsigned *small;
@@ -99,6 +114,7 @@ static void frame_stretch(int f)
     int y;
     for (y = 0; y < 360; y += 2) memset(small + y * 640, f & 255, 640 * 4); /* (half the lines change) */
     StretchDIBits(wdc, 0, 0, SCREEN_W, SCREEN_H, 0, 0, 640, 360, small, &small_bi, DIB_RGB_COLORS, SRCCOPY);
+    shown();
 }
 
 static void frame_text(int f)
@@ -108,6 +124,7 @@ static void frame_text(int f)
     FillRect(mdc, &r, GetStockObject(BLACK_BRUSH));
     for (i = 0; i < 30; i++) message(mdc, f + i * 13, 20 + (i % 2) * 600, 10 + i * 23);
     BitBlt(wdc, 0, 0, SCREEN_W, SCREEN_H, mdc, 0, 0, SRCCOPY);
+    shown();
 }
 
 static void frame_small(int f)
@@ -118,6 +135,7 @@ static void frame_small(int f)
         int x = (i * 211 + f * 3) % (SCREEN_W - 64), y = (i * 97 + f * 2) % (SCREEN_H - 64);
         BitBlt(wdc, x, y, 64, 64, bg_dc, (i * 64) % (SCREEN_W - 64), 0, SRCCOPY);
     }
+    shown();
 }
 
 int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
@@ -129,6 +147,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     wdc = GetDC(hwnd);
     font = CreateFontW(-26, 0, 0, 0, FW_NORMAL, 0, 0, 0, SHIFTJIS_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, L"MS Gothic");
     mdc = dib_dc(SCREEN_W, SCREEN_H, &bits);
+    cap_dc = dib_dc(SCREEN_W, SCREEN_H, &cap);
     bg_dc = dib_dc(SCREEN_W, SCREEN_H, &bg);
     pic_background(bg, SCREEN_W, SCREEN_H, 1);
     scene = pic_alloc(SCREEN_W, SCREEN_H);

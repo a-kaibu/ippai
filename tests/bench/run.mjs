@@ -5,18 +5,19 @@
 //
 //   node tests/bench/run.mjs OUT.json GROUP [GROUP ...]
 //   env: BUILDS="new=http://127.0.0.1:8091 old=http://127.0.0.1:8092" (name=ippai serve URL;
-//          default "new=http://127.0.0.1:8090"), ROUNDS (measured rounds, default 3; one more
+//          default "new=http://127.0.0.1:8090"), ROUNDS (measured rounds, default 3, at least the
+//          group's MIN_ROUNDS; one more
 //          before them warms the JIT's saved translations and is not counted), SCALE (work per
 //          case, default 1), ONLY="exe:case ..." (just those), TIMEOUT (s per run, default 240),
 //          PLAYWRIGHT (the playwright module), CHROME_ARGS (more browser flags)
 //
-// Pages: play.html?autostart&headless with the bench tree mounted, VNVM_NOPACE (frames as fast as
+// Pages: play.html?autostart&headless with the bench tree mounted, IPPAI_NOPACE (frames as fast as
 // the guest makes them) and Chromium's frame rate unlimited (no vsync), so frame times are what
 // the build can do rather than 16.7 ms.
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
 const { chromium } = pw.default ?? pw;
 import { writeFileSync } from "node:fs";
-import { GROUPS } from "./suite.mjs";
+import { GROUPS, MIN_ROUNDS, VERSION } from "./suite.mjs";
 
 const [out, ...groups] = process.argv.slice(2);
 if (!out || !groups.length) {
@@ -27,7 +28,7 @@ const builds = (process.env.BUILDS ?? "new=http://127.0.0.1:8090").split(/\s+/).
   const i = b.indexOf("=");
   return { name: b.slice(0, i), url: b.slice(i + 1) };
 });
-const ROUNDS = Number(process.env.ROUNDS ?? 3);
+const ROUNDS = Math.max(Number(process.env.ROUNDS ?? 3), ...groups.map((g) => MIN_ROUNDS[g] ?? 0));
 const SCALE = process.env.SCALE ?? "1";
 const TIMEOUT = Number(process.env.TIMEOUT ?? 240) * 1000;
 const only = (process.env.ONLY ?? "").split(/\s+/).filter(Boolean);
@@ -55,11 +56,12 @@ async function runOnce(build, c) {
   const scale = c.format === "plain" ? "" : SCALE;
   const args = [c.args, c.args && scale].filter(Boolean).join(",");
   const url =
-    `${build.url}/play.html?autostart&headless&env=VNVM_NOPACE%3D1&mount=/vnvm/game=bench` +
+    `${build.url}/play.html?autostart&headless&env=IPPAI_NOPACE%3D1&mount=/vnvm/game=bench` +
     `${args ? `&args=${encodeURIComponent(args)}` : ""}&run=${encodeURIComponent(`Z:\\vnvm\\game\\${c.exe}`)}`;
   const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
   const page = await context.newPage();
   const metrics = {}, checks = {}, log = [];
+  let nopace = false;
   let error, ended = false, resolve;
   const finished = new Promise((r) => (resolve = r));
   // (after the program's last line, the page's own "the game ended" and the like don't count)
@@ -71,7 +73,8 @@ async function runOnce(build, c) {
     if (log.length < 400) log.push(text);
     for (const line of text.split("\n")) {
       let r;
-      if ((r = /^BENCH (\S+) ([-\d.]+)$/.exec(line))) metrics[r[1]] = Number(r[2]);
+      if (line === "BENCH-HOST nopace") nopace = true;
+      else if ((r = /^BENCH (\S+) ([-\d.]+)$/.exec(line))) metrics[r[1]] = Number(r[2]);
       else if ((r = /^BENCH-CHECK (\S+) (\S+)$/.exec(line))) checks[r[1]] = r[2];
       else if ((r = /^BENCH-FAIL (.*)$/.exec(line))) return (error = r[1]), done();
       else if (line === "BENCH-END") return done();
@@ -97,19 +100,39 @@ async function runOnce(build, c) {
   await context.close().catch(() => {});
   // (a program that ended without its results is a failure too)
   if (!error && !Object.keys(metrics).length) error = "no results";
-  return { metrics, checks, error, log: error ? log.slice(-40) : undefined };
+  return { metrics, checks, error, nopace, log: error ? log.slice(-40) : undefined };
 }
 
-const results = { builds: builds.map((b) => b.name), rounds: ROUNDS, scale: SCALE, runs: {}, checks: {}, errors: {} };
+const results = {
+  version: VERSION,
+  builds: builds.map((b) => b.name),
+  rounds: ROUNDS,
+  scale: SCALE,
+  // (what ran: the report checks that every one of them has its numbers)
+  cases: todo.map((c) => `${c.group}/${c.exe}:${c.args}`),
+  env: { chromium: browser.version(), node: process.version, runner: process.env.RUNNER_NAME ?? "" },
+  runs: {},
+  checks: {},
+  errors: {},
+  // builds left out of the comparison, and why
+  incompatible: {},
+  // checks that came out different from one run to the next of the same build
+  unstable: {},
+};
 for (const b of builds) (results.runs[b.name] = {}), (results.checks[b.name] = {}), (results.errors[b.name] = {});
+// (graphics groups: a build that keeps its 60 fps pacing measures the vsync, not the build)
+const paced = groups.some((g) => !g.startsWith("cpu-"));
+const saidNopace = {};
+let active = builds;
 for (let round = 0; round <= ROUNDS; round++) {
   for (const c of todo) {
     const key = `${c.group}/${c.exe}:${c.args}`;
     // (alternating which build goes first: neither always gets the warmer machine)
-    const order = round % 2 ? [...builds].reverse() : builds;
+    const order = round % 2 ? [...active].reverse() : active;
     for (const b of order) {
       if (results.errors[b.name][key]?.fatal) continue;
       const r = await runOnce(b, c);
+      if (r.nopace) saidNopace[b.name] = true;
       const tag = `${round ? `round ${round}` : "warm-up"} ${b.name} ${key}`;
       if (r.error) {
         console.log(`${tag}: FAILED ${r.error}`);
@@ -121,13 +144,31 @@ for (let round = 0; round <= ROUNDS; round++) {
       // (a case that failed once and then ran was a hiccup)
       delete results.errors[b.name][key];
       console.log(`${tag}: ${Object.entries(r.metrics).map(([k, v]) => `${k} ${v.toFixed(2)}`).join(", ")}`);
-      Object.assign(results.checks[b.name], Object.fromEntries(Object.entries(r.checks).map(([k, v]) => [`${c.group}/${k}`, v])));
+      for (const [k, v] of Object.entries(r.checks)) {
+        const name = `${c.group}/${k}`, had = results.checks[b.name][name];
+        if (had !== undefined && had !== v) (results.unstable[b.name] ??= {})[name] = [...new Set([...(results.unstable[b.name][name] ?? [had]), v])];
+        results.checks[b.name][name] = v;
+      }
       if (!round) continue;
       for (const [k, v] of Object.entries(r.metrics)) {
         const name = `${c.group}/${c.exe.replace(/\.exe$/, "")}.${k}`;
         (results.runs[b.name][name] ??= []).push(v);
       }
     }
+  }
+  if (round === 0 && paced) {
+    // After the warm-up: every build must have said it runs unpaced (IPPAI_NOPACE). This one must;
+    // a previous build that doesn't (from before the flag, or with another name) can't be
+    // compared with it, so it is left out and the report compares with the history instead.
+    for (const b of builds) {
+      if (saidNopace[b.name]) continue;
+      const why = "this build does not run frames unpaced (IPPAI_NOPACE): its frame times are its 60 fps pacing";
+      console.log(`${b.name}: ${why}`);
+      if (b === builds[0]) results.errors[b.name][`${groups.join("+")}/nopace`] = { error: why, fatal: true };
+      else results.incompatible[b.name] = why;
+    }
+    active = builds.filter((b) => b === builds[0] || !results.incompatible[b.name]);
+    for (const name of Object.keys(results.incompatible)) (results.runs[name] = {}), (results.checks[name] = {}), (results.errors[name] = {});
   }
 }
 await browser.close();

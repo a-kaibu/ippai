@@ -4,8 +4,8 @@
 //! The page shows `vnhost_display_frame` (one BGRA buffer of the whole screen) and sends input
 //! with `vnhost_input_push`; the program's input thread takes them with `input_take`.
 //!
-//! Under node, `VNVM_SCREENSHOT=<file.ppm>` writes the screen out (see `start_screenshots`) and
-//! `VNVM_INPUT="<seconds>:<kind>,<x>,<y>,<data>;..."` sends input that many seconds after the
+//! Under node, `IPPAI_SCREENSHOT=<file.ppm>` writes the screen out (see `start_screenshots`) and
+//! `IPPAI_INPUT="<seconds>:<kind>,<x>,<y>,<data>;..."` sends input that many seconds after the
 //! first window shows up (see `start_scripted_input`).
 
 use std::collections::{HashMap, VecDeque};
@@ -89,7 +89,7 @@ static DISPLAY: Mutex<Option<Display>> = Mutex::new(None);
 fn with<R>(f: impl FnOnce(&mut Display) -> R) -> R {
     let mut g = DISPLAY.lock().unwrap_or_else(|e| e.into_inner());
     f(g.get_or_insert_with(|| {
-        let (w, h) = std::env::var("VNVM_SCREEN")
+        let (w, h) = std::env::var("IPPAI_SCREEN")
             .ok()
             .and_then(|s| {
                 let (w, h) = s.split_once('x')?;
@@ -111,10 +111,10 @@ fn with<R>(f: impl FnOnce(&mut Display) -> R) -> R {
     }))
 }
 
-/// `VNVM_SCREENSHOT`: a thread writes the screen out whenever it has changed, once a second.
+/// `IPPAI_SCREENSHOT`: a thread writes the screen out whenever it has changed, once a second.
 fn start_screenshots() {
     static STARTED: std::sync::Once = std::sync::Once::new();
-    let Ok(path) = std::env::var("VNVM_SCREENSHOT") else { return };
+    let Ok(path) = std::env::var("IPPAI_SCREENSHOT") else { return };
     STARTED.call_once(|| {
         std::thread::spawn(move || {
             let mut written = 0;
@@ -143,10 +143,10 @@ fn start_screenshots() {
     });
 }
 
-/// `VNVM_INPUT`: input records sent at given times (for tests without a page).
+/// `IPPAI_INPUT`: input records sent at given times (for tests without a page).
 fn start_scripted_input() {
     static STARTED: std::sync::Once = std::sync::Once::new();
-    let Ok(script) = std::env::var("VNVM_INPUT") else { return };
+    let Ok(script) = std::env::var("IPPAI_INPUT") else { return };
     STARTED.call_once(|| {
         std::thread::spawn(move || {
             let t0 = std::time::Instant::now();
@@ -157,7 +157,7 @@ fn start_scripted_input() {
                 let wait = std::time::Duration::from_secs_f64(at).saturating_sub(t0.elapsed());
                 std::thread::sleep(wait);
                 vnhost_input_push(kind as u32, x as i32, y as i32, data as u32);
-                if crate::env_on!("VNVM_INPUT_TRACE") {
+                if crate::env_on!("IPPAI_INPUT_TRACE") {
                     let n = input_queued() * 16;
                     // and the windows there, top first
                     let under: Vec<String> = with(|d| {
@@ -388,7 +388,7 @@ pub fn pace_frame() {
 }
 
 fn pace() {
-    if crate::env_on!("VNVM_NOPACE") {
+    if crate::nopace() {
         return; // (benchmarks: as many frames as the guest can make, tests/bench)
     }
     #[cfg(target_os = "emscripten")]

@@ -229,21 +229,21 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       path === WASM && version ? `${BASE}${path}?v=${encodeURIComponent(version)}` : `${BASE}${path}`,
     vnvmEnv: {
       // "/=": an empty tree at the root, so every path is kura's (no emscripten file system)
-      VNVM_MOUNTS: ["/=", "/vnvm/prefix=prefix32", ...params.getAll("mount")].join(":"),
+      IPPAI_MOUNTS: ["/=", "/vnvm/prefix=prefix32", ...params.getAll("mount")].join(":"),
       LANG: "ja_JP.UTF-8",
       // sake's C:\ (the prefix's fonts)
       SAKE_C: "/vnvm/prefix/drive_c",
       SAKE_WINEDEBUG: params.get("debug") ?? "",
-      ...(jitName ? { VNVM_JIT_URL: new URL(`jit-save/${await jitName}`, location.href).href } : {}),
+      ...(jitName ? { IPPAI_JIT_URL: new URL(`jit-save/${await jitName}`, location.href).href } : {}),
       // count the threads' CPU time (vnhost_load_busy: the run log's perf lines, game.html);
       // &noload: off
-      ...(params.has("noload") ? {} : { VNVM_LOAD: "1" }),
+      ...(params.has("noload") ? {} : { IPPAI_LOAD: "1" }),
       // (headless Chromium destroys a device that draws to a canvas: tests take shots instead)
-      ...(params.has("headless") ? { VNVM_HEADLESS: "1" } : {}),
-      ...(params.has("d3dstats") ? { VNVM_D3DSTATS: "1" } : {}),
+      ...(params.has("headless") ? { IPPAI_HEADLESS: "1" } : {}),
+      ...(params.has("d3dstats") ? { IPPAI_D3DSTATS: "1" } : {}),
       // the game starts in its own folder (as from Explorer): many open their data relatively
       ...(/^z:\\/i.test(run)
-        ? { VNVM_CWD: run.slice(2, run.lastIndexOf("\\")).replaceAll("\\", "/") || "/" }
+        ? { IPPAI_CWD: run.slice(2, run.lastIndexOf("\\")).replaceAll("\\", "/") || "/" }
         : {}),
       ...Object.fromEntries(
         params.getAll("env").map((e) => [e.slice(0, e.indexOf("=")), e.slice(e.indexOf("=") + 1)]),

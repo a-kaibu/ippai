@@ -26,7 +26,7 @@
 //!   one JSON array; covers are under `/store/games/`
 //! - pre-runs: at the start and when the launcher lists the games, each listed game with no
 //!   saved regions for this build's translator (`web/sake/jit-version.txt`) runs once for a
-//!   minute in a headless Chromium (VNVM_CHROME or one on the PATH; `--no-prerun` for none),
+//!   minute in a headless Chromium (IPPAI_CHROME or one on the PATH; `--no-prerun` for none),
 //!   saving its regions like any run: the first real run starts like a second one.
 //!   `<jit>/<name>.prerun` marks it done
 //! - saved regions are optimized on the server after each save (binaryen wasm-opt, when there
@@ -255,7 +255,7 @@ async fn save_jit(State(jit): State<Jit>, Path(name): Path<String>, body: Bytes)
 }
 
 /// Optimizes the saved regions of `names` on the server, where there is time to (binaryen's
-/// `wasm-opt -O2`, VNVM_WASM_OPT, beside the server or on the PATH; nothing without it): each part's module gets
+/// `wasm-opt -O2`, IPPAI_WASM_OPT, beside the server or on the PATH; nothing without it): each part's module gets
 /// an optimized copy `<name>.<k.><version>.opt.wasm` that `<name>.parts` lists instead. The
 /// translator's own module stays the part (merges and selections read it: wasm-opt renumbers
 /// types and folds identical functions). Reunion's pre-run regions: 7.6 -> 5.4 MB, title
@@ -266,7 +266,7 @@ async fn optimize(jit: Jit, names: Vec<String>) {
     let _one = ONE.lock().await;
     // (a release has its own next to the server)
     let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("wasm-opt"))).filter(|p| p.is_file());
-    let Some(opt) = std::env::var_os("VNVM_WASM_OPT").map(PathBuf::from).or(beside).or_else(|| find_on_path(&["wasm-opt"])) else { return };
+    let Some(opt) = std::env::var_os("IPPAI_WASM_OPT").map(PathBuf::from).or(beside).or_else(|| find_on_path(&["wasm-opt"])) else { return };
     for name in names {
         let Ok(list) = tokio::fs::read_to_string(jit.0.join(format!("{name}.parts"))).await else { continue };
         let mut made = false;
@@ -559,7 +559,7 @@ async fn prerun_games(p: Arc<Prerun>) {
         return;
     }
     let Some(chrome) = chrome() else {
-        eprintln!("prerun: no Chromium found (set VNVM_CHROME): {} games start without saved regions", todo.len());
+        eprintln!("prerun: no Chromium found (set IPPAI_CHROME): {} games start without saved regions", todo.len());
         return;
     };
     let host = if p.listen.ip().is_unspecified() { SocketAddr::from(([127, 0, 0, 1], p.listen.port())) } else { p.listen };
@@ -600,9 +600,9 @@ async fn prerun_games(p: Arc<Prerun>) {
     }
 }
 
-/// The browser for pre-runs: VNVM_CHROME, else the first Chromium or Chrome on the PATH.
+/// The browser for pre-runs: IPPAI_CHROME, else the first Chromium or Chrome on the PATH.
 fn chrome() -> Option<PathBuf> {
-    if let Some(c) = std::env::var_os("VNVM_CHROME") {
+    if let Some(c) = std::env::var_os("IPPAI_CHROME") {
         return Some(c.into());
     }
     find_on_path(&["chromium", "chromium-browser", "google-chrome", "google-chrome-stable", "chrome"])

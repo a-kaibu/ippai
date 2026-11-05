@@ -14,6 +14,7 @@
 #include <d3d11.h>
 #include <d2d1.h>
 #include <dwrite.h>
+#include "d3d11_read.h"
 
 static const GUID iid_ID2D1Factory = { 0x06152247, 0x6f50, 0x465a, { 0x92, 0x45, 0x11, 0x8b, 0xfd, 0x3b, 0x60, 0x07 } };
 static const GUID iid_IDWriteFactory = { 0xb859ee5a, 0xd838, 0x4b5b, { 0xa2, 0xe8, 0x1a, 0xdc, 0x7d, 0x93, 0xdb, 0x48 } };
@@ -58,6 +59,7 @@ static void end(void)
 {
     HRESULT hr = ID2D1RenderTarget_EndDraw(rt, NULL, NULL);
     if (FAILED(hr)) bench_fail("EndDraw");
+    d3d11_read_back(sc);
     IDXGISwapChain_Present(sc, 0, 0);
 }
 

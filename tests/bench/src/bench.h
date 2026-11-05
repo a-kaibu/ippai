@@ -7,7 +7,7 @@
  * default 1: more work per case, for slower or faster machines).
  *
  * Built by emcc (__EMSCRIPTEN__) it is just the timing and the result lines: cpu.c's pure
- * computing cases straight to wasm, for JS engines' shells (tests/bench/jsc.sh). */
+ * computing cases straight to wasm, for JS engines' shells (tests/bench/js.sh). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -162,28 +162,78 @@ static __inline__ int bench_pump(void)
     return 1;
 }
 
+/* ---- what the frames drew ----
+ * bench_frames asks for a frame to be read back (bench_capturing()); the program's present path
+ * then reads the picture it shows (GetDIBits, Lock, GetRenderTargetData, a staging copy,
+ * glReadPixels) and hands it to bench_frame_pixels. The last warm-up frame is a fixed one, so its
+ * hash is a checksum ("BENCH-CHECK <case>.frame"): the build drew what the previous one drew. One
+ * more read back ends the timed frames, so they include the GPU finishing them. */
+static int bench_capture_, bench_captured_n_;
+static unsigned bench_captured_;
+
+static __inline__ int bench_capturing(void) { return bench_capture_; }
+
+/* w x h 32-bit pixels, `pitch` bytes per row; the alpha byte is ignored (X8R8G8B8) */
+static __inline__ void bench_frame_pixels(const void *p, int w, int h, int pitch)
+{
+    unsigned hash = 2166136261u, first = *(const unsigned *)p & 0xffffff, same = 1;
+    int x, y;
+    for (y = 0; y < h; y++)
+    {
+        const unsigned *row = (const unsigned *)((const char *)p + (size_t)y * pitch);
+        for (x = 0; x < w; x++)
+        {
+            unsigned v = row[x] & 0xffffff;
+            same &= v == first;
+            hash = (hash ^ v) * 16777619u;
+        }
+    }
+    if (same) bench_fail("the frame read back is all one color: nothing was drawn");
+    bench_captured_ = hash;
+    bench_captured_n_++;
+    bench_capture_ = 0;
+}
+
+static __inline__ void bench_pump_or_exit(void)
+{
+    if (!bench_pump()) ExitProcess(0);
+}
+
 /* Runs frame(i) `warm` times, then at least `n` times timed: reports ms per frame. The frames are as
- * fast as the guest and the page can make them (run.mjs sets VNVM_NOPACE and unlimits the
+ * fast as the guest and the page can make them (run.mjs sets IPPAI_NOPACE and unlimits the
  * page's frame rate). */
 static __inline__ void bench_frames(const char *name, int warm, int n, void (*frame)(int))
 {
+    char check[64];
     double t0;
-    int i;
+    int i, got;
     n = (int)(n * bench_scale);
     if (n < 1) n = 1;
+    if (warm < 1) warm = 1;
     for (i = 0; i < warm; i++)
     {
-        if (!bench_pump()) ExitProcess(0);
+        bench_pump_or_exit();
+        bench_capture_ = i == warm - 1;
         frame(i);
     }
+    if (!bench_captured_n_) bench_fail("the frame was not read back");
+    snprintf(check, sizeof(check), "%s.frame", name);
+    bench_check(check, bench_captured_);
     /* (at least n frames and 2 s: short runs of fast cases are mostly noise) */
+    got = bench_captured_n_;
     t0 = now_ms();
     for (i = 0; i < n || now_ms() - t0 < 2000 * bench_scale; i++)
     {
-        if (!bench_pump()) ExitProcess(0);
+        bench_pump_or_exit();
+        bench_capture_ = 0;
         frame(warm + i);
     }
+    /* (the last one is read back: the GPU's queue is done when the clock stops) */
+    bench_pump_or_exit();
+    bench_capture_ = 1;
+    frame(warm + i++);
     bench_report(name, (now_ms() - t0) / i);
+    if (bench_captured_n_ == got) bench_fail("the last frame was not read back");
 }
 
 #endif

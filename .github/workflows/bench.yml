@@ -41,6 +41,7 @@ jobs:
       old_run_id: ${{ steps.p.outputs.old_run_id }}
       old_sha: ${{ steps.p.outputs.old_sha }}
       groups: ${{ steps.p.outputs.groups }}
+      all: ${{ steps.p.outputs.all }}
       js: ${{ steps.p.outputs.js }}
     steps:
       - id: p
@@ -67,6 +68,7 @@ jobs:
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
           echo "old_run_id=$OLD_RUN_ID" >> "$GITHUB_OUTPUT"
           echo "old_sha=$OLD_SHA" >> "$GITHUB_OUTPUT"
+          echo "all=$G" >> "$GITHUB_OUTPUT"
           echo "groups=$(python3 -c 'import json, sys; print(json.dumps([g for g in sys.argv[1:] if g != "js"]))' $G)" >> "$GITHUB_OUTPUT"
           echo "js=$(echo " $G " | grep -q ' js ' && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "this: CI run $RUN_ID ($SHA); previous: ${OLD_RUN_ID:-none} (${OLD_SHA:-none}); groups: $G"
@@ -187,8 +189,9 @@ jobs:
         env:
           SHA: ${{ needs.plan.outputs.sha }}
           OLD_SHA: ${{ needs.plan.outputs.old_sha }}
+          GROUPS: ${{ needs.plan.outputs.all }}
         run: |
-          python3 tests/bench/report.py results --sha "$SHA" --old-sha "$OLD_SHA" --history history/history.json \
+          python3 tests/bench/report.py results --sha "$SHA" --old-sha "$OLD_SHA" --groups "$GROUPS" --history history/history.json \
             --history-out history.json --out report.md --summary "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7.0.2
         if: always()

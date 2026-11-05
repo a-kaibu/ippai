@@ -3,13 +3,13 @@
 //! (`vnhost_jit_step`, `vnhost_jit_eflags`, `vnhost_jit_status`). The modules themselves are
 //! compiled and instantiated by vnjit.js; each thread has its own funcref table.
 //!
-//! VNVM_JIT=0 turns the JIT off (the interpreter runs everything). VNVM_JIT_DUMP=dir writes every
-//! region module to dir/<first root>-<roots>.wasm. VNVM_JIT_LAYOUT=1 prints the block order, loops
-//! and wasm bytes per mnemonic of new regions (of merged ones too with VNVM_JIT_STATS).
+//! IPPAI_JIT=0 turns the JIT off (the interpreter runs everything). IPPAI_JIT_DUMP=dir writes every
+//! region module to dir/<first root>-<roots>.wasm. IPPAI_JIT_LAYOUT=1 prints the block order, loops
+//! and wasm bytes per mnemonic of new regions (of merged ones too with IPPAI_JIT_STATS).
 //! Functions (jit::FN) are translated on a compiler thread while the interpreter goes on;
-//! only loading the module stays on the guest thread (VNVM_JIT_ASYNC=0: all of it there).
+//! only loading the module stays on the guest thread (IPPAI_JIT_ASYNC=0: all of it there).
 //!
-//! Regions are kept across runs: with VNVM_JIT_URL set, the regions built since the last save are
+//! Regions are kept across runs: with IPPAI_JIT_URL set, the regions built since the last save are
 //! sent there now and then (see [`maybe_save`]; ippai serve merges them into what it has), and the
 //! page (or pre.js under node) hands the next run that module and index (`jit::saved`). A
 //! saved region goes in when its first root first misses, if the guest code is still the same:
@@ -25,16 +25,16 @@ use std::time::{Duration, Instant};
 use koji::jit::{self, wasm::Module};
 use koji::{Cpu, Exit};
 
-/// Misses at an address before its block is compiled (VNVM_JIT_THRESHOLD overrides).
+/// Misses at an address before its block is compiled (IPPAI_JIT_THRESHOLD overrides).
 const THRESHOLD: u32 = 50;
 
 fn threshold() -> u32 {
     use std::sync::OnceLock;
     static T: OnceLock<u32> = OnceLock::new();
-    *T.get_or_init(|| std::env::var("VNVM_JIT_THRESHOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(THRESHOLD))
+    *T.get_or_init(|| std::env::var("IPPAI_JIT_THRESHOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(THRESHOLD))
 }
-/// Debugging a miscompile by bisection: VNVM_JIT_ONLY=lo-hi (hex) compiles only code in [lo, hi),
-/// VNVM_JIT_ONLY=!lo-hi all but that.
+/// Debugging a miscompile by bisection: IPPAI_JIT_ONLY=lo-hi (hex) compiles only code in [lo, hi),
+/// IPPAI_JIT_ONLY=!lo-hi all but that.
 fn debug_allowed(a: u32) -> bool {
     if wx_page(a) || page_set(&SMC_PAGES, a) {
         return false;
@@ -135,7 +135,7 @@ fn debug_range(a: u32) -> bool {
     static R: OnceLock<(u32, u32, bool)> = OnceLock::new();
     let (lo, hi, not) = *R.get_or_init(|| {
         // ("!lo-hi": everything but [lo, hi))
-        let v = std::env::var("VNVM_JIT_ONLY").unwrap_or_default();
+        let v = std::env::var("IPPAI_JIT_ONLY").unwrap_or_default();
         let not = v.starts_with('!');
         let mut it = v.trim_start_matches('!').split('-').map(|x| u32::from_str_radix(x.trim_start_matches("0x"), 16).ok());
         match (it.next().flatten(), it.next().flatten()) {
@@ -145,13 +145,13 @@ fn debug_range(a: u32) -> bool {
     });
     (a >= lo && a < hi) != not
 }
-/// VNVM_JIT_FN_ONLY=lo-hi[_lo-hi...] (hex): function mode only for entries in those ranges,
+/// IPPAI_JIT_FN_ONLY=lo-hi[_lo-hi...] (hex): function mode only for entries in those ranges,
 /// regions elsewhere.
 fn fn_allowed(a: u32) -> bool {
     use std::sync::OnceLock;
     static R: OnceLock<Vec<(u32, u32)>> = OnceLock::new();
     let r = R.get_or_init(|| {
-        let v = std::env::var("VNVM_JIT_FN_ONLY").unwrap_or_default();
+        let v = std::env::var("IPPAI_JIT_FN_ONLY").unwrap_or_default();
         v.split('_')
             .filter_map(|r| {
                 let mut it = r.split('-').map(|x| u32::from_str_radix(x.trim_start_matches("0x"), 16).ok());
@@ -287,13 +287,13 @@ thread_local! {
 pub fn enabled() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| cfg!(target_os = "emscripten") && std::env::var("VNVM_JIT").map_or(true, |v| v != "0"))
+    *ON.get_or_init(|| cfg!(target_os = "emscripten") && std::env::var("IPPAI_JIT").map_or(true, |v| v != "0"))
 }
 
 pub fn enabled64() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var("VNVM_JIT64").map_or(true, |v| v != "0"))
+    *ON.get_or_init(|| std::env::var("IPPAI_JIT64").map_or(true, |v| v != "0"))
 }
 
 pub enum Ran {
@@ -412,7 +412,7 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
     })
 }
 
-/// Compiles and their time (µs) for VNVM_JIT_COUNT: regions, functions.
+/// Compiles and their time (µs) for IPPAI_JIT_COUNT: regions, functions.
 static COMPILES: [AtomicU32; 6] = [const { AtomicU32::new(0) }; 6];
 
 /// Compiles since the start: regions, functions, rebuilt functions (the crash log).
@@ -428,23 +428,23 @@ fn count_compile(k: usize, t0: Instant) {
     COMPILES[2 * k + 1].fetch_add(t0.elapsed().as_micros() as u32, Ordering::Relaxed);
 }
 
-/// Switches read once: VNVM_JIT_COUNT=<secs> (transfer counters), VNVM_JIT_CALLS=1|2,
-/// VNVM_JIT_NOCHECK=1 (measuring only: no range checks).
+/// Switches read once: IPPAI_JIT_COUNT=<secs> (transfer counters), IPPAI_JIT_CALLS=1|2,
+/// IPPAI_JIT_NOCHECK=1 (measuring only: no range checks).
 fn init_flags() {
-    if std::env::var("VNVM_JIT_FN_ENTRIES").is_ok_and(|v| v == "0") {
+    if std::env::var("IPPAI_JIT_FN_ENTRIES").is_ok_and(|v| v == "0") {
         jit::FN_ENTRIES.store(false, Ordering::Relaxed);
     }
-    if let Ok(v) = std::env::var("VNVM_JIT_PROBE") {
+    if let Ok(v) = std::env::var("IPPAI_JIT_PROBE") {
         for (p, a) in jit::PROBES.iter().zip(v.split('_').filter_map(|a| u32::from_str_radix(a.trim_start_matches("0x"), 16).ok())) {
             p.store(a, Ordering::Relaxed);
         }
     }
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        if std::env::var("VNVM_JIT_HOIST").is_ok_and(|v| v == "0") {
+        if std::env::var("IPPAI_JIT_HOIST").is_ok_and(|v| v == "0") {
             jit::HOIST.store(false, Ordering::Relaxed);
         }
-        if let Some(secs) = std::env::var("VNVM_JIT_COUNT").ok().and_then(|v| v.parse::<u64>().ok()) {
+        if let Some(secs) = std::env::var("IPPAI_JIT_COUNT").ok().and_then(|v| v.parse::<u64>().ok()) {
             use std::sync::atomic::Ordering::Relaxed;
             if !jit::COUNT.swap(true, Relaxed) {
                 std::thread::spawn(move || loop {
@@ -456,24 +456,24 @@ fn init_flags() {
             }
         }
         // CALL/RET as wasm calls: 1 direct calls, 2 indirect ones too
-        let calls = std::env::var("VNVM_JIT_CALLS").unwrap_or_default();
+        let calls = std::env::var("IPPAI_JIT_CALLS").unwrap_or_default();
         jit::CALLS.store(calls == "1" || calls == "2", std::sync::atomic::Ordering::Relaxed);
         jit::INDIRECT_CALLS.store(calls == "2", std::sync::atomic::Ordering::Relaxed);
-        // debugging the long-mode translator: VNVM_JIT64_INS / _BLOCKS (limits), VNVM_JIT64_OFF
+        // debugging the long-mode translator: IPPAI_JIT64_INS / _BLOCKS (limits), IPPAI_JIT64_OFF
         // (mnemonics, as iced names them, left to the interpreter)
         let num = |k: &str| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(0);
-        jit::long::DEBUG_INS.store(num("VNVM_JIT64_INS"), std::sync::atomic::Ordering::Relaxed);
-        jit::long::DEBUG_BLOCKS.store(num("VNVM_JIT64_BLOCKS"), std::sync::atomic::Ordering::Relaxed);
-        jit::long::DEBUG_CHECK.store(num("VNVM_JIT64_CHECK") != 0, std::sync::atomic::Ordering::Relaxed);
-        for name in std::env::var("VNVM_JIT64_OFF").unwrap_or_default().split(',').filter(|s| !s.is_empty()) {
+        jit::long::DEBUG_INS.store(num("IPPAI_JIT64_INS"), std::sync::atomic::Ordering::Relaxed);
+        jit::long::DEBUG_BLOCKS.store(num("IPPAI_JIT64_BLOCKS"), std::sync::atomic::Ordering::Relaxed);
+        jit::long::DEBUG_CHECK.store(num("IPPAI_JIT64_CHECK") != 0, std::sync::atomic::Ordering::Relaxed);
+        for name in std::env::var("IPPAI_JIT64_OFF").unwrap_or_default().split(',').filter(|s| !s.is_empty()) {
             if !jit::long::debug_off_named(name) {
-                eprintln!("VNVM_JIT64_OFF: no mnemonic {name}");
+                eprintln!("IPPAI_JIT64_OFF: no mnemonic {name}");
             }
         }
         jit::set_watch(exe_wx_page);
         jit::set_deny(|a| wx_page(a) || page_set(&SMC_PAGES, a));
-        // function mode by default (VNVM_JIT_FN=0: regions)
-        jit::FN.store(std::env::var("VNVM_JIT_FN").map_or(true, |v| v != "0"), std::sync::atomic::Ordering::Relaxed);
+        // function mode by default (IPPAI_JIT_FN=0: regions)
+        jit::FN.store(std::env::var("IPPAI_JIT_FN").map_or(true, |v| v != "0"), std::sync::atomic::Ordering::Relaxed);
 
     });
 }
@@ -504,7 +504,7 @@ pub fn run(cpu: &mut Cpu, pending: u32) -> Ran {
     let depth = cpu.jit_depth;
     #[cfg(target_os = "emscripten")]
     let expect = {
-        // VNVM_JIT64_VERIFY=1: single-instruction regions, =2: whole regions; one region per call
+        // IPPAI_JIT64_VERIFY=1: single-instruction regions, =2: whole regions; one region per call
         // now and then, checked against the interpreter
         thread_local! { static VN: Cell<u32> = const { Cell::new(0) }; }
         let mode = if cpu.mode64 != 0 { verify64() } else { 0 };
@@ -549,7 +549,7 @@ fn verify64() -> u32 {
     use std::sync::OnceLock;
     static ON: OnceLock<u32> = OnceLock::new();
     *ON.get_or_init(|| {
-        let on = std::env::var("VNVM_JIT64_VERIFY").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+        let on = std::env::var("IPPAI_JIT64_VERIFY").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
         if on == 1 {
             jit::long::DEBUG_INS.store(1, Ordering::Relaxed);
             jit::long::DEBUG_BLOCKS.store(1, Ordering::Relaxed);
@@ -657,7 +657,7 @@ fn insert(hash: &mut [[u32; 2]], eip: u32, idx: u32) -> bool {
 
 /// Compiles `module` and points the hash table at its region's blocks.
 fn load(st: &mut State, bytes: &[u8], roots: Vec<u32>, starts: &[(u32, u32)]) -> bool {
-    if let Some(dir) = std::env::var_os("VNVM_JIT_DUMP") {
+    if let Some(dir) = std::env::var_os("IPPAI_JIT_DUMP") {
         let name = format!("{:08x}-{}.wasm", roots[0], roots.len());
         let _ = std::fs::write(std::path::Path::new(&dir).join(name), bytes);
     }
@@ -791,7 +791,7 @@ fn load_saved_fn(st: &mut State, i: usize) -> bool {
     true
 }
 
-/// Sends the regions built since the last save to VNVM_JIT_URL (as one module and its index)
+/// Sends the regions built since the last save to IPPAI_JIT_URL (as one module and its index)
 /// once the run is past its start, at most every SAVE_EVERY and only when there are enough to
 /// be worth it: each save changes the module, and Chromium then forgets its compiled code.
 fn maybe_save() {
@@ -800,7 +800,7 @@ fn maybe_save() {
     const SAVE_MIN: usize = 32;
     static URL: std::sync::OnceLock<Option<std::ffi::CString>> = std::sync::OnceLock::new();
     static SAVE: Mutex<(Option<Instant>, Option<Instant>, Option<HashMap<Vec<u32>, u32>>, bool)> = Mutex::new((None, None, None, false));
-    let Some(url) = URL.get_or_init(|| std::env::var("VNVM_JIT_URL").ok().and_then(|u| std::ffi::CString::new(u).ok())) else {
+    let Some(url) = URL.get_or_init(|| std::env::var("IPPAI_JIT_URL").ok().and_then(|u| std::ffi::CString::new(u).ok())) else {
         return;
     };
     if profiling() {
@@ -850,7 +850,7 @@ fn maybe_save() {
         done.insert(r, s.build);
     }
     let idx = jit::saved::encode(&entries);
-    if stats() || crate::env_on!("VNVM_JIT_SAVE_LOG") {
+    if stats() || crate::env_on!("IPPAI_JIT_SAVE_LOG") {
         eprintln!("vnjit: saving {} regions ({} bytes)", entries.len(), wasm.len());
     }
     let mut body = (wasm.len() as u32).to_le_bytes().to_vec();
@@ -1020,10 +1020,10 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
     }
     let (lo, hi) = (cpu.trap_lo, cpu.trap_hi);
     let mut m = Module { name: Some(format!("x86_{:08x}_{}", roots[0], roots.len())), ..Module::default() };
-    if let Some(n) = std::env::var("VNVM_JIT_SLOTS").ok().and_then(|v| v.parse::<u32>().ok()) {
+    if let Some(n) = std::env::var("IPPAI_JIT_SLOTS").ok().and_then(|v| v.parse::<u32>().ok()) {
         jit::SLOTS_MAX.store(n.min(6), std::sync::atomic::Ordering::Relaxed);
     }
-    if crate::env_on!("VNVM_JIT_LAYOUT") {
+    if crate::env_on!("IPPAI_JIT_LAYOUT") {
         jit::LAYOUT.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     let (misses, known) = (&st.misses, &st.known);
@@ -1112,7 +1112,7 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         }
         // the block and what it statically reaches, as one function
         let mut m = Module { name: Some(format!("x86_{eip:08x}")), ..Module::default() };
-        if crate::env_on!("VNVM_JIT_LAYOUT") {
+        if crate::env_on!("IPPAI_JIT_LAYOUT") {
             jit::LAYOUT.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         let (lo, hi) = (cpu.trap_lo, cpu.trap_hi);
@@ -1128,7 +1128,7 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
             st.known.insert(eip);
             return false;
         };
-        if crate::env_on!("VNVM_JIT_LAYOUT") {
+        if crate::env_on!("IPPAI_JIT_LAYOUT") {
             eprintln!("vnjit fresh {eip:#x}\n{}", region.layout);
         }
         let bytes = m.finish();
@@ -1136,7 +1136,7 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         mark_code(&region.code);
         let ok = load(st, &bytes, vec![eip], &region.starts);
         count_compile(0, t0);
-        if crate::env_on!("VNVM_JIT_TIME") {
+        if crate::env_on!("IPPAI_JIT_TIME") {
             eprintln!("vnjit time {eip:#x}: {} ins, translate {:?}, load {:?}", region.instructions, t1 - t0, t1.elapsed());
         }
         if ok {
@@ -1167,7 +1167,7 @@ fn compile_long(st: &mut State, cpu: &Cpu, mem: &mut Linear) -> bool {
     let bytes = m.finish();
     let t1 = std::time::Instant::now();
     let ok = load(st, &bytes, vec![eip], &region.starts);
-    if crate::env_on!("VNVM_JIT_TIME") {
+    if crate::env_on!("IPPAI_JIT_TIME") {
         eprintln!("vnjit time {eip:#x}: {} ins, translate {:?}, load {:?}", region.instructions, t1 - t0, t1.elapsed());
     }
     if ok {
@@ -1244,12 +1244,12 @@ struct Job {
     done: std::sync::mpsc::Sender<(u32, u32, Built)>,
 }
 
-/// The compiler thread's queue (VNVM_JIT_ASYNC=0: none, functions are translated where they
+/// The compiler thread's queue (IPPAI_JIT_ASYNC=0: none, functions are translated where they
 /// are needed).
 fn compiler() -> Option<&'static std::sync::mpsc::Sender<Job>> {
     static Q: std::sync::OnceLock<Option<std::sync::mpsc::Sender<Job>>> = std::sync::OnceLock::new();
     Q.get_or_init(|| {
-        if std::env::var("VNVM_JIT_ASYNC").is_ok_and(|v| v == "0") {
+        if std::env::var("IPPAI_JIT_ASYNC").is_ok_and(|v| v == "0") {
             return None;
         }
         let (tx, rx) = std::sync::mpsc::channel::<Job>();
@@ -1282,26 +1282,26 @@ fn take_built(st: &mut State, mem: &mut Linear) {
 
 fn build_fn(mem: &mut Linear, eip: u32, (lo, hi): (u32, u32), part: bool, build: u32, misses: &HashMap<u32, u32>, known: &HashSet<u32>, hints: &HashMap<u32, u32>) -> Built {
     let t0 = Instant::now();
-    if crate::env_on!("VNVM_JIT_LAYOUT") {
+    if crate::env_on!("IPPAI_JIT_LAYOUT") {
         jit::LAYOUT.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     let mut m = Module { name: Some(format!("x86_{eip:08x}_fn")), ..Module::default() };
     // a function built again (it left its blocks often) may take more: twice per build
-    // (big interpreters' loops, a C library's long switch), from VNVM_JIT_FN_INS
-    let base = *FN_INS.get_or_init(|| std::env::var("VNVM_JIT_FN_INS").ok().and_then(|v| v.parse().ok()).unwrap_or(1000));
+    // (big interpreters' loops, a C library's long switch), from IPPAI_JIT_FN_INS
+    let base = *FN_INS.get_or_init(|| std::env::var("IPPAI_JIT_FN_INS").ok().and_then(|v| v.parse().ok()).unwrap_or(1000));
     jit::FN_MAX_INS.store(base << (build.min(4) - 1), std::sync::atomic::Ordering::Relaxed);
     let region = jit::translate_function(&mut m, mem, eip, jit::MAX_BLOCKS, (lo, hi), &|a| hints.get(&a).copied(), &|a| debug_allowed(a) && ran(misses, known, a), |a| debug_allowed(a) && !(a >= lo && a < hi) && (a == eip || if part { !known.contains(&a) && misses.contains_key(&a) } else { ran(misses, known, a) }))?;
-    if crate::env_on!("VNVM_JIT_LAYOUT") {
+    if crate::env_on!("IPPAI_JIT_LAYOUT") {
         eprintln!("vnjit fn {eip:#x}\n{}", region.layout);
     }
     if stats() {
         eprintln!("vnjit fn {eip:#x} build {build}: {} instructions", region.instructions);
     }
     let bytes = m.finish();
-    if let Some(dir) = std::env::var_os("VNVM_JIT_DUMP") {
+    if let Some(dir) = std::env::var_os("IPPAI_JIT_DUMP") {
         let _ = std::fs::write(std::path::Path::new(&dir).join(format!("{eip:08x}-fn.wasm")), &bytes);
     }
-    if crate::env_on!("VNVM_JIT_TIME") {
+    if crate::env_on!("IPPAI_JIT_TIME") {
         eprintln!("vnjit time {eip:#x}: {} ins, translate {:?} build {build} part {part}", region.instructions, t0.elapsed());
     }
     let text = code_bytes(mem, &region.code)?;
@@ -1316,7 +1316,7 @@ fn finish_fn(st: &mut State, eip: u32, build: u32, built: Built, t0: Instant) ->
     };
     let t1 = Instant::now();
     let ok = install_fn(st, eip, &bytes, &region.starts, &region.sites, &region.code);
-    if crate::env_on!("VNVM_JIT_TIME") {
+    if crate::env_on!("IPPAI_JIT_TIME") {
         eprintln!("vnjit time {eip:#x}: {} ins, load {:?}", region.instructions, t1.elapsed());
     }
     count_compile(1, t0);
@@ -1468,25 +1468,25 @@ pub unsafe extern "C" fn vnhost_jit_x87(cpu: u32, top: u32, info: u32, a: f64, b
 #[no_mangle]
 pub extern "C" fn vnhost_jit_status(op: u32, a: u32, b: u32, r: u32, c: u32) -> u32 {
     if op == 0xdead {
-        // (jit::long's VNVM_JIT64_CHECK: a lazy condition that disagrees with the flags)
+        // (jit::long's IPPAI_JIT64_CHECK: a lazy condition that disagrees with the flags)
         eprintln!("vnjit64 check: condition {b} at {a:#x}: lazy {r}, eflags {c:#x}");
         return 0;
     }
     koji::lazy::Lazy { op, a, b, r, c }.status()
 }
 
-/// VNVM_JIT_PROFILE: every region's blocks (address, entry counter, instruction keys).
+/// IPPAI_JIT_PROFILE: every region's blocks (address, entry counter, instruction keys).
 static PROF: Mutex<Vec<(u32, u32, Vec<String>)>> = Mutex::new(Vec::new());
 
 fn profiling() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| {
-        let on = crate::env_on!("VNVM_JIT_PROFILE");
+        let on = crate::env_on!("IPPAI_JIT_PROFILE");
         jit::PROFILE.store(on, std::sync::atomic::Ordering::Relaxed);
-        // VNVM_JIT_PROFILE=<seconds> (> 1): print the counts that long after the first region
+        // IPPAI_JIT_PROFILE=<seconds> (> 1): print the counts that long after the first region
         // (under node, where no page asks for them)
-        if let Some(secs) = std::env::var("VNVM_JIT_PROFILE").ok().and_then(|v| v.parse::<u64>().ok()).filter(|&s| s > 1) {
+        if let Some(secs) = std::env::var("IPPAI_JIT_PROFILE").ok().and_then(|v| v.parse::<u64>().ok()).filter(|&s| s > 1) {
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_secs(secs));
                 vnhost_jit_profile();
@@ -1545,8 +1545,8 @@ pub extern "C" fn vnhost_jit_profile() {
     for (k, n) in keys.iter().take(200) {
         o += &format!("PROF key {k} {n}\n");
     }
-    // VNVM_PROF_BLOCKS=<n>: more of the hottest blocks (default 40)
-    let nblocks = std::env::var("VNVM_PROF_BLOCKS").ok().and_then(|v| v.parse().ok()).unwrap_or(40);
+    // IPPAI_PROF_BLOCKS=<n>: more of the hottest blocks (default 40)
+    let nblocks = std::env::var("IPPAI_PROF_BLOCKS").ok().and_then(|v| v.parse().ok()).unwrap_or(40);
     for (n, a, len) in blocks.iter().take(nblocks) {
         o += &format!("PROF block {a:08x} {len} {n}\n");
     }
@@ -1587,10 +1587,10 @@ fn category(k: &str) -> &'static str {
 fn stats() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("VNVM_JIT_STATS").is_some())
+    *ON.get_or_init(|| std::env::var_os("IPPAI_JIT_STATS").is_some())
 }
 
-/// VNVM_JIT_STATS: which instructions blocks hand to the interpreter, printed every 2^22.
+/// IPPAI_JIT_STATS: which instructions blocks hand to the interpreter, printed every 2^22.
 fn count_step(cpu: &Cpu) {
     thread_local! {
         static COUNTS: RefCell<(u64, HashMap<String, u64>)> = RefCell::new((0, HashMap::new()));
@@ -1621,7 +1621,7 @@ fn count_step(cpu: &Cpu) {
     });
 }
 
-/// VNVM_JIT_STATS: where the JIT hands back to the run loop, printed every 2^20.
+/// IPPAI_JIT_STATS: where the JIT hands back to the run loop, printed every 2^20.
 pub(crate) fn count_miss(eip: u32) {
     if !stats() {
         return;
@@ -1642,7 +1642,7 @@ pub(crate) fn count_miss(eip: u32) {
     });
 }
 
-/// VNVM_JIT_STATS: entries into the run loop per thread (a guest spinning on system calls
+/// IPPAI_JIT_STATS: entries into the run loop per thread (a guest spinning on system calls
 /// shows up here), printed every 2^16 with the addresses seen most.
 pub(crate) fn count_entry(eip: u32) {
     if !stats() {

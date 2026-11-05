@@ -8,7 +8,7 @@ TITLES.tsv: id, url, exe_rel columns (header row); optional steps, story_at, pre
 STEPS.tsv: id<TAB>steps<TAB>story_at<TAB>pre (x,y clicked before the title), wins over the columns.
 IDS_FILE "-": every title of TITLES.tsv.
 OUT_DIR/<id>/ gets result.json + PNGs; titles whose result.json exists are skipped.
-env: VNVM_DIST (a release directory: vnvm, web/; default the checkout's
+env: IPPAI_DIST (a release directory: vnvm, web/; default the checkout's
 target/release + web/dist), JIT_DIR, SKIP_X64=0 (run x64 exes too: sake runs them), PORT,
 TRIALS, STORES, BASE_STORE (corpus-prep.sh), ENGINE, PREP_JOBS, CORPUS_QS (appended to the page's query).
 """
@@ -28,7 +28,7 @@ TRIALS = os.environ.get('TRIALS', '/home/user/trials')
 STORES = os.environ.get('STORES', '/home/user/runs/stores')
 os.makedirs(STORES, exist_ok=True)
 PORT = int(os.environ.get('PORT', '8092'))
-DIST = os.environ.get('VNVM_DIST')
+DIST = os.environ.get('IPPAI_DIST')
 BIN = DIST or f'{ROOT}/target/release'
 WEB = f'{DIST}/web' if DIST else f'{ROOT}/web/dist'
 JIT_DIR = os.environ.get('JIT_DIR', '/home/user/runs/jit')
@@ -125,7 +125,7 @@ while True:
         if engine: qs += '&engine=' + engine
         qs += os.environ.get('CORPUS_QS', '')  # (more page parameters, e.g. &env=NAME%3Dvalue)
         if winexe.endswith('_vnvm_autoclick.exe'):
-            qs += '&env=VNVM_ROOT_APP%3D0&env=VNVM_HELPER_EXE%3D_vnvm_autoclick.exe'  # small slots for the helper: the game gets the low app area
+            qs += '&env=IPPAI_ROOT_APP%3D0&env=IPPAI_HELPER_EXE%3D_vnvm_autoclick.exe'  # small slots for the helper: the game gets the low app area
         st, at, pre = steps.get(tid, ('key:Return wait:3', '', ''))
         e2 = dict(env)
         if at: e2['STORY_AT'] = at
