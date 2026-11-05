@@ -73,8 +73,33 @@ jobs:
           echo "js=$(echo " $G " | grep -q ' js ' && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "this: CI run $RUN_ID ($SHA); previous: ${OLD_RUN_ID:-none} (${OLD_SHA:-none}); groups: $G"
 
-  run:
+  # The programs and the fonts, once: apt's mirror is sometimes very slow (a run's job took an hour
+  # to fetch mingw), so one job fetches it, with retries, and the groups' jobs take the result.
+  prepare:
     needs: plan
+    if: needs.plan.outputs.groups != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - name: Programs and fonts
+        run: |
+          apt="-o Acquire::Retries=5 -o Acquire::http::Timeout=30"
+          sudo apt-get $apt update -q
+          sudo apt-get $apt install -yq --no-install-recommends gcc-mingw-w64-i686 g++-mingw-w64-i686 fonts-ipafont-gothic fonts-ipafont-mincho
+          pip install --user -q fonttools==4.59.0
+          tests/bench/build.sh inputs/exe
+          python3 tools/ci/sake-fonts.py inputs/fonts
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: inputs
+          path: inputs
+          retention-days: 3
+
+  run:
+    needs: [plan, prepare]
     if: needs.plan.outputs.groups != '[]'
     runs-on: ubuntu-24.04
     timeout-minutes: 360
@@ -102,6 +127,10 @@ jobs:
           path: dist-old
           run-id: ${{ needs.plan.outputs.old_run_id }}
           github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: inputs
+          path: ${{ runner.temp }}/inputs
       - name: Tools
         # (an apt or browser download that hangs must not hold the whole run: one did for an hour)
         timeout-minutes: 15
@@ -109,12 +138,9 @@ jobs:
           SHA: ${{ needs.plan.outputs.sha }}
           OLD_SHA: ${{ needs.plan.outputs.old_sha }}
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -yq --no-install-recommends mingw-w64 zstd fonts-ipafont-gothic fonts-ipafont-mincho
-          pip install --user -q fonttools==4.59.0
           npm install --prefix "$RUNNER_TEMP/pw" --no-audit --no-fund playwright@1.56.1
-          "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install --with-deps chromium
-          python3 tools/ci/sake-fonts.py "$RUNNER_TEMP/fonts"
+          # (the runner image has the browser's libraries: no apt here)
+          "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install chromium
           unpack() {  # artifact dir, sha, destination (the build's tarball is named by git describe)
             local t
             t=$(ls "$1"/ippai-*"${2:0:7}"*.tar.zst 2>/dev/null | head -1)
@@ -128,9 +154,9 @@ jobs:
           ROUNDS: ${{ inputs.rounds }}
           PLAYWRIGHT: ${{ runner.temp }}/pw/node_modules/playwright/index.mjs
         run: |
-          export NEW=$RUNNER_TEMP/new
+          export NEW=$RUNNER_TEMP/new EXE=$RUNNER_TEMP/inputs/exe
           if [ -d "$RUNNER_TEMP/old" ]; then export OLD=$RUNNER_TEMP/old; fi
-          tests/bench/ci.sh "results/${{ matrix.group }}.json" "$RUNNER_TEMP/fonts" "${{ matrix.group }}"
+          tests/bench/ci.sh "results/${{ matrix.group }}.json" "$RUNNER_TEMP/inputs/fonts" "${{ matrix.group }}"
       - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
@@ -168,7 +194,7 @@ jobs:
           if-no-files-found: ignore
 
   report:
-    needs: [plan, run, js]
+    needs: [plan, prepare, run, js]
     if: always() && needs.plan.result == 'success'
     runs-on: ubuntu-24.04
     steps:

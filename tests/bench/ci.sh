@@ -5,7 +5,8 @@
 #
 #   tests/bench/ci.sh OUT.json FONTS GROUP...
 #   env: NEW=unpacked build (ippai, web/: tools/ci/build.sh), OLD=the build to compare with
-#        (optional), WORK (default $RUNNER_TEMP or /tmp/bench), ROUNDS, PLAYWRIGHT
+#        (optional), WORK (default $RUNNER_TEMP or /tmp/bench), ROUNDS, PLAYWRIGHT, EXE (the
+#        programs tests/bench/build.sh built; default: build them here)
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 OUT=$(realpath -m "$1") FONTS=$(realpath "$2")
@@ -13,7 +14,7 @@ shift 2
 WORK=${WORK:-${RUNNER_TEMP:-/tmp}/bench}
 rm -rf "$WORK" && mkdir -p "$WORK/prefix/drive_c/windows/temp" "$(dirname "$OUT")"
 cp -r "$FONTS" "$WORK/prefix/drive_c/windows/Fonts"
-"$ROOT/tests/bench/build.sh" "$WORK/exe" >/dev/null
+if [ -n "${EXE:-}" ]; then cp -r "$EXE" "$WORK/exe"; else "$ROOT/tests/bench/build.sh" "$WORK/exe" >/dev/null; fi
 
 BUILDS="" PIDS=()
 trap 'kill "${PIDS[@]}" 2>/dev/null || true' EXIT
