@@ -1,3 +1,4 @@
+import { preloadFiles } from "./readonly-files";
 // Games that are web pages already (NW.js or Electron: TyranoScript, RPG Maker MV/MZ): when the
 // program's folder (or its resources/app) has a package.json (ippai pack unpacks one appended to the exe: crates/ippai/src/nwjs.rs),
 // the page opens the game's own start page in an iframe instead of running the exe. Its files
@@ -102,26 +103,16 @@ const stub: unknown = new Proxy(function () {}, {
  * Node's require for NW.js games that call it from the page: synchronous fs (reads from the
  * game's tree, writes as saves) and path; nw.gui and the like do nothing.
  */
-function nodeRequire(root: string, items: Map<string, string>, changed: () => void) {
+function nodeRequire(files: Map<string, Uint8Array>, items: Map<string, string>, changed: () => void) {
   const read = (p: string): Uint8Array | null => {
     const saved = items.get(FILE + norm(p));
     if (saved !== undefined) return Uint8Array.from(atob(saved), (c) => c.charCodeAt(0));
-    // (synchronous, as Node's: the page waits for the server)
-    const x = new XMLHttpRequest();
-    x.open("GET", root + enc(norm(p)), false);
-    x.overrideMimeType("text/plain; charset=x-user-defined");
-    x.send();
-    if (x.status !== 200) return null;
-    return Uint8Array.from(x.responseText, (c) => c.charCodeAt(0) & 0xff);
+    return files.get(norm(p))?.slice() ?? null;
   };
-  const exists = (p: string) => {
-    if (items.has(FILE + norm(p))) return true;
-    const x = new XMLHttpRequest();
-    x.open("HEAD", root + enc(norm(p)), false);
-    x.send();
-    // (folders: no extension)
-    return x.status === 200 || !/\.[^./\\]*$/.test(String(p));
-  };
+  const exists = (p: string) =>
+    items.has(FILE + norm(p)) ||
+    files.has(norm(p)) ||
+    [...files.keys()].some((name) => name.startsWith(norm(p).replace(/\/$/, "") + "/"));
   const encoding = (opt: unknown) =>
     typeof opt === "string" ? opt : (opt as { encoding?: string } | undefined)?.encoding;
   const write = (p: string, data: unknown) => {
@@ -228,8 +219,8 @@ export async function startWebGame(
 
   // saves: the page's localStorage (and fs writes), as one JSON blob
   const items = new Map<string, string>();
-  const saved = saveName ? await loadSaves(`${saveName}-web`).catch(() => null) : null;
-  if (saved) {
+  const saved = saveName ? await loadSaves(`${saveName}-web`) : null;
+  if (saved?.length) {
     try {
       for (const [k, v] of Object.entries(
         JSON.parse(new TextDecoder().decode(saved)) as Record<string, string>,
@@ -239,20 +230,50 @@ export async function startWebGame(
       console.warn("saves:", e);
     }
   }
-  let dirty = false;
-  const save = () => {
-    if (!dirty || !saveName) return;
-    dirty = false;
-    void storeSaves(`${saveName}-web`, new TextEncoder().encode(JSON.stringify(Object.fromEntries(items))));
+  let generation = 0;
+  let savedGeneration = 0;
+  let pending: Promise<void> | undefined;
+  const save = (): Promise<void> => {
+    if (pending) return pending.then(save);
+    if (generation === savedGeneration || !saveName) return Promise.resolve();
+    const current = generation;
+    pending = storeSaves(
+      `${saveName}-web`,
+      new TextEncoder().encode(JSON.stringify(Object.fromEntries(items))),
+    )
+      .then(() => {
+        savedGeneration = current;
+      })
+      .catch((e: unknown) => {
+        log(`セーブを保存できません: ${String(e)}`);
+      })
+      .finally(() => {
+        pending = undefined;
+      });
+    return pending;
   };
-  const changed = () => (dirty = true);
-  setInterval(save, 3000);
-  addEventListener("visibilitychange", () => document.visibilityState === "hidden" && save());
-  addEventListener("pagehide", save);
+  const changed = () => {
+    generation++;
+  };
+  setInterval(() => void save(), 3000);
+  addEventListener("visibilitychange", () => document.visibilityState === "hidden" && void save());
+  addEventListener("pagehide", () => void save());
 
   const localStorage = storage(items, changed);
   const studio = studioApi(items, changed);
-  const require = nodeRequire(root + enc(at.dir), items, changed);
+  const files = new Map<string, Uint8Array>();
+  if (node) {
+    const response = await fetch(new URL(`store/trees/${encodeURIComponent(at.tree)}.tsv`, location.href));
+    if (!response.ok) throw new Error(`ゲーム一覧の取得: HTTP ${response.status}`);
+    const paths = (await response.text())
+      .split("\n")
+      .filter((line) => line.startsWith("f\t"))
+      .map((line) => line.split("\t")[3]!)
+      .filter((path) => path.startsWith(at.dir));
+    const loaded = await preloadFiles(root, paths);
+    for (const [path, bytes] of loaded) files.set(norm(path.slice(at.dir.length)), bytes);
+  }
+  const require = nodeRequire(files, items, changed);
   Object.assign(window, {
     vnvmFrame(win: Window) {
       Object.defineProperty(win, "localStorage", { value: localStorage });

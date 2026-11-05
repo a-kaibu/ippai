@@ -1,3 +1,5 @@
+import { SaveTransport } from "./save-transport";
+const transport = new SaveTransport();
 // Saved games: what the game wrote (in kura's in-memory file system) survives the page.
 // The files written under the game's folders and the prefix's user folders go to the browser's
 // origin private file system (OPFS) as one blob per game, whenever they change (checked every
@@ -28,18 +30,13 @@ const backup = (name: string) => new URL(`saves/${encodeURIComponent(name)}`, lo
 
 /** The blob an earlier session saved for `name`: this browser's, else the server's backup (null: none). */
 export async function loadSaves(name: string): Promise<Uint8Array | null> {
+  // The server is authoritative across devices; OPFS only seeds legacy saves when absent.
+  const remote = await transport.load(backup(name));
+  if (remote) return remote;
   const f = await file(name, false);
-  const data = f ? new Uint8Array(await (await f.getFile()).arrayBuffer()) : null;
-  if (data?.length) return data;
-  try {
-    const r = await fetch(backup(name));
-    if (!r.ok) return null;
-    const b = new Uint8Array(await r.arrayBuffer());
-    console.log(`saves: ${name} from the backup (${b.length} bytes)`);
-    return b.length ? b : null;
-  } catch {
-    return null;
-  }
+  const local = f ? new Uint8Array(await (await f.getFile()).arrayBuffer()) : null;
+  if (local?.length) await transport.store(backup(name), local);
+  return local;
 }
 
 function exportSaves(m: SavesModule, roots: string[]): Uint8Array<ArrayBuffer> {
@@ -64,16 +61,18 @@ function same(a: Uint8Array | null, b: Uint8Array): boolean {
 
 /** Writes `data` as `name`'s blob (OPFS, and the server's backup); false when OPFS fails. */
 export async function storeSaves(name: string, data: Uint8Array<ArrayBuffer>): Promise<boolean> {
-  const f = await file(name, true);
-  if (!f) return false;
-  const w = await f.createWritable();
-  await w.write(data);
-  await w.close();
-  console.log(`saves: ${name} ${data.length} bytes`);
-  // (keepalive: it still goes out when the page is closing)
-  void fetch(backup(name), { method: "PUT", body: data, keepalive: data.length < 60000 })
-    .then((r) => r.ok || r.status === 404 || console.warn(`saves: backup: HTTP ${r.status}`))
-    .catch((e) => console.warn(`saves: backup: ${e}`));
+  await transport.store(backup(name), data);
+  // A denied OPFS quota must not prevent server persistence.
+  try {
+    const f = await file(name, true);
+    if (f) {
+      const w = await f.createWritable();
+      await w.write(data);
+      await w.close();
+    }
+  } catch (e) {
+    console.warn("saves: local cache", e);
+  }
   return true;
 }
 
@@ -87,25 +86,31 @@ export function keepSaving(
   roots: string[],
   last: Uint8Array | null,
 ): () => Promise<void> {
-  let busy = false;
+  let pending: Promise<void> | undefined;
   let seen = -1;
-  const save = async () => {
-    if (busy) return;
+  const perform = async () => {
     // (nothing written since the last look: no export)
     const changes = m._vnhost_vfs_changes?.() ?? -2;
     if (changes === seen && changes !== -2) return;
-    busy = true;
     try {
-      seen = changes;
       const data = exportSaves(m, roots);
-      if (same(last, data)) return;
+      if (same(last, data)) {
+        seen = changes;
+        return;
+      }
       if (!(await storeSaves(name, data))) return;
       last = data;
+      seen = changes;
     } catch (e) {
       console.warn(`saves: ${e}`);
-    } finally {
-      busy = false;
     }
+  };
+  const save = (): Promise<void> => {
+    if (pending) return pending.then(save);
+    pending = perform().finally(() => {
+      pending = undefined;
+    });
+    return pending;
   };
   setInterval(save, 5000);
   addEventListener("visibilitychange", () => document.visibilityState === "hidden" && void save());

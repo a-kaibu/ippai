@@ -71,11 +71,13 @@ export function coverUrl(g: GameEntry): string | null {
 
 /** Sets play.html's parameters for `g` (other parameters, e.g. &debug, stay). */
 export function applyGame(params: URLSearchParams, g: GameEntry): void {
+  params.set("game", g.id);
   params.set("run", g.run);
   params.delete("mount");
   for (const m of g.mounts) params.append("mount", m);
   if (g.args.length) params.set("args", g.args.join(","));
   else params.delete("args");
+  params.delete("env");
   for (const e of g.env) params.append("env", e);
   if (g.arch) params.set("arch", g.arch);
   else params.delete("arch");

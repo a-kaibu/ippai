@@ -31,7 +31,7 @@ link() {  # <output .js> <emcc flags...>
   local out=$1
   shift
   emcc -O2 ${SAKE_LDEXTRA:-} -pthread -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -Wno-undefined -o "$out" "$OUT/main.o" "$OUT/shim.o" "$LIB" \
-    $WRAPFLAGS --pre-js "$HO/pre.js" --js-library "$HO/vnfs.js" --js-library "$HO/vnjit.js" \
+    $WRAPFLAGS --pre-js "$HO/fetch-bridge.js" --pre-js "$HO/pre.js" --js-library "$HO/vnfs.js" --js-library "$HO/vnjit.js" \
     -sPROXY_TO_PTHREAD -sEXIT_RUNTIME \
     -sGLOBAL_BASE=2147483648 -sINITIAL_MEMORY=4294901760 -sALLOW_MEMORY_GROWTH=0 \
     -sSTACK_SIZE=1MB -sDEFAULT_PTHREAD_STACK_SIZE=1MB -sPTHREAD_POOL_SIZE=16 -sPTHREAD_POOL_SIZE_STRICT=0 \

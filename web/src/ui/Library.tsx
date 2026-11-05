@@ -1,8 +1,10 @@
+import { api } from "../library-data";
+import { Personal, Statistics } from "./Personal";
 // The game list (play.html without ?run=): cards with cover, brand, year and score from
 // `ippai meta`, a filter, and a dialog with the game's details. Picking a game starts it from
 // that click (audio and fullscreen need the user gesture).
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Bug, ExternalLink, Gamepad2, Info, Play, ScrollText, Search, Star } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -74,7 +76,7 @@ function GameCard({
           </div>
         </div>
       </button>
-      {m && (
+      {
         <Button
           size="icon-sm"
           variant="secondary"
@@ -85,13 +87,13 @@ function GameCard({
         >
           <Info />
         </Button>
-      )}
+      }
     </li>
   );
 }
 
 function GameInfo({ game, onPick, onClose }: { game: GameEntry; onPick: () => void; onClose: () => void }) {
-  const m = game.meta!;
+  const m = game.meta ?? { source: "", title: game.title };
   const url = coverUrl(game);
   const facts: [string, string | undefined][] = [
     ["ブランド", m.brand],
@@ -147,6 +149,7 @@ function GameInfo({ game, onPick, onClose }: { game: GameEntry; onPick: () => vo
               ))}
             </div>
           )}
+          <Personal game={game.id} />
           <Button size="lg" className="w-full" onClick={onPick}>
             <Play className="fill-current" /> 起動
           </Button>
@@ -157,8 +160,21 @@ function GameInfo({ game, onPick, onClose }: { game: GameEntry; onPick: () => vo
 }
 
 export function Library({ games, onPick }: { games: GameEntry[]; onPick: (g: GameEntry) => void }) {
+  const [favorites, setFavorites] = useState<string[]>([]);
+  const [onlyFavorites, setOnlyFavorites] = useState(false);
+  const [favoriteError, setFavoriteError] = useState("");
+  const [stats, setStats] = useState(false);
   const [query, setQuery] = useState("");
   const [info, setInfo] = useState<GameEntry | null>(null);
+  useEffect(() => {
+    if (info) return;
+    void api<string[]>("favorites")
+      .then((ids) => {
+        setFavorites(ids);
+        setFavoriteError("");
+      })
+      .catch((e: unknown) => setFavoriteError(String(e)));
+  }, [info]);
   const { debug } = useUi();
   const last = useMemo(played, []);
   const sorted = useMemo(
@@ -169,17 +185,21 @@ export function Library({ games, onPick }: { games: GameEntry[]; onPick: (g: Gam
     [games, last],
   );
   const q = query.trim().toLowerCase();
-  const shown = q
+  const searched = q
     ? sorted.filter((g) => {
         const m = g.meta;
         const key = [g.title, g.engine, g.id, m?.title, m?.furigana, m?.brand, m?.series, ...(m?.tags ?? [])];
         return key.filter(Boolean).join(" ").toLowerCase().includes(q);
       })
     : sorted;
+  const shown = onlyFavorites ? searched.filter((g) => favorites.includes(g.id)) : searched;
   return (
     <main className="fixed inset-0 z-40 overflow-y-auto bg-background">
       <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur">
         <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-3">
+          <Button variant="outline" onClick={() => setStats(true)}>
+            統計
+          </Button>
           <Gamepad2 className="size-5 shrink-0 text-primary" />
           <h1 className="text-lg font-bold tracking-tight">vnvm</h1>
           <Badge variant="secondary">{games.length} 本</Badge>
@@ -214,6 +234,15 @@ export function Library({ games, onPick }: { games: GameEntry[]; onPick: (g: Gam
         </div>
       </header>
       <div className="mx-auto max-w-7xl px-4 pt-5 pb-10">
+        <label className="mb-4 flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={onlyFavorites}
+            onChange={(e) => setOnlyFavorites(e.target.checked)}
+          />
+          お気に入りのみ
+        </label>
+        {favoriteError && <p role="alert">{favoriteError}</p>}
         {!games.length ? (
           <div className="mx-auto mt-16 max-w-xl rounded-xl border border-dashed p-8 text-center text-sm leading-relaxed text-muted-foreground">
             <p className="mb-3 text-base font-medium text-foreground">ゲームがまだありません</p>
@@ -243,6 +272,17 @@ export function Library({ games, onPick }: { games: GameEntry[]; onPick: (g: Gam
           </ul>
         )}
       </div>
+      {stats && (
+        <Dialog open onOpenChange={setStats}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>プレイ統計</DialogTitle>
+              <DialogDescription>ゲーム別のプレイ時間</DialogDescription>
+            </DialogHeader>
+            <Statistics games={games} />
+          </DialogContent>
+        </Dialog>
+      )}
       {info && <GameInfo game={info} onClose={() => setInfo(null)} onPick={() => onPick(info)} />}
     </main>
   );

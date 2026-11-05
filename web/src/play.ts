@@ -1,3 +1,5 @@
+import { trackPlay } from "./library-data";
+let stopPlay: (() => void) | undefined;
 // Runs sake (crates/sake, the from-scratch Win32 layer, built by crates/sake/build.sh → public/sake/)
 // in the page: the prefix (its C:\ fonts) and the games are streamed from the store, windows are
 // composed by kura (crates/kura/src/display.rs) and shown with WebGPU. (The page ran Wine too
@@ -159,7 +161,10 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   )}`;
   const nosave = params.has("nosave");
   // a web game (NW.js): its own page, no sake
-  if (await startWebGame(run, mounts, nosave ? null : saveName, log)) return;
+  if (await startWebGame(run, mounts, nosave ? null : saveName, log)) {
+    if (!nosave && params.get("game")) stopPlay = trackPlay(params.get("game")!);
+    return;
+  }
   log("sake を読み込み中");
   const BASE = new URL("sake/", location.href).href;
   const WASM = "sake.wasm";
@@ -199,8 +204,21 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   const version = await wasmVersion;
   recorder.note(`build: ${WASM} ${version}, translator ${await jitVersion}`);
   const saveRoots = [...mounts.map((m) => m.slice(0, m.indexOf("="))), "/vnvm/prefix/drive_c/users"];
-  const saved = nosave ? null : await loadSaves(saveName).catch(() => null);
+  const saved = nosave ? null : await loadSaves(saveName);
+  // Preload tree manifests before the factory: initialization may read them on the page.
+  const vnvmFiles: Record<string, Uint8Array> = {};
+  await Promise.all(
+    [...new Set(["prefix32", ...mounts.map((m) => m.slice(m.indexOf("=") + 1))])]
+      .filter(Boolean)
+      .map(async (tree) => {
+        const name = `trees/${tree}.tsv`;
+        const r = await fetch(new URL(`store/${name}`, location.href));
+        if (!r.ok) throw new Error(`mount ${tree}: HTTP ${r.status}`);
+        vnvmFiles[name] = new Uint8Array(await r.arrayBuffer());
+      }),
+  );
   const moduleArg = {
+    vnvmFiles,
     // (sake takes the host path: Z:\\x\\y.exe is /x/y.exe)
     arguments: [
       run.replace(/^z:/i, "").replaceAll("\\", "/"),
@@ -249,6 +267,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     // sake's ExitProcess / exit() end the runtime itself (it is the root process): the
     // frame loop then goes back to the list (closeGame)
     onExit: () => {
+      stopPlay?.();
       exited = true;
     },
     printErr: (line: string) => {
@@ -263,6 +282,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   };
   log(`${run} を起動中`);
   const sake = await factory(moduleArg);
+  if (!nosave && params.get("game")) stopPlay = trackPlay(params.get("game")!);
   recorder.attach(sake);
   if (!nosave) saveNow = keepSaving(sake as unknown as SavesModule, saveName, saveRoots, saved);
   // for tests/play.mjs (headless Chromium can't present WebGPU canvases)
@@ -561,6 +581,7 @@ function closeGame(): void {
 }
 
 function leave(): void {
+  stopPlay?.();
   const back = () => {
     const url = new URL(location.href);
     url.searchParams.delete("autostart");

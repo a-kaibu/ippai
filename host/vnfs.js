@@ -4,7 +4,7 @@
 // that came over the network (compressed; none from the browser's HTTP cache) go to vfs.rs's
 // counters (vnhost_net_wire).
 //
-// node: read from $VNVM_STORE. Browser (a worker, so synchronous XHR is allowed): fetch from
+// node: read from $VNVM_STORE. Browser: a dedicated worker uses fetch; the game pthread waits for its response from
 // store/ beside the directory of sake.js; the server sends chunks with "Content-Encoding: zstd",
 // so the browser decompresses them.
 addToLibrary({
@@ -28,30 +28,8 @@ addToLibrary({
         data = require('fs').readFileSync(require('path').join(store, name));
         if (name.startsWith('chunks/')) data = require('zlib').zstdDecompressSync(data);
       } else {
-        const x = new XMLHttpRequest();
-        const url = store + '/' + name;
-        x.open('GET', url, false);
-        // a binary responseType is refused for synchronous requests on the page's own thread
-        // (the trees are read there); workers take the bytes as they are
-        const doc = typeof document != 'undefined';
-        if (doc) x.overrideMimeType('text/plain; charset=x-user-defined');
-        else x.responseType = 'arraybuffer';
-        x.send();
-        if (x.status !== 200) throw new Error(`HTTP ${x.status}`);
-        // what came over the network: the resource timing entries of this thread's requests
-        // (an entry may come in after its request returns: the next request counts it)
-        const perf = typeof performance != 'undefined' && performance.getEntriesByType ? performance : null;
-        if (!perf) wasmExports.vnhost_net_wire(+(x.getResponseHeader('content-length') || 0), 0);
-        else {
-          for (const e of perf.getEntriesByType('resource'))
-            if (e.initiatorType === 'xmlhttprequest' && e.name.includes('/store/')) wasmExports.vnhost_net_wire(e.transferSize, e.transferSize === 0 && e.decodedBodySize > 0);
-          perf.clearResourceTimings();
-        }
-        if (doc) {
-          const t = x.responseText;
-          data = new Uint8Array(t.length);
-          for (let i = 0; i < t.length; i++) data[i] = t.charCodeAt(i);
-        } else data = new Uint8Array(x.response);
+        data = Module.vnvmFiles?.[name] ?? ippaiFetchSync(store + '/' + name);
+        if (data.wire !== undefined) wasmExports.vnhost_net_wire(data.wire, data.cached);
       }
     } catch (e) {
       if (!ENVIRONMENT_IS_NODE) err(`vnvm_fetch ${name}: ${e}`);

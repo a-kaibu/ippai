@@ -34,7 +34,13 @@ if (!ENVIRONMENT_IS_PTHREAD) {
   if (W && !W.prototype.vnvmPost) {
     W.prototype.vnvmPost = W.prototype.postMessage;
     W.prototype.postMessage = function (m, ...rest) {
-      if (m && m.cmd === 'load') m = { ...m, vnvmJit: vnvmJitBundle, vnvmSaves };
+      if (m && m.cmd === 'load') {
+        m = { ...m, vnvmJit: vnvmJitBundle, vnvmSaves };
+        if (!ENVIRONMENT_IS_NODE) {
+          m.vnvmFetchPort = ippaiFetchConnect();
+          rest[0] = [...(rest[0] || []), m.vnvmFetchPort];
+        }
+      }
       return this.vnvmPost(m, ...rest);
     };
   }
@@ -43,6 +49,7 @@ if (!ENVIRONMENT_IS_PTHREAD) {
     if (d && d.cmd === 'load') {
       vnvmJitBundle = d.vnvmJit || null;
       vnvmSaves = d.vnvmSaves || null;
+      if (d.vnvmFetchPort) ippaiFetchPort = d.vnvmFetchPort;
     }
   };
   if (ENVIRONMENT_IS_NODE) require('worker_threads').parentPort.on('message', take);
