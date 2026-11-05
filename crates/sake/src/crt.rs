@@ -1317,16 +1317,25 @@ fn fwrite(c: &mut Ctx) -> u32 {
 }
 fn fseek(c: &mut Ctx) -> u32 {
     let (fp, off, whence) = (c.a(0), c.i(1) as i64, c.a(2));
+    if fp == 0 || whence > 2 || (whence == 0 && off < 0) {
+        set_errno(22); // EINVAL
+        return u32::MAX;
+    }
     with_file(fp, |s| {
         let Some(f) = &s.f else { return u32::MAX };
-        s.unget = None;
-        s.eof = false;
         let pos = match whence {
-            0 => SeekFrom::Start(off.max(0) as u64),
-            1 => SeekFrom::Current(off),
+            0 => SeekFrom::Start(off as u64),
+            1 => SeekFrom::Current(off - s.unget.is_some() as i64),
             _ => SeekFrom::End(off),
         };
-        if f.seek(pos).is_some() { 0 } else { u32::MAX }
+        if f.seek(pos).is_some() {
+            s.unget = None;
+            s.eof = false;
+            0
+        } else {
+            set_errno(22);
+            u32::MAX
+        }
     })
     .unwrap_or(u32::MAX)
 }

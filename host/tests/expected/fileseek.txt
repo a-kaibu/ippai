@@ -1,0 +1,7 @@
+first 97
+negative 1 1 1
+origin 1 1 1
+eof 1
+failed-eof 1
+reset 0 0
+pushback 0 97
