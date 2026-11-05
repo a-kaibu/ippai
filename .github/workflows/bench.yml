@@ -103,6 +103,8 @@ jobs:
           run-id: ${{ needs.plan.outputs.old_run_id }}
           github-token: ${{ github.token }}
       - name: Tools
+        # (an apt or browser download that hangs must not hold the whole run: one did for an hour)
+        timeout-minutes: 15
         env:
           SHA: ${{ needs.plan.outputs.sha }}
           OLD_SHA: ${{ needs.plan.outputs.old_sha }}
