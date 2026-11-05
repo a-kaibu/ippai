@@ -35,6 +35,22 @@ jobs:
       - name: cargo test
         run: cargo test --workspace --release
 
+  rustfs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rustfs-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: rustfs-${{ runner.os }}-
+      - name: Encrypted storage against RustFS
+        run: bash tools/ci/test-rustfs.sh
+
   build:
     runs-on: ubuntu-24.04
     steps:
@@ -61,7 +77,9 @@ jobs:
           restore-keys: build-${{ runner.os }}-
       - name: Web check
         working-directory: web
-        run: npm ci --no-audit --no-fund && npx vp check
+        run: npm ci --no-audit --no-fund && npx vp check && npx vp test
+      - name: Fetch ordering tests
+        run: node tests/fetch-bridge.test.mjs
       - name: Build
         run: tools/ci/build.sh
       - name: host/tests on sake
