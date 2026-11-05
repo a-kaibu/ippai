@@ -73,6 +73,8 @@ flowchart TB
 | `web/` | Vite+ (`vp`) のフロントエンド (TypeScript、UI は React + Tailwind CSS v4 + shadcn/ui、`src/components/ui`): `index.html` (= `play.html`、ゲーム一覧)、`game.html`、`bench.html`、`logs.html` (実行ログ) |
 | `tests/` | ヘッドレス Chromium での確認 (`play.mjs`)、Android 相当に遅くして測る (`android-like.sh`)、コーパス |
 
+お気に入り、メモ、プレイ時間の統計、`.ippai` の持ち運び、暗号化 S3 ストレージと SQLite バックアップの手順は [docs/storage.md](docs/storage.md) を参照してください。
+
 ## インストール
 
 ```sh
