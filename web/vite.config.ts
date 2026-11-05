@@ -1,13 +1,32 @@
 declare const process: { env: Record<string, string | undefined> }; // (node runs this file; no @types/node here)
-import { defineConfig } from "vite-plus";
+import { build, defineConfig, type Plugin } from "vite-plus";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+
+// frame.js: the script of web games' frames (src/frame.ts), a classic script (it must run before
+// the game's own scripts), served by ippai serve's game listener
+const frame = (): Plugin => ({
+  name: "ippai-frame",
+  apply: "build",
+  async closeBundle() {
+    await build({
+      configFile: false,
+      logLevel: "warn",
+      build: {
+        outDir: "dist",
+        emptyOutDir: false,
+        target: "es2022",
+        lib: { entry: "src/frame.ts", formats: ["iife"], name: "ippaiFrame", fileName: () => "frame.js" },
+      },
+    });
+  },
+});
 
 // Built into web/dist and served by ippai serve next to the store. The UI is React with
 // Tailwind CSS and shadcn/ui (src/components/ui); sake's files (public/sake/) are copied as-is.
 export default defineConfig({
   base: "./",
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), frame()],
   resolve: { alias: { "@": new URL("./src", import.meta.url).pathname } },
   build: {
     outDir: "dist",

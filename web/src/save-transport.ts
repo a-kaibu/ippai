@@ -2,7 +2,8 @@
 export class SaveTransport {
   private revisions = new Map<string, string>();
   private queues = new Map<string, Promise<void>>();
-  constructor(private request: typeof fetch = fetch) {}
+  // (fetch called as this.request would be an illegal invocation: bound to the window)
+  constructor(private request: typeof fetch = (input, init) => fetch(input, init)) {}
   async load(url: string): Promise<Uint8Array | null> {
     const r = await this.request(url, { cache: "no-store" });
     if (r.status === 404) {

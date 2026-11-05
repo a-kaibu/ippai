@@ -94,7 +94,13 @@ ippai meta sample | ippai meta --all
 `ippai serve --foreground` は systemd などから動かすとき用です。保存先 (Linux):
 ストア `~/.local/share/ippai/store`、JIT キャッシュ `~/.cache/ippai/jit`、ログ `~/.local/state/ippai/logs`、
 設定 `~/.config/ippai/config.toml` (`store` `cache` `logs` `listen`、どれも任意)、制御用ソケット
-`$XDG_RUNTIME_DIR/ippai/server.sock`。詳しくは `crates/ippai/src/dirs.rs`。
+`$XDG_RUNTIME_DIR/ippai/server-<ストア>.sock` (ストアごとに 1 つ。同じストアで 2 つ目のサーバーは起動しません)。
+詳しくは `crates/ippai/src/dirs.rs`。
+
+Web ゲーム (NW.js / Electron) は管理画面と別オリジンで動かすため、サーバーは `--listen` の次のポート
+(既定 8657、`--game-listen` で変更) でゲームのファイルだけを配信します。リバースプロキシ越しに使うときは
+そのポートも公開し、ブラウザから見える URL が「同じホスト・そのポート」でなければ `--game-url` で指定します
+(例: `tailscale serve --bg --https 8657 http://127.0.0.1:8657`)。
 
 ## リリース
 

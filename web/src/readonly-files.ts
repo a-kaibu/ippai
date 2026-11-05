@@ -2,7 +2,7 @@
 export async function preloadFiles(
   root: string,
   paths: string[],
-  request: typeof fetch = fetch,
+  request: typeof fetch = (input, init) => fetch(input, init),
 ): Promise<Map<string, Uint8Array>> {
   const files = new Map<string, Uint8Array>();
   let next = 0;

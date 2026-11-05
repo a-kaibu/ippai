@@ -16,7 +16,12 @@
 //!   programs saved (shared libraries and the like; the chunks only for a program with no list
 //!   of its own yet): every page loads them too, so a
 //!   game's first run starts with them
-//! - `GET /tree/<name>/<path>`: one file of a tree as itself (web games in an iframe; treefiles.rs)
+//! - `GET /tree/<name>/<path>`: one file of a tree as itself (treefiles.rs)
+//! - web games (NW.js / Electron pages: web/src/html.ts) run in an iframe from a second
+//!   listener (`--game-listen`, the next port by default): another origin than the app's, so their
+//!   scripts cannot reach the page, the saves or anything else here. It serves only `/tree/...`
+//!   and `/frame.js` (web/src/frame.ts); `GET /game-origin` tells the page where it is
+//! - writes (PUT) come only from the app's own pages (`Sec-Fetch-Site`)
 //! - `GET /games`: the launcher's list, the store's `games/<id>.json` (`ippai add-game`) as
 //!   one JSON array; covers are under `/store/games/`
 //! - pre-runs: at the start and when the launcher lists the games, each listed game with no
@@ -45,7 +50,7 @@ use axum::{
     extract::{DefaultBodyLimit, Path, State},
     http::{header, HeaderValue, Request, StatusCode},
     middleware::{self, Next},
-    response::Response,
+    response::{IntoResponse, Response},
     routing::{get, put},
     Router,
 };
@@ -68,12 +73,49 @@ pub struct Args {
     /// [default: 127.0.0.1:8656, or listen in config.toml]
     #[arg(long)]
     listen: Option<SocketAddr>,
+    /// Where web games' files are served, a different origin than the app's [default: the
+    /// port after --listen's]
+    #[arg(long)]
+    game_listen: Option<SocketAddr>,
+    /// The URL the browser reaches --game-listen at, when not the app's host with that port
+    /// (behind a proxy) [default: the app's scheme and host, --game-listen's port]
+    #[arg(long)]
+    game_url: Option<String>,
     /// No pre-runs (see prerun_games): a game's first run translates its code itself.
     #[arg(long)]
     no_prerun: bool,
     /// Run in this process (for systemd and the like) instead of in the background.
     #[arg(long)]
     pub foreground: bool,
+}
+
+/// Whether `req` may change things: reads always; writes not from another site's or origin's
+/// page (a web game's, on the game listener: `Sec-Fetch-Site: same-site`). Requests without the
+/// header (curl, the tests, older browsers) are let through.
+fn same_origin_write<B>(req: &Request<B>) -> bool {
+    use axum::http::Method;
+    if matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
+        return true;
+    }
+    req.headers().get("sec-fetch-site").is_none_or(|v| v == "same-origin" || v == "none")
+}
+
+/// The game listener: web games' files and the frame's script, nothing else. Pages there may
+/// be framed by the app's (another origin, cross-origin isolated: they need COEP and CORP).
+fn games_router(trees: crate::treefiles::Trees, web: &std::path::Path) -> Router {
+    async fn game_headers(req: Request<axum::body::Body>, next: Next) -> Response {
+        let mut res = next.run(req).await;
+        let h = res.headers_mut();
+        h.insert("cross-origin-embedder-policy", HeaderValue::from_static("require-corp"));
+        h.insert("cross-origin-resource-policy", HeaderValue::from_static("cross-origin"));
+        h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+        h.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+        res
+    }
+    Router::new()
+        .route("/tree/{name}/{*path}", get(crate::treefiles::file).with_state(trees))
+        .route_service("/frame.js", tower_http::services::ServeFile::new(web.join("frame.js")))
+        .layer(middleware::from_fn(game_headers))
 }
 
 /// The jit directory; the lock keeps merges one at a time.
@@ -607,6 +649,9 @@ async fn games(State(p): State<Arc<Prerun>>) -> Response {
 }
 
 async fn headers(req: Request<axum::body::Body>, next: Next) -> Response {
+    if !same_origin_write(&req) {
+        return (StatusCode::FORBIDDEN, "writes come from this server's own pages").into_response();
+    }
     let chunk = req.uri().path().starts_with("/store/chunks/");
     let log = req.uri().path().starts_with("/logs/");
     // a versioned URL (?v=...) names content that never changes: the browser keeps it without
@@ -675,6 +720,8 @@ struct Resolved {
     jit: PathBuf,
     logs: PathBuf,
     listen: SocketAddr,
+    game_listen: SocketAddr,
+    game_url: Option<String>,
     no_prerun: bool,
 }
 
@@ -688,6 +735,11 @@ pub fn run(dirs: &crate::dirs::Dirs, a: Args) -> anyhow::Result<()> {
         jit: a.jit.unwrap_or_else(|| dirs.cache.join("jit")),
         logs: a.logs.unwrap_or_else(|| dirs.logs.clone()),
         listen: a.listen.unwrap_or(dirs.listen),
+        game_listen: a.game_listen.unwrap_or_else(|| {
+            let l = a.listen.unwrap_or(dirs.listen);
+            SocketAddr::new(l.ip(), l.port().wrapping_add(1))
+        }),
+        game_url: a.game_url,
         no_prerun: a.no_prerun,
     };
     for d in [&dirs.store, &args.jit, &args.logs] {
@@ -723,6 +775,8 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
         precompress(&web);
     });
     let saves = saves::Saves::new(&store)?;
+    let trees = crate::treefiles::Trees::new(store.clone())?;
+    let game_origin = serde_json::json!({ "port": args.game_listen.port(), "url": args.game_url });
     let app = Router::new()
         .route("/log-save/{name}", put(save_log).with_state(logs.clone()))
         .route("/log-list", get(log_list).with_state(logs))
@@ -744,18 +798,51 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
                 .service(ServeDir::new(&args.jit)),
         )
         .merge(crate::store_api::router(store.clone())?)
-        .route("/tree/{name}/{*path}", get(crate::treefiles::file).with_state(crate::treefiles::Trees::new(store.clone())?))
+        .route("/tree/{name}/{*path}", get(crate::treefiles::file).with_state(trees.clone()))
+        .route("/game-origin", get(move || async move { axum::Json(game_origin) }))
         .fallback_service(ServeDir::new(&args.web).precompressed_zstd())
         .layer(middleware::from_fn(headers));
+    let games = games_router(trees, &args.web);
     // without TCP_NODELAY a kept-alive connection waits out the peer's delayed ACK (~40ms) on
     // every small response; the page reads the store one chunk at a time
     let listener = tokio::net::TcpListener::bind(args.listen).await?.tap_io(|tcp| {
         let _ = tcp.set_nodelay(true);
     });
+    let game_listener = tokio::net::TcpListener::bind(args.game_listen).await?.tap_io(|tcp| {
+        let _ = tcp.set_nodelay(true);
+    });
     let url = format!("http://{}", args.listen);
     crate::daemon::listen(dirs, url.clone(), store.display().to_string()).await?;
-    eprintln!("ippai {} on {url} (store {}, web {})", env!("IPPAI_VERSION"), store.display(), args.web.display());
+    eprintln!(
+        "ippai {} on {url}, web games on http://{} (store {}, web {})",
+        env!("IPPAI_VERSION"),
+        args.game_listen,
+        store.display(),
+        args.web.display()
+    );
     tokio::spawn(prerun_games(pre));
-    axum::serve(listener, app).await?;
+    use std::future::IntoFuture;
+    tokio::try_join!(axum::serve(listener, app).into_future(), axum::serve(game_listener, games).into_future())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::Request;
+
+    #[test]
+    fn writes_only_from_the_apps_pages() {
+        let req = |method: &str, site: Option<&str>| {
+            let mut r = Request::builder().method(method).uri("/saves/x");
+            if let Some(s) = site {
+                r = r.header("sec-fetch-site", s);
+            }
+            r.body(()).unwrap()
+        };
+        assert!(super::same_origin_write(&req("PUT", Some("same-origin"))));
+        assert!(super::same_origin_write(&req("PUT", None)), "curl and the tests");
+        assert!(!super::same_origin_write(&req("PUT", Some("same-site"))), "a web game on the game listener");
+        assert!(!super::same_origin_write(&req("POST", Some("cross-site"))));
+        assert!(super::same_origin_write(&req("GET", Some("cross-site"))));
+    }
 }
