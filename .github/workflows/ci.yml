@@ -22,6 +22,8 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-24.04
+    env:
+      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/cache@v6.1.0
@@ -34,6 +36,8 @@ jobs:
           restore-keys: test-${{ runner.os }}-
       - name: cargo test
         run: cargo test --workspace --release
+      - name: Check all Rust targets without warnings
+        run: cargo check --workspace --all-targets --locked
 
   rustfs:
     runs-on: ubuntu-24.04
@@ -75,9 +79,9 @@ jobs:
             target
           key: build-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'tools/ci/build.sh') }}
           restore-keys: build-${{ runner.os }}-
-      - name: Web check
+      - name: Web check (Oxfmt, Oxlint, types; warnings are errors)
         working-directory: web
-        run: npm ci --no-audit --no-fund && npx vp check && npx vp test
+        run: npm ci --no-audit --no-fund && npm run check && npx vp test
       - name: Fetch ordering tests
         run: node tests/fetch-bridge.test.mjs
       - name: Build

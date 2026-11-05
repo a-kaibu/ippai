@@ -1135,13 +1135,8 @@ unsafe fn device_call(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &mut
             let dev = dev!(d);
             if m == 46 {
                 let cur = dev.st.transforms.get(&state).copied().unwrap_or(IDENT);
-                mtx = mul(&mtx, &cur);
-                // (MultiplyTransform: M = pM * current; D3D: current * pM)
-                mtx = mul(&cur, &{
-                    let mut t = [0f32; 16];
-                    std::ptr::copy_nonoverlapping(p as *const f32, t.as_mut_ptr(), 16);
-                    t
-                });
+                // MultiplyTransform: current * supplied matrix.
+                mtx = mul(&cur, &mtx);
             }
             dev.st.transforms.insert(state, mtx);
             S_OK

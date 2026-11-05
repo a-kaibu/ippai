@@ -236,7 +236,7 @@ impl Shader {
             let ctl = (t >> 16) & 0xff;
             let mut ins = Ins { op, ctl, dst: None, src: Vec::new(), extra: [0; 4], predicated: None };
             let mut k = 0;
-            let mut next_param = |k: &mut usize, dst: bool| -> Option<Param> {
+            let next_param = |k: &mut usize, dst: bool| -> Option<Param> {
                 let mut p = parse_param(*toks.get(*k)?, dst);
                 let raw = toks[*k];
                 *k += 1;
@@ -262,7 +262,6 @@ impl Shader {
                     for j in 0..4 {
                         ins.extra[j] = toks.get(k + j).copied().unwrap_or(0);
                     }
-                    k = toks.len();
                 }
                 _ => {
                     if !no_dst(op) {

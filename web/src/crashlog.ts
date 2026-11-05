@@ -236,7 +236,7 @@ async function writeFile(name: string, text: string): Promise<void> {
     await w.write(text);
     await w.close();
   } catch (e) {
-    console.warn(`crashlog: OPFS ${name}: ${e}`);
+    console.warn(`crashlog: OPFS ${name}: ${String(e)}`);
   }
 }
 
@@ -494,7 +494,7 @@ export class FlightRecorder {
       if (!n) return "(busy)";
       return new TextDecoder().decode(new Uint8Array(this.wasm.wasmMemory.buffer, i[8]! >>> 0, n).slice());
     } catch (e) {
-      return `(snapshot failed: ${e})`;
+      return `(snapshot failed: ${String(e)})`;
     }
   }
 

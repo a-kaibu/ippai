@@ -163,7 +163,7 @@ export class Video {
           this.copyReady(s);
         },
         error: (e) => {
-          this.note(`video ${s.id}: ${e}`);
+          this.note(`video ${s.id}: ${String(e)}`);
           this.fail(s);
         },
       });
@@ -267,7 +267,7 @@ export class Video {
         at += need;
       }
     } catch (e) {
-      this.note(`video ${s.id}: copy of frame ${n}: ${e}`);
+      this.note(`video ${s.id}: copy of frame ${n}: ${String(e)}`);
       ok = 0;
     }
     new Uint32Array(this.wasm.wasmMemory.buffer, this.layoutBuf, 14).set(layout);

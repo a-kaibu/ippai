@@ -104,16 +104,16 @@ fn create(c: &mut Ctx, out: u32, access: u32, oa: u32, io: u32, attrs: u32, shar
 }
 
 /// NtCreateFile(&h, access, oa, iosb, alloc, attrs, share, disposition, options, ea, ealen)
-fn NtCreateFile(c: &mut Ctx) -> u32 {
+fn nt_create_file(c: &mut Ctx) -> u32 {
     let a: Vec<u32> = (0..9).map(|i| c.a(i)).collect();
     create(c, a[0], a[1], a[2], a[3], a[5], a[6], a[7], a[8])
 }
 /// NtOpenFile(&h, access, oa, iosb, share, options)
-fn NtOpenFile(c: &mut Ctx) -> u32 {
+fn nt_open_file(c: &mut Ctx) -> u32 {
     let a: Vec<u32> = (0..6).map(|i| c.a(i)).collect();
     create(c, a[0], a[1], a[2], a[3], 0, a[4], 1, a[5])
 }
-fn NtClose(c: &mut Ctx) -> u32 {
+fn nt_close(c: &mut Ctx) -> u32 {
     let h = c.a(0);
     if k32(c, "CloseHandle", &[h]) != 0 { 0 } else { 0xc000_0008 }
 }
@@ -131,7 +131,7 @@ fn seek_to(c: &mut Ctx, h: u32, off: u32) {
 }
 
 /// NtReadFile(h, event, apc, apcctx, iosb, buf, len, &offset, key)
-fn NtReadFile(c: &mut Ctx) -> u32 {
+fn nt_read_file(c: &mut Ctx) -> u32 {
     let (h, io, buf, len, off) = (c.a(0), c.a(4), c.a(5), c.a(6), c.a(7));
     seek_to(c, h, off);
     let n = mem::heap_alloc(4, true);
@@ -150,7 +150,7 @@ fn NtReadFile(c: &mut Ctx) -> u32 {
     iosb(io, 0, got);
     0
 }
-fn NtWriteFile(c: &mut Ctx) -> u32 {
+fn nt_write_file(c: &mut Ctx) -> u32 {
     let (h, io, buf, len, off) = (c.a(0), c.a(4), c.a(5), c.a(6), c.a(7));
     seek_to(c, h, off);
     let n = mem::heap_alloc(4, true);
@@ -165,7 +165,7 @@ fn NtWriteFile(c: &mut Ctx) -> u32 {
     iosb(io, 0, got);
     0
 }
-fn NtFlushBuffersFile(c: &mut Ctx) -> u32 {
+fn nt_flush_buffers_file(c: &mut Ctx) -> u32 {
     iosb(c.a(1), 0, 0);
     0
 }
@@ -193,7 +193,7 @@ fn basic(out: u32, t: u32, attrs: u32) {
 }
 
 /// NtQueryInformationFile(h, iosb, buf, len, class)
-fn NtQueryInformationFile(c: &mut Ctx) -> u32 {
+fn nt_query_information_file(c: &mut Ctx) -> u32 {
     let (h, io, out, len, class) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
     let need = match class {
         4 => 40,
@@ -245,7 +245,7 @@ fn NtQueryInformationFile(c: &mut Ctx) -> u32 {
 }
 
 /// NtSetInformationFile(h, iosb, buf, len, class): the position and the end of file.
-fn NtSetInformationFile(c: &mut Ctx) -> u32 {
+fn nt_set_information_file(c: &mut Ctx) -> u32 {
     let (h, io, buf, class) = (c.a(0), c.a(1), c.a(2), c.a(4));
     match class {
         14 => {
@@ -282,7 +282,7 @@ fn attr_data(c: &mut Ctx, oa: u32) -> Result<u32, u32> {
     Ok(d)
 }
 /// NtQueryAttributesFile(oa, FILE_BASIC_INFORMATION*)
-fn NtQueryAttributesFile(c: &mut Ctx) -> u32 {
+fn nt_query_attributes_file(c: &mut Ctx) -> u32 {
     let out = c.a(1);
     match attr_data(c, c.a(0)) {
         Ok(d) => {
@@ -294,7 +294,7 @@ fn NtQueryAttributesFile(c: &mut Ctx) -> u32 {
     }
 }
 /// NtQueryFullAttributesFile(oa, FILE_NETWORK_OPEN_INFORMATION*)
-fn NtQueryFullAttributesFile(c: &mut Ctx) -> u32 {
+fn nt_query_full_attributes_file(c: &mut Ctx) -> u32 {
     let out = c.a(1);
     match attr_data(c, c.a(0)) {
         Ok(d) => {
@@ -312,7 +312,7 @@ fn NtQueryFullAttributesFile(c: &mut Ctx) -> u32 {
         Err(st) => st,
     }
 }
-fn NtDeleteFile(c: &mut Ctx) -> u32 {
+fn nt_delete_file(c: &mut Ctx) -> u32 {
     let Some(path) = path_of(c.a(0)) else { return 0xc000_0033 };
     let ok = k32(c, "DeleteFileW", &[path]);
     mem::heap_free(path);
@@ -320,11 +320,11 @@ fn NtDeleteFile(c: &mut Ctx) -> u32 {
 }
 
 /// NtSetInformationThread(h, class, buf, len): accepted (ThreadHideFromDebugger and the like).
-fn NtSetInformationThread(_: &mut Ctx) -> u32 {
+fn nt_set_information_thread(_: &mut Ctx) -> u32 {
     0
 }
 /// NtQueryInformationProcess(h, class, buf, len, &retlen)
-fn NtQueryInformationProcess(c: &mut Ctx) -> u32 {
+fn nt_query_information_process(c: &mut Ctx) -> u32 {
     let (class, out, len, ret) = (c.a(1), c.a(2), c.a(3), c.a(4));
     let (need, st) = match class {
         0 => (24, 0),            // ProcessBasicInformation
@@ -353,25 +353,25 @@ fn NtQueryInformationProcess(c: &mut Ctx) -> u32 {
 
 pub fn init() {
     for (n, f) in [
-        ("SetInformationThread", NtSetInformationThread as crate::api::Handler),
-        ("QueryInformationProcess", NtQueryInformationProcess),
+        ("SetInformationThread", nt_set_information_thread as crate::api::Handler),
+        ("QueryInformationProcess", nt_query_information_process),
     ] {
         implement("ntdll", &format!("Nt{n}"), f);
         implement("ntdll", &format!("Zw{n}"), f);
     }
     for d in ["ntdll"] {
         for (n, f) in [
-            ("CreateFile", NtCreateFile as crate::api::Handler),
-            ("OpenFile", NtOpenFile),
-            ("Close", NtClose),
-            ("ReadFile", NtReadFile),
-            ("WriteFile", NtWriteFile),
-            ("FlushBuffersFile", NtFlushBuffersFile),
-            ("QueryInformationFile", NtQueryInformationFile),
-            ("SetInformationFile", NtSetInformationFile),
-            ("QueryAttributesFile", NtQueryAttributesFile),
-            ("QueryFullAttributesFile", NtQueryFullAttributesFile),
-            ("DeleteFile", NtDeleteFile),
+            ("CreateFile", nt_create_file as crate::api::Handler),
+            ("OpenFile", nt_open_file),
+            ("Close", nt_close),
+            ("ReadFile", nt_read_file),
+            ("WriteFile", nt_write_file),
+            ("FlushBuffersFile", nt_flush_buffers_file),
+            ("QueryInformationFile", nt_query_information_file),
+            ("SetInformationFile", nt_set_information_file),
+            ("QueryAttributesFile", nt_query_attributes_file),
+            ("QueryFullAttributesFile", nt_query_full_attributes_file),
+            ("DeleteFile", nt_delete_file),
         ] {
             implement(d, &format!("Nt{n}"), f);
             implement(d, &format!("Zw{n}"), f);

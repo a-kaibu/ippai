@@ -174,7 +174,8 @@ const MAX_BLOCKS: usize = 1024;
 extern "C" {
     fn vnvm_jit_init(ptr: *const u8, len: usize);
     fn vnvm_jit_load(ptr: *const u8, len: usize, n: u32) -> i32;
-    fn vnvm_jit_run(cpu: *mut Cpu) -> i32;
+    // JavaScript forwards this address to generated Wasm; it does not use Cpu's Rust layout.
+    fn vnvm_jit_run(cpu: *mut std::ffi::c_void) -> i32;
     fn vnvm_jit_bundle_idx(ptr: *mut u8, cap: usize) -> i32;
     fn vnvm_jit_bundle_load() -> i32;
     fn vnvm_jit_save(url: *const std::ffi::c_char, ptr: *const u8, len: usize);
@@ -199,6 +200,7 @@ struct State {
     hot: HashMap<(u32, u32), u32>,
     merges: u32,
     /// table index of the saved regions' first function on this thread, once instantiated
+    #[cfg(target_os = "emscripten")]
     saved: Option<i32>,
     /// entries of functions (jit::FN): regions never take their hash entry
     fns: HashSet<u32>,
@@ -397,6 +399,7 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
                 merged: HashSet::new(),
                 hot: HashMap::new(),
                 merges: 0,
+                #[cfg(target_os = "emscripten")]
                 saved: None,
                 fns: HashSet::new(),
                 fn_builds: HashMap::new(),
@@ -499,26 +502,29 @@ pub fn run(cpu: &mut Cpu, pending: u32) -> Ran {
     cpu.jit_budget = BUDGET;
     cpu.jit_code_pages = CODE_PAGES.as_ptr() as usize as u32;
     let depth = cpu.jit_depth;
-    // VNVM_JIT64_VERIFY=1: single-instruction regions, =2: whole regions; one region per call
-    // now and then, checked against the interpreter
-    thread_local! { static VN: Cell<u32> = const { Cell::new(0) }; }
-    let mode = if cpu.mode64 != 0 { verify64() } else { 0 };
-    let verify = mode != 0 && debug_allowed(cpu.eip) && VN.with(|v| { v.set(v.get().wrapping_add(1)); v.get() % match mode { 1 => 4, 2 => 32, _ => 1 } == 0 });
-    let expect = verify.then(|| {
-        cpu.jit_budget = 2;
-        let mut c = cpu.clone();
-        let mut rec = Recorder(Vec::new(), HashMap::new());
-        let mut states = vec![(c.clone(), 0)];
-        for _ in 0..if mode == 1 { 1 } else { 400 } {
-            if koji::step(&mut c, &mut rec) != Exit::Continue {
-                break;
-            }
-            states.push((c.clone(), rec.0.len()));
-        }
-        (cpu.clone(), states, rec.0)
-    });
     #[cfg(target_os = "emscripten")]
-    let r = unsafe { vnvm_jit_run(cpu) };
+    let expect = {
+        // VNVM_JIT64_VERIFY=1: single-instruction regions, =2: whole regions; one region per call
+        // now and then, checked against the interpreter
+        thread_local! { static VN: Cell<u32> = const { Cell::new(0) }; }
+        let mode = if cpu.mode64 != 0 { verify64() } else { 0 };
+        let verify = mode != 0 && debug_allowed(cpu.eip) && VN.with(|v| { v.set(v.get().wrapping_add(1)); v.get() % match mode { 1 => 4, 2 => 32, _ => 1 } == 0 });
+        verify.then(|| {
+            cpu.jit_budget = 2;
+            let mut c = cpu.clone();
+            let mut rec = Recorder(Vec::new(), HashMap::new());
+            let mut states = vec![(c.clone(), 0)];
+            for _ in 0..if mode == 1 { 1 } else { 400 } {
+                if koji::step(&mut c, &mut rec) != Exit::Continue {
+                    break;
+                }
+                states.push((c.clone(), rec.0.len()));
+            }
+            (cpu.clone(), states, rec.0)
+        })
+    };
+    #[cfg(target_os = "emscripten")]
+    let r = unsafe { vnvm_jit_run((cpu as *mut Cpu).cast()) };
     #[cfg(target_os = "emscripten")]
     if let Some((before, states, writes)) = expect {
         if r == jit::RET_CONTINUE || r == jit::RET_INTERP {
@@ -538,6 +544,7 @@ pub fn run(cpu: &mut Cpu, pending: u32) -> Ran {
     }
 }
 
+#[cfg(target_os = "emscripten")]
 fn verify64() -> u32 {
     use std::sync::OnceLock;
     static ON: OnceLock<u32> = OnceLock::new();
@@ -553,8 +560,10 @@ fn verify64() -> u32 {
 
 /// Guest memory for a dry run of one instruction: reads see its own writes, which are kept
 /// (address, byte) instead of done.
+#[cfg(target_os = "emscripten")]
 struct Recorder(Vec<(u32, u8)>, HashMap<u32, u8>);
 
+#[cfg(target_os = "emscripten")]
 impl koji::Memory for Recorder {
     fn read8(&mut self, addr: u32) -> Result<u8, koji::Fault> {
         match self.1.get(&addr) {
@@ -571,6 +580,7 @@ impl koji::Memory for Recorder {
 }
 
 /// How `got` differs from the interpreter's `want` (its writes: `writes`).
+#[cfg(target_os = "emscripten")]
 fn diff64(want: &Cpu, got: &Cpu, writes: &[(u32, u8)]) -> Vec<String> {
     let (mut w, mut g) = (want.clone(), got.clone());
     w.materialize();
@@ -600,6 +610,7 @@ fn diff64(want: &Cpu, got: &Cpu, writes: &[(u32, u8)]) -> Vec<String> {
 
 /// Reports a region run (from `before` to `got`) that no interpreter state of the same RIP
 /// matches (`states`: after each instruction, with how many of `writes` were made).
+#[cfg(target_os = "emscripten")]
 fn check64(before: &Cpu, states: &[(Cpu, usize)], got: &Cpu, writes: &[(u32, u8)]) {
     static N: AtomicU32 = AtomicU32::new(0);
     if N.fetch_add(1, Ordering::Relaxed) % 100_000 == 0 {
@@ -1169,17 +1180,7 @@ fn compile_long(st: &mut State, cpu: &Cpu, mem: &mut Linear) -> bool {
     ok
 }
 
-/// Whether cpu.eip looks like a function's entry: the return address on the stack follows a
-/// CALL of it (or an indirect CALL). Only a guess: a wrong one costs speed, not correctness.
-/// Whether `a` follows a CALL (a return address).
-fn after_call(mem: &mut Linear, a: u32) -> bool {
-    let mut c = [0u8; 7];
-    if a < 7 || koji::Memory::fetch(mem, a - 7, &mut c) < 7 {
-        return false;
-    }
-    c[2] == 0xe8 || [2usize, 3, 4, 6, 7].iter().any(|&k| c[7 - k] == 0xff && (c[8 - k] >> 3) & 7 == 2)
-}
-
+/// Whether cpu.eip looks like the target of a CALL whose return address is on the stack.
 fn called(cpu: &Cpu, mem: &mut Linear) -> bool {
     let mut b = [0u8; 4];
     if koji::Memory::fetch(mem, cpu.regs[4], &mut b) < 4 {

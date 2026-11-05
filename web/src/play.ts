@@ -332,7 +332,7 @@ async function loadJit(
     );
     return parts.length ? { parts } : undefined;
   } catch (e) {
-    console.log(`no saved regions for ${name}: ${e}`);
+    console.log(`no saved regions for ${name}: ${String(e)}`);
     return undefined;
   }
 }
@@ -399,7 +399,7 @@ function readAhead(name: Promise<string>, after: Promise<unknown>): (sake: SakeM
       }
     };
     await Promise.all(Array.from({ length: 4 }, one));
-  })().catch((e) => console.log(`read-ahead: ${e}`));
+  })().catch((e) => console.log(`read-ahead: ${String(e)}`));
   return (w) => {
     sake = w;
     for (const [hash, data] of got.splice(0)) put(w, hash, data);

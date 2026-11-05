@@ -102,7 +102,7 @@ export function keepSaving(
       last = data;
       seen = changes;
     } catch (e) {
-      console.warn(`saves: ${e}`);
+      console.warn(`saves: ${String(e)}`);
     }
   };
   const save = (): Promise<void> => {

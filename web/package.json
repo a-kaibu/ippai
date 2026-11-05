@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "vp dev",
     "build": "vp build",
-    "check": "vp check"
+    "check": "vp check --deny-warnings",
+    "lint": "vp lint --deny-warnings",
+    "fmt": "vp fmt",
+    "fmt:check": "vp fmt --check"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",

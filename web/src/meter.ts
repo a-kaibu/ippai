@@ -119,7 +119,7 @@ class Meter {
 
   private poll(): void {
     const w = this.wasm;
-    const v = new Array<number>(11).fill(0);
+    const v = Array.from({ length: 11 }, () => 0);
     let d3dFrames = 0;
     let busy = 0;
     try {

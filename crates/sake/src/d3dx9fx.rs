@@ -20,7 +20,6 @@ const PC_MATRIX_COLUMNS: u32 = 3;
 const PC_OBJECT: u32 = 4;
 const PC_STRUCT: u32 = 5;
 const PT_BOOL: u32 = 1;
-const PT_INT: u32 = 2;
 const PT_FLOAT: u32 = 3;
 const PT_STRING: u32 = 4;
 const PT_PIXELSHADER: u32 = 15;

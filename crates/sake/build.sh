@@ -12,7 +12,7 @@ HO=$ROOT/host
 . "$EMSDK4/emsdk_env.sh" >/dev/null 2>&1
 mkdir -p "$OUT"
 cd "$ROOT"
-RUSTC_BOOTSTRAP=1 RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-globals -C panic=abort" \
+RUSTC_BOOTSTRAP=1 RUSTFLAGS="${RUSTFLAGS:-} -D warnings -C target-feature=+atomics,+bulk-memory,+mutable-globals -C panic=abort" \
   cargo build --release -p sake --target wasm32-unknown-emscripten -Zbuild-std=std,panic_abort
 LIB=$ROOT/target/wasm32-unknown-emscripten/release/libsake.a
 emcc -O2 -pthread -c "$HERE/c/main.c" -o "$OUT/main.o"
