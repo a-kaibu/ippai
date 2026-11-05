@@ -7,7 +7,7 @@
 //! ~/.cache/ippai/web            ~/Library/Caches/ippai/web             the built-in web app, unpacked
 //! ~/.local/state/ippai/logs     <data>/logs                            server.log, the pages' run logs
 //! ~/.config/ippai/config.toml   ~/Library/Application Support/ippai/config.toml
-//! $XDG_RUNTIME_DIR/ippai        <cache>/run (0700)                     server.sock
+//! $XDG_RUNTIME_DIR/ippai        <cache>/run (0700)                     server-<store>.sock
 //! ```
 //!
 //! config.toml (all optional): `store = "/data/ippai"`, `cache = "..."`, `logs = "..."`,
@@ -32,7 +32,7 @@ pub struct Dirs {
     /// jit/ and web/ go under it
     pub cache: PathBuf,
     pub logs: PathBuf,
-    /// server.sock
+    /// the servers' control sockets
     pub run: PathBuf,
     pub listen: SocketAddr,
 }
@@ -59,8 +59,12 @@ impl Dirs {
         })
     }
 
+    /// The control socket of the server of this store (one per store: `stop` and `status` with
+    /// `--store` find the server of that store).
     pub fn socket(&self) -> PathBuf {
-        self.run.join("server.sock")
+        let store = std::path::absolute(&self.store).unwrap_or_else(|_| self.store.clone());
+        let key = blake3::hash(store.as_os_str().as_encoded_bytes()).to_hex();
+        self.run.join(format!("server-{}.sock", &key[..12]))
     }
 
     pub fn server_log(&self) -> PathBuf {

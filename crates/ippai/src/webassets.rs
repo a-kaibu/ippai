@@ -42,12 +42,60 @@ pub fn unpack(cache: &Path) -> Result<PathBuf> {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::rename(&tmp, &dir).with_context(|| dir.display().to_string())?;
     }
-    // older builds' copies
-    for e in std::fs::read_dir(&root)?.flatten() {
+    // this server uses it while it runs: older builds' servers still running keep theirs
+    let inuse = std::fs::File::open(dir.join(".done"))?;
+    inuse.lock_shared()?;
+    Box::leak(Box::new(inuse));
+    prune(&root, &key)?;
+    Ok(dir)
+}
+
+/// Removes the copies of other builds that no running server uses (one that does holds a shared
+/// lock on its `.done`).
+fn prune(root: &Path, keep: &str) -> Result<()> {
+    for e in std::fs::read_dir(root)?.flatten() {
         let n = e.file_name();
-        if n != key.as_str() && !n.to_string_lossy().starts_with('.') {
-            let _ = std::fs::remove_dir_all(e.path());
+        if n == keep || n.to_string_lossy().starts_with('.') {
+            continue;
+        }
+        match std::fs::File::open(e.path().join(".done")) {
+            Ok(f) => {
+                if f.try_lock().is_ok() {
+                    let _ = std::fs::remove_dir_all(e.path());
+                }
+            }
+            // (one never finished)
+            Err(_) => {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
         }
     }
-    Ok(dir)
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn keeps_copies_running_servers_use() {
+        let root = std::env::temp_dir().join(format!("ippai-web-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for d in ["new", "used", "unused", "unfinished"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+            if d != "unfinished" {
+                std::fs::write(root.join(d).join(".done"), "").unwrap();
+            }
+        }
+        // (another server of an older build)
+        let other = std::fs::File::open(root.join("used/.done")).unwrap();
+        other.lock_shared().unwrap();
+        super::prune(&root, "new").unwrap();
+        assert!(root.join("new").exists());
+        assert!(root.join("used").exists(), "removed under a running server");
+        assert!(!root.join("unused").exists());
+        assert!(!root.join("unfinished").exists());
+        drop(other);
+        super::prune(&root, "new").unwrap();
+        assert!(!root.join("used").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

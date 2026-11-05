@@ -1,6 +1,7 @@
 //! The server in the background: `ippai serve` starts `ippai serve --foreground` detached, its
 //! output appended to `<logs>/server.log`, and returns once it answers on its control socket
-//! (`<run>/server.sock`). `stop` and `status` ask the server there (one line: `stop`, `status`).
+//! (`<run>/server-<store>.sock`, one per store: see Dirs::socket). `stop` and `status` ask the
+//! server there (one line: `stop`, `status`).
 
 use crate::dirs::Dirs;
 use anyhow::{bail, Context, Result};
@@ -142,13 +143,11 @@ fn print_from(path: &std::path::Path, from: u64) {
     }
 }
 
-/// The server's side of the socket: answers `status`, exits on `stop`. When another server
-/// answers there already (a second one on another port and store: tests run several), this
-/// one goes without (stop it with a signal).
+/// The server's side of the socket: answers `status`, exits on `stop`. A second server for
+/// the same store does not start (servers of other stores have sockets of their own).
 pub async fn listen(dirs: &Dirs, url: String, store: String) -> Result<()> {
     if let Some(s) = running(dirs) {
-        eprintln!("ippai: {} (pid {}) has the control socket: `ippai stop` and `status` will not see this server", s.url, s.pid);
-        return Ok(());
+        bail!("{} (pid {}) already serves this store: `ippai stop` it first, or give another --store", s.url, s.pid);
     }
     dirs.make_run()?;
     let sock = dirs.socket();
