@@ -554,9 +554,7 @@ impl D3d {
                 drop_all(&mut self.groups0);
                 self.clear_groups2();
             }
-            // (rounded up to 4 bytes: what follows the data in memory goes along, unused)
-            let n = data.len().div_ceil(4) * 4;
-            gpu::write_buffer(self.data_buf, 0, unsafe { std::slice::from_raw_parts(data.as_ptr(), n) });
+            write_padded(self.data_buf, 0, data);
         }
         self.target = [0; 3];
         let mut i = 0;
@@ -1199,8 +1197,9 @@ impl D3d {
             _ => {
                 let (id, at, off, len) = (a(1), a(2), a(3) as usize, a(4));
                 if let Some(&(mut b, size)) = self.buffers.get(&id) {
-                    let n = (len.div_ceil(4) * 4).min(size.saturating_sub(at)) as usize;
-                    if n > 0 && off + n <= blob.len().div_ceil(4) * 4 {
+                    // (the bytes the command names that the blob and the buffer hold)
+                    let n = (len as usize).min(size.saturating_sub(at) as usize).min(blob.len().saturating_sub(off));
+                    if n > 0 {
                         if self.bused.contains(&id) {
                             if at == 0 && n as u32 + 16 > size {
                                 // all of it (but the padding to 16): a new GPU buffer, draws before keep the old one
@@ -1214,7 +1213,7 @@ impl D3d {
                                 self.submit();
                             }
                         }
-                        gpu::write_buffer(b, at, unsafe { std::slice::from_raw_parts(blob.as_ptr().add(off), n) });
+                        write_padded(b, at, &blob[off..off + n]);
                     }
                 }
                 5
@@ -2581,4 +2580,42 @@ fn common<T: PartialEq>(a: &[T], b: &[T]) -> (Vec<bool>, Vec<bool>) {
         }
     }
     (ka, kb)
+}
+
+/// `bytes` into `buf` at `at`, as WebGPU wants writes: whole 4-byte words. The last partial word
+/// goes from a zero-padded copy (nothing past `bytes` is read); the buffer must have room for it.
+fn write_padded(buf: gpu::Id, at: u32, bytes: &[u8]) {
+    padded_words(at, bytes, |at, b| gpu::write_buffer(buf, at, b));
+}
+
+fn padded_words(at: u32, bytes: &[u8], mut write: impl FnMut(u32, &[u8])) {
+    let (head, tail) = bytes.split_at(bytes.len() & !3);
+    if !head.is_empty() {
+        write(at, head);
+    }
+    if !tail.is_empty() {
+        let mut word = [0u8; 4];
+        word[..tail.len()].copy_from_slice(tail);
+        write(at + head.len() as u32, &word);
+    }
+}
+
+#[cfg(test)]
+mod padded_tests {
+    #[test]
+    fn writes_whole_words_without_reading_past_the_data() {
+        for len in 0..=9usize {
+            let data: Vec<u8> = (1..=len as u8).collect();
+            let mut out = vec![0xeeu8; 16];
+            super::padded_words(4, &data, |at, b| {
+                assert_eq!(b.len() % 4, 0);
+                assert_eq!(at % 4, 0);
+                out[at as usize..at as usize + b.len()].copy_from_slice(b);
+            });
+            let padded = len.div_ceil(4) * 4;
+            assert_eq!(&out[4..4 + len], &data[..]);
+            assert!(out[4 + len..4 + padded].iter().all(|&b| b == 0), "len {len}: padding is zeros");
+            assert!(out[4 + padded..].iter().all(|&b| b == 0xee));
+        }
+    }
 }
