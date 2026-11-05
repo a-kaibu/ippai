@@ -316,9 +316,16 @@ pub extern "C" fn vnhost_d3d9_done() {
 pub fn wait_readback(id: u32) -> bool {
     flush();
     let mut g = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
-    let deadline = now() + 3000.0;
+    // (10 s without the page finishing a batch: a slow GPU with frames queued before the
+    // readback, or shaders compiling, is still making progress)
+    let mut deadline = now() + 10000.0;
+    let mut done = g.as_ref().map_or(0, |q| q.done);
     loop {
         let q = g.as_mut().unwrap();
+        if q.done != done {
+            done = q.done;
+            deadline = now() + 10000.0;
+        }
         if let Some(i) = q.readbacks_done.iter().position(|&r| r == id) {
             q.readbacks_done.swap_remove(i);
             return true;
