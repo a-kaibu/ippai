@@ -41,7 +41,7 @@ history's), the JS engines disagree, a group left no results, a case has fewer n
 rounds, or there are none. The artifact `bench-history` carries the medians and checksums of the
 last 300 commits from run to run; `VERSION` in `suite.mjs` says how they were measured, and only
 the same version is compared with (bump it when the numbers stop being comparable). The report's
-計測条件 lists Chromium, node, Emscripten and the JavaScriptCore revision (`JSC_REV` pins one).
+計測条件 lists Chromium, node, Emscripten and the JavaScriptCore revision (pinned by `JSC_REV` in `js.sh`).
 
 The JavaScriptCore shell is Safari's engine on Linux, not iPhone Safari: no iOS memory limits,
 other JIT settings, another CPU.
