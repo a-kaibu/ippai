@@ -1257,6 +1257,27 @@ fn _wfopen(c: &mut Ctx) -> u32 {
         }
     }
 }
+fn remove(c: &mut Ctx) -> u32 {
+    let path = a2s(&cstr(c.a(0)));
+    let Some(path) = crate::files::resolve(&path) else {
+        set_errno(2);
+        return u32::MAX;
+    };
+    if kura::fs::remove_file(path).is_ok() { 0 } else { set_errno(13); u32::MAX }
+}
+fn rename(c: &mut Ctx) -> u32 {
+    let from = a2s(&cstr(c.a(0)));
+    let to = a2s(&cstr(c.a(1)));
+    let Some(from) = crate::files::resolve(&from) else {
+        set_errno(2);
+        return u32::MAX;
+    };
+    if crate::files::resolve(&to).is_some() {
+        set_errno(13);
+        return u32::MAX;
+    }
+    if kura::fs::rename(from, crate::files::resolve_new(&to)).is_ok() { 0 } else { set_errno(13); u32::MAX }
+}
 fn fclose(c: &mut Ctx) -> u32 {
     let fp = c.a(0);
     let had = FILES.lock().unwrap().get_or_insert_with(HashMap::default).remove(&fp).is_some();
@@ -2385,7 +2406,7 @@ pub fn init() {
     reg!(_putenv, fputc, __acrt_iob_func, _create_locale, _free_locale, _fdclass, _dclass, _fdsign, _dsign, strnlen);
     implement("ucrtbase", "__stdio_common_vsprintf", __stdio_common_vsprintf);
     implement("ucrtbase", "__stdio_common_vswprintf", __stdio_common_vswprintf);
-    reg!(wcsncmp, getenv, _ismbblead, memcpy_s, _controlfp_s, __iob_func, __p__iob, fopen_s, _wfopen_s, _setjmp3, longjmp);
+    reg!(wcsncmp, getenv, _ismbblead, memcpy_s, _controlfp_s, __iob_func, __p__iob, fopen_s, _wfopen_s, _setjmp3, longjmp, remove, rename);
     implement("msvcrt", "_setjmp", _setjmp3);
     reg!(_encode_pointer, _encoded_null, _crt_debugger_hook, _configthreadlocale, ___mb_cur_max_l_func);
     reg!(_initterm, _initterm_e, _onexit, atexit, __dllonexit, exit, _exit, abort, __getmainargs, __set_app_type,
