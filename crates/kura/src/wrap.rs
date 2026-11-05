@@ -86,7 +86,14 @@ const LOAD_RUN_MAX: f64 = 3000.0;
 static LOAD_RETIRED: AtomicU64 = AtomicU64::new(0);
 
 fn add_f64(a: &AtomicU64, v: f64) {
-    let _ = a.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |r| Some((f64::from_bits(r) + v).to_bits()));
+    let mut current = a.load(Ordering::Relaxed);
+    loop {
+        let next = (f64::from_bits(current) + v).to_bits();
+        match a.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return,
+            Err(actual) => current = actual,
+        }
+    }
 }
 
 /// A thread's slot and when it last woke by its own clock; its time goes to LOAD_RETIRED when
