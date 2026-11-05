@@ -135,3 +135,85 @@ pub fn router(s: Arc<Saves>) -> Router {
         .layer(axum::extract::DefaultBodyLimit::max(256 << 20))
         .with_state(s)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::{to_bytes, Body},
+        http::Request,
+    };
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn http_save_preconditions_and_persistence() {
+        let dir = std::env::temp_dir().join(format!("ippai-save-http-{}", uuid::Uuid::new_v4()));
+        let db = Library::new(&dir).unwrap();
+        db.connect()
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE saves(name TEXT PRIMARY KEY, revision INTEGER NOT NULL, data BLOB);",
+            )
+            .unwrap();
+        let state = Arc::new(Saves {
+            db,
+            remote: None,
+            lock: Default::default(),
+        });
+        let app = router(state.clone());
+        let request = |method, path: &str, revision: Option<&str>, bytes: &[u8]| {
+            let mut r = Request::builder().method(method).uri(path);
+            if let Some(revision) = revision {
+                r = r.header(header::IF_MATCH, revision);
+            }
+            r.body(Body::from(bytes.to_vec())).unwrap()
+        };
+        let missing = app
+            .clone()
+            .oneshot(request("GET", "/saves/game", None, b""))
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        for (revision, status) in [
+            (None, StatusCode::PRECONDITION_REQUIRED),
+            (Some("bad"), StatusCode::PRECONDITION_REQUIRED),
+            (Some("\"1\""), StatusCode::PRECONDITION_FAILED),
+            (Some("\"0\""), StatusCode::NO_CONTENT),
+        ] {
+            let r = app
+                .clone()
+                .oneshot(request("PUT", "/saves/game", revision, b"\0\xffsave"))
+                .await
+                .unwrap();
+            assert_eq!(r.status(), status);
+        }
+        let stale = app
+            .clone()
+            .oneshot(request("PUT", "/saves/game", Some("\"0\""), b"stale"))
+            .await
+            .unwrap();
+        assert_eq!(stale.status(), StatusCode::PRECONDITION_FAILED);
+        let r = app
+            .clone()
+            .oneshot(request("GET", "/saves/game", None, b""))
+            .await
+            .unwrap();
+        assert_eq!(r.headers()[header::ETAG], "\"1\"");
+        assert_eq!(r.headers()[header::CACHE_CONTROL], "no-store");
+        assert_eq!(
+            to_bytes(r.into_body(), 1024).await.unwrap().as_ref(),
+            b"\0\xffsave"
+        );
+        let invalid = app
+            .oneshot(request("PUT", "/saves/.hidden", Some("0"), b"invalid"))
+            .await
+            .unwrap();
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+        let reopened = Saves::new(&dir).unwrap();
+        assert_eq!(
+            reopened.read("game").await.unwrap(),
+            Some((1, b"\0\xffsave".to_vec()))
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
