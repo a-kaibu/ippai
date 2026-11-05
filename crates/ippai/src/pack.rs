@@ -257,13 +257,19 @@ fn add_game(
     mount: Vec<String>,
     meta_id: Option<String>,
     no_meta: bool,
+    new_list: Option<String>,
 ) -> Result<()> {
     if !valid_id(&id) {
         bail!("id {id:?}: use letters, digits, _ and -");
     }
-    // the exe must be in the tree (a typo would only show up as "file not found")
-    let list = fs::read_to_string(store.join("trees").join(format!("{tree}.tsv")))
-        .with_context(|| format!("tree {tree} (pack it with `tree` first)"))?;
+    // the exe must be in the tree (a typo would only show up as "file not found"). With
+    // `new_list` (ippai add) the tree is published only once all of this holds, so a failed
+    // add leaves the game as it was
+    let list = match &new_list {
+        Some(l) => l.clone(),
+        None => fs::read_to_string(store.join("trees").join(format!("{tree}.tsv")))
+            .with_context(|| format!("tree {tree} (pack it with `tree` first)"))?,
+    };
     let exe = exe.replace('\\', "/");
     let Some(line) = list.lines().find(|l| l.starts_with("f\t") && l.split('\t').nth(3).is_some_and(|p| p.eq_ignore_ascii_case(&exe)))
     else {
@@ -284,16 +290,21 @@ fn add_game(
     fs::create_dir_all(&dir)?;
     // a replaced entry keeps its metadata and cover
     let old = read_game(store, &id).ok();
-    let cover = match cover {
+    let new_cover = match cover {
         Some(src) => {
             let ext = src.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
             if !["png", "jpg", "jpeg", "webp"].contains(&ext.as_str()) {
                 bail!("cover {}: png, jpg or webp", src.display());
             }
-            let name = format!("{id}.{ext}");
-            fs::copy(&src, dir.join(&name)).with_context(|| src.display().to_string())?;
-            Some(name)
+            if !src.is_file() {
+                bail!("cover {}: no such file", src.display());
+            }
+            Some((src, format!("{id}.{ext}")))
         }
+        None => None,
+    };
+    let cover = match &new_cover {
+        Some((_, name)) => Some(name.clone()),
         None => old.as_ref().and_then(|o| o.cover.clone()),
     };
     let mut entry = GameEntry {
@@ -311,6 +322,13 @@ fn add_game(
     if !no_meta && (entry.meta.is_none() || meta_id.is_some()) {
         fetch_meta(store, &mut entry, None, meta_id.as_deref());
     }
+    // all checked: publish
+    if let Some(l) = &new_list {
+        publish_tree(store, &tree, l)?;
+    }
+    if let Some((src, name)) = &new_cover {
+        fs::copy(src, dir.join(name)).with_context(|| src.display().to_string())?;
+    }
     write_game(store, &entry)?;
     eprintln!("{id}: {} ({}{})", entry.title, entry.run, if entry.arch.is_some() { ", 64-bit" } else { "" });
     Ok(())
@@ -320,7 +338,7 @@ pub fn run(store: &Path, cmd: Cmd) -> Result<()> {
     match cmd {
         Cmd::Pack { dir, name, follow, chunk_kib } => tree(store, &dir, &name, follow, chunk_kib << 10)?,
         Cmd::AddGame { id, title, tree, exe, engine, cover, args, env, mount, meta_id, no_meta } => {
-            add_game(store, id, title, tree, exe, engine, cover, args, env, mount, meta_id, no_meta)?
+            add_game(store, id, title, tree, exe, engine, cover, args, env, mount, meta_id, no_meta, None)?
         }
         Cmd::Meta { ids, all, meta_id, title, search } => {
             if let Some(k) = search {
@@ -361,9 +379,9 @@ pub fn run(store: &Path, cmd: Cmd) -> Result<()> {
             if !valid_id(&id) {
                 bail!("id {id:?}: use letters, digits, _ and - (--id)");
             }
-            tree(store, &dir, &id, follow, 256 << 10)?;
+            let list = pack_tree(store, &dir, &id, follow, 256 << 10)?;
             let tree_name = id.clone();
-            add_game(store, id, title.unwrap_or(name), tree_name, exe, engine, cover, args, env, mount, meta_id, no_meta)?
+            add_game(store, id, title.unwrap_or(name), tree_name, exe, engine, cover, args, env, mount, meta_id, no_meta, Some(list))?
         }
         Cmd::Remove { id } => {
             if !valid_id(&id) {
@@ -431,7 +449,25 @@ static MOVIES: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
     ok
 });
 
+/// Packs `root` as tree `name` and publishes its list.
 fn tree(store: &Path, root: &Path, name: &str, follow: bool, chunk: u64) -> Result<()> {
+    let list = pack_tree(store, root, name, follow, chunk)?;
+    publish_tree(store, name, &list)
+}
+
+/// `trees/<name>.tsv` = `list`, replaced whole (a reader sees the old list or the new one).
+fn publish_tree(store: &Path, name: &str, list: &str) -> Result<()> {
+    let dir = store.join("trees");
+    fs::create_dir_all(&dir)?;
+    let tmp = dir.join(format!(".{name}.tsv.{}.tmp", std::process::id()));
+    fs::write(&tmp, list)?;
+    fs::rename(&tmp, dir.join(format!("{name}.tsv")))?;
+    Ok(())
+}
+
+/// Stores the chunks of `root`'s files and returns the tree's list (not yet published: the
+/// chunks are named by their content, so a list never published leaves nothing wrong behind).
+fn pack_tree(store: &Path, root: &Path, name: &str, follow: bool, chunk: u64) -> Result<String> {
     use std::os::unix::fs::MetadataExt;
     let root = root.canonicalize()?;
     let mut lines = Vec::new();
@@ -521,14 +557,61 @@ fn tree(store: &Path, root: &Path, name: &str, follow: bool, chunk: u64) -> Resu
     for (line, text) in done {
         lines[line] = text;
     }
-    let dir = store.join("trees");
-    fs::create_dir_all(&dir)?;
     let mut out = format!("vnvm-tree\t1\t{chunk}\n");
     for l in lines {
         out.push_str(&l);
         out.push('\n');
     }
-    fs::write(dir.join(format!("{name}.tsv")), out)?;
     eprintln!("{name}: {} files, {} MiB", files.len(), bytes >> 20);
-    Ok(())
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn add(store: &Path, dir: &Path, exe: &str) -> Result<()> {
+        run(
+            store,
+            Cmd::Add {
+                dir: dir.to_path_buf(),
+                exe: exe.into(),
+                id: Some("sample".into()),
+                title: None,
+                engine: None,
+                cover: None,
+                args: vec![],
+                env: vec![],
+                mount: vec![],
+                meta_id: None,
+                no_meta: true,
+                follow: false,
+            },
+        )
+    }
+
+    #[test]
+    fn failed_add_leaves_the_game_as_it_was() {
+        let t = std::env::temp_dir().join(format!("ippai-add-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&t);
+        let (store, game) = (t.join("store"), t.join("game"));
+        fs::create_dir_all(&game).unwrap();
+        fs::write(game.join("game.exe"), b"MZ old").unwrap();
+        add(&store, &game, "game.exe").unwrap();
+        let tsv = store.join("trees/sample.tsv");
+        let (list, entry) = (fs::read(&tsv).unwrap(), fs::read(store.join("games/sample.json")).unwrap());
+
+        // the folder changed, and --exe names a file that is not there
+        fs::write(game.join("game.exe"), b"MZ new, longer").unwrap();
+        fs::write(game.join("extra.dat"), b"x").unwrap();
+        assert!(add(&store, &game, "missing.exe").is_err());
+        assert_eq!(fs::read(&tsv).unwrap(), list, "the old tree is still published");
+        assert_eq!(fs::read(store.join("games/sample.json")).unwrap(), entry);
+        assert!(fs::read_dir(store.join("trees")).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().ends_with(".tmp")));
+
+        // a good add then replaces both
+        add(&store, &game, "game.exe").unwrap();
+        assert!(fs::read_to_string(&tsv).unwrap().contains("extra.dat"));
+        let _ = fs::remove_dir_all(&t);
+    }
 }
