@@ -81,8 +81,11 @@ pub fn step_cached<M: Memory>(cpu: &mut Cpu, mem: &mut M, cache: Option<&mut Dec
         }
     };
     let branch = ins.flow_control() != iced_x86::FlowControl::Next;
-    let has_mem = (0..ins.op_count()).any(|i| ins.op_kind(i) == OpKind::Memory);
-    if !(has_mem && (ins.has_lock_prefix() || ins.mnemonic() == Mnemonic::Xchg)) {
+    // Only LOCK and XCHG can require atomic memory handling. Most instructions need
+    // no operand scan on this hot path.
+    let locked_mem = (ins.has_lock_prefix() || ins.mnemonic() == Mnemonic::Xchg)
+        && (0..ins.op_count()).any(|i| ins.op_kind(i) == OpKind::Memory);
+    if !locked_mem {
         let mut x = X { cpu, mem, ins: &ins, lock: None };
         return (x.exec(), branch);
     }

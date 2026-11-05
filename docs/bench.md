@@ -37,3 +37,21 @@ Locally (a build in `web/dist` and `target/release/ippai`, fonts from `tools/ci/
     python3 tests/bench/report.py DIR_OF_OUT_JSON --sha local
 
 `ONLY="d3d9.exe:fade"` runs one case; `SCALE=2` doubles the work per case.
+
+## Interpreter operand scan (2026-11-06)
+
+`cargo build --release -p koji --example ibench`; compare the original and modified
+executables on the same machine, six runs each, alternating their order each round.
+Each run executes 20 million instructions per mode. Local native results (median):
+
+| mode | before (ns/instruction) | after | change |
+|---|---:|---:|---:|
+| decode cache | 20.3 | 20.0 | -1.5% |
+| no cache | 44.55 | 44.65 | +0.2% |
+
+The interpreter now scans operand kinds only for LOCK-prefixed instructions and XCHG,
+which are the only instructions needing its atomic-memory path. The scan previously ran
+for every instruction. Atomic-memory handling itself is unchanged.
+This is a small microbenchmark improvement; native uncached execution is effectively
+unchanged. These numbers do not establish a browser or whole-game speedup.
+Validation: `cargo test -p koji --release`.
