@@ -2287,6 +2287,11 @@ fn IsDBCSLeadByteEx(c: &mut Ctx) -> u32 {
 
 fn MultiByteToWideChar(c: &mut Ctx) -> u32 {
     let (cp, _flags, src, n, dst, cap) = (c.a(0), c.a(1), c.a(2), c.i(3), c.a(4), c.a(5));
+    if src == 0 || n == 0 || n < -1 || cap > i32::MAX as u32 || src == dst {
+        last_error(87);
+        return 0;
+    }
+    if cap != 0 && dst == 0 { last_error(122); return 0; }
     let s = if n < 0 { let mut v = cstr(src); v.push(0); v } else { mem::slice(src, n as u32).to_vec() };
     let w = mb2w(cp, &s);
     if cap == 0 {
@@ -2303,6 +2308,11 @@ fn MultiByteToWideChar(c: &mut Ctx) -> u32 {
 }
 fn WideCharToMultiByte(c: &mut Ctx) -> u32 {
     let (cp, src, n, dst, cap) = (c.a(0), c.a(2), c.i(3), c.a(4), c.a(5));
+    if src == 0 || n == 0 || n < -1 || cap > i32::MAX as u32 || src == dst {
+        last_error(87);
+        return 0;
+    }
+    if cap != 0 && dst == 0 { last_error(122); return 0; }
     let s: Vec<u16> = if n < 0 {
         let mut v = wstr(src);
         v.push(0);
