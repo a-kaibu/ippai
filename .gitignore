@@ -9,3 +9,6 @@
 /crates/ippai/target
 /dist
 /web/public/benchwasm
+
+# mlugg/setup-zig restores this cache before GoReleaser checks the worktree.
+/.zig-cache/
