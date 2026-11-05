@@ -6,7 +6,8 @@
 #   tests/bench/js.sh OUT.json [WORK]      (JSC=path to the jsc shell skips installing it)
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
-OUT=$1
+OUT=$(realpath -m "$1")
+mkdir -p "$(dirname "$OUT")"
 WORK=${2:-$(mktemp -d)}
 mkdir -p "$WORK"
 . "$ROOT/tools/ci/emsdk.sh"
