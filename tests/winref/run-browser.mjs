@@ -7,7 +7,8 @@
 //   IPPAI=path (default target/release/ippai), WEB=dir (web app instead of the built-in one),
 //   PLAYWRIGHT=module path, FONTS=dir (drive_c\windows\Fonts), IPPAI_JIT=0, PORT (default 8790),
 //   GUEST_ENV="NAME=value ..." (the program's environment), DEBUG_CONSOLE=1 (every console line
-//   of the page into stderr.txt), BROWSER64=1
+//   of the page into stderr.txt), BROWSER64=1, SYSTEM64=dir (x64 DLLs, e.g. the CRT, for the
+//   prefix's windows\system64)
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, cpSync, readdirSync, copyFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,6 +28,7 @@ const work = mkdtempSync(join(tmpdir(), "winref-"));
 const store = join(work, "store");
 mkdirSync(join(work, "prefix/drive_c/windows/temp"), { recursive: true });
 if (process.env.FONTS) cpSync(process.env.FONTS, join(work, "prefix/drive_c/windows/Fonts"), { recursive: true });
+if (process.env.SYSTEM64) cpSync(process.env.SYSTEM64, join(work, "prefix/drive_c/windows/system64"), { recursive: true });
 mkdirSync(join(work, "probes"));
 for (const n of names) copyFileSync(join(exeDir, `${n}.exe`), join(work, "probes", `${n}.exe`));
 execFileSync(ippai, ["--store", store, "pack", join(work, "prefix"), "prefix32"], { stdio: "ignore" });

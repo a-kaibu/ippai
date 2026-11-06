@@ -111,7 +111,14 @@
   ポインタ配列は 8 バイト刻み。拡張関数名は ARB/EXT を外した名前でも探す。
 - user: DPI API (GetDpiForWindow など 96 固定)、ShowWindow(SW_MAXIMIZE) で画面いっぱいに広げる。
 - 構造体: PAINTSTRUCT、BITMAP、DIBSECTION、SYSTEM_INFO、MEMORY_BASIC_INFORMATION は x64 の
-  形で書く (host/tests/struct64.c)。未対応: XAudio2 (32 ビットのみ)、d3d9 ブリッジ。
+  形で書く (host/tests/struct64.c)。
+- XAudio2 2.7 (xaudio2.rs): 参照カウントはポインタの後、XAUDIO2_BUFFER / VOICE_SENDS /
+  VOICE_STATE はポインタ幅の配置、SetVolume / SetFrequencyRatio の float は xmm から
+  (host/tests/xaudio2.c: x86 と x64 で同じ行)。
+- d3d9 (d3d9.rs): vtable は 8 バイト、引数は 8 バイトの枠で kura に渡す (kura は下位半分を読む)。
+  SetNPatchMode の float は xmm1 から。D3DLOCKED_RECT の pBits は 8 バイト目。winref の d3d9
+  プローブ (`BROWSER64=1 SYSTEM64=<x64 CRT> node tests/winref/run-browser.mjs`) は x64 でも
+  32 ビットと同じく既知の差だけ。
 
 ## 16 ビット (Win16)
 
