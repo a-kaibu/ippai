@@ -373,6 +373,14 @@ fn image_of(this: u32) -> Option<(Arc<Img>, Fmt)> {
     })
 }
 
+/// A bitmap source's pixels as premultiplied BGRA rows (w * 4 bytes each), for Direct2D.
+pub fn pbgra(c: &mut Ctx, src: u32) -> Option<(u32, u32, Vec<u8>)> {
+    let (img, _) = read_source(c, src)?;
+    let mut out = vec![0u8; (img.w * img.h * 4) as usize];
+    encode(&img, Fmt::Pbgra, (0, 0, img.w, img.h), img.w * 4, &mut out);
+    Some((img.w, img.h, out))
+}
+
 /// Any IWICBitmapSource's pixels: ours directly, the game's through its methods.
 fn read_source(c: &mut Ctx, src: u32) -> Option<(Arc<Img>, Fmt)> {
     if src == 0 {

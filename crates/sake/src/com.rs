@@ -61,7 +61,7 @@ fn fmt_guid(g: Guid) -> String {
     format!("{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{}", g.0, g.1, g.2, g.3[0], g.3[1], g.3[2..].iter().map(|b| format!("{b:02x}")).collect::<String>())
 }
 
-fn warn_once(msg: &str) {
+pub fn warn_once(msg: &str) {
     static SEEN: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
     if SEEN.lock().unwrap().get_or_insert_with(Default::default).insert(msg.to_string()) {
         eprintln!("{msg}");

@@ -29,6 +29,18 @@ struct Dc {
     items: Vec<Item>,
     xf: Option<Xf>,
     clips: Vec<[f32; 4]>,
+    /// the bitmap texture the BITMAP items in `items` show
+    bitmap: Option<u32>,
+}
+
+/// A bitmap of its own (CreateBitmap, CreateBitmapFromWicBitmap): its texture, size in pixels,
+/// and whether its alpha is ignored (D2D1_ALPHA_MODE_IGNORE).
+#[derive(Clone, Copy)]
+struct Image {
+    gpu: u32,
+    w: u32,
+    h: u32,
+    opaque: bool,
 }
 
 struct Brush {
@@ -83,6 +95,7 @@ struct State {
     brushes: HashMap<u32, Brush>,
     /// bitmap object -> (surface, w, h)
     bitmaps: HashMap<u32, (u32, u32, u32)>,
+    images: HashMap<u32, Image>,
     stops: HashMap<u32, Vec<(f32, [f32; 4])>>,
     /// device -> factory, context/device -> device
     parents: HashMap<u32, u32>,
@@ -164,6 +177,9 @@ fn context_methods() -> Vec<(&'static str, Handler)> {
     vec![
         ("CreateSolidColorBrush", CreateSolidColorBrush),
         ("CreateBitmapFromDxgiSurface", CreateBitmapFromDxgiSurface),
+        ("CreateBitmap", CreateBitmap),
+        ("CreateBitmapFromWicBitmap", CreateBitmapFromWicBitmap),
+        ("DrawBitmap", DrawBitmap),
         ("SetTarget", SetTarget),
         ("GetTarget", GetTarget),
         ("BeginDraw", ok),
@@ -313,15 +329,151 @@ fn GetIdentity(c: &mut Ctx) -> u32 {
     0
 }
 
+/// An ID2D1Bitmap1 object (both kinds: a D3D11 surface, or an image of its own).
+fn bitmap_object() -> u32 {
+    com::object(
+        "ID2D1Bitmap1",
+        &[
+            ("Release", BitmapRelease as Handler),
+            ("GetSize", BitmapSize),
+            ("GetPixelSize", BitmapPixelSize),
+            ("GetDpi", GetDpi),
+            ("GetPixelFormat", BitmapFormat),
+            ("CopyFromMemory", CopyFromMemory),
+        ],
+        8,
+    )
+}
+
 fn new_bitmap(surface: u32) -> u32 {
     let (w, h) = gpu2d::size(surface).unwrap_or((0, 0));
-    let o = com::object(
-        "ID2D1Bitmap1",
-        &[("GetSize", BitmapSize as Handler), ("GetPixelSize", BitmapPixelSize), ("GetDpi", GetDpi)],
-        8,
-    );
+    let o = bitmap_object();
     st(|s| s.bitmaps.insert(o, (surface, w, h)));
     o
+}
+
+/// An image bitmap `w` x `h`, from premultiplied BGRA rows `px` (`pitch` apart) when given.
+fn new_image(w: u32, h: u32, px: Option<(&[u8], u32)>, opaque: bool) -> u32 {
+    let gpu = gpu2d::bitmap(w, h);
+    if let Some((px, pitch)) = px {
+        gpu2d::bitmap_write(gpu, (0, 0, w, h), px, pitch);
+    }
+    let o = bitmap_object();
+    st(|s| s.images.insert(o, Image { gpu, w, h, opaque }));
+    o
+}
+
+/// D2D1_ALPHA_MODE_IGNORE in D2D1_PIXEL_FORMAT `pf` (or a format without alpha).
+fn alpha_ignored(pf: u32) -> bool {
+    pf != 0 && (r32(pf + 4) == 3 || r32(pf) == 88) // (DXGI_FORMAT_B8G8R8X8_UNORM)
+}
+
+fn CreateBitmap(c: &mut Ctx) -> u32 {
+    // (this, D2D1_SIZE_U by value, data, pitch, properties, out)
+    let (w, h, data, pitch, props, out) = (c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6));
+    if w == 0 || h == 0 || w > 16384 || h > 16384 {
+        return 0x8007_0057; // E_INVALIDARG
+    }
+    let px = (data != 0).then(|| mem::slice(data, pitch * (h - 1) + w * 4).to_vec());
+    mem::putp(out, new_image(w, h, px.as_deref().map(|p| (p, pitch)), alpha_ignored(props)));
+    0
+}
+
+fn CreateBitmapFromWicBitmap(c: &mut Ctx) -> u32 {
+    // (this, source, properties or NULL, out)
+    let (src, props, out) = (c.a(1), c.a(2), c.a(3));
+    let Some((w, h, px)) = crate::wic::pbgra(c, src) else {
+        mem::putp(out, 0);
+        return 0x8000_4005; // E_FAIL
+    };
+    mem::putp(out, new_image(w, h, Some((&px, w * 4)), alpha_ignored(props)));
+    0
+}
+
+fn CopyFromMemory(c: &mut Ctx) -> u32 {
+    // (this, D2D1_RECT_U * or NULL, data, pitch)
+    let (this, pr, data, pitch) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    let Some(im) = st(|s| s.images.get(&this).copied()) else { return 0x8000_4005 };
+    let (x, y, r, b) = if pr != 0 { (r32(pr), r32(pr + 4), r32(pr + 8), r32(pr + 12)) } else { (0, 0, im.w, im.h) };
+    let (r, b) = (r.min(im.w), b.min(im.h));
+    if data == 0 || r <= x || b <= y {
+        return 0x8007_0057;
+    }
+    let (w, h) = (r - x, b - y);
+    let px = mem::slice(data, pitch * (h - 1) + w * 4).to_vec();
+    gpu2d::bitmap_write(im.gpu, (x, y, w, h), &px, pitch);
+    0
+}
+
+fn BitmapFormat(c: &mut Ctx) -> u32 {
+    // (this, out): D2D1_PIXEL_FORMAT returned through a hidden pointer
+    let out = c.a(1);
+    let opaque = st(|s| s.images.get(&c.a(0)).is_some_and(|i| i.opaque));
+    w32(out, 87); // DXGI_FORMAT_B8G8R8A8_UNORM
+    w32(out + 4, if opaque { 3 } else { 1 });
+    out
+}
+
+fn BitmapRelease(c: &mut Ctx) -> u32 {
+    let this = c.a(0);
+    let n = com::release_obj(this);
+    if n == 0 {
+        if let Some(im) = st(|s| {
+            s.bitmaps.remove(&this);
+            s.images.remove(&this)
+        }) {
+            // (drawn first if a context still has it in its items)
+            let users: Vec<u32> = st(|s| s.dcs.iter().filter(|d| d.1.bitmap == Some(im.gpu)).map(|d| *d.0).collect());
+            users.into_iter().for_each(flush);
+            gpu2d::bitmap_free(im.gpu);
+        }
+    }
+    n
+}
+
+fn DrawBitmap(c: &mut Ctx) -> u32 {
+    // (this, bitmap, destination D2D1_RECT_F * or NULL, opacity, interpolation, source * or NULL)
+    let (dc, bmp, pd, opacity, interp, ps) = (c.a(0), c.a(1), c.a(2), fl(c, 3), c.a(4), c.a(5));
+    let Some(im) = st(|s| s.images.get(&bmp).copied()) else {
+        if bmp != 0 {
+            com::warn_once("sake: d2d DrawBitmap of a surface bitmap: not drawn");
+        }
+        return 0;
+    };
+    let src = if ps != 0 { [rf(ps, 0), rf(ps, 1), rf(ps, 2), rf(ps, 3)] } else { [0.0, 0.0, im.w as f32, im.h as f32] };
+    let dst = if pd != 0 { [rf(pd, 0), rf(pd, 1), rf(pd, 2), rf(pd, 3)] } else { [0.0, 0.0, src[2] - src[0], src[3] - src[1]] };
+    let xf = st(|s| s.dcs.get(&dc).and_then(|d| d.xf));
+    if xf.is_some_and(|m| m[1] != 0.0 || m[2] != 0.0) {
+        com::warn_once("sake: d2d DrawBitmap under a rotation: drawn in its bounding box");
+    }
+    // (a mirroring transform: the corners swapped, and the source with them)
+    let (a, b) = (apply(xf, dst[0], dst[1]), apply(xf, dst[2], dst[3]));
+    let mut shape = [a.0, a.1, b.0, b.1];
+    let mut tex = src;
+    if shape[0] > shape[2] {
+        shape.swap(0, 2);
+        tex.swap(0, 2);
+    }
+    if shape[1] > shape[3] {
+        shape.swap(1, 3);
+        tex.swap(1, 3);
+    }
+    let Some(r) = st(|s| s.dcs.get(&dc).map(|d| clip_rect(d, shape))) else { return 0 };
+    if r[2] <= r[0] || r[3] <= r[1] || opacity <= 0.0 {
+        return 0;
+    }
+    // one bitmap a draw: what shows another goes first
+    if st(|s| s.dcs.get(&dc).is_some_and(|d| d.bitmap.is_some_and(|g| g != im.gpu))) {
+        flush(dc);
+    }
+    let paint = [opacity.min(1.0), (interp != 0) as u32 as f32, im.opaque as u32 as f32, 0.0];
+    st(|s| {
+        if let Some(d) = s.dcs.get_mut(&dc) {
+            d.bitmap = Some(im.gpu);
+            d.items.push(Item { rect: r, shape, extra: tex, paint, kind: [gpu2d::BITMAP, 0, 0, 0] });
+        }
+    });
+    0
 }
 
 fn CreateBitmapFromDxgiSurface(c: &mut Ctx) -> u32 {
@@ -332,14 +484,18 @@ fn CreateBitmapFromDxgiSurface(c: &mut Ctx) -> u32 {
     mem::putp(c.a(3), new_bitmap(c.a(1)));
     0
 }
+/// A bitmap's size in pixels (either kind).
+fn bitmap_size(b: u32) -> (u32, u32) {
+    st(|s| s.images.get(&b).map(|i| (i.w, i.h)).or_else(|| s.bitmaps.get(&b).map(|v| (v.1, v.2))).unwrap_or_default())
+}
 fn BitmapSize(c: &mut Ctx) -> u32 {
-    let (_, w, h) = st(|s| s.bitmaps.get(&c.a(0)).copied().unwrap_or_default());
+    let (w, h) = bitmap_size(c.a(0));
     w32(c.a(1), (w as f32).to_bits());
     w32(c.a(1) + 4, (h as f32).to_bits());
     c.a(1)
 }
 fn BitmapPixelSize(c: &mut Ctx) -> u32 {
-    let (_, w, h) = st(|s| s.bitmaps.get(&c.a(0)).copied().unwrap_or_default());
+    let (w, h) = bitmap_size(c.a(0));
     w32(c.a(1), w);
     w32(c.a(1) + 4, h);
     c.a(1)
@@ -352,6 +508,7 @@ fn set_target(dc: u32, bmp: u32) {
         if let Some(d) = s.dcs.get_mut(&dc) {
             (d.target, d.surface, d.w, d.h) = (bmp, surface, w, h);
             d.items.clear();
+            d.bitmap = None;
         }
     });
 }
@@ -384,9 +541,9 @@ fn GetPixelSize(c: &mut Ctx) -> u32 {
 
 /// Draws what was collected over the target texture.
 fn flush(dc: u32) {
-    let job = st(|s| s.dcs.get_mut(&dc).map(|d| (d.surface, std::mem::take(&mut d.items))));
-    if let Some((surface, items)) = job {
-        gpu2d::draw(surface, &items);
+    let job = st(|s| s.dcs.get_mut(&dc).map(|d| (d.surface, std::mem::take(&mut d.items), d.bitmap.take())));
+    if let Some((surface, items, bitmap)) = job {
+        gpu2d::draw(surface, &items, bitmap);
     }
 }
 
@@ -434,6 +591,7 @@ fn Clear(c: &mut Ctx) -> u32 {
     let surface = st(|s| {
         let d = s.dcs.get_mut(&dc)?;
         d.items.clear();
+        d.bitmap = None;
         Some(d.surface)
     });
     if let Some(surface) = surface {

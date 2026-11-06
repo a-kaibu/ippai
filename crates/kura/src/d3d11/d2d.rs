@@ -16,6 +16,10 @@ pub const RECT: u32 = 0;
 pub const ELLIPSE: u32 = 1;
 /// coverage from the glyph atlas at pixel + `shape[0..2]`
 pub const GLYPH: u32 = 2;
+/// the draw's bitmap (premultiplied): destination rectangle `shape` (device pixels) showing
+/// its texels `extra` (l, t, r, b), times `paint[0]` (opacity); `paint[1]` 1: linear (else
+/// nearest), `paint[2]` 1: its alpha ignored. Partial coverage at the edges of `rect`.
+pub const BITMAP: u32 = 3;
 
 /// One shape. Device pixels; `rect` is already inside the target and the clips.
 #[repr(C)]
@@ -48,6 +52,13 @@ const VS: &str = "struct V {
 ";
 const PS: &str = "@group(1) @binding(16) var atlas: texture_2d<f32>;
 @group(1) @binding(17) var ramps: texture_2d<f32>;
+// bitmap {
+@group(1) @binding(18) var bmp: texture_2d<f32>;
+fn texel(q: vec2<i32>, lo: vec2<i32>, hi: vec2<i32>, opaque: bool) -> vec4<f32> {
+    let c = textureLoad(bmp, clamp(q, lo, hi), 0);
+    return select(c, vec4<f32>(c.rgb, 1.0), opaque);
+}
+// }
 @fragment fn main(@builtin(position) p: vec4<f32>,
         @location(0) @interpolate(flat) r: vec4<f32>,
         @location(1) @interpolate(flat) shape: vec4<f32>,
@@ -76,6 +87,29 @@ const PS: &str = "@group(1) @binding(16) var atlas: texture_2d<f32>;
             }
             cov = f32(n) / 16.0;
         }
+        // bitmap {
+        case 3u: {
+            let c = clamp(min(r.zw, px + 1.0) - max(r.xy, px), vec2<f32>(0.0), vec2<f32>(1.0));
+            // the texel position of the pixel's center
+            let t = (px + 0.5 - shape.xy) / max(shape.zw - shape.xy, vec2<f32>(1e-6));
+            let s = extra.xy + t * (extra.zw - extra.xy);
+            let lo = vec2<i32>(floor(extra.xy));
+            let hi = max(vec2<i32>(ceil(extra.zw)) - 1, lo);
+            let opaque = paint.z != 0.0;
+            var col: vec4<f32>;
+            if (paint.y != 0.0) {
+                let b = s - 0.5;
+                let q = vec2<i32>(floor(b));
+                let f = b - floor(b);
+                let top = mix(texel(q, lo, hi, opaque), texel(q + vec2<i32>(1, 0), lo, hi, opaque), f.x);
+                let bot = mix(texel(q + vec2<i32>(0, 1), lo, hi, opaque), texel(q + vec2<i32>(1, 1), lo, hi, opaque), f.x);
+                col = mix(top, bot, f.y);
+            } else {
+                col = texel(vec2<i32>(floor(s)), lo, hi, opaque);
+            }
+            return col * (paint.x * c.x * c.y);
+        }
+        // }
         default: {
             cov = textureLoad(atlas, vec2<i32>(px + shape.xy), 0).r;
         }
@@ -131,9 +165,30 @@ impl Shadow {
     }
 }
 
+/// `PS` without its `// bitmap {` .. `// }` parts: the draws without a bitmap (a smaller
+/// shader, which the software rasterizers of weak devices run faster)
+fn plain_ps() -> String {
+    let mut out = String::new();
+    let mut skip = false;
+    for l in PS.lines() {
+        match l.trim() {
+            "// bitmap {" => skip = true,
+            "// }" if skip => skip = false,
+            _ if !skip => {
+                out.push_str(l);
+                out.push('\n');
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 struct D2 {
     vs: u32,
+    /// the shader for draws without a bitmap, with one
     ps: u32,
+    ps_bitmap: u32,
     atlas: Shadow,
     /// glyph key -> atlas position
     glyphs: HashMap<u64, [u32; 2]>,
@@ -148,8 +203,8 @@ static D2S: Mutex<Option<D2>> = Mutex::new(None);
 fn d2<R>(f: impl FnOnce(&mut D2) -> R) -> R {
     let mut g = D2S.lock().unwrap_or_else(|e| e.into_inner());
     f(g.get_or_insert_with(|| {
-        let mut sh = [0u32; 2];
-        for (i, code) in [VS, PS].iter().enumerate() {
+        let mut sh = [0u32; 3];
+        for (i, code) in [VS, &plain_ps(), PS].iter().enumerate() {
             let id = page_id();
             gpu::record(|q| {
                 let off = q.blob(code.as_bytes());
@@ -160,6 +215,7 @@ fn d2<R>(f: impl FnOnce(&mut D2) -> R) -> R {
         D2 {
             vs: sh[0],
             ps: sh[1],
+            ps_bitmap: sh[2],
             atlas: Shadow::new(ATLAS, ATLAS, format::P_R8, 1),
             glyphs: HashMap::new(),
             shelf: [0; 3],
@@ -249,8 +305,37 @@ pub fn clear(addr: u32, rgba: [f32; 4]) {
     d.targets = None;
 }
 
-/// Paints `items` over the texture in order, source over (premultiplied).
-pub fn draw(addr: u32, items: &[Item]) {
+/// A bitmap of its own (BGRA, premultiplied): its texture id.
+pub fn bitmap(w: u32, h: u32) -> u32 {
+    let id = page_id();
+    gpu::record(|q| q.cmd(&[gpu::CREATE_TEXTURE2, id, w.max(1), h.max(1), 1, 1, format::P_BGRA8, 0]));
+    id
+}
+
+/// Writes rows `px` (`pitch` bytes apart) to bitmap `id` at (x, y), `w` x `h`.
+pub fn bitmap_write(id: u32, (x, y, w, h): (u32, u32, u32, u32), px: &[u8], pitch: u32) {
+    let row = (w * 4) as usize;
+    let mut rows = Vec::with_capacity(row * h as usize);
+    for k in 0..h as usize {
+        match px.get(k * pitch as usize..k * pitch as usize + row) {
+            Some(r) => rows.extend_from_slice(r),
+            None => return,
+        }
+    }
+    gpu::record(|q| {
+        let off = q.blob(&rows);
+        q.cmd(&[gpu::WRITE_TEXTURE2, id, 0, 0, x, y, w, h, w * 4, off]);
+    });
+}
+
+/// Frees a bitmap's texture.
+pub fn bitmap_free(id: u32) {
+    gpu::record(|q| q.cmd(&[gpu::DESTROY_TEXTURE, id]));
+}
+
+/// Paints `items` over the texture in order, source over (premultiplied); BITMAP items show
+/// texture `bitmap`.
+pub fn draw(addr: u32, items: &[Item], bitmap: Option<u32>) {
     if items.is_empty() {
         return;
     }
@@ -262,7 +347,7 @@ pub fn draw(addr: u32, items: &[Item]) {
     let (vs, ps, atlas, ramps) = d2(|s| {
         s.atlas.upload();
         s.ramps.upload();
-        (s.vs, s.ps, s.atlas.gpu, s.ramps.gpu)
+        (s.vs, if bitmap.is_some() { s.ps_bitmap } else { s.ps }, s.atlas.gpu, s.ramps.gpu)
     });
     // pipeline: triangle strip, no culling, no depth, one instance buffer, one target blended
     // ONE, INV_SRC_ALPHA
@@ -301,11 +386,14 @@ pub fn draw(addr: u32, items: &[Item]) {
         c.extend([0f32; 4].map(f32::to_bits));
         // stencil reference, the instance buffer, no index buffer
         c.extend_from_slice(&[0, 1, DATA, vo, 0, 0, 0]);
-        // group 0: nothing; group 1: the atlas and the ramps
+        // group 0: nothing; group 1: the atlas, the ramps (and the bitmap)
         c.push(0);
-        c.push(2);
+        c.push(2 + bitmap.is_some() as u32);
         c.extend_from_slice(&[16, 1, atlas, 1, 0, 1, 0, 1]);
         c.extend_from_slice(&[17, 1, ramps, 1, 0, 1, 0, 1]);
+        if let Some(b) = bitmap {
+            c.extend_from_slice(&[18, 1, b, 1, 0, 1, 0, 1]);
+        }
         c.extend_from_slice(&[0, 4, items.len() as u32, 0, 0, 0, 0]);
         q.cmd(&c);
     });
@@ -315,7 +403,9 @@ pub fn draw(addr: u32, items: &[Item]) {
 mod tests {
     #[test]
     fn shaders_validate() {
-        for (code, what) in [(super::VS, "vs"), (super::PS, "ps")] {
+        let plain = super::plain_ps();
+        assert!(!plain.contains("bmp") && !plain.contains("// }"));
+        for (code, what) in [(super::VS, "vs"), (super::PS, "ps"), (plain.as_str(), "plain ps")] {
             let m = naga::front::wgsl::parse_str(code).unwrap_or_else(|e| panic!("{what}: {}", e.emit_to_string(code)));
             naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{what}: {e:?}"));
         }
