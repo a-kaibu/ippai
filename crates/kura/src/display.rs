@@ -285,21 +285,7 @@ impl Display {
 /// A display mode change (ChangeDisplaySettings): the screen takes the new size.
 #[no_mangle]
 pub extern "C" fn vnhost_display_set_size(w: c_int, h: c_int) {
-    if w <= 0 || h <= 0 || w > 8192 || h > 8192 {
-        return;
-    }
-    with(|d| {
-        if (d.w, d.h) == (w, h) {
-            return;
-        }
-        d.w = w;
-        d.h = h;
-        d.screen = vec![0xff00_0000; (w * h) as usize];
-        d.bands.clear();
-        d.stale = Rect::default();
-        let all = d.screen_rect();
-        d.compose(all);
-    })
+    with(|d| d.set_size(w, h))
 }
 
 /// The part of the screen the page shows (see `Display::view`): `out` gets l, t, r, b.
@@ -313,22 +299,7 @@ pub unsafe extern "C" fn vnhost_display_view(out: *mut i32) {
 /// returns how many. (The page draws the ones above a Direct3D window over its frames.)
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_display_windows(out: *mut i32, max: c_int) -> c_int {
-    with(|d| {
-        let out = std::slice::from_raw_parts_mut(out, 4 * max.max(0) as usize);
-        let mut n = 0;
-        for id in d.order.iter().rev() {
-            let w = &d.wins[id];
-            if !w.visible || w.rect.empty() {
-                continue;
-            }
-            if n as c_int == max {
-                break;
-            }
-            out[4 * n..4 * n + 4].copy_from_slice(&[w.rect.l, w.rect.t, w.rect.r, w.rect.b]);
-            n += 1;
-        }
-        n as c_int
-    })
+    with(|d| d.windows(std::slice::from_raw_parts_mut(out, 4 * max.max(0) as usize)) as c_int)
 }
 
 #[no_mangle]
@@ -349,7 +320,41 @@ pub unsafe extern "C" fn vnhost_window_pos(hwnd: u32, rect: *const i32, visible:
     let r = std::slice::from_raw_parts(rect, 8);
     let rect = Rect { l: r[0], t: r[1], r: r[2], b: r[3] };
     let client = Rect { l: r[4], t: r[5], r: r[6], b: r[7] };
-    with(|d| {
+    with(|d| d.pos(hwnd, rect, client, visible != 0, restack != 0, above))
+}
+
+impl Display {
+    fn set_size(&mut self, w: i32, h: i32) {
+        if w <= 0 || h <= 0 || w > 8192 || h > 8192 || (self.w, self.h) == (w, h) {
+            return;
+        }
+        self.w = w;
+        self.h = h;
+        self.screen = vec![0xff00_0000; (w * h) as usize];
+        self.bands.clear();
+        self.stale = Rect::default();
+        self.compose(self.screen_rect());
+    }
+
+    /// The visible windows' rects, topmost first, as many as `out` holds; how many.
+    fn windows(&self, out: &mut [i32]) -> usize {
+        let mut n = 0;
+        for id in self.order.iter().rev() {
+            let w = &self.wins[id];
+            if !w.visible || w.rect.empty() {
+                continue;
+            }
+            if 4 * n == out.len() {
+                break;
+            }
+            out[4 * n..4 * n + 4].copy_from_slice(&[w.rect.l, w.rect.t, w.rect.r, w.rect.b]);
+            n += 1;
+        }
+        n
+    }
+
+    fn pos(&mut self, hwnd: u32, rect: Rect, client: Rect, visible: bool, restack: bool, above: u32) {
+        let d = self;
         let old = d.wins.get(&hwnd).map(|w| if w.visible { w.rect } else { Rect::default() }).unwrap_or_default();
         let win = d.wins.entry(hwnd).or_insert_with(|| Win { rect: Rect::default(), client, visible: false, pixels: Vec::new(), shared: 0 });
         if win.rect.w() != rect.w() || win.rect.h() != rect.h() {
@@ -358,15 +363,15 @@ pub unsafe extern "C" fn vnhost_window_pos(hwnd: u32, rect: *const i32, visible:
         }
         win.rect = rect;
         win.client = client;
-        win.visible = visible != 0;
-        if restack != 0 || !d.order.contains(&hwnd) {
+        win.visible = visible;
+        if restack || !d.order.contains(&hwnd) {
             d.order.retain(|&h| h != hwnd);
             let at = d.order.iter().position(|&h| h == above).unwrap_or(d.order.len());
             d.order.insert(at, hwnd);
         }
-        let new = if visible != 0 { rect } else { Rect::default() };
+        let new = if visible { rect } else { Rect::default() };
         d.compose(old.or(&new));
-    })
+    }
 }
 
 /// New pixels for part of a window: `dirty` in window coordinates, `bits` (BGRA rows of
@@ -379,6 +384,11 @@ pub unsafe extern "C" fn vnhost_window_pos(hwnd: u32, rect: *const i32, visible:
 /// get half the rate.
 const FRAME: std::time::Duration = std::time::Duration::from_micros(16_667);
 const BIG: i32 = 256 * 256;
+
+/// Whether a draw of `r` is a big redraw (see `FRAME`).
+fn big(r: &Rect) -> bool {
+    r.w() * r.h() >= BIG
+}
 
 static DREW_BIG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -419,10 +429,17 @@ fn pace() {
 pub unsafe extern "C" fn vnhost_window_draw(hwnd: u32, dirty: *const i32, bits: *const u32, stride: c_int, ox: c_int, oy: c_int) {
     let r = std::slice::from_raw_parts(dirty, 4);
     let dirty = Rect { l: r[0], t: r[1], r: r[2], b: r[3] };
-    if dirty.w() * dirty.h() >= BIG {
-        DREW_BIG.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-    with(|d| {
+    with(|d| d.draw(hwnd, dirty, bits, stride, ox, oy))
+}
+
+impl Display {
+    /// # Safety
+    /// `bits` must hold the rows of `dirty` (see `vnhost_window_draw`).
+    unsafe fn draw(&mut self, hwnd: u32, dirty: Rect, bits: *const u32, stride: c_int, ox: c_int, oy: c_int) {
+        if big(&dirty) {
+            DREW_BIG.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        let d = self;
         let Some(win) = d.wins.get_mut(&hwnd) else { return };
         let dirty = dirty.and(&Rect { l: 0, t: 0, r: win.rect.w(), b: win.rect.h() });
         if dirty.empty() || win.px().is_empty() {
@@ -457,7 +474,7 @@ pub unsafe extern "C" fn vnhost_window_draw(hwnd: u32, dirty: *const i32, bits: 
         if win.visible {
             d.compose(at);
         }
-    })
+    }
 }
 
 /// `IPPAI_NODIFF`: every draw goes to the screen as it is (no compare; for measuring).
@@ -534,41 +551,52 @@ fn update_changed<'a>(px: &mut [u32], ww: usize, dirty: Rect, src: impl Fn(i32) 
 /// The caller keeps `bits` alive and unmoved until `vnhost_window_unshare`.
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_window_draw_shared(hwnd: u32, dirty: *const i32, bits: *const u32, w: c_int, h: c_int) {
-    with(|d| {
-        if let Some(win) = d.wins.get_mut(&hwnd) {
-            if win.rect.w() == w && win.rect.h() == h {
-                win.shared = bits as usize;
-            }
-        }
-    });
-    vnhost_window_draw(hwnd, dirty, bits, w, 0, 0)
+    let r = std::slice::from_raw_parts(dirty, 4);
+    with(|d| d.draw_shared(hwnd, Rect { l: r[0], t: r[1], r: r[2], b: r[3] }, bits, w, h))
 }
 
 /// sake: the window stops showing the surface `vnhost_window_draw_shared` gave it (about to be
 /// freed or moved): it keeps a copy of it. When this returns, nothing reads the surface.
 #[no_mangle]
 pub extern "C" fn vnhost_window_unshare(hwnd: u32) {
-    with(|d| {
-        if let Some(win) = d.wins.get_mut(&hwnd) {
+    with(|d| d.unshare(hwnd))
+}
+
+#[no_mangle]
+pub extern "C" fn vnhost_window_destroy(hwnd: u32) {
+    with(|d| d.destroy(hwnd))
+}
+
+impl Display {
+    /// # Safety
+    /// See `vnhost_window_draw_shared`.
+    unsafe fn draw_shared(&mut self, hwnd: u32, dirty: Rect, bits: *const u32, w: c_int, h: c_int) {
+        if let Some(win) = self.wins.get_mut(&hwnd) {
+            if win.rect.w() == w && win.rect.h() == h {
+                win.shared = bits as usize;
+            }
+        }
+        self.draw(hwnd, dirty, bits, w, 0, 0)
+    }
+
+    fn unshare(&mut self, hwnd: u32) {
+        if let Some(win) = self.wins.get_mut(&hwnd) {
             if win.shared != 0 {
                 let px = win.px().to_vec();
                 win.pixels = px;
                 win.shared = 0;
             }
         }
-    })
-}
+    }
 
-#[no_mangle]
-pub extern "C" fn vnhost_window_destroy(hwnd: u32) {
-    with(|d| {
-        if let Some(win) = d.wins.remove(&hwnd) {
-            d.order.retain(|&h| h != hwnd);
+    fn destroy(&mut self, hwnd: u32) {
+        if let Some(win) = self.wins.remove(&hwnd) {
+            self.order.retain(|&h| h != hwnd);
             if win.visible {
-                d.compose(win.rect);
+                self.compose(win.rect);
             }
         }
-    })
+    }
 }
 
 /// The screen for the page: returns the BGRA buffer (width*height pixels). `io[0]` is the
@@ -585,7 +613,12 @@ pub extern "C" fn vnhost_window_destroy(hwnd: u32) {
 pub unsafe extern "C" fn vnhost_display_frame(io: *mut u32) -> *const u32 {
     let direct_ok = *io.add(3) == 1;
     let io = std::slice::from_raw_parts_mut(io, 12);
-    with(|d| {
+    with(|d| d.frame(io.try_into().unwrap(), direct_ok))
+}
+
+impl Display {
+    fn frame(&mut self, io: &mut [u32; 12], direct_ok: bool) -> *const u32 {
+        let d = self;
         let n = d.serial.wrapping_sub(io[0]) as usize;
         let mut one = None;
         let all = d.screen_rect();
@@ -620,7 +653,7 @@ pub unsafe extern "C" fn vnhost_display_frame(io: *mut u32) -> *const u32 {
             }
         }
         d.screen.as_ptr()
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -729,6 +762,362 @@ mod tests {
         assert_eq!(first_diff(&a, &a), None);
         assert_eq!(last_diff(&a, &a), None);
     }
+
+    fn rect(l: i32, t: i32, r: i32, b: i32) -> Rect {
+        Rect { l, t, r, b }
+    }
+
+    fn disp(w: i32, h: i32) -> Display {
+        Display { w, h, wins: HashMap::new(), order: Vec::new(), screen: vec![0xff00_0000; (w * h) as usize], serial: 0, bands: Default::default(), stale: Rect::default() }
+    }
+
+    const BLACK: u32 = 0xff00_0000;
+
+    impl Display {
+        fn at(&self, x: i32, y: i32) -> u32 {
+            self.screen[(y * self.w + x) as usize]
+        }
+        /// fills window `id` with `c` (a plain draw)
+        fn fill(&mut self, id: u32, c: u32) {
+            let r = self.wins[&id].rect;
+            let px = vec![c; (r.w() * r.h()) as usize];
+            unsafe { self.draw(id, rect(0, 0, r.w(), r.h()), px.as_ptr(), r.w(), 0, 0) };
+        }
+        /// frame(): (io after, the changed box as l t r b)
+        fn take(&mut self, seen: u32, direct_ok: bool) -> ([u32; 12], Rect) {
+            let mut io = [0u32; 12];
+            io[0] = seen;
+            io[3] = direct_ok as u32;
+            let p = self.frame(&mut io, direct_ok);
+            assert_eq!(p, self.screen.as_ptr());
+            (io, rect(io[10] as i32, io[1] as i32, io[11] as i32, io[2] as i32))
+        }
+    }
+
+    #[test]
+    fn rect_ops() {
+        let a = rect(1, 2, 5, 9);
+        assert_eq!((a.w(), a.h()), (4, 7));
+        assert!(!a.empty() && rect(3, 0, 3, 5).empty() && rect(0, 4, 5, 4).empty() && rect(4, 0, 3, 5).empty() && rect(0, 5, 5, 4).empty());
+        assert!(!rect(0, 0, 1, 1).empty());
+        assert_eq!(a.and(&rect(3, 0, 9, 4)), rect(3, 2, 5, 4));
+        assert_eq!(a.or(&rect(3, 0, 9, 4)), rect(1, 0, 9, 9));
+        assert_eq!(a.or(&rect(7, 7, 7, 9)), a);
+        assert_eq!(rect(7, 7, 7, 9).or(&a), a);
+    }
+
+    #[test]
+    fn windows_compose_in_z_order() {
+        let mut d = disp(40, 30);
+        d.pos(1, rect(10, 10, 30, 20), rect(12, 14, 28, 18), true, false, 0);
+        assert_eq!(d.at(10, 10), BLACK, "a new window is black");
+        d.fill(1, 0xff11_1111);
+        assert_eq!((d.at(10, 10), d.at(29, 19), d.at(9, 10), d.at(30, 19), d.at(10, 20)), (0xff11_1111, 0xff11_1111, BLACK, BLACK, BLACK));
+        // a second one on top, overlapping
+        d.pos(2, rect(25, 15, 35, 25), rect(25, 15, 35, 25), true, false, 0);
+        d.fill(2, 0xff22_2222);
+        assert_eq!((d.at(26, 16), d.at(24, 16), d.at(34, 24)), (0xff22_2222, 0xff11_1111, 0xff22_2222));
+        // window 1 restacked on top (above 0: the top)
+        d.pos(1, rect(10, 10, 30, 20), rect(12, 14, 28, 18), true, true, 0);
+        assert_eq!(d.order, [2, 1]);
+        assert_eq!(d.at(26, 16), 0xff11_1111);
+        // and below 2 again
+        d.pos(1, rect(10, 10, 30, 20), rect(12, 14, 28, 18), true, true, 2);
+        assert_eq!(d.order, [1, 2]);
+        assert_eq!(d.at(26, 16), 0xff22_2222);
+        // hidden: what was under it shows
+        d.pos(2, rect(25, 15, 35, 25), rect(25, 15, 35, 25), false, false, 0);
+        assert_eq!((d.at(26, 16), d.at(34, 24), d.at(20, 16)), (0xff11_1111, BLACK, 0xff11_1111));
+        // a draw into a hidden window changes nothing on the screen
+        d.fill(2, 0xff33_3333);
+        assert_eq!(d.at(34, 24), BLACK);
+        d.pos(2, rect(25, 15, 35, 25), rect(25, 15, 35, 25), true, false, 0);
+        assert_eq!(d.at(34, 24), 0xff33_3333, "it kept its pixels");
+        // moved (same size: pixels kept), then resized (black again)
+        d.pos(1, rect(0, 0, 20, 10), rect(0, 0, 20, 10), true, false, 0);
+        assert_eq!((d.at(0, 0), d.at(10, 10), d.at(20, 12)), (0xff11_1111, BLACK, BLACK));
+        d.pos(1, rect(0, 0, 21, 10), rect(0, 0, 21, 10), true, false, 0);
+        assert_eq!(d.at(0, 0), BLACK);
+        d.destroy(2);
+        assert_eq!(d.at(34, 24), BLACK);
+        assert_eq!(d.order, [1]);
+        d.destroy(7);
+    }
+
+    #[test]
+    fn partial_draws() {
+        let mut d = disp(20, 20);
+        d.pos(1, rect(2, 3, 12, 13), rect(2, 3, 12, 13), true, false, 0);
+        // a 3x2 block at (4,5) of the window from a source of stride 8 starting at (4,5)
+        let src: Vec<u32> = (0..16).map(|i| 0xff00_0000 | i).collect();
+        unsafe { d.draw(1, rect(4, 5, 7, 7), src.as_ptr(), 8, 4, 5) };
+        assert_eq!((d.at(6, 8), d.at(8, 8), d.at(6, 9), d.at(8, 9)), (0xff00_0000, 0xff00_0002, 0xff00_0008, 0xff00_000a));
+        assert_eq!((d.at(9, 8), d.at(6, 10), d.at(5, 8)), (BLACK, BLACK, BLACK));
+        // drawing outside the window is clipped to it
+        let big = vec![0xff44_4444u32; 400];
+        unsafe { d.draw(1, rect(-5, -5, 50, 50), big.as_ptr().add(5 * 20 + 5), 20, 0, 0) };
+        assert_eq!((d.at(2, 3), d.at(11, 12), d.at(12, 12), d.at(1, 3)), (0xff44_4444, 0xff44_4444, BLACK, BLACK));
+        // the same pixels again: no new frame
+        let s = d.serial;
+        unsafe { d.draw(1, rect(0, 0, 10, 10), big.as_ptr(), 20, 0, 0) };
+        assert_eq!(d.serial, s);
+        unsafe { d.draw(9, rect(0, 0, 10, 10), big.as_ptr(), 20, 0, 0) };
+        assert_eq!(d.serial, s);
+    }
+
+    #[test]
+    fn view_is_the_game_window() {
+        let mut d = disp(100, 80);
+        assert_eq!(d.view(), rect(0, 0, 100, 80), "no windows: the screen");
+        d.pos(1, rect(5, 5, 60, 50), rect(8, 10, 58, 48), true, false, 0);
+        d.pos(2, rect(70, 70, 75, 75), rect(70, 70, 75, 75), true, true, 1);
+        assert_eq!(d.order, [2, 1]);
+        assert_eq!(d.view(), rect(8, 10, 58, 48), "the biggest client area, without the frame; one below does not widen it");
+        // a dialog on top that sticks out widens it
+        d.pos(3, rect(50, 40, 90, 70), rect(52, 42, 88, 68), true, false, 0);
+        assert_eq!(d.view(), rect(8, 10, 90, 70));
+        // hidden ones do not count
+        d.pos(3, rect(50, 40, 90, 70), rect(52, 42, 88, 68), false, false, 0);
+        assert_eq!(d.view(), rect(8, 10, 58, 48));
+        // clipped to the screen
+        d.pos(1, rect(-10, -10, 60, 50), rect(-5, -5, 58, 48), true, false, 0);
+        assert_eq!(d.view(), rect(0, 0, 58, 48));
+        // client areas off the screen: the screen
+        d.pos(1, rect(200, 200, 260, 250), rect(200, 200, 260, 250), true, false, 0);
+        d.pos(2, rect(70, 70, 75, 75), rect(170, 170, 175, 175), true, false, 0);
+        assert_eq!(d.view(), rect(0, 0, 100, 80));
+        // a window above that is off the screen does not widen it
+        let mut d = disp(100, 80);
+        d.pos(1, rect(5, 5, 60, 50), rect(8, 10, 58, 48), true, false, 0);
+        d.pos(2, rect(120, 0, 130, 10), rect(120, 0, 130, 10), true, false, 0);
+        assert_eq!(d.view(), rect(8, 10, 58, 48));
+        // a smaller window above: the main one is still the biggest
+        d.pos(4, rect(10, 12, 20, 22), rect(10, 12, 20, 22), true, false, 0);
+        assert_eq!(d.view(), rect(8, 10, 58, 48));
+        // the biggest by area: 10x10 over 2x30
+        let mut e = disp(100, 80);
+        e.pos(1, rect(0, 0, 10, 10), rect(0, 0, 10, 10), true, false, 0);
+        e.pos(2, rect(50, 0, 52, 30), rect(50, 0, 52, 30), true, true, 1);
+        assert_eq!(e.view(), rect(0, 0, 10, 10));
+        // zero-sized windows are not shown
+        d.pos(5, rect(0, 0, 0, 0), rect(0, 0, 0, 0), true, false, 0);
+        assert_eq!(d.view(), rect(8, 10, 58, 48));
+    }
+
+    #[test]
+    fn window_list_topmost_first() {
+        let mut d = disp(100, 80);
+        d.pos(1, rect(0, 0, 10, 10), rect(0, 0, 10, 10), true, false, 0);
+        d.pos(2, rect(1, 1, 5, 5), rect(1, 1, 5, 5), false, false, 0);
+        d.pos(3, rect(2, 2, 2, 9), rect(2, 2, 2, 9), true, false, 0);
+        d.pos(4, rect(3, 4, 5, 6), rect(3, 4, 5, 6), true, false, 0);
+        let mut out = [0i32; 12];
+        assert_eq!(d.windows(&mut out), 2);
+        assert_eq!(out[..8], [3, 4, 5, 6, 0, 0, 10, 10]);
+        let mut one = [0i32; 4];
+        assert_eq!(d.windows(&mut one), 1);
+        assert_eq!(one, [3, 4, 5, 6]);
+        assert_eq!(d.windows(&mut []), 0);
+    }
+
+    #[test]
+    fn frames_say_what_changed() {
+        let mut d = disp(40, 30);
+        let (io, r) = d.take(u32::MAX, false);
+        assert_eq!(r, rect(0, 0, 40, 30), "a caller with no frame gets all of it");
+        let s0 = io[0];
+        assert_eq!(s0, d.serial);
+        d.pos(1, rect(10, 10, 30, 20), rect(10, 10, 30, 20), true, false, 0);
+        let (io, r) = d.take(s0, false);
+        assert_eq!(r, rect(10, 10, 30, 20));
+        let s1 = io[0];
+        assert_ne!(s1, s0);
+        // nothing since: an empty box
+        let (io, r) = d.take(s1, false);
+        assert!(r.empty() && io[0] == s1, "{r:?}");
+        // two draws: their union
+        unsafe {
+            d.draw(1, rect(0, 0, 2, 2), [0xff00_0001u32; 4].as_ptr(), 2, 0, 0);
+            d.draw(1, rect(5, 6, 7, 8), [0xff00_0002u32; 4].as_ptr(), 2, 5, 6);
+        }
+        let (_, r) = d.take(s1, false);
+        assert_eq!(r, rect(10, 10, 17, 18));
+        let (_, r) = d.take(s1.wrapping_add(1), false);
+        assert_eq!(r, rect(15, 16, 17, 18), "only the newest");
+        // a caller further behind than the bands kept gets the whole screen
+        for i in 0..70u32 {
+            unsafe { d.draw(1, rect(0, 0, 1, 1), [0xff10_0000 | i].as_ptr(), 1, 0, 0) };
+        }
+        let (_, r) = d.take(s1, false);
+        assert_eq!(r, rect(0, 0, 40, 30));
+        assert_eq!(d.bands.len(), 64);
+        let (io, r) = d.take(d.serial.wrapping_sub(64), false);
+        assert_eq!((r, io[3]), (rect(10, 10, 11, 11), 0));
+    }
+
+    #[test]
+    fn shared_surfaces_go_direct() {
+        let mut d = disp(40, 30);
+        d.pos(1, rect(10, 10, 14, 13), rect(10, 10, 14, 13), true, false, 0);
+        let s0 = d.serial;
+        let surf: Vec<u32> = (0..12).map(|i| 0xff00_0100 | i).collect();
+        unsafe { d.draw_shared(1, rect(0, 0, 4, 3), surf.as_ptr(), 4, 3) };
+        assert_eq!(d.wins[&1].shared, surf.as_ptr() as usize);
+        assert_eq!(d.wins[&1].px(), &surf[..]);
+        // the screen was not written: the page takes the window's surface
+        assert_eq!(d.at(10, 10), BLACK);
+        assert_eq!(d.stale, rect(10, 10, 14, 13));
+        let (io, r) = d.take(s0, true);
+        assert_eq!(r, rect(10, 10, 14, 13));
+        assert_eq!(io[3..10], [1, surf.as_ptr() as usize as u32, 4, 10, 10, 14, 13]);
+        assert_eq!(d.at(10, 10), BLACK, "still behind");
+        // windows on top that are hidden, or elsewhere, leave it direct
+        d.pos(8, rect(30, 0, 40, 5), rect(30, 0, 40, 5), true, false, 0);
+        d.pos(9, rect(9, 9, 15, 15), rect(9, 9, 15, 15), false, false, 0);
+        let s9 = d.serial;
+        unsafe { d.draw_shared(1, rect(0, 0, 4, 3), surf.as_ptr(), 4, 3) };
+        let mut moved = surf.clone();
+        moved[0] = 0xff00_0f00;
+        unsafe { d.draw_shared(1, rect(0, 0, 4, 3), moved.as_ptr(), 4, 3) };
+        assert_eq!((d.take(s9, true).0[3], d.at(10, 10)), (1, 0xff00_0100), "the screen keeps the older pixels");
+        d.destroy(8);
+        d.destroy(9);
+        unsafe { d.draw_shared(1, rect(0, 0, 4, 3), surf.as_ptr(), 4, 3) };
+        let s0 = d.serial.wrapping_sub(1);
+        // a caller that cannot take it: the screen is brought up to date
+        let (io, _) = d.take(s0, false);
+        assert_eq!(io[3], 0);
+        assert_eq!((d.at(10, 10), d.at(13, 12)), (0xff00_0100, 0xff00_010b));
+        assert!(d.stale.empty());
+        // a window on top of part of it: no longer direct
+        d.pos(2, rect(12, 11, 20, 20), rect(12, 11, 20, 20), true, false, 0);
+        let s1 = d.serial;
+        let surf2: Vec<u32> = (0..12).map(|i| 0xff00_0200 | i).collect();
+        unsafe { d.draw_shared(1, rect(0, 0, 4, 3), surf2.as_ptr(), 4, 3) };
+        assert_eq!(d.at(10, 10), 0xff00_0200);
+        let (io, _) = d.take(s1, true);
+        assert_eq!(io[3], 0);
+        // a mixed run of bands (direct then composed) is not direct either
+        d.destroy(2);
+        let s2 = d.serial;
+        let surf3: Vec<u32> = (0..12).map(|i| 0xff00_0300 | i).collect();
+        unsafe { d.draw_shared(1, rect(0, 0, 4, 3), surf3.as_ptr(), 4, 3) };
+        let (io, _) = d.take(s2.wrapping_sub(1), true);
+        assert_eq!(io[3], 0);
+        assert_eq!(d.at(11, 10), 0xff00_0301);
+        // a different surface: the old one is copied first
+        let surf4: Vec<u32> = (0..12).map(|i| 0xff00_0400 | i).collect();
+        unsafe { d.draw(1, rect(0, 0, 1, 1), surf4.as_ptr(), 4, 0, 0) };
+        assert_eq!(d.wins[&1].shared, 0);
+        assert_eq!(d.wins[&1].px()[..3], [0xff00_0400, 0xff00_0301, 0xff00_0302]);
+        // unshare keeps a copy
+        unsafe { d.draw_shared(1, rect(0, 0, 4, 3), surf4.as_ptr(), 4, 3) };
+        d.unshare(1);
+        assert_eq!(d.wins[&1].shared, 0);
+        assert_eq!(d.wins[&1].px(), &surf4[..]);
+        d.unshare(1);
+        d.unshare(5);
+        // a surface of another size is not taken
+        unsafe { d.draw_shared(1, rect(0, 0, 2, 2), surf4.as_ptr(), 2, 6) };
+        assert_eq!(d.wins[&1].shared, 0);
+    }
+
+    #[test]
+    fn display_size() {
+        let mut d = disp(40, 30);
+        d.pos(1, rect(30, 20, 50, 40), rect(30, 20, 50, 40), true, false, 0);
+        d.fill(1, 0xff55_5555);
+        let s = d.serial;
+        for (w, h) in [(40, 30), (0, 30), (40, 0), (-1, 30), (40, -1), (8193, 30), (40, 8193)] {
+            d.set_size(w, h);
+            assert_eq!((d.serial, d.w, d.h), (s, 40, 30), "{w}x{h}");
+        }
+        d.set_size(8192, 1);
+        assert_eq!((d.w, d.h), (8192, 1));
+        d.set_size(1, 8192);
+        assert_eq!((d.w, d.h), (1, 8192));
+        d.set_size(60, 50);
+        assert_eq!((d.screen.len(), d.at(45, 35), d.at(0, 0)), (3000, 0xff55_5555, BLACK));
+        assert_eq!(d.bands.len(), 1);
+        let (_, r) = d.take(s, false);
+        assert_eq!(r, rect(0, 0, 60, 50));
+    }
+
+    #[test]
+    fn input_queue() {
+        assert_eq!(vnhost_input_push(INPUT_KEY_DOWN, 1, 2, 3), 0);
+        vnhost_input_push(INPUT_MOUSE_MOVE, -1, 4, 0);
+        assert_eq!(input_queued(), 2);
+        assert_eq!(input_take(0), [[INPUT_KEY_DOWN, 1, 2, 3], [INPUT_MOUSE_MOVE, u32::MAX, 4, 0]]);
+        assert!(input_take(1).is_empty());
+    }
+
+    #[test]
+    fn big_redraws() {
+        assert!(big(&rect(0, 0, 256, 256)) && big(&rect(10, 10, 522, 138)));
+        assert!(!big(&rect(0, 0, 255, 256)) && !big(&rect(0, 0, 256, 255)) && !big(&rect(0, 0, 30, 30)));
+    }
+
+    #[test]
+    fn diffs_of_zero_pixels() {
+        let a = vec![0u32; 40];
+        for k in [0, 15, 16, 17, 39] {
+            let mut b = a.clone();
+            b[k] = 5;
+            assert_eq!((first_diff(&a, &b), last_diff(&a, &b)), (Some(k), Some(k + 1)), "{k}");
+        }
+    }
+
+    #[test]
+    fn change_boxes_across_rows() {
+        let (w, h) = (20usize, 4usize);
+        let a = vec![0u32; w * h];
+        // the first row reaches the right edge, a later one the left: both count
+        let mut b = a.clone();
+        b[w + 5..2 * w].fill(1);
+        b[2 * w + 1] = 1;
+        assert_eq!(run(&a, &b, w, Rect { l: 0, t: 0, r: w as i32, b: h as i32 }).0, Rect { l: 1, t: 1, r: w as i32, b: 3 });
+        // the first row reaches the left edge, a later one the right
+        let mut b = a.clone();
+        b[w] = 1;
+        b[3 * w - 1] = 1;
+        assert_eq!(run(&a, &b, w, Rect { l: 0, t: 0, r: w as i32, b: h as i32 }).0, Rect { l: 0, t: 1, r: w as i32, b: 3 });
+    }
+
+    /// The C API on the one global display (the only test that uses it).
+    #[test]
+    fn host_calls() {
+        unsafe {
+            vnhost_display_set_size(64, 48);
+            vnhost_display_set_size(0, 48);
+            let (mut w, mut h) = (0, 0);
+            vnhost_display_size(&mut w, &mut h);
+            assert_eq!((w, h), (64, 48));
+            vnhost_window_pos(7, [4, 4, 12, 10, 5, 6, 11, 9].as_ptr(), 1, 0, 0);
+            vnhost_window_pos(8, [40, 30, 44, 34, 40, 30, 44, 34].as_ptr(), 1, 0, 0);
+            let mut v = [0i32; 4];
+            vnhost_display_view(v.as_mut_ptr());
+            assert_eq!(v, [5, 6, 44, 34], "the client area, widened by the window above");
+            let mut list = [0i32; 8];
+            assert_eq!(vnhost_display_windows(list.as_mut_ptr(), 2), 2);
+            assert_eq!(list, [40, 30, 44, 34, 4, 4, 12, 10]);
+            let px = vec![0xff12_3456u32; 48];
+            vnhost_window_draw(7, [0, 0, 8, 6].as_ptr(), px.as_ptr(), 8, 0, 0);
+            let mut io = [u32::MAX; 12];
+            io[3] = 0;
+            let screen = std::slice::from_raw_parts(vnhost_display_frame(io.as_mut_ptr()), 64 * 48);
+            assert_eq!((screen[4 * 64 + 4], screen[3 * 64 + 4]), (0xff12_3456, BLACK));
+            let surf = vec![0xff65_4321u32; 48];
+            vnhost_window_draw_shared(7, [0, 0, 8, 6].as_ptr(), surf.as_ptr(), 8, 6);
+            vnhost_window_unshare(7);
+            with(|d| assert_eq!((d.wins[&7].shared, d.wins[&7].px()[0]), (0, 0xff65_4321)));
+            vnhost_window_destroy(8);
+            assert_eq!(vnhost_display_windows(list.as_mut_ptr(), 2), 1);
+            vnhost_window_destroy(7);
+            with(|d| assert!(d.wins.is_empty() && d.order.is_empty()));
+        }
+    }
+
 }
 
 /// Kani proofs (formal/kani.sh): the rectangle algebra windows are composed with.
@@ -755,4 +1144,5 @@ mod proofs {
         assert!(!inside(p, &b) || inside(p, &u));
         assert_eq!(a.and(&b).empty(), b.and(&a).empty());
     }
+
 }

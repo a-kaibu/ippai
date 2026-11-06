@@ -1,0 +1,15 @@
+# Missed mutants that change nothing a test could see ("file: description", as cargo mutants
+# names them without line and column), each with why.
+# display.rs: copy_in's `first` only skips windows the whole-area window hides; drawing them all
+# from the bottom gives the same pixels
+crates/kura/src/display.rs: delete ! in Display::copy_in
+crates/kura/src/display.rs: replace || with && in Display::copy_in
+# display.rs: the 16-pixel fast paths of first_diff / last_diff only decide where the exact scan
+# starts
+crates/kura/src/display.rs: replace ^ with | in first_diff
+crates/kura/src/display.rs: replace ^ with | in last_diff
+crates/kura/src/display.rs: replace - with / in last_diff
+# display.rs: update_changed's column search: an empty slice finds nothing, and x1 > x0 always
+crates/kura/src/display.rs: replace > with >= in update_changed
+crates/kura/src/display.rs: replace < with <= in update_changed
+crates/kura/src/display.rs: replace + with * in update_changed

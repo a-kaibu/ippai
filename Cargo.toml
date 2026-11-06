@@ -6,3 +6,10 @@ exclude = ["fuzz"]
 [workspace.package]
 edition = "2021"
 license = "MIT OR Apache-2.0"
+
+# cargo-mutants (.cargo/mutants.toml): quick to rebuild, fast enough for the exhaustive tests.
+[profile.mutants]
+inherits = "dev"
+opt-level = 1
+debug = 0
+incremental = true

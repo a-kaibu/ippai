@@ -643,4 +643,218 @@ mod tests {
         let at = |o: u32| u32::from_le_bytes(out[o as usize..o as usize + 4].try_into().unwrap());
         assert_eq!((at(offs.offset + 16), at(offs.offset + 20)), (3, 4));
     }
+    #[test]
+    fn check_reports_errors_with_the_rewritten_source() {
+        assert!(check("void main() { gl_FragColor = vec4(1.0); }", true).is_ok());
+        let (msg, src) = check("void main() { gl_FragColor = undefined_thing; }", true).unwrap_err();
+        assert!(!msg.is_empty());
+        assert!(src.starts_with("#version 450\n") && src.contains("vn_FragColor = undefined_thing"), "{src}");
+    }
+
+    #[test]
+    fn identifiers() {
+        assert!(is_ident('a') && is_ident('Z') && is_ident('7') && is_ident('_'));
+        assert!(!is_ident('.') && !is_ident(' ') && !is_ident('['));
+    }
+
+    #[test]
+    fn comments() {
+        assert_eq!(strip_comments("a // b\nc"), "a \nc");
+        assert_eq!(strip_comments("a /* b\nc */ d"), "a \n d");
+        assert_eq!(strip_comments("a /* b */"), "a ");
+        assert_eq!(strip_comments("/**/x"), "x");
+        assert_eq!(strip_comments("/* * / */y"), "y");
+        assert_eq!(strip_comments("x/y/"), "x/y/");
+        assert_eq!(strip_comments("p /* unclosed"), "p ");
+        assert_eq!(strip_comments("a/"), "a/");
+        assert_eq!(strip_comments("x // tail"), "x ");
+        assert_eq!(strip_comments("p /* x*"), "p ");
+    }
+
+    #[test]
+    fn identifier_mapping() {
+        let mut f = |id: &str, rest: &str| (id == "ab").then(|| format!("<{rest}>"));
+        assert_eq!(map_idents("ab+ab1 xab _ab ab", &mut f), "<+ab1>+ab1 xab _ab <>");
+        assert_eq!(map_idents("1ab ab", &mut f), "1ab <>");
+        // gl_TexCoord[n] and friends take their index with them
+        let mut g = |id: &str, _: &str| (id == "gl_TexCoord").then(|| "T".to_string());
+        assert_eq!(map_idents("gl_TexCoord[1].x", &mut g), "T.x");
+        assert_eq!(map_idents("gl_TexCoord", &mut g), "T");
+        let mut h = |id: &str, _: &str| (id == "gl_FragData" || id == "gl_TextureMatrix" || id == "gl_MultiTexCoord").then(|| "F".to_string());
+        assert_eq!(map_idents("gl_FragData[0] gl_TextureMatrix[2] gl_MultiTexCoord[3]", &mut h), "F F F");
+    }
+
+    #[test]
+    fn declarations() {
+        let d = parse_decl("uniform highp vec4 a, b[2]").unwrap();
+        assert_eq!((d.qual.as_str(), d.ty.as_str(), d.names.clone()), ("uniform", "vec4", vec!["a".to_string(), "b[2]".to_string()]));
+        let d = parse_decl("flat in int out_like").unwrap();
+        assert_eq!((d.qual.as_str(), d.ty.as_str()), ("in", "int"));
+        assert!(parse_decl("vec4 f(vec4 x)").is_none());
+        assert!(parse_decl("const float k = 1.0").is_none());
+        assert!(parse_decl("uniform float k = 1.0").is_none());
+        assert!(parse_decl("uniform vec4 f(int)").is_none());
+        assert!(parse_decl("uniform Blk { vec4 x").is_none());
+        assert!(parse_decl("layout(location = 0) out vec4 c").is_none());
+        assert!(parse_decl("uniform").is_none());
+        assert_eq!(base_name("x[3]"), "x");
+    }
+
+    fn vs_of(src: &str) -> String {
+        rewrite(src, false, &mut Vec::new(), &HashMap::new(), &mut Vec::new()).0
+    }
+    fn ps_of(src: &str) -> String {
+        rewrite(src, true, &mut Vec::new(), &HashMap::new(), &mut Vec::new()).0
+    }
+
+    #[test]
+    fn builtins_rewritten() {
+        let v = vs_of(
+            "void main() { gl_Position = gl_ModelViewMatrix * gl_ProjectionMatrix * gl_Vertex;\n\
+             gl_FrontColor = gl_Color; gl_TexCoord[1] = gl_TextureMatrix[2] * gl_MultiTexCoord1;\n\
+             vec3 n = gl_NormalMatrix * gl_Normal; }",
+        );
+        for want in [
+            "in vec4 vn_Vertex;",
+            "in vec4 vn_Color;",
+            "in vec3 vn_Normal;",
+            "in vec4 vn_MultiTexCoord1;",
+            "out vec4 vn_FrontColor;",
+            "out vec4 vn_TexCoord1;",
+            "  mat4 vn_MV;\n",
+            "  mat4 vn_P;\n",
+            "  mat3 vn_NM;\n",
+            "  mat4 vn_TM2;\n",
+            "vn_TM2 * vn_MultiTexCoord1",
+            "vn_NM * vn_Normal",
+            "uniform VnU0 {",
+            "void vn_main()",
+            "gl_Position.y = -gl_Position.y;",
+        ] {
+            assert!(v.contains(want), "{want:?} not in\n{v}");
+        }
+        assert!(!v.contains("gl_Vertex") && !v.contains("gl_Color") && !v.contains("[1]"), "{v}");
+        let p = ps_of(
+            "uniform lowp sampler2D t; void main() { mediump vec4 c = texture2DProj(t, gl_TexCoord[0]) + texture2DLod(t, gl_TexCoord[3].xy, 0.0);\n\
+             gl_FragColor = c * gl_Color; }",
+        );
+        for want in [
+            "in vec4 vn_FrontColor;",
+            "in vec4 vn_TexCoord0;",
+            "in vec4 vn_TexCoord3;",
+            "out vec4 vn_FragColor;",
+            "textureProj(sampler2D(t_vnt, t_vns), vn_TexCoord0)",
+            "textureLod(sampler2D(t_vnt, t_vns), vn_TexCoord3.xy, 0.0)",
+            "layout(set = 1, binding = 16) uniform texture2D t_vnt;",
+            "layout(set = 1, binding = 160) uniform sampler t_vns;",
+            "void main()",
+        ] {
+            assert!(p.contains(want), "{want:?} not in\n{p}");
+        }
+        assert!(!p.contains("mediump") && !p.contains("lowp") && !p.contains("vn_main") && !p.contains("gl_Position"), "{p}");
+        assert!(!p.contains("in vec4 vn_Color"), "{p}");
+        // vertex inputs mean nothing in a pixel shader: left to naga to refuse
+        let p = ps_of("void main() { gl_FragColor = vec4(gl_Normal, 1.0) + gl_Vertex; }");
+        assert!(p.contains("vec4(gl_Normal, 1.0) + gl_Vertex") && !p.contains("vn_Normal") && !p.contains("vn_Vertex"), "{p}");
+    }
+
+    #[test]
+    fn preprocessor_lines_and_scopes() {
+        let v = vs_of("#version 120\n#extension GL_EXT_foo : enable\n#define K 2.0\n  #ifdef X\nuniform float a;\n#endif\nfloat f() { if (true) { return K; } return a; }\nvoid main() { gl_Position = vec4(f()); }");
+        assert!(!v.contains("#version 120") && !v.contains("extension"), "{v}");
+        assert!(v.contains("#define K 2.0\n") && v.contains("#ifdef X\n") && v.contains("#endif\n"), "{v}");
+        // a function body stays one piece, nested braces included, and keeps its statements
+        assert!(v.contains("float f() { if (true) { return K; } return a; }"), "{v}");
+        assert!(v.contains("  float a;\n"), "{v}");
+        // a '#' inside an expression line is not a directive
+        let v = vs_of("void main() { gl_Position = vec4(1.0); }\nconst float k = 2.0;");
+        assert!(v.contains("const float k = 2.0;\n"), "{v}");
+        let v = vs_of("float k = 1.0; #extension x\nvoid main() { gl_Position = vec4(k); }");
+        assert!(v.contains("#extension x"), "{v}");
+        // declarations after functions and structs are still found
+        let v = vs_of("struct S { float x; }; float f() { { return 1.0; } }\nuniform float b; void main() { gl_Position = vec4(f() + b); }");
+        assert!(v.contains("  float b;\n") && v.contains("struct S { float x; }") && v.contains("float f() { { return 1.0; } }"), "{v}");
+    }
+
+    #[test]
+    fn locations_shared_between_stages() {
+        let mut attribs = Vec::new();
+        let mut vary = Vec::new();
+        let mut bound = HashMap::new();
+        bound.insert("pos".to_string(), 3);
+        let (v, _) = rewrite(
+            "attribute vec4 pos; attribute vec4 col; varying vec4 a; varying ivec2 b; void main() { a = col; b = ivec2(1); gl_Position = pos; }",
+            false,
+            &mut attribs,
+            &bound,
+            &mut vary,
+        );
+        assert_eq!(attribs, [("pos".to_string(), 3), ("col".to_string(), 0)]);
+        assert!(v.contains("layout(location = 3) in vec4 pos;") && v.contains("layout(location = 0) in vec4 col;"), "{v}");
+        assert!(v.contains("layout(location = 0) out vec4 a;") && v.contains("layout(location = 1) flat out ivec2 b;"), "{v}");
+        let (p, _) = rewrite("varying ivec2 b; varying vec4 a; void main() { gl_FragColor = a; }", true, &mut attribs, &bound, &mut vary);
+        assert!(p.contains("layout(location = 1) flat in ivec2 b;") && p.contains("layout(location = 0) in vec4 a;"), "{p}");
+        // GLSL 1.30 fragment outputs
+        let p = ps_of("#version 130\nin vec4 a; out vec4 color; void main() { color = a; }");
+        assert!(p.contains("layout(location = 0) out vec4 color;") && p.contains("layout(location = 0) in vec4 a;"), "{p}");
+        let p = ps_of("flat in uint u; void main() { gl_FragColor = vec4(float(u)); }");
+        assert!(p.contains("flat in uint u;"), "{p}");
+    }
+
+    #[test]
+    fn narrow_and_two_row_uniforms() {
+        let v = vs_of("uniform mat2 r; uniform float w[4]; uniform vec3 c[2]; uniform mat2 ra[2]; uniform float s;\n\
+                       void main() { gl_Position = vec4(r * vec2(w[1], w[w[0] > 0.0 ? 2 : 3]), c[1].z, s); }");
+        for want in ["  mat2x4 r_vn2r;\n", "  vec4 w_vna1[4];\n", "  vec4 c_vna3[2];\n", "  mat2 ra[2];\n", "  float s;\n", "mat2(r_vn2r)", "w_vna1[1].x", "w_vna1[w_vna1[0].x > 0.0 ? 2 : 3].x", "c_vna3[1].xyz.z"] {
+            assert!(v.contains(want), "{want:?} not in\n{v}");
+        }
+        assert_eq!(index_narrow("w [1] + w2[0] + xw[0]", "w", "W", "x"), "W[1].x + w2[0] + xw[0]");
+        assert_eq!(index_narrow("w[a[1]] w", "w", "W", "xy"), "W[a[1]].xy w");
+        assert_eq!(index_narrow("w[w[1]]", "w", "W", "x"), "W[W[1].x].x");
+        assert_eq!(index_narrow("w[", "w", "W", "x"), "W[].x");
+        assert_eq!(index_narrow("_w[0]", "_w", "W", "x"), "W[0].x");
+    }
+
+    #[test]
+    fn block_members_of_every_shape() {
+        let p = link(
+            "uniform mat2 r; uniform vec3 v3; uniform float fa[3]; uniform mat3x2 m32; attribute vec4 v;\n\
+             void main() { gl_Position = v + vec4(r * vec2(fa[0], fa[2]), v3.x, (m32 * vec3(1.0)).x); }",
+            "void main() { gl_FragColor = vec4(1.0); }",
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert!(p.ps.block.is_none());
+        let b = p.vs.block.as_ref().unwrap();
+        let m = |n: &str| b.members.iter().find(|m| m.name == n).unwrap_or_else(|| panic!("{n}"));
+        assert_eq!((m("r").cols, m("r").rows, m("r").count), (2, 2, None));
+        assert_eq!((m("v3").cols, m("v3").rows), (1, 3));
+        assert_eq!((m("fa").cols, m("fa").rows, m("fa").count, m("fa").stride), (1, 1, Some(3), 16));
+        assert_eq!((m("m32").cols, m("m32").rows), (3, 2));
+        assert_eq!((p.sizes["r"], p.sizes["v3"], p.sizes["fa"], p.sizes["m32"]), (4, 3, 1, 6));
+        assert_eq!(p.attribs, [("v".to_string(), 0)]);
+    }
+
+    #[test]
+    fn put_packs_std140() {
+        let rd = |out: &[u8], o: u32| u32::from_le_bytes(out[o as usize..o as usize + 4].try_into().unwrap());
+        // 2-row matrix: columns 16 bytes apart
+        let m = Member { name: "m".into(), offset: 8, cols: 2, rows: 2, count: None, stride: 0 };
+        let mut out = vec![0u8; 64];
+        m.put(&mut out, &[1, 2, 3, 4]);
+        assert_eq!([rd(&out, 8), rd(&out, 12), rd(&out, 24), rd(&out, 28)], [1, 2, 3, 4]);
+        assert_eq!(rd(&out, 16), 0);
+        // vector: packed
+        let v = Member { name: "v".into(), offset: 4, cols: 1, rows: 3, count: None, stride: 0 };
+        let mut out = vec![0u8; 32];
+        v.put(&mut out, &[7, 8, 9]);
+        assert_eq!([rd(&out, 4), rd(&out, 8), rd(&out, 12)], [7, 8, 9]);
+        // array of mat3x2, short data, write past the end ignored
+        let a = Member { name: "a".into(), offset: 0, cols: 3, rows: 2, count: Some(2), stride: 48 };
+        let mut out = vec![0u8; 80];
+        a.put(&mut out, &[1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!([rd(&out, 0), rd(&out, 4), rd(&out, 16), rd(&out, 20), rd(&out, 32), rd(&out, 36)], [1, 2, 3, 4, 5, 6]);
+        assert_eq!([rd(&out, 48), rd(&out, 52), rd(&out, 64), rd(&out, 68)], [7, 8, 9, 0]);
+        assert_eq!(a.words(), 6);
+    }
 }

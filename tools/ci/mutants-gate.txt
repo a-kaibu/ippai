@@ -1,0 +1,8 @@
+# Files whose mutants the tests all catch (tools/ci/mutants.sh): a missed mutant in one of these
+# fails the Mutants workflow. Add a file once its mutants are all caught or listed in
+# mutants-known.txt.
+crates/glwgsl/src/lib.rs
+crates/kura/src/d3d9/format.rs
+crates/kura/src/d3d11/format.rs
+crates/kura/src/display.rs
+crates/kura/src/video.rs

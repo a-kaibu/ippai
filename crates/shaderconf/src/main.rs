@@ -109,3 +109,22 @@ fn main() {
         std::process::exit(1);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    /// Every case translates, to WGSL naga takes, and asks for something (cargo test, and cargo
+    /// mutants on the translators: a mutant that breaks their output shows here without a browser).
+    #[test]
+    fn every_case_is_valid_wgsl() {
+        let (mut out, mut errors) = (Vec::new(), Vec::new());
+        super::cases::all(&mut out, &mut errors);
+        assert!(errors.is_empty(), "{}", errors.join("\n"));
+        assert!(out.len() > 2000, "{} cases", out.len());
+        for c in &out {
+            if let Err(e) = super::fuzz::valid(&c.wgsl) {
+                panic!("{}: {e}\n{}", c.name, c.wgsl);
+            }
+            assert!(!c.pixels.is_empty() && c.pixels.iter().any(|p| p.1.iter().any(|w| w.is_some())), "{}: nothing compared", c.name);
+        }
+    }
+}

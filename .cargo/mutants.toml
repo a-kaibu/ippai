@@ -1,0 +1,10 @@
+# cargo-mutants (tools/ci/mutants.sh, .github/workflows/mutants.yml)
+profile = "mutants"
+exclude_re = [
+    # Kani proofs (formal/kani.sh), not built by cargo test
+    '\bproofs::',
+    # diagnostics and test hooks driven by environment variables (IPPAI_VIDEO_STATS,
+    # IPPAI_SCREENSHOT, IPPAI_INPUT), and the frame pacing's sleeps
+    'video\.rs:\d+:\d+: .*\bstat\b',
+    'display\.rs:\d+:\d+: .*\b(start_screenshots|start_scripted_input|pace|pace_frame|nodiff)\b',
+]

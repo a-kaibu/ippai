@@ -499,4 +499,173 @@ mod tests {
             assert!(!exists(id));
         }
     }
+
+    fn header(w: u32, h: u32, tracks: u32, len: usize) -> Vec<u8> {
+        let mut d = b"VNV1".to_vec();
+        for v in [w, h, tracks, 0] {
+            d.extend_from_slice(&v.to_le_bytes());
+        }
+        d.resize(len, 0);
+        d
+    }
+
+    #[test]
+    fn open_checks_the_header() {
+        for (w, h, t, len) in [(16, 16, 1, 16), (8192, 8192, 2, 20), (1, 1, 1, 16)] {
+            let id = open(header(w, h, t, len)).unwrap_or_else(|| panic!("{w}x{h} {t}"));
+            close(id);
+        }
+        for (w, h, t, len) in [
+            (16, 16, 1, 15),
+            (0, 16, 1, 16),
+            (16, 0, 1, 16),
+            (8193, 16, 1, 16),
+            (16, 8193, 1, 16),
+            (16, 16, 0, 16),
+            (16, 16, 3, 16),
+        ] {
+            assert!(open(header(w, h, t, len)).is_none(), "{w}x{h} {t} {len}");
+        }
+        let mut d = vnv();
+        d[0] = b'X';
+        assert!(open(d).is_none());
+    }
+
+    #[test]
+    fn a_fresh_stream_holds_nothing() {
+        // (the only test that lists streams)
+        assert!(!available(), "no page has listed streams yet");
+        let id = open(vnv()).unwrap();
+        for n in [0, 1] {
+            assert_eq!(vnhost_video_has(id, n), 0, "frame {n}");
+        }
+        assert!(!failed(id));
+        // the page sees no request yet; frame() rings the doorbell with one
+        let row = |id: u32| {
+            let mut out = vec![0u32; 6 * 64];
+            let n = unsafe { vnhost_video_list(out.as_mut_ptr(), 64) } as usize;
+            out[..n * 6]
+                .chunks(6)
+                .find(|r| r[0] == id)
+                .map(|r| r.to_vec())
+                .unwrap()
+        };
+        assert_eq!(row(id)[3..], [u32::MAX; 3]);
+        assert!(available(), "listing streams is the page being there");
+        let rung = DOORBELL.load(Ordering::SeqCst);
+        let mut px = [0u8; 4];
+        // nothing decoded: after the first frame's wait the guest goes on without one
+        assert!(!unsafe { frame(id, 2, px.as_mut_ptr(), 4, 1, 1, Out::Rgb) });
+        assert!(
+            DOORBELL.load(Ordering::SeqCst) > rung,
+            "a new request rings the page"
+        );
+        assert_eq!(row(id)[3], 2);
+        close(id);
+    }
+
+    #[test]
+    fn a_failed_stream_gives_no_frames() {
+        let id = open(vnv()).unwrap();
+        let mut size = 16 * 16 * 4;
+        let buf = unsafe { vnhost_video_begin(id, 0, &mut size) };
+        let layout = [RGBA, 0, 64, 0, 0, 0, 0, RGBA, 0, 64, 0, 0, 0, 0];
+        unsafe { vnhost_video_ready(id, buf, layout.as_ptr(), 1) };
+        assert_eq!((vnhost_video_has(id, 0), vnhost_video_has(id, 1)), (1, 0));
+        assert_eq!(vnhost_video_doorbell(), DOORBELL.as_ptr() as u32);
+        vnhost_video_fail(id);
+        assert!(failed(id) && !failed(u32::MAX));
+        let mut px = vec![0u8; 16 * 16 * 4];
+        assert!(!unsafe { frame(id, 0, px.as_mut_ptr(), 64, 16, 16, Out::Rgb) });
+        close(id);
+    }
+    #[test]
+    fn bt601_both_ways() {
+        assert_eq!(ycc_to_rgb(100, 200, 50), (0, 130, 227));
+        assert_eq!(ycc_to_rgb(50, 60, 200), (150, 21, 0));
+        assert_eq!(ycc_to_rgb(16, 128, 128), (16, 16, 16));
+        assert_eq!(ycc_to_rgb(200, 90, 170), (255, 183, 132));
+        assert_eq!(rgb_to_ycc(255, 0, 0), (76, 85, 255));
+        assert_eq!(rgb_to_ycc(10, 200, 30), (124, 75, 47));
+        assert_eq!(rgb_to_ycc(0, 0, 255), (29, 255, 107));
+    }
+
+    /// A 4x4 slot in `fmt` (planes padded: strides wider than the rows) with an alpha track
+    /// in `alpha` (None: no alpha track) and the guest's pixels of it (pitch 24).
+    fn slot_pixels(fmt: u32, alpha: Option<u32>, out: Out) -> (Vec<u8>, Vec<u8>) {
+        let mut buf: Vec<u8> = (0..200u32).map(|i| (i * 37 % 251) as u8).collect();
+        let color = match fmt {
+            I420 => [I420, 0, 5, 20, 3, 30, 3],
+            NV12 => [NV12, 0, 5, 20, 6, 0, 0],
+            _ => [RGBA, 0, 18, 0, 0, 0, 0],
+        };
+        let a = match alpha {
+            Some(RGBA) => [RGBA, 100, 17, 0, 0, 0, 0],
+            Some(f) => [f, 100, 6, 0, 0, 0, 0],
+            None => [0; 7],
+        };
+        buf[0] = 0; // (a pixel that clamps)
+        let mut dst = vec![0xeeu8; 24 * 4];
+        unsafe {
+            convert(
+                buf.as_ptr(),
+                &[color, a],
+                1 + alpha.is_some() as u32,
+                4,
+                4,
+                dst.as_mut_ptr(),
+                24,
+                4,
+                4,
+                out,
+            )
+        };
+        (buf, dst)
+    }
+
+    #[test]
+    fn convert_planes() {
+        for fmt in [I420, NV12, RGBA] {
+            for alpha in [None, Some(I420), Some(RGBA)] {
+                for out in [Out::Ycc, Out::Rgb] {
+                    let (b, dst) = slot_pixels(fmt, alpha, out);
+                    for y in 0..4 {
+                        for x in 0..4 {
+                            let ycc = match fmt {
+                                I420 => (
+                                    b[y * 5 + x],
+                                    b[20 + y / 2 * 3 + x / 2],
+                                    b[30 + y / 2 * 3 + x / 2],
+                                ),
+                                NV12 => (
+                                    b[y * 5 + x],
+                                    b[20 + y / 2 * 6 + x / 2 * 2],
+                                    b[21 + y / 2 * 6 + x / 2 * 2],
+                                ),
+                                _ => {
+                                    let q = y * 18 + x * 4;
+                                    rgb_to_ycc(b[q], b[q + 1], b[q + 2])
+                                }
+                            };
+                            let al = match alpha {
+                                None => 255,
+                                Some(RGBA) => b[100 + y * 17 + x * 4],
+                                Some(_) => b[100 + y * 6 + x],
+                            };
+                            let want = match out {
+                                Out::Ycc => [ycc.0, ycc.1, ycc.2, al],
+                                Out::Rgb => {
+                                    let (r, g, bl) = ycc_to_rgb(ycc.0, ycc.1, ycc.2);
+                                    [bl, g, r, 255]
+                                }
+                            };
+                            let o = y * 24 + x * 4;
+                            assert_eq!(dst[o..o + 4], want, "fmt {fmt} alpha {alpha:?} at {x},{y}");
+                        }
+                        assert_eq!(dst[y * 24 + 16..y * 24 + 24], [0xee; 8], "past the row");
+                    }
+                }
+            }
+        }
+    }
 }

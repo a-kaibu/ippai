@@ -411,8 +411,9 @@ mod tests {
         for (sh, bits) in [(0, 5), (5, 6), (11, 5)] {
             for a in 0..1u32 << bits {
                 for b in 0..1u32 << bits {
-                    // the other channels pick the mode: c0 > c1, then c0 <= c1
-                    for (oa, ob) in [(0xffffu32, 0u32), (0, 0xffff)] {
+                    // the other channels pick the mode: c0 > c1, then c0 <= c1 (and c0 == c1
+                    // when a == b: the 3-color mode too)
+                    for (oa, ob) in [(0xffffu32, 0u32), (0, 0xffff), (0, 0)] {
                         let m = !(((1 << bits) - 1) << sh) & 0xffff;
                         let c0 = (a << sh) | (oa & m);
                         let c1 = (b << sh) | (ob & m);
@@ -445,6 +446,62 @@ mod tests {
             *v = (i as u8 * 2) | ((i as u8 * 2 + 1) << 4);
         }
         check_block(DXT3, &b);
+    }
+
+
+    /// What each format is, as the D3D9 docs list them.
+    #[test]
+    fn format_table() {
+        use super::super::gpu::{FMT_BGRA8, FMT_DEPTH24S8, FMT_RGBA16F, FMT_RGBA32F};
+        // (format, depth, render target, no alpha, kept as it is on the page)
+        let all = [
+            (R8G8B8, false, false, true, false),
+            (A8R8G8B8, false, true, false, true),
+            (X8R8G8B8, false, true, true, true),
+            (R5G6B5, false, true, true, false),
+            (X1R5G5B5, false, true, true, false),
+            (A1R5G5B5, false, true, false, false),
+            (A4R4G4B4, false, false, false, false),
+            (A8, false, false, false, false),
+            (X4R4G4B4, false, false, true, false),
+            (A8B8G8R8, false, true, false, false),
+            (X8B8G8R8, false, true, true, false),
+            (L8, false, false, true, false),
+            (A8L8, false, false, false, false),
+            (A4L4, false, false, false, false),
+            (P8, false, false, false, false),
+            (D16_LOCKABLE, true, false, false, false),
+            (D32, true, false, false, false),
+            (D15S1, true, false, false, false),
+            (D24S8, true, false, false, false),
+            (D24X8, true, false, false, false),
+            (D24X4S4, true, false, false, false),
+            (D16, true, false, false, false),
+            (D32F_LOCKABLE, true, false, false, false),
+            (D24FS8, true, false, false, false),
+            (A16B16G16R16F, false, true, false, true),
+            (A32B32G32R32F, false, true, false, false),
+            (DXT1, false, false, true, false),
+            (DXT2, false, false, false, false),
+            (DXT3, false, false, false, false),
+            (DXT4, false, false, false, false),
+            (DXT5, false, false, false, false),
+        ];
+        for (f, depth, rt, no_a, same) in all {
+            assert!(supported(f), "{f}");
+            assert_eq!((is_depth(f), renderable(f), no_alpha(f), same_on_page(f)), (depth, rt, no_a, same), "{f}");
+            let (page, bpp) = match f {
+                _ if depth => (FMT_DEPTH24S8, 4),
+                A16B16G16R16F => (FMT_RGBA16F, 8),
+                A32B32G32R32F => (FMT_RGBA32F, 16),
+                _ => (FMT_BGRA8, 4),
+            };
+            assert_eq!((page_format(f), page_bpp(f)), (page, bpp), "{f}");
+        }
+        for f in [0, 1, 27, 40, 100, INDEX16, INDEX32, 114, u32::MAX] {
+            assert!(!supported(f) && !is_depth(f) && !renderable(f) && !no_alpha(f) && !same_on_page(f), "{f}");
+            assert_eq!(page_format(f), FMT_BGRA8);
+        }
     }
 
     /// A region that ends inside a block: only its pixels are written, row by row.
