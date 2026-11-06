@@ -1,0 +1,61 @@
+caps vs fffe0300 ps ffff0300 maxtex 16384x16384 stages 8 textures 8
+caps texture pow2 0 nonpow2cond 0 square 0 alpha 1 mipmap 1
+caps blend src ffff dest ffff scissor 1 separatealpha 1
+format A8R8G8B8 texture 1 rendertarget 1 depth -1
+format X8R8G8B8 texture 1 rendertarget 1 depth -1
+format R5G6B5 texture 1 rendertarget 1 depth -1
+format A1R5G5B5 texture 1 rendertarget 1 depth -1
+format A4R4G4B4 texture 1 rendertarget 1 depth -1
+format X1R5G5B5 texture 1 rendertarget 1 depth -1
+format A8 texture 1 rendertarget 1 depth -1
+format L8 texture 1 rendertarget 1 depth -1
+format A8L8 texture 1 rendertarget 1 depth -1
+format P8 texture 1 rendertarget 0 depth -1
+format DXT1 texture 1 rendertarget 0 depth -1
+format DXT3 texture 1 rendertarget 0 depth -1
+format DXT5 texture 1 rendertarget 0 depth -1
+format A8B8G8R8 texture 1 rendertarget 1 depth -1
+format A2R10G10B10 texture 1 rendertarget 1 depth -1
+format A16B16G16R16F texture 1 rendertarget 1 depth -1
+format A32B32G32R32F texture 1 rendertarget 1 depth -1
+format R32F texture 1 rendertarget 1 depth -1
+format D16 texture 0 rendertarget 0 depth 1
+format D24S8 texture 0 rendertarget 0 depth 1
+format D24X8 texture 0 rendertarget 0 depth 1
+format D32 texture 0 rendertarget 0 depth 0
+format R8G8B8 texture 0 rendertarget 0 depth -1
+format V8U8 texture 1 rendertarget 1 depth -1
+format UYVY texture 0 rendertarget 0 depth -1
+format YUY2 texture 0 rendertarget 0 depth -1
+CheckDeviceType windowed 1
+image clear 64 64 0
+image raster 64 64 2
+image sampling 64 64 3
+image address 64 64 0
+texture A8R8G8B8 ok
+texture X8R8G8B8 ok
+texture R5G6B5 ok
+texture X1R5G5B5 ok
+texture A1R5G5B5 ok
+texture A4R4G4B4 ok
+texture L8 ok
+texture A8 ok
+texture A8L8 ok
+texture DXT1 ok
+texture DXT3 ok
+texture DXT5 ok
+texture A8B8G8R8 ok
+texture X4R4G4B4 ok
+image formats 64 64 1
+image blend 64 64 2
+image stages 64 64 2
+image depth_scissor 64 64 1
+ColorFill 0
+StretchRect point 0
+StretchRect linear 0
+StretchRect sub 0
+image surfaces 64 64 2
+TestCooperativeLevel 0
+Present 0
+Release device 0
+Release d3d 0
