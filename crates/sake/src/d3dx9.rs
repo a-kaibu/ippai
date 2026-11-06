@@ -684,6 +684,108 @@ fn D3DXCreateTextureFromFileExA(c: &mut Ctx) -> u32 {
 fn D3DXCreateTextureFromFileExW(c: &mut Ctx) -> u32 {
     texture_file(c, true, true)
 }
+/// A RECT* as (left, top, right, bottom), or the whole `w` x `h` for NULL.
+fn rect_or(p: u32, w: u32, h: u32) -> (u32, u32, u32, u32) {
+    if p == 0 {
+        return (0, 0, w, h);
+    }
+    let g = |k: u32| (r32(p + 4 * k) as i32).max(0) as u32;
+    (g(0).min(w), g(1).min(h), g(2).min(w), g(3).min(h))
+}
+/// D3DXLoadSurfaceFrom* for an image file: its `src` rectangle into the surface's `dst`
+/// rectangle (scaled, nearest), color key pixels transparent.
+#[allow(clippy::too_many_arguments)]
+fn surface_from(c: &mut Ctx, surf: u32, dst: u32, data: &[u8], src: u32, key: u32, info: u32) -> u32 {
+    let Some((iw, ih, px, ff)) = image_info(data) else {
+        eprintln!("sake: D3DXLoadSurface: image not decoded ({:02x?})", &data[..data.len().min(8)]);
+        return 0x88760b59;
+    };
+    write_info(info, iw, ih, ff);
+    let desc = mem::heap_alloc(32, true);
+    com_call(c, surf, 12, &[desc]);
+    let (fmt, sw, sh) = (r32(desc), r32(desc + 24), r32(desc + 28));
+    mem::heap_free(desc);
+    let (sl, st, sr, sb) = rect_or(src, iw, ih);
+    let (dl, dt, dr, db) = rect_or(dst, sw, sh);
+    if sr <= sl || sb <= st || dr <= dl || db <= dt {
+        return 0;
+    }
+    let lr = mem::heap_alloc(8, true);
+    let hr = com_call(c, surf, 13, &[lr, dst, 0]);
+    if hr != 0 {
+        mem::heap_free(lr);
+        return hr;
+    }
+    let (pitch, bits) = (r32(lr), r32(lr + 4));
+    mem::heap_free(lr);
+    let (dw, dh) = (dr - dl, db - dt);
+    for y in 0..dh {
+        let sy = st + (y as u64 * (sb - st) as u64 / dh as u64) as u32;
+        for x in 0..dw {
+            let sx = sl + (x as u64 * (sr - sl) as u64 / dw as u64) as u32;
+            let i = 4 * (sy * iw + sx) as usize;
+            let (b, g, r, mut a) = (px[i], px[i + 1], px[i + 2], px[i + 3]);
+            if key != 0 && u32::from_le_bytes([b, g, r, a]) == key {
+                a = 0;
+            }
+            let f = |v: u8| v as f32 / 255.0;
+            let (r, g, b) = if a == 0 && key != 0 { (0, 0, 0) } else { (r, g, b) };
+            if let Some((v, bpp)) = pack(fmt, [f(r), f(g), f(b), f(a)]) {
+                // (the locked bits start at the rectangle's corner)
+                let at = bits + y * pitch + x * bpp;
+                match bpp {
+                    4 => w32(at, v),
+                    2 => mem::w16(at, v as u16),
+                    _ => mem::w8(at, v as u8),
+                }
+            }
+        }
+    }
+    com_call(c, surf, 14, &[]);
+    0
+}
+/// D3DXLoadSurfaceFromFileInMemory(surface, palette, dst rect, data, length, src rect, filter,
+/// color key, &info)
+fn D3DXLoadSurfaceFromFileInMemory(c: &mut Ctx) -> u32 {
+    let data = mem::slice(c.a(3), c.a(4)).to_vec();
+    let (surf, dst, src, key, info) = (c.a(0), c.a(2), c.a(5), c.a(7), c.a(8));
+    surface_from(c, surf, dst, &data, src, key, info)
+}
+/// D3DXLoadSurfaceFromFile{A,W}(surface, palette, dst rect, file, src rect, filter, color key, &info)
+fn surface_file(c: &mut Ctx, wide: bool) -> u32 {
+    let name = crate::k32::arg_str(c.a(3), wide);
+    let Some(data) = crate::files::resolve(&name).and_then(|h| kura::fs::read(h).ok()) else {
+        return 0x88760b59;
+    };
+    let (surf, dst, src, key, info) = (c.a(0), c.a(2), c.a(4), c.a(6), c.a(7));
+    surface_from(c, surf, dst, &data, src, key, info)
+}
+fn D3DXLoadSurfaceFromFileA(c: &mut Ctx) -> u32 {
+    surface_file(c, false)
+}
+fn D3DXLoadSurfaceFromFileW(c: &mut Ctx) -> u32 {
+    surface_file(c, true)
+}
+/// D3DXGetImageInfoFromFile{A,W}(file, &info)
+fn image_info_file(c: &mut Ctx, wide: bool) -> u32 {
+    let name = crate::k32::arg_str(c.a(0), wide);
+    let Some(data) = crate::files::resolve(&name).and_then(|h| kura::fs::read(h).ok()) else {
+        return 0x88760b59;
+    };
+    match image_info(&data) {
+        Some((w, h, _, ff)) => {
+            write_info(c.a(1), w, h, ff);
+            0
+        }
+        None => 0x88760b59,
+    }
+}
+fn D3DXGetImageInfoFromFileA(c: &mut Ctx) -> u32 {
+    image_info_file(c, false)
+}
+fn D3DXGetImageInfoFromFileW(c: &mut Ctx) -> u32 {
+    image_info_file(c, true)
+}
 /// D3DXGetImageInfoFromFileInMemory(data, length, &info)
 fn D3DXGetImageInfoFromFileInMemory(c: &mut Ctx) -> u32 {
     let data = mem::slice(c.a(0), c.a(1)).to_vec();
@@ -876,6 +978,8 @@ pub fn init() {
         ("D3DXCreateTextureFromFileExA", D3DXCreateTextureFromFileExA),
         ("D3DXCreateTextureFromFileExW", D3DXCreateTextureFromFileExW),
         ("D3DXGetImageInfoFromFileInMemory", D3DXGetImageInfoFromFileInMemory),
+        ("D3DXGetImageInfoFromFileA", D3DXGetImageInfoFromFileA),
+        ("D3DXGetImageInfoFromFileW", D3DXGetImageInfoFromFileW),
         ("D3DXCreateEffectEx", D3DXCreateEffectEx),
         ("D3DXCreateEffectFromFileA", D3DXCreateEffectFromFileA),
         ("D3DXCreateEffectFromFileW", D3DXCreateEffectFromFileW),
@@ -925,6 +1029,9 @@ pub fn init() {
         ("D3DXCreateFontIndirectA", D3DXCreateFont),
         ("D3DXCreateFontIndirectW", D3DXCreateFont),
         ("D3DXCheckVersion", D3DXCheckVersion),
+        ("D3DXLoadSurfaceFromFileInMemory", D3DXLoadSurfaceFromFileInMemory),
+        ("D3DXLoadSurfaceFromFileA", D3DXLoadSurfaceFromFileA),
+        ("D3DXLoadSurfaceFromFileW", D3DXLoadSurfaceFromFileW),
     ];
     for v in 24..=43 {
         let dll = format!("d3dx9_{v}");
