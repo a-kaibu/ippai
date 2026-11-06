@@ -74,7 +74,22 @@ fn open(c: &mut Ctx, wide: bool) -> u32 {
     if flags & 0x1303 != 0 {
         return fail(MMIOERR_CANNOTOPEN);
     }
-    let data = if info != 0 && r32(info + 4) == FOURCC_MEM {
+    if crate::env_on!("SAKE_TRACE_FILES") && info != 0 {
+        eprintln!("sake: mmioOpen({name:#x}, {info:#x}, flags {flags:#x}) {:x?}", (0..18).map(|i| r32(info + 4 * i)).collect::<Vec<_>>());
+    }
+    let proc = io_proc(name, info, wide);
+    let data = if let Some(p) = proc {
+        match read_via(c, p, name, info, flags) {
+            Some(v) => Data::File(v),
+            None => return fail(MMIOERR_CANNOTOPEN),
+        }
+    } else if name == 0 && info != 0 && r32(info + 4) == 0 && r32(info + 48) != 0 {
+        // adwInfo[0]: an open file's handle, read from where it is (a RIFF in an archive)
+        let Some(v) = from_handle(r32(info + 48)) else {
+            return fail(MMIOERR_CANNOTOPEN);
+        };
+        Data::File(v)
+    } else if info != 0 && r32(info + 4) == FOURCC_MEM {
         Data::Mem(r32(info + 24), r32(info + 20))
     } else {
         if name == 0 {
@@ -91,6 +106,100 @@ fn open(c: &mut Ctx, wide: bool) -> u32 {
         w32(info + 68, h);
     }
     h
+}
+/// The RIFF at an open file's position (or the rest of the file, up to 64 MB)
+fn from_handle(h: u32) -> Option<Vec<u8>> {
+    use std::io::SeekFrom;
+    let f = crate::obj::file(h)?;
+    let at = f.seek(SeekFrom::Current(0))?;
+    let tmp = mem::alloc(8)?;
+    let got = f.read_into(tmp, 8);
+    let n = if got == 8 && r32(tmp) == FOURCC_RIFF { r32(tmp + 4).saturating_add(8) } else { (f.size().saturating_sub(at)).min(64 << 20) as u32 };
+    mem::release(tmp);
+    f.seek(SeekFrom::Start(at))?;
+    let buf = mem::alloc(n.max(1))?;
+    let got = f.read_into(buf, n);
+    let v = mem::slice(buf, got).to_vec();
+    mem::release(buf);
+    Some(v)
+}
+
+/// I/O procedures by FOURCC (mmioInstallIOProc)
+static PROCS: Mutex<Vec<(u32, u32)>> = Mutex::new(Vec::new());
+
+/// The game's I/O procedure for this open: MMIOINFO's pIOProc, its fccIOProc installed, or the
+/// one installed for the name's "file.EXT+" extension.
+fn io_proc(name: u32, info: u32, wide: bool) -> Option<u32> {
+    let procs = PROCS.lock().unwrap();
+    let find = |f: u32| procs.iter().rev().find(|&&(k, _)| k == f).map(|&(_, p)| p);
+    if info != 0 {
+        if r32(info + 8) != 0 {
+            return Some(r32(info + 8));
+        }
+        let f = r32(info + 4);
+        if f != 0 && f != FOURCC_MEM {
+            if let Some(p) = find(f) {
+                return Some(p);
+            }
+        }
+    }
+    if name != 0 {
+        let path = crate::k32::arg_str(name, wide);
+        let head = &path[..path.find('+')?];
+        let ext = &head[head.rfind('.')? + 1..];
+        // (as given, then upper-cased: mmioStringToFOURCC with or without MMIO_TOUPPER)
+        let mut b = [b' '; 4];
+        for (i, ch) in ext.bytes().take(4).enumerate() {
+            b[i] = ch;
+        }
+        return find(u32::from_le_bytes(b)).or_else(|| find(u32::from_le_bytes(b.map(|c| c.to_ascii_uppercase()))));
+    }
+    None
+}
+
+/// The whole stream through the game's I/O procedure (MMIOM_OPEN, READs, MMIOM_CLOSE), in the
+/// game's MMIOINFO (or one of ours): its files are small (sound effects in an archive).
+fn read_via(c: &mut Ctx, proc: u32, name: u32, info: u32, flags: u32) -> Option<Vec<u8>> {
+    const MMIOM_READ: u32 = 0;
+    const MMIOM_OPEN: u32 = 3;
+    const MMIOM_CLOSE: u32 = 4;
+    let tmp = mem::alloc(0x10000 + 72)?;
+    let mi = if info != 0 { info } else { tmp + 0x10000 };
+    w32(mi + 8, proc);
+    w32(mi + 44, 0);
+    if c.call(proc, &[mi, MMIOM_OPEN, name, flags]) != 0 {
+        mem::release(tmp);
+        return None;
+    }
+    let mut v = Vec::new();
+    loop {
+        let n = c.call(proc, &[mi, MMIOM_READ, tmp, 0x10000]) as i32;
+        if n <= 0 || v.len() > 256 << 20 {
+            break;
+        }
+        v.extend_from_slice(mem::slice(tmp, n as u32));
+    }
+    c.call(proc, &[mi, MMIOM_CLOSE, 0, 0]);
+    mem::release(tmp);
+    Some(v)
+}
+/// mmioInstallIOProc(fcc, proc, flags): INSTALL 0x10000, REMOVE 0x20000, FINDPROC 0x40000
+fn mmioInstallIOProcA(c: &mut Ctx) -> u32 {
+    let (fcc, proc, flags) = (c.a(0), c.a(1), c.a(2));
+    let mut procs = PROCS.lock().unwrap();
+    if flags & 0x10000 != 0 {
+        procs.push((fcc, proc));
+        return proc;
+    }
+    let i = procs.iter().rposition(|&(k, p)| k == fcc && (flags & 0x20000 == 0 || p == proc || proc == 0));
+    match i {
+        Some(i) if flags & 0x20000 != 0 => {
+            procs.remove(i);
+            proc
+        }
+        Some(i) => procs[i].1,
+        None => 0,
+    }
 }
 fn mmioOpenA(c: &mut Ctx) -> u32 {
     open(c, false)
@@ -203,6 +312,8 @@ pub fn init() {
     for (n, f) in [
         ("mmioOpenA", mmioOpenA as crate::api::Handler),
         ("mmioOpenW", mmioOpenW),
+        ("mmioInstallIOProcA", mmioInstallIOProcA),
+        ("mmioInstallIOProcW", mmioInstallIOProcA),
         ("mmioClose", mmioClose),
         ("mmioRead", mmioRead),
         ("mmioWrite", mmioWrite),
