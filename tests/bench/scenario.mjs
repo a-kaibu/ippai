@@ -9,6 +9,7 @@
 //   line_p50, line_p95    click -> the next line's first frame (text advance)
 //   scene_p50, scene_max  click -> a scene transition done (pictures read and decoded, crossfade)
 //   choice                click -> the choice's next scene done
+//   fx_*                  click -> an effect done (the KiriKiri game: testdata/kirikiri)
 //   idle_cpu              the browser's CPU per second while the game waits for 3 s (ms/s)
 //   gpu_busy              the GPU's time in render passes per second of play (ms/s; timestamp-query)
 //   peak_rss_mb           the browser's processes' memory at most (MB)
@@ -145,6 +146,8 @@ export async function runScenario(browser, build, c, timeout) {
       if (w.what === "choice") metrics.choice = r.t - at;
       else if (r.what === "line") lines.push(r.t - at);
       else if (r.what === "scene") scenes.push(r.t - at);
+      // (the KiriKiri game's heavy effects, each once: click -> the effect done)
+      else if (r.what.startsWith("fx_")) metrics[r.what] = Math.max(metrics[r.what] ?? 0, r.t - at);
       // (after the movie the game goes on by itself: the next wait comes after its scene)
       if (r.what === "saved") {
         // the save must reach the browser's storage before the page goes (web/src/saves.ts)

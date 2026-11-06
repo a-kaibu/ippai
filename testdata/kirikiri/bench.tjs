@@ -1,0 +1,77 @@
+// 吉里吉里ベンチの重い演出 (scenario/first.ks から使う)。
+//   benchPetals(n)  画面いっぱいのレイヤに花びら n 枚を毎フレーム回転・拡大して描く
+//                   (Layer.operateAffine、全面クリア、アルファ合成)
+//   benchPetalsStop()  止めて、描いた間隔の p50/p95 を "BENCH kk_petals_p50 ms" で出す
+//   benchBlur()     表のベースレイヤを二度ぼかしてセピアにする (doBoxBlur, doGrayScale, adjustGamma)
+
+var benchPetal = %[];
+
+function benchPetals(n)
+{
+	var p = benchPetal;
+	var base = kag.fore.base;
+	p.src = new Layer(kag, base);
+	p.src.loadImages("petal");
+	p.src.setSizeToImageSize();
+	p.src.visible = false;
+	p.layer = new Layer(kag, base);
+	with (p.layer) {
+		.type = ltAlpha;
+		.face = dfAlpha;
+		.setImageSize(kag.scWidth, kag.scHeight);
+		.setSizeToImageSize();
+		.absolute = 500000; // (立ち絵の上、メッセージの下)
+		.hitThreshold = 256; // (クリックは下へ通す)
+		.visible = true;
+	}
+	p.items = [];
+	for (var i = 0; i < n; i++)
+		p.items.add(%[x: Math.random() * kag.scWidth, y: Math.random() * kag.scHeight, vx: Math.random() * 2 - 1,
+			vy: 1 + Math.random() * 2, a: Math.random() * 6.28, va: Math.random() * 0.1 - 0.05, s: 0.5 + Math.random()]);
+	p.gaps = [];
+	p.last = void;
+	p.handler = function(tick) {
+		var p = benchPetal;
+		// (60 枚/秒まで: 間隔が 16 ms を超えるのは描くのが間に合わないとき)
+		if (p.last !== void && tick - p.last < 15) return;
+		if (p.last !== void) p.gaps.add(tick - p.last);
+		p.last = tick;
+		var l = p.layer, src = p.src, w = kag.scWidth, h = kag.scHeight;
+		l.fillRect(0, 0, w, h, 0);
+		for (var i = 0; i < p.items.count; i++) {
+			var o = p.items[i];
+			o.x += o.vx; o.y += o.vy; o.a += o.va;
+			if (o.y > h + 40) { o.y = -40; o.x = Math.random() * w; }
+			var c = Math.cos(o.a) * o.s, s = Math.sin(o.a) * o.s;
+			// (中心のまわりに回して o.x, o.y へ)
+			l.operateAffine(src, 0, 0, src.imageWidth, src.imageHeight, true, c, s, -s, c,
+				o.x - (c * 32 - s * 32), o.y - (s * 32 + c * 32), omAuto, 255, stFastLinear);
+		}
+	};
+	System.addContinuousHandler(p.handler);
+}
+
+function benchPetalsStop()
+{
+	var p = benchPetal;
+	System.removeContinuousHandler(p.handler);
+	invalidate p.layer;
+	invalidate p.src;
+	var g = p.gaps;
+	g.sort();
+	if (g.count) {
+		Debug.message("BENCH kk_petals_p50 " + g[g.count \ 2]);
+		Debug.message("BENCH kk_petals_p95 " + g[(g.count * 95) \ 100]);
+		Debug.message("BENCH kk_petals_frames " + g.count);
+	}
+}
+
+function benchBlur()
+{
+	with (kag.fore.base) {
+		.doBoxBlur(12, 12);
+		.doBoxBlur(12, 12);
+		.doGrayScale();
+		.adjustGamma(1.0, 40, 255, 0.9, 20, 230, 0.7, 0, 200);
+	}
+}
