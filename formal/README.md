@@ -11,6 +11,7 @@
 | The rule of `repeats()` (when a batch may be skipped) | TLA+ `tla/RepeatSkip.tla`: for every batch of up to 3 commands (clears, draws with and without blending, writes, copies, fills; partial boxes, an array texture) from any contents, "repeats" implies running it twice leaves what once did | `formal/run.sh` |
 | Texel conversion (`d3d9/format.rs`, `d3d11/format.rs`) against references written from the Direct3D docs | exhaustive tests: every texel of every 16- and 8-bit format, every DXT endpoint pair per channel in both modes, every DXT5 alpha pair and code, every f32 → f16 (against `half`, IEEE round to nearest even) | `cargo test -p kura --release format` |
 | UNORM expansion, pitch/row arithmetic of every D3D9 and DXGI format, window rectangle algebra | Kani proofs (`#[cfg(kani)] mod proofs`) for all inputs in the API's limits | `formal/kani.sh` |
+| Direct3D 9/11 and OpenGL viewports and scissors (`rects9`, `rects11` in `render/d3d.rs`) | Kani: for every target size and every viewport, depth range and scissor (NaN and infinities too), what reaches setViewport / setScissorRect is what WebGPU accepts: inside the target as WebGPU adds it up, depths in 0..1 | `formal/kani.sh` |
 | unsafe conversion loops on exactly sized buffers, movie slots across threads, padded GPU uploads | Miri | `formal/miri.sh` |
 | Shader translation (HLSL → DXBC / D3D9 bytecode, D3D9 assembly, GLSL → WGSL): what the shaders compute on a real WebGPU (Chromium's Dawn) against the D3D11.3 functional spec, the D3D9 instruction reference, HLSL constant packing, GLSL 1.20 and std140 | `crates/shaderconf` writes the cases (shader, uniform data per pixel, expected pixel), `tests/shaders.mjs` draws them | `cargo run -q -p shaderconf > c.json && node tests/shaders.mjs c.json` |
 
@@ -32,6 +33,11 @@ Siglus segment ended let later draws keep the segment's stamp (the next frame re
 a changed target); deferred clears did not mark the texture changed for draws sampling it;
 Direct3D 11 depth buffers no draw had used were cleared to 1 by the optimized passes while plain
 ones loaded WebGPU's zeros (they start at 1 now in both).
+
+Kani found: a viewport whose x + width, rounded in f32, came out past the target by one ulp
+(a WebGPU validation error, the draw lost); the D3D9 path passed MinZ/MaxZ outside 0..1 and NaN
+through. The model tests found StretchRect and GetRenderTargetData with boxes or levels past the
+texture, and a copy of depth24plus-stencil8, going to WebGPU as invalid copies.
 
 Found and fixed with these: the movie slot flag above; `f16_bits` rounded ties up (4535 of every
 7th f32 differed from IEEE round to nearest even); 5- and 6-bit channels were expanded by bit

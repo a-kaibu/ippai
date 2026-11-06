@@ -268,7 +268,9 @@ impl Gen {
                 let (w, h) = (1 + r.below(sw.min(dw)), 1 + r.below(sh.min(dh)));
                 let (sx, sy, dx, dy) = (r.below(sw - w + 1), r.below(sh - h + 1), r.below(dw - w + 1), r.below(dh - h + 1));
                 let (dw2, dh2) = if r.chance(50) { (w, h) } else { (1 + r.below(dw - dx), 1 + r.below(dh - dy)) };
-                b.c.extend_from_slice(&[COPY, st, 0, sx, sy, w, h, dt, 0, dx, dy, dw2, dh2, r.below(2)]);
+                // (sometimes past the textures or their levels, as a bad StretchRect: no WebGPU error)
+                let (dx, sl) = if r.chance(10) { (dx + r.below(20), r.below(3)) } else { (dx, 0) };
+                b.c.extend_from_slice(&[COPY, st, sl, sx, sy, w, h, dt, 0, dx, dy, dw2, dh2, r.below(2)]);
             }
             2 => {
                 // ColorFill
@@ -282,7 +284,8 @@ impl Gen {
                 let t = r.pick(&[1u32, 2, 3, 5, 6]);
                 let (w, h, _, _) = size_of_tex(t);
                 self.req += 1;
-                b.c.extend_from_slice(&[READBACK, self.req, t, 0, 0, 0, w, h, dst as u32, w * 4]);
+                let (level, x) = if r.chance(10) { (r.below(3), r.below(4)) } else { (0, 0) };
+                b.c.extend_from_slice(&[READBACK, self.req, t, level, x, 0, w, h, dst as u32, w * 4]);
             }
         }
     }

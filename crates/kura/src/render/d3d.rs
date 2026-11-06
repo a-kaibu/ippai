@@ -1676,14 +1676,7 @@ impl D3d {
             return p;
         }
         let (tw, th) = self.target_size();
-        // viewport and scissor inside the target
-        let (x0, y0) = (sx.min(tw), sy.min(th));
-        let (x1, y1) = (x0.max(sx.saturating_add(sw).min(tw)), y0.max(sy.saturating_add(sh).min(th)));
-        if x1 <= x0 || y1 <= y0 {
-            return p;
-        }
-        let (vpx, vpy) = (vx.max(-32768.0), vy.max(-32768.0));
-        let (vpw, vph) = (vw.min(32768.0).max(1.0), vh.min(32768.0).max(1.0));
+        let Some((vpt, sci)) = rects9(tw, th, [vx, vy, vw, vh, minz, maxz], [sx, sy, sw, sh], self.clip) else { return p };
         if !self.clears.is_empty() {
             for t in &texs {
                 self.settle(t[1]);
@@ -1700,23 +1693,8 @@ impl D3d {
             }
         }
         gpu::set_pipeline(pipe);
-        // WebGPU wants the viewport inside the target
-        let (cx0, cy0) = (vpx.max(0.0), vpy.max(0.0));
-        let (cx1, cy1) = ((tw as f32).min(vpx + vpw), (th as f32).min(vpy + vph));
-        if cx1 <= cx0 || cy1 <= cy0 {
-            return p;
-        }
-        gpu::set_viewport(cx0, cy0, cx1 - cx0, cy1 - cy0, minz.min(maxz), minz.max(maxz));
-        let (mut sx0, mut sy0) = (x0.max(cx0.floor() as u32), y0.max(cy0.floor() as u32));
-        let (mut sx1, mut sy1) = (x1.min(cx1.ceil() as u32), y1.min(cy1.ceil() as u32));
-        if let Some(d) = self.clip {
-            (sx0, sy0, sx1, sy1) = (sx0.max(d[0]), sy0.max(d[1]), sx1.min(d[2]), sy1.min(d[3]));
-        }
-        if sx1 <= sx0 || sy1 <= sy0 {
-            gpu::set_scissor(sx0.min(tw), sy0.min(th), 0, 0);
-            return p;
-        }
-        gpu::set_scissor(sx0, sy0, sx1 - sx0, sy1 - sy0);
+        gpu::set_viewport(vpt[0], vpt[1], vpt[2], vpt[3], vpt[4], vpt[5]);
+        gpu::set_scissor(sci[0], sci[1], sci[2], sci[3]);
         let g0 = match self.groups0.get(&(vss, pss)) {
             Some(&g) => g,
             None => {
@@ -1795,10 +1773,21 @@ impl D3d {
         if sw == 0 || sh == 0 || dw == 0 || dh == 0 || sw > 1 << 15 || dw > 1 << 15 {
             return;
         }
+        // (levels and boxes inside the textures, as WebGPU wants them; Direct3D fails such a
+        // StretchRect too)
+        let size = |t: &Tex, l: u32| ((t.w >> l).max(1), (t.h >> l).max(1));
+        if sl >= s.levels || dl >= t.levels {
+            return;
+        }
+        let ((slw, slh), (dlw, dlh)) = (size(s, sl), size(t, dl));
+        if sx as u64 + sw as u64 > slw as u64 || sy as u64 + sh as u64 > slh as u64 || dx as u64 + dw as u64 > dlw as u64 || dy as u64 + dh as u64 > dlh as u64 {
+            return;
+        }
         let (s_tex, s_fmt, s_w, s_h) = (s.tex, s.format, s.w, s.h);
         let (t_tex, t_fmt) = (t.tex, t.format);
         self.end_pass();
-        if sw == dw && sh == dh && s_fmt == t_fmt && st != dt {
+        // (WebGPU copies no depth-stencil texture of depth24plus-stencil8)
+        if sw == dw && sh == dh && s_fmt == t_fmt && st != dt && s_fmt != DS {
             self.open = true;
             gpu::copy_texture(s_tex, sl, [sx, sy, 0], t_tex, dl, [dx, dy, 0], [sw, sh, 1]);
             self.use_tex(st);
@@ -1838,7 +1827,9 @@ impl D3d {
 
     fn readback(&mut self, a: [u32; 9]) {
         let [req, id, level, x, y, w, h, dst, pitch] = a;
-        let Some(t) = self.textures.get(&id).filter(|t| !is_depth(t.format) && w > 0 && h > 0) else {
+        // (a box inside the level: WebGPU's copy wants it so)
+        let inside = |t: &Tex| level < t.levels && x as u64 + w as u64 <= (t.w >> level).max(1) as u64 && y as u64 + h as u64 <= (t.h >> level).max(1) as u64;
+        let Some(t) = self.textures.get(&id).filter(|t| !is_depth(t.format) && w > 0 && h > 0 && inside(t)) else {
             vnhost_d3d9_readback_done(req);
             return;
         };
@@ -2450,32 +2441,14 @@ impl D3d {
             return q_;
         }
         let (tw, th) = self.target_size2();
-        let (tw, th) = (tw as f32, th as f32);
-        // viewport inside the target (WebGPU wants it there)
-        let (mut x0, mut y0, mut x1, mut y1) = if vw > 0.0 && vh > 0.0 { (vx, vy, vx + vw, vy + vh) } else { (0.0, 0.0, tw, th) };
-        x0 = x0.max(0.0);
-        y0 = y0.max(0.0);
-        x1 = x1.min(tw);
-        y1 = y1.min(th);
-        if x1 <= x0 || y1 <= y0 {
-            return q_;
-        }
-        let (z0, z1) = (minz.min(maxz).clamp(0.0, 1.0), minz.max(maxz).clamp(0.0, 1.0));
+        let Some((vpt, sci)) = rects11(tw, th, [vx, vy, vw, vh, minz, maxz], [sx, sy, sw, sh], s_on != 0) else { return q_ };
         let (pipeline, layouts) = {
             let p = &self.pipelines2[&pid];
             (p.pipeline, p.layouts.clone())
         };
         gpu::set_pipeline(pipeline);
-        gpu::set_viewport(x0, y0, x1 - x0, y1 - y0, z0, z1);
-        let (mut rx0, mut ry0, mut rx1, mut ry1) = if s_on != 0 { (sx as i64, sy as i64, sx as i64 + sw as i64, sy as i64 + sh as i64) } else { (0, 0, tw as i64, th as i64) };
-        rx0 = rx0.max(x0.floor() as i64);
-        ry0 = ry0.max(y0.floor() as i64);
-        rx1 = rx1.min(x1.ceil() as i64).min(tw as i64);
-        ry1 = ry1.min(y1.ceil() as i64).min(th as i64);
-        if rx1 <= rx0 || ry1 <= ry0 {
-            return q_;
-        }
-        gpu::set_scissor(rx0 as u32, ry0 as u32, (rx1 - rx0) as u32, (ry1 - ry0) as u32);
+        gpu::set_viewport(vpt[0], vpt[1], vpt[2], vpt[3], vpt[4], vpt[5]);
+        gpu::set_scissor(sci[0], sci[1], sci[2], sci[3]);
         gpu::set_blend_constant(blend);
         gpu::set_stencil_ref(stencil_ref);
         for (gi, g) in groups.iter().enumerate() {
@@ -2585,6 +2558,63 @@ impl D3d {
         }
         q_
     }
+}
+
+/// A Direct3D 11 / OpenGL draw's viewport (x y w h minz maxz; w or h 0: the whole target) and
+/// scissor (x y w h, when `scissor`) as WebGPU takes them, as `rects9`.
+pub(crate) fn rects11(tw: u32, th: u32, vp: [f32; 6], sc: [u32; 4], scissor: bool) -> Option<([f32; 6], [u32; 4])> {
+    let [vx, vy, vw, vh, minz, maxz] = vp;
+    let whole = !(vw > 0.0 && vh > 0.0);
+    let vp = if whole { [0.0, 0.0, tw as f32, th as f32, minz, maxz] } else { [vx, vy, vw, vh, minz, maxz] };
+    let sc = if scissor { sc } else { [0, 0, tw, th] };
+    rects9(tw, th, vp, sc, None)
+}
+
+/// A Direct3D 9 draw's viewport (x y w h minz maxz) and scissor (x y w h) as WebGPU takes them
+/// on a `tw` x `th` target: the viewport inside the target, depths in 0..1 (NaN: 0 and 1), the
+/// scissor inside both and `clip` (a segment drawn again in part). None: nothing to draw.
+pub(crate) fn rects9(tw: u32, th: u32, vp: [f32; 6], sc: [u32; 4], clip: Option<[u32; 4]>) -> Option<([f32; 6], [u32; 4])> {
+    let [vx, vy, vw, vh, minz, maxz] = vp;
+    let [sx, sy, sw, sh] = sc;
+    // scissor inside the target
+    let (x0, y0) = (sx.min(tw), sy.min(th));
+    let (x1, y1) = (x0.max(sx.saturating_add(sw).min(tw)), y0.max(sy.saturating_add(sh).min(th)));
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    // (f32::max and min take the number when one side is NaN)
+    let (vpx, vpy) = (vx.max(-32768.0).min(32768.0), vy.max(-32768.0).min(32768.0));
+    let (vpw, vph) = (vw.min(32768.0).max(1.0), vh.min(32768.0).max(1.0));
+    // WebGPU wants the viewport inside the target
+    let (cx0, cy0) = (vpx.max(0.0), vpy.max(0.0));
+    let (cx1, cy1) = ((tw as f32).min(vpx + vpw), (th as f32).min(vpy + vph));
+    if cx1 <= cx0 || cy1 <= cy0 {
+        return None;
+    }
+    let z = |v: f32, or: f32| if v.is_nan() { or } else { v.clamp(0.0, 1.0) };
+    let (z0, z1) = (z(minz, 0.0), z(maxz, 1.0));
+    let (mut sx0, mut sy0) = (x0.max(cx0.floor() as u32), y0.max(cy0.floor() as u32));
+    let (mut sx1, mut sy1) = (x1.min(cx1.ceil() as u32), y1.min(cy1.ceil() as u32));
+    if let Some(d) = clip {
+        (sx0, sy0, sx1, sy1) = (sx0.max(d[0]), sy0.max(d[1]), sx1.min(d[2]), sy1.min(d[3]));
+    }
+    if sx1 <= sx0 || sy1 <= sy0 {
+        return None;
+    }
+    // (x + w, as WebGPU adds them up, must not pass the target: x1 - x0 can round up)
+    let span = |a: f32, b: f32| {
+        let mut w = b - a;
+        // (one rounding: one step down is enough, see the proof)
+        if w > 0.0 && a as f64 + w as f64 > b as f64 {
+            w = f32::from_bits(w.to_bits() - 1);
+        }
+        w
+    };
+    let (w, h) = (span(cx0, cx1), span(cy0, cy1));
+    if w <= 0.0 || h <= 0.0 {
+        return None;
+    }
+    Some(([cx0, cy0, w, h, z0.min(z1), z0.max(z1)], [sx0, sy0, sx1 - sx0, sy1 - sy0]))
 }
 
 fn color_of(c: u32) -> [f64; 4] {
@@ -2700,3 +2730,44 @@ mod padded_tests {
 
 #[cfg(test)]
 mod model_tests;
+
+/// `rects9` gives what WebGPU's setViewport / setScissorRect accept on the target for every
+/// input (NaN and infinite floats too): the viewport inside the target (as WebGPU adds it up,
+/// in f64), depths in 0..1, the scissor inside the target.
+#[cfg(kani)]
+mod proofs {
+    #[kani::proof]
+    fn rects9_are_valid_webgpu() {
+        let (tw, th): (u32, u32) = (kani::any(), kani::any());
+        kani::assume(tw >= 1 && tw <= 16384 && th >= 1 && th <= 16384);
+        let vp: [f32; 6] = kani::any();
+        let sc: [u32; 4] = kani::any();
+        let clip: Option<[u32; 4]> = kani::any();
+        if let Some((v, s)) = super::rects9(tw, th, vp, sc, clip) {
+            assert!(v.iter().all(|x| x.is_finite()));
+            assert!(v[0] >= 0.0 && v[1] >= 0.0 && v[2] > 0.0 && v[3] > 0.0);
+            assert!(v[0] as f64 + v[2] as f64 <= tw as f64 && v[1] as f64 + v[3] as f64 <= th as f64);
+            assert!(0.0 <= v[4] && v[4] <= v[5] && v[5] <= 1.0);
+            assert!(s[2] > 0 && s[3] > 0);
+            assert!(s[0] as u64 + s[2] as u64 <= tw as u64 && s[1] as u64 + s[3] as u64 <= th as u64);
+        }
+    }
+}
+
+#[cfg(test)]
+mod rect_tests {
+    #[test]
+    fn rects9_edges() {
+        // NaN depths: the whole range; out-of-range depths clamped
+        let (v, _) = super::rects9(16, 16, [0.0, 0.0, 16.0, 16.0, f32::NAN, f32::NAN], [0, 0, 16, 16], None).unwrap();
+        assert_eq!((v[4], v[5]), (0.0, 1.0));
+        let (v, _) = super::rects9(16, 16, [0.0, 0.0, 16.0, 16.0, -1.0, 2.0], [0, 0, 16, 16], None).unwrap();
+        assert_eq!((v[4], v[5]), (0.0, 1.0));
+        // a viewport past the target: clipped; wholly outside: nothing
+        let (v, s) = super::rects9(16, 16, [-8.0, 4.0, 32.0, 32.0, 0.0, 1.0], [0, 0, 100, 100], None).unwrap();
+        assert_eq!((v[0], v[1], v[2], v[3]), (0.0, 4.0, 16.0, 12.0));
+        assert_eq!(s, [0, 4, 16, 12]);
+        assert!(super::rects9(16, 16, [20.0, 0.0, 4.0, 4.0, 0.0, 1.0], [0, 0, 16, 16], None).is_none());
+        assert!(super::rects9(16, 16, [0.0, 0.0, 16.0, 16.0, 0.0, 1.0], [0, 0, 16, 16], Some([3, 3, 3, 9])).is_none());
+    }
+}
