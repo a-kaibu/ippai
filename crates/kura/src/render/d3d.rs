@@ -1027,7 +1027,12 @@ impl D3d {
         // what it reads
         let mut loose = Vec::new();
         let mut hashed = true;
-        let mut cleared: Vec<u32> = Vec::new();
+        // subresources cleared whole: texture, level, layer
+        let mut cleared: Vec<(u32, u32, u32)> = Vec::new();
+        // (a texture read: cleared whole, every level and layer)
+        let all_clear = |cleared: &[(u32, u32, u32)], t: u32| {
+            self.textures.get(&t).is_some_and(|x| (0..x.levels).all(|l| (0..x.layers).all(|y| cleared.contains(&(t, l, y)))))
+        };
         let mut target = [0u32; 3];
         let mut targets2: Option<&[u32]> = None;
         let mut drawn: Vec<u32> = Vec::new();
@@ -1056,27 +1061,27 @@ impl D3d {
                         return None;
                     }
                     if c[i + 1] & 1 != 0 {
-                        cleared.push(target[0]);
+                        cleared.push((target[0], target[1], 0));
                     }
                     if c[i + 1] & 2 != 0 && target[2] != 0 {
-                        cleared.push(target[2]);
+                        cleared.push((target[2], 0, 0));
                     }
                     i += 12;
                 }
                 CLEAR_VIEW => {
                     if c[i + 4] & 3 != 0 {
-                        cleared.push(c[i + 1]);
+                        cleared.push((c[i + 1], c[i + 2], c[i + 3]));
                     }
                     i += 11;
                 }
                 DRAW => {
-                    if !cleared.contains(&target[0]) || (target[2] != 0 && !cleared.contains(&target[2])) {
+                    if !cleared.contains(&(target[0], target[1], 0)) || (target[2] != 0 && !cleared.contains(&(target[2], 0, 0))) {
                         return None;
                     }
                     let ntex = c[i + 17] as usize;
                     for t in 0..ntex {
                         let tex = c[i + 18 + 3 * t + 1];
-                        reads.push((tex, cleared.contains(&tex)));
+                        reads.push((tex, all_clear(&cleared, tex)));
                     }
                     drawn.push(target[0]);
                     let p = i + 18 + 3 * ntex;
@@ -1086,11 +1091,12 @@ impl D3d {
                     let tg = targets2?;
                     let pipe = self.pipelines2.get(&c[i + 1]).filter(|p| p.pipeline != 0)?;
                     let n = tg[0] as usize;
-                    if (0..n).any(|k| !cleared.contains(&tg[1 + k * 3])) {
+                    let sub = |k: usize| (tg[1 + k * 3], tg[2 + k * 3], tg[3 + k * 3]);
+                    if (0..n).any(|k| !cleared.contains(&sub(k))) {
                         return None;
                     }
                     // (stencil: whether its clears cover it is not tracked here)
-                    if pipe.zuse & 2 != 0 || (pipe.zuse != 0 && !cleared.contains(&tg[1 + n * 3])) {
+                    if pipe.zuse & 2 != 0 || (pipe.zuse != 0 && !cleared.contains(&sub(n))) {
                         return None;
                     }
                     let mut q = i + 2 + 6 + 5 + 4 + 1;
@@ -1110,7 +1116,7 @@ impl D3d {
                         let m = c[q] as usize;
                         for (j, e) in c[q + 1..q + 1 + m * 8].chunks(8).enumerate() {
                             if e[1] == 1 || e[1] >= 4 {
-                                reads.push((e[2], cleared.contains(&e[2])));
+                                reads.push((e[2], all_clear(&cleared, e[2])));
                             }
                             if e[1] == 0 {
                                 if let Some(k) = renum(e[2], &made) {
@@ -1150,7 +1156,7 @@ impl D3d {
                 // a copy or fill overwrites its box whatever was there: the box ends the same, its
                 // destination counts as drawn (a read of it before must have been of a clear)
                 COPY => {
-                    reads.push((c[i + 1], cleared.contains(&c[i + 1])));
+                    reads.push((c[i + 1], all_clear(&cleared, c[i + 1])));
                     drawn.push(c[i + 7]);
                     i += 14;
                 }
@@ -1187,7 +1193,7 @@ impl D3d {
         }
         // (a texture it draws to or clears, read before it clears it, holds what the last run
         // left)
-        if reads.iter().any(|&(t, clear)| !clear && (drawn.contains(&t) || cleared.contains(&t))) {
+        if reads.iter().any(|&(t, clear)| !clear && (drawn.contains(&t) || cleared.iter().any(|c| c.0 == t))) {
             return None;
         }
         if !hashed {
@@ -1890,6 +1896,16 @@ impl D3d {
             &format!(r#"{{"dimension":{}{},"aspect":{}}}"#, q(dim), if dim == "2d" { r#","arrayLayerCount":1"# } else { "" }, q(if depth { "depth-only" } else { "all" })),
         );
         self.textures.insert(id, Tex { tex, w, h, levels, format: fmt, view, layers: layers.max(1), dim, views: HashMap::new(), fits: HashMap::new(), zclear: None, zused: 0 });
+        // A depth buffer starts at depth 1 (what Direct3D leaves undefined; WebGPU's zeros fail
+        // every LESS test), and the passes that clear rather than load an aspect no draw used
+        // yet (see `zused`) start from that too.
+        if depth {
+            for level in 0..levels {
+                for layer in 0..layers.max(1) {
+                    self.clear_now(id, level, layer, 6, [0.0; 4], 1.0, 0);
+                }
+            }
+        }
     }
 
     /// A view of texture `id` for binding or rendering (cached on the texture).

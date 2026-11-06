@@ -393,6 +393,23 @@ fn show(c: &[u32]) -> String {
         let (name, n) = match c[i] {
             CREATE_TEXTURE => ("tex", 7),
             DESTROY_TEXTURE => ("destroy", 2),
+            CREATE_TEXTURE2 => ("tex2", 8),
+            WRITE_TEXTURE2 => ("write2", 10),
+            CREATE_BUFFER => ("buffer", 3),
+            DESTROY_BUFFER => ("destroy buffer", 2),
+            WRITE_BUFFER => ("write buffer", 5),
+            CREATE_PIPELINE2 => ("pipe2", 3 + c[i + 2] as usize),
+            SET_TARGETS2 => ("targets2", 2 + c[i + 1] as usize * 3 + 3),
+            CLEAR_VIEW => ("clear view", 11),
+            GEN_MIPS => ("mips", 2),
+            DRAW2 => {
+                let mut q = i + 2 + 6 + 5 + 4 + 1;
+                q += 1 + 2 * c[q] as usize + 3;
+                for _ in 0..2 {
+                    q += 1 + 8 * c[q] as usize;
+                }
+                ("draw2", q + 7 - i)
+            }
             CREATE_SHADER => ("shader", 4),
             CREATE_PIPELINE => ("pipe", 3 + c[i + 2] as usize),
             WRITE_TEXTURE => ("write", 9),
@@ -411,7 +428,7 @@ fn show(c: &[u32]) -> String {
         };
         let w = &c[i + 1..i + n];
         out.push(match c[i] {
-            CREATE_SHADER | CREATE_PIPELINE => format!("{name} {}", w[0]),
+            CREATE_SHADER | CREATE_PIPELINE | CREATE_PIPELINE2 => format!("{name} {}", w[0]),
             CLEAR => format!("clear flags {} color {:?} z {} s {} rect {:?}", w[0], [f32of(w[1]), f32of(w[2]), f32of(w[3]), f32of(w[4])], f32of(w[5]), w[6], &w[7..11]),
             DRAW => {
                 let vp: Vec<f32> = w[1..7].iter().map(|&x| f32of(x)).collect();
@@ -424,22 +441,17 @@ fn show(c: &[u32]) -> String {
     out.join("\n  ")
 }
 
-/// Runs a scenario's batches on a fresh model, optimized or not; returns what was observed.
-fn run(seed: u64, frames: usize, pass_opt: bool, seg: bool) -> (Vec<Obs>, Vec<String>, (u32, u32, u32)) {
+/// Runs batches on a fresh model, optimized or not; returns what was observed.
+fn run(seed: u64, batches: &[Batch], pass_opt: bool, seg: bool) -> (Vec<Obs>, Vec<String>, (u32, u32, u32)) {
     model::reset();
-    // (readbacks write to a guest address: 32 bits)
-    let dst = unsafe { libc::mmap(std::ptr::null_mut(), 4096, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_32BIT, -1, 0) };
-    assert!(dst != libc::MAP_FAILED);
-    let mut g = Gen::new(seed);
+    let dump = std::env::var("IPPAI_MODEL_DUMP").ok().and_then(|s| s.parse::<u64>().ok()) == Some(seed);
     let mut d = D3d::new();
     d.no_pass_opt = !pass_opt;
     d.no_seg = !seg;
     d.skip_check = false;
     let mut obs = Vec::new();
-    let setup = g.setup();
-    let batches = std::iter::once(setup).chain((0..frames).map(|_| g.frame(dst as usize)).collect::<Vec<_>>());
-    for (k, b) in batches.enumerate() {
-        if std::env::var("IPPAI_MODEL_DUMP").ok().and_then(|s| s.parse::<u64>().ok()) == Some(seed) {
+    for (k, b) in batches.iter().enumerate() {
+        if dump {
             eprintln!("batch {k}: {}", show(&b.c));
         }
         d.run(&b.c, &b.data, &b.blob);
@@ -448,7 +460,7 @@ fn run(seed: u64, frames: usize, pass_opt: bool, seg: bool) -> (Vec<Obs>, Vec<St
         }
         if let Some(o) = &d.overlay {
             let v = model::with(|m| m.view_values(o.view));
-            if std::env::var("IPPAI_MODEL_DUMP").ok().and_then(|s| s.parse::<u64>().ok()) == Some(seed) {
+            if dump {
                 eprintln!("after batch {k} ({}): {:x} {:x} {:x}", if pass_opt { "opt" } else { "plain" }, v[0], v[128], v[255]);
             }
             obs.push(Obs::Frame(format!("after batch {k}"), v));
@@ -457,21 +469,25 @@ fn run(seed: u64, frames: usize, pass_opt: bool, seg: bool) -> (Vec<Obs>, Vec<St
     obs.extend(model::with(|m| std::mem::take(&mut m.obs)));
     let errors = model::with(|m| std::mem::take(&mut m.errors));
     let (a, b) = d.seg_stats.get();
-    unsafe { libc::munmap(dst, 4096) };
     (obs, errors, (d.skipped.get(), a, b))
 }
 
-fn check(seeds: std::ops::Range<u64>, frames: usize) {
+/// Scenarios `make(seed, readback address)` run plain and optimized: the same observations, no
+/// WebGPU error. Returns (batches skipped, segments not drawn, segments drawn in part).
+fn check(seeds: std::ops::Range<u64>, make: impl Fn(u64, u32) -> Vec<Batch>) -> (u32, u32, u32) {
+    // (readbacks write to a guest address: 32 bits)
+    let dst = unsafe { libc::mmap(std::ptr::null_mut(), 4096, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_32BIT, -1, 0) };
+    assert!(dst != libc::MAP_FAILED);
     let mut stats = (0, 0, 0);
     for seed in seeds {
-        let (want, e1, _) = run(seed, frames, false, false);
+        let batches = make(seed, dst as usize as u32);
+        let (want, e1, _) = run(seed, &batches, false, false);
         assert!(e1.is_empty(), "seed {seed}, plain: WebGPU errors {e1:?}");
         let (pass_opt, seg) = match std::env::var("IPPAI_MODEL_OPT").as_deref() {
             Ok("pass") => (true, false),
-            Ok("seg") => (false, true),
             _ => (true, true),
         };
-        let (got, e2, s) = run(seed, frames, pass_opt, seg);
+        let (got, e2, s) = run(seed, &batches, pass_opt, seg);
         assert!(e2.is_empty(), "seed {seed}, optimized: WebGPU errors {e2:?}");
         stats = (stats.0 + s.0, stats.1 + s.1, stats.2 + s.2);
         assert_eq!(want.len(), got.len(), "seed {seed}: observations");
@@ -486,11 +502,322 @@ fn check(seeds: std::ops::Range<u64>, frames: usize) {
             }
         }
     }
+    unsafe { libc::munmap(dst, 4096) };
     eprintln!("skipped batches {}, segments not drawn {}, drawn in part {}", stats.0, stats.1, stats.2);
+    stats
+}
+
+fn seeds() -> u64 {
+    std::env::var("IPPAI_MODEL_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(200)
 }
 
 #[test]
 fn optimizations_draw_the_same_d3d9() {
-    let n: u64 = std::env::var("IPPAI_MODEL_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(200);
-    check(0..n, 12);
+    let s = check(0..seeds(), |seed, dst| {
+        let mut g = Gen::new(seed);
+        let mut v = vec![g.setup()];
+        for _ in 0..12 {
+            v.push(g.frame(dst as usize));
+        }
+        v
+    });
+    // (the optimizations ran)
+    assert!(s.0 > 0 && s.1 > 0 && s.2 > 0, "{s:?}");
+}
+
+// ---- Direct3D 11 (crates/kura/src/d3d11 draw(): the commands as it makes them) ----
+
+const VS11: &str = r#"
+struct U { m: array<vec4f, 4> };
+@group(0) @binding(0) var<uniform> cb: U;
+@vertex fn main(@location(0) p: vec4f) -> @builtin(position) vec4f { return p * cb.m[0]; }
+"#;
+
+fn ps11(targets: u32, tex: bool) -> String {
+    let mut s = String::from("struct U { m: array<vec4f, 4> };\n@group(1) @binding(0) var<uniform> cb: U;\n");
+    if tex {
+        s += "@group(1) @binding(16) var t0: texture_2d<f32>;\n@group(1) @binding(160) var s0: sampler;\n";
+    }
+    let outs: Vec<String> = (0..targets).map(|k| format!("@location({k}) o{k}: vec4f")).collect();
+    s += &format!("struct O {{ {} }};\n", outs.join(", "));
+    let v = if tex { "textureSample(t0, s0, p.xy) + cb.m[0]" } else { "cb.m[0]" };
+    let set: Vec<String> = (0..targets).map(|k| format!("o.o{k} = {v} * {}.0;", k + 1)).collect();
+    s += &format!("@fragment fn main(@builtin(position) p: vec4f) -> O {{ var o: O; {} return o; }}\n", set.join(" "));
+    s
+}
+
+/// Textures: (id, w, h, layers, mips, format code)
+const TEXTURES11: [(u32, u32, u32, u32, u32, u32); 6] = [
+    (21, 16, 16, 1, 1, 0), // back buffer
+    (22, 16, 16, 1, 1, 0), // a layer
+    (23, 8, 8, 1, 2, 0),   // a picture with mips
+    (24, 16, 16, 1, 1, 1), // depth stencil
+    (25, 16, 16, 2, 1, 0), // an array: two targets in one texture
+    (26, 16, 16, 1, 1, 4), // rgba8unorm
+];
+
+#[derive(Clone, Copy)]
+struct Pipe11 {
+    id: u32,
+    /// color targets
+    n: u32,
+    /// 0 no depth, 1 depth, 2 depth and stencil
+    z: u32,
+    tex: bool,
+    fmt: u32,
+}
+
+struct Gen11 {
+    r: Rng,
+    pipes: Vec<Pipe11>,
+    /// buffer ids (the guest's: never the same twice)
+    next_buf: u32,
+    req: u32,
+    /// the contents of the constant buffers (ids 1 and 2)
+    cbs: [Vec<u8>; 2],
+    /// the vertex buffer of the last frame, destroyed in the next
+    old_vb: u32,
+    /// the frames made (their seeds), to make again
+    frames: Vec<u64>,
+}
+
+fn fnv32(h: &mut u32, b: &[u8]) {
+    for &x in b {
+        *h = (*h ^ x as u32).wrapping_mul(0x0100_0193);
+    }
+}
+
+impl Gen11 {
+    fn new(seed: u64) -> Gen11 {
+        Gen11 { r: Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ 0x1111 | 1), pipes: Vec::new(), next_buf: 100, req: 0x7800_0000 + (seed as u32 & 0xffff) * 0x1000, cbs: [vec![0; 64], vec![0; 64]], old_vb: 0, frames: Vec::new() }
+    }
+
+    fn setup(&mut self) -> Batch {
+        let mut b = Batch::new();
+        for &(id, w, h, layers, mips, fmt) in &TEXTURES11 {
+            b.c.extend_from_slice(&[CREATE_TEXTURE2, id, w, h, layers, mips, fmt, 0]);
+        }
+        let mut shaders = vec![(11u32, VS11.to_string())];
+        for n in 1..=2 {
+            for tex in [false, true] {
+                shaders.push((12 + (n - 1) * 2 + tex as u32, ps11(n, tex)));
+            }
+        }
+        for (id, code) in &shaders {
+            let off = b.blob(code.as_bytes());
+            b.c.extend_from_slice(&[CREATE_SHADER, *id, off, code.len() as u32]);
+        }
+        for (id, size) in [(1, 64), (2, 64)] {
+            b.c.extend_from_slice(&[CREATE_BUFFER, id, size]);
+        }
+        let mut id = 50;
+        for fmt in [0u32, 4] {
+            for n in 1..=2u32 {
+                if fmt == 4 && n == 2 {
+                    continue;
+                }
+                for z in 0..3u32 {
+                    for tex in [false, true] {
+                        let r = &mut self.r;
+                        let ps = 12 + (n - 1) * 2 + tex as u32;
+                        let mut key = vec![11, ps, r.pick(&[3u32, 3, 4]), 0, r.below(3), r.below(2), 0, 0, 0];
+                        if z == 0 {
+                            key.push(0xffff);
+                        } else {
+                            let (en, write, func) = (r.below(2) | (z == 2) as u32, r.below(2), r.below(9));
+                            let sen = (z == 2) as u32;
+                            key.extend_from_slice(&[1, en, write, func, sen, 0xffff]);
+                            for _ in 0..2 {
+                                key.extend_from_slice(&[r.below(9), r.below(9), r.below(9), r.below(9)]);
+                            }
+                        }
+                        key.extend_from_slice(&[1, 16, 0, 1, 3, 0, 0]);
+                        key.push(n);
+                        for _ in 0..n {
+                            let blend = r.chance(40) as u32;
+                            key.extend_from_slice(&[fmt, blend, r.below(14), r.below(14), 1 + r.below(5), r.below(14), r.below(14), 1 + r.below(5), r.pick(&[15u32, 15, 7, 0])]);
+                        }
+                        b.c.extend_from_slice(&[CREATE_PIPELINE2, id, key.len() as u32]);
+                        b.c.extend_from_slice(&key);
+                        self.pipes.push(Pipe11 { id, n, z, tex, fmt });
+                        id += 1;
+                    }
+                }
+            }
+        }
+        self.picture(&mut b, 0);
+        self.picture(&mut b, 1);
+        b
+    }
+
+    fn picture(&mut self, b: &mut Batch, level: u32) {
+        let (w, h) = (8 >> level, 8 >> level);
+        let px: Vec<u8> = (0..w * h * 4).map(|_| self.r.below(256) as u8).collect();
+        let off = b.blob(&px);
+        b.c.extend_from_slice(&[WRITE_TEXTURE2, 23, level, 0, 0, 0, w, h, w * 4, off]);
+    }
+
+    fn write_cb(&mut self, b: &mut Batch, k: usize) {
+        let bytes: Vec<u8> = (0..64).map(|_| self.r.below(3) as u8).collect();
+        self.cbs[k] = bytes.clone();
+        let off = b.blob(&bytes);
+        b.c.extend_from_slice(&[WRITE_BUFFER, k as u32 + 1, 0, off, 64]);
+    }
+
+    /// One frame from its seed (made again from the same seed, it draws the same, from new
+    /// buffers); `change`: one constant differs.
+    fn frame(&mut self, fseed: u64, change: bool, dst: u32) -> Batch {
+        let saved = std::mem::replace(&mut self.r, Rng(fseed | 1));
+        let mut b = Batch::new();
+        // this frame's vertices, in a buffer of its own (a Map with DISCARD renames it)
+        let vb = self.next_buf;
+        self.next_buf += 1;
+        let ib = self.next_buf;
+        self.next_buf += 1;
+        let verts: Vec<u8> = (0..64 * 16).map(|_| self.r.below(3) as u8).collect();
+        let idx: Vec<u8> = (0..64u16).flat_map(|k| (k % 16).to_le_bytes()).collect();
+        b.c.extend_from_slice(&[CREATE_BUFFER, vb, verts.len() as u32]);
+        let off = b.blob(&verts);
+        b.c.extend_from_slice(&[WRITE_BUFFER, vb, 0, off, verts.len() as u32]);
+        b.c.extend_from_slice(&[CREATE_BUFFER, ib, idx.len() as u32]);
+        let off = b.blob(&idx);
+        b.c.extend_from_slice(&[WRITE_BUFFER, ib, 0, off, idx.len() as u32]);
+        if self.old_vb != 0 && self.r.chance(70) {
+            b.c.extend_from_slice(&[DESTROY_BUFFER, self.old_vb, DESTROY_BUFFER, self.old_vb + 1]);
+        }
+        self.old_vb = vb;
+        if self.r.chance(10) {
+            self.picture(&mut b, 0);
+            if self.r.chance(50) {
+                b.c.extend_from_slice(&[GEN_MIPS, 23]);
+            }
+        }
+        // a layer first
+        if self.r.chance(40) {
+            let (t, layer) = self.r.pick(&[(22u32, 0u32), (25, 0), (25, 1)]);
+            self.pass(&mut b, &[(t, layer)], false, vb, ib, &verts, &idx, change);
+        }
+        let main: &[(u32, u32)] = if self.r.chance(25) { &[(21, 0), (25, 1)] } else if self.r.chance(10) { &[(26, 0)] } else { &[(21, 0)] };
+        let z = self.r.chance(50);
+        self.pass(&mut b, main, z, vb, ib, &verts, &idx, change);
+        if self.r.chance(15) {
+            let (st, dt) = self.r.pick(&[(21u32, 22u32), (22, 21), (23, 22), (25, 21)]);
+            b.c.extend_from_slice(&[COPY, st, 0, 0, 0, 8, 8, dt, 0, self.r.below(8), self.r.below(8), 8, 8, 0]);
+        }
+        if self.r.chance(10) {
+            self.req += 1;
+            b.c.extend_from_slice(&[READBACK, self.req, 21, 0, 0, 0, 16, 16, dst, 64]);
+        }
+        let shown = if main[0].0 == 26 { 26 } else { 21 };
+        b.c.extend_from_slice(&[PRESENT, shown, 0, 0, 16, 16, 0, 0, 0]);
+        self.r = saved;
+        b
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn pass(&mut self, b: &mut Batch, targets: &[(u32, u32)], z: bool, vb: u32, ib: u32, verts: &[u8], idx: &[u8], change: bool) {
+        let mut c = vec![SET_TARGETS2, targets.len() as u32];
+        for &(t, l) in targets {
+            c.extend_from_slice(&[t, 0, l]);
+        }
+        c.extend_from_slice(&if z { [24, 0, 0] } else { [0, 0, 0] });
+        b.c.extend_from_slice(&c);
+        for &(t, l) in targets {
+            if self.r.chance(90) {
+                let col = [self.r.below(3) as f32 / 2.0, 0.25, 1.0, 1.0];
+                b.c.extend_from_slice(&[CLEAR_VIEW, t, 0, l, 1, col[0].to_bits(), col[1].to_bits(), col[2].to_bits(), col[3].to_bits(), 0, 0]);
+            }
+        }
+        if z && self.r.chance(85) {
+            let flags = self.r.pick(&[2u32, 6, 6, 4]);
+            b.c.extend_from_slice(&[CLEAR_VIEW, 24, 0, 0, flags, 0, 0, 0, 0, (self.r.below(3) as f32 / 2.0).to_bits(), self.r.below(256)]);
+        }
+        let fmt = if targets[0].0 == 26 { 4 } else { 0 };
+        let sampled: Vec<(u32, u32, u32, u32)> = [(23u32, 0u32, 2u32, 0u32), (23, 1, 1, 0), (22, 0, 1, 0), (25, 0, 1, 0), (25, 0, 1, 1), (26, 0, 1, 0)]
+            .into_iter()
+            .filter(|s| !targets.iter().any(|t| t.0 == s.0) && !(s.0 == 21))
+            .collect();
+        for _ in 0..1 + self.r.below(5) {
+            if self.r.chance(15) {
+                let k = self.r.below(2) as usize;
+                self.write_cb(b, k);
+            }
+            let cands: Vec<Pipe11> = self.pipes.iter().copied().filter(|p| p.n == targets.len() as u32 && p.fmt == fmt && (p.z != 0) == z).collect();
+            let p = self.r.pick(&cands);
+            let r = &mut self.r;
+            let vp = if r.chance(70) { [0.0f32, 0.0, 16.0, 16.0] } else { [r.below(10) as f32, r.below(10) as f32, 1.0 + r.below(16) as f32, 1.0 + r.below(16) as f32] };
+            let mut w = vec![DRAW2, p.id];
+            w.extend(vp.iter().map(|f| f.to_bits()));
+            w.extend_from_slice(&[0f32.to_bits(), 1f32.to_bits()]);
+            if r.chance(30) {
+                w.extend_from_slice(&[r.below(16), r.below(16), r.below(17), r.below(17), 1]);
+            } else {
+                w.extend_from_slice(&[0, 0, 0, 0, 0]);
+            }
+            w.extend([0.5f32, 0.25, 1.0, 1.0].iter().map(|f| f.to_bits()));
+            w.push(r.below(256));
+            let voff = r.below(16) * 16;
+            w.extend_from_slice(&[1, vb, voff]);
+            let indexed = r.chance(30);
+            let ioff = r.below(16) * 2;
+            if indexed {
+                w.extend_from_slice(&[ib, ioff, 1]);
+            } else {
+                w.extend_from_slice(&[0, 0, 0]);
+            }
+            w.extend_from_slice(&[1, 0, 0, 1, 0, 64, 64, 0, 0]);
+            if p.tex {
+                let s = r.pick(&sampled);
+                let key = 2 | 2 << 3 | 2 << 6 | r.below(2) << 9 | r.below(2) << 10 | r.below(2) << 11 | 1 << 17;
+                w.extend_from_slice(&[3, 0, 0, 2, 0, 64, 64, 0, 0, 16, 1, s.0, 1, s.1, s.2, s.3, 1, 160, 2, key, 0, 32f32.to_bits(), 0, 0, 0]);
+            } else {
+                w.extend_from_slice(&[1, 0, 0, 2, 0, 64, 64, 0, 0]);
+            }
+            let count = r.pick(&[3u32, 4, 6]);
+            let start = r.below(4);
+            w.extend_from_slice(&[indexed as u32, count, 1, start, 0, 0]);
+            if change && r.chance(30) {
+                // (another constant: written before this draw)
+                let k = 1;
+                self.cbs[k][self.r.below(64) as usize] ^= 1;
+                let bytes = self.cbs[k].clone();
+                let off = b.blob(&bytes);
+                b.c.extend_from_slice(&[WRITE_BUFFER, k as u32 + 1, 0, off, 64]);
+            }
+            // what it reads from its buffers (as d3d11 draw() hashes it)
+            let mut h = 0x811c_9dc5u32;
+            let vs: Vec<u32> = if indexed {
+                (0..count).map(|k| u16::from_le_bytes([idx[(ioff + (start + k) * 2) as usize], idx[(ioff + (start + k) * 2 + 1) as usize]]) as u32).collect()
+            } else {
+                (start..start + count).collect()
+            };
+            for v in vs {
+                let at = (voff + v * 16) as usize;
+                fnv32(&mut h, &verts[at..at + 16]);
+            }
+            fnv32(&mut h, &self.cbs[0]);
+            fnv32(&mut h, &self.cbs[1]);
+            w.push(h.max(1));
+            b.c.extend_from_slice(&w);
+        }
+    }
+}
+
+#[test]
+fn optimizations_draw_the_same_d3d11() {
+    let s = check(0..seeds(), |seed, dst| {
+        let mut g = Gen11::new(seed);
+        let mut v = vec![g.setup()];
+        for _ in 0..12 {
+            // the same frame again (a still screen), a little changed, or a new one
+            let (fs, change) = match g.r.below(4) {
+                0 | 1 if !g.frames.is_empty() => (*g.frames.last().unwrap(), g.r.chance(30)),
+                _ => (g.r.next(), false),
+            };
+            g.frames.push(fs);
+            v.push(g.frame(fs, change, dst));
+        }
+        v
+    });
+    assert!(s.0 > 0, "{s:?}");
 }
