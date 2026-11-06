@@ -688,11 +688,11 @@ enum Pat {
 }
 
 const HATCHES: [[u8; 8]; 6] = [
-    [0, 0, 0, 0, 0, 0, 0xff, 0],
+    [0, 0, 0, 0xff, 0, 0, 0, 0],
     [8; 8],
     [0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01],
     [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80],
-    [8, 8, 8, 8, 8, 8, 0xff, 8],
+    [8, 8, 8, 0xff, 8, 8, 8, 8],
     [0x81, 0x42, 0x24, 0x18, 0x18, 0x24, 0x42, 0x81],
 ];
 
@@ -2570,8 +2570,9 @@ fn TransparentBlt(c: &mut Ctx) -> u32 {
         let r = Rect { l: dx, t: dy, r: dx + d.2, b: dy + d.3 }.and(&cv.clip);
         for y in r.t..r.b {
             for x in r.l..r.r {
-                let sx = s.0 + sox + (x - dx) * s.2 / d.2.max(1);
-                let sy = s.1 + soy + (y - dy) * s.3 / d.3.max(1);
+                // pixel centres, as StretchBlt
+                let sx = s.0 + sox + ((2 * (x - dx) + 1) * s.2) / (2 * d.2.max(1));
+                let sy = s.1 + soy + ((2 * (y - dy) + 1) * s.3) / (2 * d.3.max(1));
                 if sx < 0 || sy < 0 || sx >= sv.w || sy >= sv.h {
                     continue;
                 }
@@ -2603,8 +2604,9 @@ fn AlphaBlend(c: &mut Ctx) -> u32 {
         }
         for y in r.t..r.b {
             for x in r.l..r.r {
-                let sx = s.0 + sox + (x - dx) * s.2 / d.2.max(1);
-                let sy = s.1 + soy + (y - dy) * s.3 / d.3.max(1);
+                // pixel centres, as StretchBlt
+                let sx = s.0 + sox + ((2 * (x - dx) + 1) * s.2) / (2 * d.2.max(1));
+                let sy = s.1 + soy + ((2 * (y - dy) + 1) * s.3) / (2 * d.3.max(1));
                 if sx < 0 || sy < 0 || sx >= sv.w || sy >= sv.h {
                     continue;
                 }
@@ -2659,6 +2661,67 @@ fn alpha_rows(sv: &View, dv: &View, r: &Rect, o: (i32, i32), k: u32, per_pixel: 
             unsafe { pd.write_unaligned(ch(24) | ch(16) | ch(8) | ch(0)) };
         }
     }
+}
+
+/// GradientFill: rectangles (GRADIENT_FILL_RECT_H 0 / _V 1) or triangles (2), colors
+/// interpolated per pixel from the TRIVERTEXes (16-bit channels).
+fn GradientFill(c: &mut Ctx) -> u32 {
+    let (dc, pv, nv, pm, nm, mode) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5));
+    let vert = |i: u32| -> Option<((i32, i32), [f64; 3])> {
+        if i >= nv {
+            return None;
+        }
+        let a = pv + 16 * i;
+        Some(((r32(a) as i32, r32(a + 4) as i32), [r16(a + 8) as f64, r16(a + 10) as f64, r16(a + 12) as f64]))
+    };
+    let pack = |c: [f64; 3]| -> u32 { c.iter().fold(0, |acc, &v| acc << 8 | ((v / 256.0) as u32).min(255)) };
+    draw(dc, |_, _, cv| {
+        let mut d = Rect::default();
+        for m in 0..nm {
+            if mode < 2 {
+                let (Some(a), Some(b)) = (vert(r32(pm + 8 * m)), vert(r32(pm + 8 * m + 4))) else { continue };
+                let (l, t, r, bo) = (a.0 .0.min(b.0 .0), a.0 .1.min(b.0 .1), a.0 .0.max(b.0 .0), a.0 .1.max(b.0 .1));
+                let (c0, c1) = if (mode == 0 && a.0 .0 <= b.0 .0) || (mode == 1 && a.0 .1 <= b.0 .1) { (a.1, b.1) } else { (b.1, a.1) };
+                let rr = cv.rect(Rect { l, t, r, b: bo }).and(&cv.clip);
+                for y in rr.t..rr.b {
+                    for x in rr.l..rr.r {
+                        let (k, n) = if mode == 0 { (x - cv.ox - l, r - l) } else { (y - cv.oy - t, bo - t) };
+                        let f = k as f64 / n.max(1) as f64;
+                        let col = [0, 1, 2].map(|i| c0[i] + (c1[i] - c0[i]) * f);
+                        cv.v.put(x, y, pack(col));
+                    }
+                }
+                d = d.or(&rr);
+            } else {
+                let vs: Vec<_> = (0..3).filter_map(|k| vert(r32(pm + 12 * m + 4 * k))).collect();
+                if vs.len() < 3 {
+                    continue;
+                }
+                let p: Vec<(i32, i32)> = vs.iter().map(|v| cv.dev(v.0 .0, v.0 .1)).collect();
+                let det = ((p[1].1 - p[2].1) * (p[0].0 - p[2].0) + (p[2].0 - p[1].0) * (p[0].1 - p[2].1)) as f64;
+                if det == 0.0 {
+                    continue;
+                }
+                for (y, x0, x1) in gdi_geom::poly_spans(&[p.clone()], false) {
+                    for x in x0..x1 {
+                        if !cv.clip.has(x, y) {
+                            continue;
+                        }
+                        let w0 = ((p[1].1 - p[2].1) * (x - p[2].0) + (p[2].0 - p[1].0) * (y - p[2].1)) as f64 / det;
+                        let w1 = ((p[2].1 - p[0].1) * (x - p[2].0) + (p[0].0 - p[2].0) * (y - p[2].1)) as f64 / det;
+                        let w2 = 1.0 - w0 - w1;
+                        let col = [0, 1, 2].map(|i| (vs[0].1[i] * w0 + vs[1].1[i] * w1 + vs[2].1[i] * w2).clamp(0.0, 65535.0));
+                        cv.v.put(x, y, pack(col));
+                        d = d.or(&Rect { l: x, t: y, r: x + 1, b: y + 1 });
+                    }
+                }
+            }
+        }
+        d
+    }) as u32
+}
+fn GdiGradientFill(c: &mut Ctx) -> u32 {
+    GradientFill(c)
 }
 
 fn GdiAlphaBlend(c: &mut Ctx) -> u32 {
@@ -4206,7 +4269,7 @@ fn register() {
         CreateCompatibleBitmap, CreateDiscardableBitmap, CreateBitmap, CreateBitmapIndirect, CreateDIBSection,
         GetDIBits, SetDIBits, CreateDIBitmap, GetBitmapBits, SetBitmapBits, GetBitmapDimensionEx,
         GetDIBColorTable, SetDIBColorTable,
-        BitBlt, StretchBlt, PatBlt, MaskBlt, GdiTransparentBlt, GdiAlphaBlend, StretchDIBits, SetDIBitsToDevice,
+        BitBlt, StretchBlt, PatBlt, MaskBlt, GdiTransparentBlt, GdiAlphaBlend, GdiGradientFill, StretchDIBits, SetDIBitsToDevice,
         GetPixel, SetPixel, SetPixelV, LineTo, Polyline, PolylineTo, Rectangle, Ellipse, RoundRect, Polygon,
         PolyPolyline, PolyBezier, PolyBezierTo, Pie, Chord, Arc, ArcTo, PolyPolygon, SetPolyFillMode, GetPolyFillMode,
         CreateRectRgn, CreateRectRgnIndirect, CreateRoundRectRgn, CreateEllipticRgn, CreatePolygonRgn,
@@ -4230,7 +4293,7 @@ fn register() {
         EnumFontsA, EnumFontsW, EnumFontFamiliesA, EnumFontFamiliesW, EnumFontFamiliesExA, EnumFontFamiliesExW,
         GdiFlush, GdiSetBatchLimit, GetPixelFormat, SetICMMode,
     );
-    reg!("msimg32"; TransparentBlt, AlphaBlend);
+    reg!("msimg32"; TransparentBlt, AlphaBlend, GradientFill);
     reg!("msvfw32"; DrawDibOpen, DrawDibClose, DrawDibBegin, DrawDibEnd, DrawDibRealize, DrawDibSetPalette,
         DrawDibStart, DrawDibStop, DrawDibDraw);
 }

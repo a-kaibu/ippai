@@ -1,2 +1,17 @@
 # Differences between sake and Windows already understood (tests/winref/compare.py):
 #   <probe glob> <regex on the diff line>  # why
+
+# the runner is en-US (LCID 409, console UTF-8) and Windows Server 2025 reports 6.2.9200 to
+# un-manifested exes; sake plays a Japanese Windows 7
+env-* ^(want|got) +(GetUserDefaultLCID|GetUserDefaultUILanguage|GetConsoleCP|GetVersionEx|GetSystemDefaultLangID|GetUserDefaultLangID|GetSystemDefaultUILanguage)  # runner locale/version
+# undefined flags of shifts by more than 1 and of SHLD/SHRD (Intel leaves OF/AF to the CPU)
+host_intops-32 ^(want|got) +(shifts|dshift) 
+# msvcrt's buffered ftell after a failed fseek reports the buffer position; programs don't rely on it
+host_fileseek-32 ^(want|got) +(negative|origin) 
+# GDI drawing that matches in shape but not to the pixel: Windows flattens ellipses and Beziers
+# into paths (its own flattening), its round-rect/polygon regions round edges its own way, the
+# HALFTONE shrink filter is its own, and a region as clip area is kept as its bounding box
+gdi-* ^image (shapes|fills_nullpen|polyline_bezier|regions|pens|stretch_halftone|clip):
+gdi-* ^(want|got) +GetClipBox 
+# 8 and 1 bpp GetDIBits of a 32 bpp bitmap: Windows' nearest-color choice into its default table
+gdi-* ^(want|got) +GetDIBits (8|1) 
