@@ -41,13 +41,15 @@ WebGPU D3D9 を使う。いまはページ (`play.html` / `game.html`) が動か
   テクスチャのオフセットはエラー)。d3dx9_24〜43 の D3DXCompileShader(FromFile)・
   D3DXGetShaderConstantTable・ID3DXConstantTable (d3dx9shader.rs) がこれを使う。
   テストは host/tests/d3dx9shader.c (定数の書き込みを偽のデバイスで表示)。
-  D3DXCreateEffect(Ex/FromFile) にエフェクトのソース (.fx) が来たときは hlsl/fx.rs で fx_2_0 の
+  D3DXCreateEffect(Ex/FromFile) にエフェクトのソース (.fx) が来たときは hlslc の fx.rs で fx_2_0 の
   バイナリにしてから d3dx9fx.rs に渡す (technique/pass、レンダー・テクスチャステージ・サンプラー
   ステート、sampler_state、アノテーション、`compile vs_2_0 f(定数)`、asm {}、VertexShader 変数)。
   プリシェーダーは作らない (定数でない式のステートはエラー)。テストは host/tests/d3dx9effect.c。
-- specs.txt にない DLL (d2d1、dwrite など) はプレフィックスの
-  `C:\windows\system32` から Wine の PE ビルドを x86 として読む。Direct2D はこの Wine の d2d1 が
-  D3D11 の上で描く。
+- Direct2D (d2d.rs) と DirectWrite (dwrite.rs) は自前。D2D の描画は WebGPU: 変換・クリップ・
+  文字の配置は CPU で決めて、矩形・楕円・グリフを kura::d3d11::d2d の Item として集め、EndDraw/Flush
+  で 1 回のインスタンス描画にする (グリフは R8 のアトラス、グラデーションは 256 texel のランプ
+  テクスチャ)。確認は tests/gfx.mjs の d2dtest。
+- specs.txt にない DLL はプレフィックスの `C:\windows\system32` から Wine の PE ビルドを x86 として読む。
 - Wine の unix 側呼び出し (unixlib.rs): `__wine_unix_call_dispatcher` と
   `NtQueryVirtualMemory(MemoryWineUnixFuncs)` を受けて、dwrite のフォント処理 (アウトライン、
   ビットマップ、メトリクス) を ttf-parser と ab_glyph_rasterizer で返す。フォント一覧はレジストリの

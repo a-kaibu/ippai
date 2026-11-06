@@ -1,31 +1,226 @@
-//! What sake's Direct2D needs of a D3D11 texture: its size, a clear, and drawing a block of
-//! premultiplied BGRA pixels over it (source over). sake draws text and shapes on the CPU and
-//! hands the changed rectangle here at EndDraw; it goes over the texture with a fixed WGSL
-//! pipeline (no game shaders, no state of the game's context touched).
+//! What sake's Direct2D needs of a D3D11 texture: its size, a clear, and drawing its shapes on
+//! the GPU. sake works out where each shape goes on the CPU (transforms, clips, text layout) and
+//! hands a list of [`Item`]s here at EndDraw; one instanced draw paints them over the texture,
+//! source over, with a fixed WGSL pipeline (no game shaders, no state of the game's context
+//! touched). Glyph coverage lives in an R8 atlas and gradients in a ramp texture (256 texels a
+//! row), both kept here and uploaded before the draw that reads them.
 
 use super::*;
 
-// (the block's corner comes as first_instance: y << 16 | x; the staging texture holds the block
-// at its top left)
-const VS: &str = "struct O { @builtin(position) p: vec4<f32>, @location(0) @interpolate(flat) at: vec2<i32> }
-@vertex fn main(@builtin(vertex_index) i: u32, @builtin(instance_index) k: u32) -> O {
+const DATA: u32 = 0xffff_ffff;
+
+/// `Item::kind[0]`: coverage of the pixel by `rect` (partial at its edges)
+pub const RECT: u32 = 0;
+/// coverage by the ellipse `shape` (center, outer radii) minus, when `extra[2]` != 0, the one
+/// with radii `extra[0..2]`, 4x4 samples a pixel inside `rect`
+pub const ELLIPSE: u32 = 1;
+/// coverage from the glyph atlas at pixel + `shape[0..2]`
+pub const GLYPH: u32 = 2;
+
+/// One shape. Device pixels; `rect` is already inside the target and the clips.
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug)]
+pub struct Item {
+    pub rect: [f32; 4],
+    pub shape: [f32; 4],
+    pub extra: [f32; 4],
+    /// straight RGBA; with a ramp: (start x, y, direction / length²)
+    pub paint: [f32; 4],
+    /// (kind, ramp row + 1 or 0, set by `draw`: target width, height)
+    pub kind: [u32; 4],
+}
+
+const VS: &str = "struct V {
+    @builtin(position) p: vec4<f32>,
+    @location(0) @interpolate(flat) rect: vec4<f32>,
+    @location(1) @interpolate(flat) shape: vec4<f32>,
+    @location(2) @interpolate(flat) extra: vec4<f32>,
+    @location(3) @interpolate(flat) paint: vec4<f32>,
+    @location(4) @interpolate(flat) kind: vec4<u32>,
+}
+@vertex fn main(@builtin(vertex_index) i: u32, @location(0) rect: vec4<f32>, @location(1) shape: vec4<f32>,
+        @location(2) extra: vec4<f32>, @location(3) paint: vec4<f32>, @location(4) kind: vec4<u32>) -> V {
     let uv = vec2<f32>(f32(i & 1u), f32(i >> 1u));
-    return O(vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0), vec2<i32>(i32(k & 0xffffu), i32(k >> 16u)));
+    let c = mix(floor(rect.xy), ceil(rect.zw), uv);
+    let size = vec2<f32>(f32(kind.z), f32(kind.w));
+    return V(vec4<f32>(c.x / size.x * 2.0 - 1.0, 1.0 - c.y / size.y * 2.0, 0.0, 1.0), rect, shape, extra, paint, kind);
 }
 ";
-const PS: &str = "@group(1) @binding(16) var t0: texture_2d<f32>;
-@fragment fn main(@builtin(position) p: vec4<f32>, @location(0) @interpolate(flat) at: vec2<i32>) -> @location(0) vec4<f32> {
-    return textureLoad(t0, vec2<i32>(p.xy) - at, 0);
+const PS: &str = "@group(1) @binding(16) var atlas: texture_2d<f32>;
+@group(1) @binding(17) var ramps: texture_2d<f32>;
+@fragment fn main(@builtin(position) p: vec4<f32>,
+        @location(0) @interpolate(flat) r: vec4<f32>,
+        @location(1) @interpolate(flat) shape: vec4<f32>,
+        @location(2) @interpolate(flat) extra: vec4<f32>,
+        @location(3) @interpolate(flat) paint: vec4<f32>,
+        @location(4) @interpolate(flat) kind: vec4<u32>) -> @location(0) vec4<f32> {
+    let px = floor(p.xy);
+    var cov = 0.0;
+    switch kind.x {
+        case 0u: {
+            let c = clamp(min(r.zw, px + 1.0) - max(r.xy, px), vec2<f32>(0.0), vec2<f32>(1.0));
+            cov = c.x * c.y;
+        }
+        case 1u: {
+            var n = 0u;
+            for (var k = 0u; k < 16u; k++) {
+                let s = px + vec2<f32>(f32(k % 4u), f32(k / 4u)) * 0.25 + 0.125;
+                let d = s - shape.xy;
+                let o = d / shape.zw;
+                if (all(s >= r.xy) && all(s < r.zw) && dot(o, o) <= 1.0) {
+                    let ii = d / extra.xy;
+                    if (extra.z == 0.0 || extra.x <= 0.0 || extra.y <= 0.0 || dot(ii, ii) > 1.0) {
+                        n++;
+                    }
+                }
+            }
+            cov = f32(n) / 16.0;
+        }
+        default: {
+            cov = textureLoad(atlas, vec2<i32>(px + shape.xy), 0).r;
+        }
+    }
+    var col = paint;
+    if (kind.y != 0u) {
+        let t = clamp(dot(px + 0.5 - paint.xy, paint.zw), 0.0, 1.0);
+        col = textureLoad(ramps, vec2<i32>(i32(t * 255.0 + 0.5), i32(kind.y - 1u)), 0);
+    }
+    let a = col.a * cov;
+    return vec4<f32>(col.rgb * a, a);
 }
 ";
+
+const ATLAS: u32 = 1024;
+const RAMP_ROWS: u32 = 64;
+
+/// A texture kept on the CPU too; the changed rows go up before a draw.
+struct Shadow {
+    gpu: u32,
+    w: u32,
+    bpp: u32,
+    px: Vec<u8>,
+    /// changed rows [y0, y1)
+    dirty: Option<(u32, u32)>,
+}
+
+impl Shadow {
+    fn new(w: u32, h: u32, page: u32, bpp: u32) -> Shadow {
+        let gpu = page_id();
+        gpu::record(|q| q.cmd(&[gpu::CREATE_TEXTURE2, gpu, w, h, 1, 1, page, 0]));
+        Shadow { gpu, w, bpp, px: vec![0; (w * h * bpp) as usize], dirty: None }
+    }
+
+    fn put(&mut self, x: u32, y: u32, w: u32, h: u32, src: &[u8]) {
+        let row = (w * self.bpp) as usize;
+        for k in 0..h {
+            let at = (((y + k) * self.w + x) * self.bpp) as usize;
+            self.px[at..at + row].copy_from_slice(&src[k as usize * row..][..row]);
+        }
+        self.dirty = Some(self.dirty.map_or((y, y + h), |(a, b)| (a.min(y), b.max(y + h))));
+    }
+
+    fn upload(&mut self) {
+        let Some((y0, y1)) = self.dirty.take() else { return };
+        let bpr = self.w * self.bpp;
+        let rows = &self.px[(y0 * bpr) as usize..(y1 * bpr) as usize];
+        let (gpu, w) = (self.gpu, self.w);
+        gpu::record(|q| {
+            let off = q.blob(rows);
+            q.cmd(&[gpu::WRITE_TEXTURE2, gpu, 0, 0, 0, y0, w, y1 - y0, bpr, off]);
+        });
+    }
+}
 
 struct D2 {
     vs: u32,
     ps: u32,
-    /// the staging texture (object id) and its size
-    tex: Option<(u32, u32, u32)>,
+    atlas: Shadow,
+    /// glyph key -> atlas position
+    glyphs: HashMap<u64, [u32; 2]>,
+    /// the shelf being filled: x, y, height
+    shelf: [u32; 3],
+    ramps: Shadow,
+    /// ramp contents -> row
+    rows: HashMap<Vec<u8>, u32>,
 }
 static D2S: Mutex<Option<D2>> = Mutex::new(None);
+
+fn d2<R>(f: impl FnOnce(&mut D2) -> R) -> R {
+    let mut g = D2S.lock().unwrap_or_else(|e| e.into_inner());
+    f(g.get_or_insert_with(|| {
+        let mut sh = [0u32; 2];
+        for (i, code) in [VS, PS].iter().enumerate() {
+            let id = page_id();
+            gpu::record(|q| {
+                let off = q.blob(code.as_bytes());
+                q.cmd(&[gpu::CREATE_SHADER, id, off, code.len() as u32]);
+            });
+            sh[i] = id;
+        }
+        D2 {
+            vs: sh[0],
+            ps: sh[1],
+            atlas: Shadow::new(ATLAS, ATLAS, format::P_R8, 1),
+            glyphs: HashMap::new(),
+            shelf: [0; 3],
+            ramps: Shadow::new(256, RAMP_ROWS, format::P_RGBA8, 4),
+            rows: HashMap::new(),
+        }
+    }))
+}
+
+/// Where glyph `key` (`w`x`h` coverage bytes `cov`, made only when it is new) is in the atlas;
+/// None: the atlas is full (draw what uses it, then `reset`).
+pub fn glyph(key: u64, w: u32, h: u32, cov: impl FnOnce() -> Vec<u8>) -> Option<[u32; 2]> {
+    d2(|s| {
+        if let Some(&at) = s.glyphs.get(&key) {
+            return Some(at);
+        }
+        if w > ATLAS || h > ATLAS {
+            return Some([0, 0]);
+        }
+        let [mut x, mut y, mut sh] = s.shelf;
+        if x + w > ATLAS {
+            (x, y, sh) = (0, y + sh, 0);
+        }
+        if y + h > ATLAS {
+            return None;
+        }
+        let px = cov();
+        if px.len() >= (w * h) as usize {
+            s.atlas.put(x, y, w, h, &px);
+        }
+        s.shelf = [x + w + 1, y, sh.max(h + 1)];
+        s.glyphs.insert(key, [x, y]);
+        Some([x, y])
+    })
+}
+
+/// The ramp row (straight RGBA8, 256 texels from t = 0 to 1) holding `texels`; None: no room
+/// (draw what uses the ramps, then `reset`).
+pub fn ramp(texels: &[u8; 1024]) -> Option<u32> {
+    d2(|s| {
+        if let Some(&r) = s.rows.get(&texels[..]) {
+            return Some(r);
+        }
+        let r = s.rows.len() as u32;
+        if r >= RAMP_ROWS {
+            return None;
+        }
+        s.ramps.put(0, r, 256, 1, texels);
+        s.rows.insert(texels.to_vec(), r);
+        Some(r)
+    })
+}
+
+/// Forgets the atlas and the ramps (after the items that used them were drawn).
+pub fn reset() {
+    d2(|s| {
+        s.glyphs.clear();
+        s.shelf = [0; 3];
+        s.rows.clear();
+    })
+}
 
 /// The texture behind a D3D11 texture or DXGI surface address: (id, width, height).
 fn texture(d: &D11, addr: u32) -> Option<(u32, u32, u32)> {
@@ -54,52 +249,26 @@ pub fn clear(addr: u32, rgba: [f32; 4]) {
     d.targets = None;
 }
 
-/// Draws `w`x`h` premultiplied BGRA pixels (`px`, 4 bytes each, rows packed) at (x, y) over the
-/// texture, source over. The rectangle must lie inside the texture.
-pub fn composite(addr: u32, x: u32, y: u32, w: u32, h: u32, px: &[u8]) {
-    if w == 0 || h == 0 || px.len() < (w * h * 4) as usize {
+/// Paints `items` over the texture in order, source over (premultiplied).
+pub fn draw(addr: u32, items: &[Item]) {
+    if items.is_empty() {
         return;
     }
     let mut g = D11S.lock().unwrap_or_else(|e| e.into_inner());
     let Some(d) = g.as_mut() else { return };
     let Some((target, tw, th)) = texture(d, addr) else { return };
-    if x + w > tw || y + h > th {
-        return;
-    }
-    let mut s = D2S.lock().unwrap();
-    let s = s.get_or_insert_with(|| {
-        let mut sh = [0u32; 2];
-        for (i, code) in [VS, PS].iter().enumerate() {
-            let id = page_id();
-            gpu::record(|q| {
-                let off = q.blob(code.as_bytes());
-                q.cmd(&[gpu::CREATE_SHADER, id, off, code.len() as u32]);
-            });
-            sh[i] = id;
-        }
-        D2 { vs: sh[0], ps: sh[1], tex: None }
+    let Some(Data::Texture(tt)) = d.objs.get(&target).map(|o| &o.data) else { return };
+    let (tgpu, tpage) = (tt.gpu, tt.page);
+    let (vs, ps, atlas, ramps) = d2(|s| {
+        s.atlas.upload();
+        s.ramps.upload();
+        (s.vs, s.ps, s.atlas.gpu, s.ramps.gpu)
     });
-    // the staging texture, as large as the largest block so far
-    let staging = match s.tex {
-        Some((id, sw, sh)) if sw >= w && sh >= h => id,
-        old => {
-            if let Some((id, _, _)) = old {
-                d.release(id);
-            }
-            let (sw, sh) = (w.max(old.map_or(0, |o| o.1)), h.max(old.map_or(0, |o| o.2)));
-            let a = new_texture(d, 2, sw, sh, 1, 1, 87, 0, 8, false);
-            let id = d.id_of(a);
-            s.tex = Some((id, sw, sh));
-            id
-        }
-    };
-    let (Some(Data::Texture(st)), Some(Data::Texture(tt))) = (d.objs.get(&staging).map(|o| &o.data), d.objs.get(&target).map(|o| &o.data)) else { return };
-    let (sgpu, tgpu, tpage) = (st.gpu, tt.gpu, tt.page);
-    unsafe { upload_texture(st, 0, px.as_ptr() as u32, w * 4, Some([0, 0, 0, w, h, 1])) };
-    // pipeline: triangle strip, no culling, no depth, no vertex buffers, one target blended
+    // pipeline: triangle strip, no culling, no depth, one instance buffer, one target blended
     // ONE, INV_SRC_ALPHA
-    let mut key = vec![s.vs, s.ps, 4, 0, 1, 0, 0, 0, 0, 0xffff, 0, 1];
-    key.extend_from_slice(&[tpage, 1, blend_factor(2, false), blend_factor(6, false), 1, blend_factor(2, true), blend_factor(6, true), 1, 0xf]);
+    let mut key = vec![vs, ps, 4, 0, 1, 0, 0, 0, 0, 0xffff];
+    key.extend_from_slice(&[1, std::mem::size_of::<Item>() as u32, 1, 5, 3, 0, 0, 3, 16, 1, 3, 32, 2, 3, 48, 3, 7, 64, 4]);
+    key.extend_from_slice(&[1, tpage, 1, blend_factor(2, false), blend_factor(6, false), 1, blend_factor(2, true), blend_factor(6, true), 1, 0xf]);
     let pipe = match d.pipelines.get(&key) {
         Some(&p) => p,
         None => {
@@ -111,17 +280,44 @@ pub fn composite(addr: u32, x: u32, y: u32, w: u32, h: u32, px: &[u8]) {
             id
         }
     };
-    gpu::record(|q| q.cmd(&[gpu::SET_TARGETS2, 1, tgpu, 0, 0, 0, 0, 0]));
+    let mut bytes = Vec::with_capacity(items.len() * std::mem::size_of::<Item>());
+    for it in items {
+        let mut it = *it;
+        (it.kind[2], it.kind[3]) = (tw, th);
+        for v in it.rect.iter().chain(&it.shape).chain(&it.extra).chain(&it.paint) {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        for v in it.kind {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+    }
     d.targets = None;
-    let mut c = vec![gpu::DRAW2, pipe];
-    c.extend([x as f32, y as f32, w as f32, h as f32, 0.0, 1.0].map(f32::to_bits));
-    c.extend_from_slice(&[0, 0, 0, 0, 0]);
-    c.extend([0f32; 4].map(f32::to_bits));
-    c.extend_from_slice(&[0, 0, 0, 0, 0]);
-    // group 0: nothing; group 1: the staging texture (its used corner) and a point sampler
-    c.push(0);
-    c.push(1);
-    c.extend_from_slice(&[16, 1, sgpu, 1, 0, 1, 0, 1]);
-    c.extend_from_slice(&[0, 4, 1, 0, 0, y << 16 | x, 0]);
-    gpu::record(|q| q.cmd(&c));
+    gpu::record(|q| {
+        q.cmd(&[gpu::SET_TARGETS2, 1, tgpu, 0, 0, 0, 0, 0]);
+        let vo = q.data(&bytes, 16);
+        let mut c = vec![gpu::DRAW2, pipe];
+        c.extend([0.0, 0.0, tw as f32, th as f32, 0.0, 1.0].map(f32::to_bits));
+        c.extend_from_slice(&[0, 0, 0, 0, 0]);
+        c.extend([0f32; 4].map(f32::to_bits));
+        // stencil reference, the instance buffer, no index buffer
+        c.extend_from_slice(&[0, 1, DATA, vo, 0, 0, 0]);
+        // group 0: nothing; group 1: the atlas and the ramps
+        c.push(0);
+        c.push(2);
+        c.extend_from_slice(&[16, 1, atlas, 1, 0, 1, 0, 1]);
+        c.extend_from_slice(&[17, 1, ramps, 1, 0, 1, 0, 1]);
+        c.extend_from_slice(&[0, 4, items.len() as u32, 0, 0, 0, 0]);
+        q.cmd(&c);
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn shaders_validate() {
+        for (code, what) in [(super::VS, "vs"), (super::PS, "ps")] {
+            let m = naga::front::wgsl::parse_str(code).unwrap_or_else(|e| panic!("{what}: {}", e.emit_to_string(code)));
+            naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{what}: {e:?}"));
+        }
+    }
 }

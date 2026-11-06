@@ -13,3 +13,6 @@ koji = { path = "../koji" }
 dxwgsl = { path = "../dxwgsl" }
 glwgsl = { path = "../glwgsl" }
 libc = "0.2"
+
+[dev-dependencies]
+naga = { version = "30", features = ["wgsl-in"] }

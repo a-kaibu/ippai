@@ -1362,6 +1362,13 @@ impl TextFont {
     pub fn advance(&self, ch: u32) -> f32 {
         glyph(&self.r, ch).adv as f32
     }
+    /// What identifies `ch`'s glyph in this font at this size (for caches of its bitmap).
+    pub fn glyph_key(&self, ch: u32) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (self.r.face, self.r.em.to_bits(), ch, self.r.bold).hash(&mut h);
+        h.finish()
+    }
     /// Calls `f(left, top above the baseline, w, h, coverage)` with the glyph's black box.
     pub fn glyph(&self, ch: u32, mut f: impl FnMut(i32, i32, i32, i32, &[u8])) {
         let g = glyph(&self.r, ch);

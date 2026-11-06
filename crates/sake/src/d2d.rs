@@ -1,7 +1,8 @@
-//! Direct2D on D3D11 textures: device contexts draw on the CPU (text with dwrite.rs's layout and
-//! gdi.rs's glyphs, solid rectangles) into a premultiplied BGRA layer of the target's size; at
-//! EndDraw (or Flush) the changed rectangle goes over the target texture on the GPU
-//! (kura::d3d11::d2d::composite). Clear clears the texture itself.
+//! Direct2D on D3D11 textures, drawn with WebGPU: device contexts work out on the CPU where each
+//! shape goes (transforms, clips, text with dwrite.rs's layout and gdi.rs's glyphs) and collect
+//! them as kura::d3d11::d2d items (rectangles, ellipses, glyphs from kura's atlas; solid colors
+//! or gradient ramps); EndDraw (or Flush) draws them over the target texture in one instanced
+//! draw. Clear clears the texture itself.
 
 #![allow(non_snake_case)]
 
@@ -11,7 +12,7 @@ use crate::dwrite;
 use crate::mem::{self, r32, w32};
 use std::collections::HashMap;
 use std::sync::Mutex;
-use kura::d3d11::d2d as gpu2d;
+use kura::d3d11::d2d::{self as gpu2d, Item};
 
 type Xf = [f32; 6];
 const IDENTITY: Xf = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
@@ -24,10 +25,8 @@ struct Dc {
     surface: u32,
     w: u32,
     h: u32,
-    /// premultiplied BGRA, w * h * 4 (empty until drawn on)
-    layer: Vec<u8>,
-    /// the changed pixels [x0, y0, x1, y1)
-    dirty: Option<[u32; 4]>,
+    /// what was drawn since the last flush
+    items: Vec<Item>,
     xf: Option<Xf>,
     clips: Vec<[f32; 4]>,
 }
@@ -47,22 +46,32 @@ enum Paint {
 }
 
 impl Paint {
-    fn at(&self, x: f32, y: f32) -> [f32; 4] {
+    /// The item's paint and ramp words; None: no room for its ramp.
+    fn gpu(&self) -> Option<([f32; 4], u32)> {
         match self {
-            Paint::Solid(c) => *c,
+            Paint::Solid(c) => Some((*c, 0)),
             Paint::Linear { a, d, len2, stops, opacity } => {
-                let t = if *len2 > 0.0 { ((x - a[0]) * d[0] + (y - a[1]) * d[1]) / len2 } else { 0.0 };
-                let mut c = stops.first().map_or([0.0; 4], |s| s.1);
-                for w in stops.windows(2) {
-                    let ((p0, c0), (p1, c1)) = (w[0], w[1]);
-                    if t >= p0 {
-                        c = if t >= p1 { c1 } else {
-                            let k = (t - p0) / (p1 - p0).max(1e-6);
-                            [0, 1, 2, 3].map(|i| c0[i] + (c1[i] - c0[i]) * k)
-                        };
+                let mut texels = [0u8; 1024];
+                for k in 0..256 {
+                    let t = k as f32 / 255.0;
+                    let mut c = stops.first().map_or([0.0; 4], |s| s.1);
+                    for w in stops.windows(2) {
+                        let ((p0, c0), (p1, c1)) = (w[0], w[1]);
+                        if t >= p0 {
+                            c = if t >= p1 { c1 } else {
+                                let k = (t - p0) / (p1 - p0).max(1e-6);
+                                [0, 1, 2, 3].map(|i| c0[i] + (c1[i] - c0[i]) * k)
+                            };
+                        }
+                    }
+                    c[3] *= opacity;
+                    for i in 0..4 {
+                        texels[k * 4 + i] = (c[i].clamp(0.0, 1.0) * 255.0).round() as u8;
                     }
                 }
-                [c[0], c[1], c[2], c[3] * opacity]
+                let row = gpu2d::ramp(&texels)?;
+                let dir = if *len2 > 0.0 { [d[0] / len2, d[1] / len2] } else { [0.0; 2] };
+                Some(([a[0], a[1], dir[0], dir[1]], row + 1))
             }
         }
     }
@@ -342,8 +351,7 @@ fn set_target(dc: u32, bmp: u32) {
         let (surface, w, h) = s.bitmaps.get(&bmp).copied().unwrap_or_default();
         if let Some(d) = s.dcs.get_mut(&dc) {
             (d.target, d.surface, d.w, d.h) = (bmp, surface, w, h);
-            d.layer = Vec::new();
-            d.dirty = None;
+            d.items.clear();
         }
     });
 }
@@ -374,23 +382,29 @@ fn GetPixelSize(c: &mut Ctx) -> u32 {
 
 // ---- drawing ----
 
-/// Sends the changed pixels to the target texture.
+/// Draws what was collected over the target texture.
 fn flush(dc: u32) {
-    let job = st(|s| {
-        let d = s.dcs.get_mut(&dc)?;
-        let [x0, y0, x1, y1] = d.dirty.take()?;
-        let (w, h) = (x1 - x0, y1 - y0);
-        let mut px = Vec::with_capacity((w * h * 4) as usize);
-        for y in y0..y1 {
-            let a = ((y * d.w + x0) * 4) as usize;
-            px.extend_from_slice(&d.layer[a..a + (w * 4) as usize]);
-            d.layer[a..a + (w * 4) as usize].fill(0);
-        }
-        Some((d.surface, x0, y0, w, h, px))
-    });
-    if let Some((surface, x, y, w, h, px)) = job {
-        gpu2d::composite(surface, x, y, w, h, &px);
+    let job = st(|s| s.dcs.get_mut(&dc).map(|d| (d.surface, std::mem::take(&mut d.items))));
+    if let Some((surface, items)) = job {
+        gpu2d::draw(surface, &items);
     }
+}
+
+/// `f`'s result, after making room in kura's atlas and ramps if it found none (by drawing
+/// what is pending first).
+fn room<T>(dc: u32, mut f: impl FnMut() -> Option<T>) -> T {
+    if let Some(v) = f() {
+        return v;
+    }
+    flush(dc);
+    gpu2d::reset();
+    f().expect("d2d: an empty atlas has room")
+}
+
+/// Adds an item painted with `paint`.
+fn push(dc: u32, kind: u32, rect: [f32; 4], shape: [f32; 4], extra: [f32; 4], paint: &Paint) {
+    let (p, row) = room(dc, || paint.gpu());
+    st(|s| s.dcs.get_mut(&dc).map(|d| d.items.push(Item { rect, shape, extra, paint: p, kind: [kind, row, 0, 0] })));
 }
 
 fn EndDraw(c: &mut Ctx) -> u32 {
@@ -419,8 +433,7 @@ fn Clear(c: &mut Ctx) -> u32 {
     // (what was drawn before the clear is gone)
     let surface = st(|s| {
         let d = s.dcs.get_mut(&dc)?;
-        d.dirty = None;
-        d.layer.iter_mut().for_each(|b| *b = 0);
+        d.items.clear();
         Some(d.surface)
     });
     if let Some(surface) = surface {
@@ -470,52 +483,15 @@ fn clip_rect(d: &Dc, r: [f32; 4]) -> [f32; 4] {
     r
 }
 
-fn mark(d: &mut Dc, x0: u32, y0: u32, x1: u32, y1: u32) {
-    if d.layer.len() != (d.w * d.h * 4) as usize {
-        d.layer = vec![0; (d.w * d.h * 4) as usize];
-    }
-    d.dirty = Some(match d.dirty {
-        Some([a, b, c, e]) => [a.min(x0), b.min(y0), c.max(x1), e.max(y1)],
-        None => [x0, y0, x1, y1],
-    });
-}
-
-/// Source-over of `color` (straight RGBA) at coverage `cov` (0..=1) onto a layer pixel.
-#[inline]
-fn blend(px: &mut [u8], color: [f32; 4], cov: f32) {
-    let a = color[3] * cov;
-    if a <= 0.0 {
-        return;
-    }
-    let inv = 1.0 - a;
-    let s = [color[2] * a, color[1] * a, color[0] * a, a];
-    for k in 0..4 {
-        px[k] = ((s[k] * 255.0) + px[k] as f32 * inv).round().clamp(0.0, 255.0) as u8;
-    }
-}
-
-/// Fills device rectangle `r` (already clipped) with `color` at `opacity`; partial pixels at
-/// the edges get partial coverage.
+/// Fills device rectangle `r` (already clipped) with `paint`; partial pixels at the edges get
+/// partial coverage.
 fn fill(dc: u32, r: [f32; 4], paint: &Paint) {
+    let inside = st(|s| s.dcs.get(&dc).map(|d| clip_rect(d, r)));
+    let Some(r) = inside else { return };
     if r[2] <= r[0] || r[3] <= r[1] {
         return;
     }
-    st(|s| {
-        let Some(d) = s.dcs.get_mut(&dc) else { return };
-        let (x0, y0, x1, y1) = (r[0].floor() as u32, r[1].floor() as u32, (r[2].ceil() as u32).min(d.w), (r[3].ceil() as u32).min(d.h));
-        if x1 <= x0 || y1 <= y0 {
-            return;
-        }
-        mark(d, x0, y0, x1, y1);
-        for y in y0..y1 {
-            let cy = (r[3].min(y as f32 + 1.0) - r[1].max(y as f32)).clamp(0.0, 1.0);
-            for x in x0..x1 {
-                let cx = (r[2].min(x as f32 + 1.0) - r[0].max(x as f32)).clamp(0.0, 1.0);
-                let i = ((y * d.w + x) * 4) as usize;
-                blend(&mut d.layer[i..i + 4], paint.at(x as f32 + 0.5, y as f32 + 0.5), cx * cy);
-            }
-        }
-    });
+    push(dc, gpu2d::RECT, r, [0.0; 4], [0.0; 4], paint);
 }
 
 fn brush(dc: u32, b: u32) -> Paint {
@@ -567,35 +543,6 @@ fn CreateLinearGradientBrush(c: &mut Ctx) -> u32 {
     0
 }
 
-/// Paints device pixels in `bbox` (clipped) with `paint` where `inside(x, y)` holds, 4x4
-/// samples a pixel.
-fn shape(dc: u32, bbox: [f32; 4], paint: &Paint, inside: impl Fn(f32, f32) -> bool) {
-    st(|s| {
-        let Some(d) = s.dcs.get_mut(&dc) else { return };
-        let r = clip_rect(d, bbox);
-        let (x0, y0, x1, y1) = (r[0].floor().max(0.0) as u32, r[1].floor().max(0.0) as u32, (r[2].ceil().max(0.0) as u32).min(d.w), (r[3].ceil().max(0.0) as u32).min(d.h));
-        if x1 <= x0 || y1 <= y0 {
-            return;
-        }
-        mark(d, x0, y0, x1, y1);
-        for y in y0..y1 {
-            for x in x0..x1 {
-                let mut n = 0;
-                for k in 0..16 {
-                    let (sx, sy) = (x as f32 + (k % 4) as f32 * 0.25 + 0.125, y as f32 + (k / 4) as f32 * 0.25 + 0.125);
-                    if sx >= r[0] && sx < r[2] && sy >= r[1] && sy < r[3] && inside(sx, sy) {
-                        n += 1;
-                    }
-                }
-                if n > 0 {
-                    let i = ((y * d.w + x) * 4) as usize;
-                    blend(&mut d.layer[i..i + 4], paint.at(x as f32 + 0.5, y as f32 + 0.5), n as f32 / 16.0);
-                }
-            }
-        }
-    });
-}
-
 /// An ellipse's (center, radii) through the transform (axis-aligned scale and translation).
 fn xf_ellipse(dc: u32, p: u32) -> ([f32; 2], [f32; 2]) {
     let xf = st(|s| s.dcs.get(&dc).and_then(|d| d.xf));
@@ -609,11 +556,11 @@ fn ellipse(dc: u32, c: [f32; 2], r: [f32; 2], paint: &Paint, ring: Option<f32>) 
     let (ox, oy) = (r[0] + h, r[1] + h);
     let (ix, iy) = (r[0] - h, r[1] - h);
     let bbox = [c[0] - ox, c[1] - oy, c[0] + ox, c[1] + oy];
-    shape(dc, bbox, paint, |x, y| {
-        let (dx, dy) = (x - c[0], y - c[1]);
-        let out = (dx / ox).powi(2) + (dy / oy).powi(2) <= 1.0;
-        out && (ring.is_none() || ix <= 0.0 || iy <= 0.0 || (dx / ix).powi(2) + (dy / iy).powi(2) > 1.0)
-    });
+    let Some(rr) = st(|s| s.dcs.get(&dc).map(|d| clip_rect(d, bbox))) else { return };
+    if rr[2] <= rr[0] || rr[3] <= rr[1] {
+        return;
+    }
+    push(dc, gpu2d::ELLIPSE, rr, [c[0], c[1], ox, oy], [ix, iy, ring.is_some() as u32 as f32, 0.0], paint);
 }
 
 fn FillEllipse(c: &mut Ctx) -> u32 {
@@ -684,41 +631,32 @@ fn draw_text(dc: u32, text: &[u16], fmt: &dwrite::Format, w: f32, h: f32, x: f32
     let Some(font) = dwrite::layout(&[], &f, 0.0, 0.0).font else { return };
     let chars = dwrite::chars(text);
     let clip_extra = if clip_box { Some(xf_rect(xf, [x, y, x + w, y + h])) } else { None };
-    st(|s| {
-        let Some(d) = s.dcs.get_mut(&dc) else { return };
-        let mut lim = clip_rect(d, [0.0, 0.0, d.w as f32, d.h as f32]);
-        if let Some(c) = clip_extra {
-            lim = [lim[0].max(c[0]), lim[1].max(c[1]), lim[2].min(c[2]), lim[3].min(c[3])];
-        }
-        for l in &laid.lines {
-            for i in l.from..l.to {
-                let ch = chars[i];
-                if ch < 32 {
-                    continue;
-                }
-                let (px, py) = apply(xf, x + l.x + laid.pen[i], y + l.baseline);
-                let (px, py) = (px.round() as i32, py.round() as i32);
-                font.glyph(ch, |gx, top, gw, gh, cov| {
-                    let (ox, oy) = (px + gx, py - top);
-                    let (x0, y0) = (ox.max(lim[0].ceil() as i32), oy.max(lim[1].ceil() as i32));
-                    let (x1, y1) = ((ox + gw).min(lim[2].floor() as i32), (oy + gh).min(lim[3].floor() as i32));
-                    if x1 <= x0 || y1 <= y0 {
-                        return;
-                    }
-                    mark(d, x0 as u32, y0 as u32, x1 as u32, y1 as u32);
-                    for yy in y0..y1 {
-                        for xx in x0..x1 {
-                            let k = cov[((yy - oy) * gw + (xx - ox)) as usize];
-                            if k != 0 {
-                                let i = ((yy as u32 * d.w + xx as u32) * 4) as usize;
-                                blend(&mut d.layer[i..i + 4], paint.at(xx as f32 + 0.5, yy as f32 + 0.5), k as f32 / 255.0);
-                            }
-                        }
-                    }
-                });
+    let Some(mut lim) = st(|s| s.dcs.get(&dc).map(|d| clip_rect(d, [0.0, 0.0, d.w as f32, d.h as f32]))) else { return };
+    if let Some(c) = clip_extra {
+        lim = [lim[0].max(c[0]), lim[1].max(c[1]), lim[2].min(c[2]), lim[3].min(c[3])];
+    }
+    for l in &laid.lines {
+        for i in l.from..l.to {
+            let ch = chars[i];
+            if ch < 32 {
+                continue;
             }
+            let (px, py) = apply(xf, x + l.x + laid.pen[i], y + l.baseline);
+            let (px, py) = (px.round() as i32, py.round() as i32);
+            font.glyph(ch, |gx, top, gw, gh, cov| {
+                let (ox, oy) = (px + gx, py - top);
+                let (x0, y0) = (ox.max(lim[0].ceil() as i32), oy.max(lim[1].ceil() as i32));
+                let (x1, y1) = ((ox + gw).min(lim[2].floor() as i32), (oy + gh).min(lim[3].floor() as i32));
+                if x1 <= x0 || y1 <= y0 {
+                    return;
+                }
+                let key = font.glyph_key(ch);
+                let at = room(dc, || gpu2d::glyph(key, gw as u32, gh as u32, || cov.to_vec()));
+                let shape = [at[0] as f32 - ox as f32, at[1] as f32 - oy as f32, 0.0, 0.0];
+                push(dc, gpu2d::GLYPH, [x0 as f32, y0 as f32, x1 as f32, y1 as f32], shape, [0.0; 4], &paint);
+            });
         }
-    });
+    }
 }
 
 fn DrawText(c: &mut Ctx) -> u32 {
