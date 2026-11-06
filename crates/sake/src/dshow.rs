@@ -24,7 +24,8 @@ const MS: u32 = 3; // IMediaSeeking
 const MP: u32 = 4; // IMediaPosition
 const BA: u32 = 5; // IBasicAudio
 const VW: u32 = 6; // IVideoWindow
-const NI: u32 = 7;
+const BV: u32 = 7; // IBasicVideo
+const NI: u32 = 8;
 // fields after the vtables (room for 8-byte ones)
 const REFS: u32 = 8 * NI;
 const EVENT: u32 = REFS + 4;
@@ -33,7 +34,10 @@ const MSG: u32 = HWND + 4;
 const LPARAM: u32 = MSG + 4;
 const STATE: u32 = LPARAM + 4;
 const PENDING: u32 = STATE + 4;
-const SIZE: u32 = PENDING + 4;
+/// EC_COMPLETE went out since the last RenderFile: a Run again (a looping background movie,
+/// rewound by SetPositions) "plays" on without end instead of completing at once forever
+const DONE: u32 = PENDING + 4;
+const SIZE: u32 = DONE + 4;
 
 fn slot_of(iid: u32) -> Option<u32> {
     Some(match r32(iid) {
@@ -44,6 +48,7 @@ fn slot_of(iid: u32) -> Option<u32> {
         0x56a8_68b2 => MP,
         0x56a8_68b3 => BA,
         0x56a8_68b4 => VW,
+        0x56a8_68b5 | 0x329b_b360 => BV, // IBasicVideo(2)
         _ => return None,
     })
 }
@@ -167,12 +172,38 @@ fn get0_2_64(c: &mut Ctx) -> u32 {
     0
 }
 
+const VIDEO: (u32, u32) = (1280, 720);
+fn video_w(c: &mut Ctx) -> u32 {
+    put32(c.a(1), VIDEO.0);
+    0
+}
+fn video_h(c: &mut Ctx) -> u32 {
+    put32(c.a(1), VIDEO.1);
+    0
+}
+fn video_size(c: &mut Ctx) -> u32 {
+    put32(c.a(1), VIDEO.0);
+    put32(c.a(2), VIDEO.1);
+    0
+}
+fn video_pos(c: &mut Ctx) -> u32 {
+    for (i, v) in [0, 0, VIDEO.0, VIDEO.1].into_iter().enumerate() {
+        put32(c.a(1 + i as u32), v);
+    }
+    0
+}
+
 const IDISPATCH: [(Handler, u32); 4] = [(notimpl, 8), (notimpl, 16), (notimpl, 24), (notimpl, 36)];
 
-/// The movie ends as soon as it runs: queue EC_COMPLETE, signal the event, notify the window.
+/// The movie ends as soon as it runs: queue EC_COMPLETE, signal the event, notify the window
+/// (once a movie: see DONE).
 fn run(c: &mut Ctx) -> u32 {
     let b = base(c, MC);
     w32(b + STATE, 2);
+    if r32(b + DONE) != 0 {
+        return 0;
+    }
+    w32(b + DONE, 1);
     w32(b + PENDING, 1);
     crate::k32::event_set(r32(b + EVENT), true);
     if r32(b + HWND) != 0 {
@@ -181,12 +212,23 @@ fn run(c: &mut Ctx) -> u32 {
     }
     0
 }
+/// RenderFile: a new movie, which completes when it runs
+fn render_file_gb(c: &mut Ctx) -> u32 {
+    w32(base(c, GB) + DONE, 0);
+    0
+}
+fn render_file_mc(c: &mut Ctx) -> u32 {
+    w32(base(c, MC) + DONE, 0);
+    0
+}
 fn pause(c: &mut Ctx) -> u32 {
     w32(base(c, MC) + STATE, 1);
     0
 }
 fn stop(c: &mut Ctx) -> u32 {
     w32(base(c, MC) + STATE, 0);
+    // (a movie run again after a stop plays to its end again)
+    w32(base(c, MC) + DONE, 0);
     0
 }
 fn get_state(c: &mut Ctx) -> u32 {
@@ -240,7 +282,7 @@ fn vtables() -> &'static [u32; NI as usize] {
                 (ok, 4),             // SetDefaultSyncSource
                 (ok, 12),            // Connect
                 (ok, 8),             // Render
-                (ok, 12),            // RenderFile
+                (render_file_gb, 12), // RenderFile
                 (notimpl, 16),       // AddSourceFilter
                 (ok, 8),             // SetLogFile
                 (ok, 4),             // Abort
@@ -255,7 +297,7 @@ fn vtables() -> &'static [u32; NI as usize] {
                 (pause, 4),
                 (stop, 4),
                 (get_state, 12),
-                (ok, 8),       // RenderFile
+                (render_file_mc, 8), // RenderFile
                 (notimpl, 12), // AddSourceFilter
                 (notimpl, 8),
                 (notimpl, 8),
@@ -337,6 +379,33 @@ fn vtables() -> &'static [u32; NI as usize] {
             (ok, 8),            // HideCursor
             (get0, 8),          // IsCursorHidden
         ]);
+        // IBasicVideo: a 1280x720 picture, its source and destination the whole of it
+        // (CatSystem2 asks for the size before it plays a movie)
+        let mut bv: Vec<(Handler, u32)> = iunknown!(BV).into_iter().chain(IDISPATCH).collect();
+        bv.extend([(get0_64 as Handler, 8), (get0, 8), (get0, 8), (video_w, 8), (video_h, 8)]);
+        for i in 0..16 {
+            // put/get Source and Destination Left, Width, Top, Height
+            let get: Handler = match i {
+                3 | 11 => video_w,
+                7 | 15 => video_h,
+                _ if i % 2 == 1 => get0,
+                _ => ok,
+            };
+            bv.push((get, 8));
+        }
+        bv.extend([
+            (ok as Handler, 20), // SetSourcePosition
+            (video_pos, 20),     // GetSourcePosition
+            (ok, 4),             // SetDefaultSourcePosition
+            (ok, 20),            // SetDestinationPosition
+            (video_pos, 20),     // GetDestinationPosition
+            (ok, 4),             // SetDefaultDestinationPosition
+            (video_size, 12),    // GetVideoSize
+            (notimpl, 20),       // GetVideoPaletteEntries
+            (notimpl, 12),       // GetCurrentImage
+            (ok, 4),             // IsUsingDefaultSource
+            (ok, 4),             // IsUsingDefaultDestination
+        ]);
         [
             vtable("IGraphBuilder", &gb),
             vtable("IMediaControl", &mc),
@@ -345,6 +414,7 @@ fn vtables() -> &'static [u32; NI as usize] {
             vtable("IMediaPosition", &mp),
             vtable("IBasicAudio", &ba),
             vtable("IVideoWindow", &vw),
+            vtable("IBasicVideo", &bv),
         ]
     })
 }
