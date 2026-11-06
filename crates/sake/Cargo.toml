@@ -21,3 +21,6 @@ ttf-parser = "0.25"
 sha2 = "0.10"
 jpeg-decoder = { version = "0.3", default-features = false }
 png = "0.17"
+
+[dev-dependencies]
+naga = { version = "30", features = ["wgsl-in"] }

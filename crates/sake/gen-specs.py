@@ -8,7 +8,7 @@ winmm imm32 dsound ddraw msvcrt msvcp60 ws2_32 wsock32 d3d8 d3d9 dinput dinput8 
 quartz uxtheme msimg32 winspool.drv rpcrt4 setupapi mpr wininet urlmon dwmapi psapi powrprof crypt32 secur32 hid
 iphlpapi userenv winhttp gdiplus usp10 dbghelp xinput1_3 vorbisfile
 oleacc imagehlp shfolder compstui uiautomationcore atl cabinet propsys mfreadwrite msi
-msvcr70 msvcr71 msvcr80 msvcr90 msvcr100 msvcr110 msvcr120 vcruntime140 vcomp vcomp90 vcomp100 vcomp110 vcomp120 vcomp140""".split() + [f'd3dx9_{v}' for v in range(24, 44)]
+msvcr70 msvcr71 msvcr80 msvcr90 msvcr100 msvcr110 msvcr120 vcruntime140 vcomp vcomp90 vcomp100 vcomp110 vcomp120 vcomp140""".split() + [f'd3dx9_{v}' for v in range(24, 44)] + [f'd3dcompiler_{v}' for v in range(33, 48)]
 SIZES = {'word': 4, 'long': 4, 'ptr': 4, 'str': 4, 'wstr': 4, 'segptr': 4, 'segstr': 4, 'int64': 8,
          'double': 8, 'float': 4, 'int128': 16, 'long64': 8}
 src = sys.argv[1]

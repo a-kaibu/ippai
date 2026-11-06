@@ -32,7 +32,11 @@ WebGPU D3D9 を使う。いまはページ (`play.html` / `game.html`) が動か
 - D3D11 / DXGI (d3d11.rs): kura の WebGPU D3D11 (Wine 経路と同じ実装) に橋渡し。vtable の
   各メソッドはトラップで、`kura::d3d11::call` に引数を渡すだけ。メソッド表は
   `host/gen-d3d11-stubs.py` が d3d11_methods.rs として生成する。
-- specs.txt にない DLL (d2d1、dwrite、d3dcompiler_47 など) はプレフィックスの
+- d3dcompiler_33〜47 (d3dcompiler.rs, d3dreflect.rs): 自前の HLSL コンパイラ (src/hlsl/:
+  プリプロセッサ、構文解析、関数はすべてインライン展開、SM4/5 の DXBC を出す) で D3DCompile、
+  D3DPreprocess、署名ブロブ、D3DReflect。出力は kura の DXBC→WGSL がそのまま読む。
+  テストは `cargo test -p sake hlsl` (WGSL まで通して naga で検証) と host/tests/hlsltest.c。
+- specs.txt にない DLL (d2d1、dwrite など) はプレフィックスの
   `C:\windows\system32` から Wine の PE ビルドを x86 として読む。Direct2D はこの Wine の d2d1 が
   D3D11 の上で描く。
 - Wine の unix 側呼び出し (unixlib.rs): `__wine_unix_call_dispatcher` と

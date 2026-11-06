@@ -1,0 +1,42 @@
+include common.hlsli type 0
+D3DCompile(vs, vs_5_0) -> 0 code 1
+DXBC 1
+include common.hlsli type 0
+D3DCompile(ps, ps_4_0) -> 0 code 1
+DXBC 1
+D3DReflect -> 0
+version 0x10050 cbuffers 1 resources 1 inputs 4
+cbuffer Scene size 112 vars 4
+  wvp offset 0 size 64 used 1 class 2 type 3 4x4 elements 0
+  light offset 64 size 12 used 0 class 1 type 3 1x3 elements 0
+  power offset 76 size 4 used 0 class 0 type 3 1x1 elements 0
+  mode offset 80 size 20 used 0 class 0 type 2 1x1 elements 2
+bind Scene type 0 point 1 count 1
+input POSITION0 register 0 sysval 0 type 3 mask 0x7
+input NORMAL0 register 1 sysval 0 type 3 mask 0x7
+input TEXCOORD0 register 2 sysval 0 type 3 mask 0x3
+input SV_VertexID0 register 3 sysval 6 type 1 mask 0x1
+output SV_Position0 sysval 1 type 3
+output NORMAL0 sysval 0 type 3
+output TEXCOORD0 sysval 0 type 3
+missing cbuffer -> failed
+D3DReflect -> 0
+version 0x40 cbuffers 1 resources 3 inputs 3
+cbuffer Scene size 112 vars 4
+  wvp offset 0 size 64 used 0 class 2 type 3 4x4 elements 0
+  light offset 64 size 12 used 1 class 1 type 3 1x3 elements 0
+  power offset 76 size 4 used 1 class 0 type 3 1x1 elements 0
+  mode offset 80 size 20 used 1 class 0 type 2 1x1 elements 2
+bind smp type 3 point 1 count 1
+bind tex type 2 point 2 count 1
+bind Scene type 0 point 1 count 1
+input SV_Position0 register 0 sysval 1 type 3 mask 0xf
+input NORMAL0 register 1 sysval 0 type 3 mask 0x7
+input TEXCOORD0 register 2 sysval 0 type 3 mask 0x3
+output SV_Target0 sysval 64 type 3
+missing cbuffer -> failed
+D3DCompile(ps, ps_4_0) -> 0x80004005 code 0
+errors 1
+include common.hlsli type 0
+D3DCompile(missing, ps_4_0) -> 0x80004005 code 0
+errors 1
