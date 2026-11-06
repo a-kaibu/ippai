@@ -4,7 +4,8 @@
 /// Format::conv for 32-bit float texels stored as halves (d3d9's converters copy those as they are)
 pub const F32_TO_F16: u32 = 0xf32;
 
-/// f32 to f16 bits (rounded to nearest; out of range to infinity, NaN kept)
+/// f32 to f16 bits (IEEE 754 round to nearest even, as D3D's float conversion rules ask; out of
+/// range to infinity, NaN kept)
 pub fn f16_bits(v: f32) -> u16 {
     let b = v.to_bits();
     let sign = ((b >> 16) & 0x8000) as u16;
@@ -17,17 +18,20 @@ pub fn f16_bits(v: f32) -> u16 {
     if e16 >= 31 {
         return sign | 0x7c00;
     }
-    if e16 <= 0 {
+    // (h, the bits dropped): rounding up carries into the exponent, up to infinity
+    let (h, shift) = if e16 <= 0 {
         if e16 < -10 {
             return sign;
         }
-        let m = m | 0x80_0000;
         let shift = (14 - e16) as u32;
-        let h = (m >> shift) + ((m >> (shift - 1)) & 1);
-        return sign | h as u16;
-    }
-    let h = ((e16 as u32) << 10 | m >> 13) + ((m >> 12) & 1);
-    sign | h as u16
+        ((m | 0x80_0000) >> shift, shift)
+    } else {
+        ((e16 as u32) << 10 | m >> 13, 13)
+    };
+    let rest = (m | 0x80_0000) & ((1 << shift) - 1);
+    let half = 1 << (shift - 1);
+    let up = rest > half || (rest == half && h & 1 == 1);
+    sign | (h + up as u32) as u16
 }
 
 pub const P_BGRA8: u32 = 0;
@@ -175,4 +179,64 @@ pub fn vertex_format(dxgi: u32) -> Option<u32> {
         52 => 31,
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every f32 against the `half` crate (IEEE 754 binary16, round to nearest even).
+    #[test]
+    fn f16_bits_matches_ieee_for_every_f32() {
+        let threads = std::thread::available_parallelism().map_or(4, |n| n.get()) as u64;
+        let per = (1u64 << 32).div_ceil(threads);
+        let bad: u64 = (0..threads)
+            .map(|t| {
+                std::thread::spawn(move || {
+                    let mut bad = 0u64;
+                    for b in t * per..((t + 1) * per).min(1 << 32) {
+                        let v = f32::from_bits(b as u32);
+                        let got = f16_bits(v);
+                        let ok = if v.is_nan() { got & 0x7c00 == 0x7c00 && got & 0x3ff != 0 } else { got == half::f16::from_f32(v).to_bits() };
+                        if !ok {
+                            if bad == 0 {
+                                eprintln!("f16_bits({v:e} = {b:#x}) = {got:#x}, want {:#x}", half::f16::from_f32(v).to_bits());
+                            }
+                            bad += 1;
+                        }
+                    }
+                    bad
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .sum();
+        assert_eq!(bad, 0);
+    }
+}
+
+/// Kani proofs (formal/kani.sh): the layout arithmetic of every DXGI format.
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// No overflow for any level Direct3D 11 allows (16384 x 16384), rows of whole blocks, and
+    /// a known format's page texels fit what one guest texel (or block) converts to.
+    #[kani::proof]
+    fn pitch_rows_every_format() {
+        let dxgi: u32 = kani::any_where(|&f| f <= 132);
+        let w: u32 = kani::any_where(|&w| (1..=16384).contains(&w));
+        let h: u32 = kani::any_where(|&h| (1..=16384).contains(&h));
+        let (pitch, rows) = pitch_rows(dxgi, w, h);
+        if let Some(f) = info(dxgi) {
+            assert!(f.block == 1 || f.block == 4);
+            assert!(pitch == w.div_ceil(f.block) * f.bpp && rows == h.div_ceil(f.block));
+            assert!(pitch as u64 * rows as u64 <= 16384 * 16384 * 16);
+            if f.conv == 0 {
+                // copied as is: the page format has the guest's texel size
+                assert!(f.block == 1 && page_bpp(f.page) == f.bpp);
+            }
+        }
+    }
 }

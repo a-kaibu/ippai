@@ -1,0 +1,69 @@
+# Formal verification of the graphics paths (formal/): TLC model checks of the protocols between
+# guest threads and the render thread (formal/tla), Kani proofs of the format arithmetic, and the
+# tests around unsafe memory handoff under Miri. The exhaustive reference tests (every texel of
+# the 16-bit formats, every f32 to f16, every DXT endpoint pair) run with cargo test in CI.
+name: Formal
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: formal-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  tlc:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      # (yashikota/tlc-static: static TLC without a JVM; checksum of the linux-amd64 archive)
+      TLC_VERSION: v2026.11.02.163154
+      TLC_SHA256: 84f1e3bf90cf845f0be2f3505a1f93673175122e8dbe76c092ce69f129f28cbc
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: TLC
+        run: |
+          curl -sSLf --retry 4 -o /tmp/tlc.tgz "https://github.com/yashikota/tlc-static/releases/download/$TLC_VERSION/tlc-linux-amd64.tar.gz"
+          echo "$TLC_SHA256  /tmp/tlc.tgz" | sha256sum -c
+          mkdir -p ~/.local/bin && tar xzf /tmp/tlc.tgz -C ~/.local/bin tlc
+      - name: Model checks
+        run: TLC=~/.local/bin/tlc formal/run.sh
+
+  kani:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      KANI_VERSION: 0.68.0
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/bin/kani
+            ~/.cargo/bin/cargo-kani
+            ~/.kani
+            ~/.cargo/registry
+          key: kani-${{ runner.os }}-${{ env.KANI_VERSION }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: kani-${{ runner.os }}-${{ env.KANI_VERSION }}-
+      - name: Kani
+        run: |
+          command -v cargo-kani || cargo install --locked kani-verifier --version "$KANI_VERSION"
+          cargo kani setup
+      - name: Proofs
+        run: formal/kani.sh
+
+  miri:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Miri
+        run: rustup toolchain install nightly --profile minimal --component miri,rust-src
+      - name: Tests under Miri
+        run: formal/miri.sh

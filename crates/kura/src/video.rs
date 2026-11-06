@@ -22,10 +22,12 @@ const RGBA: u32 = 2;
 
 struct Slot {
     buf: Vec<u8>,
-    /// the frame it holds (-1: none), and whether the page is writing it
+    /// the frame it holds (-1: none), whether the page is writing it, and how many guest
+    /// threads read it (a count: one reader done must not free the slot under another,
+    /// formal/tla/VideoSlots.tla)
     frame: i32,
     writing: bool,
-    reading: bool,
+    reading: u32,
     /// per track: format, then offset and stride of planes 0..3 in `buf`
     layout: [[u32; 7]; 2],
 }
@@ -77,7 +79,7 @@ pub fn open(data: Vec<u8>) -> Option<u32> {
     static NEXT: AtomicI32 = AtomicI32::new(1);
     let id = NEXT.fetch_add(1, Ordering::Relaxed) as u32;
     let slots = (0..SLOTS)
-        .map(|_| Slot { buf: Vec::new(), frame: -1, writing: false, reading: false, layout: [[0; 7]; 2] })
+        .map(|_| Slot { buf: Vec::new(), frame: -1, writing: false, reading: 0, layout: [[0; 7]; 2] })
         .collect();
     with(|m| m.insert(id, Stream { data, w, h, tracks, want: -1, slots, closed: false, failed: false, shown: -1, opened: Instant::now() }));
     Some(id)
@@ -96,7 +98,7 @@ pub fn close(id: u32) {
 
 /// Drops stream `id` when it is closed and no slot of it is written or read any more.
 fn release(m: &mut HashMap<u32, Stream>, id: u32) {
-    if m.get(&id).is_some_and(|s| s.closed && !s.slots.iter().any(|sl| sl.writing || sl.reading)) {
+    if m.get(&id).is_some_and(|s| s.closed && !s.slots.iter().any(|sl| sl.writing || sl.reading > 0)) {
         m.remove(&id);
     }
 }
@@ -148,7 +150,7 @@ pub unsafe fn frame(id: u32, n: i32, dst: *mut u8, pitch: usize, w: u32, h: u32,
         if let Some(k) = k {
             stat(start.elapsed(), n, s.slots[k].frame != n);
             s.shown = s.slots[k].frame;
-            s.slots[k].reading = true;
+            s.slots[k].reading += 1;
             let (sw, sh, tracks) = (s.w, s.h, s.tracks);
             let (buf, layout) = (s.slots[k].buf.as_ptr(), s.slots[k].layout);
             drop(g);
@@ -156,7 +158,7 @@ pub unsafe fn frame(id: u32, n: i32, dst: *mut u8, pitch: usize, w: u32, h: u32,
             let mut g = STREAMS.lock().unwrap_or_else(|e| e.into_inner());
             let m = g.get_or_insert_with(HashMap::new);
             if let Some(s) = m.get_mut(&id) {
-                s.slots[k].reading = false;
+                s.slots[k].reading -= 1;
             }
             release(m, id);
             return true;
@@ -352,7 +354,7 @@ pub unsafe extern "C" fn vnhost_video_begin(id: u32, n: i32, size: *mut u32) -> 
             .slots
             .iter()
             .enumerate()
-            .filter(|(_, sl)| !sl.reading && !sl.writing)
+            .filter(|(_, sl)| sl.reading == 0 && !sl.writing)
             .min_by_key(|(_, sl)| if sl.frame < 0 || sl.frame < want { i32::MIN + sl.frame.max(0) } else { sl.frame })
             .map(|(k, _)| k);
         let Some(k) = free else { return 0 };
@@ -428,7 +430,7 @@ mod tests {
     #[test]
     fn close_waits_for_the_guest_reading() {
         let id = open(vnv()).unwrap();
-        with(|m| m.get_mut(&id).unwrap().slots[0].reading = true);
+        with(|m| m.get_mut(&id).unwrap().slots[0].reading += 1);
         close(id);
         assert!(exists(id), "dropped while the guest reads a slot");
         // the page is done writing some other slot: the read still holds the stream
@@ -437,9 +439,34 @@ mod tests {
         let mut px = [0u8; 4];
         assert!(!unsafe { frame(id, 0, px.as_mut_ptr(), 4, 1, 1, Out::Rgb) }, "a closed stream gives no frames");
         with(|m| {
-            m.get_mut(&id).unwrap().slots[0].reading = false;
+            m.get_mut(&id).unwrap().slots[0].reading -= 1;
             release(m, id);
         });
+        assert!(!exists(id));
+    }
+
+    #[test]
+    fn two_readers_of_one_slot() {
+        // one guest thread converts slot 0 while another reads the same frame and finishes:
+        // the slot stays taken until the first one is done too (VideoSlotsFlag.cfg's trace)
+        let id = open(vnv()).unwrap();
+        let mut size = 16 * 16 * 4;
+        let buf = unsafe { vnhost_video_begin(id, 0, &mut size) };
+        let layout = [RGBA, 0, 64, 0, 0, 0, 0, RGBA, 0, 64, 0, 0, 0, 0];
+        unsafe { vnhost_video_ready(id, buf, layout.as_ptr(), 1) };
+        with(|m| m.get_mut(&id).unwrap().slots[0].reading += 1);
+        let mut px = vec![0u8; 16 * 16 * 4];
+        assert!(unsafe { frame(id, 0, px.as_mut_ptr(), 64, 16, 16, Out::Rgb) });
+        assert_eq!(with(|m| m.get(&id).unwrap().slots[0].reading), 1, "the first reader still holds it");
+        for n in 1..4 {
+            let b = unsafe { vnhost_video_begin(id, n, &mut size) };
+            assert_ne!(b, buf, "the page must not write the slot a guest reads");
+            if b != 0 {
+                unsafe { vnhost_video_ready(id, b, layout.as_ptr(), 1) };
+            }
+        }
+        with(|m| m.get_mut(&id).unwrap().slots[0].reading -= 1);
+        close(id);
         assert!(!exists(id));
     }
 

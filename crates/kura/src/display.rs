@@ -730,3 +730,29 @@ mod tests {
         assert_eq!(last_diff(&a, &a), None);
     }
 }
+
+/// Kani proofs (formal/kani.sh): the rectangle algebra windows are composed with.
+#[cfg(kani)]
+mod proofs {
+    use super::Rect;
+
+    fn any_rect() -> Rect {
+        let v = || kani::any_where(|&v: &i32| (-100_000..=100_000).contains(&v));
+        Rect { l: v(), t: v(), r: v(), b: v() }
+    }
+    fn inside(p: (i32, i32), r: &Rect) -> bool {
+        !r.empty() && r.l <= p.0 && p.0 < r.r && r.t <= p.1 && p.1 < r.b
+    }
+
+    /// A point is in a ∩ b exactly when it is in both; a ∪ b holds both.
+    #[kani::proof]
+    fn and_or() {
+        let (a, b) = (any_rect(), any_rect());
+        let p = (kani::any(), kani::any());
+        assert_eq!(inside(p, &a.and(&b)), inside(p, &a) && inside(p, &b));
+        let u = a.or(&b);
+        assert!(!inside(p, &a) || inside(p, &u));
+        assert!(!inside(p, &b) || inside(p, &u));
+        assert_eq!(a.and(&b).empty(), b.and(&a).empty());
+    }
+}

@@ -16,3 +16,7 @@ libc = "0.2"
 
 [dev-dependencies]
 naga = { version = "30", features = ["wgsl-in"] }
+half = "2"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
