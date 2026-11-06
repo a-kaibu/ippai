@@ -489,4 +489,109 @@ mod tests {
         assert_eq!(&w[7..11], &[0x0300_0042, 0x800f_0000, 0xb0e4_0000, 0xa0e4_0800]);
         assert_eq!(&w[11..15], &[0x0300_0005, 0x801f_0000, 0x80e4_0000, 0xa100_0000]);
     }
+
+    /// D3DSHADER_INSTRUCTION_OPCODE_TYPE (d3d9types.h).
+    #[test]
+    fn opcodes() {
+        use super::op_code;
+        let names = [
+            "nop", "mov", "add", "sub", "mad", "mul", "rcp", "rsq", "dp3", "dp4", "min", "max", "slt", "sge", "exp", "log", "lit", "dst", "lrp", "frc", "m4x4", "m4x3", "m3x4", "m3x3", "m3x2", "call",
+            "callnz", "loop", "ret", "endloop", "label", "dcl", "pow", "crs", "sgn", "abs", "nrm", "sincos", "rep", "endrep", "if", "ifc", "else", "endif", "break", "breakc", "mova", "defb", "defi",
+        ];
+        for (i, n) in names.iter().enumerate() {
+            assert_eq!(op_code(n), Some(i as u32), "{n}");
+        }
+        let tex = [
+            ("texcoord", 64), ("texcrd", 64), ("texkill", 65), ("tex", 66), ("texld", 66), ("texldp", 66), ("texldb", 66), ("texbem", 67), ("texbeml", 68), ("texreg2ar", 69), ("texreg2gb", 70),
+            ("texm3x2pad", 71), ("texm3x2tex", 72), ("texm3x3pad", 73), ("texm3x3tex", 74), ("texm3x3spec", 76), ("texm3x3vspec", 77), ("expp", 78), ("logp", 79), ("cnd", 80), ("def", 81),
+            ("texreg2rgb", 82), ("texdp3tex", 83), ("texm3x2depth", 84), ("texdp3", 85), ("texm3x3", 86), ("texdepth", 87), ("cmp", 88), ("bem", 89), ("dp2add", 90), ("dsx", 91), ("dsy", 92),
+            ("texldd", 93), ("setp", 94), ("texldl", 95), ("breakp", 96), ("phase", 0xfffd),
+        ];
+        for (n, c) in tex {
+            assert_eq!(op_code(n), Some(c), "{n}");
+        }
+        assert_eq!(op_code("movx"), None);
+    }
+
+    #[test]
+    fn registers_and_selectors() {
+        use super::{register, swizzle, Ver};
+        let ps = Ver { pixel: true, major: 2, minor: 0 };
+        let vs = Ver { pixel: false, major: 2, minor: 0 };
+        assert_eq!(register("t3", &ps), Ok((3, 3)), "ps: texture coordinate input");
+        assert_eq!(register("t3", &vs), Ok((6, 3)), "vs: texture coordinate output");
+        assert_eq!(register("b2", &vs), Ok((14, 2)));
+        assert_eq!(register("i1", &vs), Ok((7, 1)));
+        assert_eq!(register("p0", &ps), Ok((19, 0)));
+        assert_eq!(register("r2047", &vs), Ok((0, 2047)));
+        assert!(register("r2048", &vs).is_err());
+        assert!(register("", &vs).is_err() && register("é3", &vs).is_err() && register("q1", &vs).is_err());
+        assert_eq!(swizzle("xyzw"), Ok(0xe4));
+        assert_eq!(swizzle("x"), Ok(0));
+        assert_eq!(swizzle("wz"), Ok(0b10_10_10_11));
+        assert!(swizzle("xyzwx").is_err() && swizzle("").is_err() && swizzle("q").is_err());
+    }
+
+    /// Token words by the D3D9 bytecode format (instruction, destination, source and relative
+    /// address tokens), written out by hand.
+    #[test]
+    fn tokens() {
+        let body = |src: &str| assemble(src).unwrap_or_else(|e| panic!("{e}: {src}"))[1..].to_vec();
+        let end = 0x0000_ffff;
+        // relative addressing: the index folded into the register number, an address token
+        assert_eq!(body("vs_3_0\nmov r1, c[a0.x + 3]"), [0x0300_0001, 0x800f_0001, 0xa0e4_2003, 0xb000_0000, end]);
+        assert_eq!(body("vs_3_0\nmov r0.y, c4[a0.w + 2]"), [0x0300_0001, 0x8002_0000, 0xa0e4_2006, 0xb0ff_0000, end]);
+        assert_eq!(body("vs_3_0\nmov r0, c[a0.x + 1].y"), [0x0300_0001, 0x800f_0000, 0xa055_2001, 0xb000_0000, end]);
+        assert_eq!(body("vs_3_0\nmov o2[aL].xy, r0"), [0x0300_0001, 0xe003_2002, 0xf000_0800, 0x80e4_0000, end]);
+        // vs_1_1: no address token, no length
+        assert_eq!(body("vs_1_1\nmov r0, c[a0.x + 2]"), [0x0000_0001, 0x800f_0000, 0xa0e4_2002, end]);
+        // source modifiers
+        assert_eq!(body("ps_2_0\nadd r0, -r1, r2_abs"), [0x0300_0002, 0x800f_0000, 0x81e4_0001, 0x8be4_0002, end]);
+        assert_eq!(body("ps_2_0\nmad r0, -r3_abs, 1-r1, -r2_bx2"), [0x0400_0004, 0x800f_0000, 0x8ce4_0003, 0x86e4_0001, 0x85e4_0002, end]);
+        assert_eq!(body("ps_1_4\nmad r0, r1_bias, r2_x2, -r3_x2"), [0x0000_0004, 0x800f_0000, 0x82e4_0001, 0x87e4_0002, 0x88e4_0003, end]);
+        assert_eq!(body("ps_1_4\nmad r0, -r1_bias, r2_dz, r3_dw"), [0x0000_0004, 0x800f_0000, 0x83e4_0001, 0x89e4_0002, 0x8ae4_0003, end]);
+        assert_eq!(body("ps_3_0\nif !b0\nendif"), [0x0100_0028, 0x8de4_0800 | 0x6000_0000, 0x0000_002b, end]);
+        // result modifiers and shifts
+        assert_eq!(body("ps_2_0\nmul_sat_x2 r0, r1, r2")[1], 0x811f_0000);
+        assert_eq!(body("ps_2_0\nmul_sat_pp r0, r1, r2")[1], 0x803f_0000);
+        assert_eq!(body("ps_2_0\nmul_centroid_d2 r0, r1, r2")[1], 0x8f4f_0000);
+        assert_eq!(body("ps_2_0\nmul_x4 r0, r1, r2")[1], 0x820f_0000);
+        assert_eq!(body("ps_2_0\nmul_x8 r0, r1, r2")[1], 0x830f_0000);
+        assert_eq!(body("ps_2_0\nmul_d4 r0, r1, r2")[1], 0x8e0f_0000);
+        assert_eq!(body("ps_2_0\nmul_d8 r0, r1, r2")[1], 0x8d0f_0000);
+        // declarations
+        assert_eq!(body("vs_3_0\ndcl_texcoord3 v2"), [0x0200_001f, 0x8003_0005, 0x900f_0002, end]);
+        assert_eq!(body("ps_3_0\ndcl_volume s1"), [0x0200_001f, 0xa000_0000, 0xa00f_0801, end]);
+        assert_eq!(body("ps_3_0\ndcl_cube s2"), [0x0200_001f, 0x9800_0000, 0xa00f_0802, end]);
+        assert_eq!(body("ps_3_0\ndcl_texcoord0_centroid v0.xy"), [0x0200_001f, 0x8000_0005, 0x9043_0000, end]);
+        assert_eq!(body("ps_3_0\ndcl_color1_pp v1"), [0x0200_001f, 0x8001_000a, 0x902f_0001, end]);
+        assert!(assemble("ps_3_0\ndcl_bogus v0").is_err());
+        // constants
+        assert_eq!(body("vs_3_0\ndefb b0, true\ndefb b1, false"), [0x0200_002f, 0xe00f_0800, 1, 0x0200_002f, 0xe00f_0801, 0, end]);
+        assert_eq!(body("vs_3_0\ndefi i1, 1, -2, 3, 4"), [0x0500_0030, 0xf00f_0001, 1, (-2i32) as u32, 3, 4, end]);
+        assert_eq!(body("ps_2_0\ndef c0, 1.0, 0.5f, -2, 0"), [0x0500_0051, 0xa00f_0000, 0x3f80_0000, 0x3f00_0000, 0xc000_0000, 0, end]);
+        // comparisons, predicates, co-issue, projected and biased texld
+        assert_eq!(body("ps_3_0\nif_gt r0.x, r1.x\nendif"), [0x0201_0029, 0x8000_0000, 0x8000_0001, 0x0000_002b, end]);
+        assert_eq!(body("ps_3_0\nbreak_le r0.x, r1.y"), [0x0206_002d, 0x8000_0000, 0x8055_0001, end]);
+        assert_eq!(body("ps_3_0\nsetp_ne p0, r0, r1")[..2], [0x0305_005e, 0xb00f_1000]);
+        assert_eq!(body("ps_1_1\n+add r0.a, r1, r2")[0], 0x4000_0002);
+        assert_eq!(body("ps_2_0\ntexldp r0, t0, s0")[0], 0x0301_0042);
+        assert_eq!(body("ps_2_0\ntexldb r0, t0, s0")[0], 0x0302_0042);
+        assert_eq!(body("ps_2_0\nmov r0, r1 ; comment\n// line\n\nmov r1, r0").len(), 7);
+    }
+
+    #[test]
+    fn versions_and_operands() {
+        assert_eq!(assemble("vs_2_x\n").unwrap()[0], 0xfffe_0200);
+        assert_eq!(assemble("vs_2_sw\n").unwrap()[0], 0xfffe_0200);
+        assert_eq!(assemble("ps.1.4\n").unwrap()[0], 0xffff_0104);
+        for bad in ["xs_1_1\n", "vs_1\n", "vs_a_1\n", "vs_1_q\n", "", "mov r0, r1\n", "ps_2_0\nfoo r0\n", "ps_2_0\nmov_qq r0, r1\n", "ps_2_0\nmov r0, r1_zz\n"] {
+            assert!(assemble(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(super::split_args("c[a0.x + 1, 2], r1 , t2"), ["c[a0.x + 1, 2]", "r1", "t2"]);
+        assert_eq!(super::split_args("[[a,b],c], d"), ["[[a,b],c]", "d"]);
+        assert_eq!(super::split_operand("c3[a0.x + 2].y"), ("c5".to_string(), Some("a0.x".to_string()), "y".to_string()));
+        assert_eq!(super::split_operand("c[7]"), ("c7".to_string(), None, String::new()));
+        assert_eq!(super::split_operand("[3]"), ("[3]".to_string(), None, String::new()));
+    }
 }

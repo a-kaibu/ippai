@@ -620,4 +620,210 @@ mod tests {
         assert_eq!(pp("#define L \\\n  5\nL"), "5");
         assert_eq!(pp("float f = 1.5f; int i = 0x10u;"), "float f = 1.5 ; int i = 16u ;");
     }
+
+    fn lex(s: &str) -> Vec<Tok> {
+        let mut out = Vec::new();
+        lex_line(s, 7, &mut out).unwrap();
+        assert!(out.iter().all(|t| t.line == 7));
+        out.into_iter().map(|t| t.t).collect()
+    }
+
+    #[test]
+    fn numbers() {
+        use Tok::*;
+        assert_eq!(lex("0x1F 0XffUL 0x10l"), [Int(31, false), Int(255, true), Int(16, false)]);
+        assert_eq!(lex("12 012 0 7u 3L"), [Int(12, false), Int(10, false), Int(0, false), Int(7, true), Int(3, false)]);
+        assert_eq!(lex("1.5 .25 2. 1e3 1e+2 5E-1 3f 2h 1.0F"), [Float(1.5), Float(0.25), Float(2.0), Float(1000.0), Float(100.0), Float(0.5), Float(3.0), Float(2.0), Float(1.0)]);
+        // an "e" without digits is the next token
+        assert_eq!(lex("1e"), [Int(1, false), Ident("e".into())]);
+        assert_eq!(lex("1e+"), [Int(1, false), Ident("e".into()), Punct("+")]);
+        assert_eq!(lex("2.x"), [Float(2.0), Ident("x".into())]);
+        assert_eq!(lex("4."), [Float(4.0)]);
+        assert_eq!(lex("1.5e"), [Float(1.5), Ident("e".into())]);
+        let mut out = Vec::new();
+        assert!(lex_line("0x", 1, &mut out).is_err(), "no hex digits");
+        assert!(lex_line("99999999999999999999", 1, &mut out).is_err());
+    }
+
+    #[test]
+    fn identifiers_strings_puncts() {
+        use Tok::*;
+        assert_eq!(lex("a_1 _b9"), [Ident("a_1".into()), Ident("_b9".into())]);
+        assert_eq!(lex("x<<=y>>=z...w"), [Ident("x".into()), Punct("<<="), Ident("y".into()), Punct(">>="), Ident("z".into()), Punct("..."), Ident("w".into())]);
+        assert_eq!(lex("a&&b||c"), [Ident("a".into()), Punct("&&"), Ident("b".into()), Punct("||"), Ident("c".into())]);
+        assert_eq!(lex(r#""a\"b" c"#), [Str(r#"a\"b"#.into()), Ident("c".into())]);
+        assert_eq!(lex(r#""" x"#), [Str("".into()), Ident("x".into())]);
+        assert_eq!(lex(r#""open"#), [Str("open".into())]);
+        assert_eq!(lex(r#""tail\"#), [Str(r#"tail\"#.into())]);
+        // other characters are skipped, whole
+        assert_eq!(lex("aé b"), [Ident("a".into()), Ident("b".into())]);
+    }
+
+    #[test]
+    fn comments_and_continuations() {
+        assert_eq!(clean("a // b\nc"), ["a ", "c"]);
+        assert_eq!(clean("a /* b */ c"), ["a   c"]);
+        assert_eq!(clean("a /* b\nc */ d\ne"), ["a   d", "", "e"]);
+        assert_eq!(clean("x \\\ny\nz"), ["x y", "", "z"]);
+        assert_eq!(clean("s = \"// not a comment\" // one"), ["s = \"// not a comment\" "]);
+        assert_eq!(clean("s = \"a\\\"/*\" t"), ["s = \"a\\\"/*\" t"]);
+        assert_eq!(clean("s = \"a\\"), ["s = \"a"], "a continuation, even in a string");
+        assert_eq!(clean("p\r\nq"), ["p", "q"]);
+        assert_eq!(clean("/**/x/*"), [" x"]);
+        assert_eq!(clean("é/* */ü"), ["é ü"]);
+        assert_eq!(clean("tail /* open"), ["tail "]);
+    }
+
+    #[test]
+    fn includes_and_lines() {
+        let mut depth = 0;
+        let mut inc = |n: &str, _: bool| {
+            depth += 1;
+            (n == "self").then(|| "#include \"self\"\n".to_string())
+        };
+        let e = preprocess("#include \"self\"\n", &[], &mut inc).unwrap_err();
+        assert!(e.contains("too deep"), "{e}");
+        assert_eq!(depth, 32);
+        let mut inc = |_: &str, _: bool| None;
+        let t = preprocess("a\n\nb /* x\n */ c\nd", &[], &mut inc).unwrap();
+        assert_eq!(t.iter().map(|t| t.line).collect::<Vec<_>>(), [1, 3, 3, 5]);
+    }
+
+    fn ifv(e: &str) -> i64 {
+        let mut inc = |_: &str, _: bool| None;
+        let mut p = Pp { macros: HashMap::new(), include: &mut inc, out: Vec::new(), depth: 0, row_major: false };
+        p.define("TWO 2", 1).unwrap();
+        p.define("F(x) (x * 3)", 1).unwrap();
+        p.eval_if(e, 1).unwrap()
+    }
+
+    #[test]
+    fn if_expressions() {
+        for (e, v) in [
+            ("1 ? 2 : 3", 2),
+            ("0 ? 2 : 3", 3),
+            ("0 || 0", 0),
+            ("0 || 5", 1),
+            ("2 && 0", 0),
+            ("2 && 3", 1),
+            ("6 | 9", 15),
+            ("6 ^ 3", 5),
+            ("6 & 3", 2),
+            ("2 == 2", 1),
+            ("2 == 3", 0),
+            ("2 != 3", 1),
+            ("2 != 2", 0),
+            ("2 < 3", 1),
+            ("3 < 3", 0),
+            ("3 > 2", 1),
+            ("3 > 3", 0),
+            ("3 <= 3", 1),
+            ("4 <= 3", 0),
+            ("3 >= 3", 1),
+            ("2 >= 3", 0),
+            ("1 << 4", 16),
+            ("32 >> 2", 8),
+            ("7 + 5", 12),
+            ("7 - 5", 2),
+            ("7 * 5", 35),
+            ("7 / 2", 3),
+            ("7 / 0", 0),
+            ("7 % 4", 3),
+            ("7 % 0", 0),
+            // precedence and associativity
+            ("1 + 2 * 3", 7),
+            ("(1 + 2) * 3", 9),
+            ("10 - 3 - 2", 5),
+            ("1 | 2 ^ 3 & 6", 1 | (2 ^ (3 & 6))),
+            ("1 << 2 + 1", 8),
+            ("2 + 3 < 6 == 1", 1),
+            ("0 || 1 && 0", 0),
+            ("1 ? 0 ? 4 : 5 : 6", 5),
+            ("0 ? 1 : 0 ? 2 : 3", 3),
+            ("1 ? 7 : 8 + 1", 7),
+            // unary
+            ("!0", 1),
+            ("!7", 0),
+            ("-3 + 1", -2),
+            ("+4", 4),
+            ("~0", -1),
+            ("2.9 + 1", 3),
+            ("undefined_name + 4", 4),
+            // macros and defined
+            ("TWO * TWO", 4),
+            ("F(TWO)", 6),
+            ("defined(TWO) + defined TWO + defined(NOPE)", 2),
+        ] {
+            assert_eq!(ifv(e), v, "#if {e}");
+        }
+        let mut inc = |_: &str, _: bool| None;
+        let p = Pp { macros: HashMap::new(), include: &mut inc, out: Vec::new(), depth: 0, row_major: false };
+        for bad in ["", "1 +", "1 ? 2", "defined", "defined +", ")"] {
+            assert!(p.eval_if(bad, 1).is_err(), "#if {bad}");
+        }
+    }
+
+    fn pp_err(s: &str) -> String {
+        let mut inc = |_: &str, _: bool| None;
+        preprocess(s, &[], &mut inc).unwrap_err()
+    }
+
+    #[test]
+    fn directives() {
+        assert_eq!(pp("#ifndef NOPE\na\n#endif\n#ifndef EXT\nb\n#endif"), "a");
+        assert_eq!(pp("#if 0\na\n#elif 0\nb\n#elif 1\nc\n#elif 1\nd\n#else\ne\n#endif"), "c");
+        assert_eq!(pp("#if 1\na\n#elif 1\nb\n#else\nc\n#endif"), "a");
+        assert_eq!(pp("#if 0\na\n#else\nb\n#endif"), "b");
+        // an inner branch of an outer one that is off stays off
+        assert_eq!(pp("#if 0\n#if 1\na\n#elif 1\nb\n#else\nc\n#endif\n#define X 1\n#endif\nX"), "X");
+        assert_eq!(pp("#if 0\n#ifdef EXT\na\n#endif\n#error no\n#bogus\n#endif\nz"), "z");
+        assert_eq!(pp("#define A 1\n#undef A\nA"), "A");
+        assert_eq!(pp("#line 5\n#warning w\n#\n#pragma once\nk"), "k");
+        assert!(pp_err("#error stop here").contains("#error stop here"));
+        assert!(pp_err("#frobnicate").contains("unknown directive"));
+        assert!(pp_err("#elif 1").contains("without #if"));
+        assert!(pp_err("#else").contains("without #if"));
+        assert!(pp_err("#endif").contains("without #if"));
+        assert!(pp_err("#if 1\na").contains("missing #endif"));
+        assert!(pp_err("#define").contains("bad #define"));
+        assert!(pp_err("#define F(a b").contains("bad macro parameters"));
+        assert!(pp_err("#include nofile").contains("bad #include"));
+        assert!(pp_err("#include \"x.h\"").contains("cannot open include file x.h"));
+        // includes: quotes and angle brackets, tokens in order
+        let mut seen = Vec::new();
+        let mut inc = |n: &str, sys: bool| {
+            seen.push((n.to_string(), sys));
+            Some(format!("in_{}", n.replace('.', "_")))
+        };
+        let t = preprocess("a\n#include \"q.h\"\nb\n#include <s.h>\nc", &[], &mut inc).unwrap();
+        assert_eq!(t.iter().map(text).collect::<Vec<_>>().join(" "), "a in_q_h b in_s_h c");
+        assert_eq!(seen, [("q.h".to_string(), false), ("s.h".to_string(), true)]);
+        // #pragma pack_matrix
+        let mut inc = |_: &str, _: bool| None;
+        let t = preprocess("a\n#pragma pack_matrix( row_major )\nb\n#pragma pack_matrix(column_major)", &[], &mut inc).unwrap();
+        assert_eq!(t.iter().map(|t| t.t.clone()).collect::<Vec<_>>(), [Tok::Ident("a".into()), Tok::PackMatrix(true), Tok::Ident("b".into()), Tok::PackMatrix(false)]);
+    }
+
+    #[test]
+    fn macro_calls() {
+        assert_eq!(pp("#define F(a, b) [a|b]\nF((1, 2), (3))"), "[ ( 1 , 2 ) | ( 3 ) ]");
+        assert_eq!(pp("#define F(a, b) [a|b]\nF(f(x, y), z)"), "[ f ( x , y ) | z ]");
+        assert_eq!(pp("#define Z() zero\nZ() Z"), "zero Z");
+        assert_eq!(pp("#define G(a) a\nG() G (1)"), "1");
+        assert_eq!(pp("#define S(x) #x\nS(a + b)"), "\"a + b\"");
+        assert_eq!(pp("#define S(x) # y\nS(a)"), "# y");
+        assert_eq!(pp("#define N 7\n#define P(x) x##N x\nP(N)"), "NN 7");
+        assert_eq!(pp("#define N 7\n#define P(x) N##x\nP(1)"), "N1");
+        assert_eq!(pp("#define R R + 1\nR"), "R + 1");
+        assert_eq!(pp("#define F(x) F(x) + 1\nF(2)"), "F ( 2 ) + 1");
+        assert_eq!(pp("#define F(x) x\nF(1)F(2)"), "1 2");
+        assert_eq!(pp("#define F(x, y) y\nF(1)"), "");
+        assert_eq!(pp("#define A ## b\nA"), "## b");
+        assert_eq!(pp("#define A a ##\nA"), "a ##");
+        assert!(pp_err("#define F(x) x\nF(1, (2)").contains("unterminated call of macro F"));
+        // expansion depth: 64 nested macros expand, 65 do not
+        let chain = |n: usize| (0..n).map(|k| format!("#define M{k} M{}\n", k + 1)).collect::<String>() + "M0";
+        assert_eq!(pp(&chain(64)), "M64");
+        assert!(pp_err(&chain(65)).contains("too deep"));
+    }
 }
