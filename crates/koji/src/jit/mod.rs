@@ -183,8 +183,6 @@ pub fn set_deny(f: fn(u32) -> bool) {
     DENY.set(f);
 }
 
-/// The same for functions (jit::FN; IPPAI_JIT_FN_INS)
-pub static FN_MAX_INS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(1000);
 /// Inlined callees: at most this many instructions each, and in all in a region.
 const MAX_INLINE: usize = 128;
 const MAX_INLINE_TOTAL: usize = 400;
@@ -4497,7 +4495,7 @@ pub static HOIST: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBoo
 /// taking at most `max_blocks` blocks whose start `accept` agrees to. None if not even the
 /// entry block can be translated.
 pub fn translate_region<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u32], max_blocks: usize, accept: impl FnMut(u32) -> bool) -> Option<Region> {
-    translate(module, mem, roots, max_blocks, accept, None, &|_| None, &|_| false)
+    translate(module, mem, roots, max_blocks, MAX_REGION_INS, accept, None, &|_| None, &|_| false)
 }
 
 /// Adds the function at `entry` (see [`FN`]) to `module`: its adapter for the region calling
@@ -4505,9 +4503,11 @@ pub fn translate_region<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u3
 /// ("f<n+1>"), entered at any of `starts` (table index | block << ENTRY_SHIFT | FN_TAG).
 /// Small callees are inlined whether they ran or not (if outside `trap`).
 /// `hints` gives the target an indirect call or jump at an address mostly goes to (a small one
-/// is inlined behind a check).
-pub fn translate_function<M: Memory>(module: &mut Module, mem: &mut M, entry: u32, max_blocks: usize, trap: (u32, u32), hints: &dyn Fn(u32) -> Option<u32>, ran: &dyn Fn(u32) -> bool, accept: impl FnMut(u32) -> bool) -> Option<Region> {
-    translate(module, mem, &[entry], max_blocks, accept, Some(trap), hints, ran)
+/// is inlined behind a check). `max_ins`: instructions it takes at most (fixed for the whole
+/// translation: each call its own, whatever other threads translate meanwhile).
+#[allow(clippy::too_many_arguments)]
+pub fn translate_function<M: Memory>(module: &mut Module, mem: &mut M, entry: u32, max_blocks: usize, max_ins: usize, trap: (u32, u32), hints: &dyn Fn(u32) -> Option<u32>, ran: &dyn Fn(u32) -> bool, accept: impl FnMut(u32) -> bool) -> Option<Region> {
+    translate(module, mem, &[entry], max_blocks, max_ins, accept, Some(trap), hints, ran)
 }
 
 fn translate<M: Memory>(
@@ -4515,6 +4515,7 @@ fn translate<M: Memory>(
     mem: &mut M,
     roots: &[u32],
     max_blocks: usize,
+    max_ins: usize,
     mut accept: impl FnMut(u32) -> bool,
     fn_trap: Option<(u32, u32)>,
     hints: &dyn Fn(u32) -> Option<u32>,
@@ -4530,7 +4531,6 @@ fn translate<M: Memory>(
     let mut hle = BTreeMap::new();
     let mut thunks = BTreeMap::new();
     while let Some(a) = queue.pop_front() {
-        let max_ins = if fnm { FN_MAX_INS.load(core::sync::atomic::Ordering::Relaxed) } else { MAX_REGION_INS };
         if blocks.len() >= max_blocks.min(MAX_BLOCKS) || total >= max_ins {
             break;
         }
@@ -4979,4 +4979,53 @@ fn translate<M: Memory>(
         Vec::new()
     };
     Some(Region { starts, instructions: count, code, layout, profile, sites })
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use super::*;
+
+    /// 3000 blocks of `inc eax; jmp $+2`, then `ret`, at 0x100000.
+    struct Code(Vec<u8>);
+    impl Memory for Code {
+        fn read8(&mut self, a: u32) -> Result<u8, crate::Fault> {
+            a.checked_sub(0x10_0000).and_then(|i| self.0.get(i as usize).copied()).ok_or(crate::Fault { addr: a, write: false })
+        }
+        fn write8(&mut self, a: u32, _: u8) -> Result<(), crate::Fault> {
+            Err(crate::Fault { addr: a, write: true })
+        }
+    }
+
+    fn code() -> Code {
+        let mut v: Vec<u8> = core::iter::repeat_n([0x40u8, 0xeb, 0x00], 3000).flatten().collect();
+        v.push(0xc3);
+        Code(v)
+    }
+
+    fn function_size(max_ins: usize) -> usize {
+        let mut m = Module::default();
+        let r = translate_function(&mut m, &mut code(), 0x10_0000, MAX_BLOCKS, max_ins, (0, 0), &|_| None, &|_| true, |_| true).unwrap();
+        r.instructions
+    }
+
+    /// A function's instruction limit is its own: threads translating with others at once get
+    /// what they get alone (it was a global each build stored, read again per block).
+    #[test]
+    fn function_limit_is_per_translation() {
+        let alone: Vec<usize> = [100, 1000, 4000].iter().map(|&n| function_size(n)).collect();
+        assert!(alone[0] < alone[1] && alone[1] < alone[2], "{alone:?}");
+        assert!(alone[0] >= 100 && alone[0] < 110, "{alone:?}");
+        std::thread::scope(|s| {
+            for t in 0..6 {
+                let alone = &alone;
+                s.spawn(move || {
+                    for _ in 0..8 {
+                        let i = t % 3;
+                        assert_eq!(function_size([100, 1000, 4000][i]), alone[i]);
+                    }
+                });
+            }
+        });
+    }
 }

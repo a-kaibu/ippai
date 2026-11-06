@@ -1376,8 +1376,7 @@ fn build_fn(mem: &mut Linear, eip: u32, (lo, hi): (u32, u32), part: bool, build:
     // a function built again (it left its blocks often) may take more: twice per build
     // (big interpreters' loops, a C library's long switch), from IPPAI_JIT_FN_INS
     let base = *FN_INS.get_or_init(|| std::env::var("IPPAI_JIT_FN_INS").ok().and_then(|v| v.parse().ok()).unwrap_or(1000));
-    jit::FN_MAX_INS.store(base << (build.min(4) - 1), std::sync::atomic::Ordering::Relaxed);
-    let region = jit::translate_function(&mut m, mem, eip, jit::MAX_BLOCKS, (lo, hi), &|a| hints.get(&a).copied(), &|a| debug_allowed(a) && ran(misses, known, a), |a| debug_allowed(a) && !(a >= lo && a < hi) && (a == eip || if part { !known.contains(&a) && misses.contains_key(&a) } else { ran(misses, known, a) }))?;
+    let region = jit::translate_function(&mut m, mem, eip, jit::MAX_BLOCKS, base << (build.min(4) - 1), (lo, hi), &|a| hints.get(&a).copied(), &|a| debug_allowed(a) && ran(misses, known, a), |a| debug_allowed(a) && !(a >= lo && a < hi) && (a == eip || if part { !known.contains(&a) && misses.contains_key(&a) } else { ran(misses, known, a) }))?;
     if crate::env_on!("IPPAI_JIT_LAYOUT") {
         eprintln!("vnjit fn {eip:#x}\n{}", region.layout);
     }
