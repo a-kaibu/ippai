@@ -156,10 +156,14 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   addEventListener("touchcancel", (e) => e.touches.length || (fingers = 0));
   const run = params.get("run") ?? "C:\\wintest.exe";
   // saved games: per program and mounts; what it writes in its folders and the user folders
+  // (&saves: the launcher's, kept by the program it started: BISHOP's startup.exe writes the
+  // bsxx.ini its game reads)
   const mounts = params.getAll("mount");
-  const saveName = `${run.replace(/[^A-Za-z0-9_.-]/g, "_")}-${fnv(
-    new TextEncoder().encode(mounts.join(":")),
-  )}`;
+  const saveName =
+    params.get("saves") ??
+    `${run.replace(/[^A-Za-z0-9_.-]/g, "_")}-${fnv(new TextEncoder().encode(mounts.join(":")))}`;
+  // (the programs this one starts in its place keep them: closeGame)
+  params.set("saves", saveName);
   const nosave = params.has("nosave");
   // a web game (NW.js): its own page, no sake
   if (await startWebGame(run, mounts, nosave ? null : saveName, log)) {
@@ -579,6 +583,7 @@ function closeGame(): void {
     const { run, args } = nextRun;
     log(`${run} に切り替えます`);
     const url = new URL(location.href);
+    url.searchParams.set("saves", params.get("saves")!);
     url.searchParams.set("run", run);
     url.searchParams.set("args", args.split(/\s+/).filter(Boolean).join(","));
     if (!args.trim()) url.searchParams.delete("args");

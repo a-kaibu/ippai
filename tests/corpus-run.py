@@ -117,7 +117,9 @@ while True:
         wait_port(PORT)
         winexe = 'Z:\\vnvm\\game\\' + exe.replace('/', '\\')
         args = titles[tid].get('args', '')
-        qs = 'autostart&headless&load&nosave&mount=/vnvm/game=g&run=' + urllib.parse.quote(winexe)
+        # (saves on: a fresh browser each title, and a launcher's settings file reaches the game it
+        # starts, BISHOP's bsxx.ini)
+        qs = 'autostart&headless&load&mount=/vnvm/game=g&run=' + urllib.parse.quote(winexe)
         if args: qs += '&args=' + urllib.parse.quote(args)
         qs += os.environ.get('CORPUS_QS', '')  # (more page parameters, e.g. &env=NAME%3Dvalue)
         st, at, pre = steps.get(tid, ('key:Return wait:3', '', ''))
