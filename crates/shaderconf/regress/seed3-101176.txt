@@ -1,0 +1,19 @@
+# shaderconf --fuzz N 3: input #101176
+# was: hlslc output dxwgsl rejects: a register past Direct3D's limits
+HLSL (ps_4_0):
+cbuffer C : register(buniform mat2 m2; uniform mat3 m30) { float4 A; float4 B; float4 Cc; };
+float4 ps() : SV_Target {
+  float4 t0 = float4(0.0, 0.0, 0.0, 0.0);
+  float4 t1 = float4(0.0, 0.0, 0.0, 0.0);
+  float4 t2 = float4(0.0, 0.0, 0.0, 0.0);
+  float4 arr[4];
+  arr[0] = float4(0.0, 1.0, 2.0, 3.0);
+  arr[1] = float4(1.0, 1.0, 2.0, 3.0);
+  arr[2] = float4(2.0, 1.0, 2.0, 3.0);
+  arr[3] = float4(3.0, 1.0, 2.0, 3.0);
+  t1 += t2;
+  t1 = (abs((-t2)) + float4(4.0, -3.0, 2.0, -6.0));
+  t1 += float4(8.0, 2.0, 0.0, 8.0);
+  t1 += max(t2, A);
+  return t2;
+}

@@ -104,7 +104,7 @@ struct W {
     tmp: u32,
     /// open switch statements: (labels waiting for a body, a case is open, a default was given)
     switches: Vec<(Vec<String>, bool, bool)>,
-    /// what each open block is: b'i' if, b'l' loop, b's' switch
+    /// what each open block is: b'i' if, b'e' its else, b'l' loop, b's' switch
     blocks: Vec<u8>,
     last_op: u32,
 }
@@ -207,6 +207,9 @@ fn check_registers(w: &W, p: &Program) -> R<()> {
     }
     if w.inputs.keys().chain(w.outputs.keys()).any(|&r| r >= 32) || w.cbs.keys().any(|&r| r >= 15) || w.res.keys().any(|&r| r >= 128) || w.samplers.keys().any(|&r| r >= 16) {
         return Err("a register past Direct3D's limits".into());
+    }
+    if (w.depth_out || w.mask_out) && p.kind != tpf::PIXEL {
+        return Err("oDepth or oMask outside a pixel shader".into());
     }
     fn check(w: &W, o: &Operand) -> R<()> {
         if o.sel == tpf::Sel::Mask(0) && !matches!(o.ty, tpf::NULL | tpf::IMM32) {
@@ -492,14 +495,23 @@ impl W {
         let b = if k == K::U { val } else { format!("bitcast<{}>({val})", vty(K::U, n)) };
         match o.ty {
             tpf::OUTPUT_DEPTH | tpf::OUTPUT_DEPTH_GE | tpf::OUTPUT_DEPTH_LE => {
+                if !self.depth_out {
+                    return Err("oDepth written without dcl_output oDepth".into());
+                }
                 self.line(&format!("oDepth = {b};"));
                 return Ok(());
             }
             tpf::OUTPUT_COVERAGE_MASK => {
+                if !self.mask_out {
+                    return Err("oMask written without dcl_output oMask".into());
+                }
                 self.line(&format!("oMask = {b};"));
                 return Ok(());
             }
             _ => {}
+        }
+        if !matches!(o.ty, tpf::TEMP | tpf::INDEXABLE_TEMP | tpf::OUTPUT) {
+            return Err(format!("register type {} as a destination", o.ty));
         }
         let place = self.reg(o)?;
         if comps.len() == 4 {
@@ -890,14 +902,16 @@ impl W {
             0x11 => self.dot(i, 4)?,
             0x12 => {
                 if self.blocks.last() != Some(&b'i') {
-                    return Err("else outside an if".into());
+                    return Err("else outside an if (or a second one)".into());
                 }
+                *self.blocks.last_mut().unwrap() = b'e';
                 self.depth -= 1;
                 self.line("} else {");
                 self.depth += 1;
             }
             0x15 | 0x16 => {
-                if self.blocks.last() != Some(if op == 0x15 { &b'i' } else { &b'l' }) {
+                let open = self.blocks.last().copied();
+                if !(if op == 0x15 { matches!(open, Some(b'i' | b'e')) } else { open == Some(b'l') }) {
                     return Err(format!("{} without its block", if op == 0x15 { "endif" } else { "endloop" }));
                 }
                 self.close()

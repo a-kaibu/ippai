@@ -323,6 +323,10 @@ impl Shader {
         };
         let mut blocks: Vec<u32> = Vec::new();
         for i in &self.ins {
+            // (a declaration names its register)
+            if i.op == DCL && (i.dst.is_none() || i.extra.is_empty()) {
+                return false;
+            }
             let params = i.dst.iter().chain(&i.src).chain(&i.predicated);
             for p in params {
                 if !reg_ok(p) {
@@ -405,13 +409,15 @@ impl Shader {
             match i.op {
                 IF | IFC => blocks.push(IF),
                 LOOPOP | REP => blocks.push(i.op),
+                // (one else to an if)
                 ELSE => {
-                    if blocks.last() != Some(&IF) {
+                    if blocks.pop() != Some(IF) {
                         return false;
                     }
+                    blocks.push(ELSE);
                 }
                 ENDIF => {
-                    if blocks.pop() != Some(IF) {
+                    if !matches!(blocks.pop(), Some(IF | ELSE)) {
                         return false;
                     }
                 }
@@ -426,7 +432,7 @@ impl Shader {
                     }
                 }
                 BREAK | BREAKC | BREAKP => {
-                    if !blocks.iter().any(|&b| b != IF) {
+                    if !blocks.iter().any(|&b| b == LOOPOP || b == REP) {
                         return false;
                     }
                 }
@@ -445,7 +451,7 @@ impl Shader {
         let mut max_const = 0;
         for ins in &self.ins {
             if ins.op == DCL {
-                let d = ins.dst.unwrap();
+                let Some(d) = ins.dst else { continue };
                 let usage = ins.extra[0] & 0x1f;
                 let index = (ins.extra[0] >> 16) & 0xf;
                 match d.ty {
@@ -883,9 +889,9 @@ impl<'a> Gen<'a> {
                 MAX => Some(format!("max({}, {})", a(self, 0), a(self, 1))),
                 SLT => Some(format!("select(vec4f(0.0), vec4f(1.0), {} < {})", a(self, 0), a(self, 1))),
                 SGE => Some(format!("select(vec4f(0.0), vec4f(1.0), {} >= {})", a(self, 0), a(self, 1))),
-                EXP | EXPP => Some(format!("vec4f(exp2({}))", sc(self, 0))),
+                EXP | EXPP => Some(format!("vec4f(ex2({}))", sc(self, 0))),
                 LOG | LOGP => Some(format!("vec4f(lg2({}))", sc(self, 0))),
-                POW => Some(format!("vec4f(pow(abs({}), {}))", sc(self, 0), sc(self, 1))),
+                POW => Some(format!("vec4f(pw({}, {}))", sc(self, 0), sc(self, 1))),
                 LIT => Some(format!("lit({})", a(self, 0))),
                 DST => Some(format!(
                     "vec4f(1.0, {0}.y * {1}.y, {0}.z, {1}.w)",
@@ -1309,6 +1315,9 @@ pub fn uniform_size(n: u32) -> u32 {
 
 const HELPERS: &str = "
 fn rcp(x: f32) -> f32 { if (x == 0.0) { return 0x1.fffffep+127f; } return 1.0 / x; }
+// (functions, not the builtins themselves: WGSL rejects a constant pow(0, 0) or exp2(200))
+fn pw(x: f32, y: f32) -> f32 { return pow(abs(x), y); }
+fn ex2(x: f32) -> f32 { return exp2(x); }
 fn rsq(x: f32) -> f32 { let a = abs(x); if (a == 0.0) { return 0x1.fffffep+127f; } return inverseSqrt(a); }
 fn lg2(x: f32) -> f32 { let a = abs(x); if (a == 0.0) { return -0x1.fffffep+127f; } return log2(a); }
 fn nrm(v: vec4f) -> vec4f { let l = dot(v.xyz, v.xyz); if (l == 0.0) { return vec4f(0.0); } return v * inverseSqrt(l); }

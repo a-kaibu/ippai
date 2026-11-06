@@ -398,6 +398,25 @@ fn malformed_sources_are_errors() {
             let _ = super::compile(src, &[], &mut inc, "ps", t, 0);
         }
     }
+    // (shaderconf --fuzz: a register list that is not one, a cbuffer at a c register, and
+    // COLOR4 in shader model 3, which has four render targets: errors, not bad bytecode)
+    let mut inc = |_: &str, _: bool| None;
+    for (src, t) in [
+        ("cbuffer C : register(buniform mat2 m2; uniform mat3 m30) { float4 A; };\nfloat4 ps() : SV_Target { return A; }\n", "ps_4_0"),
+        ("cbuffer C : register(c3) { float4 A; };\nfloat4 ps() : SV_Target { return A; }\n", "ps_4_0"),
+        ("cbuffer C : register(b14) { float4 A; };\nfloat4 ps() : SV_Target { return A; }\n", "ps_4_0"),
+        ("float4 A : register(c0);\nfloat4 ps() : COLOR4 { return A; }\n", "ps_3_0"),
+    ] {
+        assert!(super::compile(src, &[], &mut inc, "ps", t, 0).is_err(), "{src}");
+    }
+    for (src, t) in [
+        ("cbuffer C : register(b13) { float4 A; };\nfloat4 ps() : SV_Target { return A; }\n", "ps_4_0"),
+        ("cbuffer C : register(ps_5_0, b1) { float4 A; };\nfloat4 ps() : SV_Target { return A; }\n", "ps_5_0"),
+        ("cbuffer C : register(b0, space0) { float4 A; };\nfloat4 ps() : SV_Target { return A; }\n", "ps_5_0"),
+        ("float4 A : register(c0);\nfloat4 ps() : COLOR3 { return A; }\n", "ps_3_0"),
+    ] {
+        assert!(super::compile(src, &[], &mut inc, "ps", t, 0).is_ok(), "{src}");
+    }
     for asm in ["ps_3_0\nexp , c0.x\nmov oCswitch\n", "ps_3_0\nlog r0.x,.y\nmov odcl_te0.5rd0 r0\n", "ps_3_0\nmov r0, ]c[\n", "ps_3_0\nmov r0, [1]\n"] {
         let _ = super::d3d9asm::assemble(asm);
     }

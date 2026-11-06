@@ -64,7 +64,12 @@ fn main() {
     if let Some(n) = a.next() {
         let n = n.parse().expect("--fuzz N [seed]");
         let seed = a.next().map_or(1, |s| s.parse().expect("--fuzz N [seed]"));
-        std::process::exit(if fuzz::run(&out, n, seed) { 0 } else { 1 });
+        // (the inputs that broke a translator before, then new ones)
+        let bad = fuzz::regressions(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("regress"));
+        for b in &bad {
+            println!("REGRESSION {b}");
+        }
+        std::process::exit(if fuzz::run(&out, n, seed) && bad.is_empty() { 0 } else { 1 });
     }
     if list {
         for c in &out {

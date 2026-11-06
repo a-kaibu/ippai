@@ -168,6 +168,34 @@ impl Input {
         }
     }
 
+    /// The text `show` gives (lines starting with # before it: comments).
+    fn parse(t: &str) -> Option<Input> {
+        let t: String = t.lines().skip_while(|l| l.starts_with('#')).collect::<Vec<_>>().join("\n");
+        let (head, rest) = t.split_once(|c| c == '\n' || c == ':').map(|(a, b)| (a.trim(), b))?;
+        let rest = rest.strip_prefix('\n').unwrap_or(rest);
+        let hex = |s: &str| s.split_whitespace().map(|w| u32::from_str_radix(w, 16).ok()).collect::<Option<Vec<u32>>>();
+        Some(match head {
+            "HLSL (ps_4_0)" => Input::Hlsl(rest.trim_start_matches(['\n']).to_string(), "ps_4_0"),
+            "HLSL (ps_3_0)" => Input::Hlsl(rest.trim_start_matches(['\n']).to_string(), "ps_3_0"),
+            "D3D9 assembly" => Input::Asm(rest.trim_start_matches(['\n']).to_string()),
+            "GLSL" => Input::Glsl(rest.trim_start_matches(['\n']).to_string()),
+            "DXBC" => Input::Dxbc(bytes(&hex(rest)?)),
+            "D3D9 tokens" => Input::D3d9(hex(rest)?),
+            _ => return None,
+        })
+    }
+
+    /// Whether a translator took the input, and what is wrong with what it made (None:
+    /// rejected, or valid WGSL).
+    fn failure(&self, panic_msg: &Mutex<String>) -> (bool, Option<String>) {
+        match panic::catch_unwind(AssertUnwindSafe(|| self.run())) {
+            Err(_) => (false, Some(format!("panic: {}", panic_msg.lock().unwrap()))),
+            Ok(Err(e)) => (false, Some(e)),
+            Ok(Ok(None)) => (false, None),
+            Ok(Ok(Some(ws))) => (true, ws.iter().find_map(|w| valid(w).err().map(|e| format!("invalid WGSL: {e}\n{w}")))),
+        }
+    }
+
     /// Ok(None): rejected (fine); Ok(Some(wgsl)): accepted
     fn run(&self) -> Result<Option<Vec<String>>, String> {
         let mut inc = |_: &str, _: bool| None;
@@ -272,17 +300,9 @@ pub fn run(cases: &[Case], n: usize, seed: u64) -> bool {
             *current.lock().unwrap() = input.show();
             *CURRENT.lock().unwrap() = input.show();
             started.store(t0.elapsed().as_millis() as u64 + 1, Ordering::Relaxed);
-            let res = panic::catch_unwind(AssertUnwindSafe(|| input.run()));
+            let (took, fail) = input.failure(&msg);
+            accepted += took as usize;
             started.store(0, Ordering::Relaxed);
-            let fail = match res {
-                Err(_) => Some(format!("panic: {}", msg.lock().unwrap())),
-                Ok(Err(e)) => Some(e),
-                Ok(Ok(None)) => None,
-                Ok(Ok(Some(ws))) => {
-                    accepted += 1;
-                    ws.iter().find_map(|w| valid(w).err().map(|e| format!("invalid WGSL: {e}\n{w}")))
-                }
-            };
             if let Some(f) = fail {
                 // (one report per distinct message)
                 let key: String = f.lines().next().unwrap_or("").chars().filter(|c| !c.is_ascii_digit()).collect();
@@ -295,5 +315,37 @@ pub fn run(cases: &[Case], n: usize, seed: u64) -> bool {
         let _ = panic::take_hook();
         println!("fuzz: {n} inputs from {} seeds, {accepted} accepted, {bad} failed ({} distinct)", seeds.len(), seen.len());
         bad == 0
+    }
+}
+
+/// The inputs fuzzing found that broke a translator (crates/shaderconf/regress, as `show` prints
+/// them): each must now be rejected or give valid WGSL. Returns the failures.
+pub fn regressions(dir: &std::path::Path) -> Vec<String> {
+    let msg = Mutex::new(String::new());
+    let mut out = Vec::new();
+    let mut files: Vec<_> = std::fs::read_dir(dir).map(|d| d.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+    files.sort();
+    for f in files {
+        let t = std::fs::read_to_string(&f).unwrap_or_default();
+        match Input::parse(&t) {
+            None => out.push(format!("{}: cannot read", f.display())),
+            Some(i) => {
+                if let (_, Some(e)) = i.failure(&msg) {
+                    out.push(format!("{}: {}", f.display(), e.lines().next().unwrap_or("")));
+                }
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn regressions_stay_fixed() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("regress");
+        assert!(std::fs::read_dir(&dir).map(|d| d.count()).unwrap_or(0) > 0);
+        let bad = super::regressions(&dir);
+        assert!(bad.is_empty(), "{bad:#?}");
     }
 }

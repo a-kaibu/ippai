@@ -340,21 +340,30 @@ impl Parser {
                         if self.peek().is_none() {
                             return self.err("unterminated register()");
                         }
-                        if let Some(Tok::Ident(s)) = self.peek() {
-                            let s = s.clone();
-                            let c = s.chars().next().unwrap_or(' ').to_ascii_lowercase();
-                            if let Ok(i) = s[1..].parse::<u32>() {
-                                if !s.starts_with("space") {
+                        // ([profile,] register [, spaceN]; a register may name a component)
+                        match self.peek() {
+                            Some(Tok::Ident(s)) => {
+                                let s = s.clone();
+                                let c = s.chars().next().unwrap_or(' ').to_ascii_lowercase();
+                                let num = s.get(1..).and_then(|r| r.parse::<u32>().ok());
+                                if s.starts_with("space") && s[5..].parse::<u32>().is_ok() || s.contains('_') {
+                                    // (a register space, a shader profile)
+                                } else if let (Some(i), true) = (num, "bcstui".contains(c)) {
                                     last = Some((c, i));
+                                } else if !matches!(s.as_str(), "x" | "y" | "z" | "w") {
+                                    return self.err(&format!("register({s})"));
                                 }
                             }
+                            Some(Tok::Punct(p)) if *p == "," || *p == "." => {}
+                            _ => return self.err("a bad register()"),
                         }
                         self.p += 1;
                     }
                     // (register numbers past what any shader model has)
                     if let Some((c, i)) = last {
                         let max = match c {
-                            'b' | 's' | 'i' => 16,
+                            'b' => 14,
+                            's' | 'i' => 16,
                             't' => 128,
                             'u' => 64,
                             _ => 8192,
@@ -560,10 +569,14 @@ impl Parser {
         if let Some(Tok::Ident(s)) = self.peek() {
             match s.as_str() {
                 "cbuffer" | "tbuffer" => {
+                    let letter = if s == "cbuffer" { 'b' } else { 't' };
                     self.p += 1;
                     let name = self.ident()?;
                     let mut v = Var::default();
                     self.post_decl(&mut v)?;
+                    if v.reg.is_some_and(|r| r.0 != letter) {
+                        return self.err("a cbuffer's register is a b register (a tbuffer's t)");
+                    }
                     self.expect("{")?;
                     let mut vars = Vec::new();
                     while !self.eat("}") {

@@ -1150,8 +1150,12 @@ impl<'a> L<'a> {
         };
         let (name0, mut index) = split_sem(sem);
         let up = name0.to_ascii_uppercase();
-        // (8 render targets, 32 input/output registers)
-        let max = if matches!(up.as_str(), "SV_TARGET" | "COLOR") && pixel_out(self.o.pixel, output) { 8 } else { 32 };
+        // (8 render targets, 4 in shader model 2/3; 32 input/output registers)
+        let max = if matches!(up.as_str(), "SV_TARGET" | "COLOR") && pixel_out(self.o.pixel, output) {
+            if self.sm3() { 4 } else { 8 }
+        } else {
+            32
+        };
         if index >= max {
             return Err(format!("semantic {sem}: index out of range"));
         }

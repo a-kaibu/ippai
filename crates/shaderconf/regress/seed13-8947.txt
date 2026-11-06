@@ -1,0 +1,7 @@
+# shaderconf --fuzz N 13: input #8947
+# was: invalid WGSL: error: pow built-in function argument is out of valid range
+D3D9 assembly:
+ps_3_0
+mov r0, c0.y
+pow r0.x
+mov oC0, r0
