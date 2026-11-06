@@ -23,6 +23,7 @@ const DDERR_OUTOFMEMORY: u32 = 0x8007_000e;
 const DDERR_NOCLIPLIST: u32 = 0x8876_00cd;
 const DDERR_NOPALETTEATTACHED: u32 = 0x8876_0230;
 const DDERR_NOCOLORKEY: u32 = 0x8876_00d7;
+const DDERR_INVALIDRECT: u32 = 0x8876_0096;
 
 const CAPS_BACKBUFFER: u32 = 0x4;
 const CAPS_COMPLEX: u32 = 0x8;
@@ -457,7 +458,7 @@ fn S_GetPixelFormat(c: &mut Ctx) -> u32 {
 }
 fn S_GetDDInterface(c: &mut Ctx) -> u32 {
     put32(c.a(1), dd_block(3));
-    DD_OK
+    dd_created()
 }
 fn S_GetUniqueness(c: &mut Ctx) -> u32 {
     put32(c.a(1), 1);
@@ -637,6 +638,12 @@ fn present_if_primary(c: &mut Ctx, id: u32, r: Rect) {
     gcall(c, "user32", "ReleaseDC", &[hwnd, dc]);
 }
 
+/// A rect Blt takes as it is: not empty and inside the surface (DDERR_INVALIDRECT otherwise;
+/// a clipper clips a destination instead).
+fn rect_ok(r: Rect, w: i32, h: i32) -> bool {
+    r.l < r.r && r.t < r.b && r.l >= 0 && r.t >= 0 && r.r <= w && r.b <= h
+}
+
 fn clip_rect(r: Rect, w: i32, h: i32) -> Rect {
     Rect { l: r.l.max(0), t: r.t.max(0), r: r.r.min(w), b: r.b.min(h) }
 }
@@ -670,9 +677,17 @@ fn px_mask(bpp: u32) -> u32 {
     if bpp >= 4 { 0x00ff_ffff } else { (1u32 << (bpp * 8)) - 1 }
 }
 
-/// Copies `sr` of `src` to `dr` of `dst` (same format), stretching with the nearest pixel and
-/// skipping source pixels in the key range.
-fn blit(dst: &Surf, dr: Rect, src: &Surf, sr: Rect, key: Option<(u32, u32)>) {
+/// The source pixel of destination pixel `i` of `d` stretched from `s`, as Windows' HEL steps:
+/// a 16.16 step rounded up, starting half a step in (but at 0 when widening a row).
+fn stretch_pick(i: i32, s: i32, d: i32, row: bool) -> i32 {
+    let step = (((s as i64) << 16) + d as i64 - 1) / d as i64;
+    let start = if row && d > s { 0 } else { step / 2 };
+    ((i as i64 * step + start) >> 16) as i32
+}
+
+/// Copies `sr` of `src` to `dr` of `dst` (same format), stretching with the nearest pixel,
+/// mirrored left-right / up-down if asked, skipping source pixels in the key range.
+fn blit(dst: &Surf, dr: Rect, src: &Surf, sr: Rect, key: Option<(u32, u32)>, mirror: (bool, bool)) {
     let bpp = dst.bpp as u32 / 8;
     let (dw, dh, sw, sh) = (dr.r - dr.l, dr.b - dr.t, sr.r - sr.l, sr.b - sr.t);
     if dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0 {
@@ -681,13 +696,18 @@ fn blit(dst: &Surf, dr: Rect, src: &Surf, sr: Rect, key: Option<(u32, u32)>) {
     let base_d = mem::slice_mut(dst.bits, dst.pitch * dst.h as u32).as_mut_ptr();
     let base_s = mem::slice(src.bits, src.pitch * src.h as u32).as_ptr();
     let mask = px_mask(bpp);
-    let same = dw == sw && dh == sh;
+    let same = dw == sw && dh == sh && !mirror.0 && !mirror.1;
     // overlapping copies within one surface go bottom-up / right-to-left as needed
     let overlap = dst.bits == src.bits;
     let rows: Box<dyn Iterator<Item = i32>> = if overlap && dr.t > sr.t { Box::new((0..dh).rev()) } else { Box::new(0..dh) };
     for y in rows {
         let dy = dr.t + y;
-        let sy = if same { sr.t + y } else { sr.t + (y as i64 * sh as i64 / dh as i64) as i32 };
+        let sy = if same {
+            sr.t + y
+        } else {
+            let k = if dh == sh { y } else { stretch_pick(y, sh, dh, false) };
+            if mirror.1 { sr.b - 1 - k } else { sr.t + k }
+        };
         if dy < 0 || dy >= dst.h || sy < 0 || sy >= src.h {
             continue;
         }
@@ -715,7 +735,12 @@ fn blit(dst: &Surf, dr: Rect, src: &Surf, sr: Rect, key: Option<(u32, u32)>) {
         }
         for x in 0..dw {
             let dx = dr.l + x;
-            let sx = if same { sr.l + x } else { sr.l + (x as i64 * sw as i64 / dw as i64) as i32 };
+            let sx = if same {
+                sr.l + x
+            } else {
+                let k = if dw == sw { x } else { stretch_pick(x, sw, dw, true) };
+                if mirror.0 { sr.r - 1 - k } else { sr.l + k }
+            };
             if dx < 0 || dx >= dst.w || sx < 0 || sx >= src.w {
                 continue;
             }
@@ -783,6 +808,9 @@ fn S_Blt(c: &mut Ctx) -> u32 {
     let Some((sid_, _)) = sid(srcb) else { return DDERR_INVALIDPARAMS };
     let Some(src) = surf(sid_) else { return DDERR_INVALIDPARAMS };
     let sr = if srp == 0 { Rect { l: 0, t: 0, r: src.w, b: src.h } } else { Rect::read(srp) };
+    if (dst.clipper == 0 && !rect_ok(dr, dst.w, dst.h)) || !rect_ok(sr, src.w, src.h) {
+        return DDERR_INVALIDRECT;
+    }
     let key = if flags & 0x10000 != 0 && fx != 0 {
         Some((r32(fx + 92), r32(fx + 96)))
     } else if flags & 0x8000 != 0 {
@@ -790,8 +818,10 @@ fn S_Blt(c: &mut Ctx) -> u32 {
     } else {
         None
     };
+    // DDBLT_DDFX: DDBLTFX_MIRRORLEFTRIGHT / MIRRORUPDOWN
+    let ddfx = if flags & 0x800 != 0 && fx != 0 { r32(fx + 4) } else { 0 };
     if src.bpp == dst.bpp {
-        blit(&dst, dr, &src, sr, key);
+        blit(&dst, dr, &src, sr, key, (ddfx & 2 != 0, ddfx & 4 != 0));
     } else {
         gdi_blit(c, &dst, dr, &src, sr);
     }
@@ -807,9 +837,12 @@ fn S_BltFast(c: &mut Ctx) -> u32 {
     let Some(src) = surf(sid_) else { return DDERR_INVALIDPARAMS };
     let sr = if srp == 0 { Rect { l: 0, t: 0, r: src.w, b: src.h } } else { Rect::read(srp) };
     let dr = Rect { l: x, t: y, r: x + sr.r - sr.l, b: y + sr.b - sr.t };
+    if !rect_ok(dr, dst.w, dst.h) || !rect_ok(sr, src.w, src.h) {
+        return DDERR_INVALIDRECT;
+    }
     let key = if trans & 1 != 0 { src.ck_src } else { None };
     if src.bpp == dst.bpp {
-        blit(&dst, dr, &src, sr, key);
+        blit(&dst, dr, &src, sr, key, (false, false));
     } else {
         gdi_blit(c, &dst, dr, &src, sr);
     }
@@ -929,8 +962,8 @@ fn dd_block(v: usize) -> u32 {
     *B[v].get_or_init(|| {
         let mut m: Vec<(Handler, u32)> = vec![
             (D_QueryInterface, 12),
-            (one, 4),
-            (one, 4),
+            (D_AddRef, 4),
+            (D_Release, 4),
             (ok, 4),
             (D_CreateClipper, 16),
             (D_CreatePalette, 20),
@@ -973,6 +1006,21 @@ fn dd_version(c: &Ctx) -> usize {
     r32(c.a(0) + 4) as usize
 }
 
+/// References to the DirectDraw object (one object, whatever interface or create call).
+static DD_REFS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+fn D_AddRef(_: &mut Ctx) -> u32 {
+    DD_REFS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+}
+fn D_Release(_: &mut Ctx) -> u32 {
+    let r = DD_REFS.fetch_update(std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed, |n| Some(n.saturating_sub(1)));
+    r.unwrap_or(0).saturating_sub(1)
+}
+fn dd_created() -> u32 {
+    DD_REFS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    DD_OK
+}
+
 fn D_QueryInterface(c: &mut Ctx) -> u32 {
     let v = match guid_first(c.a(1)) {
         0x6c14_db80 | 0 => 0,
@@ -985,7 +1033,7 @@ fn D_QueryInterface(c: &mut Ctx) -> u32 {
         }
     };
     put32(c.a(2), dd_block(v));
-    DD_OK
+    dd_created()
 }
 
 fn D_CreateClipper(c: &mut Ctx) -> u32 {
@@ -1188,11 +1236,11 @@ fn D_GetDeviceIdentifier(c: &mut Ctx) -> u32 {
 
 fn DirectDrawCreate(c: &mut Ctx) -> u32 {
     put32(c.a(1), dd_block(0));
-    DD_OK
+    dd_created()
 }
 fn DirectDrawCreateEx(c: &mut Ctx) -> u32 {
     put32(c.a(1), dd_block(3));
-    DD_OK
+    dd_created()
 }
 fn DirectDrawCreateClipper(c: &mut Ctx) -> u32 {
     put32(c.a(1), new_clipper());
@@ -1230,6 +1278,7 @@ pub fn create_instance(clsid: u32, iid: u32) -> Option<u32> {
         0x15e6_5ec0 => 3,
         _ => 0,
     };
+    dd_created();
     Some(dd_block(v))
 }
 

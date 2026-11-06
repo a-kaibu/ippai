@@ -3,7 +3,8 @@
  * color fill, copy, stretch up and down, source color keys (Blt and BltFast), mirroring, rect
  * clipping and its errors, overlapping blits within a surface; Lock pitches; GetDC with GDI
  * drawing on a surface; GetSurfaceDesc, GetPixelFormat and display mode queries.
- * libs: -lddraw -ldxguid -lgdi32 */
+ * libs: -lddraw -ldxguid -lgdi32
+ * arch: 32 (DirectDraw games are 32-bit; sake has no x64 DirectDraw) */
 #define COBJMACROS
 #include "../probe.h"
 #include <ddraw.h>
