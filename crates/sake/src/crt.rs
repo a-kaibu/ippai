@@ -2083,6 +2083,22 @@ fn memcpy_s(c: &mut Ctx) -> u32 {
     mem::copy(d, s, n);
     0
 }
+/// memmove_s(dst, size, src, count): overlapping copies allowed; a short destination is ERANGE
+/// and is left as it was
+fn memmove_s(c: &mut Ctx) -> u32 {
+    let (d, dn, s, n) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    if n == 0 {
+        return 0;
+    }
+    if d == 0 || s == 0 {
+        return 22;
+    }
+    if dn < n {
+        return 34;
+    }
+    mem::copy(d, s, n);
+    0
+}
 fn _controlfp_s(c: &mut Ctx) -> u32 {
     if c.a(0) != 0 {
         w32(c.a(0), 0x9001f);
@@ -3195,7 +3211,7 @@ pub fn init() {
     reg!(_putenv, fputc, __acrt_iob_func, _create_locale, _free_locale, _fdclass, _dclass, _fdsign, _dsign, strnlen);
     implement("ucrtbase", "__stdio_common_vsprintf", __stdio_common_vsprintf);
     implement("ucrtbase", "__stdio_common_vswprintf", __stdio_common_vswprintf);
-    reg!(wcsncmp, getenv, _ismbblead, memcpy_s, _controlfp_s, __iob_func, __p__iob, fopen_s, _wfopen_s, _setjmp3, longjmp, remove, rename);
+    reg!(wcsncmp, getenv, _ismbblead, memcpy_s, memmove_s, _controlfp_s, __iob_func, __p__iob, fopen_s, _wfopen_s, _setjmp3, longjmp, remove, rename);
     implement("msvcrt", "_setjmp", _setjmp3);
     reg!(_encode_pointer, _encoded_null, _crt_debugger_hook, _configthreadlocale, ___mb_cur_max_l_func);
     reg!(_initterm, _initterm_e, _onexit, atexit, __dllonexit, exit, _exit, abort, __getmainargs, __set_app_type,
