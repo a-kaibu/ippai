@@ -526,7 +526,11 @@ fn init_flags() {
         jit::set_watch(exe_wx_page);
         jit::set_deny(|a| wx_page(a) || page_set(&SMC_PAGES, a));
         // function mode by default (IPPAI_JIT_FN=0: regions)
-        jit::FN.store(std::env::var("IPPAI_JIT_FN").map_or(true, |v| v != "0"), std::sync::atomic::Ordering::Relaxed);
+        // (a constant stored: the wasm build stored false for this flag when the value was
+        // the expression's, and FN mode was off by default)
+        if !std::env::var("IPPAI_JIT_FN").is_ok_and(|v| v == "0") {
+            jit::FN.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
 
     });
 }
@@ -1291,7 +1295,11 @@ fn compile_fn(st: &mut State, eip: u32, (lo, hi): (u32, u32), mem: &mut Linear, 
         // translated on the compiler thread; the interpreter goes on meanwhile (a build takes
         // a few ms here, several times that on a phone: a dropped frame each, in the story's
         // scene changes)
+        let tc = Instant::now();
         let job = Job { eip, lo, hi, part, build, misses: st.misses.clone(), known: st.known.clone(), hints: st.hints.clone(), tid: std::thread::current().id(), done: st.done_tx.clone() };
+        if crate::env_on!("IPPAI_JIT_TIME") {
+            eprintln!("vnjit job {eip:#x}: misses {} known {} hints {}, copied in {:?}", st.misses.len(), st.known.len(), st.hints.len(), tc.elapsed());
+        }
         if jobs.send(job).is_ok() {
             st.pending.insert(eip);
             return false;
