@@ -381,7 +381,7 @@ fn D3DXCreateBuffer(c: &mut Ctx) -> u32 {
 
 /// D3DXCreateEffect(device, data, length, defines, include, flags, pool, effect, errors) and the
 /// Ex form (.., include, skip constants, flags, ..): a compiled effect (crate::d3dx9fx) or effect
-/// source, compiled to fx_2_0 first (crate::hlsl::compile_effect)
+/// source, compiled to fx_2_0 first (hlslc::compile_effect)
 #[allow(clippy::too_many_arguments)]
 fn effect_from(c: &mut Ctx, dev: u32, data: &[u8], name: &str, defs: u32, inc: u32, flags: u32, out: u32, errs: u32) -> u32 {
     if errs != 0 {
@@ -395,7 +395,7 @@ fn effect_from(c: &mut Ctx, dev: u32, data: &[u8], name: &str, defs: u32, inc: u
         let defines = crate::d3dcompiler::defines(defs);
         let base = crate::d3dcompiler::dir_of(name);
         let mut include = |n: &str, sys: bool| crate::d3dcompiler::open_include(c, inc, &base, n, sys);
-        compiled = crate::hlsl::compile_effect(src.trim_end_matches('\0'), &defines, &mut include, flags & crate::hlsl::PACK_MATRIX_ROW_MAJOR);
+        compiled = hlslc::compile_effect(src.trim_end_matches('\0'), &defines, &mut include, flags & hlslc::PACK_MATRIX_ROW_MAJOR);
         match &compiled {
             Ok(b) => Ok(&b[..]),
             Err(e) => Err(format!("{}: error X3000: {e}", if name.is_empty() { "memory" } else { name })),
@@ -718,7 +718,7 @@ fn D3DXAssembleShader(c: &mut Ctx) -> u32 {
     // (data, length, defines, include, flags, shader, errors)
     let src = String::from_utf8_lossy(&mem::cstrn(c.a(0), c.a(1))).into_owned();
     let (out, errs) = (c.a(5), c.a(6));
-    match crate::d3dx9asm::assemble(&src) {
+    match hlslc::d3d9asm::assemble(&src) {
         Ok(words) => {
             let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
             if out != 0 {

@@ -1,7 +1,7 @@
 //! Shader model 2/3 output: lower.rs's instructions (in its sm3 mode, where ints and bools are
-//! floats and true is 1.0) as Direct3D 9 shader assembly, assembled by d3dx9asm, with a CTAB
+//! floats and true is 1.0) as Direct3D 9 shader assembly, assembled by d3d9asm.rs, with a CTAB
 //! comment (the constant table D3DXGetShaderConstantTable and ID3DXConstantTable read).
-//! Instruction count limits are not checked: the bytecode only feeds kura's translation.
+//! Instruction count limits are not checked: the bytecode only feeds a WGSL translation (dxwgsl).
 
 use std::collections::HashMap;
 
@@ -801,7 +801,7 @@ pub fn assembly(mut s: Shader) -> Result<(String, Vec<u8>), String> {
 /// The shader's bytecode (with its CTAB comment after the version token).
 pub fn finish(s: Shader) -> Result<Vec<u8>, String> {
     let (text, tab) = assembly(s)?;
-    let words = crate::d3dx9asm::assemble(&text).map_err(|e| format!("internal error: {e}\n{text}"))?;
+    let words = crate::d3d9asm::assemble(&text).map_err(|e| format!("internal error: {e}\n{text}"))?;
     let mut out = Vec::new();
     out.extend_from_slice(&words[0].to_le_bytes());
     let mut body = b"CTAB".to_vec();

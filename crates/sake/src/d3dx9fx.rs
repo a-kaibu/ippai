@@ -2,7 +2,7 @@
 //! parameters, techniques and passes parsed from the binary; a pass sets its render, texture
 //! stage and sampler states, textures and shaders on the device, and the shaders' constants
 //! from the parameters of the same name (their constant tables). Effect source text is compiled
-//! to this binary first (crate::hlsl::compile_effect, in d3dx9.rs). Not done: preshaders and FXLC
+//! to this binary first (hlslc::compile_effect, in d3dx9.rs). Not done: preshaders and FXLC
 //! expressions (logged), parameter blocks.
 
 #![allow(non_snake_case)]
@@ -1515,7 +1515,7 @@ technique T <string Desc = "main";> {
 }
 "#;
         let mut none = |_: &str, _: bool| None;
-        let fx = crate::hlsl::compile_effect(src, &[], &mut none, 0).unwrap();
+        let fx = hlslc::compile_effect(src, &[], &mut none, 0).unwrap();
         let (params, top, values, techs, objects) = super::parse(&fx).unwrap();
         let st = |s: &super::State| {
             let v = &values[&s.param];
@@ -1546,7 +1546,7 @@ technique T <string Desc = "main";> {
         assert_eq!(shaders.len(), 3, "{:?}", objects.iter().map(|o| (o.ty, o.data.len())).collect::<Vec<_>>());
         for o in shaders {
             let words: Vec<u32> = o.data.chunks(4).map(|b| u32::from_le_bytes(b.try_into().unwrap())).collect();
-            assert!(kura::d3d9::shader::Shader::parse(&words).is_some());
+            assert!(dxwgsl::d3d9::Shader::parse(&words).is_some());
         }
     }
 }

@@ -229,7 +229,7 @@ fn sampler_state(tss: u32) -> Option<u32> {
 
 /// Direct3D 8's fixed input registers (v0 position, ... v7-v14 texture coordinates) as usages
 fn reg_usage(reg: u32) -> (u32, u32) {
-    use super::shader::*;
+    use dxwgsl::d3d9::*;
     match reg {
         0 => (USAGE_POSITION, 0),
         1 => (USAGE_BLENDWEIGHT, 0),

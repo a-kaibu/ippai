@@ -696,6 +696,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
+name = "dxwgsl"
+version = "0.1.0"
+dependencies = [
+ "naga",
+]
+
+[[package]]
 name = "either"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -956,6 +963,14 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
+name = "hlslc"
+version = "0.1.0"
+dependencies = [
+ "dxwgsl",
+ "naga",
+]
 
 [[package]]
 name = "hmac"
@@ -1306,6 +1321,7 @@ dependencies = [
 name = "kura"
 version = "0.1.0"
 dependencies = [
+ "dxwgsl",
  "koji",
  "libc",
  "naga",
@@ -2058,7 +2074,9 @@ dependencies = [
  "ab_glyph",
  "ab_glyph_rasterizer",
  "dlmalloc",
+ "dxwgsl",
  "encoding_rs",
+ "hlslc",
  "jpeg-decoder",
  "koji",
  "kura",

@@ -562,7 +562,7 @@ fn compile(c: &mut Ctx, src: &[u8], name: &str, defs: u32, inc: u32, entry: u32,
     let defines = crate::d3dcompiler::defines(defs);
     let base = crate::d3dcompiler::dir_of(name);
     let mut include = |n: &str, sys: bool| crate::d3dcompiler::open_include(c, inc, &base, n, sys);
-    let r = crate::hlsl::compile(src, &defines, &mut include, &entry, &target, flags & crate::hlsl::PACK_MATRIX_ROW_MAJOR);
+    let r = hlslc::compile(src, &defines, &mut include, &entry, &target, flags & hlslc::PACK_MATRIX_ROW_MAJOR);
     for p in [out, errs, table] {
         if p != 0 {
             w32(p, 0);
@@ -805,7 +805,7 @@ mod tests {
                    sampler2D tex;\n\
                    float4 main(float2 uv : TEXCOORD0) : COLOR { return tex2D(tex, uv) * tint + mul(float4(uv, 0, 1), wvp) + lights[1].col + lights[0].dir.x; }";
         let mut inc = |_: &str, _: bool| None;
-        let code = crate::hlsl::compile(src, &[], &mut inc, "main", "ps_3_0", 0).unwrap();
+        let code = hlslc::compile(src, &[], &mut inc, "main", "ps_3_0", 0).unwrap();
         let (_, d) = crate::d3dx9fx::comments(&code).into_iter().find(|(f, _)| f == b"CTAB").unwrap();
         // (parse without guest memory: names only)
         let names = super::ctab_names(d);

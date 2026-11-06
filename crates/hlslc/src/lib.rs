@@ -1,9 +1,12 @@
 //! An HLSL compiler (what d3dcompiler_*.dll's D3DCompile does): preprocessor (pp.rs), parser
 //! (parse.rs), lowering with every call inlined (lower.rs, intrinsics.rs, prelude.rs) and shader
-//! model 4/5 DXBC output (sm4.rs), which kura's DXBC to WGSL translation reads, or shader model
-//! 2/3 bytecode (sm3.rs) for Direct3D 9.
+//! model 4/5 DXBC output (sm4.rs), or shader model 2/3 bytecode (sm3.rs, through the Direct3D 9
+//! assembler in d3d9asm.rs) for Direct3D 9. Effects (.fx) compile to fx_2_0 (fx.rs).
+//!
+//! Source text in, bytecode out; std only. The dxwgsl crate turns the output into WGSL.
 
 mod ast;
+pub mod d3d9asm;
 mod fx;
 mod intrinsics;
 mod lower;

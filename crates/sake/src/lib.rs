@@ -31,8 +31,6 @@ pub mod crt;
 pub mod com;
 pub mod d2d;
 pub mod d3dx9;
-pub mod d3dx9asm;
-pub mod hlsl;
 pub mod d3dcompiler;
 pub mod d3dreflect;
 pub mod d3dx9fx;

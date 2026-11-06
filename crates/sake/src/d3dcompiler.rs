@@ -129,7 +129,7 @@ fn compile(c: &mut Ctx, src: &[u8], name: &str, defs: u32, inc: u32, entry: u32,
     let defines = defines(defs);
     let base = dir_of(name);
     let mut include = |n: &str, sys: bool| open_include(c, inc, &base, n, sys);
-    let r = crate::hlsl::compile(src, &defines, &mut include, &entry, &target, flags);
+    let r = hlslc::compile(src, &defines, &mut include, &entry, &target, flags);
     mem::putp(errs, 0);
     match r {
         Ok(code) => {
@@ -185,7 +185,7 @@ fn D3DPreprocess(c: &mut Ctx) -> u32 {
     let defines = defines(defs);
     let base = dir_of(&name);
     let mut include = |n: &str, sys: bool| open_include(c, inc, &base, n, sys);
-    let r = crate::hlsl::preprocess(src.trim_end_matches('\0'), &defines, &mut include);
+    let r = hlslc::preprocess(src.trim_end_matches('\0'), &defines, &mut include);
     mem::putp(errs, 0);
     match r {
         Ok(toks) => {
@@ -198,7 +198,7 @@ fn D3DPreprocess(c: &mut Ctx) -> u32 {
                 } else {
                     s.push(' ');
                 }
-                s.push_str(&crate::hlsl::pp::text(&t));
+                s.push_str(&hlslc::pp::text(&t));
             }
             s.push('\n');
             mem::putp(out, text_blob(&s));
@@ -219,12 +219,12 @@ fn D3DCreateBlob(c: &mut Ctx) -> u32 {
 
 /// A DXBC container of the chunks `tags` of `code`.
 fn part(code: &[u8], tags: &[&[u8; 4]]) -> Option<Vec<u8>> {
-    let cont = kura::d3d11::dxbc::Container::parse(code).ok()?;
+    let cont = dxwgsl::dxbc::Container::parse(code).ok()?;
     let mut chunks = Vec::new();
     for t in tags {
         chunks.push((**t, cont.chunk(t)?.to_vec()));
     }
-    Some(crate::hlsl::sm4::container(&chunks))
+    Some(hlslc::sm4::container(&chunks))
 }
 
 fn sig_blob(c: &mut Ctx, tags: &[&[u8; 4]], out: u32) -> u32 {

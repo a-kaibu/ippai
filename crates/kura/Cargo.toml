@@ -10,5 +10,6 @@ crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 koji = { path = "../koji" }
+dxwgsl = { path = "../dxwgsl" }
 libc = "0.2"
 naga = { version = "30", features = ["glsl-in", "wgsl-in", "wgsl-out"] }  # (naga 30's glsl-in needs spv-in or wgsl-in)

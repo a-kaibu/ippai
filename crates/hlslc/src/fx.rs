@@ -606,7 +606,7 @@ impl W<'_> {
                     }
                 }
             }
-            FxVal::Asm(text) => match crate::d3dx9asm::assemble(text) {
+            FxVal::Asm(text) => match crate::d3d9asm::assemble(text) {
                 Ok(w) => Some(w.iter().flat_map(|x| x.to_le_bytes()).collect()),
                 Err(e) => {
                     self.warnings.push(format!("asm: {e}"));

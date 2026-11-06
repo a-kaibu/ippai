@@ -14,9 +14,9 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-use super::dxbc::{Container, SigElement};
-use super::shader::{Binding, Wgsl};
-use super::tpf::{self, Index, Inst, Operand, Program};
+use crate::dxbc::{Container, SigElement};
+use crate::{Binding, Wgsl};
+use crate::tpf::{self, Index, Inst, Operand, Program};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum K {

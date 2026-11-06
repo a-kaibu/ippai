@@ -32,12 +32,12 @@ WebGPU D3D9 を使う。いまはページ (`play.html` / `game.html`) が動か
 - D3D11 / DXGI (d3d11.rs): kura の WebGPU D3D11 (Wine 経路と同じ実装) に橋渡し。vtable の
   各メソッドはトラップで、`kura::d3d11::call` に引数を渡すだけ。メソッド表は
   `host/gen-d3d11-stubs.py` が d3d11_methods.rs として生成する。
-- d3dcompiler_33〜47 (d3dcompiler.rs, d3dreflect.rs): 自前の HLSL コンパイラ (src/hlsl/:
+- d3dcompiler_33〜47 (d3dcompiler.rs, d3dreflect.rs): 自前の HLSL コンパイラ (crates/hlslc:
   プリプロセッサ、構文解析、関数はすべてインライン展開、SM4/5 の DXBC を出す) で D3DCompile、
-  D3DPreprocess、署名ブロブ、D3DReflect。出力は kura の DXBC→WGSL がそのまま読む。
-  テストは `cargo test -p sake hlsl` (WGSL まで通して naga で検証) と host/tests/hlsltest.c。
-  D3D9 向けの ps_2_0〜3_0 / vs_2_0〜3_0 も出せる (hlsl/sm3.rs: int と bool は float で扱い、
-  アセンブリを d3dx9asm で組み立てて CTAB を付ける。ビット演算・switch・continue・
+  D3DPreprocess、署名ブロブ、D3DReflect。出力は dxwgsl (crates/dxwgsl) の DXBC→WGSL がそのまま読む。
+  テストは `cargo test -p hlslc` (WGSL まで通して naga で検証) と host/tests/hlsltest.c。
+  D3D9 向けの ps_2_0〜3_0 / vs_2_0〜3_0 も出せる (hlslc の sm3.rs: int と bool は float で扱い、
+  アセンブリを hlslc::d3d9asm で組み立てて CTAB を付ける。ビット演算・switch・continue・
   テクスチャのオフセットはエラー)。d3dx9_24〜43 の D3DXCompileShader(FromFile)・
   D3DXGetShaderConstantTable・ID3DXConstantTable (d3dx9shader.rs) がこれを使う。
   テストは host/tests/d3dx9shader.c (定数の書き込みを偽のデバイスで表示)。

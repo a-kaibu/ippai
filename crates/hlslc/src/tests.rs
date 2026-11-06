@@ -1,4 +1,4 @@
-//! Shaders compiled here go through kura's DXBC to WGSL translation and naga's validation.
+//! Shaders compiled here go through dxwgsl's DXBC to WGSL translation and naga's validation.
 
 fn compile(src: &str, entry: &str, target: &str) -> Vec<u8> {
     let mut inc = |_: &str, _: bool| None;
@@ -9,7 +9,7 @@ fn compile(src: &str, entry: &str, target: &str) -> Vec<u8> {
 }
 
 fn wgsl(code: &[u8], pixel: bool, ps: Option<&[u8]>) -> String {
-    let w = kura::d3d11::shader::translate(code, pixel, ps).unwrap_or_else(|e| panic!("translate: {e}"));
+    let w = dxwgsl::translate(code, pixel, ps).unwrap_or_else(|e| panic!("translate: {e}"));
     let m = match naga::front::wgsl::parse_str(&w.code) {
         Ok(m) => m,
         Err(e) => panic!("{}\n{}", e.emit_to_string(&w.code), w.code),
@@ -47,9 +47,9 @@ fn d3d11test() {
         pair(D3D11TEST, "vs_quad", "ps_quad", t);
     }
     let v = compile(D3D11TEST, "vs_tri", "vs_4_0");
-    let sig = kura::d3d11::shader::signature(&v, false);
+    let sig = dxwgsl::signature(&v, false);
     assert_eq!(sig.iter().map(|e| (e.name.as_str(), e.reg)).collect::<Vec<_>>(), [("POSITION", 0), ("COLOR", 1)]);
-    let osig = kura::d3d11::shader::signature(&v, true);
+    let osig = dxwgsl::signature(&v, true);
     assert_eq!(osig[0].name, "SV_Position");
     assert_eq!(osig[0].sysval, 1);
 }
@@ -255,17 +255,17 @@ fn print() {
 
 // ---- shader model 2/3 ----
 
-/// D3D9 bytecode through kura's D3D9 translation; (WGSL, assembly)
-fn d3d9(src: &str, entry: &str, target: &str, link: u32) -> (String, kura::d3d9::shader::Shader) {
+/// D3D9 bytecode through dxwgsl's D3D9 translation; (WGSL, assembly)
+fn d3d9(src: &str, entry: &str, target: &str, link: u32) -> (String, dxwgsl::d3d9::Shader) {
     let code = compile(src, entry, target);
     let words: Vec<u32> = code.chunks(4).map(|b| u32::from_le_bytes(b.try_into().unwrap())).collect();
-    let s = kura::d3d9::shader::Shader::parse(&words).unwrap_or_else(|| panic!("{entry}: kura cannot parse"));
-    let g = kura::d3d9::shader::Gen::new(&s);
+    let s = dxwgsl::d3d9::Shader::parse(&words).unwrap_or_else(|| panic!("{entry}: dxwgsl cannot parse"));
+    let g = dxwgsl::d3d9::Gen::new(&s);
     let code = if s.pixel {
-        g.pixel(&kura::d3d9::shader::Options { link, vs_inputs: Vec::new(), alpha_test: None, fog: false })
+        g.pixel(&dxwgsl::d3d9::Options { link, vs_inputs: Vec::new(), alpha_test: None, fog: false })
     } else {
         let ins = s.inputs.iter().enumerate().map(|(k, i)| (i.0, k as u32, 0)).collect();
-        g.vertex(&kura::d3d9::shader::Options { link: 0, vs_inputs: ins, alpha_test: None, fog: false })
+        g.vertex(&dxwgsl::d3d9::Options { link: 0, vs_inputs: ins, alpha_test: None, fog: false })
     };
     let m = match naga::front::wgsl::parse_str(&code) {
         Ok(m) => m,

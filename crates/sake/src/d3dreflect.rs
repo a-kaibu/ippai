@@ -240,7 +240,7 @@ fn signature(b: Option<&[u8]>) -> Vec<SigR> {
 }
 
 fn parse(code: &[u8]) -> Option<Refl> {
-    let cont = kura::d3d11::dxbc::Container::parse(code).ok()?;
+    let cont = dxwgsl::dxbc::Container::parse(code).ok()?;
     let shdr = cont.chunk(b"SHEX").or_else(|| cont.chunk(b"SHDR"));
     let mut r = Refl {
         version: shdr.map_or(0, |s| rd(s, 0)),
@@ -255,7 +255,7 @@ fn parse(code: &[u8]) -> Option<Refl> {
         threads: [0; 3],
     };
     if let Some(s) = shdr {
-        if let Ok(p) = kura::d3d11::tpf::decode(s) {
+        if let Ok(p) = dxwgsl::tpf::decode(s) {
             for i in &p.insts {
                 match i.op {
                     0x68 => r.temps = i.extra.first().copied().unwrap_or(0),
@@ -621,8 +621,8 @@ mod tests {
                    Texture2D t; SamplerState ss;\n\
                    float4 main(float2 uv : TEXCOORD) : SV_Target { return t.Sample(ss, uv) * mul(float4(v, s), m) + k[1]; }";
         let mut inc = |_: &str, _: bool| None;
-        let b = crate::hlsl::compile(src, &[], &mut inc, "main", "ps_5_0", 0).unwrap();
-        let c = kura::d3d11::dxbc::Container::parse(&b).unwrap();
+        let b = hlslc::compile(src, &[], &mut inc, "main", "ps_5_0", 0).unwrap();
+        let c = dxwgsl::dxbc::Container::parse(&b).unwrap();
         let r = c.chunk(b"RDEF").unwrap();
         assert_eq!(super::rd(r, 0), 1); // one cbuffer
         assert_eq!(super::rd(r, 8), 3); // sampler, texture, cbuffer

@@ -67,6 +67,8 @@ flowchart TB
 | --- | --- |
 | `crates/koji` | i386 CPU コア: インタプリタと x86→wasm JIT (ネイティブ CPU との差分テスト付き) |
 | `crates/kura` | ブラウザ側のホスト: メモリ、スレッド、fd、ファイルシステム、表示、音声、Direct3D 9/11・OpenGL (WebGPU) |
+| `crates/hlslc` | HLSL コンパイラ: ソース → DXBC (SM4/5)・D3D9 バイトコード (SM2/3)・fx_2_0 エフェクト、D3D9 シェーダーアセンブラ。std のみ |
+| `crates/dxwgsl` | シェーダーバイトコード → WGSL: DXBC (SM4/5) と D3D8/9 (vs/ps 1.x〜3.0)、署名の読み取り。std のみ |
 | `crates/sake` | Win32 層 (kernel32、user32、gdi32、d3d9 など)。`build.sh` が sake.js / sake.wasm を作る |
 | `crates/ippai` | `ippai` 1本のCLI (Web UI を内蔵)。`serve` / `stop` / `status` / `logs`: サーバー (COOP/COEP 付きの配信、JIT リージョンの保存、ゲーム一覧、セーブの S3 バックアップ、実行ログ)。`add`: フォルダをチャンク (256KiB、zstd) のストアにして一覧に登録。`remove` / `meta`: 一覧と、批評空間・VNDB からの作品情報。`pack` / `add-game` は `add` の前半・後半 (非表示) |
 | `host/` | emscripten の JS ライブラリ (`pre.js`、`vnfs.js`、`vnjit.js`)、生成スクリプト、テスト用プログラム (`tests/`) |
@@ -124,7 +126,7 @@ target/release/ippai serve --foreground --web web/dist --listen 127.0.0.1:8080
 sake は今のところ、Wine で作った 32bit prefix (`prefix32`、作り方は vnvm-wine の
 `hangover/make-prefix32.py`) の `drive_c` をフォントと、sake にまだない DLL (d2d1、dwrite、
 d3dcompiler_47 など) のために使います。ビルド済みのものが共有フォルダの `vnvm-env/` にあります。
-Direct3D 10/11 のシェーダーは DXBC から WGSL へ直接翻訳します (`crates/kura/src/d3d11/wgsl.rs`)。
+Direct3D 10/11 のシェーダーは DXBC から WGSL へ直接翻訳します (`crates/dxwgsl`)。
 
 ## 制約
 

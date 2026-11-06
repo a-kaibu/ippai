@@ -6,16 +6,12 @@
 //! interfaces (the device is also an IDXGIDevice) has a block per interface ("faces").
 //!
 //! Draws become commands of the d3d9 batch queue (`d3d9::gpu`, run by crates/kura/src/render/d3d.rs):
-//! shaders go DXBC -> SPIR-V -> WGSL (`shader`), buffers are guest memory copied into a new page
+//! shaders go DXBC -> WGSL (the dxwgsl crate), buffers are guest memory copied into a new page
 //! buffer whenever a draw needs them after the guest wrote them.
 
 pub mod d2d;
-pub mod dxbc;
 pub mod format;
 pub mod names;
-pub mod shader;
-pub mod tpf;
-pub mod wgsl;
 
 use crate::d3d9::gpu;
 use crate::d3d9::HostCalls;
@@ -168,7 +164,7 @@ pub struct Texture {
 pub struct View {
     pub res: u32,
     pub fmt: u32,
-    /// shader view dimension (shader::Binding::Texture's numbering)
+    /// shader view dimension (dxwgsl::Binding::Texture's numbering)
     pub vdim: u32,
     pub mip: u32,
     pub mips: u32,
@@ -194,7 +190,7 @@ pub struct Shader {
     pub code: Vec<u8>,
     pub pixel: bool,
     /// page shader and bindings, per pixel shader for vertex shaders (key 0 otherwise)
-    pub wgsl: HashMap<u32, Option<(u32, Vec<(u32, shader::Binding)>)>>,
+    pub wgsl: HashMap<u32, Option<(u32, Vec<(u32, dxwgsl::Binding)>)>>,
 }
 
 pub struct Elem {
@@ -2197,7 +2193,7 @@ unsafe fn copy_region(d: &mut D11, dst: u32, dsub: u32, x: u32, y: u32, _z: u32,
 // draws
 
 /// A shader's page shader and bindings (translated on first use; vertex shaders per pixel shader).
-fn shader_for(d: &mut D11, sh: u32, ps: u32) -> Option<(u32, Vec<(u32, shader::Binding)>)> {
+fn shader_for(d: &mut D11, sh: u32, ps: u32) -> Option<(u32, Vec<(u32, dxwgsl::Binding)>)> {
     let ps_code = match d.objs.get(&ps).map(|o| &o.data) {
         Some(Data::Shader(s)) => Some(s.code.clone()),
         _ => None,
@@ -2208,7 +2204,7 @@ fn shader_for(d: &mut D11, sh: u32, ps: u32) -> Option<(u32, Vec<(u32, shader::B
     if let Some(r) = s.wgsl.get(&key) {
         return r.clone();
     }
-    let r = match shader::translate(&s.code, s.pixel, if s.pixel { None } else { ps_code.as_deref() }) {
+    let r = match dxwgsl::translate(&s.code, s.pixel, if s.pixel { None } else { ps_code.as_deref() }) {
         Ok(w) => {
             let id = page_id();
             gpu::record(|q| {
@@ -2353,7 +2349,7 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
         Some(Data::Shader(s)) => s.code.clone(),
         _ => return,
     };
-    let inputs = shader::signature(&vs_code, false);
+    let inputs = dxwgsl::signature(&vs_code, false);
     // vertex buffers used: slot -> (attributes)
     let mut slots: Vec<(u32, u32, Vec<[u32; 3]>)> = Vec::new(); // (slot, step, attrs: format offset location)
     for inp in &inputs {
@@ -2460,7 +2456,7 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
         let mut entries: Vec<[u32; 8]> = Vec::new();
         for (bi, kind) in binds.iter() {
             match kind {
-                shader::Binding::Uniform(size) => {
+                dxwgsl::Binding::Uniform(size) => {
                     let cb = st.cbs[stage].get(*bi as usize).copied().unwrap_or(0);
                     let g = if cb != 0 { buffer_gpu(d, cb) } else { 0 };
                     cbs_read.push(cb);
@@ -2470,7 +2466,7 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
                     };
                     entries.push([*bi, 0, g, 0, bsize.min((*size).max(16).max(bsize)), *size, 0, 0]);
                 }
-                shader::Binding::Texture(vdim, sample) => {
+                dxwgsl::Binding::Texture(vdim, sample) => {
                     let t = bi - 16;
                     let sv = st.srvs[stage].get(t as usize).copied().unwrap_or(0);
                     buffer_view_sync(d, sv);
@@ -2487,7 +2483,7 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
                     }
                     entries.push(e);
                 }
-                shader::Binding::Sampler(cmp) => {
+                dxwgsl::Binding::Sampler(cmp) => {
                     let s = bi - 160;
                     let id = st.samplers[stage].get(s as usize).copied().unwrap_or(0);
                     let desc = state_desc(d, id).cloned().unwrap_or_else(|| vec![0x15, 3, 3, 3, 0, 1, 8, 0, 0, 0, 0, 0, 0x7f7f_ffff]);
