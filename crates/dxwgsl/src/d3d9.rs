@@ -161,6 +161,7 @@ const BREAKC: u32 = 45;
 const MOVA: u32 = 46;
 const DEFB: u32 = 47;
 const DEFI: u32 = 48;
+const CALL_NZ: u32 = 26;
 const TEXCOORD: u32 = 64;
 const TEXKILL: u32 = 65;
 const TEX: u32 = 66;
@@ -280,7 +281,164 @@ impl Shader {
             s.ins.push(ins);
         }
         s.scan();
-        Some(s)
+        s.valid().then_some(s)
+    }
+
+    /// The registers, operand counts and block nesting are ones the shader model has (the
+    /// D3D9 "Registers" and "Instructions" references for vs/ps 1.x-3.0): anything else is
+    /// rejected, not translated to WGSL that names what does not exist.
+    fn valid(&self) -> bool {
+        let (ps, m) = (self.pixel, self.major);
+        let version = match (ps, m) {
+            (true, 1) => self.minor <= 4,
+            (false, 1) => self.minor <= 1,
+            (_, 2) => self.minor <= 1,
+            (_, 3) => self.minor == 0,
+            _ => false,
+        };
+        if !version {
+            return false;
+        }
+        let declared = |ty: u32, num: u32| self.ins.iter().any(|i| i.op == DCL && i.dst.is_some_and(|d| d.ty == ty && d.num == num));
+        // (a register the generated code has a variable or a value for)
+        let reg_ok = |p: &Param| -> bool {
+            let n = p.num;
+            match p.ty {
+                TEMP => n < 32,
+                INPUT if ps => if m >= 3 { n < 10 && declared(INPUT, n) } else { n < 2 },
+                INPUT => n < 16 && declared(INPUT, n),
+                CONST | CONST2 | CONST3 | CONST4 => const_index(p) < 8192,
+                ADDR => n < 8 && if ps { m < 3 } else { m >= 2 || n == 0 },
+                RASTOUT => !ps && m < 3 && n < 3,
+                ATTROUT => !ps && m < 3 && n < 2,
+                OUTPUT => !ps && n < if m >= 3 { 12 } else { 8 },
+                CONSTINT | CONSTBOOL => n < 16,
+                COLOROUT => ps && n < 4,
+                DEPTHOUT => ps && n == 0,
+                SAMPLER => ps && n < 16,
+                LOOP | PREDICATE => n == 0,
+                MISCTYPE => ps && m >= 3 && n < 2,
+                _ => false,
+            }
+        };
+        let mut blocks: Vec<u32> = Vec::new();
+        for i in &self.ins {
+            let params = i.dst.iter().chain(&i.src).chain(&i.predicated);
+            for p in params {
+                if !reg_ok(p) {
+                    return false;
+                }
+                if let Some((ty, num, _)) = p.rel {
+                    if !matches!(ty, ADDR | LOOP) || (ty == ADDR && (ps || num != 0)) {
+                        return false;
+                    }
+                }
+            }
+            let rows = match i.op {
+                M4X4 | M3X4 => 3,
+                M4X3 | M3X3 => 2,
+                M3X2 => 1,
+                _ => 0,
+            };
+            if i.src.get(1).is_some_and(|p| p.ty == TEMP && p.num + rows >= 32) {
+                return false;
+            }
+            if let Some(p) = i.predicated {
+                if p.ty != PREDICATE {
+                    return false;
+                }
+            }
+            // sources: values, not booleans, loop counters or integers (those go to if/loop/rep)
+            let special = matches!(i.op, IF | CALL_NZ | LOOPOP | REP | BREAKP);
+            if !special && i.src.iter().any(|p| matches!(p.ty, CONSTBOOL | LOOP | CONSTINT | SAMPLER) && !matches!(i.op, TEX | TEXLDL | TEXLDD)) {
+                return false;
+            }
+            // (texture instructions: pixel shaders; texcoord and the 1.x texture ops only in 1.x)
+            let tex_ok = match i.op {
+                TEXCOORD | 67..=77 => ps && m == 1,
+                TEX | TEXKILL | TEXLDD | DSX | DSY => ps,
+                // (vertex texture fetch is not translated)
+                TEXLDL => ps && m >= 2,
+                _ => true,
+            };
+            // (shader model 2+ samples a declared sampler)
+            if matches!(i.op, TEX | TEXLDL | TEXLDD) && m >= 2 && !i.src.get(1).is_some_and(|p| p.ty == SAMPLER && self.samplers.iter().any(|s| s.0 == p.num)) {
+                return false;
+            }
+            if !tex_ok {
+                return false;
+            }
+            match i.op {
+                IF | BREAKP => {
+                    if i.src.len() != 1 || !matches!(i.src[0].ty, CONSTBOOL | PREDICATE) {
+                        return false;
+                    }
+                }
+                REP => {
+                    if i.src.len() != 1 || i.src[0].ty != CONSTINT {
+                        return false;
+                    }
+                }
+                LOOPOP => {
+                    if i.src.len() != 2 || i.src[0].ty != LOOP || i.src[1].ty != CONSTINT {
+                        return false;
+                    }
+                }
+                IFC | BREAKC if i.src.len() != 2 => return false,
+                _ => {}
+            }
+            // destinations: registers that are variables
+            if let Some(d) = i.dst {
+                let ok = match i.op {
+                    DCL => true,
+                    DEF => matches!(d.ty, CONST | CONST2 | CONST3 | CONST4),
+                    DEFI => d.ty == CONSTINT,
+                    DEFB => d.ty == CONSTBOOL,
+                    MOVA => d.ty == ADDR && !ps,
+                    SETP => d.ty == PREDICATE,
+                    _ => matches!(d.ty, TEMP | ADDR | RASTOUT | ATTROUT | OUTPUT | COLOROUT | DEPTHOUT) || (ps && m < 3 && d.ty == INPUT) || (!ps && d.ty == INPUT),
+                };
+                if !ok {
+                    return false;
+                }
+            }
+            match i.op {
+                IF | IFC => blocks.push(IF),
+                LOOPOP | REP => blocks.push(i.op),
+                ELSE => {
+                    if blocks.last() != Some(&IF) {
+                        return false;
+                    }
+                }
+                ENDIF => {
+                    if blocks.pop() != Some(IF) {
+                        return false;
+                    }
+                }
+                ENDLOOP => {
+                    if blocks.pop() != Some(LOOPOP) {
+                        return false;
+                    }
+                }
+                ENDREP => {
+                    if blocks.pop() != Some(REP) {
+                        return false;
+                    }
+                }
+                BREAK | BREAKC | BREAKP => {
+                    if !blocks.iter().any(|&b| b != IF) {
+                        return false;
+                    }
+                }
+                _ => {}
+            }
+            if i.src.iter().any(|p| p.ty == LOOP) || i.src.iter().any(|p| p.rel.is_some_and(|r| r.0 == LOOP)) {
+                if !blocks.contains(&LOOPOP) {
+                    return false;
+                }
+            }
+        }
+        blocks.is_empty()
     }
 
     fn scan(&mut self) {
@@ -895,6 +1053,16 @@ impl<'a> Gen<'a> {
         let mut o = 0;
         let mut t = 0;
         for ins in &self.s.ins {
+            // (matrix ops read the rows after their second source)
+            let rows = match ins.op {
+                M4X4 | M3X4 => 3,
+                M4X3 | M3X3 => 2,
+                M3X2 => 1,
+                _ => 0,
+            };
+            if let Some(p) = ins.src.get(1).filter(|p| p.ty == TEMP) {
+                r = r.max(p.num + 1 + rows);
+            }
             for p in ins.dst.iter().chain(ins.src.iter()) {
                 match p.ty {
                     TEMP => r = r.max(p.num + 1),

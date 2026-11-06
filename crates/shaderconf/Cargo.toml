@@ -11,3 +11,4 @@ hlslc = { path = "../hlslc" }
 dxwgsl = { path = "../dxwgsl" }
 glwgsl = { path = "../glwgsl" }
 half = "2"
+naga = { version = "30", features = ["wgsl-in"] }

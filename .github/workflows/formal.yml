@@ -96,6 +96,17 @@ jobs:
           PLAYWRIGHT: ${{ runner.temp }}/pw/node_modules/playwright/index.mjs
           OUT: ${{ runner.temp }}/shaders-report.json
         run: node tests/shaders.mjs "$RUNNER_TEMP/cases.json"
+      # (mutated sources and bytecode through the translators: no panic, hang, huge
+      # allocation or invalid WGSL; a fixed seed, then one that changes per run)
+      - name: Fuzz the translators
+        if: always()
+        run: |
+          ulimit -v 6000000
+          ./target/release/shaderconf --fuzz 300000 7 > "$RUNNER_TEMP/fuzz.txt" || { cat "$RUNNER_TEMP/fuzz.txt"; exit 1; }
+          tail -1 "$RUNNER_TEMP/fuzz.txt"
+          echo "seed ${{ github.run_number }}"
+          ./target/release/shaderconf --fuzz 300000 ${{ github.run_number }} > "$RUNNER_TEMP/fuzz2.txt" || { cat "$RUNNER_TEMP/fuzz2.txt"; exit 1; }
+          tail -1 "$RUNNER_TEMP/fuzz2.txt"
       - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:

@@ -171,6 +171,10 @@ fn split_sem(s: &str) -> (String, u32) {
     (d.to_string(), idx)
 }
 
+fn pixel_out(pixel: bool, output: bool) -> bool {
+    pixel && output
+}
+
 fn temp(t: u32) -> Reg {
     Reg { f: RegF::Temp(t), rel: None }
 }
@@ -1146,6 +1150,11 @@ impl<'a> L<'a> {
         };
         let (name0, mut index) = split_sem(sem);
         let up = name0.to_ascii_uppercase();
+        // (8 render targets, 32 input/output registers)
+        let max = if matches!(up.as_str(), "SV_TARGET" | "COLOR") && pixel_out(self.o.pixel, output) { 8 } else { 32 };
+        if index >= max {
+            return Err(format!("semantic {sem}: index out of range"));
+        }
         let pixel = self.o.pixel;
         // shader model 2/3 names (backward compatibility)
         let (name, sysval) = match (up.as_str(), pixel, output) {
@@ -1805,6 +1814,11 @@ impl<'a> L<'a> {
                 let t = if x.ty.numeric() && y.ty.numeric() { self.common(&x.ty, &y.ty)? } else { x.ty.clone() };
                 // (a vector condition picks per component)
                 let t = if cv.ty.comps() > 1 && t.comps() == 1 { Ty::vec(t.base(), cv.ty.comps()) } else { t };
+                // (a narrower vector condition: the values truncated to it, as fxc does)
+                let t = match t {
+                    Ty::Vec(b, n) if cv.ty.comps() > 1 && (cv.ty.comps() as u32) < n as u32 => Ty::vec(b, cv.ty.comps()),
+                    t => t,
+                };
                 let x = self.cast(x, &t)?;
                 let y = self.cast(y, &t)?;
                 let cb = self.cast(cv.clone(), &cv.ty.with_base(B::Bool))?;

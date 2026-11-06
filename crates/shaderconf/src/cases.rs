@@ -497,7 +497,7 @@ fn d3d9_cases(out: &mut Vec<Case>, errors: &mut Vec<String>) {
 
 // ---------------------------------------------------------------- OpenGL (GLSL 1.20)
 
-const GL_VS: &str = "#version 120\nattribute vec4 p;\nvoid main() { gl_Position = p; }\n";
+pub const GL_VS: &str = "#version 120\nattribute vec4 p;\nvoid main() { gl_Position = p; }\n";
 
 /// A GLSL case: `body` sets gl_FragColor from uniforms a, b, c (vec4), ia, ib (ivec4), m2,
 /// m3, m4 (mat2-4, column-major as glUniformMatrix with transpose false), f (float[3]).

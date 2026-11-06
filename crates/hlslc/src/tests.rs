@@ -388,3 +388,17 @@ fn sm3_ctab() {
     assert_eq!(got, want);
     assert_eq!(name(r32(24) as usize), "ps_2_0");
 }
+
+/// Inputs the shaderconf fuzzer found: an error, not a hang or a panic.
+#[test]
+fn malformed_sources_are_errors() {
+    for src in ["float4 A : register(c0); float4 B : register(c/*); float4 C : register(c2);\nfloat4 ps() : COLOR { return A; }\n"] {
+        for t in ["ps_3_0", "ps_4_0"] {
+            let mut inc = |_: &str, _: bool| None;
+            let _ = super::compile(src, &[], &mut inc, "ps", t, 0);
+        }
+    }
+    for asm in ["ps_3_0\nexp , c0.x\nmov oCswitch\n", "ps_3_0\nlog r0.x,.y\nmov odcl_te0.5rd0 r0\n", "ps_3_0\nmov r0, ]c[\n", "ps_3_0\nmov r0, [1]\n"] {
+        let _ = super::d3d9asm::assemble(asm);
+    }
+}

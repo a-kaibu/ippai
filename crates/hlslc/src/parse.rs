@@ -270,7 +270,14 @@ impl Parser {
             let e = self.expr()?;
             self.expect("]")?;
             let n = const_int(&e).ok_or(format!("line {}: array size is not a constant", self.line()))?;
+            // (no shader storage holds more than 65536 elements)
+            if !(1..=65536).contains(&n) {
+                return Err(format!("line {}: array size {n} is out of range", self.line()));
+            }
             dims.push(n as u32);
+        }
+        if dims.iter().map(|&n| n.max(1) as u64).product::<u64>() > 65536 {
+            return Err(format!("line {}: array too large", self.line()));
         }
         for n in dims.into_iter().rev() {
             ty = Ty::Array(Box::new(ty), n);
@@ -330,6 +337,9 @@ impl Parser {
                     self.expect("(")?;
                     let mut last = None;
                     while !self.eat(")") {
+                        if self.peek().is_none() {
+                            return self.err("unterminated register()");
+                        }
                         if let Some(Tok::Ident(s)) = self.peek() {
                             let s = s.clone();
                             let c = s.chars().next().unwrap_or(' ').to_ascii_lowercase();
@@ -340,6 +350,18 @@ impl Parser {
                             }
                         }
                         self.p += 1;
+                    }
+                    // (register numbers past what any shader model has)
+                    if let Some((c, i)) = last {
+                        let max = match c {
+                            'b' | 's' | 'i' => 16,
+                            't' => 128,
+                            'u' => 64,
+                            _ => 8192,
+                        };
+                        if i >= max {
+                            return Err(format!("line {}: register {c}{i} is out of range", self.line()));
+                        }
                     }
                     v.reg = last;
                 }

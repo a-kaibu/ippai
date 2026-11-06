@@ -185,11 +185,103 @@ fn declarations(w: &mut W, p: &Program) -> R<()> {
             _ => {}
         }
     }
+    check_registers(w, p)?;
     // compare sampling needs depth textures
     for i in &p.insts {
         if matches!(i.op, 0x46 | 0x47 | 0x7e) {
             if let Some(r) = i.ops.get(2).and_then(|o| w.res.get_mut(&o.reg())) {
                 r.depth = true;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Every register an instruction names is declared, and the declarations are within the
+/// Direct3D 11 limits (4096 temps, 32 inputs/outputs, 15 constant buffers of 4096 vectors,
+/// 128 resources, 16 samplers): bytecode that is not is rejected, not translated to WGSL
+/// that names what does not exist.
+fn check_registers(w: &W, p: &Program) -> R<()> {
+    if w.temps > 4096 || w.xs.len() > 4096 || w.xs.iter().any(|(&r, &n)| r >= 4096 || n == 0 || n > 4096) {
+        return Err("more temps than Direct3D allows".into());
+    }
+    if w.inputs.keys().chain(w.outputs.keys()).any(|&r| r >= 32) || w.cbs.keys().any(|&r| r >= 15) || w.res.keys().any(|&r| r >= 128) || w.samplers.keys().any(|&r| r >= 16) {
+        return Err("a register past Direct3D's limits".into());
+    }
+    fn check(w: &W, o: &Operand) -> R<()> {
+        if o.sel == tpf::Sel::Mask(0) && !matches!(o.ty, tpf::NULL | tpf::IMM32) {
+            return Err("an empty write mask".into());
+        }
+        let dims = match o.ty {
+            tpf::TEMP => {
+                if o.reg() >= w.temps {
+                    return Err(format!("r{} is not declared", o.reg()));
+                }
+                1
+            }
+            tpf::INDEXABLE_TEMP => {
+                let n = w.xs.get(&o.reg()).ok_or(format!("x{} is not declared", o.reg()))?;
+                if let Some(Index::Imm(k)) = o.idx.get(1) {
+                    if k >= n {
+                        return Err(format!("x{}[{k}] past its size", o.reg()));
+                    }
+                }
+                2
+            }
+            tpf::INPUT => {
+                if !w.inputs.contains_key(&o.reg()) {
+                    return Err(format!("v{} is not declared", o.reg()));
+                }
+                1
+            }
+            tpf::OUTPUT => {
+                if !w.outputs.contains_key(&o.reg()) {
+                    return Err(format!("o{} is not declared", o.reg()));
+                }
+                1
+            }
+            tpf::CONSTANT_BUFFER => {
+                let n = w.cbs.get(&o.reg()).ok_or(format!("cb{} is not declared", o.reg()))?;
+                if let Some(Index::Imm(k)) = o.idx.get(1) {
+                    if k >= n {
+                        return Err(format!("cb{}[{k}] past its size", o.reg()));
+                    }
+                }
+                2
+            }
+            tpf::IMM_CONSTANT_BUFFER => 1,
+            tpf::RESOURCE => {
+                if !w.res.contains_key(&o.reg()) {
+                    return Err(format!("t{} is not declared", o.reg()));
+                }
+                1
+            }
+            tpf::SAMPLER => {
+                if !w.samplers.contains_key(&o.reg()) {
+                    return Err(format!("s{} is not declared", o.reg()));
+                }
+                1
+            }
+            tpf::IMM32 | tpf::NULL => 0,
+            _ => return Ok(()),
+        };
+        if o.idx.len() != dims || (dims > 0 && !matches!(o.idx[0], Index::Imm(_)) && o.ty != tpf::IMM_CONSTANT_BUFFER) {
+            return Err(format!("operand of type {} with {} indices", o.ty, o.idx.len()));
+        }
+        for i in &o.idx {
+            if let Index::Rel(r, _) = i {
+                if !matches!(r.ty, tpf::TEMP | tpf::INDEXABLE_TEMP | tpf::INPUT | tpf::IMM32) {
+                    return Err(format!("register of type {} as an index", r.ty));
+                }
+                check(w, r)?;
+            }
+        }
+        Ok(())
+    }
+    for i in &p.insts {
+        if tpf::arity(i.op).is_some() {
+            for o in &i.ops {
+                check(w, o)?;
             }
         }
     }
@@ -358,6 +450,9 @@ impl W {
         let swz = o.swizzle();
         let pick: Vec<u8> = comps.iter().map(|&c| swz[c as usize]).collect();
         let n = pick.len();
+        if n == 0 {
+            return Err("a source no component of the destination reads".into());
+        }
         let mut e = if o.ty == tpf::IMM32 {
             let vals: Vec<String> = pick.iter().map(|&c| self.lit(k, o.imm[c as usize])).collect();
             if n == 1 {
@@ -429,6 +524,13 @@ impl W {
         let mut a = Vec::new();
         for o in &i.ops[1..] {
             a.push(self.src(o, kin, &comps)?);
+        }
+        // (immediates only: a constant expression, which WGSL rejects when it overflows or
+        // divides by zero; one operand through nf_zero makes it a run-time value)
+        if kin == K::F && !a.is_empty() && i.ops[1..].iter().all(|o| o.ty == tpf::IMM32) {
+            self.nonfinite = true;
+            let n = comps.len();
+            a[0] = format!("bitcast<{}>(bitcast<{}>({}) + nf_zero)", vty(K::F, n), vty(K::U, n), a[0]);
         }
         let v = f(&a);
         self.dst(&i.ops[0], v, kout, i.sat)
@@ -755,6 +857,10 @@ impl W {
             }
         }
         self.last_op = op;
+        // (break and continue: inside a loop; break also in a switch, handled above)
+        if matches!(op, 0x02 | 0x03 | 0x07 | 0x08) && !self.blocks.contains(&b'l') && !(matches!(op, 0x02 | 0x03) && self.blocks.contains(&b's')) {
+            return Err("break/continue outside a loop".into());
+        }
         match op {
             0x00 => self.cw(i, F, F, |a| format!("({} + {})", a[0], a[1]))?,
             0x01 => self.cw(i, U, U, |a| format!("({} & {})", a[0], a[1]))?,
@@ -790,7 +896,12 @@ impl W {
                 self.line("} else {");
                 self.depth += 1;
             }
-            0x15 | 0x16 => self.close(),
+            0x15 | 0x16 => {
+                if self.blocks.last() != Some(if op == 0x15 { &b'i' } else { &b'l' }) {
+                    return Err(format!("{} without its block", if op == 0x15 { "endif" } else { "endloop" }));
+                }
+                self.close()
+            }
             0x18 => self.cmp(i, F, "==")?,
             0x1d => self.cmp(i, F, ">=")?,
             0x31 => self.cmp(i, F, "<")?,
@@ -857,7 +968,10 @@ impl W {
                     let ones = self.splat(U, n, 0xffff_ffff);
                     let z = self.splat(U, n, 0);
                     // (D3D: all ones for a division by zero)
-                    let v = format!("select({a} {opr} {t}, {ones}, {t} == {z})");
+                    // (the divisor never 0 where it is used: naga and Tint reject a constant
+                    // division by zero)
+                    let one = self.splat(U, n, 1);
+                    let v = format!("select({a} {opr} select({t}, {one}, {t} == {z}), {ones}, {t} == {z})");
                     if d == 0 && i.ops[1].ty != tpf::NULL && same_place(&i.ops[0], &i.ops[2..4]) {
                         return Err("udiv quotient overwrites its operands".into());
                     }

@@ -11,6 +11,7 @@
 //! (ps_3_0), the HLSL constant packing rules, the GLSL 1.20 spec and std140 for GL.
 
 mod cases;
+mod fuzz;
 mod json;
 mod random;
 
@@ -58,6 +59,12 @@ fn main() {
             println!("{}\n----\n{}", c.src, c.wgsl);
         }
         return;
+    }
+    let mut a = std::env::args().skip_while(|a| a != "--fuzz").skip(1);
+    if let Some(n) = a.next() {
+        let n = n.parse().expect("--fuzz N [seed]");
+        let seed = a.next().map_or(1, |s| s.parse().expect("--fuzz N [seed]"));
+        std::process::exit(if fuzz::run(&out, n, seed) { 0 } else { 1 });
     }
     if list {
         for c in &out {

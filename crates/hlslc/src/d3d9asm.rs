@@ -116,7 +116,8 @@ fn register(s: &str, v: &Ver) -> Result<(u32, u32), String> {
         if p.is_empty() {
             return Ok(0);
         }
-        p.parse::<u32>().map_err(|_| format!("bad register {s}"))
+        // (11 bits in the token)
+        p.parse::<u32>().ok().filter(|&n| n < 0x800).ok_or(format!("bad register {s}"))
     };
     let named: &[(&str, u32, u32)] = &[("opos", 4, 0), ("ofog", 4, 1), ("opts", 4, 2), ("odepth", 9, 0), ("al", 15, 0), ("vpos", 17, 0), ("vface", 17, 1)];
     for &(n, t, r) in named {
@@ -136,6 +137,9 @@ fn register(s: &str, v: &Ver) -> Result<(u32, u32), String> {
     }
     if let Some(r) = pre("o") {
         return Ok((6, num(r)?));
+    }
+    if lower.is_empty() || !lower.is_char_boundary(1) {
+        return Err(format!("unknown register {s}"));
     }
     let (c, rest) = lower.split_at(1);
     Ok(match c {
@@ -187,8 +191,9 @@ fn write_mask(s: &str) -> Result<u32, String> {
 /// address register text and offset, selector).
 fn split_operand(s: &str) -> (String, Option<String>, String) {
     let s = s.trim();
-    if let Some(open) = s.find('[') {
-        let close = s.rfind(']').unwrap_or(s.len());
+    // (a register letter before the '[' and a ']' after it; anything else is not an index)
+    let index = s.find('[').filter(|&o| o > 0 && s.is_char_boundary(1)).and_then(|o| s.rfind(']').filter(|&c| c > o).map(|c| (o, c)));
+    if let Some((open, close)) = index {
         let base = &s[..open];
         let inside = &s[open + 1..close];
         let after = s[close + 1..].trim_start_matches('.').to_string();

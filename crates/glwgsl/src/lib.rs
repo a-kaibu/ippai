@@ -430,8 +430,9 @@ fn rewrite(src: &str, pixel: bool, attribs: &mut Vec<(String, u32)>, bound: &Has
 /// GLSL 450 -> (WGSL, module)
 fn compile(src: &str, pixel: bool) -> Result<(String, naga::Module), String> {
     let stage = if pixel { naga::ShaderStage::Fragment } else { naga::ShaderStage::Vertex };
-    let m = naga::front::glsl::Frontend::default()
-        .parse(&naga::front::glsl::Options::from(stage), src)
+    // (naga's GLSL front end panics on some malformed sources: an error where unwinding exists)
+    let m = std::panic::catch_unwind(|| naga::front::glsl::Frontend::default().parse(&naga::front::glsl::Options::from(stage), src))
+        .map_err(|_| "naga's GLSL front end panicked".to_string())?
         .map_err(|e| format!("{e:?}"))?;
     let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
         .validate(&m)
