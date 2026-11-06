@@ -1218,15 +1218,28 @@ impl<'a> L<'a> {
 
     // ---- entry ----
 
-    pub fn entry(mut self, name: &str) -> R<sm4::Shader> {
+    /// The entry point `name`; `args` (an effect's compile statement) give its first uniform
+    /// parameters (or ones without a semantic) their values.
+    pub fn entry(mut self, name: &str, args: &[Expr]) -> R<sm4::Shader> {
         let prog = self.prog;
         let f = prog.funcs.iter().find(|f| f.name == name && f.body.is_some()).ok_or(format!("entry point '{name}' not found"))?;
-        let uniforms: Vec<Var> = f.params.iter().filter(|p| p.uniform).cloned().collect();
+        let bindable = |p: &&Var| p.uniform || (p.sem.is_none() && !p.is_out && !matches!(p.ty(), Ty::Struct(_)));
+        let bound: Vec<&Var> = f.params.iter().filter(bindable).take(args.len()).collect();
+        if bound.len() < args.len() {
+            return Err(format!("{name}: {} arguments for {} uniform parameters", args.len(), bound.len()));
+        }
+        let is_bound = |p: &Var| bound.iter().any(|b| b.name == p.name);
+        let uniforms: Vec<Var> = f.params.iter().filter(|p| p.uniform && !is_bound(p)).cloned().collect();
         self.scopes.push(HashMap::new());
         self.setup_globals(&uniforms)?;
+        for (p, a) in bound.iter().zip(args) {
+            let v = self.expr(a)?;
+            let v = self.cast(v, p.ty())?;
+            self.scopes.last_mut().unwrap().insert(p.name.clone(), v);
+        }
         let body = f.body.as_ref().unwrap();
         let mut outs = Vec::new();
-        for p in f.params.iter().filter(|p| !p.uniform) {
+        for p in f.params.iter().filter(|p| !p.uniform && !is_bound(p)) {
             let t = p.ty().clone();
             if p.is_out {
                 let mut regs = Vec::new();
@@ -1684,6 +1697,7 @@ impl<'a> L<'a> {
                 self.expr(b)?
             }
             Expr::List(_) => return Err("initializer list in an expression".into()),
+            Expr::Str(_) => return Err("a string in an expression".into()),
             Expr::Construct(t, args) => {
                 let mut flat = Vec::new();
                 for a in args {

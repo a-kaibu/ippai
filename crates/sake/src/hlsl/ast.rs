@@ -143,6 +143,8 @@ pub enum Expr {
     Index(Box<Expr>, Box<Expr>),
     List(Vec<Expr>),
     Comma(Box<Expr>, Box<Expr>),
+    /// a string literal (effect annotations and string parameters)
+    Str(String),
 }
 
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
@@ -176,6 +178,54 @@ pub struct Var {
     pub is_in: bool,
     pub is_out: bool,
     pub line: u32,
+    /// effects: <annotations>, sampler_state { states }, a shader object's value
+    pub annos: Vec<Anno>,
+    pub states: Vec<FxState>,
+    pub fx: Option<FxVal>,
+}
+
+/// An effect annotation: type name = value;
+#[derive(Clone, Debug)]
+pub struct Anno {
+    pub ty: Ty,
+    pub name: String,
+    pub value: Expr,
+}
+
+/// An effect state's value.
+#[derive(Clone, Debug)]
+pub enum FxVal {
+    Expr(Expr),
+    /// <name>
+    Ref(String),
+    /// compile target entry(args)
+    Compile(String, String, Vec<Expr>),
+    /// asm { .. }: the assembly text
+    Asm(String),
+    Null,
+}
+
+/// Name[index] = value;
+#[derive(Clone, Debug)]
+pub struct FxState {
+    pub name: String,
+    pub index: Option<u32>,
+    pub value: FxVal,
+    pub line: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct Pass {
+    pub name: String,
+    pub annos: Vec<Anno>,
+    pub states: Vec<FxState>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Technique {
+    pub name: String,
+    pub annos: Vec<Anno>,
+    pub passes: Vec<Pass>,
 }
 
 impl Var {
@@ -239,4 +289,7 @@ pub struct Program {
     pub globals: Vec<Var>,
     pub cbufs: Vec<CBuf>,
     pub funcs: Vec<Func>,
+    /// effects: techniques; VertexShader / PixelShader variables (name, vertex, value)
+    pub techniques: Vec<Technique>,
+    pub shaders: Vec<(String, bool, FxVal, Vec<Anno>)>,
 }

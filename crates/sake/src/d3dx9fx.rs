@@ -1,8 +1,9 @@
 //! ID3DXEffect over compiled effects (fx_2_0 binaries, as D3DXCreateEffect gets them from games):
 //! parameters, techniques and passes parsed from the binary; a pass sets its render, texture
 //! stage and sampler states, textures and shaders on the device, and the shaders' constants
-//! from the parameters of the same name (their constant tables). Not done: effect source text
-//! (needs an HLSL compiler), preshaders and FXLC expressions (logged), parameter blocks.
+//! from the parameters of the same name (their constant tables). Effect source text is compiled
+//! to this binary first (crate::hlsl::compile_effect, in d3dx9.rs). Not done: preshaders and FXLC
+//! expressions (logged), parameter blocks.
 
 #![allow(non_snake_case)]
 
@@ -1488,4 +1489,64 @@ pub fn create(c: &mut Ctx, device: u32, data: &[u8]) -> Result<u32, String> {
     let e = Effect { device, params, top, values, techniques, objects, hbase, tech: 0, block: 0, pass: None, ctabs, pres: pres_map };
     FX.lock().unwrap().get_or_insert_with(HashMap::default).insert(o, e);
     Ok(o)
+}
+
+#[cfg(test)]
+mod tests {
+    /// effect source compiled by crate::hlsl reads back with the right parameters, states and
+    /// shaders
+    #[test]
+    fn compiled_source() {
+        let src = r#"
+float4x4 WorldViewProj : WORLDVIEWPROJECTION;
+float Alpha <string UIName = "alpha"; float UIMin = 0.0;> = 0.5;
+texture Tex;
+sampler2D Samp = sampler_state { Texture = <Tex>; MinFilter = LINEAR; MagFilter = Linear; AddressU = Clamp; };
+struct VO { float4 pos : POSITION; float2 uv : TEXCOORD0; };
+VO vs(float4 p : POSITION, float2 uv : TEXCOORD0) { VO o; o.pos = mul(p, WorldViewProj); o.uv = uv; return o; }
+float4 ps(float2 uv : TEXCOORD0, uniform float k) : COLOR { float4 c = tex2D(Samp, uv); c.a *= Alpha * k; return c; }
+technique T <string Desc = "main";> {
+    pass P0 {
+        AlphaBlendEnable = TRUE; SrcBlend = SrcAlpha; DestBlend = InvSrcAlpha; ZEnable = false;
+        VertexShader = compile vs_2_0 vs();
+        PixelShader = compile ps_2_0 ps(2.0);
+    }
+    pass P1 { CullMode = None; VertexShader = compile vs_2_0 vs(); PixelShader = NULL; }
+}
+"#;
+        let mut none = |_: &str, _: bool| None;
+        let fx = crate::hlsl::compile_effect(src, &[], &mut none, 0).unwrap();
+        let (params, top, values, techs, objects) = super::parse(&fx).unwrap();
+        let st = |s: &super::State| {
+            let v = &values[&s.param];
+            let k = match s.kind { super::Kind::Const => "c".to_string(), super::Kind::Ref(i) => params[i].name.clone(), super::Kind::Unsupported => "?".into() };
+            (s.op, s.index, if let Some(o) = params[s.param].object { 100 + o } else { u32::from_le_bytes(v[..4].try_into().unwrap()) }, k)
+        };
+        let sts = |v: &[super::State]| v.iter().map(st).map(|(o, i, v, k)| format!("{o}.{i}={v}{k}")).collect::<Vec<_>>().join(" ");
+        // AlphaBlendEnable, SrcBlend SrcAlpha, DestBlend InvSrcAlpha, ZEnable, shaders (object ids + 100)
+        assert_eq!(sts(&techs[0].passes[0].states), "13.0=1c 6.0=5c 7.0=6c 0.0=0c 146.0=104c 147.0=105c");
+        assert_eq!(sts(&techs[0].passes[1].states), "8.0=1c 146.0=106c 147.0=107c");
+        // Texture <Tex>, MinFilter, MagFilter Linear, AddressU Clamp
+        assert_eq!(sts(&params[top[3]].sampler), "164.0=102Tex 170.0=2c 169.0=2c 165.0=3c");
+        let names: Vec<&str> = top.iter().map(|&i| params[i].name.as_str()).collect();
+        assert_eq!(names, ["WorldViewProj", "Alpha", "Tex", "Samp"]);
+        let alpha = &params[top[1]];
+        assert_eq!(alpha.annotations.len(), 2);
+        assert_eq!(params[top[0]].semantic, "WORLDVIEWPROJECTION");
+        let samp = &params[top[3]];
+        assert_eq!(samp.sampler.len(), 4);
+        assert_eq!(techs.len(), 1);
+        assert_eq!(techs[0].name, "T");
+        assert_eq!(techs[0].annotations.len(), 1);
+        assert_eq!(techs[0].passes.len(), 2);
+        assert_eq!(techs[0].passes[0].states.len(), 6);
+        assert_eq!(techs[0].passes[1].states.len(), 3);
+        // two vertex shaders, a pixel shader, NULL: bytecode for the compiled ones
+        let shaders: Vec<&super::Object> = objects.iter().filter(|o| o.data.starts_with(&[0, 2, 0xfe, 0xff]) || o.data.starts_with(&[0, 2, 0xff, 0xff])).collect();
+        assert_eq!(shaders.len(), 3, "{:?}", objects.iter().map(|o| (o.ty, o.data.len())).collect::<Vec<_>>());
+        for o in shaders {
+            let words: Vec<u32> = o.data.chunks(4).map(|b| u32::from_le_bytes(b.try_into().unwrap())).collect();
+            assert!(kura::d3d9::shader::Shader::parse(&words).is_some());
+        }
+    }
 }

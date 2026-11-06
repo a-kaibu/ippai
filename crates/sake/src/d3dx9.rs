@@ -380,12 +380,28 @@ fn D3DXCreateBuffer(c: &mut Ctx) -> u32 {
 }
 
 /// D3DXCreateEffect(device, data, length, defines, include, flags, pool, effect, errors) and the
-/// Ex form (.., include, skip constants, flags, ..): compiled effects only (crate::d3dx9fx)
-fn effect_from(c: &mut Ctx, dev: u32, data: &[u8], out: u32, errs: u32) -> u32 {
+/// Ex form (.., include, skip constants, flags, ..): a compiled effect (crate::d3dx9fx) or effect
+/// source, compiled to fx_2_0 first (crate::hlsl::compile_effect)
+#[allow(clippy::too_many_arguments)]
+fn effect_from(c: &mut Ctx, dev: u32, data: &[u8], name: &str, defs: u32, inc: u32, flags: u32, out: u32, errs: u32) -> u32 {
     if errs != 0 {
         mem::putp(errs, 0);
     }
-    match crate::d3dx9fx::create(c, dev, data) {
+    let compiled;
+    let data = if data.len() >= 4 && data[..4] == [1, 9, 0xff, 0xfe] {
+        Ok(data)
+    } else {
+        let src = String::from_utf8_lossy(data).into_owned();
+        let defines = crate::d3dcompiler::defines(defs);
+        let base = crate::d3dcompiler::dir_of(name);
+        let mut include = |n: &str, sys: bool| crate::d3dcompiler::open_include(c, inc, &base, n, sys);
+        compiled = crate::hlsl::compile_effect(src.trim_end_matches('\0'), &defines, &mut include, flags & crate::hlsl::PACK_MATRIX_ROW_MAJOR);
+        match &compiled {
+            Ok(b) => Ok(&b[..]),
+            Err(e) => Err(format!("{}: error X3000: {e}", if name.is_empty() { "memory" } else { name })),
+        }
+    };
+    match data.and_then(|d| crate::d3dx9fx::create(c, dev, d)) {
         Ok(e) => {
             mem::putp(out, e);
             0
@@ -393,7 +409,7 @@ fn effect_from(c: &mut Ctx, dev: u32, data: &[u8], out: u32, errs: u32) -> u32 {
         Err(m) => {
             eprintln!("sake: D3DXCreateEffect: {m}");
             if errs != 0 {
-                mem::putp(errs, buffer(m.as_bytes()));
+                mem::putp(errs, buffer(format!("{m}\0").as_bytes()));
             }
             mem::putp(out, 0);
             0x88760b59
@@ -402,25 +418,25 @@ fn effect_from(c: &mut Ctx, dev: u32, data: &[u8], out: u32, errs: u32) -> u32 {
 }
 fn D3DXCreateEffect(c: &mut Ctx) -> u32 {
     let data = mem::slice(c.a(1), c.a(2)).to_vec();
-    let (dev, out, errs) = (c.a(0), c.a(7), c.a(8));
-    effect_from(c, dev, &data, out, errs)
+    let (dev, defs, inc, flags, out, errs) = (c.a(0), c.a(3), c.a(4), c.a(5), c.a(7), c.a(8));
+    effect_from(c, dev, &data, "", defs, inc, flags, out, errs)
 }
 fn D3DXCreateEffectEx(c: &mut Ctx) -> u32 {
     let data = mem::slice(c.a(1), c.a(2)).to_vec();
-    let (dev, out, errs) = (c.a(0), c.a(8), c.a(9));
-    effect_from(c, dev, &data, out, errs)
+    let (dev, defs, inc, flags, out, errs) = (c.a(0), c.a(3), c.a(4), c.a(6), c.a(8), c.a(9));
+    effect_from(c, dev, &data, "", defs, inc, flags, out, errs)
 }
 /// D3DXCreateEffectFromFile{A,W}(device, file, defines, include, flags, pool, effect, errors)
 /// and the Ex forms (.., include, skip, flags, pool, effect, errors)
 fn effect_file(c: &mut Ctx, wide: bool, ex: bool) -> u32 {
     let name = crate::k32::arg_str(c.a(1), wide);
-    let (out, errs) = if ex { (c.a(7), c.a(8)) } else { (c.a(6), c.a(7)) };
-    let Some(data) = crate::files::resolve(&name).and_then(|h| kura::fs::read(h).ok()) else {
+    let (flags, out, errs) = if ex { (c.a(5), c.a(7), c.a(8)) } else { (c.a(4), c.a(6), c.a(7)) };
+    let Some(data) = crate::d3dcompiler::read_file(&name) else {
         mem::putp(out, 0);
         return 0x88760b59;
     };
-    let dev = c.a(0);
-    effect_from(c, dev, &data, out, errs)
+    let (dev, defs, inc) = (c.a(0), c.a(2), c.a(3));
+    effect_from(c, dev, &data, &name, defs, inc, flags, out, errs)
 }
 fn D3DXCreateEffectFromFileA(c: &mut Ctx) -> u32 {
     effect_file(c, false, false)

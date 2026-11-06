@@ -4,6 +4,7 @@
 //! 2/3 bytecode (sm3.rs) for Direct3D 9.
 
 mod ast;
+mod fx;
 mod intrinsics;
 mod lower;
 mod parse;
@@ -64,43 +65,40 @@ pub fn assembly(
     flags: u32,
 ) -> Result<String, String> {
     let t = parse_target(target)?;
-    let shader = lowered(src, defines, include, entry, &t, flags)?;
+    let (prog, pre) = parse_program(src, defines, include)?;
+    let shader = lower_entry(&prog, &pre, entry, &[], &t, flags)?;
     Ok(sm3::assembly(shader)?.0)
 }
 
-fn lowered(
+/// The program and the prelude (intrinsics written in HLSL).
+fn parse_program(
     src: &str,
     defines: &[(String, String)],
     include: &mut dyn FnMut(&str, bool) -> Option<String>,
-    entry: &str,
-    t: &Target,
-    flags: u32,
-) -> Result<sm4::Shader, String> {
+) -> Result<(ast::Program, ast::Program), String> {
     let toks = pp::preprocess(src, defines, include)?;
     let mut p = parse::Parser::new(toks);
     p.program()?;
-    let prog = p.prog;
     let mut none = |_: &str, _: bool| None;
     let pre_toks = pp::preprocess(&prelude::source(), &[], &mut none)?;
     let mut pp2 = parse::Parser::new(pre_toks);
     pp2.program().map_err(|e| format!("prelude: {e}"))?;
-    let pre = pp2.prog;
+    Ok((p.prog, pp2.prog))
+}
+
+/// Entry point `entry` (with `args` for its uniform parameters) lowered for target `t`.
+fn lower_entry(prog: &ast::Program, pre: &ast::Program, entry: &str, args: &[ast::Expr], t: &Target, flags: u32) -> Result<sm4::Shader, String> {
     // (the prelude shares the program's struct table: it has no structs)
-    let minor = if t.major >= 5 {
-        0
-    } else if t.major == 4 {
-        t.minor.min(1)
-    } else {
-        t.minor
-    };
-    let o = lower::Opts {
-        pixel: t.pixel,
-        major: t.major.min(5),
-        minor,
-        row_major: flags & PACK_MATRIX_ROW_MAJOR != 0,
-    };
-    let l = lower::L::new(o, &prog, &pre);
-    l.entry(entry)
+    let minor = if t.major >= 5 { 0 } else if t.major == 4 { t.minor.min(1) } else { t.minor };
+    let o = lower::Opts { pixel: t.pixel, major: t.major.min(5), minor, row_major: flags & PACK_MATRIX_ROW_MAJOR != 0 };
+    lower::L::new(o, prog, pre).entry(entry, args)
+}
+
+fn finish(shader: sm4::Shader, t: &Target) -> Result<Vec<u8>, String> {
+    if t.major < 4 {
+        return sm3::finish(shader);
+    }
+    Ok(sm4::finish(shader))
 }
 
 /// HLSL source to a DXBC blob (or shader model 2/3 bytecode).
@@ -113,11 +111,19 @@ pub fn compile(
     flags: u32,
 ) -> Result<Vec<u8>, String> {
     let t = parse_target(target)?;
-    let shader = lowered(src, defines, include, entry, &t, flags)?;
-    if t.major < 4 {
-        return sm3::finish(shader);
-    }
-    Ok(sm4::finish(shader))
+    let (prog, pre) = parse_program(src, defines, include)?;
+    finish(lower_entry(&prog, &pre, entry, &[], &t, flags)?, &t)
+}
+
+/// Effect source (.fx) to a compiled fx_2_0 effect.
+pub fn compile_effect(
+    src: &str,
+    defines: &[(String, String)],
+    include: &mut dyn FnMut(&str, bool) -> Option<String>,
+    flags: u32,
+) -> Result<Vec<u8>, String> {
+    let (prog, pre) = parse_program(src, defines, include)?;
+    fx::effect(&prog, &pre, flags)
 }
 
 #[cfg(test)]

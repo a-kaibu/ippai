@@ -1,0 +1,31 @@
+create
+  CreateVertexShader fffe0200
+  CreatePixelShader ffff0200
+D3DXCreateEffect 00000000
+by semantic: WorldViewProj class 3 type 3 4x4
+Alpha = 0.5, 2 annotations
+UIName alpha UIMin 0.25
+Samp: class 4 type 12
+technique Main: 1 passes, Desc main, valid 00000000
+begin
+  CreateStateBlock 1
+pass 0
+  SetRenderState 27 1
+  SetRenderState 19 5
+  SetRenderState 20 6
+  SetRenderState 7 0
+  SetVertexShader 1
+  SetPixelShader 2
+  vsF c0 = 1 0 0 3
+  vsF c1 = 0 1 0 0
+  vsF c2 = 0 0 1 0
+  vsF c3 = 0 0 0 1
+  psF c0 = 0.75 0 0 0
+  psF c1 = 1 0.5 0.25 1
+  SetTexture 0 0
+  SetSamplerState 0 6 2
+  SetSamplerState 0 5 1
+  SetSamplerState 0 1 3
+end
+  stateblock apply
+bad effect 88760b59, errors given

@@ -318,7 +318,7 @@ impl Parser {
     fn post_decl(&mut self, v: &mut Var) -> R<()> {
         loop {
             if self.is("<") {
-                self.skip_group("<", ">")?;
+                v.annos = self.annotations()?;
                 continue;
             }
             if !self.eat(":") {
@@ -363,6 +363,155 @@ impl Parser {
                 _ => v.sem = Some(n),
             }
         }
+    }
+
+    /// < type name = value; ... >
+    fn annotations(&mut self) -> R<Vec<Anno>> {
+        let mut out = Vec::new();
+        self.expect("<")?;
+        while !self.eat(">") {
+            if self.peek().is_none() {
+                return self.err("unterminated annotations");
+            }
+            let _ = self.modifiers()?;
+            let ty = self.ty()?;
+            let name = self.ident()?;
+            let ty = self.array_suffix(ty)?;
+            self.expect("=")?;
+            let value = self.assign_expr()?;
+            self.expect(";")?;
+            out.push(Anno { ty, name, value });
+        }
+        Ok(out)
+    }
+
+    /// An effect state's value (after '=').
+    fn fx_value(&mut self) -> R<FxVal> {
+        if self.is_id("compile") {
+            self.p += 1;
+            let target = self.ident()?;
+            let entry = self.ident()?;
+            let args = if self.is("(") { self.args()? } else { Vec::new() };
+            return Ok(FxVal::Compile(target, entry, args));
+        }
+        if self.is_id("asm") && matches!(self.peek_at(1), Some(Tok::Punct("{"))) {
+            self.p += 2;
+            return Ok(FxVal::Asm(self.asm_text()?));
+        }
+        if self.is_id("NULL") || self.is_id("null") {
+            self.p += 1;
+            return Ok(FxVal::Null);
+        }
+        if self.is("<") {
+            self.p += 1;
+            let n = self.ident()?;
+            let mut name = n;
+            // (<arr[2]>)
+            if self.eat("[") {
+                let e = self.expr()?;
+                self.expect("]")?;
+                name = format!("{name}[{}]", const_int(&e).unwrap_or(0));
+            }
+            self.expect(">")?;
+            return Ok(FxVal::Ref(name));
+        }
+        Ok(FxVal::Expr(self.assign_expr()?))
+    }
+
+    /// The text of an asm { } block (after its '{'), a line per source line.
+    fn asm_text(&mut self) -> R<String> {
+        let mut lines: Vec<(u32, Vec<String>)> = Vec::new();
+        let mut depth = 1;
+        loop {
+            let Some(t) = self.t.get(self.p).cloned() else { return self.err("unterminated asm block") };
+            self.p += 1;
+            match &t.t {
+                Tok::Punct("{") => depth += 1,
+                Tok::Punct("}") => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            if lines.last().is_none_or(|l| l.0 != t.line) {
+                lines.push((t.line, Vec::new()));
+            }
+            lines.last_mut().unwrap().1.push(super::pp::text(&t));
+        }
+        let mut out = String::new();
+        for (_, toks) in lines {
+            // (ps.1.1: lexed as ps .1 .1)
+            if toks.len() >= 3 && matches!(toks[0].as_str(), "ps" | "vs") && toks[1].starts_with("0.") {
+                let v: Vec<&str> = toks[1..].iter().map(|x| x.trim_start_matches("0.")).collect();
+                out.push_str(&format!("{}_{}\n", toks[0], v.join("_")));
+                continue;
+            }
+            let mut l = String::new();
+            let word = |s: &str| s.chars().next().is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+            let mut prev_word = false;
+            for x in &toks {
+                let w = word(x);
+                if w && prev_word {
+                    l.push(' ');
+                }
+                l.push_str(x);
+                if x == "," {
+                    l.push(' ');
+                }
+                prev_word = w;
+            }
+            out.push_str(&l);
+            out.push('\n');
+        }
+        Ok(out)
+    }
+
+    /// { Name[i] = value; ... } (after '{' is checked)
+    fn fx_states(&mut self) -> R<Vec<FxState>> {
+        self.expect("{")?;
+        let mut out = Vec::new();
+        while !self.eat("}") {
+            if self.peek().is_none() {
+                return self.err("unterminated state block");
+            }
+            let line = self.line();
+            let name = self.ident()?;
+            let mut index = None;
+            if self.eat("[") {
+                let e = self.expr()?;
+                self.expect("]")?;
+                index = Some(const_int(&e).ok_or(format!("line {line}: state index is not a constant"))? as u32);
+            }
+            self.expect("=")?;
+            let value = self.fx_value()?;
+            self.expect(";")?;
+            out.push(FxState { name, index, value, line });
+        }
+        Ok(out)
+    }
+
+    /// technique [name] [<annotations>] { pass [name] [<annotations>] { states } ... }
+    fn technique(&mut self) -> R<()> {
+        self.p += 1;
+        let name = if let Some(Tok::Ident(_)) = self.peek() { self.ident()? } else { String::new() };
+        let annos = if self.is("<") { self.annotations()? } else { Vec::new() };
+        self.expect("{")?;
+        let mut passes = Vec::new();
+        while !self.eat("}") {
+            if !self.is_id("pass") {
+                return self.err("expected a pass");
+            }
+            self.p += 1;
+            let pname = if let Some(Tok::Ident(_)) = self.peek() { self.ident()? } else { String::new() };
+            let pannos = if self.is("<") { self.annotations()? } else { Vec::new() };
+            let states = self.fx_states()?;
+            passes.push(Pass { name: pname, annos: pannos, states });
+        }
+        self.eat(";");
+        self.prog.techniques.push(Technique { name, annos, passes });
+        Ok(())
     }
 
     pub fn program(&mut self) -> R<()> {
@@ -428,7 +577,24 @@ impl Parser {
                     self.typedefs.push((n, t));
                     return Ok(());
                 }
-                "technique" | "technique9" | "technique10" | "technique11" | "pass" | "fxgroup" => {
+                "technique" | "technique9" => return self.technique(),
+                "VertexShader" | "PixelShader" | "vertexshader" | "pixelshader" if matches!(self.peek_at(1), Some(Tok::Ident(_))) => {
+                    // a shader variable: VertexShader vs = compile ..;
+                    let vertex = s.to_ascii_lowercase() == "vertexshader";
+                    self.p += 1;
+                    let name = self.ident()?;
+                    let mut v = Var::default();
+                    let ty = self.array_suffix(Ty::Void)?;
+                    if ty != Ty::Void {
+                        return self.err("arrays of shaders are not supported");
+                    }
+                    self.post_decl(&mut v)?;
+                    let val = if self.eat("=") { self.fx_value()? } else { FxVal::Null };
+                    self.expect(";")?;
+                    self.prog.shaders.push((name, vertex, val, v.annos));
+                    return Ok(());
+                }
+                "technique10" | "technique11" | "pass" | "fxgroup" => {
                     while !self.is("{") {
                         if self.peek().is_none() {
                             return self.err("bad technique");
@@ -511,16 +677,11 @@ impl Parser {
                 v.row_major = self.pack;
             }
             if self.eat("=") {
-                if self.is_id("sampler_state") || self.is_id("compile") {
-                    while !self.is(";") && !self.is(",") {
-                        if self.is("{") {
-                            self.skip_group("{", "}")?;
-                        } else if self.peek().is_none() {
-                            return self.err("unterminated declaration");
-                        } else {
-                            self.p += 1;
-                        }
-                    }
+                if self.is_id("sampler_state") {
+                    self.p += 1;
+                    v.states = self.fx_states()?;
+                } else if self.is_id("compile") {
+                    v.fx = Some(self.fx_value()?);
                 } else {
                     v.init = Some(self.assign_expr()?);
                 }
@@ -936,9 +1097,10 @@ impl Parser {
                 // (Foo::Bar: static members are not supported; the name alone)
                 Ok(Expr::Var(s, line))
             }
-            Some(Tok::Str(_)) => {
+            Some(Tok::Str(s)) => {
+                let s = s.clone();
                 self.p += 1;
-                Ok(Expr::Int(0, false))
+                Ok(Expr::Str(s))
             }
             _ => self.err("expected an expression"),
         }

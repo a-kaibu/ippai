@@ -41,6 +41,10 @@ WebGPU D3D9 を使う。いまはページ (`play.html` / `game.html`) が動か
   テクスチャのオフセットはエラー)。d3dx9_24〜43 の D3DXCompileShader(FromFile)・
   D3DXGetShaderConstantTable・ID3DXConstantTable (d3dx9shader.rs) がこれを使う。
   テストは host/tests/d3dx9shader.c (定数の書き込みを偽のデバイスで表示)。
+  D3DXCreateEffect(Ex/FromFile) にエフェクトのソース (.fx) が来たときは hlsl/fx.rs で fx_2_0 の
+  バイナリにしてから d3dx9fx.rs に渡す (technique/pass、レンダー・テクスチャステージ・サンプラー
+  ステート、sampler_state、アノテーション、`compile vs_2_0 f(定数)`、asm {}、VertexShader 変数)。
+  プリシェーダーは作らない (定数でない式のステートはエラー)。テストは host/tests/d3dx9effect.c。
 - specs.txt にない DLL (d2d1、dwrite など) はプレフィックスの
   `C:\windows\system32` から Wine の PE ビルドを x86 として読む。Direct2D はこの Wine の d2d1 が
   D3D11 の上で描く。
