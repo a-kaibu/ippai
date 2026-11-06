@@ -15,8 +15,9 @@ const E_INVALIDARG: u32 = 0x8007_0057;
 const E_OUTOFMEMORY: u32 = 0x8007_000e;
 
 fn wchars(p: u32, n: u32) -> Vec<u16> {
-    // (a negative count: nothing)
-    (0..n.min(i32::MAX as u32)).map(|i| r16(p + 2 * i)).collect()
+    // (a negative count: nothing; no text is longer than the guest's address space)
+    let n = if (n as i32) < 0 { 0 } else { n.min(1 << 28) };
+    (0..n).map(|i| r16(p + 2 * i)).collect()
 }
 
 /// The font for a call: the DC's (remembered in the SCRIPT_CACHE, a block holding the HFONT),
@@ -192,7 +193,7 @@ fn ScriptTextOut(c: &mut Ctx) -> u32 {
 // SCRIPT_STRING_ANALYSIS: {dc, chars (copy), n, SIZE, advances}
 fn ScriptStringAnalyse(c: &mut Ctx) -> u32 {
     let (dc, s, n, out) = (c.a(0), c.a(1), c.a(2), c.a(12));
-    if n == 0 || dc == 0 {
+    if n == 0 || (n as i32) < 0 || n > 1 << 28 || dc == 0 {
         return E_INVALIDARG;
     }
     let text = wchars(s, n);

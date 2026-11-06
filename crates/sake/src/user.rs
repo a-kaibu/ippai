@@ -443,22 +443,28 @@ pub fn flush(top: u32, r: Rect) {
     unsafe { kura::display::vnhost_window_draw_shared(top, d.as_ptr(), g.px.as_ptr(), g.w, g.h) };
 }
 
+/// What the display gets of a client area (screen coordinates): at most the 8192x8192 its
+/// surface has (resize_surface), whatever size a program gave the window.
+fn shown_rect(c: Rect) -> [i32; 8] {
+    let (r, b) = (c.l.saturating_add(c.w().clamp(0, 8192)), c.t.saturating_add(c.h().clamp(0, 8192)));
+    [c.l, c.t, r, b, c.l, c.t, r, b]
+}
+
 /// Tells the display where a top-level window is (its client area is what it shows).
 fn update_display(s: &State, h: u32) {
     let Some(w) = s.wins.get(&h) else { return };
     if w.parent != 0 && w.parent != DESKTOP {
         return;
     }
-    let c = w.client.off(w.rect.l, w.rect.t);
-    let r = [c.l, c.t, c.r, c.b, c.l, c.t, c.r, c.b];
+    let r = shown_rect(w.client.off(w.rect.l, w.rect.t));
+    let c = Rect { l: r[0], t: r[1], r: r[2], b: r[3] };
     let shown = w.visible && w.style & 0x4000_0000 == 0 && c.w() > 0 && c.h() > 0;
     unsafe { kura::display::vnhost_window_pos(h, r.as_ptr(), shown as i32, 0, 0) };
     // owned windows (dialogs) stay above their owner, as on Windows: RealLive's fullscreen
     // settings dialog is shown before its topmost fullscreen owner
     if shown {
         for (&o, ow) in s.wins.iter().filter(|(_, ow)| ow.owner == h && ow.visible && (ow.parent == 0 || ow.parent == DESKTOP)) {
-            let c = ow.client.off(ow.rect.l, ow.rect.t);
-            let r = [c.l, c.t, c.r, c.b, c.l, c.t, c.r, c.b];
+            let r = shown_rect(ow.client.off(ow.rect.l, ow.rect.t));
             unsafe { kura::display::vnhost_window_pos(o, r.as_ptr(), 1, 1, 0) };
         }
     }

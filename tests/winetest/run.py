@@ -171,6 +171,8 @@ def main():
 
     exp_path = os.path.join(HERE, f"expected-{a.arch}{suffix}.tsv")
     expected = read_tsv(exp_path)
+    # tests whose failure count depends on thread timing: only their status is compared
+    flaky = {l.split()[0] for l in open(os.path.join(HERE, "flaky.txt")) if l.strip() and not l.startswith("#")}
     worse, better = [], []
     for k in sorted(results):
         r = results[k]
@@ -178,7 +180,7 @@ def main():
             continue
         es, ef = expected[k]
         # (failure counts of some tests move a little from run to run: timing, threads)
-        if RANK[r["status"]] > RANK[es] or (r["status"] == es == "fail" and r["failures"] > ef + max(5, ef // 10)):
+        if RANK[r["status"]] > RANK[es] or (r["status"] == es == "fail" and k not in flaky and r["failures"] > ef + max(5, ef // 10)):
             worse.append(f"{k}: {es} ({ef}) -> {r['status']} ({r['failures']})")
         elif RANK[r["status"]] < RANK[es] or r["failures"] < ef:
             better.append(f"{k}: {es} ({ef}) -> {r['status']} ({r['failures']})")

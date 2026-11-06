@@ -84,7 +84,27 @@ pub fn r64(a: u32) -> u64 {
 }
 #[inline(always)]
 pub fn w64(a: u32, v: u64) {
-    unsafe { (a as usize as *mut u64).write_unaligned(v) }
+    if guest(a, 8) {
+        unsafe { (a as usize as *mut u64).write_unaligned(v) }
+    }
+}
+
+/// Guest memory is below 2G (HI); sake's own heap and stacks are above it (emscripten's
+/// GLOBAL_BASE). A write the guest asks for there (a bad pointer passed to an API: Wine's tests
+/// pass some on purpose) would corrupt sake itself: it is dropped (Windows would fault).
+#[inline(always)]
+fn guest(a: u32, n: u32) -> bool {
+    if a as u64 + n as u64 <= 0x8000_0000 {
+        return true;
+    }
+    refused(a, n);
+    false
+}
+#[cold]
+#[inline(never)]
+fn refused(a: u32, n: u32) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| eprintln!("sake: a write of {n} bytes to {a:#x} (not guest memory) was dropped"));
 }
 
 #[inline(always)]
@@ -101,15 +121,21 @@ pub fn r32(a: u32) -> u32 {
 }
 #[inline(always)]
 pub fn w8(a: u32, v: u8) {
-    unsafe { *(a as usize as *mut u8) = v }
+    if guest(a, 1) {
+        unsafe { *(a as usize as *mut u8) = v }
+    }
 }
 #[inline(always)]
 pub fn w16(a: u32, v: u16) {
-    unsafe { (a as usize as *mut u16).write_unaligned(v) }
+    if guest(a, 2) {
+        unsafe { (a as usize as *mut u16).write_unaligned(v) }
+    }
 }
 #[inline(always)]
 pub fn w32(a: u32, v: u32) {
-    unsafe { (a as usize as *mut u32).write_unaligned(v) }
+    if guest(a, 4) {
+        unsafe { (a as usize as *mut u32).write_unaligned(v) }
+    }
 }
 /// Writes `v` if `a` is not NULL.
 #[inline]
@@ -125,13 +151,19 @@ pub fn slice_mut<'a>(a: u32, n: u32) -> &'a mut [u8] {
     unsafe { std::slice::from_raw_parts_mut(a as usize as *mut u8, n as usize) }
 }
 pub fn fill(a: u32, n: u32, v: u8) {
-    unsafe { std::ptr::write_bytes(a as usize as *mut u8, v, n as usize) }
+    if guest(a, n) {
+        unsafe { std::ptr::write_bytes(a as usize as *mut u8, v, n as usize) }
+    }
 }
 pub fn copy(dst: u32, src: u32, n: u32) {
-    unsafe { std::ptr::copy(src as usize as *const u8, dst as usize as *mut u8, n as usize) }
+    if guest(dst, n) {
+        unsafe { std::ptr::copy(src as usize as *const u8, dst as usize as *mut u8, n as usize) }
+    }
 }
 pub fn write(dst: u32, data: &[u8]) {
-    unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), dst as usize as *mut u8, data.len()) }
+    if guest(dst, data.len() as u32) {
+        unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), dst as usize as *mut u8, data.len()) }
+    }
 }
 
 /// NUL-terminated byte string at `a` (without the NUL).

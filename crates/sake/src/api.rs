@@ -260,7 +260,7 @@ pub fn implemented(addr: u32) -> bool {
     ENTRIES.read().unwrap().get(i).is_some_and(|e| e.f.is_some())
 }
 
-fn trace() -> u32 {
+pub fn trace() -> u32 {
     static T: OnceLock<u32> = OnceLock::new();
     *T.get_or_init(|| std::env::var("SAKE_TRACE").ok().and_then(|s| s.parse().ok()).unwrap_or(0))
 }
@@ -313,7 +313,7 @@ thread_local! {
 /// Prints (and clears) this thread's last API calls (SAKE_TRACE=3).
 pub fn dump_ring(why: &str) {
     RING.with(|r| {
-        let mut r = r.borrow_mut();
+        let Ok(mut r) = r.try_borrow_mut() else { return };
         if r.is_empty() {
             return;
         }

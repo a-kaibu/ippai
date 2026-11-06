@@ -530,6 +530,14 @@ pub unsafe extern "C" fn sake_main(argc: i32, argv: *const *const libc::c_char) 
         eprintln!("usage: sake <program.exe> [args]");
         return 1;
     }
+    // SAKE_TRACE=3: a panic of sake itself (a guest's bad argument) also shows the last API calls
+    if api::trace() == 3 {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |i| {
+            api::dump_ring("the panic");
+            prev(i)
+        }));
+    }
     main(&args[1], &args[2..])
 }
 

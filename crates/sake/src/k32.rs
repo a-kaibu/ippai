@@ -4495,6 +4495,12 @@ pub fn init() {
     implement("kernel32", "LocaleNameToLCID", LocaleNameToLCID);
     implement("ntdll", "NtQuerySystemTime", NtQuerySystemTime);
     implement("ntdll", "RtlTimeToSecondsSince1970", RtlTimeToSecondsSince1970);
+    // heap walks find no entries (sake's heaps keep no per-block list a program could walk)
+    implement("ntdll", "RtlWalkHeap", |_| 0x8000_001a); // STATUS_NO_MORE_ENTRIES
+    implement("kernel32", "HeapWalk", |_| {
+        last_error(259); // ERROR_NO_MORE_ITEMS
+        0
+    });
     implement("ntdll", "__wine_dbg_strdup", wine_dbg_strdup);
     implement("ntdll", "LdrGetDllHandle", LdrGetDllHandle);
     implement("ntdll", "RtlFindExportedRoutineByName", RtlFindExportedRoutineByName);

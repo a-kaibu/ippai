@@ -3773,8 +3773,9 @@ fn GetTextCharsetInfo(c: &mut Ctx) -> u32 {
 }
 
 /// A negative character count: the text functions fail (ERROR_INVALID_PARAMETER)
+/// A text count no call can have: negative, or more than the guest's memory holds.
 fn bad_count(n: u32) -> bool {
-    if (n as i32) < 0 {
+    if (n as i32) < 0 || n > 1 << 28 {
         crate::k32::last_error(87);
         return true;
     }
@@ -3784,7 +3785,7 @@ fn ansi_chars(p: u32, n: u32) -> Vec<u16> {
     a2w(&mem::cstrn(p, n))
 }
 fn wide_chars(p: u32, n: u32) -> Vec<u16> {
-    (0..n).map(|i| r16(p + 2 * i)).collect()
+    (0..if bad_count(n) { 0 } else { n }).map(|i| r16(p + 2 * i)).collect()
 }
 
 fn extent(c: &mut Ctx, s: &[u16], out: u32) -> u32 {

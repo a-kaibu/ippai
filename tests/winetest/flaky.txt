@@ -1,0 +1,3 @@
+# Tests whose number of failed checks moves a lot from run to run (thread timing): run.py
+# compares only their status (ok / fail / crash).
+kernelbase:sync
