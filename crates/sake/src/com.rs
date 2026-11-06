@@ -118,7 +118,11 @@ fn add_ref(c: &mut Ctx) -> u32 {
 }
 
 fn release(c: &mut Ctx) -> u32 {
-    let this = c.a(0);
+    release_obj(c.a(0))
+}
+
+/// Release on `obj` (for objects whose own Release frees more): the references left.
+pub fn release_obj(this: u32) -> u32 {
     objs(|m| match m.get_mut(&this) {
         Some(o) if o.refs > 1 => {
             o.refs -= 1;
@@ -190,7 +194,7 @@ const CLSID_WIC_FACTORY2: u32 = 0x317d_06e8;
 /// CoCreateInstance of the WIC imaging factory.
 pub fn create_instance(clsid: u32) -> Option<u32> {
     match mem::r32(clsid) {
-        CLSID_WIC_FACTORY | CLSID_WIC_FACTORY2 => Some(object("IWICImagingFactory2", &[], 8)),
+        CLSID_WIC_FACTORY | CLSID_WIC_FACTORY2 => Some(crate::wic::factory()),
         _ => None,
     }
 }
