@@ -177,7 +177,8 @@ async function key(name) {
 
 // 1. the title
 // before the title: a launcher or settings dialog (PRE=x,y clicks there every 3 s; otherwise
-// Return every 6 s from 12 s on, which takes a dialog's default button)
+// Return every 6 s from 12 s on, which takes a dialog's default button; a small window is a
+// dialog however many colours its text has: Softpal's ウインドウモード dialog)
 let last = null, firstFrame = null, lastPre = 0;
 const PRE = process.env.PRE?.split(",").map(Number);
 while (now() < TITLE_MAX && !crashed) {
@@ -187,7 +188,7 @@ while (now() < TITLE_MAX && !crashed) {
   last = f;
   view = f.view;
   if (PRE?.length === 2 && now() - lastPre >= 3) { lastPre = now(); await click(PRE[0], PRE[1]); }
-  else if (!PRE && process.env.PRE_KEYS !== "0" && now() > 12 && now() - lastPre >= 6 && f.colors <= 300) { lastPre = now(); await key("Return"); }
+  else if (!PRE && process.env.PRE_KEYS !== "0" && now() > 12 && now() - lastPre >= 6 && (f.colors <= 300 || f.w < 320 || f.h < 200)) { lastPre = now(); await key("Return"); }
   if (firstFrame === null && f.w > 32) firstFrame = now();
   // (a small window with many colours is a launcher: CatSystem2's フルスクリーン/ウィンドウ bar)
   if (f.colors > 300 && f.w >= 320 && f.h >= 200) { res.title = now(); break; }

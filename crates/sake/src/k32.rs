@@ -3838,6 +3838,48 @@ fn SystemFunction036(c: &mut Ctx) -> u32 {
     mem::write(p, &buf);
     1
 }
+/// BCryptOpenAlgorithmProvider(&alg, id, implementation, flags): any algorithm "opens"; only
+/// BCryptGenRandom does something with it.
+fn BCryptOpenAlgorithmProvider(c: &mut Ctx) -> u32 {
+    put32(c.a(0), mem::heap_alloc(16, true));
+    0
+}
+fn BCryptCloseAlgorithmProvider(_: &mut Ctx) -> u32 {
+    0
+}
+/// BCryptGenRandom(alg, buffer, length, flags)
+fn BCryptGenRandom(c: &mut Ctx) -> u32 {
+    let mut buf = vec![0u8; c.a(2) as usize];
+    for chunk in buf.chunks_mut(256) {
+        unsafe { libc::getentropy(chunk.as_mut_ptr().cast(), chunk.len()) };
+    }
+    mem::write(c.a(1), &buf);
+    0
+}
+fn BCryptGetProperty(_: &mut Ctx) -> u32 {
+    0xc000_00bb // STATUS_NOT_SUPPORTED
+}
+/// pdh: a query whose counters all read 0 (LiveMaker watches the CPU load).
+fn PdhOpenQuery(c: &mut Ctx) -> u32 {
+    put32(c.a(2), mem::heap_alloc(16, true));
+    0
+}
+/// PdhAddCounter(query, path, user, &counter)
+fn PdhAddCounter(c: &mut Ctx) -> u32 {
+    put32(c.a(3), mem::heap_alloc(16, true));
+    0
+}
+fn pdh_ok(_: &mut Ctx) -> u32 {
+    0
+}
+/// PdhGetFormattedCounterValue(counter, format, &type, PDH_FMT_COUNTERVALUE*)
+fn PdhGetFormattedCounterValue(c: &mut Ctx) -> u32 {
+    put32(c.a(2), 0);
+    if c.a(3) != 0 {
+        mem::fill(c.a(3), 16, 0);
+    }
+    0
+}
 fn RtlZeroMemory(c: &mut Ctx) -> u32 {
     mem::fill(c.a(0), c.a(1), 0);
     0
@@ -4142,6 +4184,17 @@ pub fn init() {
         AreFileApisANSI, SetFileApisToANSI,
     );
     reg!("advapi32"; GetUserNameA, SystemFunction036);
+    reg!("bcrypt"; BCryptOpenAlgorithmProvider, BCryptCloseAlgorithmProvider, BCryptGenRandom, BCryptGetProperty);
+    for n in ["PdhOpenQueryA", "PdhOpenQueryW", "PdhOpenQuery"] {
+        implement("pdh", n, PdhOpenQuery);
+    }
+    for n in ["PdhAddCounterA", "PdhAddCounterW", "PdhAddEnglishCounterA", "PdhAddEnglishCounterW"] {
+        implement("pdh", n, PdhAddCounter);
+    }
+    for n in ["PdhCollectQueryData", "PdhRemoveCounter", "PdhCloseQuery"] {
+        implement("pdh", n, pdh_ok);
+    }
+    reg!("pdh"; PdhGetFormattedCounterValue);
     for n in ["Process32Next", "Process32NextW", "Module32First", "Module32FirstW", "Module32Next", "Module32NextW", "Thread32First", "Thread32Next"] {
         implement("kernel32", n, no_more);
     }

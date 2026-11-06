@@ -136,6 +136,16 @@ pub fn raise(cpu: &mut Cpu, code: u32, flags: u32, addr: u32, params: &[u32]) {
             st.join(" "),
             cpu.regs[5]
         );
+        // (the callers, by the ebp chain: where a C++ throw came from)
+        let (mut bp, mut rets) = (cpu.regs[5], String::new());
+        for _ in 0..8 {
+            if bp < 0x1000 || bp & 3 != 0 || crate::mem::find(bp).is_none() {
+                break;
+            }
+            rets += &format!(" {:x}", r32(bp + 4));
+            bp = r32(bp);
+        }
+        eprintln!("sake:   returns{rets}");
         let mut f = r32(crate::cur().teb);
         let mut chain = String::new();
         for _ in 0..12 {

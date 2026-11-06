@@ -1029,6 +1029,7 @@ pub fn init() {
         ("D3DXCreateFontIndirectA", D3DXCreateFont),
         ("D3DXCreateFontIndirectW", D3DXCreateFont),
         ("D3DXCheckVersion", D3DXCheckVersion),
+        ("D3DXCreateSprite", crate::d3dx9sprite::D3DXCreateSprite),
         ("D3DXLoadSurfaceFromFileInMemory", D3DXLoadSurfaceFromFileInMemory),
         ("D3DXLoadSurfaceFromFileA", D3DXLoadSurfaceFromFileA),
         ("D3DXLoadSurfaceFromFileW", D3DXLoadSurfaceFromFileW),

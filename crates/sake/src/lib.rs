@@ -33,6 +33,7 @@ pub mod d3dx9;
 pub mod d3dcompiler;
 pub mod d3dreflect;
 pub mod d3dx9fx;
+pub mod d3dx9sprite;
 pub mod d3dx9shader;
 pub mod vcomp;
 pub mod nt;
