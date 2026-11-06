@@ -254,7 +254,8 @@ pub fn decode(chunk: &[u8]) -> Result<Program, String> {
             p += n;
             continue;
         }
-        let n = ((t >> 24) & 0x1f) as usize;
+        // (bits 24..30: the length in dwords)
+        let n = ((t >> 24) & 0x7f) as usize;
         if n == 0 || p + n > len {
             return Err(format!("bad instruction length at {p}"));
         }

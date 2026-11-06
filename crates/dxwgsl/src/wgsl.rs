@@ -490,7 +490,15 @@ impl W {
             return Ok(());
         }
         let comps = bits(o.mask() as u32);
-        let n = comps.len().max(1);
+        if comps.is_empty() || (o.comps == 0 && matches!(o.ty, tpf::TEMP | tpf::INDEXABLE_TEMP | tpf::OUTPUT)) {
+            // (writes nothing: no compiler makes it, and it is not valid bytecode)
+            return Err("a destination with an empty write mask".into());
+        }
+        if sat && k != K::F {
+            // (_sat is a float modifier: not valid on integer results)
+            return Err("_sat on an integer result".into());
+        }
+        let n = comps.len();
         let val = if sat && k == K::F { format!("saturate({val})") } else { val };
         let b = if k == K::U { val } else { format!("bitcast<{}>({val})", vty(K::U, n)) };
         match o.ty {
@@ -869,6 +877,14 @@ impl W {
             }
         }
         self.last_op = op;
+        // (_sat is for float results: not valid on integer, bit or comparison instructions)
+        const INT_RESULT: &[u32] = &[
+            0x01, 0x18, 0x1b, 0x1c, 0x1d, 0x1e, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x31, 0x39, 0x3b,
+            0x3c, 0x4e, 0x4f, 0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x57, 0x82, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x8b, 0x8c, 0x8d, 0x8e,
+        ];
+        if i.sat && INT_RESULT.contains(&op) {
+            return Err(format!("_sat on integer instruction {op:#x}"));
+        }
         // (break and continue: inside a loop; break also in a switch, handled above)
         if matches!(op, 0x02 | 0x03 | 0x07 | 0x08) && !self.blocks.contains(&b'l') && !(matches!(op, 0x02 | 0x03) && self.blocks.contains(&b's')) {
             return Err("break/continue outside a loop".into());

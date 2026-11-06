@@ -27,7 +27,8 @@ const page = await browser.newPage();
 page.on("console", (m) => m.type() === "error" && console.error("page:", m.text()));
 await page.goto(`http://127.0.0.1:${server.address().port}/`);
 
-const results = await page.evaluate(async (cases) => {
+// (in chunks: one evaluate of a whole oracle run's cases runs Node out of heap)
+const run = async (cases) => page.evaluate(async (cases) => {
   const adapter = await navigator.gpu.requestAdapter();
   const device = await adapter.requestDevice();
   const info = adapter.info ?? {};
@@ -129,8 +130,15 @@ const results = await page.evaluate(async (cases) => {
       r.error = String(e);
     }
   }
+  device.destroy();
   return { adapter: `${info.vendor ?? ""} ${info.architecture ?? ""}`.trim(), out };
 }, cases);
+const results = { adapter: "", out: [] };
+for (let i = 0; i < cases.length; i += 250) {
+  const r = await run(cases.slice(i, i + 250));
+  results.adapter = r.adapter;
+  results.out.push(...r.out);
+}
 
 await browser.close();
 server.close();

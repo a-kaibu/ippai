@@ -109,6 +109,19 @@ jobs:
           PLAYWRIGHT: ${{ runner.temp }}/pw/node_modules/playwright/index.mjs
           OUT: ${{ runner.temp }}/shaders-report.json
         run: node tests/shaders.mjs "$RUNNER_TEMP/cases.json"
+      # (mutated DXBC and D3D9 bytecode with the reference interpreters' results as the
+      # expected pixels: dxwgsl's WGSL must compute what the instructions do; a fixed seed,
+      # then one that changes per run)
+      - name: Interpreter oracle on WebGPU
+        if: always()
+        env:
+          PLAYWRIGHT: ${{ runner.temp }}/pw/node_modules/playwright/index.mjs
+        run: |
+          ./target/release/shaderconf --oracle 20000 7 > "$RUNNER_TEMP/oracle.json"
+          node tests/shaders.mjs "$RUNNER_TEMP/oracle.json" | grep -v '^ok '
+          echo "seed ${{ github.run_number }}"
+          ./target/release/shaderconf --oracle 20000 ${{ github.run_number }} > "$RUNNER_TEMP/oracle2.json"
+          node tests/shaders.mjs "$RUNNER_TEMP/oracle2.json" | grep -v '^ok '
       # (mutated sources and bytecode through the translators: no panic, hang, huge
       # allocation or invalid WGSL; a fixed seed, then one that changes per run)
       - name: Fuzz the translators

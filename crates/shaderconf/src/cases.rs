@@ -46,12 +46,12 @@ float4 ps() : SV_Target {
   int4 ia = asint(a); int4 ib = asint(b); int4 ic = asint(c);
 ";
 
-fn dxbc_wgsl(src: &str, target: &str) -> Result<(String, u32, u32), String> {
+fn dxbc_wgsl(src: &str, target: &str) -> Result<(String, u32, u32, Vec<u8>), String> {
     let mut inc = |_: &str, _: bool| None;
     let code = hlslc::compile(src, &[], &mut inc, "ps", target, 0)?;
     let w = dxwgsl::translate(&code, true, None)?;
     let b = w.bindings.iter().find(|b| matches!(b.1, dxwgsl::Binding::Uniform(_))).map_or(0, |b| b.0);
-    Ok((w.code, 1, b))
+    Ok((w.code, 1, b, code))
 }
 
 /// A DXBC case: `body` sets `r` from a, b, c (uint4), fa.. (float4), ia.. (int4); one pixel
@@ -81,10 +81,11 @@ fn dxbc(
 #[allow(clippy::too_many_arguments)]
 pub fn dxbc_raw(out: &mut Vec<Case>, errors: &mut Vec<String>, name: &str, rule: &'static str, src: &str, target: &str, tol: Tol, pixels: Vec<(Vec<u32>, [Want; 4])>) {
     match dxbc_wgsl(src, target) {
-        Ok((wgsl, group, binding)) => out.push(Case {
+        Ok((wgsl, group, binding, code)) => out.push(Case {
             name: format!("dxbc/{name}"),
             api: "dxbc",
             src: src.to_string(),
+            code,
             wgsl,
             group,
             binding,
@@ -367,12 +368,13 @@ fn packing(out: &mut Vec<Case>, errors: &mut Vec<String>) {
     for &(name, decl, expr, word) in cases {
         let src = format!("cbuffer C : register(b0) {{ {decl} }};\nfloat4 ps() : SV_Target {{ return float4({expr}, 0, 0, 1); }}\n");
         match dxbc_wgsl(&src, "ps_4_0") {
-            Ok((wgsl, group, binding)) => {
+            Ok((wgsl, group, binding, code)) => {
                 let data: Vec<u8> = (0..64u32).flat_map(|i| (i as f32).to_bits().to_le_bytes()).collect();
                 out.push(Case {
                     name: format!("dxbc/pack_{name}"),
                     api: "dxbc",
                     src: src.clone(),
+                    code,
                     wgsl,
                     group,
                     binding,
@@ -411,6 +413,7 @@ pub fn d3d9_words(out: &mut Vec<Case>, errors: &mut Vec<String>, name: &str, rul
             name: format!("d3d9/{name}"),
             api: "d3d9",
             src: src.to_string(),
+            code: words.iter().flat_map(|w| w.to_le_bytes()).collect(),
             wgsl,
             group: 0,
             binding: 1,
@@ -491,6 +494,8 @@ fn d3d9_cases(out: &mut Vec<Case>, errors: &mut Vec<String>) {
         vec![(xyz(5.0, 1.0, 0.0), w1(vec![5.0])), (xyz(0.0, 1.0, 0.0), w1(vec![0.0]))]);
     d3d9(out, errors, "swizzle_mask", "swizzles and write masks", "mov r0, c2\nmov r0.yw, c0.wzyx", Tol::Exact,
         vec![([[1.0, 2.0, 3.0, 4.0], [0.0; 4], [9.0, 9.0, 9.0, 9.0]], [one(9.0), one(3.0), one(9.0), one(1.0)])]);
+    d3d9(out, errors, "dsx_in_if", "dsx inside an if on a constant (WGSL's uniformity analysis must not reject it): the derivative of a constant is 0", "mov r0, c2\nif_gt c0.x, c1.x\ndsx r1, c0\nadd r0, r1, c2\nendif", Tol::Exact,
+        vec![(xyz(2.0, 1.0, 5.0), w1(vec![5.0])), (xyz(0.0, 1.0, 5.0), w1(vec![5.0]))]);
     d3d9(out, errors, "def", "def: constants in the shader", "def c5, 0.25, 0.5, 2.0, -1.0\nmul r0, c0, c5", Tol::Exact,
         vec![([[4.0, 4.0, 4.0, 4.0], [0.0; 4], [0.0; 4]], [one(1.0), one(2.0), one(8.0), one(-4.0)])]);
 }
@@ -519,6 +524,7 @@ pub fn glsl_raw(out: &mut Vec<Case>, errors: &mut Vec<String>, name: &str, rule:
                 name: format!("glsl/{name}"),
                 api: "glsl",
                 src: ps.clone(),
+                code: Vec::new(),
                 wgsl: p.ps.wgsl.clone(),
                 group,
                 binding,

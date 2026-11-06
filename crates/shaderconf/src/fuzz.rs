@@ -144,7 +144,7 @@ fn words(b: &[u8]) -> Vec<u32> {
 }
 
 /// naga's verdict on translator output
-fn valid(code: &str) -> Result<(), String> {
+pub fn valid(code: &str) -> Result<(), String> {
     let m = naga::front::wgsl::parse_str(code).map_err(|e| e.emit_to_string(code))?;
     naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&m).map(|_| ()).map_err(|e| format!("{e:?}"))
 }
@@ -329,11 +329,12 @@ pub fn regressions(dir: &std::path::Path) -> Vec<String> {
         let t = std::fs::read_to_string(&f).unwrap_or_default();
         match Input::parse(&t) {
             None => out.push(format!("{}: cannot read", f.display())),
-            Some(i) => {
-                if let (_, Some(e)) = i.failure(&msg) {
-                    out.push(format!("{}: {}", f.display(), e.lines().next().unwrap_or("")));
-                }
-            }
+            Some(i) => match i.failure(&msg) {
+                (_, Some(e)) => out.push(format!("{}: {}", f.display(), e.lines().next().unwrap_or(""))),
+                // (invalid bytecode a translator took before: it must say no)
+                (true, None) if t.contains("# must be rejected") => out.push(format!("{}: accepted", f.display())),
+                _ => {}
+            },
         }
     }
     out

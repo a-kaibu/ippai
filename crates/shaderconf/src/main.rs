@@ -13,7 +13,12 @@
 mod cases;
 mod fuzz;
 mod json;
+mod oracle;
 mod random;
+mod ref_d3d9;
+mod ref_dxbc;
+#[cfg(test)]
+mod ref_tests;
 
 /// How a pixel's channel compares.
 #[derive(Clone, Copy, Debug)]
@@ -39,6 +44,8 @@ pub struct Case {
     pub wgsl: String,
     /// what it was translated from (HLSL, assembly or GLSL)
     pub src: String,
+    /// the bytecode dxwgsl translated (DXBC, D3D9 tokens; empty for GLSL)
+    pub code: Vec<u8>,
     /// the uniform buffer the shader reads: group, binding, bytes
     pub group: u32,
     pub binding: u32,
@@ -70,6 +77,14 @@ fn main() {
             println!("REGRESSION {b}");
         }
         std::process::exit(if fuzz::run(&out, n, seed) && bad.is_empty() { 0 } else { 1 });
+    }
+    let mut a = std::env::args().skip_while(|a| a != "--oracle").skip(1);
+    if let Some(n) = a.next() {
+        let n = n.parse().expect("--oracle N [seed]");
+        let seed = a.next().map_or(1, |s| s.parse().expect("--oracle N [seed]"));
+        let m = oracle::cases(&out, n, seed);
+        eprintln!("shaderconf: {} mutants of {n} with an interpreted result", m.len());
+        out = m;
     }
     if list {
         for c in &out {

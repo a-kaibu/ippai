@@ -241,6 +241,10 @@ impl Shader {
                 let mut p = parse_param(*toks.get(*k)?, dst);
                 let raw = toks[*k];
                 *k += 1;
+                // (parameter tokens have bit 31 set)
+                if major >= 2 && raw & 0x8000_0000 == 0 {
+                    return None;
+                }
                 if !dst && raw & 0x2000 != 0 {
                     if major >= 2 {
                         let a = parse_param(*toks.get(*k)?, false);
@@ -256,21 +260,21 @@ impl Shader {
                 DCL => {
                     ins.extra[0] = *toks.first()?;
                     k = 1;
-                    ins.dst = next_param(&mut k, true);
+                    ins.dst = Some(next_param(&mut k, true)?);
                 }
                 DEF | DEFI | DEFB => {
-                    ins.dst = next_param(&mut k, true);
+                    ins.dst = Some(next_param(&mut k, true)?);
                     for j in 0..4 {
                         ins.extra[j] = toks.get(k + j).copied().unwrap_or(0);
                     }
                 }
                 _ => {
                     if !no_dst(op) {
-                        ins.dst = next_param(&mut k, true);
+                        ins.dst = Some(next_param(&mut k, true)?);
                     }
                     if t & 0x1000_0000 != 0 && major >= 2 {
                         // predicated: the predicate comes before the sources
-                        ins.predicated = next_param(&mut k, false);
+                        ins.predicated = Some(next_param(&mut k, false)?);
                     }
                     while k < toks.len() {
                         let p = next_param(&mut k, false)?;
@@ -391,8 +395,11 @@ impl Shader {
                 IFC | BREAKC if i.src.len() != 2 => return false,
                 _ => {}
             }
-            // destinations: registers that are variables
+            // destinations: registers that are variables, writing at least one component
             if let Some(d) = i.dst {
+                if !matches!(i.op, DCL | DEF | DEFI | DEFB) && d.mask == 0 {
+                    return false;
+                }
                 let ok = match i.op {
                     DCL => true,
                     DEF => matches!(d.ty, CONST | CONST2 | CONST3 | CONST4),
@@ -1196,7 +1203,9 @@ impl<'a> Gen<'a> {
     pub fn pixel(mut self, opts: &Options) -> String {
         let s = self.s;
         let (nr, _, _, nt) = self.temps();
-        let mut h = String::new();
+        // (texld, dsx and dsy inside if blocks and loops on a value read per pixel: legal in
+        // D3D9, rejected by WGSL's uniformity analysis unless it is off)
+        let mut h = String::from("diagnostic(off, derivative_uniformity);\n");
         h.push_str(&uniforms(s.max_const, 1));
         h.push_str(HELPERS);
         h.push_str(PS_HELPERS);

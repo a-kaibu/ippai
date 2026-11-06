@@ -10,6 +10,7 @@
 | The executor (`render/d3d.rs`) against WebGPU: every call kura makes checked against the spec's validation rules, and its optimizations (clears deferred into loadOps, stencil cleared and discarded, batches the same as the last one not run, Siglus segments drawn again only where they changed) against plain execution | `render/model.rs`, a model of WebGPU (validation, an abstract meaning of every command: texel terms, queue writes at once, commands at submit, `discard` leaves zeros); `render/d3d/model_tests.rs` runs random Direct3D 9, Direct3D 11, OpenGL/Direct2D-style command streams optimized and plain: the same frames and readbacks, no WebGPU error | `IPPAI_MODEL_SEEDS=N cargo test --release -p kura --lib optimizations_draw_the_same` |
 | The rule of `repeats()` (when a batch may be skipped) | TLA+ `tla/RepeatSkip.tla`: for every batch of up to 3 commands (clears, draws with and without blending, writes, copies, fills; partial boxes, an array texture) from any contents, "repeats" implies running it twice leaves what once did | `formal/run.sh` |
 | Direct3D 9 and 11 object lifetimes (`d3d9/mod.rs`, `d3d11/mod.rs`): reference counts, what the device state, state blocks, views and swap chains hold, Reset, ResizeBuffers, ClearState | TLA+ `tla/ComRefs.tla`, the API's rules (an object lives while the application, a live holder or a live binding reaches it; AddRef/Release return the public count); `d3d9/trace_tests.rs` and `d3d11/trace_tests.rs` make random calls through the real entry points and write each run as a trace; TLC checks every call's result, returned object and the set of live objects against ComRefs (`tla/ComRefsTrace.tla`) | `formal/trace.sh` |
+| The bytecode semantics of shader translation, instruction by instruction | `crates/shaderconf/src/ref_dxbc.rs` and `ref_d3d9.rs`: reference interpreters of shader model 4/5 and ps_2_0..3_0, written from the D3D11.3 functional spec and the D3D9 instruction reference with their own decoders (nothing shared with dxwgsl). Checked against every case's expected pixels (`interpreters_give_what_the_cases_expect`); then the oracle: the cases' bytecode mutated, each mutant dxwgsl takes and the interpreter runs with a result every implementation must give (nothing out of range, no infinity, NaN or denormal on the way) becomes a case whose expected pixels are the interpreter's, run on WebGPU | `cargo test -p shaderconf`; `shaderconf --oracle 20000 7 > o.json && node tests/shaders.mjs o.json` |
 | Texel conversion (`d3d9/format.rs`, `d3d11/format.rs`) against references written from the Direct3D docs | exhaustive tests: every texel of every 16- and 8-bit format, every DXT endpoint pair per channel in both modes, every DXT5 alpha pair and code, every f32 → f16 (against `half`, IEEE round to nearest even) | `cargo test -p kura --release format` |
 | UNORM expansion, pitch/row arithmetic of every D3D9 and DXGI format, window rectangle algebra | Kani proofs (`#[cfg(kani)] mod proofs`) for all inputs in the API's limits | `formal/kani.sh` |
 | Direct3D 9/11 and OpenGL viewports and scissors (`rects9`, `rects11` in `render/d3d.rs`) | Kani: for every target size and every viewport, depth range and scissor (NaN and infinities too), what reaches setViewport / setScissorRect is what WebGPU accepts: inside the target as WebGPU adds it up, depths in 0..1 | `formal/kani.sh` |
@@ -54,6 +55,16 @@ tore down another made after it; a D3D11 swap chain kept its reference on the de
 destroyed (the device's count drifted up). Deliberately left as they are, and written into
 ComRefs: resources do not hold their device, and Reset / ResizeBuffers do not fail while the
 application still holds old buffers.
+
+The interpreter oracle found: D3D9 pixel shaders with texld, dsx or dsy inside if blocks or
+loops were invalid WGSL for Chromium (its uniformity analysis was not turned off for D3D9 as it
+is for DXBC; naga does not check it, so only the browser saw it); dxwgsl took invalid bytecode
+and gave it a meaning the instructions do not have: DXBC destinations with no components
+(written as all four), _sat on integer instructions, D3D9 destinations with write mask 0 and
+parameter tokens without bit 31 (a missing destination read as none), D3D9 defs of non-constant
+registers. And one decoding bug: dxwgsl read a DXBC instruction's length from 5 bits instead
+of 7, so an instruction 41 dwords long was read as 9. They are rejected now
+(`crates/shaderconf/regress/oracle7-*.txt`).
 
 Found and fixed with these: the movie slot flag above; `f16_bits` rounded ties up (4535 of every
 7th f32 differed from IEEE round to nearest even); 5- and 6-bit channels were expanded by bit
