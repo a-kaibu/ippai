@@ -670,7 +670,9 @@ fn lookup_proc(base: u32, imp: Import, bind_known: bool) -> Option<u32> {
 
 /// A data export of a DLL we implement (msvcrt's variables).
 fn hle_data(dll: &str, name: &str) -> Option<u32> {
-    (api::dll_key(dll) == "msvcrt").then(|| crate::crt::data(name)).flatten()
+    // (msvcr90's too: AdvHD imports _acmdln from it)
+    let k = api::dll_key(dll);
+    (api::is_crt(&k) && !k.starts_with("msvcp") && !k.starts_with("vcruntime")).then(|| crate::crt::data(name)).flatten()
 }
 
 fn load_dll_file(dll: &str) -> Result<u32, String> {

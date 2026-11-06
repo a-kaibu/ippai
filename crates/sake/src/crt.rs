@@ -827,6 +827,51 @@ fn itoa_common(v: i64, out: u32, base: u32) -> u32 {
 fn _itoa(c: &mut Ctx) -> u32 {
     itoa_common(c.i(0) as i64, c.a(1), c.a(2).clamp(2, 36))
 }
+fn digits(mut u: u64, base: u64) -> Vec<u8> {
+    let mut s = Vec::new();
+    loop {
+        s.push(b"0123456789abcdefghijklmnopqrstuvwxyz"[(u % base) as usize]);
+        u /= base;
+        if u == 0 {
+            break;
+        }
+    }
+    s.reverse();
+    s
+}
+/// _itoa_s / _ltoa_s / _ultoa_s (v, buf, size, radix) and the 64-bit _i64toa_s / _ui64toa_s
+/// (v as two words): 0, or ERANGE (34) when it does not fit
+fn toa_s(v: u64, neg: bool, out: u32, size: u32, base: u32) -> u32 {
+    let mut s = digits(v, base.clamp(2, 36) as u64);
+    if neg {
+        s.insert(0, b'-');
+    }
+    if out == 0 || s.len() as u32 + 1 > size {
+        if out != 0 && size > 0 {
+            w8(out, 0);
+        }
+        return 34;
+    }
+    mem::write(out, &s);
+    w8(out + s.len() as u32, 0);
+    0
+}
+fn _itoa_s(c: &mut Ctx) -> u32 {
+    let v = c.i(0) as i64;
+    let neg = c.a(3) == 10 && v < 0;
+    toa_s(if neg { v.unsigned_abs() } else { c.a(0) as u64 }, neg, c.a(1), c.a(2), c.a(3))
+}
+fn _ultoa_s(c: &mut Ctx) -> u32 {
+    toa_s(c.a(0) as u64, false, c.a(1), c.a(2), c.a(3))
+}
+fn _i64toa_s(c: &mut Ctx) -> u32 {
+    let v = (c.a(0) as u64 | (c.a(1) as u64) << 32) as i64;
+    let neg = c.a(4) == 10 && v < 0;
+    toa_s(if neg { v.unsigned_abs() } else { v as u64 }, neg, c.a(2), c.a(3), c.a(4))
+}
+fn _ui64toa_s(c: &mut Ctx) -> u32 {
+    toa_s(c.a(0) as u64 | (c.a(1) as u64) << 32, false, c.a(2), c.a(3), c.a(4))
+}
 fn abs(c: &mut Ctx) -> u32 {
     c.i(0).unsigned_abs()
 }
@@ -996,6 +1041,107 @@ fn swprintf(c: &mut Ctx) -> u32 {
         w16(c.a(0) + 2 * i as u32, u);
     }
     s.len() as u32
+}
+// the secure and counted variants (msvcr80+): `cap` is the buffer's size in characters
+fn put_w(out: u32, cap: u32, s: &[u16], truncate: bool) -> u32 {
+    if cap == 0 {
+        return u32::MAX;
+    }
+    let n = s.len().min(cap as usize - 1);
+    for (i, &u) in s[..n].iter().enumerate() {
+        w16(out + 2 * i as u32, u);
+    }
+    w16(out + 2 * n as u32, 0);
+    if n < s.len() && truncate { u32::MAX } else { n as u32 }
+}
+fn put_a(out: u32, cap: u32, s: &[u8], truncate: bool) -> u32 {
+    if cap == 0 {
+        return u32::MAX;
+    }
+    let n = s.len().min(cap as usize - 1);
+    mem::write(out, &s[..n]);
+    w8(out + n as u32, 0);
+    if n < s.len() && truncate { u32::MAX } else { n as u32 }
+}
+/// sprintf_s(buf, size, fmt, ...)
+fn sprintf_s(c: &mut Ctx) -> u32 {
+    let s = format(&cstr(c.a(2)), &mut VaArgs::arg(c, 3), false);
+    put_a(c.a(0), c.a(1), &s, false)
+}
+fn vsprintf_s(c: &mut Ctx) -> u32 {
+    let s = format(&cstr(c.a(2)), &mut VaArgs::stack(c.a(3)), false);
+    put_a(c.a(0), c.a(1), &s, false)
+}
+/// _snprintf_s(buf, size, count, fmt, ...): at most count characters (_TRUNCATE: -1 when cut)
+fn _snprintf_s(c: &mut Ctx) -> u32 {
+    let s = format(&cstr(c.a(3)), &mut VaArgs::arg(c, 4), false);
+    put_a(c.a(0), c.a(1).min(c.a(2).saturating_add(1)), &s, true)
+}
+fn _vsnprintf_s(c: &mut Ctx) -> u32 {
+    let s = format(&cstr(c.a(3)), &mut VaArgs::stack(c.a(4)), false);
+    put_a(c.a(0), c.a(1).min(c.a(2).saturating_add(1)), &s, true)
+}
+/// _vscprintf(fmt, va): the length
+fn _vscprintf(c: &mut Ctx) -> u32 {
+    format(&cstr(c.a(0)), &mut VaArgs::stack(c.a(1)), false).len() as u32
+}
+fn _scprintf(c: &mut Ctx) -> u32 {
+    format(&cstr(c.a(0)), &mut VaArgs::arg(c, 1), false).len() as u32
+}
+/// swprintf_s(buf, count, fmt, ...) (also msvcr80+'s swprintf with a count: _swprintf_c)
+fn swprintf_s(c: &mut Ctx) -> u32 {
+    let s = format_w(&wstr(c.a(2)), &mut VaArgs::arg(c, 3));
+    put_w(c.a(0), c.a(1), &s, false)
+}
+fn vswprintf_s(c: &mut Ctx) -> u32 {
+    let s = format_w(&wstr(c.a(2)), &mut VaArgs::stack(c.a(3)));
+    put_w(c.a(0), c.a(1), &s, false)
+}
+/// _snwprintf(buf, count, fmt, ...) / _vsnwprintf: -1 when cut
+fn _snwprintf(c: &mut Ctx) -> u32 {
+    let s = format_w(&wstr(c.a(2)), &mut VaArgs::arg(c, 3));
+    let n = s.len().min(c.a(1) as usize);
+    for (i, &u) in s[..n].iter().enumerate() {
+        w16(c.a(0) + 2 * i as u32, u);
+    }
+    if n < c.a(1) as usize {
+        w16(c.a(0) + 2 * n as u32, 0);
+        n as u32
+    } else {
+        u32::MAX
+    }
+}
+fn _vsnwprintf(c: &mut Ctx) -> u32 {
+    let s = format_w(&wstr(c.a(2)), &mut VaArgs::stack(c.a(3)));
+    let n = s.len().min(c.a(1) as usize);
+    for (i, &u) in s[..n].iter().enumerate() {
+        w16(c.a(0) + 2 * i as u32, u);
+    }
+    if n < c.a(1) as usize {
+        w16(c.a(0) + 2 * n as u32, 0);
+        n as u32
+    } else {
+        u32::MAX
+    }
+}
+/// _snwprintf_s(buf, size, count, fmt, ...)
+fn _snwprintf_s(c: &mut Ctx) -> u32 {
+    let s = format_w(&wstr(c.a(3)), &mut VaArgs::arg(c, 4));
+    put_w(c.a(0), c.a(1).min(c.a(2).saturating_add(1)), &s, true)
+}
+fn _vsnwprintf_s(c: &mut Ctx) -> u32 {
+    let s = format_w(&wstr(c.a(3)), &mut VaArgs::stack(c.a(4)));
+    put_w(c.a(0), c.a(1).min(c.a(2).saturating_add(1)), &s, true)
+}
+fn vswprintf(c: &mut Ctx) -> u32 {
+    let s = format_w(&wstr(c.a(1)), &mut VaArgs::stack(c.a(2)));
+    for (i, &u) in s.iter().chain([0u16].iter()).enumerate() {
+        w16(c.a(0) + 2 * i as u32, u);
+    }
+    s.len() as u32
+}
+fn _vscwprintf(c: &mut Ctx) -> u32 {
+    format_w(&wstr(c.a(0)), &mut VaArgs::stack(c.a(1))).len() as u32
 }
 fn printf(c: &mut Ctx) -> u32 {
     let s = format(&cstr(c.a(0)), &mut VaArgs::arg(c, 1), false);
@@ -1812,6 +1958,18 @@ fn ___lc_locale_name_func(_: &mut Ctx) -> u32 {
         p
     })
 }
+/// the locale handles (LCIDs) by category (LC_ALL..LC_TIME): all 0x411 (ja-JP), as
+/// ___lc_locale_name_func's names (msvcr80/90's isctype and toupper read LC_CTYPE's)
+fn ___lc_handle_func(_: &mut Ctx) -> u32 {
+    static P: OnceLock<u32> = OnceLock::new();
+    *P.get_or_init(|| {
+        let p = mem::heap_alloc(6 * 4, true);
+        for i in 0..6 {
+            w32(p + 4 * i, 0x411);
+        }
+        p
+    })
+}
 /// _seh_filter_exe(code, pointers): no signal handlers here: search on
 fn _seh_filter_exe(_: &mut Ctx) -> u32 {
     0
@@ -1879,10 +2037,47 @@ fn fputc(c: &mut Ctx) -> u32 {
 fn __acrt_iob_func(c: &mut Ctx) -> u32 {
     data("_iob").unwrap_or(0) + FILE_SIZE * c.a(0)
 }
-/// _locale_t: only ever the "C" locale
+/// _locale_t: always the process's (ja-JP, code page 932) as { threadlocinfo*, threadmbcinfo* }
+/// with the fields the CRT's inline code reads (msvcr80/90 layout): locinfo's code page,
+/// handles, mb_cur_max and ctype tables; mbcinfo's code page and lead-byte table (AdvHD's
+/// statically linked _Mbrtowc reads it).
 fn _create_locale(_: &mut Ctx) -> u32 {
     static LOC: OnceLock<u32> = OnceLock::new();
-    *LOC.get_or_init(|| mem::heap_alloc(64, true))
+    *LOC.get_or_init(|| {
+        let cp = crate::text::acp();
+        let loc = mem::heap_alloc(8, true);
+        let li = mem::heap_alloc(0x100, true);
+        w32(li, 1);
+        w32(li + 4, cp);
+        w32(li + 8, cp);
+        for i in 0..6 {
+            w32(li + 0xc + 4 * i, 0x411);
+        }
+        w32(li + 0xac, if crate::text::is_dbcs() { 2 } else { 1 });
+        w32(li + 0xc8, r32(data("_pctype").unwrap()));
+        // pclmap / pcumap: ASCII case tables
+        let (lo, up) = (mem::heap_alloc(256, true), mem::heap_alloc(256, true));
+        for b in 0..=255u8 {
+            w8(lo + b as u32, b.to_ascii_lowercase());
+            w8(up + b as u32, b.to_ascii_uppercase());
+        }
+        w32(li + 0xcc, lo);
+        w32(li + 0xd0, up);
+        let mb = mem::heap_alloc(0x220, true);
+        w32(mb, 1);
+        w32(mb + 4, cp);
+        w32(mb + 8, crate::text::is_dbcs() as u32);
+        w32(mb + 12, 0x411);
+        // mbctype[257] at 0x1c (index 0 is EOF), then mbcasemap[256]
+        let t = data("_mbctype").unwrap();
+        mem::copy(mb + 0x1c, t, 257);
+        for b in 0..=255u8 {
+            w8(mb + 0x11d + b as u32, b);
+        }
+        w32(loc, li);
+        w32(loc + 4, mb);
+        loc
+    })
 }
 fn _free_locale(_: &mut Ctx) -> u32 {
     0
@@ -2377,7 +2572,8 @@ pub fn init() {
     implement("ucrtbase", "wcstok", wcstok_s);
     reg!(localeconv, setlocale);
     reg!(strcpy_s, wcscpy_s, strcat_s, wcscat_s, wcsncpy_s);
-    reg!(strncpy_s, ___lc_codepage_func, ___lc_locale_name_func, _seh_filter_exe);
+    reg!(_itoa_s, _ultoa_s, _i64toa_s, _ui64toa_s);
+    reg!(strncpy_s, ___lc_codepage_func, ___lc_locale_name_func, ___lc_handle_func, _seh_filter_exe);
     implement("ucrtbase", "__stdio_common_vsprintf_s", __stdio_common_vsprintf_s);
     implement("ucrtbase", "__stdio_common_vswprintf_s", __stdio_common_vswprintf_s);
     reg!(_libm_sse2_sin_precise, _libm_sse2_cos_precise, _libm_sse2_tan_precise, _libm_sse2_asin_precise,
@@ -2418,7 +2614,9 @@ pub fn init() {
         _stricmp, _strnicmp, strchr, strrchr, strstr, _strdup, _strlwr, _strupr, wcslen, wcscpy, wcscmp,
         toupper, tolower, isalpha, isupper, islower, isdigit, isspace, ispunct, isalnum, isxdigit, isprint,
         atoi, strtol, strtoul, atof, strtod, _itoa, abs, qsort, bsearch, srand, rand, time, clock,
-        sprintf, vsprintf, _snprintf, _vsnprintf, swprintf, printf, sscanf,
+        sprintf, vsprintf, _snprintf, _vsnprintf, swprintf, printf, sscanf, sprintf_s, vsprintf_s, _snprintf_s,
+        _vsnprintf_s, _vscprintf, _scprintf, swprintf_s, vswprintf_s, _snwprintf, _vsnwprintf, _snwprintf_s,
+        _vsnwprintf_s, vswprintf, _vscwprintf,
         floor, ceil, sqrt, sin, cos, tan, asin, acos, atan, exp, log, log10, fabs, sinh, cosh, tanh, pow, atan2,
         fmod, ldexp, frexp, modf,
         _CIsqrt, _CIsin, _CIcos, _CItan, _CIasin, _CIacos, _CIatan, _CIexp, _CIlog, _CIlog10, _CIsinh, _CIcosh,
@@ -2432,6 +2630,7 @@ pub fn init() {
         ("labs", abs),
         ("getc", fgetc),
         ("_ltoa", _itoa),
+        ("_ltoa_s", _itoa_s),
         ("_ftol2", _ftol),
         ("_decode_pointer", _encode_pointer),
         ("_malloc_crt", malloc),
