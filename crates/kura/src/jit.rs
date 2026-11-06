@@ -256,6 +256,27 @@ struct Shared {
 /// Shared regions by their roots.
 static SHARED: Mutex<Option<HashMap<Vec<u32>, Vec<Arc<Shared>>>>> = Mutex::new(None);
 
+/// What the translations hold (IPPAI_JIT_COUNT prints it; never freed so far): modules loaded
+/// (each thread's own), their bytes, the highest table index they took (all threads).
+static MODULES: [std::sync::atomic::AtomicU64; 3] = [const { std::sync::atomic::AtomicU64::new(0) }; 3];
+
+#[cfg(target_os = "emscripten")]
+fn loaded(base: i32, n: u32, bytes: usize) -> i32 {
+    if base >= 0 {
+        MODULES[0].fetch_add(1, Ordering::Relaxed);
+        MODULES[1].fetch_add(bytes as u64, Ordering::Relaxed);
+        MODULES[2].fetch_max(base as u64 + n as u64, Ordering::Relaxed);
+    }
+    base
+}
+
+/// SHARED: (modules, bytes of module code, guest text and tables).
+fn shared_size() -> (usize, usize) {
+    let g = SHARED.lock().unwrap();
+    let Some(m) = g.as_ref() else { return (0, 0) };
+    m.values().flatten().fold((0, 0), |(n, b), r| (n + 1, b + r.bytes.len() + r.text.len() + (r.starts.len() + r.code.len()) * 8 + r.sites.len() * 4))
+}
+
 fn code_bytes(mem: &mut Linear, code: &[(u32, u32)]) -> Option<Vec<u8>> {
     let mut text = Vec::new();
     for &(a, n) in code {
@@ -507,7 +528,12 @@ fn init_flags() {
                     std::thread::sleep(std::time::Duration::from_secs(secs.max(1)));
                     let v: Vec<String> = jit::COUNTERS.iter().zip(jit::COUNTER_NAMES).map(|(c, n)| format!("{n}={}", c.swap(0, Relaxed))).collect();
                     let c: Vec<u32> = COMPILES.iter().map(|c| c.swap(0, Relaxed)).collect();
-                    eprintln!("vnjit count/{secs}s {} | regions {} {} ms, functions {} {} ms (rebuilt {}, {} ms)", v.join(" "), c[0], c[1] / 1000, c[2], c[3] / 1000, c[4], c[5] / 1000);
+                    let (sn, sb) = shared_size();
+                    let m: Vec<u64> = MODULES.iter().map(|c| c.load(Relaxed)).collect();
+                    eprintln!(
+                        "vnjit count/{secs}s {} | regions {} {} ms, functions {} {} ms (rebuilt {}, {} ms) | shared {sn} ({} KiB), loaded {} modules ({} KiB), table {}",
+                        v.join(" "), c[0], c[1] / 1000, c[2], c[3] / 1000, c[4], c[5] / 1000, sb >> 10, m[0], m[1] >> 10, m[2]
+                    );
                 });
             }
         }
@@ -718,7 +744,7 @@ fn load(st: &mut State, bytes: &[u8], roots: Vec<u32>, starts: &[(u32, u32)]) ->
         let _ = std::fs::write(std::path::Path::new(&dir).join(name), bytes);
     }
     #[cfg(target_os = "emscripten")]
-    let base = unsafe { vnvm_jit_load(bytes.as_ptr(), bytes.len(), 1) };
+    let base = loaded(unsafe { vnvm_jit_load(bytes.as_ptr(), bytes.len(), 1) }, 1, bytes.len());
     #[cfg(not(target_os = "emscripten"))]
     let base = { let _ = bytes; -1 };
     if base < 0 {
@@ -1407,7 +1433,7 @@ fn take_built(st: &mut State, mem: &mut Linear) {
             Some(m) if kept.iter().all(|&k| k) => {
                 let n = 2 * items.iter().filter(|i| i.2.is_some()).count();
                 #[cfg(target_os = "emscripten")]
-                let b = unsafe { vnvm_jit_load(m.as_ptr(), m.len(), n as u32) };
+                let b = loaded(unsafe { vnvm_jit_load(m.as_ptr(), m.len(), n as u32) }, n as u32, m.len());
                 #[cfg(not(target_os = "emscripten"))]
                 let b = { let _ = (m, n); -1 };
                 if crate::env_on!("IPPAI_JIT_TIME") {
@@ -1492,7 +1518,7 @@ fn finish_fn(st: &mut State, eip: u32, build: u32, built: Built, at: Option<u32>
 /// Compiles a function's module (adapter, function) and points the hash table at its blocks.
 fn install_fn(st: &mut State, eip: u32, bytes: &[u8], starts: &[(u32, u32)], sites: &[u32], code: &[(u32, u32)]) -> bool {
     #[cfg(target_os = "emscripten")]
-    let base = unsafe { vnvm_jit_load(bytes.as_ptr(), bytes.len(), 2) };
+    let base = loaded(unsafe { vnvm_jit_load(bytes.as_ptr(), bytes.len(), 2) }, 2, bytes.len());
     #[cfg(not(target_os = "emscripten"))]
     let base = { let _ = bytes; -1 };
     st.known.insert(eip);
