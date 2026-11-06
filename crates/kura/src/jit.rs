@@ -1291,6 +1291,7 @@ fn build_fn(mem: &mut Linear, eip: u32, (lo, hi): (u32, u32), part: bool, build:
     if crate::env_on!("IPPAI_JIT_LAYOUT") {
         jit::LAYOUT.store(true, std::sync::atomic::Ordering::Relaxed);
     }
+    profiling();
     let mut m = Module { name: Some(format!("x86_{eip:08x}_fn")), ..Module::default() };
     // a function built again (it left its blocks often) may take more: twice per build
     // (big interpreters' loops, a C library's long switch), from IPPAI_JIT_FN_INS
@@ -1316,7 +1317,7 @@ fn build_fn(mem: &mut Linear, eip: u32, (lo, hi): (u32, u32), part: bool, build:
 
 /// Loads a translated function (or notes that it could not be).
 fn finish_fn(st: &mut State, eip: u32, build: u32, built: Built, t0: Instant) -> bool {
-    let Some((bytes, region, text)) = built else {
+    let Some((bytes, mut region, text)) = built else {
         st.known.insert(eip);
         return false;
     };
@@ -1330,6 +1331,7 @@ fn finish_fn(st: &mut State, eip: u32, build: u32, built: Built, t0: Instant) ->
         count_compile(2, t0);
     }
     if ok {
+        keep_profile(&mut region);
         let r = Arc::new(Shared { bytes, starts: region.starts, code: region.code, text, build, sites: region.sites });
         SHARED.lock().unwrap().get_or_insert_with(HashMap::new).entry(fn_key(eip).to_vec()).or_default().push(r);
         maybe_save();
@@ -1490,16 +1492,19 @@ fn profiling() -> bool {
     *ON.get_or_init(|| {
         let on = crate::env_on!("IPPAI_JIT_PROFILE");
         jit::PROFILE.store(on, std::sync::atomic::Ordering::Relaxed);
-        // IPPAI_JIT_PROFILE=<seconds> (> 1): print the counts that long after the first region
-        // (under node, where no page asks for them)
+        // IPPAI_JIT_PROFILE=<seconds> (> 1): print the counts every that many seconds after the
+        // first region (under node, where no page asks for them; counts add up, so the difference
+        // of two prints is that window)
         if let Some(secs) = std::env::var("IPPAI_JIT_PROFILE").ok().and_then(|v| v.parse::<u64>().ok()).filter(|&s| s > 1) {
-            std::thread::spawn(move || {
+            std::thread::spawn(move || loop {
                 std::thread::sleep(std::time::Duration::from_secs(secs));
                 vnhost_jit_profile();
             });
         }
         on
-    })
+    // (set on every call: a store made only once inside get_or_init was not seen by translate
+    // on other threads, and every region came back without counters)
+    }) && { jit::PROFILE.store(true, std::sync::atomic::Ordering::Relaxed); true }
 }
 
 fn keep_profile(region: &mut jit::Region) {
