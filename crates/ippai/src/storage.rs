@@ -101,6 +101,7 @@ mod tests {
             bucket,
             config,
             cache: Default::default(),
+            inflight: Default::default(),
             requests: tokio::sync::Semaphore::new(8),
         };
         s.put("chunks/test", b"game bytes").await.unwrap();
@@ -116,15 +117,246 @@ mod tests {
             }
         }
         s.config.keys.remove("old");
-        assert_eq!(s.get("chunks/test").await.unwrap().unwrap(), b"game bytes");
+        assert_eq!(&*s.get("chunks/test").await.unwrap().unwrap(), b"game bytes");
         let restored = dir.join("restored.db");
         s.restore(snapshot, &restored).await.unwrap();
         s.db = Library(restored);
-        s.cache.lock().unwrap().clear();
+        *s.cache.lock().unwrap() = Default::default();
         assert!(s.db.profile("game").unwrap().favorite);
-        assert_eq!(s.get("chunks/test").await.unwrap().unwrap(), b"game bytes");
+        assert_eq!(&*s.get("chunks/test").await.unwrap().unwrap(), b"game bytes");
         server.abort();
         std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod gc_tests {
+    use super::*;
+    use axum::{body::Bytes, extract::{Path as UrlPath, State}, http::StatusCode, response::IntoResponse, routing::get, Router};
+    use std::sync::{atomic::{AtomicUsize, Ordering::SeqCst}, Arc, Mutex};
+
+    /// An S3 bucket in memory answering after `delay`; counts requests and the most PUTs or
+    /// GETs on their way at once.
+    #[derive(Clone, Default)]
+    pub(crate) struct Fake {
+        objects: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
+        delay_ms: u64,
+        now: Arc<AtomicUsize>,
+        most: Arc<AtomicUsize>,
+        gets: Arc<AtomicUsize>,
+    }
+
+    pub(crate) async fn serve(delay_ms: u64) -> (Fake, Storage, std::path::PathBuf) {
+        async fn busy(f: &Fake) {
+            let n = f.now.fetch_add(1, SeqCst) + 1;
+            f.most.fetch_max(n, SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(f.delay_ms)).await;
+            f.now.fetch_sub(1, SeqCst);
+        }
+        async fn put(State(f): State<Fake>, UrlPath(p): UrlPath<String>, b: Bytes) -> StatusCode {
+            busy(&f).await;
+            f.objects.lock().unwrap().insert(p, b.to_vec());
+            StatusCode::OK
+        }
+        async fn read(State(f): State<Fake>, UrlPath(p): UrlPath<String>) -> axum::response::Response {
+            f.gets.fetch_add(1, SeqCst);
+            busy(&f).await;
+            f.objects.lock().unwrap().get(&p).cloned().map(IntoResponse::into_response).unwrap_or_else(|| StatusCode::NOT_FOUND.into_response())
+        }
+        async fn delete(State(f): State<Fake>, UrlPath(p): UrlPath<String>) -> StatusCode {
+            f.objects.lock().unwrap().remove(&p);
+            StatusCode::NO_CONTENT
+        }
+        let f = Fake { delay_ms, ..Default::default() };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let app = Router::new().route("/{*path}", get(read).put(put).delete(delete)).with_state(f.clone());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let dir = std::env::temp_dir().join(format!("ippai-gc-{}", Uuid::new_v4()));
+        let config = Config {
+            bucket: "test".into(),
+            region: "us-east-1".into(),
+            endpoint: Some(endpoint.clone()),
+            prefix: "".into(),
+            active_key: "k".into(),
+            keys: BTreeMap::from([("k".into(), "03".repeat(32))]),
+        };
+        let bucket = Bucket::new("test", Region::Custom { region: "us-east-1".into(), endpoint }, Credentials::new(Some("t"), Some("t"), None, None, None).unwrap()).unwrap().with_path_style();
+        let s = Storage { db: Library::new(&dir).unwrap(), bucket, config, cache: Default::default(), inflight: Default::default(), requests: tokio::sync::Semaphore::new(8) };
+        (f, s, dir)
+    }
+
+    fn names(f: &Fake) -> std::collections::BTreeSet<String> {
+        f.objects.lock().unwrap().keys().map(|k| k.trim_start_matches("test/").to_string()).collect()
+    }
+
+    fn named(s: &Storage) -> std::collections::BTreeSet<String> {
+        let c = s.db.connect().unwrap();
+        let mut q = c.prepare("SELECT envelope FROM objects").unwrap();
+        let v: Vec<String> = q.query_map([], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+        v.iter().map(|e| serde_json::from_str::<Envelope>(e).unwrap().object.to_string()).collect()
+    }
+
+    /// Moves everything recorded `ms` into the past.
+    fn age_retired(s: &Storage, ms: i64) {
+        let c = s.db.connect().unwrap();
+        c.execute("UPDATE retired SET retired_ms=retired_ms-?", [ms]).unwrap();
+        c.execute("UPDATE backups SET created_ms=created_ms-?", [ms]).unwrap();
+    }
+
+    /// Random puts over a few names, saves, forgets and backups, then gc: what is named
+    /// stays and reads back; what is gone is only what nothing (no row, no kept backup's
+    /// database) names; a backup restores whole after gc.
+    #[tokio::test]
+    async fn gc_deletes_only_what_nothing_names() {
+        let (f, s, dir) = serve(0).await;
+        let mut seed = 0x6a09e667f3bcc909u64;
+        let mut rnd = move |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        let mut want: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        let mut backups = Vec::new();
+        for step in 0..120 {
+            match rnd(10) {
+                0 => {
+                    let l = format!("trees/t{}", rnd(4));
+                    s.forget(&l).unwrap();
+                    want.remove(&l);
+                }
+                1 if step > 60 && backups.len() < 2 => {
+                    backups.push((s.backup().await.unwrap(), want.clone()));
+                    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                }
+                _ => {
+                    let l = format!("trees/t{}", rnd(4));
+                    let v = format!("{step}").into_bytes();
+                    s.put(&l, &v).await.unwrap();
+                    want.insert(l, v);
+                }
+            }
+        }
+        // nothing is old enough yet
+        assert_eq!(s.gc(std::time::Duration::from_secs(3600), None).await.unwrap().deleted, 0);
+        age_retired(&s, 7_200_000);
+        let before = names(&f);
+        let r = s.gc(std::time::Duration::from_secs(3600), None).await.unwrap();
+        let after = names(&f);
+        assert!(r.deleted > 0, "{r:?}");
+        assert_eq!(before.len() - after.len(), r.deleted);
+        assert!(named(&s).is_subset(&after));
+        *s.cache.lock().unwrap() = Default::default();
+        for (l, v) in &want {
+            assert_eq!(&*s.get(l).await.unwrap().unwrap(), &v[..]);
+        }
+        // each backup restores whole: its rows' objects are all still there
+        for (i, (b, then)) in backups.iter().enumerate() {
+            let out = dir.join(format!("restored{i}.db"));
+            s.restore(*b, &out).await.unwrap();
+            let r = Storage { db: Library(out), bucket: s.bucket.clone(), config: Config { keys: s.config.keys.clone(), active_key: "k".into(), bucket: "test".into(), region: "us-east-1".into(), endpoint: None, prefix: "".into() }, cache: Default::default(), inflight: Default::default(), requests: tokio::sync::Semaphore::new(8) };
+            for (l, v) in then {
+                assert_eq!(&*r.get(l).await.unwrap().unwrap(), &v[..], "backup {i} {l}");
+            }
+        }
+        // with the backups dropped, what only they named goes too; what is named stays
+        let r = s.gc(std::time::Duration::from_secs(3600), Some(0)).await.unwrap();
+        assert_eq!(r.backups_dropped, backups.len());
+        assert_eq!(names(&f), named(&s));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Saves keep their last SAVE_REVISIONS revisions in S3.
+    #[tokio::test]
+    async fn old_save_revisions_are_retired() {
+        let (f, s, dir) = serve(0).await;
+        let db = s.db.clone();
+        db.connect().unwrap().execute_batch("CREATE TABLE IF NOT EXISTS saves(name TEXT PRIMARY KEY, revision INTEGER NOT NULL, data BLOB);").unwrap();
+        let saves = crate::saves::Saves { db, remote: Some(s), lock: tokio::sync::Mutex::new(()) };
+        for rev in 0..20 {
+            assert!(saves.write("game", rev, format!("save {rev}").as_bytes()).await.unwrap());
+        }
+        assert_eq!(saves.read("game").await.unwrap().unwrap(), (20, b"save 19".to_vec()));
+        let s = saves.remote.as_ref().unwrap();
+        let rows: i64 = s.db.connect().unwrap().query_row("SELECT COUNT(*) FROM objects WHERE logical LIKE 'saves/game/%'", [], |r| r.get(0)).unwrap();
+        assert_eq!(rows, SAVE_REVISIONS);
+        age_retired(s, 7_200_000);
+        s.gc(std::time::Duration::from_secs(3600), None).await.unwrap();
+        assert_eq!(names(&f).len() as i64, SAVE_REVISIONS);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// push_store uploads several at once (A/B: 64 chunks against a bucket answering in 40 ms
+    /// each); chunks before trees before games; one pushed is not pushed again.
+    #[tokio::test]
+    async fn push_store_in_parallel() {
+        let (f, s, dir) = serve(40).await;
+        let store = dir.join("store");
+        for i in 0..64 {
+            let d = store.join(format!("chunks/{:02x}", i % 4));
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join(format!("c{i}")), [i as u8; 100]).unwrap();
+        }
+        std::fs::create_dir_all(store.join("trees")).unwrap();
+        std::fs::write(store.join("trees/t.tsv"), "tree").unwrap();
+        std::fs::create_dir_all(store.join("games")).unwrap();
+        std::fs::write(store.join("games/g.json"), "game").unwrap();
+        let t = std::time::Instant::now();
+        s.push_store(&store).await.unwrap();
+        let took = t.elapsed();
+        eprintln!("push_store: 66 files at 40 ms each in {took:?} (one at a time: {} ms)", 66 * 40);
+        assert!(f.most.load(SeqCst) >= 4, "{}", f.most.load(SeqCst));
+        assert!(took < std::time::Duration::from_millis(66 * 40 / 2));
+        assert_eq!(names(&f).len(), 66);
+        let order: Vec<i64> = ["chunks/00/c0", "trees/t.tsv", "games/g.json"]
+            .iter()
+            .map(|l| s.db.connect().unwrap().query_row("SELECT rowid FROM objects WHERE logical=?", [l], |r| r.get(0)).unwrap())
+            .collect();
+        assert!(order[0] < order[1] && order[1] < order[2], "{order:?}");
+        let max_chunk: i64 = s.db.connect().unwrap().query_row("SELECT MAX(rowid) FROM objects WHERE logical LIKE 'chunks/%'", [], |r| r.get(0)).unwrap();
+        assert!(max_chunk < order[1]);
+        s.push_store(&store).await.unwrap();
+        assert_eq!(names(&f).len(), 66 + 2, "only trees and games go again");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The same object asked for many times at once: one download; the cache holds what it
+    /// says it holds.
+    #[tokio::test]
+    async fn one_download_per_object() {
+        let (f, s, dir) = serve(30).await;
+        s.put("chunks/x", b"payload").await.unwrap();
+        let s = Arc::new(s);
+        let tasks: Vec<_> = (0..16).map(|_| { let s = s.clone(); tokio::spawn(async move { s.get("chunks/x").await.unwrap().unwrap() }) }).collect();
+        for t in tasks {
+            assert_eq!(&*t.await.unwrap(), b"payload");
+        }
+        assert_eq!(f.gets.load(SeqCst), 1);
+        assert!(s.inflight.lock().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cache_counts_and_bounds() {
+        let mut c = Cache::default();
+        let mut seed = 0xbb67ae8584caa73bu64;
+        let mut rnd = move |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        let ids: Vec<Uuid> = (0..30).map(|_| Uuid::new_v4()).collect();
+        for _ in 0..5000 {
+            let id = ids[rnd(30) as usize];
+            c.put(id, vec![0u8; rnd(2000) as usize].into(), 10_000);
+            assert_eq!(c.bytes, c.map.values().map(|d| d.len()).sum::<usize>());
+            assert!(c.bytes <= 10_000);
+            assert_eq!(c.order.len(), c.map.len());
+        }
+        c.put(Uuid::new_v4(), vec![0u8; CACHE_ITEM + 1].into(), usize::MAX);
+        assert!(c.bytes <= 10_000);
     }
 }
 
@@ -132,8 +364,59 @@ pub struct Storage {
     pub db: Library,
     bucket: Box<Bucket>,
     config: Config,
-    cache: std::sync::Mutex<std::collections::VecDeque<(Uuid, Vec<u8>)>>,
+    cache: std::sync::Mutex<Cache>,
+    /// one download per object at a time (the others wait for it and take it from the cache)
+    inflight: std::sync::Mutex<std::collections::HashMap<Uuid, std::sync::Arc<tokio::sync::Mutex<()>>>>,
     requests: tokio::sync::Semaphore,
+}
+
+/// Decrypted objects of at most 1 MiB, 64 MiB of them, the oldest put dropped first.
+#[derive(Default)]
+struct Cache {
+    map: std::collections::HashMap<Uuid, std::sync::Arc<[u8]>>,
+    order: std::collections::VecDeque<Uuid>,
+    bytes: usize,
+}
+
+const CACHE_ITEM: usize = 1 << 20;
+const CACHE_BYTES: usize = 64 << 20;
+
+impl Cache {
+    fn get(&self, id: &Uuid) -> Option<std::sync::Arc<[u8]>> {
+        self.map.get(id).cloned()
+    }
+    fn put(&mut self, id: Uuid, data: std::sync::Arc<[u8]>, limit: usize) {
+        if data.len() > CACHE_ITEM || self.map.contains_key(&id) {
+            return;
+        }
+        self.bytes += data.len();
+        self.map.insert(id, data);
+        self.order.push_back(id);
+        while self.bytes > limit {
+            let Some(old) = self.order.pop_front() else { break };
+            if let Some(d) = self.map.remove(&old) {
+                self.bytes -= d.len();
+            }
+        }
+    }
+}
+
+/// Uploads at once (push_store).
+const PUTS: usize = 8;
+/// Revisions of a save kept in S3 (older ones are retired, see [`Storage::gc`]).
+pub const SAVE_REVISIONS: i64 = 8;
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
+}
+
+/// What [`Storage::gc`] did.
+#[derive(Debug, Default, PartialEq)]
+pub struct Gc {
+    pub deleted: usize,
+    /// retired but kept: within the grace period, or a backup still refers to them
+    pub kept: usize,
+    pub backups_dropped: usize,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -201,6 +484,7 @@ impl Storage {
             bucket,
             config,
             cache: Default::default(),
+            inflight: Default::default(),
             requests: tokio::sync::Semaphore::new(8),
         };
         s.key(&s.config.active_key)?;
@@ -255,12 +539,98 @@ impl Storage {
             bytes,
         )?;
         self.upload(envelope.object, &ciphertext).await?;
-        self.db.connect()?.execute("INSERT INTO objects(logical,envelope,size) VALUES(?,?,?) ON CONFLICT(logical) DO UPDATE SET envelope=excluded.envelope,size=excluded.size",
+        let mut c = self.db.connect()?;
+        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let old: Option<String> = tx.query_row("SELECT envelope FROM objects WHERE logical=?", [logical], |r| r.get(0)).optional()?;
+        tx.execute("INSERT INTO objects(logical,envelope,size) VALUES(?,?,?) ON CONFLICT(logical) DO UPDATE SET envelope=excluded.envelope,size=excluded.size",
             rusqlite::params![logical, serde_json::to_string(&envelope)?, bytes.len() as i64])?;
+        if let Some(old) = old {
+            retire(&tx, serde_json::from_str::<Envelope>(&old)?.object)?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
-    pub async fn get(&self, logical: &str) -> Result<Option<Vec<u8>>> {
+    /// Drops `logical`; its object is retired.
+    pub fn forget(&self, logical: &str) -> Result<()> {
+        let mut c = self.db.connect()?;
+        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let old: Option<String> = tx.query_row("SELECT envelope FROM objects WHERE logical=?", [logical], |r| r.get(0)).optional()?;
+        if let Some(old) = old {
+            tx.execute("DELETE FROM objects WHERE logical=?", [logical])?;
+            retire(&tx, serde_json::from_str::<Envelope>(&old)?.object)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Forgets save `name`'s revisions older than the last [`SAVE_REVISIONS`] up to `current`.
+    pub fn prune_save(&self, name: &str, current: i64) -> Result<()> {
+        let prefix = format!("saves/{name}/");
+        let old: Vec<String> = {
+            let c = self.db.connect()?;
+            let mut q = c.prepare("SELECT logical FROM objects WHERE substr(logical,1,?)=?")?;
+            let rows = q.query_map(rusqlite::params![prefix.len() as i64, prefix], |r| r.get::<_, String>(0))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+                .into_iter()
+                .filter(|l| l[prefix.len()..].parse::<i64>().is_ok_and(|r| r <= current - SAVE_REVISIONS))
+                .collect()
+        };
+        for l in old {
+            self.forget(&l)?;
+        }
+        Ok(())
+    }
+
+    /// Deletes retired objects (replaced or forgotten) that no backup refers to, once retired for
+    /// `grace`: a backup taken before an object was retired has it in its database, so objects
+    /// go only when retired before the oldest backup kept. `keep_backups`: the newest that many
+    /// backups are kept, the others deleted first.
+    pub async fn gc(&self, grace: std::time::Duration, keep_backups: Option<usize>) -> Result<Gc> {
+        let mut out = Gc::default();
+        if let Some(n) = keep_backups {
+            let old: Vec<(String, String)> = {
+                let c = self.db.connect()?;
+                let mut q = c.prepare("SELECT id,snapshot FROM backups ORDER BY created_ms DESC LIMIT -1 OFFSET ?")?;
+                let rows = q.query_map([n as i64], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                rows.collect::<rusqlite::Result<_>>()?
+            };
+            for (id, snapshot) in old {
+                self.delete(Uuid::parse_str(&id)?).await?;
+                self.delete(Uuid::parse_str(&snapshot)?).await?;
+                self.db.connect()?.execute("DELETE FROM backups WHERE id=?", [&id])?;
+                out.backups_dropped += 1;
+            }
+        }
+        let (oldest, retired): (Option<i64>, Vec<(String, i64)>) = {
+            let c = self.db.connect()?;
+            let oldest = c.query_row("SELECT MIN(created_ms) FROM backups", [], |r| r.get(0))?;
+            let mut q = c.prepare("SELECT object,retired_ms FROM retired")?;
+            let rows = q.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            (oldest, rows.collect::<rusqlite::Result<_>>()?)
+        };
+        let cutoff = (now_ms() - grace.as_millis() as i64).min(oldest.unwrap_or(i64::MAX));
+        for (object, at) in retired {
+            // (an object still named by a row: never; new objects get new UUIDs)
+            let named: bool = self.db.connect()?.query_row("SELECT EXISTS(SELECT 1 FROM objects WHERE instr(envelope,?) > 0)", [&object], |r| r.get(0))?;
+            if at >= cutoff || named {
+                out.kept += 1;
+                continue;
+            }
+            self.delete(Uuid::parse_str(&object)?).await?;
+            self.db.connect()?.execute("DELETE FROM retired WHERE object=?", [&object])?;
+            out.deleted += 1;
+        }
+        Ok(out)
+    }
+
+    async fn delete(&self, id: Uuid) -> Result<()> {
+        let r = self.bucket.delete_object(self.path(id)).await?;
+        ensure!(r.status_code() / 100 == 2 || r.status_code() == 404, "S3 delete failed: {}", r.status_code());
+        Ok(())
+    }
+
+    pub async fn get(&self, logical: &str) -> Result<Option<std::sync::Arc<[u8]>>> {
         let entry: Option<String> = self
             .db
             .connect()?
@@ -272,69 +642,77 @@ impl Storage {
             .optional()?;
         let Some(entry) = entry else { return Ok(None) };
         let e: Envelope = serde_json::from_str(&entry)?;
-        // Cache compressed plaintext chunks, bounded to 64 MiB; cap remote concurrency.
-        if let Some((_, data)) = self
-            .cache
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|(id, _)| *id == e.object)
+        if let Some(data) = self.cache.lock().unwrap().get(&e.object) {
+            return Ok(Some(data));
+        }
+        // the same object asked for at once (a file's chunks fetched ahead, two clients):
+        // one download
+        let gate = self.inflight.lock().unwrap().entry(e.object).or_default().clone();
+        let data = async {
+            let _one = gate.lock().await;
+            if let Some(data) = self.cache.lock().unwrap().get(&e.object) {
+                return Ok(data);
+            }
+            let _permit = self.requests.acquire().await?;
+            let ciphertext = self.download(e.object).await?;
+            let data = std::sync::Arc::<[u8]>::from(e.decrypt(&self.key(&e.key_id)?, &ciphertext)?);
+            self.cache.lock().unwrap().put(e.object, data.clone(), CACHE_BYTES);
+            Ok::<_, anyhow::Error>(data)
+        }
+        .await;
         {
-            return Ok(Some(data.clone()));
-        }
-        let _permit = self.requests.acquire().await?;
-        let ciphertext = self.download(e.object).await?;
-        let data = e.decrypt(&self.key(&e.key_id)?, &ciphertext)?;
-        if data.len() <= 1 << 20 {
-            let mut cache = self.cache.lock().unwrap();
-            if !cache.iter().any(|(id, _)| *id == e.object) {
-                cache.push_back((e.object, data.clone()));
-            }
-            while cache.iter().map(|(_, b)| b.len()).sum::<usize>() > 64 << 20 {
-                cache.pop_front();
+            let mut f = self.inflight.lock().unwrap();
+            // (the last one out: the map's and ours are all that are left)
+            if f.get(&e.object).is_some_and(|g| std::sync::Arc::ptr_eq(g, &gate)) && std::sync::Arc::strong_count(&gate) == 2 {
+                f.remove(&e.object);
             }
         }
-        Ok(Some(data))
+        Ok(Some(data?))
     }
 
-    /// Upload immutable store files in bounded units. Existing content hashes are reusable.
+    /// Uploads the store's files not uploaded yet, [`PUTS`] at once: chunks first, then trees,
+    /// then games (a game's description goes up once what it names is there).
     pub async fn push_store(&self, store: &Path) -> Result<()> {
-        let mut dirs = vec![
-            store.join("chunks"),
-            store.join("trees"),
-            store.join("games"),
-        ];
-        while let Some(dir) = dirs.pop() {
-            if !dir.exists() {
-                continue;
-            }
-            for entry in std::fs::read_dir(dir)? {
-                let entry = entry?;
-                if entry.file_type()?.is_dir() {
-                    dirs.push(entry.path());
+        use futures_util::TryStreamExt;
+        for top in ["chunks", "trees", "games"] {
+            let mut files = Vec::new();
+            let mut dirs = vec![store.join(top)];
+            while let Some(dir) = dirs.pop() {
+                if !dir.exists() {
                     continue;
                 }
-                if !entry.file_type()?.is_file() {
-                    continue;
-                }
-                let path = entry.path();
-                let logical = path
-                    .strip_prefix(store)?
-                    .to_str()
-                    .context("non-UTF8 store path")?;
-                if logical.starts_with("chunks/") {
-                    let exists: bool = self.db.connect()?.query_row(
-                        "SELECT EXISTS(SELECT 1 FROM objects WHERE logical=?)",
-                        [logical],
-                        |r| r.get(0),
-                    )?;
-                    if exists {
-                        continue;
+                for entry in std::fs::read_dir(dir)? {
+                    let entry = entry?;
+                    let kind = entry.file_type()?;
+                    if kind.is_dir() {
+                        dirs.push(entry.path());
+                    } else if kind.is_file() {
+                        let path = entry.path();
+                        let logical = path.strip_prefix(store)?.to_str().context("non-UTF8 store path")?.to_string();
+                        files.push((path, logical));
                     }
                 }
-                let data = tokio::fs::read(&path).await?;
-                self.put(logical, &data).await?;
             }
+            files.sort();
+            futures_util::stream::iter(files.into_iter().map(Ok::<_, anyhow::Error>))
+                .map_ok(|(path, logical)| async move {
+                    // (chunks are named by their content: one uploaded is never again)
+                    if logical.starts_with("chunks/") {
+                        let exists: bool = self.db.connect()?.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM objects WHERE logical=?)",
+                            [&logical],
+                            |r| r.get(0),
+                        )?;
+                        if exists {
+                            return Ok(());
+                        }
+                    }
+                    let data = tokio::fs::read(&path).await?;
+                    self.put(&logical, &data).await
+                })
+                .try_buffer_unordered(PUTS)
+                .try_collect::<Vec<()>>()
+                .await?;
         }
         Ok(())
     }
@@ -373,6 +751,10 @@ impl Storage {
                 .as_millis(),
         };
         self.upload(id, &serde_json::to_vec(&backup)?).await?;
+        self.db.connect()?.execute(
+            "INSERT INTO backups(id,snapshot,created_ms) VALUES(?,?,?)",
+            rusqlite::params![id.to_string(), backup.envelope.object.to_string(), backup.created_ms as i64],
+        )?;
         Ok(id)
     }
 
@@ -475,4 +857,10 @@ impl Storage {
         )?;
         self.upload(id, &serde_json::to_vec(&b)?).await
     }
+}
+
+/// Notes that `object` is no longer named (gc deletes it later).
+fn retire(tx: &rusqlite::Transaction, object: Uuid) -> Result<()> {
+    tx.execute("INSERT OR IGNORE INTO retired(object,retired_ms) VALUES(?,?)", rusqlite::params![object.to_string(), now_ms()])?;
+    Ok(())
 }

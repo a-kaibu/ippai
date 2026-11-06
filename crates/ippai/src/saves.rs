@@ -48,7 +48,8 @@ impl Saves {
                 .ok_or_else(|| anyhow::anyhow!("S3 configuration required"))?
                 .get(&format!("saves/{name}/{revision}"))
                 .await?
-                .ok_or_else(|| anyhow::anyhow!("save object missing"))?,
+                .ok_or_else(|| anyhow::anyhow!("save object missing"))?
+                .to_vec(),
         };
         Ok(Some((revision, data)))
     }
@@ -71,6 +72,9 @@ impl Saves {
         }
         let local = self.remote.is_none().then_some(data);
         self.db.connect()?.execute("INSERT INTO saves(name,revision,data) VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET revision=excluded.revision,data=excluded.data", rusqlite::params![name,next,local])?;
+        if let Some(remote) = &self.remote {
+            remote.prune_save(name, next)?;
+        }
         Ok(true)
     }
 }

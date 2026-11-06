@@ -27,7 +27,7 @@ async fn file(State(s): State<Store>, Path(path): Path<String>) -> Response {
     // The DB and keys are never reachable through /store.
     if let Some(remote) = s.remote.as_ref() {
         match remote.get(&path).await {
-            Ok(Some(bytes)) => return bytes.into_response(),
+            Ok(Some(bytes)) => return axum::body::Bytes::from_owner(bytes).into_response(),
             Ok(None) => {}
             Err(e) => {
                 eprintln!("store: {e}");

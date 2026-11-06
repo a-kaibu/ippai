@@ -134,7 +134,7 @@ async fn rustfs_encrypted_storage() -> Result<()> {
             "must refuse overwrite"
         );
         s.db = Library(restored);
-        s.cache.lock().unwrap().clear();
+        *s.cache.lock().unwrap() = Default::default();
         assert_eq!(s.db.profile("game")?.note, "private note");
         assert!(s.db.profile("game")?.favorite);
         s.hydrate_catalog(&dir).await?;
@@ -144,15 +144,15 @@ async fn rustfs_encrypted_storage() -> Result<()> {
             !dir.join("chunks").exists(),
             "catalog hydration downloaded chunks"
         );
-        assert_eq!(s.get("chunks/test").await?, Some(chunk));
-        assert_eq!(s.get("saves/game/1").await?, Some(b"private save".to_vec()));
+        assert_eq!(s.get("chunks/test").await?.as_deref(), Some(&chunk[..]));
+        assert_eq!(s.get("saves/game/1").await?.as_deref(), Some(&b"private save"[..]));
         assert!(s.get("chunks/missing").await?.is_none());
 
         // A cold cache must reject a modified ciphertext from the real object store.
         let mut damaged = s.download(original.object).await?;
         damaged[0] ^= 1;
         s.upload(original.object, &damaged).await?;
-        s.cache.lock().unwrap().clear();
+        *s.cache.lock().unwrap() = Default::default();
         assert!(s.get("chunks/test").await.is_err());
         Ok(())
     }

@@ -237,6 +237,13 @@ pub async fn import(store: &Path, id: &str, bytes: &[u8], saves: &Saves) -> Resu
         tx.execute("INSERT INTO sessions(id,game,started_ms,elapsed_ms) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET elapsed_ms=max(sessions.elapsed_ms,excluded.elapsed_ms) WHERE sessions.game=excluded.game AND sessions.started_ms=excluded.started_ms",rusqlite::params![s.id,id,s.started_ms,s.elapsed_ms])?;
     }
     tx.commit()?;
+    if let Some(remote) = &saves.remote {
+        for key in [name.clone(), format!("{name}-web")] {
+            if let Some(rev) = rusqlite::OptionalExtension::optional(c.query_row("SELECT revision FROM saves WHERE name=?", [&key], |r| r.get::<_, i64>(0)))? {
+                remote.prune_save(&key, rev)?;
+            }
+        }
+    }
     Ok(())
 }
 

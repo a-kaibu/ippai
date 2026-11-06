@@ -85,6 +85,15 @@ enum StorageCmd {
     Rotate,
     /// Rewrap an existing backup envelope without rewriting its ciphertext.
     RotateBackup { backup: uuid::Uuid },
+    /// Delete objects no longer named (replaced, old save revisions) that no kept backup
+    /// refers to, once retired for the grace period.
+    Gc {
+        #[arg(long, default_value_t = 7)]
+        grace_days: u64,
+        /// Keep only the newest N backups (the others are deleted first).
+        #[arg(long)]
+        keep_backups: Option<usize>,
+    },
 }
 
 fn storage_command(store: &std::path::Path, action: StorageCmd) -> anyhow::Result<()> {
@@ -97,6 +106,11 @@ fn storage_command(store: &std::path::Path, action: StorageCmd) -> anyhow::Resul
             StorageCmd::Restore { backup, output } => storage.restore(backup, &output).await,
             StorageCmd::Rotate => storage.rotate_objects(),
             StorageCmd::RotateBackup { backup } => storage.rotate_backup(backup).await,
+            StorageCmd::Gc { grace_days, keep_backups } => {
+                let r = storage.gc(std::time::Duration::from_secs(grace_days * 86400), keep_backups).await?;
+                println!("deleted {} objects, kept {} retired, dropped {} backups", r.deleted, r.kept, r.backups_dropped);
+                Ok(())
+            }
         }
     })
 }

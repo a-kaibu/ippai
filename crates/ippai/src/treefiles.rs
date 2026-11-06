@@ -127,6 +127,18 @@ fn with_hook(page: Vec<u8>) -> Vec<u8> {
     [&page[..at], HOOK, &page[at..]].concat()
 }
 
+/// Chunks of a file on their way at once (the one going out and those after it).
+const AHEAD: usize = 4;
+
+/// A stored chunk decoded, if it is `len` bytes: decoding stops past that (a broken or hostile
+/// chunk does not get to fill memory).
+fn decode(raw: &[u8], len: usize) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut out = Vec::with_capacity(len);
+    zstd::stream::Decoder::new(raw).ok()?.take(len as u64 + 1).read_to_end(&mut out).ok()?;
+    (out.len() == len).then_some(out)
+}
+
 impl Trees {
     /// Chunk `i` of `e`, decoded.
     async fn chunk(&self, tree: &Tree, e: &Entry, i: u64) -> Result<Vec<u8>, StatusCode> {
@@ -143,35 +155,32 @@ impl Trees {
             Some(remote) => remote.get(&logical).await.map_err(|_| StatusCode::BAD_GATEWAY)?,
             None => None,
         };
-        let raw = match remote {
+        let raw: Arc<[u8]> = match remote {
             Some(raw) => raw,
-            None => tokio::fs::read(self.store.join(&logical)).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+            None => tokio::fs::read(self.store.join(&logical)).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.into(),
         };
-        let data = tokio::task::spawn_blocking(move || zstd::decode_all(&raw[..]))
+        tokio::task::spawn_blocking(move || decode(&raw, len))
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        if data.len() != len {
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        }
-        Ok(data)
+            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)
     }
 
-    /// Bytes `a..=b` of `e`, one chunk at a time.
+    /// Bytes `a..=b` of `e`, in order, the next [`AHEAD`] chunks fetched while one goes out
+    /// (from S3 each is a round trip).
     fn bytes(self, tree: Arc<Tree>, e: Arc<Entry>, a: u64, b: u64) -> impl futures_util::Stream<Item = std::io::Result<Vec<u8>>> {
+        use futures_util::StreamExt;
         let (first, last) = (a / tree.chunk, b / tree.chunk);
-        futures_util::stream::try_unfold(first, move |i| {
-            let (t, tree, e) = (self.clone(), tree.clone(), e.clone());
-            async move {
-                if i > last {
-                    return Ok(None);
+        futures_util::stream::iter(first..=last)
+            .map(move |i| {
+                let (t, tree, e) = (self.clone(), tree.clone(), e.clone());
+                async move {
+                    let data = t.chunk(&tree, &e, i).await.map_err(|s| std::io::Error::other(s.to_string()))?;
+                    let from = if i == first { (a % tree.chunk) as usize } else { 0 };
+                    let to = if i == last { (b % tree.chunk) as usize + 1 } else { data.len() };
+                    Ok(data[from..to].to_vec())
                 }
-                let data = t.chunk(&tree, &e, i).await.map_err(|s| std::io::Error::other(s.to_string()))?;
-                let from = if i == first { (a % tree.chunk) as usize } else { 0 };
-                let to = if i == last { (b % tree.chunk) as usize + 1 } else { data.len() };
-                Ok(Some((data[from..to].to_vec(), i + 1)))
-            }
-        })
+            })
+            .buffered(AHEAD)
     }
 }
 
@@ -279,6 +288,96 @@ mod tests {
         }
         let (s, _, b) = get_(&app, "/tree/t/EMPTY.TXT", None).await;
         assert_eq!((s, b.len()), (StatusCode::OK, 0));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Random files of many chunks (some all zero), random ranges: what comes out is the
+    /// file's bytes, in order. A chunk that decodes to more than its length is an error, found
+    /// without decoding it all.
+    #[tokio::test]
+    async fn many_chunks_in_order() {
+        let dir = std::env::temp_dir().join(format!("ippai-treefiles-{}", uuid::Uuid::new_v4()));
+        let mut seed = 0x853c49e6748fea9bu64;
+        let mut rnd = move |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        let chunk = 64u64;
+        let mut lines = format!("vnvm-tree\t1\t{chunk}\n");
+        let mut files = Vec::new();
+        for f in 0..6 {
+            let size = 1 + rnd(40 * chunk);
+            let data: Vec<u8> = (0..size).map(|_| rnd(256) as u8).collect();
+            let mut hashes = Vec::new();
+            for (i, c) in data.chunks(chunk as usize).enumerate() {
+                if i % 5 == 3 {
+                    hashes.push(String::new());
+                    continue;
+                }
+                let h = blake3::hash(c).to_hex()[..32].to_string();
+                std::fs::create_dir_all(dir.join("chunks").join(&h[..2])).unwrap();
+                std::fs::write(dir.join("chunks").join(&h[..2]).join(&h), zstd::encode_all(c, 3).unwrap()).unwrap();
+                hashes.push(h);
+            }
+            let want: Vec<u8> = data.chunks(chunk as usize).enumerate().flat_map(|(i, c)| if i % 5 == 3 { vec![0; c.len()] } else { c.to_vec() }).collect();
+            lines += &format!("f\t644\t0\tf{f}\t{size}\t{}\n", hashes.join(","));
+            files.push(want);
+        }
+        // a chunk that decodes to 64 MiB, listed as 64 bytes
+        let bomb = zstd::encode_all(&vec![0u8; 64 << 20][..], 19).unwrap();
+        std::fs::create_dir_all(dir.join("chunks/bb")).unwrap();
+        std::fs::write(dir.join("chunks/bb/bb00"), bomb).unwrap();
+        lines += "f\t644\t0\tbomb\t128\tbb00,bb00\n";
+        std::fs::create_dir_all(dir.join("trees")).unwrap();
+        std::fs::write(dir.join("trees/m.tsv"), lines).unwrap();
+        let t = Trees { store: dir.clone(), remote: Arc::new(None), cache: Default::default() };
+        let app = Router::new().route("/tree/{name}/{*path}", get(file)).with_state(t);
+        for (f, want) in files.iter().enumerate() {
+            let (s, _, b) = get_(&app, &format!("/tree/m/f{f}"), None).await;
+            assert_eq!((s, &b), (StatusCode::OK, want));
+            for _ in 0..20 {
+                let a = rnd(want.len() as u64);
+                let z = a + rnd(want.len() as u64 - a);
+                let (s, _, b) = get_(&app, &format!("/tree/m/f{f}"), Some(&format!("bytes={a}-{z}"))).await;
+                assert_eq!(s, StatusCode::PARTIAL_CONTENT);
+                assert_eq!(&b[..], &want[a as usize..=z as usize], "f{f} {a}-{z}");
+            }
+        }
+        let res = app.clone().oneshot(Request::builder().uri("/tree/m/bomb").body(Body::empty()).unwrap()).await.unwrap();
+        assert!(to_bytes(res.into_body(), usize::MAX).await.is_err());
+        assert_eq!(decode(&zstd::encode_all(&b"abcd"[..], 3).unwrap(), 4).as_deref(), Some(&b"abcd"[..]));
+        assert_eq!(decode(&zstd::encode_all(&b"abcde"[..], 3).unwrap(), 4), None);
+        assert_eq!(decode(&zstd::encode_all(&b"abc"[..], 3).unwrap(), 4), None);
+        assert_eq!(decode(b"not zstd", 4), None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A file of 24 chunks from S3 answering in 30 ms each: the chunks after the one going
+    /// out are on their way meanwhile (one at a time it takes 24 round trips).
+    #[tokio::test]
+    async fn s3_chunks_fetched_ahead() {
+        let (_f, s, dir) = crate::storage::gc_tests::serve(30).await;
+        let mut hashes = Vec::new();
+        let mut want = Vec::new();
+        for i in 0..24u8 {
+            let c = [i; 64];
+            let h = blake3::hash(&c).to_hex()[..32].to_string();
+            s.put(&format!("chunks/{}/{h}", &h[..2]), &zstd::encode_all(&c[..], 3).unwrap()).await.unwrap();
+            hashes.push(h);
+            want.extend_from_slice(&c);
+        }
+        std::fs::create_dir_all(dir.join("trees")).unwrap();
+        std::fs::write(dir.join("trees/s.tsv"), format!("vnvm-tree\t1\t64\nf\t644\t0\tbig.bin\t{}\t{}\n", want.len(), hashes.join(","))).unwrap();
+        let t = Trees { store: dir.clone(), remote: Arc::new(Some(s)), cache: Default::default() };
+        let app = Router::new().route("/tree/{name}/{*path}", get(file)).with_state(t);
+        let t0 = std::time::Instant::now();
+        let (st, _, b) = get_(&app, "/tree/s/big.bin", None).await;
+        let took = t0.elapsed();
+        eprintln!("24 chunks at 30 ms: {took:?} (one at a time: 720 ms)");
+        assert_eq!((st, b), (StatusCode::OK, want));
+        assert!(took < std::time::Duration::from_millis(400), "{took:?}");
         let _ = std::fs::remove_dir_all(dir);
     }
 

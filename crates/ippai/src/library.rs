@@ -32,6 +32,8 @@ impl Library {
             CREATE INDEX IF NOT EXISTS sessions_game ON sessions(game,started_ms);
             CREATE TABLE IF NOT EXISTS objects(logical TEXT PRIMARY KEY, envelope TEXT NOT NULL, size INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS game_settings(game TEXT PRIMARY KEY, config TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS retired(object TEXT PRIMARY KEY, retired_ms INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS backups(id TEXT PRIMARY KEY, snapshot TEXT NOT NULL, created_ms INTEGER NOT NULL);
             PRAGMA user_version=1;")?;
         Ok(db)
     }
