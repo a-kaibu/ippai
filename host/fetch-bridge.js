@@ -135,10 +135,21 @@ async function ippaiFetchRobust(url, opt = {}) {
   }
 }
 
+/**
+ * The transfer buffer a synchronous read and the network worker share: a header (status,
+ * part length, wire bytes, from the HTTP cache, body length) and IPPAI_BRIDGE_BYTES of body
+ * at a time, one per thread. A/B (node workers, 400 reads, median of 5): a 256 KiB chunk took
+ * 0.369 ms with 64 KiB parts copied twice (the old protocol), 0.342 ms copied once, 0.214 ms
+ * in one 256 KiB part, 0.216 ms with 1 MiB; a 64 KiB read 0.135-0.139 ms with any. Chunks
+ * are 256 KiB at most.
+ */
+var IPPAI_BRIDGE_HEADER = 32;
+var IPPAI_BRIDGE_BYTES = 262144;
+
 function ippaiFetchWorker(event) {
   const { url, shared } = event.data;
-  const state = new Int32Array(shared, 0, 4);
-  const output = new Uint8Array(shared, 16);
+  const state = new Int32Array(shared, 0, 8);
+  const output = new Uint8Array(shared, IPPAI_BRIDGE_HEADER);
   const publish = (status) => {
     Atomics.store(state, 0, status);
     Atomics.notify(state, 0);
@@ -150,6 +161,7 @@ function ippaiFetchWorker(event) {
       const { data, wire, cached } = await ippaiFetchRobust(url);
       Atomics.store(state, 2, wire);
       Atomics.store(state, 3, cached);
+      Atomics.store(state, 4, data.length);
       for (let offset = 0; offset < data.length; offset += output.length) {
         const part = data.subarray(offset, offset + output.length);
         output.set(part);
@@ -172,7 +184,7 @@ function ippaiFetchWorker(event) {
 
 /** The network worker's script: the functions above, `main` its message handler. */
 function ippaiFetchWorkerSource(main) {
-  const vars = { IPPAI_CHUNKS, IPPAI_STALL_MS, IPPAI_GIVE_UP_MS, IPPAI_RETRY_STATUS };
+  const vars = { IPPAI_CHUNKS, IPPAI_STALL_MS, IPPAI_GIVE_UP_MS, IPPAI_RETRY_STATUS, IPPAI_BRIDGE_HEADER, IPPAI_BRIDGE_BYTES };
   const fns = [ippaiIsChunk, ippaiBackoff, ippaiPause, ippaiFetchOnce, ippaiNetReport, ippaiCache, ippaiFetchRobust, ippaiFetchWorker];
   return [
     ...Object.entries(vars).map(([k, v]) => `var ${k} = ${JSON.stringify(v)};`),
@@ -200,6 +212,7 @@ function ippaiFetchDispose() {
   ippaiFetchWorkerInstance = undefined;
 }
 
+var ippaiBridgeBuffer;
 function ippaiFetchSync(url) {
   if (typeof document !== 'undefined') throw new Error('synchronous reads on the page must be preloaded');
   if (!ippaiFetchPort && !ippaiFetchWorkerInstance) {
@@ -208,10 +221,13 @@ function ippaiFetchSync(url) {
     ippaiFetchWorkerInstance = new Worker(location);
     URL.revokeObjectURL(location);
   }
-  const shared = new SharedArrayBuffer(16 + 65536);
-  const state = new Int32Array(shared, 0, 4);
-  const bytes = new Uint8Array(shared, 16);
-  const parts = [];
+  // (this thread's buffer, kept: one read at a time per thread; a new one after a worker
+  // that timed out, which may still write into the old)
+  const shared = (ippaiBridgeBuffer ??= new SharedArrayBuffer(IPPAI_BRIDGE_HEADER + IPPAI_BRIDGE_BYTES));
+  const state = new Int32Array(shared, 0, 8);
+  const bytes = new Uint8Array(shared, IPPAI_BRIDGE_HEADER);
+  Atomics.store(state, 0, 0);
+  let result;
   let length = 0;
   (ippaiFetchPort || ippaiFetchWorkerInstance).postMessage({url, shared});
   for (;;) {
@@ -219,6 +235,7 @@ function ippaiFetchSync(url) {
       if (Atomics.wait(state, 0, 0, 65000) === 'timed-out') {
         Atomics.store(state, 0, -1);
         Atomics.notify(state, 0);
+        ippaiBridgeBuffer = undefined;
         ippaiFetchDispose();
         throw new Error('fetch worker timed out');
       }
@@ -226,15 +243,15 @@ function ippaiFetchSync(url) {
     const status = Atomics.load(state, 0);
     if (status === -1) throw new Error(`fetch failed: ${url}`);
     if (status === 2) break;
-    const part = bytes.slice(0, Atomics.load(state, 1));
-    parts.push(part);
-    length += part.length;
+    // (copied once, into the body's place: the length came first)
+    result ??= new Uint8Array(Atomics.load(state, 4));
+    const n = Atomics.load(state, 1);
+    result.set(bytes.subarray(0, n), length);
+    length += n;
     Atomics.store(state, 0, 0);
     Atomics.notify(state, 0);
   }
-  const result = new Uint8Array(length);
-  let offset = 0;
-  for (const part of parts) { result.set(part, offset); offset += part.length; }
+  result ??= new Uint8Array(0);
   result.wire = Atomics.load(state, 2) >>> 0;
   result.cached = Atomics.load(state, 3);
   return result;

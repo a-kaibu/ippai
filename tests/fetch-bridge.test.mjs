@@ -26,7 +26,7 @@ globalThis.Worker = class {
         if (url === 'stall' && n === 1) return {ok: true, status: 200, body: {getReader: () => ({
           read: () => new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason))),
         })}};
-        return {ok: url !== '404', status: 404, arrayBuffer: async () => body(url === 'empty' ? 0 : 150000)};
+        return {ok: url !== '404', status: 404, arrayBuffer: async () => body(url === 'empty' ? 0 : url === 'big' ? 700001 : url === 'exact' ? 262144 * 2 : 150000)};
       };
       parentPort.on('message', data => ippaiFetchWorker({data}));
     \`, {eval:true});
@@ -37,7 +37,7 @@ globalThis.Worker = class {
 globalThis.Blob = class {};
 globalThis.URL = {createObjectURL: () => '', revokeObjectURL: () => {}};
 eval(workerData.source);
-try { parentPort.postMessage({data: Array.from(ippaiFetchSync(workerData.url))}); }
+try { const all = workerData.url.split('|').map((u) => Array.from(ippaiFetchSync(u))); parentPort.postMessage({data: all.length === 1 ? all[0] : all}); }
 catch(e) { parentPort.postMessage({error: e.message}); }
 finally { ippaiFetchDispose(); }
 `;
@@ -55,6 +55,17 @@ test('parallel reverse-order requests preserve every byte across buffer boundari
   const expected = Array.from({length:150000}, (_, i) => i % 251);
   assert.deepEqual(slow.data, expected);
   assert.deepEqual(fast.data, expected);
+});
+test('bodies over several transfer buffers (and exactly two) arrive whole, one after another on a thread', async () => {
+  for (const [url, n] of [['big', 700001], ['exact', 524288], ['fast', 150000]]) {
+    const r = await request(url);
+    assert.equal(r.data.length, n, url);
+    assert.ok(r.data.every((b, i) => b === i % 251), url);
+  }
+  // (several reads on one thread share its transfer buffer)
+  const seq = await request('big|empty|fast|exact|big');
+  assert.deepEqual(seq.data.map((d) => d.length), [700001, 0, 150000, 524288, 700001]);
+  assert.ok(seq.data.every((d) => d.every((b, i) => b === i % 251)));
 });
 test('empty response completes', async () => assert.deepEqual((await request('empty')).data, []));
 test('network and HTTP failures unblock the caller', async () => {
