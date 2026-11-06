@@ -3,6 +3,10 @@
 
     compare.py <reference dir> <sake dir> [--known tests/winref/known.txt] [--png dir] [--report file.md]
 
+The reference is run.sh's output on Windows or tests/winref/golden (Windows' answers kept in
+the repository, golden.py): then a probe whose source changed since its answer is reported as
+stale, and one without an answer as new; neither fails the run.
+
 Line kinds (probe.h): plain lines must be equal; "ulp <n> <label> <hex>" doubles within n ulps;
 "image <name> <w> <h> <tol>" pictures within tol per channel (a PNG of reference / sake /
 difference goes to --png for each one that differs); "skip ..." as the first reference line
@@ -118,6 +122,18 @@ def main():
             opt[o] = args[k + 1]
             del args[k:k + 2]
     ref, got = args
+    stale = set()
+    if os.path.exists(os.path.join(ref, "..", "golden.py")) or any(
+            os.path.exists(os.path.join(ref, p, "src")) for p in os.listdir(ref)):
+        import tempfile
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import golden
+        stale = {p for p in os.listdir(ref) if os.path.isdir(os.path.join(ref, p))
+                 and open(os.path.join(ref, p, "src")).read().strip() != golden.src_hash(p)}
+        tmp = tempfile.mkdtemp()
+        golden.GOLDEN = os.path.abspath(ref)
+        golden.expand(tmp)
+        ref = tmp
     known = []
     if "--known" in opt:
         for l in open(opt["--known"], encoding="utf-8"):
@@ -125,11 +141,17 @@ def main():
             if l and not l.startswith("#"):
                 g, rx = l.split(None, 1)
                 known.append((g, re.compile(rx)))
-    report, failed, totals = [], [], {"ok": 0, "known": 0, "fail": 0, "skip": 0}
+    report, failed, totals = [], [], {"ok": 0, "known": 0, "fail": 0, "skip": 0, "stale": 0, "new": 0}
+    for probe in sorted(set(os.listdir(got)) - set(os.listdir(ref))):
+        if os.path.isdir(os.path.join(got, probe)):
+            totals["new"] += 1
+            report.append(f"- {probe}: new, no Windows answer yet")
     for probe in sorted(os.listdir(ref)):
         rdir = os.path.join(ref, probe)
         if not os.path.isdir(rdir):
             continue
+        if not os.path.isdir(os.path.join(got, probe)):
+            continue  # (not run: a filtered run.sh)
         wl, wi = parse(os.path.join(rdir, "stdout.txt"))
         gl, gi = parse(os.path.join(got, probe, "stdout.txt"))
         if wl and wl[0].startswith("skip"):
@@ -155,6 +177,10 @@ def main():
             d = image_diff(name, im, gi.get(name), opt.get("--png"), probe)
             if d:
                 diffs.append(d)
+        if probe in stale:
+            totals["stale"] += 1
+            report.append(f"- {probe}: stale, its source changed since Windows' answer ({len(diffs)} differences)")
+            continue
         is_known = lambda d: any(fnmatch.fnmatch(probe, g) and rx.search(d) for g, rx in known)
         unknown = [d for d in diffs if not is_known(d)]
         if not diffs:
@@ -170,7 +196,7 @@ def main():
             report.extend("      " + d[:300] for d in unknown[:40])
             if len(unknown) > 40:
                 report.append(f"      ... {len(unknown) - 40} more")
-    summary = f"winref: {totals['ok']} ok, {totals['known']} with known differences, {totals['fail']} differ, {totals['skip']} skipped"
+    summary = f"winref: {totals['ok']} ok, {totals['known']} with known differences, {totals['fail']} differ, {totals['skip']} skipped, {totals['stale']} stale, {totals['new']} new"
     text = summary + "\n\n" + "\n".join(report) + "\n"
     print(text)
     if "--report" in opt:

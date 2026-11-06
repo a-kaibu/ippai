@@ -15,3 +15,9 @@ gdi-* ^image (shapes|fills_nullpen|polyline_bezier|regions|pens|stretch_halftone
 gdi-* ^(want|got) +GetClipBox 
 # 8 and 1 bpp GetDIBits of a 32 bpp bitmap: Windows' nearest-color choice into its default table
 gdi-* ^(want|got) +GetDIBits (8|1) 
+# sake's console goes out as UTF-8 text (node's stderr): a lone byte >= 0x80 can't come through
+crt_printf-* ^(want|got) +%c (-1|-42|255|2147483647) 
+# x87 extended precision: msvcrt's sin/cos/tan reduce big arguments its own way (sin(pi) is
+# 3.2e-15 there), and pow/_hypot keep 64-bit mantissas inside; koji's x87 is IEEE double
+crt_math-32 ^(want|got) +ulp 1 (sin|cos|tan)\((3.14159265358979|1.0000000000000001e\+300|10000000000)\)
+crt_math-32 ^(want|got) +ulp 1 (pow\(100.5,3.14159265358979\)|_hypot\(2,100.5\))

@@ -1,0 +1,36 @@
+rand 41 18467 6334 26500 19169 15724 11478 29358 26962 24464 5705 28145 23281 16827 9961 491
+rand12345 7584 19164 25795 22125 5828 23405 27477 5413
+RAND_MAX 32767
+qsort 0 35 30 25 20 5 15 10 8 28 38 3 18 13 33 23 1 36 31 26 21 11 16 6 34 4 14 9 29 19 24 39 32 27 22 17 12 37 7 2
+bsearch 3
+ctype   0 20 20 20 20 20 20 20 20 20 24 24 24 24 24 20 20 20 20 20 20 20 20 20 20 20 20 20 20 20 20 20 20 | 1 1
+ctype  32 44 48 48 48 48 48 48 48 48 48 48 48 48 48 48 48 42 42 42 42 42 42 42 42 42 42 48 48 48 48 48 48 | 33 33
+ctype  64 48 51 51 51 51 51 51 51 51 51 51 51 51 51 51 51 51 51 51 51 51 51 51 51 51 51 51 48 48 48 48 48 | 65 97
+ctype  96 48 41 41 41 41 41 41 41 41 41 41 41 41 41 41 41 41 41 41 41 41 41 41 41 41 41 41 48 48 48 48 20 | 65 97
+ctype 128 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 | 129 129
+ctype 160 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 | 161 161
+ctype 192 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 | 193 193
+ctype 224 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 | 225 225
+setlocale C
+_setmbcp 0 getmbcp 932
+lead 0 1 1 1 0 0 0 0 0 0 0 0 1 1 1 1
+_mbslen 8 strlen 12
+_mbschr 6
+_mbsrchr 7
+_mbsinc 2 5
+_mbsnextc 0x8140 _ismbcspace 1
+_mbctohira 0x82a0 _mbctokata 0x8341 _mbcjistojms 0x82a0 _mbcjmstojis 0x2422
+_mbsicmp -1 _mbscmp 1
+_mbsupr 82 a0 82 a2 41 42 43 83 41 81 40 58
+_stricmp 0 1 _strnicmp 0 strcmp -1
+_strlwr mixed 123 _strupr MIXED 123 _strrev 321 DEXIM
+strtok [a] [b] [c]
+strspn 3 strcspn 3 strpbrk llo strstr stack
+strftime '%Y-%m-%d %H:%M:%S' 19 1999-01-02 03:04:05
+strftime '%a %A %b %B' 24 Sat Saturday Jan January
+strftime '%c' 17 01/02/99 03:04:05
+strftime '%x %X' 17 01/02/99 03:04:05
+strftime '%j %U %W %w' 11 002 00 00 6
+strftime '%I %p %y %%' 10 03 AM 99 %
+gmtime 71-0-1 0:0 wday 5 yday 0
+asctime Fri Jan 01 00:00:00 1971

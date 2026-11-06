@@ -1,0 +1,31 @@
+image lines_octants 64 64 0
+image pens 64 64 0
+image rop2 64 64 0
+image shapes 64 64 0
+image fills_nullpen 64 64 0
+image polyline_bezier 64 64 0
+image brushes 64 64 0
+CombineRgn 1 -> 3 box 24 24 43 43 data 224
+CombineRgn 2 -> 3 box 4 4 60 60 data 432
+CombineRgn 3 -> 3 box 4 4 60 60 data 624
+CombineRgn 4 -> 3 box 4 4 43 43 data 416
+PtInRegion 1 0
+image regions 64 64 0
+GetClipBox 3 8 9 55 54
+image clip 64 64 0
+image bitblt_rops 64 64 0
+GetPixel 030201 000000 ffffffff
+image patblt_pixels 64 64 0
+image stretch_coloroncolor 64 64 0
+image stretch_halftone 64 64 48
+image stretchdibits 64 64 0
+image alphablend 64 64 2
+image gradientfill 64 64 2
+image transparentblt 64 64 0
+GetDIBits 24 -> 4 size 192 clr 0: ff 30 00 20 30 10 ff 30 20 20 30 30 ff 30 40 20 30 50 ff 30 60 20 30 70 ff 30 80 20 30 90 ff 30 a0 20 30 b0 ff 30 c0 20 30 d0 ff 30 e0 20 30 f0 20 20 00 ff 20 10 20 20 20 ff 20 30 20 20 40 ff
+GetDIBits 16 -> 4 size 128 clr 0: df 00 c4 08 df 10 c4 18 df 20 c4 28 df 30 c4 38 df 40 c4 48 df 50 c4 58 df 60 c4 68 df 70 c4 78 84 00 9f 08 84 10 9f 18 84 20 9f 28 84 30 9f 38 84 40 9f 48 84 50 9f 58 84 60 9f 68 84 70 9f 78
+GetDIBits 8 -> 4 size 64 clr 0: 00 51 00 52 00 53 00 54 00 55 00 56 00 57 00 57 48 00 49 00 4a 00 4b fe 4c 00 4d 00 4e 00 4f 00 00 49 00 4a 00 4b 00 4c 62 4d 00 4e 00 4f 00 4f 40 fc 41 fc 42 c3 43 c4 44 c5 45 c6 46 fd 47 fd p000000 p800000 p008000 p808000
+GetDIBits 1 -> 4 size 16 clr 0: 02 aa 00 00 01 55 00 00 00 aa 00 00 00 55 00 00 p000000 pffffff p000000 p000000
+GetObject 0 64 64 256 1 32
+GetObject dibsection 104 0 0
+GetDeviceCaps 32 1 -1

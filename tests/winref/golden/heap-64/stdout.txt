@@ -1,0 +1,78 @@
+HeapAlloc 0: size 0 zero 1 align16 1
+  in-place shrink 1 size 0
+  grow size 64 kept 1 zeroed 1
+HeapFree(ph, 0, r)                                               = 1 err 57005
+HeapAlloc 1: size 1 zero 1 align16 1
+  in-place shrink 1 size 0
+  grow size 65 kept 1 zeroed 1
+HeapFree(ph, 0, r)                                               = 1 err 57005
+HeapAlloc 15: size 15 zero 1 align16 1
+  in-place shrink 0 size -1
+  grow size 79 kept 1 zeroed 1
+HeapFree(ph, 0, r)                                               = 1 err 57005
+HeapAlloc 16: size 16 zero 1 align16 1
+  in-place shrink 0 size -1
+  grow size 80 kept 1 zeroed 1
+HeapFree(ph, 0, r)                                               = 1 err 57005
+HeapAlloc 17: size 17 zero 1 align16 1
+  in-place shrink 0 size -1
+  grow size 81 kept 1 zeroed 1
+HeapFree(ph, 0, r)                                               = 1 err 57005
+HeapAlloc 511: size 511 zero 1 align16 1
+  in-place shrink 1 size 255
+  grow size 575 kept 1 zeroed 1
+HeapFree(ph, 0, r)                                               = 1 err 57005
+HeapAlloc 512: size 512 zero 1 align16 1
+  in-place shrink 1 size 256
+  grow size 576 kept 1 zeroed 1
+HeapFree(ph, 0, r)                                               = 1 err 57005
+HeapAlloc 4096: size 4096 zero 1 align16 1
+  in-place shrink 1 size 2048
+  grow size 4160 kept 1 zeroed 1
+HeapFree(ph, 0, r)                                               = 1 err 57005
+HeapAlloc 100000: size 100000 zero 1 align16 1
+  in-place shrink 1 size 50000
+  grow size 100064 kept 1 zeroed 1
+HeapFree(ph, 0, r)                                               = 1 err 57005
+HeapAlloc 1048576: size 1048576 zero 1 align16 1
+  in-place shrink 1 size 524288
+  grow size 1048640 kept 1 zeroed 1
+HeapFree(ph, 0, r)                                               = 1 err 57005
+HeapFree(ph, 0, NULL)                                            = 1 err 57005
+HeapAlloc(ph, 0, (SIZE_T)-64) == NULL                            = 1 err 8
+fixed heap 0x8000 1
+fixed heap too big 0 err 8
+HeapDestroy(h)                                                   = 1 err 57005
+GlobalSize(g)                                                    = 100 err 57005
+GlobalFlags(g)                                                   = 0 err 57005
+GlobalFlags(g)                                                   = 1 err 57005
+zero 1
+GlobalHandle(p) == g                                             = 1 err 57005
+GlobalUnlock(g)                                                  = 0 err 0
+GlobalUnlock(g)                                                  = 0 err 158
+GlobalSize(g2)                                                   = 5000 err 57005
+GlobalFree(g2) == NULL                                           = 1 err 57005
+GlobalLock(f) == (void *)f                                       = 1 err 57005
+GlobalSize(f)                                                    = 33 err 57005
+GlobalFlags(f)                                                   = 0 err 57005
+GlobalFree(f) == NULL                                            = 1 err 57005
+LocalSize(l)                                                     = 10 err 57005
+LocalFlags(l)                                                    = 0 err 57005
+LocalFree(l) == NULL                                             = 1 err 57005
+GlobalAlloc(GMEM_FIXED, 0) != NULL                               = 1 err 57005
+GlobalAlloc(GMEM_MOVEABLE, 0) != NULL                            = 1 err 57005
+reserve: region 73728 state 2000 protect 0 alloc 1 type 20000
+VirtualAlloc(p + 4096, 100, MEM_COMMIT, PAGE_READWRITE) == p + 4096 = 1 err 57005
+commit: region 4096 state 1000 protect 4 base off 4096
+after: region 65536 state 2000 protect 0
+VirtualProtect(p + 4096, 10, PAGE_READONLY, &old)                = 1 err 57005
+old 4
+IsBadReadPtr(p + 4096, 4)                                        = 0 err 57005
+IsBadWritePtr(p + 4096, 4)                                       = 1 err 57005
+IsBadReadPtr(p, 4)                                               = 1 err 57005
+IsBadReadPtr(NULL, 4)                                            = 1 err 57005
+VirtualFree(p + 4096, 4096, MEM_DECOMMIT)                        = 1 err 57005
+VirtualFree(p, 4096, MEM_RELEASE)                                = 0 err 87
+VirtualFree(p, 0, MEM_RELEASE)                                   = 1 err 57005
+VirtualFree(p, 0, MEM_RELEASE)                                   = 0 err 487
+page 4096 granularity 65536

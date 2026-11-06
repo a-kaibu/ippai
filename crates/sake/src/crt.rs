@@ -1170,6 +1170,8 @@ fn snprintf_into(out: u32, cap: u32, s: &[u8]) -> u32 {
     if s.len() < cap as usize {
         w8(out + n as u32, 0);
         s.len() as u32
+    } else if s.len() == cap as usize {
+        s.len() as u32 // (fits without its NUL)
     } else {
         u32::MAX
     }
@@ -1520,12 +1522,28 @@ fn ret(c: &mut Ctx, v: f64) -> u32 {
 macro_rules! math1 {
     ($($name:ident = $f:expr),* $(,)?) => { $( fn $name(c: &mut Ctx) -> u32 { let x = c.f64(0); ret(c, $f(x)) } )* };
 }
-math1!(floor = f64::floor, ceil = f64::ceil, sqrt = f64::sqrt, sin = f64::sin, cos = f64::cos, tan = f64::tan,
-    asin = f64::asin, acos = f64::acos, atan = f64::atan, exp = f64::exp, log = f64::ln, log10 = f64::log10,
-    fabs = f64::abs, sinh = f64::sinh, cosh = f64::cosh, tanh = f64::tanh);
+math1!(floor = f64::floor, ceil = f64::ceil, fabs = f64::abs);
+/// msvcrt's errno for math: EDOM when a number gives NaN, ERANGE when finite numbers give an
+/// infinity (log(0) too).
+fn math_errno(args: &[f64], r: f64) {
+    if r.is_nan() && !args.iter().any(|a| a.is_nan()) {
+        set_errno(33);
+    } else if r.is_infinite() && args.iter().all(|a| a.is_finite()) {
+        set_errno(34);
+    }
+}
+macro_rules! math1e {
+    ($($name:ident = $f:expr),* $(,)?) => { $( fn $name(c: &mut Ctx) -> u32 { let x = c.f64(0); let r = $f(x); math_errno(&[x], r); ret(c, r) } )* };
+}
+math1e!(sqrt = f64::sqrt, sin = f64::sin, cos = f64::cos, tan = f64::tan, asin = f64::asin, acos = f64::acos,
+    atan = f64::atan, exp = f64::exp, log = f64::ln, log10 = f64::log10, sinh = f64::sinh, cosh = f64::cosh, tanh = f64::tanh);
 fn pow(c: &mut Ctx) -> u32 {
     let (x, y) = (c.f64(0), c.f64(2));
-    ret(c, x.powf(y))
+    let r = x.powf(y);
+    if x != 0.0 {
+        math_errno(&[x, y], r);
+    }
+    ret(c, r)
 }
 fn atan2(c: &mut Ctx) -> u32 {
     let (y, x) = (c.f64(0), c.f64(2));
@@ -1533,7 +1551,9 @@ fn atan2(c: &mut Ctx) -> u32 {
 }
 fn fmod(c: &mut Ctx) -> u32 {
     let (x, y) = (c.f64(0), c.f64(2));
-    ret(c, x % y)
+    let r = x % y;
+    math_errno(&[x, y], r);
+    ret(c, if r == 0.0 { 0f64.copysign(x) } else { r })
 }
 fn ldexp(c: &mut Ctx) -> u32 {
     let (x, e) = (c.f64(0), c.i(2));

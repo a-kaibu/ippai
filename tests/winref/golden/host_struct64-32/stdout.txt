@@ -1,0 +1,5 @@
+sysinfo page 4096 gran 65536 cpus ok min ok max ok
+query ok base ok alloc ok size 8192 state 1000 protect 4 type 20000
+bitmap ok 64 x 32 bpp 32 bits ok
+dibsection ok 64 x 32 bits ok size 8192
+paint dc ok rect ok

@@ -63,8 +63,24 @@ impl VaArgs {
 
 /// ANSI printf: `%s` is ANSI unless `wide` (then `%s` is UTF-16, as in swprintf).
 pub fn format(fmt: &[u8], va: &mut VaArgs, wide: bool) -> Vec<u8> {
-    w2a(&format_units(&a2w(fmt), va, !wide))
+    let u = format_units(&a2w(fmt), va, !wide);
+    // (%c bytes that are no character on their own come as U+F700 + byte)
+    let mut out = Vec::with_capacity(u.len());
+    let mut run = Vec::new();
+    for c in u {
+        if c & 0xff00 == RAW {
+            out.extend(w2a(&run));
+            run.clear();
+            out.push(c as u8);
+        } else {
+            run.push(c);
+        }
+    }
+    out.extend(w2a(&run));
+    out
 }
+
+const RAW: u16 = 0xf700;
 
 /// UTF-16 printf (wsprintfW/swprintf): `%s` is UTF-16, `%S` ANSI.
 pub fn format_w(fmt: &[u16], va: &mut VaArgs) -> Vec<u16> {
@@ -167,6 +183,7 @@ fn format_units(f: &[u16], va: &mut VaArgs, ansi: bool) -> Vec<u16> {
         let mut body: Vec<u16>;
         let mut sign = String::new();
         let mut numeric = true;
+        let is_float = matches!(ty, b'e' | b'E' | b'f' | b'F' | b'g' | b'G' | b'a' | b'A');
         match ty {
             b'd' | b'i' => {
                 let v = if long64 { va.u64() as i64 } else if short { va.u32() as i16 as i64 } else { va.u32() as i32 as i64 };
@@ -190,15 +207,27 @@ fn format_units(f: &[u16], va: &mut VaArgs, ansi: bool) -> Vec<u16> {
                 if alt && v != 0 && base == 16 {
                     sign = if ty == b'X' { "0X".into() } else { "0x".into() };
                 }
+                if alt && base == 8 && body.first() != Some(&(b'0' as u16)) {
+                    body.insert(0, b'0' as u16);
+                }
             }
             b'p' => {
                 body = num(va.u32() as u64, 16, true, Some(8));
+                if alt {
+                    sign = "0X".into();
+                }
             }
             b'c' | b'C' => {
                 numeric = false;
                 let v = va.u32();
                 let w = wide_arg.unwrap_or((ty == b'C') == ansi);
-                body = if w { vec![v as u16] } else { a2w(&[v as u8]) };
+                body = if w {
+                    vec![v as u16]
+                } else if ansi && v as u8 >= 0x80 {
+                    vec![RAW | v as u8 as u16]
+                } else {
+                    a2w(&[v as u8])
+                };
             }
             b's' | b'S' => {
                 numeric = false;
@@ -217,24 +246,25 @@ fn format_units(f: &[u16], va: &mut VaArgs, ansi: bool) -> Vec<u16> {
             }
             b'e' | b'E' | b'f' | b'F' | b'g' | b'G' | b'a' | b'A' => {
                 let v = va.f64();
-                if v.is_sign_negative() && !v.is_nan() {
+                if v.is_sign_negative() {
                     sign = "-".into();
                 } else if plus {
                     sign = "+".into();
                 } else if space {
                     sign = " ".into();
                 }
-                let s = float(v.abs(), ty, prec.unwrap_or(6), alt);
+                let s = float(v, ty, prec.unwrap_or(6), alt);
                 body = s.encode_utf16().collect();
             }
             b'n' => {
-                let p = va.u32();
-                put32(p, out.len() as u32);
+                // (msvcrt ignores %n: printf %n support is off by default)
+                let _ = va.u32();
                 continue;
             }
             _ => {
-                body = vec![b'%' as u16, ty as u16];
-                numeric = false;
+                // an unknown conversion (and "%5%") prints its character
+                out.push(ty as u16);
+                continue;
             }
         }
         let s: Vec<u16> = sign.encode_utf16().collect();
@@ -245,7 +275,7 @@ fn format_units(f: &[u16], va: &mut VaArgs, ansi: bool) -> Vec<u16> {
                 out.extend(&s);
                 out.extend(&body);
                 out.extend(std::iter::repeat_n(b' ' as u16, pad));
-            } else if zero && numeric && prec.is_none() {
+            } else if zero && numeric && (prec.is_none() || is_float) {
                 out.extend(&s);
                 out.extend(std::iter::repeat_n(b'0' as u16, pad));
                 out.extend(&body);
@@ -278,27 +308,120 @@ fn num(v: u64, base: u64, upper: bool, prec: Option<usize>) -> Vec<u16> {
     d
 }
 
+/// msvcrt's decimal digits of |v|: 17 significant digits (the rest print as 0), d0.d1d2... x
+/// 10^e. Infinities and NaNs are the "digits" 1#INF, 1#IND, 1#QNAN, 1#SNAN, rounded like
+/// numbers ("%.2f" of infinity is 1.#J).
+fn digits17(v: f64) -> (Vec<u8>, i32) {
+    let special: Option<&[u8]> = if v.is_infinite() {
+        Some(b"1#INF")
+    } else if v.is_nan() {
+        let b = v.to_bits();
+        Some(if b == 0xfff8_0000_0000_0000 {
+            b"1#IND"
+        } else if b & (1 << 51) != 0 {
+            b"1#QNAN"
+        } else {
+            b"1#SNAN"
+        })
+    } else {
+        None
+    };
+    if let Some(s) = special {
+        return (s.to_vec(), 0);
+    }
+    if v == 0.0 {
+        return (vec![b'0'], 0);
+    }
+    let s = format!("{:.16e}", v.abs());
+    let (m, e) = s.split_once('e').unwrap();
+    (m.bytes().filter(|c| *c != b'.').collect(), e.parse().unwrap())
+}
+
+/// Keeps n digits (n <= 0: none), rounding half up on the digit after; may carry into a new
+/// leading 1 (then e grows). Digits past the given ones are '0'.
+fn round_to(d: &[u8], e: i32, n: i32) -> (Vec<u8>, i32) {
+    let at = |i: i32| if i >= 0 && (i as usize) < d.len() { d[i as usize] } else { b'0' };
+    if n < 0 {
+        return (Vec::new(), e);
+    }
+    let mut v: Vec<u8> = (0..n).map(at).collect();
+    if at(n) >= b'5' {
+        let mut i = n as usize;
+        loop {
+            if i == 0 {
+                v.insert(0, b'1');
+                return (v, e + 1);
+            }
+            i -= 1;
+            if v[i] == b'9' {
+                v[i] = b'0';
+            } else {
+                v[i] += 1;
+                break;
+            }
+        }
+    }
+    (v, e)
+}
+
+fn fixed(d: &[u8], e: i32, prec: usize, alt: bool) -> String {
+    // digits kept: the integer ones and prec more
+    let (r, e) = round_to(d, e, e + 1 + prec as i32);
+    let at = |i: i32| if i >= 0 && (i as usize) < r.len() { r[i as usize] as char } else { '0' };
+    let mut s = String::new();
+    if e < 0 {
+        s.push('0');
+    } else {
+        for i in 0..=e {
+            s.push(at(i));
+        }
+    }
+    if prec > 0 || alt {
+        s.push('.');
+    }
+    for k in 1..=prec as i32 {
+        s.push(at(e + k));
+    }
+    s
+}
+
+fn expo(d: &[u8], e: i32, prec: usize, alt: bool, special: bool) -> String {
+    let (r, e) = round_to(d, e, prec as i32 + 1);
+    let at = |i: usize| r.get(i).map_or('0', |c| *c as char);
+    let mut s = String::new();
+    s.push(at(0));
+    if prec > 0 || alt {
+        s.push('.');
+    }
+    for k in 1..=prec {
+        s.push(at(k));
+    }
+    let e = if special || (d.len() == 1 && d[0] == b'0') { 0 } else { e };
+    s + &format!("e{}{:03}", if e < 0 { '-' } else { '+' }, e.abs())
+}
+
 fn float(v: f64, ty: u8, prec: usize, alt: bool) -> String {
-    if v.is_nan() {
-        return "1.#QNAN0".into();
-    }
-    if v.is_infinite() {
-        return "1.#INF00".into();
-    }
+    let (d, e) = digits17(v);
+    let special = !v.is_finite();
     let s = match ty {
-        b'f' | b'F' => format!("{v:.prec$}"),
-        b'e' | b'E' => exp(v, prec),
+        b'f' | b'F' => fixed(&d, e, prec, alt),
+        b'e' | b'E' | b'a' | b'A' => expo(&d, e, prec, alt, special),
         _ => {
             let p = prec.max(1);
-            let e = if v == 0.0 { 0 } else { v.log10().floor() as i32 };
-            let mut s = if e < -4 || e >= p as i32 { exp(v, p - 1) } else { format!("{v:.*}", (p as i32 - 1 - e).max(0) as usize) };
+            if v == 0.0 && alt {
+                // (msvcrt: 0 has all its precision after the point)
+                return fixed(&d, e, p, true);
+            }
+            // the exponent after rounding to p digits picks the style
+            let (_, x) = if d == b"0" { (Vec::new(), 0) } else { round_to(&d, e, p as i32) };
+            let mut s = if !special && (x < -4 || x >= p as i32) { expo(&d, e, p - 1, alt, special) } else { fixed(&d, e, (p as i32 - 1 - if special { 0 } else { x }).max(0) as usize, alt) };
             if !alt && s.contains('.') {
-                let (m, x) = match s.find('e') {
+                let (m, xs) = match s.find('e') {
                     Some(k) => (s[..k].to_string(), s[k..].to_string()),
                     None => (s.clone(), String::new()),
                 };
                 let m = m.trim_end_matches('0').trim_end_matches('.').to_string();
-                s = m + &x;
+                s = m + &xs;
             }
             s
         }
@@ -307,18 +430,6 @@ fn float(v: f64, ty: u8, prec: usize, alt: bool) -> String {
         s.to_uppercase()
     } else {
         s
-    }
-}
-
-fn exp(v: f64, prec: usize) -> String {
-    let s = format!("{v:.prec$e}");
-    // Rust: 1.5e3 -> msvcrt: 1.5e+003
-    match s.split_once('e') {
-        Some((m, e)) => {
-            let n: i32 = e.parse().unwrap_or(0);
-            format!("{m}e{}{:03}", if n < 0 { '-' } else { '+' }, n.abs())
-        }
-        None => s,
     }
 }
 

@@ -289,10 +289,20 @@ impl<'a, M: Memory> X<'a, M> {
             }
             Fprem | Fprem1 => {
                 let (x, y) = (self.cpu.fpu.st(0), self.cpu.fpu.st(1));
-                let q = if mn == Fprem { fpu::trunc(x / y) } else { fpu::libm_round_even(x / y) };
-                let r = x - q * y;
-                self.cpu.fpu.set_st(0, r);
-                let qi = q.abs() as i64;
+                // exact, as the FPU: fmod / IEEE remainder; the quotient's low 3 bits from the
+                // remainder modulo 8y (always complete: C2 clear)
+                let rt = libm::fmod(x, y);
+                let r = if mn == Fprem { rt } else { libm::remainder(x, y) };
+                self.cpu.fpu.set_st(0, if r == 0.0 { 0f64.copysign(x) } else { r });
+                let y8 = y * 8.0;
+                let mut qi = if y8.is_finite() && y.is_finite() && y != 0.0 {
+                    libm::round(libm::fabs((libm::fmod(x, y8) - rt) / y)) as i64
+                } else {
+                    0
+                };
+                if r != rt {
+                    qi += 1; // (rounded to the nearest instead of truncated)
+                }
                 let mut sw = self.cpu.fpu.sw & !(C0 | C1 | C2 | C3);
                 if qi & 1 != 0 { sw |= C1; }
                 if qi & 2 != 0 { sw |= C3; }

@@ -1,0 +1,65 @@
+CreateDirectoryA("wr-files", NULL)                           = 1 err 57005
+CreateDirectoryA("wr-files", NULL)                           = 0 err 183
+SetCurrentDirectoryA("wr-files")                             = 1 err 57005
+CreateFileA("missing.txt", GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL) == INVALID_HANDLE_VALUE = 1 err 2
+CreateFileA("nodir\\missing.txt", GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL) == INVALID_HANDLE_VALUE = 1 err 3
+GetFileAttributesA("missing.txt")                            = 4294967295 err 2
+GetFileAttributesA("nodir\\x")                               = 4294967295 err 3
+CreateFileA("a.txt", GENERIC_READ, 0, NULL, CREATE_NEW, 0, NULL) == INVALID_HANDLE_VALUE = 1 err 80
+OPEN_ALWAYS existing err 183
+CreateFileA("a.txt", GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL) == INVALID_HANDLE_VALUE = 1 err 32
+DeleteFileA("a.txt")                                         = 0 err 32
+ReadFile(h, b, 3, &r, NULL)                                  = 1 err 57005
+read 3 hel
+SetFilePointer(h, 10, NULL, FILE_BEGIN)                      = 10 err 57005
+ReadFile(h, b, 3, &r, NULL)                                  = 1 err 57005
+read past end 0
+SetFilePointer(h, -20, NULL, FILE_CURRENT)                   = 4294967295 err 131
+GetFileSize(h, NULL)                                         = 5 err 57005
+CreateFileA("a.txt", GENERIC_WRITE, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL) == INVALID_HANDLE_VALUE = 1 err 32
+second reader 1
+CREATE_ALWAYS new err 0
+SetFilePointer(h, 100, NULL, FILE_BEGIN)                     = 100 err 57005
+WriteFile(h, "Z", 1, &w, NULL)                               = 1 err 57005
+GetFileSize(h, NULL)                                         = 101 err 57005
+gap zeros 100 last Z
+SetFilePointer(h, 50, NULL, FILE_BEGIN)                      = 50 err 57005
+SetEndOfFile(h)                                              = 1 err 57005
+GetFileSize(h, NULL)                                         = 50 err 57005
+WriteFile(h, "Z", 1, &w, NULL)                               = 0 err 5
+GetFileSize(h, NULL)                                         = 0 err 57005
+MoveFileA("a.txt", "b.bin")                                  = 0 err 183
+MoveFileExA("a.txt", "b.bin", MOVEFILE_REPLACE_EXISTING)     = 1 err 57005
+GetFileAttributesA("a.txt")                                  = 4294967295 err 2
+CopyFileA("b.bin", "c.dat", TRUE)                            = 1 err 0
+CopyFileA("b.bin", "c.dat", TRUE)                            = 0 err 80
+SetFileAttributesA("c.dat", FILE_ATTRIBUTE_READONLY)         = 1 err 57005
+DeleteFileA("c.dat")                                         = 0 err 5
+GetFileAttributesA("c.dat")                                  = 1 err 57005
+SetFileAttributesA("c.dat", FILE_ATTRIBUTE_NORMAL)           = 1 err 57005
+CreateDirectoryA("sub", NULL)                                = 1 err 57005
+RemoveDirectoryA("sub")                                      = 0 err 145
+RemoveDirectoryA("nosuch")                                   = 0 err 2
+find sub\*: end err 18: . .. long_name_file.text noext two.dots.txt x1.txt x22.txt Y.TXT
+find sub\*.txt: end err 18: two.dots.txt x1.txt x22.txt Y.TXT
+find sub\*.TXT: end err 18: two.dots.txt x1.txt x22.txt Y.TXT
+find sub\x?.txt: end err 18: x1.txt
+find sub\x??.txt: end err 18: x1.txt x22.txt
+find sub\*.: end err 18: . .. noext
+find sub\*.*: end err 18: . .. long_name_file.text noext two.dots.txt x1.txt x22.txt Y.TXT
+find sub\*.tex: err 2:
+find sub\y.txt: end err 18: Y.TXT
+find sub\none*: err 2:
+find nodir\*: err 3:
+find sub: end err 18: sub
+find sub\: err 87:
+GetFullPathName 'x.txt' <cur>\x.txt part x.txt
+GetFullPathName '.\a\..\b' <cur>\b part b
+GetFullPathName 'sub\..\..\q' <parent>\q part q
+GetFullPathName 'a/b\c' <cur>\a\b\c part c
+GetFullPathName 'trail.' <cur>\trail part trail
+GetFullPathName 'trail. .' <cur>\trail part trail
+GetFullPathName 'C:\dir\..\..\..\file' \file part file
+GetFullPathName '\\server\share\x\..' \\server\share part (null)
+GetFullPathName 'a\\b' <cur>\a\b part b
+GetFileAttributesA("wr-files")                               = 4294967295 err 2

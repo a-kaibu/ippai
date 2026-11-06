@@ -1,0 +1,6 @@
+GetACP 932 GetOEMCP 932
+GetUserDefaultLCID 409 GetSystemDefaultLCID 409 GetThreadLocale 411
+GetUserDefaultUILanguage 409
+GetConsoleCP 65001
+GetVersionEx 6.2.9200 2
+lstrcmpiA ja -1
