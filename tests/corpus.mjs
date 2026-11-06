@@ -189,7 +189,8 @@ while (now() < TITLE_MAX && !crashed) {
   if (PRE?.length === 2 && now() - lastPre >= 3) { lastPre = now(); await click(PRE[0], PRE[1]); }
   else if (!PRE && process.env.PRE_KEYS !== "0" && now() > 12 && now() - lastPre >= 6 && f.colors <= 300) { lastPre = now(); await key("Return"); }
   if (firstFrame === null && f.w > 32) firstFrame = now();
-  if (f.colors > 300) { res.title = now(); break; }
+  // (a small window with many colours is a launcher: CatSystem2's フルスクリーン/ウィンドウ bar)
+  if (f.colors > 300 && f.w >= 320 && f.h >= 200) { res.title = now(); break; }
 }
 // the title is drawn: wait until it holds still (menus fade in), at most 25 s
 if (res.title !== null) {
