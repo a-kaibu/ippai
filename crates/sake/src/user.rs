@@ -3109,6 +3109,10 @@ fn GetKeyNameTextA(c: &mut Ctx) -> u32 {
     let s = format!("Key{}", (c.a(0) >> 16) & 0xff);
     ret_str(c.a(1), c.a(2), &s, false)
 }
+fn GetKeyNameTextW(c: &mut Ctx) -> u32 {
+    let s = format!("Key{}", (c.a(0) >> 16) & 0xff);
+    ret_str(c.a(1), c.a(2), &s, true)
+}
 fn GetDoubleClickTime(_: &mut Ctx) -> u32 {
     500
 }
@@ -3648,8 +3652,14 @@ fn InsertMenuItemW(c: &mut Ctx) -> u32 {
     insert_item(h, pos, by_pos, it)
 }
 fn SetMenuItemInfoA(c: &mut Ctx) -> u32 {
+    set_menu_item_info(c, false)
+}
+fn SetMenuItemInfoW(c: &mut Ctx) -> u32 {
+    set_menu_item_info(c, true)
+}
+fn set_menu_item_info(c: &mut Ctx, wide: bool) -> u32 {
     let (h, item, by_pos, p) = (c.a(0), c.a(1), c.a(2) != 0, c.a(3));
-    let (mask, it) = read_mii(p, false);
+    let (mask, it) = read_mii(p, wide);
     with(|s| {
         let Some(m) = s.menus.get_mut(&h) else { return 0 };
         let Some(i) = item_index(m, item, by_pos) else { return 0 };
@@ -3670,6 +3680,12 @@ fn SetMenuItemInfoA(c: &mut Ctx) -> u32 {
     })
 }
 fn GetMenuItemInfoA(c: &mut Ctx) -> u32 {
+    get_menu_item_info(c, false)
+}
+fn GetMenuItemInfoW(c: &mut Ctx) -> u32 {
+    get_menu_item_info(c, true)
+}
+fn get_menu_item_info(c: &mut Ctx, wide: bool) -> u32 {
     let (h, item, by_pos, p) = (c.a(0), c.a(1), c.a(2) != 0, c.a(3));
     let it = with(|s| s.menus.get(&h).and_then(|m| item_index(m, item, by_pos).map(|i| m.items[i].clone())));
     let Some(it) = it else { return 0 };
@@ -3688,12 +3704,20 @@ fn GetMenuItemInfoA(c: &mut Ctx) -> u32 {
         w32(p + 32, it.data);
     }
     if mask & 0x50 != 0 {
-        let a = w2a(&it.text);
         let cap = r32(p + 40);
-        if r32(p + 36) != 0 && cap > 0 {
-            mem::put_cstr(r32(p + 36), cap, &a);
-        }
-        w32(p + 40, a.len() as u32);
+        let n = if wide {
+            if r32(p + 36) != 0 && cap > 0 {
+                mem::put_wstr(r32(p + 36), cap, &it.text);
+            }
+            it.text.len()
+        } else {
+            let a = w2a(&it.text);
+            if r32(p + 36) != 0 && cap > 0 {
+                mem::put_cstr(r32(p + 36), cap, &a);
+            }
+            a.len()
+        };
+        w32(p + 40, n as u32);
     }
     1
 }
@@ -4656,7 +4680,7 @@ pub fn init() {
         GetForegroundWindow, SetForegroundWindow, BringWindowToTop, SetCapture, ReleaseCapture, GetCapture,
         GetCursorPos, SetCursorPos, SetCursor, GetCursor, ShowCursor, ClipCursor, GetKeyState, GetAsyncKeyState,
         GetKeyboardState, SetKeyboardState, GetKeyboardType, GetKeyboardLayout, GetKeyboardLayoutList,
-        ActivateKeyboardLayout, LoadKeyboardLayoutA, MapVirtualKeyA, MapVirtualKeyW, GetKeyNameTextA,
+        ActivateKeyboardLayout, LoadKeyboardLayoutA, MapVirtualKeyA, MapVirtualKeyW, GetKeyNameTextA, GetKeyNameTextW,
         GetDoubleClickTime, MessageBeep, MessageBoxA, MessageBoxW, MessageBoxExA, MessageBoxIndirectA,
         SetWindowsHookExA, SetWindowsHookExW, UnhookWindowsHookEx, CallNextHookEx, WinHelpA, GetSysColor,
         GetSysColorBrush, GetSystemMetrics, SystemParametersInfoA, SystemParametersInfoW, ChangeDisplaySettingsA,
@@ -4670,7 +4694,7 @@ pub fn init() {
         CloseClipboard, EmptyClipboard, GetClipboardData, SetClipboardData, IsClipboardFormatAvailable,
         EnumClipboardFormats, GetPriorityClipboardFormat, RegisterClipboardFormatA, RegisterClipboardFormatW,
         CreateMenu, CreatePopupMenu, DestroyMenu, InsertMenuA, AppendMenuA, AppendMenuW, InsertMenuItemA,
-        InsertMenuItemW, SetMenuItemInfoA, GetMenuItemInfoA, GetMenuItemCount, GetMenuItemID, GetSubMenu,
+        InsertMenuItemW, SetMenuItemInfoA, SetMenuItemInfoW, GetMenuItemInfoA, GetMenuItemInfoW, GetMenuItemCount, GetMenuItemID, GetSubMenu,
         GetMenuState, GetMenuStringA, CheckMenuItem, CheckMenuRadioItem, EnableMenuItem, DeleteMenu, RemoveMenu, ModifyMenuA, GetMenu,
         SetMenu, GetSystemMenu, DrawMenuBar, TrackPopupMenu, TrackPopupMenuEx, GetMenuItemRect,
         SetMenuItemBitmaps, GetMenuCheckMarkDimensions,

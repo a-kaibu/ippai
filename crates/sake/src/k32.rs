@@ -565,6 +565,9 @@ fn CreateMutexW(c: &mut Ctx) -> u32 {
 fn OpenMutexA(c: &mut Ctx) -> u32 {
     open_named(c.a(2), false)
 }
+fn OpenMutexW(c: &mut Ctx) -> u32 {
+    open_named(c.a(2), true)
+}
 fn ReleaseMutex(c: &mut Ctx) -> u32 {
     let tid = crate::cur().tid;
     let r = obj::with(|t| match t.objs.get_mut(&c.a(0)) {
@@ -2645,6 +2648,16 @@ fn GlobalFindAtomA(c: &mut Ctx) -> u32 {
 fn FindAtomA(c: &mut Ctx) -> u32 {
     GlobalFindAtomA(c)
 }
+fn GlobalFindAtomW(c: &mut Ctx) -> u32 {
+    let s = arg_str(c.a(0), true).to_lowercase();
+    ATOMS.lock().unwrap().iter().position(|x| x.to_lowercase() == s).map_or(0, |i| 0xc000 + i as u32)
+}
+fn FindAtomW(c: &mut Ctx) -> u32 {
+    GlobalFindAtomW(c)
+}
+fn AddAtomW(c: &mut Ctx) -> u32 {
+    add_atom(arg_str(c.a(0), true))
+}
 fn GlobalDeleteAtom(_: &mut Ctx) -> u32 {
     0
 }
@@ -3910,6 +3923,11 @@ fn GetComputerNameA(c: &mut Ctx) -> u32 {
     w32(c.a(1), 5);
     1
 }
+fn GetComputerNameW(c: &mut Ctx) -> u32 {
+    put_wstr(c.a(0), r32(c.a(1)), &a2w(b"SAKE"));
+    w32(c.a(1), 4);
+    1
+}
 fn GetUserNameA(c: &mut Ctx) -> u32 {
     put_cstr(c.a(0), r32(c.a(1)), b"user");
     w32(c.a(1), 5);
@@ -4230,7 +4248,7 @@ pub fn init() {
         SetProcessAffinityMask, GetProcessAffinityMask, SetThreadIdealProcessor, Sleep, SleepEx, SwitchToThread,
         CreateEventA, CreateEventW, CreateEventExW, CreateWaitableTimerA, CreateWaitableTimerW, CreateWaitableTimerExW,
         OpenWaitableTimerA, OpenWaitableTimerW, SetWaitableTimer, CancelWaitableTimer, OpenEventA, OpenEventW, SetEvent, ResetEvent, PulseEvent,
-        CreateMutexA, CreateMutexW, OpenMutexA, ReleaseMutex, CreateSemaphoreA, CreateSemaphoreW, ReleaseSemaphore,
+        CreateMutexA, CreateMutexW, OpenMutexA, OpenMutexW, ReleaseMutex, CreateSemaphoreA, CreateSemaphoreW, ReleaseSemaphore,
         WaitForSingleObject, WaitForSingleObjectEx, WaitForMultipleObjects, WaitForMultipleObjectsEx, CloseHandle,
         DuplicateHandle, InitializeCriticalSection, InitializeCriticalSectionAndSpinCount, InitializeCriticalSectionEx,
         DeleteCriticalSection, EnterCriticalSection, LeaveCriticalSection, TryEnterCriticalSection,
@@ -4262,7 +4280,7 @@ pub fn init() {
         IsDBCSLeadByteEx, MultiByteToWideChar, WideCharToMultiByte, GetStringTypeA, GetStringTypeExA, GetStringTypeW,
         GetStringTypeExW, LCMapStringA, LCMapStringW, CompareStringA, CompareStringW, GetDateFormatA, GetTimeFormatA,
         MulDiv, lstrlenA, lstrlenW, lstrcpyA, lstrcpyW, lstrcpynA, lstrcpynW, lstrcatA, lstrcatW, lstrcmpA, lstrcmpiA,
-        lstrcmpW, lstrcmpiW, GlobalAddAtomA, GlobalAddAtomW, AddAtomA, GlobalFindAtomA, FindAtomA, GlobalDeleteAtom,
+        lstrcmpW, lstrcmpiW, GlobalAddAtomA, GlobalAddAtomW, AddAtomA, AddAtomW, GlobalFindAtomA, FindAtomA, GlobalFindAtomW, FindAtomW, GlobalDeleteAtom,
         DeleteAtom, GlobalGetAtomNameA,
         GetSystemTime, GetLocalTime, GetSystemTimeAsFileTime, GetSystemTimePreciseAsFileTime, FileTimeToSystemTime,
         SystemTimeToFileTime, FileTimeToLocalFileTime, LocalFileTimeToFileTime, FileTimeToDosDateTime, CompareFileTime,
@@ -4287,7 +4305,7 @@ pub fn init() {
         SearchPathA,
         CreateFileMappingA, CreateFileMappingW, MapViewOfFile, MapViewOfFileEx, UnmapViewOfFile, CreatePipe,
         CreateProcessA, CreateProcessW, WinExec, OpenProcess, GetStartupInfoA, GetStartupInfoW, SetHandleCount,
-        FormatMessageA, FormatMessageW, Beep, GetComputerNameA, InitializeSListHead, GetCurrentPackageId,
+        FormatMessageA, FormatMessageW, Beep, GetComputerNameA, GetComputerNameW, InitializeSListHead, GetCurrentPackageId,
         CreateToolhelp32Snapshot, Process32First, Process32FirstW, ConvertDefaultLocale,
         InterlockedPushEntrySList, InterlockedPopEntrySList, InterlockedFlushSList, QueryDepthSList, InterlockedPushListSListEx,
         AreFileApisANSI, SetFileApisToANSI,
