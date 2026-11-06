@@ -69,6 +69,16 @@ jobs:
       - name: Tests under Miri
         run: formal/miri.sh
 
+  # (the render optimizations against plain execution on the WebGPU model, render/model.rs:
+  # many more random command streams than cargo test runs)
+  render-model:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Optimized and plain runs draw the same
+        run: IPPAI_MODEL_SEEDS=100000 cargo test --release -p kura --lib optimizations_draw_the_same -- --nocapture
+
   shaders:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
