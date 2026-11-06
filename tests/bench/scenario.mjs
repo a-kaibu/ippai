@@ -80,7 +80,8 @@ export async function runScenario(browser, build, c, timeout) {
     let wake = () => {};
     const ended = { v: false };
     page.on("console", (m) => {
-      for (const line of m.text().split("\n")) {
+      // (krkrz's log lines start with the time: "12:34:56 ")
+      for (const line of m.text().split("\n").map((l) => l.replace(/^\d\d:\d\d:\d\d /, ""))) {
         if (log.length < 400) log.push(line);
         let r;
         if ((r = /^BENCH-STATE (\S+) (\d+)$/.exec(line))) events.push({ kind: "state", what: r[1], step: +r[2], t: Date.now() });
@@ -125,7 +126,7 @@ export async function runScenario(browser, build, c, timeout) {
     let peak = rssMb();
     const sampler = setInterval(() => (peak = Math.max(peak, rssMb())), 250);
     const t0 = Date.now();
-    await page.goto(url("play"));
+    await page.goto(url(c.args));
     const title = await next((e) => e.kind === "state" && e.what === "title", "the title");
     metrics["cold.startup"] = title.t - t0;
     const gpuTotal = () => page.evaluate(() => window.vnvmSake?._vnhost_gpu_total?.() ?? -1).catch(() => -1);
@@ -177,7 +178,7 @@ export async function runScenario(browser, build, c, timeout) {
     let restored;
     const got = new Promise((resolve) => {
       page2.on("console", (m) => {
-        for (const line of m.text().split("\n")) {
+        for (const line of m.text().split("\n").map((l) => l.replace(/^\d\d:\d\d:\d\d /, ""))) {
           let r;
           if (log.length < 600) log.push(`load: ${line}`);
           if (/^BENCH-STATE restored /.test(line)) (restored = Date.now()), resolve();
@@ -191,7 +192,7 @@ export async function runScenario(browser, build, c, timeout) {
       setTimeout(resolve, Math.max(1000, deadline - Date.now()));
     });
     const t1 = Date.now();
-    await page2.goto(url("load"));
+    await page2.goto(url(c.load ?? "load"));
     await got;
     if (!restored) error ??= `load: the save was not restored (${Math.round((Date.now() - t1) / 1000)} s)`;
     else metrics["warm.restore"] = restored - t1;

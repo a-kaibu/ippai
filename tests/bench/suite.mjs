@@ -12,7 +12,7 @@
 export const VERSION = 2;
 
 // More rounds for the groups whose cases are short and noisy (run.mjs's default when ROUNDS isn't set)
-export const MIN_ROUNDS = { "cpu-kernels": 7, "cpu-game": 5, scenario: 5 };
+export const MIN_ROUNDS = { "cpu-kernels": 7, "cpu-game": 5, scenario: 5, kirikiri: 5 };
 
 const cases = (exe, names, extra = {}) => names.map((c) => ({ exe, args: c, ...extra }));
 
@@ -36,4 +36,7 @@ export const GROUPS = {
   gl: cases("gl.exe", ["vn", "sprites_immediate", "sprites_arrays", "upload", "fade", "rt"]),
   // a whole (small) game played as a player plays it, paced: tests/bench/scenario.mjs
   scenario: [{ exe: "scenario.exe", args: "play", scenario: true }],
+  // the same, a game made with 吉里吉里Z and KAG3 (tests/bench/gen-kirikiri.mjs): the engine games
+  // ship with, its scripts (TJS), archive (xp3), PNG pictures and transitions
+  kirikiri: [{ exe: "kirikiri\\tvpwin32.exe", name: "kirikiri", args: "-mode=play", load: "-mode=load", scenario: true }],
 };

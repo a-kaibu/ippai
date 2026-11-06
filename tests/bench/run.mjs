@@ -138,10 +138,12 @@ const results = {
   incompatible: {},
   // checks that came out different from one run to the next of the same build
   unstable: {},
+  // the metrics each case made (the report checks they have all their rounds)
+  produced: {},
 };
 for (const b of builds) (results.runs[b.name] = {}), (results.checks[b.name] = {}), (results.errors[b.name] = {});
 // (graphics groups: a build that keeps its 60 fps pacing measures the vsync, not the build)
-const paced = groups.some((g) => !g.startsWith("cpu-") && g !== "scenario");
+const paced = todo.some((c) => !c.group.startsWith("cpu-") && !c.scenario);
 const saidNopace = {};
 let active = builds;
 for (let round = 0; round <= ROUNDS; round++) {
@@ -171,8 +173,9 @@ for (let round = 0; round <= ROUNDS; round++) {
       }
       if (!round) continue;
       for (const [k, v] of Object.entries(r.metrics)) {
-        const name = `${c.group}/${c.exe.replace(/\.exe$/, "")}.${k}`;
+        const name = `${c.group}/${c.name ?? c.exe.replace(/\.exe$/, "")}.${k}`;
         (results.runs[b.name][name] ??= []).push(v);
+        ((results.produced[b.name] ??= {})[key] ??= []).includes(name) || results.produced[b.name][key].push(name);
       }
     }
   }
