@@ -1198,18 +1198,63 @@ pub struct Glyph {
 }
 
 type GlyphKey = (usize, u32, u32, bool);
-static GLYPHS: OnceLock<Mutex<HashMap<GlyphKey, Arc<Glyph>>>> = OnceLock::new();
+
+/// Rasterized glyphs, at most [`GLYPH_CACHE_BYTES`] of them: past that the least recently
+/// used half goes (a long story in many sizes would otherwise keep every glyph it drew).
+#[derive(Default)]
+struct Glyphs {
+    map: HashMap<GlyphKey, (Arc<Glyph>, u64)>,
+    tick: u64,
+    bytes: usize,
+}
+
+const GLYPH_CACHE_BYTES: usize = 16 << 20;
+
+impl Glyphs {
+    fn size(g: &Glyph) -> usize {
+        g.cov.len() + 64
+    }
+    fn get(&mut self, k: &GlyphKey) -> Option<Arc<Glyph>> {
+        self.tick += 1;
+        let e = self.map.get_mut(k)?;
+        e.1 = self.tick;
+        Some(e.0.clone())
+    }
+    fn put(&mut self, k: GlyphKey, g: Arc<Glyph>, limit: usize) {
+        self.tick += 1;
+        self.bytes += Self::size(&g);
+        if let Some((old, _)) = self.map.insert(k, (g, self.tick)) {
+            self.bytes -= Self::size(&old);
+        }
+        while self.bytes > limit {
+            let mut ticks: Vec<u64> = self.map.values().map(|e| e.1).collect();
+            ticks.sort_unstable();
+            // (the newest half; nothing once only one bigger than the limit is left)
+            let keep_from = if ticks.len() > 1 { ticks[ticks.len() / 2] } else { u64::MAX };
+            let mut bytes = 0;
+            self.map.retain(|_, e| {
+                let keep = e.1 >= keep_from;
+                if keep {
+                    bytes += Self::size(&e.0);
+                }
+                keep
+            });
+            self.bytes = bytes;
+        }
+    }
+}
+
+static GLYPHS: Mutex<Option<Glyphs>> = Mutex::new(None);
 
 const GLYPH_INDEX: u32 = 0x8000_0000;
 
 fn glyph(r: &Real, ch: u32) -> Arc<Glyph> {
     let key = (r.face, r.em.to_bits(), ch, r.bold);
-    let m = GLYPHS.get_or_init(|| Mutex::new(HashMap::default()));
-    if let Some(g) = m.lock().unwrap().get(&key) {
-        return g.clone();
+    if let Some(g) = GLYPHS.lock().unwrap().get_or_insert_with(Glyphs::default).get(&key) {
+        return g;
     }
     let g = Arc::new(raster(r, ch));
-    m.lock().unwrap().insert(key, g.clone());
+    GLYPHS.lock().unwrap().get_or_insert_with(Glyphs::default).put(key, g.clone(), GLYPH_CACHE_BYTES);
     g
 }
 
@@ -3880,4 +3925,63 @@ fn register() {
     reg!("msimg32"; TransparentBlt, AlphaBlend);
     reg!("msvfw32"; DrawDibOpen, DrawDibClose, DrawDibBegin, DrawDibEnd, DrawDibRealize, DrawDibSetPalette,
         DrawDibStart, DrawDibStop, DrawDibDraw);
+}
+
+#[cfg(test)]
+mod glyph_cache_tests {
+    use super::*;
+
+    fn g(n: usize) -> Arc<Glyph> {
+        Arc::new(Glyph { x0: 0, top: 0, w: 0, h: 0, cov: vec![0; n], adv: 0 })
+    }
+
+    /// Random gets and puts (sizes, keys again): `bytes` is what the map holds, the cache
+    /// stays within its limit after a trim, and a glyph used since the last put of the others
+    /// survives the trim.
+    #[test]
+    fn glyph_cache_is_bounded() {
+        let mut seed = 0x2545f4914f6cdd1du64;
+        let mut rnd = |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        for _ in 0..200 {
+            let limit = 2000 + rnd(20000) as usize;
+            let mut c = Glyphs::default();
+            for _ in 0..500 {
+                let k: GlyphKey = (0, 0, rnd(60) as u32, false);
+                if rnd(2) == 0 {
+                    c.get(&k);
+                } else {
+                    let hot: GlyphKey = (1, 0, 0, false);
+                    if c.map.contains_key(&hot) {
+                        c.get(&hot);
+                    }
+                    c.put(k, g(rnd(800) as usize), limit);
+                    if k != hot && c.map.len() > 2 && rnd(4) == 0 {
+                        c.put(hot, g(10), limit);
+                    }
+                }
+                let sum: usize = c.map.values().map(|e| Glyphs::size(&e.0)).sum();
+                assert_eq!(c.bytes, sum);
+                assert!(c.bytes <= limit);
+            }
+        }
+    }
+
+    #[test]
+    fn glyph_cache_keeps_recently_used() {
+        let mut c = Glyphs::default();
+        for i in 0..10 {
+            c.put((0, 0, i, false), g(100), 10_000);
+        }
+        c.get(&(0, 0, 0, false));
+        c.put((0, 0, 99, false), g(100), 1640);
+        assert!(c.map.contains_key(&(0, 0, 0, false)));
+        assert!(c.map.contains_key(&(0, 0, 99, false)));
+        assert!(!c.map.contains_key(&(0, 0, 1, false)));
+        assert!(c.bytes <= 1640);
+    }
 }
