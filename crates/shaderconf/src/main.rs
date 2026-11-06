@@ -12,6 +12,7 @@
 
 mod cases;
 mod json;
+mod random;
 
 /// How a pixel's channel compares.
 #[derive(Clone, Copy, Debug)]
@@ -35,6 +36,8 @@ pub struct Case {
     /// which translator: "dxbc", "d3d9", "glsl"
     pub api: &'static str,
     pub wgsl: String,
+    /// what it was translated from (HLSL, assembly or GLSL)
+    pub src: String,
     /// the uniform buffer the shader reads: group, binding, bytes
     pub group: u32,
     pub binding: u32,
@@ -50,6 +53,12 @@ fn main() {
     let mut out = Vec::new();
     let mut errors = Vec::new();
     cases::all(&mut out, &mut errors);
+    if let Some(n) = std::env::args().skip_while(|a| a != "--src").nth(1) {
+        for c in out.iter().filter(|c| c.name == n) {
+            println!("{}\n----\n{}", c.src, c.wgsl);
+        }
+        return;
+    }
     if list {
         for c in &out {
             println!("{} ({} pixels): {}", c.name, c.pixels.len(), c.rule);

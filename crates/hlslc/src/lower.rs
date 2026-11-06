@@ -97,6 +97,9 @@ pub struct L<'a> {
     inputs: Vec<SigEl>,
     outputs: Vec<SigEl>,
     fns: Vec<FnCtx>,
+    /// places picked by a run-time index from a select chain: (the elements, the index, the
+    /// copy written to), stored back once the write is done
+    wbs: Vec<(Vec<Vec<C>>, C, Vec<C>, B)>,
 }
 
 const TRUE: u32 = 0xffff_ffff;
@@ -361,6 +364,7 @@ impl<'a> L<'a> {
             xs: Vec::new(),
             icb: Vec::new(),
             marks: Vec::new(),
+            wbs: Vec::new(),
             scopes: Vec::new(),
             globals: HashMap::new(),
             cbvar: HashMap::new(),
@@ -1755,6 +1759,7 @@ impl<'a> L<'a> {
                     Val::num(v.ty, c)
                 }
                 Un::PreInc | Un::PreDec | Un::PostInc | Un::PostDec => {
+                    let mark = self.wbs.len();
                     let p = self.place(a)?;
                     let old = self.copy(&p.c);
                     let fl = p.ty.base() == B::Float || self.sm3();
@@ -1767,6 +1772,7 @@ impl<'a> L<'a> {
                         self.alu(IADD, p.ty.base(), &[&old, &Self::imm(v, old.len())])
                     };
                     self.assign(&p.c, &c);
+                    self.write_back(mark);
                     if matches!(op, Un::PostInc | Un::PostDec) {
                         Val::num(p.ty, old)
                     } else {
@@ -1780,6 +1786,7 @@ impl<'a> L<'a> {
                 self.binary(*op, x, y)?
             }
             Expr::Assign(op, a, b) => {
+                let mark = self.wbs.len();
                 let p = self.place(a)?;
                 let mut v = self.expr(b)?;
                 if let Some(op) = op {
@@ -1788,6 +1795,7 @@ impl<'a> L<'a> {
                 }
                 let v = self.cast(v, &p.ty)?;
                 self.assign(&p.c, &v.c);
+                self.write_back(mark);
                 Val::num(p.ty, p.c)
             }
             Expr::Cond(c, a, b) => {
@@ -1832,8 +1840,32 @@ impl<'a> L<'a> {
             }
             Expr::Index(a, i) => {
                 let v = self.place(a)?;
-                let iv = self.expr(i)?;
-                self.index(v, iv)?
+                let mut iv = self.expr(i)?;
+                if matches!(iv.c.first(), Some(C::I(_))) || !matches!(v.ty, Ty::Array(..) | Ty::Vec(..) | Ty::Mat(..)) {
+                    self.index(v, iv)?
+                } else {
+                    iv = self.cast(iv, &Ty::Scalar(B::Int))?;
+                    let r = self.index(v.clone(), iv.clone())?;
+                    // (a register indexed relative to the variable's own storage is the place)
+                    let own = |c: &C| match c {
+                        C::R(Reg { f, rel: Some(_) }, _) => v.c.iter().any(|d| matches!(d, C::R(Reg { f: g, .. }, _) if g == f)),
+                        _ => false,
+                    };
+                    if !r.c.iter().all(own) {
+                        let k = match &v.ty {
+                            Ty::Array(e, _) => ncomp(self.prog, e),
+                            Ty::Mat(_, _, c) => *c as usize,
+                            _ => 1,
+                        };
+                        let elems: Vec<Vec<C>> = v.c.chunks(k.max(1)).map(|e| e.to_vec()).collect();
+                        // (the select may hand back an element itself: write to a copy)
+                        let cp = if r.c.iter().any(|c| v.c.contains(c)) { self.copy(&r.c) } else { r.c.clone() };
+                        self.wbs.push((elems, iv.c[0], cp.clone(), r.ty.base()));
+                        Val::num(r.ty, cp)
+                    } else {
+                        r
+                    }
+                }
             }
             _ => return Err("assignment to something that is not a variable".into()),
         };
@@ -1841,6 +1873,20 @@ impl<'a> L<'a> {
             return Err("assignment to a constant, a uniform or an input".into());
         }
         Ok(v)
+    }
+
+    /// Stores the places picked by a run-time index since `mark` back (innermost first):
+    /// element k = index == k ? the copy : element k.
+    fn write_back(&mut self, mark: usize) {
+        while self.wbs.len() > mark {
+            let (elems, iv, cp, b) = self.wbs.pop().unwrap();
+            for (k, e) in elems.iter().enumerate() {
+                let m = self.alu(sm4::IEQ, B::Bool, &[&[iv], &[C::I(self.ival(k as i64))]])[0];
+                let n = e.len();
+                let v = self.alu(sm4::MOVC, b, &[&vec![m; n], &cp, e]);
+                self.assign(e, &v);
+            }
+        }
     }
 
     fn member(&mut self, v: Val, name: &str) -> R<Val> {
@@ -2106,6 +2152,14 @@ impl<'a> L<'a> {
     }
 
     fn call(&mut self, name: &str, args: &[Expr], line: u32) -> R<Val> {
+        // (out arguments picked by a run-time index are stored back after the call)
+        let mark = self.wbs.len();
+        let r = self.call_inner(name, args, line);
+        self.write_back(mark);
+        r
+    }
+
+    fn call_inner(&mut self, name: &str, args: &[Expr], line: u32) -> R<Val> {
         // user functions (and the prelude's) take their out arguments as places
         let user = self.prog.funcs.iter().any(|f| f.name == name);
         let pre = !user && self.prelude.funcs.iter().any(|f| f.name == name);

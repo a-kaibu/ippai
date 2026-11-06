@@ -74,10 +74,17 @@ fn dxbc(
         Out::F4 => "  return r;\n}\n",
     };
     let src = format!("{DXBC_HEAD}  {body}\n{ret}");
-    match dxbc_wgsl(&src, target) {
+    dxbc_raw(out, errors, name, rule, &src, target, tol, pixels.into_iter().map(|(d, w)| (d.to_vec(), w)).collect());
+}
+
+/// A DXBC case from whole HLSL source (entry `ps`), the constant buffer's words per pixel.
+#[allow(clippy::too_many_arguments)]
+pub fn dxbc_raw(out: &mut Vec<Case>, errors: &mut Vec<String>, name: &str, rule: &'static str, src: &str, target: &str, tol: Tol, pixels: Vec<(Vec<u32>, [Want; 4])>) {
+    match dxbc_wgsl(src, target) {
         Ok((wgsl, group, binding)) => out.push(Case {
             name: format!("dxbc/{name}"),
             api: "dxbc",
+            src: src.to_string(),
             wgsl,
             group,
             binding,
@@ -288,6 +295,48 @@ float4 ps() : SV_Target {
         .collect();
     dxbc(out, errors, "swizzle", "source swizzles and write masks", "ps_4_0", "float4 r = 0; r.yx = fa.zw; r.zw = fa.xx;", Out::F4, Tol::Exact, sw);
     packing(out, errors);
+    // local arrays written at a run-time index (indexable temps, or a select per element)
+    for (n, len) in [("dyn_store4", 4), ("dyn_store8", 8)] {
+        let src = format!("cbuffer C : register(b0) {{ float4 A; float4 B; float4 Cc; }};
+float4 ps() : SV_Target {{
+  float4 arr[{len}];
+  for (int k = 0; k < {len}; k++) arr[k] = float4(k, 0, 0, 1);
+  arr[(int)A.x] = B;
+  arr[(int)A.y].y += 5;
+  return float4(arr[2].x, arr[2].y, arr[(int)A.z].x, arr[1].y);
+}}
+");
+        let px = [(0.0f32, 2.0f32, 1.0f32), (2.0, 2.0, 2.0), (2.0, 1.0, 3.0), (3.0, 0.0, 0.0)]
+            .iter()
+            .map(|&(i, j, k)| {
+                let mut arr: Vec<[f32; 4]> = (0..len).map(|q| [q as f32, 0.0, 0.0, 1.0]).collect();
+                arr[i as usize] = [9.0, 8.0, 7.0, 6.0];
+                arr[j as usize][1] += 5.0;
+                let mut w = vec![0u32; 12];
+                w[0] = i.to_bits();
+                w[1] = j.to_bits();
+                w[2] = k.to_bits();
+                for (q, v) in [9.0f32, 8.0, 7.0, 6.0].iter().enumerate() {
+                    w[4 + q] = v.to_bits();
+                }
+                (w, [one(arr[2][0]), one(arr[2][1]), one(arr[k as usize][0]), one(arr[1][1])])
+            })
+            .collect::<Vec<_>>();
+        dxbc_raw(out, errors, n, "a local array written at a run-time index", &src, "ps_4_0", Tol::Exact, px.clone());
+        let src3 = src.replace("cbuffer C : register(b0) { float4 A; float4 B; float4 Cc; };", "float4 A : register(c0); float4 B : register(c1); float4 Cc : register(c2);").replace("SV_Target", "COLOR");
+        let mut inc = |_: &str, _: bool| None;
+        match hlslc::compile(&src3, &[], &mut inc, "ps", "ps_3_0", 0) {
+            Ok(code) => {
+                let words: Vec<u32> = code.chunks(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect();
+                let px3 = px.iter().map(|(w, want)| {
+                    let f = |i: usize| [f32::from_bits(w[i]), f32::from_bits(w[i + 1]), f32::from_bits(w[i + 2]), f32::from_bits(w[i + 3])];
+                    ([f(0), f(4), f(8)], want.clone())
+                }).collect();
+                d3d9_words(out, errors, &format!("hlsl_{n}"), "a local array written at a run-time index (shader model 3)", &words, &src3, Tol::Exact, px3);
+            }
+            Err(e) => errors.push(format!("d3d9/hlsl_{n}: {e}")),
+        }
+    }
 }
 
 /// HLSL constant packing ("Packing rules for constant variables"): a member never straddles a
@@ -323,6 +372,7 @@ fn packing(out: &mut Vec<Case>, errors: &mut Vec<String>) {
                 out.push(Case {
                     name: format!("dxbc/pack_{name}"),
                     api: "dxbc",
+                    src: src.clone(),
                     wgsl,
                     group,
                     binding,
@@ -341,9 +391,17 @@ fn packing(out: &mut Vec<Case>, errors: &mut Vec<String>) {
 /// A ps_3_0 case: `body` (assembly) computes r0 from c0, c1, c2 (each a float4 per pixel).
 fn d3d9(out: &mut Vec<Case>, errors: &mut Vec<String>, name: &str, rule: &'static str, body: &str, tol: Tol, pixels: Vec<([[f32; 4]; 3], [Want; 4])>) {
     let src = format!("ps_3_0\n{body}\nmov oC0, r0\n");
+    match hlslc::d3d9asm::assemble(&src) {
+        Ok(words) => d3d9_words(out, errors, name, rule, &words, &src, tol, pixels),
+        Err(e) => errors.push(format!("d3d9/{name}: {e}\n{src}")),
+    }
+}
+
+/// A D3D9 pixel shader case from its tokens; c0, c1, c2 per pixel.
+#[allow(clippy::too_many_arguments)]
+pub fn d3d9_words(out: &mut Vec<Case>, errors: &mut Vec<String>, name: &str, rule: &'static str, words: &[u32], src: &str, tol: Tol, pixels: Vec<([[f32; 4]; 3], [Want; 4])>) {
     let r = (|| -> Result<(String, u32), String> {
-        let words = hlslc::d3d9asm::assemble(&src)?;
-        let s = dxwgsl::d3d9::Shader::parse(&words).ok_or("dxwgsl cannot parse it")?;
+        let s = dxwgsl::d3d9::Shader::parse(words).ok_or("dxwgsl cannot parse it")?;
         let n = s.max_const;
         let w = dxwgsl::d3d9::Gen::new(&s).pixel(&dxwgsl::d3d9::Options { link: 0, vs_inputs: Vec::new(), alpha_test: None, fog: false });
         Ok((w, dxwgsl::d3d9::uniform_size(n)))
@@ -352,6 +410,7 @@ fn d3d9(out: &mut Vec<Case>, errors: &mut Vec<String>, name: &str, rule: &'stati
         Ok((wgsl, size)) => out.push(Case {
             name: format!("d3d9/{name}"),
             api: "d3d9",
+            src: src.to_string(),
             wgsl,
             group: 0,
             binding: 1,
@@ -443,8 +502,13 @@ const GL_VS: &str = "#version 120\nattribute vec4 p;\nvoid main() { gl_Position 
 /// A GLSL case: `body` sets gl_FragColor from uniforms a, b, c (vec4), ia, ib (ivec4), m2,
 /// m3, m4 (mat2-4, column-major as glUniformMatrix with transpose false), f (float[3]).
 fn glsl(out: &mut Vec<Case>, errors: &mut Vec<String>, name: &str, rule: &'static str, body: &str, tol: Tol, pixels: Vec<(Vec<(&'static str, Vec<u32>)>, [Want; 4])>) {
+    glsl_raw(out, errors, name, rule, &format!("void main() {{\n  {body}\n}}"), tol, pixels);
+}
+
+/// A GLSL case from its main function (and functions before it), with the uniforms of `glsl`.
+pub fn glsl_raw(out: &mut Vec<Case>, errors: &mut Vec<String>, name: &str, rule: &'static str, main: &str, tol: Tol, pixels: Vec<(Vec<(&'static str, Vec<u32>)>, [Want; 4])>) {
     let ps = format!(
-        "#version 120\nuniform vec4 a; uniform vec4 b; uniform vec4 c; uniform ivec4 ia; uniform ivec4 ib;\nuniform mat2 m2; uniform mat3 m3; uniform mat4 m4; uniform float f[3];\nvoid main() {{\n  {body}\n}}\n"
+        "#version 120\nuniform vec4 a; uniform vec4 b; uniform vec4 c; uniform ivec4 ia; uniform ivec4 ib;\nuniform mat2 m2; uniform mat3 m3; uniform mat4 m4; uniform float f[3];\n{main}\n"
     );
     match glwgsl::link(GL_VS, &ps, &Default::default()) {
         Ok(p) => {
@@ -454,6 +518,7 @@ fn glsl(out: &mut Vec<Case>, errors: &mut Vec<String>, name: &str, rule: &'stati
             out.push(Case {
                 name: format!("glsl/{name}"),
                 api: "glsl",
+                src: ps.clone(),
                 wgsl: p.ps.wgsl.clone(),
                 group,
                 binding,
@@ -560,4 +625,6 @@ pub fn all(out: &mut Vec<Case>, errors: &mut Vec<String>) {
     dxbc_cases(out, errors);
     d3d9_cases(out, errors);
     glsl_cases(out, errors);
+    super::random::cases(out, errors, 300, 0x5eed, 0, 2, "small");
+    super::random::cases(out, errors, 500, 0x1bba1, 2, 4, "random");
 }

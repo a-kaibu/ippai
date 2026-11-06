@@ -40,6 +40,8 @@ pub fn case(s: &mut String, c: &Case) {
             let _ = write!(s, "[\"rel\",{r:e},{a:e}]");
         }
     }
+    s.push_str(",\"src\":");
+    string(s, &c.src);
     s.push_str(",\"wgsl\":");
     string(s, &c.wgsl);
     s.push_str(",\"pixels\":[");

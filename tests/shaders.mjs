@@ -70,13 +70,22 @@ const results = await page.evaluate(async (cases) => {
         fragment: { module: fs, entryPoint: "main", targets: [{ format: "rgba32float" }] },
         primitive: { topology: "triangle-list" },
       });
+      // (auto layouts leave out uniforms the shader declares but never reads: nothing to bind)
+      let bind = c.wgsl.includes("var<uniform>");
+      if (bind) {
+        device.pushErrorScope("validation");
+        const probe = device.createBuffer({ size: 65536, usage: GPUBufferUsage.UNIFORM });
+        device.createBindGroup({ layout: pipe.getBindGroupLayout(c.group), entries: [{ binding: c.binding, resource: { buffer: probe } }] });
+        bind = !(await device.popErrorScope());
+        probe.destroy();
+      }
       const w = c.pixels.length;
       const tex = device.createTexture({ size: [w, 1], format: "rgba32float", usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
       const enc = device.createCommandEncoder();
       const pass = enc.beginRenderPass({ colorAttachments: [{ view: tex.createView(), loadOp: "clear", storeOp: "store", clearValue: [-7, -7, -7, -7] }] });
       pass.setPipeline(pipe);
       const empty = [];
-      for (let g = 0; g < c.group; g++) {
+      for (let g = 0; bind && g < c.group; g++) {
         empty.push(device.createBindGroup({ layout: pipe.getBindGroupLayout(g), entries: [] }));
         pass.setBindGroup(g, empty[g]);
       }
@@ -87,7 +96,8 @@ const results = await page.evaluate(async (cases) => {
         const b = device.createBuffer({ size: data.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
         device.queue.writeBuffer(b, 0, data);
         bufs.push(b);
-        pass.setBindGroup(c.group, device.createBindGroup({ layout: pipe.getBindGroupLayout(c.group), entries: [{ binding: c.binding, resource: { buffer: b } }] }));
+        // (a shader that reads no uniforms has nothing to bind)
+        if (bind) pass.setBindGroup(c.group, device.createBindGroup({ layout: pipe.getBindGroupLayout(c.group), entries: [{ binding: c.binding, resource: { buffer: b } }] }));
         pass.setViewport(x, 0, 1, 1, 0, 1);
         pass.setScissorRect(x, 0, 1, 1);
         pass.draw(3);
