@@ -281,14 +281,63 @@ struct Clear {
 
 /// Direct3D 9: what a target's segment drew last (see `D3d::segment`).
 struct Seg {
-    /// the clear that starts it (flags, color)
+    /// what starts it: the clear (flags & 1, color), or [2, its rectangle] for a draw that covers
+    /// a rectangle opaque (krkrz draws the whole screen as one picture each frame, no clear)
     clear: [u32; 5],
     level: u32,
-    /// per draw: what it reads and how (see `draw_key`), where it draws (x0 y0 x1 y1, x0 =
-    /// u32::MAX: not known)
-    draws: Vec<(u64, [u32; 4])>,
+    /// per draw: what it reads and how (see `draw_key`)
+    draws: Vec<DrawKey>,
     /// the target's stamp after it (u64::MAX: not taken yet)
     after: u64,
+}
+
+/// A Direct3D 9 draw as segments compare them (`D3d::draw_key`).
+#[derive(Clone, Copy, PartialEq)]
+struct DrawKey {
+    /// its words but where its data went in this batch (`base`), with when the textures it
+    /// samples last changed (`key`)
+    key: u64,
+    base: u64,
+    /// where it draws (x0 y0 x1 y1, x0 = u32::MAX: not known)
+    bbox: [u32; 4],
+    /// its texture at stage 0 and that one's stamp, the other textures' stamps hashed
+    tex0: u32,
+    stamp0: u64,
+    others: u64,
+    /// its pixels depend on stage 0 near texel (sx x + ox, sy y + oy) only (d3d9/device.rs
+    /// rect_draw): [sx, ox, sy, oy]
+    map: Option<[f32; 4]>,
+    /// it covers this rectangle opaque (pixels: x0 y0 x1 y1)
+    cover: Option<[u32; 4]>,
+}
+
+impl DrawKey {
+    /// Where on the target its pixels changed when only its texture at stage 0 changed, in
+    /// texel box `r` (a texel of margin for filtering, a pixel for rounding); None: not known.
+    fn damage(&self, r: [u32; 4]) -> Option<[u32; 4]> {
+        let [sx, ox, sy, oy] = self.map?;
+        let span = |a: u32, b: u32, s: f32, o: f32| {
+            let (p, q) = ((a as f32 - 1.0 - o) / s, (b as f32 + 1.0 - o) / s);
+            let (lo, hi) = (p.min(q).floor() - 1.0, p.max(q).ceil() + 1.0);
+            (lo.max(0.0) as u32, hi.clamp(0.0, 65535.0) as u32)
+        };
+        let (x0, x1) = span(r[0], r[2], sx, ox);
+        let (y0, y1) = span(r[1], r[3], sy, oy);
+        let b = self.bbox;
+        if b[0] == u32::MAX {
+            return None;
+        }
+        let d = [x0.max(b[0]), y0.max(b[1]), x1.min(b[2]), y1.min(b[3])];
+        Some(if d[2] > d[0] && d[3] > d[1] { d } else { [b[0], b[1], b[0], b[1]] })
+    }
+}
+
+/// How a texture's pixels changed lately: (stamp, the box written at level 0 or None: anything),
+/// the last few; changes at or before `floor` are not known.
+#[derive(Default)]
+struct TexChanges {
+    floor: u64,
+    last: Vec<(u64, Option<[u32; 4]>)>,
 }
 
 struct Readback {
@@ -358,6 +407,8 @@ pub struct D3d {
     check_done: HashMap<u32, Vec<u8>>,
     /// when each texture's pixels last changed (a counter, see `touch`)
     stamps: HashMap<u32, u64>,
+    /// what each texture's last changes were (see `changed_since`)
+    tex_changes: HashMap<u32, TexChanges>,
     stamp: u64,
     /// Direct3D 9: the last segment drawn to each target (see `segment`)
     segs: HashMap<u32, Seg>,
@@ -442,6 +493,7 @@ impl D3d {
             checks: HashMap::new(),
             check_done: HashMap::new(),
             stamps: HashMap::new(),
+            tex_changes: HashMap::new(),
             stamp: 0,
             segs: HashMap::new(),
             seg_open: None,
@@ -622,7 +674,14 @@ impl D3d {
             }
             self.touch_for(op, &c[i..]);
             if op == CLEAR && a(10) == 0 && a(1) & 1 != 0 && self.target[0] != 0 && !self.no_pass_opt && !self.no_seg {
-                if let Some(j) = self.segment(c, i) {
+                if let Some(j) = self.segment(c, i, false) {
+                    i = j;
+                    continue;
+                }
+            }
+            // (a draw covering a rectangle opaque, not in a segment: one starts there)
+            if op == DRAW && self.seg_open.is_none() && self.target[0] != 0 && self.targets2.is_none() && !self.no_pass_opt && !self.no_seg && draw_flags(c, i) & 1 != 0 {
+                if let Some(j) = self.segment(c, i, true) {
                     i = j;
                     continue;
                 }
@@ -854,8 +913,42 @@ impl D3d {
 
     /// The pixels of texture `id` change.
     fn touch(&mut self, id: u32) {
+        self.touch_box(id, None);
+    }
+
+    /// The pixels of texture `id` change, only in box `r` of level 0 when it is Some.
+    fn touch_box(&mut self, id: u32, r: Option<[u32; 4]>) {
         self.stamp += 1;
         self.stamps.insert(id, self.stamp);
+        let ch = self.tex_changes.entry(id).or_default();
+        ch.last.push((self.stamp, r));
+        if ch.last.len() > 8 {
+            ch.floor = ch.last.remove(0).0;
+        }
+    }
+
+    /// The box of level 0 texture `id` changed in since its stamp was `since` (empty when it
+    /// did not); None: not known (more than that, or too long ago).
+    fn changed_since(&self, id: u32, since: u64) -> Option<[u32; 4]> {
+        if self.stamp_of(id) == since {
+            return Some([0; 4]);
+        }
+        let ch = self.tex_changes.get(&id)?;
+        if since < ch.floor {
+            return None;
+        }
+        let mut b: Option<[u32; 4]> = None;
+        for &(st, r) in &ch.last {
+            if st <= since {
+                continue;
+            }
+            let r = r?;
+            b = Some(match b {
+                None => r,
+                Some(o) => [o[0].min(r[0]), o[1].min(r[1]), o[2].max(r[2]), o[3].max(r[3])],
+            });
+        }
+        b
     }
 
     fn stamp_of(&self, id: u32) -> u64 {
@@ -865,6 +958,8 @@ impl D3d {
     /// The textures a command writes other than by drawing (passes touch their targets).
     fn touch_for(&mut self, op: u32, c: &[u32]) {
         match op {
+            // (level 0, x y w h)
+            WRITE_TEXTURE | WRITE_TEXTURE_MEM if c[2] == 0 => self.touch_box(c[1], Some([c[3], c[4], c[3].saturating_add(c[5]), c[4].saturating_add(c[6])])),
             CREATE_TEXTURE | CREATE_TEXTURE2 | DESTROY_TEXTURE | WRITE_TEXTURE | WRITE_TEXTURE_MEM | WRITE_TEXTURE2 | FILL | GEN_MIPS => self.touch(c[1]),
             COPY => self.touch(c[7]),
             _ => {}
@@ -872,24 +967,41 @@ impl D3d {
     }
 
     /// What a Direct3D 9 draw at `c[i..]` reads and how: its words but where its data went in
-    /// this batch, and when the textures it samples last changed.
-    fn draw_key(&self, c: &[u32], i: usize) -> (u64, [u32; 4], usize) {
+    /// this batch, and when the textures it samples last changed. The draw's tail: the guest's
+    /// hash of what it read, its box (4), what it is (5: d3d9/device.rs rect_draw).
+    fn draw_key(&self, c: &[u32], i: usize) -> (DrawKey, usize) {
         let ntex = c[i + 17] as usize;
         let p = i + 18 + 3 * ntex;
         let nbuf = c[p] as usize;
-        let end = p + 1 + nbuf + 4 + 5;
+        let end = p + 1 + nbuf + 4 + 5 + 5;
+        let add = |h: u64, w: u64| (h ^ w).wrapping_mul(0x0100_0000_01b3);
         let mut h = 0xcbf2_9ce4_8422_2325u64;
-        let mut add = |w: u64| h = (h ^ w).wrapping_mul(0x0100_0000_01b3);
-        for (k, &w) in c[i..end - 4].iter().enumerate() {
+        for (k, &w) in c[i..end - 9].iter().enumerate() {
             let at = i + k;
             // (data offsets: vso, pso, vertex buffers, indices)
             let offset = at == i + 12 || at == i + 14 || (at > p && at <= p + nbuf) || at == p + 1 + nbuf + 1;
-            add(if offset { 0 } else { w as u64 });
+            h = add(h, if offset { 0 } else { w as u64 });
         }
+        let base = h;
+        let mut others = 0xcbf2_9ce4_8422_2325u64;
+        let (mut tex0, mut stamp0) = (0, 0);
         for t in 0..ntex {
-            add(self.stamp_of(c[i + 18 + 3 * t + 1]));
+            let (slot, id) = (c[i + 18 + 3 * t], c[i + 18 + 3 * t + 1]);
+            let s = self.stamp_of(id);
+            h = add(h, s);
+            if slot == 0 {
+                (tex0, stamp0) = (id, s);
+            } else {
+                others = add(others, s);
+            }
         }
-        (h, [c[end - 4], c[end - 3], c[end - 2], c[end - 1]], end)
+        let bbox = [c[end - 9], c[end - 8], c[end - 7], c[end - 6]];
+        let flags = c[end - 5];
+        let map = (flags & 2 != 0 && tex0 != 0).then(|| [f32of(c[end - 4]), f32of(c[end - 3]), f32of(c[end - 2]), f32of(c[end - 1])]);
+        // (the box is the vertices' rounded out with a pixel of margin: two pixels in from it are
+        // covered whatever the rounding)
+        let cover = (flags & 1 != 0 && bbox[0] != u32::MAX).then(|| [bbox[0] + 2, bbox[1] + 2, bbox[2].saturating_sub(2), bbox[3].saturating_sub(2)]);
+        (DrawKey { key: h, base, bbox, tex0, stamp0, others, map, cover }, end)
     }
 
     /// Direct3D 9: at a clear of the whole color target (`c[i]`), its segment: the clear and the
@@ -900,21 +1012,28 @@ impl D3d {
     /// is cleared and drawn again, with only the draws that touch it; with none changed, nothing.
     /// Returns where the segment ends when it ran it so; None: run as usual (its draws are
     /// recorded for the next frame).
-    fn segment(&mut self, c: &[u32], i: usize) -> Option<usize> {
+    /// With `cover` (`c[i]` a draw that covers a rectangle opaque, no clear before it: krkrz
+    /// draws its whole screen so), the segment starts at that draw; it is redrawn in part only
+    /// where the box that changed is inside that rectangle. A draw whose only change is its
+    /// texture's, in a box, changed only where that box shows (`DrawKey::damage`): krkrz's
+    /// screen when the click glyph turns.
+    fn segment(&mut self, c: &[u32], i: usize, cover: bool) -> Option<usize> {
         let t = self.target[0];
         let level = self.target[1];
         // (cleared again at once, as Siglus does: only the depth part of this one counts)
-        if c.get(i + 12) == Some(&CLEAR) && c.get(i + 22) == Some(&0) && c[i + 13] & 1 != 0 {
+        if !cover && c.get(i + 12) == Some(&CLEAR) && c.get(i + 22) == Some(&0) && c[i + 13] & 1 != 0 {
             if c[i + 1] & 6 != 0 {
                 self.clear_whole(c[i + 1] & 6, [0.0; 4], f32of(c[i + 6]), c[i + 7]);
             }
             return Some(i + 12);
         }
-        let clear: [u32; 5] = [c[i + 1] & 1, c[i + 2], c[i + 3], c[i + 4], c[i + 5]];
+        let covered = if cover { self.draw_key(c, i).0.cover? } else { [0; 4] };
+        let clear: [u32; 5] = if cover { [2, covered[0], covered[1], covered[2], covered[3]] } else { [c[i + 1] & 1, c[i + 2], c[i + 3], c[i + 4], c[i + 5]] };
+        let start = if cover { i } else { i + 12 };
         // the segment
         let mut draws = Vec::new();
         let mut ds = self.target[2];
-        let mut k = i + 12;
+        let mut k = start;
         while k < c.len() {
             match c[k] {
                 SET_TARGET if c[k + 1] == t && c[k + 2] == level => {
@@ -926,8 +1045,8 @@ impl D3d {
                     if ds != 0 {
                         return None;
                     }
-                    let (key, bbox, end) = self.draw_key(c, k);
-                    draws.push((key, bbox));
+                    let (key, end) = self.draw_key(c, k);
+                    draws.push(key);
                     k = end;
                 }
                 _ => break,
@@ -945,13 +1064,35 @@ impl D3d {
         if usable {
             let old = &self.segs[&t];
             // draws in both, in the same order, leave their pixels as they were; the others
-            // (gone, new, or moved past another) are where it changed
-            let (keep_old, keep_new) = common(&old.draws, &new.draws);
-            let changed = old.draws.iter().zip(keep_old).chain(new.draws.iter().zip(keep_new)).filter(|(_, k)| !k);
-            for (d, _) in changed {
-                let b = d.1;
-                if b[0] == u32::MAX {
+            // (gone, new, or moved past another) are where it changed. (In order by what they
+            // are but their textures' stamps: one whose texture at stage 0 alone changed
+            // changed where that shows, when known.)
+            let bases = |v: &[DrawKey]| v.iter().map(|d| (d.base, d.others, d.tex0)).collect::<Vec<_>>();
+            let (keep_old, keep_new) = common(&bases(&old.draws), &bases(&new.draws));
+            let mut boxes: Vec<Option<[u32; 4]>> = Vec::new();
+            for (d, _) in old.draws.iter().zip(&keep_old).chain(new.draws.iter().zip(&keep_new)).filter(|(_, k)| !**k) {
+                boxes.push((d.bbox[0] != u32::MAX).then_some(d.bbox));
+            }
+            let kept_old = old.draws.iter().zip(&keep_old).filter(|(_, k)| **k).map(|(d, _)| d);
+            let kept_new = new.draws.iter().zip(&keep_new).filter(|(_, k)| **k).map(|(d, _)| d);
+            for (o, n) in kept_old.zip(kept_new) {
+                if o.key == n.key {
+                    continue;
+                }
+                let r = self.changed_since(n.tex0, o.stamp0).filter(|_| o.stamp0 <= n.stamp0);
+                boxes.push(match r {
+                    Some(r) if r[2] <= r[0] || r[3] <= r[1] => continue,
+                    Some(r) => n.damage(r).or((n.bbox[0] != u32::MAX).then_some(n.bbox)),
+                    None => (n.bbox[0] != u32::MAX).then_some(n.bbox),
+                });
+            }
+            for b in boxes {
+                let Some(b) = b else {
                     known = false;
+                    continue;
+                };
+                if b[2] <= b[0] || b[3] <= b[1] {
+                    continue;
                 }
                 dirty = Some(match dirty {
                     None => b,
@@ -966,6 +1107,8 @@ impl D3d {
             None => Some(None),
             // (most of the target: drawn whole, a clear is cheaper than a load on a tiler)
             Some(d) if ((d[2].saturating_sub(d[0])) as u64 * (d[3].saturating_sub(d[1])) as u64) * 10 > tw as u64 * th as u64 * 6 => None,
+            // (a draw starts it: only inside what it covers is nothing left from before)
+            Some(d) if cover && !(d[0] >= covered[0] && d[1] >= covered[1] && d[2] <= covered[2] && d[3] <= covered[3]) => None,
             Some(d) => Some(Some(d)),
         };
         let Some(part) = part else {
@@ -974,19 +1117,22 @@ impl D3d {
             return None;
         };
         // the depth part of the clear goes on as usual
-        let (flags, z, stencil) = (c[i + 1], f32of(c[i + 6]), c[i + 7]);
-        if flags & 6 != 0 {
-            self.clear_whole(flags & 6, [0.0; 4], z, stencil);
+        if !cover {
+            let (flags, z, stencil) = (c[i + 1], f32of(c[i + 6]), c[i + 7]);
+            if flags & 6 != 0 {
+                self.clear_whole(flags & 6, [0.0; 4], z, stencil);
+            }
         }
         let (skipped, parts) = self.seg_stats.get();
-        let color = [f32of(c[i + 2]), f32of(c[i + 3]), f32of(c[i + 4]), f32of(c[i + 5])];
+        // (the box is cleared to the clear's color first; a covering draw covers it itself)
+        let color = (!cover).then(|| [f32of(c[i + 2]), f32of(c[i + 3]), f32of(c[i + 4]), f32of(c[i + 5])]);
         match part {
             // the same: the target keeps what it has
             None => self.seg_stats.set((skipped + 1, parts)),
             Some(d) => {
                 self.seg_stats.set((skipped, parts + 1));
                 if d[2] > d[0] && d[3] > d[1] {
-                    self.replay(c, i + 12, end, &new.draws, Some((d, color)));
+                    self.replay(c, start, end, &new.draws, Some((d, color)));
                 }
             }
         }
@@ -995,8 +1141,10 @@ impl D3d {
             let pair = self.next_token;
             self.snap(t, pair);
             self.target = [t, level, self.target[2]];
-            self.clear_whole(1, color, 0.0, 0);
-            self.replay(c, i + 12, end, &new.draws, None);
+            if let Some(color) = color {
+                self.clear_whole(1, color, 0.0, 0);
+            }
+            self.replay(c, start, end, &new.draws, None);
             self.snap(t, pair);
         }
         // (the target the segment leaves set)
@@ -1012,9 +1160,9 @@ impl D3d {
     /// The target changes, depth clears and draws of a segment (`c[k..end]`, its draws
     /// `draws`), only those that draw into the box of `part` (cleared first to its color, in
     /// the pass of the first draw; clipped to it), or all.
-    fn replay(&mut self, c: &[u32], mut k: usize, end: usize, draws: &[(u64, [u32; 4])], part: Option<([u32; 4], [f32; 4])>) {
+    fn replay(&mut self, c: &[u32], mut k: usize, end: usize, draws: &[DrawKey], part: Option<([u32; 4], Option<[f32; 4]>)>) {
         let clip = part.map(|p| p.0);
-        let mut box_clear = part;
+        let mut box_clear = part.and_then(|(d, color)| Some((d, color?)));
         let color_target = self.target;
         self.clip = clip;
         let mut n = 0;
@@ -1033,7 +1181,7 @@ impl D3d {
                     k += 12;
                 }
                 _ => {
-                    let b = draws[n].1;
+                    let b = draws[n].bbox;
                     n += 1;
                     let hit = clip.is_none_or(|d| b[0] == u32::MAX || (b[0] < d[2] && b[2] > d[0] && b[1] < d[3] && b[3] > d[1]));
                     if hit {
@@ -1044,7 +1192,7 @@ impl D3d {
                         }
                         k = self.draw(c, k);
                     } else {
-                        k = self.draw_key(c, k).2;
+                        k = self.draw_key(c, k).1;
                     }
                 }
             }
@@ -1145,7 +1293,7 @@ impl D3d {
                     }
                     drawn.push(target[0]);
                     let p = i + 18 + 3 * ntex;
-                    i = p + 1 + c[p] as usize + 4 + 5;
+                    i = p + 1 + c[p] as usize + 4 + 5 + 5;
                 }
                 DRAW2 => {
                     let tg = targets2?;
@@ -1733,7 +1881,7 @@ impl D3d {
         let offs = c[p..p + nbuf].to_vec();
         p += nbuf;
         let (ifmt, ioff, count, base) = (c[p], c[p + 1], c[p + 2], c[p + 3] as i32);
-        p += 4 + 5;
+        p += 4 + 5 + 5;
         if pipe == 0 || self.data_buf == 0 || count == 0 {
             return p;
         }
@@ -1801,7 +1949,7 @@ impl D3d {
         gpu::set_blend_constant(color_of(blend_factor));
         // (the model of WebGPU in the tests draws only inside the box the guest gave)
         #[cfg(test)]
-        super::model::set_bounds(Some([c[p - 4], c[p - 3], c[p - 2], c[p - 1]]));
+        super::model::set_bounds(Some([c[p - 9], c[p - 8], c[p - 7], c[p - 6]]));
         if ifmt != 0 {
             gpu::set_index_buffer(self.data_buf, ifmt == 4, ioff);
             gpu::draw_indexed(count, 1, 0, base, 0);
@@ -2704,6 +2852,12 @@ pub(crate) fn now() -> f64 {
 }
 
 /// The longest run of draws `a` and `b` share in order: which of each are in it.
+/// The flags of the Direct3D 9 draw at `c[i]` (d3d9/device.rs rect_draw).
+fn draw_flags(c: &[u32], i: usize) -> u32 {
+    let p = i + 18 + 3 * c[i + 17] as usize;
+    c[p + 1 + c[p] as usize + 4 + 5]
+}
+
 fn common<T: PartialEq>(a: &[T], b: &[T]) -> (Vec<bool>, Vec<bool>) {
     let (n, m) = (a.len(), b.len());
     // l[i][j]: length for a[i..], b[j..]
@@ -2838,5 +2992,52 @@ mod rect_tests {
         assert_eq!(s, [0, 4, 16, 12]);
         assert!(super::rects9(16, 16, [20.0, 0.0, 4.0, 4.0, 0.0, 1.0], [0, 0, 16, 16], None).is_none());
         assert!(super::rects9(16, 16, [0.0, 0.0, 16.0, 16.0, 0.0, 1.0], [0, 0, 16, 16], Some([3, 3, 3, 9])).is_none());
+    }
+}
+
+#[cfg(test)]
+mod damage_tests {
+    use super::DrawKey;
+
+    fn quad(map: Option<[f32; 4]>) -> DrawKey {
+        DrawKey { key: 1, base: 1, bbox: [0, 0, 1282, 722], tex0: 7, stamp0: 0, others: 0, map, cover: Some([2, 2, 1280, 720]) }
+    }
+
+    #[test]
+    fn damage_maps_the_texel_box_to_the_screen() {
+        // krkrz: a 1280x720 texture drawn 1:1 from -0.5 (texel = x + 0.5)
+        let d = quad(Some([1.0, 0.5, 1.0, 0.5]));
+        // the click glyph: texels 557..570 x 558..574 -> a margin of a texel and a pixel around
+        assert_eq!(d.damage([557, 558, 570, 574]), Some([554, 555, 572, 576]));
+        // scaled by 2 (texel = x / 2): screen pixels twice as far
+        let d = quad(Some([0.5, 0.0, 0.5, 0.0]));
+        assert_eq!(d.damage([10, 10, 12, 12]), Some([17, 17, 27, 27]));
+        // flipped (texel = 100 - x): still the box, ordered
+        let d = quad(Some([-1.0, 100.0, 1.0, 0.0]));
+        assert_eq!(d.damage([10, 0, 20, 1]), Some([78, 0, 92, 3]));
+        // inside the draw's box only; no map: not known
+        let d = quad(Some([1.0, 0.0, 1.0, 0.0]));
+        assert_eq!(d.damage([1270, 700, 1300, 800]), Some([1268, 698, 1282, 722]));
+        assert_eq!(quad(None).damage([0, 0, 1, 1]), None);
+    }
+
+    #[test]
+    fn changed_since_knows_the_last_boxes_only() {
+        let mut d = super::D3d::new();
+        let s0 = d.stamp_of(7);
+        d.touch_box(7, Some([1, 1, 2, 2]));
+        d.touch_box(7, Some([5, 5, 6, 8]));
+        assert_eq!(d.changed_since(7, s0), Some([1, 1, 6, 8]));
+        let s1 = d.stamp_of(7);
+        assert_eq!(d.changed_since(7, s1), Some([0; 4]));
+        // a draw into it: anything
+        d.touch(7);
+        assert_eq!(d.changed_since(7, s1), None);
+        let s2 = d.stamp_of(7);
+        for k in 0..9 {
+            d.touch_box(7, Some([k, 0, k + 1, 1]));
+        }
+        // (more than the last 8 since s2: not known)
+        assert_eq!(d.changed_since(7, s2), None);
     }
 }

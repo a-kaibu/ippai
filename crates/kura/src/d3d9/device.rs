@@ -2387,6 +2387,69 @@ fn type_size(ty: u32) -> u32 {
 
 const PRIM_TOPOLOGY: [u32; 7] = [3, 0, 1, 2, 3, 4, 3];
 
+/// What the page may assume of a draw of one screen-aligned rectangle in pixels (XYZRHW, not
+/// indexed, fixed function), for redrawing only what changed (render/d3d.rs, segments):
+/// `[flags, sx, ox, sy, oy]`, flags 1: it covers its rectangle opaque (nothing it draws over
+/// shows through: no blending, alpha test, depth, stencil or scissor, all of the color written,
+/// no culling); 2: its pixels depend on nothing but stage 0's texture near texel
+/// (sx * x + ox, sy * y + oy) for pixel (x, y) (the f32 bits of sx ox sy oy), and what else
+/// the draw reads (its key). All zero: neither.
+#[allow(clippy::too_many_arguments)]
+unsafe fn rect_draw(d: &D3d, elems: &[Elem], streams: &[(u32, u32, u32)], first: u32, count: u32, prim: u32, ff: bool, samplers: &[u32], wmask: u32, ds: u32) -> [u32; 5] {
+    let none = [0u32; 5];
+    let Some(dev) = d.dev.as_ref() else { return none };
+    let st = &dev.st;
+    // (four corners as a strip or a fan)
+    if !ff || count != 4 || !(prim == 5 || prim == 6) {
+        return none;
+    }
+    let Some(pe) = elems.iter().find(|e| e.usage == shader::USAGE_POSITIONT && e.stream == 0) else { return none };
+    let Some(&(_, ptr, stride)) = streams.first() else { return none };
+    let vtx = |v: u32, off: u32, k: usize| *((ptr + (first + v) * stride + off) as *const f32).add(k);
+    let pos: Vec<(f32, f32)> = (0..4).map(|v| (vtx(v, pe.offset, 0), vtx(v, pe.offset, 1))).collect();
+    let (x0, x1) = pos.iter().fold((f32::MAX, f32::MIN), |a, p| (a.0.min(p.0), a.1.max(p.0)));
+    let (y0, y1) = pos.iter().fold((f32::MAX, f32::MIN), |a, p| (a.0.min(p.1), a.1.max(p.1)));
+    // (an axis-aligned rectangle: every corner once)
+    let corners = [(x0, y0), (x1, y0), (x0, y1), (x1, y1)];
+    if !(x1 > x0 && y1 > y0 && x0.is_finite() && x1.is_finite() && y0.is_finite() && y1.is_finite()) || !corners.iter().all(|c| pos.iter().filter(|p| **p == *c).count() == 1) {
+        return none;
+    }
+    let rs = &st.rs;
+    let mut flags = 0;
+    if rs[27] == 0 && rs[15] == 0 && ds == 0 && rs[52] == 0 && rs[174] == 0 && rs[22] == 1 && wmask == 0xf {
+        flags |= 1;
+    }
+    let mut m = [0f32; 4];
+    // stage 0 alone, a 2D texture of one level, its coordinates the vertices' texcoord 0 as they are
+    let tex = st.textures[0];
+    let tsize = match d.objs.get(&tex).map(|o| &o.data) {
+        Some(Data::Texture(t)) if t.levels.len() == 1 => Some((t.w as f32, t.h as f32)),
+        _ => None,
+    };
+    let tc = elems.iter().find(|e| e.usage == shader::USAGE_TEXCOORD && e.index == 0 && e.stream == 0 && e.ty == 1);
+    if let (Some((tw, th)), Some(tc), [0]) = (tsize, tc, samplers) {
+        let one_stage = st.tss[1][1] == 1 && st.tss[0][11] & 0xffff == 0 && st.tss[0][24] == 0;
+        let uv: Vec<(f32, f32)> = (0..4).map(|v| (vtx(v, tc.offset, 0) * tw, vtx(v, tc.offset, 1) * th)).collect();
+        // texel = s * position + o, from two corners, true for all four; inside the texture
+        // (no wrapping), at most 4 times larger or smaller
+        let at = |c: (f32, f32)| uv[pos.iter().position(|p| *p == c).unwrap()];
+        let (a, b) = (at((x0, y0)), at((x1, y1)));
+        let (sx, sy) = ((b.0 - a.0) / (x1 - x0), (b.1 - a.1) / (y1 - y0));
+        let (ox, oy) = (a.0 - sx * x0, a.1 - sy * y0);
+        let fits = (0..4).all(|v| (sx * pos[v].0 + ox - uv[v].0).abs() < 0.01 && (sy * pos[v].1 + oy - uv[v].1).abs() < 0.01);
+        let inside = uv.iter().all(|t| t.0 >= -0.01 && t.1 >= -0.01 && t.0 <= tw + 0.01 && t.1 <= th + 0.01);
+        let scale = |s: f32| (0.25..=4.0).contains(&s.abs());
+        if one_stage && fits && inside && scale(sx) && scale(sy) {
+            flags |= 2;
+            m = [sx, ox, sy, oy];
+        }
+    }
+    if flags == 0 {
+        return none;
+    }
+    [flags, f2u(m[0]), f2u(m[1]), f2u(m[2]), f2u(m[3])]
+}
+
 unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> u32 {
     if prims == 0 || !(1..=6).contains(&prim) {
         return S_OK;
@@ -2817,6 +2880,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         }
     }
     let hash = h.0 as u32 ^ (h.0 >> 32) as u32;
+    let ext = rect_draw(d, &elems, &streams, first, count, prim, index.is_none() && vs.is_none() && ps.is_none(), &samplers, wmask, ds);
 
     ensure_target(d, rt, ds);
     let dev = d.dev.as_mut().unwrap();
@@ -2889,6 +2953,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         c.extend_from_slice(&[ifmt, ioff, icount, base as u32]);
         c.push(hash);
         c.extend_from_slice(&bbox);
+        c.extend_from_slice(&ext);
         b.cmd(&c);
         ((vso, pso), true)
     });

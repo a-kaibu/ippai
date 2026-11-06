@@ -238,6 +238,9 @@ impl Gen {
         c.extend_from_slice(&[if indexed { 2 } else { 0 }, io, nv, 0]);
         c.push(hash);
         c.extend_from_slice(&bbox);
+        // (no rectangle claims: the model hashes every sampled texel and the old color into
+        // each pixel, so it cannot check them; render/d3d.rs tests `damage` itself)
+        c.extend_from_slice(&[0; 5]);
         b.c.extend_from_slice(&c);
     }
 
@@ -366,7 +369,7 @@ impl Gen {
                     let ntex = b.c[i + 17] as usize;
                     let p = i + 18 + 3 * ntex;
                     draws.push(i);
-                    p + 1 + b.c[p] as usize + 4 + 5 - i
+                    p + 1 + b.c[p] as usize + 4 + 5 + 5 - i
                 }
                 _ => panic!("op {}", b.c[i]),
             };
@@ -374,6 +377,7 @@ impl Gen {
         }
         let Some(&d) = draws.get(self.r.below(draws.len() as u32) as usize) else { return };
         let ntex = b.c[d + 17] as usize;
+        // (where its box ends; rect_draw's 5 words come after it)
         let end = d + 18 + 3 * ntex + 1 + b.c[d + 18 + 3 * ntex] as usize + 4 + 5;
         // new constants (and so a new hash), at a new place in the data
         let pso = b.c[d + 14] as usize;
@@ -425,7 +429,7 @@ fn show(c: &[u32]) -> String {
             DRAW => {
                 let ntex = c[i + 17] as usize;
                 let p = i + 18 + 3 * ntex;
-                ("draw", p + 1 + c[p] as usize + 9 - i)
+                ("draw", p + 1 + c[p] as usize + 14 - i)
             }
             _ => ("?", c.len() - i),
         };
@@ -435,7 +439,7 @@ fn show(c: &[u32]) -> String {
             CLEAR => format!("clear flags {} color {:?} z {} s {} rect {:?}", w[0], [f32of(w[1]), f32of(w[2]), f32of(w[3]), f32of(w[4])], f32of(w[5]), w[6], &w[7..11]),
             DRAW => {
                 let vp: Vec<f32> = w[1..7].iter().map(|&x| f32of(x)).collect();
-                format!("draw pipe {} vp {vp:?} sc {:?} texs {:?} bbox {:?}", w[0], &w[7..11], &w[17..17 + 3 * w[16] as usize], &w[n - 5..])
+                format!("draw pipe {} vp {vp:?} sc {:?} texs {:?} bbox {:?}", w[0], &w[7..11], &w[17..17 + 3 * w[16] as usize], &w[n - 10..n - 5])
             }
             _ => format!("{name} {:?}", w),
         });
