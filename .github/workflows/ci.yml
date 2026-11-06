@@ -57,6 +57,10 @@ jobs:
           (cd web && npm ci --no-audit --no-fund && npx vp build)
           cargo build -p ippai
           node tests/webgame-isolation.mjs target/debug/ippai
+      - name: Installable, and opens offline (service worker)
+        env:
+          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
+        run: node tests/offline-browser.mjs target/debug/ippai
 
   test:
     runs-on: ubuntu-24.04

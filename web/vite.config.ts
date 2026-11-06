@@ -22,11 +22,57 @@ const frame = (): Plugin => ({
   },
 });
 
+// sw.js: the service worker (src/sw.ts, registered by src/pwa.ts), with the build's shell files
+// (the pages, their assets, the manifest and icons; not sake/: that comes versioned, on first use
+// or with 端末に保存) and an id from their contents
+const PUBLIC_SHELL = [
+  "manifest.webmanifest",
+  "icons/icon.svg",
+  "icons/icon-192.png",
+  "icons/icon-512.png",
+  "icons/maskable-512.png",
+  "icons/apple-touch-icon.png",
+];
+const serviceWorker = (): Plugin => {
+  const shell = new Map<string, string | Uint8Array>();
+  return {
+    name: "ippai-sw",
+    apply: "build",
+    generateBundle(_, bundle) {
+      for (const [name, out] of Object.entries(bundle))
+        if (!/^(bench|game)\.html$/.test(name)) shell.set(name, out.type === "chunk" ? out.code : out.source);
+    },
+    async closeBundle() {
+      const files = [...PUBLIC_SHELL, ...[...shell.keys()].sort()];
+      const enc = new TextEncoder();
+      const all = [...shell.keys()].sort().flatMap((k) => {
+        const v = shell.get(k)!;
+        return [enc.encode(k), typeof v === "string" ? enc.encode(v) : v];
+      });
+      const bytes = new Uint8Array(all.reduce((n, a) => n + a.length, 0));
+      all.reduce((at, a) => (bytes.set(a, at), at + a.length), 0);
+      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+      const id = Array.from(digest.slice(0, 8), (b) => b.toString(16).padStart(2, "0")).join("");
+      await build({
+        configFile: false,
+        logLevel: "warn",
+        define: { IPPAI_BUILD: JSON.stringify(id), IPPAI_SHELL: JSON.stringify(["./", ...files]) },
+        build: {
+          outDir: "dist",
+          emptyOutDir: false,
+          target: "es2022",
+          lib: { entry: "src/sw.ts", formats: ["iife"], name: "ippaiSw", fileName: () => "sw.js" },
+        },
+      });
+    },
+  };
+};
+
 // Built into web/dist and served by ippai serve next to the store. The UI is React with
 // Tailwind CSS and shadcn/ui (src/components/ui); sake's files (public/sake/) are copied as-is.
 export default defineConfig({
   base: "./",
-  plugins: [react(), tailwindcss(), frame()],
+  plugins: [react(), tailwindcss(), frame(), serviceWorker()],
   resolve: { alias: { "@": new URL("./src", import.meta.url).pathname } },
   build: {
     outDir: "dist",

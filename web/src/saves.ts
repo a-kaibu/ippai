@@ -39,6 +39,8 @@ export async function loadSaves(name: string): Promise<Uint8Array | null> {
   // Out of reach (a dropped mobile link, a few tries): this browser's copy, synced later.
   let remote: Uint8Array | null;
   try {
+    // (offline: no tries at all; started from the app kept on the device, sw.ts)
+    if (!navigator.onLine) throw new Error("offline");
     remote = await withRetries(() => transport.load(backup(name)), 3);
   } catch (e) {
     console.warn(`saves: server out of reach, starting from this browser's copy: ${String(e)}`);

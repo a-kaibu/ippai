@@ -12,11 +12,14 @@ import {
   Gamepad2,
   HardDrive,
   Info,
+  MonitorDown,
   Play,
+  RefreshCw,
   ScrollText,
   Search,
   Star,
   Trash2,
+  WifiOff,
   X,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -27,6 +30,7 @@ import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { coverUrl, played, type GameEntry } from "../launcher";
 import { dropOffline, offlineState, saveOffline, type OfflineState } from "../offline";
+import { useApp } from "../pwa";
 import { renderShell } from "./Shell";
 import { setDebug, useUi } from "./store";
 
@@ -256,9 +260,11 @@ export function Library({ games, onPick }: { games: GameEntry[]; onPick: (g: Gam
         setFavorites(ids);
         setFavoriteError("");
       })
-      .catch((e: unknown) => setFavoriteError(String(e)));
+      // (offline: the list shows no favorites, without an error)
+      .catch((e: unknown) => setFavoriteError(navigator.onLine ? String(e) : ""));
   }, [info]);
   const { debug } = useUi();
+  const app = useApp();
   const last = useMemo(played, []);
   const sorted = useMemo(
     () =>
@@ -309,6 +315,16 @@ export function Library({ games, onPick }: { games: GameEntry[]; onPick: (g: Gam
             <Bug className="size-4 sm:hidden" />
             <span className="max-sm:hidden">デバッグ</span>
           </label>
+          {app.install && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={app.install}
+              title="ホーム画面・デスクトップにアプリとして追加"
+            >
+              <MonitorDown /> <span className="max-sm:hidden">アプリにする</span>
+            </Button>
+          )}
           <Button asChild variant="ghost" size="sm">
             <a href="logs.html">
               <ScrollText /> <span className="max-sm:hidden">ログ</span>
@@ -317,6 +333,21 @@ export function Library({ games, onPick }: { games: GameEntry[]; onPick: (g: Gam
         </div>
       </header>
       <div className="mx-auto max-w-7xl px-4 pt-5 pb-10">
+        {!app.online && (
+          <p className="mb-4 flex items-center gap-2 rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
+            <WifiOff className="size-4 shrink-0" />
+            オフラインです。「端末に保存」したゲームを遊べます。
+          </p>
+        )}
+        {app.updated && (
+          <p className="mb-4 flex items-center gap-2 rounded-lg border p-3 text-sm">
+            <RefreshCw className="size-4 shrink-0 text-primary" />
+            <span className="flex-1">新しいバージョンがあります。</span>
+            <Button size="sm" variant="outline" onClick={() => location.reload()}>
+              再読み込み
+            </Button>
+          </p>
+        )}
         <label className="mb-4 flex items-center gap-2">
           <input
             type="checkbox"

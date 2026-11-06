@@ -19,7 +19,9 @@ export async function api<T>(path: string, body?: unknown): Promise<T> {
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
         },
-  );
+  ).catch((e: unknown) => {
+    throw navigator.onLine ? e : new Error("オフラインのため、プレイ記録は読み書きできません");
+  });
   if (!r.ok) throw new Error(`保存サーバー: HTTP ${r.status}`);
   return (r.status === 204 ? undefined : await r.json()) as T;
 }

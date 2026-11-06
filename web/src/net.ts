@@ -103,8 +103,12 @@ export async function withRetries<T>(f: () => Promise<T>, tries = 5): Promise<T>
 
 /** HTTP failure that retrying will not fix (404 and the like). */
 export class HttpError extends Error {
-  constructor(readonly status: number) {
-    super(`HTTP ${status}`);
+  constructor(
+    readonly status: number,
+    /** offline, and the file is not on this device (sw.ts) */
+    readonly offline = false,
+  ) {
+    super(offline ? "オフラインで、端末に保存されていません" : `HTTP ${status}`);
   }
 }
 
@@ -126,6 +130,8 @@ export async function fetchRetry(
       try {
         const { response, data } = await once(String(url), { ...init, signal: opt.signal }, stallMs, request);
         if (data) return data;
+        // (sw.ts: offline, and not kept on the device)
+        if (response.headers.has("x-ippai-offline")) throw new HttpError(response.status, true);
         if (!RETRY.has(response.status)) throw new HttpError(response.status);
         error = new Error(`HTTP ${response.status}`);
         after = Math.min((Number(response.headers.get("retry-after")) || 0) * 1000, 30000);

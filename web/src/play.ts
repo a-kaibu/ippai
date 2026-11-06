@@ -27,6 +27,8 @@ import { renderShell } from "./ui/Shell";
 import { showLibrary } from "./ui/Library";
 import { FlightRecorder, sendLeftovers } from "./crashlog";
 import { fetchRetry, getChunk, chunkCache, HttpError, trimChunks, watchRetries, withRetries } from "./net";
+import { fileVersion, fnv, jitBase as jitBaseOf, sakeBase, translatorVersion, versioned } from "./runtime";
+import { checkOnline, startApp } from "./pwa";
 
 const params = new URLSearchParams(location.search);
 const canvas = document.querySelector<HTMLCanvasElement>("#screen")!;
@@ -171,7 +173,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     return;
   }
   log("sake を読み込み中");
-  const BASE = new URL("sake/", location.href).href;
+  const BASE = sakeBase();
   const WASM = "sake.wasm";
   recorder = new FlightRecorder(params.get("game") ?? run.slice(run.lastIndexOf("\\") + 1), {
     game: params.get("game") ?? "",
@@ -181,19 +183,11 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     env: params.getAll("env").join(" "),
   });
   // the browser keeps a versioned sake.wasm with its compiled code (see ippai serve)
-  const wasmVersion = fetch(`${BASE}${WASM}`, { method: "HEAD" }).then(
-    (r) => `${r.headers.get("last-modified") ?? ""}-${r.headers.get("content-length") ?? ""}`,
-    () => "",
-  );
+  const wasmVersion = fileVersion(`${BASE}${WASM}`);
   // x86 regions earlier runs of this program saved (ippai serve /jit), per build of sake.wasm
   // (which has the translator); &jit=0 for none
-  const jitBase = params.get("jit") ?? `sake-${run.replace(/[^A-Za-z0-9_.-]/g, "_")}`;
-  // (jit-version.txt: a hash of the translator's sources, which crates/sake/build.sh writes; saved
-  // regions stay good across builds that change anything else)
-  const jitVersion = fetch(`${BASE}jit-version.txt`, { cache: "no-cache" })
-    .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`))))
-    .then((t) => (/^[0-9a-f]{8}$/.test(t.trim()) ? t.trim() : Promise.reject(new Error("bad version"))))
-    .catch(() => wasmVersion.then((v) => fnv(new TextEncoder().encode(v))));
+  const jitBase = params.get("jit") ?? jitBaseOf(run);
+  const jitVersion = translatorVersion(wasmVersion);
   const jitName = jitBase === "0" ? undefined : jitVersion.then((v) => `${jitBase}-${v}`);
   const jit = jitName
     ? jitName.then(async (name) => {
@@ -204,11 +198,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   const ahead = jitName ? readAhead(jitName, jit) : undefined;
   // versioned too: the game's threads past the pool each start a worker from it, and a URL the
   // browser must revalidate fails while the link is down (the game then hangs)
-  const scriptUrl = await fetch(`${BASE}sake.js`, { method: "HEAD" }).then(
-    (r) =>
-      `${BASE}sake.js?v=${encodeURIComponent(`${r.headers.get("last-modified") ?? ""}-${r.headers.get("content-length") ?? ""}`)}`,
-    () => `${BASE}sake.js`,
-  );
+  const scriptUrl = versioned(`${BASE}sake.js`, await fileVersion(`${BASE}sake.js`));
   const factory = (await import(/* @vite-ignore */ scriptUrl)).default as (m: object) => Promise<SakeModule>;
   const version = await wasmVersion;
   recorder.note(`build: ${WASM} ${version}, translator ${await jitVersion}`);
@@ -234,8 +224,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       ...(params.get("args")?.split(",").filter(Boolean) ?? []),
     ],
     mainScriptUrlOrBlob: scriptUrl,
-    locateFile: (path: string) =>
-      path === WASM && version ? `${BASE}${path}?v=${encodeURIComponent(version)}` : `${BASE}${path}`,
+    locateFile: (path: string) => (path === WASM ? versioned(`${BASE}${path}`, version) : `${BASE}${path}`),
     vnvmEnv: {
       // "/=": an empty tree at the root, so every path is kura's (no emscripten file system)
       IPPAI_MOUNTS: ["/=", "/vnvm/prefix=prefix32", ...params.getAll("mount")].join(":"),
@@ -307,13 +296,6 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   sake._vnhost_render_start();
   watch(sake);
   (await audio).attach(sake);
-}
-
-/** FNV-1a of `bytes`, in hex. */
-function fnv(bytes: Uint8Array): string {
-  let h = 0x811c9dc5;
-  for (const b of bytes) h = Math.imul(h ^ b, 0x01000193);
-  return (h >>> 0).toString(16);
 }
 
 /**
@@ -514,6 +496,8 @@ function splash(g: GameEntry): void {
 }
 
 async function main(): Promise<void> {
+  // installable, and opens offline (sw.ts)
+  startApp();
   // logs an earlier page left (its tab was killed mid-game) go to the server now
   void sendLeftovers().catch(() => {});
   // a weak link: say that the game waits for the network (the requests are being retried)
@@ -530,6 +514,7 @@ async function main(): Promise<void> {
     setStart({ shown: false });
     log("");
     const games = await fetchGames();
+    void checkOnline();
     showLibrary(games, (g) => {
       const url = new URL(location.href);
       url.searchParams.set("game", g.id);

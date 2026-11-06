@@ -1,10 +1,12 @@
 // A game saved to the device beforehand (on Wi-Fi, before a trip on a mobile line): every store
 // chunk of its trees (and of the prefix: fonts, DLLs) goes into the chunk cache (net.ts CHUNKS),
-// where the game's reads (host/fetch-bridge.js) and the page's read-ahead look first. The list
-// and the program itself still come from the server; only the game data stays here.
+// where the game's reads (host/fetch-bridge.js) and the page's read-ahead look first. sake
+// itself, the game's saved x86 regions and lists are fetched with them (saveApp), and the
+// service worker (sw.ts) keeps those and the app's pages: the game then starts with no connection.
 
-import { type GameEntry } from "./launcher";
-import { chunkCache, chunkPath, fetchRetry, getChunk, treeChunks } from "./net";
+import { coverUrl, type GameEntry } from "./launcher";
+import { chunkCache, chunkPath, fetchRetry, getChunk, HttpError, treeChunks } from "./net";
+import { fileVersion, jitBase, sakeBase, translatorVersion, versioned } from "./runtime";
 
 const store = () => new URL("store/", location.href).href;
 
@@ -51,6 +53,42 @@ export async function offlineState(g: GameEntry): Promise<OfflineState | null> {
   };
 }
 
+/**
+ * Fetches what play.ts loads for `g` besides the chunks, at the URLs it uses: sake.js and
+ * sake.wasm, the saved regions and the lists (sw.ts keeps them). Nothing when there is no
+ * service worker (dev, or a browser without one): the browser's HTTP cache only.
+ */
+async function saveApp(g: GameEntry, signal: AbortSignal): Promise<void> {
+  if (!navigator.serviceWorker?.controller) return;
+  const base = sakeBase();
+  const wasm = fileVersion(`${base}sake.wasm`);
+  const get = (u: string) => fetchRetry(u, {}, { signal, giveUpMs: 60000 });
+  // (no saved regions yet, and the like: not needed to start)
+  const maybe = (u: string) =>
+    get(u).catch((e: unknown) => {
+      if (!(e instanceof HttpError)) throw e;
+      return new Uint8Array();
+    });
+  const name = `${jitBase(g.run)}-${await translatorVersion(wasm)}`;
+  const parts = new TextDecoder()
+    .decode(await maybe(`jit/${name}.parts`))
+    .split("\n")
+    .filter(Boolean)
+    .flatMap((l) => {
+      const [module, idx, v] = l.split(" ");
+      return [`jit/${module}?v=${v}`, `jit/${idx}?v=${v}`];
+    });
+  const cover = coverUrl(g);
+  await Promise.all([
+    get(versioned(`${base}sake.js`, await fileVersion(`${base}sake.js`))),
+    get(versioned(`${base}sake.wasm`, await wasm)),
+    maybe(`jit/${name}.chunks`),
+    maybe("jit/_shared.chunks"),
+    ...(cover ? [maybe(cover)] : []),
+    ...parts.map(maybe),
+  ]);
+}
+
 /** Fetches `g`'s chunks the device lacks (4 at a time, retried as net.ts does); `progress(have, total)`. */
 export async function saveOffline(
   g: GameEntry,
@@ -60,6 +98,7 @@ export async function saveOffline(
   void navigator.storage?.persist?.().catch(() => false);
   const cache = await chunkCache();
   if (!cache) throw new Error("この環境では端末に保存できません");
+  await saveApp(g, signal);
   const [{ hashes }, have] = await Promise.all([chunksOf(g), onDevice()]);
   const missing = hashes.filter((h) => !have.has(h));
   let done = hashes.length - missing.length;
