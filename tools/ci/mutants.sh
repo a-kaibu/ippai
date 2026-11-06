@@ -5,7 +5,8 @@
 # Writes target/mutants.out and a Markdown report (also to $GITHUB_STEP_SUMMARY). A missed
 # mutant fails the run only in a gate file (those have no missed mutants left: a new one is a
 # test gap of the change); elsewhere it is reported. A diff of more than MUTANTS_MAX (400)
-# mutants runs a round-robin sample of them.
+# mutants runs a round-robin sample of them. Each mutant runs the tests of the crates mutated, and
+# shaderconf's (conformance cases, reference interpreters) when a translator crate is among them.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER=$PWD/tools/ci/memcap.sh
@@ -18,6 +19,7 @@ case "${1:-}" in
     git diff "$2" HEAD -- 'crates/*.rs' > target/mutants.diff
     if [ ! -s target/mutants.diff ]; then echo "mutants: no Rust changes since $2"; exit 0; fi
     args=(--in-diff target/mutants.diff)
+    files=$(grep '^+++ b/' target/mutants.diff | cut -c7-)
     n=$(cargo mutants "${args[@]}" --list | wc -l)
     echo "mutants: $n in the diff"
     [ "$n" -gt 0 ] || exit 0
@@ -28,12 +30,14 @@ case "${1:-}" in
     fi
     ;;
   gate)
-    while read -r f; do
-      case "$f" in "" | "#"*) ;; *) args+=(-f "$f") ;; esac
-    done < tools/ci/mutants-gate.txt
+    files=$(grep -v '^#' tools/ci/mutants-gate.txt)
+    for f in $files; do args+=(-f "$f"); done
     ;;
   *) echo "usage: $0 diff BASE | gate" >&2; exit 2 ;;
 esac
+crates=$(for f in $files; do echo "$f"; done | sed -n 's#^crates/\([^/]*\)/.*#\1#p' | sort -u)
+if echo "$crates" | grep -qxE 'hlslc|dxwgsl|glwgsl'; then crates="$crates shaderconf"; fi
+[ -z "$crates" ] || args+=(--test-package "$(echo $crates | tr ' ' ',')")
 rc=0
 cargo mutants "${args[@]}" -j "$JOBS" -o target || rc=$?
 # 0: all caught, 2: missed, 3: timeouts; others (baseline failed, usage) are errors

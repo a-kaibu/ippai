@@ -543,6 +543,7 @@ mod tests {
         assert_eq!(body("vs_3_0\nmov r0.y, c4[a0.w + 2]"), [0x0300_0001, 0x8002_0000, 0xa0e4_2006, 0xb0ff_0000, end]);
         assert_eq!(body("vs_3_0\nmov r0, c[a0.x + 1].y"), [0x0300_0001, 0x800f_0000, 0xa055_2001, 0xb000_0000, end]);
         assert_eq!(body("vs_3_0\nmov o2[aL].xy, r0"), [0x0300_0001, 0xe003_2002, 0xf000_0800, 0x80e4_0000, end]);
+        assert_eq!(body("vs_3_0\nmov o2[a0.y], r0"), [0x0300_0001, 0xe00f_2002, 0xb055_0000, 0x80e4_0000, end]);
         // vs_1_1: no address token, no length
         assert_eq!(body("vs_1_1\nmov r0, c[a0.x + 2]"), [0x0000_0001, 0x800f_0000, 0xa0e4_2002, end]);
         // source modifiers

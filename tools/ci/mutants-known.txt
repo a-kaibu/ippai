@@ -13,3 +13,18 @@ crates/kura/src/display.rs: replace - with / in last_diff
 crates/kura/src/display.rs: replace > with >= in update_changed
 crates/kura/src/display.rs: replace < with <= in update_changed
 crates/kura/src/display.rs: replace + with * in update_changed
+# hlslc d3d9asm.rs: token fields are disjoint bits, so | and ^ build the same word
+crates/hlslc/src/d3d9asm.rs: replace | with ^ in reg_bits
+crates/hlslc/src/d3d9asm.rs: replace | with ^ in source
+crates/hlslc/src/d3d9asm.rs: replace | with ^ in dest
+crates/hlslc/src/d3d9asm.rs: replace | with ^ in assemble
+# d3d9asm.rs: a ']' found by rfind after the '[' found by find cannot be at the same place; a
+# '.' inside brackets ends up rejoined into the same operand text
+crates/hlslc/src/d3d9asm.rs: replace > with >= in split_operand
+crates/hlslc/src/d3d9asm.rs: replace match guard !t[..i].contains('[') with true in source
+# hlslc pp.rs: "0" read as octal is 0 too; arguments of a call without parameters are dropped
+# either way; paste() without ## returns its input either way
+crates/hlslc/src/pp.rs: replace > with >= in lex_line
+crates/hlslc/src/pp.rs: replace && with || in Pp<'_>::expand
+crates/hlslc/src/pp.rs: replace == with != in Pp<'_>::expand
+crates/hlslc/src/pp.rs: replace == with != in paste

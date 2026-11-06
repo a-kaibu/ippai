@@ -639,6 +639,7 @@ mod tests {
         assert_eq!(lex("1e+"), [Int(1, false), Ident("e".into()), Punct("+")]);
         assert_eq!(lex("2.x"), [Float(2.0), Ident("x".into())]);
         assert_eq!(lex("4."), [Float(4.0)]);
+        assert_eq!(lex("2e7"), [Float(2e7)]);
         assert_eq!(lex("1.5e"), [Float(1.5), Ident("e".into())]);
         let mut out = Vec::new();
         assert!(lex_line("0x", 1, &mut out).is_err(), "no hex digits");
@@ -672,6 +673,8 @@ mod tests {
         assert_eq!(clean("/**/x/*"), [" x"]);
         assert_eq!(clean("é/* */ü"), ["é ü"]);
         assert_eq!(clean("tail /* open"), ["tail "]);
+        assert_eq!(clean("\"a//b\" c"), ["\"a//b\" c"]);
+        assert_eq!(clean("/*/ x */y"), [" y"]);
     }
 
     #[test]
@@ -684,6 +687,10 @@ mod tests {
         let e = preprocess("#include \"self\"\n", &[], &mut inc).unwrap_err();
         assert!(e.contains("too deep"), "{e}");
         assert_eq!(depth, 32);
+        // includes one after another do not add up
+        let mut inc = |_: &str, _: bool| Some("k".to_string());
+        let src = "#include \"a\"\n".repeat(40);
+        assert_eq!(preprocess(&src, &[], &mut inc).unwrap().len(), 40);
         let mut inc = |_: &str, _: bool| None;
         let t = preprocess("a\n\nb /* x\n */ c\nd", &[], &mut inc).unwrap();
         assert_eq!(t.iter().map(|t| t.line).collect::<Vec<_>>(), [1, 3, 3, 5]);
@@ -706,7 +713,7 @@ mod tests {
             ("0 || 5", 1),
             ("2 && 0", 0),
             ("2 && 3", 1),
-            ("6 | 9", 15),
+            ("6 | 3", 7),
             ("6 ^ 3", 5),
             ("6 & 3", 2),
             ("2 == 2", 1),
@@ -717,6 +724,8 @@ mod tests {
             ("3 < 3", 0),
             ("3 > 2", 1),
             ("3 > 3", 0),
+            ("7 > 4", 1),
+            ("4 > 7", 0),
             ("3 <= 3", 1),
             ("4 <= 3", 0),
             ("3 >= 3", 1),
@@ -818,6 +827,15 @@ mod tests {
         assert_eq!(pp("#define F(x) F(x) + 1\nF(2)"), "F ( 2 ) + 1");
         assert_eq!(pp("#define F(x) x\nF(1)F(2)"), "1 2");
         assert_eq!(pp("#define F(x, y) y\nF(1)"), "");
+        assert_eq!(pp("#define H(a, b) b\nH(, x)"), "x");
+        assert_eq!(pp("#define N 7\n#define P(x) a##x x\nP(N)"), "aN 7");
+        // nesting depth counts arguments too
+        let nest = |n: usize| format!("#define I(x) x\n{}1{}", "I(".repeat(n), ")".repeat(n));
+        assert_eq!(pp(&nest(30)), "1");
+        assert!(pp_err(&nest(70)).contains("too deep"));
+        let fchain = |n: usize| (0..n).map(|k| format!("#define F{k}(x) F{}(x)\n", k + 1)).collect::<String>() + "F0(1)";
+        assert_eq!(pp(&fchain(30)), "F30 ( 1 )");
+        assert!(pp_err(&fchain(70)).contains("too deep"));
         assert_eq!(pp("#define A ## b\nA"), "## b");
         assert_eq!(pp("#define A a ##\nA"), "a ##");
         assert!(pp_err("#define F(x) x\nF(1, (2)").contains("unterminated call of macro F"));
