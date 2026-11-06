@@ -803,7 +803,8 @@ fn read_at(ino: Ino, buf: &mut [u8], off: u64) -> Result<usize, c_int> {
         Err(n) => return Ok(n),
         Ok(l) => l,
     };
-    if off >= size {
+    // (a read of nothing: else end - 1 below wraps, and every chunk of the file is fetched ahead)
+    if off >= size || buf.is_empty() {
         return Ok(0);
     }
     let end = (off + buf.len() as u64).min(size);
@@ -832,13 +833,22 @@ fn read_at(ino: Ino, buf: &mut [u8], off: u64) -> Result<usize, c_int> {
     Ok((end - off) as usize)
 }
 
-/// Turns a file from the store into one in memory, before it is written.
-fn copy_up(ino: Ino) -> Result<(), c_int> {
+/// Files this big and more, copied from the store into memory to be written, are noted
+/// (stderr): a game that writes into a big archive holds all of it.
+const COPY_UP_NOTE: u64 = 16 << 20;
+
+/// Turns a file from the store into one in memory, before it is written: its first `keep`
+/// bytes (the rest is cut, as set_size does: truncating is not a copy of the whole).
+fn copy_up(ino: Ino, keep: u64) -> Result<(), c_int> {
     let size = with(|fs| match fs.node(ino).map(|n| &n.data) {
         Some(Data::File(Content::Lower { size, .. })) => Some(*size),
         _ => None,
     });
     let Some(size) = size else { return Ok(()) };
+    let size = size.min(keep);
+    if size >= COPY_UP_NOTE {
+        eprintln!("kura: a write copies {} MiB of a file from the store into memory (inode {ino})", size >> 20);
+    }
     let mut v = vec![0; size as usize];
     read_at(ino, &mut v, 0)?;
     with(|fs| {
@@ -850,7 +860,7 @@ fn copy_up(ino: Ino) -> Result<(), c_int> {
 }
 
 fn write_at(ino: Ino, data: &[u8], off: u64) -> Result<usize, c_int> {
-    copy_up(ino)?;
+    copy_up(ino, u64::MAX)?;
     with(|fs| {
         let Some(Data::File(Content::Upper(v))) = fs.data_mut(ino) else { return Err(libc::EBADF) };
         let end = off as usize + data.len();
@@ -866,7 +876,7 @@ fn write_at(ino: Ino, data: &[u8], off: u64) -> Result<usize, c_int> {
 }
 
 fn set_size(ino: Ino, size: u64) -> Result<(), c_int> {
-    copy_up(ino)?;
+    copy_up(ino, size)?;
     with(|fs| match fs.data_mut(ino) {
         Some(Data::File(Content::Upper(v))) => {
             v.resize(size as usize, 0);
@@ -1242,6 +1252,112 @@ mod tests {
                 assert_eq!(c.order.iter().cloned().collect::<Vec<_>>(), model.iter().map(|m| m.0).collect::<Vec<_>>());
                 for (h, len) in &model {
                     assert_eq!(c.map[h].len(), *len);
+                }
+            }
+        }
+    }
+
+    /// The store, for these tests: chunks by name, and the names fetched.
+    static STORE: Mutex<Option<(HashMap<String, Vec<u8>>, Vec<String>)>> = Mutex::new(None);
+
+    #[no_mangle]
+    extern "C" fn vnvm_fetch(name: *const c_char, len: *mut size_t) -> *mut u8 {
+        let name = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned();
+        let mut g = STORE.lock().unwrap();
+        let (m, log) = g.get_or_insert_with(Default::default);
+        log.push(name.clone());
+        let Some(d) = m.get(&name) else { return std::ptr::null_mut() };
+        unsafe {
+            let p = libc::malloc(d.len().max(1)) as *mut u8;
+            std::ptr::copy_nonoverlapping(d.as_ptr(), p, d.len());
+            *len = d.len();
+            p
+        }
+    }
+
+    /// Store files (chunks of 64 bytes, some all zero, the last short), then random writes,
+    /// truncations and reads against a model of each file's bytes. A truncation to 0 of a file
+    /// still in the store fetches nothing; one to n only the chunks before n (and the next).
+    #[test]
+    fn store_files_written_and_cut() {
+        let mut seed = 0x510e527fade682d1u64;
+        let mut rnd = move |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        let mut fs = Fs { next_handle: 1, ..Default::default() };
+        let root = fs.add(Data::Dir(BTreeMap::new()), 0o755, 0);
+        let mut tsv = String::from("vnvm-tree\t1\t64\n");
+        let mut models = Vec::new();
+        let mut chunks = HashMap::new();
+        for f in 0..12 {
+            let size = rnd(64 * 9) + 1;
+            let data: Vec<u8> = (0..size).map(|i| if (i / 64) % 4 == 2 { 0 } else { 1 + rnd(255) as u8 }).collect();
+            let mut names = Vec::new();
+            for c in data.chunks(64) {
+                if c.iter().all(|&b| b == 0) {
+                    names.push(String::new());
+                    continue;
+                }
+                let h: String = (0..16).map(|_| format!("{:02x}", rnd(256))).collect();
+                // (stored chunks may end short: their zero tail is cut)
+                let mut stored = c.to_vec();
+                while stored.last() == Some(&0) {
+                    stored.pop();
+                }
+                chunks.insert(format!("chunks/{}/{h}", &h[..2]), stored);
+                names.push(h);
+            }
+            tsv += &format!("f\t644\t0\tf{f}\t{size}\t{}\n", names.join(","));
+            models.push(data);
+        }
+        fs.load_tree(root, &tsv);
+        let inos: Vec<Ino> = (0..12).map(|f| match fs.node(root).map(|n| &n.data) {
+            Some(Data::Dir(c)) => c[&format!("f{f}")],
+            _ => unreachable!(),
+        }).collect();
+        *FS.lock().unwrap() = Some(fs);
+        *STORE.lock().unwrap() = Some((chunks, Vec::new()));
+        let fetched = || std::mem::take(&mut STORE.lock().unwrap().as_mut().unwrap().1);
+        // the first operation on each file: a truncation, checked for what it fetched
+        for (f, &ino) in inos.iter().enumerate() {
+            let n = if f % 3 == 0 { 0 } else { rnd(models[f].len() as u64 + 100) };
+            fetched();
+            set_size(ino, n).unwrap();
+            let got = fetched();
+            // (and the chunk after them, fetched ahead as after any read)
+            let need = (n.min(models[f].len() as u64)).div_ceil(64) as usize;
+            let need = if need == 0 { 0 } else { need + 1 };
+            assert!(got.len() <= need, "f{f} cut to {n}: fetched {} chunks, needs {need}", got.len());
+            models[f].resize(n as usize, 0);
+        }
+        for _ in 0..2000 {
+            let f = rnd(12) as usize;
+            let (ino, m) = (inos[f], &mut models[f]);
+            match rnd(3) {
+                0 => {
+                    let off = rnd(m.len() as u64 + 80);
+                    let data: Vec<u8> = (0..rnd(150)).map(|_| rnd(256) as u8).collect();
+                    assert_eq!(write_at(ino, &data, off), Ok(data.len()));
+                    let end = off as usize + data.len();
+                    if m.len() < end {
+                        m.resize(end, 0);
+                    }
+                    m[off as usize..end].copy_from_slice(&data);
+                }
+                1 => {
+                    let n = rnd(m.len() as u64 + 100);
+                    set_size(ino, n).unwrap();
+                    m.resize(n as usize, 0);
+                }
+                _ => {
+                    let off = rnd(m.len() as u64 + 10);
+                    let mut buf = vec![0xaa; rnd(200) as usize];
+                    let n = read_at(ino, &mut buf, off).unwrap();
+                    let want = &m[(off as usize).min(m.len())..(off as usize + buf.len()).min(m.len())];
+                    assert_eq!(&buf[..n], want);
                 }
             }
         }
