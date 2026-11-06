@@ -221,8 +221,8 @@ struct State {
     hints: HashMap<u32, u32>,
     /// functions the compiler thread is translating, and where it says it is done
     pending: HashSet<u32>,
-    done_tx: std::sync::mpsc::Sender<(u32, u32, Built)>,
-    done_rx: std::sync::mpsc::Receiver<(u32, u32, Built)>,
+    done_tx: std::sync::mpsc::Sender<Batch>,
+    done_rx: std::sync::mpsc::Receiver<Batch>,
     /// sites whose hint changed (a site going to several targets keeps its second hint)
     rehinted: HashSet<u32>,
 }
@@ -835,6 +835,34 @@ fn maybe_save() {
         return;
     }
     g.1 = Some(now);
+    for (r, s) in &new {
+        done.insert(r.clone(), s.build);
+    }
+    // the first time, the store chunks the run read so far too (for the page to fetch ahead)
+    let chunks = if g.3 { None } else { Some(crate::vfs::fetched()) };
+    g.3 = true;
+    drop(guard);
+    // merged and sent on a thread of its own: the merge of a few hundred functions took the
+    // game's thread tens of ms
+    static SAVER: std::sync::OnceLock<Option<std::sync::mpsc::Sender<Save>>> = std::sync::OnceLock::new();
+    let tx = SAVER.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<Save>();
+        std::thread::Builder::new().name("vnjit-save".into()).spawn(move || rx.into_iter().for_each(save)).ok()?;
+        Some(tx)
+    });
+    let job = (url.as_c_str(), new, chunks);
+    match tx {
+        Some(tx) => {
+            let _ = tx.send(job);
+        }
+        None => save(job),
+    }
+}
+
+/// What [`save`] sends: the URL, the new regions, the chunks read (the first time).
+type Save = (&'static std::ffi::CStr, Vec<(Vec<u32>, Arc<Shared>)>, Option<Vec<u8>>);
+
+fn save((url, new, chunks): Save) {
     let entries: Vec<jit::saved::Entry> = new
         .iter()
         .map(|(r, s)| jit::saved::Entry {
@@ -852,9 +880,6 @@ fn maybe_save() {
         eprintln!("vnjit: save: {} modules don't merge", mods.len());
         return;
     };
-    for (r, s) in new {
-        done.insert(r, s.build);
-    }
     let idx = jit::saved::encode(&entries);
     if stats() || crate::env_on!("IPPAI_JIT_SAVE_LOG") {
         eprintln!("vnjit: saving {} regions ({} bytes)", entries.len(), wasm.len());
@@ -862,9 +887,6 @@ fn maybe_save() {
     let mut body = (wasm.len() as u32).to_le_bytes().to_vec();
     body.extend_from_slice(&wasm);
     body.extend_from_slice(&idx);
-    // the first time, the store chunks the run read so far too (for the page to fetch ahead)
-    let chunks = if g.3 { None } else { Some(crate::vfs::fetched()) };
-    g.3 = true;
     #[cfg(target_os = "emscripten")]
     unsafe {
         vnvm_jit_save(url.as_ptr(), body.as_ptr(), body.len());
@@ -1223,7 +1245,7 @@ fn compile_fn(st: &mut State, eip: u32, (lo, hi): (u32, u32), mem: &mut Linear, 
         // translated on the compiler thread; the interpreter goes on meanwhile (a build takes
         // a few ms here, several times that on a phone: a dropped frame each, in the story's
         // scene changes)
-        let job = Job { eip, lo, hi, part, build, misses: st.misses.clone(), known: st.known.clone(), hints: st.hints.clone(), done: st.done_tx.clone() };
+        let job = Job { eip, lo, hi, part, build, misses: st.misses.clone(), known: st.known.clone(), hints: st.hints.clone(), tid: std::thread::current().id(), done: st.done_tx.clone() };
         if jobs.send(job).is_ok() {
             st.pending.insert(eip);
             return false;
@@ -1231,7 +1253,7 @@ fn compile_fn(st: &mut State, eip: u32, (lo, hi): (u32, u32), mem: &mut Linear, 
     }
     let t0 = Instant::now();
     let built = build_fn(mem, eip, (lo, hi), part, build, &st.misses, &st.known, &st.hints);
-    finish_fn(st, eip, build, built, t0)
+    finish_fn(st, eip, build, built, None, t0)
 }
 
 /// A function translated (on the compiler thread or not): (module, region, its code bytes).
@@ -1247,8 +1269,22 @@ struct Job {
     misses: HashMap<u32, u32>,
     known: HashSet<u32>,
     hints: HashMap<u32, u32>,
-    done: std::sync::mpsc::Sender<(u32, u32, Built)>,
+    /// the guest thread asking (its jobs that wait together come back as one batch)
+    tid: std::thread::ThreadId,
+    done: std::sync::mpsc::Sender<Batch>,
 }
+
+/// Functions the compiler thread finished for one guest thread: (eip, build, built) each, and
+/// when there are several, one module of all the built ones (in order, two functions each:
+/// adapter, function) so the guest thread loads them at once. Loading a module costs the guest
+/// thread far more per module than per function, and a scene change asks for hundreds.
+struct Batch {
+    items: Vec<(u32, u32, Built)>,
+    merged: Option<Vec<u8>>,
+}
+
+/// Functions one batch takes, at most (one load: a longer pause of its own).
+const BATCH_MAX: usize = 16;
 
 /// The compiler thread's queue (IPPAI_JIT_ASYNC=0: none, functions are translated where they
 /// are needed).
@@ -1262,9 +1298,28 @@ fn compiler() -> Option<&'static std::sync::mpsc::Sender<Job>> {
         std::thread::Builder::new()
             .name("vnjit".into())
             .spawn(move || {
-                for j in rx {
-                    let built = build_fn(&mut Linear, j.eip, (j.lo, j.hi), j.part, j.build, &j.misses, &j.known, &j.hints);
-                    let _ = j.done.send((j.eip, j.build, built));
+                // the jobs waiting when one is taken go with it, a batch per guest thread
+                let mut waiting: std::collections::VecDeque<Job> = std::collections::VecDeque::new();
+                loop {
+                    let Some(j) = waiting.pop_front().or_else(|| rx.recv().ok()) else { break };
+                    waiting.extend(rx.try_iter());
+                    let mut jobs = vec![j];
+                    let mut i = 0;
+                    while i < waiting.len() && jobs.len() < BATCH_MAX {
+                        if waiting[i].tid == jobs[0].tid {
+                            jobs.extend(waiting.remove(i));
+                        } else {
+                            i += 1;
+                        }
+                    }
+                    let done = jobs[0].done.clone();
+                    let items: Vec<(u32, u32, Built)> = jobs
+                        .into_iter()
+                        .map(|j| (j.eip, j.build, build_fn(&mut Linear, j.eip, (j.lo, j.hi), j.part, j.build, &j.misses, &j.known, &j.hints)))
+                        .collect();
+                    let mods: Vec<&[u8]> = items.iter().filter_map(|(_, _, b)| b.as_ref().map(|b| &b.0[..])).collect();
+                    let merged = if mods.len() > 1 { jit::wasm::merge(&mods, &[]) } else { None };
+                    let _ = done.send(Batch { items, merged });
                 }
             })
             .ok()?;
@@ -1275,14 +1330,39 @@ fn compiler() -> Option<&'static std::sync::mpsc::Sender<Job>> {
 
 /// Installs the functions the compiler thread finished for this thread.
 fn take_built(st: &mut State, mem: &mut Linear) {
-    while let Ok((eip, build, built)) = st.done_rx.try_recv() {
-        st.pending.remove(&eip);
+    while let Ok(Batch { items, merged }) = st.done_rx.try_recv() {
         // (the code changed since: dropped, as if it had not been translated; it is again
         // when hot)
-        if built.as_ref().is_some_and(|(_, r, text)| !(code_kept(&r.code) && code_bytes(mem, &r.code).is_some_and(|t| t == *text))) {
-            continue;
+        let kept: Vec<bool> = items
+            .iter()
+            .map(|(_, _, b)| b.as_ref().is_none_or(|(_, r, text)| code_kept(&r.code) && code_bytes(mem, &r.code).is_some_and(|t| t == *text)))
+            .collect();
+        // all of them at once when none was dropped
+        let t0 = Instant::now();
+        let mut base = match merged {
+            Some(m) if kept.iter().all(|&k| k) => {
+                let n = 2 * items.iter().filter(|i| i.2.is_some()).count();
+                #[cfg(target_os = "emscripten")]
+                let b = unsafe { vnvm_jit_load(m.as_ptr(), m.len(), n as u32) };
+                #[cfg(not(target_os = "emscripten"))]
+                let b = { let _ = (m, n); -1 };
+                if crate::env_on!("IPPAI_JIT_TIME") {
+                    eprintln!("vnjit time batch of {}: load {:?}", n / 2, t0.elapsed());
+                }
+                (b >= 0).then_some(b as u32)
+            }
+            _ => None,
+        };
+        for ((eip, build, built), k) in items.into_iter().zip(kept) {
+            st.pending.remove(&eip);
+            let at = built.is_some().then_some(base).flatten();
+            if built.is_some() {
+                base = base.map(|b| b + 2);
+            }
+            if k {
+                finish_fn(st, eip, build, built, at, t0);
+            }
         }
-        finish_fn(st, eip, build, built, Instant::now());
     }
 }
 
@@ -1315,15 +1395,22 @@ fn build_fn(mem: &mut Linear, eip: u32, (lo, hi): (u32, u32), part: bool, build:
     Some((bytes, region, text))
 }
 
-/// Loads a translated function (or notes that it could not be).
-fn finish_fn(st: &mut State, eip: u32, build: u32, built: Built, t0: Instant) -> bool {
+/// Loads a translated function (or notes that it could not be); `at`: already loaded (with
+/// others) at that table index.
+fn finish_fn(st: &mut State, eip: u32, build: u32, built: Built, at: Option<u32>, t0: Instant) -> bool {
     let Some((bytes, mut region, text)) = built else {
         st.known.insert(eip);
         return false;
     };
     let t1 = Instant::now();
-    let ok = install_fn(st, eip, &bytes, &region.starts, &region.sites, &region.code);
-    if crate::env_on!("IPPAI_JIT_TIME") {
+    let ok = match at {
+        Some(base) => {
+            enter_fn(st, base, eip, &region.starts, &region.sites, &region.code);
+            true
+        }
+        None => install_fn(st, eip, &bytes, &region.starts, &region.sites, &region.code),
+    };
+    if at.is_none() && crate::env_on!("IPPAI_JIT_TIME") {
         eprintln!("vnjit time {eip:#x}: {} ins, load {:?}", region.instructions, t1.elapsed());
     }
     count_compile(1, t0);
