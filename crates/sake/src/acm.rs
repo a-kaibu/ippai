@@ -136,7 +136,9 @@ pub fn ms_block(b: &[u8], ch: usize, spb: usize, out: &mut Vec<i16>) {
             let p = p.clamp(-32768, 32767);
             s2[c] = s1[c];
             s1[c] = p;
-            delta[c] = (MS_ADAPT[nib as usize] * delta[c] >> 8).max(16);
+            // the spec's delta has no upper bound: a run of big nibbles grows it 3x a sample until
+            // the multiply overflows, so cap it where it still fits (as FFmpeg does)
+            delta[c] = (MS_ADAPT[nib as usize] * delta[c] >> 8).clamp(16, i32::MAX / 768);
             out[start + i * ch + c] = p as i16;
         }
     }
@@ -438,6 +440,23 @@ mod proptests {
         (b, want)
     }
 
+    /// MS ADPCM worked by hand from the format's definition: predictor 1 (512, -256), delta 16,
+    /// sample1 100, sample2 50; nibbles 1, 7, -8, 4. Each sample is
+    /// (s1 * c1 + s2 * c2) >> 8 + nibble * delta, then delta = adapt[nibble] * delta >> 8, min 16:
+    /// 166 (delta 230*16>>8 -> 16), 344 (614*16>>8 = 38), 218 (768*38>>8 = 114), 548.
+    #[test]
+    fn ms_by_hand() {
+        let b = [1, 16, 0, 100, 0, 50, 0, 0x17, 0x84];
+        let mut out = Vec::new();
+        ms_block(&b, 1, 6, &mut out);
+        assert_eq!(out, [50, 100, 166, 344, 218, 548]);
+        // stereo: the nibbles alternate channels, high nibble first
+        let b = [1, 0, 16, 0, 16, 0, 100, 0, 0, 0, 50, 0, 0, 0, 0x10, 0x70];
+        out.clear();
+        ms_block(&b, 2, 4, &mut out);
+        assert_eq!(out, [50, 0, 100, 0, 166, 0, 344, 0]);
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(512))]
 
@@ -460,6 +479,19 @@ mod proptests {
             if ms { ms_block(&b, ch, spb, &mut out) } else { ima_block(&b, ch, spb, &mut out) }
             prop_assert!(out.len() == 1 || out.len() == 1 + spb * ch);
             prop_assert_eq!(out[0], 7);
+        }
+
+        /// MS ADPCM: a block the header says has the largest delta, then nibbles that grow it
+        /// every sample, saturates instead of overflowing.
+        #[test]
+        fn ms_delta_saturates(ch in 1usize..=2, nib in 8u8..12, spb in 2usize..200) {
+            let mut b = vec![0u8; ch];
+            b.extend((0..ch).flat_map(|_| i16::MAX.to_le_bytes()));
+            b.extend(vec![0u8; 4 * ch]);
+            b.extend(vec![nib * 17; spb * ch / 2 + 1]);
+            let mut out = Vec::new();
+            ms_block(&b, ch, spb, &mut out);
+            prop_assert_eq!(out.len(), spb * ch);
         }
 
         /// MS ADPCM: the two header samples come out first, in order, per channel.
