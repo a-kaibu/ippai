@@ -156,51 +156,74 @@ static void swap(char *a, char *b, size_t w) {
     }
     for (; w; w--, a++, b++) { char t = *a; *a = *b; *b = t; }
 }
-/* quicksort (median of three, the smaller side first so the stack stays small), insertion sort
- * below 8 elements */
-static void sort(char *base, size_t n, size_t w, cmp_fn f) {
-    while (n > 7) {
-        char *lo = base, *mid = base + (n / 2) * w, *hi = base + (n - 1) * w;
-        if (f(mid, lo) < 0) swap(mid, lo, w);
-        if (f(hi, mid) < 0) {
-            swap(hi, mid, w);
-            if (f(mid, lo) < 0) swap(mid, lo, w);
-        }
-        swap(mid, lo, w); /* pivot at base */
-        char *i = base + w, *j = hi;
-        for (;;) {
-            while (i <= j && f(i, base) < 0) i += w;
-            while (i <= j && f(base, j) < 0) j -= w;
-            if (i >= j) break;
-            swap(i, j, w);
-            i += w;
-            j -= w;
-        }
-        swap(base, j, w);
-        size_t left = (j - base) / w, right = n - left - 1;
-        if (left < right) {
-            sort(base, left, w, f);
-            base = j + w;
-            n = right;
-        } else {
-            sort(j + w, right, w, f);
-            n = left;
-        }
+/* msvcrt's own quicksort, step for step (median of three; the largest moved to the end below
+ * 9 elements; an explicit stack), so that equal keys end up in the order Windows leaves them
+ * (tests/winref crt_misc) */
+static void shortsort(char *lo, char *hi, size_t w, cmp_fn f) {
+    while (hi > lo) {
+        char *max = lo;
+        for (char *p = lo + w; p <= hi; p += w)
+            if (f(p, max) > 0) max = p;
+        swap(max, hi, w);
+        hi -= w;
     }
-    for (size_t k = 1; k < n; k++)
-        for (char *p = base + k * w; p > base && f(p - w, p) > 0; p -= w) swap(p - w, p, w);
 }
-void qsort(void *base, size_t n, size_t w, cmp_fn f) {
-    if (n > 1 && w) sort(base, n, w, f);
+void qsort(void *base, size_t num, size_t w, cmp_fn f) {
+    char *lostk[32], *histk[32];
+    int sp = 0;
+    if (num < 2 || !w) return;
+    char *lo = base, *hi = (char *)base + w * (num - 1);
+    for (;;) {
+        size_t size = (hi - lo) / w + 1;
+        if (size <= 8) {
+            shortsort(lo, hi, w, f);
+        } else {
+            char *mid = lo + (size / 2) * w;
+            if (f(lo, mid) > 0) swap(lo, mid, w);
+            if (f(lo, hi) > 0) swap(lo, hi, w);
+            if (f(mid, hi) > 0) swap(mid, hi, w);
+            char *loguy = lo, *higuy = hi;
+            for (;;) {
+                if (mid > loguy) do loguy += w; while (loguy < mid && f(loguy, mid) <= 0);
+                if (mid <= loguy) do loguy += w; while (loguy <= hi && f(loguy, mid) <= 0);
+                do higuy -= w; while (higuy > mid && f(higuy, mid) > 0);
+                if (higuy < loguy) break;
+                swap(loguy, higuy, w);
+                if (mid == higuy) mid = loguy;
+            }
+            higuy += w;
+            if (mid < higuy) do higuy -= w; while (higuy > mid && f(higuy, mid) == 0);
+            if (mid >= higuy) do higuy -= w; while (higuy > lo && f(higuy, mid) == 0);
+            if (higuy - lo >= hi - loguy) {
+                if (lo < higuy) { lostk[sp] = lo; histk[sp] = higuy; ++sp; }
+                if (loguy < hi) { lo = loguy; continue; }
+            } else {
+                if (loguy < hi) { lostk[sp] = loguy; histk[sp] = hi; ++sp; }
+                if (lo < higuy) { hi = higuy; continue; }
+            }
+        }
+        if (--sp < 0) return;
+        lo = lostk[sp];
+        hi = histk[sp];
+    }
 }
-void *bsearch(const void *key, const void *base, size_t n, size_t w, cmp_fn f) {
-    size_t lo = 0, hi = n;
-    while (lo < hi) {
-        size_t mid = (lo + hi) / 2;
-        const char *p = (const char *)base + mid * w;
-        int r = f(key, p);
-        if (!r) return (void *)p;
-        if (r < 0) hi = mid; else lo = mid + 1;
+/* msvcrt's bsearch: which of equal elements it returns follows its halving */
+void *bsearch(const void *key, const void *base, size_t num, size_t w, cmp_fn f) {
+    const char *lo = base, *hi = (const char *)base + (num - 1) * w;
+    if (!num) return 0;
+    while (lo <= hi) {
+        size_t half = num / 2;
+        if (half) {
+            const char *mid = lo + (num & 1 ? half : half - 1) * w;
+            int r = f(key, mid);
+            if (!r) return (void *)mid;
+            if (r < 0) { hi = mid - w; num = num & 1 ? half : half - 1; }
+            else { lo = mid + w; num = half; }
+        } else if (num) {
+            return f(key, lo) ? 0 : (void *)lo;
+        } else {
+            break;
+        }
     }
     return 0;
 }

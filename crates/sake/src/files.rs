@@ -10,6 +10,77 @@ pub struct File {
     pub f: Mutex<kura::fs::File>,
     pub path: String,
     pub dir: bool,
+    /// opened for writing (WriteFile fails with ERROR_ACCESS_DENIED otherwise)
+    pub write: bool,
+    /// its entry in OPEN (sharing checks), removed when the handle goes
+    share: u64,
+}
+
+impl Drop for File {
+    fn drop(&mut self) {
+        if self.share != 0 {
+            OPEN.lock().unwrap().retain(|o| o.0 != self.share);
+        }
+    }
+}
+
+/// CreateFile's sharing: (entry id, host path in lower case, access bits, share mode) of each
+/// open handle that asked for a share mode (the C runtime's and sake's own opens share all)
+static OPEN: Mutex<Vec<(u64, String, u32, u32)>> = Mutex::new(Vec::new());
+const R: u32 = 1;
+const W: u32 = 2;
+const D: u32 = 4;
+
+/// The read/write/delete bits of a CreateFile access mask.
+fn access_bits(access: u32) -> u32 {
+    let mut b = 0;
+    if access & (0x8000_0000 | 0x1000_0000 | 1) != 0 {
+        b |= R;
+    }
+    if access & (0x4000_0000 | 0x1000_0000 | 2 | 4) != 0 {
+        b |= W;
+    }
+    if access & (0x0001_0000 | 0x1000_0000) != 0 {
+        b |= D;
+    }
+    b
+}
+
+/// ERROR_SHARING_VIOLATION when an open handle of `host` does not share what this one wants or
+/// this one does not share what that one has.
+fn share_conflict(host: &str, want: u32, share: u32) -> bool {
+    let key = host.to_lowercase();
+    OPEN.lock().unwrap().iter().any(|o| o.1 == key && (want & !o.3 & 7 != 0 || o.2 & !share & 7 != 0))
+}
+
+/// Whether some handle keeps `host` from being deleted or renamed (opened without FILE_SHARE_DELETE).
+pub fn delete_blocked(host: &str) -> bool {
+    share_conflict(host, D, 7)
+}
+
+/// Not found: ERROR_PATH_NOT_FOUND when the directory is missing too, else ERROR_FILE_NOT_FOUND.
+pub fn missing(w: &str) -> u32 {
+    let full = full_path(w);
+    match full.trim_end_matches('\\').rsplit_once('\\') {
+        Some((d, _)) if resolve(&format!("{d}\\")).is_none() => ERROR_PATH_NOT_FOUND,
+        _ => ERROR_FILE_NOT_FOUND,
+    }
+}
+
+/// FILE_ATTRIBUTE_READONLY and the like set by SetFileAttributes (the host files keep none):
+/// host path in lower case -> attributes
+pub static ATTRS: Mutex<Vec<(String, u32)>> = Mutex::new(Vec::new());
+pub fn set_attrs(host: &str, a: u32) {
+    let key = host.to_lowercase();
+    let mut t = ATTRS.lock().unwrap();
+    t.retain(|x| x.0 != key);
+    if a & !0x80 & 0x7 != 0 {
+        t.push((key, a & 0x7));
+    }
+}
+pub fn extra_attrs(host: &str) -> u32 {
+    let key = host.to_lowercase();
+    ATTRS.lock().unwrap().iter().find(|x| x.0 == key).map_or(0, |x| x.1)
 }
 
 pub struct Find {
@@ -66,6 +137,26 @@ pub fn full_path(p: &str) -> String {
         }
     } else if let Some(rest) = p.strip_prefix("\\\\?\\") {
         rest.to_string()
+    } else if let Some(rest) = p.strip_prefix("\\\\") {
+        // UNC: \\server\share stays the root (".." does not go above it)
+        let mut it = rest.splitn(3, '\\');
+        let (srv, share, tail) = (it.next().unwrap_or(""), it.next().unwrap_or(""), it.next().unwrap_or(""));
+        let mut parts: Vec<&str> = Vec::new();
+        for c in tail.split('\\') {
+            match c {
+                "" | "." => {}
+                ".." => {
+                    parts.pop();
+                }
+                c => parts.push(c),
+            }
+        }
+        let mut out = format!("\\\\{srv}\\{share}");
+        for c in parts {
+            out.push('\\');
+            out.push_str(c);
+        }
+        return out;
     } else if p.starts_with('\\') {
         format!("{}{}", &cwd()[..2], p)
     } else {
@@ -80,6 +171,13 @@ pub fn full_path(p: &str) -> String {
                 parts.pop();
             }
             c => parts.push(c),
+        }
+    }
+    // (the last component loses its trailing dots and spaces: "trail. ." is "trail")
+    if let Some(l) = parts.last_mut() {
+        let t = l.trim_end_matches(['.', ' ']);
+        if !t.is_empty() {
+            *l = t;
         }
     }
     let trailing = abs.ends_with('\\') && !parts.is_empty();
@@ -143,15 +241,26 @@ pub const ERROR_ACCESS_DENIED: u32 = 5;
 pub const ERROR_FILE_EXISTS: u32 = 80;
 pub const ERROR_ALREADY_EXISTS: u32 = 183;
 
-/// CreateFile: (handle object, error)
+/// CreateFile: (handle object, error), sharing everything
 pub fn open(w: &str, access: u32, disposition: u32) -> Result<File, u32> {
+    open_shared(w, access, disposition, None).map(|f| f.0)
+}
+
+/// CreateFile with its share mode (None: no sharing checks): (handle object, whether it existed)
+pub fn open_shared(w: &str, access: u32, disposition: u32, share: Option<u32>) -> Result<(File, bool), u32> {
     let write = access & 0x4000_0000 != 0 || access & 0x1000_0000 != 0 || access & 2 != 0;
     let existing = resolve(w);
     let host = existing.clone().unwrap_or_else(|| resolve_new(w));
     if let Some(h) = &existing {
         if kura::fs::metadata(h).is_ok_and(|m| m.is_dir()) {
             let f = kura::fs::File::open(h).map_err(|_| ERROR_ACCESS_DENIED)?;
-            return Ok(File { f: Mutex::new(f), path: h.clone(), dir: true });
+            return Ok((File { f: Mutex::new(f), path: h.clone(), dir: true, write: false, share: 0 }, true));
+        }
+        if share.is_some_and(|s| share_conflict(h, access_bits(access), s)) {
+            return Err(32);
+        }
+        if write && extra_attrs(h) & 1 != 0 {
+            return Err(ERROR_ACCESS_DENIED);
         }
     }
     let mut o = kura::fs::OpenOptions::new();
@@ -169,7 +278,7 @@ pub fn open(w: &str, access: u32, disposition: u32) -> Result<File, u32> {
         }
         3 => {
             if existing.is_none() {
-                return Err(ERROR_FILE_NOT_FOUND);
+                return Err(missing(w));
             }
             if write {
                 o.write(true);
@@ -180,14 +289,25 @@ pub fn open(w: &str, access: u32, disposition: u32) -> Result<File, u32> {
         }
         5 => {
             if existing.is_none() {
-                return Err(ERROR_FILE_NOT_FOUND);
+                return Err(missing(w));
             }
             o.write(true).truncate(true);
         }
         _ => return Err(87),
     }
     match o.open(&host) {
-        Ok(f) => Ok(File { f: Mutex::new(f), path: host, dir: false }),
+        Ok(f) => {
+            let id = match share {
+                Some(s) => {
+                    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+                    let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    OPEN.lock().unwrap().push((id, host.to_lowercase(), access_bits(access), s));
+                    id
+                }
+                None => 0,
+            };
+            Ok((File { f: Mutex::new(f), path: host, dir: false, write, share: id }, existing.is_some()))
+        }
         Err(e) => Err(match e.kind() {
             std::io::ErrorKind::NotFound => {
                 if existing.is_none() && disposition != 3 {
@@ -234,6 +354,15 @@ pub fn filetime(t: std::time::SystemTime) -> u64 {
     116_444_736_000_000_000 + d.as_nanos() as u64 / 100
 }
 
+/// Attributes of host file `h` (with those SetFileAttributes gave it).
+pub fn attrs_of(h: &str, m: &kura::fs::Metadata) -> u32 {
+    // (attributes set replace the archive bit the host file shows)
+    match extra_attrs(h) {
+        0 => attrs(m),
+        x => attrs(m) & 0x10 | x,
+    }
+}
+
 pub fn attrs(m: &kura::fs::Metadata) -> u32 {
     if m.is_dir() {
         0x10
@@ -252,7 +381,8 @@ pub fn wild(pat: &str, name: &str) -> bool {
         match p.first() {
             None => n.is_empty(),
             Some('*') => (0..=n.len()).any(|i| m(&p[1..], &n[i..])),
-            Some('?') => !n.is_empty() && m(&p[1..], &n[1..]) || n.is_empty() && m(&p[1..], n),
+            // (DOS: '?' also matches nothing at the end of the name or before its dot)
+            Some('?') => !n.is_empty() && m(&p[1..], &n[1..]) || (n.is_empty() || n[0] == '.') && m(&p[1..], n),
             Some(c) => n.first() == Some(c) && m(&p[1..], &n[1..]),
         }
     }
@@ -260,12 +390,21 @@ pub fn wild(pat: &str, name: &str) -> bool {
     if pat == "*.*" {
         return true;
     }
+    // "name." and "*.": names without an extension
+    if let Some(base) = pat.strip_suffix('.').filter(|b| !b.is_empty() && !b.ends_with('.')) {
+        return (name == "." || name == ".." || !name.contains('.')) && wild(base, name);
+    }
     m(&p, &n)
 }
 
 pub fn find(w: &str) -> Option<Find> {
     let full = full_path(w);
-    let (dir, pat) = full.rsplit_once('\\')?;
+    let (dir, mut pat) = full.rsplit_once('\\')?;
+    // (the pattern as given: GetFullPathName's normalization drops the dot of "*.")
+    let given = w.rsplit(['\\', '/']).next().unwrap_or("");
+    if !given.is_empty() && given.trim_end_matches(['.', ' ']) == pat {
+        pat = given;
+    }
     // ("" and "dir\" find nothing, as on Windows)
     if w.is_empty() || pat.is_empty() {
         return None;

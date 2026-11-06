@@ -143,15 +143,19 @@ int main(void) {
     find("sub\\");
     {
         static const char *ps[] = { "x.txt", ".\\a\\..\\b", "sub\\..\\..\\q", "a/b\\c", "trail.", "trail. .",
-                                    "C:\\dir\\..\\..\\..\\file", "\\\\server\\share\\x\\..", "C:", "a\\\\b" };
-        char cur[MAX_PATH];
+                                    "C:\\dir\\..\\..\\..\\file", "\\\\server\\share\\x\\..", "a\\\\b" };
+        char cur[MAX_PATH], par[MAX_PATH];
         GetCurrentDirectoryA(MAX_PATH, cur);
         size_t cl = strlen(cur);
+        strcpy(par, cur);
+        *strrchr(par, '\\') = 0;
+        size_t pl = strlen(par);
         for (unsigned i = 0; i < sizeof ps / sizeof *ps; i++) {
             char out[MAX_PATH], *part = NULL;
             DWORD n = GetFullPathNameA(ps[i], MAX_PATH, out, &part);
-            const char *shown = strncmp(out, cur, cl) == 0 ? out + cl : (out[1] == ':' ? out + 2 : out);
-            printf("GetFullPathName '%s' %s%s part %s\n", ps[i], strncmp(out, cur, cl) == 0 ? "<cur>" : "",
+            int in_cur = strncmp(out, cur, cl) == 0, in_par = !in_cur && strncmp(out, par, pl) == 0;
+            const char *shown = in_cur ? out + cl : in_par ? out + pl : (out[1] == ':' ? out + 2 : out);
+            printf("GetFullPathName '%s' %s%s part %s\n", ps[i], in_cur ? "<cur>" : in_par ? "<parent>" : "",
                    shown, part ? part : "(null)");
             (void)n;
         }

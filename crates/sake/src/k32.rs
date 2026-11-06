@@ -2302,11 +2302,12 @@ fn IsDBCSLeadByteEx(c: &mut Ctx) -> u32 {
 
 fn MultiByteToWideChar(c: &mut Ctx) -> u32 {
     let (cp, _flags, src, n, dst, cap) = (c.a(0), c.a(1), c.a(2), c.i(3), c.a(4), c.a(5));
-    if src == 0 || n == 0 || n < -1 || cap > i32::MAX as u32 || src == dst {
+    // (Windows: any negative length means NUL-terminated; no output buffer with a size is
+    // ERROR_INVALID_PARAMETER)
+    if src == 0 || n == 0 || cap > i32::MAX as u32 || src == dst || cap != 0 && dst == 0 {
         last_error(87);
         return 0;
     }
-    if cap != 0 && dst == 0 { last_error(122); return 0; }
     let s = if n < 0 { let mut v = cstr(src); v.push(0); v } else { mem::slice(src, n as u32).to_vec() };
     let w = mb2w(cp, &s);
     if cap == 0 {
@@ -2323,11 +2324,12 @@ fn MultiByteToWideChar(c: &mut Ctx) -> u32 {
 }
 fn WideCharToMultiByte(c: &mut Ctx) -> u32 {
     let (cp, src, n, dst, cap) = (c.a(0), c.a(2), c.i(3), c.a(4), c.a(5));
-    if src == 0 || n == 0 || n < -1 || cap > i32::MAX as u32 || src == dst {
+    // (Windows: any negative length means NUL-terminated; no output buffer with a size is
+    // ERROR_INVALID_PARAMETER)
+    if src == 0 || n == 0 || cap > i32::MAX as u32 || src == dst || cap != 0 && dst == 0 {
         last_error(87);
         return 0;
     }
-    if cap != 0 && dst == 0 { last_error(122); return 0; }
     let s: Vec<u16> = if n < 0 {
         let mut v = wstr(src);
         v.push(0);
@@ -3038,15 +3040,15 @@ fn create_file(c: &mut Ctx, wide: bool) -> u32 {
     if name.eq_ignore_ascii_case("CONOUT$") || name.eq_ignore_ascii_case("CONIN$") {
         return obj::add(Obj::Other("console"));
     }
-    match files::open(&name, access, disp) {
+    match files::open_shared(&name, access, disp, Some(c.a(2))) {
         // a directory opens only with FILE_FLAG_BACKUP_SEMANTICS
-        Ok(f) if f.dir && c.a(5) & 0x0200_0000 == 0 => {
+        Ok((f, _)) if f.dir && c.a(5) & 0x0200_0000 == 0 => {
             last_error(5);
             0xffff_ffff
         }
-        Ok(f) => {
-            let existed = disp == 2 || disp == 4;
-            last_error(if existed { 0 } else { 0 });
+        Ok((f, existed)) => {
+            // CREATE_ALWAYS / OPEN_ALWAYS of an existing file: ERROR_ALREADY_EXISTS
+            last_error(if existed && (disp == 2 || disp == 4) { 183 } else { 0 });
             obj::add(Obj::File(std::sync::Arc::new(f)))
         }
         Err(e) => {
@@ -3128,6 +3130,11 @@ fn WriteFile(c: &mut Ctx) -> u32 {
         last_error(6);
         return 0;
     };
+    if !f.write {
+        put32(pw, 0);
+        last_error(5);
+        return 0;
+    }
     let w = f.write_from(buf, n);
     put32(pw, w);
     ok(w == n)
@@ -3269,7 +3276,8 @@ fn find_first(c: &mut Ctx, wide: bool) -> u32 {
             obj::add(Obj::Find(std::sync::Arc::new(Mutex::new(f))))
         }
         None => {
-            last_error(2);
+            // ("dir\": ERROR_INVALID_PARAMETER; a missing directory: ERROR_PATH_NOT_FOUND)
+            last_error(if pat.ends_with(['\\', '/']) { 87 } else { files::missing(&pat) });
             0xffff_ffff
         }
     }
@@ -3315,13 +3323,13 @@ fn file_attrs(name: &str) -> u32 {
     if crate::env_on!("SAKE_TRACE_FILES") {
         eprintln!("sake: GetFileAttributes({name})");
     }
-    match files::resolve(name).and_then(|h| kura::fs::metadata(h).ok()) {
-        Some(m) => files::attrs(&m),
+    match files::resolve(name).and_then(|h| kura::fs::metadata(&h).ok().map(|m| (h, m))) {
+        Some((h, m)) => files::attrs_of(&h, &m),
         // (system32's DLLs that we implement are there: Siglus checks that kernel32.dll is,
         // then its language)
         None if is_system_dll_path(name) => 0x20,
         None => {
-            last_error(2);
+            last_error(files::missing(name));
             0xffff_ffff
         }
     }
@@ -3341,12 +3349,12 @@ fn GetFileAttributesW(c: &mut Ctx) -> u32 {
 }
 fn attrs_ex(c: &mut Ctx, wide: bool) -> u32 {
     let name = arg_str(c.a(0), wide);
-    let Some(m) = files::resolve(&name).and_then(|h| kura::fs::metadata(h).ok()) else {
-        last_error(2);
+    let Some((h, m)) = files::resolve(&name).and_then(|h| kura::fs::metadata(&h).ok().map(|m| (h, m))) else {
+        last_error(files::missing(&name));
         return 0;
     };
     let p = c.a(2);
-    w32(p, files::attrs(&m));
+    w32(p, files::attrs_of(&h, &m));
     let t = m.modified().map_or(0, files::filetime);
     for o in [4, 12, 20] {
         put64(p + o, t);
@@ -3361,11 +3369,23 @@ fn GetFileAttributesExA(c: &mut Ctx) -> u32 {
 fn GetFileAttributesExW(c: &mut Ctx) -> u32 {
     attrs_ex(c, true)
 }
-fn SetFileAttributesA(_: &mut Ctx) -> u32 {
-    1
+fn set_file_attrs(name: &str, a: u32) -> u32 {
+    match files::resolve(name) {
+        Some(h) => {
+            files::set_attrs(&h, a);
+            1
+        }
+        None => {
+            last_error(files::missing(name));
+            0
+        }
+    }
 }
-fn SetFileAttributesW(_: &mut Ctx) -> u32 {
-    1
+fn SetFileAttributesA(c: &mut Ctx) -> u32 {
+    set_file_attrs(&arg_str(c.a(0), false), c.a(1))
+}
+fn SetFileAttributesW(c: &mut Ctx) -> u32 {
+    set_file_attrs(&arg_str(c.a(0), true), c.a(1))
 }
 pub fn mkdir(name: &str) -> u32 {
     let h = files::resolve_new(name);
@@ -3384,7 +3404,19 @@ fn CreateDirectoryW(c: &mut Ctx) -> u32 {
     mkdir(&arg_str(c.a(0), true))
 }
 fn rmdir(name: &str) -> u32 {
-    ok(files::resolve(name).is_some_and(|h| kura::fs::remove_dir(h).is_ok()))
+    let Some(h) = files::resolve(name) else {
+        last_error(files::missing(name));
+        return 0;
+    };
+    if !files::is_dir(&h) {
+        last_error(267); // ERROR_DIRECTORY
+        return 0;
+    }
+    if kura::fs::read_dir(&h).is_ok_and(|mut d| d.next().is_some()) {
+        last_error(145); // ERROR_DIR_NOT_EMPTY
+        return 0;
+    }
+    ok(kura::fs::remove_dir(h).is_ok())
 }
 fn RemoveDirectoryA(c: &mut Ctx) -> u32 {
     rmdir(&arg_str(c.a(0), false))
@@ -3394,9 +3426,20 @@ fn RemoveDirectoryW(c: &mut Ctx) -> u32 {
 }
 fn del(name: &str) -> u32 {
     match files::resolve(name) {
-        Some(h) => ok(kura::fs::remove_file(h).is_ok()),
+        Some(h) if files::extra_attrs(&h) & 1 != 0 || files::is_dir(&h) => {
+            last_error(5);
+            0
+        }
+        Some(h) if files::delete_blocked(&h) => {
+            last_error(32);
+            0
+        }
+        Some(h) => {
+            files::set_attrs(&h, 0);
+            ok(kura::fs::remove_file(h).is_ok())
+        }
         None => {
-            last_error(2);
+            last_error(files::missing(name));
             0
         }
     }
@@ -3409,12 +3452,16 @@ fn DeleteFileW(c: &mut Ctx) -> u32 {
 }
 fn mv(from: &str, to: &str, replace: bool) -> u32 {
     let Some(f) = files::resolve(from) else {
-        last_error(2);
+        last_error(files::missing(from));
         return 0;
     };
     let t = files::resolve(to);
     if t.is_some() && !replace {
         last_error(183);
+        return 0;
+    }
+    if files::delete_blocked(&f) || t.as_ref().is_some_and(|t| files::delete_blocked(t)) {
+        last_error(32);
         return 0;
     }
     ok(kura::fs::rename(f, t.unwrap_or_else(|| files::resolve_new(to))).is_ok())
@@ -3433,7 +3480,7 @@ fn MoveFileExW(c: &mut Ctx) -> u32 {
 }
 fn copy_file(from: &str, to: &str, fail: bool) -> u32 {
     let Some(f) = files::resolve(from) else {
-        last_error(2);
+        last_error(files::missing(from));
         return 0;
     };
     let t = files::resolve(to);
@@ -3441,7 +3488,9 @@ fn copy_file(from: &str, to: &str, fail: bool) -> u32 {
         last_error(80);
         return 0;
     }
-    ok(kura::fs::copy(f, t.unwrap_or_else(|| files::resolve_new(to))).is_ok())
+    let r = kura::fs::copy(f, t.unwrap_or_else(|| files::resolve_new(to))).is_ok();
+    last_error(if r { 0 } else { 5 });
+    ok(r)
 }
 fn CopyFileA(c: &mut Ctx) -> u32 {
     copy_file(&arg_str(c.a(0), false), &arg_str(c.a(1), false), c.a(2) != 0)
@@ -3453,7 +3502,11 @@ fn full_path_name(c: &mut Ctx, wide: bool) -> u32 {
     let name = arg_str(c.a(0), wide);
     let full = files::full_path(&name);
     let r = ret_str(c.a(2), c.a(1), &full, wide);
-    if c.a(3) != 0 && r < c.a(1) {
+    let unc_root = full.strip_prefix("\\\\").is_some_and(|u| u.matches('\\').count() <= 1);
+    if c.a(3) != 0 && r < c.a(1) && (full.ends_with('\\') || unc_root) {
+        // (no file part in "C:\" or "dir\")
+        w32(c.a(3), 0);
+    } else if c.a(3) != 0 && r < c.a(1) {
         let pos = full.rfind('\\').map_or(0, |i| i + 1);
         let off = if wide { full[..pos].encode_utf16().count() * 2 } else { crate::text::s2a(&full[..pos]).len() };
         w32(c.a(3), c.a(2) + off as u32);

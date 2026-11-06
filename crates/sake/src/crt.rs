@@ -760,22 +760,84 @@ fn parse_int(s: &[u8], base: u32) -> (i64, usize, bool) {
     }
     (if neg { -v } else { v }, i, neg)
 }
+/// msvcrt's strtoxl: (value, bytes used, overflowed) with the value accumulated in 32 bits;
+/// signed: LONG_MIN/LONG_MAX past the range, unsigned: ULONG_MAX, then negated for a '-'
+fn strtoxl(s: &[u8], base: u32, unsigned: bool) -> (u32, usize, bool) {
+    let mut i = 0;
+    while i < s.len() && matches!(s[i], b' ' | 9..=13) {
+        i += 1;
+    }
+    let neg = s.get(i) == Some(&b'-');
+    if matches!(s.get(i), Some(b'-' | b'+')) {
+        i += 1;
+    }
+    if base == 1 || base > 36 {
+        return (0, 0, false);
+    }
+    let mut base = base;
+    if (base == 0 || base == 16) && s.get(i) == Some(&b'0') && matches!(s.get(i + 1), Some(b'x' | b'X')) {
+        i += 2;
+        base = 16;
+    } else if base == 0 {
+        base = if s.get(i) == Some(&b'0') { 8 } else { 10 };
+    }
+    let start = i;
+    let (mut v, mut over) = (0u32, false);
+    while let Some(d) = s.get(i).and_then(|&b| (b as char).to_digit(base)) {
+        match v.checked_mul(base).and_then(|x| x.checked_add(d)) {
+            Some(x) => v = x,
+            None => over = true,
+        }
+        i += 1;
+    }
+    if i == start {
+        return (0, 0, false);
+    }
+    if !unsigned && (neg && v > 0x8000_0000 || !neg && v > 0x7fff_ffff) {
+        over = true;
+    }
+    let v = if over {
+        if unsigned { u32::MAX } else if neg { 0x8000_0000 } else { 0x7fff_ffff }
+    } else {
+        v
+    };
+    (if neg && (unsigned || !over) { v.wrapping_neg() } else { v }, i, over)
+}
+/// atoi/_atoi64: digits accumulated with wrap-around (no range check)
+fn atoi_wrap(s: &[u8]) -> u64 {
+    let mut i = 0;
+    while i < s.len() && matches!(s[i], b' ' | 9..=13) {
+        i += 1;
+    }
+    let neg = s.get(i) == Some(&b'-');
+    if matches!(s.get(i), Some(b'-' | b'+')) {
+        i += 1;
+    }
+    let mut v = 0u64;
+    while let Some(&b) = s.get(i).filter(|b| b.is_ascii_digit()) {
+        v = v.wrapping_mul(10).wrapping_add((b - b'0') as u64);
+        i += 1;
+    }
+    if neg { v.wrapping_neg() } else { v }
+}
 fn atoi(c: &mut Ctx) -> u32 {
-    parse_int(&cstr(c.a(0)), 10).0 as i32 as u32
+    atoi_wrap(&cstr(c.a(0))) as u32
+}
+fn strtol_common(c: &mut Ctx, unsigned: bool) -> u32 {
+    let (v, n, over) = strtoxl(&cstr(c.a(0)), c.a(2), unsigned);
+    if c.a(1) != 0 {
+        w32(c.a(1), c.a(0) + n as u32);
+    }
+    if over {
+        set_errno(34); // ERANGE
+    }
+    v
 }
 fn strtol(c: &mut Ctx) -> u32 {
-    let (v, n, _) = parse_int(&cstr(c.a(0)), c.a(2));
-    if c.a(1) != 0 {
-        w32(c.a(1), c.a(0) + n as u32);
-    }
-    v.clamp(i32::MIN as i64, i32::MAX as i64) as i32 as u32
+    strtol_common(c, false)
 }
 fn strtoul(c: &mut Ctx) -> u32 {
-    let (v, n, _) = parse_int(&cstr(c.a(0)), c.a(2));
-    if c.a(1) != 0 {
-        w32(c.a(1), c.a(0) + n as u32);
-    }
-    v as u32
+    strtol_common(c, true)
 }
 /// (value, bytes used)
 fn parse_float(s: &[u8]) -> (f64, usize) {
@@ -876,35 +938,120 @@ fn abs(c: &mut Ctx) -> u32 {
     c.i(0).unsigned_abs()
 }
 
+/// msvcrt's own quicksort (median of three, insertion of the largest below 9 elements), in
+/// place: games that sort equal keys get them in the order Windows leaves them.
 fn qsort(c: &mut Ctx) -> u32 {
-    let (base, n, w, f) = (c.a(0), c.a(1), c.a(2), c.a(3));
-    if n < 2 || w == 0 {
+    let (base, num, w, f) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    if num < 2 || w == 0 {
         return 0;
     }
-    // sort a copy by index, comparing the copy's elements, then write the result back
-    let tmp = mem::heap_alloc(n * w, false);
-    mem::copy(tmp, base, n * w);
-    let mut idx: Vec<u32> = (0..n).collect();
-    idx.sort_by(|&a, &b| {
-        let r = c.call(f, &[tmp + a * w, tmp + b * w]) as i32;
-        r.cmp(&0)
-    });
-    for (i, &k) in idx.iter().enumerate() {
-        mem::copy(base + i as u32 * w, tmp + k * w, w);
+    let cmp = |c: &mut Ctx, a: u32, b: u32| c.call(f, &[a, b]) as i32;
+    let swap = |a: u32, b: u32| {
+        if a != b {
+            for k in 0..w {
+                let (x, y) = (r8(a + k), r8(b + k));
+                w8(a + k, y);
+                w8(b + k, x);
+            }
+        }
+    };
+    let mut stack: Vec<(u32, u32)> = Vec::new();
+    let (mut lo, mut hi) = (base, base + w * (num - 1));
+    loop {
+        let size = (hi - lo) / w + 1;
+        if size <= 8 {
+            let mut h = hi;
+            while h > lo {
+                let mut max = lo;
+                let mut p = lo + w;
+                while p <= h {
+                    if cmp(c, p, max) > 0 {
+                        max = p;
+                    }
+                    p += w;
+                }
+                swap(max, h);
+                h -= w;
+            }
+        } else {
+            let mut mid = lo + (size / 2) * w;
+            if cmp(c, lo, mid) > 0 { swap(lo, mid); }
+            if cmp(c, lo, hi) > 0 { swap(lo, hi); }
+            if cmp(c, mid, hi) > 0 { swap(mid, hi); }
+            let (mut loguy, mut higuy) = (lo, hi);
+            loop {
+                if mid > loguy {
+                    loop {
+                        loguy += w;
+                        if !(loguy < mid && cmp(c, loguy, mid) <= 0) { break; }
+                    }
+                }
+                if mid <= loguy {
+                    loop {
+                        loguy += w;
+                        if !(loguy <= hi && cmp(c, loguy, mid) <= 0) { break; }
+                    }
+                }
+                loop {
+                    higuy -= w;
+                    if !(higuy > mid && cmp(c, higuy, mid) > 0) { break; }
+                }
+                if higuy < loguy { break; }
+                swap(loguy, higuy);
+                if mid == higuy { mid = loguy; }
+            }
+            higuy += w;
+            if mid < higuy {
+                loop {
+                    higuy -= w;
+                    if !(higuy > mid && cmp(c, higuy, mid) == 0) { break; }
+                }
+            }
+            if mid >= higuy {
+                loop {
+                    higuy -= w;
+                    if !(higuy > lo && cmp(c, higuy, mid) == 0) { break; }
+                }
+            }
+            if higuy.wrapping_sub(lo) as i32 >= hi.wrapping_sub(loguy) as i32 {
+                if lo < higuy { stack.push((lo, higuy)); }
+                if loguy < hi { lo = loguy; continue; }
+            } else {
+                if loguy < hi { stack.push((loguy, hi)); }
+                if lo < higuy { hi = higuy; continue; }
+            }
+        }
+        match stack.pop() {
+            Some((l, h)) => (lo, hi) = (l, h),
+            None => return 0,
+        }
     }
-    mem::heap_free(tmp);
-    0
 }
+/// msvcrt's bsearch (which of equal elements it finds follows its halving)
 fn bsearch(c: &mut Ctx) -> u32 {
-    let (key, base, n, w, f) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
-    let (mut lo, mut hi) = (0, n);
-    while lo < hi {
-        let mid = (lo + hi) / 2;
-        let r = c.call(f, &[key, base + mid * w]) as i32;
-        match r.cmp(&0) {
-            std::cmp::Ordering::Equal => return base + mid * w,
-            std::cmp::Ordering::Less => hi = mid,
-            std::cmp::Ordering::Greater => lo = mid + 1,
+    let (key, base, mut num, w, f) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
+    if num == 0 {
+        return 0;
+    }
+    let (mut lo, mut hi) = (base as i64, base as i64 + (num as i64 - 1) * w as i64);
+    while lo <= hi {
+        let half = num / 2;
+        if half != 0 {
+            let mid = lo + (if num & 1 != 0 { half } else { half - 1 }) as i64 * w as i64;
+            let r = c.call(f, &[key, mid as u32]) as i32;
+            if r == 0 {
+                return mid as u32;
+            } else if r < 0 {
+                hi = mid - w as i64;
+                num = if num & 1 != 0 { half } else { half - 1 };
+            } else {
+                lo = mid + w as i64;
+                num = half;
+            }
+        } else if num != 0 {
+            return if c.call(f, &[key, lo as u32]) != 0 { 0 } else { lo as u32 };
+        } else {
+            break;
         }
     }
     0
@@ -1148,77 +1295,219 @@ fn printf(c: &mut Ctx) -> u32 {
     eprint!("{}", a2s(&s));
     s.len() as u32
 }
-fn sscanf(c: &mut Ctx) -> u32 {
-    // the integer/string subset (%d %x %s %c %f)
-    let s = cstr(c.a(0));
-    let f = cstr(c.a(1));
-    let mut va = VaArgs::arg(c, 2);
-    let (mut i, mut k, mut n) = (0, 0, 0u32);
+/// The scanf family's conversions over `s`: (assignments, or -1 when the input ended before
+/// the first conversion). msvcrt's: widths, '*', h/l/ll/I64/L, %d %i %u %o %x %e %f %g %s %c
+/// %[set] %n %p.
+fn scan(s: &[u8], f: &[u8], va: &mut VaArgs) -> i32 {
+    let (mut i, mut k, mut n) = (0usize, 0usize, 0i32);
+    let ws = |b: u8| matches!(b, b' ' | 9..=13);
+    let mut converted = false;
     while k < f.len() {
         let ch = f[k];
-        if ch == b'%' && k + 1 < f.len() {
-            k += 1;
-            while k < f.len() && (f[k].is_ascii_digit() || f[k] == b'l' || f[k] == b'h') {
-                k += 1;
-            }
-            let conv = f.get(k).copied().unwrap_or(0);
-            k += 1;
-            if conv != b'c' {
-                while i < s.len() && s[i].is_ascii_whitespace() {
-                    i += 1;
-                }
-            }
-            match conv {
-                b'd' | b'i' | b'u' | b'x' | b'X' => {
-                    let (v, used, _) = parse_int(&s[i..], if matches!(conv, b'x' | b'X') { 16 } else { 10 });
-                    if used == 0 {
-                        break;
-                    }
-                    i += used;
-                    w32(va.u32(), v as u32);
-                }
-                b'f' | b'g' | b'e' => {
-                    let (v, used) = parse_float(&s[i..]);
-                    if used == 0 {
-                        break;
-                    }
-                    i += used;
-                    mem::write(va.u32(), &(v as f32).to_le_bytes());
-                }
-                b's' => {
-                    let st = i;
-                    while i < s.len() && !s[i].is_ascii_whitespace() {
-                        i += 1;
-                    }
-                    if i == st {
-                        break;
-                    }
-                    let out = va.u32();
-                    mem::write(out, &s[st..i]);
-                    w8(out + (i - st) as u32, 0);
-                }
-                b'c' => {
-                    let Some(&b) = s.get(i) else { break };
-                    i += 1;
-                    w8(va.u32(), b);
-                }
-                _ => break,
-            }
-            n += 1;
-        } else if ch.is_ascii_whitespace() {
-            while i < s.len() && s[i].is_ascii_whitespace() {
+        if ws(ch) {
+            while i < s.len() && ws(s[i]) {
                 i += 1;
             }
             k += 1;
-        } else {
+            continue;
+        }
+        if ch != b'%' || k + 1 >= f.len() {
             if s.get(i) != Some(&ch) {
                 break;
             }
             i += 1;
             k += 1;
+            continue;
         }
+        k += 1;
+        if f[k] == b'%' {
+            while i < s.len() && ws(s[i]) {
+                i += 1;
+            }
+            if s.get(i) != Some(&b'%') {
+                break;
+            }
+            i += 1;
+            k += 1;
+            continue;
+        }
+        let skip = f[k] == b'*';
+        if skip {
+            k += 1;
+        }
+        let mut width = 0usize;
+        while k < f.len() && f[k].is_ascii_digit() {
+            width = width * 10 + (f[k] - b'0') as usize;
+            k += 1;
+        }
+        let mut size = 0; // 1 h, 2 hh, 4 l, 8 ll/I64, 9 L
+        loop {
+            match f.get(k) {
+                Some(b'h') => size = if size == 1 { 2 } else { 1 },
+                Some(b'l') => size = if size == 4 { 8 } else { 4 },
+                Some(b'L') => size = 9,
+                Some(b'I') if f[k + 1..].starts_with(b"64") => {
+                    size = 8;
+                    k += 2;
+                }
+                Some(b'I') if f[k + 1..].starts_with(b"32") => {
+                    size = 4;
+                    k += 2;
+                }
+                _ => break,
+            }
+            k += 1;
+        }
+        let Some(&conv) = f.get(k) else { break };
+        k += 1;
+        if !matches!(conv, b'c' | b'[' | b'n') {
+            while i < s.len() && ws(s[i]) {
+                i += 1;
+            }
+        }
+        if i >= s.len() && conv != b'n' {
+            if !converted {
+                return -1;
+            }
+            break;
+        }
+        let lim = if width == 0 { usize::MAX } else { width };
+        let field = &s[i..s.len().min(i.saturating_add(lim))];
+        match conv {
+            b'd' | b'i' | b'u' | b'o' | b'x' | b'X' | b'p' => {
+                let base = match conv {
+                    b'i' => 0,
+                    b'o' => 8,
+                    b'x' | b'X' | b'p' => 16,
+                    _ => 10,
+                };
+                let (v, used) = scan_int(field, base);
+                if used == 0 {
+                    break;
+                }
+                i += used;
+                if !skip {
+                    let p = va.u32();
+                    match size {
+                        1 => mem::write(p, &(v as u16).to_le_bytes()),
+                        2 => w8(p, v as u8),
+                        8 => mem::write(p, &v.to_le_bytes()),
+                        _ => w32(p, v as u32),
+                    }
+                    n += 1;
+                }
+            }
+            b'e' | b'E' | b'f' | b'g' | b'G' | b'a' => {
+                let (v, used) = parse_float(field);
+                if used == 0 {
+                    break;
+                }
+                i += used;
+                if !skip {
+                    let p = va.u32();
+                    if size == 4 || size == 9 {
+                        mem::write(p, &v.to_le_bytes());
+                    } else {
+                        mem::write(p, &(v as f32).to_le_bytes());
+                    }
+                    n += 1;
+                }
+            }
+            b's' => {
+                let st = i;
+                while i < s.len() && !ws(s[i]) && i - st < lim {
+                    i += 1;
+                }
+                if !skip {
+                    let out = va.u32();
+                    mem::write(out, &s[st..i]);
+                    w8(out + (i - st) as u32, 0);
+                    n += 1;
+                }
+            }
+            b'c' => {
+                let len = if width == 0 { 1 } else { width }.min(s.len() - i);
+                if !skip {
+                    mem::write(va.u32(), &s[i..i + len]);
+                    n += 1;
+                }
+                i += len;
+            }
+            b'[' => {
+                let neg = f.get(k) == Some(&b'^');
+                if neg {
+                    k += 1;
+                }
+                let mut set = [false; 256];
+                let st = k;
+                while k < f.len() && (f[k] != b']' || k == st) {
+                    if f.get(k + 1) == Some(&b'-') && f.get(k + 2).is_some_and(|&e| e != b']') {
+                        let (a, b) = (f[k].min(f[k + 2]), f[k].max(f[k + 2]));
+                        for x in a..=b {
+                            set[x as usize] = true;
+                        }
+                        k += 3;
+                    } else {
+                        set[f[k] as usize] = true;
+                        k += 1;
+                    }
+                }
+                k += 1;
+                let st = i;
+                while i < s.len() && set[s[i] as usize] != neg && i - st < lim {
+                    i += 1;
+                }
+                if i == st {
+                    break;
+                }
+                if !skip {
+                    let out = va.u32();
+                    mem::write(out, &s[st..i]);
+                    w8(out + (i - st) as u32, 0);
+                    n += 1;
+                }
+            }
+            b'n' => {
+                if !skip {
+                    w32(va.u32(), i as u32);
+                }
+                continue;
+            }
+            _ => break,
+        }
+        converted = true;
     }
     n
+}
+/// An integer field of scanf: (value, bytes used); "0x" for base 16 (and 0), a sign.
+fn scan_int(s: &[u8], base: u32) -> (u64, usize) {
+    let mut i = 0;
+    let neg = s.first() == Some(&b'-');
+    if matches!(s.first(), Some(b'-' | b'+')) {
+        i += 1;
+    }
+    let mut base = base;
+    if (base == 0 || base == 16) && s.get(i) == Some(&b'0') && matches!(s.get(i + 1), Some(b'x' | b'X')) {
+        i += 2;
+        base = 16;
+    } else if base == 0 {
+        base = if s.get(i) == Some(&b'0') { 8 } else { 10 };
+    }
+    let st = i;
+    let mut v = 0u64;
+    while let Some(d) = s.get(i).and_then(|&b| (b as char).to_digit(base)) {
+        v = v.wrapping_mul(base as u64).wrapping_add(d as u64);
+        i += 1;
+    }
+    if i == st {
+        // ("0x" alone: the 0 was a number)
+        return if base == 16 && st >= 2 && s.get(st - 2) == Some(&b'0') { (0, st - 1) } else { (0, 0) };
+    }
+    (if neg { v.wrapping_neg() } else { v }, i)
+}
+fn sscanf(c: &mut Ctx) -> u32 {
+    let (s, f) = (cstr(c.a(0)), cstr(c.a(1)));
+    scan(&s, &f, &mut VaArgs::arg(c, 2)) as u32
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1419,7 +1708,7 @@ fn rename(c: &mut Ctx) -> u32 {
         return u32::MAX;
     };
     if crate::files::resolve(&to).is_some() {
-        set_errno(13);
+        set_errno(17); // EEXIST
         return u32::MAX;
     }
     if kura::fs::rename(from, crate::files::resolve_new(&to)).is_ok() { 0 } else { set_errno(13); u32::MAX }
@@ -1484,6 +1773,8 @@ fn fwrite(c: &mut Ctx) -> u32 {
 }
 fn fseek(c: &mut Ctx) -> u32 {
     let (fp, off, whence) = (c.a(0), c.i(1) as i64, c.a(2));
+    // (msvcrt clears the end-of-file flag first, also when the seek then fails)
+    with_file(fp, |s| s.eof = false);
     if fp == 0 || whence > 2 || (whence == 0 && off < 0) {
         set_errno(22); // EINVAL
         return u32::MAX;
@@ -2561,8 +2852,8 @@ fn _ui64toa(c: &mut Ctx) -> u32 {
     i64_to_a(c.a(0) as u64 | (c.a(1) as u64) << 32, false, c.a(2), c.a(3))
 }
 fn _atoi64(c: &mut Ctx) -> u32 {
-    let v = parse_int(&cstr(c.a(0)), 10).0;
-    c.ret64(v as u64)
+    let v = atoi_wrap(&cstr(c.a(0)));
+    c.ret64(v)
 }
 fn div(c: &mut Ctx) -> u32 {
     let (a, b) = (c.i(0), c.i(1));
@@ -2638,19 +2929,51 @@ fn _fcvt(c: &mut Ctx) -> u32 {
         d.remove(0);
         dec -= 1;
     }
-    if ip == "0" {
+    if ip == "0" && v != 0.0 {
         // 0.00123: "123" with the point 2 digits to its left
         let z = d.iter().take_while(|&&b| b == b'0').count();
         if z == d.len() {
             d.clear();
             dec = -(n as i32);
-            if v == 0.0 { dec = 0; }
         } else {
             d.drain(..z);
             dec = -(z as i32);
         }
     }
+    if v == 0.0 {
+        // (0: n zeros, the point before them)
+        d = vec![b'0'; n];
+        dec = 0;
+    }
     cvt_out(c, &d, dec, v.is_sign_negative() && v != 0.0, c.a(3), c.a(4))
+}
+/// _gcvt(value, digits, buffer): msvcrt's own %g ("1.", "1.23e-004", "1.e+020")
+fn _gcvt(c: &mut Ctx) -> u32 {
+    let (v, n, out) = (c.f64(0), c.i(2).clamp(1, 340) as usize, c.a(3));
+    let mut s = String::new();
+    if v.is_sign_negative() && v != 0.0 {
+        s.push('-');
+    }
+    let (mut d, dec) = ecvt_digits(v, n);
+    while d.len() > 1 && d.last() == Some(&b'0') {
+        d.pop();
+    }
+    let d = String::from_utf8(d).unwrap();
+    if v == 0.0 {
+        s.push_str("0.");
+    } else if dec < -1 || dec > n as i32 {
+        let e = dec - 1;
+        s.push_str(&format!("{}.{}e{}{:03}", &d[..1], &d[1..], if e < 0 { '-' } else { '+' }, e.abs()));
+    } else if dec <= 0 {
+        s.push_str(&format!("0.{}{}", "0".repeat((-dec) as usize), d));
+    } else {
+        let k = dec as usize;
+        let ip = if d.len() >= k { d[..k].to_string() } else { format!("{d}{}", "0".repeat(k - d.len())) };
+        s.push_str(&format!("{ip}.{}", if d.len() > k { &d[k..] } else { "" }));
+    }
+    s.push('\0');
+    mem::write(out, s.as_bytes());
+    out
 }
 fn _mbslen(c: &mut Ctx) -> u32 {
     let s = cstr(c.a(0));
@@ -2840,7 +3163,7 @@ pub fn init() {
     reg!(strcpy_s, wcscpy_s, strcat_s, wcscat_s, wcsncpy_s);
     reg!(_itoa_s, _ultoa_s, _i64toa_s, _ui64toa_s);
     reg!(puts, putchar, setvbuf, _strrev, _ultoa, _i64toa, _ui64toa, _atoi64, div, _isnan, _finite, _fpclass, _hypot,
-        _ecvt, _fcvt, _mbslen, _mbschr, _mbsrchr, _mbsinc, _mbsnextc, _ismbcspace, _mbctohira, _mbctokata,
+        _ecvt, _fcvt, _gcvt, _mbslen, _mbschr, _mbsrchr, _mbsinc, _mbsnextc, _ismbcspace, _mbctohira, _mbctokata,
         _mbcjistojms, _mbcjmstojis, _mbsupr, _mbslwr, _setmbcp, _getmbcp, asctime);
     implement("msvcrt", "ldiv", div);
     reg!(strncpy_s, ___lc_codepage_func, ___lc_locale_name_func, ___lc_handle_func, _seh_filter_exe);
