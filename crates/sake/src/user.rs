@@ -2562,16 +2562,29 @@ fn next_timer() -> Option<Duration> {
 }
 
 fn has_work() -> bool {
+    has_work_of(QS_ALL)
+}
+const QS_ALL: u32 = 0x4ff;
+/// Whether thread `me` has messages of the QS_* kinds in `mask`: input (key, mouse, raw input
+/// 0x407), posted (0x108), paint (0x20), sent (0x40). (Delphi's TThread.WaitFor waits for
+/// QS_SENDMESSAGE only and peeks without removing: a pending paint must not wake it.)
+fn queued(s: &State, me: u32, mask: u32) -> bool {
+    s.queues.get(&me).is_some_and(|q| {
+        mask & 0x108 != 0 && (!q.posted.is_empty() || q.quit.is_some())
+            || mask & 0x407 != 0 && !q.input.is_empty()
+            || mask & 0x40 != 0 && !q.sent.is_empty()
+    }) || mask & 0x20 != 0 && s.wins.iter().any(|(_, w)| w.tid == me && w.visible && !w.update.empty())
+}
+fn has_work_of(mask: u32) -> bool {
     let me = crate::cur().tid;
-    with(|s| {
-        let Some(q) = s.queues.get(&me) else { return false };
-        !q.posted.is_empty() || !q.input.is_empty() || !q.sent.is_empty() || q.quit.is_some()
-            || s.wins.iter().any(|(_, w)| w.tid == me && w.visible && !w.update.empty())
-    })
+    with(|s| queued(s, me, mask))
 }
 
 /// Blocks until this thread has a message, a handle is signaled or `ms` passes.
 fn wait_msgs(handles: &[u32], all: bool, ms: u32) -> u32 {
+    wait_msgs_of(handles, all, ms, QS_ALL)
+}
+fn wait_msgs_of(handles: &[u32], all: bool, ms: u32, mask: u32) -> u32 {
     start_input();
     let timer = next_timer();
     let ms = match timer {
@@ -2583,10 +2596,7 @@ fn wait_msgs(handles: &[u32], all: bool, ms: u32) -> u32 {
         // (called with the object table locked: the USER lock is taken inside, never the other way)
         let s = STATE.try_lock();
         match s {
-            Ok(g) => g.as_ref().is_some_and(|s| {
-                s.queues.get(&me).is_some_and(|q| !q.posted.is_empty() || !q.input.is_empty() || !q.sent.is_empty() || q.quit.is_some())
-                    || s.wins.iter().any(|(_, w)| w.tid == me && w.visible && !w.update.empty())
-            }),
+            Ok(g) => g.as_ref().is_some_and(|s| queued(s, me, mask)),
             Err(_) => true,
         }
     };
@@ -2660,22 +2670,22 @@ fn WaitMessage(_: &mut Ctx) -> u32 {
     1
 }
 fn MsgWaitForMultipleObjects(c: &mut Ctx) -> u32 {
-    let (n, hs, all, ms) = (c.a(0), c.a(1), c.a(2) != 0, c.a(3));
+    let (n, hs, all, ms, mask) = (c.a(0), c.a(1), c.a(2) != 0, c.a(3), c.a(4));
     let hs: Vec<u32> = (0..n.min(64)).map(|i| r32(hs + 4 * i)).collect();
     process_sent(c.cpu);
-    if has_work() {
+    if has_work_of(mask) {
         return n;
     }
-    wait_msgs(&hs, all, ms)
+    wait_msgs_of(&hs, all, ms, mask)
 }
 fn MsgWaitForMultipleObjectsEx(c: &mut Ctx) -> u32 {
-    let (n, hs, ms, flags) = (c.a(0), c.a(1), c.a(2), c.a(4));
+    let (n, hs, ms, mask, flags) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
     let hs: Vec<u32> = (0..n.min(64)).map(|i| r32(hs + 4 * i)).collect();
     process_sent(c.cpu);
-    if has_work() {
+    if has_work_of(mask) {
         return n;
     }
-    wait_msgs(&hs, flags & 1 != 0, ms)
+    wait_msgs_of(&hs, flags & 1 != 0, ms, mask)
 }
 fn GetQueueStatus(_: &mut Ctx) -> u32 {
     if has_work() { 0x00ff_00ff } else { 0 }
