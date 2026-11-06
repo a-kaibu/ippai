@@ -2,7 +2,8 @@
 // serve on a small store and checks in Chromium that the page is installable, that after one
 // online visit it opens with no network (still cross-origin isolated, the game list as last
 // read, "オフラインです") and that a file never fetched answers at once as offline (no retries);
-// then the same with the network up but the server gone.
+// then the same with the network up but the server gone. Two games sharing chunks are saved to
+// the device and one removed: the other stays saved.
 // With EXE (a Windows console program) and FONTS (a drive_c/windows/Fonts folder) and sake built
 // into web/dist/sake: the game is saved to the device from its dialog, then started offline,
 // and must print a line matching EXPECT (default: one starting with the program's name).
@@ -17,12 +18,20 @@ const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
 const { chromium } = pw.default ?? pw;
 
 const bin = resolve(process.argv[2] ?? "target/debug/ippai");
-const web = resolve("web/dist");
 const work = mkdtempSync(join(tmpdir(), "ippai-offline-"));
+// (a copy of web/dist: without a sake build, stand-ins for its files, which 端末に保存 fetches)
+const web = join(work, "web");
+cpSync(resolve("web/dist"), web, { recursive: true });
 const store = join(work, "store");
 const run = (...a) => execFileSync(bin, ["--store", store, ...a], { stdio: "pipe" });
 const exe = process.env.EXE && resolve(process.env.EXE);
 const full = !!(exe && process.env.FONTS && existsSync(join(web, "sake/sake.wasm")));
+if (!existsSync(join(web, "sake/sake.wasm"))) {
+  mkdirSync(join(web, "sake"), { recursive: true });
+  writeFileSync(join(web, "sake/sake.js"), "export default () => {};\n");
+  writeFileSync(join(web, "sake/sake.wasm"), new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0]));
+  writeFileSync(join(web, "sake/jit-version.txt"), "00000000\n");
+}
 
 const prefix = join(work, "prefix/drive_c/windows");
 mkdirSync(join(prefix, "temp"), { recursive: true });
@@ -33,8 +42,17 @@ const game = join(work, "game");
 mkdirSync(game);
 if (full) cpSync(exe, join(game, basename(exe)));
 else writeFileSync(join(game, "game.exe"), "MZ not really");
+// (a file both games have: one chunk they share, besides the prefix's)
+const shared = new Uint8Array(300 << 10).map((_, i) => (i * 7) & 255);
+writeFileSync(join(game, "shared.dat"), shared);
 run("pack", game, "g");
 run("add-game", "g", "--title", "オフラインのゲーム", "--tree", "g", "--exe", full ? basename(exe) : "game.exe", "--no-meta");
+const other = join(work, "other");
+mkdirSync(other);
+writeFileSync(join(other, "other.exe"), "MZ another");
+writeFileSync(join(other, "shared.dat"), shared);
+run("pack", other, "a");
+run("add-game", "a", "--title", "もうひとつのゲーム", "--tree", "a", "--exe", "other.exe", "--no-meta");
 
 const port = 8700 + Math.floor(Math.random() * 200) * 2;
 const server = spawn(
@@ -70,11 +88,25 @@ try {
   await page.waitForFunction(() => !!navigator.serviceWorker.controller, null, { timeout: 30000 });
   await page.getByText("オフラインのゲーム").first().waitFor();
 
-  if (full) {
-    await page.getByRole("button", { name: "オフラインのゲーム の情報" }).click();
-    await page.getByRole("button", { name: "端末に保存" }).click();
-    await page.getByText(/端末に保存済み/).waitFor({ timeout: 120000 });
-  }
+  // both games saved to the device, then the other one removed: this one's chunks (the prefix's
+  // and the file they share) must stay
+  const dialog = async (title, f) => {
+    await page.getByRole("button", { name: `${title} の情報` }).click();
+    await f(page.getByRole("dialog"));
+    await page.keyboard.press("Escape");
+    await page.getByRole("dialog").waitFor({ state: "detached" });
+  };
+  for (const title of ["オフラインのゲーム", "もうひとつのゲーム"])
+    await dialog(title, async (d) => {
+      await d.getByRole("button", { name: "端末に保存" }).click();
+      await d.getByText(/端末に保存済み/).waitFor({ timeout: 120000 });
+    });
+  await dialog("もうひとつのゲーム", async (d) => {
+    await d.getByRole("button", { name: "端末から削除" }).click();
+    // (what it shares with the saved game stays)
+    await d.getByText(/一部を端末に保存済み/).waitFor();
+  });
+  await dialog("オフラインのゲーム", (d) => d.getByText(/端末に保存済み/).waitFor({ timeout: 10000 }));
 
   await browser.setOffline(true);
   await page.reload();

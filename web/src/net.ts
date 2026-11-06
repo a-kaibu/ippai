@@ -199,17 +199,28 @@ const KEEP_BYTES = 2 << 30;
 
 /**
  * Keeps the chunk cache within its share of the origin's storage (and 2 GB): the oldest go
- * first. Also asks the browser to keep this origin's data (saves, chunks) under storage pressure.
+ * first, but not those `saved()` lists (games saved to the device: offline.ts savedChunks; only
+ * asked when something must go). Also asks the browser to keep this origin's data (saves,
+ * chunks) under storage pressure.
  */
-export async function trimChunks(): Promise<void> {
+export async function trimChunks(saved: () => Promise<Set<string>> = async () => new Set()): Promise<void> {
   void navigator.storage?.persist?.().catch(() => false);
   const cache = await chunkCache();
   if (!cache) return;
   const { quota = 0 } = (await navigator.storage?.estimate?.().catch(() => undefined)) ?? {};
   const limit = Math.min(KEEP_BYTES, quota ? quota * 0.5 : KEEP_BYTES);
   const keys = await cache.keys();
-  const over = keys.length - Math.floor(limit / (256 << 10));
-  for (const k of keys.slice(0, Math.max(0, over))) await cache.delete(k);
+  let over = keys.length - Math.floor(limit / (256 << 10));
+  if (over <= 0) return;
+  const keep = await saved().catch(() => null);
+  // (the saved games' lists out of reach: nothing goes rather than their chunks)
+  if (!keep) return;
+  for (const k of keys) {
+    if (over <= 0) break;
+    if (keep.has(k.url.slice(k.url.lastIndexOf("/") + 1))) continue;
+    await cache.delete(k);
+    over--;
+  }
 }
 
 /** The store chunk hashes (hex) of a tree's file list (trees/<name>.tsv, crates/ippai/src/pack.rs). */

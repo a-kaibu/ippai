@@ -23,10 +23,33 @@ export interface OfflineState {
   bytes: number;
 }
 
-async function chunksOf(g: GameEntry): Promise<{ hashes: string[]; chunk: number }> {
+// The games saved to the device (by id: their trees), in this browser: chunks one of them needs
+// stay when another is removed, and when the cache is trimmed (net.ts trimChunks).
+const SAVED = "ippai-offline";
+
+function savedGames(): Record<string, string[]> {
+  try {
+    return JSON.parse(localStorage.getItem(SAVED) ?? "{}") as Record<string, string[]>;
+  } catch {
+    return {};
+  }
+}
+
+function setSaved(id: string, trees: string[] | null): void {
+  const all = savedGames();
+  if (trees) all[id] = trees;
+  else delete all[id];
+  try {
+    localStorage.setItem(SAVED, JSON.stringify(all));
+  } catch {
+    // (storage blocked: removing a game then keeps nothing for the others)
+  }
+}
+
+async function chunksOfTrees(trees: string[]): Promise<{ hashes: string[]; chunk: number }> {
   const seen = new Set<string>();
   let chunk = 1 << 18;
-  for (const t of gameTrees(g)) {
+  for (const t of trees) {
     const tsv = new TextDecoder().decode(
       await fetchRetry(new URL(`trees/${encodeURIComponent(t)}.tsv`, store())),
     );
@@ -34,6 +57,16 @@ async function chunksOf(g: GameEntry): Promise<{ hashes: string[]; chunk: number
     for (const h of treeChunks(tsv)) seen.add(h);
   }
   return { hashes: [...seen], chunk };
+}
+
+const chunksOf = (g: GameEntry) => chunksOfTrees(gameTrees(g));
+
+/** The chunks of the games saved to the device except `but` (their tree lists: sw.ts has them offline). */
+export async function savedChunks(but?: string): Promise<Set<string>> {
+  const keep = new Set<string>();
+  for (const [id, trees] of Object.entries(savedGames()))
+    if (id !== but) for (const h of (await chunksOfTrees(trees)).hashes) keep.add(h);
+  return keep;
 }
 
 async function onDevice(): Promise<Set<string>> {
@@ -98,6 +131,7 @@ export async function saveOffline(
   void navigator.storage?.persist?.().catch(() => false);
   const cache = await chunkCache();
   if (!cache) throw new Error("この環境では端末に保存できません");
+  setSaved(g.id, gameTrees(g));
   await saveApp(g, signal);
   const [{ hashes }, have] = await Promise.all([chunksOf(g), onDevice()]);
   const missing = hashes.filter((h) => !have.has(h));
@@ -113,10 +147,16 @@ export async function saveOffline(
   await Promise.all(Array.from({ length: 4 }, one));
 }
 
-/** Removes `g`'s chunks from the device (those other games share go too: they come back on use). */
+/**
+ * Removes `g`'s chunks from the device, but not those another saved game needs (the prefix's
+ * fonts and DLLs, files the games share): that one must still start offline.
+ */
 export async function dropOffline(g: GameEntry): Promise<void> {
   const cache = await chunkCache();
   if (!cache) return;
-  const { hashes } = await chunksOf(g);
-  await Promise.all(hashes.map((h) => cache.delete(new URL(chunkPath(h), store()).href)));
+  const [{ hashes }, keep] = await Promise.all([chunksOf(g), savedChunks(g.id)]);
+  setSaved(g.id, null);
+  await Promise.all(
+    hashes.filter((h) => !keep.has(h)).map((h) => cache.delete(new URL(chunkPath(h), store()).href)),
+  );
 }

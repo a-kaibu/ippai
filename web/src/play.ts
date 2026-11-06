@@ -29,6 +29,7 @@ import { FlightRecorder, sendLeftovers } from "./crashlog";
 import { fetchRetry, getChunk, chunkCache, HttpError, trimChunks, watchRetries, withRetries } from "./net";
 import { fileVersion, fnv, jitBase as jitBaseOf, sakeBase, translatorVersion, versioned } from "./runtime";
 import { checkOnline, startApp } from "./pwa";
+import { savedChunks } from "./offline";
 
 const params = new URLSearchParams(location.search);
 const canvas = document.querySelector<HTMLCanvasElement>("#screen")!;
@@ -502,7 +503,7 @@ async function main(): Promise<void> {
   void sendLeftovers().catch(() => {});
   // a weak link: say that the game waits for the network (the requests are being retried)
   watchRetries((n) => setUi({ net: n > 0 }));
-  void trimChunks().catch(() => undefined);
+  void trimChunks(savedChunks).catch(() => undefined);
   const problem = checkSupport();
   if (problem) {
     log(problem);
