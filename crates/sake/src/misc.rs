@@ -2156,12 +2156,20 @@ enum Hasher {
 static HASHES: Mutex<Option<HashMap<u32, Hasher>>> = Mutex::new(None);
 static NEXT_HASH: AtomicU32 = AtomicU32::new(0x4a00_0000);
 
-fn CryptAcquireContextA(c: &mut Ctx) -> u32 {
+/// The provider's default key length (bits): 40 for the Base provider asked by name, else 128
+/// (no name is the Strong provider since Vista: SRPG Studio)
+static KEY_BITS: AtomicU32 = AtomicU32::new(128);
+fn acquire(c: &mut Ctx, wide: bool) -> u32 {
+    let name = if c.a(2) == 0 { String::new() } else { arg_str(c.a(2), wide) };
+    KEY_BITS.store(if name.contains(" Base ") { 40 } else { 128 }, Ordering::Relaxed);
     put32(c.a(0), 0x4a7f_0001);
     1
 }
+fn CryptAcquireContextA(c: &mut Ctx) -> u32 {
+    acquire(c, false)
+}
 fn CryptAcquireContextW(c: &mut Ctx) -> u32 {
-    CryptAcquireContextA(c)
+    acquire(c, true)
 }
 fn CryptReleaseContext(_: &mut Ctx) -> u32 {
     1
@@ -2231,6 +2239,98 @@ fn CryptGetHashParam(c: &mut Ctx) -> u32 {
 }
 fn CryptDestroyHash(c: &mut Ctx) -> u32 {
     HASHES.lock().unwrap().get_or_insert_with(HashMap::default).remove(&c.a(0)).is_some() as u32
+}
+
+/// RC4 keys (CALG_RC4) made with CryptDeriveKey from a hash: the key's bytes and the cipher
+/// state, which a final CryptEncrypt/CryptDecrypt resets (SRPG Studio's data.dts)
+struct Rc4 {
+    key: Vec<u8>,
+    s: [u8; 256],
+    i: u8,
+    j: u8,
+}
+impl Rc4 {
+    fn new(key: Vec<u8>) -> Rc4 {
+        let mut r = Rc4 { key, s: [0; 256], i: 0, j: 0 };
+        r.reset();
+        r
+    }
+    fn reset(&mut self) {
+        for (i, x) in self.s.iter_mut().enumerate() {
+            *x = i as u8;
+        }
+        let mut j = 0u8;
+        for i in 0..256 {
+            j = j.wrapping_add(self.s[i]).wrapping_add(self.key[i % self.key.len()]);
+            self.s.swap(i, j as usize);
+        }
+        (self.i, self.j) = (0, 0);
+    }
+    fn apply(&mut self, d: &mut [u8]) {
+        for b in d {
+            self.i = self.i.wrapping_add(1);
+            self.j = self.j.wrapping_add(self.s[self.i as usize]);
+            self.s.swap(self.i as usize, self.j as usize);
+            *b ^= self.s[self.s[self.i as usize].wrapping_add(self.s[self.j as usize]) as usize];
+        }
+    }
+}
+static KEYS: Mutex<Option<HashMap<u32, Rc4>>> = Mutex::new(None);
+/// CryptDeriveKey(prov, alg, hash, flags, &key): key length in the flags' high word (else the
+/// provider's default); a 40-bit key gets 11 zero bytes of salt unless CRYPT_NO_SALT (0x10)
+fn CryptDeriveKey(c: &mut Ctx) -> u32 {
+    let (alg, hash, flags, out) = (c.a(1), c.a(2), c.a(3), c.a(4));
+    if alg != 0x6801 {
+        eprintln!("sake: CryptDeriveKey: algorithm {alg:#x}");
+        w32(crate::cur().teb + crate::teb_last_error(), 0x8009_0008);
+        return 0;
+    }
+    let digest = {
+        let g = HASHES.lock().unwrap();
+        match g.as_ref().and_then(|m| m.get(&hash)) {
+            Some(Hasher::Md5(x)) => x.clone().finalize().0.to_vec(),
+            Some(Hasher::Sha1(x)) => x.clone().finish().to_vec(),
+            Some(Hasher::Sha256(x)) => sha2::Digest::finalize(x.clone()).to_vec(),
+            None => return 0,
+        }
+    };
+    let bits = match flags >> 16 {
+        0 => KEY_BITS.load(Ordering::Relaxed),
+        b => b,
+    };
+    let mut key = digest[..((bits / 8) as usize).clamp(5, digest.len())].to_vec();
+    if key.len() == 5 && flags & 0x10 == 0 {
+        key.resize(16, 0);
+    }
+    let id = NEXT_HASH.fetch_add(1, Ordering::Relaxed);
+    KEYS.lock().unwrap().get_or_insert_with(HashMap::default).insert(id, Rc4::new(key));
+    put32(out, id);
+    1
+}
+/// CryptEncrypt / CryptDecrypt(key, hash, final, flags, data, &len[, cap]): RC4 in place
+fn rc4_call(c: &mut Ctx) -> u32 {
+    let (key, fin, data, plen) = (c.a(0), c.a(2) != 0, c.a(4), c.a(5));
+    let n = r32(plen);
+    let mut g = KEYS.lock().unwrap();
+    let Some(k) = g.get_or_insert_with(HashMap::default).get_mut(&key) else { return 0 };
+    if data != 0 && n != 0 {
+        let mut buf = mem::slice(data, n).to_vec();
+        k.apply(&mut buf);
+        mem::write(data, &buf);
+    }
+    if fin {
+        k.reset();
+    }
+    1
+}
+fn CryptDecrypt(c: &mut Ctx) -> u32 {
+    rc4_call(c)
+}
+fn CryptEncrypt(c: &mut Ctx) -> u32 {
+    rc4_call(c)
+}
+fn CryptDestroyKey(c: &mut Ctx) -> u32 {
+    KEYS.lock().unwrap().get_or_insert_with(HashMap::default).remove(&c.a(0)).is_some() as u32
 }
 
 /// SHA-1 (no crate for it here; small enough to keep).
@@ -2315,7 +2415,8 @@ pub fn init() {
         RegSetValueExA, RegSetValueExW, RegSetValueA, RegDeleteValueA, RegDeleteValueW, RegDeleteKeyA,
         RegDeleteKeyW, RegEnumKeyExA, RegEnumKeyExW, RegEnumKeyA, RegEnumKeyW, RegEnumValueA, RegEnumValueW,
         RegQueryInfoKeyA, RegQueryInfoKeyW, CryptAcquireContextA, CryptAcquireContextW, CryptReleaseContext,
-        CryptGenRandom, CryptCreateHash, CryptHashData, CryptGetHashParam, CryptDestroyHash,
+        CryptGenRandom, CryptCreateHash, CryptHashData, CryptGetHashParam, CryptDestroyHash, CryptDeriveKey,
+        CryptDecrypt, CryptEncrypt, CryptDestroyKey,
     );
     reg!("wintrust"; WinVerifyTrust);
     reg!("version"; GetFileVersionInfoSizeA, GetFileVersionInfoSizeW, GetFileVersionInfoA, GetFileVersionInfoW,
