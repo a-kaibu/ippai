@@ -53,7 +53,7 @@
   で 1 回のインスタンス描画にする (グリフは R8 のアトラス、グラデーションは 256 texel のランプ
   テクスチャ)。確認は tests/gfx.mjs の d2dtest。
 - specs.txt にない DLL は C:\ の `windows\system32` にあれば x86 として読む。
-- フォント一覧はレジストリの Fonts キー、無い書体は Fonts\Replacements で MS ゴシック系に置き換える。
+- フォント一覧はレジストリの Fonts キー (DirectWrite のシステムコレクションが読む)。
 - WH_CBT フック (HCBT_CREATEWND): MFC はこれでウィンドウを結び付けるので、無いと LiveMaker が
   ウィンドウを作れずに終わる。
 
