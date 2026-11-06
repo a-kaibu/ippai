@@ -35,6 +35,9 @@ jobs:
           mkdir -p ~/.local/bin && tar xzf /tmp/tlc.tgz -C ~/.local/bin tlc
       - name: Model checks
         run: TLC=~/.local/bin/tlc formal/run.sh
+      # (kura's real Direct3D 9/11 object tables, random calls, each run checked against ComRefs.tla)
+      - name: Trace checks
+        run: IPPAI_TRACE_SEEDS=200 TLC=~/.local/bin/tlc formal/trace.sh
 
   kani:
     runs-on: ubuntu-24.04

@@ -12,6 +12,8 @@ pub mod d3d8;
 pub mod device;
 pub mod format;
 pub mod gpu;
+#[cfg(test)]
+pub(crate) mod trace_tests;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -226,10 +228,13 @@ impl D3d {
             }
             Data::Buffer(b) => self.guest_free(b.mem),
             Data::Device => {
-                if let Some(dev) = self.dev.take() {
+                // (a device made after this one is not this one's)
+                if self.dev.as_ref().is_some_and(|dev| dev.obj == id) {
+                    let dev = self.dev.take().unwrap();
                     dev.release_all(self);
                 }
             }
+            Data::StateBlock(sb) => device::unbind_all(self, &device::state_binds(&sb)),
             _ => {}
         }
     }

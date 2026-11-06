@@ -321,6 +321,8 @@ impl Device {
             d.unbind(self.dummy);
             d.release(self.dummy);
         }
+        // (the reference CreateDevice took on the IDirect3D9)
+        d.release(self.d3d);
     }
 }
 
@@ -435,7 +437,11 @@ pub unsafe fn call(d: &mut D3d, iface: u32, m: u32, this: u32, args: *const u32,
                 // Capture
                 let Some(dev) = &d.dev else { return D3DERR_INVALIDCALL };
                 if let Some(Data::StateBlock(sb)) = d.objs.get_mut(&this).map(|o| &mut o.data) {
+                    let old = state_binds(sb);
                     copy_state(sb, &dev.st);
+                    let new = state_binds(sb);
+                    bind_all(d, &new);
+                    unbind_all(d, &old);
                 }
                 S_OK
             }
@@ -1224,6 +1230,7 @@ unsafe fn device_call(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &mut
             // CreateStateBlock(type): all types capture everything (simple)
             let dev = dev!(d);
             let st = dev.st.clone();
+            bind_all(d, &state_binds(&st));
             let o = d.new_obj(IF_STATEBLOCK, 0, Data::StateBlock(Box::new(st)));
             wrp(a(2), 0, o);
             S_OK
@@ -1238,6 +1245,7 @@ unsafe fn device_call(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &mut
             let dev = dev!(d);
             dev.recording = None;
             let st = dev.st.clone();
+            bind_all(d, &state_binds(&st));
             let o = d.new_obj(IF_STATEBLOCK, 0, Data::StateBlock(Box::new(st)));
             wrp(a(1), 0, o);
             S_OK
@@ -1548,7 +1556,7 @@ fn copy_state(dst: &mut State, src: &State) {
 }
 
 /// the objects a state holds a binding on
-fn state_binds(st: &State) -> [u32; 36] {
+pub(crate) fn state_binds(st: &State) -> [u32; 36] {
     let mut b = [0u32; 36];
     b[..16].copy_from_slice(&st.textures);
     for (i, s) in st.streams.iter().enumerate() {
@@ -1556,6 +1564,23 @@ fn state_binds(st: &State) -> [u32; 36] {
     }
     b[32..].copy_from_slice(&[st.indices, st.decl, st.vs, st.ps]);
     b
+}
+
+/// (state blocks hold what they captured, as the device's state does)
+pub(crate) fn bind_all(d: &mut D3d, ids: &[u32]) {
+    for &b in ids {
+        if b != 0 {
+            d.bind(b);
+        }
+    }
+}
+
+pub(crate) fn unbind_all(d: &mut D3d, ids: &[u32]) {
+    for &b in ids {
+        if b != 0 {
+            d.unbind(b);
+        }
+    }
 }
 
 /// the device state = state block `sb`'s

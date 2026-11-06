@@ -13,6 +13,8 @@ pub mod d2d;
 pub mod d3d10;
 pub mod format;
 pub mod names;
+#[cfg(test)]
+mod trace_tests;
 
 use crate::d3d9::gpu;
 use crate::d3d9::HostCalls;
@@ -515,6 +517,8 @@ impl D11 {
             }
             Data::SwapChain(s) => {
                 self.release(s.buffer);
+                // (the reference new_swapchain took)
+                self.release(s.device);
             }
             _ => {}
         }
