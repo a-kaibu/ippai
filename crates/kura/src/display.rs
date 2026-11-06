@@ -50,6 +50,8 @@ struct Win {
     /// its client area on the screen
     client: Rect,
     visible: bool,
+    /// its pixels; while it shows a `shared` surface, what of it the screen was last told
+    /// (`vnhost_window_draw` compares new pixels with them: only what changed is redrawn)
     pixels: Vec<u32>,
     /// sake: the surface the window shows instead of `pixels` (rect-sized rows, owned by the
     /// caller; see `vnhost_window_draw_shared`), 0 for none
@@ -76,9 +78,9 @@ struct Display {
     order: Vec<u32>,
     screen: Vec<u32>,
     serial: u32,
-    /// the rows each of the last few serials redrew, newest last, and the window whose own
+    /// the area each of the last few serials redrew, newest last, and the window whose own
     /// pixels they are when `screen` was not updated (see `direct`)
-    bands: std::collections::VecDeque<(i32, i32, u32)>,
+    bands: std::collections::VecDeque<(Rect, u32)>,
     /// where `screen` is behind its windows: the areas drawn `direct`ly since it was last made
     /// whole (see `sync`)
     stale: Rect,
@@ -247,7 +249,7 @@ impl Display {
         if self.bands.len() == 64 {
             self.bands.pop_front();
         }
-        self.bands.push_back((area.t, area.b, direct));
+        self.bands.push_back((area, direct));
     }
 
     /// Composes `area` of `screen` from the windows.
@@ -431,19 +433,100 @@ pub unsafe extern "C" fn vnhost_window_draw(hwnd: u32, dirty: *const i32, bits: 
             win.shared = 0;
         }
         let ww = win.rect.w() as usize;
-        // (nothing to copy when the window shows these very pixels)
-        for y in (dirty.t..dirty.b).filter(|_| win.shared == 0) {
-            let src = bits.offset(((y - oy) * stride + (dirty.l - ox)) as isize);
-            let dst = y as usize * ww + dirty.l as usize;
-            let n = dirty.w() as usize;
-            // (the alpha byte is whatever the surface has: the page draws the frame opaque)
-            win.pixels[dst..dst + n].copy_from_slice(std::slice::from_raw_parts(src, n));
+        // Games redraw all of their window every frame, mostly the same pixels (a still screen,
+        // a message waiting for a click): only the box that changed goes to the screen, the
+        // page uploads and redraws only that, and nothing at all when nothing changed. The new
+        // pixels are compared with `pixels` (what the screen has of the window) as they are
+        // copied there; a whole new frame costs a row's compare more than the copy.
+        // (the alpha byte is whatever the surface has: the page draws the frame opaque)
+        let src = |y: i32| std::slice::from_raw_parts(bits.offset(((y - oy) * stride + (dirty.l - ox)) as isize), dirty.w() as usize);
+        let changed = if nodiff() {
+            for y in dirty.t..dirty.b {
+                let dst = y as usize * ww + dirty.l as usize;
+                win.pixels[dst..dst + dirty.w() as usize].copy_from_slice(src(y));
+            }
+            dirty
+        } else {
+            update_changed(&mut win.pixels, ww, dirty, src)
+        };
+        if changed.empty() {
+            return;
         }
+        let dirty = changed;
         let at = Rect { l: dirty.l + win.rect.l, t: dirty.t + win.rect.t, r: dirty.r + win.rect.l, b: dirty.b + win.rect.t };
         if win.visible {
             d.compose(at);
         }
     })
+}
+
+/// `IPPAI_NODIFF`: every draw goes to the screen as it is (no compare; for measuring).
+fn nodiff() -> bool {
+    crate::env_on!("IPPAI_NODIFF")
+}
+
+/// Where `a` and `b` first differ (None: the same).
+fn first_diff(a: &[u32], b: &[u32]) -> Option<usize> {
+    // (blocks of 16 or'ed together: the compiler keeps it to a load and xor per pixel)
+    let n = a.len().min(b.len());
+    let mut i = 0;
+    while i + 16 <= n {
+        let (x, y) = (&a[i..i + 16], &b[i..i + 16]);
+        if x.iter().zip(y).fold(0, |acc, (p, q)| acc | (p ^ q)) != 0 {
+            break;
+        }
+        i += 16;
+    }
+    (i..n).find(|&k| a[k] != b[k])
+}
+
+/// Where `a` and `b` last differ, plus one (None: the same).
+fn last_diff(a: &[u32], b: &[u32]) -> Option<usize> {
+    let n = a.len().min(b.len());
+    let mut i = n;
+    while i >= 16 {
+        let (x, y) = (&a[i - 16..i], &b[i - 16..i]);
+        if x.iter().zip(y).fold(0, |acc, (p, q)| acc | (p ^ q)) != 0 {
+            break;
+        }
+        i -= 16;
+    }
+    (0..i).rev().find(|&k| a[k] != b[k]).map(|k| k + 1)
+}
+
+/// Copies rows `src(y)` (y in `dirty.t..dirty.b`, columns `dirty.l..dirty.r`) into `px` (rows
+/// of `ww`) and returns the box of what was different there (empty: nothing).
+fn update_changed<'a>(px: &mut [u32], ww: usize, dirty: Rect, src: impl Fn(i32) -> &'a [u32]) -> Rect {
+    let (l, w) = (dirty.l as usize, dirty.w() as usize);
+    let row = |y: i32| y as usize * ww + l..y as usize * ww + l + w;
+    // the first and the last row that changed
+    let Some(t) = (dirty.t..dirty.b).find(|&y| first_diff(&px[row(y)], src(y)).is_some()) else { return Rect::default() };
+    let b = (t..dirty.b).rev().find(|&y| first_diff(&px[row(y)], src(y)).is_some()).unwrap() + 1;
+    // the columns, from both ends of each row: only what lies outside the box so far is
+    // looked at
+    let (mut x0, mut x1) = (w, 0);
+    for y in t..b {
+        let (p, s) = (&px[row(y)], src(y));
+        if x0 > 0 {
+            if let Some(k) = first_diff(&p[..x0], &s[..x0]) {
+                x0 = k;
+            }
+        }
+        if x1 < w {
+            if let Some(k) = last_diff(&p[x1..], &s[x1..]) {
+                x1 += k;
+            }
+        }
+        if x0 == 0 && x1 == w {
+            break;
+        }
+    }
+    let x1 = x1.max(x0 + 1).min(w);
+    for y in t..b {
+        let r = row(y);
+        px[r.start + x0..r.start + x1].copy_from_slice(&src(y)[x0..x1]);
+    }
+    Rect { l: dirty.l + x0 as i32, t, r: dirty.l + x1 as i32, b }
 }
 
 /// sake: like `vnhost_window_draw`, but `bits` is the window's whole surface (`w`*`h` pixels),
@@ -490,8 +573,9 @@ pub extern "C" fn vnhost_window_destroy(hwnd: u32) {
 
 /// The screen for the page: returns the BGRA buffer (width*height pixels). `io[0]` is the
 /// serial of the frame the caller shows (anything else, such as -1, for none); stores the
-/// current serial there, which changes whenever the screen does, and in `io[1]..io[2]` the
-/// rows that changed since (so a text cursor's blink doesn't upload the whole screen).
+/// current serial there, which changes whenever the screen does, and the box that changed since
+/// (so a text cursor's blink doesn't upload the whole screen): rows `io[1]..io[2]`, columns
+/// `io[10]..io[11]`. `io` has 12 words.
 ///
 /// With `io[3]` = 1 the caller can take the changed rows from a window's own surface: when all
 /// of them are one window's (a game redrawing its window; `screen` was not updated for them),
@@ -500,22 +584,25 @@ pub extern "C" fn vnhost_window_destroy(hwnd: u32) {
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_display_frame(io: *mut u32) -> *const u32 {
     let direct_ok = *io.add(3) == 1;
-    let io = std::slice::from_raw_parts_mut(io, if direct_ok { 10 } else { 3 });
+    let io = std::slice::from_raw_parts_mut(io, 12);
     with(|d| {
         let n = d.serial.wrapping_sub(io[0]) as usize;
         let mut one = None;
-        let (t, b) = if n <= d.bands.len() {
-            one = d.bands.iter().rev().take(n).next().map(|x| x.2).filter(|&id| id != 0);
-            if d.bands.iter().rev().take(n).any(|x| Some(x.2) != one) {
+        let all = d.screen_rect();
+        let area = if n <= d.bands.len() {
+            one = d.bands.iter().rev().take(n).next().map(|x| x.1).filter(|&id| id != 0);
+            if d.bands.iter().rev().take(n).any(|x| Some(x.1) != one) {
                 one = None;
             }
-            d.bands.iter().rev().take(n).fold((d.h, 0), |(t, b), &(t2, b2, _)| (t.min(t2), b.max(b2)))
+            d.bands.iter().rev().take(n).fold(Rect::default(), |a, x| a.or(&x.0)).and(&all)
         } else {
-            (0, d.h)
+            all
         };
         io[0] = d.serial;
-        io[1] = t.max(0) as u32;
-        io[2] = b.max(t).min(d.h) as u32;
+        io[1] = area.t.max(0) as u32;
+        io[2] = area.b.max(area.t).max(0) as u32;
+        io[10] = area.l.max(0) as u32;
+        io[11] = area.r.max(area.l).max(0) as u32;
         let win = one.filter(|_| direct_ok).and_then(|id| d.wins.get(&id)).filter(|w| w.shared != 0);
         match win {
             Some(w) => {
@@ -569,4 +656,77 @@ pub extern "C" fn vnhost_input_push(kind: u32, x: i32, y: i32, data: u32) -> c_i
     INPUT.lock().unwrap_or_else(|e| e.into_inner()).push_back([kind, x as u32, y as u32, data]);
     INPUT_READY.notify_one();
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(old: &[u32], new: &[u32], w: usize, dirty: Rect) -> (Rect, Vec<u32>) {
+        let mut px = old.to_vec();
+        let r = update_changed(&mut px, w, dirty, |y| &new[y as usize * w + dirty.l as usize..y as usize * w + dirty.r as usize]);
+        (r, px)
+    }
+
+    #[test]
+    fn same_pixels_change_nothing() {
+        let a: Vec<u32> = (0..64 * 48).collect();
+        let (r, px) = run(&a, &a.clone(), 64, Rect { l: 0, t: 0, r: 64, b: 48 });
+        assert!(r.empty());
+        assert_eq!(px, a);
+    }
+
+    #[test]
+    fn box_of_the_change() {
+        let (w, h) = (100usize, 70usize);
+        let a: Vec<u32> = (0..(w * h) as u32).map(|i| i * 7).collect();
+        let mut b = a.clone();
+        // two spots: (13, 20) and (81, 33)
+        b[20 * w + 13] ^= 1;
+        b[33 * w + 81] ^= 0xff00;
+        let (r, px) = run(&a, &b, w, Rect { l: 0, t: 0, r: w as i32, b: h as i32 });
+        assert_eq!(r, Rect { l: 13, t: 20, r: 82, b: 34 });
+        assert_eq!(px, b);
+    }
+
+    #[test]
+    fn only_inside_dirty() {
+        let (w, h) = (40usize, 30usize);
+        let a = vec![5u32; w * h];
+        let mut b = a.clone();
+        b[3 * w + 3] = 9; // outside dirty: not looked at
+        b[10 * w + 20] = 9;
+        let dirty = Rect { l: 10, t: 5, r: 35, b: 25 };
+        let (r, px) = run(&a, &b, w, dirty);
+        assert_eq!(r, Rect { l: 20, t: 10, r: 21, b: 11 });
+        assert_eq!(px[3 * w + 3], 5);
+        assert_eq!(px[10 * w + 20], 9);
+    }
+
+    #[test]
+    fn every_single_pixel() {
+        let (w, h) = (37usize, 9usize);
+        let a: Vec<u32> = (0..(w * h) as u32).collect();
+        for k in 0..w * h {
+            let mut b = a.clone();
+            b[k] = u32::MAX;
+            let (r, px) = run(&a, &b, w, Rect { l: 0, t: 0, r: w as i32, b: h as i32 });
+            let (x, y) = ((k % w) as i32, (k / w) as i32);
+            assert_eq!(r, Rect { l: x, t: y, r: x + 1, b: y + 1 });
+            assert_eq!(px, b);
+        }
+    }
+
+    #[test]
+    fn diff_ends() {
+        let a = vec![1u32; 50];
+        for k in 0..50 {
+            let mut b = a.clone();
+            b[k] = 2;
+            assert_eq!(first_diff(&a, &b), Some(k));
+            assert_eq!(last_diff(&a, &b), Some(k + 1));
+        }
+        assert_eq!(first_diff(&a, &a), None);
+        assert_eq!(last_diff(&a, &a), None);
+    }
 }

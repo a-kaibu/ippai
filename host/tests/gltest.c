@@ -2,7 +2,8 @@
  * framebuffer object (glBegin/glEnd, glTexImage2D, alpha blending), that texture drawn on the
  * window with client arrays, and a spinning triangle from a vertex buffer drawn by a GLSL 1.10
  * program (attributes, a uniform matrix and color). Prints each step and quits after 60 s.
- * With "still" the triangle stays put (tests/gfx.mjs checks the screen).
+ * With "still" the triangle stays put (tests/gfx.mjs checks the screen, and that the frames,
+ * the same every time though the texture is uploaded again, are not drawn again).
  * Build: i686-w64-mingw32-gcc -O2 gltest.c -o gltest.exe -mwindows -lopengl32 -lgdi32 */
 #include <windows.h>
 #include <GL/gl.h>
@@ -175,6 +176,9 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glEnable(GL_TEXTURE_2D);
         glBindTexture(GL_TEXTURE_2D, tex);
+        /* the same pixels again every frame, as games re-upload their text: a still frame is
+         * still the same frame (tests/gfx.mjs: drawn once, then skipped) */
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 64, 64, GL_RGBA, GL_UNSIGNED_BYTE, px);
         glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
         glColor4f(1, 1, 1, 1);
         glBegin(GL_QUADS);

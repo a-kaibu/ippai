@@ -50,6 +50,8 @@ static FRAME: Mutex<[u32; 4]> = Mutex::new([0; 4]);
 /// counters: Direct3D frames, batch time (µs), passes, bytes uploaded, and the bytes passes
 /// would move between tile memory and memory on a tile-based GPU (loaded, stored)
 pub(crate) static STATS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
+/// the screen (GDI, DirectDraw, the windows): canvas redraws, bytes uploaded
+static SCREEN_STATS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
 /// time spent in frames (µs)
 static FRAME_US: AtomicU64 = AtomicU64::new(0);
 static GPU_NS: AtomicU64 = AtomicU64::new(0);
@@ -356,6 +358,7 @@ impl Render {
             let format = gpu::canvas_format();
             self.draw(view, format, self.rect, cw, ch);
             gpu::drop(view);
+            SCREEN_STATS[0].fetch_add(1, Relaxed);
         }
         let want = SHOT_WANT.load(Relaxed);
         if want != self.shot_done && self.shot.is_none() && self.tex != 0 {
@@ -370,7 +373,7 @@ impl Render {
         if width <= 0 || height <= 0 {
             return false;
         }
-        let mut io = [0u32; 10];
+        let mut io = [0u32; 12];
         io[0] = self.serial.unwrap_or(u32::MAX);
         // (the changed rows straight from the game window's surface when only it changed)
         io[3] = self.serial.is_some() as u32;
@@ -393,26 +396,30 @@ impl Render {
             }
         }
         let (mut y0, mut y1) = (io[1] as i32, io[2] as i32);
+        let (mut x0, mut x1) = (io[10] as i32, (io[11] as i32).min(width));
         if new_tex {
-            (y0, y1) = (0, height);
+            (x0, x1, y0, y1) = (0, width, 0, height);
         }
         let mut frame = [io[0], bits as u32, width as u32, height as u32];
         if io[3] == 1 {
             let (ptr, stride) = (io[4] as usize, io[5] as i32);
             let [l, t, r, b] = [io[6] as i32, io[7] as i32, io[8] as i32, io[9] as i32];
-            let (x0, x1) = (l.max(0), r.min(width));
+            let (x0, x1) = (l.max(x0).max(0), r.min(x1).min(width));
             let (t2, b2) = (y0.max(t).max(0), y1.min(b).min(height));
             if x1 > x0 && b2 > t2 {
                 let off = ptr + (((t2 - t) * stride + (x0 - l)) * 4) as usize;
                 let bpr = (stride * 4) as u32;
                 let n = ((b2 - t2 - 1) * stride * 4 + (x1 - x0) * 4) as usize;
                 gpu::write_texture(self.tex, 0, [x0 as u32, t2 as u32, 0], off as *const u8, n, bpr, (b2 - t2) as u32, [(x1 - x0) as u32, (b2 - t2) as u32, 1]);
+                SCREEN_STATS[1].fetch_add(((x1 - x0) * (b2 - t2) * 4) as u64, Relaxed);
             }
             frame = [io[0], ptr as u32, stride as u32, (b - t) as u32];
-        } else if y1 > y0 {
+        } else if y1 > y0 && x1 > x0 {
             let stride = width * 4;
-            let p = bits as usize + (y0 * stride) as usize;
-            gpu::write_texture(self.tex, 0, [0, y0 as u32, 0], p as *const u8, ((y1 - y0) * stride) as usize, stride as u32, (y1 - y0) as u32, [width as u32, (y1 - y0) as u32, 1]);
+            let p = bits as usize + (y0 * stride + x0 * 4) as usize;
+            let n = ((y1 - y0 - 1) * stride + (x1 - x0) * 4) as usize;
+            gpu::write_texture(self.tex, 0, [x0 as u32, y0 as u32, 0], p as *const u8, n, stride as u32, (y1 - y0) as u32, [(x1 - x0) as u32, (y1 - y0) as u32, 1]);
+            SCREEN_STATS[1].fetch_add(((x1 - x0) * (y1 - y0) * 4) as u64, Relaxed);
         }
         self.serial = Some(io[0]);
         *FRAME.lock().unwrap_or_else(|e| e.into_inner()) = frame;
@@ -547,7 +554,7 @@ impl Render {
             let d = |i: usize| now[i] - s.at[i];
             let g = self.d3d.gpu_ms.take();
             eprintln!(
-                "page stats/{secs:.1}s: rAF {:.1}/s, slow {}, render {}ms, d3d frames {:.1}/s, batches {}ms, gpu {:.0}ms (max {:.0}), passes {}, submits {}, textures {}, upload {:.1}MB, tile load {}MB store {}MB, same frames skipped {}, regions unchanged {} redrawn {}",
+                "page stats/{secs:.1}s: rAF {:.1}/s, slow {}, render {}ms, d3d frames {:.1}/s, batches {}ms, gpu {:.0}ms (max {:.0}), passes {}, submits {}, textures {}, upload {:.1}MB, tile load {}MB store {}MB, same frames skipped {}, regions unchanged {} redrawn {}, screen redraws {} upload {:.1}MB",
                 s.frames as f64 / secs,
                 s.slow,
                 FRAME_US.swap(0, Relaxed) / 1000,
@@ -563,7 +570,9 @@ impl Render {
                 d(5) >> 20,
                 self.d3d.skipped.take(),
                 self.d3d.seg_stats.get().0,
-                self.d3d.seg_stats.replace((0, 0)).1
+                self.d3d.seg_stats.replace((0, 0)).1,
+                SCREEN_STATS[0].swap(0, Relaxed),
+                SCREEN_STATS[1].swap(0, Relaxed) as f64 / 1e6
             );
             *s = Stats { t0: t, last: t, frames: 0, slow: 0, at: now, d3d_at: self.d3d.frames };
         }

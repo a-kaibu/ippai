@@ -499,15 +499,15 @@ impl D3d {
             };
             let blob_cmp = &*blob_cmp;
             if let (Some((n, _, _)), Some((lc, ld, lb))) = (&norm, &self.last) {
-                if lc == n && ld.as_slice() == data && lb.as_slice() == blob_cmp && self.skip_check {
-                    let tex = if c.len() >= 9 && c[c.len() - 9] == PRESENT { c[c.len() - 8] } else { 0 };
+                if lc == n && same(ld, data) && same(lb, blob_cmp) && self.skip_check {
+                    let tex = if c.len() >= 9 && matches!(c[c.len() - 9], PRESENT | PRESENT_FLIP) { c[c.len() - 8] } else { 0 };
                     let pair = self.next_token;
                     self.snap(tex, pair);
                     self.run_batch(c, data, blob);
                     self.snap(tex, pair);
                     return;
                 }
-                if lc == n && ld.as_slice() == data && lb.as_slice() == blob_cmp {
+                if lc == n && same(ld, data) && same(lb, blob_cmp) {
                     // (its buffers still come and go: later batches may draw from them)
                     for &at in &self.last_bufs.clone() {
                         self.buffer_cmd(&c[at..], blob);
@@ -518,10 +518,9 @@ impl D3d {
                     return;
                 }
             }
-            let blob_cmp = blob_cmp.to_vec();
             self.last = norm.map(|(n, bufs, _)| {
                 self.last_bufs = bufs;
-                (n, data.to_vec(), blob_cmp)
+                (n, data.to_vec(), blob_cmp.to_vec())
             });
         }
         self.run_batch(c, data, blob);
@@ -1137,6 +1136,22 @@ impl D3d {
                     i = q + 7;
                 }
                 PRESENT | PRESENT_FLIP => i += 9,
+                // Texture uploads from the blob (Direct2D's layer, glTexSubImage, D3D9 UpdateSurface):
+                // the same bytes as the last run's to the same place, where nothing else drew since
+                // (draws into it need it cleared, or it is read after: see the end), so it holds them
+                WRITE_TEXTURE => i += 9,
+                WRITE_TEXTURE2 => i += 10,
+                // a copy or fill overwrites its box whatever was there: the box ends the same, its
+                // destination counts as drawn (a read of it before must have been of a clear)
+                COPY => {
+                    reads.push((c[i + 1], cleared.contains(&c[i + 1])));
+                    drawn.push(c[i + 7]);
+                    i += 14;
+                }
+                FILL => {
+                    drawn.push(c[i + 1]);
+                    i += 8;
+                }
                 CREATE_BUFFER => {
                     bufs.push(i);
                     made.push(c[i + 1]);
@@ -2582,6 +2597,23 @@ fn common<T: PartialEq>(a: &[T], b: &[T]) -> (Vec<bool>, Vec<bool>) {
     (ka, kb)
 }
 
+/// Whether `a` and `b` hold the same bytes. (The libc memcmp under wasm goes a byte at a time; a
+/// still frame's texture uploads compare a megabyte or more each.)
+fn same(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let word = |c: &[u8], k: usize| u64::from_ne_bytes(c[k * 8..k * 8 + 8].try_into().unwrap());
+    let (ca, cb) = (a.chunks_exact(32), b.chunks_exact(32));
+    let (ta, tb) = (ca.remainder(), cb.remainder());
+    for (x, y) in ca.zip(cb) {
+        if (word(x, 0) ^ word(y, 0)) | (word(x, 1) ^ word(y, 1)) | (word(x, 2) ^ word(y, 2)) | (word(x, 3) ^ word(y, 3)) != 0 {
+            return false;
+        }
+    }
+    ta == tb
+}
+
 /// `bytes` into `buf` at `at`, as WebGPU wants writes: whole 4-byte words. The last partial word
 /// goes from a zero-padded copy (nothing past `bytes` is read); the buffer must have room for it.
 fn write_padded(buf: gpu::Id, at: u32, bytes: &[u8]) {
@@ -2602,6 +2634,18 @@ fn padded_words(at: u32, bytes: &[u8], mut write: impl FnMut(u32, &[u8])) {
 
 #[cfg(test)]
 mod padded_tests {
+    #[test]
+    fn same_finds_every_byte() {
+        let a: Vec<u8> = (0..200u32).map(|i| (i * 13) as u8).collect();
+        assert!(super::same(&a, &a.clone()));
+        assert!(!super::same(&a, &a[..199]));
+        for k in 0..a.len() {
+            let mut b = a.clone();
+            b[k] ^= 0x40;
+            assert!(!super::same(&a, &b), "byte {k}");
+        }
+    }
+
     #[test]
     fn writes_whole_words_without_reading_past_the_data() {
         for len in 0..=9usize {

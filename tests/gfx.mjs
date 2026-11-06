@@ -1,6 +1,7 @@
 // Graphics API tests: runs each check of host/tests (built by build-gfx.sh, packed as store
 // tree "gfxtest") with "still" in headless Chromium through tests/play.mjs, then compares pixels
-// of the screen against what the check draws, and its log against what it prints. Needs
+// of the screen against what the check draws, and its log against what it prints, and (from
+// the &d3dstats lines) that a still picture is not uploaded or drawn again. Needs
 // ippai serve on BASE (default http://127.0.0.1:8090); exits 1 when anything fails.
 //
 //   node tests/gfx.mjs ["name" ...]    (default: all; OUT=dir keeps the screens and logs;
@@ -24,17 +25,22 @@ const TESTS = {
     pixels: [[40, 150, 255, 0, 0], [120, 150, 0, 255, 0], [200, 150, 0, 0, 255], [280, 150, 255, 255, 0],
       [360, 150, 0, 255, 255], [440, 150, 255, 0, 255], [10, 470, 0, 7, 247], [630, 470, 0, 247, 247]],
     log: [/IDirectDraw7_CreateSurface/, /frame 60 /],
+    // the same frame every time: nothing of the screen uploaded once it shows
+    still: "screen",
   },
   "ddrawtest full": {
     // the same in exclusive 640x480x32 with a flip chain (BltFast to the back buffer, Flip)
     pixels: [[40, 150, 255, 0, 0], [120, 150, 0, 255, 0], [200, 150, 0, 0, 255], [10, 470, 0, 7, 247], [630, 470, 0, 247, 247]],
     log: [/frame 60 /],
+    still: "screen",
   },
   d3d8test: {
     // Clear, fixed-function textured quad (checker), vs.1.1/ps.1.1 triangle
     pixels: [[10, 10, 32, 32, 64], [600, 450, 32, 32, 64], [45, 45, 0, 0, 255],
       [454, 190, 236, 10, 9], [330, 374, 5, 9, 241], [580, 374, 5, 243, 6], [450, 320, 73, 88, 94]],
     log: [/frame 60 /],
+    // the same batch every frame: skipped (no passes)
+    still: "skip",
   },
   d3d11test: {
     // ClearRenderTargetView, textured blended quad, triangle with a constant buffer
@@ -48,12 +54,16 @@ const TESTS = {
     pixels: [[10, 10, 26, 77, 26], [100, 100, 255, 0, 0], [341, 100, 0, 0, 255], [460, 100, 26, 77, 26],
       [45, 420, 252, 255, 3], [320, 420, 127, 255, 128], [595, 420, 2, 255, 253]],
     log: [/text metrics \d/, /EndDraw -> 0\b/, /frame 60\b/],
+    // (its layer uploaded again every frame)
+    still: "skip",
   },
   gltest: {
     // glClear, glBegin quad into an FBO, its texture drawn with client arrays, GLSL triangle
     pixels: [[10, 10, 26, 77, 26], [60, 60, 102, 26, 26], [100, 90, 255, 255, 0], [170, 90, 51, 13, 77],
       [15, 475, 255, 0, 0], [320, 115, 240, 8, 7], [175, 335, 6, 9, 240], [465, 335, 6, 241, 9], [320, 280, 64, 96, 95]],
     log: [/ARB functions ok/, /framebuffer status 0x8cd5/, /frame 60, glGetError 0\b/],
+    // (glTexSubImage2D every frame)
+    still: "skip",
   },
   // (not graphics: the JIT's dispatch must fault on a call through a null pointer)
   nullcall: { pixels: [], log: [/nullcall: ok/] },
@@ -83,7 +93,7 @@ for (const name of names) {
   const engine =
     (process.env.ENGINE ? `engine=${process.env.ENGINE}&` : "") +
     (process.env.ENV ?? "").split(" ").filter(Boolean).map((e) => `env=${encodeURIComponent(e)}&`).join("");
-  const url = `${base}/play.html?${engine}autostart&headless&mount=/vnvm/game=gfxtest&args=${["still", ...args]}&run=Z:\\vnvm\\game\\${exe}.exe`;
+  const url = `${base}/play.html?${engine}autostart&headless&d3dstats&mount=/vnvm/game=gfxtest&args=${["still", ...args]}&run=Z:\\vnvm\\game\\${exe}.exe`;
   execFileSync("rm", ["-rf", out]);
   try {
     execFileSync("node", [`${here}/play.mjs`, url, out, "22", "20"], { stdio: "ignore", timeout: 90000 });
@@ -92,6 +102,11 @@ for (const name of names) {
   const log = existsSync(`${out}/console.log`) ? readFileSync(`${out}/console.log`, "utf8") : "";
   for (const re of t.log) if (!re.test(log)) errors.push(`log lacks ${re}`);
   for (const bad of [/Unhandled exception/, /\[pageerror\]/, /\[crash\]/]) if (bad.test(log)) errors.push(`log has ${bad}`);
+  // Render load: a still picture is not drawn again (the stats every 5 s; the last one is from
+  // well after the first frame)
+  const stats = [...log.matchAll(/page stats\/.*/g)].map((m) => m[0]).at(-1) ?? "";
+  if (t.still === "screen" && !/screen redraws \d+ upload 0\.0MB/.test(stats)) errors.push(`still frames uploaded again: ${stats}`);
+  if (t.still === "skip" && !(/passes 0,/.test(stats) && /same frames skipped [1-9]/.test(stats))) errors.push(`still frames drawn again: ${stats}`);
   if (!t.pixels.length) {
   } else if (existsSync(`${out}/screen-001.png`)) {
     const png = readPng(`${out}/screen-001.png`);
