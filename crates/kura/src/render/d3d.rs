@@ -137,7 +137,7 @@ fn num(f: f32) -> String {
     if f.is_finite() { format!("{f}") } else { "0".into() }
 }
 
-const CLEAR_SHADER: &str = r#"
+pub(crate) const CLEAR_SHADER: &str = r#"
 struct C { color: vec4f, z: vec4f };
 @group(0) @binding(0) var<uniform> c: C;
 @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
@@ -1138,9 +1138,15 @@ impl D3d {
                 PRESENT | PRESENT_FLIP => i += 9,
                 // Texture uploads from the blob (Direct2D's layer, glTexSubImage, D3D9 UpdateSurface):
                 // the same bytes as the last run's to the same place, where nothing else drew since
-                // (draws into it need it cleared, or it is read after: see the end), so it holds them
-                WRITE_TEXTURE => i += 9,
-                WRITE_TEXTURE2 => i += 10,
+                // (draws into it need it cleared, or it is read after: see the end), so it holds them.
+                // Not when a draw or copy read it before (and not of a clear): that run saw what
+                // was there before the write, the next one would see the write.
+                WRITE_TEXTURE | WRITE_TEXTURE2 => {
+                    if reads.iter().any(|&(t, clear)| t == c[i + 1] && !clear) {
+                        return None;
+                    }
+                    i += if c[i] == WRITE_TEXTURE { 9 } else { 10 };
+                }
                 // a copy or fill overwrites its box whatever was there: the box ends the same, its
                 // destination counts as drawn (a read of it before must have been of a clear)
                 COPY => {
@@ -1179,8 +1185,9 @@ impl D3d {
                 _ => return None,
             }
         }
-        // (a texture it draws to, read before it clears it, holds what the last run left)
-        if reads.iter().any(|&(t, clear)| !clear && drawn.contains(&t)) {
+        // (a texture it draws to or clears, read before it clears it, holds what the last run
+        // left)
+        if reads.iter().any(|&(t, clear)| !clear && (drawn.contains(&t) || cleared.contains(&t))) {
             return None;
         }
         if !hashed {
@@ -1301,6 +1308,8 @@ impl D3d {
     /// Records a clear of a whole view for the next pass that draws to it (merged with one not
     /// done yet of the same view).
     fn defer_clear(&mut self, tex: u32, c: Clear) {
+        // (its pixels change now, as far as draws that sample it later know: see `draw_key`)
+        self.touch(tex);
         if let Some(t) = self.textures.get_mut(&tex) {
             if is_depth(t.format) {
                 if c.flags & 2 != 0 {
@@ -1515,6 +1524,8 @@ impl D3d {
         if !self.begin_pass() {
             return;
         }
+        // (the pass may have begun before a segment ended: see `seg_close`)
+        self.touch(self.target[0]);
         let fmt = self.textures[&self.target[0]].format;
         let depth = self.target[2] != 0;
         let key = (fmt, depth, flags & 3);
@@ -1675,6 +1686,8 @@ impl D3d {
         if !self.begin_pass() {
             return p;
         }
+        // (the pass may have begun before a segment ended: its stamp must not stay)
+        self.touch(self.target[0]);
         for t in &texs {
             if t[1] != 0 {
                 self.use_tex(t[1]);
@@ -1740,12 +1753,17 @@ impl D3d {
             gpu::set_vertex_buffer(b as u32, self.data_buf, o);
         }
         gpu::set_blend_constant(color_of(blend_factor));
+        // (the model of WebGPU in the tests draws only inside the box the guest gave)
+        #[cfg(test)]
+        super::model::set_bounds(Some([c[p - 4], c[p - 3], c[p - 2], c[p - 1]]));
         if ifmt != 0 {
             gpu::set_index_buffer(self.data_buf, ifmt == 4, ioff);
             gpu::draw_indexed(count, 1, 0, base, 0);
         } else {
             gpu::draw(count, 1, 0, 0);
         }
+        #[cfg(test)]
+        super::model::set_bounds(None);
         p
     }
 
@@ -2663,3 +2681,6 @@ mod padded_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod model_tests;

@@ -8,6 +8,8 @@
 
 pub mod d3d;
 pub mod gpu;
+#[cfg(test)]
+pub mod model;
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
