@@ -3,6 +3,8 @@
 ; (krkrz は標準出力に出す):
 ;   BENCH-STATE <何> <番号>   何かを表示し終えた (title, scene, line, saved, restored, end)
 ;   BENCH-WAIT <番号> <何>    クリックを待ち始めた (click, idle: 3 秒待ってから, choice: 選択肢)
+;   BENCH-SHOT <名前>          画面が止まった: ハーネスが画面を撮って期待した絵か確かめる
+;                              (testdata/kirikiri/expected.json)。撮るあいだ (2.5 秒) は何も動かさない
 ; 番号は両方で数える。-mode=load で起動するとセーブを読んで restored で止まる。
 ; fx_* はクリックから重い演出の終わりまで (特殊トランジション、移動と揺れ、文字送り、画像処理)。
 ; 花びらの間は bench.tjs が描いた間隔を "BENCH kk_petals_p95 ms" で出す。
@@ -10,6 +12,8 @@
 ; ---- 合図 ----
 [macro name=st][eval exp="Debug.message('BENCH-STATE ' + mp.w + ' ' + (++tf.step))"][endmacro]
 [macro name=bw][eval exp="Debug.message('BENCH-WAIT ' + (++tf.step) + ' ' + mp.w)"][endmacro]
+; (クリック待ちの記号が出る前、アニメーションのないところで)
+[macro name=shot][eval exp="Debug.message('BENCH-SHOT ' + mp.n)"][wait time=2500 canskip=false][endmacro]
 
 ; ---- 台詞: [line t=本文 voice=ボイス (face=立ち絵) (idle=1)] ----
 [macro name=line]
@@ -29,7 +33,7 @@
 [if exp="mp.ch !== void"][image storage=%ch layer=0 page=back visible=true left=440 top=80][else][freeimage layer=0 page=back][endif]
 [if exp="mp.method !== void"][trans method=%method time=%time|1000][elsif exp="mp.rule !== void"][trans method=universal rule=%rule vague=64 time=600][else][trans method=crossfade time=500][endif]
 [wt]
-[st w=%w|scene][bw w=click][waitclick]
+[st w=%w|scene][if exp="mp.shot !== void"][shot n=%shot][endif][bw w=click][waitclick]
 [endmacro]
 
 [loadplugin module=extrans.dll]
@@ -42,11 +46,11 @@
 *title|タイトル
 [image storage=title layer=base page=fore]
 [nowait]吉里吉里ベンチ　―　クリックではじめる[endnowait]
-[st w=title][bw w=click][waitclick]
+[st w=title][shot n=title][bw w=click][waitclick]
 [playbgm storage=bgm0 loop=true]
 
 ; ---- 一: 丘 ----
-[scene bg=bg1 ch=ch0_0]
+[scene bg=bg1 ch=ch0_0 shot=scene1]
 [line voice=voice0 t="「おはよう。今日もいい天気だね」"]
 [line voice=voice1 face=ch0_1 t="「丘の上まで行ってみない？　向こうに町が見えるはず」"]
 [line voice=voice2 idle=1 t="風が草をなでていく。遠くで鳥が鳴いた。"]
@@ -66,7 +70,7 @@
 [image storage=ch1_1 layer=1 page=back visible=true left=440 top=80]
 [image storage=ch2_1 layer=2 page=back visible=true left=840 top=80]
 [trans method=crossfade time=400][wt]
-[st w=fx_three][bw w=click][waitclick]
+[st w=fx_three][shot n=three][bw w=click][waitclick]
 [cm][backlay]
 [freeimage layer=1 page=back][freeimage layer=2 page=back]
 [trans method=crossfade time=300][wt]
@@ -83,14 +87,15 @@
 [cm][delay speed=10][font edge=true edgecolor=0x402030]
 花びらが[ruby text=ま]舞[ruby text=ちゅう]宙をただよい、夕日を受けてきらきらと光っていた。ふたりはしばらく黙ったまま、その景色を眺めていた。風が吹くたびに、[ruby text=はなびら]花弁はくるくると回りながら道の向こうへ流れていく。
 [resetfont][delay speed=nowait]
-[st w=fx_typed][bw w=click][p]
-[eval exp="benchPetalsStop()"]
+[st w=fx_typed]
+[eval exp="benchPetalsStop()"][shot n=ruby]
+[bw w=click][p]
 
 ; 回想: ぼかしてセピアに
 [cm]
 [eval exp="benchBlur()"]
-[st w=fx_blur][bw w=click][waitclick]
-[scene bg=bg2 ch=ch1_1 method=ripple time=1200 w=fx_ripple]
+[st w=fx_blur][shot n=blur][bw w=click][waitclick]
+[scene bg=bg2 ch=ch1_1 method=ripple time=1200 w=fx_ripple shot=ripple]
 
 ; ---- 三: 分かれ道 ----
 [scene bg=bg3 ch=ch2_0 method=wave time=1000 w=fx_wave]
@@ -108,11 +113,11 @@
 [locate x=400 y=400][link target=*left]　左の道を行く　[endlink]
 [locate x=400 y=520][link target=*right]　右の道を行く　[endlink]
 [resetfont]
-[st w=fx_choice][bw w=choice][s]
+[st w=fx_choice][shot n=choice][bw w=choice][s]
 
 *left
 [er][layopt layer=message1 visible=false][current layer=message0]
-[scene bg=bg4 ch=ch0_0 method=rotatezoom time=1000 w=fx_rotatezoom]
+[scene bg=bg4 ch=ch0_0 method=rotatezoom time=1000 w=fx_rotatezoom shot=rotatezoom]
 [jump target=*after]
 
 *right
@@ -126,12 +131,12 @@
 
 ; ---- セーブ: KAG は最後のラベルで保存し、ロードするとそこから始める ----
 *saved|保存した場面
-[if exp="tf.loaded"][nowait]（ロードしました）[endnowait][st w=restored][eval exp="Debug.message('BENCH-END')"][s][endif]
+[if exp="tf.loaded"][nowait]（ロードしました）[endnowait][st w=restored][shot n=restored][eval exp="Debug.message('BENCH-END')"][s][endif]
 [save place=0]
 [st w=saved][bw w=click][p]
 
 ; ---- 四: 町 ----
-[scene bg=bg6 ch=ch2_0 method=mosaic time=1000 w=fx_mosaic]
+[scene bg=bg6 ch=ch2_0 method=mosaic time=1000 w=fx_mosaic shot=mosaic]
 [line voice=voice16 t="丘を下りきると、町の灯りがともり始めていた。"]
 [line voice=voice17 face=ch2_1 t="「着いたね。おなか空いた」"]
 [line voice=voice18 t="ふたりで笑って、灯りのほうへ歩いていった。"]

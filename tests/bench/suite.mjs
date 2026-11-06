@@ -9,7 +9,9 @@
 // What the numbers mean: bump it when a change to the programs or the harness makes the numbers
 // of before incomparable (the report then compares only with the history of the same version).
 //   2: frames read back at the end of the timed ones; IPPAI_NOPACE (was VNVM_NOPACE)
-export const VERSION = 2;
+//   3: scenario: starts by what is kept (start.*), idle_cpu by process; kirikiri: still screens
+//      for the checkpoint pictures (2.5 s each)
+export const VERSION = 3;
 
 // More rounds for the groups whose cases are short and noisy (run.mjs's default when ROUNDS isn't set)
 export const MIN_ROUNDS = { "cpu-kernels": 7, "cpu-game": 5, scenario: 5, kirikiri: 5 };
