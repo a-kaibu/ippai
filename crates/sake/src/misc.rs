@@ -2367,6 +2367,42 @@ fn PathCombineW(c: &mut Ctx) -> u32 {
     ret_str(d, 260, &append(&a, &b), true);
     d
 }
+/// PathCanonicalize: "." and ".." parts resolved ("C:\\a\\..\\b" -> "C:\\b"; Unity builds its
+/// _Data folder's path with it)
+fn canonicalize(p: &str) -> String {
+    let (root, rest) = if p.as_bytes().get(1) == Some(&b':') {
+        let n = if p.as_bytes().get(2) == Some(&b'\\') { 3 } else { 2 };
+        p.split_at(n)
+    } else if let Some(r) = p.strip_prefix("\\\\") {
+        ("\\\\", r)
+    } else if let Some(r) = p.strip_prefix('\\') {
+        ("\\", r)
+    } else {
+        ("", p)
+    };
+    let mut out: Vec<&str> = Vec::new();
+    for part in rest.split('\\') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                out.pop();
+            }
+            x => out.push(x),
+        }
+    }
+    let tail = if rest.ends_with('\\') && !out.is_empty() { "\\" } else { "" };
+    format!("{root}{}{tail}", out.join("\\"))
+}
+fn PathCanonicalizeA(c: &mut Ctx) -> u32 {
+    let (d, s) = (c.a(0), arg_str(c.a(1), false));
+    ret_str(d, 260, &canonicalize(&s), false);
+    1
+}
+fn PathCanonicalizeW(c: &mut Ctx) -> u32 {
+    let (d, s) = (c.a(0), arg_str(c.a(1), true));
+    ret_str(d, 260, &canonicalize(&s), true);
+    1
+}
 fn PathFindFileNameA(c: &mut Ctx) -> u32 {
     let p = c.a(0);
     let s = cstr(p);
@@ -2601,7 +2637,7 @@ pub fn init() {
         mciSendStringW, mciSendCommandA, midiOutGetNumDevs, auxGetNumDevs, mixerGetNumDevs);
     reg!("shlwapi"; PathStripToRootA, PathStripToRootW, PathIsUNCA, PathIsUNCW);
     reg!("shlwapi"; PathRemoveFileSpecA, PathRemoveFileSpecW, PathFileExistsA, PathFileExistsW, PathIsDirectoryA,
-        PathIsDirectoryW, PathAppendA, PathAppendW, PathCombineA, PathCombineW, PathFindFileNameA,
+        PathIsDirectoryW, PathAppendA, PathAppendW, PathCombineA, PathCombineW, PathCanonicalizeA, PathCanonicalizeW, PathFindFileNameA,
         PathFindFileNameW, PathFindExtensionA, PathFindExtensionW, PathIsRelativeA, PathIsRelativeW, PathUnquoteSpacesA,
         PathUnquoteSpacesW, PathAddBackslashA, PathAddBackslashW, PathStripPathA, PathStripPathW, PathAddExtensionA, PathAddExtensionW);
     reg!("shlwapi"; StrStrA, StrStrW, StrStrIA, StrStrIW);
