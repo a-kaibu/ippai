@@ -391,6 +391,15 @@ fn put_chunk(store: &Path, buf: &[u8]) -> Result<String> {
 
 const ZSTD_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
 
+/// The chunks' zstd level: 19 (IPPAI_ZSTD_LEVEL to change). Measured on prefix32 (311 MiB of
+/// DLLs and fonts in 256 KiB chunks): level 3 is 99.2 MiB at 1 s of CPU, 6 96.9 MiB 2.8 s,
+/// 12 93.9 MiB 16 s, 19 85.8 MiB 80 s. A pack is once and every play downloads the chunks
+/// (decoding is about as fast at every level), so 19.
+fn zstd_level() -> i32 {
+    static L: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
+    *L.get_or_init(|| std::env::var("IPPAI_ZSTD_LEVEL").ok().and_then(|v| v.parse().ok()).unwrap_or(19))
+}
+
 /// Writes chunk `h` zstd-compressed into `dir`, unless it is there already (a chunk left by
 /// an older, brotli-compressing ippai pack is rewritten).
 fn write_chunk(dir: &Path, h: &str, buf: &[u8]) -> Result<()> {
@@ -401,7 +410,7 @@ fn write_chunk(dir: &Path, h: &str, buf: &[u8]) -> Result<()> {
     }
     fs::create_dir_all(dir)?;
     let tmp = dir.join(format!(".{h}.{:?}.tmp", std::thread::current().id()));
-    fs::write(&tmp, zstd::bulk::compress(buf, 19)?)?;
+    fs::write(&tmp, zstd::bulk::compress(buf, zstd_level())?)?;
     fs::rename(&tmp, &path)?;
     Ok(())
 }
@@ -520,14 +529,18 @@ fn pack_tree(store: &Path, root: &Path, name: &str, follow: bool, chunk: u64) ->
         .par_iter()
         .map(|(line, disk, path, mode, mtime, size)| -> Result<(usize, String)> {
             let f = File::open(disk).with_context(|| disk.display().to_string())?;
-            let mut hashes = Vec::new();
-            let mut off = 0;
-            while off < *size {
-                let mut buf = vec![0u8; chunk.min(size - off) as usize];
-                f.read_exact_at(&mut buf, off)?;
-                hashes.push(put_chunk(store, &buf)?);
-                off += chunk;
-            }
+            // (a file's chunks in parallel too: a game that is one big archive packs on every
+            // core; rayon runs a task per thread at a time, so the buffers in memory are about
+            // one chunk per core)
+            let hashes: Vec<String> = (0..size.div_ceil(chunk))
+                .into_par_iter()
+                .map(|i| {
+                    let off = i * chunk;
+                    let mut buf = vec![0u8; chunk.min(size - off) as usize];
+                    f.read_exact_at(&mut buf, off)?;
+                    put_chunk(store, &buf)
+                })
+                .collect::<Result<_>>()?;
             Ok((*line, format!("f\t{mode:o}\t{mtime}\t{}\t{size}\t{}", esc(path), hashes.join(","))))
         })
         .collect::<Result<_>>()?;
@@ -594,6 +607,46 @@ mod tests {
         // a good add then replaces both
         add(&store, &game, "game.exe").unwrap();
         assert!(fs::read_to_string(&tsv).unwrap().contains("extra.dat"));
+        let _ = fs::remove_dir_all(&t);
+    }
+
+    /// Random files of many chunks (zero chunks, repeated chunks, short last ones), packed with
+    /// a file's chunks in parallel: the tree lists them in order and each decodes to its part.
+    #[test]
+    fn files_chunked_in_order() {
+        let t = std::env::temp_dir().join(format!("ippai-chunks-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&t);
+        let (store, dir) = (t.join("store"), t.join("files"));
+        fs::create_dir_all(&dir).unwrap();
+        let mut seed = 0x9b05688c2b3e6c1fu64;
+        let mut rnd = move |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        let chunk = 4096u64;
+        let mut files = Vec::new();
+        for f in 0..5 {
+            let n = 1 + rnd(60 * chunk);
+            let data: Vec<u8> = (0..n).map(|i| match (i / chunk) % 7 { 3 => 0, 5 => (i % 251) as u8, _ => rnd(256) as u8 }).collect();
+            fs::write(dir.join(format!("f{f}")), &data).unwrap();
+            files.push(data);
+        }
+        let tsv = pack_tree(&store, &dir, "t", false, chunk).unwrap();
+        for (f, data) in files.iter().enumerate() {
+            let line = tsv.lines().find(|l| l.split('\t').nth(3) == Some(&format!("f{f}"))).unwrap();
+            let names: Vec<&str> = line.split('\t').nth(5).unwrap().split(',').collect();
+            assert_eq!(names.len() as u64, (data.len() as u64).div_ceil(chunk));
+            for (i, (name, part)) in names.iter().zip(data.chunks(chunk as usize)).enumerate() {
+                if name.is_empty() {
+                    assert!(part.iter().all(|&b| b == 0), "f{f} chunk {i}");
+                    continue;
+                }
+                let raw = fs::read(store.join("chunks").join(&name[..2]).join(name)).unwrap();
+                assert_eq!(zstd::decode_all(&raw[..]).unwrap(), part, "f{f} chunk {i}");
+            }
+        }
         let _ = fs::remove_dir_all(&t);
     }
 }
