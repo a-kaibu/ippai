@@ -415,7 +415,7 @@ fn show(c: &[u32]) -> String {
             WRITE_TEXTURE => ("write", 9),
             SET_TARGET => ("target", 4),
             CLEAR => ("clear", 12),
-            PRESENT => ("present", 9),
+            PRESENT | PRESENT_FLIP => ("present", 9),
             COPY => ("copy", 14),
             READBACK => ("readback", 10),
             FILL => ("fill", 8),
@@ -709,7 +709,9 @@ impl Gen11 {
             b.c.extend_from_slice(&[READBACK, self.req, 21, 0, 0, 0, 16, 16, dst, 64]);
         }
         let shown = if main[0].0 == 26 { 26 } else { 21 };
-        b.c.extend_from_slice(&[PRESENT, shown, 0, 0, 16, 16, 0, 0, 0]);
+        // (OpenGL presents bottom row first)
+        let op = if self.r.chance(20) { PRESENT_FLIP } else { PRESENT };
+        b.c.extend_from_slice(&[op, shown, 0, 0, 16, 16, 0, 0, 0]);
         self.r = saved;
         b
     }
@@ -756,8 +758,15 @@ impl Gen11 {
             }
             w.extend([0.5f32, 0.25, 1.0, 1.0].iter().map(|f| f.to_bits()));
             w.push(r.below(256));
+            // (OpenGL and Direct2D: vertices and constants in the batch's data block, no hash)
+            let gl = r.chance(25);
             let voff = r.below(16) * 16;
-            w.extend_from_slice(&[1, vb, voff]);
+            if gl {
+                let at = b.data(&verts[voff as usize..], 16);
+                w.extend_from_slice(&[1, DATA, at]);
+            } else {
+                w.extend_from_slice(&[1, vb, voff]);
+            }
             let indexed = r.chance(30);
             let ioff = r.below(16) * 2;
             if indexed {
@@ -765,13 +774,17 @@ impl Gen11 {
             } else {
                 w.extend_from_slice(&[0, 0, 0]);
             }
-            w.extend_from_slice(&[1, 0, 0, 1, 0, 64, 64, 0, 0]);
+            let r = &mut self.r;
+            let cb = |b: &mut Batch, k: usize, cbs: &[Vec<u8>; 2]| if gl { [DATA, b.data(&cbs[k], 256), 64, 64] } else { [k as u32 + 1, 0, 64, 64] };
+            let c0 = cb(b, 0, &self.cbs);
+            let c1 = cb(b, 1, &self.cbs);
+            w.extend_from_slice(&[1, 0, 0, c0[0], c0[1], c0[2], c0[3], 0, 0]);
             if p.tex {
                 let s = r.pick(&sampled);
                 let key = 2 | 2 << 3 | 2 << 6 | r.below(2) << 9 | r.below(2) << 10 | r.below(2) << 11 | 1 << 17;
-                w.extend_from_slice(&[3, 0, 0, 2, 0, 64, 64, 0, 0, 16, 1, s.0, 1, s.1, s.2, s.3, 1, 160, 2, key, 0, 32f32.to_bits(), 0, 0, 0]);
+                w.extend_from_slice(&[3, 0, 0, c1[0], c1[1], c1[2], c1[3], 0, 0, 16, 1, s.0, 1, s.1, s.2, s.3, 1, 160, 2, key, 0, 32f32.to_bits(), 0, 0, 0]);
             } else {
-                w.extend_from_slice(&[1, 0, 0, 2, 0, 64, 64, 0, 0]);
+                w.extend_from_slice(&[1, 0, 0, c1[0], c1[1], c1[2], c1[3], 0, 0]);
             }
             let count = r.pick(&[3u32, 4, 6]);
             let start = r.below(4);
@@ -797,7 +810,7 @@ impl Gen11 {
             }
             fnv32(&mut h, &self.cbs[0]);
             fnv32(&mut h, &self.cbs[1]);
-            w.push(h.max(1));
+            w.push(if gl { 0 } else { h.max(1) });
             b.c.extend_from_slice(&w);
         }
     }
