@@ -1521,6 +1521,9 @@ fn LocalUnlock(_: &mut Ctx) -> u32 {
 fn LocalSize(c: &mut Ctx) -> u32 {
     mem::heap_size(c.a(0))
 }
+fn LocalFlags(_: &mut Ctx) -> u32 {
+    0
+}
 fn LocalHandle(c: &mut Ctx) -> u32 {
     c.a(0)
 }
@@ -4187,7 +4190,7 @@ pub fn init() {
         IsBadReadPtr, IsBadWritePtr, IsBadCodePtr, IsBadStringPtrA, GetProcessHeap, HeapCreate, HeapDestroy, HeapAlloc,
         HeapFree, HeapReAlloc, HeapSize, HeapValidate, HeapCompact, HeapSetInformation, HeapLock, HeapUnlock,
         GlobalAlloc, GlobalFree, GlobalReAlloc, GlobalLock, GlobalUnlock, GlobalHandle, GlobalSize, GlobalFlags,
-        LocalAlloc, LocalFree, LocalReAlloc, LocalLock, LocalUnlock, LocalSize, LocalHandle,
+        LocalAlloc, LocalFree, LocalReAlloc, LocalLock, LocalUnlock, LocalSize, LocalHandle, LocalFlags,
         GlobalMemoryStatus, GlobalMemoryStatusEx, GetSystemInfo, GetNativeSystemInfo, IsProcessorFeaturePresent,
         GetLogicalProcessorInformationEx, GetLogicalProcessorInformation, GetNumaHighestNodeNumber, GetCurrentProcessorNumber,
         GetCurrentProcessorNumberEx, GetNumaNodeProcessorMaskEx, GetNumaNodeProcessorMask, GetActiveProcessorCount,

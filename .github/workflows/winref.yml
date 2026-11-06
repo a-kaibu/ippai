@@ -13,9 +13,9 @@ on:
 permissions:
   contents: read
 
+# (not cancelled by the next push: main moves fast and each run's reference is worth keeping)
 concurrency:
-  group: winref-${{ github.ref }}
-  cancel-in-progress: true
+  group: winref-${{ github.sha }}
 
 jobs:
   probes:

@@ -2517,6 +2517,272 @@ fn _Gettnames(_: &mut Ctx) -> u32 {
     p
 }
 
+// ---------------------------------------------------------------------------------------------
+// found missing by tests/winref (behaviour as Windows' msvcrt prints it there)
+
+fn puts(c: &mut Ctx) -> u32 {
+    let mut s = cstr(c.a(0));
+    s.push(b'\n');
+    eprint!("{}", a2s(&s));
+    0
+}
+fn putchar(c: &mut Ctx) -> u32 {
+    let ch = c.a(0) & 0xff;
+    eprint!("{}", a2s(&[ch as u8]));
+    ch
+}
+fn setvbuf(_: &mut Ctx) -> u32 {
+    0
+}
+fn _strrev(c: &mut Ctx) -> u32 {
+    let mut s = cstr(c.a(0));
+    s.reverse();
+    mem::write(c.a(0), &s);
+    c.a(0)
+}
+fn _ultoa(c: &mut Ctx) -> u32 {
+    itoa_common(c.a(0) as i64, c.a(1), c.a(2).clamp(2, 36))
+}
+fn i64_to_a(v: u64, neg: bool, out: u32, base: u32) -> u32 {
+    let mut s = digits(v, base.clamp(2, 36) as u64);
+    if neg {
+        s.insert(0, b'-');
+    }
+    s.push(0);
+    mem::write(out, &s);
+    out
+}
+fn _i64toa(c: &mut Ctx) -> u32 {
+    let v = (c.a(0) as u64 | (c.a(1) as u64) << 32) as i64;
+    let neg = c.a(3) == 10 && v < 0;
+    i64_to_a(if neg { v.unsigned_abs() } else { v as u64 }, neg, c.a(2), c.a(3))
+}
+fn _ui64toa(c: &mut Ctx) -> u32 {
+    i64_to_a(c.a(0) as u64 | (c.a(1) as u64) << 32, false, c.a(2), c.a(3))
+}
+fn _atoi64(c: &mut Ctx) -> u32 {
+    let v = parse_int(&cstr(c.a(0)), 10).0;
+    c.ret64(v as u64)
+}
+fn div(c: &mut Ctx) -> u32 {
+    let (a, b) = (c.i(0), c.i(1));
+    if b == 0 {
+        return 0;
+    }
+    c.ret64((a.wrapping_div(b) as u32 as u64) | (a.wrapping_rem(b) as u32 as u64) << 32)
+}
+fn _isnan(c: &mut Ctx) -> u32 {
+    c.f64(0).is_nan() as u32
+}
+fn _finite(c: &mut Ctx) -> u32 {
+    c.f64(0).is_finite() as u32
+}
+fn _fpclass(c: &mut Ctx) -> u32 {
+    let x = c.f64(0);
+    let neg = x.is_sign_negative();
+    use std::num::FpCategory::*;
+    match x.classify() {
+        Nan => if x.to_bits() & (1 << 51) != 0 { 2 } else { 1 },
+        Infinite => if neg { 4 } else { 0x200 },
+        Normal => if neg { 8 } else { 0x100 },
+        Subnormal => if neg { 0x10 } else { 0x80 },
+        Zero => if neg { 0x20 } else { 0x40 },
+    }
+}
+fn _hypot(c: &mut Ctx) -> u32 {
+    let (x, y) = (c.f64(0), c.f64(2));
+    ret(c, x.hypot(y))
+}
+/// _ecvt/_fcvt's buffer (one, as msvcrt's per-thread one)
+fn cvt_buf() -> u32 {
+    static B: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let b = B.load(std::sync::atomic::Ordering::Relaxed);
+    if b != 0 {
+        return b;
+    }
+    let p = mem::heap_alloc(352, true);
+    B.store(p, std::sync::atomic::Ordering::Relaxed);
+    p
+}
+/// (digits, decimal point position) of |v| with `n` significant digits
+fn ecvt_digits(v: f64, n: usize) -> (Vec<u8>, i32) {
+    let n = n.clamp(1, 340);
+    if v == 0.0 {
+        return (vec![b'0'; n], 0);
+    }
+    let s = format!("{:.*e}", n - 1, v.abs());
+    let (m, e) = s.split_once('e').unwrap();
+    (m.bytes().filter(|b| b.is_ascii_digit()).collect(), e.parse::<i32>().unwrap() + 1)
+}
+fn cvt_out(c: &mut Ctx, d: &[u8], dec: i32, neg: bool, pdec: u32, psign: u32) -> u32 {
+    let b = cvt_buf();
+    mem::write(b, &d[..d.len().min(350)]);
+    w8(b + d.len().min(350) as u32, 0);
+    w32(pdec, dec as u32);
+    w32(psign, neg as u32);
+    let _ = c;
+    b
+}
+fn _ecvt(c: &mut Ctx) -> u32 {
+    let (v, n) = (c.f64(0), c.i(2).max(0) as usize);
+    let (d, dec) = ecvt_digits(v, n);
+    cvt_out(c, &d, dec, v.is_sign_negative() && v != 0.0, c.a(3), c.a(4))
+}
+fn _fcvt(c: &mut Ctx) -> u32 {
+    let (v, n) = (c.f64(0), c.i(2).clamp(0, 300) as usize);
+    let s = format!("{:.*}", n, v.abs());
+    let (ip, fp) = s.split_once('.').unwrap_or((&s, ""));
+    let mut d: Vec<u8> = ip.bytes().chain(fp.bytes()).collect();
+    let mut dec = ip.len() as i32;
+    while d.len() > 1 && d[0] == b'0' && dec > 0 {
+        d.remove(0);
+        dec -= 1;
+    }
+    if ip == "0" {
+        // 0.00123: "123" with the point 2 digits to its left
+        let z = d.iter().take_while(|&&b| b == b'0').count();
+        if z == d.len() {
+            d.clear();
+            dec = -(n as i32);
+            if v == 0.0 { dec = 0; }
+        } else {
+            d.drain(..z);
+            dec = -(z as i32);
+        }
+    }
+    cvt_out(c, &d, dec, v.is_sign_negative() && v != 0.0, c.a(3), c.a(4))
+}
+fn _mbslen(c: &mut Ctx) -> u32 {
+    let s = cstr(c.a(0));
+    let (mut i, mut n) = (0, 0);
+    while i < s.len() {
+        i += if crate::text::is_lead(s[i]) && i + 1 < s.len() { 2 } else { 1 };
+        n += 1;
+    }
+    n
+}
+/// (offset, character) of each character of an ANSI string
+fn mb_chars(s: &[u8]) -> Vec<(usize, u32)> {
+    let mut v = Vec::new();
+    let mut i = 0;
+    while i < s.len() {
+        if crate::text::is_lead(s[i]) && i + 1 < s.len() {
+            v.push((i, (s[i] as u32) << 8 | s[i + 1] as u32));
+            i += 2;
+        } else {
+            v.push((i, s[i] as u32));
+            i += 1;
+        }
+    }
+    v
+}
+fn _mbschr(c: &mut Ctx) -> u32 {
+    let (p, ch) = (c.a(0), c.a(1) & 0xffff);
+    let s = cstr(p);
+    if ch == 0 {
+        return p + s.len() as u32;
+    }
+    mb_chars(&s).iter().find(|x| x.1 == ch).map_or(0, |x| p + x.0 as u32)
+}
+fn _mbsrchr(c: &mut Ctx) -> u32 {
+    let (p, ch) = (c.a(0), c.a(1) & 0xffff);
+    let s = cstr(p);
+    if ch == 0 {
+        return p + s.len() as u32;
+    }
+    mb_chars(&s).iter().rev().find(|x| x.1 == ch).map_or(0, |x| p + x.0 as u32)
+}
+fn _mbsinc(c: &mut Ctx) -> u32 {
+    let p = c.a(0);
+    p + if crate::text::is_lead(r8(p)) && r8(p + 1) != 0 { 2 } else { 1 }
+}
+fn _mbsnextc(c: &mut Ctx) -> u32 {
+    let p = c.a(0);
+    let b = r8(p);
+    if crate::text::is_lead(b) && r8(p + 1) != 0 { (b as u32) << 8 | r8(p + 1) as u32 } else { b as u32 }
+}
+fn _ismbcspace(c: &mut Ctx) -> u32 {
+    let ch = c.a(0);
+    (matches!(ch, 0x09..=0x0d | 0x20) || ch == 0x8140 && crate::text::acp() == 932) as u32
+}
+fn _mbctohira(c: &mut Ctx) -> u32 {
+    match c.a(0) {
+        k @ 0x8340..=0x837e => k - 0x8340 + 0x829f,
+        k @ 0x8380..=0x8393 => k - 0x8380 + 0x82de,
+        k => k,
+    }
+}
+fn _mbctokata(c: &mut Ctx) -> u32 {
+    match c.a(0) {
+        h @ 0x829f..=0x82dd => h - 0x829f + 0x8340,
+        h @ 0x82de..=0x82f1 => h - 0x82de + 0x8380,
+        h => h,
+    }
+}
+fn _mbcjistojms(c: &mut Ctx) -> u32 {
+    let ch = c.a(0);
+    let (hi, lo) = (ch >> 8, ch & 0xff);
+    if !(0x21..=0x7e).contains(&hi) || !(0x21..=0x7e).contains(&lo) {
+        return 0;
+    }
+    let s1 = (hi + 1) / 2 + if hi <= 0x5e { 0x70 } else { 0xb0 };
+    let s2 = if hi & 1 != 0 { lo + if lo <= 0x5f { 0x1f } else { 0x20 } } else { lo + 0x7e };
+    s1 << 8 | s2
+}
+fn _mbcjmstojis(c: &mut Ctx) -> u32 {
+    let ch = c.a(0);
+    let (s1, s2) = (ch >> 8, ch & 0xff);
+    if !matches!(s1, 0x81..=0x9f | 0xe0..=0xef) || !matches!(s2, 0x40..=0x7e | 0x80..=0xfc) {
+        return 0;
+    }
+    let mut hi = (if s1 <= 0x9f { s1 - 0x70 } else { s1 - 0xb0 }) * 2;
+    let lo = if s2 < 0x9f {
+        hi -= 1;
+        s2 - if s2 > 0x7f { 0x20 } else { 0x1f }
+    } else {
+        s2 - 0x7e
+    };
+    hi << 8 | lo
+}
+fn _mbsupr(c: &mut Ctx) -> u32 {
+    let mut s = cstr(c.a(0));
+    crate::text::upper_a(&mut s);
+    mem::write(c.a(0), &s);
+    c.a(0)
+}
+fn _mbslwr(c: &mut Ctx) -> u32 {
+    let mut s = cstr(c.a(0));
+    crate::text::lower_a(&mut s);
+    mem::write(c.a(0), &s);
+    c.a(0)
+}
+static MBCP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(u32::MAX);
+fn _setmbcp(c: &mut Ctx) -> u32 {
+    let cp = match c.i(0) {
+        -3 | -4 => crate::text::acp(), // _MB_CP_ANSI, _MB_CP_LOCALE
+        -2 => crate::text::acp(),      // _MB_CP_OEM
+        cp => cp as u32,
+    };
+    MBCP.store(cp, std::sync::atomic::Ordering::Relaxed);
+    0
+}
+fn _getmbcp(_: &mut Ctx) -> u32 {
+    match MBCP.load(std::sync::atomic::Ordering::Relaxed) {
+        u32::MAX => crate::text::acp(),
+        cp => cp,
+    }
+}
+fn asctime(c: &mut Ctx) -> u32 {
+    let tm = read_tm(c.a(0));
+    const DAY: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const MON: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let s = format!("{} {} {:02} {:02}:{:02}:{:02} {}\n\0", DAY[tm[6].rem_euclid(7) as usize],
+        MON[tm[4].rem_euclid(12) as usize], tm[3], tm[2], tm[1], tm[0], tm[5] + 1900);
+    let b = cvt_buf();
+    mem::write(b, s.as_bytes());
+    b
+}
+
 pub fn init() {
     implement("msvcrt", "_strtof_l", strtod);
     reg!(_set_fmode, _get_initial_narrow_environment, _get_initial_wide_environment, _initialize_onexit_table,
@@ -2573,6 +2839,10 @@ pub fn init() {
     reg!(localeconv, setlocale);
     reg!(strcpy_s, wcscpy_s, strcat_s, wcscat_s, wcsncpy_s);
     reg!(_itoa_s, _ultoa_s, _i64toa_s, _ui64toa_s);
+    reg!(puts, putchar, setvbuf, _strrev, _ultoa, _i64toa, _ui64toa, _atoi64, div, _isnan, _finite, _fpclass, _hypot,
+        _ecvt, _fcvt, _mbslen, _mbschr, _mbsrchr, _mbsinc, _mbsnextc, _ismbcspace, _mbctohira, _mbctokata,
+        _mbcjistojms, _mbcjmstojis, _mbsupr, _mbslwr, _setmbcp, _getmbcp, asctime);
+    implement("msvcrt", "ldiv", div);
     reg!(strncpy_s, ___lc_codepage_func, ___lc_locale_name_func, ___lc_handle_func, _seh_filter_exe);
     implement("ucrtbase", "__stdio_common_vsprintf_s", __stdio_common_vsprintf_s);
     implement("ucrtbase", "__stdio_common_vswprintf_s", __stdio_common_vswprintf_s);
