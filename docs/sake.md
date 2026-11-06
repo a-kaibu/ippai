@@ -100,12 +100,13 @@
   旧来のコードに写し、NDS は Cpu::vex_tmp (xmm16) に src1 を写してから実行)。ymm (256 ビット)
   は #UD、CPUID は AVX を報告しない。JIT は VEX 命令でインタプリタに落ちる。
   `tools/jit64test native` で実 CPU と照合済み (rcp/rsqrt の近似値を除き一致)。
-  未実装: dpps/dppd、mpsadbw、phminposuw、pcmpXstrX。
+  SSE4.1 の dpps/dppd、mpsadbw、phminposuw と SSE4.2 の pcmpXstrX も実行する
+  (host/tests/sse4.c: native と一致、-mavx の VEX 形も)。
 - gl.rs: x64 では引数を位置で並べる ('d'/'f' は xmm、他は a64 の下位)。glShaderSource の
   ポインタ配列は 8 バイト刻み。拡張関数名は ARB/EXT を外した名前でも探す。
 - user: DPI API (GetDpiForWindow など 96 固定)、ShowWindow(SW_MAXIMIZE) で画面いっぱいに広げる。
-- 未対応: XAudio2 (32 ビットのみ)、多くの構造体 (PAINTSTRUCT、BITMAP、SYSTEM_INFO、
-  MEMORY_BASIC_INFORMATION など)。
+- 構造体: PAINTSTRUCT、BITMAP、DIBSECTION、SYSTEM_INFO、MEMORY_BASIC_INFORMATION は x64 の
+  形で書く (host/tests/struct64.c)。未対応: XAudio2 (32 ビットのみ)、d3d9 ブリッジ。
 
 ## 16 ビット (Win16)
 

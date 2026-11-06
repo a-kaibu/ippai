@@ -865,6 +865,84 @@ impl<'a, M: Memory> X<'a, M> {
                     r
                 })
             }
+            // SSE4.1: dot products (each product rounded, then the sums in pairs)
+            Dpps => {
+                let imm = ins.immediate8() as u32;
+                binop(self, &|a, b| {
+                    let p = |i: u32| if imm & (16 << i) != 0 { f32x(a, i) * f32x(b, i) } else { 0.0 };
+                    let sum = (p(0) + p(1)) + (p(2) + p(3));
+                    (0..4).fold(0, |r, i| if imm & (1 << i) != 0 { set32(r, i, sum.to_bits()) } else { r })
+                })
+            }
+            Dppd => {
+                let imm = ins.immediate8() as u32;
+                binop(self, &|a, b| {
+                    let p = |i: u32| if imm & (16 << i) != 0 { f64x(a, i) * f64x(b, i) } else { 0.0 };
+                    let sum = p(0) + p(1);
+                    (0..2).fold(0, |r, i| if imm & (1 << i) != 0 { set64(r, i, sum.to_bits()) } else { r })
+                })
+            }
+            // SSE4.1: sums of absolute differences of 4 bytes, 8 windows of the destination
+            Mpsadbw => {
+                let imm = ins.immediate8() as u32;
+                binop(self, &|a, b| {
+                    let byte = |v: u128, i: u32| (v >> (8 * i)) as u8 as i32;
+                    let (so, d) = (4 * (imm & 3), 4 * ((imm >> 2) & 1));
+                    (0..8u32).fold(0u128, |r, i| {
+                        let sad: i32 = (0..4).map(|j| (byte(a, d + i + j) - byte(b, so + j)).abs()).sum();
+                        r | (sad as u128) << (16 * i)
+                    })
+                })
+            }
+            // SSE4.1: the smallest word and its index
+            Phminposuw => {
+                let v = tryf!(self.read_v(1));
+                let (mut m, mut at) = (u16::MAX as u128 + 1, 0);
+                for i in 0..8 {
+                    let w = (v >> (16 * i)) & 0xffff;
+                    if w < m {
+                        (m, at) = (w, i);
+                    }
+                }
+                tryf!(self.write_v(0, m | (at as u128) << 16));
+                self.done()
+            }
+            // SSE4.2 string compares
+            Pcmpestri | Pcmpestrm | Pcmpistri | Pcmpistrm | Pcmpestri64 | Pcmpestrm64 => {
+                let a = tryf!(self.read_v(0));
+                let b = tryf!(self.read_v(1));
+                let imm = ins.immediate8() as u32;
+                let explicit = matches!(mn, Pcmpestri | Pcmpestrm | Pcmpestri64 | Pcmpestrm64);
+                let lens = explicit.then(|| (self.cpu.regs[0], self.cpu.regs[2]));
+                let (res, la, lb, n) = pcmpstr(a, b, imm, lens);
+                let mut f = self.cpu.eflags & !STATUS;
+                if res != 0 {
+                    f |= crate::flags::CF;
+                }
+                if lb < n {
+                    f |= crate::flags::ZF;
+                }
+                if la < n {
+                    f |= crate::flags::SF;
+                }
+                if res & 1 != 0 {
+                    f |= crate::flags::OF;
+                }
+                self.cpu.eflags = f;
+                if matches!(mn, Pcmpestri | Pcmpistri | Pcmpestri64) {
+                    let i = if res == 0 { n } else if imm & 0x40 != 0 { 31 - res.leading_zeros() } else { res.trailing_zeros() };
+                    self.set_reg(Register::ECX, i as u64);
+                } else {
+                    let m = if imm & 0x40 == 0 {
+                        res as u128
+                    } else {
+                        let w = if imm & 1 != 0 { 16 } else { 8 };
+                        (0..n).filter(|i| res >> i & 1 != 0).fold(0u128, |r, i| r | (((1u128 << w) - 1) << (w * i)))
+                    };
+                    self.cpu.set_xmm(0, m);
+                }
+                self.done()
+            }
             Ptest => {
                 let a = tryf!(self.read_v(0));
                 let b = tryf!(self.read_v(1));
@@ -901,4 +979,56 @@ impl<'a, M: Memory> X<'a, M> {
             _ => Exit::InvalidOpcode,
         }
     }
+}
+
+/// PCMPxSTRx: the result bits (IntRes2), the lengths of `a` and `b` and the element count.
+/// `lens`: the explicit lengths (EAX, EDX), else up to the first zero element.
+fn pcmpstr(a: u128, b: u128, imm: u32, lens: Option<(u32, u32)>) -> (u32, u32, u32, u32) {
+    let words = imm & 1 != 0;
+    let signed = imm & 2 != 0;
+    let n: u32 = if words { 8 } else { 16 };
+    let el = |v: u128, i: u32| -> i32 {
+        let x = if words { (v >> (16 * i)) as u16 as u32 } else { (v >> (8 * i)) as u8 as u32 };
+        match (signed, words) {
+            (true, true) => x as u16 as i16 as i32,
+            (true, false) => x as u8 as i8 as i32,
+            _ => x as i32,
+        }
+    };
+    let len = |v: u128, r: Option<u32>| match r {
+        Some(r) => (r as i32).unsigned_abs().min(n),
+        None => (0..n).find(|&i| el(v, i) == 0).unwrap_or(n),
+    };
+    let (la, lb) = (len(a, lens.map(|l| l.0)), len(b, lens.map(|l| l.1)));
+    let agg = (imm >> 2) & 3;
+    // a[j] against b[i], with the forced results for elements past the lengths
+    let cmp = |j: u32, i: u32| -> bool {
+        match (j < la, i < lb) {
+            (true, true) => match agg {
+                1 if j % 2 == 0 => el(a, j) <= el(b, i),
+                1 => el(a, j) >= el(b, i),
+                _ => el(a, j) == el(b, i),
+            },
+            (false, false) => agg >= 2,
+            (false, true) => agg == 3,
+            (true, false) => false,
+        }
+    };
+    let mut r1 = 0u32;
+    for i in 0..n {
+        let bit = match agg {
+            0 => (0..n).any(|j| cmp(j, i)),
+            1 => (0..n / 2).any(|k| cmp(2 * k, i) && cmp(2 * k + 1, i)),
+            2 => cmp(i, i),
+            _ => (0..n - i).all(|k| cmp(k, i + k)),
+        };
+        r1 |= (bit as u32) << i;
+    }
+    let all = (1u32 << n) - 1;
+    let r2 = match (imm >> 4) & 3 {
+        1 => !r1 & all,
+        3 => r1 ^ ((1u32 << lb) - 1),
+        _ => r1,
+    };
+    (r2, la, lb, n)
 }

@@ -11,8 +11,10 @@ set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SAKE=${SAKE:-/home/user/work/sake-out/sake.js}
 OUT=${OUT:-$(mktemp -d)}
-TESTS=${*:-nullcall intops simd atomics smc cmp64 ssecvt dinputtest textbounds crtstdio fileseek crtfiles hlsltest d3dx9shader d3dx9effect struct64 guard}
+TESTS=${*:-nullcall intops simd atomics smc cmp64 ssecvt dinputtest textbounds crtstdio fileseek crtfiles hlsltest d3dx9shader d3dx9effect struct64 guard sse4}
 X64=" struct64 guard "
+# Tests in VEX are also built with -mavx (the VEX forms of their SSE instructions)
+VEX=" sse4 "
 fail=0
 for t in $TESTS; do
   # a "libs:" line in the source names its import libraries
@@ -41,6 +43,17 @@ for t in $TESTS; do
     echo "FAIL $t (interpreter):"; diff <(echo "$interp") "$want" | head -10; fail=1
   else
     echo "ok   $t"
+  fi
+  if [[ "$VEX" == *" $t "* ]]; then
+    if ! i686-w64-mingw32-gcc -O2 -mavx "$ROOT/host/tests/$t.c" -o "$OUT/$t-vex.exe" $libs; then
+      echo "FAIL $t (VEX): build"; fail=1; continue
+    fi
+    tv=$( (cd "$(dirname "$SAKE")" && timeout 300 node "$SAKE" "$OUT/$t-vex.exe" 2>&1 | grep -v '^sake:') )
+    if [ "$tv" != "$(cat "$want")" ]; then
+      echo "FAIL $t (VEX):"; diff <(echo "$tv") "$want" | head -10; fail=1
+    else
+      echo "ok   $t (VEX)"
+    fi
   fi
   if [[ "$X64" == *" $t "* ]]; then
     if ! x86_64-w64-mingw32-gcc -O2 "$ROOT/host/tests/$t.c" -o "$OUT/$t-64.exe" $libs; then
