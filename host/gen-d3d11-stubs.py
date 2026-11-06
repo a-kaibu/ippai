@@ -17,12 +17,19 @@ IFACES = [  # (number, interface whose vtable is used)
     (88, 'ID3D11BlendState1'), (89, 'ID3D11DepthStencilState'), (90, 'ID3D11RasterizerState1'),
     (91, 'ID3D11Query'), (92, 'ID3D11ClassLinkage'), (93, 'ID3D11CommandList'),
     (94, 'ID3D10Multithread'),
+    # Direct3D 10 / 10.1 (crates/kura/src/d3d11/d3d10.rs): faces of the same objects
+    (95, 'ID3D10Device1'), (96, 'ID3D10Buffer'), (97, 'ID3D10Texture1D'), (98, 'ID3D10Texture2D'),
+    (99, 'ID3D10Texture3D'), (100, 'ID3D10ShaderResourceView1'), (101, 'ID3D10RenderTargetView'),
+    (102, 'ID3D10DepthStencilView'), (103, 'ID3D10VertexShader'), (104, 'ID3D10GeometryShader'),
+    (105, 'ID3D10PixelShader'), (106, 'ID3D10InputLayout'), (107, 'ID3D10SamplerState'),
+    (108, 'ID3D10BlendState1'), (109, 'ID3D10DepthStencilState'), (110, 'ID3D10RasterizerState'),
+    (111, 'ID3D10Query'),
 ]
 # methods returning a float (x87): their own stub returns 0.0
 FLOAT = {('ID3D11DeviceContext2', 'GetResourceMinLOD')}
 
 wine, inc = sys.argv[1], (sys.argv[2] if len(sys.argv) > 2 else '/usr/share/mingw-w64/include')
-src = ''.join(open(f'{inc}/{f}').read() for f in ['d3d10.h', 'dxgi.h', 'dxgi1_2.h', 'dxgi1_3.h', 'd3d11.h', 'd3d11_1.h', 'd3d11_2.h'])
+src = ''.join(open(f'{inc}/{f}').read() for f in ['d3d10.h', 'd3d10_1.h', 'dxgi.h', 'dxgi1_2.h', 'dxgi1_3.h', 'd3d11.h', 'd3d11_1.h', 'd3d11_2.h'])
 vt = {}
 for m in re.finditer(r'typedef struct (\w+)Vtbl \{\s*BEGIN_INTERFACE(.*?)END_INTERFACE', src, re.S):
     name, body = m.groups()

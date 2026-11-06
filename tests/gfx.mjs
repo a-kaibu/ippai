@@ -48,6 +48,12 @@ const TESTS = {
       [320, 90, 239, 9, 8], [150, 352, 7, 12, 237], [490, 352, 7, 237, 11], [320, 280, 70, 93, 92]],
     log: [/frame 60\b/],
   },
+  d3d10test: {
+    // d3d11test's picture through d3d10.dll (D3D10_BLEND_DESC, integer viewport, ID3D10Buffer::Map)
+    pixels: [[10, 10, 26, 77, 26], [630, 470, 26, 77, 26], [60, 40, 13, 38, 77], [140, 40, 255, 255, 0],
+      [320, 90, 239, 9, 8], [150, 352, 7, 12, 237], [490, 352, 7, 237, 11], [320, 280, 70, 93, 92]],
+    log: [/feature level 0xa100/, /buffer desc 32 2 0x4 0x10000 0\b/, /blend desc same/, /frame 60\b/],
+  },
   d2dtest: {
     // Direct2D on the D3D11 swap chain: clear, filled rectangle, ellipse outline, gradient bar,
     // DirectWrite text (its metrics in the log)

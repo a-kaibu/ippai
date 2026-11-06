@@ -32,6 +32,11 @@ WebGPU D3D9 を使う。いまはページ (`play.html` / `game.html`) が動か
 - D3D11 / DXGI (d3d11.rs): kura の WebGPU D3D11 (Wine 経路と同じ実装) に橋渡し。vtable の
   各メソッドはトラップで、`kura::d3d11::call` に引数を渡すだけ。メソッド表は
   `host/gen-d3d11-stubs.py` が d3d11_methods.rs として生成する。
+- D3D10 / 10.1 (d3d10.dll、d3d10_1.dll): D3D11 の同じオブジェクトの別の面 (kura の d3d11/d3d10.rs、
+  インターフェース 95〜111)。メソッドは D3D11 のデバイス・コンテキスト・オブジェクトの呼び出しにして、違う
+  構造体 (D3D10_BLEND_DESC、深度ステンシルビューの記述、整数のビューポート、バッファの記述、Map の結果)
+  だけ変換する。D3D10CompileShader は hlslc。リフレクションと Effects 10 は未対応。テストは
+  host/tests/d3d10test.c (tests/gfx.mjs)。
 - d3dcompiler_33〜47 (d3dcompiler.rs, d3dreflect.rs): 自前の HLSL コンパイラ (crates/hlslc:
   プリプロセッサ、構文解析、関数はすべてインライン展開、SM4/5 の DXBC を出す) で D3DCompile、
   D3DPreprocess、署名ブロブ、D3DReflect。出力は dxwgsl (crates/dxwgsl) の DXBC→WGSL がそのまま読む。

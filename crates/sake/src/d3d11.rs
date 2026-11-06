@@ -10,7 +10,7 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::api::{host_fn, implement, Ctx};
 use crate::mem;
-use kura::d3d11::{CREATE_DEVICE, CREATE_FACTORY};
+use kura::d3d11::{CREATE_DEVICE, CREATE_DEVICE10, CREATE_FACTORY};
 
 #[path = "d3d11_methods.rs"]
 mod methods;
@@ -92,6 +92,24 @@ fn D3D11CoreCreateDevice(c: &mut Ctx) -> u32 {
     let a = [c.a(1), 0, 0, c.a(2), c.a(3), c.a(4), 7, 0, 0, c.a(5), 0, 0];
     host(CREATE_DEVICE, &a)
 }
+/// d3d10.dll / d3d10_1.dll: the D3D11 device's D3D10 face (crates/kura/src/d3d11/d3d10.rs)
+/// (adapter, driver type, software, flags, sdk, out)
+fn D3D10CreateDevice(c: &mut Ctx) -> u32 {
+    host(CREATE_DEVICE10, &[c.a(0), c.a(1), c.a(2), c.a(3), 0xa000, c.a(4), 0, 0, c.a(5)])
+}
+/// (adapter, driver type, software, flags, sdk, swap chain desc, swap chain, device)
+fn D3D10CreateDeviceAndSwapChain(c: &mut Ctx) -> u32 {
+    host(CREATE_DEVICE10, &[c.a(0), c.a(1), c.a(2), c.a(3), 0xa000, c.a(4), c.a(5), c.a(6), c.a(7)])
+}
+/// (adapter, driver type, software, flags, level, sdk, out)
+fn D3D10CreateDevice1(c: &mut Ctx) -> u32 {
+    host(CREATE_DEVICE10, &[c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), 0, 0, c.a(6)])
+}
+/// (adapter, driver type, software, flags, level, sdk, swap chain desc, swap chain, device)
+fn D3D10CreateDeviceAndSwapChain1(c: &mut Ctx) -> u32 {
+    let a: Vec<u32> = (0..9).map(|i| c.a(i)).collect();
+    host(CREATE_DEVICE10, &a)
+}
 fn D3D11On12CreateDevice(_: &mut Ctx) -> u32 {
     E_NOTIMPL
 }
@@ -120,6 +138,10 @@ pub fn register() {
     for n in ["D3D11CoreCreateLayeredDevice", "D3D11CoreGetLayeredDeviceSize", "D3D11CoreRegisterLayers"] {
         implement("d3d11", n, not_impl);
     }
+    implement("d3d10", "D3D10CreateDevice", D3D10CreateDevice);
+    implement("d3d10", "D3D10CreateDeviceAndSwapChain", D3D10CreateDeviceAndSwapChain);
+    implement("d3d10_1", "D3D10CreateDevice1", D3D10CreateDevice1);
+    implement("d3d10_1", "D3D10CreateDeviceAndSwapChain1", D3D10CreateDeviceAndSwapChain1);
     implement("dxgi", "CreateDXGIFactory", CreateDXGIFactory);
     implement("dxgi", "CreateDXGIFactory1", CreateDXGIFactory);
     implement("dxgi", "CreateDXGIFactory2", CreateDXGIFactory2);

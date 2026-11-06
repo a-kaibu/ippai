@@ -10,6 +10,7 @@
 //! buffer whenever a draw needs them after the guest wrote them.
 
 pub mod d2d;
+pub mod d3d10;
 pub mod format;
 pub mod names;
 
@@ -33,6 +34,8 @@ const DXGI_ERROR_UNSUPPORTED: u32 = 0x887a_0004;
 pub const INIT: u32 = 0xffff_0011;
 pub const CREATE_DEVICE: u32 = 0xffff_0012;
 pub const CREATE_FACTORY: u32 = 0xffff_0013;
+/// D3D10CreateDeviceAndSwapChain1(adapter, driver, software, flags, level, sdk, desc, swapchain, device)
+pub const CREATE_DEVICE10: u32 = 0xffff_0014;
 
 pub const IF_FACTORY: u32 = 64;
 pub const IF_ADAPTER: u32 = 65;
@@ -128,7 +131,7 @@ const IIDS: &[(u32, &[u32])] = &[
 /// Interfaces another face of the same object can answer (device <-> IDXGIDevice, 2D textures
 /// <-> IDXGISurface)
 fn other_face(primary: u32, want: u32) -> bool {
-    matches!((primary, want), (IF_DEVICE, IF_DXGIDEVICE) | (IF_TEX2D, IF_SURFACE) | (IF_DEVICE | IF_CONTEXT, IF_MULTITHREAD))
+    matches!((primary, want), (IF_DEVICE, IF_DXGIDEVICE) | (IF_TEX2D, IF_SURFACE) | (IF_DEVICE | IF_CONTEXT, IF_MULTITHREAD)) || d3d10::ten(primary) == Some(want)
 }
 
 pub struct Buffer {
@@ -573,6 +576,7 @@ pub unsafe fn call(id: u32, args: *const u32, calls: *const HostCalls) -> u32 {
         let mut after = After::None;
         let r = match id {
             CREATE_DEVICE => create_device(d, args),
+            CREATE_DEVICE10 => create_device10(d, args),
             CREATE_FACTORY => {
                 let f = dxgi_objects(d);
                 let r = query_interface(d, f, IF_FACTORY, a(1), a(2));
@@ -628,7 +632,7 @@ unsafe fn query_interface(d: &mut D11, id: u32, iface: u32, riid: u32, out: u32)
     }
     let first = rd(riid, 0);
     let primary = d.objs.get(&id).map_or(0, |o| o.iface);
-    let want = match IIDS.iter().find(|x| x.0 == first) {
+    let want = match IIDS.iter().chain(d3d10::IIDS10).find(|x| x.0 == first) {
         Some((0, _)) => primary,
         Some((_, ifs)) => {
             if ifs.contains(&iface) {
@@ -713,6 +717,27 @@ unsafe fn create_device(d: &mut D11, args: *const u32) -> u32 {
     }
     if d.trace {
         eprintln!("d3d11: device, feature level {level:#x}");
+    }
+    S_OK
+}
+
+/// D3D10CreateDevice(AndSwapChain)(1): the D3D11 device's D3D10 face
+unsafe fn create_device10(d: &mut D11, args: *const u32) -> u32 {
+    let a = |i: usize| *args.add(i);
+    let dev_out = a(8);
+    let mut dev = [0u32; 2];
+    let mut level = 0u32;
+    let v = [a(0), a(1), a(2), a(3), 0, 0, 7, a(6), a(7), dev.as_mut_ptr() as usize as u32, &mut level as *mut u32 as usize as u32, 0];
+    let r = create_device(d, v.as_ptr());
+    if r != S_OK {
+        return r;
+    }
+    let id = d.id_of(rdp(dev.as_mut_ptr() as usize as u32, 0));
+    if dev_out != 0 {
+        let f = d.face(id, d3d10::IF10_DEVICE);
+        wrp(dev_out, 0, f);
+    } else {
+        d.release(id);
     }
     S_OK
 }
@@ -924,6 +949,8 @@ unsafe fn method(d: &mut D11, iface: u32, m: u32, this: u32, args: *const u32, a
         },
         IF_DEVICE => device_call(d, m, this, &a),
         IF_CONTEXT => context_call(d, m, &a, after),
+        d3d10::IF10_DEVICE => d3d10::device(d, m, this, &a, after),
+        d3d10::IF10_BUFFER..=d3d10::IF10_QUERY => d3d10::child(d, iface, m, this, &a, after),
         _ => child_call(d, iface, m, this, &a),
     }
 }
@@ -1311,7 +1338,7 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             std::ptr::write_bytes(a(2) as *mut u8, 0, a(3) as usize);
             S_OK
         }
-        34..=36 => private_data(d, m - 34 + 5, this, a),
+        34..=36 => private_data(d, m - 30, this, a),
         37 => 0xb000,
         38 => 0,
         39 => S_OK,

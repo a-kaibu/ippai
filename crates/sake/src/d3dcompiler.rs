@@ -296,6 +296,50 @@ fn D3DDisassemble(c: &mut Ctx) -> u32 {
     0
 }
 
+/// D3D10CompileShader(data, size, name, defines, include, entry, profile, flags, code, errors)
+fn D3D10CompileShader(c: &mut Ctx) -> u32 {
+    let src = mem::slice(c.a(0), c.a(1)).to_vec();
+    let name = if c.a(2) == 0 { String::new() } else { crate::k32::arg_str(c.a(2), false) };
+    let (d, i, e, t, f, o, er) = (c.a(3), c.a(4), c.a(5), c.a(6), c.a(7), c.a(8), c.a(9));
+    compile(c, &src, &name, d, i, e, t, f, o, er)
+}
+
+/// A string the guest keeps (the D3D10Get*ShaderProfile results).
+fn static_str(s: &'static str) -> u32 {
+    static AT: std::sync::Mutex<Vec<(&'static str, u32)>> = std::sync::Mutex::new(Vec::new());
+    let mut g = AT.lock().unwrap();
+    if let Some(&(_, p)) = g.iter().find(|x| x.0 == s) {
+        return p;
+    }
+    let p = mem::heap_alloc(s.len() as u32 + 1, true);
+    mem::write(p, s.as_bytes());
+    g.push((s, p));
+    p
+}
+fn D3D10GetVertexShaderProfile(_: &mut Ctx) -> u32 {
+    static_str("vs_4_0")
+}
+fn D3D10GetPixelShaderProfile(_: &mut Ctx) -> u32 {
+    static_str("ps_4_0")
+}
+fn D3D10GetGeometryShaderProfile(_: &mut Ctx) -> u32 {
+    static_str("gs_4_0")
+}
+/// D3D10DisassembleShader(data, size, color, comments, text)
+fn D3D10DisassembleShader(c: &mut Ctx) -> u32 {
+    mem::putp(c.a(4), text_blob("// (no disassembly in sake)\n"));
+    0
+}
+/// Not done: shader reflection (ID3D10ShaderReflection) and effects (Effects 10)
+fn D3D10ReflectShader(c: &mut Ctx) -> u32 {
+    mem::putp(c.a(2), 0);
+    0x8000_4001
+}
+fn D3D10CreateEffectFromMemory(c: &mut Ctx) -> u32 {
+    mem::putp(c.a(5), 0);
+    0x8000_4001
+}
+
 pub fn init() {
     let fns: &[(&str, Handler)] = &[
         ("D3DCompile", D3DCompile),
@@ -312,6 +356,24 @@ pub fn init() {
         ("D3DDisassemble", D3DDisassemble),
         ("D3DReflect", crate::d3dreflect::D3DReflect),
     ];
+    let d3d10: &[(&str, Handler)] = &[
+        ("D3D10CompileShader", D3D10CompileShader),
+        ("D3D10CreateBlob", D3DCreateBlob),
+        ("D3D10GetInputSignatureBlob", D3DGetInputSignatureBlob),
+        ("D3D10GetOutputSignatureBlob", D3DGetOutputSignatureBlob),
+        ("D3D10GetInputAndOutputSignatureBlob", D3DGetInputAndOutputSignatureBlob),
+        ("D3D10GetVertexShaderProfile", D3D10GetVertexShaderProfile),
+        ("D3D10GetPixelShaderProfile", D3D10GetPixelShaderProfile),
+        ("D3D10GetGeometryShaderProfile", D3D10GetGeometryShaderProfile),
+        ("D3D10DisassembleShader", D3D10DisassembleShader),
+        ("D3D10ReflectShader", D3D10ReflectShader),
+        ("D3D10CreateEffectFromMemory", D3D10CreateEffectFromMemory),
+    ];
+    for dll in ["d3d10", "d3d10_1"] {
+        for (n, f) in d3d10 {
+            implement(dll, n, *f);
+        }
+    }
     for v in 33..=47 {
         let dll = format!("d3dcompiler_{v}");
         for (n, f) in fns {
