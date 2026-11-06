@@ -162,6 +162,8 @@ pub struct Device {
     pub cursor: bool,
     pub gamma: Vec<u8>,
     pub frames: u64,
+    /// the declarations GetVertexDeclaration hands out for FVFs (fvf -> object id)
+    pub fvf_decls: HashMap<u32, u32>,
 }
 
 fn default_state() -> State {
@@ -836,6 +838,7 @@ unsafe fn create_device(d: &mut D3d, d3d: u32, ty: u32, focus: u32, behavior: u3
         cursor: true,
         gamma: Vec::new(),
         frames: 0,
+        fvf_decls: HashMap::new(),
     });
     let _ = dev.new_gpu();
     d.dev = Some(dev);
@@ -1350,7 +1353,22 @@ unsafe fn device_call(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &mut
         }
         88 => {
             let dev = dev!(d);
-            let decl = dev.st.decl;
+            let (mut decl, fvf) = (dev.st.decl, dev.st.fvf);
+            // with an FVF set: a declaration of it, as Direct3D makes one (made once a device)
+            if decl == 0 && fvf != 0 {
+                decl = match dev.fvf_decls.get(&fvf) {
+                    Some(&id) => id,
+                    None => {
+                        let elems = fvf_elems(fvf).0;
+                        let mut raw: Vec<[u32; 2]> = elems.iter().map(|e| [e.stream | e.offset << 16, e.ty | e.usage << 16 | e.index << 24]).collect();
+                        raw.push([0xff, 17]);
+                        let addr = d.new_obj(IF_DECL, 0, Data::Decl(Decl { elems, raw, fvf }));
+                        let id = d.id_of(addr);
+                        d.dev.as_mut().unwrap().fvf_decls.insert(fvf, id);
+                        id
+                    }
+                };
+            }
             if decl != 0 {
                 d.add_ref(decl);
             }

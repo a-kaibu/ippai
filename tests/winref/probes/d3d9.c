@@ -147,6 +147,27 @@ int main(void) {
         printf("CheckDeviceType windowed %d\n", IDirect3D9_CheckDeviceType(d3d, 0, D3DDEVTYPE_HAL, D3DFMT_X8R8G8B8, D3DFMT_X8R8G8B8, TRUE) == D3D_OK);
     }
 
+    /* SetFVF makes a vertex declaration of the FVF (GetVertexDeclaration, its elements) */
+    {
+        static const DWORD fvfs[] = { FVF, D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE | D3DFVF_SPECULAR | D3DFVF_TEX2, D3DFVF_XYZB2 | D3DFVF_TEX1 | D3DFVF_TEXCOORDSIZE2(0) };
+        for (int i = 0; i < 3; i++) {
+            IDirect3DVertexDeclaration9 *vd = NULL;
+            IDirect3DDevice9_SetFVF(dev, fvfs[i]);
+            HRESULT g = IDirect3DDevice9_GetVertexDeclaration(dev, &vd);
+            printf("fvf %#lx: GetVertexDeclaration %#lx %s", fvfs[i], g, vd ? "decl" : "null");
+            if (vd) {
+                D3DVERTEXELEMENT9 el[MAXD3DDECLLENGTH + 1];
+                UINT n = 0;
+                IDirect3DVertexDeclaration9_GetDeclaration(vd, el, &n);
+                for (UINT k = 0; k < n; k++) printf(" %u/%u/%u/%u/%u/%u", el[k].Stream, el[k].Offset, el[k].Type, el[k].Method, el[k].Usage, el[k].UsageIndex);
+                IDirect3DVertexDeclaration9_Release(vd);
+            }
+            DWORD f = 0;
+            IDirect3DDevice9_GetFVF(dev, &f);
+            printf(" GetFVF %#lx\n", f);
+        }
+    }
+
     reset();
     /* clears: whole target, two rects, inside a smaller viewport */
     {

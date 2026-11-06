@@ -836,7 +836,61 @@ fn DrawTextLayout(c: &mut Ctx) -> u32 {
     0
 }
 
+// ---- matrix helpers (x86: floats on the stack) ----
+
+fn put_matrix(out: u32, m: [f32; 6]) {
+    for (i, v) in m.iter().enumerate() {
+        w32(out + 4 * i as u32, v.to_bits());
+    }
+}
+/// D2D1MakeRotateMatrix(angle in degrees, center, out)
+fn D2D1MakeRotateMatrix(c: &mut Ctx) -> u32 {
+    let (a, cx, cy, out) = (fl(c, 0).to_radians(), fl(c, 1), fl(c, 2), c.a(3));
+    let (s, co) = a.sin_cos();
+    put_matrix(out, [co, s, -s, co, cx - cx * co + cy * s, cy - cx * s - cy * co]);
+    0
+}
+/// D2D1MakeSkewMatrix(angle x, angle y, center, out)
+fn D2D1MakeSkewMatrix(c: &mut Ctx) -> u32 {
+    let (tx, ty, cx, cy, out) = (fl(c, 0).to_radians().tan(), fl(c, 1).to_radians().tan(), fl(c, 2), fl(c, 3), c.a(4));
+    put_matrix(out, [1.0, ty, tx, 1.0, -cy * tx, -cx * ty]);
+    0
+}
+fn det(m: u32) -> f32 {
+    rf(m, 0) * rf(m, 3) - rf(m, 1) * rf(m, 2)
+}
+fn D2D1IsMatrixInvertible(c: &mut Ctx) -> u32 {
+    (det(c.a(0)) != 0.0) as u32
+}
+fn D2D1InvertMatrix(c: &mut Ctx) -> u32 {
+    let m = c.a(0);
+    let d = det(m);
+    if d == 0.0 {
+        return 0;
+    }
+    let [a, b, cc, dd, x, y] = [rf(m, 0), rf(m, 1), rf(m, 2), rf(m, 3), rf(m, 4), rf(m, 5)];
+    put_matrix(m, [dd / d, -b / d, -cc / d, a / d, (cc * y - dd * x) / d, (b * x - a * y) / d]);
+    1
+}
+
+fn D2D1SinCos(c: &mut Ctx) -> u32 {
+    let (s, co) = fl(c, 0).sin_cos();
+    w32(c.a(1), s.to_bits());
+    w32(c.a(2), co.to_bits());
+    0
+}
+fn D2D1Tan(c: &mut Ctx) -> u32 {
+    c.st0 = Some(fl(c, 0).tan() as f64);
+    0
+}
+
 pub fn init() {
+    implement("d2d1", "D2D1SinCos", D2D1SinCos);
+    implement("d2d1", "D2D1Tan", D2D1Tan);
+    implement("d2d1", "D2D1MakeRotateMatrix", D2D1MakeRotateMatrix);
+    implement("d2d1", "D2D1MakeSkewMatrix", D2D1MakeSkewMatrix);
+    implement("d2d1", "D2D1IsMatrixInvertible", D2D1IsMatrixInvertible);
+    implement("d2d1", "D2D1InvertMatrix", D2D1InvertMatrix);
     implement("d2d1", "D2D1CreateFactory", D2D1CreateFactory);
     implement("d2d1", "D2D1CreateDevice", D2D1CreateDevice);
     implement("d2d1", "D2D1CreateDeviceContext", D2D1CreateDeviceContext);

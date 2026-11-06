@@ -3295,6 +3295,21 @@ fn set_display(c: &mut Ctx, w: i32, h: i32) {
         c.call(f, &[0xffff, 0x7e, 32, (h as u32) << 16 | (w as u32 & 0xffff)]);
     }
 }
+/// ChangeDisplaySettingsEx{A,W}(device, mode, hwnd, flags, param): the primary display's
+fn ChangeDisplaySettingsExA(c: &mut Ctx) -> u32 {
+    let p = c.a(1);
+    if p != 0 && r32(p + 40) & 0x180000 == 0x180000 {
+        set_display(c, r32(p + 108) as i32, r32(p + 112) as i32);
+    }
+    0
+}
+fn ChangeDisplaySettingsExW(c: &mut Ctx) -> u32 {
+    let p = c.a(1);
+    if p != 0 && r32(p + 72) & 0x180000 == 0x180000 {
+        set_display(c, r32(p + 172) as i32, r32(p + 176) as i32);
+    }
+    0
+}
 fn ChangeDisplaySettingsW(c: &mut Ctx) -> u32 {
     let p = c.a(0);
     if p != 0 {
@@ -4720,7 +4735,7 @@ pub fn init() {
         GetDoubleClickTime, MessageBeep, MessageBoxA, MessageBoxW, MessageBoxExA, MessageBoxIndirectA,
         SetWindowsHookExA, SetWindowsHookExW, UnhookWindowsHookEx, CallNextHookEx, WinHelpA, GetSysColor,
         GetSysColorBrush, GetSystemMetrics, SystemParametersInfoA, SystemParametersInfoW, ChangeDisplaySettingsA,
-        ChangeDisplaySettingsW, EnumDisplaySettingsA, EnumDisplaySettingsW, EnumDisplaySettingsExA, EnumDisplaySettingsExW, EnumDisplayDevicesA, EnumDisplayDevicesW, MonitorFromWindow, MonitorFromPoint,
+        ChangeDisplaySettingsW, ChangeDisplaySettingsExA, ChangeDisplaySettingsExW, EnumDisplaySettingsA, EnumDisplaySettingsW, EnumDisplaySettingsExA, EnumDisplaySettingsExW, EnumDisplayDevicesA, EnumDisplayDevicesW, MonitorFromWindow, MonitorFromPoint,
         MonitorFromRect, GetMonitorInfoA, GetMonitorInfoW, EnumDisplayMonitors,
         SetRect, SetRectEmpty, CopyRect, IsRectEmpty, EqualRect, PtInRect, OffsetRect, InflateRect, IntersectRect,
         UnionRect, SubtractRect, FillRect, FrameRect, InvertRect, DrawFocusRect, DrawEdge, DrawFrameControl,
