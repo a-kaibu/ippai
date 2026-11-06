@@ -20,6 +20,10 @@ pub const GLYPH: u32 = 2;
 /// its texels `extra` (l, t, r, b), times `paint[0]` (opacity); `paint[1]` 1: linear (else
 /// nearest), `paint[2]` 1: its alpha ignored. Partial coverage at the edges of `rect`.
 pub const BITMAP: u32 = 3;
+/// coverage by a transformed unit square (or, `extra[3]` != 0, the circle inscribed in it):
+/// `shape` (2x2) and `extra[0..2]` map device positions to its (u, v); `extra[2]` != 0:
+/// aliased (the pixel's center only), else 4x4 samples; inside `rect`
+pub const QUAD: u32 = 4;
 
 /// One shape. Device pixels; `rect` is already inside the target and the clips.
 #[repr(C)]
@@ -86,6 +90,20 @@ fn texel(q: vec2<i32>, lo: vec2<i32>, hi: vec2<i32>, opaque: bool) -> vec4<f32> 
                 }
             }
             cov = f32(n) / 16.0;
+        }
+        case 4u: {
+            var n = 0u;
+            let m = select(16u, 1u, extra.z != 0.0);
+            for (var k = 0u; k < m; k++) {
+                let s = select(px + vec2<f32>(f32(k % 4u), f32(k / 4u)) * 0.25 + 0.125, px + 0.5, m == 1u);
+                let uv = vec2<f32>(shape.x * s.x + shape.z * s.y + extra.x, shape.y * s.x + shape.w * s.y + extra.y);
+                let o = uv * 2.0 - 1.0;
+                let inq = select(all(uv >= vec2<f32>(0.0)) && all(uv < vec2<f32>(1.0)), dot(o, o) <= 1.0, extra.w != 0.0);
+                if (all(s >= r.xy) && all(s < r.zw) && inq) {
+                    n++;
+                }
+            }
+            cov = f32(n) / f32(m);
         }
         // bitmap {
         case 3u: {

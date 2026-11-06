@@ -30,6 +30,8 @@ struct Dc {
     xf: Option<Xf>,
     /// dots per inch other than 96 (render target properties, SetDpi): DIPs scale by dpi / 96
     dpi: Option<(f32, f32)>,
+    /// D2D1_ANTIALIAS_MODE_ALIASED
+    aliased: bool,
     clips: Vec<[f32; 4]>,
     /// the bitmap texture the BITMAP items in `items` show
     bitmap: Option<u32>,
@@ -200,14 +202,14 @@ fn context_methods() -> Vec<(&'static str, Handler)> {
         ("DrawTextLayout", DrawTextLayout),
         ("PushAxisAlignedClip", PushAxisAlignedClip),
         ("PopAxisAlignedClip", PopAxisAlignedClip),
-        ("SetAntialiasMode", ok),
+        ("SetAntialiasMode", SetAntialiasMode),
         ("SetTextAntialiasMode", ok),
         ("SetTextRenderingParams", ok),
         ("SetDpi", SetDpi),
         ("SetUnitMode", ok),
         ("SetPrimitiveBlend", ok),
         ("SetTags", ok),
-        ("GetAntialiasMode", zero),
+        ("GetAntialiasMode", GetAntialiasMode),
         ("GetTextAntialiasMode", zero),
         ("GetDpi", GetDpi),
         ("GetSize", GetSize),
@@ -757,8 +759,51 @@ fn ellipse(dc: u32, c: [f32; 2], r: [f32; 2], paint: &Paint, ring: Option<f32>) 
     push(dc, gpu2d::ELLIPSE, rr, [c[0], c[1], ox, oy], [ix, iy, ring.is_some() as u32 as f32, 0.0], paint);
 }
 
+fn SetAntialiasMode(c: &mut Ctx) -> u32 {
+    let a = c.a(1) == 1;
+    st(|s| s.dcs.get_mut(&c.a(0)).map(|d| d.aliased = a));
+    0
+}
+fn GetAntialiasMode(c: &mut Ctx) -> u32 {
+    st(|s| s.dcs.get(&c.a(0)).is_some_and(|d| d.aliased)) as u32
+}
+
+/// Fills rectangle `r` (l, t, r, b) under the target's transform as a QUAD item (rotated or
+/// skewed, or aliased), or the circle inscribed in it: false when the transform is singular.
+fn quad(dc: u32, r: [f32; 4], circle: bool, paint: &Paint) -> bool {
+    let Some((m, aliased)) = st(|s| s.dcs.get(&dc).map(|d| (eff(d).unwrap_or(IDENTITY), d.aliased))) else { return true };
+    let (w, h) = (r[2] - r[0], r[3] - r[1]);
+    // unit square -> device: x = a u + c v + e, y = b u + d v + f
+    let (a, b, cc, d) = (w * m[0], w * m[1], h * m[2], h * m[3]);
+    let (e, f) = (r[0] * m[0] + r[1] * m[2] + m[4], r[0] * m[1] + r[1] * m[3] + m[5]);
+    let det = a * d - b * cc;
+    if det == 0.0 || !det.is_finite() {
+        return false;
+    }
+    let (ia, ib, ic, id) = (d / det, -b / det, -cc / det, a / det);
+    let (ie, iff) = (-(ia * e + ic * f), -(ib * e + id * f));
+    let xs = [e, e + a, e + cc, e + a + cc];
+    let ys = [f, f + b, f + d, f + b + d];
+    let bbox = [xs.iter().copied().fold(f32::MAX, f32::min), ys.iter().copied().fold(f32::MAX, f32::min), xs.iter().copied().fold(f32::MIN, f32::max), ys.iter().copied().fold(f32::MIN, f32::max)];
+    let Some(rr) = st(|s| s.dcs.get(&dc).map(|d| clip_rect(d, bbox))) else { return true };
+    if rr[2] > rr[0] && rr[3] > rr[1] {
+        push(dc, gpu2d::QUAD, rr, [ia, ib, ic, id], [ie, iff, aliased as u32 as f32, circle as u32 as f32], paint);
+    }
+    true
+}
+/// Whether shapes need QUAD items: a transform that turns or skews them, or aliased drawing.
+fn needs_quad(dc: u32) -> bool {
+    st(|s| s.dcs.get(&dc).is_some_and(|d| d.aliased || eff(d).is_some_and(|m| m[1] != 0.0 || m[2] != 0.0)))
+}
+
 fn FillEllipse(c: &mut Ctx) -> u32 {
     let (dc, p, b) = (c.a(0), c.a(1), c.a(2));
+    if needs_quad(dc) {
+        let (x, y, rx, ry) = (rf(p, 0), rf(p, 1), rf(p, 2), rf(p, 3));
+        if quad(dc, [x - rx, y - ry, x + rx, y + ry], true, &brush(dc, b)) {
+            return 0;
+        }
+    }
     let (ctr, r) = xf_ellipse(dc, p);
     ellipse(dc, ctr, r, &brush(dc, b), None);
     0
@@ -773,6 +818,9 @@ fn DrawEllipse(c: &mut Ctx) -> u32 {
 fn FillRectangle(c: &mut Ctx) -> u32 {
     let (dc, p, b) = (c.a(0), c.a(1), c.a(2));
     let r = [rf(p, 0), rf(p, 1), rf(p, 2), rf(p, 3)];
+    if needs_quad(dc) && quad(dc, r, false, &brush(dc, b)) {
+        return 0;
+    }
     let Some(r) = st(|s| s.dcs.get(&dc).map(|d| clip_rect(d, xf_rect(eff(d), r)))) else { return 0 };
     fill(dc, r, &brush(dc, b));
     0
@@ -790,6 +838,9 @@ fn DrawRectangle(c: &mut Ctx) -> u32 {
         [r[0] - h, r[1] + h, r[0] + h, r[3] - h],
         [r[2] - h, r[1] + h, r[2] + h, r[3] - h],
     ] {
+        if needs_quad(dc) && quad(dc, e, false, &paint) {
+            continue;
+        }
         if let Some(e) = st(|s| s.dcs.get(&dc).map(|d| clip_rect(d, xf_rect(eff(d), e)))) {
             fill(dc, e, &paint);
         }
