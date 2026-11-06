@@ -16,6 +16,7 @@ use ab_glyph::{Font as _, FontVec, PxScale, ScaleFont as _};
 use crate::api::{implement, Ctx};
 use crate::mem::{self, cstr, put32, r16, r32, r8, w16, w32, w8, wstr};
 use crate::text::{a2s, a2w, mb2w};
+use crate::gdi_geom;
 use crate::user::{self, Rect};
 
 macro_rules! reg {
@@ -102,6 +103,8 @@ pub struct DcState {
     pub bk_mode: u32,
     pub rop2: u32,
     pub stretch: u32,
+    /// ALTERNATE 1, WINDING 2
+    pub fill_mode: u32,
     pub map_mode: u32,
     pub align: u32,
     pub vp: (i32, i32),
@@ -462,6 +465,7 @@ fn new_dc(kind: Kind, paint: Option<Rect>) -> u32 {
         bk_mode: 2,
         rop2: 13,
         stretch: 1,
+        fill_mode: 1,
         map_mode: 1,
         align: 0,
         vp: (0, 0),
@@ -647,8 +651,8 @@ fn rop3(op: u8, p: u32, s: u32, d: u32) -> u32 {
         0xbb => !s | d,
         0x44 => s & !d,
         0x11 => !(s | d),
-        0xb8 => (s & p) | (!s & d),
-        0xe2 => (s & d) | (!s & p),
+        0xb8 => (s & d) | (!s & p),
+        0xe2 => (s & p) | (!s & d),
         _ => {
             let mut r = 0;
             for i in 0..8 {
@@ -677,7 +681,20 @@ enum Pat {
     Solid(u32),
     None,
     Tile(View, i32, i32),
+    /// 8x8 bits (bit 7 = left), set bits fg, clear bits bg; origin
+    Hatch([u8; 8], u32, u32, i32, i32),
+    /// a monochrome bitmap: 0 bits the text color, 1 bits the background color
+    Mono(View, u32, u32, i32, i32),
 }
+
+const HATCHES: [[u8; 8]; 6] = [
+    [0, 0, 0, 0, 0, 0, 0xff, 0],
+    [8; 8],
+    [0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01],
+    [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80],
+    [8, 8, 8, 8, 8, 8, 0xff, 8],
+    [0x81, 0x42, 0x24, 0x18, 0x18, 0x24, 0x42, 0x81],
+];
 
 impl Pat {
     fn at(&self, x: i32, y: i32) -> u32 {
@@ -689,6 +706,24 @@ impl Pat {
                     return 0;
                 }
                 v.get((x - ox).rem_euclid(v.w), (y - oy).rem_euclid(v.h)) & 0xffffff
+            }
+            Pat::Hatch(b, fg, bg, ox, oy) => {
+                let (u, w) = ((x - ox).rem_euclid(8), (y - oy).rem_euclid(8));
+                if b[w as usize] >> (7 - u) & 1 != 0 {
+                    *fg
+                } else {
+                    *bg
+                }
+            }
+            Pat::Mono(v, fg, bg, ox, oy) => {
+                if v.w <= 0 || v.h <= 0 {
+                    return 0;
+                }
+                if v.get((x - ox).rem_euclid(v.w), (y - oy).rem_euclid(v.h)) & 0xffffff == 0 {
+                    *fg
+                } else {
+                    *bg
+                }
             }
         }
     }
@@ -702,7 +737,9 @@ fn pattern(t: &Objs, s: &DcState, brush: u32) -> Pat {
     match t.m.get(&brush) {
         Some(G::Brush(b)) => match b.style {
             1 => Pat::None,
+            2 => Pat::Hatch(HATCHES[b.hatch.min(5) as usize], rgb(b.color), rgb(s.bk), s.brush_org.0, s.brush_org.1),
             3 | 5 => match t.m.get(&b.pattern) {
+                Some(G::Bitmap(bm)) if bm.bpp == 1 && !bm.dib => Pat::Mono(View::of(bm), rgb(s.text), rgb(s.bk), s.brush_org.0, s.brush_org.1),
                 Some(G::Bitmap(bm)) => Pat::Tile(View::of(bm), s.brush_org.0, s.brush_org.1),
                 _ => Pat::Solid(rgb(b.color)),
             },
@@ -769,6 +806,8 @@ pub struct Src<'a> {
     h: i32,
     /// the source DC's background color (color -> mono)
     bk: u32,
+    /// HALFTONE stretch mode: Windows picks floor(i * sw / dw), not the pixel centre
+    half: bool,
 }
 
 /// The blit at the heart of BitBlt/StretchBlt/StretchDIBits: dst rect (device coordinates,
@@ -776,13 +815,15 @@ pub struct Src<'a> {
 fn blit(c: &mut Canvas, dst: (i32, i32, i32, i32), src: Option<Src>, op: u8, pat: &Pat, text: u32, bk: u32) -> Rect {
     let (mut dx, mut dy, mut dw, mut dh) = dst;
     let mut flip = (false, false);
+    // a mirrored stretch covers x+w+1..=x (pixel x is drawn), PatBlt covers x+w..x-1
+    let one = (src.is_some() && uses_src(op)) as i32;
     if dw < 0 {
-        dx += dw;
+        dx += dw + one;
         dw = -dw;
         flip.0 = true;
     }
     if dh < 0 {
-        dy += dh;
+        dy += dh + one;
         dh = -dh;
         flip.1 = true;
     }
@@ -796,12 +837,12 @@ fn blit(c: &mut Canvas, dst: (i32, i32, i32, i32), src: Option<Src>, op: u8, pat
     };
     let (mut sx, mut sy, mut sw, mut sh) = (s.x, s.y, s.w, s.h);
     if sw < 0 {
-        sx += sw;
+        sx += sw + 1;
         sw = -sw;
         flip.0 = !flip.0;
     }
     if sh < 0 {
-        sy += sh;
+        sy += sh + 1;
         sh = -sh;
         flip.1 = !flip.1;
     }
@@ -810,7 +851,8 @@ fn blit(c: &mut Canvas, dst: (i32, i32, i32, i32), src: Option<Src>, op: u8, pat
     }
     let map_x = |x: i32| -> i32 {
         let i = x - dx;
-        let k = if sw == dw { i } else { ((i as i64 * sw as i64) / dw as i64) as i32 };
+        // pixel centres: Windows samples at (i + 0.5) * sw / dw
+        let k = if sw == dw { i } else if s.half { ((i as i64 * sw as i64) / dw as i64) as i32 } else { (((2 * i as i64 + 1) * sw as i64) / (2 * dw as i64)) as i32 };
         if flip.0 {
             sx + sw - 1 - k
         } else {
@@ -819,7 +861,7 @@ fn blit(c: &mut Canvas, dst: (i32, i32, i32, i32), src: Option<Src>, op: u8, pat
     };
     let map_y = |y: i32| -> i32 {
         let i = y - dy;
-        let k = if sh == dh { i } else { ((i as i64 * sh as i64) / dh as i64) as i32 };
+        let k = if sh == dh { i } else if s.half { ((i as i64 * sh as i64) / dh as i64) as i32 } else { (((2 * i as i64 + 1) * sh as i64) / (2 * dh as i64)) as i32 };
         if flip.1 {
             sy + sh - 1 - k
         } else {
@@ -1943,7 +1985,7 @@ fn CreateBrushIndirect(c: &mut Ctx) -> u32 {
     add(G::Brush(Brush { style, color, hatch, pattern: if style == 3 { hatch } else { 0 } }))
 }
 fn CreateHatchBrush(c: &mut Ctx) -> u32 {
-    add(G::Brush(Brush { style: 0, color: c.a(1), hatch: c.a(0), pattern: 0 }))
+    add(G::Brush(Brush { style: 2, color: c.a(1), hatch: c.a(0), pattern: 0 }))
 }
 fn CreatePatternBrush(c: &mut Ctx) -> u32 {
     add(G::Brush(Brush { style: 3, color: 0, hatch: 0, pattern: c.a(0) }))
@@ -1986,6 +2028,7 @@ setter!(SetBkColor, bk);
 setter!(SetBkMode, bk_mode);
 setter!(SetROP2, rop2);
 setter!(SetStretchBltMode, stretch);
+setter!(SetPolyFillMode, fill_mode);
 setter!(SetMapMode, map_mode);
 setter!(SetTextAlign, align);
 
@@ -1998,6 +2041,7 @@ macro_rules! getter {
 }
 getter!(GetTextColor, text);
 getter!(GetBkColor, bk);
+getter!(GetPolyFillMode, fill_mode);
 getter!(GetBkMode, bk_mode);
 getter!(GetROP2, rop2);
 getter!(GetStretchBltMode, stretch);
@@ -2279,9 +2323,10 @@ fn dib_copy(b: &Bitmap, start: u32, lines: u32, bits: u32, i: &DibInfo, to_dib: 
     let lines = lines.min(i.h as u32 - start.min(i.h as u32)).min(b.h as u32);
     let w = i.w.min(b.w);
     for k in 0..lines as i32 {
-        // row in top-down terms of both images
-        let row = if i.top_down { start as i32 + k } else { b.h - 1 - (start as i32 + k) };
+        // row in top-down terms of both images: scan lines count from the bottom of the DIB,
+        // and the DIB's rows lie over the bitmap's top rows (a 4-line DIB is the top 4 rows)
         let drow = if i.top_down { start as i32 + k } else { i.h - 1 - (start as i32 + k) };
+        let row = drow;
         if row < 0 || row >= b.h || drow < 0 || drow >= i.h {
             continue;
         }
@@ -2481,10 +2526,10 @@ fn bit_blt(dst: u32, d: (i32, i32, i32, i32), src: u32, s: (i32, i32, i32, i32),
             // the same DC: blit from a copy of its own pixels
             let copy = copy_view(&c.v);
             let (sx, sy) = c.dev(s.0, s.1);
-            let r = blit(c, dst_r, Some(Src { v: &copy.0, x: sx, y: sy, w: s.2, h: s.3, bk: rgb(ds.bk) }), op, &pat, rgb(ds.text), rgb(ds.bk));
+            let r = blit(c, dst_r, Some(Src { v: &copy.0, x: sx, y: sy, w: s.2, h: s.3, bk: rgb(ds.bk), half: ds.stretch == 4 }), op, &pat, rgb(ds.text), rgb(ds.bk));
             return r;
         };
-        let src_ = Src { v: &sv, x: s.0 + sox, y: s.1 + soy, w: s.2, h: s.3, bk: rgb(ss.bk) };
+        let src_ = Src { v: &sv, x: s.0 + sox, y: s.1 + soy, w: s.2, h: s.3, bk: rgb(ss.bk), half: ds.stretch == 4 };
         blit(c, dst_r, Some(src_), op, &pat, rgb(ds.text), rgb(ds.bk))
     }) as u32
 }
@@ -2641,7 +2686,7 @@ fn dib_to_device(dc: u32, d: (i32, i32, i32, i32), s: (i32, i32, i32, i32), bits
     let ok = draw(dc, |t, ds, c| {
         let pat = pattern(t, ds, ds.brush);
         let (dx, dy) = c.dev(d.0, d.1);
-        blit(c, (dx, dy, d.2, d.3), Some(Src { v: &v, x: s.0, y: sy, w: s.2, h: s.3, bk: rgb(ds.bk) }), op, &pat, rgb(ds.text), rgb(ds.bk))
+        blit(c, (dx, dy, d.2, d.3), Some(Src { v: &v, x: s.0, y: sy, w: s.2, h: s.3, bk: rgb(ds.bk), half: ds.stretch == 4 }), op, &pat, rgb(ds.text), rgb(ds.bk))
     });
     if ok {
         n.max(1) as u32
@@ -2702,135 +2747,377 @@ fn SetPixelV(c: &mut Ctx) -> u32 {
 
 // --- lines and shapes
 
-fn pen_of(t: &Objs, s: &DcState) -> Option<(u32, i32)> {
+#[derive(Clone, Copy)]
+struct PenInfo {
+    col: u32,
+    width: i32,
+    /// PS_SOLID 0, DASH 1, DOT 2, DASHDOT 3, DASHDOTDOT 4
+    style: u32,
+}
+
+fn pen_of(t: &Objs, s: &DcState) -> Option<PenInfo> {
     if s.pen == STOCK + 4 * 19 {
-        return Some((rgb(s.dc_pen), 1));
+        return Some(PenInfo { col: rgb(s.dc_pen), width: 1, style: 0 });
     }
     match t.m.get(&s.pen) {
-        Some(G::Pen(p)) if p.style != 5 => Some((rgb(p.color), p.width)),
+        // (a wide pen made by CreatePen is solid whatever its style)
+        Some(G::Pen(p)) if p.style & 15 != 5 => Some(PenInfo { col: rgb(p.color), width: p.width, style: if p.width > 1 || p.style & 15 > 4 { 0 } else { p.style & 15 } }),
         _ => None,
     }
 }
 
-fn line(c: &mut Canvas, a: (i32, i32), b: (i32, i32), col: u32, rop2: u32, last: bool) -> Rect {
-    let (mut x, mut y) = c.dev(a.0, a.1);
-    let (x1, y1) = c.dev(b.0, b.1);
-    let (dx, dy) = ((x1 - x).abs(), -(y1 - y).abs());
-    let (sx, sy) = (if x < x1 { 1 } else { -1 }, if y < y1 { 1 } else { -1 });
-    let mut err = dx + dy;
-    let mut r = Rect::default();
-    loop {
-        let end = x == x1 && y == y1;
-        if end && !last {
-            break;
-        }
-        if c.clip.has(x, y) {
-            let d = c.v.get(x, y);
-            let v = match rop2 {
-                1 => 0,
-                6 => !d,
-                7 => d ^ col,
-                16 => 0xffffff,
-                _ => col,
-            };
-            c.v.put(x, y, v & 0xffffff);
-            r = r.or(&Rect { l: x, t: y, r: x + 1, b: y + 1 });
-        }
-        if end {
-            break;
-        }
-        let e2 = 2 * err;
-        if e2 >= dy {
-            err += dy;
-            x += sx;
-        }
-        if e2 <= dx {
-            err += dx;
-            y += sy;
+/// The 16 binary raster ops (R2_BLACK 1 .. R2_WHITE 16) of pen p over destination d.
+fn rop2(op: u32, p: u32, d: u32) -> u32 {
+    match op {
+        13 => p,
+        11 => d,
+        7 => p ^ d,
+        6 => !d & 0xffffff,
+        _ => {
+            let t = op.wrapping_sub(1) & 15;
+            let mut r = 0;
+            for i in 0..4 {
+                if t >> i & 1 != 0 {
+                    r |= (if i & 2 != 0 { p } else { !p }) & (if i & 1 != 0 { d } else { !d });
+                }
+            }
+            r & 0xffffff
         }
     }
-    r
+}
+
+fn plot(c: &mut Canvas, x: i32, y: i32, col: u32, op: u32) -> bool {
+    if !c.clip.has(x, y) {
+        return false;
+    }
+    let d = if op == 13 { 0 } else { c.v.get(x, y) & 0xffffff };
+    c.v.put(x, y, rop2(op, col, d));
+    true
+}
+
+fn pts_rect(pts: &[(i32, i32)]) -> Rect {
+    pts.iter().fold(Rect::default(), |a, &(x, y)| a.or(&Rect { l: x, t: y, r: x + 1, b: y + 1 }))
+}
+
+/// Draws paths (logical coordinates) with the DC's pen; `closed` joins each path's ends.
+/// A cosmetic pen leaves out each path's last point (unless closed), a wide pen covers it.
+fn stroke(c: &mut Canvas, s: &DcState, pen: PenInfo, paths: &[Vec<(i32, i32)>], closed: bool) -> Rect {
+    let mut done: Vec<(i32, i32)> = Vec::new();
+    if pen.width > 1 {
+        let nib = gdi_geom::nib(pen.width);
+        let mut set = std::collections::HashSet::new();
+        for p in paths {
+            let mut q: Vec<(i32, i32)> = p.iter().map(|&(x, y)| c.dev(x, y)).collect();
+            if closed && q.len() > 1 {
+                q.push(q[0]);
+            }
+            if q.len() == 1 {
+                q.push(q[0]);
+            }
+            for w in q.windows(2) {
+                for (x, y) in gdi_geom::line_pts(w[0], w[1], true) {
+                    for &(u, v) in &nib {
+                        set.insert((x + u, y + v));
+                    }
+                }
+            }
+        }
+        for (x, y) in set {
+            if plot(c, x, y, pen.col, s.rop2) {
+                done.push((x, y));
+            }
+        }
+        return pts_rect(&done);
+    }
+    // dash patterns of cosmetic pens (on, off, ...)
+    let dashes: &[u32] = match pen.style {
+        1 => &[18, 6],
+        2 => &[3, 3],
+        3 => &[9, 6, 3, 6],
+        4 => &[9, 3, 3, 3, 3, 3],
+        _ => &[],
+    };
+    let period: u32 = dashes.iter().sum();
+    let mut pos = 0u32;
+    for p in paths {
+        let mut q: Vec<(i32, i32)> = p.iter().map(|&(x, y)| c.dev(x, y)).collect();
+        if closed && q.len() > 1 {
+            q.push(q[0]);
+        }
+        for w in q.windows(2) {
+            for (x, y) in gdi_geom::line_pts(w[0], w[1], false) {
+                let mut on = true;
+                if period > 0 {
+                    let mut k = pos % period;
+                    for (i, &d) in dashes.iter().enumerate() {
+                        if k < d {
+                            on = i % 2 == 0;
+                            break;
+                        }
+                        k -= d;
+                    }
+                    pos += 1;
+                }
+                let hit = if on {
+                    plot(c, x, y, pen.col, s.rop2)
+                } else if s.bk_mode == 2 {
+                    plot(c, x, y, rgb(s.bk), s.rop2)
+                } else {
+                    false
+                };
+                if hit {
+                    done.push((x, y));
+                }
+            }
+        }
+    }
+    pts_rect(&done)
+}
+
+/// Fills spans (device coordinates) with a brush pattern through ROP2.
+fn fill_spans(c: &mut Canvas, spans: &[gdi_geom::Span], pat: &Pat, op: u32) -> Rect {
+    if matches!(pat, Pat::None) {
+        return Rect::default();
+    }
+    let mut d = Rect::default();
+    for &(y, x0, x1) in spans {
+        let r = Rect { l: x0, t: y, r: x1, b: y + 1 }.and(&c.clip);
+        if r.empty() {
+            continue;
+        }
+        for x in r.l..r.r {
+            plot(c, x, y, pat.at(x, y), op);
+        }
+        d = d.or(&r);
+    }
+    d
+}
+
+fn dev_spans(c: &Canvas, s: Vec<gdi_geom::Span>) -> Vec<gdi_geom::Span> {
+    s.into_iter().map(|(y, a, b)| (y + c.oy, a + c.ox, b + c.ox)).collect()
+}
+
+fn line(c: &mut Canvas, s: &DcState, pen: PenInfo, a: (i32, i32), b: (i32, i32)) -> Rect {
+    stroke(c, s, pen, &[vec![a, b]], false)
 }
 
 fn LineTo(c: &mut Ctx) -> u32 {
     let (dc, x, y) = (c.a(0), c.i(1), c.i(2));
-    let Some(s) = dc_state(dc) else { return 0 };
     draw(dc, |t, s, cv| match pen_of(t, s) {
-        Some((col, _)) => line(cv, s.pos, (x, y), col, s.rop2, false),
+        Some(pen) => line(cv, s, pen, s.pos, (x, y)),
         None => Rect::default(),
     });
-    let _ = s;
     with_dc(dc, |d| d.s.pos = (x, y));
     1
 }
-fn Polyline(c: &mut Ctx) -> u32 {
-    let (dc, p, n) = (c.a(0), c.a(1), c.a(2));
-    let pts: Vec<(i32, i32)> = (0..n).map(|i| (r32(p + 8 * i) as i32, r32(p + 8 * i + 4) as i32)).collect();
-    draw(dc, |t, s, cv| {
-        let Some((col, _)) = pen_of(t, s) else { return Rect::default() };
-        let mut r = Rect::default();
-        for w in pts.windows(2) {
-            r = r.or(&line(cv, w[0], w[1], col, s.rop2, false));
-        }
-        r
+fn read_pts(p: u32, n: u32) -> Vec<(i32, i32)> {
+    (0..n).map(|i| (r32(p + 8 * i) as i32, r32(p + 8 * i + 4) as i32)).collect()
+}
+fn polyline(dc: u32, pts: Vec<(i32, i32)>) -> u32 {
+    draw(dc, |t, s, cv| match pen_of(t, s) {
+        Some(pen) => stroke(cv, s, pen, &[pts], false),
+        None => Rect::default(),
     }) as u32
+}
+fn Polyline(c: &mut Ctx) -> u32 {
+    polyline(c.a(0), read_pts(c.a(1), c.a(2)))
 }
 fn PolylineTo(c: &mut Ctx) -> u32 {
     let (dc, p, n) = (c.a(0), c.a(1), c.a(2));
     let Some(s) = dc_state(dc) else { return 0 };
     let mut pts = vec![s.pos];
-    pts.extend((0..n).map(|i| (r32(p + 8 * i) as i32, r32(p + 8 * i + 4) as i32)));
+    pts.extend(read_pts(p, n));
     let last = *pts.last().unwrap();
-    draw(dc, |t, s, cv| {
-        let Some((col, _)) = pen_of(t, s) else { return Rect::default() };
-        let mut r = Rect::default();
-        for w in pts.windows(2) {
-            r = r.or(&line(cv, w[0], w[1], col, s.rop2, false));
-        }
-        r
-    });
+    polyline(dc, pts);
     with_dc(dc, |d| d.s.pos = last);
     1
 }
-fn Rectangle(c: &mut Ctx) -> u32 {
-    let (dc, l, tp, r, b) = (c.a(0), c.i(1), c.i(2), c.i(3), c.i(4));
-    draw(dc, |t, s, cv| {
-        let pen = pen_of(t, s);
-        let pat = pattern(t, s, s.brush);
-        let inset = pen.is_some() as i32;
-        let mut d = Rect::default();
-        if !matches!(pat, Pat::None) {
-            d = pat_blt(cv, cv.rect(Rect { l: l + inset, t: tp + inset, r: r - inset, b: b - inset }), &pat, 0xf0);
-        }
-        if let Some((col, _)) = pen {
-            let pc = Pat::Solid(col);
-            for e in [Rect { l, t: tp, r, b: tp + 1 }, Rect { l, t: b - 1, r, b }, Rect { l, t: tp, r: l + 1, b }, Rect { l: r - 1, t: tp, r, b }] {
-                d = d.or(&pat_blt(cv, cv.rect(e), &pc, 0xf0));
+fn PolyPolyline(c: &mut Ctx) -> u32 {
+    let (dc, p, counts, n) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    let mut at = p;
+    let mut paths = Vec::new();
+    for i in 0..n {
+        let k = r32(counts + 4 * i);
+        paths.push(read_pts(at, k));
+        at += 8 * k;
+    }
+    draw(dc, |t, s, cv| match pen_of(t, s) {
+        Some(pen) => stroke(cv, s, pen, &paths, false),
+        None => Rect::default(),
+    }) as u32
+}
+fn bezier_path(pts: &[(i32, i32)]) -> Vec<(i32, i32)> {
+    let mut v = vec![];
+    if let Some(&f) = pts.first() {
+        v.push(f);
+    }
+    for k in (1..pts.len().saturating_sub(2)).step_by(3) {
+        let q = gdi_geom::bezier([pts[k - 1], pts[k], pts[k + 1], pts[k + 2]]);
+        v.extend(q.into_iter().skip(1));
+    }
+    v
+}
+fn PolyBezier(c: &mut Ctx) -> u32 {
+    let pts = read_pts(c.a(1), c.a(2));
+    polyline(c.a(0), bezier_path(&pts))
+}
+fn PolyBezierTo(c: &mut Ctx) -> u32 {
+    let (dc, p, n) = (c.a(0), c.a(1), c.a(2));
+    let Some(s) = dc_state(dc) else { return 0 };
+    let mut pts = vec![s.pos];
+    pts.extend(read_pts(p, n));
+    let last = *pts.last().unwrap();
+    polyline(dc, bezier_path(&pts));
+    with_dc(dc, |d| d.s.pos = last);
+    1
+}
+
+/// A closed shape: `area(l, t, r, b)` gives its spans for a box. With a pen the box is the
+/// whole shape and its border is drawn with the pen, without one the box is a pixel smaller.
+fn shape(dc: u32, b: (i32, i32, i32, i32), area: impl Fn(i32, i32, i32, i32) -> Vec<gdi_geom::Span>) -> u32 {
+    let (mut l, mut t, mut r, mut bo) = b;
+    if l > r {
+        std::mem::swap(&mut l, &mut r);
+    }
+    if t > bo {
+        std::mem::swap(&mut t, &mut bo);
+    }
+    draw(dc, |tt, s, cv| {
+        let pen = pen_of(tt, s);
+        let pat = pattern(tt, s, s.brush);
+        match pen {
+            None => {
+                let sp = dev_spans(cv, area(l, t, r - 1, bo - 1));
+                fill_spans(cv, &sp, &pat, s.rop2)
             }
+            Some(pen) => {
+                let sp = dev_spans(cv, area(l, t, r, bo));
+                let (edge, inner) = gdi_geom::outline(&sp);
+                let mut d = fill_spans(cv, &inner, &pat, s.rop2);
+                if pen.width > 1 {
+                    // a wide pen: the nib along the border
+                    let nib = gdi_geom::nib(pen.width);
+                    let set: std::collections::HashSet<(i32, i32)> = edge.iter().flat_map(|&(x, y)| nib.iter().map(move |&(u, v)| (x + u, y + v))).collect();
+                    for (x, y) in set {
+                        plot(cv, x, y, pen.col, s.rop2);
+                    }
+                } else {
+                    for &(x, y) in &edge {
+                        plot(cv, x, y, pen.col, s.rop2);
+                    }
+                }
+                d = d.or(&pts_rect(&edge));
+                d
+            }
+        }
+    }) as u32
+}
+fn Rectangle(c: &mut Ctx) -> u32 {
+    shape(c.a(0), (c.i(1), c.i(2), c.i(3), c.i(4)), |l, t, r, b| (t..b).filter(|_| r > l).map(|y| (y, l, r)).collect())
+}
+fn Ellipse(c: &mut Ctx) -> u32 {
+    shape(c.a(0), (c.i(1), c.i(2), c.i(3), c.i(4)), gdi_geom::ellipse_spans)
+}
+fn RoundRect(c: &mut Ctx) -> u32 {
+    let (ew, eh) = (c.i(5), c.i(6));
+    shape(c.a(0), (c.i(1), c.i(2), c.i(3), c.i(4)), move |l, t, r, b| gdi_geom::round_rect_spans(l, t, r, b, ew, eh))
+}
+/// Pie (pie: true) or chord of the ellipse in the box, counter-clockwise from radial s to e.
+fn arc_area(l: i32, t: i32, r: i32, b: i32, s: (i32, i32), e: (i32, i32), pie: bool) -> Vec<gdi_geom::Span> {
+    let (cx, cy) = ((l + r) as f64 / 2.0, (t + b) as f64 / 2.0);
+    let (a0, a1) = (gdi_geom::angle(cx, cy, s.0 as f64, s.1 as f64), gdi_geom::angle(cx, cy, e.0 as f64, e.1 as f64));
+    // the chord's end points on the ellipse
+    let (rx, ry) = ((r - l) as f64 / 2.0, (b - t) as f64 / 2.0);
+    let on = |a: f64| (cx + rx * a.cos(), cy - ry * a.sin());
+    let (p0, p1) = (on(a0), on(a1));
+    let mut out = Vec::new();
+    for (y, x0, x1) in gdi_geom::ellipse_spans(l, t, r, b) {
+        let mut run: Option<i32> = None;
+        for x in x0..=x1 {
+            let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
+            let inside = x < x1
+                && if pie {
+                    gdi_geom::on_arc(gdi_geom::angle(cx, cy, px, py), a0, a1)
+                } else {
+                    // left of the chord p1 -> p0 (y down): the side the arc is on
+                    (p0.0 - p1.0) * (py - p1.1) - (p0.1 - p1.1) * (px - p1.0) <= 0.0
+                };
+            match (inside, run) {
+                (true, None) => run = Some(x),
+                (false, Some(a)) => {
+                    out.push((y, a, x));
+                    run = None;
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+fn Pie(c: &mut Ctx) -> u32 {
+    let (s, e) = ((c.i(5), c.i(6)), (c.i(7), c.i(8)));
+    shape(c.a(0), (c.i(1), c.i(2), c.i(3), c.i(4)), move |l, t, r, b| arc_area(l, t, r, b, s, e, true))
+}
+fn Chord(c: &mut Ctx) -> u32 {
+    let (s, e) = ((c.i(5), c.i(6)), (c.i(7), c.i(8)));
+    shape(c.a(0), (c.i(1), c.i(2), c.i(3), c.i(4)), move |l, t, r, b| arc_area(l, t, r, b, s, e, false))
+}
+fn arc(dc: u32, b: (i32, i32, i32, i32), s: (i32, i32), e: (i32, i32)) -> u32 {
+    let (l, t, r, bo) = b;
+    draw(dc, |tt, st, cv| {
+        let Some(pen) = pen_of(tt, st) else { return Rect::default() };
+        let (cx, cy) = ((l + r) as f64 / 2.0, (t + bo) as f64 / 2.0);
+        let (a0, a1) = (gdi_geom::angle(cx, cy, s.0 as f64, s.1 as f64), gdi_geom::angle(cx, cy, e.0 as f64, e.1 as f64));
+        let (edge, _) = gdi_geom::outline(&gdi_geom::ellipse_spans(l, t, r, bo));
+        let pts: Vec<(i32, i32)> = edge.into_iter().filter(|&(x, y)| gdi_geom::on_arc(gdi_geom::angle(cx, cy, x as f64 + 0.5, y as f64 + 0.5), a0, a1)).collect();
+        let paths: Vec<Vec<(i32, i32)>> = pts.iter().map(|&p| vec![p]).collect();
+        if pen.width > 1 {
+            return stroke(cv, st, pen, &paths, false);
+        }
+        let mut d = Vec::new();
+        for (x, y) in pts {
+            let (x, y) = cv.dev(x, y);
+            if plot(cv, x, y, pen.col, st.rop2) {
+                d.push((x, y));
+            }
+        }
+        pts_rect(&d)
+    }) as u32
+}
+fn Arc(c: &mut Ctx) -> u32 {
+    arc(c.a(0), (c.i(1), c.i(2), c.i(3), c.i(4)), (c.i(5), c.i(6)), (c.i(7), c.i(8)))
+}
+fn ArcTo(c: &mut Ctx) -> u32 {
+    let dc = c.a(0);
+    let r = arc(dc, (c.i(1), c.i(2), c.i(3), c.i(4)), (c.i(5), c.i(6)), (c.i(7), c.i(8)));
+    with_dc(dc, |d| d.s.pos = (c.i(7), c.i(8)));
+    r
+}
+fn polygons(dc: u32, polys: Vec<Vec<(i32, i32)>>) -> u32 {
+    draw(dc, |t, s, cv| {
+        let pat = pattern(t, s, s.brush);
+        let dev: Vec<Vec<(i32, i32)>> = polys.iter().map(|p| p.iter().map(|&(x, y)| cv.dev(x, y)).collect()).collect();
+        let sp = gdi_geom::poly_spans(&dev, s.fill_mode == 2);
+        let mut d = fill_spans(cv, &sp, &pat, s.rop2);
+        if let Some(pen) = pen_of(t, s) {
+            d = d.or(&stroke(cv, s, pen, &polys, true));
         }
         d
     }) as u32
 }
-fn Ellipse(c: &mut Ctx) -> u32 {
-    Rectangle(c)
-}
-fn RoundRect(c: &mut Ctx) -> u32 {
-    Rectangle(c)
-}
 fn Polygon(c: &mut Ctx) -> u32 {
-    let (dc, p, n) = (c.a(0), c.a(1), c.a(2));
-    let mut pts: Vec<(i32, i32)> = (0..n).map(|i| (r32(p + 8 * i) as i32, r32(p + 8 * i + 4) as i32)).collect();
-    if let Some(&f) = pts.first() {
-        pts.push(f);
+    polygons(c.a(0), vec![read_pts(c.a(1), c.a(2))])
+}
+fn PolyPolygon(c: &mut Ctx) -> u32 {
+    let (dc, p, counts, n) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    let mut at = p;
+    let mut v = Vec::new();
+    for i in 0..n {
+        let k = r32(counts + 4 * i);
+        v.push(read_pts(at, k));
+        at += 8 * k;
     }
-    draw(dc, |t, s, cv| {
-        let Some((col, _)) = pen_of(t, s) else { return Rect::default() };
-        let mut r = Rect::default();
-        for w in pts.windows(2) {
-            r = r.or(&line(cv, w[0], w[1], col, s.rop2, false));
-        }
-        r
-    }) as u32
+    polygons(dc, v)
 }
 
 // --- regions and clipping
@@ -2865,13 +3152,6 @@ fn sub_rect(a: Rect, b: Rect) -> Vec<Rect> {
     }
     v
 }
-fn sub(a: &[Rect], b: &[Rect]) -> Vec<Rect> {
-    let mut cur: Vec<Rect> = a.to_vec();
-    for &x in b {
-        cur = cur.into_iter().flat_map(|r| sub_rect(r, x)).collect();
-    }
-    cur
-}
 
 fn region(h: u32) -> Option<Vec<Rect>> {
     with(|t| match t.m.get(&h) {
@@ -2883,32 +3163,47 @@ fn set_region(h: u32, r: Vec<Rect>) -> u32 {
     let k = region_kind(&r);
     with(|t| {
         if let Some(G::Region(x)) = t.m.get_mut(&h) {
-            *x = r.into_iter().filter(|x| !x.empty()).collect();
+            *x = gdi_geom::normalize(&r);
         }
     });
     k
 }
 
 fn CreateRectRgn(c: &mut Ctx) -> u32 {
-    add(G::Region(vec![Rect { l: c.i(0), t: c.i(1), r: c.i(2), b: c.i(3) }].into_iter().filter(|r| !r.empty()).collect()))
+    let (l, t, r, b) = (c.i(0).min(c.i(2)), c.i(1).min(c.i(3)), c.i(0).max(c.i(2)), c.i(1).max(c.i(3)));
+    add(G::Region(vec![Rect { l, t, r, b }].into_iter().filter(|r| !r.empty()).collect()))
 }
 fn CreateRectRgnIndirect(c: &mut Ctx) -> u32 {
     add(G::Region(vec![Rect::read(c.a(0))].into_iter().filter(|r| !r.empty()).collect()))
 }
+/// Elliptic and round regions cover the box less its right column and bottom row.
 fn CreateRoundRectRgn(c: &mut Ctx) -> u32 {
-    CreateRectRgn(c)
+    let (l, t, r, b) = (c.i(0).min(c.i(2)), c.i(1).min(c.i(3)), c.i(0).max(c.i(2)), c.i(1).max(c.i(3)));
+    add(G::Region(gdi_geom::spans_region(&gdi_geom::round_rect_spans(l, t, r - 1, b - 1, c.i(4), c.i(5)))))
 }
 fn CreateEllipticRgn(c: &mut Ctx) -> u32 {
-    CreateRectRgn(c)
+    let (l, t, r, b) = (c.i(0).min(c.i(2)), c.i(1).min(c.i(3)), c.i(0).max(c.i(2)), c.i(1).max(c.i(3)));
+    add(G::Region(gdi_geom::spans_region(&gdi_geom::ellipse_spans(l, t, r - 1, b - 1))))
+}
+fn CreateEllipticRgnIndirect(c: &mut Ctx) -> u32 {
+    let r = Rect::read(c.a(0));
+    let (l, t, rr, b) = (r.l.min(r.r), r.t.min(r.b), r.l.max(r.r), r.t.max(r.b));
+    add(G::Region(gdi_geom::spans_region(&gdi_geom::ellipse_spans(l, t, rr - 1, b - 1))))
 }
 fn CreatePolygonRgn(c: &mut Ctx) -> u32 {
-    let (p, n) = (c.a(0), c.a(1));
-    let mut r = Rect { l: i32::MAX, t: i32::MAX, r: i32::MIN, b: i32::MIN };
+    let pts = read_pts(c.a(0), c.a(1));
+    add(G::Region(gdi_geom::spans_region(&gdi_geom::poly_spans(&[pts], c.a(2) == 2))))
+}
+fn CreatePolyPolygonRgn(c: &mut Ctx) -> u32 {
+    let (p, counts, n) = (c.a(0), c.a(1), c.a(2));
+    let mut at = p;
+    let mut v = Vec::new();
     for i in 0..n {
-        let (x, y) = (r32(p + 8 * i) as i32, r32(p + 8 * i + 4) as i32);
-        r = Rect { l: r.l.min(x), t: r.t.min(y), r: r.r.max(x), b: r.b.max(y) };
+        let k = r32(counts + 4 * i);
+        v.push(read_pts(at, k));
+        at += 8 * k;
     }
-    add(G::Region(if n > 0 { vec![r] } else { vec![] }))
+    add(G::Region(gdi_geom::spans_region(&gdi_geom::poly_spans(&v, c.a(3) == 2))))
 }
 fn ExtCreateRegion(c: &mut Ctx) -> u32 {
     let p = c.a(2);
@@ -2925,18 +3220,7 @@ fn CombineRgn(c: &mut Ctx) -> u32 {
     let Some(ra) = region(a) else { return 0 };
     let rb = region(b).unwrap_or_default();
     let out = match mode {
-        1 => ra.iter().flat_map(|x| rb.iter().map(move |y| x.and(y))).filter(|r| !r.empty()).collect(),
-        2 => {
-            let mut v = ra.clone();
-            v.extend(sub(&rb, &ra));
-            v
-        }
-        3 => {
-            let mut v = sub(&ra, &rb);
-            v.extend(sub(&rb, &ra));
-            v
-        }
-        4 => sub(&ra, &rb),
+        1..=4 => gdi_geom::combine(&ra, &rb, mode),
         _ => ra.clone(),
     };
     set_region(d, out)
@@ -2959,7 +3243,10 @@ fn RectInRegion(c: &mut Ctx) -> u32 {
     region(c.a(0)).is_some_and(|r| r.iter().any(|x| !x.and(&q).empty())) as u32
 }
 fn EqualRgn(c: &mut Ctx) -> u32 {
-    (region(c.a(0)).map(|r| bound(&r)) == region(c.a(1)).map(|r| bound(&r))) as u32
+    match (region(c.a(0)), region(c.a(1))) {
+        (Some(a), Some(b)) => (gdi_geom::normalize(&a) == gdi_geom::normalize(&b)) as u32,
+        _ => 0,
+    }
 }
 fn GetRegionData(c: &mut Ctx) -> u32 {
     let (h, n, p) = (c.a(0), c.a(1), c.a(2));
@@ -2993,11 +3280,30 @@ fn PaintRgn(c: &mut Ctx) -> u32 {
     }
     1
 }
-fn FrameRgn(_: &mut Ctx) -> u32 {
+/// The region's border w x h pixels thick: the region less itself shifted by +-w, +-h.
+fn FrameRgn(c: &mut Ctx) -> u32 {
+    let (dc, h, b, w, hh) = (c.a(0), c.a(1), c.a(2), c.i(3), c.i(4));
+    let Some(r) = region(h) else { return 0 };
+    let mut inner = r.clone();
+    for (dx, dy) in [(w, 0), (-w, 0), (0, hh), (0, -hh)] {
+        let moved: Vec<Rect> = r.iter().map(|q| q.off(dx, dy)).collect();
+        inner = gdi_geom::combine(&inner, &moved, 1);
+    }
+    for q in gdi_geom::combine(&r, &inner, 4) {
+        fill_rect_brush(dc, q, b);
+    }
     1
 }
-fn InvertRgn(_: &mut Ctx) -> u32 {
-    1
+fn InvertRgn(c: &mut Ctx) -> u32 {
+    let (dc, h) = (c.a(0), c.a(1));
+    let Some(r) = region(h) else { return 0 };
+    draw(dc, |_, _, cv| {
+        let mut d = Rect::default();
+        for q in &r {
+            d = d.or(&pat_blt(cv, cv.rect(*q), &Pat::Solid(0), 0x55));
+        }
+        d
+    }) as u32
 }
 
 /// Clip box from region `h` (device coordinates), combined by `mode`.
@@ -3902,7 +4208,9 @@ fn register() {
         GetDIBColorTable, SetDIBColorTable,
         BitBlt, StretchBlt, PatBlt, MaskBlt, GdiTransparentBlt, GdiAlphaBlend, StretchDIBits, SetDIBitsToDevice,
         GetPixel, SetPixel, SetPixelV, LineTo, Polyline, PolylineTo, Rectangle, Ellipse, RoundRect, Polygon,
+        PolyPolyline, PolyBezier, PolyBezierTo, Pie, Chord, Arc, ArcTo, PolyPolygon, SetPolyFillMode, GetPolyFillMode,
         CreateRectRgn, CreateRectRgnIndirect, CreateRoundRectRgn, CreateEllipticRgn, CreatePolygonRgn,
+        CreateEllipticRgnIndirect, CreatePolyPolygonRgn,
         ExtCreateRegion, SetRectRgn, CombineRgn, OffsetRgn, GetRgnBox, PtInRegion, RectInRegion, EqualRgn,
         GetRegionData, FillRgn, PaintRgn, FrameRgn, InvertRgn,
         SelectClipRgn, ExtSelectClipRgn, IntersectClipRect, ExcludeClipRect, OffsetClipRgn, GetClipBox, GetClipRgn,

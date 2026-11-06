@@ -45,6 +45,7 @@ pub mod dinput;
 pub mod fast;
 pub mod files;
 pub mod gdi;
+pub mod gdi_geom;
 pub mod k32;
 pub mod mem;
 pub mod misc;
