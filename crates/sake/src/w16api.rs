@@ -99,6 +99,7 @@ const SIMPLE: &[(&str, &str, &str, &str)] = &[
     ("GDI.StretchDIBits", "gdi32!StretchDIBits", "hssssssssppwl", "i"),
     ("GDI.SetDIBitsToDevice", "gdi32!SetDIBitsToDevice", "hsssssswwppw", "i"),
     ("GDI.CreateSolidBrush", "gdi32!CreateSolidBrush", "l", "h"),
+    ("GDI.CreatePatternBrush", "gdi32!CreatePatternBrush", "h", "h"),
     ("GDI.CreatePen", "gdi32!CreatePen", "wsl", "h"),
     ("GDI.CreateCompatibleDC", "gdi32!CreateCompatibleDC", "h", "h"),
     ("GDI.CreateCompatibleBitmap", "gdi32!CreateCompatibleBitmap", "hss", "h"),
@@ -341,8 +342,9 @@ pub fn init() {
     });
     reg("KERNEL._lread", |c| file_read(c, c.a(0) & 0xffff, lin(c.a(1)), c.a(2) & 0xffff));
     reg("KERNEL._hread", |c| file_read(c, c.a(0) & 0xffff, lin(c.a(1)), c.a(2)));
-    reg("KERNEL._lwrite", |c| file_write(c, c.a(0) & 0xffff, lin(c.a(1)), c.a(2) & 0xffff));
-    reg("KERNEL._hwrite", |c| file_write(c, c.a(0) & 0xffff, lin(c.a(1)), c.a(2)));
+    // (the buffer is a "p" in the spec, already linear; _lread's is a "g", a segmented pointer)
+    reg("KERNEL._lwrite", |c| file_write(c, c.a(0) & 0xffff, c.a(1), c.a(2) & 0xffff));
+    reg("KERNEL._hwrite", |c| file_write(c, c.a(0) & 0xffff, c.a(1), c.a(2)));
     reg("KERNEL._llseek", |c| call32(c.cpu, "kernel32!SetFilePointer", &[c.a(0) & 0xffff, c.a(1), 0, c.a(2) & 0xffff]));
     reg("KERNEL.OpenFile", open_file);
     reg("KERNEL.DOS3Call", |c| {
@@ -641,11 +643,25 @@ fn file_read(c: &mut C16, h: u32, buf: u32, n: u32) -> u32 {
 }
 
 fn file_write(c: &mut C16, h: u32, buf: u32, n: u32) -> u32 {
+    if let Some(n) = std_write(h, buf, n) {
+        return n;
+    }
     let got = crate::mem::heap_alloc(4, true);
     let ok = call32(c.cpu, "kernel32!WriteFile", &[h, buf, n, got, 0]);
     let r = r32(got);
     crate::mem::heap_free(got);
     if ok == 0 { 0xffff_ffff } else { r }
+}
+
+/// DOS handles 1 and 2 (stdout, stderr: _lwrite or INT 21h's write) go to the console, a line at
+/// a time; `None` for other handles
+fn std_write(h: u32, buf: u32, n: u32) -> Option<u32> {
+    if h != 1 && h != 2 {
+        return None;
+    }
+    let b: Vec<u8> = (0..n).map(|i| crate::mem::r8(buf + i)).collect();
+    crate::k32::console_write(&crate::text::a2s(&b));
+    Some(n)
 }
 
 /// OpenFile(name, OFSTRUCT*, mode): OFSTRUCT16 has the same layout as the 32-bit one.
@@ -1549,6 +1565,10 @@ pub fn dos(cpu: &mut Cpu) {
         0x3e => {
             crate::w16::call32(cpu, "kernel32!CloseHandle", &[cpu.regs[3] & 0xffff]);
             ok(cpu);
+        }
+        0x40 if std_write(cpu.regs[3] & 0xffff, ds_dx(cpu), cpu.regs[ECX] & 0xffff).is_some() => {
+            ok(cpu);
+            set_ax(cpu, cpu.regs[ECX] & 0xffff);
         }
         0x3f | 0x40 => {
             let h = cpu.regs[3] & 0xffff;

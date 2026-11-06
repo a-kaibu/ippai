@@ -524,6 +524,9 @@ pub fn hle_module(dll: &str) -> u32 {
 
 use crate::mem::w16;
 
+/// The folders SetDllDirectory / AddDllDirectory added to the search (after the exe's).
+pub static DLL_DIRS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
 /// The guest file of a DLL the program ships (exe directory, then the current directory).
 fn find_dll_file(dll: &str) -> Option<(String, String)> {
     let name = if dll.contains('.') { dll.to_string() } else { format!("{dll}.dll") };
@@ -540,6 +543,7 @@ fn find_dll_file(dll: &str) -> Option<(String, String)> {
     }
     let exe_dir = MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.path.rsplit_once('\\').map_or(String::new(), |x| x.0.to_string()));
     let mut dirs: Vec<String> = exe_dir.into_iter().collect();
+    dirs.extend(DLL_DIRS.lock().unwrap().iter().cloned());
     dirs.push(crate::files::cwd().trim_end_matches('\\').to_string());
     // the folders of DLLs loaded by path (LOAD_WITH_ALTERED_SEARCH_PATH finds their dependencies there)
     for m in MODULES.read().unwrap().iter().filter(|m| m.dll && !m.hle) {

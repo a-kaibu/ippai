@@ -10,6 +10,11 @@ with(Window) {
 Plugins.link("menu.dll");
 Plugins.link("KAGParser.dll");
 @endif
+@if (!kirikiriz)
+// 吉里吉里2 (ベンチの krkr2 グループ): Debug.message はコンソールとログファイルにしか出ないので、
+// ハーネスの合図はログファイルから (sake が SAKE_ECHO_FILE=krkr.console.log で標準出力にも出す)
+Debug.startLogToFile(true);
+@endif
 
 // このスクリプトは一番最初に実行されるスクリプトです
 Scripts.execStorage("system/Initialize.tjs"); // system/Initialize.tjs を実行

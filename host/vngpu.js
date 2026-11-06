@@ -216,7 +216,7 @@ addToLibrary({
   vngpu_set_viewport: (x, y, w, h, z0, z1) => VG.pass.setViewport(x, y, w, h, z0, z1),
   vngpu_set_scissor: (x, y, w, h) => VG.pass.setScissorRect(x, y, w, h),
   vngpu_set_blend_constant: (r, g, b, a) => VG.pass.setBlendConstant({ r, g, b, a }),
-  vngpu_set_stencil_ref: (v) => VG.pass.setStencilReference(v),
+  vngpu_set_stencil_ref: (v) => VG.pass.setStencilReference(v >>> 0),
   vngpu_draw: (n, inst, first, firstInst) => VG.pass.draw(n, inst, first, firstInst),
   vngpu_draw_indexed: (n, inst, first, base, firstInst) => VG.pass.drawIndexed(n, inst, first, base, firstInst),
 });

@@ -1020,6 +1020,110 @@ fn N_SetNotificationPositions(c: &mut Ctx) -> u32 {
     0
 }
 
+// ---------------------------------------------------------------------------------------------
+// PlaySound / sndPlaySound: one sound at a time (a new one stops the last), a .wav file or a
+// RIFF image in memory, played as a buffer of the mixer's own
+
+/// the buffer's key in `Dev::bufs` (not a guest address)
+const PLAY_SOUND: u32 = 0xffff_fff0;
+const SND_ASYNC: u32 = 1;
+const SND_MEMORY: u32 = 4;
+const SND_LOOP: u32 = 8;
+const SND_NOSTOP: u32 = 0x10;
+const SND_PURGE: u32 = 0x40;
+
+/// The "fmt " and "data" chunks of a RIFF WAVE image: their offsets, and data's length
+fn wave_chunks(b: &[u8]) -> Option<(usize, usize, usize)> {
+    if b.len() < 12 || &b[..4] != b"RIFF" || &b[8..12] != b"WAVE" {
+        return None;
+    }
+    let (mut at, mut fmt, mut data) = (12, None, None);
+    while at + 8 <= b.len() {
+        let n = u32::from_le_bytes(b[at + 4..at + 8].try_into().unwrap()) as usize;
+        match &b[at..at + 4] {
+            b"fmt " => fmt = Some(at + 8),
+            b"data" => data = Some((at + 8, n.min(b.len() - at - 8))),
+            _ => {}
+        }
+        at += 8 + n + (n & 1);
+    }
+    Some((fmt?, data?.0, data?.1))
+}
+
+fn play_sound(name: u32, flags: u32, wide: bool) -> u32 {
+    let playing = with(|d| d.bufs.get(&PLAY_SOUND).is_some_and(|b| b.playing));
+    if flags & SND_NOSTOP != 0 && playing {
+        return 0;
+    }
+    // (owner: the image's start; data points into it)
+    let old = with(|d| d.bufs.remove(&PLAY_SOUND)).map(|b| b.owner);
+    if let Some(p) = old {
+        mem::heap_free(p);
+    }
+    if name == 0 || flags & SND_PURGE != 0 || no_sound() {
+        return 1;
+    }
+    let image = if flags & SND_MEMORY != 0 {
+        // (a RIFF image: its length from its header)
+        mem::slice(name, 8 + r32(name + 4)).to_vec()
+    } else {
+        let path = crate::k32::arg_str(name, wide);
+        match crate::files::resolve(&path).and_then(|h| kura::fs::read(h).ok()) {
+            Some(b) => b,
+            None => return 0,
+        }
+    };
+    let Some((fmt, data, size)) = wave_chunks(&image) else { return 0 };
+    let p = mem::heap_alloc(image.len() as u32, false);
+    mem::slice_mut(p, image.len() as u32).copy_from_slice(&image);
+    let f = Fmt::read(p + fmt as u32);
+    if f.bits == 0 || f.rate == 0 {
+        mem::heap_free(p);
+        return 0;
+    }
+    start_mixer();
+    with(|d| {
+        d.bufs.insert(
+            PLAY_SOUND,
+            Buf {
+                data: p + data as u32,
+                size: size as u32,
+                fmt: f,
+                freq: f.rate,
+                flags: 0,
+                primary: false,
+                playing: true,
+                looping: flags & SND_LOOP != 0,
+                pos: 0.0,
+                gain: gains(0, 0),
+                volume: 0,
+                pan: 0,
+                notify: Vec::new(),
+                refs: 1,
+                owner: p,
+            },
+        )
+    });
+    if flags & SND_ASYNC == 0 && flags & SND_LOOP == 0 {
+        // synchronous: back when it has played
+        let ms = size as u64 * 1000 / (f.rate * f.block()).max(1) as u64;
+        std::thread::sleep(Duration::from_millis(ms));
+    }
+    1
+}
+fn PlaySoundA(c: &mut Ctx) -> u32 {
+    play_sound(c.a(0), c.a(2), false)
+}
+fn PlaySoundW(c: &mut Ctx) -> u32 {
+    play_sound(c.a(0), c.a(2), true)
+}
+fn sndPlaySoundA(c: &mut Ctx) -> u32 {
+    play_sound(c.a(0), c.a(1), false)
+}
+fn sndPlaySoundW(c: &mut Ctx) -> u32 {
+    play_sound(c.a(0), c.a(1), true)
+}
+
 pub fn init() {
     for (n, f) in [
         ("waveOutGetNumDevs", waveOutGetNumDevs as crate::api::Handler),
@@ -1040,6 +1144,11 @@ pub fn init() {
         implement("winmm", n, f);
     }
     implement("winmm", "mixerOpen", mixerOpen);
+    implement("winmm", "PlaySoundA", PlaySoundA);
+    implement("winmm", "PlaySound", PlaySoundA);
+    implement("winmm", "PlaySoundW", PlaySoundW);
+    implement("winmm", "sndPlaySoundA", sndPlaySoundA);
+    implement("winmm", "sndPlaySoundW", sndPlaySoundW);
     implement("winmm", "mixerGetDevCapsA", mixerGetDevCaps);
     implement("winmm", "mixerGetDevCapsW", mixerGetDevCaps);
     implement("dsound", "DirectSoundCreate", DirectSoundCreate);

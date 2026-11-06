@@ -12,7 +12,11 @@ import { fileURLToPath } from "node:url";
 import { deflateSync } from "node:zlib";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
-export const EXPECTED = { kirikiri: join(ROOT, "testdata/kirikiri/expected.json") };
+export const EXPECTED = {
+  kirikiri: join(ROOT, "testdata/kirikiri/expected.json"),
+  // (the same game on 吉里吉里2: its own pictures, text and transitions drawn by another engine)
+  krkr2: join(ROOT, "testdata/kirikiri/expected-krkr2.json"),
+};
 const GRID = [32, 18];
 // (a cell "differs" when a channel's mean is off by more than CELL; at most CELLS such cells and a
 // mean difference of MEAN over the whole grid)

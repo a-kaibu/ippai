@@ -1,16 +1,21 @@
 // The KiriKiri benchmark's game (suite.mjs's "kirikiri" group, played by scenario.mjs):
 // testdata/kirikiri (a small KAG3 game, see its scenario/first.ks) packed into data.xp3 as games
-// ship, next to 吉里吉里Z's tvpwin32.exe and the plugins it links.
+// ship, next to 吉里吉里Z's tvpwin32.exe and the plugins it links; or, the same game for the
+// "krkr2" group, next to 吉里吉里2's krkr.eXe (its scripts in UTF-16: 吉里吉里2 reads text without
+// a BOM as Shift_JIS).
 //
 //   node tests/bench/pack-kirikiri.mjs OUT_DIR KRKRZ_DIR   (writes OUT_DIR/kirikiri/)
 //     KRKRZ_DIR: the krkrz release (tests/bench/fetch-krkrz.sh)
-import { copyFileSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+//   node tests/bench/pack-kirikiri.mjs OUT_DIR KRKR2_DIR   (writes OUT_DIR/krkr2/)
+//     KRKR2_DIR: 吉里吉里2 2.32r2's kirikiri2/ (tests/bench/fetch-krkr2.sh)
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { deflateSync } from "node:zlib";
 
 const [out, krkrz] = process.argv.slice(2);
 if (!krkrz) throw new Error("usage: pack-kirikiri.mjs OUT_DIR KRKRZ_DIR");
+const krkr2 = existsSync(join(krkrz, "krkr.eXe"));
 const game = join(dirname(fileURLToPath(import.meta.url)), "../../testdata/kirikiri");
 
 const adler32 = (b) => {
@@ -28,7 +33,12 @@ const walk = (dir, at) => {
   for (const f of readdirSync(dir).sort()) {
     const p = join(dir, f), name = at ? `${at}/${f}` : f;
     if (statSync(p).isDirectory()) walk(p, name);
-    else files.push([name, readFileSync(p), /\.(tjs|ks|txt)$/.test(f)]);
+    else {
+      const text = /\.(tjs|ks|txt)$/.test(f);
+      let data = readFileSync(p);
+      if (text && krkr2) data = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(data.toString("utf8"), "utf16le")]);
+      files.push([name, data, text]);
+    }
   }
 };
 walk(game, "");
@@ -66,11 +76,18 @@ parts[1] = u64(at);
 parts.push(Buffer.from([1]), u64(packed.length), u64(raw.length), packed);
 const archive = Buffer.concat(parts);
 
-const dir = join(out, "kirikiri");
+const dir = join(out, krkr2 ? "krkr2" : "kirikiri");
 mkdirSync(join(dir, "plugin"), { recursive: true });
 writeFileSync(join(dir, "data.xp3"), archive);
-copyFileSync(join(krkrz, "tvpwin32.exe"), join(dir, "tvpwin32.exe"));
-for (const p of ["KAGParser.dll", "menu.dll", "extrans.dll"]) copyFileSync(join(krkrz, "plugin", p), join(dir, "plugin", p));
-// (krkrz's license asks for its notice next to the binaries)
-copyFileSync(join(krkrz, "license.txt"), join(dir, "license.txt"));
-console.log(`kirikiri/data.xp3: ${files.length} files, ${(archive.length / 1048576).toFixed(1)} MiB`);
+if (krkr2) {
+  // (KAGParser and menu are built into 吉里吉里2)
+  copyFileSync(join(krkrz, "krkr.eXe"), join(dir, "krkr.eXe"));
+  copyFileSync(join(krkrz, "plugin", "extrans.dll"), join(dir, "plugin", "extrans.dll"));
+  copyFileSync(join(krkrz, "..", "license.txt"), join(dir, "license.txt"));
+} else {
+  copyFileSync(join(krkrz, "tvpwin32.exe"), join(dir, "tvpwin32.exe"));
+  for (const p of ["KAGParser.dll", "menu.dll", "extrans.dll"]) copyFileSync(join(krkrz, "plugin", p), join(dir, "plugin", p));
+  // (krkrz's license asks for its notice next to the binaries)
+  copyFileSync(join(krkrz, "license.txt"), join(dir, "license.txt"));
+}
+console.log(`${krkr2 ? "krkr2" : "kirikiri"}/data.xp3: ${files.length} files, ${(archive.length / 1048576).toFixed(1)} MiB`);

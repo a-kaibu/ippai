@@ -1,0 +1,195 @@
+; novel16 のシナリオ (testdata/novel16/novel16.c が読む。tests/bench/pack-novel16.py が Shift_JIS にする)
+; 一行一命令: bg 名前 / ch 位置(0-2) 名前|- / show cut|fade|wipe|blinds|mosaic ミリ秒 / voice 名前 /
+; speed 一文字のミリ秒 / say 文 / textwin on|off / st 何 / bw click|idle|choice / slide 位置 名前 /
+; shake ミリ秒 / petals / choice ラベル (続く二行がボタン、ふたつめならラベルへ) / goto ラベル / save / end
+
+; ---- タイトル ----
+bg title
+textwin off
+show cut 0
+st title
+bw click
+textwin on
+
+; ---- 一: 丘 ----
+bg bg1
+ch 1 ch0_0
+show fade 500
+st scene
+bw click
+voice voice0
+say 「おはよう。今日もいい天気だね」
+st line
+bw click
+ch 1 ch0_1
+show cut 0
+voice voice1
+say 「丘の上まで行ってみない？　向こうに町が見えるはず」
+st line
+bw click
+voice voice2
+say 風が草をなでていく。遠くで鳥が鳴いた。
+st line
+bw idle
+ch 1 ch0_2
+show cut 0
+voice voice3
+say 「ほら、急がないと日が高くなっちゃう」
+st line
+bw click
+voice voice4
+say そう言って、彼女は先に歩き出した。
+st line
+bw click
+
+; 移動と揺れ: 立ち絵を横から滑らせて画面を揺らす
+textwin off
+slide 1 ch0_0
+shake 500
+st fx_move
+bw click
+
+; 三人並べる
+ch 0 ch0_1
+ch 1 ch1_1
+ch 2 ch2_1
+show fade 400
+st fx_three
+bw click
+ch 0 -
+ch 2 -
+textwin on
+
+; ---- 二: 夕方の道 (ワイプで) ----
+bg bg2
+ch 1 ch1_0
+show wipe 600
+st scene
+bw click
+voice voice5
+say 「やっと追いついた。足、速すぎ」
+st line
+bw click
+ch 1 ch1_1
+show cut 0
+voice voice6
+say 「そっちが遅いだけだよ」
+st line
+bw click
+
+; 花びら: 48 枚のスプライトを 60 フレーム
+petals
+
+voice voice7
+say いつのまにか空の色が変わり始めていた。
+st line
+bw click
+ch 1 ch1_2
+show cut 0
+voice voice8
+say 「この先で道がふたつに分かれてるんだ」
+st line
+bw click
+
+; 文字送り: 長い文を一文字 20 ms で
+speed 20
+say 花びらが舞い、宙をただよい、夕日を受けてきらきらと光っていた。ふたりはしばらく黙ったまま、その景色を眺めていた。風が吹くたびに、花弁はくるくると回りながら道の向こうへ流れていく。
+speed 30
+st fx_typed
+bw click
+
+; ---- 三: 分かれ道 (ブラインドで) ----
+bg bg3
+ch 1 ch2_0
+show blinds 1200
+st fx_blinds
+bw click
+voice voice9
+say 「左は森、右は川。どっちにする？」
+st line
+bw click
+ch 1 ch2_1
+show cut 0
+voice voice10
+say 「決めるのはきみだよ」
+st line
+bw click
+voice voice11
+say 少し考えてから、ぼくは答えた。
+st line
+bw click
+ch 1 ch2_2
+show cut 0
+voice voice12
+say 「……うん、そっちにしよう」
+st line
+bw click
+
+; ---- 選択肢: ボタンふたつ (ひとつめがハーネスのクリック 640,430 の下) ----
+choice right
+　左の道を行く
+　右の道を行く
+bg bg4
+ch 1 ch0_0
+goto after
+*right
+bg bg5
+ch 1 ch1_0
+*after
+show mosaic 1000
+st fx_mosaic
+bw click
+
+voice voice13
+say 木々のあいだから、やわらかい光がこぼれていた。
+st line
+bw click
+ch 1 ch0_1
+show cut 0
+voice voice14
+say 「ここ、覚えておこう。また来たいから」
+st line
+bw click
+voice voice15
+say ぼくはその景色を栞にはさむことにした。
+st line
+bw click
+
+; ---- セーブ: 読み込む (引数 load) とここから ----
+save
+st saved
+bw click
+
+; ---- 四: 町 ----
+bg bg6
+ch 1 ch2_0
+show fade 500
+st scene
+bw click
+voice voice16
+say 丘を下りきると、町の灯りがともり始めていた。
+st line
+bw click
+ch 1 ch2_1
+show cut 0
+voice voice17
+say 「着いたね。おなか空いた」
+st line
+bw click
+voice voice18
+say ふたりで笑って、灯りのほうへ歩いていった。
+st line
+bw click
+ch 1 ch2_2
+show cut 0
+voice voice19
+say 「また明日も、どこか行こう」
+st line
+bw click
+
+bg -
+ch 1 -
+show fade 500
+say おしまい
+st end
+end

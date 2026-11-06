@@ -14,7 +14,7 @@
 export const VERSION = 3;
 
 // More rounds for the groups whose cases are short and noisy (run.mjs's default when ROUNDS isn't set)
-export const MIN_ROUNDS = { "cpu-kernels": 7, "cpu-game": 5, scenario: 5, kirikiri: 5 };
+export const MIN_ROUNDS = { "cpu-kernels": 7, "cpu-game": 5, scenario: 5, kirikiri: 5, krkr2: 5, "renpy-gl": 5, "renpy-angle": 5, onscripter: 5, onscripter64: 5, win16: 5 };
 
 const cases = (exe, names, extra = {}) => names.map((c) => ({ exe, args: c, ...extra }));
 
@@ -41,4 +41,22 @@ export const GROUPS = {
   // the same, a game made with 吉里吉里Z and KAG3 (tests/bench/gen-kirikiri.mjs): the engine games
   // ship with, its scripts (TJS), archive (xp3), PNG pictures and transitions
   kirikiri: [{ exe: "kirikiri\\tvpwin32.exe", name: "kirikiri", args: "-mode=play", load: "-mode=load", scenario: true }],
+  // the same game on 吉里吉里2 2.32r2 (tests/bench/fetch-krkr2.sh): the engine most released
+  // KiriKiri games use (DirectDraw/GDI, its own TJS2 and KAG3). It logs Debug.message only to its
+  // log file, which sake echoes (SAKE_ECHO_FILE)
+  krkr2: [{ exe: "krkr2\\krkr.eXe", name: "krkr2", args: "-mode=play", load: "-mode=load", env: ["SAKE_ECHO_FILE=krkr.console.log"], scenario: true }],
+  // the same story on Ren'Py 8.5 (testdata/renpy, tests/bench/pack-renpy.py): a 64-bit program,
+  // Python 3, SDL2, ffmpeg (WAV, a VP9 movie), GLSL shaders (blur, sepia, a ripple of its own),
+  // through OpenGL (gl2) or ANGLE's Direct3D 11 (angle2). ('""': Ren'Py's base directory, the exe's)
+  "renpy-gl": [{ exe: "renpy\\RenBench.exe", name: "renpy-gl", args: '"",gl', load: '"",gl_load', scenario: true }],
+  "renpy-angle": [{ exe: "renpy\\RenBench.exe", name: "renpy-angle", args: '"",angle', load: '"",angle_load', scenario: true }],
+  // the same story on ONScripter (testdata/onscripter, tests/bench/build-onscripter.sh): the
+  // NScripter clone many doujin games ship with, SDL 1.2 through GDI, its own sprite compositing
+  // and effects (rule images, mosaic, breakup.dll), FreeType text. The mode comes from a .reg file
+  onscripter: [{ exe: "onscripter\\onscripter.exe", name: "onscripter", args: "--registry,play.reg", load: "--registry,load.reg", scenario: true }],
+  // the same, built for x64 (with mingw-w64's msvcrt.dll from Wine, app-local): sake's 64-bit path
+  // the same story on a Win16 program (testdata/novel16, tests/bench/build-novel16.sh): a small
+  // engine as Windows 3.1 games were written, 16-bit code (Open Watcom), GDI raster operations only
+  win16: [{ exe: "novel16\\novel16.exe", name: "win16", args: "", load: "load", scenario: true }],
+  onscripter64: [{ exe: "onscripter64\\onscripter.exe", name: "onscripter64", args: "--registry,play.reg", load: "--registry,load.reg", scenario: true }],
 };

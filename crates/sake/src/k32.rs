@@ -2956,6 +2956,24 @@ fn LoadLibraryW(c: &mut Ctx) -> u32 {
 fn LoadLibraryExA(c: &mut Ctx) -> u32 {
     LoadLibraryA(c)
 }
+/// SetDllDirectory(path): one folder searched after the exe's (NULL or "": none again)
+fn set_dll_directory(c: &mut Ctx, wide: bool) -> u32 {
+    let mut dirs = crate::pe::DLL_DIRS.lock().unwrap();
+    dirs.clear();
+    if c.a(0) != 0 {
+        let d = crate::files::full_path(arg_str(c.a(0), wide).trim_end_matches(['\\', '/']));
+        if !d.is_empty() {
+            dirs.push(d);
+        }
+    }
+    1
+}
+fn SetDllDirectoryA(c: &mut Ctx) -> u32 {
+    set_dll_directory(c, false)
+}
+fn SetDllDirectoryW(c: &mut Ctx) -> u32 {
+    set_dll_directory(c, true)
+}
 fn LoadLibraryExW(c: &mut Ctx) -> u32 {
     LoadLibraryW(c)
 }
@@ -3109,14 +3127,14 @@ fn GetConsoleOutputCP(_: &mut Ctx) -> u32 {
 /// WriteConsoleA/W(h, buf, n, &written, _): to stderr (no console; the CRT imports them)
 fn WriteConsoleA(c: &mut Ctx) -> u32 {
     let (buf, n) = (c.a(1), c.a(2).min(0x10000));
-    eprint!("{}", String::from_utf8_lossy(mem::slice(buf, n)));
+    console_write(&String::from_utf8_lossy(mem::slice(buf, n)));
     put32(c.a(3), n);
     1
 }
 fn WriteConsoleW(c: &mut Ctx) -> u32 {
     let (buf, n) = (c.a(1), c.a(2).min(0x10000));
     let w: Vec<u16> = (0..n).map(|i| mem::r16(buf + 2 * i)).collect();
-    eprint!("{}", String::from_utf16_lossy(&w));
+    console_write(&String::from_utf16_lossy(&w));
     put32(c.a(3), n);
     1
 }
@@ -3155,6 +3173,14 @@ fn CreateFileW(c: &mut Ctx) -> u32 {
 fn _lopen(c: &mut Ctx) -> u32 {
     let name = arg_str(c.a(0), false);
     match files::open(&name, if c.a(1) & 3 != 0 { 0xc000_0000 } else { 0x8000_0000 }, 3) {
+        Ok(f) => obj::add(Obj::File(std::sync::Arc::new(f))),
+        Err(_) => 0xffff_ffff,
+    }
+}
+/// _lcreat(name, attributes): a new empty file (or the old one emptied), open to read and write
+fn _lcreat(c: &mut Ctx) -> u32 {
+    let name = arg_str(c.a(0), false);
+    match files::open(&name, 0xc000_0000, 2) {
         Ok(f) => obj::add(Obj::File(std::sync::Arc::new(f))),
         Err(_) => 0xffff_ffff,
     }
@@ -3211,7 +3237,7 @@ fn WriteFile(c: &mut Ctx) -> u32 {
         _ => None,
     });
     if let Some(_k) = kind {
-        eprint!("{}", a2s(mem::slice(buf, n)));
+        console_write(&a2s(mem::slice(buf, n)));
         put32(pw, n);
         return 1;
     }
@@ -3224,9 +3250,44 @@ fn WriteFile(c: &mut Ctx) -> u32 {
         last_error(5);
         return 0;
     }
+    echo_write(&f.path, buf, n);
     let w = f.write_from(buf, n);
     put32(pw, w);
     ok(w == n)
+}
+/// Console output a line at a time (the page logs each write as its own line: 吉里吉里2 writes its
+/// log a character at a time)
+pub(crate) fn console_write(t: &str) {
+    static PENDING: Mutex<String> = Mutex::new(String::new());
+    let mut p = PENDING.lock().unwrap();
+    p.push_str(t);
+    while let Some(i) = p.find('\n') {
+        let line: String = p.drain(..=i).collect();
+        eprintln!("{}", line.trim_end_matches(['\r', '\n']));
+    }
+}
+/// SAKE_ECHO_FILE=name: what the program writes to files of that name also goes to the log, a
+/// line at a time (a game's own log file: 吉里吉里2 writes Debug.message only to krkr.console.log)
+fn echo_write(path: &str, buf: u32, n: u32) {
+    static NAME: OnceLock<Option<String>> = OnceLock::new();
+    let Some(name) = NAME.get_or_init(|| std::env::var("SAKE_ECHO_FILE").ok().map(|s| s.to_ascii_lowercase())) else { return };
+    if !path.to_ascii_lowercase().ends_with(name.as_str()) {
+        return;
+    }
+    let b = mem::slice(buf, n);
+    // (UTF-16 once the file started with a BOM, or when most odd bytes are 0; else the ANSI code page)
+    static WIDE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if b.starts_with(&[0xff, 0xfe]) {
+        WIDE.store(true, Ordering::Relaxed);
+    }
+    let zeros = b.iter().skip(1).step_by(2).filter(|&&x| x == 0).count();
+    let t = if WIDE.load(Ordering::Relaxed) || (b.len() >= 2 && zeros * 2 >= b.len() / 2) {
+        let u: Vec<u16> = b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).filter(|&c| c != 0xfeff).collect();
+        String::from_utf16_lossy(&u)
+    } else {
+        a2s(b)
+    };
+    console_write(&t);
 }
 fn SetFilePointer(c: &mut Ctx) -> u32 {
     let (h, lo, phi, how) = (c.a(0), c.a(1), c.a(2), c.a(3));
@@ -3331,6 +3392,91 @@ fn GetFileInformationByHandle(c: &mut Ctx) -> u32 {
     w32(p + 32, (m.len() >> 32) as u32);
     w32(p + 36, m.len() as u32);
     w32(p + 40, 1);
+    1
+}
+
+/// GetFileInformationByHandleEx(file, class, buffer, size): the classes Python's os.stat and
+/// os.path ask for (basic, standard, attribute tag, id)
+fn GetFileInformationByHandleEx(c: &mut Ctx) -> u32 {
+    let Some(f) = obj::file(c.a(0)) else {
+        last_error(6);
+        return 0;
+    };
+    let Ok(m) = f.f.lock().unwrap().metadata() else { return 0 };
+    let (class, p, size) = (c.a(1), c.a(2), c.a(3));
+    let need = match class {
+        0 => 40,
+        1 => 24,
+        9 => 8,
+        18 => 24,
+        _ => {
+            last_error(87); // ERROR_INVALID_PARAMETER: "not this kind of file" to Python
+            return 0;
+        }
+    };
+    if size < need {
+        last_error(24);
+        return 0;
+    }
+    mem::fill(p, need, 0);
+    let t = m.modified().map_or(0, files::filetime);
+    match class {
+        0 => {
+            for o in [0, 8, 16, 24] {
+                put64(p + o, t);
+            }
+            w32(p + 32, files::attrs(&m));
+        }
+        1 => {
+            put64(p, m.len().next_multiple_of(4096));
+            put64(p + 8, m.len());
+            w32(p + 16, 1);
+            mem::write(p + 21, &[m.is_dir() as u8]);
+        }
+        9 => w32(p, files::attrs(&m)),
+        _ => {
+            put64(p, 0x1234);
+            // (a file id from the path: os.path.samefile compares them)
+            let h = f.path.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b.to_ascii_lowercase() as u64).wrapping_mul(0x100_0000_01b3));
+            put64(p + 8, h);
+        }
+    }
+    1
+}
+/// PathCchSkipRoot(path, *root end): past "C:\", "C:", "\\server\share\" or "\"
+fn PathCchSkipRoot(c: &mut Ctx) -> u32 {
+    let (p, out) = (c.a(0), c.a(1));
+    if p == 0 || out == 0 {
+        return 0x8007_0057;
+    }
+    let w = mem::wstr(p);
+    let sep = |i: usize| w.get(i).is_some_and(|&ch| ch == b'\\' as u16 || ch == b'/' as u16);
+    let n = if w.len() >= 2 && w[1] == b':' as u16 {
+        if sep(2) { 3 } else { 2 }
+    } else if sep(0) && sep(1) {
+        // \\server\share\ (or \\?\...)
+        let mut i = 2;
+        for _ in 0..2 {
+            while i < w.len() && !sep(i) {
+                i += 1;
+            }
+            if i < w.len() {
+                i += 1;
+            }
+        }
+        i
+    } else if sep(0) {
+        1
+    } else {
+        return 0x8007_0057;
+    };
+    mem::wp(out, p + 2 * n as u32);
+    0
+}
+fn VerifyConsoleIoHandle(c: &mut Ctx) -> u32 {
+    obj::file(c.a(0)).is_none() as u32
+}
+fn SetHandleInformation(_: &mut Ctx) -> u32 {
     1
 }
 
@@ -4403,7 +4549,7 @@ pub fn init() {
         GetModuleHandleExW, LoadLibraryA, LoadLibraryW, LoadLibraryExA, LoadLibraryExW, FreeLibrary,
         DisableThreadLibraryCalls, GetProcAddress, FindResourceA, FindResourceW, FindResourceExA, FindResourceExW,
         LoadResource, LockResource, FreeResource, SizeofResource,
-        GetStdHandle, SetStdHandle, GetFileType, GetConsoleMode, WriteConsoleA, WriteConsoleW, GetConsoleCP, GetConsoleOutputCP, CreateFileA, CreateFileW, _lopen, _lclose, _lread,
+        GetStdHandle, SetStdHandle, SetDllDirectoryA, SetDllDirectoryW, GetFileInformationByHandleEx, PathCchSkipRoot, VerifyConsoleIoHandle, SetHandleInformation, GetFileType, GetConsoleMode, WriteConsoleA, WriteConsoleW, GetConsoleCP, GetConsoleOutputCP, CreateFileA, CreateFileW, _lopen, _lcreat, _lclose, _lread,
         _llseek, ReadFile, WriteFile, SetFilePointer, SetFilePointerEx, GetFileSize, GetFileSizeEx, SetEndOfFile,
         FlushFileBuffers, LockFile, UnlockFile, GetFileTime, SetFileTime, GetFileInformationByHandle,
         FindFirstFileA, FindFirstFileW, FindFirstFileExA, FindFirstFileExW, FindNextFileA, FindNextFileW, FindClose, GetFileAttributesA,

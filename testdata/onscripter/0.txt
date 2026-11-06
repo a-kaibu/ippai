@@ -1,0 +1,247 @@
+;modew720,value500
+; ONScripter ベンチ: ippai のベンチマーク (tests/bench, グループ onscripter) が遊ぶ小さなノベル。
+; 絵と音は吉里吉里ベンチ (testdata/kirikiri) のもの。tests/bench/pack-onscripter.py が Shift_JIS に
+; して、build-onscripter.sh が作った onscripter.exe の隣に置く。合図は benchlog (標準出力の行):
+;   BENCH-STATE <何> <番号>   何かを表示し終えた (title, scene, line, saved, restored, end, fx_*)
+;   BENCH-WAIT <番号> <何>    クリックを待ち始めた (click, idle: 3 秒待ってから, choice: 選択肢)
+; 起動の引数 --registry play.reg / load.reg (getreg で読む [bench] "mode") で最初から遊ぶか、
+; セーブを読んで restored で止まる。fx_* はクリックから重い演出の終わりまで (ルール画像、
+; モザイク、breakup.dll、揺れ、文字送り、モノクロ、48 枚の花びらのスプライト)。
+; 花びらの 60 フレームにかかった時間を "BENCH ns_petals_frame ms" (1 フレームの平均) で出す。
+
+*define
+caption "ONScripter Bench"
+rmode 0
+savenumber 1
+defaultspeed 0,0,0
+effect 2,10,500
+effect 3,18,600,"rule\wipe.png"
+effect 4,10,400
+effect 5,16,1000
+effect 6,99,1200,"breakup.dll/lrp"
+numalias step,90
+numalias tmp,91
+numalias petal_t,92
+defsub st
+defsub bw
+game
+
+; ---- 合図 ----
+*st
+getparam $90
+inc %step
+itoa $91,%step
+benchlog "BENCH-STATE "+$90+" "+$91
+return
+*bw
+getparam $90
+inc %step
+itoa $91,%step
+benchlog "BENCH-WAIT "+$91+" "+$90
+return
+
+*start
+setwindow 64,540,38,4,28,28,2,6,0,1,1,#202040,40,520,1239,699
+getreg $80,"bench","mode"
+if $80=="load" loadgame 1
+if $80=="load" benchlog "BENCH-FAIL no save to load":goto *halt
+
+; ---- タイトル ----
+bg "bgimage\title.png",1
+strsp 40,"ＯＮＳｃｒｉｐｔｅｒ ベンチ　―　クリックではじめる",360,320,20,1,28,28,0,0,0,0
+print 1
+st "title":bw "click":click
+csp 40:print 1
+mp3loop "bgm\bgm0.wav"
+
+; ---- 一: 丘 ----
+bg "bgimage\bg1.png",1
+lsp 10,":a;fgimage\ch0_0.png",440,80
+print 2
+st "scene":bw "click":click
+
+dwave 1,"sound\voice0.wav"
+「おはよう。今日もいい天気だね」
+st "line":bw "click":click:textclear
+lsp 10,":a;fgimage\ch0_1.png",440,80:print 1
+dwave 1,"sound\voice1.wav"
+「丘の上まで行ってみない？　向こうに町が見えるはず」
+st "line":bw "click":click:textclear
+dwave 1,"sound\voice2.wav"
+風が草をなでていく。遠くで鳥が鳴いた。
+st "line":bw "idle":click:textclear
+lsp 10,":a;fgimage\ch0_2.png",440,80:print 1
+dwave 1,"sound\voice3.wav"
+「ほら、急がないと日が高くなっちゃう」
+st "line":bw "click":click:textclear
+dwave 1,"sound\voice4.wav"
+そう言って、彼女は先に歩き出した。
+st "line":bw "click":click:textclear
+
+; 移動と揺れ: 立ち絵を 30 段で横から滑らせて画面を揺らす
+erasetextwindow 1:texthide
+lsp 10,":a;fgimage\ch0_0.png",-200,80:print 1
+for %tmp=1 to 30
+	amsp 10,-200+%tmp*640/30,80
+	print 1
+	wait 16
+next
+quake 8,500
+st "fx_move":bw "click":click
+
+; 三人並べて一度に表情を変える
+lsp 10,":a;fgimage\ch0_1.png",40,80
+lsp 11,":a;fgimage\ch1_1.png",440,80
+lsp 12,":a;fgimage\ch2_1.png",840,80
+print 4
+st "fx_three":bw "click":click
+csp 11:csp 12:print 2
+textshow
+
+; ---- 二: 夕方の道 (ルール画像で) ----
+lsp 10,":a;fgimage\ch1_0.png",440,80
+bg "bgimage\bg2.png",3
+st "scene":bw "click":click
+dwave 1,"sound\voice5.wav"
+「やっと追いついた。足、速すぎ」
+st "line":bw "click":click:textclear
+lsp 10,":a;fgimage\ch1_1.png",440,80:print 1
+dwave 1,"sound\voice6.wav"
+「そっちが遅いだけだよ」
+st "line":bw "click":click:textclear
+
+; 花びら: 48 枚のスプライトを 60 フレーム動かす (1 フレームごとに全部 amsp して print 1)
+for %tmp=0 to 47
+	lsp 100+%tmp,":a;image\petal.png",%tmp*27,-64
+next
+resettimer
+for %petal_t=1 to 60
+	for %tmp=0 to 47
+		sin %80,%petal_t*6+%tmp*30:mov %80,%80*40/1000
+		mov %81,%petal_t*11+%tmp*37:mod %81,800
+		amsp 100+%tmp,%tmp*27+%80,%81-64
+	next
+	print 1
+next
+gettimer %82
+mov %83,%82/60
+itoa $84,%83
+benchlog "BENCH ns_petals_frame "+$84
+for %tmp=0 to 47:csp 100+%tmp:next
+print 1
+
+dwave 1,"sound\voice7.wav"
+いつのまにか空の色が変わり始めていた。
+st "line":bw "click":click:textclear
+lsp 10,":a;fgimage\ch1_2.png",440,80:print 1
+dwave 1,"sound\voice8.wav"
+「この先で道がふたつに分かれてるんだ」
+st "line":bw "click":click:textclear
+
+; 文字送り: ルビつきの長い文を一文字 20 ms で
+rubyon
+!s20花びらが(舞/ま)(宙/ちゅう)をただよい、夕日を受けてきらきらと光っていた。ふたりはしばらく黙ったまま、その景色を眺めていた。風が吹くたびに、(花弁/はなびら)はくるくると回りながら道の向こうへ流れていく。!sd
+rubyoff
+st "fx_typed":bw "click":click:textclear
+
+; 回想: モノクロ (セピア) で描き直す
+monocro #ffd0a0
+print 4
+st "fx_blur":bw "click":click
+monocro off
+print 4
+
+; ---- 三: 分かれ道 (breakup.dll で) ----
+lsp 10,":a;fgimage\ch2_0.png",440,80
+bg "bgimage\bg3.png",6
+st "fx_wave":bw "click":click
+dwave 1,"sound\voice9.wav"
+「左は森、右は川。どっちにする？」
+st "line":bw "click":click:textclear
+lsp 10,":a;fgimage\ch2_1.png",440,80:print 1
+dwave 1,"sound\voice10.wav"
+「決めるのはきみだよ」
+st "line":bw "click":click:textclear
+dwave 1,"sound\voice11.wav"
+少し考えてから、ぼくは答えた。
+st "line":bw "click":click:textclear
+lsp 10,":a;fgimage\ch2_2.png",440,80:print 1
+dwave 1,"sound\voice12.wav"
+「……うん、そっちにしよう」
+st "line":bw "click":click:textclear
+
+; ---- 選択肢: ボタンのスプライトふたつ (ひとつめがハーネスのクリック 640,430 の下) ----
+mp3fadeout 1500
+mp3loop "bgm\bgm1.wav"
+erasetextwindow 1:texthide
+strsp 50,"　左の道を行く　",400,400,10,1,44,44,0,0,0,0
+strsp 51,"　右の道を行く　",400,520,10,1,44,44,0,0,0,0
+spbtn 50,1
+spbtn 51,2
+print 1
+st "fx_choice":bw "choice"
+btnwait %tmp
+csp 50:csp 51
+if %tmp==2 goto *right
+*left
+lsp 10,":a;fgimage\ch0_0.png",440,80
+bg "bgimage\bg4.png",5
+goto *after
+*right
+lsp 10,":a;fgimage\ch1_0.png",440,80
+bg "bgimage\bg5.png",5
+*after
+st "fx_mosaic":bw "click":click
+textshow
+
+dwave 1,"sound\voice13.wav"
+木々のあいだから、やわらかい光がこぼれていた。
+st "line":bw "click":click:textclear
+lsp 10,":a;fgimage\ch0_1.png",440,80:print 1
+dwave 1,"sound\voice14.wav"
+「ここ、覚えておこう。また来たいから」
+st "line":bw "click":click:textclear
+dwave 1,"sound\voice15.wav"
+ぼくはその景色を栞にはさむことにした。
+st "line":bw "click":click:textclear
+
+; ---- セーブ: 読み込むとここから (mode は読み直す: 変数はセーブのものに戻る) ----
+savegame 1
+getreg $80,"bench","mode"
+if $80=="load" goto *restored
+st "saved":bw "click":click
+
+; ---- 四: 町 ----
+lsp 10,":a;fgimage\ch2_0.png",440,80
+bg "bgimage\bg6.png",2
+st "scene":bw "click":click
+dwave 1,"sound\voice16.wav"
+丘を下りきると、町の灯りがともり始めていた。
+st "line":bw "click":click:textclear
+lsp 10,":a;fgimage\ch2_1.png",440,80:print 1
+dwave 1,"sound\voice17.wav"
+「着いたね。おなか空いた」
+st "line":bw "click":click:textclear
+dwave 1,"sound\voice18.wav"
+ふたりで笑って、灯りのほうへ歩いていった。
+st "line":bw "click":click:textclear
+lsp 10,":a;fgimage\ch2_2.png",440,80:print 1
+dwave 1,"sound\voice19.wav"
+「また明日も、どこか行こう」
+st "line":bw "click":click:textclear
+
+mp3stop
+csp 10
+bg black,2
+おしまい
+st "end"
+benchlog "BENCH-END"
+goto *halt
+
+*restored
+（ロードしました）
+st "restored"
+benchlog "BENCH-END"
+*halt
+wait 1000
+goto *halt
