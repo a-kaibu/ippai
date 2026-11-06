@@ -683,7 +683,10 @@ static ID3D11Texture2D *mf, *mu, *mfs, *mus;
 static ID3D11RenderTargetView *mfv, *muv;
 static ID3D11VertexShader *mvs;
 static ID3D11Buffer *mcb;
-static float in_a[256], in_b[256], in_c[256];
+static struct { float a[256], b[256], c[256]; } in;
+#define in_a in.a
+#define in_b in.b
+#define in_c in.c
 
 static unsigned lcg = 12345;
 static unsigned rnd(void) { lcg = lcg * 1103515245u + 12345u; return lcg >> 1 ^ lcg << 17; }
@@ -695,7 +698,7 @@ static int run(const char *op, int uint_target, unsigned *out) {
     D3D_SHADER_MACRO defs[2] = { { "OP", op }, { NULL, NULL } };
     ID3D11PixelShader *p = ps_of(MATH, uint_target ? "u" : "f", defs);
     if (!p) return 0;
-    ID3D11DeviceContext_UpdateSubresource(ctx, (ID3D11Resource *)mcb, 0, NULL, in_a, 0, 0);
+    ID3D11DeviceContext_UpdateSubresource(ctx, (ID3D11Resource *)mcb, 0, NULL, &in, 0, 0);
     ID3D11DeviceContext_OMSetRenderTargets(ctx, 1, uint_target ? &muv : &mfv, NULL);
     viewport(0, 0, N, N, 0, 1);
     ID3D11DeviceContext_IASetInputLayout(ctx, NULL);

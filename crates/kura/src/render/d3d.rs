@@ -14,7 +14,7 @@ use crate::d3d9::gpu::*;
 const DATA: u32 = 0xffff_ffff;
 
 // (crates/kura/src/d3d11/format.rs P_*)
-const TEX_FORMATS: [&str; 22] = [
+const TEX_FORMATS: [&str; 30] = [
     "bgra8unorm",
     "depth24plus-stencil8",
     "rgba16float",
@@ -37,25 +37,58 @@ const TEX_FORMATS: [&str; 22] = [
     "rgba8sint",
     "r32uint",
     "r32sint",
+    "rgba32float",
+    "rgba32uint",
+    "rgba32sint",
+    "rg32uint",
+    "rg32sint",
+    "r8snorm",
+    "rg8snorm",
+    "rgb9e5ufloat",
 ];
+/// (index of rgba32float)
+const P_RGBA32F: u32 = 22;
 fn tex_format(i: u32) -> &'static str {
+    // (32-bit float texels a shader samples with a filter want float32-filterable: halves without
+    // it, converted on writes and readbacks)
+    if i == P_RGBA32F && !gpu::has_feature("float32-filterable") {
+        return "rgba16float";
+    }
     TEX_FORMATS.get(i as usize).copied().unwrap_or("bgra8unorm")
+}
+/// Whether texels of page format `i` arrive as 32-bit floats but are kept as halves.
+fn halved(i: u32) -> bool {
+    i == P_RGBA32F && tex_format(i) == "rgba16float"
 }
 fn bpp(f: &str) -> u32 {
     match f {
-        "r8unorm" => 1,
-        "rg8unorm" | "r16float" | "depth16unorm" => 2,
-        "rgba16float" | "rg32float" => 8,
+        "r8unorm" | "r8snorm" => 1,
+        "rg8unorm" | "rg8snorm" | "r16float" | "depth16unorm" => 2,
+        "rgba16float" | "rg32float" | "rg32uint" | "rg32sint" => 8,
+        "rgba32float" | "rgba32uint" | "rgba32sint" => 16,
         _ => 4,
     }
 }
 /// Whether WebGPU draws to a color format (crates/kura/src/render/model.rs format_info).
 fn renderable(f: &str) -> bool {
-    !f.ends_with("snorm") && !is_depth(f) && (f != "rg11b10ufloat" || gpu::has_feature("rg11b10ufloat-renderable"))
+    !f.ends_with("snorm") && !is_depth(f) && f != "rgb9e5ufloat" && (f != "rg11b10ufloat" || gpu::has_feature("rg11b10ufloat-renderable"))
 }
 /// Whether WebGPU blends into a color format (without the float32-blendable feature).
 fn blendable(f: &str) -> bool {
-    !f.ends_with("uint") && !f.ends_with("sint") && f != "r32float" && f != "rg32float"
+    !f.ends_with("uint") && !f.ends_with("sint") && (!f.ends_with("32float") || gpu::has_feature("float32-blendable"))
+}
+fn f16_to_f32(h: u16) -> f32 {
+    let (s, e, m) = ((h as u32 & 0x8000) << 16, (h >> 10) as u32 & 31, h as u32 & 0x3ff);
+    f32::from_bits(match (e, m) {
+        (0, 0) => s,
+        (0, _) => {
+            // subnormal: normalized
+            let k = m.leading_zeros() - 21;
+            s | (113 - k) << 23 | ((m << k) & 0x3ff) << 13
+        }
+        (31, _) => s | 0x7f80_0000 | m << 13,
+        _ => s | (e + 112) << 23 | m << 13,
+    })
 }
 fn is_depth(f: &str) -> bool {
     f.starts_with("depth")
@@ -189,6 +222,8 @@ struct Tex {
     /// depth-stencil textures: the aspects a draw has used (1 depth, 2 stencil). Until then they
     /// hold what the last clear left, and passes clear them instead of loading and storing them.
     zused: u32,
+    /// 32-bit float texels kept as halves (see `halved`)
+    halved: bool,
 }
 
 impl Tex {
@@ -265,6 +300,8 @@ struct Readback {
     h: u32,
     dst: u32,
     pitch: u32,
+    /// halves read back as 32-bit floats (see `halved`)
+    halved: bool,
 }
 
 pub struct D3d {
@@ -476,6 +513,13 @@ impl D3d {
         if ok && vnhost_d3d9_readback_begin(r.req) != 0 {
             for y in 0..r.h as usize {
                 let src = &r.data[y * r.bpr as usize..y * r.bpr as usize + r.row as usize];
+                if r.halved {
+                    let f: Vec<u8> = src.chunks_exact(2).flat_map(|h| f16_to_f32(u16::from_le_bytes([h[0], h[1]])).to_le_bytes()).collect();
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(f.as_ptr(), (r.dst as usize + y * r.pitch as usize) as *mut u8, f.len());
+                    }
+                    continue;
+                }
                 unsafe {
                     std::ptr::copy_nonoverlapping(src.as_ptr(), (r.dst as usize + y * r.pitch as usize) as *mut u8, r.row as usize);
                 }
@@ -600,7 +644,7 @@ impl D3d {
                     self.clear_groups2();
                     self.created.set(self.created.get() + 1);
                     let view = gpu::view(tex, "");
-                    self.textures.insert(id, Tex { tex, w, h, levels, format: fmt, view, layers: 1, dim: "2d", views: HashMap::new(), fits: HashMap::new(), zclear: None, zused: 0 });
+                    self.textures.insert(id, Tex { tex, w, h, levels, format: fmt, view, layers: 1, dim: "2d", views: HashMap::new(), fits: HashMap::new(), zclear: None, zused: 0, halved: false });
                     i += 7;
                 }
                 DESTROY_TEXTURE => {
@@ -744,14 +788,22 @@ impl D3d {
                 WRITE_TEXTURE2 => {
                     let (id, level, layer, x, y, w, h, bpr, off) = (a(1), a(2), a(3), a(4), a(5), a(6), a(7), a(8), a(9));
                     if let Some(t) = self.textures.get(&id).filter(|t| !is_depth(t.format)) {
-                        let (tw, th, levels, tex) = (t.w, t.h, t.levels, t.tex);
+                        let (tw, th, levels, tex, halved) = (t.w, t.h, t.levels, t.tex, t.halved);
                         self.flush_if_used(id);
                         let (lw, lh) = ((tw >> level).max(1), (th >> level).max(1));
                         let (cw, ch) = (w.min(lw.saturating_sub(x)), h.min(lh.saturating_sub(y)));
                         let len = (bpr * h) as usize;
                         if cw > 0 && ch > 0 && level < levels && off as usize + len <= blob.len() {
                             STATS[3].fetch_add(len as u64, Relaxed);
-                            gpu::write_texture(tex, level, [x, y, layer], blob[off as usize..].as_ptr(), len, bpr, h, [cw, ch, 1]);
+                            if halved {
+                                let half: Vec<u8> = blob[off as usize..off as usize + len]
+                                    .chunks_exact(4)
+                                    .flat_map(|f| crate::d3d11::format::f16_bits(f32::from_le_bytes([f[0], f[1], f[2], f[3]])).to_le_bytes())
+                                    .collect();
+                                gpu::write_texture(tex, level, [x, y, layer], half.as_ptr(), len / 2, bpr / 2, h, [cw, ch, 1]);
+                            } else {
+                                gpu::write_texture(tex, level, [x, y, layer], blob[off as usize..].as_ptr(), len, bpr, h, [cw, ch, 1]);
+                            }
                         }
                     }
                     i += 10;
@@ -1843,7 +1895,7 @@ impl D3d {
             vnhost_d3d9_readback_done(req);
             return;
         };
-        let (tex, format) = (t.tex, t.format);
+        let (tex, format, halved) = (t.tex, t.format, t.halved);
         self.end_pass();
         let bpp = bpp(format);
         let bpr = (w * bpp).div_ceil(256) * 256;
@@ -1855,7 +1907,7 @@ impl D3d {
         let token = self.next_token;
         self.next_token = self.next_token.wrapping_add(1).max(1);
         gpu::read_buffer(buf, bpr * h, data.as_mut_ptr(), token);
-        self.readbacks.insert(token, Readback { req, buf, data, bpr, row: w * bpp, h, dst, pitch });
+        self.readbacks.insert(token, Readback { req, buf, data, bpr, row: w * bpp, h, dst, pitch, halved });
     }
 
     // ---- Direct3D 11 ----
@@ -1869,7 +1921,7 @@ impl D3d {
             _ => "2d",
         };
         let depth = is_depth(fmt);
-        let renderable = dim == "2d" && !fmt.ends_with("snorm") && (fmt != "rg11b10ufloat" || gpu::has_feature("rg11b10ufloat-renderable"));
+        let renderable = dim == "2d" && !fmt.ends_with("snorm") && fmt != "rgb9e5ufloat" && (fmt != "rg11b10ufloat" || gpu::has_feature("rg11b10ufloat-renderable"));
         // (no more levels than the size has)
         let biggest = if dim == "3d" { w.max(h).max(layers) } else { w.max(h) };
         let levels = if dim == "1d" { 1 } else { mips.max(1).min(32 - biggest.max(1).leading_zeros()) };
@@ -1898,7 +1950,7 @@ impl D3d {
             tex,
             &format!(r#"{{"dimension":{}{},"aspect":{}}}"#, q(dim), if dim == "2d" { r#","arrayLayerCount":1"# } else { "" }, q(if depth { "depth-only" } else { "all" })),
         );
-        self.textures.insert(id, Tex { tex, w, h, levels, format: fmt, view, layers: layers.max(1), dim, views: HashMap::new(), fits: HashMap::new(), zclear: None, zused: 0 });
+        self.textures.insert(id, Tex { tex, w, h, levels, format: fmt, view, layers: layers.max(1), dim, views: HashMap::new(), fits: HashMap::new(), zclear: None, zused: 0, halved: halved(format) });
         // A depth buffer starts at depth 1 (what Direct3D leaves undefined; WebGPU's zeros fail
         // every LESS test), and the passes that clear rather than load an aspect no draw used
         // yet (see `zused`) start from that too.

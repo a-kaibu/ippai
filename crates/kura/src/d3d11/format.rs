@@ -55,6 +55,14 @@ pub const P_RGBA8SN: u32 = 18;
 pub const P_RGBA8SI: u32 = 19;
 pub const P_R32UI: u32 = 20;
 pub const P_R32SI: u32 = 21;
+pub const P_RGBA32F: u32 = 22;
+pub const P_RGBA32UI: u32 = 23;
+pub const P_RGBA32SI: u32 = 24;
+pub const P_RG32UI: u32 = 25;
+pub const P_RG32SI: u32 = 26;
+pub const P_R8SN: u32 = 27;
+pub const P_RG8SN: u32 = 28;
+pub const P_RGB9E5: u32 = 29;
 
 pub struct Format {
     /// page format
@@ -80,8 +88,12 @@ const fn c(bpp: u32, block: u32, conv: u32) -> Format {
 pub fn info(dxgi: u32) -> Option<Format> {
     use crate::d3d9::format as f9;
     Some(match dxgi {
-        // (no rgba32float page textures: halves, see F32_TO_F16)
-        1 | 2 => Format { page: P_RGBA16F, bpp: 16, block: 1, conv: F32_TO_F16, no_alpha: false },
+        // (the page keeps them as halves without float32-filterable: render/d3d.rs halved)
+        1 | 2 => f(P_RGBA32F, 16),
+        3 => f(P_RGBA32UI, 16),
+        4 => f(P_RGBA32SI, 16),
+        17 => f(P_RG32UI, 8),
+        18 => f(P_RG32SI, 8),
         9 | 10 => f(P_RGBA16F, 8),
         15 | 16 => f(P_RG32F, 8),
         23 | 24 => f(P_RGB10A2, 4),
@@ -100,7 +112,10 @@ pub fn info(dxgi: u32) -> Option<Format> {
         48 | 49 => f(P_RG8, 2),
         53 | 54 => f(P_R16F, 2),
         55 => f(P_D16, 2),
+        51 => f(P_RG8SN, 2),
         60 | 61 => f(P_R8, 1),
+        63 => f(P_R8SN, 1),
+        67 => f(P_RGB9E5, 4),
         65 => c(1, 1, f9::A8),
         70 | 71 | 72 => c(8, 4, f9::DXT1),
         73 | 74 | 75 => c(16, 4, f9::DXT3),
@@ -122,9 +137,10 @@ pub fn is_depth(page: u32) -> bool {
 /// bytes per texel on the page
 pub fn page_bpp(page: u32) -> u32 {
     match page {
-        P_R8 => 1,
-        P_RG8 | P_R16F | P_D16 => 2,
-        P_RGBA16F | P_RG32F => 8,
+        P_R8 | P_R8SN => 1,
+        P_RG8 | P_RG8SN | P_R16F | P_D16 => 2,
+        P_RGBA16F | P_RG32F | P_RG32UI | P_RG32SI => 8,
+        P_RGBA32F | P_RGBA32UI | P_RGBA32SI => 16,
         _ => 4,
     }
 }
