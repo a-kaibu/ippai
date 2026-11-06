@@ -300,7 +300,12 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   (await audio).attach(sake);
 }
 
-/** Saved region parts downloaded and compiled at once (see loadJit). */
+/**
+ * Saved region parts downloaded and compiled at once (see loadJit). A/B, headless Chromium, CPU
+ * throttled 4x, 8 parts of the KiriKiri bench game's 6.4 MiB module (median of 3): 1 at a time
+ * 980 ms, 2 896 ms, 4 886 ms, 8 940-960 ms; the processes' memory grew ~205 MiB at every width
+ * (V8 compiles lazily).
+ */
 const JIT_LOADS = 4;
 
 /**
