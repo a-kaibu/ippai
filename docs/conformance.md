@@ -18,7 +18,8 @@ Wine (it has no `wine_server_call`), so the tests expect Windows' results everyw
   sake process (node build) with a fresh `C:\` and a time limit, and sorts the results into
   ok / fail (N failed checks) / crash (no summary line: an unhandled exception or a sake
   panic) / timeout. ~13 min for the 394 i386 tests on 4 cores.
-- `tests/winetest/expected-i386.tsv` holds the current results. A run fails on a regression
+- `tests/winetest/expected-i386.tsv` and `expected-x86_64.tsv` hold the current results (378
+  tests each, 5.4M / 5.7M checks run, 2026-11-06; x86_64 runs on sake's own x64 CRT). A run fails on a regression
   (a test that got worse, or more failed checks); `--update` records improvements.
 - `target/winetest/report-<arch>.md` has per-dll totals, the unimplemented functions the
   tests called (by how many tests), and the first failure messages of each test.
