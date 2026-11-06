@@ -1,0 +1,77 @@
+SetCooperativeLevel 0
+GetCaps 0 hel blt 1 colorkey 1 stretch 1
+GetDisplayMode 0 bpp 32
+rgb32: desc flags 0x1007 caps 0x840 24x16 bpp 32 masks ff0000 ff00 ff
+rgb32: Blt copy 0
+rgb32: Blt stretch 0
+rgb32: Blt sub 0
+rgb32: Blt shrink 0
+rgb32: SetColorKey 0
+rgb32: Blt keysrc 0
+rgb32: BltFast srccolorkey 0
+rgb32: Blt mirror 0
+rgb32: Blt outside 0x88760096
+rgb32: BltFast edge 0x88760096
+rgb32: Blt empty 0x88760096
+rgb32_blits: lock pitch>=row 1 bpp 32
+image rgb32_blits 24 16 0
+rgb32: Blt overlap 0
+rgb32: BltFast overlap 0
+rgb32_overlap: lock pitch>=row 1 bpp 32
+image rgb32_overlap 24 16 0
+rgb32: GetDC 0
+rgb32: GetPixel 0080ff
+rgb32_gdi: lock pitch>=row 1 bpp 32
+image rgb32_gdi 24 16 0
+rgb565: desc flags 0x1007 caps 0x840 24x16 bpp 16 masks f800 7e0 1f
+rgb565: Blt copy 0
+rgb565: Blt stretch 0
+rgb565: Blt sub 0
+rgb565: Blt shrink 0
+rgb565: SetColorKey 0
+rgb565: Blt keysrc 0
+rgb565: BltFast srccolorkey 0
+rgb565: Blt mirror 0
+rgb565: Blt outside 0x88760096
+rgb565: BltFast edge 0x88760096
+rgb565: Blt empty 0x88760096
+rgb565_blits: lock pitch>=row 1 bpp 16
+image rgb565_blits 24 16 0
+rgb565: Blt overlap 0
+rgb565: BltFast overlap 0
+rgb565_overlap: lock pitch>=row 1 bpp 16
+image rgb565_overlap 24 16 0
+rgb565: GetDC 0
+rgb565: GetPixel 0082ff
+rgb565_gdi: lock pitch>=row 1 bpp 16
+image rgb565_gdi 24 16 0
+rgb555: desc flags 0x1007 caps 0x840 24x16 bpp 16 masks 7c00 3e0 1f
+rgb555: Blt copy 0
+rgb555: Blt stretch 0
+rgb555: Blt sub 0
+rgb555: Blt shrink 0
+rgb555: SetColorKey 0
+rgb555: Blt keysrc 0
+rgb555: BltFast srccolorkey 0
+rgb555: Blt mirror 0
+rgb555: Blt outside 0x88760096
+rgb555: BltFast edge 0x88760096
+rgb555: Blt empty 0x88760096
+rgb555_blits: lock pitch>=row 1 bpp 16
+image rgb555_blits 24 16 0
+rgb555: Blt overlap 0
+rgb555: BltFast overlap 0
+rgb555_overlap: lock pitch>=row 1 bpp 16
+image rgb555_overlap 24 16 0
+rgb555: GetDC 0
+rgb555: GetPixel 0084ff
+rgb555_gdi: lock pitch>=row 1 bpp 16
+image rgb555_gdi 24 16 0
+CreatePalette 0
+SetPalette 0
+8bpp GetPixel e7b24d f9ac53
+pal8: lock pitch>=row 1 bpp 8
+image pal8 24 16 0
+CreateSurface default format 0
+default format flags 0x40 bpp 32 masks ff0000 ff00 ff
+Release 0
