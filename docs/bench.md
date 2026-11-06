@@ -14,7 +14,7 @@ depend on how fast that runner happens to be. Every number is milliseconds, lowe
 | `ddraw` | VN scene (BltFast, color keys, Lock, GetDC text), full-frame Lock, 200 color-keyed sprites, exclusive-mode flip chain |
 | `d3d8` | VN scene with text texture, 2000 DrawPrimitiveUP sprites, movie upload |
 | `d3d9` | VN scene, ps_2_0 crossfade, 2000 sprites batched / one call each, render-target blur passes, movie upload, state changes |
-| `d3d11` | the same set with SM4 shaders (`dxbc.py`: hand-assembled, sake has no HLSL compiler), UpdateSubresource and Map uploads |
+| `d3d11` | the same set with SM4 shaders (HLSL compiled at start by D3DCompile), UpdateSubresource and Map uploads |
 | `d2d` | shapes + DrawText scene, DrawBitmap scene, 30 text lines, 1000 shapes |
 | `gl` | VN scene (glBegin), 2000 sprites immediate / vertex arrays, glTexSubImage2D, GLSL crossfade, FBO blur passes |
 | `scenario` | `src/scenario.c`: a small D3D9 visual novel played through by `scenario.mjs` (paced, as players play): title, lines with voices, scene transitions (pictures read from a 70 MB archive in no useful order, unfiltered, crossfaded), a movie, a choice, a save; then the save loaded in a new page. Click to the next line p50/p95, transitions, start-up (cold: a new browser context) and restore (warm: the same context), the game's frame intervals p50/p95/p99, the browser's CPU while the game waits, peak memory, chunks fetched |

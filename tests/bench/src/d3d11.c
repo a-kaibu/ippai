@@ -1,6 +1,6 @@
-/* Direct3D 11: newer engines (and Direct2D's back end), at 1280x720. Shaders are shader model 4
- * bytecode from tests/bench/dxbc.py (d3d11_shaders.h): a quad placed by a constant buffer,
- * texture x color, a crossfade and a blur. Each case reports ms per frame.
+/* Direct3D 11: newer engines (and Direct2D's back end), at 1280x720. Shaders are HLSL compiled
+ * at start (D3DCompile, shader model 4): a quad placed by a constant buffer, texture x color, a
+ * crossfade and a blur. Each case reports ms per frame.
  *
  *   vn               background, 3 characters, message window, typing text (GDI into a DIB, then
  *                    UpdateSubresource), each quad with its own constant buffer update (Map DISCARD)
@@ -12,11 +12,11 @@
  *   upload           a 1280x720 texture rewritten every frame by UpdateSubresource (movies)
  *   upload_map       the same through a dynamic texture (Map WRITE_DISCARD)
  *
- * Build: i686-w64-mingw32-gcc -O2 d3d11.c -o d3d11.exe -mwindows -ld3d11 -ldxguid -lgdi32 */
+ * Build: i686-w64-mingw32-gcc -O2 d3d11.c -o d3d11.exe -mwindows -ld3d11 -ld3dcompiler_47 -ldxguid -lgdi32 */
 #define COBJMACROS
 #include "bench.h"
 #include <d3d11.h>
-#include "d3d11_shaders.h"
+#include <d3dcompiler.h>
 #include "d3d11_read.h"
 
 typedef struct { float x, y, u, v, r, g, b, a; } V;
@@ -229,6 +229,27 @@ static void frame_upload_map(int f)
     IDXGISwapChain_Present(sc, 0, 0);
 }
 
+static const char hlsl[] =
+    "cbuffer C : register(b0) { float4 k; };\n"
+    "Texture2D t0 : register(t0); Texture2D t1 : register(t1); SamplerState s : register(s0);\n"
+    "struct V { float4 pos : SV_Position; float2 uv : TEXCOORD; float4 col : COLOR; };\n"
+    /* the unit quad at k.xy, size k.zw */
+    "V vs_quad(float2 p : POSITION, float2 uv : TEXCOORD, float4 col : COLOR) {\n"
+    "  V o; o.pos = float4(p * k.zw + k.xy, 0.5, 1); o.uv = uv; o.col = col; return o; }\n"
+    "float4 ps_sprite(V i) : SV_Target { return t0.Sample(s, i.uv) * i.col; }\n"
+    "float4 ps_fade(V i) : SV_Target { return lerp(t0.Sample(s, i.uv), t1.Sample(s, i.uv), k.x); }\n"
+    "float4 ps_blur(V i) : SV_Target { return (t0.Sample(s, i.uv + k.xy) + t0.Sample(s, i.uv - k.xy)) * 0.5; }\n";
+
+static ID3DBlob *compile(const char *entry, const char *target)
+{
+    ID3DBlob *code = NULL, *err = NULL;
+    if (FAILED(D3DCompile(hlsl, sizeof(hlsl) - 1, "d3d11.c", NULL, NULL, entry, target, 0, 0, &code, &err))) {
+        fprintf(stderr, "D3DCompile(%s): %s\n", entry, err ? (const char *)ID3D10Blob_GetBufferPointer(err) : "failed");
+        exit(1);
+    }
+    return code;
+}
+
 int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
 {
     DXGI_SWAP_CHAIN_DESC sd = { 0 };
@@ -263,11 +284,15 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show)
     BCHECK(D3D11CreateDeviceAndSwapChain(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, NULL, 0, D3D11_SDK_VERSION, &sd, &sc, &dev, &level, &ctx));
     BCHECK(IDXGISwapChain_GetBuffer(sc, 0, &IID_ID3D11Texture2D, (void **)&bb));
     BCHECK(ID3D11Device_CreateRenderTargetView(dev, (ID3D11Resource *)bb, NULL, &backbuf));
-    BCHECK(ID3D11Device_CreateVertexShader(dev, vs_quad, sizeof(vs_quad), NULL, &vs));
-    BCHECK(ID3D11Device_CreatePixelShader(dev, ps_sprite, sizeof(ps_sprite), NULL, &ps_sprite_));
-    BCHECK(ID3D11Device_CreatePixelShader(dev, ps_fade, sizeof(ps_fade), NULL, &ps_fade_));
-    BCHECK(ID3D11Device_CreatePixelShader(dev, ps_blur, sizeof(ps_blur), NULL, &ps_blur_));
-    BCHECK(ID3D11Device_CreateInputLayout(dev, elems, 3, vs_quad, sizeof(vs_quad), &layout));
+    {
+        ID3DBlob *v = compile("vs_quad", "vs_4_0"), *a = compile("ps_sprite", "ps_4_0"), *b = compile("ps_fade", "ps_4_0");
+        ID3DBlob *c = compile("ps_blur", "ps_4_0");
+        BCHECK(ID3D11Device_CreateVertexShader(dev, ID3D10Blob_GetBufferPointer(v), ID3D10Blob_GetBufferSize(v), NULL, &vs));
+        BCHECK(ID3D11Device_CreatePixelShader(dev, ID3D10Blob_GetBufferPointer(a), ID3D10Blob_GetBufferSize(a), NULL, &ps_sprite_));
+        BCHECK(ID3D11Device_CreatePixelShader(dev, ID3D10Blob_GetBufferPointer(b), ID3D10Blob_GetBufferSize(b), NULL, &ps_fade_));
+        BCHECK(ID3D11Device_CreatePixelShader(dev, ID3D10Blob_GetBufferPointer(c), ID3D10Blob_GetBufferSize(c), NULL, &ps_blur_));
+        BCHECK(ID3D11Device_CreateInputLayout(dev, elems, 3, ID3D10Blob_GetBufferPointer(v), ID3D10Blob_GetBufferSize(v), &layout));
+    }
     bd.RenderTarget[0].BlendEnable = TRUE;
     bd.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
     bd.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
