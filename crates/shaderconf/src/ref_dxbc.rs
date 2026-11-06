@@ -272,9 +272,24 @@ fn ftou(x: f32) -> u32 {
     if x.is_nan() { 0 } else { x as u32 }
 }
 
-/// f32 -> f16 bits: round to nearest even, overflow to infinity, NaN stays NaN.
+/// f32 -> f16 bits as WARP converts (dxwgsl's d3d_f32tof16): toward zero, finite overflow to
+/// 65504, infinities stay, NaNs 0x7fff (with the sign), float denormals 0.
 fn f32tof16(x: f32) -> u32 {
-    half::f16::from_f32(x).to_bits() as u32
+    let b = x.to_bits();
+    let (s, a) = ((b >> 16) & 0x8000, b & 0x7fff_ffff);
+    if a > 0x7f80_0000 {
+        s | 0x7fff
+    } else if a == 0x7f80_0000 {
+        s | 0x7c00
+    } else if a >= 0x477f_e000 {
+        s | 0x7bff
+    } else if a >= 0x3880_0000 {
+        s | (a - 0x3800_0000) >> 13
+    } else if a < 0x0080_0000 {
+        s
+    } else {
+        s | (f32::from_bits(a) * 16777216.0) as u32
+    }
 }
 
 struct Run<'a> {
@@ -463,7 +478,8 @@ impl Run<'_> {
                 0x4f => self.cw(i, U, |a| if a[0] < a[1] { !0 } else { 0 })?,
                 0x50 => self.cw(i, U, |a| if a[0] >= a[1] { !0 } else { 0 })?,
                 0x19 => self.cw(i, F, |a| b(f(a[0]).exp2()))?,
-                0x1a => self.cw(i, F, |a| b(f(a[0]) - f(a[0]).floor()))?,
+                // (below 1: -tiny gives 0x3f7fffff; infinities NaN)
+                0x1a => self.cw(i, F, |a| b(if f(a[0]).is_finite() { (f(a[0]) - f(a[0]).floor()).min(f32::from_bits(0x3f7f_ffff)) } else { f32::NAN }))?,
                 0x1b => self.cw(i, F, |a| ftoi(f(a[0])))?,
                 0x1c => self.cw(i, F, |a| ftou(f(a[0])))?,
                 0x2b => self.cw(i, I, |a| b(a[0] as i32 as f32))?,
@@ -505,7 +521,8 @@ impl Run<'_> {
                 0x29 => self.cw(i, I, |a| a[0] << (a[1] & 31))?,
                 0x2a => self.cw(i, I, |a| ((a[0] as i32) >> (a[1] & 31)) as u32)?,
                 0x55 => self.cw(i, U, |a| a[0] >> (a[1] & 31))?,
-                0x2f => self.cw(i, F, |a| b(f(a[0]).log2()))?,
+                // (denormals are 0: WARP flushes them)
+                0x2f => self.cw(i, F, |a| b(if f(a[0]).is_subnormal() { f32::NEG_INFINITY } else { f(a[0]).log2() }))?,
                 0x30 => blocks.push(pc - 1),
                 0x32 => self.cw(i, F, |a| b(f(a[0]) * f(a[1]) + f(a[2])))?,
                 0x33 => self.cw(i, F, |a| b(fmin(f(a[0]), f(a[1]))))?,

@@ -142,9 +142,13 @@ fn ftou(f: f32) -> u32 {
 }
 
 fn f16_rtz(v: f32) -> u16 {
-    // (round toward zero: the conversion D3D also allows for f32tof16)
+    // (round toward zero: the conversion D3D also allows for f32tof16, WARP's, which gives
+    // every NaN as 0x7fff)
+    if v.is_nan() {
+        return (v.to_bits() >> 16) as u16 & 0x8000 | 0x7fff;
+    }
     let h = half::f16::from_f32(v);
-    if v.is_nan() || v.is_infinite() || (h.to_f32().abs() <= v.abs()) {
+    if v.is_infinite() || (h.to_f32().abs() <= v.abs()) {
         return h.to_bits();
     }
     let b = h.to_bits();

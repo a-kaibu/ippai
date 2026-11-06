@@ -943,8 +943,14 @@ impl W {
             0x27 => self.cmp(i, I, "!=")?,
             0x4f => self.cmp(i, U, "<")?,
             0x50 => self.cmp(i, U, ">=")?,
-            0x19 => self.cw(i, F, F, |a| format!("exp2({})", a[0]))?,
-            0x1a => self.cw(i, F, F, |a| format!("fract({})", a[0]))?,
+            0x19 => {
+                self.helpers.insert("d3d_exp2");
+                self.per_comp(i, &[F], F, |a| format!("d3d_exp2({})", a[0]))?
+            }
+            0x1a => {
+                self.helpers.insert("d3d_frc");
+                self.per_comp(i, &[F], F, |a| format!("d3d_frc({})", a[0]))?
+            }
             0x1b => {
                 self.helpers.insert("d3d_ftoi");
                 self.per_comp(i, &[F], I, |a| format!("d3d_ftoi({})", a[0]))?
@@ -1429,13 +1435,26 @@ mod tests {
 /// functional spec; checked on WebGPU by tests/shaders.mjs). Infinities and NaN come from bit
 /// patterns of the argument (WGSL has no such constants).
 const HELPERS: &[(&str, &str)] = &[
-    // log: log(+-0) = -inf, log(x < 0) = NaN, NaN stays
+    // log: log(+-0) = -inf (denormals are 0, as WARP flushes them), log(x < 0) = NaN, NaN stays
     ("d3d_log2", "fn d3d_log2(x: f32) -> f32 {
   let b = bitcast<u32>(x);
   if ((b & 0x7fffffffu) > 0x7f800000u) { return x; }
-  if ((b & 0x7fffffffu) == 0u) { return bitcast<f32>(b | 0xff800000u); }
+  if ((b & 0x7f800000u) == 0u) { return bitcast<f32>((b & 0x80000000u) | 0xff800000u); }
   if (b > 0x80000000u) { return bitcast<f32>(b | 0x7fc00000u); }
   return log2(x);
+}
+"),
+    // exp: NaN stays NaN
+    ("d3d_exp2", "fn d3d_exp2(x: f32) -> f32 {
+  if ((bitcast<u32>(x) & 0x7fffffffu) > 0x7f800000u) { return x; }
+  return exp2(x);
+}
+"),
+    // frc: below 1 (-tiny gives 0x3f7fffff), infinities and NaN give NaN
+    ("d3d_frc", "fn d3d_frc(x: f32) -> f32 {
+  let b = bitcast<u32>(x);
+  if ((b & 0x7fffffffu) >= 0x7f800000u) { return bitcast<f32>((b & 0x7f800000u) | 0x00400000u); }
+  return min(x - floor(x), bitcast<f32>(0x3f7fffffu));
 }
 "),
     // ftoi: toward zero, NaN 0, clamped to the int range (WGSL clamps to 2^31 - 128)
@@ -1452,15 +1471,18 @@ const HELPERS: &[(&str, &str)] = &[
   return u32(x);
 }
 "),
-    // f32tof16: NaN stays NaN, magnitudes that round past 65504 are infinities (WGSL leaves
-    // pack2x16float of those undefined)
+    // f32tof16 as Direct3D's reference rasterizer (WARP) converts: toward zero, magnitudes past
+    // 65504 to 65504 (infinities stay), NaNs all 0x7fff (with the sign), float denormals 0
     ("d3d_f32tof16", "fn d3d_f32tof16(x: f32) -> u32 {
   let b = bitcast<u32>(x);
   let s = (b >> 16u) & 0x8000u;
   let a = b & 0x7fffffffu;
-  if (a > 0x7f800000u) { return s | 0x7e00u; }
-  if (a >= 0x477ff000u) { return s | 0x7c00u; }
-  return pack2x16float(vec2<f32>(x, 0.0f)) & 0xffffu;
+  if (a > 0x7f800000u) { return s | 0x7fffu; }
+  if (a == 0x7f800000u) { return s | 0x7c00u; }
+  if (a >= 0x477fe000u) { return s | 0x7bffu; }
+  if (a >= 0x38800000u) { return s | ((a - 0x38000000u) >> 13u); }
+  if (a < 0x00800000u) { return s; }
+  return s | u32(bitcast<f32>(a) * 16777216.0f);
 }
 "),
 ];

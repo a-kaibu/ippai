@@ -1341,8 +1341,13 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
         }
         32 => E_INVALIDARG,
         33 => {
-            // CheckFeatureSupport(feature, data, size)
+            // CheckFeatureSupport(feature, data, size): nothing optional, but for what WARP
+            // answers too: concurrent creates (THREADING) and compute on 10.x (the device is
+            // free-threaded here and compute runs at every level)
             std::ptr::write_bytes(a(2) as *mut u8, 0, a(3) as usize);
+            if (a(1) == 0 || a(1) == 4) && a(3) >= 4 {
+                wr(a(2), 0, 1);
+            }
             S_OK
         }
         34..=36 => private_data(d, m - 30, this, a),
@@ -1868,7 +1873,16 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
             // ClearRenderTargetView(view, color)
             let v = d.id_of(a(1));
             if let Some((tex, level, layer)) = view_target(d, v) {
-                let c = [rd(a(2), 0), rd(a(2), 1), rd(a(2), 2), rd(a(2), 3)];
+                let mut c = [rd(a(2), 0), rd(a(2), 1), rd(a(2), 2), rd(a(2), 3)];
+                // 8-bit UNORM targets: the color as the runtime converts it (each channel
+                // clamped, times 255 in floats, rounded to even), not left to the GPU's own
+                if let Some(Data::View(View { fmt: 28 | 49 | 61 | 65 | 87 | 88, .. })) = d.objs.get(&v).map(|o| &o.data) {
+                    for x in &mut c {
+                        let f = f32::from_bits(*x);
+                        let f = if f.is_nan() { 0.0 } else { f.clamp(0.0, 1.0) };
+                        *x = ((f * 255.0).round_ties_even() / 255.0).to_bits();
+                    }
+                }
                 gpu::record(|q| q.cmd(&[gpu::CLEAR_VIEW, tex, level, layer, 1, c[0], c[1], c[2], c[3], 0, 0]));
                 d.targets = None;
             }

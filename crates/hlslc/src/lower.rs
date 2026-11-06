@@ -42,6 +42,8 @@ pub struct Opts {
     pub major: u32,
     pub minor: u32,
     pub row_major: bool,
+    /// D3DCOMPILE_IEEE_STRICTNESS: without it isnan() is false, as fxc folds it
+    pub ieee: bool,
 }
 
 struct TexD {
@@ -79,7 +81,7 @@ struct FnCtx {
 }
 
 pub struct L<'a> {
-    o: Opts,
+    pub(crate) o: Opts,
     prog: &'a Program,
     prelude: &'a Program,
     code: Vec<Ins>,

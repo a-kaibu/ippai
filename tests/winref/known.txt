@@ -38,17 +38,20 @@ d3d9-* ^image address:
 d3d9-* ^image surfaces:
 # Direct3D 11 on the runner is WARP. Its format list and flags are its own; sake has no MSAA
 # (quality levels 0: games fall back), no BC6H/BC7, video formats or 3-channel 32-bit textures
-# yet (TODO), and creates nothing on other threads concurrently
-d3d11-* ^(want|got) +(format |threading |compute on)
-# WARP converts floats to UNORM with the spec's 0.6 ulp leeway (17/255 -> 16); GPUs and sake round
-d3d11-* ^(want|got) +clear 
+# yet (TODO)
+d3d11-* ^(want|got) +format 
+# WARP flushes float denormals on every operation (abs(denormal) = 0, clamp to -0); WebGPU
+# leaves denormals to the GPU and sake does not flush them but in log; log2 just below 1 is
+# within the spec's 2^-21 absolute error, not the probe's ulps
+d3d11-* ^(want|got) +f0\.abs [08]0[0-7][0-9a-f]{5} 
+d3d11-* ^(want|got) +f0\.clamp \S+ \S+ [08]0[0-7][0-9a-f]{5} 
+d3d11-* ^(want|got) +ulp \d+ f0\.log2?:3f7fffff:
 # lines and wireframe: WebGPU leaves line rasterization (Bresenham or diamond exit) to the GPU
 d3d11-* ^image (lines|wireframe):
 # BORDER and MIRROR_ONCE addressing: WebGPU has neither (TODO: in the shader)
 d3d11-* ^image address:
-# WIC: CMYK -> sRGB goes through a color profile on Windows, 16bppGray -> 8 bits rounds a few
-# levels up, and the Linear/Cubic/Fant scalers' weights are their own (sake: plain bilinear).
-# TODO: from wicconv's measured tables (cmyk_grid, gray16_ramp, the "w" impulse lines)
+# WIC pictures: CMYK -> sRGB goes through a color profile on Windows (sake: its measured grid,
+# within a few levels), and the Cubic/Fant scalers' weights are their own (see wicconv below)
 imaging-* ^image (gdip_)?(jpeg_cmyk|png_gray16):
 imaging-* ^(want|got) +gdip jpeg_cmyk: pixel
 imaging-* ^image scale_[23]_

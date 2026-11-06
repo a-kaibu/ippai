@@ -532,6 +532,8 @@ pub fn call(l: &mut L, name: &str, args: &[Expr], line: u32) -> R<Val> {
             let n = v.c.len();
             let inf = imm(f32::INFINITY.to_bits(), n);
             let r = match name {
+                // (fxc assumes no NaNs unless asked for IEEE strictness: isnan is false)
+                "isnan" if !l.o.ieee => imm(0, n),
                 "isnan" => l.x_alu(NE, B::Bool, &[&v.c, &v.c]),
                 "isinf" => l.x_alu_m(EQ, B::Float, &[(&v.c, 2), (&inf, 0)]),
                 _ => l.x_alu_m(LT, B::Float, &[(&v.c, 2), (&inf, 0)]),
