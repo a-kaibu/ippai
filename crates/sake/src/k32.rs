@@ -1127,32 +1127,40 @@ fn VirtualFree(c: &mut Ctx) -> u32 {
 }
 fn VirtualQuery(c: &mut Ctx) -> u32 {
     let (a, mbi, len) = (c.a(0), c.a(1), c.a(2));
-    if len < 28 {
+    // MEMORY_BASIC_INFORMATION: (base, allocation base, allocation protection, region size,
+    // state, protection, type); x64: pointers and the size 8 bytes, 48 in all
+    let x64 = mem::x64();
+    let size = if x64 { 48 } else { 28 };
+    if len < size {
         return 0;
     }
     let page = a & !(mem::PAGE - 1);
-    match mem::query(a) {
-        Some((b, r, start, n, state, prot)) => {
-            w32(mbi, start.max(page));
-            w32(mbi + 4, b);
-            w32(mbi + 8, r.alloc_prot);
-            w32(mbi + 12, n - (page - start));
-            w32(mbi + 16, state);
-            w32(mbi + 20, prot);
-            w32(mbi + 24, r.kind);
-        }
+    let (base, alloc, aprot, n, state, prot, kind) = match mem::query(a) {
+        Some((b, r, start, n, state, prot)) => (start.max(page), b, r.alloc_prot, n - (page - start), state, prot, r.kind),
         None => {
             let (lo, n) = mem::free_at(a);
-            w32(mbi, lo.max(page));
-            w32(mbi + 4, 0);
-            w32(mbi + 8, 0);
-            w32(mbi + 12, n - (page.max(lo) - lo));
-            w32(mbi + 16, 0x10000);
-            w32(mbi + 20, 1);
-            w32(mbi + 24, 0);
+            (lo.max(page), 0, 0, n - (page.max(lo) - lo), 0x10000, 1, 0)
         }
+    };
+    if x64 {
+        mem::fill(mbi, 48, 0);
+        mem::w64(mbi, mem::widen(base));
+        mem::w64(mbi + 8, if alloc != 0 { mem::widen(alloc) } else { 0 });
+        w32(mbi + 16, aprot);
+        mem::w64(mbi + 24, n as u64);
+        w32(mbi + 32, state);
+        w32(mbi + 36, prot);
+        w32(mbi + 40, kind);
+    } else {
+        w32(mbi, base);
+        w32(mbi + 4, alloc);
+        w32(mbi + 8, aprot);
+        w32(mbi + 12, n);
+        w32(mbi + 16, state);
+        w32(mbi + 20, prot);
+        w32(mbi + 24, kind);
     }
-    28
+    size
 }
 fn VirtualProtect(c: &mut Ctx) -> u32 {
     match mem::protect(c.a(0), c.a(1), c.a(2)) {
@@ -1550,6 +1558,21 @@ fn GlobalMemoryStatusEx(c: &mut Ctx) -> u32 {
 
 fn GetSystemInfo(c: &mut Ctx) -> u32 {
     let p = c.a(0);
+    if mem::x64() {
+        // (x64: the addresses and the mask 8 bytes; PROCESSOR_ARCHITECTURE_AMD64, 8664)
+        mem::fill(p, 48, 0);
+        w16(p, 9);
+        w32(p + 4, 0x1000);
+        mem::w64(p + 8, 0x10000);
+        mem::w64(p + 16, 0x7fff_fffe_ffff);
+        mem::w64(p + 24, ((1u64 << ncpu()) - 1) as u64);
+        w32(p + 32, ncpu());
+        w32(p + 36, 8664);
+        w32(p + 40, 0x10000);
+        w16(p + 44, 6);
+        w16(p + 46, 0x0f01);
+        return 0;
+    }
     mem::fill(p, 36, 0);
     w32(p + 4, 0x1000);
     w32(p + 8, 0x10000);

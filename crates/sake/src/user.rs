@@ -2902,10 +2902,11 @@ fn BeginPaint(c: &mut Ctx) -> u32 {
     for k in kids {
         invalidate(k, None, true);
     }
-    mem::fill(ps, 64, 0);
-    w32(ps, dc);
-    w32(ps + 4, 0);
-    upd.write(ps + 8);
+    // PAINTSTRUCT: (hdc, fErase, rcPaint, ...); x64: hdc 8 bytes, 72 in all
+    let at = if mem::x64() { 8 } else { 4 };
+    mem::fill(ps, if mem::x64() { 72 } else { 64 }, 0);
+    mem::wp(ps, dc);
+    upd.write(ps + at + 4);
     dc
 }
 fn EndPaint(c: &mut Ctx) -> u32 {

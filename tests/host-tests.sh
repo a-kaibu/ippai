@@ -3,13 +3,16 @@
 # with the JIT and with the interpreter (IPPAI_JIT=0). Both outputs must equal
 # host/tests/expected/<name>.txt (checksums of integer, MMX/SSE, atomics, self-modifying code
 # results; they match Windows). UPDATE=1 rewrites the expected files. Exits 1 on a failure.
+# Tests in X64 are also built for x86-64 (64-bit programs; no C runtime of sake's own there
+# yet) and must print the same.
 #
 #   tests/host-tests.sh [name ...]      SAKE=path/to/sake.js (default /home/user/work/sake-out/sake.js)
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SAKE=${SAKE:-/home/user/work/sake-out/sake.js}
 OUT=${OUT:-$(mktemp -d)}
-TESTS=${*:-nullcall intops simd atomics smc cmp64 ssecvt dinputtest textbounds crtstdio fileseek crtfiles hlsltest d3dx9shader d3dx9effect}
+TESTS=${*:-nullcall intops simd atomics smc cmp64 ssecvt dinputtest textbounds crtstdio fileseek crtfiles hlsltest d3dx9shader d3dx9effect struct64}
+X64=" struct64 "
 fail=0
 for t in $TESTS; do
   # a "libs:" line in the source names its import libraries
@@ -38,6 +41,17 @@ for t in $TESTS; do
     echo "FAIL $t (interpreter):"; diff <(echo "$interp") "$want" | head -10; fail=1
   else
     echo "ok   $t"
+  fi
+  if [[ "$X64" == *" $t "* ]]; then
+    if ! x86_64-w64-mingw32-gcc -O2 "$ROOT/host/tests/$t.c" -o "$OUT/$t-64.exe" $libs; then
+      echo "FAIL $t (x64): build"; fail=1; continue
+    fi
+    t64=$( (cd "$(dirname "$SAKE")" && timeout 300 node "$SAKE" "$OUT/$t-64.exe" 2>&1 | grep -v '^sake:') )
+    if [ "$t64" != "$(cat "$want")" ]; then
+      echo "FAIL $t (x64):"; diff <(echo "$t64") "$want" | head -10; fail=1
+    else
+      echo "ok   $t (x64)"
+    fi
   fi
 done
 exit $fail
