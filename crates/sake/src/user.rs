@@ -3123,9 +3123,12 @@ fn message_box(c: &mut Ctx, wide: bool) -> u32 {
     let t = arg_str(c.a(1), wide);
     let cap = arg_str(c.a(2), wide);
     eprintln!("sake: MessageBox [{cap}] {t}");
+    // the answer that goes on: OK, Ignore, Yes, Cancel (Retry would ask again), Continue
     match c.a(3) & 0xf {
-        1 | 3 => 1,
-        4 => 6,
+        2 => 5,
+        3 | 4 => 6,
+        5 => 2,
+        6 => 11,
         _ => 1,
     }
 }
@@ -4718,6 +4721,21 @@ pub fn init() {
     for n in ["SetProcessDpiAwarenessContext", "EnableNonClientDpiScaling"] {
         implement("user32", n, |_| 1);
     }
+    // shcore (api-ms-win-shcore-scaling-*: Eushully's 天冥のコンキスタ)
+    implement("shcore", "SetProcessDpiAwareness", |_| 0);
+    implement("shcore", "GetProcessDpiAwareness", |c| {
+        w32(c.a(1), 0);
+        0
+    });
+    implement("shcore", "GetDpiForMonitor", |c| {
+        w32(c.a(2), 96);
+        w32(c.a(3), 96);
+        0
+    });
+    implement("shcore", "GetScaleFactorForMonitor", |c| {
+        w32(c.a(1), 100);
+        0
+    });
     for n in ["DdeNameService", "DdeFreeStringHandle", "DdeUninitialize", "DdeKeepStringHandle", "DdeDisconnect", "DdeFreeDataHandle", "DdeEnableCallback"] {
         implement("user32", n, dde_true);
     }

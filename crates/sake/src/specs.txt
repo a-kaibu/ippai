@@ -32501,3 +32501,7 @@ avrt AvRevertMmThreadCharacteristics stdcall 4 -
 avrt AvSetMmThreadPriority stdcall 8 -
 avrt AvSetMmMaxThreadCharacteristicsA stdcall 12 -
 avrt AvSetMmMaxThreadCharacteristicsW stdcall 12 -
+shcore SetProcessDpiAwareness stdcall 4 -
+shcore GetProcessDpiAwareness stdcall 8 -
+shcore GetDpiForMonitor stdcall 16 -
+shcore GetScaleFactorForMonitor stdcall 8 -

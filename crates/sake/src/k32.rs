@@ -2170,6 +2170,32 @@ fn GetSystemDefaultLangID(_: &mut Ctx) -> u32 {
 fn GetUserDefaultUILanguage(_: &mut Ctx) -> u32 {
     lcid()
 }
+/// Get{Thread,User,Process,System}PreferredUILanguages(flags, count, buffer, size): the one UI
+/// language, as an id (MUI_LANGUAGE_ID 4: "0411") or a name ("ja-JP"), in a double-NUL list.
+/// (Delphi's startup calls GetThreadPreferredUILanguages on Vista+ without checking it exists.)
+fn preferred_ui_languages(c: &mut Ctx) -> u32 {
+    let l = lcid();
+    let s = if c.a(0) & 4 != 0 {
+        format!("{l:04X}")
+    } else {
+        LOCALES.iter().find(|x| x.0 == l).map_or("en-US", |x| x.1).to_string()
+    };
+    let w: Vec<u16> = s.encode_utf16().chain([0, 0]).collect();
+    w32(c.a(1), 1);
+    let (buf, cap) = (c.a(2), r32(c.a(3)));
+    w32(c.a(3), w.len() as u32);
+    if buf == 0 {
+        return 1;
+    }
+    if (cap as usize) < w.len() {
+        last_error(122);
+        return 0;
+    }
+    for (i, &u) in w.iter().enumerate() {
+        w16(buf + 2 * i as u32, u);
+    }
+    1
+}
 fn GetSystemDefaultUILanguage(_: &mut Ctx) -> u32 {
     lcid()
 }
@@ -3323,6 +3349,11 @@ fn FindFirstFileExA(c: &mut Ctx) -> u32 {
     let _ = p;
     find_first(c, false)
 }
+fn FindFirstFileExW(c: &mut Ctx) -> u32 {
+    let d = c.a(2);
+    w32(c.esp + 8, d);
+    find_first(c, true)
+}
 fn FindNextFileA(c: &mut Ctx) -> u32 {
     find_next(c, false)
 }
@@ -3847,10 +3878,13 @@ pub fn exec(file: &str, args: &str, dir: Option<&str>) -> bool {
         Some(d) => files::full_path(&format!("{}\\{f}", files::full_path(d).trim_end_matches('\\'))),
         None => files::full_path(&f),
     };
-    if files::resolve(&full).is_none() {
+    // (the file's own spelling: KiriKiri restarts やきゅられ体験版.eXe as ….exe, and the page
+    // opens the path as given)
+    let Some(h) = files::resolve(&full) else {
         eprintln!("sake: exec {full}: not found");
         return false;
-    }
+    };
+    let full = files::host_to_win(&h);
     eprintln!("sake: exec {full}\t{args}");
     unsafe { libc::exit(0) }
 }
@@ -4234,6 +4268,14 @@ pub fn init() {
     implement("ntdll", "RtlFindExportedRoutineByName", RtlFindExportedRoutineByName);
     implement("ntdll", "NtQueryVirtualMemory", NtQueryVirtualMemory);
     implement("kernel32", "LCIDToLocaleName", LCIDToLocaleName);
+    for d in ["kernel32", "kernelbase"] {
+        for n in ["GetThreadPreferredUILanguages", "GetUserPreferredUILanguages", "GetProcessPreferredUILanguages", "GetSystemPreferredUILanguages"] {
+            implement(d, n, preferred_ui_languages);
+        }
+        implement(d, "SetThreadPreferredUILanguages", |_| 1);
+        implement(d, "SetProcessPreferredUILanguages", |_| 1);
+        implement(d, "GetThreadUILanguage", |_| lcid());
+    }
     implement("kernel32", "GetLocaleInfoEx", GetLocaleInfoEx);
     implement("kernel32", "GetSystemDefaultLocaleName", GetUserDefaultLocaleName);
     implement("ntdll", "__wine_dbg_get_channel_flags", wine_dbg_channel_flags);
@@ -4293,7 +4335,7 @@ pub fn init() {
         GetStdHandle, SetStdHandle, GetFileType, GetConsoleMode, WriteConsoleA, WriteConsoleW, GetConsoleCP, GetConsoleOutputCP, CreateFileA, CreateFileW, _lopen, _lclose, _lread,
         _llseek, ReadFile, WriteFile, SetFilePointer, SetFilePointerEx, GetFileSize, GetFileSizeEx, SetEndOfFile,
         FlushFileBuffers, LockFile, UnlockFile, GetFileTime, SetFileTime, GetFileInformationByHandle,
-        FindFirstFileA, FindFirstFileW, FindFirstFileExA, FindNextFileA, FindNextFileW, FindClose, GetFileAttributesA,
+        FindFirstFileA, FindFirstFileW, FindFirstFileExA, FindFirstFileExW, FindNextFileA, FindNextFileW, FindClose, GetFileAttributesA,
         GetFileAttributesW, GetFileAttributesExA, GetFileAttributesExW, SetFileAttributesA, SetFileAttributesW,
         CreateDirectoryA, CreateDirectoryW, RemoveDirectoryA, RemoveDirectoryW, DeleteFileA, DeleteFileW, MoveFileA,
         MoveFileW, MoveFileExA, MoveFileExW, CopyFileA, CopyFileW, GetFullPathNameA, GetFullPathNameW,

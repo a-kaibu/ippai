@@ -140,7 +140,7 @@ pub fn dll_key(dll: &str) -> String {
         return "kernelbase".into();
     }
     // (the others by the DLL that implements them)
-    for (pre, dll) in [("ntuser-", "user32"), ("rtcore-ntuser-", "user32"), ("gdi-", "gdi32"), ("security-", "advapi32"), ("shell-", "shell32")] {
+    for (pre, dll) in [("ntuser-", "user32"), ("rtcore-ntuser-", "user32"), ("gdi-", "gdi32"), ("security-", "advapi32"), ("shell-", "shell32"), ("shcore-", "shcore")] {
         if k.strip_prefix("api-ms-win-").or_else(|| k.strip_prefix("ext-ms-win-")).is_some_and(|r| r.starts_with(pre)) {
             return dll.into();
         }
