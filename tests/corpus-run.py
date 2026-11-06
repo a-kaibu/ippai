@@ -110,7 +110,9 @@ while True:
         jit = f'{JIT_DIR}/{tid}'
         os.makedirs(jit, exist_ok=True)
         srv = subprocess.Popen([f'{BIN}/ippai', 'serve', '--foreground', '--web', WEB, '--store', f'{STORES}/{tid}',
-                                '--jit', jit, '--listen', f'127.0.0.1:{PORT}', '--no-prerun'],
+                                '--jit', jit, '--listen', f'127.0.0.1:{PORT}', '--no-prerun',
+                                # (web games' origin; the default, PORT + 1, is the next lane's PORT)
+                                '--game-listen', f'127.0.0.1:{PORT + 1000}'],
                                stdout=open(f'{od}/server.log', 'w'), stderr=subprocess.STDOUT)
         wait_port(PORT)
         winexe = 'Z:\\vnvm\\game\\' + exe.replace('/', '\\')
