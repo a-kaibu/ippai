@@ -92,6 +92,8 @@ impl Image<'_> {
         let pe = rd(0x3c)? as usize;
         let nsec = u16::from_le_bytes(img.get(pe + 6..pe + 8)?.try_into().ok()?) as usize;
         let opt = u16::from_le_bytes(img.get(pe + 20..pe + 22)?.try_into().ok()?) as usize;
+        // the resources' section (data directory 2): bytes, not pointers
+        let rsrc = rd(pe + 24 + 112)? as usize;
         let (mut code, mut data) = (Vec::new(), Vec::new());
         for i in 0..nsec {
             let s = pe + 24 + opt + 40 * i;
@@ -102,7 +104,8 @@ impl Image<'_> {
             }
             if ch & 0x2000_0020 != 0 {
                 code.push((va, end));
-            } else {
+            } else if ch & 0x0200_0000 == 0 && !(va..end).contains(&rsrc) {
+                // (not discardable ones: .reloc, a MinGW build's DWARF sections; nor resources)
                 data.push((va, end));
             }
         }
@@ -190,10 +193,11 @@ fn locate(m: &Image) -> Option<(Vec<u32>, u32)> {
     let mut starts: Vec<u32> = ptrs.keys().copied().collect();
     starts.sort_unstable();
     // a function's start, not a switch case's (tables point into functions too): after
-    // padding or a return, or 16-aligned
+    // padding or a return, or 16-aligned, or a frame's set-up (push ebp; mov ebp, esp: Borland
+    // packs functions with constants between them)
     let is_start = |f: u32| {
         let o = (f - m.base) as usize;
-        f % 16 == 0 || matches!(m.img.get(o.wrapping_sub(1)), Some(0xcc | 0x90 | 0xc3))
+        f % 16 == 0 || matches!(m.img.get(o.wrapping_sub(1)), Some(0xcc | 0x90 | 0xc3)) || m.img.get(o..o + 3) == Some(&[0x55, 0x8b, 0xec][..])
     };
     // the functions that may hold `a`: starts a little before it (the tables below sort out
     // which)
@@ -254,7 +258,7 @@ fn locate(m: &Image) -> Option<(Vec<u32>, u32)> {
     }
     // _floor_P points at floor 1's table (entry 1); mapping0_inverse is entry 4 of mapping 0's
     // table and uses both _floor_P and _residue_P
-    let mut mapping = Vec::new();
+    let (mut mapping, mut old_mapping) = (Vec::new(), Vec::new());
     for &fb in &floor1 {
         for p in m.refs(fb, &m.data) {
             let floor_p = p - 4;
@@ -267,13 +271,26 @@ fn locate(m: &Image) -> Option<(Vec<u32>, u32)> {
                         if table_at(loc - 16, 5).is_some_and(|t| t[4] == f) {
                             mapping.push(f);
                         }
+                        // libvorbis 1.0 betas: an 8-entry table (pack, unpack, look, copy_info,
+                        // free_info, free_look, forward, inverse) whose look uses them
+                        // (only when there is no 1.0-and-later table)
+                        if let Some(t) = table_at(loc - 8, 8).filter(|t| t[2] == f) {
+                            old_mapping.push(t[7]);
+                        }
                     }
                 }
             }
         }
     }
+    if mapping.is_empty() {
+        mapping = old_mapping;
+    }
     mapping.sort_unstable();
     mapping.dedup();
+    // a build with the encoder: mapping0_forward (entry 3, just before inverse) passes too
+    let next_is_candidate = |f: &u32| ptrs[f].iter().any(|&loc| m.img.get((loc + 4 - m.base) as usize..).is_some_and(|_| mapping.contains(&m.u32_at((loc + 4 - m.base) as usize))));
+    let forward: Vec<u32> = mapping.iter().copied().filter(next_is_candidate).collect();
+    mapping.retain(|f| !forward.contains(f));
     if mapping.len() != 1 {
         if !mapping.is_empty() || !floor1.is_empty() {
             eprintln!("sake: vorbis: libvorbis at {:#x}? {} floor tables, mapping0_inverse candidates {mapping:x?}: left alone", m.base, floor1.len());
