@@ -28,6 +28,8 @@ struct Dc {
     /// what was drawn since the last flush
     items: Vec<Item>,
     xf: Option<Xf>,
+    /// dots per inch other than 96 (render target properties, SetDpi): DIPs scale by dpi / 96
+    dpi: Option<(f32, f32)>,
     clips: Vec<[f32; 4]>,
     /// the bitmap texture the BITMAP items in `items` show
     bitmap: Option<u32>,
@@ -201,7 +203,7 @@ fn context_methods() -> Vec<(&'static str, Handler)> {
         ("SetAntialiasMode", ok),
         ("SetTextAntialiasMode", ok),
         ("SetTextRenderingParams", ok),
-        ("SetDpi", ok),
+        ("SetDpi", SetDpi),
         ("SetUnitMode", ok),
         ("SetPrimitiveBlend", ok),
         ("SetTags", ok),
@@ -222,9 +224,13 @@ fn zero(_: &mut Ctx) -> u32 {
 fn CreateDeviceContext(c: &mut Ctx) -> u32 {
     let o = com::object(CONTEXT, &context_methods(), 8);
     let device = c.a(0);
+    // (D2D1_RENDER_TARGET_PROPERTIES: dpiX, dpiY after the type and pixel format; 0 is 96)
+    let props = c.a(2);
+    let dpi = if props != 0 { (rf(props, 3), rf(props, 4)) } else { (0.0, 0.0) };
+    let dpi = Some(dpi).filter(|&(x, y)| x > 0.0 && y > 0.0 && (x, y) != (96.0, 96.0));
     st(|s| {
         s.parents.insert(o, device);
-        s.dcs.insert(o, Dc { device, ..Default::default() })
+        s.dcs.insert(o, Dc { device, dpi, ..Default::default() })
     });
     mem::putp(c.a(2), o);
     0
@@ -239,9 +245,13 @@ fn D2D1CreateDeviceContext(c: &mut Ctx) -> u32 {
     let o = com::object(CONTEXT, &context_methods(), 8);
     let surface = c.a(0);
     let bmp = new_bitmap(surface);
+    // (D2D1_RENDER_TARGET_PROPERTIES: dpiX, dpiY after the type and pixel format; 0 is 96)
+    let props = c.a(2);
+    let dpi = if props != 0 { (rf(props, 3), rf(props, 4)) } else { (0.0, 0.0) };
+    let dpi = Some(dpi).filter(|&(x, y)| x > 0.0 && y > 0.0 && (x, y) != (96.0, 96.0));
     st(|s| {
         s.parents.insert(o, device);
-        s.dcs.insert(o, Dc { device, ..Default::default() })
+        s.dcs.insert(o, Dc { device, dpi, ..Default::default() })
     });
     set_target(o, bmp);
     mem::putp(c.a(2), o);
@@ -256,9 +266,13 @@ fn CreateDxgiSurfaceRenderTarget(c: &mut Ctx) -> u32 {
     mem::heap_free(dev_out);
     let o = com::object(CONTEXT, &context_methods(), 8);
     let bmp = new_bitmap(c.a(1));
+    // (D2D1_RENDER_TARGET_PROPERTIES: dpiX, dpiY after the type and pixel format; 0 is 96)
+    let props = c.a(2);
+    let dpi = if props != 0 { (rf(props, 3), rf(props, 4)) } else { (0.0, 0.0) };
+    let dpi = Some(dpi).filter(|&(x, y)| x > 0.0 && y > 0.0 && (x, y) != (96.0, 96.0));
     st(|s| {
         s.parents.insert(o, device);
-        s.dcs.insert(o, Dc { device, ..Default::default() })
+        s.dcs.insert(o, Dc { device, dpi, ..Default::default() })
     });
     set_target(o, bmp);
     mem::putp(c.a(3), o);
@@ -275,12 +289,33 @@ fn GetDevice(c: &mut Ctx) -> u32 {
 }
 
 fn GetDpi(c: &mut Ctx) -> u32 {
-    for p in [c.a(1), c.a(2)] {
+    let (x, y) = st(|s| s.dcs.get(&c.a(0)).and_then(|d| d.dpi)).unwrap_or((96.0, 96.0));
+    for (p, v) in [(c.a(1), x), (c.a(2), y)] {
         if p != 0 {
-            w32(p, 96f32.to_bits());
+            w32(p, v.to_bits());
         }
     }
     0
+}
+/// SetDpi(x, y): both 0 is the default (96); a negative or one 0 is ignored
+fn SetDpi(c: &mut Ctx) -> u32 {
+    let (x, y) = (fl(c, 1), fl(c, 2));
+    let dpi = if x == 0.0 && y == 0.0 {
+        None
+    } else if x > 0.0 && y > 0.0 {
+        Some((x, y))
+    } else {
+        return 0;
+    };
+    st(|s| s.dcs.get_mut(&c.a(0)).map(|d| d.dpi = dpi.filter(|&v| v != (96.0, 96.0))));
+    0
+}
+/// The transform drawing goes by: the target's, then DIPs to pixels.
+fn eff(d: &Dc) -> Option<Xf> {
+    let Some((dx, dy)) = d.dpi else { return d.xf };
+    let (sx, sy) = (dx / 96.0, dy / 96.0);
+    let m = d.xf.unwrap_or(IDENTITY);
+    Some([m[0] * sx, m[1] * sy, m[2] * sx, m[3] * sy, m[4] * sx, m[5] * sy])
 }
 
 // ---- resources ----
@@ -442,7 +477,7 @@ fn DrawBitmap(c: &mut Ctx) -> u32 {
     };
     let src = if ps != 0 { [rf(ps, 0), rf(ps, 1), rf(ps, 2), rf(ps, 3)] } else { [0.0, 0.0, im.w as f32, im.h as f32] };
     let dst = if pd != 0 { [rf(pd, 0), rf(pd, 1), rf(pd, 2), rf(pd, 3)] } else { [0.0, 0.0, src[2] - src[0], src[3] - src[1]] };
-    let xf = st(|s| s.dcs.get(&dc).and_then(|d| d.xf));
+    let xf = st(|s| s.dcs.get(&dc).and_then(eff));
     if xf.is_some_and(|m| m[1] != 0.0 || m[2] != 0.0) {
         com::warn_once("sake: d2d DrawBitmap under a rotation: drawn in its bounding box");
     }
@@ -525,9 +560,10 @@ fn GetTarget(c: &mut Ctx) -> u32 {
     0
 }
 fn GetSize(c: &mut Ctx) -> u32 {
-    let (w, h) = st(|s| s.dcs.get(&c.a(0)).map_or((0, 0), |d| (d.w, d.h)));
-    w32(c.a(1), (w as f32).to_bits());
-    w32(c.a(1) + 4, (h as f32).to_bits());
+    // (in DIPs)
+    let (w, h, (dx, dy)) = st(|s| s.dcs.get(&c.a(0)).map_or((0, 0, (96.0, 96.0)), |d| (d.w, d.h, d.dpi.unwrap_or((96.0, 96.0)))));
+    w32(c.a(1), (w as f32 * 96.0 / dx).to_bits());
+    w32(c.a(1) + 4, (h as f32 * 96.0 / dy).to_bits());
     c.a(1)
 }
 fn GetPixelSize(c: &mut Ctx) -> u32 {
@@ -653,7 +689,7 @@ fn fill(dc: u32, r: [f32; 4], paint: &Paint) {
 }
 
 fn brush(dc: u32, b: u32) -> Paint {
-    let xf = st(|s| s.dcs.get(&dc).and_then(|d| d.xf));
+    let xf = st(|s| s.dcs.get(&dc).and_then(eff));
     st(|s| {
         s.brushes.get(&b).map(|b| match &b.linear {
             None => Paint::Solid([b.color[0], b.color[1], b.color[2], b.color[3] * b.opacity]),
@@ -703,7 +739,7 @@ fn CreateLinearGradientBrush(c: &mut Ctx) -> u32 {
 
 /// An ellipse's (center, radii) through the transform (axis-aligned scale and translation).
 fn xf_ellipse(dc: u32, p: u32) -> ([f32; 2], [f32; 2]) {
-    let xf = st(|s| s.dcs.get(&dc).and_then(|d| d.xf));
+    let xf = st(|s| s.dcs.get(&dc).and_then(eff));
     let (cx, cy) = apply(xf, rf(p, 0), rf(p, 1));
     let (sx, sy) = xf.map_or((1.0, 1.0), |m| (m[0].hypot(m[1]), m[2].hypot(m[3])));
     ([cx, cy], [rf(p, 2) * sx, rf(p, 3) * sy])
@@ -737,7 +773,7 @@ fn DrawEllipse(c: &mut Ctx) -> u32 {
 fn FillRectangle(c: &mut Ctx) -> u32 {
     let (dc, p, b) = (c.a(0), c.a(1), c.a(2));
     let r = [rf(p, 0), rf(p, 1), rf(p, 2), rf(p, 3)];
-    let Some(r) = st(|s| s.dcs.get(&dc).map(|d| clip_rect(d, xf_rect(d.xf, r)))) else { return 0 };
+    let Some(r) = st(|s| s.dcs.get(&dc).map(|d| clip_rect(d, xf_rect(eff(d), r)))) else { return 0 };
     fill(dc, r, &brush(dc, b));
     0
 }
@@ -754,7 +790,7 @@ fn DrawRectangle(c: &mut Ctx) -> u32 {
         [r[0] - h, r[1] + h, r[0] + h, r[3] - h],
         [r[2] - h, r[1] + h, r[2] + h, r[3] - h],
     ] {
-        if let Some(e) = st(|s| s.dcs.get(&dc).map(|d| clip_rect(d, xf_rect(d.xf, e)))) {
+        if let Some(e) = st(|s| s.dcs.get(&dc).map(|d| clip_rect(d, xf_rect(eff(d), e)))) {
             fill(dc, e, &paint);
         }
     }
@@ -766,7 +802,7 @@ fn PushAxisAlignedClip(c: &mut Ctx) -> u32 {
     let r = [rf(p, 0), rf(p, 1), rf(p, 2), rf(p, 3)];
     st(|s| {
         if let Some(d) = s.dcs.get_mut(&dc) {
-            let r = xf_rect(d.xf, r);
+            let r = xf_rect(eff(d), r);
             d.clips.push(r);
         }
     });
@@ -780,7 +816,7 @@ fn PopAxisAlignedClip(c: &mut Ctx) -> u32 {
 /// Draws laid-out text with its box's top left at (x, y) (before the transform).
 fn draw_text(dc: u32, text: &[u16], fmt: &dwrite::Format, w: f32, h: f32, x: f32, y: f32, b: u32, clip_box: bool) {
     let paint = brush(dc, b);
-    let xf = st(|s| s.dcs.get(&dc).and_then(|d| d.xf));
+    let xf = st(|s| s.dcs.get(&dc).and_then(eff));
     // (a scaling transform scales the font; glyphs stay upright)
     let scale = xf.map_or(1.0, |m| (m[0] * m[3] - m[1] * m[2]).abs().sqrt());
     let mut f = fmt.clone();
