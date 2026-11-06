@@ -716,3 +716,8 @@ _controlfp 0x8001f
 (int)2147483647.9000001 = 2147483647 (long long) 2147483647
 (int)-2147483648.9000001 = -2147483648 (long long) -2147483648
 abs 5 labs 7 div -3 -1
+rc 0: _controlfp 0x8001f _control87 0x8001f sse 2 sse 4 sse -2 sse -2 sse 1
+rc 1: _controlfp 0x8011f _control87 0x8011f sse 2 sse 3 sse -3 sse -2 sse 1
+rc 2: _controlfp 0x8021f _control87 0x8021f sse 3 sse 4 sse -2 sse -1 sse 2
+rc 3: _controlfp 0x8031f _control87 0x8031f sse 2 sse 3 sse -2 sse -1 sse 1
+_controlfp_s 0 0x8001f

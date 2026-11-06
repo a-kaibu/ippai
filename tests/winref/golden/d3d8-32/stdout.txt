@@ -1,0 +1,45 @@
+fpu before 53
+fpu preserve 0 53
+fpu default 0 24
+fpu default: 1/3 0.3333333432674408
+Release 0
+fpu after release 24
+caps vs fffe0101 ps ffff0104 stages 8 textures 8
+caps texture pow2 0 nonpow2cond 0 square 0 alpha 1
+GetAdapterDisplayMode 0 format 22
+format A8R8G8B8 texture 1 depth -1
+format X8R8G8B8 texture 1 depth -1
+format R5G6B5 texture 1 depth -1
+format A1R5G5B5 texture 1 depth -1
+format A4R4G4B4 texture 1 depth -1
+format X1R5G5B5 texture 1 depth -1
+format DXT1 texture 1 depth -1
+format DXT3 texture 1 depth -1
+format DXT5 texture 1 depth -1
+format D16 texture 0 depth 1
+format D24S8 texture 0 depth 1
+image clear 64 64 0
+image sampling 64 64 10
+texture A8R8G8B8 ok
+texture X8R8G8B8 ok
+texture R5G6B5 ok
+texture X1R5G5B5 ok
+texture A1R5G5B5 ok
+texture A4R4G4B4 ok
+texture DXT1 ok
+texture DXT3 ok
+texture DXT5 ok
+UpdateTexture 0
+image formats 64 64 1
+image blend 64 64 2
+CreateVertexShader 0 CreatePixelShader 0
+image shaders 64 64 2
+CopyRects whole 0
+CopyRects rects 0
+CopyRects rects no points 0
+LockRect back buffer 0
+image copyrects 64 64 0
+TestCooperativeLevel 0
+Present 0
+Release device 0
+Release d3d 0
