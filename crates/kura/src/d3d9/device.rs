@@ -3,7 +3,8 @@
 use super::format as fmt;
 use super::gpu::{self, Batch};
 use dxwgsl::d3d9::{self as shader, Shader};
-use super::{ff, After, D3d, Data, D3DERR_INVALIDCALL, D3DERR_NOTAVAILABLE, E_NOTIMPL, S_OK};
+use dxwgsl::d3d9ff as ff;
+use super::{After, D3d, Data, D3DERR_INVALIDCALL, D3DERR_NOTAVAILABLE, E_NOTIMPL, S_OK};
 use super::{IF_CUBE, IF_D3D9, IF_DECL, IF_DEVICE, IF_IB, IF_PS, IF_QUERY, IF_STATEBLOCK, IF_SURFACE, IF_SWAPCHAIN};
 use super::{IF_TEXTURE, IF_VB, IF_VOLUME, IF_VOLUMETEX, IF_VS};
 use std::collections::HashMap;

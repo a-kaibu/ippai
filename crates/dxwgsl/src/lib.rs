@@ -2,11 +2,12 @@
 //!
 //! - Direct3D 10/11 (DXBC, shader model 4/5): [`translate`] and [`signature`] here; dxbc.rs reads
 //!   the container, tpf.rs the shader model 4/5 program, wgsl.rs writes the WGSL.
-//! - Direct3D 8/9 (vs/ps 1.x-3.0 bytecode): [`d3d9`].
+//! - Direct3D 8/9 (vs/ps 1.x-3.0 bytecode): [`d3d9`]; the fixed-function pipeline: [`d3d9ff`].
 //!
 //! Bytes in, WGSL text and what it binds out; no GPU or OS calls, std only.
 
 pub mod d3d9;
+pub mod d3d9ff;
 pub mod dxbc;
 pub mod tpf;
 mod wgsl;

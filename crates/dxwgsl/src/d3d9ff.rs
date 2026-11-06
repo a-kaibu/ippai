@@ -1,13 +1,13 @@
 //! The fixed-function pipeline as WGSL: a vertex shader from the vertex declaration and
 //! transforms, a pixel shader from the texture stage states.
 //!
-//! Uniforms (same block as programmable shaders, see shader::uniforms):
+//! Uniforms (same block as programmable shaders, see d3d9::uniforms):
 //! vertex: x[0] position fixup, x[2] (vp x, vp y, 2/vp w, 2/vp h) for pretransformed vertices,
 //! c[0..4] world*view*projection (D3D's row-major memory), c[4..12] texture matrices of
 //! stages 0-1, c[12] material diffuse (lighting without normals).
 //! pixel: x[0] alpha bits and alpha reference, c[0] texture factor, c[1..9] stage constants.
 
-use dxwgsl::d3d9::{location, uniforms, USAGE_COLOR, USAGE_NORMAL, USAGE_POSITION, USAGE_POSITIONT, USAGE_TEXCOORD};
+use crate::d3d9::{location, uniforms, USAGE_COLOR, USAGE_NORMAL, USAGE_POSITION, USAGE_POSITIONT, USAGE_TEXCOORD};
 use std::fmt::Write;
 
 pub const VS_CONSTS: u32 = 13;

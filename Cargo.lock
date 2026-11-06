@@ -908,6 +908,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "glwgsl"
+version = "0.1.0"
+dependencies = [
+ "naga",
+]
+
+[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1322,9 +1329,9 @@ name = "kura"
 version = "0.1.0"
 dependencies = [
  "dxwgsl",
+ "glwgsl",
  "koji",
  "libc",
- "naga",
 ]
 
 [[package]]

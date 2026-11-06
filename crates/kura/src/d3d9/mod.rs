@@ -6,11 +6,10 @@
 //! this module allocates (the PE side hands over its vtables once).
 //!
 //! The device's state lives here; draws become WebGPU commands (`gpu`) for the page, with
-//! shaders translated to WGSL (`dxwgsl::d3d9`, fixed function in `ff`).
+//! shaders translated to WGSL (`dxwgsl::d3d9`, fixed function in `dxwgsl::d3d9ff`).
 
 pub mod d3d8;
 pub mod device;
-pub mod ff;
 pub mod format;
 pub mod gpu;
 

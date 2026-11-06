@@ -1,11 +1,8 @@
-//! GLSL programs (OpenGL 2.x, GLSL 1.10-1.30 with the compatibility built-ins): the sources are
-//! rewritten into Vulkan-style GLSL 450 (locations, sets and bindings, uniforms gathered into
-//! one block per stage, samplers split into texture + sampler, built-ins as our own inputs,
-//! outputs and uniforms), naga makes WGSL of that. Uniform values are kept by name and laid out
-//! into each stage's block (offsets from naga) at every draw.
+//! GLSL programs (OpenGL 2.x, GLSL 1.10-1.30 with the compatibility built-ins): the glwgsl crate
+//! makes WGSL of the sources (built-ins become `vn_*` inputs and uniforms, filled here). Uniform
+//! values are kept by name and laid out into each stage's block at every draw.
 
 use super::*;
-use std::fmt::Write as _;
 
 pub(crate) struct Shader {
     pixel: bool,
@@ -29,8 +26,7 @@ pub(crate) struct Program {
 
 struct Stage {
     shader: u32,
-    /// the uniform block: (member name, offset, type), size
-    block: Option<(Vec<(String, u32, naga::TypeInner, Vec<naga::TypeInner>)>, u32)>,
+    block: Option<glwgsl::Block>,
     /// sampler uniforms in binding order
     samplers: Vec<String>,
 }
@@ -46,441 +42,15 @@ struct Linked {
 
 const GL_VERTEX_SHADER: u32 = 0x8B31;
 
-fn is_ident(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '_'
-}
-
-fn strip_comments(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let b: Vec<char> = s.chars().collect();
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == '/' && b.get(i + 1) == Some(&'/') {
-            while i < b.len() && b[i] != '\n' {
-                i += 1;
-            }
-        } else if b[i] == '/' && b.get(i + 1) == Some(&'*') {
-            i += 2;
-            while i + 1 < b.len() && !(b[i] == '*' && b[i + 1] == '/') {
-                if b[i] == '\n' {
-                    out.push('\n');
-                }
-                i += 1;
-            }
-            i += 2;
-        } else {
-            out.push(b[i]);
-            i += 1;
-        }
-    }
-    out
-}
-
-/// Replaces identifiers by `f` (None: keep).
-fn map_idents(s: &str, f: &mut dyn FnMut(&str, &str) -> Option<String>) -> String {
-    let mut out = String::with_capacity(s.len());
-    let b: Vec<char> = s.chars().collect();
-    let mut i = 0;
-    while i < b.len() {
-        if (b[i].is_ascii_alphabetic() || b[i] == '_') && (i == 0 || !is_ident(b[i - 1])) {
-            let st = i;
-            while i < b.len() && is_ident(b[i]) {
-                i += 1;
-            }
-            let id: String = b[st..i].iter().collect();
-            let rest: String = b[i..b.len().min(i + 4)].iter().collect();
-            match f(&id, &rest) {
-                Some(r) => {
-                    out.push_str(&r);
-                    // gl_TexCoord[n] -> vn_TexCoordn eats "[n]"
-                    if id == "gl_TexCoord" || id == "gl_TextureMatrix" || id == "gl_FragData" || id == "gl_MultiTexCoord" {
-                        if let Some(close) = b[i..].iter().position(|&c| c == ']') {
-                            i += close + 1;
-                        }
-                    }
-                }
-                None => out.push_str(&id),
-            }
-        } else {
-            out.push(b[i]);
-            i += 1;
-        }
-    }
-    out
-}
-
-struct Decl {
-    qual: String,
-    ty: String,
-    names: Vec<String>,
-}
-
-/// A global declaration "qualifiers type a, b[2];" (None: something else).
-fn parse_decl(stmt: &str) -> Option<Decl> {
-    let words: Vec<&str> = stmt.split_whitespace().collect();
-    let quals = ["attribute", "varying", "uniform", "in", "out"];
-    let skip = ["highp", "mediump", "lowp", "centroid", "flat", "smooth", "noperspective", "invariant", "const"];
-    let mut q = None;
-    let mut rest = Vec::new();
-    for w in &words {
-        if quals.contains(w) && q.is_none() {
-            q = Some(w.to_string());
-        } else if !skip.contains(w) {
-            rest.push(*w);
-        }
-    }
-    let q = q?;
-    if rest.first()?.starts_with("layout") {
-        return None;
-    }
-    let ty = rest.first()?.to_string();
-    let names = rest[1..].join(" ");
-    if names.contains('(') || names.contains('{') || names.contains('=') {
-        return None;
-    }
-    let names = names.split(',').map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).collect();
-    Some(Decl { qual: q, ty, names })
-}
-
-fn base_name(n: &str) -> &str {
-    n.split('[').next().unwrap_or(n).trim()
-}
-
-/// Rewrites one stage. `attribs`: vertex input locations by name (assigned as found when
-/// missing); `varyings`: locations by name, shared by both stages.
-fn rewrite(src: &str, pixel: bool, attribs: &mut Vec<(String, u32)>, bound: &HashMap<String, u32>, varyings: &mut Vec<String>) -> (String, Vec<String>) {
-    let set = pixel as u32;
-    let src = strip_comments(src);
-    let mut head = String::from("#version 450\n");
-    let mut body = String::new();
-    let mut block = String::new();
-    let mut samplers: Vec<String> = Vec::new();
-    let mut extra_in: Vec<(String, String)> = Vec::new();
-    let mut extra_out: Vec<(String, String)> = Vec::new();
-    let mut extra_uni: Vec<(String, String)> = Vec::new();
-    let mut frag_out = false;
-
-    let att_loc = |name: &str, attribs: &mut Vec<(String, u32)>| -> u32 {
-        if let Some(a) = attribs.iter().find(|a| a.0 == name) {
-            return a.1;
-        }
-        let l = bound.get(name).copied().unwrap_or_else(|| (0..16).find(|l| !attribs.iter().any(|a| a.1 == *l) && !bound.values().any(|b| b == l)).unwrap_or(15));
-        attribs.push((name.to_string(), l));
-        l
-    };
-    let var_loc = |name: &str, varyings: &mut Vec<String>| -> usize {
-        match varyings.iter().position(|v| v == name) {
-            Some(i) => i,
-            None => {
-                varyings.push(name.to_string());
-                varyings.len() - 1
-            }
-        }
-    };
-
-    // built-ins
-    let src = map_idents(&src, &mut |id, rest| {
-        let digit = rest.chars().nth(1).filter(|c| c.is_ascii_digit());
-        Some(match id {
-            "gl_Vertex" if !pixel => {
-                extra_in.push(("vec4".into(), "vn_Vertex".into()));
-                "vn_Vertex".into()
-            }
-            "gl_Color" if !pixel => {
-                extra_in.push(("vec4".into(), "vn_Color".into()));
-                "vn_Color".into()
-            }
-            "gl_Normal" if !pixel => {
-                extra_in.push(("vec3".into(), "vn_Normal".into()));
-                "vn_Normal".into()
-            }
-            _ if id.starts_with("gl_MultiTexCoord") && !pixel => {
-                let n = format!("vn_{}", &id[3..]);
-                extra_in.push(("vec4".into(), n.clone()));
-                n
-            }
-            "gl_Color" | "gl_FrontColor" | "gl_BackColor" => {
-                let n = "vn_FrontColor".to_string();
-                if pixel { extra_in.push(("vec4".into(), n.clone())) } else { extra_out.push(("vec4".into(), n.clone())) }
-                n
-            }
-            "gl_TexCoord" => {
-                let n = format!("vn_TexCoord{}", digit.unwrap_or('0'));
-                if pixel { extra_in.push(("vec4".into(), n.clone())) } else { extra_out.push(("vec4".into(), n.clone())) }
-                n
-            }
-            "gl_FragColor" | "gl_FragData" => {
-                frag_out = true;
-                "vn_FragColor".into()
-            }
-            "gl_ModelViewProjectionMatrix" => {
-                extra_uni.push(("mat4".into(), "vn_MVP".into()));
-                "vn_MVP".into()
-            }
-            "gl_ModelViewMatrix" => {
-                extra_uni.push(("mat4".into(), "vn_MV".into()));
-                "vn_MV".into()
-            }
-            "gl_ProjectionMatrix" => {
-                extra_uni.push(("mat4".into(), "vn_P".into()));
-                "vn_P".into()
-            }
-            "gl_NormalMatrix" => {
-                extra_uni.push(("mat3".into(), "vn_NM".into()));
-                "vn_NM".into()
-            }
-            "gl_TextureMatrix" => {
-                let n = format!("vn_TM{}", digit.unwrap_or('0'));
-                extra_uni.push(("mat4".into(), n.clone()));
-                n
-            }
-            "texture2D" | "textureCube" | "texture1D" | "shadow2D" => "texture".into(),
-            "texture2DProj" => "textureProj".into(),
-            "texture2DLod" => "textureLod".into(),
-            "highp" | "mediump" | "lowp" => String::new(),
-            _ => return None,
-        })
-    });
-
-    // global statements
-    let chars: Vec<char> = src.chars().collect();
-    let mut depth = 0;
-    let mut stmt = String::new();
-    let mut i = 0;
-    let mut line_start = true;
-    while i < chars.len() {
-        let ch = chars[i];
-        if depth == 0 && line_start && ch == '#' {
-            let end = chars[i..].iter().position(|&c| c == '\n').map_or(chars.len(), |p| i + p);
-            let line: String = chars[i..end].iter().collect();
-            if !line.trim_start_matches('#').trim_start().starts_with("version") && !line.contains("extension") {
-                body.push_str(&line);
-                body.push('\n');
-            }
-            i = end;
-            continue;
-        }
-        line_start = ch == '\n' || (line_start && ch.is_whitespace());
-        match ch {
-            '{' => {
-                depth += 1;
-                stmt.push(ch);
-            }
-            '}' => {
-                depth -= 1;
-                stmt.push(ch);
-                if depth == 0 {
-                    body.push_str(&stmt);
-                    stmt.clear();
-                }
-            }
-            ';' if depth == 0 => {
-                let s = stmt.trim().to_string();
-                stmt.clear();
-                if s.starts_with("precision") {
-                } else if let Some(d) = parse_decl(&s) {
-                    for n in &d.names {
-                        let b = base_name(n);
-                        match d.qual.as_str() {
-                            "uniform" if d.ty.starts_with("sampler") => samplers.push(b.to_string()),
-                            "uniform" => {
-                                let _ = writeln!(block, "  {} {};", d.ty, n);
-                            }
-                            "attribute" | "in" if !pixel => {
-                                let l = att_loc(b, attribs);
-                                let _ = writeln!(head, "layout(location = {l}) in {} {};", d.ty, n);
-                            }
-                            "varying" | "out" if !pixel => {
-                                let l = var_loc(b, varyings);
-                                let flat = if d.ty.starts_with('i') || d.ty.starts_with('u') { "flat " } else { "" };
-                                let _ = writeln!(head, "layout(location = {l}) {flat}out {} {};", d.ty, n);
-                            }
-                            "varying" | "in" => {
-                                let l = var_loc(b, varyings);
-                                let flat = if d.ty.starts_with('i') || d.ty.starts_with('u') { "flat " } else { "" };
-                                let _ = writeln!(head, "layout(location = {l}) {flat}in {} {};", d.ty, n);
-                            }
-                            _ => {
-                                // fragment output (GLSL 1.30)
-                                let _ = writeln!(head, "layout(location = 0) out {} {};", d.ty, n);
-                            }
-                        }
-                    }
-                } else {
-                    body.push_str(&s);
-                    body.push_str(";\n");
-                }
-            }
-            _ => stmt.push(ch),
-        }
-        i += 1;
-    }
-    body.push_str(&stmt);
-
-    // built-in declarations
-    let mut seen = HashSet::new();
-    for (ty, n) in &extra_in {
-        if seen.insert(n.clone()) {
-            if pixel {
-                let l = var_loc(n, varyings);
-                let _ = writeln!(head, "layout(location = {l}) in {ty} {n};");
-            } else {
-                let l = att_loc(n, attribs);
-                let _ = writeln!(head, "layout(location = {l}) in {ty} {n};");
-            }
-        }
-    }
-    for (ty, n) in &extra_out {
-        if seen.insert(n.clone()) {
-            let l = var_loc(n, varyings);
-            let _ = writeln!(head, "layout(location = {l}) out {ty} {n};");
-        }
-    }
-    for (ty, n) in &extra_uni {
-        if seen.insert(n.clone()) {
-            let _ = writeln!(block, "  {ty} {n};");
-        }
-    }
-    if frag_out {
-        head.push_str("layout(location = 0) out vec4 vn_FragColor;\n");
-    }
-    if !block.is_empty() {
-        let _ = write!(head, "layout(set = {set}, binding = 0) uniform VnU{set} {{\n{block}}};\n");
-    }
-    // samplers: texture + sampler, uses as sampler2D(t, s)
-    for (k, s) in samplers.iter().enumerate() {
-        let _ = writeln!(head, "layout(set = {set}, binding = {}) uniform texture2D {s}_vnt;", 16 + k);
-        let _ = writeln!(head, "layout(set = {set}, binding = {}) uniform sampler {s}_vns;", 160 + k);
-    }
-    let body = map_idents(&body, &mut |id, _| {
-        if samplers.iter().any(|s| s == id) {
-            Some(format!("sampler2D({id}_vnt, {id}_vns)"))
-        } else if id == "main" && !pixel {
-            Some("vn_main".into())
-        } else {
-            None
-        }
-    });
-    let mut out = head;
-    out.push_str(&body);
-    if !pixel {
-        out.push_str("\nvoid main() {\n  vn_main();\n  gl_Position.y = -gl_Position.y;\n  gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5;\n}\n");
-    }
-    (out, samplers)
-}
-
-/// GLSL 450 -> (WGSL, module)
-fn compile(src: &str, pixel: bool) -> Result<(String, naga::Module), String> {
-    let stage = if pixel { naga::ShaderStage::Fragment } else { naga::ShaderStage::Vertex };
-    let m = naga::front::glsl::Frontend::default()
-        .parse(&naga::front::glsl::Options::from(stage), src)
-        .map_err(|e| format!("{e:?}"))?;
-    let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
-        .validate(&m)
-        .map_err(|e| format!("naga validation: {e:?}"))?;
-    let text = naga::back::wgsl::write_string(&m, &info, naga::back::wgsl::WriterFlags::empty()).map_err(|e| format!("naga wgsl-out: {e}"))?;
-    Ok((format!("diagnostic(off, derivative_uniformity);\n{text}"), m))
-}
-
-fn block_of(m: &naga::Module) -> Option<(Vec<(String, u32, naga::TypeInner, Vec<naga::TypeInner>)>, u32)> {
-    for (_, g) in m.global_variables.iter() {
-        if g.space != naga::AddressSpace::Uniform {
-            continue;
-        }
-        if let naga::TypeInner::Struct { members, span } = &m.types[g.ty].inner {
-            let ms = members
-                .iter()
-                .map(|x| {
-                    let inner = m.types[x.ty].inner.clone();
-                    // (element type of arrays)
-                    let mut chain = Vec::new();
-                    if let naga::TypeInner::Array { base, .. } = &inner {
-                        chain.push(m.types[*base].inner.clone());
-                    }
-                    (x.name.clone().unwrap_or_default(), x.offset, inner, chain)
-                })
-                .collect();
-            return Some((ms, *span));
-        }
-    }
-    None
-}
-
-/// 32-bit words one element of a value takes in GL (glUniform data)
-fn words(t: &naga::TypeInner) -> u32 {
-    match t {
-        naga::TypeInner::Vector { size, .. } => *size as u32,
-        naga::TypeInner::Matrix { columns, rows, .. } => *columns as u32 * *rows as u32,
-        _ => 1,
-    }
-}
-
-/// Writes GL-packed `v` (elements of `t`) into a std140-style block at `off`.
-fn put(out: &mut [u8], off: u32, t: &naga::TypeInner, elem: Option<&naga::TypeInner>, stride: u32, v: &[u32]) {
-    let mut w = |o: u32, x: u32| {
-        if let Some(d) = out.get_mut(o as usize..o as usize + 4) {
-            d.copy_from_slice(&x.to_le_bytes());
-        }
-    };
-    let one = |t: &naga::TypeInner, base: u32, v: &[u32], w: &mut dyn FnMut(u32, u32)| match t {
-        naga::TypeInner::Matrix { columns, rows, .. } => {
-            let (c, r) = (*columns as u32, *rows as u32);
-            let cstride = if r == 2 { 8 } else { 16 };
-            for ci in 0..c {
-                for ri in 0..r {
-                    if let Some(&x) = v.get((ci * r + ri) as usize) {
-                        w(base + ci * cstride + ri * 4, x);
-                    }
-                }
-            }
-        }
-        _ => {
-            for (k, &x) in v.iter().take(words(t) as usize).enumerate() {
-                w(base + k as u32 * 4, x);
-            }
-        }
-    };
-    match (t, elem) {
-        (naga::TypeInner::Array { size, .. }, Some(e)) => {
-            let n = match size {
-                naga::ArraySize::Constant(n) => n.get(),
-                _ => 1,
-            };
-            let ew = words(e) as usize;
-            for k in 0..n {
-                let s = &v[(k as usize * ew).min(v.len())..((k as usize + 1) * ew).min(v.len())];
-                one(e, off + k * stride, s, &mut w);
-            }
-        }
-        _ => one(t, off, v, &mut w),
-    }
-}
-
 fn link(g: &mut Gl, p: &mut Program) -> Result<Linked, String> {
     let find = |pixel: bool| p.shaders.iter().copied().find(|s| g.shaders.get(s).is_some_and(|x| x.pixel == pixel));
     let (vs, ps) = (find(false).ok_or("no vertex shader")?, find(true).ok_or("no fragment shader")?);
-    let mut attribs = Vec::new();
-    let mut varyings = Vec::new();
-    let (vsrc, vsamp) = rewrite(&g.shaders[&vs].source, false, &mut attribs, &p.bound_attribs, &mut varyings);
-    let (psrc, psamp) = rewrite(&g.shaders[&ps].source, true, &mut attribs, &p.bound_attribs, &mut varyings);
-    let (vw, vm) = compile(&vsrc, false).map_err(|e| format!("vertex shader: {e}\n{vsrc}"))?;
-    let (pw, pm) = compile(&psrc, true).map_err(|e| format!("fragment shader: {e}\n{psrc}"))?;
-    let mut sizes = HashMap::new();
-    for m in [&vm, &pm] {
-        if let Some((ms, _)) = block_of(m) {
-            for (n, _, t, chain) in ms {
-                sizes.insert(n, words(chain.first().unwrap_or(&t)));
-            }
-        }
-    }
-    for s in vsamp.iter().chain(&psamp) {
-        sizes.insert(s.clone(), 1);
-    }
+    let l = glwgsl::link(&g.shaders[&vs].source, &g.shaders[&ps].source, &p.bound_attribs)?;
     Ok(Linked {
-        vs: Stage { shader: shader(&vw), block: block_of(&vm), samplers: vsamp },
-        ps: Stage { shader: shader(&pw), block: block_of(&pm), samplers: psamp },
-        attribs,
-        sizes,
+        vs: Stage { shader: shader(&l.vs.wgsl), block: l.vs.block, samplers: l.vs.samplers },
+        ps: Stage { shader: shader(&l.ps.wgsl), block: l.ps.block, samplers: l.ps.samplers },
+        attribs: l.attribs,
+        sizes: l.sizes,
     })
 }
 
@@ -539,14 +109,12 @@ unsafe extern "C" fn glGetShaderSource(sh: u32, max: i32, len: *mut i32, out: *m
 extern "C" fn glCompileShader(sh: u32) {
     let mut g = gl();
     let Some(x) = g.as_mut().unwrap().shaders.get_mut(&sh) else { return };
-    // (checked on its own here; linking does it again with the other stage)
-    let (src, _) = rewrite(&x.source, x.pixel, &mut Vec::new(), &HashMap::new(), &mut Vec::new());
-    match compile(&src, x.pixel) {
-        Ok(_) => {
+    match glwgsl::check(&x.source, x.pixel) {
+        Ok(()) => {
             x.ok = true;
             x.log.clear();
         }
-        Err(e) => {
+        Err((e, src)) => {
             x.ok = false;
             x.log = e;
             eprintln!("gl: shader {sh} does not compile: {}\n{src}", x.log);
@@ -960,15 +528,11 @@ pub(crate) fn draw_from(g: &mut Gl, c: &mut Ctx, mode: u32, src: Src) {
     let mut groups: Vec<(Vec<u8>, Vec<[u32; 8]>)> = Vec::new();
     for st in [&l.vs, &l.ps] {
         let mut block = Vec::new();
-        if let Some((ms, size)) = &st.block {
-            block = vec![0u8; (*size as usize).max(16)];
-            for (n, off, t, chain) in ms {
-                let stride = match t {
-                    naga::TypeInner::Array { stride, .. } => *stride,
-                    _ => 0,
-                };
-                if let Some(v) = builtin_value(n).or_else(|| p.values.get(n).cloned()) {
-                    put(&mut block, *off, t, chain.first(), stride, &v);
+        if let Some(b) = &st.block {
+            block = vec![0u8; (b.size as usize).max(16)];
+            for m in &b.members {
+                if let Some(v) = builtin_value(&m.name).or_else(|| p.values.get(&m.name).cloned()) {
+                    m.put(&mut block, &v);
                 }
             }
         }
@@ -1007,63 +571,4 @@ pub(crate) fn draw_from(g: &mut Gl, c: &mut Ctx, mode: u32, src: Src) {
         wds.extend_from_slice(&[0, order.len() as u32, 1, 0, 0, 0, 0]);
         q.cmd(&wds);
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Both stages through rewrite and naga, as link does: (vertex WGSL, fragment WGSL, samplers, attributes)
-    fn translate(vs: &str, ps: &str) -> (String, String, Vec<String>, Vec<(String, u32)>) {
-        let (mut attribs, mut varyings) = (Vec::new(), Vec::new());
-        let (vsrc, mut samp) = rewrite(vs, false, &mut attribs, &HashMap::new(), &mut varyings);
-        let (psrc, psamp) = rewrite(ps, true, &mut attribs, &HashMap::new(), &mut varyings);
-        let (vw, _) = compile(&vsrc, false).unwrap_or_else(|e| panic!("vertex shader: {e}\n{vsrc}"));
-        let (pw, _) = compile(&psrc, true).unwrap_or_else(|e| panic!("fragment shader: {e}\n{psrc}"));
-        samp.extend(psamp);
-        (vw, pw, samp, attribs)
-    }
-
-    #[test]
-    fn fixed_function_builtins() {
-        // GLSL 1.10 the old way: built-in attributes, matrices and varyings
-        let (vw, pw, samp, _) = translate(
-            "void main() { gl_TexCoord[0] = gl_MultiTexCoord0; gl_FrontColor = gl_Color;\n\
-             gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex; }",
-            "uniform sampler2D tex; uniform vec4 tint;\n\
-             void main() { gl_FragColor = texture2D(tex, gl_TexCoord[0].st) * gl_Color * tint; }",
-        );
-        assert!(vw.contains("@vertex") && pw.contains("@fragment"));
-        assert_eq!(samp, ["tex"]);
-    }
-
-    #[test]
-    fn attributes_varyings_uniforms() {
-        // what gltest.c and engines with their own shaders write (Ren'Py's gl renderer looks like this)
-        let (vw, pw, samp, attribs) = translate(
-            "#ifdef GL_ES\nprecision highp float;\n#endif\n\
-             uniform mat4 Projection; attribute vec4 Vertex; attribute vec2 VertexTexCoord0;\n\
-             varying vec2 vTexCoord0; // comment\n\
-             void main() { vTexCoord0 = VertexTexCoord0; gl_Position = Projection * Vertex; }",
-            "#ifdef GL_ES\nprecision mediump float;\n#endif\n\
-             uniform sampler2D tex0; uniform float Alpha; varying vec2 vTexCoord0;\n\
-             /* block\n comment */ void main() { vec4 c = texture2D(tex0, vTexCoord0); gl_FragColor = c * Alpha; }",
-        );
-        assert!(vw.contains("@vertex") && pw.contains("@fragment"));
-        assert_eq!(samp, ["tex0"]);
-        let names: Vec<&str> = attribs.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(names.contains(&"Vertex") && names.contains(&"VertexTexCoord0"), "{attribs:?}");
-    }
-
-    #[test]
-    fn glsl_130_in_out() {
-        let (vw, pw, _, attribs) = translate(
-            "#version 130\nin vec2 pos; in vec3 col; out vec3 v_col; uniform mat4 rot;\n\
-             void main() { v_col = col; gl_Position = rot * vec4(pos, 0.0, 1.0); }",
-            "#version 130\nin vec3 v_col; uniform vec4 tint; out vec4 color;\n\
-             void main() { color = vec4(v_col, 1.0) * tint; }",
-        );
-        assert!(vw.contains("@vertex") && pw.contains("@fragment"));
-        assert_eq!(attribs.len(), 2, "{attribs:?}");
-    }
 }

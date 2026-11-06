@@ -1,0 +1,9 @@
+[package]
+name = "glwgsl"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "GLSL 1.10-1.30 (OpenGL 2.x programs with the compatibility built-ins) to WGSL, through naga"
+
+[dependencies]
+naga = { version = "30", features = ["glsl-in", "wgsl-in", "wgsl-out"] }  # (naga 30's glsl-in needs spv-in or wgsl-in)
