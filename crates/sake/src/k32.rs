@@ -3800,6 +3800,18 @@ fn GetUserNameA(c: &mut Ctx) -> u32 {
     w32(c.a(1), 5);
     1
 }
+/// RtlGenRandom (advapi32!SystemFunction036): the browser's random bytes.
+fn SystemFunction036(c: &mut Ctx) -> u32 {
+    let (p, n) = (c.a(0), c.a(1));
+    let mut buf = vec![0u8; n as usize];
+    for chunk in buf.chunks_mut(256) {
+        if unsafe { libc::getentropy(chunk.as_mut_ptr().cast(), chunk.len()) } != 0 {
+            return 0;
+        }
+    }
+    mem::write(p, &buf);
+    1
+}
 fn RtlZeroMemory(c: &mut Ctx) -> u32 {
     mem::fill(c.a(0), c.a(1), 0);
     0
@@ -4103,7 +4115,7 @@ pub fn init() {
         InterlockedPushEntrySList, InterlockedPopEntrySList, InterlockedFlushSList, QueryDepthSList, InterlockedPushListSListEx,
         AreFileApisANSI, SetFileApisToANSI,
     );
-    reg!("advapi32"; GetUserNameA);
+    reg!("advapi32"; GetUserNameA, SystemFunction036);
     for n in ["Process32Next", "Process32NextW", "Module32First", "Module32FirstW", "Module32Next", "Module32NextW", "Thread32First", "Thread32Next"] {
         implement("kernel32", n, no_more);
     }

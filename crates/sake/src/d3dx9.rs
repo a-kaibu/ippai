@@ -858,6 +858,11 @@ fn D3DXCreateFont(c: &mut Ctx) -> u32 {
     0
 }
 
+/// D3DXCheckVersion(D3D_SDK_VERSION, D3DX_SDK_VERSION): every version is ours.
+fn D3DXCheckVersion(_: &mut Ctx) -> u32 {
+    1
+}
+
 pub fn init() {
     let fns: &[(&str, Handler)] = &[
         ("D3DXCreateEffect", D3DXCreateEffect),
@@ -919,6 +924,7 @@ pub fn init() {
         ("D3DXCreateFontW", D3DXCreateFont),
         ("D3DXCreateFontIndirectA", D3DXCreateFont),
         ("D3DXCreateFontIndirectW", D3DXCreateFont),
+        ("D3DXCheckVersion", D3DXCheckVersion),
     ];
     for v in 24..=43 {
         let dll = format!("d3dx9_{v}");
