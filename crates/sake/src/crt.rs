@@ -343,16 +343,48 @@ fn ___mb_cur_max_func(_: &mut Ctx) -> u32 {
 fn __pctype_func(_: &mut Ctx) -> u32 {
     r32(data("_pctype").unwrap())
 }
-/// The control word the CRT reports: all exceptions masked, round to nearest, and on x86 53-bit
-/// precision (_PC_53); x64 has no precision control (Windows' answer: 0x8001f)
-fn fp_control() -> u32 {
-    if mem::x64() { 0x8001f } else { 0x9001f }
+/// The CRT's control word (_MCW_EM | _MCW_RC | _MCW_PC | _MCW_IC bits) over the guest's own
+/// x87 control word and MXCSR: x86 sets and reports the x87 one (and the SSE rounding and
+/// masks with it), x64 only MXCSR (no precision control there: Windows' answer is 0x8001f).
+const EM_BITS: [(u32, u32); 6] = [(0x10, 0), (0x80000, 1), (0x8, 2), (0x4, 3), (0x2, 4), (0x1, 5)];
+pub fn fp_control(c: &Ctx) -> u32 {
+    if mem::x64() {
+        let m = c.cpu.mxcsr;
+        let em = EM_BITS.iter().filter(|&&(_, b)| m >> (7 + b) & 1 != 0).fold(0, |a, &(f, _)| a | f);
+        return em | (m >> 13 & 3) << 8;
+    }
+    let cw = c.cpu.fpu.cw as u32;
+    let em = EM_BITS.iter().filter(|&&(_, b)| cw >> b & 1 != 0).fold(0, |a, &(f, _)| a | f);
+    let pc = match cw >> 8 & 3 {
+        0 => 0x20000,
+        2 => 0x10000,
+        _ => 0,
+    };
+    em | (cw >> 10 & 3) << 8 | pc | (cw >> 12 & 1) << 18
 }
-fn _controlfp(_: &mut Ctx) -> u32 {
-    fp_control()
+pub fn set_fp_control(c: &mut Ctx, new: u32, mask: u32) -> u32 {
+    let v = (fp_control(c) & !mask) | (new & mask);
+    let em = |shift: u32| EM_BITS.iter().filter(|&&(f, _)| v & f != 0).fold(0, |a, &(_, b)| a | 1 << (b + shift));
+    let rc = v >> 8 & 3;
+    c.cpu.mxcsr = (c.cpu.mxcsr & !(0x3f << 7 | 3 << 13)) | em(7) | rc << 13;
+    if !mem::x64() {
+        let pc = match v & 0x30000 {
+            0x20000 => 0,
+            0x10000 => 2,
+            _ => 3,
+        };
+        c.cpu.fpu.cw = (c.cpu.fpu.cw & 0xe0c0) as u16 | em(0) as u16 | (pc << 8 | rc << 10 | (v >> 18 & 1) << 12) as u16 | 0x40;
+    }
+    fp_control(c)
 }
-fn _control87(_: &mut Ctx) -> u32 {
-    fp_control()
+fn _controlfp(c: &mut Ctx) -> u32 {
+    // (the denormal mask stays as it is)
+    let (new, mask) = (c.a(0), c.a(1) & !0x80000);
+    set_fp_control(c, new, mask)
+}
+fn _control87(c: &mut Ctx) -> u32 {
+    let (new, mask) = (c.a(0), c.a(1));
+    set_fp_control(c, new, mask)
 }
 fn _clearfp(_: &mut Ctx) -> u32 {
     0
@@ -2071,8 +2103,10 @@ fn mem_s(c: &mut Ctx, f: fn(Option<&mut [u8]>, Option<&[u8]>, usize) -> i32) -> 
     e as u32
 }
 fn _controlfp_s(c: &mut Ctx) -> u32 {
-    if c.a(0) != 0 {
-        w32(c.a(0), fp_control());
+    let (out, new, mask) = (c.a(0), c.a(1), c.a(2) & !0x80000);
+    let v = set_fp_control(c, new, mask);
+    if out != 0 {
+        w32(out, v);
     }
     0
 }

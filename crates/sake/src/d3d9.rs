@@ -74,6 +74,9 @@ pub fn host_calls() -> &'static HostCalls {
     &CALLS
 }
 
+const CREATE_DEVICE9: u32 = 1 << 8 | 16;
+const CREATE_DEVICE8: u32 = 17 << 8 | 15;
+
 fn method(c: &mut Ctx) -> u32 {
     let id = IDS.lock().unwrap().as_ref().and_then(|m| m.get(&c.trap).copied()).unwrap_or(0);
     match id {
@@ -84,6 +87,16 @@ fn method(c: &mut Ctx) -> u32 {
         }
         SURFACE_GETDC => surface_get_dc(c),
         SURFACE_RELEASEDC => surface_release_dc(c),
+        // IDirect3D9::CreateDevice, IDirect3D8::CreateDevice: without D3DCREATE_FPU_PRESERVE
+        // the x87 goes to single precision, exceptions masked (control word 0x7f), and stays so
+        CREATE_DEVICE9 | CREATE_DEVICE8 if !mem::x64() => {
+            let behavior = c.a(4);
+            let r = unsafe { kura::d3d9::vnhost_d3d9_call(id, (c.esp + 4) as usize as *const u32, &CALLS) };
+            if r == 0 && behavior & 2 == 0 {
+                c.cpu.fpu.cw = 0x7f;
+            }
+            r
+        }
         _ if mem::x64() => {
             let n = args_of(id);
             let mut slots = [0u64; 16];

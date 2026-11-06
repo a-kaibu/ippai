@@ -155,6 +155,9 @@ fn enter(stack: u32) -> &'static mut Thread {
             // long mode, GS = the TEB
             (*cpu).mode64 = 1;
             (*cpu).gs_base = teb;
+        } else {
+            // (a 32-bit thread starts at 53-bit precision on Windows)
+            (*cpu).fpu.cw = 0x27f;
         }
     }
     let t = Box::leak(Box::new(Thread { cpu, tid, teb, obj: 0, stack: st }));

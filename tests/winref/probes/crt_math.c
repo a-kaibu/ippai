@@ -36,5 +36,42 @@ int main(void) {
     for (unsigned i = 0; i < sizeof cv / sizeof *cv; i++)
         printf("(int)%.17g = %d (long long) %I64d\n", cv[i], (int)cv[i], (long long)cv[i]);
     printf("abs %d labs %ld div %d %d\n", abs(-5), labs(-7L), div(-7, 2).quot, div(-7, 2).rem);
+    /* _controlfp's rounding modes as fistp/frndint (x87) and cvtsd2si (SSE) see them, its
+     * precision control, and what _control87/_controlfp_s report */
+    static const unsigned rcs[] = { _RC_NEAR, _RC_DOWN, _RC_UP, _RC_CHOP };
+    static const double rv[] = { 2.5, 3.5, -2.5, -1.7, 1.2 };
+    for (unsigned m = 0; m < 4; m++) {
+        unsigned r = _controlfp(rcs[m], _MCW_RC);
+        printf("rc %u: _controlfp %#x _control87 %#x", m, r & (_MCW_PC | _MCW_RC | _MCW_EM), _control87(0, 0) & (_MCW_PC | _MCW_RC | _MCW_EM));
+        for (unsigned i = 0; i < sizeof rv / sizeof *rv; i++) {
+            volatile double v = rv[i];
+#ifdef __i386__
+            int n; double f;
+            __asm__ volatile("fldl %1\n\tfistpl %0" : "=m"(n) : "m"(v));
+            __asm__ volatile("fldl %1\n\tfrndint\n\tfstpl %0" : "=m"(f) : "m"(v));
+            printf(" %g:%d/%g", v, n, f);
+#endif
+            int s2;
+            __asm__ volatile("cvtsd2si %1, %0" : "=r"(s2) : "x"(v));
+            printf(" sse %d", s2);
+        }
+        printf("\n");
+    }
+    _controlfp(_RC_NEAR, _MCW_RC);
+    unsigned cur = 0;
+    int e = _controlfp_s(&cur, _EM_ZERODIVIDE, _EM_ZERODIVIDE);
+    printf("_controlfp_s %d %#x\n", e, cur & (_MCW_PC | _MCW_RC | _MCW_EM));
+#ifdef __i386__
+    static const unsigned pcs[] = { _PC_24, _PC_53, _PC_64 };
+    for (unsigned m = 0; m < 3; m++) {
+        unsigned r = _controlfp(pcs[m], _MCW_PC);
+        unsigned short cw;
+        __asm__ volatile("fnstcw %0" : "=m"(cw));
+        volatile double one = 1.0, three = 3.0, third = one / three;
+        printf("pc %u: _controlfp %#x fnstcw %#x\n", m, r & (_MCW_PC | _MCW_RC | _MCW_EM), cw);
+        printf("pc %u: 1/3 %.17g\n", m, third);
+    }
+    _controlfp(_PC_53, _MCW_PC);
+#endif
     return 0;
 }
