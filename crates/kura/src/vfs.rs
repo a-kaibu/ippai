@@ -599,10 +599,52 @@ fn join(cur: &[String]) -> String {
 // ---------------------------------------------------------------------------------------------
 // chunk cache
 
+/// Chunks by hash, the oldest put dropped first once they hold more than the limit. `bytes`
+/// is the sum of the lengths of what `map` holds: every change goes through [`Cache::put`].
+#[derive(Default)]
 struct Cache {
     map: HashMap<Hash, Arc<Vec<u8>>>,
+    /// each hash in `map` once, oldest first
     order: VecDeque<Hash>,
     bytes: usize,
+}
+
+impl Cache {
+    /// Holds `data` as `h` (in place of what `h` held: it keeps its place in the order), then
+    /// drops the oldest while over `limit` (`h` itself last).
+    fn put(&mut self, h: &Hash, data: Arc<Vec<u8>>, limit: usize) {
+        match self.map.insert(*h, data.clone()) {
+            Some(old) => self.bytes = self.bytes - old.len() + data.len(),
+            None => {
+                self.order.push_back(*h);
+                self.bytes += data.len();
+            }
+        }
+        self.trim(limit);
+    }
+
+    fn trim(&mut self, limit: usize) {
+        while self.bytes > limit {
+            let Some(old) = self.order.pop_front() else { break };
+            if let Some(d) = self.map.remove(&old) {
+                self.bytes -= d.len();
+            }
+        }
+    }
+
+    /// Chunk `h` at `len` bytes: one the page fetched ahead comes as stored (a file's last
+    /// chunk short) and is padded in place (a copy only if someone holds it).
+    fn get(&mut self, h: &Hash, len: usize, limit: usize) -> Option<Arc<Vec<u8>>> {
+        let c = self.map.get_mut(h)?;
+        let had = c.len();
+        if had != len {
+            Arc::make_mut(c).resize(len, 0);
+            self.bytes = self.bytes - had + len;
+        }
+        let d = c.clone();
+        self.trim(limit);
+        Some(d)
+    }
 }
 
 static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
@@ -723,20 +765,8 @@ fn chunk_data(h: &Hash, len: usize) -> Result<Arc<Vec<u8>>, c_int> {
 
 fn chunk_data_wait(h: &Hash, len: usize) -> Result<Arc<Vec<u8>>, c_int> {
     wait_ahead(h);
-    {
-        let mut g = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(c) = g.as_mut().and_then(|c| c.map.get(h)) {
-            if c.len() == len {
-                return Ok(c.clone());
-            }
-            // fetched ahead, as stored: padded in place (a copy only if someone holds it)
-            let c = g.as_mut().unwrap().map.remove(h).unwrap();
-            let mut d = Arc::try_unwrap(c).unwrap_or_else(|c| c.to_vec());
-            d.resize(len, 0);
-            let d = Arc::new(d);
-            g.as_mut().unwrap().map.insert(*h, d.clone());
-            return Ok(d);
-        }
+    if let Some(d) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_mut().and_then(|c| c.get(h, len, cache_limit())) {
+        return Ok(d);
     }
     let mut data = fetch_chunk(h).ok_or(libc::EIO)?;
     data.resize(len, 0);
@@ -752,18 +782,7 @@ pub unsafe extern "C" fn vnhost_vfs_put_chunk(hash: *const u8, data: *mut u8, le
 }
 
 fn cache_put(h: &Hash, data: Arc<Vec<u8>>) -> Arc<Vec<u8>> {
-    let mut g = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    let c = g.get_or_insert_with(|| Cache { map: HashMap::new(), order: VecDeque::new(), bytes: 0 });
-    if c.map.insert(*h, data.clone()).is_none() {
-        c.order.push_back(*h);
-        c.bytes += data.len();
-        while c.bytes > cache_limit() {
-            let Some(old) = c.order.pop_front() else { break };
-            if let Some(d) = c.map.remove(&old) {
-                c.bytes -= d.len();
-            }
-        }
-    }
+    CACHE.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Cache::default).put(h, data.clone(), cache_limit());
     data
 }
 
@@ -1170,4 +1189,76 @@ pub(crate) fn h_set_len(h: u32, size: u64) -> Result<(), c_int> {
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_free(p: *mut c_void) {
     libc::free(p)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Random puts, replacements (other lengths) and padded gets against a model: a list of
+    /// (hash, length) oldest first. After each step `bytes` is the sum of what is held, the
+    /// order holds each hash once, the cache is within its limit (or holds one chunk bigger
+    /// than it at most: none), and what is held is the newest suffix of the model.
+    #[test]
+    fn cache_accounts_for_what_it_holds() {
+        let mut seed = 0x9e3779b97f4a7c15u64;
+        let mut rnd = |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        for _ in 0..300 {
+            let limit = 1 + rnd(4000) as usize;
+            let keys = 1 + rnd(12);
+            let mut c = Cache::default();
+            let mut model: Vec<(Hash, usize)> = Vec::new();
+            for _ in 0..200 {
+                let mut h = [0u8; 16];
+                h[0] = rnd(keys) as u8;
+                let len = rnd(1200) as usize;
+                if rnd(3) == 0 {
+                    let got = c.get(&h, len, limit);
+                    let i = model.iter().position(|m| m.0 == h);
+                    assert_eq!(got.is_some(), i.is_some());
+                    if let (Some(d), Some(i)) = (got, i) {
+                        assert_eq!(d.len(), len);
+                        model[i].1 = len;
+                    }
+                } else {
+                    c.put(&h, Arc::new(vec![h[0]; len]), limit);
+                    match model.iter().position(|m| m.0 == h) {
+                        Some(i) => model[i].1 = len,
+                        None => model.push((h, len)),
+                    }
+                }
+                while model.iter().map(|m| m.1).sum::<usize>() > limit && !model.is_empty() {
+                    model.remove(0);
+                }
+                let sum: usize = c.map.values().map(|d| d.len()).sum();
+                assert_eq!(c.bytes, sum);
+                assert!(c.bytes <= limit);
+                assert_eq!(c.order.len(), c.map.len());
+                assert_eq!(c.order.iter().cloned().collect::<Vec<_>>(), model.iter().map(|m| m.0).collect::<Vec<_>>());
+                for (h, len) in &model {
+                    assert_eq!(c.map[h].len(), *len);
+                }
+            }
+        }
+    }
+
+    /// A padded get copies only a chunk someone else holds.
+    #[test]
+    fn cache_pads_in_place() {
+        let mut c = Cache::default();
+        let h = [1u8; 16];
+        c.put(&h, Arc::new(vec![7; 10]), 1000);
+        let p = Arc::as_ptr(&c.map[&h]);
+        let d = c.get(&h, 20, 1000).unwrap();
+        assert_eq!(Arc::as_ptr(&d), p);
+        assert_eq!((&d[..10], &d[10..], c.bytes), (&[7u8; 10][..], &[0u8; 10][..], 20));
+        let d2 = c.get(&h, 30, 1000).unwrap();
+        assert_ne!(Arc::as_ptr(&d2), Arc::as_ptr(&d));
+        assert_eq!((d.len(), d2.len(), c.bytes), (20, 30, 30));
+    }
 }
