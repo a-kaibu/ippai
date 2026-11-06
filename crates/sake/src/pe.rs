@@ -682,6 +682,7 @@ fn load_dll_file(dll: &str) -> Result<u32, String> {
         eprintln!("sake: loading {win} ({} bytes)", data.len());
     }
     let base = load(&data, &win, &mut resolve_import)?;
+    crate::vorbis_hook::patch(base, with(base, |m| m.size).unwrap_or(0));
     tls_module(base);
     PENDING.lock().unwrap().push(base);
     Ok(base)
@@ -724,6 +725,7 @@ pub fn load_exe(_cpu: &mut Cpu, host: &str, win: &str) -> Result<u32, String> {
     let size = with(base, |m| m.size).unwrap_or(0);
     kura::jit::exe_image(base, size);
     crate::movie::patch(base, size);
+    crate::vorbis_hook::patch(base, size);
     tls_module(base);
     Ok(base)
 }

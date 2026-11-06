@@ -50,6 +50,7 @@ pub mod k32;
 pub mod mem;
 pub mod misc;
 pub mod movie;
+pub mod vorbis_hook;
 pub mod obj;
 pub mod dshow;
 pub mod mf;

@@ -13,6 +13,7 @@ koji = { path = "../koji" }
 kura = { path = "../kura" }
 hlslc = { path = "../hlslc" }
 dxwgsl = { path = "../dxwgsl" }
+vorbis = { path = "../vorbis" }
 libc = "0.2"
 dlmalloc = "0.2"
 encoding_rs = "0.8"
