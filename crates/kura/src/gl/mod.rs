@@ -473,11 +473,6 @@ pub unsafe extern "C" fn vngl_swap(hwnd: u32, rect: *const i32) {
     gpu::present();
 }
 
-#[no_mangle]
-pub extern "C" fn vngl_flush() {
-    gpu::flush();
-}
-
 /// A GL function by name (null: not ours; the driver has a do-nothing one).
 #[no_mangle]
 pub unsafe extern "C" fn vngl_proc(name: *const c_char) -> *const c_void {

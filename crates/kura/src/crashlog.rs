@@ -221,12 +221,6 @@ fn thread_state(why: &str) {
     EV.put(l.bytes());
 }
 
-/// Thread `tid` ended (its process ended without it destroying its CPU).
-pub fn forget_tid(tid: i32) {
-    let mut g = THREADS.lock().unwrap_or_else(|e| e.into_inner());
-    g.retain(|x| x.tid != tid);
-}
-
 // ---------------------------------------------------------------------------------------------
 // guest threads
 

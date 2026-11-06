@@ -63,15 +63,6 @@ impl Fpu {
         let p = self.phys(0);
         if self.exact & (1 << p) != 0 { Some(self.ints[p]) } else { None }
     }
-    /// Keep the exact integer of ST(0) through sign changes and rounding.
-    pub fn map_exact(&mut self, f: impl Fn(i64) -> i64) {
-        let p = self.phys(0);
-        if self.exact & (1 << p) != 0 {
-            let v = f(self.ints[p]);
-            self.regs[p] = v as f64;
-            self.ints[p] = v;
-        }
-    }
     pub fn pop(&mut self) {
         let p = self.phys(0);
         self.empty |= 1 << p;

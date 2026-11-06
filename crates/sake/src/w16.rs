@@ -699,11 +699,6 @@ fn u16at(d: &[u8], o: usize) -> u16 {
     u16::from_le_bytes([d[o], d[o + 1]])
 }
 
-pub fn ne_u16(off: u32) -> u16 {
-    let t = task();
-    u16at(&t.file, (t.ne + off) as usize)
-}
-
 /// Far pointer of an entry (by ordinal) of the program.
 fn entry_point(d: &[u8], ne: usize, segs: &[u16], ord: u16) -> Option<u32> {
     let mut p = ne + u16at(d, ne + 4) as usize;

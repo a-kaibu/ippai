@@ -7,7 +7,7 @@
 //! stages 0-1, c[12] material diffuse (lighting without normals).
 //! pixel: x[0] alpha bits and alpha reference, c[0] texture factor, c[1..9] stage constants.
 
-use crate::d3d9::{location, uniforms, USAGE_COLOR, USAGE_NORMAL, USAGE_POSITION, USAGE_POSITIONT, USAGE_TEXCOORD};
+use crate::d3d9::{uniforms, USAGE_COLOR, USAGE_NORMAL, USAGE_POSITION, USAGE_POSITIONT, USAGE_TEXCOORD};
 use std::fmt::Write;
 
 pub const VS_CONSTS: u32 = 13;
@@ -251,8 +251,4 @@ fn alpha_ok(a: f32, func: u32) -> bool {
 ",
     );
     h
-}
-
-pub fn has_location(usage: u32, index: u32) -> bool {
-    location(usage, index).is_some()
 }

@@ -88,10 +88,6 @@ pub fn cur() -> &'static mut Thread {
     unsafe { &mut *p }
 }
 
-pub fn is_guest_thread() -> bool {
-    !CUR.with(|c| c.get()).is_null()
-}
-
 static NEXT_TID: AtomicU32 = AtomicU32::new(0x20);
 pub const PID: u32 = 0x10;
 pub static PEB: AtomicU32 = AtomicU32::new(0);

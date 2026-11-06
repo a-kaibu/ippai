@@ -19,8 +19,6 @@ pub const E_NOINTERFACE: u32 = 0x8000_4002;
 struct Obj {
     iface: &'static str,
     refs: u32,
-    /// other interfaces (name, its sub-object) QueryInterface hands out for this object
-    extra: Vec<(&'static str, u32)>,
 }
 
 static OBJS: Mutex<Option<HashMap<u32, Obj>>> = Mutex::new(None);
@@ -91,9 +89,7 @@ fn query_interface(c: &mut Ctx) -> u32 {
     let want = read_guid(riid);
     let found = objs(|m| {
         let o = m.get_mut(&this)?;
-        let hit = table(o.iface).2.iter().any(|n| iid(n) == Some(want)).then_some(this).or_else(|| {
-            o.extra.iter().find(|(n, _)| table(n).2.iter().any(|n| iid(n) == Some(want))).map(|e| e.1)
-        });
+        let hit = table(o.iface).2.iter().any(|n| iid(n) == Some(want)).then_some(this);
         if hit.is_some() {
             o.refs += 1;
         }
@@ -169,18 +165,8 @@ pub fn object(iface: &'static str, impls: &[(&str, Handler)], size: u32) -> u32 
     let vt = vtable(iface, impls);
     let o = mem::heap_alloc(size.max(mem::ps()), true);
     mem::wp(o, vt);
-    objs(|m| m.insert(o, Obj { iface, refs: 1, extra: Vec::new() }));
+    objs(|m| m.insert(o, Obj { iface, refs: 1 }));
     o
-}
-
-/// Let QueryInterface on `obj` also hand out `sub` (an object of `iface`, e.g. a second
-/// interface of the same COM object).
-pub fn add_interface(obj: u32, iface: &'static str, sub: u32) {
-    objs(|m| {
-        if let Some(o) = m.get_mut(&obj) {
-            o.extra.push((iface, sub));
-        }
-    });
 }
 
 /// AddRef from the host (an object handed out again).
