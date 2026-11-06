@@ -1,0 +1,43 @@
+D3DXCompileShader(ps_2_0) -> 0 code 1 table 1
+version 0xffff0200 size ok 1
+constants 6 version 0xffff0200
+tint: tint set 2 reg 8 count 1 class 1 type 3 1x4 elements 1 members 0 bytes 16
+wvp: wvp set 2 reg 0 count 4 class 3 type 3 4x4 elements 1 members 0 bytes 64
+wvp_r: wvp_r set 2 reg 4 count 4 class 2 type 3 4x4 elements 1 members 0 bytes 64
+lights: lights set 2 reg 10 count 4 class 5 type 0 1x1 elements 2 members 2 bytes 56
+lights[1].col: col set 2 reg 13 count 1 class 1 type 3 1x4 elements 1 members 0 bytes 16
+lights[1].dir: dir set 2 reg 12 count 1 class 1 type 3 1x3 elements 1 members 0 bytes 12
+tex: tex set 3 reg 1 count 1 class 4 type 12 1x1 elements 1 members 0 bytes 4
+sampler index 1
+missing 1
+SetVector tint
+  psF c8 = 1 2 3 4
+SetFloat scale
+  psF c9 = 0.5 0 0 0
+SetMatrix wvp
+  psF c0 = 1 5 9 13
+  psF c1 = 2 6 10 14
+  psF c2 = 3 7 11 15
+  psF c3 = 4 8 12 16
+SetMatrix wvp_r
+  psF c4 = 1 2 3 4
+  psF c5 = 5 6 7 8
+  psF c6 = 9 10 11 12
+  psF c7 = 13 14 15 16
+SetMatrixTranspose wvp
+  psF c0 = 1 2 3 4
+  psF c1 = 5 6 7 8
+  psF c2 = 9 10 11 12
+  psF c3 = 13 14 15 16
+SetFloatArray lights[1].col
+  psF c13 = 5 6 7 8
+D3DXGetShaderConstantTable -> 0
+constants 6
+D3DXCompileShader(vs_2_0) -> 0
+constants 1 version 0xfffe0200
+SetMatrix wvp
+  vsF c0 = 1 5 9 13
+  vsF c1 = 2 6 10 14
+  vsF c2 = 3 7 11 15
+  vsF c3 = 4 8 12 16
+error -> 1 errors 1

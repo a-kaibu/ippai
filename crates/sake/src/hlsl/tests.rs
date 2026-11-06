@@ -228,13 +228,163 @@ fn checksum() {
 
 #[test]
 fn print() {
-    let Ok(which) = std::env::var("HLSL_PRINT") else { return };
+    let Ok(which) = std::env::var("HLSL_PRINT") else {
+        return;
+    };
     let (src, vs, ps) = match which.as_str() {
         "game" => (GAME, "vs_main", "ps_main"),
         "misc" => (MISC, "vs", "ps"),
         "legacy" => (LEGACY, "vs", "ps"),
+        "sm3" | "sm3ps" | "skin" | "ps3" => {
+            let (e, t) = match which.as_str() {
+                "sm3" => ("vs", "vs_2_0"),
+                "sm3ps" => ("ps", "ps_2_0"),
+                "skin" => ("vs_skin", "vs_3_0"),
+                _ => ("ps3", "ps_3_0"),
+            };
+            eprintln!("{}", sm3_text(SM3, e, t));
+            let link = if t.starts_with("ps") { 0xffff } else { 0 };
+            eprintln!("{}", d3d9(SM3, e, t, link).0);
+            return;
+        }
         _ => (D3D11TEST, "vs_tri", "ps_quad"),
     };
     let (v, p) = pair(src, vs, ps, "5_0");
     eprintln!("{v}\n-----\n{p}");
+}
+
+// ---- shader model 2/3 ----
+
+/// D3D9 bytecode through kura's D3D9 translation; (WGSL, assembly)
+fn d3d9(src: &str, entry: &str, target: &str, link: u32) -> (String, kura::d3d9::shader::Shader) {
+    let code = compile(src, entry, target);
+    let words: Vec<u32> = code.chunks(4).map(|b| u32::from_le_bytes(b.try_into().unwrap())).collect();
+    let s = kura::d3d9::shader::Shader::parse(&words).unwrap_or_else(|| panic!("{entry}: kura cannot parse"));
+    let g = kura::d3d9::shader::Gen::new(&s);
+    let code = if s.pixel {
+        g.pixel(&kura::d3d9::shader::Options { link, vs_inputs: Vec::new(), alpha_test: None, fog: false })
+    } else {
+        let ins = s.inputs.iter().enumerate().map(|(k, i)| (i.0, k as u32, 0)).collect();
+        g.vertex(&kura::d3d9::shader::Options { link: 0, vs_inputs: ins, alpha_test: None, fog: false })
+    };
+    let m = match naga::front::wgsl::parse_str(&code) {
+        Ok(m) => m,
+        Err(e) => panic!("{entry}: {}\n{}", e.emit_to_string(&code), code),
+    };
+    if let Err(e) = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&m) {
+        panic!("{entry}: invalid: {e:?}\n{code}");
+    }
+    (code, s)
+}
+
+fn sm3_text(src: &str, entry: &str, target: &str) -> String {
+    let mut inc = |_: &str, _: bool| None;
+    super::assembly(src, &[], &mut inc, entry, target, 0).unwrap_or_else(|e| panic!("{entry}: {e}"))
+}
+
+const SM3: &str = r#"
+float4x4 WorldViewProj;
+float4 Diffuse : register(c8);
+float4x3 Bones[20];
+sampler2D Tex : register(s0);
+sampler2D Mask;
+samplerCUBE Env;
+float Alpha;
+bool UseMask;
+float4 Weights[4];
+int Count;
+struct VO { float4 pos : POSITION; float2 uv : TEXCOORD0; float4 col : COLOR0; float3 n : TEXCOORD1; };
+VO vs(float4 p : POSITION, float2 uv : TEXCOORD0, float4 c : COLOR0, float3 n : NORMAL) {
+    VO o;
+    o.pos = mul(p, WorldViewProj);
+    o.uv = uv;
+    o.col = saturate(c * Diffuse);
+    o.n = normalize(n);
+    return o;
+}
+VO vs_skin(float4 p : POSITION, float2 uv : TEXCOORD0, float4 idx : BLENDINDICES, float4 w : BLENDWEIGHT) {
+    VO o;
+    float3 pos = 0;
+    for (int k = 0; k < 2; k++) pos += mul(p, Bones[(int)idx[k]]) * w[k];
+    o.pos = mul(float4(pos, 1), WorldViewProj);
+    o.uv = uv;
+    o.col = Count > 1 ? Diffuse : 1;
+    o.n = 0;
+    return o;
+}
+float4 ps(VO i) : COLOR0 {
+    float4 c = tex2D(Tex, i.uv) * i.col;
+    if (UseMask) c.a *= tex2D(Mask, i.uv).r;
+    float4 acc = 0;
+    for (int k = 0; k < Count; k++) acc += Weights[k] * tex2D(Tex, i.uv + k * 0.01);
+    clip(c.a - 0.01);
+    c.rgb = lerp(c.rgb, dot(c.rgb, float3(0.299, 0.587, 0.114)), Alpha);
+    c += texCUBE(Env, i.n) * 0.1;
+    return c + acc * (Count > 2 ? 1 : 0) + frac(i.uv.x) + fmod(i.uv.y, 0.5) + step(0.5, i.uv.x);
+}
+float early(float x) {
+    if (x < 0) return -1;
+    while (x > 1) { x *= 0.5; if (x < 0.75) return x; }
+    return x * 2;
+}
+float4 ps3(VO i, float2 vpos : VPOS, float face : VFACE) : COLOR0 {
+    if (i.uv.x > 2) return 0;
+    int a = (int)(i.uv.x * 7);
+    int b = a / 3 + a % 3;
+    float s, co;
+    sincos(i.uv.y, s, co);
+    float4 c = float4(floor(i.uv.x), ceil(i.uv.y), round(vpos.x), sqrt(abs(s)));
+    c.x += b + (face > 0 ? 1 : 0) + early(co) + pow(abs(c.y), 2.2) + exp(c.z) + atan2(s, co);
+    c.y += tex2Dbias(Tex, float4(i.uv, 0, 1)).x + tex2Dproj(Tex, float4(i.uv, 0, 2)).y + tex2Dgrad(Tex, i.uv, ddx(i.uv), ddy(i.uv)).z;
+    c.z += any(c.xy > 1) ? 1 : (all(c.xy == 0) ? 2 : -1);
+    c.w = sign(c.x) + min(a, 2) + max(c.x, c.y) + (float)(a != 2 && b >= 1) + (float)!(a < 1 || b == 4);
+    return c;
+}
+"#;
+
+#[test]
+fn sm3() {
+    let (_, v) = d3d9(SM3, "vs", "vs_2_0", 0);
+    let (_, p) = d3d9(SM3, "ps", "ps_2_0", v.writes);
+    assert!(p.samplers.len() == 3);
+    let (_, v3) = d3d9(SM3, "vs", "vs_3_0", 0);
+    d3d9(SM3, "ps", "ps_3_0", v3.writes);
+    let (_, sk) = d3d9(SM3, "vs_skin", "vs_3_0", 0);
+    assert!(sk.uses_rel);
+    d3d9(SM3, "ps3", "ps_3_0", v3.writes);
+    // constants: Diffuse stays in c8; the rest packed around it
+    let t = sm3_text(SM3, "vs", "vs_2_0");
+    assert!(t.contains("c8"), "{t}");
+}
+
+#[test]
+fn sm3_ctab() {
+    let code = compile(SM3, "ps", "ps_2_0");
+    let w = |i: usize| u32::from_le_bytes(code[4 * i..4 * i + 4].try_into().unwrap());
+    assert_eq!(w(0), 0xffff_0200);
+    assert_eq!(w(1) & 0xffff, 0xfffe);
+    assert_eq!(&code[8..12], b"CTAB");
+    let t = &code[12..];
+    let r32 = |o: usize| u32::from_le_bytes(t[o..o + 4].try_into().unwrap());
+    let r16 = |o: usize| u16::from_le_bytes(t[o..o + 2].try_into().unwrap());
+    let name = |o: usize| String::from_utf8_lossy(t[o..].split(|&b| b == 0).next().unwrap()).into_owned();
+    let n = r32(12) as usize;
+    let info = r32(16) as usize;
+    let mut got = Vec::new();
+    for k in 0..n {
+        let e = info + 20 * k;
+        got.push((name(r32(e) as usize), r16(e + 4), r16(e + 8)));
+    }
+    got.sort();
+    let want: Vec<(String, u16, u16)> = vec![
+        ("Alpha".into(), 2, 1),
+        ("Count".into(), 2, 1),
+        ("Env".into(), 3, 1),
+        ("Mask".into(), 3, 1),
+        ("Tex".into(), 3, 1),
+        ("UseMask".into(), 2, 1),
+        ("Weights".into(), 2, 4),
+    ];
+    assert_eq!(got, want);
+    assert_eq!(name(r32(24) as usize), "ps_2_0");
 }

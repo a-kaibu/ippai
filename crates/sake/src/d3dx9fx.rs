@@ -411,7 +411,7 @@ fn parse(data: &[u8]) -> Result<(Vec<Param>, Vec<usize>, HashMap<usize, Vec<u8>>
 }
 
 /// The comment blocks of shader-style bytecode (after its version token): (fourcc, body).
-fn comments(code: &[u8]) -> Vec<([u8; 4], &[u8])> {
+pub(crate) fn comments(code: &[u8]) -> Vec<([u8; 4], &[u8])> {
     let w = |i: usize| code.get(4 * i..4 * i + 4).map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()));
     let mut out = Vec::new();
     let mut i = 1;

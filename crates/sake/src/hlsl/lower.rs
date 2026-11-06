@@ -286,11 +286,11 @@ fn writes(s: &Stmt, name: &str, outs: &dyn Fn(&str) -> bool) -> bool {
 }
 
 /// Constant folding of an elementwise operation on immediates.
-fn fold(op: u32, a: &[u32]) -> Option<u32> {
+fn fold(op: u32, a: &[u32], tru: u32) -> Option<u32> {
     use sm4::*;
     let f = |i: usize| flt(a[i]);
     let i = |k: usize| a[k] as i32;
-    let m = |b: bool| if b { TRUE } else { 0 };
+    let m = |b: bool| if b { tru } else { 0 };
     Some(match op {
         MOV => a[0],
         ADD => fbits(f(0) + f(1)),
@@ -370,6 +370,26 @@ impl<'a> L<'a> {
             inputs: Vec::new(),
             outputs: Vec::new(),
             fns: Vec::new(),
+        }
+    }
+
+    /// shader model 2/3 output: ints and bools are floats (true 1.0), no bit operations
+    fn sm3(&self) -> bool {
+        self.o.major < 4
+    }
+    fn tru(&self) -> u32 {
+        if self.sm3() {
+            ONE_F
+        } else {
+            TRUE
+        }
+    }
+    /// an int constant
+    fn ival(&self, v: i64) -> u32 {
+        if self.sm3() {
+            fbits(v as f32)
+        } else {
+            v as u32
         }
     }
 
@@ -523,8 +543,38 @@ impl<'a> L<'a> {
     /// An elementwise operation over comps (args the same length); modifiers per argument
     /// (1 negate, 2 absolute value).
     fn alu_m(&mut self, op: u32, b: B, args: &[(&[C], u8)]) -> Vec<C> {
+        let mut owned: Vec<(&[C], u8)> = args.to_vec();
+        let (mut op, mut b) = (op, b);
+        if self.sm3() {
+            // (integer operations on float values)
+            use sm4::*;
+            op = match op {
+                IADD => ADD,
+                IMAD => MAD,
+                IMUL | UMUL => MUL,
+                IEQ => EQ,
+                INE => NE,
+                ILT | ULT => LT,
+                IGE | UGE => GE,
+                IMAX | UMAX => MAX,
+                IMIN | UMIN => MIN,
+                ITOF | UTOF => MOV,
+                FTOI | FTOU => ROUND_Z,
+                // (of bools)
+                AND => MUL,
+                OR => MAX,
+                INEG => {
+                    owned[0].1 ^= 1;
+                    MOV
+                }
+                x => x,
+            };
+            b = B::Float;
+        }
+        let args = &owned[..];
         let n = args[0].0.len();
-        if args.iter().all(|a| a.0.iter().all(|c| matches!(c, C::I(_)))) {
+        let foldable = !self.sm3() || super::sm3::float_op(op);
+        if foldable && args.iter().all(|a| a.0.iter().all(|c| matches!(c, C::I(_)))) {
             let mut out = Vec::new();
             let mut ok = true;
             for k in 0..n {
@@ -536,7 +586,7 @@ impl<'a> L<'a> {
                         if a.1 & 1 != 0 { neg_imm(v, b) } else { v }
                     })
                     .collect();
-                match fold(op, &vals) {
+                match fold(op, &vals, self.tru()) {
                     Some(v) => out.push(C::I(v)),
                     None => {
                         ok = false;
@@ -589,6 +639,21 @@ impl<'a> L<'a> {
 
     /// An operation with two results (imul/udiv: hi/quotient first): which one to keep.
     fn alu2(&mut self, op: u32, args: &[&[C]], second: bool) -> Vec<C> {
+        use sm4::*;
+        if self.sm3() {
+            match op {
+                IMUL | UMUL => return self.alu(MUL, B::Float, args),
+                UDIV => {
+                    let q = self.alu(DIV, B::Float, args);
+                    let tq = self.alu(ROUND_Z, B::Float, &[&q]);
+                    if !second {
+                        return tq;
+                    }
+                    return self.alu_m(MAD, B::Float, &[(&tq, 1), (args[1], 0), (args[0], 0)]);
+                }
+                _ => {}
+            }
+        }
         let n = args[0].len();
         let mut out = Vec::new();
         for st in (0..n).step_by(4) {
@@ -616,6 +681,13 @@ impl<'a> L<'a> {
             return cs.to_vec();
         }
         let n = cs.len();
+        if self.sm3() {
+            return match (from, to) {
+                (B::Float, B::Int | B::Uint) => self.alu(ROUND_Z, to, &[cs]),
+                (_, B::Bool) => self.alu(NE, to, &[cs, &Self::imm(0, n)]),
+                _ => cs.to_vec(),
+            };
+        }
         match (from, to) {
             (B::Float, B::Int) => self.alu(FTOI, to, &[cs]),
             (B::Float, B::Uint) => self.alu(FTOU, to, &[cs]),
@@ -698,6 +770,14 @@ impl<'a> L<'a> {
     /// New storage for a variable of type `t`: temps, arrays in an indexable temp.
     fn storage(&mut self, t: &Ty) -> Vec<C> {
         match t {
+            Ty::Array(e, n) if self.sm3() => {
+                // (no indexable temps: elements in temps)
+                let mut out = Vec::new();
+                for _ in 0..*n {
+                    out.extend(self.storage(e));
+                }
+                out
+            }
             Ty::Array(..) => {
                 let mut u = Vec::new();
                 units(self.prog, t, &mut u);
@@ -780,14 +860,19 @@ impl<'a> L<'a> {
         match t {
             Ty::Scalar(_) | Ty::Vec(..) => {
                 let n = t.comps() as u32;
-                if at % 16 + 4 * n > 16 {
+                // (shader model 2/3: each in registers of its own)
+                if at % 16 + 4 * n > 16 || self.sm3() {
                     at = at.div_ceil(16) * 16;
                 }
                 for k in 0..n {
                     let o = at + 4 * k;
                     out.push(C::R(reg(o / 16), ((o % 16) / 4) as u8));
                 }
-                at + 4 * n
+                if self.sm3() {
+                    at + 16
+                } else {
+                    at + 4 * n
+                }
             }
             Ty::Mat(_, r, c) => {
                 at = at.div_ceil(16) * 16;
@@ -798,7 +883,8 @@ impl<'a> L<'a> {
                         out.push(C::R(reg(at / 16 + rr), cc as u8));
                     }
                 }
-                if row_major { at + (r - 1) * 16 + c * 4 } else { at + (c - 1) * 16 + r * 4 }
+                let end = if row_major { at + (r - 1) * 16 + c * 4 } else { at + (c - 1) * 16 + r * 4 };
+                if self.sm3() { end.div_ceil(16) * 16 } else { end }
             }
             Ty::Array(e, n) => {
                 at = at.div_ceil(16) * 16;
@@ -828,6 +914,29 @@ impl<'a> L<'a> {
     }
 
     fn rdef_var(&self, name: &str, t: &Ty, row_major: bool, off: u32, end: u32) -> sm4::CbVar {
+        let el = if let Ty::Array(e, _) = t { &**e } else { t };
+        let mut members = Vec::new();
+        if let Ty::Struct(i) = el {
+            let mut at = 0u32;
+            for f in &self.prog.structs[*i].fields {
+                let rm = f.row_major.unwrap_or(row_major);
+                let mut v = Vec::new();
+                let st = if self.sm3() { at.div_ceil(16) * 16 } else { at };
+                let e = self.cb_layout(&f.ty, rm, st, 0, &mut v);
+                let first = match v.first() {
+                    Some(C::R(Reg { f: RegF::Cb(_, r), .. }, c)) => r * 16 + *c as u32 * 4,
+                    _ => st,
+                };
+                members.push(self.rdef_var(&f.name, &f.ty, rm, first, e));
+                at = e;
+            }
+        }
+        let mut v = self.rdef_var0(name, t, row_major, off, end);
+        v.members = members;
+        v
+    }
+
+    fn rdef_var0(&self, name: &str, t: &Ty, row_major: bool, off: u32, end: u32) -> sm4::CbVar {
         let (el, elems) = match t {
             Ty::Array(e, n) => (&**e, *n as u16),
             t => (t, 0),
@@ -844,7 +953,19 @@ impl<'a> L<'a> {
             Ty::Mat(_, r, c) => (if row_major { 2 } else { 3 }, *r as u16, *c as u16),
             _ => (5, 1, 1),
         };
-        sm4::CbVar { name: name.into(), offset: off, size: end - off, class, ty: if class == 5 { 0 } else { ty }, rows, cols, elems, used: false }
+        sm4::CbVar {
+            name: name.into(),
+            offset: off,
+            size: end - off,
+            class,
+            ty: if class == 5 { 0 } else { ty },
+            rows,
+            cols,
+            elems,
+            used: false,
+            explicit: false,
+            members: Vec::new(),
+        }
     }
 
     fn add_cbuffer(&mut self, name: &str, reg: Option<u32>, vars: &[Var]) -> R<()> {
@@ -868,7 +989,9 @@ impl<'a> L<'a> {
                 Some(C::R(Reg { f: RegF::Cb(_, r), .. }, c)) => r * 16 + *c as u32 * 4,
                 _ => start,
             };
-            rvars.push(self.rdef_var(&v.name, v.ty(), rm, first, end));
+            let mut rv = self.rdef_var(&v.name, v.ty(), rm, first, end);
+            rv.explicit = matches!(v.reg, Some(('c', _)));
+            rvars.push(rv);
             self.cbvar.insert(v.name.clone(), (sym as usize, rvars.len() - 1));
             self.globals.insert(v.name.clone(), Val::num(v.ty().clone(), comps));
             at = at.max(end);
@@ -1014,12 +1137,16 @@ impl<'a> L<'a> {
             }
             return Ok(());
         }
-        let Some(sem) = sem else { return Err(format!("missing semantic on a shader {}", if output { "output" } else { "input" })) };
+        let Some(sem) = sem else {
+            return Err(format!("missing semantic on a shader {}", if output { "output" } else { "input" }));
+        };
         let (name0, mut index) = split_sem(sem);
         let up = name0.to_ascii_uppercase();
         let pixel = self.o.pixel;
         // shader model 2/3 names (backward compatibility)
         let (name, sysval) = match (up.as_str(), pixel, output) {
+            // (shader model 2/3 pixel shaders: POSITION is not VPOS, not readable)
+            ("POSITION", true, false) if self.sm3() => ("POSITION".to_string(), 0),
             ("SV_POSITION", _, _) => ("SV_Position".to_string(), 1),
             ("POSITION", false, true) | ("POSITION", true, false) | ("VPOS", true, false) | ("POSITIONT", false, true) => ("SV_Position".to_string(), 1),
             // (in the signature as D3D_NAME_TARGET / DEPTH; declared as plain outputs)
@@ -1035,6 +1162,11 @@ impl<'a> L<'a> {
         };
         let mut u = Vec::new();
         units(self.prog, t, &mut u);
+        if name == "POSITION" && pixel && !output && self.sm3() {
+            // (unreadable: zeros)
+            out.extend(std::iter::repeat_n(C::I(0), u.iter().sum()));
+            return Ok(());
+        }
         let mut bases = Vec::new();
         leaf_bases(self.prog, t, &mut bases);
         let b = bases.first().copied().unwrap_or(B::Float);
@@ -1123,6 +1255,24 @@ impl<'a> L<'a> {
         let mut ret_regs = Vec::new();
         if f.ret != Ty::Void {
             self.sig(&f.ret.clone(), f.ret_sem.as_deref(), Interp::Linear, true, &mut ret_regs)?;
+        }
+        if self.sm3() {
+            // (no ret before the end: returns as in an inlined function, outputs at the end)
+            let ret = if f.ret == Ty::Void { Vec::new() } else { self.storage(&f.ret) };
+            let early = body.iter().enumerate().any(|(i, s)| has_return(s) && (i + 1 < body.len() || !matches!(s, Stmt::Return(..))));
+            let flag = if early {
+                let t = self.tmp();
+                self.marks.push((t, self.code.len()));
+                self.assign(&[C::R(temp(t), 0)], &[C::I(0)]);
+                Some(t)
+            } else {
+                None
+            };
+            self.fns.push(FnCtx { ret: ret.clone(), ret_ty: f.ret.clone(), flag, loops: 0, entry: Some((outs, ret_regs.clone())) });
+            self.stmts(body)?;
+            self.assign(&ret_regs, &ret);
+            self.write_outputs()?;
+            return self.finish();
         }
         self.fns.push(FnCtx { ret: Vec::new(), ret_ty: f.ret.clone(), flag: None, loops: 0, entry: Some((outs, ret_regs)) });
         self.stmts(body)?;
@@ -1369,7 +1519,7 @@ impl<'a> L<'a> {
                 let first = if cont && step.is_some() {
                     let f = self.tmp();
                     self.marks.push((f, self.code.len()));
-                    self.assign(&[C::R(temp(f), 0)], &[C::I(TRUE)]);
+                    self.assign(&[C::R(temp(f), 0)], &[C::I(self.tru())]);
                     Some(f)
                 } else {
                     None
@@ -1412,7 +1562,7 @@ impl<'a> L<'a> {
                 let first = if cont {
                     let f = self.tmp();
                     self.marks.push((f, self.code.len()));
-                    self.assign(&[C::R(temp(f), 0)], &[C::I(TRUE)]);
+                    self.assign(&[C::R(temp(f), 0)], &[C::I(self.tru())]);
                     Some(f)
                 } else {
                     None
@@ -1492,7 +1642,7 @@ impl<'a> L<'a> {
                     }
                     None => None,
                 };
-                if self.fctx().entry.is_some() {
+                if self.fctx().entry.is_some() && !self.sm3() {
                     let (_, ret_regs) = self.fctx().entry.clone().unwrap();
                     if let Some(v) = val {
                         self.assign(&ret_regs, &v.c);
@@ -1506,7 +1656,7 @@ impl<'a> L<'a> {
                     self.assign(&r, &v.c);
                 }
                 if let Some(f) = self.fctx().flag {
-                    self.assign(&[C::R(temp(f), 0)], &[C::I(TRUE)]);
+                    self.assign(&[C::R(temp(f), 0)], &[C::I(self.tru())]);
                     if self.fctx().loops > 0 {
                         self.flow(BREAK);
                     }
@@ -1518,16 +1668,16 @@ impl<'a> L<'a> {
 
     // ---- expressions ----
 
-    fn lit_int(v: i64, unsigned: bool) -> Val {
-        Val::num(Ty::Scalar(if unsigned { B::Uint } else { B::Int }), vec![C::I(v as u32)])
+    fn lit_int(&self, v: i64, unsigned: bool) -> Val {
+        Val::num(Ty::Scalar(if unsigned { B::Uint } else { B::Int }), vec![C::I(self.ival(v))])
     }
 
     pub fn expr(&mut self, e: &Expr) -> R<Val> {
         use sm4::*;
         Ok(match e {
-            Expr::Int(v, u) => Self::lit_int(*v, *u),
+            Expr::Int(v, u) => self.lit_int(*v, *u),
             Expr::Float(f) => Val::num(Ty::Scalar(B::Float), vec![C::I(fbits(*f as f32))]),
-            Expr::Bool(b) => Val::num(Ty::Scalar(B::Bool), vec![C::I(if *b { TRUE } else { 0 })]),
+            Expr::Bool(b) => Val::num(Ty::Scalar(B::Bool), vec![C::I(if *b { self.tru() } else { 0 })]),
             Expr::Var(n, line) => self.lookup(n, *line)?,
             Expr::Comma(a, b) => {
                 self.expr(a)?;
@@ -1583,6 +1733,9 @@ impl<'a> L<'a> {
                     Val::num(v.ty, c)
                 }
                 Un::BitNot => {
+                    if self.sm3() {
+                        return Err("bitwise operators need shader model 4".into());
+                    }
                     let v = self.expr(a)?;
                     let c = self.alu(NOT, v.ty.base(), &[&v.c]);
                     Val::num(v.ty, c)
@@ -1590,9 +1743,10 @@ impl<'a> L<'a> {
                 Un::PreInc | Un::PreDec | Un::PostInc | Un::PostDec => {
                     let p = self.place(a)?;
                     let old = self.copy(&p.c);
-                    let one = if p.ty.base() == B::Float { fbits(1.0) } else { 1 };
+                    let fl = p.ty.base() == B::Float || self.sm3();
+                    let one = if fl { fbits(1.0) } else { 1 };
                     let dec = matches!(op, Un::PreDec | Un::PostDec);
-                    let c = if p.ty.base() == B::Float {
+                    let c = if fl {
                         self.alu_m(ADD, B::Float, &[(&old, 0), (&Self::imm(one, old.len()), dec as u8)])
                     } else {
                         let v = if dec { one.wrapping_neg() } else { one };
@@ -1707,7 +1861,9 @@ impl<'a> L<'a> {
     fn index_reg(&mut self, iv: Val, stride: u32) -> R<(u32, u8)> {
         let iv = self.cast(iv, &Ty::Scalar(B::Int))?;
         let mut c = iv.c[0];
-        if stride > 1 {
+        if stride > 1 && self.sm3() {
+            c = self.alu(sm4::MUL, B::Float, &[&[c], &[C::I(fbits(stride as f32))]])[0];
+        } else if stride > 1 {
             c = if stride.is_power_of_two() {
                 self.alu(sm4::ISHL, B::Int, &[&[c], &[C::I(stride.trailing_zeros())]])[0]
             } else {
@@ -1726,7 +1882,7 @@ impl<'a> L<'a> {
     /// index, or a select chain
     fn select(&mut self, elems: Vec<Vec<C>>, iv: Val, ty: Ty) -> R<Val> {
         if let Some(C::I(k)) = iv.c.first() {
-            let k = if iv.ty.base() == B::Float { flt(*k) as i64 } else { *k as i32 as i64 };
+            let k = if iv.ty.base() == B::Float || self.sm3() { flt(*k) as i64 } else { *k as i32 as i64 };
             let e = elems.get(k as usize).ok_or(format!("index {k} out of range"))?;
             return Ok(Val::num(ty, e.clone()));
         }
@@ -1737,7 +1893,8 @@ impl<'a> L<'a> {
             _ => 0,
         };
         let e0 = &elems[0];
-        if !e0.is_empty() && e0.iter().all(addressable) {
+        // (shader model 3 pixel shaders: no address register)
+        if !e0.is_empty() && e0.iter().all(addressable) && !(self.sm3() && self.o.pixel) {
             let stride = if elems.len() > 1 { regno(&elems[1][0]).wrapping_sub(regno(&e0[0])) } else { 1 };
             let regular = elems.iter().enumerate().all(|(k, e)| {
                 e.len() == e0.len()
@@ -1769,7 +1926,7 @@ impl<'a> L<'a> {
         let iv = self.cast(iv, &Ty::Scalar(B::Int))?;
         let mut cur = elems[0].clone();
         for (k, e) in elems.iter().enumerate().skip(1) {
-            let m = self.alu(sm4::IEQ, B::Bool, &[&iv.c, &[C::I(k as u32)]])[0];
+            let m = self.alu(sm4::IEQ, B::Bool, &[&iv.c, &[C::I(self.ival(k as i64))]])[0];
             let n = cur.len();
             cur = self.alu(sm4::MOVC, ty.base(), &[&vec![m; n], e, &cur]);
         }
@@ -1783,7 +1940,7 @@ impl<'a> L<'a> {
                 let mut elems: Vec<Vec<C>> = (0..*n as usize).map(|i| v.c[i * k..(i + 1) * k].to_vec()).collect();
                 let not_reg = !elems.is_empty()
                     && !elems[0].iter().all(|c| matches!(c, C::R(Reg { f: RegF::X(..) | RegF::Cb(..) | RegF::Icb(_), .. }, _)));
-                if not_reg && !matches!(iv.c.first(), Some(C::I(_))) && *n > 4 {
+                if not_reg && !matches!(iv.c.first(), Some(C::I(_))) && *n > 4 && !self.sm3() {
                     // (into an indexable temp first)
                     let st = self.storage(&v.ty);
                     self.assign(&st, &v.c);
@@ -1828,6 +1985,10 @@ impl<'a> L<'a> {
         if matches!(op, Bin::Shl | Bin::Shr | Bin::And | Bin::Or | Bin::Xor | Bin::Mod) && t.base() == B::Float && op != Bin::Mod {
             return Err("bitwise operator on floats".into());
         }
+        if matches!(op, Bin::Shl | Bin::Shr | Bin::And | Bin::Or | Bin::Xor) && self.sm3() {
+            return Err("bitwise operators need shader model 4".into());
+        }
+        let sm3 = self.sm3();
         let a = self.cast(x, &t)?;
         let b = self.cast(y, &t)?;
         let base = t.base();
@@ -1841,7 +2002,7 @@ impl<'a> L<'a> {
             Bin::Add => Val::num(t.clone(), self.alu(if f { ADD } else { IADD }, base, &[&a.c, &b.c])),
             Bin::Sub => Val::num(t.clone(), self.alu_m(if f { ADD } else { IADD }, base, &[(&a.c, 0), (&b.c, 1)])),
             Bin::Mul => {
-                if f {
+                if f || sm3 {
                     Val::num(t.clone(), self.alu(MUL, base, &[&a.c, &b.c]))
                 } else if a.c.iter().chain(&b.c).all(|c| matches!(c, C::I(_))) {
                     let c = a.c.iter().zip(&b.c).map(|(x, y)| if let (C::I(x), C::I(y)) = (x, y) { C::I(x.wrapping_mul(*y)) } else { *x }).collect();
@@ -1853,6 +2014,9 @@ impl<'a> L<'a> {
             Bin::Div => {
                 if f {
                     Val::num(t.clone(), self.alu(DIV, base, &[&a.c, &b.c]))
+                } else if sm3 {
+                    let q = self.alu(DIV, base, &[&a.c, &b.c]);
+                    Val::num(t.clone(), self.alu(ROUND_Z, base, &[&q]))
                 } else if u {
                     Val::num(t.clone(), self.alu2(UDIV, &[&a.c, &b.c], false))
                 } else {
@@ -1861,7 +2025,7 @@ impl<'a> L<'a> {
                 }
             }
             Bin::Mod => {
-                if f {
+                if f || sm3 {
                     // a - b * trunc(a / b)
                     let q = self.alu(DIV, base, &[&a.c, &b.c]);
                     let tq = self.alu(ROUND_Z, base, &[&q]);
@@ -2055,6 +2219,9 @@ impl<'a> L<'a> {
     }
     pub(super) fn x_samp_cmp(&mut self, s: u32) {
         self.samps[s as usize].cmp = true;
+    }
+    pub(super) fn x_sm3(&self) -> bool {
+        self.sm3()
     }
     pub(super) fn x_major(&self) -> u32 {
         self.o.major

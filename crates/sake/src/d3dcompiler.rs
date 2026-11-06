@@ -61,7 +61,7 @@ fn text_blob(s: &str) -> u32 {
 }
 
 /// D3D_SHADER_MACRO array (name, definition pairs, NULL-terminated)
-fn defines(p: u32) -> Vec<(String, String)> {
+pub(crate) fn defines(p: u32) -> Vec<(String, String)> {
     let mut v = Vec::new();
     if p == 0 {
         return v;
@@ -82,11 +82,11 @@ fn defines(p: u32) -> Vec<(String, String)> {
     v
 }
 
-fn read_file(name: &str) -> Option<Vec<u8>> {
+pub(crate) fn read_file(name: &str) -> Option<Vec<u8>> {
     crate::files::resolve(name).and_then(|h| kura::fs::read(h).ok())
 }
 
-fn dir_of(name: &str) -> String {
+pub(crate) fn dir_of(name: &str) -> String {
     match name.rfind(['\\', '/']) {
         Some(i) => name[..=i].to_string(),
         None => String::new(),
@@ -95,7 +95,7 @@ fn dir_of(name: &str) -> String {
 
 /// An include handler: the guest's ID3DInclude, or files beside `base` for
 /// D3D_COMPILE_STANDARD_FILE_INCLUDE (1).
-fn open_include(c: &mut Ctx, inc: u32, base: &str, name: &str, system: bool) -> Option<String> {
+pub(crate) fn open_include(c: &mut Ctx, inc: u32, base: &str, name: &str, system: bool) -> Option<String> {
     if inc == 0 {
         return None;
     }

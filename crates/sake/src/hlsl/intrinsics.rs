@@ -28,7 +28,11 @@ fn temp(t: u32) -> Reg {
 
 impl L<'_> {
     fn float(&mut self, v: Val) -> R<Val> {
-        let t = if v.ty.numeric() { v.ty.with_base(B::Float) } else { return Err("a number is needed".into()) };
+        let t = if v.ty.numeric() {
+            v.ty.with_base(B::Float)
+        } else {
+            return Err("a number is needed".into());
+        };
         self.x_cast(v, &t)
     }
 
@@ -507,7 +511,8 @@ pub fn call(l: &mut L, name: &str, args: &[Expr], line: u32) -> R<Val> {
                 let v = l.x_cast(v.clone(), &v.ty.with_base(B::Int))?;
                 (l.x_alu(ILT, B::Bool, &[&imm(0, n), &v.c]), l.x_alu(ILT, B::Bool, &[&v.c, &imm(0, n)]))
             };
-            let r = l.x_alu_m(IADD, B::Int, &[(&lt, 0), (&gt, 1)]);
+            // (true is -1, or 1.0 in shader model 2/3)
+            let r = if l.x_sm3() { l.x_alu_m(IADD, B::Int, &[(&gt, 0), (&lt, 1)]) } else { l.x_alu_m(IADD, B::Int, &[(&lt, 0), (&gt, 1)]) };
             Val::num(v.ty.with_base(B::Int), r)
         }
         "any" | "all" => {
@@ -561,7 +566,9 @@ pub fn call(l: &mut L, name: &str, args: &[Expr], line: u32) -> R<Val> {
         "transpose" => {
             need(1)?;
             let v = l.expr(&args[0])?;
-            let Ty::Mat(b, r, c) = v.ty else { return Err(format!("line {line}: transpose of a non-matrix")) };
+            let Ty::Mat(b, r, c) = v.ty else {
+                return Err(format!("line {line}: transpose of a non-matrix"));
+            };
             let mut out = Vec::new();
             for j in 0..c as usize {
                 for i in 0..r as usize {
@@ -575,6 +582,13 @@ pub fn call(l: &mut L, name: &str, args: &[Expr], line: u32) -> R<Val> {
             let v = l.expr(&args[0])?;
             let v = l.float(v)?;
             let n = v.c.len();
+            if l.x_sm3() && !v.c.iter().all(|c| matches!(c, C::I(_))) {
+                // (texkill: any component below 0)
+                let o = l.x_opnd(&v.c);
+                let i = l.x_emit(DISCARD, vec![], vec![o]);
+                i.ctl = n as u32;
+                return Ok(Val::num(Ty::Void, vec![]));
+            }
             let m = l.x_alu(LT, B::Bool, &[&v.c, &imm(0, n)]);
             for c in m {
                 if c != C::I(0) {

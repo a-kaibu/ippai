@@ -91,7 +91,8 @@ fn op_code(name: &str) -> Option<u32> {
 
 /// Instructions with no destination (all operands are sources).
 fn no_dest(op: u32) -> bool {
-    matches!(op, 0 | 25 | 26 | 27 | 28 | 29 | 30 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 65 | 96 | 0xfffd)
+    // (texkill's operand is a destination token)
+    matches!(op, 0 | 25 | 26 | 27 | 28 | 29 | 30 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 96 | 0xfffd)
 }
 
 const USAGES: &[&str] =
@@ -342,7 +343,9 @@ pub fn assemble(src: &str) -> Result<Vec<u32>, String> {
         let mut parts = mnem_l.split('_');
         let base = parts.next().unwrap_or("");
         let mods: Vec<&str> = parts.collect();
-        let Some(op) = op_code(base) else { return Err(format!("unknown instruction {mnem}")) };
+        let Some(op) = op_code(base) else {
+            return Err(format!("unknown instruction {mnem}"));
+        };
         let operands: Vec<String> = if rest.is_empty() { Vec::new() } else { split_args(rest) };
         let mut body: Vec<u32> = Vec::new();
         let mut ctl = 0u32;

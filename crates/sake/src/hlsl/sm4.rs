@@ -173,6 +173,7 @@ pub struct Samp {
 }
 
 /// A constant buffer variable (RDEF)
+#[derive(Clone)]
 pub struct CbVar {
     pub name: String,
     pub offset: u32,
@@ -185,6 +186,10 @@ pub struct CbVar {
     pub cols: u16,
     pub elems: u16,
     pub used: bool,
+    /// register(cN) given (shader model 2/3)
+    pub explicit: bool,
+    /// members of a struct (offsets from the struct's start)
+    pub members: Vec<CbVar>,
 }
 
 pub struct Cb {
@@ -241,7 +246,7 @@ fn temps_of(i: &Ins, f: &mut dyn FnMut(u32)) {
 
 /// Virtual temps to registers (live ranges over the linear code, extended over loops they cross);
 /// the number of registers.
-fn alloc(code: &mut [Ins], marks: &[(u32, usize)]) -> u32 {
+pub(super) fn alloc(code: &mut [Ins], marks: &[(u32, usize)]) -> u32 {
     use std::collections::HashMap;
     let mut iv: HashMap<u32, (usize, usize)> = HashMap::new();
     let note = |t: u32, at: usize, iv: &mut HashMap<u32, (usize, usize)>| {

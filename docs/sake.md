@@ -36,6 +36,11 @@ WebGPU D3D9 を使う。いまはページ (`play.html` / `game.html`) が動か
   プリプロセッサ、構文解析、関数はすべてインライン展開、SM4/5 の DXBC を出す) で D3DCompile、
   D3DPreprocess、署名ブロブ、D3DReflect。出力は kura の DXBC→WGSL がそのまま読む。
   テストは `cargo test -p sake hlsl` (WGSL まで通して naga で検証) と host/tests/hlsltest.c。
+  D3D9 向けの ps_2_0〜3_0 / vs_2_0〜3_0 も出せる (hlsl/sm3.rs: int と bool は float で扱い、
+  アセンブリを d3dx9asm で組み立てて CTAB を付ける。ビット演算・switch・continue・
+  テクスチャのオフセットはエラー)。d3dx9_24〜43 の D3DXCompileShader(FromFile)・
+  D3DXGetShaderConstantTable・ID3DXConstantTable (d3dx9shader.rs) がこれを使う。
+  テストは host/tests/d3dx9shader.c (定数の書き込みを偽のデバイスで表示)。
 - specs.txt にない DLL (d2d1、dwrite など) はプレフィックスの
   `C:\windows\system32` から Wine の PE ビルドを x86 として読む。Direct2D はこの Wine の d2d1 が
   D3D11 の上で描く。
