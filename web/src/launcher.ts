@@ -35,8 +35,6 @@ export interface GameEntry {
   mounts: string[];
   /** NAME=value */
   env: string[];
-  /** "x86_64": a 64-bit program */
-  arch?: string;
   meta?: GameMeta;
 }
 
@@ -79,7 +77,5 @@ export function applyGame(params: URLSearchParams, g: GameEntry): void {
   else params.delete("args");
   params.delete("env");
   for (const e of g.env) params.append("env", e);
-  if (g.arch) params.set("arch", g.arch);
-  else params.delete("arch");
   markPlayed(g.id);
 }

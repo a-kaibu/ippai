@@ -242,7 +242,7 @@ fn with<R>(f: impl FnOnce(&mut D3d) -> R) -> R {
 
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_d3d9_init(vtbls: *const u32, count: u32) -> u32 {
-    // (an array of pointers: 8 bytes each in the 64-bit build, all below 4GB)
+    // (an array of pointers: 8 bytes each for 64-bit programs, all below 4GB)
     let k = (device::ptr() / 4) as usize;
     let v: Vec<u32> = (0..count as usize).map(|i| *vtbls.add(i * k)).collect();
     let mut g = D3D.lock().unwrap_or_else(|e| e.into_inner());

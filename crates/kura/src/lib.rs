@@ -7,7 +7,6 @@
 //! * `display` – the screen and the page's input
 //! * `render` – the thread that draws (WebGPU)
 //! * `wrap` – the few libc entry points (`-Wl,--wrap=...`) kura takes over
-#![cfg_attr(target_arch = "wasm64", feature(simd_wasm64))]
 
 /// Whether environment variable `$name` is set, read once (std::env::var takes a lock and walks
 /// the environment on every call).

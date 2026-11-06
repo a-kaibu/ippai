@@ -334,8 +334,8 @@ unsafe fn wr(p: u32, i: usize, v: u32) {
     }
 }
 
-/// Size of the guest's pointers (and HWNDs): the 64-bit build runs 64-bit programs.
-pub(crate) static PTR_SIZE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(if cfg!(target_arch = "wasm64") { 8 } else { 4 });
+/// Size of the guest's pointers (and HWNDs).
+pub(crate) static PTR_SIZE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(4);
 
 /// Size of the guest's pointers (4, or 8 for 64-bit programs: set by the embedder).
 #[inline(always)]

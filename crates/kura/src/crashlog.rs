@@ -322,10 +322,6 @@ fn mem_end() -> u64 {
     {
         core::arch::wasm32::memory_size(0) as u64 * 65536
     }
-    #[cfg(target_arch = "wasm64")]
-    {
-        core::arch::wasm64::memory_size(0) as u64 * 65536
-    }
     #[cfg(not(target_family = "wasm"))]
     {
         0

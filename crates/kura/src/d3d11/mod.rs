@@ -316,7 +316,7 @@ unsafe fn rdf(p: u32, i: usize) -> f32 {
     f32::from_bits(rd(p, i))
 }
 
-/// Size of the guest's pointers (and HWNDs, SIZE_Ts): the 64-bit build runs 64-bit programs.
+/// Size of the guest's pointers (and HWNDs, SIZE_Ts): 8 for 64-bit programs.
 /// Guest addresses are below 4G either way.
 use crate::d3d9::device::ptr;
 
