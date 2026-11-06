@@ -3,7 +3,7 @@ name = "kura"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-description = "Host runtime for Wine's unix side on wasm32: in-process kernel shims and the x86 run loop"
+description = "Browser host for sake on wasm32: the x86 run loop, file system, display, audio and WebGPU rendering"
 
 [lib]
 crate-type = ["staticlib", "rlib"]

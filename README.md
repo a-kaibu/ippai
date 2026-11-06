@@ -7,7 +7,7 @@ Direct3D/OpenGL (WebGPU) はブラウザ側のホスト `crates/kura` です。
 
 Wine 11.20 の Unix 側を wasm にする Hangover 方式の経路は 2026-11-02 に廃止を決め、実装・設計
 メモ (docs/hangover.md など)・実験結果ごと [a-kaibu/vnvm-wine](https://github.com/a-kaibu/vnvm-wine)
-に移しました (履歴もそちらに全部あります)。sake と Wine の比較は [docs/engine-compare.md](docs/engine-compare.md)、
+に移しました (履歴もそちらに全部あります)。
 先行研究の調査は [docs/prior-work.md](docs/prior-work.md)、翻訳器は [docs/translator.md](docs/translator.md)、
 実行ごとの詳細ログ (クラッシュの原因調査用) は [docs/crashlog.md](docs/crashlog.md) にあります。
 
@@ -124,9 +124,8 @@ target/release/ippai pack ~/prefix32 prefix32   # sake の C:\ (フォント)
 target/release/ippai serve --foreground --web web/dist --listen 127.0.0.1:8080
 ```
 
-sake は今のところ、Wine で作った 32bit prefix (`prefix32`、作り方は vnvm-wine の
-`hangover/make-prefix32.py`) の `drive_c` をフォントと、sake にまだない DLL (d2d1、dwrite、
-d3dcompiler_47 など) のために使います。ビルド済みのものが共有フォルダの `vnvm-env/` にあります。
+sake の C:\ はフォントだけです (`tools/ci/sake-fonts.py`)。64 ビットの C/C++ ランタイムだけは
+まだ自前がなく、C:\ の `windows\system64` にある PE ビルドを読みます。
 Direct3D 10/11 のシェーダーは DXBC から WGSL へ直接翻訳します (`crates/dxwgsl`)。
 
 ## 制約

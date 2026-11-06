@@ -48,7 +48,7 @@ echo "shard ${SHARD:-0}/${SHARDS:-1}: $(wc -l < "$IDS") titles"
 
 run1() {  # ids file, port
   IPPAI_DIST=$DIST BASE_STORE=$BASE TRIALS=$WORK/trials STORES=$WORK/stores JIT_DIR=$WORK/jit \
-    DL_TRIES=${DL_TRIES:-3} DL_MAX_TIME=${DL_MAX_TIME:-3600} PREP_TIMEOUT=${PREP_TIMEOUT:-11000} SKIP_X64=0 ENGINE=sake CORPUS_QS='&env=SAKE_TRACE_LOAD%3D1' STORY=${STORY:-30} PREP_JOBS=${PREP_JOBS:-1} PORT=$2 \
+    DL_TRIES=${DL_TRIES:-3} DL_MAX_TIME=${DL_MAX_TIME:-3600} PREP_TIMEOUT=${PREP_TIMEOUT:-11000} SKIP_X64=0 CORPUS_QS='&env=SAKE_TRACE_LOAD%3D1' STORY=${STORY:-30} PREP_JOBS=${PREP_JOBS:-1} PORT=$2 \
     python3 "$ROOT/tests/corpus-run.py" "$TITLES" "$1" "$OUT"
 }
 # LANES (default 2) queues side by side, each with its own Chromium, server and downloads: the

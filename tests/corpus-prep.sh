@@ -59,10 +59,6 @@ if [ ! -d x ]; then
     # (msiextract can't do packages split over several cabinets: tests/msiunpack.py)
     if mkdir -p "$m.x" && { (cd "$m.x" && LC_ALL=C.UTF-8 msiextract "$OLDPWD/$m" >/dev/null 2>&1) ||
         { rm -rf "$m.x" && mkdir "$m.x" && python3 -I "$(dirname "$0")/msiunpack.py" "$m" "$m.x" >/dev/null 2>&1; }; }; then
-      # its registry entries, for the launcher helper to write (install paths the game reads);
-      # INSTALLDIR: where its biggest exe went
-      d=$(find "$m.x" -iname '*.exe' -printf '%s\t%h\n' | sort -rn | head -1 | cut -f2)
-      [ -n "$d" ] && python3 -I "$(dirname "$0")/msireg.py" "$m" "Z:\\vnvm\\game\\$(echo "${d#x.part/}" | tr / '\\')" >> x.part/_vnvm_reg.tsv
       rm -f "$m"
     else rm -rf "$m.x"
     fi
@@ -81,14 +77,6 @@ fi
 # share one address space, so the game can't get 0x400000 while the launcher holds it)
 g=$(find . -iname cs2.exe -printf '%P\n' | head -1)
 [ -n "$g" ] && e=$g
-# the launcher helper (host/tests/autoclick.c) goes in the tree root: corpus-run.py starts the
-# game through it so launcher dialogs get pressed and every dialog's text gets logged
-AC=${AUTOCLICK_EXE:-$HOME/.cache/vnvm/autoclick.exe}
-if [ ! -f "$AC" ] && command -v i686-w64-mingw32-gcc >/dev/null; then
-  mkdir -p "$(dirname "$AC")"
-  i686-w64-mingw32-gcc -O2 "$(dirname "$0")/../host/tests/autoclick.c" -o "$AC.tmp" -municode && mv "$AC.tmp" "$AC"
-fi
-[ -f "$AC" ] && cp "$AC" ./_vnvm_autoclick.exe
 if [ ! -d "$store" ]; then
   rm -rf "$store.part"
   cp -al "$BASE" "$store.part"

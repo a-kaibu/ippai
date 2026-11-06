@@ -1,5 +1,4 @@
-//! i386 user-mode CPU core for running Windows code under a wasm-built Wine
-//! (see vnvm-wine docs/hangover.md).
+//! x86 user-mode CPU core (interpreter and x86->wasm JIT) for running Windows code with sake.
 //!
 //! The guest address space is flat 32-bit; segment registers other than FS/GS
 //! (Windows' TEB) are ignored. The CPU never owns memory: everything goes
@@ -183,7 +182,7 @@ pub struct Cpu {
     pub fs_base: u32,
     pub gs_base: u32,
     /// [start, end): jumping here stops execution with [`Exit::Trap`]
-    /// (the syscall / unix-call dispatchers of the wasm-built Wine).
+    /// (sake's API trap addresses).
     pub trap_lo: u32,
     pub trap_hi: u32,
     /// Value returned by RDTSC (the embedder advances it).

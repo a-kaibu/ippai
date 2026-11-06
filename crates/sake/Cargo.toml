@@ -3,7 +3,7 @@ name = "sake"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-description = "From-scratch Win32 layer (HLE of kernel32/user32/gdi32/dsound...) for running 32-bit Windows games on koji in the browser, without Wine"
+description = "From-scratch Win32 layer (HLE of kernel32/user32/gdi32/dsound...) for running 32-bit Windows games on koji in the browser"
 
 [lib]
 crate-type = ["staticlib", "rlib"]
@@ -17,7 +17,6 @@ libc = "0.2"
 dlmalloc = "0.2"
 encoding_rs = "0.8"
 ab_glyph = "0.2"
-ab_glyph_rasterizer = "0.1"
 md5 = "0.8"
 ttf-parser = "0.25"
 sha2 = "0.10"

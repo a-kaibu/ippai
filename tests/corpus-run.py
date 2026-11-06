@@ -10,7 +10,7 @@ IDS_FILE "-": every title of TITLES.tsv.
 OUT_DIR/<id>/ gets result.json + PNGs; titles whose result.json exists are skipped.
 env: IPPAI_DIST (a release directory: vnvm, web/; default the checkout's
 target/release + web/dist), JIT_DIR, SKIP_X64=0 (run x64 exes too: sake runs them), PORT,
-TRIALS, STORES, BASE_STORE (corpus-prep.sh), ENGINE, PREP_JOBS, CORPUS_QS (appended to the page's query).
+TRIALS, STORES, BASE_STORE (corpus-prep.sh), PREP_JOBS, CORPUS_QS (appended to the page's query).
 """
 import csv, json, os, subprocess, sys, threading, queue, time, shutil, urllib.parse, socket
 
@@ -115,17 +115,9 @@ while True:
         wait_port(PORT)
         winexe = 'Z:\\vnvm\\game\\' + exe.replace('/', '\\')
         args = titles[tid].get('args', '')
-        engine = os.environ.get('ENGINE', '')  # ENGINE=sake: sake instead of Wine (no launcher helper: sake starts no 2nd process)
-        if not engine and os.environ.get('AUTOCLICK', '1') == '1' and '_vnvm_autoclick.exe\t' in open(f'{STORES}/{tid}/trees/g.tsv', errors='replace').read():
-            # through the launcher helper (host/tests/autoclick.c, packed by corpus-prep.sh)
-            args = ','.join([winexe] + [a for a in args.split(',') if a])
-            winexe = 'Z:\\vnvm\\game\\_vnvm_autoclick.exe'
         qs = 'autostart&headless&load&nosave&mount=/vnvm/game=g&run=' + urllib.parse.quote(winexe)
         if args: qs += '&args=' + urllib.parse.quote(args)
-        if engine: qs += '&engine=' + engine
         qs += os.environ.get('CORPUS_QS', '')  # (more page parameters, e.g. &env=NAME%3Dvalue)
-        if winexe.endswith('_vnvm_autoclick.exe'):
-            qs += '&env=IPPAI_ROOT_APP%3D0&env=IPPAI_HELPER_EXE%3D_vnvm_autoclick.exe'  # small slots for the helper: the game gets the low app area
         st, at, pre = steps.get(tid, ('key:Return wait:3', '', ''))
         e2 = dict(env)
         if at: e2['STORY_AT'] = at

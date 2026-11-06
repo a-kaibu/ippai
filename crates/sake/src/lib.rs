@@ -25,7 +25,6 @@ pub mod acm;
 pub mod api;
 pub mod d3d9;
 pub mod d3d11;
-pub mod unixlib;
 pub mod guest;
 pub mod crt;
 pub mod com;

@@ -2080,7 +2080,6 @@ name = "sake"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
- "ab_glyph_rasterizer",
  "dlmalloc",
  "dxwgsl",
  "encoding_rs",

@@ -175,7 +175,6 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     args: params.get("args") ?? "",
     mounts: params.getAll("mount").join(" "),
     env: params.getAll("env").join(" "),
-    engine: "sake",
     arch: "x86",
   });
   // the browser keeps a versioned sake.wasm with its compiled code (see ippai serve)

@@ -1,8 +1,6 @@
-# sake: Rust で一から書いた Win32 層 (旧名 vnwin)
+# sake: Rust で一から書いた Win32 層
 
-Wine を使わずに、ゲームの x86 コードを kura の JIT で動かし、Windows API を Rust
-(crates/sake、wasm) で実装する。Wine 経路 (2026-11-02 に [a-kaibu/vnvm-wine](https://github.com/a-kaibu/vnvm-wine) へ移した) と同じページ・同じ JIT・同じ
-WebGPU D3D9 を使う。いまはページ (`play.html` / `game.html`) が動かすのは sake だけ (`&engine=` は無視)。
+ゲームの x86 コードを koji の JIT で動かし、Windows API を Rust (crates/sake、wasm) で実装する。
 
 ## 仕組み
 
@@ -31,7 +29,7 @@ WebGPU D3D9 を使う。いまはページ (`play.html` / `game.html`) が動か
   ゲームはソフトウェア描画に回る。
 - D3D11 / DXGI (d3d11.rs): kura の WebGPU D3D11 (Wine 経路と同じ実装) に橋渡し。vtable の
   各メソッドはトラップで、`kura::d3d11::call` に引数を渡すだけ。メソッド表は
-  `host/gen-d3d11-stubs.py` が d3d11_methods.rs として生成する。
+  `host/gen-d3d11-methods.py` が d3d11_methods.rs として生成する。
 - D3D10 / 10.1 (d3d10.dll、d3d10_1.dll): D3D11 の同じオブジェクトの別の面 (kura の d3d11/d3d10.rs、
   インターフェース 95〜111)。メソッドは D3D11 のデバイス・コンテキスト・オブジェクトの呼び出しにして、違う
   構造体 (D3D10_BLEND_DESC、深度ステンシルビューの記述、整数のビューポート、バッファの記述、Map の結果)
@@ -54,28 +52,14 @@ WebGPU D3D9 を使う。いまはページ (`play.html` / `game.html`) が動か
   文字の配置は CPU で決めて、矩形・楕円・グリフを kura::d3d11::d2d の Item として集め、EndDraw/Flush
   で 1 回のインスタンス描画にする (グリフは R8 のアトラス、グラデーションは 256 texel のランプ
   テクスチャ)。確認は tests/gfx.mjs の d2dtest。
-- specs.txt にない DLL はプレフィックスの `C:\windows\system32` から Wine の PE ビルドを x86 として読む。
-- Wine の unix 側呼び出し (unixlib.rs): `__wine_unix_call_dispatcher` と
-  `NtQueryVirtualMemory(MemoryWineUnixFuncs)` を受けて、dwrite のフォント処理 (アウトライン、
-  ビットマップ、メトリクス) を ttf-parser と ab_glyph_rasterizer で返す。フォント一覧はレジストリの
-  Fonts キー、無い書体は Wine の Fonts\Replacements で MS ゴシック系に置き換える。
+- specs.txt にない DLL は C:\ の `windows\system32` にあれば x86 として読む。
+- フォント一覧はレジストリの Fonts キー、無い書体は Fonts\Replacements で MS ゴシック系に置き換える。
 - WH_CBT フック (HCBT_CREATEWND): MFC はこれでウィンドウを結び付けるので、無いと LiveMaker が
   ウィンドウを作れずに終わる。
 
-## A/B (Chromium、Reunion、KiriKiri)
-
-| | Wine | sake |
-|---|---|---|
-| タイトルまで (game.html) | 10.1 s | 8.0 s |
-| 本編の CPU | 0.26 コア | 0.24 コア |
-
-数字は 868d37e のときのもの。差が出た主な理由は、JIT が GUEST_LO (0x10000) の上 32 KB に
-触るコードをインタープリタに回していたこと (sake は 0x30000 より下を使わない) と、
-トラップを x86 スタブに置き換えたこと。
-
 ## V8 向けの調整 (2026-11-02、docs/v8-wasm-shape.md を受けて)
 
-- メモリは 65535 ページ固定 (`INITIAL_MEMORY=4294901760`、伸長なし)。wine.wasm と JIT のモジュールの
+- メモリは 65535 ページ固定 (`INITIAL_MEMORY=4294901760`、伸長なし)。JIT のモジュールの
   import (最小 = 最大 = `MEMORY_MIN_PAGES`) と同じでないと JIT のモジュールが link できない。
   Android ではメモリサイズの読み直しが関数ごとに 1 回になる。4GB を最初からコミットするので、
   実機で確保できるかは最後の確認項目 (docs/translator.md)。
