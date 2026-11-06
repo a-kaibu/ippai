@@ -27,7 +27,11 @@ if [ ! -d x ]; then
   rm -rf x.part; mkdir x.part
   case "${f,,}" in
     # (a file or two failing, e.g. a damaged Thumbs.db, still leaves a game)
-    *.zip|*.lzh) (cd x.part && LC_ALL=C.UTF-8 unar -q -e cp932 -o . ../$f >/dev/null 2>&1 || [ -n "$(ls)" ]) ;;
+    # (unar leaves some -lh5- members of PrismRhythm_trial_Web.lzh empty; 7z reads them, and
+    # Shift-JIS names are converted below)
+    *.lzh) (cd x.part && LC_ALL=C.UTF-8 7z x -y ../$f >/dev/null 2>&1 ||
+             LC_ALL=C.UTF-8 unar -q -f -e cp932 -o . ../$f >/dev/null 2>&1 || [ -n "$(ls)" ]) ;;
+    *.zip) (cd x.part && LC_ALL=C.UTF-8 unar -q -e cp932 -o . ../$f >/dev/null 2>&1 || [ -n "$(ls)" ]) ;;
     *.rar|*.7z) (cd x.part && LC_ALL=C.UTF-8 unar -q -o . ../$f >/dev/null 2>&1 || [ -n "$(ls)" ]) ;;
     *.exe)
       # InstallShield setup with its files in the exe, self-extracting archive or Inno Setup installer
