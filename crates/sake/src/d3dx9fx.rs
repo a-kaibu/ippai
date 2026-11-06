@@ -2,8 +2,9 @@
 //! parameters, techniques and passes parsed from the binary; a pass sets its render, texture
 //! stage and sampler states, textures and shaders on the device, and the shaders' constants
 //! from the parameters of the same name (their constant tables). Effect source text is compiled
-//! to this binary first (hlslc::compile_effect, in d3dx9.rs). Not done: preshaders and FXLC
-//! expressions (logged), parameter blocks.
+//! to this binary first (hlslc::compile_effect, in d3dx9.rs). Shader preshaders and the FXLC
+//! expressions of states are evaluated on the CPU. Not done: array selectors (logged), parameter
+//! blocks.
 
 #![allow(non_snake_case)]
 
@@ -61,7 +62,9 @@ enum Kind {
     Const,
     /// another parameter's value, by name
     Ref(usize),
-    /// FXLC expressions and array selectors: not evaluated
+    /// an FXLC expression of parameters (evaluated as preshaders are)
+    Expr(std::sync::Arc<Pres>),
+    /// array selectors: not evaluated
     Unsupported,
 }
 
@@ -377,6 +380,13 @@ fn parse(data: &[u8]) -> Result<(Vec<Param>, Vec<usize>, HashMap<usize, Vec<u8>>
                 }
                 Kind::Const
             }
+            2 => match pres_body(&b) {
+                Some(pr) => Kind::Expr(std::sync::Arc::new(pr)),
+                None => {
+                    unsupported += 1;
+                    Kind::Unsupported
+                }
+            },
             1 => {
                 let name = String::from_utf8_lossy(b.split(|&x| x == 0).next().unwrap_or(&[])).into_owned();
                 match top.iter().find(|&&i| p.params[i].name == name) {
@@ -498,6 +508,12 @@ fn pres_inputs(op: u32) -> Option<usize> {
 
 fn pres(code: &[u8]) -> Option<Pres> {
     let (_, body) = comments(code).into_iter().find(|(f, _)| f == b"PRES")?;
+    pres_body(body)
+}
+
+/// A preshader's own bytecode (a PRES comment's body, or an effect's FXLC state expression:
+/// version token, then CTAB, CLIT, FXLC comments).
+fn pres_body(body: &[u8]) -> Option<Pres> {
     let mut inputs = Vec::new();
     let mut lits = Vec::new();
     let mut ins = Vec::new();
@@ -669,12 +685,30 @@ const TSS: [u32; 18] = [1, 26, 2, 3, 4, 27, 5, 6, 28, 7, 8, 9, 10, 11, 22, 23, 2
 impl Effect {
     /// What state `s` does, for sampler stage `stage` when it is a sampler's state.
     fn state_calls(&self, s: &State, stage: u32, out: &mut Vec<Call>) {
-        let vp = match s.kind {
-            Kind::Const => s.param,
-            Kind::Ref(i) => i,
+        let (vp, expr) = match &s.kind {
+            Kind::Const => (s.param, None),
+            Kind::Ref(i) => (*i, None),
+            // (the expression's results, as the state parameter's type)
+            Kind::Expr(pr) => (s.param, Some(self.run_pres(pr).into_iter().map(|v| v.unwrap_or(0.0)).collect::<Vec<f64>>())),
             Kind::Unsupported => return,
         };
-        let first = self.u32_at(vp, 0);
+        let ty = self.params[vp].ty;
+        let u32_at = |k: usize| match &expr {
+            None => self.u32_at(vp, k),
+            Some(v) => {
+                let x = v.get(k).copied().unwrap_or(0.0);
+                match ty {
+                    PT_FLOAT => (x as f32).to_bits(),
+                    PT_BOOL => (x != 0.0) as u32,
+                    _ => x as i32 as u32,
+                }
+            }
+        };
+        let f32_at = |k: usize| match &expr {
+            None => self.f32_at(vp, k),
+            Some(v) => v.get(k).copied().unwrap_or(0.0) as f32,
+        };
+        let first = u32_at(0);
         let obj = |p: usize| self.params[p].object.and_then(|id| self.objects.get(id as usize)).map_or(0, |o| o.created);
         match s.op {
             0..=102 => out.push(Call::Dev(57, vec![RS[s.op as usize], first])),
@@ -686,9 +720,9 @@ impl Effect {
                 let vs = s.op < 156;
                 let n = self.n_values(vp);
                 match s.op - if vs { 148 } else { 156 } {
-                    1 => out.push(Call::ConstB(vs, s.index, (0..n).map(|k| self.u32_at(vp, k)).collect())),
-                    2 => out.push(Call::ConstI(vs, s.index, (0..n).map(|k| self.u32_at(vp, k)).collect())),
-                    _ => out.push(Call::ConstF(vs, s.index, (0..n).map(|k| self.f32_at(vp, k)).collect())),
+                    1 => out.push(Call::ConstB(vs, s.index, (0..n).map(u32_at).collect())),
+                    2 => out.push(Call::ConstI(vs, s.index, (0..n).map(u32_at).collect())),
+                    _ => out.push(Call::ConstF(vs, s.index, (0..n).map(f32_at).collect())),
                 }
             }
             164 => out.push(Call::Dev(65, vec![if stage != u32::MAX { stage } else { s.index }, obj(vp)])),
@@ -733,6 +767,26 @@ impl Effect {
     /// Runs shader `sh`'s preshader: the float constants it computes.
     fn pres_calls(&self, sh: u32, vs: bool, out: &mut Vec<Call>) {
         let Some(pr) = self.pres.get(&sh) else { return };
+        let outv = self.run_pres(pr);
+        // the registers written, in runs
+        let regs = outv.len().div_ceil(4);
+        let mut r = 0;
+        while r < regs {
+            if (0..4).all(|j| outv.get(4 * r + j).copied().flatten().is_none()) {
+                r += 1;
+                continue;
+            }
+            let start = r;
+            let mut f = Vec::new();
+            while r < regs && (0..4).any(|j| outv.get(4 * r + j).copied().flatten().is_some()) {
+                f.extend((0..4).map(|j| outv.get(4 * r + j).copied().flatten().unwrap_or(0.0) as f32));
+                r += 1;
+            }
+            out.push(Call::ConstF(vs, start as u32, f));
+        }
+    }
+    /// Runs a preshader on the parameters' values: the output scalars it wrote.
+    fn run_pres(&self, pr: &Pres) -> Vec<Option<f64>> {
         let mut input: Vec<f64> = Vec::new();
         for k in &pr.inputs {
             let Some(p) = self.by_name(None, &k.name) else { continue };
@@ -830,22 +884,7 @@ impl Effect {
                 }
             }
         }
-        // the registers written, in runs
-        let regs = outv.len().div_ceil(4);
-        let mut r = 0;
-        while r < regs {
-            if (0..4).all(|j| outv.get(4 * r + j).copied().flatten().is_none()) {
-                r += 1;
-                continue;
-            }
-            let start = r;
-            let mut f = Vec::new();
-            while r < regs && (0..4).any(|j| outv.get(4 * r + j).copied().flatten().is_some()) {
-                f.extend((0..4).map(|j| outv.get(4 * r + j).copied().flatten().unwrap_or(0.0) as f32));
-                r += 1;
-            }
-            out.push(Call::ConstF(vs, start as u32, f));
-        }
+        outv
     }
     /// The shader constants of shader object `sh` from the parameters of the same names.
     fn const_calls(&self, sh: u32, vs: bool, out: &mut Vec<Call>) {
@@ -1519,7 +1558,7 @@ technique T <string Desc = "main";> {
         let (params, top, values, techs, objects) = super::parse(&fx).unwrap();
         let st = |s: &super::State| {
             let v = &values[&s.param];
-            let k = match s.kind { super::Kind::Const => "c".to_string(), super::Kind::Ref(i) => params[i].name.clone(), super::Kind::Unsupported => "?".into() };
+            let k = match s.kind { super::Kind::Const => "c".to_string(), super::Kind::Ref(i) => params[i].name.clone(), super::Kind::Expr(_) => "expr".into(), super::Kind::Unsupported => "?".into() };
             (s.op, s.index, if let Some(o) = params[s.param].object { 100 + o } else { u32::from_le_bytes(v[..4].try_into().unwrap()) }, k)
         };
         let sts = |v: &[super::State]| v.iter().map(st).map(|(o, i, v, k)| format!("{o}.{i}={v}{k}")).collect::<Vec<_>>().join(" ");
