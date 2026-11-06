@@ -1,0 +1,10 @@
+# DLLs whose tests need a GPU: run.py --browser runs them in headless Chromium (run-browser.mjs),
+# the node run leaves them out
+ddraw
+d3d8
+d3d9
+d3d10
+d3d11
+dxgi
+d2d1
+opengl32

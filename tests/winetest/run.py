@@ -69,7 +69,10 @@ def run_one(sake, exe, test, timeout, fonts):
         timed_out = True
     finally:
         shutil.rmtree(c, ignore_errors=True)
-    secs = time.time() - t0
+    return parse(test, out, timed_out, time.time() - t0)
+
+
+def parse(test, out, timed_out, secs):
     lines = out.splitlines()
     executed = failures = 0
     summary = False
@@ -109,12 +112,16 @@ def main():
     ap.add_argument("--timeout", type=int, default=120)
     ap.add_argument("--fonts", default=os.environ.get("WINETEST_FONTS"))
     ap.add_argument("--shard", default="0/1", help="i/n: every n-th test from the i-th (CI matrix)")
+    ap.add_argument("--browser", action="store_true", help="run in headless Chromium (run-browser.mjs): the GPU dlls of browser.txt")
     ap.add_argument("only", nargs="*")
     a = ap.parse_args()
     sake = os.path.abspath(os.environ.get("SAKE", os.path.join(ROOT, "target/sake-out/sake.js")))
     w = os.path.abspath(os.environ.get("WINETEST", os.path.join(ROOT, "target/winetest")))
     bindir = os.path.join(w, "bin", a.arch)
     dlls = [l.split()[0] for l in open(os.path.join(HERE, "dlls.txt")) if l.strip() and not l.startswith("#")]
+    gpu = [l.split()[0] for l in open(os.path.join(HERE, "browser.txt")) if l.strip() and not l.startswith("#")]
+    dlls = [d for d in dlls if (d in gpu) == a.browser]
+    suffix = "-browser" if a.browser else ""
     sel = collections.defaultdict(set)
     for o in a.only:
         d, _, t = o.partition(":")
@@ -141,15 +148,28 @@ def main():
     jobs = jobs[si::sn]
 
     results = {}
+    if a.browser:
+        out = tempfile.mkdtemp(prefix="winetest-browser-")
+        jf = os.path.join(out, "jobs")
+        with open(jf, "w") as f:
+            f.writelines(f"{d} {os.path.basename(exe)} {t}\n" for d, exe, t in jobs)
+        subprocess.run(["node", os.path.join(HERE, "run-browser.mjs"), bindir, jf, out, str(a.timeout), str(a.j)], check=True)
+        for d, exe, t in jobs:
+            p = os.path.join(out, f"{d}:{t}.txt")
+            text = open(p, errors="replace").read() if os.path.exists(p) else "timeout\n"
+            r = parse(t, text, text.rstrip().endswith("timeout"), 0)
+            results[f"{d}:{t}"] = r
+            print(f"{r['status']:7} {d}:{t} {r['executed']} tests, {r['failures']} failures", flush=True)
+        shutil.rmtree(out, ignore_errors=True)
     with concurrent.futures.ThreadPoolExecutor(a.j) as pool:
-        futs = {pool.submit(run_one, sake, exe, t, a.timeout, a.fonts): (d, t) for d, exe, t in jobs}
+        futs = {pool.submit(run_one, sake, exe, t, a.timeout, a.fonts): (d, t) for d, exe, t in ([] if a.browser else jobs)}
         for f in concurrent.futures.as_completed(futs):
             d, t = futs[f]
             r = f.result()
             results[f"{d}:{t}"] = r
             print(f"{r['status']:7} {d}:{t} {r['executed']} tests, {r['failures']} failures ({r['secs']:.0f}s)", flush=True)
 
-    exp_path = os.path.join(HERE, f"expected-{a.arch}.tsv")
+    exp_path = os.path.join(HERE, f"expected-{a.arch}{suffix}.tsv")
     expected = read_tsv(exp_path)
     worse, better = [], []
     for k in sorted(results):
@@ -174,8 +194,8 @@ def main():
                 s, n, e = rows[k]
                 f.write(f"{k}\t{s}\t{n}\t{e}\n")
 
-    tsv(os.path.join(w, f"results-{a.arch}.tsv"))
-    report(os.path.join(w, f"report-{a.arch}.md"), a.arch, results, worse, better)
+    tsv(os.path.join(w, f"results-{a.arch}{suffix}.tsv"))
+    report(os.path.join(w, f"report-{a.arch}{suffix}.md"), a.arch, results, worse, better)
     if a.update:
         tsv(exp_path)
     counts = collections.Counter(r["status"] for r in results.values())

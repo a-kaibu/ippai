@@ -23,6 +23,13 @@ Wine (it has no `wine_server_call`), so the tests expect Windows' results everyw
 - `target/winetest/report-<arch>.md` has per-dll totals, the unimplemented functions the
   tests called (by how many tests), and the first failure messages of each test.
 
+- The dlls in `tests/winetest/browser.txt` (ddraw, d3d8/9/10/11, dxgi, d2d1, opengl32) need a GPU,
+  which the node build lacks: `run.py --browser` runs them in headless Chromium (WebGPU)
+  through play.html (`tests/winetest/run-browser.mjs`: the programs packed into a scratch
+  store, served by `ippai serve`, one browser context per test, the program's console lines
+  parsed as for node). Results in `expected-i386-browser.tsv`; CI job `winetest-gpu`. Needs
+  the web build with sake in it (`web/dist`), `target/release/ippai` and Playwright.
+
 Two switches make the tests more useful on sake: `SAKE_PROC_STUBS=1` makes GetProcAddress find
 functions sake knows from the DLL specs but does not implement (their stubs return 0), as
 Windows would, so a test fails on them instead of crashing on a NULL call (games keep the
@@ -34,6 +41,7 @@ tests/winetest/build.sh                      # or: build.sh kernel32 gdi32
 SAKE=target/sake-out/sake.js tests/winetest/run.py -j 4           # all
 tests/winetest/run.py gdi32:bitmap kernel32  # a test, a dll
 tests/winetest/run.py --update               # record the new results
+PLAYWRIGHT=.../playwright/index.js WEB=web/dist FONTS=<Fonts dir> tests/winetest/run.py --browser -j 3
 ```
 
 ## Differential GDI test (tests/diff)
