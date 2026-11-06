@@ -131,8 +131,14 @@ pub fn dll_key(dll: &str) -> String {
     if k.starts_with("api-ms-win-crt-") {
         return "ucrtbase".into();
     }
-    if k.starts_with("api-ms-win-core-") {
+    if k.starts_with("api-ms-win-core-") || k.starts_with("api-ms-win-appmodel-") || k.starts_with("ext-ms-win-kernel32-") {
         return "kernelbase".into();
+    }
+    // (the others by the DLL that implements them)
+    for (pre, dll) in [("ntuser-", "user32"), ("rtcore-ntuser-", "user32"), ("gdi-", "gdi32"), ("security-", "advapi32"), ("shell-", "shell32")] {
+        if k.strip_prefix("api-ms-win-").or_else(|| k.strip_prefix("ext-ms-win-")).is_some_and(|r| r.starts_with(pre)) {
+            return dll.into();
+        }
     }
     k.to_string()
 }

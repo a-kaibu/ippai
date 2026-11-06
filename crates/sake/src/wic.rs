@@ -315,7 +315,7 @@ fn s_init_istream(c: &mut Ctx) -> u32 {
 }
 
 /// The rest of a stream's bytes, through its Read (whoever made it).
-fn read_stream(c: &mut Ctx, stm: u32) -> Vec<u8> {
+pub(crate) fn read_stream(c: &mut Ctx, stm: u32) -> Vec<u8> {
     if let Some(v) = stream(stm, |d, pos| d[(*pos as usize).min(d.len())..].to_vec()) {
         return v;
     }

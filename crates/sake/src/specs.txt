@@ -32495,3 +32495,9 @@ pdh PdhCollectQueryData stdcall 4 -
 pdh PdhGetFormattedCounterValue stdcall 16 -
 pdh PdhRemoveCounter stdcall 4 -
 pdh PdhCloseQuery stdcall 4 -
+avrt AvSetMmThreadCharacteristicsA stdcall 8 -
+avrt AvSetMmThreadCharacteristicsW stdcall 8 -
+avrt AvRevertMmThreadCharacteristics stdcall 4 -
+avrt AvSetMmThreadPriority stdcall 8 -
+avrt AvSetMmMaxThreadCharacteristicsA stdcall 12 -
+avrt AvSetMmMaxThreadCharacteristicsW stdcall 12 -

@@ -1028,6 +1028,14 @@ fn add_font(data: Vec<u8>) -> u32 {
             }
         }
     }
+    // the Japanese family name first: what a Japanese Windows enumerates (Siglus looks for it)
+    if let Ok(face) = ttf_parser::Face::parse(&data, 0) {
+        let ja = face.names().into_iter().find(|n| n.name_id == 1 && n.platform_id == ttf_parser::PlatformId::Windows && n.language_id == 0x411);
+        if let Some(j) = ja.and_then(|n| n.to_string()).filter(|j| !j.is_empty()) {
+            names.retain(|n| n != &j);
+            names.insert(0, j);
+        }
+    }
     let Ok(f) = FontVec::try_from_vec(data) else { return 0 };
     if names.is_empty() {
         return 0;
@@ -2205,6 +2213,13 @@ fn CreateDIBSection(c: &mut Ctx) -> u32 {
         dib: true,
         own,
     }))
+}
+
+/// A 32-bit top-down DIB section holding `px` (BGRA rows): GDI+'s HBITMAP of a bitmap.
+pub(crate) fn dib_section_bgra(w: u32, h: u32, px: &[u8]) -> u32 {
+    let Some(bits) = mem::alloc((w * h * 4).max(4)) else { return 0 };
+    mem::write(bits, &px[..(w * h * 4) as usize]);
+    add(G::Bitmap(Bitmap { w: w as i32, h: h as i32, bpp: 32, bits, stride: w * 4, bottom_up: false, pal: Vec::new(), r565: false, dib: true, own: 2 }))
 }
 
 /// Copies between a bitmap and a DIB in guest memory: rows [start, start+lines) counted
@@ -3515,12 +3530,16 @@ fn GetOutlineTextMetricsW(c: &mut Ctx) -> u32 {
     outline_metrics(c, true)
 }
 fn add_font_file(name: &str) -> u32 {
-    let Some(data) = crate::files::resolve(name).and_then(|h| kura::fs::read(h).ok()) else { return 0 };
-    if data.starts_with(b"ttcf") {
+    let n = match crate::files::resolve(name).and_then(|h| kura::fs::read(h).ok()) {
         // a collection: each face
-        return (0..).map_while(|i| ttc_face(&data, i)).map(add_font).sum();
+        Some(data) if data.starts_with(b"ttcf") => (0..).map_while(|i| ttc_face(&data, i)).map(add_font).sum(),
+        Some(data) => add_font(data),
+        None => 0,
+    };
+    if crate::env_on!("SAKE_TRACE_FONT") {
+        eprintln!("sake: AddFontResource({name}) = {n}");
     }
-    add_font(data)
+    n
 }
 fn AddFontResourceA(c: &mut Ctx) -> u32 {
     add_font_file(&crate::k32::arg_str(c.a(0), false))
@@ -3625,8 +3644,10 @@ fn enum_fonts(c: &mut Ctx, filter: Option<String>, proc_: u32, lp: u32, wide: bo
             names.push(format!("@{}", f.names[0]));
         }
     }
+    // (a font the game added under any of its names: Siglus asks for the Japanese one)
     for (n, _) in ADDED.lock().unwrap().iter() {
-        names.push(n[0].clone());
+        let hit = filter.as_ref().and_then(|fl| n.iter().find(|x| x.eq_ignore_ascii_case(fl)));
+        names.push(hit.unwrap_or(&n[0]).clone());
     }
     for name in names {
         if let Some(fl) = &filter {

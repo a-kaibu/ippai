@@ -3291,11 +3291,21 @@ fn file_attrs(name: &str) -> u32 {
     }
     match files::resolve(name).and_then(|h| kura::fs::metadata(h).ok()) {
         Some(m) => files::attrs(&m),
+        // (system32's DLLs that we implement are there: Siglus checks that kernel32.dll is,
+        // then its language)
+        None if is_system_dll_path(name) => 0x20,
         None => {
             last_error(2);
             0xffff_ffff
         }
     }
+}
+/// C:\windows\system32\<a DLL we implement>
+fn is_system_dll_path(name: &str) -> bool {
+    let full = files::full_path(name).to_ascii_lowercase();
+    full.strip_prefix("c:\\windows\\system32\\")
+        .and_then(|n| n.strip_suffix(".dll"))
+        .is_some_and(|d| !d.contains('\\') && crate::api::is_system(d))
 }
 fn GetFileAttributesA(c: &mut Ctx) -> u32 {
     file_attrs(&arg_str(c.a(0), false))
@@ -3859,6 +3869,15 @@ fn BCryptGenRandom(c: &mut Ctx) -> u32 {
 fn BCryptGetProperty(_: &mut Ctx) -> u32 {
     0xc000_00bb // STATUS_NOT_SUPPORTED
 }
+/// avrt (MMCSS): AvSetMmThreadCharacteristics(task, &index) -> a handle; the rest succeed.
+fn AvSetMmThreadCharacteristics(c: &mut Ctx) -> u32 {
+    let max = crate::api::name_of(c.trap).unwrap_or_default().contains("Max");
+    put32(c.a(if max { 2 } else { 1 }), 1);
+    0x4d4d_4353
+}
+fn av_true(_: &mut Ctx) -> u32 {
+    1
+}
 /// pdh: a query whose counters all read 0 (LiveMaker watches the CPU load).
 fn PdhOpenQuery(c: &mut Ctx) -> u32 {
     put32(c.a(2), mem::heap_alloc(16, true));
@@ -4195,6 +4214,11 @@ pub fn init() {
         implement("pdh", n, pdh_ok);
     }
     reg!("pdh"; PdhGetFormattedCounterValue);
+    for n in ["AvSetMmThreadCharacteristicsA", "AvSetMmThreadCharacteristicsW", "AvSetMmMaxThreadCharacteristicsA", "AvSetMmMaxThreadCharacteristicsW"] {
+        implement("avrt", n, AvSetMmThreadCharacteristics);
+    }
+    implement("avrt", "AvRevertMmThreadCharacteristics", av_true);
+    implement("avrt", "AvSetMmThreadPriority", av_true);
     for n in ["Process32Next", "Process32NextW", "Module32First", "Module32FirstW", "Module32Next", "Module32NextW", "Thread32First", "Thread32Next"] {
         implement("kernel32", n, no_more);
     }

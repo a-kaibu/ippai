@@ -34,6 +34,7 @@ pub mod d3dcompiler;
 pub mod d3dreflect;
 pub mod d3dx9fx;
 pub mod d3dx9sprite;
+pub mod gdiplus;
 pub mod d3dx9shader;
 pub mod vcomp;
 pub mod nt;
@@ -400,6 +401,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     user::init();
     gdi::init();
     misc::init();
+    gdiplus::init();
     crt::init();
     vcomp::init();
     nt::init();
