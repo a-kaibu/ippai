@@ -29,6 +29,7 @@ import { FlightRecorder, sendLeftovers } from "./crashlog";
 import { fetchRetry, getChunk, chunkCache, HttpError, trimChunks, watchRetries, withRetries } from "./net";
 import { fileVersion, fnv, jitBase as jitBaseOf, sakeBase, translatorVersion, versioned } from "./runtime";
 import { checkOnline, startApp } from "./pwa";
+import { Budget, pool } from "./ahead";
 import { savedChunks } from "./offline";
 
 const params = new URLSearchParams(location.search);
@@ -299,6 +300,9 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   (await audio).attach(sake);
 }
 
+/** Saved region parts downloaded and compiled at once (see loadJit). */
+const JIT_LOADS = 4;
+
 /**
  * The saved regions `name`, its parts compiled while they download (the browser caches each
  * part's code: a run's save adds a part, the others stay the same), if any.
@@ -313,8 +317,9 @@ async function loadJit(
       .decode(await fetchRetry(`jit/${name}.parts`, {}, { giveUpMs: 60000 }))
       .split("\n")
       .filter(Boolean);
-    const parts = await Promise.all(
-      list.map(async (line) => {
+    const parts = await pool(
+      JIT_LOADS,
+      list.map((line) => async () => {
         const [wasm, idx, v] = line.split(" ");
         const [module, bytes] = await Promise.all([
           // (streamed: the browser keeps the compiled code of a ?v= URL; tried again as a whole)
@@ -340,10 +345,20 @@ async function loadJit(
  * start once the saved regions are here (`after`), go at low priority, and none starts while
  * one of the game's own requests is on its way (vnhost_net_busy).
  */
+/**
+ * Bytes fetched ahead at most: before the module is there (held here) and in all (the module's
+ * chunk cache is 128 MiB, oldest out first: more would push out what was fetched ahead before
+ * the game reads it, after taking the memory and the network). The list has up to 8192 chunks
+ * of up to 256 KiB: 2 GiB.
+ */
+const AHEAD_BEFORE_START = 32 << 20;
+const AHEAD_TOTAL = 64 << 20;
+
 function readAhead(name: Promise<string>, after: Promise<unknown>): (sake: SakeModule) => void {
   const store = new URL("store/", location.href).href;
   const got: [Uint8Array, Uint8Array][] = [];
   let sake: SakeModule | undefined;
+  const budget = new Budget(AHEAD_BEFORE_START, AHEAD_TOTAL);
   let p = 0;
   const put = (w: SakeModule, hash: Uint8Array, data: Uint8Array) => {
     p ||= w._malloc(16) >>> 0;
@@ -381,7 +396,7 @@ function readAhead(name: Promise<string>, after: Promise<unknown>): (sake: SakeM
     const cache = await chunkCache();
     let next = 0;
     const one = async () => {
-      while (next * 16 < list.length) {
+      while (next * 16 < list.length && (await budget.room())) {
         // (the game's requests first)
         while (sake?._vnhost_net_busy?.()) await new Promise((r) => setTimeout(r, 25));
         const hash = list.subarray(next * 16, ++next * 16);
@@ -390,6 +405,7 @@ function readAhead(name: Promise<string>, after: Promise<unknown>): (sake: SakeM
         // left to the game's own read)
         const c = await getChunk(store, hex, { cache, priority: "low" }).catch(() => null);
         if (!c) continue;
+        budget.add(c.data.length);
         if (sake) put(sake, hash, c.data);
         else got.push([hash, c.data]);
       }
@@ -399,6 +415,7 @@ function readAhead(name: Promise<string>, after: Promise<unknown>): (sake: SakeM
   return (w) => {
     sake = w;
     for (const [hash, data] of got.splice(0)) put(w, hash, data);
+    budget.start();
   };
 }
 
