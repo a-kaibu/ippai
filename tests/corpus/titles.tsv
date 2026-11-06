@@ -217,7 +217,7 @@ s2026_bishop_tks	超狂指導日誌 体験版	dat?*	2026	http://suezou.dyndns.or
 dl_VJ01005807	【DLsite限定版】友恵の探偵物語 ～のぞき魔な私の天職～	dat?*	~2026	https://trial.dlsite.com/professional/VJ01006000/VJ01005807_trial.zip	友恵の探偵物語 ～のぞき魔な私の天職～_体験版/tomoe.exe					none		
 dl_VJ01000787	神楽黎明記 ～紫の章～ 参	debonosu	~2023	https://trial.dlsite.com/professional/VJ01001000/VJ01000787_trial.zip						none		
 s2017_marmalade_mashimaro	s2017_marmalade_mashimaro	entis	2017	http://suezou.dyndns.org/dl2017/marmalade/mashimaro/mashimaro_trial.zip	お家に帰るまでがましまろです体験版/mashimaro.exe		wait:12 wait:12 click:640,400 wait:5 key:Return wait:8 click:640,400 wait:5 key:Return wait:8			title		
-b2006_pulltop	b2006_pulltop	livemaker	2006	http://suezou.dyndns.org/dl2006/pulltop/princesswaltz/PrincessWaltz_WebTrial2.exe						prep		
+b2006_pulltop	b2006_pulltop	livemaker	2006	http://suezou.dyndns.org/dl2006/pulltop/princesswaltz/PrincessWaltz_WebTrial2.exe	prwaltz_t.exe		click:0.5,0.622 wait:8			prep	story	
 dl_RJ01701406	政治家寝取られ	pak?*		https://trial.dlsite.com/doujin/RJ01702000/RJ01701406_trial.zip	Sample/PoliticDLC/Binaries/Win64/PoliticDLC-Win64-Shipping.exe					x64		
 s2011_propeller_sukima	すきま桜とうその都会　体験版２	propeller	2011	http://suezou.dyndns.org/dl2011/propeller/sukima/sukima_trial2.zip	sukima_trial2/sukima_trial2.exe					title		
 s2026_lump_of_sugar_tayutama_zero	s2026_lump_of_sugar_tayutama_zero	qlie	2026	http://suezou.dyndns.org/dl2026/lump-of-sugar/tayutama_zero/tayutamazero_trial.zip	tayutamazero_trial/tayutamazero_trial.exe		wait:12 wait:12 click:640,400 wait:5 key:Return wait:8 click:640,400 wait:5 key:Return wait:8			none		

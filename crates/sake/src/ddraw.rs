@@ -2,8 +2,8 @@
 //! bitmap over them (so GetDC works and presenting is a StretchBlt into the window). Blt and
 //! BltFast between surfaces of one format are done here (copy, color key, stretch, fill); the
 //! primary surface reaches the window when it is drawn to, unlocked, released or flipped.
-//! Direct3D is not offered (QueryInterface for IDirect3D* fails), so games take their
-//! software paths.
+//! IDirect3D7 (QueryInterface of IDirectDraw7) draws into these surfaces in software
+//! (d3d7.rs); the older Direct3D interfaces are not offered.
 
 #![allow(non_snake_case)]
 
@@ -13,6 +13,9 @@ use std::sync::{Mutex, OnceLock};
 use crate::api::{implement, Ctx, Handler};
 use crate::mem::{self, put32, r32, w32};
 use crate::user::Rect;
+
+#[path = "d3d7.rs"]
+mod d3d7;
 
 const DD_OK: u32 = 0;
 const E_NOINTERFACE: u32 = 0x8000_4002;
@@ -34,13 +37,15 @@ const CAPS_PRIMARY: u32 = 0x200;
 const CAPS_SYSTEMMEMORY: u32 = 0x800;
 const CAPS_VIDEOMEMORY: u32 = 0x4000;
 const CAPS_LOCALVIDMEM: u32 = 0x1000_0000;
+const CAPS_ZBUFFER: u32 = 0x2_0000;
 
 #[derive(Clone)]
 struct Surf {
     w: i32,
     h: i32,
     bpp: u16,
-    r565: bool,
+    /// DDPIXELFORMAT flags and the R, G, B, A (or Z) masks
+    pf: [u32; 5],
     pitch: u32,
     bits: u32,
     hbm: u32,
@@ -56,6 +61,8 @@ struct Surf {
     /// the guest interface blocks, by vtable kind (0: v1-3, 1: v4, 2: v7)
     blocks: [u32; 3],
     lock: Option<Rect>,
+    /// the attached depth buffer (Direct3D)
+    zbuf: u32,
 }
 
 struct State {
@@ -128,16 +135,21 @@ fn masks(bpp: u16, r565: bool) -> (u32, u32, u32) {
     }
 }
 
+/// The pixel format of a plain surface: flags (PALETTEINDEXED8 | RGB, or RGB) and masks.
+fn plain_pf(bpp: u16, r565: bool) -> [u32; 5] {
+    let (r, g, b) = masks(bpp, r565);
+    [if bpp == 8 { 0x60 } else { 0x40 }, r, g, b, 0]
+}
+
 /// DDPIXELFORMAT
-fn write_pf(p: u32, bpp: u16, r565: bool) {
+fn write_pf(p: u32, bpp: u16, pf: [u32; 5]) {
     mem::fill(p, 32, 0);
     w32(p, 32);
-    w32(p + 4, if bpp == 8 { 0x60 } else { 0x40 }); // PALETTEINDEXED8 | RGB, or RGB
+    w32(p + 4, pf[0]);
     w32(p + 12, bpp as u32);
-    let (r, g, b) = masks(bpp, r565);
-    w32(p + 16, r);
-    w32(p + 20, g);
-    w32(p + 24, b);
+    for i in 0..4 {
+        w32(p + 16 + 4 * i as u32, pf[1 + i]);
+    }
 }
 
 /// DDSURFACEDESC(2) for a surface (or the display mode when `s` is None).
@@ -151,11 +163,11 @@ fn write_desc_mode(p: u32, s: Option<&Surf>, mode: (i32, i32, u16)) {
     };
     mem::fill(p, size, 0);
     w32(p, size);
-    let (w, h, bpp, r565, pitch, caps, bits) = match s {
-        Some(s) => (s.w, s.h, s.bpp, s.r565, s.pitch, s.caps, 0),
+    let (w, h, bpp, pf, pitch, caps, bits) = match s {
+        Some(s) => (s.w, s.h, s.bpp, s.pf, s.pitch, s.caps, 0),
         None => {
             let (w, h, b) = mode;
-            (w, h, b, b == 16, stride(w, b), 0, 0)
+            (w, h, b, plain_pf(b, b == 16), stride(w, b), 0, 0)
         }
     };
     let _ = bits;
@@ -178,7 +190,7 @@ fn write_desc_mode(p: u32, s: Option<&Surf>, mode: (i32, i32, u16)) {
             w32(p + 20, chain_len(s) - 1);
         }
     }
-    write_pf(p + 72, bpp, r565);
+    write_pf(p + 72, bpp, pf);
     w32(p + 104, caps);
 }
 
@@ -210,6 +222,9 @@ fn stride(w: i32, bpp: u16) -> u32 {
 // surfaces
 
 fn new_surface(w: i32, h: i32, bpp: u16, r565: bool, caps: u32) -> Option<u32> {
+    new_surface_pf(w, h, bpp, r565, plain_pf(bpp, r565), caps)
+}
+fn new_surface_pf(w: i32, h: i32, bpp: u16, r565: bool, pf: [u32; 5], caps: u32) -> Option<u32> {
     let pitch = stride(w, bpp);
     let bits = mem::alloc((pitch * h as u32).max(4))?;
     let hbm = crate::gdi::bitmap_over(w, h, bpp, bits, pitch, r565);
@@ -222,7 +237,7 @@ fn new_surface(w: i32, h: i32, bpp: u16, r565: bool, caps: u32) -> Option<u32> {
                 w,
                 h,
                 bpp,
-                r565,
+                pf,
                 pitch,
                 bits,
                 hbm,
@@ -236,6 +251,7 @@ fn new_surface(w: i32, h: i32, bpp: u16, r565: bool, caps: u32) -> Option<u32> {
                 refs: 1,
                 blocks: [0; 3],
                 lock: None,
+                zbuf: 0,
             },
         );
         id
@@ -250,7 +266,7 @@ fn surf_vtbl(kind: u8) -> u32 {
             (S_AddRef, 4),
             (S_Release, 4),
             (S_AddAttachedSurface, 8),
-            (ok, 8),
+            (S_DeleteAttachedSurface, 12),
             (S_Blt, 24),
             (unsupported, 16),
             (S_BltFast, 24),
@@ -356,6 +372,9 @@ fn S_AddRef(c: &mut Ctx) -> u32 {
 }
 fn S_Release(c: &mut Ctx) -> u32 {
     let (id, _) = this(c);
+    release_surface(c, id)
+}
+fn release_surface(c: &mut Ctx, id: u32) -> u32 {
     let left = with(|s| s.surfs.get_mut(&id).map_or(0, |x| {
         x.refs = x.refs.saturating_sub(1);
         x.refs
@@ -399,9 +418,32 @@ fn free_surface(c: &mut Ctx, id: u32) {
     }
     gcall(c, "gdi32", "DeleteObject", &[s.hbm]);
     mem::release(s.bits);
+    if s.zbuf != 0 {
+        release_surface(c, s.zbuf);
+    }
 }
 
-fn S_AddAttachedSurface(_: &mut Ctx) -> u32 {
+fn S_AddAttachedSurface(c: &mut Ctx) -> u32 {
+    let (id, _) = this(c);
+    let Some((z, _)) = sid(c.a(1)) else { return DDERR_INVALIDPARAMS };
+    if surf(z).is_some_and(|x| x.caps & CAPS_ZBUFFER != 0) {
+        with(|st| {
+            st.surfs.get_mut(&z).map(|x| x.refs += 1);
+            st.surfs.get_mut(&id).map(|x| x.zbuf = z)
+        });
+    }
+    DD_OK
+}
+fn S_DeleteAttachedSurface(c: &mut Ctx) -> u32 {
+    let (id, _) = this(c);
+    let z = sid(c.a(2)).map(|x| x.0);
+    let old = with(|st| {
+        let x = st.surfs.get_mut(&id)?;
+        if x.zbuf != 0 && (z.is_none() || z == Some(x.zbuf)) { Some(std::mem::take(&mut x.zbuf)) } else { None }
+    });
+    if let Some(o) = old {
+        release_surface(c, o);
+    }
     DD_OK
 }
 
@@ -409,6 +451,11 @@ fn S_GetAttachedSurface(c: &mut Ctx) -> u32 {
     let (id, kind) = this(c);
     let want = r32(c.a(1));
     let Some(s) = surf(id) else { return DDERR_INVALIDPARAMS };
+    if s.zbuf != 0 && want & CAPS_ZBUFFER != 0 {
+        with(|st| st.surfs.get_mut(&s.zbuf).map(|x| x.refs += 1));
+        put32(c.a(2), block(s.zbuf, kind));
+        return DD_OK;
+    }
     if s.next != 0 && want & (CAPS_BACKBUFFER | CAPS_FLIP) != 0 {
         with(|st| st.surfs.get_mut(&s.next).map(|x| x.refs += 1));
         put32(c.a(2), block(s.next, kind));
@@ -453,7 +500,7 @@ fn S_GetSurfaceDesc(c: &mut Ctx) -> u32 {
 fn S_GetPixelFormat(c: &mut Ctx) -> u32 {
     let (id, _) = this(c);
     let Some(s) = surf(id) else { return DDERR_INVALIDPARAMS };
-    write_pf(c.a(1), s.bpp, s.r565);
+    write_pf(c.a(1), s.bpp, s.pf);
     DD_OK
 }
 fn S_GetDDInterface(c: &mut Ctx) -> u32 {
@@ -1027,6 +1074,10 @@ fn D_QueryInterface(c: &mut Ctx) -> u32 {
         0xb3a6_f3e0 => 1,
         0x9c59_509a => 2,
         0x15e6_5ec0 => 3,
+        0xf504_9e77 if dd_version(c) == 3 => {
+            put32(c.a(2), d3d7::d3d_block());
+            return dd_created();
+        }
         _ => {
             put32(c.a(2), 0);
             return E_NOINTERFACE;
@@ -1067,14 +1118,24 @@ fn D_CreateSurface(c: &mut Ctx) -> u32 {
     let mut caps = if flags & 1 != 0 { r32(d + 104) } else { CAPS_OFFSCREENPLAIN };
     let (mw, mh, mbpp) = display();
     let (mut bpp, mut r565) = (mbpp, mbpp == 16);
+    let mut pfv = None;
     if flags & 0x1000 != 0 {
         let pf = d + 72;
-        if r32(pf + 4) & 0x20 != 0 {
+        let pff = r32(pf + 4);
+        if pff & 0x20 != 0 {
             bpp = 8;
-        } else if r32(pf + 4) & 0x40 != 0 {
+        } else if pff & 0x400 != 0 {
+            bpp = r32(pf + 12) as u16;
+            pfv = Some([0x400, 0, r32(pf + 20), 0, 0]);
+        } else if pff & 0x40 != 0 {
             bpp = r32(pf + 12) as u16;
             r565 = bpp == 16 && r32(pf + 20) == 0x07e0;
+            let a = if pff & 1 != 0 { r32(pf + 28) } else { 0 };
+            pfv = Some([0x40 | (a != 0) as u32, r32(pf + 16), r32(pf + 20), r32(pf + 24), a]);
         }
+    } else if caps & CAPS_ZBUFFER != 0 {
+        bpp = 16;
+        pfv = Some([0x400, 0, 0xffff, 0, 0]);
     }
     let (w, h) = if caps & CAPS_PRIMARY != 0 {
         if with(|s| s.exclusive) { (mw, mh) } else { crate::user::screen() }
@@ -1091,7 +1152,8 @@ fn D_CreateSurface(c: &mut Ctx) -> u32 {
     if backs > 0 {
         caps |= CAPS_FRONTBUFFER;
     }
-    let Some(id) = new_surface(w, h, bpp, r565, caps) else { return DDERR_OUTOFMEMORY };
+    let pf = pfv.filter(|p| p[1] | p[2] | p[3] != 0).unwrap_or_else(|| plain_pf(bpp, r565));
+    let Some(id) = new_surface_pf(w, h, bpp, r565, pf, caps) else { return DDERR_OUTOFMEMORY };
     if flags & 0x10000 != 0 {
         let key = (r32(d + 64), r32(d + 68));
         with(|s| s.surfs.get_mut(&id).map(|x| x.ck_src = Some(key)));
