@@ -2039,6 +2039,11 @@ fn GetVersionExW(c: &mut Ctx) -> u32 {
 }
 /// RtlGetVersion(RTL_OSVERSIONINFOW*): Artemis asks ntdll directly (GetVersionEx lies on 8.1+)
 /// GetProductInfo(major, minor, spmajor, spminor, &type): Windows 10 Pro
+/// DeviceIoControl: no devices (ASProtect looks it up and quits when it is missing).
+fn DeviceIoControl(_: &mut Ctx) -> u32 {
+    last_error(1); // ERROR_INVALID_FUNCTION
+    0
+}
 fn GetProductInfo(c: &mut Ctx) -> u32 {
     put32(c.a(4), 0x30); // PRODUCT_PROFESSIONAL
     1
@@ -2976,6 +2981,27 @@ fn GetFileType(c: &mut Ctx) -> u32 {
 }
 fn GetConsoleMode(_: &mut Ctx) -> u32 {
     0
+}
+/// GetConsoleCP / GetConsoleOutputCP: the ANSI code page
+fn GetConsoleCP(_: &mut Ctx) -> u32 {
+    crate::text::acp()
+}
+fn GetConsoleOutputCP(_: &mut Ctx) -> u32 {
+    crate::text::acp()
+}
+/// WriteConsoleA/W(h, buf, n, &written, _): to stderr (no console; the CRT imports them)
+fn WriteConsoleA(c: &mut Ctx) -> u32 {
+    let (buf, n) = (c.a(1), c.a(2).min(0x10000));
+    eprint!("{}", String::from_utf8_lossy(mem::slice(buf, n)));
+    put32(c.a(3), n);
+    1
+}
+fn WriteConsoleW(c: &mut Ctx) -> u32 {
+    let (buf, n) = (c.a(1), c.a(2).min(0x10000));
+    let w: Vec<u16> = (0..n).map(|i| mem::r16(buf + 2 * i)).collect();
+    eprint!("{}", String::from_utf16_lossy(&w));
+    put32(c.a(3), n);
+    1
 }
 fn create_file(c: &mut Ctx, wide: bool) -> u32 {
     let name = arg_str(c.a(0), wide);
@@ -4095,7 +4121,7 @@ pub fn init() {
         GetModuleHandleExW, LoadLibraryA, LoadLibraryW, LoadLibraryExA, LoadLibraryExW, FreeLibrary,
         DisableThreadLibraryCalls, GetProcAddress, FindResourceA, FindResourceW, FindResourceExA, FindResourceExW,
         LoadResource, LockResource, FreeResource, SizeofResource,
-        GetStdHandle, SetStdHandle, GetFileType, GetConsoleMode, CreateFileA, CreateFileW, _lopen, _lclose, _lread,
+        GetStdHandle, SetStdHandle, GetFileType, GetConsoleMode, WriteConsoleA, WriteConsoleW, GetConsoleCP, GetConsoleOutputCP, CreateFileA, CreateFileW, _lopen, _lclose, _lread,
         _llseek, ReadFile, WriteFile, SetFilePointer, SetFilePointerEx, GetFileSize, GetFileSizeEx, SetEndOfFile,
         FlushFileBuffers, LockFile, UnlockFile, GetFileTime, SetFileTime, GetFileInformationByHandle,
         FindFirstFileA, FindFirstFileW, FindFirstFileExA, FindNextFileA, FindNextFileW, FindClose, GetFileAttributesA,
@@ -4125,7 +4151,7 @@ pub fn init() {
     implement("mpr", "WNetGetUniversalNameW", WNetGetUniversalNameA);
     reg!("advapi32"; RegisterTraceGuidsW, UnregisterTraceGuids, TraceEvent, GetTraceLoggerHandle, GetTraceEnableFlags, GetTraceEnableLevel);
     reg!("ntdll"; RtlGetVersion, RtlGetNtVersionNumbers, RtlFirstEntrySList);
-    reg!("kernel32"; QueryDosDeviceA, QueryDosDeviceW, GetLogicalDriveStringsA, GetLogicalDriveStringsW, GetProductInfo);
+    reg!("kernel32"; DeviceIoControl, QueryDosDeviceA, QueryDosDeviceW, GetLogicalDriveStringsA, GetLogicalDriveStringsW, GetProductInfo);
     reg!("ntdll"; RtlInitUnicodeString, RtlInitAnsiString, RtlFreeUnicodeString, RtlAnsiStringToUnicodeString,
         RtlUnicodeStringToAnsiString, RtlDosPathNameToNtPathName_U, RtlFormatCurrentUserKeyPath, LdrGetProcedureAddress,
         NtProtectVirtualMemory);

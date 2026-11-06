@@ -116,6 +116,13 @@ fn specs() -> &'static Spec {
     })
 }
 
+/// The functions the spec lists for `dll` (a key: "kernel32"), sorted.
+pub fn spec_names(dll: &str) -> Vec<String> {
+    let mut v: Vec<String> = specs().by_name.keys().filter(|(d, _)| d == dll).map(|(_, n)| n.clone()).collect();
+    v.sort();
+    v
+}
+
 /// "KERNEL32.dll" -> "kernel32"
 pub fn dll_key(dll: &str) -> String {
     let d = crate::pe::base_name(dll);

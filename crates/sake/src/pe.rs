@@ -147,6 +147,11 @@ pub fn load(data: &[u8], path: &str, resolve: &mut dyn FnMut(&str, Import) -> u3
         if n > 0 {
             mem::write(base + va, &data[ptr..ptr + n]);
         }
+        // ASProtect (its .adata section): its decryptors run from small W|X allocations that
+        // the JIT then translates too (with its stores watched) rather than interpreting
+        if !dll && data.get(s..s + 8) == Some(b".adata\0\0") {
+            kura::jit::translate_wx_pages();
+        }
     }
     // relocations
     let delta = (widen_base(base, pref)).wrapping_sub(pref);
@@ -175,8 +180,11 @@ pub fn load(data: &[u8], path: &str, resolve: &mut dyn FnMut(&str, Import) -> u3
     let mut exports = HashMap::default();
     let mut ordinals = HashMap::default();
     let (erva, esize) = dir(0);
-    if erva != 0 {
-        let e = base + erva;
+    // (a table outside the image is a packer's leftover: ASProtect's AGE.EXE (Eushully) has
+    // 0x48000000 functions, which Windows never reads because nothing looks them up)
+    let fits = |rva: u32, n: u32, k: u32| (rva as u64) + (n as u64) * (k as u64) <= size as u64;
+    let e = base + erva;
+    if erva != 0 && fits(erva, 40, 1) && fits(r32(e + 28), r32(e + 20), 4) && fits(r32(e + 32), r32(e + 24), 4) && fits(r32(e + 36), r32(e + 24), 2) {
         let ord_base = r32(e + 16);
         let nfun = r32(e + 20);
         let nnames = r32(e + 24);
@@ -236,6 +244,9 @@ pub fn load(data: &[u8], path: &str, resolve: &mut dyn FnMut(&str, Import) -> u3
     });
     // imports (after the module is listed: a DLL importing from itself, or a cycle)
     let (irva, _) = dir(1);
+    if crate::env_on!("SAKE_TRACE_LOAD") {
+        eprintln!("sake: mapped {path} at {base:#x} ({size:#x} bytes), imports at {irva:#x}");
+    }
     if irva != 0 {
         let mut d = base + irva;
         while r32(d + 12) != 0 {
@@ -393,6 +404,23 @@ static PENDING: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 /// TLS index of the next module with a TLS directory
 static TLS_NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// Where the exe's entry and threads return: a stub in kernel32's image that goes on to
+/// EXIT_TRAP (0 until kernel32 is made).
+static EXIT_THUNK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// The return address for a 32-bit entry point or thread start: inside kernel32's image, as on
+/// Windows (BaseThreadInitThunk).
+pub fn exit_return() -> u32 {
+    if mem::x64() {
+        return crate::api::EXIT_TRAP;
+    }
+    hle_module("kernel32.dll");
+    match EXIT_THUNK.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => crate::api::EXIT_TRAP,
+        t => t,
+    }
+}
+
 /// The module handle of one of our DLLs (made on first use: a header page so code reading
 /// the headers finds an image).
 pub fn hle_module(dll: &str) -> u32 {
@@ -400,9 +428,21 @@ pub fn hle_module(dll: &str) -> u32 {
     if let Some(b) = MODULES.read().unwrap().iter().find(|m| m.name == name).map(|m| m.base) {
         return b;
     }
-    let base = mem::reserve(0, 0x1000, 2, 0x100_0000, true).expect("module");
-    mem::commit(base, 2);
-    // MZ + PE headers with no sections, directories or exports
+    // (32-bit) an export directory of every function the DLL has, each a jump to its trap:
+    // packers (ASProtect, Enigma) find kernel32 from the return address of the exe's entry and
+    // walk its exports for GetProcAddress, and ASProtect runs the first instructions of the
+    // APIs it imports (user32's too) from copies in its own code
+    let key = crate::api::dll_key(dll);
+    let names = if !mem::x64() { crate::api::spec_names(&key) } else { Vec::new() };
+    let strings: usize = names.iter().map(|n| n.len() + 1).sum::<usize>() + name.len() + 1;
+    let n = names.len() as u32;
+    let exp_size = 40 + 10 * n + strings as u32;
+    // header page, then the export directory, then 16-byte thunks (the first: the exe's return)
+    let thunks = 0x1000 + (exp_size + 15) / 16 * 16;
+    let size = if n == 0 { 0x1000 } else { (thunks + 16 * (n + 1) + 0xfff) & !0xfff };
+    let base = mem::reserve(0, size, 2, 0x100_0000, true).expect("module");
+    mem::commit_range(base, size, 0x20);
+    // MZ + PE headers with no sections
     w16(base, 0x5a4d);
     w32(base + 0x3c, 0x40);
     w32(base + 0x40, 0x4550);
@@ -419,14 +459,58 @@ pub fn hle_module(dll: &str) -> u32 {
         w16(base + 0x58, 0x10b);
         w32(base + 0x58 + 28, base);
     }
-    w32(base + 0x58 + 56, 0x1000);
+    w32(base + 0x58 + 56, size);
+    let mut exports = HashMap::default();
+    if n != 0 {
+        // IMAGE_EXPORT_DIRECTORY at 0x1000: functions, names (sorted), ordinals, strings
+        let e = base + 0x1000;
+        let (funs, nms, ords) = (e + 40, e + 40 + 4 * n, e + 40 + 8 * n);
+        let mut str_at = ords + 2 * n;
+        let dll_name = str_at;
+        mem::write(str_at, name.as_bytes());
+        str_at += name.len() as u32 + 1;
+        w32(e + 12, dll_name - base);
+        w32(e + 16, 1);
+        w32(e + 20, n);
+        w32(e + 24, n);
+        w32(e + 28, funs - base);
+        w32(e + 32, nms - base);
+        w32(e + 36, ords - base);
+        // (stub 0: the exe's and threads' return address, on to EXIT_TRAP with EAX kept)
+        mem::write(base + thunks, &[0xb9, 0x20, 0x00, 0xff, 0xff, 0xff, 0xe1, 0xcc]);
+        // each function: Windows' hot-patch prologue undone, then `mov ecx, trap; jmp ecx`:
+        // ASProtect copies an API's first instructions into its own code and jumps past them, so
+        // what follows the prologue must work anywhere (no relative jump)
+        for (i, f) in names.iter().enumerate() {
+            let i = i as u32;
+            let t = base + thunks + 16 * (i + 1);
+            let trap = crate::api::export(&key, f);
+            mem::write(t, &[0x8b, 0xff, 0x55, 0x8b, 0xec, 0x5d, 0xb9]);
+            w32(t + 7, trap);
+            mem::write(t + 11, &[0xff, 0xe1, 0xcc, 0xcc, 0xcc]);
+            exports.insert(f.clone(), t);
+            w32(funs + 4 * i, t - base);
+            w32(nms + 4 * i, str_at - base);
+            w16(ords + 2 * i, i as u16);
+            mem::write(str_at, f.as_bytes());
+            str_at += f.len() as u32 + 1;
+        }
+        // the directory entry (export table, its size)
+        w32(base + 0x58 + 96, 0x1000);
+        w32(base + 0x58 + 100, exp_size);
+        w32(base + 0x58 + 92, 16);
+        if key == "kernel32" {
+            EXIT_THUNK.store(base + thunks, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    mem::protect(base, size, 0x20);
     MODULES.write().unwrap().push(Module {
         base,
-        size: 0x1000,
+        size,
         entry: 0,
         name: name.clone(),
         path: format!("C:\\windows\\system32\\{name}"),
-        exports: HashMap::default(),
+        exports,
         ordinals: HashMap::default(),
         dll: true,
         tls: None,
@@ -573,7 +657,15 @@ fn lookup_proc(base: u32, imp: Import, bind_known: bool) -> Option<u32> {
     // to older ones when they are missing
     let kernel = !bind_known && matches!(api::dll_key(&name).as_str(), "kernel32" | "kernelbase" | "ntdll");
     let known = api::is_known(a);
-    (api::implemented(a) || (known && !kernel) || crate::env_on!("SAKE_ALL_EXPORTS")).then(|| crate::fast::bind(&name, &n, a))
+    if !(api::implemented(a) || (known && !kernel) || crate::env_on!("SAKE_ALL_EXPORTS")) {
+        return None;
+    }
+    // a trap: the function's thunk in the module's image if it has one (kernel32 code at a
+    // kernel32 address, which packers copy instructions from)
+    match crate::fast::bind(&name, &n, a) {
+        b if b == a => Some(with(base, |m| m.exports.get(&n).copied()).flatten().unwrap_or(a)),
+        b => Some(b),
+    }
 }
 
 /// A data export of a DLL we implement (msvcrt's variables).
@@ -584,6 +676,9 @@ fn hle_data(dll: &str, name: &str) -> Option<u32> {
 fn load_dll_file(dll: &str) -> Result<u32, String> {
     let (host, win) = find_dll_file(dll).ok_or_else(|| format!("{dll} not found"))?;
     let data = kura::fs::read(&host).map_err(|e| format!("{host}: {e}"))?;
+    if crate::env_on!("SAKE_TRACE_LOAD") {
+        eprintln!("sake: loading {win} ({} bytes)", data.len());
+    }
     let base = load(&data, &win, &mut resolve_import)?;
     tls_module(base);
     PENDING.lock().unwrap().push(base);

@@ -365,7 +365,7 @@ pub fn spawn_gated(start: u32, param: u32, stack: u32, obj: u32, gated: bool) ->
                 start64(cpu, start, param);
             }
             let sp = cpu.regs[ESP] - 8;
-            w32(sp, api::EXIT_TRAP);
+            w32(sp, pe::exit_return());
             w32(sp + 4, param);
             cpu.regs[ESP] = sp;
             cpu.eip = start;
@@ -489,7 +489,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
         start64(cpu, entry, peb);
     }
     let sp = cpu.regs[ESP] - 8;
-    w32(sp, api::EXIT_TRAP);
+    w32(sp, pe::exit_return());
     w32(sp + 4, peb);
     cpu.regs[ESP] = sp;
     cpu.eip = entry;

@@ -69,14 +69,25 @@ fn page_set(map: &[AtomicU32], a: u32) -> bool {
 }
 
 fn wx_page(a: u32) -> bool {
-    page_set(&WX_PAGES, a) && !page_set(&EXE_PAGES, a)
+    page_set(&WX_PAGES, a) && !page_set(&EXE_PAGES, a) && !wx_jit()
+}
+/// Whether code on W|X pages outside the exe is translated too, its stores watched like the
+/// exe's (IPPAI_JIT_WX=1, or [`translate_wx_pages`]): stores into it from code elsewhere go
+/// unseen, so only for programs known to keep their code there (ASProtect's decryptors).
+fn wx_jit() -> bool {
+    static ENV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    WX_JIT.load(Ordering::Relaxed) || *ENV.get_or_init(|| std::env::var_os("IPPAI_JIT_WX").is_some())
+}
+static WX_JIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub fn translate_wx_pages() {
+    WX_JIT.store(true, Ordering::Relaxed);
 }
 
 /// A main executable's W|X pages: packers (ASProtect) decrypt code there in place, also code
 /// that already ran, so translations of code there test their stores (jit::set_watch), and
 /// the interpreter tests its own (`interp_write`).
 fn exe_wx_page(a: u32) -> bool {
-    page_set(&WX_PAGES, a) && page_set(&EXE_PAGES, a)
+    page_set(&WX_PAGES, a) && (page_set(&EXE_PAGES, a) || wx_jit())
 }
 
 /// Pages whose translated code was written over: the interpreter runs them from then on.
