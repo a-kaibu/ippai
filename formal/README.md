@@ -38,6 +38,13 @@ Kani found: a viewport whose x + width, rounded in f32, came out past the target
 (a WebGPU validation error, the draw lost); the D3D9 path passed MinZ/MaxZ outside 0..1 and NaN
 through. The model tests found StretchRect and GetRenderTargetData with boxes or levels past the
 texture, and a copy of depth24plus-stencil8, going to WebGPU as invalid copies.
+The state mapping tests (`every_sampler_state_is_valid_webgpu`, `every_pipeline_state_is_valid_webgpu`,
+`every_texture_kind_is_valid_webgpu`: every D3D9/D3D11 sampler, blend, depth, raster and texture
+state the games can set, through the model's validation) found: a strip index format on list
+topologies; blending on formats WebGPU cannot blend (integer, r32float); render targets of
+formats it cannot render (snorm, rg11b10 without the feature) and snorm textures made with
+RENDER_ATTACHMENT; write masks past 0xf; mip counts past the size; depth textures of 3D or cube
+kinds as attachments.
 
 Found and fixed with these: the movie slot flag above; `f16_bits` rounded ties up (4535 of every
 7th f32 differed from IEEE round to nearest even); 5- and 6-bit channels were expanded by bit

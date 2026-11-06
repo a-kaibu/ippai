@@ -49,6 +49,14 @@ fn bpp(f: &str) -> u32 {
         _ => 4,
     }
 }
+/// Whether WebGPU draws to a color format (crates/kura/src/render/model.rs format_info).
+fn renderable(f: &str) -> bool {
+    !f.ends_with("snorm") && !is_depth(f) && (f != "rg11b10ufloat" || gpu::has_feature("rg11b10ufloat-renderable"))
+}
+/// Whether WebGPU blends into a color format (without the float32-blendable feature).
+fn blendable(f: &str) -> bool {
+    !f.ends_with("uint") && !f.ends_with("sint") && f != "r32float" && f != "rg32float"
+}
 fn is_depth(f: &str) -> bool {
     f.starts_with("depth")
 }
@@ -580,10 +588,10 @@ impl D3d {
                     let (id, w, h, levels, format, rt) = (a(1), a(2), a(3), a(4), a(5), a(6));
                     let fmt = tex_format(format);
                     let depth = fmt == DS;
-                    // (StretchRect/ColorFill can draw into any color texture)
+                    // (StretchRect/ColorFill can draw into any renderable color texture)
                     let _ = rt;
-                    let u = usage::T_BINDING | usage::T_COPY_DST | usage::T_COPY_SRC | usage::T_RENDER;
-                    let levels = if depth { 1 } else { levels.max(1) };
+                    let u = usage::T_BINDING | usage::T_COPY_DST | usage::T_COPY_SRC | if depth || renderable(fmt) { usage::T_RENDER } else { 0 };
+                    let levels = if depth { 1 } else { levels.max(1).min(32 - w.max(h).max(1).leading_zeros()) };
                     let tex = gpu::texture(&format!(r#"{{"size":[{w},{h}],"format":{},"mipLevelCount":{levels},"usage":{u}}}"#, q(fmt)));
                     if let Some(old) = self.textures.remove(&id) {
                         old.free(self.shown());
@@ -1576,7 +1584,7 @@ impl D3d {
     fn create_pipeline(&mut self, k: &[u32]) -> Pipe {
         let (vs, ps, topo, strip, cull, color_fmt, depth_fmt, depth_write, depth_cmp) = (k[0], k[1], k[2], k[3], k[4], k[5], k[6], k[7], k[8]);
         let blend = &k[9..16];
-        let wmask = k[16];
+        let wmask = k[16] & 0xf;
         let mut p = 17;
         let nbuf = k[p];
         p += 1;
@@ -1594,7 +1602,8 @@ impl D3d {
         }
         let format = tex_format(color_fmt);
         let depth = depth_fmt != 0xff;
-        let blend_state = if blend[0] != 0 {
+        // (no blending into formats WebGPU does not blend: 32-bit floats, integers)
+        let blend_state = if blend[0] != 0 && blendable(format) {
             let comp = |s: &str, d: &str, o: &str| {
                 if o == "min" || o == "max" {
                     format!(r#"{{"srcFactor":"one","dstFactor":"one","operation":{}}}"#, q(o))
@@ -1610,9 +1619,10 @@ impl D3d {
         } else {
             String::new()
         };
+        // (a strip index format only on a strip topology)
         let strip_fmt = match strip {
-            2 => r#","stripIndexFormat":"uint16""#,
-            4 => r#","stripIndexFormat":"uint32""#,
+            2 if pick(&TOPOLOGY, topo, "triangle-list").ends_with("strip") => r#","stripIndexFormat":"uint16""#,
+            4 if pick(&TOPOLOGY, topo, "triangle-list").ends_with("strip") => r#","stripIndexFormat":"uint32""#,
             _ => "",
         };
         let cull = match cull {
@@ -1860,8 +1870,10 @@ impl D3d {
         };
         let depth = is_depth(fmt);
         let renderable = dim == "2d" && !fmt.ends_with("snorm") && (fmt != "rg11b10ufloat" || gpu::has_feature("rg11b10ufloat-renderable"));
-        let levels = if dim == "1d" { 1 } else { mips.max(1) };
-        let u = usage::T_BINDING | usage::T_COPY_DST | usage::T_COPY_SRC | if renderable || depth { usage::T_RENDER } else { 0 };
+        // (no more levels than the size has)
+        let biggest = if dim == "3d" { w.max(h).max(layers) } else { w.max(h) };
+        let levels = if dim == "1d" { 1 } else { mips.max(1).min(32 - biggest.max(1).leading_zeros()) };
+        let u = usage::T_BINDING | usage::T_COPY_DST | usage::T_COPY_SRC | if renderable || (depth && dim == "2d") { usage::T_RENDER } else { 0 };
         let tex = gpu::texture(&format!(
             r#"{{"size":[{w},{},{}],"dimension":{},"format":{},"mipLevelCount":{levels},"usage":{u}}}"#,
             if dim == "1d" { 1 } else { h },
@@ -1890,7 +1902,7 @@ impl D3d {
         // A depth buffer starts at depth 1 (what Direct3D leaves undefined; WebGPU's zeros fail
         // every LESS test), and the passes that clear rather than load an aspect no draw used
         // yet (see `zused`) start from that too.
-        if depth {
+        if depth && dim == "2d" {
             for level in 0..levels {
                 for layer in 0..layers.max(1) {
                     self.clear_now(id, level, layer, 6, [0.0; 4], 1.0, 0);
@@ -2306,6 +2318,12 @@ impl D3d {
             let t = &k[qi..qi + 9];
             qi += 9;
             let format = tex_format(t[0]);
+            // (formats WebGPU cannot draw to, as Direct3D 11 can: snorm; no draw rather than an
+            // invalid pipeline)
+            if !renderable(format) {
+                layouts.iter().for_each(|&l| gpu::drop(l));
+                return false;
+            }
             let comp = |s: u32, d: u32, o: u32| {
                 let op = pick(&BLEND_OP, o, "add");
                 if op == "min" || op == "max" {
@@ -2314,9 +2332,8 @@ impl D3d {
                     format!(r#"{{"operation":{},"srcFactor":{},"dstFactor":{}}}"#, q(op), q(pick(&BLEND2, s, "one")), q(pick(&BLEND2, d, "zero")))
                 }
             };
-            let blendable = !format.ends_with("uint") && !format.ends_with("sint") && format != "r32float" && format != "rg32float";
-            let blend = if t[1] != 0 && blendable { format!(r#","blend":{{"color":{},"alpha":{}}}"#, comp(t[2], t[3], t[4]), comp(t[5], t[6], t[7])) } else { String::new() };
-            targets.push(format!(r#"{{"format":{}{blend},"writeMask":{}}}"#, q(format), if ps != 0 { t[8] } else { 0 }));
+            let blend = if t[1] != 0 && blendable(format) { format!(r#","blend":{{"color":{},"alpha":{}}}"#, comp(t[2], t[3], t[4]), comp(t[5], t[6], t[7])) } else { String::new() };
+            targets.push(format!(r#"{{"format":{}{blend},"writeMask":{}}}"#, q(format), if ps != 0 { t[8] & 0xf } else { 0 }));
         }
         let fragment = if ps != 0 {
             self.shaders.get(&ps).copied()
@@ -2332,8 +2349,8 @@ impl D3d {
         };
         let pl = gpu::pipeline_layout(&format!(r#"{{"bindGroupLayouts":[{}]}}"#, layouts.iter().map(|l| l.to_string()).collect::<Vec<_>>().join(",")));
         let strip_fmt = match strip {
-            1 => r#","stripIndexFormat":"uint16""#,
-            2 => r#","stripIndexFormat":"uint32""#,
+            1 if pick(&TOPOLOGY, topo, "triangle-list").ends_with("strip") => r#","stripIndexFormat":"uint16""#,
+            2 if pick(&TOPOLOGY, topo, "triangle-list").ends_with("strip") => r#","stripIndexFormat":"uint32""#,
             _ => "",
         };
         let pipeline = gpu::render_pipeline(&format!(

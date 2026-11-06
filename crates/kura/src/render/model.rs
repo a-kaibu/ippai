@@ -587,7 +587,7 @@ impl Model {
         let layers = d;
         let n = (w.min(4096) * h.min(4096)) as usize;
         let mut texels = Vec::new();
-        for m in 0..mips.min(16) {
+        for m in 0..mips.min(32) {
             for _ in 0..layers {
                 texels.push(vec![0u64; (((w >> m).max(1)) * ((h >> m).max(1))).min(n as u32) as usize]);
             }

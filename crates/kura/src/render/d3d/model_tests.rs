@@ -837,3 +837,110 @@ fn optimizations_draw_the_same_d3d11() {
     });
     assert!(s.0 > 0, "{s:?}");
 }
+
+// ---- state mappings: whatever state a game sets, the descriptors kura makes are valid WebGPU ----
+
+/// Samplers: every Direct3D 9 sampler key, and Direct3D 11 keys with any LOD clamps (NaN,
+/// negative, reversed).
+#[test]
+fn every_sampler_state_is_valid_webgpu() {
+    model::reset();
+    let mut d = D3d::new();
+    for key in 0..1u32 << 12 {
+        d.sampler(key);
+    }
+    let lods = [0f32, 1.0, 13.5, -1.0, 1e30, f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 3.0];
+    let mut r = Rng(7);
+    for k in 0..40000u32 {
+        let key = if k < 1 << 13 { k << 9 | (k & 0x1ff) } else { r.next() as u32 };
+        let (lo, hi) = (r.pick(&lods), r.pick(&lods));
+        d.sampler2(key, lo.to_bits(), hi.to_bits());
+    }
+    let errors = model::with(|m| std::mem::take(&mut m.errors));
+    assert!(errors.is_empty(), "{:?}", &errors[..errors.len().min(10)]);
+}
+
+/// Pipelines: random Direct3D 9 and Direct3D 11 / OpenGL keys (every table index and past the
+/// tables, any formats, blends, depth and stencil states, topologies) on the shaders of the
+/// scenarios above.
+#[test]
+fn every_pipeline_state_is_valid_webgpu() {
+    let n: u32 = std::env::var("IPPAI_MODEL_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(200) * 50;
+    model::reset();
+    let mut d = D3d::new();
+    let mut g = Gen::new(1);
+    let mut g11 = Gen11::new(1);
+    let (s9, s11) = (g.setup(), g11.setup());
+    d.run(&s9.c, &s9.data, &s9.blob);
+    d.run(&s11.c, &s11.data, &s11.blob);
+    model::with(|m| m.errors.clear());
+    let mut r = Rng(11);
+    let mut last = 0;
+    for k in 0..n {
+        // Direct3D 9: vs ps topo strip cull color_fmt depth_fmt depth_write depth_cmp blend[7] wmask, one buffer
+        let mut key = vec![1, r.pick(&[2u32, 3]), r.below(7), r.below(6), r.below(4), r.pick(&[0u32, 2, 4, 5, 8, 9, 10, 15, 16, 99]), r.pick(&[0xffu32, 1]), r.below(2), r.below(12)];
+        for _ in 0..7 {
+            key.push(r.below(20));
+        }
+        key.push(r.below(17));
+        key.extend_from_slice(&[1, 16, 1, r.below(16), 0, 0]);
+        let p = d.create_pipeline(&key);
+        if p.pipeline != 0 {
+            gpu::drop(p.pipeline);
+        }
+        // Direct3D 11 / OpenGL
+        let n_t = 1 + r.below(2);
+        let mut key = vec![11, 12 + (n_t - 1) * 2 + r.below(2), r.below(7), r.below(4), r.below(5), r.below(2), r.next() as u32 % 100, r.pick(&[0f32, 1.5, -2.0, f32::NAN]).to_bits(), r.pick(&[0f32, 0.5, f32::INFINITY]).to_bits()];
+        if r.chance(30) {
+            key.push(0xffff);
+        } else {
+            key.extend_from_slice(&[r.pick(&[1u32, 7, 14]), r.below(2), r.below(2), r.below(12), r.below(2), r.next() as u32]);
+            for _ in 0..8 {
+                key.push(r.below(12));
+            }
+        }
+        key.extend_from_slice(&[1, 16, r.below(2), 1, r.below(40), 0, 0]);
+        key.push(n_t);
+        for _ in 0..n_t {
+            // (the float formats: the test's shaders write floats)
+            key.extend_from_slice(&[r.pick(&[0u32, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 15, 16, 18]), r.below(2), r.below(20), r.below(20), r.below(8), r.below(20), r.below(20), r.below(8), r.below(17)]);
+        }
+        let id = 9000 + k;
+        let mut c = vec![CREATE_PIPELINE2, id, key.len() as u32];
+        c.extend_from_slice(&key);
+        d.run(&c, &[], &[]);
+        let groups: [&[u32]; 2] = [&[0, 0, 1, 0, 64, 64, 0, 0], if key[1] % 2 == 1 { &[0, 0, 2, 0, 64, 64, 0, 0, 16, 1, 23, 1, 0, 1, 0, 1, 160, 2, 0, 0, 0, 0, 0, 0] } else { &[0, 0, 2, 0, 64, 64, 0, 0] }];
+        d.pipeline2(id, &groups);
+        let errors = model::with(|m| std::mem::take(&mut m.errors));
+        assert!(errors.is_empty(), "pipeline {k}: {errors:?}\nkey {key:?}");
+        last = k;
+    }
+    assert_eq!(last + 1, n);
+}
+
+/// Textures of every format the page knows (and past the table), every dimension, odd sizes and
+/// mip counts: valid createTexture / createView calls.
+#[test]
+fn every_texture_kind_is_valid_webgpu() {
+    model::reset();
+    let mut d = D3d::new();
+    let mut c = Vec::new();
+    let mut id = 1;
+    for fmt in 0..24u32 {
+        for (w, h, levels) in [(1u32, 1u32, 1u32), (16, 8, 5), (7, 3, 3), (256, 1, 9), (5, 5, 20)] {
+            c.extend_from_slice(&[CREATE_TEXTURE, id, w, h, levels, fmt, 1]);
+            id += 1;
+            for dim in 0..3u32 {
+                for layers in [1u32, 6] {
+                    c.extend_from_slice(&[CREATE_TEXTURE2, id, w, h, layers, levels, fmt, dim]);
+                    id += 1;
+                }
+            }
+        }
+    }
+    d.run(&c, &[], &[]);
+    let errors = model::with(|m| std::mem::take(&mut m.errors));
+    let mut seen: Vec<&String> = errors.iter().collect();
+    seen.dedup();
+    assert!(errors.is_empty(), "{} errors: {:?}", errors.len(), &seen[..seen.len().min(12)]);
+}
