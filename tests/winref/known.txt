@@ -21,3 +21,23 @@ crt_printf-* ^(want|got) +%c (-1|-42|255|2147483647)
 # 3.2e-15 there), and pow/_hypot keep 64-bit mantissas inside; koji's x87 is IEEE double
 crt_math-32 ^(want|got) +ulp 1 (sin|cos|tan)\((3.14159265358979|1.0000000000000001e\+300|10000000000)\)
 crt_math-32 ^(want|got) +ulp 1 (pow\(100.5,3.14159265358979\)|_hypot\(2,100.5\))
+# Direct3D 9 on the Windows runner is WARP: its limits and format list are its own (a GPU's
+# differ too). sake offers R8G8B8 textures (no driver does: games fall back without them) and
+# lacks A2R10G10B10/R32F/V8U8 textures and A8/L8/A8L8/A4R4G4B4 targets so far (TODO).
+d3d9-* ^(want|got) +caps vs .* maxtex 
+d3d9-* ^(want|got) +caps blend src 
+d3d9-* ^(want|got) +format (A4R4G4B4|A8|L8|A8L8|A2R10G10B10|R32F|D32|R8G8B8|V8U8) 
+# D3DTADDRESS_BORDER: WebGPU has no border colour; sake clamps (TODO: in the shader)
+d3d9-* ^image address:
+# StretchRect with D3DTEXF_NONE: WARP filters linearly, GPUs' drivers use point (sake: point)
+d3d9-* ^image surfaces:
+# Direct3D 11 on the runner is WARP. Its format list and flags are its own; sake has no MSAA
+# (quality levels 0: games fall back), no BC6H/BC7, video formats or 3-channel 32-bit textures
+# yet (TODO), and creates nothing on other threads concurrently
+d3d11-* ^(want|got) +(format |threading |compute on)
+# WARP converts floats to UNORM with the spec's 0.6 ulp leeway (17/255 -> 16); GPUs and sake round
+d3d11-* ^(want|got) +clear 
+# lines and wireframe: WebGPU leaves line rasterization (Bresenham or diamond exit) to the GPU
+d3d11-* ^image (lines|wireframe):
+# BORDER and MIRROR_ONCE addressing: WebGPU has neither (TODO: in the shader)
+d3d11-* ^image address:

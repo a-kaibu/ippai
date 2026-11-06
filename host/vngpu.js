@@ -53,7 +53,7 @@ addToLibrary({
       const canvas = await vnvmCanvas;
       const adapter = await navigator.gpu?.requestAdapter();
       if (!adapter) throw new Error('no WebGPU adapter');
-      const features = ['rg11b10ufloat-renderable', 'timestamp-query', 'float32-filterable', 'float32-blendable'].filter((f) => adapter.features.has(f));
+      const features = ['rg11b10ufloat-renderable', 'timestamp-query', 'float32-filterable', 'float32-blendable', 'depth-clip-control'].filter((f) => adapter.features.has(f));
       VG.device = await adapter.requestDevice({ requiredFeatures: features });
       if (VG.device.features.has('timestamp-query')) {
         const PASSES = 256;

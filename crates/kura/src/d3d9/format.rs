@@ -93,9 +93,10 @@ pub fn page_bpp(fmt: u32) -> u32 {
     }
 }
 
-/// Whether the format has no alpha (samplers then read alpha as 1).
+/// Whether the format has no alpha (samplers then read alpha as 1). (DXT1 has: its 1-bit
+/// transparent black, as Windows samples it.)
 pub fn no_alpha(fmt: u32) -> bool {
-    matches!(fmt, X8R8G8B8 | X8B8G8R8 | R5G6B5 | X1R5G5B5 | X4R4G4B4 | R8G8B8 | L8 | DXT1)
+    matches!(fmt, X8R8G8B8 | X8B8G8R8 | R5G6B5 | X1R5G5B5 | X4R4G4B4 | R8G8B8 | L8)
 }
 
 /// An n-bit UNORM value as 8 bits: round(v * 255 / (2^n - 1)), what a GPU samples it as (D3D's

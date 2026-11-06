@@ -571,10 +571,12 @@ const CAPS: [u32; 76] = {
     c[7] = 0x10 | 0x40 | 0x80 | 0x200 | 0x400 | 0x2000 | 0x4000 | 0x8_0000 | 0x10_0000 | 0x20_0000; // DevCaps
     // PrimitiveMiscCaps (not 0x1000, NULLREFERENCE: the D3D sample framework then refuses the device)
     c[8] = 0x2 | 0x4 | 0x10 | 0x20 | 0x40 | 0x80 | 0x100 | 0x800 | 0x2_0000 | 0x4_0000;
-    c[9] = 0x1 | 0x10 | 0x80 | 0x100 | 0x2000 | 0x8_0000 | 0x20_0000 | 0x40_0000 | 0x200_0000 | 0x400_0000; // RasterCaps
+    // RasterCaps (SCISSORTEST: games check it before they use the scissor rect)
+    c[9] = 0x1 | 0x10 | 0x80 | 0x100 | 0x2000 | 0x8_0000 | 0x20_0000 | 0x40_0000 | 0x100_0000 | 0x200_0000 | 0x400_0000;
     c[10] = 0xff; // ZCmpCaps
-    c[11] = 0x1fff; // SrcBlendCaps
-    c[12] = 0x1fff; // DestBlendCaps
+    // Src/DestBlendCaps: through BLENDFACTOR (0x2000; no dual-source SRCCOLOR2)
+    c[11] = 0x3fff;
+    c[12] = 0x3fff;
     c[13] = 0xff; // AlphaCmpCaps
     c[14] = 0x8 | 0x80 | 0x200 | 0x4000 | 0x8_0000; // ShadeCaps
     // TextureCaps: PERSPECTIVE, ALPHA, TEXREPEATNOTSCALEDBYSIZE, CUBEMAP, MIPMAP, MIPVOLUMEMAP; no POW2 or

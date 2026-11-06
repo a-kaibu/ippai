@@ -4,6 +4,84 @@
 /// Format::conv for 32-bit float texels stored as halves (d3d9's converters copy those as they are)
 pub const F32_TO_F16: u32 = 0xf32;
 
+/// Format::conv codes of texels converted here (to 32-bit floats): 16-bit UNORM/SNORM channels
+/// (WebGPU has no 16-bit normalized formats) and BC4/BC5 blocks (decoded as the hardware does,
+/// in floats)
+pub const U16N: u32 = 0x1601;
+pub const S16N: u32 = 0x1602;
+pub const BC4U: u32 = 0xbc41;
+pub const BC4S: u32 = 0xbc42;
+pub const BC5U: u32 = 0xbc51;
+pub const BC5S: u32 = 0xbc52;
+
+/// Texels of a w x h box in the guest's layout (rows `pitch` apart; rows of 4x4 blocks for BC)
+/// as 32-bit floats, `n` channels a texel (conversions above). None: not one of them.
+///
+/// # Safety
+/// `src` must hold the box.
+pub unsafe fn to_floats(conv: u32, n: u32, src: *const u8, pitch: usize, w: u32, h: u32) -> Option<Vec<u8>> {
+    let (w, h) = (w as usize, h as usize);
+    let n = n as usize;
+    let mut out = vec![0f32; w * h * n];
+    match conv {
+        U16N | S16N => {
+            for y in 0..h {
+                let row = src.add(y * pitch);
+                for i in 0..w * n {
+                    let v = u16::from_le_bytes([*row.add(2 * i), *row.add(2 * i + 1)]);
+                    out[y * w * n + i] = if conv == U16N { v as f32 / 65535.0 } else { ((v as i16) as f32 / 32767.0).max(-1.0) };
+                }
+            }
+        }
+        BC4U | BC4S | BC5U | BC5S => {
+            let signed = conv == BC4S || conv == BC5S;
+            let chans = if conv == BC4U || conv == BC4S { 1 } else { 2 };
+            let block = 8 * chans;
+            for by in 0..h.div_ceil(4) {
+                for bx in 0..w.div_ceil(4) {
+                    let b = std::slice::from_raw_parts(src.add(by * pitch + bx * block), block);
+                    for c in 0..chans {
+                        let v = bc4_block(&b[c * 8..c * 8 + 8], signed);
+                        for (i, &f) in v.iter().enumerate() {
+                            let (x, y) = (bx * 4 + i % 4, by * 4 + i / 4);
+                            if x < w && y < h {
+                                out[(y * w + x) * n + c] = f;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        _ => return None,
+    }
+    Some(out.iter().flat_map(|f| f.to_le_bytes()).collect())
+}
+
+/// The 16 values of a BC4 block (BC5 is two of them), as the Direct3D spec interpolates.
+fn bc4_block(b: &[u8], signed: bool) -> [f32; 16] {
+    let (e0, e1, scale) = if signed {
+        ((b[0] as i8).max(-127) as f32, (b[1] as i8).max(-127) as f32, 127.0)
+    } else {
+        (b[0] as f32, b[1] as f32, 255.0)
+    };
+    let mut pal = [0f32; 8];
+    pal[0] = e0;
+    pal[1] = e1;
+    if e0 > e1 {
+        for i in 1..7 {
+            pal[i + 1] = ((7 - i) as f32 * e0 + i as f32 * e1) / 7.0;
+        }
+    } else {
+        for i in 1..5 {
+            pal[i + 1] = ((5 - i) as f32 * e0 + i as f32 * e1) / 5.0;
+        }
+        pal[6] = if signed { -127.0 } else { 0.0 };
+        pal[7] = scale;
+    }
+    let bits = u64::from_le_bytes([b[2], b[3], b[4], b[5], b[6], b[7], 0, 0]);
+    std::array::from_fn(|i| pal[((bits >> (i * 3)) & 7) as usize] / scale)
+}
+
 /// f32 to f16 bits (IEEE 754 round to nearest even, as D3D's float conversion rules ask; out of
 /// range to infinity, NaN kept)
 pub fn f16_bits(v: f32) -> u16 {
@@ -113,13 +191,27 @@ pub fn info(dxgi: u32) -> Option<Format> {
         53 | 54 => f(P_R16F, 2),
         55 => f(P_D16, 2),
         51 => f(P_RG8SN, 2),
+        11 => Format { page: P_RGBA32F, bpp: 8, block: 1, conv: U16N, no_alpha: false },
+        13 => Format { page: P_RGBA32F, bpp: 8, block: 1, conv: S16N, no_alpha: false },
+        35 => Format { page: P_RG32F, bpp: 4, block: 1, conv: U16N, no_alpha: false },
+        37 => Format { page: P_RG32F, bpp: 4, block: 1, conv: S16N, no_alpha: false },
+        56 => Format { page: P_R32F, bpp: 2, block: 1, conv: U16N, no_alpha: false },
+        58 => Format { page: P_R32F, bpp: 2, block: 1, conv: S16N, no_alpha: false },
+        79 | 80 => Format { page: P_R32F, bpp: 8, block: 4, conv: BC4U, no_alpha: false },
+        81 => Format { page: P_R32F, bpp: 8, block: 4, conv: BC4S, no_alpha: false },
+        82 | 83 => Format { page: P_RG32F, bpp: 16, block: 4, conv: BC5U, no_alpha: false },
+        84 => Format { page: P_RG32F, bpp: 16, block: 4, conv: BC5S, no_alpha: false },
         60 | 61 => f(P_R8, 1),
         63 => f(P_R8SN, 1),
         67 => f(P_RGB9E5, 4),
         65 => c(1, 1, f9::A8),
-        70 | 71 | 72 => c(8, 4, f9::DXT1),
-        73 | 74 | 75 => c(16, 4, f9::DXT3),
-        76 | 77 | 78 => c(16, 4, f9::DXT5),
+        70 | 71 => c(8, 4, f9::DXT1),
+        73 | 74 => c(16, 4, f9::DXT3),
+        76 | 77 => c(16, 4, f9::DXT5),
+        // (the _SRGB ones: decoded the same, sampled through sRGB)
+        72 => Format { page: P_BGRA8_SRGB, ..c(8, 4, f9::DXT1) },
+        75 => Format { page: P_BGRA8_SRGB, ..c(16, 4, f9::DXT3) },
+        78 => Format { page: P_BGRA8_SRGB, ..c(16, 4, f9::DXT5) },
         85 => c(2, 1, f9::R5G6B5),
         86 => c(2, 1, f9::A1R5G5B5),
         87 | 90 => f(P_BGRA8, 4),
@@ -128,6 +220,48 @@ pub fn info(dxgi: u32) -> Option<Format> {
         115 => c(2, 1, f9::A4R4G4B4),
         _ => return None,
     })
+}
+
+/// D3D11_FORMAT_SUPPORT bits of a DXGI format: what the page does with it.
+pub fn support(dxgi: u32) -> u32 {
+    const VB: u32 = 0x2;
+    const IB: u32 = 0x4;
+    const TEX: u32 = 0x10 | 0x20 | 0x40 | 0x80; // 1D, 2D, 3D, cube
+    const LOAD: u32 = 0x100;
+    const SAMPLE: u32 = 0x200;
+    const COMPARISON: u32 = 0x400;
+    const MIP: u32 = 0x1000;
+    const AUTOGEN: u32 = 0x2000;
+    const RT: u32 = 0x4000;
+    const BLEND: u32 = 0x8000;
+    const DS: u32 = 0x10000;
+    const LOCK: u32 = 0x20000;
+    const DISPLAY: u32 = 0x80000;
+    let mut s = if vertex_format(dxgi).is_some() { VB } else { 0 };
+    if matches!(dxgi, 42 | 57) {
+        s |= IB;
+    }
+    let Some(f) = info(dxgi) else { return s };
+    if is_depth(f.page) {
+        return s | 0x10 | 0x20 | 0x80 | MIP | DS | COMPARISON;
+    }
+    s |= TEX | LOAD | MIP | LOCK;
+    let int = matches!(f.page, P_RGBA8UI | P_RGBA8SI | P_R32UI | P_R32SI | P_RGBA32UI | P_RGBA32SI | P_RG32UI | P_RG32SI);
+    if !int {
+        s |= SAMPLE | 0x80_0000; // (and SHADER_GATHER)
+    }
+    // (what the page draws to: not block-compressed, converted, SNORM or shared-exponent texels)
+    let renderable = f.block == 1 && f.conv == 0 && !matches!(f.page, P_RGBA8SN | P_R8SN | P_RG8SN | P_RGB9E5);
+    if renderable {
+        s |= RT;
+        if !int {
+            s |= BLEND | AUTOGEN;
+        }
+    }
+    if matches!(dxgi, 28 | 29 | 87 | 91 | 24) {
+        s |= DISPLAY;
+    }
+    s
 }
 
 pub fn is_depth(page: u32) -> bool {
@@ -254,5 +388,34 @@ mod proofs {
                 assert!(f.block == 1 && page_bpp(f.page) == f.bpp);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod conv_tests {
+    use super::*;
+
+    #[test]
+    fn bc4_as_the_spec_interpolates() {
+        // 8 values: e0 > e1; index 2 is (6 e0 + e1) / 7
+        let v = bc4_block(&[200, 10, 0b010_001_000, 0, 0, 0, 0, 0], false);
+        assert_eq!(v[0], 200.0 / 255.0);
+        assert_eq!(v[1], 10.0 / 255.0);
+        assert_eq!(v[2], (6.0 * 200.0 + 10.0) / 7.0 / 255.0);
+        // 6 values plus 0 and 1: e0 <= e1, indices 6 and 7
+        let v = bc4_block(&[10, 200, 0b110 | 0b111 << 3, 0, 0, 0, 0, 0], false);
+        assert_eq!((v[0], v[1]), (0.0, 1.0));
+        // signed: -128 reads as -127, the extremes are -1 and 1
+        let v = bc4_block(&[0x80, 0x7f, 0b110 | 0b111 << 3, 0, 0, 0, 0, 0], true);
+        assert_eq!((v[0], v[1], v[2]), (-1.0, 1.0, -1.0));
+    }
+
+    #[test]
+    fn unorm16_to_floats() {
+        let px: [u16; 4] = [0, 65535, 32768, 1];
+        let b: Vec<u8> = px.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let f = unsafe { to_floats(U16N, 4, b.as_ptr(), 8, 1, 1) }.unwrap();
+        let f: Vec<f32> = f.chunks(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+        assert_eq!(f, [0.0, 1.0, 32768.0 / 65535.0, 1.0 / 65535.0]);
     }
 }

@@ -236,7 +236,8 @@ pub fn pixel(k: &PsKey) -> String {
         "
 fn alpha_ok(a: f32, func: u32) -> bool {
   let r = bitcast<f32>(u.x[0].w);
-  let q = round(a * 255.0) / 255.0;
+  // (the alpha as it is, against ref / 255: Windows lets 127.5 / 255 pass LESS 128)
+  let q = a;
   switch (func) {
     case 1u: { return false; }
     case 2u: { return q < r; }

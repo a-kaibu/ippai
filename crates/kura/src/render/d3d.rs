@@ -2554,7 +2554,7 @@ impl D3d {
             _ => "",
         };
         let pipeline = gpu::render_pipeline(&format!(
-            r#"{{"layout":{pl},"vertex":{{"module":{vm},"entryPoint":"main","buffers":[{}]}},"fragment":{{"module":{fm},"entryPoint":"main","targets":[{}]}},"primitive":{{"topology":{}{strip_fmt},"cullMode":{},"frontFace":{}}}{ds}}}"#,
+            r#"{{"layout":{pl},"vertex":{{"module":{vm},"entryPoint":"main","buffers":[{}]}},"fragment":{{"module":{fm},"entryPoint":"main","targets":[{}]}},"primitive":{{"topology":{}{strip_fmt},"cullMode":{},"frontFace":{}{}}}{ds}}}"#,
             buffers.join(","),
             targets.join(","),
             q(pick(&TOPOLOGY, topo, "triangle-list")),
@@ -2563,7 +2563,9 @@ impl D3d {
                 3 => "back",
                 _ => "none",
             }),
-            q(if ccw != 0 { "ccw" } else { "cw" })
+            q(if ccw & 1 != 0 { "ccw" } else { "cw" }),
+            // (DepthClipEnable off: depth clamped, not clipped, where the device can)
+            if ccw & 2 != 0 && gpu::has_feature("depth-clip-control") { r#","unclippedDepth":true"# } else { "" }
         ));
         gpu::drop(pl);
         let p = self.pipelines2.get_mut(&id).unwrap();

@@ -209,7 +209,7 @@ int main(void) {
         quad(-0.5f + 44, -0.5f + 32, 24 - 0.5f + 44, 24 - 0.5f + 32, 0xff80ff40, 0.125f, 0.125f, 0.875f, 0.875f);
         end();
         reset();
-        shot("sampling", 3);
+        shot("sampling", 10); /* (WARP weighs texels in 16ths) */
         /* address modes: texcoords -1..2 */
         begin(0);
         IDirect3DDevice9_SetTexture(dev, 0, (IDirect3DBaseTexture9 *)t);

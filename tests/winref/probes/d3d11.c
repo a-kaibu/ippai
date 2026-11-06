@@ -331,9 +331,6 @@ static void pictures(void) {
                 draw_buf(a, sizeof a[0], 3, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
                 draw_buf(b, sizeof b[0], 3, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             }
-        set_raster(D3D11_FILL_WIREFRAME, D3D11_CULL_NONE, FALSE, FALSE, 0, 0, TRUE);
-        struct v2 w[3] = { { 4, 36, {1, 1, 1, 1} }, { 28, 40, {1, 1, 1, 1} }, { 10, 60, {1, 1, 1, 1} } };
-        draw_buf(w, sizeof w[0], 3, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         set_raster(D3D11_FILL_SOLID, D3D11_CULL_NONE, FALSE, TRUE, 0, 0, TRUE);
         D3D11_RECT sc = { 40, 36, 52, 50 };
         ID3D11DeviceContext_RSSetScissorRects(ctx, 1, &sc);
@@ -351,6 +348,14 @@ static void pictures(void) {
         quadz(58, 12, 62, 20, 1.5f, 0xff00ff00);
         quadz(58, 22, 62, 30, -0.5f, 0xff0000ff);
         shot("rasterizer", 1, 0);
+        reset();
+        /* wireframe (lines of its own picture: line rasterization is the GPU's in WebGPU) */
+        begin(0, 0, 0.125f, 1);
+        set_raster(D3D11_FILL_WIREFRAME, D3D11_CULL_NONE, FALSE, FALSE, 0, 0, TRUE);
+        struct v2 w[6] = { { 4, 4, {1, 1, 1, 1} }, { 40, 10, {1, 1, 1, 1} }, { 10, 60, {1, 1, 1, 1} },
+                           { 44, 20, {1, 0, 0, 1} }, { 60, 30, {0, 1, 0, 1} }, { 48, 58, {0, 0, 1, 1} } };
+        draw_buf(w, sizeof w[0], 6, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        shot("wireframe", 1, 0);
         reset();
     }
     /* sampling: 4x4 texture, point and linear, enlarged and shrunk, modulated */
@@ -379,7 +384,7 @@ static void pictures(void) {
         /* Load: texel fetch by integer coordinates */
         use(vs, layout, ps_load);
         quad(2, 28, 6, 32, 0xffffffff, 0, 0, 0.5f, 0.5f);
-        shot("sampling", 3, 0);
+        shot("sampling", 10, 0); /* (WARP weighs texels in 16ths) */
         /* address modes: texcoords -1..2 */
         begin(0, 0, 0, 1);
         use(vs, layout, ps_tex);
@@ -389,7 +394,8 @@ static void pictures(void) {
         for (int m = 0; m < 6; m++) {
             ID3D11SamplerState *s = sampler(m == 5 ? D3D11_FILTER_MIN_MAG_MIP_LINEAR : D3D11_FILTER_MIN_MAG_MIP_POINT, modes[m == 5 ? 3 : m], border);
             float x = (m % 3) * 21, y = (m / 3) * 32;
-            quad(x + 1, y + 1, x + 21, y + 31, 0xffffffff, -1, -1, 2, 2);
+            /* (31 rows for 12 texels: no pixel centre on a texel edge, where rounding decides) */
+            quad(x + 1, y + 1, x + 21, y + 32, 0xffffffff, -1, -1, 2, 2);
             if (s) ID3D11SamplerState_Release(s);
         }
         shot("address", 0, 0);
@@ -418,7 +424,8 @@ static void pictures(void) {
         use(vs, layout, ps_texlod);
         for (int l = 0; l < 6; l++) {
             konst(0, 0, 0, 0, l * 0.75f);
-            quad(l * 10 + 1, 1, l * 10 + 9, 9, 0xffffffff, 0, 0, 1, 1);
+            /* (texcoords off by 1/64: no pixel centre on a texel edge of any level) */
+            quad(l * 10 + 1, 1, l * 10 + 9, 9, 0xffffffff, 1 / 64.0f, 1 / 64.0f, 1 + 1 / 64.0f, 1 + 1 / 64.0f);
         }
         use(vs, layout, ps_tex);
         ID3D11SamplerState *tri = sampler(D3D11_FILTER_MIN_MAG_MIP_LINEAR, D3D11_TEXTURE_ADDRESS_WRAP, NULL);
@@ -430,7 +437,7 @@ static void pictures(void) {
         use(vs, layout, ps_texbias);
         for (int b = 0; b < 4; b++) {
             konst(0, 0, 0, 0, b - 1.0f);
-            quad(b * 10 + 1, 24, b * 10 + 9, 32, 0xffffffff, 0, 0, 1, 1);
+            quad(b * 10 + 1, 24, b * 10 + 9, 32, 0xffffffff, 1 / 64.0f, 1 / 64.0f, 1 + 1 / 64.0f, 1 + 1 / 64.0f);
         }
         /* GenerateMips of a render-target texture with odd content */
         D3D11_TEXTURE2D_DESC g = { 8, 8, 0, 1, DXGI_FORMAT_R8G8B8A8_UNORM, { 1, 0 }, D3D11_USAGE_DEFAULT,
@@ -449,12 +456,12 @@ static void pictures(void) {
             use(vs, layout, ps_texlod);
             for (int l = 0; l < 4; l++) {
                 konst(0, 0, 0, 0, l);
-                quad(l * 16 + 1, 36, l * 16 + 15, 50, 0xffffffff, 0, 0, 1, 1);
+                quad(l * 16, 36, l * 16 + 16, 52, 0xffffffff, 0, 0, 1, 1); /* (2 pixels a texel of level 0) */
             }
             ID3D11ShaderResourceView_Release(gv);
             ID3D11Texture2D_Release(gt);
         }
-        shot("mipmaps", 3, 0);
+        shot("mipmaps", 10, 0);
         ID3D11SamplerState_Release(s);
         ID3D11SamplerState_Release(tri);
         ID3D11ShaderResourceView_Release(v);
@@ -675,9 +682,14 @@ static void pictures(void) {
 static const char *MATH =
     "cbuffer c : register(b0) { float4 A[64]; float4 B[64]; float4 C[64]; }\n"
     "float4 vs(uint id : SV_VertexID) : SV_Position { return float4(id == 1 ? 3 : -1, id == 2 ? -3 : 1, 0.5, 1); }\n"
+    /* (one of the two per compile: the compiler checks every function's body) */
+    "#ifdef F\n"
     "float4 f(float4 p : SV_Position) : SV_Target { uint i = (uint)p.y * 8 + (uint)p.x; float4 a = A[i], b = B[i], c = C[i]; return OP; }\n"
+    "#endif\n"
+    "#ifdef U\n"
     "uint4 u(float4 p : SV_Position) : SV_Target { uint i = (uint)p.y * 8 + (uint)p.x;\n"
-    "  uint4 a = asuint(A[i]), b = asuint(B[i]), c = asuint(C[i]); int4 sa = asint(A[i]), sb = asint(B[i]); return OP; }\n";
+    "  uint4 a = asuint(A[i]), b = asuint(B[i]), c = asuint(C[i]); int4 sa = asint(A[i]), sb = asint(B[i]); return OP; }\n"
+    "#endif\n";
 
 static ID3D11Texture2D *mf, *mu, *mfs, *mus;
 static ID3D11RenderTargetView *mfv, *muv;
@@ -695,7 +707,7 @@ static unsigned bitsf(float f) { unsigned u; memcpy(&u, &f, 4); return u; }
 
 /* runs OP over the inputs; out: 256 results as bits */
 static int run(const char *op, int uint_target, unsigned *out) {
-    D3D_SHADER_MACRO defs[2] = { { "OP", op }, { NULL, NULL } };
+    D3D_SHADER_MACRO defs[3] = { { "OP", op }, { uint_target ? "U" : "F", "1" }, { NULL, NULL } };
     ID3D11PixelShader *p = ps_of(MATH, uint_target ? "u" : "f", defs);
     if (!p) return 0;
     ID3D11DeviceContext_UpdateSubresource(ctx, (ID3D11Resource *)mcb, 0, NULL, &in, 0, 0);

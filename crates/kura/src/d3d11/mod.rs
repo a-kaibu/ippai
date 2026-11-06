@@ -831,6 +831,9 @@ unsafe fn upload_texture(t: &Texture, sub: u32, mem: u32, pitch: u32, bx: Option
             }
         }
         bpr = w * 8;
+    } else if let Some(v) = format::to_floats(f.conv, format::page_bpp(t.page) / 4, src, pitch as usize, w, h) {
+        out = v;
+        bpr = w * format::page_bpp(t.page);
     } else if f.conv != 0 {
         crate::d3d9::format::convert(f.conv, src, pitch as usize, w, h, &mut out);
         bpr = w * format::page_bpp(t.page);
@@ -1324,9 +1327,9 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
         28 => E_NOTIMPL,
         29 => {
             // CheckFormatSupport(format, out)
-            let ok = format::info(a(1)).is_some() || format::vertex_format(a(1)).is_some() || matches!(a(1), 42 | 57);
-            wr(a(2), 0, if ok { 0x0fff_ffff } else { 0 });
-            if ok { S_OK } else { E_FAIL }
+            let bits = format::support(a(1));
+            wr(a(2), 0, bits);
+            if bits != 0 { S_OK } else { E_FAIL }
         }
         30 => {
             wr(a(3), 0, if a(2) == 1 { 1 } else { 0 });
@@ -2157,14 +2160,8 @@ unsafe fn update_subresource(d: &mut D11, res: u32, sub: u32, bx: u32, data: u32
             // the box's texels start at `data`
             let t: &Texture = t;
             match b {
-                Some(bb) => {
-                    let mem = data;
-                    // upload_texture reads rows from mem at the box's origin: shift back
-                    let f = format::info(t.fmt);
-                    let (block, bpp) = f.map_or((1, 4), |f| (f.block, f.bpp));
-                    let base = mem.wrapping_sub(bb[1] / block * pitch + bb[0] / block * bpp);
-                    upload_texture(t, sub, base, pitch, Some(bb));
-                }
+                // (upload_texture reads the box's rows from `data` on: the box's first texel)
+                Some(bb) => upload_texture(t, sub, data, pitch, Some(bb)),
                 None => upload_texture(t, sub, data, pitch, None),
             }
         }
@@ -2417,7 +2414,8 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
     let mut key = vec![vs, ps.as_ref().map_or(0, |p| p.0), topo, strip];
     // rasterizer: cull, front ccw, depth bias, slope, clamp
     let r = rs.unwrap_or_else(|| vec![3, 3, 0, 0, 0, 0, 1, 0, 0, 0]);
-    key.extend_from_slice(&[r[1], r[2], r[3], r[5], r[4]]);
+    // (front ccw in bit 0, DepthClipEnable off in bit 1)
+    key.extend_from_slice(&[r[1], (r[2] != 0) as u32 | ((r[6] == 0) as u32) << 1, r[3], r[5], r[4]]);
     // depth stencil
     match (depth_fmt, &ds) {
         (Some(f), Some(s)) => {
