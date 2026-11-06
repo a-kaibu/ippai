@@ -1805,31 +1805,35 @@ fn get_object(c: &mut Ctx, wide: bool) -> u32 {
     let (h, n, p) = (c.a(0), c.a(1), c.a(2));
     with(|t| match t.m.get(&h) {
         Some(G::Bitmap(b)) => {
-            let need = if b.dib && n >= 84 { 84 } else { 24 };
+            // BITMAP, then DIBSECTION's BITMAPINFOHEADER, bit fields, section and offset; x64:
+            // bmBits 8 bytes (BITMAP 32), the section 8 aligned (DIBSECTION 104)
+            let x64 = mem::x64();
+            let (small, full, d) = if x64 { (32, 104, 8) } else { (24, 84, 0) };
+            let need = if b.dib && n >= full { full } else { small };
             if p == 0 {
                 return need;
             }
-            let mut buf = [0u8; 84];
+            let mut buf = [0u8; 104];
             let put = |buf: &mut [u8], o: usize, v: u32| buf[o..o + 4].copy_from_slice(&v.to_le_bytes());
             put(&mut buf, 4, b.w as u32);
             put(&mut buf, 8, b.h as u32);
             put(&mut buf, 12, if b.dib { b.stride } else { b.stride });
             buf[16..18].copy_from_slice(&1u16.to_le_bytes());
             buf[18..20].copy_from_slice(&b.bpp.to_le_bytes());
-            put(&mut buf, 20, if b.dib { b.bits } else { 0 });
-            if need == 84 {
-                put(&mut buf, 24, 40);
-                put(&mut buf, 28, b.w as u32);
-                put(&mut buf, 32, if b.bottom_up { b.h as u32 } else { (-b.h) as u32 });
-                buf[36..38].copy_from_slice(&1u16.to_le_bytes());
-                buf[38..40].copy_from_slice(&b.bpp.to_le_bytes());
-                put(&mut buf, 44, b.stride * b.h as u32);
-                put(&mut buf, 56, if b.bpp <= 8 { b.pal.len() as u32 } else { 0 });
+            put(&mut buf, if x64 { 24 } else { 20 }, if b.dib { b.bits } else { 0 });
+            if need == full {
+                put(&mut buf, 24 + d, 40);
+                put(&mut buf, 28 + d, b.w as u32);
+                put(&mut buf, 32 + d, if b.bottom_up { b.h as u32 } else { (-b.h) as u32 });
+                buf[36 + d..38 + d].copy_from_slice(&1u16.to_le_bytes());
+                buf[38 + d..40 + d].copy_from_slice(&b.bpp.to_le_bytes());
+                put(&mut buf, 44 + d, b.stride * b.h as u32);
+                put(&mut buf, 56 + d, if b.bpp <= 8 { b.pal.len() as u32 } else { 0 });
                 if b.bpp == 16 {
-                    put(&mut buf, 40, 3);
+                    put(&mut buf, 40 + d, 3);
                     let m = if b.r565 { [0xf800, 0x7e0, 0x1f] } else { [0x7c00, 0x3e0, 0x1f] };
                     for (i, v) in m.iter().enumerate() {
-                        put(&mut buf, 64 + 4 * i, *v);
+                        put(&mut buf, 64 + d + 4 * i, *v);
                     }
                 }
             }
@@ -2503,6 +2507,10 @@ fn AlphaBlend(c: &mut Ctx) -> u32 {
         let Some((sv, sox, soy, _)) = source(t, src) else { return Rect::default() };
         let (dx, dy) = cv.dev(d.0, d.1);
         let r = Rect { l: dx, t: dy, r: dx + d.2, b: dy + d.3 }.and(&cv.clip);
+        if s.2 == d.2 && s.3 == d.3 && sv.bpp == 32 && cv.v.bpp == 32 {
+            alpha_rows(&sv, &cv.v, &r, (s.0 + sox - dx, s.1 + soy - dy), k, per_pixel);
+            return r;
+        }
         for y in r.t..r.b {
             for x in r.l..r.r {
                 let sx = s.0 + sox + (x - dx) * s.2 / d.2.max(1);
@@ -2523,6 +2531,46 @@ fn AlphaBlend(c: &mut Ctx) -> u32 {
         r
     }) as u32
 }
+/// x / 255 rounded down, for x up to 255 * 255.
+#[inline(always)]
+fn div255(x: u32) -> u32 {
+    (x + 1 + (x >> 8)) >> 8
+}
+
+/// AlphaBlend without stretching, 32 bpp to 32 bpp, row by row (the same results as the
+/// pixel loop): source pixel (x + o.0, y + o.1) over destination pixel (x, y) in `r`. The
+/// source may be the destination (each pixel is read before it is written, in order).
+fn alpha_rows(sv: &View, dv: &View, r: &Rect, o: (i32, i32), k: u32, per_pixel: bool) {
+    let (l, rr) = (r.l.max(-o.0), r.r.min(sv.w - o.0));
+    if l >= rr {
+        return;
+    }
+    for y in r.t.max(-o.1)..r.b.min(sv.h - o.1) {
+        let sp = unsafe { (sv.row(y + o.1) as *const u32).add((l + o.0) as usize) };
+        let dp = unsafe { (dv.row(y) as *mut u32).add(l as usize) };
+        for i in 0..(rr - l) as usize {
+            let (ps, pd) = unsafe { (sp.add(i), dp.add(i)) };
+            let p = unsafe { ps.read_unaligned() };
+            let a = if !per_pixel { k } else if k == 255 { p >> 24 } else { div255((p >> 24) * k) };
+            if k == 255 && a == 255 {
+                // (an opaque source pixel, the common case: sc + 0)
+                unsafe { pd.write_unaligned(p) };
+                continue;
+            }
+            if k == 255 && p == 0 {
+                continue; // (sc 0 and the destination times 255 / 255)
+            }
+            let q = unsafe { pd.read_unaligned() };
+            let ia = 255 - a;
+            let ch = |sh: u32| {
+                let sc = if k == 255 { p >> sh & 255 } else { div255((p >> sh & 255) * k) };
+                (sc + div255((q >> sh & 255) * ia)).min(255) << sh
+            };
+            unsafe { pd.write_unaligned(ch(24) | ch(16) | ch(8) | ch(0)) };
+        }
+    }
+}
+
 fn GdiAlphaBlend(c: &mut Ctx) -> u32 {
     AlphaBlend(c)
 }
