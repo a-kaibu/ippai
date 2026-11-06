@@ -347,7 +347,7 @@ class Conductor extends BaseConductor
 		// コンストラクタ
 		super.BaseConductor();
 		ignoreCR = global.ignoreCR;
-		debugLevel = tkdlVerbose;
+		debugLevel = tkdlNone; // (吉里吉里ベンチ: 出荷版のようにタグを記録しない)
 		this.owner = owner;
 		this.handlers = handlers;
 		timeOutTimer = new Timer(onTimeOut, '');

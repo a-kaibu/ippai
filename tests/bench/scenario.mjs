@@ -19,6 +19,8 @@
 import { readdirSync, readFileSync } from "node:fs";
 
 const linux = process.platform === "linux";
+// (BENCH_VERBOSE=1: the page's lines as they come)
+const verbose = !!process.env.BENCH_VERBOSE;
 // the browser's processes (this job runs one browser)
 function browserProcs() {
   if (!linux) return [];
@@ -84,6 +86,7 @@ export async function runScenario(browser, build, c, timeout) {
       // (krkrz's log lines start with the time: "12:34:56 ")
       for (const line of m.text().split("\n").map((l) => l.replace(/^\d\d:\d\d:\d\d /, ""))) {
         if (log.length < 400) log.push(line);
+        if (verbose) console.log(`  ${((Date.now() - t0) / 1000).toFixed(1)} ${line.slice(0, 200)}`);
         let r;
         if ((r = /^BENCH-STATE (\S+) (\d+)$/.exec(line))) events.push({ kind: "state", what: r[1], step: +r[2], t: Date.now() });
         else if ((r = /^BENCH-WAIT (\d+)(?: (\S+))?$/.exec(line))) events.push({ kind: "wait", what: r[2] ?? "", step: +r[1], t: Date.now() });
@@ -143,6 +146,7 @@ export async function runScenario(browser, build, c, timeout) {
       } else await page.waitForTimeout(100); // (a player's click is not instant either)
       const at = await click(640, w.what === "choice" ? 430 : 600);
       const r = await next((e) => e.kind === "state" && e.step > w.step, "the click's answer");
+      if (r.what === "end") break;
       if (w.what === "choice") metrics.choice = r.t - at;
       else if (r.what === "line") lines.push(r.t - at);
       else if (r.what === "scene") scenes.push(r.t - at);

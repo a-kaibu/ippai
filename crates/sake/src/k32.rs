@@ -3072,6 +3072,13 @@ fn ReadFile(c: &mut Ctx) -> u32 {
 }
 fn WriteFile(c: &mut Ctx) -> u32 {
     let (h, buf, n, pw) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    // (a length of -1: krkrz's console log passes what failed to convert; Windows can't read
+    // that much and fails with ERROR_NOACCESS)
+    if n >= 0x8000_0000 {
+        put32(pw, 0);
+        last_error(998);
+        return 0;
+    }
     let kind = obj::with(|t| match t.objs.get(&h) {
         Some((Obj::Other(k), _)) => Some(*k),
         _ => None,
