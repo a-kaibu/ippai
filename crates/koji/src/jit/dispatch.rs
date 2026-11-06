@@ -62,20 +62,6 @@ pub fn module() -> alloc::vec::Vec<u8> {
         for i in (0..super::N_PARAMS).rev() {
             c.set(V + i);
         }
-        // a RET with the state as results: into the Cpu, and on
-        c.get(V).i32c(super::RET_VALUES).eq().if_();
-        c.get(cpu).get(V + 1).store32(Off::eip());
-        for i in 0..8 {
-            c.get(cpu).get(V + 2 + i).store32(Off::reg(i as usize));
-        }
-        c.get(V + 10).i32c(-1).ne().if_();
-        for i in 0..5 {
-            c.get(cpu).get(V + 10 + i).store32(Off::lazy() + 4 * i);
-        }
-        c.end();
-        c.get(cpu).get(V + 15).store32(Off::budget());
-        c.br(1);
-        c.end();
         c.get(V).tee(st).if_().get(st).ret().end();
         c.br(0);
     }

@@ -427,7 +427,7 @@ fn count_compile(k: usize, t0: Instant) {
     COMPILES[2 * k + 1].fetch_add(t0.elapsed().as_micros() as u32, Ordering::Relaxed);
 }
 
-/// Switches read once: IPPAI_JIT_COUNT=<secs> (transfer counters), IPPAI_JIT_CALLS=1|2,
+/// Switches read once: IPPAI_JIT_COUNT=<secs> (transfer counters),
 /// IPPAI_JIT_NOCHECK=1 (measuring only: no range checks).
 fn init_flags() {
     if std::env::var("IPPAI_JIT_FN_ENTRIES").is_ok_and(|v| v == "0") {
@@ -455,9 +455,6 @@ fn init_flags() {
             }
         }
         // CALL/RET as wasm calls: 1 direct calls, 2 indirect ones too
-        let calls = std::env::var("IPPAI_JIT_CALLS").unwrap_or_default();
-        jit::CALLS.store(calls == "1" || calls == "2", std::sync::atomic::Ordering::Relaxed);
-        jit::INDIRECT_CALLS.store(calls == "2", std::sync::atomic::Ordering::Relaxed);
         // debugging the long-mode translator: IPPAI_JIT64_INS / _BLOCKS (limits), IPPAI_JIT64_OFF
         // (mnemonics, as iced names them, left to the interpreter)
         let num = |k: &str| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(0);

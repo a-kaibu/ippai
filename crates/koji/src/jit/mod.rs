@@ -45,14 +45,6 @@ const MAX_INS: usize = 200;
 // block return codes
 pub const RET_CONTINUE: i32 = 0;
 pub const RET_INTERP: i32 = 1;
-/// A RET left the region with the state in the function's results (status, next EIP,
-/// registers, lazy flags, budget: the parameters' layout) instead of in the Cpu: a CALL that
-/// made a wasm call continues right after it when EIP is its return address.
-pub const RET_VALUES: i32 = 0x5245_5456;
-/// Guest CALLs to other regions become wasm calls (returning through RET_VALUES) instead of
-/// tail calls through the hash table (IPPAI_JIT_CALLS=1; off by default, see
-/// docs/translator.md).
-pub static CALLS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 /// Debugging (IPPAI_JIT_COUNT): counters of control transfers the generated code bumps
 /// (wasm32 only: their addresses are i32 constants). See [`COUNTER_NAMES`].
 pub static COUNT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
@@ -69,8 +61,6 @@ pub static FN_ENTRIES: core::sync::atomic::AtomicBool = core::sync::atomic::Atom
 /// Debugging (IPPAI_JIT_PROBE): instructions run by the interpreter (which prints the state
 /// before them), 0 = none.
 pub static PROBES: [core::sync::atomic::AtomicU32; 8] = [const { core::sync::atomic::AtomicU32::new(0) }; 8];
-/// Indirect CALLs as wasm calls too (IPPAI_JIT_CALLS=2)
-pub static INDIRECT_CALLS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 /// Function-level translation (IPPAI_JIT_FN=1): a guest function (an address CALLs go to)
 /// becomes one wasm function `(cpu) -> status` with the guest state in the Cpu at its entry
 /// and exits. Its blocks are the ones its own jumps reach (never a call's target); a CALL is a
@@ -2831,12 +2821,6 @@ impl<'a> Gen<'a> {
                     return false;
                 }
                 let f = ins.near_branch32();
-                if self.block_of(f).is_none() && CALLS.load(core::sync::atomic::Ordering::Relaxed) {
-                    let t = self.temp();
-                    self.c.u32c(f).set(t);
-                    self.call_out(t, next);
-                    return false;
-                }
                 self.ras_push(next);
                 self.goto(f);
                 return false;
@@ -2857,10 +2841,6 @@ impl<'a> Gen<'a> {
                 }
                 if self.fnm {
                     self.call_fn(t, next);
-                    return false;
-                }
-                if CALLS.load(core::sync::atomic::Ordering::Relaxed) && INDIRECT_CALLS.load(core::sync::atomic::Ordering::Relaxed) {
-                    self.call_out(t, next);
                     return false;
                 }
                 self.ras_push(next);
@@ -2961,17 +2941,6 @@ impl<'a> Gen<'a> {
                     self.goto(r);
                     self.depth -= 1;
                     self.c.end();
-                }
-                if CALLS.load(core::sync::atomic::Ordering::Relaxed) {
-                    // back to the wasm caller (a CALL's call_out, or the dispatcher)
-                    self.mmx_flush();
-                    self.xmm_flush();
-                    self.x87_flush_out();
-                    bump(&mut self.c, 5);
-                    self.c.i32c(RET_VALUES).get(t);
-                    push_state(&mut self.c);
-                    self.c.ret();
-                    return false;
                 }
                 self.c.get(t);
                 self.jump_dyn();
@@ -3204,73 +3173,6 @@ impl<'a> Gen<'a> {
     /// The open label before a loop holding block k.
     fn loop_entry(&self, k: usize) -> Option<u32> {
         self.loops.range(..k).rev().filter(|&(_, &e)| e >= k).find_map(|(&h, _)| self.fwd[h])
-    }
-
-    /// CALL to the address in local `t` (the return address `next` is pushed) as a wasm call
-    /// of the target's region; its RET comes back here with the state as results
-    /// (RET_VALUES). Continues at `next` when that is where it returned, else wherever it went.
-    /// Without a translation, or nested too deep, a tail call as before.
-    fn call_out(&mut self, t: u32, next: u32) {
-        self.mmx_flush();
-        self.xmm_flush();
-        self.x87_flush();
-        self.fc = FCache::default();
-        let hash = offset_of!(Cpu, jit_hash) as u32;
-        let maskf = offset_of!(Cpu, jit_mask) as u32;
-        let (h, e) = (self.temp(), self.temp());
-        self.c.block(); // found 0
-        self.c.block(); // slow 0, found 1
-        self.depth += 2;
-        self.c.get(L_CPU).load32(Off::calls()).u32c(MAX_DEPTH).ge_u().br_if(0);
-        self.c.get(t).u32c(0x9e37_79b1).mul().i32c(15).shr_u().get(L_CPU).load32(maskf).and().set(h);
-        self.c.loop_(); // probe 0, slow 1, found 2
-        self.depth += 1;
-        self.c.get(L_CPU).load32(hash).get(h).i32c(3).shl().add().tee(e).load32(0).tee(L_NEXT);
-        self.c.get(t).eq().br_if(2);
-        self.c.get(L_NEXT).eqz().br_if(1);
-        self.c.get(h).i32c(1).add().get(L_CPU).load32(maskf).and().set(h).br(0);
-        self.depth -= 1;
-        self.c.end(); // probe
-        self.depth -= 1;
-        self.c.end(); // slow: the dispatcher's way
-        bump(&mut self.c, 1);
-        self.c.get(t);
-        self.jump_dyn();
-        self.depth -= 1;
-        self.c.end(); // found: entry at e + 4
-        bump(&mut self.c, 0);
-        // into the ring like a jump between regions (a hot callee gets merged in, see emit_lookup)
-        let ring = offset_of!(Cpu, jit_ring) as u32;
-        self.c.get(L_CPU).load32(ring).tee(h).get(h).load32(0).tee(L_NEXT).i32c(1).add().store32(0);
-        self.c.get(h).get(L_NEXT).i32c(RING_SIZE as i32 - 1).and().i32c(3).shl().add().tee(h);
-        self.c.get(L_ARG).u32c((1 << ENTRY_SHIFT) - 1).and().store32(4);
-        self.c.get(h).get(t).store32(8);
-        self.c.get(L_CPU).get(L_CPU).load32(Off::calls()).i32c(1).add().store32(Off::calls());
-        self.c.get(L_CPU).get(e).load32(4).tee(h);
-        push_state(&mut self.c);
-        self.c.get(h).u32c((1 << ENTRY_SHIFT) - 1).and().call_indirect(2, 0);
-        for l in (L_REG..N_PARAMS).rev() {
-            self.c.set(l);
-        }
-        self.c.set(L_NEXT).set(L_ST);
-        self.c.get(L_CPU).get(L_CPU).load32(Off::calls()).i32c(1).sub().store32(Off::calls());
-        // left another way (the state is in the Cpu): pass it on as it is
-        self.c.get(L_ST).i32c(RET_VALUES).ne().if_();
-        bump(&mut self.c, 4);
-        self.c.get(L_ST);
-        for _ in 1..N_PARAMS {
-            self.c.i32c(0);
-        }
-        self.c.ret().end();
-        self.c.get(L_NEXT).u32c(next).eq().if_();
-        self.depth += 1;
-        bump(&mut self.c, 2);
-        self.goto(next);
-        self.depth -= 1;
-        self.c.end();
-        bump(&mut self.c, 3);
-        self.c.get(L_NEXT);
-        self.jump_dyn();
     }
 
     /// A function's CALL of the address in local `t` (the return address `next` pushed): a
