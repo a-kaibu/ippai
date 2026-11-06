@@ -19,7 +19,7 @@ depend on how fast that runner happens to be. Every number is milliseconds, lowe
 | `gl` | VN scene (glBegin), 2000 sprites immediate / vertex arrays, glTexSubImage2D, GLSL crossfade, FBO blur passes |
 | `scenario` | `src/scenario.c`: a small D3D9 visual novel played through by `scenario.mjs` (paced, as players play): title, lines with voices, scene transitions (pictures read from a 70 MB archive in no useful order, unfiltered, crossfaded), a movie, a choice, a save; then the save loaded in a new page. Click to the next line p50/p95, transitions, start-up (cold: a new browser context) and restore (warm: the same context), the game's frame intervals p50/p95/p99, the browser's CPU while the game waits, peak memory, chunks fetched |
 | `kirikiri` | the same played on a small game made with 吉里吉里Z 1.4.0r2 and KAG3 (`testdata/kirikiri`, packed into data.xp3 by `pack-kirikiri.mjs`; the engine fetched pinned by `fetch-krkrz.sh`): TJS and KAG scripts, PNG pictures, WAV voices and BGM, links for the choice, KAG's save (with a thumbnail) and load, and effects chosen to be heavy, each its own `fx_*` metric: extrans transitions (ripple, wave, rotatezoom, mosaic), a slide-in with a screen quake, three characters crossfaded at once, edged text with ruby typed out, a full-screen box blur and sepia, and 48 petals drawn with operateAffine over the screen every frame (`kk_petals_p50/p95`, the game's frame intervals meanwhile). Its `Debug.message` lines (krkrz prints them to stdout) are the harness's states |
-| `js` | `cpu.c`'s computing cases and `bench.c` as plain wasm in V8 (node) and JavaScriptCore (jsvu's shell): the engines compared, and the cost of the x86 translation against `cpu-game`; `dyn.js`: wasm the way koji makes it (modules compiled at run time, instantiation, a module per block, `call` vs `call_indirect`, first tier vs optimized) |
+| `js` | `cpu.c`'s computing cases and `bench.c` as plain wasm in V8 (node) and JavaScriptCore (WebKitGTK's nightly shell, pinned by revision + sha256): the engines compared, and the cost of the x86 translation against `cpu-game`; `dyn.js`: wasm the way koji makes it (modules compiled at run time, instantiation, a module per block, `call` vs `call_indirect`, first tier vs optimized) |
 
 The scenes are 1280x720 and drawn from procedural pictures (`src/bench.h`): no game files.
 Frames run unpaced (`IPPAI_NOPACE`, Chromium without vsync); the WebGPU device on the runners is
@@ -49,7 +49,7 @@ history's), the JS engines disagree, a group left no results, a case has fewer n
 rounds, or there are none. The artifact `bench-history` carries the medians and checksums of the
 last 300 commits from run to run; `VERSION` in `suite.mjs` says how they were measured, and only
 the same version is compared with (bump it when the numbers stop being comparable). The report's
-計測条件 lists Chromium, node, Emscripten and the JavaScriptCore revision (pinned by `JSC_REV` in `js.sh`).
+計測条件 lists Chromium, node, Emscripten and the JavaScriptCore revision (pinned by `IPPAI_JSC_REV` + `IPPAI_JSC_SHA256` in `js.sh`).
 
 The JavaScriptCore shell is Safari's engine on Linux, not iPhone Safari: no iOS memory limits,
 other JIT settings, another CPU.

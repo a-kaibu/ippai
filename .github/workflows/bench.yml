@@ -181,6 +181,11 @@ jobs:
         with:
           path: ~/emsdk4
           key: emsdk-${{ runner.os }}-${{ hashFiles('tools/ci/emsdk.sh') }}
+      - uses: actions/cache@v6.1.0
+        with:
+          # (the pinned JavaScriptCore bundle: webkitgtk.org drops old revisions)
+          path: ~/.cache/ippai-jsc
+          key: jsc-${{ hashFiles('tests/bench/js.sh') }}
       - name: Bench js (V8 and JavaScriptCore)
         env:
           ROUNDS: ${{ inputs.rounds }}
@@ -220,7 +225,7 @@ jobs:
           GROUPS: ${{ needs.plan.outputs.all }}
         run: |
           python3 tests/bench/report.py results --sha "$SHA" --old-sha "$OLD_SHA" --groups "$GROUPS" --history history/history.json \
-            --history-out history.json --out report.md --summary "$GITHUB_STEP_SUMMARY"
+            --history-out history.json --rejected-out rejected.json --out report.md --summary "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
@@ -232,6 +237,8 @@ jobs:
         if: always()
         with:
           name: bench-report
-          path: report.md
+          path: |
+            report.md
+            rejected.json
           retention-days: 90
           if-no-files-found: ignore

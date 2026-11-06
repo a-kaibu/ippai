@@ -3,6 +3,7 @@
 
     report.py RESULTS_DIR --sha SHA [--old-sha SHA] [--groups "cpu-kernels gdi ... js"]
               [--history history.json] [--out report.md] [--summary FILE] [--history-out history.json]
+              [--rejected-out rejected.json]
 
 RESULTS_DIR holds the JSON files tests/bench/run.mjs and js.mjs wrote (any depth). For each metric
 (ms, lower is better) the median of the rounds is compared between the builds that ran side by
@@ -16,7 +17,9 @@ commits; only entries of the same suite VERSION are compared with.
 Exits 1 (after writing the report) when the results can't be trusted or something broke: a
 case that worked before fails (a broken benchmark is a broken feature), a checksum differs from
 the previous build's, a group of --groups left no results, a case has fewer numbers than its
-rounds, or there are no numbers at all. Slower numbers alone do not fail the run."""
+rounds, or there are no numbers at all. Slower numbers alone do not fail the run. Such a run is
+not added to the history (--history-out gets the previous history unchanged); its entry goes to
+--rejected-out instead, with the reasons."""
 import argparse
 import glob
 import json
@@ -35,6 +38,7 @@ p.add_argument("--old-sha", default="")
 p.add_argument("--groups", default="")
 p.add_argument("--history")
 p.add_argument("--history-out")
+p.add_argument("--rejected-out")
 p.add_argument("--out")
 p.add_argument("--summary", action="append", default=[])
 a = p.parse_args()
@@ -165,6 +169,7 @@ out = [f"## ベンチマーク {a.sha[:7]}" + (f"（比較対象 {a.old_sha[:7]}
 if problems:
     out.append("\n### ❌ この結果は信用できない、または壊れた\n")
     out += [f"- {p}" for p in problems]
+    out.append("\n（この版の数値は履歴に入れていない: 次のコミットの比較対象は前の履歴のまま）")
 if incompatible:
     out.append("\n### 比較から外した前の版\n")
     out += [f"- {b} ({a.old_sha[:7]}): {why}" for b, why in incompatible.items()]
@@ -218,15 +223,22 @@ for f in ([a.out] if a.out else []) + a.summary:
 if not a.out and not a.summary:
     sys.stdout.write(text)
 
+entry = {"sha": a.sha, "date": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+         "version": version, "old_sha": a.old_sha if ab else "", "env": env,
+         "metrics": {m: statistics.median(v) for m, v in new.items()},
+         "checks": {k: v for k, v in checks_new.items() if k not in unstable},
+         "cases": sorted(all_cases), "errors": sorted(err_new)}
 if a.history_out:
-    history["commits"] = [c for c in history["commits"] if c["sha"] != a.sha]
-    history["commits"].append({"sha": a.sha, "date": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                               "version": version, "old_sha": a.old_sha if ab else "", "env": env,
-                               "metrics": {m: statistics.median(v) for m, v in new.items()},
-                               "checks": {k: v for k, v in checks_new.items() if k not in unstable},
-                               "cases": sorted(all_cases), "errors": sorted(err_new)})
-    history["commits"] = history["commits"][-KEEP:]
+    # Only a run that can be trusted joins the history: it is what the next commits compare with.
+    # A failed one leaves the history as it was (written again, so the artifact carries on).
+    if not problems:
+        history["commits"] = [c for c in history["commits"] if c["sha"] != a.sha]
+        history["commits"].append(entry)
+        history["commits"] = history["commits"][-KEEP:]
     json.dump(history, open(a.history_out, "w", encoding="utf-8"), indent=0)
+if a.rejected_out and problems:
+    # (the failed run's numbers, to look into: never compared with)
+    json.dump({**entry, "problems": problems}, open(a.rejected_out, "w", encoding="utf-8"), indent=0)
 
 if problems:
     print("\n".join(problems), file=sys.stderr)

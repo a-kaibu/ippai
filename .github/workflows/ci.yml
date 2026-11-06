@@ -40,6 +40,8 @@ jobs:
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
         run: node tests/net-browser.mjs
+      - name: Bench report (a failed run stays out of the history)
+        run: python3 tests/bench/test_report.py
       - uses: actions/cache@v6.1.0
         with:
           path: |
