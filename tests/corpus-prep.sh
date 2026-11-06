@@ -5,6 +5,7 @@
 # prints the exe path inside the tree on success
 set -e
 id=$1 url=$2 exe=$3 store=$4
+HERE=$(cd "$(dirname "$0")" && pwd)
 T=${TRIALS:-/home/user/trials}/$id
 BASE=${BASE_STORE:-/home/user/work/base-store}
 mkdir -p "$T"
@@ -29,8 +30,9 @@ if [ ! -d x ]; then
     *.zip|*.lzh) (cd x.part && LC_ALL=C.UTF-8 unar -q -e cp932 -o . ../$f >/dev/null 2>&1 || [ -n "$(ls)" ]) ;;
     *.rar|*.7z) (cd x.part && LC_ALL=C.UTF-8 unar -q -o . ../$f >/dev/null 2>&1 || [ -n "$(ls)" ]) ;;
     *.exe)
-      # self-extracting archive or Inno Setup installer
-      (cd x.part && (LC_ALL=C.UTF-8 innoextract -s -q -e "../$f" 2>/dev/null && [ -n "$(ls)" ]) ||
+      # InstallShield setup with its files in the exe, self-extracting archive or Inno Setup installer
+      (cd x.part && (python3 -I "$HERE/isextract.py" "../$f" . >/dev/null 2>&1 && [ -n "$(ls)" ]) ||
+         (LC_ALL=C.UTF-8 innoextract -s -q -e "../$f" 2>/dev/null && [ -n "$(ls)" ]) ||
          (LC_ALL=C.UTF-8 unar -q -e cp932 -o . "../$f" >/dev/null 2>&1 && [ -n "$(ls)" ]) ||
          (LC_ALL=C.UTF-8 7z x -y "../$f" >/dev/null 2>&1 && [ -n "$(ls)" ]) ||
          (LC_ALL=C.UTF-8 unrar x -y "../$f" >/dev/null 2>&1 && [ -n "$(ls)" ])) ;;
@@ -41,12 +43,12 @@ if [ ! -d x ]; then
   # packages and Inno Setup installers here rather than run them in the browser (an installer
   # writing a 1 GB package into the in-memory file system runs out of wasm memory)
   find x.part -type f -iname '*.exe' -print0 | while IFS= read -r -d '' s; do
-    if python3 -I "$(dirname "$0")/isextract.py" "$s" "$s.is" >/dev/null 2>&1; then rm -f "$s"
+    if python3 -I "$HERE/isextract.py" "$s" "$s.is" >/dev/null 2>&1; then rm -f "$s"
     elif LC_ALL=C.UTF-8 innoextract -s -q -e -d "$s.inno" "$s" >/dev/null 2>&1 && [ -n "$(ls "$s.inno")" ]; then rm -f "$s"
     # a self-extracting zip of the game (kaguya's sperman_trial.exe); not a program that only
     # carries a zip of its own data (NW.js): the zip has to hold an .exe
     elif unzip -Z1 "$s" 2>/dev/null | grep -qi '\.exe$' &&
-        python3 -I "$(dirname "$0")/unzip-cp932.py" "$s" "$s.zip" >/dev/null 2>&1 && [ -n "$(ls "$s.zip")" ]; then rm -f "$s"
+        python3 -I "$HERE/unzip-cp932.py" "$s" "$s.zip" >/dev/null 2>&1 && [ -n "$(ls "$s.zip")" ]; then rm -f "$s"
     else rm -rf "$s.is" "$s.inno" "$s.zip"
     fi
   done
@@ -58,7 +60,7 @@ if [ ! -d x ]; then
   find x.part -type f -iname '*.msi' -print0 | while IFS= read -r -d '' m; do
     # (msiextract can't do packages split over several cabinets: tests/msiunpack.py)
     if mkdir -p "$m.x" && { (cd "$m.x" && LC_ALL=C.UTF-8 msiextract "$OLDPWD/$m" >/dev/null 2>&1) ||
-        { rm -rf "$m.x" && mkdir "$m.x" && python3 -I "$(dirname "$0")/msiunpack.py" "$m" "$m.x" >/dev/null 2>&1; }; }; then
+        { rm -rf "$m.x" && mkdir "$m.x" && python3 -I "$HERE/msiunpack.py" "$m" "$m.x" >/dev/null 2>&1; }; }; then
       rm -f "$m"
     else rm -rf "$m.x"
     fi

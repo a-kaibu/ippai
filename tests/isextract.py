@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """isextract.py SETUP.EXE OUTDIR: unpacks an InstallShield setup.exe whose payload is an
-"ISSetupStream" / "InstallShield" overlay (files obfuscated with a name-derived key, the
+"ISSetupStream" / "InstallShield" overlay, or plain NUL-separated entries, (files obfuscated with a name-derived key, the
 ISSetupStream ones also zlib-compressed). Prints the file names."""
 import sys, struct, zlib, os
 M = [0x13, 0x35, 0x86, 0x07]
@@ -62,8 +62,33 @@ def main(path, out):
             if data[:2] == b'x\x9c':
                 data = zlib.decompress(data)
             save(out, name, data)
+    elif plain(f, end, out):
+        pass
     else:
         sys.exit('not an InstallShield stream setup')
+
+def plain(f, end, out):
+    """older setups (ojyonana_trial.exe): name, path, version and decimal size as NUL-ended
+    strings, then the file as is; the path (Disk1\\AdvHD.exe) is where the file goes"""
+    size = os.fstat(f.fileno()).st_size
+    pos = end
+    while pos < size:
+        f.seek(pos); h = f.read(1024).split(b'\0', 4)
+        if len(h) < 5 or not h[3].isdigit():
+            return pos > end
+        name, ln = h[1].decode('cp932'), int(h[3])
+        pos += sum(len(x) + 1 for x in h[:4])
+        p = os.path.join(out, name.replace('\\', '/'))
+        os.makedirs(os.path.dirname(p) or out, exist_ok=True)
+        f.seek(pos)
+        with open(p, 'wb') as o:
+            left = ln
+            while left:
+                b = f.read(min(left, 1 << 22)); o.write(b); left -= len(b)
+                if not b: return False
+        print(name, ln)
+        pos += ln
+    return pos > end
 
 def save(out, name, data):
     p = os.path.join(out, name.replace('\\', '/'))
