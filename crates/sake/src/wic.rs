@@ -267,7 +267,10 @@ fn s_seek(c: &mut Ctx) -> u32 {
 }
 
 fn s_set_size(c: &mut Ctx) -> u32 {
-    let (this, n) = (c.a(0), c.a(1));
+    let (this, n, high) = (c.a(0), c.a(1), c.a(2));
+    if high != 0 || n > 1 << 30 {
+        return 0x8003_0070; // STG_E_MEDIUMFULL
+    }
     stream(this, |d, _| d.resize(n as usize, 0));
     0
 }

@@ -1,0 +1,135 @@
+# Conformance against outside references:
+#  - winetest: Wine's own conformance tests (dlls/<dll>/tests of the Wine release pinned in
+#    tests/winetest/build.sh, built with mingw-w64 the way Wine builds them) run on sake's node
+#    build, compared with tests/winetest/expected-<arch>.tsv. Fails when a test gets worse.
+#    The test programs are cached per Wine version and dll list; nothing of Wine is committed.
+#  - diff: random GDI drawing into DIB sections on Wine's GDI (the reference) and on sake,
+#    hash by hash (tests/diff/gdi.py, known differences in tests/diff/gdi-expected.txt); SSE
+#    and x87 operations on boundary and random operands in every rounding mode on the real CPU
+#    (the program under Wine runs natively) and on sake (tests/diff/fpu.py).
+name: Conformance
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: conformance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sake:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Tools
+        run: |
+          rustup component add rust-src
+          rustup target add wasm32-unknown-emscripten
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/emsdk4
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: conformance-sake-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'tools/ci/emsdk.sh') }}
+          restore-keys: conformance-sake-${{ runner.os }}-
+      - name: sake (node build)
+        run: |
+          . tools/ci/emsdk.sh
+          OUT=$PWD/target/sake-out WEB_OUT=$PWD/target/sake-web bash crates/sake/build.sh
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: sake-node
+          path: |
+            target/sake-out/sake.js
+            target/sake-out/sake.wasm
+          retention-days: 3
+
+  winetest-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - id: key
+        run: echo "key=winetest-${{ hashFiles('tests/winetest/build.sh', 'tests/winetest/dlls.txt') }}" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6.1.0
+        id: cache
+        with:
+          path: target/winetest/bin
+          key: ${{ steps.key.outputs.key }}
+      - name: Build Wine's tests
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq --no-install-recommends mingw-w64 flex bison
+          tests/winetest/build.sh
+          rm -rf target/winetest/build target/winetest/wine-*
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: winetest-bin
+          path: target/winetest/bin
+          retention-days: 3
+
+  winetest:
+    needs: [sake, winetest-build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [i386]
+        shard: [0, 1]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: sake-node
+          path: target/sake-out
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: winetest-bin
+          path: target/winetest/bin
+      - name: Wine's tests on sake (shard ${{ matrix.shard }} of 2)
+        run: python3 tests/winetest/run.py --arch ${{ matrix.arch }} --shard ${{ matrix.shard }}/2 -j 4 --timeout 120
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: winetest-${{ matrix.arch }}-${{ matrix.shard }}
+          path: |
+            target/winetest/report-*.md
+            target/winetest/results-*.tsv
+          retention-days: 14
+
+  diff:
+    needs: [sake]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: sake-node
+          path: target/sake-out
+      - name: Wine (the reference) and mingw-w64
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update -q
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends mingw-w64 wine wine32:i386
+      - name: GDI drawing, sake against Wine
+        run: python3 tests/diff/gdi.py
+      - name: Floating point, sake against the CPU
+        if: always()
+        run: python3 tests/diff/fpu.py

@@ -186,8 +186,10 @@ pub fn find_impl(dll: &str, name: &str) -> Option<Handler> {
     if let Some(f) = m.get(&format!("{dll}!{name}")) {
         return Some(*f);
     }
-    // kernel32 <-> kernelbase <-> ntdll forwarders
-    for d in ["kernel32", "kernelbase", "ntdll", "msvcrt", "user32"] {
+    // kernel32 <-> kernelbase <-> ntdll forwarders; shcore exports shlwapi's string, registry
+    // and stream helpers (shlwapi forwards them there since Windows 8)
+    let shl: &[&str] = if dll == "shcore" { &["shlwapi"] } else { &[] };
+    for d in shl.iter().chain(&["kernel32", "kernelbase", "ntdll", "msvcrt", "user32"]) {
         if let Some(f) = m.get(&format!("{d}!{name}")) {
             return Some(*f);
         }
@@ -211,7 +213,8 @@ pub fn export(dll: &str, name: &str) -> u32 {
     }
     let sp = specs();
     let spec = sp.by_name.get(&key).copied().or_else(|| {
-        ["kernel32", "kernelbase", "ntdll"].iter().find_map(|k| sp.by_name.get(&(k.to_string(), name.to_string())).copied())
+        let shl: &[&str] = if d == "shcore" { &["shlwapi"] } else { &[] };
+        shl.iter().chain(&["kernel32", "kernelbase", "ntdll"]).find_map(|k| sp.by_name.get(&(k.to_string(), name.to_string())).copied())
     });
     let f = find_impl(&d, name);
     let mut e = ENTRIES.write().unwrap();

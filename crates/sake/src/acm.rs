@@ -173,6 +173,9 @@ fn driver_details(c: &mut Ctx, wide: bool) -> u32 {
         return MMSYSERR_INVALPARAM;
     }
     let size = r32(p);
+    if !(4..=0x10000).contains(&size) {
+        return MMSYSERR_INVALPARAM;
+    }
     let mut b = vec![0u8; size as usize];
     b[0..4].copy_from_slice(&size.to_le_bytes());
     let put = |b: &mut Vec<u8>, at: usize, v: u32| {

@@ -199,7 +199,14 @@ pub fn run(cpu: &mut Cpu, until: u32) {
                     fatal(cpu, "fault at a trap address");
                 }
                 // (STATUS_GUARD_PAGE_VIOLATION once on a guard page, else STATUS_ACCESS_VIOLATION)
-                let code = if mem::guard_hit(addr) { 0x8000_0001 } else { 0xc000_0005 };
+                let guard = mem::guard_hit(addr);
+                // a guard page of the thread's stack (between TEB DeallocationStack and
+                // StackBase): Windows commits it, moves the guard page down and StackLimit
+                // with it, and the program sees nothing (kernel32 virtual test_stack_commit)
+                if guard && !mem::x64() && mem::stack_grow(crate::cur().teb, addr) {
+                    continue;
+                }
+                let code = if guard { 0x8000_0001 } else { 0xc000_0005 };
                 if mem::x64() {
                     let e = cpu.eip;
                     seh64::raise(cpu, code, 0, e, &[write as u64, addr as u64]);
@@ -491,6 +498,8 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     let (img, cmd) = if x64 { (0x60, 0x70) } else { (0x38, 0x40) };
     ustr(pp + img, 2 * wpath16.len() as u32, wp);
     ustr(pp + cmd, cmdlen, wcmd);
+    // the window title (STARTUPINFO lpTitle) is the image path when the parent gave none
+    ustr(pp + if x64 { 0xb0 } else { 0x70 }, 2 * wpath16.len() as u32, wp);
     let entry = pe::with(base, |m| m.entry).unwrap();
     pe::init_dlls(cpu);
     if x64 {

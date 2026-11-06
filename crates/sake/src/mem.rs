@@ -373,6 +373,24 @@ pub fn guard_hit(a: u32) -> bool {
     true
 }
 
+/// A guard page at `a` was hit: if it is inside the 32-bit thread stack of `teb`, the page
+/// below becomes the guard page (unless it is the stack's last one) and StackLimit the hit
+/// page's base.
+pub fn stack_grow(teb: u32, a: u32) -> bool {
+    let (dealloc, base) = (r32(teb + 0xe0c), r32(teb + 4));
+    if dealloc == 0 || !(dealloc..base).contains(&a) {
+        return false;
+    }
+    let page = a & !(PAGE - 1);
+    if page >= dealloc + PAGE {
+        commit_range(page - PAGE, PAGE, 0x04 | 0x100);
+    }
+    if page < r32(teb + 8) {
+        w32(teb + 8, page);
+    }
+    true
+}
+
 /// The allocation holding `a`.
 pub fn find(a: u32) -> Option<(u32, Region)> {
     let sp = SPACE.lock().unwrap();

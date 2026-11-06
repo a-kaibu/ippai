@@ -129,14 +129,15 @@ pub fn is_dir<P: AsRef<std::path::Path>>(h: P) -> bool {
 /// Absolute Windows path of `p` (GetFullPathName): drive, no "." or "..", backslashes.
 pub fn full_path(p: &str) -> String {
     let p = p.replace('/', "\\");
-    let abs = if p.len() >= 2 && p.as_bytes()[1] == b':' {
+    let abs = if p.len() >= 2 && p.as_bytes()[1] == b':' && p.is_char_boundary(2) {
         if p.len() == 2 || p.as_bytes()[2] != b'\\' {
             format!("{}\\{}", &p[..2], &p[2..])
         } else {
             p
         }
-    } else if let Some(rest) = p.strip_prefix("\\\\?\\") {
-        rest.to_string()
+    } else if let Some(rest) = p.strip_prefix("\\\\?\\").or_else(|| p.strip_prefix("\\??\\")) {
+        // (an NT or long path; an empty or driveless one is taken from the current directory)
+        if rest.len() >= 2 && rest.as_bytes()[1] == b':' { full_path(rest) } else { format!("{}{}", cwd(), rest) }
     } else if let Some(rest) = p.strip_prefix("\\\\") {
         // UNC: \\server\share stays the root (".." does not go above it)
         let mut it = rest.splitn(3, '\\');

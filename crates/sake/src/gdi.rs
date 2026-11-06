@@ -374,6 +374,89 @@ impl View {
             }
         }
     }
+    /// The pixel as stored (32/24 bpp: the color, 16: the 16-bit value, palettes: the index).
+    /// Raster ops work on these, as in Windows (an indexed DIB's ops combine indices).
+    #[inline]
+    fn raw(&self, x: i32, y: i32) -> u32 {
+        let r = self.row(y);
+        unsafe {
+            match self.bpp {
+                32 => (r as *const u32).add(x as usize).read_unaligned(),
+                24 => {
+                    let p = r.add(3 * x as usize);
+                    (*p.add(2) as u32) << 16 | (*p.add(1) as u32) << 8 | *p as u32
+                }
+                16 => (r as *const u16).add(x as usize).read_unaligned() as u32,
+                8 => *r.add(x as usize) as u32,
+                4 => (*r.add(x as usize / 2) >> if x & 1 == 0 { 4 } else { 0 } & 15) as u32,
+                1 => (*r.add(x as usize / 8) >> (7 - (x & 7)) & 1) as u32,
+                _ => 0,
+            }
+        }
+    }
+    #[inline]
+    fn set_raw(&self, x: i32, y: i32, v: u32) {
+        let r = self.row(y);
+        unsafe {
+            match self.bpp {
+                32 => (r as *mut u32).add(x as usize).write_unaligned(v),
+                24 => {
+                    let p = r.add(3 * x as usize);
+                    *p = v as u8;
+                    *p.add(1) = (v >> 8) as u8;
+                    *p.add(2) = (v >> 16) as u8;
+                }
+                16 => (r as *mut u16).add(x as usize).write_unaligned(v as u16),
+                8 => *r.add(x as usize) = v as u8,
+                4 => {
+                    let p = r.add(x as usize / 2);
+                    let i = (v & 15) as u8;
+                    *p = if x & 1 == 0 { (*p & 0x0f) | i << 4 } else { (*p & 0xf0) | i };
+                }
+                1 => {
+                    let p = r.add(x as usize / 8);
+                    let m = 0x80u8 >> (x & 7);
+                    *p = if v & 1 != 0 { *p | m } else { *p & !m };
+                }
+                _ => {}
+            }
+        }
+    }
+    /// A solid color (0xRRGGBB) as a stored pixel: palettes take the nearest entry.
+    fn pixel(&self, c: u32) -> u32 {
+        match self.bpp {
+            32 | 24 => c & 0xffffff,
+            16 if self.r565 => (c >> 19 & 31) << 11 | (c >> 10 & 63) << 5 | (c >> 3 & 31),
+            16 => (c >> 19 & 31) << 10 | (c >> 11 & 31) << 5 | (c >> 3 & 31),
+            _ => self.index_of(c),
+        }
+    }
+    /// The COLORREF (0xBBGGRR) a stored pixel shows
+    fn color_of(&self, px: u32) -> u32 {
+        let c = match self.bpp {
+            32 | 24 => px & 0xffffff,
+            16 => {
+                let x5 = |v: u32| v << 3 | v >> 2;
+                let (r, g, b) = if self.r565 {
+                    let g6 = px >> 5 & 63;
+                    (px >> 11 & 31, g6 << 2 | g6 >> 4, px & 31)
+                } else {
+                    (px >> 10 & 31, x5(px >> 5 & 31), px & 31)
+                };
+                x5(r) << 16 | g << 8 | x5(b)
+            }
+            _ => self.pal_at(px as usize),
+        };
+        (c & 0xff) << 16 | (c & 0xff00) | (c >> 16 & 0xff)
+    }
+    /// The bits a stored pixel has
+    fn raw_mask(&self) -> u32 {
+        if self.bpp >= 32 {
+            u32::MAX
+        } else {
+            (1u32 << self.bpp) - 1
+        }
+    }
     fn pal_at(&self, i: usize) -> u32 {
         self.pal.get(i).copied().unwrap_or(if i == 0 { 0 } else { 0xffffff })
     }
@@ -776,8 +859,9 @@ fn sys_color(i: u32) -> u32 {
 /// Fills `r` (device coordinates) with a raster op of the pattern.
 fn pat_blt(c: &mut Canvas, r: Rect, pat: &Pat, op: u8) -> Rect {
     let r = r.and(&c.clip);
-    if r.empty() {
-        return r;
+    if r.empty() || matches!(pat, Pat::None) && uses_pat(op) {
+        // (a raster op of the null brush draws nothing)
+        return Rect::default();
     }
     if let (Pat::Solid(col), 0xf0, 32) = (pat, op, c.v.bpp) {
         for y in r.t..r.b {
@@ -788,10 +872,11 @@ fn pat_blt(c: &mut Canvas, r: Rect, pat: &Pat, op: u8) -> Rect {
         }
         return r;
     }
+    let mask = c.v.raw_mask();
     for y in r.t..r.b {
         for x in r.l..r.r {
-            let d = c.v.get(x, y);
-            c.v.put(x, y, rop3(op, pat.at(x, y), 0, d));
+            let p = c.v.pixel(pat.at(x, y));
+            c.v.set_raw(x, y, rop3(op, p, 0, c.v.raw(x, y)) & mask);
         }
     }
     r
@@ -813,6 +898,7 @@ pub struct Src<'a> {
 /// The blit at the heart of BitBlt/StretchBlt/StretchDIBits: dst rect (device coordinates,
 /// w/h may be negative), source, raster op. Nearest-neighbor stretching.
 fn blit(c: &mut Canvas, dst: (i32, i32, i32, i32), src: Option<Src>, op: u8, pat: &Pat, text: u32, bk: u32) -> Rect {
+    // (a negative extent covers x+w+1 ..= x, as in Windows)
     let (mut dx, mut dy, mut dw, mut dh) = dst;
     let mut flip = (false, false);
     // a mirrored stretch covers x+w+1..=x (pixel x is drawn), PatBlt covers x+w..x-1
@@ -897,6 +983,12 @@ fn blit(c: &mut Canvas, dst: (i32, i32, i32, i32), src: Option<Src>, op: u8, pat
     let color_to_mono = d.mono && !sv.mono;
     let need_dst = (op >> 1 ^ op) & 0x55 != 0;
     let need_pat = uses_pat(op);
+    // raster ops combine stored pixels (an indexed destination's: indices); a source of
+    // another format is converted first, to an index by the 5 high bits of each component
+    // as Windows does
+    let same = sv.bpp == d.bpp && !mono_to_color && !color_to_mono && if d.bpp <= 8 { sv.pal == d.pal } else { sv.r565 == d.r565 };
+    let mask = d.raw_mask();
+    let (text_px, bk_px) = (d.pixel(text), d.pixel(bk));
     for y in r.t..r.b {
         let syy = map_y(y);
         for (k, x) in (r.l..r.r).enumerate() {
@@ -904,35 +996,50 @@ fn blit(c: &mut Canvas, dst: (i32, i32, i32, i32), src: Option<Src>, op: u8, pat
             if !in_src(sxx, syy) {
                 continue;
             }
-            let mut sc = sv.get(sxx, syy);
-            if mono_to_color {
-                sc = if sc & 0xffffff == 0 { text } else { bk };
-            } else if color_to_mono {
-                sc = if sc & 0xffffff == s.bk { 0xffffff } else { 0 };
-            }
-            if op == 0xcc {
-                if d.bpp != 32 || sv.bpp != 32 {
-                    sc &= 0xffffff;
+            let spx = if same {
+                sv.raw(sxx, syy)
+            } else {
+                let sc = sv.get(sxx, syy) & 0xffffff;
+                if mono_to_color {
+                    if sc == 0 { text_px } else { bk_px }
+                } else if color_to_mono {
+                    (sc != s.bk) as u32 ^ 1
+                } else if d.bpp <= 8 {
+                    d.index_of(sc & 0xf8f8f8 | 0x040404)
+                } else {
+                    d.pixel(sc)
                 }
-                d.put(x, y, sc);
+            };
+            if op == 0xcc {
+                d.set_raw(x, y, spx);
                 continue;
             }
-            let dc = if need_dst { d.get(x, y) } else { 0 };
-            let p = if need_pat { pat.at(x, y) } else { 0 };
-            d.put(x, y, rop3(op, p, sc, dc));
+            let dpx = if need_dst { d.raw(x, y) } else { 0 };
+            let p = if need_pat { d.pixel(pat.at(x, y)) } else { 0 };
+            d.set_raw(x, y, rop3(op, p, spx, dpx) & mask);
         }
     }
     r
 }
 
 pub fn fill_rect_brush(dc: u32, r: Rect, brush: u32) {
+    pat_rect(dc, r, Some(brush), 0xf0);
+}
+
+/// PatBlt of a rectangle (user32's FillRect/InvertRect/FrameRect are made of these): with
+/// `brush` instead of the DC's. An upside-down rectangle is turned the right way as PatBlt's
+/// negative extents are: x+w+1 ..= x.
+pub fn pat_rect(dc: u32, r: Rect, brush: Option<u32>, op: u8) {
+    let flip = |a: i32, b: i32| if a > b { (b + 1, a + 1) } else { (a, b) };
+    let ((l, rr), (t, b)) = (flip(r.l, r.r), flip(r.t, r.b));
+    let r = Rect { l, t, r: rr, b };
     draw(dc, |t, s, c| {
-        let pat = pattern(t, s, brush);
-        if matches!(pat, Pat::None) {
+        let pat = pattern(t, s, brush.unwrap_or(s.brush));
+        if matches!(pat, Pat::None) && uses_pat(op) {
             return Rect::default();
         }
         let r = c.rect(r);
-        pat_blt(c, r, &pat, 0xf0)
+        pat_blt(c, r, &pat, op)
     });
 }
 
@@ -2793,15 +2900,20 @@ fn GetPixel(c: &mut Ctx) -> u32 {
 }
 fn SetPixel(c: &mut Ctx) -> u32 {
     let (dc, x, y, col) = (c.a(0), c.i(1), c.i(2), c.a(3));
-    draw(dc, |_, _, cv| {
+    let mut out = u32::MAX;
+    draw(dc, |_, s, cv| {
         let (x, y) = cv.dev(x, y);
+        // (SetPixel follows the DC's ROP2 too, and returns the color it could store, also
+        // outside the clip)
+        let px = cv.v.pixel(cref(col));
+        out = cv.v.color_of(px);
         if cv.clip.has(x, y) {
-            cv.v.put(x, y, cref(col));
+            cv.v.set_raw(x, y, rop2(s.rop2, px, cv.v.raw(x, y)) & cv.v.raw_mask());
             return Rect { l: x, t: y, r: x + 1, b: y + 1 };
         }
         Rect::default()
     });
-    col
+    out
 }
 fn SetPixelV(c: &mut Ctx) -> u32 {
     SetPixel(c);
@@ -2829,32 +2941,23 @@ fn pen_of(t: &Objs, s: &DcState) -> Option<PenInfo> {
     }
 }
 
-/// The 16 binary raster ops (R2_BLACK 1 .. R2_WHITE 16) of pen p over destination d.
+/// A binary raster op (R2_BLACK 1 ..= R2_WHITE 16) of pen and destination pixel values: op-1 is
+/// the truth table (bit 2*pen+dst); callers mask the result to the pixel's bits.
+#[inline]
 fn rop2(op: u32, p: u32, d: u32) -> u32 {
-    match op {
-        13 => p,
-        11 => d,
-        7 => p ^ d,
-        6 => !d & 0xffffff,
-        _ => {
-            let t = op.wrapping_sub(1) & 15;
-            let mut r = 0;
-            for i in 0..4 {
-                if t >> i & 1 != 0 {
-                    r |= (if i & 2 != 0 { p } else { !p }) & (if i & 1 != 0 { d } else { !d });
-                }
-            }
-            r & 0xffffff
-        }
-    }
+    let t = op.wrapping_sub(1) & 15;
+    let m = |b: u32| if t >> b & 1 != 0 { u32::MAX } else { 0 };
+    (!p & !d & m(0)) | (!p & d & m(1)) | (p & !d & m(2)) | (p & d & m(3))
 }
 
 fn plot(c: &mut Canvas, x: i32, y: i32, col: u32, op: u32) -> bool {
     if !c.clip.has(x, y) {
         return false;
     }
-    let d = if op == 13 { 0 } else { c.v.get(x, y) & 0xffffff };
-    c.v.put(x, y, rop2(op, col, d));
+    // raster ops act on the stored pixel values (palette indices of an indexed DIB)
+    let px = c.v.pixel(col);
+    let d = if op == 13 { 0 } else { c.v.raw(x, y) };
+    c.v.set_raw(x, y, rop2(op, px, d) & c.v.raw_mask());
     true
 }
 
@@ -3669,6 +3772,14 @@ fn GetTextCharsetInfo(c: &mut Ctx) -> u32 {
     128
 }
 
+/// A negative character count: the text functions fail (ERROR_INVALID_PARAMETER)
+fn bad_count(n: u32) -> bool {
+    if (n as i32) < 0 {
+        crate::k32::last_error(87);
+        return true;
+    }
+    false
+}
 fn ansi_chars(p: u32, n: u32) -> Vec<u16> {
     a2w(&mem::cstrn(p, n))
 }
@@ -3686,6 +3797,9 @@ fn extent(c: &mut Ctx, s: &[u16], out: u32) -> u32 {
     1
 }
 fn GetTextExtentPoint32A(c: &mut Ctx) -> u32 {
+    if bad_count(c.a(2)) {
+        return 0;
+    }
     let s = ansi_chars(c.a(1), c.a(2));
     extent(c, &s, c.a(3))
 }
@@ -3693,6 +3807,9 @@ fn GetTextExtentPointA(c: &mut Ctx) -> u32 {
     GetTextExtentPoint32A(c)
 }
 fn GetTextExtentPoint32W(c: &mut Ctx) -> u32 {
+    if bad_count(c.a(2)) {
+        return 0;
+    }
     let s = wide_chars(c.a(1), c.a(2));
     extent(c, &s, c.a(3))
 }
@@ -3719,10 +3836,16 @@ fn ext_ex(c: &mut Ctx, s: &[u16]) -> u32 {
     1
 }
 fn GetTextExtentExPointA(c: &mut Ctx) -> u32 {
+    if bad_count(c.a(2)) {
+        return 0;
+    }
     let s = ansi_chars(c.a(1), c.a(2));
     ext_ex(c, &s)
 }
 fn GetTextExtentExPointW(c: &mut Ctx) -> u32 {
+    if bad_count(c.a(2)) {
+        return 0;
+    }
     let s = wide_chars(c.a(1), c.a(2));
     ext_ex(c, &s)
 }
@@ -4070,6 +4193,9 @@ fn TextOutW(c: &mut Ctx) -> u32 {
 }
 fn ext_text_out(c: &mut Ctx, wide: bool) -> u32 {
     let (dc, x, y, opts, rp, sp, n, dxp) = (c.a(0), c.i(1), c.i(2), c.a(3), c.a(4), c.a(5), c.a(6), c.a(7));
+    if bad_count(n) {
+        return 0;
+    }
     let rect = (rp != 0).then(|| Rect::read(rp));
     let (s, units): (Vec<u16>, Vec<usize>) = if wide || opts & 0x10 != 0 {
         (wide_chars(sp, n), (0..n as usize).collect())

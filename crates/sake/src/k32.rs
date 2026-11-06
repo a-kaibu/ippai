@@ -21,7 +21,7 @@ macro_rules! reg {
     ($dll:literal; $($f:ident),* $(,)?) => { $( implement($dll, stringify!($f), $f); )* };
 }
 
-fn last_error(e: u32) {
+pub fn last_error(e: u32) {
     w32(crate::cur().teb + crate::teb_last_error(), e);
 }
 
@@ -1177,7 +1177,18 @@ fn VirtualProtect(c: &mut Ctx) -> u32 {
         }
     }
 }
-fn VirtualLock(_: &mut Ctx) -> u32 {
+/// (nothing is paged out; a guard page in the range fails it once, with the guard gone, as
+/// touching it would: STATUS_GUARD_PAGE_VIOLATION)
+fn VirtualLock(c: &mut Ctx) -> u32 {
+    let (a, n) = (c.a(0) & !0xfff, c.a(1).saturating_add(c.a(0) & 0xfff));
+    let mut hit = false;
+    for p in (0..n.div_ceil(0x1000)).map(|i| a.wrapping_add(i * 0x1000)) {
+        hit |= mem::guard_hit(p);
+    }
+    if hit {
+        last_error(0x8000_0001);
+        return 0;
+    }
     1
 }
 fn VirtualUnlock(_: &mut Ctx) -> u32 {
@@ -2957,7 +2968,19 @@ fn DisableThreadLibraryCalls(_: &mut Ctx) -> u32 {
 fn GetProcAddress(c: &mut Ctx) -> u32 {
     let (h, p) = (c.a(0), c.a(1));
     let imp = if p < 0x10000 { crate::pe::Import::Ordinal(p) } else { crate::pe::Import::Name(Box::leak(a2s(&cstr(p)).into_boxed_str())) };
-    let r = crate::pe::proc_address(h, imp).unwrap_or(0);
+    let mut r = crate::pe::proc_address(h, imp).unwrap_or(0);
+    // SAKE_PROC_STUBS (tests/winetest): a system DLL's function we know but don't implement
+    // is found, as on Windows, and its trap returns 0; programs (games) otherwise see NULL
+    // and take the way they have for older Windows
+    if r == 0 && p >= 0x10000 && crate::env_on!("SAKE_PROC_STUBS") {
+        if let Some(dll) = crate::pe::with(h, |m| m.name.clone()).filter(|d| crate::api::is_system(d)) {
+            let name = a2s(&cstr(p));
+            let trap = crate::api::export(&dll, &name);
+            if crate::api::is_known(trap) {
+                r = crate::fast::bind(&dll, &name, trap);
+            }
+        }
+    }
     if crate::env_on!("SAKE_TRACE_LOAD") {
         eprintln!("sake: GetProcAddress({h:#x}, {}) = {r:#x}", if p < 0x10000 { format!("#{p}") } else { a2s(&cstr(p)) });
     }
@@ -3458,7 +3481,20 @@ fn SetFileAttributesA(c: &mut Ctx) -> u32 {
 fn SetFileAttributesW(c: &mut Ctx) -> u32 {
     set_file_attrs(&arg_str(c.a(0), true), c.a(1))
 }
+/// CreateDirectory's and RemoveDirectory's name errors: none (ERROR_PATH_NOT_FOUND), wildcards
+/// or other characters a name can't have (ERROR_INVALID_NAME)
+fn bad_dir_name(name: &str) -> Option<u32> {
+    if name.is_empty() {
+        return Some(3);
+    }
+    let last = name.trim_end_matches(['\\', '/']).rsplit(['\\', '/']).next().unwrap_or("");
+    last.contains(['?', '*', '<', '>', '|', '"']).then_some(123)
+}
 pub fn mkdir(name: &str) -> u32 {
+    if let Some(e) = bad_dir_name(name) {
+        last_error(e);
+        return 0;
+    }
     let h = files::resolve_new(name);
     match kura::fs::create_dir(&h) {
         Ok(()) => 1,
@@ -3475,6 +3511,10 @@ fn CreateDirectoryW(c: &mut Ctx) -> u32 {
     mkdir(&arg_str(c.a(0), true))
 }
 fn rmdir(name: &str) -> u32 {
+    if let Some(e) = bad_dir_name(name) {
+        last_error(e);
+        return 0;
+    }
     let Some(h) = files::resolve(name) else {
         last_error(files::missing(name));
         return 0;
@@ -3892,6 +3932,10 @@ fn split_command(cmd: &str) -> (String, String) {
 /// that exists) takes this one's place. The page reads the line and starts it once we exit
 /// (play.ts); launchers end themselves right after anyway. False for anything else.
 pub fn exec(file: &str, args: &str, dir: Option<&str>) -> bool {
+    // (SAKE_NO_EXEC: tests/winetest, whose programs start copies of themselves as children)
+    if std::env::var_os("SAKE_NO_EXEC").is_some() {
+        return false;
+    }
     let mut f = file.trim().to_string();
     if !f.to_ascii_lowercase().ends_with(".exe") {
         if files::resolve(&files::full_path(&f)).is_none() && files::resolve(&files::full_path(&format!("{f}.exe"))).is_some() {

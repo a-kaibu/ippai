@@ -15,7 +15,8 @@ const E_INVALIDARG: u32 = 0x8007_0057;
 const E_OUTOFMEMORY: u32 = 0x8007_000e;
 
 fn wchars(p: u32, n: u32) -> Vec<u16> {
-    (0..n).map(|i| r16(p + 2 * i)).collect()
+    // (a negative count: nothing)
+    (0..n.min(i32::MAX as u32)).map(|i| r16(p + 2 * i)).collect()
 }
 
 /// The font for a call: the DC's (remembered in the SCRIPT_CACHE, a block holding the HFONT),
@@ -83,6 +84,9 @@ fn put16(base: u32, i: u32, v: u16) {
 
 fn ScriptPlace(c: &mut Ctx) -> u32 {
     let (dc, psc, glyphs, n, adv, goff, abc) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(6), c.a(7), c.a(8));
+    if (n as i32) <= 0 || n > 1 << 20 {
+        return E_INVALIDARG;
+    }
     let Some(f) = cache_font(dc, psc) else { return E_PENDING };
     let Some(w) = gdi::font_abc(dc, f, &wchars(glyphs, n)) else { return E_PENDING };
     let (mut ta, mut tb, mut tc) = (0, 0, 0);

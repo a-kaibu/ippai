@@ -32505,3 +32505,7 @@ shcore SetProcessDpiAwareness stdcall 4 -
 shcore GetProcessDpiAwareness stdcall 8 -
 shcore GetDpiForMonitor stdcall 16 -
 shcore GetScaleFactorForMonitor stdcall 8 -
+shcore SetCurrentProcessExplicitAppUserModelID stdcall 4 -
+shcore GetCurrentProcessExplicitAppUserModelID stdcall 4 -
+shcore SetProcessReference stdcall 4 -
+shcore GetProcessReference stdcall 4 -

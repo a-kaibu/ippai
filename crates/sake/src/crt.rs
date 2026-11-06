@@ -1297,6 +1297,11 @@ fn printf(c: &mut Ctx) -> u32 {
     eprint!("{}", a2s(&s));
     s.len() as u32
 }
+fn vprintf(c: &mut Ctx) -> u32 {
+    let s = format(&cstr(c.a(0)), &mut VaArgs::stack(c.a(1)), false);
+    eprint!("{}", a2s(&s));
+    s.len() as u32
+}
 /// The scanf family's conversions over `s`: (assignments, or -1 when the input ended before
 /// the first conversion). msvcrt's: widths, '*', h/l/ll/I64/L, %d %i %u %o %x %e %f %g %s %c
 /// %[set] %n %p.
@@ -3243,7 +3248,7 @@ pub fn init() {
         _stricmp, _strnicmp, strchr, strrchr, strstr, _strdup, _strlwr, _strupr, wcslen, wcscpy, wcscmp,
         toupper, tolower, isalpha, isupper, islower, isdigit, isspace, ispunct, isalnum, isxdigit, isprint,
         atoi, strtol, strtoul, atof, strtod, _itoa, abs, qsort, bsearch, srand, rand, time, clock,
-        sprintf, vsprintf, _snprintf, _vsnprintf, swprintf, printf, sscanf, sprintf_s, vsprintf_s, _snprintf_s,
+        sprintf, vsprintf, _snprintf, _vsnprintf, swprintf, printf, vprintf, sscanf, sprintf_s, vsprintf_s, _snprintf_s,
         _vsnprintf_s, _vscprintf, _scprintf, swprintf_s, vswprintf_s, _snwprintf, _vsnwprintf, _snwprintf_s,
         _vsnwprintf_s, vswprintf, _vscwprintf,
         floor, ceil, sqrt, sin, cos, tan, asin, acos, atan, exp, log, log10, fabs, sinh, cosh, tanh, pow, atan2,

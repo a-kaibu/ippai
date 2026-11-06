@@ -468,7 +468,8 @@ fn resize_surface(w: &mut Window) {
     if w.parent != 0 && w.parent != DESKTOP {
         return;
     }
-    let (cw, ch) = (w.client.w().max(1), w.client.h().max(1));
+    // (the pixels of a huge window: its first 8192x8192, drawing is clipped to the surface)
+    let (cw, ch) = (w.client.w().clamp(1, 8192), w.client.h().clamp(1, 8192));
     match &w.surface {
         Some(s) => {
             let mut g = s.lock().unwrap();
@@ -3459,12 +3460,16 @@ fn FillRect(c: &mut Ctx) -> u32 {
 fn FrameRect(c: &mut Ctx) -> u32 {
     let r = Rect::read(c.a(1));
     let (dc, b) = (c.a(0), c.a(2));
+    if r.empty() {
+        return 0;
+    }
     for e in [Rect { b: r.t + 1, ..r }, Rect { t: r.b - 1, ..r }, Rect { r: r.l + 1, ..r }, Rect { l: r.r - 1, ..r }] {
         crate::gdi::fill_rect_brush(dc, e, b);
     }
     1
 }
-fn InvertRect(_: &mut Ctx) -> u32 {
+fn InvertRect(c: &mut Ctx) -> u32 {
+    crate::gdi::pat_rect(c.a(0), Rect::read(c.a(1)), None, 0x55);
     1
 }
 fn DrawFocusRect(_: &mut Ctx) -> u32 {
@@ -4746,6 +4751,48 @@ pub fn init() {
         w32(c.a(1), 100);
         0
     });
+    // the AppUserModelID is the process parameters' WindowTitle with STARTF_TITLEISAPPID
+    // (0x1000), as on Windows; no process references are kept (the getter finds none, E_FAIL)
+    implement("shcore", "SetCurrentProcessExplicitAppUserModelID", |c| {
+        let id = crate::mem::wstr(c.a(0));
+        if c.a(0) == 0 || id.len() >= 128 {
+            return 0x8007_0057;
+        }
+        let (flags, title) = app_id_params();
+        let buf = crate::mem::heap_alloc(2 * id.len() as u32 + 2, true);
+        for (i, &u) in id.iter().enumerate() {
+            crate::mem::w16(buf + 2 * i as u32, u);
+        }
+        w32(flags, r32(flags) & !0x800 | 0x1000 | 0x4000);
+        crate::mem::w16(title, 2 * id.len() as u16);
+        crate::mem::w16(title + 2, 2 * id.len() as u16 + 2);
+        crate::mem::wp(title + crate::mem::ps(), buf);
+        0
+    });
+    implement("shcore", "GetCurrentProcessExplicitAppUserModelID", |c| {
+        let (flags, title) = app_id_params();
+        let (n, buf) = (crate::mem::r16(title) as u32 / 2, crate::mem::rp(title + crate::mem::ps()));
+        if c.a(0) == 0 {
+            return 0x8007_0057;
+        }
+        if r32(flags) & 0x1000 == 0 || buf == 0 {
+            crate::mem::wp(c.a(0), 0);
+            return 0x8000_4005;
+        }
+        let out = crate::mem::heap_alloc(2 * n + 2, true);
+        for i in 0..n {
+            crate::mem::w16(out + 2 * i, crate::mem::r16(buf + 2 * i));
+        }
+        crate::mem::wp(c.a(0), out);
+        0
+    });
+    implement("shcore", "SetProcessReference", |_| 0);
+    implement("shcore", "GetProcessReference", |c| {
+        if c.a(0) != 0 {
+            crate::mem::wp(c.a(0), 0);
+        }
+        0x8000_4005
+    });
     for n in ["DdeNameService", "DdeFreeStringHandle", "DdeUninitialize", "DdeKeepStringHandle", "DdeDisconnect", "DdeFreeDataHandle", "DdeEnableCallback"] {
         implement("user32", n, dde_true);
     }
@@ -4756,4 +4803,16 @@ pub fn init() {
         CheckDlgButton, IsDlgButtonChecked, CheckRadioButton, GetDialogBaseUnits, MapDialogRect,
     );
     let _ = a2s;
+}
+
+/// The process parameters' dwFlags and WindowTitle (UNICODE_STRING) addresses.
+fn app_id_params() -> (u32, u32) {
+    let peb = crate::PEB.load(std::sync::atomic::Ordering::Relaxed);
+    if crate::mem::x64() {
+        let pp = crate::mem::rp(peb + 0x20);
+        (pp + 0xa4, pp + 0xb0)
+    } else {
+        let pp = r32(peb + 0x10);
+        (pp + 0x68, pp + 0x70)
+    }
 }

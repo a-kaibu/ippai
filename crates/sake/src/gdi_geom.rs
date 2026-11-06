@@ -60,6 +60,12 @@ pub fn nib(w: i32) -> Vec<(i32, i32)> {
 /// Spans inside polygons (each implicitly closed): a pixel is in when its corner point (x, y)
 /// is, left and top edges in, right and bottom out. ALTERNATE or WINDING.
 pub fn poly_spans(polys: &[Vec<(i32, i32)>], winding: bool) -> Vec<Span> {
+    // GDI coordinates are 28-bit (+-2^27); a polygon beyond them makes an empty region (as
+    // on Windows, Wine's gdi32 clipping test) instead of 2^31 rows of edge table
+    const LIM: i32 = 1 << 27;
+    if polys.iter().flatten().any(|&(x, y)| !(-LIM..LIM).contains(&x) || !(-LIM..LIM).contains(&y)) {
+        return Vec::new();
+    }
     let mut edges = Vec::new();
     for p in polys {
         for i in 0..p.len() {
