@@ -578,6 +578,30 @@ fn RegQueryValueA(c: &mut Ctx) -> u32 {
     query_value(c, h, "", 0, d, l, false)
 }
 
+/// RegGetValue(key, subkey, value, flags, &type, data, &len) (the RRF_RT_ type filter is not
+/// applied)
+fn reg_get_value(c: &mut Ctx, wide: bool) -> u32 {
+    let (k, sub, name, t, d, l) = (c.a(0), c.a(1), c.a(2), c.a(4), c.a(5), c.a(6));
+    let name = if name == 0 { String::new() } else { arg_str(name, wide) };
+    let mut h = k;
+    if sub != 0 && r8(sub) != 0 {
+        let tmp = mem::heap_alloc(4, true);
+        let r = open_key(k, &arg_str(sub, wide), false, tmp);
+        h = r32(tmp);
+        mem::heap_free(tmp);
+        if r != 0 {
+            return r;
+        }
+    }
+    query_value(c, h, &name, t, d, l, wide)
+}
+fn RegGetValueA(c: &mut Ctx) -> u32 {
+    reg_get_value(c, false)
+}
+fn RegGetValueW(c: &mut Ctx) -> u32 {
+    reg_get_value(c, true)
+}
+
 fn set_value(key: u32, name: &str, ty: u32, data: u32, len: u32, wide: bool) -> u32 {
     let Some(path) = key_path(key) else { return 6 };
     let mut bytes = mem::slice(data, len).to_vec();
@@ -2434,7 +2458,7 @@ pub fn init() {
     }
     reg!("advapi32";
         RegOpenKeyExA, RegOpenKeyExW, RegOpenKeyA, RegOpenKeyW, RegCreateKeyExA, RegCreateKeyExW, RegCreateKeyA,
-        RegCreateKeyW, RegCloseKey, RegFlushKey, RegQueryValueExA, RegQueryValueExW, RegQueryValueA,
+        RegCreateKeyW, RegCloseKey, RegFlushKey, RegQueryValueExA, RegQueryValueExW, RegQueryValueA, RegGetValueA, RegGetValueW,
         RegSetValueExA, RegSetValueExW, RegSetValueA, RegDeleteValueA, RegDeleteValueW, RegDeleteKeyA,
         RegDeleteKeyW, RegEnumKeyExA, RegEnumKeyExW, RegEnumKeyA, RegEnumKeyW, RegEnumValueA, RegEnumValueW,
         RegQueryInfoKeyA, RegQueryInfoKeyW, CryptAcquireContextA, CryptAcquireContextW, CryptReleaseContext,

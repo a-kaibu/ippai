@@ -131,6 +131,11 @@ pub fn dll_key(dll: &str) -> String {
     if k.starts_with("api-ms-win-crt-") {
         return "ucrtbase".into();
     }
+    for (pre, dll) in [("api-ms-win-core-com-", "ole32"), ("api-ms-win-core-registry-", "advapi32"), ("api-ms-win-core-shlwapi-", "shlwapi")] {
+        if k.starts_with(pre) {
+            return dll.into();
+        }
+    }
     if k.starts_with("api-ms-win-core-") || k.starts_with("api-ms-win-appmodel-") || k.starts_with("ext-ms-win-kernel32-") {
         return "kernelbase".into();
     }

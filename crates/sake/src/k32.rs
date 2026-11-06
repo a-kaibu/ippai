@@ -4052,6 +4052,17 @@ fn SearchTreeForFile(c: &mut Ctx) -> u32 {
 fn WNetGetUniversalNameA(_: &mut Ctx) -> u32 {
     2250 // ERROR_NOT_CONNECTED: a local drive
 }
+/// GetProcessMitigationPolicy(process, policy, buffer, length): no mitigation is on (ChakraCore
+/// fails fast without the function)
+fn GetProcessMitigationPolicy(c: &mut Ctx) -> u32 {
+    if c.a(2) != 0 {
+        mem::fill(c.a(2), c.a(3), 0);
+    }
+    1
+}
+fn true_(_: &mut Ctx) -> u32 {
+    1
+}
 fn GetCurrentPackageId(_: &mut Ctx) -> u32 {
     15700
 }
@@ -4203,6 +4214,13 @@ pub fn init() {
         AreFileApisANSI, SetFileApisToANSI,
     );
     reg!("advapi32"; GetUserNameA, SystemFunction036);
+    for d in ["kernel32", "kernelbase"] {
+        implement(d, "GetProcessMitigationPolicy", GetProcessMitigationPolicy);
+        implement(d, "SetProcessMitigationPolicy", true_);
+        implement(d, "SetThreadInformation", true_);
+    }
+    implement("kernelbase", "VirtualAllocFromApp", VirtualAlloc);
+    implement("kernelbase", "VirtualProtectFromApp", VirtualProtect);
     reg!("bcrypt"; BCryptOpenAlgorithmProvider, BCryptCloseAlgorithmProvider, BCryptGenRandom, BCryptGetProperty);
     for n in ["PdhOpenQueryA", "PdhOpenQueryW", "PdhOpenQuery"] {
         implement("pdh", n, PdhOpenQuery);
