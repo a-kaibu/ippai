@@ -87,14 +87,33 @@
 - 例外 (seh64.rs): .pdata/UNWIND_INFO による仮想巻き戻し、例外ディスパッチ (VEH → フレームの
   ハンドラ)、RtlUnwindEx (STATUS_UNWIND_CONSOLIDATE、STATUS_LONGJUMP)、RtlCaptureContext、
   RtlLookupFunctionEntry、RtlVirtualUnwind、RtlAddFunctionTable、setjmp/longjmp。
-- C/C++ ランタイム (msvcrt、ucrtbase、msvcp*/vcruntime*) は crt.rs ではなく、プレフィックスの
-  `C:\windows\system64` に置いた Wine の x86_64 PE ビルドを読む。system32 にない DLL も
-  system64 から読み、アーキテクチャの違うファイル (ゲスト同梱の 32 ビット d3dcompiler_47 など)
-  は飛ばす。
+- C/C++ ランタイム (2026-11-06、#29): x86 と同じ crt.rs が x64 も受け持つ (msvcrt、ucrtbase、
+  vcruntime140(_1)、api-ms-win-crt-*)。Wine の x86_64 PE DLL (`C:\windows\system64`) は使わない。
+  - 書式・変換の中身は crates/crt (ゲストのメモリに触らない純粋な Rust): printf (UCRT の
+    `__stdio_common_*` のオプションビット、旧 msvcrt の書式)、scanf (_s のサイズ引数)、
+    strto*/ato*/_itoa*、strftime/mktime/gmtime、_s 文字列関数。crt.rs は引数の取り出し
+    (x86 のスロット / x64 の位置、`Args`) とゲストメモリへの読み書きだけ。
+  - strtod の ERANGE は Windows に合わせる: 結果が 0 に丸まったときと無限大だけ。非正規化数は
+    エラーにしない (C11/glibc は不正確な非正規化数でも ERANGE。Wine の ucrtbase テストが Windows の値)。
+  - C++ 例外 (cxx64.rs): _CxxThrowException、__CxxFrameHandler3/4 (FH4 の圧縮 FuncInfo)、
+    __C_specific_handler、catch funclet の呼び出しと継続、再送出、std::uncaught_exceptions。
+    Wine の except.c / handler4.c の移植。
+  - msvcp140 (msvcp.rs、x64 のみ): locale の最小限 (_Locimp "C"、_Lockit、_Locinfo、
+    ctype<char>)、_Xbad_alloc/_Xlength_error/_Xout_of_range/_Xregex_error (std の例外を
+    throw)。iarsys64.dll (Artemis) が使う分。それ以外の msvcp140 の関数は未実装で呼ぶと止まる。
+  - 未対応: printf の位置指定引数 (%1$d)、x64 の _create_locale (x86 の配置のまま)、
+    _set_se_translator。x86 の msvcp は thiscall の橋渡しが要るので #30 で。
+  - テスト: host/tests/x64crt.cpp (clang の x86_64-pc-windows-msvc、ucrtbase/vcruntime140 を
+    import する /MD 相当のプログラム。printf/scanf/変換/_s/時刻/C++ 例外/SEH)、
+    host/tests の crtstdio・crtfiles・fileseek・cmp64・x64seh を x86-64 でもビルドして
+    x86 と同じ期待値で照合 (tests/host-tests.sh の `x64/<name>`)。crates/crt は glibc との
+    差分 PBT (tests/glibc.rs)、cargo-fuzz の 5 ターゲット (crates/crt/fuzz、fuzz/run.sh と Fuzz ワークフローが回す)、Kani
+    (_s 関数を全入力のモデルと照合、memcpy_s/memmove_s、_itoa/_itoa_s)。
 - 動画: Media Foundation は MFStartup が失敗する (動画を飛ばす)。DirectShow のグラフに足される
   EVR (CLSID_EnhancedVideoRenderer) は何もしないフィルタ。
 - 確認: Artemis x64 の 3 本 (遥かなるニライカナイ、GALS FICTION、セレクトオブリージュ) が
   Chromium でタイトル → 本編。SakanaGL x64 (でか乳巫女) もタイトル (約 30 秒) → 本編。
+  2026-11-06 に自前の x64 CRT (プレフィックスはフォントだけ) で 4 本とも本編まで再確認。
 - SakanaGL の sakanagl.dll は /arch:AVX2。koji のインタプリタが VEX の 128 ビット形
   (AVX/AVX2)、FMA3、SSE3/SSSE3/SSE4.1 を実行する (interp/vex.rs: VEX のコードを名前で
   旧来のコードに写し、NDS は Cpu::vex_tmp (xmm16) に src1 を写してから実行)。ymm (256 ビット)

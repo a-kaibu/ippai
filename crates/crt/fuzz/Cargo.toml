@@ -1,0 +1,52 @@
+[package]
+name = "crt-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+libc = "0.2"
+crt = { path = ".." }
+
+# (its own workspace: not a member of the repository's)
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "printf"
+path = "fuzz_targets/printf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "scanf"
+path = "fuzz_targets/scanf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "strto"
+path = "fuzz_targets/strto.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "strings"
+path = "fuzz_targets/strings.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "strftime"
+path = "fuzz_targets/strftime.rs"
+test = false
+doc = false
+bench = false

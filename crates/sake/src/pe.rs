@@ -532,13 +532,6 @@ fn find_dll_file(dll: &str) -> Option<(String, String)> {
     let name = if dll.contains('.') { dll.to_string() } else { format!("{dll}.dll") };
     if name.contains('\\') || name.contains('/') || name.contains(':') {
         let w = crate::files::full_path(&name);
-        // (x64: system32's 64-bit DLLs are C:\windows\system64 in the 32-bit prefix)
-        if mem::x64() && w.len() > 20 && w[..20].eq_ignore_ascii_case("C:\\windows\\system32\\") {
-            let w64 = format!("{}{}", SYSDIR64, &w[19..]);
-            if let Some(h) = crate::files::resolve(&w64) {
-                return Some((h, w));
-            }
-        }
         return crate::files::resolve(&w).map(|h| (h, w));
     }
     let exe_dir = MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.path.rsplit_once('\\').map_or(String::new(), |x| x.0.to_string()));
@@ -549,15 +542,15 @@ fn find_dll_file(dll: &str) -> Option<(String, String)> {
     for m in MODULES.read().unwrap().iter().filter(|m| m.dll && !m.hle) {
         if let Some((d, _)) = m.path.rsplit_once('\\') {
             // (not system32, where Wine's own builds of the DLLs we implement also are)
-            if !dirs.iter().any(|x| x.eq_ignore_ascii_case(d)) && !d.eq_ignore_ascii_case("C:\\windows\\system32") && !d.eq_ignore_ascii_case(SYSDIR64) {
+            if !dirs.iter().any(|x| x.eq_ignore_ascii_case(d)) && !d.eq_ignore_ascii_case("C:\\windows\\system32") {
                 dirs.push(d.to_string());
             }
         }
     }
     // then the Wine prefix's system32 for DLLs we do not implement at all (msvcr90 and other
-    // side-by-side runtimes, d3dx9_43...: Wine's PE builds)
-    if !api::is_system(dll) {
-        dirs.push(if mem::x64() { SYSDIR64 } else { "C:\\windows\\system32" }.into());
+    // side-by-side runtimes, d3dx9_43...: Wine's 32-bit PE builds; a 64-bit program has none)
+    if !api::is_system(dll) && !mem::x64() {
+        dirs.push("C:\\windows\\system32".into());
     }
     for d in dirs {
         let w = format!("{d}\\{name}");
@@ -566,7 +559,7 @@ fn find_dll_file(dll: &str) -> Option<(String, String)> {
             // shipping a 32-bit d3dcompiler_47.dll gets the system's)
             if is_64bit_file(&h) == mem::x64() {
                 // (the DLLs still taken from the prefix: what sake has yet to implement)
-                if d.eq_ignore_ascii_case("C:\\windows\\system32") || d.eq_ignore_ascii_case(SYSDIR64) {
+                if d.eq_ignore_ascii_case("C:\\windows\\system32") {
                     eprintln!("sake: prefix DLL {w}");
                 }
                 return Some((h, w));
@@ -576,16 +569,8 @@ fn find_dll_file(dll: &str) -> Option<(String, String)> {
     None
 }
 
-/// Where a 64-bit program's system DLLs (Wine's x86_64 PE builds) are.
-const SYSDIR64: &str = "C:\\windows\\system64";
-
-/// The C runtime's API sets are ucrtbase, which a 64-bit program loads from the prefix.
-fn canon(dll: &str) -> &str {
-    if mem::x64() && api::dll_key(dll) == "ucrtbase" { "ucrtbase.dll" } else { dll }
-}
 
 fn resolve_import(dll: &str, imp: Import) -> u32 {
-    let dll = canon(dll);
     let hle = api::is_core(dll) || (api::is_system(dll) && find_dll_file(dll).is_none());
     if hle {
         let name = match imp {
@@ -676,7 +661,10 @@ fn lookup_proc(base: u32, imp: Import, bind_known: bool) -> Option<u32> {
 fn hle_data(dll: &str, name: &str) -> Option<u32> {
     // (msvcr90's too: AdvHD imports _acmdln from it)
     let k = api::dll_key(dll);
-    (api::is_crt(&k) && !k.starts_with("msvcp") && !k.starts_with("vcruntime")).then(|| crate::crt::data(name)).flatten()
+    if k.starts_with("msvcp") {
+        return crate::msvcp::data(name);
+    }
+    (api::is_crt(&k) && !k.starts_with("vcruntime")).then(|| crate::crt::data(name)).flatten()
 }
 
 fn load_dll_file(dll: &str) -> Result<u32, String> {
@@ -694,7 +682,6 @@ fn load_dll_file(dll: &str) -> Result<u32, String> {
 
 /// LoadLibrary: an existing module, one of ours, or a DLL file (initialized here).
 pub fn load_library(cpu: &mut Cpu, name: &str) -> u32 {
-    let name = canon(name);
     let _g = LOADER.lock().unwrap();
     let key = api::dll_key(name);
     if let Some(b) = by_name(name) {

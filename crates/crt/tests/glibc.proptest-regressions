@@ -1,0 +1,17 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 14fbd7726b62da0c167fa02a0fc596b348362d9cac455c69b06a4dd4df5b8ca1 # shrinks to input = "x", convs = ["%*s"], seps = [",", "", ""]
+cc e4b10323af9a17563407ffb1046cd05fc807d7d397e3293fb2c2fbe8753e2c17 # shrinks to (flags, w, p) = ("#", None, Some(2)), v = 99.5, ty = 'g'
+cc 7f7bd0d26117e7d3cd78dc2a0a854d37b55a936df72b586355e9c4f0146622dc # shrinks to input = "E", convs = ["%2c"], seps = ["", "", ""]
+cc 1cdcf63a68071fdaf0a89ee646c5598346f7e3e7481e8020008f290deb80335e # shrinks to input = "0E 0", convs = ["%f", "%d"], seps = ["", "", ""]
+cc 3bda53746816b09750eff32ebea5edd268c1ea7ccb7480cb10f421c0b43c3ccf # shrinks to (flags, w, p) = ("#", Some(7), Some(2)), v = 99.5, ty = 'g'
+cc 71b1ec4771651688d22a21b05d9d78e00a7fe76b05000c7cdd5d24cd1bdca546 # shrinks to s = "0xap-130"
+cc 76310e4a44236dbddb416db28c0ed6496b68898f7c99c4217ab9c6fd63fd4ea1 # shrinks to input = "0xx", convs = ["%f"], seps = ["", "", ""]
+cc 646519b28845430ef1170ef56f1ffe849acce20adbe8325cd195bc0c3adb9682 # shrinks to input = "0x", convs = ["%2f"], seps = ["", "", ""]
+cc 18251e36c2d92d7c5ab4051fd24701085a054f4a7a31a11b9d9c0397826cbda5 # shrinks to input = "0x.x", convs = ["%f"], seps = ["", "", ""]
+cc ee29d932da6b0ae09b8e57145bef3f0d071e1b8a07c4d26712e8d0000168a848 # shrinks to input = "\t", convs = ["%n", "%*c"], seps = ["", ",", ""]
+cc 82b518e7903c00d5ad48c232ff30dcc7fffc782e9e5b2fb45140b573ba7a49b9 # shrinks to s = "nan(ind)"

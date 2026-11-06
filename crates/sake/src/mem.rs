@@ -174,6 +174,18 @@ pub fn cstrn(a: u32, n: u32) -> Vec<u8> {
     }
     v
 }
+/// Up to `n` UTF-16 units, stopping at a NUL.
+pub fn wstrn(a: u32, n: u32) -> Vec<u16> {
+    let mut v = Vec::new();
+    for i in 0..n {
+        let c = r16(a + 2 * i);
+        if c == 0 {
+            break;
+        }
+        v.push(c);
+    }
+    v
+}
 /// Copies `s` + NUL to `dst` (at most `cap` bytes including the NUL); returns bytes without NUL.
 pub fn put_cstr(dst: u32, cap: u32, s: &[u8]) -> u32 {
     if cap == 0 || dst == 0 {

@@ -245,7 +245,7 @@ fn op_slots(c: u16) -> u32 {
 /// function (no entry) just returns. None: no more frames (a host frame or garbage).
 /// `seen`: dispatcher frames passed so far (a handler's return to SEH64_TRAP leads to the
 /// context its exception happened in, the n-th dispatch from the top).
-fn step(kind: u32, ctx: u32, seen: &mut usize) -> Option<(u64, u32, u64, u32, u32)> {
+fn step(cpu: &mut Cpu, kind: u32, ctx: u32, seen: &mut usize, rec: u32) -> Option<(u64, u32, u64, u32, u32)> {
     let pc = rip(ctx);
     if pc == crate::api::SEH64_TRAP as u64 {
         let sp = rsp(ctx);
@@ -258,8 +258,10 @@ fn step(kind: u32, ctx: u32, seen: &mut usize) -> Option<(u64, u32, u64, u32, u3
         return Some((0, 0, sp, 0, 0));
     }
     if pc == CONSOLIDATE_TRAP as u64 {
-        // a catch block's caller: the frame it was called for
+        // a catch block's caller: the frame it was called for (the C++ runtime notes the
+        // exception leaving the catch)
         let sp = rsp(ctx);
+        crate::cxx64::through_catch(cpu, sp as u32, kind == UNW_FLAG_UHANDLER, rec);
         crate::mem::copy(ctx, r64(sp as u32) as u32, CONTEXT_SIZE);
         return Some((0, 0, sp, 0, 0));
     }
@@ -372,7 +374,7 @@ fn walk(cpu: &mut Cpu) {
     loop {
         crate::mem::copy(d.next, d.cur, CONTEXT_SIZE);
         let pc = rip(d.cur);
-        let Some((h, data, frame, f, base)) = step(UNW_FLAG_EHANDLER, d.next, &mut 1) else { break };
+        let Some((h, data, frame, f, base)) = step(cpu, UNW_FLAG_EHANDLER, d.next, &mut 1, d.rec) else { break };
         if frame >= d.limit || rsp(d.next) > d.limit {
             break;
         }
@@ -534,7 +536,7 @@ fn RtlUnwind(c: &mut Ctx) -> u32 {
     0
 }
 
-fn unwind(c: &mut Ctx, target: u64, ip: u64, rec_in: u32, retval: u64, ctx_in: u32) {
+pub fn unwind(c: &mut Ctx, target: u64, ip: u64, rec_in: u32, retval: u64, ctx_in: u32) {
     // scratch below the caller's stack
     let sp = c.esp;
     let ctx = ((sp - 0x200) & !15) - CONTEXT_SIZE;
@@ -560,7 +562,7 @@ fn unwind(c: &mut Ctx, target: u64, ip: u64, rec_in: u32, retval: u64, ctx_in: u
     loop {
         crate::mem::copy(next, ctx, CONTEXT_SIZE);
         let pc = rip(ctx);
-        let Some((h, data, frame, f, base)) = step(UNW_FLAG_UHANDLER, next, &mut seen) else {
+        let Some((h, data, frame, f, base)) = step(c.cpu, UNW_FLAG_UHANDLER, next, &mut seen, rec) else {
             crate::fatal(c.cpu, &format!("x64 unwind to {target:#x}: ran out of frames at {pc:#x}"));
         };
         if frame > limit || (target != 0 && frame > target) {
@@ -605,6 +607,8 @@ fn RtlRestoreContext(c: &mut Ctx) -> u32 {
 /// Continues at `ctx` (a longjmp's buffer, or a catch block first, as `rec` says).
 fn restore(c: &mut Ctx, ctx: u32, rec: u32) {
     let code = if rec != 0 { r32(rec) } else { 0 };
+    // (below everything the unwind still uses: the exception's record and object)
+    let deep = c.cpu.gpr(4) as u32;
     if code == STATUS_LONGJUMP && r32(rec + 0x18) >= 1 {
         // _JUMP_BUFFER: Frame, Rbx, Rsp, Rbp, Rsi, Rdi, R12-R15, Rip, MxCsr, FpCsr, Spare, Xmm6-15
         let jb = r64(rec + 0x20) as u32;
@@ -622,13 +626,15 @@ fn restore(c: &mut Ctx, ctx: u32, rec: u32) {
     load_context(c.cpu, ctx);
     c.jumped = true;
     if code == STATUS_UNWIND_CONSOLIDATE && r32(rec + 0x18) >= 1 {
-        // the callback (a catch block) runs on the target's stack and returns where to go on;
-        // its return address is CONSOLIDATE_TRAP with the target context above it
+        // the callback (a catch block) runs below the stack the unwind was called on (the
+        // thrown object may be in a frame unwound) and returns where to go on; its return
+        // address is CONSOLIDATE_TRAP with the target context above it
         let cb = r64(rec + 0x20);
-        let sp = rsp(ctx) as u32;
+        let sp = deep.min(rsp(ctx) as u32);
         let saved = ((sp - 0x100) & !15) - CONTEXT_SIZE;
         crate::mem::copy(saved, ctx, CONTEXT_SIZE);
-        let frame = saved - 0x30;
+        // (RSP+8 16-byte aligned at its entry, as after a call)
+        let frame = saved - 0x38;
         w64(frame, CONSOLIDATE_TRAP as u64);
         w64(frame + 8, saved as u64);
         c.cpu.set_gpr(4, frame as u64);
@@ -645,7 +651,7 @@ fn restore(c: &mut Ctx, ctx: u32, rec: u32) {
 pub fn consolidated(cpu: &mut Cpu) {
     let sp = cpu.gpr(4) as u32; // (past the return address)
     let saved = r64(sp) as u32;
-    let to = cpu.gpr(0);
+    let to = crate::cxx64::catch_done(cpu, sp, cpu.gpr(0));
     set_rip(saved, to);
     load_context(cpu, saved);
     if trace() {
@@ -684,7 +690,7 @@ fn RtlRaiseException(c: &mut Ctx) -> u32 {
 }
 
 /// _setjmp(jmp_buf, frame) / _setjmpex: the caller's callee-saved state (_JUMP_BUFFER)
-fn setjmp(c: &mut Ctx) -> u32 {
+pub fn setjmp(c: &mut Ctx) -> u32 {
     let (jb, frame) = (c.a(0), c.a64(1));
     let cpu = &*c.cpu;
     w64(jb, frame);
@@ -705,7 +711,7 @@ fn setjmp(c: &mut Ctx) -> u32 {
 
 /// longjmp(jmp_buf, value): unwinds to the buffer's frame (running __finally blocks and
 /// destructors), or just restores it when it has none
-fn longjmp(c: &mut Ctx) -> u32 {
+pub fn longjmp(c: &mut Ctx) -> u32 {
     let (jb, v) = (c.a(0), c.a(1));
     let v = if v == 0 { 1 } else { v } as u64;
     let rec = ((c.esp - 0x800) & !15) - RECORD_SIZE;
@@ -722,10 +728,6 @@ fn longjmp(c: &mut Ctx) -> u32 {
         set_reg(ctx, 0, v);
         restore(c, ctx, rec);
     }
-    0
-}
-
-fn zero(_: &mut Ctx) -> u32 {
     0
 }
 
@@ -750,7 +752,4 @@ pub fn register() {
     implement("ntdll", "_setjmp", setjmp);
     implement("ntdll", "_setjmpex", setjmp);
     implement("ntdll", "longjmp", longjmp);
-    for n in ["__wine_dbg_get_channel_flags", "__wine_dbg_header", "__wine_dbg_output", "__wine_dbg_strdup"] {
-        implement("ntdll", n, zero);
-    }
 }

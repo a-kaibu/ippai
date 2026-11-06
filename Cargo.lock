@@ -614,6 +614,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
 
 [[package]]
+name = "crt"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "proptest",
+]
+
+[[package]]
 name = "crunchy"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2213,6 +2221,7 @@ name = "sake"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
+ "crt",
  "dlmalloc",
  "dxwgsl",
  "encoding_rs",

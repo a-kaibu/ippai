@@ -232,6 +232,9 @@ fn frame_handler(c: &mut Ctx) -> u32 {
 }
 
 pub fn init() {
+    if crate::mem::x64() {
+        return crate::cxx64::register();
+    }
     for d in ["msvcrt", "ucrtbase"] {
         implement(d, "_CxxThrowException", throw);
         for n in ["__CxxFrameHandler", "__CxxFrameHandler2", "__CxxFrameHandler3"] {

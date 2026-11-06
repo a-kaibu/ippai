@@ -78,6 +78,10 @@ jobs:
           restore-keys: test-${{ runner.os }}-
       - name: cargo test
         run: cargo test --workspace --release
+      # (the C runtime's property tests once more with overflow checks: fuzzing found an
+      # overflow that release builds wrap silently)
+      - name: crt tests with overflow checks
+        run: cargo test -p crt
       - name: Check all Rust targets without warnings
         run: cargo check --workspace --all-targets --locked
 
@@ -106,7 +110,7 @@ jobs:
       - name: Tools
         run: |
           sudo apt-get update -q
-          sudo apt-get install -yq --no-install-recommends mingw-w64 zstd
+          sudo apt-get install -yq --no-install-recommends mingw-w64 zstd clang lld llvm
           rustup component add rust-src
           rustup target add wasm32-unknown-emscripten
       - uses: actions/setup-node@v7.1.0

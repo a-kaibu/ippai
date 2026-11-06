@@ -63,6 +63,8 @@ pub mod pe;
 pub mod seh;
 pub mod seh64;
 pub mod cxx;
+pub mod cxx64;
+pub mod msvcp;
 pub mod sound;
 pub mod xaudio2;
 pub mod mmio;
@@ -415,6 +417,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     misc::init();
     gdiplus::init();
     crt::init();
+    msvcp::init();
     vcomp::init();
     nt::init();
     ini::init();

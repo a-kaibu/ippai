@@ -3,8 +3,9 @@
 # with the JIT and with the interpreter (IPPAI_JIT=0). Both outputs must equal
 # host/tests/expected/<name>.txt (checksums of integer, MMX/SSE, atomics, self-modifying code
 # results; they match Windows). UPDATE=1 rewrites the expected files. Exits 1 on a failure.
-# Tests in X64 are also built for x86-64 (64-bit programs; no C runtime of sake's own there
-# yet) and must print the same.
+# Tests in X64 are also built for x86-64 (mingw-w64: msvcrt) and must print the same: sake's
+# C runtime has to behave alike in both. CLANG64 are x86-64 programs clang builds (SEH, and
+# x64crt: an MSVC-ABI program on ucrtbase/vcruntime140), each with its own expected file.
 #
 #   tests/host-tests.sh [name ...]      SAKE=path/to/sake.js (default /home/user/work/sake-out/sake.js)
 set -uo pipefail
@@ -12,7 +13,8 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SAKE=${SAKE:-/home/user/work/sake-out/sake.js}
 OUT=${OUT:-$(mktemp -d)}
 TESTS=${*:-nullcall intops simd atomics smc cmp64 ssecvt dinputtest textbounds crtstdio fileseek crtfiles hlsltest d3dx9shader d3dx9effect struct64 guard sse4 xaudio2}
-X64=" struct64 guard xaudio2 "
+X64=" struct64 guard xaudio2 crtstdio fileseek crtfiles cmp64 "
+CLANG64=${CLANG64-x64seh x64crt}
 # Tests in VEX are also built with -mavx (the VEX forms of their SSE instructions)
 VEX=" sse4 "
 fail=0
@@ -65,6 +67,20 @@ for t in $TESTS; do
     else
       echo "ok   $t (x64)"
     fi
+  fi
+done
+for t in $CLANG64; do
+  case $t in
+  x64crt) "$ROOT/host/tests/build-x64crt.sh" "$OUT" ;;
+  *) clang --target=x86_64-w64-windows-gnu -fms-extensions -fuse-ld=lld -O2 "$ROOT/host/tests/$t.c" -o "$OUT/$t.exe" ;;
+  esac || { echo "FAIL $t: build"; fail=1; continue; }
+  got=$( (cd "$(dirname "$SAKE")" && timeout 300 node "$SAKE" "$OUT/$t.exe" 2>&1 | grep -v '^sake:') )
+  want=$ROOT/host/tests/expected/$t.txt
+  [ -n "${UPDATE:-}" ] && echo "$got" > "$want"
+  if [ "$got" != "$(cat "$want" 2>/dev/null)" ]; then
+    echo "FAIL $t:"; diff <(echo "$got") "$want" | head -10; fail=1
+  else
+    echo "ok   $t"
   fi
 done
 exit $fail

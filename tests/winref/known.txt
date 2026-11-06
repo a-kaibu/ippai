@@ -21,6 +21,11 @@ crt_printf-* ^(want|got) +%c (-1|-42|255|2147483647)
 # 3.2e-15 there), and pow/_hypot keep 64-bit mantissas inside; koji's x87 is IEEE double
 crt_math-32 ^(want|got) +ulp 1 (sin|cos|tan)\((3.14159265358979|1.0000000000000001e\+300|10000000000)\)
 crt_math-32 ^(want|got) +ulp 1 (pow\(100.5,3.14159265358979\)|_hypot\(2,100.5\))
+# 64-bit msvcrt's own SSE2 libm: pow is a few ulp off the correctly rounded value, and sin/cos
+# reduce big arguments their own way (sin(pi) keeps only 20 bits); sake's x64 CRT uses Rust's
+# (correctly rounded or within 1 ulp)
+crt_math-64 ^(want|got) +ulp 1 (sin|cos|tan)\((3.14159265358979|1.0000000000000001e\+300|10000000000)\)
+crt_math-64 ^(want|got) +ulp 1 pow\(
 # Direct3D 9 on the Windows runner is WARP: its limits and format list are its own (a GPU's
 # differ too). sake offers R8G8B8 textures (no driver does: games fall back without them) and
 # lacks A2R10G10B10/R32F/V8U8 textures and A8/L8/A8L8/A4R4G4B4 targets so far (TODO).

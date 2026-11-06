@@ -11,6 +11,11 @@ crates (`mod proptests`). The shader translators have their own mutation fuzzer
 | `x86_interp` | koji::step on any bytes, 32-bit, 64-bit and 16-bit mode | no panic |
 | `image` | sake::ole::decode (BMP, PNG, JPEG: OleLoadPicture, WIC) | no panic, w x h BGRA out |
 | `acm` | sake::acm IMA / MS ADPCM blocks | no panic, all of a block's samples or none |
+| `printf` (crates/crt) | crt::fmt::format, every mode (UCRT option bits, legacy msvcrt), narrow and wide | no panic, output within MAX_OUT, text without % unchanged |
+| `scanf` (crates/crt) | crt::scan on any input and format | no panic, writes fit the secure forms' buffers, the count never exceeds the conversions |
+| `strto` (crates/crt) | strtod/strtof/strtol/strtoul/strtoll against glibc | same value, end and errno (Windows' errno where it differs: no ERANGE for subnormals) |
+| `strings` (crates/crt) | the _s string functions against their models (crt::sec::model) | same errno and buffer |
+| `strftime` (crates/crt) | crt::time strftime and mktime on any format and struct tm | no panic, mktime's result in range and gmtime gives back the normalized fields |
 
 Run (from the repository root):
 

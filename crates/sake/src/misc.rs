@@ -61,375 +61,67 @@ impl VaArgs {
     }
 }
 
-/// ANSI printf: `%s` is ANSI unless `wide` (then `%s` is UTF-16, as in swprintf).
-pub fn format(fmt: &[u8], va: &mut VaArgs, wide: bool) -> Vec<u8> {
-    let u = format_units(&a2w(fmt), va, !wide);
-    // (%c bytes that are no character on their own come as U+F700 + byte)
-    let mut out = Vec::with_capacity(u.len());
-    let mut run = Vec::new();
-    for c in u {
-        if c & 0xff00 == RAW {
-            out.extend(w2a(&run));
-            run.clear();
-            out.push(c as u8);
-        } else {
-            run.push(c);
-        }
-    }
-    out.extend(w2a(&run));
-    out
+/// The printf dialect of the API at hand: the legacy CRT's (msvcrt, msvcr*, user32's wsprintf)
+/// unless the program called the UCRT (crt::fmt::Mode::ucrt with the call's options).
+pub fn legacy_mode() -> crt::fmt::Mode {
+    crt::fmt::Mode::legacy(crate::mem::x64())
 }
 
-const RAW: u16 = 0xf700;
+/// ANSI printf (the legacy dialect): `%s` is ANSI unless `wide` (then UTF-16, as in swprintf).
+/// An invalid format gives what came before it.
+pub fn format(fmt: &[u8], va: &mut VaArgs, wide: bool) -> Vec<u8> {
+    if wide {
+        return w2a(&format_w(&a2w(fmt), va));
+    }
+    printf(fmt, va, legacy_mode()).unwrap_or_default()
+}
 
 /// UTF-16 printf (wsprintfW/swprintf): `%s` is UTF-16, `%S` ANSI.
 pub fn format_w(fmt: &[u16], va: &mut VaArgs) -> Vec<u16> {
-    format_units(fmt, va, false)
+    printf(fmt, va, legacy_mode()).unwrap_or_default()
 }
 
-fn format_units(f: &[u16], va: &mut VaArgs, ansi: bool) -> Vec<u16> {
-    let mut out: Vec<u16> = Vec::with_capacity(f.len() + 16);
-    let mut i = 0;
-    let ch = |i: usize| f.get(i).copied().unwrap_or(0);
-    while i < f.len() {
-        let c = f[i];
-        if c != b'%' as u16 {
-            out.push(c);
-            i += 1;
-            continue;
-        }
-        i += 1;
-        if ch(i) == b'%' as u16 {
-            out.push(c);
-            i += 1;
-            continue;
-        }
-        let (mut left, mut plus, mut space, mut zero, mut alt) = (false, false, false, false, false);
-        loop {
-            match ch(i) as u8 {
-                b'-' => left = true,
-                b'+' => plus = true,
-                b' ' => space = true,
-                b'0' => zero = true,
-                b'#' => alt = true,
-                _ => break,
-            }
-            i += 1;
-        }
-        let mut width = 0usize;
-        if ch(i) == b'*' as u16 {
-            let w = va.u32() as i32;
-            if w < 0 {
-                left = true;
-            }
-            width = w.unsigned_abs() as usize;
-            i += 1;
-        } else {
-            while (b'0' as u16..=b'9' as u16).contains(&ch(i)) {
-                width = width * 10 + (ch(i) - b'0' as u16) as usize;
-                i += 1;
-            }
-        }
-        let mut prec: Option<usize> = None;
-        if ch(i) == b'.' as u16 {
-            i += 1;
-            let mut p = 0usize;
-            if ch(i) == b'*' as u16 {
-                p = (va.u32() as i32).max(0) as usize;
-                i += 1;
-            } else {
-                while (b'0' as u16..=b'9' as u16).contains(&ch(i)) {
-                    p = p * 10 + (ch(i) - b'0' as u16) as usize;
-                    i += 1;
-                }
-            }
-            prec = Some(p);
-        }
-        // size
-        let mut long64 = false;
-        let mut short = false;
-        let mut wide_arg: Option<bool> = None;
-        loop {
-            let c = ch(i) as u8;
-            match c {
-                b'h' => {
-                    short = true;
-                    wide_arg = Some(false);
-                }
-                b'l' => {
-                    if ch(i + 1) == b'l' as u16 {
-                        long64 = true;
-                        i += 1;
-                    } else {
-                        wide_arg = Some(true);
-                    }
-                }
-                b'w' => wide_arg = Some(true),
-                b'L' | b'z' | b'j' | b't' => {}
-                b'I' => {
-                    if ch(i + 1) == b'6' as u16 && ch(i + 2) == b'4' as u16 {
-                        long64 = true;
-                        i += 2;
-                    } else if ch(i + 1) == b'3' as u16 && ch(i + 2) == b'2' as u16 {
-                        i += 2;
-                    }
-                }
-                _ => break,
-            }
-            i += 1;
-        }
-        let ty = ch(i) as u8;
-        i += 1;
-        let mut body: Vec<u16>;
-        let mut sign = String::new();
-        let mut numeric = true;
-        let is_float = matches!(ty, b'e' | b'E' | b'f' | b'F' | b'g' | b'G' | b'a' | b'A');
-        match ty {
-            b'd' | b'i' => {
-                let v = if long64 { va.u64() as i64 } else if short { va.u32() as i16 as i64 } else { va.u32() as i32 as i64 };
-                if v < 0 {
-                    sign = "-".into();
-                } else if plus {
-                    sign = "+".into();
-                } else if space {
-                    sign = " ".into();
-                }
-                body = num(v.unsigned_abs(), 10, false, prec);
-            }
-            b'u' | b'x' | b'X' | b'o' => {
-                let v = if long64 { va.u64() } else if short { va.u32() as u16 as u64 } else { va.u32() as u64 };
-                let base = match ty {
-                    b'u' => 10,
-                    b'o' => 8,
-                    _ => 16,
-                };
-                body = num(v, base, ty == b'X', prec);
-                if alt && v != 0 && base == 16 {
-                    sign = if ty == b'X' { "0X".into() } else { "0x".into() };
-                }
-                if alt && base == 8 && body.first() != Some(&(b'0' as u16)) {
-                    body.insert(0, b'0' as u16);
-                }
-            }
-            b'p' => {
-                body = num(va.u32() as u64, 16, true, Some(8));
-                if alt {
-                    sign = "0X".into();
-                }
-            }
-            b'c' | b'C' => {
-                numeric = false;
-                let v = va.u32();
-                let w = wide_arg.unwrap_or((ty == b'C') == ansi);
-                body = if w {
-                    vec![v as u16]
-                } else if ansi && v as u8 >= 0x80 {
-                    vec![RAW | v as u8 as u16]
-                } else {
-                    a2w(&[v as u8])
-                };
-            }
-            b's' | b'S' => {
-                numeric = false;
-                let p = va.u32();
-                let w = wide_arg.unwrap_or((ty == b'S') == ansi);
-                body = if p == 0 {
-                    "(null)".encode_utf16().collect()
-                } else if w {
-                    wstr(p)
-                } else {
-                    a2w(&cstr(p))
-                };
-                if let Some(pr) = prec {
-                    body.truncate(pr);
-                }
-            }
-            b'e' | b'E' | b'f' | b'F' | b'g' | b'G' | b'a' | b'A' => {
-                let v = va.f64();
-                if v.is_sign_negative() {
-                    sign = "-".into();
-                } else if plus {
-                    sign = "+".into();
-                } else if space {
-                    sign = " ".into();
-                }
-                let s = float(v, ty, prec.unwrap_or(6), alt);
-                body = s.encode_utf16().collect();
-            }
-            b'n' => {
-                // (msvcrt ignores %n: printf %n support is off by default)
-                let _ = va.u32();
-                continue;
-            }
-            _ => {
-                // an unknown conversion (and "%5%") prints its character
-                out.push(ty as u16);
-                continue;
-            }
-        }
-        let s: Vec<u16> = sign.encode_utf16().collect();
-        let len = s.len() + body.len();
-        if len < width {
-            let pad = width - len;
-            if left {
-                out.extend(&s);
-                out.extend(&body);
-                out.extend(std::iter::repeat_n(b' ' as u16, pad));
-            } else if zero && numeric && (prec.is_none() || is_float) {
-                out.extend(&s);
-                out.extend(std::iter::repeat_n(b'0' as u16, pad));
-                out.extend(&body);
-            } else {
-                out.extend(std::iter::repeat_n(b' ' as u16, pad));
-                out.extend(&s);
-                out.extend(&body);
-            }
-        } else {
-            out.extend(&s);
-            out.extend(&body);
-        }
-    }
-    out
+/// printf of `fmt` (ANSI bytes or UTF-16 units) with guest variable arguments.
+pub fn printf<T: crt::Unit>(fmt: &[T], va: &mut VaArgs, m: crt::fmt::Mode) -> Result<Vec<T>, crt::fmt::Error> {
+    crt::fmt::format(fmt, m, &mut GuestArgs(va))
 }
 
-fn num(v: u64, base: u64, upper: bool, prec: Option<usize>) -> Vec<u16> {
-    let digits = if upper { b"0123456789ABCDEF" } else { b"0123456789abcdef" };
-    let mut d = Vec::new();
-    let mut x = v;
-    while x > 0 {
-        d.push(digits[(x % base) as usize] as u16);
-        x /= base;
-    }
-    let min = prec.unwrap_or(1);
-    while d.len() < min {
-        d.push(b'0' as u16);
-    }
-    d.reverse();
-    d
-}
+/// crt::fmt's arguments from a guest va_list (x86: 4-byte slots, 64-bit values and doubles in
+/// two; x64: one 8-byte slot each) and the strings in guest memory.
+pub struct GuestArgs<'a>(pub &'a mut VaArgs);
 
-/// msvcrt's decimal digits of |v|: 17 significant digits (the rest print as 0), d0.d1d2... x
-/// 10^e. Infinities and NaNs are the "digits" 1#INF, 1#IND, 1#QNAN, 1#SNAN, rounded like
-/// numbers ("%.2f" of infinity is 1.#J).
-fn digits17(v: f64) -> (Vec<u8>, i32) {
-    let special: Option<&[u8]> = if v.is_infinite() {
-        Some(b"1#INF")
-    } else if v.is_nan() {
-        let b = v.to_bits();
-        Some(if b == 0xfff8_0000_0000_0000 {
-            b"1#IND"
-        } else if b & (1 << 51) != 0 {
-            b"1#QNAN"
-        } else {
-            b"1#SNAN"
-        })
-    } else {
-        None
-    };
-    if let Some(s) = special {
-        return (s.to_vec(), 0);
+impl crt::fmt::Args for GuestArgs<'_> {
+    fn int(&mut self, bytes: u32) -> u64 {
+        if bytes == 8 { self.0.u64() } else { self.0.u32() as u64 }
     }
-    if v == 0.0 {
-        return (vec![b'0'], 0);
+    fn float(&mut self) -> f64 {
+        self.0.f64()
     }
-    let s = format!("{:.16e}", v.abs());
-    let (m, e) = s.split_once('e').unwrap();
-    (m.bytes().filter(|c| *c != b'.').collect(), e.parse().unwrap())
-}
-
-/// Keeps n digits (n <= 0: none), rounding half up on the digit after; may carry into a new
-/// leading 1 (then e grows). Digits past the given ones are '0'.
-fn round_to(d: &[u8], e: i32, n: i32) -> (Vec<u8>, i32) {
-    let at = |i: i32| if i >= 0 && (i as usize) < d.len() { d[i as usize] } else { b'0' };
-    if n < 0 {
-        return (Vec::new(), e);
-    }
-    let mut v: Vec<u8> = (0..n).map(at).collect();
-    if at(n) >= b'5' {
-        let mut i = n as usize;
-        loop {
-            if i == 0 {
-                v.insert(0, b'1');
-                return (v, e + 1);
-            }
-            i -= 1;
-            if v[i] == b'9' {
-                v[i] = b'0';
-            } else {
-                v[i] += 1;
-                break;
-            }
+    fn narrow(&mut self, p: u64, max: Option<usize>) -> Vec<u8> {
+        match max {
+            Some(n) => crate::mem::cstrn(p as u32, n.min(u32::MAX as usize) as u32),
+            None => cstr(p as u32),
         }
     }
-    (v, e)
-}
-
-fn fixed(d: &[u8], e: i32, prec: usize, alt: bool) -> String {
-    // digits kept: the integer ones and prec more
-    let (r, e) = round_to(d, e, e + 1 + prec as i32);
-    let at = |i: i32| if i >= 0 && (i as usize) < r.len() { r[i as usize] as char } else { '0' };
-    let mut s = String::new();
-    if e < 0 {
-        s.push('0');
-    } else {
-        for i in 0..=e {
-            s.push(at(i));
+    fn wide(&mut self, p: u64, max: Option<usize>) -> Vec<u16> {
+        match max {
+            Some(n) => crate::mem::wstrn(p as u32, n.min(u32::MAX as usize) as u32),
+            None => wstr(p as u32),
         }
     }
-    if prec > 0 || alt {
-        s.push('.');
+    fn counted(&mut self, p: u64) -> (usize, u64) {
+        // ANSI_STRING / UNICODE_STRING: Length, MaximumLength, then the Buffer pointer
+        let p = p as u32;
+        (crate::mem::r16(p) as usize, crate::mem::rp(p + crate::mem::ps()) as u64)
     }
-    for k in 1..=prec as i32 {
-        s.push(at(e + k));
+    fn a2w(&self, s: &[u8]) -> Vec<u16> {
+        a2w(s)
     }
-    s
-}
-
-fn expo(d: &[u8], e: i32, prec: usize, alt: bool, special: bool) -> String {
-    let (r, e) = round_to(d, e, prec as i32 + 1);
-    let at = |i: usize| r.get(i).map_or('0', |c| *c as char);
-    let mut s = String::new();
-    s.push(at(0));
-    if prec > 0 || alt {
-        s.push('.');
+    fn w2a(&self, s: &[u16]) -> Vec<u8> {
+        w2a(s)
     }
-    for k in 1..=prec {
-        s.push(at(k));
-    }
-    let e = if special || (d.len() == 1 && d[0] == b'0') { 0 } else { e };
-    s + &format!("e{}{:03}", if e < 0 { '-' } else { '+' }, e.abs())
-}
-
-fn float(v: f64, ty: u8, prec: usize, alt: bool) -> String {
-    let (d, e) = digits17(v);
-    let special = !v.is_finite();
-    let s = match ty {
-        b'f' | b'F' => fixed(&d, e, prec, alt),
-        b'e' | b'E' | b'a' | b'A' => expo(&d, e, prec, alt, special),
-        _ => {
-            let p = prec.max(1);
-            if v == 0.0 && alt {
-                // (msvcrt: 0 has all its precision after the point)
-                return fixed(&d, e, p, true);
-            }
-            // the exponent after rounding to p digits picks the style
-            let (_, x) = if d == b"0" { (Vec::new(), 0) } else { round_to(&d, e, p as i32) };
-            let mut s = if !special && (x < -4 || x >= p as i32) { expo(&d, e, p - 1, alt, special) } else { fixed(&d, e, (p as i32 - 1 - if special { 0 } else { x }).max(0) as usize, alt) };
-            if !alt && s.contains('.') {
-                let (m, xs) = match s.find('e') {
-                    Some(k) => (s[..k].to_string(), s[k..].to_string()),
-                    None => (s.clone(), String::new()),
-                };
-                let m = m.trim_end_matches('0').trim_end_matches('.').to_string();
-                s = m + &xs;
-            }
-            s
-        }
-    };
-    if ty.is_ascii_uppercase() {
-        s.to_uppercase()
-    } else {
-        s
+    fn store(&mut self, p: u64, bytes: u32, v: u64) {
+        crate::mem::write(p as u32, &v.to_le_bytes()[..bytes.min(8) as usize]);
     }
 }
 

@@ -151,11 +151,10 @@ pub fn dll_key(dll: &str) -> String {
 /// Whether `dll` is one we implement (or at least know the exports of).
 pub fn is_system(dll: &str) -> bool {
     let k = dll_key(dll);
-    !(crate::mem::x64() && is_crt(&k)) && specs().dlls.contains(&k)
+    specs().dlls.contains(&k) || (crate::mem::x64() && matches!(k.as_str(), "msvcp140" | "vcruntime140_1"))
 }
 
-/// The C/C++ runtimes: a 64-bit program gets Wine's PE builds of them (their structures,
-/// FILE, va_lists... are all 64-bit ones there) instead of crt.rs.
+/// The C/C++ runtimes.
 pub fn is_crt(key: &str) -> bool {
     let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit() || b == b'_');
     matches!(key, "msvcrt" | "ucrtbase" | "crtdll")
@@ -166,8 +165,9 @@ pub fn is_crt(key: &str) -> bool {
 
 /// DLLs we implement even when the game ships its own copy.
 pub fn is_core(dll: &str) -> bool {
-    if crate::mem::x64() && is_crt(&dll_key(dll)) {
-        return false;
+    // (x64: the C runtime and vcruntime too, which the C++ exception support is part of)
+    if crate::mem::x64() && matches!(dll_key(dll).as_str(), "ucrtbase" | "vcruntime140" | "vcruntime140_1") {
+        return true;
     }
     matches!(
         dll_key(dll).as_str(),
@@ -235,6 +235,12 @@ pub fn export(dll: &str, name: &str) -> u32 {
 pub fn name_of(addr: u32) -> Option<String> {
     let i = addr.checked_sub(TRAP_LO)? / 4;
     ENTRIES.read().unwrap().get(i as usize).map(|e| format!("{}!{}", e.dll, e.name))
+}
+
+/// The DLL key ("ucrtbase", "msvcrt"...) of a trap address.
+pub fn dll_of(addr: u32) -> Option<String> {
+    let i = addr.checked_sub(TRAP_LO)? / 4;
+    ENTRIES.read().unwrap().get(i as usize).map(|e| e.dll.clone())
 }
 
 /// Whether the API at trap address `addr` has an implementation.
