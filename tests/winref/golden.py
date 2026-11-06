@@ -31,7 +31,9 @@ def sources(probe):
         main = os.path.join(ROOT, "host", "tests", base[5:] + ".c")
     else:
         main = os.path.join(HERE, "probes", base + ".c")
-    return [main] + [os.path.join(HERE, f) for f in COMMON]
+    # (a probe's data header, e.g. imaging_data.h)
+    data = os.path.join(HERE, "probes", base + "_data.h")
+    return [main] + ([data] if os.path.exists(data) else []) + [os.path.join(HERE, f) for f in COMMON]
 
 
 def src_hash(probe):
