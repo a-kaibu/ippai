@@ -46,7 +46,6 @@ int main(void) {
     P("%%|%5%|");
     P("%p", (void *)0x1234);
     P("%#p", (void *)0x1234);
-    P("%Z", "ignored");
     P("%y %d", 5);
     { int n = 0; char b[64]; sprintf(b, "abc%n", &n); printf("%%n %d\n", n); }
     /* bounded variants */

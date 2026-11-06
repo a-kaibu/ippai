@@ -34,8 +34,10 @@ static void probe_image(const char *name, const void *bits, int w, int h, int st
     }
 }
 
-/* no error dialogs on the Windows runner */
+/* No error dialogs on the Windows runner; Japanese thread locale (the runner's is en-US; the
+ * code page comes from ja.manifest); stdout unbuffered so that a crash keeps what came before. */
 static void __attribute__((constructor)) probe_init(void) {
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
-    setvbuf(stdout, NULL, _IOFBF, 1 << 16);
+    SetThreadLocale(0x411);
+    setvbuf(stdout, NULL, _IONBF, 0);
 }

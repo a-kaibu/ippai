@@ -1,5 +1,4 @@
-/* manifest: ja
- * The environment the other probes see: code pages and locales (Windows' are whatever the runner
+/* The environment the other probes see: code pages and locales (Windows' are whatever the runner
  * has; the "-ja" build asks for code page 932 through its manifest), OS version. Informational:
  * known.txt accepts its differences. */
 #include "../probe.h"

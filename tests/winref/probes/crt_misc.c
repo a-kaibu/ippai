@@ -1,5 +1,4 @@
-/* manifest: ja
- * msvcrt: rand's sequence (games use it for gameplay), qsort's order of equal keys, ctype and
+/* msvcrt: rand's sequence (games use it for gameplay), qsort's order of equal keys, ctype and
  * the multibyte (code page 932) functions, string helpers, strftime on a fixed date. */
 #include "../probe.h"
 #include <ctype.h>

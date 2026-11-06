@@ -1,5 +1,4 @@
-/* manifest: ja
- * kernel32/user32 text: code page 932 and UTF-8 conversions (invalid input, default chars, MB_ERR
+/* kernel32/user32 text: code page 932 and UTF-8 conversions (invalid input, default chars, MB_ERR
  * flags), CompareString orderings, LCMapString (case, width, kana), CharUpper/Lower, lstrcmp, wsprintf. */
 #include "../probe.h"
 

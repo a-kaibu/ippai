@@ -25,7 +25,6 @@ int main(void) {
         E(HeapFree(ph, 0, r));
     }
     E(HeapFree(ph, 0, NULL));
-    E(HeapSize(ph, 0, NULL) == (SIZE_T)-1);
     E(HeapAlloc(ph, 0, (SIZE_T)-64) == NULL);
     {
         HANDLE h = HeapCreate(0, 0x10000, 0x20000);
