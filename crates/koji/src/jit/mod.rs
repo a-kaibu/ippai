@@ -11,8 +11,8 @@
 //!
 //! Instructions the translator does not handle are run by the `step` import (the
 //! interpreter, one instruction) in the middle of the block. A branch back to the block's own
-//! start becomes a wasm loop; backward jumps count down `cpu.jit_budget` (signals are noticed
-//! when it runs out).
+//! start becomes a wasm loop; backward jumps count down `cpu.jit_budget` (the host gets control
+//! back when it runs out).
 //!
 //! Imports of a block module: `env.memory` (the shared linear memory), `env.step(cpu) -> i32`,
 //! `env.eflags(cpu) -> i32` (materializes and returns EFLAGS) and

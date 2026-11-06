@@ -230,13 +230,6 @@ pub unsafe extern "C" fn vnhost_load_slot(i: u32, out: *mut f64) -> bool {
     true
 }
 
-/// Threads counted by vnhost_load_busy * 1000 + those running now (a check of the counting).
-#[no_mangle]
-pub unsafe extern "C" fn vnhost_load_threads() -> u32 {
-    let n = LOAD_N.load(Ordering::Relaxed).min(LOAD_THREADS);
-    (n * 1000 + LOAD[..n].iter().filter(|l| l.woke.load(Ordering::Relaxed) != 0).count()) as u32
-}
-
 #[cfg(target_os = "emscripten")]
 #[repr(C)]
 struct Mallinfo {

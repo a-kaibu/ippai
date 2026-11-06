@@ -679,20 +679,16 @@ pub fn fatal16(cpu: &mut Cpu, msg: &str) -> ! {
 }
 
 /// The CPU stopped in 16-bit code with `code` (lib.rs's X_*): faults are fatal, INT 21h is DOS.
-pub fn exception(cpu: &mut Cpu, code: i32, info: &[u32; 2]) {
-    match code {
-        5 => {
-            let n = info[0];
-            match n {
-                0x21 => crate::w16api::dos(cpu),
-                0x2f | 0x31 | 0x1a | 0x16 | 0x2a | 0x5c | 0x3f => crate::w16api::int_other(cpu, n),
-                _ => fatal16(cpu, &format!("int {n:#x}")),
-            }
-        }
-        2 => fatal16(cpu, &format!("fault at {:#x} (write {})", info[0], info[1])),
-        3 => fatal16(cpu, "divide error"),
-        4 => fatal16(cpu, "illegal instruction"),
-        _ => fatal16(cpu, &format!("cpu exit {code}")),
+pub fn exception(cpu: &mut Cpu, stop: kura::cpu::Stop) {
+    use kura::cpu::Stop;
+    match stop {
+        Stop::Int(0x21) => crate::w16api::dos(cpu),
+        Stop::Int(n @ (0x2f | 0x31 | 0x1a | 0x16 | 0x2a | 0x5c | 0x3f)) => crate::w16api::int_other(cpu, n),
+        Stop::Int(n) => fatal16(cpu, &format!("int {n:#x}")),
+        Stop::Fault { addr, write } => fatal16(cpu, &format!("fault at {addr:#x} (write {write})")),
+        Stop::Divide => fatal16(cpu, "divide error"),
+        Stop::Invalid => fatal16(cpu, "illegal instruction"),
+        _ => fatal16(cpu, &format!("cpu exit {stop:?}")),
     }
 }
 

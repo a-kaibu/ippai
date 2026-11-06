@@ -1,12 +1,11 @@
 //! The sound card behind sake's audio APIs (waveOut, DirectSound, XAudio2).
 //!
 //! Each render stream queues its frames here. The wall clock plays them: on
-//! every call the elapsed time is mixed (resampled to 44.1 kHz stereo f32) into `out`, which the
-//! page drains with `vnhost_audio_take` into WebAudio. Under node nobody drains it and `out` just
-//! stays capped, so the timing games wait on is the same in both.
+//! every call the elapsed time is mixed (44.1 kHz stereo f32) into `out`, which the
+//! page reads from the ring (`vnhost_audio_ring`) into WebAudio. Under node nobody drains it and
+//! `out` just stays capped, so the timing games wait on is the same in both.
 
 use std::collections::{HashMap, VecDeque};
-use std::ffi::c_int;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
@@ -18,19 +17,13 @@ pub const RATE: u32 = 44100;
 const OUT_CAP: usize = RATE as usize / 4;
 
 struct Stream {
-    rate: u32,
-    channels: u32,
-    bits: u32,
-    float: bool,
-    /// stereo frames at `rate`
+    /// stereo frames at RATE
     q: VecDeque<[f32; 2]>,
-    /// position between q[0] and q[1], in source frames
-    phase: f64,
 }
 
 struct Card {
-    streams: HashMap<c_int, Stream>,
-    next_id: c_int,
+    streams: HashMap<i32, Stream>,
+    next_id: i32,
     /// time up to which `out` has been mixed
     clock: Instant,
     out: VecDeque<[f32; 2]>,
@@ -62,21 +55,10 @@ impl Card {
         let start = self.out.len();
         self.out.resize(start + n, [0.0; 2]);
         for s in self.streams.values_mut() {
-            let step = s.rate as f64 / RATE as f64;
-            for o in self.out.range_mut(start..) {
-                let Some(a) = s.q.front().copied() else { break };
-                let b = s.q.get(1).copied().unwrap_or(a);
-                let t = s.phase as f32;
-                o[0] += a[0] + (b[0] - a[0]) * t;
-                o[1] += a[1] + (b[1] - a[1]) * t;
-                s.phase += step;
-                while s.phase >= 1.0 && !s.q.is_empty() {
-                    s.phase -= 1.0;
-                    s.q.pop_front();
-                }
-            }
-            if s.q.is_empty() {
-                s.phase = 0.0;
+            let k = s.q.len().min(n);
+            for (o, f) in self.out.range_mut(start..).zip(s.q.drain(..k)) {
+                o[0] += f[0];
+                o[1] += f[1];
             }
         }
         if RING_ON.load(Ordering::Relaxed) {
@@ -89,58 +71,36 @@ impl Card {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn vnhost_audio_open(rate: u32, channels: u32, bits: u32, is_float: c_int) -> c_int {
-    if rate == 0 || !(1..=2).contains(&channels) || !matches!((bits, is_float != 0), (8 | 16, false) | (32, true)) {
-        return -1;
-    }
+/// A new stream of stereo f32 frames at RATE.
+pub fn open() -> i32 {
     if stats() {
-        eprintln!("vnvm audio: open {rate} Hz, {channels} ch, {bits} bits");
+        eprintln!("vnvm audio: open");
     }
     with(|c| {
         let id = c.next_id;
         c.next_id += 1;
-        c.streams.insert(id, Stream { rate, channels, bits, float: is_float != 0, q: VecDeque::new(), phase: 0.0 });
+        c.streams.insert(id, Stream { q: VecDeque::new() });
         id
     })
 }
 
-#[no_mangle]
-pub extern "C" fn vnhost_audio_close(id: c_int) {
+pub fn close(id: i32) {
     with(|c| c.streams.remove(&id));
 }
 
 /// Frames of stream `id` not played yet.
-#[no_mangle]
-pub extern "C" fn vnhost_audio_queued(id: c_int) -> u32 {
+pub fn queued(id: i32) -> u32 {
     with(|c| c.streams.get(&id).map_or(0, |s| s.q.len() as u32))
 }
 
-/// Queues `frames` frames in the stream's format; returns how many were taken (all of them).
-#[no_mangle]
-pub unsafe extern "C" fn vnhost_audio_write(id: c_int, data: *const u8, frames: u32) -> u32 {
+/// Queues interleaved stereo frames.
+pub fn write(id: i32, frames: &[f32]) {
     with(|c| {
-        let Some(s) = c.streams.get_mut(&id) else { return 0 };
-        let size = (s.bits / 8) as usize;
-        let n = frames as usize * s.channels as usize;
-        let bytes = std::slice::from_raw_parts(data, n * size);
-        let sample = |i: usize| -> f32 {
-            let b = &bytes[i * size..];
-            match (s.bits, s.float) {
-                (8, _) => (b[0] as f32 - 128.0) / 128.0,
-                (16, _) => i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0,
-                _ => f32::from_le_bytes([b[0], b[1], b[2], b[3]]),
-            }
-        };
-        let ch = s.channels as usize;
-        let mut q = std::mem::take(&mut s.q);
-        q.extend((0..frames as usize).map(|f| {
-            let l = sample(f * ch);
-            [l, if ch == 2 { sample(f * ch + 1) } else { l }]
-        }));
+        let Some(s) = c.streams.get_mut(&id) else { return };
+        let before = s.q.len();
+        s.q.extend(frames.chunks_exact(2).map(|f| [f[0], f[1]]));
         if stats() {
-            let tail = q.len() - frames as usize;
-            let (sum, n) = q.range(tail..).fold((0f64, 0usize), |(a, n), f| (a + (f[0] * f[0]) as f64, n + 1));
+            let (sum, n) = s.q.range(before..).fold((0f64, 0usize), |(a, n), f| (a + (f[0] * f[0]) as f64, n + 1));
             static ACC: Mutex<(f64, usize)> = Mutex::new((0.0, 0));
             let mut acc = ACC.lock().unwrap_or_else(|e| e.into_inner());
             acc.0 += sum;
@@ -150,8 +110,6 @@ pub unsafe extern "C" fn vnhost_audio_write(id: c_int, data: *const u8, frames: 
                 *acc = (0.0, 0);
             }
         }
-        s.q = q;
-        frames
     })
 }
 
@@ -199,18 +157,4 @@ pub unsafe extern "C" fn vnhost_audio_ring(frames: *mut u32) -> *const u8 {
     *frames = RING_FRAMES as u32;
     RING_ON.store(true, Ordering::Relaxed);
     &RING as *const Ring as *const u8
-}
-
-/// Moves up to `frames` mixed 48 kHz stereo frames (interleaved f32) to `buf`; returns how many.
-#[no_mangle]
-pub unsafe extern "C" fn vnhost_audio_take(buf: *mut f32, frames: u32) -> u32 {
-    with(|c| {
-        let n = c.out.len().min(frames as usize);
-        let dst = std::slice::from_raw_parts_mut(buf, n * 2);
-        for (i, f) in c.out.drain(..n).enumerate() {
-            dst[i * 2] = f[0];
-            dst[i * 2 + 1] = f[1];
-        }
-        n as u32
-    })
 }

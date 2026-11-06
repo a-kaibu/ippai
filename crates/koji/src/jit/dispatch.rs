@@ -1,7 +1,6 @@
 //! The dispatcher module: `run(cpu) -> i32` looks `cpu.eip` up in the block hash table and
 //! calls the block through the `env.table` funcref table, until a block returns non-zero, an
-//! address has no block (returns [`super::RET_INTERP`]), a signal is pending or
-//! `cpu.jit_budget` runs out (returns 0).
+//! address has no block (returns [`super::RET_INTERP`]) or `cpu.jit_budget` runs out (returns 0).
 //!
 //! The hash table (owned by the embedder) is `cpu.jit_mask + 1` entries of (eip, entry), entry
 //! being the region function's table index | the block's index << ENTRY_SHIFT (the function's
@@ -27,17 +26,15 @@ pub fn module() -> alloc::vec::Vec<u8> {
     m.imports.push(Import::Table("table"));
     let hash = offset_of!(Cpu, jit_hash) as u32;
     let maskf = offset_of!(Cpu, jit_mask) as u32;
-    let pending = offset_of!(Cpu, jit_pending) as u32;
     let (cpu, eip, h, e, st, mask) = (0, 1, 2, 3, 4, 5);
     const V: u32 = 6; // the region's results
     let mut c = Code::default();
     c.get(cpu).load32(maskf).set(mask);
     c.loop_();
     {
-        // budget and signals
+        // budget
         c.get(cpu).get(cpu).load32(Off::budget()).i32c(1).sub().store32(Off::budget());
         c.get(cpu).load32(Off::budget()).i32c(0).le_s();
-        c.get(cpu).load32(pending).load32(0).or();
         c.if_().i32c(0).ret().end();
         c.get(cpu).load32(Off::eip()).set(eip);
         // (0 is the key of an empty slot: the interpreter faults there)

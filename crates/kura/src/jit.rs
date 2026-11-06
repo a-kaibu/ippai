@@ -124,10 +124,9 @@ pub fn pages_protected(addr: usize, len: usize, prot: i32) {
     }
 }
 
-/// the loader mapped a main executable (not a DLL) there.
-#[no_mangle]
-pub extern "C" fn vnhost_jit_exe_image(addr: *const std::ffi::c_void, size: usize) {
-    set_pages(&EXE_PAGES, addr as usize, size, true);
+/// The loader mapped a main executable (not a DLL) there.
+pub fn exe_image(addr: u32, size: u32) {
+    set_pages(&EXE_PAGES, addr as usize, size as usize, true);
 }
 
 fn debug_range(a: u32) -> bool {
@@ -478,7 +477,7 @@ fn init_flags() {
     });
 }
 
-pub fn run(cpu: &mut Cpu, pending: u32) -> Ran {
+pub fn run(cpu: &mut Cpu) -> Ran {
     init_flags();
     check_generation();
     // (saves come after builds; this covers a run whose builds were all done early)
@@ -498,7 +497,6 @@ pub fn run(cpu: &mut Cpu, pending: u32) -> Ran {
         cpu.jit_ring = st.ring.as_mut_ptr() as usize as u32;
         cpu.jit_calls = st.calls.as_mut_ptr() as usize as u32;
     });
-    cpu.jit_pending = pending;
     cpu.jit_budget = BUDGET;
     cpu.jit_code_pages = CODE_PAGES.as_ptr() as usize as u32;
     let depth = cpu.jit_depth;
@@ -1665,8 +1663,3 @@ pub(crate) fn count_entry(eip: u32) {
     });
 }
 
-/// FlushInstructionCache: the guest wrote code there (see `code_changed`).
-#[no_mangle]
-pub extern "C" fn vnhost_jit_code_changed(addr: *const std::ffi::c_void, size: usize) {
-    code_changed(addr as usize, size);
-}

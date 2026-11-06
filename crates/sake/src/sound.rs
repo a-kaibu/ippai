@@ -435,7 +435,7 @@ fn waveOutGetVolume(c: &mut Ctx) -> u32 {
 fn start_mixer() {
     static STARTED: OnceLock<()> = OnceLock::new();
     STARTED.get_or_init(|| {
-        let id = kura::audio::vnhost_audio_open(RATE, 2, 32, 1);
+        let id = kura::audio::open();
         with(|d| d.stream = id);
         if crate::env_on!("SAKE_NO_MIXER") {
             return;
@@ -453,7 +453,7 @@ fn start_mixer() {
                     drop(cv.wait_timeout(lock.lock().unwrap(), Duration::from_millis(10)).unwrap());
                     loop {
                         let t0 = std::time::Instant::now();
-                        let q = kura::audio::vnhost_audio_queued(id);
+                        let q = kura::audio::queued(id);
                         t_q += t0.elapsed().as_secs_f64();
                         if q >= AHEAD {
                             break;
@@ -466,7 +466,7 @@ fn start_mixer() {
                         }
                         t_mix += t0.elapsed().as_secs_f64();
                         let t0 = std::time::Instant::now();
-                        unsafe { kura::audio::vnhost_audio_write(id, out.as_ptr() as *const u8, STEP as u32) };
+                        kura::audio::write(id, &out);
                         t_w += t0.elapsed().as_secs_f64();
                         n += 1;
                     }

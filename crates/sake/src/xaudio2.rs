@@ -200,7 +200,7 @@ fn engine_thread(c: &mut Ctx) -> u32 {
     let lock = Mutex::new(());
     loop {
         let (stream, running) = with(|e| (e.stream, e.running));
-        if !running || kura::audio::vnhost_audio_queued(stream) >= AHEAD {
+        if !running || kura::audio::queued(stream) >= AHEAD {
             drop(WAKE.wait_timeout(lock.lock().unwrap(), Duration::from_millis(5)).unwrap());
             continue;
         }
@@ -225,7 +225,7 @@ fn engine_thread(c: &mut Ctx) -> u32 {
         for &cb in &engine_cbs {
             callback(c, cb, 1, None);
         }
-        unsafe { kura::audio::vnhost_audio_write(stream, out.as_ptr() as *const u8, STEP as u32) };
+        kura::audio::write(stream, &out);
     }
 }
 
@@ -235,7 +235,7 @@ fn start_thread() {
             return false;
         }
         e.thread = true;
-        e.stream = kura::audio::vnhost_audio_open(RATE, 2, 32, 1);
+        e.stream = kura::audio::open();
         true
     });
     if spawn {

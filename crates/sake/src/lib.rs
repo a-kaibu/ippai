@@ -142,12 +142,14 @@ fn new_teb(tid: u32, stack: u32) -> (u32, u32, u32) {
 fn enter(stack: u32) -> &'static mut Thread {
     let tid = NEXT_TID.fetch_add(4, Ordering::Relaxed);
     let (teb, top, st) = new_teb(tid, stack);
-    let cpu = kura::cpu::vnhost_cpu_create(api::TRAP_LO, api::TRAP_HI);
+    let cpu = kura::cpu::create(api::TRAP_LO, api::TRAP_HI);
     unsafe {
         (*cpu).fs_base = teb;
         (*cpu).regs[ESP] = top - 16;
         if mem::x64() {
-            kura::cpu::vnhost_cpu_set_long_mode(cpu, teb);
+            // long mode, GS = the TEB
+            (*cpu).mode64 = 1;
+            (*cpu).gs_base = teb;
         }
     }
     let t = Box::leak(Box::new(Thread { cpu, tid, teb, obj: 0, stack: st }));
@@ -156,29 +158,19 @@ fn enter(stack: u32) -> &'static mut Thread {
     t
 }
 
-/// Exit codes of vnhost_cpu_run (signal_wasm.c's `enum vnhost_exit`).
-const X_TRAP: i32 = 1;
-const X_FAULT: i32 = 2;
-const X_DIVIDE: i32 = 3;
-const X_INVALID: i32 = 4;
-const X_INT: i32 = 5;
-const X_HALT: i32 = 6;
-const X_PENDING: i32 = 7;
-
 /// Runs guest code until it returns to RET_TRAP with ESP at or above `until` (0: forever).
 pub fn run(cpu: &mut Cpu, until: u32) {
-    let mut info = [0u32; 2];
+    use kura::cpu::Stop;
     loop {
-        let code = unsafe { kura::cpu::vnhost_cpu_run(cpu, info.as_mut_ptr()) };
-        match code {
-            X_TRAP if (w16::TRAP..w16::TRAP + 0x10000).contains(&info[0]) => {
-                if w16::dispatch(cpu, info[0]) {
+        let stop = kura::cpu::run(cpu);
+        match stop {
+            Stop::Trap(a) if (w16::TRAP..w16::TRAP + 0x10000).contains(&a) => {
+                if w16::dispatch(cpu, a) {
                     return;
                 }
             }
-            X_FAULT | X_DIVIDE | X_INVALID | X_INT | X_HALT if cpu.mode16 != 0 => w16::exception(cpu, code, &info),
-            X_TRAP => {
-                let a = info[0];
+            Stop::Fault { .. } | Stop::Divide | Stop::Invalid | Stop::Int(_) | Stop::Halt if cpu.mode16 != 0 => w16::exception(cpu, stop),
+            Stop::Trap(a) => {
                 if a == api::RET_TRAP {
                     if cpu.regs[ESP] >= until && until != 0 {
                         return;
@@ -197,50 +189,45 @@ pub fn run(cpu: &mut Cpu, until: u32) {
                     api::dispatch(cpu, a);
                 }
             }
-            X_FAULT => {
+            Stop::Fault { addr, write } => {
                 if crate::env_on!("SAKE_TRACE_FAULT") {
-                    eprintln!("sake: fault at {:#x} reading {:#x} (write {})", cpu.eip, info[0], info[1]);
+                    eprintln!("sake: fault at {:#x} reading {addr:#x} (write {write})", cpu.eip);
                 }
-                if info[0] >= api::TRAP_LO && cpu.eip == info[0] {
+                if addr >= api::TRAP_LO && cpu.eip == addr {
                     fatal(cpu, "fault at a trap address");
                 }
                 if mem::x64() {
                     let e = cpu.eip;
-                    seh64::raise(cpu, 0xc000_0005, 0, e, &[info[1] as u64, info[0] as u64]);
+                    seh64::raise(cpu, 0xc000_0005, 0, e, &[write as u64, addr as u64]);
                     continue;
                 }
-                seh::raise_fault(cpu, info[0], info[1] != 0)
+                seh::raise_fault(cpu, addr, write)
             }
-            X_DIVIDE => {
+            Stop::Divide => {
                 let e = cpu.eip;
                 raise(cpu, 0xc000_0094, e, &[])
             }
-            X_INVALID => {
+            Stop::Invalid => {
                 let e = cpu.eip;
                 let mut b = [0u8; 8];
                 b.copy_from_slice(mem::slice(e, 8));
                 eprintln!("sake: illegal instruction at {e:#x}: {b:02x?}");
                 raise(cpu, 0xc000_001d, e, &[])
             }
-            X_INT => {
+            Stop::Int(n) => {
                 let e = cpu.eip;
-                if info[0] == 3 {
+                if n == 3 {
                     raise(cpu, 0x8000_0003, e, &[0])
                 } else {
                     // int 2d etc.: skip it
                     cpu.eip += 2;
                 }
             }
-            X_HALT => {
+            Stop::Halt => {
                 let e = cpu.eip;
                 raise(cpu, 0xc000_0096, e, &[])
             }
-            X_PENDING => {
-                for s in 1..32 {
-                    kura::cpu::vnhost_signal_pending(s);
-                }
-            }
-            _ => fatal(cpu, &format!("cpu run exit {code}")),
+            Stop::Syscall => fatal(cpu, "syscall"),
         }
     }
 }

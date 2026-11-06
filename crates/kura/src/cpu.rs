@@ -10,16 +10,21 @@ use koji::{Cpu, Exit, Fault, Memory};
 
 const NULL_PAGES: u32 = 0x10000;
 
-/// Exit codes shared with signal_wasm.c (`enum vnhost_exit`).
-const EXIT_TRAP: i32 = 1;
-const EXIT_FAULT: i32 = 2;
-const EXIT_DIVIDE: i32 = 3;
-const EXIT_INVALID: i32 = 4;
-const EXIT_INT: i32 = 5;
-const EXIT_HALT: i32 = 6;
-const EXIT_PENDING: i32 = 7;
-/// SYSCALL in long mode (x86-64 guests)
-const EXIT_SYSCALL: i32 = 8;
+/// Why [`run`] returned.
+#[derive(Clone, Copy, Debug)]
+pub enum Stop {
+    /// Reached a trap address (in [trap_lo, trap_hi)).
+    Trap(u32),
+    Fault { addr: u32, write: bool },
+    Divide,
+    /// An invalid opcode at EIP.
+    Invalid,
+    /// INT n
+    Int(u32),
+    Halt,
+    /// SYSCALL in long mode (x86-64 guests)
+    Syscall,
+}
 
 /// The linear memory as the guest sees it.
 pub(crate) struct Linear;
@@ -173,38 +178,24 @@ impl Memory for Linear {
 }
 
 // ---------------------------------------------------------------------------------------------
-// signals: pending bits per thread the run loop and the JIT check between blocks (nothing
-// raises them since Wine's processes went; the JIT still polls the word)
-
-struct ThreadSignals {
-    pending: AtomicU32,
-}
+// thread ids
 
 static NEXT_TID: AtomicU32 = AtomicU32::new(1000);
 
 thread_local! {
-    static SELF: (i32, Arc<ThreadSignals>) = {
-        let tid = NEXT_TID.fetch_add(1, Ordering::Relaxed) as i32;
-        (tid, Arc::new(ThreadSignals { pending: AtomicU32::new(0) }))
-    };
+    static TID: i32 = NEXT_TID.fetch_add(1, Ordering::Relaxed) as i32;
 }
 
-#[no_mangle]
-pub extern "C" fn vnhost_gettid() -> i32 {
-    SELF.with(|s| s.0)
-}
-
-/// Takes `sig` off the calling thread's pending set; returns whether it was pending.
-#[no_mangle]
-pub extern "C" fn vnhost_signal_pending(sig: i32) -> i32 {
-    SELF.with(|s| (s.1.pending.fetch_and(!(1 << sig), Ordering::SeqCst) & (1 << sig) != 0) as i32)
+/// The calling thread's id (for logs).
+pub fn tid() -> i32 {
+    TID.with(|t| *t)
 }
 
 // ---------------------------------------------------------------------------------------------
-// the C interface of signal_wasm.c
+// guest threads' CPUs
 
-#[no_mangle]
-pub extern "C" fn vnhost_cpu_create(trap_lo: u32, trap_hi: u32) -> *mut Cpu {
+/// A new CPU (kept until [`destroy`]: the crash log reads it).
+pub fn create(trap_lo: u32, trap_hi: u32) -> *mut Cpu {
     let mut cpu = Box::new(Cpu::default());
     cpu.trap_lo = trap_lo;
     cpu.trap_hi = trap_hi;
@@ -214,100 +205,21 @@ pub extern "C" fn vnhost_cpu_create(trap_lo: u32, trap_hi: u32) -> *mut Cpu {
     cpu
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn vnhost_cpu_destroy(cpu: *mut Cpu) {
+/// # Safety
+/// `cpu` came from [`create`] and is not used after this.
+pub unsafe fn destroy(cpu: *mut Cpu) {
     crate::crashlog::unregister(cpu);
     drop(Box::from_raw(cpu));
 }
 
-/// regs: eax ecx edx ebx esp ebp esi edi eip eflags
-#[no_mangle]
-pub unsafe extern "C" fn vnhost_cpu_get(cpu: *const Cpu, regs: *mut u32) {
-    let c = &*cpu;
-    let r = std::slice::from_raw_parts_mut(regs, 10);
-    r[..8].copy_from_slice(&c.regs);
-    r[8] = c.eip;
-    r[9] = c.flags();
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn vnhost_cpu_set(cpu: *mut Cpu, regs: *const u32) {
-    let c = &mut *cpu;
-    let r = std::slice::from_raw_parts(regs, 10);
-    c.regs.copy_from_slice(&r[..8]);
-    c.eip = r[8];
-    c.eflags = r[9] | 0x2;
-    c.lazy.op = 0;
-}
-
-/// x86-64 guests (signal_wasm64.c): long mode, GS = the TEB.
-#[no_mangle]
-pub unsafe extern "C" fn vnhost_cpu_set_long_mode(cpu: *mut Cpu, gs_base: u32) {
-    (*cpu).mode64 = 1;
-    (*cpu).gs_base = gs_base;
-}
-
-/// regs: rax rcx rdx rbx rsp rbp rsi rdi r8-r15 rip rflags
-#[no_mangle]
-pub unsafe extern "C" fn vnhost_cpu_get64(cpu: *const Cpu, regs: *mut u64) {
-    let c = &*cpu;
-    let r = std::slice::from_raw_parts_mut(regs, 18);
-    for (i, v) in r[..16].iter_mut().enumerate() {
-        *v = c.gpr(i);
-    }
-    r[16] = c.eip as u64 | (c.rip_hi as u64) << 32;
-    r[17] = c.flags() as u64;
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn vnhost_cpu_set64(cpu: *mut Cpu, regs: *const u64) {
-    let c = &mut *cpu;
-    let r = std::slice::from_raw_parts(regs, 18);
-    for (i, v) in r[..16].iter().enumerate() {
-        c.set_gpr(i, *v);
-    }
-    c.eip = r[16] as u32;
-    c.rip_hi = (r[16] >> 32) as u32;
-    c.eflags = r[17] as u32 | 0x2;
-    c.lazy.op = 0;
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn vnhost_cpu_set_fs(cpu: *mut Cpu, base: u32) {
-    (*cpu).fs_base = base;
-}
-
-/// FXSAVE image of the x87/SSE state into a host buffer.
-#[no_mangle]
-pub unsafe extern "C" fn vnhost_cpu_fxsave(cpu: *const Cpu, dst: *mut u8) {
-    let mut buf = Buf(std::slice::from_raw_parts_mut(dst, 512));
-    let _ = koji::fxsave(&*cpu, &mut buf, 0);
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn vnhost_cpu_fxrstor(cpu: *mut Cpu, src: *const u8) {
-    let mut copy = [0u8; 512];
-    copy.copy_from_slice(std::slice::from_raw_parts(src, 512));
-    let mut buf = Buf(&mut copy);
-    let _ = koji::fxrstor(&mut *cpu, &mut buf, 0);
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn vnhost_cpuid(leaf: u32, sub: u32, regs: *mut u32) {
-    let (a, b, c, d) = koji::cpuid(leaf, sub);
-    let r = std::slice::from_raw_parts_mut(regs, 4);
-    r.copy_from_slice(&[a, b, c, d]);
-}
-
-/// What an [`Exit`] means for signal_wasm.c; None to keep running.
-fn exit_code(cpu: &Cpu, mem: &mut Linear, exit: Exit, info: &mut [u32], from_jit: bool) -> Option<i32> {
+/// What an [`Exit`] means for the caller of [`run`]; None to keep running.
+fn exit_code(cpu: &Cpu, mem: &mut Linear, exit: Exit, from_jit: bool) -> Option<Stop> {
     use crate::crashlog::exception;
     match exit {
         Exit::Continue => None,
         Exit::Trap(a) => {
             crate::crashlog::trap(cpu, a);
-            info[0] = a;
-            Some(EXIT_TRAP)
+            Some(Stop::Trap(a))
         }
         Exit::Fault(f) => {
             exception(cpu, "access violation", Some((f.addr, f.write)), from_jit);
@@ -348,23 +260,20 @@ fn exit_code(cpu: &Cpu, mem: &mut Linear, exit: Exit, info: &mut [u32], from_jit
                 let st: Vec<String> = (0..48u32).map(|k| format!("{:x}", mem.read64(rsp.wrapping_add(k * 8)).unwrap_or(0xdead))).collect();
                 eprintln!("vnfault stack {}", st.join(" "));
             }
-            info[0] = f.addr;
-            info[1] = f.write as u32;
-            Some(EXIT_FAULT)
+            Some(Stop::Fault { addr: f.addr, write: f.write })
         }
         Exit::DivideError => {
             exception(cpu, "divide error", None, from_jit);
-            Some(EXIT_DIVIDE)
+            Some(Stop::Divide)
         }
         Exit::InvalidOpcode => {
             exception(cpu, "invalid opcode", None, from_jit);
-            info[0] = cpu.eip;
             if crate::env_on!("IPPAI_TRACE_UD") {
                 let mut b = [0u8; 16];
                 let n = mem.fetch(cpu.eip, &mut b);
                 eprintln!("kura: invalid opcode at {:#x}: {:02x?}", cpu.eip, &b[..n]);
             }
-            Some(EXIT_INVALID)
+            Some(Stop::Invalid)
         }
         Exit::Interrupt(n) => {
             let what = match n {
@@ -376,14 +285,13 @@ fn exit_code(cpu: &Cpu, mem: &mut Linear, exit: Exit, info: &mut [u32], from_jit
             let mut l = crate::crashlog::Line::<32>::new();
             let _ = std::fmt::Write::write_fmt(&mut l, format_args!("{what} {n:#x}"));
             exception(cpu, std::str::from_utf8(l.bytes()).unwrap_or(what), None, from_jit);
-            info[0] = n as u32;
-            Some(EXIT_INT)
+            Some(Stop::Int(n as u32))
         }
         Exit::Halt => {
             exception(cpu, "hlt (privileged instruction)", None, from_jit);
-            Some(EXIT_HALT)
+            Some(Stop::Halt)
         }
-        Exit::Syscall => Some(EXIT_SYSCALL),
+        Exit::Syscall => Some(Stop::Syscall),
     }
 }
 
@@ -432,7 +340,7 @@ fn trace_eip(cpu: *mut Cpu) -> Option<impl Drop> {
         Some(s)
     }))?;
     let _ = secs;
-    let tid = SELF.with(|s| s.0);
+    let tid = tid();
     let mut list = CPUS.lock().unwrap();
     let e = match list.iter().find(|(t, _)| *t == tid) {
         Some((_, e)) => e.clone(),
@@ -452,38 +360,29 @@ fn trace_eip(cpu: *mut Cpu) -> Option<impl Drop> {
     Some(TraceGuard(e))
 }
 
-/// Runs until the guest reaches a trap address, faults, or a signal is pending.
-/// `info` gets the trap/fault address (and for faults, whether it was a write).
-#[no_mangle]
-pub unsafe extern "C" fn vnhost_cpu_run(cpu: *mut Cpu, info: *mut u32) -> i32 {
+/// Runs until the guest reaches a trap address or stops otherwise (fault, INT...).
+pub fn run(cpu: &mut Cpu) -> Stop {
     let _guest = trace_eip(cpu);
     crate::crashlog::in_guest(true);
-    let r = cpu_run(cpu, info);
+    let r = cpu_run(cpu);
     crate::crashlog::in_guest(false);
     r
 }
 
-unsafe fn cpu_run(cpu: *mut Cpu, info: *mut u32) -> i32 {
-    let cpu = &mut *cpu;
-    let info = std::slice::from_raw_parts_mut(info, 2);
-    let signals = SELF.with(|s| s.1.clone());
+fn cpu_run(cpu: &mut Cpu) -> Stop {
     let mut mem = Linear;
     // long mode: IPPAI_JIT64=0 leaves it to the interpreter
     let jit = crate::jit::enabled() && (cpu.mode64 == 0 || crate::jit::enabled64()) && cpu.mode16 == 0;
     crate::jit::count_entry(cpu.eip);
     loop {
-        let pending = signals.pending.load(Ordering::Relaxed);
-        if pending != 0 {
-            return EXIT_PENDING;
-        }
         trace_call(cpu);
         if jit {
-            match crate::jit::run(cpu, signals.pending.as_ptr() as u32) {
+            match crate::jit::run(cpu) {
                 crate::jit::Ran::Stopped => {
                     crate::jit::count_entry(cpu.eip | 0x8000_0000);
                     continue;
                 }
-                crate::jit::Ran::Exit(e) => match exit_code(cpu, &mut mem, e, info, true) {
+                crate::jit::Ran::Exit(e) => match exit_code(cpu, &mut mem, e, true) {
                     Some(code) => return code,
                     None => continue,
                 },
@@ -498,7 +397,7 @@ unsafe fn cpu_run(cpu: *mut Cpu, info: *mut u32) -> i32 {
         // the interpreter: up to the next branch with the JIT, a batch of steps without
         for _ in 0..4096 {
             let (e, branch) = crate::jit::step(cpu, &mut mem);
-            if let Some(code) = exit_code(cpu, &mut mem, e, info, false) {
+            if let Some(code) = exit_code(cpu, &mut mem, e, false) {
                 return code;
             }
             if jit && branch {
@@ -536,22 +435,4 @@ fn trace_call(cpu: &Cpu) {
     let ret = if ok(r[4]) { unsafe { *(r[4] as usize as *const u32) } } else { 0 };
     eprintln!("call {k} prev-dst-hash {h:08x} code {c:08x} | eax {:08x} ecx {:08x} edx {:08x} esi {:08x} edi {:08x} esp {:08x} [esp] {ret:08x} r8 {:x} r9 {:x}", r[0], r[1], r[2], r[6], r[7], r[4], cpu.r8[0], cpu.r8[1]);
     PREV.with(|p| p.set((k + 1, r[2], r[1])));
-}
-
-/// A host buffer seen as guest memory at address 0 (for FXSAVE images).
-struct Buf<'a>(&'a mut [u8]);
-
-impl Memory for Buf<'_> {
-    fn read8(&mut self, addr: u32) -> Result<u8, Fault> {
-        self.0.get(addr as usize).copied().ok_or(Fault { addr, write: false })
-    }
-    fn write8(&mut self, addr: u32, v: u8) -> Result<(), Fault> {
-        match self.0.get_mut(addr as usize) {
-            Some(b) => {
-                *b = v;
-                Ok(())
-            }
-            None => Err(Fault { addr, write: true }),
-        }
-    }
 }

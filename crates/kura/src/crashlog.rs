@@ -150,7 +150,7 @@ fn stamp(w: &mut impl Write) {
         (s / 60) % 60,
         s % 60,
         ms % 1000,
-        crate::cpu::vnhost_gettid()
+        crate::cpu::tid()
     );
 }
 
@@ -249,7 +249,7 @@ thread_local! {
     static CUR: Cell<Option<&'static ThreadLog>> = const { Cell::new(None) };
 }
 
-/// The calling thread got `cpu` (vnhost_cpu_create).
+/// The calling thread got `cpu` (cpu::create).
 pub fn register(cpu: *mut Cpu) {
     static HOOK: std::sync::Once = std::sync::Once::new();
     HOOK.call_once(|| {
@@ -262,7 +262,7 @@ pub fn register(cpu: *mut Cpu) {
         }));
     });
     let t: &'static ThreadLog = Box::leak(Box::new(ThreadLog {
-        tid: crate::cpu::vnhost_gettid(),
+        tid: crate::cpu::tid(),
         cpu: AtomicUsize::new(cpu as usize),
         guest: AtomicU32::new(0),
         traps: UnsafeCell::new([[0; 4]; TRAPS]),
@@ -275,7 +275,7 @@ pub fn register(cpu: *mut Cpu) {
     g.push(t);
 }
 
-/// `cpu` is going away (vnhost_cpu_destroy).
+/// `cpu` is going away (cpu::destroy).
 pub fn unregister(cpu: *mut Cpu) {
     let mut g = THREADS.lock().unwrap_or_else(|e| e.into_inner());
     g.retain(|x| {
