@@ -1254,6 +1254,7 @@ pub(crate) fn pipeline_key(c: &Ctx, vs: u32, ps: u32, topo: u32, depth: bool, ve
 
 pub(crate) fn pipeline(g: &mut Gl, key: Vec<u32>) -> u32 {
     if let Some(&p) = g.pipelines.get(&key) {
+        crate::render::gpu::pipeline_hit();
         return p;
     }
     let id = page_id();

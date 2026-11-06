@@ -2443,7 +2443,10 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
         key.extend_from_slice(&[*f, t[0], blend_factor(t[1], false), blend_factor(t[2], false), t[3], blend_factor(t[4], true), blend_factor(t[5], true), t[6], t[7] & 0xf]);
     }
     let pipe = match d.pipelines.get(&key) {
-        Some(&p) => p,
+        Some(&p) => {
+            crate::render::gpu::pipeline_hit();
+            p
+        }
         None => {
             let id = page_id();
             let mut c = vec![gpu::CREATE_PIPELINE2, id, key.len() as u32];

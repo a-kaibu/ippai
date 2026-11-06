@@ -50,6 +50,12 @@ function Lines({ v }: { v: MeterView }) {
         {v.heapUsed >= 0 ? `wasm ${mb(v.heapUsed)} MB（最大 ${mb(v.heapTop)}）・` : ""}
         {v.jsHeap >= 0 ? `JS ${mb(v.jsHeap)} MB・` : ""}キャッシュ {mb(v.cacheBytes)} MB
       </Row>
+      {v.pipeHits >= 0 && (
+        <Row k="パイプライン" bad={v.pipeMade > 0 && v.pipeP95 > 16}>
+          ヒット {v.pipeHits}・生成 {v.pipeMade}（累計 {v.pipeTotal}）・生成 p50 {v.pipeP50.toFixed(1)} ms p95{" "}
+          {v.pipeP95.toFixed(1)} ms 最長 {v.pipeMax.toFixed(1)} ms
+        </Row>
+      )}
       <Row k="fps">
         ゲーム {v.gameFps.toFixed(0)}・ページ {v.pageFps.toFixed(0)}・CPU {v.cpu.toFixed(2)} コア
       </Row>

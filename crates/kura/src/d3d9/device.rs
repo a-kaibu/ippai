@@ -2654,7 +2654,10 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         }
     }
     let pipe = match dev.pipelines.get(&key) {
-        Some(&p) => p,
+        Some(&p) => {
+            crate::render::gpu::pipeline_hit();
+            p
+        }
         None => {
             let id = gpu_id();
             gpu::record(|b| {

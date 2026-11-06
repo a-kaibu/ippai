@@ -15,6 +15,7 @@ export interface MeterWasm {
   _vnhost_mem_info?(out: number): void;
   _vnhost_render_info?(out: number): void;
   _vnhost_load_busy?(): number;
+  _vnhost_gpu_pipelines?(out: number): void;
 }
 
 /** Running totals at one moment. */
@@ -36,6 +37,8 @@ interface Totals {
   frames: number;
   raf: number;
   busy: number;
+  pipeHits: number;
+  pipeMade: number;
 }
 
 /** What one window (the last n seconds) looked like. */
@@ -68,6 +71,14 @@ export interface MeterView {
   pageFps: number;
   /** guest CPU in cores */
   cpu: number;
+  /** pipelines: the APIs' cache hits and pipelines created, in this window and in all; the
+   * creation time of the recent ones (ms, p50/p95) and the longest; -1 hits: unknown */
+  pipeHits: number;
+  pipeMade: number;
+  pipeTotal: number;
+  pipeP50: number;
+  pipeP95: number;
+  pipeMax: number;
 }
 
 const HISTORY = 61;
@@ -76,7 +87,7 @@ class Meter {
   private wasm: MeterWasm | null = null;
   private buf = 0;
   private hist: (Totals & { stallMax: number; reqMax: number })[] = [];
-  private now = { inflight: 0, cacheBytes: 0, heapTop: -1, heapUsed: -1 };
+  private now = { inflight: 0, cacheBytes: 0, heapTop: -1, heapUsed: -1, pipeP50: 0, pipeP95: 0, pipeMax: 0 };
   private frames = 0;
   private raf = 0;
   private pageReqs = 0;
@@ -122,6 +133,8 @@ class Meter {
     const v = Array.from({ length: 11 }, () => 0);
     let d3dFrames = 0;
     let busy = 0;
+    let pipeHits = -1;
+    let pipeMade = 0;
     try {
       if (w?._malloc && w.HEAPF64) {
         this.buf ||= w._malloc(128) >>> 0;
@@ -141,6 +154,12 @@ class Meter {
           d3dFrames = new Uint32Array(w.wasmMemory.buffer, this.buf, 8)[4]!;
         }
         busy = w._vnhost_load_busy?.() ?? 0;
+        if (w._vnhost_gpu_pipelines) {
+          w._vnhost_gpu_pipelines(this.buf);
+          const p = f64();
+          [pipeHits, pipeMade] = [p[0]!, p[1]!];
+          [this.now.pipeMax, this.now.pipeP50, this.now.pipeP95] = [p[3]!, p[4]!, p[5]!];
+        }
       }
     } catch {
       // (the runtime is gone: after an abort or exit)
@@ -163,6 +182,8 @@ class Meter {
       frames: this.frames + d3dFrames,
       raf: this.raf,
       busy,
+      pipeHits,
+      pipeMade,
     });
     if (this.hist.length > HISTORY) this.hist.shift();
     this.view = this.window(2);
@@ -202,6 +223,12 @@ class Meter {
       gameFps: (b.frames - a.frames) / s,
       pageFps: (b.raf - a.raf) / s,
       cpu: (b.busy - a.busy) / 1000 / s,
+      pipeHits: b.pipeHits < 0 ? -1 : b.pipeHits - a.pipeHits,
+      pipeMade: b.pipeMade - a.pipeMade,
+      pipeTotal: b.pipeMade,
+      pipeP50: this.now.pipeP50,
+      pipeP95: this.now.pipeP95,
+      pipeMax: this.now.pipeMax,
     };
   }
 
@@ -238,7 +265,11 @@ export function meterLine(v: MeterView | null): string {
     `avg ${v.reqAvgMs.toFixed(0)} ms, longest ${v.reqMaxMs.toFixed(0)} ms), total ${mb(v.wireTotal)} MB over the network ` +
     `(${mb(v.bytesTotal)} MB decoded, ${v.requestsTotal} requests), waiting for files ${v.stallPerSec.toFixed(0)} ms/s ` +
     `(longest ${v.stallMaxMs.toFixed(0)} ms), in flight ${v.inflight}, chunk cache ${mb(v.cacheBytes)} MB` +
-    (v.heapTop >= 0 ? `, heap ${mb(v.heapUsed)} MB in use (top ${mb(v.heapTop)} MB)` : "")
+    (v.heapTop >= 0 ? `, heap ${mb(v.heapUsed)} MB in use (top ${mb(v.heapTop)} MB)` : "") +
+    (v.pipeHits >= 0
+      ? `, pipelines ${v.pipeHits} hits ${v.pipeMade} made (${v.pipeTotal} in all; ` +
+        `p50 ${v.pipeP50.toFixed(1)} p95 ${v.pipeP95.toFixed(1)} max ${v.pipeMax.toFixed(1)} ms)`
+      : "")
   );
 }
 

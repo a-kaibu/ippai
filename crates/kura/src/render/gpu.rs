@@ -120,7 +120,88 @@ pub fn pipeline_layout(json: &str) -> Id {
     unsafe { ffi::vngpu_pipeline_layout(json.as_ptr(), json.len()) }
 }
 pub fn render_pipeline(json: &str) -> Id {
-    unsafe { ffi::vngpu_render_pipeline(json.as_ptr(), json.len()) }
+    let t = std::time::Instant::now();
+    let id = unsafe { ffi::vngpu_render_pipeline(json.as_ptr(), json.len()) };
+    PIPELINES.lock().unwrap_or_else(|e| e.into_inner()).made(t.elapsed().as_micros() as u32);
+    id
+}
+
+/// Pipelines the APIs' caches found (d3d9, d3d11, Direct2D, OpenGL) and the ones created here,
+/// with their creation times: whether the caches work, and what a miss costs.
+#[derive(Default)]
+pub struct PipelineStats {
+    pub made: u64,
+    pub total_us: u64,
+    pub max_us: u32,
+    /// the last RECENT creation times (us), for p50/p95
+    recent: std::collections::VecDeque<u32>,
+}
+
+const RECENT: usize = 512;
+pub static PIPELINE_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static PIPELINES: std::sync::Mutex<PipelineStats> =
+    std::sync::Mutex::new(PipelineStats { made: 0, total_us: 0, max_us: 0, recent: std::collections::VecDeque::new() });
+
+/// An API's pipeline cache had the pipeline.
+pub fn pipeline_hit() {
+    PIPELINE_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+impl PipelineStats {
+    fn made(&mut self, us: u32) {
+        self.made += 1;
+        self.total_us += us as u64;
+        self.max_us = self.max_us.max(us);
+        if self.recent.len() == RECENT {
+            self.recent.pop_front();
+        }
+        self.recent.push_back(us);
+    }
+    /// The `q`th quantile (0..1) of the recent creation times (us; 0 with none).
+    pub fn quantile(&self, q: f64) -> u32 {
+        let mut v: Vec<u32> = self.recent.iter().copied().collect();
+        if v.is_empty() {
+            return 0;
+        }
+        v.sort_unstable();
+        v[((v.len() - 1) as f64 * q).round() as usize]
+    }
+}
+
+/// The pipeline counters into `out` (f64 each): cache hits, pipelines created, their creation
+/// time in all, the longest, p50 and p95 of the recent ones (ms).
+#[no_mangle]
+pub unsafe extern "C" fn vnhost_gpu_pipelines(out: *mut f64) {
+    let s = PIPELINES.lock().unwrap_or_else(|e| e.into_inner());
+    let v = [
+        PIPELINE_HITS.load(std::sync::atomic::Ordering::Relaxed) as f64,
+        s.made as f64,
+        s.total_us as f64 / 1000.0,
+        s.max_us as f64 / 1000.0,
+        s.quantile(0.5) as f64 / 1000.0,
+        s.quantile(0.95) as f64 / 1000.0,
+    ];
+    std::ptr::copy_nonoverlapping(v.as_ptr(), out, v.len());
+}
+
+#[cfg(test)]
+mod pipeline_stats_tests {
+    use super::*;
+
+    #[test]
+    fn quantiles_of_the_recent() {
+        let mut s = PipelineStats::default();
+        assert_eq!(s.quantile(0.5), 0);
+        for us in 1..=100 {
+            s.made(us);
+        }
+        assert_eq!((s.quantile(0.0), s.quantile(0.5), s.quantile(0.95), s.quantile(1.0)), (1, 51, 95, 100));
+        for _ in 0..RECENT {
+            s.made(7);
+        }
+        assert_eq!((s.quantile(0.5), s.quantile(1.0), s.max_us, s.made), (7, 7, 100, 100 + RECENT as u64));
+        assert_eq!(s.total_us, 5050 + 7 * RECENT as u64);
+    }
 }
 pub fn pipeline_group_layout(p: Id, i: u32) -> Id {
     unsafe { ffi::vngpu_pipeline_group_layout(p, i) }
