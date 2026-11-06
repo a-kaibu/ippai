@@ -3,3 +3,6 @@ GpuQueue GpuQueueTimeouts.cfg violation
 GpuReadback GpuReadback.cfg ok
 VideoSlots VideoSlots.cfg ok
 VideoSlots VideoSlotsFlag.cfg violation
+RepeatSkip RepeatSkip.cfg ok
+RepeatSkip RepeatSkipOld.cfg violation
+RepeatSkip RepeatSkipUseful.cfg violation
