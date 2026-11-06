@@ -1361,6 +1361,21 @@ unsafe fn device_call(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &mut
                     None => {
                         let elems = fvf_elems(fvf).0;
                         let mut raw: Vec<[u32; 2]> = elems.iter().map(|e| [e.stream | e.offset << 16, e.ty | e.usage << 16 | e.index << 24]).collect();
+                        // (blend weights, and indices in the last beta: in the declaration only)
+                        let pos = fvf & 0x400e;
+                        if (6..=0xe).contains(&pos) {
+                            let n = (pos - 6) / 2 + 1;
+                            let idx = if fvf & 0x1000 != 0 { Some(5) } else if fvf & 0x8000 != 0 { Some(4) } else { None };
+                            let w = n - idx.is_some() as u32;
+                            let mut at = 1;
+                            if w > 0 {
+                                raw.insert(at, [12 << 16, (w - 1) | 1 << 16]);
+                                at += 1;
+                            }
+                            if let Some(t) = idx {
+                                raw.insert(at, [(12 + 4 * w) << 16, t | 2 << 16]);
+                            }
+                        }
                         raw.push([0xff, 17]);
                         let addr = d.new_obj(IF_DECL, 0, Data::Decl(Decl { elems, raw, fvf }));
                         let id = d.id_of(addr);

@@ -694,7 +694,8 @@ fn brush(dc: u32, b: u32) -> Paint {
     let xf = st(|s| s.dcs.get(&dc).and_then(eff));
     st(|s| {
         s.brushes.get(&b).map(|b| match &b.linear {
-            None => Paint::Solid([b.color[0], b.color[1], b.color[2], b.color[3] * b.opacity]),
+            // (Direct2D keeps a solid color in 8 bits a channel: an alpha of 0.5 is 128/255)
+            None => Paint::Solid([b.color[0], b.color[1], b.color[2], b.color[3] * b.opacity].map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5).floor() / 255.0)),
             Some((p0, p1, stops)) => {
                 let (a0, a1) = apply(xf, p0[0], p0[1]);
                 let (b0, b1) = apply(xf, p1[0], p1[1]);
@@ -756,7 +757,8 @@ fn ellipse(dc: u32, c: [f32; 2], r: [f32; 2], paint: &Paint, ring: Option<f32>) 
     if rr[2] <= rr[0] || rr[3] <= rr[1] {
         return;
     }
-    push(dc, gpu2d::ELLIPSE, rr, [c[0], c[1], ox, oy], [ix, iy, ring.is_some() as u32 as f32, 0.0], paint);
+    let aliased = st(|s| s.dcs.get(&dc).is_some_and(|d| d.aliased));
+    push(dc, gpu2d::ELLIPSE, rr, [c[0], c[1], ox, oy], [ix, iy, ring.is_some() as u32 as f32, aliased as u32 as f32], paint);
 }
 
 fn SetAntialiasMode(c: &mut Ctx) -> u32 {
@@ -932,8 +934,13 @@ fn put_matrix(out: u32, m: [f32; 6]) {
 }
 /// D2D1MakeRotateMatrix(angle in degrees, center, out)
 fn D2D1MakeRotateMatrix(c: &mut Ctx) -> u32 {
-    let (a, cx, cy, out) = (fl(c, 0).to_radians(), fl(c, 1), fl(c, 2), c.a(3));
-    let (s, co) = a.sin_cos();
+    let (deg, cx, cy, out) = (fl(c, 0), fl(c, 1), fl(c, 2), c.a(3));
+    // (multiples of 90 degrees exactly, as Windows gives them)
+    let (s, co) = if deg % 90.0 == 0.0 {
+        [(0.0, 1.0), (1.0, 0.0), (0.0, -1.0), (-1.0, 0.0)][((deg / 90.0).rem_euclid(4.0)) as usize]
+    } else {
+        deg.to_radians().sin_cos()
+    };
     put_matrix(out, [co, s, -s, co, cx - cx * co + cy * s, cy - cx * s - cy * co]);
     0
 }

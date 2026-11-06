@@ -12,7 +12,8 @@ const DATA: u32 = 0xffff_ffff;
 /// `Item::kind[0]`: coverage of the pixel by `rect` (partial at its edges)
 pub const RECT: u32 = 0;
 /// coverage by the ellipse `shape` (center, outer radii) minus, when `extra[2]` != 0, the one
-/// with radii `extra[0..2]`, 4x4 samples a pixel inside `rect`
+/// with radii `extra[0..2]`, 4x4 samples a pixel inside `rect` (`extra[3]` != 0: aliased, the
+/// pixel's center only)
 pub const ELLIPSE: u32 = 1;
 /// coverage from the glyph atlas at pixel + `shape[0..2]`
 pub const GLYPH: u32 = 2;
@@ -78,18 +79,19 @@ fn texel(q: vec2<i32>, lo: vec2<i32>, hi: vec2<i32>, opaque: bool) -> vec4<f32> 
         }
         case 1u: {
             var n = 0u;
-            for (var k = 0u; k < 16u; k++) {
-                let s = px + vec2<f32>(f32(k % 4u), f32(k / 4u)) * 0.25 + 0.125;
+            let m = select(16u, 1u, extra.w != 0.0);
+            for (var k = 0u; k < m; k++) {
+                let s = select(px + vec2<f32>(f32(k % 4u), f32(k / 4u)) * 0.25 + 0.125, px + 0.5, m == 1u);
                 let d = s - shape.xy;
                 let o = d / shape.zw;
-                if (all(s >= r.xy) && all(s < r.zw) && dot(o, o) <= 1.0) {
+                if (all(s >= r.xy) && all(s < r.zw) && dot(o, o) < 1.0) {
                     let ii = d / extra.xy;
                     if (extra.z == 0.0 || extra.x <= 0.0 || extra.y <= 0.0 || dot(ii, ii) > 1.0) {
                         n++;
                     }
                 }
             }
-            cov = f32(n) / 16.0;
+            cov = f32(n) / f32(m);
         }
         case 4u: {
             var n = 0u;
@@ -98,7 +100,7 @@ fn texel(q: vec2<i32>, lo: vec2<i32>, hi: vec2<i32>, opaque: bool) -> vec4<f32> 
                 let s = select(px + vec2<f32>(f32(k % 4u), f32(k / 4u)) * 0.25 + 0.125, px + 0.5, m == 1u);
                 let uv = vec2<f32>(shape.x * s.x + shape.z * s.y + extra.x, shape.y * s.x + shape.w * s.y + extra.y);
                 let o = uv * 2.0 - 1.0;
-                let inq = select(all(uv >= vec2<f32>(0.0)) && all(uv < vec2<f32>(1.0)), dot(o, o) <= 1.0, extra.w != 0.0);
+                let inq = select(all(uv >= vec2<f32>(0.0)) && all(uv < vec2<f32>(1.0)), dot(o, o) < 1.0, extra.w != 0.0);
                 if (all(s >= r.xy) && all(s < r.zw) && inq) {
                     n++;
                 }
