@@ -17,7 +17,10 @@
 //! 32-bit lazy record, or computed EFLAGS for 64-bit operations). Instructions the
 //! translator does not handle run through the `step` import.
 
-use super::wasm::{Code, Func, FuncType, Import, Module, F64, I32, I64};
+use super::wasm::{Code, Func, FuncType, Import, Module, F64, I32, I64, V128};
+
+#[path = "long/sse.rs"]
+mod sse;
 use super::{Region, ENTRY_SHIFT, GUEST_HI, GUEST_LO, N_PARAMS, RET_INTERP};
 use crate::{Cpu, Memory};
 use alloc::collections::BTreeMap;
@@ -80,6 +83,8 @@ const L_A: u32 = L_FC + 2; // i32: the instruction's memory address
 const L_ST: u32 = L_FC + 3; // i32: an exit's status
 const L_DBG: u32 = L_FC + 4; // i32: debugging
 const N_I32: u32 = 5;
+const L_V0: u32 = L_FC + N_I32; // v128: SSE operands (long/sse.rs)
+const L_V1: u32 = L_V0 + 1;
 
 // EFLAGS bits
 const CF: u32 = 1;
@@ -581,9 +586,8 @@ impl<'a> Gen<'a> {
         true
     }
 
-    /// The status flags (i32) of the lazy operation, computed (64-bit operations).
-    fn status64(&mut self, kind: u32) {
-        let bits = 64;
+    /// The status flags (i32) of the lazy operation of `bits`-wide operands, computed.
+    fn status(&mut self, kind: u32, bits: u32) {
         // ZF SF PF
         self.zf();
         self.c.i32c(6).shl();
@@ -608,28 +612,29 @@ impl<'a> Gen<'a> {
             }
             INC | DEC => {
                 self.c.get(L_FC).i32c(1).and().or();
-                self.c.get(if kind == INC { L_FR } else { L_FA }).i64c(i64::MIN).x(I64_EQ).i32c(11).shl().or();
+                let min = if bits == 64 { i64::MIN } else { 1 << (bits - 1) };
+                self.c.get(if kind == INC { L_FR } else { L_FA }).i64c(min).x(I64_EQ).i32c(11).shl().or();
                 // AF: bit 4 of a ^ 1 ^ r
                 self.c.get(L_FA).get(L_FR).x(I64_XOR).i64c(4).x(I64_SHR_U).x(I32_WRAP).i32c(1).and().i32c(4).shl().or();
             }
             SHL => {
-                // CF: the last bit out (b = count 1..63); OF: MSB(r) ^ CF
-                self.c.get(L_FA).i64c(64).get(L_FB).x(I64_SUB).x(I64_SHR_U).x(I32_WRAP).i32c(1).and().tee(L_ST).or();
+                // CF: the last bit out (b = count 1..bits-1); OF: MSB(r) ^ CF
+                self.c.get(L_FA).i64c(bits as i64).get(L_FB).x(I64_SUB).x(I64_SHR_U).x(I32_WRAP).i32c(1).and().tee(L_ST).or();
                 self.c.get(L_FR);
-                self.sign_bit(64);
+                self.sign_bit(bits);
                 self.c.get(L_ST).xor().i32c(11).shl().or();
             }
             SHR => {
                 self.c.get(L_FA).get(L_FB).i64c(1).x(I64_SUB).x(I64_SHR_U).x(I32_WRAP).i32c(1).and().or();
                 self.c.get(L_FA);
-                self.sign_bit(64);
+                self.sign_bit(bits);
                 self.c.i32c(11).shl().or();
             }
             SAR => {
                 self.c.get(L_FA).get(L_FB).i64c(1).x(I64_SUB).x(I64_SHR_S).x(I32_WRAP).i32c(1).and().or();
             }
             MUL => {
-                self.mul_overflow(64);
+                self.mul_overflow(bits);
                 self.c.u32c(CF | OF).mul().or();
             }
             _ => {} // LOGIC: CF OF AF 0
@@ -643,7 +648,7 @@ impl<'a> Gen<'a> {
         if bits == 64 {
             self.c.get(L_CPU);
             self.c.get(L_CPU).load32(cpu_off!(eflags)).u32c(!STATUS).and();
-            self.status64(kind);
+            self.status(kind, 64);
             self.c.or().store32(cpu_off!(eflags));
             self.c.get(L_CPU).i32c(0).store32(lazy);
         } else {
@@ -665,6 +670,30 @@ impl<'a> Gen<'a> {
             self.c.store32(lazy + 16);
         }
         self.flags = Flags::Cpu;
+    }
+
+    /// The status flags into EFLAGS itself (the lazy record cleared), for an instruction that
+    /// changes some of them and keeps the rest. Flags already in the Cpu may still be a lazy
+    /// record (from the interpreter or a 32-bit operation): then the interpreter runs it.
+    fn flags_to_eflags(&mut self) {
+        let lazy = offset_of!(Cpu, lazy) as u32;
+        match self.flags {
+            Flags::Lazy(kind, bits) => {
+                self.c.get(L_CPU);
+                self.c.get(L_CPU).load32(cpu_off!(eflags)).u32c(!STATUS).and();
+                self.status(kind, bits);
+                self.c.or().store32(cpu_off!(eflags));
+                self.c.get(L_CPU).i32c(0).store32(lazy);
+                self.flags = Flags::Cpu;
+            }
+            Flags::Cpu => {
+                self.c.get(L_CPU).load32(lazy).if_();
+                self.depth += 1;
+                self.bail();
+                self.depth -= 1;
+                self.c.end();
+            }
+        }
     }
 
     /// Records a flag-setting operation whose operands/result are in L_FA L_FB L_FR.
@@ -788,6 +817,11 @@ impl<'a> Gen<'a> {
         let n = ins.op_count();
         let mi = ins.mnemonic() as usize;
         let off = DEBUG_OFF[mi / 64 % 32].load(Relaxed) & (1 << (mi % 64)) != 0;
+        let vector = (0..n).any(|i| ins.op_kind(i) == OpKind::Register && ins.op_register(i).is_vector_register())
+            || ins.encoding() != iced_x86::EncodingKind::Legacy;
+        if !off && vector && self.sse() {
+            return true;
+        }
         let all_simple = !off && (0..n).all(|i| self.simple(i));
         let handled = all_simple && self.emit_ins();
         if handled {
@@ -796,6 +830,111 @@ impl<'a> Gen<'a> {
         let ends = ins.flow_control() != FlowControl::Next;
         self.fallback(ends);
         !ends
+    }
+
+    /// SHL/SHR/SAR r/m32 or r/m64 by CL. A count of 0 (CL masked) changes no flag, so the
+    /// flags are set (into the Cpu) only when it isn't.
+    fn shift_cl(&mut self, bits: u32) -> bool {
+        use Mnemonic::*;
+        let m = self.ins.mnemonic();
+        if self.has_mem() && !self.addr(bits / 8) {
+            return false;
+        }
+        self.flags_to_cpu();
+        self.read_op(0, bits);
+        self.c.set(L_FA);
+        self.get_reg(Register::CL);
+        self.c.i64c(bits as i64 - 1).x(I64_AND).set(L_FB);
+        self.c.get(L_FA);
+        let kind = match m {
+            Shl | Sal => {
+                self.c.get(L_FB).x(I64_SHL);
+                SHL
+            }
+            Shr => {
+                self.c.get(L_FB).x(I64_SHR_U);
+                SHR
+            }
+            _ => {
+                self.sext(bits);
+                self.c.get(L_FB).x(I64_SHR_S);
+                SAR
+            }
+        };
+        if bits < 64 {
+            self.c.i64c(mask(bits)).x(I64_AND);
+        }
+        self.c.set(L_FR);
+        self.c.get(L_FB).x(I64_EQZ).eqz().if_();
+        self.set_flags(kind, bits);
+        self.flags_to_cpu();
+        self.c.end();
+        // (count 0: the same value back; a 32-bit register still zero-extended)
+        self.write_op(0, bits, L_FR);
+        true
+    }
+
+    /// BT/BTS/BTR/BTC on a 32/64-bit register, or on memory by an immediate (a register
+    /// offset into memory addresses a bit string: the interpreter's). Only CF changes.
+    fn bit_test(&mut self) -> bool {
+        use Mnemonic::*;
+        let ins = self.ins;
+        let bits = self.op_bits(0);
+        let imm = ins.op_kind(1) == OpKind::Immediate8;
+        if bits < 32 || (self.has_mem() && (!imm || !self.addr(bits / 8))) {
+            return false;
+        }
+        self.flags_to_eflags();
+        let (v, b) = (self.temp(), self.temp());
+        self.read_op(0, bits);
+        self.c.set(v);
+        self.read_op(1, if imm { 8 } else { bits });
+        self.c.i64c(bits as i64 - 1).x(I64_AND).set(b);
+        let ef = cpu_off!(eflags);
+        self.c.get(L_CPU);
+        self.c.get(L_CPU).load32(ef).u32c(!CF).and();
+        self.c.get(v).get(b).x(I64_SHR_U).x(I32_WRAP).i32c(1).and().or().store32(ef);
+        let m = ins.mnemonic();
+        if m != Bt {
+            self.c.get(v).i64c(1).get(b).x(I64_SHL);
+            match m {
+                Bts => self.c.x(I64_OR),
+                Btr => self.c.i64c(-1).x(I64_XOR).x(I64_AND),
+                _ => self.c.x(I64_XOR),
+            };
+            self.c.set(v);
+            self.write_op(0, bits, v);
+        }
+        true
+    }
+
+    /// BSF/BSR r32/r64, r/m: the index of the lowest/highest set bit; a zero source sets ZF
+    /// and leaves the destination as it was. The other flags are kept (as the interpreter
+    /// does: they are undefined).
+    fn bit_scan(&mut self) -> bool {
+        let bits = self.op_bits(0);
+        if bits < 32 || (self.has_mem() && !self.addr(bits / 8)) {
+            return false;
+        }
+        self.flags_to_eflags();
+        let t = self.temp();
+        self.read_op(1, bits);
+        self.c.set(t);
+        let ef = cpu_off!(eflags);
+        self.c.get(L_CPU);
+        self.c.get(L_CPU).load32(ef).u32c(!ZF).and();
+        self.c.get(t).x(I64_EQZ).i32c(6).shl().or().store32(ef);
+        self.c.get(t).x(I64_EQZ).eqz().if_();
+        if self.ins.mnemonic() == Mnemonic::Bsf {
+            self.c.get(t).x(0x7a); // i64.ctz
+        } else {
+            self.c.i64c(63).get(t).x(0x79).x(I64_SUB); // 63 - i64.clz
+        }
+        let r = self.temp();
+        self.c.set(r);
+        self.write_op(0, bits, r);
+        self.c.end();
+        true
     }
 
     /// The instruction if it is one this handles (else nothing emitted).
@@ -810,6 +949,8 @@ impl<'a> Gen<'a> {
                 self.c.op(0xfe).op(0x03).op(0x00); // atomic.fence
                 true
             }
+            Bsf | Bsr if n == 2 => self.bit_scan(),
+            Bt | Bts | Btr | Btc => self.bit_test(),
             Nop | Endbr64 | Endbr32 | Pause | Lfence | Sfence | Prefetchnta | Prefetcht0 | Prefetcht1 | Prefetcht2 | Prefetchw => true,
             Mov => {
                 let bits = self.op_bits(0).max(self.op_bits(1));
@@ -935,6 +1076,7 @@ impl<'a> Gen<'a> {
                 let bits = self.op_bits(0);
                 let count = match ins.op_kind(1) {
                     OpKind::Immediate8 => ins.immediate8() as u32,
+                    _ if ins.op_register(1) == Register::CL && bits >= 32 => return self.shift_cl(bits),
                     _ => return false,
                 } & if bits == 64 { 63 } else { 31 };
                 if bits == 0 || (bits < 32 && count >= bits) {
@@ -1376,6 +1518,7 @@ pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, entry: u6
     Gen::ret_status(&mut g.c, L_ST);
     let mut locals = alloc::vec![I64; N_I64 as usize];
     locals.extend_from_slice(&[I32; N_I32 as usize]);
+    locals.extend_from_slice(&[V128; 2]);
     let code = core::mem::take(&mut g.c);
     module.funcs.push(Func { ty: 2, locals, code });
     let starts = blocks.iter().enumerate().map(|(k, b)| (b.start as u32, k as u32)).collect();

@@ -98,7 +98,12 @@
 - SakanaGL の sakanagl.dll は /arch:AVX2。koji のインタプリタが VEX の 128 ビット形
   (AVX/AVX2)、FMA3、SSE3/SSSE3/SSE4.1 を実行する (interp/vex.rs: VEX のコードを名前で
   旧来のコードに写し、NDS は Cpu::vex_tmp (xmm16) に src1 を写してから実行)。ymm (256 ビット)
-  は #UD、CPUID は AVX を報告しない。JIT は VEX 命令でインタプリタに落ちる。
+  は #UD、CPUID は AVX を報告しない。
+- 64 ビットの JIT (koji jit/long.rs、long/sse.rs) は SSE〜SSE4.1 と VEX.128 の主な形を wasm SIMD
+  に訳す (VEX はインタプリタと同じ表で旧来の形に写し、NDS は src1 を読むだけ)。CL 指定の
+  シフト (32/64 ビット)、bsf/bsr、bt/bts/btr/btc も訳す (未定義のフラグはインタプリタと同じく
+  そのまま)。SakanaGL の起動 (最初の描画) は 113 秒 → 8 秒。`tools/jit64test` は xmm も比べ、
+  SSE/VEX の iced の Code 578 種をランダムに混ぜる。
   `tools/jit64test native` で実 CPU と照合済み (rcp/rsqrt の近似値を除き一致)。
   SSE4.1 の dpps/dppd、mpsadbw、phminposuw と SSE4.2 の pcmpXstrX も実行する
   (host/tests/sse4.c: native と一致、-mavx の VEX 形も)。

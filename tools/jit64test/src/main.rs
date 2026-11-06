@@ -108,7 +108,13 @@ fn random_ins(rng: &mut Rng, out: &mut Vec<Instruction>, rip_hi: u32) {
         mem(rng, rip)
     };
     use Code as C;
-    let k = rng.below(30);
+    let k = rng.below(40);
+    if k >= 30 {
+        if let Some(i) = random_sse(rng) {
+            out.push(i);
+        }
+        return;
+    }
     let ins = match k {
         0 => {
             let b = bitsel(rng);
@@ -228,12 +234,17 @@ fn random_ins(rng: &mut Rng, out: &mut Vec<Instruction>, rip_hi: u32) {
                 [C::Shr_rm8_imm8, C::Shr_rm16_imm8, C::Shr_rm32_imm8, C::Shr_rm64_imm8],
                 [C::Sar_rm8_imm8, C::Sar_rm16_imm8, C::Sar_rm32_imm8, C::Sar_rm64_imm8],
                 [C::Shl_rm8_CL, C::Shl_rm16_CL, C::Shl_rm32_CL, C::Shl_rm64_CL],
+                [C::Shr_rm8_CL, C::Shr_rm16_CL, C::Shr_rm32_CL, C::Shr_rm64_CL],
+                [C::Sar_rm8_CL, C::Sar_rm16_CL, C::Sar_rm32_CL, C::Sar_rm64_CL],
             ];
-            let w = rng.below(4) as usize;
+            let w = rng.below(6) as usize;
             let code = codes[w][bi];
             let cnt = rng.below(b as u64 + 2) as u32;
             let dst = sized(r(rng), b);
-            if w == 3 {
+            if w >= 3 {
+                if rng.below(3) == 0 {
+                    return out.push(Instruction::with2(code, m(rng), Register::CL).unwrap());
+                }
                 if dst == Register::CL || dst == Register::CX || dst == Register::ECX || dst == Register::RCX {
                     Instruction::with(C::Nopd)
                 } else {
@@ -292,7 +303,7 @@ fn random_ins(rng: &mut Rng, out: &mut Vec<Instruction>, rip_hi: u32) {
         23 => Instruction::with(rng.pick(&[C::Cdqe, C::Cqo, C::Cdq, C::Cwde, C::Cbw, C::Cwd])),
         24 => {
             // fallback paths: bt, bsf, rol, locked ops, xchg with memory
-            match rng.below(7) {
+            match rng.below(9) {
                 3 => {
                     let mut i = Instruction::with2(C::Cmpxchg_rm64_r64, m(rng), r(rng)).unwrap();
                     i.set_has_lock_prefix(true);
@@ -309,9 +320,32 @@ fn random_ins(rng: &mut Rng, out: &mut Vec<Instruction>, rip_hi: u32) {
                     i
                 }
                 6 => Instruction::with2(C::Xchg_rm64_r64, m(rng), r(rng)).unwrap(),
-                0 => Instruction::with2(C::Bt_rm64_r64, r(rng), r(rng)).unwrap(),
+                0 => {
+                    let b = rng.pick(&[32u32, 64]);
+                    let w = rng.below(4) as usize;
+                    let rr = if b == 64 { [C::Bt_rm64_r64, C::Bts_rm64_r64, C::Btr_rm64_r64, C::Btc_rm64_r64] } else { [C::Bt_rm32_r32, C::Bts_rm32_r32, C::Btr_rm32_r32, C::Btc_rm32_r32] };
+                    let ri = if b == 64 { [C::Bt_rm64_imm8, C::Bts_rm64_imm8, C::Btr_rm64_imm8, C::Btc_rm64_imm8] } else { [C::Bt_rm32_imm8, C::Bts_rm32_imm8, C::Btr_rm32_imm8, C::Btc_rm32_imm8] };
+                    match rng.below(3) {
+                        0 => Instruction::with2(rr[w], sized(r(rng), b), sized(r(rng), b)).unwrap(),
+                        1 => Instruction::with2(ri[w], sized(r(rng), b), rng.next() as u8 as u32).unwrap(),
+                        _ => Instruction::with2(ri[w], m(rng), rng.next() as u8 as u32).unwrap(),
+                    }
+                }
                 1 => Instruction::with2(C::Rol_rm32_imm8, sized(r(rng), 32), rng.below(32) as u32).unwrap(),
-                _ => Instruction::with2(C::Bsr_r64_rm64, r(rng), r(rng)).unwrap(),
+                _ => {
+                    let (code, b) = rng.pick(&[(C::Bsr_r64_rm64, 64), (C::Bsf_r64_rm64, 64), (C::Bsr_r32_rm32, 32), (C::Bsf_r32_rm32, 32)]);
+                    let src = match rng.below(4) {
+                        0 => return out.push(Instruction::with2(code, sized(r(rng), b), m(rng)).unwrap()),
+                        // (zero sometimes)
+                        1 => {
+                            let z = r(rng);
+                            out.push(Instruction::with2(C::Xor_rm32_r32, sized(z, 32), sized(z, 32)).unwrap());
+                            z
+                        }
+                        _ => r(rng),
+                    };
+                    Instruction::with2(code, sized(r(rng), b), sized(src, b)).unwrap()
+                }
             }
         }
         25 => {
@@ -335,6 +369,76 @@ fn random_ins(rng: &mut Rng, out: &mut Vec<Instruction>, rip_hi: u32) {
         }
     };
     out.push(ins);
+}
+
+/// SSE and VEX.128 forms with xmm, GPR, memory and imm8 operands (every such Code of iced's,
+/// those the JIT doesn't translate run through `step`)
+fn sse_codes() -> &'static [Code] {
+    use iced_x86::{EncodingKind, OpCodeOperandKind as K};
+    static CODES: std::sync::OnceLock<Vec<Code>> = std::sync::OnceLock::new();
+    CODES.get_or_init(|| {
+        Code::values()
+            .filter(|&c| {
+                let o = c.op_code();
+                if !(o.encoding() == EncodingKind::Legacy || o.encoding() == EncodingKind::VEX) || !o.mode64() || o.op_count() == 0 {
+                    return false;
+                }
+                let kinds: Vec<K> = (0..o.op_count()).map(|i| o.op_kind(i)).collect();
+                let ok = kinds.iter().all(|k| matches!(k, K::xmm_reg | K::xmm_rm | K::xmm_or_mem | K::xmm_vvvv | K::r32_reg | K::r64_reg | K::r32_rm | K::r64_rm | K::r32_or_mem | K::r64_or_mem | K::imm8 | K::mem));
+                let any_x = kinds.iter().any(|k| matches!(k, K::xmm_reg | K::xmm_rm | K::xmm_or_mem | K::xmm_vvvv));
+                let m = format!("{:?}", c.mnemonic());
+                // (side effects outside the compared state, or not in CPUID)
+                let skip = ["Maskmov", "Vmaskmov", "Ldmxcsr", "Stmxcsr", "Aes", "Pclmul", "Sha", "Gf2p8", "Vcvtph2ps", "Vcvtps2ph", "Extrq", "Insertq", "Movnt", "Crc32", "Vfm", "Vfnm", "Vgather", "Vpgather", "Vpdpb", "Vpdpw", "Vpmadd52", "Kmov", "Vpbroadcast", "Vbroadcast", "Vperm", "Vtest", "Vpblendd", "Vpsllv", "Vpsrlv", "Vpsrav", "Vblendv", "Vpblendv", "Rdrand", "Rdseed", "Pconfig", "Bndc", "Bndm", "Senduipi"];
+                ok && any_x && !skip.iter().any(|p| m.starts_with(p))
+            })
+            .collect()
+    })
+}
+
+fn rand_xmm(rng: &mut Rng) -> Register {
+    unsafe { std::mem::transmute::<u8, Register>(Register::XMM0 as u8 + rng.below(16) as u8) }
+}
+
+fn random_sse(rng: &mut Rng) -> Option<Instruction> {
+    use iced_x86::{OpCodeOperandKind as K, OpKind};
+    let codes = sse_codes();
+    let c = rng.pick(codes);
+    let o = c.op_code();
+    let mut ins = Instruction::with(c);
+    for i in 0..o.op_count() {
+        let k = o.op_kind(i);
+        let memory = matches!(k, K::mem) || (matches!(k, K::xmm_or_mem | K::r32_or_mem | K::r64_or_mem) && rng.below(3) == 0);
+        if memory {
+            // rbx (= DATA) + a 16-aligned offset (aligned forms don't fault)
+            ins.set_op_kind(i, OpKind::Memory);
+            ins.set_memory_base(Register::RBX);
+            ins.set_memory_index(Register::None);
+            ins.set_memory_index_scale(1);
+            ins.set_memory_displacement64(rng.below((DATA_LEN as u64 - 64) / 16) * 16);
+            ins.set_memory_displ_size(1);
+            continue;
+        }
+        match k {
+            K::xmm_reg | K::xmm_rm | K::xmm_or_mem | K::xmm_vvvv => {
+                ins.set_op_kind(i, OpKind::Register);
+                ins.set_op_register(i, rand_xmm(rng));
+            }
+            K::r32_reg | K::r32_rm | K::r32_or_mem => {
+                ins.set_op_kind(i, OpKind::Register);
+                ins.set_op_register(i, sized(rng.pick(&R64), 32));
+            }
+            K::r64_reg | K::r64_rm | K::r64_or_mem => {
+                ins.set_op_kind(i, OpKind::Register);
+                ins.set_op_register(i, rng.pick(&R64));
+            }
+            K::imm8 => {
+                ins.set_op_kind(i, OpKind::Immediate8);
+                ins.set_immediate8(rng.next() as u8);
+            }
+            _ => return None,
+        }
+    }
+    Some(ins)
 }
 
 /// None when a branch lost its target (the shrinker removed it)
@@ -563,6 +667,21 @@ fn initial(rng: &mut Rng, rip_hi: u32) -> Cpu {
     c.set_gpr(4, (STACK - 0x800) as u64); // rsp
     c.set_gpr(5, DATA as u64 + 0x100); // rbp
     c.eflags = 0x202 | (rng.next() as u32 & 0x8d5);
+    // xmm: random bits, or floats / doubles / small integers (fewer NaNs)
+    for i in 0..16 {
+        let v: u128 = match rng.below(4) {
+            0 => rng.next() as u128 | (rng.next() as u128) << 64,
+            1 => (0..4).fold(0, |v, k| v | ((((rng.next() as i32) >> rng.below(31)) as f32 / 8.0).to_bits() as u128) << (32 * k)),
+            2 => (0..2).fold(0, |v, k| v | ((((rng.next() as i64) >> rng.below(63)) as f64 / 8.0).to_bits() as u128) << (64 * k)),
+            _ => (0..8).fold(0, |v, k| v | ((rng.below(512) as u16).wrapping_sub(256) as u128) << (16 * k)),
+        };
+        if i < 8 {
+            c.xmm[i] = v;
+        } else {
+            c.xmm8[i - 8] = v;
+        }
+    }
+    c.mxcsr = 0x1f80 | if rng.below(4) == 0 { (rng.below(4) as u32) << 13 } else { 0 };
     c
 }
 
@@ -601,6 +720,12 @@ fn run_case(engine: &Engine, memory: &SharedMemory, base: usize, list0: &[Instru
         }
         if want_cpu.eflags & 0x8d5 != got_cpu.eflags & 0x8d5 {
             diffs.push(format!("flags: want {:#x} got {:#x}", want_cpu.eflags & 0x8d5, got_cpu.eflags & 0x8d5));
+        }
+        for i in 0..16 {
+            let (w, g) = if i < 8 { (want_cpu.xmm[i], got_cpu.xmm[i]) } else { (want_cpu.xmm8[i - 8], got_cpu.xmm8[i - 8]) };
+            if w != g {
+                diffs.push(format!("xmm{i}: want {w:032x} got {g:032x}"));
+            }
         }
         if want_cpu.rip_hi != got_cpu.rip_hi {
             diffs.push(format!("rip_hi: want {} got {}", want_cpu.rip_hi, got_cpu.rip_hi));
@@ -853,3 +978,25 @@ fn main() {
         std::process::exit(1);
     }
 }
+
+#[test]
+fn sse_encodes() {
+    let mut rng = Rng(7);
+    println!("{} codes", sse_codes().len());
+    let (mut ok, mut bad) = (0, 0);
+    for _ in 0..2000 {
+        let Some(i) = random_sse(&mut rng) else { continue };
+        match encode(&[i], CODE as u64) {
+            Some(_) => ok += 1,
+            None => {
+                bad += 1;
+                if bad < 5 {
+                    println!("{:?} ds {} d {:#x} k {:?} {:?}", i.code(), i.memory_displ_size(), i.memory_displacement64(), (0..i.op_count()).map(|k| i.op_kind(k)).collect::<Vec<_>>(), BlockEncoder::encode(64, InstructionBlock::new(&[i], CODE as u64), BlockEncoderOptions::NONE).err());
+                }
+            }
+        }
+    }
+    println!("ok {ok} bad {bad}");
+}
+
+

@@ -7,7 +7,7 @@ use iced_x86::{ConditionCode, Decoder, DecoderOptions, Instruction, Mnemonic, Op
 
 mod x87;
 mod sse;
-mod vex;
+pub(crate) mod vex;
 
 macro_rules! tryf {
     ($e:expr) => {

@@ -8,7 +8,7 @@
 #![no_std]
 extern crate alloc;
 
-mod interp;
+pub(crate) mod interp;
 pub mod flags;
 pub mod lazy;
 pub mod jit;

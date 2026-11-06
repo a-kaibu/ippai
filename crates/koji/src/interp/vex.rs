@@ -370,3 +370,12 @@ fn vex_only(mn: iced_x86::Mnemonic) -> bool {
 fn xi(r: Register) -> usize {
     r as usize - Register::XMM0 as usize
 }
+
+/// The legacy form of a VEX 128-bit instruction that runs as one (see the module docs), and
+/// whether VEX.vvvv is its extra first source (`dst = src1 op src2`); None for the FMA and
+/// VEX-only ones and for 256-bit forms.
+pub(crate) fn legacy_of(code: Code) -> Option<(Code, bool)> {
+    let t = tables();
+    let c = code as usize;
+    (t.fma[c] == 0 && t.legacy[c] != Code::INVALID && !vex_only(code.mnemonic())).then(|| (t.legacy[c], t.nds[c]))
+}

@@ -6,7 +6,7 @@ use super::{Flags, Gen, Off, L_CPU, L_F0, L_MMX, L_OP, L_V0, L_V1, STATUS_BITS};
 use iced_x86::{Instruction, Mnemonic, OpKind, Register};
 
 /// Lane-wise binary operations: the wasm SIMD opcode.
-fn binop(m: Mnemonic) -> Option<u32> {
+pub(super) fn binop(m: Mnemonic) -> Option<u32> {
     use Mnemonic::*;
     Some(match m {
         Paddb => 0x6e,
@@ -47,7 +47,7 @@ fn binop(m: Mnemonic) -> Option<u32> {
 }
 
 /// Shifts: (lane bits, shl/shr_s/shr_u opcode, arithmetic).
-fn shift(m: Mnemonic) -> Option<(u32, u32, bool)> {
+pub(super) fn shift(m: Mnemonic) -> Option<(u32, u32, bool)> {
     use Mnemonic::*;
     Some(match m {
         Psllw => (16, 0x8b, false),
@@ -63,7 +63,7 @@ fn shift(m: Mnemonic) -> Option<(u32, u32, bool)> {
 }
 
 /// Unpacks: (element bytes, high half).
-fn unpack(m: Mnemonic) -> Option<(usize, bool)> {
+pub(super) fn unpack(m: Mnemonic) -> Option<(usize, bool)> {
     use Mnemonic::*;
     Some(match m {
         Punpcklbw => (1, false),
@@ -84,7 +84,7 @@ fn unpack(m: Mnemonic) -> Option<(usize, bool)> {
 
 /// SSE floating point arithmetic: (lane bits, packed, wasm vector opcode, scalar opcode).
 /// MIN/MAX are not IEEE min/max: the second operand unless the first is less (greater).
-fn farith(m: Mnemonic) -> Option<(u32, bool, u32, u32)> {
+pub(super) fn farith(m: Mnemonic) -> Option<(u32, bool, u32, u32)> {
     use Mnemonic::*;
     Some(match m {
         Addps => (32, true, 0xe4, 0),
