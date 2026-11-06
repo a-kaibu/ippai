@@ -265,6 +265,9 @@ const COMMITTED: u32 = 0x8000_0000;
 /// Tells the JIT which pages are writable and executable (Windows protection `prot`, 0: none):
 /// it interprets W|X pages outside the main exe and checks stores on the main exe's.
 fn jit_prot(a: u32, n: u32, prot: u32) {
+    // PAGE_NOACCESS, PAGE_GUARD: any access faults (prot 0: decommitted or released; reserved
+    // pages are not checked)
+    kura::jit::fault_pages(a, n, prot & 0xff == 0x01 || prot & 0x100 != 0);
     let wx = prot & (0x40 | 0x80) != 0;
     let p = if prot == 0 { 0 } else if wx { libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC } else { libc::PROT_READ };
     kura::jit::pages_protected(a as usize, n as usize, p);
@@ -351,6 +354,23 @@ pub fn protect(a: u32, n: u32, prot: u32) -> Option<u32> {
         kura::jit::code_changed(a as usize, n as usize);
     }
     Some(if old == 0 { r.prot } else { old })
+}
+
+/// An access to `a` faulted: whether its page was a guard page (PAGE_GUARD), which it is no
+/// longer (STATUS_GUARD_PAGE_VIOLATION, once; the next access goes through).
+pub fn guard_hit(a: u32) -> bool {
+    let Some((b, _)) = find(a) else { return false };
+    let i = ((a - b) / PAGE) as usize;
+    let mut g = PAGES.lock().unwrap();
+    let Some(x) = g.get_mut(&b).and_then(|p| p.get_mut(i)) else { return false };
+    if *x & COMMITTED == 0 || *x & 0x100 == 0 {
+        return false;
+    }
+    *x &= !0x100;
+    let prot = *x & !COMMITTED;
+    drop(g);
+    jit_prot(b + i as u32 * PAGE, PAGE, prot);
+    true
 }
 
 /// The allocation holding `a`.

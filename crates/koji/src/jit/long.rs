@@ -308,6 +308,15 @@ impl<'a> Gen<'a> {
         self.bail();
         self.depth -= 1;
         self.c.end();
+        // the pages that fault (super::PAGE_MAP)
+        if super::page_check() {
+            super::pages_marked(&mut self.c, L_A, size);
+            self.c.if_();
+            self.depth += 1;
+            self.bail();
+            self.depth -= 1;
+            self.c.end();
+        }
         true
     }
 

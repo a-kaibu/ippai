@@ -483,6 +483,32 @@ fn nocheck() -> bool {
     NOCHECK.load(core::sync::atomic::Ordering::Relaxed)
 }
 
+/// Guest pages an access faults on (PAGE_NOACCESS, PAGE_GUARD): the host address of a byte
+/// per page of [0, GUEST_HI), nonzero for such a page; 0 while there are none (then nothing
+/// is checked). Set by the host when the first such page appears (it drops what was
+/// translated before); from then on every access checks its pages and leaves the block when
+/// one is marked, so that the interpreter raises the fault. Accesses through ESP (the stack)
+/// are not checked.
+pub static PAGE_MAP: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// Whether accesses check [`PAGE_MAP`].
+pub fn page_check() -> bool {
+    page_map() != 0
+}
+
+fn page_map() -> u32 {
+    PAGE_MAP.load(core::sync::atomic::Ordering::Relaxed) as u32
+}
+
+/// Pushes whether [the address on local `t`, + `size`) touches a page marked in [`PAGE_MAP`]
+/// (nonzero: it does); `t` must be inside the guest range already.
+fn pages_marked(c: &mut Code, t: u32, size: u32) {
+    let map = page_map();
+    c.get(t).i32c(12).shr_u().load8u(map);
+    c.get(t).i32c(size.max(1) as i32 - 1).add().i32c(12).shr_u().load8u(map);
+    c.or();
+}
+
 const STATUS_BITS: u32 =
     RflagsBits::OF | RflagsBits::SF | RflagsBits::ZF | RflagsBits::AF | RflagsBits::CF | RflagsBits::PF;
 
@@ -693,6 +719,11 @@ impl<'a> Gen<'a> {
     /// block's RET returns). The guest code runs instead (in the interpreter) when a range is
     /// outside the guest's.
     fn hle(&mut self, h: Hle) {
+        if page_check() {
+            // (its ranges: the interpreter checks their pages)
+            self.bail();
+            return;
+        }
         let (sp, d, s, n) = (L_REG + 4, self.temp(), self.temp(), self.temp());
         self.check(sp, 16);
         self.c.get(sp).load32(4).set(d).get(sp).load32(8).set(s).get(sp).load32(12).set(n);
@@ -984,8 +1015,11 @@ impl<'a> Gen<'a> {
     fn addr(&mut self, size: u32) -> u32 {
         let ins = self.ins;
         let t = self.temp();
-        if let Some(t) = self.addr_pair(t, size) {
-            return t;
+        let prot = page_check();
+        if !prot {
+            if let Some(t) = self.addr_pair(t, size) {
+                return t;
+            }
         }
         self.c.u32c(ins.memory_displacement32());
         if ins.memory_base() != Register::None {
@@ -1014,7 +1048,7 @@ impl<'a> Gen<'a> {
         let base = ins.memory_base();
         let seg = ins.memory_segment();
         // [table + r * scale] with r known small: in the guest range whatever r is
-        if base == Register::None && ins.memory_index().is_gpr32() && seg != Register::FS && seg != Register::GS {
+        if !prot && base == Register::None && ins.memory_index().is_gpr32() && seg != Register::FS && seg != Register::GS {
             if let Some(m) = self.small[ins.memory_index().number()] {
                 let lo = ins.memory_displacement32() as u64;
                 let hi = lo + m as u64 * ins.memory_index_scale() as u64 + size as u64;
@@ -1043,8 +1077,22 @@ impl<'a> Gen<'a> {
         self.bail();
         self.depth -= 1;
         self.c.end();
+        self.guard_pages(t, size);
         self.folded = Some((t, GUEST_LO));
         t
+    }
+
+    /// Leaves the block when [local `t`, + `size`) touches a marked page (see [`PAGE_MAP`]).
+    fn guard_pages(&mut self, t: u32, size: u32) {
+        if !page_check() {
+            return;
+        }
+        pages_marked(&mut self.c, t, size);
+        self.c.if_();
+        self.depth += 1;
+        self.bail();
+        self.depth -= 1;
+        self.c.end();
     }
 
     /// [base + index << scale + disp] with a small displacement: the sum is checked to be
@@ -1116,6 +1164,10 @@ impl<'a> Gen<'a> {
         if nocheck() {
             return true;
         }
+        // (pages checked: only the stack goes without)
+        if reg != 4 && page_check() {
+            return false;
+        }
         if disp.unsigned_abs() >= SAFE_MARGIN as u32 / 2 {
             return false;
         }
@@ -1138,6 +1190,11 @@ impl<'a> Gen<'a> {
 
     /// Leaves the block unless [local `t`, + local `n`) is inside the guest range.
     fn check_len(&mut self, t: u32, n: u32) {
+        if page_check() {
+            // (a range of any length: the interpreter checks its pages)
+            self.bail();
+            return;
+        }
         let o = self.temp();
         self.c.get(t).u32c(GUEST_LO).sub().set(o);
         self.c.get(o).u32c(GUEST_HI - GUEST_LO).gt_u();
@@ -1158,6 +1215,7 @@ impl<'a> Gen<'a> {
         self.bail();
         self.depth -= 1;
         self.c.end();
+        self.guard_pages(t, size);
     }
 
     fn load(&mut self, bits: u32) {
@@ -4374,7 +4432,7 @@ fn dirty_in(g: &Gen, blocks: &[(u32, Vec<Instruction>)], l: &structure::Layout) 
 /// uses as a base before writing it, that nothing in the loop writes (no calls in it), is
 /// checked once on the way in (`hoist`), and is safe in the whole loop.
 fn safe_in(g: &Gen, blocks: &[(u32, Vec<Instruction>)], l: &structure::Layout) -> (Vec<u8>, BTreeMap<usize, (u8, u32)>) {
-    if nocheck() {
+    if nocheck() || page_check() {
         return (Vec::new(), BTreeMap::new());
     }
     let n = blocks.len();

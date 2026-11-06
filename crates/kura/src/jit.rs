@@ -350,6 +350,52 @@ fn mark_code(code: &[(u32, u32)]) {
     }
 }
 
+/// A byte per guest page of [0, 2 GB): nonzero where an access faults (PAGE_NOACCESS,
+/// PAGE_GUARD); made with the first such page (koji's PAGE_MAP points at it from then on).
+static FAULT_MAP: std::sync::OnceLock<&'static [std::sync::atomic::AtomicU8]> = std::sync::OnceLock::new();
+
+/// Marks (`on`) or clears the guest's pages `addr..addr + len` as faulting on any access. The
+/// first mark turns the page checks on for good: translations made without them are dropped,
+/// everyone's, and saved ones are no longer used.
+pub fn fault_pages(addr: u32, len: u32, on: bool) {
+    if len == 0 || addr >= 1 << 31 || (!on && FAULT_MAP.get().is_none()) {
+        return;
+    }
+    let map = *FAULT_MAP.get_or_init(|| {
+        let m: &'static [std::sync::atomic::AtomicU8] = Box::leak((0..1 << 19).map(|_| std::sync::atomic::AtomicU8::new(0)).collect());
+        m
+    });
+    let (lo, hi) = (addr as usize >> 12, ((addr as usize + len as usize - 1) >> 12).min((1 << 19) - 1));
+    for b in &map[lo..=hi] {
+        b.store(on as u8, Ordering::Relaxed);
+    }
+    if on && jit::PAGE_MAP.load(Ordering::Relaxed) == 0 {
+        jit::PAGE_MAP.store(map.as_ptr() as usize, Ordering::SeqCst);
+        drop_translations();
+        if stats() {
+            eprintln!("vnjit pages {addr:#x}+{len:#x} fault: accesses check pages from now on");
+        }
+    }
+}
+
+/// Whether the access [addr, + len) touches a page marked by [`fault_pages`].
+#[inline(always)]
+pub(crate) fn faults(addr: u32, len: u32) -> bool {
+    let Some(map) = FAULT_MAP.get() else { return false };
+    let (lo, hi) = (addr as usize >> 12, (addr as usize + len.max(1) as usize - 1) >> 12);
+    map.get(lo).is_some_and(|b| b.load(Ordering::Relaxed) != 0) || map.get(hi).is_some_and(|b| b.load(Ordering::Relaxed) != 0)
+}
+
+/// Every thread drops its translations (at its next entry into the run loop).
+fn drop_translations() {
+    for w in &CODE_PAGES {
+        w.store(0, Ordering::Relaxed);
+    }
+    CODE_RANGES.lock().unwrap().clear();
+    *SHARED.lock().unwrap() = None;
+    GENERATION.fetch_add(1, Ordering::SeqCst);
+}
+
 /// The guest's pages `addr..addr + len` may get new code (made writable, unmapped, mapped over,
 /// or the instruction cache flushed): translations of code there are dropped, everyone's.
 pub fn code_changed(addr: usize, len: usize) {
@@ -737,8 +783,8 @@ fn saved_regions() -> &'static Saved {
 /// A saved region for `roots` (any built from `roots[0]` when `exact` is off: the one with most
 /// roots) whose guest code is still there, and clear of the trap range `trap`.
 fn find_saved(mem: &mut Linear, roots: &[u32], exact: bool, trap: (u32, u32)) -> Option<usize> {
-    if profiling() {
-        return None; // saved regions have no counters
+    if profiling() || jit::page_check() {
+        return None; // saved regions have no counters, nor page checks
     }
     let s = saved_regions();
     s.by_root
@@ -769,7 +815,7 @@ fn load_saved(st: &mut State, i: usize) -> bool {
 
 /// A saved function at `eip` (its newest build) whose guest code is still there.
 fn find_saved_fn(mem: &mut Linear, eip: u32) -> Option<usize> {
-    if profiling() {
+    if profiling() || jit::page_check() {
         return None;
     }
     let s = saved_regions();
@@ -1281,6 +1327,8 @@ struct Job {
 struct Batch {
     items: Vec<(u32, u32, Built)>,
     merged: Option<Vec<u8>>,
+    /// built with page checks (koji's PAGE_MAP)
+    checked: bool,
 }
 
 /// Functions one batch takes, at most (one load: a longer pause of its own).
@@ -1313,13 +1361,14 @@ fn compiler() -> Option<&'static std::sync::mpsc::Sender<Job>> {
                         }
                     }
                     let done = jobs[0].done.clone();
+                    let checked = jit::page_check();
                     let items: Vec<(u32, u32, Built)> = jobs
                         .into_iter()
                         .map(|j| (j.eip, j.build, build_fn(&mut Linear, j.eip, (j.lo, j.hi), j.part, j.build, &j.misses, &j.known, &j.hints)))
                         .collect();
                     let mods: Vec<&[u8]> = items.iter().filter_map(|(_, _, b)| b.as_ref().map(|b| &b.0[..])).collect();
                     let merged = if mods.len() > 1 { jit::wasm::merge(&mods, &[]) } else { None };
-                    let _ = done.send(Batch { items, merged });
+                    let _ = done.send(Batch { items, merged, checked });
                 }
             })
             .ok()?;
@@ -1330,7 +1379,14 @@ fn compiler() -> Option<&'static std::sync::mpsc::Sender<Job>> {
 
 /// Installs the functions the compiler thread finished for this thread.
 fn take_built(st: &mut State, mem: &mut Linear) {
-    while let Ok(Batch { items, merged }) = st.done_rx.try_recv() {
+    while let Ok(Batch { items, merged, checked }) = st.done_rx.try_recv() {
+        // (built before the page checks came on: dropped, translated again when hot)
+        if jit::page_check() && !checked {
+            for (eip, _, _) in &items {
+                st.pending.remove(eip);
+            }
+            continue;
+        }
         // (the code changed since: dropped, as if it had not been translated; it is again
         // when hot)
         let kept: Vec<bool> = items

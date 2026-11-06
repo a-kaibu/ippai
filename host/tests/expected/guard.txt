@@ -1,0 +1,6 @@
+noaccess read: faults 1 code c0000005 at +1000 sum 7168 old 4
+noaccess write: faults 1 code c0000005 at +1000 value 3
+guard query: protect 104
+guard read: faults 1 code 80000001 at +2000 sum 0
+guard after: protect 4
+guard again: faults 0

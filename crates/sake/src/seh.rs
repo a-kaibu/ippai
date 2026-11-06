@@ -223,9 +223,9 @@ pub fn remove_veh(c: &mut Ctx) -> u32 {
     (v.len() != n) as u32
 }
 
-pub fn raise_fault(cpu: &mut Cpu, addr: u32, write: bool) {
+pub fn raise_fault(cpu: &mut Cpu, code: u32, addr: u32, write: bool) {
     let eip = cpu.eip;
-    raise(cpu, 0xc000_0005, 0, eip, &[write as u32, addr]);
+    raise(cpu, code, 0, eip, &[write as u32, addr]);
 }
 
 /// UnhandledExceptionFilter set by the program.

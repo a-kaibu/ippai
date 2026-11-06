@@ -43,7 +43,7 @@ fn mem_end() -> u64 {
 
 #[inline(always)]
 fn check(addr: u32, len: u32, write: bool) -> Result<*mut u8, Fault> {
-    if addr < NULL_PAGES || addr as u64 + len as u64 > mem_end() {
+    if addr < NULL_PAGES || addr as u64 + len as u64 > mem_end() || crate::jit::faults(addr, len) {
         return Err(Fault { addr, write });
     }
     if write {

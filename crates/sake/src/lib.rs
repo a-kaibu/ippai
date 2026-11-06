@@ -197,12 +197,14 @@ pub fn run(cpu: &mut Cpu, until: u32) {
                 if addr >= api::TRAP_LO && cpu.eip == addr {
                     fatal(cpu, "fault at a trap address");
                 }
+                // (STATUS_GUARD_PAGE_VIOLATION once on a guard page, else STATUS_ACCESS_VIOLATION)
+                let code = if mem::guard_hit(addr) { 0x8000_0001 } else { 0xc000_0005 };
                 if mem::x64() {
                     let e = cpu.eip;
-                    seh64::raise(cpu, 0xc000_0005, 0, e, &[write as u64, addr as u64]);
+                    seh64::raise(cpu, code, 0, e, &[write as u64, addr as u64]);
                     continue;
                 }
-                seh::raise_fault(cpu, addr, write)
+                seh::raise_fault(cpu, code, addr, write)
             }
             Stop::Divide => {
                 let e = cpu.eip;

@@ -11,8 +11,8 @@ set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SAKE=${SAKE:-/home/user/work/sake-out/sake.js}
 OUT=${OUT:-$(mktemp -d)}
-TESTS=${*:-nullcall intops simd atomics smc cmp64 ssecvt dinputtest textbounds crtstdio fileseek crtfiles hlsltest d3dx9shader d3dx9effect struct64}
-X64=" struct64 "
+TESTS=${*:-nullcall intops simd atomics smc cmp64 ssecvt dinputtest textbounds crtstdio fileseek crtfiles hlsltest d3dx9shader d3dx9effect struct64 guard}
+X64=" struct64 guard "
 fail=0
 for t in $TESTS; do
   # a "libs:" line in the source names its import libraries
