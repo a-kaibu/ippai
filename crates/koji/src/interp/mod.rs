@@ -736,6 +736,67 @@ impl<'a, M: Memory> X<'a, M> {
             Cld => { self.cpu.eflags &= !DF; self.done() }
             Std => { self.cpu.eflags |= DF; self.done() }
 
+            // BCD adjustments (32-bit mode only; the flags the SDM leaves undefined come out 0)
+            Daa | Das => {
+                let ax = self.cpu.regs[EAX];
+                let (al, cf, af) = (ax & 0xff, self.cf() != 0, self.cpu.eflags & AF != 0);
+                let mut r = al;
+                let (mut ncf, mut naf) = (false, false);
+                if al & 0xf > 9 || af {
+                    naf = true;
+                    if ins.mnemonic() == Daa {
+                        ncf = cf || al + 6 > 0xff;
+                        r = (r + 6) & 0xff;
+                    } else {
+                        ncf = cf || al < 6;
+                        r = r.wrapping_sub(6) & 0xff;
+                    }
+                }
+                if al > 0x99 || cf {
+                    r = if ins.mnemonic() == Daa { r + 0x60 } else { r.wrapping_sub(0x60) } & 0xff;
+                    ncf = true;
+                } else if ins.mnemonic() == Daa {
+                    ncf = false;
+                }
+                self.cpu.regs[EAX] = (ax & !0xff) | r;
+                self.set_status(szp(r, 8) | if ncf { CF } else { 0 } | if naf { AF } else { 0 });
+                self.done()
+            }
+            Aaa | Aas => {
+                let ax = self.cpu.regs[EAX];
+                let adjust = ax & 0xf > 9 || self.cpu.eflags & AF != 0;
+                let mut v = ax & 0xffff;
+                if adjust {
+                    v = if ins.mnemonic() == Aaa {
+                        v.wrapping_add(0x106)
+                    } else {
+                        v.wrapping_sub(6).wrapping_sub(0x100)
+                    } & 0xffff;
+                }
+                v &= 0xff0f;
+                self.cpu.regs[EAX] = (ax & !0xffff) | v;
+                self.set_status(szp(v & 0xff, 8) | if adjust { CF | AF } else { 0 });
+                self.done()
+            }
+            Aam => {
+                let base = ins.immediate8() as u32;
+                if base == 0 { return Exit::DivideError; }
+                let ax = self.cpu.regs[EAX];
+                let al = ax & 0xff;
+                let (q, r) = (al / base, al % base);
+                self.cpu.regs[EAX] = (ax & !0xffff) | q << 8 | r;
+                self.set_status(szp(r, 8));
+                self.done()
+            }
+            Aad => {
+                let base = ins.immediate8() as u32;
+                let ax = self.cpu.regs[EAX];
+                let r = ((ax & 0xff) + ((ax >> 8) & 0xff) * base) & 0xff;
+                self.cpu.regs[EAX] = (ax & !0xffff) | r;
+                self.set_status(szp(r, 8));
+                self.done()
+            }
+
             Enter => {
                 let size = ins.immediate16() as u64;
                 let level = ins.immediate8_2nd() as u64 & 31;
