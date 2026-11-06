@@ -620,7 +620,16 @@ pub fn call(l: &mut L, name: &str, args: &[Expr], line: u32) -> R<Val> {
                 _ => (F16TOF32, B::Uint, B::Float),
             };
             let v = l.x_cast(v.clone(), &v.ty.with_base(from))?;
-            let c = l.x_alu(op, to, &[&v.c]);
+            let mut c = l.x_alu(op, to, &[&v.c]);
+            if name == "firstbithigh" {
+                // (firstbit_hi counts from the top bit, HLSL's firstbithigh from bit 0:
+                // 31 - x, and no bit stays 0xffffffff)
+                let n = c.len();
+                let none = l.x_alu(sm4::IEQ, B::Bool, &[&c, &imm(u32::MAX, n)]);
+                let neg = l.x_alu(INEG, B::Int, &[&c]);
+                let lsb = l.x_alu(IADD, B::Int, &[&neg, &imm(31, n)]);
+                c = l.x_alu(sm4::MOVC, to, &[&none, &c, &lsb]);
+            }
             Val::num(v.ty.with_base(to), c)
         }
         "fwidth" => {

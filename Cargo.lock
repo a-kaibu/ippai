@@ -2241,6 +2241,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "shaderconf"
+version = "0.1.0"
+dependencies = [
+ "dxwgsl",
+ "glwgsl",
+ "half",
+ "hlslc",
+]
+
+[[package]]
 name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

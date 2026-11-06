@@ -1,6 +1,7 @@
 # Formal verification of the graphics paths (formal/): TLC model checks of the protocols between
-# guest threads and the render thread (formal/tla), Kani proofs of the format arithmetic, and the
-# tests around unsafe memory handoff under Miri. The exhaustive reference tests (every texel of
+# guest threads and the render thread (formal/tla), Kani proofs of the format arithmetic, the
+# tests around unsafe memory handoff under Miri, and the shader conformance cases
+# (crates/shaderconf: the translators' WGSL run on WebGPU against the D3D / GL rules). The exhaustive reference tests (every texel of
 # the 16-bit formats, every f32 to f16, every DXT endpoint pair) run with cargo test in CI.
 name: Formal
 
@@ -67,3 +68,37 @@ jobs:
         run: rustup toolchain install nightly --profile minimal --component miri,rust-src
       - name: Tests under Miri
         run: formal/miri.sh
+
+  shaders:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 22
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: shaders-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: shaders-${{ runner.os }}-
+      - name: Browser
+        run: |
+          npm install --prefix "$RUNNER_TEMP/pw" --no-audit --no-fund playwright@1.56.1
+          "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Cases
+        run: cargo run -q --release -p shaderconf > "$RUNNER_TEMP/cases.json"
+      - name: Run on WebGPU
+        env:
+          PLAYWRIGHT: ${{ runner.temp }}/pw/node_modules/playwright/index.mjs
+          OUT: ${{ runner.temp }}/shaders-report.json
+        run: node tests/shaders.mjs "$RUNNER_TEMP/cases.json"
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: shaders-report
+          path: ${{ runner.temp }}/shaders-report.json
+          retention-days: 14

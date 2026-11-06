@@ -421,6 +421,12 @@ pub fn assemble(src: &str) -> Result<Vec<u32>, String> {
                 }
             }
         }
+        // (Microsoft's spelling if_gt / break_gt: the comparing forms, as ifc_gt / breakc_gt)
+        let op = match op {
+            40 if ctl != 0 => 41,
+            44 if ctl != 0 => 45,
+            op => op,
+        };
         let len = if v.major >= 2 { (body.len() as u32) << 24 } else { 0 };
         words.push(op | ctl << 16 | len | if coissue { 1 << 30 } else { 0 });
         words.extend(body);

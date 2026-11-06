@@ -186,6 +186,8 @@ fn rewrite(src: &str, pixel: bool, attribs: &mut Vec<(String, u32)>, bound: &Has
     let mut body = String::new();
     let mut block = String::new();
     let mut samplers: Vec<String> = Vec::new();
+    let mut two_rows: Vec<(String, &str)> = Vec::new();
+    let mut narrow_arrays: Vec<(String, &str)> = Vec::new();
     let mut extra_in: Vec<(String, String)> = Vec::new();
     let mut extra_out: Vec<(String, String)> = Vec::new();
     let mut extra_uni: Vec<(String, String)> = Vec::new();
@@ -315,7 +317,26 @@ fn rewrite(src: &str, pixel: bool, attribs: &mut Vec<(String, u32)>, bound: &Has
                         match d.qual.as_str() {
                             "uniform" if d.ty.starts_with("sampler") => samplers.push(b.to_string()),
                             "uniform" => {
-                                let _ = writeln!(block, "  {} {};", d.ty, n);
+                                // (2-row matrices have no std140 layout in WGSL: kept as 4-row ones
+                                // of which the shader reads the top two rows, see `TWO_ROWS`)
+                                // (arrays of scalars and short vectors: elements 16 bytes apart in
+                                // std140, which WGSL cannot say of them; kept as vec4 arrays, see
+                                // `NARROW`)
+                                let narrow = NARROW.iter().find(|t| t.0 == d.ty).filter(|_| n.contains('['));
+                                match (TWO_ROWS.iter().find(|t| t.0 == d.ty && !n.contains('[')), narrow) {
+                                    (Some(&(_, wide, gl)), _) => {
+                                        let _ = writeln!(block, "  {wide} {n}{TWO_ROWS_SUFFIX};");
+                                        two_rows.push((n.clone(), gl));
+                                    }
+                                    (None, Some(&(_, wide, swz))) => {
+                                        let b = base_name(n);
+                                        let _ = writeln!(block, "  {wide} {b}{NARROW_SUFFIX}{}{};", swz.len(), &n[b.len()..]);
+                                        narrow_arrays.push((b.to_string(), swz));
+                                    }
+                                    _ => {
+                                        let _ = writeln!(block, "  {} {};", d.ty, n);
+                                    }
+                                }
                             }
                             "attribute" | "in" if !pixel => {
                                 let l = att_loc(b, attribs);
@@ -383,9 +404,15 @@ fn rewrite(src: &str, pixel: bool, attribs: &mut Vec<(String, u32)>, bound: &Has
         let _ = writeln!(head, "layout(set = {set}, binding = {}) uniform texture2D {s}_vnt;", 16 + k);
         let _ = writeln!(head, "layout(set = {set}, binding = {}) uniform sampler {s}_vns;", 160 + k);
     }
+    let mut body = body;
+    for (n, swz) in &narrow_arrays {
+        body = index_narrow(&body, n, &format!("{n}{NARROW_SUFFIX}{}", swz.len()), swz);
+    }
     let body = map_idents(&body, &mut |id, _| {
         if samplers.iter().any(|s| s == id) {
             Some(format!("sampler2D({id}_vnt, {id}_vns)"))
+        } else if let Some((_, gl)) = two_rows.iter().find(|t| t.0 == id) {
+            Some(format!("{gl}({id}{TWO_ROWS_SUFFIX})"))
         } else if id == "main" && !pixel {
             Some("vn_main".into())
         } else {
@@ -411,6 +438,62 @@ fn compile(src: &str, pixel: bool) -> Result<(String, naga::Module), String> {
         .map_err(|e| format!("naga validation: {e:?}"))?;
     let text = naga::back::wgsl::write_string(&m, &info, naga::back::wgsl::WriterFlags::empty()).map_err(|e| format!("naga wgsl-out: {e}"))?;
     Ok((format!("diagnostic(off, derivative_uniformity);\n{text}"), m))
+}
+
+/// Uniform matrices with two rows: (GLSL type, the 4-row type the block holds, the constructor
+/// that takes its top rows back).
+const TWO_ROWS: [(&str, &str, &str); 4] = [("mat2", "mat2x4", "mat2"), ("mat2x2", "mat2x4", "mat2"), ("mat3x2", "mat3x4", "mat3x2"), ("mat4x2", "mat4x4", "mat4x2")];
+const TWO_ROWS_SUFFIX: &str = "_vn2r";
+/// Array element types narrower than 16 bytes: (GLSL type, the vec4 type the block holds, the
+/// components the shader reads).
+const NARROW: [(&str, &str, &str); 6] =
+    [("float", "vec4", "x"), ("vec2", "vec4", "xy"), ("vec3", "vec4", "xyz"), ("int", "ivec4", "x"), ("ivec2", "ivec4", "xy"), ("ivec3", "ivec4", "xyz")];
+const NARROW_SUFFIX: &str = "_vna";
+
+/// `name[i]` -> `wide[i].swz` in `s` (indices rewritten too).
+fn index_narrow(s: &str, name: &str, wide: &str, swz: &str) -> String {
+    let b: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < b.len() {
+        if (b[i].is_ascii_alphabetic() || b[i] == '_') && (i == 0 || !is_ident(b[i - 1])) {
+            let st = i;
+            while i < b.len() && is_ident(b[i]) {
+                i += 1;
+            }
+            let id: String = b[st..i].iter().collect();
+            let mut j = i;
+            while j < b.len() && b[j].is_whitespace() {
+                j += 1;
+            }
+            if id == name && j < b.len() && b[j] == '[' {
+                let mut depth = 0;
+                let mut k = j;
+                while k < b.len() {
+                    match b[k] {
+                        '[' => depth += 1,
+                        ']' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    k += 1;
+                }
+                let inner: String = b[j + 1..k.min(b.len())].iter().collect();
+                out.push_str(&format!("{wide}[{}].{swz}", index_narrow(&inner, name, wide, swz)));
+                i = k + 1;
+            } else {
+                out.push_str(&id);
+            }
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    out
 }
 
 fn block_of(m: &naga::Module) -> Option<Block> {
@@ -442,7 +525,16 @@ fn block_of(m: &naga::Module) -> Option<Block> {
                             (c, r, None, 0)
                         }
                     };
-                    Member { name: x.name.clone().unwrap_or_default(), offset: x.offset, cols, rows, count, stride }
+                    let name = x.name.clone().unwrap_or_default();
+                    let narrow = name.rfind(NARROW_SUFFIX).filter(|&i| name[i + NARROW_SUFFIX.len()..].parse::<u32>().is_ok());
+                    match (name.strip_suffix(TWO_ROWS_SUFFIX), narrow) {
+                        (Some(n), _) => Member { name: n.to_string(), offset: x.offset, cols, rows: 2, count, stride },
+                        (None, Some(i)) => {
+                            let rows = name[i + NARROW_SUFFIX.len()..].parse().unwrap_or(4);
+                            Member { name: name[..i].to_string(), offset: x.offset, cols: 1, rows, count, stride }
+                        }
+                        (None, None) => Member { name, offset: x.offset, cols, rows, count, stride },
+                    }
                 })
                 .collect();
             return Some(Block { members, size: *span });
@@ -465,8 +557,8 @@ impl Member {
             }
         };
         let ew = self.words() as usize;
-        // matrix columns are 16 bytes apart (8 for 2-row ones); vectors and scalars are packed
-        let cstride = if self.cols == 1 { 0 } else if self.rows == 2 { 8 } else { 16 };
+        // matrix columns are 16 bytes apart (std140, 2-row ones too); vectors and scalars are packed
+        let cstride = if self.cols == 1 { 0 } else { 16 };
         for k in 0..self.count.unwrap_or(1) {
             let base = self.offset + k * self.stride;
             let s = &v[(k as usize * ew).min(v.len())..((k as usize + 1) * ew).min(v.len())];

@@ -97,6 +97,8 @@ struct W {
     used_t: std::collections::BTreeSet<u32>,
     used_s: std::collections::BTreeSet<u32>,
     nonfinite: bool,
+    /// helper functions the body calls (see HELPERS)
+    helpers: std::collections::BTreeSet<&'static str>,
     body: String,
     depth: usize,
     tmp: u32,
@@ -244,6 +246,7 @@ impl W {
             used_t: Default::default(),
             used_s: Default::default(),
             nonfinite: false,
+            helpers: Default::default(),
             body: String::new(),
             depth: 1,
             tmp: 0,
@@ -455,6 +458,9 @@ impl W {
     fn cmp(&mut self, i: &Inst, k: K, op: &str) -> R<()> {
         let n = bits(i.ops[0].mask() as u32).len();
         let (z, t) = (self.splat(K::U, n, 0), self.splat(K::U, n, 0xffff_ffff));
+        if op == "!==" {
+            return self.cw(i, k, K::U, |a| format!("select({z}, {t}, !({} == {}))", a[0], a[1]));
+        }
         self.cw(i, k, K::U, |a| format!("select({z}, {t}, {} {op} {})", a[0], a[1]))
     }
 
@@ -788,7 +794,8 @@ impl W {
             0x18 => self.cmp(i, F, "==")?,
             0x1d => self.cmp(i, F, ">=")?,
             0x31 => self.cmp(i, F, "<")?,
-            0x39 => self.cmp(i, F, "!=")?,
+            // (unordered: true when either is NaN; `!=` on floats is not that on every WebGPU)
+            0x39 => self.cmp(i, F, "!==")?,
             0x20 => self.cmp(i, I, "==")?,
             0x21 => self.cmp(i, I, ">=")?,
             0x22 => self.cmp(i, I, "<")?,
@@ -798,12 +805,12 @@ impl W {
             0x19 => self.cw(i, F, F, |a| format!("exp2({})", a[0]))?,
             0x1a => self.cw(i, F, F, |a| format!("fract({})", a[0]))?,
             0x1b => {
-                let n = vty(I, bits(i.ops[0].mask() as u32).len());
-                self.cw(i, F, I, |a| format!("{n}({})", a[0]))?
+                self.helpers.insert("d3d_ftoi");
+                self.per_comp(i, &[F], I, |a| format!("d3d_ftoi({})", a[0]))?
             }
             0x1c => {
-                let n = vty(U, bits(i.ops[0].mask() as u32).len());
-                self.cw(i, F, U, |a| format!("{n}({})", a[0]))?
+                self.helpers.insert("d3d_ftou");
+                self.per_comp(i, &[F], U, |a| format!("d3d_ftou({})", a[0]))?
             }
             0x2b => {
                 let n = vty(F, bits(i.ops[0].mask() as u32).len());
@@ -862,7 +869,10 @@ impl W {
             0x2a => self.shift(i, I, ">>")?,
             0x55 => self.shift(i, U, ">>")?,
             0x2d => self.load(i)?,
-            0x2f => self.cw(i, F, F, |a| format!("log2({})", a[0]))?,
+            0x2f => {
+                self.helpers.insert("d3d_log2");
+                self.per_comp(i, &[F], F, |a| format!("d3d_log2({})", a[0]))?
+            }
             0x30 => self.open("loop {", b'l'),
             0x32 => self.cw(i, F, F, |a| format!("({} * {} + {})", a[0], a[1], a[2]))?,
             0x33 => self.cw(i, F, F, |a| format!("min({}, {})", a[0], a[1]))?,
@@ -924,7 +934,10 @@ impl W {
                 self.vec4_result(i, format!("vec4<u32>(textureDimensions(t{t}).x)"), U, swz)?;
             }
             0x81 => self.cw(i, F, F, |a| format!("(1.0f / {})", a[0]))?,
-            0x82 => self.per_comp(i, &[F], U, |a| format!("(pack2x16float(vec2<f32>({}, 0.0f)) & 0xffffu)", a[0]))?,
+            0x82 => {
+                self.helpers.insert("d3d_f32tof16");
+                self.per_comp(i, &[F], U, |a| format!("d3d_f32tof16({})", a[0]))?
+            }
             0x83 => self.per_comp(i, &[U], F, |a| format!("unpack2x16float({} & 0xffffu).x", a[0]))?,
             0x86 => self.cw(i, U, U, |a| format!("countOneBits({})", a[0]))?,
             0x87 => self.per_comp(i, &[U], U, |a| format!("select(31u - firstLeadingBit({0}), 0xffffffffu, {0} == 0u)", a[0]))?,
@@ -1060,6 +1073,11 @@ pub fn translate(code: &[u8], pixel: bool, ps: Option<&[u8]>) -> R<Wgsl> {
     }
     if w.nonfinite {
         m.push_str("var<private> nf_zero: u32;\n");
+    }
+    for &(name, code) in HELPERS {
+        if w.helpers.contains(name) {
+            m.push_str(code);
+        }
     }
     if !w.icb.is_empty() {
         let n = w.icb.len() / 4;
@@ -1262,3 +1280,43 @@ mod tests {
         assert_eq!(fails, 0);
     }
 }
+
+/// Direct3D's results where WGSL's built-ins leave them to the implementation (D3D11.3
+/// functional spec; checked on WebGPU by tests/shaders.mjs). Infinities and NaN come from bit
+/// patterns of the argument (WGSL has no such constants).
+const HELPERS: &[(&str, &str)] = &[
+    // log: log(+-0) = -inf, log(x < 0) = NaN, NaN stays
+    ("d3d_log2", "fn d3d_log2(x: f32) -> f32 {
+  let b = bitcast<u32>(x);
+  if ((b & 0x7fffffffu) > 0x7f800000u) { return x; }
+  if ((b & 0x7fffffffu) == 0u) { return bitcast<f32>(b | 0xff800000u); }
+  if (b > 0x80000000u) { return bitcast<f32>(b | 0x7fc00000u); }
+  return log2(x);
+}
+"),
+    // ftoi: toward zero, NaN 0, clamped to the int range (WGSL clamps to 2^31 - 128)
+    ("d3d_ftoi", "fn d3d_ftoi(x: f32) -> i32 {
+  if ((bitcast<u32>(x) & 0x7fffffffu) > 0x7f800000u) { return 0; }
+  if (x >= 2147483648.0f) { return 2147483647; }
+  return i32(x);
+}
+"),
+    // ftou: NaN and negatives 0, clamped (WGSL clamps to 2^32 - 256)
+    ("d3d_ftou", "fn d3d_ftou(x: f32) -> u32 {
+  if ((bitcast<u32>(x) & 0x7fffffffu) > 0x7f800000u) { return 0u; }
+  if (x >= 4294967296.0f) { return 0xffffffffu; }
+  return u32(x);
+}
+"),
+    // f32tof16: NaN stays NaN, magnitudes that round past 65504 are infinities (WGSL leaves
+    // pack2x16float of those undefined)
+    ("d3d_f32tof16", "fn d3d_f32tof16(x: f32) -> u32 {
+  let b = bitcast<u32>(x);
+  let s = (b >> 16u) & 0x8000u;
+  let a = b & 0x7fffffffu;
+  if (a > 0x7f800000u) { return s | 0x7e00u; }
+  if (a >= 0x477ff000u) { return s | 0x7c00u; }
+  return pack2x16float(vec2<f32>(x, 0.0f)) & 0xffffu;
+}
+"),
+];

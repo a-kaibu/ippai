@@ -1140,9 +1140,9 @@ pub fn uniform_size(n: u32) -> u32 {
 }
 
 const HELPERS: &str = "
-fn rcp(x: f32) -> f32 { if (x == 0.0) { return 3.4e38; } return 1.0 / x; }
-fn rsq(x: f32) -> f32 { let a = abs(x); if (a == 0.0) { return 3.4e38; } return inverseSqrt(a); }
-fn lg2(x: f32) -> f32 { let a = abs(x); if (a == 0.0) { return -3.4e38; } return log2(a); }
+fn rcp(x: f32) -> f32 { if (x == 0.0) { return 0x1.fffffep+127f; } return 1.0 / x; }
+fn rsq(x: f32) -> f32 { let a = abs(x); if (a == 0.0) { return 0x1.fffffep+127f; } return inverseSqrt(a); }
+fn lg2(x: f32) -> f32 { let a = abs(x); if (a == 0.0) { return -0x1.fffffep+127f; } return log2(a); }
 fn nrm(v: vec4f) -> vec4f { let l = dot(v.xyz, v.xyz); if (l == 0.0) { return vec4f(0.0); } return v * inverseSqrt(l); }
 fn lit(v: vec4f) -> vec4f {
   var r = vec4f(1.0, 0.0, 0.0, 1.0);
