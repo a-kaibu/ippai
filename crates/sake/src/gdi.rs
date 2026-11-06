@@ -3911,8 +3911,32 @@ fn GetGlyphIndicesW(c: &mut Ctx) -> u32 {
     }
     n
 }
-fn GetFontData(_: &mut Ctx) -> u32 {
-    0xffff_ffff
+/// GetFontData(dc, table, offset, buf, size): the selected font's file (table 0, or 'ttcf': the
+/// font as one face) or one of its tables (the tag's bytes as a DWORD); size asked with no buffer.
+/// (NonColor's text renderer feeds it to its own FreeType.)
+fn GetFontData(c: &mut Ctx) -> u32 {
+    let (dc, table, off, buf, cap) = (c.a(0), c.a(1), c.a(2) as usize, c.a(3), c.a(4) as usize);
+    let Some((r, _, _)) = real_of(dc) else { return 0xffff_ffff };
+    let d = r.font.as_slice();
+    let be32 = |o: usize| d.get(o..o + 4).map(|b| u32::from_be_bytes(b.try_into().unwrap()));
+    let part = if table == 0 || table == u32::from_le_bytes(*b"ttcf") {
+        Some(d)
+    } else {
+        let n = d.get(4..6).map_or(0, |b| u16::from_be_bytes([b[0], b[1]]) as usize);
+        let tag = u32::from_be_bytes(table.to_le_bytes());
+        (0..n).find(|i| be32(12 + 16 * i) == Some(tag)).and_then(|i| {
+            let (o, l) = (be32(12 + 16 * i + 8)? as usize, be32(12 + 16 * i + 12)? as usize);
+            d.get(o..o + l)
+        })
+    };
+    let Some(part) = part else { return 0xffff_ffff };
+    let Some(rest) = part.get(off..) else { return 0xffff_ffff };
+    if buf == 0 || cap == 0 {
+        return rest.len() as u32;
+    }
+    let n = rest.len().min(cap);
+    mem::write(buf, &rest[..n]);
+    n as u32
 }
 fn GetKerningPairsA(_: &mut Ctx) -> u32 {
     0
