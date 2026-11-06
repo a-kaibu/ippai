@@ -534,6 +534,193 @@ fn set_ctl(h: u32, f: impl FnOnce(&mut Ctl)) {
     f(CTLS.lock().unwrap().get_or_insert_with(HashMap::default).entry(h).or_default());
 }
 
+/// Combo boxes (settings dialogs): their items and selection, drawn as a box with the selected
+/// item; a click selects the next item (no drop-down list) and tells the parent CBN_SELCHANGE.
+#[derive(Default)]
+struct Combo {
+    items: Vec<(Vec<u16>, u32)>,
+    sel: i32,
+}
+static COMBOS: Mutex<Option<HashMap<u32, Combo>>> = Mutex::new(None);
+fn combo_proc() -> u32 {
+    static P: OnceLock<u32> = OnceLock::new();
+    *P.get_or_init(|| crate::api::host_fn("combo_proc", combo_proc_fn, 16))
+}
+fn combo<R>(h: u32, f: impl FnOnce(&mut Combo) -> R) -> R {
+    let mut g = COMBOS.lock().unwrap();
+    let e = g.get_or_insert_with(HashMap::default).entry(h).or_insert_with(|| Combo { items: Vec::new(), sel: -1 });
+    f(e)
+}
+fn combo_proc_fn(c: &mut Ctx) -> u32 {
+    const CB_ERR: u32 = u32::MAX;
+    let (h, m, wp, lp) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    let wide = msg_wide();
+    let text = |p: u32| -> Vec<u16> { if p == 0 { Vec::new() } else { crate::k32::arg_str(p, wide).encode_utf16().collect() } };
+    let find = |items: &[(Vec<u16>, u32)], from: u32, s: &[u16], exact: bool| -> u32 {
+        let lower = |v: &[u16]| String::from_utf16_lossy(v).to_lowercase();
+        let want = lower(s);
+        let n = items.len();
+        let start = if from as i32 >= 0 && (from as usize) < n { from as usize + 1 } else { 0 };
+        (0..n).map(|k| (start + k) % n.max(1)).find(|&i| if exact { lower(&items[i].0) == want } else { lower(&items[i].0).starts_with(&want) }).map_or(CB_ERR, |i| i as u32)
+    };
+    let changed = |c: &mut Ctx| {
+        invalidate(h, None, true);
+        let (id, parent) = with(|s| s.wins.get(&h).map_or((0, 0), |w| (w.id, w.parent)));
+        if parent != 0 {
+            send(c, parent, 0x111, 1 << 16 | (id & 0xffff), h);
+        }
+    };
+    match m {
+        // CB_ADDSTRING, CB_INSERTSTRING
+        0x143 | 0x14a => {
+            let t = text(lp);
+            let r = combo(h, |cb| {
+                let at = if m == 0x14a && (wp as usize) < cb.items.len() { wp as usize } else { cb.items.len() };
+                cb.items.insert(at, (t, 0));
+                at as u32
+            });
+            invalidate(h, None, true);
+            r
+        }
+        // CB_DELETESTRING
+        0x144 => combo(h, |cb| {
+            if (wp as usize) < cb.items.len() {
+                cb.items.remove(wp as usize);
+                if cb.sel >= cb.items.len() as i32 {
+                    cb.sel = -1;
+                }
+                cb.items.len() as u32
+            } else {
+                CB_ERR
+            }
+        }),
+        0x146 => combo(h, |cb| cb.items.len() as u32),
+        0x147 => combo(h, |cb| cb.sel as u32),
+        // CB_GETLBTEXT, CB_GETLBTEXTLEN
+        0x148 | 0x149 => {
+            let Some(t) = combo(h, |cb| cb.items.get(wp as usize).map(|i| i.0.clone())) else { return CB_ERR };
+            let bytes = if wide { t.clone() } else { Vec::new() };
+            let a = if wide { Vec::new() } else { crate::text::s2a(&String::from_utf16_lossy(&t)) };
+            if m == 0x149 {
+                return if wide { bytes.len() as u32 } else { a.len() as u32 };
+            }
+            if wide {
+                mem::put_wstr(lp, bytes.len() as u32 + 1, &bytes);
+                bytes.len() as u32
+            } else {
+                mem::put_cstr(lp, a.len() as u32 + 1, &a);
+                a.len() as u32
+            }
+        }
+        0x14b => {
+            combo(h, |cb| {
+                cb.items.clear();
+                cb.sel = -1;
+            });
+            invalidate(h, None, true);
+            0
+        }
+        // CB_FINDSTRING, CB_FINDSTRINGEXACT
+        0x14c | 0x158 => {
+            let t = text(lp);
+            combo(h, |cb| find(&cb.items, wp, &t, m == 0x158))
+        }
+        // CB_SELECTSTRING
+        0x14d => {
+            let t = text(lp);
+            let r = combo(h, |cb| {
+                let i = find(&cb.items, wp, &t, false);
+                if i != CB_ERR {
+                    cb.sel = i as i32;
+                }
+                i
+            });
+            invalidate(h, None, true);
+            r
+        }
+        // CB_SETCURSEL
+        0x14e => {
+            let r = combo(h, |cb| {
+                if (wp as usize) < cb.items.len() {
+                    cb.sel = wp as i32;
+                    wp
+                } else {
+                    cb.sel = -1;
+                    CB_ERR
+                }
+            });
+            invalidate(h, None, true);
+            r
+        }
+        0x150 => combo(h, |cb| cb.items.get(wp as usize).map_or(CB_ERR, |i| i.1)),
+        0x151 => combo(h, |cb| match cb.items.get_mut(wp as usize) {
+            Some(i) => {
+                i.1 = lp;
+                0
+            }
+            None => CB_ERR,
+        }),
+        // CB_GETDROPPEDSTATE, CB_SHOWDROPDOWN, CB_SETEXTENDEDUI, CB_LIMITTEXT...
+        0x157 | 0x14f | 0x155 | 0x141 => 0,
+        0xf => {
+            combo_paint(c, h);
+            0
+        }
+        0x14 => 1,
+        0x30 => {
+            set_ctl(h, |t| t.font = wp);
+            0
+        }
+        0x31 => ctl(h).font,
+        // a click: the next item
+        0x201 => {
+            let moved = combo(h, |cb| {
+                if cb.items.is_empty() {
+                    return false;
+                }
+                cb.sel = (cb.sel + 1).rem_euclid(cb.items.len() as i32);
+                true
+            });
+            if moved {
+                changed(c);
+            }
+            0
+        }
+        0x2 => {
+            COMBOS.lock().unwrap().get_or_insert_with(HashMap::default).remove(&h);
+            def_proc(c, wide)
+        }
+        _ => def_proc(c, wide),
+    }
+}
+fn combo_paint(c: &mut Ctx, h: u32) {
+    let (w, hh, enabled) = with(|s| s.wins.get(&h).map_or((0, 0, true), |w| (w.client.w(), w.client.h(), w.enabled)));
+    let text = combo(h, |cb| cb.items.get(cb.sel.max(0) as usize).filter(|_| cb.sel >= 0).map(|i| i.0.clone()).unwrap_or_default());
+    let ps = mem::heap_alloc(64 + 16, true);
+    let rc = ps + 64;
+    let dc = gcall(c, "user32", "BeginPaint", &[h, ps]);
+    let font = ctl(h).font;
+    if font != 0 {
+        gcall(c, "gdi32", "SelectObject", &[dc, font]);
+    }
+    gcall(c, "gdi32", "SetBkMode", &[dc, 1]);
+    gcall(c, "gdi32", "SetTextColor", &[dc, if enabled { 0 } else { 0x6d6d6d }]);
+    // (the box: the top of the window, whose height includes the list's)
+    let bh = hh.min(22);
+    let fill = |r: Rect, color: u32| crate::gdi::fill_rect_brush(dc, r, crate::gdi::solid_brush(color));
+    fill(Rect { l: 0, t: 0, r: w, b: bh }, 0x7a7a7a);
+    fill(Rect { l: 1, t: 1, r: w - 1, b: bh - 1 }, if enabled { 0xffffff } else { 0xf0f0f0 });
+    // the arrow
+    let ax = w - 12;
+    for k in 0..4 {
+        fill(Rect { l: ax - 3 + k, t: bh / 2 - 2 + k, r: ax + 4 - k, b: bh / 2 - 1 + k }, 0x404040);
+    }
+    Rect { l: 4, t: 0, r: w - 20, b: bh }.write(rc);
+    crate::gdi::draw_text(dc, &text, rc, 0x4 | 0x20);
+    gcall(c, "user32", "EndPaint", &[h, ps]);
+    mem::heap_free(ps);
+}
+
 fn control_proc() -> u32 {
     static P: OnceLock<u32> = OnceLock::new();
     *P.get_or_init(|| crate::api::host_fn("control_proc", control_proc_fn, 16))
@@ -837,6 +1024,7 @@ fn system_classes(s: &mut State) {
             proc_: match n {
                 "Button" | "Static" | "Edit" => control_proc(),
                 "SysTabControl32" => tab_proc(),
+                "ComboBox" => combo_proc(),
                 // (the class's own: a CBT hook subclassing a new dialog keeps it as the super proc)
                 "#32770" => dlg_wndproc(),
                 _ => builtin_proc(),
