@@ -189,11 +189,11 @@ pub(super) fn supported(ins: &Instruction) -> bool {
         }
         Movhlps | Movlhps => d.is_xmm() && ins.op_kind(1) == OpKind::Register && ins.op_register(1).is_xmm(),
         _ if !vreg(d) || ins.op_count() < 2 => false,
-        Pandn | Pmulhw | Pmulhuw | Packsswb | Packuswb | Packssdw | Pshufb => ins.op_count() == 2 && src(1, width),
+        Pandn | Pmulhw | Pmulhuw | Pmuludq | Packsswb | Packuswb | Packssdw | Pshufb => ins.op_count() == 2 && src(1, width),
         _ if binop(m).is_some() || unpack(m).is_some() => ins.op_count() == 2 && src(1, width),
         _ if shift(m).is_some() => ins.op_count() == 2 && (ins.op_kind(1) == OpKind::Immediate8 || src(1, width)),
         Pshufw => d.is_mm() && ins.op_count() == 3 && src(1, 8),
-        Pshufd => d.is_xmm() && ins.op_count() == 3 && src(1, 16),
+        Pshufd | Pshuflw | Pshufhw => d.is_xmm() && ins.op_count() == 3 && src(1, 16),
         Pslldq | Psrldq => d.is_xmm() && ins.op_kind(1) == OpKind::Immediate8,
         _ => false,
     }
@@ -410,6 +410,16 @@ impl Gen<'_> {
             self.vread(1, a, mm);
             self.vread(0, None, mm);
             self.c.simd(0x4f);
+        } else if m == Pmuludq {
+            // the even dwords to the low half of each, then their 64-bit products
+            let l: [u8; 16] = core::array::from_fn(|k| (if k < 4 { k } else if k < 8 { k + 4 } else { k }) as u8);
+            self.vread(0, None, mm);
+            self.c.set(L_V0);
+            self.vread(1, a, mm);
+            self.c.set(L_V1);
+            self.c.get(L_V0).get(L_V0).shuffle(l);
+            self.c.get(L_V1).get(L_V1).shuffle(l);
+            self.c.simd(0xde); // i64x2.extmul_low_i32x4_u
         } else if matches!(m, Pmulhw | Pmulhuw) {
             let (lo, hi, shr, narrow) = if m == Pmulhw { (0xbc, 0xbd, 0xac, 0x85) } else { (0xbe, 0xbf, 0xad, 0x86) };
             self.vread(0, None, mm);
@@ -499,15 +509,20 @@ impl Gen<'_> {
                     self.c.sub().simd(0x0f).simd(0x4e); // and splat(-(count < bits))
                 }
             }
-        } else if matches!(m, Pshufw | Pshufd) {
-            let (e, n) = if m == Pshufw { (2, 4) } else { (4, 4) };
+        } else if matches!(m, Pshufw | Pshufd | Pshuflw | Pshufhw) {
+            // (element bytes, the first element shuffled: PSHUFHW the high four words)
+            let (e, at) = match m {
+                Pshufd => (4, 0),
+                Pshufhw => (2, 4),
+                _ => (2, 0),
+            };
             let imm = ins.immediate8();
-            // (PSHUFW: the high half as it is, so V8 sees a pshuflw)
+            // (PSHUFW, PSHUFLW: the high half as it is, so V8 sees a pshuflw)
             let mut l: [u8; 16] = core::array::from_fn(|k| k as u8);
-            for k in 0..n {
-                let j = (imm >> (2 * k)) as usize & 3;
+            for k in 0..4 {
+                let j = at + ((imm >> (2 * k)) as usize & 3);
                 for t in 0..e {
-                    l[k * e + t] = (j * e + t) as u8;
+                    l[(at + k) * e + t] = (j * e + t) as u8;
                 }
             }
             self.vread(1, a, mm);

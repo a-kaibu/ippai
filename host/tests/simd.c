@@ -114,6 +114,26 @@ static __attribute__((noinline)) unsigned sse2_int(void)
     return sum;
 }
 
+/* PSHUFLW / PSHUFHW / PMULUDQ (image composition code: alpha spread over a pixel's words) */
+static __attribute__((noinline)) unsigned sse2_shuffle(void)
+{
+    sum = 0;
+    static __m128i mem[2];
+    for (int i = 0; i < N; i++)
+    {
+        __m128i a = _mm_set_epi32(rnd(), rnd(), rnd(), rnd()), b = _mm_set_epi32(rnd(), rnd(), rnd(), rnd());
+        mem[i & 1] = b;
+        mix128(_mm_shufflelo_epi16(a, 0xff)); mix128(_mm_shufflehi_epi16(a, 0xff));
+        mix128(_mm_shufflelo_epi16(a, 0x1b)); mix128(_mm_shufflehi_epi16(a, 0x1b));
+        mix128(_mm_shufflelo_epi16(b, 0x9c)); mix128(_mm_shufflehi_epi16(b, 0x63));
+        mix128(_mm_shufflehi_epi16(_mm_shufflelo_epi16(a, 0x00), 0xe4));
+        mix128(_mm_shufflelo_epi16(_mm_loadu_si128(&mem[i & 1]), 0x4e));
+        mix128(_mm_shufflehi_epi16(_mm_loadu_si128(&mem[i & 1]), 0xb1));
+        mix128(_mm_mul_epu32(a, b));
+    }
+    return sum;
+}
+
 /* floats from the random bits, NaNs and infinities included now and then */
 static float rf(void)
 {
@@ -162,5 +182,6 @@ int main(void)
     printf("mmx_chain   %08x\n", mmx_chain());
     printf("sse2_int    %08x\n", sse2_int());
     printf("sse_float   %08x\n", sse_float());
+    printf("sse2_shuf   %08x\n", sse2_shuffle());
     return 0;
 }
