@@ -81,8 +81,16 @@ pub fn open(data: Vec<u8>) -> Option<u32> {
     let slots = (0..SLOTS)
         .map(|_| Slot { buf: Vec::new(), frame: -1, writing: false, reading: 0, layout: [[0; 7]; 2] })
         .collect();
-    with(|m| m.insert(id, Stream { data, w, h, tracks, want: -1, slots, closed: false, failed: false, shown: -1, opened: Instant::now() }));
+    // (IPPAI_VIDEO_FAIL: every stream fails, as on a phone without decoders: tests the fallback)
+    let failed = std::env::var_os("IPPAI_VIDEO_FAIL").is_some();
+    with(|m| m.insert(id, Stream { data, w, h, tracks, want: -1, slots, closed: false, failed, shown: -1, opened: Instant::now() }));
     Some(id)
+}
+
+/// Whether the page gave up on stream `id` (no decoder for it, or the decoder failed: Android
+/// takes hardware decoders back when several movies play at once).
+pub fn failed(id: u32) -> bool {
+    with(|m| m.get(&id).is_some_and(|s| s.failed))
 }
 
 pub fn close(id: u32) {

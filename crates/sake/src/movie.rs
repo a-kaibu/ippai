@@ -113,6 +113,19 @@ fn frame(c: &mut Ctx) -> u32 {
             }
         }
     };
+    // a stream the page could not decode goes back to the game's own decoder (else the movie
+    // is never drawn: ANEMOI's aurora on a phone that took its hardware decoder back)
+    let stream = stream.filter(|&id| {
+        if !video::failed(id) {
+            return true;
+        }
+        eprintln!("sake: movie player {this:#x}: WebCodecs failed, the game's decoder from here on");
+        video::close(id);
+        if let Some(e) = PLAYERS.lock().unwrap().as_mut().and_then(|m| m.get_mut(&this)) {
+            e.1 = None;
+        }
+        false
+    });
     let Some(id) = stream else {
         // the game's own decoder
         c.cpu.eip = *TRAMPOLINE.lock().unwrap();
