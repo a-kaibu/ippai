@@ -1725,13 +1725,18 @@ impl D3d {
 
     #[allow(clippy::too_many_arguments)]
     fn clear_rect(&mut self, flags: u32, color: [f32; 4], z: f32, x: u32, y: u32, w: u32, h: u32) {
-        let (tw, th) = self.target_size();
+        // (the views: the D3D9 target, or the first color and the depth of a `SET_TARGETS2` set)
+        let (rt, ds, (tw, th)) = match &self.targets2 {
+            Some(tg) if tg[0] > 1 => return,
+            Some(tg) => (if tg[0] == 1 { tg[1] } else { 0 }, tg[1 + tg[0] as usize * 3], self.target_size2()),
+            None => (self.target[0], self.target[2], self.target_size()),
+        };
         let (x0, y0) = (x.min(tw), y.min(th));
         let (x1, y1) = (x.saturating_add(w).min(tw), y.saturating_add(h).min(th));
         if x1 <= x0 || y1 <= y0 {
             return;
         }
-        if x0 == 0 && y0 == 0 && x1 == tw && y1 == th {
+        if x0 == 0 && y0 == 0 && x1 == tw && y1 == th && self.targets2.is_none() {
             self.clear_whole(flags, color, z, 0);
             return;
         }
@@ -1739,9 +1744,14 @@ impl D3d {
             return;
         }
         // (the pass may have begun before a segment ended: see `seg_close`)
-        self.touch(self.target[0]);
-        let fmt = self.textures[&self.target[0]].format;
-        let depth = self.target[2] != 0;
+        let fmt = match self.textures.get(&rt) {
+            Some(t) => t.format,
+            None => "",
+        };
+        if rt != 0 {
+            self.touch(rt);
+        }
+        let depth = ds != 0;
         let key = (fmt, depth, flags & 3);
         let pipe = match self.clear_pipes.get(&key) {
             Some(&p) => p,
@@ -1756,9 +1766,8 @@ impl D3d {
                     String::new()
                 };
                 let p = gpu::render_pipeline(&format!(
-                    r#"{{"layout":"auto","vertex":{{"module":{m},"entryPoint":"vs"}},"fragment":{{"module":{m},"entryPoint":"fs","targets":[{{"format":{},"writeMask":{}}}]}},"primitive":{{"topology":"triangle-list"}}{ds}}}"#,
-                    q(fmt),
-                    if flags & 1 != 0 { 15 } else { 0 }
+                    r#"{{"layout":"auto","vertex":{{"module":{m},"entryPoint":"vs"}},"fragment":{{"module":{m},"entryPoint":"fs","targets":[{}]}},"primitive":{{"topology":"triangle-list"}}{ds}}}"#,
+                    if rt != 0 { format!(r#"{{"format":{},"writeMask":{}}}"#, q(fmt), if flags & 1 != 0 { 15 } else { 0 }) } else { String::new() }
                 ));
                 self.clear_pipes.insert(key, p);
                 p

@@ -208,6 +208,8 @@ pub(crate) struct Ctx {
     caps: HashSet<u32>,
     viewport: [i32; 4],
     scissor: [i32; 4],
+    /// glShadeModel(GL_FLAT)
+    flat: bool,
     depth_range: [f32; 2],
     clear_color: [f32; 4],
     clear_depth: f32,
@@ -260,6 +262,7 @@ impl Ctx {
             caps: HashSet::new(),
             viewport: [0; 4],
             scissor: [0; 4],
+            flat: false,
             depth_range: [0.0, 1.0],
             clear_color: [0.0; 4],
             clear_depth: 1.0,
@@ -748,7 +751,9 @@ extern "C" fn glStencilMask(m: u32) {
     with(|_, c| c.stencil_mask = m)
 }
 extern "C" fn glHint(_: u32, _: u32) {}
-extern "C" fn glShadeModel(_: u32) {}
+extern "C" fn glShadeModel(m: u32) {
+    with(|_, c| c.flat = m == 0x1D00)
+}
 extern "C" fn glPolygonMode(_: u32, _: u32) {}
 extern "C" fn glLineWidth(_: f32) {}
 extern "C" fn glPointSize(_: f32) {}
@@ -1306,7 +1311,39 @@ pub(crate) fn draw_state(c: &Ctx, w: u32, h: u32) -> Vec<u32> {
     out
 }
 
+/// Flat shading: triangles as a list, each vertex with the color of the triangle's provoking
+/// vertex (its last one; a quad's or quad strip quad's last one).
+fn flat_order(mode: u32, n: usize) -> Option<Vec<(usize, usize)>> {
+    let tris: Vec<([usize; 3], usize)> = match mode {
+        4 => (0..n / 3).map(|t| ([3 * t, 3 * t + 1, 3 * t + 2], 3 * t + 2)).collect(),
+        5 => (0..n.saturating_sub(2)).map(|i| (if i % 2 == 0 { [i, i + 1, i + 2] } else { [i + 1, i, i + 2] }, i + 2)).collect(),
+        6 => (1..n.saturating_sub(1)).map(|i| ([0, i, i + 1], i + 1)).collect(),
+        7 => (0..n / 4).flat_map(|q| [([4 * q, 4 * q + 1, 4 * q + 2], 4 * q + 3), ([4 * q, 4 * q + 2, 4 * q + 3], 4 * q + 3)]).collect(),
+        8 => (0..n.saturating_sub(2) / 2).flat_map(|q| [([2 * q, 2 * q + 1, 2 * q + 3], 2 * q + 3), ([2 * q, 2 * q + 3, 2 * q + 2], 2 * q + 3)]).collect(),
+        // (a polygon takes the first vertex's color)
+        9 => (1..n.saturating_sub(1)).map(|i| ([0, i, i + 1], 0)).collect(),
+        _ => return None,
+    };
+    Some(tris.iter().flat_map(|&(t, p)| t.map(|i| (i, p))).collect())
+}
+
 fn draw(g: &mut Gl, c: &mut Ctx, mode: u32, v: Vec<[f32; 16]>) {
+    if c.flat {
+        if let Some(fo) = flat_order(mode, v.len()) {
+            let nv: Vec<[f32; 16]> = fo
+                .iter()
+                .map(|&(i, p)| {
+                    let mut x = v[i];
+                    x[4..8].copy_from_slice(&v[p][4..8]);
+                    x
+                })
+                .collect();
+            c.flat = false;
+            draw(g, c, 4, nv);
+            c.flat = true;
+            return;
+        }
+    }
     let (topo, order) = assemble(mode, v.len());
     if order.is_empty() {
         return;
@@ -1378,6 +1415,20 @@ extern "C" fn glClear(mask: u32) {
         let Some((color, level, depth, _, _)) = target(g, c) else { return };
         let cc = c.clear_color.map(|f| f.to_bits());
         let (cd, cs) = (c.clear_depth.to_bits(), c.clear_stencil as u32 & 0xff);
+        // (with the scissor test on: only its box, as a rectangle clear of the targets)
+        if c.caps.contains(&GL_SCISSOR_TEST) && color != 0 {
+            let sc = c.scissor;
+            let f = (mask & 0x4000 != 0 && c.color_mask != 0) as u32 | (mask & 0x100 != 0 && depth != 0) as u32 * 2 | (mask & 0x400 != 0 && depth != 0) as u32 * 4;
+            let (x, y) = (sc[0].max(0) as u32, sc[1].max(0) as u32);
+            let (w, h) = ((sc[0] + sc[2]).max(0) as u32 - x, (sc[1] + sc[3]).max(0) as u32 - y);
+            if f != 0 && w > 0 && h > 0 {
+                gpu::record(|q| {
+                    q.cmd(&[gpu::SET_TARGETS2, 1, color, level, 0, depth, 0, 0]);
+                    q.cmd(&[gpu::CLEAR, f, cc[0], cc[1], cc[2], cc[3], cd, cs, x, y, w, h]);
+                });
+            }
+            return;
+        }
         gpu::record(|q| {
             if mask & 0x4000 != 0 && color != 0 && c.color_mask != 0 {
                 q.cmd(&[gpu::CLEAR_VIEW, color, level, 0, 1, cc[0], cc[1], cc[2], cc[3], 0, 0]);
