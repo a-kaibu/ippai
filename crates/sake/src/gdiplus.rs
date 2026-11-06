@@ -1,5 +1,5 @@
 //! GDI+ images (gdiplus.dll): bitmaps decoded from a file or an IStream (PNG, JPEG, BMP via
-//! ole::decode), their size, pixel format, pixels (LockBits, GetPixel) and an HBITMAP of them.
+//! picture.rs), their size, pixel format, pixels (LockBits, GetPixel) and an HBITMAP of them.
 //! Enough for the games and launchers that load their pictures with GDI+; no drawing.
 
 #![allow(non_snake_case)]
@@ -23,6 +23,7 @@ struct Bitmap {
     w: u32,
     h: u32,
     px: Vec<u8>, // BGRA, top row first
+    fmt: u32,    // the PixelFormat GDI+ reports for it
     locked: Option<(u32, u32, u32, u32, u32)>, // buffer, x, y, w, format (to write back)
 }
 
@@ -33,9 +34,12 @@ fn with<R>(f: impl FnOnce(&mut HashMap<u32, Bitmap>) -> R) -> R {
 }
 
 fn new_image(data: &[u8], out: u32) -> u32 {
-    let Some((w, h, px)) = crate::ole::decode(data) else { return UNKNOWN_IMAGE_FORMAT };
+    let Some(pic) = crate::picture::decode(data) else { return UNKNOWN_IMAGE_FORMAT };
+    let fmt = pic.gdiplus_format();
+    let f = &pic.frames[0];
+    let (w, h, px) = (f.w, f.h, f.bgra());
     let o = mem::heap_alloc(16, true);
-    with(|m| m.insert(o, Bitmap { w, h, px, locked: None }));
+    with(|m| m.insert(o, Bitmap { w, h, px, fmt, locked: None }));
     mem::putp(out, o);
     OK
 }
@@ -56,8 +60,10 @@ fn from_stream(c: &mut Ctx) -> u32 {
     if c.a(0) == 0 || c.a(1) == 0 {
         return INVALID_PARAMETER;
     }
+    // (the out pointer read first: on x64 calling the stream's Read clobbers the argument registers)
+    let out = c.a(1);
     let data = crate::wic::read_stream(c, c.a(0));
-    new_image(&data, c.a(1))
+    new_image(&data, out)
 }
 /// GdipCreateBitmapFromFile / GdipLoadImageFromFile (+ICM)(wide path, &image)
 fn from_file(c: &mut Ctx) -> u32 {
@@ -86,7 +92,8 @@ fn GdipGetImageDimension(c: &mut Ctx) -> u32 {
     OK
 }
 fn GdipGetImagePixelFormat(c: &mut Ctx) -> u32 {
-    put32(c.a(1), FMT_32ARGB);
+    let Some(f) = with(|m| m.get(&c.a(0)).map(|b| b.fmt)) else { return INVALID_PARAMETER };
+    put32(c.a(1), f);
     OK
 }
 fn GdipGetImageType(c: &mut Ctx) -> u32 {
@@ -117,9 +124,9 @@ fn GdipDisposeImage(c: &mut Ctx) -> u32 {
     OK
 }
 fn GdipCloneImage(c: &mut Ctx) -> u32 {
-    let Some((w, h, px)) = with(|m| m.get(&c.a(0)).map(|b| (b.w, b.h, b.px.clone()))) else { return INVALID_PARAMETER };
+    let Some((w, h, px, fmt)) = with(|m| m.get(&c.a(0)).map(|b| (b.w, b.h, b.px.clone(), b.fmt))) else { return INVALID_PARAMETER };
     let o = mem::heap_alloc(16, true);
-    with(|m| m.insert(o, Bitmap { w, h, px, locked: None }));
+    with(|m| m.insert(o, Bitmap { w, h, px, fmt, locked: None }));
     mem::putp(c.a(1), o);
     OK
 }

@@ -56,6 +56,7 @@ pub mod dshow;
 pub mod mf;
 pub mod usp;
 pub mod ole;
+pub mod picture;
 pub mod wic;
 pub mod wmi;
 pub mod pe;

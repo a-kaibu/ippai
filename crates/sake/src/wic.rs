@@ -19,54 +19,14 @@ const WINCODEC_ERR_UNSUPPORTEDPIXELFORMAT: u32 = 0x8898_2f80;
 const WINCODEC_ERR_COMPONENTNOTFOUND: u32 = 0x8898_2f50;
 const WINCODEC_ERR_INSUFFICIENTBUFFER: u32 = 0x8898_2f8c;
 
-/// The pixel formats sake converts between.
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Fmt {
-    Bgra,
-    Pbgra,
-    Bgr32,
-    Rgba,
-    Prgba,
-    Rgb32,
-    Bgr24,
-    Rgb24,
-    Gray8,
-}
-
-const WIC_BASE: (u32, u16, u16, [u8; 7]) = (0x6fdd_c324, 0x4e03, 0x4bfe, [0xb1, 0x85, 0x3d, 0x77, 0x76, 0x8d, 0xc9]);
+use crate::picture::{self, Fmt};
 
 fn fmt_guid(f: Fmt) -> Guid {
-    let base = |last: u8| {
-        let mut b = [0u8; 8];
-        b[..7].copy_from_slice(&WIC_BASE.3);
-        b[7] = last;
-        (WIC_BASE.0, WIC_BASE.1, WIC_BASE.2, b)
-    };
-    match f {
-        Fmt::Bgra => base(0x0f),
-        Fmt::Pbgra => base(0x10),
-        Fmt::Bgr32 => base(0x0e),
-        Fmt::Bgr24 => base(0x0c),
-        Fmt::Rgb24 => base(0x0d),
-        Fmt::Gray8 => base(0x08),
-        Fmt::Rgba => (0xf5c7_ad2d, 0x6a8d, 0x43dd, [0xa7, 0xa8, 0xa2, 0x99, 0x35, 0x26, 0x1a, 0xe9]),
-        Fmt::Prgba => (0x3cc4_a650, 0xa527, 0x4d37, [0xa9, 0x16, 0x31, 0x42, 0xc7, 0xeb, 0xed, 0xba]),
-        Fmt::Rgb32 => (0xd98c_6b95, 0x3efe, 0x47d6, [0xbb, 0x25, 0xeb, 0x17, 0x48, 0xab, 0x0c, 0xf1]),
-    }
+    f.guid()
 }
-
-const ALL: [Fmt; 9] = [Fmt::Bgra, Fmt::Pbgra, Fmt::Bgr32, Fmt::Rgba, Fmt::Prgba, Fmt::Rgb32, Fmt::Bgr24, Fmt::Rgb24, Fmt::Gray8];
 
 fn fmt_of(g: Guid) -> Option<Fmt> {
-    ALL.into_iter().find(|&f| fmt_guid(f) == g)
-}
-
-fn bpp(f: Fmt) -> u32 {
-    match f {
-        Fmt::Bgr24 | Fmt::Rgb24 => 3,
-        Fmt::Gray8 => 1,
-        _ => 4,
-    }
+    Fmt::of(g)
 }
 
 fn write_guid(p: u32, g: Guid) {
@@ -77,71 +37,69 @@ fn write_guid(p: u32, g: Guid) {
 }
 
 /// Straight BGRA, `w * 4` bytes a row.
+#[derive(Clone)]
 struct Img {
     w: u32,
     h: u32,
     px: Vec<u8>,
+    /// the palette of indexed formats (ARGB), as CopyPalette gives it
+    palette: Vec<u32>,
+    dpi: (f64, f64),
 }
 
 /// Pixels of `img` in `f`, rows of `stride` bytes (rectangle x, y, w, h).
-fn encode(img: &Img, f: Fmt, (x, y, w, h): (u32, u32, u32, u32), stride: u32, out: &mut [u8]) {
-    let n = bpp(f) as usize;
-    for row in 0..h {
-        let src = &img.px[(((y + row) * img.w + x) * 4) as usize..][..(w * 4) as usize];
-        let dst = &mut out[(row * stride) as usize..][..w as usize * n];
-        for (s, d) in src.chunks_exact(4).zip(dst.chunks_exact_mut(n)) {
-            let (b, g, r, a) = (s[0], s[1], s[2], s[3]);
-            let pm = |c: u8| ((c as u32 * a as u32 + 127) / 255) as u8;
-            match f {
-                Fmt::Bgra => d.copy_from_slice(&[b, g, r, a]),
-                Fmt::Pbgra => d.copy_from_slice(&[pm(b), pm(g), pm(r), a]),
-                Fmt::Bgr32 => d.copy_from_slice(&[b, g, r, 255]),
-                Fmt::Rgba => d.copy_from_slice(&[r, g, b, a]),
-                Fmt::Prgba => d.copy_from_slice(&[pm(r), pm(g), pm(b), a]),
-                Fmt::Rgb32 => d.copy_from_slice(&[r, g, b, 255]),
-                Fmt::Bgr24 => d.copy_from_slice(&[b, g, r]),
-                Fmt::Rgb24 => d.copy_from_slice(&[r, g, b]),
-                Fmt::Gray8 => d[0] = ((r as u32 * 77 + g as u32 * 150 + b as u32 * 29) >> 8) as u8,
-            }
-        }
-    }
+fn encode(img: &Img, f: Fmt, r: (u32, u32, u32, u32), stride: u32, out: &mut [u8]) {
+    picture::from_bgra(&img.px, img.w, f, r, stride, out, &img.palette);
 }
 
 /// `w x h` pixels in `f` (rows of `stride` bytes) as straight BGRA.
-fn decode(f: Fmt, w: u32, h: u32, stride: u32, data: &[u8]) -> Img {
-    let n = bpp(f) as usize;
-    let mut px = vec![0u8; (w * h * 4) as usize];
-    for row in 0..h as usize {
-        let Some(src) = data.get(row * stride as usize..row * stride as usize + w as usize * n) else { break };
-        let dst = &mut px[row * w as usize * 4..][..w as usize * 4];
-        for (s, d) in src.chunks_exact(n).zip(dst.chunks_exact_mut(4)) {
-            let un = |c: u8, a: u8| if a == 0 { 0 } else { (c as u32 * 255 / a as u32).min(255) as u8 };
-            let v = match f {
-                Fmt::Bgra => [s[0], s[1], s[2], s[3]],
-                Fmt::Pbgra => [un(s[0], s[3]), un(s[1], s[3]), un(s[2], s[3]), s[3]],
-                Fmt::Bgr32 => [s[0], s[1], s[2], 255],
-                Fmt::Rgba => [s[2], s[1], s[0], s[3]],
-                Fmt::Prgba => [un(s[2], s[3]), un(s[1], s[3]), un(s[0], s[3]), s[3]],
-                Fmt::Rgb32 => [s[2], s[1], s[0], 255],
-                Fmt::Bgr24 => [s[0], s[1], s[2], 255],
-                Fmt::Rgb24 => [s[2], s[1], s[0], 255],
-                Fmt::Gray8 => [s[0], s[0], s[0], 255],
-            };
-            d.copy_from_slice(&v);
-        }
+fn decode(f: Fmt, w: u32, h: u32, stride: u32, data: &[u8], palette: &[u32]) -> Img {
+    Img { w, h, px: picture::to_bgra(f, w, h, stride, data, palette), palette: palette.to_vec(), dpi: (96.0, 96.0) }
+}
+
+impl Img {
+    fn new(w: u32, h: u32, px: Vec<u8>) -> Img {
+        Img { w, h, px, palette: Vec::new(), dpi: (96.0, 96.0) }
     }
-    Img { w, h, px }
 }
 
 /// What each object of this module is.
 enum Obj {
-    Stream { data: Vec<u8>, pos: u64 },
-    /// a decoder, a frame, a converter, a scaler or clipper: an image and its format
-    Source { img: Arc<Img>, fmt: Fmt, container: Guid },
+    Stream {
+        data: Vec<u8>,
+        pos: u64,
+    },
+    /// a frame, a converter, a scaler or clipper: an image and its format, and for a frame in
+    /// its own format (or a converter to it) the decoded pixels as they are
+    Source {
+        img: Arc<Img>,
+        fmt: Fmt,
+        raw: Option<Arc<picture::Frame>>,
+    },
+    /// a decoder: the picture and its container format
+    Decoder {
+        pic: Arc<picture::Picture>,
+        container: Guid,
+    },
+    /// IWICPalette: ARGB colors and the WICBitmapPaletteType
+    Palette {
+        colors: Vec<u32>,
+        kind: u32,
+    },
     /// IWICBitmap (pixels changed through Lock)
-    Bitmap { img: Arc<Mutex<Img>>, fmt: Fmt },
+    Bitmap {
+        img: Arc<Mutex<Img>>,
+        fmt: Fmt,
+    },
     /// IWICBitmapLock: the bitmap, the rectangle and the guest copy of its pixels
-    Lock { bitmap: Arc<Mutex<Img>>, fmt: Fmt, rect: (u32, u32, u32, u32), buf: u32, stride: u32, write: bool },
+    Lock {
+        bitmap: Arc<Mutex<Img>>,
+        fmt: Fmt,
+        rect: (u32, u32, u32, u32),
+        buf: u32,
+        stride: u32,
+        write: bool,
+    },
 }
 
 static OBJS: Mutex<Option<HashMap<u32, Obj>>> = Mutex::new(None);
@@ -163,8 +121,8 @@ fn release(c: &mut Ctx) -> u32 {
         if let Some(Obj::Lock { bitmap, fmt, rect, buf, stride, write }) = with(|m| m.remove(&this)) {
             if write {
                 let data = mem::slice(buf, stride * rect.3).to_vec();
-                let part = decode(fmt, rect.2, rect.3, stride, &data);
                 let mut img = bitmap.lock().unwrap();
+                let part = decode(fmt, rect.2, rect.3, stride, &data, &img.palette);
                 for row in 0..rect.3 {
                     let d = (((rect.1 + row) * img.w + rect.0) * 4) as usize;
                     let s = (row * rect.2 * 4) as usize;
@@ -240,11 +198,7 @@ fn s_write(c: &mut Ctx) -> u32 {
 
 fn s_seek(c: &mut Ctx) -> u32 {
     // (this, LARGE_INTEGER move, origin, ULARGE_INTEGER* new); x64: move is one register
-    let (mv, origin, out) = if mem::x64() {
-        (c.a64(1) as i64, c.a(2), c.a(3))
-    } else {
-        ((c.a(1) as u64 | (c.a(2) as u64) << 32) as i64, c.a(3), c.a(4))
-    };
+    let (mv, origin, out) = if mem::x64() { (c.a64(1) as i64, c.a(2), c.a(3)) } else { ((c.a(1) as u64 | (c.a(2) as u64) << 32) as i64, c.a(3), c.a(4)) };
     let this = c.a(0);
     let p = stream(this, |d, pos| {
         let base = match origin {
@@ -299,7 +253,9 @@ fn s_init_memory(c: &mut Ctx) -> u32 {
 fn s_init_filename(c: &mut Ctx) -> u32 {
     let (this, name) = (c.a(0), c.a(1));
     let name = String::from_utf16_lossy(&mem::wstr(name));
-    let Some(data) = crate::d3dcompiler::read_file(&name) else { return 0x8007_0002 };
+    let Some(data) = crate::d3dcompiler::read_file(&name) else {
+        return 0x8007_0002;
+    };
     stream(this, |d, pos| {
         *d = data;
         *pos = 0;
@@ -345,23 +301,17 @@ pub(crate) fn read_stream(c: &mut Ctx, stm: u32) -> Vec<u8> {
 const PNG: Guid = (0x1b7c_faf4, 0x713f, 0x473c, [0xbb, 0xcd, 0x61, 0x37, 0x42, 0x5f, 0xae, 0xaf]);
 const JPEG: Guid = (0x19e4_a5aa, 0x5662, 0x4fc5, [0xa0, 0xc0, 0x17, 0x58, 0x02, 0x8e, 0x10, 0x57]);
 const BMP: Guid = (0x0af1_d87e, 0xfcfe, 0x4188, [0xbd, 0xeb, 0xa7, 0x90, 0x64, 0x71, 0xcb, 0xe3]);
+const GIF: Guid = (0x1f8a_5601, 0x7d4d, 0x4cbd, [0x9c, 0x82, 0x1b, 0xc8, 0xd4, 0xee, 0xb9, 0xa5]);
 
 fn source_impls() -> Vec<(&'static str, crate::api::Handler)> {
-    vec![
-        ("Release", release as crate::api::Handler),
-        ("GetSize", src_size),
-        ("GetPixelFormat", src_format),
-        ("GetResolution", src_resolution),
-        ("CopyPalette", no_palette),
-        ("CopyPixels", src_copy),
-    ]
+    vec![("Release", release as crate::api::Handler), ("GetSize", src_size), ("GetPixelFormat", src_format), ("GetResolution", src_resolution), ("CopyPalette", src_palette), ("CopyPixels", src_copy)]
 }
 
 /// A source object of `iface`.
 fn new_source(iface: &'static str, img: Arc<Img>, fmt: Fmt, extra: &[(&'static str, crate::api::Handler)]) -> u32 {
     let mut impls = source_impls();
     impls.extend_from_slice(extra);
-    new(iface, &impls, Obj::Source { img, fmt, container: (0, 0, 0, [0; 8]) })
+    new(iface, &impls, Obj::Source { img, fmt, raw: None })
 }
 
 /// The image of one of this module's sources or bitmaps, and its format.
@@ -370,7 +320,7 @@ fn image_of(this: u32) -> Option<(Arc<Img>, Fmt)> {
         Obj::Source { img, fmt, .. } => Some((img.clone(), *fmt)),
         Obj::Bitmap { img, fmt } => {
             let i = img.lock().unwrap();
-            Some((Arc::new(Img { w: i.w, h: i.h, px: i.px.clone() }), *fmt))
+            Some((Arc::new(i.clone()), *fmt))
         }
         _ => None,
     })
@@ -401,17 +351,19 @@ fn read_source(c: &mut Ctx, src: u32) -> Option<(Arc<Img>, Fmt)> {
     let f = fmt_of(read_guid(tmp));
     mem::heap_free(tmp);
     let f = f?;
-    let stride = w * bpp(f);
+    let stride = f.row_bytes(w).div_ceil(4) * 4;
     let buf = mem::heap_alloc((stride * h).max(4), false);
     let r = c.call(mem::rp(vt + 7 * k), &[src, 0, stride, stride * h, buf]);
     let data = mem::slice(buf, stride * h).to_vec();
     mem::heap_free(buf);
-    (r == 0).then(|| (Arc::new(decode(f, w, h, stride, &data)), f))
+    (r == 0).then(|| (Arc::new(decode(f, w, h, stride, &data, &[])), f))
 }
 
 fn src_size(c: &mut Ctx) -> u32 {
     let (this, pw, ph) = (c.a(0), c.a(1), c.a(2));
-    let Some((img, _)) = image_of(this) else { return E_FAIL };
+    let Some((img, _)) = image_of(this) else {
+        return E_FAIL;
+    };
     if pw == 0 || ph == 0 {
         return E_INVALIDARG;
     }
@@ -422,7 +374,9 @@ fn src_size(c: &mut Ctx) -> u32 {
 
 fn src_format(c: &mut Ctx) -> u32 {
     let (this, out) = (c.a(0), c.a(1));
-    let Some((_, f)) = image_of(this) else { return E_FAIL };
+    let Some((_, f)) = image_of(this) else {
+        return E_FAIL;
+    };
     if out == 0 {
         return E_INVALIDARG;
     }
@@ -430,19 +384,43 @@ fn src_format(c: &mut Ctx) -> u32 {
     0
 }
 
+/// GetResolution(this, &x, &y): a frame's dots per inch (and of what was made from it), else 96
 fn src_resolution(c: &mut Ctx) -> u32 {
-    let (x, y) = (c.a(1), c.a(2));
-    if x != 0 {
-        mem::w64(x, 96f64.to_bits());
+    let (this, x, y) = (c.a(0), c.a(1), c.a(2));
+    if x == 0 || y == 0 {
+        return E_INVALIDARG;
     }
-    if y != 0 {
-        mem::w64(y, 96f64.to_bits());
-    }
+    let (dx, dy) = with(|m| match m.get(&this) {
+        Some(Obj::Source { img, .. }) => img.dpi,
+        Some(Obj::Bitmap { img, .. }) => img.lock().unwrap().dpi,
+        _ => (96.0, 96.0),
+    });
+    mem::w64(x, dx.to_bits());
+    mem::w64(y, dy.to_bits());
     0
 }
 
-fn no_palette(_: &mut Ctx) -> u32 {
-    WINCODEC_ERR_PALETTEUNAVAILABLE
+/// CopyPalette(this, IWICPalette*): a source's palette, if it has one
+fn src_palette(c: &mut Ctx) -> u32 {
+    let (this, pal) = (c.a(0), c.a(1));
+    let Some((img, _)) = image_of(this) else {
+        return E_FAIL;
+    };
+    set_palette(pal, img.palette.clone(), 0)
+}
+
+fn set_palette(pal: u32, colors: Vec<u32>, kind: u32) -> u32 {
+    if colors.is_empty() {
+        return WINCODEC_ERR_PALETTEUNAVAILABLE;
+    }
+    with(|m| match m.get_mut(&pal) {
+        Some(Obj::Palette { colors: c, kind: k }) => {
+            *c = colors;
+            *k = kind;
+            0
+        }
+        _ => E_INVALIDARG,
+    })
 }
 
 /// The rectangle a WICRect* asks for (NULL: everything), if inside the image.
@@ -459,20 +437,27 @@ fn rect(p: u32, w: u32, h: u32) -> Option<(u32, u32, u32, u32)> {
 
 fn src_copy(c: &mut Ctx) -> u32 {
     let (this, prc, stride, size, buf) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
-    let Some((img, f)) = image_of(this) else { return E_FAIL };
-    let Some(r) = rect(prc, img.w, img.h) else { return E_INVALIDARG };
+    let Some((img, f)) = image_of(this) else {
+        return E_FAIL;
+    };
+    let Some(r) = rect(prc, img.w, img.h) else {
+        return E_INVALIDARG;
+    };
     if buf == 0 {
         return E_POINTER;
     }
     if r.2 == 0 || r.3 == 0 {
         return 0;
     }
-    let row = r.2 * bpp(f);
+    let row = f.row_bytes(r.2);
     if stride < row || (size as u64) < stride as u64 * (r.3 - 1) as u64 + row as u64 {
         return WINCODEC_ERR_INSUFFICIENTBUFFER;
     }
     let mut out = mem::slice(buf, stride * (r.3 - 1) + row).to_vec();
-    encode(&img, f, r, stride, &mut out);
+    match raw_of(this) {
+        Some(fr) if fr.fmt == f => picture::copy_rect(f, &fr.bits, fr.stride(), r, stride, &mut out),
+        _ => encode(&img, f, r, stride, &mut out),
+    }
     mem::write(buf, &out);
     0
 }
@@ -480,41 +465,32 @@ fn src_copy(c: &mut Ctx) -> u32 {
 // ---- decoders ----
 
 fn decoder(data: &[u8]) -> Option<u32> {
-    let container = if data.starts_with(b"\x89PNG") {
-        PNG
-    } else if data.starts_with(&[0xff, 0xd8]) {
-        JPEG
-    } else if data.starts_with(b"BM") {
-        BMP
-    } else {
-        return None;
+    let pic = picture::decode(data)?;
+    let container = match pic.kind {
+        picture::Kind::Png => PNG,
+        picture::Kind::Jpeg => JPEG,
+        picture::Kind::Bmp => BMP,
+        picture::Kind::Gif => GIF,
     };
-    let (w, h, px) = crate::ole::decode(data)?;
-    let img = Arc::new(Img { w, h, px });
-    let fmt = if container == PNG { Fmt::Bgra } else { Fmt::Bgr32 };
     let d = new(
         "IWICBitmapDecoder",
-        &[
-            ("Release", release),
-            ("GetContainerFormat", dec_container),
-            ("GetFrameCount", dec_frame_count),
-            ("GetFrame", dec_frame),
-            ("CopyPalette", no_palette),
-            ("Initialize", ok),
-        ],
-        Obj::Source { img, fmt, container },
+        &[("Release", release), ("GetContainerFormat", dec_container), ("GetFrameCount", dec_frame_count), ("GetFrame", dec_frame), ("CopyPalette", dec_palette), ("Initialize", ok)],
+        Obj::Decoder { pic: Arc::new(pic), container },
     );
     Some(d)
 }
 
+fn picture_of(this: u32) -> Option<(Arc<picture::Picture>, Guid)> {
+    with(|m| match m.get(&this) {
+        Some(Obj::Decoder { pic, container }) => Some((pic.clone(), *container)),
+        _ => None,
+    })
+}
+
 fn dec_container(c: &mut Ctx) -> u32 {
     let (this, out) = (c.a(0), c.a(1));
-    let g = with(|m| match m.get(&this) {
-        Some(Obj::Source { container, .. }) => Some(*container),
-        _ => None,
-    });
-    match g {
-        Some(g) if out != 0 => {
+    match picture_of(this) {
+        Some((_, g)) if out != 0 => {
             write_guid(out, g);
             0
         }
@@ -523,18 +499,52 @@ fn dec_container(c: &mut Ctx) -> u32 {
 }
 
 fn dec_frame_count(c: &mut Ctx) -> u32 {
-    mem::w32(c.a(1), 1);
+    let (this, out) = (c.a(0), c.a(1));
+    let Some((pic, _)) = picture_of(this) else {
+        return E_FAIL;
+    };
+    if out == 0 {
+        return E_INVALIDARG;
+    }
+    mem::w32(out, pic.frames.len() as u32);
     0
 }
 
+fn dec_palette(c: &mut Ctx) -> u32 {
+    let (this, pal) = (c.a(0), c.a(1));
+    let Some((pic, _)) = picture_of(this) else {
+        return E_FAIL;
+    };
+    set_palette(pal, pic.palette.clone(), 0)
+}
+
+/// GetFrame(this, index, out): a frame source in the frame's own pixel format
 fn dec_frame(c: &mut Ctx) -> u32 {
     let (this, index, out) = (c.a(0), c.a(1), c.a(2));
-    let Some((img, f)) = image_of(this) else { return E_FAIL };
-    if index != 0 {
+    let Some((pic, _)) = picture_of(this) else {
+        return E_FAIL;
+    };
+    let Some(f) = pic.frames.get(index as usize) else {
         return E_INVALIDARG;
-    }
-    mem::putp(out, new_source("IWICBitmapFrameDecode", img, f, &[]));
+    };
+    let img = Img { w: f.w, h: f.h, px: f.bgra(), palette: f.palette.clone(), dpi: f.dpi };
+    let raw = picture::Frame { w: f.w, h: f.h, fmt: f.fmt, bits: f.bits.clone(), palette: f.palette.clone(), dpi: f.dpi };
+    let fmt = f.fmt;
+    let p = new_source("IWICBitmapFrameDecode", Arc::new(img), fmt, &[]);
+    with(|m| {
+        if let Some(Obj::Source { raw: r, .. }) = m.get_mut(&p) {
+            *r = Some(Arc::new(raw));
+        }
+    });
+    mem::putp(out, p);
     0
+}
+
+fn raw_of(this: u32) -> Option<Arc<picture::Frame>> {
+    with(|m| match m.get(&this) {
+        Some(Obj::Source { raw, .. }) => raw.clone(),
+        _ => None,
+    })
 }
 
 fn create_decoder(data: &[u8], out: u32) -> u32 {
@@ -584,29 +594,241 @@ fn f_create_stream(c: &mut Ctx) -> u32 {
 
 fn f_create_converter(c: &mut Ctx) -> u32 {
     let out = c.a(1);
-    let empty = Arc::new(Img { w: 0, h: 0, px: Vec::new() });
+    let empty = Arc::new(Img::new(0, 0, Vec::new()));
     mem::putp(out, new_source("IWICFormatConverter", empty, Fmt::Bgra, &[("Initialize", conv_init), ("CanConvert", conv_can)]));
     0
 }
 
 fn set_source(this: u32, img: Arc<Img>, fmt: Fmt) {
     with(|m| {
-        if let Some(Obj::Source { img: i, fmt: f, .. }) = m.get_mut(&this) {
+        if let Some(Obj::Source { img: i, fmt: f, raw }) = m.get_mut(&this) {
             *i = img;
             *f = fmt;
+            *raw = None;
         }
     });
 }
 
+// ---- palettes ----
+
+fn palette_colors(p: u32) -> Option<Vec<u32>> {
+    with(|m| match m.get(&p) {
+        Some(Obj::Palette { colors, .. }) => Some(colors.clone()),
+        _ => None,
+    })
+}
+
+fn f_create_palette(c: &mut Ctx) -> u32 {
+    let out = c.a(1);
+    if out == 0 {
+        return E_INVALIDARG;
+    }
+    let p = new(
+        "IWICPalette",
+        &[
+            ("Release", release),
+            ("InitializePredefined", pal_predefined),
+            ("InitializeCustom", pal_custom),
+            ("InitializeFromBitmap", pal_from_bitmap),
+            ("InitializeFromPalette", pal_from_palette),
+            ("GetType", pal_type),
+            ("GetColorCount", pal_count),
+            ("GetColors", pal_colors),
+            ("IsBlackWhite", pal_is_bw),
+            ("IsGrayscale", pal_is_gray),
+            ("HasAlpha", pal_has_alpha),
+        ],
+        Obj::Palette { colors: Vec::new(), kind: 0 },
+    );
+    mem::putp(out, p);
+    0
+}
+
+/// The colors of a WICBitmapPaletteType: black and white (2), gray 4/16/256 (10, 11, 12), the
+/// halftone cubes (3..9) as Windows builds them, each with a transparent black added if asked.
+fn predefined(kind: u32, transparent: bool) -> Option<Vec<u32>> {
+    let gray = |n: u32| (0..n).map(|i| 0xff00_0000 | (i * 255 / (n - 1)) * 0x01_0101).collect::<Vec<_>>();
+    let cube = |r: u32, g: u32, b: u32| {
+        let mut v = Vec::new();
+        for bi in 0..b {
+            for gi in 0..g {
+                for ri in 0..r {
+                    v.push(0xff00_0000 | (ri * 255 / (r - 1)) << 16 | (gi * 255 / (g - 1)) << 8 | bi * 255 / (b - 1));
+                }
+            }
+        }
+        v
+    };
+    let mut v = match kind {
+        2 => vec![0xff00_0000, 0xffff_ffff],
+        3 => cube(2, 2, 2),
+        4 => cube(3, 3, 3),
+        5 => cube(4, 4, 4),
+        6 => cube(5, 5, 5),
+        7 => cube(6, 6, 6),
+        8 => cube(6, 7, 6),
+        9 => cube(8, 8, 4),
+        10 => gray(4),
+        11 => gray(16),
+        12 => gray(256),
+        _ => return None,
+    };
+    if transparent && v.len() < 256 {
+        v.push(0);
+    }
+    Some(v)
+}
+
+fn pal_set(this: u32, colors: Vec<u32>, kind: u32) -> u32 {
+    with(|m| match m.get_mut(&this) {
+        Some(Obj::Palette { colors: c, kind: k }) => {
+            *c = colors;
+            *k = kind;
+            0
+        }
+        _ => E_INVALIDARG,
+    })
+}
+
+fn pal_predefined(c: &mut Ctx) -> u32 {
+    let (this, kind, transparent) = (c.a(0), c.a(1), c.a(2));
+    let Some(v) = predefined(kind, transparent != 0) else {
+        return E_INVALIDARG;
+    };
+    pal_set(this, v, kind)
+}
+
+fn pal_custom(c: &mut Ctx) -> u32 {
+    let (this, p, n) = (c.a(0), c.a(1), c.a(2));
+    if p == 0 && n != 0 || n > 256 {
+        return E_INVALIDARG;
+    }
+    pal_set(this, (0..n).map(|i| mem::r32(p + 4 * i)).collect(), 0)
+}
+
+fn pal_from_palette(c: &mut Ctx) -> u32 {
+    let (this, other) = (c.a(0), c.a(1));
+    let Some((colors, kind)) = with(|m| match m.get(&other) {
+        Some(Obj::Palette { colors, kind }) => Some((colors.clone(), *kind)),
+        _ => None,
+    }) else {
+        return E_INVALIDARG;
+    };
+    pal_set(this, colors, kind)
+}
+
+/// InitializeFromBitmap(this, source, count, add transparent): the most used colors
+fn pal_from_bitmap(c: &mut Ctx) -> u32 {
+    let (this, src, n, transparent) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    let Some((img, _)) = read_source(c, src) else {
+        return E_INVALIDARG;
+    };
+    if !(2..=256).contains(&n) {
+        return E_INVALIDARG;
+    }
+    let mut counts: HashMap<u32, u32> = HashMap::new();
+    for p in img.px.chunks_exact(4) {
+        *counts.entry(0xff00_0000 | (p[2] as u32) << 16 | (p[1] as u32) << 8 | p[0] as u32).or_default() += 1;
+    }
+    let mut v: Vec<(u32, u32)> = counts.into_iter().collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    let keep = n as usize - (transparent != 0) as usize;
+    let mut colors: Vec<u32> = v.into_iter().take(keep).map(|(c, _)| c).collect();
+    if transparent != 0 {
+        colors.push(0);
+    }
+    pal_set(this, colors, 0)
+}
+
+fn pal_get<R>(this: u32, f: impl FnOnce(&[u32], u32) -> R) -> Option<R> {
+    with(|m| match m.get(&this) {
+        Some(Obj::Palette { colors, kind }) => Some(f(colors, *kind)),
+        _ => None,
+    })
+}
+
+fn pal_out(this: u32, out: u32, f: impl FnOnce(&[u32], u32) -> u32) -> u32 {
+    if out == 0 {
+        return E_INVALIDARG;
+    }
+    match pal_get(this, f) {
+        Some(v) => {
+            mem::w32(out, v);
+            0
+        }
+        None => E_INVALIDARG,
+    }
+}
+
+fn pal_type(c: &mut Ctx) -> u32 {
+    pal_out(c.a(0), c.a(1), |_, k| k)
+}
+
+fn pal_count(c: &mut Ctx) -> u32 {
+    pal_out(c.a(0), c.a(1), |v, _| v.len() as u32)
+}
+
+fn pal_colors(c: &mut Ctx) -> u32 {
+    let (this, n, out, actual) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    if out == 0 || actual == 0 {
+        return E_INVALIDARG;
+    }
+    let Some(v) = pal_get(this, |v, _| v.to_vec()) else {
+        return E_INVALIDARG;
+    };
+    let k = (n as usize).min(v.len());
+    for (i, col) in v[..k].iter().enumerate() {
+        mem::w32(out + 4 * i as u32, *col);
+    }
+    mem::w32(actual, k as u32);
+    0
+}
+
+fn pal_is_bw(c: &mut Ctx) -> u32 {
+    pal_out(c.a(0), c.a(1), |v, k| (k == 2 || v == [0xff00_0000, 0xffff_ffff]) as u32)
+}
+
+fn pal_is_gray(c: &mut Ctx) -> u32 {
+    pal_out(c.a(0), c.a(1), |v, k| {
+        (matches!(k, 2 | 10 | 11 | 12)
+            || k == 0
+                && !v.is_empty()
+                && v.iter().all(|c| {
+                    let b = c.to_le_bytes();
+                    b[0] == b[1] && b[1] == b[2]
+                })) as u32
+    })
+}
+
+fn pal_has_alpha(c: &mut Ctx) -> u32 {
+    pal_out(c.a(0), c.a(1), |v, _| v.iter().any(|c| c >> 24 != 255) as u32)
+}
+
 fn conv_init(c: &mut Ctx) -> u32 {
     // (this, source, dst format, dither, palette, double alpha threshold, palette type)
-    let (this, src, fmt) = (c.a(0), c.a(1), c.a(2));
+    let (this, src, fmt, pal) = (c.a(0), c.a(1), c.a(2), c.a(4));
     let Some(f) = fmt_of(read_guid(fmt)) else {
         eprintln!("sake: WIC converter: unsupported format {:x?}", read_guid(fmt));
         return WINCODEC_ERR_UNSUPPORTEDPIXELFORMAT;
     };
-    let Some((img, _)) = read_source(c, src) else { return E_INVALIDARG };
+    let Some((mut img, _)) = read_source(c, src) else {
+        return E_INVALIDARG;
+    };
+    // (to an indexed format: with the palette given)
+    if let Some(colors) = palette_colors(pal).filter(|p| !p.is_empty()) {
+        let mut i = (*img).clone();
+        i.palette = colors;
+        img = Arc::new(i);
+    } else if f.indexed() && img.palette.is_empty() {
+        return E_INVALIDARG;
+    }
+    let raw = raw_of(src).filter(|r| r.fmt == f);
     set_source(this, img, f);
+    with(|m| {
+        if let Some(Obj::Source { raw: r, .. }) = m.get_mut(&this) {
+            *r = raw;
+        }
+    });
     0
 }
 
@@ -619,7 +841,7 @@ fn conv_can(c: &mut Ctx) -> u32 {
 
 fn f_create_scaler(c: &mut Ctx) -> u32 {
     let out = c.a(1);
-    let empty = Arc::new(Img { w: 0, h: 0, px: Vec::new() });
+    let empty = Arc::new(Img::new(0, 0, Vec::new()));
     mem::putp(out, new_source("IWICBitmapScaler", empty, Fmt::Bgra, &[("Initialize", scaler_init)]));
     0
 }
@@ -627,7 +849,9 @@ fn f_create_scaler(c: &mut Ctx) -> u32 {
 fn scaler_init(c: &mut Ctx) -> u32 {
     // (this, source, width, height, mode): bilinear, or nearest for mode 0
     let (this, src, w, h, mode) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
-    let Some((img, f)) = read_source(c, src) else { return E_INVALIDARG };
+    let Some((img, f)) = read_source(c, src) else {
+        return E_INVALIDARG;
+    };
     if w == 0 || h == 0 {
         return E_INVALIDARG;
     }
@@ -638,16 +862,23 @@ fn scaler_init(c: &mut Ctx) -> u32 {
 fn scale(img: &Img, w: u32, h: u32, nearest: bool) -> Img {
     let mut px = vec![0u8; (w * h * 4) as usize];
     let (sw, sh) = (img.w.max(1), img.h.max(1));
-    let at = |x: u32, y: u32, k: usize| img.px[((y.min(sh - 1) * img.w + x.min(sw - 1)) * 4) as usize + k] as f32;
+    // filtered premultiplied (as Windows does: no color bleeds from transparent pixels)
+    let mut pm = vec![0u8; img.px.len()];
+    picture::from_bgra(&img.px, img.w, Fmt::Pbgra, (0, 0, img.w, img.h), img.w * 4, &mut pm, &[]);
+    let at = |x: u32, y: u32, k: usize| pm[((y.min(sh - 1) * img.w + x.min(sw - 1)) * 4) as usize + k] as f32;
     for y in 0..h {
         for x in 0..w {
             let fx = ((x as f32 + 0.5) * sw as f32 / w as f32 - 0.5).max(0.0);
             let fy = ((y as f32 + 0.5) * sh as f32 / h as f32 - 0.5).max(0.0);
             let d = ((y * w + x) * 4) as usize;
             if nearest || img.px.is_empty() {
-                let (sx, sy) = ((x * sw / w).min(sw - 1), (y * sh / h).min(sh - 1));
+                // Windows' pick: (x * sw + sw - 1) / w, through premultiplied and back
+                let (sx, sy) = (((x * sw + sw - 1) / w).min(sw - 1), ((y * sh + sh - 1) / h).min(sh - 1));
                 if !img.px.is_empty() {
-                    px[d..d + 4].copy_from_slice(&img.px[((sy * img.w + sx) * 4) as usize..][..4]);
+                    let s = &img.px[((sy * img.w + sx) * 4) as usize..][..4];
+                    let mut p = [0u8; 4];
+                    picture::from_bgra(s, 1, Fmt::Pbgra, (0, 0, 1, 1), 4, &mut p, &[]);
+                    px[d..d + 4].copy_from_slice(&picture::to_bgra(Fmt::Pbgra, 1, 1, 4, &p, &[]));
                 }
                 continue;
             }
@@ -656,11 +887,13 @@ fn scale(img: &Img, w: u32, h: u32, nearest: bool) -> Img {
             for k in 0..4 {
                 let top = at(x0, y0, k) * (1.0 - tx) + at(x0 + 1, y0, k) * tx;
                 let bot = at(x0, y0 + 1, k) * (1.0 - tx) + at(x0 + 1, y0 + 1, k) * tx;
-                px[d + k] = (top * (1.0 - ty) + bot * ty + 0.5) as u8;
+                px[d + k] = (top * (1.0 - ty) + bot * ty) as u8;
             }
+            let p = picture::to_bgra(Fmt::Pbgra, 1, 1, 4, &px[d..d + 4], &[]);
+            px[d..d + 4].copy_from_slice(&p);
         }
     }
-    Img { w, h, px }
+    Img { w, h, px, palette: img.palette.clone(), dpi: img.dpi }
 }
 
 fn crop(img: &Img, (x, y, w, h): (u32, u32, u32, u32)) -> Img {
@@ -668,27 +901,31 @@ fn crop(img: &Img, (x, y, w, h): (u32, u32, u32, u32)) -> Img {
     for row in y..y + h {
         px.extend_from_slice(&img.px[((row * img.w + x) * 4) as usize..][..(w * 4) as usize]);
     }
-    Img { w, h, px }
+    Img { w, h, px, palette: img.palette.clone(), dpi: img.dpi }
 }
 
 fn f_create_clipper(c: &mut Ctx) -> u32 {
     let out = c.a(1);
-    let empty = Arc::new(Img { w: 0, h: 0, px: Vec::new() });
+    let empty = Arc::new(Img::new(0, 0, Vec::new()));
     mem::putp(out, new_source("IWICBitmapClipper", empty, Fmt::Bgra, &[("Initialize", clipper_init)]));
     0
 }
 
 fn clipper_init(c: &mut Ctx) -> u32 {
     let (this, src, prc) = (c.a(0), c.a(1), c.a(2));
-    let Some((img, f)) = read_source(c, src) else { return E_INVALIDARG };
-    let Some(r) = rect(prc, img.w, img.h) else { return E_INVALIDARG };
+    let Some((img, f)) = read_source(c, src) else {
+        return E_INVALIDARG;
+    };
+    let Some(r) = rect(prc, img.w, img.h) else {
+        return E_INVALIDARG;
+    };
     set_source(this, Arc::new(crop(&img, r)), f);
     0
 }
 
 fn f_create_flip(c: &mut Ctx) -> u32 {
     let out = c.a(1);
-    let empty = Arc::new(Img { w: 0, h: 0, px: Vec::new() });
+    let empty = Arc::new(Img::new(0, 0, Vec::new()));
     mem::putp(out, new_source("IWICBitmapFlipRotator", empty, Fmt::Bgra, &[("Initialize", flip_init)]));
     0
 }
@@ -696,69 +933,93 @@ fn f_create_flip(c: &mut Ctx) -> u32 {
 fn flip_init(c: &mut Ctx) -> u32 {
     // (this, source, options): rotate 90/180/270 (1..3), flip horizontal 8, vertical 16
     let (this, src, opt) = (c.a(0), c.a(1), c.a(2));
-    let Some((img, f)) = read_source(c, src) else { return E_INVALIDARG };
+    let Some((img, f)) = read_source(c, src) else {
+        return E_INVALIDARG;
+    };
     let rot = opt & 3;
     let (w, h) = if rot & 1 == 1 { (img.h, img.w) } else { (img.w, img.h) };
     let mut px = vec![0u8; (w * h * 4) as usize];
     for y in 0..h {
         for x in 0..w {
-            let (mut dx, mut dy) = (x, y);
+            // the source pixel this destination pixel shows: Windows flips the source, then
+            // rotates (Rotate90 | FlipHorizontal puts the last source pixel first)
+            let (mut sx, mut sy) = match rot {
+                1 => (y, img.h - 1 - x),
+                2 => (img.w - 1 - x, img.h - 1 - y),
+                3 => (img.w - 1 - y, x),
+                _ => (x, y),
+            };
             if opt & 8 != 0 {
-                dx = w - 1 - dx;
+                sx = img.w - 1 - sx;
             }
             if opt & 16 != 0 {
-                dy = h - 1 - dy;
+                sy = img.h - 1 - sy;
             }
-            // the source pixel this destination pixel shows
-            let (sx, sy) = match rot {
-                1 => (dy, img.h - 1 - dx),
-                2 => (img.w - 1 - dx, img.h - 1 - dy),
-                3 => (img.w - 1 - dy, dx),
-                _ => (dx, dy),
-            };
             let d = ((y * w + x) * 4) as usize;
             px[d..d + 4].copy_from_slice(&img.px[((sy * img.w + sx) * 4) as usize..][..4]);
         }
     }
-    set_source(this, Arc::new(Img { w, h, px }), f);
+    set_source(this, Arc::new(Img { w, h, px, palette: img.palette.clone(), dpi: img.dpi }), f);
     0
 }
 
 fn new_bitmap(img: Img, fmt: Fmt) -> u32 {
     let mut impls = source_impls();
-    impls.extend_from_slice(&[("Lock", bm_lock as crate::api::Handler), ("SetResolution", ok), ("SetPalette", ok)]);
+    impls.extend_from_slice(&[("Lock", bm_lock as crate::api::Handler), ("SetResolution", ok), ("SetPalette", bm_set_palette)]);
     new("IWICBitmap", &impls, Obj::Bitmap { img: Arc::new(Mutex::new(img)), fmt })
+}
+
+fn bm_set_palette(c: &mut Ctx) -> u32 {
+    let (this, p) = (c.a(0), c.a(1));
+    let Some(colors) = palette_colors(p) else {
+        return E_INVALIDARG;
+    };
+    with(|m| match m.get(&this) {
+        Some(Obj::Bitmap { img, .. }) => {
+            img.lock().unwrap().palette = colors;
+            0
+        }
+        _ => E_FAIL,
+    })
 }
 
 fn f_create_bitmap(c: &mut Ctx) -> u32 {
     // (this, width, height, format, option, out)
     let (w, h, fmt, out) = (c.a(1), c.a(2), c.a(3), c.a(5));
-    let Some(f) = fmt_of(read_guid(fmt)) else { return WINCODEC_ERR_UNSUPPORTEDPIXELFORMAT };
-    mem::putp(out, new_bitmap(Img { w, h, px: vec![0; (w * h * 4) as usize] }, f));
+    let Some(f) = fmt_of(read_guid(fmt)) else {
+        return WINCODEC_ERR_UNSUPPORTEDPIXELFORMAT;
+    };
+    mem::putp(out, new_bitmap(Img::new(w, h, vec![0; (w * h * 4) as usize]), f));
     0
 }
 
 fn f_bitmap_from_memory(c: &mut Ctx) -> u32 {
     // (this, width, height, format, stride, size, buffer, out)
     let (w, h, fmt, stride, size, buf, out) = (c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6), c.a(7));
-    let Some(f) = fmt_of(read_guid(fmt)) else { return WINCODEC_ERR_UNSUPPORTEDPIXELFORMAT };
+    let Some(f) = fmt_of(read_guid(fmt)) else {
+        return WINCODEC_ERR_UNSUPPORTEDPIXELFORMAT;
+    };
     let data = mem::slice(buf, size).to_vec();
-    mem::putp(out, new_bitmap(decode(f, w, h, stride, &data), f));
+    mem::putp(out, new_bitmap(decode(f, w, h, stride, &data, &[]), f));
     0
 }
 
 fn f_bitmap_from_source(c: &mut Ctx) -> u32 {
     // (this, source, option, out)
     let (src, out) = (c.a(1), c.a(3));
-    let Some((img, f)) = read_source(c, src) else { return E_INVALIDARG };
-    mem::putp(out, new_bitmap(Img { w: img.w, h: img.h, px: img.px.clone() }, f));
+    let Some((img, f)) = read_source(c, src) else {
+        return E_INVALIDARG;
+    };
+    mem::putp(out, new_bitmap(Img::new(img.w, img.h, img.px.clone()), f));
     0
 }
 
 fn f_bitmap_from_source_rect(c: &mut Ctx) -> u32 {
     // (this, source, x, y, width, height, out)
     let (src, x, y, w, h, out) = (c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6));
-    let Some((img, f)) = read_source(c, src) else { return E_INVALIDARG };
+    let Some((img, f)) = read_source(c, src) else {
+        return E_INVALIDARG;
+    };
     if x + w > img.w || y + h > img.h {
         return E_INVALIDARG;
     }
@@ -779,8 +1040,10 @@ fn bm_lock(c: &mut Ctx) -> u32 {
         let i = bitmap.lock().unwrap();
         (i.w, i.h)
     };
-    let Some(r) = rect(prc, w, h) else { return E_INVALIDARG };
-    let stride = (r.2 * bpp(fmt)).div_ceil(4) * 4;
+    let Some(r) = rect(prc, w, h) else {
+        return E_INVALIDARG;
+    };
+    let stride = fmt.row_bytes(r.2).div_ceil(4) * 4;
     let buf = mem::heap_alloc((stride * r.3).max(4), true);
     let mut data = vec![0u8; (stride * r.3) as usize];
     encode(&bitmap.lock().unwrap(), fmt, r, stride, &mut data);
@@ -837,6 +1100,7 @@ pub fn factory() -> u32 {
             ("CreateDecoderFromFilename", f_decoder_from_filename),
             ("CreateDecoderFromStream", f_decoder_from_stream),
             ("CreateFormatConverter", f_create_converter),
+            ("CreatePalette", f_create_palette),
             ("CreateBitmapScaler", f_create_scaler),
             ("CreateBitmapClipper", f_create_clipper),
             ("CreateBitmapFlipRotator", f_create_flip),
@@ -855,40 +1119,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn formats_round_trip() {
-        let img = Img { w: 2, h: 1, px: vec![10, 20, 30, 128, 1, 2, 3, 255] };
-        for f in ALL {
-            let stride = 2 * bpp(f) + 1;
-            let mut out = vec![0u8; stride as usize];
-            encode(&img, f, (0, 0, 2, 1), stride, &mut out);
-            let back = decode(f, 2, 1, stride, &out);
-            match f {
-                Fmt::Bgra | Fmt::Rgba => assert_eq!(back.px, img.px, "{f:?}"),
-                Fmt::Bgr32 | Fmt::Rgb32 | Fmt::Bgr24 | Fmt::Rgb24 => assert_eq!(back.px, vec![10, 20, 30, 255, 1, 2, 3, 255], "{f:?}"),
-                Fmt::Pbgra | Fmt::Prgba => {
-                    // premultiplied and back: within rounding
-                    for (a, b) in back.px.iter().zip(&img.px) {
-                        assert!((*a as i32 - *b as i32).abs() <= 2, "{f:?} {:?}", back.px);
-                    }
-                }
-                Fmt::Gray8 => assert_eq!(back.px[3], 255),
-            }
-        }
-    }
-
-    #[test]
-    fn premultiplied_order() {
-        let img = Img { w: 1, h: 1, px: vec![255, 0, 0, 128] }; // blue, half alpha
-        let mut out = [0u8; 4];
-        encode(&img, Fmt::Pbgra, (0, 0, 1, 1), 4, &mut out);
-        assert_eq!(out, [128, 0, 0, 128]);
-        encode(&img, Fmt::Prgba, (0, 0, 1, 1), 4, &mut out);
-        assert_eq!(out, [0, 0, 128, 128]);
-    }
-
-    #[test]
-    fn scale_and_flip() {
-        let img = Img { w: 2, h: 1, px: vec![0, 0, 0, 255, 200, 200, 200, 255] };
+    fn scale_and_crop() {
+        let img = Img::new(2, 1, vec![0, 0, 0, 255, 200, 200, 200, 255]);
         let s = scale(&img, 4, 2, true);
         assert_eq!((s.w, s.h), (4, 2));
         assert_eq!(&s.px[0..4], &[0, 0, 0, 255]);
@@ -898,61 +1130,10 @@ mod tests {
     }
 
     #[test]
-    fn guids() {
-        for f in ALL {
-            assert_eq!(fmt_of(fmt_guid(f)), Some(f));
-        }
-    }
-}
-
-#[cfg(test)]
-mod proptests {
-    use super::*;
-    use proptest::prelude::*;
-
-    proptest! {
-        #![proptest_config(ProptestConfig::with_cases(256))]
-
-        /// Every pixel format, any image and rectangle, rows padded: straight formats come back
-        /// exact, premultiplied ones within their rounding (and never brighter than alpha
-        /// while premultiplied), gray between the darkest and brightest channel.
-        #[test]
-        fn formats_round_trip(w in 1u32..12, h in 1u32..8, rect in (0u32..12, 0u32..8, 1u32..12, 1u32..8), pad in 0u32..5, seed in any::<u64>()) {
-            let px: Vec<u8> = (0..(w * h * 4) as u64).map(|i| (i.wrapping_mul(seed | 1) >> 9) as u8).collect();
-            let img = Img { w, h, px };
-            let (x, y) = (rect.0 % w, rect.1 % h);
-            let (rw, rh) = (rect.2.min(w - x), rect.3.min(h - y));
-            for f in ALL {
-                let stride = rw * bpp(f) + pad;
-                let mut out = vec![0u8; (stride * rh) as usize];
-                encode(&img, f, (x, y, rw, rh), stride, &mut out);
-                let back = decode(f, rw, rh, stride, &out);
-                for r in 0..rh {
-                    for c in 0..rw {
-                        let s = &img.px[(((y + r) * w + x + c) * 4) as usize..][..4];
-                        let g = &back.px[((r * rw + c) * 4) as usize..][..4];
-                        let e = &out[(r * stride + c * bpp(f)) as usize..][..bpp(f) as usize];
-                        match f {
-                            Fmt::Bgra | Fmt::Rgba => prop_assert_eq!(g, s, "{:?}", f),
-                            Fmt::Bgr32 | Fmt::Rgb32 | Fmt::Bgr24 | Fmt::Rgb24 => prop_assert_eq!(g, &[s[0], s[1], s[2], 255][..], "{:?}", f),
-                            Fmt::Pbgra | Fmt::Prgba => {
-                                let a = s[3] as i32;
-                                prop_assert!(e[..3].iter().all(|&v| v as i32 <= a), "{:?} {:?}", f, e);
-                                prop_assert_eq!(g[3], s[3]);
-                                for k in 0..3 {
-                                    let err = (g[k] as i32 - s[k] as i32).abs();
-                                    if a == 0 { prop_assert_eq!(g[k], 0) } else { prop_assert!(err <= 128 / a + 1, "{:?} {:?} -> {:?}", f, s, g) }
-                                }
-                            }
-                            Fmt::Gray8 => {
-                                let (lo, hi) = (s[..3].iter().min().unwrap(), s[..3].iter().max().unwrap());
-                                prop_assert!(g[0] >= lo.saturating_sub(1) && g[0] <= *hi, "{:?} -> {:?}", s, g);
-                                prop_assert_eq!((g[0], g[1], g[2], g[3]), (g[0], g[0], g[0], 255));
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    fn predefined_palettes() {
+        assert_eq!(predefined(2, false).unwrap(), [0xff00_0000, 0xffff_ffff]);
+        assert_eq!(predefined(10, true).unwrap(), [0xff00_0000, 0xff55_5555, 0xffaa_aaaa, 0xffff_ffff, 0]);
+        assert_eq!(predefined(12, false).unwrap().len(), 256);
+        assert_eq!(predefined(9, false).unwrap().len(), 256);
     }
 }

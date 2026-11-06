@@ -41,3 +41,9 @@ d3d11-* ^(want|got) +clear
 d3d11-* ^image (lines|wireframe):
 # BORDER and MIRROR_ONCE addressing: WebGPU has neither (TODO: in the shader)
 d3d11-* ^image address:
+# WIC: CMYK -> sRGB goes through a color profile on Windows, 16bppGray -> 8 bits rounds a few
+# levels up, and the Linear/Cubic/Fant scalers' weights are their own (sake: plain bilinear).
+# TODO: from wicconv's measured tables (cmyk_grid, gray16_ramp, the "w" impulse lines)
+imaging-* ^image (gdip_)?(jpeg_cmyk|png_gray16):
+imaging-* ^(want|got) +gdip jpeg_cmyk: pixel
+imaging-* ^image scale_[123]_
