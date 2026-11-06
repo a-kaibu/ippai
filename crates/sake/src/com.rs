@@ -195,6 +195,7 @@ const CLSID_WIC_FACTORY2: u32 = 0x317d_06e8;
 pub fn create_instance(clsid: u32) -> Option<u32> {
     match mem::r32(clsid) {
         CLSID_WIC_FACTORY | CLSID_WIC_FACTORY2 => Some(crate::wic::factory()),
+        0x4590_f811 => Some(crate::wmi::locator()), // CLSID_WbemLocator
         _ => None,
     }
 }

@@ -53,6 +53,7 @@ pub mod mf;
 pub mod usp;
 pub mod ole;
 pub mod wic;
+pub mod wmi;
 pub mod pe;
 pub mod seh;
 pub mod seh64;

@@ -1369,7 +1369,7 @@ fn RevokeDragDrop(_: &mut Ctx) -> u32 {
     0
 }
 
-fn bstr_alloc(chars: &[u16]) -> u32 {
+pub(crate) fn bstr_alloc(chars: &[u16]) -> u32 {
     let p = mem::heap_alloc(4 + 2 * chars.len() as u32 + 2, true);
     w32(p, 2 * chars.len() as u32);
     for (i, &c) in chars.iter().enumerate() {
