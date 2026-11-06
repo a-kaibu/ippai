@@ -27,6 +27,10 @@ addToLibrary({
         return v;
       });
     },
+    // GPU time (timestamp-query, where the device has it): each render pass writes its start and
+    // end; a submit resolves them and, once read, hands the sum to vnhost_gpu_time (kura keeps
+    // the total, the benchmarks read it)
+    ts: null,
     heap: () => new Uint8Array(wasmMemory.buffer),
     call: (name, ...a) => wasmExports[name](...a),
   },
@@ -49,8 +53,19 @@ addToLibrary({
       const canvas = await vnvmCanvas;
       const adapter = await navigator.gpu?.requestAdapter();
       if (!adapter) throw new Error('no WebGPU adapter');
-      const features = ['rg11b10ufloat-renderable'].filter((f) => adapter.features.has(f));
+      const features = ['rg11b10ufloat-renderable', 'timestamp-query'].filter((f) => adapter.features.has(f));
       VG.device = await adapter.requestDevice({ requiredFeatures: features });
+      if (VG.device.features.has('timestamp-query')) {
+        const PASSES = 256;
+        VG.ts = {
+          max: PASSES,
+          n: 0,
+          set: VG.device.createQuerySet({ type: 'timestamp', count: PASSES * 2 }),
+          resolve: VG.device.createBuffer({ size: PASSES * 16, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC }),
+          // (buffers to read the times back with; one per submit still being read)
+          idle: [],
+        };
+      }
       VG.device.addEventListener('uncapturederror', (e) => err(`webgpu: ${e.error.message}`));
       VG.canvas = canvas;
       VG.ctx = canvas.getContext('webgpu');
@@ -123,10 +138,29 @@ addToLibrary({
     );
   },
   vngpu_submit: () => {
-    if (VG.enc) {
-      VG.device.queue.submit([VG.enc.finish()]);
-      VG.enc = null;
+    if (!VG.enc) return;
+    const ts = VG.ts, n = ts?.n ?? 0;
+    let read = null;
+    if (n) {
+      read = ts.idle.pop() ?? VG.device.createBuffer({ size: ts.max * 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+      VG.enc.resolveQuerySet(ts.set, 0, n * 2, ts.resolve, 0);
+      VG.enc.copyBufferToBuffer(ts.resolve, 0, read, 0, n * 16);
+      ts.n = 0;
     }
+    VG.device.queue.submit([VG.enc.finish()]);
+    VG.enc = null;
+    if (read)
+      read.mapAsync(GPUMapMode.READ, 0, n * 16).then(
+        () => {
+          const t = new BigUint64Array(read.getMappedRange(0, n * 16));
+          let ns = 0n;
+          for (let i = 0; i < n * 2; i += 2) if (t[i + 1] > t[i]) ns += t[i + 1] - t[i];
+          read.unmap();
+          ts.idle.push(read);
+          VG.call('vnhost_gpu_time', Number(ns) / 1000, n);
+        },
+        () => ts.idle.push(read),
+      );
   },
   // vnhost_render_done(token) once the GPU finished what was submitted
   vngpu_on_done: (token) => {
@@ -161,7 +195,12 @@ addToLibrary({
   },
   vngpu_begin_pass: (ptr, len) => {
     VG.enc ??= VG.device.createCommandEncoder();
-    VG.pass = VG.enc.beginRenderPass(VG.json(ptr, len));
+    const desc = VG.json(ptr, len), ts = VG.ts;
+    if (ts && ts.n < ts.max) {
+      desc.timestampWrites = { querySet: ts.set, beginningOfPassWriteIndex: ts.n * 2, endOfPassWriteIndex: ts.n * 2 + 1 };
+      ts.n++;
+    }
+    VG.pass = VG.enc.beginRenderPass(desc);
   },
   vngpu_end_pass: () => {
     VG.pass.end();

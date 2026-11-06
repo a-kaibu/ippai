@@ -52,6 +52,8 @@ static FRAME: Mutex<[u32; 4]> = Mutex::new([0; 4]);
 pub(crate) static STATS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
 /// time spent in frames (µs)
 static FRAME_US: AtomicU64 = AtomicU64::new(0);
+static GPU_NS: AtomicU64 = AtomicU64::new(0);
+static GPU_PASSES: AtomicU64 = AtomicU64::new(0);
 
 thread_local! {
     static R: RefCell<Option<Render>> = const { RefCell::new(None) };
@@ -138,6 +140,23 @@ pub extern "C" fn vnhost_render_frame(t: f64) {
         r.get_or_insert_with(Render::new).frame(t);
     });
     FRAME_US.fetch_add(((d3d::now() - t0) * 1000.0) as u64, Relaxed);
+}
+
+/// host/vngpu.js: the GPU time (timestamp-query) of `passes` render passes of one submit, in µs.
+#[no_mangle]
+pub extern "C" fn vnhost_gpu_time(us: f64, passes: u32) {
+    GPU_NS.fetch_add((us * 1000.0) as u64, Relaxed);
+    GPU_PASSES.fetch_add(passes as u64, Relaxed);
+}
+
+/// The GPU time of every render pass so far, in ms (tests/bench reads it from the page's thread);
+/// -1 without timestamp-query.
+#[no_mangle]
+pub extern "C" fn vnhost_gpu_total() -> f64 {
+    if GPU_PASSES.load(Relaxed) == 0 {
+        return -1.0;
+    }
+    GPU_NS.load(Relaxed) as f64 / 1e6
 }
 
 /// host/vngpu.js: the GPU finished the work submitted before `on_done(token)`.

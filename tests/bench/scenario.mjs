@@ -10,6 +10,7 @@
 //   scene_p50, scene_max  click -> a scene transition done (pictures read and decoded, crossfade)
 //   choice                click -> the choice's next scene done
 //   idle_cpu              the browser's CPU per second while the game waits for 3 s (ms/s)
+//   gpu_busy              the GPU's time in render passes per second of play (ms/s; timestamp-query)
 //   peak_rss_mb           the browser's processes' memory at most (MB)
 //   chunks, chunk_mb      the store's chunks the page fetched while playing (count, MB)
 //   warm.restore          page opened again -> the save restored and shown
@@ -127,6 +128,8 @@ export async function runScenario(browser, build, c, timeout) {
     await page.goto(url("play"));
     const title = await next((e) => e.kind === "state" && e.what === "title", "the title");
     metrics["cold.startup"] = title.t - t0;
+    const gpuTotal = () => page.evaluate(() => window.vnvmSake?._vnhost_gpu_total?.() ?? -1).catch(() => -1);
+    const gpu0 = await gpuTotal(), play0 = Date.now();
     const lines = [], scenes = [];
     for (;;) {
       const w = await next((e) => e.kind === "wait" || (e.kind === "state" && e.what === "end"), "the game to wait");
@@ -155,6 +158,8 @@ export async function runScenario(browser, build, c, timeout) {
       }
     }
     clearInterval(sampler);
+    const gpu1 = await gpuTotal();
+    if (gpu0 >= 0 && gpu1 > gpu0) metrics.gpu_busy = ((gpu1 - gpu0) / (Date.now() - play0)) * 1000;
     metrics.line_p50 = pct(lines, 0.5);
     metrics.line_p95 = pct(lines, 0.95);
     metrics.scene_p50 = pct(scenes, 0.5);

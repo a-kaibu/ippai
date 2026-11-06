@@ -33,6 +33,13 @@ end with a read back, so the GPU's queue is done when the clock stops. The pages
 out of the comparison (its numbers would be its 60 fps pacing), and this build not saying it
 fails the run.
 
+Where the device has `timestamp-query` (Chromium runs with `--enable-webgpu-developer-features`,
+so the times aren't rounded to 100 µs), every render pass writes its start and end
+(`host/vngpu.js`) and kura sums them (`vnhost_gpu_total`): `<case>.gpu` is the GPU time per timed
+frame (`bench_frames` prints `BENCH-MARK` and `BENCH-FRAMES` around them and pauses 200 ms at
+each, so the times of other frames stay out), and the scenario's `gpu_busy` the GPU time per
+second of play. On SwiftShader it is the software rasterizer's time.
+
 The report (job summary, artifact `bench-report`) lists every metric with the change against the
 previous commit; a change is marked when it is over 3% and every round of one build beat every
 round of the other. The run fails when the results can't be trusted or something broke: a case

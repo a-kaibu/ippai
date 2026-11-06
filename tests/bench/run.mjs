@@ -43,6 +43,8 @@ const todo = groups.flatMap((g) => {
 // unlimited)
 const browserArgs = (unpaced) => [
   "--enable-unsafe-webgpu",
+  // (timestamp-query's times as they are, not rounded to 100 µs)
+  "--enable-webgpu-developer-features",
   ...(unpaced ? ["--disable-frame-rate-limit", "--disable-gpu-vsync"] : []),
   // (a page in the background would get its timers and frames throttled)
   "--disable-background-timer-throttling",
@@ -66,6 +68,8 @@ async function runOnce(build, c) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
   const page = await context.newPage();
   const metrics = {}, checks = {}, log = [];
+  const gpuAt = {}, pending = [];
+  const gpuTotal = () => page.evaluate(() => window.vnvmSake?._vnhost_gpu_total?.() ?? -1).catch(() => -1);
   let nopace = false;
   let error, ended = false, resolve;
   const finished = new Promise((r) => (resolve = r));
@@ -79,6 +83,16 @@ async function runOnce(build, c) {
     for (const line of text.split("\n")) {
       let r;
       if (line === "BENCH-HOST nopace") nopace = true;
+      // (the GPU time of the timed frames, where the page has timestamp-query: "<case>.gpu", ms
+      // per frame)
+      else if ((r = /^BENCH-MARK (\S+)$/.exec(line))) gpuAt[r[1]] = gpuTotal();
+      else if ((r = /^BENCH-FRAMES (\S+) (\d+)$/.exec(line))) {
+        const [name, frames, at] = [r[1], +r[2], gpuAt[r[1]]];
+        pending.push(gpuTotal().then(async (t) => {
+          const t0 = await at;
+          if (t0 >= 0 && t > t0) metrics[`${name}.gpu`] = (t - t0) / frames;
+        }));
+      }
       else if ((r = /^BENCH (\S+) ([-\d.]+)$/.exec(line))) metrics[r[1]] = Number(r[2]);
       else if ((r = /^BENCH-CHECK (\S+) (\S+)$/.exec(line))) checks[r[1]] = r[2];
       else if ((r = /^BENCH-FAIL (.*)$/.exec(line))) return (error = r[1]), done();
@@ -97,6 +111,7 @@ async function runOnce(build, c) {
   try {
     await page.goto(url);
     await finished;
+    await Promise.all(pending);
   } catch (e) {
     error ??= `${e}`;
   }

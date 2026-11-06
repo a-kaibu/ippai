@@ -221,6 +221,11 @@ static __inline__ void bench_frames(const char *name, int warm, int n, void (*fr
     bench_check(check, bench_captured_);
     /* (at least n frames and 2 s: short runs of fast cases are mostly noise) */
     got = bench_captured_n_;
+    /* (run.mjs reads the page's GPU time, timestamp-query, at the mark and after the report: the
+     * pauses let the time of the frames before reach it, and keep the next frames out) */
+    printf("BENCH-MARK %s\n", name);
+    fflush(stdout);
+    Sleep(200);
     t0 = now_ms();
     for (i = 0; i < n || now_ms() - t0 < 2000 * bench_scale; i++)
     {
@@ -234,6 +239,9 @@ static __inline__ void bench_frames(const char *name, int warm, int n, void (*fr
     frame(warm + i++);
     bench_report(name, (now_ms() - t0) / i);
     if (bench_captured_n_ == got) bench_fail("the last frame was not read back");
+    printf("BENCH-FRAMES %s %d\n", name, i);
+    fflush(stdout);
+    Sleep(200);
 }
 
 #endif
