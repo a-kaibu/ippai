@@ -34,8 +34,10 @@ if [ ! -d x ]; then
     *.zip) (cd x.part && LC_ALL=C.UTF-8 unar -q -e cp932 -o . ../$f >/dev/null 2>&1 || [ -n "$(ls)" ]) ;;
     *.rar|*.7z) (cd x.part && LC_ALL=C.UTF-8 unar -q -o . ../$f >/dev/null 2>&1 || [ -n "$(ls)" ]) ;;
     *.exe)
-      # InstallShield setup with its files in the exe, self-extracting archive or Inno Setup installer
+      # InstallShield setup with its files in the exe, a zlib-stream setup (zsfx.py), self-extracting
+      # archive or Inno Setup installer
       (cd x.part && (python3 -I "$HERE/isextract.py" "../$f" . >/dev/null 2>&1 && [ -n "$(ls)" ]) ||
+         (python3 -I "$HERE/zsfx.py" "../$f" . >/dev/null 2>&1 && [ -n "$(ls)" ]) ||
          (LC_ALL=C.UTF-8 innoextract -s -q -e "../$f" 2>/dev/null && [ -n "$(ls)" ]) ||
          (LC_ALL=C.UTF-8 unar -q -e cp932 -o . "../$f" >/dev/null 2>&1 && [ -n "$(ls)" ]) ||
          (LC_ALL=C.UTF-8 7z x -y "../$f" >/dev/null 2>&1 && [ -n "$(ls)" ]) ||

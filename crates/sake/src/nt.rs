@@ -54,7 +54,8 @@ fn path_of(oa: u32) -> Option<u32> {
     // a device path (QueryDosDevice's): its drive
     for d in ['C', 'Z'] {
         let dev = crate::k32::drive_device(d).unwrap();
-        if s.len() >= dev.len() && s[..dev.len()].eq_ignore_ascii_case(dev) {
+        // (s may hold Japanese: compare bytes, the device name is ASCII)
+        if s.as_bytes().get(..dev.len()).is_some_and(|p| p.eq_ignore_ascii_case(dev.as_bytes())) {
             w.splice(0..dev.len(), [d as u16, b':' as u16]);
         }
     }
