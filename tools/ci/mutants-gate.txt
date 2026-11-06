@@ -4,7 +4,13 @@
 crates/glwgsl/src/lib.rs
 crates/hlslc/src/d3d9asm.rs
 crates/hlslc/src/pp.rs
-crates/kura/src/d3d9/format.rs
+crates/ippai/src/envelope.rs
+crates/ippai/src/library.rs
+crates/ippai/src/nwjs.rs
+crates/ippai/src/pack.rs
+crates/ippai/src/treefiles.rs
+crates/ippai/src/webassets.rs
 crates/kura/src/d3d11/format.rs
+crates/kura/src/d3d9/format.rs
 crates/kura/src/display.rs
 crates/kura/src/video.rs

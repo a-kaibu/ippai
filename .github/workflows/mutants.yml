@@ -16,7 +16,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: mutants-${{ github.ref }}-${{ github.event_name }}
+  # one group per pushed commit: other threads push often, and a pending run replaced by a newer one would skip its diff
+  group: mutants-${{ github.event_name == 'push' && github.sha || github.ref }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
