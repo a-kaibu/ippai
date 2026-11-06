@@ -512,7 +512,7 @@ impl Jit {
             let mut params = vec![Val::I32(0); 16];
             params[0] = Val::I32(CPU as i32);
             params[1] = Val::I32((k << koji::jit::ENTRY_SHIFT) as i32);
-            let mut results = vec![Val::I32(0); 16];
+            let mut results = vec![Val::I32(0); 1];
             f.call(&mut self.store, &params, &mut results).map_err(|e| format!("trap: {e:?}"))?;
             regions += 1;
             match results[0].unwrap_i32() {
@@ -721,7 +721,7 @@ fn exe_mode(args: &[String]) {
             let mut params = vec![Val::I32(0); 16];
             params[0] = Val::I32(CPU as i32);
             params[1] = Val::I32((k << koji::jit::ENTRY_SHIFT) as i32);
-            let mut results = vec![Val::I32(0); 16];
+            let mut results = vec![Val::I32(0); 1];
             if f.call(&mut jit.store, &params, &mut results).is_err() {
                 break;
             }

@@ -1,6 +1,6 @@
 //! Long mode (x86-64) translation: a region of basic blocks (found from an entry by following
-//! direct jumps) becomes one wasm function of the region type (`super::N_PARAMS` i32 in and
-//! out) that the dispatcher and the hash table treat like a 32-bit region's.
+//! direct jumps) becomes one wasm function of the region type (`super::N_PARAMS` i32 in, the
+//! status out) that the dispatcher and the hash table treat like a 32-bit region's.
 //!
 //! Unlike 32-bit regions it keeps nothing in the parameters: the sixteen 64-bit registers are
 //! loaded from the Cpu into i64 locals at entry and written back at every exit, which returns
@@ -731,13 +731,9 @@ impl<'a> Gen<'a> {
         self.flags = Flags::Cpu;
     }
 
-    /// `return (status, 0...)` with the state already in the Cpu.
+    /// `return status` with the state already in the Cpu.
     fn ret_status(c: &mut Code, st: u32) {
-        c.get(st);
-        for _ in 1..N_PARAMS {
-            c.i32c(0);
-        }
-        c.ret();
+        c.get(st).ret();
     }
 
     // ---- instructions
@@ -1295,7 +1291,7 @@ pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, entry: u6
     if module.types.is_empty() {
         module.types.push(FuncType { params: alloc::vec![I32], results: alloc::vec![I32] });
         module.types.push(FuncType { params: alloc::vec![I32; 5], results: alloc::vec![I32] });
-        module.types.push(FuncType { params: alloc::vec![I32; N_PARAMS as usize], results: alloc::vec![I32; N_PARAMS as usize] });
+        module.types.push(FuncType { params: alloc::vec![I32; N_PARAMS as usize], results: alloc::vec![I32] });
         module.imports.push(Import::Memory);
         module.imports.push(Import::Func("step", 0));
         module.imports.push(Import::Func("eflags", 0));
@@ -1311,11 +1307,7 @@ pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, entry: u6
     let mut g = Gen { c: Code::default(), blocks: &blocks, index: &index, flags: Flags::Cpu, depth: 0, ins: blocks[0].ins[0], temps: 0 };
     // the dispatcher's key is the low 32 bits: code at another 4GB alias is left to the interpreter
     g.c.get(L_CPU).load32(cpu_off!(rip_hi)).u32c((entry >> 32) as u32).ne().if_();
-    g.c.i32c(RET_INTERP);
-    for _ in 1..N_PARAMS {
-        g.c.i32c(0);
-    }
-    g.c.ret();
+    g.c.i32c(RET_INTERP).ret();
     g.c.end();
     g.c.i32c(0).set(L_FC);
     g.load_regs();

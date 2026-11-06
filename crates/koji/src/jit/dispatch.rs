@@ -21,13 +21,12 @@ pub fn slot(eip: u32, mask: u32) -> u32 {
 pub fn module() -> alloc::vec::Vec<u8> {
     let mut m = Module::default();
     m.types.push(FuncType { params: alloc::vec![I32], results: alloc::vec![I32] });
-    m.types.push(FuncType { params: alloc::vec![I32; super::N_PARAMS as usize], results: alloc::vec![I32; super::N_PARAMS as usize] });
+    m.types.push(FuncType { params: alloc::vec![I32; super::N_PARAMS as usize], results: alloc::vec![I32] });
     m.imports.push(Import::Memory);
     m.imports.push(Import::Table("table"));
     let hash = offset_of!(Cpu, jit_hash) as u32;
     let maskf = offset_of!(Cpu, jit_mask) as u32;
     let (cpu, eip, h, e, st, mask) = (0, 1, 2, 3, 4, 5);
-    const V: u32 = 6; // the region's results
     let mut c = Code::default();
     c.get(cpu).load32(maskf).set(mask);
     c.loop_();
@@ -59,14 +58,11 @@ pub fn module() -> alloc::vec::Vec<u8> {
         c.i32c(-1).i32c(0).i32c(0).i32c(0).i32c(0);
         c.get(cpu).load32(Off::budget());
         c.get(e).u32c((1 << super::ENTRY_SHIFT) - 1).and().call_indirect(1, 0);
-        for i in (0..super::N_PARAMS).rev() {
-            c.set(V + i);
-        }
-        c.get(V).tee(st).if_().get(st).ret().end();
+        c.tee(st).if_().get(st).ret().end();
         c.br(0);
     }
     c.end();
     c.i32c(0);
-    m.funcs.push(Func { ty: 0, locals: alloc::vec![I32; 5 + super::N_PARAMS as usize], code: c });
+    m.funcs.push(Func { ty: 0, locals: alloc::vec![I32; 5], code: c });
     m.finish()
 }

@@ -3396,9 +3396,6 @@ fn fn_adapter() -> Func {
     c.get(L_CPU).get(L_CPU).load32(Off::calls()).get(L_ARG).i32c(ENTRY_SHIFT as i32).shr_u().u32c(0x7ff).and().i32c(16).shl().or();
     c.get(L_REG + 4);
     c.get(L_ARG).u32c((1 << ENTRY_SHIFT) - 1).and().i32c(1).add().call_indirect(T_FN, 0).set(L_REG + 4).tee(L_ARG).i32c(RET_CONTINUE).get(L_ARG).i32c(RET_FN).ne().select();
-    for _ in 1..N_PARAMS {
-        c.i32c(0);
-    }
     Func { ty: 2, locals: Vec::new(), code: c }
 }
 
@@ -4672,7 +4669,7 @@ fn translate<M: Memory>(
     if module.types.is_empty() {
         module.types.push(FuncType { params: alloc::vec![I32], results: alloc::vec![I32] });
         module.types.push(FuncType { params: alloc::vec![I32; 5], results: alloc::vec![I32] });
-        module.types.push(FuncType { params: alloc::vec![I32; N_PARAMS as usize], results: alloc::vec![I32; N_PARAMS as usize] });
+        module.types.push(FuncType { params: alloc::vec![I32; N_PARAMS as usize], results: alloc::vec![I32] });
         module.imports.push(Import::Memory);
         module.imports.push(Import::Func("step", 0));
         module.imports.push(Import::Func("eflags", 0));
@@ -4941,10 +4938,6 @@ fn translate<M: Memory>(
     g.c.get(L_ST);
     if fnm {
         g.c.get(L_REG + 4);
-    } else {
-        for _ in 1..N_PARAMS {
-            g.c.i32c(0);
-        }
     }
 
     let mut locals = alloc::vec![I32; if fnm { N_PARAMS as usize - 2 } else { 0 } + N_LOCALS_I32 as usize];
