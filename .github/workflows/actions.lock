@@ -32,6 +32,12 @@ workflows:
         - 'goreleaser/goreleaser-action@v7.3.0'
         - 'mlugg/setup-zig@v2.2.1'
         - 'taiki-e/install-action@v2.88.1'
+    '.github/workflows/winref.yml':
+        - 'actions/cache@v6.1.0'
+        - 'actions/checkout@v7.0.1'
+        - 'actions/download-artifact@v8.0.2'
+        - 'actions/setup-node@v7.1.0'
+        - 'actions/upload-artifact@v7.0.2'
 dependencies:
     'actions/cache@v6.1.0':
         ref: 'v6.1.0'

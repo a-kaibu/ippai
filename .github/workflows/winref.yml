@@ -1,0 +1,125 @@
+# Differential test against real Windows (tests/winref): the probes and host/tests' console
+# checks run natively on a Windows runner (the reference) and on sake's node build, with the JIT
+# and with the interpreter; compare.py checks sake against Windows line by line and picture by
+# picture (tests/winref/known.txt lists the differences already understood). Other suites can
+# add probes to tests/winref/probes and get Windows' answers here.
+name: winref
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: winref-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: mingw-w64
+        run: sudo apt-get update -q && sudo apt-get install -yq --no-install-recommends mingw-w64
+      - name: Build the probes
+        run: tests/winref/build.sh "$RUNNER_TEMP/exe"
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: winref-exe
+          path: ${{ runner.temp }}/exe
+          retention-days: 7
+
+  windows:
+    needs: probes
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: winref-exe
+          path: exe
+      - name: Run on Windows
+        shell: bash
+        run: tests/winref/run.sh exe ref
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: winref-windows
+          path: ref
+          retention-days: 30
+
+  sake:
+    needs: probes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Tools
+        run: |
+          rustup component add rust-src
+          rustup target add wasm32-unknown-emscripten
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 22
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/emsdk4
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: winref-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'tools/ci/emsdk.sh') }}
+          restore-keys: winref-${{ runner.os }}-
+      - name: Build sake (node)
+        run: |
+          . tools/ci/emsdk.sh
+          OUT=$PWD/target/sake-out bash crates/sake/build.sh
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: winref-exe
+          path: exe
+      - name: Run on sake (JIT, interpreter)
+        run: |
+          SAKE=$PWD/target/sake-out/sake.js tests/winref/run.sh exe out/jit
+          IPPAI_JIT=0 SAKE=$PWD/target/sake-out/sake.js tests/winref/run.sh exe out/interp
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: winref-sake
+          path: out
+          retention-days: 30
+
+  compare:
+    needs: [windows, sake]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: winref-windows
+          path: ref
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: winref-sake
+          path: out
+      - name: sake (JIT) against Windows
+        run: python3 tests/winref/compare.py ref out/jit --known tests/winref/known.txt --png png --report jit.md
+      - name: sake (interpreter) against Windows
+        if: always()
+        run: python3 tests/winref/compare.py ref out/interp --known tests/winref/known.txt --report interp.md
+      - name: Summary
+        if: always()
+        run: cat jit.md interp.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+      - uses: actions/upload-artifact@v7.0.2
+        if: always()
+        with:
+          name: winref-report
+          path: |
+            jit.md
+            interp.md
+            png
+          retention-days: 30

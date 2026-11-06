@@ -1,0 +1,2 @@
+# Differences between sake and Windows already understood (tests/winref/compare.py):
+#   <probe glob> <regex on the diff line>  # why
