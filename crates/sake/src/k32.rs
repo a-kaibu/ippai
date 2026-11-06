@@ -1201,6 +1201,33 @@ fn is_bad(p: u32, n: u32) -> bool {
         None => true,
     }
 }
+/// Read/WriteProcessMemory(process, addr, buffer, n, done): the one process; a write may patch
+/// code (Delphi programs hook their own functions this way: QLIE)
+fn ReadProcessMemory(c: &mut Ctx) -> u32 {
+    let (a, b, n) = (c.a(1), c.a(2), c.a(3));
+    if is_bad(a, n) || is_bad(b, n) {
+        last_error(299);
+        return 0;
+    }
+    mem::copy(b, a, n);
+    if c.a(4) != 0 {
+        w32(c.a(4), n);
+    }
+    1
+}
+fn WriteProcessMemory(c: &mut Ctx) -> u32 {
+    let (a, b, n) = (c.a(1), c.a(2), c.a(3));
+    if is_bad(a, n) || is_bad(b, n) {
+        last_error(998);
+        return 0;
+    }
+    mem::copy(a, b, n);
+    kura::jit::code_changed(a as usize, n.max(1) as usize);
+    if c.a(4) != 0 {
+        w32(c.a(4), n);
+    }
+    1
+}
 fn IsBadReadPtr(c: &mut Ctx) -> u32 {
     ok(is_bad(c.a(0), c.a(1)))
 }
@@ -4300,7 +4327,7 @@ pub fn init() {
         UnhandledExceptionFilter, IsDebuggerPresent, OutputDebugStringA, OutputDebugStringW, SetConsoleCtrlHandler,
         DebugBreak, EncodePointer, DecodePointer,
         VirtualAlloc, VirtualFree, VirtualQuery, VirtualProtect, VirtualLock, VirtualUnlock, FlushInstructionCache,
-        IsBadReadPtr, IsBadWritePtr, IsBadCodePtr, IsBadStringPtrA, GetProcessHeap, HeapCreate, HeapDestroy, HeapAlloc,
+        IsBadReadPtr, ReadProcessMemory, WriteProcessMemory, IsBadWritePtr, IsBadCodePtr, IsBadStringPtrA, GetProcessHeap, HeapCreate, HeapDestroy, HeapAlloc,
         HeapFree, HeapReAlloc, HeapSize, HeapValidate, HeapCompact, HeapSetInformation, HeapLock, HeapUnlock,
         GlobalAlloc, GlobalFree, GlobalReAlloc, GlobalLock, GlobalUnlock, GlobalHandle, GlobalSize, GlobalFlags,
         LocalAlloc, LocalFree, LocalReAlloc, LocalLock, LocalUnlock, LocalSize, LocalHandle, LocalFlags,
