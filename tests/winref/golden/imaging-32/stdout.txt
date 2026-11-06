@@ -1,0 +1,283 @@
+WICImagingFactory 0
+png_rgba8: container 1b7cfaf4 frames 1 size 21x13 format 32bppBGRA dpi 96 96
+image png_rgba8 21 13 0
+image png_rgba8_alpha 21 13 0
+png_rgb8: container 1b7cfaf4 frames 1 size 21x13 format 24bppBGR dpi 96 96
+image png_rgb8 21 13 0
+png_gray8: container 1b7cfaf4 frames 1 size 21x13 format 8bppGray dpi 96 96
+image png_gray8 21 13 0
+png_graya8: container 1b7cfaf4 frames 1 size 21x13 format 32bppBGRA dpi 96 96
+image png_graya8 21 13 0
+image png_graya8_alpha 21 13 0
+png_pal8: container 1b7cfaf4 frames 1 size 21x13 format 4bppIndexed dpi 96 96
+png_pal8: palette 16 alpha 0 first ffdfdf94 ff99df9e last ff390b7e
+image png_pal8 21 13 0
+png_pal4: container 1b7cfaf4 frames 1 size 21x13 format 4bppIndexed dpi 96 96
+png_pal4: palette 16 alpha 0 first ffdfdf94 ff99df9e last ff390b7e
+image png_pal4 21 13 0
+png_pal_trns: container 1b7cfaf4 frames 1 size 21x13 format 8bppIndexed dpi 96 96
+png_pal_trns: palette 32 alpha 1 first ff151f28 ff291fff last 80956f28
+image png_pal_trns 21 13 0
+image png_pal_trns_alpha 21 13 0
+png_gray1: container 1b7cfaf4 frames 1 size 21x13 format BlackWhite dpi 96 96
+image png_gray1 21 13 0
+png_rgb16: container 1b7cfaf4 frames 1 size 21x13 format 48bppRGB dpi 96 96
+image png_rgb16 21 13 0
+png_gray16: container 1b7cfaf4 frames 1 size 21x13 format 16bppGray dpi 96 96
+image png_gray16 21 13 0
+png_rgb_trns: container 1b7cfaf4 frames 1 size 21x13 format 32bppBGRA dpi 96 96
+image png_rgb_trns 21 13 0
+png_rgba8_adam7: container 1b7cfaf4 frames 1 size 21x13 format 32bppBGRA dpi 96 96
+image png_rgba8_adam7 21 13 0
+image png_rgba8_adam7_alpha 21 13 0
+bmp24: container 0af1d87e frames 1 size 21x13 format 24bppBGR dpi 96 96
+image bmp24 21 13 0
+bmp8: container 0af1d87e frames 1 size 21x13 format 8bppIndexed dpi 96 96
+bmp8: palette 16 alpha 0 first ffdfdf94 ff99df9e last ff390b7e
+image bmp8 21 13 0
+bmp1: container 0af1d87e frames 1 size 21x13 format 1bppIndexed dpi 96 96
+bmp1: palette 2 alpha 0 first ff000000 ffffffff last ffffffff
+image bmp1 21 13 0
+bmp32: container 0af1d87e frames 1 size 21x13 format 32bppBGR dpi 72 72
+image bmp32 21 13 0
+bmp32_v5_alpha: container 0af1d87e frames 1 size 21x13 format 32bppBGRA dpi 72 72
+image bmp32_v5_alpha 21 13 0
+image bmp32_v5_alpha_alpha 21 13 0
+bmp24_topdown: container 0af1d87e frames 1 size 21x13 format 24bppBGR dpi 72 72
+image bmp24_topdown 21 13 0
+bmp16_555: container 0af1d87e frames 1 size 21x13 format 16bppBGR555 dpi 72 72
+image bmp16_555 21 13 0
+bmp16_565: container 0af1d87e frames 1 size 21x13 format 16bppBGR565 dpi 72 72
+image bmp16_565 21 13 0
+bmp4: container 0af1d87e frames 1 size 21x13 format 4bppIndexed dpi 72 72
+bmp4: palette 16 alpha 0 first ff00ff00 ff35ee11 last ff1b00ff
+image bmp4 21 13 0
+bmp8_rle: container 0af1d87e frames 1 size 21x13 format 32bppBGR dpi 72 72
+bmp8_rle: palette 256 alpha 0 first ff000000 ff010d07 last fffff3f9
+image bmp8_rle 21 13 0
+jpeg_420: container 19e4a5aa frames 1 size 21x13 format 24bppBGR dpi 96 96
+image jpeg_420 21 13 8
+jpeg_444: container 19e4a5aa frames 1 size 21x13 format 24bppBGR dpi 96 96
+image jpeg_444 21 13 8
+jpeg_422: container 19e4a5aa frames 1 size 21x13 format 24bppBGR dpi 96 96
+image jpeg_422 21 13 8
+jpeg_progressive: container 19e4a5aa frames 1 size 21x13 format 24bppBGR dpi 96 96
+image jpeg_progressive 21 13 8
+jpeg_gray: container 19e4a5aa frames 1 size 21x13 format 8bppGray dpi 96 96
+image jpeg_gray 21 13 8
+jpeg_restart: container 19e4a5aa frames 1 size 21x13 format 24bppBGR dpi 96 96
+image jpeg_restart 21 13 8
+jpeg_cmyk: container 19e4a5aa frames 1 size 21x13 format 32bppCMYK dpi 96 96
+image jpeg_cmyk 21 13 8
+gif: container 1f8a5601 frames 1 size 21x13 format 8bppIndexed dpi 96 96
+gif: palette 16 alpha 0 first ffdfdf94 ff99df9e last ff000000
+image gif 21 13 0
+gif_trns: container 1f8a5601 frames 1 size 21x13 format 8bppIndexed dpi 96 96
+gif_trns: palette 8 alpha 1 first 00bfdf98 ffbf948a last ff390b7e
+image gif_trns 21 13 0
+image gif_trns_alpha 21 13 0
+gif_interlaced: container 1f8a5601 frames 1 size 21x13 format 8bppIndexed dpi 96 96
+gif_interlaced: palette 16 alpha 0 first ffdfdf94 ff99df9e last ff000000
+image gif_interlaced 21 13 0
+gif_anim: container 1f8a5601 frames 2 size 21x13 format 8bppIndexed dpi 96 96
+gif_anim: palette 16 alpha 0 first ffdfdf94 ff99df9e last ff000000
+image gif_anim 21 13 0
+gif_anim_frame1: size 21x13
+image gif_anim_frame1 21 13 0
+image gif_anim_frame1_alpha 21 13 0
+convert to 32bppPBGRA: can 1 init 0
+  0000000016398387050c0f104514899713101c207c8d8da72b0a273006668fb7
+  0b3a304040358fc72532375084d38dd749203c60d09f89e705053f702e6383f7
+  2b614080030103075a433f9012130917921c3ca002150d27239d37b0130d0f37
+  5e732fc02d440f47a24026d0513a0d570f041be01627096756b00ef03c0a0377
+convert to 32bppRGBA: can 1 init 0
+  ff110500f76c2a87efc74f10e7227497df7d9920d7d8bea7cf33e330c78e08b7
+  bfe92d40b74452c7af9f7750a7fa9cd79f55c16097b0e6e78f0b0b70876630f7
+  7fc15580771c7a076f779f9067d2c4175f2de9a057880e274fe333b0473e5837
+  3f997dc037f4a2472f4fc7d027aaec571f0511e0176036670fbb5bf007168077
+convert to 32bppBGR: can 1 init 0
+  0511ff002a6cf7874fc7ef107422e797997ddf20bed8d7a7e333cf30088ec7b7
+  2de9bf405244b7c7779faf509cfaa7d7c1559f60e6b097e70b0b8f70306687f7
+  55c17f807a1c77079f776f90c4d26717e92d5fa00e88572733e34fb0583e4737
+  7d993fc0a2f43747c74f2fd0ecaa275711051fe0366017675bbb0ff080160777
+convert to 24bppBGR: can 1 init 0
+  0511ff2a6cf74fc7ef7422e7997ddfbed8d7e333cf088ec7
+  2de9bf5244b7779faf9cfaa7c1559fe6b0970b0b8f306687
+  55c17f7a1c779f776fc4d267e92d5f0e885733e34f583e47
+  7d993fa2f437c74f2fecaa2711051f3660175bbb0f801607
+convert to 24bppRGB: can 1 init 0
+  ff1105f76c2aefc74fe72274df7d99d7d8becf33e3c78e08
+  bfe92db74452af9f77a7fa9c9f55c197b0e68f0b0b876630
+  7fc155771c7a6f779f67d2c45f2de957880e4fe333473e58
+  3f997d37f4a22f4fc727aaec1f05111760360fbb5b071680
+convert to 16bppBGR565: can 1 init 0
+  80f865f329ee0ee1f3dbd7d69cc961c4
+  45bf2ab2eeacd3a7b89a9c9541882683
+  0a7eef70b36b98667d594154064feb41
+  cf3cb437782a5d2522180613cb0db000
+convert to 16bppBGR555: can 1 init 0
+  407ca57909778e70f36d776bdc642162
+  a55f0a596e56f353584ddc4a21448641
+  0a3f6f38d3355833bd2c212a8627eb20
+  6f1ed41b3815bd12020c8609eb065000
+convert to 8bppGray: can 1 init 0
+  8096cb7a9bd67f98
+  d96ba0e675b0466c
+  b04679c05a7bc742
+  8ad75aa00e54a329
+convert to 32bppPRGBA: can 1 init 0
+  00000000833916870f0c0510891445971c1013208d8d7ca7270a2b308f6606b7
+  303a0b408f3540c7373225508dd384d73c204960899fd0e73f05057083632ef7
+  40612b80030103073f435a90091312173c1c92a00d150227379d23b00f0d1337
+  2f735ec00f442d472640a2d00d3a51571b040fe0092716670eb056f0030a3c77
+convert to 64bppRGBA: can 1 init 0
+  ffff111105050000f7f76c6c2a2a8787efefc7c74f4f1010e7e7222274749797dfdf7d7d99992020d7d7d8d8bebea7a7cfcf3333e3e33030c7c78e8e0808b7b7
+  bfbfe9e92d2d4040b7b744445252c7c7afaf9f9f77775050a7a7fafa9c9cd7d79f9f5555c1c160609797b0b0e6e6e7e78f8f0b0b0b0b7070878766663030f7f7
+  7f7fc1c15555808077771c1c7a7a07076f6f77779f9f90906767d2d2c4c417175f5f2d2de9e9a0a0575788880e0e27274f4fe3e33333b0b047473e3e58583737
+  3f3f99997d7dc0c03737f4f4a2a247472f2f4f4fc7c7d0d02727aaaaecec57571f1f05051111e0e017176060363667670f0fbbbb5b5bf0f00707161680807777
+convert to 8bppAlpha: can 1 init 0
+  0087109720a730b7
+  40c750d760e770f7
+  80079017a027b037
+  c047d057e067f077
+convert to BlackWhite: can 1 init 0
+  ed
+  b4
+  92
+  d2
+image scale_0_13x7 13 7 1
+image scale_0_13x7_alpha 13 7 1
+image scale_0_3x2 3 2 1
+image scale_0_3x2_alpha 3 2 1
+image scale_0_16x8 16 8 1
+image scale_0_16x8_alpha 16 8 1
+image scale_1_13x7 13 7 1
+image scale_1_13x7_alpha 13 7 1
+image scale_1_3x2 3 2 1
+image scale_1_3x2_alpha 3 2 1
+image scale_1_16x8 16 8 1
+image scale_1_16x8_alpha 16 8 1
+image scale_2_13x7 13 7 1
+image scale_2_13x7_alpha 13 7 1
+image scale_2_3x2 3 2 1
+image scale_2_3x2_alpha 3 2 1
+image scale_2_16x8 16 8 1
+image scale_2_16x8_alpha 16 8 1
+image scale_3_13x7 13 7 1
+image scale_3_13x7_alpha 13 7 1
+image scale_3_3x2 3 2 1
+image scale_3_3x2_alpha 3 2 1
+image scale_3_16x8 16 8 1
+image scale_3_16x8_alpha 16 8 1
+clipper 0
+image clip 5 2 0
+image clip_alpha 5 2 0
+fliprotator 0
+image rotate90_flip 4 8 0
+image rotate90_flip_alpha 4 8 0
+GdiplusStartup 0
+gdip png_rgba8: 21x13 format 0x26200a
+image gdip_png_rgba8 21 13 0
+image gdip_png_rgba8_alpha 21 13 0
+gdip png_rgba8: pixel 3,2 ff262aff
+gdip png_rgb8: 21x13 format 0x21808
+image gdip_png_rgb8 21 13 0
+gdip png_rgb8: pixel 3,2 ff262aff
+gdip png_gray8: 21x13 format 0x26200a
+image gdip_png_gray8 21 13 0
+gdip png_gray8: pixel 3,2 ff414141
+gdip png_graya8: 21x13 format 0x26200a
+image gdip_png_graya8 21 13 0
+image gdip_png_graya8_alpha 21 13 0
+gdip png_graya8: pixel 3,2 ff414141
+gdip png_pal8: 21x13 format 0x30402
+image gdip_png_pal8 21 13 0
+gdip png_pal8: pixel 3,2 ff1355c9
+gdip png_pal4: 21x13 format 0x30402
+image gdip_png_pal4 21 13 0
+gdip png_pal4: pixel 3,2 ff1355c9
+gdip png_pal_trns: 21x13 format 0x26200a
+image gdip_png_pal_trns 21 13 0
+image gdip_png_pal_trns_alpha 21 13 0
+gdip png_pal_trns: pixel 3,2 ff291fff
+gdip png_gray1: 21x13 format 0x30101
+image gdip_png_gray1 21 13 0
+gdip png_gray1: pixel 3,2 ff000000
+gdip png_rgb16: 21x13 format 0x26200a
+image gdip_png_rgb16 21 13 0
+gdip png_rgb16: pixel 3,2 ff262aff
+gdip png_gray16: 21x13 format 0x26200a
+image gdip_png_gray16 21 13 0
+gdip png_gray16: pixel 3,2 ff2b2b2b
+gdip png_rgb_trns: 21x13 format 0x26200a
+image gdip_png_rgb_trns 21 13 0
+gdip png_rgb_trns: pixel 3,2 ff262aff
+gdip png_rgba8_adam7: 21x13 format 0x26200a
+image gdip_png_rgba8_adam7 21 13 0
+image gdip_png_rgba8_adam7_alpha 21 13 0
+gdip png_rgba8_adam7: pixel 3,2 ff262aff
+gdip bmp24: 21x13 format 0x21808
+image gdip_bmp24 21 13 0
+gdip bmp24: pixel 3,2 ff262aff
+gdip bmp8: 21x13 format 0x30803
+image gdip_bmp8 21 13 0
+gdip bmp8: pixel 3,2 ff1355c9
+gdip bmp1: 21x13 format 0x30101
+image gdip_bmp1 21 13 0
+gdip bmp1: pixel 3,2 ff000000
+gdip bmp32: 21x13 format 0x22009
+image gdip_bmp32 21 13 0
+gdip bmp32: pixel 3,2 ff262aff
+gdip bmp32_v5_alpha: 21x13 format 0x26200a
+image gdip_bmp32_v5_alpha 21 13 0
+image gdip_bmp32_v5_alpha_alpha 21 13 0
+gdip bmp32_v5_alpha: pixel 3,2 ff262aff
+gdip bmp24_topdown: 21x13 format 0x21808
+image gdip_bmp24_topdown 21 13 0
+gdip bmp24_topdown: pixel 3,2 ff262aff
+gdip bmp16_555: 21x13 format 0x22009
+image gdip_bmp16_555 21 13 0
+gdip bmp16_555: pixel 3,2 ff2129ff
+gdip bmp16_565: 21x13 format 0x22009
+image gdip_bmp16_565 21 13 0
+gdip bmp16_565: pixel 3,2 ff2128ff
+gdip bmp4: 21x13 format 0x30402
+image gdip_bmp4 21 13 0
+gdip bmp4: pixel 3,2 ff9fcc33
+gdip bmp8_rle: 21x13 format 0x22009
+image gdip_bmp8_rle 21 13 0
+gdip bmp8_rle: pixel 3,2 ff12ea7e
+gdip jpeg_420: 21x13 format 0x21808
+image gdip_jpeg_420 21 13 8
+gdip jpeg_420: pixel 3,2 ff2c349f
+gdip jpeg_444: 21x13 format 0x21808
+image gdip_jpeg_444 21 13 8
+gdip jpeg_444: pixel 3,2 ff2525ff
+gdip jpeg_422: 21x13 format 0x21808
+image gdip_jpeg_422 21 13 8
+gdip jpeg_422: pixel 3,2 ff1d26bf
+gdip jpeg_progressive: 21x13 format 0x21808
+image gdip_jpeg_progressive 21 13 8
+gdip jpeg_progressive: pixel 3,2 ff373e98
+gdip jpeg_gray: 21x13 format 0x30803
+image gdip_jpeg_gray 21 13 8
+gdip jpeg_gray: pixel 3,2 ff3e3e3e
+gdip jpeg_restart: 21x13 format 0x21808
+image gdip_jpeg_restart 21 13 8
+gdip jpeg_restart: pixel 3,2 ff2926ab
+gdip jpeg_cmyk: 21x13 format 0x200f
+image gdip_jpeg_cmyk 21 13 8
+gdip jpeg_cmyk: pixel 3,2 ff563f83
+gdip gif: 21x13 format 0x30803
+image gdip_gif 21 13 0
+gdip gif: pixel 3,2 ff1355c9
+gdip gif_trns: 21x13 format 0x30803
+image gdip_gif_trns 21 13 0
+image gdip_gif_trns_alpha 21 13 0
+gdip gif_trns: pixel 3,2 ff394a9e
+gdip gif_interlaced: 21x13 format 0x30803
+image gdip_gif_interlaced 21 13 0
+gdip gif_interlaced: pixel 3,2 ff1355c9
+gdip gif_anim: 21x13 format 0x26200a
+image gdip_gif_anim 21 13 0
+gdip gif_anim: pixel 3,2 ff1355c9
