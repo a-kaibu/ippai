@@ -1963,6 +1963,20 @@ fn PathAddBackslashW(c: &mut Ctx) -> u32 {
     path_op(c, true, add_backslash);
     c.a(0) + 2 * wstr(c.a(0)).len() as u32
 }
+/// PathRemoveBackslash: the trailing backslash off, except a root's ("C:\\"); returns where the
+/// string now ends
+fn remove_backslash(s: &str) -> Option<String> {
+    let root = s.len() == 3 && s.as_bytes()[1] == b':' || s == "\\";
+    Some(if s.ends_with('\\') && !root { s[..s.len() - 1].to_string() } else { s.to_string() })
+}
+fn PathRemoveBackslashA(c: &mut Ctx) -> u32 {
+    path_op(c, false, remove_backslash);
+    c.a(0) + crate::mem::cstr(c.a(0)).len() as u32
+}
+fn PathRemoveBackslashW(c: &mut Ctx) -> u32 {
+    path_op(c, true, remove_backslash);
+    c.a(0) + 2 * wstr(c.a(0)).len() as u32
+}
 fn strip_path(s: &str) -> Option<String> {
     Some(s.rsplit(['\\', '/']).next().unwrap_or(s).to_string())
 }
@@ -2331,7 +2345,7 @@ pub fn init() {
     reg!("shlwapi"; PathRemoveFileSpecA, PathRemoveFileSpecW, PathFileExistsA, PathFileExistsW, PathIsDirectoryA,
         PathIsDirectoryW, PathAppendA, PathAppendW, PathCombineA, PathCombineW, PathCanonicalizeA, PathCanonicalizeW, PathFindFileNameA,
         PathFindFileNameW, PathFindExtensionA, PathFindExtensionW, PathIsRelativeA, PathIsRelativeW, PathUnquoteSpacesA,
-        PathUnquoteSpacesW, PathAddBackslashA, PathAddBackslashW, PathStripPathA, PathStripPathW, PathAddExtensionA, PathAddExtensionW);
+        PathUnquoteSpacesW, PathAddBackslashA, PathAddBackslashW, PathRemoveBackslashA, PathRemoveBackslashW, PathStripPathA, PathStripPathW, PathAddExtensionA, PathAddExtensionW);
     reg!("shlwapi"; StrStrA, StrStrW, StrStrIA, StrStrIW);
     reg!("sensapi"; IsNetworkAlive);
     reg!("ws2_32"; WSAStartup, WSACleanup);

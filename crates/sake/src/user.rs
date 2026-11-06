@@ -4133,6 +4133,12 @@ fn wsprintfW(c: &mut Ctx) -> u32 {
     let out = crate::misc::format_w(&f, &mut crate::misc::VaArgs::arg(c, 2));
     mem::put_wstr(dst, 1024, &out)
 }
+fn wvsprintfW(c: &mut Ctx) -> u32 {
+    let (dst, fmt, va) = (c.a(0), c.a(1), c.a(2));
+    let f: Vec<u16> = wstr(fmt);
+    let out = crate::misc::format_w(&f, &mut crate::misc::VaArgs::stack(va));
+    mem::put_wstr(dst, 1024, &out)
+}
 fn GetGUIThreadInfo(_: &mut Ctx) -> u32 {
     0
 }
@@ -4727,7 +4733,7 @@ pub fn init() {
         GetIconInfo, LoadBitmapA, LoadBitmapW, LoadAcceleratorsA, LoadMenuA, LoadMenuW,
         CharLowerA, CharUpperA, CharLowerW, CharUpperW, CharLowerBuffA, CharUpperBuffA, CharLowerBuffW, CharUpperBuffW, CharNextA, CharNextW,
         CharPrevA, CharToOemA, OemToCharA, OemToCharBuffA, CharToOemBuffA, IsCharAlphaA, IsCharAlphaNumericA,
-        IsCharUpperA, IsCharLowerA, IsCharAlphaW, wsprintfA, wvsprintfA, wsprintfW, GetGUIThreadInfo,
+        IsCharUpperA, IsCharLowerA, IsCharAlphaW, wsprintfA, wvsprintfA, wsprintfW, wvsprintfW, GetGUIThreadInfo,
         AttachThreadInput, FlashWindow, GetProcessWindowStation, GetUserObjectInformationA, SetProcessDPIAware,
         IsWindowUnicode, RegisterHotKey, UnregisterHotKey,
     );

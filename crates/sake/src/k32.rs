@@ -2234,6 +2234,21 @@ fn preferred_ui_languages(c: &mut Ctx) -> u32 {
     }
     1
 }
+/// VerLanguageName(lang, buf, chars): the language's name as a Japanese Windows writes it
+/// (神楽黎明記 used the unwritten buffer)
+fn ver_language_name(c: &mut Ctx, wide: bool) -> u32 {
+    let name = match c.a(0) & 0x3ff {
+        0x11 => "日本語",
+        0x09 => "英語 (米国)",
+        0x04 => "中国語 (簡体字、中国)",
+        0x12 => "韓国語",
+        _ => "言語ニュートラル",
+    };
+    if c.a(1) == 0 || c.a(2) == 0 {
+        return if wide { name.encode_utf16().count() } else { crate::text::s2a(name).len() } as u32;
+    }
+    ret_str(c.a(1), c.a(2), name, wide)
+}
 fn GetSystemDefaultUILanguage(_: &mut Ctx) -> u32 {
     lcid()
 }
@@ -4492,6 +4507,10 @@ pub fn init() {
         implement(d, "SetThreadPreferredUILanguages", |_| 1);
         implement(d, "SetProcessPreferredUILanguages", |_| 1);
         implement(d, "GetThreadUILanguage", |_| lcid());
+    }
+    for d in ["kernel32", "kernelbase", "version"] {
+        implement(d, "VerLanguageNameA", |c| ver_language_name(c, false));
+        implement(d, "VerLanguageNameW", |c| ver_language_name(c, true));
     }
     implement("kernel32", "GetLocaleInfoEx", GetLocaleInfoEx);
     implement("kernel32", "GetSystemDefaultLocaleName", GetUserDefaultLocaleName);
