@@ -74,6 +74,11 @@ pub fn step_cached<M: Memory>(cpu: &mut Cpu, mem: &mut M, cache: Option<&mut Dec
                 }
                 return (Exit::InvalidOpcode, true);
             }
+            // (MOV to or from a control, debug or test register: privileged, and no register
+            // of ours; found by fuzz/x86_interp)
+            if (0..ins.op_count()).any(|i| ins.op_kind(i) == OpKind::Register && { let r = ins.op_register(i); r.is_cr() || r.is_dr() || r.is_tr() }) {
+                return (Exit::InvalidOpcode, true);
+            }
             if let Some(e) = slot {
                 *e = (pc, buf, ins.len() as u8, ins);
             }

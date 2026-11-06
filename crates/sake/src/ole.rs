@@ -265,7 +265,7 @@ fn picture_vtbl() -> u32 {
 }
 
 /// BGRA rows, top first (JPEG, BMP, PNG with its alpha).
-pub(crate) fn decode(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+pub fn decode(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     if data.starts_with(b"\x89PNG") {
         let mut d = png::Decoder::new(data);
         d.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
@@ -273,7 +273,7 @@ pub(crate) fn decode(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
         let mut px = vec![0; r.output_buffer_size()];
         let info = r.next_frame(&mut px).ok()?;
         let (w, h) = (info.width, info.height);
-        let n = (w * h) as usize;
+        let n = w as usize * h as usize;
         let mut out = vec![0xffu8; n * 4];
         for i in 0..n {
             let (r, g, b, a) = match info.color_type {
@@ -291,7 +291,7 @@ pub(crate) fn decode(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
         let px = d.decode().ok()?;
         let info = d.info()?;
         let (w, h) = (info.width as u32, info.height as u32);
-        let n = (w * h) as usize;
+        let n = w as usize * h as usize;
         let mut out = vec![0xffu8; n * 4];
         for i in 0..n {
             let (r, g, b) = match info.pixel_format {
@@ -319,8 +319,12 @@ pub(crate) fn decode(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
         let w = w.unsigned_abs();
         let stride = (w as usize * bpp).div_ceil(32) * 4;
         let hdr = u32le(14) as usize;
-        let pal = &data[14 + hdr..off.min(data.len())];
-        let mut out = vec![0xffu8; (w * h) as usize * 4];
+        // (headers and rows that are not all in the file: not a picture; found by fuzz/image)
+        if !matches!(bpp, 8 | 24 | 32) || off as u64 + stride as u64 * h as u64 > data.len() as u64 {
+            return None;
+        }
+        let pal = data.get(14usize.saturating_add(hdr)..off).unwrap_or(&[]);
+        let mut out = vec![0xffu8; w as usize * h as usize * 4];
         for y in 0..h as usize {
             let sy = if top_down { y } else { h as usize - 1 - y };
             let row = data.get(off + sy * stride..off + sy * stride + stride)?;
@@ -400,4 +404,96 @@ pub fn init() {
     implement("ole32", "GetHGlobalFromStream", GetHGlobalFromStream);
     implement("oleaut32", "OleLoadPicture", OleLoadPicture);
     implement("oleaut32", "OleLoadPictureEx", OleLoadPictureEx);
+}
+
+#[cfg(test)]
+mod proptests {
+    use super::decode;
+    use proptest::collection::vec;
+    use proptest::prelude::*;
+
+    fn bmp(w: u32, h: u32, bpp: u16, top_down: bool, px: &[u8], pal: &[u8]) -> Vec<u8> {
+        let stride = (w as usize * bpp as usize).div_ceil(32) * 4;
+        let off = 54 + pal.len() as u32;
+        let mut f = b"BM".to_vec();
+        f.extend((off + stride as u32 * h).to_le_bytes());
+        f.extend([0; 4]);
+        f.extend(off.to_le_bytes());
+        f.extend(40u32.to_le_bytes());
+        f.extend(w.to_le_bytes());
+        f.extend((if top_down { -(h as i32) } else { h as i32 }).to_le_bytes());
+        f.extend(1u16.to_le_bytes());
+        f.extend(bpp.to_le_bytes());
+        f.extend([0; 24]);
+        f.extend(pal);
+        let n = bpp as usize / 8;
+        for y in 0..h as usize {
+            let sy = if top_down { y } else { h as usize - 1 - y };
+            let row = &px[sy * w as usize * n..][..w as usize * n];
+            f.extend(row);
+            f.extend(vec![0; stride - row.len()]);
+        }
+        f
+    }
+
+    fn png(w: u32, h: u32, color: png::ColorType, px: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut e = png::Encoder::new(&mut out, w, h);
+        e.set_color(color);
+        e.set_depth(png::BitDepth::Eight);
+        e.write_header().unwrap().write_image_data(px).unwrap();
+        out
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// 24- and 32-bit BMPs, bottom-up or top-down: the pixels back as BGRA, top row first.
+        #[test]
+        fn bmp_round_trip(w in 1u32..24, h in 1u32..24, wide in any::<bool>(), top_down in any::<bool>(), seed in any::<u64>()) {
+            let n = if wide { 4 } else { 3 };
+            let px: Vec<u8> = (0..(w * h) as u64 * n).map(|i| (i.wrapping_mul(seed | 1) >> 7) as u8).collect();
+            let (gw, gh, got) = decode(&bmp(w, h, 8 * n as u16, top_down, &px, &[])).unwrap();
+            prop_assert_eq!((gw, gh), (w, h));
+            for i in 0..(w * h) as usize {
+                let s = &px[i * n as usize..];
+                prop_assert_eq!(&got[4 * i..4 * i + 4], &[s[0], s[1], s[2], 255][..]);
+            }
+        }
+
+        /// 8-bit BMPs through their palette.
+        #[test]
+        fn bmp_palette(w in 1u32..24, h in 1u32..12, idx in vec(any::<u8>(), 24 * 12), pal in vec(any::<u8>(), 1024)) {
+            let px = &idx[..(w * h) as usize];
+            let (_, _, got) = decode(&bmp(w, h, 8, false, px, &pal)).unwrap();
+            for (i, &k) in px.iter().enumerate() {
+                let p = &pal[4 * k as usize..];
+                prop_assert_eq!(&got[4 * i..4 * i + 4], &[p[0], p[1], p[2], 255][..]);
+            }
+        }
+
+        /// PNG (gray, gray+alpha, RGB, RGBA): BGRA with the image's alpha.
+        #[test]
+        fn png_round_trip(w in 1u32..20, h in 1u32..20, kind in 0usize..4, seed in any::<u64>()) {
+            let (color, n) = [(png::ColorType::Grayscale, 1), (png::ColorType::GrayscaleAlpha, 2), (png::ColorType::Rgb, 3), (png::ColorType::Rgba, 4)][kind];
+            let px: Vec<u8> = (0..(w * h) as u64 * n).map(|i| (i.wrapping_mul(seed | 1) >> 5) as u8).collect();
+            let (gw, gh, got) = decode(&png(w, h, color, &px)).unwrap();
+            prop_assert_eq!((gw, gh), (w, h));
+            for i in 0..(w * h) as usize {
+                let s = &px[i * n as usize..][..n as usize];
+                let want = match n { 1 => [s[0], s[0], s[0], 255], 2 => [s[0], s[0], s[0], s[1]], 3 => [s[2], s[1], s[0], 255], _ => [s[2], s[1], s[0], s[3]] };
+                prop_assert_eq!(&got[4 * i..4 * i + 4], &want[..]);
+            }
+        }
+
+        /// Any bytes after a signature: None or w x h BGRA, never a panic.
+        #[test]
+        fn any_bytes(sig in 0usize..3, rest in vec(any::<u8>(), 0..400)) {
+            let mut d = [&b"BM"[..], b"\x89PNG\r\n\x1a\n", &[0xff, 0xd8]][sig].to_vec();
+            d.extend(rest);
+            if let Some((w, h, px)) = decode(&d) {
+                prop_assert_eq!(px.len(), w as usize * h as usize * 4);
+            }
+        }
+    }
 }

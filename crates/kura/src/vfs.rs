@@ -1262,3 +1262,106 @@ mod tests {
         assert_eq!((d.len(), d2.len(), c.bytes), (20, 30, 30));
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::collection::vec;
+    use proptest::prelude::*;
+
+    /// `ippai pack`'s escaping for the tree list (crates/ippai/src/pack.rs).
+    fn esc(s: &str) -> String {
+        s.replace('\\', "\\\\").replace('\t', "\\t").replace('\n', "\\n")
+    }
+
+    fn mounted() -> (Fs, Ino) {
+        let mut fs = Fs { next_handle: 1, ..Default::default() };
+        let root = fs.add(Data::Dir(BTreeMap::new()), 0o755, 0);
+        fs.mounts.push(("/".into(), root));
+        (fs, root)
+    }
+
+    /// A saved file's place: up to two directory levels, a file name (never one of the
+    /// directory names, so no path is both).
+    fn save_path() -> impl Strategy<Value = String> {
+        (vec(prop::sample::select(vec!["a", "b", "セーブ", "dir with space"]), 0..3), prop::sample::select(vec!["x.sav", "y.dat", "global.sav", "名前.bin"]))
+            .prop_map(|(dirs, f)| dirs.iter().map(|d| format!("{d}/")).collect::<String>() + f)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// The saves the page keeps (Fs::export) read back as they were written, the last
+        /// write of a path winning.
+        #[test]
+        fn saves_round_trip(files in vec((save_path(), vec(any::<u8>(), 0..300), any::<i64>()), 0..16)) {
+            let (mut fs, _) = mounted();
+            let mut want = BTreeMap::new();
+            for (p, data, mtime) in &files {
+                fs.put_file(&format!("/save/{p}"), data.clone(), *mtime);
+                want.insert(format!("/save/{p}"), (data.clone(), *mtime));
+            }
+            let mut out = Vec::new();
+            fs.export("/save", &mut out);
+            let got: BTreeMap<String, (Vec<u8>, i64)> = parse_records(&out).into_iter().map(|(p, d, m)| (p, (d, m))).collect();
+            prop_assert_eq!(got.len(), parse_records(&out).len(), "a path exported twice");
+            prop_assert_eq!(got, want);
+        }
+
+        /// A truncated or corrupt saves blob gives some of its files, never a panic.
+        #[test]
+        fn saves_blob_any_bytes(b in vec(any::<u8>(), 0..200), cut in any::<prop::sample::Index>()) {
+            let _ = parse_records(&b);
+            let (mut fs, _) = mounted();
+            fs.put_file("/s/a", b.clone(), 1);
+            let mut out = Vec::new();
+            fs.export("/s", &mut out);
+            let n = cut.index(out.len() + 1);
+            let got = parse_records(&out[..n]);
+            prop_assert!(got.len() <= 1);
+            prop_assert_eq!(got.len() == 1, n == out.len());
+        }
+
+        /// clean(): absolute, no "." / ".." / empty parts, and a fixed point.
+        #[test]
+        fn clean_is_canonical(parts in vec(prop::sample::select(vec!["", ".", "..", "a", "b", "日本", "c d", "..."]), 0..10), abs in any::<bool>()) {
+            let p = (if abs { "/" } else { "" }).to_string() + &parts.join("/");
+            let c = clean(&p);
+            prop_assert!(c.starts_with('/'));
+            prop_assert!(c == "/" || !c.ends_with('/'));
+            prop_assert!(c[1..].split('/').all(|s| c == "/" || !matches!(s, "" | "." | "..")));
+            prop_assert_eq!(clean(&c), c.clone());
+        }
+
+        /// A tree list with names holding tabs, newlines and backslashes: every entry is found
+        /// under its own name.
+        #[test]
+        fn tree_names_escape(names in vec("[a-z\\\\\t\n ]{1,6}", 1..8), mode in 0u32..0o1000, mtime in any::<i32>()) {
+            let (mut fs, root) = mounted();
+            let mut tsv = String::from("vnvm-tree\t1\t262144\n");
+            let mut want = BTreeMap::new();
+            for (i, n) in names.iter().enumerate() {
+                let n = format!("{i}{n}");
+                tsv += &format!("f\t{mode:o}\t{mtime}\t{}\t{}\t\n", esc(&format!("d/{n}")), i * 7);
+                want.insert(n, i as u64 * 7);
+            }
+            tsv = format!("vnvm-tree\t1\t262144\nd\t755\t0\td\n{}", &tsv["vnvm-tree\t1\t262144\n".len()..]);
+            fs.load_tree(root, &tsv);
+            for (n, size) in want {
+                let ino = fs.walk(root, "d");
+                prop_assert!(ino.is_some());
+                let f = match &fs.node(ino.unwrap()).unwrap().data { Data::Dir(ch) => ch.get(&n).copied(), _ => None };
+                prop_assert!(f.is_some(), "{:?} not found", n);
+                prop_assert_eq!(fs.file_size(f.unwrap()), size);
+                prop_assert_eq!(fs.node(f.unwrap()).unwrap().mode, mode);
+            }
+        }
+
+        /// Any text as a tree list: no panic.
+        #[test]
+        fn tree_list_any_text(t in "(([dfl]\t[0-7]{0,4}\t-?[0-9]{0,3}\t[a-z/\\\\.]{0,8}(\t[0-9a-f,]{0,40}){0,3})?\n){0,12}") {
+            let (mut fs, root) = mounted();
+            fs.load_tree(root, &t);
+        }
+    }
+}

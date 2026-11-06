@@ -408,3 +408,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn with_range(v: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(header::RANGE, v.parse().unwrap());
+        h
+    }
+
+    proptest! {
+        /// Any Range header against any size: none, unsatisfiable, or bytes inside the file.
+        #[test]
+        fn range_inside_the_file(v in "(bytes=)?[ 0-9]{0,6}-?[ 0-9]{0,6}(,[0-9]-[0-9])?|bytes=-[0-9]{1,25}|bytes=[0-9]{1,25}-", size in prop_oneof![Just(0u64), 1u64..5000, Just(u64::MAX)]) {
+            if let Some(Some((a, b))) = range(&with_range(&v), size) {
+                prop_assert!(a <= b && b < size, "{:?} of {}: {}-{}", v, size, a, b);
+            }
+        }
+
+        /// The three forms as RFC 9110 reads them.
+        #[test]
+        fn range_forms(a in 0u64..1000, n in 1u64..1000, size in 1u64..1000) {
+            let last = size - 1;
+            prop_assert_eq!(range(&with_range(&format!("bytes={a}-")), size), Some((a <= last).then_some((a, last))));
+            prop_assert_eq!(range(&with_range(&format!("bytes=-{n}")), size), Some(Some((size.saturating_sub(n), last))));
+            let b = a + n;
+            prop_assert_eq!(range(&with_range(&format!("bytes={a}-{b}")), size), Some((a <= last).then_some((a, b.min(last)))));
+        }
+    }
+}

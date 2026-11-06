@@ -122,4 +122,36 @@ mod tests {
         assert!(e.decrypt(&[1; 32], &cipher).is_err());
         assert!(e.decrypt(&[1; 32], b"short").is_err());
     }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        /// Whatever is sealed opens with its master key, also after a rewrap to another.
+        #[test]
+        fn seal_open_rewrap(plain in proptest::collection::vec(any::<u8>(), 0..2000), a in any::<[u8; 32]>(), b in any::<[u8; 32]>()) {
+            let (e, c) = Envelope::encrypt(&a, "k1", &plain).unwrap();
+            prop_assert_eq!(e.decrypt(&a, &c).unwrap(), plain.clone());
+            let r = e.rewrap(&a, &b, "k2").unwrap();
+            prop_assert_eq!(r.decrypt(&b, &c).unwrap(), plain);
+            if a != b {
+                prop_assert!(r.decrypt(&a, &c).is_err());
+                prop_assert!(e.decrypt(&b, &c).is_err());
+            }
+        }
+
+        /// One flipped bit anywhere (ciphertext, wrapped key, key id) or a cut: refused.
+        #[test]
+        fn any_change_is_refused(plain in proptest::collection::vec(any::<u8>(), 1..300), at in any::<prop::sample::Index>(), bit in 0u8..8, which in 0u8..4) {
+            let (mut e, mut c) = Envelope::encrypt(&[9; 32], "key", &plain).unwrap();
+            match which {
+                0 => { let i = at.index(c.len()); c[i] ^= 1 << bit }
+                1 => { let i = at.index(e.wrapped_key.len()); e.wrapped_key[i] ^= 1 << bit }
+                2 => e.key_id.push('x'),
+                _ => c.truncate(at.index(c.len())),
+            }
+            prop_assert!(e.decrypt(&[9; 32], &c).is_err());
+        }
+    }
 }

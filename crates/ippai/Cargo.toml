@@ -30,3 +30,6 @@ rust-embed = { version = "8", features = ["include-exclude"] }
 directories = "6"
 toml = { version = "0.9", default-features = false, features = ["parse", "serde"] }
 ureq = { version = "2", features = ["json", "native-certs"] }
+
+[dev-dependencies]
+proptest = "1"

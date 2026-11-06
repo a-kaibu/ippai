@@ -10,3 +10,9 @@
 
 # mlugg/setup-zig restores this cache before GoReleaser checks the worktree.
 /.zig-cache/
+# fuzz/ (cargo-fuzz): build, corpus, crash inputs and seeds stay out of git
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts
+/fuzz/seeds
+/fuzz/coverage

@@ -901,3 +901,55 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// Every pixel format, any image and rectangle, rows padded: straight formats come back
+        /// exact, premultiplied ones within their rounding (and never brighter than alpha
+        /// while premultiplied), gray between the darkest and brightest channel.
+        #[test]
+        fn formats_round_trip(w in 1u32..12, h in 1u32..8, rect in (0u32..12, 0u32..8, 1u32..12, 1u32..8), pad in 0u32..5, seed in any::<u64>()) {
+            let px: Vec<u8> = (0..(w * h * 4) as u64).map(|i| (i.wrapping_mul(seed | 1) >> 9) as u8).collect();
+            let img = Img { w, h, px };
+            let (x, y) = (rect.0 % w, rect.1 % h);
+            let (rw, rh) = (rect.2.min(w - x), rect.3.min(h - y));
+            for f in ALL {
+                let stride = rw * bpp(f) + pad;
+                let mut out = vec![0u8; (stride * rh) as usize];
+                encode(&img, f, (x, y, rw, rh), stride, &mut out);
+                let back = decode(f, rw, rh, stride, &out);
+                for r in 0..rh {
+                    for c in 0..rw {
+                        let s = &img.px[(((y + r) * w + x + c) * 4) as usize..][..4];
+                        let g = &back.px[((r * rw + c) * 4) as usize..][..4];
+                        let e = &out[(r * stride + c * bpp(f)) as usize..][..bpp(f) as usize];
+                        match f {
+                            Fmt::Bgra | Fmt::Rgba => prop_assert_eq!(g, s, "{:?}", f),
+                            Fmt::Bgr32 | Fmt::Rgb32 | Fmt::Bgr24 | Fmt::Rgb24 => prop_assert_eq!(g, &[s[0], s[1], s[2], 255][..], "{:?}", f),
+                            Fmt::Pbgra | Fmt::Prgba => {
+                                let a = s[3] as i32;
+                                prop_assert!(e[..3].iter().all(|&v| v as i32 <= a), "{:?} {:?}", f, e);
+                                prop_assert_eq!(g[3], s[3]);
+                                for k in 0..3 {
+                                    let err = (g[k] as i32 - s[k] as i32).abs();
+                                    if a == 0 { prop_assert_eq!(g[k], 0) } else { prop_assert!(err <= 128 / a + 1, "{:?} {:?} -> {:?}", f, s, g) }
+                                }
+                            }
+                            Fmt::Gray8 => {
+                                let (lo, hi) = (s[..3].iter().min().unwrap(), s[..3].iter().max().unwrap());
+                                prop_assert!(g[0] >= lo.saturating_sub(1) && g[0] <= *hi, "{:?} -> {:?}", s, g);
+                                prop_assert_eq!((g[0], g[1], g[2], g[3]), (g[0], g[0], g[0], 255));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

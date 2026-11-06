@@ -143,3 +143,47 @@ pub fn upper_a(s: &mut [u8]) {
         i += 1;
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        /// Text a Japanese game writes (ASCII, kana, kanji, full-width, half-width katakana; the
+        /// wave dash is U+FF5E in Windows-31J, U+301C has no code; NEC/IBM extensions included)
+        /// survives Shift_JIS both ways.
+        #[test]
+        fn cp932_round_trip(s in "[ -~ぁ-んァ-ヶ日本語漢字学校生活時間世界東京名前今年月火水木金土私君彼女愛夢恋剣魔法王姫髙﨑ａ-ｚ０-９｡-ﾟ「」、。・ー～①Ⅰ]{0,40}") {
+            let w: Vec<u16> = s.encode_utf16().collect();
+            let mb = w2mb(932, &w);
+            prop_assert_eq!(mb2w(932, &mb), w);
+        }
+
+        /// Any bytes in any code page: decoding then encoding again is stable (a second trip
+        /// changes nothing), never a panic.
+        #[test]
+        fn any_bytes_settle(b in proptest::collection::vec(any::<u8>(), 0..64), cp in prop::sample::select(vec![932u32, 936, 949, 950, 65001, 1250, 1251, 1252])) {
+            let once = w2mb(cp, &mb2w(cp, &b));
+            let w = mb2w(cp, &once);
+            prop_assert_eq!(mb2w(cp, &w2mb(cp, &w)), w);
+        }
+
+        /// ASCII is itself in every code page.
+        #[test]
+        fn ascii_everywhere(s in "[\\x00-\\x7f]{0,40}", cp in prop::sample::select(vec![932u32, 936, 949, 950, 65001, 1250, 1251, 1252])) {
+            let w: Vec<u16> = s.encode_utf16().collect();
+            prop_assert_eq!(mb2w(cp, s.as_bytes()), w.clone());
+            prop_assert_eq!(w2mb(cp, &w), s.as_bytes().to_vec());
+        }
+
+        /// Unmappable characters become '?' (one per character), as on Windows.
+        #[test]
+        fn unmappable_is_question_mark(n in 1usize..8) {
+            let w: Vec<u16> = "😀".repeat(n).encode_utf16().collect();
+            prop_assert_eq!(w2mb(932, &w), vec![b'?'; n]);
+        }
+    }
+}

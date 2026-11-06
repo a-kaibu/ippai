@@ -65,7 +65,11 @@ const IMA_STEP: [i32; 89] = [
     11487, 12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767,
 ];
 
-fn ima_block(b: &[u8], ch: usize, spb: usize, out: &mut Vec<i16>) {
+pub fn ima_block(b: &[u8], ch: usize, spb: usize, out: &mut Vec<i16>) {
+    // (a block shorter than its headers: nothing, as ms_block; found by fuzz/acm)
+    if b.len() < 4 * ch || spb == 0 {
+        return;
+    }
     let start = out.len();
     out.resize(start + spb * ch, 0);
     for c in 0..ch {
@@ -100,7 +104,7 @@ fn ima_block(b: &[u8], ch: usize, spb: usize, out: &mut Vec<i16>) {
 const MS_ADAPT: [i32; 16] = [230, 230, 230, 230, 307, 409, 512, 614, 768, 614, 512, 409, 307, 230, 230, 230];
 const MS_COEF: [(i32, i32); 7] = [(256, 0), (512, -256), (0, 0), (192, 64), (240, 0), (460, -208), (392, -232)];
 
-fn ms_block(b: &[u8], ch: usize, spb: usize, out: &mut Vec<i16>) {
+pub fn ms_block(b: &[u8], ch: usize, spb: usize, out: &mut Vec<i16>) {
     if b.len() < 7 * ch || spb < 2 {
         return;
     }
@@ -384,5 +388,92 @@ pub fn init() {
         ("acmStreamReset", ok0),
     ] {
         implement("msacm32", n, f);
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::collection::vec;
+    use proptest::prelude::*;
+
+    /// The IMA ADPCM encoder of the format's reference (each nibble the closest step, the
+    /// predictor and index updated exactly as a decoder does), into one block of `ch` channels
+    /// laid out as the decoder reads it; also the samples a decoder must give back.
+    fn ima_encode(pcm: &[Vec<i16>]) -> (Vec<u8>, Vec<i16>) {
+        let (ch, spb) = (pcm.len(), pcm[0].len());
+        let mut b = vec![0u8; 4 * ch + (spb - 1).div_ceil(8) * 4 * ch];
+        let mut want = vec![0i16; spb * ch];
+        for (c, s) in pcm.iter().enumerate() {
+            let (mut pred, mut idx) = (s[0] as i32, 0i32);
+            b[4 * c..4 * c + 4].copy_from_slice(&[s[0] as u8, (s[0] >> 8) as u8, 0, 0]);
+            want[c] = s[0];
+            for i in 1..spb {
+                let step = IMA_STEP[idx as usize];
+                let mut diff = s[i] as i32 - pred;
+                let mut nib = 0;
+                if diff < 0 {
+                    nib = 8;
+                    diff = -diff;
+                }
+                let mut d = step >> 3;
+                for (bit, part) in [(4, step), (2, step >> 1), (1, step >> 2)] {
+                    if diff >= part {
+                        nib |= bit;
+                        diff -= part;
+                        d += part;
+                    }
+                }
+                pred = if nib & 8 != 0 { pred - d } else { pred + d }.clamp(-32768, 32767);
+                idx = (idx + IMA_INDEX[nib as usize]).clamp(0, 88);
+                want[i * ch + c] = pred as i16;
+                let k = i - 1;
+                let at = 4 * ch + (k / 8) * 4 * ch + 4 * c + (k % 8) / 2;
+                b[at] |= if k % 2 == 0 { nib as u8 } else { (nib as u8) << 4 };
+            }
+        }
+        (b, want)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        /// A block in the encoder's layout decodes to exactly what the encoder tracked.
+        #[test]
+        fn ima_matches_the_reference_encoder(ch in 1usize..=2, pcm in vec(vec(any::<i16>(), 1..80), 2)) {
+            let spb = pcm[0].len().min(pcm[1].len());
+            let pcm: Vec<Vec<i16>> = pcm[..ch].iter().map(|s| s[..spb].to_vec()).collect();
+            let (block, want) = ima_encode(&pcm);
+            let mut out = Vec::new();
+            ima_block(&block, ch, spb, &mut out);
+            prop_assert_eq!(out, want);
+        }
+
+        /// Any bytes, channel count and block length the header claims: no panic, and either
+        /// nothing or the whole block of samples.
+        #[test]
+        fn blocks_any_bytes(b in vec(any::<u8>(), 0..200), ch in 1usize..9, spb in 0usize..600, ms in any::<bool>()) {
+            let mut out = vec![7i16];
+            if ms { ms_block(&b, ch, spb, &mut out) } else { ima_block(&b, ch, spb, &mut out) }
+            prop_assert!(out.len() == 1 || out.len() == 1 + spb * ch);
+            prop_assert_eq!(out[0], 7);
+        }
+
+        /// MS ADPCM: the two header samples come out first, in order, per channel.
+        #[test]
+        fn ms_header_samples(ch in 1usize..=2, head in vec(any::<i16>(), 4), rest in vec(any::<u8>(), 0..64), spb in 2usize..100) {
+            let mut b = vec![0u8; ch];
+            b.extend((0..ch).flat_map(|_| 16i16.to_le_bytes()));
+            b.extend((0..ch).flat_map(|c| head[c].to_le_bytes()));
+            b.extend((0..ch).flat_map(|c| head[2 + c].to_le_bytes()));
+            b.extend(&rest);
+            let mut out = Vec::new();
+            ms_block(&b, ch, spb, &mut out);
+            prop_assert_eq!(out.len(), spb * ch);
+            for c in 0..ch {
+                prop_assert_eq!(out[c], head[2 + c]);
+                prop_assert_eq!(out[ch + c], head[c]);
+            }
+        }
     }
 }

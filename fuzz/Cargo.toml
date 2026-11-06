@@ -1,0 +1,49 @@
+# Coverage-guided fuzzing (cargo-fuzz / libFuzzer, nightly): fuzz/README.md.
+[package]
+name = "ippai-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+koji = { path = "../crates/koji" }
+sake = { path = "../crates/sake" }
+wasmparser = "0.263.0"
+wasmtime = { version = "50.0.1", default-features = false, features = ["cranelift", "runtime", "threads"] }
+
+[workspace]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "x86_interp"
+path = "fuzz_targets/x86_interp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "x86_jit"
+path = "fuzz_targets/x86_jit.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "image"
+path = "fuzz_targets/image.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "acm"
+path = "fuzz_targets/acm.rs"
+test = false
+doc = false
+bench = false

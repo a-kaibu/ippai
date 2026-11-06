@@ -1,0 +1,65 @@
+# Coverage-guided fuzzing (fuzz/README.md): every cargo-fuzz target in fuzz/ and crates/*/fuzz/,
+# a minute each on every push to main, five minutes each (and the corpus shrunk) once a day.
+# The corpus is kept in the Actions cache from run to run; crash inputs go up as an artifact.
+name: Fuzz
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: seconds per target
+        default: "300"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/cargo-fuzz
+            fuzz/target
+            crates/*/fuzz/target
+          key: fuzz-build-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock', 'crates/*/fuzz/Cargo.lock') }}
+          restore-keys: fuzz-build-${{ runner.os }}-
+      - name: Tools
+        run: |
+          sudo apt-get update -q && sudo apt-get install -yq gcc-multilib imagemagick
+          rustup toolchain install nightly --profile minimal
+          command -v cargo-fuzz || cargo install --locked cargo-fuzz --version 0.13.2
+      # (saved after the job under a new key when it passes; a failing run's corpus is not
+      # kept, its crash inputs are uploaded)
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            fuzz/corpus
+            crates/*/fuzz/corpus
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: fuzz-corpus-
+      - name: Fuzz
+        env:
+          MERGE: ${{ github.event_name == 'schedule' && '1' || '0' }}
+        run: fuzz/run.sh ${{ inputs.seconds || (github.event_name == 'schedule' && '300') || '60' }}
+      - uses: actions/upload-artifact@v7.0.2
+        if: failure()
+        with:
+          name: fuzz-crashes
+          path: |
+            fuzz/artifacts
+            crates/*/fuzz/artifacts
+          retention-days: 30
