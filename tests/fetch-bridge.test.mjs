@@ -11,11 +11,22 @@ globalThis.Worker = class {
   constructor() {
     this.w = new NodeWorker(workerData.source + '\\n' + \`
       const {parentPort} = require('node:worker_threads');
-      globalThis.fetch = async url => {
+      IPPAI_STALL_MS = 200;
+      IPPAI_GIVE_UP_MS = 1500;
+      const tries = new Map();
+      const body = (length) => Uint8Array.from({length}, (_, i) => i % 251).buffer;
+      globalThis.fetch = async (url, init) => {
+        const n = (tries.get(url) ?? 0) + 1;
+        tries.set(url, n);
         await new Promise(r => setTimeout(r, url === 'slow' ? 30 : 1));
-        if (url === 'fail') throw new Error('offline');
-        return {ok: url !== '404', status: 404, arrayBuffer: async () =>
-          Uint8Array.from({length: url === 'empty' ? 0 : 150000}, (_, i) => i % 251).buffer};
+        // a link that drops twice, a server that is restarting, then both fine
+        if (url === 'fail' || (url === 'flaky' && n <= 2)) throw new TypeError('Failed to fetch');
+        if (url === 'restart' && n <= 2) return {ok: false, status: 503};
+        // a body that stops halfway the first time (the stall watch aborts it)
+        if (url === 'stall' && n === 1) return {ok: true, status: 200, body: {getReader: () => ({
+          read: () => new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason))),
+        })}};
+        return {ok: url !== '404', status: 404, arrayBuffer: async () => body(url === 'empty' ? 0 : 150000)};
       };
       parentPort.on('message', data => ippaiFetchWorker({data}));
     \`, {eval:true});
@@ -49,4 +60,13 @@ test('empty response completes', async () => assert.deepEqual((await request('em
 test('network and HTTP failures unblock the caller', async () => {
   assert.ok((await request('fail')).error);
   assert.ok((await request('404')).error);
+});
+test('dropped links, 503s and stalled bodies are retried until the bytes arrive', async () => {
+  const expected = Array.from({length:150000}, (_, i) => i % 251);
+  for (const url of ['flaky', 'restart', 'stall']) assert.deepEqual((await request(url)).data, expected, url);
+});
+test('a 404 fails at once, without retries', async () => {
+  const t = Date.now();
+  assert.ok((await request('404')).error);
+  assert.ok(Date.now() - t < 1000);
 });

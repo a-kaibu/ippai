@@ -5,7 +5,20 @@ import { Personal, Statistics } from "./Personal";
 // that click (audio and fullscreen need the user gesture).
 
 import { useEffect, useMemo, useState } from "react";
-import { Bug, ExternalLink, Gamepad2, Info, Play, ScrollText, Search, Star } from "lucide-react";
+import {
+  Bug,
+  Download,
+  ExternalLink,
+  Gamepad2,
+  HardDrive,
+  Info,
+  Play,
+  ScrollText,
+  Search,
+  Star,
+  Trash2,
+  X,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -13,6 +26,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { coverUrl, played, type GameEntry } from "../launcher";
+import { dropOffline, offlineState, saveOffline, type OfflineState } from "../offline";
 import { renderShell } from "./Shell";
 import { setDebug, useUi } from "./store";
 
@@ -92,6 +106,74 @@ function GameCard({
   );
 }
 
+const mb = (b: number) => `${Math.max(1, Math.round(b / 2 ** 20))} MB`;
+
+/** The game's data on this device: save it beforehand (for a weak mobile link), or remove it. */
+function Offline({ game }: { game: GameEntry }) {
+  const [state, setState] = useState<OfflineState | null | undefined>();
+  const [saving, setSaving] = useState<{ have: number; total: number; stop: AbortController } | null>(null);
+  const [error, setError] = useState("");
+  const refresh = () =>
+    void offlineState(game).then(setState, (e: unknown) => {
+      setState(null);
+      setError(String(e instanceof Error ? e.message : e));
+    });
+  useEffect(refresh, [game]);
+  if (state === null && !error) return null;
+  if (!state) return error ? <p className="text-sm text-muted-foreground">{error}</p> : null;
+  const save = () => {
+    const stop = new AbortController();
+    setError("");
+    setSaving({ have: state.have, total: state.total, stop });
+    saveOffline(game, (have, total) => setSaving({ have, total, stop }), stop.signal)
+      .catch(
+        (e: unknown) =>
+          stop.signal.aborted ||
+          setError(`保存できませんでした: ${String(e instanceof Error ? e.message : e)}`),
+      )
+      .finally(() => {
+        setSaving(null);
+        refresh();
+      });
+  };
+  const all = state.have >= state.total;
+  return (
+    <div className="grid gap-2 rounded-lg border p-3 text-sm">
+      <div className="flex items-center gap-2">
+        <HardDrive className="size-4 shrink-0 text-muted-foreground" />
+        <span className="flex-1">
+          {saving
+            ? `端末に保存中 ${Math.floor((saving.have / Math.max(1, saving.total)) * 100)}%`
+            : all
+              ? `端末に保存済み（約 ${mb(state.bytes)}）`
+              : state.have
+                ? `一部を端末に保存済み（${Math.floor((state.have / state.total) * 100)}%、全体 約 ${mb(state.bytes)}）`
+                : `端末に保存すると、モバイル回線でも読み込みで止まりません（約 ${mb(state.bytes)}）`}
+        </span>
+      </div>
+      {error && <p className="text-destructive">{error}</p>}
+      <div className="flex gap-2">
+        {saving ? (
+          <Button size="sm" variant="outline" onClick={() => saving.stop.abort()}>
+            <X /> 中止
+          </Button>
+        ) : (
+          !all && (
+            <Button size="sm" variant="outline" onClick={save}>
+              <Download /> 端末に保存
+            </Button>
+          )
+        )}
+        {!saving && state.have > 0 && (
+          <Button size="sm" variant="ghost" onClick={() => void dropOffline(game).finally(refresh)}>
+            <Trash2 /> 端末から削除
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function GameInfo({ game, onPick, onClose }: { game: GameEntry; onPick: () => void; onClose: () => void }) {
   const m = game.meta ?? { source: "", title: game.title };
   const url = coverUrl(game);
@@ -150,6 +232,7 @@ function GameInfo({ game, onPick, onClose }: { game: GameEntry; onPick: () => vo
             </div>
           )}
           <Personal game={game.id} />
+          <Offline game={game} />
           <Button size="lg" className="w-full" onClick={onPick}>
             <Play className="fill-current" /> 起動
           </Button>

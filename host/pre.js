@@ -11,6 +11,9 @@ Module.preRun.push(() => {
 // ('load'): the saves as a SharedArrayBuffer, not copied per thread.
 var vnvmJitBundle = null;
 var vnvmSaves = null;
+// the tree lists the page fetched before starting (`vnvmFiles`, host/vnfs.js): every thread gets
+// them, so a thread's first look at the file system needs no request
+var vnvmTrees = null;
 Module.preInit = [].concat(Module.preInit || [], () => {
   if (ENVIRONMENT_IS_PTHREAD) return;
   const f = ENVIRONMENT_IS_NODE && process.env.IPPAI_JIT_FILE;
@@ -23,6 +26,7 @@ Module.preInit = [].concat(Module.preInit || [], () => {
     }
   }
   vnvmJitBundle = Module.vnvmJit || null;
+  vnvmTrees = Module.vnvmFiles || null;
   if (Module.vnvmSaves) {
     vnvmSaves = new Uint8Array(new SharedArrayBuffer(Module.vnvmSaves.length));
     vnvmSaves.set(Module.vnvmSaves);
@@ -35,7 +39,7 @@ if (!ENVIRONMENT_IS_PTHREAD) {
     W.prototype.vnvmPost = W.prototype.postMessage;
     W.prototype.postMessage = function (m, ...rest) {
       if (m && m.cmd === 'load') {
-        m = { ...m, vnvmJit: vnvmJitBundle, vnvmSaves };
+        m = { ...m, vnvmJit: vnvmJitBundle, vnvmSaves, vnvmTrees };
         if (!ENVIRONMENT_IS_NODE) {
           m.vnvmFetchPort = ippaiFetchConnect();
           rest[0] = [...(rest[0] || []), m.vnvmFetchPort];
@@ -49,6 +53,7 @@ if (!ENVIRONMENT_IS_PTHREAD) {
     if (d && d.cmd === 'load') {
       vnvmJitBundle = d.vnvmJit || null;
       vnvmSaves = d.vnvmSaves || null;
+      if (d.vnvmTrees) Module.vnvmFiles = d.vnvmTrees;
       if (d.vnvmFetchPort) ippaiFetchPort = d.vnvmFetchPort;
     }
   };

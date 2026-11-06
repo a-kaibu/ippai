@@ -6,7 +6,8 @@
 // shot (to page through a game); CLICK_SEQ="x,y;;x,y" clicks its n-th entry (if any) after shot n
 // instead, then CLICK_EVERY takes over (SHOT_COORDS=1: click coordinates are screenshot pixels). CHROME_ARGS adds browser flags; USER_DATA_DIR keeps the
 // browser profile (its HTTP and code caches) there across runs. NET="kbit/s,ms" throttles the
-// network; DEBUG_TEXT=1 logs the debug overlay (?debugmode=1) after every shot.
+// network; NET_DROP="at,seconds" cuts it off at `at` s for `seconds` (repeatable: "a,s;a,s"; a
+// phone out of coverage); DEBUG_TEXT=1 logs the debug overlay (?debugmode=1) after every shot.
 //
 //   node tests/play.mjs URL OUT_DIR [SECONDS] [INTERVAL]
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
@@ -33,18 +34,32 @@ if (process.env.THROTTLE) {
   const cdp = await page.context().newCDPSession(page);
   await cdp.send('Emulation.setCPUThrottlingRate', { rate: Number(process.env.THROTTLE) });
 }
-if (process.env.NET) {
-  // a slow connection: NET="kbit/s,latency ms" (DevTools network throttling; the page's
-  // workers' requests go through it too)
-  const [kbps, latency] = process.env.NET.split(",").map(Number);
-  const cdp = await page.context().newCDPSession(page);
-  await cdp.send("Network.enable");
-  await cdp.send("Network.emulateNetworkConditions", {
-    offline: false,
+// a slow connection: NET="kbit/s,latency ms" (DevTools network throttling; the page's workers'
+// requests go through it too); NET_DROP's cuts through the same session (a context's setOffline
+// would be undone by the throttling)
+let netCdp;
+const net = async (offline) => {
+  const [kbps, latency] = (process.env.NET ?? "0,0").split(",").map(Number);
+  netCdp ??= await page.context().newCDPSession(page);
+  await netCdp.send("Network.enable");
+  await netCdp.send("Network.emulateNetworkConditions", {
+    offline,
     latency,
-    downloadThroughput: (kbps * 1000) / 8,
-    uploadThroughput: (kbps * 1000) / 8,
+    downloadThroughput: kbps ? (kbps * 1000) / 8 : -1,
+    uploadThroughput: kbps ? (kbps * 1000) / 8 : -1,
   });
+};
+if (process.env.NET) await net(false);
+for (const drop of (process.env.NET_DROP ?? "").split(";").filter(Boolean)) {
+  const [at, secs] = drop.split(",").map(Number);
+  setTimeout(async () => {
+    appendFileSync(logFile, `${stamp()} [net] offline for ${secs} s\n`);
+    await net(true);
+    setTimeout(async () => {
+      await net(false);
+      appendFileSync(logFile, `${stamp()} [net] online again\n`);
+    }, secs * 1000);
+  }, at * 1000);
 }
 await page.goto(url);
 

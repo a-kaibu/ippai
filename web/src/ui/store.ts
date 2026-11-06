@@ -26,6 +26,8 @@ export interface UiState {
   back: (() => void) | null;
   /** debug mode: network, memory and fps over the game (ui/Debug.tsx) */
   debug: boolean;
+  /** requests are being retried: the link dropped or stalls (web/src/net.ts) */
+  net: boolean;
 }
 
 const DEBUG = "vnvm.debug";
@@ -52,6 +54,7 @@ let state: UiState = {
   bench: null,
   back: null,
   debug: debugAtStart(),
+  net: false,
 };
 const listeners = new Set<() => void>();
 

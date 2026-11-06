@@ -52,3 +52,32 @@ test("failed writes do not advance the revision", async () => {
   await transport.store("/save", new Uint8Array([2]));
   expect(revisions).toEqual(['"0"', '"0"']);
 });
+
+test("a game started offline syncs later only over the same server bytes", async () => {
+  let server: Uint8Array | null = new Uint8Array([5]);
+  const request: typeof fetch = async (_url, init) => {
+    if (init?.method === "PUT") {
+      server = new Uint8Array(init.body as Uint8Array);
+      return new Response(null, { status: 204, headers: { etag: '"2"' } });
+    }
+    return server
+      ? new Response(server.slice(), { headers: { etag: '"1"' } })
+      : new Response(null, { status: 404 });
+  };
+  const same = new SaveTransport(request);
+  same.startedOffline("/save", new Uint8Array([5]));
+  await same.store("/save", new Uint8Array([6]));
+  expect(Array.from(server!)).toEqual([6]);
+
+  // another device saved meanwhile: kept, the write is a conflict
+  const other = new SaveTransport(request);
+  other.startedOffline("/save", new Uint8Array([5]));
+  await expect(other.store("/save", new Uint8Array([7]))).rejects.toThrow("別の端末");
+  expect(Array.from(server!)).toEqual([6]);
+
+  server = null;
+  const fresh = new SaveTransport(request);
+  fresh.startedOffline("/save", null);
+  await fresh.store("/save", new Uint8Array([8]));
+  expect(Array.from(server!)).toEqual([8]);
+});

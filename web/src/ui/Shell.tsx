@@ -2,7 +2,7 @@
 // and the bench panel (state in ui/store.ts), plus toasts (sonner).
 
 import { createRoot } from "react-dom/client";
-import { ArrowLeft, Copy, Loader2, Play } from "lucide-react";
+import { ArrowLeft, Copy, Loader2, Play, WifiOff } from "lucide-react";
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Toaster } from "@/components/ui/sonner";
@@ -85,6 +85,15 @@ function Shell({ children }: { children?: ReactNode }) {
         <div className="pointer-events-none fixed bottom-3 left-3 z-30 flex max-w-[calc(100%-1.5rem)] items-center gap-2 rounded-full border bg-background/80 px-3 py-1.5 text-sm shadow backdrop-blur">
           {!/^エラー|ません/.test(ui.status) && <Loader2 className="size-3.5 shrink-0 animate-spin" />}
           <span className="truncate">{ui.status}</span>
+        </div>
+      )}
+      {ui.net && (
+        <div
+          role="status"
+          className="pointer-events-none fixed top-3 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full border bg-background/85 px-3 py-1.5 text-sm shadow backdrop-blur"
+        >
+          <WifiOff className="size-3.5 shrink-0" />
+          <span>回線が不安定です。再接続を待っています</span>
         </div>
       )}
       {ui.stats.length > 0 && (

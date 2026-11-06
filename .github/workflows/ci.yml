@@ -36,6 +36,10 @@ jobs:
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
         run: node tests/fetch-browser.mjs
+      - name: Unstable link (drops, stalls, offline, chunks kept on the device)
+        env:
+          PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
+        run: node tests/net-browser.mjs
       - uses: actions/cache@v6.1.0
         with:
           path: |

@@ -106,8 +106,23 @@ pub unsafe extern "C" fn vnhost_vfs_export(roots: *const c_char, len: *mut size_
 
 fn with<R>(f: impl FnOnce(&mut Fs) -> R) -> R {
     let mut g = FS.lock().unwrap_or_else(|e| e.into_inner());
-    f(g.get_or_insert_with(Fs::load))
+    if g.is_none() {
+        // Loaded without the lock: loading may wait on the network (a tree list; a dropped
+        // mobile link: minutes of retries), and the page's main thread takes the lock too
+        // (vnhost_vfs_export), spinning meanwhile. LOADING makes the other threads wait for
+        // the one that loads.
+        drop(g);
+        let _one = LOADING.lock().unwrap_or_else(|e| e.into_inner());
+        if FS.lock().unwrap_or_else(|e| e.into_inner()).is_none() {
+            let fs = Fs::load();
+            *FS.lock().unwrap_or_else(|e| e.into_inner()) = Some(fs);
+        }
+        g = FS.lock().unwrap_or_else(|e| e.into_inner());
+    }
+    f(g.as_mut().unwrap())
 }
+
+static LOADING: Mutex<()> = Mutex::new(());
 
 extern "C" {
     /// host/vnfs.js: reads `name` from the store into a malloc'ed buffer (NULL if missing)

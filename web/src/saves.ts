@@ -1,4 +1,5 @@
 import { SaveTransport } from "./save-transport";
+import { withRetries } from "./net";
 const transport = new SaveTransport();
 // Saved games: what the game wrote (in kura's in-memory file system) survives the page.
 // The files written under the game's folders and the prefix's user folders go to the browser's
@@ -30,13 +31,25 @@ const backup = (name: string) => new URL(`saves/${encodeURIComponent(name)}`, lo
 
 /** The blob an earlier session saved for `name`: this browser's, else the server's backup (null: none). */
 export async function loadSaves(name: string): Promise<Uint8Array | null> {
+  const local = async () => {
+    const f = await file(name, false);
+    return f ? new Uint8Array(await (await f.getFile()).arrayBuffer()) : null;
+  };
   // The server is authoritative across devices; OPFS only seeds legacy saves when absent.
-  const remote = await transport.load(backup(name));
+  // Out of reach (a dropped mobile link, a few tries): this browser's copy, synced later.
+  let remote: Uint8Array | null;
+  try {
+    remote = await withRetries(() => transport.load(backup(name)), 3);
+  } catch (e) {
+    console.warn(`saves: server out of reach, starting from this browser's copy: ${String(e)}`);
+    const data = await local();
+    transport.startedOffline(backup(name), data);
+    return data;
+  }
   if (remote) return remote;
-  const f = await file(name, false);
-  const local = f ? new Uint8Array(await (await f.getFile()).arrayBuffer()) : null;
-  if (local?.length) await transport.store(backup(name), local);
-  return local;
+  const data = await local();
+  if (data?.length) await transport.store(backup(name), data);
+  return data;
 }
 
 function exportSaves(m: SavesModule, roots: string[]): Uint8Array<ArrayBuffer> {
@@ -61,8 +74,9 @@ function same(a: Uint8Array | null, b: Uint8Array): boolean {
 
 /** Writes `data` as `name`'s blob (OPFS, and the server's backup); false when OPFS fails. */
 export async function storeSaves(name: string, data: Uint8Array<ArrayBuffer>): Promise<boolean> {
-  await transport.store(backup(name), data);
-  // A denied OPFS quota must not prevent server persistence.
+  // This browser's copy first: with the link down the save still survives the page (the server's
+  // copy is tried again on the next change check). A denied OPFS quota must not prevent server
+  // persistence.
   try {
     const f = await file(name, true);
     if (f) {
@@ -73,6 +87,7 @@ export async function storeSaves(name: string, data: Uint8Array<ArrayBuffer>): P
   } catch (e) {
     console.warn("saves: local cache", e);
   }
+  await transport.store(backup(name), data);
   return true;
 }
 

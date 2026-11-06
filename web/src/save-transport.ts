@@ -2,6 +2,8 @@
 export class SaveTransport {
   private revisions = new Map<string, string>();
   private queues = new Map<string, Promise<void>>();
+  /** what a game started from when the server could not be reached (this browser's copy) */
+  private bases = new Map<string, Uint8Array>();
   // (fetch called as this.request would be an illegal invocation: bound to the window)
   constructor(private request: typeof fetch = (input, init) => fetch(input, init)) {}
   async load(url: string): Promise<Uint8Array | null> {
@@ -17,13 +19,37 @@ export class SaveTransport {
     this.revisions.set(url, revision);
     return data;
   }
+  /**
+   * The server was out of reach at the start, so the game started from `data` (this browser's
+   * copy): the first store later learns the server's revision, and writes over it only if the
+   * server still has these same bytes (or nothing), so another device's newer save is not lost.
+   */
+  startedOffline(url: string, data: Uint8Array | null): void {
+    this.bases.set(url, data ?? new Uint8Array());
+  }
+  private async learnRevision(url: string): Promise<void> {
+    const base = this.bases.get(url);
+    if (!base) throw new Error("セーブの読み込みが未完了です");
+    const r = await this.request(url, { cache: "no-store" });
+    if (r.status === 404) {
+      this.revisions.set(url, '"0"');
+    } else {
+      if (!r.ok) throw new Error(`セーブの取得に失敗しました: HTTP ${r.status}`);
+      const revision = r.headers.get("etag");
+      const bytes = new Uint8Array(await r.arrayBuffer());
+      if (!revision || bytes.length !== base.length || !bytes.every((b, i) => b === base[i]))
+        throw new Error("別の端末でセーブが更新されました。再読み込みが必要です");
+      this.revisions.set(url, revision);
+    }
+    this.bases.delete(url);
+  }
   store(url: string, data: Uint8Array<ArrayBuffer>): Promise<void> {
     const snapshot = data.slice();
     const previous = this.queues.get(url) ?? Promise.resolve();
     const pending = previous
       .catch(() => {})
       .then(async () => {
-        if (!this.revisions.has(url)) throw new Error("セーブの読み込みが未完了です");
+        if (!this.revisions.has(url)) await this.learnRevision(url);
         const r = await this.request(url, {
           method: "PUT",
           headers: { "if-match": this.revisions.get(url)! },

@@ -26,6 +26,7 @@ import { getUi, setDebug, setStart, setUi } from "./ui/store";
 import { renderShell } from "./ui/Shell";
 import { showLibrary } from "./ui/Library";
 import { FlightRecorder, sendLeftovers } from "./crashlog";
+import { fetchRetry, getChunk, chunkCache, HttpError, trimChunks, watchRetries, withRetries } from "./net";
 
 const params = new URLSearchParams(location.search);
 const canvas = document.querySelector<HTMLCanvasElement>("#screen")!;
@@ -199,7 +200,13 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       })
     : Promise.resolve(undefined);
   const ahead = jitName ? readAhead(jitName, jit) : undefined;
-  const scriptUrl = `${BASE}sake.js`;
+  // versioned too: the game's threads past the pool each start a worker from it, and a URL the
+  // browser must revalidate fails while the link is down (the game then hangs)
+  const scriptUrl = await fetch(`${BASE}sake.js`, { method: "HEAD" }).then(
+    (r) =>
+      `${BASE}sake.js?v=${encodeURIComponent(`${r.headers.get("last-modified") ?? ""}-${r.headers.get("content-length") ?? ""}`)}`,
+    () => `${BASE}sake.js`,
+  );
   const factory = (await import(/* @vite-ignore */ scriptUrl)).default as (m: object) => Promise<SakeModule>;
   const version = await wasmVersion;
   recorder.note(`build: ${WASM} ${version}, translator ${await jitVersion}`);
@@ -212,9 +219,9 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       .filter(Boolean)
       .map(async (tree) => {
         const name = `trees/${tree}.tsv`;
-        const r = await fetch(new URL(`store/${name}`, location.href));
-        if (!r.ok) throw new Error(`mount ${tree}: HTTP ${r.status}`);
-        vnvmFiles[name] = new Uint8Array(await r.arrayBuffer());
+        vnvmFiles[name] = await fetchRetry(new URL(`store/${name}`, location.href)).catch((e: unknown) => {
+          throw new Error(`mount ${tree}: ${e instanceof Error ? e.message : String(e)}`);
+        });
       }),
   );
   const moduleArg = {
@@ -314,20 +321,22 @@ function fnv(bytes: Uint8Array): string {
 async function loadJit(
   name: string,
 ): Promise<{ parts: { module: WebAssembly.Module; idx: Uint8Array }[] } | undefined> {
-  const ok = (r: Response) => (r.ok ? r : Promise.reject(new Error(`HTTP ${r.status}`)));
+  const ok = (r: Response) => (r.ok ? r : Promise.reject(new HttpError(r.status)));
   try {
     // "<module> <index> <version>" per part
-    const list = (await (await fetch(`jit/${name}.parts`).then(ok)).text()).split("\n").filter(Boolean);
+    const list = new TextDecoder()
+      .decode(await fetchRetry(`jit/${name}.parts`, {}, { giveUpMs: 60000 }))
+      .split("\n")
+      .filter(Boolean);
     const parts = await Promise.all(
       list.map(async (line) => {
         const [wasm, idx, v] = line.split(" ");
         const [module, bytes] = await Promise.all([
-          WebAssembly.compileStreaming(fetch(`jit/${wasm}?v=${v}`).then(ok)),
-          fetch(`jit/${idx}?v=${v}`)
-            .then(ok)
-            .then((r) => r.arrayBuffer()),
+          // (streamed: the browser keeps the compiled code of a ?v= URL; tried again as a whole)
+          withRetries(() => WebAssembly.compileStreaming(fetch(`jit/${wasm}?v=${v}`).then(ok))),
+          fetchRetry(`jit/${idx}?v=${v}`, {}, { giveUpMs: 60000 }),
         ]);
-        return { module, idx: new Uint8Array(bytes) };
+        return { module, idx: bytes };
       }),
     );
     return parts.length ? { parts } : undefined;
@@ -364,8 +373,8 @@ function readAhead(name: Promise<string>, after: Promise<unknown>): (sake: SakeM
     // this program's list; for a program with none yet (a game's first run), those several
     // programs read (fonts and the like)
     const get = (u: string) =>
-      fetch(u).then(
-        (r) => (r.ok ? r.arrayBuffer() : new ArrayBuffer(0)),
+      fetchRetry(u, {}, { giveUpMs: 60000 }).then(
+        (b) => b.buffer,
         () => new ArrayBuffer(0),
       );
     let lists = [await get(`jit/${await name}.chunks`)];
@@ -384,6 +393,7 @@ function readAhead(name: Promise<string>, after: Promise<unknown>): (sake: SakeM
     }
     const list = new Uint8Array(all);
     if (!list.length) return;
+    const cache = await chunkCache();
     let next = 0;
     const one = async () => {
       while (next * 16 < list.length) {
@@ -391,11 +401,12 @@ function readAhead(name: Promise<string>, after: Promise<unknown>): (sake: SakeM
         while (sake?._vnhost_net_busy?.()) await new Promise((r) => setTimeout(r, 25));
         const hash = list.subarray(next * 16, ++next * 16);
         const hex = Array.from(hash, (b) => b.toString(16).padStart(2, "0")).join("");
-        const c = await fetch(`${store}chunks/${hex.slice(0, 2)}/${hex}`, { priority: "low" });
-        if (!c.ok) continue;
-        const data = new Uint8Array(await c.arrayBuffer());
-        if (sake) put(sake, hash, data);
-        else got.push([hash, data]);
+        // (kept on the device from an earlier play: no network; a chunk that fails for good is
+        // left to the game's own read)
+        const c = await getChunk(store, hex, { cache, priority: "low" }).catch(() => null);
+        if (!c) continue;
+        if (sake) put(sake, hash, c.data);
+        else got.push([hash, c.data]);
       }
     };
     await Promise.all(Array.from({ length: 4 }, one));
@@ -503,6 +514,9 @@ function splash(g: GameEntry): void {
 async function main(): Promise<void> {
   // logs an earlier page left (its tab was killed mid-game) go to the server now
   void sendLeftovers().catch(() => {});
+  // a weak link: say that the game waits for the network (the requests are being retried)
+  watchRetries((n) => setUi({ net: n > 0 }));
+  void trimChunks().catch(() => undefined);
   const problem = checkSupport();
   if (problem) {
     log(problem);
