@@ -12,6 +12,8 @@ FILTER=${3:-}
 for exe in "$EXE"/*.exe; do
   n=$(basename "$exe" .exe)
   [[ -n "$FILTER" && "$n" != *$FILTER* ]] && continue
+  # (GPU probes run in the browser on sake's side: run-browser.mjs)
+  [[ -n "${SAKE:-}" && -f "$EXE/browser.txt" ]] && grep -qx "$n" "$EXE/browser.txt" && continue
   d=$OUT/$n
   rm -rf "$d"; mkdir -p "$d/cwd"
   start=$(date +%s)

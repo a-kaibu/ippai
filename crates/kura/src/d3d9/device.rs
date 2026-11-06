@@ -156,6 +156,8 @@ pub struct Device {
     last_vs: (Vec<u8>, u32),
     last_ps: (Vec<u8>, u32),
     batch_gen: u64,
+    /// the batch `last_vs` / `last_ps` were written to
+    uniform_gen: u64,
     pub in_scene: bool,
     pub cursor: bool,
     pub gamma: Vec<u8>,
@@ -827,6 +829,7 @@ unsafe fn create_device(d: &mut D3d, d3d: u32, ty: u32, focus: u32, behavior: u3
         last_vs: (Vec::new(), 0),
         last_ps: (Vec::new(), 0),
         batch_gen: u64::MAX,
+        uniform_gen: u64::MAX,
         in_scene: false,
         cursor: true,
         gamma: Vec::new(),
@@ -2817,9 +2820,11 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
 
     ensure_target(d, rt, ds);
     let dev = d.dev.as_mut().unwrap();
-    let same_batch = dev.batch_gen == gpu::batch_gen();
+    // (uniforms of the last draw can be reused only from the same batch's data: a Clear or a
+    // target change since a flush does not write them again)
+    let same_batch = dev.uniform_gen == gpu::batch_gen();
     // data: vertices, indices, uniforms
-    let (cmd, ok) = gpu::record(|b| {
+    let ((cmd, ok), gen) = gpu::record_gen(|b| {
         let mut offs = Vec::new();
         for &(_, ptr, stride) in &streams {
             let start = ptr + first * stride;
@@ -2890,6 +2895,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     let _ = ok;
     dev.last_vs = (vsu, cmd.0);
     dev.last_ps = (psu, cmd.1);
+    dev.uniform_gen = gen;
     // mark the target rendered
     mark_rendered(d, rt);
     // (big batches go out now: the page writes the data block in one piece)

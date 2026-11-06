@@ -9,10 +9,17 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 OUT=${1:-$ROOT/target/winref/exe}
 mkdir -p "$OUT"
+OUT=$(cd "$OUT" && pwd)
 (cd "$HERE" && i686-w64-mingw32-windres ja.rc -O coff -o "$OUT/ja32.res" && x86_64-w64-mingw32-windres ja.rc -O coff -o "$OUT/ja64.res")
 libs() { sed -n 's/.*libs: *\([-a-z0-9_ ]*\).*/\1/p' "$1" | head -1; }
+# probes marked "run: browser" draw through the GPU: sake runs them in Chromium (run-browser.mjs)
+: > "$OUT/browser.txt"
 for src in "$HERE"/probes/*.c; do
   n=$(basename "$src" .c)
+  if grep -q 'run: browser' "$src"; then
+    echo "$n-32" >> "$OUT/browser.txt"
+    grep -q 'arch: 32' "$src" || echo "$n-64" >> "$OUT/browser.txt"
+  fi
   l=$(libs "$src")
   i686-w64-mingw32-gcc -O2 -msse2 -Wall -Wno-format -Wno-unused -o "$OUT/$n-32.exe" "$src" "$OUT/ja32.res" "$HERE/fpu53.c" $l
   if ! grep -q 'arch: 32' "$src"; then

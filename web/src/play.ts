@@ -266,7 +266,8 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     },
     // sake's ExitProcess / exit() end the runtime itself (it is the root process): the
     // frame loop then goes back to the list (closeGame)
-    onExit: () => {
+    onExit: (code: number) => {
+      console.log(`exit code ${code}`);
       stopPlay?.();
       exited = true;
     },
