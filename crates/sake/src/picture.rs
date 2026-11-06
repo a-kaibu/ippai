@@ -156,12 +156,19 @@ pub fn gray(b: u8, g: u8, r: u8) -> u8 {
     (linear_to_srgb(y) * 255.0 + 0.5).clamp(0.0, 255.0) as u8
 }
 
+/// 16bppGray of an sRGB color: the same luminance, to 16 bits.
+fn gray16(b: u8, g: u8, r: u8) -> u16 {
+    let y = 0.2126 * srgb_to_linear(r) + 0.7152 * srgb_to_linear(g) + 0.0722 * srgb_to_linear(b);
+    (linear_to_srgb(y) * 65535.0 + 0.5).clamp(0.0, 65535.0) as u16
+}
+
 /// Premultiplied to straight: what Windows' converters give (truncating).
 fn unpremultiply(c: u8, a: u8) -> u8 {
     if a == 0 {
         0
     } else {
-        (c as u32 * 255 / a as u32).min(255) as u8
+        // (in floats, both scaled to 0..1 first: 57 of 171 is 84, not 85)
+        ((c as f32 / 255.0) / (a as f32 / 255.0) * 255.0).min(255.0) as u8
     }
 }
 
@@ -169,11 +176,50 @@ fn premultiply(c: u8, a: u8) -> u8 {
     ((c as u32 * a as u32 + 127) / 255) as u8
 }
 
-/// The 32bppCMYK -> sRGB of Windows' converters (no color profile).
+/// Windows' 32bppCMYK -> sRGB (through its CMYK color profile), measured on a grid of 9 levels
+/// of each ink (tests/winref/golden/wicconv-32/cmyk_grid.png: RGB, cyan fastest, black slowest).
+static CMYK_GRID: &[u8; 9 * 9 * 9 * 9 * 3] = include_bytes!("../data/cmyk_grid.rgb");
+
+/// 32bppCMYK as Windows shows it: the measured grid, interpolated between its levels (within a
+/// few levels of Windows' own conversion).
 pub fn cmyk_to_bgr(c: u8, m: u8, y: u8, k: u8) -> [u8; 3] {
-    let f = |v: u8| ((255 - v as u32) * (255 - k as u32) / 255) as u8;
-    [f(y), f(m), f(c)]
+    let mut idx = [0usize; 4];
+    let mut t = [0f32; 4];
+    for (j, v) in [c, m, y, k].into_iter().enumerate() {
+        let p = v as f32 * 8.0 / 255.0;
+        idx[j] = (p as usize).min(7);
+        t[j] = p - idx[j] as f32;
+    }
+    let mut rgb = [0f32; 3];
+    for corner in 0..16 {
+        let mut w = 1.0;
+        let mut at = 0;
+        for j in 0..4 {
+            let bit = (corner >> j) & 1;
+            w *= if bit == 1 { t[j] } else { 1.0 - t[j] };
+            at += (idx[j] + bit) * [1, 9, 81, 729][j];
+        }
+        for (ch, out) in rgb.iter_mut().enumerate() {
+            *out += w * CMYK_GRID[at * 3 + ch] as f32;
+        }
+    }
+    let q = |v: f32| (v + 0.5).clamp(0.0, 255.0) as u8;
+    [q(rgb[2]), q(rgb[1]), q(rgb[0])]
 }
+
+/// The first 16bppGray level of each 8-bit gray 1..=255 in Windows' conversion (measured:
+/// tests/winref/golden/wicconv-32/gray16_ramp.png).
+const GRAY16_TO_8: [u16; 255] = [
+    127, 379, 632, 884, 1137, 1389, 1641, 1894, 2146, 2399, 2649, 2892, 3122, 3551, 3752, 3946, 4315, 4490, 4827, 4988, 5298, 5595, 5737, 6015, 6281, 6538, 6786, 7026, 7373, 7596, 7812, 8127, 8330,
+    8626, 8913, 9099, 9371, 9635, 9893, 10143, 10387, 10704, 10935, 11161, 11456, 11671, 11952, 12226, 12493, 12690, 12947, 13261, 13506, 13746, 13982, 14270, 14497, 14774, 15046, 15312, 15573,
+    15829, 16081, 16328, 16571, 16810, 17091, 17368, 17594, 17862, 18124, 18383, 18637, 18887, 19133, 19416, 19655, 19929, 20160, 20426, 20688, 20946, 21201, 21452, 21734, 21977, 22218, 22489, 22755,
+    22986, 23246, 23503, 23787, 24037, 24283, 24557, 24797, 25064, 25328, 25559, 25816, 26098, 26349, 26597, 26869, 27111, 27377, 27640, 27874, 28131, 28410, 28661, 28909, 29179, 29422, 29687, 29948,
+    30207, 30462, 30716, 30966, 31237, 31482, 31747, 31988, 32248, 32505, 32759, 33032, 33282, 33529, 33795, 34057, 34317, 34575, 34830, 35083, 35334, 35601, 35847, 36110, 36370, 36627, 36883, 37136,
+    37387, 37654, 37901, 38163, 38422, 38680, 38935, 39189, 39456, 39705, 39969, 40214, 40473, 40730, 40985, 41254, 41505, 41769, 42016, 42276, 42534, 42791, 43045, 43312, 43562, 43825, 44072, 44331,
+    44588, 44844, 45097, 45363, 45612, 45874, 46134, 46392, 46648, 46902, 47154, 47418, 47680, 47927, 48185, 48442, 48697, 48962, 49214, 49476, 49724, 49982, 50239, 50506, 50760, 51011, 51273, 51534,
+    51781, 52037, 52304, 52558, 52810, 53072, 53332, 53590, 53847, 54102, 54356, 54608, 54870, 55129, 55388, 55644, 55899, 56153, 56416, 56666, 56926, 57183, 57440, 57695, 57958, 58210, 58471, 58729,
+    58977, 59243, 59497, 59751, 60012, 60262, 60520, 60777, 61042, 61297, 61549, 61810, 62069, 62327, 62583, 62838, 63092, 63353, 63604, 63862, 64119, 64375, 64638, 64891, 65152, 65411,
+];
 
 /// One pixel of `f` (its bytes or, below 8 bits, the value) as straight BGRA.
 fn pixel_to_bgra(f: Fmt, s: &[u8], v: u32, palette: &[u32]) -> [u8; 4] {
@@ -192,7 +238,8 @@ fn pixel_to_bgra(f: Fmt, s: &[u8], v: u32, palette: &[u32]) -> [u8; 4] {
         Fmt::Gray4 => grayn(v, 4),
         Fmt::Gray8 => [s[0], s[0], s[0], 255],
         Fmt::Gray16 => {
-            let g = ((le16(0) as u32 * 255 + 32767) / 65535) as u8;
+            let v = le16(0);
+            let g = GRAY16_TO_8.partition_point(|&t| t <= v) as u8;
             [g, g, g, 255]
         }
         Fmt::Bgr555 => {
@@ -220,7 +267,7 @@ fn pixel_to_bgra(f: Fmt, s: &[u8], v: u32, palette: &[u32]) -> [u8; 4] {
             let [b, g, r] = cmyk_to_bgr(s[0], s[1], s[2], s[3]);
             [b, g, r, 255]
         }
-        Fmt::Alpha8 => [0, 0, 0, s[0]],
+        Fmt::Alpha8 => [255, 255, 255, s[0]],
     }
 }
 
@@ -254,12 +301,16 @@ pub fn to_bgra(f: Fmt, w: u32, h: u32, stride: u32, data: &[u8], palette: &[u32]
 }
 
 /// The palette entry closest to a color (for converting to indexed formats).
-fn nearest(palette: &[u32], b: u8, g: u8, r: u8, a: u8) -> u32 {
+/// Windows picks among the first 2^bits opaque entries by RGB distance, lowest index on ties.
+fn nearest(palette: &[u32], bits: u32, b: u8, g: u8, r: u8) -> u32 {
     let mut best = (u32::MAX, 0);
-    for (i, &c) in palette.iter().enumerate() {
+    for (i, &c) in palette.iter().take(1 << bits).enumerate() {
         let e = c.to_le_bytes();
+        if e[3] != 255 {
+            continue;
+        }
         let d = |x: u8, y: u8| (x as i32 - y as i32).pow(2) as u32;
-        let dist = d(e[0], b) + d(e[1], g) + d(e[2], r) + d(e[3], a);
+        let dist = d(e[0], b) + d(e[1], g) + d(e[2], r);
         if dist < best.0 {
             best = (dist, i as u32);
         }
@@ -279,9 +330,9 @@ pub fn from_bgra(src: &[u8], sw: u32, f: Fmt, (x, y, w, h): (u32, u32, u32, u32)
             let (b, g, r, a) = (p[0], p[1], p[2], p[3]);
             let w16 = |d: &mut [u8], o: usize, v: u16| d[o..o + 2].copy_from_slice(&v.to_le_bytes());
             let v = match f {
-                Fmt::Idx1 | Fmt::Idx2 | Fmt::Idx4 | Fmt::Idx8 => nearest(palette, b, g, r, a),
+                Fmt::Idx1 | Fmt::Idx2 | Fmt::Idx4 | Fmt::Idx8 => nearest(palette, bits, b, g, r),
                 Fmt::BlackWhite => (gray(b, g, r) >= 128) as u32,
-                Fmt::Gray2 => gray(b, g, r) as u32 >> 6,
+                Fmt::Gray2 => (gray(b, g, r) as u32 * 3 + 127) / 255,
                 Fmt::Gray4 => gray(b, g, r) as u32 >> 4,
                 _ => 0,
             };
@@ -294,14 +345,15 @@ pub fn from_bgra(src: &[u8], sw: u32, f: Fmt, (x, y, w, h): (u32, u32, u32, u32)
                 Fmt::Idx8 => d[o] = v as u8,
                 Fmt::Gray8 => d[o] = gray(b, g, r),
                 Fmt::Alpha8 => d[o] = a,
-                Fmt::Gray16 => w16(d, o, gray(b, g, r) as u16 * 257),
+                Fmt::Gray16 => w16(d, o, gray16(b, g, r)),
                 Fmt::Bgr555 => w16(d, o, ((r as u16 >> 3) << 10) | ((g as u16 >> 3) << 5) | (b as u16 >> 3)),
                 Fmt::Bgr565 => w16(d, o, ((r as u16 >> 3) << 11) | ((g as u16 >> 2) << 5) | (b as u16 >> 3)),
                 Fmt::Bgr24 => d[o..o + 3].copy_from_slice(&[b, g, r]),
                 Fmt::Rgb24 => d[o..o + 3].copy_from_slice(&[r, g, b]),
                 // (the fourth byte is copied, not set: what Windows does)
                 Fmt::Bgr32 | Fmt::Bgra => d[o..o + 4].copy_from_slice(&[b, g, r, a]),
-                Fmt::Rgb32 | Fmt::Rgba => d[o..o + 4].copy_from_slice(&[r, g, b, a]),
+                Fmt::Rgba => d[o..o + 4].copy_from_slice(&[r, g, b, a]),
+                Fmt::Rgb32 => d[o..o + 4].copy_from_slice(&[r, g, b, 255]),
                 Fmt::Pbgra => d[o..o + 4].copy_from_slice(&[premultiply(b, a), premultiply(g, a), premultiply(r, a), a]),
                 Fmt::Prgba => d[o..o + 4].copy_from_slice(&[premultiply(r, a), premultiply(g, a), premultiply(b, a), a]),
                 Fmt::Rgb48 => {
@@ -1025,11 +1077,8 @@ mod proptests {
                                 }
                             }
                             Fmt::Alpha8 => prop_assert_eq!(g[3], s[3]),
-                            Fmt::Cmyk => {
-                                for k in 0..3 {
-                                    prop_assert!((g[k] as i32 - s[k] as i32).abs() <= 2, "{:?} {:?} -> {:?}", f, s, g);
-                                }
-                            }
+                            // (Windows' CMYK goes through a color profile both ways: not a round trip)
+                            Fmt::Cmyk => prop_assert_eq!(g[3], 255),
                             _ => {
                                 // grays: one level of the format, and gray between the darkest and brightest channel
                                 let (lo, hi) = (*s[..3].iter().min().unwrap() as i32, *s[..3].iter().max().unwrap() as i32);

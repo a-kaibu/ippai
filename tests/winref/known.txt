@@ -51,4 +51,13 @@ d3d11-* ^image address:
 # TODO: from wicconv's measured tables (cmyk_grid, gray16_ramp, the "w" impulse lines)
 imaging-* ^image (gdip_)?(jpeg_cmyk|png_gray16):
 imaging-* ^(want|got) +gdip jpeg_cmyk: pixel
-imaging-* ^image scale_[123]_
+imaging-* ^image scale_[23]_
+# WIC conversions measured but not yet reproduced exactly: CMYK goes through Windows' color
+# profile (sake interpolates a measured 9-level grid: within 3 levels; the sRGB -> CMYK direction
+# is not modelled), 16bppGray encodes within 1 of 65535, 4 of 128 indexed picks differ (ties of
+# Windows' own nearest-color search), and the cubic and Fant scalers' weights are their own
+# (nearest and linear match exactly)
+wicconv-* ^image cmyk_grid:
+wicconv-* ^(want|got) +32bppCMYK>32bppBGRA:
+wicconv-* ^(want|got) +32bppBGRA>(16bppGray|32bppCMYK|[248]bppIndexed):
+wicconv-* ^(want|got) +w [23] 

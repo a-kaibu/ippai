@@ -87,9 +87,11 @@ enum Obj {
         kind: u32,
     },
     /// IWICBitmap (pixels changed through Lock)
+    /// (and for an indexed one made from memory its bytes and stride, for SetPalette)
     Bitmap {
         img: Arc<Mutex<Img>>,
         fmt: Fmt,
+        raw: Option<(Vec<u8>, u32)>,
     },
     /// IWICBitmapLock: the bitmap, the rectangle and the guest copy of its pixels
     Lock {
@@ -318,7 +320,7 @@ fn new_source(iface: &'static str, img: Arc<Img>, fmt: Fmt, extra: &[(&'static s
 fn image_of(this: u32) -> Option<(Arc<Img>, Fmt)> {
     with(|m| match m.get(&this)? {
         Obj::Source { img, fmt, .. } => Some((img.clone(), *fmt)),
-        Obj::Bitmap { img, fmt } => {
+        Obj::Bitmap { img, fmt, .. } => {
             let i = img.lock().unwrap();
             Some((Arc::new(i.clone()), *fmt))
         }
@@ -644,37 +646,50 @@ fn f_create_palette(c: &mut Ctx) -> u32 {
     0
 }
 
-/// The colors of a WICBitmapPaletteType: black and white (2), gray 4/16/256 (10, 11, 12), the
-/// halftone cubes (3..9) as Windows builds them, each with a transparent black added if asked.
+/// The colors of a WICBitmapPaletteType as Windows makes them: black and white (2), gray 4/16/256
+/// (10, 11, 12), and the halftone color cubes (3..9: red slowest, blue fastest, levels rounded
+/// half up) with the 16 system colors' extra 8 or the light gray after them; a transparent
+/// black is added to the halftones if asked (replacing the last of 256).
 fn predefined(kind: u32, transparent: bool) -> Option<Vec<u32>> {
-    let gray = |n: u32| (0..n).map(|i| 0xff00_0000 | (i * 255 / (n - 1)) * 0x01_0101).collect::<Vec<_>>();
+    let level = |i: u32, n: u32| (i * 255 + (n - 1) / 2) / (n - 1);
+    let gray = |n: u32| (0..n).map(|i| 0xff00_0000 | level(i, n) * 0x01_0101).collect::<Vec<_>>();
     let cube = |r: u32, g: u32, b: u32| {
         let mut v = Vec::new();
-        for bi in 0..b {
+        for ri in 0..r {
             for gi in 0..g {
-                for ri in 0..r {
-                    v.push(0xff00_0000 | (ri * 255 / (r - 1)) << 16 | (gi * 255 / (g - 1)) << 8 | bi * 255 / (b - 1));
+                for bi in 0..b {
+                    v.push(0xff00_0000 | level(ri, r) << 16 | level(gi, g) << 8 | level(bi, b));
                 }
             }
         }
         v
     };
-    let mut v = match kind {
-        2 => vec![0xff00_0000, 0xffff_ffff],
-        3 => cube(2, 2, 2),
-        4 => cube(3, 3, 3),
-        5 => cube(4, 4, 4),
-        6 => cube(5, 5, 5),
-        7 => cube(6, 6, 6),
+    const EXTRA8: [u32; 8] = [0xffc0_c0c0, 0xff80_8080, 0xff80_0000, 0xff00_8000, 0xff00_0080, 0xff80_8000, 0xff80_0080, 0xff00_8080];
+    let with = |mut v: Vec<u32>, extra: &[u32]| {
+        v.extend_from_slice(extra);
+        v
+    };
+    let halftone = match kind {
+        2 => return Some(vec![0xff00_0000, 0xffff_ffff]),
+        10 => return Some(gray(4)),
+        11 => return Some(gray(16)),
+        12 => return Some(gray(256)),
+        3 => with(cube(2, 2, 2), &EXTRA8),
+        4 => with(cube(3, 3, 3), &EXTRA8[..1]),
+        5 => with(cube(4, 4, 4), &EXTRA8),
+        6 => with(cube(5, 5, 5), &EXTRA8[..1]),
+        7 => with(cube(6, 6, 6), &EXTRA8),
         8 => cube(6, 7, 6),
         9 => cube(8, 8, 4),
-        10 => gray(4),
-        11 => gray(16),
-        12 => gray(256),
         _ => return None,
     };
-    if transparent && v.len() < 256 {
-        v.push(0);
+    let mut v = halftone;
+    if transparent {
+        if v.len() == 256 {
+            v[255] = 0;
+        } else {
+            v.push(0);
+        }
     }
     Some(v)
 }
@@ -855,44 +870,116 @@ fn scaler_init(c: &mut Ctx) -> u32 {
     if w == 0 || h == 0 {
         return E_INVALIDARG;
     }
-    set_source(this, Arc::new(scale(&img, w, h, mode == 0)), f);
+    set_source(this, Arc::new(scale(&img, w, h, mode)), f);
     0
 }
 
-fn scale(img: &Img, w: u32, h: u32, nearest: bool) -> Img {
+/// The source taps of each of `d` destination pixels from `s` for an interpolation mode:
+/// linear (1) two taps at the pixel's center, cubic (2) Catmull-Rom's four, Fant (3) the
+/// source area the pixel covers when shrinking (linear when growing).
+fn taps(s: u32, d: u32, mode: u32) -> Vec<Vec<(u32, f32)>> {
+    let ratio = s as f32 / d as f32;
+    (0..d)
+        .map(|i| {
+            let mut t: Vec<(u32, f32)> = Vec::new();
+            let mut add = |j: i64, w: f32| {
+                let j = j.clamp(0, s as i64 - 1) as u32;
+                match t.iter_mut().find(|e| e.0 == j) {
+                    Some(e) => e.1 += w,
+                    None => t.push((j, w)),
+                }
+            };
+            if mode == 3 && s > d {
+                let (lo, hi) = (i as f32 * ratio, (i + 1) as f32 * ratio);
+                let mut j = lo.floor();
+                while j < hi {
+                    add(j as i64, ((j + 1.0).min(hi) - j.max(lo)) / ratio);
+                    j += 1.0;
+                }
+                return t;
+            }
+            if mode == 1 {
+                // Windows' bilinear: 16.16 positions, weights in 256ths (each pass floors)
+                let step = ((s as u64) << 16) / d as u64;
+                let p = (step / 2 + i as u64 * step).saturating_sub(0x8000);
+                let x = ((p & 0xffff) >> 8) as f32;
+                add((p >> 16) as i64, (256.0 - x) / 256.0);
+                add((p >> 16) as i64 + 1, x / 256.0);
+                return t;
+            }
+            let f = ((i as f32 + 0.5) * ratio - 0.5).max(0.0);
+            let (j0, x) = (f.floor() as i64, f - f.floor());
+            if mode == 2 {
+                // Catmull-Rom
+                let cr = |d: f32| {
+                    let d = d.abs();
+                    if d < 1.0 {
+                        1.5 * d * d * d - 2.5 * d * d + 1.0
+                    } else if d < 2.0 {
+                        -0.5 * d * d * d + 2.5 * d * d - 4.0 * d + 2.0
+                    } else {
+                        0.0
+                    }
+                };
+                for k in -1..=2 {
+                    add(j0 + k, cr(x - k as f32));
+                }
+            } else {
+                add(j0, 1.0 - x);
+                add(j0 + 1, x);
+            }
+            t
+        })
+        .collect()
+}
+
+/// `img` scaled to `w x h` with a WICBitmapInterpolationMode, filtered premultiplied (as
+/// Windows does: no color bleeds from transparent pixels) and straight again.
+fn scale(img: &Img, w: u32, h: u32, mode: u32) -> Img {
     let mut px = vec![0u8; (w * h * 4) as usize];
-    let (sw, sh) = (img.w.max(1), img.h.max(1));
-    // filtered premultiplied (as Windows does: no color bleeds from transparent pixels)
+    if img.px.is_empty() {
+        return Img { w, h, px, palette: img.palette.clone(), dpi: img.dpi };
+    }
+    let (sw, sh) = (img.w, img.h);
     let mut pm = vec![0u8; img.px.len()];
     picture::from_bgra(&img.px, img.w, Fmt::Pbgra, (0, 0, img.w, img.h), img.w * 4, &mut pm, &[]);
-    let at = |x: u32, y: u32, k: usize| pm[((y.min(sh - 1) * img.w + x.min(sw - 1)) * 4) as usize + k] as f32;
-    for y in 0..h {
-        for x in 0..w {
-            let fx = ((x as f32 + 0.5) * sw as f32 / w as f32 - 0.5).max(0.0);
-            let fy = ((y as f32 + 0.5) * sh as f32 / h as f32 - 0.5).max(0.0);
-            let d = ((y * w + x) * 4) as usize;
-            if nearest || img.px.is_empty() {
-                // Windows' pick: (x * sw + sw - 1) / w, through premultiplied and back
+    if mode == 0 {
+        // Windows' pick: (x * sw + sw - 1) / w
+        for y in 0..h {
+            for x in 0..w {
                 let (sx, sy) = (((x * sw + sw - 1) / w).min(sw - 1), ((y * sh + sh - 1) / h).min(sh - 1));
-                if !img.px.is_empty() {
-                    let s = &img.px[((sy * img.w + sx) * 4) as usize..][..4];
-                    let mut p = [0u8; 4];
-                    picture::from_bgra(s, 1, Fmt::Pbgra, (0, 0, 1, 1), 4, &mut p, &[]);
-                    px[d..d + 4].copy_from_slice(&picture::to_bgra(Fmt::Pbgra, 1, 1, 4, &p, &[]));
+                let d = ((y * w + x) * 4) as usize;
+                px[d..d + 4].copy_from_slice(&pm[((sy * sw + sx) * 4) as usize..][..4]);
+            }
+        }
+    } else {
+        // across, then down
+        let (tx, ty) = (taps(sw, w, mode), taps(sh, h, mode));
+        let mut mid = vec![0f32; (w * sh * 4) as usize];
+        for y in 0..sh {
+            for (x, t) in tx.iter().enumerate() {
+                for k in 0..4 {
+                    let v: f32 = t.iter().map(|&(j, wt)| wt * pm[((y * sw + j) * 4) as usize + k] as f32).sum();
+                    mid[((y * w + x as u32) * 4) as usize + k] = if mode == 1 { v.floor() } else { v };
                 }
-                continue;
             }
-            let (x0, y0) = (fx as u32, fy as u32);
-            let (tx, ty) = (fx - x0 as f32, fy - y0 as f32);
-            for k in 0..4 {
-                let top = at(x0, y0, k) * (1.0 - tx) + at(x0 + 1, y0, k) * tx;
-                let bot = at(x0, y0 + 1, k) * (1.0 - tx) + at(x0 + 1, y0 + 1, k) * tx;
-                px[d + k] = (top * (1.0 - ty) + bot * ty) as u8;
+        }
+        for (y, t) in ty.iter().enumerate() {
+            for x in 0..w {
+                let d = ((y as u32 * w + x) * 4) as usize;
+                for k in 0..4 {
+                    let v: f32 = t.iter().map(|&(j, wt)| wt * mid[((j * w + x) * 4) as usize + k]).sum();
+                    px[d + k] = v.clamp(0.0, 255.0) as u8;
+                }
+                // (premultiplied: no channel above alpha)
+                let a = px[d + 3];
+                for k in 0..3 {
+                    px[d + k] = px[d + k].min(a);
+                }
             }
-            let p = picture::to_bgra(Fmt::Pbgra, 1, 1, 4, &px[d..d + 4], &[]);
-            px[d..d + 4].copy_from_slice(&p);
         }
     }
+    let px = picture::to_bgra(Fmt::Pbgra, w, h, w * 4, &px, &[]);
     Img { w, h, px, palette: img.palette.clone(), dpi: img.dpi }
 }
 
@@ -966,7 +1053,7 @@ fn flip_init(c: &mut Ctx) -> u32 {
 fn new_bitmap(img: Img, fmt: Fmt) -> u32 {
     let mut impls = source_impls();
     impls.extend_from_slice(&[("Lock", bm_lock as crate::api::Handler), ("SetResolution", ok), ("SetPalette", bm_set_palette)]);
-    new("IWICBitmap", &impls, Obj::Bitmap { img: Arc::new(Mutex::new(img)), fmt })
+    new("IWICBitmap", &impls, Obj::Bitmap { img: Arc::new(Mutex::new(img)), fmt, raw: None })
 }
 
 fn bm_set_palette(c: &mut Ctx) -> u32 {
@@ -975,8 +1062,14 @@ fn bm_set_palette(c: &mut Ctx) -> u32 {
         return E_INVALIDARG;
     };
     with(|m| match m.get(&this) {
-        Some(Obj::Bitmap { img, .. }) => {
-            img.lock().unwrap().palette = colors;
+        Some(Obj::Bitmap { img, fmt, raw }) => {
+            let mut i = img.lock().unwrap();
+            // (an indexed bitmap made from memory: its pixels through the new palette)
+            if let Some((data, stride)) = raw {
+                let (w, h) = (i.w, i.h);
+                i.px = picture::to_bgra(*fmt, w, h, *stride, data, &colors);
+            }
+            i.palette = colors;
             0
         }
         _ => E_FAIL,
@@ -1000,7 +1093,15 @@ fn f_bitmap_from_memory(c: &mut Ctx) -> u32 {
         return WINCODEC_ERR_UNSUPPORTEDPIXELFORMAT;
     };
     let data = mem::slice(buf, size).to_vec();
-    mem::putp(out, new_bitmap(decode(f, w, h, stride, &data, &[]), f));
+    let b = new_bitmap(decode(f, w, h, stride, &data, &[]), f);
+    if f.indexed() {
+        with(|m| {
+            if let Some(Obj::Bitmap { raw, .. }) = m.get_mut(&b) {
+                *raw = Some((data, stride));
+            }
+        });
+    }
+    mem::putp(out, b);
     0
 }
 
@@ -1031,7 +1132,7 @@ fn bm_lock(c: &mut Ctx) -> u32 {
     // (this, rect, flags (1 read, 2 write), out)
     let (this, prc, flags, out) = (c.a(0), c.a(1), c.a(2), c.a(3));
     let Some((bitmap, fmt)) = with(|m| match m.get(&this) {
-        Some(Obj::Bitmap { img, fmt }) => Some((img.clone(), *fmt)),
+        Some(Obj::Bitmap { img, fmt, .. }) => Some((img.clone(), *fmt)),
         _ => None,
     }) else {
         return E_FAIL;
@@ -1121,7 +1222,7 @@ mod tests {
     #[test]
     fn scale_and_crop() {
         let img = Img::new(2, 1, vec![0, 0, 0, 255, 200, 200, 200, 255]);
-        let s = scale(&img, 4, 2, true);
+        let s = scale(&img, 4, 2, 0);
         assert_eq!((s.w, s.h), (4, 2));
         assert_eq!(&s.px[0..4], &[0, 0, 0, 255]);
         assert_eq!(&s.px[12..16], &[200, 200, 200, 255]);
@@ -1132,7 +1233,9 @@ mod tests {
     #[test]
     fn predefined_palettes() {
         assert_eq!(predefined(2, false).unwrap(), [0xff00_0000, 0xffff_ffff]);
-        assert_eq!(predefined(10, true).unwrap(), [0xff00_0000, 0xff55_5555, 0xffaa_aaaa, 0xffff_ffff, 0]);
+        assert_eq!(predefined(10, true).unwrap(), [0xff00_0000, 0xff55_5555, 0xffaa_aaaa, 0xffff_ffff]);
+        assert_eq!(predefined(3, true).unwrap().len(), 17);
+        assert_eq!(predefined(8, false).unwrap()[251], 0xffff_ffff);
         assert_eq!(predefined(12, false).unwrap().len(), 256);
         assert_eq!(predefined(9, false).unwrap().len(), 256);
     }
