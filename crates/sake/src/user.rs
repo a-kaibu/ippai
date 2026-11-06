@@ -3307,8 +3307,14 @@ fn display_mode(n: u32, p: u32, wide: bool) -> u32 {
     let modes = [(640, 480), (800, 600), (1024, 768), (1280, 720), (1280, 960)];
     let (w, h) = if n == 0xffff_ffff || n == 0xffff_fffe { screen() } else if (n as usize) < modes.len() { modes[n as usize] } else { return 0 };
     let (d, e) = if wide { (32, 64) } else { (0, 0) };
-    mem::fill(p + 36 + d, 120 + e - d, 0);
-    w16(p + 36 + d, 156 + e as u16);
+    // only the caller's dmSize: older programs pass the 124-byte DEVMODEA of Windows 95 on
+    // their stack (RealLive), and the rest is their return address
+    let size = match r16(p + 36 + d) as u32 {
+        0 => 156 + e,
+        n => n.clamp(124 + e, 156 + e),
+    };
+    mem::fill(p + 36 + d, size - 36 - d, 0);
+    w16(p + 36 + d, size as u16);
     w32(p + 40 + d, 0x5c0000);
     w32(p + 104 + e, 32);
     w32(p + 108 + e, w as u32);
