@@ -381,6 +381,82 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[test]
+    fn mime_types() {
+        for (p, m) in [
+            ("a/B.HTML", "text/html; charset=utf-8"),
+            ("x.htm", "text/html; charset=utf-8"),
+            ("x.js", "text/javascript; charset=utf-8"),
+            ("x.mjs", "text/javascript; charset=utf-8"),
+            ("x.json", "application/json"),
+            ("x.css", "text/css"),
+            ("x.txt", "text/plain; charset=utf-8"),
+            ("x.ks", "text/plain; charset=utf-8"),
+            ("x.tjs", "text/plain; charset=utf-8"),
+            ("x.png", "image/png"),
+            ("x.jpg", "image/jpeg"),
+            ("x.jpeg", "image/jpeg"),
+            ("x.gif", "image/gif"),
+            ("x.webp", "image/webp"),
+            ("x.svg", "image/svg+xml"),
+            ("x.ogg", "audio/ogg"),
+            ("x.oga", "audio/ogg"),
+            ("x.m4a", "audio/mp4"),
+            ("x.mp3", "audio/mpeg"),
+            ("x.wav", "audio/wav"),
+            ("x.webm", "video/webm"),
+            ("x.mp4", "video/mp4"),
+            ("x.m4v", "video/mp4"),
+            ("x.ogv", "video/ogg"),
+            ("x.woff", "font/woff"),
+            ("x.woff2", "font/woff2"),
+            ("x.ttf", "font/ttf"),
+            ("x.otf", "font/otf"),
+            ("x.wasm", "application/wasm"),
+            ("x.bin", "application/octet-stream"),
+            ("noext", "application/octet-stream"),
+        ] {
+            assert_eq!(mime(p), m, "{p}");
+        }
+    }
+
+    #[tokio::test]
+    async fn tree_listing_rules() {
+        let (dir, app) = store();
+        let h = {
+            let d = dir.join("chunks/ab");
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("abcd"), zstd::encode_all(&b"zz"[..], 3).unwrap()).unwrap();
+            "abcd"
+        };
+        // other kinds of lines and lines with other field counts are not files; a short
+        // chunk name is an error; a name with _ - . is a name
+        std::fs::write(
+            dir.join("trees/a_b-c.d.tsv"),
+            format!("vnvm-tree\t1\t4\nd\t755\t0\tdir\t2\t{h}\nf\t644\t0\tx\t2\t{h}\textra\nf\t644\t0\tok\t2\t{h}\nf\t644\t0\tshort\t2\ta\nf\t644\t0\tnochunks\t2\t\n"),
+        )
+        .unwrap();
+        assert_eq!(get_(&app, "/tree/a_b-c.d/ok", None).await.2, b"zz");
+        assert_eq!(get_(&app, "/tree/a_b-c.d/dir", None).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(get_(&app, "/tree/a_b-c.d/x", None).await.0, StatusCode::NOT_FOUND);
+        // a chunk name too short to be stored: the body fails
+        let res = app.clone().oneshot(Request::builder().uri("/tree/a_b-c.d/short").body(Body::empty()).unwrap()).await.unwrap();
+        assert!(to_bytes(res.into_body(), usize::MAX).await.is_err());
+        // an empty chunk name is an all-zero chunk, also when it is the only one
+        assert_eq!(get_(&app, "/tree/a_b-c.d/nochunks", None).await.2, b"\0\0");
+        for bad in ["/tree/a%20b/ok", "/tree/a%2Fb/ok", "/tree/a$/ok", "/tree/a%C3%A9/ok"] {
+            assert_eq!(get_(&app, bad, None).await.0, StatusCode::BAD_REQUEST, "{bad}");
+        }
+        // a new listing (a new mtime) is read again
+        let path = dir.join("trees/a_b-c.d.tsv");
+        std::fs::write(&path, format!("vnvm-tree\t1\t4\nf\t644\t0\tnew\t2\t{h}\n")).unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+        std::fs::File::options().write(true).open(&path).unwrap().set_modified(later).unwrap();
+        assert_eq!(get_(&app, "/tree/a_b-c.d/new", None).await.2, b"zz");
+        assert_eq!(get_(&app, "/tree/a_b-c.d/ok", None).await.0, StatusCode::NOT_FOUND);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[tokio::test]
     async fn bad_ranges_are_416() {
         let (dir, app) = store();

@@ -105,6 +105,17 @@ impl Envelope {
 mod tests {
     use super::*;
     #[test]
+    fn keys_and_nonces_are_random() {
+        let (a, b) = (random::<32>().unwrap(), random::<32>().unwrap());
+        assert!(a != b && a != [0; 32] && a != [1; 32]);
+        // the same data twice: other data keys, other ciphertexts
+        let (e1, c1) = Envelope::encrypt(&[1; 32], "k", b"same").unwrap();
+        let (e2, c2) = Envelope::encrypt(&[1; 32], "k", b"same").unwrap();
+        assert_ne!(c1, c2);
+        assert_ne!(e1.object, e2.object);
+    }
+
+    #[test]
     fn rotation_does_not_change_object_or_ciphertext() {
         let (e, cipher) = Envelope::encrypt(&[1; 32], "old", b"game data").unwrap();
         let updated = e.rewrap(&[1; 32], &[2; 32], "new").unwrap();

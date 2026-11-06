@@ -565,6 +565,22 @@ fn pack_tree(store: &Path, root: &Path, name: &str, follow: bool, chunk: u64) ->
 mod tests {
     use super::*;
 
+    #[test]
+    fn ids_from_names() {
+        assert_eq!(default_id("My Game_2 (Trial)"), "my-game_2-trial");
+        assert_eq!(default_id("--AB--cd--"), "ab-cd");
+        assert_eq!(default_id("ab"), "ab");
+        let h = default_id("体験版");
+        assert!(h.starts_with("game-") && h.len() == 13 && h != default_id("製品版"), "{h}");
+        assert!(default_id("a").starts_with("game-"));
+        for ok in ["a", "a-b_c9", "Z"] {
+            assert!(valid_id(ok), "{ok}");
+        }
+        for bad in ["", "a b", "a/b", "é", "a.b"] {
+            assert!(!valid_id(bad), "{bad}");
+        }
+    }
+
     fn add(store: &Path, dir: &Path, exe: &str) -> Result<()> {
         run(
             store,

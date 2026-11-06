@@ -357,6 +357,12 @@ pub(crate) mod gc_tests {
         }
         c.put(Uuid::new_v4(), vec![0u8; CACHE_ITEM + 1].into(), usize::MAX);
         assert!(c.bytes <= 10_000);
+        // the limits are inclusive: an item of exactly CACHE_ITEM, a cache of exactly the limit
+        let mut c = Cache::default();
+        c.put(Uuid::new_v4(), vec![0u8; CACHE_ITEM].into(), CACHE_ITEM);
+        assert_eq!((c.bytes, c.map.len()), (CACHE_ITEM, 1));
+        c.put(Uuid::new_v4(), vec![0u8; 1].into(), CACHE_ITEM);
+        assert_eq!((c.bytes, c.map.len()), (1, 1), "the oldest goes first");
     }
 }
 

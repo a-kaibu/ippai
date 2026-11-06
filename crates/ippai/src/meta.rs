@@ -517,7 +517,11 @@ pub fn download_cover(url: &str) -> Result<(Vec<u8>, &'static str)> {
 }
 
 fn now_rfc3339() -> String {
-    let s = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) as i64;
+    rfc3339(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) as i64)
+}
+
+/// Seconds since 1970 as "YYYY-MM-DDThh:mm:ssZ".
+fn rfc3339(s: i64) -> String {
     let (days, rem) = (s.div_euclid(86400), s.rem_euclid(86400));
     // civil from days (Howard Hinnant)
     let z = days + 719468;
@@ -564,5 +568,64 @@ mod tests {
     #[test]
     fn date() {
         assert_eq!(now_rfc3339().len(), 20);
+        for (s, d) in [
+            (0, "1970-01-01T00:00:00Z"),
+            (951_782_400, "2000-02-29T00:00:00Z"),
+            (951_868_799, "2000-02-29T23:59:59Z"),
+            (1_709_164_800, "2024-02-29T00:00:00Z"),
+            (1_735_689_599, "2024-12-31T23:59:59Z"),
+            (1_793_975_430, "2026-11-06T14:30:30Z"),
+            (4_107_542_400, "2100-03-01T00:00:00Z"),
+            (-86_400, "1969-12-31T00:00:00Z"),
+        ] {
+            assert_eq!(rfc3339(s), d, "{s}");
+        }
+    }
+
+    #[test]
+    fn entities() {
+        assert_eq!(unescape("&lt;a&gt; &quot;b&quot; &apos;c&apos;&nbsp;&amp;"), "<a> \"b\" 'c' &");
+        assert_eq!(unescape("&#x41;&#66;&bogus;&#xzz;"), "AB&bogus;&#xzz;");
+        assert_eq!(unescape("plain"), "plain");
+    }
+
+    #[test]
+    fn unique() {
+        let mut l = vec![];
+        push_unique(&mut l, "a");
+        push_unique(&mut l, "");
+        push_unique(&mut l, "b");
+        push_unique(&mut l, "a");
+        assert_eq!(l, ["a", "b"]);
+    }
+
+    #[test]
+    fn vndb_names() {
+        let dev = |n: &str, o: Option<&str>| VndbDev { name: n.into(), original: o.map(Into::into) };
+        let mut v = VndbVn { title: "Romaji".into(), alttitle: Some("原題".into()), ..Default::default() };
+        assert_eq!((v.name(), v.brand()), ("原題".to_string(), String::new()));
+        v.alttitle = Some(String::new());
+        v.developers = vec![dev("Brand", Some("ブランド")), dev("Other", None)];
+        assert_eq!((v.name(), v.brand()), ("Romaji".to_string(), "ブランド".to_string()));
+        v.alttitle = None;
+        v.developers = vec![dev("Brand", Some(""))];
+        assert_eq!((v.name(), v.brand()), ("Romaji".to_string(), "Brand".to_string()));
+    }
+
+    #[test]
+    fn closest_and_most_voted() {
+        let c = |t: &str, v| Candidate { source: "vndb", id: t.into(), title: t.into(), brand: String::new(), release: String::new(), votes: v };
+        assert_eq!(norm("アート ー！"), "アートー");
+        // contained either way: the closest length wins over votes; votes break ties
+        let cands = [c("Reunion Fan Disc", 999), c("Reunion FD", 3), c("Re", 999)];
+        assert_eq!(best("Reunion", &cands).unwrap().title, "Reunion FD");
+        let cands = [c("Reunion A", 3), c("Reunion B", 7)];
+        assert_eq!(best("Reunion", &cands).unwrap().title, "Reunion B");
+        let cands = [c("Reunion B", 7), c("Reunion A", 7)];
+        assert_eq!(best("Reunion", &cands).unwrap().title, "Reunion B", "first of equals");
+        let cands = [c("Reunion Extra Long", 999), c("Reunion", 0)];
+        assert_eq!(best("Reunion", &cands).unwrap().title, "Reunion");
+        assert_eq!(best("Reunion Fan Disc", &[c("Reunion", 1)]).unwrap().title, "Reunion");
+        assert!(best("", &cands).is_none() && best("x", &[c("", 5)]).is_none());
     }
 }

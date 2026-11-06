@@ -139,6 +139,21 @@ mod tests {
     }
 
     #[test]
+    fn finds_the_zip_start() {
+        // an end of central directory record: size 0x30 at 12, offset 0x100 at 16
+        let mut tail = vec![0u8; 10];
+        tail.extend_from_slice(b"PK\x05\x06");
+        tail.extend_from_slice(&[0; 8]);
+        tail.extend_from_slice(&0x30u32.to_le_bytes());
+        tail.extend_from_slice(&0x100u32.to_le_bytes());
+        tail.extend_from_slice(&[0; 2]);
+        assert_eq!(zip_start(&tail, 0x1000), Some(0x1000 + 10 - 0x30 - 0x100));
+        assert_eq!(zip_start(&tail, 0x100), None, "offsets before the file");
+        assert_eq!(zip_start(&tail[..tail.len() - 4], 0x1000), None, "cut short");
+        assert_eq!(zip_start(b"no record", 0), None);
+    }
+
+    #[test]
     fn stops_a_zip_bomb() {
         let d = tmp("bomb");
         // 300 MiB of zeros compress to well under a MiB: past MIN_OUT and RATIO

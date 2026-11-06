@@ -152,6 +152,17 @@ impl Library {
 mod tests {
     use super::*;
     #[test]
+    fn favorites_in_order() {
+        let dir = std::env::temp_dir().join(format!("ippai-test-{}", uuid::Uuid::new_v4()));
+        let db = Library::new(&dir).unwrap();
+        for (g, f) in [("b", true), ("c", false), ("a", true)] {
+            db.set_profile(g, &Profile { favorite: f, note: String::new() }).unwrap();
+        }
+        assert_eq!(db.favorites().unwrap(), ["a", "b"]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn retries_reordering_and_snapshot() {
         let dir = std::env::temp_dir().join(format!("ippai-test-{}", uuid::Uuid::new_v4()));
         let db = Library::new(&dir).unwrap();
