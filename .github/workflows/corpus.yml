@@ -101,8 +101,15 @@ jobs:
           npm install -g playwright@1.56.1
           npx -y playwright@1.56.1 install --with-deps chromium
           mkdir -p "$RUNNER_TEMP/dist"
-          # (the artifact can hold older builds from CI's cache too: the one of that commit)
-          tar -I zstd -xf "$(ls dist/ippai-"${SHA:0:7}"*.tar.zst | head -1)" -C "$RUNNER_TEMP/dist" --strip-components=1
+          # (tools/ci/build.sh names it by git describe, ippai-v0.1.1-35-g900cc23 or a bare
+          # short sha before any tag, and empties target/dist first: the artifact holds one build;
+          # its VERSION file carries the full commit, checked against the run's)
+          TARS=(dist/ippai-*.tar.zst)
+          [ ${#TARS[@]} = 1 ] && [ -f "${TARS[0]}" ] || { echo "want one build in the artifact: ${TARS[*]}"; ls -la dist; exit 1; }
+          tar -I zstd -xf "${TARS[0]}" -C "$RUNNER_TEMP/dist" --strip-components=1
+          read -r V BUILT < "$RUNNER_TEMP/dist/VERSION"
+          [ "$BUILT" = "$SHA" ] || { echo "artifact is $V ($BUILT), CI run was $SHA"; exit 1; }
+          echo "build $V ($BUILT)"
           python3 tools/ci/sake-fonts.py "$RUNNER_TEMP/fonts"
           wait
       - name: Corpus shard ${{ matrix.shard }}
