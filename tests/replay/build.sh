@@ -5,7 +5,7 @@
 #                                  inside, of the trace's width: winref probes named
 #                                  replay_<probe>-<bits>-<bits> (tests/winref/build.sh calls this
 #                                  with its exe dir; they draw, so they are listed in browser.txt)
-#                                  and one per trial game's trace in games/ (games.py; recorded by
+#                                  and one per trial game's trace in testdata/apitrace (games.py; recorded by
 #                                  .github/workflows/gametrace.yml), the same, showing one frame
 #                                  in GAME_EVERY (default 900: 15 s at 60 fps)
 # The streams come from the apitrace crate (`cargo run -p apitrace`, or APITRACE=its binary).
@@ -53,7 +53,7 @@ if [ $(( ${#traces[@]} + ${#games[@]} )) -gt 0 ]; then
   # (a game's trace ends where the game was killed: not -strict)
   for n in "${games[@]}"; do
     bits=${n##*-}
-    python3 "$HERE/games.py" unpack "$HERE/games/$n" "$OUT/$n.trace"
+    python3 "$HERE/games.py" unpack "$ROOT/testdata/apitrace/$n" "$OUT/$n.trace"
     st=0; "$APITRACE" "-$bits" "$OUT/$n.trace" "$OUT/$n.rpl" || st=$?
     rm "$OUT/$n.trace"
     if [ $st = 3 ]; then echo "$n: not replayed yet"; continue; fi

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Trial games' traces in tests/replay/games (.github/workflows/gametrace.yml records them):
+"""Trial games' traces in testdata/apitrace (.github/workflows/gametrace.yml records them):
 <id>-<bits>.txt (what was recorded: api, exe, seconds, the trace's size and sha256, parts) and the
 trace, zstd-compressed, in parts of at most 90 MiB (GitHub refuses a file over 100 MB):
 <id>-<bits>.trace.zst.000, .001, ...
@@ -19,7 +19,7 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-GAMES = os.path.join(HERE, "games")
+GAMES = os.path.join(HERE, "..", "..", "testdata", "apitrace")
 TITLES = os.path.join(HERE, "..", "corpus", "titles.tsv")
 PART = 90 << 20
 

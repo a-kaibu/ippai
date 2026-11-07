@@ -44,7 +44,7 @@ def sources(probe):
         rep = os.path.join(ROOT, "tests", "replay")
         conv = os.path.join(ROOT, "crates", "apitrace", "src")
         # (a trial game's trace: its parts, tests/replay/games.py)
-        game = os.path.join(rep, "games", base[7:])
+        game = os.path.join(ROOT, "testdata", "apitrace", base[7:])
         trace = sorted(glob.glob(glob.escape(game) + ".trace.zst.*")) + [game + ".txt"] if os.path.exists(game + ".txt") else [os.path.join(rep, "traces", base[7:] + ".trace")]
         return trace + [os.path.join(rep, f) for f in ("replay.c", "replay.h", "d3d9img.c", "d3d8img.c", "d3d11img.c", "build.sh")] + [os.path.join(conv, f) for f in ("replay.rs", "layout.rs", "layouts.txt", "trace.rs", "snappy.rs")] + [os.path.join(HERE, f) for f in COMMON]
     else:

@@ -21,6 +21,7 @@ on:
       - 'host/tests/**'
       - 'tests/winref/**'
       - 'tests/replay/**'
+      - 'testdata/apitrace/**'
       - 'Cargo.lock'
       - '.github/workflows/winref.yml'
   schedule:
@@ -203,7 +204,7 @@ jobs:
         env:
           PLAYWRIGHT: ${{ runner.temp }}/pw/node_modules/playwright/index.mjs
           WEB: web/dist
-          # (a trial game's replay, tests/replay/games, is a minute of frames)
+          # (a trial game's replay, testdata/apitrace, is a minute of frames)
           TIMEOUT: 900
         run: |
           node tests/winref/run-browser.mjs exe out/jit

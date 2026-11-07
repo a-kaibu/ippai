@@ -1,5 +1,5 @@
 # Trial games' Direct3D calls (tests/replay/games.txt: ids of tests/corpus/titles.tsv) recorded
-# with apitrace on Windows, once, into tests/replay/games/ (a commit on main): winref then builds
+# with apitrace on Windows, once, into testdata/apitrace/ (a commit on main): winref then builds
 # each into a probe of its own (replay_<id>-<bits>: tests/replay/build.sh), takes Windows'
 # answers for it once and checks sake against them on every push, as for the probes' traces
 # (docs/replay.md, "Games"). Nobody runs the games again unless asked (`again`).
@@ -7,7 +7,7 @@
 #           (tests/replay/gameapi.py)
 #   record  on Windows: the game under apitrace for `seconds` to its title screen
 #           (tests/replay/record-game.ps1), zstd, in parts under 100 MB (GitHub's limit)
-#   commit  the traces that convert (the apitrace crate) into tests/replay/games
+#   commit  the traces that convert (the apitrace crate) into testdata/apitrace
 name: Game traces
 
 on:
@@ -191,7 +191,7 @@ jobs:
           path: pack
           retention-days: 7
 
-  # the traces into tests/replay/games (a commit on main): only those the converter takes
+  # the traces into testdata/apitrace (a commit on main): only those the converter takes
   commit:
     needs: [plan, record]
     if: ${{ !cancelled() && needs.plan.outputs.ids != '[]' }}
@@ -234,16 +234,16 @@ jobs:
             git fetch -q origin main
             git worktree remove --force "$M" 2>/dev/null || true
             git worktree add -q --detach "$M" FETCH_HEAD
-            mkdir -p "$M/tests/replay/games"
+            mkdir -p "$M/testdata/apitrace"
             took=
             for m in ok/*.txt; do
               n=$(basename "$m" .txt)
               # (a title recorded again: its old parts go)
-              rm -f "$M/tests/replay/games/$n".*
-              cp ok/"$n".* "$M/tests/replay/games/"
+              rm -f "$M/testdata/apitrace/$n".*
+              cp ok/"$n".* "$M/testdata/apitrace/"
               took="$took $n"
             done
-            git -C "$M" add -A tests/replay/games
+            git -C "$M" add -A testdata/apitrace
             if git -C "$M" diff --cached --quiet; then echo "no change"; exit 0; fi
             git -C "$M" commit -qm "replay: apitrace traces of trial games:${took} (${GITHUB_SHA::7})"
             git -C "$M" push -q origin HEAD:main && exit 0
