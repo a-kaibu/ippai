@@ -239,6 +239,8 @@ pub fn init() {
     }
     // KERNEL
     reg("KERNEL.InitTask", init_task);
+    reg("KERNEL.Catch", catch);
+    reg("KERNEL.Throw", throw);
     reg("KERNEL.WaitEvent", |_| 0);
     reg("KERNEL.GetVersion", |_| 0x0500_0a03);
     reg("KERNEL.GetWinFlags", |_| 0x0413);
@@ -668,6 +670,56 @@ fn std_write(h: u32, buf: u32, n: u32) -> Option<u32> {
 fn open_file(c: &mut C16) -> u32 {
     let r = call32(c.cpu, "kernel32!OpenFile", &[c.a(0), c.a(1), c.w(2) as u32]);
     if r == u32::MAX { 0xffff } else { r & 0xffff }
+}
+
+thread_local! {
+    /// Catch/Throw's registers for after the return: [ip, cs, sp, bp, si, di, ds, ss, ax]
+    static JUMP: std::cell::Cell<[u16; 9]> = const { std::cell::Cell::new([0; 9]) };
+}
+
+/// Catch(CATCHBUF*): the caller's registers as they will be after this call returns, so that
+/// Throw can return there again (Windows' setjmp; Free Pascal's RTL uses it for Halt and
+/// exceptions). CATCHBUF: ip, cs, sp, bp, si, di, ds, ss, and a spare word. Returns 0.
+fn catch(c: &mut C16) -> u32 {
+    let buf = c.args[0];
+    let cpu = &*c.cpu;
+    // (the far return address, then the pointer argument: both gone after the return)
+    let sp = ((cpu.regs[ESP] & 0xffff) + 8) as u16;
+    let regs = [r16(c.sp), r16(c.sp + 2), sp, cpu.regs[koji::EBP] as u16, cpu.regs[koji::ESI] as u16, cpu.regs[koji::EDI] as u16, cpu.sreg[3], cpu.sreg[2], 0];
+    for (i, v) in regs.iter().enumerate() {
+        w16(buf + 2 * i as u32, *v);
+    }
+    JUMP.with(|j| j.set(regs));
+    w16::AFTER.with(|a| a.set(Some(jump)));
+    0
+}
+
+/// Throw(CATCHBUF*, value): back to where Catch returned, with value as its result.
+fn throw(c: &mut C16) -> u32 {
+    let buf = c.args[0];
+    let mut regs = [0u16; 9];
+    for (i, v) in regs.iter_mut().enumerate().take(8) {
+        *v = r16(buf + 2 * i as u32);
+    }
+    regs[8] = c.args[1] as u16;
+    JUMP.with(|j| j.set(regs));
+    w16::AFTER.with(|a| a.set(Some(jump)));
+    0
+}
+
+/// Catch's and Throw's return (a "register" function: dispatch only popped the return address)
+fn jump(cpu: &mut Cpu) {
+    let [ip, cs, sp, bp, si, di, ds, ss, ax] = JUMP.with(|j| j.get());
+    let set = |r: &mut u32, v: u16| *r = (*r & 0xffff_0000) | v as u32;
+    set(&mut cpu.regs[ESP], sp);
+    set(&mut cpu.regs[koji::EBP], bp);
+    set(&mut cpu.regs[koji::ESI], si);
+    set(&mut cpu.regs[koji::EDI], di);
+    set(&mut cpu.regs[EAX], ax);
+    w16::set_seg(cpu, 3, ds);
+    w16::set_seg(cpu, 2, ss);
+    w16::set_seg(cpu, 1, cs);
+    cpu.eip = ip as u32;
 }
 
 fn init_task(c: &mut C16) -> u32 {

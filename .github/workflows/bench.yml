@@ -62,7 +62,7 @@ jobs:
             [ -n "$id" ] && [ "$sha" != "$SHA" ] && [ "$id" -lt "$RUN_ID" ] || continue
             if has_build "$id"; then OLD_RUN_ID=$id OLD_SHA=$sha; break; fi
           done <<< "$runs"
-          ALL="cpu-kernels cpu-game gdi ddraw d3d8 d3d9 d3d11 d2d gl scenario kirikiri krkr2 renpy-gl renpy-angle onscripter onscripter64 win16"
+          ALL="cpu-kernels cpu-game gdi ddraw d3d8 d3d9 d3d11 d2d gl scenario kirikiri krkr2 renpy-gl renpy-angle onscripter onscripter64 win16 win16-pascal"
           G=${GROUPS:-$ALL js}
           echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
@@ -94,12 +94,13 @@ jobs:
             target/crt64
             target/onscripter
             target/watcom
+            target/fpc16
           key: bench-engines-${{ hashFiles('tests/bench/fetch-*.sh', 'tests/bench/build-*.sh', 'tests/bench/*.patch') }}
       - name: Programs and fonts
         run: |
           apt="-o Acquire::Retries=5 -o Acquire::http::Timeout=30"
           sudo apt-get $apt update -q
-          sudo apt-get $apt install -yq --no-install-recommends gcc-mingw-w64-i686 g++-mingw-w64-i686 gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 fonts-ipafont-gothic fonts-ipafont-mincho
+          sudo apt-get $apt install -yq --no-install-recommends gcc-mingw-w64-i686 g++-mingw-w64-i686 gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 fpc nasm fonts-ipafont-gothic fonts-ipafont-mincho
           pip install --user -q fonttools==4.59.0 pillow==11.3.0
           tests/bench/build.sh inputs/exe
           python3 tools/ci/sake-fonts.py inputs/fonts

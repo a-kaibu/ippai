@@ -14,7 +14,7 @@
 export const VERSION = 3;
 
 // More rounds for the groups whose cases are short and noisy (run.mjs's default when ROUNDS isn't set)
-export const MIN_ROUNDS = { "cpu-kernels": 7, "cpu-game": 5, scenario: 5, kirikiri: 5, krkr2: 5, "renpy-gl": 5, "renpy-angle": 5, onscripter: 5, onscripter64: 5, win16: 5 };
+export const MIN_ROUNDS = { "cpu-kernels": 7, "cpu-game": 5, scenario: 5, kirikiri: 5, krkr2: 5, "renpy-gl": 5, "renpy-angle": 5, onscripter: 5, onscripter64: 5, win16: 5, "win16-pascal": 5 };
 
 const cases = (exe, names, extra = {}) => names.map((c) => ({ exe, args: c, ...extra }));
 
@@ -54,9 +54,13 @@ export const GROUPS = {
   // NScripter clone many doujin games ship with, SDL 1.2 through GDI, its own sprite compositing
   // and effects (rule images, mosaic, breakup.dll), FreeType text. The mode comes from a .reg file
   onscripter: [{ exe: "onscripter\\onscripter.exe", name: "onscripter", args: "--registry,play.reg", load: "--registry,load.reg", scenario: true }],
-  // the same, built for x64 (with mingw-w64's msvcrt.dll from Wine, app-local): sake's 64-bit path
+  // the same, built for x64 (mingw-w64's msvcrt.dll is sake's own): sake's 64-bit path
   // the same story on a Win16 program (testdata/novel16, tests/bench/build-novel16.sh): a small
   // engine as Windows 3.1 games were written, 16-bit code (Open Watcom), GDI raster operations only
   win16: [{ exe: "novel16\\novel16.exe", name: "win16", args: "", load: "load", scenario: true }],
+  // the same script on a second Win16 engine of the other kind (testdata/novel16p, Free Pascal,
+  // tests/bench/build-novel16p.sh): it composes its 256-colour screen in its own 16-bit code
+  // (sprites, a darkened text window, pixel transitions) and shows it with StretchDIBits
+  "win16-pascal": [{ exe: "novel16p\\novel16p.exe", name: "win16-pascal", args: "", load: "load", scenario: true }],
   onscripter64: [{ exe: "onscripter64\\onscripter.exe", name: "onscripter64", args: "--registry,play.reg", load: "--registry,load.reg", scenario: true }],
 };

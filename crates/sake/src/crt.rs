@@ -143,6 +143,7 @@ pub fn data(name: &str) -> Option<u32> {
         }
         "__argc" => var(args().0),
         "__argv" => var(args().1),
+        "__wargv" => var(wargs().1),
         "_acmdln" => var(crate::k32::cmdline().0),
         "_wcmdln" => var(crate::k32::cmdline().1),
         "_environ" | "__initenv" => var(env()),
@@ -203,37 +204,57 @@ fn ctype_table() -> u32 {
     *g
 }
 
+/// The command line split into words, as the CRT does (quotes group and are dropped).
+fn split_words<T: Copy + PartialEq + From<u8>>(line: &[T]) -> Vec<Vec<T>> {
+    let (quote, space, tab) = (T::from(b'"'), T::from(b' '), T::from(b'\t'));
+    let mut words = Vec::new();
+    let mut cur: Option<Vec<T>> = None;
+    let mut quoted = false;
+    for &b in line {
+        if b == quote {
+            quoted = !quoted;
+            cur.get_or_insert_with(Vec::new);
+        } else if (b == space || b == tab) && !quoted {
+            words.extend(cur.take());
+        } else {
+            cur.get_or_insert_with(Vec::new).push(b);
+        }
+    }
+    words.extend(cur);
+    words
+}
+
+/// A NULL-terminated pointer array of the strings, each `unit` bytes per char.
+fn string_array(words: Vec<Vec<u8>>, unit: u32) -> u32 {
+    let argv = mem::heap_alloc(ps() * (words.len() as u32 + 1), true);
+    for (i, w) in words.iter().enumerate() {
+        let s = mem::heap_alloc(w.len() as u32 + unit, true);
+        mem::write(s, w);
+        wp(argv + ps() * i as u32, s);
+    }
+    argv
+}
+
 /// (argc, argv) parsed from the command line, as the CRT does.
 fn args() -> (u32, u32) {
     static A: Mutex<(u32, u32)> = Mutex::new((0, 0));
     let mut g = A.lock().unwrap();
     if g.1 == 0 {
-        let line = cstr(crate::k32::cmdline().0);
-        let mut words: Vec<Vec<u8>> = Vec::new();
-        let mut cur: Option<Vec<u8>> = None;
-        let mut quoted = false;
-        for &b in &line {
-            match b {
-                b'"' => {
-                    quoted = !quoted;
-                    cur.get_or_insert_with(Vec::new);
-                }
-                b' ' | b'\t' if !quoted => {
-                    if let Some(w) = cur.take() {
-                        words.push(w);
-                    }
-                }
-                _ => cur.get_or_insert_with(Vec::new).push(b),
-            }
-        }
-        words.extend(cur);
-        let argv = mem::heap_alloc(ps() * (words.len() as u32 + 1), true);
-        for (i, w) in words.iter().enumerate() {
-            let s = mem::heap_alloc(w.len() as u32 + 1, true);
-            mem::write(s, w);
-            wp(argv + ps() * i as u32, s);
-        }
-        *g = (words.len() as u32, argv);
+        let words = split_words(&cstr(crate::k32::cmdline().0));
+        *g = (words.len() as u32, string_array(words, 1));
+    }
+    *g
+}
+
+/// (argc, wargv) parsed from the wide command line.
+fn wargs() -> (u32, u32) {
+    static A: Mutex<(u32, u32)> = Mutex::new((0, 0));
+    let mut g = A.lock().unwrap();
+    if g.1 == 0 {
+        let words = split_words(&mem::wstr(crate::k32::cmdline().1));
+        let n = words.len() as u32;
+        let bytes = words.into_iter().map(|w| w.iter().flat_map(|c| c.to_le_bytes()).collect()).collect();
+        *g = (n, string_array(bytes, 2));
     }
     *g
 }
@@ -324,6 +345,22 @@ fn __p___argc(_: &mut Ctx) -> u32 {
 }
 fn __p___argv(_: &mut Ctx) -> u32 {
     data("__argv").unwrap()
+}
+fn __p___wargv(_: &mut Ctx) -> u32 {
+    data("__wargv").unwrap()
+}
+fn __p__wcmdln(_: &mut Ctx) -> u32 {
+    data("_wcmdln").unwrap()
+}
+fn __p__wenviron(_: &mut Ctx) -> u32 {
+    data("_wenviron").unwrap()
+}
+fn __wgetmainargs(c: &mut Ctx) -> u32 {
+    let (argc, argv) = wargs();
+    w32(c.a(0), argc);
+    wp(c.a(1), argv);
+    wp(c.a(2), rp(data("_wenviron").unwrap()));
+    0
 }
 fn __p__environ(_: &mut Ctx) -> u32 {
     data("_environ").unwrap()
@@ -3338,7 +3375,8 @@ pub fn init() {
     implement("msvcrt", "_setjmp", _setjmp3);
     reg!(_encode_pointer, _encoded_null, _crt_debugger_hook, _configthreadlocale, ___mb_cur_max_l_func);
     reg!(_initterm, _initterm_e, _onexit, atexit, __dllonexit, exit, _exit, abort, __getmainargs, __set_app_type,
-        __p__fmode, __p__commode, __p___argc, __p___argv, __p__environ, __p___initenv, __p__acmdln,
+        __p__fmode, __p__commode, __p___argc, __p___argv, __p___wargv, __p__wcmdln, __p__wenviron, __wgetmainargs,
+        __p__environ, __p___initenv, __p__acmdln,
         __p___mb_cur_max, ___mb_cur_max_func, __pctype_func, _controlfp, _control87, _clearfp, _purecall,
         _XcptFilter, signal, _lock, _unlock, _errno, __doserrno,
         malloc, calloc, realloc, free, _msize,
@@ -3384,5 +3422,36 @@ pub fn init() {
         ("??_V@YAXPAX@Z", free),
     ] {
         implement("msvcrt", alias, f);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_words;
+    use proptest::prelude::*;
+
+    #[test]
+    fn split_like_crt() {
+        let w = split_words(br#"a.exe  "b c"  d"e"f """#);
+        assert_eq!(w, [b"a.exe".to_vec(), b"b c".to_vec(), b"def".to_vec(), b"".to_vec()]);
+    }
+
+    proptest! {
+        // The narrow and wide splitters agree on ASCII, so __argv and __wargv hold the same words.
+        #[test]
+        fn wide_matches_narrow(line in "[ a-z\"\t]{0,40}") {
+            let n = split_words(line.as_bytes());
+            let w: Vec<u16> = line.encode_utf16().collect();
+            let w = split_words(&w);
+            let back: Vec<Vec<u8>> = w.iter().map(|s| s.iter().map(|&c| c as u8).collect()).collect();
+            prop_assert_eq!(n, back);
+        }
+        // Words never hold an unquoted separator, and joining quoted words gives them back.
+        #[test]
+        fn quoted_round_trip(words in prop::collection::vec("[a-z ]{0,6}", 1..6)) {
+            let line: String = words.iter().map(|w| format!("\"{w}\"")).collect::<Vec<_>>().join(" ");
+            let got: Vec<String> = split_words(line.as_bytes()).into_iter().map(|w| String::from_utf8(w).unwrap()).collect();
+            prop_assert_eq!(got, words);
+        }
     }
 }
