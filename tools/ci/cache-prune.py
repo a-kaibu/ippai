@@ -44,20 +44,21 @@ def prune(target, own):
     # <profile>/build/<name>/<hash>/, which nightly cargo uses)
     pat = re.compile(r"^(lib)?(%s)(-[0-9a-f]{16}|$)" % "|".join(sorted(map(re.escape, own))))
     before = size(target)
+    # (any layout: target/<profile>, target/<triple>/<profile>, and the newer one where a
+    # profile has no .fingerprint of its own, only build/<name>/<hash>/)
     for d, subs, _ in os.walk(target):
-        if ".fingerprint" not in subs:
-            continue
-        # (a profile directory: target/<profile> or target/<triple>/<profile>)
-        shutil.rmtree(os.path.join(d, "incremental"), ignore_errors=True)
-        for sub in (".fingerprint", "deps", "build"):
+        for sub in list(subs):
             p = os.path.join(d, sub)
-            if not os.path.isdir(p):
+            if sub == "incremental":
+                shutil.rmtree(p, ignore_errors=True)
+            elif sub in (".fingerprint", "deps", "build"):
+                for e in os.listdir(p):
+                    if pat.match(e):
+                        q = os.path.join(p, e)
+                        shutil.rmtree(q) if os.path.isdir(q) and not os.path.islink(q) else os.remove(q)
+            else:
                 continue
-            for e in os.listdir(p):
-                if pat.match(e):
-                    q = os.path.join(p, e)
-                    shutil.rmtree(q) if os.path.isdir(q) and not os.path.islink(q) else os.remove(q)
-        subs[:] = [s for s in subs if s not in (".fingerprint", "deps", "build", "incremental", "examples")]
+            subs.remove(sub)
     print(f"{target}: {before >> 20} MiB -> {size(target) >> 20} MiB")
 
 

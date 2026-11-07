@@ -96,6 +96,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
+name = "bcdec_rs"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d521509f38a9ab0fce76656a0416161ee5d42c1eab6672b958391e2ac7a0e31"
+
+[[package]]
 name = "bit-set"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1159,6 +1165,7 @@ dependencies = [
 name = "kura"
 version = "0.1.0"
 dependencies = [
+ "bcdec_rs",
  "dxwgsl",
  "glwgsl",
  "koji",
@@ -1732,6 +1739,7 @@ dependencies = [
  "koji",
  "kura",
  "libc",
+ "libm",
  "md5",
  "png",
  "sha2",

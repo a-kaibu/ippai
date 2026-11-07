@@ -163,7 +163,7 @@ fuzz_target!(|data: &[u8]| {
     // (one memory for all runs: mapping 4 GB each time is most of a run. What a run leaves
     // outside the window is never read: a run touching it is not compared)
     static MEM: OnceLock<SharedMemory> = OnceLock::new();
-    let mem = MEM.get_or_init(|| SharedMemory::new(engine, MemoryType::shared(jit::wasm::MEMORY_MIN_PAGES, jit::wasm::MEMORY_MIN_PAGES)).unwrap()).clone();
+    let mem = MEM.get_or_init(|| SharedMemory::new(engine, MemoryType::shared(jit::wasm::memory_min_pages(), jit::wasm::memory_min_pages())).unwrap()).clone();
     for b in &mem.data()[..PAGES_AT as usize + 0x2_0000] {
         unsafe { *b.get() = 0 };
     }
