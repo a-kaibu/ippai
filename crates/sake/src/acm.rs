@@ -346,6 +346,13 @@ fn acmStreamOpen(c: &mut Ctx) -> u32 {
     let (ph, src, dst, flags) = (c.a(0), c.a(2), c.a(3), c.a(7));
     let (s, d) = (read_fmt(src), read_fmt(dst));
     if !supported(&s, &d) {
+        // (once a pair: which codecs games ask for, MP3 = 0x55, shows in corpus logs)
+        static SEEN: Mutex<Vec<(u16, u16)>> = Mutex::new(Vec::new());
+        let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+        if !seen.contains(&(s.tag, d.tag)) {
+            seen.push((s.tag, d.tag));
+            eprintln!("sake: acm: no conversion from format {:#x} ({} Hz, {} ch) to {:#x} ({} bit)", s.tag, s.rate, s.channels, d.tag, d.bits);
+        }
         if ph != 0 {
             putp(ph, 0);
         }
