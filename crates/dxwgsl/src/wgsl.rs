@@ -1168,6 +1168,19 @@ fn texture_type(dim: u32, k: K, depth: bool) -> R<(String, u32)> {
 
 /// DXBC (shader model 4/5) to WGSL; `ps`: the pixel shader a vertex shader feeds.
 pub fn translate(code: &[u8], pixel: bool, ps: Option<&[u8]>) -> R<Wgsl> {
+    translate_with(code, pixel, ps, None)
+}
+
+/// Point sprites (what ANGLE's point sprite geometry shader does, for a page without geometry
+/// shaders): the vertex shader runs once per point as an instance and six times per instance,
+/// once per corner of two triangles, moving its position by the corner times the point size
+/// output (PSIZE, clamped to 1..`max_size`) in pixels. The viewport's half size comes in a
+/// uniform at binding 15 of group 0 (xy).
+pub fn translate_point_sprite(code: &[u8], ps: Option<&[u8]>, max_size: f32) -> R<Wgsl> {
+    translate_with(code, false, ps, Some(max_size))
+}
+
+fn translate_with(code: &[u8], pixel: bool, ps: Option<&[u8]>, sprite: Option<f32>) -> R<Wgsl> {
     let (c, p) = parse(code)?;
     if p.kind != if pixel { tpf::PIXEL } else { tpf::VERTEX } {
         return Err(format!("program type {} for a {} shader", p.kind, if pixel { "pixel" } else { "vertex" }));
@@ -1302,6 +1315,12 @@ pub fn translate(code: &[u8], pixel: bool, ps: Option<&[u8]>) -> R<Wgsl> {
                     let val = if k == K::U { format!("in{r}") } else { format!("bitcast<vec4<u32>>(in{r})") };
                     pre.push(assign(format!("v{r}"), d.mask, val));
                 }
+                // (point sprites: the point is the instance, and draws are not instanced)
+                6 if sprite.is_some() => {
+                    params.push("@builtin(instance_index) in_vid: u32".into());
+                    pre.push(assign(format!("v{r}"), d.mask, "vec4<u32>(in_vid)".into()));
+                }
+                8 if sprite.is_some() => pre.push(assign(format!("v{r}"), d.mask, "vec4<u32>(0u)".into())),
                 6 => {
                     params.push("@builtin(vertex_index) in_vid: u32".into());
                     pre.push(assign(format!("v{r}"), d.mask, "vec4<u32>(in_vid)".into()));
@@ -1320,6 +1339,20 @@ pub fn translate(code: &[u8], pixel: bool, ps: Option<&[u8]>) -> R<Wgsl> {
             Some(r) if w.outputs.contains_key(&r) => format!("out.pos = bitcast<vec4<f32>>(o{r});"),
             _ => "out.pos = vec4<f32>(0.0f);".into(),
         });
+        if let Some(max) = sprite {
+            params.push("@builtin(vertex_index) sp_vid: u32".into());
+            let _ = writeln!(m, "@group(0) @binding(15) var<uniform> sp_view: vec4<f32>;");
+            bindings.push((15, Binding::Uniform(16)));
+            let size = w
+                .osgn
+                .iter()
+                .find(|e| e.sysval == 0 && e.name.eq_ignore_ascii_case("PSIZE") && w.outputs.contains_key(&e.reg))
+                .map_or("1.0f".to_string(), |e| format!("bitcast<f32>(o{}.{})", e.reg, XYZW[bits(e.mask)[0] as usize]));
+            // (the geometry shader's strip 0 1 2 3 as triangles 0 1 2, 2 1 3)
+            post.push("var sp_c = array<vec2<f32>, 6>(vec2<f32>(0.5f, -0.5f), vec2<f32>(0.5f, 0.5f), vec2<f32>(-0.5f, -0.5f), vec2<f32>(-0.5f, -0.5f), vec2<f32>(0.5f, 0.5f), vec2<f32>(-0.5f, 0.5f));".into());
+            post.push(format!("let sp_s = clamp({size}, 1.0f, {max:?}f);"));
+            post.push("out.pos = out.pos + vec4<f32>(sp_c[sp_vid % 6u] * sp_s * out.pos.w / sp_view.xy, 0.0f, 0.0f);".into());
+        }
         match ps.map(varyings) {
             Some(Ok(vary)) => {
                 for v in vary {

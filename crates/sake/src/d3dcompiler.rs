@@ -120,6 +120,21 @@ pub(crate) fn open_include(c: &mut Ctx, inc: u32, base: &str, name: &str, system
     Some(text)
 }
 
+/// ANGLE's point sprite geometry shader (GL_POINTS on D3D11): no geometry shaders on the page,
+/// so a tag the D3D11 device knows, with the shader's maxPointSize
+fn angle_point_sprite_gs(src: &str) -> Vec<u8> {
+    let max = src
+        .split("maxPointSize")
+        .nth(1)
+        .and_then(|r| r.split('=').nth(1))
+        .and_then(|r| r.split(';').next())
+        .and_then(|v| v.trim().trim_end_matches(['f', 'F']).parse::<f32>().ok())
+        .unwrap_or(1024.0);
+    let mut b = dxwgsl::POINT_SPRITE_GS.to_vec();
+    b.extend(max.to_le_bytes());
+    b
+}
+
 #[allow(clippy::too_many_arguments)]
 fn compile(c: &mut Ctx, src: &[u8], name: &str, defs: u32, inc: u32, entry: u32, target: u32, flags: u32, out: u32, errs: u32) -> u32 {
     let src = String::from_utf8_lossy(src).into_owned();
@@ -129,7 +144,11 @@ fn compile(c: &mut Ctx, src: &[u8], name: &str, defs: u32, inc: u32, entry: u32,
     let defines = defines(defs);
     let base = dir_of(name);
     let mut include = |n: &str, sys: bool| open_include(c, inc, &base, n, sys);
-    let r = hlslc::compile(src, &defines, &mut include, &entry, &target, flags);
+    let r = if target.starts_with("gs_") && src.contains("ANGLE_POINT_SPRITE_SHADER") {
+        Ok(angle_point_sprite_gs(src))
+    } else {
+        hlslc::compile(src, &defines, &mut include, &entry, &target, flags)
+    };
     mem::putp(errs, 0);
     match r {
         Ok(code) => {

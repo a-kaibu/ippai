@@ -326,6 +326,8 @@ pub struct D11 {
     /// the ID3DDeviceContextState whose state `st` is (0: the context's own)
     st_owner: u32,
     pipelines: HashMap<Vec<u32>, u32>,
+    /// point sprites' viewport uniform (page buffer, the half size written to it)
+    sprite_view: (u32, [f32; 2]),
     /// page targets set in this batch generation
     targets: Option<(u64, Vec<u32>)>,
     next_gpu: u32,
@@ -608,6 +610,7 @@ pub unsafe fn init(vtbls: *const u32, count: u32) -> u32 {
                 st: default_state(),
                 st_owner: 0,
                 pipelines: HashMap::new(),
+                sprite_view: (0, [0.0; 2]),
                 targets: None,
                 next_gpu: 0,
             })
@@ -2547,18 +2550,23 @@ unsafe fn copy_region(d: &mut D11, dst: u32, dsub: u32, x: u32, y: u32, _z: u32,
 // draws
 
 /// A shader's page shader and bindings (translated on first use; vertex shaders per pixel shader).
-fn shader_for(d: &mut D11, sh: u32, ps: u32) -> Option<(u32, Vec<(u32, dxwgsl::Binding)>)> {
+fn shader_for(d: &mut D11, sh: u32, ps: u32, sprite: Option<f32>) -> Option<(u32, Vec<(u32, dxwgsl::Binding)>)> {
     let ps_code = match d.objs.get(&ps).map(|o| &o.data) {
         Some(Data::Shader(s)) => Some(s.code.clone()),
         _ => None,
     };
     let trace = d.trace;
     let Some(Data::Shader(s)) = d.objs.get_mut(&sh).map(|o| &mut o.data) else { return None };
-    let key = if s.pixel { 0 } else { ps };
+    // (point sprite variants of a vertex shader: the pixel shader's id with the top bit set)
+    let key = if s.pixel { 0 } else if sprite.is_some() { ps | 0x8000_0000 } else { ps };
     if let Some(r) = s.wgsl.get(&key) {
         return r.clone();
     }
-    let r = match dxwgsl::translate(&s.code, s.pixel, if s.pixel { None } else { ps_code.as_deref() }) {
+    let w = match sprite {
+        Some(max) if !s.pixel => dxwgsl::translate_point_sprite(&s.code, ps_code.as_deref(), max),
+        _ => dxwgsl::translate(&s.code, s.pixel, if s.pixel { None } else { ps_code.as_deref() }),
+    };
+    let r = match w {
         Ok(w) => {
             let id = page_id();
             gpu::record(|q| {
@@ -2633,13 +2641,61 @@ fn buffer_gpu(d: &mut D11, id: u32) -> u32 {
     b.gpu
 }
 
+/// WebGPU has 8 vertex buffers, D3D11 16 slots, and ANGLE gives every GL attribute its own
+/// slot, often on one buffer. When a draw uses more than 8, slots on the same buffer with the
+/// same stride and step become one (offsets moved into the attributes) where the attributes
+/// still fit in a vertex. `slots`: (slot, step, attributes [format, offset, location]); the
+/// result: (buffer, stride, offset) per slot index used in `slots` afterwards.
+fn merge_vertex_buffers(vbs: &[(u32, u32, u32); 16], slots: &mut Vec<(u32, u32, Vec<[u32; 3]>)>) -> Vec<(u32, u32, u32)> {
+    let mut vbx = vbs.to_vec();
+    if slots.len() <= 8 {
+        return vbx;
+    }
+    let mut out: Vec<(u32, u32, Vec<[u32; 3]>)> = Vec::new();
+    for (slot, step, attrs) in std::mem::take(slots) {
+        let (buf, stride, off) = vbs[slot as usize];
+        let limit = if stride == 0 { 2048 } else { stride };
+        let fits = |base: u32, list: &[[u32; 3]], from: u32| list.iter().all(|a| from - base + a[1] + vertex_size(a[0]) <= limit);
+        let into = out.iter().position(|(s2, st2, a2)| {
+            let (b2, str2, o2) = vbx[*s2 as usize];
+            if b2 != buf || str2 != stride || *st2 != step || buf == 0 {
+                return false;
+            }
+            let base = o2.min(off);
+            fits(base, a2, o2) && fits(base, &attrs, off)
+        });
+        match into {
+            Some(i) => {
+                let s2 = out[i].0 as usize;
+                let o2 = vbx[s2].2;
+                let base = o2.min(off);
+                for a in &mut out[i].2 {
+                    a[1] += o2 - base;
+                }
+                out[i].2.extend(attrs.into_iter().map(|a| [a[0], a[1] + off - base, a[2]]));
+                vbx[s2].2 = base;
+            }
+            None => out.push((slot, step, attrs)),
+        }
+    }
+    *slots = out;
+    vbx
+}
+
 #[allow(clippy::too_many_arguments)]
 unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u32, start: u32, base: i32, first_instance: u32) {
     if count == 0 || st.vs == 0 {
         return;
     }
-    let Some((vs, vb)) = shader_for(d, st.vs, st.ps) else { return };
-    let ps = if st.ps != 0 { shader_for(d, st.ps, 0) } else { None };
+    // GL_POINTS through ANGLE: its point sprite geometry shader, done as an instance per point
+    // (non-indexed, non-instanced point lists; see dxwgsl::translate_point_sprite)
+    let sprite = match d.objs.get(&st.shaders[0]).map(|o| &o.data) {
+        Some(Data::Shader(s)) if st.topology == 1 && !indexed && instances <= 1 => dxwgsl::point_sprite_gs(&s.code),
+        _ => None,
+    };
+    let (count, instances, start, first_instance) = if sprite.is_some() { (6, count, 0, start) } else { (count, instances, start, first_instance) };
+    let Some((vs, vb)) = shader_for(d, st.vs, st.ps, sprite) else { return };
+    let ps = if st.ps != 0 { shader_for(d, st.ps, 0, None) } else { None };
     if std::env::var("IPPAI_D3D_TRACE").as_deref() == Ok("2") {
         // the first vertices and the vertex shader's constants
         let words = |id: u32, from: u32, n: u32| -> Vec<String> {
@@ -2715,17 +2771,24 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
         let i = match slots.iter().position(|s| s.0 == e.3) {
             Some(i) => i,
             None => {
-                slots.push((e.3, e.5 as u32, Vec::new()));
+                slots.push((e.3, if sprite.is_some() { 1 } else { e.5 as u32 }, Vec::new()));
                 slots.len() - 1
             }
         };
         slots[i].2.push([vf, e.4, inp.reg]);
     }
     slots.sort_by_key(|s| s.0);
+    // the vertex buffers the draw reads: (buffer, stride, offset) by slot
+    let vbx = merge_vertex_buffers(&st.vbs, &mut slots);
+    if slots.len() > 8 {
+        // (more than WebGPU's 8: an invalid pipeline would lose the whole frame)
+        return;
+    }
     let blend = state_desc(d, st.blend).cloned();
     let ds = state_desc(d, st.depth).cloned();
     let rs = state_desc(d, st.raster).cloned();
     let topo = match st.topology {
+        _ if sprite.is_some() => 3,
         1 => 0,
         2 => 1,
         3 => 2,
@@ -2751,7 +2814,7 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
     // vertex buffers
     key.push(slots.len() as u32);
     for s in &slots {
-        key.extend_from_slice(&[st.vbs[s.0 as usize].1, s.1, s.2.len() as u32]);
+        key.extend_from_slice(&[vbx[s.0 as usize].1, s.1, s.2.len() as u32]);
         for at in &s.2 {
             key.extend_from_slice(at);
         }
@@ -2797,7 +2860,7 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
     w.extend(st.blend_factor.iter().map(|f| f.to_bits()));
     w.push(st.stencil_ref);
     w.push(slots.len() as u32);
-    let vbs: Vec<(u32, u32)> = slots.iter().map(|s| (st.vbs[s.0 as usize].0, st.vbs[s.0 as usize].2)).collect();
+    let vbs: Vec<(u32, u32)> = slots.iter().map(|s| (vbx[s.0 as usize].0, vbx[s.0 as usize].2)).collect();
     for (buf, off) in vbs {
         let g = buffer_gpu(d, buf);
         w.extend_from_slice(&[g, off]);
@@ -2814,6 +2877,26 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
         let mut entries: Vec<[u32; 8]> = Vec::new();
         for (bi, kind) in binds.iter() {
             match kind {
+                dxwgsl::Binding::Uniform(_) if stage == 0 && *bi == 15 && sprite.is_some() => {
+                    let half = [st.viewport[2] * 0.5, st.viewport[3] * 0.5];
+                    if d.sprite_view.0 == 0 || d.sprite_view.1 != half {
+                        let made = d.sprite_view.0;
+                        let g = if made != 0 { made } else { page_id() };
+                        d.sprite_view = (g, half);
+                        let mut bytes = Vec::new();
+                        for f in [half[0].max(1.0), half[1].max(1.0), 0.0, 0.0] {
+                            bytes.extend(f.to_le_bytes());
+                        }
+                        gpu::record(|q| {
+                            let off = q.blob(&bytes);
+                            if made == 0 {
+                                q.cmd(&[gpu::CREATE_BUFFER, g, 16]);
+                            }
+                            q.cmd(&[gpu::WRITE_BUFFER, g, 0, off, 16]);
+                        });
+                    }
+                    entries.push([*bi, 0, d.sprite_view.0, 0, 16, 16, 0, 0]);
+                }
                 dxwgsl::Binding::Uniform(size) => {
                     let cb = st.cbs[stage].get(*bi as usize).copied().unwrap_or(0);
                     let g = if cb != 0 { buffer_gpu(d, cb) } else { 0 };
@@ -2888,7 +2971,7 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
         (start..start.saturating_add(count)).collect()
     };
     for s in &slots {
-        let (buf, stride, off) = st.vbs[s.0 as usize];
+        let (buf, stride, off) = vbx[s.0 as usize];
         let Some((m, size)) = mem(buf) else {
             known = false;
             break;
@@ -2929,4 +3012,64 @@ fn sampler_key(s: &[u32], cmp: bool) -> u32 {
     let aniso = (f & 0x40 != 0) as u32;
     let func = if cmp { s[6] & 15 } else { 0 };
     addr(s[1]) | addr(s[2]) << 3 | addr(s[3]) << 6 | mag << 9 | min << 10 | mip << 11 | aniso << 12 | func << 13 | (s[5].clamp(1, 16)) << 17
+}
+
+#[cfg(test)]
+mod vb_merge_tests {
+    use super::merge_vertex_buffers;
+    use proptest::prelude::*;
+
+    #[test]
+    fn nine_slots_on_one_buffer_become_one() {
+        // ANGLE: 9 float4 attributes, each its own slot on buffer 7 at offset 16*i, stride 144
+        let mut vbs = [(0u32, 0u32, 0u32); 16];
+        let mut slots = Vec::new();
+        for i in 0..9u32 {
+            vbs[i as usize] = (7, 144, 1000 + 16 * i);
+            slots.push((i, 0, vec![[3, 0, i]]));
+        }
+        let vbx = merge_vertex_buffers(&vbs, &mut slots);
+        assert_eq!(slots.len(), 1);
+        assert_eq!(vbx[slots[0].0 as usize], (7, 144, 1000));
+        let offs: Vec<u32> = slots[0].2.iter().map(|a| a[1]).collect();
+        assert_eq!(offs, (0..9).map(|i| 16 * i).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn eight_or_fewer_stay() {
+        let mut vbs = [(0u32, 0u32, 0u32); 16];
+        vbs[0] = (1, 16, 0);
+        vbs[1] = (1, 16, 4);
+        let mut slots = vec![(0, 0, vec![[0, 0, 0]]), (1, 0, vec![[0, 0, 1]])];
+        merge_vertex_buffers(&vbs, &mut slots);
+        assert_eq!(slots.len(), 2);
+    }
+
+    proptest! {
+        /// every attribute still reads the same bytes of the same buffer, and fits its vertex
+        #[test]
+        fn merging_keeps_each_attribute_address(n in 9usize..16, bufs in prop::collection::vec(1u32..4, 16),
+            strides in prop::collection::vec(prop::sample::select(vec![0u32, 16, 32, 64]), 16),
+            offs in prop::collection::vec(0u32..64, 16), fmts in prop::collection::vec(0u32..4, 16)) {
+            let mut vbs = [(0u32, 0u32, 0u32); 16];
+            let mut slots = Vec::new();
+            for i in 0..n {
+                vbs[i] = (bufs[i], strides[i], offs[i]);
+                slots.push((i as u32, 0, vec![[fmts[i], 0, i as u32]]));
+            }
+            let want: Vec<(u32, u32, u32, u32)> = (0..n).map(|i| (i as u32, bufs[i], strides[i], offs[i])).collect();
+            let vbx = merge_vertex_buffers(&vbs, &mut slots);
+            let mut got = Vec::new();
+            for (s, _, attrs) in &slots {
+                let (b, st, o) = vbx[*s as usize];
+                for a in attrs {
+                    let limit = if st == 0 { 2048 } else { st };
+                    prop_assert!(a[1] + super::vertex_size(a[0]) <= limit || attrs.len() == 1);
+                    got.push((a[2], b, st, o + a[1]));
+                }
+            }
+            got.sort();
+            prop_assert_eq!(got, want);
+        }
+    }
 }

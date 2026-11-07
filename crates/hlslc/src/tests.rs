@@ -443,3 +443,19 @@ fn texture_arrays() {
     let e = super::compile(&bad, &[], &mut inc, "main", "ps_5_0", 0).unwrap_err();
     assert!(e.contains("out of range"), "{e}");
 }
+
+/// ANGLE's vertex shader for GL_POINTS (its geometry shader expands the points): translated in
+/// point sprite mode, it is valid WGSL that offsets by the corner and the PSIZE output
+#[test]
+fn point_sprite_vertex_shader() {
+    let src = "struct VS_OUTPUT { float4 dx_Position : SV_Position; float gl_PointSize : PSIZE; float2 v0 : TEXCOORD0; };\n\
+VS_OUTPUT main(float2 p : TEXCOORD0, float s : TEXCOORD1) { VS_OUTPUT o; o.dx_Position = float4(p, 0, 1); o.gl_PointSize = s; o.v0 = p; return o; }\n\
+float4 ps(VS_OUTPUT i) : SV_Target { return float4(i.v0, 0, 1); }\n";
+    let v = compile(src, "main", "vs_5_0");
+    let p = compile(src, "ps", "ps_5_0");
+    let w = dxwgsl::translate_point_sprite(&v, Some(&p), 1024.0).unwrap();
+    let m = naga::front::wgsl::parse_str(&w.code).unwrap_or_else(|e| panic!("{}\n{}", e.emit_to_string(&w.code), w.code));
+    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&m).unwrap();
+    assert!(w.code.contains("sp_view") && w.code.contains("clamp(bitcast<f32>(o"), "{}", w.code);
+    assert!(w.bindings.iter().any(|b| b.0 == 15), "{:?}", w.bindings);
+}
