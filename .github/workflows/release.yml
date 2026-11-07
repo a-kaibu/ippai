@@ -9,10 +9,10 @@
 # checksums.txt and SBOMs and publishes them on GitHub Releases.
 #
 # Caches: a run for a tag can only restore caches saved on main (GitHub scopes caches by ref),
-# so nothing is saved by a release; web restores CI's build job caches (emsdk, the registry
-# crates' wasm builds, rust-src, pnpm store), and the nightly run on main (schedule: everything
-# but the release job; a dry_run dispatch is the same) saves bin's per-target cargo caches and
-# the apt and pip downloads.
+# so nothing is saved by a release: the nightly run on main (schedule: everything but the
+# release job; a dry_run dispatch is the same) saves them (web's emsdk, wasm registry builds and
+# pnpm store, bin's per-target cargo caches, the apt and pip downloads; rust-src and the
+# emscripten std are CI's build job's cache).
 name: Release
 
 on:
@@ -103,14 +103,14 @@ jobs:
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: 26
-      # (CI's build job saves these caches on main; restored only here)
-      - uses: actions/cache/restore@v6.1.0
+      - id: cache-pnpm
+        uses: actions/cache/restore@v6.1.0
         with:
           path: |
             ~/.pnpm-store
             ~/.cache/node/corepack
-          key: pnpm-${{ runner.os }}-build-${{ hashFiles('web/pnpm-lock.yaml', 'web/package.json') }}
-          restore-keys: pnpm-${{ runner.os }}-build-
+          key: pnpm-${{ runner.os }}-release-${{ hashFiles('web/pnpm-lock.yaml', 'web/package.json') }}
+          restore-keys: pnpm-${{ runner.os }}-release-
       - run: tools/ci/pnpm.sh
       - run: tools/ci/rust-key.sh
       - uses: actions/cache/restore@v6.1.0
@@ -124,17 +124,17 @@ jobs:
             ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/multirust-config.toml
           key: rust-wasm-${{ env.RUST_KEY }}
       - run: tools/ci/rust-wasm.sh
-      - uses: actions/cache/restore@v6.1.0
+      # (emsdk and the registry crates' wasm builds; saved on main only)
+      - id: cargo-cache
+        uses: actions/cache/restore@v6.1.0
         with:
           path: |
             ~/emsdk4
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: build-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock', 'tools/ci/build.sh', 'tools/ci/emsdk.sh') }}
-          restore-keys: |
-            build-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock', 'tools/ci/build.sh', 'tools/ci/emsdk.sh') }}-
-            build-${{ runner.os }}-${{ env.RUST_KEY }}-
+          key: release-web-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock', 'tools/ci/emsdk.sh') }}
+          restore-keys: release-web-${{ env.RUST_KEY }}-
       # (the page's two sake builds only: SAKE_NODE=0 skips node's)
       - name: sake.wasm and the page
         run: |
@@ -146,6 +146,25 @@ jobs:
           name: web
           path: web/dist
           retention-days: 3
+      - if: github.ref == 'refs/heads/main' && steps.cache-pnpm.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: |
+            ~/.pnpm-store
+            ~/.cache/node/corepack
+          key: ${{ steps.cache-pnpm.outputs.cache-primary-key }}
+      - name: Shrink the cargo cache
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        run: python3 tools/ci/cache-prune.py target
+      - if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: |
+            ~/emsdk4
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
       - wait: fonts
       - if: github.ref == 'refs/heads/main' && steps.cache-apt.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6.1.0
