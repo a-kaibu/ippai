@@ -1,6 +1,6 @@
 # Differential test against real Windows (tests/winref). Windows' answers are kept in the
 # repository (tests/winref/golden, golden.py): every push checks sake's node build against them
-# (JIT and interpreter; the ```known blocks of TODO.md list the differences already understood), with
+# (JIT and interpreter; tests/winref/known.txt lists the differences already understood), with
 # no Windows involved, as tests/winref/check.sh does locally (GPU probes in headless Chromium). The Windows runner only runs when a
 # probe changed or has no answer yet (or by hand): it records the new answers and commits them.
 #
@@ -23,7 +23,6 @@ on:
       - 'tests/replay/**'
       - 'Cargo.lock'
       - '.github/workflows/winref.yml'
-      - 'TODO.md'
   schedule:
     - cron: "23 19 * * *"
   workflow_dispatch:
@@ -199,10 +198,10 @@ jobs:
       - name: Wait for the node runs
         wait: [node-jit, node-interp]
       - name: sake (JIT) against Windows
-        run: python3 tests/winref/compare.py tests/winref/golden out/jit --known TODO.md --png png --report jit.md
+        run: python3 tests/winref/compare.py tests/winref/golden out/jit --known tests/winref/known.txt --png png --report jit.md
       - name: sake (interpreter) against Windows
         if: always()
-        run: python3 tests/winref/compare.py tests/winref/golden out/interp --known TODO.md --report interp.md
+        run: python3 tests/winref/compare.py tests/winref/golden out/interp --known tests/winref/known.txt --report interp.md
       - name: Summary
         if: always()
         run: cat jit.md interp.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true

@@ -1,0 +1,122 @@
+# Differences between sake and Windows already understood (tests/winref/compare.py):
+#   <probe glob> <regex on the diff line>  # why
+
+# the runner is en-US (LCID 409, console UTF-8) and Windows Server 2025 reports 6.2.9200 to
+# un-manifested exes; sake plays a Japanese Windows 7
+env-* ^(want|got) +(GetUserDefaultLCID|GetUserDefaultUILanguage|GetConsoleCP|GetVersionEx|GetSystemDefaultLangID|GetUserDefaultLangID|GetSystemDefaultUILanguage)  # runner locale/version
+# undefined flags of shifts by more than 1 and of SHLD/SHRD (Intel leaves OF/AF to the CPU)
+host_intops-32 ^(want|got) +(shifts|dshift) 
+# msvcrt's buffered ftell after a failed fseek reports the buffer position; programs don't rely on it
+host_fileseek-32 ^(want|got) +(negative|origin) 
+# GDI drawing that matches in shape but not to the pixel: Windows flattens ellipses and Beziers
+# into paths (its own flattening), its round-rect/polygon regions round edges its own way, the
+# HALFTONE shrink filter is its own, and a region as clip area is kept as its bounding box
+gdi-* ^image (shapes|fills_nullpen|polyline_bezier|regions|pens|stretch_halftone|clip):
+gdi-* ^(want|got) +GetClipBox 
+# 8 and 1 bpp GetDIBits of a 32 bpp bitmap: Windows' nearest-color choice into its default table
+gdi-* ^(want|got) +GetDIBits (8|1) 
+# sake's console goes out as UTF-8 text (node's stderr): a lone byte >= 0x80 can't come through
+crt_printf-* ^(want|got) +%c (-1|-42|255|2147483647) 
+# x87 extended precision: msvcrt's sin/cos/tan reduce big arguments its own way (sin(pi) is
+# 3.2e-15 there), and pow/_hypot keep 64-bit mantissas inside; koji's x87 is IEEE double
+crt_math-32 ^(want|got) +ulp 1 (sin|cos|tan)\((3.14159265358979|1.0000000000000001e\+300|10000000000)\)
+crt_math-32 ^(want|got) +ulp 1 (pow\(100.5,3.14159265358979\)|_hypot\(2,100.5\))
+# 64-bit msvcrt's own SSE2 libm: pow is a few ulp off the correctly rounded value, and sin/cos
+# reduce big arguments their own way (sin(pi) keeps only 20 bits); sake's x64 CRT uses Rust's
+# (correctly rounded or within 1 ulp)
+crt_math-64 ^(want|got) +ulp 1 (sin|cos|tan)\((3.14159265358979|1.0000000000000001e\+300|10000000000)\)
+crt_math-64 ^(want|got) +ulp 1 pow\(
+# Direct3D 9 on the Windows runner is WARP: its limits and format list are its own (a GPU's
+# differ too). sake has no A8/L8/A8L8/A4R4G4B4/A2R10G10B10/R32F/V8U8 render targets so far (TODO:
+# their texels on the page as what sampling them gives, and read back as the format).
+d3d9-* ^(want|got) +caps vs .* maxtex 
+d3d9-* ^(want|got) +caps blend src 
+d3d9-* ^(want|got) +format (A4R4G4B4|A8|L8|A8L8|A2R10G10B10|R32F|V8U8) texture 1 rendertarget 
+# StretchRect with D3DTEXF_NONE: WARP filters linearly, GPUs' drivers use point (sake: point)
+d3d9-* ^image surfaces:
+# the d3d9 probe's trace played back (tests/replay): its pictures in the probe's order are r<call>;
+# sampling (r307) and address2 (r443) take tolerance 10 in the probe (WARP's 1/16 filter weights),
+# the replay's pictures 2; r1023 is surfaces (above), and so is the back buffer at its Present (f0)
+replay_d3d9-32-32 ^image (r307|r443|r1023|f0):
+# Direct3D 11 on the runner is WARP. Its format list and flags are its own; sake has no MSAA
+# (quality levels 0: games fall back) and no video or palette formats (100-115: answered as a
+# device without video support does, E_FAIL; BC6H/BC7, 3-channel 32-bit, the 4:2:2 packed and
+# XR_BIAS textures are decoded or widened on upload)
+d3d11-* ^(want|got) +format 
+# WARP flushes float denormals on every operation (abs(denormal) = 0, clamp to -0); WebGPU
+# leaves denormals to the GPU and sake does not flush them but in log; log2 just below 1 is
+# within the spec's 2^-21 absolute error, not the probe's ulps
+d3d11-* ^(want|got) +f0\.abs [08]0[0-7][0-9a-f]{5} 
+d3d11-* ^(want|got) +f0\.clamp \S+ \S+ [08]0[0-7][0-9a-f]{5} 
+d3d11-* ^(want|got) +ulp \d+ f0\.log2?:3f7fffff:
+# lines and wireframe: WebGPU leaves line rasterization (Bresenham or diamond exit) to the GPU
+d3d11-* ^image (lines|wireframe):
+# BORDER with linear filtering (the shader mixes the border in, dxwgsl::addr): WARP weighs texels
+# in 16ths, the GPU finer; a level at most
+d3d11-* ^image address: \d+ pixels off by more than 0 \(worst 1;
+# WIC pictures: CMYK -> sRGB goes through a color profile on Windows (sake: its measured grid,
+# within a few levels), and the Cubic/Fant scalers' weights are their own (see wicconv below)
+imaging-* ^image (gdip_)?(jpeg_cmyk|png_gray16):
+imaging-* ^(want|got) +gdip jpeg_cmyk: pixel
+imaging-* ^image scale_[23]_
+# WIC conversions measured but not yet reproduced exactly: CMYK goes through Windows' color
+# profile (sake interpolates a measured 9-level grid: within 3 levels; the sRGB -> CMYK direction
+# is not modelled), 16bppGray encodes within 1 of 65535, 4 of 128 indexed picks differ (ties of
+# Windows' own nearest-color search), and the cubic and Fant scalers' weights are their own
+# (nearest and linear match exactly)
+wicconv-* ^image cmyk_grid:
+wicconv-* ^(want|got) +32bppCMYK>32bppBGRA:
+wicconv-* ^(want|got) +32bppBGRA>(16bppGray|32bppCMYK|[248]bppIndexed):
+wicconv-* ^(want|got) +w [23] 
+# x87 precision control: koji's x87 computes in doubles whatever the precision field says (the
+# control word itself reads back as on Windows); single precision (_PC_24, or Direct3D's
+# CreateDevice without D3DCREATE_FPU_PRESERVE) rounds 1/3 to a float there
+crt_math-32 ^(want|got) +pc 0: 1/3 
+d3d8-32 ^(want|got) +fpu default: 1/3 
+# Direct2D (WARP): antialiased edges are Windows' own coverage (sake: 4x4 samples), an aliased
+# ellipse outline is its tessellated stroke (sake: a ring), and an antialiased clip still fades
+# an aliased fill at its edges (sake: clips by the pixel center there)
+d2d-* ^image (fills_aa|outlines|transforms):
+# OpenGL on the runner is Microsoft's GDI Generic software GL 1.1, not a GPU driver: its pixel
+# formats have no alpha bits; it fills pixels whose centres lie exactly on an edge into both
+# triangles (sake follows the GPU top-left rule); GL_CLAMP with linear filtering blends in the
+# border color (NVIDIA's drivers treat it as clamp-to-edge, as sake does); and it rounds colors
+# a few levels differently (formats/blend_depth: within 4)
+gl-* ^(want|got) +pixel format: 
+gl-* ^image (raster|textures):
+# The runner's OpenGL is Microsoft's GDI Generic 1.1 software renderer, whose arithmetic is its
+# own: GL_REPLACE colors of RGB(A) textures come out trunc(c * 255 / 256), components of more
+# than 8 bits are truncated to 8 (sake, as GPU drivers, rounds to nearest: the GL spec leaves it
+# to the implementation), and it keeps GL 1.1's rules where drivers games run on have GL 2+:
+# no non-power-of-two sizes, INVALID_ENUM for internal format 5, INVALID_VALUE for a
+# TexSubImage2D of an undefined level, the requested internal format read back (drivers: the
+# real one, GL_RGBA8). sake's unpack is tested on its own (crates/kura/src/gl).
+gltex-* ^(want|got) +tex (u?byte|u?short|u?int|float) 
+# (the unpack cases: the same texels as Windows', each byte its trunc(c * 255 / 256))
+gltex-* ^(want|got) +(unpack|sub) \S+ rgb 
+gltex-* ^(want|got) +(TexImage2D width 3|TexImage2D internal 5|TexSubImage2D undefined level):
+gltex-* ^(want|got) +level 0 after the errors 4 x 4 internal 
+# Windows' Direct3D 7 device takes several references of its IDirect3D7 for itself (9 in all
+# after CreateDevice); sake's device holds one, dropped with the device as Windows' are
+ddrefs-* ^(want|got) +refs d3d7 after CreateDevice 
+# window manager details games don't see: class atoms are numbered from the session's atom table
+# (0xC149.. on the runner), DWM sends WM_DWMNCRENDERINGCHANGED (0x31f) at create, ShowWindow's
+# "was visible" answer is an undocumented nonzero (24), and NCPAINT/ERASEBKGND come with
+# ShowWindow there while sake paints at the next message loop
+user-* ^(want|got) +GetClassInfoA\(wc.hInstance, "ippai-winref", &got\) 
+user-* ^(want|got) +start: 
+user-* ^want +WM_(NCPAINT|ERASEBKGND)$
+user-* ^(want|got) +ShowWindow\(h, SW_HIDE\) 
+# the runner's ANSI code page is 1252: 0x95 0x5c is two characters there, one (表) in sake's 932
+shell-* ^(want|got) +(name|removespec|strip) .*(2e747874\]|955c|835c\]|835c5c95\]) 
+res-* ^(want|got) +item 0: 1 id \d+ type 0 state 0 sub 1 text \[&File\] cch 5$  # a popup's wID is its HMENU, whose number differs
+# sake's MS-named fonts are IPA fonts under those names (tools/ci/sake-fonts.py), as separate
+# .ttf files in a game's store or one msgothic.ttc from `ippai ttc`: other design metrics, and the
+# file, its type and face count differ when the store has the .ttf files
+dwfont-* ^(want|got) +(metrics em|face 00000000 type|local loader|analyze)
+# the runner's VMR-9 (Direct3D 9) doesn't connect in windowless mode (its session has no
+# device for it): RenderFile goes to another renderer, so the VMR-9's size and positions stay
+# empty and the graph's own video window answers. The VMR-7 lines are the reference.
+dshow-* ^(want|got) +vmr9: (GetNativeVideoSize 0|GetVideoPosition|SetVideoPosition src [08]|get_Visible|GetVideoSize|GetCurrentImage|RepaintVideo)
+# the screen plus 1 each way: the runner's is 1024x768, sake's 1366x768
+dshow-* ^(want|got) +vmr[79]: GetMaxIdealVideoSize 00000000 (1025|1367)x769$

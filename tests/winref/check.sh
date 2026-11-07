@@ -25,4 +25,4 @@ SAKE=$SAKE "$HERE/run.sh" "$EXE" "$OUT" "${1:-}" > /dev/null
 [ -n "${BROWSER:-}" ] && WEB=${WEB:-$ROOT/web/dist} node "$HERE/run-browser.mjs" "$EXE" "$OUT" "${1:-}" > /dev/null
 s=$(python3 "$HERE/golden.py" stale "$EXE")
 [ -n "$s" ] && echo "stale or missing Windows answers (the winref workflow refreshes them): $s"
-python3 "$HERE/compare.py" "$HERE/golden" "$OUT" --known "$ROOT/TODO.md" ${PNG:+--png "$PNG"}
+python3 "$HERE/compare.py" "$HERE/golden" "$OUT" --known "$HERE/known.txt" ${PNG:+--png "$PNG"}
