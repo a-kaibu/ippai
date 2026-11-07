@@ -681,6 +681,64 @@ mod bc67_tests {
         assert!(unsafe { bc67_texels(BC4U, [0u8; 16].as_ptr(), 16, 4, 4) }.is_none());
     }
 
+    /// Random 16-byte blocks, every mode equally (BC7: mode m is the lowest set bit m of byte 0,
+    /// 0 none (reserved); BC6H: the 2 or 5 mode bits, reserved ones included)
+    fn blocks(conv: u32, per_mode: usize) -> Vec<(u32, [u8; 16])> {
+        let mut x = 0x9e37_79b9_7f4a_7c15u64 ^ conv as u64;
+        let mut rnd = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let modes: Vec<u32> = if conv == BC7 { (0..9).collect() } else { (0..32).collect() };
+        let mut out = Vec::new();
+        for &m in &modes {
+            for _ in 0..per_mode {
+                let mut b = [0u8; 16];
+                b[..8].copy_from_slice(&rnd().to_le_bytes());
+                b[8..].copy_from_slice(&rnd().to_le_bytes());
+                if conv == BC7 {
+                    // (m 8: no bit in byte 0 = reserved)
+                    b[0] = if m == 8 { 0 } else { (b[0] & !((2u8 << m) - 1)) | (1 << m) };
+                } else if m < 2 {
+                    b[0] = (b[0] & !3) | m as u8;
+                } else {
+                    b[0] = (b[0] & !0x1f) | (m as u8 & 0x1c) | 2 | (m as u8 & 1);
+                }
+                out.push((m, b));
+            }
+        }
+        out
+    }
+
+    /// BC7 decoded as two independent implementations decode it (bcn-decode, written from the
+    /// spec, and texture2ddecoder, from AssetStudio's), every mode and the reserved one
+    #[test]
+    fn bc7_matches_independent_decoders() {
+        for (m, b) in blocks(BC7, 4000) {
+            let got = unsafe { bc67_texels(BC7, b.as_ptr(), 16, 4, 4) }.unwrap();
+            let want1: Vec<u8> = bcn_decode::bc7::decode_block(&b).iter().flatten().copied().collect();
+            assert_eq!(got, want1, "bc7 mode {m} block {b:02x?} (bcn-decode)");
+            let mut t = [0u32; 16];
+            texture2ddecoder::decode_bc7_block(&b, &mut t);
+            let want2: Vec<u8> = t.iter().flat_map(|c| { let [b, g, r, a] = c.to_le_bytes(); [r, g, b, a] }).collect();
+            assert_eq!(got, want2, "bc7 mode {m} block {b:02x?} (texture2ddecoder)");
+        }
+    }
+
+    /// BC6H (unsigned and signed) as bcn-decode decodes it, half for half, every mode value
+    #[test]
+    fn bc6h_matches_independent_decoder() {
+        for conv in [BC6U, BC6S] {
+            for (m, b) in blocks(conv, 2000) {
+                let got = unsafe { bc67_texels(conv, b.as_ptr(), 16, 4, 4) }.unwrap();
+                let want: Vec<u8> = bcn_decode::bc6h::decode_block_half(&b, conv == BC6S).iter().flat_map(|p| [p[0], p[1], p[2], 0x3c00]).flat_map(|h| h.to_le_bytes()).collect();
+                assert_eq!(got, want, "bc6h {} mode {m} block {b:02x?}", if conv == BC6S { "signed" } else { "unsigned" });
+            }
+        }
+    }
+
     proptest! {
         /// Any box (sizes not multiples of 4, rows padded): each texel is its block's texel as
         /// the decoder gives it, BC6H's alpha 1.0

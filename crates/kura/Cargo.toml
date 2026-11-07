@@ -18,6 +18,8 @@ bcdec_rs = "0.2"
 [dev-dependencies]
 naga = { version = "30", features = ["wgsl-in"] }
 half = "2"
+texture2ddecoder = "0.1"
+bcn-decode = "0.1"
 proptest = "1"
 hlslc = { path = "../hlslc" }
 
