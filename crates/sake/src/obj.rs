@@ -15,7 +15,9 @@ pub enum Obj {
     Mutex { owner: u32, count: u32 },
     Semaphore { count: i32, max: i32 },
     Thread { tid: u32, done: bool, code: u32 },
-    Process,
+    /// this process (DuplicateHandle of GetCurrentProcess, OpenProcess of our id): the access
+    /// it was opened with
+    Process { access: u32 },
     File(Arc<crate::files::File>),
     Find(Arc<Mutex<crate::files::Find>>),
     Mapping { file: Option<Arc<crate::files::File>>, size: u32, view: u32 },
@@ -182,7 +184,7 @@ fn try_take(t: &mut Table, h: u32, tid: u32, take: bool) -> Option<bool> {
             }
         }
         Obj::Thread { done, .. } => *done,
-        Obj::Process => false,
+        Obj::Process { .. } => false,
         // files and the like count as signaled
         _ => true,
     })

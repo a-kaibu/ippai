@@ -40,6 +40,14 @@ pub fn arg_str(p: u32, wide: bool) -> String {
 
 /// Writes a string result as the A or W function would: returns the length written, or the
 /// size needed (with NUL) when it does not fit.
+/// `s` in `cap` characters, cut short if it must be, ended with a 0
+fn put_name(dst: u32, cap: u32, s: &str, wide: bool) -> u32 {
+    if wide {
+        put_wstr(dst, cap, &s.encode_utf16().collect::<Vec<_>>())
+    } else {
+        put_cstr(dst, cap, &crate::text::s2a(s))
+    }
+}
 pub fn ret_str(dst: u32, cap: u32, s: &str, wide: bool) -> u32 {
     if wide {
         let v: Vec<u16> = s.encode_utf16().collect();
@@ -313,8 +321,19 @@ fn ExitProcess(c: &mut Ctx) -> u32 {
     }
     unsafe { libc::exit(code as i32) }
 }
+const PROCESS_ALL_ACCESS: u32 = 0x1f_ffff;
+/// The access a handle to this process has (GetCurrentProcess's: all), None for another handle
+pub fn self_process(h: u32) -> Option<u32> {
+    if h == obj::CURRENT_PROCESS {
+        return Some(PROCESS_ALL_ACCESS);
+    }
+    obj::with(|t| match t.objs.get(&h) {
+        Some((Obj::Process { access }, _)) => Some(*access),
+        _ => None,
+    })
+}
 fn TerminateProcess(c: &mut Ctx) -> u32 {
-    if c.a(0) == obj::CURRENT_PROCESS {
+    if self_process(c.a(0)).is_some_and(|a| a & 1 != 0) {
         unsafe { libc::exit(c.a(1) as i32) }
     }
     0
@@ -383,19 +402,153 @@ fn _endthread(_: &mut Ctx) -> u32 {
 fn FreeLibraryAndExitThread(c: &mut Ctx) -> u32 {
     exit_thread(c.a(1))
 }
-/// PROCESS_MEMORY_COUNTERS: a modest working set
+/// GetProcessMemoryInfo(process, PROCESS_MEMORY_COUNTERS(_EX)*, bytes): a modest working set
+/// (64 MB); needs query access
 fn K32GetProcessMemoryInfo(c: &mut Ctx) -> u32 {
-    let (p, cb) = (c.a(1), c.a(2));
-    mem::fill(p, cb.min(44), 0);
-    w32(p, cb.min(44));
-    for off in [8, 12, 16, 20, 32, 36, 40] {
-        if off + 4 <= cb {
-            w32(p + off, 64 << 20);
+    let (h, p, cb) = (c.a(0), c.a(1), c.a(2));
+    if !psapi_access(h, false) {
+        return 0;
+    }
+    let ps = mem::ps();
+    let (size, ex) = (8 + 8 * ps, 8 + 9 * ps);
+    if cb < size {
+        last_error(122);
+        return 0;
+    }
+    let n = if cb >= ex { ex } else { size };
+    mem::fill(p, n, 0);
+    w32(p, n);
+    w32(p + 4, 20_000); // page faults
+    for i in [0, 1, 6, 7, 8] {
+        if 8 + (i + 1) * ps <= n {
+            mem::wp(p + 8 + i * ps, 64 << 20);
         }
     }
     1
 }
 
+/// Memory in pages as GlobalMemoryStatusEx tells it, for GetPerformanceInfo and
+/// NtQuerySystemInformation alike: (physical, available, commit total, commit limit, peak,
+/// paged pool, nonpaged pool)
+fn perf_pages() -> [u32; 7] {
+    let pages = (PHYS / 4096) as u32;
+    [pages, pages / 4 * 3, pages / 4, 2 * pages, pages / 4, 0x6000, 0x2000]
+}
+/// The threads that run (by id) and the handles open
+fn counts() -> (Vec<u32>, u32) {
+    obj::with(|t| {
+        let mut tids: Vec<u32> = t.objs.iter().filter_map(|(_, (o, _))| match o {
+            Obj::Thread { tid, done: false, .. } => Some(*tid),
+            _ => None,
+        }).collect();
+        tids.sort();
+        tids.dedup();
+        (tids, t.objs.iter().count() as u32)
+    })
+}
+/// GetPerformanceInfo(PERFORMANCE_INFORMATION*, bytes): in pages, one process with its threads
+/// and handles
+fn K32GetPerformanceInfo(c: &mut Ctx) -> u32 {
+    let (p, cb) = (c.a(0), c.a(1));
+    let ps = mem::ps();
+    let size = if mem::x64() { 104 } else { 56 };
+    if cb < size {
+        last_error(24); // ERROR_BAD_LENGTH
+        return 0;
+    }
+    mem::fill(p, size, 0);
+    w32(p, size);
+    let [phys, avail, commit, limit, peak, paged, nonpaged] = perf_pages();
+    let at = |i: u32| p + ps + i * ps; // the SIZE_T fields after cb
+    for (i, v) in [commit, limit, peak, phys, avail, phys / 8, paged + nonpaged, paged, nonpaged, 4096].into_iter().enumerate() {
+        mem::wp(at(i as u32), v);
+    }
+    let (tids, handles) = counts();
+    w32(at(10), handles);
+    w32(at(10) + 4, 1);
+    w32(at(10) + 8, tids.len().max(1) as u32);
+    1
+}
+/// NtQuerySystemInformation(class, buffer, bytes, &needed): SystemBasicInformation,
+/// SystemPerformanceInformation, SystemProcessInformation (this process, its threads); other
+/// classes STATUS_NOT_IMPLEMENTED
+fn NtQuerySystemInformation(c: &mut Ctx) -> u32 {
+    let (class, p, len, pr) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    let ps = mem::ps();
+    let x64 = mem::x64();
+    let [phys, avail, commit, limit, peak, paged, nonpaged] = perf_pages();
+    let (need, exact) = match class {
+        0 => (if x64 { 64 } else { 44 }, true),
+        2 => (312, false),
+        5 => {
+            let (tids, _) = counts();
+            let name = crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.path.rsplit('\\').next().unwrap_or("").to_string()).unwrap_or_default();
+            let (fixed, ti) = if x64 { (0x100, 0x50) } else { (0xb8, 0x40) };
+            (fixed + ti * tids.len().max(1) as u32 + 2 * (name.encode_utf16().count() as u32 + 1), false)
+        }
+        _ => return 0xc000_0002,
+    };
+    if pr != 0 {
+        w32(pr, need);
+    }
+    if (exact && len != need) || len < need {
+        return 0xc000_0004; // STATUS_INFO_LENGTH_MISMATCH
+    }
+    mem::fill(p, need, 0);
+    match class {
+        0 => {
+            w32(p + 4, 156_250); // the timer's increment (15.625 ms)
+            w32(p + 8, 4096);
+            w32(p + 12, phys);
+            w32(p + 16, 1);
+            w32(p + 20, phys);
+            mem::wp(p + 24, 0x10000);
+            mem::wp(p + 24 + ps, 0x10000);
+            // (as GetSystemInfo tells it)
+            if x64 {
+                mem::w64(p + 24 + 2 * ps, 0x7fff_fffe_ffff);
+            } else {
+                w32(p + 24 + 2 * ps, 0x7ffe_ffff);
+            }
+            mem::wp(p + 24 + 3 * ps, (1u32 << ncpu()) - 1);
+            mem::w8(p + 24 + 4 * ps, ncpu() as u8);
+        }
+        2 => {
+            for (o, v) in [(44, avail), (48, commit), (52, limit), (56, peak), (112, paged), (116, nonpaged)] {
+                w32(p + o, v);
+            }
+        }
+        _ => {
+            let (tids, handles) = counts();
+            let tids = if tids.is_empty() { vec![crate::cur().tid] } else { tids };
+            let name: Vec<u16> = crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.path.rsplit('\\').next().unwrap_or("").to_string()).unwrap_or_default().encode_utf16().collect();
+            let (fixed, ti) = if x64 { (0x100, 0x50) } else { (0xb8, 0x40) };
+            w32(p + 4, tids.len() as u32);
+            let s = p + fixed + ti * tids.len() as u32;
+            for (i, &u) in name.iter().enumerate() {
+                mem::w16(s + 2 * i as u32, u);
+            }
+            mem::w16(p + 0x38, 2 * name.len() as u16);
+            mem::w16(p + 0x3a, 2 * name.len() as u16 + 2);
+            mem::wp(p + 0x38 + ps, s);
+            let (pid_at, hc_at) = if x64 { (0x50, 0x60) } else { (0x44, 0x4c) };
+            w32(p + pid_at - ps, 8); // base priority: normal
+            mem::wp(p + pid_at, crate::PID);
+            w32(p + hc_at, handles);
+            w32(p + hc_at + 4, 1); // session
+            for (i, &tid) in tids.iter().enumerate() {
+                let t = p + fixed + ti * i as u32;
+                let cid = if x64 { 0x28 } else { 0x20 };
+                mem::wp(t + cid, crate::PID);
+                mem::wp(t + cid + ps, tid);
+                w32(t + cid + 2 * ps, 8);
+                w32(t + cid + 2 * ps + 4, 8);
+                w32(t + cid + 2 * ps + 12, 5); // Waiting
+            }
+        }
+    }
+    0
+}
 /// The process's modules in load order, as EnumProcessModules lists them: the exe, then ntdll,
 /// kernel32 and kernelbase (always there on Windows), then every DLL loaded (mono finds a
 /// P/Invoke into "__Internal" or an unmapped DLL by GetProcAddress on each)
@@ -419,18 +572,22 @@ fn process_modules() -> Vec<u32> {
 /// all of them take
 fn K32EnumProcessModules(c: &mut Ctx) -> u32 {
     let (h, p, cb, pn) = (c.a(0), c.a(1), c.a(2), c.a(3));
-    if h != obj::CURRENT_PROCESS {
-        last_error(6);
-        return 0;
-    }
-    if pn == 0 {
-        last_error(998);
+    if !psapi_access(h, true) {
         return 0;
     }
     let all = process_modules();
     let ps = mem::ps();
+    // (the list is written before the count: a NULL count fails after it)
+    if p == 0 && cb >= ps {
+        last_error(998); // ERROR_NOACCESS
+        return 0;
+    }
     for (i, &b) in all.iter().enumerate().take((cb / ps) as usize) {
         mem::wp(p + i as u32 * ps, b);
+    }
+    if pn == 0 {
+        last_error(998);
+        return 0;
     }
     w32(pn, all.len() as u32 * ps);
     1
@@ -443,12 +600,24 @@ fn K32EnumProcessModulesEx(c: &mut Ctx) -> u32 {
     }
     K32EnumProcessModules(c)
 }
+/// Whether psapi may read this process's modules through `h`: PROCESS_QUERY_INFORMATION (or
+/// its limited form) and PROCESS_VM_READ; ERROR_INVALID_HANDLE / ERROR_ACCESS_DENIED if not
+fn psapi_access(h: u32, vm_read: bool) -> bool {
+    match self_process(h) {
+        None => last_error(6),
+        Some(a) if a & 0x1400 == 0 || (vm_read && a & 0x10 == 0) => last_error(5),
+        Some(_) => return true,
+    }
+    false
+}
 /// The module a psapi call names (0: the exe), or ERROR_INVALID_HANDLE
 fn psapi_module(process: u32, h: u32) -> Option<u32> {
-    let base = if h == 0 { crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.base) } else { crate::pe::by_base(h).map(|_| h) };
-    if process != obj::CURRENT_PROCESS || base.is_none() {
-        last_error(6);
+    if !psapi_access(process, true) {
         return None;
+    }
+    let base = if h == 0 { crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.base) } else { crate::pe::by_base(h).map(|_| h) };
+    if base.is_none() {
+        last_error(6);
     }
     base
 }
@@ -471,7 +640,8 @@ fn K32GetModuleInformation(c: &mut Ctx) -> u32 {
     1
 }
 /// GetModuleBaseName / GetModuleFileNameEx(process, module, buffer, chars): as much of the name
-/// as fits, ended by a 0 when there is room for one; the characters copied
+/// as fits, ended by a 0 when there is room for one; the characters copied. GetModuleFileNameEx
+/// cut short ends the buffer with a 0 as GetModuleFileName does (Wine's psapi test, Windows 10)
 fn psapi_name(c: &mut Ctx, base_only: bool, wide: bool) -> u32 {
     let (dst, cap) = (c.a(2), c.a(3));
     let Some(b) = psapi_module(c.a(0), c.a(1)) else { return 0 };
@@ -480,6 +650,11 @@ fn psapi_name(c: &mut Ctx, base_only: bool, wide: bool) -> u32 {
     if cap == 0 {
         last_error(122);
         return 0;
+    }
+    if !base_only {
+        let n = if wide { name.encode_utf16().count() } else { crate::text::s2a(&name).len() } as u32;
+        put_name(dst, cap, &name, wide);
+        return n.min(cap);
     }
     if wide {
         let v: Vec<u16> = name.encode_utf16().collect();
@@ -1009,7 +1184,7 @@ fn DuplicateHandle(c: &mut Ctx) -> u32 {
     let h = if src == obj::CURRENT_THREAD {
         obj::dup(crate::cur().obj)
     } else if src == obj::CURRENT_PROCESS {
-        obj::add(Obj::Process)
+        obj::add(Obj::Process { access: PROCESS_ALL_ACCESS })
     } else if c.a(6) & 1 != 0 {
         // DUPLICATE_CLOSE_SOURCE: Windows hands out the number it just freed (the old handle
         // keeps working through the new one)
@@ -1819,15 +1994,18 @@ fn LCIDToLocaleName(c: &mut Ctx) -> u32 {
 /// LdrGetDllHandle(path, flags, UNICODE_STRING *name, HMODULE *out)
 fn LdrGetDllHandle(c: &mut Ctx) -> u32 {
     let us = c.a(2);
-    let h = if us == 0 { 0 } else { module_handle(r32(us + 4), true) };
-    put32(c.a(3), h);
+    let h = if us == 0 { 0 } else { module_handle(mem::rp(us + mem::ps()), true) };
+    if c.a(3) != 0 {
+        mem::wp(c.a(3), h);
+    }
     if h == 0 { 0xc000_0135 } else { 0 }
 }
 // ntdll's counted strings: UNICODE_STRING / ANSI_STRING = { u16 Length, u16 MaximumLength, PTR Buffer }
 fn put_counted(us: u32, len: u32, max: u32, buf: u32) {
     w16(us, len as u16);
     w16(us + 2, max as u16);
-    w32(us + 4, buf);
+    // (UNICODE_STRING / ANSI_STRING: Buffer after the two lengths, pointer-aligned)
+    mem::wp(us + mem::ps(), buf);
 }
 fn RtlInitUnicodeString(c: &mut Ctx) -> u32 {
     let (us, s) = (c.a(0), c.a(1));
@@ -1843,8 +2021,8 @@ fn RtlInitAnsiString(c: &mut Ctx) -> u32 {
 }
 fn RtlFreeUnicodeString(c: &mut Ctx) -> u32 {
     let us = c.a(0);
-    if us != 0 && r32(us + 4) != 0 {
-        mem::heap_free(r32(us + 4));
+    if us != 0 && mem::rp(us + mem::ps()) != 0 {
+        mem::heap_free(mem::rp(us + mem::ps()));
         put_counted(us, 0, 0, 0);
     }
     0
@@ -1861,7 +2039,7 @@ fn counted_out(us: u32, v: &[u16], unit: u32, alloc: bool) -> u32 {
             return 0x8000_0005; // STATUS_BUFFER_OVERFLOW
         }
         w16(us, n as u16);
-        r32(us + 4)
+        mem::rp(us + mem::ps())
     };
     for (i, &x) in v.iter().enumerate() {
         if unit == 2 { w16(buf + 2 * i as u32, x) } else { w8(buf + i as u32, x as u8) }
@@ -1870,10 +2048,10 @@ fn counted_out(us: u32, v: &[u16], unit: u32, alloc: bool) -> u32 {
     0
 }
 fn counted_bytes(us: u32) -> Vec<u8> {
-    (0..r16(us) as u32).map(|i| mem::r8(r32(us + 4) + i)).collect()
+    (0..r16(us) as u32).map(|i| mem::r8(mem::rp(us + mem::ps()) + i)).collect()
 }
 fn counted_wide(us: u32) -> Vec<u16> {
-    (0..r16(us) as u32 / 2).map(|i| r16(r32(us + 4) + 2 * i)).collect()
+    (0..r16(us) as u32 / 2).map(|i| r16(mem::rp(us + mem::ps()) + 2 * i)).collect()
 }
 fn RtlAnsiStringToUnicodeString(c: &mut Ctx) -> u32 {
     let w = a2w(&counted_bytes(c.a(1)));
@@ -1883,6 +2061,74 @@ fn RtlUnicodeStringToAnsiString(c: &mut Ctx) -> u32 {
     let a: Vec<u16> = crate::text::w2a(&counted_wide(c.a(1))).into_iter().map(|b| b as u16).collect();
     counted_out(c.a(0), &a, 1, c.a(2) != 0)
 }
+/// RtlMultiByteToUnicodeN(dst, dst bytes, &written bytes, src, src bytes): the ANSI code page's
+/// text as UTF-16, cut to what fits (whole characters)
+fn RtlMultiByteToUnicodeN(c: &mut Ctx) -> u32 {
+    let (dst, cap, pw, src, n) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
+    let b: Vec<u8> = (0..n).map(|i| mem::r8(src + i)).collect();
+    let w = a2w(&b);
+    let k = w.len().min(cap as usize / 2);
+    for (i, &u) in w[..k].iter().enumerate() {
+        w16(dst + 2 * i as u32, u);
+    }
+    if pw != 0 {
+        w32(pw, 2 * k as u32);
+    }
+    0
+}
+/// RtlUnicodeToMultiByteN(dst, dst bytes, &written bytes, src, src bytes)
+fn RtlUnicodeToMultiByteN(c: &mut Ctx) -> u32 {
+    let (dst, cap, pw, src, n) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
+    let w: Vec<u16> = (0..n / 2).map(|i| r16(src + 2 * i)).collect();
+    let mut out = Vec::new();
+    // (whole characters: a double-byte one that does not fit is left out)
+    for &u in &w {
+        let b = crate::text::w2a(&[u]);
+        if out.len() + b.len() > cap as usize {
+            break;
+        }
+        out.extend(b);
+    }
+    mem::write(dst, &out);
+    if pw != 0 {
+        w32(pw, out.len() as u32);
+    }
+    0
+}
+fn RtlMultiByteToUnicodeSize(c: &mut Ctx) -> u32 {
+    let (pw, src, n) = (c.a(0), c.a(1), c.a(2));
+    let b: Vec<u8> = (0..n).map(|i| mem::r8(src + i)).collect();
+    w32(pw, 2 * a2w(&b).len() as u32);
+    0
+}
+fn RtlUnicodeToMultiByteSize(c: &mut Ctx) -> u32 {
+    let (pw, src, n) = (c.a(0), c.a(1), c.a(2));
+    let w: Vec<u16> = (0..n / 2).map(|i| r16(src + 2 * i)).collect();
+    w32(pw, crate::text::w2a(&w).len() as u32);
+    0
+}
+/// RtlUpcaseUnicodeChar(c): Windows' upper case of one UTF-16 unit
+fn RtlUpcaseUnicodeChar(c: &mut Ctx) -> u32 {
+    crate::nt::up(c.a(0) as u16) as u32
+}
+/// RtlCompareUnicodeString(a, b, case insensitive): the difference of the first units that
+/// differ (in upper case when asked), else of the lengths
+fn RtlCompareUnicodeString(c: &mut Ctx) -> u32 {
+    let (a, b, ci) = (counted_wide(c.a(0)), counted_wide(c.a(1)), c.a(2) & 0xff != 0);
+    let f = |u: u16| if ci { crate::nt::up(u) } else { u };
+    for (x, y) in a.iter().zip(&b) {
+        let (x, y) = (f(*x), f(*y));
+        if x != y {
+            return (x as i32 - y as i32) as u32;
+        }
+    }
+    (a.len() as i32 - b.len() as i32) as u32
+}
+/// RtlEqualUnicodeString(a, b, case insensitive)
+fn RtlEqualUnicodeString(c: &mut Ctx) -> u32 {
+    let (a, b) = (counted_wide(c.a(0)), counted_wide(c.a(1)));
+    (a.len() == b.len() && RtlCompareUnicodeString(c) == 0) as u32
+}
 /// RtlDosPathNameToNtPathName_U(dos, &nt, &filepart, reserved): "\??\" + the full path
 fn RtlDosPathNameToNtPathName_U(c: &mut Ctx) -> u32 {
     let (dos, nt, part) = (c.a(0), c.a(1), c.a(2));
@@ -1891,7 +2137,7 @@ fn RtlDosPathNameToNtPathName_U(c: &mut Ctx) -> u32 {
     counted_out(nt, &w, 2, true);
     if part != 0 {
         let at = w.iter().rposition(|&x| x == b'\\' as u16).map_or(0, |i| i + 1);
-        w32(part, if at < w.len() { r32(nt + 4) + 2 * at as u32 } else { 0 });
+        mem::wp(part, if at < w.len() { mem::rp(nt + mem::ps()) + 2 * at as u32 } else { 0 });
     }
     1
 }
@@ -1910,7 +2156,9 @@ fn LdrGetProcedureAddress(c: &mut Ctx) -> u32 {
         crate::pe::Import::Ordinal(ord)
     };
     let r = crate::pe::proc_address_static(h, imp).unwrap_or(0);
-    put32(out, r);
+    if out != 0 {
+        mem::wp(out, r);
+    }
     if r == 0 { 0xc000_0139 } else { 0 }
 }
 /// NtProtectVirtualMemory(process, &base, &size, protect, &old)
@@ -1937,9 +2185,31 @@ fn NtQueryVirtualMemory(c: &mut Ctx) -> u32 {
             let f = crate::api::export("kernel32", "VirtualQuery");
             let n = c.call(f, &[a, info, len]);
             if ret != 0 {
-                w32(ret, n);
+                mem::wp(ret, n);
             }
             if n == 0 { 0xc000_0004 } else { 0 }
+        }
+        2 => {
+            // MemoryMappedFilenameInformation: MEMORY_SECTION_NAME, the name right after it
+            let name = match mapped_file(a) {
+                Ok(p) => device_path(&p),
+                Err(1006) => return 0xc000_0098, // STATUS_FILE_INVALID
+                Err(_) => return 0xc000_0141,    // STATUS_INVALID_ADDRESS
+            };
+            let w: Vec<u16> = name.encode_utf16().collect();
+            let us = 2 * mem::ps();
+            let need = us + 2 * w.len() as u32 + 2;
+            if ret != 0 {
+                mem::wp(ret, need);
+            }
+            if len < need {
+                return 0x8000_0005; // STATUS_BUFFER_OVERFLOW
+            }
+            mem::w16(info, 2 * w.len() as u16);
+            mem::w16(info + 2, 2 * w.len() as u16 + 2);
+            mem::wp(info + mem::ps(), info + us);
+            put_wstr(info + us, w.len() as u32 + 1, &w);
+            0
         }
         _ => 0xc000_0003,
     }
@@ -3857,7 +4127,12 @@ fn module_name(h: u32, wide: bool, dst: u32, cap: u32) -> u32 {
     };
     let n = if wide { path.encode_utf16().count() } else { crate::text::s2a(&path).len() } as u32;
     if n >= cap {
-        ret_str(dst, cap, &path, wide);
+        // cut short: W ends with a 0, A fills the buffer and has none (Windows 10, winref fmt)
+        if wide {
+            put_name(dst, cap, &path, true);
+        } else {
+            mem::write(dst, &crate::text::s2a(&path)[..cap as usize]);
+        }
         last_error(122);
         return cap;
     }
@@ -4192,6 +4467,10 @@ fn create_file(c: &mut Ctx, wide: bool) -> u32 {
         Ok((f, existed)) => {
             // CREATE_ALWAYS / OPEN_ALWAYS of an existing file: ERROR_ALREADY_EXISTS
             last_error(if existed && (disp == 2 || disp == 4) { 183 } else { 0 });
+            // a file made (or remade) here takes the read-only / hidden / system attributes asked
+            if !f.dir && (!existed || disp == 2) && c.a(5) & 7 != 0 {
+                files::set_attrs(&f.path, c.a(5) & 7);
+            }
             obj::add(Obj::File(std::sync::Arc::new(f)))
         }
         Err(e) => {
@@ -5077,6 +5356,7 @@ fn MapViewOfFile(c: &mut Ctx) -> u32 {
     let n = if n == 0 { total } else { n.min(total.max(n)) };
     let Some(b) = mem::reserve(0, n.max(1), 4, 0x40000, false) else { return 0 };
     mem::commit(b, 4);
+    VIEWS.lock().unwrap().push((b, n.max(1), file.as_ref().map(|f| files::host_to_win(&f.path))));
     if let Some(f) = &file {
         let pos = f.seek(SeekFrom::Current(0)).unwrap_or(0);
         f.seek(SeekFrom::Start(off));
@@ -5098,9 +5378,86 @@ fn UnmapViewOfFile(c: &mut Ctx) -> u32 {
     let a = c.a(0);
     let named_view = obj::with(|t| t.objs.values().any(|(o, _)| matches!(o, Obj::Mapping { file: None, view, .. } if *view == a)));
     if !named_view {
+        VIEWS.lock().unwrap().retain(|v| v.0 != a);
         mem::release(a);
     }
     1
+}
+/// Each view MapViewOfFile made: (base, size, the file's Windows path; None: pagefile-backed)
+static VIEWS: Mutex<Vec<(u32, u32, Option<String>)>> = Mutex::new(Vec::new());
+/// "C:\x\y" as the NT device path GetMappedFileName gives ("\Device\HarddiskVolume1\x\y")
+fn device_path(win: &str) -> String {
+    match win.chars().next().and_then(drive_device) {
+        Some(d) if win.get(1..2) == Some(":") => format!("{d}{}", &win[2..]),
+        _ => win.to_string(),
+    }
+}
+/// The file behind an address (a module's image or a file view), as GetMappedFileName finds it:
+/// Err(ERROR_FILE_INVALID) for a pagefile view, Err(ERROR_UNEXP_NET_ERR) for no mapping
+fn mapped_file(a: u32) -> Result<String, u32> {
+    if let Some(b) = crate::pe::containing(a) {
+        return Ok(crate::pe::with(b, |m| m.path.clone()).unwrap());
+    }
+    match VIEWS.lock().unwrap().iter().find(|v| a >= v.0 && a - v.0 < v.1) {
+        Some((_, _, Some(p))) => Ok(p.clone()),
+        Some(_) => Err(1006),
+        None => {
+            // (a pagefile section a program shares by name)
+            let named = obj::with(|t| t.objs.values().any(|(o, _)| matches!(o, Obj::Mapping { file: None, view, size } if *view != 0 && a >= *view && a - *view < *size)));
+            Err(if named { 1006 } else { 59 })
+        }
+    }
+}
+/// GetMappedFileName(process, address, buffer, chars): the device path of the file mapped there
+fn mapped_file_name(c: &mut Ctx, wide: bool) -> u32 {
+    let (h, a, dst, cap) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    if !psapi_access(h, false) {
+        return 0;
+    }
+    if dst == 0 || cap == 0 {
+        last_error(87);
+        return 0;
+    }
+    match mapped_file(a) {
+        Ok(p) => {
+            let p = device_path(&p);
+            let n = if wide { p.encode_utf16().count() } else { crate::text::s2a(&p).len() } as u32;
+            put_name(dst, cap, &p, wide);
+            n.min(cap)
+        }
+        Err(e) => {
+            last_error(e);
+            0
+        }
+    }
+}
+fn K32GetMappedFileNameA(c: &mut Ctx) -> u32 {
+    mapped_file_name(c, false)
+}
+fn K32GetMappedFileNameW(c: &mut Ctx) -> u32 {
+    mapped_file_name(c, true)
+}
+/// GetProcessImageFileName(process, buffer, chars): the exe's device path, which must fit with
+/// its 0
+fn image_file_name(c: &mut Ctx, wide: bool) -> u32 {
+    let (h, dst, cap) = (c.a(0), c.a(1), c.a(2));
+    if !psapi_access(h, false) {
+        return 0;
+    }
+    let exe = crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.path.clone()).unwrap_or_default();
+    let p = device_path(&exe);
+    let n = if wide { p.encode_utf16().count() } else { crate::text::s2a(&p).len() } as u32;
+    if n >= cap || dst == 0 {
+        last_error(122);
+        return 0;
+    }
+    put_name(dst, cap, &p, wide)
+}
+fn K32GetProcessImageFileNameA(c: &mut Ctx) -> u32 {
+    image_file_name(c, false)
+}
+fn K32GetProcessImageFileNameW(c: &mut Ctx) -> u32 {
+    image_file_name(c, true)
 }
 
 fn CreatePipe(_: &mut Ctx) -> u32 {
@@ -5170,8 +5527,23 @@ fn WinExec(c: &mut Ctx) -> u32 {
     exec(&prog, &args, None);
     2
 }
-fn OpenProcess(_: &mut Ctx) -> u32 {
-    0
+/// OpenProcess(access, inherit, id): our own process only (there is no other)
+fn OpenProcess(c: &mut Ctx) -> u32 {
+    if c.a(2) != crate::PID {
+        last_error(87);
+        return 0;
+    }
+    obj::add(Obj::Process { access: c.a(0) & PROCESS_ALL_ACCESS })
+}
+/// EnumProcesses(ids, bytes, &used): ours
+fn K32EnumProcesses(c: &mut Ctx) -> u32 {
+    let (p, cb, pu) = (c.a(0), c.a(1), c.a(2));
+    let n = (cb / 4).min(1);
+    if n == 1 {
+        w32(p, crate::PID);
+    }
+    w32(pu, 4 * n);
+    1
 }
 /// OpenThread(access, inherit, id): a handle of the thread with that id (mono opens its own
 /// threads by id)
@@ -5470,9 +5842,17 @@ pub fn init() {
     implement("msvcrt", "_endthread", _endthread);
     implement("kernel32", "SetThreadExecutionState", SetThreadExecutionState);
     implement("psapi", "GetProcessMemoryInfo", K32GetProcessMemoryInfo);
+    implement("ntdll", "NtQuerySystemInformation", NtQuerySystemInformation);
+    implement("ntdll", "ZwQuerySystemInformation", NtQuerySystemInformation);
     for (n, f) in [
         ("EnumProcessModules", K32EnumProcessModules as crate::api::Handler),
         ("EnumProcessModulesEx", K32EnumProcessModulesEx),
+        ("EnumProcesses", K32EnumProcesses),
+        ("GetPerformanceInfo", K32GetPerformanceInfo),
+        ("GetMappedFileNameA", K32GetMappedFileNameA),
+        ("GetMappedFileNameW", K32GetMappedFileNameW),
+        ("GetProcessImageFileNameA", K32GetProcessImageFileNameA),
+        ("GetProcessImageFileNameW", K32GetProcessImageFileNameW),
         ("GetModuleInformation", K32GetModuleInformation),
         ("GetModuleBaseNameA", K32GetModuleBaseNameA),
         ("GetModuleBaseNameW", K32GetModuleBaseNameW),
@@ -5631,6 +6011,8 @@ pub fn init() {
     reg!("advapi32"; RegisterTraceGuidsW, UnregisterTraceGuids, TraceEvent, GetTraceLoggerHandle, GetTraceEnableFlags, GetTraceEnableLevel);
     reg!("ntdll"; RtlGetVersion, RtlGetNtVersionNumbers, RtlVerifyVersionInfo, RtlFirstEntrySList);
     reg!("kernel32"; DeviceIoControl, QueryDosDeviceA, QueryDosDeviceW, GetLogicalDriveStringsA, GetLogicalDriveStringsW, GetProductInfo);
+    reg!("ntdll"; RtlMultiByteToUnicodeN, RtlUnicodeToMultiByteN, RtlMultiByteToUnicodeSize, RtlUnicodeToMultiByteSize,
+        RtlUpcaseUnicodeChar, RtlCompareUnicodeString, RtlEqualUnicodeString);
     reg!("ntdll"; RtlInitUnicodeString, RtlInitAnsiString, RtlFreeUnicodeString, RtlAnsiStringToUnicodeString,
         RtlUnicodeStringToAnsiString, RtlDosPathNameToNtPathName_U, RtlFormatCurrentUserKeyPath, LdrGetProcedureAddress,
         NtProtectVirtualMemory);

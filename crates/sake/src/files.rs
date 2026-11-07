@@ -12,6 +12,8 @@ pub struct File {
     pub dir: bool,
     /// opened for writing (WriteFile fails with ERROR_ACCESS_DENIED otherwise)
     pub write: bool,
+    /// a directory's listing being read by NtQueryDirectoryFile, with the mask it took
+    pub scan: Mutex<Option<(Vec<u16>, Find)>>,
     /// its entry in OPEN (sharing checks), removed when the handle goes
     share: u64,
 }
@@ -128,6 +130,12 @@ pub fn is_dir<P: AsRef<std::path::Path>>(h: P) -> bool {
 
 /// Absolute Windows path of `p` (GetFullPathName): drive, no "." or "..", backslashes.
 pub fn full_path(p: &str) -> String {
+    full_path_trim(p, true)
+}
+/// full_path; `trim` false for a \\?\ path, whose last component keeps trailing dots and
+/// spaces (CreateFile of \\?\C:\d\a. makes "a."): such a path stays \\?\-prefixed so that
+/// taking its full path again keeps them
+fn full_path_trim(p: &str, trim: bool) -> String {
     let p = p.replace('/', "\\");
     let abs = if p.len() >= 2 && p.as_bytes()[1] == b':' && p.is_char_boundary(2) {
         if p.len() == 2 || p.as_bytes()[2] != b'\\' {
@@ -137,7 +145,8 @@ pub fn full_path(p: &str) -> String {
         }
     } else if let Some(rest) = p.strip_prefix("\\\\?\\").or_else(|| p.strip_prefix("\\??\\")) {
         // (an NT or long path; an empty or driveless one is taken from the current directory)
-        if rest.len() >= 2 && rest.as_bytes()[1] == b':' { full_path(rest) } else { format!("{}{}", cwd(), rest) }
+        let rest = if rest.len() >= 2 && rest.as_bytes()[1] == b':' { rest.to_string() } else { format!("{}{}", cwd(), rest) };
+        return full_path_trim(&rest, false);
     } else if let Some(rest) = p.strip_prefix("\\\\") {
         // UNC: \\server\share stays the root (".." does not go above it)
         let mut it = rest.splitn(3, '\\');
@@ -175,14 +184,19 @@ pub fn full_path(p: &str) -> String {
         }
     }
     // (the last component loses its trailing dots and spaces: "trail. ." is "trail")
+    let mut kept = false;
     if let Some(l) = parts.last_mut() {
         let t = l.trim_end_matches(['.', ' ']);
-        if !t.is_empty() {
-            *l = t;
+        if !t.is_empty() && t.len() != l.len() {
+            if trim {
+                *l = t;
+            } else {
+                kept = true;
+            }
         }
     }
     let trailing = abs.ends_with('\\') && !parts.is_empty();
-    let mut out = format!("{}\\{}", drive.to_ascii_uppercase(), parts.join("\\"));
+    let mut out = format!("{}{}\\{}", if kept { "\\\\?\\" } else { "" }, drive.to_ascii_uppercase(), parts.join("\\"));
     if trailing {
         out.push('\\');
     }
@@ -192,6 +206,7 @@ pub fn full_path(p: &str) -> String {
 /// Host path for a Windows path, without checking that it exists.
 pub fn to_host(w: &str) -> String {
     let w = full_path(w);
+    let w = w.strip_prefix("\\\\?\\").unwrap_or(&w);
     let (drive, rest) = w.split_at(2);
     let rest = rest.replace('\\', "/");
     match drive {
@@ -255,7 +270,7 @@ pub fn open_shared(w: &str, access: u32, disposition: u32, share: Option<u32>) -
     if let Some(h) = &existing {
         if kura::fs::metadata(h).is_ok_and(|m| m.is_dir()) {
             let f = kura::fs::File::open(h).map_err(|_| ERROR_ACCESS_DENIED)?;
-            return Ok((File { f: Mutex::new(f), path: h.clone(), dir: true, write: false, share: 0 }, true));
+            return Ok((File { f: Mutex::new(f), path: h.clone(), dir: true, write: false, scan: Mutex::new(None), share: 0 }, true));
         }
         if share.is_some_and(|s| share_conflict(h, access_bits(access), s)) {
             return Err(32);
@@ -307,7 +322,7 @@ pub fn open_shared(w: &str, access: u32, disposition: u32, share: Option<u32>) -
                 }
                 None => 0,
             };
-            Ok((File { f: Mutex::new(f), path: host, dir: false, write, share: id }, existing.is_some()))
+            Ok((File { f: Mutex::new(f), path: host, dir: false, write, scan: Mutex::new(None), share: id }, existing.is_some()))
         }
         Err(e) => Err(match e.kind() {
             std::io::ErrorKind::NotFound => {

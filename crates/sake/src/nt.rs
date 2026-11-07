@@ -26,20 +26,25 @@ fn status() -> u32 {
     }
 }
 
+/// IO_STATUS_BLOCK: the status (a pointer-sized union), then Information (ULONG_PTR). An
+/// error status leaves it as it was (Windows writes it for success and warnings only: Wine's
+/// mailslot / directory tests)
 fn iosb(p: u32, st: u32, info: u32) {
-    if p != 0 {
-        w32(p, st);
-        w32(p + 4, info);
+    if p != 0 && st < 0xc000_0000 {
+        mem::wp(p, st);
+        mem::wp(p + mem::ps(), info);
     }
 }
 
 /// OBJECT_ATTRIBUTES' name as a Win32 path (in guest memory, to free).
 fn path_of(oa: u32) -> Option<u32> {
-    let us = r32(oa + 8);
+    // (OBJECT_ATTRIBUTES: Length, RootDirectory, ObjectName; UNICODE_STRING's Buffer after its
+    // two lengths, both pointer-aligned)
+    let us = mem::rp(oa + 2 * mem::ps());
     if us == 0 {
         return None;
     }
-    let (n, b) = (r16(us) as u32 / 2, r32(us + 4));
+    let (n, b) = (r16(us) as u32 / 2, mem::rp(us + mem::ps()));
     let mut w: Vec<u16> = (0..n).map(|i| r16(b + 2 * i)).collect();
     let s = String::from_utf16_lossy(&w);
     for pre in ["\\??\\UNC\\", "\\??\\", "\\DosDevices\\", "\\GLOBAL??\\"] {
@@ -59,7 +64,18 @@ fn path_of(oa: u32) -> Option<u32> {
             w.splice(0..dev.len(), [d as u16, b':' as u16]);
         }
     }
-    // relative to RootDirectory: not tracked; the name alone
+    // relative to RootDirectory (a directory handle): under that directory
+    let root = mem::rp(oa + mem::ps());
+    if root != 0 {
+        let dir = crate::obj::with(|t| match t.objs.get(&root) {
+            Some((crate::obj::Obj::File(f), _)) if f.dir => Some(crate::files::host_to_win(&f.path)),
+            _ => None,
+        });
+        if let Some(d) = dir {
+            let pre: Vec<u16> = format!("{}\\", d.trim_end_matches('\\')).encode_utf16().collect();
+            w.splice(0..0, pre);
+        }
+    }
     let p = mem::heap_alloc(2 * w.len() as u32 + 2, true);
     for (i, &x) in w.iter().enumerate() {
         mem::w16(p + 2 * i as u32, x);
@@ -84,7 +100,32 @@ fn create(c: &mut Ctx, out: u32, access: u32, oa: u32, io: u32, attrs: u32, shar
     if opts & 0x1000 != 0 {
         flags |= 0x0400_0000; // FILE_DELETE_ON_CLOSE
     }
-    let existed = k32(c, "GetFileAttributesW", &[path]) != u32::MAX;
+    let attrs_now = k32(c, "GetFileAttributesW", &[path]);
+    let existed = attrs_now != u32::MAX;
+    let is_dir = existed && attrs_now & 0x10 != 0;
+    // FILE_DIRECTORY_FILE: a directory only (made by CREATE / OPEN_IF); FILE_NON_DIRECTORY_FILE:
+    // never one
+    let fail = |st: u32| {
+        mem::heap_free(path);
+        st
+    };
+    if opts & 1 != 0 {
+        if existed && !is_dir {
+            return fail(0xc000_0103); // STATUS_NOT_A_DIRECTORY
+        }
+        if existed && disp == 2 {
+            return fail(0xc000_0035); // STATUS_OBJECT_NAME_COLLISION
+        }
+        if !existed && (disp == 2 || disp == 3) {
+            if k32(c, "CreateDirectoryW", &[path, 0]) == 0 {
+                let st = status();
+                return fail(st);
+            }
+        }
+    } else if opts & 0x40 != 0 && is_dir {
+        return fail(0xc000_00ba); // STATUS_FILE_IS_A_DIRECTORY
+    }
+    let cd = if opts & 1 != 0 { 3 } else { cd };
     let h = k32(c, "CreateFileW", &[path, access, share, 0, cd, flags, 0]);
     mem::heap_free(path);
     if h == u32::MAX {
@@ -92,7 +133,7 @@ fn create(c: &mut Ctx, out: u32, access: u32, oa: u32, io: u32, attrs: u32, shar
         iosb(io, st, 0);
         return st;
     }
-    put32(out, h);
+    mem::wp(out, h);
     // FILE_SUPERSEDED 0, FILE_OPENED 1, FILE_CREATED 2, FILE_OVERWRITTEN 3
     let info = match (disp, existed) {
         (0, true) => 0,
@@ -352,6 +393,220 @@ fn nt_query_information_process(c: &mut Ctx) -> u32 {
     st
 }
 
+/// A name in upper case as UTF-16, the way NTFS orders a directory (RtlUpcaseUnicodeChar on
+/// each unit)
+fn upcase(n: &str) -> Vec<u16> {
+    n.encode_utf16().map(up).collect()
+}
+pub fn up(u: u16) -> u16 {
+    match char::from_u32(u as u32) {
+        Some(c) => {
+            let mut it = c.to_uppercase();
+            match (it.next(), it.next()) {
+                (Some(x), None) if (x as u32) < 0x10000 => x as u32 as u16,
+                _ => u,
+            }
+        }
+        None => u,
+    }
+}
+
+/// The attributes of a listed entry (what SetFileAttributes gave a file included)
+fn entry_attrs(dir: &str, name: &str, m: &kura::fs::Metadata) -> u32 {
+    if name == "." || name == ".." {
+        return crate::files::attrs(m);
+    }
+    crate::files::attrs_of(&format!("{}/{name}", dir.trim_end_matches('/')), m)
+}
+
+/// Whether `name` matches the NtQueryDirectoryFile mask `expr`, without regard to case:
+/// '*' any characters, '?' one, and the DOS wildcards FindFirstFile's patterns become:
+/// '<' (DOS_STAR) any characters up to and including the name's last period (all of a name
+/// whose periods all lead, from its start), '>' (DOS_QM) one character, or none at a period or the end (a run of
+/// them then ends there, taking the period only when nothing follows), '"' (DOS_DOT) a period
+/// or nothing at the end. ".." is matched as "." (Windows' answers in Wine's ntdll directory
+/// test).
+pub fn nt_match(expr: &[u16], name: &[u16]) -> bool {
+    let name = if name == [b'.' as u16, b'.' as u16] { &name[..1] } else { name };
+    let (e, n) = (expr.len(), name.len());
+    let lead = name.iter().take_while(|&&c| c == b'.' as u16).count();
+    // memo[i][j]: expr[i..] against name[j..]
+    let mut memo = vec![None::<bool>; (e + 1) * (n + 1)];
+    fn go(i: usize, j: usize, x: &[u16], s: &[u16], lead: usize, memo: &mut Vec<Option<bool>>) -> bool {
+        let (e, n) = (x.len(), s.len());
+        if let Some(r) = memo[i * (n + 1) + j] {
+            return r;
+        }
+        let dot = b'.' as u16;
+        let r = if i == e {
+            j == n
+        } else {
+            match x[i] {
+                0x2a => (j..=n).any(|k| go(i + 1, k, x, s, lead, memo)),
+                0x3c => {
+                    // up to just past the last period, or anywhere with none; at the start of a
+                    // name whose periods all lead (".a"), also the whole name
+                    let to = (j..n).rev().find(|&k| s[k] == dot).map_or(n, |k| k + 1);
+                    let whole = j == 0 && !s[lead..].contains(&dot);
+                    (j..=to).chain(whole.then_some(n)).any(|k| go(i + 1, k, x, s, lead, memo))
+                }
+                0x3f => j < n && go(i + 1, j + 1, x, s, lead, memo),
+                0x3e => {
+                    if j == n {
+                        go(i + 1, j, x, s, lead, memo)
+                    } else if s[j] == dot {
+                        let mut k = i;
+                        while k < e && x[k] == 0x3e {
+                            k += 1;
+                        }
+                        if k == e { go(k, j + 1, x, s, lead, memo) } else { go(k, j, x, s, lead, memo) }
+                    } else {
+                        go(i + 1, j + 1, x, s, lead, memo)
+                    }
+                }
+                0x22 => {
+                    if j == n {
+                        go(i + 1, j, x, s, lead, memo)
+                    } else {
+                        s[j] == dot && go(i + 1, j + 1, x, s, lead, memo)
+                    }
+                }
+                c => j < n && up(c) == up(s[j]) && go(i + 1, j + 1, x, s, lead, memo),
+            }
+        };
+        memo[i * (n + 1) + j] = Some(r);
+        r
+    }
+    go(0, 0, expr, name, lead, &mut memo)
+}
+
+/// The fixed part of each FILE_INFORMATION_CLASS NtQueryDirectoryFile writes: (its size, where
+/// FileNameLength is, where the name goes)
+fn dir_class(class: u32) -> Option<(u32, u32, u32)> {
+    Some(match class {
+        1 => (64, 60, 64),   // FileDirectoryInformation
+        2 => (68, 60, 68),   // FileFullDirectoryInformation
+        3 => (94, 60, 94),   // FileBothDirectoryInformation
+        12 => (12, 8, 12),   // FileNamesInformation
+        37 => (104, 60, 104), // FileIdBothDirectoryInformation
+        38 => (80, 60, 80),  // FileIdFullDirectoryInformation
+        _ => return None,
+    })
+}
+
+/// One entry at `p` (zeroed first): the times, sizes and attributes the class has, and as much
+/// of the name as fits in `room` bytes; the name's bytes written
+fn dir_entry(p: u32, class: u32, name: &str, m: &kura::fs::Metadata, attrs: u32, room: u32) -> u32 {
+    let (fixed, len_at, name_at) = dir_class(class).unwrap();
+    mem::fill(p, fixed, 0);
+    if class != 12 {
+        let t = m.modified().map_or(0, crate::files::filetime);
+        for o in [8, 16, 24, 32] {
+            mem::put64(p + o, t);
+        }
+        let size = if m.is_dir() { 0 } else { m.len() };
+        mem::put64(p + 40, size);
+        mem::put64(p + 48, size); // (as NtQueryInformationFile gives it)
+        w32(p + 56, attrs);
+    }
+    let w: Vec<u16> = name.encode_utf16().collect();
+    w32(p + len_at, 2 * w.len() as u32);
+    let n = (2 * w.len() as u32).min(room.saturating_sub(name_at)) / 2;
+    for (i, &u) in w[..n as usize].iter().enumerate() {
+        mem::w16(p + name_at + 2 * i as u32, u);
+    }
+    2 * n
+}
+
+/// NtQueryDirectoryFile(dir, event, apc, apc ctx, iosb, buf, len, class, single, mask, restart):
+/// the next entries of a directory opened with FILE_DIRECTORY_FILE / FILE_FLAG_BACKUP_SEMANTICS
+/// (.NET's Directory.GetFiles under mono reads directories this way). The mask counts on the
+/// first call (or a restart) only; "." and ".." come first except at a drive's root.
+fn nt_query_directory_file(c: &mut Ctx) -> u32 {
+    let (h, io, buf, len, class) = (c.a(0), c.a(4), c.a(5), c.a(6), c.a(7));
+    let (single, mask, restart) = (c.a(8) & 0xff != 0, c.a(9), c.a(10) & 0xff != 0);
+    let Some((fixed, _, _)) = dir_class(class) else {
+        // FileObjectIdInformation, FileQuotaInformation, FileReparsePointInformation: not for
+        // a directory of files, once the buffer holds one
+        return match class {
+            29 | 32 | 33 if len < [72, 56, 16][[29, 32, 33].iter().position(|&x| x == class).unwrap()] => 0xc000_0004,
+            _ => 0xc000_0003, // STATUS_INVALID_INFO_CLASS
+        };
+    };
+    let f = crate::obj::with(|t| match t.objs.get(&h) {
+        Some((crate::obj::Obj::File(f), _)) => Some(f.clone()),
+        _ => None,
+    });
+    let Some(f) = f else { return 0xc000_0008 };
+    if !f.dir {
+        return 0xc000_000d; // STATUS_INVALID_PARAMETER
+    }
+    // (room for the fixed part and one character, 8-aligned)
+    if len < (fixed + 2 + 7) & !7 {
+        return 0xc000_0004; // STATUS_INFO_LENGTH_MISMATCH
+    }
+    let mut scan = f.scan.lock().unwrap();
+    let first = scan.is_none();
+    if first || restart {
+        // a new mask on the first call or a restart (Windows 8 on); none (NULL or empty) keeps
+        // the last one, "*" at first
+        let mask: Vec<u16> = if mask != 0 && r16(mask) != 0 {
+            let b = mem::rp(mask + mem::ps());
+            (0..r16(mask) as u32 / 2).map(|i| r16(b + 2 * i)).collect()
+        } else {
+            scan.as_ref().map_or(vec![b'*' as u16], |s| s.0.clone())
+        };
+        let win = crate::files::host_to_win(&f.path);
+        let all = crate::files::find(&format!("{}\\*", win.trim_end_matches('\\'))).map_or(Vec::new(), |f| f.entries);
+        let mut entries: Vec<_> = all.into_iter().filter(|(n, _)| nt_match(&mask, &n.encode_utf16().collect::<Vec<_>>())).collect();
+        // NTFS's order: "." and "..", then the names compared in upper case
+        entries.sort_by_cached_key(|(n, _)| (n != ".", n != "..", upcase(n)));
+        let none = entries.is_empty();
+        *scan = Some((mask, crate::files::Find { entries, at: 0 }));
+        if none {
+            // (nothing at all on a handle's first call; a restart that finds nothing has
+            // reached the end)
+            if first {
+                return 0xc000_000f; // STATUS_NO_SUCH_FILE
+            }
+            iosb(io, 0x8000_0006, 0);
+            return 0x8000_0006;
+        }
+    }
+    let s = &mut scan.as_mut().unwrap().1;
+    if s.at >= s.entries.len() {
+        iosb(io, 0x8000_0006, 0);
+        return 0x8000_0006; // STATUS_NO_MORE_FILES
+    }
+    let (mut at, mut prev) = (0u32, None::<u32>);
+    while s.at < s.entries.len() {
+        let (name, m) = &s.entries[s.at];
+        let need = fixed + 2 * name.encode_utf16().count() as u32;
+        if at + need > len {
+            if prev.is_none() {
+                // (not even the first: its fixed part and what fits of the name, kept for next time)
+                dir_entry(buf, class, name, m, entry_attrs(&f.path, name, m), len);
+                iosb(io, 0x8000_0005, len);
+                return 0x8000_0005; // STATUS_BUFFER_OVERFLOW
+            }
+            break;
+        }
+        if let Some(p) = prev {
+            w32(buf + p, at - p);
+        }
+        dir_entry(buf + at, class, name, m, entry_attrs(&f.path, name, m), need);
+        prev = Some(at);
+        s.at += 1;
+        at = (at + need + 7) & !7;
+        if single {
+            break;
+        }
+    }
+    let end = prev.map_or(0, |p| p + fixed + r32(buf + p + dir_class(class).unwrap().1));
+    iosb(io, 0, end);
+    0
+}
+
 pub fn init() {
     for (n, f) in [
         ("SetInformationThread", nt_set_information_thread as crate::api::Handler),
@@ -373,9 +628,68 @@ pub fn init() {
             ("QueryAttributesFile", nt_query_attributes_file),
             ("QueryFullAttributesFile", nt_query_full_attributes_file),
             ("DeleteFile", nt_delete_file),
+            ("QueryDirectoryFile", nt_query_directory_file),
         ] {
             implement(d, &format!("Nt{n}"), f);
             implement(d, &format!("Zw{n}"), f);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::nt_match;
+    fn m(e: &str, n: &str) -> bool {
+        nt_match(&e.encode_utf16().collect::<Vec<_>>(), &n.encode_utf16().collect::<Vec<_>>())
+    }
+    #[test]
+    fn nt_masks() {
+        // (mask, name, whether Windows lists it)
+        for (e, n, want) in [
+            ("*", "a.b", true),
+            ("*.", "a.", true),
+            ("*.", "ab", false),
+            ("?.*", ".", false),
+            ("?.*", "..", false),
+            ("?.*", "a.b", true),
+            ("A.TXT", "a.txt", true),
+            ("\u{c9}b.tmp", "\u{e9}b.tmp", true),
+            ("<a", ".a", true),
+            ("<a", "a.", false),
+            ("<a", "ea", true),
+            ("<a", ".aa", false),
+            ("<.<", "ea", false),
+            ("<.<", ".", true),
+            ("<.<.<", "ea.tmp.tmp", true),
+            ("<.<.<", "n.tmp", false),
+            ("<.<.<", "..a", true),
+            ("<\"\"", ".a", true),
+            ("<\"\"", ".a.a", false),
+            ("<\"\"", "n.tmp", false),
+            ("<\"<.", "a..", true),
+            ("<\"<.", "a.", false),
+            (">", ".", true),
+            (">", "..", true),
+            (">", "ea", false),
+            (">>", "a.", true),
+            (">>", ".a", false),
+            (">.>", ".a", true),
+            (">>.>>>", ".a.a", false),
+            (">>.>>>", "a..", true),
+            (">>.tmp", "ea.tmp", true),
+            (">>.tmp", "longfilename.tmp", false),
+            ("n\"tmp", "n.tmp", true),
+            ("ea\"", "ea", true),
+            ("ea\"", "ea.tmp", false),
+            ("e\"a", "ea", false),
+            ("<", ".a", true),
+            ("<", ".a.a", false),
+            ("<", "n.tmp", false),
+            (".<", "..a", false),
+            (".<", ".aa", true),
+            (".<", "a.", false),
+        ] {
+            assert_eq!(m(e, n), want, "{e:?} {n:?}");
         }
     }
 }
