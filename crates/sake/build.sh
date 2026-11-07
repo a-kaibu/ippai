@@ -53,9 +53,12 @@ link() {  # <output .js> <memory flags> <emcc flags...>
 # instances of their own in the same node; host/snap.js: save states under node)
 NODE="-sNODERAWFS=1 -sENVIRONMENT=node -sMODULARIZE -sEXPORT_NAME=createSake --pre-js $HO/snap.js --extern-post-js $HO/node-main.js -sEXPORTED_FUNCTIONS=_main,$EXPORTS"
 # (the four links at once: each takes a core for a minute)
+# (SAKE_NODE=0: the page's two only, as the release builds: .github/workflows/release.yml)
 pids=()
-link "$OUT/sake.js" "$FIXED" $NODE & pids+=($!)
-link "$OUT/sake-grow.js" "$GROW" $NODE & pids+=($!)
+if [ "${SAKE_NODE:-1}" != 0 ]; then
+  link "$OUT/sake.js" "$FIXED" $NODE & pids+=($!)
+  link "$OUT/sake-grow.js" "$GROW" $NODE & pids+=($!)
+fi
 WEB_OUT=${WEB_OUT:-$ROOT/web/public/sake}
 mkdir -p "$WEB_OUT"
 # (no emscripten file system: the page mounts a tree at "/", crates/kura/src/vfs.rs)

@@ -1,6 +1,7 @@
 # GoReleaser: the release archives of ippai (one binary with the web app built in) for GitHub
-# Releases. .github/workflows/release.yml runs it after CI built web/dist (sake.wasm and the
-# page: they are the same for every target, so they are built once, before this).
+# Releases. .github/workflows/release.yml builds web/dist (sake.wasm and the page, the same for
+# every target) once, then each target's binary on a runner of its own (cargo zigbuild, in
+# parallel), and runs this last: it only archives, checksums, SBOMs and publishes them.
 version: 2
 project_name: ippai
 
@@ -10,6 +11,9 @@ builds:
     binary: ippai
     # (a workspace: build the one package)
     dir: crates/ippai
+    # (the binaries are already built: tools/ci/prebuilt-cargo.sh copies them where GoReleaser
+    # looks; release.yml's bin jobs build them with `cargo zigbuild --release --locked`)
+    tool: ../../tools/ci/prebuilt-cargo.sh
     command: zigbuild
     flags: [--release, --locked]
     targets:
@@ -18,12 +22,8 @@ builds:
       # (pack, add and storage on the PC that has the games; serve runs in the foreground only)
       - x86_64-pc-windows-gnu
     env:
-      - IPPAI_VERSION={{ .Version }}
-      # (GoReleaser looks for the binary under dir/target: a workspace would build into ../../target)
+      # (GoReleaser looks for the binary under dir/target)
       - CARGO_TARGET_DIR=target
-    hooks:
-      # a release only when the x86-64 binary starts, serves its built-in page and stops
-      post: tools/ci/smoke.sh "{{ .Path }}" "{{ .Target }}"
 
 archives:
   - formats: [tar.gz]

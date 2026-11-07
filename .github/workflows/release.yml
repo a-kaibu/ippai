@@ -1,9 +1,18 @@
 # Release from the GitHub web UI: Actions → Release → Run workflow, pick patch / minor / major:
 # svu takes the next version after the last v* tag and the workflow tags main with it. A v* tag
 # pushed by hand (git tag v0.1.0 && git push origin v0.1.0) releases that tag the same way. Only a
-# release: no tests here (CI runs them on every push). It builds sake.wasm and the page, makes
-# sake's fonts, then GoReleaser builds ippai for Linux x86-64 and ARM64 with the page built in,
-# smoke-tests it and puts the archives (with fonts/), checksums.txt and SBOMs on GitHub Releases.
+# build and a release: no tests here (CI runs them on every push).
+#
+# Jobs: web (sake.wasm, the page and sake's fonts, once: the same for every target) and version
+# run at once; then bin, one runner per target (cargo zigbuild of ippai with the page built in)
+# in parallel; then release: GoReleaser archives the downloaded binaries (with fonts/), makes
+# checksums.txt and SBOMs and publishes them on GitHub Releases.
+#
+# Caches: a run for a tag can only restore caches saved on main (GitHub scopes caches by ref),
+# so nothing is saved by a release; web restores CI's build job caches (emsdk, the registry
+# crates' wasm builds, rust-src, pnpm store), and the nightly run on main (schedule: everything
+# but the release job; a dry_run dispatch is the same) saves bin's per-target cargo caches and
+# the apt and pip downloads.
 name: Release
 
 on:
@@ -22,93 +31,243 @@ on:
           - patch
           - minor
           - major
+      dry_run:
+        description: "Build only: no tag, no release (measures a release; warms the caches)"
+        required: false
+        default: false
+        type: boolean
+
+  # (builds only, on main: keeps the caches a release restores warm)
+  schedule:
+    - cron: "17 19 * * *"
 
 permissions:
   contents: write
 
 concurrency:
-  group: release
+  group: release-${{ (github.event_name == 'schedule' || inputs.dry_run) && 'warm' || 'release' }}
   cancel-in-progress: false
 
 jobs:
-  release:
+  version:
     # manual releases only from main
-    if: >-
-      github.event_name == 'push' ||
-      github.ref == 'refs/heads/main'
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Setup svu
+        if: github.event_name == 'workflow_dispatch'
+        uses: freerangebytes/setup-svu@v0.2.1
+      - id: v
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BUMP_TYPE: ${{ inputs.bump_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          case $EVENT in
+            workflow_dispatch) tag=$(svu "$BUMP_TYPE") ;;
+            push) tag=$REF_NAME ;;
+            *) tag=v0.0.0 ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version: $tag"
+
+  web:
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: tools/ci/cache-keys.sh
+      # (sake's C:\ is fonts only: the IPA fonts under the Windows names, in the archives as fonts/)
+      - id: cache-apt
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: ~/.apt-cache
+          key: apt-${{ env.CI_IMAGE }}-fonts-ipafont-gothic-fonts-ipafont-mincho-python3-fonttools
+      - name: sake's fonts
+        id: fonts
+        background: true
+        run: |
+          tools/ci/apt.sh fonts-ipafont-gothic fonts-ipafont-mincho python3-fonttools
+          python3 tools/ci/sake-fonts.py fonts
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 26
+      # (CI's build job saves these caches on main; restored only here)
+      - uses: actions/cache/restore@v6.1.0
+        with:
+          path: |
+            ~/.pnpm-store
+            ~/.cache/node/corepack
+          key: pnpm-${{ runner.os }}-build-${{ hashFiles('web/pnpm-lock.yaml', 'web/package.json') }}
+          restore-keys: pnpm-${{ runner.os }}-build-
+      - run: tools/ci/pnpm.sh
+      - run: tools/ci/rust-key.sh
+      - uses: actions/cache/restore@v6.1.0
+        with:
+          path: |
+            ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src
+            ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/wasm32-unknown-emscripten
+            ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/components
+            ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/manifest-rust-src
+            ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/manifest-rust-std-wasm32-unknown-emscripten
+            ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/multirust-config.toml
+          key: rust-wasm-${{ env.RUST_KEY }}
+      - run: tools/ci/rust-wasm.sh
+      - uses: actions/cache/restore@v6.1.0
+        with:
+          path: |
+            ~/emsdk4
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: build-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock', 'tools/ci/build.sh', 'tools/ci/emsdk.sh') }}
+          restore-keys: |
+            build-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock', 'tools/ci/build.sh', 'tools/ci/emsdk.sh') }}-
+            build-${{ runner.os }}-${{ env.RUST_KEY }}-
+      # (the page's two sake builds only: SAKE_NODE=0 skips node's)
+      - name: sake.wasm and the page
+        run: |
+          . tools/ci/emsdk.sh
+          SAKE_NODE=0 OUT=$PWD/target/sake-out WEB_OUT=$PWD/web/public/sake bash crates/sake/build.sh
+          (cd web && pnpm install --frozen-lockfile && pnpm exec vp build)
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: web
+          path: web/dist
+          retention-days: 3
+      - wait: fonts
+      - if: github.ref == 'refs/heads/main' && steps.cache-apt.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ~/.apt-cache
+          key: apt-${{ env.CI_IMAGE }}-fonts-ipafont-gothic-fonts-ipafont-mincho-python3-fonttools
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: fonts
+          path: fonts
+          retention-days: 3
+
+  bin:
+    needs: [version, web]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          # (pack, add and storage on the PC that has the games; serve runs in the foreground only)
+          - x86_64-pc-windows-gnu
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: tools/ci/rust-key.sh
+      # (cargo-zigbuild and zig as wheels: tools/ci/pip.sh)
+      - id: cache-pip
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: ~/.pip-wheels
+          key: pip-${{ runner.os }}-cargo-zigbuild==0.24.1-ziglang==0.14.1
+      - run: tools/ci/pip.sh cargo-zigbuild==0.24.1 ziglang==0.14.1
+      - if: github.ref == 'refs/heads/main' && steps.cache-pip.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ~/.pip-wheels
+          key: pip-${{ runner.os }}-cargo-zigbuild==0.24.1-ziglang==0.14.1
+      - run: rustup target add ${{ matrix.target }}
+      # (the registry crates' builds for this target and zig's libc builds; saved on main only)
+      - id: cargo-cache
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cache/zig
+            ~/.cache/cargo-zigbuild
+            target
+          key: release-${{ matrix.target }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: release-${{ matrix.target }}-${{ env.RUST_KEY }}-
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: web
+          path: web/dist
+      - name: cargo zigbuild
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          IPPAI_VERSION=${TAG#v} cargo zigbuild --release --locked -p ippai --target "$TARGET"
+          mkdir -p out && cp target/"$TARGET"/release/ippai target/"$TARGET"/release/ippai.exe out/ 2>/dev/null || true
+          ls -l out
+          test -n "$(ls out)"
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: bin-${{ matrix.target }}
+          path: out
+          retention-days: 3
+      - name: Shrink the cargo cache
+        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        run: python3 tools/ci/cache-prune.py target
+      - if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cache/zig
+            ~/.cache/cargo-zigbuild
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
+  release:
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
+    needs: [version, bin]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           fetch-tags: true
-
-      # (what tools/ci/build.sh needs, as CI's build job; and the IPA fonts for sake's C:\)
-      - name: apt
-        run: tools/ci/apt.sh mingw-w64 zstd clang lld llvm fonts-ipafont-gothic fonts-ipafont-mincho python3-fonttools
-      - uses: actions/setup-node@v7.1.0
+      # (bin-<target>/ → target/prebuilt/<target>/: tools/ci/prebuilt-cargo.sh hands them to GoReleaser)
+      - uses: actions/download-artifact@v8.0.2
         with:
-          node-version: 24
-      - run: tools/ci/pnpm.sh
-      - run: tools/ci/rust-wasm.sh
-
-      # sake.wasm and the page (the same for every target): built into the binaries
-      - name: sake.wasm and the page
-        run: |
-          . tools/ci/emsdk.sh
-          OUT=$PWD/target/sake-out WEB_OUT=$PWD/web/public/sake bash crates/sake/build.sh
-          (cd web && pnpm install --frozen-lockfile && pnpm exec vp build)
-
-      # (sake's C:\ is fonts only: the IPA fonts under the Windows names, in the archives as fonts/)
-      - name: sake's fonts
-        run: python3 tools/ci/sake-fonts.py fonts
-
-      - name: Setup svu
-        if: github.event_name == 'workflow_dispatch'
-        uses: freerangebytes/setup-svu@v0.2.1
+          pattern: bin-*
+          path: target/prebuilt
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: fonts
+          path: fonts
+      - run: |
+          for d in target/prebuilt/bin-*; do mv "$d" "target/prebuilt/${d#target/prebuilt/bin-}"; done
+          chmod +x target/prebuilt/*/*
+          ls -lR target/prebuilt
 
       - name: Create release tag
         if: github.event_name == 'workflow_dispatch'
-        id: tag
         shell: bash
         env:
-          BUMP_TYPE: ${{ inputs.bump_type }}
+          TAG: ${{ needs.version.outputs.tag }}
         run: |
           set -euo pipefail
-
-          version="$(svu "$BUMP_TYPE")"
-
           git config user.name "github-actions[bot]"
           git config user.email \
             "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git tag "$version"
-          git push origin "$version"
-
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Created release tag: $version"
-
-      - name: Rust targets
-        run: rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-pc-windows-gnu
-
-      - uses: mlugg/setup-zig@v2.2.1
-        with:
-          version: 0.14.1
-
-      - uses: taiki-e/install-action@v2.88.1
-        with:
-          tool: cargo-zigbuild
+          git tag "$TAG"
+          git push origin "$TAG"
+          echo "Created release tag: $TAG"
 
       - uses: anchore/sbom-action/download-syft@v0.24.3
-
-      - uses: actions/cache@v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            crates/ippai/target
-          key: release-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: release-${{ runner.os }}-
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7.3.0
@@ -118,7 +277,4 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GORELEASER_CURRENT_TAG: >-
-            ${{ github.event_name == 'workflow_dispatch'
-                && steps.tag.outputs.version
-                || github.ref_name }}
+          GORELEASER_CURRENT_TAG: ${{ needs.version.outputs.tag }}
