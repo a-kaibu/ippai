@@ -1718,6 +1718,7 @@ dependencies = [
 name = "koji"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "iced-x86",
  "libc",
  "libm",

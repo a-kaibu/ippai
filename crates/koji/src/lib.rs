@@ -228,6 +228,10 @@ pub struct Cpu {
     pub ldt: u32,
 }
 
+/// `Cpu::ldt` value for real-mode segment loading in 16-bit mode (base = selector * 16): what
+/// the hardware-recorded 80386 real-mode suite (crates/koji/tests/singlestep.rs) runs on.
+pub const LDT_REAL: u32 = u32::MAX;
+
 impl Cpu {
     /// 16-bit mode: the linear address of CS:IP.
     #[inline]

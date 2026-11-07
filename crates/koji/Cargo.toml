@@ -9,6 +9,9 @@ description = "x86 user-mode CPU core: interpreter and x86->wasm JIT"
 iced-x86 = { version = "1.21", default-features = false, features = ["no_std", "decoder", "instr_info", "fast_fmt"] }
 libm = "0.2"
 
+[dev-dependencies]
+flate2 = "1"
+
 [target.'cfg(all(target_arch = "x86_64", target_os = "linux"))'.dev-dependencies]
 libc = "0.2"
 iced-x86 = { version = "1.21", default-features = false, features = ["no_std", "decoder", "instr_info", "encoder", "code_asm", "nasm"] }

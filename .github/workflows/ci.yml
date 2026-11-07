@@ -76,6 +76,14 @@ jobs:
             target
           key: test-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: test-${{ runner.os }}-
+      # (SingleStepTests/80386: real-mode tests recorded on a real 386, ~430 MB, which
+      # crates/koji/tests/singlestep.rs runs when they are there)
+      - uses: actions/cache@v6.1.0
+        with:
+          path: target/sst
+          key: sst-${{ hashFiles('tests/sst/fetch.sh') }}
+      - name: Fetch SingleStepTests
+        run: tests/sst/fetch.sh
       - name: cargo test
         run: cargo test --workspace --release
       # (the C runtime's property tests once more with overflow checks: fuzzing found an

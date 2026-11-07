@@ -192,9 +192,9 @@ impl<'a, M: Memory> X<'a, M> {
     }
 
     /// 16-bit mode: loads segment register `i` (ES CS SS DS FS GS) with `sel`; its base comes
-    /// from the embedder's table at `Cpu::ldt`.
+    /// from the embedder's table at `Cpu::ldt` ([`crate::LDT_REAL`]: real-mode bases, sel * 16).
     pub(crate) fn load_seg(&mut self, i: usize, sel: u16) {
-        let base = if sel >> 3 == 0 { 0 } else { self.mem.read32(self.cpu.ldt.wrapping_add((sel as u32 >> 3) * 4)).unwrap_or(0) };
+        let base = if self.cpu.ldt == crate::LDT_REAL { (sel as u32) << 4 } else if sel >> 3 == 0 { 0 } else { self.mem.read32(self.cpu.ldt.wrapping_add((sel as u32 >> 3) * 4)).unwrap_or(0) };
         self.cpu.sreg[i] = sel;
         self.cpu.sbase[i] = base;
     }
@@ -269,6 +269,41 @@ impl<'a, M: Memory> X<'a, M> {
     #[inline]
     fn stack_bits(&self) -> u32 {
         if self.m64() { 64 } else if self.m16() { 16 } else { 32 }
+    }
+
+    /// Width of what a CALL / RET / RETF / IRET / ENTER / LEAVE / PUSH sreg / POP sreg moves:
+    /// its operand size (66 switches it: `o32 ret` in 16-bit code pops 4 bytes), not the
+    /// stack's.
+    fn transfer_bits(&self) -> u32 {
+        use iced_x86::Code as C;
+        match self.ins.code() {
+            C::Retnw | C::Retnw_imm16 | C::Retfw | C::Retfw_imm16 | C::Iretw | C::Enterw_imm16_imm8 | C::Leavew | C::Call_rel16 | C::Call_rm16 | C::Call_ptr1616 | C::Call_m1616 => 16,
+            C::Pushw_ES | C::Pushw_CS | C::Pushw_SS | C::Pushw_DS | C::Pushw_FS | C::Pushw_GS | C::Popw_ES | C::Popw_SS | C::Popw_DS | C::Popw_FS | C::Popw_GS => 16,
+            C::Retnd | C::Retnd_imm16 | C::Retfd | C::Retfd_imm16 | C::Iretd | C::Enterd_imm16_imm8 | C::Leaved | C::Call_rel32_32 | C::Call_rm32 | C::Call_ptr1632 | C::Call_m1632 => 32,
+            C::Pushd_ES | C::Pushd_CS | C::Pushd_SS | C::Pushd_DS | C::Pushd_FS | C::Pushd_GS | C::Popd_ES | C::Popd_SS | C::Popd_DS | C::Popd_FS | C::Popd_GS => 32,
+            _ => self.stack_bits(),
+        }
+    }
+
+    #[inline]
+    fn sreg_operand(&self) -> bool {
+        self.ins.op_kind(0) == OpKind::Register && reg_info(self.ins.op_register(0)).0 == SEG
+    }
+
+    /// Address size of the memory operand (what [`Self::offset`] wraps at).
+    fn offset_bits(&self) -> u32 {
+        let ins = self.ins;
+        if ins.memory_base() != Register::None && ins.memory_base() != Register::RIP && ins.memory_base() != Register::EIP {
+            reg_info(ins.memory_base()).1
+        } else if ins.memory_index() != Register::None {
+            reg_info(ins.memory_index()).1
+        } else if self.m64() {
+            64
+        } else if self.m16() && ins.memory_displ_size() < 4 {
+            16
+        } else {
+            32
+        }
     }
 
     /// Effective address (offset only, no segment base): LEA.
@@ -643,7 +678,9 @@ impl<'a, M: Memory> X<'a, M> {
             }
 
             Push => {
-                let bits = if ins.op_kind(0) == OpKind::Register || ins.op_kind(0) == OpKind::Memory {
+                let bits = if self.sreg_operand() {
+                    self.transfer_bits()
+                } else if ins.op_kind(0) == OpKind::Register || ins.op_kind(0) == OpKind::Memory {
                     self.op_bits(0)
                 } else {
                     ins.stack_pointer_increment().unsigned_abs() * 8
@@ -653,7 +690,7 @@ impl<'a, M: Memory> X<'a, M> {
                 self.done()
             }
             Pop => {
-                let bits = self.op_bits(0);
+                let bits = if self.sreg_operand() { self.transfer_bits() } else { self.op_bits(0) };
                 let sp = self.sp();
                 let v = tryf!(self.read_mem(self.stk(sp), bits));
                 self.set_sp(sp.wrapping_add(bits as u64 / 8));
@@ -805,9 +842,9 @@ impl<'a, M: Memory> X<'a, M> {
             Enter => {
                 let size = ins.immediate16() as u64;
                 let level = ins.immediate8_2nd() as u64 & 31;
-                let (w, sb) = (self.stack_bits(), self.stack_bits() as u64 / 8);
+                let (w, sb) = (self.transfer_bits(), self.transfer_bits() as u64 / 8);
                 let m64 = self.m64();
-                let rbp = if m64 { Register::RBP } else if self.m16() { Register::BP } else { Register::EBP };
+                let rbp = if m64 { Register::RBP } else if w == 16 { Register::BP } else { Register::EBP };
                 let bp = self.get_reg(rbp);
                 let mut sp = self.sp().wrapping_sub(sb);
                 tryf!(self.write_mem(self.stk(sp), w, bp));
@@ -827,29 +864,34 @@ impl<'a, M: Memory> X<'a, M> {
             }
             Leave => {
                 let m64 = self.m64();
-                let rbp = if m64 { Register::RBP } else if self.m16() { Register::BP } else { Register::EBP };
-                let bp = self.get_reg(rbp);
-                let v = tryf!(self.read_mem(self.stk(bp), self.stack_bits()));
-                self.set_sp(bp.wrapping_add(self.stack_bits() as u64 / 8));
+                let w = self.transfer_bits();
+                let rbp = if m64 { Register::RBP } else if w == 16 { Register::BP } else { Register::EBP };
+                // (the stack's width picks SP or ESP, the operand size BP or EBP)
+                let sp_from = if m64 { Register::RBP } else if self.m16() { Register::BP } else { Register::EBP };
+                let bp = self.get_reg(sp_from);
+                let v = tryf!(self.read_mem(self.stk(bp), w));
+                self.set_sp(bp.wrapping_add(w as u64 / 8));
                 self.set_reg(rbp, v);
                 self.done()
             }
 
             Jmp | Call if self.m16() && self.far() => self.far_transfer(),
             Retf if self.m16() => {
-                let ip = tryf!(self.pop(16));
-                let cs = tryf!(self.pop(16));
+                let w = self.transfer_bits();
+                let ip = tryf!(self.pop(w));
+                let cs = tryf!(self.pop(w));
                 let extra = if ins.op_count() == 1 { ins.immediate16() as u64 } else { 0 };
                 let sp = self.sp();
                 self.set_sp(sp.wrapping_add(extra));
                 self.load_seg(1, cs as u16);
                 self.jump(ip)
             }
-            Iret if self.m16() => {
-                let ip = tryf!(self.pop(16));
-                let cs = tryf!(self.pop(16));
-                let f = tryf!(self.pop(16)) as u32;
-                let which = USER_WRITABLE & 0xffff;
+            Iret | Iretd if self.m16() => {
+                let w = self.transfer_bits();
+                let ip = tryf!(self.pop(w));
+                let cs = tryf!(self.pop(w));
+                let f = tryf!(self.pop(w)) as u32;
+                let which = USER_WRITABLE & if w == 16 { 0xffff } else { !0 };
                 self.cpu.eflags = (self.cpu.eflags & !which) | (f & which) | 2;
                 self.load_seg(1, cs as u16);
                 self.jump(ip)
@@ -879,12 +921,12 @@ impl<'a, M: Memory> X<'a, M> {
                     _ => tryf!(self.read_op(0)),
                 };
                 let ret = self.next();
-                tryf!(self.push(ret, self.stack_bits()));
+                tryf!(self.push(ret, self.transfer_bits()));
                 self.jump(t)
             }
             Ret => {
                 let sp = self.sp();
-                let w = self.stack_bits();
+                let w = self.transfer_bits();
                 let t = tryf!(self.read_mem(self.stk(sp), w));
                 let extra = if ins.op_count() == 1 { ins.immediate16() as u64 } else { 0 };
                 self.set_sp(sp.wrapping_add(w as u64 / 8 + extra));
@@ -1075,6 +1117,34 @@ impl<'a, M: Memory> X<'a, M> {
             Int => {
                 self.cpu.eip = self.next() as u32;
                 Exit::Interrupt(ins.immediate8())
+            }
+            // INTO: INT 4 when OF is set (a trap: EIP past it)
+            Into => {
+                if self.cpu.flags() & OF == 0 {
+                    return self.done();
+                }
+                self.cpu.eip = self.next() as u32;
+                Exit::Interrupt(4)
+            }
+            // BOUND: #BR (vector 5, a fault: EIP stays) when the index is outside
+            // [lower, upper], signed, both read from the memory operand
+            Bound => {
+                let bits = self.op_bits(0);
+                let a = self.addr();
+                let lo = tryf!(self.read_mem(a, bits));
+                let hi = tryf!(self.read_mem(a.wrapping_add(bits / 8), bits));
+                let v = self.get_reg(ins.op_register(0));
+                let sx = |x: u64| if bits == 16 { x as u16 as i16 as i64 } else { x as u32 as i32 as i64 };
+                if sx(v) < sx(lo) || sx(v) > sx(hi) {
+                    return Exit::Interrupt(5);
+                }
+                self.done()
+            }
+            // SALC (undocumented, D6): AL = CF ? FF : 0
+            Salc => {
+                let v = if self.cf() != 0 { 0xff } else { 0 };
+                self.set_reg(Register::AL, v);
+                self.done()
             }
             Syscall => {
                 // long mode SYSCALL: RCX = return address, R11 = RFLAGS; the embedder sees it as
@@ -1360,8 +1430,12 @@ impl<'a, M: Memory> X<'a, M> {
             // bit string: the offset is signed and may address outside the operand
             let o = match bits { 16 => off as u16 as i16 as i64, 32 => off as u32 as i32 as i64, _ => off as i64 };
             let sh = match bits { 16 => 4, 32 => 5, _ => 6 };
-            let base = self.offset().wrapping_add(self.seg_base());
-            let a = lin(base.wrapping_add(((o >> sh) * (bits as i64 / 8)) as u64), self.m64());
+            // (the offset wraps at the address size: 16-bit addressing stays in the segment)
+            let mut eff = self.offset().wrapping_add(((o >> sh) * (bits as i64 / 8)) as u64);
+            if self.offset_bits() == 16 {
+                eff &= 0xffff;
+            }
+            let a = lin(eff.wrapping_add(self.seg_base()), self.m64());
             (tryf!(self.read_mem(a, bits)), Some(a))
         } else {
             (tryf!(self.read_op(0)), None)
