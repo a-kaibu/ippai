@@ -70,10 +70,11 @@ pub fn has_stencil(fmt: u32) -> bool {
 
 /// Formats a render target can have.
 pub fn renderable(fmt: u32) -> bool {
-    // (and those Windows answers for: tests/winref/golden/d3d9-32)
+    // (and those Windows answers for: tests/winref/golden/d3d9-32, d3d9rtfmt-32: X8B8G8R8 is
+    // not one, the 10- and 16-bit ones, L16, Q8W8V8U8 and the 16-bit floats and G32R32F are)
     matches!(
         fmt,
-        A8R8G8B8 | X8R8G8B8 | A8B8G8R8 | X8B8G8R8 | R5G6B5 | X1R5G5B5 | A1R5G5B5 | A16B16G16R16F | A32B32G32R32F | A4R4G4B4 | A8 | L8 | A8L8 | A2R10G10B10 | R32F | V8U8
+        A8R8G8B8 | X8R8G8B8 | A8B8G8R8 | R5G6B5 | X1R5G5B5 | A1R5G5B5 | A16B16G16R16F | A32B32G32R32F | A4R4G4B4 | A8 | L8 | A8L8 | A2R10G10B10 | A2B10G10R10 | G16R16 | A16B16G16R16 | L16 | R16F | G16R16F | R32F | G32R32F | V8U8 | Q8W8V8U8
     )
 }
 
@@ -199,6 +200,24 @@ pub fn target_channels(fmt: u32) -> (u32, bool) {
     }
 }
 
+/// The steps a render target of the format keeps a channel in where the page holds more (R, G,
+/// B, A: 2^bits - 1; 0, as the page keeps it): what a draw writes is rounded to them, as Windows
+/// writes R5G6B5 and the rest (winref d3d9rtfmt, #53). (The X bits keep what the page has:
+/// Windows' draws leave them 0, but DESTALPHA blending reads them as 1 here)
+pub fn target_steps(fmt: u32) -> [u32; 4] {
+    match fmt {
+        R5G6B5 => [31, 63, 31, 0],
+        X1R5G5B5 => [31, 31, 31, 0],
+        A1R5G5B5 => [31, 31, 31, 1],
+        A4R4G4B4 => [15, 15, 15, 15],
+        X4R4G4B4 => [15, 15, 15, 0],
+        A2R10G10B10 | A2B10G10R10 => [1023, 1023, 1023, 3],
+        G16R16 => [65535, 65535, 0, 0],
+        A16B16G16R16 => [65535; 4],
+        _ => [0; 4],
+    }
+}
+
 /// A D3DCOLOR as a clear of a render target of the format leaves it on the page
 /// (target_channels).
 pub fn target_color(fmt: u32, c: u32) -> u32 {
@@ -209,7 +228,10 @@ pub fn target_color(fmt: u32, c: u32) -> u32 {
     let r = pick(1, r);
     let (g, b) = if lum { (r, r) } else { (pick(2, g), pick(4, b)) };
     let a = if mask & 8 != 0 { a } else { 0xff };
-    u32::from_le_bytes([b, g, r, a])
+    // (to the format's steps, as 8 bits: target_steps)
+    let st = target_steps(fmt);
+    let q = |v: u8, m: u32| if m == 0 || m > 255 { v } else { ext((v as u32 * m + 127) / 255, m.trailing_ones()) as u8 };
+    u32::from_le_bytes([q(b, st[2]), q(g, st[1]), q(r, st[0]), q(a, st[3])])
 }
 
 /// A page texel (`page_bpp` bytes: BGRA8, or 16- or 32-bit float RGBA) as R, G, B, A.
@@ -548,6 +570,51 @@ mod tests {
         }
     }
 
+    /// Colors in render targets of fewer bits, as Windows samples them after drawing them
+    /// (winref d3d9rtfmt-32's "color" lines): rounded to the format's steps, then widened.
+    #[test]
+    fn target_steps_as_windows() {
+        let cases: [(u32, [(u32, u32); 3]); 4] = [
+            (R5G6B5, [(0xff8000, 0xff8200), (0x406020, 0x426121), (0xc060c0, 0xbd61bd)]),
+            (X1R5G5B5, [(0xff8000, 0xff8400), (0x406020, 0x426321), (0xc060c0, 0xbd63bd)]),
+            (A1R5G5B5, [(0xff8000, 0xff8400), (0x406020, 0x426321), (0xc060c0, 0xbd63bd)]),
+            (A4R4G4B4, [(0xff8000, 0xff8800), (0x406020, 0x446622), (0xc060c0, 0xbb66bb)]),
+        ];
+        for (f, cs) in cases {
+            for (c, want) in cs {
+                assert_eq!(target_color(f, 0xff00_0000 | c) & 0xff_ffff, want, "format {f} color {c:06x}");
+            }
+        }
+        // (and the shader's steps are what the format's bits hold)
+        for f in [R5G6B5, X1R5G5B5, A1R5G5B5, A4R4G4B4, X4R4G4B4, A2R10G10B10, A2B10G10R10, G16R16, A16B16G16R16] {
+            let mut out = [0u8; 8];
+            let st = target_steps(f);
+            for (i, &m) in st.iter().enumerate() {
+                if m == 0 {
+                    continue;
+                }
+                // every step k / m packs to k
+                for k in [0, 1, m / 2, m - 1, m] {
+                    let mut c = [0.0f32; 4];
+                    c[i] = k as f32 / m as f32;
+                    assert!(pack(f, c, &mut out));
+                    let back = page_texel_of(f, &out)[i];
+                    assert_eq!((back * m as f32).round() as u32, k, "format {f} channel {i} step {k}/{m}: {back}");
+                }
+            }
+        }
+        // formats the page keeps whole: no steps
+        for f in [A8R8G8B8, X8R8G8B8, A8, L8, A8L8, A16B16G16R16F, R32F] {
+            assert_eq!(target_steps(f), [0; 4]);
+        }
+    }
+
+    /// A texel of a format as R, G, B, A, through the page as a sampler reads it
+    fn page_texel_of(f: u32, t: &[u8]) -> [f32; 4] {
+        let page = conv(f, t, 1, 1);
+        page_texel(f, &page)
+    }
+
     /// Every value of every 16-bit format.
     #[test]
     fn every_16_bit_texel() {
@@ -781,7 +848,7 @@ mod tests {
             (A8, false, true, false, false),
             (X4R4G4B4, false, false, true, false),
             (A8B8G8R8, false, true, false, false),
-            (X8B8G8R8, false, true, true, false),
+            (X8B8G8R8, false, false, true, false),
             (L8, false, true, true, false),
             (A8L8, false, true, false, false),
             (A4L4, false, false, false, false),
@@ -806,7 +873,7 @@ mod tests {
         let wide16 = [A2B10G10R10, A2R10G10B10, V8U8, L6V5U5, X8L8V8U8, Q8W8V8U8, A2W10V10U10, R16F, G16R16F];
         let wide32 = [G16R16, A16B16G16R16, V16U16, L16, Q16W16V16U16, R32F, G32R32F];
         for f in wide16.into_iter().chain(wide32) {
-            assert!(supported(f) != matches!(f, X8L8V8U8 | L6V5U5 | A2W10V10U10) && !is_depth(f) && renderable(f) == matches!(f, A2R10G10B10 | R32F | V8U8) && !no_alpha(f) && !same_on_page(f), "{f}");
+            assert!(supported(f) != matches!(f, X8L8V8U8 | L6V5U5 | A2W10V10U10) && !is_depth(f) && renderable(f) == matches!(f, A2R10G10B10 | A2B10G10R10 | G16R16 | A16B16G16R16 | L16 | R16F | G16R16F | R32F | G32R32F | V8U8 | Q8W8V8U8) && !no_alpha(f) && !same_on_page(f), "{f}");
             let (page, bpp) = if wide16.contains(&f) { (FMT_RGBA16F, 8) } else { (FMT_RGBA32F, 16) };
             assert_eq!((page_format(f), page_bpp(f)), (page, bpp), "{f}");
         }

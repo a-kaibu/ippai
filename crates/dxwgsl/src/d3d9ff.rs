@@ -241,9 +241,15 @@ pub fn pixel(k: &PsKey) -> String {
     if let Some(func) = k.alpha_test {
         let _ = writeln!(h, "  if (!alpha_ok(out.w, {}u)) {{ discard; }}", func);
     }
-    h.push_str("  return out;\n}\n");
+    // (a render target of fewer bits: what it keeps, x[3])
+    h.push_str("  return steps(out);\n}\n");
     h.push_str(
         "
+// (a render target of fewer bits, x[3]: R, G, B, A each rounded to its 2^bits - 1 steps; 0: as it is)
+fn steps(c: vec4f) -> vec4f {
+  let m = vec4f(u.x[3]);
+  return select(c, round(clamp(c, vec4f(0.0), vec4f(1.0)) * m) / max(m, vec4f(1.0)), m > vec4f(0.0));
+}
 fn alpha_ok(a: f32, func: u32) -> bool {
   let r = bitcast<f32>(u.x[0].w);
   // (the alpha as it is, against ref / 255: Windows lets 127.5 / 255 pass LESS 128)

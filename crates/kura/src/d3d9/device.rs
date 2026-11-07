@@ -1719,7 +1719,9 @@ fn apply_state(d: &mut D3d, sb: u32) {
 // resources
 
 unsafe fn create_texture(d: &mut D3d, w: u32, h: u32, levels: u32, usage: u32, f: u32, pool: u32, out: u32) -> u32 {
-    if out == 0 || w == 0 || h == 0 || !fmt::supported(f) {
+    // (a render target texture of a format that cannot be one: refused, as Windows, winref
+    // d3d9rtfmt's X8B8G8R8)
+    if out == 0 || w == 0 || h == 0 || !fmt::supported(f) || usage & USAGE_RENDERTARGET != 0 && !fmt::renderable(f) {
         if d.trace {
             eprintln!("d3d9: CreateTexture {w}x{h} format {f:#x}: not supported");
         }
@@ -3114,6 +3116,13 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     }
     put(&mut psu, 8, alpha_bits);
     put(&mut psu, 12, f2u((st.rs[24] & 0xff) as f32 / 255.0));
+    // (a render target of fewer bits than the page's: the steps it keeps, dxwgsl's steps())
+    // (not when it blends: Windows blends the shader's values, then rounds; the page's are
+    // then a step finer than Windows')
+    let steps = if st.rs[27] != 0 { [0; 4] } else { fmt::target_steps(target.4) };
+    for (i, m) in steps.into_iter().enumerate() {
+        put(&mut psu, 48 + 4 * i, m);
+    }
     if ps.is_some() {
         consts(&mut psu, &st.psf, ps_consts);
     } else {
