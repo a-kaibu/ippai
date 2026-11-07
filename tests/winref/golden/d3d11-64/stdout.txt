@@ -88,6 +88,16 @@ texture BC5_UNORM ok
 texture BC5_SNORM ok
 image formats 64 64 1
 image formats_alpha 64 64 1
+texture BC6H_UF16 ok
+texture BC6H_SF16 ok
+texture BC7_UNORM ok
+texture BC7_UNORM_SRGB ok
+texture R32G32B32_FLOAT ok
+texture R8G8_B8G8_UNORM ok
+texture G8R8_G8B8_UNORM ok
+texture R10G10B10_XR_BIAS_A2_UNORM failed
+image formats2 64 64 1
+image formats2_alpha 64 64 1
 image blend 64 64 2
 image blend_alpha 64 64 2
 image discard 64 64 1
