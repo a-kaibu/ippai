@@ -79,6 +79,18 @@ d2d-* ^image (fills_aa|outlines|transforms):
 # a few levels differently (formats/blend_depth: within 4)
 gl-* ^(want|got) +pixel format: 
 gl-* ^image (raster|textures):
+# The runner's OpenGL is Microsoft's GDI Generic 1.1 software renderer, whose arithmetic is its
+# own: GL_REPLACE colors of RGB(A) textures come out trunc(c * 255 / 256), components of more
+# than 8 bits are truncated to 8 (sake, as GPU drivers, rounds to nearest: the GL spec leaves it
+# to the implementation), and it keeps GL 1.1's rules where drivers games run on have GL 2+:
+# no non-power-of-two sizes, INVALID_ENUM for internal format 5, INVALID_VALUE for a
+# TexSubImage2D of an undefined level, the requested internal format read back (drivers: the
+# real one, GL_RGBA8). sake's unpack is tested on its own (crates/kura/src/gl).
+gltex-* ^(want|got) +tex (u?byte|u?short|u?int|float) 
+# (the unpack cases: the same texels as Windows', each byte its trunc(c * 255 / 256))
+gltex-* ^(want|got) +(unpack|sub) \S+ rgb 
+gltex-* ^(want|got) +(TexImage2D width 3|TexImage2D internal 5|TexSubImage2D undefined level):
+gltex-* ^(want|got) +level 0 after the errors 4 x 4 internal 
 # Windows' Direct3D 7 device takes several references of its IDirect3D7 for itself (9 in all
 # after CreateDevice); sake's device holds one, dropped with the device as Windows' are
 ddrefs-* ^(want|got) +refs d3d7 after CreateDevice 

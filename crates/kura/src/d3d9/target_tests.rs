@@ -252,3 +252,80 @@ fn clear_answers_and_a_smaller_depth_buffer() {
     }
     gpu::set_pump(None);
 }
+
+/// Render targets of the formats Windows also renders to (A4R4G4B4, A8, L8, A8L8, A2R10G10B10,
+/// R32F, V8U8, and R5G6B5's kind): valid WebGPU pipelines writing only the channels the format
+/// has, a clear that leaves the others as the format reads them, and GetRenderTargetData giving
+/// the format's texels (format::pack of the page's).
+#[test]
+fn render_targets_of_fewer_channels() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        let vt: Vec<u32> = (1..=64).map(|i| 0x1000 * i).collect();
+        vnhost_d3d9_init(vt.as_ptr(), vt.len() as u32);
+    }
+    let dev = device();
+    errors();
+    use super::format as f;
+    let o = out();
+    assert_eq!(call(IF_DEVICE, 18, &[dev, 0, 0, 0, o]), 0); // GetBackBuffer
+    let back = rd(o);
+    // (format, its channels' write mask, the clear of 0x80406020 read back)
+    let cases: [(u32, u32, &[u8]); 11] = [
+        (f::A8R8G8B8, 0xf, &[0x20, 0x60, 0x40, 0x80]),
+        (f::R5G6B5, 0xf, &(8u16 << 11 | 24 << 5 | 4).to_le_bytes()),
+        (f::A1R5G5B5, 0xf, &(1u16 << 15 | 8 << 10 | 12 << 5 | 4).to_le_bytes()),
+        (f::A4R4G4B4, 0xf, &0x8462u16.to_le_bytes()),
+        (f::A8, 8, &[0x80]),
+        (f::L8, 1, &[0x40]),
+        (f::A8L8, 9, &[0x40, 0x80]),
+        (f::A8B8G8R8, 0xf, &[0x40, 0x60, 0x20, 0x80]),
+        (f::A2R10G10B10, 0xf, &(2u32 << 30 | 257 << 20 | 385 << 10 | 128).to_le_bytes()),
+        (f::R32F, 1, &[]),
+        (f::V8U8, 3, &[0x20, 0x30]),
+    ];
+    call(IF_DEVICE, 57, &[dev, 27, 1]); // ALPHABLENDENABLE
+    for (i, (fmt, mask, want)) in cases.into_iter().enumerate() {
+        let o = out();
+        assert_eq!(call(IF_DEVICE, 23, &[dev, 64, 64, 1, 1, fmt, 0, o, 0]), 0, "format {fmt}");
+        let tex = rd(o);
+        let o = out();
+        assert_eq!(call(IF_TEXTURE, 18, &[tex, 0, o]), 0);
+        let rt = rd(o);
+        assert_eq!(call(IF_DEVICE, 37, &[dev, 0, rt]), 0, "format {fmt}");
+        assert_eq!(call(IF_DEVICE, 43, &[dev, 0, 0, 1, 0x8040_6020, 1f32.to_bits(), 0]), 0);
+        let from = model::with(|m| m.objs.len());
+        // (each with its own blend: a pipeline of its own)
+        call(IF_DEVICE, 57, &[dev, 19, 1 + i as u32]);
+        quad(dev);
+        let t = targets(from);
+        assert!(!t.is_empty() && t.iter().all(|p| p[0].1 == mask), "format {fmt}: {t:?}");
+        // the clear read back
+        let o = out();
+        assert_eq!(call(IF_DEVICE, 36, &[dev, 64, 64, fmt, 2, o, 0]), 0);
+        let sys = rd(o);
+        assert_eq!(call(IF_DEVICE, 37, &[dev, 0, back]), 0);
+        assert_eq!(call(IF_DEVICE, 43, &[dev, 0, 0, 1, 0x8040_6020, 1f32.to_bits(), 0]), 0);
+        assert_eq!(call(IF_DEVICE, 37, &[dev, 0, rt]), 0);
+        assert_eq!(call(IF_DEVICE, 43, &[dev, 0, 0, 1, 0x8040_6020, 1f32.to_bits(), 0]), 0);
+        assert_eq!(call(IF_DEVICE, 32, &[dev, rt, sys]), 0, "format {fmt}: GetRenderTargetData");
+        let lr = out();
+        assert_eq!(call(IF_SURFACE, 13, &[sys, lr, 0, 0x10]), 0);
+        let bits = rd(lr + 4);
+        let got: Vec<u8> = (0..want.len().max(4)).map(|i| unsafe { *((bits as usize + i) as *const u8) }).collect();
+        if fmt == f::R32F {
+            let v = f32::from_le_bytes(got[..4].try_into().unwrap());
+            assert!((v - 64.0 / 255.0).abs() < 1e-3, "format {fmt}: {v}");
+        } else {
+            assert_eq!(&got[..want.len()], want, "format {fmt}");
+        }
+        call(IF_SURFACE, 14, &[sys]);
+        assert_eq!(call(IF_DEVICE, 37, &[dev, 0, back]), 0);
+        for x in [sys, rt, tex] {
+            call(IF_SURFACE, 2, &[x]);
+        }
+        let e = errors();
+        assert!(e.is_empty(), "format {fmt}: {:?}", &e[..e.len().min(8)]);
+    }
+    gpu::set_pump(None);
+}

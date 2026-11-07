@@ -290,14 +290,21 @@ fn clear_value(color: [f32; 4]) -> u64 {
     h
 }
 
-/// What a clear leaves in a texel of `format`: 8-bit UNORM formats hold the bytes (as writes
-/// do: a readback gives them back and uploading those bytes gives the same value), others the
-/// value of the color.
+/// What a clear leaves in a texel of `format`: 8-bit UNORM formats and float formats of up to 8
+/// bytes hold the bytes (the color in the format, as writes do: a readback gives them back and
+/// uploading those bytes gives the same value), others the value of the color.
 pub(crate) fn clear_texel(format: &str, c: [f32; 4]) -> u64 {
     let u = |x: f32| if x.is_nan() { 0 } else { (x.clamp(0.0, 1.0) * 255.0).round() as u64 };
+    let h = |i: usize| crate::d3d11::format::f16_bits(c[i]) as u64;
+    let f = |i: usize| c[i].to_bits() as u64;
     match format {
         "rgba8unorm" => u(c[0]) | u(c[1]) << 8 | u(c[2]) << 16 | u(c[3]) << 24,
         "bgra8unorm" => u(c[2]) | u(c[1]) << 8 | u(c[0]) << 16 | u(c[3]) << 24,
+        "rgba16float" => h(0) | h(1) << 16 | h(2) << 32 | h(3) << 48,
+        "rg16float" => h(0) | h(1) << 16,
+        "r16float" => h(0),
+        "rg32float" => f(0) | f(1) << 32,
+        "r32float" => f(0),
         _ => clear_value(c),
     }
 }

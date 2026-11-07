@@ -70,7 +70,11 @@ pub fn has_stencil(fmt: u32) -> bool {
 
 /// Formats a render target can have.
 pub fn renderable(fmt: u32) -> bool {
-    matches!(fmt, A8R8G8B8 | X8R8G8B8 | A8B8G8R8 | X8B8G8R8 | R5G6B5 | X1R5G5B5 | A1R5G5B5 | A16B16G16R16F | A32B32G32R32F)
+    // (and those Windows answers for: tests/winref/golden/d3d9-32)
+    matches!(
+        fmt,
+        A8R8G8B8 | X8R8G8B8 | A8B8G8R8 | X8B8G8R8 | R5G6B5 | X1R5G5B5 | A1R5G5B5 | A16B16G16R16F | A32B32G32R32F | A4R4G4B4 | A8 | L8 | A8L8 | A2R10G10B10 | R32F | V8U8
+    )
 }
 
 /// (bytes per block, block size in pixels)
@@ -773,13 +777,13 @@ mod tests {
             (R5G6B5, false, true, true, false),
             (X1R5G5B5, false, true, true, false),
             (A1R5G5B5, false, true, false, false),
-            (A4R4G4B4, false, false, false, false),
-            (A8, false, false, false, false),
+            (A4R4G4B4, false, true, false, false),
+            (A8, false, true, false, false),
             (X4R4G4B4, false, false, true, false),
             (A8B8G8R8, false, true, false, false),
             (X8B8G8R8, false, true, true, false),
-            (L8, false, false, true, false),
-            (A8L8, false, false, false, false),
+            (L8, false, true, true, false),
+            (A8L8, false, true, false, false),
             (A4L4, false, false, false, false),
             (P8, false, false, false, false),
             (D16_LOCKABLE, true, false, false, false),
@@ -802,7 +806,7 @@ mod tests {
         let wide16 = [A2B10G10R10, A2R10G10B10, V8U8, L6V5U5, X8L8V8U8, Q8W8V8U8, A2W10V10U10, R16F, G16R16F];
         let wide32 = [G16R16, A16B16G16R16, V16U16, L16, Q16W16V16U16, R32F, G32R32F];
         for f in wide16.into_iter().chain(wide32) {
-            assert!(supported(f) != matches!(f, X8L8V8U8 | L6V5U5 | A2W10V10U10) && !is_depth(f) && !renderable(f) && !no_alpha(f) && !same_on_page(f), "{f}");
+            assert!(supported(f) != matches!(f, X8L8V8U8 | L6V5U5 | A2W10V10U10) && !is_depth(f) && renderable(f) == matches!(f, A2R10G10B10 | R32F | V8U8) && !no_alpha(f) && !same_on_page(f), "{f}");
             let (page, bpp) = if wide16.contains(&f) { (FMT_RGBA16F, 8) } else { (FMT_RGBA32F, 16) };
             assert_eq!((page_format(f), page_bpp(f)), (page, bpp), "{f}");
         }

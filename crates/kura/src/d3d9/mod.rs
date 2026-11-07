@@ -117,6 +117,8 @@ pub enum After {
     None,
     Present,
     Readback(u32),
+    /// a readback into `staging` (the page's texels) that becomes `fmt`'s at `dst`
+    ReadbackAs { req: u32, staging: u32, fmt: u32, w: u32, h: u32, dst: u32, pitch: u32 },
 }
 
 impl D3d {
@@ -381,6 +383,20 @@ pub unsafe extern "C" fn vnhost_d3d9_call(id: u32, args: *const u32, calls: *con
         After::Present => gpu::present(),
         After::Readback(req) => {
             gpu::wait_readback(req);
+        }
+        After::ReadbackAs { req, staging, fmt, w, h, dst, pitch } => {
+            gpu::wait_readback(req);
+            let page = format::page_bpp(fmt) as usize;
+            let (bpp, _) = format::layout(fmt).unwrap_or((4, 1));
+            for y in 0..h as usize {
+                let src = unsafe { std::slice::from_raw_parts((staging as usize + y * w as usize * page) as *const u8, w as usize * page) };
+                let row = unsafe { std::slice::from_raw_parts_mut((dst as usize + y * pitch as usize) as *mut u8, (w * bpp) as usize) };
+                for (t, out) in src.chunks_exact(page).zip(row.chunks_exact_mut(bpp as usize)) {
+                    format::pack(fmt, format::page_texel(fmt, t), out);
+                }
+            }
+            // (the lock is let go: calls is the guest's allocator still)
+            unsafe { ((*calls).free)(staging as usize as *mut u8) };
         }
     }
     if let Some(t0) = t0 {

@@ -210,6 +210,8 @@ pub fn pixel(k: &PsKey) -> String {
             let smp = format!("textureSample(tex{0}, smp{0}, {1})", t, crate::addr::coord(&addr, t as u32, &coord));
             let _ = writeln!(h, "  var t{} = {};", t, smp);
             let _ = writeln!(h, "  if ((u.x[0].z & {}u) != 0u) {{ t{}.w = 1.0; }}", 1u32 << t, t);
+            // (bits 16-31: red is the luminance, rgb = r)
+            let _ = writeln!(h, "  if ((u.x[0].z & {}u) != 0u) {{ t{t} = vec4f(t{t}.xxx, t{t}.w); }}", 1u32 << (t + 16));
             if addr.iter().any(|a| a.sampler == t as u32) {
                 let _ = writeln!(h, "  t{t} = {};", crate::addr::wrap(&addr, t as u32, &format!("t{t}"), &coord));
             }

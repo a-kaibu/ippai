@@ -1924,15 +1924,28 @@ unsafe fn lock_surface(d: &mut D3d, s: u32, out: u32, rect: u32, flags: u32, aft
     if sf.gpu_newer {
         sf.shadow = None;
     }
-    if sf.gpu_newer && flags & LOCK_DISCARD == 0 && fmt::layout(sf.fmt) == Some((fmt::page_bpp(sf.fmt), 1)) {
-        // the page has the pixels: read them back first (only when its rows are the guest's:
-        // the page writes w * its bpp bytes a row, past the end of a smaller guest copy)
+    if sf.gpu_newer && flags & LOCK_DISCARD == 0 && fmt::layout(sf.fmt).is_some_and(|l| l.1 == 1) {
+        // the page has the pixels: read them back first
         sf.gpu_newer = false;
-        let (gpu, level, w, h, pitch) = (sf.gpu, sf.level, sf.w, sf.h, sf.pitch);
-        let req = readback(d, gpu, level, w, h, mem, pitch);
-        *after = After::Readback(req);
+        let (gpu, level, w, h, pitch, f) = (sf.gpu, sf.level, sf.w, sf.h, sf.pitch, sf.fmt);
+        *after = readback_as(d, gpu, level, w, h, f, mem, pitch);
     }
     S_OK
+}
+
+/// A readback of a page texture of `f`'s texels to `mem` (rows `pitch` apart): straight when
+/// the page has them as they are, else through a copy of the page's texels (pack).
+fn readback_as(d: &mut D3d, gpu: u32, level: u32, w: u32, h: u32, f: u32, mem: u32, pitch: u32) -> After {
+    if fmt::same_on_page(f) || f == fmt::A32B32G32R32F {
+        return After::Readback(readback(d, gpu, level, w, h, mem, pitch));
+    }
+    let page = fmt::page_bpp(f);
+    let staging = d.guest_alloc(w * h * page);
+    if staging == 0 {
+        return After::None;
+    }
+    let req = readback(d, gpu, level, w, h, staging, w * page);
+    After::ReadbackAs { req, staging, fmt: f, w, h, dst: mem, pitch }
 }
 
 fn readback(d: &mut D3d, gpu: u32, level: u32, w: u32, h: u32, mem: u32, pitch: u32) -> u32 {
@@ -2161,15 +2174,17 @@ unsafe fn update_texture(d: &mut D3d, src: u32, dst: u32) -> u32 {
 unsafe fn get_rt_data(d: &mut D3d, rt: u32, dst: u32, after: &mut After) -> u32 {
     let (s, t) = (d.id_of(rt), d.id_of(dst));
     let Some(Data::Surface(a)) = d.objs.get(&s).map(|o| &o.data) else { return D3DERR_INVALIDCALL };
-    let (gpu, level, w, h, page) = (a.gpu, a.level, a.w, a.h, fmt::page_bpp(a.fmt));
+    let (gpu, level, w, h, page, af) = (a.gpu, a.level, a.w, a.h, fmt::page_bpp(a.fmt), a.fmt);
     let Some(mem) = surface_mem(d, t) else { return D3DERR_INVALIDCALL };
     let Some(Data::Surface(b)) = d.objs.get(&t).map(|o| &o.data) else { return D3DERR_INVALIDCALL };
-    if b.w != w || b.h != h || gpu == 0 || fmt::layout(b.fmt) != Some((page, 1)) {
+    // (the target's format, or one the page has as it is for one it has as it is: A8R8G8B8
+    // and X8R8G8B8)
+    let same = b.fmt == af || fmt::same_on_page(b.fmt) && fmt::same_on_page(af) && fmt::layout(b.fmt) == Some((page, 1));
+    if b.w != w || b.h != h || gpu == 0 || !same || fmt::layout(b.fmt).map_or(true, |l| l.1 != 1) {
         return D3DERR_INVALIDCALL;
     }
-    let pitch = b.pitch;
-    let req = readback(d, gpu, level, w, h, mem, pitch);
-    *after = After::Readback(req);
+    let (pitch, f) = (b.pitch, b.fmt);
+    *after = readback_as(d, gpu, level, w, h, f, mem, pitch);
     S_OK
 }
 
@@ -2232,7 +2247,7 @@ unsafe fn color_fill(d: &mut D3d, s: u32, rect: u32, color: u32) -> u32 {
     }
     let Some(g) = surface_gpu(d, s) else { return D3DERR_INVALIDCALL };
     let r = if rect != 0 { [rd(rect, 0), rd(rect, 1), rd(rect, 2), rd(rect, 3)] } else { [0, 0, g.2, g.3] };
-    gpu::record(|b| b.cmd(&[gpu::FILL, g.0, g.1, r[0], r[1], r[2] - r[0], r[3] - r[1], color]));
+    gpu::record(|b| b.cmd(&[gpu::FILL, g.0, g.1, r[0], r[1], r[2] - r[0], r[3] - r[1], fmt::target_color(g.4, color)]));
     if let Some(dev) = d.dev.as_mut() {
         dev.batch_target = None;
     }
@@ -2397,7 +2412,9 @@ unsafe fn clear(d: &mut D3d, count: u32, rects: u32, flags: u32, color: u32, z: 
     } else {
         Vec::new()
     };
-    let c = [(color >> 16) & 0xff, (color >> 8) & 0xff, color & 0xff, color >> 24].map(|v| f2u(v as f32 / 255.0));
+    // (a target of fewer channels: what it does not keep as it reads, format::target_color)
+    let tc = fmt::target_color(target.4, color);
+    let c = [(tc >> 16) & 0xff, (tc >> 8) & 0xff, tc & 0xff, tc >> 24].map(|v| f2u(v as f32 / 255.0));
     for r in list {
         if r[2] <= r[0] || r[3] <= r[1] {
             continue;
@@ -2411,7 +2428,7 @@ unsafe fn clear(d: &mut D3d, count: u32, rects: u32, flags: u32, color: u32, z: 
                 b.cmd(&[r[0] as u32, r[1] as u32, (r[2] - r[0]) as u32, (r[3] - r[1]) as u32]);
             }
             for (_, g) in &more {
-                b.cmd(&[gpu::FILL, g.0, g.1, r[0] as u32, r[1] as u32, (r[2] - r[0]) as u32, (r[3] - r[1]) as u32, color]);
+                b.cmd(&[gpu::FILL, g.0, g.1, r[0] as u32, r[1] as u32, (r[2] - r[0]) as u32, (r[3] - r[1]) as u32, fmt::target_color(g.4, color)]);
             }
         });
     }
@@ -2937,7 +2954,8 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         if st.rs[7] != 0 { st.rs[23] } else { 8 },
     ];
     key.extend_from_slice(&blend);
-    key.push(wmask);
+    // (a target of fewer channels keeps the others as cleared: format::target_channels)
+    key.push(wmask & fmt::target_channels(target.4).0);
     key.push(streams.len() as u32);
     for (i, &(sn, _, stride)) in streams.iter().enumerate() {
         let list: Vec<&(u32, u32, u32, u32)> = attrs.iter().filter(|a| a.0 == i as u32).collect();
@@ -2966,7 +2984,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     // (only shader model 2+ pixel shaders write them: see dxwgsl::d3d9::Options::targets)
     let writes_more = ps_shader.is_some_and(|s| s.major >= 2);
     for (i, (_, g)) in more.iter().enumerate() {
-        key.extend_from_slice(&[fmt::page_format(g.4), if writes_more { st.rs[190 + i] & 0xf } else { 0 }]);
+        key.extend_from_slice(&[fmt::page_format(g.4), if writes_more { st.rs[190 + i] & fmt::target_channels(g.4).0 } else { 0 }]);
     }
     let pipe = match dev.pipelines.get(&key) {
         Some(&p) => {
@@ -3044,6 +3062,10 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         };
         if fmt::no_alpha(f) {
             alpha_bits |= 1 << s;
+        }
+        // (bits 16-31: red is the luminance, a render target's: format::target_channels)
+        if fmt::target_channels(f).1 && s < 16 {
+            alpha_bits |= 1 << (16 + s);
         }
         let ss = &st.ss[s as usize];
         let mip = if levels > 1 { ss[7] } else { 0 };

@@ -599,7 +599,8 @@ pub struct Options {
     pub link: u32,
     /// vertex shader inputs: (register, location, kind)
     pub vs_inputs: Vec<(u32, u32, u32)>,
-    /// pixel shader: samplers that read alpha as 1 are known at run time (u.x[0].x bits)
+    /// pixel shader: samplers that read alpha as 1 are known at run time (u.x[0].z bits 0-15;
+    /// bits 16-31: those that read red as the luminance, rgb = r)
     pub alpha_test: Option<u32>,
     /// sampler texture types (by register) for samplers the shader didn't declare (ps 1.x)
     pub fog: bool,
@@ -1361,7 +1362,7 @@ fn fixpos(p: vec4f) -> vec4f {
 
 const PS_HELPERS: &str = "
 // samplers of formats without alpha read 1 (x[0].z: a bit per sampler)
-fn fixa(c: vec4f, s: u32) -> vec4f { if ((u.x[0].z & (1u << s)) != 0u) { return vec4f(c.xyz, 1.0); } return c; }
+fn fixa(c: vec4f, s: u32) -> vec4f { var r = c; if ((u.x[0].z & (1u << (s + 16u))) != 0u) { r = vec4f(c.xxx, c.w); } if ((u.x[0].z & (1u << s)) != 0u) { r.w = 1.0; } return r; }
 // alpha test against x[0].w (the reference, 0..1 as f32 bits)
 fn alpha_ok(a: f32, func: u32) -> bool {
   let r = bitcast<f32>(u.x[0].w);
