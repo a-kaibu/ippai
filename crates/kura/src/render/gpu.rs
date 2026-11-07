@@ -36,7 +36,8 @@ mod ffi {
         #[allow(clippy::too_many_arguments)]
         pub fn vngpu_copy_texture(src: Id, smip: u32, sx: u32, sy: u32, sz: u32, dst: Id, dmip: u32, dx: u32, dy: u32, dz: u32, w: u32, h: u32, d: u32);
         #[allow(clippy::too_many_arguments)]
-        pub fn vngpu_copy_to_buffer(tex: Id, mip: u32, x: u32, y: u32, buf: Id, bpr: u32, w: u32, h: u32);
+        pub fn vngpu_copy_to_buffer(tex: Id, mip: u32, x: u32, y: u32, z: u32, buf: Id, bpr: u32, w: u32, h: u32);
+        pub fn vngpu_copy_buffer(src: Id, dst: Id, size: u32);
         #[allow(clippy::too_many_arguments)]
         pub fn vngpu_copy_from_buffer(buf: Id, bpr: u32, tex: Id, mip: u32, x: u32, y: u32, w: u32, h: u32);
         pub fn vngpu_begin_pass(p: *const u8, n: usize);
@@ -266,7 +267,16 @@ pub fn copy_texture(src: Id, smip: u32, so: [u32; 3], dst: Id, dmip: u32, d: [u3
 }
 #[allow(clippy::too_many_arguments)]
 pub fn copy_to_buffer(tex: Id, mip: u32, x: u32, y: u32, buf: Id, bpr: u32, w: u32, h: u32) {
-    unsafe { ffi::vngpu_copy_to_buffer(tex, mip, x, y, buf, bpr, w, h) }
+    copy_layer_to_buffer(tex, mip, [x, y, 0], buf, bpr, w, h)
+}
+/// copyTextureToBuffer of a box in array layer (or 3D slice) `o[2]`.
+#[allow(clippy::too_many_arguments)]
+pub fn copy_layer_to_buffer(tex: Id, mip: u32, o: [u32; 3], buf: Id, bpr: u32, w: u32, h: u32) {
+    unsafe { ffi::vngpu_copy_to_buffer(tex, mip, o[0], o[1], o[2], buf, bpr, w, h) }
+}
+/// copyBufferToBuffer of the first `size` bytes.
+pub fn copy_buffer(src: Id, dst: Id, size: u32) {
+    unsafe { ffi::vngpu_copy_buffer(src, dst, size) }
 }
 
 /// copyBufferToTexture: rows of `bpr` bytes from the start of `buf` into a box of mip `mip`.

@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-node@v7.1.0
         with:
-          node-version: 22
+          node-version: 24
       # (pnpm, never npm: tools/ci/pnpm.sh; its store and corepack's pnpm are cached)
       - uses: actions/cache@v6.1.0
         with:
@@ -374,7 +374,7 @@ jobs:
         run: tools/ci/apt.sh mingw-w64 zstd clang lld llvm
       - uses: actions/setup-node@v7.1.0
         with:
-          node-version: 22
+          node-version: 24
       # (pnpm, never npm: tools/ci/pnpm.sh; its store and corepack's pnpm are cached)
       - uses: actions/cache@v6.1.0
         with:
@@ -442,6 +442,17 @@ jobs:
       # and the JIT freeing modules nothing refers to after every load, kura jit.rs reclaim)
       - name: host/tests on sake-grow (a memory that starts at 2.06 GB and grows), JIT modules freed at every load
         run: IPPAI_JIT_RECLAIM=1 SAKE=$PWD/target/sake-out/sake-grow.js tests/host-tests.sh
+      - name: Save states under node (cut anywhere, restored, the same output)
+        run: SAKE=$PWD/target/sake-out/sake.js tests/snap.sh
+      - uses: actions/cache@v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-1.63.0
+      - name: Save states in the page (taken, loaded, loaded on another device)
+        run: |
+          mkdir -p "$RUNNER_TEMP/ippai-browser" && pnpm add --dir "$RUNNER_TEMP/ippai-browser" playwright@1.63.0
+          "$RUNNER_TEMP/ippai-browser/node_modules/.bin/playwright" install chromium
+          PLAYWRIGHT=$RUNNER_TEMP/ippai-browser/node_modules/playwright/index.mjs node tests/savestate-browser.mjs target/release/ippai
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: ippai

@@ -686,6 +686,10 @@ fn input_queued() -> usize {
 
 #[no_mangle]
 pub extern "C" fn vnhost_input_push(kind: u32, x: i32, y: i32, data: u32) -> c_int {
+    // (nothing changes while a save state is taken: what comes meanwhile is dropped)
+    if crate::snap::pausing() {
+        return 0;
+    }
     INPUT.lock().unwrap_or_else(|e| e.into_inner()).push_back([kind, x as u32, y as u32, data]);
     INPUT_READY.notify_one();
     0

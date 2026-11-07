@@ -2273,7 +2273,10 @@ fn mm_timer_thread(c: &mut Ctx) -> u32 {
     loop {
         let now = std::time::Instant::now();
         if next > now {
-            std::thread::sleep(next - now);
+            kura::snap::sleep(next - now);
+            if crate::snap::point() || std::time::Instant::now() < next {
+                continue;
+            }
         }
         if t.stop.load(Ordering::Relaxed) {
             break;

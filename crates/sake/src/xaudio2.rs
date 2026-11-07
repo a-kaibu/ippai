@@ -77,6 +77,11 @@ struct Engine {
 static ENGINE: Mutex<Option<Engine>> = Mutex::new(None);
 static WAKE: Condvar = Condvar::new();
 
+/// Save states: wakes the engine thread's wait.
+pub(crate) fn snap_wake() {
+    WAKE.notify_all();
+}
+
 fn with<R>(f: impl FnOnce(&mut Engine) -> R) -> R {
     let mut g = ENGINE.lock().unwrap_or_else(|e| e.into_inner());
     f(g.get_or_insert_with(|| Engine { voices: HashMap::default(), master: 0, callbacks: Vec::new(), running: false, stream: -1, thread: false, v28: false }))
@@ -214,6 +219,7 @@ fn engine_thread(c: &mut Ctx) -> u32 {
         let (stream, running) = with(|e| (e.stream, e.running));
         if !running || kura::audio::queued(stream) >= AHEAD {
             drop(WAKE.wait_timeout(lock.lock().unwrap(), Duration::from_millis(5)).unwrap());
+            crate::snap::point();
             continue;
         }
         let (engine_cbs, starts): (Vec<u32>, Vec<(u32, u32)>) = with(|e| {

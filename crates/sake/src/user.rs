@@ -5042,13 +5042,25 @@ fn UnregisterHotKey(_: &mut Ctx) -> u32 {
 // ---------------------------------------------------------------------------------------------
 // input from the page (kura's input queue)
 
+static INPUT_AT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// A restored save state: the input thread again, if it ran.
+pub(crate) fn snap_restore() {
+    if INPUT_AT.load(std::sync::atomic::Ordering::Relaxed) != 0 {
+        start_input();
+    }
+}
+
 fn start_input() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
+    // (once per save-state epoch: a restored copy starts it again)
+    if kura::snap::once(&INPUT_AT) {
         std::thread::spawn(|| {
+            kura::snap::register("input", false, 0);
             let trace = crate::env_on!("SAKE_TRACE_INPUT");
             loop {
+                kura::snap::idle();
                 let recs = kura::display::input_take(100);
+                kura::snap::busy();
                 if recs.is_empty() {
                     continue;
                 }
@@ -5061,7 +5073,7 @@ fn start_input() {
                 crate::obj::signal();
             }
         });
-    });
+    }
 }
 
 /// WM_INPUT with raw input event `h`, to `hwnd` (0: the window with the focus)

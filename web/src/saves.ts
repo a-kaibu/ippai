@@ -1,5 +1,6 @@
 import { SaveTransport } from "./save-transport";
 import { withRetries } from "./net";
+import { snapping } from "./savestate";
 const transport = new SaveTransport();
 // Saved games: what the game wrote (in kura's in-memory file system) survives the page.
 // The files written under the game's folders and the prefix's user folders go to the browser's
@@ -106,6 +107,8 @@ export function keepSaving(
   let pending: Promise<void> | undefined;
   let seen = -1;
   const perform = async () => {
+    // (a save state is being taken: the memory stays as it is; the next look saves)
+    if (snapping()) return;
     // (nothing written since the last look: no export)
     const changes = m._vnhost_vfs_changes?.() ?? -2;
     if (changes === seen && changes !== -2) return;

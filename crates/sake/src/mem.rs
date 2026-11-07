@@ -261,6 +261,12 @@ pub struct Region {
 /// allocation, which is all games look at).
 static SPACE: Mutex<BTreeMap<u32, Region>> = Mutex::new(BTreeMap::new());
 
+/// Save states (snap.rs): the guest memory a state holds, its allocations.
+pub fn snap_ranges(v: &mut Vec<(u32, u32)>) {
+    let sp = SPACE.lock().unwrap_or_else(|e| e.into_inner());
+    v.extend(sp.iter().map(|(&a, r)| (a, r.size)));
+}
+
 fn align_up(v: u32, a: u32) -> u32 {
     (v + a - 1) & !(a - 1)
 }

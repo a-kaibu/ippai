@@ -4,6 +4,8 @@
 // them (a movie file is read a few seconds ahead of the frame shown). The guest asks for frame n; this decodes ahead of the newest request (hardware
 // first) and copies whole frames into the stream's slots, where the guest takes them.
 
+import { snapping } from "./savestate";
+
 export interface VideoWasm {
   wasmMemory: WebAssembly.Memory;
   _malloc(size: number): number;
@@ -89,6 +91,8 @@ export class Video {
 
   /** Called every frame (and on each request): new and closed streams, decoding ahead. */
   tick(): void {
+    // (a save state is being taken: the memory stays as it is)
+    if (snapping()) return;
     const n = this.wasm._vnhost_video_list(this.io, 16);
     const u32 = new Uint32Array(this.wasm.wasmMemory.buffer, this.io, n * 6);
     const live = new Set<number>();

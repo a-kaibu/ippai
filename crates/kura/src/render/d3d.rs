@@ -250,6 +250,8 @@ struct Tex {
     halved: bool,
     /// made for unordered access views: a storage texture too
     storage: bool,
+    /// the command that made it (save states: d3d/snap.rs)
+    make: Vec<u32>,
 }
 
 impl Tex {
@@ -469,6 +471,13 @@ pub struct D3d {
     no_ps: Id,
     clear_module: Id,
     blit_module: Id,
+    // save states (d3d/snap.rs): what made the shaders and Direct3D 9 pipelines, the texture
+    // shown, the reads of a state being taken
+    shader_src: HashMap<u32, String>,
+    pipe_keys: HashMap<u32, Vec<u32>>,
+    overlay_tex: u32,
+    snap_reads: Option<Vec<snap::Read>>,
+    snap_tokens: HashMap<u32, usize>,
 }
 
 impl D3d {
@@ -546,6 +555,11 @@ impl D3d {
             no_ps: 0,
             clear_module: 0,
             blit_module: 0,
+            shader_src: HashMap::new(),
+            pipe_keys: HashMap::new(),
+            overlay_tex: 0,
+            snap_reads: None,
+            snap_tokens: HashMap::new(),
         }
     }
 
@@ -580,6 +594,9 @@ impl D3d {
     }
 
     pub fn mapped(&mut self, token: u32, ok: bool) {
+        if self.snap_mapped(token, ok) {
+            return;
+        }
         if let Some((pair, buf, px)) = self.checks.remove(&token) {
             gpu::destroy(buf);
             match self.check_done.remove(&pair) {
@@ -736,7 +753,7 @@ impl D3d {
                     self.clear_groups2();
                     self.created.set(self.created.get() + 1);
                     let view = gpu::view(tex, "");
-                    self.textures.insert(id, Tex { tex, w, h, levels, format: fmt, view, layers: 1, dim: "2d", views: HashMap::new(), fits: HashMap::new(), zclear: None, zused: 0, halved: halved(format), storage: false });
+                    self.textures.insert(id, Tex { tex, w, h, levels, format: fmt, view, layers: 1, dim: "2d", views: HashMap::new(), fits: HashMap::new(), zclear: None, zused: 0, halved: halved(format), storage: false, make: c[i..i + 7].to_vec() });
                     i += 7;
                 }
                 DESTROY_TEXTURE => {
@@ -817,6 +834,7 @@ impl D3d {
                             keep
                         });
                     }
+                    self.shader_src.insert(id as u32, code.into_owned());
                     i += 4;
                 }
                 CREATE_PIPELINE => {
@@ -825,6 +843,7 @@ impl D3d {
                     if let Some(old) = self.pipelines.insert(id, p) {
                         gpu::drop(old.pipeline);
                     }
+                    self.pipe_keys.insert(id, c[i + 3..i + 3 + n].to_vec());
                     i += 3 + n;
                 }
                 SET_TARGET => {
@@ -869,6 +888,7 @@ impl D3d {
                             self.tex_gen += 1;
                         }
                         self.overlay = Some(Overlay { view, rect, flip: op == PRESENT_FLIP });
+                        self.overlay_tex = tex;
                     }
                     self.frames += 1;
                     STATS[0].fetch_add(1, Relaxed);
@@ -2285,7 +2305,9 @@ impl D3d {
             tex,
             &format!(r#"{{"dimension":{}{},"aspect":{}}}"#, q(dim), if dim == "2d" { r#","arrayLayerCount":1"# } else { "" }, q(if depth { "depth-only" } else { "all" })),
         );
-        self.textures.insert(id, Tex { tex, w, h, levels, format: fmt, view, layers: layers.max(1), dim, views: HashMap::new(), fits: HashMap::new(), zclear: None, zused: 0, halved: halved(format), storage });
+        let mut make = vec![CREATE_TEXTURE2];
+        make.extend_from_slice(&a);
+        self.textures.insert(id, Tex { tex, w, h, levels, format: fmt, view, layers: layers.max(1), dim, views: HashMap::new(), fits: HashMap::new(), zclear: None, zused: 0, halved: halved(format), storage, make });
         // A depth buffer starts at depth 1 (what Direct3D leaves undefined; WebGPU's zeros fail
         // every LESS test), and the passes that clear rather than load an aspect no draw used
         // yet (see `zused`) start from that too.
@@ -3302,6 +3324,9 @@ mod padded_tests {
         }
     }
 }
+
+mod snap;
+pub use snap::Saved;
 
 #[cfg(test)]
 mod model_tests;

@@ -835,16 +835,29 @@ fn fetch_ahead(h: &Hash) {
     AHEAD_WORK.notify_one();
 }
 
+/// A restored save state: no fetcher of the old module is left (the next fetch ahead starts
+/// them again; what they had queued is fetched when read).
+pub(crate) fn snap_restore() {
+    *AHEAD.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
 fn fetcher() {
+    crate::snap::register("vfs fetcher", false, 0);
     loop {
         let h = {
+            crate::snap::idle();
             let mut g = AHEAD.lock().unwrap_or_else(|e| e.into_inner());
-            loop {
-                if let Some(h) = g.as_mut().and_then(|a| a.queue.pop_front()) {
-                    break h;
+            let h = loop {
+                if !crate::snap::pausing() {
+                    if let Some(h) = g.as_mut().and_then(|a| a.queue.pop_front()) {
+                        break h;
+                    }
                 }
-                g = AHEAD_WORK.wait(g).unwrap_or_else(|e| e.into_inner());
-            }
+                g = AHEAD_WORK.wait_timeout(g, std::time::Duration::from_millis(100)).unwrap_or_else(|e| e.into_inner()).0;
+            };
+            drop(g);
+            crate::snap::busy();
+            h
         };
         if let Some(data) = fetch_chunk(&h) {
             cache_put(&h, Arc::new(data), false);

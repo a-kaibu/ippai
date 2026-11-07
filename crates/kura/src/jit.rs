@@ -1167,16 +1167,35 @@ fn maybe_save() {
     drop(guard);
     // merged and sent on a thread of its own: the merge of a few hundred functions took the
     // game's thread tens of ms
-    static SAVER: std::sync::OnceLock<Option<std::sync::mpsc::Sender<Save>>> = std::sync::OnceLock::new();
-    let tx = SAVER.get_or_init(|| {
-        let (tx, rx) = std::sync::mpsc::channel::<Save>();
-        std::thread::Builder::new().name("vnjit-save".into()).spawn(move || rx.into_iter().for_each(save)).ok()?;
-        Some(tx)
-    });
+    // (one per save-state epoch: a restored copy has none of the old thread)
+    static SAVER: Mutex<(u32, Option<Option<std::sync::mpsc::Sender<Save>>>)> = Mutex::new((0, None));
+    let tx = {
+        let mut q = SAVER.lock().unwrap_or_else(|e| e.into_inner());
+        if q.0 != crate::snap::epoch() {
+            *q = (crate::snap::epoch(), None);
+        }
+        q.1.get_or_insert_with(|| {
+            let (tx, rx) = std::sync::mpsc::channel::<Save>();
+            std::thread::Builder::new()
+                .name("vnjit-save".into())
+                .spawn(move || {
+                    rx.into_iter().for_each(|j| {
+                        save(j);
+                        crate::snap::drain_done();
+                    })
+                })
+                .ok()?;
+            Some(tx)
+        })
+        .clone()
+    };
     let job = (url.as_c_str(), id, new, chunks);
     match tx {
         Some(tx) => {
-            let _ = tx.send(job);
+            crate::snap::drain_add();
+            if tx.send(job).is_err() {
+                crate::snap::drain_done();
+            }
         }
         None => save(job),
     }
@@ -1703,10 +1722,12 @@ fn compile_fn(st: &mut State, eip: u32, (lo, hi): (u32, u32), mem: &mut Linear, 
         if crate::env_on!("IPPAI_JIT_TIME") {
             eprintln!("vnjit job {eip:#x}: misses {} known {} hints {}, copied in {:?}", st.misses.len(), st.known.len(), st.hints.len(), tc.elapsed());
         }
+        crate::snap::drain_add();
         if jobs.send(job).is_ok() {
             st.pending.insert(eip);
             return false;
         }
+        crate::snap::drain_done();
     }
     let t0 = Instant::now();
     let built = build_fn(mem, eip, (lo, hi), part, build, &st.misses, &st.known, &st.hints);
@@ -1747,9 +1768,14 @@ const BATCH_MAX: usize = 16;
 
 /// The compiler thread's queue (IPPAI_JIT_ASYNC=0: none, functions are translated where they
 /// are needed).
-fn compiler() -> Option<&'static std::sync::mpsc::Sender<Job>> {
-    static Q: std::sync::OnceLock<Option<std::sync::mpsc::Sender<Job>>> = std::sync::OnceLock::new();
-    Q.get_or_init(|| {
+fn compiler() -> Option<std::sync::mpsc::Sender<Job>> {
+    // (one per save-state epoch: a restored copy has none of the old thread)
+    static Q: Mutex<(u32, Option<Option<std::sync::mpsc::Sender<Job>>>)> = Mutex::new((0, None));
+    let mut q = Q.lock().unwrap_or_else(|e| e.into_inner());
+    if q.0 != crate::snap::epoch() {
+        *q = (crate::snap::epoch(), None);
+    }
+    q.1.get_or_insert_with(|| {
         if std::env::var("IPPAI_JIT_ASYNC").is_ok_and(|v| v == "0") {
             return None;
         }
@@ -1779,13 +1805,16 @@ fn compiler() -> Option<&'static std::sync::mpsc::Sender<Job>> {
                         .collect();
                     let mods: Vec<&[u8]> = items.iter().filter_map(|(_, _, b)| b.as_ref().map(|b| &b.0[..])).collect();
                     let merged = if mods.len() > 1 { jit::wasm::merge(&mods, &[]) } else { None };
+                    let n = items.len();
                     let _ = done.send(Batch { items, merged, checked });
+                    drop(done);
+                    (0..n).for_each(|_| crate::snap::drain_done());
                 }
             })
             .ok()?;
         Some(tx)
     })
-    .as_ref()
+    .clone()
 }
 
 /// Installs the functions the compiler thread finished for this thread.

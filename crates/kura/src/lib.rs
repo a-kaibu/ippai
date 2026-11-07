@@ -45,3 +45,4 @@ pub mod vfs;
 pub mod fs;
 pub mod wrap;
 pub mod usage;
+pub mod snap;

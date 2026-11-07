@@ -153,6 +153,14 @@ thread_local! {
     static CUR: std::cell::Cell<(u32, u32)> = const { std::cell::Cell::new((0, 0)) };
 }
 
+/// This thread's (context, DC) (save states keep it: snap.rs).
+pub(crate) fn current_pair() -> (u32, u32) {
+    CUR.with(|c| c.get())
+}
+pub(crate) fn set_current_pair(v: (u32, u32)) {
+    CUR.with(|c| c.set(v))
+}
+
 fn wglCreateContext(_: &mut Ctx) -> u32 {
     kura::gl::vngl_context_create(0)
 }

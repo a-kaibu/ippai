@@ -1,0 +1,98 @@
+# Save states (どこでもセーブ)
+
+A save state is the whole running program at one moment, independent of the game's own saves:
+taken at any time from the button in the top right corner of the game, loaded later (also on
+another device) to go on from exactly there.
+
+## What a state is
+
+The module's whole linear memory, taken while every thread stands still where a copy can go on
+from. Everything outside the memory is made again from it:
+
+| outside the memory | how it comes back |
+| --- | --- |
+| the threads' host stacks | every thread stands where nothing on its stack matters (below); a restored module starts a thread per record |
+| the GPU (textures, buffers, shaders, pipelines) | the drawing thread reads it all back into one batch that makes it again (`crates/kura/src/render/d3d/snap.rs`) |
+| translated x86 code (JIT) | per thread, translated again (the shared cache is in memory) |
+| clocks | an offset makes the program's time go on from the state's (`kura::wrap` clock_gettime) |
+| the page (audio, movies, input) | the page is new; the guest's rings and queues are in memory |
+
+### Where a thread stands still (`crates/sake/src/snap.rs`)
+
+* **CONTINUE**: at the top level of the run loop, between blocks of guest code (kura's
+  `Stop::Pause`). It goes on there.
+* **RESTART**: waiting in an API called from the top level that may simply be called again
+  (`RESTARTABLE`: Sleep, WaitFor*, critical sections, SRW locks, GetMessage, ...): its waits come
+  before anything it does. A restored thread calls it again with the same stack.
+* **RETURN**: in a condition variable's wait (a wake without a signal is allowed): the lock is
+  taken again and the API returns as woken.
+* **START**: created suspended, not started yet.
+
+Host threads (the file fetcher, input, the sound mixer, the movie thread) say when they are idle
+(`kura::snap::idle/busy`); work handed between threads (JIT compiles, region saves) is counted
+(`DRAIN`) and waited for.
+
+A thread anywhere else (a modal dialog's loop, a window procedure waiting on another thread, a
+16-bit program, an exception being handled) keeps the state from being taken: the save fails
+after 5 seconds and says where it was (`still running: ... (user32!DialogBoxParamA)`).
+
+### Taking one (`crates/kura/src/snap.rs`)
+
+The page sets `Ctl.cmd = SAVE`. The coordinator thread asks every thread to stand still (and wakes
+the ones that sleep), waits until all have, has the drawing thread read the GPU back
+(`Ctl.gpu`), lists the memory to copy (the host's statics, heap and stacks, and the guest's
+reservations) and says READY. The page copies the blocks and says RESUME; the time the program
+stood still is taken off its clocks.
+
+### Restoring
+
+The page makes a memory, fills it from the state and sets `Ctl.restoring`, then instantiates the
+module with that memory (emscripten skips the data segments: the image says they are done).
+sake's main sees `restoring` and, instead of starting the program, sets the clocks' offsets,
+restarts the host services and starts each guest thread from its record. The drawing thread
+runs the GPU batch before the guest's batches.
+
+## The file
+
+`IPPAISNP`, u32 version (1), u32 header length, the header (JSON: `format`, `build`, `ctl`,
+`raw`, `created`), then blocks: u32 address, u32 length, u32 compressed length and a zstd frame
+of 1 MiB at most. Blocks of zeros are left out. An address of 0xffffffff ends it. A state is of one
+build of sake (`build-id.txt`, a hash of sake.wasm): another build can't load it.
+
+Sizes: the test program (host/tests/snaptest.c) 42 MiB of memory → 2.5 MiB, standing still
+0.15 s in Chromium (zstd level 1 in a worker, ~660 MB/s).
+
+## Where states are kept
+
+* this browser: OPFS `states/<game>/<slot>.snap` and `index.json` (4 slots);
+* the server: `ippai serve` `/saves/state.<game>.<slot>` and `/saves/state.<game>.index` (the
+  same versioned saves as the game's own, in its S3 bucket when one is set up): another device
+  lists and loads them too.
+
+A state holds the game's own save files as they were then: loading one goes back to those.
+
+## Limits
+
+* Depth and stencil buffers can't be read back (WebGPU): they come back as last cleared (games
+  clear them every frame).
+* Under node, files opened outside kura's file system (NODERAWFS) are not in a state.
+* Node 22's V8 loses `i32.atomic.store` to constant addresses at 2 GiB and up in its first tier,
+  where all of the host's statics are: run sake.js under node 24 or later.
+
+## Under node, and the tests
+
+host/snap.js (the node build's pre-js):
+
+    IPPAI_SNAP_SAVE=<file>@<s>[,<s>...]   states at those seconds (file, file.1, ...)
+    IPPAI_SNAP_EXIT=1                     end right at the (last) state, without going on
+    IPPAI_SNAP_LOAD=<file>                start from a state
+
+* `tests/snap.sh`: snaptest.c (events, critical sections, condition variables, SRW locks,
+  Sleep, a thread started late, the clocks) for x86 and x86-64, JIT and interpreter: cut at five
+  moments, the output before the cut and after the restore must be the whole run's; restored
+  twice the same; a state of a restored run; live states change nothing.
+* `a_state_draws_the_same_d3d9/11` (crates/kura/src/render/d3d/model_tests.rs): random Direct3D
+  command streams on the WebGPU model, with the GPU read back after a random batch and made again
+  in a fresh model: every later frame and readback the same.
+* `tests/savestate-browser.mjs`: in Chromium with ippai serve, a state from the dialog, loaded,
+  and loaded in a browser with nothing of its own (the server's copy).

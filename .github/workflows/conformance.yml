@@ -152,7 +152,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-node@v7.1.0
         with:
-          node-version: 22
+          node-version: 24
       - uses: actions/download-artifact@v8.0.2
         with:
           name: sake-node
@@ -183,7 +183,7 @@ jobs:
       - run: tools/ci/cache-keys.sh
       - uses: actions/setup-node@v7.1.0
         with:
-          node-version: 22
+          node-version: 24
       # (pnpm, never npm: tools/ci/pnpm.sh; its store and corepack's pnpm are cached)
       - uses: actions/cache@v6.1.0
         with:
@@ -293,7 +293,7 @@ jobs:
       - run: tools/ci/cache-keys.sh
       - uses: actions/setup-node@v7.1.0
         with:
-          node-version: 22
+          node-version: 24
       - uses: actions/download-artifact@v8.0.2
         with:
           name: sake-node

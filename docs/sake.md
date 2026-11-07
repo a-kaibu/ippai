@@ -224,6 +224,10 @@
   プローブ (`BROWSER64=1 SYSTEM64=<x64 CRT> node tests/winref/run-browser.mjs`) は x64 でも
   32 ビットと同じく既知の差だけ。
 
+## どこでもセーブ (2026-11-07)
+
+実行中のプログラムをそのまま保存・復元する（ゲーム右上のボタン）。全スレッドを安全な位置で止めてメモリ全体を zstd で保存し、GPU の中身はメモリに読み戻して再構築する。ブラウザ（OPFS）と ippai serve（S3）に保存されるので別の端末からも続けられる。詳細は docs/savestate.md。
+
 ## 16 ビット (Win16)
 
 - NE 形式の exe (Windows 3.x) は `w16::start` が読む (w16.rs)。koji のインタプリタに 16 ビット

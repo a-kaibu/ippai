@@ -324,8 +324,20 @@ fn write_texel(b: &[u8]) -> u64 {
         let mut w = [0u8; 8];
         w[..b.len()].copy_from_slice(b);
         u64::from_le_bytes(w)
+    } else if b[..8] == b[8..16] {
+        // (what copyTextureToBuffer made of a value: it comes back as it was)
+        u64::from_le_bytes(b[..8].try_into().unwrap())
     } else {
         hash_bytes(0x77, b)
+    }
+}
+
+/// A color value as a texel of `format` holds it: no more bits than its bytes (so that what is
+/// read back and written again is the same value).
+fn fit(format: &str, v: u64) -> u64 {
+    match format_info(format) {
+        Some((bpp, ..)) if bpp < 8 && !format.starts_with("depth") => v & ((1u64 << (bpp * 8)) - 1),
+        _ => v,
     }
 }
 
@@ -483,7 +495,8 @@ struct Draw {
 #[derive(Clone)]
 enum Cmd {
     Copy(usize, u32, [u32; 3], usize, u32, [u32; 3], [u32; 3]),
-    ToBuffer(usize, u32, u32, u32, usize, u32, u32, u32),
+    ToBuffer(usize, u32, [u32; 3], usize, u32, u32, u32),
+    BufCopy(usize, usize, u32),
     FromBuffer(usize, u32, usize, u32, u32, u32, u32, u32),
     Pass(Vec<Attachment>, Option<Attachment>, Vec<Draw>),
     /// a compute pass of one dispatch: pipeline hash, bind group, workgroups
@@ -1431,7 +1444,8 @@ impl Model {
         self.enc.push(Cmd::Copy(s, smip, so, t, dmip, d, size));
     }
 
-    pub fn copy_to_buffer(&mut self, tex: u32, mip: u32, x: u32, y: u32, buf: u32, bpr: u32, w: u32, h: u32) {
+    pub fn copy_to_buffer(&mut self, tex: u32, mip: u32, o: [u32; 3], buf: u32, bpr: u32, w: u32, h: u32) {
+        let [x, y, z] = o;
         let what = "copyTextureToBuffer";
         self.no_pass(what);
         let (Some(t), Some(b)) = (self.texture_of(tex, what), self.buffer_of(buf, what)) else { return };
@@ -1450,9 +1464,9 @@ impl Model {
             self.err(format!("{what}: mip {mip}"));
             return;
         }
-        let (lw, lh, _) = tx.size(mip);
-        if x + w > lw || y + h > lh {
-            self.err(format!("{what}: {x},{y}+{w}x{h} outside {lw}x{lh}"));
+        let (lw, lh, ld) = tx.size(mip);
+        if x + w > lw || y + h > lh || z >= ld {
+            self.err(format!("{what}: {x},{y},{z}+{w}x{h} outside {lw}x{lh}x{ld}"));
             return;
         }
         if bpr % 256 != 0 || (h > 1 && bpr < w * bpp) {
@@ -1463,7 +1477,23 @@ impl Model {
             self.err(format!("{what}: {w}x{h} into a {bs}-byte buffer"));
             return;
         }
-        self.enc.push(Cmd::ToBuffer(t, mip, x, y, b, bpr, w, h));
+        self.enc.push(Cmd::ToBuffer(t, mip, [x, y, z], b, bpr, w, h));
+    }
+
+    pub fn copy_buffer(&mut self, src: u32, dst: u32, size: u32) {
+        let what = "copyBufferToBuffer";
+        self.no_pass(what);
+        let (Some(s), Some(d)) = (self.buffer_of(src, what), self.buffer_of(dst, what)) else { return };
+        let (Obj::Buffer(a), Obj::Buffer(b)) = (&self.objs[s], &self.objs[d]) else { return };
+        let (au, asz, bu, bsz) = (a.usage, a.size, b.usage, b.size);
+        if au & 4 == 0 || bu & 8 == 0 {
+            self.err(format!("{what}: usage (COPY_SRC, COPY_DST)"));
+        }
+        if size % 4 != 0 || size > asz || size > bsz || s == d {
+            self.err(format!("{what}: {size} bytes from {asz} into {bsz}"));
+            return;
+        }
+        self.enc.push(Cmd::BufCopy(s, d, size));
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1562,7 +1592,7 @@ impl Model {
             let cv: Vec<f32> = c.arr("clearValue").iter().map(|x| if let J::Num(n) = x { *n as f32 } else { 0.0 }).collect();
             let color = [cv.first().copied().unwrap_or(0.0), cv.get(1).copied().unwrap_or(0.0), cv.get(2).copied().unwrap_or(0.0), cv.get(3).copied().unwrap_or(0.0)];
             let format = self.view_of(a).map(|v| self.tex(v.tex).format.clone()).unwrap_or_default();
-            colors.push(Attachment { view: a, load_clear: (load == "clear").then(|| clear_texel(&format, color)), store: store == "store", stencil_clear: None, stencil_store: true });
+            colors.push(Attachment { view: a, load_clear: (load == "clear").then(|| fit(&format, clear_texel(&format, color))), store: store == "store", stencil_clear: None, stencil_store: true });
         }
         let mut depth = None;
         if let Some(d) = j.get("depthStencilAttachment") {
@@ -2028,6 +2058,7 @@ impl Model {
             let zatt = depth.as_ref().map(|a| sub(self, a));
             for (ci, a) in colors.iter().enumerate() {
                 let (t, si, (w, h, _)) = sub(self, a);
+                let format = self.tex(t).format.clone();
                 let mask = p.targets.get(ci).map_or(15, |t| t.1);
                 // (a depth test may keep the old color too)
                 let ztest = zatt.is_some() && p.depth.as_ref().is_some_and(|d| d.2 != "always");
@@ -2044,7 +2075,7 @@ impl Model {
                         if mask != 0 {
                             let Obj::Texture(tx) = &mut self.objs[t] else { continue };
                             // (a partial write mask keeps part of the old value)
-                            tx.texels[si][at] = if mask == 15 { new } else { mix(new, old ^ mask as u64) };
+                            tx.texels[si][at] = fit(&format, if mask == 15 { new } else { mix(new, old ^ mask as u64) });
                         }
                     }
                 }
@@ -2091,7 +2122,8 @@ impl Model {
             let mut bufs = Vec::new();
             match c {
                 Cmd::Copy(s, _, _, t, ..) => texs.extend([*s, *t]),
-                Cmd::ToBuffer(t, _, _, _, b, ..) | Cmd::FromBuffer(b, _, t, ..) => {
+                Cmd::BufCopy(a, b, _) => bufs.extend([*a, *b]),
+                Cmd::ToBuffer(t, _, _, b, ..) | Cmd::FromBuffer(b, _, t, ..) => {
                     texs.push(*t);
                     bufs.push(*b);
                 }
@@ -2161,11 +2193,17 @@ impl Model {
                         }
                     }
                 }
-                Cmd::ToBuffer(t, mip, x, y, b, bpr, w, h) => {
+                Cmd::BufCopy(a, b, n) => {
+                    let Obj::Buffer(src) = &self.objs[a] else { continue };
+                    let bytes = src.data[..n as usize].to_vec();
+                    let Obj::Buffer(dst) = &mut self.objs[b] else { continue };
+                    dst.data[..n as usize].copy_from_slice(&bytes);
+                }
+                Cmd::ToBuffer(t, mip, [x, y, z], b, bpr, w, h) => {
                     let tx = self.tex(t).clone();
                     let (bpp, ..) = format_info(&tx.format).unwrap();
                     let (lw, ..) = tx.size(mip);
-                    let s = tx.sub(mip, 0);
+                    let s = tx.sub(mip, z);
                     let Obj::Buffer(bf) = &mut self.objs[b] else { continue };
                     for r in 0..h {
                         for c in 0..w {
@@ -2495,9 +2533,14 @@ pub extern "C" fn vngpu_copy_texture(src: u32, smip: u32, sx: u32, sy: u32, sz: 
     with(|m| m.copy_texture(src, smip, [sx, sy, sz], dst, dmip, [dx, dy, dz], [w, h, d]))
 }
 #[no_mangle]
-pub extern "C" fn vngpu_copy_to_buffer(tex: u32, mip: u32, x: u32, y: u32, buf: u32, bpr: u32, w: u32, h: u32) {
+pub extern "C" fn vngpu_copy_to_buffer(tex: u32, mip: u32, x: u32, y: u32, z: u32, buf: u32, bpr: u32, w: u32, h: u32) {
     count("copy_to_buffer");
-    with(|m| m.copy_to_buffer(tex, mip, x, y, buf, bpr, w, h))
+    with(|m| m.copy_to_buffer(tex, mip, [x, y, z], buf, bpr, w, h))
+}
+#[no_mangle]
+pub extern "C" fn vngpu_copy_buffer(src: u32, dst: u32, size: u32) {
+    count("copy_buffer");
+    with(|m| m.copy_buffer(src, dst, size))
 }
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]

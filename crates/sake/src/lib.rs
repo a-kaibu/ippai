@@ -97,6 +97,7 @@ pub mod text;
 pub mod user;
 pub mod w16;
 pub mod w16api;
+pub mod snap;
 
 use mem::{r32, w32};
 
@@ -108,6 +109,10 @@ pub struct Thread {
     pub obj: u32,
     /// the guest stack's reservation (released when the thread ends)
     pub stack: u32,
+    /// save states: the host's thread-local state of this thread when it stood still (snap.rs)
+    pub tls: [u32; 8],
+    /// a thread pool thread's arguments (k32 tp_take), kept for its start over
+    pub tp: Option<(u32, (u32, u32, u32))>,
 }
 
 thread_local! {
@@ -187,18 +192,33 @@ fn enter(stack: u32) -> &'static mut Thread {
             (*cpu).fpu.cw = 0x27f;
         }
     }
-    let t = Box::leak(Box::new(Thread { cpu, tid, teb, obj: 0, stack: st }));
-    CUR.with(|c| c.set(t));
+    let t = Box::leak(Box::new(Thread { cpu, tid, teb, obj: 0, stack: st, tls: [0; 8], tp: None }));
+    adopt(t as *mut Thread);
     k32::tls_thread_init(teb);
     t
 }
 
+/// Makes the calling host thread run guest thread `t` (a new one, or one a restored save
+/// state goes on with): sake's and the save states' records of it.
+pub(crate) fn adopt(t: *mut Thread) {
+    CUR.with(|c| c.set(t));
+    kura::snap::register("guest thread", true, t as usize);
+}
+
 /// Runs guest code until it returns to RET_TRAP with ESP at or above `until` (0: forever).
 pub fn run(cpu: &mut Cpu, until: u32) {
+    let depth = snap::enter_run();
+    run_loop(cpu, until, depth);
+    snap::leave_run();
+}
+
+fn run_loop(cpu: &mut Cpu, until: u32, depth: u32) {
     use kura::cpu::Stop;
     loop {
+        snap::before_guest(cpu, depth);
         let stop = kura::cpu::run(cpu);
         match stop {
+            Stop::Pause => snap::park_here(),
             Stop::Trap(a) if (w16::TRAP..w16::TRAP + 0x10000).contains(&a) => {
                 if w16::dispatch(cpu, a) {
                     return;
@@ -545,26 +565,38 @@ pub fn spawn_gated(start: u32, param: u32, stack: u32, obj: u32, gated: bool) ->
             t.obj = obj::dup(obj);
             tx.send(t.tid).unwrap();
             if gated {
-                k32::wait_gate(obj);
+                k32::wait_gate_start(obj, start, param);
             }
-            let cpu = unsafe { &mut *t.cpu };
-            pe::thread_attach(cpu);
-            if mem::x64() {
-                start64(cpu, start, param);
-            }
-            let sp = cpu.regs[ESP] - 8;
-            w32(sp, pe::exit_return());
-            w32(sp + 4, param);
-            cpu.regs[ESP] = sp;
-            cpu.eip = start;
-            run(cpu, 0);
+            thread_start(t, start, param);
+            run(unsafe { &mut *t.cpu }, 0);
         })
         .expect("thread");
     rx.recv().unwrap()
 }
 
+/// A new thread's first steps: DllMain(THREAD_ATTACH), then `start(param)` set up to run.
+pub(crate) fn thread_start(t: &mut Thread, start: u32, param: u32) {
+    let cpu = unsafe { &mut *t.cpu };
+    pe::thread_attach(cpu);
+    if mem::x64() {
+        return setup64(cpu, start, param);
+    }
+    let sp = cpu.regs[ESP] - 8;
+    w32(sp, pe::exit_return());
+    w32(sp + 4, param);
+    cpu.regs[ESP] = sp;
+    cpu.eip = start;
+}
+
 /// x64: runs `start(param)` as the thread's first function (returning to EXIT_TRAP).
 fn start64(cpu: &mut Cpu, start: u32, param: u32) -> ! {
+    setup64(cpu, start, param);
+    run(cpu, 0);
+    unsafe { libc::exit(0) }
+}
+
+/// x64: the registers and stack for `start(param)` returning to EXIT_TRAP.
+fn setup64(cpu: &mut Cpu, start: u32, param: u32) {
     let sp = ((cpu.regs[ESP] - 0x40) & !15) - 8;
     mem::w64(sp, api::EXIT_TRAP as u64);
     cpu.set_gpr(ESP, sp as u64);
@@ -572,8 +604,6 @@ fn start64(cpu: &mut Cpu, start: u32, param: u32) -> ! {
     let f = mem::widen(start);
     cpu.eip = f as u32;
     cpu.rip_hi = (f >> 32) as u32;
-    run(cpu, 0);
-    unsafe { libc::exit(0) }
 }
 
 /// The program: `exe` is its host path.
@@ -581,6 +611,9 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     if let Some(p) = std::env::var("SAKE_PID").ok().and_then(|s| s.parse::<u32>().ok()) {
         PID.store(p, Ordering::Relaxed);
         NEXT_TID.store(p + 0x10, Ordering::Relaxed);
+    }
+    if kura::snap::restoring() {
+        snap::restore();
     }
     if pe::is_64bit_file(exe) {
         mem::set_x64();
@@ -627,6 +660,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     cxx::init();
     d3d11::register();
     guest::bind_host();
+    snap::init();
     // SAKE_MEMINFO=<seconds>: sake's own heap (above the guest's 2 GB) now and then, on stderr
     #[cfg(target_os = "emscripten")]
     if let Some(secs) = std::env::var("SAKE_MEMINFO").ok().and_then(|s| s.parse::<f64>().ok()) {

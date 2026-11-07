@@ -356,6 +356,7 @@ fn FatalAppExitA(c: &mut Ctx) -> u32 {
 
 /// The calling thread ends (from the thread's own code: ExitThread or a return).
 pub fn exit_thread(code: u32) -> ! {
+    kura::snap::unregister();
     let t = crate::cur();
     let h = t.obj;
     obj::with(|tb| {
@@ -733,6 +734,34 @@ pub fn wait_gate(h: u32) {
     g.retain(|&(x, _)| x != h);
 }
 
+/// wait_gate for a new thread that will run `start(param)`: it may stand still for a save
+/// state meanwhile (snap.rs START).
+pub fn wait_gate_start(h: u32, start: u32, param: u32) {
+    let mut g = GATE.lock().unwrap();
+    while g.iter().any(|&(x, n)| x == h && n > 0) {
+        if kura::snap::pausing() {
+            drop(g);
+            crate::snap::point_start(start, param);
+            g = GATE.lock().unwrap();
+            continue;
+        }
+        g = GATE_CV.wait(g).unwrap();
+    }
+    g.retain(|&(x, _)| x != h);
+}
+
+/// Save states: wakes the waits here so that they see the pause.
+pub(crate) fn snap_wake() {
+    drop(GATE.lock());
+    GATE_CV.notify_all();
+    drop(CS_LOCK.lock());
+    CS_CV.notify_all();
+    drop(SYNC.lock());
+    SYNC_CV.notify_all();
+    drop(ADDR_GEN.lock());
+    ADDR_CV.notify_all();
+}
+
 fn ResumeThread(c: &mut Ctx) -> u32 {
     let h = c.a(0);
     if let Some(pid) = obj::with(|t| match t.objs.get(&h) {
@@ -856,10 +885,27 @@ fn Sleep(c: &mut Ctx) -> u32 {
     let ms = c.a(0);
     if ms == 0 {
         std::thread::yield_now();
-    } else {
-        std::thread::sleep(std::time::Duration::from_millis(ms as u64));
+        return 0;
     }
+    sleep_ms(ms);
     0
+}
+
+/// Sleeps `ms` (INFINITE: for good); a save state may be taken meanwhile (the call starts over
+/// in a restored copy).
+pub(crate) fn sleep_ms(ms: u32) {
+    let end = (ms != u32::MAX).then(|| std::time::Instant::now() + std::time::Duration::from_millis(ms as u64));
+    loop {
+        let left = match end {
+            Some(e) => match e.checked_duration_since(std::time::Instant::now()) {
+                Some(d) if !d.is_zero() => d,
+                _ => return,
+            },
+            None => std::time::Duration::from_secs(3600),
+        };
+        kura::snap::sleep(left);
+        crate::snap::point();
+    }
 }
 // WaitOnAddress: one generation counter for all addresses; any wake wakes every waiter, which
 // returns TRUE (Windows allows that: callers check the value again)
@@ -890,15 +936,26 @@ fn WaitOnAddress(c: &mut Ctx) -> u32 {
         return 1;
     }
     let start = *g;
-    let woken = |g: &mut u64| *g == start;
-    if ms == 0xffff_ffff {
-        drop(ADDR_CV.wait_while(g, woken));
-        return 1;
-    }
-    let (_g, r) = ADDR_CV.wait_timeout_while(g, std::time::Duration::from_millis(ms as u64), woken).unwrap_or_else(|e| e.into_inner());
-    if r.timed_out() {
-        last_error(1460);
-        return 0;
+    let end = (ms != 0xffff_ffff).then(|| std::time::Instant::now() + std::time::Duration::from_millis(ms as u64));
+    let mut g = g;
+    while *g == start {
+        if kura::snap::pausing() {
+            drop(g);
+            crate::snap::point();
+            g = ADDR_GEN.lock().unwrap_or_else(|e| e.into_inner());
+            continue;
+        }
+        let left = match end {
+            Some(e) => match e.checked_duration_since(std::time::Instant::now()) {
+                Some(d) if !d.is_zero() => d,
+                _ => {
+                    last_error(1460);
+                    return 0;
+                }
+            },
+            None => std::time::Duration::from_secs(3600),
+        };
+        g = ADDR_CV.wait_timeout(g, left).unwrap_or_else(|e| e.into_inner()).0;
     }
     1
 }
@@ -1357,6 +1414,14 @@ pub fn cs_enter(cs: u32) {
         let mut g = CS_LOCK.lock().unwrap();
         waiters.fetch_add(1, Ordering::SeqCst);
         while own.load(Ordering::SeqCst) != 0 {
+            if kura::snap::pausing() {
+                waiters.fetch_sub(1, Ordering::SeqCst);
+                drop(g);
+                crate::snap::point();
+                g = CS_LOCK.lock().unwrap();
+                waiters.fetch_add(1, Ordering::SeqCst);
+                continue;
+            }
             g = CS_CV.wait_timeout(g, std::time::Duration::from_millis(50)).unwrap().0;
         }
         waiters.fetch_sub(1, Ordering::SeqCst);
@@ -1478,6 +1543,12 @@ pub(crate) fn srw_acquire(l: u32, shared: bool) {
     }
     let mut g = SYNC.lock().unwrap();
     while !srw_try(l, shared) {
+        if kura::snap::pausing() {
+            drop(g);
+            crate::snap::point();
+            g = SYNC.lock().unwrap();
+            continue;
+        }
         g = SYNC_CV.wait_timeout(g, std::time::Duration::from_millis(20)).unwrap().0;
     }
 }
@@ -1522,15 +1593,25 @@ fn InitializeConditionVariable(c: &mut Ctx) -> u32 {
     0
 }
 /// Waits for a wake of `cv` (after `release`, before `reacquire`); false on timeout.
-pub(crate) fn cv_wait(cv: u32, ms: u32, release: impl FnOnce(), reacquire: impl FnOnce()) -> bool {
+/// A condition variable's wait: `release(a, b)` lets go of its lock, `reacquire(a, b)` takes
+/// it again (plain functions: a save state taken meanwhile has a restored copy call
+/// `reacquire` and return `woken` from the API, a wake without a signal).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn cv_wait(cv: u32, ms: u32, release: fn(u64, u64), reacquire: fn(u64, u64), a: u64, b: u64, woken: u32) -> bool {
     // the generation is read before the lock is released (a wake in between is seen), but SYNC is
     // not held across `release` (srw_release takes it to notify: holding it deadlocked)
     let gen0 = *SYNC.lock().unwrap().get_or_insert_with(HashMap::default).entry(cv).or_insert(0);
-    release();
+    release(a, b);
     let mut g = SYNC.lock().unwrap();
     let end = (ms != u32::MAX).then(|| std::time::Instant::now() + std::time::Duration::from_millis(ms as u64));
     let mut woke = true;
     while g.as_ref().unwrap().get(&cv).copied() == Some(gen0) {
+        if kura::snap::pausing() {
+            drop(g);
+            crate::snap::point_return(woken, reacquire, a, b);
+            g = SYNC.lock().unwrap();
+            continue;
+        }
         let left = match end {
             Some(e) => match e.checked_duration_since(std::time::Instant::now()) {
                 Some(d) => d.min(std::time::Duration::from_millis(50)),
@@ -1544,7 +1625,7 @@ pub(crate) fn cv_wait(cv: u32, ms: u32, release: impl FnOnce(), reacquire: impl 
         g = SYNC_CV.wait_timeout(g, left).unwrap().0;
     }
     drop(g);
-    reacquire();
+    reacquire(a, b);
     if !woke {
         last_error(1460);
     }
@@ -1558,7 +1639,7 @@ pub(crate) fn cv_wake(cv: u32) {
 }
 fn SleepConditionVariableSRW(c: &mut Ctx) -> u32 {
     let (cv, l, ms, shared) = (c.a(0), c.a(1), c.a(2), c.a(3) & 1 != 0);
-    cv_wait(cv, ms, || srw_release(l, shared), || srw_acquire(l, shared)) as u32
+    cv_wait(cv, ms, |l, s| srw_release(l as u32, s != 0), |l, s| srw_acquire(l as u32, s != 0), l as u64, shared as u64, 1) as u32
 }
 fn SleepConditionVariableCS(c: &mut Ctx) -> u32 {
     let (cv, cs, ms) = (c.a(0), c.a(1), c.a(2));
@@ -1567,14 +1648,17 @@ fn SleepConditionVariableCS(c: &mut Ctx) -> u32 {
     cv_wait(
         cv,
         ms,
-        || {
-            w32(cs + cs_off(REC), 1);
-            cs_leave(cs)
+        |cs, _| {
+            w32(cs as u32 + cs_off(REC), 1);
+            cs_leave(cs as u32)
         },
-        || {
-            cs_enter(cs);
-            w32(cs + cs_off(REC), depth)
+        |cs, depth| {
+            cs_enter(cs as u32);
+            w32(cs as u32 + cs_off(REC), depth as u32)
         },
+        cs as u64,
+        depth as u64,
+        1,
     ) as u32
 }
 fn WakeConditionVariable(c: &mut Ctx) -> u32 {
@@ -1796,6 +1880,12 @@ fn SetThreadErrorMode(c: &mut Ctx) -> u32 {
 }
 fn GetThreadErrorMode(_: &mut Ctx) -> u32 {
     THREAD_ERROR_MODE.with(|t| t.get())
+}
+pub(crate) fn thread_error_mode() -> u32 {
+    THREAD_ERROR_MODE.with(|t| t.get())
+}
+pub(crate) fn set_thread_error_mode(m: u32) {
+    THREAD_ERROR_MODE.with(|t| t.set(m))
 }
 
 fn RtlUnwind(c: &mut Ctx) -> u32 {
@@ -2683,6 +2773,15 @@ fn tp_spawn(timer: bool, h: u32, gen: u32, arg: (u32, u32, u32)) {
     crate::spawn_gated(entry, h, 0x10000, obj::new_thread_obj(0), false);
 }
 static TP_ARGS: Mutex<Vec<(u32, u32, (u32, u32, u32))>> = Mutex::new(Vec::new());
+/// A pool thread's arguments: taken the first time, then kept in its record (a thread started
+/// over by a restored save state finds them there).
+fn tp_args(h: u32) -> Option<(u32, (u32, u32, u32))> {
+    let t = crate::cur();
+    if t.tp.is_none() {
+        t.tp = tp_take(h);
+    }
+    t.tp
+}
 fn tp_take(h: u32) -> Option<(u32, (u32, u32, u32))> {
     let mut v = TP_ARGS.lock().unwrap();
     let i = v.iter().position(|x| x.0 == h)?;
@@ -2691,12 +2790,13 @@ fn tp_take(h: u32) -> Option<(u32, (u32, u32, u32))> {
 }
 fn tp_timer_thread(c: &mut Ctx) -> u32 {
     let h = c.a(0);
-    if let Some((gen, (delay, period, mode))) = tp_take(h) {
+    if let Some((gen, (delay, period, mode))) = tp_args(h) {
         let mut next = std::time::Instant::now() + std::time::Duration::from_millis(delay as u64);
         loop {
             let now = std::time::Instant::now();
             if next > now {
-                std::thread::sleep((next - now).min(std::time::Duration::from_millis(50)));
+                kura::snap::sleep((next - now).min(std::time::Duration::from_millis(50)));
+                crate::snap::point();
                 if tp_current(h, gen) {
                     continue;
                 }
@@ -2729,7 +2829,7 @@ fn tp_timer_thread(c: &mut Ctx) -> u32 {
 /// RegisterWaitForSingleObject's flags (callback(ctx, timed out), again unless WT_EXECUTEONLYONCE)
 fn tp_wait_thread(c: &mut Ctx) -> u32 {
     let h = c.a(0);
-    if let Some((gen, (obj_h, ms, mode))) = tp_take(h) {
+    if let Some((gen, (obj_h, ms, mode))) = tp_args(h) {
         loop {
             let r = obj::wait(&[obj_h], false, ms, None);
             if !tp_current(h, gen) {
@@ -2954,6 +3054,12 @@ fn fs_redirection(disable: u32, old: u32) -> u32 {
     }
     put32(old, FS_REDIR_OFF.with(|r| r.replace(disable)));
     0
+}
+pub(crate) fn fs_redirection_off() -> u32 {
+    FS_REDIR_OFF.with(|r| r.get())
+}
+pub(crate) fn set_fs_redirection_off(v: u32) {
+    FS_REDIR_OFF.with(|r| r.set(v))
 }
 fn RtlWow64EnableFsRedirectionEx(c: &mut Ctx) -> u32 {
     fs_redirection(c.a(0), c.a(1))

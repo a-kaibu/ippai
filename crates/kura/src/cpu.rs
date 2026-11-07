@@ -29,6 +29,9 @@ pub enum Stop {
     /// An unmasked SSE floating-point exception (#XM); EIP at the instruction, the MXCSR
     /// flags set.
     SimdException,
+    /// A save state is being taken and the thread is at the top level of its run loop
+    /// (crates/kura/src/snap.rs): EIP at the next instruction, nothing done.
+    Pause,
 }
 
 /// The linear memory as the guest sees it.
@@ -389,6 +392,9 @@ fn cpu_run(cpu: &mut Cpu) -> Stop {
     let jit = crate::jit::enabled() && (cpu.mode64 == 0 || crate::jit::enabled64()) && (cpu.mode16 == 0 || crate::jit::enabled16());
     crate::jit::count_entry(cpu.eip);
     loop {
+        if crate::snap::pausing() && crate::snap::parkable() {
+            return Stop::Pause;
+        }
         trace_call(cpu);
         // (with TF set every instruction traps, and with an SSE exception unmasked any SSE
         // instruction may: the interpreter runs them one by one; so it does SSE rounding

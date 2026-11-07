@@ -410,22 +410,34 @@ pub fn end(key: u32) {
 /// Frames of sound kept queued ahead.
 const AHEAD: u32 = 4410;
 
+static THREAD_AT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// A restored save state: the movie thread again, if it ran.
+pub(crate) fn snap_restore() {
+    if THREAD_AT.load(std::sync::atomic::Ordering::Relaxed) != 0 {
+        thread();
+    }
+}
+
 fn thread() {
-    static T: OnceLock<()> = OnceLock::new();
-    T.get_or_init(|| {
+    // (once per save-state epoch: a restored copy starts it again)
+    if kura::snap::once(&THREAD_AT) {
         std::thread::Builder::new()
             .name("movies".into())
             .spawn(|| {
+                kura::snap::register("movies", false, 0);
                 let mut g = PLAYS.lock().unwrap_or_else(|e| e.into_inner());
                 loop {
                     drop(g);
+                    kura::snap::busy();
                     let wait = turn();
+                    kura::snap::idle();
                     g = PLAYS.lock().unwrap_or_else(|e| e.into_inner());
                     g = WAKE.wait_timeout(g, wait).unwrap_or_else(|e| e.into_inner()).0;
                 }
             })
             .expect("movie thread");
-    });
+    }
 }
 
 /// One turn of the movie thread: ends, frames, sound. Returns how long it may sleep.

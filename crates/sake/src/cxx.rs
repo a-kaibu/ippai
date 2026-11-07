@@ -20,6 +20,11 @@ thread_local! {
     static CURRENT: RefCell<Vec<(u32, u32)>> = const { RefCell::new(Vec::new()) };
 }
 
+/// No exception being handled on this thread (save states: snap.rs).
+pub fn idle() -> bool {
+    CURRENT.with(|c| c.borrow().is_empty())
+}
+
 /// guest stubs: call `fn` with EBP set (catch and unwind funclets; returns EAX), and thiscall
 /// with 0, 1 or 2 stack arguments
 fn stubs() -> &'static [u32; 4] {

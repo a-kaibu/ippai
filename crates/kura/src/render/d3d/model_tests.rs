@@ -953,3 +953,115 @@ fn every_texture_kind_is_valid_webgpu() {
     seen.dedup();
     assert!(errors.is_empty(), "{} errors: {:?}", errors.len(), &seen[..seen.len().min(12)]);
 }
+
+// ---- save states (d3d/snap.rs): the GPU read back after any batch and made again ----
+
+/// Runs `batches`, with a state after batch `cut` restored into a fresh model and D3d (Some), or
+/// straight through (None); returns what each batch after `cut` was observed to do.
+fn run_cut(batches: &[Batch], cut: usize, snap: bool) -> Vec<Vec<Obs>> {
+    model::reset();
+    let mut d = D3d::new();
+    d.skip_check = false;
+    let mut out = Vec::new();
+    for (k, b) in batches.iter().enumerate() {
+        d.run(&b.c, &b.data, &b.blob);
+        for token in model::with(|m| m.finish_maps()) {
+            d.mapped(token, true);
+        }
+        let mut obs = model::with(|m| std::mem::take(&mut m.obs));
+        if let Some(o) = &d.overlay {
+            obs.push(Obs::Frame(format!("after batch {k}"), model::with(|m| m.view_values(o.view))));
+        }
+        if k > cut {
+            out.push(obs);
+        }
+        if k == cut && !snap {
+            // (what a state leaves out: depth and stencil, as last cleared)
+            let mut c = Vec::new();
+            for (&id, t) in d.textures.iter().filter(|(_, t)| is_depth(t.format)) {
+                c.extend(snap::depth_clears(id, t));
+            }
+            d.run_batch(&c, &[], &[]);
+            model::with(|m| m.obs.clear());
+            // (what the page shows right then)
+            out.push(d.overlay.iter().map(|o| Obs::Frame("restored".into(), model::with(|m| m.view_values(o.view)))).collect());
+        }
+        if k == cut && snap {
+            d.snap_begin();
+            assert!(d.snap_ready().is_none() || d.textures.is_empty() && d.buffers.is_empty());
+            for token in model::with(|m| m.finish_maps()) {
+                d.mapped(token, true);
+            }
+            assert_eq!(d.snap_ready(), Some(true));
+            let saved = d.snap_take();
+            let targets2 = d.targets2.clone();
+            let errors = model::with(|m| std::mem::take(&mut m.errors));
+            assert!(errors.is_empty(), "reading back: WebGPU errors {errors:?}");
+            // (a new page: nothing of the old GPU is left)
+            model::reset();
+            d = D3d::new();
+            d.skip_check = false;
+            d.snap_restore(&saved);
+            let errors = model::with(|m| std::mem::take(&mut m.errors));
+            assert!(errors.is_empty(), "making again: WebGPU errors {errors:?}");
+            model::with(|m| m.obs.clear());
+            assert_eq!(d.targets2, targets2, "Direct3D 11 targets");
+            out.push(d.overlay.iter().map(|o| Obs::Frame("restored".into(), model::with(|m| m.view_values(o.view)))).collect());
+        }
+    }
+    let errors = model::with(|m| std::mem::take(&mut m.errors));
+    assert!(errors.is_empty(), "WebGPU errors {errors:?}");
+    out
+}
+
+fn check_cuts(make: impl Fn(u64, u32) -> Vec<Batch>) {
+    let dst = unsafe { libc::mmap(std::ptr::null_mut(), 4096, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_32BIT, -1, 0) };
+    assert!(dst != libc::MAP_FAILED);
+    for seed in 0..seeds() / 4 {
+        let batches = make(seed, dst as usize as u32);
+        let cut = (seed as usize * 7) % (batches.len() - 1);
+        let want = run_cut(&batches, cut, false);
+        let got = run_cut(&batches, cut, true);
+        for (k, (w, g)) in want.iter().zip(&got).enumerate() {
+            if w != g {
+                let what: Vec<String> = w
+                    .iter()
+                    .zip(g)
+                    .map(|(a, b)| match (a, b) {
+                        (Obs::Frame(n, a), Obs::Frame(_, b)) => format!("{n}: {} of {} differ (first {:?})", a.iter().zip(b).filter(|(x, y)| x != y).count(), a.len(), a.iter().zip(b).position(|(x, y)| x != y)),
+                        (Obs::Read(a), Obs::Read(b)) => format!("read: {} of {} differ", a.iter().zip(b).filter(|(x, y)| x != y).count(), a.len()),
+                        _ => "kinds".into(),
+                    })
+                    .collect();
+                panic!("seed {seed}, state after batch {cut}: batch {} (0: right after the state) observed differently ({} vs {} observations): {what:?}", k, w.len(), g.len());
+            }
+        }
+    }
+    unsafe { libc::munmap(dst, 4096) };
+}
+
+#[test]
+fn a_state_draws_the_same_d3d9() {
+    check_cuts(|seed, dst| {
+        let mut g = Gen::new(seed);
+        let mut v = vec![g.setup()];
+        for _ in 0..12 {
+            v.push(g.frame(dst as usize));
+        }
+        v
+    });
+}
+
+#[test]
+fn a_state_draws_the_same_d3d11() {
+    check_cuts(|seed, dst| {
+        let mut g = Gen11::new(seed);
+        let mut v = vec![g.setup()];
+        for _ in 0..12 {
+            let fs = g.r.next();
+            g.frames.push(fs);
+            v.push(g.frame(fs, false, dst));
+        }
+        v
+    });
+}

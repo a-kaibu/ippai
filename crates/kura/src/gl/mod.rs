@@ -361,6 +361,14 @@ thread_local! {
     static CURRENT: Cell<u32> = const { Cell::new(0) };
 }
 
+/// This thread's current context (save states keep it: crates/sake/src/snap.rs).
+pub fn current() -> u32 {
+    CURRENT.with(|c| c.get())
+}
+pub fn set_current(id: u32) {
+    CURRENT.with(|c| c.set(id))
+}
+
 fn page_id() -> u32 {
     crate::d3d11::page_id()
 }

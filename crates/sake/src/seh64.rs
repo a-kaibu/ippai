@@ -320,6 +320,11 @@ thread_local! {
     static UNWINDS: RefCell<Vec<Unwind>> = const { RefCell::new(Vec::new()) };
 }
 
+/// No exception dispatch or unwind under way on this thread (save states: snap.rs).
+pub fn idle() -> bool {
+    STACK.with(|s| s.borrow().is_empty()) && UNWINDS.with(|u| u.borrow().is_empty())
+}
+
 /// Raises exception `code` at `addr` with `cpu` as the context, and starts the dispatch: the
 /// next guest code to run is the first handler (or the context again).
 pub fn raise(cpu: &mut Cpu, code: u32, flags: u32, addr: u32, params: &[u64]) {

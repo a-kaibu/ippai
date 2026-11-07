@@ -28,6 +28,19 @@ export interface UiState {
   debug: boolean;
   /** requests are being retried: the link dropped or stalls (web/src/net.ts) */
   net: boolean;
+  /** save states of the running game (ui/States.tsx, web/src/savestate.ts); null: none here */
+  states: StatesView | null;
+}
+
+export interface StatesView {
+  /** the slots (null: empty), as the dialog shows them */
+  slots: ({ created: string; thumb: string; size: number; old: boolean } | null)[];
+  /** what is being done ("": nothing) */
+  busy: string;
+  /** opens the dialog (reads the slots again) */
+  open: () => void;
+  save: (slot: number) => void;
+  load: (slot: number) => void;
 }
 
 const DEBUG = "vnvm.debug";
@@ -55,6 +68,7 @@ let state: UiState = {
   back: null,
   debug: debugAtStart(),
   net: false,
+  states: null,
 };
 const listeners = new Set<() => void>();
 

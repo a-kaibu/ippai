@@ -38,6 +38,19 @@ import {
 import { checkOnline, startApp } from "./pwa";
 import { Budget, pool } from "./ahead";
 import { savedChunks } from "./offline";
+import {
+  build,
+  getState,
+  listStates,
+  putState,
+  SLOTS,
+  snapping,
+  stateMemory,
+  takeState,
+  type SnapModule,
+  type StateInfo,
+} from "./savestate";
+import { toast } from "sonner";
 
 const params = new URLSearchParams(location.search);
 const canvas = document.querySelector<HTMLCanvasElement>("#screen")!;
@@ -217,6 +230,18 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   );
   const saveRoots = [...mounts.map((m) => m.slice(0, m.indexOf("="))), "/vnvm/prefix/drive_c/users"];
   const saved = nosave ? null : await loadSaves(saveName);
+  // a save state to go on from (&state=<slot>: the states dialog starts the page again so)
+  const slot = params.get("state");
+  let stateMem: WebAssembly.Memory | undefined;
+  if (slot !== null && !nosave) {
+    log("ステートを読み込み中");
+    const info = (await listStates(saveName)).find((s) => s.slot === Number(slot));
+    if (!info) throw new Error("ステートが見つかりません");
+    stateMem = await stateMemory(await getState(saveName, info));
+    // (a reload starts the game as usual)
+    params.delete("state");
+    history.replaceState(history.state, "", `?${params}`);
+  }
   // Preload tree manifests before the factory: initialization may read them on the page.
   const vnvmFiles: Record<string, Uint8Array> = {};
   await Promise.all(
@@ -261,8 +286,10 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
         params.getAll("env").map((e) => [e.slice(0, e.indexOf("=")), e.slice(e.indexOf("=") + 1)]),
       ),
     },
-    // read by kura's file system as "@saves" (host/vnfs.js)
-    vnvmSaves: saved,
+    // read by kura's file system as "@saves" (host/vnfs.js); a state has its files already
+    vnvmSaves: stateMem ? null : saved,
+    // the memory a state filled (the module starts its threads where they stood)
+    ...(stateMem ? { wasmMemory: stateMem } : {}),
     // the canvas: a thread of the module draws into it (crates/kura/src/render, host/vngpu.js)
     vnvmCanvas: canvas.transferControlToOffscreen(),
     vnvmJit: await jit,
@@ -320,6 +347,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   sake._vnhost_render_start();
   watch(sake);
   (await audio).attach(sake);
+  if (!nosave) attachStates(sake as unknown as SnapModule, saveName);
 }
 
 /**
@@ -381,6 +409,57 @@ async function loadJit(
 const AHEAD_BEFORE_START = 32 << 20;
 const AHEAD_TOTAL = 64 << 20;
 
+/** The states dialog (ui/States.tsx) for the running game `game`. */
+function attachStates(sake: SnapModule, game: string): void {
+  let slots: StateInfo[] = [];
+  let busy = "";
+  let id = "";
+  const show = () =>
+    setUi({
+      states: {
+        slots: Array.from({ length: SLOTS }, (_, i) => {
+          const s = slots.find((x) => x.slot === i);
+          return s ? { created: s.created, thumb: s.thumb, size: s.size, old: !!id && s.build !== id } : null;
+        }),
+        busy,
+        open: () => void refresh(),
+        save: (n) => void save(n),
+        load,
+      },
+    });
+  const refresh = async () => {
+    id = await build();
+    slots = await listStates(game).catch(() => slots);
+    show();
+  };
+  const save = async (n: number) => {
+    if (busy || snapping()) return;
+    busy = "セーブ中…";
+    show();
+    try {
+      const { file, info } = await takeState(sake);
+      const s = { ...info, slot: n };
+      const { uploaded } = await putState(game, s, file);
+      slots = [...slots.filter((x) => x.slot !== n), s];
+      toast(`スロット ${n + 1} にセーブしました`);
+      busy = "サーバーに送信中…";
+      show();
+      await uploaded.catch(() => toast.warning("サーバーには送れませんでした（この端末には保存済みです）"));
+    } catch (e) {
+      toast.error(`セーブできませんでした: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      busy = "";
+      show();
+    }
+  };
+  const load = (n: number) => {
+    // (a new page: the module starts from the state)
+    params.set("state", String(n));
+    location.search = `?${params}`;
+  };
+  void refresh();
+}
+
 function readAhead(name: Promise<string>, after: Promise<unknown>): (sake: SakeModule) => void {
   const store = new URL("store/", location.href).href;
   const got: [Uint8Array, Uint8Array][] = [];
@@ -433,6 +512,8 @@ function readAhead(name: Promise<string>, after: Promise<unknown>): (sake: SakeM
         const c = await getChunk(store, hex, { cache, priority: "low" }).catch(() => null);
         if (!c) continue;
         budget.add(c.data.length);
+        // (a save state is being taken: the memory stays as it is)
+        while (snapping()) await new Promise((r) => setTimeout(r, 50));
         if (sake) put(sake, hash, c.data);
         else got.push([hash, c.data]);
       }

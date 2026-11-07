@@ -269,6 +269,12 @@ pub fn wait(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> bool
     let deadline = (ms != 0xffff_ffff).then(|| Instant::now() + Duration::from_millis(ms as u64));
     let mut g = lock();
     loop {
+        // (a save state: the wait stands still here, holding nothing; see snap.rs)
+        if kura::snap::pausing() {
+            drop(g);
+            crate::snap::point();
+            g = lock();
+        }
         let t = g.get_or_insert_with(|| Table { objs: Objs::default(), next: 0x100, names: HashMap::default(), gen: 0 });
         if let Some(x) = extra {
             if x() {

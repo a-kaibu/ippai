@@ -279,6 +279,7 @@ fn wave_thread(c: &mut Ctx) -> u32 {
         }
         if done.is_empty() {
             drop(WAVE_CV.wait_timeout(WAVE_LOCK.lock().unwrap(), Duration::from_millis(20)).unwrap());
+            crate::snap::point();
         }
     }
     crate::k32::exit_thread(0)
@@ -432,6 +433,20 @@ fn waveOutGetVolume(c: &mut Ctx) -> u32 {
     0
 }
 
+/// Save states: wakes the device threads' waits.
+pub(crate) fn snap_wake() {
+    drop(WAVE_LOCK.lock());
+    WAVE_CV.notify_all();
+}
+
+/// A restored save state: the mixer again, if it ran.
+pub(crate) fn snap_restore() {
+    let id = with(|d| d.stream);
+    if id > 0 && !crate::env_on!("SAKE_NO_MIXER") {
+        spawn_mixer(id);
+    }
+}
+
 fn start_mixer() {
     static STARTED: OnceLock<()> = OnceLock::new();
     STARTED.get_or_init(|| {
@@ -440,9 +455,15 @@ fn start_mixer() {
         if crate::env_on!("SAKE_NO_MIXER") {
             return;
         }
+        spawn_mixer(id);
+    });
+}
+
+fn spawn_mixer(id: i32) {
         std::thread::Builder::new()
             .name("dsound mixer".into())
             .spawn(move || {
+                kura::snap::register("dsound mixer", false, 0);
                 let mut out = vec![0f32; STEP * 2];
                 let stats = crate::env_on!("SAKE_MIX_STATS");
                 let (mut t_mix, mut t_q, mut t_w, mut t_all, mut n) = (0f64, 0f64, 0f64, std::time::Instant::now(), 0);
@@ -450,7 +471,9 @@ fn start_mixer() {
                 // cost the thread about 0.15 cores)
                 let (lock, cv) = (Mutex::new(()), std::sync::Condvar::new());
                 loop {
+                    kura::snap::idle();
                     drop(cv.wait_timeout(lock.lock().unwrap(), Duration::from_millis(10)).unwrap());
+                    kura::snap::busy();
                     loop {
                         let t0 = std::time::Instant::now();
                         let q = kura::audio::queued(id);
@@ -478,7 +501,6 @@ fn start_mixer() {
                 }
             })
             .expect("mixer thread");
-    });
 }
 
 // ---------------------------------------------------------------------------------------------

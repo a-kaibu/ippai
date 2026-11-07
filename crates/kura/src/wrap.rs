@@ -50,9 +50,10 @@ extern "C" {
 /// a second.
 #[no_mangle]
 pub unsafe extern "C" fn __wrap_clock_gettime(clk: libc::clockid_t, ts: *mut libc::timespec) -> c_int {
+    // (plus what a restored save state adds: the program's time goes on from the save, see snap.rs)
     let ms = match clk {
-        libc::CLOCK_REALTIME => emscripten_date_now(),
-        libc::CLOCK_MONOTONIC | libc::CLOCK_MONOTONIC_RAW | libc::CLOCK_BOOTTIME => emscripten_get_now(),
+        libc::CLOCK_REALTIME => emscripten_date_now() + crate::snap::offset(1),
+        libc::CLOCK_MONOTONIC | libc::CLOCK_MONOTONIC_RAW | libc::CLOCK_BOOTTIME => emscripten_get_now() + crate::snap::offset(0),
         _ => return __real_clock_gettime(clk, ts),
     };
     let ns = (ms * 1e6) as i64;

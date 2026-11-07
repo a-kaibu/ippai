@@ -211,16 +211,21 @@ fn cnd_wait(cv: u32, m: u32, ms: u32) -> u32 {
     let woke = cv_wait(
         cv,
         ms,
-        || {
+        |m, _| {
+            let m = m as u32;
             w32(m + OWNER, u32::MAX);
             w32(m + COUNT, 0);
             srw_release(m + LOCK, false);
         },
-        || {
+        |m, n| {
+            let m = m as u32;
             srw_acquire(m + LOCK, false);
             w32(m + OWNER, tid());
-            w32(m + COUNT, n.max(1));
+            w32(m + COUNT, (n as u32).max(1));
         },
+        m as u64,
+        n as u64,
+        SUCCESS,
     );
     if woke { SUCCESS } else { TIMEDOUT }
 }

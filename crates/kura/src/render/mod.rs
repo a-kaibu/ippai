@@ -12,7 +12,7 @@ pub mod gpu;
 pub mod model;
 
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering::Relaxed, Ordering::SeqCst};
 use std::sync::Mutex;
 
 use gpu::{q, usage, Id, Res};
@@ -43,7 +43,13 @@ static CANVAS: AtomicU32 = AtomicU32::new(0);
 /// Where the shown part of the screen is on the canvas, for pointer events: x, y, w, h, and
 /// the view l t r b, screen w h.
 static LAYOUT: Mutex<[i32; 10]> = Mutex::new([0, 0, 1, 1, 0, 0, 1, 1, 1, 1]);
-static STARTED: AtomicBool = AtomicBool::new(false);
+/// The drawing thread started in this run: the epoch it started in + 1 (save states: a restored
+/// module starts its own, see `snap_restore`), RESTORED before a restored module's main ran.
+static STARTED: Mutex<u32> = Mutex::new(0);
+const RESTORED: u32 = u32::MAX;
+/// Save states: the GPU's part of the state being taken (the drawing thread reads it all back
+/// when crates/kura/src/snap.rs asks, d3d/snap.rs), with the epoch it was taken in.
+static SNAP_GPU: Mutex<Option<(u32, d3d::Saved)>> = Mutex::new(None);
 /// A test wants the picture (`vnhost_render_shot`): its serial asked for, and done.
 static SHOT_WANT: AtomicU32 = AtomicU32::new(0);
 static SHOT: Mutex<(u32, usize, u32, u32)> = Mutex::new((0, 0, 0, 0));
@@ -66,8 +72,14 @@ thread_local! {
 /// The page, once its module runs: starts the thread that draws into `Module.vnvmCanvas`.
 #[no_mangle]
 pub extern "C" fn vnhost_render_start() {
-    if STARTED.swap(true, Relaxed) {
-        return;
+    {
+        let mut s = STARTED.lock().unwrap_or_else(|e| e.into_inner());
+        let tag = if crate::snap::restoring() { RESTORED } else { crate::snap::epoch() + 1 };
+        if *s == tag {
+            return;
+        }
+        *s = tag;
+        crate::snap::GPU_THREAD.store(1, SeqCst);
     }
     extern "C" fn main(_: *mut libc::c_void) -> *mut libc::c_void {
         extern "C" {
@@ -85,6 +97,17 @@ pub extern "C" fn vnhost_render_start() {
     }
     let mut t: libc::pthread_t = unsafe { std::mem::zeroed() };
     unsafe { libc::pthread_create(&mut t, std::ptr::null(), main, std::ptr::null_mut()) };
+}
+
+/// A restored module's main, before its threads go on (crates/kura/src/snap.rs restore_begin):
+/// the state's drawing thread is gone; the module's own started already, or will.
+pub(crate) fn snap_restore() {
+    let mut s = STARTED.lock().unwrap_or_else(|e| e.into_inner());
+    // (under the lock: vnhost_render_start sees the flag or the new epoch)
+    crate::snap::VNHOST_SNAP.restoring.store(0, SeqCst);
+    let here = *s == RESTORED;
+    *s = if here { crate::snap::epoch() + 1 } else { 0 };
+    crate::snap::GPU_THREAD.store(here as u32, SeqCst);
 }
 
 /// The page's canvas is `w`×`h` device pixels.
@@ -141,7 +164,10 @@ pub extern "C" fn vnhost_render_frame(t: f64) {
     let t0 = d3d::now();
     R.with(|r| {
         let mut r = r.borrow_mut();
-        r.get_or_insert_with(Render::new).frame(t);
+        let r = r.get_or_insert_with(Render::new);
+        if !r.snap_step() {
+            r.frame(t);
+        }
     });
     FRAME_US.fetch_add(((d3d::now() - t0) * 1000.0) as u64, Relaxed);
 }
@@ -245,6 +271,8 @@ struct Render {
     /// a shot being read: its buffer, texture, size, pixels
     shot: Option<(Id, Id, u32, u32, Vec<u8>, u32)>,
     shot_done: u32,
+    /// a state's GPU part being read back
+    snapping: bool,
 }
 
 struct Stats {
@@ -283,6 +311,47 @@ impl Render {
             stats: crate::env_on!("IPPAI_D3DSTATS").then_some(Stats { t0: 0.0, last: 0.0, frames: 0, slow: 0, at: [0; 6], d3d_at: 0 }),
             shot: None,
             shot_done: 0,
+            snapping: false,
+        }
+    }
+
+    /// Save states, before each frame: the GPU's part when asked (and nothing else until the
+    /// program goes on: memory stays as it is); a restored module's GPU made again first.
+    /// Returns whether the frame is left out.
+    fn snap_step(&mut self) -> bool {
+        use crate::snap::{self, VNHOST_SNAP};
+        // (a restored module's main has not set its things up yet)
+        if snap::restoring() {
+            return true;
+        }
+        if !snap::pausing() {
+            // a state taken in this run (it went on), or the one this module was restored from
+            if let Some((e, s)) = SNAP_GPU.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                if e != snap::epoch() {
+                    self.d3d.snap_restore(&s);
+                    self.d3d_frames = u64::MAX;
+                }
+            }
+            return false;
+        }
+        match VNHOST_SNAP.gpu.load(SeqCst) {
+            snap::GPU_DUMP => {
+                if !self.snapping {
+                    self.d3d.snap_begin();
+                    self.snapping = true;
+                } else if let Some(ok) = self.d3d.snap_ready() {
+                    self.snapping = false;
+                    let s = self.d3d.snap_take();
+                    if ok {
+                        *SNAP_GPU.lock().unwrap_or_else(|e| e.into_inner()) = Some((snap::epoch(), s));
+                    }
+                    VNHOST_SNAP.gpu.store(if ok { snap::GPU_DONE } else { snap::GPU_FAILED }, SeqCst);
+                }
+                true
+            }
+            snap::GPU_DONE | snap::GPU_FAILED => true,
+            // (the program's threads are still stopping: one may wait for a frame)
+            _ => false,
         }
     }
 

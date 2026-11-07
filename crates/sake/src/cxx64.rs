@@ -233,6 +233,11 @@ thread_local! {
     static TRYLEVEL4: Cell<i32> = const { Cell::new(-2) };
 }
 
+/// No exception being handled on this thread (save states: snap.rs).
+pub fn idle() -> bool {
+    ACTIVE.with(|a| a.borrow().is_empty()) && TRYLEVEL4.with(|t| t.get()) == -2
+}
+
 /// The EXCEPTION_RECORD of the exception the thread is handling (0: none), for exception_ptr.
 pub fn current_record() -> u32 {
     ACTIVE.with(|a| a.borrow().last().map_or(0, |a| a.rec))

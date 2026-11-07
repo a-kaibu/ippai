@@ -280,6 +280,12 @@ pub fn name_of(addr: u32) -> Option<String> {
     ENTRIES.read().unwrap().get(i as usize).map(|e| format!("{}!{}", e.dll, e.name))
 }
 
+/// Whether the function at a trap address is cdecl, and its stdcall argument bytes.
+pub fn args_of(addr: u32) -> (bool, u32) {
+    let i = (addr.wrapping_sub(TRAP_LO) / 4) as usize;
+    ENTRIES.read().unwrap().get(i).map_or((true, 0), |e| (e.cdecl, e.bytes))
+}
+
 /// The DLL key ("ucrtbase", "msvcrt"...) of a trap address.
 pub fn dll_of(addr: u32) -> Option<String> {
     let i = addr.checked_sub(TRAP_LO)? / 4;
@@ -445,6 +451,7 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
             eprintln!("{line}");
         }
     }
+    let top = crate::snap::api_enter(addr, esp);
     let mut c = Ctx { cpu, esp, edx: None, jumped: false, st0: None, trap: addr };
     let r = match f {
         Some(f) => f(&mut c),
@@ -460,6 +467,9 @@ pub fn dispatch(cpu: &mut Cpu, addr: u32) {
             0
         }
     };
+    if top {
+        crate::snap::api_leave();
+    }
     if c.jumped {
         return;
     }
