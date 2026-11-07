@@ -95,7 +95,6 @@ jobs:
           mkdir -p traces
           for p in ${{ needs.probes.outputs.stale }}; do
             (cd exe && "$APITRACE" trace --api d3d9 -o "../traces/$p.trace" "./$p.exe" > "../traces/$p.stdout" 2> "../traces/$p.stderr"; echo "$p exit $?")
-            python tests/winref/golden.py src "$p" > "traces/$p.src"
             ls -l "traces/$p.trace"
             tail -3 "traces/$p.stderr"
           done
@@ -131,14 +130,18 @@ jobs:
             took=
             for p in ${{ needs.probes.outputs.stale }}; do
               [ -s "traces/$p.trace" ] || { echo "$p: no trace"; continue; }
-              if [ "$(cat "traces/$p.src")" = "$(python3 "$M/tests/winref/golden.py" src "$p")" ]; then
+              # (the sources' hash here, at the recorded commit: Windows' checkout has CRLF lines)
+              src=$(python3 tests/winref/golden.py src "$p")
+              if [ "$src" = "$(python3 "$M/tests/winref/golden.py" src "$p")" ]; then
                 mkdir -p "$M/tests/replay/traces"
-                cp "traces/$p.trace" "traces/$p.src" "$M/tests/replay/traces/"
+                cp "traces/$p.trace" "$M/tests/replay/traces/"
+                echo "$src" > "$M/tests/replay/traces/$p.src"
                 took="$took $p"
               else
                 echo "$p: its sources changed on main since ${GITHUB_SHA::7}, left for a later run"
               fi
             done
+            [ -n "$took" ] || { echo "nothing to commit"; exit 0; }
             git -C "$M" add tests/replay/traces
             if git -C "$M" diff --cached --quiet; then echo "no change"; exit 0; fi
             git -C "$M" commit -qm "replay: apitrace traces of${took} recorded on Windows (${GITHUB_SHA::7})"
