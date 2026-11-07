@@ -1,0 +1,15 @@
+load 1
+procs 1
+register 1 unregister 1
+process session 1
+state 1 0 bytes 4
+id 1 same 1 bytes 4
+protocol 1 0 bytes 2
+user 1 sized 1
+station 1 sized 1
+bad class 0
+enum 1 ours 1
+enumw 1 ours 1
+enum version 2 0
+prng 1
+prng 1 1 differ 1

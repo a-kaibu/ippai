@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::api::{implement, Ctx};
+use crate::api::{implement, Ctx, Handler};
 use crate::k32::{arg_str, ret_str};
 use crate::mem::{self, cstr, put32, r16, r32, r8, w16, w32, wstr};
 use crate::obj::{self, Obj};
@@ -2417,6 +2417,7 @@ fn xinput_ok(_: &mut Ctx) -> u32 {
 
 pub fn init() {
     let _ = (s2a, r8);
+    wts_init();
     implement("shell32", "SHGetKnownFolderPath", SHGetKnownFolderPath);
     for d in ["xinput1_1", "xinput1_2", "xinput1_3", "xinput1_4", "xinput9_1_0"] {
         for n in ["XInputGetState", "XInputGetStateEx", "XInputSetState", "XInputGetCapabilities", "XInputGetKeystroke", "XInputGetBatteryInformation", "XInputGetDSoundAudioDeviceGuids"] {
@@ -2505,4 +2506,191 @@ fn StrStrIA(c: &mut Ctx) -> u32 {
 }
 fn StrStrIW(c: &mut Ctx) -> u32 {
     str_str(c, true, true)
+}
+
+// ---------------------------------------------------------------------------------------------
+// wtsapi32 (Remote Desktop sessions: FVP's and Yuka's trials ask), bcryptprimitives
+
+/// The one session: 1, the console, active, as a desktop user's on Windows.
+const SESSION: u32 = 1;
+
+/// An ASCII string in a new heap block (as WTSFreeMemory frees): UTF-16 or ANSI.
+fn wts_str(s: &str, wide: bool) -> (u32, u32) {
+    let n = s.len() as u32 + 1;
+    let p = mem::heap_alloc(if wide { 2 * n } else { n }, true);
+    for (i, b) in s.bytes().enumerate() {
+        if wide { w16(p + 2 * i as u32, b as u16) } else { mem::write(p + i as u32, &[b]) }
+    }
+    (p, if wide { 2 * n } else { n })
+}
+
+/// WTSQuerySessionInformation(server, session, class, &buf, &bytes): the console session's
+/// (as Windows answers for it: empty client strings, zero client numbers); other sessions don't
+/// exist.
+fn wts_query(c: &mut Ctx, wide: bool) -> u32 {
+    let (session, class, out, bytes) = (c.a(1), c.a(2), c.a(3), c.a(4));
+    if out == 0 || bytes == 0 {
+        crate::k32::last_error(87);
+        return 0;
+    }
+    // (WTS_CURRENT_SESSION: -1)
+    if session != SESSION && session != u32::MAX {
+        crate::k32::last_error(7022); // ERROR_CTX_WINSTATION_NOT_FOUND
+        return 0;
+    }
+    let zeros = |n: u32| (mem::heap_alloc(n, true), n);
+    let (p, n) = match class {
+        // initial program, application name, working directory, OEM id, client name, client directory
+        0 | 1 | 2 | 3 | 10 | 11 => wts_str("", wide),
+        4 => {
+            let (p, n) = zeros(4);
+            w32(p, SESSION);
+            (p, n)
+        }
+        5 => wts_str("user", wide),
+        6 => wts_str("Console", wide),
+        7 => wts_str("WORKGROUP", wide),
+        // connect state (WTSActive), client build number, client hardware id
+        8 | 9 | 13 => zeros(4),
+        // client product id, protocol type (the console: 0)
+        12 | 16 => zeros(2),
+        // WTS_CLIENT_ADDRESS, WTS_CLIENT_DISPLAY
+        14 => zeros(24),
+        15 => zeros(12),
+        _ => {
+            crate::k32::last_error(87);
+            return 0;
+        }
+    };
+    mem::putp(out, p);
+    w32(bytes, n);
+    1
+}
+
+fn WTSQuerySessionInformationA(c: &mut Ctx) -> u32 {
+    wts_query(c, false)
+}
+fn WTSQuerySessionInformationW(c: &mut Ctx) -> u32 {
+    wts_query(c, true)
+}
+
+/// WTSEnumerateSessions(server, 0, 1, &info, &count): the one session
+/// (WTS_SESSION_INFO {SessionId, pWinStationName, State}).
+fn wts_enum(c: &mut Ctx, wide: bool) -> u32 {
+    let (out, count) = (c.a(3), c.a(4));
+    if c.a(1) != 0 || c.a(2) != 1 || out == 0 || count == 0 {
+        crate::k32::last_error(87);
+        return 0;
+    }
+    let ps = mem::ps();
+    let info = mem::heap_alloc(3 * ps, true);
+    w32(info, SESSION);
+    mem::putp(info + ps, wts_str("Console", wide).0);
+    w32(info + 2 * ps, 0);
+    mem::putp(out, info);
+    w32(count, 1);
+    1
+}
+fn WTSEnumerateSessionsA(c: &mut Ctx) -> u32 {
+    wts_enum(c, false)
+}
+fn WTSEnumerateSessionsW(c: &mut Ctx) -> u32 {
+    wts_enum(c, true)
+}
+
+/// WTSFreeMemory(p): the blocks above (their strings are kept: a few bytes per call).
+fn WTSFreeMemory(c: &mut Ctx) -> u32 {
+    if c.a(0) != 0 {
+        mem::heap_free(c.a(0));
+    }
+    0
+}
+
+/// ProcessIdToSessionId(pid, &session): every process is in the one session.
+fn ProcessIdToSessionId(c: &mut Ctx) -> u32 {
+    if c.a(1) == 0 {
+        crate::k32::last_error(87);
+        return 0;
+    }
+    w32(c.a(1), SESSION);
+    1
+}
+
+/// ProcessPrng(buf, len): always TRUE (Chromium's base calls it for every random byte).
+fn ProcessPrng(c: &mut Ctx) -> u32 {
+    let mut buf = vec![0u8; c.a(1) as usize];
+    for chunk in buf.chunks_mut(256) {
+        unsafe { libc::getentropy(chunk.as_mut_ptr().cast(), chunk.len()) };
+    }
+    mem::write(c.a(0), &buf);
+    1
+}
+
+fn wts_init() {
+    // session change notifications: registered, and none come (the session never changes)
+    for n in ["WTSRegisterSessionNotification", "WTSUnRegisterSessionNotification", "WTSRegisterSessionNotificationEx", "WTSUnRegisterSessionNotificationEx"] {
+        implement("wtsapi32", n, |_| 1);
+    }
+    reg!("wtsapi32"; WTSQuerySessionInformationA, WTSQuerySessionInformationW, WTSEnumerateSessionsA, WTSEnumerateSessionsW, WTSFreeMemory);
+    // no user tokens or other servers' processes
+    for n in ["WTSQueryUserToken", "WTSEnumerateProcessesA", "WTSEnumerateProcessesW"] {
+        implement("wtsapi32", n, |_| {
+            crate::k32::last_error(1314); // ERROR_PRIVILEGE_NOT_HELD
+            0
+        });
+    }
+    implement("wtsapi32", "WTSOpenServerA", |_| 0);
+    implement("wtsapi32", "WTSOpenServerW", |_| 0);
+    implement("wtsapi32", "WTSCloseServer", |_| 0);
+    for d in ["kernel32", "kernelbase"] {
+        implement(d, "ProcessIdToSessionId", ProcessIdToSessionId);
+    }
+    implement("kernel32", "WTSGetActiveConsoleSessionId", |_| SESSION);
+    reg!("bcryptprimitives"; ProcessPrng);
+    // wmvcore (Windows Media Format SDK): krmovie.dll of KiriKiri Z imports WMCreateSyncReader
+    // (its own WMV demuxer); nothing reads ASF here (movies "play" to their end at once, as in
+    // dshow.rs), so the readers, writers and editors can't be made
+    fn not_made(c: &mut Ctx, out: u32) -> u32 {
+        if c.a(out) != 0 {
+            mem::putp(c.a(out), 0);
+        }
+        0x8000_4001 // E_NOTIMPL
+    }
+    let outs: [(Handler, &[&str]); 3] = [
+        (|c| not_made(c, 0), &["WMCreateEditor", "WMCreateProfileManager", "WMCreateIndexer", "WMCreateWriterFileSink", "WMCreateWriterNetworkSink", "WMCreateWriterPushSink"]),
+        (|c| not_made(c, 1), &["WMCreateWriter", "WMCreateBackupRestorer"]),
+        (|c| not_made(c, 2), &["WMCreateSyncReader", "WMCreateReader"]),
+    ];
+    for (f, names) in outs {
+        for n in names {
+            implement("wmvcore", n, f);
+        }
+    }
+    // AMGetErrorText(hr, buf, chars): a DirectShow error's text, for krmovie's messages
+    implement("quartz", "AMGetErrorTextA", |c| {
+        let t = format!("DirectShow error 0x{:08X}", c.a(0));
+        if c.a(1) == 0 || (c.a(2) as usize) <= t.len() {
+            return 0;
+        }
+        mem::write(c.a(1), t.as_bytes());
+        mem::write(c.a(1) + t.len() as u32, &[0]);
+        t.len() as u32
+    });
+    implement("quartz", "AMGetErrorTextW", |c| {
+        let t = format!("DirectShow error 0x{:08X}", c.a(0));
+        if c.a(1) == 0 || (c.a(2) as usize) <= t.len() {
+            return 0;
+        }
+        for (i, b) in t.bytes().chain([0]).enumerate() {
+            w16(c.a(1) + 2 * i as u32, b as u16);
+        }
+        t.len() as u32
+    });
+    // WMIsContentProtected(file, &protected): no DRM'd content here (NS_E_DRM... not, S_FALSE)
+    implement("wmvcore", "WMIsContentProtected", |c| {
+        if c.a(1) != 0 {
+            w32(c.a(1), 0);
+        }
+        1 // S_FALSE
+    });
 }
