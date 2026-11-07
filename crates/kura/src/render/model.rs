@@ -392,6 +392,8 @@ pub struct Pipeline {
     pub buffers: Vec<u32>,
     /// per vertex buffer: its attributes (offset, size, shader location)
     pub attrs: Vec<Vec<(u32, u32, u32)>>,
+    /// per vertex buffer: stepMode "instance"
+    pub per_instance: Vec<bool>,
     pub topology: String,
     /// "uint16" / "uint32": an index of all ones restarts the strip
     pub strip_format: Option<String>,
@@ -917,6 +919,7 @@ impl Model {
         // vertex buffers
         let mut buffers = Vec::new();
         let mut attrs = Vec::new();
+        let mut per_instance = Vec::new();
         let mut locs = Vec::new();
         if let Some(v) = j.get("vertex") {
             for b in v.arr("buffers") {
@@ -945,6 +948,7 @@ impl Model {
                 }
                 buffers.push(stride);
                 attrs.push(list);
+                per_instance.push(b.s("stepMode") == Some("instance"));
             }
             if buffers.len() > 8 {
                 self.err(format!("{what}: {} vertex buffers", buffers.len()));
@@ -1053,7 +1057,7 @@ impl Model {
             // (the error was given)
         }
         let strip_format = prim.and_then(|p| p.s("stripIndexFormat")).map(str::to_string);
-        let p = Pipeline { hash: h, groups, targets, depth: depth.map(|d| (d.0, d.1, d.2)), buffers, attrs, topology: topo.to_string(), strip_format, clear_shader: clear };
+        let p = Pipeline { hash: h, groups, targets, depth: depth.map(|d| (d.0, d.1, d.2)), buffers, attrs, per_instance, topology: topo.to_string(), strip_format, clear_shader: clear };
         self.put(Obj::Pipeline(p))
     }
 
@@ -1651,8 +1655,12 @@ impl Model {
     }
 
     /// The primitives a draw assembles (WebGPU's vertex fetch and primitive assembly: index
-    /// buffer, baseVertex, topology, strip restart), one instance.
+    /// buffer, baseVertex, topology, strip restart), instance after instance.
     fn assemble(&self, d: &Draw) -> Vec<Vec<Vertex>> {
+        (d.args[4]..d.args[4].saturating_add(d.args[1])).flat_map(|i| self.assemble1(d, i)).collect()
+    }
+
+    fn assemble1(&self, d: &Draw, instance: u32) -> Vec<Vec<Vertex>> {
         let Obj::Pipeline(p) = &self.objs[d.st.pipeline.unwrap()] else { return Vec::new() };
         let (n, first, base) = (d.args[0], d.args[2], d.args[3] as i32);
         // the vertex index of each invocation (None: a strip restart)
@@ -1676,6 +1684,7 @@ impl Model {
             let mut out = Vec::new();
             for (k, list) in p.attrs.iter().enumerate() {
                 let stride = p.buffers[k] as i64;
+                let v = if p.per_instance[k] { instance as i64 } else { v };
                 let src = d.st.vbufs.get(k).copied().flatten().and_then(|(b, off)| match &self.objs[b] {
                     Obj::Buffer(bf) => Some((bf, off)),
                     _ => None,

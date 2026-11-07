@@ -22,6 +22,8 @@ mod trace_tests;
 mod map_tests;
 #[cfg(test)]
 mod bind_tests;
+#[cfg(test)]
+mod draw_tests;
 
 use crate::d3d9::gpu;
 use crate::d3d9::HostCalls;
@@ -2125,8 +2127,9 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
             st.ib = (new, a(2), a(3));
             d.rebind(new, old);
         }
-        20 => draw(d, st, true, a(1), a(2).max(1), a(3), a(4) as i32, a(5)),
-        21 => draw(d, st, false, a(1), a(2).max(1), a(3), 0, a(4)),
+        // (no instances: nothing drawn)
+        20 => draw(d, st, true, a(1), a(2), a(3), a(4) as i32, a(5)),
+        21 => draw(d, st, false, a(1), a(2), a(3), 0, a(4)),
         24 => st.topology = a(1),
         27 | 28 => {
             // Begin, End: an event or a timestamp has no Begin
@@ -2773,7 +2776,7 @@ fn merge_vertex_buffers(vbs: &[(u32, u32, u32); 16], slots: &mut Vec<(u32, u32, 
 
 #[allow(clippy::too_many_arguments)]
 unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u32, start: u32, base: i32, first_instance: u32) {
-    if count == 0 || st.vs == 0 {
+    if count == 0 || instances == 0 || st.vs == 0 {
         return;
     }
     // GL_POINTS through ANGLE: its point sprite geometry shader, done as an instance per point

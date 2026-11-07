@@ -18,6 +18,7 @@ libc = "0.2"
 naga = { version = "30", features = ["wgsl-in"] }
 half = "2"
 proptest = "1"
+hlslc = { path = "../hlslc" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
