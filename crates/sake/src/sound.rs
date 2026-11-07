@@ -10,7 +10,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::api::{host_fn, implement, Ctx};
-use crate::mem::{self, put32, r16, r32, w16, w32};
+use crate::mem::{self, ps, put32, r16, r32, w16, w32};
 
 pub(crate) const RATE: u32 = 44100;
 /// output frames per mixing step (10 ms)
@@ -27,6 +27,8 @@ pub(crate) struct Fmt {
     pub channels: u32,
     pub bits: u32,
     pub float: bool,
+    /// G.711: 6 A-law, 7 mu-law (8-bit codes)
+    pub law: u8,
 }
 
 impl Fmt {
@@ -37,10 +39,12 @@ impl Fmt {
         let tag = r16(p);
         let bits = r16(p + 14) as u32;
         let float = tag == 3 || (tag == 0xfffe && r32(p + 24) == 3);
-        Fmt { rate: r32(p + 4), channels: (r16(p + 2) as u32).clamp(1, 2), bits, float }
+        let law = if matches!(tag, 6 | 7) { tag as u8 } else if tag == 0xfffe && matches!(r32(p + 24), 6 | 7) { r32(p + 24) as u8 } else { 0 };
+        // (the real channel count: the stride; the mixer plays the first two)
+        Fmt { rate: r32(p + 4), channels: (r16(p + 2) as u32).max(1), bits, float, law }
     }
     fn write(&self, p: u32) {
-        w16(p, if self.float { 3 } else { 1 });
+        w16(p, if self.float { 3 } else if self.law != 0 { self.law as u16 } else { 1 });
         w16(p + 2, self.channels as u16);
         w32(p + 4, self.rate);
         w32(p + 8, self.rate * self.block());
@@ -101,6 +105,7 @@ pub(crate) fn sample_at(data: u32, f: &Fmt, frame: usize) -> (f32, f32) {
     let at = data + frame as u32 * f.block();
     let one = |a: u32| -> f32 {
         match (f.bits, f.float) {
+            (8, _) if f.law != 0 => g711(mem::r8(a), f.law == 6) as f32 / 32768.0,
             (8, _) => (mem::r8(a) as f32 - 128.0) / 128.0,
             (16, _) => r16(a) as i16 as f32 / 32768.0,
             (32, true) => f32::from_bits(r32(a)),
@@ -112,6 +117,80 @@ pub(crate) fn sample_at(data: u32, f: &Fmt, frame: usize) -> (f32, f32) {
     let l = one(at);
     let r = if f.channels >= 2 { one(at + f.bits / 8) } else { l };
     (l, r)
+}
+
+/// A G.711 code as a 16-bit sample (A-law when `alaw`, else mu-law).
+pub(crate) fn g711(code: u8, alaw: bool) -> i16 {
+    if alaw {
+        let v = code ^ 0x55;
+        let (seg, mant) = ((v >> 4) & 7, (v & 15) as i32);
+        let mag = if seg == 0 { (mant << 4) + 8 } else { ((mant << 4) + 0x108) << (seg - 1) };
+        (if v & 0x80 != 0 { mag } else { -mag }) as i16
+    } else {
+        let v = !code;
+        let (seg, mant) = ((v >> 4) & 7, (v & 15) as i32);
+        let mag = (((mant << 3) + 0x84) << seg) - 0x84;
+        (if v & 0x80 != 0 { -mag } else { mag }) as i16
+    }
+}
+
+/// Whether waveOutOpen takes a WAVEFORMATEX(TENSIBLE), as Windows decides (Wine's winmm wave
+/// tests): 0, WAVERR_BADFORMAT (32) or, for some with WAVE_FORMAT_DIRECT, MMSYSERR_INVALPARAM.
+/// Non-extensible formats are PCM, float or G.711 (through the mapper only) of one or two
+/// channels; extensible ones need cbSize 22, nAvgBytesPerSec = nBlockAlign * rate and the
+/// valid bits to fit.
+pub(crate) fn wave_format_check(tag: u16, ch: u16, rate: u32, avg: u32, align: u16, bits: u16, ext: Option<(u16, u16, [u8; 16])>, direct: bool) -> u32 {
+    const BAD: u32 = 32;
+    let soft = if direct { 11 } else { BAD };
+    let (sub, valid) = match ext {
+        None => {
+            let sub = match tag {
+                1 | 3 | 6 | 7 => tag as u32,
+                _ => return BAD,
+            };
+            if ch > 2 {
+                return BAD;
+            }
+            (sub, bits)
+        }
+        Some((cb, valid, guid)) => {
+            if cb < 22 || guid[4..] != [0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71] {
+                return BAD;
+            }
+            (u32::from_le_bytes(guid[..4].try_into().unwrap()), valid)
+        }
+    };
+    if ch == 0 || rate == 0 || align as u32 != ch as u32 * bits as u32 / 8 {
+        return BAD;
+    }
+    if ext.is_some() && avg != align as u32 * rate {
+        return soft;
+    }
+    let ok_bits = bits % 8 == 0 && bits != 0;
+    match sub {
+        1 if !ok_bits || (bits == 32 && (valid == 0 || valid > 32)) => BAD,
+        1 if !matches!(bits, 8 | 16 | 24 | 32) => soft,
+        1 if bits == 32 && valid == 24 => 0,
+        1 => if valid == bits { 0 } else { BAD },
+        3 if !ok_bits || valid == 0 || valid > bits => BAD,
+        3 if !matches!(bits, 32 | 64) => soft,
+        3 => if bits == 32 && valid == 32 { 0 } else { BAD },
+        6 | 7 => if !direct && ext.is_none() && bits == 8 { 0 } else { BAD },
+        _ => BAD,
+    }
+}
+
+fn read_format_check(p: u32, direct: bool) -> u32 {
+    let tag = r16(p);
+    let ext = (tag == 0xfffe).then(|| {
+        let cb = r16(p + 16);
+        let mut g = [0u8; 16];
+        if cb >= 22 {
+            g.copy_from_slice(mem::slice(p + 24, 16));
+        }
+        (cb, r16(p + 18), g)
+    });
+    wave_format_check(tag, r16(p + 2), r32(p + 4), r32(p + 8), r16(p + 12), r16(p + 14), ext, direct)
 }
 
 /// Mixes STEP frames of every playing buffer into `out`; fires notifications.
@@ -199,11 +278,28 @@ struct Wave {
     played: u64,
     cb: (u32, u32, u32),
     volume: u32,
+    /// the device id it was opened on (WAVE_MAPPER -1)
+    device: u32,
 }
 
 static WAVE_CV: std::sync::Condvar = std::sync::Condvar::new();
 static WAVE_LOCK: Mutex<()> = Mutex::new(());
 static NEXT_WAVE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x5a00);
+
+/// WAVEHDR: lpData, dwBufferLength, dwBytesRecorded, dwUser, dwFlags (pointers are 8 bytes on
+/// x64: the flags at 24, not 16)
+fn hlen(h: u32) -> u32 {
+    r32(h + ps())
+}
+fn hflags_at(h: u32) -> u32 {
+    h + 2 * ps() + 8
+}
+fn hflags(h: u32) -> u32 {
+    r32(hflags_at(h))
+}
+fn set_hflags(h: u32, f: u32) {
+    w32(hflags_at(h), f)
+}
 
 /// Mixes the waveOut devices; true when a header finished.
 fn mix_waves(d: &mut Dev, out: &mut [f32]) -> bool {
@@ -217,29 +313,29 @@ fn mix_waves(d: &mut Dev, out: &mut [f32]) -> bool {
         let (gl, gr) = ((w.volume & 0xffff) as f32 / 65535.0, (w.volume >> 16) as f32 / 65535.0);
         for o in out.chunks_exact_mut(2) {
             let Some(&h) = w.queue.front() else { break };
-            let frames = (r32(h + 4) / block) as usize;
+            let frames = (hlen(h) / block) as usize;
             let i = w.pos as usize;
             if i >= frames {
                 w.queue.pop_front();
-                w32(h + 16, (r32(h + 16) | WHDR_DONE) & !WHDR_INQUEUE);
+                set_hflags(h, (hflags(h) | WHDR_DONE) & !WHDR_INQUEUE);
                 w.done.push(h);
-                w.played += (frames as u32 * block) as u64;
+                w.played += hlen(h) as u64;
                 w.pos = 0.0;
                 finished = true;
                 continue;
             }
-            let (l, r) = sample_at(r32(h), &w.fmt, i);
+            let (l, r) = sample_at(mem::rp(h), &w.fmt, i);
             o[0] += l * gl;
             o[1] += r * gr;
             w.pos += step;
         }
         // a header that ended exactly on this step
         if let Some(&h) = w.queue.front() {
-            if w.pos as usize >= (r32(h + 4) / block) as usize {
+            if w.pos as usize >= (hlen(h) / block) as usize {
                 w.queue.pop_front();
-                w32(h + 16, (r32(h + 16) | WHDR_DONE) & !WHDR_INQUEUE);
+                set_hflags(h, (hflags(h) | WHDR_DONE) & !WHDR_INQUEUE);
                 w.done.push(h);
-                w.played += r32(h + 4) as u64;
+                w.played += hlen(h) as u64;
                 w.pos = 0.0;
                 finished = true;
             }
@@ -296,26 +392,106 @@ fn mixerGetDevCaps(_: &mut Ctx) -> u32 {
 fn waveOutGetNumDevs(_: &mut Ctx) -> u32 {
     1
 }
+const WAVE_MAPPER: u32 = 0xffff_ffff;
+/// A device id (0 or WAVE_MAPPER) or an open handle's device; None for anything else.
+fn wave_device(id: u32) -> Option<u32> {
+    match id {
+        0 | WAVE_MAPPER => Some(id),
+        h => with(|d| d.waves.get(&h).map(|w| w.device)),
+    }
+}
+/// waveOutGetDevCaps(device or handle, caps, size): the first `size` bytes of WAVEOUTCAPS
 fn wave_caps(c: &mut Ctx, wide: bool) -> u32 {
-    let p = c.a(1);
+    let (p, size) = (c.a(1), c.a(2));
+    if wave_device(c.a(0)).is_none() {
+        return 2; // MMSYSERR_BADDEVICEID
+    }
+    if p == 0 {
+        return 11; // MMSYSERR_INVALPARAM
+    }
     let name = "sake WebAudio";
     let o = if wide { 8 + 64 } else { 8 + 32 };
-    for i in 0..o + 12 {
-        mem::w8(p + i, 0);
+    let mut b = vec![0u8; o + 12];
+    b[0] = 1;
+    b[2] = 2;
+    b[5] = 1; // driver version 1.0
+    for (i, ch) in name.bytes().enumerate() {
+        b[8 + if wide { 2 * i } else { i }] = ch;
     }
-    w16(p, 1);
-    w16(p + 2, 2);
-    w32(p + 4, 0x100);
-    for (i, b) in name.bytes().enumerate() {
-        if wide {
-            w16(p + 8 + 2 * i as u32, b as u16);
-        } else {
-            mem::w8(p + 8 + i as u32, b);
+    b[o..o + 4].copy_from_slice(&0xfffu32.to_le_bytes());
+    b[o + 4] = 2;
+    b[o + 8] = 0xc;
+    mem::write(p, &b[..(size as usize).min(b.len())]);
+    0
+}
+/// waveOutGetID(handle, &id)
+fn waveOutGetID(c: &mut Ctx) -> u32 {
+    let Some(dev) = with(|d| d.waves.get(&c.a(0)).map(|w| w.device)) else { return 5 };
+    if c.a(1) == 0 {
+        return 11;
+    }
+    put32(c.a(1), dev);
+    0
+}
+/// waveOutMessage(device or handle, message, p1, p2): the driver queries programs make
+fn waveOutMessage(c: &mut Ctx) -> u32 {
+    let (msg, p1, p2) = (c.a(1), c.a(2), c.a(3));
+    // the device interface path (DRV_QUERYDEVICEINTERFACE*)
+    let path: Vec<u16> = r"\\?\SWD#MMDEVAPI#{0.0.0.00000000}.{sake}#{e6327cad-dcec-4949-ae8a-991e976a79d2}".encode_utf16().chain([0]).collect();
+    match msg {
+        // DRVM_MAPPER_PREFERRED_GET, DRVM_MAPPER_CONSOLEVOICECOM_GET: device 0, no flags
+        0x2015 | 0x2017 => {
+            if p1 == 0 || p2 == 0 {
+                return 11;
+            }
+            put32(p1, 0);
+            put32(p2, 0);
+            0
         }
+        0x805 => 0, // DRV_QUERYMAPPABLE
+        0x80c => {
+            if p1 == 0 {
+                return 11;
+            }
+            put32(p1, 2 * path.len() as u32);
+            0
+        }
+        0x80d => {
+            if p1 == 0 || p2 < 2 * path.len() as u32 {
+                return 11;
+            }
+            for (i, u) in path.iter().enumerate() {
+                w16(p1 + 2 * i as u32, *u);
+            }
+            0
+        }
+        _ => 8, // MMSYSERR_NOTSUPPORTED
     }
-    w32(p + o, 0xfff);
-    w16(p + o + 4, 2);
-    w32(p + o + 8, 0xc);
+}
+/// waveOutGetErrorText(error, text, size)
+fn wave_error_text(c: &mut Ctx, wide: bool) -> u32 {
+    let (e, p, n) = (c.a(0), c.a(1), c.a(2));
+    let text = match e {
+        0 => "The specified command was carried out.",
+        1 => "Undefined external error.",
+        2 => "A device ID has been used that is out of range for your system.",
+        5 => "An invalid handle was passed to a system function.",
+        8 => "The function requested is not supported by the device driver.",
+        11 => "An invalid parameter was passed to a system function.",
+        32 => "The specified format is not supported or cannot be translated. Use the Capabilities function to determine the supported formats.",
+        33 => "Cannot perform this operation while media data is still playing. Reset the device, or wait until the data is finished playing.",
+        34 => "The wave header was not prepared. Use the Prepare function to prepare the header, and then try again.",
+        _ => return 11,
+    };
+    if p == 0 || n == 0 {
+        return 11;
+    }
+    if wide {
+        let w: Vec<u16> = text.encode_utf16().collect();
+        mem::put_wstr(p, n, &w);
+    } else {
+        mem::put_cstr(p, n, text.as_bytes());
+    }
     0
 }
 fn waveOutGetDevCapsA(c: &mut Ctx) -> u32 {
@@ -326,19 +502,34 @@ fn waveOutGetDevCapsW(c: &mut Ctx) -> u32 {
 }
 /// waveOutOpen(phwo, device, format, callback, instance, flags)
 fn waveOutOpen(c: &mut Ctx) -> u32 {
-    let (ph, fmtp, cb, inst, flags) = (c.a(0), c.a(2), c.a(3), c.a(4), c.a(5));
-    let fmt = Fmt::read(fmtp);
-    if !matches!(fmt.bits, 8 | 16 | 24 | 32) || fmt.rate == 0 {
-        return 32; // WAVERR_BADFORMAT
+    let (ph, device, fmtp, cb, inst, flags) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5));
+    // a device id (not an open handle)
+    if !matches!(device, 0 | WAVE_MAPPER) {
+        return 2; // MMSYSERR_BADDEVICEID
     }
+    if fmtp == 0 {
+        return 11; // MMSYSERR_INVALPARAM
+    }
+    let e = read_format_check(fmtp, flags & 8 != 0);
+    if e != 0 {
+        // a failed open (not a query) leaves NULL
+        if flags & 1 == 0 && ph != 0 {
+            put32(ph, 0);
+        }
+        return e;
+    }
+    let fmt = Fmt::read(fmtp);
     if flags & 1 != 0 {
-        return 0;
+        return 0; // WAVE_FORMAT_QUERY
+    }
+    if ph == 0 {
+        return 11;
     }
     start_mixer();
     let hwo = NEXT_WAVE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let cbk = (flags & 0x70000, cb, inst);
     with(|d| {
-        d.waves.insert(hwo, Wave { fmt, queue: Default::default(), pos: 0.0, done: Vec::new(), paused: false, closing: false, played: 0, cb: cbk, volume: 0xffff_ffff })
+        d.waves.insert(hwo, Wave { fmt, queue: Default::default(), pos: 0.0, done: Vec::new(), paused: false, closing: false, played: 0, cb: cbk, volume: 0xffff_ffff, device })
     });
     put32(ph, hwo);
     static ENTRY: OnceLock<u32> = OnceLock::new();
@@ -358,22 +549,55 @@ fn waveOutClose(c: &mut Ctx) -> u32 {
     // (the device thread drops it on its next look)
     0
 }
+/// The flags waveOutPrepareHeader leaves: a prepared header is left alone, another one becomes
+/// prepared and neither done nor queued.
+pub(crate) fn prepared_flags(f: u32) -> u32 {
+    if f & WHDR_PREPARED != 0 { f } else { (f | WHDR_PREPARED) & !(WHDR_DONE | WHDR_INQUEUE) }
+}
+/// waveOutUnprepareHeader: Err(WAVERR_STILLPLAYING) for a queued prepared header; an
+/// unprepared one is left alone.
+pub(crate) fn unprepared_flags(f: u32) -> Result<u32, u32> {
+    match f {
+        f if f & WHDR_PREPARED == 0 => Ok(f),
+        f if f & WHDR_INQUEUE != 0 => Err(33),
+        f => Ok(f & !WHDR_PREPARED),
+    }
+}
 fn waveOutPrepareHeader(c: &mut Ctx) -> u32 {
     let h = c.a(1);
-    w32(h + 16, r32(h + 16) | WHDR_PREPARED);
+    if h == 0 {
+        return 11;
+    }
+    set_hflags(h, prepared_flags(hflags(h)));
     0
 }
 fn waveOutUnprepareHeader(c: &mut Ctx) -> u32 {
     let h = c.a(1);
-    if r32(h + 16) & WHDR_INQUEUE != 0 {
-        return 33; // WAVERR_STILLPLAYING
+    if h == 0 {
+        return 11;
     }
-    w32(h + 16, r32(h + 16) & !WHDR_PREPARED);
+    match unprepared_flags(hflags(h)) {
+        Ok(f) => set_hflags(h, f),
+        Err(e) => return e,
+    }
     0
 }
 fn waveOutWrite(c: &mut Ctx) -> u32 {
     let (hwo, h) = (c.a(0), c.a(1));
-    w32(h + 16, (r32(h + 16) & !WHDR_DONE) | WHDR_INQUEUE);
+    if h == 0 {
+        return 11;
+    }
+    let f = hflags(h);
+    if f & WHDR_PREPARED == 0 {
+        return 34; // WAVERR_UNPREPARED
+    }
+    if f & WHDR_INQUEUE != 0 {
+        return 33; // WAVERR_STILLPLAYING
+    }
+    if !with(|d| d.waves.contains_key(&hwo)) {
+        return 5;
+    }
+    set_hflags(h, (f & !WHDR_DONE) | WHDR_INQUEUE);
     if with(|d| d.waves.get_mut(&hwo).map(|w| w.queue.push_back(h))).is_none() {
         return 5; // MMSYSERR_INVALHANDLE
     }
@@ -384,7 +608,7 @@ fn waveOutReset(c: &mut Ctx) -> u32 {
     with(|d| {
         if let Some(w) = d.waves.get_mut(&hwo) {
             for h in w.queue.drain(..) {
-                w32(h + 16, (r32(h + 16) | WHDR_DONE) & !WHDR_INQUEUE);
+                set_hflags(h, (hflags(h) | WHDR_DONE) & !WHDR_INQUEUE);
                 w.done.push(h);
             }
             w.pos = 0.0;
@@ -405,12 +629,15 @@ fn waveOutRestart(c: &mut Ctx) -> u32 {
 }
 /// waveOutGetPosition(hwo, MMTIME*, size): bytes, samples or ms
 fn waveOutGetPosition(c: &mut Ctx) -> u32 {
-    let (hwo, t) = (c.a(0), c.a(1));
+    let (hwo, t, size) = (c.a(0), c.a(1), c.a(2));
+    if t == 0 || size < 12 {
+        return 1; // MMSYSERR_ERROR (an MMTIME is 12 bytes)
+    }
     let Some((bytes, fmt)) = with(|d| d.waves.get(&hwo).map(|w| (w.played + (w.pos as u64) * w.fmt.block() as u64, w.fmt))) else { return 5 };
     let frames = bytes / fmt.block().max(1) as u64;
     match r32(t) {
         2 => w32(t + 4, frames as u32),
-        1 => w32(t + 4, (frames * 1000 / fmt.rate as u64) as u32),
+        // (TIME_MS and the rest: bytes, as Windows answers)
         _ => {
             w32(t, 4);
             w32(t + 4, bytes as u32)
@@ -428,6 +655,9 @@ fn waveOutSetVolume(c: &mut Ctx) -> u32 {
     0
 }
 fn waveOutGetVolume(c: &mut Ctx) -> u32 {
+    if c.a(1) == 0 {
+        return 11;
+    }
     let v = with(|d| d.waves.get(&c.a(0)).map_or(0xffff_ffff, |w| w.volume));
     put32(c.a(1), v);
     0
@@ -681,7 +911,7 @@ fn DS_CreateSoundBuffer(c: &mut Ctx) -> u32 {
     let primary = flags & 1 != 0;
     let bytes = r32(desc + 8);
     let wfx = r32(desc + 16);
-    let fmt = if wfx != 0 { Fmt::read(wfx) } else { Fmt { rate: 22050, channels: 2, bits: 16, float: false } };
+    let fmt = if wfx != 0 { Fmt::read(wfx) } else { Fmt { rate: 22050, channels: 2, bits: 16, float: false, law: 0 } };
     let size = if primary { 0 } else { bytes };
     let data = if size > 0 { mem::heap_alloc(size, true) } else { 0 };
     let o = new_object(buf_vtbl(), 0);
@@ -1058,6 +1288,7 @@ const SND_MEMORY: u32 = 4;
 const SND_LOOP: u32 = 8;
 const SND_NOSTOP: u32 = 0x10;
 const SND_PURGE: u32 = 0x40;
+const SND_RESOURCE: u32 = 0x4_0004;
 
 /// The "fmt " and "data" chunks of a RIFF WAVE image: their offsets, and data's length
 fn wave_chunks(b: &[u8]) -> Option<(usize, usize, usize)> {
@@ -1077,7 +1308,65 @@ fn wave_chunks(b: &[u8]) -> Option<(usize, usize, usize)> {
     Some((fmt?, data?.0, data?.1))
 }
 
-fn play_sound(name: u32, flags: u32, wide: bool) -> u32 {
+/// A RIFF WAVE image with MS or IMA ADPCM data as 16-bit PCM (PlaySound goes through ACM on
+/// Windows); others as they are.
+pub(crate) fn adpcm_to_pcm(image: Vec<u8>) -> Vec<u8> {
+    let Some((fmt, data, size)) = wave_chunks(&image) else { return image };
+    let f = &image[fmt..];
+    if f.len() < 20 {
+        return image;
+    }
+    let u16_at = |o: usize| u16::from_le_bytes([f[o], f[o + 1]]) as usize;
+    let (tag, ch, rate, align) = (u16_at(0), u16_at(2).max(1), u32::from_le_bytes(f[4..8].try_into().unwrap()), u16_at(12));
+    if !matches!(tag, 2 | 0x11) || align == 0 {
+        return image;
+    }
+    let spb = u16_at(18);
+    let mut pcm = Vec::new();
+    for b in image[data..data + size].chunks(align) {
+        if tag == 2 {
+            crate::acm::ms_block(b, ch, spb, &mut pcm);
+        } else {
+            crate::acm::ima_block(b, ch, spb, &mut pcm);
+        }
+    }
+    let bytes: Vec<u8> = pcm.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let mut out = Vec::with_capacity(44 + bytes.len());
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + bytes.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    for v in [1u16, ch as u16] {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    out.extend_from_slice(&rate.to_le_bytes());
+    out.extend_from_slice(&(rate * 2 * ch as u32).to_le_bytes());
+    for v in [2 * ch as u16, 16] {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+    out.extend_from_slice(&bytes);
+    out
+}
+
+/// PlaySound's sound: a WAVE resource of `module`, or a file (without an extension: with
+/// ".wav"; a name ending in a dot is not found).
+fn sound_image(name: u32, module: u32, flags: u32, wide: bool) -> Option<Vec<u8>> {
+    if flags & SND_RESOURCE == SND_RESOURCE {
+        let m = if module == 0 { crate::k32::module_handle(0, false) } else { module };
+        let e = crate::pe::find_resource(m, &crate::pe::ResId::Name("WAVE".encode_utf16().collect()), &crate::pe::ResId::from_arg(name, wide))?;
+        return Some(mem::slice(m + r32(e), r32(e + 4)).to_vec());
+    }
+    let path = crate::k32::arg_str(name, wide);
+    let read = |p: &str| crate::files::resolve(p).and_then(|h| kura::fs::read(h).ok());
+    read(&path).or_else(|| {
+        let base = path.rsplit(['\\', '/']).next().unwrap_or("");
+        (!base.contains('.')).then(|| read(&format!("{path}.wav"))).flatten()
+    })
+}
+
+fn play_sound(name: u32, module: u32, flags: u32, wide: bool) -> u32 {
     let playing = with(|d| d.bufs.get(&PLAY_SOUND).is_some_and(|b| b.playing));
     if flags & SND_NOSTOP != 0 && playing {
         return 0;
@@ -1090,16 +1379,16 @@ fn play_sound(name: u32, flags: u32, wide: bool) -> u32 {
     if name == 0 || flags & SND_PURGE != 0 || no_sound() {
         return 1;
     }
-    let image = if flags & SND_MEMORY != 0 {
+    let image = if flags & SND_RESOURCE != SND_RESOURCE && flags & SND_MEMORY != 0 {
         // (a RIFF image: its length from its header)
         mem::slice(name, 8 + r32(name + 4)).to_vec()
     } else {
-        let path = crate::k32::arg_str(name, wide);
-        match crate::files::resolve(&path).and_then(|h| kura::fs::read(h).ok()) {
+        match sound_image(name, module, flags, wide) {
             Some(b) => b,
             None => return 0,
         }
     };
+    let image = adpcm_to_pcm(image);
     let Some((fmt, data, size)) = wave_chunks(&image) else { return 0 };
     let p = mem::heap_alloc(image.len() as u32, false);
     mem::slice_mut(p, image.len() as u32).copy_from_slice(&image);
@@ -1139,16 +1428,16 @@ fn play_sound(name: u32, flags: u32, wide: bool) -> u32 {
     1
 }
 fn PlaySoundA(c: &mut Ctx) -> u32 {
-    play_sound(c.a(0), c.a(2), false)
+    play_sound(c.a(0), c.a(1), c.a(2), false)
 }
 fn PlaySoundW(c: &mut Ctx) -> u32 {
-    play_sound(c.a(0), c.a(2), true)
+    play_sound(c.a(0), c.a(1), c.a(2), true)
 }
 fn sndPlaySoundA(c: &mut Ctx) -> u32 {
-    play_sound(c.a(0), c.a(1), false)
+    play_sound(c.a(0), 0, c.a(1) & !0x4_0000, false)
 }
 fn sndPlaySoundW(c: &mut Ctx) -> u32 {
-    play_sound(c.a(0), c.a(1), true)
+    play_sound(c.a(0), 0, c.a(1) & !0x4_0000, true)
 }
 
 pub fn init() {
@@ -1167,6 +1456,10 @@ pub fn init() {
         ("waveOutGetPosition", waveOutGetPosition),
         ("waveOutSetVolume", waveOutSetVolume),
         ("waveOutGetVolume", waveOutGetVolume),
+        ("waveOutGetID", waveOutGetID),
+        ("waveOutMessage", waveOutMessage),
+        ("waveOutGetErrorTextA", |c| wave_error_text(c, false)),
+        ("waveOutGetErrorTextW", |c| wave_error_text(c, true)),
     ] {
         implement("winmm", n, f);
     }
@@ -1182,4 +1475,157 @@ pub fn init() {
     implement("dsound", "DirectSoundCreate8", DirectSoundCreate8);
     implement("dsound", "DirectSoundEnumerateA", DirectSoundEnumerateA);
     implement("dsound", "DirectSoundEnumerateW", DirectSoundEnumerateW);
+}
+
+#[cfg(test)]
+mod wave_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    #[test]
+    fn g711_reference_points() {
+        // ITU-T G.711's end points and zeros
+        assert_eq!(g711(0xff, false), 0);
+        assert_eq!(g711(0x7f, false), 0);
+        assert_eq!(g711(0x80, false), 32124);
+        assert_eq!(g711(0x00, false), -32124);
+        assert_eq!(g711(0xd5, true), 8);
+        assert_eq!(g711(0x55, true), -8);
+        assert_eq!(g711(0xaa, true), 32256);
+        assert_eq!(g711(0x2a, true), -32256);
+    }
+
+    #[test]
+    fn g711_is_odd_and_monotone() {
+        for alaw in [false, true] {
+            for code in 0..=255u8 {
+                assert_eq!(g711(code, alaw), -g711(code ^ 0x80, alaw), "code {code:#x} alaw {alaw}");
+            }
+            // the magnitudes grow with the code's 7 magnitude bits (complemented for mu-law,
+            // even bits flipped for A-law)
+            let mag = |m: u8| if alaw { g711((m ^ 0x55) | 0x80, true) } else { g711(!m | 0x80, false) };
+            let m: Vec<i16> = (0..128u8).map(|i| mag(i).abs()).collect();
+            assert!(m.windows(2).all(|w| w[0] < w[1]), "alaw {alaw}: {m:?}");
+        }
+    }
+
+    const KS: [u8; 12] = [0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71];
+    fn guid(sub: u32) -> [u8; 16] {
+        let mut g = [0; 16];
+        g[..4].copy_from_slice(&sub.to_le_bytes());
+        g[4..].copy_from_slice(&KS);
+        g
+    }
+
+    #[test]
+    fn windows_format_rules() {
+        let pcm = |ch: u16, bits: u16| wave_format_check(1, ch, 48000, 0, ch * bits / 8, bits, None, false);
+        assert_eq!(pcm(2, 16), 0);
+        assert_eq!(pcm(0, 16), 32);
+        assert_eq!(pcm(3, 16), 32);
+        assert_eq!(pcm(2, 12), 32);
+        assert_eq!(wave_format_check(1, 2, 48000, 0, 4, 40, None, true), 32); // block align
+        assert_eq!(wave_format_check(1, 1, 48000, 0, 5, 40, None, true), 11); // 40-bit PCM, direct
+        assert_eq!(wave_format_check(1, 1, 48000, 0, 5, 40, None, false), 32);
+        assert_eq!(wave_format_check(6, 1, 8000, 0, 1, 8, None, false), 0); // A-law through the mapper
+        assert_eq!(wave_format_check(6, 1, 8000, 0, 1, 8, None, true), 32);
+        assert_eq!(wave_format_check(3, 2, 48000, 0, 8, 32, None, false), 0);
+        assert_eq!(wave_format_check(3, 2, 48000, 0, 16, 64, None, false), 32);
+        assert_eq!(wave_format_check(2, 2, 48000, 0, 4, 16, None, false), 32); // ADPCM
+        // extensible: 6 channels are fine, the average rate must match
+        let ext = |ch: u16, avg: u32, valid: u16, sub: u32, direct: bool| {
+            wave_format_check(0xfffe, ch, 48000, avg, ch * 4, 32, Some((22, valid, guid(sub))), direct)
+        };
+        assert_eq!(ext(6, 6 * 4 * 48000, 32, 3, false), 0);
+        assert_eq!(ext(6, 6 * 4 * 48000, 24, 1, false), 0);
+        assert_eq!(ext(6, 6 * 4 * 48000, 20, 1, false), 32);
+        assert_eq!(ext(2, 0, 32, 3, true), 11);
+        assert_eq!(ext(2, 0, 32, 3, false), 32);
+        assert_eq!(wave_format_check(0xfffe, 2, 48000, 384000, 8, 32, Some((21, 32, guid(3))), false), 32);
+    }
+
+    #[test]
+    fn header_flag_rules() {
+        // Wine's wave test sequence: done unprepared, prepare clears it, a second prepare keeps
+        // what is set
+        assert_eq!(unprepared_flags(WHDR_DONE), Ok(WHDR_DONE));
+        assert_eq!(prepared_flags(WHDR_DONE | WHDR_INQUEUE), WHDR_PREPARED);
+        assert_eq!(prepared_flags(WHDR_PREPARED | WHDR_INQUEUE), WHDR_PREPARED | WHDR_INQUEUE);
+        assert_eq!(unprepared_flags(WHDR_PREPARED | WHDR_INQUEUE), Err(33));
+        assert_eq!(unprepared_flags(WHDR_PREPARED | WHDR_DONE), Ok(WHDR_DONE));
+    }
+
+    proptest! {
+        #[test]
+        fn prepare_is_idempotent_and_unprepare_inverts(f in any::<u32>()) {
+            let p = prepared_flags(f);
+            prop_assert!(p & WHDR_PREPARED != 0);
+            prop_assert_eq!(prepared_flags(p), p);
+            if let Ok(u) = unprepared_flags(p) {
+                prop_assert_eq!(u & WHDR_PREPARED, 0);
+                prop_assert_eq!(u | WHDR_PREPARED, p);
+            } else {
+                prop_assert!(p & WHDR_INQUEUE != 0);
+            }
+        }
+
+        #[test]
+        fn accepted_formats_are_playable(tag in prop_oneof![Just(1u16), Just(3), Just(6), Just(7), Just(2), Just(0xfffe)],
+                                         ch in 0u16..9, bits in 0u16..70, rate in 0u32..200000, direct in any::<bool>(),
+                                         valid in 0u16..70, sub in prop_oneof![Just(1u32), Just(3), Just(6)]) {
+            let align = (ch as u32 * bits as u32 / 8) as u16;
+            let ext = (tag == 0xfffe).then(|| (22, valid, guid(sub)));
+            if wave_format_check(tag, ch, rate, align as u32 * rate, align, bits, ext, direct) == 0 {
+                // what the mixer can read: whole bytes, 8-32 bits (float only 32), a channel
+                prop_assert!(ch >= 1 && rate > 0);
+                prop_assert!(matches!(bits, 8 | 16 | 24 | 32));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod play_sound_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn riff(tag: u16, ch: u16, align: u16, spb: u16, data: &[u8]) -> Vec<u8> {
+        let mut f = Vec::new();
+        for v in [tag, ch] {
+            f.extend_from_slice(&v.to_le_bytes());
+        }
+        f.extend_from_slice(&22050u32.to_le_bytes());
+        f.extend_from_slice(&0u32.to_le_bytes());
+        for v in [align, 4, 2, spb] {
+            f.extend_from_slice(&v.to_le_bytes());
+        }
+        let mut b = b"RIFF\0\0\0\0WAVEfmt ".to_vec();
+        b.extend_from_slice(&(f.len() as u32).to_le_bytes());
+        b.extend_from_slice(&f);
+        b.extend_from_slice(b"data");
+        b.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        b.extend_from_slice(data);
+        b
+    }
+
+    #[test]
+    fn pcm_stays() {
+        let b = riff(1, 2, 4, 0, &[1, 2, 3, 4]);
+        assert_eq!(adpcm_to_pcm(b.clone()), b);
+    }
+
+    proptest! {
+        /// IMA ADPCM: every block becomes samples-per-block frames of 16-bit PCM, in a WAVE
+        /// image the player reads back
+        #[test]
+        fn ima_becomes_pcm(ch in 1u16..3, blocks in 0usize..4, data in proptest::collection::vec(any::<u8>(), 512)) {
+            let align = 256 * ch as usize;
+            let spb = (align - 4 * ch as usize) * 8 / (4 * ch as usize) + 1;
+            let body = &data.iter().cycle().take(align * blocks).copied().collect::<Vec<u8>>();
+            let out = adpcm_to_pcm(riff(0x11, ch, align as u16, spb as u16, body));
+            let (fmt, _, size) = wave_chunks(&out).unwrap();
+            prop_assert_eq!(&out[fmt..fmt + 2], &[1, 0]);
+            prop_assert_eq!(size, blocks * spb * ch as usize * 2);
+        }
+    }
 }

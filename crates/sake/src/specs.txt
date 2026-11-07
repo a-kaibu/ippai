@@ -7987,7 +7987,7 @@ version VerLanguageNameA stdcall 12 -
 version VerLanguageNameW stdcall 12 -
 version VerQueryValueA stdcall 16 -
 version VerQueryValueW stdcall 16 -
-winmm @ stdcall 12 2
+winmm PlaySound stdcall 12 2
 winmm CloseDriver stdcall 12 -
 winmm DefDriverProc stdcall 20 -
 winmm DriverCallback stdcall 28 -
@@ -8001,7 +8001,6 @@ winmm GetDriverFlags stdcall 4 -
 winmm GetDriverModuleHandle stdcall 4 -
 winmm OpenDriver stdcall 12 -
 winmm OpenDriverA stdcall 12 -
-winmm PlaySound stdcall 12 -
 winmm PlaySoundA stdcall 12 -
 winmm PlaySoundW stdcall 12 -
 winmm SendDriverMessage stdcall 16 -

@@ -70,7 +70,7 @@ fn b(n: u32) -> u32 {
 // formats
 
 /// The mix format: what the engine renders (32-bit float stereo at kura's rate)
-pub(crate) const MIX: Fmt = Fmt { rate: RATE, channels: 2, bits: 32, float: true };
+pub(crate) const MIX: Fmt = Fmt { rate: RATE, channels: 2, bits: 32, float: true, law: 0 };
 
 /// A WAVEFORMATEX(TENSIBLE)'s fields as the rules look at them
 #[derive(Clone, Copy, Debug)]
@@ -151,7 +151,7 @@ pub(crate) fn check(w: &Wave, compatible: bool) -> Result<Fmt, u32> {
     if !compatible {
         return Err(UNSUPPORTED_FORMAT);
     }
-    Ok(Fmt { rate: w.rate, channels: w.channels as u32, bits: w.bits as u32, float })
+    Ok(Fmt { rate: w.rate, channels: w.channels as u32, bits: w.bits as u32, float, law: 0 })
 }
 
 /// What shared mode does with a format: Initialize's answer (`flags`: its stream flags) and
@@ -1703,7 +1703,7 @@ mod tests {
     fn test_client(rate: u32) -> Client {
         Client {
             refs: 1,
-            fmt: Some(Fmt { rate, channels: 2, bits: 32, float: true }),
+            fmt: Some(Fmt { rate, channels: 2, bits: 32, float: true, law: 0 }),
             flags: 0,
             frames: 0,
             event: 0,
@@ -1789,7 +1789,7 @@ mod tests {
         assert_eq!(gain_of(&e, &c), [0.0, 0.0]);
         // a mono stream: its one channel's volumes on both sides
         e.endpoint.mute = false;
-        c.fmt = Some(Fmt { rate: RATE, channels: 1, bits: 16, float: false });
+        c.fmt = Some(Fmt { rate: RATE, channels: 1, bits: 16, float: false, law: 0 });
         assert_eq!(gain_of(&e, &c), [0.25, 0.25]);
     }
 

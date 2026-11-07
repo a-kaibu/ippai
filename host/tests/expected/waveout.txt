@@ -1,0 +1,35 @@
+devices 1
+query pcm16: 0 handle untouched 1
+query no channels: 32 handle untouched 1
+query 3 channels: 32 handle untouched 1
+query 40-bit: 32 handle untouched 1
+query 40-bit direct: 11 handle untouched 1
+query float: 0 handle untouched 1
+query alaw: 0 handle untouched 1
+query alaw direct: 32 handle untouched 1
+query float 5.1: 0 handle untouched 1
+query float 5.1 no rate: 32 handle untouched 1
+query float 5.1 no rate direct: 11 handle untouched 1
+open bad format 32 handle 1
+open no format 11
+open device 2 2
+open 0 open event 0
+getid 0 id -1
+open on a handle 2
+caps of handle 0 null caps 11 device 2 2
+volume null 11
+preferred 0 0 0, no status 11
+write unprepared 34
+prepare 0 flags 2
+prepare again 0 flags 12
+unprepare queued 33
+write 0 flags 12
+write again 33
+done 2 flags 3 3
+position short 1
+position 0 type 4 bytes 17640
+position 0 type 2 samples 4410
+unprepare 0 flags 1
+unprepare 0 flags 1
+close 0
+error text 0 [Cannot perform this operation while media data is still playing. Reset the device, or wait until the data is finished playing.]

@@ -391,7 +391,7 @@ winmm:midi	fail	5	9
 winmm:mixer	ok	0	4
 winmm:mmio	crash	83	0
 winmm:timer	fail	8	88
-winmm:wave	fail	909	7686
+winmm:wave	fail	3	7513
 ws2_32:afd	timeout	673	0
 ws2_32:protocol	fail	1	7640
 ws2_32:sock	fail	477	720375

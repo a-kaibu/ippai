@@ -602,7 +602,7 @@ fn X_CreateSourceVoice(c: &mut Ctx) -> u32 {
         putp(pp, 0);
         return E_INVALIDARG;
     }
-    let fmt = Fmt { rate: r32(wf + 4), channels: (r16(wf + 2) as u32).max(1), bits, float: sub == 3 };
+    let fmt = Fmt { rate: r32(wf + 4), channels: (r16(wf + 2) as u32).max(1), bits, float: sub == 3, law: 0 };
     let o = new_voice(Kind::Source, fmt, first_send(sends), cb);
     with_voice(o, |v| v.chain = chain);
     putp(pp, o);
@@ -618,7 +618,7 @@ fn X_CreateSubmixVoice(c: &mut Ctx) -> u32 {
             return e;
         }
     };
-    let fmt = Fmt { rate: if rate == 0 { RATE } else { rate }, channels: ch.max(1), bits: 32, float: true };
+    let fmt = Fmt { rate: if rate == 0 { RATE } else { rate }, channels: ch.max(1), bits: 32, float: true, law: 0 };
     let o = new_voice(Kind::Submix, fmt, first_send(sends), 0);
     with_voice(o, |v| v.chain = chain);
     putp(pp, o);
@@ -638,7 +638,7 @@ fn X_CreateMasteringVoice(c: &mut Ctx) -> u32 {
             return e;
         }
     };
-    let fmt = Fmt { rate: if rate == 0 { RATE } else { rate }, channels: if ch == 0 { 2 } else { ch }, bits: 32, float: true };
+    let fmt = Fmt { rate: if rate == 0 { RATE } else { rate }, channels: if ch == 0 { 2 } else { ch }, bits: 32, float: true, law: 0 };
     let o = new_voice(Kind::Master, fmt, 0, 0);
     with_voice(o, |v| v.chain = chain);
     putp(pp, o);
