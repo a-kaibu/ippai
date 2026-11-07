@@ -171,6 +171,10 @@ impl Converter {
             // (neither in nor out: an argument apitrace does not record, e.g. pSharedHandle, which
             // a non-Ex device wants NULL)
             let Some(v) = vout else { return Ok(Arg::Word(0)) };
+            // (an out pointer the caller passed as NULL)
+            if *v == Value::Null {
+                return Ok(Arg::Word(0));
+            }
             let inner = v.deref();
             let level = call.arg("Level").and_then(|v| v.int()).unwrap_or(0) as u32;
             let face = call.arg("FaceType").and_then(|v| v.int()).map(|f| f as u32);
