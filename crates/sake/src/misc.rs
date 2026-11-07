@@ -1295,6 +1295,70 @@ fn CoGetMalloc(c: &mut Ctx) -> u32 {
     mem::putp(c.a(1), malloc_obj());
     0
 }
+/// In-process marshaling (every apartment of sake's one process shares its objects, as the
+/// free-threaded marshaler does): the stream carries a tag and the interface pointer, which
+/// holds the reference the unmarshaling takes over.
+const MARSHAL_TAG: u32 = 0x5341_4b45;
+/// CoMarshalInterface(stream, riid, unknown, dest context, reserved, flags)
+fn CoMarshalInterface(c: &mut Ctx) -> u32 {
+    let (stm, iid, unk) = (c.a(0), c.a(1), c.a(2));
+    if stm == 0 || unk == 0 {
+        return 0x8007_0057;
+    }
+    let out = mem::heap_alloc(16, true);
+    let hr = crate::d3dx9::com_call(c, unk, 0, &[iid, out]);
+    if hr != 0 {
+        return hr;
+    }
+    let p = mem::rp(out);
+    w32(out, MARSHAL_TAG);
+    w32(out + 4, p);
+    w32(out + 8, (p as u64 >> 32) as u32);
+    // IStream::Write(data, 12, NULL)
+    let hr = crate::d3dx9::com_call(c, stm, 4, &[out, 12, 0]);
+    if hr != 0 {
+        crate::d3dx9::com_call(c, p, 2, &[]);
+    }
+    hr
+}
+/// The interface pointer CoMarshalInterface wrote to `stm` (it holds a reference), or an error
+fn read_marshaled(c: &mut Ctx, stm: u32) -> Result<u32, u32> {
+    if stm == 0 {
+        return Err(0x8007_0057);
+    }
+    let buf = mem::heap_alloc(16, true);
+    let hr = crate::d3dx9::com_call(c, stm, 3, &[buf, 12, buf + 12]);
+    if hr != 0 || mem::r32(buf + 12) != 12 || mem::r32(buf) != MARSHAL_TAG {
+        // (STG_E_READFAULT)
+        return Err(if hr != 0 { hr } else { 0x8003_001e });
+    }
+    Ok(mem::r32(buf + 4))
+}
+/// CoUnmarshalInterface(stream, riid, void**)
+fn CoUnmarshalInterface(c: &mut Ctx) -> u32 {
+    let (stm, iid, out) = (c.a(0), c.a(1), c.a(2));
+    if out == 0 {
+        return 0x8000_4003;
+    }
+    mem::putp(out, 0);
+    let p = match read_marshaled(c, stm) {
+        Ok(p) => p,
+        Err(hr) => return hr,
+    };
+    let hr = crate::d3dx9::com_call(c, p, 0, &[iid, out]);
+    crate::d3dx9::com_call(c, p, 2, &[]);
+    hr
+}
+/// CoReleaseMarshalData(stream): the marshaled reference goes
+fn CoReleaseMarshalData(c: &mut Ctx) -> u32 {
+    match read_marshaled(c, c.a(0)) {
+        Ok(p) => {
+            crate::d3dx9::com_call(c, p, 2, &[]);
+            0
+        }
+        Err(hr) => hr,
+    }
+}
 fn CoCreateGuid(c: &mut Ctx) -> u32 {
     let p = c.a(0);
     static SEED: AtomicU32 = AtomicU32::new(0x1234_5678);
@@ -3154,7 +3218,7 @@ pub fn init() {
     }
     implement("rpcrt4", "RpcStringFreeW", RpcStringFreeA);
     reg!("ole32"; CoInitialize, CoInitializeEx, OleInitialize, CoUninitialize, OleUninitialize, CoCreateInstance,
-        CoTaskMemAlloc, CoTaskMemRealloc, CoTaskMemFree, PropVariantClear, CoGetMalloc, CoCreateGuid, IsEqualGUID, StringFromGUID2, StringFromCLSID, StringFromIID, CLSIDFromString, CLSIDFromProgID, IIDFromString,
+        CoTaskMemAlloc, CoTaskMemRealloc, CoTaskMemFree, PropVariantClear, CoGetMalloc, CoCreateGuid, CoMarshalInterface, CoUnmarshalInterface, CoReleaseMarshalData, IsEqualGUID, StringFromGUID2, StringFromCLSID, StringFromIID, CLSIDFromString, CLSIDFromProgID, IIDFromString,
         RegisterDragDrop, RevokeDragDrop);
     reg!("oleaut32"; SysAllocString, SysAllocStringLen, SysAllocStringByteLen, SysReAllocString,
         SysReAllocStringLen, SysFreeString, SysStringLen, SysStringByteLen, VariantInit, VariantClear, VariantCopy,

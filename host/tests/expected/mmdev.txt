@@ -8,18 +8,18 @@ id 00000000
 id [{0.0.0.00000000}.{5a2c1e0b-7f3d-4e8a-9c61-3b8d0f4a2e17}]
 state 00000000 1
 get by id 00000000 same 1
-get bad id 80070490
+get bad id 80070057
 qi endpoint 00000000 1
 flow 00000000 0 null 80004003
 identity 1 device back 00000000 same 1
 endpoint qi store 80004002 0000000000000000
 store 00000000 1
-props 3
+props 7
 friendly 00000000 vt 31
 friendly [<30b9><30d4><30fc><30ab><30fc> (sake Audio)]
 desc 00000000 vt 31
-other key 00000000 vt 0
-key 0 00000000 pid 14, key 3 80070057
+other key 00000000 vt 19
+key 0 00000000 pid 14, key 7 80070057
 set 80030005
 enum render 00000000 count 1 item0 00000000 same 1 item1 80070057
 enum capture 00000000 count 0

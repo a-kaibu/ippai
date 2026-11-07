@@ -16,6 +16,7 @@ comctl32
 usp10
 winmm
 msacm32
+mmdevapi
 dsound
 dinput
 xaudio2_7

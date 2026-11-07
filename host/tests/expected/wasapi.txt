@@ -1,0 +1,44 @@
+activate 00000000 1
+uninit size 88890001 padding 88890001 start 88890001
+period 00000000 def 100000 min 30000
+mix 00000000
+mix tag fffe ch 2 rate 44100 avg 352800 align 8 bits 32 cb 22 valid 32 mask 3 sub 00000003
+supported mix 00000000 close null
+supported pcm16 00000000 close null
+supported 22050 00000001 close 1
+closest tag fffe ch 2 rate 44100 avg 352800 align 8 bits 32 cb 22 valid 32 mask 3 sub 00000003
+supported 6ch plain 80070057
+supported bad align 80070057
+supported alaw 88890008
+supported null 80004003
+supported exclusive 8889000e
+init 22050 88890008
+init bad flags 88890021
+init 00000000 again 88890002
+size 00000000 8820 padding 00000000 0
+latency 00000000 1
+event null 80070057 set 00000000 again 8000ffff
+render 00000000 clock 00000000 stream 00000000 simple 00000000 channel 00000000 session 00000000
+session same 1 capture 80004002 adjust 80070057 null
+get too large 88890006 null
+get 0 00000000 null
+get half 00000000 zeroed 1 while held 88890007 null
+reset while held 8889000b
+release too many 88890009 release 00000000 again 88890007
+padding after write 4410
+frequency 00000000 176400
+position stopped 0
+start 00000000 again 88890005
+event 0 drained 1 position moved 1 qpc 1
+stop 00000000 again 00000001
+position held 1
+padding stopped 2205 reset 00000000 padding 0 position 0
+stream channels 00000000 2 set 00000000 bad 80070057 range 80070057 all 1.000 0.500
+simple get 00000000 1.000 set 00000000 bad 80070057 0.250 mute 00000000 1
+channel count 00000000 2
+session state 00000000 0 name 00000000 empty 1
+control2 00000000 pid 00000000 ours 1 system 00000001
+manager 00000000 enum 00000000 count 1 volume 00000000 1
+endpoint volume 00000000 range -65.25000 0.00000 0.03125 channels 2
+set scalar 00000000 db 0.000 scalar 1.000 bad 80070057
+release client 0

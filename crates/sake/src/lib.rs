@@ -85,6 +85,7 @@ pub mod sound;
 pub mod xapo;
 pub mod xaudio2;
 mod mmdevapi;
+mod wasapi;
 pub mod x3daudio;
 pub mod mmio;
 pub mod gl;

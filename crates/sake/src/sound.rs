@@ -589,6 +589,11 @@ fn create_device() -> u32 {
     o
 }
 
+/// A DirectSound device (IMMDevice::Activate of IDirectSound8), None with SAKE_NO_SOUND
+pub(crate) fn device() -> Option<u32> {
+    (!no_sound()).then(create_device)
+}
+
 fn no_sound() -> bool {
     crate::env_on!("SAKE_NO_SOUND")
 }

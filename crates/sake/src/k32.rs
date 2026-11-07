@@ -6076,6 +6076,38 @@ fn image_file_name(c: &mut Ctx, wide: bool) -> u32 {
     }
     put_name(dst, cap, &p, wide)
 }
+/// The exe's path: its Windows path, or (`native`) the NT device path
+pub(crate) fn exe_path(native: bool) -> String {
+    let exe = crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.path.clone()).unwrap_or_default();
+    if native { device_path(&exe) } else { exe }
+}
+/// QueryFullProcessImageName(process, flags, buffer, size in/out): flags 0 the Windows path,
+/// PROCESS_NAME_NATIVE (1) the device path; *size the characters written, without the NUL
+fn full_image_name(c: &mut Ctx, wide: bool) -> u32 {
+    let (h, flags, dst, psize) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    if flags > 1 || psize == 0 {
+        last_error(87);
+        return 0;
+    }
+    if !psapi_access(h, false) {
+        return 0;
+    }
+    let p = exe_path(flags == 1);
+    let n = if wide { p.encode_utf16().count() } else { crate::text::s2a(&p).len() } as u32;
+    if n >= r32(psize) || dst == 0 {
+        last_error(122);
+        return 0;
+    }
+    put_name(dst, r32(psize), &p, wide);
+    w32(psize, n);
+    1
+}
+fn QueryFullProcessImageNameA(c: &mut Ctx) -> u32 {
+    full_image_name(c, false)
+}
+fn QueryFullProcessImageNameW(c: &mut Ctx) -> u32 {
+    full_image_name(c, true)
+}
 fn K32GetProcessImageFileNameA(c: &mut Ctx) -> u32 {
     image_file_name(c, false)
 }
@@ -6510,6 +6542,10 @@ pub fn init() {
     implement("msvcrt", "_endthread", _endthread);
     implement("kernel32", "SetThreadExecutionState", SetThreadExecutionState);
     implement("psapi", "GetProcessMemoryInfo", K32GetProcessMemoryInfo);
+    for d in ["kernel32", "kernelbase"] {
+        implement(d, "QueryFullProcessImageNameA", QueryFullProcessImageNameA);
+        implement(d, "QueryFullProcessImageNameW", QueryFullProcessImageNameW);
+    }
     for (n, f) in [
         ("EnumProcessModules", K32EnumProcessModules as crate::api::Handler),
         ("EnumProcessModulesEx", K32EnumProcessModulesEx),

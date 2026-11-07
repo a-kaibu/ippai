@@ -175,6 +175,12 @@ kernelbase:process	fail	109	157
 kernelbase:security	crash	3	0
 kernelbase:sync	fail	488	998
 mfplat:mfplat	crash	7	0
+mmdevapi:capture	ok	0	1
+mmdevapi:dependency	fail	1	7
+mmdevapi:mmdevenum	ok	0	42
+mmdevapi:propstore	ok	0	41
+mmdevapi:render	ok	0	4996
+mmdevapi:spatialaudio	ok	0	3
 mpr:mpr	fail	31	327
 msacm32:msacm	fail	180	345
 msdmo:msdmo	ok	0	46

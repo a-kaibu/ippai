@@ -232,6 +232,7 @@ pub fn init() {
     kura::snap::on_pause(crate::k32::snap_wake);
     kura::snap::on_pause(crate::sound::snap_wake);
     kura::snap::on_pause(crate::xaudio2::snap_wake);
+    kura::snap::on_pause(crate::wasapi::snap_wake);
     kura::snap::on_pause(crate::dshow_play::snap_wake);
     kura::snap::set_ranges(crate::mem::snap_ranges);
     // (the kernel other processes share is outside this memory, host/vnkern.js)
@@ -249,6 +250,7 @@ pub fn restore() -> ! {
     init();
     eprintln!("snap: restoring {} threads", parts.len());
     crate::sound::snap_restore();
+    crate::wasapi::snap_restore();
     crate::user::snap_restore();
     crate::dshow_play::snap_restore();
     let mut main = None;
