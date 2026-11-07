@@ -97,15 +97,17 @@ struct FU { env: vec4u, aref: vec4f, ec0: vec4f, ec1: vec4f, base: vec4u };
 @group(1) @binding(161) var s1: sampler;
 struct In { @builtin(position) p: vec4f, @location(0) col: vec4f, @location(1) t0: vec4f, @location(2) t1: vec4f };
 // mode: 0 off 1 modulate 2 replace 3 decal 4 add 5 blend; base: 0 rgba 1 rgb 2 alpha 3 luminance 4 luminance alpha
+// 6 intensity (its alpha adds and blends as the colour does)
 fn env(mode: u32, base: u32, c: vec4f, t: vec4f, ec: vec4f) -> vec4f {
   let rgb = base != 2u;
-  let a = base == 0u || base == 2u || base == 4u;
+  let a = base == 0u || base == 2u || base == 4u || base == 6u;
+  let i = base == 6u;
   switch mode {
     case 1u: { return vec4f(select(c.rgb, c.rgb * t.rgb, rgb), select(c.a, c.a * t.a, a)); }
     case 2u: { return vec4f(select(c.rgb, t.rgb, rgb), select(c.a, t.a, a)); }
     case 3u: { return vec4f(mix(c.rgb, t.rgb, select(1.0, t.a, a)), c.a); }
-    case 4u: { return vec4f(select(c.rgb, c.rgb + t.rgb, rgb), select(c.a, c.a * t.a, a)); }
-    case 5u: { return vec4f(select(c.rgb, mix(c.rgb, ec.rgb, t.rgb), rgb), select(c.a, c.a * t.a, a)); }
+    case 4u: { return vec4f(select(c.rgb, c.rgb + t.rgb, rgb), select(select(c.a, c.a * t.a, a), c.a + t.a, i)); }
+    case 5u: { return vec4f(select(c.rgb, mix(c.rgb, ec.rgb, t.rgb), rgb), select(select(c.a, c.a * t.a, a), mix(c.a, ec.a, t.a), i)); }
     default: { return c; }
   }
 }
@@ -131,7 +133,7 @@ pub(crate) struct Texture {
     w: u32,
     h: u32,
     levels: u32,
-    /// 0 rgba 1 rgb 2 alpha 3 luminance 4 luminance alpha, 5 depth
+    /// 0 rgba 1 rgb 2 alpha 3 luminance 4 luminance alpha, 5 depth, 6 intensity
     base: u32,
     defined: u32,
     min: u32,
@@ -782,6 +784,9 @@ extern "C" fn glFinish() {
 }
 extern "C" fn glPixelStorei(p: u32, v: i32) {
     with(|_, c| match p {
+        // (alignments 1, 2, 4, 8; lengths and skips not negative)
+        0x0CF5 | 0x0D05 if !matches!(v, 1 | 2 | 4 | 8) => c.err(GL_INVALID_VALUE),
+        0x0CF2..=0x0CF4 | 0x0D02..=0x0D04 if v < 0 => c.err(GL_INVALID_VALUE),
         0x0CF5 => c.unpack[0] = v,
         0x0CF2 => c.unpack[1] = v,
         0x0CF3 => c.unpack[2] = v,
@@ -790,7 +795,9 @@ extern "C" fn glPixelStorei(p: u32, v: i32) {
         0x0D02 => c.pack[1] = v,
         0x0D03 => c.pack[2] = v,
         0x0D04 => c.pack[3] = v,
-        _ => {}
+        // (SWAP_BYTES, LSB_FIRST, image height, skip images: taken, not used)
+        0x0CF0 | 0x0CF1 | 0x0D00 | 0x0D01 | 0x806B..=0x806E => {}
+        _ => c.err(GL_INVALID_ENUM),
     })
 }
 
@@ -1557,80 +1564,139 @@ fn base_format(internal: i32) -> u32 {
         0x1906 | 0x803B..=0x803E => 2,
         1 | 0x1909 | 0x803F..=0x8042 => 3,
         2 | 0x190A | 0x8043..=0x8048 => 4,
+        0x8049..=0x804D => 6,
         3 | 0x1907 | 0x8050..=0x8054 | 0x8D62 | 0x8C40 | 0x8C41 | 0x2A10 => 1,
         0x1902 | 0x81A5..=0x81A7 | 0x84F9 | 0x88F0 | 0x8CAC | 0x8CAD => 5,
         _ => 0,
     }
 }
 
-/// Pixels in GL format/type as RGBA8 rows (w x h), with the unpack state's alignment and row length.
-pub(crate) unsafe fn to_rgba(src: *const u8, w: u32, h: u32, format: u32, ty: u32, base: u32, unpack: [i32; 4]) -> Vec<u8> {
-    let comps = match format {
-        0x1906 | 0x1909 | 0x1903 | 0x1904 | 0x1905 => 1,
+/// The components a pixel group of `format` has (0: not a pixel format).
+pub(crate) fn format_comps(format: u32) -> usize {
+    match format {
+        0x1900..=0x1906 | 0x1909 => 1,
         0x190A | 0x8227 => 2,
         0x1907 | 0x80E0 => 3,
-        _ => 4,
+        0x1908 | 0x80E1 => 4,
+        _ => 0,
+    }
+}
+
+/// A packed type's bytes and fields (shift, bits) in component order.
+pub(crate) fn packed_fields(ty: u32) -> Option<(usize, &'static [(u32, u32)])> {
+    Some(match ty {
+        0x8032 => (1, &[(5, 3), (2, 3), (0, 2)]),
+        0x8362 => (1, &[(0, 3), (3, 3), (6, 2)]),
+        0x8363 => (2, &[(11, 5), (5, 6), (0, 5)]),
+        0x8364 => (2, &[(0, 5), (5, 6), (11, 5)]),
+        0x8033 => (2, &[(12, 4), (8, 4), (4, 4), (0, 4)]),
+        0x8365 => (2, &[(0, 4), (4, 4), (8, 4), (12, 4)]),
+        0x8034 => (2, &[(11, 5), (6, 5), (1, 5), (0, 1)]),
+        0x8366 => (2, &[(0, 5), (5, 5), (10, 5), (15, 1)]),
+        0x8035 => (4, &[(24, 8), (16, 8), (8, 8), (0, 8)]),
+        0x8367 => (4, &[(0, 8), (8, 8), (16, 8), (24, 8)]),
+        0x8036 => (4, &[(22, 10), (12, 10), (2, 10), (0, 2)]),
+        0x8368 => (4, &[(0, 10), (10, 10), (20, 10), (30, 2)]),
+        _ => return None,
+    })
+}
+
+/// The bytes of one component of an unpacked type (0: not a pixel type).
+fn comp_size(ty: u32) -> usize {
+    match ty {
+        0x1400 | 0x1401 => 1,
+        0x1402 | 0x1403 | 0x140B => 2,
+        0x1404..=0x1406 => 4,
+        _ => 0,
+    }
+}
+
+fn half(h: u16) -> f32 {
+    let (s, e, m) = ((h >> 15) as u32, ((h >> 10) & 31) as i32, (h & 1023) as f32);
+    let v = match e {
+        0 => m * (2f32).powi(-24),
+        31 => if m == 0.0 { f32::INFINITY } else { f32::NAN },
+        _ => (1.0 + m / 1024.0) * (2f32).powi(e - 15),
     };
-    let packed = matches!(ty, 0x8363 | 0x8364 | 0x8033 | 0x8365 | 0x8034 | 0x8366);
-    let bpp = if packed {
-        2
-    } else if matches!(ty, 0x8035 | 0x8367) {
-        4
-    } else {
-        comps * type_size(ty)
+    if s != 0 { -v } else { v }
+}
+
+/// The component of type `ty` at `p` as 8 bits: GL 2.1's conversion to [0, 1] (unsigned c /
+/// (2^b - 1), signed (2c + 1) / (2^b - 1)), clamped, rounded.
+unsafe fn comp8(p: *const u8, ty: u32) -> u8 {
+    use std::ptr::read_unaligned as rd;
+    let n = |c: f64| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
+    match ty {
+        0x1401 => *p,
+        0x1400 => n((2.0 * (*p as i8) as f64 + 1.0) / 255.0),
+        0x1403 => ((rd(p as *const u16) as u32 * 255 + 32767) / 65535) as u8,
+        0x1402 => n((2.0 * rd(p as *const i16) as f64 + 1.0) / 65535.0),
+        0x1405 => n(rd(p as *const u32) as f64 / 4294967295.0),
+        0x1404 => n((2.0 * rd(p as *const i32) as f64 + 1.0) / 4294967295.0),
+        0x140B => n(half(rd(p as *const u16)) as f64),
+        _ => n(rd(p as *const f32) as f64),
+    }
+}
+
+/// Pixels in GL format/type as RGBA8 rows (w x h) of a texture of base format `base`, read
+/// with the unpack state (alignment, row length, skipped rows and pixels) as GL 2.1 3.6.4 says.
+pub(crate) unsafe fn to_rgba(src: *const u8, w: u32, h: u32, format: u32, ty: u32, base: u32, unpack: [i32; 4]) -> Vec<u8> {
+    let packed = packed_fields(ty);
+    let n = format_comps(format).max(1);
+    // (an element: a component, or a whole packed group)
+    let (s, group) = match packed {
+        Some((b, _)) => (b, b),
+        None => (comp_size(ty).max(1), n * comp_size(ty).max(1)),
     };
-    let row_px = if unpack[1] > 0 { unpack[1] as usize } else { w as usize };
-    let align = unpack[0].max(1) as usize;
-    let pitch = (row_px * bpp).next_multiple_of(align);
-    let src = src.add(unpack[2].max(0) as usize * pitch + unpack[3].max(0) as usize * bpp);
+    let l = if unpack[1] > 0 { unpack[1] as usize } else { w as usize };
+    let a = unpack[0].max(1) as usize;
+    let row = l * group;
+    let pitch = if s >= a { row } else { row.div_ceil(a) * a };
+    let src = src.add(unpack[2].max(0) as usize * pitch + unpack[3].max(0) as usize * group);
     let mut out = vec![0u8; (w * h * 4) as usize];
+    let mut v = [0u8; 4];
     for y in 0..h as usize {
         let row = src.add(y * pitch);
         for x in 0..w as usize {
-            let p = row.add(x * bpp);
-            let ch = |k: usize| -> u8 {
-                match ty {
-                    GL_FLOAT => (std::ptr::read_unaligned((p as *const f32).add(k)).clamp(0.0, 1.0) * 255.0 + 0.5) as u8,
-                    GL_UNSIGNED_SHORT => (std::ptr::read_unaligned((p as *const u16).add(k)) >> 8) as u8,
-                    _ => *p.add(k),
+            let p = row.add(x * group);
+            match packed {
+                Some((b, fields)) => {
+                    let bits = match b {
+                        1 => *p as u32,
+                        2 => std::ptr::read_unaligned(p as *const u16) as u32,
+                        _ => std::ptr::read_unaligned(p as *const u32),
+                    };
+                    for (k, &(sh, nb)) in fields.iter().enumerate().take(4) {
+                        let max = (1u64 << nb) - 1;
+                        v[k] = ((((bits as u64 >> sh) & max) * 255 + max / 2) / max) as u8;
+                    }
                 }
-            };
-            let [r, g, b, a]: [u8; 4] = if packed {
-                let v = std::ptr::read_unaligned(p as *const u16) as u32;
-                let e = |v: u32, bits: u32| ((v * 255 + ((1 << bits) - 1) / 2) / ((1 << bits) - 1)) as u8;
-                let rgba = match ty {
-                    0x8363 => [e(v >> 11, 5), e((v >> 5) & 63, 6), e(v & 31, 5), 255],
-                    0x8364 => [e(v & 31, 5), e((v >> 5) & 63, 6), e(v >> 11, 5), 255],
-                    0x8033 => [e(v >> 12, 4), e((v >> 8) & 15, 4), e((v >> 4) & 15, 4), e(v & 15, 4)],
-                    0x8365 => [e(v & 15, 4), e((v >> 4) & 15, 4), e((v >> 8) & 15, 4), e(v >> 12, 4)],
-                    0x8034 => [e(v >> 11, 5), e((v >> 6) & 31, 5), e((v >> 1) & 31, 5), e(v & 1, 1)],
-                    _ => [e(v & 31, 5), e((v >> 5) & 31, 5), e((v >> 10) & 31, 5), e(v >> 15, 1)],
-                };
-                // (BGRA with packed types: components in that order)
-                if format == 0x80E1 { [rgba[2], rgba[1], rgba[0], rgba[3]] } else { rgba }
-            } else if ty == 0x8035 {
-                let b4 = [*p, *p.add(1), *p.add(2), *p.add(3)];
-                let v = [b4[3], b4[2], b4[1], b4[0]];
-                if format == 0x80E1 { [v[2], v[1], v[0], v[3]] } else { v }
-            } else {
-                match format {
-                    0x1906 => [0, 0, 0, ch(0)],
-                    0x1909 => [ch(0), ch(0), ch(0), 255],
-                    0x190A => [ch(0), ch(0), ch(0), ch(1)],
-                    0x1903 => [ch(0), 0, 0, 255],
-                    0x8227 => [ch(0), ch(1), 0, 255],
-                    0x1907 => [ch(0), ch(1), ch(2), 255],
-                    0x80E0 => [ch(2), ch(1), ch(0), 255],
-                    0x80E1 => [ch(2), ch(1), ch(0), ch(3)],
-                    _ => [ch(0), ch(1), ch(2), ch(3)],
+                None => {
+                    for (k, c) in v.iter_mut().enumerate().take(n) {
+                        *c = comp8(p.add(k * s), ty);
+                    }
                 }
+            }
+            let [r, g, b, al] = match format {
+                0x1903 => [v[0], 0, 0, 255],
+                0x1904 => [0, v[0], 0, 255],
+                0x1905 => [0, 0, v[0], 255],
+                0x1906 => [0, 0, 0, v[0]],
+                0x1907 => [v[0], v[1], v[2], 255],
+                0x1909 => [v[0], v[0], v[0], 255],
+                0x190A => [v[0], v[0], v[0], v[1]],
+                0x8227 => [v[0], v[1], 0, 255],
+                0x80E0 => [v[2], v[1], v[0], 255],
+                0x80E1 => [v[2], v[1], v[0], v[3]],
+                _ => [v[0], v[1], v[2], v[3]],
             };
             let px = match base {
                 1 => [r, g, b, 255],
-                2 => [0, 0, 0, if format == 0x1906 { a } else { a }],
+                2 => [0, 0, 0, al],
                 3 => [r, r, r, 255],
-                4 => [r, r, r, a],
-                _ => [r, g, b, a],
+                4 => [r, r, r, al],
+                6 => [r, r, r, r],
+                _ => [r, g, b, al],
             };
             out[(y * w as usize + x) * 4..][..4].copy_from_slice(&px);
         }
@@ -1664,14 +1730,39 @@ fn alloc_texture(t: &mut Texture, w: u32, h: u32, base: u32) {
     });
 }
 
-unsafe extern "C" fn glTexImage2D(target: u32, level: i32, internal: i32, w: i32, h: i32, _border: i32, format: u32, ty: u32, pixels: *const u8) {
-    if target != GL_TEXTURE_2D || w < 0 || h < 0 {
-        return;
+/// The error of an upload of `format` / `type` pixels (0: none): an unknown format or type,
+/// a packed type of another number of components than the format's.
+fn pixels_err(format: u32, ty: u32) -> u32 {
+    let n = format_comps(format);
+    match packed_fields(ty) {
+        _ if n == 0 => GL_INVALID_ENUM,
+        Some((_, f)) if f.len() != n => GL_INVALID_OPERATION,
+        Some(_) => 0,
+        None if comp_size(ty) == 0 && ty != 0x1A00 => GL_INVALID_ENUM,
+        None => 0,
     }
+}
+
+/// The bound texture (the default texture, 0, made when first used).
+fn bound_mut<'a>(g: &'a mut Gl, c: &Ctx) -> &'a mut Texture {
+    g.textures.entry(bound_texture(c)).or_insert_with(|| Texture { min: 0x2702, mag: 0x2601, wrap_s: 0x2901, wrap_t: 0x2901, ..Default::default() })
+}
+
+unsafe extern "C" fn glTexImage2D(target: u32, level: i32, internal: i32, w: i32, h: i32, border: i32, format: u32, ty: u32, pixels: *const u8) {
     with(|g, c| {
-        let name = bound_texture(c);
+        // (GL 2.1 3.8.1's errors in its order; any size, as GL 2.0 takes)
+        if target != GL_TEXTURE_2D {
+            return c.err(GL_INVALID_ENUM);
+        }
+        if level < 0 || level > 15 || w < 0 || h < 0 || !(0..=1).contains(&border) || internal <= 0 || (5..0x1900).contains(&internal) {
+            return c.err(GL_INVALID_VALUE);
+        }
+        let e = pixels_err(format, ty);
+        if e != 0 {
+            return c.err(e);
+        }
         let src = unpack_ptr(g, c, pixels);
-        let Some(t) = g.textures.get_mut(&name) else { return c.err(GL_INVALID_OPERATION) };
+        let t = bound_mut(g, c);
         let base = base_format(internal);
         if level == 0 {
             alloc_texture(t, w as u32, h as u32, base);
@@ -1703,16 +1794,27 @@ unsafe fn upload(t: &mut Texture, level: u32, x: u32, y: u32, w: u32, h: u32, sr
 }
 
 unsafe extern "C" fn glTexSubImage2D(target: u32, level: i32, x: i32, y: i32, w: i32, h: i32, format: u32, ty: u32, pixels: *const u8) {
-    if target != GL_TEXTURE_2D || w <= 0 || h <= 0 || pixels.is_null() {
-        return;
-    }
     with(|g, c| {
-        let name = bound_texture(c);
-        let Some(t) = g.textures.get_mut(&name) else { return };
-        if t.gpu == 0 || t.base == 5 {
+        if target != GL_TEXTURE_2D {
+            return c.err(GL_INVALID_ENUM);
+        }
+        let e = pixels_err(format, ty);
+        if e != 0 {
+            return c.err(e);
+        }
+        let t = bound_mut(g, c);
+        if !(0..32).contains(&level) || t.gpu == 0 || t.defined >> level & 1 == 0 {
+            return c.err(if level < 0 { GL_INVALID_VALUE } else { GL_INVALID_OPERATION });
+        }
+        // (the level's size, and the region in it)
+        let (lw, lh) = ((t.w >> level).max(1) as i64, (t.h >> level).max(1) as i64);
+        if x < 0 || y < 0 || w < 0 || h < 0 || x as i64 + w as i64 > lw || y as i64 + h as i64 > lh {
+            return c.err(GL_INVALID_VALUE);
+        }
+        if w == 0 || h == 0 || pixels.is_null() || t.base == 5 {
             return;
         }
-        upload(t, level as u32, x.max(0) as u32, y.max(0) as u32, w as u32, h as u32, pixels, format, ty, c.unpack);
+        upload(t, level as u32, x as u32, y as u32, w as u32, h as u32, pixels, format, ty, c.unpack);
     })
 }
 
@@ -2126,3 +2228,5 @@ fn unused() -> u32 {
 mod glsl;
 #[cfg(test)]
 mod names_tests;
+#[cfg(test)]
+mod unpack_tests;
