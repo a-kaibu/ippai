@@ -271,7 +271,7 @@ int toupper(int c) { return islower(c) ? c - 32 : c; }
 
 #ifdef __x86_64__
 /* fast.rs's x86 stubs for x64: the common case here, the trap (host_*) for the rest. They keep
- * k32's layouts: a critical section's OwningThread (+12) is its lock word, +16 counts waiters;
+ * k32's layouts: a critical section's OwningThread (+16) is its lock word, +24 counts waiters;
  * the thread id at TEB+0x48, the last error at TEB+0x68, TLS slots at TEB+0x1480 (8 bytes
  * each, read as 32 bits like the trap), errno at TEB+0x1000 (crt.rs ERRNO_TEB). */
 typedef unsigned int u32;
@@ -285,23 +285,26 @@ int (*host_heap_free)(void *, u32, void *);
 /* mem.rs slab_table(): a spin lock word, then the free list of class k (k*16 bytes) at +4k */
 volatile u32 *slab_table;
 
+/* the x64 RTL_CRITICAL_SECTION as 32-bit words: DebugInfo (8 bytes), LockCount, RecursionCount,
+ * OwningThread (8), LockSemaphore (8), SpinCount */
+enum { CS_LOCK = 2, CS_REC = 3, CS_OWNER = 4, CS_SEM = 6 };
 void EnterCriticalSection(volatile u32 *cs) {
     u32 me = TEB32(0x48), z = 0;
-    if (cs[3] == me) { cs[2]++; return; }
-    if (__atomic_compare_exchange_n(&cs[3], &z, me, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
-        cs[2] = 1;
-        cs[1] = 0;
+    if (cs[CS_OWNER] == me) { cs[CS_REC]++; return; }
+    if (__atomic_compare_exchange_n(&cs[CS_OWNER], &z, me, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+        cs[CS_REC] = 1;
+        cs[CS_LOCK] = 0xfffffffe; /* locked, no waiters (Vista and later) */
         return;
     }
     host_enter_cs(cs);
 }
 void LeaveCriticalSection(volatile u32 *cs) {
-    int n = (int)cs[2];
-    if (n > 1) { cs[2] = n - 1; return; }
-    cs[2] = 0;
-    cs[1] = 0xffffffff;
-    __atomic_exchange_n(&cs[3], 0, __ATOMIC_SEQ_CST);
-    if (cs[4]) host_cs_wake(cs);
+    int n = (int)cs[CS_REC];
+    if (n > 1) { cs[CS_REC] = n - 1; return; }
+    cs[CS_REC] = 0;
+    cs[CS_LOCK] = 0xffffffff;
+    __atomic_exchange_n(&cs[CS_OWNER], 0, __ATOMIC_SEQ_CST);
+    if (cs[CS_SEM]) host_cs_wake(cs);
 }
 u32 GetLastError(void) { return TEB32(0x68); }
 void SetLastError(u32 e) { TEB32(0x68) = e; }

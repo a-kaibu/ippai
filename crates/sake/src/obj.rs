@@ -23,8 +23,44 @@ pub enum Obj {
     Other(&'static str),
 }
 
+/// Objects and the handles to them: every handle is its own number (DuplicateHandle and opening
+/// a named object give a new one, closing one leaves the others valid); an object is kept under
+/// the number of its first handle, with the count of its open handles.
+#[derive(Default)]
+pub struct Objs {
+    map: HashMap<u32, (Obj, u32)>,
+    handles: HashMap<u32, u32>,
+}
+
+impl Objs {
+    /// the object key of handle `h` (an object's key also finds it after its first handle closed)
+    fn key(&self, h: &u32) -> Option<u32> {
+        self.handles.get(h).copied().or_else(|| self.map.contains_key(h).then_some(*h))
+    }
+    pub fn get(&self, h: &u32) -> Option<&(Obj, u32)> {
+        self.map.get(&self.key(h)?)
+    }
+    pub fn get_mut(&mut self, h: &u32) -> Option<&mut (Obj, u32)> {
+        let k = self.key(h)?;
+        self.map.get_mut(&k)
+    }
+    pub fn contains_key(&self, h: &u32) -> bool {
+        self.handles.contains_key(h)
+    }
+    /// (object key, object) for every object
+    pub fn iter(&self) -> impl Iterator<Item = (&u32, &(Obj, u32))> {
+        self.map.iter()
+    }
+    pub fn values(&self) -> impl Iterator<Item = &(Obj, u32)> {
+        self.map.values()
+    }
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut (Obj, u32)> {
+        self.map.values_mut()
+    }
+}
+
 pub struct Table {
-    pub objs: HashMap<u32, (Obj, u32)>,
+    pub objs: Objs,
     next: u32,
     /// named objects: name -> handle of the first one
     pub names: HashMap<String, u32>,
@@ -40,7 +76,7 @@ pub fn lock() -> MutexGuard<'static, Option<Table>> {
 
 pub fn with<R>(f: impl FnOnce(&mut Table) -> R) -> R {
     let mut g = lock();
-    f(g.get_or_insert_with(|| Table { objs: HashMap::default(), next: 0x100, names: HashMap::default(), gen: 0 }))
+    f(g.get_or_insert_with(|| Table { objs: Objs::default(), next: 0x100, names: HashMap::default(), gen: 0 }))
 }
 
 pub const CURRENT_PROCESS: u32 = 0xffff_ffff;
@@ -50,32 +86,35 @@ pub fn add(o: Obj) -> u32 {
     with(|t| {
         let h = t.next;
         t.next += 4;
-        t.objs.insert(h, (o, 1));
+        t.objs.map.insert(h, (o, 1));
+        t.objs.handles.insert(h, h);
         h
     })
 }
 
-/// Another handle to the same object (DuplicateHandle): objects are refcounted by handle.
+/// Another handle to the same object (DuplicateHandle, opening a named object).
 pub fn dup(h: u32) -> u32 {
     with(|t| {
-        let Some((_, rc)) = t.objs.get_mut(&h) else { return 0 };
-        *rc += 1;
-        h
+        let Some(k) = t.objs.key(&h) else { return 0 };
+        t.objs.map.get_mut(&k).unwrap().1 += 1;
+        let n = t.next;
+        t.next += 4;
+        t.objs.handles.insert(n, k);
+        n
     })
 }
 
+/// Closes one handle; the object goes with its last one.
 pub fn close(h: u32) -> bool {
-    with(|t| match t.objs.get_mut(&h) {
-        Some((_, rc)) if *rc > 1 => {
-            *rc -= 1;
-            true
+    with(|t| {
+        let Some(k) = t.objs.handles.remove(&h) else { return false };
+        let rc = &mut t.objs.map.get_mut(&k).unwrap().1;
+        *rc -= 1;
+        if *rc == 0 {
+            t.objs.map.remove(&k);
+            t.names.retain(|_, v| *v != k);
         }
-        Some(_) => {
-            t.objs.remove(&h);
-            t.names.retain(|_, v| *v != h);
-            true
-        }
-        None => false,
+        true
     })
 }
 
@@ -167,7 +206,7 @@ pub fn wait(handles: &[u32], all: bool, ms: u32, extra: Option<&dyn Fn() -> bool
     let deadline = (ms != 0xffff_ffff).then(|| Instant::now() + Duration::from_millis(ms as u64));
     let mut g = lock();
     loop {
-        let t = g.get_or_insert_with(|| Table { objs: HashMap::default(), next: 0x100, names: HashMap::default(), gen: 0 });
+        let t = g.get_or_insert_with(|| Table { objs: Objs::default(), next: 0x100, names: HashMap::default(), gen: 0 });
         if let Some(x) = extra {
             if x() {
                 return handles.len() as u32;

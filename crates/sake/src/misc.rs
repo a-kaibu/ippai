@@ -139,6 +139,8 @@ struct KeyData {
     values: Vec<(String, u32, Vec<u8>)>,
     /// made or changed by the game (saved)
     ours: bool,
+    /// the key's own name as created (paths are kept in lower case; not saved)
+    name: String,
 }
 
 const REG_FILE: &str = "C:\\users\\user\\sake-registry.tsv";
@@ -264,6 +266,10 @@ fn create_key_ex(h: u32, sub: &str, out: u32, disp: u32) -> u32 {
 
 fn open_key(h: u32, sub: &str, create: bool, out: u32) -> u32 {
     let Some(base) = key_path(h) else { return 6 };
+    if sub.starts_with('\\') {
+        put32(out, 0);
+        return 161; // ERROR_BAD_PATHNAME
+    }
     let path = join(&base, sub);
     if crate::env_on!("SAKE_TRACE_REG") {
         eprintln!("sake reg: open {path}");
@@ -275,9 +281,16 @@ fn open_key(h: u32, sub: &str, create: bool, out: u32) -> u32 {
         if create {
             // create the parents too
             let mut p = String::new();
-            for part in path.split('\\') {
-                p = if p.is_empty() { part.into() } else { format!("{p}\\{part}") };
-                m.entry(p.clone()).or_default();
+            let given: Vec<&str> = sub.split('\\').filter(|x| !x.is_empty()).collect();
+            let parts: Vec<&str> = path.split('\\').collect();
+            for (i, part) in parts.iter().enumerate() {
+                p = if p.is_empty() { (*part).into() } else { format!("{p}\\{part}") };
+                let e = m.entry(p.clone()).or_default();
+                // (the name as the program spelled it, for RegEnumKey)
+                let g = (i + given.len()).checked_sub(parts.len()).and_then(|j| given.get(j));
+                if e.name.is_empty() {
+                    e.name = g.map_or(part.to_string(), |g| g.to_string());
+                }
             }
             if let Some(k) = m.get_mut(&path).filter(|k| !k.ours) {
                 k.ours = true;
@@ -330,8 +343,8 @@ fn RegCreateKeyW(c: &mut Ctx) -> u32 {
     open_key(c.a(0), &s, true, c.a(2))
 }
 fn RegCloseKey(c: &mut Ctx) -> u32 {
-    if root_name(c.a(0)).is_none() {
-        obj::close(c.a(0));
+    if root_name(c.a(0)).is_none() && !obj::close(c.a(0)) {
+        return 6;
     }
     0
 }
@@ -351,13 +364,25 @@ fn query_value(c: &mut Ctx, key: u32, name: &str, pty: u32, data: u32, plen: u32
     if crate::env_on!("SAKE_TRACE_REG") {
         eprintln!("sake reg: query {path}\\{name}: {:?}", v.as_ref().map(|x| x.1.len()));
     }
-    let Some((ty, mut bytes)) = v else { return 2 };
+    let Some((ty, mut bytes)) = v else {
+        // (Windows clears the type, and the size only of a size query)
+        put32(pty, 0);
+        if data == 0 {
+            put32(plen, 0);
+        }
+        return 2;
+    };
+    let have = if plen != 0 { r32(plen) } else { 0 };
     if is_str(ty) && !wide {
         let u: Vec<u16> = bytes.chunks(2).map(|b| u16::from_le_bytes([b[0], *b.get(1).unwrap_or(&0)])).collect();
+        // (the A function converts in place: past the text, the caller's buffer keeps the UTF-16
+        // bytes that were there)
+        if data != 0 && have as usize >= bytes.len() {
+            mem::write(data, &bytes);
+        }
         bytes = w2a(&u);
     }
     put32(pty, ty);
-    let have = if plen != 0 { r32(plen) } else { 0 };
     put32(plen, bytes.len() as u32);
     if data == 0 {
         return 0;
@@ -408,6 +433,24 @@ fn reg_get_value(c: &mut Ctx, wide: bool) -> u32 {
             return r;
         }
     }
+    // the RRF_RT_* filter: bit 1 << type for REG_NONE..REG_DWORD, 0x20 MULTI_SZ, 0x40 QWORD;
+    // REG_SZ takes REG_EXPAND_SZ too unless RRF_NOEXPAND (0x10000000)
+    let flags = c.a(3);
+    let path = key_path(h);
+    let lname = name.to_lowercase();
+    let ty = path.and_then(|p| with_reg(|m| m.get(&p).and_then(|k| k.values.iter().find(|v| v.0.to_lowercase() == lname).map(|v| v.1))));
+    if let Some(ty) = ty {
+        let bit = match ty {
+            0..=4 => 1 << ty,
+            7 => 0x20,
+            11 => 0x40,
+            _ => 0,
+        };
+        let allowed = flags & 0xffff == 0xffff || flags & bit != 0 || ty == 2 && flags & 2 != 0 && flags & 0x1000_0000 == 0;
+        if !allowed {
+            return 1630; // ERROR_UNSUPPORTED_TYPE
+        }
+    }
     query_value(c, h, &name, t, d, l, wide)
 }
 fn RegGetValueA(c: &mut Ctx) -> u32 {
@@ -421,15 +464,25 @@ fn set_value(key: u32, name: &str, ty: u32, data: u32, len: u32, wide: bool) -> 
     let Some(path) = key_path(key) else { return 6 };
     let mut bytes = mem::slice(data, len).to_vec();
     if is_str(ty) && !wide {
-        let mut u: Vec<u16> = a2w(bytes.split(|&b| b == 0).next().unwrap_or(&[]));
-        u.push(0);
+        // all of it converted (MULTI_SZ: every string), with a NUL added when the text has none
+        let nul = bytes.last().is_some_and(|&b| b != 0);
+        let mut u: Vec<u16> = bytes.split(|&b| b == 0).enumerate().flat_map(|(i, s)| (i > 0).then_some(0).into_iter().chain(a2w(s))).collect();
+        if nul {
+            u.push(0);
+        }
         bytes = u.iter().flat_map(|c| c.to_le_bytes()).collect();
     }
     with_reg(|m| {
         let k = m.entry(path).or_default();
         let lname = name.to_lowercase();
-        k.values.retain(|v| v.0.to_lowercase() != lname);
-        k.values.push((name.to_string(), ty, bytes));
+        // (replacing keeps the name's spelling and place)
+        match k.values.iter_mut().find(|v| v.0.to_lowercase() == lname) {
+            Some(v) => {
+                v.1 = ty;
+                v.2 = bytes;
+            }
+            None => k.values.push((name.to_string(), ty, bytes)),
+        }
         k.ours = true;
         save_reg(m);
     });
@@ -443,9 +496,25 @@ fn RegSetValueExW(c: &mut Ctx) -> u32 {
     let name = if c.a(1) == 0 { String::new() } else { arg_str(c.a(1), true) };
     set_value(c.a(0), &name, c.a(3), c.a(4), c.a(5), true)
 }
+/// RegSetValueA(key, subkey, REG_SZ, text, len): the default value of the subkey (made if
+/// needed); the text's own NUL ends it
 fn RegSetValueA(c: &mut Ctx) -> u32 {
-    let (k, ty, d, n) = (c.a(0), c.a(2), c.a(3), c.a(4));
-    set_value(k, "", ty, d, n + 1, false)
+    let (k, sub, ty, d) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    let mut h = k;
+    if sub != 0 && r8(sub) != 0 {
+        let tmp = mem::heap_alloc(8, true);
+        let r = open_key(k, &arg_str(sub, false), true, tmp);
+        h = r32(tmp);
+        mem::heap_free(tmp);
+        if r != 0 {
+            return r;
+        }
+    }
+    let r = set_value(h, "", ty, d, cstr(d).len() as u32 + 1, false);
+    if h != k {
+        obj::close(h);
+    }
+    r
 }
 fn delete_value(key: u32, name: &str) -> u32 {
     let Some(path) = key_path(key) else { return 6 };
@@ -530,14 +599,22 @@ fn RegDeleteKeyW(c: &mut Ctx) -> u32 {
     delete_key(c.a(0), &s)
 }
 
+/// The subkeys' names as created, in Windows' order (case-insensitive, by UTF-16 upper case)
 fn subkeys(path: &str) -> Vec<String> {
     let pre = format!("{path}\\");
     let mut v: Vec<String> = with_reg(|m| {
-        m.keys().filter_map(|k| k.strip_prefix(&pre)).map(|r| r.split('\\').next().unwrap_or("").to_string()).collect()
+        let mut low: Vec<String> = m.keys().filter_map(|k| k.strip_prefix(&pre)).map(|r| r.split('\\').next().unwrap_or("").to_string()).collect();
+        low.sort();
+        low.dedup();
+        low.into_iter().map(|l| m.get(&format!("{pre}{l}")).map(|k| k.name.clone()).filter(|n| !n.is_empty()).unwrap_or(l)).collect()
     });
-    v.sort();
-    v.dedup();
+    let key = |s: &String| -> Vec<u16> { s.to_uppercase().encode_utf16().collect() };
+    v.sort_by_key(key);
     v
+}
+/// A name's length as the A or W function counts it
+fn name_len(s: &str, wide: bool) -> u32 {
+    if wide { s.encode_utf16().count() as u32 } else { crate::text::s2a(s).len() as u32 }
 }
 fn enum_key(c: &mut Ctx, wide: bool, ex: bool) -> u32 {
     let (k, i, name) = (c.a(0), c.a(1), c.a(2));
@@ -546,7 +623,7 @@ fn enum_key(c: &mut Ctx, wide: bool, ex: bool) -> u32 {
     if ex {
         let pn = c.a(3);
         let cap = r32(pn);
-        if (s.len() as u32) >= cap {
+        if name_len(&s, wide) >= cap {
             return 234;
         }
         let n = ret_str(name, cap, &s, wide);
@@ -574,7 +651,7 @@ fn enum_value(c: &mut Ctx, wide: bool) -> u32 {
     let v = with_reg(|m| m.get(&path).and_then(|kd| kd.values.get(i as usize).map(|v| v.0.clone())));
     let Some(vn) = v else { return 259 };
     let cap = r32(pn);
-    if (vn.len() as u32) >= cap {
+    if name_len(&vn, wide) >= cap {
         return 234;
     }
     w32(pn, ret_str(name, cap, &vn, wide));
@@ -592,13 +669,13 @@ fn query_info(c: &mut Ctx) -> u32 {
     let subs = subkeys(&path);
     let (nv, maxn, maxd) = with_reg(|m| {
         m.get(&path).map_or((0, 0, 0), |kd| {
-            (kd.values.len(), kd.values.iter().map(|v| v.0.len()).max().unwrap_or(0), kd.values.iter().map(|v| v.2.len()).max().unwrap_or(0))
+            (kd.values.len(), kd.values.iter().map(|v| v.0.encode_utf16().count()).max().unwrap_or(0), kd.values.iter().map(|v| v.2.len()).max().unwrap_or(0))
         })
     });
     put32(c.a(1), 0);
     put32(c.a(2), 0);
     put32(c.a(4), subs.len() as u32);
-    put32(c.a(5), subs.iter().map(|s| s.len()).max().unwrap_or(0) as u32);
+    put32(c.a(5), subs.iter().map(|s| s.encode_utf16().count()).max().unwrap_or(0) as u32);
     put32(c.a(6), 0);
     put32(c.a(7), nv as u32);
     put32(c.a(8), maxn as u32);

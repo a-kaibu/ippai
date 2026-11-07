@@ -52,6 +52,15 @@ impl Ctx<'_> {
     pub fn xmm(&self, i: u32) -> u64 {
         if i < 4 { self.cpu.xmm(i as usize) as u64 } else { crate::mem::r64(self.esp + 8 + 8 * i) }
     }
+    /// A POINT passed by value at slots `i`, `i + 1` (x64: the one 8-byte argument `i`; the
+    /// index is the same when only 4-byte arguments come before it).
+    pub fn pt(&self, i: u32) -> (i32, i32) {
+        if crate::mem::x64() {
+            let v = self.a64(i);
+            return (v as u32 as i32, (v >> 32) as u32 as i32);
+        }
+        (self.i(i), self.i(i + 1))
+    }
     pub fn i(&self, i: u32) -> i32 {
         self.a(i) as i32
     }

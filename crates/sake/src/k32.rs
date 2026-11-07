@@ -428,6 +428,11 @@ fn ResumeThread(c: &mut Ctx) -> u32 {
 /// threads can't be stopped from outside here and go on (0)
 fn SuspendThread(c: &mut Ctx) -> u32 {
     let tid = crate::cur().tid;
+    // a thread that has not started yet (created suspended): one more suspension
+    if let Some((_, n)) = GATE.lock().unwrap().iter_mut().find(|(x, n)| *x == c.a(0) && *n > 0) {
+        *n += 1;
+        return *n - 1;
+    }
     let h = match c.a(0) {
         0xffff_fffe => obj::with(|t| {
             t.objs.iter().find_map(|(&h, (o, _))| matches!(o, Obj::Thread { tid: x, .. } if *x == tid).then_some(h))
@@ -466,10 +471,21 @@ fn GetExitCodeProcess(c: &mut Ctx) -> u32 {
 fn TerminateThread(_: &mut Ctx) -> u32 {
     1
 }
-fn GetThreadPriority(_: &mut Ctx) -> u32 {
-    0
+// thread priorities are kept (and answered) but change nothing: by thread handle
+static PRIORITY: Mutex<Option<HashMap<u32, i32>>> = Mutex::new(None);
+fn thread_key(h: u32) -> u32 {
+    if h == obj::CURRENT_THREAD { crate::cur().obj } else { h }
 }
-fn SetThreadPriority(_: &mut Ctx) -> u32 {
+fn GetThreadPriority(c: &mut Ctx) -> u32 {
+    PRIORITY.lock().unwrap().get_or_insert_with(HashMap::default).get(&thread_key(c.a(0))).copied().unwrap_or(0) as u32
+}
+fn SetThreadPriority(c: &mut Ctx) -> u32 {
+    let p = c.i(1);
+    if !matches!(p, -15 | -2..=2 | 15) {
+        last_error(87);
+        return 0;
+    }
+    PRIORITY.lock().unwrap().get_or_insert_with(HashMap::default).insert(thread_key(c.a(0)), p);
     1
 }
 fn SetPriorityClass(_: &mut Ctx) -> u32 {
@@ -575,10 +591,35 @@ fn named(name: u32, wide: bool) -> Option<String> {
     (name != 0).then(|| arg_str(name, wide))
 }
 
+/// The kind of a named object (a name is one namespace: another kind under it is an error)
+fn kind(o: &Obj) -> u8 {
+    match o {
+        Obj::Event { .. } => 1,
+        Obj::Mutex { .. } => 2,
+        Obj::Semaphore { .. } => 3,
+        Obj::Timer { .. } => 4,
+        Obj::Mapping { .. } => 5,
+        _ => 0,
+    }
+}
+/// A kernel object name: "Local\\" / "Global\\" prefixes, no other backslash (ERROR_PATH_NOT_FOUND)
+fn name_ok(n: &str) -> bool {
+    let rest = n.strip_prefix("Local\\").or_else(|| n.strip_prefix("Global\\")).unwrap_or(n);
+    !rest.contains('\\')
+}
 fn create_named(name: Option<String>, o: Obj) -> u32 {
     if let Some(n) = &name {
-        let existing = obj::with(|t| t.names.get(n).copied());
-        if let Some(h) = existing {
+        if !name_ok(n) {
+            last_error(3);
+            return 0;
+        }
+        let k = kind(&o);
+        let existing = obj::with(|t| t.names.get(n).map(|h| (*h, t.objs.get(h).map_or(0, |(o, _)| kind(o)))));
+        if let Some((h, hk)) = existing {
+            if hk != k {
+                last_error(6); // ERROR_INVALID_HANDLE: another kind of object has the name
+                return 0;
+            }
             last_error(files::ERROR_ALREADY_EXISTS);
             return obj::dup(h);
         }
@@ -590,10 +631,14 @@ fn create_named(name: Option<String>, o: Obj) -> u32 {
     last_error(0);
     h
 }
-fn open_named(name: u32, wide: bool) -> u32 {
+fn open_named(name: u32, wide: bool, want: u8) -> u32 {
     let n = arg_str(name, wide);
-    match obj::with(|t| t.names.get(&n).copied()) {
-        Some(h) => obj::dup(h),
+    match obj::with(|t| t.names.get(&n).map(|h| (*h, t.objs.get(h).map_or(0, |(o, _)| kind(o))))) {
+        Some((_, k)) if k != want => {
+            last_error(6);
+            0
+        }
+        Some((h, _)) => obj::dup(h),
         None => {
             last_error(2);
             0
@@ -622,10 +667,10 @@ fn CreateWaitableTimerExW(c: &mut Ctx) -> u32 {
     create_named(named(c.a(1), true), new_timer(c.a(2) & 1 != 0))
 }
 fn OpenWaitableTimerA(c: &mut Ctx) -> u32 {
-    open_named(c.a(2), false)
+    open_named(c.a(2), false, 4)
 }
 fn OpenWaitableTimerW(c: &mut Ctx) -> u32 {
-    open_named(c.a(2), true)
+    open_named(c.a(2), true, 4)
 }
 /// SetWaitableTimer(h, due, period ms, apc, arg, resume): `due` in 100 ns, negative = from now,
 /// positive = an absolute FILETIME. (The completion routine is not called.)
@@ -649,6 +694,9 @@ fn SetWaitableTimer(c: &mut Ctx) -> u32 {
         _ => false,
     });
     obj::signal();
+    if r {
+        last_error(0);
+    }
     ok(r)
 }
 fn CancelWaitableTimer(c: &mut Ctx) -> u32 {
@@ -661,10 +709,10 @@ fn CancelWaitableTimer(c: &mut Ctx) -> u32 {
     }))
 }
 fn OpenEventA(c: &mut Ctx) -> u32 {
-    open_named(c.a(2), false)
+    open_named(c.a(2), false, 1)
 }
 fn OpenEventW(c: &mut Ctx) -> u32 {
-    open_named(c.a(2), true)
+    open_named(c.a(2), true, 1)
 }
 pub fn event_set(h: u32, v: bool) -> u32 {
     let r = obj::with(|t| match t.objs.get_mut(&h) {
@@ -701,10 +749,10 @@ fn CreateMutexW(c: &mut Ctx) -> u32 {
     create_named(named(c.a(2), true), Obj::Mutex { owner: if own { tid } else { 0 }, count: own as u32 })
 }
 fn OpenMutexA(c: &mut Ctx) -> u32 {
-    open_named(c.a(2), false)
+    open_named(c.a(2), false, 2)
 }
 fn OpenMutexW(c: &mut Ctx) -> u32 {
-    open_named(c.a(2), true)
+    open_named(c.a(2), true, 2)
 }
 fn ReleaseMutex(c: &mut Ctx) -> u32 {
     let tid = crate::cur().tid;
@@ -789,6 +837,11 @@ fn WaitForMultipleObjects(c: &mut Ctx) -> u32 {
         return obj::WAIT_FAILED;
     }
     let hs: Vec<u32> = (0..c.a(0)).map(|i| mem::rp(c.a(1) + mem::ps() * i)).collect();
+    // (wait-all on the same object twice: ERROR_INVALID_PARAMETER)
+    if c.a(2) != 0 && (1..hs.len()).any(|i| hs[..i].contains(&hs[i])) {
+        last_error(87);
+        return obj::WAIT_FAILED;
+    }
     obj::wait(&hs, c.a(2) != 0, c.a(3), None)
 }
 fn WaitForMultipleObjectsEx(c: &mut Ctx) -> u32 {
@@ -804,7 +857,11 @@ fn WaitForMultipleObjectsEx(c: &mut Ctx) -> u32 {
 }
 fn CloseHandle(c: &mut Ctx) -> u32 {
     let h = c.a(0);
-    ok(obj::close(h) || h == obj::CURRENT_PROCESS || h == obj::CURRENT_THREAD || h < 0x10)
+    let r = obj::close(h) || h == obj::CURRENT_PROCESS || h == obj::CURRENT_THREAD;
+    if !r {
+        last_error(6);
+    }
+    ok(r)
 }
 fn DuplicateHandle(c: &mut Ctx) -> u32 {
     let src = c.a(1);
@@ -812,6 +869,10 @@ fn DuplicateHandle(c: &mut Ctx) -> u32 {
         obj::dup(crate::cur().obj)
     } else if src == obj::CURRENT_PROCESS {
         obj::add(Obj::Process)
+    } else if c.a(6) & 1 != 0 {
+        // DUPLICATE_CLOSE_SOURCE: Windows hands out the number it just freed (the old handle
+        // keeps working through the new one)
+        if obj::with(|t| t.objs.contains_key(&src)) { src } else { 0 }
     } else {
         obj::dup(src)
     };
@@ -834,26 +895,34 @@ fn cs_debug_info(cs: u32) {
     w32(d + 4, cs);
     w32(cs, d);
 }
+// RTL_CRITICAL_SECTION fields: DebugInfo, LockCount, RecursionCount, OwningThread, LockSemaphore,
+// SpinCount (pointer-sized ones are 8 bytes on x64)
+const LOCK: usize = 1;
+const REC: usize = 2;
+const OWNER: usize = 3;
+const SEM: usize = 4;
+const SPIN: usize = 5;
+fn cs_off(f: usize) -> u32 {
+    if mem::x64() { [0, 8, 12, 16, 24, 32][f] } else { [0, 4, 8, 12, 16, 20][f] }
+}
+/// LockCount while owned (Vista and later: bit 0 clear = locked, no waiters counted)
+const CS_LOCKED: u32 = 0xffff_fffe;
 fn cs_init(cs: u32) {
-    w32(cs, 0);
-    w32(cs + 4, 0xffff_ffff);
-    w32(cs + 8, 0);
-    w32(cs + 12, 0);
-    w32(cs + 16, 0);
-    w32(cs + 20, 0);
+    mem::fill(cs, if mem::x64() { 40 } else { 24 }, 0);
+    w32(cs + cs_off(LOCK), 0xffff_ffff);
 }
 pub fn cs_enter(cs: u32) {
     let me = crate::cur().tid;
-    let own = atomic(cs + 12);
+    let own = atomic(cs + cs_off(OWNER));
     if own.load(Ordering::Acquire) == me {
-        w32(cs + 8, r32(cs + 8) + 1);
+        w32(cs + cs_off(REC), r32(cs + cs_off(REC)) + 1);
         return;
     }
     let mut spins = 0;
     loop {
         if own.compare_exchange(0, me, Ordering::Acquire, Ordering::Relaxed).is_ok() {
-            w32(cs + 8, 1);
-            w32(cs + 4, 0);
+            w32(cs + cs_off(REC), 1);
+            w32(cs + cs_off(LOCK), CS_LOCKED);
             return;
         }
         spins += 1;
@@ -861,7 +930,7 @@ pub fn cs_enter(cs: u32) {
             std::hint::spin_loop();
             continue;
         }
-        let waiters = atomic(cs + 16);
+        let waiters = atomic(cs + cs_off(SEM));
         let mut g = CS_LOCK.lock().unwrap();
         waiters.fetch_add(1, Ordering::SeqCst);
         while own.load(Ordering::SeqCst) != 0 {
@@ -872,15 +941,15 @@ pub fn cs_enter(cs: u32) {
     }
 }
 pub fn cs_leave(cs: u32) {
-    let n = r32(cs + 8);
+    let n = r32(cs + cs_off(REC));
     if n > 1 {
-        w32(cs + 8, n - 1);
+        w32(cs + cs_off(REC), n - 1);
         return;
     }
-    w32(cs + 8, 0);
-    w32(cs + 4, 0xffff_ffff);
-    atomic(cs + 12).store(0, Ordering::SeqCst);
-    if atomic(cs + 16).load(Ordering::SeqCst) != 0 {
+    w32(cs + cs_off(REC), 0);
+    w32(cs + cs_off(LOCK), 0xffff_ffff);
+    atomic(cs + cs_off(OWNER)).store(0, Ordering::SeqCst);
+    if atomic(cs + cs_off(SEM)).load(Ordering::SeqCst) != 0 {
         let _g = CS_LOCK.lock().unwrap();
         CS_CV.notify_all();
     }
@@ -898,12 +967,12 @@ fn InitializeCriticalSection(c: &mut Ctx) -> u32 {
 fn InitializeCriticalSectionAndSpinCount(c: &mut Ctx) -> u32 {
     cs_init(c.a(0));
     cs_debug_info(c.a(0));
-    w32(c.a(0) + 20, c.a(1) & 0x00ff_ffff);
+    w32(c.a(0) + cs_off(SPIN), c.a(1) & 0x00ff_ffff);
     1
 }
 fn SetCriticalSectionSpinCount(c: &mut Ctx) -> u32 {
-    let old = r32(c.a(0) + 20);
-    w32(c.a(0) + 20, c.a(1) & 0x00ff_ffff);
+    let old = r32(c.a(0) + cs_off(SPIN));
+    w32(c.a(0) + cs_off(SPIN), c.a(1) & 0x00ff_ffff);
     old
 }
 fn GetHandleInformation(c: &mut Ctx) -> u32 {
@@ -942,13 +1011,14 @@ fn LeaveCriticalSection(c: &mut Ctx) -> u32 {
 fn TryEnterCriticalSection(c: &mut Ctx) -> u32 {
     let cs = c.a(0);
     let me = crate::cur().tid;
-    let own = atomic(cs + 12);
+    let own = atomic(cs + cs_off(OWNER));
     if own.load(Ordering::Acquire) == me {
-        w32(cs + 8, r32(cs + 8) + 1);
+        w32(cs + cs_off(REC), r32(cs + cs_off(REC)) + 1);
         return 1;
     }
     if own.compare_exchange(0, me, Ordering::Acquire, Ordering::Relaxed).is_ok() {
-        w32(cs + 8, 1);
+        w32(cs + cs_off(REC), 1);
+        w32(cs + cs_off(LOCK), CS_LOCKED);
         return 1;
     }
     0
@@ -1070,17 +1140,17 @@ fn SleepConditionVariableSRW(c: &mut Ctx) -> u32 {
 fn SleepConditionVariableCS(c: &mut Ctx) -> u32 {
     let (cv, cs, ms) = (c.a(0), c.a(1), c.a(2));
     // a recursively entered section is left and entered again as a whole
-    let depth = r32(cs + 8).max(1);
+    let depth = r32(cs + cs_off(REC)).max(1);
     cv_wait(
         cv,
         ms,
         || {
-            w32(cs + 8, 1);
+            w32(cs + cs_off(REC), 1);
             cs_leave(cs)
         },
         || {
             cs_enter(cs);
-            w32(cs + 8, depth)
+            w32(cs + cs_off(REC), depth)
         },
     ) as u32
 }
@@ -1231,10 +1301,16 @@ fn TlsAlloc(_: &mut Ctx) -> u32 {
     }
 }
 fn TlsFree(c: &mut Ctx) -> u32 {
-    if let Some(x) = TLS_USED.lock().unwrap().get_mut(c.a(0) as usize) {
-        *x = false;
+    match TLS_USED.lock().unwrap().get_mut(c.a(0) as usize) {
+        Some(x) => {
+            *x = false;
+            1
+        }
+        None => {
+            last_error(87);
+            0
+        }
     }
-    1
 }
 fn TlsGetValue(c: &mut Ctx) -> u32 {
     let i = c.a(0);
@@ -1248,6 +1324,7 @@ fn TlsGetValue(c: &mut Ctx) -> u32 {
 fn TlsSetValue(c: &mut Ctx) -> u32 {
     let i = c.a(0);
     if i >= 1088 {
+        last_error(87);
         return 0;
     }
     mem::wp(tls_slot(i), c.a(1));
@@ -2899,11 +2976,186 @@ fn CompareStringW(c: &mut Ctx) -> u32 {
     let rd = |p: u32, n: i32| -> Vec<u16> { if n < 0 { wstr(p) } else { (0..n as u32).map(|i| r16(p + 2 * i)).take_while(|&x| x != 0).collect() } };
     cmp_w(&rd(s1, n1), &rd(s2, n2), flags & 1 != 0) as i32 as u32 + 2
 }
+/// A date/time picture (GetDateFormat/GetTimeFormat) into text: fields are runs of one letter,
+/// '...' is literal text ('' a quote). `skip` drops fields of those letters with the literal
+/// text before them (TIME_NOSECONDS and the like).
+fn format_picture(pic: &str, st: [u16; 8], ja: bool, skip: &str, h24: bool) -> String {
+    let (y, mo, dow, d, h, mi, sec) = (st[0] as u32, st[1] as u32, st[2] as usize % 7, st[3] as u32, st[4] as u32, st[5] as u32, st[6] as u32);
+    enum Item {
+        Lit(String),
+        Field(char, usize),
+    }
+    let mut items = Vec::new();
+    let cs: Vec<char> = pic.chars().collect();
+    let mut i = 0;
+    while i < cs.len() {
+        let ch = cs[i];
+        if ch == '\'' {
+            let mut lit = String::new();
+            i += 1;
+            while i < cs.len() {
+                if cs[i] == '\'' {
+                    if cs.get(i + 1) == Some(&'\'') {
+                        lit.push('\'');
+                        i += 2;
+                        continue;
+                    }
+                    i += 1;
+                    break;
+                }
+                lit.push(cs[i]);
+                i += 1;
+            }
+            items.push(Item::Lit(lit));
+        } else if "yMdgHhmst".contains(ch) {
+            let n = cs[i..].iter().take_while(|&&x| x == ch).count();
+            items.push(Item::Field(ch, n));
+            i += n;
+        } else {
+            items.push(Item::Lit(ch.to_string()));
+            i += 1;
+        }
+    }
+    // skipped fields take the literal text before them along (after them when first)
+    let mut keep = vec![true; items.len()];
+    for k in 0..items.len() {
+        if let Item::Field(ch, _) = items[k] {
+            let ch = if h24 && ch == 'h' { 'H' } else { ch };
+            if skip.contains(ch) {
+                keep[k] = false;
+                let mut j = k;
+                while j > 0 && matches!(items[j - 1], Item::Lit(_)) {
+                    j -= 1;
+                    keep[j] = false;
+                }
+                if j == 0 {
+                    let mut j = k + 1;
+                    while j < items.len() && matches!(items[j], Item::Lit(_)) {
+                        keep[j] = false;
+                        j += 1;
+                    }
+                }
+            }
+        }
+    }
+    const JA_DAYS: [&str; 7] = ["日", "月", "火", "水", "木", "金", "土"];
+    const EN_DAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    const EN_MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+    let mut out = String::new();
+    for (k, it) in items.iter().enumerate() {
+        if !keep[k] {
+            continue;
+        }
+        match *it {
+            Item::Lit(ref l) => out.push_str(l),
+            Item::Field(ch, n) => {
+                let ch = if h24 && ch == 'h' { 'H' } else { ch };
+                let num = |v: u32| if n >= 2 { format!("{v:02}") } else { v.to_string() };
+                let am = h < 12;
+                let s = match ch {
+                    'd' if n >= 4 => if ja { format!("{}曜日", JA_DAYS[dow]) } else { EN_DAYS[dow].into() },
+                    'd' if n == 3 => if ja { JA_DAYS[dow].into() } else { EN_DAYS[dow][..3].into() },
+                    'd' => num(d),
+                    'M' if n >= 4 => if ja { format!("{mo}月") } else { EN_MONTHS[(mo as usize + 11) % 12].into() },
+                    'M' if n == 3 => if ja { mo.to_string() } else { EN_MONTHS[(mo as usize + 11) % 12][..3].into() },
+                    'M' => num(mo),
+                    'y' if n == 1 => (y % 100).to_string(),
+                    'y' if n == 2 => format!("{:02}", y % 100),
+                    'y' => y.to_string(),
+                    'g' => if ja { "西暦".into() } else { "A.D.".into() },
+                    'H' => num(h),
+                    'h' => num(if h % 12 == 0 { 12 } else { h % 12 }),
+                    'm' => num(mi),
+                    's' => num(sec),
+                    _ => {
+                        let m = if ja { if am { "午前" } else { "午後" } } else if am { "AM" } else { "PM" };
+                        if n == 1 { m.chars().next().unwrap().to_string() } else { m.into() }
+                    }
+                };
+                out.push_str(&s);
+            }
+        }
+    }
+    out
+}
+/// The SYSTEMTIME at `p` (the local time when 0), None when `date`/time fields are invalid.
+fn read_systemtime(p: u32, date: bool) -> Option<[u16; 8]> {
+    let tmp = (p == 0).then(|| mem::heap_alloc(16, true));
+    if let Some(t) = tmp {
+        system_time(t, true);
+    }
+    let q = tmp.unwrap_or(p);
+    let st: [u16; 8] = std::array::from_fn(|i| r16(q + 2 * i as u32));
+    if let Some(t) = tmp {
+        mem::heap_free(t);
+    }
+    let (y, m, d) = (st[0] as i64, st[1] as i64, st[3] as i64);
+    let good = if date { (1601..=30827).contains(&y) && (1..=12).contains(&m) && d >= 1 && d <= days_in_month(y, m) } else { st[4] < 24 && st[5] < 60 && st[6] < 60 && st[7] < 1000 };
+    let mut st = st;
+    if date {
+        st[2] = (days_from_civil(y, m, d) + 4).rem_euclid(7) as u16;
+    }
+    good.then_some(st)
+}
+/// GetDateFormat(A/W) and GetTimeFormat(A/W): (lcid, flags, time, picture, out, cap)
+fn date_time_format(c: &mut Ctx, date: bool, wide: bool) -> u32 {
+    let (lcid, flags, t, pic, out, cap) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5));
+    let Some(st) = read_systemtime(t, date) else {
+        last_error(87);
+        return 0;
+    };
+    let ja = lcid & 0x3ff == 0x11 || matches!(lcid, 0 | 0x400 | 0x800) && crate::text::acp() == 932;
+    let picture = if pic != 0 {
+        arg_str(pic, wide)
+    } else if date {
+        let long = flags & 2 != 0;
+        match (ja, long) {
+            (true, false) => "yyyy/MM/dd",
+            (true, true) => "yyyy'年'M'月'd'日'",
+            (false, false) => "M/d/yyyy",
+            (false, true) => "dddd, MMMM d, yyyy",
+        }
+        .into()
+    } else if ja {
+        "H:mm:ss".into()
+    } else {
+        "h:mm:ss tt".into()
+    };
+    let mut skip = String::new();
+    if !date {
+        if flags & 1 != 0 {
+            skip.push_str("ms");
+        }
+        if flags & 2 != 0 {
+            skip.push('s');
+        }
+        if flags & 4 != 0 {
+            skip.push('t');
+        }
+    }
+    let text = format_picture(&picture, st, ja, &skip, !date && flags & 8 != 0);
+    let n = if wide { text.encode_utf16().count() } else { crate::text::s2a(&text).len() } as u32 + 1;
+    if cap == 0 {
+        return n;
+    }
+    if n > cap {
+        last_error(122);
+        return 0;
+    }
+    ret_str(out, cap, &text, wide);
+    n
+}
 fn GetDateFormatA(c: &mut Ctx) -> u32 {
-    ret_str(c.a(4), c.a(5), "2026/11/01", false) + 1
+    date_time_format(c, true, false)
+}
+fn GetDateFormatW(c: &mut Ctx) -> u32 {
+    date_time_format(c, true, true)
 }
 fn GetTimeFormatA(c: &mut Ctx) -> u32 {
-    ret_str(c.a(4), c.a(5), "12:00:00", false) + 1
+    date_time_format(c, false, false)
+}
+fn GetTimeFormatW(c: &mut Ctx) -> u32 {
+    date_time_format(c, false, true)
 }
 fn MulDiv(c: &mut Ctx) -> u32 {
     let (a, b, d) = (c.i(0) as i64, c.i(1) as i64, c.i(2) as i64);
@@ -4981,7 +5233,7 @@ pub fn init() {
         GetUserDefaultLangID, GetSystemDefaultLangID, GetUserDefaultUILanguage, GetSystemDefaultUILanguage,
         IsValidLocale, GetLocaleInfoA, GetLocaleInfoW, EnumCalendarInfoA, GetCPInfo, GetCPInfoExA, IsDBCSLeadByte,
         IsDBCSLeadByteEx, MultiByteToWideChar, WideCharToMultiByte, GetStringTypeA, GetStringTypeExA, GetStringTypeW,
-        GetStringTypeExW, LCMapStringA, LCMapStringW, CompareStringA, CompareStringW, GetDateFormatA, GetTimeFormatA,
+        GetStringTypeExW, LCMapStringA, LCMapStringW, CompareStringA, CompareStringW, GetDateFormatA, GetTimeFormatA, GetDateFormatW, GetTimeFormatW,
         MulDiv, lstrlenA, lstrlenW, lstrcpyA, lstrcpyW, lstrcpynA, lstrcpynW, lstrcatA, lstrcatW, lstrcmpA, lstrcmpiA,
         lstrcmpW, lstrcmpiW, GlobalAddAtomA, GlobalAddAtomW, AddAtomA, AddAtomW, GlobalFindAtomA, FindAtomA, GlobalFindAtomW, FindAtomW, GlobalDeleteAtom,
         DeleteAtom, GlobalGetAtomNameA,

@@ -112,6 +112,8 @@ pub struct Class {
     pub unicode: bool,
     pub atom: u32,
     pub extra: Vec<u8>,
+    /// UnregisterClass'd (kept: windows refer to classes by index)
+    pub unregistered: bool,
 }
 
 pub struct Window {
@@ -141,6 +143,8 @@ pub struct Window {
     pub unicode: bool,
     pub surface: Option<Arc<Mutex<Surface>>>,
     pub children: Vec<u32>,
+    /// shown at least once (the first ShowWindow sends WM_SIZE and WM_MOVE)
+    pub shown: bool,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -204,6 +208,8 @@ struct Queue {
     sent: VecDeque<Sent>,
     timers: Vec<Timer>,
     quit: Option<u32>,
+    /// QS_* bits of messages that came since the last GetQueueStatus (posted, sent)
+    fresh: u32,
 }
 
 pub struct Menu {
@@ -291,11 +297,11 @@ pub fn metric(i: u32) -> i32 {
         1 | 62 | 79 => h,
         17 => h - 19,
         2 | 3 | 9 | 10 | 20 | 21 => 16,
-        4 => 19,
+        4 => 23,
         5 | 6 => 1,
         7 | 8 => 3,
         11 | 12 | 13 | 14 => 32,
-        15 => 19,
+        15 => 20,
         19 => 1,
         28 => 112,
         29 => 27,
@@ -319,16 +325,18 @@ pub fn metric(i: u32) -> i32 {
         80 => 1,
         81 => 1,
         82 => (crate::text::is_dbcs()) as i32,
+        92 => 4,
         _ => 0,
     }
 }
 
-/// The non-client margins of a window style: (left, top, right, bottom).
+/// The non-client margins of a window style: (left, top, right, bottom), with Windows 10's
+/// metrics at 96 dpi (caption 23, menu 20, a sizing frame 4 plus the padded border 4).
 fn frame(style: u32, exstyle: u32, menu: bool) -> (i32, i32, i32, i32) {
     let child = style & 0x4000_0000 != 0;
     let mut b = 0;
     if style & 0x0004_0000 != 0 {
-        b += 4;
+        b += 8;
     } else if style & 0x0040_0000 != 0 || exstyle & 1 != 0 {
         b += 3;
     } else if style & 0x0080_0000 != 0 {
@@ -339,10 +347,10 @@ fn frame(style: u32, exstyle: u32, menu: bool) -> (i32, i32, i32, i32) {
     }
     let mut top = b;
     if style & 0x00c0_0000 == 0x00c0_0000 {
-        top += if exstyle & 0x80 != 0 { 15 } else { 19 };
+        top += if exstyle & 0x80 != 0 { 15 } else { 23 };
     }
     if menu && !child {
-        top += 19;
+        top += 20;
     }
     (b, top, b, b)
 }
@@ -497,10 +505,10 @@ fn resize_surface(w: &mut Window) {
 
 fn class_index(s: &State, name: u32, wide: bool) -> Option<usize> {
     if name < 0x10000 {
-        return s.classes.iter().position(|c| c.atom == name);
+        return s.classes.iter().position(|c| c.atom == name && !c.unregistered);
     }
     let n = arg_str(name, wide).to_lowercase();
-    s.classes.iter().position(|c| c.name.to_lowercase() == n)
+    s.classes.iter().position(|c| c.name.to_lowercase() == n && !c.unregistered)
 }
 
 fn builtin_proc() -> u32 {
@@ -1046,6 +1054,7 @@ fn system_classes(s: &mut State) {
             unicode: false,
             atom,
             extra: Vec::new(),
+            unregistered: false,
         });
     }
 }
@@ -1080,18 +1089,24 @@ fn register_class(c: &mut Ctx, p: u32, wide: bool, ex: bool) -> u32 {
         unicode: wide,
         atom,
         extra: vec![0; r32(p + f[2]) as usize],
+        unregistered: false,
     };
     let _ = c;
     with(|s| {
         system_classes(s);
         let low = name.to_lowercase();
-        if let Some(i) = s.classes.iter().position(|k| k.name.to_lowercase() == low) {
-            s.classes[i] = cls;
-        } else {
-            s.classes.push(cls);
+        // (an application class of the same module again: ERROR_CLASS_ALREADY_EXISTS; the
+        // system classes may be replaced)
+        match s.classes.iter().position(|k| k.name.to_lowercase() == low) {
+            Some(i) if s.classes[i].inst == cls.inst && s.classes[i].inst != 0 && !s.classes[i].unregistered => {
+                w32(crate::cur().teb + crate::teb_last_error(), 1410);
+                return 0;
+            }
+            Some(i) => s.classes[i] = cls,
+            None => s.classes.push(cls),
         }
-    });
-    atom
+        atom
+    })
 }
 fn RegisterClassA(c: &mut Ctx) -> u32 {
     let p = c.a(0);
@@ -1109,11 +1124,30 @@ fn RegisterClassExW(c: &mut Ctx) -> u32 {
     let p = c.a(0);
     register_class(c, p, true, true)
 }
-fn UnregisterClassA(_: &mut Ctx) -> u32 {
-    1
+/// UnregisterClass(name, instance): ERROR_CLASS_DOES_NOT_EXIST, ERROR_CLASS_HAS_WINDOWS
+fn unregister_class(name: u32, wide: bool) -> u32 {
+    let r = with(|s| {
+        system_classes(s);
+        let i = class_index(s, name, wide).filter(|&i| s.classes[i].inst != 0).ok_or(1411u32)?;
+        if s.wins.values().any(|w| w.class == i) {
+            return Err(1412);
+        }
+        s.classes[i].unregistered = true;
+        Ok(())
+    });
+    match r {
+        Ok(()) => 1,
+        Err(e) => {
+            w32(crate::cur().teb + crate::teb_last_error(), e);
+            0
+        }
+    }
 }
-fn UnregisterClassW(_: &mut Ctx) -> u32 {
-    1
+fn UnregisterClassA(c: &mut Ctx) -> u32 {
+    unregister_class(c.a(0), false)
+}
+fn UnregisterClassW(c: &mut Ctx) -> u32 {
+    unregister_class(c.a(0), true)
 }
 fn class_info(c: &mut Ctx, wide: bool, ex: bool) -> u32 {
     let (name, out) = (c.a(1), c.a(2));
@@ -1183,7 +1217,11 @@ fn trace_msgs() -> bool {
 
 fn send_other_thread(cpu: &mut koji::Cpu, tid: u32, msg: Msg) -> u32 {
     let result = Arc::new((Mutex::new(None), std::sync::Condvar::new()));
-    with(|s| s.queues.entry(tid).or_default().sent.push_back(Sent { msg, result: result.clone() }));
+    with(|s| {
+        let q = s.queues.entry(tid).or_default();
+        q.sent.push_back(Sent { msg, result: result.clone() });
+        q.fresh |= 0x40;
+    });
     crate::obj::signal();
     // wait, handling messages sent to us meanwhile
     loop {
@@ -1242,9 +1280,11 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
     // (negative sizes are empty windows, as on Windows)
     cx = cx.max(0);
     cy = cy.max(0);
+    let mut ex = ex;
     if !child && style & 0x8000_0000 == 0 {
-        // overlapped: a caption
-        style |= 0x00c0_0000;
+        // overlapped: a caption, WS_CLIPSIBLINGS and WS_EX_WINDOWEDGE
+        style |= 0x04c0_0000;
+        ex |= 0x100;
     }
     let made = with(|s| {
         system_classes(s);
@@ -1278,6 +1318,7 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
             unicode: wide,
             surface: None,
             children: Vec::new(),
+            shown: false,
         };
         s.wins.insert(h, w);
         if child {
@@ -1337,6 +1378,11 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
         destroy(c, h);
         return 0;
     }
+    // WM_NCCALCSIZE (wParam FALSE: the window rectangle in, the client rectangle out)
+    let rc = cs + if x64 { 0xd0 } else { 0x90 };
+    let wr = with(|s| s.wins.get(&h).map(|w| w.rect)).unwrap_or_default();
+    wr.write(rc);
+    send(c, h, 0x83, 0, rc);
     if send(c, h, 0x1, 0, cs) == 0xffff_ffff {
         c.cpu.regs[koji::ESP] = save;
         destroy(c, h);
@@ -1352,6 +1398,7 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
         let (cw, ch) = with(|s| s.wins.get(&h).map_or((0, 0), |w| (w.client.w(), w.client.h())));
         send(c, h, 0x5, 0, (ch as u32) << 16 | (cw as u32 & 0xffff));
         send(c, h, 0x3, 0, (y as u32) << 16 | (x as u32 & 0xffff));
+        with(|s| s.wins.get_mut(&h).map(|w| w.shown = true));
     }
     if child {
         send(c, parent, 0x210, 1 | (menu & 0xffff) << 16, h); // WM_PARENTNOTIFY
@@ -1407,6 +1454,7 @@ fn DestroyWindow(c: &mut Ctx) -> u32 {
     let h = c.a(0);
     let was_active = with(|s| s.active == h);
     let ok = destroy(c, h);
+    w32(crate::cur().teb + crate::teb_last_error(), if ok { 0 } else { 1400 });
     // the active window gone: another visible top-level window takes over, as on Windows
     if ok && was_active {
         let next = with(|s| s.wins.iter().filter(|(&k, w)| k != DESKTOP && w.parent == 0 && w.visible).map(|(&k, _)| k).max());
@@ -1431,19 +1479,16 @@ fn show(c: &mut Ctx, h: u32, cmd: u32) -> u32 {
     let vis = !matches!(cmd, 0);
     if vis != was {
         send(c, h, 0x18, vis as u32, 0);
-        with(|s| {
-            if let Some(w) = s.wins.get_mut(&h) {
-                w.visible = vis;
-                if vis {
-                    w.update = Rect { l: 0, t: 0, r: w.client.w(), b: w.client.h() };
-                    w.erase = true;
-                }
-            }
-            update_display(s, h);
-        });
-        let (cw, ch) = with(|s| s.wins.get(&h).map_or((0, 0), |w| (w.client.w(), w.client.h())));
-        if vis {
-            send(c, h, 0x5, 0, (ch as u32) << 16 | (cw as u32 & 0xffff));
+        // SetWindowPos(SWP_SHOWWINDOW or SWP_HIDEWINDOW, nothing else), then for the first show
+        // WM_SIZE and WM_MOVE
+        let f = 0x17 | if vis { 0x40 | SWP_BY_SHOWWINDOW } else { 0x80 | SWP_BY_HIDEWINDOW };
+        set_pos(c, h, 0, 0, 0, 0, 0, f);
+        let first = with(|s| s.wins.get_mut(&h).is_some_and(|w| vis && !std::mem::replace(&mut w.shown, true)));
+        if first {
+            let Some((r, cl)) = with(|s| s.wins.get(&h).map(|w| (w.rect, w.client))) else { return 0 };
+            send(c, h, 0x5, 0, (cl.h() as u32) << 16 | (cl.w() as u32 & 0xffff));
+            let (x, y) = (r.l + cl.l, r.t + cl.t);
+            send(c, h, 0x3, 0, (y as u32 & 0xffff) << 16 | (x as u32 & 0xffff));
         }
         let top = with(|s| s.wins.get(&h).is_some_and(|w| w.parent == 0));
         if vis && top && !matches!(cmd, 4 | 8) {
@@ -1563,8 +1608,42 @@ fn IsChild(c: &mut Ctx) -> u32 {
     })
 }
 
+/// WINDOWPOS at `p`: hwnd, hwndInsertAfter (pointer sized), x, y, cx, cy, flags
+fn windowpos_write(p: u32, h: u32, after: u32, x: i32, y: i32, cx: i32, cy: i32, flags: u32) {
+    let ps = mem::ps();
+    mem::wp(p, h);
+    mem::wp(p + ps, after);
+    for (k, v) in [x as u32, y as u32, cx as u32, cy as u32, flags].iter().enumerate() {
+        w32(p + 2 * ps + 4 * k as u32, *v);
+    }
+}
+fn windowpos_read(p: u32) -> (i32, i32, i32, i32, u32) {
+    let o = p + 2 * mem::ps();
+    (r32(o) as i32, r32(o + 4) as i32, r32(o + 8) as i32, r32(o + 12) as i32, r32(o + 16))
+}
+// SWP_ flags Windows keeps for itself in WM_WINDOWPOSCHANGED: the client area did not move /
+// change size (DefWindowProc sends WM_MOVE / WM_SIZE otherwise), shown or hidden by ShowWindow
+const SWP_NOCLIENTSIZE: u32 = 0x800;
+const SWP_NOCLIENTMOVE: u32 = 0x1000;
+const SWP_BY_SHOWWINDOW: u32 = 0x1000_0000;
+const SWP_BY_HIDEWINDOW: u32 = 0x2000_0000;
+
+/// SetWindowPos: WM_WINDOWPOSCHANGING (which may change the request), WM_NCCALCSIZE when the
+/// size changes, WM_WINDOWPOSCHANGED unless nothing changed (DefWindowProc turns it into
+/// WM_MOVE and WM_SIZE), as Windows sends them.
 fn set_pos(c: &mut Ctx, h: u32, after: u32, x: i32, y: i32, cx: i32, cy: i32, flags: u32) -> u32 {
-    let _ = after;
+    if !is_window(h) {
+        w32(crate::cur().teb + crate::teb_last_error(), 1400);
+        return 0;
+    }
+    let save = c.cpu.regs[koji::ESP];
+    let wp = (save - 0x80) & !15;
+    c.cpu.regs[koji::ESP] = wp - 16;
+    let internal = flags & (SWP_BY_SHOWWINDOW | SWP_BY_HIDEWINDOW);
+    windowpos_write(wp, h, after, x, y, cx, cy, flags & !internal);
+    send(c, h, 0x46, 0, wp);
+    let (x, y, cx, cy, flags) = windowpos_read(wp);
+    let flags = flags | internal;
     let r = with(|s| {
         let w = s.wins.get_mut(&h)?;
         let old = w.rect;
@@ -1593,27 +1672,37 @@ fn set_pos(c: &mut Ctx, h: u32, after: u32, x: i32, y: i32, cx: i32, cy: i32, fl
         }
         resize_surface(w);
         let moved = old.l != r.l || old.t != r.t;
-        let (cw, ch) = (w.client.w(), w.client.h());
+        let shown = vis != w.visible;
+        let hidden_all_along = !vis && !w.visible;
         update_display(s, h);
-        Some((resized, moved, cw, ch, r))
+        Some((resized, moved, shown, hidden_all_along, r))
     });
-    let Some((resized, moved, cw, ch, r)) = r else { return 0 };
-    // WINDOWPOS for WM_WINDOWPOSCHANGED
-    let save = c.cpu.regs[koji::ESP];
-    let wp = (save - 0x40) & !15;
-    c.cpu.regs[koji::ESP] = wp - 16;
-    for (k, v) in [h, after, r.l as u32, r.t as u32, r.w() as u32, r.h() as u32, flags].iter().enumerate() {
-        w32(wp + 4 * k as u32, *v);
+    let Some((resized, moved, shown, hidden, r)) = r else {
+        c.cpu.regs[koji::ESP] = save;
+        return 0;
+    };
+    let changed = resized || moved || shown || flags & 0x24 != 0x4;
+    if changed {
+        if resized || flags & 0x20 != 0 {
+            let rc = wp + 0x40;
+            r.write(rc);
+            send(c, h, 0x83, 0, rc);
+        }
+        let mut f = flags;
+        if !resized {
+            f |= SWP_NOCLIENTSIZE;
+        }
+        if !moved {
+            f |= SWP_NOCLIENTMOVE;
+        }
+        if hidden {
+            f |= 8; // (SWP_NOREDRAW: nothing to draw)
+        }
+        windowpos_write(wp, h, after, r.l, r.t, r.w(), r.h(), f);
+        send(c, h, 0x47, 0, wp);
     }
-    send(c, h, 0x47, 0, wp);
     c.cpu.regs[koji::ESP] = save;
-    if resized {
-        send(c, h, 0x5, 0, (ch as u32) << 16 | (cw as u32 & 0xffff));
-    }
-    if moved {
-        send(c, h, 0x3, 0, (r.t as u32) << 16 | (r.l as u32 & 0xffff));
-    }
-    if flags & 0x40 != 0 {
+    if flags & 0x40 != 0 && internal == 0 {
         send(c, h, 0x18, 1, 0);
     }
     // without SWP_NOACTIVATE a shown top-level window becomes the active one (NonColor shows
@@ -1624,6 +1713,19 @@ fn set_pos(c: &mut Ctx, h: u32, after: u32, x: i32, y: i32, cx: i32, cy: i32, fl
     }
     crate::obj::signal();
     1
+}
+/// WM_MOVE (the client area's position) and WM_SIZE, as DefWindowProc sends them for
+/// WM_WINDOWPOSCHANGED
+fn send_move_size(c: &mut Ctx, h: u32, mv: bool, size: bool) {
+    let Some((r, cl, child)) = with(|s| s.wins.get(&h).map(|w| (w.rect, w.client, w.parent != 0))) else { return };
+    let _ = child;
+    if mv {
+        let (x, y) = (r.l + cl.l, r.t + cl.t);
+        send(c, h, 0x3, 0, (y as u32 & 0xffff) << 16 | (x as u32 & 0xffff));
+    }
+    if size {
+        send(c, h, 0x5, 0, (cl.h() as u32) << 16 | (cl.w() as u32 & 0xffff));
+    }
 }
 fn SetWindowPos(c: &mut Ctx) -> u32 {
     let (h, after, x, y, cx, cy, f) = (c.a(0), c.a(1), c.i(2), c.i(3), c.i(4), c.i(5), c.a(6));
@@ -1932,11 +2034,11 @@ fn window_at(s: &State, x: i32, y: i32) -> u32 {
     }
 }
 fn WindowFromPoint(c: &mut Ctx) -> u32 {
-    let (x, y) = (c.i(0), c.i(1));
+    let (x, y) = c.pt(0);
     with(|s| window_at(s, x, y))
 }
 fn ChildWindowFromPoint(c: &mut Ctx) -> u32 {
-    let (h, x, y) = (c.a(0), c.i(1), c.i(2));
+    let (h, (x, y)) = (c.a(0), c.pt(1));
     with(|s| {
         let o = client_screen(s, h);
         let (sx, sy) = (x + o.l, y + o.t);
@@ -2020,11 +2122,49 @@ fn GetWindowLongA(c: &mut Ctx) -> u32 {
 fn GetWindowLongW(c: &mut Ctx) -> u32 {
     get_long(c.a(0), c.i(1), true)
 }
+/// SetWindowLong: GWL_STYLE / GWL_EXSTYLE go through WM_STYLECHANGING (which may change the new
+/// style) and WM_STYLECHANGED; a top-level window keeps WS_CLIPSIBLINGS; a bad index is
+/// ERROR_INVALID_INDEX. A style change clears the last error (other fields leave it).
+fn set_long_msg(c: &mut Ctx, h: u32, i: i32, v: u32) -> u32 {
+    let err = |e: u32| w32(crate::cur().teb + crate::teb_last_error(), e);
+    let Some((extra, top)) = with(|s| s.wins.get(&h).map(|w| (w.extra.len(), w.parent == 0 && w.style & 0x4000_0000 == 0))) else {
+        err(1400);
+        return 0;
+    };
+    let named = matches!(i, -4 | -6 | -8 | -12 | -16 | -20 | -21);
+    if !named && !(i >= 0 && i as usize + 4 <= extra) {
+        err(1413);
+        return 0;
+    }
+    if !matches!(i, -16 | -20) {
+        return set_long(h, i, v);
+    }
+    err(0);
+    let old = get_long(h, i, false);
+    let save = c.cpu.regs[koji::ESP];
+    let ss = (save - 0x40) & !15;
+    c.cpu.regs[koji::ESP] = ss - 16;
+    w32(ss, old);
+    w32(ss + 4, v);
+    send(c, h, 0x7c, i as u32, ss);
+    let mut new = r32(ss + 4);
+    if i == -16 && top {
+        new |= 0x0400_0000;
+    }
+    set_long(h, i, new);
+    w32(ss, old);
+    w32(ss + 4, new);
+    send(c, h, 0x7d, i as u32, ss);
+    c.cpu.regs[koji::ESP] = save;
+    old
+}
 fn SetWindowLongA(c: &mut Ctx) -> u32 {
-    set_long(c.a(0), c.i(1), c.a(2))
+    let (h, i, v) = (c.a(0), c.i(1), c.a(2));
+    set_long_msg(c, h, i, v)
 }
 fn SetWindowLongW(c: &mut Ctx) -> u32 {
-    set_long(c.a(0), c.i(1), c.a(2))
+    let (h, i, v) = (c.a(0), c.i(1), c.a(2));
+    set_long_msg(c, h, i, v)
 }
 fn GetClassLongA(c: &mut Ctx) -> u32 {
     let (h, i) = (c.a(0), c.i(1));
@@ -2125,16 +2265,25 @@ fn prop_key(k: u32, wide: bool) -> String {
     if k < 0x10000 {
         format!("#{k}")
     } else {
-        arg_str(k, wide)
+        // (property names are atoms: case-insensitive)
+        arg_str(k, wide).to_lowercase()
     }
+}
+/// GetProp: a name that is no property is ERROR_FILE_NOT_FOUND (its atom is not there)
+fn get_prop(h: u32, key: &str) -> u32 {
+    let v = with(|s| s.wins.get(&h).and_then(|w| w.props.iter().find(|(x, _)| x == key).map(|p| p.1)));
+    if v.is_none() && !key.starts_with('#') {
+        w32(crate::cur().teb + crate::teb_last_error(), 2);
+    }
+    v.unwrap_or(0)
 }
 fn GetPropA(c: &mut Ctx) -> u32 {
     let key = prop_key(c.a(1), false);
-    with(|s| s.wins.get(&c.a(0)).and_then(|w| w.props.iter().find(|(x, _)| *x == key).map(|p| p.1)).unwrap_or(0))
+    get_prop(c.a(0), &key)
 }
 fn GetPropW(c: &mut Ctx) -> u32 {
     let key = prop_key(c.a(1), true);
-    with(|s| s.wins.get(&c.a(0)).and_then(|w| w.props.iter().find(|(x, _)| *x == key).map(|p| p.1)).unwrap_or(0))
+    get_prop(c.a(0), &key)
 }
 fn RemovePropA(c: &mut Ctx) -> u32 {
     let key = prop_key(c.a(1), false);
@@ -2274,7 +2423,11 @@ fn def_proc(c: &mut Ctx, proc_wide: bool) -> u32 {
         }
         0x21 => 1,
         0x46 => 0,
-        0x47 => 0,
+        0x47 => {
+            let (.., f) = windowpos_read(lp);
+            send_move_size(c, h, f & SWP_NOCLIENTMOVE == 0, f & SWP_NOCLIENTSIZE == 0);
+            0
+        }
         0x24 => 0,
         0x83 => 0,
         0x112 => {
@@ -2390,7 +2543,9 @@ fn post_thread(tid: u32, mut m: Msg) {
     with(|s| {
         m.x = s.cursor.0;
         m.y = s.cursor.1;
-        s.queues.entry(tid).or_default().posted.push_back(m)
+        let q = s.queues.entry(tid).or_default();
+        q.posted.push_back(m);
+        q.fresh |= 0x8;
     });
     crate::obj::signal();
 }
@@ -2716,8 +2871,40 @@ fn MsgWaitForMultipleObjectsEx(c: &mut Ctx) -> u32 {
     let r = wait_msgs_of(&hs, flags & 1 != 0, ms, mask, alertable);
     if alertable && r == n && crate::apc::run(c) { crate::apc::WAIT_IO_COMPLETION } else { r }
 }
-fn GetQueueStatus(_: &mut Ctx) -> u32 {
-    if has_work() { 0x00ff_00ff } else { 0 }
+/// GetQueueStatus(flags): high word, the QS_* kinds in the queue; low word, those that came since
+/// the last call (posted and sent messages; input, timers and paint count while there)
+fn GetQueueStatus(c: &mut Ctx) -> u32 {
+    let flags = c.a(0);
+    let me = crate::cur().tid;
+    let now = Instant::now();
+    with(|s| {
+        let paint = s.wins.iter().any(|(_, w)| w.tid == me && w.visible && !w.update.empty());
+        let q = s.queues.entry(me).or_default();
+        let mut st = 0;
+        if !q.posted.is_empty() || q.quit.is_some() {
+            st |= 0x8;
+        }
+        if !q.sent.is_empty() {
+            st |= 0x40;
+        }
+        if q.timers.iter().any(|t| t.due <= now) {
+            st |= 0x10;
+        }
+        for m in &q.input {
+            st |= match m.msg {
+                0x100..=0x109 => 0x1,
+                0x200 => 0x2,
+                0x201..=0x20e => 0x4,
+                _ => 0x400,
+            };
+        }
+        if paint {
+            st |= 0x20;
+        }
+        let fresh = (q.fresh | st & !0x48) & flags;
+        q.fresh &= !flags;
+        (st & flags) << 16 | fresh
+    })
 }
 fn GetInputState(_: &mut Ctx) -> u32 {
     let me = crate::cur().tid;
@@ -2853,12 +3040,16 @@ fn SetTimer(c: &mut Ctx) -> u32 {
 }
 fn KillTimer(c: &mut Ctx) -> u32 {
     let (h, id) = (c.a(0), c.a(1));
-    with(|s| {
+    let found = with(|s| {
+        let mut found = false;
         for q in s.queues.values_mut() {
+            let n = q.timers.len();
             q.timers.retain(|t| !(t.hwnd == h && t.id == id));
+            found |= q.timers.len() != n;
         }
+        found
     });
-    1
+    found as u32
 }
 
 // painting
@@ -3634,7 +3825,8 @@ fn EqualRect(c: &mut Ctx) -> u32 {
     (Rect::read(c.a(0)) == Rect::read(c.a(1))) as u32
 }
 fn PtInRect(c: &mut Ctx) -> u32 {
-    Rect::read(c.a(0)).has(c.i(1), c.i(2)) as u32
+    let (x, y) = c.pt(1);
+    Rect::read(c.a(0)).has(x, y) as u32
 }
 fn OffsetRect(c: &mut Ctx) -> u32 {
     Rect::read(c.a(0)).off(c.i(1), c.i(2)).write(c.a(0));
@@ -3657,6 +3849,7 @@ fn IntersectRect(c: &mut Ctx) -> u32 {
 }
 fn UnionRect(c: &mut Ctx) -> u32 {
     let r = Rect::read(c.a(1)).or(&Rect::read(c.a(2)));
+    let r = if r.empty() { Rect::default() } else { r };
     r.write(c.a(0));
     (!r.empty()) as u32
 }

@@ -83,3 +83,11 @@ gl-* ^image (raster|textures):
 # Windows' Direct3D 7 device takes several references of its IDirect3D7 for itself (9 in all
 # after CreateDevice); sake's device holds one, dropped with the device as Windows' are
 ddrefs-* ^(want|got) +refs d3d7 after CreateDevice 
+# window manager details games don't see: class atoms are numbered from the session's atom table
+# (0xC149.. on the runner), DWM sends WM_DWMNCRENDERINGCHANGED (0x31f) at create, ShowWindow's
+# "was visible" answer is an undocumented nonzero (24), and NCPAINT/ERASEBKGND come with
+# ShowWindow there while sake paints at the next message loop
+user-* ^(want|got) +GetClassInfoA\(wc.hInstance, "ippai-winref", &got\) 
+user-* ^(want|got) +start: 
+user-* ^want +WM_(NCPAINT|ERASEBKGND)$
+user-* ^(want|got) +ShowWindow\(h, SW_HIDE\) 

@@ -89,7 +89,8 @@ int main(void) {
         LONG r = RegEnumKeyExA(k, i, nm, &nl, NULL, NULL, NULL, NULL);
         printf("key %lu: %ld", i, r);
         if (r) { printf("\n"); break; }
-        printf(" %s len %lu\n", nm, nl);
+        printf(" "); for (char *q = nm; *q; q++) printf(*q > 0 ? "%c" : "\\x%02x", (unsigned char)*q); /* (bytes: cp932 stays cp932) */
+        printf(" len %lu\n", nl);
     }
     char small[3]; DWORD sl = sizeof small;
     E(RegEnumKeyExA(k, 0, small, &sl, NULL, NULL, NULL, NULL)); printf("len %lu\n", sl);
