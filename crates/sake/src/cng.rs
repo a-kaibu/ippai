@@ -30,6 +30,8 @@ pub const NTE_BAD_KEY_STATE: u32 = 0x8009_000B;
 pub const NTE_EXISTS: u32 = 0x8009_000F;
 pub const NTE_PERM: u32 = 0x8009_0010;
 pub const NTE_NOT_FOUND: u32 = 0x8009_0011;
+/// a private-key operation on a public key
+pub const NTE_NO_KEY: u32 = 0x8009_000D;
 pub const NTE_BAD_KEYSET: u32 = 0x8009_0016;
 pub const NTE_INVALID_HANDLE: u32 = 0x8009_0026;
 pub const NTE_INVALID_PARAMETER: u32 = 0x8009_0027;
@@ -304,7 +306,7 @@ impl Rsa {
 
     /// Signs `digest` (its length must be the padding's hash's)
     pub fn sign(&self, pad: Pad, digest: &[u8]) -> Result<Vec<u8>, u32> {
-        let Rsa::Private(k) = self else { return Err(NTE_NOT_SUPPORTED) };
+        let Rsa::Private(k) = self else { return Err(NTE_NO_KEY) };
         let r = match pad {
             Pad::Pkcs1(h) => k.sign(pkcs1_sign(h, digest)?, digest),
             Pad::Pss(h, salt) => {
@@ -350,7 +352,7 @@ impl Rsa {
         r.map_err(|_| NTE_INVALID_PARAMETER)
     }
     pub fn decrypt(&self, pad: Pad, label: &[u8], data: &[u8]) -> Result<Vec<u8>, u32> {
-        let Rsa::Private(k) = self else { return Err(NTE_NOT_SUPPORTED) };
+        let Rsa::Private(k) = self else { return Err(NTE_NO_KEY) };
         if data.len() != k.size() {
             return Err(NTE_INVALID_PARAMETER);
         }
@@ -526,18 +528,18 @@ impl Ecc {
     fn validate(&self) -> Result<(), u32> {
         let n = self.curve.size();
         if self.x.len() != n || self.y.len() != n || self.d.as_ref().is_some_and(|d| d.len() != n) {
-            return Err(NTE_BAD_DATA);
+            return Err(NTE_NOT_SUPPORTED);
         }
         let mut sec1 = vec![4u8];
         sec1.extend_from_slice(&self.x);
         sec1.extend_from_slice(&self.y);
         on_curve!(self.curve, m => {
             use m::elliptic_curve::sec1::ToEncodedPoint;
-            let pk = m::PublicKey::from_sec1_bytes(&sec1).map_err(|_| NTE_BAD_DATA)?;
+            let pk = m::PublicKey::from_sec1_bytes(&sec1).map_err(|_| NTE_NOT_SUPPORTED)?;
             if let Some(d) = &self.d {
-                let sk = m::SecretKey::from_slice(d).map_err(|_| NTE_BAD_DATA)?;
+                let sk = m::SecretKey::from_slice(d).map_err(|_| NTE_NOT_SUPPORTED)?;
                 if sk.public_key().to_encoded_point(false) != pk.to_encoded_point(false) {
-                    return Err(NTE_BAD_DATA);
+                    return Err(NTE_NOT_SUPPORTED);
                 }
             }
         });
@@ -547,7 +549,7 @@ impl Ecc {
     /// blob is wanted (None: either)
     pub fn from_blob(b: &[u8], private: Option<bool>) -> Result<Ecc, u32> {
         if b.len() < 8 {
-            return Err(NTE_BAD_DATA);
+            return Err(NTE_NOT_SUPPORTED);
         }
         let magic = u32::from_le_bytes(b[0..4].try_into().unwrap());
         let Some((curve, ecdsa, is_priv)) = ecc_of_magic(magic) else { return Err(NTE_INVALID_PARAMETER) };
@@ -556,7 +558,7 @@ impl Ecc {
         }
         let n = u32::from_le_bytes(b[4..8].try_into().unwrap()) as usize;
         if n != curve.size() || b.len() != 8 + n * (2 + is_priv as usize) {
-            return Err(NTE_BAD_DATA);
+            return Err(NTE_NOT_SUPPORTED);
         }
         let e = Ecc { curve, ecdsa, x: b[8..8 + n].to_vec(), y: b[8 + n..8 + 2 * n].to_vec(), d: is_priv.then(|| b[8 + 2 * n..].to_vec()) };
         e.validate()?;
@@ -581,7 +583,7 @@ impl Ecc {
     }
     /// ECDSA over a hash (randomized, as Windows'): r || s
     pub fn sign(&self, hash: &[u8]) -> Result<Vec<u8>, u32> {
-        let Some(d) = &self.d else { return Err(NTE_NOT_SUPPORTED) };
+        let Some(d) = &self.d else { return Err(NTE_NO_KEY) };
         if !self.ecdsa {
             return Err(NTE_NOT_SUPPORTED);
         }
@@ -1351,8 +1353,11 @@ fn NCryptDeriveKey(c: &mut Ctx) -> u32 {
         put32(res, v.len() as u32);
         return 0;
     }
+    // (cut to the buffer: a hash's first bytes; the raw secret's last, its high-order bytes, as
+    // Windows)
     let n = v.len().min(outlen as usize);
-    mem::write(out, &v[..n]);
+    let part = if k == Kdf::Raw { &v[v.len() - n..] } else { &v[..n] };
+    mem::write(out, part);
     put32(res, n as u32);
     0
 }
@@ -1377,7 +1382,17 @@ fn crypt(c: &mut Ctx, enc: bool) -> u32 {
         Ok(p) => p,
         Err(e) => return e,
     };
-    // the size: the modulus' (a decryption's output is at most that)
+    // the size: the modulus' for an encryption; a decryption's is its plaintext's (Windows
+    // decrypts to tell), raw: the modulus'
+    if out == 0 && !enc && pad != Pad::None {
+        return match r.decrypt(pad, &label, &bytes(input, insize)) {
+            Ok(v) => {
+                put32(res, v.len() as u32);
+                0
+            }
+            Err(e) => e,
+        };
+    }
     if out == 0 {
         put32(res, r.size() as u32);
         return 0;
@@ -1626,7 +1641,7 @@ mod tests {
         info.extend_from_slice(&d);
         assert_eq!(k.sign(Pad::Pkcs1(None), &info).unwrap(), k.sign(Pad::Pkcs1(Some(Hash::Sha256)), &d).unwrap());
         // a public key cannot sign
-        assert_eq!(Rsa::Public(k.public()).sign(Pad::Pkcs1(Some(Hash::Sha256)), &d).unwrap_err(), NTE_NOT_SUPPORTED);
+        assert_eq!(Rsa::Public(k.public()).sign(Pad::Pkcs1(Some(Hash::Sha256)), &d).unwrap_err(), NTE_NO_KEY);
     }
 
     #[test]
@@ -1676,14 +1691,14 @@ mod tests {
                 assert_eq!((pk.x.clone(), pk.y.clone(), pk.d.clone()), (k.x.clone(), k.y.clone(), None));
                 // kinds, sizes, points, scalars
                 assert_eq!(Ecc::from_blob(&privb, Some(false)).unwrap_err(), NTE_INVALID_PARAMETER);
-                assert_eq!(Ecc::from_blob(&pubb[..pubb.len() - 1], None).unwrap_err(), NTE_BAD_DATA);
+                assert_eq!(Ecc::from_blob(&pubb[..pubb.len() - 1], None).unwrap_err(), NTE_NOT_SUPPORTED);
                 let mut off = pubb.clone();
                 off[8 + n] ^= 1; // y changed: not on the curve
-                assert_eq!(Ecc::from_blob(&off, None).unwrap_err(), NTE_BAD_DATA);
+                assert_eq!(Ecc::from_blob(&off, None).unwrap_err(), NTE_NOT_SUPPORTED);
                 let mut wrong_d = privb.clone();
                 let last = wrong_d.len() - 1;
                 wrong_d[last] ^= 1; // a scalar of another point
-                assert_eq!(Ecc::from_blob(&wrong_d, None).unwrap_err(), NTE_BAD_DATA);
+                assert_eq!(Ecc::from_blob(&wrong_d, None).unwrap_err(), NTE_NOT_SUPPORTED);
                 assert!(pk.to_blob(true).is_err());
             }
         }
