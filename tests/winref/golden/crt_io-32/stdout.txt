@@ -16,7 +16,9 @@ chsize down 0 length 5
 fstat64 mode 0100666 nlink 1 size 5
 dup 1
 dup shares position 0
+dup mode 0x8000
 dup2 0
+dup2 mode 0x8000
 close dup2 0 close dup 0
 setmode 0x8000 0x4000
 get_osfhandle 1
@@ -45,11 +47,26 @@ stat file slash -1 errno 2
 stat missing -1 errno 2
 stat wildcard -1 errno 2
 stat exe -1 errno 2
+stat parent slash -1 errno 2
+stat parent mode 040777 nlink 1 size 0
+stat root \ 0 errno 0 dir 1
+stat root / 0 errno 0 dir 1
+stat root C:\ 0 errno 0 dir 1
+stat root C:/ 0 errno 0 dir 1
+stat root C: -1 errno 2 dir 0
 stat32 0 size 4
 wstat64i32 0 size 4 mode 0100666
 access 0 0
 access missing -1 errno 2
 access bad mode 0 errno 0
+access mode 0 0 errno 0
+access mode 1 0 errno 0
+access mode 2 0 errno 0
+access mode 3 0 errno 0
+access mode 4 0 errno 0
+access mode 5 0 errno 0
+access mode 6 0 errno 0
+access mode 7 0 errno 0
 access readonly -1 errno 13
 unlink 0
 unlink again -1 errno 2
@@ -85,6 +102,8 @@ mbtowc 1 0192
 wcrtomb -1 3fa0
 btowc 0041 201a 00b1
 wctob 65 -1 -1
+_mbstrlen 5
+fgetwc 201a 00a0 0061 0192
 setlocale .932 1 MB_CUR_MAX 2
 932 mbstowcs 3 3042 0061 30a2
 932 mbstowcs len 3
@@ -98,6 +117,8 @@ setlocale .932 1 MB_CUR_MAX 2
 932 wcrtomb 2 82a0
 932 btowc 0041 ffff ff71
 932 wctob 65 -1 -79
+932 _mbstrlen 3
+932 fgetwc 3042 0061 30a2 ffff
 setlocale C 1 MB_CUR_MAX 1
 C mbstowcs 5 0082 00a0 0061
 C mbstowcs len 5
@@ -111,6 +132,8 @@ C mbtowc 1 0083
 C wcrtomb -1 82a0
 C btowc 0041 ffff ff71
 C wctob 65 -1 -79
+C _mbstrlen 5
+C fgetwc 0082 00a0 0061 0083
 strerror 0 No error
 strerror 1 Operation not permitted
 strerror 2 No such file or directory
@@ -157,6 +180,15 @@ strerror 42 Illegal byte sequence
 strerror 43 Unknown error
 strerror No such file or directory | No such file or directory
 wcserror 1
+strerror same buffer 1 now Invalid argument
+wcserror own buffer 1
+strerror other thread 1 Permission denied | No such file or directory
+w2m default 1252 2 used 1 612a
+w2m default 932 3 used 1 82a023
+w2m 932 none missing 2 used 0
+w2m utf8 with used 1 err 0
+w2m utf8 with default 1 err 0
+IsDBCSLeadByteEx 932 1 1252 0 932 trail 0
 strerror_s small 0 'No s'
 ulp 1 erf 3fe0a7ef5c18edd2
 ulp 1 erfc 3fa15aaa8ec85205
