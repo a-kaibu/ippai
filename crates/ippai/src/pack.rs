@@ -68,14 +68,11 @@ pub enum Cmd {
         #[arg(long)]
         follow: bool,
         /// Average chunk size (KiB; a power of two): files are cut where their content says
-        /// (FastCDC, cdc.rs; chunks avg/4 to avg*4). Big enough for an S3 store with a request
-        /// rate limit (Hugging Face Buckets answer SlowDown at a few PUTs a second); a file
-        /// smaller than a chunk is one chunk of its own size either way.
+        /// (FastCDC, cdc.rs; chunks avg/4 to avg*4). Big for an S3 store with a request rate
+        /// limit (Hugging Face Buckets answer SlowDown at a few PUTs a second); a file smaller
+        /// than a chunk is one chunk of its own size either way.
         #[arg(long, default_value_t = DEFAULT_CHUNK_KIB)]
         chunk_kib: u64,
-        /// Cut files in chunks of exactly --chunk-kib instead (the trees of ippai before 0.3).
-        #[arg(long)]
-        fixed: bool,
     },
     /// Unpack an archive or installer as `add` does (prints the exe it would start).
     #[command(hide = true)]
@@ -89,7 +86,8 @@ pub enum Cmd {
         /// except links to "/".
         #[arg(long)]
         follow: bool,
-        #[arg(long, default_value_t = 256)]
+        /// Average chunk size (KiB), as `add`.
+        #[arg(long, default_value_t = DEFAULT_CHUNK_KIB)]
         chunk_kib: u64,
     },
     /// Add a game (its files packed with `ippai pack`) to the launcher's list, or replace it.
@@ -293,8 +291,7 @@ pub(crate) fn add_for_test(store: &Path, dir: &Path, id: &str, mount: Vec<String
             meta_id: None,
             no_meta: true,
             follow: false,
-            chunk_kib: 256,
-            fixed: false,
+            chunk_kib: 64,
         },
     )
 }
@@ -454,7 +451,7 @@ fn add_game(
 
 pub fn run(store: &Path, cmd: Cmd) -> Result<()> {
     match cmd {
-        Cmd::Pack { dir, name, follow, chunk_kib } => tree(store, &dir, &name, follow, Chunking::Fixed(chunk_kib << 10))?,
+        Cmd::Pack { dir, name, follow, chunk_kib } => tree(store, &dir, &name, follow, chunking(chunk_kib))?,
         Cmd::AddGame { id, title, tree, exe, engine, cover, args, env, mount, meta_id, no_meta } => {
             add_game(store, id, title, tree, exe, engine, cover, args, env, mount, meta_id, no_meta, None, vec![])?
         }
@@ -501,7 +498,7 @@ pub fn run(store: &Path, cmd: Cmd) -> Result<()> {
             }
             println!("{}", unpack::pick_exe(&out, None).unwrap_or_default());
         }
-        Cmd::Add { dir, exe, id, title, engine, cover, args, env, mount, meta_id, no_meta, follow, chunk_kib, fixed } => {
+        Cmd::Add { dir, exe, id, title, engine, cover, args, env, mount, meta_id, no_meta, follow, chunk_kib } => {
             let path = dir.canonicalize().with_context(|| dir.display().to_string())?;
             let package = unpack::is_package(&path);
             let name = if package { path.file_stem() } else { path.file_name() }.map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -536,9 +533,7 @@ pub fn run(store: &Path, cmd: Cmd) -> Result<()> {
                     Some(e) => unpack::pick_exe(&root, Some(e)).with_context(|| format!("{e} is not in {}", dir.display()))?,
                     None => unpack::pick_exe(&root, None).with_context(|| format!("no program in {} (--exe)", dir.display()))?,
                 };
-                let kib = chunk_kib.clamp(4, 1 << 16) << 10;
-                let chunking = if fixed { Chunking::Fixed(kib) } else { Chunking::Cdc(crate::cdc::Params::with_avg(kib)) };
-                let list = pack_tree(store, &root, &id, follow, chunking)?;
+                let list = pack_tree(store, &root, &id, follow, chunking(chunk_kib))?;
                 add_game(store, id.clone(), title.unwrap_or(name), id.clone(), exe, engine, cover, args, env, mount, meta_id, no_meta, Some(list), issues)
             })();
             if package {
@@ -604,17 +599,14 @@ fn esc(s: &str) -> String {
 /// `trees/<name>.tsv`:
 ///
 /// ```text
-/// vnvm-tree	1	<chunk size>
+/// vnvm-tree	2	<average chunk size>
 /// d	<mode>	<mtime>	<path>
-/// f	<mode>	<mtime>	<path>	<size>	<chunk>,<chunk>,...     ("" chunk: all zero)
+/// f	<mode>	<mtime>	<path>	<size>	<hash>:<length>,...     (":<length>": all zero)
 /// l	<mode>	<mtime>	<path>	<target>
 /// ```
 ///
-/// Paths are relative to the tree, parents before children; modes in octal. A file's last
-/// chunk holds only what is left of it.
-///
-/// Version 2 (`vnvm-tree 2 <average chunk size>`, content-defined chunks, cdc.rs): each chunk
-/// is `<hash>:<length>` (`:<length>` all zero), the lengths adding up to the file's size.
+/// Paths are relative to the tree, parents before children; modes in octal. Files are cut where
+/// their content says (cdc.rs); the chunks' lengths add up to the file's size.
 /// Whether ffmpeg is there to make the movies' VP9 copies (said once when it is not).
 static MOVIES: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
     let ok = crate::movie::available();
@@ -656,7 +648,7 @@ pub fn ensure_prefix(store: &Path, fonts: &Path) -> Result<bool> {
         for f in &files {
             fs::copy(f, dir.join(f.file_name().unwrap()))?;
         }
-        tree(store, &root, PREFIX_TREE, false, Chunking::Fixed(256 << 10))
+        tree(store, &root, PREFIX_TREE, false, chunking(DEFAULT_CHUNK_KIB))
     })();
     let _ = fs::remove_dir_all(&root);
     made.map(|()| true)
@@ -699,7 +691,7 @@ fn mtime(m: &fs::Metadata) -> i64 {
 }
 
 /// Packs `root` as tree `name` and publishes its list.
-fn tree(store: &Path, root: &Path, name: &str, follow: bool, chunking: Chunking) -> Result<()> {
+fn tree(store: &Path, root: &Path, name: &str, follow: bool, chunking: Params) -> Result<()> {
     let list = pack_tree(store, root, name, follow, chunking)?;
     publish_tree(store, name, &list)
 }
@@ -716,19 +708,19 @@ fn publish_tree(store: &Path, name: &str, list: &str) -> Result<()> {
 
 /// Stores the chunks of `root`'s files and returns the tree's list (not yet published: the
 /// chunks are named by their content, so a list never published leaves nothing wrong behind).
-/// The average chunk size of `ippai add` (KiB).
-pub const DEFAULT_CHUNK_KIB: u64 = 4096;
+/// The average chunk size of `ippai add` and `pack` (KiB). Measured with LOOPERS on Hugging
+/// Face Buckets: a push of 1.9 GB took 1723 s in 256 KiB chunks, 358 s in 1 MiB, 105 s in 4 MiB,
+/// 69 s in 16 MiB (the PUT rate limit); the game started as fast with any of 1 MiB and more.
+pub const DEFAULT_CHUNK_KIB: u64 = 16384;
 
-/// How a tree's files are cut into chunks.
-#[derive(Clone, Copy, Debug)]
-pub enum Chunking {
-    /// every chunk this long but a file's last (`vnvm-tree 1 <length>`)
-    Fixed(u64),
-    /// where the content says (cdc.rs; `vnvm-tree 2 <avg>`, each chunk `<hash>:<length>`)
-    Cdc(crate::cdc::Params),
+use crate::cdc::Params;
+
+/// The chunking of an average size in KiB (a power of two, 64 KiB to 64 MiB).
+fn chunking(kib: u64) -> Params {
+    Params::with_avg(kib.clamp(64, 1 << 16) << 10)
 }
 
-fn pack_tree(store: &Path, root: &Path, name: &str, follow: bool, chunking: Chunking) -> Result<String> {
+fn pack_tree(store: &Path, root: &Path, name: &str, follow: bool, chunking: Params) -> Result<String> {
     let root = root.canonicalize()?;
     let mut lines = Vec::new();
     let mut files = Vec::new();
@@ -819,31 +811,22 @@ fn pack_tree(store: &Path, root: &Path, name: &str, follow: bool, chunking: Chun
             // (a file's chunks in parallel too: a game that is one big archive packs on every
             // core; rayon runs a task per thread at a time, so the buffers in memory are about
             // one chunk per core)
-            // (offset, length) of each chunk; content-defined cuts take a pass over the file
-            // first (gear hashing is far faster than the compression after it)
-            let spans: Vec<(u64, u64)> = match chunking {
-                Chunking::Fixed(chunk) => (0..size.div_ceil(chunk)).map(|i| (i * chunk, chunk.min(size - i * chunk))).collect(),
-                Chunking::Cdc(p) => {
-                    let mut at = 0;
-                    crate::cdc::lengths(&mut std::io::BufReader::new(&f), p)?
-                        .into_iter()
-                        .map(|n| {
-                            at += n;
-                            (at - n, n)
-                        })
-                        .collect()
-                }
-            };
+            // (offset, length) of each chunk: the cuts take a pass over the file first (gear
+            // hashing is far faster than the compression after it)
+            let mut at = 0;
+            let spans: Vec<(u64, u64)> = crate::cdc::lengths(&mut std::io::BufReader::new(&f), chunking)?
+                .into_iter()
+                .map(|n| {
+                    at += n;
+                    (at - n, n)
+                })
+                .collect();
             let hashes: Vec<String> = spans
                 .into_par_iter()
                 .map(|(off, n)| {
                     let mut buf = vec![0u8; n as usize];
                     read_exact_at(&f, &mut buf, off)?;
-                    let h = put_chunk(store, &buf)?;
-                    Ok(match chunking {
-                        Chunking::Fixed(_) => h,
-                        Chunking::Cdc(_) => format!("{h}:{n}"),
-                    })
+                    Ok(format!("{}:{n}", put_chunk(store, &buf)?))
                 })
                 .collect::<Result<_>>()?;
             Ok((*line, format!("f\t{mode:o}\t{mtime}\t{}\t{size}\t{}", esc(path), hashes.join(","))))
@@ -857,10 +840,7 @@ fn pack_tree(store: &Path, root: &Path, name: &str, follow: bool, chunking: Chun
     for (line, text) in done {
         lines[line] = text;
     }
-    let mut out = match chunking {
-        Chunking::Fixed(chunk) => format!("vnvm-tree\t1\t{chunk}\n"),
-        Chunking::Cdc(p) => format!("vnvm-tree\t2\t{}\n", p.avg),
-    };
+    let mut out = format!("vnvm-tree\t2\t{}\n", chunking.avg);
     for l in lines {
         out.push_str(&l);
         out.push('\n');
@@ -936,8 +916,7 @@ mod tests {
                 meta_id: None,
                 no_meta: true,
                 follow: false,
-                chunk_kib: 256,
-                fixed: false,
+                chunk_kib: 64,
             },
         )
     }
@@ -1019,40 +998,9 @@ mod tests {
         tokio::runtime::Runtime::new().unwrap().block_on(remove_game(store, id, None))
     }
 
-    /// `add --chunk-kib 4096`: the tree says its chunk size, a big file is cut in 4 MiB chunks
-    /// that read back as the file, a small file is one chunk of its own size.
-    #[test]
-    fn add_with_bigger_chunks() {
-        let t = std::env::temp_dir().join(format!("ippai-bigchunk-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&t);
-        let (store, game) = (t.join("store"), t.join("game"));
-        fs::create_dir_all(&game).unwrap();
-        fs::write(game.join("game.exe"), b"MZ small").unwrap();
-        let big: Vec<u8> = (0..10_000_000u32).map(|i| (i.wrapping_mul(2654435761) >> 24) as u8).collect();
-        fs::write(game.join("data.arc"), &big).unwrap();
-        let cmd = Cmd::Add { dir: game.clone(), exe: Some("game.exe".into()), id: Some("big".into()), title: None, engine: None, cover: None, args: vec![], env: vec![], mount: vec![], meta_id: None, no_meta: true, follow: false, chunk_kib: 4096, fixed: true };
-        run(&store, cmd).unwrap();
-        let list = fs::read_to_string(store.join("trees/big.tsv")).unwrap();
-        assert_eq!(list.lines().next().unwrap().split('\t').nth(2), Some("4194304"));
-        let chunks_of = |name: &str| -> Vec<String> {
-            let line = list.lines().find(|l| l.split('\t').nth(3) == Some(name)).unwrap();
-            line.split('\t').nth(5).unwrap().split(',').map(String::from).collect()
-        };
-        let parts = chunks_of("data.arc");
-        assert_eq!(parts.len(), 3, "10 MB in 4 MiB chunks");
-        let mut back = Vec::new();
-        for c in &parts {
-            back.extend(zstd::decode_all(&fs::read(store.join("chunks").join(&c[..2]).join(c)).unwrap()[..]).unwrap());
-        }
-        assert_eq!(back, big);
-        assert_eq!(chunks_of("game.exe").len(), 1);
-        let _ = fs::remove_dir_all(&t);
-    }
-
-    /// `add` cuts files where their content says (a version 2 list, `<hash>:<length>`): the
-    /// lengths add up and the chunks read back as the file; a second game whose archive has the
-    /// first one's bytes after 1234 others shares nearly all of its chunks (fixed chunks would
-    /// share none).
+    /// `add` cuts files where their content says (`<hash>:<length>`): the lengths add up and the
+    /// chunks read back as the file; a second game whose archive has the first one's bytes after
+    /// 1234 others shares nearly all of its chunks (fixed-size chunks would share none).
     #[test]
     fn add_cuts_by_content() {
         let t = std::env::temp_dir().join(format!("ippai-cdc-{}", std::process::id()));
@@ -1074,7 +1022,7 @@ mod tests {
             fs::create_dir_all(&d).unwrap();
             fs::write(d.join("game.exe"), b"MZ").unwrap();
             fs::write(d.join("data.arc"), data).unwrap();
-            let cmd = Cmd::Add { dir: d, exe: Some("game.exe".into()), id: Some(id.into()), title: None, engine: None, cover: None, args: vec![], env: vec![], mount: vec![], meta_id: None, no_meta: true, follow: false, chunk_kib: 64, fixed: false };
+            let cmd = Cmd::Add { dir: d, exe: Some("game.exe".into()), id: Some(id.into()), title: None, engine: None, cover: None, args: vec![], env: vec![], mount: vec![], meta_id: None, no_meta: true, follow: false, chunk_kib: 64 };
             run(&store, cmd).unwrap();
         }
         let entries = |id: &str| -> Vec<(String, u64)> {
@@ -1124,7 +1072,8 @@ mod tests {
         }
         let line = list.lines().find(|l| l.split('\t').nth(3) == Some("drive_c/windows/Fonts/msgothic.ttf")).unwrap();
         let mut back = Vec::new();
-        for name in line.split('\t').nth(5).unwrap().split(',') {
+        for c in line.split('\t').nth(5).unwrap().split(',') {
+            let name = c.split(':').next().unwrap();
             let raw = fs::read(store.join("chunks").join(&name[..2]).join(name)).unwrap();
             back.extend(zstd::decode_all(&raw[..]).unwrap());
         }
@@ -1137,8 +1086,9 @@ mod tests {
         let _ = fs::remove_dir_all(&t);
     }
 
-    /// Random files of many chunks (zero chunks, repeated chunks, short last ones), packed with
-    /// a file's chunks in parallel: the tree lists them in order and each decodes to its part.
+    /// Random files of many chunks (zero runs, repeated parts), packed with a file's chunks in
+    /// parallel: the tree lists them in order, their lengths add up to the file's, and each
+    /// decodes to its part (a zero chunk is `:<length>`).
     #[test]
     fn files_chunked_in_order() {
         let t = std::env::temp_dir().join(format!("ippai-chunks-{}", std::process::id()));
@@ -1160,12 +1110,14 @@ mod tests {
             fs::write(dir.join(format!("f{f}")), &data).unwrap();
             files.push(data);
         }
-        let tsv = pack_tree(&store, &dir, "t", false, Chunking::Fixed(chunk)).unwrap();
+        let tsv = pack_tree(&store, &dir, "t", false, chunking(64)).unwrap();
         for (f, data) in files.iter().enumerate() {
             let line = tsv.lines().find(|l| l.split('\t').nth(3) == Some(&format!("f{f}"))).unwrap();
-            let names: Vec<&str> = line.split('\t').nth(5).unwrap().split(',').collect();
-            assert_eq!(names.len() as u64, (data.len() as u64).div_ceil(chunk));
-            for (i, (name, part)) in names.iter().zip(data.chunks(chunk as usize)).enumerate() {
+            let mut at = 0usize;
+            for (i, c) in line.split('\t').nth(5).unwrap().split(',').enumerate() {
+                let (name, n) = c.split_once(':').unwrap();
+                let part = &data[at..at + n.parse::<usize>().unwrap()];
+                at += part.len();
                 if name.is_empty() {
                     assert!(part.iter().all(|&b| b == 0), "f{f} chunk {i}");
                     continue;
@@ -1173,6 +1125,7 @@ mod tests {
                 let raw = fs::read(store.join("chunks").join(&name[..2]).join(name)).unwrap();
                 assert_eq!(zstd::decode_all(&raw[..]).unwrap(), part, "f{f} chunk {i}");
             }
+            assert_eq!(at, data.len());
         }
         let _ = fs::remove_dir_all(&t);
     }

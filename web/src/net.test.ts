@@ -54,11 +54,8 @@ test("gives up after giveUpMs, and the page's retries are counted while they las
 
 test("a tree's chunk hashes (holes left out)", () => {
   const h = (c: string) => c.repeat(32);
-  const tsv = `vnvm-tree\t1\t262144\nd\t755\t0\tdir\nf\t644\t0\tdir/a\t300000\t${h("a")},,${h("b")}\nf\t644\t0\tempty\t0\t\nl\t777\t0\tlink\ta\n`;
+  const tsv = `vnvm-tree\t2\t16777216\nd\t755\t0\tdir\nf\t644\t0\tdir/a\t30\t${h("a")}:10,:5,${h("b")}:15\nf\t644\t0\tempty\t0\t\nl\t777\t0\tlink\ta\n`;
   expect(treeChunks(tsv)).toEqual([h("a"), h("b")]);
-  // (a version 2 list: <hash>:<length>, ":<length>" all zero)
-  const v2 = `vnvm-tree\t2\t4194304\nf\t644\t0\tb\t30\t${h("c")}:10,:5,${h("d")}:15\n`;
-  expect(treeChunks(v2)).toEqual([h("c"), h("d")]);
 });
 
 /** A Cache Storage stand-in: what was put, with its headers. */

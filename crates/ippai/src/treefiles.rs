@@ -18,51 +18,38 @@ use std::time::SystemTime;
 struct Entry {
     size: u64,
     chunks: Vec<String>,
-    /// where each chunk starts and, last, the size: content-defined chunks (a version 2 tree,
-    /// pack.rs); `None`: every chunk the tree's chunk size long
-    starts: Option<Vec<u64>>,
+    /// where each chunk starts and, last, the size (chunks are cut by content: pack.rs, cdc.rs)
+    starts: Vec<u64>,
 }
 
 impl Entry {
     /// The chunk that holds byte `at`.
-    fn index(&self, chunk: u64, at: u64) -> u64 {
-        match &self.starts {
-            None => at / chunk,
-            Some(s) => (s.partition_point(|&x| x <= at) - 1) as u64,
-        }
+    fn index(&self, at: u64) -> u64 {
+        (self.starts.partition_point(|&x| x <= at) - 1) as u64
     }
 
     /// Where chunk `i` starts, and its length.
-    fn span(&self, chunk: u64, i: u64) -> (u64, u64) {
-        match &self.starts {
-            None => (i * chunk, chunk.min(self.size - i * chunk)),
-            Some(s) => (s[i as usize], s[i as usize + 1] - s[i as usize]),
-        }
+    fn span(&self, i: u64) -> (u64, u64) {
+        let s = &self.starts;
+        (s[i as usize], s[i as usize + 1] - s[i as usize])
     }
 }
 
-/// A tree list's chunks of one file (`<hash>,...` or, version 2, `<hash>:<length>,...`): the
-/// hashes, and where each starts when lengths are given (`None` if they do not add up to `size`).
-fn parse_chunks(field: &str, size: u64) -> Option<(Vec<String>, Option<Vec<u64>>)> {
-    if field.is_empty() && size == 0 {
-        return Some((vec![], None));
-    }
-    if !field.contains(':') {
-        return Some((field.split(',').map(String::from).collect(), None));
-    }
+/// A tree list's chunks of one file (`<hash>:<length>,...`): the hashes, and where each starts;
+/// `None` if the lengths do not add up to `size`.
+fn parse_chunks(field: &str, size: u64) -> Option<(Vec<String>, Vec<u64>)> {
     let (mut hashes, mut starts, mut at) = (Vec::new(), vec![0u64], 0u64);
-    for c in field.split(',') {
+    for c in field.split(',').filter(|c| !c.is_empty()) {
         let (h, n) = c.split_once(':')?;
         at += n.parse::<u64>().ok().filter(|&n| n > 0)?;
         hashes.push(h.to_string());
         starts.push(at);
     }
-    (at == size).then_some((hashes, Some(starts)))
+    (at == size).then_some((hashes, starts))
 }
 
 struct Tree {
     mtime: SystemTime,
-    chunk: u64,
     files: HashMap<String, Arc<Entry>>,
 }
 
@@ -87,19 +74,19 @@ impl Trees {
         }
         let text = std::fs::read_to_string(&path).ok()?;
         let mut lines = text.lines();
-        let chunk = lines.next()?.split('\t').nth(2)?.parse().ok()?;
+        lines.next()?;
         let unesc = |s: &str| s.replace("\\t", "\t").replace("\\n", "\n").replace("\\\\", "\\");
         let mut files = HashMap::new();
         for l in lines {
             let f: Vec<&str> = l.split('\t').collect();
             if f.len() == 6 && f[0] == "f" {
-                let size = f[4].parse().ok()?;
-                let (chunks, starts) = parse_chunks(f[5], size)?;
+                let Ok(size) = f[4].parse() else { continue };
+                let Some((chunks, starts)) = parse_chunks(f[5], size) else { continue };
                 let e = Entry { size, chunks, starts };
                 files.insert(unesc(f[3]).to_lowercase(), Arc::new(e));
             }
         }
-        let t = Arc::new(Tree { mtime, chunk, files });
+        let t = Arc::new(Tree { mtime, files });
         self.cache.lock().unwrap().insert(name.to_string(), t.clone());
         Some(t)
     }
@@ -182,9 +169,9 @@ fn decode(raw: &[u8], len: usize) -> Option<Vec<u8>> {
 
 impl Trees {
     /// Chunk `i` of `e`, decoded.
-    async fn chunk(&self, tree: &Tree, e: &Entry, i: u64) -> Result<Vec<u8>, StatusCode> {
+    async fn chunk(&self, e: &Entry, i: u64) -> Result<Vec<u8>, StatusCode> {
         let hash = e.chunks.get(i as usize).ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-        let len = e.span(tree.chunk, i).1 as usize;
+        let len = e.span(i).1 as usize;
         if hash.is_empty() {
             return Ok(vec![0; len]);
         }
@@ -208,15 +195,15 @@ impl Trees {
 
     /// Bytes `a..=b` of `e`, in order, the next [`AHEAD`] chunks fetched while one goes out
     /// (from S3 each is a round trip).
-    fn bytes(self, tree: Arc<Tree>, e: Arc<Entry>, a: u64, b: u64) -> impl futures_util::Stream<Item = std::io::Result<Vec<u8>>> {
+    fn bytes(self, e: Arc<Entry>, a: u64, b: u64) -> impl futures_util::Stream<Item = std::io::Result<Vec<u8>>> {
         use futures_util::StreamExt;
-        let (first, last) = (e.index(tree.chunk, a), e.index(tree.chunk, b));
+        let (first, last) = (e.index(a), e.index(b));
         futures_util::stream::iter(first..=last)
             .map(move |i| {
-                let (t, tree, e) = (self.clone(), tree.clone(), e.clone());
+                let (t, e) = (self.clone(), e.clone());
                 async move {
-                    let data = t.chunk(&tree, &e, i).await.map_err(|s| std::io::Error::other(s.to_string()))?;
-                    let start = e.span(tree.chunk, i).0;
+                    let data = t.chunk(&e, i).await.map_err(|s| std::io::Error::other(s.to_string()))?;
+                    let start = e.span(i).0;
                     let from = if i == first { (a - start) as usize } else { 0 };
                     let to = if i == last { (b - start) as usize + 1 } else { data.len() };
                     Ok(data[from..to].to_vec())
@@ -251,7 +238,7 @@ pub async fn file(State(t): State<Trees>, Path((name, path)): Path<(String, Stri
         let (a, b) = part.unwrap_or((0, e.size - 1));
         if part.is_none() && e.size <= MAX_PAGE && mime(&path).starts_with("text/html") {
             use futures_util::TryStreamExt;
-            let page: Vec<u8> = t.clone().bytes(tree, e, a, b).try_concat().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+            let page: Vec<u8> = t.clone().bytes(e, a, b).try_concat().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
             let page = with_hook(page);
             return Ok(r.header(header::CONTENT_LENGTH, page.len()).body(Body::from(page)).unwrap());
         }
@@ -259,7 +246,7 @@ pub async fn file(State(t): State<Trees>, Path((name, path)): Path<(String, Stri
         if part.is_some() {
             r = r.status(StatusCode::PARTIAL_CONTENT).header(header::CONTENT_RANGE, format!("bytes {a}-{b}/{}", e.size));
         }
-        Ok(r.body(Body::from_stream(t.clone().bytes(tree, e, a, b))).unwrap())
+        Ok(r.body(Body::from_stream(t.clone().bytes(e, a, b))).unwrap())
     }
     .await;
     match res {
@@ -290,11 +277,11 @@ mod tests {
         std::fs::create_dir_all(dir.join("trees")).unwrap();
         std::fs::write(
             dir.join("trees/t.tsv"),
-            format!("vnvm-tree\t1\t4\nf\t644\t0\ta.bin\t10\t{c0},,{c2}\nf\t644\t0\tempty.txt\t0\t\n"),
+            format!("vnvm-tree\t2\t4\nf\t644\t0\ta.bin\t10\t{c0}:4,:4,{c2}:2\nf\t644\t0\tempty.txt\t0\t\n"),
         )
         .unwrap();
         // (a second tree, chunked so the page is one chunk)
-        std::fs::write(dir.join("trees/p.tsv"), format!("vnvm-tree\t1\t1024\nf\t644\t0\tWWW/Index.html\t42\t{page}\n")).unwrap();
+        std::fs::write(dir.join("trees/p.tsv"), format!("vnvm-tree\t2\t1024\nf\t644\t0\tWWW/Index.html\t42\t{page}:42\n")).unwrap();
         let t = Trees { store: dir.clone(), remote: Arc::new(None), cache: Default::default() };
         (dir, Router::new().route("/tree/{name}/{*path}", get(file)).with_state(t))
     }
@@ -333,8 +320,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// Random files of many chunks (some all zero), random ranges: what comes out is the
-    /// file's bytes, in order. A chunk that decodes to more than its length is an error, found
+    /// Random files of many chunks of any length (some all zero), random ranges: what comes
+    /// out is the file's bytes, in order. A chunk that decodes to more than its length is an error, found
     /// without decoding it all.
     #[tokio::test]
     async fn many_chunks_in_order() {
@@ -346,24 +333,27 @@ mod tests {
             seed ^= seed << 17;
             seed % n
         };
-        let chunk = 64u64;
-        let mut lines = format!("vnvm-tree\t1\t{chunk}\n");
+        let mut lines = String::from("vnvm-tree\t2\t64\n");
         let mut files = Vec::new();
         for f in 0..6 {
-            let size = 1 + rnd(40 * chunk);
+            let size = 1 + rnd(40 * 64);
             let data: Vec<u8> = (0..size).map(|_| rnd(256) as u8).collect();
-            let mut hashes = Vec::new();
-            for (i, c) in data.chunks(chunk as usize).enumerate() {
+            let (mut hashes, mut want, mut at, mut i) = (Vec::new(), Vec::new(), 0usize, 0);
+            while at < data.len() {
+                let c = &data[at..(at + 1 + rnd(130) as usize).min(data.len())];
+                at += c.len();
+                i += 1;
                 if i % 5 == 3 {
-                    hashes.push(String::new());
+                    hashes.push(format!(":{}", c.len()));
+                    want.extend(std::iter::repeat_n(0u8, c.len()));
                     continue;
                 }
                 let h = blake3::hash(c).to_hex()[..32].to_string();
                 std::fs::create_dir_all(dir.join("chunks").join(&h[..2])).unwrap();
                 std::fs::write(dir.join("chunks").join(&h[..2]).join(&h), zstd::encode_all(c, 3).unwrap()).unwrap();
-                hashes.push(h);
+                hashes.push(format!("{h}:{}", c.len()));
+                want.extend_from_slice(c);
             }
-            let want: Vec<u8> = data.chunks(chunk as usize).enumerate().flat_map(|(i, c)| if i % 5 == 3 { vec![0; c.len()] } else { c.to_vec() }).collect();
             lines += &format!("f\t644\t0\tf{f}\t{size}\t{}\n", hashes.join(","));
             files.push(want);
         }
@@ -371,7 +361,7 @@ mod tests {
         let bomb = zstd::encode_all(&vec![0u8; 64 << 20][..], 19).unwrap();
         std::fs::create_dir_all(dir.join("chunks/bb")).unwrap();
         std::fs::write(dir.join("chunks/bb/bb00"), bomb).unwrap();
-        lines += "f\t644\t0\tbomb\t128\tbb00,bb00\n";
+        lines += "f\t644\t0\tbomb\t128\tbb00:64,bb00:64\n";
         std::fs::create_dir_all(dir.join("trees")).unwrap();
         std::fs::write(dir.join("trees/m.tsv"), lines).unwrap();
         let t = Trees { store: dir.clone(), remote: Arc::new(None), cache: Default::default() };
@@ -411,7 +401,8 @@ mod tests {
             want.extend_from_slice(&c);
         }
         std::fs::create_dir_all(dir.join("trees")).unwrap();
-        std::fs::write(dir.join("trees/s.tsv"), format!("vnvm-tree\t1\t64\nf\t644\t0\tbig.bin\t{}\t{}\n", want.len(), hashes.join(","))).unwrap();
+        let list: Vec<String> = hashes.iter().map(|h| format!("{h}:64")).collect();
+        std::fs::write(dir.join("trees/s.tsv"), format!("vnvm-tree\t2\t64\nf\t644\t0\tbig.bin\t{}\t{}\n", want.len(), list.join(","))).unwrap();
         let t = Trees { store: dir.clone(), remote: Arc::new(Some(s)), cache: Default::default() };
         let app = Router::new().route("/tree/{name}/{*path}", get(file)).with_state(t);
         let t0 = std::time::Instant::now();
@@ -471,27 +462,29 @@ mod tests {
             std::fs::write(d.join("abcd"), zstd::encode_all(&b"zz"[..], 3).unwrap()).unwrap();
             "abcd"
         };
-        // other kinds of lines and lines with other field counts are not files; a short
-        // chunk name is an error; a name with _ - . is a name
+        // other kinds of lines, lines with other field counts and lists whose lengths do not
+        // add up are not files; a short chunk name is an error; a name with _ - . is a name
         std::fs::write(
             dir.join("trees/a_b-c.d.tsv"),
-            format!("vnvm-tree\t1\t4\nd\t755\t0\tdir\t2\t{h}\nf\t644\t0\tx\t2\t{h}\textra\nf\t644\t0\tok\t2\t{h}\nf\t644\t0\tshort\t2\ta\nf\t644\t0\tnochunks\t2\t\n"),
+            format!("vnvm-tree\t2\t4\nd\t755\t0\tdir\t2\t{h}:2\nf\t644\t0\tx\t2\t{h}:2\textra\nf\t644\t0\tok\t2\t{h}:2\nf\t644\t0\tshort\t2\ta:2\nf\t644\t0\tnochunks\t2\t:2\nf\t644\t0\twrong\t3\t{h}:2\nf\t644\t0\tnolength\t2\t{h}\n"),
         )
         .unwrap();
         assert_eq!(get_(&app, "/tree/a_b-c.d/ok", None).await.2, b"zz");
         assert_eq!(get_(&app, "/tree/a_b-c.d/dir", None).await.0, StatusCode::NOT_FOUND);
         assert_eq!(get_(&app, "/tree/a_b-c.d/x", None).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(get_(&app, "/tree/a_b-c.d/wrong", None).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(get_(&app, "/tree/a_b-c.d/nolength", None).await.0, StatusCode::NOT_FOUND);
         // a chunk name too short to be stored: the body fails
         let res = app.clone().oneshot(Request::builder().uri("/tree/a_b-c.d/short").body(Body::empty()).unwrap()).await.unwrap();
         assert!(to_bytes(res.into_body(), usize::MAX).await.is_err());
-        // an empty chunk name is an all-zero chunk, also when it is the only one
+        // a chunk with no name is all zero, also when it is the only one
         assert_eq!(get_(&app, "/tree/a_b-c.d/nochunks", None).await.2, b"\0\0");
         for bad in ["/tree/a%20b/ok", "/tree/a%2Fb/ok", "/tree/a$/ok", "/tree/a%C3%A9/ok"] {
             assert_eq!(get_(&app, bad, None).await.0, StatusCode::BAD_REQUEST, "{bad}");
         }
         // a new listing (a new mtime) is read again
         let path = dir.join("trees/a_b-c.d.tsv");
-        std::fs::write(&path, format!("vnvm-tree\t1\t4\nf\t644\t0\tnew\t2\t{h}\n")).unwrap();
+        std::fs::write(&path, format!("vnvm-tree\t2\t4\nf\t644\t0\tnew\t2\t{h}:2\n")).unwrap();
         let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
         std::fs::File::options().write(true).open(&path).unwrap().set_modified(later).unwrap();
         assert_eq!(get_(&app, "/tree/a_b-c.d/new", None).await.2, b"zz");
