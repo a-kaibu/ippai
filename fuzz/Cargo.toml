@@ -12,6 +12,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 koji = { path = "../crates/koji" }
 sake = { path = "../crates/sake" }
+vorbis = { path = "../crates/vorbis" }
 wasmparser = "0.263.0"
 wasmtime = { version = "50.0.1", default-features = false, features = ["cranelift", "runtime", "threads"] }
 
@@ -44,6 +45,20 @@ bench = false
 [[bin]]
 name = "acm"
 path = "fuzz_targets/acm.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vorbis"
+path = "fuzz_targets/vorbis.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pixels"
+path = "fuzz_targets/pixels.rs"
 test = false
 doc = false
 bench = false

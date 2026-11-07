@@ -537,3 +537,138 @@ fn random_sse_mmx_ops_match_the_host_cpu() {
     }
     assert!(failures.is_empty(), "{} checked, mismatches:\n{}", done, failures.join("\n"));
 }
+
+/// SSE3, SSSE3 and SSE4.1/4.2 (what games' compilers emit for /arch:SSE2 and later code paths,
+/// and what CPU-dispatched libraries pick on any CPU of the last 15 years), and the
+/// shift-by-immediate group (66 0F 71/72/73 /n ib): (prefix, map (0 = two-byte 0F xx, 0x38,
+/// 0x3a), opcode, imm8, float lane bits, reg class, rm class, fixed reg field (/n) or 0xff)
+struct Sse4Op(u8, u8, u8, bool, u32, u8, u8, u8);
+
+const SSE4_OPS: &[Sse4Op] = &[
+    // SSE3
+    Sse4Op(0xf2, 0, 0x7c, false, 32, b'x', b'x', 0xff), Sse4Op(0x66, 0, 0x7c, false, 64, b'x', b'x', 0xff),
+    Sse4Op(0xf2, 0, 0x7d, false, 32, b'x', b'x', 0xff), Sse4Op(0x66, 0, 0x7d, false, 64, b'x', b'x', 0xff),
+    Sse4Op(0xf2, 0, 0xd0, false, 32, b'x', b'x', 0xff), Sse4Op(0x66, 0, 0xd0, false, 64, b'x', b'x', 0xff),
+    Sse4Op(0xf3, 0, 0x12, false, 0, b'x', b'x', 0xff), Sse4Op(0xf3, 0, 0x16, false, 0, b'x', b'x', 0xff),
+    Sse4Op(0xf2, 0, 0x12, false, 0, b'x', b'x', 0xff),
+    // shifts by immediate: words, dwords, qwords, whole-register bytes
+    Sse4Op(0x66, 0, 0x71, true, 0, b'x', b'x', 2), Sse4Op(0x66, 0, 0x71, true, 0, b'x', b'x', 4), Sse4Op(0x66, 0, 0x71, true, 0, b'x', b'x', 6),
+    Sse4Op(0x66, 0, 0x72, true, 0, b'x', b'x', 2), Sse4Op(0x66, 0, 0x72, true, 0, b'x', b'x', 4), Sse4Op(0x66, 0, 0x72, true, 0, b'x', b'x', 6),
+    Sse4Op(0x66, 0, 0x73, true, 0, b'x', b'x', 2), Sse4Op(0x66, 0, 0x73, true, 0, b'x', b'x', 3), Sse4Op(0x66, 0, 0x73, true, 0, b'x', b'x', 6),
+    Sse4Op(0x66, 0, 0x73, true, 0, b'x', b'x', 7),
+    Sse4Op(0x00, 0, 0x71, true, 0, b'm', b'm', 2), Sse4Op(0x00, 0, 0x72, true, 0, b'm', b'm', 4), Sse4Op(0x00, 0, 0x73, true, 0, b'm', b'm', 6),
+    // SSSE3 (xmm and mmx)
+    Sse4Op(0x66, 0x38, 0x00, false, 0, b'x', b'x', 0xff), Sse4Op(0x66, 0x38, 0x01, false, 0, b'x', b'x', 0xff), Sse4Op(0x66, 0x38, 0x02, false, 0, b'x', b'x', 0xff),
+    Sse4Op(0x66, 0x38, 0x03, false, 0, b'x', b'x', 0xff), Sse4Op(0x66, 0x38, 0x04, false, 0, b'x', b'x', 0xff), Sse4Op(0x66, 0x38, 0x05, false, 0, b'x', b'x', 0xff),
+    Sse4Op(0x66, 0x38, 0x06, false, 0, b'x', b'x', 0xff), Sse4Op(0x66, 0x38, 0x07, false, 0, b'x', b'x', 0xff), Sse4Op(0x66, 0x38, 0x08, false, 0, b'x', b'x', 0xff),
+    Sse4Op(0x66, 0x38, 0x09, false, 0, b'x', b'x', 0xff), Sse4Op(0x66, 0x38, 0x0a, false, 0, b'x', b'x', 0xff), Sse4Op(0x66, 0x38, 0x0b, false, 0, b'x', b'x', 0xff),
+    Sse4Op(0x66, 0x38, 0x1c, false, 0, b'x', b'x', 0xff), Sse4Op(0x66, 0x38, 0x1d, false, 0, b'x', b'x', 0xff), Sse4Op(0x66, 0x38, 0x1e, false, 0, b'x', b'x', 0xff),
+    Sse4Op(0x66, 0x3a, 0x0f, true, 0, b'x', b'x', 0xff),
+    Sse4Op(0x00, 0x38, 0x00, false, 0, b'm', b'm', 0xff), Sse4Op(0x00, 0x38, 0x04, false, 0, b'm', b'm', 0xff), Sse4Op(0x00, 0x38, 0x0b, false, 0, b'm', b'm', 0xff),
+    Sse4Op(0x00, 0x38, 0x1c, false, 0, b'm', b'm', 0xff), Sse4Op(0x00, 0x3a, 0x0f, true, 0, b'm', b'm', 0xff),
+    // SSE4.1
+    Sse4Op(0x66, 0x38, 0x10, false, 0, b'x', b'x', 0xff), Sse4Op(0x66, 0x38, 0x14, false, 32, b'x', b'x', 0xff), Sse4Op(0x66, 0x38, 0x15, false, 64, b'x', b'x', 0xff),
+    Sse4Op(0x66, 0x38, 0x17, false, 0, b'x', b'x', 0xff),
+    Sse4Op(0x66, 0x38, 0x20, false, 0, b'x', b'x', 0xff), Sse4Op(0x66, 0x38, 0x21, false, 0, b'x', b'x', 0xff), Sse4Op(0x66, 0x38, 0x22, false, 0, b'x', b'x', 0xff),
+    Sse4Op(0x66, 0x38, 0x23, false, 0, b'x', b'x', 0xff), Sse4Op(0x66, 0x38, 0x24, false, 0, b'x', b'x', 0xff), Sse4Op(0x66, 0x38, 0x25, false, 0, b'x', b'x', 0xff),
+    Sse4Op(0x66, 0x38, 0x28, false, 0, b'x', b'x', 0xff), Sse4Op(0x66, 0x38, 0x29, false, 0, b'x', b'x', 0xff), Sse4Op(0x66, 0x38, 0x2b, false, 0, b'x', b'x', 0xff),
+    Sse4Op(0x66, 0x38, 0x30, false, 0, b'x', b'x', 0xff), Sse4Op(0x66, 0x38, 0x31, false, 0, b'x', b'x', 0xff), Sse4Op(0x66, 0x38, 0x32, false, 0, b'x', b'x', 0xff),
+    Sse4Op(0x66, 0x38, 0x33, false, 0, b'x', b'x', 0xff), Sse4Op(0x66, 0x38, 0x34, false, 0, b'x', b'x', 0xff), Sse4Op(0x66, 0x38, 0x35, false, 0, b'x', b'x', 0xff),
+    Sse4Op(0x66, 0x38, 0x37, false, 0, b'x', b'x', 0xff),
+    Sse4Op(0x66, 0x38, 0x38, false, 0, b'x', b'x', 0xff), Sse4Op(0x66, 0x38, 0x39, false, 0, b'x', b'x', 0xff), Sse4Op(0x66, 0x38, 0x3a, false, 0, b'x', b'x', 0xff),
+    Sse4Op(0x66, 0x38, 0x3b, false, 0, b'x', b'x', 0xff), Sse4Op(0x66, 0x38, 0x3c, false, 0, b'x', b'x', 0xff), Sse4Op(0x66, 0x38, 0x3d, false, 0, b'x', b'x', 0xff),
+    Sse4Op(0x66, 0x38, 0x3e, false, 0, b'x', b'x', 0xff), Sse4Op(0x66, 0x38, 0x3f, false, 0, b'x', b'x', 0xff), Sse4Op(0x66, 0x38, 0x40, false, 0, b'x', b'x', 0xff),
+    Sse4Op(0x66, 0x38, 0x41, false, 0, b'x', b'x', 0xff),
+    Sse4Op(0x66, 0x3a, 0x08, true, 32, b'x', b'x', 0xff), Sse4Op(0x66, 0x3a, 0x09, true, 64, b'x', b'x', 0xff), Sse4Op(0x66, 0x3a, 0x0a, true, 32, b'x', b'x', 0xff),
+    Sse4Op(0x66, 0x3a, 0x0b, true, 64, b'x', b'x', 0xff), Sse4Op(0x66, 0x3a, 0x0c, true, 32, b'x', b'x', 0xff), Sse4Op(0x66, 0x3a, 0x0d, true, 64, b'x', b'x', 0xff),
+    Sse4Op(0x66, 0x3a, 0x0e, true, 0, b'x', b'x', 0xff), Sse4Op(0x66, 0x3a, 0x14, true, 0, b'x', b'g', 0xff), Sse4Op(0x66, 0x3a, 0x15, true, 0, b'x', b'g', 0xff),
+    Sse4Op(0x66, 0x3a, 0x16, true, 0, b'x', b'g', 0xff), Sse4Op(0x66, 0x3a, 0x17, true, 0, b'x', b'g', 0xff), Sse4Op(0x66, 0x3a, 0x20, true, 0, b'x', b'g', 0xff),
+    Sse4Op(0x66, 0x3a, 0x21, true, 32, b'x', b'x', 0xff), Sse4Op(0x66, 0x3a, 0x22, true, 0, b'x', b'g', 0xff), Sse4Op(0x66, 0x3a, 0x40, true, 32, b'x', b'x', 0xff),
+    Sse4Op(0x66, 0x3a, 0x41, true, 64, b'x', b'x', 0xff), Sse4Op(0x66, 0x3a, 0x42, true, 0, b'x', b'x', 0xff),
+];
+
+#[test]
+fn random_sse3_ssse3_sse41_ops_match_the_host_cpu() {
+    if !(std::is_x86_feature_detected!("sse4.2") && std::is_x86_feature_detected!("ssse3")) {
+        eprintln!("host CPU without SSE4.2: skipped");
+        return;
+    }
+    let native = Native::new();
+    let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+    let mut failures = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut done = 0;
+    for _ in 0..150_000 {
+        let op = &SSE4_OPS[rng.below(SSE4_OPS.len() as u64) as usize];
+        let mut insn = Vec::new();
+        if op.0 != 0 {
+            insn.push(op.0);
+        }
+        insn.push(0x0f);
+        if op.1 != 0 {
+            insn.push(op.1);
+        }
+        insn.push(op.2);
+        let pick = |rng: &mut Rng, c: u8| if c == b'g' { reg(rng, false) } else { rng.below(8) as u8 };
+        let r = if op.7 != 0xff { op.7 } else { pick(&mut rng, op.5) };
+        let m = pick(&mut rng, op.6);
+        insn.push(0xc0 | r << 3 | m);
+        if op.3 {
+            let imm = match rng.below(4) {
+                // (shift counts around the lane widths; round's mode bits; small lane indices)
+                0 => [0, 1, 7, 8, 15, 16, 17, 31, 32, 63, 64, 255][rng.below(12) as usize],
+                _ => rng.next() as u8,
+            };
+            insn.push(imm);
+        }
+        let mut cpu = Cpu::default();
+        for (i, x) in cpu.regs.iter_mut().enumerate() {
+            if i != 4 { *x = rng.value(); }
+        }
+        cpu.regs[4] = 0x8000;
+        cpu.eflags = 0x202 | (rng.next() as u32 & STATUS);
+        for x in cpu.xmm.iter_mut() {
+            *x = u128::from_le_bytes(rand_vec(&mut rng));
+        }
+        for x in cpu.mm.iter_mut() {
+            *x = u128::from_le_bytes(rand_vec(&mut rng)) as u64;
+        }
+        let before = cpu.clone();
+        let mut mem = Vecmem(vec![0; 0x10000]);
+        mem.0[0x1000..0x1000 + insn.len()].copy_from_slice(&insn);
+        cpu.eip = 0x1000;
+        let exit = step(&mut cpu, &mut mem);
+        let ins = Decoder::new(32, &insn, DecoderOptions::NONE).decode();
+        if exit != Exit::Continue {
+            if seen.insert(ins.mnemonic()) {
+                failures.push(format!("{:02x?} {:?}: {:?}", insn, ins.mnemonic(), exit));
+            }
+            continue;
+        }
+        let mut st = State::default();
+        for i in 0..8 {
+            st.r[i] = before.regs[i] as u64;
+            st.xmm[i] = before.xmm[i].to_le_bytes();
+            st.mm[i] = before.mm[i];
+        }
+        st.flags = before.eflags as u64;
+        native.run(&insn, &mut st);
+        let mut ok = (st.flags as u32 & STATUS) == (cpu.eflags & STATUS);
+        for i in 0..8 {
+            if i != 4 && st.r[i] as u32 != cpu.regs[i] { ok = false; }
+            if !lanes_equal(u128::from_le_bytes(st.xmm[i]), cpu.xmm[i], op.4) { ok = false; }
+            if st.mm[i] != cpu.mm[i] { ok = false; }
+        }
+        if !ok && seen.insert(ins.mnemonic()) {
+            let diff: Vec<String> = (0..8)
+                .filter(|&i| u128::from_le_bytes(st.xmm[i]) != cpu.xmm[i])
+                .map(|i| format!("xmm{} in {:032x} want {:032x} got {:032x}", i, before.xmm[i], u128::from_le_bytes(st.xmm[i]), cpu.xmm[i]))
+                .chain((0..8).filter(|&i| st.mm[i] != cpu.mm[i]).map(|i| format!("mm{} in {:016x} want {:016x} got {:016x}", i, before.mm[i], st.mm[i], cpu.mm[i])))
+                .chain((0..8).filter(|&i| i != 4 && st.r[i] as u32 != cpu.regs[i]).map(|i| format!("r{} in {:08x} want {:08x} got {:08x}", i, before.regs[i], st.r[i] as u32, cpu.regs[i])))
+                .collect();
+            failures.push(format!("{:02x?} {:?} flags want {:03x} got {:03x}\n  {}", insn, ins.mnemonic(), st.flags as u32 & STATUS, cpu.eflags & STATUS, diff.join("\n  ")));
+        }
+        done += 1;
+    }
+    assert!(failures.is_empty(), "{} checked, first mismatch per mnemonic:\n{}", done, failures.join("\n"));
+}

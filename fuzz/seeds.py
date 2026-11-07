@@ -120,3 +120,13 @@ write("x86_jit", [state(96, i) + c[:1024] for i, c in enumerate(code)])
 write("x86_interp", [state(32, i) + bytes([0x0F, 0x93]) + c for i, c in enumerate(code)])
 write("image", images())
 write("acm", acm())
+
+
+def vorbis():
+    # the test streams (several channel counts, rates, qualities), cut short: the fuzzer
+    # mutates headers and the first audio packets
+    d = os.path.join(os.path.dirname(ROOT), "..", "crates", "vorbis", "testdata")
+    return [open(os.path.join(d, f), "rb").read()[:16384] for f in sorted(os.listdir(d)) if f.endswith(".ogg")]
+
+
+write("vorbis", vorbis())
