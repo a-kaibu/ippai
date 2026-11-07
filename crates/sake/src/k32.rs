@@ -2834,6 +2834,49 @@ fn IsWow64Process(c: &mut Ctx) -> u32 {
     1
 }
 
+thread_local! {
+    /// The thread's file system redirection setting (nonzero: off). We are not WoW64, so it
+    /// redirects nothing; programs only read back what they set.
+    static FS_REDIR_OFF: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+/// RtlWow64EnableFsRedirectionEx(disable, &old): any value is kept as given; a bad pointer is
+/// STATUS_ACCESS_VIOLATION and changes nothing.
+fn fs_redirection(disable: u32, old: u32) -> u32 {
+    if old == 0 || is_bad(old, 4) {
+        return 0xc000_0005;
+    }
+    put32(old, FS_REDIR_OFF.with(|r| r.replace(disable)));
+    0
+}
+fn RtlWow64EnableFsRedirectionEx(c: &mut Ctx) -> u32 {
+    fs_redirection(c.a(0), c.a(1))
+}
+/// RtlWow64EnableFsRedirection(enable)
+fn RtlWow64EnableFsRedirection(c: &mut Ctx) -> u32 {
+    FS_REDIR_OFF.with(|r| r.set((c.a(0) == 0) as u32));
+    0
+}
+/// Wow64DisableWow64FsRedirection(PVOID* old)
+fn Wow64DisableWow64FsRedirection(c: &mut Ctx) -> u32 {
+    let old = c.a(0);
+    if old == 0 || is_bad(old, mem::ps()) {
+        last_error(998);
+        return 0;
+    }
+    mem::wp(old, FS_REDIR_OFF.with(|r| r.replace(1)));
+    1
+}
+/// Wow64RevertWow64FsRedirection(old)
+fn Wow64RevertWow64FsRedirection(c: &mut Ctx) -> u32 {
+    FS_REDIR_OFF.with(|r| r.set(c.a(0)));
+    1
+}
+/// Wow64EnableWow64FsRedirection(enable): BOOLEAN
+fn Wow64EnableWow64FsRedirection(c: &mut Ctx) -> u32 {
+    FS_REDIR_OFF.with(|r| r.set((c.a(0) & 0xff == 0) as u32));
+    1
+}
+
 // ---------------------------------------------------------------------------------------------
 // version, locale
 
@@ -5865,6 +5908,12 @@ pub fn init() {
     }
     implement("kernel32", "ResolveDelayLoadedAPI", ResolveDelayLoadedAPI);
     implement("kernel32", "IsBadStringPtrW", IsBadStringPtrW);
+    reg!("ntdll"; RtlWow64EnableFsRedirection, RtlWow64EnableFsRedirectionEx);
+    for d in ["kernel32", "kernelbase"] {
+        implement(d, "Wow64DisableWow64FsRedirection", Wow64DisableWow64FsRedirection);
+        implement(d, "Wow64RevertWow64FsRedirection", Wow64RevertWow64FsRedirection);
+        implement(d, "Wow64EnableWow64FsRedirection", Wow64EnableWow64FsRedirection);
+    }
     implement("kernel32", "GetUserDefaultLocaleName", GetUserDefaultLocaleName);
     implement("kernel32", "LocaleNameToLCID", LocaleNameToLCID);
     implement("ntdll", "NtQuerySystemTime", NtQuerySystemTime);

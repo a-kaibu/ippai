@@ -206,7 +206,7 @@ ncrypt:ncrypt	fail	130	305
 ntdll:alpc	fail	1340	1704
 ntdll:atom	crash	0	0
 ntdll:change	fail	46	82
-ntdll:directory	fail	17	6321
+ntdll:directory	fail	11	6322
 ntdll:env	crash	59	0
 ntdll:error	fail	1447	1448
 ntdll:exception	crash	42	0
@@ -256,7 +256,7 @@ oleaut32:vartest	crash	0	0
 oleaut32:vartype	timeout	1021009	0
 pdh:pdh	crash	45	0
 propsys:propsys	crash	14	0
-psapi:psapi_main	fail	66	333
+psapi:psapi_main	fail	67	333
 quartz:acmwrapper	crash	1	0
 quartz:avidec	crash	2	0
 quartz:avisplit	ok	0	0
