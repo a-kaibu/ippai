@@ -1,5 +1,10 @@
 lock 0
 owns 1
+self try 3
+self lock 3
+plain 0
+plain owns 1
+plain released 0
 trylock held elsewhere 3
 unlock 0
 owns after 0

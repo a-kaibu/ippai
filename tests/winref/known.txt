@@ -114,3 +114,9 @@ res-* ^(want|got) +item 0: 1 id \d+ type 0 state 0 sub 1 text \[&File\] cch 5$  
 # .ttf files in a game's store or one msgothic.ttc from `ippai ttc`: other design metrics, and the
 # file, its type and face count differ when the store has the .ttf files
 dwfont-* ^(want|got) +(metrics em|face 00000000 type|local loader|analyze)
+# the runner's VMR-9 (Direct3D 9) doesn't connect in windowless mode (its session has no
+# device for it): RenderFile goes to another renderer, so the VMR-9's size and positions stay
+# empty and the graph's own video window answers. The VMR-7 lines are the reference.
+dshow-* ^(want|got) +vmr9: (GetNativeVideoSize 0|GetVideoPosition|SetVideoPosition src [08]|get_Visible|GetVideoSize|GetCurrentImage|RepaintVideo)
+# the screen plus 1 each way: the runner's is 1024x768, sake's 1366x768
+dshow-* ^(want|got) +vmr[79]: GetMaxIdealVideoSize 00000000 (1025|1367)x769$

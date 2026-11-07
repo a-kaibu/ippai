@@ -1647,11 +1647,18 @@ fn wl_native(c: &mut Ctx) -> u32 {
     }
     0
 }
-/// Get{Min,Max}IdealVideoSize(w, h)
-fn wl_ideal(c: &mut Ctx) -> u32 {
-    let v = native(wl_block(c));
-    put32(c.a(1), v.0 as u32);
-    put32(c.a(2), v.1 as u32);
+/// GetMinIdealVideoSize(w, h): 1x1, as Windows answers (tests/winref dshow)
+fn wl_min_ideal(c: &mut Ctx) -> u32 {
+    put32(c.a(1), 1);
+    put32(c.a(2), 1);
+    0
+}
+/// GetMaxIdealVideoSize(w, h): one more than the screen each way (Windows on a 1024x768 screen:
+/// 1025x769)
+fn wl_max_ideal(c: &mut Ctx) -> u32 {
+    let (w, h) = crate::user::screen();
+    put32(c.a(1), (w + 1) as u32);
+    put32(c.a(2), (h + 1) as u32);
     0
 }
 fn rect_at(p: u32) -> (i32, i32, i32, i32) {
@@ -1790,8 +1797,8 @@ fn vmr(iid: u32) -> Option<u32> {
         let mut wl = unk(q2);
         wl.extend([
             (wl_native as Handler, 20),
-            (wl_ideal, 12), // GetMinIdealVideoSize
-            (wl_ideal, 12), // GetMaxIdealVideoSize
+            (wl_min_ideal, 12),
+            (wl_max_ideal, 12),
             (wl_set_pos, 12),
             (wl_get_pos, 12),
             (wl_get_mode, 8),
