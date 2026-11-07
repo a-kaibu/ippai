@@ -28,6 +28,12 @@ crt_math-64 ^(want|got) +ulp 1 (sin|cos|tan)\((3.14159265358979|1.00000000000000
 crt_math-64 ^(want|got) +ulp 1 pow\(
 # Direct3D 9 on the Windows runner is WARP: its limits are its own (a GPU's differ too).
 d3d9-* ^(want|got) +caps vs .* maxtex 
+# Direct3D 9 state blocks on the runner: a float constant tested on its own (vsf 239-255 and
+# 1000, psf 128-223, after the render state loop) does not come back from a block there, while
+# the sweep of every register right after ("vsf runs all 0-8191", "psf runs all 0-223", same
+# calls) brings all of them back, and sake matches the sweep (kura's
+# d3d9_state_block_constants_as_windows); the single lines depend on what ran before on WARP
+d3d9sb-* ^(want|got) +(vsf|psf) [0-9]+ all 
 d3d9-* ^(want|got) +caps blend src 
 # StretchRect with D3DTEXF_NONE: WARP filters linearly, GPUs' drivers use point (sake: point)
 d3d9-* ^image surfaces:

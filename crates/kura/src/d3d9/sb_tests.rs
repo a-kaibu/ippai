@@ -366,3 +366,55 @@ fn d3d9_state_block_trace() {
         check(&steps, seed);
     }
 }
+
+/// Every float constant through a block of each type on a software vertex processing device,
+/// as winref d3d9sb's runs on Windows (golden 140122a): D3DSBT_ALL and D3DSBT_VERTEXSTATE hold
+/// all 8192 vertex shader constants, D3DSBT_ALL and D3DSBT_PIXELSTATE all 224 pixel shader
+/// ones, and neither holds the other's.
+#[test]
+fn d3d9_state_block_constants_as_windows() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        let vt: Vec<u32> = (1..=64).map(|i| 0x1000 * i).collect();
+        vnhost_d3d9_init(vt.as_ptr(), vt.len() as u32);
+    }
+    let o = mem(4);
+    unsafe { vnhost_d3d9_create(0x20, o as *mut u32, &CALLS) };
+    let d3d = rd(o, 0);
+    let pp = mem(14);
+    for (i, x) in [64, 64, 22, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0].into_iter().enumerate() {
+        wr(pp, i as u32, x);
+    }
+    // (D3DCREATE_SOFTWARE_VERTEXPROCESSING)
+    assert_eq!(call(IF_D3D9, 16, &[d3d, 0, 1, 1, 0x20, pp, o]), 0);
+    let dev = rd(o, 0);
+    let b = mem(4);
+    let set = |m: u32, i: u32, v: f32| {
+        wr(b, 0, v.to_bits());
+        assert_eq!(call(IF_DEVICE, m, &[dev, i, b, 1]), 0);
+    };
+    let get = |m: u32, i: u32| {
+        wr(b, 0, 0);
+        assert_eq!(call(IF_DEVICE, m + 1, &[dev, i, b, 1]), 0);
+        f32::from_bits(rd(b, 0))
+    };
+    // (SetVertexShaderConstantF 94, SetPixelShaderConstantF 109; types ALL 1, PIXEL 2, VERTEX 3)
+    for (m, n, held_by) in [(94u32, 8192u32, [true, false, true]), (109, 224, [true, true, false])] {
+        for i in 0..n {
+            for (t, &want) in held_by.iter().enumerate() {
+                set(m, i, 3.0);
+                assert_eq!(call(IF_DEVICE, 59, &[dev, t as u32 + 1, o]), 0);
+                let sb = rd(o, 0);
+                set(m, i, 4.0);
+                assert_eq!(call(IF_STATEBLOCK, 5, &[sb]), 0);
+                assert_eq!(get(m, i) == 3.0, want, "method {m} register {i} type {}", t + 1);
+                call(IF_STATEBLOCK, 2, &[sb]);
+            }
+        }
+        // (past the last register: refused)
+        wr(b, 0, 0);
+        assert_ne!(call(IF_DEVICE, m, &[dev, n, b, 1]), 0);
+    }
+    call(IF_DEVICE, 2, &[dev]);
+    call(IF_D3D9, 2, &[d3d]);
+}
