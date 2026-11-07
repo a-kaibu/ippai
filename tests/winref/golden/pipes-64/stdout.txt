@@ -100,3 +100,22 @@ CloseHandle(m2)                                                                =
 in1 != INVALID_HANDLE_VALUE                                                    = 1 err 57005
 client ippai_probe_in valid 0 err 5
 client ippai_probe_in valid 1 err 0
+write 'up' 1 err 57005 wrote 2
+read(10) 1 err 57005 got 2 'up'
+write 'down' 0 err 5 wrote 0
+CloseHandle(cw)                                                                = 1 err 57005
+CloseHandle(in1)                                                               = 1 err 57005
+ConnectNamedPipe(ov, &o)                                                       = 0 err 997
+WaitForSingleObject(o.hEvent, 0)                                               = 258 err 57005
+client ippai_probe_ov valid 1 err 0
+WaitForSingleObject(o.hEvent, 0)                                               = 0 err 57005
+GetOverlappedResult(ov, &o, &got, FALSE)                                       = 1 err 0
+write 'ovl' 1 err 57005 wrote 3
+ReadFile(ov, buf, 100, NULL, &o)                                               = 1 err 57005
+GetOverlappedResult(ov, &o, &got, TRUE)                                        = 1 err 0
+overlapped read 3 'ovl'
+ReadFile(ov, buf, 100, NULL, &o)                                               = 0 err 997
+CancelIo(ov)                                                                   = 1 err 57005
+GetOverlappedResult(ov, &o, &got, TRUE)                                        = 0 err 995
+CloseHandle(oc)                                                                = 1 err 57005
+CloseHandle(ov)                                                                = 1 err 57005

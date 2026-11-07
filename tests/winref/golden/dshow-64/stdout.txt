@@ -56,3 +56,71 @@ position at the stop 5000000
 put_Visible 00000000
 put_Owner 0 00000000
 released
+vmr7: create 00000000
+vmr7: AddFilter 00000000
+vmr7: windowless control before the mode 80004002
+vmr7: filter config 00000000
+vmr7: GetRenderingMode 00000000 1
+vmr7: SetRenderingMode 00000000
+vmr7: GetRenderingMode now 00000000 2
+vmr7: windowless control 00000000
+vmr7: SetVideoClippingWindow 00000000
+vmr7: GetNativeVideoSize before 00000000 0x0 0:0
+vmr7: RenderFile 00000000
+vmr7: our renderer among the filters 1
+vmr7: GetNativeVideoSize 00000000 64x48 64:48
+vmr7: GetMinIdealVideoSize 00000000 1x1
+vmr7: GetMaxIdealVideoSize 00000000 1025x769
+vmr7: GetAspectRatioMode 00000000 0
+vmr7: GetVideoPosition 00000000 src 0 0 64 48 dst 0 0 0 0
+vmr7: SetVideoPosition dst 00000000
+vmr7: SetVideoPosition src 00000000
+vmr7: SetVideoPosition src too big 80070057
+vmr7: SetVideoPosition none 80004003
+vmr7: GetVideoPosition now 00000000 src 0 0 32 24 dst 8 4 136 100
+vmr7: SetAspectRatioMode 00000000
+vmr7: GetAspectRatioMode now 00000000 1
+vmr7: get_Visible 80004002
+vmr7: GetVideoSize 80004002
+vmr7: GetCurrentImage 00000000 64x48 32 bits top frame 0
+vmr7: RepaintVideo 00000000
+vmr7: DisplayModeChanged 00000000
+vmr7: SetBorderColor 00000000
+vmr7: GetBorderColor 00000000 123456
+vmr7: Run 00000000
+vmr7 run: EC_COMPLETE p1 00000000 after the expected time
+vmr7: released
+vmr9: create 00000000
+vmr9: AddFilter 00000000
+vmr9: windowless control before the mode 80004002
+vmr9: filter config 00000000
+vmr9: GetRenderingMode 00000000 1
+vmr9: SetRenderingMode 00000000
+vmr9: GetRenderingMode now 00000000 2
+vmr9: windowless control 00000000
+vmr9: SetVideoClippingWindow 00000000
+vmr9: GetNativeVideoSize before 00000000 0x0 0:0
+vmr9: RenderFile 00000000
+vmr9: our renderer among the filters 1
+vmr9: GetNativeVideoSize 00000000 0x0 0:0
+vmr9: GetMinIdealVideoSize 00000000 1x1
+vmr9: GetMaxIdealVideoSize 00000000 1025x769
+vmr9: GetAspectRatioMode 00000000 0
+vmr9: GetVideoPosition 00000000 src 0 0 0 0 dst 0 0 0 0
+vmr9: SetVideoPosition dst 00000000
+vmr9: SetVideoPosition src 80070057
+vmr9: SetVideoPosition src too big 80070057
+vmr9: SetVideoPosition none 80004003
+vmr9: GetVideoPosition now 00000000 src 0 0 0 0 dst 8 4 136 100
+vmr9: SetAspectRatioMode 00000000
+vmr9: GetAspectRatioMode now 00000000 1
+vmr9: get_Visible 00000000
+vmr9: GetVideoSize 00000000
+vmr9: GetCurrentImage 80004005
+vmr9: RepaintVideo 8004020c
+vmr9: DisplayModeChanged 00000000
+vmr9: SetBorderColor 00000000
+vmr9: GetBorderColor 00000000 123456
+vmr9: Run 00000000
+vmr9 run: EC_COMPLETE p1 00000000 after the expected time
+vmr9: released

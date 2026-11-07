@@ -7,7 +7,7 @@ family [004d005300200047006f0074006800690063] 00000000 exists 1
   has 41:1 3042:1 6f22:1 ff21:1 2460:1 1f600:0
   metrics em 256 asc 220 desc 36 gap 0 cap 174 x 115 ul -17 19 st 66 13
   face 00000000 type 2 index 0 files 1
-  local loader 00000000 path 00000000 len ok 0 msgothic.ttc short 8007007a
+  local loader 00000000 path 00000000 len 29 msgothic.ttc short 8007007a
   analyze 00000000 1 3 2 3
   from face 00000000 MS Gothic
 family [ff2dff33002030b430b730c330af] 00000000 exists 1
@@ -17,7 +17,7 @@ family [ff2dff33002030b430b730c330af] 00000000 exists 1
   has 41:1 3042:1 6f22:1 ff21:1 2460:1 1f600:0
   metrics em 256 asc 220 desc 36 gap 0 cap 174 x 115 ul -17 19 st 66 13
   face 00000000 type 2 index 0 files 1
-  local loader 00000000 path 00000000 len ok 0 msgothic.ttc short 8007007a
+  local loader 00000000 path 00000000 len 29 msgothic.ttc short 8007007a
   analyze 00000000 1 3 2 3
   from face 00000000 MS Gothic
 family [006d0073002000700067006f0074006800690063] 00000000 exists 1
@@ -27,7 +27,7 @@ family [006d0073002000700067006f0074006800690063] 00000000 exists 1
   has 41:1 3042:1 6f22:1 ff21:1 2460:1 1f600:0
   metrics em 256 asc 220 desc 36 gap 0 cap 174 x 115 ul -17 19 st 66 13
   face 00000000 type 2 index 2 files 1
-  local loader 00000000 path 00000000 len ok 0 msgothic.ttc short 8007007a
+  local loader 00000000 path 00000000 len 29 msgothic.ttc short 8007007a
   analyze 00000000 1 3 2 3
   from face 00000000 MS PGothic
 family [004d005300200055004900200047006f0074006800690063] 00000000 exists 1
@@ -37,11 +37,18 @@ family [004d005300200055004900200047006f0074006800690063] 00000000 exists 1
   has 41:1 3042:1 6f22:1 ff21:1 2460:1 1f600:0
   metrics em 256 asc 220 desc 36 gap 0 cap 174 x 115 ul -17 19 st 66 13
   face 00000000 type 2 index 1 files 1
-  local loader 00000000 path 00000000 len ok 0 msgothic.ttc short 8007007a
+  local loader 00000000 path 00000000 len 29 msgothic.ttc short 8007007a
   analyze 00000000 1 3 2 3
   from face 00000000 MS UI Gothic
-family [004d00530020004d0069006e00630068006f] 00000000 exists 0
-family [ff2dff330020ff30660e671d] 00000000 exists 0
 fallback 00000000
 number substitution 00000000 1
-  map [006100620063304230443046] at 0 00000000 mapped 6 scale 100 font MS Gothic
+  map [006100620063304230443046] at 0
+   00000000 mapped 6 scale 100 font MS Gothic
+  map [6f225b570020006100620063] at 0
+   00000000 mapped 6 scale 100 font MS PGothic
+  map [ff21ff2230003042] at 0
+   00000000 mapped 4 scale 100 font MS Gothic
+  map [00780079007a30423044] at 3
+   00000000 mapped 2 scale 100 font MS UI Gothic
+  map [304230443046] at 1
+   00000000 mapped 2 scale 100 font MS PGothic
