@@ -395,12 +395,12 @@ async fn read_parts(dir: &std::path::Path, name: &str) -> Vec<(Vec<u8>, Vec<save
 /// Adds the regions `new_idx` (the functions of `new_wasm`) to `name`'s parts, those not saved
 /// already.
 async fn add_part(dir: &std::path::Path, name: &str, new_wasm: Vec<u8>, new_idx: Vec<saved::Entry>) -> StatusCode {
-    // (a game's regions stop growing once its code paths have run; this only bounds a runaway)
-    const MAX_BYTES: u64 = 256 << 20;
+    add_part_within(dir, name, new_wasm, new_idx, (JIT_MAX_BYTES, JIT_DISK_MAX_BYTES)).await
+}
+
+/// [`add_part`] with these limits (modules, disk).
+async fn add_part_within(dir: &std::path::Path, name: &str, new_wasm: Vec<u8>, new_idx: Vec<saved::Entry>, max: (u64, u64)) -> StatusCode {
     let path = |ext: &str| dir.join(format!("{name}.{ext}"));
-    if tokio::fs::metadata(path("wasm")).await.is_ok_and(|m| m.len() > MAX_BYTES) {
-        return StatusCode::INSUFFICIENT_STORAGE;
-    }
     let mut parts = read_parts(dir, name).await;
     let new_wasm = &new_wasm[..];
     // the new module's functions to keep
@@ -410,12 +410,19 @@ async fn add_part(dir: &std::path::Path, name: &str, new_wasm: Vec<u8>, new_idx:
     }
     let fresh = if keep.iter().all(|&k| k) { Some(new_wasm.to_vec()) } else { wasm::select(new_wasm, &saved::keep_funcs(&new_idx, &keep)) };
     let Some(fresh) = fresh else { return StatusCode::BAD_REQUEST };
+    // (a game's regions stop growing once its code paths have run; this only bounds a runaway:
+    // all the parts' modules, and on the disk with the optimized copies besides)
+    let modules: u64 = parts.iter().map(|(w, _)| w.len() as u64).sum::<u64>() + fresh.len() as u64;
+    if modules > max.0 || on_disk(dir, name).await + fresh.len() as u64 > max.1 {
+        return StatusCode::INSUFFICIENT_STORAGE;
+    }
     let fresh_idx: Vec<saved::Entry> = new_idx.into_iter().zip(&keep).filter(|x| *x.1).map(|x| x.0).collect();
     // A save goes in a part of its own: the parts the browser has already compiled stay as
     // they are (and their compiled code in its cache). Past PARTS_MAX they become one again.
     let old_parts = parts.len();
     parts.push((fresh, fresh_idx));
-    if parts.len() > PARTS_MAX {
+    let merged = parts.len() > PARTS_MAX;
+    if merged {
         let entries: Vec<saved::Entry> = parts.iter().flat_map(|(_, e)| e.iter().cloned()).collect();
         let names = saved::func_names(&entries);
         let mods: Vec<&[u8]> = parts.iter().map(|(w, _)| &w[..]).collect();
@@ -428,8 +435,9 @@ async fn add_part(dir: &std::path::Path, name: &str, new_wasm: Vec<u8>, new_idx:
         for (k, (w, e)) in parts.iter().enumerate() {
             let stem = if k == 0 { String::new() } else { format!("{k}.") };
             let idx = saved::encode(e);
-            // parts the browser has already compiled stay as they are
-            if parts.len() > old_parts || k + 1 == parts.len() {
+            // parts already on the disk stay as they are (the browser has compiled them): only
+            // the new one is written, or the one they were merged into
+            if merged || k >= old_parts {
                 let (tw, ti) = (path(&format!("{stem}wasm.tmp")), path(&format!("{stem}idx.tmp")));
                 tokio::fs::write(&tw, w).await?;
                 tokio::fs::write(&ti, &idx).await?;
@@ -467,6 +475,26 @@ async fn add_part(dir: &std::path::Path, name: &str, new_wasm: Vec<u8>, new_idx:
 
 /// Saved-region parts of a program at most (see save_jit)
 const PARTS_MAX: usize = 8;
+
+/// A program's saved regions at most: the modules of all its parts, and its files on the disk
+/// (the parts, their indexes, the optimized copies). A save past them gets 507 (the page does
+/// not send it again: kura jit.rs Ack::Refused).
+const JIT_MAX_BYTES: u64 = 256 << 20;
+const JIT_DISK_MAX_BYTES: u64 = 512 << 20;
+
+/// The bytes of `name`'s files in `dir` (`<name>.*`).
+async fn on_disk(dir: &std::path::Path, name: &str) -> u64 {
+    let mut n = 0;
+    let prefix = format!("{name}.");
+    if let Ok(mut d) = tokio::fs::read_dir(dir).await {
+        while let Ok(Some(e)) = d.next_entry().await {
+            if e.file_name().to_string_lossy().starts_with(&prefix) {
+                n += e.metadata().await.map_or(0, |m| m.len());
+            }
+        }
+    }
+    n
+}
 
 /// A part's version in `<name>.parts` (the browser's `?v=`, so its compiled-code cache, and the
 /// optimized copy's name): BLAKE3 of the module and its index, 64 bits in hex. (It was FNV-1a
@@ -875,6 +903,96 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
 #[cfg(test)]
 mod tests {
     use axum::http::Request;
+    use koji::jit::{saved, wasm};
+
+    /// A module shaped like the translators' with `n` functions (`seed` makes it another).
+    fn module(n: usize, seed: i32) -> Vec<u8> {
+        let mut m = wasm::Module::default();
+        m.types.push(wasm::FuncType { params: vec![wasm::I32], results: vec![wasm::I32] });
+        m.imports.push(wasm::Import::Memory);
+        m.imports.push(wasm::Import::Func("step", 0));
+        m.imports.push(wasm::Import::Table("table"));
+        for k in 0..n {
+            let mut code = wasm::Code::default();
+            code.get(0).i32c(seed * 1000 + k as i32).op(0x6a);
+            m.funcs.push(wasm::Func { ty: 0, locals: vec![], code });
+        }
+        m.finish()
+    }
+
+    /// `n` regions from `base` (one function each).
+    fn regions(n: u32, base: u32) -> Vec<saved::Entry> {
+        (0..n)
+            .map(|i| saved::Entry { roots: vec![base + i * 16], starts: vec![(base + i * 16, 0)], code: vec![(base + i * 16, 4)], text: (base + i).to_le_bytes().to_vec(), build: 0, sites: vec![] })
+            .collect()
+    }
+
+    fn scratch(what: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("ippai-{what}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn ino(p: std::path::PathBuf) -> (u64, std::time::SystemTime) {
+        let m = std::fs::metadata(p).unwrap();
+        (std::os::unix::fs::MetadataExt::ino(&m), m.modified().unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_new_part_leaves_the_others_on_the_disk_as_they_are() {
+        let d = scratch("parts");
+        let n = "sake-x-0";
+        let add = |k: u32| super::add_part(&d, n, module(4, k as i32), regions(4, 0x1000 * (k + 1)));
+        assert_eq!(add(0).await, axum::http::StatusCode::NO_CONTENT);
+        assert_eq!(add(1).await, axum::http::StatusCode::NO_CONTENT);
+        let before = [ino(d.join(format!("{n}.wasm"))), ino(d.join(format!("{n}.idx"))), ino(d.join(format!("{n}.1.wasm"))), ino(d.join(format!("{n}.1.idx")))];
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert_eq!(add(2).await, axum::http::StatusCode::NO_CONTENT);
+        let after = [ino(d.join(format!("{n}.wasm"))), ino(d.join(format!("{n}.idx"))), ino(d.join(format!("{n}.1.wasm"))), ino(d.join(format!("{n}.1.idx")))];
+        assert_eq!(before, after, "parts 0 and 1 not written again");
+        assert!(d.join(format!("{n}.2.wasm")).is_file());
+        let list = std::fs::read_to_string(d.join(format!("{n}.parts"))).unwrap();
+        assert_eq!(list.lines().count(), 3, "{list}");
+        // the same regions again: nothing
+        assert_eq!(add(2).await, axum::http::StatusCode::NO_CONTENT);
+        assert!(!d.join(format!("{n}.3.wasm")).exists());
+        // past PARTS_MAX they become one, the others' files gone
+        for k in 3..=super::PARTS_MAX as u32 {
+            assert_eq!(add(k).await, axum::http::StatusCode::NO_CONTENT);
+        }
+        let parts = super::read_parts(&d, n).await;
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].1.len(), 4 * (super::PARTS_MAX + 1));
+        assert!(wasm::check(&parts[0].0, 4 * (super::PARTS_MAX + 1)));
+        assert!(!d.join(format!("{n}.1.wasm")).exists() && !d.join(format!("{n}.1.idx")).exists());
+        assert_eq!(std::fs::read_to_string(d.join(format!("{n}.parts"))).unwrap().lines().count(), 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[tokio::test]
+    async fn the_limit_is_all_the_parts() {
+        let d = scratch("limit");
+        let n = "sake-y-0";
+        let one = module(4, 0).len() as u64;
+        // room for two parts' modules, not three (each well below the limit on its own)
+        let max = (2 * one + one / 2, u64::MAX);
+        let add = |k: u32| super::add_part_within(&d, n, module(4, k as i32), regions(4, 0x1000 * (k + 1)), max);
+        assert_eq!(add(0).await, axum::http::StatusCode::NO_CONTENT);
+        assert_eq!(add(1).await, axum::http::StatusCode::NO_CONTENT);
+        assert_eq!(add(2).await, axum::http::StatusCode::INSUFFICIENT_STORAGE);
+        assert_eq!(super::read_parts(&d, n).await.len(), 2, "nothing written");
+        // and the disk: an optimized copy counts
+        let used = super::on_disk(&d, n).await;
+        std::fs::write(d.join(format!("{n}.0123456789abcdef.opt.wasm")), vec![0u8; 100]).unwrap();
+        assert_eq!(super::on_disk(&d, n).await, used + 100);
+        let nine = module(4, 9).len() as u64;
+        let disk = (u64::MAX, used + nine + 50);
+        assert_eq!(super::add_part_within(&d, n, module(4, 9), regions(4, 0x9000), disk).await, axum::http::StatusCode::INSUFFICIENT_STORAGE);
+        let disk = (u64::MAX, used + 100 + nine);
+        assert_eq!(super::add_part_within(&d, n, module(4, 9), regions(4, 0x9000), disk).await, axum::http::StatusCode::NO_CONTENT);
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     #[test]
     fn part_version_follows_module_and_index() {
