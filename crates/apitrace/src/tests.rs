@@ -411,6 +411,7 @@ fn the_layouts_are_the_headers() {
     assert_eq!((hwnd.off, &hwnd.ty), ([28, 32], &Ty::Hwnd));
     assert_eq!(l.records["8._D3DPRESENT_PARAMETERS_"].size, [52, 56]);
     assert_eq!(l.functions["D3D11CreateDevice"].1.len(), 10);
+    assert_eq!(l.functions["CreateDXGIFactory2"].1.len(), 3);
     assert!(Layouts::parse("R x 1 1 struct t\n 0 0 a q9\n").is_err());
     assert!(Layouts::parse(" 0 0 a i4\n").is_err());
     assert!(Layouts::parse("V I -\n x Foo i4\n").is_err());
@@ -463,6 +464,39 @@ fn d3d8_shader_handles_follow_the_device() {
     let Arg::OutObj(h) = a[3] else { panic!("{a:?}") };
     assert_eq!(call_of(&r[3]).2[1], Arg::Handle(h));
     assert_eq!(call_of(&r[4]).2[1], Arg::Word(0x144));
+}
+
+/// A DXGI 1.3+ start (dl_RJ365650): CreateDXGIFactory2, the adapter from
+/// EnumAdapterByGpuPreference, D3D11CreateDevice on it (driver type UNKNOWN). Without the factory
+/// the adapter was no object, the device got none and Windows answered E_INVALIDARG.
+#[test]
+fn a_dxgi_factory2_start_converts() {
+    for bits in [32, 64] {
+        let mut w = Writer::new(&[]);
+        let base = if bits == 64 { 0x1_0000_0000u64 } else { 0 };
+        let o = |a: u64| Value::Opaque(base + a);
+        let guid = || st("GUID", &["Data1", "Data2", "Data3", "Data4"], vec![Value::UInt(1), Value::UInt(2), Value::UInt(3), Value::Array(vec![Value::UInt(4); 8])]);
+        let cf = f("CreateDXGIFactory2", &["Flags", "riid", "ppFactory"]);
+        let n = w.enter(0, &cf, &[(0, Value::UInt(1)), (1, guid())]);
+        w.leave(n, &[(2, Value::Array(vec![o(0x100)]))], Some(&Value::UInt(0)), false);
+        let ea = f("IDXGIFactory7::EnumAdapterByGpuPreference", &["this", "Adapter", "GpuPreference", "riid", "ppvAdapter"]);
+        let n = w.enter(0, &ea, &[(0, o(0x100)), (1, Value::UInt(0)), (2, Value::UInt(2)), (3, guid())]);
+        w.leave(n, &[(4, Value::Array(vec![o(0x200)]))], Some(&Value::UInt(0)), false);
+        let cd = f("D3D11CreateDevice", &["pAdapter", "DriverType", "Software", "Flags", "pFeatureLevels", "FeatureLevels", "SDKVersion", "ppDevice", "pFeatureLevel", "ppImmediateContext"]);
+        let n = w.enter(0, &cd, &[(0, o(0x200)), (1, Value::UInt(0)), (2, Value::Null), (3, Value::UInt(0x20)), (4, Value::Null), (5, Value::UInt(0)), (6, Value::UInt(7))]);
+        w.leave(n, &[(7, Value::Array(vec![o(0x300)])), (8, Value::Null), (9, Value::Array(vec![o(0x400)]))], Some(&Value::UInt(0)), false);
+        let (out, stats) = replay::convert(&w.b, None).unwrap();
+        assert_eq!(stats.ptrbits, bits);
+        assert!(stats.dropped.is_empty(), "{stats:?}");
+        let r = calls(&out);
+        assert_eq!(r.len(), 3, "{r:?}");
+        let (name, _, a) = call_of(&r[0]);
+        assert_eq!((name, a[0].clone(), a[2].clone()), ("CreateDXGIFactory2", Arg::Word(1), Arg::OutObj(1)));
+        assert_eq!(call_of(&r[1]).2[0], Arg::Handle(1));
+        assert_eq!(call_of(&r[1]).2[4], Arg::OutObj(2));
+        // (the adapter is the factory's object 2: the device is made on it)
+        assert_eq!(call_of(&r[2]).2[..2], [Arg::Handle(2), Arg::Word(0)]);
+    }
 }
 
 /// A D3D11 session: Map / memcpy / Unmap of a buffer and a texture, views bound by arrays of

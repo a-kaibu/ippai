@@ -29,7 +29,7 @@ TUS = {
 FUNCTIONS = {
     "d3d9": ["Direct3DCreate9", "Direct3DCreate9Ex"],
     "d3d8": ["Direct3DCreate8"],
-    "d3d11": ["D3D11CreateDevice", "D3D11CreateDeviceAndSwapChain", "CreateDXGIFactory", "CreateDXGIFactory1"],
+    "d3d11": ["D3D11CreateDevice", "D3D11CreateDeviceAndSwapChain", "CreateDXGIFactory", "CreateDXGIFactory1", "CreateDXGIFactory2"],
 }
 INTS = {
     "char": "i1", "signed char": "i1", "unsigned char": "i1", "_Bool": "i1",

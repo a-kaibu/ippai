@@ -2535,6 +2535,7 @@ V IUnknown -
  2 Release i4 
 F CreateDXGIFactory hr *S:_GUID,**v
 F CreateDXGIFactory1 hr *S:_GUID,**v
+F CreateDXGIFactory2 hr i4,*S:_GUID,**v
 F D3D11CreateDevice hr *O:IDXGIAdapter,i4,*S:HINSTANCE__,i4,*i4,i4,i4,**O:ID3D11Device,*i4,**O:ID3D11DeviceContext
 F D3D11CreateDeviceAndSwapChain hr *O:IDXGIAdapter,i4,*S:HINSTANCE__,i4,*i4,i4,i4,*S:DXGI_SWAP_CHAIN_DESC,**O:IDXGISwapChain,**O:ID3D11Device,*i4,**O:ID3D11DeviceContext
 F Direct3DCreate8 *O:IDirect3D8 i4
