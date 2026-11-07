@@ -230,11 +230,46 @@ static void ramp16(const GUID *g, int channels, const char *name) {
     IWICBitmap_Release(b);
 }
 
+/* CreateComponentInfo of each pixel format (AdvHD asks it for the bits per pixel of what it
+ * decodes): IWICPixelFormatInfo2's answers; a GUID that is no component: not found */
+static void format_infos(void) {
+    for (unsigned i = 0; i < sizeof formats / sizeof *formats; i++) {
+        IWICComponentInfo *ci = NULL;
+        HRESULT hr = IWICImagingFactory_CreateComponentInfo(wic, formats[i].g, &ci);
+        if (FAILED(hr)) { printf("info %s %#lx\n", formats[i].n, hr); continue; }
+        IWICPixelFormatInfo2 *pi = NULL;
+        HRESULT hq = IWICComponentInfo_QueryInterface(ci, &IID_IWICPixelFormatInfo2, (void **)&pi);
+        WICComponentType ty = 0;
+        IWICComponentInfo_GetComponentType(ci, &ty);
+        GUID g = { 0 }, cl = { 0 };
+        UINT bits = 0, ch = 0;
+        BOOL tr = 7;
+        WICPixelFormatNumericRepresentation num = 77;
+        if (pi) {
+            IWICPixelFormatInfo2_GetFormatGUID(pi, &g);
+            IWICPixelFormatInfo2_GetCLSID(pi, &cl);
+            IWICPixelFormatInfo2_GetBitsPerPixel(pi, &bits);
+            IWICPixelFormatInfo2_GetChannelCount(pi, &ch);
+            IWICPixelFormatInfo2_SupportsTransparency(pi, &tr);
+            IWICPixelFormatInfo2_GetNumericRepresentation(pi, &num);
+            IWICPixelFormatInfo2_Release(pi);
+        }
+        printf("info %s qi %#lx type %d guid %d clsid %d bits %u channels %u transparency %d numeric %d\n", formats[i].n, hq, ty,
+               IsEqualGUID(&g, formats[i].g), IsEqualGUID(&cl, formats[i].g), bits, ch, tr, num);
+        IWICComponentInfo_Release(ci);
+    }
+    static const GUID none = { 0x12345678, 0x1234, 0x5678, { 1, 2, 3, 4, 5, 6, 7, 8 } };
+    IWICComponentInfo *ci = (void *)1;
+    HRESULT hr = IWICImagingFactory_CreateComponentInfo(wic, &none, &ci);
+    printf("info unknown %#lx out %d\n", hr, ci == NULL);
+}
+
 int main(void) {
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     HRESULT hr = CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, &IID_IWICImagingFactory, (void **)&wic);
     printf("WICImagingFactory %#lx\n", hr);
     if (!wic) return 1;
+    format_infos();
     conversions();
     palettes();
     flips();

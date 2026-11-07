@@ -8,7 +8,7 @@ import os, re, sys
 
 IFACES = [  # (number, interface whose vtable is used)
     (64, 'IDXGIFactory2'), (65, 'IDXGIAdapter1'), (66, 'IDXGIOutput'), (67, 'IDXGISwapChain1'),
-    (68, 'IDXGIDevice3'), (69, 'IDXGISurface1'), (70, 'ID3D11Device5'), (71, 'ID3D11DeviceContext4'),
+    (68, 'IDXGIDevice3'), (69, 'IDXGISurface2'), (70, 'ID3D11Device5'), (71, 'ID3D11DeviceContext4'),
     (72, 'ID3D11Buffer'), (73, 'ID3D11Texture1D'), (74, 'ID3D11Texture2D'), (75, 'ID3D11Texture3D'),
     (76, 'ID3D11ShaderResourceView'), (77, 'ID3D11RenderTargetView'), (78, 'ID3D11DepthStencilView'),
     (79, 'ID3D11UnorderedAccessView'), (80, 'ID3D11VertexShader'), (81, 'ID3D11PixelShader'),

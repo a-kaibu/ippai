@@ -76,6 +76,7 @@ pub mod seh;
 pub mod seh64;
 pub mod cxx;
 pub mod cxx64;
+pub mod rtti;
 pub mod msvcp;
 mod msvcp_io;
 mod msvcp_loc;
@@ -671,6 +672,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     seh::register();
     seh64::register();
     cxx::init();
+    rtti::init();
     d3d11::register();
     guest::bind_host();
     snap::init();

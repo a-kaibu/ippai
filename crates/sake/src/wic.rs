@@ -93,6 +93,8 @@ enum Obj {
         fmt: Fmt,
         raw: Option<(Vec<u8>, u32)>,
     },
+    /// IWICPixelFormatInfo2 of a pixel format (CreateComponentInfo)
+    FormatInfo(Fmt),
     /// IWICBitmapLock: the bitmap, the rectangle and the guest copy of its pixels
     Lock {
         bitmap: Arc<Mutex<Img>>,
@@ -1193,6 +1195,87 @@ fn lock_format(c: &mut Ctx) -> u32 {
     lock(this, |f, _, _, _| write_guid(out, fmt_guid(f))).map_or(E_FAIL, |_| 0)
 }
 
+fn info_fmt(this: u32) -> Option<Fmt> {
+    with(|m| match m.get(&this) {
+        Some(Obj::FormatInfo(f)) => Some(*f),
+        _ => None,
+    })
+}
+/// A pixel format's channels: indexed, gray and alpha-only formats have one, CMYK four.
+fn channels(f: Fmt) -> u32 {
+    use Fmt::*;
+    match f {
+        Idx1 | Idx2 | Idx4 | Idx8 | BlackWhite | Gray2 | Gray4 | Gray8 | Gray16 | Alpha8 => 1,
+        Bgr555 | Bgr565 | Bgr24 | Rgb24 | Bgr32 | Rgb32 | Rgb48 => 3,
+        Bgra | Pbgra | Rgba | Prgba | Rgba64 | Cmyk => 4,
+    }
+}
+/// A u32 answer of a pixel format info (out at the second argument).
+fn info_u32(c: &mut Ctx, v: impl FnOnce(Fmt) -> u32) -> u32 {
+    let (this, out) = (c.a(0), c.a(1));
+    if out == 0 {
+        return E_INVALIDARG;
+    }
+    let Some(f) = info_fmt(this) else { return E_INVALIDARG };
+    mem::w32(out, v(f));
+    0
+}
+fn pfi_type(c: &mut Ctx) -> u32 {
+    info_u32(c, |_| 0x20) // WICPixelFormat (wincodec.h WICComponentType)
+}
+fn pfi_guid(c: &mut Ctx) -> u32 {
+    let (this, out) = (c.a(0), c.a(1));
+    if out == 0 {
+        return E_INVALIDARG;
+    }
+    let Some(f) = info_fmt(this) else { return E_INVALIDARG };
+    write_guid(out, fmt_guid(f));
+    0
+}
+fn pfi_bits(c: &mut Ctx) -> u32 {
+    info_u32(c, |f| f.bits())
+}
+fn pfi_channels(c: &mut Ctx) -> u32 {
+    info_u32(c, channels)
+}
+fn pfi_transparency(c: &mut Ctx) -> u32 {
+    use Fmt::*;
+    info_u32(c, |f| matches!(f, Idx1 | Idx2 | Idx4 | Idx8 | Bgra | Pbgra | Rgba | Prgba | Rgba64 | Alpha8) as u32)
+}
+fn pfi_numeric(c: &mut Ctx) -> u32 {
+    // WICPixelFormatNumericRepresentationIndexed 1 / UnsignedInteger 3
+    info_u32(c, |f| if f.indexed() { 1 } else { 3 })
+}
+
+/// CreateComponentInfo(clsid, out): pixel formats only (IWICPixelFormatInfo2); other components
+/// (codecs, converters): WINCODEC_ERR_COMPONENTNOTFOUND.
+fn f_component_info(c: &mut Ctx) -> u32 {
+    let (clsid, out) = (c.a(1), c.a(2));
+    if clsid == 0 || out == 0 {
+        return E_INVALIDARG;
+    }
+    let Some(f) = fmt_of(read_guid(clsid)) else {
+        mem::putp(out, 0);
+        return WINCODEC_ERR_COMPONENTNOTFOUND;
+    };
+    let p = new(
+        "IWICPixelFormatInfo2",
+        &[
+            ("Release", release),
+            ("GetComponentType", pfi_type),
+            ("GetCLSID", pfi_guid),
+            ("GetFormatGUID", pfi_guid),
+            ("GetBitsPerPixel", pfi_bits),
+            ("GetChannelCount", pfi_channels),
+            ("SupportsTransparency", pfi_transparency),
+            ("GetNumericRepresentation", pfi_numeric),
+        ],
+        Obj::FormatInfo(f),
+    );
+    mem::putp(out, p);
+    0
+}
+
 /// CoCreateInstance of the imaging factory (IWICImagingFactory and IWICImagingFactory2).
 pub fn factory() -> u32 {
     com::object(
@@ -1200,6 +1283,7 @@ pub fn factory() -> u32 {
         &[
             ("CreateDecoderFromFilename", f_decoder_from_filename),
             ("CreateDecoderFromStream", f_decoder_from_stream),
+            ("CreateComponentInfo", f_component_info),
             ("CreateFormatConverter", f_create_converter),
             ("CreatePalette", f_create_palette),
             ("CreateBitmapScaler", f_create_scaler),

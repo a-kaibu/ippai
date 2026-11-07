@@ -160,6 +160,36 @@ int main(void) {
             (void)n;
         }
     }
+    /* CreateFile2 (Windows 8's; AdvHD opens its files with it): the dispositions and errors of
+     * CreateFileW, attributes from the extended parameters */
+    {
+        typedef HANDLE(WINAPI * CF2)(LPCWSTR, DWORD, DWORD, DWORD, void *);
+        CF2 cf2 = (CF2)GetProcAddress(GetModuleHandleA("kernel32.dll"), "CreateFile2");
+        printf("CreateFile2 exported %d\n", cf2 != NULL);
+        if (cf2) {
+            struct { DWORD size, attrs, flags, qos; void *sa; HANDLE tmpl; } ex = { sizeof ex, FILE_ATTRIBUTE_HIDDEN, 0, 0, NULL, NULL };
+            E(cf2(L"cf2-missing.txt", GENERIC_READ, 0, OPEN_EXISTING, NULL) == INVALID_HANDLE_VALUE);
+            HANDLE h = cf2(L"cf2.txt", GENERIC_WRITE, 0, CREATE_NEW, &ex);
+            printf("CreateFile2 CREATE_NEW ok %d err %lu\n", h != INVALID_HANDLE_VALUE, GetLastError());
+            DWORD w = 0;
+            E(WriteFile(h, "abc", 3, &w, NULL));
+            CloseHandle(h);
+            E(GetFileAttributesA("cf2.txt"));
+            E(cf2(L"cf2.txt", GENERIC_READ, 0, CREATE_NEW, NULL) == INVALID_HANDLE_VALUE);
+            h = cf2(L"cf2.txt", GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING, NULL);
+            char b[8] = { 0 };
+            DWORD r = 0;
+            E(ReadFile(h, b, 8, &r, NULL));
+            printf("CreateFile2 read %lu %s\n", r, b);
+            E(cf2(L"cf2.txt", GENERIC_WRITE, 0, OPEN_EXISTING, NULL) == INVALID_HANDLE_VALUE);
+            CloseHandle(h);
+            h = cf2(L"cf2.txt", GENERIC_WRITE, 0, OPEN_ALWAYS, NULL);
+            printf("CreateFile2 OPEN_ALWAYS existing ok %d err %lu\n", h != INVALID_HANDLE_VALUE, GetLastError());
+            CloseHandle(h);
+            SetFileAttributesA("cf2.txt", FILE_ATTRIBUTE_NORMAL);
+            E(DeleteFileA("cf2.txt"));
+        }
+    }
     SetCurrentDirectoryA("..");
     rmtree("wr-files");
     E(GetFileAttributesA("wr-files"));

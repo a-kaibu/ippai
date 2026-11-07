@@ -4908,7 +4908,11 @@ fn WriteConsoleW(c: &mut Ctx) -> u32 {
 }
 fn create_file(c: &mut Ctx, wide: bool) -> u32 {
     let name = arg_str(c.a(0), wide);
-    let (access, disp) = (c.a(1), c.a(4));
+    open_file(name, c.a(1), c.a(2), c.a(4), c.a(5))
+}
+
+/// CreateFileW's work: `attrs` is dwFlagsAndAttributes.
+fn open_file(name: String, access: u32, share: u32, disp: u32, attrs: u32) -> u32 {
     if crate::env_on!("SAKE_TRACE_FILES") {
         eprintln!("sake: CreateFile({name}, {access:#x}, {disp})");
     }
@@ -4916,11 +4920,11 @@ fn create_file(c: &mut Ctx, wide: bool) -> u32 {
         return obj::add(Obj::Other("console"));
     }
     if let Some(n) = crate::kern::pipe_name(&name) {
-        return crate::pipe::open(&n, access, c.a(5));
+        return crate::pipe::open(&n, access, attrs);
     }
-    match files::open_shared(&name, access, disp, Some(c.a(2))) {
+    match files::open_shared(&name, access, disp, Some(share)) {
         // a directory opens only with FILE_FLAG_BACKUP_SEMANTICS
-        Ok((f, _)) if f.dir && c.a(5) & 0x0200_0000 == 0 => {
+        Ok((f, _)) if f.dir && attrs & 0x0200_0000 == 0 => {
             last_error(5);
             0xffff_ffff
         }
@@ -4928,8 +4932,8 @@ fn create_file(c: &mut Ctx, wide: bool) -> u32 {
             // CREATE_ALWAYS / OPEN_ALWAYS of an existing file: ERROR_ALREADY_EXISTS
             last_error(if existed && (disp == 2 || disp == 4) { 183 } else { 0 });
             // a file made (or remade) here takes the read-only / hidden / system attributes asked
-            if !f.dir && (!existed || disp == 2) && c.a(5) & 7 != 0 {
-                files::set_attrs(&f.path, c.a(5) & 7);
+            if !f.dir && (!existed || disp == 2) && attrs & 7 != 0 {
+                files::set_attrs(&f.path, attrs & 7);
             }
             obj::add(Obj::File(std::sync::Arc::new(f)))
         }
@@ -4944,6 +4948,13 @@ fn CreateFileA(c: &mut Ctx) -> u32 {
 }
 fn CreateFileW(c: &mut Ctx) -> u32 {
     create_file(c, true)
+}
+/// CreateFile2(name, access, share, disposition, CREATEFILE2_EXTENDED_PARAMETERS *): dwSize,
+/// dwFileAttributes, dwFileFlags, ... (no parameters: no attributes or flags)
+fn CreateFile2(c: &mut Ctx) -> u32 {
+    let p = c.a(4);
+    let attrs = if p == 0 { 0 } else { r32(p + 4) | r32(p + 8) };
+    open_file(arg_str(c.a(0), true), c.a(1), c.a(2), c.a(3), attrs)
 }
 fn _lopen(c: &mut Ctx) -> u32 {
     let name = arg_str(c.a(0), false);
@@ -6526,7 +6537,7 @@ pub fn init() {
         GetModuleHandleExW, LoadLibraryA, LoadLibraryW, LoadLibraryExA, LoadLibraryExW, FreeLibrary,
         DisableThreadLibraryCalls, GetProcAddress, FindResourceA, FindResourceW, FindResourceExA, EnumResourceTypesA, EnumResourceTypesW, EnumResourceNamesA, EnumResourceNamesW, EnumResourceLanguagesA, EnumResourceLanguagesW, FindResourceExW,
         LoadResource, LockResource, FreeResource, SizeofResource,
-        GetStdHandle, SetStdHandle, SetDllDirectoryA, SetDllDirectoryW, GetFileInformationByHandleEx, PathCchSkipRoot, VerifyConsoleIoHandle, SetHandleInformation, GetFileType, GetConsoleMode, WriteConsoleA, WriteConsoleW, GetConsoleCP, GetConsoleOutputCP, CreateFileA, CreateFileW, _lopen, _lcreat, _lclose, _lread,
+        GetStdHandle, SetStdHandle, SetDllDirectoryA, SetDllDirectoryW, GetFileInformationByHandleEx, PathCchSkipRoot, VerifyConsoleIoHandle, SetHandleInformation, GetFileType, GetConsoleMode, WriteConsoleA, WriteConsoleW, GetConsoleCP, GetConsoleOutputCP, CreateFileA, CreateFileW, CreateFile2, _lopen, _lcreat, _lclose, _lread,
         _llseek, ReadFile, WriteFile, SetFilePointer, SetFilePointerEx, GetFileSize, GetFileSizeEx, SetEndOfFile,
         FlushFileBuffers, LockFile, UnlockFile, GetFileTime, SetFileTime, GetFileInformationByHandle,
         FindFirstFileA, FindFirstFileW, FindFirstFileExA, FindFirstFileExW, FindNextFileA, FindNextFileW, FindClose, GetFileAttributesA,

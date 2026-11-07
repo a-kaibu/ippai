@@ -209,6 +209,9 @@ jobs:
         run: |
           node tests/winref/run-browser.mjs exe out/jit
           IPPAI_JIT=0 node tests/winref/run-browser.mjs exe out/interp
+          # (x64 Direct2D: float and by-value struct arguments in registers)
+          BROWSER64=1 node tests/winref/run-browser.mjs exe out/jit d2d-64
+          BROWSER64=1 IPPAI_JIT=0 node tests/winref/run-browser.mjs exe out/interp d2d-64
       - name: Wait for the node runs
         wait: [node-jit, node-interp]
       - name: sake (JIT) against Windows

@@ -25,6 +25,8 @@ pub struct Format {
     pub wrap: u32,
     /// DWRITE_LINE_SPACING_METHOD 1 (uniform): line height, baseline
     pub spacing: Option<(f32, f32)>,
+    /// IDWriteTextLayout1::SetCharacterSpacing: leading, trailing, minimum advance
+    pub char_spacing: (f32, f32, f32),
 }
 
 pub struct Layout {
@@ -45,7 +47,7 @@ fn layouts<R>(f: impl FnOnce(&mut HashMap<u32, Layout>) -> R) -> R {
 }
 
 fn fl(c: &Ctx, i: u32) -> f32 {
-    f32::from_bits(c.a(i))
+    c.f(i)
 }
 
 fn wstr(p: u32, n: Option<u32>) -> Vec<u16> {
@@ -99,11 +101,21 @@ fn factory_methods() -> Vec<(&'static str, crate::api::Handler)> {
         ("GetSystemFontCollection", GetSystemFontCollection),
         ("GetSystemFontFallback", GetSystemFontFallback),
         ("CreateNumberSubstitution", CreateNumberSubstitution),
+        ("TranslateColorGlyphRun", TranslateColorGlyphRun),
     ]
 }
 
 static SHARED: Mutex<u32> = Mutex::new(0);
 
+/// No color glyphs in the built-in faces: DWRITE_E_NOCOLOR, the enumerator NULL (its out
+/// parameter is the last argument of every overload; IDWriteFactory4's and 8's take the
+/// baseline origin as a D2D1_POINT_2F, one argument on x64, two dwords on x86).
+fn TranslateColorGlyphRun(c: &mut Ctx) -> u32 {
+    let n = com::method_dwords(c.trap).unwrap_or(9);
+    let last = if crate::mem::x64() && n > 9 { n - 2 } else { n - 1 };
+    mem::putp(c.a(last), 0);
+    0x8898_500c
+}
 fn DWriteCreateFactory(c: &mut Ctx) -> u32 {
     let (ty, out) = (c.a(0), c.a(2));
     let f = if ty == 0 {
@@ -122,7 +134,7 @@ fn DWriteCreateFactory(c: &mut Ctx) -> u32 {
 fn CreateTextFormat(c: &mut Ctx) -> u32 {
     // (this, family, collection, weight, style, stretch, size, locale, out)
     let family = String::from_utf16_lossy(&wstr(c.a(1), None));
-    let fmt = Format { family, size: fl(c, 6), weight: c.a(3) as i32, align: 0, para: 0, wrap: 0, spacing: None };
+    let fmt = Format { family, size: fl(c, 6), weight: c.a(3) as i32, align: 0, para: 0, wrap: 0, spacing: None, char_spacing: (0.0, 0.0, 0.0) };
     let o = com::object("IDWriteTextFormat3", &format_methods(), 8);
     formats(|m| m.insert(o, fmt));
     mem::putp(c.a(8), o);
@@ -245,6 +257,10 @@ fn layout_methods() -> Vec<(&'static str, crate::api::Handler)> {
         ("SetTypography", ok),
         ("SetInlineObject", ok),
         ("SetFontCollection", ok),
+        ("SetCharacterSpacing", SetCharacterSpacing),
+        ("GetLineMetrics", GetLineMetrics),
+        ("GetClusterMetrics", GetClusterMetrics),
+        ("Draw", Draw),
     ]);
     v
 }
@@ -327,6 +343,190 @@ fn GetMetrics(c: &mut Ctx) -> u32 {
     0
 }
 
+fn SetCharacterSpacing(c: &mut Ctx) -> u32 {
+    // (this, leading, trailing, minimum advance, range): the whole text (ranges are not kept)
+    let (lead, trail, min) = (fl(c, 1), fl(c, 2), fl(c, 3));
+    if min < 0.0 {
+        return E_INVALIDARG;
+    }
+    layouts(|m| m.get_mut(&c.a(0)).map(|l| l.fmt.char_spacing = (lead, trail, min)));
+    0
+}
+
+/// UTF-16 code units of a character
+fn units(ch: u32) -> u32 {
+    if ch > 0xffff { 2 } else { 1 }
+}
+
+/// DWRITE_LINE_METRICS of a laid-out text: (length, trailing white space length, newline
+/// length, height, baseline) per line; lengths in code units, the newline counted as trailing
+/// white space too.
+pub fn line_metrics(chars: &[u32], laid: &Laid, line_h: f32) -> Vec<(u32, u32, u32, f32, f32)> {
+    let u = |a: usize, b: usize| chars[a..b].iter().map(|&ch| units(ch)).sum::<u32>();
+    laid.lines
+        .iter()
+        .map(|l| {
+            let mut ws = l.to;
+            while ws > l.from && is_space(chars[ws - 1] as u16) {
+                ws -= 1;
+            }
+            let nl = u(l.to, l.to + l.nl);
+            (u(l.from, l.to) + nl, u(ws, l.to) + nl, nl, line_h, laid.base)
+        })
+        .collect()
+}
+
+fn line_height(fmt: &Format, laid: &Laid) -> f32 {
+    if let Some((h, _)) = fmt.spacing {
+        return h;
+    }
+    let (a, d, g) = laid.font.as_ref().map_or((fmt.size * 0.86, fmt.size * 0.14, 0.0), |f| f.metrics());
+    a + d + g
+}
+
+fn GetLineMetrics(c: &mut Ctx) -> u32 {
+    // (this, out DWRITE_LINE_METRICS[], max count, out count)
+    let (this, out, max, count) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    let Some((text, fmt, w, h)) = layout_of(this) else { return E_INVALIDARG };
+    let laid = layout(&text, &fmt, w, h);
+    let m = line_metrics(&chars(&text), &laid, line_height(&fmt, &laid));
+    w32(count, m.len() as u32);
+    if (max as usize) < m.len() {
+        return E_NOT_SUFFICIENT_BUFFER;
+    }
+    for (i, (len, ws, nl, lh, base)) in m.iter().enumerate() {
+        let p = out + 24 * i as u32;
+        for (k, v) in [*len, *ws, *nl, lh.to_bits(), base.to_bits(), 0].iter().enumerate() {
+            w32(p + 4 * k as u32, *v);
+        }
+    }
+    0
+}
+
+fn GetClusterMetrics(c: &mut Ctx) -> u32 {
+    // (this, out DWRITE_CLUSTER_METRICS[], max count, out count): a cluster per character
+    let (this, out, max, count) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    let Some((text, fmt, w, h)) = layout_of(this) else { return E_INVALIDARG };
+    let laid = layout(&text, &fmt, w, h);
+    let ch = chars(&text);
+    w32(count, ch.len() as u32);
+    if (max as usize) < ch.len() {
+        return E_NOT_SUFFICIENT_BUFFER;
+    }
+    for (i, &k) in ch.iter().enumerate() {
+        let p = out + 8 * i as u32;
+        w32(p, laid.adv[i].to_bits());
+        mem::w16(p + 4, units(k) as u16);
+        // canWrapLineAfter 1, isWhitespace 2, isNewline 4
+        let nl = k == 10 || k == 13;
+        let space = is_space(k as u16) || nl;
+        // (a break goes after white space, never before it; between CJK characters; after the
+        // last cluster)
+        let wrap_after = space || ch.get(i + 1).is_none_or(|&n| !is_space(n as u16) && (k > 0x2e7f || n > 0x2e7f));
+        mem::w16(p + 6, wrap_after as u16 | (space as u16) << 1 | (nl as u16) << 2);
+    }
+    0
+}
+
+/// The IDWriteFontFace of built-in face `i` (one object per face, kept).
+fn face_obj(i: usize) -> u32 {
+    static FACES: Mutex<Option<HashMap<usize, u32>>> = Mutex::new(None);
+    *FACES.lock().unwrap().get_or_insert_with(HashMap::new).entry(i).or_insert_with(|| face(i as u32))
+}
+
+/// The glyph runs of a laid-out text: per line with characters, (face, glyph indices,
+/// advances, first character, baseline origin relative to the layout's).
+pub struct Run {
+    pub face: usize,
+    pub glyphs: Vec<u16>,
+    pub adv: Vec<f32>,
+    pub from: usize,
+    pub to: usize,
+    pub x: f32,
+    pub y: f32,
+}
+pub fn runs(text: &[u16], laid: &Laid) -> Vec<Run> {
+    let Some(font) = &laid.font else { return Vec::new() };
+    let ch = chars(text);
+    let mut v = Vec::new();
+    for l in &laid.lines {
+        // (trailing white space stays in the run, as DirectWrite draws it: blank glyphs)
+        if l.to == l.from {
+            continue;
+        }
+        let glyphs = ch[l.from..l.to].iter().map(|&k| font.glyph_index(k)).collect();
+        v.push(Run { face: font.face(), glyphs, adv: laid.adv[l.from..l.to].to_vec(), from: l.from, to: l.to, x: l.x, y: l.baseline });
+    }
+    v
+}
+
+fn Draw(c: &mut Ctx) -> u32 {
+    // (this, client context, IDWriteTextRenderer, origin x, origin y): the renderer's
+    // DrawGlyphRun for each run
+    let (this, ctx, rend) = (c.a(0), c.a(1), c.a(2));
+    let (ox, oy) = (fl(c, 3), fl(c, 4));
+    let Some((text, fmt, w, h)) = layout_of(this) else { return E_INVALIDARG };
+    let laid = layout(&text, &fmt, w, h);
+    let ch = chars(&text);
+    // code unit offsets of characters
+    let mut at = vec![0u32; ch.len() + 1];
+    for (i, &k) in ch.iter().enumerate() {
+        at[i + 1] = at[i] + units(k);
+    }
+    let draw_glyph_run = mem::rp(mem::rp(rend) + 6 * mem::ps());
+    let ps = mem::ps();
+    for r in runs(&text, &laid) {
+        let n = r.glyphs.len() as u32;
+        let nu = at[r.to] - at[r.from];
+        // DWRITE_GLYPH_RUN, DWRITE_GLYPH_RUN_DESCRIPTION, then the arrays
+        let (run_sz, desc_sz) = (4 * ps + 16, 4 * ps + 8);
+        let size = run_sz + desc_sz + 2 * n + 4 * n + 8 * n + 2 * nu + 2 * nu + 16 + 32;
+        let p = mem::heap_alloc(size, true);
+        let desc = p + run_sz;
+        let idx = (desc + desc_sz + 7) & !7;
+        let adv = (idx + 2 * n + 3) & !3;
+        let off = adv + 4 * n;
+        let s = off + 8 * n;
+        let map = s + 2 * nu + 2;
+        let loc = (map + 2 * nu + 3) & !3;
+        for (k, g) in r.glyphs.iter().enumerate() {
+            mem::w16(idx + 2 * k as u32, *g);
+            w32(adv + 4 * k as u32, r.adv[k].to_bits());
+        }
+        for (k, u) in text[at[r.from] as usize..at[r.to] as usize].iter().enumerate() {
+            mem::w16(s + 2 * k as u32, *u);
+        }
+        let mut u = 0;
+        for (k, &cp) in ch[r.from..r.to].iter().enumerate() {
+            for _ in 0..units(cp) {
+                mem::w16(map + 2 * u, k as u16);
+                u += 1;
+            }
+        }
+        for (k, b) in "ja-jp\0".encode_utf16().enumerate() {
+            mem::w16(loc + 2 * k as u32, b);
+        }
+        let face = face_obj(r.face);
+        mem::wp(p, face);
+        w32(p + ps, fmt.size.to_bits());
+        w32(p + ps + 4, n);
+        mem::wp(p + ps + 8, idx);
+        mem::wp(p + 2 * ps + 8, adv);
+        mem::wp(p + 3 * ps + 8, off);
+        // (sideways 0, bidi level 0: zeroed)
+        mem::wp(desc, loc);
+        mem::wp(desc + ps, s);
+        w32(desc + 2 * ps, nu);
+        mem::wp(desc + 3 * ps, map);
+        w32(desc + 4 * ps, at[r.from]);
+        // DrawGlyphRun(this, context, baseline x, baseline y, measuring mode, run, description, effect)
+        let (bx, by) = (ox + r.x, oy + r.y);
+        c.call_f(draw_glyph_run, &[rend, ctx, bx.to_bits(), by.to_bits(), 0, p, desc, 0], &[2, 3]);
+        mem::heap_free(p);
+    }
+    0
+}
+
 // ---- rendering params, collections ----
 
 fn CreateRenderingParams(c: &mut Ctx) -> u32 {
@@ -364,6 +564,10 @@ fn with_value(iface: &'static str, methods: &[(&'static str, crate::api::Handler
 fn value(o: u32) -> u32 {
     mem::r32(o + mem::ps())
 }
+/// The built-in face index of an IDWriteFontFace of ours.
+pub fn face_index(face: u32) -> usize {
+    value(face) as usize
+}
 
 fn collection() -> u32 {
     with_value(
@@ -400,8 +604,16 @@ fn font(i: u32) -> u32 {
     with_value("IDWriteFont", &m, i)
 }
 fn face(i: u32) -> u32 {
-    let m: [(&'static str, crate::api::Handler); 5] =
-        [("GetType", FaceGetType), ("GetFiles", GetFiles), ("GetIndex", FaceGetIndex), ("GetSimulations", zero), ("IsSymbolFont", zero)];
+    let m: [(&'static str, crate::api::Handler); 8] = [
+        ("GetType", FaceGetType),
+        ("GetFiles", GetFiles),
+        ("GetIndex", FaceGetIndex),
+        ("GetSimulations", zero),
+        ("IsSymbolFont", zero),
+        ("GetMetrics", FontGetMetrics),
+        ("GetGlyphIndices", GetGlyphIndices),
+        ("GetGlyphRunOutline", GetGlyphRunOutline),
+    ];
     with_value("IDWriteFontFace", &m, i)
 }
 
@@ -502,6 +714,37 @@ fn FontGetMetrics(c: &mut Ctx) -> u32 {
     let Some(m) = crate::gdi::sys_face_design_metrics(i) else { return 0 };
     for (k, v) in m.iter().enumerate() {
         mem::w16(p + 2 * k as u32, *v);
+    }
+    0
+}
+fn GetGlyphIndices(c: &mut Ctx) -> u32 {
+    // (this, code points, count, out glyph indices)
+    let (cp, n, out) = (c.a(1), c.a(2), c.a(3));
+    let Some(f) = crate::gdi::face_font(value(c.a(0)) as usize, 16.0) else { return E_INVALIDARG };
+    for i in 0..n {
+        mem::w16(out + 2 * i, f.glyph_index(mem::r32(cp + 4 * i)));
+    }
+    0
+}
+/// GetGlyphRunOutline(this, em size, glyph indices, advances, offsets, count, sideways, right
+/// to left, geometry sink): into a Direct2D path geometry of ours, the glyphs themselves (with
+/// their pen positions from the baseline origin)
+fn GetGlyphRunOutline(c: &mut Ctx) -> u32 {
+    let (face, em) = (value(c.a(0)) as usize, fl(c, 1));
+    let (idx, adv, off, n, rtl, sink) = (c.a(2), c.a(3), c.a(4), c.a(5), c.a(7), c.a(8));
+    let font = if adv == 0 { crate::gdi::face_font(face, em) } else { None };
+    let mut pen = 0f32;
+    let mut v = Vec::with_capacity(n as usize);
+    for i in 0..n {
+        let gi = mem::r16(idx + 2 * i);
+        let a = if adv != 0 { f32::from_bits(mem::r32(adv + 4 * i)) } else { font.as_ref().map_or(em, |f| f.index_advance(gi)) };
+        let (dx, dy) = if off != 0 { (f32::from_bits(mem::r32(off + 8 * i)), f32::from_bits(mem::r32(off + 8 * i + 4))) } else { (0.0, 0.0) };
+        let x = if rtl != 0 { -(pen + a) - dx } else { pen + dx };
+        v.push((face, em, gi, x, -dy));
+        pen += a;
+    }
+    if !crate::d2d::sink_glyphs(sink, v) {
+        com::warn_once("sake: dwrite GetGlyphRunOutline into a sink of the game's own: no outline");
     }
     0
 }
@@ -733,6 +976,8 @@ pub struct Line {
     pub width: f32,
     pub width_ws: f32,
     pub baseline: f32,
+    /// the newline characters after `to` (0, 1 or 2 for CR LF)
+    pub nl: usize,
 }
 
 pub struct Laid {
@@ -740,7 +985,11 @@ pub struct Laid {
     pub lines: Vec<Line>,
     /// each character's pen x within its line
     pub pen: Vec<f32>,
+    /// each character's advance (0 for newlines)
+    pub adv: Vec<f32>,
     pub height: f32,
+    /// the baseline below a line's top
+    pub base: f32,
 }
 
 fn is_space(ch: u16) -> bool {
@@ -749,12 +998,19 @@ fn is_space(ch: u16) -> bool {
 
 /// Lays `text` out in a `w` x `h` box (0 width: no wrapping).
 pub fn layout(text: &[u16], fmt: &Format, w: f32, h: f32) -> Laid {
-    let font = text_font(&fmt.family, fmt.size, fmt.weight);
+    layout_with(text, fmt, w, h, text_font(&fmt.family, fmt.size, fmt.weight))
+}
+/// layout() in `font` (None: every advance the em size)
+fn layout_with(text: &[u16], fmt: &Format, w: f32, h: f32, font: Option<TextFont>) -> Laid {
     let (asc, desc, gap) = font.as_ref().map_or((fmt.size * 0.86, fmt.size * 0.14, 0.0), |f| f.metrics());
     let (line_h, base) = fmt.spacing.unwrap_or((asc + desc + gap, asc));
     let chars: Vec<u32> = char::decode_utf16(text.iter().copied()).map(|r| r.map_or(0xfffd, |c| c as u32)).collect();
     // (a surrogate pair is one char: map back to code units is not needed by the drawers)
-    let adv: Vec<f32> = chars.iter().map(|&ch| if ch == 10 || ch == 13 { 0.0 } else { font.as_ref().map_or(fmt.size, |f| f.advance(ch)) }).collect();
+    let (lead, trail, min_adv) = fmt.char_spacing;
+    let adv: Vec<f32> = chars
+        .iter()
+        .map(|&ch| if ch == 10 || ch == 13 { 0.0 } else { (lead + font.as_ref().map_or(fmt.size, |f| f.advance(ch)) + trail).max(min_adv) })
+        .collect();
     let wrap = fmt.wrap != 1 && w > 0.0;
     let n = chars.len();
     let mut lines = Vec::new();
@@ -783,11 +1039,11 @@ pub fn layout(text: &[u16], fmt: &Format, w: f32, h: f32) -> Laid {
             trim -= 1;
         }
         let width = if trim > start { pen[trim - 1] + adv[trim - 1] } else { 0.0 };
-        lines.push(Line { from: start, to: end, x: 0.0, top: 0.0, width, width_ws: x, baseline: 0.0 });
+        lines.push(Line { from: start, to: end, x: 0.0, top: 0.0, width, width_ws: x, baseline: 0.0, nl: next - end });
         if next >= n {
             // (text ending in a newline has an empty last line)
             if next > end {
-                lines.push(Line { from: n, to: n, x: 0.0, top: 0.0, width: 0.0, width_ws: 0.0, baseline: 0.0 });
+                lines.push(Line { from: n, to: n, x: 0.0, top: 0.0, width: 0.0, width_ws: 0.0, baseline: 0.0, nl: 0 });
             }
             break;
         }
@@ -808,7 +1064,7 @@ pub fn layout(text: &[u16], fmt: &Format, w: f32, h: f32) -> Laid {
         l.top = y0 + line_h * k as f32;
         l.baseline = l.top + base;
     }
-    Laid { font, lines, pen, height }
+    Laid { font, lines, pen, adv, height, base }
 }
 
 /// The characters of `text` as layout() counts them.
@@ -819,6 +1075,69 @@ pub fn chars(text: &[u16]) -> Vec<u32> {
 /// A text layout object's text, format and box.
 pub fn layout_of(obj: u32) -> Option<(Vec<u16>, Format, f32, f32)> {
     layouts(|m| m.get(&obj).map(|l| (l.text.clone(), l.fmt.clone(), l.max_w, l.max_h)))
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    // (no font: every advance is the em size, 10)
+    fn fmt(cs: (f32, f32, f32)) -> Format {
+        Format { family: "no such face".into(), size: 10.0, weight: 400, align: 0, para: 0, wrap: 1, spacing: Some((12.0, 9.0)), char_spacing: cs }
+    }
+    fn metrics(s: &str, w: f32, f: &Format) -> Vec<(u32, u32, u32, f32, f32)> {
+        let t: Vec<u16> = s.encode_utf16().collect();
+        let laid = layout_with(&t, f, w, 0.0, None);
+        line_metrics(&chars(&t), &laid, line_height(f, &laid))
+    }
+
+    #[test]
+    fn line_metrics_count_newlines_and_trailing_space_in_code_units() {
+        let f = fmt((0.0, 0.0, 0.0));
+        // (length, trailing white space, newline, height, baseline)
+        assert_eq!(metrics("ab\ncd", 0.0, &f), vec![(3, 1, 1, 12.0, 9.0), (2, 0, 0, 12.0, 9.0)]);
+        assert_eq!(metrics("a  \r\nb", 0.0, &f), vec![(5, 4, 2, 12.0, 9.0), (1, 0, 0, 12.0, 9.0)]);
+        // a surrogate pair is two code units; text ending in a newline has an empty last line
+        assert_eq!(metrics("\u{1f600}\n", 0.0, &f), vec![(3, 1, 1, 12.0, 9.0), (0, 0, 0, 12.0, 9.0)]);
+        assert_eq!(metrics("", 0.0, &f), vec![(0, 0, 0, 12.0, 9.0)]);
+    }
+
+    #[test]
+    fn wrapped_lines_have_no_newline() {
+        let mut f = fmt((0.0, 0.0, 0.0));
+        f.wrap = 0;
+        assert_eq!(metrics("abcd", 20.0, &f), vec![(2, 0, 0, 12.0, 9.0), (2, 0, 0, 12.0, 9.0)]);
+    }
+
+    #[test]
+    fn character_spacing_widens_each_advance() {
+        let t: Vec<u16> = "ab".encode_utf16().collect();
+        let laid = layout_with(&t, &fmt((1.0, 2.0, 0.0)), 0.0, 0.0, None);
+        assert_eq!(laid.adv, vec![13.0, 13.0]);
+        assert_eq!(laid.lines[0].width, 26.0);
+        // the minimum advance wins over a smaller one; negative spacing narrows
+        assert_eq!(layout_with(&t, &fmt((0.0, 0.0, 15.0)), 0.0, 0.0, None).adv, vec![15.0, 15.0]);
+        assert_eq!(layout_with(&t, &fmt((-2.0, 0.0, 0.0)), 0.0, 0.0, None).adv, vec![8.0, 8.0]);
+    }
+
+    proptest::proptest! {
+        /// The lines' lengths add up to the text's code units, trailing white space and the
+        /// newline are parts of the line, and every line has the format's height.
+        #[test]
+        fn line_lengths_cover_the_text(s in proptest::collection::vec(proptest::prop_oneof![
+            proptest::char::range('a', 'c'), proptest::strategy::Just(' '), proptest::strategy::Just('\n'),
+            proptest::strategy::Just('\r'), proptest::strategy::Just('\u{1f600}')], 0..16), w in 0f32..60.0) {
+            let text: String = s.into_iter().collect();
+            let mut f = fmt((0.0, 0.0, 0.0));
+            f.wrap = 0;
+            let m = metrics(&text, w, &f);
+            proptest::prop_assert_eq!(m.iter().map(|l| l.0).sum::<u32>(), text.encode_utf16().count() as u32);
+            for l in &m {
+                proptest::prop_assert!(l.2 <= l.1 && l.1 <= l.0);
+                proptest::prop_assert_eq!((l.3, l.4), (12.0, 9.0));
+            }
+        }
+    }
 }
 
 #[cfg(test)]

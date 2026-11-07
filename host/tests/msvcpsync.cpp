@@ -18,6 +18,8 @@ __declspec(dllimport) DWORD __stdcall GetCurrentThreadId(void);
 __declspec(dllimport) int __stdcall QueryPerformanceFrequency(long long *);
 __declspec(dllimport) void __stdcall GetSystemTimeAsFileTime(unsigned long long *);
 __declspec(dllimport) void __stdcall ExitProcess(unsigned);
+__declspec(dllimport) int __stdcall SleepConditionVariableSRW(void *, void *, DWORD, DWORD);
+__declspec(dllimport) void __stdcall WakeAllConditionVariable(void *);
 
 struct xt { long long sec; long nsec; };
 __declspec(dllimport) void _Mtx_init_in_situ(void *, int);
@@ -81,6 +83,54 @@ static DWORD __stdcall consumer(void *) {
         _Cnd_broadcast(cnd);
         _Mtx_unlock(mtx);
     }
+}
+
+// The STL's headers wait and wake on the Windows objects inside msvcp140's: the
+// CONDITION_VARIABLE at +8 of a _Cnd_internal_imp_t, the SRW lock at +16 of a
+// _Mtx_internal_imp_t (AdvHD's std::condition_variable::wait_for calls
+// SleepConditionVariableSRW on them and the PPL's chore wakes it with _Cnd_broadcast).
+alignas(8) static char xmtx[80], xcnd[72];
+static volatile int xflag;
+static int x_kernel_woke;
+static DWORD __stdcall kernel_waiter(void *) {
+    _Mtx_lock(xmtx);
+    int r = 1;
+    while (!xflag && r) r = SleepConditionVariableSRW(xcnd + 8, xmtx + 16, 10000, 0);
+    x_kernel_woke = r != 0 && xflag;
+    _Mtx_unlock(xmtx);
+    return 0;
+}
+static DWORD __stdcall kernel_waker(void *) {
+    Sleep(50);
+    _Mtx_lock(xmtx);
+    xflag = 2;
+    WakeAllConditionVariable(xcnd + 8);
+    _Mtx_unlock(xmtx);
+    return 0;
+}
+static void mixed_test() {
+    _Mtx_init_in_situ(xmtx, 2);
+    _Cnd_init_in_situ(xcnd);
+    HANDLE t = CreateThread(0, 0, kernel_waiter, 0, 0, 0);
+    Sleep(50);
+    _Mtx_lock(xmtx);
+    xflag = 1;
+    _Cnd_broadcast(xcnd);
+    _Mtx_unlock(xmtx);
+    WaitForSingleObject(t, 0xffffffff);
+    num("kernel wait woken by _Cnd_broadcast", x_kernel_woke);
+    xflag = 0;
+    t = CreateThread(0, 0, kernel_waker, 0, 0, 0);
+    unsigned long long ft = 0;
+    GetSystemTimeAsFileTime(&ft);
+    long long secs = (long long)((ft - 116444736000000000ULL) / 10000000) + 10;
+    xt until = {secs, 0};
+    _Mtx_lock(xmtx);
+    int r = 0;
+    while (xflag != 2 && r == 0) r = _Cnd_timedwait(xcnd, xmtx, &until);
+    num("_Cnd_timedwait woken by WakeAllConditionVariable", r == 0 && xflag == 2);
+    _Mtx_unlock(xmtx);
+    WaitForSingleObject(t, 0xffffffff);
 }
 
 extern "C" {
@@ -212,5 +262,6 @@ int main() {
     num("caught", caught);
     setjmp_test();
     chore_test();
+    mixed_test();
     ExitProcess(0);
 }

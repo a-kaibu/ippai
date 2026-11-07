@@ -1592,6 +1592,12 @@ pub fn text_font(family: &str, em: f32, weight: i32) -> Option<TextFont> {
     Some(TextFont { asc: m.win_asc * k, desc: m.win_desc * k, gap: (m.line_gap * k).max(0.0), r })
 }
 
+/// For DirectWrite glyph runs: built-in face `face` at an em size in pixels.
+pub fn face_font(face: usize, em: f32) -> Option<TextFont> {
+    let names = sys_face_names(face);
+    text_font(names[names.len() - 1], em, 400)
+}
+
 impl TextFont {
     /// ascent, descent and line gap in pixels
     pub fn metrics(&self) -> (f32, f32, f32) {
@@ -1606,6 +1612,24 @@ impl TextFont {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         (self.r.face, self.r.em.to_bits(), ch, self.r.bold).hash(&mut h);
         h.finish()
+    }
+    /// The built-in face this font draws with (sys_face_names' index).
+    pub fn face(&self) -> usize {
+        self.r.face
+    }
+    /// The glyph index of `ch` in the face (0: none).
+    pub fn glyph_index(&self, ch: u32) -> u16 {
+        char::from_u32(ch).map_or(0, |c| self.r.font.glyph_id(c).0)
+    }
+    /// glyph and glyph_key of a glyph index
+    pub fn index_glyph(&self, gi: u16, f: impl FnMut(i32, i32, i32, i32, &[u8])) {
+        self.glyph(gi as u32 | GLYPH_INDEX, f)
+    }
+    pub fn index_advance(&self, gi: u16) -> f32 {
+        glyph(&self.r, gi as u32 | GLYPH_INDEX).adv as f32
+    }
+    pub fn index_key(&self, gi: u16) -> u64 {
+        self.glyph_key(gi as u32 | GLYPH_INDEX)
     }
     /// Calls `f(left, top above the baseline, w, h, coverage)` with the glyph's black box.
     pub fn glyph(&self, ch: u32, mut f: impl FnMut(i32, i32, i32, i32, &[u8])) {

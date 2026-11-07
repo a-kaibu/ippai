@@ -61,6 +61,34 @@ impl Ctx<'_> {
         }
         (self.i(i), self.i(i + 1))
     }
+    /// The float argument `i` (x64: XMM0-3, then the stack slot's low half).
+    pub fn f(&self, i: u32) -> f32 {
+        if crate::mem::x64() {
+            return f32::from_bits(self.xmm(i) as u32);
+        }
+        f32::from_bits(self.a(i))
+    }
+    /// A D2D1_POINT_2F passed by value at slots `i`, `i + 1` (x64: the one 8-byte argument
+    /// `i`); and the slot after it.
+    pub fn pt_f(&self, i: u32) -> ((f32, f32), u32) {
+        if crate::mem::x64() {
+            let v = self.a64(i);
+            return ((f32::from_bits(v as u32), f32::from_bits((v >> 32) as u32)), i + 1);
+        }
+        ((f32::from_bits(self.a(i)), f32::from_bits(self.a(i + 1))), i + 2)
+    }
+    /// Calls guest code at `f` with `args`; the float arguments `floats` (their indexes in
+    /// `args`, which hold their bits) go in XMM registers as well on x64.
+    pub fn call_f(&mut self, f: u32, args: &[u32], floats: &[usize]) -> u32 {
+        if crate::mem::x64() {
+            for &i in floats {
+                if i < 4 {
+                    self.cpu.set_xmm(i, args[i] as u128);
+                }
+            }
+        }
+        crate::call(self.cpu, f, args)
+    }
     pub fn i(&self, i: u32) -> i32 {
         self.a(i) as i32
     }

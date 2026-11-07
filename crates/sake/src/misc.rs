@@ -3105,9 +3105,9 @@ fn WinVerifyTrust(_: &mut Ctx) -> u32 {
     0
 }
 
-/// XInput: no controller is ever connected.
-fn xinput_none(_: &mut Ctx) -> u32 {
-    1167 // ERROR_DEVICE_NOT_CONNECTED
+/// XInput: no controller is ever connected (a user index past 3: ERROR_BAD_ARGUMENTS).
+fn xinput_none(c: &mut Ctx) -> u32 {
+    if c.a(0) > 3 { 160 } else { 1167 } // ERROR_DEVICE_NOT_CONNECTED
 }
 fn xinput_ok(_: &mut Ctx) -> u32 {
     0
@@ -3117,7 +3117,8 @@ pub fn init() {
     let _ = (s2a, r8);
     wts_init();
     implement("shell32", "SHGetKnownFolderPath", SHGetKnownFolderPath);
-    for d in ["xinput1_1", "xinput1_2", "xinput1_3", "xinput1_4", "xinput9_1_0"] {
+    // (xinputuap: the Windows 10 one, AdvHD imports it)
+    for d in ["xinput1_1", "xinput1_2", "xinput1_3", "xinput1_4", "xinput9_1_0", "xinputuap"] {
         for n in ["XInputGetState", "XInputGetStateEx", "XInputSetState", "XInputGetCapabilities", "XInputGetKeystroke", "XInputGetBatteryInformation", "XInputGetDSoundAudioDeviceGuids"] {
             implement(d, n, xinput_none);
         }

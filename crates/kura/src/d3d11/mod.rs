@@ -116,6 +116,7 @@ const IIDS: &[(u32, &[u32])] = &[
     (0x6007896c, &[IF_DXGIDEVICE]), // IDXGIDevice3
     (0xcafcb56c, &[IF_SURFACE]),
     (0x4ae63092, &[IF_SURFACE]),
+    (0xaba496dd, &[IF_SURFACE]), // IDXGISurface2
     (0x035f3ab4, &[IF_DXGIRES]), // IDXGIResource
     (0xb2daad8b, &[IF_ANNOTATION]), // ID3DUserDefinedAnnotation
     (0x3d3e0379, &[IF_SWAPCHAIN, IF_SURFACE]),
@@ -818,8 +819,8 @@ unsafe fn query_interface(d: &mut D11, id: u32, iface: u32, riid: u32, out: u32)
         let surface = matches!(d.objs.get(&id).map(|o| &o.data), Some(Data::Texture(t)) if t.mips == 1 && t.layers == 1 && t.dim != 3);
         let want = match first {
             0xaec22fb8 | 0x3d3e0379 | 0x035f3ab4 => IF_DXGIRES,
-            0xcafcb56c | 0x4ae63092 if surface => IF_SURFACE,
-            0xcafcb56c | 0x4ae63092 => 0,
+            0xcafcb56c | 0x4ae63092 | 0xaba496dd if surface => IF_SURFACE,
+            0xcafcb56c | 0x4ae63092 | 0xaba496dd => 0,
             _ => u32::MAX,
         };
         if want != u32::MAX {
@@ -1500,6 +1501,15 @@ unsafe fn method(d: &mut D11, iface: u32, m: u32, this: u32, args: *const u32, a
             10 => {
                 unmap(d, d.addr_of(this), 0);
                 S_OK
+            }
+            // IDXGISurface2::GetResource(riid, out, subresource): the texture it is (a surface is
+            // one level of one layer: subresource 0)
+            13 => {
+                let r = query_interface(d, this, IF_TEX2D, a(1), a(2));
+                if a(3) != 0 {
+                    wr(a(3), 0, 0);
+                }
+                r
             }
             _ => E_NOTIMPL,
         },

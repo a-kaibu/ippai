@@ -194,7 +194,7 @@ fn st<R>(f: impl FnOnce(&mut State) -> R) -> R {
 }
 
 fn fl(c: &Ctx, i: u32) -> f32 {
-    f32::from_bits(c.a(i))
+    c.f(i)
 }
 fn rf(p: u32, i: u32) -> f32 {
     f32::from_bits(r32(p + 4 * i))
@@ -217,6 +217,9 @@ fn factory() -> u32 {
             ("CreateDxgiSurfaceRenderTarget", CreateDxgiSurfaceRenderTarget),
             ("CreateHwndRenderTarget", CreateHwndRenderTarget),
             ("GetDesktopDpi", GetDpi),
+            ("CreatePathGeometry", CreatePathGeometry),
+            ("CreateTransformedGeometry", CreateTransformedGeometry),
+            ("CreateStrokeStyle", CreateStrokeStyle),
             ("ReloadSystemMetrics", ok),
         ],
         8,
@@ -441,6 +444,9 @@ fn context_methods() -> Vec<(&'static str, Handler)> {
         ("DrawRectangle", DrawRectangle),
         ("DrawText", DrawText),
         ("DrawTextLayout", DrawTextLayout),
+        ("DrawGlyphRun", DrawGlyphRun),
+        ("DrawGeometry", DrawGeometry),
+        ("FillGeometry", FillGeometry),
         ("PushAxisAlignedClip", PushAxisAlignedClip),
         ("PopAxisAlignedClip", PopAxisAlignedClip),
         ("SetAntialiasMode", SetAntialiasMode),
@@ -648,7 +654,9 @@ fn alpha_ignored(pf: u32) -> bool {
 
 fn CreateBitmap(c: &mut Ctx) -> u32 {
     // (this, D2D1_SIZE_U by value, data, pitch, properties, out)
-    let (w, h, data, pitch, props, out) = (c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6));
+    let (w, h) = c.pt(1);
+    let (w, h, o) = (w as u32, h as u32, if mem::x64() { 2 } else { 3 });
+    let (data, pitch, props, out) = (c.a(o), c.a(o + 1), c.a(o + 2), c.a(o + 3));
     if w == 0 || h == 0 || w > 16384 || h > 16384 {
         return 0x8007_0057; // E_INVALIDARG
     }
@@ -1201,6 +1209,263 @@ fn draw_text(dc: u32, text: &[u16], fmt: &dwrite::Format, w: f32, h: f32, x: f32
     }
 }
 
+/// ID2D1RenderTarget::DrawGlyphRun (this, baseline origin, DWRITE_GLYPH_RUN *, brush,
+/// measuring mode) and ID2D1DeviceContext's (a glyph run description before the brush).
+fn DrawGlyphRun(c: &mut Ctx) -> u32 {
+    if !drawing(c.a(0), Drawing::draw) {
+        return 0;
+    }
+    let ((x, y), o) = c.pt_f(1);
+    let desc = com::method_dwords(c.trap) == Some(7);
+    let (dc, run, b) = (c.a(0), c.a(o), c.a(o + 1 + desc as u32));
+    let ps = mem::ps();
+    let face = dwrite::face_index(mem::rp(run));
+    let em = f32::from_bits(r32(run + ps));
+    let n = r32(run + ps + 4);
+    let (idx, adv, off) = (mem::rp(run + ps + 8), mem::rp(run + 2 * ps + 8), mem::rp(run + 3 * ps + 8));
+    let mut pen = 0.0;
+    let mut glyphs = Vec::with_capacity(n as usize);
+    for i in 0..n {
+        let (dx, dy) = if off != 0 { (rf(off, 2 * i), rf(off, 2 * i + 1)) } else { (0.0, 0.0) };
+        glyphs.push((mem::r16(idx + 2 * i), x + pen + dx, y - dy));
+        pen += if adv != 0 { rf(adv, i) } else { 0.0 };
+    }
+    draw_glyphs(dc, face, em, &glyphs, b, 0.0);
+    0
+}
+
+/// Draws glyphs (index, baseline x, y before the transform) of built-in face `face`; `grow`
+/// > 0: their outlines stroked that wide (in DIPs) as well, the shape grown by half of it.
+fn draw_glyphs(dc: u32, face: usize, em: f32, glyphs: &[(u16, f32, f32)], b: u32, grow: f32) {
+    let paint = brush(dc, b);
+    let xf = st(|s| s.dcs.get(&dc).and_then(eff));
+    let scale = xf.map_or(1.0, |m| (m[0] * m[3] - m[1] * m[2]).abs().sqrt());
+    let Some(font) = crate::gdi::face_font(face, em * scale) else { return };
+    let Some(lim) = st(|s| s.dcs.get(&dc).map(|d| clip_rect(d, [0.0, 0.0, d.w as f32, d.h as f32]))) else { return };
+    for &(gi, gx0, gy0) in glyphs {
+        let (px, py) = apply(xf, gx0, gy0);
+        let (px, py) = (px.round() as i32, py.round() as i32);
+        font.index_glyph(gi, |gx, top, gw, gh, cov| {
+            let r = grow * scale / 2.0;
+            let (gx, top, gw, gh, cov) = if r > 0.0 {
+                let (w2, h2, d) = dilate(cov, gw, gh, r);
+                let k = r.ceil() as i32;
+                (gx - k, top + k, w2, h2, std::borrow::Cow::Owned(d))
+            } else {
+                (gx, top, gw, gh, std::borrow::Cow::Borrowed(cov))
+            };
+            let (ox, oy) = (px + gx, py - top);
+            let (x0, y0) = (ox.max(lim[0].ceil() as i32), oy.max(lim[1].ceil() as i32));
+            let (x1, y1) = ((ox + gw).min(lim[2].floor() as i32), (oy + gh).min(lim[3].floor() as i32));
+            if x1 <= x0 || y1 <= y0 {
+                return;
+            }
+            let key = font.index_key(gi) ^ (r.to_bits() as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+            let at = room(dc, || gpu2d::glyph(key, gw as u32, gh as u32, || cov.to_vec()));
+            let shape = [at[0] as f32 - ox as f32, at[1] as f32 - oy as f32, 0.0, 0.0];
+            push(dc, gpu2d::GLYPH, [x0 as f32, y0 as f32, x1 as f32, y1 as f32], shape, [0.0; 4], &paint);
+        });
+    }
+}
+
+/// A coverage bitmap grown by `r` pixels all round (a round pen): each pixel the most of its
+/// neighbours' coverage within `r`, fading over the last pixel. The bitmap gets ceil(r) more
+/// on each side.
+pub fn dilate(cov: &[u8], w: i32, h: i32, r: f32) -> (i32, i32, Vec<u8>) {
+    let k = r.ceil() as i32;
+    let (w2, h2) = (w + 2 * k, h + 2 * k);
+    let mut out = vec![0u8; (w2 * h2) as usize];
+    // the kernel: offsets with their weight
+    let mut ker = Vec::new();
+    for dy in -k..=k {
+        for dx in -k..=k {
+            // (the pixel itself keeps all its coverage, however thin the pen)
+            let wgt = if dx == 0 && dy == 0 { 1.0 } else { (r + 0.5 - ((dx * dx + dy * dy) as f32).sqrt()).clamp(0.0, 1.0) };
+            if wgt > 0.0 {
+                ker.push((dx, dy, wgt));
+            }
+        }
+    }
+    for y in 0..h {
+        for x in 0..w {
+            let v = cov[(y * w + x) as usize];
+            if v == 0 {
+                continue;
+            }
+            for &(dx, dy, wgt) in &ker {
+                let o = ((y + k + dy) * w2 + x + k + dx) as usize;
+                let nv = (v as f32 * wgt).round() as u8;
+                if nv > out[o] {
+                    out[o] = nv;
+                }
+            }
+        }
+    }
+    (w2, h2, out)
+}
+
+// ---- geometries: what glyph outlines (IDWriteFontFace::GetGlyphRunOutline) make ----
+
+/// A path geometry holds the glyphs outlined into it (face, em, index, x, y), and whether
+/// other figures went in (not drawn); a transformed geometry its source and matrix.
+enum Geom {
+    Path { glyphs: Vec<(usize, f32, u16, f32, f32)>, figures: bool },
+    Xformed { src: u32, m: Xf },
+}
+static GEOMS: Mutex<Option<HashMap<u32, Geom>>> = Mutex::new(None);
+fn geoms<R>(f: impl FnOnce(&mut HashMap<u32, Geom>) -> R) -> R {
+    f(GEOMS.lock().unwrap().get_or_insert_with(HashMap::new))
+}
+
+fn geom_methods() -> Vec<(&'static str, Handler)> {
+    vec![("Open", GeomOpen as Handler), ("GetFactory", GetFactoryOfGeom)]
+}
+fn CreatePathGeometry(c: &mut Ctx) -> u32 {
+    let o = com::object("ID2D1PathGeometry1", &geom_methods(), 16);
+    w32(o + mem::ps(), c.a(0));
+    geoms(|m| m.insert(o, Geom::Path { glyphs: Vec::new(), figures: false }));
+    mem::putp(c.a(1), o);
+    0
+}
+fn GetFactoryOfGeom(c: &mut Ctx) -> u32 {
+    let f = r32(c.a(0) + mem::ps());
+    com::add_ref_obj(f);
+    mem::putp(c.a(1), f);
+    0
+}
+fn CreateTransformedGeometry(c: &mut Ctx) -> u32 {
+    // (this, source, matrix *, out)
+    let (src, m, out) = (c.a(1), c.a(2), c.a(3));
+    let xf = [rf(m, 0), rf(m, 1), rf(m, 2), rf(m, 3), rf(m, 4), rf(m, 5)];
+    let o = com::object("ID2D1TransformedGeometry", &[("GetFactory", GetFactoryOfGeom as Handler)], 16);
+    w32(o + mem::ps(), c.a(0));
+    com::add_ref_obj(src);
+    geoms(|g| g.insert(o, Geom::Xformed { src, m: xf }));
+    mem::putp(out, o);
+    0
+}
+fn CreateStrokeStyle(c: &mut Ctx) -> u32 {
+    // (this, properties, dashes, dash count, out): drawn as a round pen whatever it says
+    mem::putp(c.a(4), com::object("ID2D1StrokeStyle1", &[], 8));
+    0
+}
+/// Open(this, out sink): the sink records into the geometry
+fn GeomOpen(c: &mut Ctx) -> u32 {
+    let m: [(&'static str, Handler); 12] = [
+        ("SetFillMode", ok),
+        ("SetSegmentFlags", ok),
+        ("BeginFigure", SinkFigure),
+        ("AddLines", SinkFigure),
+        ("AddBeziers", SinkFigure),
+        ("EndFigure", ok),
+        ("Close", ok),
+        ("AddLine", SinkFigure),
+        ("AddBezier", SinkFigure),
+        ("AddQuadraticBezier", SinkFigure),
+        ("AddQuadraticBeziers", SinkFigure),
+        ("AddArc", SinkFigure),
+    ];
+    let o = com::object("ID2D1GeometrySink", &m, 16);
+    w32(o + mem::ps(), c.a(0));
+    com::add_ref_obj(c.a(0));
+    mem::putp(c.a(1), o);
+    0
+}
+fn SinkFigure(c: &mut Ctx) -> u32 {
+    let g = r32(c.a(0) + mem::ps());
+    geoms(|m| {
+        if let Some(Geom::Path { figures, .. }) = m.get_mut(&g) {
+            *figures = true;
+        }
+    });
+    0
+}
+/// IDWriteFontFace::GetGlyphRunOutline into a sink of ours: the glyphs go in its geometry
+/// (false: not our sink).
+pub fn sink_glyphs(sink: u32, glyphs: Vec<(usize, f32, u16, f32, f32)>) -> bool {
+    if sink == 0 || com::method_name(mem::rp(mem::rp(sink) + 9 * mem::ps())) != Some("Close") {
+        return false;
+    }
+    let g = r32(sink + mem::ps());
+    geoms(|m| match m.get_mut(&g) {
+        Some(Geom::Path { glyphs: v, .. }) => {
+            v.extend(glyphs);
+            true
+        }
+        _ => false,
+    })
+}
+/// The glyphs of a geometry with the transforms between applied (x, y; em scaled), and
+/// whether it holds figures that are not drawn.
+fn geom_glyphs(g: u32) -> (Vec<(usize, f32, u16, f32, f32)>, bool) {
+    let mut m = IDENTITY;
+    let mut g = g;
+    for _ in 0..16 {
+        match geoms(|t| match t.get(&g) {
+            Some(Geom::Path { glyphs, figures }) => Some(Err((glyphs.clone(), *figures))),
+            Some(Geom::Xformed { src, m }) => Some(Ok((*src, *m))),
+            None => None,
+        }) {
+            Some(Ok((src, xf))) => {
+                m = mul(xf, m);
+                g = src;
+            }
+            Some(Err((glyphs, figures))) => {
+                let s = (m[0] * m[3] - m[1] * m[2]).abs().sqrt();
+                let v = glyphs.into_iter().map(|(f, em, gi, x, y)| (f, em * s, gi, m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5])).collect();
+                return (v, figures);
+            }
+            None => break,
+        }
+    }
+    (Vec::new(), false)
+}
+/// a then b
+fn mul(a: Xf, b: Xf) -> Xf {
+    [
+        a[0] * b[0] + a[1] * b[2],
+        a[0] * b[1] + a[1] * b[3],
+        a[2] * b[0] + a[3] * b[2],
+        a[2] * b[1] + a[3] * b[3],
+        a[4] * b[0] + a[5] * b[2] + b[4],
+        a[4] * b[1] + a[5] * b[3] + b[5],
+    ]
+}
+fn draw_geom(dc: u32, g: u32, b: u32, width: f32) {
+    let (glyphs, figures) = geom_glyphs(g);
+    if figures {
+        com::warn_once("sake: d2d geometry with figures other than glyph outlines: not drawn");
+    }
+    // (runs of the same face and size)
+    let mut i = 0;
+    while i < glyphs.len() {
+        let (f, em) = (glyphs[i].0, glyphs[i].1);
+        let mut j = i;
+        while j < glyphs.len() && glyphs[j].0 == f && glyphs[j].1 == em {
+            j += 1;
+        }
+        let run: Vec<(u16, f32, f32)> = glyphs[i..j].iter().map(|g| (g.2, g.3, g.4)).collect();
+        draw_glyphs(dc, f, em, &run, b, width);
+        i = j;
+    }
+}
+fn DrawGeometry(c: &mut Ctx) -> u32 {
+    if !drawing(c.a(0), Drawing::draw) {
+        return 0;
+    }
+    // (this, geometry, brush, stroke width, stroke style)
+    draw_geom(c.a(0), c.a(1), c.a(2), fl(c, 3).max(0.001));
+    0
+}
+fn FillGeometry(c: &mut Ctx) -> u32 {
+    if !drawing(c.a(0), Drawing::draw) {
+        return 0;
+    }
+    // (this, geometry, brush, opacity brush)
+    draw_geom(c.a(0), c.a(1), c.a(2), 0.0);
+    0
+}
+
 fn DrawText(c: &mut Ctx) -> u32 {
     if !drawing(c.a(0), Drawing::draw) {
         return 0;
@@ -1219,8 +1484,9 @@ fn DrawTextLayout(c: &mut Ctx) -> u32 {
     if !drawing(c.a(0), Drawing::draw) {
         return 0;
     }
-    // (this, origin x, origin y, layout, brush, options)
-    let (dc, x, y, lay, b, opts) = (c.a(0), fl(c, 1), fl(c, 2), c.a(3), c.a(4), c.a(5));
+    // (this, origin (by value), layout, brush, options)
+    let ((x, y), o) = c.pt_f(1);
+    let (dc, lay, b, opts) = (c.a(0), c.a(o), c.a(o + 1), c.a(o + 2));
     let Some((text, f, w, h)) = dwrite::layout_of(lay) else { return 0 };
     draw_text(dc, &text, &f, w, h, x, y, b, opts & 2 != 0);
     0
@@ -1235,7 +1501,8 @@ fn put_matrix(out: u32, m: [f32; 6]) {
 }
 /// D2D1MakeRotateMatrix(angle in degrees, center, out)
 fn D2D1MakeRotateMatrix(c: &mut Ctx) -> u32 {
-    let (deg, cx, cy, out) = (fl(c, 0), fl(c, 1), fl(c, 2), c.a(3));
+    let (deg, ((cx, cy), o)) = (fl(c, 0), c.pt_f(1));
+    let out = c.a(o);
     // (multiples of 90 degrees exactly, as Windows gives them)
     let (s, co) = if deg % 90.0 == 0.0 {
         [(0.0, 1.0), (1.0, 0.0), (0.0, -1.0), (-1.0, 0.0)][((deg / 90.0).rem_euclid(4.0)) as usize]
@@ -1247,7 +1514,8 @@ fn D2D1MakeRotateMatrix(c: &mut Ctx) -> u32 {
 }
 /// D2D1MakeSkewMatrix(angle x, angle y, center, out)
 fn D2D1MakeSkewMatrix(c: &mut Ctx) -> u32 {
-    let (tx, ty, cx, cy, out) = (fl(c, 0).to_radians().tan(), fl(c, 1).to_radians().tan(), fl(c, 2), fl(c, 3), c.a(4));
+    let (tx, ty, ((cx, cy), o)) = (fl(c, 0).to_radians().tan(), fl(c, 1).to_radians().tan(), c.pt_f(2));
+    let out = c.a(o);
     put_matrix(out, [1.0, ty, tx, 1.0, -cy * tx, -cx * ty]);
     0
 }
@@ -1293,3 +1561,56 @@ pub fn init() {
 
 #[cfg(test)]
 mod draw_tests;
+
+#[cfg(test)]
+mod geom_tests {
+    use super::*;
+
+    #[test]
+    fn dilating_a_dot_makes_a_round_spot() {
+        // one full pixel grown by 1: its 4 neighbours half covered, the corners barely
+        let (w, h, d) = dilate(&[255], 1, 1, 1.0);
+        assert_eq!((w, h), (3, 3));
+        assert_eq!(d, vec![22, 128, 22, 128, 255, 128, 22, 128, 22]);
+        // grown by 2: the direct neighbours full, 2 away half
+        let (w, _, d) = dilate(&[255], 1, 1, 2.0);
+        assert_eq!(w, 5);
+        assert_eq!((d[12], d[13], d[14]), (255, 255, 128));
+    }
+
+    proptest::proptest! {
+        /// A dilated bitmap keeps every pixel's coverage where it was (shifted by the border),
+        /// grows by ceil(r) on each side, and a wider pen covers at least as much.
+        #[test]
+        fn dilation_only_adds(cov in proptest::collection::vec(proptest::prop_oneof![proptest::strategy::Just(0u8), 0u8..=255], 1..30), w in 1i32..6, r in 0.1f32..3.0) {
+            let h = (cov.len() as i32 + w - 1) / w;
+            let mut c = cov.clone();
+            c.resize((w * h) as usize, 0);
+            let (w2, h2, d) = dilate(&c, w, h, r);
+            let k = r.ceil() as i32;
+            proptest::prop_assert_eq!((w2, h2), (w + 2 * k, h + 2 * k));
+            for y in 0..h {
+                for x in 0..w {
+                    proptest::prop_assert!(d[((y + k) * w2 + x + k) as usize] >= c[(y * w + x) as usize]);
+                }
+            }
+            let (w3, _, d3) = dilate(&c, w, h, r + 1.0);
+            let k3 = (r + 1.0).ceil() as i32;
+            for y in 0..h2 {
+                for x in 0..w2 {
+                    proptest::prop_assert!(d3[((y + k3 - k) * w3 + x + k3 - k) as usize] >= d[(y * w2 + x) as usize]);
+                }
+            }
+        }
+
+        /// mul composes transforms: applying a then b to a point is applying mul(a, b).
+        #[test]
+        fn transforms_compose(a in proptest::array::uniform6(-4f32..4.0), b in proptest::array::uniform6(-4f32..4.0), x in -9f32..9.0, y in -9f32..9.0) {
+            let ap = |m: Xf, x: f32, y: f32| (m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]);
+            let (x1, y1) = ap(a, x, y);
+            let (x2, y2) = ap(b, x1, y1);
+            let (x3, y3) = ap(mul(a, b), x, y);
+            proptest::prop_assert!((x2 - x3).abs() < 1e-2 && (y2 - y3).abs() < 1e-2);
+        }
+    }
+}

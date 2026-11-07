@@ -31,7 +31,7 @@ $cxx -c "$src/$name.cpp" -o "$t/$name.obj"
 # (where Windows' DLLs export them: vcruntime140 has the exception copies and the mem/str
 # search functions; printf, the STL's vector algorithms, _Facet_Register and type_info's
 # vftable are no DLL's: glue.cpp has them, as msvcrt.lib / msvcprt.lib do)
-vcrt='__intrinsic_setjmp __intrinsic_setjmpex longjmp _CxxThrowException __CxxFrameHandler3 __CxxFrameHandler4 __C_specific_handler memset memcpy memmove memcmp memchr strchr strrchr strstr wcschr wcsrchr wcsstr __std_type_info_compare __std_terminate __std_exception_copy __std_exception_destroy'
+vcrt='__intrinsic_setjmp __intrinsic_setjmpex longjmp _CxxThrowException __CxxFrameHandler3 __CxxFrameHandler4 __C_specific_handler memset memcpy memmove memcmp memchr strchr strrchr strstr wcschr wcsrchr wcsstr __std_type_info_compare __std_terminate __std_exception_copy __std_exception_destroy __RTDynamicCast __RTCastToVoid __RTtypeid'
 defined=$(llvm-nm --defined-only $objs | awk '{print $NF}' | sort -u)
 for d in ucrtbase vcruntime140 kernel32 msvcp140; do printf 'LIBRARY %s.dll\nEXPORTS\n' "$d" > "$t/$d.def"; done
 llvm-nm -u $objs | awk '{print $NF}' | sort -u | while read -r s; do

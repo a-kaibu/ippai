@@ -7,7 +7,9 @@
 //! _Mtx_internal_imp_t (80 bytes): int _Type, then the critical section's storage (its SRW lock
 //! word at +16), long _Thread_id at +72 (-1 or 0: no owner), int _Count at +76. Storage the
 //! program's constexpr std::mutex constructor zeroed works without _Mtx_init_in_situ.
-//! _Cnd_internal_imp_t (72 bytes): only its address is used (the wait generation's key).
+//! _Cnd_internal_imp_t (72 bytes): the CONDITION_VARIABLE at +8 is the wait's key, as the STL's
+//! _Stl_condition_variable keeps it: the headers' inline waits call SleepConditionVariableSRW on
+//! it (with the mutex's SRW lock at +16), and _Cnd_broadcast must wake those too.
 
 #![allow(non_snake_case)]
 
@@ -32,6 +34,8 @@ const MTX_TIMED: u32 = 0x4;
 const MTX_RECURSIVE: u32 = 0x100;
 
 const LOCK: u32 = 16;
+/// the CONDITION_VARIABLE inside a _Cnd_internal_imp_t
+const CV: u32 = 8;
 const OWNER: u32 = 72;
 const COUNT: u32 = 76;
 
@@ -209,7 +213,7 @@ fn cnd_init_in_situ(c: &mut Ctx) -> u32 {
 fn cnd_wait(cv: u32, m: u32, ms: u32) -> u32 {
     let n = r32(m + COUNT);
     let woke = cv_wait(
-        cv,
+        cv + CV,
         ms,
         |m, _| {
             let m = m as u32;
@@ -244,7 +248,7 @@ fn _Cnd_timedwait_for(c: &mut Ctx) -> u32 {
 }
 /// _Cnd_signal / _Cnd_broadcast (a signal wakes all waiters: they recheck their predicate)
 fn _Cnd_signal(c: &mut Ctx) -> u32 {
-    cv_wake(c.a(0));
+    cv_wake(c.a(0) + CV);
     SUCCESS
 }
 
@@ -273,7 +277,7 @@ fn _Cnd_do_broadcast_at_thread_exit(_: &mut Ctx) -> u32 {
             w32(done, 1);
         }
         mtx_unlock(m);
-        cv_wake(cnd);
+        cv_wake(cnd + CV);
     }
     0
 }

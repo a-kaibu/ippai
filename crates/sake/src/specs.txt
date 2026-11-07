@@ -14131,6 +14131,13 @@ xinput1_4 XInputCancelGuideButtonWait stdcall 4 102
 xinput1_4 XInputPowerOffController stdcall 4 103
 xinput1_4 XInputGetBaseBusInformation stdcall 8 104
 xinput1_4 XInputGetCapabilitiesEx stdcall 16 108
+xinputuap XInputGetState stdcall 8 -
+xinputuap XInputSetState stdcall 8 -
+xinputuap XInputGetCapabilities stdcall 12 -
+xinputuap XInputEnable stdcall 4 -
+xinputuap XInputGetBatteryInformation stdcall 12 -
+xinputuap XInputGetKeystroke stdcall 12 -
+xinputuap XInputGetAudioDeviceIds stdcall 20 -
 wintrust WinVerifyTrust stdcall 12 -
 sensapi IsNetworkAlive stdcall 4 -
 sensapi IsDestinationReachableA stdcall 8 -

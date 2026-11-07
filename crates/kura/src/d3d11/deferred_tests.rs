@@ -638,3 +638,51 @@ fn state_descriptions() {
     assert_eq!(release(plain), 0);
     assert_eq!(release(bs), 0);
 }
+
+/// A 2D texture of one level and one layer answers IDXGISurface, IDXGISurface1 and IDXGISurface2
+/// with one face (AdvHD asks for IDXGISurface2 to make a Direct2D bitmap of it), and
+/// IDXGISurface2::GetResource gives the texture back with subresource 0; one of two levels has
+/// none (winref d3d11api "surface").
+#[test]
+fn surface2_of_a_texture() {
+    let _g = setup();
+    let c = Ctx::new();
+    let td = mem(11);
+    let iid = mem(4);
+    for (mips, has) in [(1, true), (2, false)] {
+        put(td, &[64, 32, mips, 1, 87, 1, 0, 0, 0x28, 0, 0]);
+        assert_eq!(call1(m(IF_DEVICE, 5), &[c.dev, td, 0, c.o]), 0);
+        let tex = rd1(c.o);
+        let base = refs(tex);
+        let mut faces = Vec::new();
+        for first in [0xcafcb56c, 0x4ae63092, 0xaba496dd] {
+            put(iid, &[first, 0, 0, 0]);
+            let hr = call1(m(IF_TEX2D, 0), &[tex, iid, c.o]);
+            assert_eq!(hr == 0, has, "{first:#x} mips {mips}");
+            if hr == 0 {
+                faces.push(rd1(c.o));
+            } else {
+                assert_eq!(rd1(c.o), 0);
+            }
+        }
+        if has {
+            assert!(faces.windows(2).all(|w| w[0] == w[1]), "{faces:x?}");
+            assert_eq!(refs(tex), base + 3);
+            let (out, sub) = (mem(2), mem(1));
+            put(sub, &[77]);
+            put(iid, &[0x6f15aaf2, 0, 0, 0]);
+            assert_eq!(call1(m(IF_SURFACE, 13), &[faces[0], iid, out, sub]), 0);
+            assert_eq!((rd1(out), rd1(sub)), (tex, 0));
+            assert_eq!(refs(tex), base + 4);
+            release(rd1(out));
+            // (an interface the texture lacks: E_NOINTERFACE, nothing written)
+            put(iid, &[0x48570b85, 0, 0, 0]);
+            assert_ne!(call1(m(IF_SURFACE, 13), &[faces[0], iid, out, 0]), 0);
+            for f in faces {
+                release(f);
+            }
+        }
+        assert_eq!(refs(tex), base);
+        release(tex);
+    }
+}

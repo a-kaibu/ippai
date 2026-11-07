@@ -21,7 +21,9 @@ const t0 = Date.now();
 const stamp = () => ((Date.now() - t0) / 1000).toFixed(1).padStart(7);
 const logFile = `${out}/console.log`;
 const args = ["--enable-unsafe-webgpu", ...(process.env.CHROME_ARGS ?? "").split(" ").filter(Boolean)];
-const viewport = { width: 1280, height: 720 };
+// VIEWPORT="WxH": the page's size (default 1280x720; with &env=IPPAI_SCREEN%3DWxH a bigger screen)
+const [vw, vh] = (process.env.VIEWPORT ?? "1280x720").split("x").map(Number);
+const viewport = { width: vw, height: vh };
 const browser = process.env.USER_DATA_DIR
   ? await chromium.launchPersistentContext(process.env.USER_DATA_DIR, { args, viewport })
   : await chromium.launch({ args });

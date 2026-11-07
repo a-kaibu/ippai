@@ -7,7 +7,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 OUT=${1:-$ROOT/target/winref/exe}
 mkdir -p "$OUT"
-for t in msvcpsync msvcstream; do
+for t in msvcpsync msvcstream msvcrtti; do
   "$ROOT/host/tests/build-msvc64.sh" "$t" "$OUT"
   mv "$OUT/$t.exe" "$OUT/host_$t-64.exe"
 done

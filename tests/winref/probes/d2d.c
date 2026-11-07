@@ -4,7 +4,6 @@
  * source rects), and what the render target reports (DPI, sizes). Each picture is the 64x64
  * B8G8R8A8 texture read back through a staging copy. WARP on the Windows runner.
  * libs: -ld3d11 -ld2d1 -luuid
- * arch: 32 (sake's Direct2D is 32-bit)
  * run: browser (sake draws through WebGPU: tests/winref/run-browser.mjs) */
 #define COBJMACROS
 #define INITGUID

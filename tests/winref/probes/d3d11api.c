@@ -9,6 +9,7 @@
 #define INITGUID
 #include "../probe.h"
 #include <d3d11.h>
+#include <dxgi1_2.h>
 
 static ID3D11Device *dev;
 static ID3D11DeviceContext *ctx;
@@ -474,6 +475,39 @@ static void refcounts(void) {
     printf("refs end device %lu\n", refs(dev));
 }
 
+/* a 2D texture's IDXGISurface faces (AdvHD asks for IDXGISurface2 to make a Direct2D bitmap of
+ * its picture): one level of one layer has them, GetResource gives the texture back */
+static void surfaces(void) {
+    struct { const char *name; UINT mips, layers; } t[] = { { "plain", 1, 1 }, { "mips", 2, 1 }, { "array", 1, 2 } };
+    for (int i = 0; i < 3; i++) {
+        ID3D11Texture2D *tex = NULL;
+        HRESULT hr = tex2d(DXGI_FORMAT_B8G8R8A8_UNORM, 64, 32, t[i].mips, t[i].layers, D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET, D3D11_USAGE_DEFAULT, 0, 0, 1, &tex);
+        if (FAILED(hr)) { printf("surface %s texture %s\n", t[i].name, code(hr)); continue; }
+        IDXGISurface *s1 = NULL;
+        IDXGISurface2 *s2 = NULL;
+        HRESULT h1 = ID3D11Texture2D_QueryInterface(tex, &IID_IDXGISurface, (void **)&s1);
+        HRESULT h2 = ID3D11Texture2D_QueryInterface(tex, &IID_IDXGISurface2, (void **)&s2);
+        printf("surface %s IDXGISurface %s IDXGISurface2 %s same %d refs %lu\n", t[i].name, code(h1), code(h2), s1 && s2 && (void *)s1 == (void *)s2, refs(tex));
+        if (s2) {
+            ID3D11Texture2D *back = NULL;
+            ID3D11Resource *res = NULL;
+            UINT sub = 77, sub2 = 77;
+            HRESULT g1 = IDXGISurface2_GetResource(s2, &IID_ID3D11Texture2D, (void **)&back, &sub);
+            HRESULT g2 = IDXGISurface2_GetResource(s2, &IID_ID3D11Resource, (void **)&res, &sub2);
+            DXGI_SURFACE_DESC d = { 0 };
+            HRESULT gd = IDXGISurface2_GetDesc(s2, &d);
+            printf("surface %s GetResource %s same %d sub %u resource %s same %d sub %u refs %lu desc %s %ux%u fmt %u\n", t[i].name, code(g1), back == tex, sub,
+                   code(g2), res == (ID3D11Resource *)tex, sub2, refs(tex), code(gd), d.Width, d.Height, d.Format);
+            if (back) ID3D11Texture2D_Release(back);
+            if (res) ID3D11Resource_Release(res);
+            IDXGISurface2_Release(s2);
+        }
+        if (s1) IDXGISurface_Release(s1);
+        printf("surface %s released refs %lu\n", t[i].name, refs(tex));
+        ID3D11Texture2D_Release(tex);
+    }
+}
+
 int main(void) {
     D3D_FEATURE_LEVEL fl = D3D_FEATURE_LEVEL_11_0, got = 0;
     HRESULT hr = D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, &fl, 1, D3D11_SDK_VERSION, NULL, NULL, NULL);
@@ -495,6 +529,7 @@ int main(void) {
     views();
     queries();
     refcounts();
+    surfaces();
     ID3D11DeviceContext_Release(ctx);
     printf("release device %lu\n", ID3D11Device_Release(dev));
     return 0;
