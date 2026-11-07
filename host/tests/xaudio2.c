@@ -1,5 +1,5 @@
 /* XAudio2 2.7 (CoCreateInstance CLSID_XAudio2): a mastering voice, a source voice with a
- * callback, two buffers played to the end of the stream, the voice state, volume and frequency
+ * callback, two buffers played to the end of the stream (SamplesPlayed starting over), the voice state, volume and frequency
  * ratio round trips. The 2.7 interfaces are declared here (mingw's xaudio2.h is 2.8+). Prints
  * only what any XAudio2 2.7 gives; built for x86 and x86-64 (the same lines from each). No C
  * runtime.
@@ -24,6 +24,8 @@ static void out(const char *f, ...)
     WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), b, n, &n, NULL);
 }
 
+/* xaudio2.h packs its structures to 1 byte: on x64 pContext is at 36, SamplesPlayed at 12 */
+#pragma pack(push, 1)
 typedef struct { UINT32 Flags; void *pOutputVoice; } SEND;
 typedef struct { UINT32 SendCount; SEND *pSends; } SENDS;
 typedef struct {
@@ -34,6 +36,7 @@ typedef struct {
 } XBUFFER;
 typedef struct { void *pCurrentBufferContext; UINT32 BuffersQueued; UINT64 SamplesPlayed; } XSTATE;
 typedef struct { UINT32 CreationFlags, InputChannels, InputSampleRate; } XDETAILS;
+#pragma pack(pop)
 
 typedef struct Voice Voice;
 /* IXAudio2Voice then IXAudio2SourceVoice (2.7: no IUnknown) */
@@ -157,7 +160,8 @@ void mainCRTStartup(void)
     out("callbacks starts %d ends %d streams %d passes %d\n", (int)cb.starts, (int)cb.ends, (int)cb.streams, cb.passes > 0);
     out("ended a %d b %d\n", cb.ended[0] == &ctx_a, cb.ended[1] == &ctx_b);
     src->v->GetState(src, &st);
-    out("state queued %u current %d played all %d\n", st.BuffersQueued, st.pCurrentBufferContext != NULL, st.SamplesPlayed >= 8820);
+    /* (SamplesPlayed counts since the last end of stream: b2 ended one) */
+    out("state queued %u current %d played since the end %d\n", st.BuffersQueued, st.pCurrentBufferContext != NULL, (int)st.SamplesPlayed);
 
     src->v->DestroyVoice(src);
     master->v->DestroyVoice(master);

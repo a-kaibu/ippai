@@ -10,5 +10,5 @@ ratio 1500
 start 0
 callbacks starts 2 ends 2 streams 1 passes 1
 ended a 1 b 1
-state queued 0 current 0 played all 1
+state queued 0 current 0 played since the end 0
 release 0
