@@ -1,9 +1,9 @@
 # Release from the GitHub web UI: Actions → Release → Run workflow, pick patch / minor / major:
 # svu takes the next version after the last v* tag and the workflow tags main with it. A v* tag
-# pushed by hand (git tag v0.1.0 && git push origin v0.1.0) releases that tag the same way. Both
-# run CI (tests, sake.wasm and the page, host/tests), then GoReleaser builds ippai for Linux
-# x86-64 and ARM64 with the page built in, smoke-tests it and puts the archives, checksums.txt and
-# SBOMs on GitHub Releases.
+# pushed by hand (git tag v0.1.0 && git push origin v0.1.0) releases that tag the same way. Only a
+# release: no tests here (CI runs them on every push). It builds sake.wasm and the page, makes
+# sake's fonts, then GoReleaser builds ippai for Linux x86-64 and ARM64 with the page built in,
+# smoke-tests it and puts the archives (with fonts/), checksums.txt and SBOMs on GitHub Releases.
 name: Release
 
 on:
@@ -31,15 +31,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  ci:
+  release:
     # manual releases only from main
     if: >-
       github.event_name == 'push' ||
       github.ref == 'refs/heads/main'
-    uses: ./.github/workflows/ci.yml
-
-  release:
-    needs: ci
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7.0.1
@@ -47,11 +43,25 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      # sake.wasm and the page CI built (the same for every target): built into the binaries
-      - uses: actions/download-artifact@v8.0.2
+      # (what tools/ci/build.sh needs, as CI's build job; and the IPA fonts for sake's C:\)
+      - name: apt
+        run: tools/ci/apt.sh mingw-w64 zstd clang lld llvm fonts-ipafont-gothic fonts-ipafont-mincho python3-fonttools
+      - uses: actions/setup-node@v7.1.0
         with:
-          name: web
-          path: web/dist
+          node-version: 24
+      - run: tools/ci/pnpm.sh
+      - run: tools/ci/rust-wasm.sh
+
+      # sake.wasm and the page (the same for every target): built into the binaries
+      - name: sake.wasm and the page
+        run: |
+          . tools/ci/emsdk.sh
+          OUT=$PWD/target/sake-out WEB_OUT=$PWD/web/public/sake bash crates/sake/build.sh
+          (cd web && pnpm install --frozen-lockfile && pnpm exec vp build)
+
+      # (sake's C:\ is fonts only: the IPA fonts under the Windows names, in the archives as fonts/)
+      - name: sake's fonts
+        run: python3 tools/ci/sake-fonts.py fonts
 
       - name: Setup svu
         if: github.event_name == 'workflow_dispatch'
@@ -99,13 +109,6 @@ jobs:
             crates/ippai/target
           key: release-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: release-${{ runner.os }}-
-
-      # (sake's C:\ is fonts only: the IPA fonts under the Windows names, in the archives as fonts/)
-      - name: sake's fonts
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends fonts-ipafont-gothic fonts-ipafont-mincho python3-fonttools
-          python3 tools/ci/sake-fonts.py fonts
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7.3.0
