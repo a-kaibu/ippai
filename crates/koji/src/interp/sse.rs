@@ -2,6 +2,7 @@
 
 use super::X;
 use crate::flags::STATUS;
+use crate::round::{self, Op};
 use crate::{fpu, Exit, Fault, Memory};
 use iced_x86::{Mnemonic, OpKind, Register};
 
@@ -496,16 +497,17 @@ impl<'a, M: Memory> X<'a, M> {
                 let a = tryf!(self.read_v(0));
                 let b = tryf!(self.read_v(1));
                 let mut r = a;
+                let mx = self.cpu.mxcsr;
                 for i in 0..(if scalar { 1 } else { 4 }) {
                     let (x, y) = (f32x(a, i), f32x(b, i));
                     let v = match mn {
-                        Addss | Addps => x + y,
-                        Subss | Subps => x - y,
-                        Mulss | Mulps => x * y,
-                        Divss | Divps => x / y,
+                        Addss | Addps => round::sse32(Op::Add, x, y, mx),
+                        Subss | Subps => round::sse32(Op::Sub, x, y, mx),
+                        Mulss | Mulps => round::sse32(Op::Mul, x, y, mx),
+                        Divss | Divps => round::sse32(Op::Div, x, y, mx),
                         Minss | Minps => if sse_min(x as f64, y as f64) { x } else { y },
                         Maxss | Maxps => if (x as f64) > (y as f64) { x } else { y },
-                        Sqrtss | Sqrtps => if y.is_nan() { f32::from_bits(y.to_bits() | 0x40_0000) } else if y < 0.0 { f32::from_bits(0xffc0_0000) } else { libm::sqrtf(y) },
+                        Sqrtss | Sqrtps => if y.is_nan() { f32::from_bits(y.to_bits() | 0x40_0000) } else if y < 0.0 { f32::from_bits(0xffc0_0000) } else { round::sse32(Op::Sqrt, y, 0.0, mx) },
                         Rcpss | Rcpps => 1.0 / y,
                         _ => 1.0 / libm::sqrtf(y),
                     };
@@ -520,16 +522,17 @@ impl<'a, M: Memory> X<'a, M> {
                 let a = tryf!(self.read_v(0));
                 let b = tryf!(self.read_v(1));
                 let mut r = a;
+                let mx = self.cpu.mxcsr;
                 for i in 0..(if scalar { 1 } else { 2 }) {
                     let (x, y) = (f64x(a, i), f64x(b, i));
                     let v = match mn {
-                        Addsd | Addpd => x + y,
-                        Subsd | Subpd => x - y,
-                        Mulsd | Mulpd => x * y,
-                        Divsd | Divpd => x / y,
+                        Addsd | Addpd => round::sse64(Op::Add, x, y, mx),
+                        Subsd | Subpd => round::sse64(Op::Sub, x, y, mx),
+                        Mulsd | Mulpd => round::sse64(Op::Mul, x, y, mx),
+                        Divsd | Divpd => round::sse64(Op::Div, x, y, mx),
                         Minsd | Minpd => if sse_min(x, y) { x } else { y },
                         Maxsd | Maxpd => if x > y { x } else { y },
-                        _ => if y.is_nan() { f64::from_bits(y.to_bits() | 0x8_0000_0000_0000) } else if y < 0.0 { f64::from_bits(0xfff8_0000_0000_0000) } else { libm::sqrt(y) },
+                        _ => if y.is_nan() { f64::from_bits(y.to_bits() | 0x8_0000_0000_0000) } else if y < 0.0 { f64::from_bits(0xfff8_0000_0000_0000) } else { round::sse64(Op::Sqrt, y, 0.0, mx) },
                     };
                     r = set64(r, i, v.to_bits());
                 }
@@ -575,13 +578,9 @@ impl<'a, M: Memory> X<'a, M> {
                 let raw = tryf!(self.read_v(1));
                 let a = tryf!(self.read_v(0));
                 // a 64-bit source (REX.W) converts with one rounding, like the hardware
-                let (f, d) = if self.vbits(1) == 64 {
-                    let v = raw as u64 as i64;
-                    (v as f32, v as f64)
-                } else {
-                    let v = raw as u32 as i32;
-                    (v as f32, v as f64)
-                };
+                let v = if self.vbits(1) == 64 { raw as u64 as i64 } else { raw as u32 as i32 as i64 };
+                let rc = self.cpu.mxcsr >> 13;
+                let (f, d) = (round::i64_to_f32(v, rc), round::i64_to_f64(v, rc));
                 let r = if mn == Cvtsi2ss { set32(a, 0, f.to_bits()) } else { set64(a, 0, d.to_bits()) };
                 tryf!(self.write_v(0, r));
                 self.done()
@@ -603,12 +602,13 @@ impl<'a, M: Memory> X<'a, M> {
             Cvtsd2ss => {
                 let a = tryf!(self.read_v(0));
                 let v = tryf!(self.read_v(1));
-                tryf!(self.write_v(0, set32(a, 0, (f64x(v, 0) as f32).to_bits())));
+                tryf!(self.write_v(0, set32(a, 0, round::f64_to_f32(f64x(v, 0), self.cpu.mxcsr >> 13).to_bits())));
                 self.done()
             }
             Cvtdq2ps => {
                 let v = tryf!(self.read_v(1));
-                let r = lanes(v, 0, 32, |x, _| (x as u32 as i32 as f32).to_bits() as u64);
+                let rc = self.cpu.mxcsr >> 13;
+                let r = lanes(v, 0, 32, |x, _| round::i64_to_f32(x as u32 as i32 as i64, rc).to_bits() as u64);
                 tryf!(self.write_v(0, r));
                 self.done()
             }
@@ -642,14 +642,16 @@ impl<'a, M: Memory> X<'a, M> {
             }
             Cvtpd2ps => {
                 let v = tryf!(self.read_v(1));
-                let r = set32(set32(0, 0, (f64x(v, 0) as f32).to_bits()), 1, (f64x(v, 1) as f32).to_bits());
+                let rc = self.cpu.mxcsr >> 13;
+                let r = set32(set32(0, 0, round::f64_to_f32(f64x(v, 0), rc).to_bits()), 1, round::f64_to_f32(f64x(v, 1), rc).to_bits());
                 tryf!(self.write_v(0, r));
                 self.done()
             }
             Cvtpi2ps => {
                 let a = tryf!(self.read_v(0));
                 let v = tryf!(self.read_v(1));
-                let r = set32(set32(a, 0, ((v as u32 as i32) as f32).to_bits()), 1, (((v >> 32) as u32 as i32) as f32).to_bits());
+                let rc = self.cpu.mxcsr >> 13;
+                let r = set32(set32(a, 0, round::i64_to_f32(v as u32 as i32 as i64, rc).to_bits()), 1, round::i64_to_f32((v >> 32) as u32 as i32 as i64, rc).to_bits());
                 tryf!(self.write_v(0, r));
                 self.done()
             }

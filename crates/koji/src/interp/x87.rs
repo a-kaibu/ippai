@@ -3,6 +3,7 @@
 use super::X;
 use crate::flags::{self, *};
 use crate::fpu::{self, C0, C1, C2, C3};
+use crate::round::{self, Op};
 use crate::{Exit, Memory, EAX};
 use iced_x86::{MemorySize, Mnemonic, OpKind, Register};
 
@@ -42,7 +43,7 @@ impl<'a, M: Memory> X<'a, M> {
     fn fstore(&mut self, v: f64) -> Result<(), crate::Fault> {
         let a = self.addr();
         match self.ins.memory_size() {
-            MemorySize::Float32 => self.mem.write32(a, (v as f32).to_bits()),
+            MemorySize::Float32 => self.mem.write32(a, crate::round::f64_to_f32(v, (self.cpu.fpu.cw >> 10) as u32).to_bits()),
             MemorySize::Float64 => self.mem.write64(a, v.to_bits()),
             _ => {
                 let b = fpu::to_f80(v);
@@ -220,13 +221,14 @@ impl<'a, M: Memory> X<'a, M> {
                     }
                 }
                 let x = self.cpu.fpu.st(d);
+                let cw = self.cpu.fpu.cw;
                 let r = match mn {
-                    Fadd | Faddp => x + s,
-                    Fsub | Fsubp => x - s,
-                    Fsubr | Fsubrp => s - x,
-                    Fmul | Fmulp => x * s,
-                    Fdiv | Fdivp => x / s,
-                    _ => s / x,
+                    Fadd | Faddp => round::x87(Op::Add, x, s, cw),
+                    Fsub | Fsubp => round::x87(Op::Sub, x, s, cw),
+                    Fsubr | Fsubrp => round::x87(Op::Sub, s, x, cw),
+                    Fmul | Fmulp => round::x87(Op::Mul, x, s, cw),
+                    Fdiv | Fdivp => round::x87(Op::Div, x, s, cw),
+                    _ => round::x87(Op::Div, s, x, cw),
                 };
                 self.cpu.fpu.set_st(d, r);
                 if matches!(mn, Faddp | Fsubp | Fsubrp | Fmulp | Fdivp | Fdivrp) {
@@ -236,13 +238,14 @@ impl<'a, M: Memory> X<'a, M> {
             Fiadd | Fisub | Fisubr | Fimul | Fidiv | Fidivr => {
                 let s = tryf!(self.fload());
                 let x = self.cpu.fpu.st(0);
+                let cw = self.cpu.fpu.cw;
                 let r = match mn {
-                    Fiadd => x + s,
-                    Fisub => x - s,
-                    Fisubr => s - x,
-                    Fimul => x * s,
-                    Fidiv => x / s,
-                    _ => s / x,
+                    Fiadd => round::x87(Op::Add, x, s, cw),
+                    Fisub => round::x87(Op::Sub, x, s, cw),
+                    Fisubr => round::x87(Op::Sub, s, x, cw),
+                    Fimul => round::x87(Op::Mul, x, s, cw),
+                    Fidiv => round::x87(Op::Div, x, s, cw),
+                    _ => round::x87(Op::Div, s, x, cw),
                 };
                 self.cpu.fpu.set_st(0, r);
             }
@@ -266,7 +269,7 @@ impl<'a, M: Memory> X<'a, M> {
                     self.cpu.fpu.pop();
                 }
             }
-            Fsqrt => { let v = self.cpu.fpu.st(0); self.cpu.fpu.set_st(0, libm::sqrt(v)); }
+            Fsqrt => { let v = self.cpu.fpu.st(0); let r = round::x87(Op::Sqrt, v, 0.0, self.cpu.fpu.cw); self.cpu.fpu.set_st(0, r); }
             Frndint => {
                 if self.cpu.fpu.exact_int().is_none() {
                     let v = self.cpu.fpu.st(0);

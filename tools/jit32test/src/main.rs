@@ -12,6 +12,7 @@ use iced_x86::{BlockEncoder, BlockEncoderOptions, Code, Instruction, Instruction
 use koji::{Cpu, Exit, Fault};
 use std::sync::atomic::Ordering::Relaxed;
 use wasmtime::*;
+mod native;
 
 const CPU: u32 = 0x2000;
 const HASH: u32 = 0x8000;
@@ -87,9 +88,16 @@ const XMM: [AsmRegisterXmm; 8] = [xmm0, xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7
 
 /// A memory operand in DATA (or the stack), `n` bytes fitting.
 fn mem(rng: &mut Rng, n: i32) -> AsmMemoryOperand {
-    let off = rng.below((DATA_LEN as i32 - 0x100 - n) as u64) as i32;
-    match rng.below(6) {
-        0 => esp + rng.below(0x7f0 - n as u64) as i32,
+    mem_a(rng, n, 1)
+}
+
+/// The same, aligned to `align` (legacy SSE's 16-byte operands: the CPU faults on others, koji
+/// doesn't)
+fn mem_a(rng: &mut Rng, n: i32, align: i32) -> AsmMemoryOperand {
+    let off = rng.below((DATA_LEN as i32 - 0x100 - n) as u64) as i32 & !(align - 1);
+    // (not ESP for aligned ones: a subroutine's ESP is 8 below)
+    match if align > 1 { 1 + rng.below(5) } else { rng.below(6) } {
+        0 => esp + (rng.below(0x7f0 - n as u64) as i32 & !(align - 1)),
         1 => ebp + (off - 0x100),
         // absolute (a global)
         2 => ptr(DATA as u64 + off as u64),
@@ -98,6 +106,11 @@ fn mem(rng: &mut Rng, n: i32) -> AsmMemoryOperand {
         _ => ebx + off,
     }
 }
+
+/// native mode: no undefined flags read (they differ between CPUs)
+static NATIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static NO_MMX: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static NO_X87: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// One random instruction or a few (into `a`)
 fn random_ins(rng: &mut Rng, a: &mut CodeAssembler) -> Result<(), IcedError> {
@@ -213,20 +226,37 @@ fn random_ins(rng: &mut Rng, a: &mut CodeAssembler) -> Result<(), IcedError> {
                 3 => sh!(g8(rng), n & 7),
                 _ => sh!(g16(rng), n & 15),
             }
-        }
-        24 => match rng.below(4) {
-            0 => a.shld(g32(rng), g32(rng), rng.below(32) as u32)?,
-            1 => a.shrd(g32(rng), g32(rng), rng.below(32) as u32)?,
-            2 => {
-                a.mov(ecx, rng.below(40) as u32)?;
-                a.shld(rng.pick(&[eax, edx, esi]), rng.pick(&[edx, esi, edi]), cl)?
+            // (OF is undefined after more than 1 bit, and CPUs differ: native mode defines it)
+            if NATIVE.load(Relaxed) {
+                a.adc(eax, 0)?
             }
-            _ => a.shrd(dword_ptr(mem(rng, 4)), g32(rng), rng.below(32) as u32)?,
-        },
+        }
+        24 => {
+            match rng.below(4) {
+                0 => a.shld(g32(rng), g32(rng), rng.below(32) as u32)?,
+                1 => a.shrd(g32(rng), g32(rng), rng.below(32) as u32)?,
+                2 => {
+                    a.mov(ecx, rng.below(40) as u32)?;
+                    a.shld(rng.pick(&[eax, edx, esi]), rng.pick(&[edx, esi, edi]), cl)?
+                }
+                _ => a.shrd(dword_ptr(mem(rng, 4)), g32(rng), rng.below(32) as u32)?,
+            }
+            if NATIVE.load(Relaxed) {
+                a.adc(eax, 0)?
+            }
+        }
         25 | 26 => match rng.below(6) {
-            0 => a.imul_2(g32(rng), gs32(rng))?,
-            1 => a.imul_3(g32(rng), gs32(rng), rng.imm32())?,
-            2 => a.imul_2(g32(rng), dword_ptr(mem(rng, 4)))?,
+            // (SF ZF AF PF are undefined after IMUL, and CPUs differ: native mode defines them)
+            k @ 0..=2 => {
+                match k {
+                    0 => a.imul_2(g32(rng), gs32(rng))?,
+                    1 => a.imul_3(g32(rng), gs32(rng), rng.imm32())?,
+                    _ => a.imul_2(g32(rng), dword_ptr(mem(rng, 4)))?,
+                }
+                if NATIVE.load(Relaxed) {
+                    a.adc(eax, 0)?
+                }
+            }
             3 => {
                 a.imul(g32(rng))?;
                 a.adc(edx, 0)?
@@ -235,7 +265,12 @@ fn random_ins(rng: &mut Rng, a: &mut CodeAssembler) -> Result<(), IcedError> {
                 a.mul(rng.pick(&[ecx, esi, edi, ebx]))?;
                 a.adc(edx, 0)?
             }
-            _ => a.imul_2(g16(rng), g16(rng))?,
+            _ => {
+                a.imul_2(g16(rng), g16(rng))?;
+                if NATIVE.load(Relaxed) {
+                    a.adc(eax, 0)?
+                }
+            }
         },
         27 => {
             // division: a divisor that isn't 0 (overflow still possible: both stop then)
@@ -399,9 +434,12 @@ fn random_ins(rng: &mut Rng, a: &mut CodeAssembler) -> Result<(), IcedError> {
                 _ => a.lodsd()?,
             }
         }
-        39..=47 => random_mmx(rng, a)?,
+        // (native mode: MMX or x87 in a test, not both: they share registers on the CPU, not in
+        // koji)
+        39..=47 if !NO_MMX.load(Relaxed) => random_mmx(rng, a)?,
         48..=57 => random_sse(rng, a)?,
-        _ => random_x87(rng, a)?,
+        58.. if !NO_X87.load(Relaxed) => random_x87(rng, a)?,
+        _ => a.xor(g32(rng), gs32(rng))?,
     }
     Ok(())
 }
@@ -466,7 +504,7 @@ fn random_mmx(rng: &mut Rng, a: &mut CodeAssembler) -> Result<(), IcedError> {
 
 fn random_sse(rng: &mut Rng, a: &mut CodeAssembler) -> Result<(), IcedError> {
     let (d, s) = (rng.pick(&XMM), rng.pick(&XMM));
-    let m = xmmword_ptr(mem(rng, 16));
+    let m = xmmword_ptr(mem_a(rng, 16, 16));
     let src_mem = rng.below(4) == 0;
     macro_rules! two {
         ($f:ident) => {
@@ -591,6 +629,8 @@ fn random_x87(rng: &mut Rng, a: &mut CodeAssembler) -> Result<(), IcedError> {
             a.fld(q(rng))?;
             a.fucomp(st0, st1)?;
             a.fnstsw(ax)?;
+            // (C0..C3 and TOP: koji keeps no exception flags)
+            a.and(ax, 0x7f00)?;
             a.fstp(st0)?
         }
     }
@@ -709,6 +749,43 @@ fn item(rng: &mut Rng) -> Vec<Instruction> {
     }
 }
 
+/// What kinds of difference (the names before ':')
+fn kinds(d: &[String]) -> std::collections::BTreeSet<String> {
+    d.iter().map(|s| s.split(':').next().unwrap_or("").to_string()).collect()
+}
+
+/// Drops instructions while the same kinds of difference remain (not another failure, such as
+/// an x87 stack underflow the removal makes). Kept: the end, returns, the loop counter, string
+/// ops' pointers, what defines the flags after a division, bit scan or test, what masks FNSTSW.
+fn shrink(mut list: Vec<Instruction>, diffs: &[String], mut run: impl FnMut(&[Instruction]) -> Vec<String>) -> Vec<Instruction> {
+    use iced_x86::Mnemonic as M;
+    let want = kinds(diffs);
+    let mut i = 0;
+    while i < list.len() {
+        let prev = if i > 0 { list[i - 1].mnemonic() } else { M::Nop };
+        let keep = list[i].ip() == 1
+            || list[i].code() == Code::Retnd_imm16
+            || (list[i].op0_kind() == iced_x86::OpKind::Memory && list[i].memory_base() == Register::EBX && list[i].memory_displacement64() == COUNTER as u64)
+            || (list[i].mnemonic() == M::Lea && matches!(list[i].op0_register(), Register::ESI | Register::EDI) && list[i].memory_base() == Register::EBX)
+            || (matches!(list[i].mnemonic(), M::Test | M::Setne | M::Sete) && matches!(prev, M::Div | M::Idiv | M::Bsf | M::Bsr | M::Tzcnt | M::Popcnt | M::Sete | M::Test))
+            || (list[i].mnemonic() == M::Adc && matches!(prev, M::Bt | M::Bts | M::Btr | M::Btc | M::Mul | M::Imul | M::Shl | M::Shr | M::Sar | M::Rol | M::Ror | M::Rcl | M::Rcr | M::Shld | M::Shrd))
+            || (list[i].mnemonic() == M::And && prev == M::Fnstsw);
+        if keep {
+            i += 1;
+            continue;
+        }
+        let mut l2 = list.clone();
+        l2.remove(i);
+        let d = run(&l2);
+        if !d.is_empty() && kinds(&d) == want {
+            list = l2;
+        } else {
+            i += 1;
+        }
+    }
+    list
+}
+
 /// Programs every run checks
 fn fixed() -> Result<Vec<(&'static str, Vec<Instruction>)>, IcedError> {
     let mut v = Vec::new();
@@ -810,6 +887,15 @@ impl Jit {
                 c.materialize();
                 unsafe { put_cpu(m, &c) };
                 c.eflags as i32
+            })
+            .unwrap();
+        linker
+            .func_wrap("env", "round", |k: u32, a: f64, b: f64, m: u32| -> f64 {
+                let r = koji::round::jit(k, a, b, m);
+                if std::env::var("JTRACE").is_ok() {
+                    println!("round {k} {:#x} {:#x} {m:#x} -> {:#x}", a.to_bits(), b.to_bits(), r.to_bits());
+                }
+                r
             })
             .unwrap();
         linker
@@ -983,6 +1069,10 @@ fn initial(rng: &mut Rng) -> Cpu {
         c.mm[i] = rng.next();
     }
     c.mxcsr = 0x1f80 | if rng.below(4) == 0 { (rng.below(4) as u32) << 13 } else { 0 };
+    // (the x87's: double, single or extended precision (f64 in koji), any rounding mode)
+    if rng.below(3) == 0 {
+        c.fpu.cw = [0x027f, 0x007f, 0x037f][rng.below(3) as usize] | (rng.below(4) as u16) << 10;
+    }
     c
 }
 
@@ -1080,6 +1170,9 @@ fn run_case(engine: &Engine, dispatch: &Module, memory: &SharedMemory, base: usi
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(|s| s.as_str()) == Some("native") {
+        return native::run(&args);
+    }
     let count: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(500);
     let seed: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(1);
     let mut config = Config::new();
@@ -1134,40 +1227,20 @@ fn main() {
         let mut list = structure(&mut rng, body, subs);
         let data = random_data(&mut rng);
         let cpu0 = initial(&mut rng);
+        // (JONLY=<test>: that one alone)
+        if std::env::var("JONLY").is_ok_and(|o| o != t.to_string()) {
+            continue;
+        }
         let (diffs, _) = run_case(&engine, &dispatch, &memory, base, &list, &data, &cpu0, mode);
         if !diffs.is_empty() {
-            // shrink: drop instructions while it still fails
-            let mut i = 0;
-            while i < list.len() {
-                // (the end, returns, the loop counter, string ops' pointers, what defines the
-                // flags after a division or a bit scan)
-                use iced_x86::Mnemonic as M;
-                let prev = if i > 0 { list[i - 1].mnemonic() } else { M::Nop };
-                let keep = list[i].ip() == 1
-                    || list[i].code() == Code::Retnd_imm16
-                    || (list[i].op0_kind() == iced_x86::OpKind::Memory && list[i].memory_base() == Register::EBX && list[i].memory_displacement64() == COUNTER as u64)
-                    || (list[i].mnemonic() == M::Lea && matches!(list[i].op0_register(), Register::ESI | Register::EDI) && list[i].memory_base() == Register::EBX)
-                    || (matches!(list[i].mnemonic(), M::Test | M::Setne | M::Sete) && matches!(prev, M::Div | M::Idiv | M::Bsf | M::Bsr | M::Tzcnt | M::Popcnt | M::Sete | M::Test))
-                    || (list[i].mnemonic() == M::Adc && matches!(prev, M::Bt | M::Bts | M::Btr | M::Btc | M::Mul | M::Imul));
-                if keep {
-                    i += 1;
-                    continue;
-                }
-                let mut l2 = list.clone();
-                l2.remove(i);
-                if !run_case(&engine, &dispatch, &memory, base, &l2, &data, &cpu0, mode).0.is_empty() {
-                    list = l2;
-                } else {
-                    i += 1;
-                }
-            }
+            list = shrink(list, &diffs, |l| run_case(&engine, &dispatch, &memory, base, l, &data, &cpu0, mode).0);
         }
         let (diffs, code) = run_case(&engine, &dispatch, &memory, base, &list, &data, &cpu0, mode);
         if !diffs.is_empty() {
             fails += 1;
             if fails <= 10 || std::env::var("JALL").is_ok() {
                 println!("test {t} {mode:?}: {}", diffs.join("; "));
-                println!("    init: {:x?} flags {:#x}", cpu0.regs, cpu0.eflags);
+                println!("    init: {:x?} flags {:#x} cw {:#x} mxcsr {:#x}", cpu0.regs, cpu0.eflags, cpu0.fpu.cw, cpu0.mxcsr);
                 let mut dec = iced_x86::Decoder::with_ip(32, &code, CODE as u64, iced_x86::DecoderOptions::NONE);
                 let mut f = iced_x86::FastFormatter::new();
                 let mut s = String::new();

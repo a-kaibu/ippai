@@ -33,6 +33,7 @@ use iced_x86::{ConditionCode, Decoder, DecoderOptions, FlowControl, Instruction,
 const F_STEP: u32 = 0;
 const F_EFLAGS: u32 = 1;
 const F_STATUS: u32 = 2;
+const F_ROUND: u32 = 4; // (kind, a, b, mode) -> f64: see jit::rounding
 
 const MAX_INS: usize = 120;
 const MAX_BLOCKS: usize = 256;
@@ -94,6 +95,7 @@ const L_E: u32 = L_FC + 6; // i32
 const N_I32: u32 = 7;
 const L_V0: u32 = L_FC + N_I32; // v128: SSE operands (long/sse.rs)
 const L_V1: u32 = L_V0 + 1;
+const L_F0: u32 = L_V0 + 2; // f64: a scalar operand (long/sse.rs)
 
 // EFLAGS bits
 const CF: u32 = 1;
@@ -2105,6 +2107,8 @@ pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[
         x87.extend_from_slice(&[F64; 8]);
         module.types.push(FuncType { params: x87, results: alloc::vec![] });
         module.imports.push(Import::Func("x87", 3));
+        module.types.push(FuncType { params: alloc::vec![I32, F64, F64, I32], results: alloc::vec![F64] });
+        module.imports.push(Import::Func("round", 4));
         module.imports.push(Import::Table("table"));
     }
 
@@ -2183,6 +2187,7 @@ pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[
     let mut locals = alloc::vec![I64; N_I64 as usize];
     locals.extend_from_slice(&[I32; N_I32 as usize]);
     locals.extend_from_slice(&[V128; 2]);
+    locals.push(F64);
     let code = core::mem::take(&mut g.c);
     module.funcs.push(Func { ty: 2, locals, code });
     let starts = blocks.iter().enumerate().map(|(k, b)| (b.start as u32, k as u32)).collect();

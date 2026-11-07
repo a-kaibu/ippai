@@ -2,7 +2,7 @@
 //! (loaded with v128.load64_zero, stored as its low i64): lane-wise operations give the same
 //! low half either way; packs, unpacks and shuffles pick their lanes for the 8-byte width.
 
-use super::{Flags, Gen, Off, L_CPU, L_F0, L_MMX, L_OP, L_V0, L_V1, STATUS_BITS};
+use super::{rounding, Flags, Gen, Off, L_CPU, L_F0, L_MMX, L_OP, L_V0, L_V1, STATUS_BITS};
 use iced_x86::{Instruction, Mnemonic, OpKind, Register};
 
 /// Lane-wise binary operations: the wasm SIMD opcode.
@@ -346,12 +346,23 @@ impl Gen<'_> {
             self.vread(0, None, mm);
             self.vread(1, a, mm);
             self.c.simd(op);
-        } else if let Some((_, _, op, _)) = farith(m) {
-            if !matches!(m, Sqrtps | Sqrtpd) {
+        } else if let Some((bits, _, op, _)) = farith(m) {
+            let sqrt = matches!(m, Sqrtps | Sqrtpd);
+            if !sqrt {
                 self.vread(0, None, false);
+                self.c.set(L_V0);
             }
             self.vread(1, a, false);
-            self.c.simd(op);
+            self.c.set(L_V1);
+            let n = if bits == 32 { 4 } else { 2 };
+            // (SQRT: lanes of the source, all replaced)
+            let base = if sqrt { L_V1 } else { L_V0 };
+            self.sse_mode().lanes(&mut self.c, rounding::vector_kind(op), sqrt, base, L_V1, n, bits == 32, |c| {
+                if !sqrt {
+                    c.get(L_V0);
+                }
+                c.get(L_V1).simd(op);
+            });
         } else if matches!(m, Minps | Maxps | Minpd | Maxpd) {
             // the first operand where it is less (greater), else the second
             let cmp = match m {
@@ -574,11 +585,7 @@ impl Gen<'_> {
             self.c.lane(0x1b, 0).lane(0x1c, 0); // i32x4.extract_lane 0, replace_lane 0
             return self.vstore(d);
         }
-        if op != 0x91 && op != 0x9f {
-            // (not SQRT: unary on the source)
-            self.vread(0, None, false);
-            self.c.lane(extract, 0);
-        }
+        self.c.set(L_V0);
         match a {
             Some(a) if bits == 32 => {
                 let o = self.mem_at(a);
@@ -590,7 +597,16 @@ impl Gen<'_> {
             }
             None => self.vread(1, None, false),
         }
-        self.c.lane(extract, 0).op(op as u8).lane(replace, 0);
+        self.c.set(L_V1);
+        let sqrt = op == 0x91 || op == 0x9f;
+        self.sse_mode().lanes(&mut self.c, rounding::scalar_kind(op as u8), sqrt, L_V0, L_V1, 1, bits == 32, |c| {
+            c.get(L_V0);
+            if !sqrt {
+                // (SQRT: unary on the source)
+                c.get(L_V0).lane(extract, 0);
+            }
+            c.get(L_V1).lane(extract, 0).op(op as u8).lane(replace, 0);
+        });
         self.vstore(d);
     }
 
@@ -675,9 +691,16 @@ impl Gen<'_> {
                     match m {
                         Cvtps2pd => self.c.simd(0x5f), // f64x2.promote_low_f32x4
                         Cvtdq2pd => self.c.simd(0xfe), // f64x2.convert_low_i32x4_s
-                        Cvtdq2ps => self.c.simd(0xfa), // f32x4.convert_i32x4_s
-                        Cvtpd2ps => self.c.simd(0x5e), // f32x4.demote_f64x2_zero
-                        _ => &mut self.c,              // MOVSD xmm, m64
+                        Cvtdq2ps | Cvtpd2ps => {
+                            // (rounded as MXCSR.RC says)
+                            self.c.set(L_V1);
+                            let ints = m == Cvtdq2ps;
+                            self.sse_mode().f32_lanes(&mut self.c, L_V1, if ints { 4 } else { 2 }, ints, |c| {
+                                c.get(L_V1).simd(if ints { 0xfa } else { 0x5e }); // f32x4.convert_i32x4_s, f32x4.demote_f64x2_zero
+                            });
+                            &mut self.c
+                        }
+                        _ => &mut self.c, // MOVSD xmm, m64
                     };
                 }
                 self.vstore(d);
@@ -694,7 +717,9 @@ impl Gen<'_> {
                     }
                     Cvtsd2ss => {
                         self.vlow(a, 8);
-                        self.c.lane(0x21, 0).op(0xb6).lane(0x20, 0); // f32.demote_f64
+                        self.c.lane(0x21, 0).set(L_F0);
+                        self.sse_mode().to_f32(&mut self.c, rounding::kind::F32, L_F0);
+                        self.c.lane(0x20, 0);
                     }
                     Cvtsi2sd => {
                         self.read_op(1, a);
@@ -702,7 +727,10 @@ impl Gen<'_> {
                     }
                     _ => {
                         self.read_op(1, a);
-                        self.c.op(0xb2).lane(0x20, 0); // f32.convert_i32_s
+                        // (exact in f64, then rounded as MXCSR.RC says)
+                        self.c.op(0xb7).set(L_F0); // f64.convert_i32_s
+                        self.sse_mode().to_f32(&mut self.c, rounding::kind::F32, L_F0);
+                        self.c.lane(0x20, 0);
                     }
                 }
                 self.vstore(d);

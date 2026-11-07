@@ -5,7 +5,8 @@
 //! where the legacy form reads its destination. VEX.128's clearing of the upper YMM half has
 //! nothing to clear (no YMM state is kept).
 
-use super::{Flags, Gen, I64Ops, I32_WRAP, I64_EXT_U, L_A, L_CPU, L_V0, L_V1, STATUS};
+use super::{Flags, Gen, I64Ops, F_ROUND, I32_WRAP, I64_EXT_U, L_A, L_CPU, L_F0, L_V0, L_V1, STATUS};
+use crate::jit::rounding::{self, kind, Mode};
 use crate::jit::packed::{binop, farith, shift, unpack};
 use crate::Cpu;
 use core::mem::offset_of;
@@ -368,12 +369,17 @@ impl Gen<'_> {
                 let (bits, _, _, op) = farith(m).unwrap();
                 let (extract, replace) = if bits == 32 { (0x1f, 0x20) } else { (0x21, 0x22) };
                 self.vfirst(src1);
-                if !matches!(m, Sqrtss | Sqrtsd) {
-                    self.vfirst(src1);
-                    self.c.lane(extract, 0);
-                }
+                self.c.set(L_V0);
                 self.vsrc(1, bits / 8);
-                self.c.lane(extract, 0).op(op as u8).lane(replace, 0);
+                self.c.set(L_V1);
+                let sqrt = matches!(m, Sqrtss | Sqrtsd);
+                sse_mode().lanes(&mut self.c, rounding::scalar_kind(op as u8), sqrt, L_V0, L_V1, 1, bits == 32, |c| {
+                    c.get(L_V0);
+                    if !sqrt {
+                        c.get(L_V0).lane(extract, 0);
+                    }
+                    c.get(L_V1).lane(extract, 0).op(op as u8).lane(replace, 0);
+                });
                 self.c.set(L_V0);
                 self.vput();
             }
@@ -386,16 +392,35 @@ impl Gen<'_> {
                     }
                     Cvtsd2ss => {
                         self.vsrc(1, 8);
-                        self.c.lane(0x21, 0).op(0xb6).lane(0x20, 0); // f32.demote_f64
+                        // (rounded as MXCSR.RC says)
+                        self.c.lane(0x21, 0).set(L_F0);
+                        sse_mode().to_f32(&mut self.c, kind::F32, L_F0);
+                        self.c.lane(0x20, 0);
                     }
                     _ => {
                         let bits = if mem(&ins, 1) { ins.memory_size().size() as u32 * 8 } else if ins.op_register(1).is_gpr64() { 64 } else { 32 };
                         self.gsrc(1, bits);
                         let f = m == Cvtsi2ss;
+                        // (rounded as MXCSR.RC says: i32 -> f64 is exact)
                         if bits == 32 {
-                            self.c.x(I32_WRAP).op(if f { 0xb2 } else { 0xb7 }); // f32/f64.convert_i32_s
+                            self.c.x(I32_WRAP).op(0xb7); // f64.convert_i32_s
+                            if f {
+                                self.c.set(L_F0);
+                                sse_mode().to_f32(&mut self.c, kind::F32, L_F0);
+                            }
                         } else {
+                            self.c.op(0xbf).set(L_F0); // f64.reinterpret_i64
+                            let m = sse_mode();
+                            m.rc_slow(&mut self.c);
+                            self.c.if_ty(if f { 0x7d } else { 0x7c });
+                            self.c.u32c(if f { kind::I64_F32 } else { kind::I64_F64 }).get(L_F0).f64c(0.0);
+                            m.call(&mut self.c);
+                            if f {
+                                self.c.op(0xb6);
+                            }
+                            self.c.else_().get(L_F0).op(0xbd); // i64.reinterpret_f64
                             self.c.op(if f { 0xb4 } else { 0xb9 }); // f32/f64.convert_i64_s
+                            self.c.end();
                         }
                         self.c.lane(if f { 0x20 } else { 0x22 }, 0);
                     }
@@ -504,11 +529,16 @@ impl Gen<'_> {
         }
         if let Some(op) = binop(m) {
             self.c.get(a).get(b).simd(op);
-        } else if let Some((_, _, op, _)) = farith(m) {
-            if !matches!(m, Sqrtps | Sqrtpd) {
-                self.c.get(a);
-            }
-            self.c.get(b).simd(op);
+        } else if let Some((bits, _, op, _)) = farith(m) {
+            let sqrt = matches!(m, Sqrtps | Sqrtpd);
+            // (SQRT: lanes of the source, all replaced)
+            let base = if sqrt { b } else { a };
+            sse_mode().lanes(&mut self.c, rounding::vector_kind(op), sqrt, base, b, if bits == 32 { 4 } else { 2 }, bits == 32, |c| {
+                if !sqrt {
+                    c.get(a);
+                }
+                c.get(b).simd(op);
+            });
         } else if let Some((e, high)) = unpack(m) {
             // (MMX: the high half of 8 bytes)
             let start = if !high { 0 } else if is_mm(&ins, 0) { 4 } else { 8 };
@@ -689,7 +719,9 @@ impl Gen<'_> {
                     self.c.get(a).v128zero().shuffle(l);
                 }
                 Cvtdq2ps => {
-                    self.c.get(b).simd(0xfa);
+                    sse_mode().f32_lanes(&mut self.c, b, 4, true, |c| {
+                        c.get(b).simd(0xfa);
+                    });
                 }
                 Cvtps2pd => {
                     self.c.get(b).simd(0x5f);
@@ -698,7 +730,9 @@ impl Gen<'_> {
                     self.c.get(b).simd(0xfe);
                 }
                 Cvtpd2ps => {
-                    self.c.get(b).simd(0x5e);
+                    sse_mode().f32_lanes(&mut self.c, b, 2, false, |c| {
+                        c.get(b).simd(0x5e);
+                    });
                 }
                 Cvttps2dq | Cvtps2dq => {
                     self.c.get(b);
@@ -746,4 +780,9 @@ impl Gen<'_> {
         self.c.set(L_V0);
         self.vput();
     }
+}
+
+/// MXCSR, for jit::rounding
+fn sse_mode() -> Mode {
+    Mode { f: F_ROUND, cpu: L_CPU, off: offset_of!(Cpu, mxcsr) as u32, cw: false }
 }

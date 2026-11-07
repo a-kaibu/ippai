@@ -1768,6 +1768,12 @@ pub unsafe extern "C" fn vnhost_jit_x87(cpu: u32, top: u32, info: u32, a: f64, b
     jit::x87_out(&mut (*cpu).fpu, top, info, [a, b, c, d, e, f, g, h]);
 }
 
+/// Arithmetic in a rounding mode wasm doesn't have (koji::round::jit).
+#[no_mangle]
+pub extern "C" fn vnhost_jit_round(kind: u32, a: f64, b: f64, mode: u32) -> f64 {
+    koji::round::jit(kind, a, b, mode)
+}
+
 #[no_mangle]
 pub extern "C" fn vnhost_jit_status(op: u32, a: u32, b: u32, r: u32, c: u32) -> u32 {
     if op == 0xdead {

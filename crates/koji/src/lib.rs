@@ -13,6 +13,7 @@ pub mod flags;
 pub mod lazy;
 pub mod jit;
 pub mod fpu;
+pub mod round;
 
 pub use iced_x86;
 pub use fpu::Fpu;

@@ -23,6 +23,7 @@ pub mod dispatch;
 mod structure;
 pub mod saved;
 mod packed;
+mod rounding;
 pub mod long;
 
 use crate::lazy;
@@ -92,6 +93,8 @@ const F_STATUS: u32 = 2;
 const F_X87: u32 = 3; // (cpu, TOP, info, 8 f64): see x87_out
 const F_CALLMISS: u32 = 4; // (cpu, slot, target) -> entry: see call_fn
 const T_CALLMISS: u32 = 5;
+const F_ROUND: u32 = 5; // (kind, a, b, mode) -> f64: see rounding
+const T_ROUND: u32 = 6;
 /// Slots of a thread's call cache (Cpu::jit_calls).
 pub const CALL_CACHE: u32 = 1 << 12;
 
@@ -782,6 +785,14 @@ impl<'a> Gen<'a> {
     }
 
     /// Leaves the block so the interpreter runs the current instruction.
+    fn x87_mode(&self) -> rounding::Mode {
+        rounding::Mode { f: F_ROUND, cpu: L_CPU, off: Off::fcw(), cw: true }
+    }
+
+    fn sse_mode(&self) -> rounding::Mode {
+        rounding::Mode { f: F_ROUND, cpu: L_CPU, off: Off::mxcsr(), cw: false }
+    }
+
     fn bail(&mut self) {
         let eip = self.eip();
         self.c.u32c(eip);
@@ -2640,6 +2651,13 @@ impl<'a> Gen<'a> {
                     let o = self.mem_at(a);
                     self.c.get(v);
                     if ins.memory_size() == iced_x86::MemorySize::Float32 {
+                        // (rounded as RC says)
+                        self.c.set(L_F0);
+                        let m = self.x87_mode();
+                        m.rc_slow(&mut self.c);
+                        self.c.if_ty(F64).u32c(rounding::kind::X87_F32).get(L_F0).f64c(0.0);
+                        m.call(&mut self.c);
+                        self.c.else_().get(L_F0).end();
                         self.c.op(0xb6 /* f32.demote_f64 */).f32store(o);
                     } else {
                         self.c.f64store(o);
@@ -2778,19 +2796,19 @@ impl<'a> Gen<'a> {
                     self.fc_get(st_index(ins.op_register(0)));
                     self.fc_slot(st_index(ins.op_register(0)))
                 };
-                self.c.get(L_FREG + d);
+                // x op y with x in L_F0, y in L_F1
                 if matches!(mn, Fsubr | Fsubrp | Fdivr | Fdivrp) {
-                    self.c.set(L_F0).get(L_F1).get(L_F0);
+                    self.c.get(L_F1).set(L_F0).get(L_FREG + d).set(L_F1);
                 } else {
-                    self.c.get(L_F1);
+                    self.c.get(L_FREG + d).set(L_F0);
                 }
-                self.c.op(match mn {
-                    Fadd | Faddp => 0xa0,
-                    Fsub | Fsubp | Fsubr | Fsubrp => 0xa1,
-                    Fmul | Fmulp => 0xa2,
-                    _ => 0xa3,
-                });
-                self.c.set(L_FREG + d);
+                let (op, k) = match mn {
+                    Fadd | Faddp => (0xa0, 0),
+                    Fsub | Fsubp | Fsubr | Fsubrp => (0xa1, 1),
+                    Fmul | Fmulp => (0xa2, 2),
+                    _ => (0xa3, 3),
+                };
+                self.x87_mode().x87_op(&mut self.c, rounding::kind::X87 + k, op, L_F0, L_F1, L_FREG + d);
                 self.fc_wrote(d);
                 if matches!(mn, Faddp | Fsubp | Fsubrp | Fmulp | Fdivp | Fdivrp) {
                     self.fc_pop();
@@ -4794,6 +4812,8 @@ fn translate<M: Memory>(
         module.types.push(FuncType { params: alloc::vec![I32; 3], results: alloc::vec![I32; 2] });
         module.types.push(FuncType { params: alloc::vec![I32; 3], results: alloc::vec![I32] });
         module.imports.push(Import::Func("callmiss", T_CALLMISS));
+        module.types.push(FuncType { params: alloc::vec![I32, F64, F64, I32], results: alloc::vec![F64] });
+        module.imports.push(Import::Func("round", T_ROUND));
     }
 
     let n = blocks.len() as u32;

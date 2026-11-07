@@ -175,6 +175,11 @@ impl Code {
         self.b.extend_from_slice(&[0x04, 0x40]);
         self
     }
+    /// `if` producing a value of type `t`
+    pub fn if_ty(&mut self, t: u8) -> &mut Self {
+        self.b.extend_from_slice(&[0x04, t]);
+        self
+    }
     /// `if` producing an i32
     pub fn if_i32(&mut self) -> &mut Self {
         self.b.extend_from_slice(&[0x04, I32]);

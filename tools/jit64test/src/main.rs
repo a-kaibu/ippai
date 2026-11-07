@@ -671,6 +671,7 @@ impl Jit {
                 c.eflags as i32
             })
             .unwrap();
+        linker.func_wrap("env", "round", |k: u32, a: f64, b: f64, m: u32| -> f64 { koji::round::jit(k, a, b, m) }).unwrap();
         linker
             .func_wrap("env", "status", |op: i32, a: i32, b: i32, r: i32, c: i32| -> i32 {
                 koji::lazy::Lazy { op: op as u32, a: a as u32 as u64, b: b as u32 as u64, r: r as u32 as u64, c: c as u32 }.status() as i32
