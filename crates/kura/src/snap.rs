@@ -233,10 +233,11 @@ pub fn unregister() {
     }
 }
 
-/// (tests: how many parts wait for reuse)
+/// (tests: how many parts of threads called `name` wait for reuse; other tests' threads come
+/// and go meanwhile)
 #[cfg(test)]
-fn retired() -> usize {
-    RETIRED.lock().unwrap_or_else(|e| e.into_inner()).len()
+fn retired(name: &str) -> usize {
+    RETIRED.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|p| std::ptr::eq(p.name, name)).count()
 }
 
 pub fn me() -> Option<&'static Part> {
@@ -815,7 +816,6 @@ mod tests {
     fn parts_are_reused() {
         let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
         static NAME: &str = "reuse test";
-        let before = retired();
         for round in 0..50usize {
             let ts: Vec<_> = (0..4usize)
                 .map(|k| {
@@ -834,7 +834,7 @@ mod tests {
                 })
                 .collect();
             ts.into_iter().for_each(|t| t.join().unwrap());
-            assert!(retired() <= before + 4, "round {round}: {} parts kept", retired());
+            assert!(retired(NAME) <= 4, "round {round}: {} parts kept", retired(NAME));
             assert!(!PARTS.lock().unwrap().iter().any(|p| std::ptr::eq(p.name, NAME)));
         }
         // (another name or kind gets a part of its own)
