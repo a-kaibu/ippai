@@ -1,0 +1,10 @@
+render 00000000
+first: ends 0
+paused and run: ends 0
+first: ends 1 (notified 1)
+signaled after GetEvent 0
+rewound: ends 0 (notified 0)
+after stop: ends 0
+stopped before its end: ends 0 (notified 0)
+run again: ends 1 (notified 1)
+wait for completion 00000000 code 1

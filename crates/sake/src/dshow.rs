@@ -4,8 +4,8 @@
 //! A movie with a `.vnv` next to it (`ippai pack` makes one of every mpg / wmv / avi / mp4 ...,
 //! crates/ippai/src/movie.rs) really plays (dshow_play.rs): its clock, seeking, EC_COMPLETE at
 //! its end, its picture where the video window (IVideoWindow / IBasicVideo) or the EVR's
-//! rectangle (IMFVideoDisplayControl) is, its sound. Any other "plays" to its end at once (Run
-//! posts EC_COMPLETE), so games go on past their opening or logo movie.
+//! rectangle (IMFVideoDisplayControl) is, its sound. Any other "plays" to its end shortly after
+//! Run (EC_COMPLETE after PLAY), so games go on past their opening or logo movie.
 //!
 //! One guest block holds every interface of a graph: pointer-sized word k is interface k's
 //! vtable (so an interface pointer is block + k * pointer size); the graph's state is in
@@ -82,6 +82,8 @@ struct Graph {
     ended: bool,
     /// a movie plays (dshow_play's PLAYS holds it)
     playing: bool,
+    /// Runs and Stops so far: an end scheduled without a movie (ENDS) is for this one
+    runs: u32,
     /// the movie's picture size (1280x720 without a movie: CatSystem2 asks before it plays)
     video: (i32, i32),
     duration: u64,
@@ -327,23 +329,73 @@ fn set_state(b: u32, s: u32) -> u32 {
     was
 }
 
-/// Without a movie, it ends as soon as it runs: queue EC_COMPLETE, signal the event, notify
-/// the window (once a movie: see Graph::done).
+/// Without a movie, it ends PLAY after it runs: EC_COMPLETE queued, the event signaled, the
+/// window notified then (once a movie: see Graph::done).
 /// From stopped it answers S_FALSE (Windows: the change is still under way), else S_OK.
 fn run(c: &mut Ctx) -> u32 {
     let b = base(c, MC);
     let was = set_state(b, 2);
-    let instant = with(b, |g| {
+    let run = with(b, |g| {
+        // (a Run again, after a Pause, keeps the end to come)
         if g.playing || g.done {
-            return false;
+            return None;
         }
+        g.runs += 1;
         g.done = true;
-        true
+        Some(g.runs)
     });
-    if instant == Some(true) {
-        completed(b);
+    if let Some(Some(n)) = run {
+        end_later(b, n);
     }
     if was == 0 { S_FALSE } else { 0 }
+}
+
+/// How long a movie with nothing to play "plays". Not 0: CatSystem2 (ここなつ #48) stores its
+/// loop count after Run returns, and its movie thread, given EC_COMPLETE before that, rewound
+/// and ran the movie again, on without end (a black screen instead of the title).
+const PLAY: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Ends to come of movies with nothing to play: (when, graph, its run).
+static ENDS: Mutex<Vec<(std::time::Instant, u32, u32)>> = Mutex::new(Vec::new());
+static ENDS_WAKE: std::sync::Condvar = std::sync::Condvar::new();
+
+/// The ends of `v` due at `t`, earliest first, taken out.
+fn due(v: &mut Vec<(std::time::Instant, u32, u32)>, t: std::time::Instant) -> Vec<(u32, u32)> {
+    let mut out: Vec<_> = v.iter().filter(|e| e.0 <= t).copied().collect();
+    v.retain(|e| e.0 > t);
+    out.sort_by_key(|e| e.0);
+    out.into_iter().map(|e| (e.1, e.2)).collect()
+}
+
+/// Graph `b`'s movie (nothing to play), run `n`, ends PLAY from now: unless a Stop or another
+/// Run came in between, or a real movie plays by then.
+fn end_later(b: u32, n: u32) {
+    ENDS.lock().unwrap_or_else(|e| e.into_inner()).push((std::time::Instant::now() + PLAY, b, n));
+    ENDS_WAKE.notify_all();
+    static T: OnceLock<()> = OnceLock::new();
+    T.get_or_init(|| {
+        std::thread::Builder::new()
+            .name("movie ends".into())
+            .spawn(|| {
+                let mut v = ENDS.lock().unwrap_or_else(|e| e.into_inner());
+                loop {
+                    let t = std::time::Instant::now();
+                    let now_due = due(&mut v, t);
+                    let wait = v.iter().map(|e| e.0.saturating_duration_since(t)).min().unwrap_or(std::time::Duration::from_secs(3600));
+                    drop(v);
+                    for (b, n) in now_due {
+                        if with(b, |g| g.runs == n && g.done && !g.playing) == Some(true) {
+                            completed(b);
+                        }
+                    }
+                    v = ENDS.lock().unwrap_or_else(|e| e.into_inner());
+                    if v.iter().all(|e| e.0 > std::time::Instant::now()) {
+                        v = ENDS_WAKE.wait_timeout(v, wait).unwrap_or_else(|e| e.into_inner()).0;
+                    }
+                }
+            })
+            .expect("movie ends thread");
+    });
 }
 /// Queues EC_PAUSED; S_FALSE from stopped, as Run.
 fn pause(c: &mut Ctx) -> u32 {
@@ -355,10 +407,12 @@ fn pause(c: &mut Ctx) -> u32 {
 fn stop(c: &mut Ctx) -> u32 {
     let b = base(c, MC);
     set_state(b, 0);
-    // (without a movie, one run again after a stop plays to its end again)
+    // (without a movie, one run again after a stop plays to its end again; one ending now
+    // doesn't)
     with(b, |g| {
         g.done = false;
         g.ended = false;
+        g.runs += 1;
     });
     0
 }
@@ -1222,6 +1276,7 @@ pub fn create_instance(clsid: u32, iid: u32) -> Option<u32> {
         state: 0,
         done: false,
         playing: false,
+        runs: 0,
         video: (1280, 720),
         duration: 0,
         rate: (0, 1),
@@ -1435,4 +1490,21 @@ fn evr(iid: u32) -> Option<u32> {
     }
     EVRS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(b, Evr { hwnd: 0, src: [0.0, 0.0, 1.0, 1.0], dst: (0, 0, 0, 0), mode: 1 });
     Some(b + ps() * s)
+}
+
+#[cfg(test)]
+mod ends_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn ends_are_taken_when_due_earliest_first() {
+        let t = Instant::now();
+        let mut v = vec![(t + Duration::from_secs(9), 1, 1), (t, 2, 5), (t - Duration::from_millis(3), 3, 7)];
+        assert_eq!(due(&mut v, t), [(3, 7), (2, 5)]);
+        assert_eq!(v.len(), 1);
+        assert!(due(&mut v, t).is_empty());
+        assert_eq!(due(&mut v, t + Duration::from_secs(9)), [(1, 1)]);
+        assert!(v.is_empty());
+    }
 }
