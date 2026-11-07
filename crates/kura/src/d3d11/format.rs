@@ -112,6 +112,22 @@ pub fn f16_bits(v: f32) -> u16 {
     sign | (h + up as u32) as u16
 }
 
+/// f16 bits to f32 (exact)
+pub fn f16_to_f32(h: u16) -> f32 {
+    let (s, e, m) = ((h as u32 >> 15) << 31, (h as u32 >> 10) & 31, h as u32 & 1023);
+    let bits = match e {
+        0 if m == 0 => 0,
+        // subnormal: normalize
+        0 => {
+            let k = m.leading_zeros() - 21; // shifts until bit 10 is set
+            (113 - k) << 23 | ((m << k) & 1023) << 13
+        }
+        31 => 0xff << 23 | m << 13,
+        _ => (e + 112) << 23 | m << 13,
+    };
+    f32::from_bits(s | bits)
+}
+
 pub const P_BGRA8: u32 = 0;
 pub const P_D24S8: u32 = 1;
 pub const P_RGBA16F: u32 = 2;
@@ -363,6 +379,23 @@ mod tests {
     use super::*;
 
     /// Every f32 against the `half` crate (IEEE 754 binary16, round to nearest even).
+    #[test]
+    fn f16_to_f32_round_trips_and_is_exact() {
+        for h in 0..=u16::MAX {
+            let f = super::f16_to_f32(h);
+            if f.is_nan() {
+                assert!(h & 0x7c00 == 0x7c00 && h & 1023 != 0);
+                continue;
+            }
+            assert_eq!(super::f16_bits(f), h, "{h:#06x} -> {f}");
+            // against the definition: (-1)^s 2^(e-15) (1 + m/1024), subnormals 2^-14 m/1024
+            let (e, m) = ((h >> 10) & 31, (h & 1023) as f64);
+            let v = if e == 0 { m / 1024.0 * 2f64.powi(-14) } else if e == 31 { f64::INFINITY } else { (1.0 + m / 1024.0) * 2f64.powi(e as i32 - 15) };
+            assert_eq!(f.abs() as f64, v, "{h:#06x}");
+            assert_eq!(f.is_sign_negative(), h >> 15 != 0);
+        }
+    }
+
     #[test]
     fn f16_bits_matches_ieee_for_every_f32() {
         let threads = std::thread::available_parallelism().map_or(4, |n| n.get()) as u64;

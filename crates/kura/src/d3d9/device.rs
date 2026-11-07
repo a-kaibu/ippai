@@ -90,7 +90,7 @@ pub struct Decl {
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum ModKey {
     Vs(u32, Vec<(u32, u32, u32)>),
-    Ps(u32, u32, Option<u32>),
+    Ps(u32, u32, Option<u32>, Vec<dxwgsl::addr::Addr>, u32),
     FfVs(ff::VsKey),
     FfPs(ff::PsKey),
 }
@@ -697,14 +697,16 @@ unsafe fn d3d9_call(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32) ->
         10 => {
             // CheckDeviceFormat(adapter, type, adapter fmt, usage, rtype, fmt)
             let (usage, rtype, f) = (a(4), a(5), a(6));
+            // (as Windows answers: no D32 depth buffers and no R8G8B8 textures, which GPUs
+            // have not had for long; creating them still works)
             let ok = if usage & USAGE_DEPTHSTENCIL != 0 {
-                fmt::is_depth(f)
+                fmt::is_depth(f) && f != fmt::D32
             } else if usage & USAGE_RENDERTARGET != 0 {
                 fmt::renderable(f)
             } else if rtype == RT_VB || rtype == RT_IB {
                 true
             } else {
-                fmt::supported(f) && !fmt::is_depth(f) || (fmt::is_depth(f) && rtype == RT_SURFACE)
+                fmt::supported(f) && !fmt::is_depth(f) && f != fmt::R8G8B8 || (fmt::is_depth(f) && rtype == RT_SURFACE)
             };
             if ok { S_OK } else { D3DERR_NOTAVAILABLE }
         }
@@ -2356,6 +2358,14 @@ unsafe fn clear(d: &mut D3d, count: u32, rects: u32, flags: u32, color: u32, z: 
     let vp = dev.st.viewport;
     let sc = dev.st.scissor;
     let scissor = dev.st.rs[174] != 0;
+    // (as Windows: a count without a list clears nothing; depth or stencil without a depth
+    // buffer is refused)
+    if count != 0 && rects == 0 {
+        return S_OK;
+    }
+    if flags & 6 != 0 && ds == 0 {
+        return D3DERR_INVALIDCALL;
+    }
     let (Some(target), dsg) = (surface_gpu(d, rt), surface_gpu(d, ds)) else { return S_OK };
     ensure_target(d, rt, ds);
     let mut area = [vp[0] as i32, vp[1] as i32, (vp[0] + vp[2]) as i32, (vp[1] + vp[3]) as i32];
@@ -2372,6 +2382,15 @@ unsafe fn clear(d: &mut D3d, count: u32, rects: u32, flags: u32, color: u32, z: 
         }
     }
     let flags = if dsg.is_none() { flags & 1 } else { flags };
+    // render targets 1-3 are cleared too (in a row from 1, of the size of 0)
+    let more: Vec<(u32, (u32, u32, u32, u32, u32))> = if flags & 1 != 0 {
+        d.dev.as_ref().unwrap().rt[1..]
+            .iter()
+            .map_while(|&r| surface_gpu(d, r).filter(|g| (g.2, g.3) == (target.2, target.3)).map(|g| (r, g)))
+            .collect()
+    } else {
+        Vec::new()
+    };
     let c = [(color >> 16) & 0xff, (color >> 8) & 0xff, color & 0xff, color >> 24].map(|v| f2u(v as f32 / 255.0));
     for r in list {
         if r[2] <= r[0] || r[3] <= r[1] {
@@ -2385,10 +2404,34 @@ unsafe fn clear(d: &mut D3d, count: u32, rects: u32, flags: u32, color: u32, z: 
             } else {
                 b.cmd(&[r[0] as u32, r[1] as u32, (r[2] - r[0]) as u32, (r[3] - r[1]) as u32]);
             }
+            for (_, g) in &more {
+                b.cmd(&[gpu::FILL, g.0, g.1, r[0] as u32, r[1] as u32, (r[2] - r[0]) as u32, (r[3] - r[1]) as u32, color]);
+            }
         });
     }
     mark_rendered(d, rt);
+    for (m, _) in more {
+        mark_rendered(d, m);
+    }
     S_OK
+}
+
+/// Makes the page draw into render target 0 and `more` (1-3) at once.
+fn ensure_targets(d: &mut D3d, rt: u32, more: &[u32], ds: u32) {
+    if more.is_empty() {
+        return ensure_target(d, rt, ds);
+    }
+    let Some(t) = surface_gpu(d, rt) else { return };
+    let z = surface_gpu(d, ds).filter(|z| z.2 >= t.2 && z.3 >= t.3);
+    let mut c = vec![gpu::SET_TARGETS2, 1 + more.len() as u32, t.0, t.1, 0];
+    for &m in more {
+        let g = surface_gpu(d, m).unwrap();
+        c.extend_from_slice(&[g.0, g.1, 0]);
+    }
+    c.extend_from_slice(&[z.map_or(0, |z| z.0), 0, 0]);
+    gpu::record(|b| b.cmd(&c));
+    // (the next single target goes out again)
+    d.dev.as_mut().unwrap().batch_target = None;
 }
 
 /// Makes the page draw into the device's targets.
@@ -2565,7 +2608,9 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     let Some(dev) = d.dev.as_ref() else { return D3DERR_INVALIDCALL };
     let st = &dev.st;
     let rt = dev.rt[0];
-    let ds = if st.rs[7] != 0 { dev.ds } else { 0 };
+    // (the depth buffer for the depth test or the stencil test)
+    let ds = if st.rs[7] != 0 || st.rs[52] != 0 { dev.ds } else { 0 };
+    let rts = dev.rt;
     // the vertex layout
     let (elems, fvf_stride) = if st.decl != 0 {
         match d.objs.get(&st.decl).map(|o| &o.data) {
@@ -2695,6 +2740,12 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     };
     let Some(target) = surface_gpu(d, rt) else { return S_OK };
     let dsg = surface_gpu(d, ds).filter(|z| z.2 >= target.2 && z.3 >= target.3);
+    // render targets 1-3 (in a row from 1, of the size of 0)
+    let more: Vec<(u32, (u32, u32, u32, u32, u32))> = rts[1..]
+        .iter()
+        .map_while(|&r| surface_gpu(d, r).filter(|g| (g.2, g.3) == (target.2, target.3)).map(|g| (r, g)))
+        .collect();
+    let ntargets = 1 + more.len() as u32;
 
     // vertex inputs: (stream slot index, elem) -> location
     let vs_shader = vs.and_then(|v| match d.objs.get(&v).map(|o| &o.data) {
@@ -2747,7 +2798,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
             let m = match d.dev.as_ref().unwrap().modules.get(&key) {
                 Some(&m) => Ok(m),
                 None => {
-                    let opts = shader::Options { link: 0, vs_inputs: vs_inputs.clone(), alpha_test: None, fog: false };
+                    let opts = shader::Options { link: 0, vs_inputs: vs_inputs.clone(), alpha_test: None, fog: false, addr: Vec::new(), targets: 1 };
                     let w = shader::Gen::new(sh).vertex(&opts);
                     Err((key, w))
                 }
@@ -2779,6 +2830,12 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     });
     // textures by sampler
     let mut samplers: Vec<u32> = Vec::new();
+    // (samplers addressing as WebGPU's don't: the pixel shader does it)
+    let addr_of = |s: u32| {
+        let ss = &st.ss[s as usize];
+        let flags = dxwgsl::addr::flags(ss[1], ss[2], ss[5] >= 2);
+        (flags != 0).then(|| dxwgsl::addr::Addr::argb(s, flags, ss[4]))
+    };
     let (ps_mod, ps_consts) = match ps_shader {
         Some(sh) => {
             for &(r, ty) in &sh.samplers {
@@ -2787,11 +2844,12 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
                 }
             }
             let link = if vs_shader.is_some() { writes } else { 0x3ff };
-            let key = ModKey::Ps(ps_serial, link, alpha_test);
+            let addr: Vec<_> = samplers.iter().filter_map(|&s| addr_of(s)).collect();
+            let key = ModKey::Ps(ps_serial, link, alpha_test, addr.clone(), ntargets);
             let m = match d.dev.as_ref().unwrap().modules.get(&key) {
                 Some(&m) => Ok(m),
                 None => {
-                    let opts = shader::Options { link, vs_inputs: Vec::new(), alpha_test, fog: false };
+                    let opts = shader::Options { link, vs_inputs: Vec::new(), alpha_test, fog: false, addr, targets: ntargets };
                     let w = shader::Gen::new(sh).pixel(&opts);
                     Err((key, w))
                 }
@@ -2815,7 +2873,8 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
                 let projected = (st.tss[i][24] & 0x100 != 0) as u32;
                 stages.push([s[1], s[2], s[3], s[26], s[4], s[5], s[6], s[27], s[28], projected]);
             }
-            let key = ModKey::FfPs(ff::PsKey { stages, specular: st.rs[29] != 0, alpha_test, tex, flat: st.rs[9] == 1 && st.vs == 0 && st.ps == 0 });
+            let addr = samplers.iter().filter_map(|&s| addr_of(s)).collect();
+            let key = ModKey::FfPs(ff::PsKey { stages, specular: st.rs[29] != 0, alpha_test, tex, flat: st.rs[9] == 1 && st.vs == 0 && st.ps == 0, addr });
             let m = match d.dev.as_ref().unwrap().modules.get(&key) {
                 Some(&m) => Ok(m),
                 None => {
@@ -2864,7 +2923,8 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         cull,
         fmt::page_format(target.4),
         dsg.map_or(0xff, |_| gpu::FMT_DEPTH24S8),
-        (st.rs[14] != 0) as u32,
+        // (ZWRITEENABLE writes only with ZENABLE on)
+        (st.rs[7] != 0 && st.rs[14] != 0) as u32,
         if st.rs[7] != 0 { st.rs[23] } else { 8 },
     ];
     key.extend_from_slice(&blend);
@@ -2878,6 +2938,26 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         for a in list {
             key.extend_from_slice(&[a.1, a.2, a.3]);
         }
+    }
+    // the stencil test (after the streams): enable, reference, read and write masks, then the
+    // faces WebGPU calls front (counterclockwise on screen: D3D's CCW states with two-sided
+    // stencil) and back (fail, depth fail, pass, function)
+    if dsg.is_some() && st.rs[52] != 0 {
+        let rs = &st.rs;
+        let cw = [rs[53], rs[54], rs[55], rs[56]];
+        let ccw = if rs[185] != 0 { [rs[186], rs[187], rs[188], rs[189]] } else { cw };
+        key.extend_from_slice(&[1, rs[57] & 0xff, rs[58] & 0xff, rs[59] & 0xff]);
+        key.extend_from_slice(&ccw);
+        key.extend_from_slice(&cw);
+    } else {
+        key.push(0);
+    }
+    // the other render targets: (page format, COLORWRITEENABLE1-3)
+    key.push(more.len() as u32);
+    // (only shader model 2+ pixel shaders write them: see dxwgsl::d3d9::Options::targets)
+    let writes_more = ps_shader.is_some_and(|s| s.major >= 2);
+    for (i, (_, g)) in more.iter().enumerate() {
+        key.extend_from_slice(&[fmt::page_format(g.4), if writes_more { st.rs[190 + i] & 0xf } else { 0 }]);
     }
     let pipe = match dev.pipelines.get(&key) {
         Some(&p) => {
@@ -2958,7 +3038,8 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         }
         let ss = &st.ss[s as usize];
         let mip = if levels > 1 { ss[7] } else { 0 };
-        let skey = (ss[1] & 7) | (ss[2] & 7) << 3 | (ss[5] & 3) << 6 | (ss[6] & 3) << 8 | (mip & 3) << 10;
+        let am = dxwgsl::addr::sampler_mode;
+        let skey = (am(ss[1]) & 7) | (am(ss[2]) & 7) << 3 | (ss[5] & 3) << 6 | (ss[6] & 3) << 8 | (mip & 3) << 10;
         texs.push((s, gpu_tex, skey));
     }
     put(&mut psu, 8, alpha_bits);
@@ -2980,8 +3061,6 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         [0, 0, target.2 as i32, target.3 as i32]
     };
     let blend_factor = st.rs[193];
-    let stencil_ref = st.rs[57];
-    let _ = stencil_ref;
 
     // What the draw reads from guest memory (its vertices, indices, constants), hashed, and
     // where it draws when its vertices are in pixels already (XYZRHW): the page redraws only
@@ -3021,7 +3100,8 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     let hash = h.0 as u32 ^ (h.0 >> 32) as u32;
     let ext = rect_draw(d, &elems, &streams, first, count, prim, index.is_none() && vs.is_none() && ps.is_none(), &samplers, wmask, ds);
 
-    ensure_target(d, rt, ds);
+    let more_rts: Vec<u32> = more.iter().map(|m| m.0).collect();
+    ensure_targets(d, rt, &more_rts, ds);
     let dev = d.dev.as_mut().unwrap();
     // (uniforms of the last draw can be reused only from the same batch's data: a Clear or a
     // target change since a flush does not write them again)
@@ -3118,8 +3198,11 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     dev.last_vs = (vsu, cmd.0);
     dev.last_ps = (psu, cmd.1);
     dev.uniform_gen = gen;
-    // mark the target rendered
+    // mark the targets rendered
     mark_rendered(d, rt);
+    for r in more_rts {
+        mark_rendered(d, r);
+    }
     // (big batches go out now: the page writes the data block in one piece)
     if gpu::record(|b| b.data.len()) > 32 << 20 {
         gpu::flush();

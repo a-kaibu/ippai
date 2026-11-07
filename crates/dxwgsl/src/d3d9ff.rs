@@ -123,6 +123,8 @@ pub struct PsKey {
     pub tex: [u8; 8],
     /// SHADEMODE flat (must match the vertex shader's)
     pub flat: bool,
+    /// stages with BORDER / MIRRORONCE addressing (crate::addr)
+    pub addr: Vec<crate::addr::Addr>,
 }
 
 const TOP_DISABLE: u32 = 1;
@@ -184,6 +186,8 @@ pub fn pixel(k: &PsKey) -> String {
             let _ = writeln!(h, "@group(1) @binding({}) var smp{}: sampler;", t * 2 + 1, t);
         }
     }
+    let addr: Vec<_> = k.addr.iter().filter(|a| k.tex.get(a.sampler as usize) == Some(&2) && (a.sampler as usize) < k.stages.len()).copied().collect();
+    h.push_str(&crate::addr::helpers(&addr));
     let f = if k.flat { "@interpolate(flat) " } else { "" };
     let _ = write!(h, "struct In {{\n  @builtin(position) fragpos: vec4f,\n  @location(0) {f}l0: vec4f,\n  @location(1) {f}l1: vec4f,\n");
     for t in 0..8 {
@@ -203,8 +207,12 @@ pub fn pixel(k: &PsKey) -> String {
             } else {
                 format!("i.l{}.xy", 2 + t)
             };
-            let _ = writeln!(h, "  var t{0} = textureSample(tex{0}, smp{0}, {1});", t, coord);
+            let smp = format!("textureSample(tex{0}, smp{0}, {1})", t, crate::addr::coord(&addr, t as u32, &coord));
+            let _ = writeln!(h, "  var t{} = {};", t, smp);
             let _ = writeln!(h, "  if ((u.x[0].z & {}u) != 0u) {{ t{}.w = 1.0; }}", 1u32 << t, t);
+            if addr.iter().any(|a| a.sampler == t as u32) {
+                let _ = writeln!(h, "  t{t} = {};", crate::addr::wrap(&addr, t as u32, &format!("t{t}"), &coord));
+            }
         } else {
             // no texture: white (as stage 0's default MODULATE then gives the diffuse color)
             let _ = writeln!(h, "  let t{} = vec4f(1.0);", t);

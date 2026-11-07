@@ -266,6 +266,8 @@ struct Pipe2 {
 
 struct Pipe {
     pipeline: Id,
+    /// Direct3D 9 stencil test: its reference
+    stencil_ref: Option<u32>,
 }
 
 /// What the page shows of a Direct3D window.
@@ -798,7 +800,7 @@ impl D3d {
                         // whole target: the next pass clears
                         self.clear_whole(flags, color, z, stencil);
                     } else {
-                        self.clear_rect(flags, color, z, x, y, w, h);
+                        self.clear_rect(flags, color, z, stencil, x, y, w, h);
                     }
                     i += 12;
                 }
@@ -843,7 +845,7 @@ impl D3d {
                     self.end_pass();
                     self.target = [tex, level, 0];
                     let col = [((color >> 16) & 255) as f32 / 255.0, ((color >> 8) & 255) as f32 / 255.0, (color & 255) as f32 / 255.0, (color >> 24) as f32 / 255.0];
-                    self.clear_rect(1, col, 0.0, x, y, w, h);
+                    self.clear_rect(1, col, 0.0, 0, x, y, w, h);
                     self.end_pass();
                     self.target = saved;
                     self.targets2 = saved2;
@@ -1198,7 +1200,7 @@ impl D3d {
                     if hit {
                         if let Some((d, color)) = box_clear.take() {
                             self.clip = None;
-                            self.clear_rect(1, color, 0.0, d[0], d[1], d[2] - d[0], d[3] - d[1]);
+                            self.clear_rect(1, color, 0.0, 0, d[0], d[1], d[2] - d[0], d[3] - d[1]);
                             self.clip = clip;
                         }
                         k = self.draw(c, k);
@@ -1216,7 +1218,7 @@ impl D3d {
                 self.end_pass();
                 self.target = color_target;
             }
-            self.clear_rect(1, color, 0.0, d[0], d[1], d[2] - d[0], d[3] - d[1]);
+            self.clear_rect(1, color, 0.0, 0, d[0], d[1], d[2] - d[0], d[3] - d[1]);
             if self.target != saved {
                 self.end_pass();
                 self.target = saved;
@@ -1664,16 +1666,18 @@ impl D3d {
         let depth = match z {
             Some(zv) => {
                 let (dclear, sclear) = (zc.is_some_and(|c| c.flags & 2 != 0), zc.is_some_and(|c| c.flags & 4 != 0));
-                // Direct3D 9 draws here never use the stencil buffer (its pipelines have no
-                // stencil state): cleared, not loaded or stored
-                let fresh_s = !self.no_pass_opt;
+                // (until a Direct3D 9 draw tests stencil, the buffer holds what the last clear
+                // left: cleared to that, not loaded or stored; see `draw`)
+                let zt = self.textures.get(&self.target[2]);
+                let fresh_s = !self.no_pass_opt && zt.is_some_and(|t| t.zused & 2 == 0);
+                let last_s = zt.and_then(|t| t.zclear).map_or(0, |z| z.1);
                 self.traffic(self.target[2], 0, !dclear, true);
                 format!(
                     r#","depthStencilAttachment":{{"view":{zv},"depthLoadOp":{},"depthClearValue":{},"depthStoreOp":"store","stencilLoadOp":{},"stencilClearValue":{},"stencilStoreOp":{}}}"#,
                     q(if dclear { "clear" } else { "load" }),
                     num(zc.map_or(1.0, |c| c.z)),
                     q(if sclear || fresh_s { "clear" } else { "load" }),
-                    zc.map_or(0, |c| c.stencil),
+                    zc.map_or(last_s, |c| c.stencil),
                     q(if fresh_s { "discard" } else { "store" })
                 )
             }
@@ -1735,7 +1739,7 @@ impl D3d {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn clear_rect(&mut self, flags: u32, color: [f32; 4], z: f32, x: u32, y: u32, w: u32, h: u32) {
+    fn clear_rect(&mut self, flags: u32, color: [f32; 4], z: f32, stencil: u32, x: u32, y: u32, w: u32, h: u32) {
         // (the views: the D3D9 target, or the first color and the depth of a `SET_TARGETS2` set)
         let (rt, ds, (tw, th)) = match &self.targets2 {
             Some(tg) if tg[0] > 1 => return,
@@ -1748,8 +1752,15 @@ impl D3d {
             return;
         }
         if x0 == 0 && y0 == 0 && x1 == tw && y1 == th && self.targets2.is_none() {
-            self.clear_whole(flags, color, z, 0);
+            self.clear_whole(flags, color, z, stencil);
             return;
+        }
+        // (stencil written in a part: passes keep it from now on, see `draw`)
+        if flags & 4 != 0 {
+            if let Some(t) = self.textures.get_mut(&ds).filter(|t| t.zused & 2 == 0) {
+                t.zused |= 2;
+                self.end_pass();
+            }
         }
         if !self.begin_pass() {
             return;
@@ -1763,7 +1774,11 @@ impl D3d {
             self.touch(rt);
         }
         let depth = ds != 0;
-        let key = (fmt, depth, flags & 3);
+        // (stencil only with a depth-stencil view; depth as the clear's, in 0..1: a quad past
+        // the far plane would draw nothing)
+        let flags = if depth { flags & 7 } else { flags & 1 };
+        let z = z.clamp(0.0, 1.0);
+        let key = (fmt, depth, flags);
         let pipe = match self.clear_pipes.get(&key) {
             Some(&p) => p,
             None => {
@@ -1772,7 +1787,13 @@ impl D3d {
                 }
                 let m = self.clear_module;
                 let ds = if depth {
-                    format!(r#","depthStencil":{{"format":"depth24plus-stencil8","depthWriteEnabled":{},"depthCompare":"always"}}"#, flags & 2 != 0)
+                    let st = if flags & 4 != 0 {
+                        let f = r#"{"failOp":"replace","depthFailOp":"replace","passOp":"replace","compare":"always"}"#;
+                        format!(r#","stencilFront":{f},"stencilBack":{f},"stencilWriteMask":255"#)
+                    } else {
+                        r#","stencilWriteMask":0"#.to_string()
+                    };
+                    format!(r#","depthStencil":{{"format":"depth24plus-stencil8","depthWriteEnabled":{},"depthCompare":"always"{st}}}"#, flags & 2 != 0)
                 } else {
                     String::new()
                 };
@@ -1789,6 +1810,9 @@ impl D3d {
         let group = gpu::bind_group(layout, &[(0, Res::Buffer(self.clear_uniform, slot * 256, 32))]);
         gpu::drop(layout);
         gpu::set_pipeline(pipe);
+        if flags & 4 != 0 {
+            gpu::set_stencil_ref(stencil & 0xff);
+        }
         gpu::set_bind_group(0, group, &[]);
         gpu::drop(group);
         gpu::set_viewport(0.0, 0.0, tw as f32, th as f32, 0.0, 1.0);
@@ -1822,10 +1846,18 @@ impl D3d {
             let step = if stride & 0x8000_0000 != 0 { r#","stepMode":"instance""# } else { "" };
             buffers.push(format!(r#"{{"arrayStride":{}{step},"attributes":[{}]}}"#, (stride & 0x7fff_ffff).div_ceil(4) * 4, attrs.join(",")));
         }
+        // the stencil test (see the d3d9 device's key), then the other render targets: their
+        // count, (page format, write mask) each
+        let stencil = (k.get(p) == Some(&1) && k.len() >= p + 12).then(|| &k[p + 1..p + 12]);
+        let q_ = p + if stencil.is_some() { 12 } else { 1 };
+        let more: Vec<(u32, u32)> = match k.get(q_) {
+            Some(&n) if k.len() >= q_ + 1 + 2 * n as usize => (0..n as usize).map(|t| (k[q_ + 1 + 2 * t], k[q_ + 2 + 2 * t] & 0xf)).collect(),
+            _ => Vec::new(),
+        };
         let format = tex_format(color_fmt);
         let depth = depth_fmt != 0xff;
         // (no blending into formats WebGPU does not blend: 32-bit floats, integers)
-        let blend_state = if blend[0] != 0 && blendable(format) {
+        let blend_of = |format: &str| if blend[0] != 0 && blendable(format) {
             let comp = |s: &str, d: &str, o: &str| {
                 if o == "min" || o == "max" {
                     format!(r#"{{"srcFactor":"one","dstFactor":"one","operation":{}}}"#, q(o))
@@ -1841,6 +1873,12 @@ impl D3d {
         } else {
             String::new()
         };
+        let blend_state = blend_of(format);
+        let mut targets = vec![format!(r#"{{"format":{}{blend_state},"writeMask":{wmask}}}"#, q(format))];
+        for &(f, m) in &more {
+            let f = tex_format(f);
+            targets.push(format!(r#"{{"format":{}{},"writeMask":{m}}}"#, q(f), blend_of(f)));
+        }
         // (a strip index format only on a strip topology)
         let strip_fmt = match strip {
             2 if pick(&TOPOLOGY, topo, "triangle-list").ends_with("strip") => r#","stripIndexFormat":"uint16""#,
@@ -1852,21 +1890,41 @@ impl D3d {
             2 => "back",
             _ => "none",
         };
+        let stencil_state = match stencil {
+            Some(st) if depth => {
+                let face = |o: usize| {
+                    format!(
+                        r#"{{"failOp":{},"depthFailOp":{},"passOp":{},"compare":{}}}"#,
+                        q(pick(&STENCIL_OP, st[o], "keep")),
+                        q(pick(&STENCIL_OP, st[o + 1], "keep")),
+                        q(pick(&STENCIL_OP, st[o + 2], "keep")),
+                        q(pick(&COMPARE, st[o + 3], "always"))
+                    )
+                };
+                format!(r#","stencilFront":{},"stencilBack":{},"stencilReadMask":{},"stencilWriteMask":{}"#, face(3), face(7), st[1], st[2])
+            }
+            _ => String::new(),
+        };
         let ds = if depth {
-            format!(r#","depthStencil":{{"format":"depth24plus-stencil8","depthWriteEnabled":{},"depthCompare":{}}}"#, depth_write != 0, q(pick(&COMPARE, depth_cmp, "always")))
+            format!(
+                r#","depthStencil":{{"format":"depth24plus-stencil8","depthWriteEnabled":{},"depthCompare":{}{stencil_state}}}"#,
+                depth_write != 0,
+                q(pick(&COMPARE, depth_cmp, "always"))
+            )
         } else {
             String::new()
         };
-        let (Some(&vm), Some(&pm)) = (self.shaders.get(&vs), self.shaders.get(&ps)) else { return Pipe { pipeline: 0 } };
+        let stencil_ref = stencil.filter(|_| depth).map(|st| st[0]);
+        let (Some(&vm), Some(&pm)) = (self.shaders.get(&vs), self.shaders.get(&ps)) else { return Pipe { pipeline: 0, stencil_ref } };
         let pipeline = gpu::render_pipeline(&format!(
-            r#"{{"layout":{},"vertex":{{"module":{vm},"entryPoint":"main","buffers":[{}]}},"fragment":{{"module":{pm},"entryPoint":"main","targets":[{{"format":{}{blend_state},"writeMask":{wmask}}}]}},"primitive":{{"topology":{}{strip_fmt},"cullMode":{},"frontFace":"ccw"}}{ds}}}"#,
+            r#"{{"layout":{},"vertex":{{"module":{vm},"entryPoint":"main","buffers":[{}]}},"fragment":{{"module":{pm},"entryPoint":"main","targets":[{}]}},"primitive":{{"topology":{}{strip_fmt},"cullMode":{},"frontFace":"ccw"}}{ds}}}"#,
             self.layout,
             buffers.join(","),
-            q(format),
+            targets.join(","),
             q(pick(&TOPOLOGY, topo, "triangle-list")),
             q(cull)
         ));
-        Pipe { pipeline }
+        Pipe { pipeline, stencil_ref }
     }
 
     fn sampler(&mut self, key: u32) -> Id {
@@ -1889,7 +1947,7 @@ impl D3d {
     }
 
     fn draw(&mut self, c: &[u32], i: usize) -> usize {
-        let pipe = self.pipelines.get(&c[i + 1]).map(|p| p.pipeline).unwrap_or(0);
+        let (pipe, stencil_ref) = self.pipelines.get(&c[i + 1]).map_or((0, None), |p| (p.pipeline, p.stencil_ref));
         let [vx, vy, vw, vh, minz, maxz] = std::array::from_fn(|k| f32of(c[i + 2 + k]));
         let (sx, sy, sw, sh) = (c[i + 8], c[i + 9], c[i + 10], c[i + 11]);
         let (vso, vss, pso, pss) = (c[i + 12], c[i + 13], c[i + 14], c[i + 15]);
@@ -1909,11 +1967,27 @@ impl D3d {
         if pipe == 0 || self.data_buf == 0 || count == 0 {
             return p;
         }
-        let (tw, th) = self.target_size();
+        // (Direct3D 9 with more render targets: a SET_TARGETS2 set)
+        let (tw, th) = if self.targets2.is_some() { self.target_size2() } else { self.target_size() };
         let Some((vpt, sci)) = rects9(tw, th, [vx, vy, vw, vh, minz, maxz], [sx, sy, sw, sh], self.clip) else { return p };
         if !self.clears.is_empty() {
             for t in &texs {
                 self.settle(t[1]);
+            }
+        }
+        // (more render targets: the depth buffer kept from pass to pass, see begin_pass2)
+        if let Some(tg) = &self.targets2 {
+            let zid = tg[1 + tg[0] as usize * 3];
+            if let Some(z) = self.textures.get_mut(&zid).filter(|z| z.zused != 3) {
+                z.zused = 3;
+                self.end_pass();
+            }
+        }
+        // (the first draw that tests stencil: from now on passes load and store it)
+        if stencil_ref.is_some() && self.targets2.is_none() {
+            if let Some(z) = self.textures.get_mut(&self.target[2]).filter(|z| z.zused & 2 == 0) {
+                z.zused |= 2;
+                self.end_pass();
             }
         }
         if !self.begin_pass() {
@@ -1927,6 +2001,9 @@ impl D3d {
             }
         }
         gpu::set_pipeline(pipe);
+        if let Some(r) = stencil_ref {
+            gpu::set_stencil_ref(r);
+        }
         gpu::set_viewport(vpt[0], vpt[1], vpt[2], vpt[3], vpt[4], vpt[5]);
         gpu::set_scissor(sci[0], sci[1], sci[2], sci[3]);
         let g0 = match self.groups0.get(&(vss, pss)) {
@@ -1939,11 +2016,15 @@ impl D3d {
         };
         gpu::set_bind_group(0, g0, &[vso, pso]);
         // (sampling the texture being drawn to is not allowed in WebGPU: it reads as white)
-        let rt = if self.targets2.is_some() { 0 } else { self.target[0] };
+        let atts: Vec<u32> = match &self.targets2 {
+            Some(tg) => (0..tg[0] as usize).map(|k| tg[1 + k * 3]).collect(),
+            None => vec![self.target[0]],
+        };
+        let drawn_to = |id: u32| id != 0 && atts.contains(&id);
         let mut k1: Vec<u32> = texs.iter().flatten().copied().collect();
-        if rt != 0 && texs.iter().any(|t| t[1] == rt) {
+        for t in texs.iter().filter(|t| drawn_to(t[1])) {
             k1.push(u32::MAX);
-            k1.push(rt);
+            k1.push(t[1]);
         }
         let g1 = match self.groups1.get(&k1) {
             Some(&g) => g,
@@ -1952,7 +2033,7 @@ impl D3d {
                 for s in 0..8u32 {
                     let t = texs.iter().find(|x| x[0] == s);
                     let view = t
-                        .and_then(|t| self.textures.get(&t[1]).filter(|tex| tex.format != DS && !(rt != 0 && t[1] == rt)))
+                        .and_then(|t| self.textures.get(&t[1]).filter(|tex| tex.format != DS && !drawn_to(t[1])))
                         .map_or(self.white, |tex| tex.view);
                     let smp = self.sampler(t.map_or(0x5, |t| t[2]));
                     entries.push((s * 2, Res::Obj(view)));

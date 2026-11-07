@@ -27,13 +27,11 @@ crt_math-32 ^(want|got) +ulp 1 (pow\(100.5,3.14159265358979\)|_hypot\(2,100.5\))
 crt_math-64 ^(want|got) +ulp 1 (sin|cos|tan)\((3.14159265358979|1.0000000000000001e\+300|10000000000)\)
 crt_math-64 ^(want|got) +ulp 1 pow\(
 # Direct3D 9 on the Windows runner is WARP: its limits and format list are its own (a GPU's
-# differ too). sake offers R8G8B8 textures (no driver does: games fall back without them) and
-# lacks A2R10G10B10/R32F/V8U8 textures and A8/L8/A8L8/A4R4G4B4 targets so far (TODO).
+# differ too). sake has no A8/L8/A8L8/A4R4G4B4/A2R10G10B10/R32F/V8U8 render targets so far (TODO:
+# their texels on the page as what sampling them gives, and read back as the format).
 d3d9-* ^(want|got) +caps vs .* maxtex 
 d3d9-* ^(want|got) +caps blend src 
-d3d9-* ^(want|got) +format (A4R4G4B4|A8|L8|A8L8|A2R10G10B10|R32F|D32|R8G8B8|V8U8) 
-# D3DTADDRESS_BORDER: WebGPU has no border colour; sake clamps (TODO: in the shader)
-d3d9-* ^image address:
+d3d9-* ^(want|got) +format (A4R4G4B4|A8|L8|A8L8|A2R10G10B10|R32F|V8U8) texture 1 rendertarget 
 # StretchRect with D3DTEXF_NONE: WARP filters linearly, GPUs' drivers use point (sake: point)
 d3d9-* ^image surfaces:
 # Direct3D 11 on the runner is WARP. Its format list and flags are its own; sake has no MSAA
@@ -48,8 +46,9 @@ d3d11-* ^(want|got) +f0\.clamp \S+ \S+ [08]0[0-7][0-9a-f]{5}
 d3d11-* ^(want|got) +ulp \d+ f0\.log2?:3f7fffff:
 # lines and wireframe: WebGPU leaves line rasterization (Bresenham or diamond exit) to the GPU
 d3d11-* ^image (lines|wireframe):
-# BORDER and MIRROR_ONCE addressing: WebGPU has neither (TODO: in the shader)
-d3d11-* ^image address:
+# BORDER with linear filtering (the shader mixes the border in, dxwgsl::addr): WARP weighs texels
+# in 16ths, the GPU finer; a level at most
+d3d11-* ^image address: \d+ pixels off by more than 0 \(worst 1;
 # WIC pictures: CMYK -> sRGB goes through a color profile on Windows (sake: its measured grid,
 # within a few levels), and the Cubic/Fant scalers' weights are their own (see wicconv below)
 imaging-* ^image (gdip_)?(jpeg_cmyk|png_gray16):

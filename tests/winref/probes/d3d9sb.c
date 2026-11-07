@@ -212,7 +212,8 @@ int main(void) {
         set_light(6, 5);
         IDirect3DStateBlock9_Apply(sb);
         D3DLIGHT9 l = { 0 };
-        printf("light made after the block: GetLight %#lx range %d\n", IDirect3DDevice9_GetLight(dev, 6, &l), (int)l.Range);
+        hr = IDirect3DDevice9_GetLight(dev, 6, &l);
+        printf("light made after the block: GetLight %#lx range %d\n", hr, (int)l.Range);
         IDirect3DStateBlock9_Release(sb);
     }
 
@@ -246,7 +247,8 @@ int main(void) {
         printf("Capture: refs of the texture it took +%ld\n", (long)refs(tex[1]) - (long)before);
         set_tex(0, 0);
         before = refs(tex[1]);
-        printf("Release recorded %lu, refs of its texture %+ld\n", IDirect3DStateBlock9_Release(sb), (long)refs(tex[1]) - (long)before);
+        ULONG left = IDirect3DStateBlock9_Release(sb);
+        printf("Release recorded %lu, refs of its texture %+ld\n", left, (long)refs(tex[1]) - (long)before);
         /* a block that recorded nothing; one that recorded a state set twice */
         IDirect3DDevice9_BeginStateBlock(dev);
         printf("EndStateBlock of nothing %#lx\n", IDirect3DDevice9_EndStateBlock(dev, &sb));

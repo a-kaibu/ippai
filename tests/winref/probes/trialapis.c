@@ -20,8 +20,12 @@ static void props(void) {
     printf("  get %p %p %p\n", GetPropA(h, "MixedCase"), GetPropA(h, "mixedcase"), GetPropA(h, "MIXEDCASE"));
     printf("  wide %p %p %p\n", GetPropW(h, L"widekey"), GetPropA(h, "WIDEKEY"), GetPropW(h, L"MixedCase"));
     printf("  lower %p %p\n", GetPropA(h, "LOWER"), GetPropW(h, L"Lower"));
-    printf("  replace %d %p\n", SetPropA(h, "MIXEDCASE", (HANDLE)0x44), GetPropA(h, "MixedCase"));
-    printf("  remove %p %p %p\n", RemovePropA(h, "mixedCASE"), GetPropA(h, "MixedCase"), RemovePropW(h, L"WIDEKEY"));
+    /* (one call a statement: C leaves the order of a call's arguments open, gcc goes right to left) */
+    BOOL rep = SetPropA(h, "MIXEDCASE", (HANDLE)0x44);
+    printf("  replace %d %p\n", rep, GetPropA(h, "MixedCase"));
+    HANDLE r1 = RemovePropA(h, "mixedCASE");
+    HANDLE g1 = GetPropA(h, "MixedCase");
+    printf("  remove %p %p %p\n", r1, g1, RemovePropW(h, L"WIDEKEY"));
     printf("  missing %p %p\n", GetPropA(h, "none"), RemovePropA(h, "none"));
     DestroyWindow(h);
 }

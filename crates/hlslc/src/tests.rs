@@ -262,10 +262,10 @@ fn d3d9(src: &str, entry: &str, target: &str, link: u32) -> (String, dxwgsl::d3d
     let s = dxwgsl::d3d9::Shader::parse(&words).unwrap_or_else(|| panic!("{entry}: dxwgsl cannot parse"));
     let g = dxwgsl::d3d9::Gen::new(&s);
     let code = if s.pixel {
-        g.pixel(&dxwgsl::d3d9::Options { link, vs_inputs: Vec::new(), alpha_test: None, fog: false })
+        g.pixel(&dxwgsl::d3d9::Options { link, vs_inputs: Vec::new(), alpha_test: None, fog: false, addr: Vec::new(), targets: 1 })
     } else {
         let ins = s.inputs.iter().enumerate().map(|(k, i)| (i.0, k as u32, 0)).collect();
-        g.vertex(&dxwgsl::d3d9::Options { link: 0, vs_inputs: ins, alpha_test: None, fog: false })
+        g.vertex(&dxwgsl::d3d9::Options { link: 0, vs_inputs: ins, alpha_test: None, fog: false, addr: Vec::new(), targets: 1 })
     };
     let m = match naga::front::wgsl::parse_str(&code) {
         Ok(m) => m,
@@ -458,4 +458,34 @@ float4 ps(VS_OUTPUT i) : SV_Target { return float4(i.v0, 0, 1); }\n";
     naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&m).unwrap();
     assert!(w.code.contains("sp_view") && w.code.contains("clamp(bitcast<f32>(o"), "{}", w.code);
     assert!(w.bindings.iter().any(|b| b.0 == 15), "{:?}", w.bindings);
+}
+
+/// Samplers with BORDER / MIRROR_ONCE (dxwgsl::addr): 2D textures and arrays sample at am{s}
+/// and mix in the border; offsets, comparisons and other samplers sample as they are.
+#[test]
+fn border_addressing_in_d3d11_shaders() {
+    const SRC: &str = "Texture2D a : register(t0); Texture2DArray b : register(t1); Texture2D<float> z : register(t2);\n\
+SamplerState s0 : register(s0); SamplerState s1 : register(s1); SamplerComparisonState c : register(s2);\n\
+float4 ps(float4 p : SV_Position, float2 uv : TEXCOORD) : SV_Target {\n\
+  return a.Sample(s0, uv) + b.Sample(s0, float3(uv, 1)) + a.Sample(s1, uv) + a.Sample(s0, uv, int2(1, 0))\n\
+    + z.SampleCmp(c, uv, 0.5) + a.SampleLevel(s0, uv * 2, 1); }\n";
+    let code = compile(SRC, "ps", "ps_5_0");
+    for flags in [1, 2, 3, 4, 8, 17, 19, 21, 31] {
+        let addr = [dxwgsl::addr::Addr { sampler: 0, flags, border: [0.25f32.to_bits(), 0, 1.0f32.to_bits(), 0.5f32.to_bits()] },
+            dxwgsl::addr::Addr { sampler: 2, flags, border: [0; 4] }];
+        let w = dxwgsl::translate_addr(&code, true, None, &addr).unwrap();
+        let m = naga::front::wgsl::parse_str(&w.code).unwrap_or_else(|e| panic!("{}\n{}", e.emit_to_string(&w.code), w.code));
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+            .validate(&m)
+            .unwrap_or_else(|e| panic!("{e:?}\n{}", w.code));
+        let c = &w.code;
+        // t0 and t1 with s0 (three samples without offset), not s1, not the offset one, not the comparison
+        assert_eq!(c.matches("am0(").count() - 1, 3, "{c}");
+        assert_eq!(c.matches("ab0_0(").count() - 1, 2, "{c}");
+        assert_eq!(c.matches("ab1_0(").count() - 1, 1, "{c}");
+        assert!(!c.contains("am1(") && !c.contains("am2(") && !c.contains("_2("), "{c}");
+        assert!(c.contains("vec4f(0.25, 0.0, 1.0, 0.5)") == (flags & 3 != 0), "{c}");
+    }
+    // no samplers with them: as translate
+    assert_eq!(dxwgsl::translate_addr(&code, true, None, &[]).unwrap().code, dxwgsl::translate(&code, true, None).unwrap().code);
 }

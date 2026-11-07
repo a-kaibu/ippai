@@ -239,7 +239,8 @@ int main(void) {
     printf("order\n");
     RaiseException(0xe0000001, 0, 0, NULL);
     printf("  back\n");
-    printf("remove %lu %lu %lu\n", RemoveVectoredExceptionHandler(h2), RemoveVectoredExceptionHandler(h2), RemoveVectoredContinueHandler(hc));
+    ULONG rm1 = RemoveVectoredExceptionHandler(h2), rm2 = RemoveVectoredExceptionHandler(h2);
+    printf("remove %lu %lu %lu\n", rm1, rm2, RemoveVectoredContinueHandler(hc));
     printf("raise after remove\n");
     RaiseException(0xe0000002, 0, 0, NULL);
     printf("  back\n");

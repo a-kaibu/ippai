@@ -245,6 +245,24 @@ int main(void) {
         end();
         reset();
         shot("address", 0);
+        /* BORDER filtered, MIRRORONCE, and one axis each: (u, v, filter) */
+        begin(0);
+        IDirect3DDevice9_SetTexture(dev, 0, (IDirect3DBaseTexture9 *)t);
+        static const DWORD modes2[4][3] = {
+            { D3DTADDRESS_BORDER, D3DTADDRESS_BORDER, D3DTEXF_LINEAR }, { D3DTADDRESS_MIRRORONCE, D3DTADDRESS_MIRRORONCE, D3DTEXF_POINT },
+            { D3DTADDRESS_BORDER, D3DTADDRESS_WRAP, D3DTEXF_LINEAR }, { D3DTADDRESS_MIRRORONCE, D3DTADDRESS_BORDER, D3DTEXF_LINEAR } };
+        for (int m = 0; m < 4; m++) {
+            IDirect3DDevice9_SetSamplerState(dev, 0, D3DSAMP_ADDRESSU, modes2[m][0]);
+            IDirect3DDevice9_SetSamplerState(dev, 0, D3DSAMP_ADDRESSV, modes2[m][1]);
+            IDirect3DDevice9_SetSamplerState(dev, 0, D3DSAMP_MINFILTER, modes2[m][2]);
+            IDirect3DDevice9_SetSamplerState(dev, 0, D3DSAMP_MAGFILTER, modes2[m][2]);
+            IDirect3DDevice9_SetSamplerState(dev, 0, D3DSAMP_BORDERCOLOR, 0xff40c0e0);
+            float x = (m & 1) * 32, y = (m >> 1) * 32;
+            quad(x - 0.5f + 2, y - 0.5f + 2, x + 30 - 0.5f, y + 30 - 0.5f, 0xffffffff, -1, -1, 2, 2);
+        }
+        end();
+        reset();
+        shot("address2", 10);
         IDirect3DTexture9_Release(t);
     }
     /* texture formats, each 8x8 drawn 1:1 (point) in a 8-pixel cell */
@@ -298,6 +316,44 @@ int main(void) {
         end();
         reset();
         shot("formats", 1);
+        /* the wide, signed and float ones (drawn the same: signed values below 0 show as 0,
+         * missing channels read 1) */
+        begin(0x808080);
+        static DWORD w64[128];
+        static float fl[128];
+        static unsigned short hf[128];
+        for (int i = 0; i < 128; i++) {
+            w64[i] = (DWORD)i * 0x9e3779b1u ^ 0x5a5a1234u;
+            fl[i] = (i % 17) / 16.0f - 0.25f;
+            hf[i] = (unsigned short)(0x3000 + i * 0x40);
+        }
+        struct { D3DFORMAT f; const char *n; const void *d; int row; } wf[] = {
+            { D3DFMT_A2R10G10B10, "A2R10G10B10", w64, 32 }, { D3DFMT_A2B10G10R10, "A2B10G10R10", w64, 32 },
+            { D3DFMT_G16R16, "G16R16", w64, 32 }, { D3DFMT_A16B16G16R16, "A16B16G16R16", w64, 64 },
+            { D3DFMT_L16, "L16", w64, 16 }, { D3DFMT_V8U8, "V8U8", w64, 16 }, { D3DFMT_Q8W8V8U8, "Q8W8V8U8", w64, 32 },
+            { D3DFMT_V16U16, "V16U16", w64, 32 }, { D3DFMT_X8L8V8U8, "X8L8V8U8", w64, 32 }, { D3DFMT_L6V5U5, "L6V5U5", w64, 16 },
+            { D3DFMT_A2W10V10U10, "A2W10V10U10", w64, 32 }, { D3DFMT_Q16W16V16U16, "Q16W16V16U16", w64, 64 },
+            { D3DFMT_R16F, "R16F", hf, 16 }, { D3DFMT_G16R16F, "G16R16F", hf, 32 }, { D3DFMT_R32F, "R32F", fl, 32 },
+            { D3DFMT_G32R32F, "G32R32F", fl, 64 },
+        };
+        IDirect3DDevice9_SetRenderState(dev, D3DRS_ALPHABLENDENABLE, TRUE);
+        IDirect3DDevice9_SetRenderState(dev, D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+        IDirect3DDevice9_SetRenderState(dev, D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+        cell = 0;
+        for (int i = 0; i < (int)(sizeof wf / sizeof wf[0]); i++) {
+            HRESULT c = IDirect3D9_CheckDeviceFormat(d3d, 0, D3DDEVTYPE_HAL, D3DFMT_X8R8G8B8, 0, D3DRTYPE_TEXTURE, wf[i].f);
+            IDirect3DTexture9 *t = texfmt(wf[i].f, 8, 8, wf[i].d, wf[i].row, 8);
+            printf("texture %s check %#lx %s\n", wf[i].n, c, t ? "ok" : "failed");
+            float x = (cell % 7) * 9 + 1, y = (cell / 7) * 9 + 1;
+            cell++;
+            if (!t) continue;
+            IDirect3DDevice9_SetTexture(dev, 0, (IDirect3DBaseTexture9 *)t);
+            quad(x - 0.5f, y - 0.5f, x + 8 - 0.5f, y + 8 - 0.5f, 0xffffffff, 0, 0, 1, 1);
+            IDirect3DTexture9_Release(t);
+        }
+        end();
+        reset();
+        shot("formats2", 1);
     }
     /* blending: over a gradient, src alpha, add, multiply, reverse subtract, min, max, separate
      * alpha factors, alpha test */

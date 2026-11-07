@@ -590,6 +590,8 @@ pub struct Gen<'a> {
     indent: usize,
     tex_level: bool,
     loops: usize,
+    /// samplers addressing as WebGPU's can't (pixel shaders)
+    addr: Vec<crate::addr::Addr>,
 }
 
 pub struct Options {
@@ -601,6 +603,10 @@ pub struct Options {
     pub alpha_test: Option<u32>,
     /// sampler texture types (by register) for samplers the shader didn't declare (ps 1.x)
     pub fog: bool,
+    /// pixel shader: samplers with BORDER / MIRRORONCE addressing (crate::addr)
+    pub addr: Vec<crate::addr::Addr>,
+    /// pixel shader: the render targets set (1-4): oC1-oC3 go to locations 1-3 of those there
+    pub targets: u32,
 }
 
 pub const CONSTS_EXTRA: u32 = 4;
@@ -628,7 +634,7 @@ impl<'a> Gen<'a> {
                 _ => {}
             }
         }
-        Gen { s, out: String::new(), defs, defis, defbs, indent: 1, tex_level: false, loops: 0 }
+        Gen { s, out: String::new(), defs, defis, defbs, indent: 1, tex_level: false, loops: 0, addr: Vec::new() }
     }
 
     fn line(&mut self, l: &str) {
@@ -790,10 +796,12 @@ impl<'a> Gen<'a> {
             3 | 4 => format!("{}.xyz", paren(coord)),
             _ => format!("{}.xy", paren(coord)),
         };
+        let c0 = c.clone();
         if ty == 3 || ty == 4 {
             // (cube/volume textures aren't bound: black)
             return "vec4f(0.0, 0.0, 0.0, 1.0)".into();
         }
+        let c = crate::addr::coord(&self.addr, sampler, &c);
         let call = match (kind, self.tex_level) {
             (1, _) => format!("textureSampleLevel(tex{0}, smp{0}, {1}, {2})", sampler, c, extra),
             (2, false) => format!("textureSampleBias(tex{0}, smp{0}, {1}, {2})", sampler, c, extra),
@@ -801,7 +809,7 @@ impl<'a> Gen<'a> {
             (_, true) => format!("textureSampleLevel(tex{0}, smp{0}, {1}, 0.0)", sampler, c),
             _ => format!("textureSample(tex{0}, smp{0}, {1})", sampler, c),
         };
-        format!("fixa({}, {}u)", call, sampler)
+        crate::addr::wrap(&self.addr, sampler, &format!("fixa({}, {}u)", call, sampler), &c0)
     }
 
     fn body(&mut self) {
@@ -1215,6 +1223,8 @@ impl<'a> Gen<'a> {
                 let _ = writeln!(h, "@group(1) @binding({}) var smp{}: sampler;", reg * 2 + 1, reg);
             }
         }
+        self.addr = opts.addr.iter().filter(|a| s.samplers.iter().any(|&(r, ty)| r == a.sampler && (ty == 2 || ty == 0))).copied().collect();
+        h.push_str(&crate::addr::helpers(&self.addr));
         h.push_str("struct In {\n  @builtin(position) fragpos: vec4f,\n  @builtin(front_facing) ff: bool,\n");
         let used = s.reads & opts.link;
         for l in 0..16 {
@@ -1224,6 +1234,11 @@ impl<'a> Gen<'a> {
         }
         h.push_str("}\n");
         h.push_str("struct Out {\n  @location(0) c0: vec4f,\n");
+        // (more render targets: what the shader writes to oC1-oC3, black for the rest)
+        let more = if s.major >= 2 { opts.targets.clamp(1, 4) } else { 1 };
+        for t in 1..more {
+            let _ = writeln!(h, "  @location({t}) c{t}: vec4f,");
+        }
         let writes_depth = s.ins.iter().any(|i| i.dst.is_some_and(|d| d.ty == DEPTHOUT));
         if writes_depth {
             h.push_str("  @builtin(frag_depth) depth: f32,\n");
@@ -1269,6 +1284,9 @@ impl<'a> Gen<'a> {
         let mut tail = String::from("  var out: Out;\n");
         let result = if s.major >= 2 { "oc0" } else { "r0" };
         let _ = writeln!(tail, "  out.c0 = {};", result);
+        for t in 1..more {
+            let _ = writeln!(tail, "  out.c{t} = oc{t};");
+        }
         if opts.fog {
             tail.push_str("  out.c0 = vec4f(mix(u.x[2].xyz, out.c0.xyz, clamp(fogf, 0.0, 1.0)), out.c0.w);\n");
         }

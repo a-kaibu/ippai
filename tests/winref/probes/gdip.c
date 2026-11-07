@@ -219,7 +219,8 @@ int main(void) {
         BitmapData d1, d2;
         printf("  double lock %d", GdipBitmapLockBits(b, NULL, 1, PF_ARGB, &d1));
         printf(" %d", GdipBitmapLockBits(b, NULL, 1, PF_ARGB, &d2));
-        printf(" unlock %d %d\n", GdipBitmapUnlockBits(b, &d1), GdipBitmapUnlockBits(b, &d1));
+        int un1 = GdipBitmapUnlockBits(b, &d1);
+        printf(" unlock %d %d\n", un1, GdipBitmapUnlockBits(b, &d1));
         HBITMAP hb = NULL;
         printf("  hbitmap %d", GdipCreateHBITMAPFromBitmap(b, &hb, 0xff336699));
         BITMAP bm;

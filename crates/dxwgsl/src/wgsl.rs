@@ -107,6 +107,10 @@ struct W {
     /// what each open block is: b'i' if, b'e' its else, b'l' loop, b's' switch
     blocks: Vec<u8>,
     last_op: u32,
+    /// samplers addressing as WebGPU's can't (crate::addr), and the (texture, sampler) pairs
+    /// sampled with them
+    addr: Vec<crate::addr::Addr>,
+    addr_used: std::collections::BTreeSet<(u32, u32)>,
 }
 
 type R<T> = Result<T, String>;
@@ -324,6 +328,8 @@ pub fn varyings(ps: &[u8]) -> R<Vec<Varying>> {
 impl W {
     fn new(pixel: bool, isgn: Vec<SigElement>, osgn: Vec<SigElement>) -> W {
         W {
+            addr: Vec::new(),
+            addr_used: Default::default(),
             pixel,
             isgn,
             osgn,
@@ -665,9 +671,11 @@ impl W {
         let s = self.sampler(&i.ops[3])?;
         let swz = i.ops[2].swizzle();
         let (coord, layer) = self.sample_coords(&i.ops[1], dim)?;
-        let mut args = vec![format!("t{t}"), format!("s{s}"), coord];
-        args.extend(layer);
         let off = self.offset(i, dim);
+        let compare = matches!(i.op, 0x46 | 0x47);
+        let addr = (matches!(dim, 3 | 8) && off.is_none() && !compare && !depth && k == K::F && self.addr.iter().any(|a| a.sampler == s)).then(|| coord.clone());
+        let mut args = vec![format!("t{t}"), format!("s{s}"), if addr.is_some() { format!("am{s}({coord})") } else { coord }];
+        args.extend(layer);
         let level = |w: &mut W, o: &Operand| -> R<String> {
             let l = w.src(o, K::F, &[0])?;
             Ok(if depth { format!("i32({l})") } else { l })
@@ -699,6 +707,9 @@ impl W {
             format!("vec4<f32>({call})")
         } else if depth {
             format!("vec4<f32>({call}, 0.0f, 0.0f, 1.0f)")
+        } else if let Some(uv) = addr {
+            self.addr_used.insert((t, s));
+            format!("ab{t}_{s}({call}, {uv})")
         } else {
             call
         };
@@ -1168,7 +1179,14 @@ fn texture_type(dim: u32, k: K, depth: bool) -> R<(String, u32)> {
 
 /// DXBC (shader model 4/5) to WGSL; `ps`: the pixel shader a vertex shader feeds.
 pub fn translate(code: &[u8], pixel: bool, ps: Option<&[u8]>) -> R<Wgsl> {
-    translate_with(code, pixel, ps, None)
+    translate_with(code, pixel, ps, None, &[])
+}
+
+/// [`translate`] for samplers with BORDER / MIRROR_ONCE addressing (`addr`, by sampler
+/// register): what they sample at and the border (crate::addr). For 2D textures and arrays
+/// sampled without offsets or comparison; the rest samples as the sampler does (clamped).
+pub fn translate_addr(code: &[u8], pixel: bool, ps: Option<&[u8]>, addr: &[crate::addr::Addr]) -> R<Wgsl> {
+    translate_with(code, pixel, ps, None, addr)
 }
 
 /// Point sprites (what ANGLE's point sprite geometry shader does, for a page without geometry
@@ -1177,15 +1195,16 @@ pub fn translate(code: &[u8], pixel: bool, ps: Option<&[u8]>) -> R<Wgsl> {
 /// output (PSIZE, clamped to 1..`max_size`) in pixels. The viewport's half size comes in a
 /// uniform at binding 15 of group 0 (xy).
 pub fn translate_point_sprite(code: &[u8], ps: Option<&[u8]>, max_size: f32) -> R<Wgsl> {
-    translate_with(code, false, ps, Some(max_size))
+    translate_with(code, false, ps, Some(max_size), &[])
 }
 
-fn translate_with(code: &[u8], pixel: bool, ps: Option<&[u8]>, sprite: Option<f32>) -> R<Wgsl> {
+fn translate_with(code: &[u8], pixel: bool, ps: Option<&[u8]>, sprite: Option<f32>, addr: &[crate::addr::Addr]) -> R<Wgsl> {
     let (c, p) = parse(code)?;
     if p.kind != if pixel { tpf::PIXEL } else { tpf::VERTEX } {
         return Err(format!("program type {} for a {} shader", p.kind, if pixel { "pixel" } else { "vertex" }));
     }
     let mut w = W::new(pixel, c.signature(false), c.signature(true));
+    w.addr = addr.to_vec();
     declarations(&mut w, &p)?;
     for i in &p.insts {
         w.inst(i)?;
@@ -1246,6 +1265,14 @@ fn translate_with(code: &[u8], pixel: bool, ps: Option<&[u8]>, sprite: Option<f3
     for &(name, code) in HELPERS {
         if w.helpers.contains(name) {
             m.push_str(code);
+        }
+    }
+    for x in &w.addr {
+        if w.addr_used.iter().any(|&(_, s)| s == x.sampler) {
+            m.push_str(&crate::addr::coord_fn(x));
+        }
+        for &(t, _) in w.addr_used.iter().filter(|&&(_, s)| s == x.sampler) {
+            m.push_str(&crate::addr::border_fn(x, &format!("t{t}"), &format!("ab{t}_{}", x.sampler)));
         }
     }
     if !w.icb.is_empty() {

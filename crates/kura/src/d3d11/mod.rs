@@ -229,7 +229,9 @@ pub struct Shader {
     pub code: Vec<u8>,
     pub pixel: bool,
     /// page shader and bindings, per pixel shader for vertex shaders (key 0 otherwise)
-    pub wgsl: HashMap<u32, Option<(u32, Vec<(u32, dxwgsl::Binding)>)>>,
+    /// by the pixel shader a vertex shader feeds (see shader_for) and the samplers addressing
+    /// as WebGPU's don't (dxwgsl::addr)
+    pub wgsl: HashMap<(u32, Vec<dxwgsl::addr::Addr>), Option<(u32, Vec<(u32, dxwgsl::Binding)>)>>,
 }
 
 pub struct Elem {
@@ -2771,7 +2773,19 @@ unsafe fn copy_region(d: &mut D11, dst: u32, dsub: u32, x: u32, y: u32, _z: u32,
 // draws
 
 /// A shader's page shader and bindings (translated on first use; vertex shaders per pixel shader).
-fn shader_for(d: &mut D11, sh: u32, ps: u32, sprite: Option<f32>) -> Option<(u32, Vec<(u32, dxwgsl::Binding)>)> {
+/// `samplers`: a pixel shader's (those with BORDER or MIRROR_ONCE addressing: the shader does it)
+fn shader_for(d: &mut D11, sh: u32, ps: u32, sprite: Option<f32>, samplers: &[u32]) -> Option<(u32, Vec<(u32, dxwgsl::Binding)>)> {
+    let mut addr = Vec::new();
+    if matches!(d.objs.get(&sh).map(|o| &o.data), Some(Data::Shader(s)) if s.pixel) {
+        for (n, &id) in samplers.iter().enumerate() {
+            if let Some(desc) = state_desc(d, id) {
+                let flags = dxwgsl::addr::flags(desc[1], desc[2], desc[0] & 4 != 0 || desc[0] & 0x40 != 0);
+                if flags != 0 {
+                    addr.push(dxwgsl::addr::Addr { sampler: n as u32, flags, border: [desc[7], desc[8], desc[9], desc[10]] });
+                }
+            }
+        }
+    }
     let ps_code = match d.objs.get(&ps).map(|o| &o.data) {
         Some(Data::Shader(s)) => Some(s.code.clone()),
         _ => None,
@@ -2779,13 +2793,13 @@ fn shader_for(d: &mut D11, sh: u32, ps: u32, sprite: Option<f32>) -> Option<(u32
     let trace = d.trace;
     let Some(Data::Shader(s)) = d.objs.get_mut(&sh).map(|o| &mut o.data) else { return None };
     // (point sprite variants of a vertex shader: the pixel shader's id with the top bit set)
-    let key = if s.pixel { 0 } else if sprite.is_some() { ps | 0x8000_0000 } else { ps };
+    let key = (if s.pixel { 0 } else if sprite.is_some() { ps | 0x8000_0000 } else { ps }, addr);
     if let Some(r) = s.wgsl.get(&key) {
         return r.clone();
     }
     let w = match sprite {
         Some(max) if !s.pixel => dxwgsl::translate_point_sprite(&s.code, ps_code.as_deref(), max),
-        _ => dxwgsl::translate(&s.code, s.pixel, if s.pixel { None } else { ps_code.as_deref() }),
+        _ => dxwgsl::translate_addr(&s.code, s.pixel, if s.pixel { None } else { ps_code.as_deref() }, &key.1),
     };
     let r = match w {
         Ok(w) => {
@@ -2915,8 +2929,8 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
         _ => None,
     };
     let (count, instances, start, first_instance) = if sprite.is_some() { (6, count, 0, start) } else { (count, instances, start, first_instance) };
-    let Some((vs, vb)) = shader_for(d, st.vs, st.ps, sprite) else { return };
-    let ps = if st.ps != 0 { shader_for(d, st.ps, 0, None) } else { None };
+    let Some((vs, vb)) = shader_for(d, st.vs, st.ps, sprite, &[]) else { return };
+    let ps = if st.ps != 0 { shader_for(d, st.ps, 0, None, &st.samplers[1]) } else { None };
     if std::env::var("IPPAI_D3D_TRACE").as_deref() == Ok("2") {
         // the first vertices and the vertex shader's constants
         let words = |id: u32, from: u32, n: u32| -> Vec<String> {
@@ -3225,8 +3239,7 @@ fn sampler_key(s: &[u32], cmp: bool) -> u32 {
         1 => 0, // wrap
         2 => 1, // mirror
         3 => 2, // clamp
-        4 => 2, // border (no border colors in WebGPU)
-        5 => 1,
+        4 | 5 => 2, // border, mirror once: clamped, the pixel shader does the rest (dxwgsl::addr)
         _ => 0,
     };
     let (mip, mag, min) = (f & 1, (f >> 2) & 1, (f >> 4) & 1);

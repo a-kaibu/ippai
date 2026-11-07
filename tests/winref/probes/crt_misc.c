@@ -38,7 +38,8 @@ int main(void) {
         printf(" | %d %d\n", toupper(c + 1), tolower(c + 1));
     }
     printf("setlocale %s\n", setlocale(LC_ALL, NULL));
-    printf("_setmbcp %d getmbcp %d\n", _setmbcp(932), _getmbcp());
+    int setmb = _setmbcp(932); /* (one call a statement: gcc evaluates arguments right to left) */
+    printf("_setmbcp %d getmbcp %d\n", setmb, _getmbcp());
     printf("lead");
     for (int c = 0x80; c < 0x100; c += 8) printf(" %d", _ismbblead(c) ? 1 : 0);
     printf("\n");

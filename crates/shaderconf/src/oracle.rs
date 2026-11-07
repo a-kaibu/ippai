@@ -117,7 +117,7 @@ fn translate(api: &str, code: &[u8]) -> Option<(String, u32, u32, usize)> {
             if !s.pixel {
                 return None;
             }
-            let o = dxwgsl::d3d9::Options { link: 0, vs_inputs: Vec::new(), alpha_test: None, fog: false };
+            let o = dxwgsl::d3d9::Options { link: 0, vs_inputs: Vec::new(), alpha_test: None, fog: false, addr: Vec::new(), targets: 1 };
             let wgsl = std::panic::catch_unwind(|| dxwgsl::d3d9::Gen::new(&s).pixel(&o)).ok()?;
             Some((wgsl, 0, 1, dxwgsl::d3d9::uniform_size(s.max_const) as usize))
         }

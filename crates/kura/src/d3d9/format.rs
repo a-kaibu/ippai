@@ -30,6 +30,22 @@ pub const D32F_LOCKABLE: u32 = 82;
 pub const D24FS8: u32 = 83;
 pub const INDEX16: u32 = 101;
 pub const INDEX32: u32 = 102;
+pub const A2B10G10R10: u32 = 31;
+pub const G16R16: u32 = 34;
+pub const A2R10G10B10: u32 = 35;
+pub const A16B16G16R16: u32 = 36;
+pub const V8U8: u32 = 60;
+pub const L6V5U5: u32 = 61;
+pub const X8L8V8U8: u32 = 62;
+pub const Q8W8V8U8: u32 = 63;
+pub const V16U16: u32 = 64;
+pub const A2W10V10U10: u32 = 67;
+pub const L16: u32 = 81;
+pub const Q16W16V16U16: u32 = 110;
+pub const R16F: u32 = 111;
+pub const G16R16F: u32 = 112;
+pub const R32F: u32 = 114;
+pub const G32R32F: u32 = 115;
 pub const A16B16G16R16F: u32 = 113;
 pub const A32B32G32R32F: u32 = 116;
 pub const DXT1: u32 = u32::from_le_bytes(*b"DXT1");
@@ -55,6 +71,9 @@ pub fn renderable(fmt: u32) -> bool {
 pub fn layout(fmt: u32) -> Option<(u32, u32)> {
     Some(match fmt {
         A8R8G8B8 | X8R8G8B8 | A8B8G8R8 | X8B8G8R8 | D32 | D24S8 | D24X8 | D24X4S4 | D32F_LOCKABLE | D24FS8 => (4, 1),
+        A2B10G10R10 | A2R10G10B10 | G16R16 | X8L8V8U8 | Q8W8V8U8 | V16U16 | A2W10V10U10 | G16R16F | R32F => (4, 1),
+        V8U8 | L6V5U5 | L16 | R16F => (2, 1),
+        A16B16G16R16 | Q16W16V16U16 | G32R32F => (8, 1),
         R8G8B8 => (3, 1),
         R5G6B5 | X1R5G5B5 | A1R5G5B5 | A4R4G4B4 | X4R4G4B4 | A8L8 | D16 | D16_LOCKABLE | D15S1 => (2, 1),
         A8 | L8 | A4L4 | P8 => (1, 1),
@@ -80,6 +99,7 @@ pub fn page_format(fmt: u32) -> u32 {
         _ if is_depth(fmt) => FMT_DEPTH24S8,
         A16B16G16R16F => FMT_RGBA16F,
         A32B32G32R32F => FMT_RGBA32F,
+        _ if wide(fmt).is_some() => wide(fmt).unwrap(),
         _ => FMT_BGRA8,
     }
 }
@@ -90,6 +110,67 @@ pub fn page_bpp(fmt: u32) -> u32 {
         FMT_RGBA16F => 8,
         FMT_RGBA32F => 16,
         _ => 4,
+    }
+}
+
+/// Formats of more than 8 bits a channel, signed ones, and those with missing channels: the
+/// page format they become (their texels as floats: 16-bit floats when those hold every value,
+/// 32-bit ones otherwise).
+fn wide(fmt: u32) -> Option<u32> {
+    Some(match fmt {
+        A2B10G10R10 | A2R10G10B10 | V8U8 | L6V5U5 | X8L8V8U8 | Q8W8V8U8 | A2W10V10U10 | R16F | G16R16F => FMT_RGBA16F,
+        G16R16 | A16B16G16R16 | V16U16 | L16 | Q16W16V16U16 | R32F | G32R32F => FMT_RGBA32F,
+        _ => return None,
+    })
+}
+
+/// A texel of a `wide` format as R, G, B, A: UNORM n bits c / (2^n - 1), SNORM c / (2^(n-1) - 1)
+/// with the most negative value -1, and what a format does not have reads 1 (Direct3D 9: R32F
+/// is (r, 1, 1, 1), V8U8 (u, v, 1, 1)).
+pub fn texel(fmt: u32, p: &[u8]) -> [f32; 4] {
+    let u = |v: u32, bits: u32| v as f32 / ((1u64 << bits) - 1) as f32;
+    let s = |v: u32, bits: u32| {
+        let m = 1u32 << (bits - 1);
+        let x = ((v & ((m << 1) - 1)) ^ m) as i32 - m as i32;
+        (x as f32 / (m - 1) as f32).max(-1.0)
+    };
+    let w16 = |i: usize| u16::from_le_bytes([p[i * 2], p[i * 2 + 1]]) as u32;
+    let w32 = |i: usize| u32::from_le_bytes([p[i * 4], p[i * 4 + 1], p[i * 4 + 2], p[i * 4 + 3]]);
+    let h = |i: usize| crate::d3d11::format::f16_to_f32(w16(i) as u16);
+    let f = |i: usize| f32::from_bits(w32(i));
+    match fmt {
+        A2B10G10R10 => {
+            let v = w32(0);
+            [u(v & 1023, 10), u((v >> 10) & 1023, 10), u((v >> 20) & 1023, 10), u(v >> 30, 2)]
+        }
+        A2R10G10B10 => {
+            let v = w32(0);
+            [u((v >> 20) & 1023, 10), u((v >> 10) & 1023, 10), u(v & 1023, 10), u(v >> 30, 2)]
+        }
+        A2W10V10U10 => {
+            let v = w32(0);
+            [s(v, 10), s(v >> 10, 10), s(v >> 20, 10), u(v >> 30, 2)]
+        }
+        G16R16 => [u(w16(0), 16), u(w16(1), 16), 1.0, 1.0],
+        A16B16G16R16 => [u(w16(0), 16), u(w16(1), 16), u(w16(2), 16), u(w16(3), 16)],
+        L16 => {
+            let l = u(w16(0), 16);
+            [l, l, l, 1.0]
+        }
+        V8U8 => [s(p[0] as u32, 8), s(p[1] as u32, 8), 1.0, 1.0],
+        L6V5U5 => {
+            let v = w16(0);
+            [s(v, 5), s(v >> 5, 5), u(v >> 10, 6), 1.0]
+        }
+        X8L8V8U8 => [s(p[0] as u32, 8), s(p[1] as u32, 8), u(p[2] as u32, 8), 1.0],
+        Q8W8V8U8 => [s(p[0] as u32, 8), s(p[1] as u32, 8), s(p[2] as u32, 8), s(p[3] as u32, 8)],
+        V16U16 => [s(w16(0), 16), s(w16(1), 16), 1.0, 1.0],
+        Q16W16V16U16 => [s(w16(0), 16), s(w16(1), 16), s(w16(2), 16), s(w16(3), 16)],
+        R16F => [h(0), 1.0, 1.0, 1.0],
+        G16R16F => [h(0), h(1), 1.0, 1.0],
+        R32F => [f(0), 1.0, 1.0, 1.0],
+        G32R32F => [f(0), f(1), 1.0, 1.0],
+        _ => [0.0, 0.0, 0.0, 1.0],
     }
 }
 
@@ -217,6 +298,19 @@ pub unsafe fn convert(fmt: u32, src: *const u8, pitch: usize, w: u32, h: u32, ou
                             d[x * 4..][..4].copy_from_slice(&[l, l, l, ext(v >> 4, 4) as u8]);
                         }
                     }
+                    _ if wide(fmt).is_some() => {
+                        let (bpp, _) = layout(fmt).unwrap();
+                        for x in 0..w {
+                            let t = texel(fmt, std::slice::from_raw_parts(s.add(x * bpp as usize), bpp as usize));
+                            for (c, v) in t.into_iter().enumerate() {
+                                if page == 16 {
+                                    d[x * 16 + c * 4..][..4].copy_from_slice(&v.to_le_bytes());
+                                } else {
+                                    d[x * 8 + c * 2..][..2].copy_from_slice(&crate::d3d11::format::f16_bits(v).to_le_bytes());
+                                }
+                            }
+                        }
+                    }
                     _ => d.fill(0),
                 }
             }
@@ -332,6 +426,87 @@ mod tests {
             for v in 0..=u16::MAX as u32 {
                 let want: Vec<u8> = ch.iter().map(|&(sh, bits)| if bits == 0 { 255 } else { byte(unorm((v >> sh) & ((1 << bits) - 1), bits)) }).collect();
                 assert_eq!(&out[v as usize * 4..][..4], &want[..], "format {fmt} texel {v:#06x}");
+            }
+        }
+    }
+
+    /// The wide formats against their definitions ("D3DFORMAT": channels from the lowest bit,
+    /// UNORM c / (2^n - 1), SNORM two's complement c / (2^(n-1) - 1) clamped to -1, missing
+    /// channels 1), every value of the 16-bit ones and of each channel of the others, through
+    /// convert() to the page's floats.
+    #[test]
+    fn wide_formats_against_their_definitions() {
+        // (format, bytes, [(shift, bits, kind) of R, G, B, A]: kind 0 none (1.0), 1 unorm, 2 snorm, 3 f16, 4 f32)
+        type Ch = (u32, u32, u8);
+        let fmts: [(u32, u32, [Ch; 4]); 16] = [
+            (A2B10G10R10, 4, [(0, 10, 1), (10, 10, 1), (20, 10, 1), (30, 2, 1)]),
+            (A2R10G10B10, 4, [(20, 10, 1), (10, 10, 1), (0, 10, 1), (30, 2, 1)]),
+            (A2W10V10U10, 4, [(0, 10, 2), (10, 10, 2), (20, 10, 2), (30, 2, 1)]),
+            (G16R16, 4, [(0, 16, 1), (16, 16, 1), (0, 0, 0), (0, 0, 0)]),
+            (A16B16G16R16, 8, [(0, 16, 1), (16, 16, 1), (32, 16, 1), (48, 16, 1)]),
+            (L16, 2, [(0, 16, 1), (0, 16, 1), (0, 16, 1), (0, 0, 0)]),
+            (V8U8, 2, [(0, 8, 2), (8, 8, 2), (0, 0, 0), (0, 0, 0)]),
+            (L6V5U5, 2, [(0, 5, 2), (5, 5, 2), (10, 6, 1), (0, 0, 0)]),
+            (X8L8V8U8, 4, [(0, 8, 2), (8, 8, 2), (16, 8, 1), (0, 0, 0)]),
+            (Q8W8V8U8, 4, [(0, 8, 2), (8, 8, 2), (16, 8, 2), (24, 8, 2)]),
+            (V16U16, 4, [(0, 16, 2), (16, 16, 2), (0, 0, 0), (0, 0, 0)]),
+            (Q16W16V16U16, 8, [(0, 16, 2), (16, 16, 2), (32, 16, 2), (48, 16, 2)]),
+            (R16F, 2, [(0, 16, 3), (0, 0, 0), (0, 0, 0), (0, 0, 0)]),
+            (G16R16F, 4, [(0, 16, 3), (16, 16, 3), (0, 0, 0), (0, 0, 0)]),
+            (R32F, 4, [(0, 32, 4), (0, 0, 0), (0, 0, 0), (0, 0, 0)]),
+            (G32R32F, 8, [(0, 32, 4), (32, 32, 4), (0, 0, 0), (0, 0, 0)]),
+        ];
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        for (fmt, bytes, ch) in fmts {
+            assert_eq!(layout(fmt), Some((bytes, 1)));
+            // texels: every 16-bit value of 2-byte formats, else each channel through all its
+            // values (up to 65536) with the others random, and the edges
+            let mut texels: Vec<u64> = Vec::new();
+            if bytes == 2 {
+                texels.extend(0..=0xffffu64);
+            } else {
+                for &(sh, bits, kind) in &ch {
+                    if kind == 0 {
+                        continue;
+                    }
+                    let n = if bits >= 16 { 1u64 << 16 } else { 1u64 << bits };
+                    for v in 0..n {
+                        seed ^= seed << 13;
+                        seed ^= seed >> 7;
+                        seed ^= seed << 17;
+                        let v = if bits == 32 { (v << 16) | (seed & 0xffff) } else { v };
+                        let mask = if bits == 64 { !0 } else { ((1u64 << bits) - 1) << sh };
+                        texels.push((seed & !mask) | (v << sh) & mask);
+                    }
+                }
+            }
+            let src: Vec<u8> = texels.iter().flat_map(|t| t.to_le_bytes()[..bytes as usize].to_vec()).collect();
+            let w = texels.len() as u32;
+            let out = conv(fmt, &src, w, 1);
+            let page = page_bpp(fmt) as usize;
+            for (i, &t) in texels.iter().enumerate() {
+                for (c, &(sh, bits, kind)) in ch.iter().enumerate() {
+                    let v = if bits == 0 { 0 } else { (t >> sh) & ((1u64 << bits) - 1) };
+                    let want: f64 = match kind {
+                        0 => 1.0,
+                        1 => v as f64 / ((1u64 << bits) - 1) as f64,
+                        2 => {
+                            let x = if v >> (bits - 1) != 0 { v as i64 - (1i64 << bits) } else { v as i64 };
+                            (x as f64 / ((1i64 << (bits - 1)) - 1) as f64).max(-1.0)
+                        }
+                        3 => crate::d3d11::format::f16_to_f32(v as u16) as f64,
+                        _ => f32::from_bits(v as u32) as f64,
+                    };
+                    let got = if page == 16 {
+                        f32::from_le_bytes(out[i * 16 + c * 4..][..4].try_into().unwrap())
+                    } else {
+                        crate::d3d11::format::f16_to_f32(u16::from_le_bytes(out[i * 8 + c * 2..][..2].try_into().unwrap()))
+                    } as f64;
+                    // (the page's float of the value: f16 for the formats of 10 bits and less, the
+                    // f32 nearest for the others)
+                    let near = if page == 16 { want as f32 as f64 } else { crate::d3d11::format::f16_to_f32(crate::d3d11::format::f16_bits(want as f32)) as f64 };
+                    assert!(got == near || got.is_nan() && near.is_nan(), "format {fmt} texel {t:#x} channel {c}: {got} want {want}");
+                }
             }
         }
     }
@@ -488,6 +663,13 @@ mod tests {
             (DXT4, false, false, false, false),
             (DXT5, false, false, false, false),
         ];
+        let wide16 = [A2B10G10R10, A2R10G10B10, V8U8, L6V5U5, X8L8V8U8, Q8W8V8U8, A2W10V10U10, R16F, G16R16F];
+        let wide32 = [G16R16, A16B16G16R16, V16U16, L16, Q16W16V16U16, R32F, G32R32F];
+        for f in wide16.into_iter().chain(wide32) {
+            assert!(supported(f) && !is_depth(f) && !renderable(f) && !no_alpha(f) && !same_on_page(f), "{f}");
+            let (page, bpp) = if wide16.contains(&f) { (FMT_RGBA16F, 8) } else { (FMT_RGBA32F, 16) };
+            assert_eq!((page_format(f), page_bpp(f)), (page, bpp), "{f}");
+        }
         for (f, depth, rt, no_a, same) in all {
             assert!(supported(f), "{f}");
             assert_eq!((is_depth(f), renderable(f), no_alpha(f), same_on_page(f)), (depth, rt, no_a, same), "{f}");
@@ -499,7 +681,7 @@ mod tests {
             };
             assert_eq!((page_format(f), page_bpp(f)), (page, bpp), "{f}");
         }
-        for f in [0, 1, 27, 40, 100, INDEX16, INDEX32, 114, u32::MAX] {
+        for f in [0, 1, 27, 40, 100, INDEX16, INDEX32, 65, 117, u32::MAX] {
             assert!(!supported(f) && !is_depth(f) && !renderable(f) && !no_alpha(f) && !same_on_page(f), "{f}");
             assert_eq!(page_format(f), FMT_BGRA8);
         }

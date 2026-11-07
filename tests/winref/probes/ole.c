@@ -168,8 +168,11 @@ int main(void) {
 
     /* BSTR */
     BSTR x = SysAllocString(L"abc");
-    printf("realloc %d len %u\n", SysReAllocString(&x, L"longer string"), SysStringLen(x));
-    printf("realloclen %d len %u\n", SysReAllocStringLen(&x, L"xy", 5), SysStringLen(x));
+    /* (one call a statement: gcc evaluates arguments right to left) */
+    INT ra = SysReAllocString(&x, L"longer string");
+    printf("realloc %d len %u\n", ra, SysStringLen(x));
+    ra = SysReAllocStringLen(&x, L"xy", 5);
+    printf("realloclen %d len %u\n", ra, SysStringLen(x));
     SysFreeString(x);
     BSTR a1 = SysAllocString(L"abc"), a2 = SysAllocString(L"ABC"), a3 = SysAllocString(L"abd"), e0 = SysAllocString(L"");
     printf("VarBstrCmp %ld %ld %ld %ld %ld\n", VarBstrCmp(a1, a2, 0x411, 0), VarBstrCmp(a1, a2, 0x411, NORM_IGNORECASE), VarBstrCmp(a1, a3, 0x411, 0), VarBstrCmp(NULL, e0, 0x411, 0), VarBstrCmp(a3, a1, 0x411, 0));

@@ -409,7 +409,7 @@ pub fn d3d9_words(out: &mut Vec<Case>, errors: &mut Vec<String>, name: &str, rul
     let r = (|| -> Result<(String, u32), String> {
         let s = dxwgsl::d3d9::Shader::parse(words).ok_or("dxwgsl cannot parse it")?;
         let n = s.max_const;
-        let w = dxwgsl::d3d9::Gen::new(&s).pixel(&dxwgsl::d3d9::Options { link: 0, vs_inputs: Vec::new(), alpha_test: None, fog: false });
+        let w = dxwgsl::d3d9::Gen::new(&s).pixel(&dxwgsl::d3d9::Options { link: 0, vs_inputs: Vec::new(), alpha_test: None, fog: false, addr: Vec::new(), targets: 1 });
         Ok((w, dxwgsl::d3d9::uniform_size(n)))
     })();
     match r {
