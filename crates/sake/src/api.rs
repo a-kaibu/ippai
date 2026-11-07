@@ -534,3 +534,41 @@ pub fn vtable(name: &str, methods: &[(Handler, u32)]) -> u32 {
     }
     v
 }
+
+#[cfg(test)]
+mod dll_key_tests {
+    use super::dll_key;
+
+    /// Module names as programs import or load them, and the DLL whose exports answer (on
+    /// Windows the API sets resolve to these hosts; security.dll forwards to secur32)
+    #[test]
+    fn names_to_keys() {
+        for (name, key) in [
+            ("KERNEL32.dll", "kernel32"),
+            ("C:\\Windows\\System32\\USER32.DLL", "user32"),
+            ("winmm", "winmm"),
+            ("wineoss.drv", "wineoss"),
+            ("quartz.ax", "quartz"),
+            ("comctl32.ocx", "comctl32"),
+            ("api-ms-win-crt-runtime-l1-1-0.dll", "ucrtbase"),
+            ("Security.dll", "secur32"),
+            ("security", "secur32"),
+            ("secur32.dll", "secur32"),
+            ("api-ms-win-core-winrt-l1-1-0.dll", "combase"),
+            ("api-ms-win-core-com-l1-1-0.dll", "ole32"),
+            ("api-ms-win-core-registry-l1-1-0.dll", "advapi32"),
+            ("api-ms-win-core-shlwapi-legacy-l1-1-0.dll", "shlwapi"),
+            ("api-ms-win-core-synch-l1-2-0.dll", "kernelbase"),
+            ("api-ms-win-appmodel-runtime-l1-1-2.dll", "kernelbase"),
+            ("ext-ms-win-kernel32-package-current-l1-1-0.dll", "kernelbase"),
+            ("api-ms-win-ntuser-sysparams-l1-1-0.dll", "user32"),
+            ("ext-ms-win-rtcore-ntuser-window-l1-1-0.dll", "user32"),
+            ("ext-ms-win-gdi-dc-l1-2-0.dll", "gdi32"),
+            ("api-ms-win-security-base-l1-1-0.dll", "advapi32"),
+            ("api-ms-win-shell-shellcom-l1-1-0.dll", "shell32"),
+            ("api-ms-win-shcore-scaling-l1-1-1.dll", "shcore"),
+        ] {
+            assert_eq!(dll_key(name), key, "{name}");
+        }
+    }
+}
