@@ -138,8 +138,9 @@ fn specs() -> &'static Spec {
             if v.len() < 5 {
                 continue;
             }
-            let cdecl = v[2] != "stdcall";
-            let bytes: u32 = v[3].parse().unwrap_or(0);
+            // (thiscall: `this` in ECX, the callee pops the rest)
+            let cdecl = !matches!(v[2], "stdcall" | "thiscall");
+            let bytes: u32 = v[3].parse::<u32>().unwrap_or(0).saturating_sub(if v[2] == "thiscall" { 4 } else { 0 });
             s.dlls.insert(v[0].to_string());
             s.by_name.entry((v[0].to_string(), v[1].to_string())).or_insert((cdecl, bytes));
             if let Ok(o) = v[4].parse::<u32>() {

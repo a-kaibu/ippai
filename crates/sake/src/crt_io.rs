@@ -1707,17 +1707,6 @@ fn wprintf(c: &mut Ctx) -> u32 {
     crate::k32::console_write(&String::from_utf16_lossy(&s));
     s.len() as u32
 }
-/// __unDName(out, mangled, n, malloc, free, flags): the name as it is (not undecorated)
-fn __unDName(c: &mut Ctx) -> u32 {
-    let (out, name, n) = (c.a(0), c.a(1), c.a(2));
-    let s = cstr(name);
-    let dst = if out == 0 { mem::heap_alloc(s.len() as u32 + 1, false) } else { out };
-    let k = if out == 0 { s.len() } else { s.len().min(n.saturating_sub(1) as usize) };
-    mem::write(dst, &s[..k]);
-    w8(dst + k as u32, 0);
-    dst
-}
-
 // math the UCRT has and Rust's std does not: libm's
 fn erf(c: &mut Ctx) -> u32 {
     let x = c.f64(0);
@@ -1922,7 +1911,7 @@ pub(super) fn init() {
     for n in ["_heapmin", "__lconv_init", "_heapchk_ok"] {
         implement("msvcrt", n, zero);
     }
-    reg!(setbuf, clearerr, fputwc, fputws, fgetwc, ungetwc, getchar, putc, wprintf, __unDName);
+    reg!(setbuf, clearerr, fputwc, fputws, fgetwc, ungetwc, getchar, putc, wprintf);
     implement("msvcrt", "_fputwc_nolock", fputwc);
     implement("msvcrt", "_putc_nolock", putc);
     implement("msvcrt", "getwc", fgetwc);

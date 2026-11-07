@@ -57,6 +57,7 @@ pub mod gdiplus;
 pub mod gdiplus_text;
 pub mod gdiplus_brush;
 pub mod gdiplus_font;
+pub mod undname;
 pub mod d3dx9shader;
 pub mod vcomp;
 pub mod nt;
@@ -663,6 +664,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     gdiplus_text::init();
     gdiplus_brush::init();
     gdiplus_font::init();
+    undname::init();
     crt::init();
     msvcp::init();
     vcomp::init();
