@@ -634,6 +634,21 @@ fn strrchr(c: &mut Ctx) -> u32 {
     }
     s.iter().rposition(|&b| b == ch).map_or(0, |i| p + i as u32)
 }
+/// strspn / strcspn: the length of the prefix made of (not made of) `set`'s bytes
+fn span(c: &mut Ctx, inside: bool) -> u32 {
+    let (s, set) = (cstr(c.a(0)), cstr(c.a(1)));
+    s.iter().position(|b| set.contains(b) != inside).unwrap_or(s.len()) as u32
+}
+fn strspn(c: &mut Ctx) -> u32 {
+    span(c, true)
+}
+fn strcspn(c: &mut Ctx) -> u32 {
+    span(c, false)
+}
+fn strpbrk(c: &mut Ctx) -> u32 {
+    let (s, set) = (cstr(c.a(0)), cstr(c.a(1)));
+    s.iter().position(|b| set.contains(b)).map_or(0, |i| c.a(0) + i as u32)
+}
 fn strstr(c: &mut Ctx) -> u32 {
     let (p, n) = (cstr(c.a(0)), cstr(c.a(1)));
     if n.is_empty() {
@@ -3381,7 +3396,7 @@ pub fn init() {
         _XcptFilter, signal, _lock, _unlock, _errno, __doserrno,
         malloc, calloc, realloc, free, _msize,
         memcpy, memmove, memset, memcmp, memchr, strlen, strcpy, strncpy, strcat, strncat, strcmp, strncmp,
-        _stricmp, _strnicmp, strchr, strrchr, strstr, _strdup, _strlwr, _strupr, wcslen, wcscpy, wcscmp,
+        _stricmp, _strnicmp, strchr, strrchr, strstr, strspn, strcspn, strpbrk, _strdup, _strlwr, _strupr, wcslen, wcscpy, wcscmp,
         toupper, tolower, isalpha, isupper, islower, isdigit, isspace, ispunct, isalnum, isxdigit, isprint, iscntrl, isgraph,
         atoi, strtol, strtoul, atof, strtod, _itoa, abs, qsort, bsearch, srand, rand, time, clock,
         sprintf, vsprintf, _snprintf, _vsnprintf, swprintf, printf, vprintf, sscanf, sprintf_s, vsprintf_s, _snprintf_s,

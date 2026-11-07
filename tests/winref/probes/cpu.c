@@ -4,14 +4,17 @@
  * integer and float, SSSE3, SSE4.1) on random registers and flags, each run once from
  * generated code. On the Windows runner this is the real processor (crates/koji's diff_native
  * tests do the same against the host CPU, but only for the interpreter). Prints every general
- * register, the defined flags and the changed XMM registers after each one. arch: 32 */
+ * register, the defined flags and the changed XMM registers after each one. In 64-bit mode
+ * (no BCD there) the registers start with random upper halves, which 32-bit operations must
+ * clear and narrower ones keep. */
 #include "../probe.h"
+#include <stddef.h>
 
 static unsigned rng = 0x2468ace1;
 static unsigned rnd(void) { rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5; return rng; }
 
 /* the state an instruction starts from and ends with */
-static struct st { DWORD r[8]; DWORD fl; DWORD pad[3]; BYTE x[8][16]; } in, out;
+static struct st { DWORD r[8]; DWORD fl; DWORD pad[3]; BYTE x[8][16]; unsigned long long q[8], fq; } in, out;
 static DWORD saved_esp;
 
 /* condition flags */
@@ -27,6 +30,7 @@ static BYTE *code, *at;
 static void b(int v) { *at++ = (BYTE)v; }
 static void d(DWORD v) { memcpy(at, &v, 4); at += 4; }
 
+#ifndef _WIN64
 /* generated: pushad, the state in, the instruction, the state out, popad, ret */
 static void (*harness(const BYTE *insn, int n))(void) {
     BYTE *start = at;
@@ -43,6 +47,30 @@ static void (*harness(const BYTE *insn, int n))(void) {
     b(0x61); b(0xc3);
     return (void (*)(void))start;
 }
+#else
+static void q(unsigned long long v) { memcpy(at, &v, 8); at += 8; }
+/* generated: the callee-saved registers (and xmm6/7) kept, r15 = &in, r14 = &out, the state in,
+ * the instruction, the state out */
+static void (*harness(const BYTE *insn, int n))(void) {
+    BYTE *start = at;
+    static const BYTE save[] = { 0x53, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x83, 0xec, 0x28,
+                                 0xf3, 0x0f, 0x7f, 0x34, 0x24, 0xf3, 0x0f, 0x7f, 0x7c, 0x24, 0x10 };
+    static const BYTE restore[] = { 0xf3, 0x0f, 0x6f, 0x34, 0x24, 0xf3, 0x0f, 0x6f, 0x7c, 0x24, 0x10, 0x48, 0x83, 0xc4, 0x28,
+                                    0x41, 0x5f, 0x41, 0x5e, 0x41, 0x5d, 0x41, 0x5c, 0x5f, 0x5e, 0x5d, 0x5b, 0xc3 };
+    memcpy(at, save, sizeof save); at += sizeof save;
+    b(0x49); b(0xbf); q((unsigned long long)&in);
+    b(0x49); b(0xbe); q((unsigned long long)&out);
+    for (int i = 0; i < 8; i++) { b(0xf3); b(0x41); b(0x0f); b(0x6f); b(0x87 | i << 3); d(offsetof(struct st, x) + 16 * i); }
+    b(0x41); b(0xff); b(0xb7); d(offsetof(struct st, fq)); b(0x9d);
+    for (int r = 0; r < 8; r++) if (r != 4) { b(0x49); b(0x8b); b(0x87 | r << 3); d(offsetof(struct st, q) + 8 * r); }
+    memcpy(at, insn, n); at += n;
+    b(0x9c); b(0x41); b(0x8f); b(0x86); d(offsetof(struct st, fq));
+    for (int r = 0; r < 8; r++) if (r != 4) { b(0x49); b(0x89); b(0x86 | r << 3); d(offsetof(struct st, q) + 8 * r); }
+    for (int i = 0; i < 8; i++) { b(0xf3); b(0x41); b(0x0f); b(0x7f); b(0x86 | i << 3); d(offsetof(struct st, x) + 16 * i); }
+    memcpy(at, restore, sizeof restore); at += sizeof restore;
+    return (void (*)(void))start;
+}
+#endif
 
 static int gpr(void) { int r; do r = rnd() & 7; while (r == 4); return r; }
 
@@ -152,6 +180,9 @@ static void gen(struct ins *x) {
         static const char *o[] = { "27", "2f", "37", "3f", "d40a", "d50a", "d410", "98", "6698", "99", "6699", "f5", "f8", "f9" };
         static const DWORD f[] = { ALL & ~OF, ALL & ~OF, AF | CF, AF | CF, SF | ZF | PF, SF | ZF | PF, SF | ZF | PF, ALL, ALL, ALL, ALL, ALL, ALL, ALL };
         int i = rnd() % 14;
+#ifdef _WIN64
+        i = 7 + rnd() % 7; /* (no BCD in 64-bit mode) */
+#endif
         op(x, o[i]);
         x->flags = f[i];
     } else if (k < 66) { /* CMOVcc, SETcc, MOVZX/MOVSX, BSWAP, XCHG */
@@ -223,13 +254,9 @@ static void gen(struct ins *x) {
 static DWORD shift_flags(int o, unsigned cnt, int bits) {
     cnt &= 31;
     if (cnt == 0) return ALL;
-    if (o < 4) { /* rotates: only CF and OF change, OF only by 1 */
-        if (o >= 2) { /* RCL/RCR rotate through CF: count mod (bits + 1) */
-            unsigned c = cnt % (bits + 1);
-            if (c == 0) return ALL;
-        }
-        return cnt == 1 ? ALL : ALL & ~OF;
-    }
+    /* rotates: only CF and OF change, OF only by 1 (RCL/RCR by a multiple of width + 1 rotate
+     * nothing, and real CPUs still change OF) */
+    if (o < 4) return cnt == 1 ? ALL : ALL & ~OF;
     DWORD f = ALL & ~AF;
     if (cnt != 1) f &= ~OF;
     if (cnt >= (unsigned)bits && (o == 4 || o == 5)) f &= ~CF; /* SHL/SHR past the width */
@@ -254,11 +281,20 @@ int main(void) {
         if (x.sse < 0) x.flags = shift_flags(x.flags, -1 - x.sse, width(&x)), x.sse = 0;
         void (*f)(void) = harness(x.b, x.n);
         memset(&out, 0, sizeof out);
+#ifdef _WIN64
+        for (int r = 0; r < 8; r++) in.q[r] = (unsigned long long)(rnd() % 4 ? rnd() : 0) << 32 | in.r[r];
+#endif
+        in.fq = in.fl;
         f();
         printf("%04d", t);
         for (int i = 0; i < x.n; i++) printf("%s%02x", i ? "" : " ", x.b[i]);
         printf(":");
+#ifdef _WIN64
+        for (int r = 0; r < 8; r++) if (r != 4) printf(" %08lx%08lx", (DWORD)(out.q[r] >> 32), (DWORD)out.q[r]);
+        out.fl = (DWORD)out.fq;
+#else
         for (int r = 0; r < 8; r++) if (r != 4) printf(" %08lx", out.r[r]);
+#endif
         printf(" fl %03lx", out.fl & x.flags);
         for (int i = 0; i < 8; i++) if (memcmp(in.x[i], out.x[i], 16)) {
             printf(" x%d ", i);
