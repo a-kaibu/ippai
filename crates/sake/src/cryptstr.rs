@@ -2,17 +2,21 @@
 //! "-----BEGIN ...-----" / "-----END ...-----" lines), hex (spaced, 16 bytes a line) and raw hex.
 //!
 //! Behaviour follows Wine's crypt32 base64 tests (Windows' answers):
+//! and Windows' own answers (tests/winref/probes/cryptstr.c):
 //! - encoding: base64 lines of 64 characters, each ended by CR LF (LF with NOCR, nothing with
 //!   NOCRLF); hex puts a space between bytes, two after the eighth of a line, a line break after
 //!   the sixteenth. A NULL buffer asks for the length with the terminating NUL, a written string
-//!   reports its length without it. Too small a buffer is ERROR_MORE_DATA: the W functions write
-//!   nothing and keep the length, the A functions write what fits (hex: whole bytes) and a NUL;
-//!   for base64 they report the needed length.
+//!   reports its length without it. No data fails. Too small a buffer is ERROR_MORE_DATA
+//!   (too_small).
 //! - decoding: white space anywhere is skipped; a group of four characters cut short by '='
-//!   must still be four long, and ends the data; an unpadded last group decodes what it has.
-//!   Hex skips white space and '-' ',' around bytes; the bytes before a bad character are
-//!   written. The header formats take any "-----BEGIN <text>-----" (the skipped count is where it
-//!   starts), CRYPT_STRING_ANY / BASE64_ANY try a header first, then bare base64 (then binary).
+//!   must still be four long, and ends the data; an unpadded last group decodes what it has. A
+//!   string that is not standard base64 is tried as URL base64 ('-' '_', no '=': the format
+//!   reported is CRYPT_STRING_BASE64URI). Hex skips white space and '-' ',' around and between
+//!   bytes; the bytes before a bad character are written. The header formats take any
+//!   "-----BEGIN <text>-----" (the skipped count is where it starts), CRYPT_STRING_ANY /
+//!   BASE64_ANY try a header first, then bare base64 (then binary). A failure reports no
+//!   skipped characters and no format. Binary from a NUL-terminated string into a buffer copies
+//!   the whole buffer, as Windows does.
 
 use crate::api::{implement, Ctx};
 use crate::k32::last_error;
@@ -32,6 +36,7 @@ pub const ANY: u32 = 7;
 pub const HEX_ANY: u32 = 8;
 pub const BASE64X509CRLHEADER: u32 = 9;
 pub const HEXRAW: u32 = 0xc;
+pub const BASE64URI: u32 = 0xd;
 pub const NOCRLF: u32 = 0x4000_0000;
 pub const NOCR: u32 = 0x8000_0000;
 
@@ -123,6 +128,40 @@ fn b64_value(c: u16) -> Option<u32> {
     B64.iter().position(|&b| b as u16 == c).map(|i| i as u32)
 }
 
+/// The URL alphabet: '-' and '_' for '+' and '/', no padding
+fn b64url_value(c: u16) -> Option<u32> {
+    match c {
+        0x2d => Some(62),
+        0x5f => Some(63),
+        0x2b | 0x2f | 0x3d => None,
+        _ => b64_value(c),
+    }
+}
+
+/// Base64 as CRYPT_STRING_BASE64 reads it: the standard alphabet, else the URL one
+/// (CRYPT_STRING_BASE64URI, 13): (bytes, the format it was)
+pub fn decode_base64_any(s: &[u16]) -> Option<(Vec<u8>, u32)> {
+    decode_base64(s).map(|d| (d, BASE64)).or_else(|| decode_base64url(s).map(|d| (d, BASE64URI)))
+}
+
+/// URL base64 (white space skipped): no padding; an unfinished last group decodes what it has
+pub fn decode_base64url(s: &[u16]) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let (mut group, mut n) = (0u32, 0usize);
+    for &c in s.iter().filter(|&&c| !is_space(c)) {
+        group = group << 6 | b64url_value(c)?;
+        n += 1;
+        if n == 4 {
+            flush(&mut out, group, 4);
+            (group, n) = (0, 0);
+        }
+    }
+    if n != 0 {
+        flush(&mut out, group << (6 * (4 - n) as u32), n);
+    }
+    Some(out)
+}
+
 /// Bare base64 (white space skipped), or None when it is malformed.
 pub fn decode_base64(s: &[u16]) -> Option<Vec<u8>> {
     let mut out = Vec::new();
@@ -205,8 +244,8 @@ fn hex_separator(c: u16) -> bool {
     matches!(c, 0x2d | 0x2c | 0x20 | 0x09 | 0x0d | 0x0a)
 }
 
-/// CRYPT_STRING_HEX: separators, then pairs of digits each followed by any '-' ','.
-/// An embedded NUL is a bad character.
+/// CRYPT_STRING_HEX: pairs of digits, separators (white space, '-', ',') around and between
+/// them, not inside one. An embedded NUL is a bad character.
 pub fn decode_hex(s: &[u16]) -> Hex {
     let mut it = s.iter().map(|&c| if c == 0 { 0xffff } else { c });
     let mut c = it.next();
@@ -220,7 +259,7 @@ pub fn decode_hex(s: &[u16]) -> Hex {
         };
         bytes.push(d1 << 4 | d2);
         c = it.next();
-        while c == Some('-' as u16) || c == Some(',' as u16) {
+        while c.is_some_and(hex_separator) {
             c = it.next();
         }
     }
@@ -236,7 +275,7 @@ pub fn decode_hex(s: &[u16]) -> Hex {
 /// Base64 and binary decoding: (data, skipped characters, the format used).
 pub fn decode(s: &[u16], raw: &[u8], fmt: u32) -> Result<(Vec<u8>, u32, u32), u32> {
     let header = || decode_header(s).map(|(skip, d)| (d, skip, BASE64HEADER));
-    let bare = || decode_base64(s).map(|d| (d, 0, BASE64));
+    let bare = || decode_base64_any(s).map(|(d, f)| (d, 0, f));
     let r = match fmt {
         BASE64HEADER | BASE64REQUESTHEADER | BASE64X509CRLHEADER => decode_header(s).map(|(skip, d)| (d, skip, fmt)),
         BASE64 => bare(),
@@ -259,6 +298,12 @@ fn binary_to_string(c: &mut Ctx, wide: bool) -> u32 {
     }
     let data = mem::slice(p, n).to_vec();
     let cap = mem::r32(plen);
+    // (no data: nothing to write, for every format)
+    if n == 0 {
+        mem::w32(plen, 0);
+        last_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
     if fmt & 0xffff == BINARY {
         if out != 0 {
             if cap < n {
@@ -294,19 +339,42 @@ fn binary_to_string(c: &mut Ctx, wide: bool) -> u32 {
         mem::w32(plen, len);
         return 1;
     }
-    last_error(ERROR_MORE_DATA);
+    let (written, need) = too_small(&data, fmt, &s, cap);
     if !wide {
-        let hex = matches!(fmt & 0xffff, HEX | HEXRAW);
-        let fit = if hex { if cap >= 3 { (cap - 1) & !1 } else { cap } } else { cap.saturating_sub(1) };
-        if cap > 0 && (!hex || cap >= 3) {
-            mem::write(out, &s.as_bytes()[..fit as usize]);
-            mem::w8(out + fit, 0);
-        }
-        if !hex {
-            mem::w32(plen, len + 1);
+        if let Some(w) = written {
+            mem::write(out, &w);
         }
     }
+    mem::w32(plen, need);
+    last_error(if wide && cap == 0 { ERROR_INVALID_PARAMETER } else { ERROR_MORE_DATA });
     0
+}
+
+/// Too small a buffer (cap <= the length): what the A function writes there and the length it
+/// reports (Windows' answers, winref cryptstr): base64 writes what fits, without a NUL, and
+/// reports cap (the needed length when only the NUL is missing); hex writes whole bytes and a
+/// NUL (nothing when not even one fits) and reports cap. The W functions write nothing.
+pub fn too_small(data: &[u8], fmt: u32, s: &str, cap: u32) -> (Option<Vec<u8>>, u32) {
+    let len = s.len() as u32;
+    if cap == 0 {
+        return (None, 0);
+    }
+    if !matches!(fmt & 0xffff, HEX | HEXRAW) {
+        let w = s.as_bytes()[..cap.min(len) as usize].to_vec();
+        return (Some(w), if cap == len { len + 1 } else { cap });
+    }
+    let nl = eol(fmt).len();
+    let mut best = None;
+    for k in 1..=data.len() {
+        let mut t = encode(&data[..k], fmt).unwrap_or_default();
+        t.truncate(t.len() - nl);
+        if t.len() as u32 + 1 > cap {
+            break;
+        }
+        t.push('\0');
+        best = Some(t.into_bytes());
+    }
+    (best, cap)
 }
 
 fn string_to_binary(c: &mut Ctx, wide: bool) -> u32 {
@@ -332,6 +400,15 @@ fn string_to_binary(c: &mut Ctx, wide: bool) -> u32 {
             mem::w32(pflags, flags);
         }
     };
+    // a failure: no skipped characters, no format, and no length when it was asked for
+    let failed = |e: u32| {
+        set(0, 0);
+        if out == 0 {
+            mem::w32(plen, 0);
+        }
+        last_error(e);
+        0
+    };
     if matches!(fmt, HEX | HEXRAW | HEX_ANY) {
         if wide && s.is_empty() {
             last_error(ERROR_INVALID_PARAMETER);
@@ -354,16 +431,22 @@ fn string_to_binary(c: &mut Ctx, wide: bool) -> u32 {
             last_error(ERROR_MORE_DATA);
             return 0;
         }
-        set(0, HEX);
+        set(0, if fmt == HEXRAW { HEXRAW } else { HEX });
         mem::w32(plen, h.bytes.len() as u32);
         return 1;
     }
     match decode(&s, &raw, fmt) {
+        // binary with a NUL-terminated string and a buffer: Windows copies the whole buffer
+        Ok((_, skip, BINARY)) if n == 0 && out != 0 => {
+            mem::copy(out, p, cap);
+            mem::w32(plen, cap);
+            set(skip, BINARY);
+            1
+        }
         Ok((data, skip, used)) => {
             if out != 0 {
                 if (cap as usize) < data.len() {
-                    last_error(ERROR_MORE_DATA);
-                    return 0;
+                    return failed(ERROR_MORE_DATA);
                 }
                 mem::write(out, &data);
             }
@@ -371,10 +454,7 @@ fn string_to_binary(c: &mut Ctx, wide: bool) -> u32 {
             set(skip, used);
             1
         }
-        Err(e) => {
-            last_error(e);
-            0
-        }
+        Err(e) => failed(e),
     }
 }
 
@@ -455,6 +535,34 @@ mod tests {
         assert_eq!(d("VVV=VVVV").unwrap(), b"UU");
         assert_eq!(d("VVVV=VVVV").unwrap(), b"UUU");
         assert_eq!(d("VV-V"), None);
+        // not standard base64: the URL alphabet, without padding
+        let a = |s: &str| decode_base64_any(&w(s));
+        assert_eq!(a("VV-V"), Some((vec![0x55, 0x5f, 0x95], BASE64URI)));
+        assert_eq!(a("V_"), Some((vec![0x57], BASE64URI)));
+        assert_eq!(a("VVVV").map(|x| x.1), Some(BASE64));
+        assert_eq!(a("-----BEGIN-----VVVV-----END-----").map(|x| x.0.len()), Some(24));
+        assert_eq!(a("-----BEGIN X509 CRL-----\r\nAA==\r\n"), None);
+        assert_eq!(a("junk-----BEGIN foo-----V-----END foo-----").map(|x| (x.0.len(), x.1)), Some((29, BASE64URI)));
+    }
+
+    /// Windows' answers for 3 bytes and small buffers (winref cryptstr, A functions)
+    #[test]
+    fn small_buffers() {
+        let d = [1u8, 8, 15];
+        let run = |fmt: u32, cap: u32| {
+            let s = encode(&d, fmt).unwrap();
+            too_small(&d, fmt, &s, cap)
+        };
+        assert_eq!(run(BASE64, 0), (None, 0));
+        assert_eq!(run(BASE64, 1), (Some(b"A".to_vec()), 1));
+        assert_eq!(run(BASE64, 5), (Some(b"AQgP\r".to_vec()), 5));
+        assert_eq!(run(BASE64, 6), (Some(b"AQgP\r\n".to_vec()), 7));
+        for (cap, want) in [(1, None), (2, None), (3, Some(&b"01\0"[..])), (5, Some(b"01\0")), (6, Some(b"01 08\0")), (7, Some(b"01 08\0"))] {
+            assert_eq!(run(HEX, cap), (want.map(|w| w.to_vec()), cap), "hex {cap}");
+        }
+        for (cap, want) in [(2, None), (3, Some(&b"01\0"[..])), (4, Some(b"01\0")), (5, Some(b"0108\0")), (7, Some(b"01080f\0"))] {
+            assert_eq!(run(HEXRAW, cap), (want.map(|w| w.to_vec()), cap), "hexraw {cap}");
+        }
     }
 
     #[test]
@@ -486,6 +594,8 @@ mod tests {
         assert_eq!(h("1-2").error, Some(ERROR_INVALID_DATA));
         assert_eq!(h("aa,BBff,-,"), Hex { bytes: vec![0xaa, 0xbb, 0xff], error: None });
         assert_eq!(h("0102q"), Hex { bytes: vec![1, 2], error: Some(ERROR_INVALID_DATA) });
+        assert_eq!(h("01 02"), Hex { bytes: vec![1, 2], error: None });
+        assert_eq!(h("00 01 02 03 04 05 06 07  08 09\r\n").bytes.len(), 10);
         assert_eq!(decode_hex(&[0x30, 0x31, 0, 0x20, 0x30, 0x32]), Hex { bytes: vec![1], error: Some(ERROR_INVALID_DATA) });
     }
 
@@ -510,10 +620,8 @@ mod tests {
             let raw = encode(&data, HEXRAW | f).unwrap();
             prop_assert_eq!(raw.len(), 2 * data.len() + eol(f).len());
             prop_assert_eq!(decode_hex(&w(&raw)), Hex { bytes: data.clone(), error: None });
-            // spaced hex: a space ends the bytes (only separators may follow), as on Windows
-            let h = decode_hex(&w(&s));
-            prop_assert_eq!(&h.bytes[..], &data[..1]);
-            prop_assert_eq!(h.error.is_some(), data.len() > 1);
+            // spaced hex decodes back too (Windows: "01 02" is two bytes)
+            prop_assert_eq!(decode_hex(&w(&s)), Hex { bytes: data.clone(), error: None });
         }
 
         #[test]
