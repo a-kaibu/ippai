@@ -30,7 +30,10 @@ const E_INVALIDARG: u32 = 0x8007_0057;
 const INSUFFICIENT_BUFFER: u32 = 0x8007_007a;
 const MF_E_SHUTDOWN: u32 = 0xc00d_3e85;
 const MF_E_ATTRIBUTENOTFOUND: u32 = 0xc00d_36e6;
-const MF_E_INVALIDTYPE: u32 = 0xc00d_36b4;
+const MF_E_INVALIDTYPE: u32 = 0xc00d_36bd;
+const MF_E_INVALIDMEDIATYPE: u32 = 0xc00d_36b4;
+/// TransferVideoFrame with nothing loaded (Windows' answer; the SDK's headers do not name it)
+const NO_FRAME_TO_TRANSFER: u32 = 0xc00d_4e26;
 const MF_E_INVALIDREQUEST: u32 = 0xc00d_36b2;
 const MF_E_UNSUPPORTED_BYTESTREAM_TYPE: u32 = 0xc00d_36c4;
 
@@ -1411,7 +1414,15 @@ fn en_balance(c: &mut Ctx) -> u32 {
 /// GetNativeVideoSize(DWORD *cx, DWORD *cy) / GetVideoAspectRatio (the picture's, reduced)
 fn video_size(c: &mut Ctx, aspect: bool) -> u32 {
     let (cx, cy) = (c.a(1), c.a(2));
-    let Some((w, h)) = engine(c.a(0), |e| e.st.video).flatten() else { return E_FAIL };
+    let Some((w, h)) = engine(c.a(0), |e| e.st.video).flatten() else {
+        // (Windows clears the sizes when there is no video)
+        for p in [cx, cy] {
+            if p != 0 {
+                put32(p, 0);
+            }
+        }
+        return E_FAIL;
+    };
     let (w, h) = if aspect {
         let g = gcd(w, h).max(1);
         (w / g, h / g)
@@ -1491,12 +1502,12 @@ fn en_transfer(c: &mut Ctx) -> u32 {
     if surf == 0 {
         return E_POINTER;
     }
-    let Some((pos, rate, frames, stream, w, h)) = position(b) else { return MF_E_INVALIDREQUEST };
+    let Some((pos, rate, frames, stream, w, h)) = position(b) else { return NO_FRAME_TO_TRANSFER };
     let Some((tw, th, fmt)) = kura::d3d11::texture_desc(surf) else { return E_INVALIDARG };
     let rgba = match fmt {
         87 | 88 | 91 | 93 => false, // B8G8R8A8 / X8 (UNORM, SRGB)
         28 | 29 => true,            // R8G8B8A8
-        _ => return MF_E_INVALIDTYPE,
+        _ => return MF_E_INVALIDMEDIATYPE,
     };
     let (l, t, r, bt) = if dst == 0 { (0, 0, tw as i32, th as i32) } else { (r32(dst) as i32, r32(dst + 4) as i32, r32(dst + 8) as i32, r32(dst + 12) as i32) };
     let (l, t, r, bt) = (l.max(0), t.max(0), r.min(tw as i32), bt.min(th as i32));
@@ -1721,7 +1732,7 @@ fn fa_create(c: &mut Ctx) -> u32 {
         Val::Unk(u) if is_callback(k) && *u != 0 => Some(*u),
         _ => None,
     });
-    let Some(notify) = notify else { return E_INVALIDARG };
+    let Some(notify) = notify else { return MF_E_ATTRIBUTENOTFOUND };
     let u32_of = |f: fn(&Guid) -> bool| s.items.iter().find_map(|(k, v)| if let (true, Val::U32(x)) = (f(k), v) { Some(*x) } else { None });
     let (category, role) = (u32_of(is_category).unwrap_or(0), u32_of(is_role).unwrap_or(0));
     add_ref(c, notify);

@@ -24,6 +24,17 @@ fn store_keeps_the_order_and_replaces_in_place() {
     assert_eq!(s.items.len(), 1);
 }
 
+/// mferror.h's codes, as Windows answers them (tests/winref/golden/mfengine-*): a getter of the
+/// wrong type, a missing attribute (no callback for CreateInstance), a bad media type
+#[test]
+fn error_codes_as_windows() {
+    assert_eq!(MF_E_INVALIDTYPE, 0xc00d_36bd);
+    assert_eq!(MF_E_ATTRIBUTENOTFOUND, 0xc00d_36e6);
+    assert_eq!(MF_E_INVALIDMEDIATYPE, 0xc00d_36b4);
+    assert_eq!(MF_E_INVALIDREQUEST, 0xc00d_36b2);
+    assert_ne!(NO_FRAME_TO_TRANSFER, MF_E_INVALIDREQUEST);
+}
+
 #[test]
 fn value_types_are_mf_attribute_types() {
     // MF_ATTRIBUTE_UINT32 .. MF_ATTRIBUTE_IUNKNOWN

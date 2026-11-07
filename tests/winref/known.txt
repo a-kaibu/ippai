@@ -186,3 +186,9 @@ acmmp3-* ^(want|got) +(call [0-3]: 0 took 208 gave (0|4608) done|took all 1, gav
 # the 64-bit GDI+ works in SSE single precision: a gradient transform's third decimal at a
 # rounding edge
 gdipbrush-64 ^(want|got) +angle 0 271\.5 0: 0: 0 0\.028 -1\.075 0\.978 0\.026 18\.70[56] 103\.990$
+# the Media Engine on the Windows runner (WARP, the probe's uncompressed 64x48 AVI) breaks
+# down once a frame is asked for: 32-bit gets no first frame at all, 64-bit shows the frame a
+# paused seek goes to but never sends seeked, then its clock runs on past the 2 s end (7.2 s)
+# on that one frame without an ended. Games wait for those events, so sake keeps the HTML
+# media element's order (seeked at once, frames on, ended at the end)
+mfengine-* ^(want|got) +(event 1009 seen|loaded: (OnVideoStreamTick|TransferVideoFrame)|seeked|playing|ended|pause event at the end|again:|paused:)

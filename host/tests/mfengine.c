@@ -289,8 +289,12 @@ int main(void) {
 
     state(e, "empty");
     printf("empty: duration nan %d, video %d\n", isnan(M(e, GetDuration, Fd)(e)) != 0, M(e, HasVideo, Fb)(e));
-    DWORD cx = 0, cy = 0;
-    printf("empty: GetNativeVideoSize %08lx\n", M(e, GetNativeVideoSize, Fpp)(e, &cx, &cy));
+    DWORD cx = 1, cy = 1;
+    hr = M(e, GetNativeVideoSize, Fpp)(e, &cx, &cy);
+    printf("empty: GetNativeVideoSize %08lx %lux%lu\n", hr, cx, cy);
+    /* (nothing loaded: no frame, whatever the texture) */
+    int dummy = 0;
+    printf("empty: TransferVideoFrame %08lx\n", M(e, TransferVideoFrame, Fpp)(e, &dummy, NULL));
     tick(e, "empty");
     printf("empty: SetCurrentTime %08lx\n", M(e, SetCurrentTime, Fsd)(e, 1.0));
 
@@ -343,6 +347,9 @@ int main(void) {
     tick(e, "seeked");
     printf("SetCurrentTime past the end %08lx\n", M(e, SetCurrentTime, Fsd)(e, 99.0));
     state(e, "past the end");
+    /* (each seek's events come from the engine's thread: wait for them before the next) */
+    wait_event(17, 3000);
+    nevents = 0;
     M(e, SetCurrentTime, Fsd)(e, 1.5);
     wait_event(17, 3000);
     nevents = 0;

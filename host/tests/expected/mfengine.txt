@@ -12,7 +12,7 @@ item 6: 00000000 key 7 vt 13 type 13 same 1, compares 1
 GetItemByIndex past the end 80070057
 unknown references after the PROPVARIANTs went 2
 GetUINT32 00000000 7
-GetUINT64 of a UINT32 c00d36b4, missing c00d36e6
+GetUINT64 of a UINT32 c00d36bd, missing c00d36e6
 GetDouble 00000000 2.50
 GetGUID 00000000 1
 GetStringLength 00000000 5
@@ -21,13 +21,13 @@ GetAllocatedString 00000000 hello 5
 GetBlob short 8007007a, fits 00000000 3 2
 GetAllocatedBlob 00000000 3 3
 GetUnknown 00000000 same 1
-GetString of a UINT32 c00d36b4
+GetString of a UINT32 c00d36bd
 compare (b within a): ours 0 theirs 1 all 0 intersection 1 smaller 1
 intersection with another value 0
 replaced in place 1
 SetItem 00000000
 SetItem's value 11
-SetItem VT_I2 c00d36b4
+SetItem VT_I2 c00d36bd
 CopyAllItems 00000000
 copied 7, unknown references 3
 DeleteItem released it 2
@@ -42,13 +42,14 @@ OpenDeviceHandle 00000000
 LockDevice 00000000 same 1
 factory 00000000
 factory as IMFMediaEngine 80004002
-CreateInstance without a callback 80070057 out cleared 1
+CreateInstance without a callback c00d36e6 out cleared 1
 CreateInstance 00000000
 notify held 1
 QueryInterface IMFMediaEngineEx 00000000 same 1
 empty: ready 0 network 0 paused 1 ended 0 seeking 0 time 0.00
 empty: duration nan 1, video 0
-empty: GetNativeVideoSize 80004005
+empty: GetNativeVideoSize 80004005 0x0
+empty: TransferVideoFrame c00d4e26
 empty: tick 00000001 pts -1
 empty: SetCurrentTime c00d36b2
 SetSource missing 00000000
@@ -74,7 +75,7 @@ SetCurrentTime past the end 00000000
 past the end: ready 4 network 1 paused 1 ended 0 seeking 0 time 2.00
 Play 00000000
 ended 1 in time 1
-played events: 16 18 17 8 13 18 9 19
+played events: 8 13 18 9 19
 ended: ready 4 network 1 paused 1 ended 1 seeking 0 time 2.00
 ended: tick 00000000 pts 19000000
 Play again 00000000
