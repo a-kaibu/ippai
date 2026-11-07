@@ -219,6 +219,7 @@ jobs:
           python3 tests/replay/games_test.py
           cargo build -q --release -p apitrace
           mkdir -p ok
+          shopt -s nullglob
           for r in pack/*.rec; do
             n=$(basename "$r" .rec)
             { read -r api; read -r exe; read -r secs; } < "$r"
@@ -230,7 +231,7 @@ jobs:
             fi
             rm -f "$RUNNER_TEMP/$n.rpl" "$RUNNER_TEMP/check.trace"
           done
-          ls -l ok
+          ls -l ok || true
       - name: Commit the traces
         run: |
           ls ok/*.txt > /dev/null 2>&1 || { echo "nothing to commit"; exit 0; }
