@@ -76,3 +76,29 @@ VirtualFree(p, 4096, MEM_RELEASE)                                = 0 err 87
 VirtualFree(p, 0, MEM_RELEASE)                                   = 1 err 57005
 VirtualFree(p, 0, MEM_RELEASE)                                   = 0 err 487
 page 4096 granularity 65536
+moveable: handle mod 8 entry flags 10007 ptr is block 1
+  locked flags 10007 GlobalFlags 101
+  300 more: flags ff0007 GlobalFlags 1ff
+  unlocked flags 7 err 0
+GlobalReAlloc(g, 0, GMEM_MOVEABLE) == g                          = 1 err 57005
+  discarded flags f ptr 0
+GlobalSize(g)                                                    = 0 err 57005
+GlobalFlags(g)                                                   = 16640 err 57005
+GlobalLock(g) == NULL                                            = 1 err 157
+GlobalReAlloc(g, 20, GMEM_MOVEABLE) == g                         = 1 err 57005
+  back flags 7
+GlobalFree(g) == NULL                                            = 1 err 57005
+  freed: flags used 0 aligned 1 ptr 0
+ddeshare empty flags 800b
+GlobalFlags(d)                                                   = 24576 err 57005
+LocalFlags(d)                                                    = 16384 err 57005
+GlobalFree(d) == NULL                                            = 1 err 57005
+LocalFlags(l)                                                    = 3840 err 57005
+LocalUnlock(l)                                                   = 0 err 158
+LocalFree(l) == NULL                                             = 1 err 57005
+GlobalUnlock(f)                                                  = 1 err 57005
+LocalUnlock(f)                                                   = 0 err 158
+GlobalHandle(f) == f                                             = 1 err 57005
+GlobalReAlloc(f, 8, GMEM_MODIFY | GMEM_DISCARDABLE) == f         = 1 err 57005
+GlobalFree(f) == NULL                                            = 1 err 57005
+GlobalHandle(NULL)                                               = 0 err 6
