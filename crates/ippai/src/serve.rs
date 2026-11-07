@@ -333,13 +333,13 @@ async fn optimize(jit: Jit, names: Vec<String>) {
         let parts = read_parts(&jit.0, &name).await;
         let mut list = String::new();
         let mut keep = std::collections::HashSet::new();
-        for (k, (_, e)) in parts.iter().enumerate() {
+        for (k, (w, e)) in parts.iter().enumerate() {
             let stem = if k == 0 { String::new() } else { format!("{k}.") };
-            let v = fnv(&saved::encode(e));
-            let o = format!("{name}.{stem}{v:08x}.opt.wasm");
+            let v = version(w, &saved::encode(e));
+            let o = format!("{name}.{stem}{v}.opt.wasm");
             let wasm = if tokio::fs::metadata(jit.0.join(&o)).await.is_ok() { o } else { format!("{name}.{stem}wasm") };
             keep.insert(wasm.clone());
-            list.push_str(&format!("{wasm} {name}.{stem}idx {v:08x}\n"));
+            list.push_str(&format!("{wasm} {name}.{stem}idx {v}\n"));
         }
         let tl = jit.0.join(format!("{name}.parts.tmp"));
         if tokio::fs::write(&tl, list).await.is_ok() {
@@ -432,10 +432,10 @@ async fn add_part(dir: &std::path::Path, name: &str, new_wasm: Vec<u8>, new_idx:
                 tokio::fs::rename(&ti, path(&format!("{stem}idx"))).await?;
             }
             // (the optimized copy of the module, when there is one: see optimize)
-            let v = fnv(&idx);
-            let opt = format!("{name}.{stem}{v:08x}.opt.wasm");
+            let v = version(w, &idx);
+            let opt = format!("{name}.{stem}{v}.opt.wasm");
             let wasm = if tokio::fs::metadata(dir.join(&opt)).await.is_ok() { opt } else { format!("{name}.{stem}wasm") };
-            list.push_str(&format!("{wasm} {name}.{stem}idx {v:08x}\n"));
+            list.push_str(&format!("{wasm} {name}.{stem}idx {v}\n"));
         }
         for k in parts.len()..=PARTS_MAX {
             for ext in ["wasm", "idx"] {
@@ -463,9 +463,13 @@ async fn add_part(dir: &std::path::Path, name: &str, new_wasm: Vec<u8>, new_idx:
 /// Saved-region parts of a program at most (see save_jit)
 const PARTS_MAX: usize = 8;
 
-/// FNV-1a: a part's version in `<name>.parts` (its index changes with its module)
-fn fnv(b: &[u8]) -> u32 {
-    b.iter().fold(0x811c9dc5u32, |h, &x| (h ^ x as u32).wrapping_mul(0x01000193))
+/// A part's version in `<name>.parts` (the browser's `?v=`, so its compiled-code cache, and the
+/// optimized copy's name): BLAKE3 of the module and its index, 64 bits in hex. (It was FNV-1a
+/// of the index alone: 32 bits, and a module changed under the same index kept its version.)
+fn version(wasm: &[u8], idx: &[u8]) -> String {
+    let mut h = blake3::Hasher::new();
+    h.update(&(wasm.len() as u64).to_le_bytes()).update(wasm).update(idx);
+    h.finalize().as_bytes()[..8].iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Prints a bench.html result and appends it to `<jit>/bench-results.txt`.
@@ -858,6 +862,18 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
 #[cfg(test)]
 mod tests {
     use axum::http::Request;
+
+    #[test]
+    fn part_version_follows_module_and_index() {
+        let v = super::version(b"wasm", b"idx");
+        assert_eq!(v.len(), 16);
+        assert!(v.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
+        assert_eq!(v, super::version(b"wasm", b"idx"));
+        assert_ne!(v, super::version(b"wasn", b"idx"), "a module changed under the same index");
+        assert_ne!(v, super::version(b"wasm", b"idy"));
+        // (the module's length first: where one ends and the index starts counts)
+        assert_ne!(super::version(b"ab", b"c"), super::version(b"a", b"bc"));
+    }
 
     #[test]
     fn writes_only_from_the_apps_pages() {
