@@ -109,6 +109,7 @@ pub mod mmio;
 pub mod gl;
 pub mod glu;
 pub mod cryptstr;
+pub mod diskspace;
 pub mod dnsrec;
 pub mod smalldlls;
 pub mod security;
@@ -681,6 +682,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     glu::init();
     smalldlls::init();
     cryptstr::init();
+    diskspace::init();
     security::init();
     sysinfo::init();
     pipe::register();

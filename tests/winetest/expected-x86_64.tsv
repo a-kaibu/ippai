@@ -290,7 +290,7 @@ secur32:schannel	fail	63	94
 secur32:secur32	crash	53	0
 setupapi:devinst	timeout	259	0
 setupapi:dialog	fail	14	20
-setupapi:diskspace	fail	112	204
+setupapi:diskspace	ok	0	228
 setupapi:install	fail	455	744
 setupapi:misc	crash	64	0
 setupapi:parser	timeout	874657	0
