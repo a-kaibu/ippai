@@ -55,8 +55,8 @@ paused: ready 4 paused 1 ended 0 seeking 1 time 0.8
 Pause again 00000000
 SetVolume 00000000
 volume 0.50
-SetLoop 00000000 loop 0
-SetAutoPlay 00000000 autoplay 0
+SetLoop 00000000 loop 1
+SetAutoPlay 00000000 autoplay 1
 Shutdown 00000000
 after shutdown: Play c00d3e85
 after shutdown: SetSource c00d3e85
