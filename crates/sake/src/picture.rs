@@ -693,6 +693,10 @@ fn bmp_frame(data: &[u8]) -> Option<Frame> {
     let max = if bpp <= 8 { 1usize << bpp } else { 0 };
     let n = if clr_used != 0 && bpp <= 8 { (clr_used as usize).min(256) } else { max };
     let n = n.min(off.saturating_sub(pal_at) / entry);
+    // a file cut inside its palette has no pixels either (off lies past its end): not a picture
+    if pal_at + n * entry > data.len() {
+        return None;
+    }
     let palette: Vec<u32> = (0..n)
         .map(|i| {
             let p = &data[pal_at + i * entry..];
@@ -1005,6 +1009,36 @@ mod tests {
         assert_eq!(conv(Fmt::BlackWhite), [0xc0]);
     }
 
+    /// A 1 bpp BMP (40-byte header, 2-color palette, one 8x1 row): whole, it decodes.
+    fn bmp_1bpp() -> Vec<u8> {
+        let mut b = b"BM".to_vec();
+        b.extend(66u32.to_le_bytes()); // file size
+        b.extend([0; 4]);
+        b.extend(62u32.to_le_bytes()); // pixels at 14 + 40 + 8
+        b.extend(40u32.to_le_bytes());
+        b.extend(8i32.to_le_bytes());
+        b.extend(1i32.to_le_bytes());
+        b.extend(1u16.to_le_bytes());
+        b.extend(1u16.to_le_bytes()); // bpp
+        b.extend([0; 24]); // compression .. important colors
+        b.extend([0, 0, 0, 0, 0xff, 0xff, 0xff, 0]); // palette
+        b.extend([0b1010_0000, 0, 0, 0]); // the row
+        b
+    }
+
+    #[test]
+    fn bmp_cut_inside_its_palette() {
+        // fuzz (image, crash-4d3b0e51...): a palette read past the end of the file panicked
+        let whole = bmp_1bpp();
+        let f = bmp_frame(&whole).expect("whole");
+        assert_eq!((f.w, f.h, f.palette.len()), (8, 1, 2));
+        for cut in 0..whole.len() {
+            let _ = bmp_frame(&whole[..cut]);
+        }
+        assert!(bmp_frame(&whole[..14 + 40 + 6]).is_none());
+        assert!(bmp_frame(&whole[..14 + 40 + 1]).is_none());
+    }
+
     #[test]
     fn sub_byte_rows() {
         let row = [0b1011_0001u8, 0b1100_0000];
@@ -1041,6 +1075,37 @@ mod proptests {
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// Any BMP header (indexed, any palette size and pixel offset), cut anywhere: decoding
+        /// never panics and a frame it returns has the pixels its size says.
+        #[test]
+        fn bmp_headers_cut_anywhere(bpp in prop::sample::select(vec![1u16, 4, 8, 16, 24, 32]), clr in 0u32..300, off in 0u32..2000, core in any::<bool>(), cut in 0usize..2200, w in 1i32..20, h in -8i32..8) {
+            let mut b = b"BM".to_vec();
+            b.extend(0u32.to_le_bytes());
+            b.extend([0; 4]);
+            b.extend(off.to_le_bytes());
+            if core {
+                b.extend(12u32.to_le_bytes());
+                b.extend((w as u16).to_le_bytes());
+                b.extend((h as i16).to_le_bytes());
+                b.extend(1u16.to_le_bytes());
+                b.extend(bpp.to_le_bytes());
+            } else {
+                b.extend(40u32.to_le_bytes());
+                b.extend(w.to_le_bytes());
+                b.extend(h.to_le_bytes());
+                b.extend(1u16.to_le_bytes());
+                b.extend(bpp.to_le_bytes());
+                b.extend([0; 16]);
+                b.extend(clr.to_le_bytes());
+                b.extend([0; 4]);
+            }
+            b.extend((0..2000u32).map(|i| (i * 37) as u8));
+            b.truncate(cut);
+            if let Some((fw, fh, px)) = crate::ole::decode(&b) {
+                prop_assert_eq!(px.len() as u64, fw as u64 * fh as u64 * 4);
+            }
+        }
 
         /// Every non-indexed format, any image and rectangle, rows padded: written from BGRA
         /// and read back, straight formats come back exact (their alpha 255 without one),
