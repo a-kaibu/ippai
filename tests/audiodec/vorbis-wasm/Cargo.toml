@@ -1,0 +1,21 @@
+[package]
+name = "vorbis-wasm"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# crates/vorbis built alone for wasm32-unknown-unknown (tests/audiodec/run.mjs): not a workspace member
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+vorbis = { path = "../../../crates/vorbis" }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
