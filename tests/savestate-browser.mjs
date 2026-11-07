@@ -3,7 +3,9 @@
 // from the dialog while it runs, then loads it: the page starts again from the state and the
 // program prints the rest of its lines, the same as a whole run (its steps and checksums go on
 // from where the state was). Then a browser with nothing of its own (another device) goes on
-// from the server's copy of the state.
+// from the server's copy of the state. Then again on sake-grow.wasm (the build of a device that
+// can't reserve 4 GB) with its memory grown before the state: loaded without asking for that
+// build, the page takes the state's.
 //
 //   node tests/savestate-browser.mjs [path to ippai] [snaptest.exe]
 //   (web/dist built with sake in it: crates/sake/build.sh, then pnpm build; PLAYWRIGHT as elsewhere)
@@ -57,6 +59,8 @@ async function device(name) {
     if (process.env.VERBOSE) console.log(`[${name}] ${m.text()}`);
   });
   page.on("pageerror", (e) => lines.push(`pageerror: ${e.message}`));
+  // (the slot may be the server's already: written over)
+  page.on("dialog", (d) => d.accept());
   return { ctx, page, lines };
 }
 const program = (lines) => lines.filter((l) => /^(step \d+|late thread|clocks|sleeper|end)/.test(l));
@@ -69,11 +73,11 @@ async function until(lines, re, ms = 120000) {
 }
 const play = `${base}play.html?game=g&headless&autostart`;
 
-let failed = false;
-try {
+/** The whole round: `start`, the page's extra parameters for the run the state is taken in. */
+async function round(tag, start) {
   // the whole run, a state taken in the middle (from the dialog)
-  const a = await device("a");
-  await a.page.goto(play);
+  const a = await device(`a${tag}`);
+  await a.page.goto(`${play}${start}`);
   await until(a.lines, /^step 15:/);
   await a.page.getByRole("button", { name: "どこでもセーブ" }).click();
   await a.page.getByRole("dialog").getByRole("button", { name: "セーブ" }).first().click();
@@ -100,13 +104,20 @@ try {
   check(a.lines, "loaded");
 
   // another device: nothing of its own, the server's state
-  const b = await device("b");
+  const b = await device(`b${tag}`);
   await b.page.goto(`${play}&state=0`);
   await until(b.lines, /^end$/);
   check(b.lines, "another device");
-  console.log("ok   save states in the page: taken, loaded, loaded on another device");
+  console.log(`ok   save states in the page${tag}: taken, loaded, loaded on another device`);
   await a.ctx.close();
   await b.ctx.close();
+}
+
+let failed = false;
+try {
+  await round("", "");
+  // (&grow: 512 MiB of sake's memory taken at once, so that it grows mid-run)
+  await round(" (sake-grow, grown)", "&memory=grow&grow=512");
 } catch (e) {
   failed = true;
   console.error(`FAIL ${e.stack ?? e}`);

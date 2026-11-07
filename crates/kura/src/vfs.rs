@@ -841,23 +841,32 @@ pub(crate) fn snap_restore() {
     *AHEAD.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
+/// A state is being taken: the fetchers stand still (crate::snap::busy).
+pub(crate) fn snap_wake() {
+    AHEAD_WORK.notify_all();
+}
+
 fn fetcher() {
     crate::snap::register("vfs fetcher", false, 0);
     loop {
-        let h = {
+        let h = loop {
             crate::snap::idle();
             let mut g = AHEAD.lock().unwrap_or_else(|e| e.into_inner());
-            let h = loop {
-                if !crate::snap::pausing() {
-                    if let Some(h) = g.as_mut().and_then(|a| a.queue.pop_front()) {
-                        break h;
-                    }
+            let got = loop {
+                if crate::snap::pausing() {
+                    break None;
+                }
+                if let Some(h) = g.as_mut().and_then(|a| a.queue.pop_front()) {
+                    break Some(h);
                 }
                 g = AHEAD_WORK.wait_timeout(g, std::time::Duration::from_millis(100)).unwrap_or_else(|e| e.into_inner()).0;
             };
             drop(g);
+            // (while a state is taken: stands still there, the lock let go)
             crate::snap::busy();
-            h
+            if let Some(h) = got {
+                break h;
+            }
         };
         if let Some(data) = fetch_chunk(&h) {
             cache_put(&h, Arc::new(data), false);

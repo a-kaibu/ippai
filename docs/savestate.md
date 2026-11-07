@@ -30,7 +30,16 @@ from. Everything outside the memory is made again from it:
 
 Host threads (the file fetcher, input, the sound mixer, the movie thread) say when they are idle
 (`kura::snap::idle/busy`); work handed between threads (JIT compiles, region saves) is counted
-(`DRAIN`) and waited for.
+(`DRAIN`) and waited for. While the page copies, nothing of the module runs: a lock held at that
+moment would be held for ever in the restored copy. So every thread stands still in an untimed
+wait (`stand_still`); an idle host thread's timed wait ends (woken) and it stands still in
+`busy`, which the coordinator waits for before READY. A thread that still wakes then (a spurious
+wake) is counted: the module says `Ctl.stirred` after RESUME and the page drops that state and
+takes it again (`kura::snap` tests `nothing_runs_while_the_page_copies`, `a_wake_while_copied_is_told`,
+checked against mutants of each of these rules).
+
+A program that started other processes (their kernel is shared outside the memory,
+host/vnkern.js) can't be saved: "other processes run with this one".
 
 A thread anywhere else (a modal dialog's loop, a window procedure waiting on another thread, a
 16-bit program, an exception being handled) keeps the state from being taken: the save fails
@@ -54,10 +63,13 @@ runs the GPU batch before the guest's batches.
 
 ## The file
 
-`IPPAISNP`, u32 version (1), u32 header length, the header (JSON: `format`, `build`, `ctl`,
-`raw`, `created`), then blocks: u32 address, u32 length, u32 compressed length and a zstd frame
+`IPPAISNP`, u32 version (1), u32 header length, the header (JSON: `format`, `build`, `wasm`
+(sake or sake-grow), `pages` (the memory's size: sake-grow's grows), `ctl`, `raw`, `created`),
+then blocks: u32 address, u32 length, u32 compressed length and a zstd frame
 of 1 MiB at most. Blocks of zeros are left out. An address of 0xffffffff ends it. A state is of one
-build of sake (`build-id.txt`, a hash of sake.wasm): another build can't load it.
+build of sake (`build-id.txt`: each build's name and a hash of its .wasm): another build can't
+load it. The page loads a state in the build it is of (a sake-grow state on a device that could
+have 4 GB too); a sake.wasm state needs the 4 GB memory.
 
 Sizes: the test program (host/tests/snaptest.c) 42 MiB of memory → 2.5 MiB, standing still
 0.15 s in Chromium (zstd level 1 in a worker, ~660 MB/s).
@@ -90,9 +102,11 @@ host/snap.js (the node build's pre-js):
 * `tests/snap.sh`: snaptest.c (events, critical sections, condition variables, SRW locks,
   Sleep, a thread started late, the clocks) for x86 and x86-64, JIT and interpreter: cut at five
   moments, the output before the cut and after the restore must be the whole run's; restored
-  twice the same; a state of a restored run; live states change nothing.
+  twice the same; a state of a restored run; live states change nothing; no run stirred; and
+  host/tests/snapproc.c (another process): no state, the program goes on.
 * `a_state_draws_the_same_d3d9/11` (crates/kura/src/render/d3d/model_tests.rs): random Direct3D
   command streams on the WebGPU model, with the GPU read back after a random batch and made again
   in a fresh model: every later frame and readback the same.
 * `tests/savestate-browser.mjs`: in Chromium with ippai serve, a state from the dialog, loaded,
-  and loaded in a browser with nothing of its own (the server's copy).
+  and loaded in a browser with nothing of its own (the server's copy); again on sake-grow with
+  its memory grown by 512 MiB before the state, loaded without `&memory=grow`.

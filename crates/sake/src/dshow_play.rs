@@ -412,6 +412,11 @@ const AHEAD: u32 = 4410;
 
 static THREAD_AT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// A state is being taken: the movie thread comes out of its wait (and stands still).
+pub(crate) fn snap_wake() {
+    WAKE.notify_all();
+}
+
 /// A restored save state: the movie thread again, if it ran.
 pub(crate) fn snap_restore() {
     if THREAD_AT.load(std::sync::atomic::Ordering::Relaxed) != 0 {

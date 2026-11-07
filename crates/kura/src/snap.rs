@@ -60,6 +60,9 @@ pub struct Ctl {
     /// saves so far, restores so far (stats)
     pub saves: AtomicU32,
     pub restores: AtomicU32,
+    /// RUNNING after a save: nonzero when a thread of the module ran while the page copied
+    /// (a lock it took may be held in the copy: the state is not to be kept)
+    pub stirred: AtomicU32,
 }
 
 pub const CMD_NONE: u32 = 0;
@@ -94,6 +97,7 @@ pub static VNHOST_SNAP: Ctl = Ctl {
     offset: [AtomicU64::new(0), AtomicU64::new(0)],
     saves: AtomicU32::new(0),
     restores: AtomicU32::new(0),
+    stirred: AtomicU32::new(0),
 };
 
 /// The page: where [`Ctl`] is.
@@ -227,20 +231,34 @@ static GATE: Mutex<()> = Mutex::new(());
 static GATE_CV: Condvar = Condvar::new();
 static COORD_CV: Condvar = Condvar::new();
 
+/// Waits on GATE_CV until the pause ends: without a timeout, so that nothing takes GATE (or
+/// anything else) while the page copies the memory: a lock held in the copy would be held for
+/// ever in the restored module (resume_all notifies under GATE, no wake is lost).
+fn stand_still(mut g: std::sync::MutexGuard<'static, ()>) {
+    while pausing() {
+        g = GATE_CV.wait(g).unwrap_or_else(|e| e.into_inner());
+        STIRS.fetch_add(1, SeqCst);
+    }
+}
+
+/// Every time a standing thread woke, or a thread came to stand still: none may between READY
+/// and RESUME ([`Ctl::stirred`]).
+static STIRS: AtomicU32 = AtomicU32::new(0);
+
 /// Stands still while a state is taken (a guest thread at a safe point; its `resume` says
 /// how it goes on in a restored copy). Returns at once when nothing is asked.
 pub fn park() {
     let Some(p) = me() else { return };
-    let mut g = GATE.lock().unwrap_or_else(|e| e.into_inner());
+    let g = GATE.lock().unwrap_or_else(|e| e.into_inner());
     p.state.store(PARKED, SeqCst);
     COORD_CV.notify_all();
-    while pausing() {
-        g = GATE_CV.wait_timeout(g, Duration::from_millis(50)).unwrap_or_else(|e| e.into_inner()).0;
-    }
+    stand_still(g);
     p.state.store(BUSY, SeqCst);
 }
 
-/// Host threads: about to wait for work (nothing of theirs changes until [`busy`]).
+/// Host threads: about to wait for work (nothing of theirs changes until [`busy`]). A wait
+/// with a timeout takes its lock again when it ends: a state waits until each idle thread came
+/// to [`busy`] and stands still there.
 pub fn idle() {
     if let Some(p) = me() {
         p.state.store(IDLE, SeqCst);
@@ -256,12 +274,11 @@ pub fn busy() {
         if !pausing() {
             return;
         }
-        p.state.store(IDLE, SeqCst);
-        let mut g = GATE.lock().unwrap_or_else(|e| e.into_inner());
+        STIRS.fetch_add(1, SeqCst);
+        let g = GATE.lock().unwrap_or_else(|e| e.into_inner());
+        p.state.store(PARKED, SeqCst);
         COORD_CV.notify_all();
-        while pausing() {
-            g = GATE_CV.wait_timeout(g, Duration::from_millis(50)).unwrap_or_else(|e| e.into_inner()).0;
-        }
+        stand_still(g);
     }
 }
 
@@ -286,12 +303,15 @@ pub fn on_pause(f: fn()) {
 fn wake_all() {
     let w = WAKERS.lock().unwrap_or_else(|e| e.into_inner()).clone();
     w.iter().for_each(|f| f());
+    crate::vfs::snap_wake();
+    crate::display::snap_wake();
 }
 
 /// Sleeps `d`, or less when a pause comes (the caller then parks and sleeps again).
 pub fn sleep(d: Duration) {
     let g = GATE.lock().unwrap_or_else(|e| e.into_inner());
     if pausing() {
+        STIRS.fetch_add(1, SeqCst);
         return;
     }
     drop(GATE_CV.wait_timeout(g, d));
@@ -416,14 +436,23 @@ pub fn set_namer(f: fn(u32) -> String) {
     *NAMER.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
 }
 
-/// Who keeps a state from being taken now (empty: no one).
-fn blockers() -> Vec<String> {
+/// What keeps a state from being taken at all (sake: other processes share its kernel).
+static REFUSE: Mutex<Option<fn() -> Option<String>>> = Mutex::new(None);
+
+pub fn set_refuse(f: fn() -> Option<String>) {
+    *REFUSE.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
+}
+
+/// Who keeps a state from being taken now (empty: no one). `idle`: whether a host thread
+/// waiting for work counts as still (first) or must stand still in [`busy`] (then: its wait
+/// may end and take its lock again while the page copies).
+fn blockers(idle: bool) -> Vec<String> {
     let parts = PARTS.lock().unwrap_or_else(|e| e.into_inner());
     let mut v: Vec<String> = parts
         .iter()
         .filter(|p| match p.state.load(SeqCst) {
             PARKED => false,
-            IDLE => p.guest,
+            IDLE => p.guest || !idle,
             _ => true,
         })
         .map(|p| {
@@ -475,6 +504,10 @@ fn notify_page() {
 fn take() {
     let t0 = raw_clocks()[0];
     VNHOST_SNAP.msg_len.store(0, SeqCst);
+    if let Some(why) = REFUSE.lock().unwrap_or_else(|e| e.into_inner()).and_then(|f| f()) {
+        VNHOST_SNAP.state.store(ST_PAUSING, SeqCst);
+        return fail(why);
+    }
     VNHOST_SNAP.state.store(ST_PAUSING, SeqCst);
     VNHOST_SNAP.pause.store(1, SeqCst);
     let start = std::time::Instant::now();
@@ -483,12 +516,12 @@ fn take() {
     loop {
         drop(g);
         wake_all();
-        let b = blockers();
+        let b = blockers(true);
         if b.is_empty() {
             // (a thread that just finished its work may still be putting its things away:
             // once more after a moment)
             std::thread::sleep(Duration::from_millis(20));
-            if blockers().is_empty() {
+            if blockers(true).is_empty() {
                 break;
             }
             g = GATE.lock().unwrap_or_else(|e| e.into_inner());
@@ -514,12 +547,21 @@ fn take() {
         }
         // (and the drawing thread back between frames)
         let t = std::time::Instant::now();
-        while !blockers().is_empty() {
+        while !blockers(true).is_empty() {
             if t.elapsed() > STOP_TIMEOUT {
-                return fail(format!("still running: {}", blockers().join(", ")));
+                return fail(format!("still running: {}", blockers(true).join(", ")));
             }
             std::thread::sleep(Duration::from_millis(1));
         }
+    }
+    // the host's idle threads standing still too (their timed waits end soon, woken)
+    let t = std::time::Instant::now();
+    while !blockers(false).is_empty() {
+        if t.elapsed() > STOP_TIMEOUT {
+            return fail(format!("still running: {}", blockers(false).join(", ")));
+        }
+        wake_all();
+        std::thread::sleep(Duration::from_millis(1));
     }
     let list = Box::leak(build_ranges().into_boxed_slice());
     VNHOST_SNAP.ranges.store(list.as_ptr() as usize as u32, SeqCst);
@@ -530,10 +572,17 @@ fn take() {
     }
     VNHOST_SNAP.saves.fetch_add(1, SeqCst);
     eprintln!("snap: stopped in {:.0} ms, {} ranges", c[0] - t0, list.len() / 2);
+    VNHOST_SNAP.stirred.store(0, SeqCst);
+    let stirs = STIRS.load(SeqCst);
     VNHOST_SNAP.state.store(ST_READY, SeqCst);
     notify_page();
     // (nothing of ours may change memory until the page has its copy)
     wait_cmd(CMD_RESUME);
+    let stirred = STIRS.load(SeqCst).wrapping_sub(stirs);
+    if stirred != 0 {
+        eprintln!("snap: stirred: {stirred} wakes while the page copied (the state is not to be kept)");
+        VNHOST_SNAP.stirred.store(stirred, SeqCst);
+    }
     let _ = unsafe { Box::from_raw(list as *mut [u32]) };
     resume_all(Some(c[0]));
     VNHOST_SNAP.state.store(ST_RUNNING, SeqCst);
@@ -605,8 +654,137 @@ mod tests {
         });
     }
 
+    /// The tests that use the module's one coordinator and Ctl.
+    static ONE: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn ctl_offsets_are_the_pages() {
+        // (web/src/savestate.ts and host/snap.js read these)
+        assert_eq!(std::mem::offset_of!(Ctl, cmd), 8);
+        assert_eq!(std::mem::offset_of!(Ctl, state), 12);
+        assert_eq!(std::mem::offset_of!(Ctl, restoring), 24);
+        assert_eq!(std::mem::offset_of!(Ctl, ranges), 28);
+        assert_eq!(std::mem::offset_of!(Ctl, nranges), 32);
+        assert_eq!(std::mem::offset_of!(Ctl, msg), 36);
+        assert_eq!(std::mem::offset_of!(Ctl, msg_len), 40);
+        assert_eq!(std::mem::offset_of!(Ctl, stirred), 88);
+    }
+
+    fn until(what: &str, f: impl Fn() -> bool) {
+        let t = std::time::Instant::now();
+        while !f() {
+            assert!(t.elapsed() < Duration::from_secs(20), "waited for ever for {what}");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// The bug a restored copy hung in: a thread woke (a timed wait) while the page copied and
+    /// held GATE, or its own lock, in the copy. Guest threads parking and sleeping, host threads
+    /// idle in waits of 1 and 60 ms (one that ends only after the threads first stood still,
+    /// nothing waking it): from READY to RESUME no lock is held and no thread runs, in each
+    /// of many states; after each the threads go on.
+    #[test]
+    fn nothing_runs_while_the_page_copies() {
+        let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+        static STOP: AtomicU32 = AtomicU32::new(0);
+        static WORK: AtomicU64 = AtomicU64::new(0);
+        static HOST_LOCK: Mutex<u32> = Mutex::new(0);
+        static HOST_CV: Condvar = Condvar::new();
+        STOP.store(0, SeqCst);
+        let mut threads = Vec::new();
+        for k in 0..3 {
+            threads.push(std::thread::spawn(move || {
+                register("guest", true, 0);
+                while STOP.load(SeqCst) == 0 {
+                    if pausing() {
+                        park();
+                    } else if k == 0 {
+                        sleep(Duration::from_millis(1));
+                    } else {
+                        WORK.fetch_add(1, SeqCst);
+                        std::thread::yield_now();
+                    }
+                }
+                unregister();
+            }));
+        }
+        for ms in [1, 60] {
+            threads.push(std::thread::spawn(move || {
+                register("host", false, 0);
+                while STOP.load(SeqCst) == 0 {
+                    idle();
+                    let g = HOST_LOCK.lock().unwrap();
+                    let mut g = HOST_CV.wait_timeout(g, Duration::from_millis(ms)).unwrap().0;
+                    *g += 1;
+                    drop(g);
+                    busy();
+                    WORK.fetch_add(1, SeqCst);
+                }
+                unregister();
+            }));
+        }
+        start();
+        for round in 0..15 {
+            let w = WORK.load(SeqCst);
+            until("work", || WORK.load(SeqCst) > w + 10);
+            VNHOST_SNAP.cmd.store(CMD_SAVE, SeqCst);
+            until("READY", || matches!(VNHOST_SNAP.state.load(SeqCst), ST_READY | ST_FAILED));
+            assert_eq!(VNHOST_SNAP.state.load(SeqCst), ST_READY, "round {round}: no state");
+            // (the page copying)
+            let (w, h) = (WORK.load(SeqCst), *HOST_LOCK.lock().unwrap());
+            let t = std::time::Instant::now();
+            while t.elapsed() < Duration::from_millis(80) {
+                assert!(GATE.try_lock().is_ok(), "round {round}: GATE held while copied");
+                assert!(HOST_LOCK.try_lock().is_ok(), "round {round}: a host thread's lock held while copied");
+                std::thread::sleep(Duration::from_micros(200));
+            }
+            assert_eq!(WORK.load(SeqCst), w, "round {round}: a thread ran while copied");
+            assert_eq!(*HOST_LOCK.lock().unwrap(), h, "round {round}: a host thread ran while copied");
+            VNHOST_SNAP.cmd.store(CMD_RESUME, SeqCst);
+            until("RUNNING", || VNHOST_SNAP.state.load(SeqCst) == ST_RUNNING);
+            assert_eq!(VNHOST_SNAP.stirred.load(SeqCst), 0, "round {round}: stirred");
+        }
+        STOP.store(1, SeqCst);
+        threads.into_iter().for_each(|t| t.join().unwrap());
+    }
+
+    /// A standing thread that wakes while the page copies (a spurious wake) is told: the state
+    /// is `stirred` (the page drops it); the next one is clean again.
+    #[test]
+    fn a_wake_while_copied_is_told() {
+        let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+        static STOP: AtomicU32 = AtomicU32::new(0);
+        STOP.store(0, SeqCst);
+        let t = std::thread::spawn(|| {
+            register("guest", true, 0);
+            while STOP.load(SeqCst) == 0 {
+                if pausing() {
+                    park();
+                }
+                std::thread::yield_now();
+            }
+            unregister();
+        });
+        start();
+        for wake in [true, false] {
+            VNHOST_SNAP.cmd.store(CMD_SAVE, SeqCst);
+            until("READY", || VNHOST_SNAP.state.load(SeqCst) == ST_READY);
+            if wake {
+                let _g = GATE.lock().unwrap();
+                GATE_CV.notify_all();
+            }
+            std::thread::sleep(Duration::from_millis(20));
+            VNHOST_SNAP.cmd.store(CMD_RESUME, SeqCst);
+            until("RUNNING", || VNHOST_SNAP.state.load(SeqCst) == ST_RUNNING);
+            assert_eq!(VNHOST_SNAP.stirred.load(SeqCst) != 0, wake);
+        }
+        STOP.store(1, SeqCst);
+        t.join().unwrap();
+    }
+
     #[test]
     fn once_per_epoch() {
+        let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
         let at = AtomicU32::new(0);
         assert!(once(&at));
         assert!(!once(&at));

@@ -89,18 +89,24 @@ fn restartable(trap: u32) -> bool {
         || n.contains("!_cnd_timedwait")
 }
 
-/// `run` begins / ends.
+/// A thread's outermost run that the host called to return to it (`run` with `until`: a
+/// DLL's init or a TLS callback before the program's entry): its depth is this much more, so
+/// that nothing in it is the top level (a restored copy has no host to return to).
+const HOST_CALL: u32 = 1 << 16;
+
+/// `run` begins (`base`: the thread's own run, which never returns to the host) / ends; the
+/// depth (1: the top level).
 #[inline]
-pub fn enter_run() -> u32 {
+pub fn enter_run(base: bool) -> u32 {
     DEPTH.with(|d| {
-        let n = d.get() + 1;
+        let n = d.get() + if d.get() == 0 && !base { HOST_CALL + 1 } else { 1 };
         d.set(n);
         n
     })
 }
 #[inline]
 pub fn leave_run() {
-    DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    DEPTH.with(|d| d.set(if d.get() == HOST_CALL + 1 { 0 } else { d.get().saturating_sub(1) }));
 }
 
 /// Before each run of guest code: whether the run loop may stop there for a state.
@@ -226,7 +232,10 @@ pub fn init() {
     kura::snap::on_pause(crate::k32::snap_wake);
     kura::snap::on_pause(crate::sound::snap_wake);
     kura::snap::on_pause(crate::xaudio2::snap_wake);
+    kura::snap::on_pause(crate::dshow_play::snap_wake);
     kura::snap::set_ranges(crate::mem::snap_ranges);
+    // (the kernel other processes share is outside this memory, host/vnkern.js)
+    kura::snap::set_refuse(|| crate::kern::host::shared().then(|| "other processes run with this one".into()));
     kura::snap::set_namer(|trap| crate::api::name_of(trap).unwrap_or_else(|| format!("{trap:#x}")));
     kura::snap::start();
 }

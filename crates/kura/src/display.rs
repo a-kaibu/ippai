@@ -672,6 +672,11 @@ static INPUT: Mutex<VecDeque<[u32; 4]>> = Mutex::new(VecDeque::new());
 static INPUT_READY: std::sync::Condvar = std::sync::Condvar::new();
 
 /// The input records so far, waiting up to `ms` for one.
+/// A state is being taken: the input thread comes out of its wait (and stands still).
+pub(crate) fn snap_wake() {
+    INPUT_READY.notify_all();
+}
+
 pub fn input_take(ms: u64) -> Vec<[u32; 4]> {
     let g = INPUT.lock().unwrap_or_else(|e| e.into_inner());
     let (mut g, _) = INPUT_READY

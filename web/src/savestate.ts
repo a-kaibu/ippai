@@ -12,7 +12,9 @@
 // ended by the address 0xffffffff.
 
 import type { Reply, Request } from "./snapz-worker";
-import { sakeBase } from "./runtime";
+import { sakeBase, type SakeBuild } from "./runtime";
+
+type SakeName = SakeBuild["name"];
 
 export interface SnapModule {
   wasmMemory: WebAssembly.Memory;
@@ -31,6 +33,8 @@ export interface StateInfo {
   size: number;
   /** the build of sake it is of (build-id.txt) */
   build: string;
+  /** which of the page's two (runtime.ts sakeBuild; "sake" when not said) */
+  wasm?: SakeName;
   /** what the screen showed (a JPEG data URL), "" without */
   thumb: string;
 }
@@ -45,8 +49,10 @@ const CMD = 8,
   RANGES = 28,
   NRANGES = 32,
   MSG = 36,
-  MSG_LEN = 40;
-const ST_READY = 2,
+  MSG_LEN = 40,
+  STIRRED = 88;
+const ST_RUNNING = 0,
+  ST_READY = 2,
   ST_FAILED = 3;
 
 let busy = false;
@@ -65,14 +71,28 @@ function work(r: Request, transfer: Transferable[] = []): Promise<Reply> {
 }
 const snapzUrl = () => `${sakeBase()}snapz.mjs`;
 
-let buildId: Promise<string> | undefined;
-/** This page's sake build (crates/sake/build.sh writes build-id.txt). */
-export function build(): Promise<string> {
-  buildId ??= fetch(`${sakeBase()}build-id.txt`, { cache: "no-cache" }).then((r) =>
-    r.ok ? r.text().then((t) => t.trim()) : "",
+let buildIds: Promise<Map<string, string>> | undefined;
+/** The ids of this page's sake builds, by name (crates/sake/build.sh writes build-id.txt:
+ * "<name> <id>" lines). */
+export function builds(): Promise<Map<string, string>> {
+  buildIds ??= fetch(`${sakeBase()}build-id.txt`, { cache: "no-cache" }).then(
+    async (r) =>
+      new Map(
+        r.ok
+          ? (await r.text())
+              .split("\n")
+              .map((l) => l.trim().split(/\s+/))
+              .filter((w) => w.length === 2)
+              .map((w) => [w[0]!, w[1]!] as [string, string])
+          : [],
+      ),
+    () => new Map(),
   );
-  return buildId;
+  return buildIds;
 }
+/** Whether this page can load a state of `s` (its build is one of the page's). */
+export const loadable = (ids: Map<string, string>, s: { build: string; wasm?: string }) =>
+  ids.size === 0 || ids.get(s.wasm ?? "sake") === s.build;
 
 /** What the page shows now, small (a JPEG data URL; "" when there is none). */
 async function thumbnail(m: SnapModule): Promise<string> {
@@ -105,14 +125,23 @@ async function thumbnail(m: SnapModule): Promise<string> {
   }
 }
 
+/** A thread of the module ran while the page copied: the state is not kept (taking it again
+ * is fine). */
+export class Stirred extends Error {
+  constructor() {
+    super("セーブ中に動いたスレッドがありました");
+  }
+}
+
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Takes a state of the running module: the file and its index entry (slot set by the caller). */
 export async function takeState(
   m: SnapModule,
+  wasm: SakeName,
 ): Promise<{ file: Uint8Array<ArrayBuffer>; info: Omit<StateInfo, "slot"> }> {
   const thumb = await thumbnail(m);
-  const id = await build();
+  const id = (await builds()).get(wasm) ?? "";
   const ctl = m._vnhost_snap_ctl() >>> 0;
   const i32 = new Int32Array(m.wasmMemory.buffer);
   const word = (off: number) => (ctl + off) >>> 2;
@@ -149,12 +178,20 @@ export async function takeState(
     });
     if (!("parts" in r)) throw new Error("packing");
     ({ parts, raw } = r);
+    // (a thread that ran while copied may have left a lock held in the copy: not kept)
+    const t1 = performance.now();
+    while (Atomics.load(i32, word(STATE)) !== ST_RUNNING && performance.now() - t1 < 5000) await wait(2);
+    if (Atomics.load(i32, word(STIRRED))) throw new Stirred();
   } finally {
     busy = false;
   }
   const took = Math.round(performance.now() - t0);
   const created = new Date().toISOString();
-  const head = new TextEncoder().encode(JSON.stringify({ format: 1, build: id, ctl, raw, created, took }));
+  // (pages: sake-grow's memory may have grown; a state needs as much)
+  const pages = m.wasmMemory.buffer.byteLength / 65536;
+  const head = new TextEncoder().encode(
+    JSON.stringify({ format: 1, build: id, wasm, pages, ctl, raw, created, took }),
+  );
   let size = 16 + head.length + 4;
   for (const p of parts) size += 12 + p.frame.length;
   const file = new Uint8Array(size);
@@ -175,30 +212,49 @@ export async function takeState(
   console.log(
     `state: ${(raw / 1048576).toFixed(1)} MiB in ${(size / 1048576).toFixed(1)} MiB, the program stood still ${took} ms`,
   );
-  return { file, info: { created, size, build: id, thumb } };
+  return { file, info: { created, size, build: id, wasm, thumb } };
 }
 
 /** The header of a state file (throws when it is none). */
-export function stateHeader(file: Uint8Array): { build: string; ctl: number; at: number } {
+export function stateHeader(file: Uint8Array): {
+  build: string;
+  wasm: SakeName;
+  pages: number;
+  ctl: number;
+  at: number;
+} {
   const v = new DataView(file.buffer, file.byteOffset, file.byteLength);
   if (String.fromCharCode(...file.subarray(0, 8)) !== MAGIC || v.getUint32(8, true) !== 1)
     throw new Error("ステートのファイルではありません");
   const hl = v.getUint32(12, true);
   const head = JSON.parse(new TextDecoder().decode(file.subarray(16, 16 + hl))) as {
     build: string;
+    wasm?: SakeName;
+    pages?: number;
     ctl: number;
   };
-  return { build: head.build, ctl: head.ctl, at: 16 + hl };
+  return {
+    build: head.build,
+    wasm: head.wasm ?? "sake",
+    pages: head.pages ?? 65535,
+    ctl: head.ctl,
+    at: 16 + hl,
+  };
 }
 
-/** A memory with the state in it, for the module to start from (its `wasmMemory`). */
-export async function stateMemory(file: Uint8Array<ArrayBuffer>): Promise<WebAssembly.Memory> {
+/** A memory with the state in it, for the module to start from (its `wasmMemory`): `fixed`,
+ * the 4 GB one the page reserved for sake.wasm, or a new one for sake-grow.wasm. */
+export async function stateMemory(
+  file: Uint8Array<ArrayBuffer>,
+  fixed?: WebAssembly.Memory,
+): Promise<WebAssembly.Memory> {
   const h = stateHeader(file);
-  const id = await build();
-  if (id && h.build !== id)
+  if (!loadable(await builds(), h))
     throw new Error("ippai の更新前のステートです（このバージョンでは読み込めません）");
-  // (sake's memory: crates/sake/build.sh INITIAL_MEMORY)
-  const mem = new WebAssembly.Memory({ initial: 65535, maximum: 65535, shared: true });
+  // (sake's memory: crates/sake/build.sh FIXED / GROW, as large as it was)
+  const mem =
+    h.wasm === "sake" ? fixed : new WebAssembly.Memory({ initial: h.pages, maximum: 65535, shared: true });
+  if (!mem) throw new Error("この端末ではこのステートを読み込めません（4 GB のメモリを確保できません）");
   const copy =
     file.byteOffset === 0 && file.byteLength === file.buffer.byteLength
       ? file.buffer.slice(0)

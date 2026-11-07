@@ -13,10 +13,11 @@ var vnvmSnap = {
   MAGIC: 'IPPAISNP',
   BLOCK: 1 << 20,
   // Ctl's offsets (crates/kura/src/snap.rs)
-  CMD: 8, STATE: 12, RESTORING: 24, RANGES: 28, NRANGES: 32, MSG: 36, MSG_LEN: 40,
+  CMD: 8, STATE: 12, RESTORING: 24, RANGES: 28, NRANGES: 32, MSG: 36, MSG_LEN: 40, STIRRED: 88,
   build() {
     const fs = require('fs');
-    const wasm = require('path').join(__dirname, 'sake.wasm');
+    // (this script's own: sake.wasm or sake-grow.wasm)
+    const wasm = __filename.replace(/\.js$/, '.wasm');
     return require('crypto').createHash('sha256').update(fs.readFileSync(wasm)).digest('hex').slice(0, 16);
   },
   zero(u8, at, n) {
@@ -69,8 +70,11 @@ var vnvmSnap = {
     if (!stay) {
       Atomics.store(i32, (ctl + vnvmSnap.CMD) >>> 2, 2);
       Atomics.notify(i32, (ctl + vnvmSnap.CMD) >>> 2);
+      // (a thread that ran while copied may have left a lock held in the copy: not kept)
+      while (Atomics.load(i32, (ctl + vnvmSnap.STATE) >>> 2) !== 0) await new Promise((r) => setTimeout(r, 2));
+      if (Atomics.load(i32, (ctl + vnvmSnap.STIRRED) >>> 2)) throw new Error('a thread ran while the state was copied');
     }
-    const head = Buffer.from(JSON.stringify({ format: 1, build: vnvmSnap.build(), ctl, raw, created: new Date().toISOString(), ...header }));
+    const head = Buffer.from(JSON.stringify({ format: 1, build: vnvmSnap.build(), ctl, raw, pages: wasmMemory.buffer.byteLength / 65536, created: new Date().toISOString(), ...header }));
     const pre = Buffer.alloc(16);
     pre.write(vnvmSnap.MAGIC, 0, 'latin1');
     pre.writeUInt32LE(1, 8);
@@ -88,7 +92,8 @@ var vnvmSnap = {
     const hl = file.readUInt32LE(12);
     const head = JSON.parse(file.toString('utf8', 16, 16 + hl));
     if (head.build !== vnvmSnap.build()) throw new Error(`the state is of another build (${head.build})`);
-    const mem = new WebAssembly.Memory({ initial: 65535, maximum: 65535, shared: true });
+    // (as large as it was: sake-grow's may have grown; crates/sake/build.sh)
+    const mem = new WebAssembly.Memory({ initial: head.pages || 65535, maximum: 65535, shared: true });
     const u8 = new Uint8Array(mem.buffer);
     let at = 16 + hl;
     for (;;) {
@@ -104,7 +109,8 @@ var vnvmSnap = {
     return mem;
   },
 };
-if (ENVIRONMENT_IS_NODE && !ENVIRONMENT_IS_PTHREAD) {
+// (the first process only: the ones it starts, host/node-main.js, have the host's kernel)
+if (ENVIRONMENT_IS_NODE && !ENVIRONMENT_IS_PTHREAD && !Module.vnvmKernel) {
   // (node 22's V8 12.4 drops i32 atomic stores to constant addresses at 2 GiB and above in its
   // first tier, and the host's statics are all there: a store to a static atomic is lost)
   if (+process.versions.node.split('.')[0] < 24) err(`sake: node ${process.versions.node}: use node 24 or later (node 22 loses atomic stores)`);

@@ -32,6 +32,7 @@ import {
   jitBase as jitBaseOf,
   sakeBase,
   sakeBuild,
+  type SakeBuild,
   translatorVersion,
   versioned,
 } from "./runtime";
@@ -39,13 +40,16 @@ import { checkOnline, startApp } from "./pwa";
 import { Budget, pool } from "./ahead";
 import { savedChunks } from "./offline";
 import {
-  build,
+  builds,
   getState,
   listStates,
+  loadable,
   putState,
   SLOTS,
   snapping,
+  stateHeader,
   stateMemory,
+  Stirred,
   takeState,
   type SnapModule,
   type StateInfo,
@@ -197,7 +201,20 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   }
   log("sake を読み込み中");
   const BASE = sakeBase();
-  const build = sakeBuild(params.get("memory"));
+  // a save state to go on from (&state=<slot>: the states dialog starts the page again so), in
+  // the build it is of
+  const slot = params.get("state");
+  const stateFile =
+    slot !== null && !nosave
+      ? await (async () => {
+          log("ステートを読み込み中");
+          const info = (await listStates(saveName)).find((s) => s.slot === Number(slot));
+          if (!info) throw new Error("ステートが見つかりません");
+          return getState(saveName, info);
+        })()
+      : undefined;
+  const stateWasm = stateFile && stateHeader(stateFile).wasm;
+  const build = sakeBuild(stateWasm === "sake-grow" ? "grow" : params.get("memory"));
   const WASM = `${build.name}.wasm`;
   recorder = new FlightRecorder(params.get("game") ?? run.slice(run.lastIndexOf("\\") + 1), {
     game: params.get("game") ?? "",
@@ -230,14 +247,9 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   );
   const saveRoots = [...mounts.map((m) => m.slice(0, m.indexOf("="))), "/vnvm/prefix/drive_c/users"];
   const saved = nosave ? null : await loadSaves(saveName);
-  // a save state to go on from (&state=<slot>: the states dialog starts the page again so)
-  const slot = params.get("state");
   let stateMem: WebAssembly.Memory | undefined;
-  if (slot !== null && !nosave) {
-    log("ステートを読み込み中");
-    const info = (await listStates(saveName)).find((s) => s.slot === Number(slot));
-    if (!info) throw new Error("ステートが見つかりません");
-    stateMem = await stateMemory(await getState(saveName, info));
+  if (stateFile) {
+    stateMem = await stateMemory(stateFile, build.memory);
     // (a reload starts the game as usual)
     params.delete("state");
     history.replaceState(history.state, "", `?${params}`);
@@ -262,8 +274,9 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       ...(params.get("args")?.split(",").filter(Boolean) ?? []),
     ],
     mainScriptUrlOrBlob: scriptUrl,
-    // (sake.wasm: the 4 GB the page could reserve, see sakeBuild)
-    ...(build.memory ? { wasmMemory: build.memory } : {}),
+    // (sake.wasm: the 4 GB the page could reserve, see sakeBuild; or the memory a state filled,
+    // the module starting its threads where they stood)
+    ...(build.memory || stateMem ? { wasmMemory: stateMem ?? build.memory } : {}),
     locateFile: (path: string) => (path === WASM ? versioned(`${BASE}${path}`, version) : `${BASE}${path}`),
     vnvmEnv: {
       // "/=": an empty tree at the root, so every path is kura's (no emscripten file system)
@@ -288,8 +301,6 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
     },
     // read by kura's file system as "@saves" (host/vnfs.js); a state has its files already
     vnvmSaves: stateMem ? null : saved,
-    // the memory a state filled (the module starts its threads where they stood)
-    ...(stateMem ? { wasmMemory: stateMem } : {}),
     // the canvas: a thread of the module draws into it (crates/kura/src/render, host/vngpu.js)
     vnvmCanvas: canvas.transferControlToOffscreen(),
     vnvmJit: await jit,
@@ -347,7 +358,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   sake._vnhost_render_start();
   watch(sake);
   (await audio).attach(sake);
-  if (!nosave) attachStates(sake as unknown as SnapModule, saveName);
+  if (!nosave) attachStates(sake as unknown as SnapModule, saveName, build.name);
 }
 
 /**
@@ -410,16 +421,16 @@ const AHEAD_BEFORE_START = 32 << 20;
 const AHEAD_TOTAL = 64 << 20;
 
 /** The states dialog (ui/States.tsx) for the running game `game`. */
-function attachStates(sake: SnapModule, game: string): void {
+function attachStates(sake: SnapModule, game: string, wasm: SakeBuild["name"]): void {
   let slots: StateInfo[] = [];
   let busy = "";
-  let id = "";
+  let ids = new Map<string, string>();
   const show = () =>
     setUi({
       states: {
         slots: Array.from({ length: SLOTS }, (_, i) => {
           const s = slots.find((x) => x.slot === i);
-          return s ? { created: s.created, thumb: s.thumb, size: s.size, old: !!id && s.build !== id } : null;
+          return s ? { created: s.created, thumb: s.thumb, size: s.size, old: !loadable(ids, s) } : null;
         }),
         busy,
         open: () => void refresh(),
@@ -428,7 +439,7 @@ function attachStates(sake: SnapModule, game: string): void {
       },
     });
   const refresh = async () => {
-    id = await build();
+    ids = await builds();
     slots = await listStates(game).catch(() => slots);
     show();
   };
@@ -437,7 +448,10 @@ function attachStates(sake: SnapModule, game: string): void {
     busy = "セーブ中…";
     show();
     try {
-      const { file, info } = await takeState(sake);
+      // (once more when a thread ran while it was copied: savestate.ts Stirred)
+      const { file, info } = await takeState(sake, wasm).catch((e: unknown) =>
+        e instanceof Stirred ? takeState(sake, wasm) : Promise.reject(e),
+      );
       const s = { ...info, slot: n };
       const { uploaded } = await putState(game, s, file);
       slots = [...slots.filter((x) => x.slot !== n), s];

@@ -444,6 +444,8 @@ jobs:
         run: IPPAI_JIT_RECLAIM=1 SAKE=$PWD/target/sake-out/sake-grow.js tests/host-tests.sh
       - name: Save states under node (cut anywhere, restored, the same output)
         run: SAKE=$PWD/target/sake-out/sake.js tests/snap.sh
+      - name: Save states under node on sake-grow (the build a state is of, its memory as large)
+        run: SAKE=$PWD/target/sake-out/sake-grow.js EXES=snaptest TIMES="0.7 2.1" tests/snap.sh
       - uses: actions/cache@v6.1.0
         with:
           path: ~/.cache/ms-playwright

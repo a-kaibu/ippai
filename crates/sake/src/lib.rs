@@ -207,7 +207,7 @@ pub(crate) fn adopt(t: *mut Thread) {
 
 /// Runs guest code until it returns to RET_TRAP with ESP at or above `until` (0: forever).
 pub fn run(cpu: &mut Cpu, until: u32) {
-    let depth = snap::enter_run();
+    let depth = snap::enter_run(until == 0);
     run_loop(cpu, until, depth);
     snap::leave_run();
 }
