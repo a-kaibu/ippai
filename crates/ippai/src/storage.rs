@@ -360,6 +360,60 @@ pub(crate) mod gc_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// Two games pushed, with chunks in common: removing one drops its entry, tree and own
+    /// chunks from the store's rows (the other's all stay and read back); a backup taken before
+    /// keeps the objects in the bucket until it goes; then gc deletes exactly them, and a fresh
+    /// server's catalog has only the other game.
+    #[tokio::test]
+    async fn removed_game_leaves_the_bucket() {
+        let (f, s, dir) = serve(0).await;
+        let store = dir.join("store");
+        let shared: Vec<u8> = (0..600_000u32).map(|i| (i * 13 % 251) as u8).collect();
+        for (name, own) in [("a", 1u8), ("b", 2)] {
+            let d = dir.join(name);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("game.exe"), [b'M', b'Z', own]).unwrap();
+            std::fs::write(d.join("own.dat"), vec![own; 300_000]).unwrap();
+            std::fs::write(d.join("shared.dat"), &shared).unwrap();
+            crate::pack::add_for_test(&store, &d, name, vec![]).unwrap();
+        }
+        s.push_store(&store).await.unwrap();
+        let mut b_files: Vec<String> = vec!["games/b.json".into(), "trees/b.tsv".into()];
+        for line in std::fs::read_to_string(store.join("trees/b.tsv")).unwrap().lines().filter(|l| l.starts_with("f\t")) {
+            b_files.extend(line.split('\t').nth(5).unwrap().split(',').filter(|c| c.len() > 2).map(|c| format!("chunks/{}/{c}", &c[..2])));
+        }
+        let backup = s.backup().await.unwrap();
+        let before = names(&f);
+
+        let gone = crate::pack::remove_game(&store, "a", Some(&s)).await.unwrap();
+        assert!(gone.iter().any(|l| l.starts_with("chunks/")) && gone.contains(&"trees/a.tsv".into()) && gone.contains(&"games/a.json".into()), "{gone:?}");
+        for l in &gone {
+            assert!(s.get(l).await.unwrap().is_none(), "{l} still named");
+            assert!(!store.join(l).exists(), "{l} still here");
+        }
+        // what b uses: chunks a shared are not among them, and all read back
+        for l in &b_files {
+            assert!(!gone.contains(l), "{l} is b's");
+            assert!(s.get(l).await.unwrap().is_some(), "{l}");
+        }
+
+        age_retired(&s, 30 * 86_400_000);
+        let r = s.gc(std::time::Duration::from_secs(86_400), None).await.unwrap();
+        assert_eq!((r.deleted, names(&f)), (0, before.clone()), "the backup from before still needs them");
+        let r = s.gc(std::time::Duration::from_secs(86_400), Some(0)).await.unwrap();
+        assert_eq!(r.backups_dropped, 1);
+        assert_eq!(r.deleted, gone.len());
+        assert_eq!(names(&f), named(&s));
+        assert_eq!(before.len() - names(&f).len(), gone.len() + 2, "a's objects and the backup's two");
+        assert!(!names(&f).contains(&backup.to_string()));
+
+        let fresh = dir.join("fresh");
+        s.hydrate_catalog(&fresh).await.unwrap();
+        assert!(fresh.join("games/b.json").exists() && fresh.join("trees/b.tsv").exists());
+        assert!(!fresh.join("games/a.json").exists() && !fresh.join("trees/a.tsv").exists(), "a does not come back");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// A bucket that turns requests away with 503 (as Hugging Face Buckets do under load):
     /// push_store still uploads the whole store, every object reads back, and gc's deletes go
     /// through; the refused requests were tried again, not skipped.

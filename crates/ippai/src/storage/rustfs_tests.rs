@@ -282,3 +282,70 @@ async fn rustfs_push_through_503() -> Result<()> {
     std::fs::remove_dir_all(dir)?;
     result
 }
+
+/// Against RustFS: two games pushed, one removed and gc run: the bucket then holds exactly what
+/// the rows name (the other game whole, no object of the removed one), and a fresh server's
+/// catalog has only the other game.
+#[tokio::test]
+#[ignore = "requires disposable RustFS; run tools/ci/test-rustfs.sh"]
+async fn rustfs_remove_game() -> Result<()> {
+    let endpoint = std::env::var("IPPAI_TEST_S3_ENDPOINT")
+        .context("IPPAI_TEST_S3_ENDPOINT must point to disposable RustFS")?;
+    let bucket_name = format!("ippai-test-{}", Uuid::new_v4());
+    let created = Bucket::create_with_path_style(
+        &bucket_name,
+        Region::Custom { region: "us-east-1".into(), endpoint: endpoint.clone() },
+        Credentials::default()?,
+        s3::BucketConfiguration::default(),
+    )
+    .await?;
+    ensure!((200..300).contains(&created.response_code), "bucket creation failed");
+    let dir = std::env::temp_dir().join(&bucket_name);
+    let store = dir.join("store");
+    let db = Library::new(&store)?;
+    let config = dir.join("storage.toml");
+    std::fs::write(&config, format!(
+        "bucket = {bucket_name:?}\nregion = 'us-east-1'\nendpoint = {endpoint:?}\nprefix = 'test/'\nactive_key = 'k'\n[keys]\nk = '{}'\n",
+        "05".repeat(32)
+    ))?;
+    let s = Storage::open(db.clone(), &config)?;
+    let result: Result<()> = async {
+        let shared: Vec<u8> = (0..600_000u32).map(|i| (i * 13 % 251) as u8).collect();
+        for (name, own) in [("a", 1u8), ("b", 2)] {
+            let d = dir.join(name);
+            std::fs::create_dir_all(&d)?;
+            std::fs::write(d.join("game.exe"), [b'M', b'Z', own])?;
+            std::fs::write(d.join("own.dat"), vec![own; 300_000])?;
+            std::fs::write(d.join("shared.dat"), &shared)?;
+            crate::pack::add_for_test(&store, &d, name, vec![])?;
+        }
+        s.push_store(&store).await?;
+        let pushed = raw_objects(&s).await?.len();
+        let gone = crate::pack::remove_game(&store, "a", Some(&s)).await?;
+        let r = s.gc(std::time::Duration::ZERO, None).await?;
+        assert_eq!(r.deleted, gone.len());
+        let left = raw_objects(&s).await?;
+        assert_eq!(left.len(), pushed - gone.len());
+        let rows: i64 = db.connect()?.query_row("SELECT COUNT(*) FROM objects", [], |r| r.get(0))?;
+        assert_eq!(left.len() as i64, rows, "the bucket holds what the rows name");
+        let fresh = dir.join("fresh");
+        s.hydrate_catalog(&fresh).await?;
+        assert!(fresh.join("games/b.json").exists() && !fresh.join("games/a.json").exists());
+        *s.cache.lock().unwrap() = Default::default();
+        for line in std::fs::read_to_string(fresh.join("trees/b.tsv"))?.lines().filter(|l| l.starts_with("f\t")) {
+            for c in line.split('\t').nth(5).unwrap().split(',').filter(|c| c.len() > 2) {
+                assert!(s.get(&format!("chunks/{}/{c}", &c[..2])).await?.is_some(), "b's chunk {c}");
+            }
+        }
+        Ok(())
+    }
+    .await;
+    for page in s.bucket.list(String::new(), None).await? {
+        for object in page.contents {
+            s.bucket.delete_object(object.key).await?;
+        }
+    }
+    s.bucket.delete().await?;
+    std::fs::remove_dir_all(dir)?;
+    result
+}

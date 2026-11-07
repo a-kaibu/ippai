@@ -137,7 +137,9 @@ pub enum Cmd {
         #[arg(long)]
         search: Option<String>,
     },
-    /// Remove a game from the launcher's list (its trees and chunks stay).
+    /// Remove a game: its entry and cover, the trees only it mounts and the chunks no tree left
+    /// lists. With IPPAI_STORAGE_CONFIG they leave the S3 store too (retired: `ippai storage gc`
+    /// deletes the objects; its saves stay).
     #[command(alias = "remove-game")]
     Remove { id: String },
 }
@@ -174,6 +176,118 @@ fn game_path(store: &Path, id: &str) -> PathBuf {
 fn read_game(store: &Path, id: &str) -> Result<GameEntry> {
     let p = game_path(store, id);
     serde_json::from_slice(&fs::read(&p).with_context(|| format!("game {id}"))?).with_context(|| p.display().to_string())
+}
+
+/// The trees a game mounts (`/path=tree`).
+fn game_trees(g: &GameEntry) -> impl Iterator<Item = &str> {
+    g.mounts.iter().filter_map(|m| m.split_once('=').map(|(_, t)| t)).filter(|t| !t.is_empty())
+}
+
+/// The chunks `trees/<name>.tsv` lists (none for a tree that is not there).
+fn tree_chunks(store: &Path, name: &str) -> Result<std::collections::HashSet<String>> {
+    let text = match fs::read_to_string(store.join("trees").join(format!("{name}.tsv"))) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Default::default()),
+        Err(e) => return Err(e.into()),
+    };
+    Ok(text
+        .lines()
+        .filter(|l| l.starts_with("f\t"))
+        .filter_map(|l| l.split('\t').nth(5))
+        .flat_map(|c| c.split(','))
+        .filter(|c| c.len() > 2)
+        .map(String::from)
+        .collect())
+}
+
+/// What removing game `id` takes away, as paths in the store (the names the S3 store knows them
+/// by): its entry and cover; the trees it mounts that no other game mounts, never sake's C:\
+/// ([`PREFIX_TREE`]); and their chunks that no tree left lists. Saves are not touched.
+fn removal(store: &Path, id: &str) -> Result<Vec<String>> {
+    if !valid_id(id) {
+        bail!("id {id:?}: use letters, digits, _ and -");
+    }
+    let game = read_game(store, id)?;
+    let mut others = std::collections::HashSet::new();
+    for e in fs::read_dir(store.join("games"))? {
+        let name = e?.file_name();
+        let Some(other) = name.to_str().and_then(|n| n.strip_suffix(".json")) else { continue };
+        if other == id || other.starts_with('.') {
+            continue;
+        }
+        let g = read_game(store, other)?;
+        others.extend(game_trees(&g).map(String::from));
+    }
+    let trees: Vec<&str> = game_trees(&game).filter(|t| *t != PREFIX_TREE && !others.contains(*t)).collect();
+    let mut out = vec![format!("games/{id}.json")];
+    for ext in ["png", "jpg", "jpeg", "webp"] {
+        if store.join(format!("games/{id}.{ext}")).exists() {
+            out.push(format!("games/{id}.{ext}"));
+        }
+    }
+    // (every tree in the store that stays: a game's, sake's C:\, one packed by hand)
+    let mut kept = std::collections::HashSet::new();
+    if let Ok(dir) = fs::read_dir(store.join("trees")) {
+        for e in dir {
+            let name = e?.file_name();
+            let Some(t) = name.to_str().and_then(|n| n.strip_suffix(".tsv")) else { continue };
+            if !t.starts_with('.') && !trees.contains(&t) {
+                kept.extend(tree_chunks(store, t)?);
+            }
+        }
+    }
+    let mut chunks = std::collections::BTreeSet::new();
+    for t in &trees {
+        out.push(format!("trees/{t}.tsv"));
+        chunks.extend(tree_chunks(store, t)?.into_iter().filter(|c| !kept.contains(c)));
+    }
+    out.extend(chunks.into_iter().map(|c| format!("chunks/{}/{c}", &c[..2])));
+    Ok(out)
+}
+
+/// Removes game `id` ([`removal`]): from `storage` first when there is one (the catalog
+/// fetched first, so that the trees only the S3 store had count as kept; the objects are
+/// retired, `Storage::gc` deletes them), then the files here. Gives what it removed.
+pub async fn remove_game(store: &Path, id: &str, storage: Option<&crate::storage::Storage>) -> Result<Vec<String>> {
+    if let Some(s) = storage {
+        s.hydrate_catalog(store).await?;
+    }
+    let gone = removal(store, id)?;
+    if let Some(s) = storage {
+        for l in &gone {
+            s.forget(l)?;
+        }
+    }
+    // (the entry first: a removal cut short leaves no game that names a missing tree)
+    for l in &gone {
+        match fs::remove_file(store.join(l)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => {}
+        }
+    }
+    Ok(gone)
+}
+
+/// `ippai add <dir> --exe game.exe --id <id> [--mount ...]` without looking anything up (tests).
+#[cfg(test)]
+pub(crate) fn add_for_test(store: &Path, dir: &Path, id: &str, mount: Vec<String>) -> Result<()> {
+    run(
+        store,
+        Cmd::Add {
+            dir: dir.to_path_buf(),
+            exe: Some("game.exe".into()),
+            id: Some(id.into()),
+            title: None,
+            engine: None,
+            cover: None,
+            args: vec![],
+            env: vec![],
+            mount,
+            meta_id: None,
+            no_meta: true,
+            follow: false,
+        },
+    )
 }
 
 fn write_game(store: &Path, g: &GameEntry) -> Result<()> {
@@ -423,13 +537,12 @@ pub fn run(store: &Path, cmd: Cmd) -> Result<()> {
             r?
         }
         Cmd::Remove { id } => {
-            if !valid_id(&id) {
-                bail!("id {id:?}: use letters, digits, _ and -");
-            }
-            let dir = store.join("games");
-            fs::remove_file(dir.join(format!("{id}.json"))).with_context(|| format!("game {id}"))?;
-            for ext in ["png", "jpg", "jpeg", "webp"] {
-                let _ = fs::remove_file(dir.join(format!("{id}.{ext}")));
+            let storage = crate::storage::Storage::configured(crate::library::Library::new(store)?)?;
+            let gone = tokio::runtime::Runtime::new()?.block_on(remove_game(store, &id, storage.as_ref()))?;
+            let chunks = gone.iter().filter(|l| l.starts_with("chunks/")).count();
+            eprintln!("{id}: removed ({} catalog files, {chunks} chunks no other game uses)", gone.len() - chunks);
+            if storage.is_some() {
+                eprintln!("  dropped from the S3 store too; `ippai storage gc` deletes the objects once retired long enough");
             }
         }
     }
@@ -768,6 +881,58 @@ mod tests {
         add(&store, &game, "game.exe").unwrap();
         assert!(fs::read_to_string(&tsv).unwrap().contains("extra.dat"));
         let _ = fs::remove_dir_all(&t);
+    }
+
+    /// Two games with a file in common, sake's C:\, and a third game that mounts the second's
+    /// tree: removing the first takes its entry, cover, tree and the chunks only it had, keeps
+    /// the shared chunks and everything of the others; removing the second keeps its tree (the
+    /// third mounts it); nothing left names a missing tree or chunk.
+    #[test]
+    fn remove_takes_only_what_nothing_else_uses() {
+        let t = std::env::temp_dir().join(format!("ippai-remove-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&t);
+        let store = t.join("store");
+        let shared: Vec<u8> = (0..600_000u32).map(|i| (i * 13 % 251) as u8).collect();
+        for (name, own) in [("a", 1u8), ("b", 2), ("c", 3)] {
+            let d = t.join(name);
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join("game.exe"), [b'M', b'Z', own]).unwrap();
+            fs::write(d.join("own.dat"), vec![own; 300_000]).unwrap();
+            fs::write(d.join("shared.dat"), &shared).unwrap();
+        }
+        add_for_test(&store, &t.join("a"), "a", vec![]).unwrap();
+        add_for_test(&store, &t.join("b"), "b", vec![]).unwrap();
+        add_for_test(&store, &t.join("c"), "c", vec!["/extra=b".into()]).unwrap();
+        fs::write(store.join("games/a.jpg"), b"cover").unwrap();
+        let fonts = t.join("fonts");
+        fs::create_dir_all(&fonts).unwrap();
+        fs::write(fonts.join("msgothic.ttf"), vec![9u8; 1000]).unwrap();
+        ensure_prefix(&store, &fonts).unwrap();
+        let chunks = |tree: &str| tree_chunks(&store, tree).unwrap();
+        let (a, b, c, prefix) = (chunks("a"), chunks("b"), chunks("c"), chunks(PREFIX_TREE));
+        let only_a: std::collections::HashSet<_> = a.iter().filter(|x| !b.contains(*x) && !c.contains(*x)).cloned().collect();
+        assert!(!only_a.is_empty() && only_a.len() < a.len(), "a has chunks of its own and shared ones");
+        let on_disk = |x: &String| store.join("chunks").join(&x[..2]).join(x).exists();
+
+        let gone = remove_game_blocking(&store, "a").unwrap();
+        assert!(gone.contains(&"games/a.json".to_string()) && gone.contains(&"games/a.jpg".to_string()) && gone.contains(&"trees/a.tsv".to_string()), "{gone:?}");
+        assert_eq!(gone.iter().filter(|l| l.starts_with("chunks/")).count(), only_a.len());
+        assert!(!store.join("games/a.json").exists() && !store.join("games/a.jpg").exists() && !store.join("trees/a.tsv").exists());
+        assert!(only_a.iter().all(|x| !on_disk(x)), "a's own chunks gone");
+        for x in b.iter().chain(&c).chain(&prefix) {
+            assert!(on_disk(x), "{x} kept");
+        }
+
+        let gone = remove_game_blocking(&store, "b").unwrap();
+        assert_eq!(gone, vec!["games/b.json".to_string()], "c still mounts b's tree");
+        assert!(store.join("trees/b.tsv").exists() && b.iter().all(on_disk));
+        assert!(remove_game_blocking(&store, "b").is_err(), "no such game any more");
+        assert!(remove_game_blocking(&store, "../c").is_err());
+        let _ = fs::remove_dir_all(&t);
+    }
+
+    fn remove_game_blocking(store: &Path, id: &str) -> Result<Vec<String>> {
+        tokio::runtime::Runtime::new().unwrap().block_on(remove_game(store, id, None))
     }
 
     /// A store without sake's C:\ gets it from the fonts (a release's fonts/): the fonts under
