@@ -75,6 +75,15 @@ jobs:
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: 22
+      # (pnpm, never npm: tools/ci/pnpm.sh; its store and corepack's pnpm are cached)
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.pnpm-store
+            ~/.cache/node/corepack
+          key: pnpm-${{ runner.os }}-sake-${{ hashFiles('web/pnpm-lock.yaml', 'web/package.json') }}
+          restore-keys: pnpm-${{ runner.os }}-sake-
+      - run: tools/ci/pnpm.sh
       # (Playwright's Chromium, per Playwright version; the runner image has its libraries, as Bench found: no apt)
       - uses: actions/cache@v6.1.0
         with:
@@ -85,7 +94,7 @@ jobs:
         id: browser-tools
         background: true
         run: |
-          npm install --prefix "$RUNNER_TEMP/pw" --no-audit --no-fund playwright@1.56.1
+          mkdir -p "$RUNNER_TEMP/pw" && pnpm add --dir "$RUNNER_TEMP/pw" playwright@1.56.1
           "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install chromium
       - run: tools/ci/rust-key.sh
       - id: cargo-cache
@@ -123,7 +132,7 @@ jobs:
         id: web
         background: true
         run: |
-          (cd web && npm ci --no-audit --no-fund && npx vp build)
+          (cd web && pnpm install --frozen-lockfile && pnpm exec vp build)
           cargo build --release -p ippai
       - name: Wait for the browser tools, the web app and ippai
         wait: [browser-tools, web]

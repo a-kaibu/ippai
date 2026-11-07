@@ -28,6 +28,15 @@ jobs:
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: 22
+      # (pnpm, never npm: tools/ci/pnpm.sh; its store and corepack's pnpm are cached)
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.pnpm-store
+            ~/.cache/node/corepack
+          key: pnpm-${{ runner.os }}-browser-${{ hashFiles('web/pnpm-lock.yaml', 'web/package.json') }}
+          restore-keys: pnpm-${{ runner.os }}-browser-
+      - run: tools/ci/pnpm.sh
       # (Playwright's Chromium, per Playwright version; the runner image has its libraries, as Bench found: no apt)
       - uses: actions/cache@v6.1.0
         with:
@@ -35,7 +44,7 @@ jobs:
           key: playwright-${{ runner.os }}-1.63.0
       - name: Install browser test tools
         run: |
-          npm install --prefix "$RUNNER_TEMP/ippai-browser" --no-audit --no-fund playwright@1.63.0
+          mkdir -p "$RUNNER_TEMP/ippai-browser" && pnpm add --dir "$RUNNER_TEMP/ippai-browser" playwright@1.63.0
           "$RUNNER_TEMP/ippai-browser/node_modules/.bin/playwright" install chromium
       - name: Real browser fetch regression
         env:
@@ -63,7 +72,7 @@ jobs:
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
         run: |
-          (cd web && npm ci --no-audit --no-fund && npx vp build)
+          (cd web && pnpm install --frozen-lockfile && pnpm exec vp build)
           cargo build -p ippai
           node tests/webgame-isolation.mjs target/debug/ippai
       - name: Installable, and opens offline (service worker)
@@ -277,6 +286,15 @@ jobs:
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: 22
+      # (pnpm, never npm: tools/ci/pnpm.sh; its store and corepack's pnpm are cached)
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.pnpm-store
+            ~/.cache/node/corepack
+          key: pnpm-${{ runner.os }}-build-${{ hashFiles('web/pnpm-lock.yaml', 'web/package.json') }}
+          restore-keys: pnpm-${{ runner.os }}-build-
+      - run: tools/ci/pnpm.sh
       - run: tools/ci/rust-key.sh
       - id: cargo-cache
         uses: actions/cache/restore@v6.1.0
@@ -292,7 +310,9 @@ jobs:
             build-${{ runner.os }}-${{ env.RUST_KEY }}-
       - name: Web check (Oxfmt, Oxlint, types; warnings are errors)
         working-directory: web
-        run: npm ci --no-audit --no-fund && npm run check && npx vp test
+        run: pnpm install --frozen-lockfile && pnpm run check && pnpm exec vp test
+      - name: pnpm only (tools/ci/no-npm.sh)
+        run: tools/ci/no-npm.sh
       - name: Fetch ordering tests
         run: node tests/fetch-bridge.test.mjs
       - name: Build

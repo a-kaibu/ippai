@@ -90,6 +90,15 @@ jobs:
           path: dist
           run-id: ${{ needs.plan.outputs.run_id }}
           github-token: ${{ github.token }}
+      # (pnpm, never npm: tools/ci/pnpm.sh; its store and corepack's pnpm are cached)
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.pnpm-store
+            ~/.cache/node/corepack
+          key: pnpm-${{ runner.os }}-corpus-${{ hashFiles('web/pnpm-lock.yaml', 'web/package.json') }}
+          restore-keys: pnpm-${{ runner.os }}-corpus-
+      - run: tools/ci/pnpm.sh
       # (Playwright's Chromium, per Playwright version; the runner image has its libraries, as Bench found: no apt)
       - uses: actions/cache@v6.1.0
         with:
@@ -105,8 +114,8 @@ jobs:
           sudo apt-get install -yq --no-install-recommends unar unrar innoextract convmv p7zip-full msitools zstd \
             fonts-ipafont-gothic fonts-ipafont-mincho
           pip install --user -q fonttools==4.59.0
-          npm install -g playwright@1.56.1
-          npx -y playwright@1.56.1 install chromium
+          mkdir -p "$RUNNER_TEMP/pw" && pnpm add --dir "$RUNNER_TEMP/pw" playwright@1.56.1
+          "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install chromium
           mkdir -p "$RUNNER_TEMP/dist"
           # (tools/ci/build.sh names it by git describe, ippai-v0.1.1-35-g900cc23 or a bare
           # short sha before any tag, and empties target/dist first: the artifact holds one build;
@@ -126,7 +135,7 @@ jobs:
           SHARD: ${{ matrix.shard }}
           SHARDS: ${{ strategy.job-total }}
         run: |
-          export PLAYWRIGHT=$(npm root -g)/playwright/index.js
+          export PLAYWRIGHT="$RUNNER_TEMP/pw/node_modules/playwright/index.js"
           tests/corpus/ci.sh "$RUNNER_TEMP/dist" "$RUNNER_TEMP/fonts" results
       # results.json, console and server logs only: no screenshots of the games on GitHub
       - uses: actions/upload-artifact@v7.0.2

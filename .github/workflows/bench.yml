@@ -142,6 +142,15 @@ jobs:
         with:
           name: inputs
           path: ${{ runner.temp }}/inputs
+      # (pnpm, never npm: tools/ci/pnpm.sh; its store and corepack's pnpm are cached)
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.pnpm-store
+            ~/.cache/node/corepack
+          key: pnpm-${{ runner.os }}-bench-${{ hashFiles('web/pnpm-lock.yaml', 'web/package.json') }}
+          restore-keys: pnpm-${{ runner.os }}-bench-
+      - run: tools/ci/pnpm.sh
       # (Playwright's Chromium, per Playwright version; the runner image has its libraries, as Bench found: no apt)
       - uses: actions/cache@v6.1.0
         with:
@@ -154,7 +163,7 @@ jobs:
           SHA: ${{ needs.plan.outputs.sha }}
           OLD_SHA: ${{ needs.plan.outputs.old_sha }}
         run: |
-          npm install --prefix "$RUNNER_TEMP/pw" --no-audit --no-fund playwright@1.56.1
+          mkdir -p "$RUNNER_TEMP/pw" && pnpm add --dir "$RUNNER_TEMP/pw" playwright@1.56.1
           # (the runner image has the browser's libraries: no apt here)
           "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install chromium
           unpack() {  # artifact dir, sha, destination (the build's tarball is named by git describe)

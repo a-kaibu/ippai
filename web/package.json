@@ -1,6 +1,7 @@
 {
   "name": "vnvm-web",
   "private": true,
+  "packageManager": "pnpm@10.28.0",
   "description": "vnvm's page: the game list (React, Tailwind CSS, shadcn/ui) and sake (crates/sake) running games with WebGPU display, audio and streamed file trees.",
   "type": "module",
   "scripts": {
