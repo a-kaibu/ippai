@@ -833,27 +833,7 @@ fn pattern(t: &Objs, s: &DcState, brush: u32) -> Pat {
 }
 
 fn sys_color(i: u32) -> u32 {
-    match i {
-        0 => 0xc8c8c8,
-        1 => 0,
-        2 => 0xd1b499,
-        3 => 0xdbcdbf,
-        4 => 0xf0f0f0,
-        5 => 0xffffff,
-        6 => 0x646464,
-        7 | 8 | 9 => 0,
-        10 | 11 => 0xb4b4b4,
-        12 => 0xababab,
-        13 => 0xd77800,
-        14 => 0xffffff,
-        15 => 0xf0f0f0,
-        16 => 0xa0a0a0,
-        17 => 0x6d6d6d,
-        18 => 0,
-        20 => 0xffffff,
-        21 => 0x696969,
-        _ => 0xf0f0f0,
-    }
+    crate::user::sys_color(i)
 }
 
 /// Fills `r` (device coordinates) with a raster op of the pattern.

@@ -130,15 +130,24 @@ jobs:
         with:
           name: winref-exe
           path: exe
+      - name: sake's fonts (IPA fonts renamed, for the probes that measure text)
+        run: |
+          sudo apt-get update -q && sudo apt-get install -yq --no-install-recommends fonts-ipafont-gothic fonts-ipafont-mincho
+          pip install fonttools
+          python3 tools/ci/sake-fonts.py "$RUNNER_TEMP/fonts"
       # (the node runs are single-threaded: JIT, interpreter and the build for the browser runs
       # side by side)
       - name: Run on sake (JIT)
         id: node-jit
         background: true
+        env:
+          FONTS: ${{ runner.temp }}/fonts
         run: SAKE=$PWD/target/sake-out/sake.js tests/winref/run.sh exe out/jit
       - name: Run on sake (interpreter)
         id: node-interp
         background: true
+        env:
+          FONTS: ${{ runner.temp }}/fonts
         run: IPPAI_JIT=0 SAKE=$PWD/target/sake-out/sake.js tests/winref/run.sh exe out/interp
       # GPU probes (Direct3D ...): sake in headless Chromium, WebGPU (software)
       - name: The web app and ippai

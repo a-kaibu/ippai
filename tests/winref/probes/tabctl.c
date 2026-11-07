@@ -6,6 +6,7 @@
  * (TCN_SELCHANGING may veto), item text and lParam round trips.
  * Sizes are printed relative to the font's metrics (text extents, tmHeight, tmAveCharWidth),
  * so that the rules compare and not the font sake has instead of Windows'.
+ * needs: fonts
  * libs: -lcomctl32 -lgdi32 */
 #include "../probe.h"
 #include <commctrl.h>
@@ -48,12 +49,18 @@ static void insert(int i, const wchar_t *text, LPARAM param) {
     printf("insert %d -> %d\n", i, (int)SendMessageW(tab, TCM_INSERTITEMW, i, (LPARAM)&it));
 }
 
-/* each item: whether it is shown, its top, its height over tmHeight, where it starts against
- * the previous one's right, its width over its text */
+/* how layout() prints widths and heights: over the text / six average characters and tmHeight
+ * (AUTO), as set (FIXED_W: TCS_FIXEDWIDTH, FIXED_H: TCM_SETITEMSIZE's height), or for
+ * justified multi-line rows where each row ends (MULTI) */
+enum { AUTO, FIXED_W, FIXED_H, MULTI };
+static int mode;
+
+/* each item: whether it is shown, its row and top within it, its height, where it starts
+ * against the previous one's right, its width (see mode) */
 static void layout(const char *label) {
     int n = (int)SendMessageW(tab, TCM_GETITEMCOUNT, 0, 0);
     printf("%s: %d items, %d rows, cursel %d\n", label, n, (int)SendMessageW(tab, TCM_GETROWCOUNT, 0, 0), (int)SendMessageW(tab, TCM_GETCURSEL, 0, 0));
-    LONG prev = 0;
+    LONG prev = 0, lowest = 0;
     for (int i = 0; i < n; i++) {
         RECT r = { -7, -7, -7, -7 };
         wchar_t buf[64] = { 0 };
@@ -64,18 +71,30 @@ static void layout(const char *label) {
         SendMessageW(tab, TCM_GETITEMW, i, (LPARAM)&it);
         SIZE sz = extent(buf);
         int ok = (int)SendMessageW(tab, TCM_GETITEMRECT, i, (LPARAM)&r);
-        printf("  item %d ret %d top %ld height-tm %ld left-prev %ld width-text %ld width-avechar %ld\n", i, ok, r.top,
-               r.bottom - r.top - tm.tmHeight, r.left - prev, r.right - r.left - sz.cx, r.right - r.left - 6 * tm.tmAveCharWidth);
+        LONG h = r.bottom - r.top, w = r.right - r.left, row = h > 0 ? (r.top - 2) / h : -1;
+        printf("  item %d ret %d row %ld top-in-row %ld ", i, ok, row, r.top - row * h);
+        if (mode == FIXED_H) printf("height %ld", h);
+        else printf("height-tm %ld", h - tm.tmHeight);
+        printf(" left-prev %ld ", r.left - prev);
+        RECT next = { 0 };
+        if (mode == FIXED_W) printf("width %ld\n", w);
+        else if (mode == MULTI) {
+            /* the last of a row: its right against the client's */
+            RECT c;
+            GetClientRect(tab, &c);
+            if (i == n - 1 || !SendMessageW(tab, TCM_GETITEMRECT, i + 1, (LPARAM)&next) || next.top != r.top)
+                printf("row-end right-client %ld\n", r.right - c.right);
+            else printf("\n");
+        } else printf("width-max(text,6avechar) %ld\n", w - max(sz.cx, 6 * tm.tmAveCharWidth));
         prev = r.right;
+        if (r.bottom > lowest) lowest = r.bottom;
     }
     RECT c, a;
     GetClientRect(tab, &c);
     a = c;
     SendMessageW(tab, TCM_ADJUSTRECT, FALSE, (LPARAM)&a);
-    RECT r0 = { 0 };
-    SendMessageW(tab, TCM_GETITEMRECT, 0, (LPARAM)&r0);
-    printf("  display %ld,%ld,%ld,%ld of client %ldx%ld (top-item0bottom %ld)\n", a.left, a.top - r0.bottom, a.right - c.right, a.bottom - c.bottom,
-           c.right, c.bottom, a.top - r0.bottom);
+    if (n) printf("  display %ld,(lowest tab's bottom)%+ld,%ld,%ld of client %ldx%ld\n", a.left, a.top - lowest, a.right - c.right, a.bottom - c.bottom, c.right, c.bottom);
+    else printf("  display %ld,%ld,%ld,%ld of client %ldx%ld\n", a.left, a.top, a.right - c.right, a.bottom - c.bottom, c.right, c.bottom);
     RECT b = a;
     SendMessageW(tab, TCM_ADJUSTRECT, TRUE, (LPARAM)&b);
     printf("  larger again %ld,%ld,%ld,%ld\n", b.left - c.left, b.top - c.top, b.right - c.right, b.bottom - c.bottom);
@@ -173,6 +192,11 @@ int main(void) {
     hit("item 3 top left", i3.left, i3.top);
     hit("item 3 top right", i3.right, i3.top);
     hit("item 3 bottom", (i3.left + i3.right) / 2, i3.bottom);
+    /* where the label starts: inside the horizontal / vertical padding (6, 3) or not */
+    for (int d = 1; d <= 8; d++) hit("item 3 left+d, middle", i3.left + d, (i3.top + i3.bottom) / 2);
+    for (int d = 1; d <= 5; d++) hit("item 3 middle, top+d", (i3.left + i3.right) / 2, i3.top + d);
+    hit("item 3 right-1, middle", i3.right - 1, (i3.top + i3.bottom) / 2);
+    hit("item 3 middle, bottom-1", (i3.left + i3.right) / 2, i3.bottom - 1);
     hit("display area", 10, 200);
 
     /* selection: SETCURSEL sends nothing, a click asks the parent first */
@@ -202,9 +226,25 @@ int main(void) {
     layout("padding 10,5");
     SendMessageW(tab, TCM_SETPADDING, 0, MAKELPARAM(6, 3));
     layout("padding 6,3");
+    /* padding takes effect at the next layout change (here TCM_SETMINTABWIDTH): item 0's height
+     * and width for each */
+    static const int pads[][2] = { { 6, 0 }, { 6, 1 }, { 6, 2 }, { 6, 3 }, { 6, 4 }, { 6, 6 }, { 6, 9 }, { 0, 3 }, { 2, 3 }, { 9, 3 }, { 6, 3 } };
+    for (unsigned k = 0; k < sizeof pads / sizeof *pads; k++) {
+        SendMessageW(tab, TCM_SETPADDING, 0, MAKELPARAM(pads[k][0], pads[k][1]));
+        SendMessageW(tab, TCM_SETMINTABWIDTH, 0, -1);
+        RECT p0, a;
+        SendMessageW(tab, TCM_GETITEMRECT, 0, (LPARAM)&p0);
+        GetClientRect(tab, &a);
+        SendMessageW(tab, TCM_ADJUSTRECT, FALSE, (LPARAM)&a);
+        SIZE sz = extent(names[0]);
+        printf("padding %d,%d: item 0 top %ld height-tm %ld width-max(text,6avechar) %ld display top-item0bottom %ld\n", pads[k][0], pads[k][1], p0.top,
+               p0.bottom - p0.top - tm.tmHeight, p0.right - p0.left - max(sz.cx, 6 * tm.tmAveCharWidth), a.top - p0.bottom);
+    }
     E(SendMessageW(tab, TCM_SETITEMSIZE, 0, MAKELPARAM(70, 30)));
     E(SendMessageW(tab, TCM_SETITEMSIZE, 0, MAKELPARAM(70, 30)));
+    mode = FIXED_H;
     layout("item size 70x30");
+    mode = AUTO;
     E(SendMessageW(tab, TCM_DELETEALLITEMS, 0, 0));
     E(SendMessageW(tab, TCM_GETCURSEL, 0, 0));
     E(SendMessageW(tab, TCM_GETITEMCOUNT, 0, 0));
@@ -213,15 +253,21 @@ int main(void) {
     tab = make(parent, TCS_FIXEDWIDTH, 500, 300);
     E(SendMessageW(tab, TCM_SETITEMSIZE, 0, MAKELPARAM(90, 0)));
     for (int i = 0; i < 4; i++) insert(i, names[i], i);
+    mode = FIXED_W;
     layout("fixed width 90");
+    mode = AUTO;
     DestroyWindow(tab);
 
     /* multi-line: rows of a narrow control, the selected row moves next to the display */
     tab = make(parent, TCS_MULTILINE, 220, 300);
     for (int i = 0; i < 8; i++) insert(i, names[i], i);
+    mode = MULTI;
     layout("multiline");
     SendMessageW(tab, TCM_SETCURSEL, 0, 0);
     layout("multiline sel 0");
+    SendMessageW(tab, TCM_SETCURSEL, 6, 0);
+    layout("multiline sel 6");
+    mode = AUTO;
     DestroyWindow(tab);
 
     /* too many for a narrow single-line control: the items keep their places (scrolled) */

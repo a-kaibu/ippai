@@ -87,6 +87,8 @@ pub mod gl;
 pub mod glu;
 pub mod dnsrec;
 pub mod smalldlls;
+pub mod security;
+pub mod sysinfo;
 pub mod gl_sigs;
 pub mod text;
 pub mod user;
@@ -603,6 +605,8 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     gl::init();
     glu::init();
     smalldlls::init();
+    security::init();
+    sysinfo::init();
     xaudio2::init();
     xapo::init();
     d3d9::register();

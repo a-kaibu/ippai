@@ -811,7 +811,7 @@ fn SetThreadAffinityMask(_: &mut Ctx) -> u32 {
 fn SetProcessAffinityMask(_: &mut Ctx) -> u32 {
     1
 }
-fn ncpu() -> u32 {
+pub(crate) fn ncpu() -> u32 {
     if let Some(n) = std::env::var("SAKE_NCPU").ok().and_then(|v| v.parse::<u32>().ok()) {
         return n.clamp(1, 64);
     }
@@ -2331,7 +2331,7 @@ fn LocalHandle(c: &mut Ctx) -> u32 {
 /// Physical memory reported to the game: 4 GB, like a modest PC (games check a minimum: 256 MB
 /// made Debonosu's 神楽黎明記 quit at startup). GlobalMemoryStatus clamps to 2 GB as Windows
 /// does for a 32-bit process.
-const PHYS: u64 = 4 << 30;
+pub(crate) const PHYS: u64 = 4 << 30;
 fn GlobalMemoryStatus(c: &mut Ctx) -> u32 {
     let p = c.a(0);
     let clamp = |v: u64| v.min(0x7fff_ffff) as u32;

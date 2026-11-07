@@ -962,14 +962,14 @@ fn dx_container(path: &str) -> u32 {
             (dxc_enum_props, 16),
             (dxc_get_prop, 12),
         ];
-        let v = mem::heap_alloc(4 * m.len() as u32, true);
+        let v = mem::heap_alloc(mem::ps() * m.len() as u32, true);
         for (i, (f, b)) in m.iter().enumerate() {
-            w32(v + 4 * i as u32, crate::api::host_fn(&format!("IDxDiagContainer::{i}"), *f, *b));
+            mem::wp(v + mem::ps() * i as u32, crate::api::host_fn(&format!("IDxDiagContainer::{i}"), *f, *b));
         }
         v
     });
-    let o = mem::heap_alloc(8, true);
-    w32(o, vt);
+    let o = mem::heap_alloc(2 * mem::ps(), true);
+    mem::wp(o, vt);
     DX_NODES.lock().unwrap().get_or_insert_with(HashMap::default).insert(o, path.to_string());
     o
 }
@@ -977,7 +977,7 @@ fn dx_path(o: u32) -> String {
     DX_NODES.lock().unwrap().get_or_insert_with(HashMap::default).get(&o).cloned().unwrap_or_default()
 }
 fn dx_qi(c: &mut Ctx) -> u32 {
-    put32(c.a(2), c.a(0));
+    mem::putp(c.a(2), c.a(0));
     0
 }
 fn dx_addref(_: &mut Ctx) -> u32 {
@@ -987,7 +987,7 @@ fn dxp_initialize(_: &mut Ctx) -> u32 {
     0
 }
 fn dxp_root(c: &mut Ctx) -> u32 {
-    put32(c.a(1), dx_container(""));
+    mem::putp(c.a(1), dx_container(""));
     0
 }
 fn dxc_num_children(c: &mut Ctx) -> u32 {
@@ -1015,10 +1015,10 @@ fn dxc_get_child(c: &mut Ctx) -> u32 {
     let name = String::from_utf16_lossy(&wstr(c.a(1)));
     let path = if base.is_empty() { name } else { format!("{base}.{name}") };
     if dx_node(&path).is_none() {
-        put32(c.a(2), 0);
+        mem::putp(c.a(2), 0);
         return 0x8007_0057;
     }
-    put32(c.a(2), dx_container(&path));
+    mem::putp(c.a(2), dx_container(&path));
     0
 }
 fn dxc_num_props(c: &mut Ctx) -> u32 {
@@ -1038,7 +1038,8 @@ fn dxc_get_prop(c: &mut Ctx) -> u32 {
     let v = c.a(2);
     let Some((_, props)) = dx_node(&dx_path(c.a(0))) else { return 0x8007_0057 };
     let Some((_, p)) = props.iter().find(|(n, _)| *n == name) else { return 0x8007_0057 };
-    mem::fill(v, 16, 0);
+    // (a VARIANT: the type, then the value at 8; 24 bytes on x64)
+    mem::fill(v, 2 * mem::ps() + 8, 0);
     match p {
         DxProp::U4(x) => {
             w16(v, 19);
@@ -1055,7 +1056,7 @@ fn dxc_get_prop(c: &mut Ctx) -> u32 {
         }
         DxProp::Str(st) => {
             w16(v, 8);
-            w32(v + 8, bstr_alloc(&st.encode_utf16().collect::<Vec<u16>>()));
+            mem::wp(v + 8, bstr_alloc(&st.encode_utf16().collect::<Vec<u16>>()));
         }
     }
     0
@@ -1066,14 +1067,14 @@ fn dxdiag_provider() -> u32 {
     static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     let vt = *V.get_or_init(|| {
         let m: &[(crate::api::Handler, u32)] = &[(dx_qi, 12), (dx_addref, 4), (dx_addref, 4), (dxp_initialize, 8), (dxp_root, 8)];
-        let v = mem::heap_alloc(4 * m.len() as u32, true);
+        let v = mem::heap_alloc(mem::ps() * m.len() as u32, true);
         for (i, (f, b)) in m.iter().enumerate() {
-            w32(v + 4 * i as u32, crate::api::host_fn(&format!("IDxDiagProvider::{i}"), *f, *b));
+            mem::wp(v + mem::ps() * i as u32, crate::api::host_fn(&format!("IDxDiagProvider::{i}"), *f, *b));
         }
         v
     });
-    let o = mem::heap_alloc(8, true);
-    w32(o, vt);
+    let o = mem::heap_alloc(2 * mem::ps(), true);
+    mem::wp(o, vt);
     o
 }
 
@@ -1092,7 +1093,7 @@ fn create_object(c: &mut Ctx, clsid: u32, iid: u32, out: u32) -> u32 {
         format!("{:08x}-{:04x}-{:04x}", r32(p), r16(p + 4), r16(p + 6))
     };
     if r32(clsid) == 0xa65b_8071 {
-        put32(out, dxdiag_provider());
+        mem::putp(out, dxdiag_provider());
         return 0;
     }
     if let Some(obj) = crate::ddraw::create_instance(clsid, iid) {

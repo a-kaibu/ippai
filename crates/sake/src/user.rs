@@ -741,92 +741,12 @@ fn control_proc() -> u32 {
     *P.get_or_init(|| crate::api::host_fn("control_proc", control_proc_fn, 16))
 }
 
-/// Tab controls: hwnd -> (each item's lParam, selection). Delphi's TPageControl checks what
-/// TCM_INSERTITEM / TCM_DELETEITEM return and reads its page objects back with TCM_GETITEM;
-/// nothing is drawn.
-static TABS: Mutex<Option<HashMap<u32, (Vec<u32>, i32)>>> = Mutex::new(None);
+#[path = "tabctl.rs"]
+mod tabctl;
 fn tab_proc() -> u32 {
     static P: OnceLock<u32> = OnceLock::new();
-    *P.get_or_init(|| crate::api::host_fn("tab_proc", tab_proc_fn, 16))
+    *P.get_or_init(|| crate::api::host_fn("tab_proc", tabctl::proc_fn, 16))
 }
-fn tab_proc_fn(c: &mut Ctx) -> u32 {
-    let (h, m, wp, lp) = (c.a(0), c.a(1), c.a(2), c.a(3));
-    let mut g = TABS.lock().unwrap();
-    let t = g.get_or_insert_with(HashMap::default).entry(h).or_insert((Vec::new(), -1));
-    let n = t.0.len() as u32;
-    // TCITEM: mask, state, state mask, text, text max, image, lParam (TCIF_PARAM = 8)
-    let param = |lp: u32| if lp != 0 && mem::r32(lp) & 8 != 0 { mem::r32(lp + 24) } else { 0 };
-    match m {
-        0x1304 => n,
-        // TCM_INSERTITEMA/W: at min(index, count)
-        0x1307 | 0x133e => {
-            let i = wp.min(n);
-            t.0.insert(i as usize, param(lp));
-            if t.1 < 0 {
-                t.1 = 0;
-            }
-            i
-        }
-        0x1308 => {
-            if wp >= n {
-                return 0;
-            }
-            t.0.remove(wp as usize);
-            if t.1 >= t.0.len() as i32 {
-                t.1 = t.0.len() as i32 - 1;
-            }
-            1
-        }
-        0x1309 => {
-            *t = (Vec::new(), -1);
-            1
-        }
-        0x130b => t.1 as u32,
-        0x130c => {
-            let old = t.1;
-            if wp < n {
-                t.1 = wp as i32;
-            }
-            old as u32
-        }
-        0x132c => 1,
-        // TCM_GETITEMA/W: lParam; the text is not kept (an empty string)
-        0x1305 | 0x133c => {
-            if wp >= n || lp == 0 {
-                return 0;
-            }
-            let mask = mem::r32(lp);
-            if mask & 8 != 0 {
-                w32(lp + 24, t.0[wp as usize]);
-            }
-            if mask & 1 != 0 && mem::r32(lp + 12) != 0 && mem::r32(lp + 16) != 0 {
-                if m == 0x133c { mem::w16(mem::r32(lp + 12), 0) } else { mem::w8(mem::r32(lp + 12), 0) }
-            }
-            1
-        }
-        // TCM_SETITEMA/W
-        0x1306 | 0x133d => {
-            if wp >= n {
-                return 0;
-            }
-            if lp != 0 && mem::r32(lp) & 8 != 0 {
-                t.0[wp as usize] = mem::r32(lp + 24);
-            }
-            1
-        }
-        0x130a | 0x1328 | 0x1303 | 0x1302 => 0,
-        0x2 => {
-            g.as_mut().unwrap().remove(&h);
-            drop(g);
-            def_proc(c, msg_wide())
-        }
-        _ => {
-            drop(g);
-            def_proc(c, msg_wide())
-        }
-    }
-}
-
 fn gcall(c: &mut Ctx, dll: &str, name: &str, args: &[u32]) -> u32 {
     let f = crate::api::export(dll, name);
     c.call(f, args)
@@ -852,8 +772,12 @@ fn ctl_paint(c: &mut Ctx, h: u32, button: bool) {
         bg = crate::gdi::solid_brush(0xf0f0f0);
     }
     let full = Rect { l: 0, t: 0, r: w, b: hh };
-    crate::gdi::fill_rect_brush(dc, full, bg);
     let kind = style & 0xf;
+    // (a group box leaves its inside alone: the controls in it may be under it)
+    let group = button && kind == 7;
+    if !group {
+        crate::gdi::fill_rect_brush(dc, full, bg);
+    }
     let fill = |r: Rect, color: u32| crate::gdi::fill_rect_brush(dc, r, crate::gdi::solid_brush(color));
     let frame = |r: Rect, color: u32| {
         fill(Rect { l: r.l, t: r.t, r: r.r, b: r.t + 1 }, color);
@@ -871,6 +795,12 @@ fn ctl_paint(c: &mut Ctx, h: u32, button: bool) {
         tr.l = 4;
         flags = 0x4 | 0x20;
     } else if !button {
+        if style & 0x1000 != 0 {
+            // SS_SUNKEN: a one-pixel sunken edge (WS_EX_STATICEDGE)
+            let mut e = full;
+            draw_edge(dc, &mut e, 2, 0xf);
+            tr = Rect { l: 1, t: 1, r: w - 1, b: hh - 1 };
+        }
         flags = match style & 3 {
             1 => 0x1,
             2 => 0x2,
@@ -890,10 +820,23 @@ fn ctl_paint(c: &mut Ctx, h: u32, button: bool) {
         }
         tr.l = 17;
         flags = 0x4 | 0x20;
-    } else if kind == 7 {
-        // group box
-        frame(Rect { l: 0, t: 7, r: w, b: hh }, 0xdcdcdc);
-        tr = Rect { l: 8, t: 0, r: w - 8, b: 16 };
+    } else if group {
+        // an etched frame from half the text height down, the label over it at 7 pixels in on
+        // the parent's background (a pixel wider each side)
+        let tm = mem::heap_alloc(64, true);
+        gcall(c, "gdi32", "GetTextMetricsW", &[dc, tm]);
+        let th = r32(tm) as i32;
+        mem::heap_free(tm);
+        let mut f = Rect { t: th / 2 - 1, ..full };
+        draw_edge(dc, &mut f, 6, 0xf | if style & 0x8000 != 0 { 0x4000 } else { 0 });
+        if !text.is_empty() {
+            let mut ext = Rect { l: 7, t: 0, r: w - 7, b: hh }; // DT_CALCRECT of the label
+            ext.write(rc);
+            crate::gdi::draw_text(dc, &text, rc, 0x20 | 0x400);
+            ext = Rect::read(rc);
+            crate::gdi::fill_rect_brush(dc, Rect { l: ext.l - 1, t: ext.t, r: ext.r + 1, b: ext.b + 1 }, bg);
+            tr = ext;
+        }
         flags = 0x20;
     } else {
         fill(Rect { l: 1, t: 1, r: w - 1, b: hh - 1 }, if st.pressed { 0xf7e4cc } else { 0xe1e1e1 });
@@ -1049,7 +992,8 @@ fn system_classes(s: &mut State) {
             inst: 0,
             icon: 0,
             cursor: 0,
-            brush: 0,
+            // (COLOR_BTNFACE + 1)
+            brush: if n == "SysTabControl32" { 16 } else { 0 },
             menu: 0,
             unicode: false,
             atom,
@@ -1674,6 +1618,17 @@ fn set_pos(c: &mut Ctx, h: u32, after: u32, x: i32, y: i32, cx: i32, cy: i32, fl
         let moved = old.l != r.l || old.t != r.t;
         let shown = vis != w.visible;
         let hidden_all_along = !vis && !w.visible;
+        let (parent, now_visible) = (w.parent, w.visible);
+        if now_visible && !vis {
+            invalidate_tree(s, h);
+        }
+        // a child hidden: its parent paints where it was (the rectangles are parent-relative)
+        if vis && !now_visible && parent != 0 && parent != DESKTOP {
+            if let Some(pw) = s.wins.get_mut(&parent) {
+                pw.update = pw.update.or(&old);
+                pw.erase = true;
+            }
+        }
         update_display(s, h);
         Some((resized, moved, shown, hidden_all_along, r))
     });
@@ -2704,7 +2659,7 @@ fn next_msg(hwnd: u32, lo: u32, hi: u32, remove: bool) -> Option<Msg> {
             let mut ws: Vec<u32> = s
                 .wins
                 .iter()
-                .filter(|(&h, w)| w.tid == me && w.visible && !w.update.empty() && (hwnd == 0 || hwnd == h))
+                .filter(|(&h, w)| w.tid == me && !w.update.empty() && (hwnd == 0 || hwnd == h) && shown_tree(s, h))
                 .map(|(&h, _)| h)
                 .collect();
             ws.sort();
@@ -2750,7 +2705,7 @@ fn queued(s: &State, me: u32, mask: u32) -> bool {
         mask & 0x108 != 0 && (!q.posted.is_empty() || q.quit.is_some())
             || mask & 0x407 != 0 && !q.input.is_empty()
             || mask & 0x40 != 0 && !q.sent.is_empty()
-    }) || mask & 0x20 != 0 && s.wins.iter().any(|(_, w)| w.tid == me && w.visible && !w.update.empty())
+    }) || mask & 0x20 != 0 && s.wins.iter().any(|(&h, w)| w.tid == me && !w.update.empty() && shown_tree(s, h))
 }
 fn has_work_of(mask: u32) -> bool {
     let me = crate::cur().tid;
@@ -2878,7 +2833,7 @@ fn GetQueueStatus(c: &mut Ctx) -> u32 {
     let me = crate::cur().tid;
     let now = Instant::now();
     with(|s| {
-        let paint = s.wins.iter().any(|(_, w)| w.tid == me && w.visible && !w.update.empty());
+        let paint = s.wins.iter().any(|(&h, w)| w.tid == me && !w.update.empty() && shown_tree(s, h));
         let q = s.queues.entry(me).or_default();
         let mut st = 0;
         if !q.posted.is_empty() || q.quit.is_some() {
@@ -3050,6 +3005,34 @@ fn KillTimer(c: &mut Ctx) -> u32 {
 }
 
 // painting
+/// Visible with all its ancestors (IsWindowVisible): a child of a hidden window is not
+/// painted (property sheet pages hidden behind the shown one).
+fn shown_tree(s: &State, mut h: u32) -> bool {
+    loop {
+        match s.wins.get(&h) {
+            Some(w) if w.visible => {
+                if w.parent == 0 || w.parent == DESKTOP {
+                    return true;
+                }
+                h = w.parent;
+            }
+            _ => return false,
+        }
+    }
+}
+
+/// A window shown: it and everything in it is to be painted.
+fn invalidate_tree(s: &mut State, h: u32) {
+    let mut todo = vec![h];
+    while let Some(h) = todo.pop() {
+        if let Some(w) = s.wins.get_mut(&h) {
+            w.update = Rect { l: 0, t: 0, r: w.client.w(), b: w.client.h() };
+            w.erase = true;
+            todo.extend(w.children.iter().copied());
+        }
+    }
+}
+
 fn invalidate(h: u32, r: Option<Rect>, erase: bool) {
     with(|s| {
         let all = h == 0;
@@ -3457,31 +3440,32 @@ fn WinHelpA(_: &mut Ctx) -> u32 {
     1
 }
 fn GetSysColor(c: &mut Ctx) -> u32 {
-    match c.a(0) {
+    sys_color(c.a(0))
+}
+/// The system colours (COLORREF) of Windows 10's default scheme.
+pub(crate) fn sys_color(i: u32) -> u32 {
+    match i {
         0 => 0xc8c8c8,
-        1 => 0x000000,
+        1 | 7 | 8 | 9 | 18 | 19 | 23 | 25 => 0x000000,
         2 => 0xd1b499,
         3 => 0xdbcdbf,
-        4 => 0xf0f0f0,
-        5 => 0xffffff,
+        4 | 15 | 30 => 0xf0f0f0,
+        5 | 14 | 20 => 0xffffff,
         6 => 0x646464,
-        7 | 8 => 0x000000,
-        9 => 0x000000,
-        10 | 11 => 0xb4b4b4,
+        10 => 0xb4b4b4,
+        11 => 0xfcf7f4,
         12 => 0xababab,
-        13 => 0xff9933,
-        14 => 0xffffff,
-        15 => 0xf0f0f0,
+        13 => 0xd47800,
         16 => 0xa0a0a0,
         17 => 0x6d6d6d,
-        18 => 0x000000,
-        19 => 0x000000,
-        20 => 0xffffff,
         21 => 0x696969,
         22 => 0xe3e3e3,
-        23 => 0x000000,
         24 => 0xe1ffff,
-        _ => 0xf0f0f0,
+        26 => 0xcc6600,
+        27 => 0xead1b9,
+        28 => 0xf2e4d7,
+        29 => 0xd47800,
+        _ => 0,
     }
 }
 fn GetSysColorBrush(c: &mut Ctx) -> u32 {
@@ -3900,8 +3884,110 @@ fn InvertRect(c: &mut Ctx) -> u32 {
 fn DrawFocusRect(_: &mut Ctx) -> u32 {
     1
 }
-fn DrawEdge(_: &mut Ctx) -> u32 {
-    1
+fn DrawEdge(c: &mut Ctx) -> u32 {
+    let p = c.a(1);
+    if p == 0 {
+        return 0;
+    }
+    let mut r = Rect::read(p);
+    let (edge, flags) = (c.a(2), c.a(3));
+    let ok = draw_edge(c.a(0), &mut r, edge, flags);
+    if flags & 0x2000 != 0 && flags & 0x10 == 0 {
+        r.write(p); // BF_ADJUST
+    }
+    ok as u32
+}
+
+/// DrawEdge's rectangle form (Windows' 3D edges: sunken/raised outer and inner lines in the
+/// system colours, BF_SOFT / BF_FLAT / BF_MONO, BF_MIDDLE, BF_ADJUST). A diagonal (BF_DIAGONAL)
+/// draws nothing yet: the 2-pixel corners of tabs and the like.
+pub(crate) fn draw_edge(dc: u32, rc: &mut Rect, edge: u32, flags: u32) -> bool {
+    // index: edge & 0xf (BDR_RAISEDOUTER 1, SUNKENOUTER 2, RAISEDINNER 4, SUNKENINNER 8) -> COLOR_*
+    const N: i8 = -1;
+    const LT_INNER_NORMAL: [i8; 16] = [N, N, N, N, N, 20, 20, N, N, 21, 21, N, N, N, N, N];
+    const LT_OUTER_NORMAL: [i8; 16] = [N, 22, 16, N, 20, 22, 16, N, 21, 22, 16, N, N, 22, 16, N];
+    const RB_INNER_NORMAL: [i8; 16] = [N, N, N, N, N, 16, 16, N, N, 22, 22, N, N, N, N, N];
+    const RB_OUTER_NORMAL: [i8; 16] = [N, 21, 20, N, 16, 21, 20, N, 22, 21, 20, N, N, 21, 20, N];
+    const LT_INNER_SOFT: [i8; 16] = [N, N, N, N, N, 22, 22, N, N, 16, 16, N, N, N, N, N];
+    const LT_OUTER_SOFT: [i8; 16] = [N, 20, 21, N, 22, 20, 21, N, 16, 20, 21, N, N, 20, 21, N];
+    const OUTER_MONO: [i8; 16] = [N, 6, 6, 6, 5, 6, 6, 6, 5, 6, 6, 6, 5, 6, 6, 6];
+    const INNER_MONO: [i8; 16] = [N, N, N, N, N, 5, 5, 5, N, 5, 5, 5, N, 5, 5, 5];
+    const OUTER_FLAT: [i8; 16] = [N, 16, 16, 16, 15, 16, 16, 16, 15, 16, 16, 16, 15, 16, 16, 16];
+    const INNER_FLAT: [i8; 16] = [N, N, N, N, N, 15, 15, 15, N, 15, 15, 15, N, 15, 15, 15];
+    let (left, top, right, bottom) = (flags & 1 != 0, flags & 2 != 0, flags & 4 != 0, flags & 8 != 0);
+    let e = (edge & 0xf) as usize;
+    let (inner, outer) = (edge & 0xc, edge & 3);
+    let (soft, flat, mono) = (flags & 0x1000 != 0, flags & 0x4000 != 0, flags & 0x8000 != 0);
+    let ok = !((inner == 0xc || outer == 3) && !(flat || mono));
+    if flags & 0x10 != 0 {
+        return ok; // BF_DIAGONAL
+    }
+    let (lti, lto, rbi, rbo) = if mono {
+        (INNER_MONO[e], OUTER_MONO[e], INNER_MONO[e], OUTER_MONO[e])
+    } else if flat {
+        let i = if INNER_FLAT[e] != N { 15 } else { N };
+        (i, OUTER_FLAT[e], i, OUTER_FLAT[e])
+    } else if soft {
+        (LT_INNER_SOFT[e], LT_OUTER_SOFT[e], RB_INNER_NORMAL[e], RB_OUTER_NORMAL[e])
+    } else {
+        (LT_INNER_NORMAL[e], LT_OUTER_NORMAL[e], RB_INNER_NORMAL[e], RB_OUTER_NORMAL[e])
+    };
+    let fill = |r: Rect, color: i8| {
+        if color != N {
+            crate::gdi::fill_rect_brush(dc, r, crate::gdi::solid_brush(sys_color(color as u32)));
+        }
+    };
+    let r = *rc;
+    let off = |a: bool, b: bool| if a && b { 1 } else { 0 };
+    let (lbi, rti, rbi_o, lti_o) = (off(bottom, left), off(top, right), off(bottom, right), off(top, left));
+    if top {
+        fill(Rect { b: r.t + 1, ..r }, lto);
+    }
+    if left {
+        fill(Rect { r: r.l + 1, ..r }, lto);
+    }
+    if bottom {
+        fill(Rect { t: r.b - 1, ..r }, rbo);
+    }
+    if right {
+        fill(Rect { l: r.r - 1, ..r }, rbo);
+    }
+    if top {
+        fill(Rect { l: r.l + lti_o, t: r.t + 1, r: r.r - rti, b: r.t + 2 }, lti);
+    }
+    if left {
+        fill(Rect { l: r.l + 1, t: r.t + lti_o, r: r.l + 2, b: r.b - lbi }, lti);
+    }
+    if bottom {
+        fill(Rect { l: r.l + lbi, t: r.b - 2, r: r.r - rbi_o, b: r.b - 1 }, rbi);
+    }
+    if right {
+        fill(Rect { l: r.r - 2, t: r.t + rti, r: r.r - 1, b: r.b - rbi_o }, rbi);
+    }
+    let (middle, adjust) = (flags & 0x800 != 0, flags & 0x2000 != 0);
+    if (middle && ok) || adjust {
+        let add = (INNER_MONO[e] != N) as i32 + (OUTER_MONO[e] != N) as i32;
+        let mut ir = r;
+        if left {
+            ir.l += add;
+        }
+        if right {
+            ir.r -= add;
+        }
+        if top {
+            ir.t += add;
+        }
+        if bottom {
+            ir.b -= add;
+        }
+        if middle && ok {
+            fill(ir, if mono { 5 } else { 15 });
+        }
+        if adjust {
+            *rc = ir;
+        }
+    }
+    ok
 }
 fn DrawFrameControl(_: &mut Ctx) -> u32 {
     1
