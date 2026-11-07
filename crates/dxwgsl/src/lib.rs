@@ -23,7 +23,8 @@ pub fn signature(code: &[u8], output: bool) -> Vec<crate::dxbc::SigElement> {
 pub enum Binding {
     /// constant buffer: size the shader reads
     Uniform(u32),
-    /// texture: view dimension (0 1d, 1 2d, 2 2d array, 3 cube, 4 cube array, 5 3d), sample
+    /// texture: view dimension (0 1d, 1 2d, 2 2d array, 3 cube, 4 cube array, 5 3d, 6
+    /// multisampled 2d), sample
     /// type (0 float, 1 uint, 2 sint, 3 depth)
     Texture(u32, u32),
     Sampler(bool),

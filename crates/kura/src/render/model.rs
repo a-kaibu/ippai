@@ -234,6 +234,18 @@ fn storable(f: &str) -> bool {
     )
 }
 
+/// Formats WebGPU (core) multisamples: the renderable ones but the 64- and 128-bit 32-bit
+/// channel ones (rg32*, rgba32*).
+fn multisamplable(f: &str) -> bool {
+    format_info(f).is_some_and(|i| i.1) && !(f.starts_with("rg32") || f.starts_with("rgba32"))
+}
+
+/// Formats a multisampled texture resolves into (WebGPU core: the blendable, filterable color
+/// formats: not r32float, no integer or depth ones).
+fn resolvable(f: &str) -> bool {
+    multisamplable(f) && format_info(f).is_some_and(|i| i.2 && i.3 && i.4 == 'f')
+}
+
 fn has_stencil(f: &str) -> bool {
     f == "depth24plus-stencil8" || f == "stencil8" || f == "depth32float-stencil8"
 }
@@ -360,6 +372,9 @@ pub struct Texture {
     pub format: String,
     pub usage: u32,
     pub dim: String,
+    /// sampleCount (1 or 4): a multisampled texture holds one value per pixel, what all of its
+    /// samples hold (the model does not tell samples apart; a resolve copies the values)
+    pub samples: u32,
     pub destroyed: bool,
     /// per (mip, layer): w*h values (depth formats: the depth values)
     pub texels: Vec<Vec<u64>>,
@@ -427,6 +442,8 @@ pub struct Pipeline {
     pub clear_shader: bool,
     /// a stencil test or stencil writes: the draw reads the pass's stencil reference
     pub uses_stencil: bool,
+    /// multisample.count
+    pub samples: u32,
 }
 
 /// A vertex as the shader gets it: (location, the bytes of that attribute; empty when the
@@ -466,6 +483,8 @@ pub struct Shader {
 #[derive(Clone)]
 struct Attachment {
     view: usize,
+    /// resolveTarget: the view the samples resolve into at the end of the pass
+    resolve: Option<usize>,
     load_clear: Option<u64>,
     store: bool,
     stencil_clear: Option<u64>,
@@ -521,6 +540,8 @@ pub struct Model {
     enc: Vec<Cmd>,
     pass: Option<(Vec<Attachment>, Option<Attachment>, Vec<Draw>, DrawState, (u32, u32))>,
     bounds: Option<[u32; 4]>,
+    /// the open pass's sample count
+    pass_samples: u32,
     /// buffers to read, with where (as read_buffer gave them)
     pub pending_maps: Vec<(usize, u32, usize, u32)>,
     pub obs: Vec<Obs>,
@@ -639,6 +660,7 @@ impl Model {
 
     pub fn texture(&mut self, s: &str) -> u32 {
         let Some(j) = self.json(s, "createTexture") else { return self.put(Obj::Sampler(0)) };
+        let samples = j.u("sampleCount").unwrap_or(1);
         let size: Vec<u32> = j.arr("size").iter().map(|n| if let J::Num(n) = n { *n as u32 } else { 0 }).collect();
         let (w, h, d) = (size.first().copied().unwrap_or(0), size.get(1).copied().unwrap_or(1), size.get(2).copied().unwrap_or(1));
         let format = j.s("format").unwrap_or("").to_string();
@@ -674,6 +696,14 @@ impl Model {
                 self.err("createTexture: a 1d texture with height or mips".into());
             }
         }
+        // multisampling (WebGPU: sampleCount 1 or 4; a 4x texture is 2D, one level, one layer,
+        // a render attachment, not a storage texture, of a format with multisampling)
+        if samples != 1 && samples != 4 {
+            self.err(format!("createTexture: sampleCount {samples}"));
+        }
+        if samples > 1 && (dim != "2d" || mips != 1 || d != 1 || usage & 0x10 == 0 || usage & 0x8 != 0 || !multisamplable(&format)) {
+            self.err(format!("createTexture: {samples}x {format} {dim} {w}x{h}x{d}, {mips} mips, usage {usage:#x}"));
+        }
         let layers = d;
         let n = (w.min(4096) * h.min(4096)) as usize;
         let mut texels = Vec::new();
@@ -683,7 +713,7 @@ impl Model {
             }
         }
         let stencil = if has_stencil(&format) { texels.clone() } else { Vec::new() };
-        self.put(Obj::Texture(Texture { w, h, layers, mips, format, usage, dim, destroyed: false, texels, stencil }))
+        self.put(Obj::Texture(Texture { w, h, layers, mips, format, usage, dim, samples, destroyed: false, texels, stencil }))
     }
 
     pub fn view(&mut self, tex: u32, s: &str) -> u32 {
@@ -719,6 +749,9 @@ impl Model {
         }
         if (dim == "2d" && layers != 1) || (dim == "cube" && layers != 6) || (dim == "cube-array" && layers % 6 != 0) {
             self.err(format!("createView: {dim} with {layers} layers"));
+        }
+        if tx.samples > 1 && dim != "2d" {
+            self.err(format!("createView: a {dim} view of a multisampled texture"));
         }
         if matches!(dim.as_str(), "cube" | "cube-array") && tx.w != tx.h {
             self.err("createView: a cube view of a texture that is not square".into());
@@ -792,6 +825,7 @@ impl Model {
                                 }
                                 let (kind, ty, vd) = match &m.types[g.ty].inner {
                                     naga::TypeInner::Image { dim, arrayed, class } => {
+                                        let multi = matches!(class, naga::ImageClass::Sampled { multi: true, .. } | naga::ImageClass::Depth { multi: true });
                                         let storage = match class {
                                             naga::ImageClass::Storage { format, .. } => Some(storage_format(*format)),
                                             _ => None,
@@ -810,9 +844,10 @@ impl Model {
                                             (naga::ImageDimension::Cube, false) => "cube",
                                             (naga::ImageDimension::Cube, true) => "cube-array",
                                         };
+                                        let vd = if multi { format!("{vd}-ms") } else { vd.to_string() };
                                         match storage {
-                                            Some(f) => ('w', f.to_string(), vd.to_string()),
-                                            None => ('t', st.to_string(), vd.to_string()),
+                                            Some(f) => ('w', f.to_string(), vd),
+                                            None => ('t', st.to_string(), vd),
                                         }
                                     }
                                     naga::TypeInner::Sampler { comparison } => ('s', if *comparison { "comparison" } else { "filtering" }.to_string(), String::new()),
@@ -837,7 +872,17 @@ impl Model {
             let (kind, dynamic, ty, view_dim) = if let Some(b) = e.get("buffer") {
                 ('b', b.b("hasDynamicOffset").unwrap_or(false), b.s("type").unwrap_or("uniform").to_string(), String::new())
             } else if let Some(t) = e.get("texture") {
-                ('t', false, t.s("sampleType").unwrap_or("float").to_string(), t.s("viewDimension").unwrap_or("2d").to_string())
+                let (ty, vd) = (t.s("sampleType").unwrap_or("float").to_string(), t.s("viewDimension").unwrap_or("2d").to_string());
+                // (multisampled: "2d" views, of any sample type but filterable float; kept as
+                // view dimension "2d-ms")
+                if t.b("multisampled").unwrap_or(false) {
+                    if vd != "2d" || ty == "float" {
+                        self.err(format!("createBindGroupLayout: entry {binding}: a multisampled {vd} {ty} texture"));
+                    }
+                    ('t', false, ty, "2d-ms".to_string())
+                } else {
+                    ('t', false, ty, vd)
+                }
             } else if let Some(t) = e.get("sampler") {
                 ('s', false, t.s("type").unwrap_or("filtering").to_string(), String::new())
             } else if let Some(t) = e.get("storageTexture") {
@@ -1108,6 +1153,23 @@ impl Model {
         if targets.is_empty() && depth.is_none() {
             self.err(format!("{what}: no color target and no depth"));
         }
+        // multisample: count 1 or 4; alpha to coverage only with 4 samples and a color target 0
+        let ms = j.get("multisample");
+        let samples = ms.and_then(|m| m.u("count")).unwrap_or(1);
+        if samples != 1 && samples != 4 {
+            self.err(format!("{what}: multisample count {samples}"));
+        }
+        if samples > 1 && (targets.iter().any(|t| !multisamplable(&t.0)) || depth.as_ref().is_some_and(|d| !multisamplable(&d.0))) {
+            self.err(format!("{what}: {samples} samples of targets {:?}", targets.iter().map(|t| &t.0).collect::<Vec<_>>()));
+        }
+        if ms.and_then(|m| m.b("alphaToCoverageEnabled")).unwrap_or(false) && (samples == 1 || targets.is_empty()) {
+            self.err(format!("{what}: alphaToCoverage with {samples} samples and {} targets", targets.len()));
+        }
+        if let Some(m) = ms.and_then(|m| m.num("mask")) {
+            if m < 0.0 || m > u32::MAX as f64 || m.fract() != 0.0 {
+                self.err(format!("{what}: multisample mask {m}"));
+            }
+        }
         if fs.is_none() && j.get("fragment").is_some() {
             // (the error was given)
         }
@@ -1115,7 +1177,7 @@ impl Model {
         let uses_stencil = depth.as_ref().is_some_and(|d| {
             ["stencilFront", "stencilBack"].iter().filter_map(|f| d.3.get(f)).any(|s| s.s("compare").unwrap_or("always") != "always" || ["failOp", "depthFailOp", "passOp"].iter().any(|k| s.s(k).unwrap_or("keep") != "keep"))
         });
-        let p = Pipeline { hash: h, groups, targets, depth: depth.map(|d| (d.0, d.1, d.2)), buffers, attrs, per_instance, topology: topo.to_string(), strip_format, clear_shader: clear, uses_stencil };
+        let p = Pipeline { hash: h, groups, targets, depth: depth.map(|d| (d.0, d.1, d.2)), buffers, attrs, per_instance, topology: topo.to_string(), strip_format, clear_shader: clear, uses_stencil, samples };
         self.put(Obj::Pipeline(p))
     }
 
@@ -1287,8 +1349,10 @@ impl Model {
                         if has_stencil(&v.format) && v.aspect == "all" {
                             self.err(format!("{what}: binding {binding}: a depth-stencil view with both aspects"));
                         }
-                        if v.dim != e.view_dim {
-                            self.err(format!("{what}: binding {binding}: a {} view where the layout wants {}", v.dim, e.view_dim));
+                        // (a view of a multisampled texture is a "2d-ms" one)
+                        let vd = if t.samples > 1 { format!("{}-ms", v.dim) } else { v.dim.clone() };
+                        if vd != e.view_dim {
+                            self.err(format!("{what}: binding {binding}: a {vd} view where the layout wants {}", e.view_dim));
                         }
                         entries.push((binding, Entry::View(a)));
                     }
@@ -1342,6 +1406,10 @@ impl Model {
         let Some((bpp, ..)) = format_info(&tx.format) else { return };
         if tx.usage & 2 == 0 {
             self.err(format!("{what}: texture without COPY_DST"));
+        }
+        if tx.samples > 1 {
+            self.err(format!("{what}: into a multisampled texture"));
+            return;
         }
         if matches!(tx.format.as_str(), "depth24plus" | "depth24plus-stencil8" | "depth32float") {
             self.err(format!("{what}: into {}", tx.format));
@@ -1429,6 +1497,11 @@ impl Model {
             self.err(format!("{what}: mip {smip} of {} / {dmip} of {}", st.mips, dt.mips));
             return;
         }
+        // (multisampled textures: to one of the same sample count, whole)
+        if st.samples != dt.samples || st.samples > 1 && (so != [0; 3] || d != [0; 3] || [size[0], size[1]] != [st.w, st.h]) {
+            self.err(format!("{what}: {}x to {}x, {so:?}+{size:?} to {d:?}", st.samples, dt.samples));
+            return;
+        }
         let (sw, sh, sd) = st.size(smip);
         let (dw, dh, dd) = dt.size(dmip);
         if so[0] + size[0] > sw || so[1] + size[1] > sh || so[2] + size[2] > sd || d[0] + size[0] > dw || d[1] + size[1] > dh || d[2] + size[2] > dd {
@@ -1455,6 +1528,10 @@ impl Model {
         let Some((bpp, ..)) = format_info(&tx.format) else { return };
         if tx.usage & 1 == 0 || bu & 8 == 0 {
             self.err(format!("{what}: usage"));
+        }
+        if tx.samples > 1 {
+            self.err(format!("{what}: from a multisampled texture"));
+            return;
         }
         if matches!(tx.format.as_str(), "depth24plus" | "depth24plus-stencil8") {
             self.err(format!("{what}: from {}", tx.format));
@@ -1508,6 +1585,10 @@ impl Model {
         if tx.usage & 2 == 0 || bu & 4 == 0 {
             self.err(format!("{what}: usage (buffer COPY_SRC, texture COPY_DST)"));
         }
+        if tx.samples > 1 {
+            self.err(format!("{what}: into a multisampled texture"));
+            return;
+        }
         if tx.format.starts_with("depth") {
             self.err(format!("{what}: into {}", tx.format));
             return;
@@ -1539,6 +1620,8 @@ impl Model {
         let mut size: Option<(u32, u32)> = None;
         let mut colors = Vec::new();
         let mut subs: Vec<(usize, u32, u32)> = Vec::new();
+        let mut pass_samples: Option<u32> = None;
+        let mut rsubs: Vec<(usize, u32, u32)> = Vec::new();
         let mut check_view = |m: &mut Model, v: u32, color: bool| -> Option<usize> {
             let a = m.at(v, what)?;
             let Some(vw) = m.view_of(a).cloned() else {
@@ -1569,6 +1652,12 @@ impl Model {
                 m.err(format!("{what}: one subresource attached twice"));
             }
             subs.push((vw.tex, vw.mip, vw.layer));
+            // (every attachment of one sample count)
+            match pass_samples {
+                None => pass_samples = Some(t.samples),
+                Some(n) if n != t.samples => m.err(format!("{what}: attachments of {n} and {} samples", t.samples)),
+                _ => {}
+            }
             Some(a)
         };
         let carr = j.arr("colorAttachments").to_vec();
@@ -1592,7 +1681,25 @@ impl Model {
             let cv: Vec<f32> = c.arr("clearValue").iter().map(|x| if let J::Num(n) = x { *n as f32 } else { 0.0 }).collect();
             let color = [cv.first().copied().unwrap_or(0.0), cv.get(1).copied().unwrap_or(0.0), cv.get(2).copied().unwrap_or(0.0), cv.get(3).copied().unwrap_or(0.0)];
             let format = self.view_of(a).map(|v| self.tex(v.tex).format.clone()).unwrap_or_default();
-            colors.push(Attachment { view: a, load_clear: (load == "clear").then(|| fit(&format, clear_texel(&format, color))), store: store == "store", stencil_clear: None, stencil_store: true });
+            // resolveTarget: a 1x view of one subresource of a resolvable format, the same as
+            // the attachment's and of its size, for a multisampled attachment
+            let mut resolve = None;
+            if let Some(r) = c.u("resolveTarget") {
+                let av = self.view_of(a).cloned().unwrap();
+                let at = self.tex(av.tex).clone();
+                match self.at(r, what).and_then(|ra| self.view_of(ra).cloned().map(|v| (ra, v))) {
+                    None => self.err(format!("{what}: resolveTarget {r} is not a view")),
+                    Some((ra, rv)) => {
+                        let rt = self.tex(rv.tex).clone();
+                        if rt.destroyed || at.samples == 1 || rt.samples != 1 || rt.usage & 0x10 == 0 || rv.mips != 1 || rv.layers != 1 || !matches!(rv.dim.as_str(), "2d" | "2d-array") || rv.format != av.format || !resolvable(&rv.format) || rt.size(rv.mip).0 != at.size(av.mip).0 || rt.size(rv.mip).1 != at.size(av.mip).1 {
+                            self.err(format!("{what}: resolve of a {}x {} {}x{} into a {}x {} {}x{} (mips {} layers {}, usage {:#x})", at.samples, av.format, at.w, at.h, rt.samples, rv.format, rt.size(rv.mip).0, rt.size(rv.mip).1, rv.mips, rv.layers, rt.usage));
+                        }
+                        rsubs.push((rv.tex, rv.mip, rv.layer));
+                        resolve = Some(ra);
+                    }
+                }
+            }
+            colors.push(Attachment { view: a, resolve, load_clear: (load == "clear").then(|| fit(&format, clear_texel(&format, color))), store: store == "store", stencil_clear: None, stencil_store: true });
         }
         let mut depth = None;
         if let Some(d) = j.get("depthStencilAttachment") {
@@ -1616,13 +1723,22 @@ impl Model {
                 } else if sl.is_some() || ss.is_some() {
                     self.err(format!("{what}: stencil ops for {}", vw.format));
                 }
+                if d.get("resolveTarget").is_some() {
+                    self.err(format!("{what}: a depth attachment with a resolveTarget"));
+                }
                 depth = Some(Attachment {
                     view: a,
+                    resolve: None,
                     load_clear: (load == Some("clear")).then(|| depth_value(z.unwrap_or(0.0) as f32)),
                     store: store != Some("discard"),
                     stencil_clear: (sl == Some("clear")).then(|| stencil_value(d.u("stencilClearValue").unwrap_or(0))),
                     stencil_store: ss != Some("discard"),
                 });
+            }
+        }
+        for (i, r) in rsubs.iter().enumerate() {
+            if subs.contains(r) || rsubs[..i].contains(r) {
+                self.err(format!("{what}: a resolve target attached twice"));
             }
         }
         let Some(sz) = size else {
@@ -1631,6 +1747,7 @@ impl Model {
         };
         let st = DrawState { viewport: [0.0, 0.0, sz.0 as f32, sz.1 as f32, 0.0, 1.0], scissor: [0, 0, sz.0, sz.1], ..Default::default() };
         self.pass = Some((colors, depth, Vec::new(), st, sz));
+        self.pass_samples = pass_samples.unwrap_or(1);
     }
 
     pub fn end_pass(&mut self) {
@@ -1786,6 +1903,9 @@ impl Model {
         if pass_colors != pipe_colors {
             self.err(format!("{what}: pipeline targets {pipe_colors:?}, pass {pass_colors:?}"));
         }
+        if p.samples != self.pass_samples {
+            self.err(format!("{what}: a pipeline of {} samples in a pass of {}", p.samples, self.pass_samples));
+        }
         let pass_depth = depth.as_ref().map(|d| self.view_of(d.view).unwrap().format.clone());
         if pass_depth != p.depth.as_ref().map(|d| d.0.clone()) {
             self.err(format!("{what}: pipeline depth {:?}, pass {pass_depth:?}", p.depth.as_ref().map(|d| &d.0)));
@@ -1805,8 +1925,8 @@ impl Model {
                     for (_, e) in &entries {
                         if let Entry::View(v) = e {
                             let vw = self.view_of(*v).unwrap().clone();
-                            for att in colors.iter().chain(depth.iter()) {
-                                let av = self.view_of(att.view).unwrap().clone();
+                            for av in colors.iter().chain(depth.iter()).flat_map(|att| std::iter::once(att.view).chain(att.resolve)) {
+                                let av = self.view_of(av).unwrap().clone();
                                 if av.tex == vw.tex && av.mip >= vw.mip && av.mip < vw.mip + vw.mips && av.layer >= vw.layer && av.layer < vw.layer + vw.layers {
                                     self.err(format!("{what}: a texture sampled and attached in the same pass"));
                                 }
@@ -2097,6 +2217,16 @@ impl Model {
                 }
             }
         }
+        // resolves (before the stores: a discarded multisampled attachment still resolves)
+        for a in colors {
+            let Some(r) = a.resolve else { continue };
+            let (t, s, _) = sub(self, a);
+            let vals = self.tex(t).texels[s].clone();
+            let rv = self.view_of(r).unwrap().clone();
+            let Obj::Texture(rt) = &mut self.objs[rv.tex] else { continue };
+            let rs = rt.sub(rv.mip, rv.layer);
+            rt.texels[rs] = vals;
+        }
         // stores
         for a in colors.iter().chain(depth.iter()) {
             let (t, s, _) = sub(self, a);
@@ -2141,6 +2271,7 @@ impl Model {
                 Cmd::Pass(cs, d, draws) => {
                     for a in cs.iter().chain(d.iter()) {
                         texs.push(self.view_of(a.view).unwrap().tex);
+                        texs.extend(a.resolve.map(|r| self.view_of(r).unwrap().tex));
                     }
                     for dr in draws {
                         for (g, _) in dr.st.groups.iter().flatten() {
@@ -2604,4 +2735,143 @@ pub extern "C" fn vngpu_draw_indexed(n: u32, inst: u32, first: u32, base: i32, f
 #[no_mangle]
 pub extern "C" fn emscripten_get_now() -> f64 {
     0.0
+}
+
+/// The model's multisampling rules (W3C WebGPU: createTexture with sampleCount, views and bind
+/// group layouts of multisampled textures, render passes' sample counts and resolve targets,
+/// the copies and writes multisampled textures do not take) and the meaning of a resolve.
+#[cfg(test)]
+mod ms_tests {
+    use super::*;
+
+    fn tex(m: &mut Model, f: &str, w: u32, h: u32, samples: u32, usage: u32) -> u32 {
+        m.texture(&format!(r#"{{"size":[{w},{h},1],"format":"{f}","sampleCount":{samples},"usage":{usage}}}"#))
+    }
+    fn errs(m: &mut Model) -> Vec<String> {
+        std::mem::take(&mut m.errors)
+    }
+
+    #[test]
+    fn textures() {
+        let mut m = Model { table: vec![None], ..Default::default() };
+        // valid: 4x color and depth, render attachments (sampled and copied too)
+        tex(&mut m, "bgra8unorm", 16, 16, 4, 0x17);
+        tex(&mut m, "depth24plus-stencil8", 16, 16, 4, 0x14);
+        tex(&mut m, "r32float", 4, 4, 4, 0x10);
+        tex(&mut m, "rgba8uint", 4, 4, 4, 0x10);
+        assert!(errs(&mut m).is_empty());
+        // each breaks a rule
+        for (f, s, usage, extra) in [
+            ("bgra8unorm", 2, 0x10, ""),
+            ("bgra8unorm", 8, 0x10, ""),
+            ("bgra8unorm", 4, 0x04, ""),
+            ("rgba8unorm", 4, 0x18, ""),
+            ("rg32float", 4, 0x10, ""),
+            ("rgba32float", 4, 0x10, ""),
+            ("rgba8snorm", 4, 0x10, ""),
+            ("bgra8unorm", 4, 0x10, r#","mipLevelCount":2"#),
+            ("bgra8unorm", 4, 0x10, r#","dimension":"3d""#),
+        ] {
+            let size = if extra.contains("3d") { "[16,16,2]" } else { "[16,16,1]" };
+            m.texture(&format!(r#"{{"size":{size},"format":"{f}","sampleCount":{s},"usage":{usage}{extra}}}"#));
+            assert!(!errs(&mut m).is_empty(), "{f} {s}x usage {usage:#x} {extra}");
+        }
+        let layered = m.texture(r#"{"size":[16,16,2],"format":"bgra8unorm","sampleCount":4,"usage":16}"#);
+        assert!(!errs(&mut m).is_empty());
+        let _ = layered;
+        // a view of a multisampled texture: 2d only
+        let t = tex(&mut m, "bgra8unorm", 16, 16, 4, 0x14);
+        m.view(t, r#"{"dimension":"2d-array"}"#);
+        assert!(!errs(&mut m).is_empty());
+        m.view(t, "");
+        assert!(errs(&mut m).is_empty());
+    }
+
+    #[test]
+    fn copies_and_writes() {
+        let mut m = Model { table: vec![None], ..Default::default() };
+        let (a, b, c) = (tex(&mut m, "rgba8unorm", 8, 8, 4, 0x13), tex(&mut m, "rgba8unorm", 8, 8, 4, 0x13), tex(&mut m, "rgba8unorm", 8, 8, 1, 0x13));
+        m.copy_texture(a, 0, [0; 3], b, 0, [0; 3], [8, 8, 1]);
+        assert!(errs(&mut m).is_empty());
+        // part of one, between sample counts
+        m.copy_texture(a, 0, [0; 3], b, 0, [0; 3], [4, 4, 1]);
+        assert!(!errs(&mut m).is_empty());
+        m.copy_texture(a, 0, [0; 3], c, 0, [0; 3], [8, 8, 1]);
+        assert!(!errs(&mut m).is_empty());
+        let buf = m.buffer(4096, 0xc);
+        m.copy_to_buffer(a, 0, 0, 0, buf, 256, 8, 8);
+        assert!(!errs(&mut m).is_empty());
+        m.copy_from_buffer(buf, 256, a, 0, 0, 0, 8, 8);
+        assert!(!errs(&mut m).is_empty());
+        let px = [0u8; 256];
+        m.write_texture(a, 0, [0; 3], px.as_ptr(), px.len(), 32, 8, [8, 8, 1]);
+        assert!(!errs(&mut m).is_empty());
+    }
+
+    #[test]
+    fn passes_resolves_and_pipelines() {
+        let mut m = Model { table: vec![None], ..Default::default() };
+        let ms = tex(&mut m, "bgra8unorm", 8, 8, 4, 0x14);
+        let one = tex(&mut m, "bgra8unorm", 8, 8, 1, 0x15);
+        let other = tex(&mut m, "rgba8unorm", 8, 8, 1, 0x15);
+        let small = tex(&mut m, "bgra8unorm", 4, 4, 1, 0x15);
+        let z4 = tex(&mut m, "depth32float", 8, 8, 4, 0x10);
+        let z1 = tex(&mut m, "depth32float", 8, 8, 1, 0x10);
+        let (vms, vone, vother, vsmall, vz4, vz1) = (m.view(ms, ""), m.view(one, ""), m.view(other, ""), m.view(small, ""), m.view(z4, ""), m.view(z1, ""));
+        let pass = |m: &mut Model, color: u32, resolve: Option<u32>, z: Option<u32>| {
+            let r = resolve.map_or(String::new(), |r| format!(r#","resolveTarget":{r}"#));
+            let d = z.map_or(String::new(), |z| format!(r#","depthStencilAttachment":{{"view":{z},"depthLoadOp":"load","depthStoreOp":"store"}}"#));
+            m.begin_pass(&format!(r#"{{"colorAttachments":[{{"view":{color},"loadOp":"clear","clearValue":[1,0,0,1],"storeOp":"store"{r}}}]{d}}}"#));
+            m.end_pass();
+        };
+        // the clear resolves into the 1x texture
+        pass(&mut m, vms, Some(vone), Some(vz4));
+        assert!(errs(&mut m).is_empty());
+        m.submit();
+        let (a, b) = (m.view_values(vms), m.view_values(vone));
+        assert_eq!(a, b);
+        assert!(a.iter().all(|&x| x != 0));
+        // sample counts that differ; resolves into another format, size, a 4x texture, from a 1x one
+        for (c, r, z) in [(vms, None, Some(vz1)), (vone, None, Some(vz4)), (vms, Some(vother), None), (vms, Some(vsmall), None), (vms, Some(vms), None), (vone, Some(vone), None)] {
+            pass(&mut m, c, r, z);
+            assert!(!errs(&mut m).is_empty(), "{c} {r:?} {z:?}");
+        }
+        // a depth attachment resolves nothing
+        m.begin_pass(&format!(r#"{{"colorAttachments":[],"depthStencilAttachment":{{"view":{vz4},"depthLoadOp":"load","depthStoreOp":"store","resolveTarget":{vz1}}}}}"#));
+        m.end_pass();
+        assert!(!errs(&mut m).is_empty());
+        // layouts: a multisampled binding is 2d and not filterable float
+        m.bind_group_layout(r#"{"entries":[{"binding":0,"visibility":2,"texture":{"sampleType":"float","viewDimension":"2d","multisampled":true}}]}"#);
+        assert!(!errs(&mut m).is_empty());
+        let l = m.bind_group_layout(r#"{"entries":[{"binding":0,"visibility":2,"texture":{"sampleType":"unfilterable-float","viewDimension":"2d","multisampled":true}}]}"#);
+        let l1 = m.bind_group_layout(r#"{"entries":[{"binding":0,"visibility":2,"texture":{"sampleType":"float","viewDimension":"2d"}}]}"#);
+        assert!(errs(&mut m).is_empty());
+        // (ms is not TEXTURE_BINDING: a sampled 4x one)
+        let sampled = tex(&mut m, "bgra8unorm", 8, 8, 4, 0x14 | 0x4);
+        let vs = m.view(sampled, "");
+        m.bind_group(l, &[0, 1, vs, 0, 0]);
+        assert!(errs(&mut m).is_empty());
+        m.bind_group(l1, &[0, 1, vs, 0, 0]);
+        assert!(!errs(&mut m).is_empty());
+        m.bind_group(l, &[0, 1, vone, 0, 0]);
+        assert!(!errs(&mut m).is_empty());
+        // pipelines: count 1 or 4, alpha to coverage with 4, targets WebGPU multisamples
+        let sh = m.shader("@vertex fn vs() -> @builtin(position) vec4f { return vec4f(0.0); }\n@fragment fn fs() -> @location(0) vec4f { return vec4f(1.0); }");
+        let pl = m.pipeline_layout(r#"{"bindGroupLayouts":[]}"#);
+        let pipe = |m: &mut Model, f: &str, ms: &str| m.render_pipeline(&format!(r#"{{"layout":{pl},"vertex":{{"module":{sh},"entryPoint":"vs"}},"fragment":{{"module":{sh},"entryPoint":"fs","targets":[{{"format":"{f}"}}]}}{ms}}}"#));
+        let p4 = pipe(&mut m, "bgra8unorm", r#","multisample":{"count":4,"mask":15,"alphaToCoverageEnabled":true}"#);
+        let p1 = pipe(&mut m, "bgra8unorm", "");
+        assert!(errs(&mut m).is_empty());
+        for (f, ms) in [("bgra8unorm", r#","multisample":{"count":2}"#), ("bgra8unorm", r#","multisample":{"count":1,"alphaToCoverageEnabled":true}"#), ("rg32float", r#","multisample":{"count":4}"#)] {
+            pipe(&mut m, f, ms);
+            assert!(!errs(&mut m).is_empty(), "{f} {ms}");
+        }
+        for (p, color, bad) in [(p4, vms, false), (p1, vone, false), (p1, vms, true), (p4, vone, true)] {
+            m.begin_pass(&format!(r#"{{"colorAttachments":[{{"view":{color},"loadOp":"load","storeOp":"store"}}]}}"#));
+            m.set_pipeline(p);
+            m.draw([3, 1, 0, 0, 0], false);
+            m.end_pass();
+            assert_eq!(!errs(&mut m).is_empty(), bad, "pipeline {p} into {color}");
+        }
+    }
 }

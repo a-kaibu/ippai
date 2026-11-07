@@ -97,6 +97,15 @@ pub(crate) fn storable(f: &str) -> bool {
 fn renderable(f: &str) -> bool {
     !f.ends_with("snorm") && !is_depth(f) && f != "rgb9e5ufloat" && (f != "rg11b10ufloat" || gpu::has_feature("rg11b10ufloat-renderable"))
 }
+/// Whether WebGPU multisamples a format (core: the renderable and depth ones but rg32* and
+/// rgba32*, crates/kura/src/render/model.rs multisamplable).
+fn multisamplable(f: &str) -> bool {
+    (renderable(f) || is_depth(f)) && !f.starts_with("rg32") && !f.starts_with("rgba32")
+}
+/// Whether a multisampled texture of format `f` resolves (the blendable color formats).
+fn resolvable(f: &str) -> bool {
+    multisamplable(f) && !is_depth(f) && blendable(f) && f != "r32float"
+}
 /// Whether WebGPU blends into a color format (without the float32-blendable feature).
 fn blendable(f: &str) -> bool {
     !f.ends_with("uint") && !f.ends_with("sint") && (!f.ends_with("32float") || gpu::has_feature("float32-blendable"))
@@ -212,6 +221,25 @@ struct C { color: vec4f, z: vec4f };
 @fragment fn fs() -> @location(0) vec4f { return c.color; }
 "#;
 
+/// A multisampled texture's samples averaged (Direct3D's resolve of a format into another of its
+/// typeless group, or an sRGB twin: the values of the source's format, written in the target's).
+const RESOLVE_SHADER: &str = r#"
+@group(0) @binding(0) var tex: texture_multisampled_2d<f32>;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+  let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
+  return vec4f(p * 2.0 - 1.0, 0.0, 1.0);
+}
+@fragment fn fs(@builtin(position) p: vec4f) -> @location(0) vec4f {
+  let c = vec2<i32>(p.xy);
+  let n = i32(textureNumSamples(tex));
+  var s = vec4f(0.0);
+  for (var k = 0; k < n; k++) {
+    s += textureLoad(tex, c, k);
+  }
+  return s / f32(n);
+}
+"#;
+
 const BLIT_SHADER: &str = r#"
 struct Out { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
 struct R { src: vec4f };
@@ -252,6 +280,11 @@ struct Tex {
     storage: bool,
     /// the command that made it (save states: d3d/snap.rs)
     make: Vec<u32>,
+    /// sampleCount: 4 for a Direct3D 11 multisampled texture WebGPU multisamples (any count
+    /// above 1 Direct3D asked for), else 1
+    samples: u32,
+    /// a multisampled texture shown on the screen: what it resolves to (texture, view)
+    shown: Option<(Id, Id)>,
 }
 
 impl Tex {
@@ -267,6 +300,12 @@ impl Tex {
         for &(t, v) in self.fits.values() {
             gpu::destroy(t);
             gpu::drop(v);
+        }
+        if let Some((t, v)) = self.shown {
+            gpu::destroy(t);
+            if v != keep {
+                gpu::drop(v);
+            }
         }
     }
 }
@@ -478,6 +517,9 @@ pub struct D3d {
     overlay_tex: u32,
     snap_reads: Option<Vec<snap::Read>>,
     snap_tokens: HashMap<u32, usize>,
+    /// the shader resolve (resolve_into): module, pipeline and layout per target format
+    resolve_module: Id,
+    resolve_pipes: HashMap<&'static str, (Id, Id)>,
 }
 
 impl D3d {
@@ -560,6 +602,8 @@ impl D3d {
             overlay_tex: 0,
             snap_reads: None,
             snap_tokens: HashMap::new(),
+            resolve_module: 0,
+            resolve_pipes: HashMap::new(),
         }
     }
 
@@ -753,7 +797,7 @@ impl D3d {
                     self.clear_groups2();
                     self.created.set(self.created.get() + 1);
                     let view = gpu::view(tex, "");
-                    self.textures.insert(id, Tex { tex, w, h, levels, format: fmt, view, layers: 1, dim: "2d", views: HashMap::new(), fits: HashMap::new(), zclear: None, zused: 0, halved: halved(format), storage: false, make: c[i..i + 7].to_vec() });
+                    self.textures.insert(id, Tex { tex, w, h, levels, format: fmt, view, layers: 1, dim: "2d", views: HashMap::new(), fits: HashMap::new(), zclear: None, zused: 0, halved: halved(format), storage: false, make: c[i..i + 7].to_vec(), samples: 1, shown: None });
                     i += 7;
                 }
                 DESTROY_TEXTURE => {
@@ -877,11 +921,11 @@ impl D3d {
                     let (tex, rect) = (a(1), [a(2) as i32, a(3) as i32, a(4) as i32, a(5) as i32]);
                     self.end_pass();
                     self.submit();
-                    if let Some(t) = self.textures.get(&tex) {
-                        let view = t.view;
+                    if self.textures.contains_key(&tex) {
+                        let view = self.present_view(tex);
                         let old = self.shown();
                         // (a view kept for the screen after its texture went: now unused)
-                        if old != view && old != 0 && !self.textures.values().any(|t| t.view == old) {
+                        if old != view && old != 0 && !self.textures.values().any(|t| t.view == old || t.shown.is_some_and(|s| s.1 == old)) {
                             gpu::drop(old);
                         }
                         if old != view {
@@ -928,7 +972,7 @@ impl D3d {
                 }
                 WRITE_TEXTURE2 => {
                     let (id, level, layer, x, y, w, h, bpr, off) = (a(1), a(2), a(3), a(4), a(5), a(6), a(7), a(8), a(9));
-                    if let Some(t) = self.textures.get(&id).filter(|t| !is_depth(t.format)) {
+                    if let Some(t) = self.textures.get(&id).filter(|t| !is_depth(t.format) && t.samples == 1) {
                         let (tw, th, levels, tex, halved) = (t.w, t.h, t.levels, t.tex, t.halved);
                         self.flush_if_used(id);
                         let (lw, lh) = ((tw >> level).max(1), (th >> level).max(1));
@@ -977,6 +1021,10 @@ impl D3d {
                 GEN_MIPS => {
                     self.gen_mips(a(1));
                     i += 2;
+                }
+                RESOLVE => {
+                    self.resolve(a(1), a(2), a(3), a(4), a(5));
+                    i += 6;
                 }
                 _ => {
                     eprintln!("d3d9: unknown command {op} at {i}");
@@ -1042,6 +1090,7 @@ impl D3d {
             WRITE_TEXTURE | WRITE_TEXTURE_MEM if c[2] == 0 => self.touch_box(c[1], Some([c[3], c[4], c[3].saturating_add(c[5]), c[4].saturating_add(c[6])])),
             CREATE_TEXTURE | CREATE_TEXTURE2 | DESTROY_TEXTURE | WRITE_TEXTURE | WRITE_TEXTURE_MEM | WRITE_TEXTURE2 | FILL | GEN_MIPS => self.touch(c[1]),
             COPY => self.touch(c[7]),
+            RESOLVE => self.touch(c[1]),
             _ => {}
         }
     }
@@ -1452,6 +1501,16 @@ impl D3d {
                     drawn.push(c[i + 1]);
                     i += 8;
                 }
+                // a resolve of a texture cleared whole in the batch (then drawn to) gives the same,
+                // its destination counts as drawn
+                RESOLVE => {
+                    if !cleared.contains(&(c[i + 4], 0, c[i + 5])) {
+                        return None;
+                    }
+                    reads.push((c[i + 4], true));
+                    drawn.push(c[i + 1]);
+                    i += 6;
+                }
                 CREATE_BUFFER => {
                     bufs.push(i);
                     made.push(c[i + 1]);
@@ -1781,9 +1840,9 @@ impl D3d {
         if let Some(&(_, v)) = z.fits.get(&(w, h)) {
             return Some(v);
         }
-        let format = z.format;
+        let (format, samples) = (z.format, z.samples);
         let (depth, stencil) = z.zclear.unwrap_or((1.0, 0));
-        let tex = gpu::texture(&format!(r#"{{"size":[{w},{h}],"format":{},"usage":{}}}"#, q(format), usage::T_RENDER));
+        let tex = gpu::texture(&format!(r#"{{"size":[{w},{h}],"format":{},"sampleCount":{samples},"usage":{}}}"#, q(format), usage::T_RENDER));
         let view = gpu::view(tex, "");
         self.textures.get_mut(&id)?.fits.insert((w, h), (tex, view));
         // starts as the depth buffer was last cleared (not 0, which fails every LESS test)
@@ -2173,6 +2232,21 @@ impl D3d {
         }
         let (s_tex, s_fmt, s_w, s_h) = (s.tex, s.format, s.w, s.h);
         let (t_tex, t_fmt) = (t.tex, t.format);
+        // multisampled textures: copied whole into one of the same sample count and format
+        // group (all Direct3D 11 copies of them; WebGPU neither samples nor partly copies them)
+        if s.samples > 1 || t.samples > 1 {
+            let base = |f: &str| f.trim_end_matches("-srgb").to_string();
+            let whole = [sl, dl, sx, sy, dx, dy] == [0; 6] && (sw, sh) == (s.w, s.h) && (dw, dh) == (t.w, t.h) && (s.w, s.h) == (t.w, t.h);
+            if s.samples != t.samples || !whole || st == dt || base(s_fmt) != base(t_fmt) || s_fmt == DS {
+                return;
+            }
+            self.end_pass();
+            self.open = true;
+            gpu::copy_texture(s_tex, 0, [0, 0, 0], t_tex, 0, [0, 0, 0], [sw, sh, 1]);
+            self.use_tex(st);
+            self.use_tex(dt);
+            return;
+        }
         self.end_pass();
         // (WebGPU copies no depth-stencil texture of depth24plus-stencil8)
         if sw == dw && sh == dh && s_fmt == t_fmt && st != dt && s_fmt != DS {
@@ -2240,7 +2314,7 @@ impl D3d {
         let [req, id, level, x, y, w, h, dst, pitch] = a;
         // (a box inside the level: WebGPU's copy wants it so)
         let inside = |t: &Tex| level < t.levels && x as u64 + w as u64 <= (t.w >> level).max(1) as u64 && y as u64 + h as u64 <= (t.h >> level).max(1) as u64;
-        let Some(t) = self.textures.get(&id).filter(|t| !is_depth(t.format) && w > 0 && h > 0 && inside(t)) else {
+        let Some(t) = self.textures.get(&id).filter(|t| !is_depth(t.format) && t.samples == 1 && w > 0 && h > 0 && inside(t)) else {
             vnhost_d3d9_readback_done(req);
             return;
         };
@@ -2261,10 +2335,109 @@ impl D3d {
 
     // ---- Direct3D 11 ----
 
+    /// The view the screen shows of texture `id`: its own, or for a multisampled one what it
+    /// resolves to now (a texture kept for that).
+    fn present_view(&mut self, id: u32) -> Id {
+        let t = &self.textures[&id];
+        if t.samples == 1 {
+            return t.view;
+        }
+        let (w, h, format) = (t.w, t.h, t.format);
+        let (stex, sview) = match t.shown {
+            Some(s) => s,
+            None => {
+                let tex = gpu::texture(&format!(r#"{{"size":[{w},{h}],"format":{},"usage":{}}}"#, q(format), usage::T_RENDER | usage::T_BINDING | usage::T_COPY_SRC));
+                let view = gpu::view(tex, "");
+                self.textures.get_mut(&id).unwrap().shown = Some((tex, view));
+                (tex, view)
+            }
+        };
+        let _ = stex;
+        self.settle(id);
+        self.resolve_into(id, 0, sview, format);
+        self.submit();
+        sview
+    }
+
+    /// RESOLVE: ResolveSubresource of texture `src` (multisampled, layer `sly`) into level `dl`
+    /// layer `dly` of `dst`, of the same size. Where the page did not multisample `src` (a
+    /// format WebGPU does not), a copy.
+    fn resolve(&mut self, dst: u32, dl: u32, dly: u32, src: u32, sly: u32) {
+        let (Some(s), Some(t)) = (self.textures.get(&src), self.textures.get(&dst)) else { return };
+        if src == dst || dl >= t.levels || dly >= t.layers || sly >= s.layers || t.dim == "3d" || t.samples != 1 || ((t.w >> dl).max(1), (t.h >> dl).max(1)) != (s.w, s.h) || is_depth(s.format) || is_depth(t.format) {
+            return;
+        }
+        let (w, h, sfmt, tfmt, samples, stex, ttex) = (s.w, s.h, s.format, t.format, s.samples, s.tex, t.tex);
+        self.settle(src);
+        self.settle(dst);
+        self.end_pass();
+        self.touch(dst);
+        if samples == 1 {
+            let base = |f: &str| f.trim_end_matches("-srgb").to_string();
+            if base(sfmt) == base(tfmt) {
+                self.open = true;
+                gpu::copy_texture(stex, 0, [0, 0, sly], ttex, dl, [0, 0, dly], [w, h, 1]);
+                self.use_tex(src);
+                self.use_tex(dst);
+            }
+            return;
+        }
+        let dv = self.view2(dst, 1, dl, 1, dly, 1, false);
+        self.resolve_into(src, sly, dv, tfmt);
+        self.use_tex(dst);
+    }
+
+    /// Resolves multisampled `src` into view `dv` (format `fmt`): the GPU's resolve when the
+    /// formats are the same, else a shader that averages the samples (an sRGB twin, another
+    /// format of the typeless group). Clears not done yet must be done.
+    fn resolve_into(&mut self, src: u32, sly: u32, dv: Id, fmt: &'static str) {
+        let s = &self.textures[&src];
+        let (sfmt, sview) = (s.format, s.view);
+        let _ = sly;
+        self.end_pass();
+        self.use_tex(src);
+        self.traffic(src, 0, true, false);
+        self.open = true;
+        if sfmt == fmt && resolvable(fmt) {
+            gpu::begin_pass(&format!(r#"{{"colorAttachments":[{{"view":{sview},"resolveTarget":{dv},"loadOp":"load","storeOp":"store"}}]}}"#));
+            gpu::end_pass();
+        } else if renderable(fmt) && !sfmt.ends_with("int") && !fmt.ends_with("int") {
+            let (pipe, layout) = self.resolve_pipe(fmt);
+            let group = gpu::bind_group(layout, &[(0, Res::Obj(sview))]);
+            gpu::begin_pass(&format!(r#"{{"colorAttachments":[{{"view":{dv},"loadOp":"clear","storeOp":"store"}}]}}"#));
+            gpu::set_pipeline(pipe);
+            gpu::set_bind_group(0, group, &[]);
+            gpu::draw(3, 1, 0, 0);
+            gpu::end_pass();
+            gpu::drop(group);
+        }
+        STATS[2].fetch_add(1, Relaxed);
+    }
+
+    /// The shader resolve into `format` (see resolve_into): pipeline, its bind group layout.
+    fn resolve_pipe(&mut self, format: &'static str) -> (Id, Id) {
+        if let Some(&p) = self.resolve_pipes.get(format) {
+            return p;
+        }
+        if self.resolve_module == 0 {
+            self.resolve_module = gpu::shader(RESOLVE_SHADER);
+        }
+        let m = self.resolve_module;
+        let layout = gpu::bind_group_layout(r#"{"entries":[{"binding":0,"visibility":2,"texture":{"sampleType":"unfilterable-float","viewDimension":"2d","multisampled":true}}]}"#);
+        let pl = gpu::pipeline_layout(&format!(r#"{{"bindGroupLayouts":[{layout}]}}"#));
+        let p = gpu::render_pipeline(&format!(
+            r#"{{"layout":{pl},"vertex":{{"module":{m},"entryPoint":"vs"}},"fragment":{{"module":{m},"entryPoint":"fs","targets":[{{"format":{}}}]}},"primitive":{{"topology":"triangle-list"}}}}"#,
+            q(format)
+        ));
+        gpu::drop(pl);
+        self.resolve_pipes.insert(format, (p, layout));
+        (p, layout)
+    }
+
     fn create_texture2(&mut self, a: [u32; 7]) {
         let [id, w, h, layers, mips, format, dim_code] = a;
-        // (bit 8: bound for unordered access)
-        let (uav, dim_code) = (dim_code & 0x100 != 0, dim_code & 0xff);
+        // (bit 8: bound for unordered access; bit 9: multisampled)
+        let (uav, ms, dim_code) = (dim_code & 0x100 != 0, dim_code & 0x200 != 0, dim_code & 0xff);
         let fmt = tex_format(format);
         // 1D textures are 2D ones of height 1: WebGPU's 1D textures have neither array layers
         // nor mips (dxwgsl declares Texture1D[Array] as texture_2d[_array] to match)
@@ -2280,10 +2453,15 @@ impl D3d {
         // (no more levels than the size has)
         let biggest = if dim == "3d" { w.max(h).max(layers) } else { w.max(h) };
         let levels = mips.max(1).min(32 - biggest.max(1).leading_zeros());
-        let storage = uav && storable(fmt);
+        // Multisampled: 4 samples, WebGPU's only count above 1 (for Direct3D's 2, 4, 8 and 16),
+        // where WebGPU has it (2D, one level and layer, a format it multisamples, no UAV);
+        // else 1 sample, and resolving it is a copy
+        let samples = if ms && dim == "2d" && layers <= 1 && mips <= 1 && !uav && multisamplable(fmt) { 4 } else { 1 };
+        let levels = if samples > 1 { 1 } else { levels };
+        let storage = uav && storable(fmt) && samples == 1;
         let u = usage::T_BINDING | usage::T_COPY_DST | usage::T_COPY_SRC | if renderable || (depth && dim == "2d") { usage::T_RENDER } else { 0 } | if storage { usage::T_STORAGE } else { 0 };
         let tex = gpu::texture(&format!(
-            r#"{{"size":[{w},{h},{}],"dimension":{},"format":{},"mipLevelCount":{levels},"usage":{u}}}"#,
+            r#"{{"size":[{w},{h},{}],"dimension":{},"format":{},"mipLevelCount":{levels},"sampleCount":{samples},"usage":{u}}}"#,
             layers.max(1),
             q(dim),
             q(fmt)
@@ -2299,6 +2477,12 @@ impl D3d {
                 self.doomed.push(t);
                 gpu::drop(v);
             }
+            if let Some((t, v)) = old.shown {
+                self.doomed.push(t);
+                if v != self.shown() {
+                    gpu::drop(v);
+                }
+            }
         }
         self.created.set(self.created.get() + 1);
         let view = gpu::view(
@@ -2307,7 +2491,7 @@ impl D3d {
         );
         let mut make = vec![CREATE_TEXTURE2];
         make.extend_from_slice(&a);
-        self.textures.insert(id, Tex { tex, w, h, levels, format: fmt, view, layers: layers.max(1), dim, views: HashMap::new(), fits: HashMap::new(), zclear: None, zused: 0, halved: halved(format), storage, make });
+        self.textures.insert(id, Tex { tex, w, h, levels, format: fmt, view, layers: layers.max(1), dim, views: HashMap::new(), fits: HashMap::new(), zclear: None, zused: 0, halved: halved(format), storage, make, samples, shown: None });
         // A depth buffer starts at depth 1 (what Direct3D leaves undefined; WebGPU's zeros fail
         // every LESS test), and the passes that clear rather than load an aspect no draw used
         // yet (see `zused`) start from that too.
@@ -2354,8 +2538,22 @@ impl D3d {
         v
     }
 
+    /// The sample count of the Direct3D 11 targets `tg`; None when they differ (an invalid
+    /// pass: Direct3D 11 draws nothing either).
+    fn samples_of2(&self, tg: &[u32]) -> Option<u32> {
+        let n = tg[0] as usize;
+        let mut ids: Vec<u32> = (0..n).map(|k| tg[1 + k * 3]).collect();
+        ids.push(tg[1 + n * 3]);
+        let mut it = ids.iter().filter_map(|id| self.textures.get(id)).map(|t| t.samples);
+        let first = it.next().unwrap_or(1);
+        it.all(|x| x == first).then_some(first)
+    }
+
     fn begin_pass2(&mut self, tg: &[u32]) -> bool {
         let n = tg[0] as usize;
+        if self.samples_of2(tg).is_none() {
+            return false;
+        }
         let mut colors = Vec::new();
         for k in 0..n {
             let id = tg[1 + k * 3];
@@ -2461,7 +2659,9 @@ impl D3d {
 
     #[allow(clippy::too_many_arguments)]
     fn clear_view(&mut self, tex: u32, level: u32, layer: u32, flags: u32, color: [f32; 4], depth: f32, stencil: u32) {
-        let Some(t) = self.textures.get(&tex) else { return };
+        // (a texture WebGPU does not draw to: 3D ones, snorm and the like; a clear pass of
+        // one is invalid and took the whole command buffer with it)
+        let Some(t) = self.textures.get(&tex).filter(|t| t.dim == "2d" && (renderable(t.format) || is_depth(t.format))) else { return };
         let (dep, fits) = (is_depth(t.format), !t.fits.is_empty());
         let flags = if dep { flags & 6 } else { flags & 1 };
         // (a depth buffer with stand-ins of other sizes: all of them now, see depth_for)
@@ -2475,7 +2675,7 @@ impl D3d {
     /// A clear of a whole view as a pass of its own.
     #[allow(clippy::too_many_arguments)]
     fn clear_now(&mut self, tex: u32, level: u32, layer: u32, flags: u32, color: [f32; 4], depth: f32, stencil: u32) {
-        if !self.textures.contains_key(&tex) {
+        if !self.textures.get(&tex).is_some_and(|t| t.dim == "2d" && (renderable(t.format) || is_depth(t.format))) {
             return;
         }
         self.end_pass();
@@ -2593,11 +2793,14 @@ impl D3d {
             "3d" => "3d",
             _ => "2d",
         };
+        // (view dimension 6: a multisampled one, a render attachment as WebGPU wants those)
+        let ms = vdim == 6;
         let tex = gpu::texture(&format!(
-            r#"{{"size":[1,1,{layers}],"dimension":{},"format":{},"usage":{}}}"#,
+            r#"{{"size":[1,1,{layers}],"dimension":{},"format":{},"sampleCount":{},"usage":{}}}"#,
             q(tdim),
             q(format),
-            usage::T_BINDING | if kind == 6 { usage::T_RENDER } else { usage::T_COPY_DST }
+            if ms { 4 } else { 1 },
+            usage::T_BINDING | if kind == 6 || ms { usage::T_RENDER } else { usage::T_COPY_DST }
         ));
         let v = gpu::view(tex, &format!(r#"{{"dimension":{}}}"#, q(dim)));
         self.dummies.insert((vdim, kind), v);
@@ -2612,8 +2815,8 @@ impl D3d {
     }
 
     /// The pipeline of `p` with bind group layouts for `groups` (entries of 8 words).
-    fn pipeline2(&mut self, id: u32, groups: &[&[u32]]) -> bool {
-        let mut kinds = Vec::new();
+    fn pipeline2(&mut self, id: u32, groups: &[&[u32]], samples: u32) -> bool {
+        let mut kinds = vec![samples];
         for g in groups {
             for e in g.chunks(8) {
                 kinds.extend_from_slice(&[e[0], e[1], if e[1] == 1 || e[1] >= 4 { e[3] } else { u32::MAX }]);
@@ -2637,13 +2840,16 @@ impl D3d {
                     2 => format!(r#"{{"binding":{binding},"visibility":{visibility},"sampler":{{"type":"filtering"}}}}"#),
                     3 => format!(r#"{{"binding":{binding},"visibility":{visibility},"sampler":{{"type":"comparison"}}}}"#),
                     _ => {
+                        // (view dimension 6: Texture2DMS, a multisampled 2D one: its floats unfilterable)
+                        let ms = vdim == 6;
                         let st = match kind {
                             4 => "uint",
                             5 => "sint",
                             6 => "depth",
+                            _ if ms => "unfilterable-float",
                             _ => "float",
                         };
-                        format!(r#"{{"binding":{binding},"visibility":{visibility},"texture":{{"sampleType":{},"viewDimension":{vd}}}}}"#, q(st))
+                        format!(r#"{{"binding":{binding},"visibility":{visibility},"texture":{{"sampleType":{},"viewDimension":{vd}{}}}}}"#, q(st), if ms { r#","multisampled":true"# } else { "" })
                     }
                 });
             }
@@ -2728,8 +2934,8 @@ impl D3d {
             qi += 9;
             let format = tex_format(t[0]);
             // (formats WebGPU cannot draw to, as Direct3D 11 can: snorm; no draw rather than an
-            // invalid pipeline)
-            if !renderable(format) {
+            // invalid pipeline; with 4 samples, the formats it multisamples)
+            if !renderable(format) || samples > 1 && !multisamplable(format) {
                 layouts.iter().for_each(|&l| gpu::drop(l));
                 return false;
             }
@@ -2744,6 +2950,12 @@ impl D3d {
             let blend = if t[1] != 0 && blendable(format) { format!(r#","blend":{{"color":{},"alpha":{}}}"#, comp(t[2], t[3], t[4]), comp(t[5], t[6], t[7])) } else { String::new() };
             targets.push(format!(r#"{{"format":{}{blend},"writeMask":{}}}"#, q(format), if ps != 0 { t[8] & 0xf } else { 0 }));
         }
+        // the blend state's AlphaToCoverageEnable and OMSetBlendState's sample mask (with 4
+        // samples; alpha to coverage needs a target 0 and a pixel shader)
+        let (a2c, mask) = (k.get(qi).copied().unwrap_or(0), k.get(qi + 1).copied().unwrap_or(u32::MAX));
+        let a2c = a2c != 0 && samples > 1 && nt > 0 && ps != 0;
+        let mask = if samples > 1 { mask & 0xf } else { mask & 1 };
+        let multisample = format!(r#","multisample":{{"count":{samples},"mask":{mask}{}}}"#, if a2c { r#","alphaToCoverageEnabled":true"# } else { "" });
         let fragment = if ps != 0 {
             self.shaders.get(&ps).copied()
         } else {
@@ -2763,7 +2975,7 @@ impl D3d {
             _ => "",
         };
         let pipeline = gpu::render_pipeline(&format!(
-            r#"{{"layout":{pl},"vertex":{{"module":{vm},"entryPoint":"main","buffers":[{}]}},"fragment":{{"module":{fm},"entryPoint":"main","targets":[{}]}},"primitive":{{"topology":{}{strip_fmt},"cullMode":{},"frontFace":{}{}}}{ds}}}"#,
+            r#"{{"layout":{pl},"vertex":{{"module":{vm},"entryPoint":"main","buffers":[{}]}},"fragment":{{"module":{fm},"entryPoint":"main","targets":[{}]}},"primitive":{{"topology":{}{strip_fmt},"cullMode":{},"frontFace":{}{}}}{ds}{multisample}}}"#,
             buffers.join(","),
             targets.join(","),
             q(pick(&TOPOLOGY, topo, "triangle-list")),
@@ -2839,13 +3051,15 @@ impl D3d {
                         3 => format!(r#"{{"binding":{binding},"visibility":4,"sampler":{{"type":"comparison"}}}}"#),
                         7 => format!(r#"{{"binding":{binding},"visibility":4,"storageTexture":{{"access":"write-only","format":{},"viewDimension":{vd}}}}}"#, q(tex_format(e[5]))),
                         _ => {
+                            let ms = kind != 8 && e[3] == 6;
                             let st = match (kind, e[5]) {
                                 (4, _) | (8, 1) => "uint",
                                 (5, _) | (8, 2) => "sint",
                                 (8, _) => "unfilterable-float",
+                                _ if ms => "unfilterable-float",
                                 _ => "float",
                             };
-                            format!(r#"{{"binding":{binding},"visibility":4,"texture":{{"sampleType":{},"viewDimension":{vd}}}}}"#, q(st))
+                            format!(r#"{{"binding":{binding},"visibility":4,"texture":{{"sampleType":{},"viewDimension":{vd}{}}}}}"#, q(st), if ms { r#","multisampled":true"# } else { "" })
                         }
                     });
                 }
@@ -2925,8 +3139,13 @@ impl D3d {
                             && (kind != 1 || !t.format.ends_with("int"))
                             && (kind != 4 || t.format.ends_with("uint"))
                             && (kind != 5 || t.format.ends_with("sint"))
+                            && (b == 6) == (t.samples > 1)
                     });
                     let v = match ok {
+                        Some(_) if b == 6 => {
+                            self.use_tex(a);
+                            self.view2(a, 1, 0, 1, 0, 1, false)
+                        }
                         Some(_) => {
                             self.use_tex(a);
                             self.view2(a, b.min(5) as u8, cc, dd, ee, ff, false)
@@ -2976,7 +3195,8 @@ impl D3d {
         if !self.pipelines2.contains_key(&pid) || count == 0 || instances == 0 {
             return q_;
         }
-        if !self.pipeline2(pid, &groups) {
+        let Some(samples) = self.targets2.as_ref().and_then(|tg| self.samples_of2(tg)) else { return q_ };
+        if !self.pipeline2(pid, &groups, samples) {
             return q_;
         }
         if !self.clears.is_empty() {
@@ -3096,13 +3316,18 @@ impl D3d {
                             && (kind != 1 || !t.format.ends_with("int"))
                             && (kind != 4 || t.format.ends_with("uint"))
                             && (kind != 5 || t.format.ends_with("sint"))
+                            && (b == 6) == (t.samples > 1)
                     });
                     let v = match ok {
                         Some(t) => {
                             let depth = is_depth(t.format);
                             self.use_tex(a);
                             used.push(a);
-                            self.view2(a, b.min(5) as u8, cc, dd, ee, ff, depth)
+                            if b == 6 {
+                                self.view2(a, 1, 0, 1, 0, 1, depth)
+                            } else {
+                                self.view2(a, b.min(5) as u8, cc, dd, ee, ff, depth)
+                            }
                         }
                         None => self.dummy(b, kind),
                     };

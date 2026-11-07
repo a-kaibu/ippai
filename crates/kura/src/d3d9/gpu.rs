@@ -38,10 +38,11 @@ pub const SET_TARGETS2: u32 = 24; // n (tex level layer)*n dtex dlevel dlayer
 pub const DRAW2: u32 = 25; // see d3d11::draw (ends with the hash of what it reads from its buffers, 0: unknown)
 pub const CLEAR_VIEW: u32 = 26; // tex level layer flags c0 c1 c2 c3 depth stencil
 pub const GEN_MIPS: u32 = 27; // tex
-pub const CREATE_TEXTURE2: u32 = 28; // id w h layers_or_depth mips format dim (0 2d, 1 3d, 2 1d)
+pub const CREATE_TEXTURE2: u32 = 28; // id w h layers_or_depth mips format dim (0 2d, 1 3d, 2 1d; | 0x100 UAV, | 0x200 multisampled)
 pub const WRITE_TEXTURE2: u32 = 29; // id level layer_or_z x y w h bytes_per_row blob_offset
 pub const PRESENT_FLIP: u32 = 30; // as PRESENT, the texture bottom row first (OpenGL)
 pub const DISPATCH: u32 = 31; // shader x y z n entries[n*8] (see d3d11::dispatch)
+pub const RESOLVE: u32 = 32; // dst dst_level dst_layer src src_layer: ResolveSubresource (src multisampled, its level 0)
 
 /// Texture formats on the page.
 pub const FMT_BGRA8: u32 = 0;

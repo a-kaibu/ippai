@@ -409,6 +409,7 @@ fn show(c: &[u32]) -> String {
             SET_TARGETS2 => ("targets2", 2 + c[i + 1] as usize * 3 + 3),
             CLEAR_VIEW => ("clear view", 11),
             GEN_MIPS => ("mips", 2),
+            RESOLVE => ("resolve", 6),
             DRAW2 => {
                 let mut q = i + 2 + 6 + 5 + 4 + 1;
                 q += 1 + 2 * c[q] as usize + 3;
@@ -558,14 +559,16 @@ fn ps11(targets: u32, tex: bool) -> String {
     s
 }
 
-/// Textures: (id, w, h, layers, mips, format code)
-const TEXTURES11: [(u32, u32, u32, u32, u32, u32); 6] = [
-    (21, 16, 16, 1, 1, 0), // back buffer
-    (22, 16, 16, 1, 1, 0), // a layer
-    (23, 8, 8, 1, 2, 0),   // a picture with mips
-    (24, 16, 16, 1, 1, 1), // depth stencil
-    (25, 16, 16, 2, 1, 0), // an array: two targets in one texture
-    (26, 16, 16, 1, 1, 4), // rgba8unorm
+/// Textures: (id, w, h, layers, mips, format code, dimension word: 0x200 multisampled)
+const TEXTURES11: [(u32, u32, u32, u32, u32, u32, u32); 8] = [
+    (21, 16, 16, 1, 1, 0, 0),     // back buffer
+    (22, 16, 16, 1, 1, 0, 0),     // a layer
+    (23, 8, 8, 1, 2, 0, 0),       // a picture with mips
+    (24, 16, 16, 1, 1, 1, 0),     // depth stencil
+    (25, 16, 16, 2, 1, 0, 0),     // an array: two targets in one texture
+    (26, 16, 16, 1, 1, 4, 0),     // rgba8unorm
+    (27, 16, 16, 1, 1, 0, 0x200), // a 4x target, resolved into 22 or 25, sampled (Texture2DMS)
+    (28, 16, 16, 1, 1, 1, 0x200), // its 4x depth stencil
 ];
 
 #[derive(Clone, Copy)]
@@ -577,7 +580,18 @@ struct Pipe11 {
     z: u32,
     tex: bool,
     fmt: u32,
+    /// its pixel shader reads the samples of texture 27
+    ms: bool,
 }
+
+/// A pixel shader that reads the samples of a 4x texture (Texture2DMS.Load, sample count).
+const PS11_MS: &str = "struct U { m: array<vec4f, 4> };
+@group(1) @binding(0) var<uniform> cb: U;
+@group(1) @binding(16) var t0: texture_multisampled_2d<f32>;
+@fragment fn main(@builtin(position) p: vec4f) -> @location(0) vec4f {
+  return textureLoad(t0, vec2<i32>(p.xy), i32(textureNumSamples(t0)) - 1) + cb.m[0];
+}
+";
 
 struct Gen11 {
     r: Rng,
@@ -606,8 +620,8 @@ impl Gen11 {
 
     fn setup(&mut self) -> Batch {
         let mut b = Batch::new();
-        for &(id, w, h, layers, mips, fmt) in &TEXTURES11 {
-            b.c.extend_from_slice(&[CREATE_TEXTURE2, id, w, h, layers, mips, fmt, 0]);
+        for &(id, w, h, layers, mips, fmt, dim) in &TEXTURES11 {
+            b.c.extend_from_slice(&[CREATE_TEXTURE2, id, w, h, layers, mips, fmt, dim]);
         }
         let mut shaders = vec![(11u32, VS11.to_string())];
         for n in 1..=2 {
@@ -615,6 +629,7 @@ impl Gen11 {
                 shaders.push((12 + (n - 1) * 2 + tex as u32, ps11(n, tex)));
             }
         }
+        shaders.push((16, PS11_MS.to_string()));
         for (id, code) in &shaders {
             let off = b.blob(code.as_bytes());
             b.c.extend_from_slice(&[CREATE_SHADER, *id, off, code.len() as u32]);
@@ -651,11 +666,31 @@ impl Gen11 {
                         }
                         b.c.extend_from_slice(&[CREATE_PIPELINE2, id, key.len() as u32]);
                         b.c.extend_from_slice(&key);
-                        self.pipes.push(Pipe11 { id, n, z, tex, fmt });
+                        self.pipes.push(Pipe11 { id, n, z, tex, fmt, ms: false });
                         id += 1;
                     }
                 }
             }
+        }
+        // pixel shaders that read the 4x texture's samples (one target of format 0)
+        for z in 0..3u32 {
+            let r = &mut self.r;
+            let mut key = vec![11, 16, 3, 0, r.below(3), r.below(2), 0, 0, 0];
+            if z == 0 {
+                key.push(0xffff);
+            } else {
+                key.extend_from_slice(&[1, 1, r.below(2), r.below(9), (z == 2) as u32, 0xffff]);
+                for _ in 0..2 {
+                    key.extend_from_slice(&[r.below(9), r.below(9), r.below(9), r.below(9)]);
+                }
+            }
+            key.extend_from_slice(&[1, 16, 0, 1, 3, 0, 0, 1, 0, 0, 2, 1, 1, 2, 1, 1, 15]);
+            // (alpha to coverage, a sample mask)
+            key.extend_from_slice(&[r.below(2), r.pick(&[u32::MAX, 5, 0])]);
+            b.c.extend_from_slice(&[CREATE_PIPELINE2, id, key.len() as u32]);
+            b.c.extend_from_slice(&key);
+            self.pipes.push(Pipe11 { id, n: 1, z, tex: false, fmt: 0, ms: true });
+            id += 1;
         }
         self.picture(&mut b, 0);
         self.picture(&mut b, 1);
@@ -704,6 +739,15 @@ impl Gen11 {
                 b.c.extend_from_slice(&[GEN_MIPS, 23]);
             }
         }
+        // a 4x pass, resolved into a layer (sampled after) or a layer of the array
+        let mut ms_shown = false;
+        if self.r.chance(30) {
+            let z = self.r.chance(50);
+            self.pass(&mut b, &[(27, 0)], z, vb, ib, &verts, &idx, change);
+            let (dt, layer) = self.r.pick(&[(22u32, 0u32), (22, 0), (25, 1)]);
+            b.c.extend_from_slice(&[RESOLVE, dt, 0, layer, 27, 0]);
+            ms_shown = self.r.chance(20);
+        }
         // a layer first
         if self.r.chance(40) {
             let (t, layer) = self.r.pick(&[(22u32, 0u32), (25, 0), (25, 1)]);
@@ -720,7 +764,7 @@ impl Gen11 {
             self.req += 1;
             b.c.extend_from_slice(&[READBACK, self.req, 21, 0, 0, 0, 16, 16, dst, 64]);
         }
-        let shown = if main[0].0 == 26 { 26 } else { 21 };
+        let shown = if ms_shown { 27 } else if main[0].0 == 26 { 26 } else { 21 };
         // (OpenGL presents bottom row first)
         let op = if self.r.chance(20) { PRESENT_FLIP } else { PRESENT };
         b.c.extend_from_slice(&[op, shown, 0, 0, 16, 16, 0, 0, 0]);
@@ -734,7 +778,8 @@ impl Gen11 {
         for &(t, l) in targets {
             c.extend_from_slice(&[t, 0, l]);
         }
-        c.extend_from_slice(&if z { [24, 0, 0] } else { [0, 0, 0] });
+        let zt = if targets[0].0 == 27 { 28 } else { 24 };
+        c.extend_from_slice(&if z { [zt, 0, 0] } else { [0, 0, 0] });
         b.c.extend_from_slice(&c);
         for &(t, l) in targets {
             if self.r.chance(90) {
@@ -744,7 +789,7 @@ impl Gen11 {
         }
         if z && self.r.chance(85) {
             let flags = self.r.pick(&[2u32, 6, 6, 4]);
-            b.c.extend_from_slice(&[CLEAR_VIEW, 24, 0, 0, flags, 0, 0, 0, 0, (self.r.below(3) as f32 / 2.0).to_bits(), self.r.below(256)]);
+            b.c.extend_from_slice(&[CLEAR_VIEW, zt, 0, 0, flags, 0, 0, 0, 0, (self.r.below(3) as f32 / 2.0).to_bits(), self.r.below(256)]);
         }
         let fmt = if targets[0].0 == 26 { 4 } else { 0 };
         let sampled: Vec<(u32, u32, u32, u32)> = [(23u32, 0u32, 2u32, 0u32), (23, 1, 1, 0), (22, 0, 1, 0), (25, 0, 1, 0), (25, 0, 1, 1), (26, 0, 1, 0)]
@@ -756,7 +801,8 @@ impl Gen11 {
                 let k = self.r.below(2) as usize;
                 self.write_cb(b, k);
             }
-            let cands: Vec<Pipe11> = self.pipes.iter().copied().filter(|p| p.n == targets.len() as u32 && p.fmt == fmt && (p.z != 0) == z).collect();
+            let ms_ok = targets[0].0 != 27;
+            let cands: Vec<Pipe11> = self.pipes.iter().copied().filter(|p| p.n == targets.len() as u32 && p.fmt == fmt && (p.z != 0) == z && (!p.ms || ms_ok)).collect();
             let p = self.r.pick(&cands);
             let r = &mut self.r;
             let vp = if r.chance(70) { [0.0f32, 0.0, 16.0, 16.0] } else { [r.below(10) as f32, r.below(10) as f32, 1.0 + r.below(16) as f32, 1.0 + r.below(16) as f32] };
@@ -791,7 +837,9 @@ impl Gen11 {
             let c0 = cb(b, 0, &self.cbs);
             let c1 = cb(b, 1, &self.cbs);
             w.extend_from_slice(&[1, 0, 0, c0[0], c0[1], c0[2], c0[3], 0, 0]);
-            if p.tex {
+            if p.ms {
+                w.extend_from_slice(&[2, 0, 0, c1[0], c1[1], c1[2], c1[3], 0, 0, 16, 1, 27, 6, 0, 1, 0, 1]);
+            } else if p.tex {
                 let s = r.pick(&sampled);
                 let key = 2 | 2 << 3 | 2 << 6 | r.below(2) << 9 | r.below(2) << 10 | r.below(2) << 11 | 1 << 17;
                 w.extend_from_slice(&[3, 0, 0, c1[0], c1[1], c1[2], c1[3], 0, 0, 16, 1, s.0, 1, s.1, s.2, s.3, 1, 160, 2, key, 0, 32f32.to_bits(), 0, 0, 0]);
@@ -914,12 +962,16 @@ fn every_pipeline_state_is_valid_webgpu() {
             // (the float formats: the test's shaders write floats)
             key.extend_from_slice(&[r.pick(&[0u32, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 15, 16, 18]), r.below(2), r.below(20), r.below(20), r.below(8), r.below(20), r.below(20), r.below(8), r.below(17)]);
         }
+        // alpha to coverage, sample mask (or a key that ends before them)
+        if r.chance(80) {
+            key.extend_from_slice(&[r.below(3), r.next() as u32]);
+        }
         let id = 9000 + k;
         let mut c = vec![CREATE_PIPELINE2, id, key.len() as u32];
         c.extend_from_slice(&key);
         d.run(&c, &[], &[]);
         let groups: [&[u32]; 2] = [&[0, 0, 1, 0, 64, 64, 0, 0], if key[1] % 2 == 1 { &[0, 0, 2, 0, 64, 64, 0, 0, 16, 1, 23, 1, 0, 1, 0, 1, 160, 2, 0, 0, 0, 0, 0, 0] } else { &[0, 0, 2, 0, 64, 64, 0, 0] }];
-        d.pipeline2(id, &groups);
+        d.pipeline2(id, &groups, r.pick(&[1, 4]));
         let errors = model::with(|m| std::mem::take(&mut m.errors));
         assert!(errors.is_empty(), "pipeline {k}: {errors:?}\nkey {key:?}");
         last = k;
@@ -944,6 +996,23 @@ fn every_texture_kind_is_valid_webgpu() {
                     c.extend_from_slice(&[CREATE_TEXTURE2, id, w, h, layers, levels, fmt, dim]);
                     id += 1;
                 }
+            }
+        }
+    }
+    // multisampled (bit 9), with UAV binding too (bit 8): every page format, 1 or more layers
+    // and levels, every dimension; then resolved, cleared, copied whole, presented, bound
+    for fmt in 0..TEX_FORMATS.len() as u32 {
+        for (w, h, layers, levels) in [(16u32, 8u32, 1u32, 1u32), (7, 3, 1, 1), (16, 16, 2, 1), (8, 8, 1, 3)] {
+            for dim in [0x200u32, 0x300, 0x201, 0x202] {
+                c.extend_from_slice(&[CREATE_TEXTURE2, id, w, h, layers, levels, fmt, dim]);
+                // a single-sample twin, resolved into and copied to
+                c.extend_from_slice(&[CREATE_TEXTURE2, id + 1, w, h, layers, levels, fmt, dim & 0xff]);
+                c.extend_from_slice(&[CLEAR_VIEW, id, 0, 0, 7, 0, 0, 0, 0, 0, 0]);
+                c.extend_from_slice(&[RESOLVE, id + 1, 0, 0, id, 0]);
+                c.extend_from_slice(&[RESOLVE, id + 1, 0, layers - 1, id, layers - 1]);
+                c.extend_from_slice(&[COPY, id, 0, 0, 0, w, h, id + 2, 0, 0, 0, w, h, 0]);
+                c.extend_from_slice(&[PRESENT, id, 0, 0, 16, 16, 0, 0, 0]);
+                id += 3;
             }
         }
     }

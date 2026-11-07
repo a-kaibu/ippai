@@ -868,6 +868,17 @@ impl W {
                 format!("({e} + vec{n}<i32>({}))", off[..n].iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", "))
             }
         };
+        // ld2dms: the sample index instead of a level (WebGPU has no multisampled arrays: the
+        // page binds those single-sampled, see texture_type)
+        if i.op == 0x2e {
+            if !matches!(dim, 4 | 9) {
+                return Err(format!("ld2dms from resource dimension {dim}"));
+            }
+            let si = self.src(&i.ops[3], K::I, &[0])?;
+            let call = format!("textureLoad(t{t}, {}, {si})", add(self.src(o, K::I, &[0, 1])?, 2));
+            let e = if depth { format!("vec4<f32>({call}, 0.0f, 0.0f, 1.0f)") } else { call };
+            return self.vec4_result(i, e, if depth { K::F } else { k }, swz);
+        }
         let mip = self.src(o, K::I, &[3])?;
         let args = match dim {
             1 => format!("vec2<i32>({}, 0), 0", self.src(o, K::I, &[0])?),
@@ -884,9 +895,62 @@ impl W {
         self.vec4_result(i, e, if depth { K::F } else { k }, swz)
     }
 
+    /// sampleinfo: the resource's sample count in x (a rasterizer operand: 1, what the shader
+    /// cannot know here)
+    fn sample_info(&mut self, i: &Inst) -> R<()> {
+        let n = if i.ops[1].ty == tpf::RESOURCE {
+            let (t, dim, _, _) = self.texture(&i.ops[1])?;
+            if !matches!(dim, 4 | 9) {
+                return Err(format!("sampleinfo of resource dimension {dim}"));
+            }
+            format!("textureNumSamples(t{t})")
+        } else {
+            "1u".into()
+        };
+        let swz = i.ops[1].swizzle();
+        let u = format!("vec4<u32>({n}, 0u, 0u, 0u)");
+        if i.ctl & 1 != 0 {
+            self.vec4_result(i, u, K::U, swz)
+        } else {
+            self.vec4_result(i, format!("vec4<f32>({u})"), K::F, swz)
+        }
+    }
+
+    /// samplepos: where sample n of the resource is from the pixel's center (the standard
+    /// patterns WebGPU uses: 1 and 4 samples; others and out of range 0)
+    fn sample_pos(&mut self, i: &Inst) -> R<()> {
+        let n = if i.ops[1].ty == tpf::RESOURCE {
+            let (t, dim, _, _) = self.texture(&i.ops[1])?;
+            if !matches!(dim, 4 | 9) {
+                return Err(format!("samplepos of resource dimension {dim}"));
+            }
+            format!("textureNumSamples(t{t})")
+        } else {
+            "1u".into()
+        };
+        let si = self.src(&i.ops[2], K::U, &[0])?;
+        self.helpers.insert("d3d_samplepos");
+        let swz = i.ops[1].swizzle();
+        self.vec4_result(i, format!("d3d_samplepos({n}, {si})"), K::F, swz)
+    }
+
     fn resinfo(&mut self, i: &Inst) -> R<()> {
         let (t, dim, _, _) = self.texture(&i.ops[2])?;
         let swz = i.ops[2].swizzle();
+        if matches!(dim, 4 | 9) {
+            // (a multisampled one: no levels but 1; arrays of it are single layers on the page)
+            let dims = format!("textureDimensions(t{t})");
+            let u = format!("vec4<u32>({dims}, {}u, 1u)", (dim == 9) as u32);
+            let (e, k) = match i.ctl & 3 {
+                2 => (u, K::U),
+                1 => {
+                    let f = format!("vec4<f32>({u})");
+                    (format!("(vec4<f32>(1.0f, 1.0f, 1.0f, 0.0f) / {f} + vec4<f32>(0.0f, 0.0f, 0.0f, 1.0f) * {f})"), K::F)
+                }
+                _ => (format!("vec4<f32>({u})"), K::F),
+            };
+            return self.vec4_result(i, e, k, swz);
+        }
         let mip = self.src(&i.ops[1], K::U, &[0])?;
         let dims = format!("textureDimensions(t{t}, {mip})");
         let levels = format!("textureNumLevels(t{t})");
@@ -1150,7 +1214,9 @@ impl W {
             0x29 => self.shift(i, I, "<<")?,
             0x2a => self.shift(i, I, ">>")?,
             0x55 => self.shift(i, U, ">>")?,
-            0x2d => self.load(i)?,
+            0x2d | 0x2e => self.load(i)?,
+            0x6e => self.sample_pos(i)?,
+            0x6f => self.sample_info(i)?,
             0x2f => {
                 self.helpers.insert("d3d_log2");
                 self.per_comp(i, &[F], F, |a| format!("d3d_log2({})", a[0]))?
@@ -1406,6 +1472,8 @@ fn texture_type(dim: u32, k: K, depth: bool) -> R<(String, u32)> {
     // (1D textures and arrays are 2D ones of height 1 on the page: WebGPU's 1D textures have no
     // levels or layers)
     let vd = match dim {
+        // (Texture2DMS and Texture2DMSArray: multisampled 2D, view dimension 6)
+        4 | 9 => 6,
         1..=3 => 1,
         7 => 2,
         5 => 5,
@@ -1414,6 +1482,9 @@ fn texture_type(dim: u32, k: K, depth: bool) -> R<(String, u32)> {
         10 => 4,
         d => return Err(format!("resource dimension {d}")),
     };
+    if vd == 6 {
+        return Ok((if depth { "texture_depth_multisampled_2d".into() } else { format!("texture_multisampled_2d<{}>", k.s()) }, vd));
+    }
     if depth {
         let t = match vd {
             1 => "texture_depth_2d",
@@ -1898,6 +1969,14 @@ const HELPERS: &[(&str, &str)] = &[
 }
 "),
     // frc: below 1 (-tiny gives 0x3f7fffff), infinities and NaN give NaN
+    // samplepos: the standard 4x pattern (D3D11 and WebGPU's), 1x the center
+    ("d3d_samplepos", "fn d3d_samplepos(n: u32, i: u32) -> vec4<f32> {
+  if (n == 4u && i < 4u) {
+    var p = array<vec2<f32>, 4>(vec2<f32>(-0.125f, -0.375f), vec2<f32>(0.375f, -0.125f), vec2<f32>(-0.375f, 0.125f), vec2<f32>(0.125f, 0.375f));
+    return vec4<f32>(p[i], 0.0f, 0.0f);
+  }
+  return vec4<f32>(0.0f);
+}"),
     ("d3d_frc", "fn d3d_frc(x: f32) -> f32 {
   let b = bitcast<u32>(x);
   if ((b & 0x7fffffffu) >= 0x7f800000u) { return bitcast<f32>((b & 0x7f800000u) | 0x00400000u); }

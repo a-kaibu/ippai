@@ -1,8 +1,9 @@
 /* Direct3D 11 (feature level 11_0; WARP on the Windows runner): clears and their rounding to
  * UNORM, fill rules and interpolation, lines and points, sampling (filters, address modes,
  * border, LOD), texture formats incl. BC and sRGB, blend states, depth/stencil, rasterizer
- * state, copies and updates, mipmap generation, and shader arithmetic: float and integer
- * operations of HLSL (compiled with the system's D3DCompile) on chosen and random inputs,
+ * state, copies and updates, mipmap generation, 4x multisampling (resolves, Texture2DMS reads,
+ * sample positions) and shader arithmetic: float and integer operations of HLSL (compiled with
+ * the system's D3DCompile) on chosen and random inputs,
  * read back from float/uint targets bit for bit (approximate operations within the limits the
  * Direct3D 11 functional spec gives them).
  * libs: -ld3d11 -ld3dcompiler_47
@@ -703,6 +704,117 @@ static void pictures(void) {
     }
 }
 
+/* ---- multisampling: 4x targets, ResolveSubresource, Texture2DMS reads ---- */
+
+static const char *MS =
+    "Texture2DMS<float4> tm : register(t0);\n"
+    "struct V { float4 p : SV_Position; float4 c : COLOR; float2 uv : TEXCOORD; };\n"
+    /* each 16-pixel column shows one sample of the 4x target */
+    "float4 sample_k(V i) : SV_Target { return tm.Load(int2(i.p.xy), (int)(i.p.x / 16)); }\n"
+    /* sample k's position (+0.5) and the sample count, for the pixel in column k */
+    "float4 pos_k(V i) : SV_Target { uint w, h, n; tm.GetDimensions(w, h, n);\n"
+    "  float2 s = tm.GetSamplePosition((int)i.p.x % 4); return float4(s + 0.5, n / 8.0, w / 256.0); }\n";
+
+static void msaa(void) {
+    UINT q[5] = { 0 };
+    static const UINT counts[5] = { 1, 2, 4, 8, 16 };
+    for (int i = 0; i < 5; i++) ID3D11Device_CheckMultisampleQualityLevels(dev, DXGI_FORMAT_R8G8B8A8_UNORM, counts[i], &q[i]);
+    printf("msaa levels 1:%u 2:%u 4:%u 8:%u 16:%u\n", q[0], q[1], q[2], q[3], q[4]);
+    D3D11_TEXTURE2D_DESC d = { W, H, 1, 1, DXGI_FORMAT_R8G8B8A8_UNORM, { 4, 1 }, D3D11_USAGE_DEFAULT, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE, 0, 0 };
+    ID3D11Texture2D *ms = NULL, *mz = NULL;
+    printf("4x quality 1 %s\n", SUCCEEDED(ID3D11Device_CreateTexture2D(dev, &d, NULL, &ms)) ? "created" : "failed");
+    if (ms) { ID3D11Texture2D_Release(ms); ms = NULL; }
+    d.SampleDesc.Quality = 0;
+    d.MipLevels = 2;
+    printf("4x mips 2 %s\n", SUCCEEDED(ID3D11Device_CreateTexture2D(dev, &d, NULL, &ms)) ? "created" : "failed");
+    if (ms) { ID3D11Texture2D_Release(ms); ms = NULL; }
+    d.MipLevels = 1;
+    if (FAILED(ID3D11Device_CreateTexture2D(dev, &d, NULL, &ms))) { puts("4x target failed"); return; }
+    D3D11_TEXTURE2D_DESC got;
+    ID3D11Texture2D_GetDesc(ms, &got);
+    printf("4x desc samples %u quality %u mips %u\n", got.SampleDesc.Count, got.SampleDesc.Quality, got.MipLevels);
+    d.Format = DXGI_FORMAT_D24_UNORM_S8_UINT; d.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+    if (FAILED(ID3D11Device_CreateTexture2D(dev, &d, NULL, &mz))) { puts("4x depth failed"); return; }
+    ID3D11RenderTargetView *mv = NULL;
+    ID3D11DepthStencilView *mzv = NULL;
+    ID3D11Device_CreateRenderTargetView(dev, (ID3D11Resource *)ms, NULL, &mv);
+    ID3D11Device_CreateDepthStencilView(dev, (ID3D11Resource *)mz, NULL, &mzv);
+    D3D11_RENDER_TARGET_VIEW_DESC rd;
+    ID3D11RenderTargetView_GetDesc(mv, &rd);
+    printf("4x rtv dimension %d\n", rd.ViewDimension);
+
+    /* a scene with slanted edges and a depth-tested overlap, resolved */
+    reset();
+    float c[4] = { 0, 0, 0.25f, 1 };
+    ID3D11DeviceContext_ClearRenderTargetView(ctx, mv, c);
+    ID3D11DeviceContext_ClearDepthStencilView(ctx, mzv, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
+    ID3D11DeviceContext_OMSetRenderTargets(ctx, 1, &mv, mzv);
+    struct v2 tri[3] = { { 4, 4 }, { 60, 12 }, { 20, 58 } };
+    rgba(tri[0].c, 0xffff0000); rgba(tri[1].c, 0xffff0000); rgba(tri[2].c, 0xffff0000);
+    draw_buf(tri, sizeof tri[0], 3, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    struct v2 thin[3] = { { 2, 40 }, { 62, 46 }, { 2, 41 } };
+    for (int i = 0; i < 3; i++) rgba(thin[i].c, 0xffffffff);
+    draw_buf(thin, sizeof thin[0], 3, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    set_depth(TRUE, D3D11_COMPARISON_LESS, TRUE, FALSE, D3D11_COMPARISON_ALWAYS, D3D11_STENCIL_OP_KEEP, 0);
+    use(vsz, layoutz, ps_color);
+    struct v3 zt[3] = { { 30, 20, 0.25f }, { 62, 62, 0.75f }, { 10, 62, 0.75f } };
+    for (int i = 0; i < 3; i++) rgba(zt[i].c, 0xff00ff00);
+    draw_buf(zt, sizeof zt[0], 3, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    quadz(36, 0, 64, 64, 0.5f, 0x800080ff);
+    ID3D11DeviceContext_OMSetRenderTargets(ctx, 1, &rtv, dsv);
+    ID3D11DeviceContext_ResolveSubresource(ctx, (ID3D11Resource *)rt, 0, (ID3D11Resource *)ms, 0, DXGI_FORMAT_R8G8B8A8_UNORM);
+    shot("msaa", 2, 1);
+
+    /* the samples one by one, through a Texture2DMS */
+    ID3DBlob *b = compile(MS, "sample_k", "ps_4_1", NULL), *b2 = compile(MS, "pos_k", "ps_4_1", NULL);
+    ID3D11PixelShader *pk = NULL, *pp = NULL;
+    if (b) ID3D11Device_CreatePixelShader(dev, ID3D10Blob_GetBufferPointer(b), ID3D10Blob_GetBufferSize(b), NULL, &pk);
+    if (b2) ID3D11Device_CreatePixelShader(dev, ID3D10Blob_GetBufferPointer(b2), ID3D10Blob_GetBufferSize(b2), NULL, &pp);
+    ID3D11ShaderResourceView *sv = srv_of(ms);
+    if (sv) {
+        D3D11_SHADER_RESOURCE_VIEW_DESC sd;
+        ID3D11ShaderResourceView_GetDesc(sv, &sd);
+        printf("4x srv dimension %d\n", sd.ViewDimension);
+    }
+    reset();
+    begin(0, 0, 0, 1);
+    if (pk && sv) {
+        use(vs, layout, pk);
+        bind_srv(sv);
+        quad(0, 0, 64, 64, 0xffffffff, 0, 0, 1, 1);
+        shot("msaa_samples", 1, 0);
+    }
+    if (pp && sv) {
+        use(vs, layout, pp);
+        quad(0, 0, 64, 64, 0xffffffff, 0, 0, 1, 1);
+        printf("sample positions %08lx %08lx %08lx %08lx\n", pixel(0, 0), pixel(1, 0), pixel(2, 0), pixel(3, 0));
+    }
+    ID3D11ShaderResourceView *none = NULL;
+    ID3D11DeviceContext_PSSetShaderResources(ctx, 0, 1, &none);
+
+    /* a 4x target copied whole to another 4x one, then resolved */
+    ID3D11Texture2D *ms2 = NULL;
+    d.Format = DXGI_FORMAT_R8G8B8A8_UNORM; d.BindFlags = D3D11_BIND_RENDER_TARGET;
+    if (SUCCEEDED(ID3D11Device_CreateTexture2D(dev, &d, NULL, &ms2))) {
+        ID3D11DeviceContext_CopyResource(ctx, (ID3D11Resource *)ms2, (ID3D11Resource *)ms);
+        begin(1, 1, 1, 1);
+        ID3D11DeviceContext_ResolveSubresource(ctx, (ID3D11Resource *)rt, 0, (ID3D11Resource *)ms2, 0, DXGI_FORMAT_R8G8B8A8_UNORM);
+        printf("copied 4x resolved %08lx %08lx %08lx\n", pixel(1, 1), pixel(40, 30), pixel(20, 42));
+        ID3D11Texture2D_Release(ms2);
+    }
+
+    if (sv) ID3D11ShaderResourceView_Release(sv);
+    if (pk) ID3D11PixelShader_Release(pk);
+    if (pp) ID3D11PixelShader_Release(pp);
+    if (b) ID3D10Blob_Release(b);
+    if (b2) ID3D10Blob_Release(b2);
+    ID3D11RenderTargetView_Release(mv);
+    ID3D11DepthStencilView_Release(mzv);
+    ID3D11Texture2D_Release(ms);
+    ID3D11Texture2D_Release(mz);
+    reset();
+}
+
 /* ---- shader arithmetic ---- */
 
 #define N 8 /* an N x N target: N*N*4 results per operation */
@@ -985,6 +1097,7 @@ int main(void) {
     ID3D11DeviceContext_PSSetConstantBuffers(ctx, 0, 1, &cb);
 
     pictures();
+    msaa();
     math();
     return 0;
 }

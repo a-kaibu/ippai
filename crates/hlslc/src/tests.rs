@@ -634,3 +634,31 @@ fn nis_variants() {
     }
     assert_eq!(n, 96);
 }
+
+/// Multisampled textures (Texture2DMS / Texture2DMSArray of floats and integers): Load with a
+/// sample index (ld2dms), GetDimensions (resinfo and sampleinfo), GetSamplePosition
+/// (samplepos), to texture_multisampled_2d in WGSL that naga accepts.
+#[test]
+fn multisampled_textures() {
+    const SRC: &str = "Texture2DMS<float4> ms : register(t0); Texture2DMS<uint4, 4> msu : register(t1); Texture2DMSArray<float4> msa : register(t2);
+float4 ps(float4 pos : SV_Position, uint si : SV_SampleIndex) : SV_Target {
+    uint w, h, n, aw, ah, al, an;
+    ms.GetDimensions(w, h, n);
+    msa.GetDimensions(aw, ah, al, an);
+    float4 c = 0;
+    for (uint k = 0; k < n; k++) c += ms.Load(int2(pos.xy), k);
+    c += ms.Load(int2(pos.xy), si, int2(1, -1)) + float4(msu.Load(int2(0, 0), 3)) + msa.Load(int3(pos.xy, 0), 1);
+    float2 p = ms.GetSamplePosition(si);
+    return c / n + float4(p, w + h, aw + ah + al + an);
+}";
+    for t in ["ps_4_1", "ps_5_0"] {
+        let code = compile(SRC, "ps", t);
+        let w = wgsl(&code, true, None);
+        assert!(w.contains("texture_multisampled_2d<f32>") && w.contains("texture_multisampled_2d<u32>"), "{w}");
+        assert!(w.contains("textureNumSamples(t0)") && w.contains("d3d_samplepos("), "{w}");
+        assert!(w.matches("textureLoad(t").count() >= 4, "{w}");
+        let b = dxwgsl::translate(&code, true, None).unwrap().bindings;
+        assert!(b.iter().filter(|x| matches!(x.1, dxwgsl::Binding::Texture(6, _))).count() == 3, "{b:?}");
+        assert!(b.contains(&(17, dxwgsl::Binding::Texture(6, 1))), "{b:?}");
+    }
+}

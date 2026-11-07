@@ -5,7 +5,8 @@
 //! drawing thread runs it before anything else (render/mod.rs), then the guest's batches go on.
 //!
 //! Depth and stencil can't be read back (WebGPU): they come back as they were last cleared
-//! (games clear them every frame).
+//! (games clear them every frame). Neither can multisampled textures: they come back
+//! uninitialized (games draw and resolve them every frame).
 
 use super::*;
 
@@ -44,7 +45,7 @@ impl D3d {
         ids.sort_unstable();
         for id in ids {
             let t = &self.textures[&id];
-            if is_depth(t.format) || t.make.is_empty() {
+            if is_depth(t.format) || t.samples > 1 || t.make.is_empty() {
                 continue;
             }
             let bpp = bpp(t.format);

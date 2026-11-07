@@ -38,10 +38,11 @@ d3d9-* ^image surfaces:
 # sampling (r307) and address2 (r443) take tolerance 10 in the probe (WARP's 1/16 filter weights),
 # the replay's pictures 2; r1023 is surfaces (above), and so is the back buffer at its Present (f0)
 replay_d3d9-32-32 ^image (r307|r443|r1023|f0):
-# Direct3D 11 on the runner is WARP. Its format list and flags are its own; sake has no MSAA
-# (quality levels 0: games fall back) and no video or palette formats (100-115: answered as a
-# device without video support does, E_FAIL; BC6H/BC7, 3-channel 32-bit, the 4:2:2 packed and
-# XR_BIAS textures are decoded or widened on upload)
+# Direct3D 11 on the runner is WARP. Its format list and flags are its own; sake answers WARP's
+# multisample quality levels (and draws 4x on WebGPU, which has no 2x/8x/16x: those run at 4x)
+# but has no video or palette formats (100-115: answered as a device without video support
+# does, E_FAIL; BC6H/BC7, 3-channel 32-bit, the 4:2:2 packed and XR_BIAS textures are decoded
+# or widened on upload)
 d3d11-* ^(want|got) +format 
 # WARP flushes float denormals on every operation (abs(denormal) = 0, clamp to -0); WebGPU
 # leaves denormals to the GPU and sake does not flush them but in log; log2 just below 1 is

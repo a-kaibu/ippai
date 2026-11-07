@@ -204,6 +204,22 @@ impl L<'_> {
         Ok(Val::num(ty, (0..comps).map(|k| C::R(temp(dst), k as u8)).collect()))
     }
 
+    /// Texture2DMS[Array].Load(coord, sample[, offset]): ld2dms (the array index in z).
+    pub(super) fn load_ms(&mut self, t: u32, coord: Val, sample: Val, offset: [i32; 3]) -> R<Val> {
+        let (dim, el) = self.x_tex_el(t);
+        let coord = self.x_cast(coord.clone(), &coord.ty.with_base(B::Int))?;
+        let c = &coord.c;
+        let z = C::I(0);
+        let addr = if dim == Dim::T2DMSArray { vec![c[0], c[1], c.get(2).copied().unwrap_or(z), z] } else { vec![c[0], c[1], z, z] };
+        let sample = self.x_cast(sample, &Ty::Scalar(B::Int))?;
+        let dst = self.x_tmp();
+        let a = self.x_opnd(&addr);
+        let si = self.x_opnd(&sample.c[..1]);
+        self.x_emit(sm4::LD_MS, vec![Dst { r: temp(dst), mask: 0xf }], vec![a, Src::Tex(t, [0, 1, 2, 3]), si]).offset = offset;
+        let comps = el.comps().max(1);
+        Ok(Val::num(el, (0..comps).map(|k| C::R(temp(dst), k as u8)).collect()))
+    }
+
     pub(super) fn load(&mut self, t: u32, coord: Val, offset: [i32; 3], has_mip: bool) -> R<Val> {
         let (dim, el) = self.x_tex_el(t);
         let coord = self.x_cast(coord.clone(), &coord.ty.with_base(B::Int))?;
@@ -752,10 +768,47 @@ pub fn method(l: &mut L, o: Val, name: &str, args: &[Expr]) -> R<Val> {
             v.c = (0..4).map(|k| C::R(r, k)).collect();
             v
         }
+        "Load" if matches!(dim, Dim::T2DMS | Dim::T2DMSArray) => {
+            let c = arg(l, 0)?;
+            let s = arg(l, 1)?;
+            let off = l.offset_of(args.get(2))?;
+            l.load_ms(t, c, s, off)?
+        }
         "Load" => {
             let c = arg(l, 0)?;
             let off = l.offset_of(args.get(1))?;
             l.load(t, c, off, dim != Dim::Buffer)?
+        }
+        "GetSamplePosition" if matches!(dim, Dim::T2DMS | Dim::T2DMSArray) => {
+            // samplepos: the sample's position from the pixel's center, in pixels (xy)
+            let s = arg(l, 0)?;
+            let s = l.x_cast(s, &Ty::Scalar(B::Int))?;
+            let si = l.x_opnd(&s.c[..1]);
+            let dst = l.x_tmp();
+            l.x_emit(SAMPLE_POS, vec![Dst { r: temp(dst), mask: 0x3 }], vec![Src::Tex(t, [0, 1, 2, 3]), si]);
+            Val::num(Ty::Vec(B::Float, 2), vec![C::R(temp(dst), 0), C::R(temp(dst), 1)])
+        }
+        "GetDimensions" if matches!(dim, Dim::T2DMS | Dim::T2DMSArray) => {
+            // (width, height[, elements], samples): resinfo (level 0) and sampleinfo
+            let outs = args;
+            let want = 3 + (dim == Dim::T2DMSArray) as usize;
+            if outs.len() != want {
+                return Err(format!("GetDimensions of a multisampled texture takes {want} outputs"));
+            }
+            let dst = l.x_tmp();
+            let z = l.x_opnd(&[C::I(0)]);
+            l.x_emit(RESINFO, vec![Dst { r: temp(dst), mask: 0x7 }], vec![z, Src::Tex(t, [0, 1, 2, 3])]).ctl = 2;
+            let sdst = l.x_tmp();
+            l.x_emit(SAMPLE_INFO, vec![Dst { r: temp(sdst), mask: 0x1 }], vec![Src::Tex(t, [0, 0, 0, 0])]).ctl = 1;
+            for (k, e) in outs.iter().enumerate() {
+                let p = l.x_place(e)?;
+                let c = if k + 1 == want { C::R(temp(sdst), 0) } else { C::R(temp(dst), k as u8) };
+                let v = Val::num(Ty::Scalar(B::Uint), vec![c]);
+                let v = l.x_cast(v, &p.ty)?;
+                l.x_assign(&p.c, &v.c);
+            }
+            let _ = l.x_major();
+            Val::num(Ty::Void, vec![])
         }
         "GetDimensions" => {
             // ([mip,] width[, height][, elements/depth], [levels])

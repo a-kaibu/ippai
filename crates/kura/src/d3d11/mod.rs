@@ -32,6 +32,8 @@ mod desc_tests;
 #[cfg(test)]
 mod copy_tests;
 #[cfg(test)]
+mod msaa_tests;
+#[cfg(test)]
 mod compute_tests;
 
 use crate::d3d9::gpu;
@@ -258,6 +260,8 @@ pub struct SwapChain {
     pub fmt: u32,
     pub buffer: u32,
     pub presents: u32,
+    /// its buffer's DXGI_SAMPLE_DESC (count, quality)
+    pub samples: (u32, u32),
 }
 
 pub enum Data {
@@ -914,7 +918,7 @@ unsafe fn create_device(d: &mut D11, args: *const u32) -> u32 {
     }
     if desc != 0 && sc_out != 0 {
         let p = swap_desc(desc);
-        let sc = new_swapchain(d, p[11], p[0], p[1], p[4], p[9]);
+        let sc = new_swapchain(d, p[11], p[0], p[1], p[4], (p[7], p[8]));
         wrp(sc_out, 0, sc);
         if sc == 0 {
             return E_FAIL;
@@ -1126,17 +1130,18 @@ fn default_state() -> State {
     }
 }
 
-unsafe fn new_swapchain(d: &mut D11, hwnd: u32, w: u32, h: u32, fmt: u32, count: u32) -> u32 {
-    let _ = count;
+/// A swap chain (address) whose buffer has `samples` (DXGI_SAMPLE_DESC: count, quality; a
+/// multisampled one with BitBlt-model swap effects, resolved when it is presented).
+unsafe fn new_swapchain(d: &mut D11, hwnd: u32, w: u32, h: u32, fmt: u32, samples: (u32, u32)) -> u32 {
     let mut rect = [0i32; 4];
     (d.calls().client_rect)(hwnd, rect.as_mut_ptr());
     let w = if w == 0 { (rect[2] - rect[0]).max(1) as u32 } else { w };
     let h = if h == 0 { (rect[3] - rect[1]).max(1) as u32 } else { h };
     let fmt = if format::info(fmt).is_some() { fmt } else { 28 };
-    let buffer = new_backbuffer(d, w, h, fmt);
+    let buffer = new_backbuffer(d, w, h, fmt, samples);
     let bid = d.id_of(buffer);
     d.add_ref(d.device);
-    let sc = d.new_obj(IF_SWAPCHAIN, Data::SwapChain(SwapChain { device: d.device, hwnd, w, h, fmt, buffer: bid, presents: 0 }));
+    let sc = d.new_obj(IF_SWAPCHAIN, Data::SwapChain(SwapChain { device: d.device, hwnd, w, h, fmt, buffer: bid, presents: 0, samples }));
     if d.trace {
         eprintln!("d3d11: swap chain {w}x{h} format {fmt} window {hwnd:#x}");
     }
@@ -1145,24 +1150,27 @@ unsafe fn new_swapchain(d: &mut D11, hwnd: u32, w: u32, h: u32, fmt: u32, count:
 
 /// A swap chain's buffer (address): views of it may take the sRGB twin of its format
 /// (DXGI's back buffer cast).
-fn new_backbuffer(d: &mut D11, w: u32, h: u32, fmt: u32) -> u32 {
-    let o = new_texture(d, 2, w, h, 1, 1, fmt, 0, 0x8 | 0x20, false);
+fn new_backbuffer(d: &mut D11, w: u32, h: u32, fmt: u32, samples: (u32, u32)) -> u32 {
+    let o = new_texture(d, 2, w, h, 1, 1, fmt, 0, 0x8 | 0x20, false, samples.0);
     let id = d.id_of(o);
     if let Some(Data::Texture(t)) = d.objs.get_mut(&id).map(|o| &mut o.data) {
         t.backbuffer = true;
+        t.samples = (samples.0.max(1), samples.1);
     }
     o
 }
 
-/// A texture object (address).
-fn new_texture(d: &mut D11, dim: u32, w: u32, h: u32, layers: u32, mips: u32, fmt: u32, usage: u32, bind: u32, cube: bool) -> u32 {
+/// A texture object (address); `samples` above 1: multisampled (on the page 4x where WebGPU
+/// can, see render::d3d create_texture2).
+#[allow(clippy::too_many_arguments)]
+fn new_texture(d: &mut D11, dim: u32, w: u32, h: u32, layers: u32, mips: u32, fmt: u32, usage: u32, bind: u32, cube: bool, samples: u32) -> u32 {
     let page = format::info(fmt).map_or(format::P_BGRA8, |f| f.page);
     let max = 32 - w.max(h).max(1).leading_zeros();
     let mips = if mips == 0 { max } else { mips.min(max) };
     let gpu = page_id();
     let layers = layers.max(1);
     // (bit 8: bound for unordered access, a storage texture on the page)
-    let uav = if bind & 0x80 != 0 { 0x100 } else { 0 };
+    let uav = if bind & 0x80 != 0 { 0x100 } else { 0 } | if samples > 1 { 0x200 } else { 0 };
     gpu::record(|q| q.cmd(&[gpu::CREATE_TEXTURE2, gpu, w.max(1), h.max(1), layers, mips, page, uav | match dim {
         3 => 1,
         1 => 2,
@@ -1190,7 +1198,7 @@ fn new_texture(d: &mut D11, dim: u32, w: u32, h: u32, layers: u32, mips: u32, fm
             _ => 0,
         },
         misc: if cube { 4 } else { 0 },
-        samples: (1, 0),
+        samples: (samples.max(1), 0),
         backbuffer: false,
         gpu,
         maps: Vec::new(),
@@ -1338,7 +1346,7 @@ unsafe fn method(d: &mut D11, iface: u32, m: u32, this: u32, args: *const u32, a
                 let usage = a(3);
                 let bind = if usage & 0x20 != 0 { 0x20 } else { 0 } | if usage & 0x10 != 0 { 8 } else { 0 } | if usage & 0x400 != 0 { 0x80 } else { 0 };
                 for i in 0..a(2) {
-                    let o = new_texture(d, 2, w, h, 1, 1, fmt, 0, bind, false);
+                    let o = new_texture(d, 2, w, h, 1, 1, fmt, 0, bind, false, 1);
                     let f = d.face(d.id_of(o), IF_SURFACE);
                     wrp(a(5), i as usize, f);
                 }
@@ -1407,7 +1415,7 @@ unsafe fn method(d: &mut D11, iface: u32, m: u32, this: u32, args: *const u32, a
             8 => {
                 // GetDesc: Width Height Format SampleDesc
                 let Some(Data::Texture(t)) = d.objs.get(&this).map(|o| &o.data) else { return E_FAIL };
-                for (i, v) in [t.w, t.h, t.fmt, 1, 0].into_iter().enumerate() {
+                for (i, v) in [t.w, t.h, t.fmt, t.samples.0, t.samples.1].into_iter().enumerate() {
                     wr(a(1), i, v);
                 }
                 S_OK
@@ -1463,7 +1471,7 @@ unsafe fn factory_call(d: &mut D11, m: u32, _this: u32, a: &dyn Fn(usize) -> u32
                 return E_INVALIDARG;
             }
             let p = swap_desc(desc);
-            let sc = new_swapchain(d, p[11], p[0], p[1], p[4], p[9]);
+            let sc = new_swapchain(d, p[11], p[0], p[1], p[4], (p[7], p[8]));
             wrp(a(3), 0, sc);
             if sc == 0 { E_FAIL } else { S_OK }
         }
@@ -1476,7 +1484,7 @@ unsafe fn factory_call(d: &mut D11, m: u32, _this: u32, a: &dyn Fn(usize) -> u32
             if desc == 0 || a(6) == 0 {
                 return E_INVALIDARG;
             }
-            let sc = new_swapchain(d, a(2), rd(desc, 0), rd(desc, 1), rd(desc, 2), rd(desc, 7));
+            let sc = new_swapchain(d, a(2), rd(desc, 0), rd(desc, 1), rd(desc, 2), (rd(desc, 4), rd(desc, 5)));
             wrp(a(6), 0, sc);
             if sc == 0 { E_FAIL } else { S_OK }
         }
@@ -1551,7 +1559,7 @@ unsafe fn output_call(d: &mut D11, m: u32, a: &dyn Fn(usize) -> u32) -> u32 {
 
 unsafe fn swapchain_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32, after: &mut After) -> u32 {
     let Some(Data::SwapChain(sc)) = d.objs.get(&this).map(|o| &o.data) else { return E_FAIL };
-    let (device, hwnd, w, h, fmt, buffer) = (sc.device, sc.hwnd, sc.w, sc.h, sc.fmt, sc.buffer);
+    let (device, hwnd, w, h, fmt, buffer, samples) = (sc.device, sc.hwnd, sc.w, sc.h, sc.fmt, sc.buffer, sc.samples);
     match m {
         3..=5 => S_OK,
         6 => parent(d, d.factory, a(1), a(2)),
@@ -1587,7 +1595,7 @@ unsafe fn swapchain_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u3
             S_OK
         }
         12 => {
-            put_swap_desc(a(1), [w, h, 60, 1, fmt, 0, 0, 1, 0, 0x20, 1, hwnd, 1, 0, 0]);
+            put_swap_desc(a(1), [w, h, 60, 1, fmt, 0, 0, samples.0, samples.1, 0x20, 1, hwnd, 1, 0, 0]);
             S_OK
         }
         13 => {
@@ -1597,7 +1605,7 @@ unsafe fn swapchain_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u3
             let nw = if a(2) == 0 { (rect[2] - rect[0]).max(1) as u32 } else { a(2) };
             let nh = if a(3) == 0 { (rect[3] - rect[1]).max(1) as u32 } else { a(3) };
             let nf = if a(4) == 0 { fmt } else { a(4) };
-            let nb = new_backbuffer(d, nw, nh, nf);
+            let nb = new_backbuffer(d, nw, nh, nf, samples);
             let nb = d.id_of(nb);
             if let Some(Data::SwapChain(sc)) = d.objs.get_mut(&this).map(|o| &mut o.data) {
                 sc.w = nw;
@@ -1625,7 +1633,7 @@ unsafe fn swapchain_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u3
         }
         18 => {
             let p = a(1);
-            for (k, v) in [w, h, fmt, 0, 1, 0, 0x20, 1, 0, 0, 0, 0].into_iter().enumerate() {
+            for (k, v) in [w, h, fmt, 0, samples.0, samples.1, 0x20, 1, 0, 0, 0, 0].into_iter().enumerate() {
                 wr(p, k, v);
             }
             S_OK
@@ -1718,7 +1726,7 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             if a(3) == 0 {
                 return S_FALSE;
             }
-            let o = new_texture(d, dim, w, h, layers, mips, fmt, usage, bind, misc & 4 != 0);
+            let o = new_texture(d, dim, w, h, layers, mips, fmt, usage, bind, misc & 4 != 0, t.samples);
             let id = d.id_of(o);
             if let Some(Data::Texture(x)) = d.objs.get_mut(&id).map(|o| &mut o.data) {
                 (x.cpu, x.misc, x.samples) = (t.cpu, misc, (t.samples, t.quality));
@@ -2139,7 +2147,7 @@ unsafe fn create_buffer_srv(d: &mut D11, rid: u32, bv: check::BufView, out: u32)
     // (the 96-bit formats have no texels on the page: a view of nothing, as Windows takes it)
     let f = format::info(fmt).filter(|f| f.block == 1).unwrap_or(format::Format { page: format::P_R32UI, bpp: 4, block: 1, conv: 0, no_alpha: false });
     let n = (bv.bytes / f.bpp.max(1)).clamp(1, 8192);
-    let tex = new_texture(d, 2, n, 1, 1, 1, fmt, 0, 8, false);
+    let tex = new_texture(d, 2, n, 1, 1, 1, fmt, 0, 8, false, 1);
     let tid = d.id_of(tex);
     // (the view's own texture and the buffer: held privately, see `destroy`)
     d.bind(tid);
@@ -2496,6 +2504,7 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
         }
         46 => copy_region(d, a(1), a(2), a(3), a(4), a(5), a(6), a(7), a(8)),
         47 => copy_resource(d, a(1), a(2)),
+        57 => resolve(d, a(1), a(2), a(3), a(4), a(5)),
         48 => update_subresource(d, a(1), a(2), a(3), a(4), a(5)),
         50 => {
             // ClearRenderTargetView(view, color)
@@ -2561,7 +2570,7 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
             st.so = so;
             hazards::after_buffers(d, st);
         }
-        49 | 51 | 52 | 55 | 57 => {}
+        49 | 51 | 52 | 55 => {}
         41 => dispatch(d, st, a(1), a(2), a(3)),
         42 => {
             // DispatchIndirect(args, offset): the group counts from the buffer
@@ -2909,6 +2918,30 @@ unsafe fn copy_resource(d: &mut D11, dst: u32, src: u32) {
     }
 }
 
+/// ResolveSubresource(dst, dst sub, src, src sub, format): a multisampled 2D texture's
+/// subresource into one of a single-sample one of its size, of formats of one typeless group
+/// (Windows does nothing with any other; `format` is a typed one of the group).
+unsafe fn resolve(d: &mut D11, dst: u32, dsub: u32, src: u32, ssub: u32, fmt: u32) {
+    let (di, si) = (d.id_of(dst), d.id_of(src));
+    let (Some(Data::Texture(a)), Some(Data::Texture(b))) = (d.objs.get(&di).map(|o| &o.data), d.objs.get(&si).map(|o| &o.data)) else { return };
+    let (dl, dly) = (dsub % a.mips.max(1), dsub / a.mips.max(1));
+    let ok = a.dim == 2
+        && b.dim == 2
+        && a.samples.0 == 1
+        && b.samples.0 > 1
+        && dly < a.layers
+        && ssub < b.layers
+        && ((a.w >> dl).max(1), (a.h >> dl).max(1)) == (b.w, b.h)
+        && format::copy_compatible(a.fmt, b.fmt)
+        && format::copy_compatible(fmt, b.fmt);
+    if !ok {
+        return;
+    }
+    let cmd = [gpu::RESOLVE, a.gpu, dl, dly, b.gpu, ssub];
+    gpu::record(|q| q.cmd(&cmd));
+    d.targets = None;
+}
+
 /// CopySubresourceRegion(dst, dst sub, x, y, z, src, src sub, box)
 unsafe fn copy_region(d: &mut D11, dst: u32, dsub: u32, x: u32, y: u32, _z: u32, src: u32, ssub: u32, bx: u32) {
     let (di, si) = (d.id_of(dst), d.id_of(src));
@@ -3237,6 +3270,8 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
         let t = &b[2 + rt * 8..2 + rt * 8 + 8];
         key.extend_from_slice(&[*f, t[0], blend_factor(t[1], false), blend_factor(t[2], false), t[3], blend_factor(t[4], true), blend_factor(t[5], true), t[6], t[7] & 0xf]);
     }
+    // multisampling: AlphaToCoverageEnable, the sample mask (render::d3d pipeline2)
+    key.extend_from_slice(&[b[0], st.sample_mask]);
     let pipe = match d.pipelines.get(&key) {
         Some(&p) => {
             crate::render::gpu::pipeline_hit();
