@@ -41,7 +41,7 @@ link() {  # <output .js> <memory flags> <emcc flags...>
   shift 2
   local log="$OUT/link-$(basename "$(dirname "$out")")-$(basename "$out").log"
   emcc -O2 ${SAKE_LDEXTRA:-} -pthread -fwasm-exceptions -sSUPPORT_LONGJMP=wasm -Wno-undefined -o "$out" "$OUT/main.o" "$OUT/shim.o" "$LIB" \
-    $WRAPFLAGS --pre-js "$HO/fetch-bridge.js" --pre-js "$HO/pre.js" --js-library "$HO/vnfs.js" --js-library "$HO/vnjit.js" \
+    $WRAPFLAGS --pre-js "$HO/fetch-bridge.js" --pre-js "$HO/pre.js" --js-library "$HO/vnfs.js" --js-library "$HO/vnjit.js" --js-library "$HO/vnkern.js" \
     -sPROXY_TO_PTHREAD -sEXIT_RUNTIME \
     -sGLOBAL_BASE=2147483648 $memory \
     -sSTACK_SIZE=1MB -sDEFAULT_PTHREAD_STACK_SIZE=1MB -sPTHREAD_POOL_SIZE=16 -sPTHREAD_POOL_SIZE_STRICT=0 \
@@ -49,7 +49,9 @@ link() {  # <output .js> <memory flags> <emcc flags...>
     2> "$log" || { grep -i "undefined\|error" "$log" | sort -u | head -80; return 1; }
   grep -i "undefined symbol" "$log" | sort -u | head -40 || true
 }
-NODE="-sNODERAWFS=1 -sENVIRONMENT=node -sEXPORTED_FUNCTIONS=_main,$EXPORTS"
+# (node: a factory too, run by host/node-main.js, so that the processes a program starts run as
+# instances of their own in the same node)
+NODE="-sNODERAWFS=1 -sENVIRONMENT=node -sMODULARIZE -sEXPORT_NAME=createSake --extern-post-js $HO/node-main.js -sEXPORTED_FUNCTIONS=_main,$EXPORTS"
 # (the four links at once: each takes a core for a minute)
 pids=()
 link "$OUT/sake.js" "$FIXED" $NODE & pids+=($!)

@@ -54,6 +54,7 @@ pub mod gdi_geom;
 pub mod k32;
 pub mod kern;
 pub mod pipe;
+pub mod process;
 pub mod mem;
 pub mod misc;
 pub mod movie;
@@ -120,7 +121,11 @@ pub fn cur() -> &'static mut Thread {
 }
 
 static NEXT_TID: AtomicU32 = AtomicU32::new(0x20);
-pub const PID: u32 = 0x10;
+static PID: AtomicU32 = AtomicU32::new(kern::ROOT_PID);
+/// This process's id (SAKE_PID: one another process started; crate::kern numbers them).
+pub fn pid() -> u32 {
+    PID.load(Ordering::Relaxed)
+}
 pub static PEB: AtomicU32 = AtomicU32::new(0);
 
 /// TEB offsets that differ between 32 and 64-bit programs.
@@ -148,7 +153,7 @@ fn new_teb(tid: u32, stack: u32) -> (u32, u32, u32) {
         mem::w64(teb + 8, top as u64);
         mem::w64(teb + 0x10, st as u64);
         mem::w64(teb + 0x30, teb as u64);
-        mem::w64(teb + 0x40, PID as u64);
+        mem::w64(teb + 0x40, pid() as u64);
         mem::w64(teb + 0x48, tid as u64);
         mem::w64(teb + 0x58, teb as u64 + 0x2000); // ThreadLocalStoragePointer (static TLS blocks)
         mem::w64(teb + 0x60, PEB.load(Ordering::Relaxed) as u64);
@@ -158,7 +163,7 @@ fn new_teb(tid: u32, stack: u32) -> (u32, u32, u32) {
     w32(teb + 4, top);
     w32(teb + 8, st);
     w32(teb + 0x18, teb);
-    w32(teb + 0x20, PID);
+    w32(teb + 0x20, pid());
     w32(teb + 0x24, tid);
     w32(teb + 0x2c, teb + 0x2000); // ThreadLocalStoragePointer (static TLS blocks)
     w32(teb + 0x30, PEB.load(Ordering::Relaxed));
@@ -573,6 +578,10 @@ fn start64(cpu: &mut Cpu, start: u32, param: u32) -> ! {
 
 /// The program: `exe` is its host path.
 pub fn main(exe: &str, args: &[String]) -> ! {
+    if let Some(p) = std::env::var("SAKE_PID").ok().and_then(|s| s.parse::<u32>().ok()) {
+        PID.store(p, Ordering::Relaxed);
+        NEXT_TID.store(p + 0x10, Ordering::Relaxed);
+    }
     if pe::is_64bit_file(exe) {
         mem::set_x64();
     }
@@ -643,6 +652,17 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     k32::set_command_line(&wpath, args);
     let dir = wpath.rsplit_once('\\').map_or(String::from("C:\\"), |(d, _)| format!("{d}\\"));
     files::set_cwd(&dir);
+    // (a process another one started: what CreateProcess gave it, and maybe a wait for
+    // ResumeThread)
+    if let Some(r) = process::record() {
+        k32::set_command_line_raw(&r.cmdline);
+        files::set_cwd(&r.cwd);
+        k32::set_std_handles(r.std);
+        process::start_child(&r);
+        if r.suspend > 0 {
+            process::wait_resumed();
+        }
+    }
     if w16::is_ne(exe) {
         w16::start(cpu, exe, &wpath, args);
     }

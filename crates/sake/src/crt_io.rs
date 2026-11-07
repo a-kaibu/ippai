@@ -1309,7 +1309,7 @@ fn _putwch(c: &mut Ctx) -> u32 {
 // processes: none can be started
 
 fn _getpid(_: &mut Ctx) -> u32 {
-    crate::PID
+    crate::pid()
 }
 fn no_process(_: &mut Ctx) -> u32 {
     set_errno(ENOENT);

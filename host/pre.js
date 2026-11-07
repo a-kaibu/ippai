@@ -11,6 +11,13 @@ Module.preRun.push(() => {
 // ('load'): the saves as a SharedArrayBuffer, not copied per thread.
 var vnvmJitBundle = null;
 var vnvmSaves = null;
+// the kernel the host's processes share (host/vnkern.js): the host's buffer (`vnvmKernel`, node's
+// runner and the page pass the one of the process that started this one), else this
+// process's own; and whether the host starts processes (`vnvmSpawn`, on the main thread)
+var vnvmKernel = null;
+var vnvmKernelI32 = null;
+var vnvmCanSpawn = false;
+var IPPAI_KERNEL_BYTES = 32 << 20;
 // the tree lists the page fetched before starting (`vnvmFiles`, host/vnfs.js): every thread gets
 // them, so a thread's first look at the file system needs no request
 var vnvmTrees = null;
@@ -27,6 +34,8 @@ Module.preInit = [].concat(Module.preInit || [], () => {
   }
   vnvmJitBundle = Module.vnvmJit || null;
   vnvmTrees = Module.vnvmFiles || null;
+  vnvmKernel = Module.vnvmKernel || (typeof SharedArrayBuffer == 'function' ? new SharedArrayBuffer(IPPAI_KERNEL_BYTES) : null);
+  vnvmCanSpawn = !!Module.vnvmSpawn;
   if (Module.vnvmSaves) {
     vnvmSaves = new Uint8Array(new SharedArrayBuffer(Module.vnvmSaves.length));
     vnvmSaves.set(Module.vnvmSaves);
@@ -39,7 +48,11 @@ if (!ENVIRONMENT_IS_PTHREAD) {
     W.prototype.vnvmPost = W.prototype.postMessage;
     W.prototype.postMessage = function (m, ...rest) {
       if (m && m.cmd === 'load') {
-        m = { ...m, vnvmJit: vnvmJitBundle, vnvmSaves, vnvmTrees };
+        m = { ...m, vnvmJit: vnvmJitBundle, vnvmSaves, vnvmTrees, vnvmKernel, vnvmCanSpawn };
+        // (what the thread asks of the host: to start a process)
+        const ask = (d) => d && d.vnvmSpawn && Module.vnvmSpawn?.(d.vnvmSpawn, vnvmKernel);
+        if (ENVIRONMENT_IS_NODE) this.on('message', ask);
+        else this.addEventListener('message', (e) => ask(e.data));
         if (!ENVIRONMENT_IS_NODE) {
           m.vnvmFetchPort = ippaiFetchConnect();
           rest[0] = [...(rest[0] || []), m.vnvmFetchPort];
@@ -53,6 +66,8 @@ if (!ENVIRONMENT_IS_PTHREAD) {
     if (d && d.cmd === 'load') {
       vnvmJitBundle = d.vnvmJit || null;
       vnvmSaves = d.vnvmSaves || null;
+      vnvmKernel = d.vnvmKernel || null;
+      vnvmCanSpawn = !!d.vnvmCanSpawn;
       if (d.vnvmTrees) Module.vnvmFiles = d.vnvmTrees;
       if (d.vnvmFetchPort) ippaiFetchPort = d.vnvmFetchPort;
     }
@@ -70,4 +85,31 @@ if (ENVIRONMENT_IS_PTHREAD && !ENVIRONMENT_IS_NODE) {
   vnvmCanvas = new Promise((r) => (got = r));
   // (a message without cmd: emscripten's handler leaves it alone)
   self.addEventListener('message', (e) => e.data && e.data.vnvmCanvas && got(e.data.vnvmCanvas));
+}
+
+// A process that ends (however: ExitProcess, a crash) goes on the shared kernel's list of
+// ended processes (host/vnkern.js), which the others read.
+if (!ENVIRONMENT_IS_PTHREAD) {
+  const exited = (code) => {
+    if (!vnvmKernel) return;
+    const h = new Int32Array(vnvmKernel, 0, 256);
+    if (!Atomics.load(h, 2)) return;
+    const pid = Number((Module.vnvmEnv && Module.vnvmEnv.SAKE_PID) || (ENVIRONMENT_IS_NODE && process.env.SAKE_PID) || 0x10);
+    const i = Atomics.load(h, 4) >>> 0;
+    Atomics.store(h, 16 + 2 * (i % 64), pid);
+    Atomics.store(h, 17 + 2 * (i % 64), code | 0);
+    Atomics.store(h, 4, i + 1);
+    Atomics.add(h, 1, 1);
+    Atomics.notify(h, 1);
+  };
+  const onExit = Module.onExit;
+  Module.onExit = (code) => {
+    exited(code);
+    onExit?.(code);
+  };
+  const onAbort = Module.onAbort;
+  Module.onAbort = (what) => {
+    exited(3);
+    onAbort?.(what);
+  };
 }

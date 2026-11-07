@@ -15,12 +15,16 @@ pub enum Obj {
     Mutex { owner: u32, count: u32 },
     Semaphore { count: i32, max: i32 },
     Thread { tid: u32, done: bool, code: u32 },
-    /// this process (DuplicateHandle of GetCurrentProcess, OpenProcess of our id): the access
-    /// it was opened with
-    Process { access: u32 },
+    /// a process (this one: DuplicateHandle of GetCurrentProcess, OpenProcess of our id; or
+    /// another, crate::process), and the access it was opened with
+    Process { access: u32, pid: u32 },
+    /// another process's thread (CreateProcess's hThread: its first)
+    RemoteThread { pid: u32, tid: u32 },
     File(Arc<crate::files::File>),
     /// an end of a pipe (crate::kern)
     Pipe(crate::pipe::Handle),
+    /// a named event, mutex or semaphore (crate::kern: other processes open it too)
+    Shared(u32),
     Find(Arc<Mutex<crate::files::Find>>),
     Mapping { file: Option<Arc<crate::files::File>>, size: u32, view: u32 },
     Key(crate::misc::Key),
@@ -34,6 +38,8 @@ pub enum Obj {
 pub struct Objs {
     map: HashMap<u32, (Obj, u32)>,
     handles: HashMap<u32, u32>,
+    /// the handles child processes inherit (HANDLE_FLAG_INHERIT)
+    inherit: crate::HashSet<u32>,
 }
 
 impl Objs {
@@ -61,6 +67,43 @@ impl Objs {
     pub fn values_mut(&mut self) -> impl Iterator<Item = &mut (Obj, u32)> {
         self.map.values_mut()
     }
+}
+
+impl Table {
+    /// (handle, object) of every handle a child inherits
+    pub fn inheritable(&self) -> impl Iterator<Item = (u32, &Obj)> {
+        self.objs.inherit.iter().filter_map(|h| Some((*h, &self.objs.get(h)?.0)))
+    }
+}
+
+/// HANDLE_FLAG_INHERIT of handle `h` (false: no such handle)
+pub fn set_inherit(h: u32, on: bool) -> bool {
+    with(|t| {
+        if !t.objs.handles.contains_key(&h) {
+            return false;
+        }
+        if on {
+            t.objs.inherit.insert(h);
+        } else {
+            t.objs.inherit.remove(&h);
+        }
+        true
+    })
+}
+pub fn inherits(h: u32) -> bool {
+    with(|t| t.objs.inherit.contains(&h))
+}
+
+/// A handle of number `h` (an inherited one keeps its number in the child).
+pub fn add_at(h: u32, o: Obj, inherit: bool) {
+    with(|t| {
+        t.objs.map.insert(h, (o, 1));
+        t.objs.handles.insert(h, h);
+        if inherit {
+            t.objs.inherit.insert(h);
+        }
+        t.next = t.next.max(h + 4);
+    })
 }
 
 pub struct Table {
@@ -112,6 +155,7 @@ pub fn dup(h: u32) -> u32 {
 pub fn close(h: u32) -> bool {
     let (r, gone) = with(|t| {
         let Some(k) = t.objs.handles.remove(&h) else { return (false, None) };
+        t.objs.inherit.remove(&h);
         let rc = &mut t.objs.map.get_mut(&k).unwrap().1;
         *rc -= 1;
         let mut gone = None;
@@ -122,8 +166,12 @@ pub fn close(h: u32) -> bool {
         (true, gone)
     });
     // (outside the table's lock: the kernel's comes after it, never before)
-    if let Some(Obj::Pipe(p)) = gone {
-        crate::pipe::closed(p);
+    match gone {
+        Some(Obj::Pipe(p)) => crate::pipe::closed(p),
+        Some(Obj::Shared(id)) => {
+            crate::kern::with(|k| k.release_sync(id, crate::pid()));
+        }
+        _ => {}
     }
     r
 }
@@ -192,7 +240,8 @@ fn try_take(t: &mut Table, h: u32, tid: u32, take: bool) -> Option<bool> {
             }
         }
         Obj::Thread { done, .. } => *done,
-        Obj::Process { .. } => false,
+        Obj::Shared(id) => crate::kern::with(|k| k.try_take(*id, crate::pid(), tid, take)).0.is_some_and(|r| r.0),
+        Obj::Process { pid, .. } | Obj::RemoteThread { pid, .. } => crate::process::ended(*pid),
         // files and the like count as signaled
         _ => true,
     })
@@ -203,7 +252,11 @@ pub const WAIT_TIMEOUT: u32 = 0x102;
 pub const ABANDONED: u32 = u32::MAX;
 
 fn abandoned(t: &Table, h: u32) -> bool {
-    matches!(t.objs.get(&h), Some((Obj::Mutex { owner: ABANDONED, .. }, _)))
+    match t.objs.get(&h) {
+        Some((Obj::Mutex { owner: ABANDONED, .. }, _)) => true,
+        Some((Obj::Shared(id), _)) => crate::kern::with(|k| k.try_take(*id, 0, 0, false)).0.is_some_and(|r| r.1),
+        _ => false,
+    }
 }
 pub const WAIT_FAILED: u32 = 0xffff_ffff;
 

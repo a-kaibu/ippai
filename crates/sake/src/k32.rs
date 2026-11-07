@@ -89,6 +89,10 @@ pub fn set_command_line(exe: &str, args: &[String]) {
         s += " ";
         s += a;
     }
+    set_command_line_raw(&s);
+}
+/// The command line as it is (a process another one started: CreateProcess's)
+pub fn set_command_line_raw(s: &str) {
     let a = crate::text::s2a(&s);
     let w: Vec<u16> = s.encode_utf16().collect();
     let pa = mem::heap_alloc(a.len() as u32 + 1, true);
@@ -288,7 +292,7 @@ fn GetCurrentProcess(_: &mut Ctx) -> u32 {
     obj::CURRENT_PROCESS
 }
 fn GetCurrentProcessId(_: &mut Ctx) -> u32 {
-    crate::PID
+    crate::pid()
 }
 fn GetCurrentThread(_: &mut Ctx) -> u32 {
     obj::CURRENT_THREAD
@@ -300,7 +304,7 @@ fn GetThreadId(c: &mut Ctx) -> u32 {
         return crate::cur().tid;
     }
     match obj::with(|t| match t.objs.get(&h) {
-        Some((Obj::Thread { tid, .. }, _)) => Some(*tid),
+        Some((Obj::Thread { tid, .. } | Obj::RemoteThread { tid, .. }, _)) => Some(*tid),
         _ => None,
     }) {
         Some(tid) => tid,
@@ -321,22 +325,29 @@ fn ExitProcess(c: &mut Ctx) -> u32 {
     }
     unsafe { libc::exit(code as i32) }
 }
-const PROCESS_ALL_ACCESS: u32 = 0x1f_ffff;
+use crate::process::PROCESS_ALL_ACCESS;
 /// The access a handle to this process has (GetCurrentProcess's: all), None for another handle
 pub fn self_process(h: u32) -> Option<u32> {
-    if h == obj::CURRENT_PROCESS {
-        return Some(PROCESS_ALL_ACCESS);
-    }
-    obj::with(|t| match t.objs.get(&h) {
-        Some((Obj::Process { access }, _)) => Some(*access),
-        _ => None,
-    })
+    crate::process::of_handle(h).filter(|&(pid, _)| crate::process::is_self(pid)).map(|(_, a)| a)
 }
 fn TerminateProcess(c: &mut Ctx) -> u32 {
-    if self_process(c.a(0)).is_some_and(|a| a & 1 != 0) {
-        unsafe { libc::exit(c.a(1) as i32) }
+    match crate::process::of_handle(c.a(0)) {
+        Some((_, a)) if a & 1 == 0 => {
+            last_error(5);
+            0
+        }
+        Some((pid, _)) if crate::process::is_self(pid) => {
+            if crate::env_on!("SAKE_TRACE_EXIT") {
+                eprintln!("sake: TerminateProcess({}) of itself", c.a(1));
+            }
+            unsafe { libc::exit(c.a(1) as i32) }
+        }
+        Some((pid, _)) => crate::process::terminate(pid, c.a(1)) as u32,
+        None => {
+            last_error(6);
+            0
+        }
     }
-    0
 }
 fn FatalAppExitA(c: &mut Ctx) -> u32 {
     eprintln!("sake: FatalAppExit: {}", arg_str(c.a(1), false));
@@ -362,10 +373,11 @@ pub fn exit_thread(code: u32) -> ! {
             }
         }
     });
+    crate::kern::with(|k| k.abandon(t.tid));
     obj::signal();
     obj::close(h);
     crate::apc::forget(t.tid);
-    if t.tid == 0x20 {
+    if t.tid == crate::process::first_tid(crate::pid()) {
         // the main thread: the process
         unsafe { libc::exit(code as i32) }
     }
@@ -533,13 +545,13 @@ fn NtQuerySystemInformation(c: &mut Ctx) -> u32 {
             mem::wp(p + 0x38 + ps, s);
             let (pid_at, hc_at) = if x64 { (0x50, 0x60) } else { (0x44, 0x4c) };
             w32(p + pid_at - ps, 8); // base priority: normal
-            mem::wp(p + pid_at, crate::PID);
+            mem::wp(p + pid_at, crate::pid());
             w32(p + hc_at, handles);
             w32(p + hc_at + 4, 1); // session
             for (i, &tid) in tids.iter().enumerate() {
                 let t = p + fixed + ti * i as u32;
                 let cid = if x64 { 0x28 } else { 0x20 };
-                mem::wp(t + cid, crate::PID);
+                mem::wp(t + cid, crate::pid());
                 mem::wp(t + cid + ps, tid);
                 w32(t + cid + 2 * ps, 8);
                 w32(t + cid + 2 * ps + 4, 8);
@@ -723,6 +735,12 @@ pub fn wait_gate(h: u32) {
 
 fn ResumeThread(c: &mut Ctx) -> u32 {
     let h = c.a(0);
+    if let Some(pid) = obj::with(|t| match t.objs.get(&h) {
+        Some((Obj::RemoteThread { pid, .. }, _)) => Some(*pid),
+        _ => None,
+    }) {
+        return crate::process::resume(pid);
+    }
     let mut g = GATE.lock().unwrap();
     let r = match g.iter_mut().find(|(x, _)| *x == h) {
         Some((_, n)) => {
@@ -776,8 +794,16 @@ fn GetExitCodeThread(c: &mut Ctx) -> u32 {
     }
 }
 fn GetExitCodeProcess(c: &mut Ctx) -> u32 {
-    put32(c.a(1), 0x103);
-    1
+    match crate::process::of_handle(c.a(0)) {
+        Some((pid, _)) => {
+            put32(c.a(1), crate::process::exit_code(pid));
+            1
+        }
+        None => {
+            last_error(6);
+            0
+        }
+    }
 }
 fn TerminateThread(_: &mut Ctx) -> u32 {
     1
@@ -918,6 +944,16 @@ fn name_ok(n: &str) -> bool {
     let rest = n.strip_prefix("Local\\").or_else(|| n.strip_prefix("Global\\")).unwrap_or(n);
     !rest.contains('\\')
 }
+/// A named event, mutex or semaphore as the kernel keeps it (other processes open it by name)
+fn kern_sync(o: &Obj) -> Option<crate::kern::Sync> {
+    use crate::kern::Sync;
+    Some(match *o {
+        Obj::Event { manual, set } => Sync::Event { manual, set },
+        Obj::Mutex { owner, count } => Sync::Mutex { owner, pid: crate::pid(), count, abandoned: false },
+        Obj::Semaphore { count, max } => Sync::Semaphore { count, max },
+        _ => return None,
+    })
+}
 fn create_named(name: Option<String>, o: Obj) -> u32 {
     if let Some(n) = &name {
         if !name_ok(n) {
@@ -925,6 +961,24 @@ fn create_named(name: Option<String>, o: Obj) -> u32 {
             return 0;
         }
         let k = kind(&o);
+        let local = obj::with(|t| t.names.contains_key(n));
+        if let (Some(s), false) = (kern_sync(&o), local) {
+            return match crate::kern::with(|kk| kk.create_sync(n, s, crate::pid())).0 {
+                Ok((id, existed)) => {
+                    let h = obj::add(Obj::Shared(id));
+                    last_error(if existed { files::ERROR_ALREADY_EXISTS } else { 0 });
+                    h
+                }
+                Err(_) => {
+                    last_error(6);
+                    0
+                }
+            };
+        }
+        if crate::kern::with(|kk| kk.sync_kind(n)).0.is_some() {
+            last_error(6);
+            return 0;
+        }
         let existing = obj::with(|t| t.names.get(n).map(|h| (*h, t.objs.get(h).map_or(0, |(o, _)| kind(o)))));
         if let Some((h, hk)) = existing {
             if hk != k {
@@ -944,6 +998,19 @@ fn create_named(name: Option<String>, o: Obj) -> u32 {
 }
 fn open_named(name: u32, wide: bool, want: u8) -> u32 {
     let n = arg_str(name, wide);
+    if let Some(k) = crate::kern::with(|kk| kk.sync_kind(&n)).0 {
+        if k != want {
+            last_error(6);
+            return 0;
+        }
+        return match crate::kern::with(|kk| kk.open_sync(&n, want, crate::pid())).0 {
+            Ok(id) => obj::add(Obj::Shared(id)),
+            Err(e) => {
+                last_error(e);
+                0
+            }
+        };
+    }
     match obj::with(|t| t.names.get(&n).map(|h| (*h, t.objs.get(h).map_or(0, |(o, _)| kind(o))))) {
         Some((_, k)) if k != want => {
             last_error(6);
@@ -1031,6 +1098,14 @@ fn OpenEventW(c: &mut Ctx) -> u32 {
     open_named(c.a(2), true, 1)
 }
 pub fn event_set(h: u32, v: bool) -> u32 {
+    if let Some(id) = shared_id(h) {
+        let r = crate::kern::with(|k| k.set_event(id, v)).0;
+        if !r {
+            last_error(6);
+        }
+        obj::signal();
+        return ok(r);
+    }
     let r = obj::with(|t| match t.objs.get_mut(&h) {
         Some((Obj::Event { set, .. }, _)) => {
             *set = v;
@@ -1070,8 +1145,26 @@ fn OpenMutexA(c: &mut Ctx) -> u32 {
 fn OpenMutexW(c: &mut Ctx) -> u32 {
     open_named(c.a(2), true, 2)
 }
+/// The kernel's id of a named event, mutex or semaphore handle
+fn shared_id(h: u32) -> Option<u32> {
+    obj::with(|t| match t.objs.get(&h) {
+        Some((Obj::Shared(id), _)) => Some(*id),
+        _ => None,
+    })
+}
 fn ReleaseMutex(c: &mut Ctx) -> u32 {
     let tid = crate::cur().tid;
+    if let Some(id) = shared_id(c.a(0)) {
+        let r = crate::kern::with(|k| k.release_mutex(id, tid)).0;
+        obj::signal();
+        return match r {
+            Ok(()) => 1,
+            Err(e) => {
+                last_error(e);
+                0
+            }
+        };
+    }
     let r = obj::with(|t| match t.objs.get_mut(&c.a(0)) {
         Some((Obj::Mutex { owner, count }, _)) if *owner == tid => {
             *count -= 1;
@@ -1114,6 +1207,20 @@ fn CreateSemaphoreW(c: &mut Ctx) -> u32 {
 }
 fn ReleaseSemaphore(c: &mut Ctx) -> u32 {
     let n = c.i(1);
+    if let Some(id) = shared_id(c.a(0)) {
+        let r = if n <= 0 { Err(87) } else { crate::kern::with(|k| k.release_semaphore(id, n)).0 };
+        obj::signal();
+        return match r {
+            Ok(p) => {
+                put32(c.a(2), p as u32);
+                1
+            }
+            Err(e) => {
+                last_error(e);
+                0
+            }
+        };
+    }
     let r = obj::with(|t| match t.objs.get_mut(&c.a(0)) {
         Some(_) if n <= 0 => Err(87),
         Some((Obj::Semaphore { count, max }, _)) => {
@@ -1184,7 +1291,7 @@ fn DuplicateHandle(c: &mut Ctx) -> u32 {
     let h = if src == obj::CURRENT_THREAD {
         obj::dup(crate::cur().obj)
     } else if src == obj::CURRENT_PROCESS {
-        obj::add(Obj::Process { access: PROCESS_ALL_ACCESS })
+        obj::add(Obj::Process { access: PROCESS_ALL_ACCESS, pid: crate::pid() })
     } else if c.a(6) & 1 != 0 {
         // DUPLICATE_CLOSE_SOURCE: Windows hands out the number it just freed (the old handle
         // keeps working through the new one)
@@ -1297,7 +1404,7 @@ fn GetHandleInformation(c: &mut Ctx) -> u32 {
         last_error(6);
         return 0;
     }
-    put32(c.a(1), 0);
+    put32(c.a(1), obj::inherits(h) as u32);
     1
 }
 fn InitializeCriticalSectionEx(c: &mut Ctx) -> u32 {
@@ -4465,8 +4572,16 @@ fn SizeofResource(c: &mut Ctx) -> u32 {
 
 /// The handle of standard stream `i` (0 in, 1 out, 2 error).
 pub(crate) fn std_handle(i: usize) -> u32 {
-    static STD: OnceLock<[u32; 3]> = OnceLock::new();
     STD.get_or_init(|| [obj::add(Obj::Other("stdin")), obj::add(Obj::Other("stdout")), obj::add(Obj::Other("stderr"))])[i]
+}
+static STD: OnceLock<[u32; 3]> = OnceLock::new();
+static STD_GIVEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// STARTF_USESTDHANDLES's handles, for a process another one started with them
+pub fn set_std_handles(h: Option<(u32, u32, u32)>) {
+    if let Some((a, b, c)) = h {
+        let _ = STD.set([a, b, c]);
+        STD_GIVEN.store(true, Ordering::Relaxed);
+    }
 }
 fn GetStdHandle(c: &mut Ctx) -> u32 {
     match c.a(0) {
@@ -4878,7 +4993,13 @@ fn PathCchSkipRoot(c: &mut Ctx) -> u32 {
 fn VerifyConsoleIoHandle(c: &mut Ctx) -> u32 {
     obj::file(c.a(0)).is_none() as u32
 }
-fn SetHandleInformation(_: &mut Ctx) -> u32 {
+/// SetHandleInformation(h, mask, flags): HANDLE_FLAG_INHERIT (protection from close is not kept)
+fn SetHandleInformation(c: &mut Ctx) -> u32 {
+    let (h, mask, flags) = (c.a(0), c.a(1), c.a(2));
+    if mask & 1 != 0 && !obj::set_inherit(h, flags & 1 != 0) {
+        last_error(6);
+        return 0;
+    }
     1
 }
 
@@ -5539,17 +5660,7 @@ fn K32GetProcessImageFileNameW(c: &mut Ctx) -> u32 {
     image_file_name(c, true)
 }
 
-/// Splits a command line into the program and the rest.
-fn split_command(cmd: &str) -> (String, String) {
-    let cmd = cmd.trim_start();
-    if let Some(q) = cmd.strip_prefix('"') {
-        let end = q.find('"').unwrap_or(q.len());
-        (q[..end].to_string(), q.get(end + 1..).unwrap_or("").trim().to_string())
-    } else {
-        let end = cmd.find(' ').unwrap_or(cmd.len());
-        (cmd[..end].to_string(), cmd[end..].trim().to_string())
-    }
-}
+use crate::process::split_command;
 
 /// Starting another program: sake runs one process, so a program of the game's own (an .exe
 /// that exists) takes this one's place. The page reads the line and starts it once we exit
@@ -5582,43 +5693,49 @@ pub fn exec(file: &str, args: &str, dir: Option<&str>) -> bool {
     eprintln!("sake: exec {full}\t{args}");
     unsafe { libc::exit(0) }
 }
-fn create_process(c: &mut Ctx, wide: bool) -> u32 {
-    let (app, cmd) = (arg_str(c.a(0), wide), arg_str(c.a(1), wide));
-    let (prog, args) = if c.a(0) != 0 { (app, split_command(&cmd).1) } else { split_command(&cmd) };
-    let dir = (c.a(7) != 0).then(|| arg_str(c.a(7), wide));
-    if !exec(&prog, &args, dir.as_deref()) {
-        eprintln!("sake: CreateProcess({prog}, {args}) refused");
-    }
-    last_error(2);
-    0
-}
 fn CreateProcessA(c: &mut Ctx) -> u32 {
-    create_process(c, false)
+    crate::process::create_process(c, false)
 }
 fn CreateProcessW(c: &mut Ctx) -> u32 {
-    create_process(c, true)
+    crate::process::create_process(c, true)
 }
 fn WinExec(c: &mut Ctx) -> u32 {
     let (prog, args) = split_command(&arg_str(c.a(0), false));
     exec(&prog, &args, None);
     2
 }
-/// OpenProcess(access, inherit, id): our own process only (there is no other)
+/// OpenProcess(access, inherit, id): this process or one the kernel knows
 fn OpenProcess(c: &mut Ctx) -> u32 {
-    if c.a(2) != crate::PID {
+    let pid = c.a(2);
+    if !crate::process::is_self(pid) && !crate::process::exists(pid) {
         last_error(87);
         return 0;
     }
-    obj::add(Obj::Process { access: c.a(0) & PROCESS_ALL_ACCESS })
+    let h = obj::add(Obj::Process { access: c.a(0) & PROCESS_ALL_ACCESS, pid });
+    if c.a(1) != 0 {
+        obj::set_inherit(h, true);
+    }
+    h
 }
-/// EnumProcesses(ids, bytes, &used): ours
+/// GetProcessId(h)
+fn GetProcessId(c: &mut Ctx) -> u32 {
+    match crate::process::of_handle(c.a(0)) {
+        Some((pid, _)) => pid,
+        None => {
+            last_error(6);
+            0
+        }
+    }
+}
+/// EnumProcesses(ids, bytes, &used): the processes running
 fn K32EnumProcesses(c: &mut Ctx) -> u32 {
     let (p, cb, pu) = (c.a(0), c.a(1), c.a(2));
-    let n = (cb / 4).min(1);
-    if n == 1 {
-        w32(p, crate::PID);
+    let ids = crate::process::running();
+    let n = ((cb / 4) as usize).min(ids.len());
+    for (i, &id) in ids[..n].iter().enumerate() {
+        w32(p + 4 * i as u32, id);
     }
-    w32(pu, 4 * n);
+    w32(pu, 4 * n as u32);
     1
 }
 /// OpenThread(access, inherit, id): a handle of the thread with that id (mono opens its own
@@ -5636,11 +5753,18 @@ fn OpenThread(c: &mut Ctx) -> u32 {
         }
     }
 }
+/// GetStartupInfo: STARTF_USESTDHANDLES and the handles when the process was started with them
 fn GetStartupInfoA(c: &mut Ctx) -> u32 {
     let p = c.a(0);
-    mem::fill(p, 68, 0);
-    w32(p, 68);
-    w32(p + 44, 0);
+    let (size, flags, std) = if mem::x64() { (104, 60, 80) } else { (68, 44, 56) };
+    mem::fill(p, size, 0);
+    w32(p, size);
+    if STD_GIVEN.load(Ordering::Relaxed) {
+        w32(p + flags, 0x100);
+        for i in 0..3 {
+            mem::wp(p + std + i * mem::ps(), std_handle(i as usize));
+        }
+    }
     0
 }
 fn GetStartupInfoW(c: &mut Ctx) -> u32 {
@@ -5807,7 +5931,7 @@ fn process_entry(c: &mut Ctx, wide: bool) -> u32 {
     let exe = crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.name.clone()).unwrap_or_default();
     let size = if wide { 36 + 520 } else { 36 + 260 };
     mem::fill(p + 4, size - 4, 0);
-    w32(p + 8, crate::PID);
+    w32(p + 8, crate::pid());
     w32(p + 20, 1);
     w32(p + 28, 8);
     ret_str(p + 36, 260, &exe, wide);
@@ -5979,7 +6103,7 @@ pub fn init() {
         GetCommandLineA, GetCommandLineW, GetEnvironmentStrings, GetEnvironmentStringsA, GetEnvironmentStringsW,
         FreeEnvironmentStringsA, FreeEnvironmentStringsW, GetEnvironmentVariableA, GetEnvironmentVariableW,
         SetEnvironmentVariableA, SetEnvironmentVariableW, ExpandEnvironmentStringsA, ExpandEnvironmentStringsW,
-        GetCurrentProcess, GetCurrentProcessId, GetCurrentThread, GetCurrentThreadId, GetThreadId, ExitProcess, TerminateProcess,
+        GetCurrentProcess, GetCurrentProcessId, GetProcessId, GetCurrentThread, GetCurrentThreadId, GetThreadId, ExitProcess, TerminateProcess,
         FatalAppExitA, ExitThread, CreateThread, ResumeThread, SuspendThread, GetExitCodeThread, GetExitCodeProcess,
         TerminateThread, GetThreadPriority, SetThreadPriority, SetPriorityClass, GetPriorityClass, SetThreadAffinityMask,
         SetProcessAffinityMask, GetProcessAffinityMask, SetThreadIdealProcessor, Sleep, SleepEx, SwitchToThread,

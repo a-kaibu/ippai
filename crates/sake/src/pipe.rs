@@ -32,7 +32,7 @@ pub fn handle(h: u32) -> Option<Handle> {
 
 /// The last handle object of an end closed (crate::obj::close).
 pub fn closed(p: Handle) {
-    kw(|k| k.release(p.end, crate::PID));
+    kw(|k| k.release(p.end, crate::pid()));
 }
 
 fn fail(status: u32) -> u32 {
@@ -49,15 +49,10 @@ const FILE_FLAG_OVERLAPPED: u32 = 0x4000_0000;
 pub fn open(name: &str, access: u32, flags: u32) -> u32 {
     let read = access & (GENERIC_READ | GENERIC_ALL | 1) != 0;
     let write = access & (GENERIC_WRITE | GENERIC_ALL | 2 | 4) != 0;
-    match kw(|k| k.open(name, read, write, crate::PID)) {
+    match kw(|k| k.open(name, read, write, crate::pid())) {
         Ok(end) => {
             last_error(0);
-            obj::add(Obj::Pipe(Handle {
-                end,
-                read,
-                write,
-                ovl: flags & FILE_FLAG_OVERLAPPED != 0,
-            }))
+            obj::add(Obj::Pipe(Handle { end, read, write, ovl: flags & FILE_FLAG_OVERLAPPED != 0 }))
         }
         Err(s) => {
             fail(s);
@@ -68,19 +63,14 @@ pub fn open(name: &str, access: u32, flags: u32) -> u32 {
 
 /// CreatePipe(&read, &write, sa, size)
 fn CreatePipe(c: &mut Ctx) -> u32 {
-    let (r, w) = kw(|k| k.create_anon(c.a(3), crate::PID));
-    let hr = obj::add(Obj::Pipe(Handle {
-        end: r,
-        read: true,
-        write: false,
-        ovl: false,
-    }));
-    let hw = obj::add(Obj::Pipe(Handle {
-        end: w,
-        read: false,
-        write: true,
-        ovl: false,
-    }));
+    let (r, w) = kw(|k| k.create_anon(c.a(3), crate::pid()));
+    let hr = obj::add(Obj::Pipe(Handle { end: r, read: true, write: false, ovl: false }));
+    let hw = obj::add(Obj::Pipe(Handle { end: w, read: false, write: true, ovl: false }));
+    // SECURITY_ATTRIBUTES.bInheritHandle
+    if c.a(2) != 0 && r32(c.a(2) + 2 * mem::ps()) != 0 {
+        obj::set_inherit(hr, true);
+        obj::set_inherit(hw, true);
+    }
     mem::putp(c.a(0), hr);
     mem::putp(c.a(1), hw);
     1
@@ -106,13 +96,14 @@ fn create_named(c: &mut Ctx, wide: bool) -> u32 {
         timeout: c.a(6),
         first: open & 0x8_0000 != 0,
     };
-    match kw(|k| k.create(&name, &p, crate::PID)) {
-        Ok(end) => obj::add(Obj::Pipe(Handle {
-            end,
-            read: open & 1 != 0,
-            write: open & 2 != 0,
-            ovl: open & FILE_FLAG_OVERLAPPED != 0,
-        })),
+    match kw(|k| k.create(&name, &p, crate::pid())) {
+        Ok(end) => {
+            let h = obj::add(Obj::Pipe(Handle { end, read: open & 1 != 0, write: open & 2 != 0, ovl: open & FILE_FLAG_OVERLAPPED != 0 }));
+            if c.a(7) != 0 && r32(c.a(7) + 2 * mem::ps()) != 0 {
+                obj::set_inherit(h, true);
+            }
+            h
+        }
         Err(s) => {
             fail(s);
             0xffff_ffff
@@ -218,13 +209,7 @@ fn io(h: u32, p: Handle, ov: u32, out: u32, mut op: Op) -> u32 {
     let mut r = kw(&mut op);
     if r == Err(PENDING) {
         if p.ovl && ov != 0 {
-            PENDING_IO.lock().unwrap().push(Pending {
-                h,
-                tid: crate::cur().tid,
-                ov,
-                cancel: false,
-                op,
-            });
+            PENDING_IO.lock().unwrap().push(Pending { h, tid: crate::cur().tid, ov, cancel: false, op });
             // (a change between the first try and now)
             pump();
             watch();
@@ -584,7 +569,7 @@ fn CancelIoEx(c: &mut Ctx) -> u32 {
 }
 
 fn GetNamedPipeClientProcessId(c: &mut Ctx) -> u32 {
-    put32(c.a(1), crate::PID);
+    put32(c.a(1), crate::pid());
     with_pipe(c, |_, _| 1)
 }
 

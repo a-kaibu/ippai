@@ -199,6 +199,8 @@ struct Timer {
 struct Sent {
     msg: Msg,
     result: Arc<(Mutex<Option<u32>>, std::sync::Condvar)>,
+    /// from another process: its message's id and the copy of WM_COPYDATA's data (freed after)
+    remote: Option<(u32, u32)>,
 }
 
 #[derive(Default)]
@@ -262,7 +264,7 @@ pub fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
         State {
             classes: Vec::new(),
             wins: HashMap::default(),
-            next: 0x10020,
+            next: first_hwnd(),
             queues: HashMap::default(),
             menus: HashMap::default(),
             focus: 0,
@@ -1143,7 +1145,9 @@ pub fn send(c: &mut Ctx, hwnd: u32, msg: u32, wp: u32, lp: u32) -> u32 {
 
 pub fn send_cpu(cpu: &mut koji::Cpu, hwnd: u32, msg: u32, wp: u32, lp: u32) -> u32 {
     let info = with(|s| s.wins.get(&hwnd).map(|w| (w.proc_, w.tid)));
-    let Some((proc_, tid)) = info else { return 0 };
+    let Some((proc_, tid)) = info else {
+        return remote(hwnd).map_or(0, |w| to_remote(&w, msg, wp, lp, true));
+    };
     let me = crate::cur().tid;
     if tid != me {
         return send_other_thread(cpu, tid, Msg { hwnd, msg, w: wp, l: lp, ..Default::default() });
@@ -1163,7 +1167,7 @@ fn send_other_thread(cpu: &mut koji::Cpu, tid: u32, msg: Msg) -> u32 {
     let result = Arc::new((Mutex::new(None), std::sync::Condvar::new()));
     with(|s| {
         let q = s.queues.entry(tid).or_default();
-        q.sent.push_back(Sent { msg, result: result.clone() });
+        q.sent.push_back(Sent { msg, result: result.clone(), remote: None });
         q.fresh |= 0x40;
     });
     crate::obj::signal();
@@ -1200,6 +1204,105 @@ fn process_sent(cpu: &mut koji::Cpu) {
         };
         *sent.result.0.lock().unwrap() = Some(r);
         sent.result.1.notify_all();
+        if let Some((id, buf)) = sent.remote {
+            if buf != 0 {
+                mem::heap_free(buf);
+            }
+            crate::kern::with(|k| k.reply(id, r));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// windows of other processes (crate::kern has their top-level windows and the messages to them)
+
+/// This process's first window handle (the processes number their windows apart).
+fn first_hwnd() -> u32 {
+    0x10020 + crate::pid().saturating_sub(crate::kern::ROOT_PID) / crate::kern::PID_STEP * 0x10_0000
+}
+
+/// Tells the other processes this one's top-level windows (once the kernel is shared).
+pub fn publish() {
+    if !crate::kern::host::shared() {
+        return;
+    }
+    let me = crate::pid();
+    let mut list: Vec<crate::kern::KWin> = with(|s| {
+        s.wins
+            .iter()
+            .filter(|(_, w)| w.parent == 0)
+            .map(|(&h, w)| crate::kern::KWin { hwnd: h, pid: me, tid: w.tid, class: s.classes[w.class].name.to_lowercase(), title: String::from_utf16_lossy(&w.text) })
+            .collect()
+    });
+    list.sort_by_key(|w| w.hwnd);
+    crate::kern::with(|k| k.set_wins(me, list));
+}
+
+/// Another process's window `hwnd`.
+fn remote(hwnd: u32) -> Option<crate::kern::KWin> {
+    if hwnd == 0 || !crate::kern::host::shared() {
+        return None;
+    }
+    crate::kern::with(|k| k.win(hwnd).filter(|w| w.pid != crate::pid()).cloned()).0
+}
+
+/// PostMessage / SendMessage to another process's window: SendMessage waits for its result
+/// (0 if that process ends first). WM_COPYDATA's COPYDATASTRUCT and data go along.
+fn to_remote(w: &crate::kern::KWin, msg: u32, wp: u32, lp: u32, send: bool) -> u32 {
+    let data = (msg == 0x4a && lp != 0).then(|| {
+        let ps = mem::ps();
+        let d = if mem::x64() { mem::r64(lp) } else { r32(lp) as u64 };
+        (d, mem::slice(mem::rp(lp + 2 * ps), r32(lp + ps)).to_vec())
+    });
+    let to = w.pid;
+    let id = crate::kern::with(|k| k.put_msg(crate::kern::XMsg { to, hwnd: w.hwnd, msg, w: wp, l: lp, data, send, ..Default::default() })).0;
+    if !send {
+        return 1;
+    }
+    crate::kern::block(None, &|| false, |k| match k.take_reply(id) {
+        Err(crate::kern::PENDING) if k.exit_code(to).is_some() => Ok(0),
+        r => r,
+    })
+    .unwrap_or(0)
+}
+
+/// The messages other processes posted or sent to this one's windows go to their threads'
+/// queues (the watcher thread, crate::process::watch, after each change).
+pub fn deliver_remote() {
+    let msgs = crate::kern::with(|k| k.take_msgs(crate::pid())).0;
+    for x in msgs {
+        let Some(tid) = with(|s| s.wins.get(&x.hwnd).map(|w| w.tid)) else {
+            if x.send {
+                crate::kern::with(|k| k.reply(x.id, 0));
+            }
+            continue;
+        };
+        let (mut l, mut buf) = (x.l, 0);
+        if let Some((d, bytes)) = &x.data {
+            let ps = mem::ps();
+            buf = mem::heap_alloc(3 * ps + bytes.len() as u32, true);
+            if mem::x64() {
+                mem::w64(buf, *d);
+            } else {
+                w32(buf, *d as u32);
+            }
+            w32(buf + ps, bytes.len() as u32);
+            mem::wp(buf + 2 * ps, if bytes.is_empty() { 0 } else { buf + 3 * ps });
+            mem::write(buf + 3 * ps, bytes);
+            l = buf;
+        }
+        let m = Msg { hwnd: x.hwnd, msg: x.msg, w: x.w, l, time: now_ms(), ..Default::default() };
+        if !x.send {
+            post_thread(tid, m);
+            continue;
+        }
+        let result = Arc::new((Mutex::new(None), std::sync::Condvar::new()));
+        with(|s| {
+            let q = s.queues.entry(tid).or_default();
+            q.sent.push_back(Sent { msg: m, result, remote: Some((x.id, buf)) });
+            q.fresh |= 0x40;
+        });
+        crate::obj::signal();
     }
 }
 
@@ -1278,6 +1381,9 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
         w32(crate::cur().teb + crate::teb_last_error(), 1407);
         return 0;
     };
+    if !child {
+        publish();
+    }
     if crate::env_on!("SAKE_TRACE_WIN") {
         eprintln!("sake: CreateWindowEx {h:x} class {cname} style {style:x} ex {ex:x} {x},{y} {cx}x{cy} parent {parent:x}");
     }
@@ -1399,6 +1505,9 @@ fn DestroyWindow(c: &mut Ctx) -> u32 {
     let was_active = with(|s| s.active == h);
     let ok = destroy(c, h);
     w32(crate::cur().teb + crate::teb_last_error(), if ok { 0 } else { 1400 });
+    if ok {
+        publish();
+    }
     // the active window gone: another visible top-level window takes over, as on Windows
     if ok && was_active {
         let next = with(|s| s.wins.iter().filter(|(&k, w)| k != DESKTOP && w.parent == 0 && w.visible).map(|(&k, _)| k).max());
@@ -1492,7 +1601,7 @@ fn UpdateWindow(c: &mut Ctx) -> u32 {
     1
 }
 fn IsWindow(c: &mut Ctx) -> u32 {
-    is_window(c.a(0)) as u32
+    (is_window(c.a(0)) || remote(c.a(0)).is_some()) as u32
 }
 fn IsWindowVisible(c: &mut Ctx) -> u32 {
     with(|s| {
@@ -1901,8 +2010,17 @@ fn SendDlgItemMessageA(c: &mut Ctx) -> u32 {
     ch.map_or(0, |ch| send(c, ch, m, wp, lp))
 }
 fn GetWindowThreadProcessId(c: &mut Ctx) -> u32 {
-    put32(c.a(1), crate::PID);
-    with(|s| s.wins.get(&c.a(0)).map_or(0, |w| w.tid))
+    if let Some(tid) = with(|s| s.wins.get(&c.a(0)).map(|w| w.tid)) {
+        put32(c.a(1), crate::pid());
+        return tid;
+    }
+    match remote(c.a(0)) {
+        Some(w) => {
+            put32(c.a(1), w.pid);
+            w.tid
+        }
+        None => 0,
+    }
 }
 fn enum_windows(c: &mut Ctx, list: Vec<u32>, f: u32, lp: u32) -> u32 {
     for h in list {
@@ -1942,8 +2060,15 @@ fn find_window(cls: u32, title: u32, wide: bool) -> u32 {
                     && cls_name.as_ref().is_none_or(|n| s.classes[w.class].name.to_lowercase() == *n)
                     && t.as_ref().is_none_or(|t| String::from_utf16_lossy(&w.text) == *t)
             })
-            .map_or(0, |(&h, _)| h)
+            .map(|(&h, _)| h)
     })
+    .or_else(|| {
+        if !crate::kern::host::shared() {
+            return None;
+        }
+        crate::kern::with(|k| k.find_win(crate::pid(), cls_name.as_deref(), t.as_deref()).map(|w| w.hwnd)).0
+    })
+    .unwrap_or(0)
 }
 fn FindWindowA(c: &mut Ctx) -> u32 {
     find_window(c.a(0), c.a(1), false)
@@ -2312,11 +2437,15 @@ fn def_proc(c: &mut Ctx, proc_wide: bool) -> u32 {
         }
         0xc => {
             let t = if lp == 0 { Vec::new() } else if wide { wstr(lp) } else { a2w(&cstr(lp)) };
-            with(|s| {
-                if let Some(w) = s.wins.get_mut(&h) {
+            let top = with(|s| {
+                s.wins.get_mut(&h).is_some_and(|w| {
                     w.text = t;
-                }
+                    w.parent == 0
+                })
             });
+            if top {
+                publish();
+            }
             1
         }
         0xd => {
@@ -2488,7 +2617,7 @@ pub fn post(hwnd: u32, msg: u32, w: u32, l: u32) -> bool {
     let tid = if hwnd == 0 { crate::cur().tid } else {
         match with(|s| s.wins.get(&hwnd).map(|w| w.tid)) {
             Some(t) => t,
-            None => return false,
+            None => return remote(hwnd).is_some_and(|rw| to_remote(&rw, msg, w, l, false) != 0),
         }
     };
     post_thread(tid, Msg { hwnd, msg, w, l, time: now_ms(), x: 0, y: 0 });
