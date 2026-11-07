@@ -83,6 +83,9 @@ pub fn format_w(fmt: &[u16], va: &mut VaArgs) -> Vec<u16> {
 
 /// printf of `fmt` (ANSI bytes or UTF-16 units) with guest variable arguments.
 pub fn printf<T: crt::Unit>(fmt: &[T], va: &mut VaArgs, m: crt::fmt::Mode) -> Result<Vec<T>, crt::fmt::Error> {
+    if m.positional {
+        return crt::fmt::format_p(fmt, m, &mut GuestArgs(va));
+    }
     crt::fmt::format(fmt, m, &mut GuestArgs(va))
 }
 

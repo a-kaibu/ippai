@@ -1,5 +1,6 @@
 //! printf on any format and any argument bits, narrow and wide, both dialects: no panic, the
-//! output bounded, and a format without '%' copied as it is.
+//! output bounded, and a format without '%' copied as it is. The positional form (format_p,
+//! _printf_p) on the same: no panic, bounded, and a format without '$' as printf has it.
 #![no_main]
 use crt::fmt::{self, Args, Mode};
 use libfuzzer_sys::fuzz_target;
@@ -59,15 +60,26 @@ fuzz_target!(|data: &[u8]| {
         _ => Mode::legacy(true),
     };
     if sel & 0x80 == 0 {
-        if let Ok(o) = fmt::format(f, m, &mut Bytes(args)) {
+        let plain = fmt::format(f, m, &mut Bytes(args));
+        if let Ok(o) = &plain {
             assert!(o.len() <= fmt::MAX_OUT);
             if !f.contains(&b'%') {
                 assert_eq!(o, f);
             }
         }
+        let p = fmt::format_p(f, m, &mut Bytes(args));
+        if let Ok(o) = &p {
+            assert!(o.len() <= fmt::MAX_OUT);
+        }
+        if !f.contains(&b'$') {
+            assert_eq!(p, plain);
+        }
     } else {
         let w: Vec<u16> = f.chunks(2).map(|c| c[0] as u16 | (c.get(1).copied().unwrap_or(0) as u16) << 8).collect();
         if let Ok(o) = fmt::format(&w, m, &mut Bytes(args)) {
+            assert!(o.len() <= fmt::MAX_OUT);
+        }
+        if let Ok(o) = fmt::format_p(&w, m, &mut Bytes(args)) {
             assert!(o.len() <= fmt::MAX_OUT);
         }
     }

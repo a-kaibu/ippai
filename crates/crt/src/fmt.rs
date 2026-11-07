@@ -40,12 +40,14 @@ pub struct Mode {
     /// `%n` stores the count (the UCRT after _set_printf_count_output(1)). Without it the
     /// UCRT fails and the legacy CRT skips the argument (msvcrt.dll on Windows writes nothing).
     pub allow_n: bool,
+    /// the _printf_p family: `%n$` positions (crate::fmt::format_p; [`format`] ignores this)
+    pub positional: bool,
 }
 
 impl Mode {
     /// msvcrt.dll and the msvcr*.dll runtimes.
     pub fn legacy(ptr64: bool) -> Mode {
-        Mode { ptr64, legacy: true, three_digit_exp: true, legacy_wide: true, allow_n: false }
+        Mode { ptr64, legacy: true, three_digit_exp: true, legacy_wide: true, allow_n: false, positional: false }
     }
     /// ucrtbase with the options word of __stdio_common_v*printf.
     pub fn ucrt(ptr64: bool, options: u64) -> Mode {
@@ -55,6 +57,7 @@ impl Mode {
             three_digit_exp: options & 0x10 != 0,
             legacy_wide: options & 4 != 0,
             allow_n: false,
+            positional: false,
         }
     }
 }
@@ -325,6 +328,198 @@ pub fn format<T: Unit>(fmt: &[T], m: Mode, a: &mut impl Args) -> Result<Vec<T>, 
         return Err(Error::TooLong);
     }
     Ok(out)
+}
+
+/// The most positional arguments `_printf_p` takes (the CRT's _ARGMAX).
+pub const MAX_POSITIONAL: usize = 100;
+
+/// One argument as read from the caller's list.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Got {
+    Int(u32, u64),
+    Float(f64),
+}
+
+/// The kinds of argument reads a format makes, in order (its strings and %n are not read).
+struct Reads(Vec<Got>);
+impl Args for Reads {
+    fn int(&mut self, bytes: u32) -> u64 {
+        self.0.push(Got::Int(bytes, 0));
+        0
+    }
+    fn float(&mut self) -> f64 {
+        self.0.push(Got::Float(0.0));
+        0.0
+    }
+    fn narrow(&mut self, _: u64, _: Option<usize>) -> Vec<u8> {
+        Vec::new()
+    }
+    fn wide(&mut self, _: u64, _: Option<usize>) -> Vec<u16> {
+        Vec::new()
+    }
+    fn counted(&mut self, _: u64) -> (usize, u64) {
+        (0, 0)
+    }
+    fn a2w(&self, s: &[u8]) -> Vec<u16> {
+        s.iter().map(|&b| b as u16).collect()
+    }
+    fn w2a(&self, s: &[u16]) -> Vec<u8> {
+        s.iter().map(|&u| u as u8).collect()
+    }
+    fn store(&mut self, _: u64, _: u32, _: u64) {}
+}
+
+/// The arguments read once in position order, handed out in the order the format uses them;
+/// strings and %n go to the caller's memory.
+struct Replay<'a, A: Args> {
+    inner: &'a mut A,
+    vals: Vec<Got>,
+    next: usize,
+}
+impl<A: Args> Args for Replay<'_, A> {
+    fn int(&mut self, _: u32) -> u64 {
+        self.next += 1;
+        match self.vals.get(self.next - 1) {
+            Some(Got::Int(_, v)) => *v,
+            _ => 0,
+        }
+    }
+    fn float(&mut self) -> f64 {
+        self.next += 1;
+        match self.vals.get(self.next - 1) {
+            Some(Got::Float(v)) => *v,
+            _ => 0.0,
+        }
+    }
+    fn narrow(&mut self, p: u64, max: Option<usize>) -> Vec<u8> {
+        self.inner.narrow(p, max)
+    }
+    fn wide(&mut self, p: u64, max: Option<usize>) -> Vec<u16> {
+        self.inner.wide(p, max)
+    }
+    fn counted(&mut self, p: u64) -> (usize, u64) {
+        self.inner.counted(p)
+    }
+    fn a2w(&self, s: &[u8]) -> Vec<u16> {
+        self.inner.a2w(s)
+    }
+    fn w2a(&self, s: &[u16]) -> Vec<u8> {
+        self.inner.w2a(s)
+    }
+    fn store(&mut self, p: u64, bytes: u32, v: u64) {
+        self.inner.store(p, bytes, v)
+    }
+}
+
+/// `n$` at `i` (digits then `$`): its position, `i` moved past it; None (and `i` kept) if there
+/// is none.
+fn position<T: Unit>(f: &[T], i: &mut usize) -> Option<usize> {
+    let mut j = *i;
+    let n = number(f, &mut j);
+    if j > *i && f.get(j).map(|c| c.code()) == Some(b'$' as u32) {
+        *i = j + 1;
+        Some(n)
+    } else {
+        None
+    }
+}
+
+/// The `_printf_p` family (MS "printf_p Positional Parameters"): `%n$` picks argument n for a
+/// conversion, `*n$` for a width or precision. A format with none is plain printf. Otherwise
+/// every conversion has its position (a mix is invalid), positions run from 1 to at most
+/// [`MAX_POSITIONAL`] with none left out, and one used twice is read as the same type both times
+/// (else invalid). The arguments are read in position order, then formatted in the format's.
+pub fn format_p<T: Unit>(fmt: &[T], m: Mode, a: &mut impl Args) -> Result<Vec<T>, Error> {
+    let ch = |i: usize| fmt.get(i).map_or(0, |c| c.code());
+    // the format without its "n$" parts, and the position of each argument it reads, in order
+    let mut plain: Vec<T> = Vec::with_capacity(fmt.len());
+    let mut order: Vec<usize> = Vec::new();
+    let (mut with, mut without) = (false, false);
+    let mut i = 0;
+    while i < fmt.len() {
+        plain.push(fmt[i]);
+        if ch(i) != b'%' as u32 {
+            i += 1;
+            continue;
+        }
+        i += 1;
+        if ch(i) == b'%' as u32 {
+            plain.push(fmt[i]);
+            i += 1;
+            continue;
+        }
+        let pos = position(fmt, &mut i);
+        // flags
+        while matches!(ch(i), 0x2d | 0x2b | 0x20 | 0x23 | 0x30) {
+            plain.push(fmt[i]);
+            i += 1;
+        }
+        // (a `*` takes a position exactly when its conversion has one)
+        let star = |i: &mut usize, plain: &mut Vec<T>, order: &mut Vec<usize>| -> Result<(), Error> {
+            if ch(*i) == b'*' as u32 {
+                plain.push(fmt[*i]);
+                *i += 1;
+                match (position(fmt, i), pos) {
+                    (Some(p), Some(_)) => order.push(p),
+                    (None, None) => {}
+                    _ => return Err(Error::Invalid),
+                }
+            } else {
+                while (0x30..=0x39).contains(&ch(*i)) {
+                    plain.push(fmt[*i]);
+                    *i += 1;
+                }
+            }
+            Ok(())
+        };
+        star(&mut i, &mut plain, &mut order)?;
+        if ch(i) == b'.' as u32 {
+            plain.push(fmt[i]);
+            i += 1;
+            star(&mut i, &mut plain, &mut order)?;
+        }
+        match pos {
+            Some(p) => {
+                with = true;
+                order.push(p);
+            }
+            None => without = true,
+        }
+    }
+    if !with {
+        return format(fmt, m, a);
+    }
+    if without {
+        return Err(Error::Invalid);
+    }
+    // what each read is (the conversions' sizes and types), then each position's kind
+    let mut reads = Reads(Vec::new());
+    format(&plain, m, &mut reads)?;
+    if reads.0.len() != order.len() {
+        return Err(Error::Invalid); // (%% inside a conversion, %n: positions that read nothing)
+    }
+    let max = order.iter().copied().max().unwrap_or(0);
+    if order.contains(&0) || max > MAX_POSITIONAL {
+        return Err(Error::Invalid);
+    }
+    let mut kind: Vec<Option<Got>> = vec![None; max];
+    for (&p, &r) in order.iter().zip(&reads.0) {
+        match kind[p - 1] {
+            None => kind[p - 1] = Some(r),
+            Some(k) if k == r => {}
+            Some(_) => return Err(Error::Invalid),
+        }
+    }
+    let mut vals = Vec::with_capacity(max);
+    for k in &kind {
+        vals.push(match k {
+            None => return Err(Error::Invalid),
+            Some(Got::Int(b, _)) => Got::Int(*b, a.int(*b)),
+            Some(Got::Float(_)) => Got::Float(a.float()),
+        });
+    }
+    let used: Vec<Got> = order.iter().map(|&p| vals[p - 1]).collect();
+    format(&plain, m, &mut Replay { inner: a, vals: used, next: 0 })
 }
 
 fn number<T: Unit>(f: &[T], i: &mut usize) -> usize {
@@ -766,6 +961,135 @@ mod tests {
     }
     fn u(fmt: &str, ints: &[u64], floats: &[f64]) -> String {
         f(fmt, ints, floats, Mode::ucrt(false, 0))
+    }
+
+    /// A va_list: integers and doubles in the caller's order (strings: index + 1 into `strs`).
+    struct Seq {
+        vals: Vec<Got>,
+        strs: Vec<Vec<u8>>,
+        stored: Vec<(u64, u32, u64)>,
+    }
+    impl Args for Seq {
+        fn int(&mut self, bytes: u32) -> u64 {
+            match (!self.vals.is_empty()).then(|| self.vals.remove(0)) {
+                Some(Got::Int(_, v)) => v & mask(bytes),
+                _ => 0xbad,
+            }
+        }
+        fn float(&mut self) -> f64 {
+            match (!self.vals.is_empty()).then(|| self.vals.remove(0)) {
+                Some(Got::Float(v)) => v,
+                _ => -0.5,
+            }
+        }
+        fn narrow(&mut self, p: u64, max: Option<usize>) -> Vec<u8> {
+            let s = (p as usize).checked_sub(1).and_then(|i| self.strs.get(i)).cloned().unwrap_or_default();
+            s.into_iter().take(max.unwrap_or(usize::MAX)).collect()
+        }
+        fn wide(&mut self, p: u64, max: Option<usize>) -> Vec<u16> {
+            self.narrow(p, max).into_iter().map(|b| b as u16).collect()
+        }
+        fn counted(&mut self, p: u64) -> (usize, u64) {
+            (self.narrow(p, None).len(), p)
+        }
+        fn a2w(&self, s: &[u8]) -> Vec<u16> {
+            s.iter().map(|&b| b as u16).collect()
+        }
+        fn w2a(&self, s: &[u16]) -> Vec<u8> {
+            s.iter().map(|&u| u as u8).collect()
+        }
+        fn store(&mut self, p: u64, bytes: u32, v: u64) {
+            self.stored.push((p, bytes, v));
+        }
+    }
+    fn seq(vals: &[Got]) -> Seq {
+        Seq { vals: vals.to_vec(), strs: vec![b"November".to_vec(), b"10".to_vec()], stored: vec![] }
+    }
+    fn p(fmt: &str, vals: &[Got]) -> Result<String, Error> {
+        format_p(fmt.as_bytes(), Mode::ucrt(false, 0), &mut seq(vals)).map(|o| String::from_utf8(o).unwrap())
+    }
+    use Got::{Float as F, Int as I};
+
+    // MS's "printf_p Positional Parameters" and its rules
+    #[test]
+    fn positional_arguments() {
+        // (the documentation's example: strings 1 and 2, in either order)
+        assert_eq!(p("%1$s %2$s", &[I(4, 1), I(4, 2)]).unwrap(), "November 10");
+        assert_eq!(p("%2$s %1$s", &[I(4, 1), I(4, 2)]).unwrap(), "10 November");
+        assert_eq!(p("%2$d %1$d %2$d", &[I(4, 7), I(4, 9)]).unwrap(), "9 7 9");
+        // an int and a double in either order of the list; 64-bit and 32-bit
+        assert_eq!(p("%2$.2f/%1$d", &[I(4, 3), F(2.5)]).unwrap(), "2.50/3");
+        assert_eq!(p("%1$.2f/%2$I64x", &[F(0.25), I(8, 1 << 40)]).unwrap(), "0.25/10000000000");
+        // width and precision from positions
+        assert_eq!(p("[%2$*1$d]", &[I(4, 5), I(4, 42)]).unwrap(), "[   42]");
+        assert_eq!(p("[%3$-*1$.*2$f]", &[I(4, 8), I(4, 1), F(3.14159)]).unwrap(), "[3.1     ]");
+        assert_eq!(p("%1$c%2$%", &[I(4, b'x' as u64)]), Err(Error::Invalid)); // (%% has no position)
+        assert_eq!(p("100%% %1$d", &[I(4, 5)]).unwrap(), "100% 5");
+        // %n through a position
+        let mut a = seq(&[I(4, 77)]);
+        assert_eq!(format_p(b"ab%1$n", Mode { allow_n: true, ..Mode::ucrt(false, 0) }, &mut a).unwrap(), b"ab");
+        assert_eq!(a.stored, [(77, 4, 2)]);
+        // no position anywhere: printf as it is
+        assert_eq!(p("%d %s", &[I(4, 1), I(4, 2)]).unwrap(), "1 10");
+        // invalid: a mix, a gap, position 0, one past _ARGMAX, one position read as two types,
+        // a * without its position (or with one in a conversion without)
+        for bad in ["%1$d %d", "%d %1$d", "%1$d %3$d", "%0$d", "%101$d", "%1$d %1$f", "%1$d %1$I64d", "%2$*d", "%*1$d", "%1$.*d"] {
+            assert_eq!(p(bad, &[I(4, 1), I(4, 2), I(4, 3)]), Err(Error::Invalid), "{bad}");
+        }
+        let ok100: String = (1..=100).rev().map(|i| format!("%{i}$d,")).collect();
+        let vals: Vec<Got> = (1..=100).map(|i| I(4, i)).collect();
+        let want: String = (1..=100).rev().map(|i| format!("{i},")).collect();
+        assert_eq!(p(&ok100, &vals).unwrap(), want);
+        // a bad conversion is still one
+        assert_eq!(p("%1$y", &[I(4, 1)]), Err(Error::Invalid));
+    }
+
+    proptest::proptest! {
+        /// A format of conversions given in some order with positions is the plain format of
+        /// the same conversions in that order, with the list's arguments in that order: any
+        /// permutation, any repeats, ints of 4 and 8 bytes, doubles and widths from arguments.
+        #[test]
+        fn positions_are_a_reordering(
+            kinds in proptest::collection::vec((0u8..4, proptest::prelude::any::<u64>(), -1e9f64..1e9), 1..8),
+            picks in proptest::collection::vec(proptest::prelude::any::<proptest::sample::Index>(), 0..12),
+            seed in proptest::prelude::any::<u64>(),
+        ) {
+            let n = kinds.len();
+            // every position at least once, then repeats, in a shuffled order
+            let mut uses: Vec<usize> = (0..n).collect();
+            uses.extend(picks.iter().map(|ix| ix.index(n)));
+            let mut r = seed | 1;
+            for k in (1..uses.len()).rev() {
+                r ^= r << 13; r ^= r >> 7; r ^= r << 17;
+                uses.swap(k, (r % (k as u64 + 1)) as usize);
+            }
+            let conv = |k: u8, pos: Option<usize>| {
+                let at = pos.map_or(String::new(), |p| format!("{}$", p + 1));
+                match k { 0 => format!("%{at}d"), 1 => format!("%{at}I64x"), 2 => format!("%{at}.3f"), _ => format!("%{at}u") }
+            };
+            let val = |i: usize| match kinds[i].0 { 0 | 3 => I(4, kinds[i].1 & 0xffff_ffff), 1 => I(8, kinds[i].1), _ => F(kinds[i].2) };
+            let pf: String = uses.iter().map(|&i| conv(kinds[i].0, Some(i)) + "|").collect();
+            let plain: String = uses.iter().map(|&i| conv(kinds[i].0, None) + "|").collect();
+            let list: Vec<Got> = (0..n).map(val).collect();
+            let in_order: Vec<Got> = uses.iter().map(|&i| val(i)).collect();
+            let got = format_p(pf.as_bytes(), Mode::ucrt(false, 0), &mut seq(&list)).unwrap();
+            let want = format(plain.as_bytes(), Mode::ucrt(false, 0), &mut seq(&in_order)).unwrap();
+            proptest::prop_assert_eq!(got, want);
+            // (and without positions, format_p is format)
+            let again = format_p(plain.as_bytes(), Mode::ucrt(false, 0), &mut seq(&in_order)).unwrap();
+            let want = format(plain.as_bytes(), Mode::ucrt(false, 0), &mut seq(&in_order)).unwrap();
+            proptest::prop_assert_eq!(again, want);
+        }
+
+        /// Any format at all: format_p never panics, and one without `$` is format's result.
+        #[test]
+        fn any_format_p(f in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..40)) {
+            let vals: Vec<Got> = (0..8).map(|i| I(4, i)).collect();
+            let got = format_p(&f, Mode::ucrt(false, 0), &mut seq(&vals));
+            if !f.contains(&b'$') {
+                proptest::prop_assert_eq!(got, format(&f, Mode::ucrt(false, 0), &mut seq(&vals)));
+            }
+        }
     }
 
     #[test]

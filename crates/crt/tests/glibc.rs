@@ -159,6 +159,72 @@ proptest! {
     }
 }
 
+/// A va_list of 64-bit integers, in order (positional formats: crt::fmt::format_p).
+struct Ints(Vec<i64>);
+impl fmt::Args for Ints {
+    fn int(&mut self, bytes: u32) -> u64 {
+        let v = if self.0.is_empty() { 0 } else { self.0.remove(0) };
+        v as u64 & if bytes >= 8 { u64::MAX } else { (1 << (8 * bytes)) - 1 }
+    }
+    fn float(&mut self) -> f64 {
+        0.0
+    }
+    fn narrow(&mut self, _: u64, _: Option<usize>) -> Vec<u8> {
+        vec![]
+    }
+    fn wide(&mut self, _: u64, _: Option<usize>) -> Vec<u16> {
+        vec![]
+    }
+    fn counted(&mut self, _: u64) -> (usize, u64) {
+        (0, 0)
+    }
+    fn a2w(&self, s: &[u8]) -> Vec<u16> {
+        s.iter().map(|&b| b as u16).collect()
+    }
+    fn w2a(&self, s: &[u16]) -> Vec<u8> {
+        s.iter().map(|&u| u as u8).collect()
+    }
+    fn store(&mut self, _: u64, _: u32, _: u64) {}
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(cases()))]
+
+    /// POSIX's %n$ (what MS's _printf_p takes too): up to six long long arguments each used at
+    /// least once, in any order and with repeats, with flags and widths (also from a position),
+    /// against glibc's snprintf.
+    #[test]
+    fn printf_positional(vals in proptest::collection::vec(any::<i64>(), 1..7), extra in proptest::collection::vec(any::<prop::sample::Index>(), 0..6),
+                         specs in proptest::collection::vec((prop_oneof![Just(""), Just("-"), Just("+"), Just("0"), Just(" ")], 0usize..12, prop_oneof![Just('d'), Just('x'), Just('u'), Just('o')]), 12), seed in any::<u64>(), star in any::<bool>()) {
+        let n = vals.len();
+        let mut uses: Vec<usize> = (0..n).collect();
+        uses.extend(extra.iter().map(|i| i.index(n)));
+        let mut r = seed | 1;
+        for k in (1..uses.len()).rev() {
+            r ^= r << 13; r ^= r >> 7; r ^= r << 17;
+            uses.swap(k, (r % (k as u64 + 1)) as usize);
+        }
+        // (a width from a position: the last argument, a small int)
+        let mut vals = vals;
+        if star {
+            vals.push(5);
+        }
+        let mut f = String::new();
+        for (k, &i) in uses.iter().enumerate() {
+            let (flag, w, ty) = &specs[k % specs.len()];
+            let w = if star && k == 0 { format!("*{}$", vals.len()) } else if *w > 0 { w.to_string() } else { String::new() };
+            f += &format!("<%{}${flag}{w}ll{ty}>", i + 1);
+        }
+        let ours = String::from_utf8(fmt::format_p(f.as_bytes(), fmt::Mode::ucrt(false, 0), &mut Ints(vals.clone())).unwrap()).unwrap();
+        let cf = CString::new(f.clone()).unwrap();
+        let mut buf = vec![0u8; 1 << 12];
+        let a = |i: usize| vals.get(i).copied().unwrap_or(0) as libc::c_longlong;
+        let len = unsafe { libc::snprintf(buf.as_mut_ptr() as *mut c_char, buf.len(), cf.as_ptr(), a(0), a(1), a(2), a(3), a(4), a(5), a(6)) };
+        // (glibc reads a * position as int: the width argument is the last, 5 either way)
+        prop_assert_eq!(ours, String::from_utf8_lossy(&buf[..len as usize]).into_owned(), "{}", f);
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // strto*
 

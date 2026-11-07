@@ -1451,6 +1451,86 @@ fn _vscwprintf(c: &mut Ctx) -> u32 {
 fn _scwprintf(c: &mut Ctx) -> u32 {
     legacy::<u16>(c.a(0), &mut VaArgs::arg(c, 1)).map_or(u32::MAX, |s| s.len() as u32)
 }
+// The _printf_p family (msvcr80+, msvcrt): printf with `%n$` positions (crt::fmt::format_p).
+// The _l forms take a locale after the format, which changes nothing here.
+fn legacy_p<T: Unit>(fmt: u32, va: &mut VaArgs) -> Option<Vec<T>> {
+    pf(fmt, va, crt::fmt::Mode { positional: true, ..crate::misc::legacy_mode() })
+}
+/// The variable arguments of a _p call: after argument `at` (`...`), or the va_list there
+fn p_args(c: &Ctx, at: u32, list: bool) -> VaArgs {
+    if list { VaArgs::stack(c.a(at)) } else { VaArgs::arg(c, at) }
+}
+/// _sprintf_p(buf, size, fmt, ...) and its v / _l / wide forms: as sprintf_s, what does not fit
+/// leaves an empty string, ERANGE and -1
+fn sprintf_p<T: Unit>(c: &mut Ctx, locale: bool, list: bool) -> u32 {
+    let s = legacy_p::<T>(c.a(2), &mut p_args(c, 3 + locale as u32, list));
+    put_s(c.a(0), size(c, 1), None, s)
+}
+/// _scprintf_p(fmt, ...): the length
+fn scprintf_p<T: Unit>(c: &mut Ctx, locale: bool, list: bool) -> u32 {
+    legacy_p::<T>(c.a(0), &mut p_args(c, 1 + locale as u32, list)).map_or(u32::MAX, |s| s.len() as u32)
+}
+/// _fprintf_p(stream, fmt, ...): wide output goes out in the ANSI code page
+fn fprintf_p<T: Unit>(c: &mut Ctx, locale: bool, list: bool) -> u32 {
+    let Some(s) = legacy_p::<T>(c.a(1), &mut p_args(c, 2 + locale as u32, list)) else { return u32::MAX };
+    write_stream(c.a(0), &units_to_ansi(&s));
+    s.len() as u32
+}
+/// _printf_p(fmt, ...): the console
+fn printf_p<T: Unit>(c: &mut Ctx, locale: bool, list: bool) -> u32 {
+    let Some(s) = legacy_p::<T>(c.a(0), &mut p_args(c, 1 + locale as u32, list)) else { return u32::MAX };
+    eprint!("{}", a2s(&units_to_ansi(&s)));
+    s.len() as u32
+}
+fn units_to_ansi<T: Unit>(s: &[T]) -> Vec<u8> {
+    if T::WIDE { crate::text::w2a(&s.iter().map(|u| u.code() as u16).collect::<Vec<u16>>()) } else { s.iter().map(|u| u.code() as u8).collect() }
+}
+fn p_init() {
+    type H = crate::api::Handler;
+    let list: [(&str, H); 32] = [
+        ("_sprintf_p", |c| sprintf_p::<u8>(c, false, false)),
+        ("_sprintf_p_l", |c| sprintf_p::<u8>(c, true, false)),
+        ("_vsprintf_p", |c| sprintf_p::<u8>(c, false, true)),
+        ("_vsprintf_p_l", |c| sprintf_p::<u8>(c, true, true)),
+        ("_swprintf_p", |c| sprintf_p::<u16>(c, false, false)),
+        ("_swprintf_p_l", |c| sprintf_p::<u16>(c, true, false)),
+        ("_vswprintf_p", |c| sprintf_p::<u16>(c, false, true)),
+        ("_vswprintf_p_l", |c| sprintf_p::<u16>(c, true, true)),
+        ("_scprintf_p", |c| scprintf_p::<u8>(c, false, false)),
+        ("_scprintf_p_l", |c| scprintf_p::<u8>(c, true, false)),
+        ("_vscprintf_p", |c| scprintf_p::<u8>(c, false, true)),
+        ("_vscprintf_p_l", |c| scprintf_p::<u8>(c, true, true)),
+        ("_scwprintf_p", |c| scprintf_p::<u16>(c, false, false)),
+        ("_scwprintf_p_l", |c| scprintf_p::<u16>(c, true, false)),
+        ("_vscwprintf_p", |c| scprintf_p::<u16>(c, false, true)),
+        ("_vscwprintf_p_l", |c| scprintf_p::<u16>(c, true, true)),
+        ("_fprintf_p", |c| fprintf_p::<u8>(c, false, false)),
+        ("_fprintf_p_l", |c| fprintf_p::<u8>(c, true, false)),
+        ("_vfprintf_p", |c| fprintf_p::<u8>(c, false, true)),
+        ("_vfprintf_p_l", |c| fprintf_p::<u8>(c, true, true)),
+        ("_fwprintf_p", |c| fprintf_p::<u16>(c, false, false)),
+        ("_fwprintf_p_l", |c| fprintf_p::<u16>(c, true, false)),
+        ("_vfwprintf_p", |c| fprintf_p::<u16>(c, false, true)),
+        ("_vfwprintf_p_l", |c| fprintf_p::<u16>(c, true, true)),
+        ("_printf_p", |c| printf_p::<u8>(c, false, false)),
+        ("_printf_p_l", |c| printf_p::<u8>(c, true, false)),
+        ("_vprintf_p", |c| printf_p::<u8>(c, false, true)),
+        ("_vprintf_p_l", |c| printf_p::<u8>(c, true, true)),
+        ("_wprintf_p", |c| printf_p::<u16>(c, false, false)),
+        ("_wprintf_p_l", |c| printf_p::<u16>(c, true, false)),
+        ("_vwprintf_p", |c| printf_p::<u16>(c, false, true)),
+        ("_vwprintf_p_l", |c| printf_p::<u16>(c, true, true)),
+    ];
+    for (n, f) in list {
+        implement("msvcrt", n, f);
+    }
+    // the UCRT's: (options, buffer, size, format, locale, va_list) and (options, FILE*, ...)
+    implement("ucrtbase", "__stdio_common_vsprintf_p", |c| ucrt_pf_p::<u8>(c));
+    implement("ucrtbase", "__stdio_common_vswprintf_p", |c| ucrt_pf_p::<u16>(c));
+    implement("ucrtbase", "__stdio_common_vfprintf_p", |c| ucrt_fpf_p::<u8>(c));
+    implement("ucrtbase", "__stdio_common_vfwprintf_p", |c| ucrt_fpf_p::<u16>(c));
+}
+
 fn printf(c: &mut Ctx) -> u32 {
     let Some(s) = legacy::<u8>(c.a(0), &mut VaArgs::arg(c, 1)) else { return u32::MAX };
     eprint!("{}", a2s(&s));
@@ -2457,6 +2537,13 @@ fn longjmp(c: &mut Ctx) -> u32 {
 // NULL_TERMINATION (1) _vsnprintf's (exactly count: no NUL, the length; more: -1), else the
 // last unit a NUL and STANDARD_SNPRINTF_BEHAVIOR (2) the length, otherwise -2 (-1 for count 0).
 fn ucrt_pf<T: Unit>(c: &mut Ctx, sized: bool, secure: bool) -> u32 {
+    ucrt_pf_m::<T>(c, sized, secure, false)
+}
+/// __stdio_common_vsprintf_p: as the _s form (what does not fit: empty, ERANGE, -1), positional
+fn ucrt_pf_p<T: Unit>(c: &mut Ctx) -> u32 {
+    ucrt_pf_m::<T>(c, false, true, true)
+}
+fn ucrt_pf_m<T: Unit>(c: &mut Ctx, sized: bool, secure: bool, positional: bool) -> u32 {
     let mut a = Args(0);
     let opts = a.u64(c);
     let buf = a.p(c);
@@ -2469,7 +2556,7 @@ fn ucrt_pf<T: Unit>(c: &mut Ctx, sized: bool, secure: bool) -> u32 {
         set_errno(22);
         return u32::MAX;
     }
-    let s = pf::<T>(fmt, &mut VaArgs::stack(va), crt::fmt::Mode::ucrt(mem::x64(), opts));
+    let s = pf::<T>(fmt, &mut VaArgs::stack(va), crt::fmt::Mode { positional, ..crt::fmt::Mode::ucrt(mem::x64(), opts) });
     if secure {
         return put_s(buf, size, sized.then_some(count), s);
     }
@@ -2529,10 +2616,16 @@ fn __stdio_common_vsnwprintf_s(c: &mut Ctx) -> u32 {
 }
 /// __stdio_common_vfprintf(options, FILE*, format, locale, va_list)
 fn ucrt_fpf<T: Unit>(c: &mut Ctx) -> u32 {
+    ucrt_fpf_m::<T>(c, false)
+}
+fn ucrt_fpf_p<T: Unit>(c: &mut Ctx) -> u32 {
+    ucrt_fpf_m::<T>(c, true)
+}
+fn ucrt_fpf_m<T: Unit>(c: &mut Ctx, positional: bool) -> u32 {
     let mut a = Args(0);
     let opts = a.u64(c);
     let (fp, fmt, _locale, va) = (a.p(c), a.p(c), a.p(c), a.p(c));
-    let Some(s) = pf::<T>(fmt, &mut VaArgs::stack(va), crt::fmt::Mode::ucrt(mem::x64(), opts)) else { return u32::MAX };
+    let Some(s) = pf::<T>(fmt, &mut VaArgs::stack(va), crt::fmt::Mode { positional, ..crt::fmt::Mode::ucrt(mem::x64(), opts) }) else { return u32::MAX };
     let bytes: Vec<u8> = if T::WIDE { crate::text::w2a(&s.iter().map(|u| u.code() as u16).collect::<Vec<u16>>()) } else { s.iter().map(|u| u.code() as u8).collect() };
     write_stream(fp, &bytes);
     s.len() as u32
@@ -3469,6 +3562,7 @@ fn asctime(c: &mut Ctx) -> u32 {
 }
 
 pub fn init() {
+    p_init();
     // crtdll's __GetMainArgs(argc, argv, envp, expand): __getmainargs without the startup info
     implement("crtdll", "__GetMainArgs", __getmainargs);
     io::init();
