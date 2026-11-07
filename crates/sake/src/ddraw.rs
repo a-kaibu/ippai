@@ -63,6 +63,8 @@ struct Surf {
     lock: Option<Rect>,
     /// the attached depth buffer (Direct3D)
     zbuf: u32,
+    /// the DirectDraw object that made it
+    dd: u32,
 }
 
 struct State {
@@ -252,6 +254,7 @@ fn new_surface_pf(w: i32, h: i32, bpp: u16, r565: bool, pf: [u32; 5], caps: u32)
                 blocks: [0; 3],
                 lock: None,
                 zbuf: 0,
+                dd: 0,
             },
         );
         id
@@ -504,8 +507,11 @@ fn S_GetPixelFormat(c: &mut Ctx) -> u32 {
     DD_OK
 }
 fn S_GetDDInterface(c: &mut Ctx) -> u32 {
-    put32(c.a(1), dd_block(3));
-    dd_created()
+    let (id, kind) = this(c);
+    let obj = surf(id).map_or(0, |s| s.dd);
+    let b = dd_iface(obj, [0, 2, 3][kind as usize]);
+    put32(c.a(1), b);
+    if b == 0 { DDERR_INVALIDPARAMS } else { DD_OK }
 }
 fn S_GetUniqueness(c: &mut Ctx) -> u32 {
     put32(c.a(1), 1);
@@ -1003,8 +1009,8 @@ fn P_SetEntries(c: &mut Ctx) -> u32 {
 // ---------------------------------------------------------------------------------------------
 // IDirectDraw 1/2/4/7
 
-/// The DirectDraw object as interface version index 0..=3 (1, 2, 4, 7).
-fn dd_block(v: usize) -> u32 {
+/// The IDirectDraw vtable of interface version index 0..=3 (1, 2, 4, 7).
+fn dd_vtbl(v: usize) -> u32 {
     static B: [OnceLock<u32>; 4] = [OnceLock::new(), OnceLock::new(), OnceLock::new(), OnceLock::new()];
     *B[v].get_or_init(|| {
         let mut m: Vec<(Handler, u32)> = vec![
@@ -1041,31 +1047,94 @@ fn dd_block(v: usize) -> u32 {
         if v == 3 {
             m.extend_from_slice(&[(unsupported, 16), (unsupported, 12)]);
         }
-        let vt = vtable(["IDirectDraw", "IDirectDraw2", "IDirectDraw4", "IDirectDraw7"][v], &m);
-        let b = mem::heap_alloc(8, true);
-        w32(b, vt);
-        w32(b + 4, v as u32);
-        b
+        vtable(["IDirectDraw", "IDirectDraw2", "IDirectDraw4", "IDirectDraw7"][v], &m)
     })
 }
 
+/// One DirectDraw object (each DirectDrawCreate / CoCreateInstance makes its own). As on
+/// Windows, each interface version counts its own references (IDirect3D7 shares
+/// IDirectDraw7's); the object goes when all of them are 0.
+struct DdObj {
+    refs: [u32; 4],
+    /// the guest interface blocks by version index, then IDirect3D7 (0 until asked for)
+    blocks: [u32; 5],
+}
+
+/// object id -> object; guest blocks are [vtable, version index, object id]
+static DDS: Mutex<Option<(HashMap<u32, DdObj>, u32)>> = Mutex::new(None);
+
+fn dds<R>(f: impl FnOnce(&mut HashMap<u32, DdObj>, &mut u32) -> R) -> R {
+    let mut g = DDS.lock().unwrap_or_else(|e| e.into_inner());
+    let (m, next) = g.get_or_insert_with(|| (HashMap::default(), 1));
+    f(m, next)
+}
+
+/// A new DirectDraw object; returns its id.
+fn dd_new() -> u32 {
+    dds(|m, next| {
+        let id = *next;
+        *next += 1;
+        m.insert(id, DdObj { refs: [0; 4], blocks: [0; 5] });
+        id
+    })
+}
+
+/// The guest interface of object `obj` as version index `v` (4: IDirect3D7), one reference
+/// added (QueryInterface / create). 0 if the object is gone.
+fn dd_iface(obj: u32, v: usize) -> u32 {
+    let Some(b) = dds(|m, _| m.get(&obj).map(|o| o.blocks[v])) else { return 0 };
+    let b = if b != 0 {
+        b
+    } else {
+        let b = mem::heap_alloc(12, true);
+        w32(b, if v == 4 { d3d7::d3d_vtbl() } else { dd_vtbl(v) });
+        w32(b + 4, v.min(3) as u32);
+        w32(b + 8, obj);
+        dds(|m, _| m.get_mut(&obj).map(|o| o.blocks[v] = b));
+        b
+    };
+    dd_addref(b);
+    b
+}
+
+/// (object id, version index) of a guest DirectDraw / Direct3D block.
+fn dd_of(b: u32) -> (u32, usize) {
+    (r32(b + 8), (r32(b + 4) as usize).min(3))
+}
+
 fn dd_version(c: &Ctx) -> usize {
-    r32(c.a(0) + 4) as usize
+    dd_of(c.a(0)).1
 }
 
-/// References to the DirectDraw object (one object, whatever interface or create call).
-static DD_REFS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+fn dd_addref(b: u32) -> u32 {
+    let (obj, v) = dd_of(b);
+    dds(|m, _| m.get_mut(&obj).map_or(0, |o| {
+        o.refs[v] += 1;
+        o.refs[v]
+    }))
+}
 
-fn D_AddRef(_: &mut Ctx) -> u32 {
-    DD_REFS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+/// Drops a reference of interface `b`; the object goes with its last one (the guest blocks
+/// stay allocated, so a stray call on a released interface finds no object instead of freed
+/// memory).
+fn dd_release(b: u32) -> u32 {
+    let (obj, v) = dd_of(b);
+    dds(|m, _| {
+        let Some(o) = m.get_mut(&obj) else { return 0 };
+        o.refs[v] = o.refs[v].saturating_sub(1);
+        let n = o.refs[v];
+        if o.refs == [0; 4] {
+            m.remove(&obj);
+        }
+        n
+    })
 }
-fn D_Release(_: &mut Ctx) -> u32 {
-    let r = DD_REFS.fetch_update(std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed, |n| Some(n.saturating_sub(1)));
-    r.unwrap_or(0).saturating_sub(1)
+
+fn D_AddRef(c: &mut Ctx) -> u32 {
+    dd_addref(c.a(0))
 }
-fn dd_created() -> u32 {
-    DD_REFS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    DD_OK
+fn D_Release(c: &mut Ctx) -> u32 {
+    dd_release(c.a(0))
 }
 
 fn D_QueryInterface(c: &mut Ctx) -> u32 {
@@ -1074,17 +1143,14 @@ fn D_QueryInterface(c: &mut Ctx) -> u32 {
         0xb3a6_f3e0 => 1,
         0x9c59_509a => 2,
         0x15e6_5ec0 => 3,
-        0xf504_9e77 if dd_version(c) == 3 => {
-            put32(c.a(2), d3d7::d3d_block());
-            return dd_created();
-        }
+        0xf504_9e77 if dd_version(c) == 3 => 4,
         _ => {
             put32(c.a(2), 0);
             return E_NOINTERFACE;
         }
     };
-    put32(c.a(2), dd_block(v));
-    dd_created()
+    put32(c.a(2), dd_iface(dd_of(c.a(0)).0, v));
+    DD_OK
 }
 
 fn D_CreateClipper(c: &mut Ctx) -> u32 {
@@ -1154,6 +1220,8 @@ fn D_CreateSurface(c: &mut Ctx) -> u32 {
     }
     let pf = pfv.filter(|p| p[1] | p[2] | p[3] != 0).unwrap_or_else(|| plain_pf(bpp, r565));
     let Some(id) = new_surface_pf(w, h, bpp, r565, pf, caps) else { return DDERR_OUTOFMEMORY };
+    let owner = dd_of(c.a(0)).0;
+    with(|s| s.surfs.get_mut(&id).map(|x| x.dd = owner));
     if flags & 0x10000 != 0 {
         let key = (r32(d + 64), r32(d + 68));
         with(|s| s.surfs.get_mut(&id).map(|x| x.ck_src = Some(key)));
@@ -1165,7 +1233,10 @@ fn D_CreateSurface(c: &mut Ctx) -> u32 {
     for i in 0..backs {
         let bc = (caps & !(CAPS_PRIMARY | CAPS_FRONTBUFFER)) | CAPS_BACKBUFFER * (i == 0) as u32 | CAPS_FLIP | CAPS_COMPLEX;
         let Some(b) = new_surface(w, h, bpp, r565, bc) else { return DDERR_OUTOFMEMORY };
-        with(|s| s.surfs.get_mut(&prev).map(|x| x.next = b));
+        with(|s| {
+            s.surfs.get_mut(&b).map(|x| x.dd = owner);
+            s.surfs.get_mut(&prev).map(|x| x.next = b)
+        });
         prev = b;
     }
     if backs > 0 {
@@ -1235,6 +1306,8 @@ fn D_GetGDISurface(c: &mut Ctx) -> u32 {
         2 => 1,
         _ => 0,
     };
+    // (a reference of the primary for the caller, as Windows gives)
+    with(|s| s.surfs.get_mut(&p).map(|x| x.refs += 1));
     put32(c.a(1), block(p, kind));
     DD_OK
 }
@@ -1297,12 +1370,12 @@ fn D_GetDeviceIdentifier(c: &mut Ctx) -> u32 {
 // exports
 
 fn DirectDrawCreate(c: &mut Ctx) -> u32 {
-    put32(c.a(1), dd_block(0));
-    dd_created()
+    put32(c.a(1), dd_iface(dd_new(), 0));
+    DD_OK
 }
 fn DirectDrawCreateEx(c: &mut Ctx) -> u32 {
-    put32(c.a(1), dd_block(3));
-    dd_created()
+    put32(c.a(1), dd_iface(dd_new(), 3));
+    DD_OK
 }
 fn DirectDrawCreateClipper(c: &mut Ctx) -> u32 {
     put32(c.a(1), new_clipper());
@@ -1340,8 +1413,7 @@ pub fn create_instance(clsid: u32, iid: u32) -> Option<u32> {
         0x15e6_5ec0 => 3,
         _ => 0,
     };
-    dd_created();
-    Some(dd_block(v))
+    Some(dd_iface(dd_new(), v))
 }
 
 pub fn init() {

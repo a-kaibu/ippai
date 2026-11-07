@@ -57,7 +57,10 @@ type C4 = [f32; 4];
 
 #[derive(Clone)]
 struct Dev {
+    /// the render target and the textures (surface ids) each hold a reference of the surface
     rt: u32,
+    /// the DirectDraw object (GetDirect3D)
+    dd: u32,
     /// x, y, width, height
     vp: [i32; 4],
     zr: (f32, f32),
@@ -68,7 +71,8 @@ struct Dev {
     tex: [u32; 8],
     /// diffuse, ambient, specular, emissive (RGBA each), power
     mat: [f32; 17],
-    lights: Vec<([u32; 26], bool)>,
+    /// by the game's light index (any u32, as on Windows; only the ones set or enabled)
+    lights: std::collections::BTreeMap<u32, ([u32; 26], bool)>,
     rec: Option<Vec<Ch>>,
 }
 
@@ -81,14 +85,14 @@ enum Ch {
     Xf(usize, [f32; 16]),
     Vp([i32; 4], (f32, f32)),
     Mat([f32; 17]),
-    Light(usize, [u32; 26]),
-    LightOn(usize, bool),
+    Light(u32, [u32; 26]),
+    LightOn(u32, bool),
 }
 
 const IDENT: [f32; 16] = [1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.];
 
 impl Dev {
-    fn new(rt: u32) -> Dev {
+    fn new(rt: u32, dd: u32) -> Dev {
         let s = surf(rt);
         let (w, h, z) = s.map_or((640, 480, false), |s| (s.w, s.h, s.zbuf != 0));
         let mut rs = vec![0u32; 256];
@@ -132,10 +136,13 @@ impl Dev {
         }
         let mut mat = [0f32; 17];
         mat[..4].copy_from_slice(&[1., 1., 1., 1.]);
-        Dev { rt, vp: [0, 0, w, h], zr: (0., 1.), xf: [IDENT; 3], rs, tss, tex: [0; 8], mat, lights: Vec::new(), rec: None }
+        Dev { rt, dd, vp: [0, 0, w, h], zr: (0., 1.), xf: [IDENT; 3], rs, tss, tex: [0; 8], mat, lights: Default::default(), rec: None }
     }
 
-    fn apply(&mut self, ch: &Ch) {
+    /// Applies a change; a texture change takes a reference of the new texture and returns
+    /// the old one, whose reference the caller drops (release_surfs, outside the D lock).
+    #[must_use]
+    fn apply(&mut self, ch: &Ch) -> u32 {
         match ch {
             Ch::Rs(k, v) => self.rs[*k] = *v,
             Ch::Tss(s, k, v) => {
@@ -145,30 +152,36 @@ impl Dev {
                     self.tss[*s][TSS_ADDRESSV] = *v;
                 }
             }
-            Ch::Tex(s, t) => self.tex[*s] = *t,
+            Ch::Tex(s, t) => {
+                let old = self.tex[*s];
+                if old != *t {
+                    hold_surf(*t);
+                    self.tex[*s] = *t;
+                    return old;
+                }
+            }
             Ch::Xf(t, m) => self.xf[*t] = *m,
             Ch::Vp(v, z) => {
                 self.vp = *v;
                 self.zr = *z;
             }
             Ch::Mat(m) => self.mat = *m,
-            Ch::Light(i, l) => {
-                if self.lights.len() <= *i {
-                    self.lights.resize(*i + 1, ([0; 26], false));
-                }
-                self.lights[*i].0 = *l;
-            }
+            Ch::Light(i, l) => self.lights.entry(*i).or_insert(([0; 26], false)).0 = *l,
             Ch::LightOn(i, on) => {
-                if self.lights.len() <= *i {
-                    let mut l = [0u32; 26];
-                    l[0] = 3;
-                    l[1..4].copy_from_slice(&[1f32.to_bits(); 3]);
-                    l[17] = 1f32.to_bits(); // direction (0, 0, 1)
-                    self.lights.resize(*i + 1, (l, false));
-                }
-                self.lights[*i].1 = *on;
+                self.lights
+                    .entry(*i)
+                    .or_insert_with(|| {
+                        // enabling a light never set: a white directional light along +z
+                        let mut l = [0u32; 26];
+                        l[0] = 3;
+                        l[1..4].copy_from_slice(&[1f32.to_bits(); 3]);
+                        l[17] = 1f32.to_bits();
+                        (l, false)
+                    })
+                    .1 = *on
             }
         }
+        0
     }
 
     /// Everything as changes (CreateStateBlock / CaptureStateBlock of a whole state).
@@ -185,7 +198,7 @@ impl Dev {
         }
         v.push(Ch::Vp(self.vp, self.zr));
         v.push(Ch::Mat(self.mat));
-        for (i, l) in self.lights.iter().enumerate() {
+        for (&i, l) in &self.lights {
             v.push(Ch::Light(i, l.0));
             v.push(Ch::LightOn(i, l.1));
         }
@@ -201,8 +214,8 @@ impl Dev {
             Ch::Xf(t, _) => Ch::Xf(*t, self.xf[*t]),
             Ch::Vp(..) => Ch::Vp(self.vp, self.zr),
             Ch::Mat(_) => Ch::Mat(self.mat),
-            Ch::Light(i, l) => Ch::Light(*i, self.lights.get(*i).map_or(*l, |x| x.0)),
-            Ch::LightOn(i, b) => Ch::LightOn(*i, self.lights.get(*i).map_or(*b, |x| x.1)),
+            Ch::Light(i, l) => Ch::Light(*i, self.lights.get(i).map_or(*l, |x| x.0)),
+            Ch::LightOn(i, b) => Ch::LightOn(*i, self.lights.get(i).map_or(*b, |x| x.1)),
         }
     }
 }
@@ -229,12 +242,53 @@ fn dev<R>(c: &Ctx, f: impl FnOnce(&mut Dev) -> R) -> Option<R> {
 }
 
 /// A state change: recorded while a state block is being recorded, applied otherwise.
-fn set(c: &Ctx, ch: Ch) -> u32 {
-    dev(c, |d| match &mut d.rec {
-        Some(r) => r.push(ch),
+fn set(c: &mut Ctx, ch: Ch) -> u32 {
+    let r = dev(c, |d| match &mut d.rec {
+        Some(r) => {
+            r.push(ch);
+            0
+        }
         None => d.apply(&ch),
-    })
-    .map_or(D3DERR_INVALIDCALL, |_| D3D_OK)
+    });
+    match r {
+        Some(old) => {
+            release_surfs(c, &[old]);
+            D3D_OK
+        }
+        None => D3DERR_INVALIDCALL,
+    }
+}
+
+/// Takes a reference of surface `id` (0 or a surface that is gone: nothing).
+fn hold_surf(id: u32) {
+    if id != 0 {
+        with(|st| st.surfs.get_mut(&id).map(|x| x.refs += 1));
+    }
+}
+
+/// Drops a reference of each surface (0 and surfaces that are gone are skipped).
+fn release_surfs(c: &mut Ctx, ids: &[u32]) {
+    for &id in ids {
+        if id != 0 && surf(id).is_some() {
+            release_surface(c, id);
+        }
+    }
+}
+
+/// The textures a state block's changes name: the block holds a reference of each.
+fn block_texs(v: &[Ch]) -> Vec<u32> {
+    v.iter().filter_map(|ch| if let Ch::Tex(_, t) = ch { Some(*t) } else { None }).collect()
+}
+
+/// Stores state block `h` (taking references of its textures), dropping the one it replaces.
+fn store_block(c: &mut Ctx, h: u32, v: Vec<Ch>) {
+    for t in block_texs(&v) {
+        hold_surf(t);
+    }
+    let old = d3d(|d| d.blocks.insert(h, v));
+    if let Some(old) = old {
+        release_surfs(c, &block_texs(&old));
+    }
 }
 
 fn rf(a: u32) -> f32 {
@@ -251,11 +305,11 @@ fn guid(p: u32, d1: u32, d2: u16, d3: u16, d4: [u8; 8]) {
 // ---------------------------------------------------------------------------------------------
 // IDirect3D7
 
-/// The Direct3D object (one, like the DirectDraw object).
-pub(super) fn d3d_block() -> u32 {
+/// The IDirect3D7 vtable (the interface is a block of its DirectDraw object: dd_iface(obj, 4)).
+pub(super) fn d3d_vtbl() -> u32 {
     static B: OnceLock<u32> = OnceLock::new();
     *B.get_or_init(|| {
-        let vt = vtable(
+        vtable(
             "IDirect3D7",
             &[
                 (Q_QueryInterface, 12),
@@ -267,22 +321,20 @@ pub(super) fn d3d_block() -> u32 {
                 (Q_EnumZBufferFormats, 16),
                 (ok, 4),
             ],
-        );
-        let b = mem::heap_alloc(8, true);
-        w32(b, vt);
-        b
+        )
     })
 }
 
 fn Q_QueryInterface(c: &mut Ctx) -> u32 {
+    let obj = dd_of(c.a(0)).0;
     match guid_first(c.a(1)) {
         0xf504_9e77 | 0 => {
-            put32(c.a(2), d3d_block());
-            dd_created()
+            put32(c.a(2), dd_iface(obj, 4));
+            D3D_OK
         }
         0x15e6_5ec0 => {
-            put32(c.a(2), dd_block(3));
-            dd_created()
+            put32(c.a(2), dd_iface(obj, 3));
+            D3D_OK
         }
         _ => {
             put32(c.a(2), 0);
@@ -421,10 +473,12 @@ fn Q_CreateDevice(c: &mut Ctx) -> u32 {
         put32(out, 0);
         return D3DERR_INVALIDCALL;
     };
+    let dd = dd_of(c.a(0)).0;
+    hold_surf(rt);
     let id = d3d(|d| {
         let id = d.next;
         d.next += 1;
-        d.devs.insert(id, Dev::new(rt));
+        d.devs.insert(id, Dev::new(rt, dd));
         id
     });
     let b = mem::heap_alloc(12, true);
@@ -457,9 +511,16 @@ fn vb_vtbl() -> u32 {
 
 fn Q_CreateVertexBuffer(c: &mut Ctx) -> u32 {
     let (desc, out) = (c.a(1), c.a(2));
+    put32(out, 0);
+    if desc == 0 {
+        return D3DERR_INVALIDCALL;
+    }
     let (fvf, n) = (r32(desc + 8), r32(desc + 12));
-    let size = Layout::of(fvf).size * n;
+    let Some(size) = vb_size(fvf, n) else { return D3DERR_INVALIDCALL };
     let m = mem::heap_alloc(size.max(4), true);
+    if m == 0 {
+        return DDERR_OUTOFMEMORY;
+    }
     let b = mem::heap_alloc(12, true);
     w32(b, vb_vtbl());
     w32(b + 4, r32(desc + 4));
@@ -514,10 +575,22 @@ fn B_Release(c: &mut Ctx) -> u32 {
     }
     n
 }
+/// The bytes of `n` vertices of `fvf` (None: no position, or past what the guest can hold).
+fn vb_size(fvf: u32, n: u32) -> Option<u32> {
+    let l = Layout::of(fvf);
+    if fvf & 0xe == 0 || l.size == 0 {
+        return None;
+    }
+    l.size.checked_mul(n).filter(|&s| s <= MAX_VB)
+}
+
+/// The largest vertex buffer made (bigger ones fail as out of memory would)
+const MAX_VB: u32 = 256 << 20;
+
 fn B_Lock(c: &mut Ctx) -> u32 {
     let Some((m, fvf, n)) = vb(c) else { return D3DERR_INVALIDCALL };
     put32(c.a(2), m);
-    put32(c.a(3), Layout::of(fvf).size * n);
+    put32(c.a(3), vb_size(fvf, n).unwrap_or(0));
     D3D_OK
 }
 fn B_GetVertexBufferDesc(c: &mut Ctx) -> u32 {
@@ -595,7 +668,11 @@ fn V_Release(c: &mut Ctx) -> u32 {
     let n = r32(b + 8).saturating_sub(1);
     w32(b + 8, n);
     if n == 0 {
-        d3d(|d| d.devs.remove(&r32(b + 4)));
+        if let Some(d) = d3d(|d| d.devs.remove(&r32(b + 4))) {
+            let mut held = d.tex.to_vec();
+            held.push(d.rt);
+            release_surfs(c, &held);
+        }
     }
     n
 }
@@ -635,16 +712,22 @@ fn V_EndScene(c: &mut Ctx) -> u32 {
     D3D_OK
 }
 fn V_GetDirect3D(c: &mut Ctx) -> u32 {
-    put32(c.a(1), d3d_block());
-    dd_created()
+    let obj = dev(c, |d| d.dd).unwrap_or(0);
+    let b = dd_iface(obj, 4);
+    put32(c.a(1), b);
+    if b == 0 { D3DERR_INVALIDCALL } else { D3D_OK }
 }
 fn V_SetRenderTarget(c: &mut Ctx) -> u32 {
     let Some((rt, _)) = sid(c.a(1)) else { return D3DERR_INVALIDCALL };
-    let (w, h) = surf(rt).map_or((0, 0), |s| (s.w, s.h));
-    dev(c, |d| {
+    let Some(s) = surf(rt) else { return D3DERR_INVALIDCALL };
+    hold_surf(rt);
+    let old = dev(c, |d| {
+        let old = d.rt;
         d.rt = rt;
-        d.vp = [0, 0, w, h];
+        d.vp = [0, 0, s.w, s.h];
+        old
     });
+    release_surfs(c, &[old.unwrap_or(rt)]);
     D3D_OK
 }
 fn V_GetRenderTarget(c: &mut Ctx) -> u32 {
@@ -713,22 +796,26 @@ fn V_GetMaterial(c: &mut Ctx) -> u32 {
 }
 fn V_SetLight(c: &mut Ctx) -> u32 {
     let p = c.a(2);
-    set(c, Ch::Light(c.a(1) as usize, std::array::from_fn(|i| r32(p + 4 * i as u32))))
+    if p == 0 {
+        return D3DERR_INVALIDCALL;
+    }
+    let l = std::array::from_fn(|i| r32(p + 4 * i as u32));
+    set(c, Ch::Light(c.a(1), l))
 }
 fn V_GetLight(c: &mut Ctx) -> u32 {
-    let i = c.a(1) as usize;
-    let Some(l) = dev(c, |d| d.lights.get(i).map(|x| x.0)).flatten() else { return D3DERR_INVALIDCALL };
+    let i = c.a(1);
+    let Some(l) = dev(c, |d| d.lights.get(&i).map(|x| x.0)).flatten() else { return D3DERR_INVALIDCALL };
     for (k, v) in l.iter().enumerate() {
         w32(c.a(2) + 4 * k as u32, *v);
     }
     D3D_OK
 }
 fn V_LightEnable(c: &mut Ctx) -> u32 {
-    set(c, Ch::LightOn(c.a(1) as usize, c.a(2) != 0))
+    set(c, Ch::LightOn(c.a(1), c.a(2) != 0))
 }
 fn V_GetLightEnable(c: &mut Ctx) -> u32 {
-    let i = c.a(1) as usize;
-    let Some(on) = dev(c, |d| d.lights.get(i).map(|x| x.1)).flatten() else { return D3DERR_INVALIDCALL };
+    let i = c.a(1);
+    let Some(on) = dev(c, |d| d.lights.get(&i).map(|x| x.1)).flatten() else { return D3DERR_INVALIDCALL };
     put32(c.a(2), on as u32);
     D3D_OK
 }
@@ -786,38 +873,43 @@ fn V_ValidateDevice(c: &mut Ctx) -> u32 {
 fn V_BeginStateBlock(c: &mut Ctx) -> u32 {
     dev(c, |d| d.rec = Some(Vec::new())).map_or(D3DERR_INVALIDCALL, |_| D3D_OK)
 }
-fn new_block(v: Vec<Ch>) -> u32 {
-    d3d(|d| {
+fn new_block(c: &mut Ctx, v: Vec<Ch>) -> u32 {
+    let h = d3d(|d| {
         let h = d.next;
         d.next += 1;
-        d.blocks.insert(h, v);
         h
-    })
+    });
+    store_block(c, h, v);
+    h
 }
 fn V_EndStateBlock(c: &mut Ctx) -> u32 {
     let Some(v) = dev(c, |d| d.rec.take()).flatten() else { return D3DERR_INVALIDCALL };
-    put32(c.a(1), new_block(v));
+    let h = new_block(c, v);
+    put32(c.a(1), h);
     D3D_OK
 }
 fn V_CreateStateBlock(c: &mut Ctx) -> u32 {
     let Some(all) = dev(c, |d| d.all()) else { return D3DERR_INVALIDCALL };
-    put32(c.a(2), new_block(all));
+    let h = new_block(c, all);
+    put32(c.a(2), h);
     D3D_OK
 }
 fn V_ApplyStateBlock(c: &mut Ctx) -> u32 {
     let Some(v) = d3d(|d| d.blocks.get(&c.a(1)).cloned()) else { return D3DERR_INVALIDCALL };
-    dev(c, |d| v.iter().for_each(|ch| d.apply(ch)));
+    let Some(old) = dev(c, |d| v.iter().map(|ch| d.apply(ch)).collect::<Vec<_>>()) else { return D3DERR_INVALIDCALL };
+    release_surfs(c, &old);
     D3D_OK
 }
 fn V_CaptureStateBlock(c: &mut Ctx) -> u32 {
     let h = c.a(1);
     let Some(v) = d3d(|d| d.blocks.get(&h).cloned()) else { return D3DERR_INVALIDCALL };
     let Some(nv) = dev(c, |d| v.iter().map(|ch| d.capture(ch)).collect::<Vec<_>>()) else { return D3DERR_INVALIDCALL };
-    d3d(|d| d.blocks.insert(h, nv));
+    store_block(c, h, nv);
     D3D_OK
 }
 fn V_DeleteStateBlock(c: &mut Ctx) -> u32 {
-    d3d(|d| d.blocks.remove(&c.a(1)));
+    let Some(old) = d3d(|d| d.blocks.remove(&c.a(1))) else { return D3DERR_INVALIDCALL };
+    release_surfs(c, &block_texs(&old));
     D3D_OK
 }
 fn V_ComputeSphereVisibility(c: &mut Ctx) -> u32 {
@@ -1088,7 +1180,7 @@ impl Xform {
             let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-12);
             v.map(|x| x / l)
         });
-        for (l, on) in &d.lights {
+        for (l, on) in d.lights.values() {
             if !on {
                 continue;
             }
@@ -1824,5 +1916,51 @@ mod tests {
         assert_eq!(p.len(), 4);
         assert!(p.iter().all(|x| x.clip[2] >= -1e-6 && x.clip[3] > 0.));
         assert!(clip_near(vec![v(0., 0., -1., 1.), v(1., 0., -1., 1.), v(0., 1., -2., 1.)]).len() < 3);
+    }
+
+    /// Vertex buffer sizes: counts whose byte size passes 32 bits (or the cap) and FVFs with
+    /// no position are refused, never wrapped to a small buffer.
+    #[test]
+    fn vertex_buffer_sizes() {
+        let tl = FVF_XYZRHW | FVF_DIFFUSE | FVF_SPECULAR | 0x100; // 32 bytes
+        assert_eq!(vb_size(tl, 3), Some(96));
+        assert_eq!(vb_size(tl, 0), Some(0));
+        assert_eq!(vb_size(tl, 0x0800_0000), None, "4 GiB wraps to 0 in u32");
+        assert_eq!(vb_size(tl, 0x1000_0001), None);
+        assert_eq!(vb_size(tl, u32::MAX), None);
+        assert_eq!(vb_size(tl, MAX_VB / 32), Some(MAX_VB));
+        assert_eq!(vb_size(tl, MAX_VB / 32 + 1), None);
+        assert_eq!(vb_size(FVF_DIFFUSE, 3), None, "no position");
+        for fvf in (0..0x1000u32).step_by(2) {
+            for n in [1u32, 7, 0x0010_0000, 0x7fff_ffff, u32::MAX] {
+                if let Some(s) = vb_size(fvf, n) {
+                    assert_eq!(s as u64, Layout::of(fvf).size as u64 * n as u64, "{fvf:#x} x {n}");
+                }
+            }
+        }
+    }
+
+    /// Light indices are the game's: any u32 is kept without room for the ones below it, and
+    /// only lights set or enabled exist.
+    #[test]
+    fn sparse_lights() {
+        let mut d = Dev::new(0, 0);
+        let l = [7u32; 26];
+        for i in [0u32, 0xffff_fffe, 100_000] {
+            assert_eq!(d.apply(&Ch::Light(i, l)), 0);
+        }
+        assert_eq!(d.apply(&Ch::LightOn(0x7fff_fff0, true)), 0);
+        assert_eq!(d.lights.len(), 4);
+        assert_eq!(d.lights[&0xffff_fffe].0, l);
+        assert!(!d.lights[&100_000].1);
+        assert!(d.lights[&0x7fff_fff0].1);
+        assert_eq!(d.lights[&0x7fff_fff0].0[0], 3, "a default directional light");
+        assert!(!d.lights.contains_key(&3));
+        // the whole state round-trips through a state block
+        let mut e = Dev::new(0, 0);
+        for ch in d.all() {
+            let _ = e.apply(&ch);
+        }
+        assert_eq!(e.lights, d.lights);
     }
 }
