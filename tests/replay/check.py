@@ -41,13 +41,14 @@ def main():
         if not t.endswith(".trace"):
             continue
         probe = t[:-6]
-        want_d, got_d = os.path.join(root, probe), os.path.join(root, "replay_" + probe)
+        want_d, got_d = os.path.join(root, probe), os.path.join(root, "replay_" + probe + "-32")
         if not (os.path.exists(want_d) and os.path.exists(got_d)):
             print(f"{probe}: no answer yet")
             continue
         want = images(want_d)
         got = [g for g in images(got_d) if g[0].startswith("r")]
-        if len(want) != len(got):
+        # (a probe that reads pixels with LockRect prints values, not pictures: nothing to match)
+        if want and len(want) != len(got):
             print(f"{probe}: {len(got)} pictures read back in the replay, the probe read {len(want)}")
             bad += 1
         for (wn, w), (gn, g) in zip(want, got):

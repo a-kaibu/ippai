@@ -193,6 +193,15 @@ impl Converter {
                 }
                 Some(Value::Opaque(a)) => Arg::OutObj(self.handle(*a)),
                 Some(Value::Null) if method.starts_with("Create") || method.starts_with("Get") => Arg::OutObj(0),
+                // an InOut argument (apitrace writes it at the LEAVE only): what the call left
+                // there, e.g. D3DPRESENT_PARAMETERS with the back buffer size filled in
+                Some(Value::Struct(..)) | Some(Value::Array(_)) => {
+                    let mut b = Vec::new();
+                    match pack(&mut b, inner.unwrap(), 4) {
+                        Ok(()) => Arg::Blob(b),
+                        Err(_) => Arg::Scratch,
+                    }
+                }
                 _ => Arg::Scratch,
             });
         }

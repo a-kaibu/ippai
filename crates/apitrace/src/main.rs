@@ -1,7 +1,17 @@
 //! apitrace <trace> <stream>: an apitrace D3D9 trace (32-bit, recorded on Windows) as the call
-//! stream tests/replay/d3d9replay.c plays back (docs/replay.md)
+//! stream tests/replay/d3d9replay.c plays back (docs/replay.md); apitrace dump <trace>: its calls
 fn main() {
     let a: Vec<String> = std::env::args().collect();
+    if a.len() == 3 && a[1] == "dump" {
+        let file = std::fs::read(&a[2]).unwrap_or_else(|e| panic!("{}: {e}", a[2]));
+        let ev = apitrace::trace::unpack(&file).unwrap();
+        let mut p = apitrace::trace::Parser::new(&ev).unwrap();
+        println!("{:?}", p.properties);
+        while let Some(c) = p.next_call().unwrap() {
+            println!("{} {}{} in {:?} out {:?} ret {:?}", c.no, c.sig.name, if c.fake { " (fake)" } else { "" }, c.args_in, c.args_out, c.ret);
+        }
+        return;
+    }
     if a.len() != 3 {
         eprintln!("usage: apitrace <in.trace> <out.rpl>");
         std::process::exit(2);

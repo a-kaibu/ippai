@@ -34,6 +34,10 @@ d3d9-* ^(want|got) +caps blend src
 d3d9-* ^(want|got) +format (A4R4G4B4|A8|L8|A8L8|A2R10G10B10|R32F|V8U8) texture 1 rendertarget 
 # StretchRect with D3DTEXF_NONE: WARP filters linearly, GPUs' drivers use point (sake: point)
 d3d9-* ^image surfaces:
+# the d3d9 probe's trace played back (tests/replay): its pictures in the probe's order are r<call>;
+# sampling (r307) and address2 (r443) take tolerance 10 in the probe (WARP's 1/16 filter weights),
+# the replay's pictures 2; r1023 is surfaces (above)
+replay_d3d9-32-32 ^image (r307|r443|r1023):
 # Direct3D 11 on the runner is WARP. Its format list and flags are its own; sake has no MSAA
 # (quality levels 0: games fall back), no BC6H/BC7, video formats or 3-channel 32-bit textures
 # yet (TODO)

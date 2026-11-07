@@ -138,7 +138,7 @@ fn d3d9_session() -> Vec<u8> {
     pp[7] = Value::Opaque(0x777);
     let pp = st("D3DPRESENT_PARAMETERS", &pp_names, pp);
     let cd = f("IDirect3D9::CreateDevice", &["this", "Adapter", "DeviceType", "hFocusWindow", "BehaviorFlags", "pPresentationParameters", "ppReturnedDeviceInterface"]);
-    let n = w.enter(0, &cd, &[(0, Value::Opaque(0x1000)), (1, Value::UInt(0)), (2, Value::UInt(1)), (3, Value::Opaque(0x777)), (4, Value::UInt(0x20)), (5, Value::Array(vec![pp.clone()]))]);
+    let n = w.enter(0, &cd, &[(0, Value::Opaque(0x1000)), (1, Value::UInt(0)), (2, Value::UInt(1)), (3, Value::Opaque(0x777)), (4, Value::UInt(0x20))]);
     w.leave(n, &[(5, Value::Array(vec![pp])), (6, Value::Array(vec![Value::Opaque(0x2000)]))], Some(&Value::UInt(0)), false);
 
     // a query: left out
