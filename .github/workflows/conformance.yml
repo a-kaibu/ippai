@@ -167,10 +167,15 @@ jobs:
           restore-keys: |
             conformance-ippai-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-
             conformance-ippai-${{ runner.os }}-${{ env.RUST_KEY }}-
+      # (Playwright's Chromium, per Playwright version; the runner image has its libraries, as Bench found: no apt)
+      - uses: actions/cache@v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-1.56.1
       - name: Browser, fonts, the page and ippai
         run: |
           npm install --prefix "$RUNNER_TEMP/pw" --no-audit --no-fund playwright@1.56.1
-          "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install --with-deps chromium
+          "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install chromium
           sudo apt-get install -yq --no-install-recommends fonts-ipafont-gothic fonts-ipafont-mincho
           pip install fonttools
           mkdir -p "$RUNNER_TEMP/fonts" && python3 tools/ci/sake-fonts.py "$RUNNER_TEMP/fonts"

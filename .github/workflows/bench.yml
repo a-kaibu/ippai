@@ -143,6 +143,11 @@ jobs:
         with:
           name: inputs
           path: ${{ runner.temp }}/inputs
+      # (Playwright's Chromium, per Playwright version; the runner image has its libraries, as Bench found: no apt)
+      - uses: actions/cache@v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-1.56.1
       - name: Tools
         # (an apt or browser download that hangs must not hold the whole run: one did for an hour)
         timeout-minutes: 15

@@ -28,10 +28,15 @@ jobs:
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: 22
+      # (Playwright's Chromium, per Playwright version; the runner image has its libraries, as Bench found: no apt)
+      - uses: actions/cache@v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-1.63.0
       - name: Install browser test tools
         run: |
           npm install --prefix "$RUNNER_TEMP/ippai-browser" --no-audit --no-fund playwright@1.63.0
-          "$RUNNER_TEMP/ippai-browser/node_modules/.bin/playwright" install --with-deps chromium
+          "$RUNNER_TEMP/ippai-browser/node_modules/.bin/playwright" install chromium
       - name: Real browser fetch regression
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
