@@ -768,13 +768,15 @@ pub fn consolidated(cpu: &mut Cpu) {
 /// RaiseException(code, flags, nargs, args)
 pub fn raise_exception(c: &mut Ctx) -> u32 {
     let (code, flags, n, args) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    let n = if args == 0 { 0 } else { n };
     let params: Vec<u64> = (0..n.min(15)).map(|i| r64(args + 8 * i)).collect();
     // the context: as if RaiseException had returned
     let ret = r64(c.esp);
     c.cpu.eip = ret as u32;
     c.cpu.rip_hi = (ret >> 32) as u32;
     c.cpu.set_gpr(4, c.esp as u64 + 8);
-    raise(c.cpu, code, flags & 1, ret as u32, &params);
+    // (x64 Windows marks a software exception: EXCEPTION_SOFTWARE_ORIGINATE 0x80)
+    raise(c.cpu, code, flags & 1 | 0x80, ret as u32, &params);
     c.jumped = true;
     0
 }

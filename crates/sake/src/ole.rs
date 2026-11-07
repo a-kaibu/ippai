@@ -37,6 +37,10 @@ fn notimpl(_: &mut Ctx) -> u32 {
 fn ok(_: &mut Ctx) -> u32 {
     0
 }
+/// Lock/UnlockRegion of an HGLOBAL stream: STG_E_INVALIDFUNCTION, as Windows
+fn no_locks(_: &mut Ctx) -> u32 {
+    0x8003_0001
+}
 
 // ---------------------------------------------------------------------------------------------
 // IStream: {vtbl, hglobal, size, pos, delete on release, -, -, refs}
@@ -62,7 +66,8 @@ fn s_read(c: &mut Ctx) -> u32 {
     }
     w32(this + 12, pos + n);
     put32(got, n);
-    if n < cb { 1 } else { 0 }
+    // (S_OK also for a short read, as Windows' HGLOBAL stream)
+    0
 }
 fn s_write(c: &mut Ctx) -> u32 {
     let (this, pv, cb, done) = (c.a(0), c.a(1), c.a(2), c.a(3));
@@ -85,17 +90,21 @@ fn s_seek(c: &mut Ctx) -> u32 {
     let (this, mv, origin, out) =
         if mem::x64() { (c.a(0), c.a64(1), c.a(2), c.a(3)) } else { (c.a(0), (c.a(2) as u64) << 32 | c.a(1) as u64, c.a(3), c.a(4)) };
     let base = match origin {
+        0 => 0,
         1 => r32(this + 12) as i64,
         2 => r32(this + 8) as i64,
-        _ => 0,
+        _ => -1,
     };
-    let p = (base + mv as i64).max(0) as u32;
+    let p = base + mv as i64;
+    // a bad origin or a position before the start: STG_E_SEEKERROR, the position stays and
+    // is what *new gets
+    let (p, hr) = if base < 0 || p < 0 || p > u32::MAX as i64 { (r32(this + 12), 0x8003_0019) } else { (p as u32, 0) };
     w32(this + 12, p);
     if out != 0 {
         w32(out, p);
         w32(out + 4, 0);
     }
-    0
+    hr
 }
 fn s_set_size(c: &mut Ctx) -> u32 {
     let (this, n) = (c.a(0), c.a(1));
@@ -109,9 +118,11 @@ fn s_set_size(c: &mut Ctx) -> u32 {
 }
 fn s_stat(c: &mut Ctx) -> u32 {
     let (this, p) = (c.a(0), c.a(1));
-    mem::fill(p, 72, 0);
-    w32(p + 4, 2); // STGTY_STREAM
-    w32(p + 8, r32(this + 8));
+    // STATSTG {pwcsName, type, cbSize (8-aligned), ...}: 72 bytes, 80 on x64
+    let ps = mem::ps();
+    mem::fill(p, 64 + 2 * ps, 0);
+    w32(p + ps, 2); // STGTY_STREAM
+    w32(p + 2 * ps, r32(this + 8));
     0
 }
 /// CopyTo(this, dest, ULARGE_INTEGER cb, read*, written*): through the destination's Write
@@ -159,8 +170,8 @@ fn stream_vtbl() -> u32 {
                 (s_copy_to, 24),
                 (ok, 8),
                 (ok, 4),
-                (notimpl, 24),
-                (notimpl, 24),
+                (no_locks, 24),
+                (no_locks, 24),
                 (s_stat, 12),
                 (s_clone, 8),
             ],
@@ -180,8 +191,11 @@ fn new_stream(h: u32, size: u32, del: bool) -> u32 {
 
 fn CreateStreamOnHGlobal(c: &mut Ctx) -> u32 {
     let (h, del, out) = (c.a(0), c.a(1), c.a(2));
+    if out == 0 {
+        return 0x8007_0057; // E_INVALIDARG
+    }
     let (h, size) = if h == 0 { (mem::heap_alloc(64, true), 0) } else { (h, mem::heap_size(h)) };
-    put32(out, new_stream(h, size, del != 0 || c.a(0) == 0));
+    mem::wp(out, new_stream(h, size, del != 0 || c.a(0) == 0));
     0
 }
 /// SHCreateMemStream(data, size): an IStream over a copy of the data.
@@ -198,7 +212,7 @@ fn GetHGlobalFromStream(c: &mut Ctx) -> u32 {
     if r32(s) != stream_vtbl() {
         return E_FAIL;
     }
-    put32(out, r32(s + 4));
+    mem::wp(out, r32(s + 4));
     0
 }
 

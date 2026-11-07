@@ -4022,6 +4022,29 @@ fn DestroyMenu(c: &mut Ctx) -> u32 {
     with(|s| s.menus.remove(&c.a(0)));
     1
 }
+/// The menu and index of `item` in menu `h`: by position, or by command in `h` and then in
+/// its popups, depth first (as Windows: GetMenuState(menu bar, id in a popup) finds it).
+fn locate(menus: &HashMap<u32, Menu>, h: u32, item: u32, by_pos: bool) -> Option<(u32, usize)> {
+    fn walk(menus: &HashMap<u32, Menu>, h: u32, item: u32, depth: u32) -> Option<(u32, usize)> {
+        let m = menus.get(&h)?;
+        for (i, it) in m.items.iter().enumerate() {
+            if it.sub == 0 && it.id == item {
+                return Some((h, i));
+            }
+            if it.sub != 0 && depth < 16 {
+                if let Some(r) = walk(menus, it.sub, item, depth + 1) {
+                    return Some(r);
+                }
+            }
+        }
+        None
+    }
+    if by_pos {
+        let m = menus.get(&h)?;
+        return item_index(m, item, true).map(|i| (h, i));
+    }
+    walk(menus, h, item, 0)
+}
 fn item_index(m: &Menu, item: u32, by_pos: bool) -> Option<usize> {
     if by_pos {
         ((item as usize) < m.items.len()).then_some(item as usize)
@@ -4061,23 +4084,28 @@ fn AppendMenuW(c: &mut Ctx) -> u32 {
     let sub = if flags & 0x10 != 0 { id } else { 0 };
     insert_item(h, 0xffff_ffff, true, MenuItem { id: if sub != 0 { 0xffff_ffff } else { id }, flags, text: menu_text(flags, p, true), sub, data: 0 })
 }
+/// MENUITEMINFO offsets: (wID, hSubMenu, dwItemData, dwTypeData, cch); handles are 8 bytes on x64.
+fn mii() -> (u32, u32, u32, u32, u32) {
+    if mem::x64() { (16, 24, 48, 56, 64) } else { (16, 20, 32, 36, 40) }
+}
 fn read_mii(p: u32, wide: bool) -> (u32, MenuItem) {
+    let (o_id, o_sub, o_data, o_text, _) = mii();
     let mask = r32(p + 4);
     let mut it = MenuItem::default();
     if mask & 0x100 != 0 || mask & 1 != 0 {
         it.flags = r32(p + 8) | r32(p + 12);
     }
     if mask & 2 != 0 {
-        it.id = r32(p + 16);
+        it.id = r32(p + o_id);
     }
     if mask & 4 != 0 {
-        it.sub = r32(p + 20);
+        it.sub = r32(p + o_sub);
     }
     if mask & 0x20 != 0 {
-        it.data = r32(p + 32);
+        it.data = r32(p + o_data);
     }
     if mask & 0x40 != 0 || (mask & 0x10 != 0 && r32(p + 8) == 0) {
-        let t = r32(p + 36);
+        let t = mem::rp(p + o_text);
         if t >= 0x10000 {
             it.text = if wide { wstr(t) } else { a2w(&cstr(t)) };
         }
@@ -4104,9 +4132,8 @@ fn set_menu_item_info(c: &mut Ctx, wide: bool) -> u32 {
     let (h, item, by_pos, p) = (c.a(0), c.a(1), c.a(2) != 0, c.a(3));
     let (mask, it) = read_mii(p, wide);
     with(|s| {
-        let Some(m) = s.menus.get_mut(&h) else { return 0 };
-        let Some(i) = item_index(m, item, by_pos) else { return 0 };
-        let x = &mut m.items[i];
+        let Some((h, i)) = locate(&s.menus, h, item, by_pos) else { return 0 };
+        let x = &mut s.menus.get_mut(&h).unwrap().items[i];
         if mask & 0x101 != 0 {
             x.flags = it.flags;
         }
@@ -4130,37 +4157,39 @@ fn GetMenuItemInfoW(c: &mut Ctx) -> u32 {
 }
 fn get_menu_item_info(c: &mut Ctx, wide: bool) -> u32 {
     let (h, item, by_pos, p) = (c.a(0), c.a(1), c.a(2) != 0, c.a(3));
-    let it = with(|s| s.menus.get(&h).and_then(|m| item_index(m, item, by_pos).map(|i| m.items[i].clone())));
+    let it = with(|s| locate(&s.menus, h, item, by_pos).map(|(m, i)| s.menus[&m].items[i].clone()));
     let Some(it) = it else { return 0 };
+    let (o_id, o_sub, o_data, o_text, o_cch) = mii();
     let mask = r32(p + 4);
     if mask & 0x101 != 0 {
         w32(p + 8, it.flags & 0x6b00);
         w32(p + 12, it.flags & 0x108b);
     }
     if mask & 2 != 0 {
-        w32(p + 16, it.id);
+        w32(p + o_id, it.id);
     }
     if mask & 4 != 0 {
-        w32(p + 20, it.sub);
+        mem::wp(p + o_sub, it.sub);
     }
     if mask & 0x20 != 0 {
-        w32(p + 32, it.data);
+        mem::wp(p + o_data, it.data);
     }
     if mask & 0x50 != 0 {
-        let cap = r32(p + 40);
+        let cap = r32(p + o_cch);
+        let t = mem::rp(p + o_text);
         let n = if wide {
-            if r32(p + 36) != 0 && cap > 0 {
-                mem::put_wstr(r32(p + 36), cap, &it.text);
+            if t != 0 && cap > 0 {
+                mem::put_wstr(t, cap, &it.text);
             }
             it.text.len()
         } else {
             let a = w2a(&it.text);
-            if r32(p + 36) != 0 && cap > 0 {
-                mem::put_cstr(r32(p + 36), cap, &a);
+            if t != 0 && cap > 0 {
+                mem::put_cstr(t, cap, &a);
             }
             a.len()
         };
-        w32(p + 40, n as u32);
+        w32(p + o_cch, n as u32);
     }
     1
 }
@@ -4175,11 +4204,11 @@ fn GetSubMenu(c: &mut Ctx) -> u32 {
 }
 fn GetMenuState(c: &mut Ctx) -> u32 {
     let (h, item, flags) = (c.a(0), c.a(1), c.a(2));
-    with(|s| s.menus.get(&h).and_then(|m| item_index(m, item, flags & 0x400 != 0).map(|i| m.items[i].flags & 0xffff)).unwrap_or(0xffff_ffff))
+    with(|s| locate(&s.menus, h, item, flags & 0x400 != 0).map(|(m, i)| s.menus[&m].items[i].flags & 0xffff)).unwrap_or(0xffff_ffff)
 }
 fn GetMenuStringA(c: &mut Ctx) -> u32 {
     let (h, item, buf, cap, flags) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
-    let t = with(|s| s.menus.get(&h).and_then(|m| item_index(m, item, flags & 0x400 != 0).map(|i| m.items[i].text.clone()))).unwrap_or_default();
+    let t = with(|s| locate(&s.menus, h, item, flags & 0x400 != 0).map(|(m, i)| s.menus[&m].items[i].text.clone())).unwrap_or_default();
     let a = w2a(&t);
     if buf == 0 {
         return a.len() as u32;
@@ -4188,8 +4217,8 @@ fn GetMenuStringA(c: &mut Ctx) -> u32 {
 }
 fn modify_flags(h: u32, item: u32, flags: u32, set: u32, clear: u32) -> u32 {
     with(|s| {
-        let Some(m) = s.menus.get_mut(&h) else { return 0xffff_ffff };
-        let Some(i) = item_index(m, item, flags & 0x400 != 0) else { return 0xffff_ffff };
+        let Some((h, i)) = locate(&s.menus, h, item, flags & 0x400 != 0) else { return 0xffff_ffff };
+        let m = s.menus.get_mut(&h).unwrap();
         let old = m.items[i].flags;
         m.items[i].flags = (old & !clear) | set;
         old & (set | clear)
@@ -4218,10 +4247,9 @@ fn EnableMenuItem(c: &mut Ctx) -> u32 {
 fn DeleteMenu(c: &mut Ctx) -> u32 {
     let (h, item, f) = (c.a(0), c.a(1), c.a(2));
     with(|s| {
-        let Some(m) = s.menus.get_mut(&h) else { return 0 };
-        match item_index(m, item, f & 0x400 != 0) {
-            Some(i) => {
-                m.items.remove(i);
+        match locate(&s.menus, h, item, f & 0x400 != 0) {
+            Some((h, i)) => {
+                s.menus.get_mut(&h).unwrap().items.remove(i);
                 1
             }
             None => 0,
@@ -4290,8 +4318,19 @@ fn GetMenuCheckMarkDimensions(_: &mut Ctx) -> u32 {
 // resources: strings, cursors, icons, bitmaps
 fn load_string(c: &mut Ctx, wide: bool) -> u32 {
     let (inst, id, buf, cap) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    // LoadStringA with no room answers -1 before looking
+    if !wide && cap == 0 {
+        return 0xffff_ffff;
+    }
     let inst = if inst == 0 { crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map_or(0, |m| m.base) } else { inst };
-    let Some(e) = crate::pe::find_resource(inst, &crate::pe::ResId::Int(6), &crate::pe::ResId::Int(id / 16 + 1)) else { return 0 };
+    let Some(e) = crate::pe::find_resource(inst, &crate::pe::ResId::Int(6), &crate::pe::ResId::Int(id / 16 + 1)) else {
+        // no block: ERROR_RESOURCE_NAME_NOT_FOUND and an empty string
+        crate::k32::last_error(1814);
+        if cap > 0 {
+            if wide { mem::w16(buf, 0) } else { mem::w8(buf, 0) }
+        }
+        return 0;
+    };
     let (mut p, _) = crate::pe::resource_data(inst, e);
     for _ in 0..id % 16 {
         p += 2 + 2 * r16(p) as u32;
@@ -4300,12 +4339,23 @@ fn load_string(c: &mut Ctx, wide: bool) -> u32 {
     let s: Vec<u16> = (0..n).map(|i| r16(p + 2 + 2 * i)).collect();
     if wide {
         if cap == 0 {
-            w32(buf, p + 2);
+            if n > 0 {
+                mem::wp(buf, p + 2);
+            }
             return n;
         }
         mem::put_wstr(buf, cap, &s)
     } else {
-        mem::put_cstr(buf, cap, &w2a(&s))
+        // as many whole characters as fit in cap - 1 bytes (a double-byte one is not split)
+        let mut a = Vec::new();
+        for &ch in &s {
+            let b = w2a(&[ch]);
+            if a.len() + b.len() > cap as usize - 1 {
+                break;
+            }
+            a.extend(b);
+        }
+        mem::put_cstr(buf, cap, &a)
     }
 }
 fn LoadStringA(c: &mut Ctx) -> u32 {
@@ -4503,12 +4553,13 @@ fn menu_items(h: u32, mut p: u32) -> u32 {
         // (an item without text or id is a separator, as RC's MENUITEM SEPARATOR writes it)
         let mut flags = f & !0x80;
         if f & 0x10 == 0 && id == 0 && text.is_empty() {
-            flags |= 0x800;
+            flags |= 0x803; // (disabled and grayed, as Windows loads it)
         }
         if f & 0x10 != 0 {
             let sub = new_menu();
             p = menu_items(sub, p);
-            insert_item(h, 0xffff_ffff, true, MenuItem { id: 0xffff_ffff, flags, text, sub, data: 0 });
+            // (a popup's id is its menu handle)
+            insert_item(h, 0xffff_ffff, true, MenuItem { id: sub, flags, text, sub, data: 0 });
         } else {
             insert_item(h, 0xffff_ffff, true, MenuItem { id, flags, text, sub: 0, data: 0 });
         }

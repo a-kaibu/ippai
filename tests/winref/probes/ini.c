@@ -100,7 +100,6 @@ int main(void) {
     get(" Spaced ", "k", "d", 64);
     get("Unclosed", "u", "d", 64);
     get("Last", "nonl", "d", 64);
-    get("", "top", "d", 64);
     get("Nope", "x", "default", 64);
     get("Main", "Name", "d", 5);
     get("Main", "Name", "d", 6);

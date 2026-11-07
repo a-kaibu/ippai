@@ -1,5 +1,6 @@
-//! winmm's multimedia file I/O (mmio*), reading only: RIFF files (WAVE, AVI headers) a game
-//! opens by name, or a block of its memory (FOURCC_MEM). A file is read whole at open.
+//! winmm's multimedia file I/O (mmio*): RIFF files (WAVE, AVI headers) a game opens by name,
+//! or a block of its memory (FOURCC_MEM). A file is read whole at open; one opened for writing
+//! (MMIO_CREATE / MMIO_WRITE) is held in memory and written out at mmioFlush and mmioClose.
 
 #![allow(non_snake_case)]
 
@@ -11,6 +12,9 @@ use crate::mem::{self, r32, w32};
 
 const MMIOERR_CANNOTOPEN: u32 = 257;
 const MMIOERR_CHUNKNOTFOUND: u32 = 265;
+const MMIOERR_CANNOTWRITE: u32 = 260;
+const MMIOERR_INVALIDFILE: u32 = 272;
+const MMIO_DIRTY: u32 = 0x1000_0000;
 const FOURCC_MEM: u32 = u32::from_le_bytes(*b"MEM ");
 const FOURCC_RIFF: u32 = u32::from_le_bytes(*b"RIFF");
 const FOURCC_LIST: u32 = u32::from_le_bytes(*b"LIST");
@@ -24,6 +28,30 @@ enum Data {
 struct Mmio {
     data: Data,
     pos: u32,
+    /// the file to write back to (opened for writing) and whether there is something to write
+    out: Option<String>,
+    dirty: bool,
+}
+
+/// MMIOINFO field offsets: (wErrorRet, cchBuffer, pchBuffer, pchNext, pchEndRead, lDiskOffset,
+/// adwInfo, hmmio, size); pointers and HTASK are 8 bytes on x64, and mmsystem.h packs it to 1.
+struct Info {
+    err: u32,
+    cch: u32,
+    buf: u32,
+    next: u32,
+    end_read: u32,
+    disk: u32,
+    adw: u32,
+    hmmio: u32,
+    size: u32,
+}
+fn info() -> Info {
+    if mem::ps() == 8 {
+        Info { err: 16, cch: 28, buf: 32, next: 40, end_read: 48, disk: 68, adw: 72, hmmio: 92, size: 100 }
+    } else {
+        Info { err: 12, cch: 20, buf: 24, next: 28, end_read: 32, disk: 44, adw: 48, hmmio: 68, size: 72 }
+    }
 }
 
 impl Mmio {
@@ -42,6 +70,56 @@ impl Mmio {
         }
         self.pos += n;
         n
+    }
+    /// writes guest bytes at the position (a file grows; memory stops at its end)
+    fn write(&mut self, src: u32, n: u32) -> u32 {
+        let n = match &mut self.data {
+            Data::File(v) => {
+                let end = (self.pos + n) as usize;
+                if v.len() < end {
+                    v.resize(end, 0);
+                }
+                v[self.pos as usize..end].copy_from_slice(mem::slice(src, n));
+                n
+            }
+            Data::Mem(a, len) => {
+                let n = n.min(len.saturating_sub(self.pos));
+                mem::copy(*a + self.pos, src, n);
+                n
+            }
+        };
+        self.pos += n;
+        self.dirty = true;
+        n
+    }
+    fn put_u32(&mut self, v: u32) {
+        let t = v.to_le_bytes();
+        match &mut self.data {
+            Data::File(d) => {
+                let end = self.pos as usize + 4;
+                if d.len() < end {
+                    d.resize(end, 0);
+                }
+                d[self.pos as usize..end].copy_from_slice(&t);
+            }
+            Data::Mem(a, len) => {
+                if self.pos + 4 <= *len {
+                    w32(*a + self.pos, v);
+                }
+            }
+        }
+        self.pos += 4;
+        self.dirty = true;
+    }
+    fn flush(&mut self) -> bool {
+        if let (Some(p), true, Data::File(v)) = (&self.out, self.dirty, &self.data) {
+            let h = crate::files::resolve(p).unwrap_or_else(|| crate::files::resolve_new(p));
+            if kura::fs::write(h, v.clone()).is_err() {
+                return false;
+            }
+            self.dirty = false;
+        }
+        true
     }
     fn u32_at(&self, off: u32) -> Option<u32> {
         if off + 4 > self.len() {
@@ -64,16 +142,19 @@ fn with<R>(h: u32, f: impl FnOnce(&mut Mmio) -> R) -> Option<R> {
 /// mmioOpen(name, MMIOINFO*, flags)
 fn open(c: &mut Ctx, wide: bool) -> u32 {
     let (name, info, flags) = (c.a(0), c.a(1), c.a(2));
+    let mi = self::info();
     let fail = |e: u32| {
         if info != 0 {
-            w32(info + 12, e);
+            w32(info + mi.err, e);
         }
         0
     };
-    // writing, creating, deleting, parsing: not supported
-    if flags & 0x1303 != 0 {
+    // deleting, parsing: not supported
+    if flags & 0x0300 != 0 {
         return fail(MMIOERR_CANNOTOPEN);
     }
+    let writing = flags & 3 != 0;
+    let mut out = None;
     if crate::env_on!("SAKE_TRACE_FILES") && info != 0 {
         eprintln!("sake: mmioOpen({name:#x}, {info:#x}, flags {flags:#x}) {:x?}", (0..18).map(|i| r32(info + 4 * i)).collect::<Vec<_>>());
     }
@@ -83,27 +164,45 @@ fn open(c: &mut Ctx, wide: bool) -> u32 {
             Some(v) => Data::File(v),
             None => return fail(MMIOERR_CANNOTOPEN),
         }
-    } else if name == 0 && info != 0 && r32(info + 4) == 0 && r32(info + 48) != 0 {
+    } else if name == 0 && info != 0 && r32(info + 4) == 0 && r32(info + mi.adw) != 0 {
         // adwInfo[0]: an open file's handle, read from where it is (a RIFF in an archive)
-        let Some(v) = from_handle(r32(info + 48)) else {
+        let Some(v) = from_handle(r32(info + mi.adw)) else {
             return fail(MMIOERR_CANNOTOPEN);
         };
         Data::File(v)
     } else if info != 0 && r32(info + 4) == FOURCC_MEM {
-        Data::Mem(r32(info + 24), r32(info + 20))
+        Data::Mem(mem::rp(info + mi.buf), r32(info + mi.cch))
     } else {
         if name == 0 {
             return fail(MMIOERR_CANNOTOPEN);
         }
         let path = crate::k32::arg_str(name, wide);
-        let Some(v) = crate::files::resolve(&path).and_then(|h| kura::fs::read(h).ok()) else { return fail(MMIOERR_CANNOTOPEN) };
-        Data::File(v)
+        let old = crate::files::resolve(&path).and_then(|h| kura::fs::read(h).ok());
+        if flags & 0x1000 != 0 {
+            // MMIO_CREATE: a new, empty file
+            let h = crate::files::resolve(&path).unwrap_or_else(|| crate::files::resolve_new(&path));
+            if kura::fs::write(h, Vec::new()).is_err() {
+                return fail(MMIOERR_CANNOTOPEN);
+            }
+            out = Some(path);
+            Data::File(Vec::new())
+        } else {
+            let Some(v) = old else { return fail(MMIOERR_CANNOTOPEN) };
+            if flags & 0x4000 != 0 {
+                // MMIO_EXIST: only whether it is there
+                return 1;
+            }
+            if writing {
+                out = Some(path);
+            }
+            Data::File(v)
+        }
     };
     let h = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    FILES.lock().unwrap().get_or_insert_with(HashMap::default).insert(h, Mmio { data, pos: 0 });
+    FILES.lock().unwrap().get_or_insert_with(HashMap::default).insert(h, Mmio { data, pos: 0, out, dirty: false });
     if info != 0 {
-        w32(info + 12, 0);
-        w32(info + 68, h);
+        w32(info + mi.err, 0);
+        mem::wp(info + mi.hmmio, h);
     }
     h
 }
@@ -208,15 +307,24 @@ fn mmioOpenW(c: &mut Ctx) -> u32 {
     open(c, true)
 }
 fn mmioClose(c: &mut Ctx) -> u32 {
-    FILES.lock().unwrap().get_or_insert_with(HashMap::default).remove(&c.a(0));
-    0
+    let f = FILES.lock().unwrap().get_or_insert_with(HashMap::default).remove(&c.a(0));
+    match f {
+        Some(mut f) => {
+            if f.flush() { 0 } else { MMIOERR_CANNOTWRITE }
+        }
+        None => MMIOERR_INVALIDFILE,
+    }
+}
+fn mmioFlush(c: &mut Ctx) -> u32 {
+    with(c.a(0), |f| if f.flush() { 0 } else { MMIOERR_CANNOTWRITE }).unwrap_or(MMIOERR_INVALIDFILE)
 }
 fn mmioRead(c: &mut Ctx) -> u32 {
     let (h, buf, n) = (c.a(0), c.a(1), c.i(2));
     with(h, |f| f.read(buf, n.max(0) as u32)).unwrap_or(u32::MAX)
 }
-fn mmioWrite(_: &mut Ctx) -> u32 {
-    u32::MAX
+fn mmioWrite(c: &mut Ctx) -> u32 {
+    let (h, buf, n) = (c.a(0), c.a(1), c.i(2));
+    with(h, |f| if f.out.is_none() && matches!(f.data, Data::File(_)) { u32::MAX } else { f.write(buf, n.max(0) as u32) }).unwrap_or(u32::MAX)
 }
 /// mmioSeek(h, offset, origin) -> new position
 fn mmioSeek(c: &mut Ctx) -> u32 {
@@ -228,8 +336,12 @@ fn mmioSeek(c: &mut Ctx) -> u32 {
             _ => 0,
         };
         let p = base + off as i64;
-        if p < 0 {
-            return u32::MAX;
+        // memory stays within its buffer; a file seeks anywhere past its start and answers a
+        // position before it (as Windows: -5 for SEEK_SET -5) without moving
+        match f.data {
+            Data::Mem(..) if p < 0 || p > f.len() as i64 => return u32::MAX,
+            _ if p < 0 => return p as i32 as u32,
+            _ => {}
         }
         f.pos = p as u32;
         f.pos
@@ -273,20 +385,85 @@ fn mmioDescend(c: &mut Ctx) -> u32 {
     .unwrap_or(MMIOERR_CHUNKNOTFOUND)
 }
 
-/// mmioAscend(h, ck, flags): to the end of the chunk (padded to even)
+/// mmioAscend(h, ck, flags): to the end of the chunk (padded to even). A chunk made by
+/// mmioCreateChunk (MMIO_DIRTY) gets its size from what was written, and a pad byte if odd.
 fn mmioAscend(c: &mut Ctx) -> u32 {
     let (h, ck) = (c.a(0), c.a(1));
-    let end = r32(ck + 12) + ((r32(ck + 4) + 1) & !1);
-    with(h, |f| f.pos = end).map_or(MMIOERR_CHUNKNOTFOUND, |_| 0)
+    let data = r32(ck + 12);
+    with(h, |f| {
+        if r32(ck + 16) & MMIO_DIRTY != 0 {
+            let size = f.pos.saturating_sub(data);
+            let at = f.pos;
+            if size != r32(ck + 4) {
+                f.pos = data - 4;
+                f.put_u32(size);
+                f.pos = at;
+                w32(ck + 4, size);
+            }
+            if size & 1 != 0 {
+                let z = [0u8];
+                if let Data::File(v) = &mut f.data {
+                    if v.len() <= at as usize {
+                        v.resize(at as usize + 1, 0);
+                    }
+                    v[at as usize] = z[0];
+                    f.dirty = true;
+                }
+            }
+        }
+        f.pos = data + ((r32(ck + 4) + 1) & !1);
+    })
+    .map_or(MMIOERR_CHUNKNOTFOUND, |_| 0)
 }
 
-/// mmioGetInfo(h, MMIOINFO*, flags): no buffered I/O; the handle and position
+/// mmioCreateChunk(h, ck, flags): the chunk header (with fccType for CREATERIFF 0x20 /
+/// CREATELIST 0x40) at the position; dwDataOffset after the 8 header bytes, MMIO_DIRTY set.
+fn mmioCreateChunk(c: &mut Ctx) -> u32 {
+    let (h, ck, flags) = (c.a(0), c.a(1), c.a(2));
+    let list = match flags & 0x60 {
+        0x20 => Some(FOURCC_RIFF),
+        0x40 => Some(FOURCC_LIST),
+        _ => None,
+    };
+    with(h, |f| {
+        if f.out.is_none() && matches!(f.data, Data::File(_)) {
+            return MMIOERR_CANNOTWRITE;
+        }
+        if let Some(id) = list {
+            w32(ck, id);
+        }
+        let start = f.pos;
+        f.put_u32(r32(ck));
+        f.put_u32(r32(ck + 4));
+        if list.is_some() {
+            f.put_u32(r32(ck + 8));
+        }
+        w32(ck + 12, start + 8);
+        w32(ck + 16, MMIO_DIRTY);
+        0
+    })
+    .unwrap_or(MMIOERR_INVALIDFILE)
+}
+
+/// mmioGetInfo(h, MMIOINFO*, flags): memory is its own buffer (pchNext at the position);
+/// a file is unbuffered (lDiskOffset at the position)
 fn mmioGetInfo(c: &mut Ctx) -> u32 {
     let (h, info) = (c.a(0), c.a(1));
-    let Some(pos) = with(h, |f| f.pos) else { return MMIOERR_CANNOTOPEN };
-    mem::fill(info, 72, 0);
-    w32(info + 44, pos);
-    w32(info + 68, h);
+    let mi = self::info();
+    let Some((pos, mem_buf)) = with(h, |f| (f.pos, if let Data::Mem(a, n) = f.data { Some((a, n)) } else { None })) else { return MMIOERR_INVALIDFILE };
+    mem::fill(info, mi.size, 0);
+    match mem_buf {
+        Some((a, n)) => {
+            w32(info + 4, FOURCC_MEM);
+            w32(info + mi.cch, n);
+            mem::wp(info + mi.buf, a);
+            mem::wp(info + mi.next, a + pos);
+            mem::wp(info + mi.end_read, a + n);
+            mem::wp(info + mi.end_read + mem::ps(), a + n);
+        }
+        None => w32(info + mi.disk, pos),
+    }
+    mem::wp(info + mi.hmmio, h);
     0
 }
 fn ok(_: &mut Ctx) -> u32 {
@@ -321,6 +498,8 @@ pub fn init() {
         ("mmioDescend", mmioDescend),
         ("mmioAscend", mmioAscend),
         ("mmioGetInfo", mmioGetInfo),
+        ("mmioCreateChunk", mmioCreateChunk),
+        ("mmioFlush", mmioFlush),
         ("mmioSetInfo", ok),
         ("mmioStringToFOURCCA", mmioStringToFOURCCA),
         ("mmioStringToFOURCCW", mmioStringToFOURCCW),

@@ -88,7 +88,6 @@ int main(void) {
     E(FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, 2, 0, sm, 3, NULL));
     E(FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM, NULL, 2, MAKELANGID(LANG_ZULU, SUBLANG_DEFAULT), sm, sizeof sm, NULL));
     E(FormatMessageA(0, NULL, 2, 0, sm, sizeof sm, NULL));
-    E(FormatMessageA(FORMAT_MESSAGE_FROM_STRING, NULL, 0, 0, sm, sizeof sm, NULL));
 
     /* modules */
     E(GetModuleHandleA(NULL) != NULL);

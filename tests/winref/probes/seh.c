@@ -63,6 +63,8 @@ FN(f_ssecvt, "mov $0x4f800000, %eax\n movd %eax, %xmm0\n cvttss2si %xmm0, %eax\n
 static void *cur; /* the function under test */
 static char *page; /* the probe's pages: addresses in them are printed relative to them */
 static int resume_at_ip; /* continue where the context points, not by returning */
+static int rmask; /* the registers the function under test set (1 ax, 2 cx, 4 dx): the others hold
+                   * whatever the caller left there, which differs between runs */
 
 /* an address: relative to the function under test when inside it, to the pages, or itself */
 static void addr(const char *l, void *a) {
@@ -85,7 +87,10 @@ static void show(const char *who, EXCEPTION_POINTERS *e) {
         if (i == 1 && (r->ExceptionCode == 0xc0000005 || r->ExceptionCode == 0x80000001)) addr("p1", (void *)r->ExceptionInformation[1]);
         else printf(" p%lu=%llx", i, (unsigned long long)r->ExceptionInformation[i]);
     }
-    printf(" ax %llx cx %llx dx %llx tf %d\n", (unsigned long long)(c->AX & 0xffffffff), (unsigned long long)(c->CX & 0xffffffff), (unsigned long long)(c->DX & 0xffffffff), !!(c->EFlags & 0x100));
+    if (rmask & 1) printf(" ax %llx", (unsigned long long)(c->AX & 0xffffffff));
+    if (rmask & 2) printf(" cx %llx", (unsigned long long)(c->CX & 0xffffffff));
+    if (rmask & 4) printf(" dx %llx", (unsigned long long)(c->DX & 0xffffffff));
+    printf(" tf %d\n", !!(c->EFlags & 0x100));
 }
 
 static int calls; /* handler calls in the current test: a runaway stops the probe */
@@ -124,6 +129,11 @@ static LONG CALLBACK cont(EXCEPTION_POINTERS *e) {
 
 static void run(const char *name, void (*f)(void)) {
     printf("%s\n", name);
+    rmask = strcmp(name, "div0") == 0 || strcmp(name, "idiv overflow") == 0 ? 7
+          : strncmp(name, "read", 4) == 0 || strncmp(name, "write", 5) == 0 ? 2
+          : strcmp(name, "in") == 0 ? 4
+          : strcmp(name, "ud2") == 0 || strcmp(name, "into") == 0 || strncmp(name, "int3", 4) == 0 || strncmp(name, "int 3", 5) == 0
+            || strncmp(name, "sse", 3) == 0 || strcmp(name, "exec 0x10") == 0 ? 1 : 0;
     cur = (void *)f;
     calls = 0;
     f();
@@ -131,6 +141,7 @@ static void run(const char *name, void (*f)(void)) {
 }
 static void runp(const char *name, void (*f)(void *), void *arg) {
     printf("%s\n", name);
+    rmask = 1;
     cur = (void *)f;
     calls = 0;
     f(arg);
@@ -195,6 +206,7 @@ int main(void) {
         if (pt[i].prot == 1) VirtualFree(pg, si.dwPageSize, MEM_DECOMMIT);
         else if (pt[i].prot) VirtualProtect(pg + si.dwPageSize, si.dwPageSize, pt[i].prot, &old);
         printf("%s (page+%lx)\n", pt[i].n, (unsigned long)(pt[i].a - pg));
+        rmask = 0;
         cur = (void *)pt[i].f;
         calls = 0;
         pt[i].f(pt[i].a);
@@ -204,6 +216,7 @@ int main(void) {
     /* RaiseException */
     cur = NULL;
     calls = -100;
+    rmask = 0;
     ULONG_PTR args[20];
     for (int i = 0; i < 20; i++) args[i] = 0x100 + i;
     printf("raise 3 params\n");

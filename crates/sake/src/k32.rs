@@ -3704,34 +3704,30 @@ fn ResolveDelayLoadedAPI(c: &mut Ctx) -> u32 {
     w32(thunk, r);
     r
 }
-fn find_res(c: &mut Ctx, m: u32, name: u32, ty: u32, wide: bool) -> u32 {
-    let _ = c;
+fn find_res(m: u32, name: u32, ty: u32, lang: Option<u32>, wide: bool) -> u32 {
     let m = if m == 0 { module_handle(0, false) } else { m };
     let ty = crate::pe::ResId::from_arg(ty, wide);
     let name = crate::pe::ResId::from_arg(name, wide);
-    match crate::pe::find_resource(m, &ty, &name) {
-        Some(e) => e,
-        None => {
-            last_error(1813);
+    match crate::pe::find_resource_lang(m, &ty, &name, lang) {
+        Ok(e) => e,
+        Err(e) => {
+            last_error(e);
             0
         }
     }
 }
 fn FindResourceA(c: &mut Ctx) -> u32 {
-    let (m, n, t) = (c.a(0), c.a(1), c.a(2));
-    find_res(c, m, n, t, false)
+    find_res(c.a(0), c.a(1), c.a(2), None, false)
 }
 fn FindResourceW(c: &mut Ctx) -> u32 {
-    let (m, n, t) = (c.a(0), c.a(1), c.a(2));
-    find_res(c, m, n, t, true)
+    find_res(c.a(0), c.a(1), c.a(2), None, true)
 }
+/// FindResourceEx(module, type, name, language): that language only (LANG_NEUTRAL: any)
 fn FindResourceExA(c: &mut Ctx) -> u32 {
-    let (m, t, n) = (c.a(0), c.a(1), c.a(2));
-    find_res(c, m, n, t, false)
+    find_res(c.a(0), c.a(2), c.a(1), Some(c.a(3) & 0xffff), false)
 }
 fn FindResourceExW(c: &mut Ctx) -> u32 {
-    let (m, t, n) = (c.a(0), c.a(1), c.a(2));
-    find_res(c, m, n, t, true)
+    find_res(c.a(0), c.a(2), c.a(1), Some(c.a(3) & 0xffff), true)
 }
 /// EnumResourceTypes/Names/Languages: the callback gets each id (a name as a temporary string)
 /// until it returns FALSE; ERROR_RESOURCE_DATA/TYPE/NAME_NOT_FOUND when there is nothing.
@@ -3739,6 +3735,8 @@ fn enum_resources(c: &mut Ctx, level: usize, wide: bool) -> u32 {
     let m = if c.a(0) == 0 { module_handle(0, false) } else { c.a(0) };
     let path: Vec<crate::pe::ResId> = (0..level).map(|i| crate::pe::ResId::from_arg(c.a(1 + i as u32), wide)).collect();
     let (cb, param) = (c.a(1 + level as u32), c.a(2 + level as u32));
+    // (read before the callbacks: on x64 the arguments are registers a call clobbers)
+    let given: Vec<u32> = (0..level).map(|i| c.a(1 + i as u32)).collect();
     let Some(ids) = crate::pe::resource_ids(m, &path) else {
         last_error([1812, 1813, 1814][level.min(2)]);
         return 0;
@@ -3765,7 +3763,7 @@ fn enum_resources(c: &mut Ctx, level: usize, wide: bool) -> u32 {
         };
         // the callback's arguments: module, then the path so far, then this id, then the param
         let mut args = vec![m];
-        args.extend((0..level).map(|i| c.a(1 + i as u32)));
+        args.extend(&given);
         if level == 2 {
             // EnumResourceLanguages' id is a WORD language
             args.push(arg & 0xffff);
@@ -3804,6 +3802,7 @@ fn EnumResourceLanguagesW(c: &mut Ctx) -> u32 {
 fn LoadResource(c: &mut Ctx) -> u32 {
     let m = if c.a(0) == 0 { module_handle(0, false) } else { c.a(0) };
     if c.a(1) == 0 {
+        last_error(87);
         return 0;
     }
     crate::pe::resource_data(m, c.a(1)).0
@@ -3816,6 +3815,7 @@ fn FreeResource(_: &mut Ctx) -> u32 {
 }
 fn SizeofResource(c: &mut Ctx) -> u32 {
     if c.a(1) == 0 {
+        last_error(87);
         return 0;
     }
     r32(c.a(1) + 4)
@@ -4896,28 +4896,10 @@ fn SetHandleCount(c: &mut Ctx) -> u32 {
     c.a(0)
 }
 fn FormatMessageA(c: &mut Ctx) -> u32 {
-    let flags = c.a(0);
-    let msg = format!("error {}\r\n", c.a(2));
-    if flags & 0x100 != 0 {
-        let a = crate::text::s2a(&msg);
-        let p = mem::heap_alloc(a.len() as u32 + 1, true);
-        mem::write(p, &a);
-        w32(c.a(4), p);
-        return a.len() as u32;
-    }
-    ret_str(c.a(4), c.a(5), &msg, false)
+    crate::fmtmsg::format_message(c, false)
 }
 fn FormatMessageW(c: &mut Ctx) -> u32 {
-    let flags = c.a(0);
-    let msg = format!("error {}\r\n", c.a(2));
-    if flags & 0x100 != 0 {
-        let w: Vec<u16> = msg.encode_utf16().collect();
-        let p = mem::heap_alloc(2 * w.len() as u32 + 2, true);
-        put_wstr(p, w.len() as u32 + 1, &w);
-        w32(c.a(4), p);
-        return w.len() as u32;
-    }
-    ret_str(c.a(4), c.a(5), &msg, true)
+    crate::fmtmsg::format_message(c, true)
 }
 fn Beep(_: &mut Ctx) -> u32 {
     1

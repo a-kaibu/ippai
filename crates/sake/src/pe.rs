@@ -349,6 +349,26 @@ fn find_entry(root: u32, dir: u32, id: &ResId) -> Option<u32> {
     None
 }
 
+/// The data entry of a resource in language `lang` (None or LANG_NEUTRAL 0: the first one), or
+/// the error Windows gives: ERROR_RESOURCE_TYPE/NAME/LANG_NOT_FOUND (1813/1814/1815).
+pub fn find_resource_lang(module: u32, ty: &ResId, name: &ResId, lang: Option<u32>) -> Result<u32, u32> {
+    let root = with(module, |m| m.resources).unwrap_or(0);
+    if root == 0 {
+        return Err(1812);
+    }
+    let t = find_entry(root, root, ty).filter(|t| t & 0x8000_0000 != 0).ok_or(1813u32)?;
+    let n = find_entry(root, root + (t & 0x7fff_ffff), name).filter(|n| n & 0x8000_0000 != 0).ok_or(1814u32)?;
+    let langs = root + (n & 0x7fff_ffff);
+    let e = match lang {
+        None | Some(0) => r32(langs + 16 + 4),
+        Some(l) => find_entry(root, langs, &ResId::Int(l)).ok_or(1815u32)?,
+    };
+    if e & 0x8000_0000 != 0 {
+        return Err(1815);
+    }
+    Ok(root + e)
+}
+
 /// The data entry (IMAGE_RESOURCE_DATA_ENTRY address) of a resource; any language.
 pub fn find_resource(module: u32, ty: &ResId, name: &ResId) -> Option<u32> {
     let root = with(module, |m| m.resources)?;

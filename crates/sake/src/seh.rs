@@ -336,6 +336,8 @@ pub fn rtl_unwind(c: &mut Ctx) -> u32 {
 /// RaiseException(code, flags, nargs, args)
 pub fn raise_exception(c: &mut Ctx) -> u32 {
     let (code, flags, n, args) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    // (no array: no parameters)
+    let n = if args == 0 { 0 } else { n };
     let params: Vec<u32> = (0..n.min(15)).map(|i| r32(args + 4 * i)).collect();
     // the context: as if RaiseException had returned
     let ret = r32(c.esp);

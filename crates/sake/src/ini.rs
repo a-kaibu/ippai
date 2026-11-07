@@ -9,7 +9,7 @@ use crate::files;
 use crate::k32::arg_str;
 use crate::mem::{put_cstr, put_wstr};
 
-type Ini = Vec<(String, Vec<(String, String)>)>;
+type Ini = Vec<(String, Vec<(String, Option<String>)>)>;
 
 /// The Windows path of profile file `name`: a bare name lives in C:\windows.
 fn path(name: &str) -> String {
@@ -38,8 +38,8 @@ fn load(name: &str) -> Ini {
         } else if l.is_empty() || l.starts_with(';') {
         } else if let Some(sec) = ini.last_mut() {
             match l.split_once('=') {
-                Some((k, v)) => sec.1.push((k.trim().to_string(), unquote(v.trim()).to_string())),
-                None => sec.1.push((l.to_string(), String::new())),
+                Some((k, v)) => sec.1.push((k.trim().to_string(), Some(unquote(v.trim()).to_string()))),
+                None => sec.1.push((l.to_string(), None)),
             }
         }
     }
@@ -59,7 +59,10 @@ fn save(name: &str, ini: &Ini) -> bool {
     for (sec, keys) in ini {
         s += &format!("[{sec}]\r\n");
         for (k, v) in keys {
-            s += &format!("{k}={v}\r\n");
+            match v {
+                Some(v) => s += &format!("{k}={v}\r\n"),
+                None => s += &format!("{k}\r\n"),
+            }
         }
         s += "\r\n";
     }
@@ -68,12 +71,13 @@ fn save(name: &str, ini: &Ini) -> bool {
     kura::fs::write(h, crate::text::s2a(&s)).is_ok()
 }
 
-fn section<'a>(ini: &'a Ini, s: &str) -> Option<&'a Vec<(String, String)>> {
+fn section<'a>(ini: &'a Ini, s: &str) -> Option<&'a Vec<(String, Option<String>)>> {
     ini.iter().find(|x| x.0.eq_ignore_ascii_case(s)).map(|x| &x.1)
 }
 
+/// The value of key `k`: a line without '=' names no value.
 fn value(ini: &Ini, s: &str, k: &str) -> Option<String> {
-    section(ini, s)?.iter().find(|x| x.0.eq_ignore_ascii_case(k)).map(|x| x.1.clone())
+    section(ini, s.trim())?.iter().find(|x| x.0.eq_ignore_ascii_case(k.trim())).and_then(|x| x.1.clone())
 }
 
 /// Copies `s` into a buffer of `cap` characters (truncated, NUL-terminated): returns the length.
@@ -137,7 +141,9 @@ fn get_string(c: &mut Ctx, wide: bool, file: &str) -> u32 {
         let v: Vec<String> = section(&ini, &s).map(|k| k.iter().map(|x| x.0.clone()).collect()).unwrap_or_default();
         return put_list(buf, cap, &v, wide);
     }
-    let v = value(&ini, &s, &arg_str(key, wide)).unwrap_or_else(|| if def != 0 { arg_str(def, wide).trim_end().to_string() } else { String::new() });
+    let found = value(&ini, &s, &arg_str(key, wide));
+    crate::k32::last_error(if found.is_some() { 0 } else { 2 });
+    let v = found.unwrap_or_else(|| if def != 0 { arg_str(def, wide).trim_end().to_string() } else { String::new() });
     put(buf, cap, &v, wide)
 }
 
@@ -182,8 +188,8 @@ fn write_string(c: &mut Ctx, wide: bool, file: &str) -> u32 {
                 keys.remove(j);
             }
             (None, 0) => {}
-            (Some(j), v) => keys[j].1 = arg_str(v, wide),
-            (None, v) => keys.push((k, arg_str(v, wide))),
+            (Some(j), v) => keys[j].1 = Some(arg_str(v, wide)),
+            (None, v) => keys.push((k, Some(arg_str(v, wide)))),
         }
     }
     save(file, &ini) as u32
@@ -191,7 +197,7 @@ fn write_string(c: &mut Ctx, wide: bool, file: &str) -> u32 {
 
 fn get_section(c: &mut Ctx, wide: bool, file: &str) -> u32 {
     let ini = load(file);
-    let v: Vec<String> = section(&ini, &arg_str(c.a(0), wide)).map(|k| k.iter().map(|(k, v)| format!("{k}={v}")).collect()).unwrap_or_default();
+    let v: Vec<String> = section(&ini, &arg_str(c.a(0), wide)).map(|k| k.iter().map(|(k, v)| format!("{k}={}", v.as_deref().unwrap_or(""))).collect()).unwrap_or_default();
     put_list(c.a(1), c.a(2), &v, wide)
 }
 

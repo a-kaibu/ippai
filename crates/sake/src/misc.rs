@@ -766,16 +766,25 @@ fn system_version_info(file: &str) -> Vec<u8> {
     ver_node("VS_VERSION_INFO", &fixed, false, &[sfi, vfi])
 }
 
+/// The version block of `path`, or the error: no file (2), no version resource (1813).
+fn version_or_error(path: &str) -> Option<Vec<u8>> {
+    let v = version_resource(path);
+    if v.is_none() {
+        crate::k32::last_error(if crate::files::resolve(&crate::files::full_path(path)).is_some() { 1813 } else { 2 });
+    }
+    v
+}
 fn GetFileVersionInfoSizeA(c: &mut Ctx) -> u32 {
     put32(c.a(1), 0);
-    version_resource(&arg_str(c.a(0), false)).map_or(0, |v| v.len() as u32 * 2)
+    version_or_error(&arg_str(c.a(0), false)).map_or(0, |v| v.len() as u32 * 2)
 }
 fn GetFileVersionInfoSizeW(c: &mut Ctx) -> u32 {
     put32(c.a(1), 0);
-    version_resource(&arg_str(c.a(0), true)).map_or(0, |v| v.len() as u32 * 2)
+    version_or_error(&arg_str(c.a(0), true)).map_or(0, |v| v.len() as u32 * 2)
 }
 fn get_version_info(path: &str, len: u32, out: u32) -> u32 {
-    let Some(v) = version_resource(path) else { return 0 };
+    let Some(v) = version_or_error(path) else { return 0 };
+    crate::k32::last_error(0);
     mem::fill(out, len, 0);
     let n = (v.len() as u32).min(len);
     mem::write(out, &v[..n as usize]);
@@ -834,12 +843,13 @@ fn ver_query(c: &mut Ctx, wide: bool) -> u32 {
         let a = w2a(&s);
         mem::write(at, &a);
         mem::w8(at + a.len() as u32, 0);
-        put32(pp, at);
+        mem::putp(pp, at);
         put32(plen, a.len() as u32 + 1);
     } else {
-        put32(pp, val);
+        mem::putp(pp, val);
         put32(plen, n);
     }
+    crate::k32::last_error(0);
     1
 }
 fn VerQueryValueA(c: &mut Ctx) -> u32 {
@@ -1232,21 +1242,57 @@ fn StringFromIID(c: &mut Ctx) -> u32 {
 }
 /// CLSIDFromString / IIDFromString: "{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}" (ProgIDs are not
 /// registered: CO_E_CLASSSTRING).
-fn guid_from_string(c: &mut Ctx) -> u32 {
+/// CLSIDFromString / IIDFromString as combase parses: NULL is GUID_NULL (S_OK), "" fails
+/// leaving the GUID, a string not starting with '{' zeroes it, and a "{...}" one is read field
+/// by field into the GUID, so a bad character leaves what came before it (as Windows does).
+fn guid_from_string(c: &mut Ctx, err: u32) -> u32 {
     let (s, out) = (c.a(0), c.a(1));
-    let t: String = crate::k32::arg_str(s, true).chars().filter(|ch| ch.is_ascii_hexdigit()).collect();
-    if t.len() != 32 || !crate::k32::arg_str(s, true).starts_with('{') {
+    if s == 0 {
         mem::fill(out, 16, 0);
-        return 0x8004_01f3;
+        return 0;
     }
-    let hex = |a: usize, n: usize| u32::from_str_radix(&t[a..a + n], 16).unwrap_or(0);
-    w32(out, hex(0, 8));
-    w16(out + 4, hex(8, 4) as u16);
-    w16(out + 6, hex(12, 4) as u16);
-    for i in 0..8 {
-        mem::w8(out + 8 + i as u32, hex(16 + 2 * i, 2) as u8);
+    let w = wstr(s);
+    if w.is_empty() {
+        return err;
     }
-    0
+    if w[0] != b'{' as u16 {
+        mem::fill(out, 16, 0);
+        return err;
+    }
+    let at = |i: usize| w.get(i).copied().unwrap_or(0);
+    let hex = |i: usize| char::from_u32(at(i) as u32).and_then(|ch| ch.to_digit(16));
+    let field = |from: usize, n: usize, put: &dyn Fn(u32)| -> bool {
+        let mut v = 0u32;
+        put(0);
+        for i in from..from + n {
+            let Some(d) = hex(i) else { return false };
+            v = v << 4 | d;
+            put(v);
+        }
+        true
+    };
+    if !field(1, 8, &|v| w32(out, v)) || at(9) != b'-' as u16 {
+        return err;
+    }
+    if !field(10, 4, &|v| w16(out + 4, v as u16)) || at(14) != b'-' as u16 {
+        return err;
+    }
+    if !field(15, 4, &|v| w16(out + 6, v as u16)) || at(19) != b'-' as u16 {
+        return err;
+    }
+    let mut i = 20;
+    for k in 0..8u32 {
+        if i == 24 {
+            if at(i) != b'-' as u16 {
+                return err;
+            }
+            i += 1;
+        }
+        let (Some(h), Some(l)) = (hex(i), hex(i + 1)) else { return err };
+        mem::w8(out + 8 + k, (h << 4 | l) as u8);
+        i += 2;
+    }
+    if at(37) == b'}' as u16 && w.len() == 38 { 0 } else { err }
 }
 /// CLSIDFromProgID: the script engines' names (other ProgIDs are not registered).
 fn CLSIDFromProgID(c: &mut Ctx) -> u32 {
@@ -1263,10 +1309,10 @@ fn CLSIDFromProgID(c: &mut Ctx) -> u32 {
     }
 }
 fn CLSIDFromString(c: &mut Ctx) -> u32 {
-    guid_from_string(c)
+    guid_from_string(c, 0x8004_01f3) // CO_E_CLASSSTRING
 }
 fn IIDFromString(c: &mut Ctx) -> u32 {
-    guid_from_string(c)
+    guid_from_string(c, 0x8004_01f4) // CO_E_IIDSTRING
 }
 // rpcrt4's UUIDs (the same GUIDs; strings without braces, lower case)
 fn UuidCreate(c: &mut Ctx) -> u32 {
@@ -1424,6 +1470,11 @@ fn VariantInit(c: &mut Ctx) -> u32 {
 }
 fn VariantClear(c: &mut Ctx) -> u32 {
     let v = c.a(0);
+    // (a type that is no VARTYPE stays: DISP_E_BADVARTYPE)
+    let t = r16(v) & 0x0fff;
+    if t > 37 && !matches!(t, 64..=72 | 0xfff) {
+        return 0x8002_0008;
+    }
     if r16(v) == 8 {
         bstr_free(r32(v + 8));
     }
@@ -2875,6 +2926,7 @@ pub fn init() {
         SafeArrayGetLBound, SafeArrayGetUBound, SafeArrayLock, SafeArrayUnlock, SafeArrayAccessData,
         SafeArrayUnaccessData, SafeArrayPtrOfIndex, SafeArrayPutElement, SafeArrayGetElement, SafeArrayDestroyData,
         SafeArrayDestroyDescriptor, SafeArrayDestroy, SafeArrayRedim);
+    reg!("oleaut32"; VarAdd, VarSub, VarMul, VarDiv, VarIdiv, VarMod, VarNeg, VarCmp, VarBstrCmp, VarBstrCat);
     reg!("shfolder"; SHGetFolderPathA, SHGetFolderPathW);
     reg!("shell32"; SHCreateDirectoryExA, SHCreateDirectoryExW, SHCreateDirectory, SHGetSpecialFolderPathA, SHGetSpecialFolderPathW, SHGetFolderPathA, SHGetFolderPathW,
         SHGetSpecialFolderLocation, SHGetFolderLocation, SHGetPathFromIDListA, SHGetPathFromIDListW, ILFree, SHGetMalloc, IsUserAnAdmin,
@@ -3596,3 +3648,299 @@ mod safearray {
     }
 }
 use safearray::*;
+
+/// oleaut32 variant arithmetic (VarAdd, VarSub, VarMul, VarDiv, VarIdiv, VarMod, VarNeg),
+/// VarCmp and the BSTR helpers, with Windows' result types: the wider of the two operands
+/// (UI1 < I2/BOOL < I4 < I8 < R4 < R8; a string is an R8, two strings concatenate in VarAdd)
+/// and an integer result that overflows moving up UI1 -> I2 -> I4 -> R8.
+mod vararith {
+    use super::*;
+    const OVERFLOW: u32 = 0x8002_000a;
+    const DIVBYZERO: u32 = 0x8002_0012;
+    const TYPEMISMATCH: u32 = 0x8002_0005;
+    const BADVARTYPE: u32 = 0x8002_0008;
+
+    #[derive(Clone, Copy, PartialEq, PartialOrd)]
+    enum Rank {
+        U1,
+        I2,
+        I4,
+        I8,
+        R4,
+        R8,
+    }
+    struct Num {
+        rank: Rank,
+        i: i64,
+        f: f64,
+    }
+    fn vt_of(v: u32) -> u16 {
+        r16(v) & !0x4000
+    }
+    fn num(v: u32) -> Result<Option<Num>, u32> {
+        let vt = vt_of(v);
+        if vt == 1 {
+            return Ok(None); // VT_NULL
+        }
+        let rank = match vt {
+            0 | 2 | 11 | 16 => Rank::I2,
+            17 => Rank::U1,
+            3 | 18 | 22 | 10 => Rank::I4,
+            19 | 23 | 20 | 21 => Rank::I8,
+            4 => Rank::R4,
+            5 | 6 | 7 | 8 => Rank::R8,
+            _ => return Err(BADVARTYPE),
+        };
+        Ok(Some(match variant_val(v).ok_or(BADVARTYPE)? {
+            Val::Empty => Num { rank, i: 0, f: 0.0 },
+            Val::Int(i) => Num { rank, i, f: i as f64 },
+            Val::F(f) => Num { rank, i: f.round_ties_even() as i64, f },
+            Val::Str(s) => {
+                let f = parse_num(&s).ok_or(TYPEMISMATCH)?;
+                Num { rank, i: f.round_ties_even() as i64, f }
+            }
+        }))
+    }
+    fn put(dst: u32, vt: u16, bits: u64) {
+        mem::fill(dst, 16, 0);
+        w16(dst, vt);
+        mem::write(dst + 8, &bits.to_le_bytes());
+    }
+    fn put_int(dst: u32, rank: Rank, i: i64) {
+        let mut r = rank;
+        loop {
+            let fits = match r {
+                Rank::U1 => (0..=255).contains(&i),
+                Rank::I2 => (i16::MIN as i64..=i16::MAX as i64).contains(&i),
+                Rank::I4 => (i32::MIN as i64..=i32::MAX as i64).contains(&i),
+                _ => true,
+            };
+            if fits {
+                break;
+            }
+            r = match r {
+                Rank::U1 => Rank::I2,
+                Rank::I2 => Rank::I4,
+                _ => Rank::R8,
+            };
+        }
+        match r {
+            Rank::U1 => put(dst, 17, i as u8 as u64),
+            Rank::I2 => put(dst, 2, i as i16 as u16 as u64),
+            Rank::I4 => put(dst, 3, i as i32 as u32 as u64),
+            Rank::I8 => put(dst, 20, i as u64),
+            _ => put(dst, 5, (i as f64).to_bits()),
+        }
+    }
+    fn put_real(dst: u32, rank: Rank, f: f64) -> u32 {
+        if !f.is_finite() {
+            return OVERFLOW;
+        }
+        if rank == Rank::R4 {
+            put(dst, 4, (f as f32).to_bits() as u64);
+        } else {
+            put(dst, 5, f.to_bits());
+        }
+        0
+    }
+    fn bstr_of(v: u32) -> Vec<u16> {
+        let b = r32(v + 8);
+        let b = if r16(v) & 0x4000 != 0 { r32(b) } else { b };
+        if b == 0 {
+            return Vec::new();
+        }
+        (0..r32(b - 4) / 2).map(|i| r16(b + 2 * i)).collect()
+    }
+    /// The result rank of two operands: a 4-byte or wider integer with a float is an R8.
+    fn rank(a: &Num, b: &Num) -> Rank {
+        let hi = if a.rank > b.rank { a.rank } else { b.rank };
+        let lo = if a.rank > b.rank { b.rank } else { a.rank };
+        if hi == Rank::R4 && (lo == Rank::I4 || lo == Rank::I8) {
+            Rank::R8
+        } else {
+            hi
+        }
+    }
+    #[derive(Clone, Copy)]
+    enum Op {
+        Add,
+        Sub,
+        Mul,
+    }
+    fn arith(c: &mut Ctx, op: Op) -> u32 {
+        let (l, r, out) = (c.a(0), c.a(1), c.a(2));
+        if matches!(op, Op::Add) && vt_of(l) == 8 && vt_of(r) == 8 {
+            let mut s = bstr_of(l);
+            s.extend(bstr_of(r));
+            put(out, 8, bstr_alloc(&s) as u64);
+            return 0;
+        }
+        let (a, b) = match (num(l), num(r)) {
+            (Err(e), _) | (_, Err(e)) => return e,
+            (Ok(Some(a)), Ok(Some(b))) => (a, b),
+            _ => {
+                put(out, 1, 0);
+                return 0;
+            }
+        };
+        let k = rank(&a, &b);
+        if k >= Rank::R4 {
+            let f = match op {
+                Op::Add => a.f + b.f,
+                Op::Sub => a.f - b.f,
+                Op::Mul => a.f * b.f,
+            };
+            return put_real(out, k, f);
+        }
+        let i = match op {
+            Op::Add => a.i.checked_add(b.i),
+            Op::Sub => a.i.checked_sub(b.i),
+            Op::Mul => a.i.checked_mul(b.i),
+        };
+        match i {
+            Some(i) => put_int(out, k, i),
+            None => return OVERFLOW,
+        }
+        0
+    }
+    pub(super) fn VarAdd(c: &mut Ctx) -> u32 {
+        arith(c, Op::Add)
+    }
+    pub(super) fn VarSub(c: &mut Ctx) -> u32 {
+        arith(c, Op::Sub)
+    }
+    pub(super) fn VarMul(c: &mut Ctx) -> u32 {
+        arith(c, Op::Mul)
+    }
+    /// VarDiv: always a real (R4 for two R4s); x/0 is DISP_E_OVERFLOW (0/0 too)
+    pub(super) fn VarDiv(c: &mut Ctx) -> u32 {
+        let (l, r, out) = (c.a(0), c.a(1), c.a(2));
+        let (a, b) = match (num(l), num(r)) {
+            (Err(e), _) | (_, Err(e)) => return e,
+            (Ok(Some(a)), Ok(Some(b))) => (a, b),
+            _ => {
+                put(out, 1, 0);
+                return 0;
+            }
+        };
+        if b.f == 0.0 {
+            // (x86's oleaut32 divides on the x87 and sees an overflow; x64's checks first)
+            return if mem::x64() { DIVBYZERO } else { OVERFLOW };
+        }
+        let k = if a.rank == Rank::R4 && b.rank == Rank::R4 { Rank::R4 } else { Rank::R8 };
+        put_real(out, k, a.f / b.f)
+    }
+    /// VarIdiv / VarMod: both rounded to integers (I4, I8 if either is), DISP_E_DIVBYZERO
+    fn int_div(c: &mut Ctx, rem: bool) -> u32 {
+        let (l, r, out) = (c.a(0), c.a(1), c.a(2));
+        let (a, b) = match (num(l), num(r)) {
+            (Err(e), _) | (_, Err(e)) => return e,
+            (Ok(Some(a)), Ok(Some(b))) => (a, b),
+            _ => {
+                put(out, 1, 0);
+                return 0;
+            }
+        };
+        if b.i == 0 {
+            return DIVBYZERO;
+        }
+        let v = if rem { a.i.wrapping_rem(b.i) } else { a.i.wrapping_div(b.i) };
+        let k = if a.rank == Rank::I8 || b.rank == Rank::I8 {
+            Rank::I8
+        } else if a.rank <= Rank::I2 && b.rank <= Rank::I2 && a.rank == b.rank {
+            a.rank
+        } else {
+            Rank::I4
+        };
+        put_int(out, k, v);
+        0
+    }
+    pub(super) fn VarIdiv(c: &mut Ctx) -> u32 {
+        int_div(c, false)
+    }
+    pub(super) fn VarMod(c: &mut Ctx) -> u32 {
+        int_div(c, true)
+    }
+    pub(super) fn VarNeg(c: &mut Ctx) -> u32 {
+        let (v, out) = (c.a(0), c.a(1));
+        let a = match num(v) {
+            Err(e) => return e,
+            Ok(None) => {
+                put(out, 1, 0);
+                return 0;
+            }
+            Ok(Some(a)) => a,
+        };
+        match vt_of(v) {
+            4 | 5 | 8 => put_real(out, if vt_of(v) == 4 { Rank::R4 } else { Rank::R8 }, -a.f),
+            7 => {
+                put(out, 7, (-a.f).to_bits());
+                0
+            }
+            11 => {
+                put(out, 2, (-a.i) as i16 as u16 as u64);
+                0
+            }
+            _ => {
+                put_int(out, if a.rank == Rank::U1 { Rank::I2 } else { a.rank }, -a.i);
+                0
+            }
+        }
+    }
+    /// Strings as CompareString orders them for these: case-insensitively first, then lower
+    /// before upper (NORM_IGNORECASE 1 stops there). VARCMP_LT 0 / EQ 1 / GT 2.
+    fn cmp_str(a: &[u16], b: &[u16], flags: u32) -> u32 {
+        let lower = |s: &[u16]| String::from_utf16_lossy(s).to_lowercase();
+        let o = lower(a).cmp(&lower(b)).then_with(|| {
+            if flags & 1 != 0 {
+                std::cmp::Ordering::Equal
+            } else {
+                // a lower-case letter sorts before its capital
+                let inv = |s: &[u16]| s.iter().map(|&c| if (b'a' as u16..=b'z' as u16).contains(&c) { 0 } else { 1 }).collect::<Vec<u8>>();
+                inv(a).cmp(&inv(b))
+            }
+        });
+        o as i32 as u32 + 1
+    }
+    pub(super) fn VarBstrCmp(c: &mut Ctx) -> u32 {
+        let s = |b: u32| -> Vec<u16> { if b == 0 { Vec::new() } else { (0..r32(b - 4) / 2).map(|i| r16(b + 2 * i)).collect() } };
+        cmp_str(&s(c.a(0)), &s(c.a(1)), c.a(3))
+    }
+    pub(super) fn VarBstrCat(c: &mut Ctx) -> u32 {
+        let s = |b: u32| -> Vec<u16> { if b == 0 { Vec::new() } else { (0..r32(b - 4) / 2).map(|i| r16(b + 2 * i)).collect() } };
+        let out = c.a(2);
+        if out == 0 {
+            return 0x8007_0057;
+        }
+        let mut v = s(c.a(0));
+        v.extend(s(c.a(1)));
+        mem::wp(out, bstr_alloc(&v));
+        0
+    }
+    /// VarCmp(l, r, lcid, flags): two strings compare as strings, a string is greater than a
+    /// number, numbers by value; VARCMP_NULL 3 with a NULL
+    pub(super) fn VarCmp(c: &mut Ctx) -> u32 {
+        let (l, r, flags) = (c.a(0), c.a(1), c.a(3));
+        let (sl, sr) = (vt_of(l) == 8, vt_of(r) == 8);
+        if sl && sr {
+            return cmp_str(&bstr_of(l), &bstr_of(r), flags);
+        }
+        if vt_of(l) == 1 || vt_of(r) == 1 {
+            return 3;
+        }
+        if sl != sr {
+            return if sl { 2 } else { 0 };
+        }
+        let (a, b) = match (num(l), num(r)) {
+            (Ok(Some(a)), Ok(Some(b))) => (a, b),
+            (Err(e), _) | (_, Err(e)) => return e,
+            _ => return 3,
+        };
+        match a.f.partial_cmp(&b.f) {
+            Some(std::cmp::Ordering::Less) => 0,
+            Some(std::cmp::Ordering::Equal) => 1,
+            _ => 2,
+        }
+    }
+}
+use vararith::*;

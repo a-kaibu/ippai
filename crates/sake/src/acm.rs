@@ -93,7 +93,9 @@ fn pcm_convert(s: &Fmt, d: &Fmt, src: &[u8]) -> Vec<u8> {
     };
     let n = src.len() / sa.max(1);
     let (sr, dr) = (s.rate as u64, d.rate as u64);
-    let c = (sr / 2).max(dr / 4);
+    // fitted to Windows' output (winref acm): upsampling steps an error term that starts at
+    // dr/2 and moves to the next frame once it exceeds dr; downsampling rounds from sr/2
+    let c = if sr < dr { dr / 2 - 1 } else { (sr / 2).max(dr / 4) };
     let mut out = Vec::new();
     for i in 0u64.. {
         let k = ((i * sr + c) / dr) as usize;

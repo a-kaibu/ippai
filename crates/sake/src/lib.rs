@@ -48,6 +48,7 @@ pub mod ini;
 pub mod dinput;
 pub mod fast;
 pub mod files;
+pub mod fmtmsg;
 pub mod gdi;
 pub mod gdi_geom;
 pub mod k32;
@@ -222,31 +223,69 @@ pub fn run(cpu: &mut Cpu, until: u32) {
                     continue;
                 }
                 let code = if guard { 0x8000_0001 } else { 0xc000_0005 };
+                // (the kind: 0 read, 1 write, 8 executing at the address: DEP)
+                let kind = if addr == cpu.eip && !guard { 8 } else { write as u32 };
                 if mem::x64() {
                     let e = cpu.eip;
-                    seh64::raise(cpu, code, 0, e, &[write as u64, addr as u64]);
+                    // a non-canonical address is a general protection fault: read of -1
+                    if kind != 8 && memory_operand(cpu).is_some_and(|a| (a as i64) >> 47 != 0 && (a as i64) >> 47 != -1) {
+                        seh64::raise(cpu, code, 0, e, &[0, u64::MAX]);
+                        continue;
+                    }
+                    seh64::raise(cpu, code, 0, e, &[kind as u64, addr as u64]);
                     continue;
                 }
-                seh::raise_fault(cpu, code, addr, write)
+                let e = cpu.eip;
+                seh::raise(cpu, code, 0, e, &[kind, addr])
             }
             Stop::Divide => {
+                // (a nonzero divisor whose quotient does not fit: STATUS_INTEGER_OVERFLOW)
                 let e = cpu.eip;
-                raise(cpu, 0xc000_0094, e, &[])
+                let code = if divisor_zero(cpu) == Some(false) { 0xc000_0095 } else { 0xc000_0094 };
+                raise(cpu, code, e, &[])
             }
             Stop::Invalid => {
                 let e = cpu.eip;
                 let mut b = [0u8; 8];
                 b.copy_from_slice(mem::slice(e, 8));
+                if privileged(&b) {
+                    raise(cpu, 0xc000_0096, e, &[]);
+                    continue;
+                }
                 eprintln!("sake: illegal instruction at {e:#x}: {b:02x?}");
                 raise(cpu, 0xc000_001d, e, &[])
             }
+            // EIP is past the instruction here; Windows reports these as it does
             Stop::Int(n) => {
                 let e = cpu.eip;
-                if n == 3 {
-                    raise(cpu, 0x8000_0003, e, &[0])
-                } else {
-                    // int 2d etc.: skip it
-                    cpu.eip += 2;
+                match n {
+                    // int3 / int 3: at the byte before EIP, and the context there too
+                    3 => {
+                        cpu.eip = e - 1;
+                        raise(cpu, 0x8000_0003, e - 1, &[0])
+                    }
+                    // INTO with OF: STATUS_INTEGER_OVERFLOW at the INTO, the context after it
+                    4 => raise(cpu, 0xc000_0095, e - 1, &[]),
+                    // BOUND out of range (a fault: EIP at the instruction)
+                    5 => raise(cpu, 0xc000_008c, e, &[]),
+                    // int 2c: STATUS_ASSERTION_FAILURE at the instruction
+                    0x2c => {
+                        cpu.eip = e - 2;
+                        raise(cpu, 0xc000_0420, e - 2, &[])
+                    }
+                    // int 2d (debug service), int 29 (__fastfail): skipped as before
+                    0x2d | 0x29 => cpu.eip += 2,
+                    // a vector user mode may not use: an access violation at the instruction
+                    // reading address -1, as the general protection fault reaches the program
+                    _ => {
+                        cpu.eip = e - 2;
+                        let m = if mem::x64() { u64::MAX } else { u32::MAX as u64 };
+                        if mem::x64() {
+                            seh64::raise(cpu, 0xc000_0005, 0, e - 2, &[0, m]);
+                        } else {
+                            seh::raise(cpu, 0xc000_0005, 0, e - 2, &[0, m as u32]);
+                        }
+                    }
                 }
             }
             Stop::Halt => {
@@ -256,6 +295,83 @@ pub fn run(cpu: &mut Cpu, until: u32) {
             Stop::Syscall => fatal(cpu, "syscall"),
         }
     }
+}
+
+/// Instructions user mode may not run that raise STATUS_PRIVILEGED_INSTRUCTION (koji reports
+/// them as invalid): CLI/STI, IN/OUT/INS/OUTS, MOV to or from CR/DR, CLTS, INVD/WBINVD,
+/// WRMSR/RDMSR, LGDT/LIDT/LMSW/INVLPG (0F 01 /2 /3 /6 /7).
+fn privileged(b: &[u8; 8]) -> bool {
+    let mut i = 0;
+    while i < 4 && matches!(b[i], 0x66 | 0x67 | 0xf2 | 0xf3 | 0x26 | 0x2e | 0x36 | 0x3e | 0x64 | 0x65 | 0x40..=0x4f) {
+        if (0x40..=0x4f).contains(&b[i]) && !mem::x64() {
+            break;
+        }
+        i += 1;
+    }
+    match b[i] {
+        0xfa | 0xfb | 0xe4..=0xe7 | 0xec..=0xef | 0x6c..=0x6f | 0xf4 => true,
+        0x0f => match b[i + 1] {
+            0x20..=0x23 | 0x06 | 0x08 | 0x09 | 0x30 | 0x32 => true,
+            0x01 => matches!((b[i + 2] >> 3) & 7, 2 | 3 | 6 | 7) && b[i + 2] >> 6 != 3,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// The instruction at EIP.
+fn instruction_at(cpu: &Cpu) -> koji::iced_x86::Instruction {
+    use koji::iced_x86::{Decoder, DecoderOptions};
+    let ip = cpu.eip as u64 | (cpu.rip_hi as u64) << 32;
+    let bytes = mem::slice(cpu.eip, 15).to_vec();
+    Decoder::with_ip(if mem::x64() { 64 } else { 32 }, &bytes, ip, DecoderOptions::NONE).decode()
+}
+
+/// The full address of the memory operand of the instruction at EIP.
+fn memory_operand(cpu: &Cpu) -> Option<u64> {
+    use koji::iced_x86::Register;
+    let ins = instruction_at(cpu);
+    let op = (0..ins.op_count()).find(|&i| ins.op_kind(i) == koji::iced_x86::OpKind::Memory)?;
+    ins.virtual_address(op, 0, |r, _, _| match r {
+        Register::FS => Some(cpu.fs_base as u64),
+        Register::GS => Some(cpu.gs_base as u64),
+        Register::ES | Register::CS | Register::SS | Register::DS => Some(0),
+        Register::AH | Register::CH | Register::DH | Register::BH => Some(cpu.gpr(r as usize - Register::AH as usize) >> 8 & 0xff),
+        r => Some(cpu.gpr(r.full_register().number())),
+    })
+}
+
+/// For a divide error at EIP: whether the divisor of the DIV/IDIV there is zero (None: not
+/// decoded).
+fn divisor_zero(cpu: &Cpu) -> Option<bool> {
+    use koji::iced_x86::{OpKind, Register};
+    let ins = instruction_at(cpu);
+    let (v, size) = match ins.op0_kind() {
+        OpKind::Register => {
+            let r = ins.op0_register();
+            let v = if matches!(r, Register::AH | Register::CH | Register::DH | Register::BH) {
+                cpu.gpr(r as usize - Register::AH as usize) >> 8
+            } else {
+                cpu.gpr(r.full_register().number())
+            };
+            (v, r.size())
+        }
+        OpKind::Memory => {
+            // (the divide read it already)
+            let a = memory_operand(cpu)? as u32;
+            let size = ins.memory_size().size();
+            let v = match size {
+                1 => mem::r8(a) as u64,
+                2 => mem::r16(a) as u64,
+                4 => mem::r32(a) as u64,
+                _ => mem::r64(a),
+            };
+            (v, size)
+        }
+        _ => return None,
+    };
+    let m = if size >= 8 { u64::MAX } else { (1u64 << (8 * size)) - 1 };
+    Some(v & m == 0)
 }
 
 /// An exception at `addr` (32 or 64-bit dispatch).
@@ -306,7 +422,7 @@ pub fn call(cpu: &mut Cpu, f: u32, args: &[u32]) -> u32 {
 }
 
 /// x64: calls guest code at `f` with the Windows x64 convention (RCX, RDX, R8, R9, then the
-/// stack above 32 bytes of home space); returns RAX. The registers but RAX/RDX come back.
+/// stack above 32 bytes of home space); returns RAX. The registers but RAX come back.
 pub fn call64(cpu: &mut Cpu, f: u64, args: &[u64]) -> u64 {
     let (regs, hi, r8) = (cpu.regs, cpu.hi, cpu.r8);
     let (eip, rip_hi) = (cpu.eip, cpu.rip_hi);
@@ -327,12 +443,12 @@ pub fn call64(cpu: &mut Cpu, f: u64, args: &[u64]) -> u64 {
     cpu.rip_hi = (f >> 32) as u32;
     run(cpu, sp + 8);
     let rax = cpu.gpr(EAX);
-    let rdx = cpu.gpr(koji::EDX);
+    // (RDX too comes back: the host function's own arguments are RCX/RDX/R8/R9, which it may
+    // read again after the call)
     cpu.regs = regs;
     cpu.hi = hi;
     cpu.r8 = r8;
     cpu.set_gpr(EAX, rax);
-    cpu.set_gpr(koji::EDX, rdx);
     cpu.eip = eip;
     cpu.rip_hi = rip_hi;
     cpu.eflags = eflags;
