@@ -1,0 +1,10 @@
+layout.cpp
+_WIN32_WINNT not defined. Defaulting to _WIN32_WINNT_MAXVER (see WinSDKVer.h)
+D:\a\ippai\ippai\tests\mfcabi\layout.cpp(32): error C2065: 'CDialogEx': undeclared identifier
+D:\a\ippai\ippai\tests\mfcabi\layout.cpp(39): error C2065: 'CSingleLock': undeclared identifier
+D:\a\ippai\ippai\tests\mfcabi\layout.cpp(40): error C2065: 'CCriticalSection': undeclared identifier
+D:\a\ippai\ippai\tests\mfcabi\layout.cpp(40): error C2065: 'CEvent': undeclared identifier
+D:\a\ippai\ippai\tests\mfcabi\layout.cpp(40): error C2065: 'CMutex': undeclared identifier
+D:\a\ippai\ippai\tests\mfcabi\layout.cpp(59): error C2672: 'slot': no matching overloaded function found
+D:\a\ippai\ippai\tests\mfcabi\layout.cpp(15): note: could be 'int slot(F)'
+D:\a\ippai\ippai\tests\mfcabi\layout.cpp(59): note: 'int slot(F)': could not deduce template argument for 'F'
