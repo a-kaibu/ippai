@@ -842,6 +842,11 @@ fn run_case(engine: &Engine, memory: &SharedMemory, base: usize, list0: &[Instru
         if want.is_err() && got.is_err() {
             return (diffs, code); // (both stopped: where differs)
         }
+        if want.as_ref().is_err_and(|e| e == "no end") {
+            // (a loop longer than the interpreter's step limit, which the JIT's regions run
+            // through: nothing to compare)
+            return (diffs, code);
+        }
         if want.is_err() || got.is_err() {
             if want.is_ok() != got.is_ok() {
                 diffs.push(format!("runs: interp {want:?} jit {got:?}"));
