@@ -2129,6 +2129,29 @@ impl D3d {
             self.use_tex(dt);
             return;
         }
+        // the bits of another format of the same size (Direct3D 11's copies between formats of
+        // one typeless group, `filter` 2): as is when only sRGB-ness differs, else through a
+        // buffer (WebGPU copies textures of other formats no other way)
+        if filter == 2 {
+            let base = |f: &str| f.trim_end_matches("-srgb").to_string();
+            if sw != dw || sh != dh || is_depth(s_fmt) || is_depth(t_fmt) || bpp(s_fmt) != bpp(t_fmt) {
+                return;
+            }
+            if st != dt && base(s_fmt) == base(t_fmt) {
+                self.open = true;
+                gpu::copy_texture(s_tex, sl, [sx, sy, 0], t_tex, dl, [dx, dy, 0], [sw, sh, 1]);
+            } else {
+                let bpr = (sw * bpp(s_fmt)).div_ceil(256) * 256;
+                let buf = gpu::buffer(bpr * sh, usage::COPY_SRC | usage::COPY_DST);
+                self.open = true;
+                gpu::copy_to_buffer(s_tex, sl, sx, sy, buf, bpr, sw, sh);
+                gpu::copy_from_buffer(buf, bpr, t_tex, dl, dx, dy, sw, sh);
+                self.doomed.push(buf);
+            }
+            self.use_tex(st);
+            self.use_tex(dt);
+            return;
+        }
         if st == dt || t_fmt == DS {
             return;
         }

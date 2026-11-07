@@ -175,10 +175,9 @@ fn push(l: &mut CmdList, r: Rec) {
 
 /// Records a call (copies of what it points to, references to what it names).
 unsafe fn record(d: &mut D11, this: u32, m: u32, a: &dyn Fn(usize) -> u32) {
+    // (only the arguments the method has: the caller's array is no longer than that)
     let mut args = [0u32; 16];
-    for (i, v) in args.iter_mut().enumerate() {
-        *v = a(i);
-    }
+    args.copy_from_slice(&super::args_of(IF_CONTEXT, m, a, 16));
     let Some(ptrs) = pointed(d, m, a) else {
         // (data past what any resource takes, or past the address space: not recorded)
         if d.trace {

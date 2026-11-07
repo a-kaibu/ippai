@@ -491,3 +491,42 @@ mod conv_tests {
         assert_eq!(f, [0.0, 1.0, 32768.0 / 65535.0, 1.0 / 65535.0]);
     }
 }
+
+/// The typeless group of a DXGI format (its formats share their bits: a copy between two of
+/// them is of the bits), or the format itself when it has none.
+pub fn family(dxgi: u32) -> u32 {
+    match dxgi {
+        1..=4 => 1,
+        5..=8 => 5,
+        9..=14 => 9,
+        15..=18 => 15,
+        19..=22 => 19,
+        23..=25 => 23,
+        27..=32 => 27,
+        33..=38 => 33,
+        39..=43 => 39,
+        44..=47 => 44,
+        48..=52 => 48,
+        53..=59 => 53,
+        60..=64 => 60,
+        70..=72 => 70,
+        73..=75 => 73,
+        76..=78 => 76,
+        79..=81 => 79,
+        82..=84 => 82,
+        87 | 90 | 91 => 90,
+        88 | 92 | 93 => 92,
+        94..=96 => 94,
+        97..=99 => 97,
+        _ => dxgi,
+    }
+}
+
+/// Whether CopyResource / CopySubresourceRegion copy between these formats (Windows' answers in
+/// Wine's test_format_compatibility): one typeless group, or R9G9B9E5_SHAREDEXP and the R32
+/// formats. (Block-compressed to uncompressed of the block's size is allowed too; the page
+/// keeps BC textures decoded, so those copies are not made: `copy_compatible` says false.)
+pub fn copy_compatible(a: u32, b: u32) -> bool {
+    let (fa, fb) = (family(a), family(b));
+    fa == fb || (a == 67 && fb == 39) || (b == 67 && fa == 39)
+}

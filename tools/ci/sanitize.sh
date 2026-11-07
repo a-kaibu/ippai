@@ -13,7 +13,10 @@ pkgs=("$@")
 [ ${#pkgs[@]} -gt 0 ] || pkgs=(-p koji -p kura -p sake -p crt -p vorbis -p hlslc -p dxwgsl -p glwgsl -p shaderconf -p ippai)
 export RUSTFLAGS="-Zsanitizer=$kind" RUSTDOCFLAGS="-Zsanitizer=$kind"
 export LSAN_OPTIONS="suppressions=$PWD/tools/ci/lsan.supp:print_suppressions=0"
-export ASAN_OPTIONS="detect_leaks=1:allocator_may_return_null=1"
+# (no fake stacks: the d3d tests run on a stack mapped below 4 GiB, trace_tests on_low_stack,
+# because the host code hands addresses of its locals to the guest side as 32-bit pointers, as
+# it does in wasm; ASan's fake frames for stack-use-after-return live above 4 GiB)
+export ASAN_OPTIONS="detect_leaks=1:allocator_may_return_null=1:detect_stack_use_after_return=0"
 # The bundled C libraries (SQLite, libzstd) stay uninstrumented: cc would build them with GCC's
 # ASan against rustc's LLVM runtime, which reports SQLite globals as ODR violations and a
 # stack-use-after-scope on a global in libzstd.

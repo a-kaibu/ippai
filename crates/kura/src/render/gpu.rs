@@ -35,6 +35,8 @@ mod ffi {
         pub fn vngpu_copy_texture(src: Id, smip: u32, sx: u32, sy: u32, sz: u32, dst: Id, dmip: u32, dx: u32, dy: u32, dz: u32, w: u32, h: u32, d: u32);
         #[allow(clippy::too_many_arguments)]
         pub fn vngpu_copy_to_buffer(tex: Id, mip: u32, x: u32, y: u32, buf: Id, bpr: u32, w: u32, h: u32);
+        #[allow(clippy::too_many_arguments)]
+        pub fn vngpu_copy_from_buffer(buf: Id, bpr: u32, tex: Id, mip: u32, x: u32, y: u32, w: u32, h: u32);
         pub fn vngpu_begin_pass(p: *const u8, n: usize);
         pub fn vngpu_end_pass();
         pub fn vngpu_set_pipeline(p: Id);
@@ -252,6 +254,12 @@ pub fn copy_texture(src: Id, smip: u32, so: [u32; 3], dst: Id, dmip: u32, d: [u3
 #[allow(clippy::too_many_arguments)]
 pub fn copy_to_buffer(tex: Id, mip: u32, x: u32, y: u32, buf: Id, bpr: u32, w: u32, h: u32) {
     unsafe { ffi::vngpu_copy_to_buffer(tex, mip, x, y, buf, bpr, w, h) }
+}
+
+/// copyBufferToTexture: rows of `bpr` bytes from the start of `buf` into a box of mip `mip`.
+#[allow(clippy::too_many_arguments)]
+pub fn copy_from_buffer(buf: Id, bpr: u32, tex: Id, mip: u32, x: u32, y: u32, w: u32, h: u32) {
+    unsafe { ffi::vngpu_copy_from_buffer(buf, bpr, tex, mip, x, y, w, h) }
 }
 
 // the render pass (one at a time)

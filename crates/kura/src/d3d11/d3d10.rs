@@ -136,7 +136,7 @@ fn misc10(m: u32) -> u32 {
 
 /// ID3D10Device1 methods.
 pub(super) unsafe fn device(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32, after: &mut After) -> u32 {
-    let args: Vec<u32> = (0..12).map(a).collect();
+    let args = super::args_of(IF10_DEVICE, m, a, 12);
     let ctx = |d: &mut D11, m11: u32, v: &[u32], after: &mut After| with(v, |b| context_call(d, m11, b, after));
     let dev = |d: &mut D11, m11: u32, v: &[u32]| with(v, |b| device_call(d, m11, this, b));
     // same arguments as the D3D11 context's
@@ -354,7 +354,7 @@ pub(super) unsafe fn device(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) ->
 /// Methods of the D3D10 faces of resources, views, shaders, states and queries.
 pub(super) unsafe fn child(d: &mut D11, iface: u32, m: u32, this: u32, a: &dyn Fn(usize) -> u32, after: &mut After) -> u32 {
     let Some(i11) = eleven(iface) else { return E_NOTIMPL };
-    let args: Vec<u32> = (0..8).map(a).collect();
+    let args = super::args_of(iface, m, a, 8);
     let me = d.face(this, iface);
     match (iface, m) {
         (_, 3) => {

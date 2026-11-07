@@ -29,6 +29,8 @@ mod draw_tests;
 mod deferred_tests;
 #[cfg(test)]
 mod desc_tests;
+#[cfg(test)]
+mod copy_tests;
 
 use crate::d3d9::gpu;
 use crate::d3d9::HostCalls;
@@ -123,6 +125,7 @@ const IIDS: &[(u32, &[u32])] = &[
     (0x917600da, &[IF_CONTEXT]), // ID3D11DeviceContext4
     (0xcc86fabe, &[IF_BLEND]), // ID3D11BlendState1
     (0x1217d7a6, &[IF_RASTER]), // ID3D11RasterizerState1
+    (0x6fbd02fb, &[IF_RASTER]), // ID3D11RasterizerState2
     (0x5c1e0d8a, &[IF_LINKAGE]), // ID3DDeviceContextState (a device child like the linkage)
     (0xc0bfa96c, &[IF_CONTEXT]),
     (0x1841e5c8, &[IF_CONTEXT, IF_BUFFER, IF_TEX1D, IF_TEX2D, IF_TEX3D, IF_SRV, IF_RTV, IF_DSV, IF_UAV, IF_VS, IF_PS, IF_GS, IF_HS, IF_DS, IF_CS, IF_LAYOUT, IF_SAMPLER, IF_BLEND, IF_DEPTH, IF_RASTER, IF_QUERY, IF_LINKAGE, IF_CMDLIST]),
@@ -673,6 +676,13 @@ pub unsafe fn init(vtbls: *const u32, count: u32) -> u32 {
     0
 }
 
+/// The arguments of method `m` of interface `iface` (as many as it has: the caller's array is
+/// no longer), then zeros up to `n`.
+pub(crate) fn args_of(iface: u32, m: u32, a: &dyn Fn(usize) -> u32, n: usize) -> Vec<u32> {
+    let k = names::ARGS.get(iface.wrapping_sub(64) as usize).and_then(|v| v.get(m as usize)).map_or(0, |&k| k as usize);
+    (0..n).map(|i| if i < k { a(i) } else { 0 }).collect()
+}
+
 /// Entry from d3d9's dispatcher: ids INIT.. and interfaces 64+.
 pub unsafe fn call(id: u32, args: *const u32, calls: *const HostCalls) -> u32 {
     crate::usage::d3d(id);
@@ -918,6 +928,34 @@ unsafe fn create_device(d: &mut D11, args: *const u32) -> u32 {
     S_OK
 }
 
+/// Stored length of a state description: blend states keep D3D11_BLEND_DESC and then
+/// LogicOpEnable, LogicOp per target; rasterizer states D3D11_RASTERIZER_DESC2.
+fn state_len(iface: u32) -> usize {
+    match iface {
+        IF_BLEND => 66 + 16,
+        IF_DEPTH => 13,
+        IF_RASTER => 12,
+        _ => 13,
+    }
+}
+
+/// A state object for `desc`: one object per description while it lives, as Windows gives
+/// back; S_FALSE without an out pointer.
+unsafe fn new_state(d: &mut D11, iface: u32, desc: Vec<u32>, out: u32) -> u32 {
+    if out == 0 {
+        return S_FALSE;
+    }
+    let same = d.objs.iter().find(|(_, o)| o.iface == iface && matches!(&o.data, Data::State(x) if *x == desc)).map(|(&id, _)| id);
+    if let Some(id) = same {
+        d.add_ref(id);
+        wrp(out, 0, d.addr_of(id));
+        return S_OK;
+    }
+    let o = d.new_obj(iface, Data::State(desc));
+    wrp(out, 0, o);
+    S_OK
+}
+
 /// A state description as the state object keeps it (what GetDesc gives and what two
 /// descriptions are compared by), or None for one Windows refuses (E_INVALIDARG): fields the
 /// state ignores set as Windows sets them, BOOLs as 0 or 1 (tests/winref/golden/d3d11desc-32).
@@ -1012,9 +1050,11 @@ fn normalize_state(m: u32, desc: &mut [u32]) -> Option<()> {
 unsafe fn create_device10(d: &mut D11, args: *const u32) -> u32 {
     let a = |i: usize| *args.add(i);
     let dev_out = a(8);
-    let mut dev = [0u32; 2];
-    let mut level = 0u32;
-    let v = [a(0), a(1), a(2), a(3), 0, 0, 7, a(6), a(7), dev.as_mut_ptr() as usize as u32, &mut level as *mut u32 as usize as u32, 0];
+    // (out slots on the heap, not the stack: the host's heap is where 32-bit pointers reach in
+    // native tests, a stack frame under ASan is not)
+    let mut dev = vec![0u32; 2];
+    let mut level = vec![0u32; 1];
+    let v = [a(0), a(1), a(2), a(3), 0, 0, 7, a(6), a(7), dev.as_mut_ptr() as usize as u32, level.as_mut_ptr() as usize as u32, 0];
     let r = create_device(d, v.as_ptr());
     if r != S_OK {
         return r;
@@ -1707,6 +1747,13 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
                 next[slot as usize] = off + size;
                 v.push(Elem { name, index, fmt, slot, offset: off, instance: class == 1 });
             }
+            let code = if a(3) == 0 { &[][..] } else { std::slice::from_raw_parts(a(3) as *const u8, a(4) as usize) };
+            let names: Vec<(&str, u32)> = v.iter().map(|e| (e.name.as_str(), e.index)).collect();
+            let slots: Vec<(u32, bool)> = v.iter().map(|e| (e.slot, e.instance)).collect();
+            if let Err(hr) = check::input_layout(a(1) != 0, &names, &slots, code) {
+                wrp(a(5), 0, 0);
+                return hr;
+            }
             if a(5) == 0 {
                 return S_FALSE;
             }
@@ -1779,19 +1826,10 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             if normalize_state(m, &mut desc).is_none() {
                 return E_INVALIDARG;
             }
-            if a(2) == 0 {
-                return S_FALSE;
-            }
-            // (one object per description while it lives, as Windows gives back)
-            let same = d.objs.iter().find(|(_, o)| o.iface == iface && matches!(&o.data, Data::State(x) if *x == desc)).map(|(&id, _)| id);
-            if let Some(id) = same {
-                d.add_ref(id);
-                wrp(a(2), 0, d.addr_of(id));
-                return S_OK;
-            }
-            let o = d.new_obj(iface, Data::State(desc));
-            wrp(a(2), 0, o);
-            S_OK
+            // (the newer descriptions' fields at the end: a blend state's LogicOpEnable and
+            // LogicOp per target, a rasterizer state's ForcedSampleCount and ConservativeRaster)
+            desc.resize(state_len(iface), 0);
+            new_state(d, iface, desc, a(2))
         }
         24 | 25 => {
             // CreateQuery/CreatePredicate(desc { Query, MiscFlags }, out): the predicates are
@@ -1887,14 +1925,25 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             if normalize_state(20, &mut desc).is_none() {
                 return E_INVALIDARG;
             }
-            if a(2) == 0 {
-                return S_FALSE;
+            for t in 0..8 {
+                let src = if desc[1] != 0 { t } else { 0 };
+                desc.extend([rd(a(1), 2 + src * 10 + 1), rd(a(1), 2 + src * 10 + 8)]);
             }
-            let o = d.new_obj(IF_BLEND, Data::State(desc));
-            wrp(a(2), 0, o);
-            S_OK
+            new_state(d, IF_BLEND, desc, a(2))
         }
-        46 => device_call(d, 22, this, a), // CreateRasterizerState1 (ForcedSampleCount ignored)
+        46 | 56 => {
+            // CreateRasterizerState1/2: D3D11_RASTERIZER_DESC with ForcedSampleCount (and
+            // ConservativeRaster) at its end
+            if a(1) == 0 {
+                return E_INVALIDARG;
+            }
+            let mut desc: Vec<u32> = (0..if m == 46 { 11 } else { 12 }).map(|i| rd(a(1), i)).collect();
+            if normalize_state(22, &mut desc).is_none() {
+                return E_INVALIDARG;
+            }
+            desc.resize(state_len(IF_RASTER), 0);
+            new_state(d, IF_RASTER, desc, a(2))
+        }
         47 => {
             // CreateDeviceContextState(flags, levels, count, sdk, iid, level_out, state_out)
             let level = if a(2) != 0 { (0..a(3) as usize).map(|i| rd(a(2), i)).find(|&l| l <= 0xb000) } else { None };
@@ -1920,7 +1969,6 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
         // context type), which this device does not have: the old creation reads its prefix
         54 => device_call(d, 5, this, a),  // CreateTexture2D1
         55 => device_call(d, 6, this, a),  // CreateTexture3D1
-        56 => device_call(d, 22, this, a), // CreateRasterizerState2
         57 => device_call(d, 7, this, a),  // CreateShaderResourceView1
         58 => device_call(d, 8, this, a),  // CreateUnorderedAccessView1
         59 => device_call(d, 9, this, a),  // CreateRenderTargetView1
@@ -2172,10 +2220,36 @@ unsafe fn child_call(d: &mut D11, iface: u32, m: u32, this: u32, a: &dyn Fn(usiz
             }
             S_OK
         }
-        // states: GetDesc
+        // states: GetDesc (GetDesc1/2: the newer descriptions)
         (IF_BLEND | IF_DEPTH | IF_RASTER | IF_SAMPLER, 7, Some(Data::State(s))) => {
-            std::ptr::copy_nonoverlapping(s.as_ptr(), a(1) as *mut u32, s.len());
-            S_OK
+            let n = match iface {
+                IF_BLEND => 66,
+                IF_RASTER => 10,
+                _ => s.len(),
+            };
+            std::ptr::copy_nonoverlapping(s.as_ptr(), a(1) as *mut u32, n.min(s.len()));
+            0
+        }
+        (IF_RASTER, 8 | 9, Some(Data::State(s))) => {
+            std::ptr::copy_nonoverlapping(s.as_ptr(), a(1) as *mut u32, if m == 8 { 11 } else { 12 });
+            0
+        }
+        (IF_BLEND, 8, Some(Data::State(s))) => {
+            // D3D11_BLEND_DESC1: targets of BlendEnable, LogicOpEnable, the 6 factors and
+            // operations, LogicOp, RenderTargetWriteMask
+            wr(a(1), 0, s[0]);
+            wr(a(1), 1, s[1]);
+            for t in 0..8 {
+                let (b, o) = (2 + t * 10, 2 + t * 8);
+                wr(a(1), b, s[o]);
+                wr(a(1), b + 1, s[66 + t * 2]);
+                for k in 0..6 {
+                    wr(a(1), b + 2 + k, s[o + 1 + k]);
+                }
+                wr(a(1), b + 8, s[67 + t * 2]);
+                wr(a(1), b + 9, s[o + 7]);
+            }
+            0
         }
         // queries: GetDataSize, GetDesc
         (IF_QUERY, 7, Some(Data::Query(t, ..))) => query_size(*t),
@@ -2792,10 +2866,16 @@ unsafe fn copy_resource(d: &mut D11, dst: u32, src: u32) {
             }
         }
         (Some(Data::Texture(a)), Some(Data::Texture(b))) => {
+            // (Windows copies nothing between formats of different typeless groups; between
+            // two of one group the bits)
+            if !format::copy_compatible(a.fmt, b.fmt) {
+                return;
+            }
+            let bits = if a.fmt != b.fmt { 2 } else { 0 };
             let mut cmds = Vec::new();
             for l in 0..a.mips.min(b.mips) {
                 let (w, h) = ((b.w >> l).max(1), (b.h >> l).max(1));
-                cmds.push([gpu::COPY, b.gpu, l, 0, 0, w, h, a.gpu, l, 0, 0, w, h, 0]);
+                cmds.push([gpu::COPY, b.gpu, l, 0, 0, w, h, a.gpu, l, 0, 0, w, h, bits]);
             }
             gpu::record(|q| {
                 for c in &cmds {
@@ -2821,11 +2901,15 @@ unsafe fn copy_region(d: &mut D11, dst: u32, dsub: u32, x: u32, y: u32, _z: u32,
             }
         }
         (Some(Data::Texture(a)), Some(Data::Texture(b))) => {
+            if !format::copy_compatible(a.fmt, b.fmt) {
+                return;
+            }
+            let bits = if a.fmt != b.fmt { 2 } else { 0 };
             let (sl, dl) = (ssub % b.mips, dsub % a.mips);
             let (bw, bh) = ((b.w >> sl).max(1), (b.h >> sl).max(1));
             let (x0, y0, x1, y1) = if bx != 0 { (rd(bx, 0), rd(bx, 1), rd(bx, 3), rd(bx, 4)) } else { (0, 0, bw, bh) };
             let (w, h) = (x1.saturating_sub(x0), y1.saturating_sub(y0));
-            let c = [gpu::COPY, b.gpu, sl, x0, y0, w, h, a.gpu, dl, x, y, w, h, 0];
+            let c = [gpu::COPY, b.gpu, sl, x0, y0, w, h, a.gpu, dl, x, y, w, h, bits];
             gpu::record(|q| q.cmd(&c));
             d.targets = None;
         }

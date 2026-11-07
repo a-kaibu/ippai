@@ -110,6 +110,9 @@ impl Ctx {
 
 fn setup() -> std::sync::MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    // (a fresh device as in a process of its own: what other tests left on the one device —
+    // objects still bound, references — would count in these tests' reference counts)
+    *D11S.lock().unwrap_or_else(|e| e.into_inner()) = None;
     let vt = mem(256);
     put(vt, &(1..=256).map(|i| 0x1000 * i).collect::<Vec<_>>());
     call1(INIT, &[vt, 256]);
@@ -523,4 +526,115 @@ fn state_objects_let_go() {
     assert_eq!(refs(c.dev), base);
     release(c.imm);
     release(c.dev);
+}
+
+/// Wine's test_create_rasterizer_state / test_create_sampler_state / CreateBlendState1 and the
+/// rules Windows has for the descriptions it gives back: the D3D11_*_DESC1/2 fields at the
+/// ends, the sampler fields that do not apply cleared, one object per description.
+#[test]
+fn state_descriptions() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let c = Ctx::new();
+    let qi = |obj: u32, g: [u32; 4]| -> Result<u32, u32> {
+        let p = mem(4);
+        put(p, &g);
+        let r = call1(m(iface_of(obj), 0), &[obj, p, c.o]);
+        if r == 0 { Ok(rd1(c.o)) } else { Err(r) }
+    };
+    // rasterizer: CreateRasterizerState gives ForcedSampleCount 0 and ConservativeRaster OFF
+    let base = [3, 3, 0, 0, 0, 0, 1, 0, 0, 0];
+    let desc = mem(12);
+    put(desc, &base);
+    assert_eq!(call1(m(IF_DEVICE, 22), &[c.dev, desc, c.o]), 0);
+    let rs = rd1(c.o);
+    let rs2 = qi(rs, [0x6fbd02fb, 0x46c4209f, 0xd12e59b0, 0xaca68655]).expect("ID3D11RasterizerState2");
+    let out = mem(13);
+    put(out, &[0xcccccccc; 13]);
+    call1(m(IF_RASTER, 9), &[rs2, out]);
+    assert_eq!((0..13).map(|i| rd1(out + 4 * i)).collect::<Vec<_>>(), [&base[..], &[0, 0, 0xcccccccc]].concat());
+    put(out, &[0xcccccccc; 13]);
+    call1(m(IF_RASTER, 7), &[rs2, out]);
+    assert_eq!(rd1(out + 40), 0xcccccccc, "GetDesc writes D3D11_RASTERIZER_DESC only");
+    put(out, &[0xcccccccc; 13]);
+    call1(m(IF_RASTER, 8), &[rs2, out]);
+    assert_eq!((rd1(out + 40), rd1(out + 44)), (0, 0xcccccccc));
+    release(rs2);
+    // the same description through CreateRasterizerState1/2 is the same object
+    put(desc, &[&base[..], &[0, 0]].concat());
+    assert_eq!(call1(m(IF_DEVICE, 56), &[c.dev, desc, c.o]), 0);
+    assert_eq!(rd1(c.o), rs);
+    release(rd1(c.o));
+    assert_eq!(call1(m(IF_DEVICE, 46), &[c.dev, desc, c.o]), 0);
+    assert_eq!(rd1(c.o), rs);
+    release(rd1(c.o));
+    put(desc, &[&base[..], &[4, 0]].concat());
+    assert_eq!(call1(m(IF_DEVICE, 46), &[c.dev, desc, c.o]), 0);
+    let forced = rd1(c.o);
+    assert_ne!(forced, rs);
+    call1(m(IF_RASTER, 9), &[forced, out]);
+    assert_eq!((rd1(out + 40), rd1(out + 44)), (4, 0));
+    release(forced);
+    assert_eq!(release(rs), 0);
+
+    // samplers (filter, U, V, W, bias, MaxAnisotropy, ComparisonFunc, border, min, max LOD)
+    let one = 1f32.to_bits();
+    let sampler = |filter: u32, w: u32| -> Vec<u32> {
+        let s = mem(13);
+        put(s, &[filter, 1, 1, w, 0, 16, 8, 0, one, 0, one, 0, 16f32.to_bits()]);
+        assert_eq!(call1(m(IF_DEVICE, 23), &[c.dev, s, c.o]), 0);
+        let o = rd1(c.o);
+        let out = mem(13);
+        call1(m(IF_SAMPLER, 7), &[o, out]);
+        release(o);
+        (0..13).map(|i| rd1(out + 4 * i)).collect()
+    };
+    // MIN_MAG_MIP_LINEAR, all WRAP: no anisotropy, NEVER, no border colour
+    assert_eq!(sampler(0x15, 1)[5..11], [0, 1, 0, 0, 0, 0]);
+    // a BORDER address keeps the colour
+    assert_eq!(sampler(0x15, 4)[5..11], [0, 1, 0, one, 0, one]);
+    // ANISOTROPIC keeps MaxAnisotropy; COMPARISON_ANISOTROPIC both
+    assert_eq!(sampler(0x55, 1)[5..7], [16, 1]);
+    assert_eq!(sampler(0xd5, 1)[5..7], [16, 8]);
+    // COMPARISON_MIN_MAG_MIP_POINT: the function only; MINIMUM_* / MAXIMUM_* are not comparisons
+    assert_eq!(sampler(0x80, 1)[5..7], [0, 8]);
+    assert_eq!(sampler(0x100, 1)[5..7], [0, 1]);
+    assert_eq!(sampler(0x180, 1)[5..7], [0, 1]);
+
+    // blend: CreateBlendState1's LogicOpEnable / LogicOp come back from GetDesc1, GetDesc
+    // writes D3D11_BLEND_DESC only
+    // (IndependentBlendEnable: without it every target is target 0's, logic op included)
+    let b1 = mem(82);
+    let mut v = vec![0, 1];
+    for t in 0..8 {
+        v.extend([0, (t == 0) as u32, 2, 1, 1, 2, 1, 1, if t == 0 { 4 } else { 0 }, 0xf]);
+    }
+    put(b1, &v);
+    assert_eq!(call1(m(IF_DEVICE, 45), &[c.dev, b1, c.o]), 0);
+    let bs = rd1(c.o);
+    let out = mem(83);
+    put(out, &[0xcccccccc; 83]);
+    call1(m(IF_BLEND, 8), &[bs, out]);
+    assert_eq!((0..82).map(|i| rd1(out + 4 * i)).collect::<Vec<_>>(), v);
+    put(out, &[0xcccccccc; 83]);
+    call1(m(IF_BLEND, 7), &[bs, out]);
+    assert_eq!(rd1(out + 4 * 66), 0xcccccccc);
+    assert_eq!(rd1(out + 4 * 9), 0xf);
+    // the same description without logic ops is another object, CreateBlendState's is the same
+    let b0 = mem(66);
+    let mut w = vec![0, 1];
+    for _ in 0..8 {
+        w.extend([0, 2, 1, 1, 2, 1, 1, 0xf]);
+    }
+    put(b0, &w);
+    assert_eq!(call1(m(IF_DEVICE, 20), &[c.dev, b0, c.o]), 0);
+    let plain = rd1(c.o);
+    assert_ne!(plain, bs);
+    v[3] = 0;
+    v[10] = 0;
+    put(b1, &v);
+    assert_eq!(call1(m(IF_DEVICE, 45), &[c.dev, b1, c.o]), 0);
+    assert_eq!(rd1(c.o), plain);
+    release(plain);
+    assert_eq!(release(plain), 0);
+    assert_eq!(release(bs), 0);
 }

@@ -472,6 +472,7 @@ struct Draw {
 enum Cmd {
     Copy(usize, u32, [u32; 3], usize, u32, [u32; 3], [u32; 3]),
     ToBuffer(usize, u32, u32, u32, usize, u32, u32, u32),
+    FromBuffer(usize, u32, usize, u32, u32, u32, u32, u32),
     Pass(Vec<Attachment>, Option<Attachment>, Vec<Draw>),
 }
 
@@ -1332,6 +1333,42 @@ impl Model {
         self.enc.push(Cmd::ToBuffer(t, mip, x, y, b, bpr, w, h));
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn copy_from_buffer(&mut self, buf: u32, bpr: u32, tex: u32, mip: u32, x: u32, y: u32, w: u32, h: u32) {
+        let what = "copyBufferToTexture";
+        self.no_pass(what);
+        let (Some(b), Some(t)) = (self.buffer_of(buf, what), self.texture_of(tex, what)) else { return };
+        let tx = self.tex(t).clone();
+        let Obj::Buffer(bf) = &self.objs[b] else { return };
+        let (bs, bu) = (bf.size, bf.usage);
+        let Some((bpp, ..)) = format_info(&tx.format) else { return };
+        if tx.usage & 2 == 0 || bu & 4 == 0 {
+            self.err(format!("{what}: usage (buffer COPY_SRC, texture COPY_DST)"));
+        }
+        if tx.format.starts_with("depth") {
+            self.err(format!("{what}: into {}", tx.format));
+            return;
+        }
+        if mip >= tx.mips {
+            self.err(format!("{what}: mip {mip}"));
+            return;
+        }
+        let (lw, lh, _) = tx.size(mip);
+        if x + w > lw || y + h > lh {
+            self.err(format!("{what}: {x},{y}+{w}x{h} outside {lw}x{lh}"));
+            return;
+        }
+        if bpr % 256 != 0 || (h > 1 && bpr < w * bpp) {
+            self.err(format!("{what}: bytesPerRow {bpr}"));
+            return;
+        }
+        if h > 0 && w > 0 && (bpr as u64 * (h as u64 - 1) + (w * bpp) as u64) > bs as u64 {
+            self.err(format!("{what}: {w}x{h} from a {bs}-byte buffer"));
+            return;
+        }
+        self.enc.push(Cmd::FromBuffer(b, bpr, t, mip, x, y, w, h));
+    }
+
     pub fn begin_pass(&mut self, s: &str) {
         let what = "beginRenderPass";
         self.no_pass(what);
@@ -1917,7 +1954,7 @@ impl Model {
             let mut bufs = Vec::new();
             match c {
                 Cmd::Copy(s, _, _, t, ..) => texs.extend([*s, *t]),
-                Cmd::ToBuffer(t, _, _, _, b, ..) => {
+                Cmd::ToBuffer(t, _, _, _, b, ..) | Cmd::FromBuffer(b, _, t, ..) => {
                     texs.push(*t);
                     bufs.push(*b);
                 }
@@ -1989,6 +2026,21 @@ impl Model {
                             for k in 0..bpp as usize {
                                 bf.data[at + k] = v[k % 8];
                             }
+                        }
+                    }
+                }
+                Cmd::FromBuffer(b, bpr, t, mip, x, y, w, h) => {
+                    let Obj::Buffer(bf) = &self.objs[b] else { continue };
+                    let data = bf.data.clone();
+                    let tx = self.tex(t).clone();
+                    let (bpp, ..) = format_info(&tx.format).unwrap();
+                    let (lw, ..) = tx.size(mip);
+                    let s = tx.sub(mip, 0);
+                    let Obj::Texture(tm) = &mut self.objs[t] else { continue };
+                    for r in 0..h {
+                        for c in 0..w {
+                            let at = (r * bpr + c * bpp) as usize;
+                            tm.texels[s][((y + r) * lw + x + c) as usize] = write_texel(&data[at..at + bpp as usize]);
                         }
                     }
                 }
@@ -2219,6 +2271,12 @@ pub extern "C" fn vngpu_copy_texture(src: u32, smip: u32, sx: u32, sy: u32, sz: 
 pub extern "C" fn vngpu_copy_to_buffer(tex: u32, mip: u32, x: u32, y: u32, buf: u32, bpr: u32, w: u32, h: u32) {
     count("copy_to_buffer");
     with(|m| m.copy_to_buffer(tex, mip, x, y, buf, bpr, w, h))
+}
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn vngpu_copy_from_buffer(buf: u32, bpr: u32, tex: u32, mip: u32, x: u32, y: u32, w: u32, h: u32) {
+    count("copy_from_buffer");
+    with(|m| m.copy_from_buffer(buf, bpr, tex, mip, x, y, w, h))
 }
 #[no_mangle]
 pub extern "C" fn vngpu_begin_pass(p: *const u8, n: usize) {

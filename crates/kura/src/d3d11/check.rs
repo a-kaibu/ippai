@@ -939,3 +939,102 @@ mod shader_tests {
         assert_eq!(shader(&dxbc(b"RDEF", ver(1, 4, 0), false), 12, 0xb000), bad);
     }
 }
+
+/// CreateInputLayout's checks (Windows' answers in Wine's test_create_input_layout): a
+/// description array is needed even for no elements, at most 32 elements, and every input of
+/// the shader's signature (name without case, index) has an element but the system values
+/// the input assembler makes (SV_VertexID 6, SV_InstanceID 8). SV_Position and the others
+/// are ordinary inputs to a vertex shader, and are needed. Elements the shader does not read
+/// are fine. `slots`: each element's (input slot, per instance).
+pub fn input_layout(have_descs: bool, elems: &[(&str, u32)], slots: &[(u32, bool)], code: &[u8]) -> Result<(), u32> {
+    if !have_descs || elems.len() > 32 {
+        return Err(E_INVALIDARG);
+    }
+    // the elements of one input slot are all per vertex or all per instance
+    if slots.iter().any(|&(s, inst)| slots.iter().any(|&(t, i2)| s == t && inst != i2)) {
+        return Err(E_INVALIDARG);
+    }
+    for s in dxwgsl::signature(code, false) {
+        // (by the system value or by the name: a pixel shader's SV_InstanceID input carries
+        // no system value of its own)
+        if matches!(s.sysval, 6 | 8) || s.name.eq_ignore_ascii_case("SV_VertexID") || s.name.eq_ignore_ascii_case("SV_InstanceID") {
+            continue;
+        }
+        if !elems.iter().any(|&(n, i)| i == s.index && n.eq_ignore_ascii_case(&s.name)) {
+            return Err(E_INVALIDARG);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod input_layout_tests {
+    use super::*;
+
+    /// A DXBC container with only an ISGN of (name, index, sysval).
+    fn isgn(inputs: &[(&str, u32, u32)]) -> Vec<u8> {
+        let mut c = Vec::new();
+        c.extend((inputs.len() as u32).to_le_bytes());
+        c.extend(8u32.to_le_bytes());
+        let mut names = Vec::new();
+        let base = 8 + 24 * inputs.len();
+        for (r, &(n, i, sv)) in inputs.iter().enumerate() {
+            for x in [(base + names.len()) as u32, i, sv, 3, r as u32, 0x0f0f] {
+                c.extend(x.to_le_bytes());
+            }
+            names.extend(n.bytes().chain([0]));
+        }
+        c.extend(names);
+        let mut b = b"DXBC".to_vec();
+        b.extend([0; 20]);
+        b.extend([0; 4]); // total size (unchecked)
+        b.extend(1u32.to_le_bytes());
+        b.extend(36u32.to_le_bytes());
+        b.extend(b"ISGN");
+        b.extend((c.len() as u32).to_le_bytes());
+        b.extend(c);
+        b
+    }
+
+    #[test]
+    fn wine_create_input_layout() {
+        let vs = isgn(&[("POSITION", 0, 0)]);
+        let ok = |e: &[(&str, u32)], code: &[u8]| input_layout(true, e, &[], code);
+        assert_eq!(ok(&[("POSITION", 0), ("COLOR", 0)], &vs), Ok(()));
+        // names without case; an element the shader does not read is fine
+        assert_eq!(ok(&[("position", 0)], &vs), Ok(()));
+        assert_eq!(ok(&[], &vs), Err(E_INVALIDARG));
+        assert_eq!(ok(&[("POSITION", 1), ("COLOR", 0)], &vs), Err(E_INVALIDARG));
+        assert_eq!(ok(&[("SV_POSITION", 0), ("COLOR", 0)], &vs), Err(E_INVALIDARG));
+        assert_eq!(ok(&[("POSITION2", 0), ("COLOR", 0)], &vs), Err(E_INVALIDARG));
+        // no inputs: no elements needed, but a description array is
+        let vs3 = isgn(&[]);
+        assert_eq!(ok(&[], &vs3), Ok(()));
+        assert_eq!(input_layout(false, &[], &[], &vs3), Err(E_INVALIDARG));
+        // POSITION per instance and COLOR per vertex in slot 0; one element alone is fine,
+        // and so are the two in slots of their own
+        let two = [("POSITION", 0), ("COLOR", 0)];
+        assert_eq!(input_layout(true, &two, &[(0, true), (0, false)], &vs), Err(E_INVALIDARG));
+        assert_eq!(input_layout(true, &two[..1], &[(0, true)], &vs), Ok(()));
+        assert_eq!(input_layout(true, &two, &[(0, true), (1, false)], &vs), Ok(()));
+        assert_eq!(ok(&[("A", 0); 33], &vs3), Err(E_INVALIDARG));
+        assert_eq!(ok(&[("A", 0); 32], &vs3), Ok(()));
+        // every input is needed but SV_VertexID / SV_InstanceID (vs2 and ps of the test)
+        let vs2 = [("CUSTOMDATA", 0, 0), ("POSITION", 0, 0), ("SV_Position", 0, 0), ("COLOR", 0, 0), ("SV_ClipDistance", 0, 0), ("SV_InstanceID", 0, 8), ("SV_VertexID", 0, 6)];
+        let ps = [("CUSTOMDATA", 0, 0), ("POSITION", 0, 0), ("SV_Position", 0, 1), ("COLOR", 0, 0), ("SV_InstanceID", 0, 0)];
+        for sig in [&vs2[..], &ps[..]] {
+            let code = isgn(sig);
+            let all: Vec<(&str, u32)> = sig.iter().map(|s| (s.0, s.1)).collect();
+            assert_eq!(ok(&all, &code), Ok(()));
+            for i in 0..all.len() {
+                let mut less = all.clone();
+                less.remove(i);
+                let want = if sig[i].0.starts_with("SV_InstanceID") || sig[i].0 == "SV_VertexID" { Ok(()) } else { Err(E_INVALIDARG) };
+                assert_eq!(ok(&less, &code), want, "{} excluded", sig[i].0);
+            }
+        }
+        // a compute shader (no ISGN) or no bytecode: nothing needed
+        assert_eq!(ok(&[], b"DXBC"), Ok(()));
+        assert_eq!(ok(&[], &[]), Ok(()));
+    }
+}
