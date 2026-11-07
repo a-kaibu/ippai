@@ -1,7 +1,8 @@
 /* DirectShow's filter graph playing a movie file, as games do (RenderFile, IVideoWindow on a
  * child of the game's window, Pause/Run/Stop, IMediaSeeking and IMediaPosition, EC_COMPLETE
  * through GetEvent, the event handle and SetNotifyWindow, IBasicVideo's sizes and
- * GetCurrentImage). The probe writes its own movie: an uncompressed AVI (64x48, 10 fps, 20
+ * GetCurrentImage); then graphs rendering into a windowless VMR-7 / VMR-9 added by hand, as
+ * Artemis does (IVMRFilterConfig, IVMRWindowlessControl). The probe writes its own movie: an uncompressed AVI (64x48, 10 fps, 20
  * frames, each frame's top and bottom halves two grays), which Windows plays with its AVI
  * splitter, and next to it the `.vnv` ippai pack would make of it (uncompressed I420, the same
  * pictures in video range), which sake plays. Times are printed rounded to what a loaded
@@ -9,6 +10,8 @@
  * libs: -lole32 -lstrmiids -loleaut32 -luuid -lgdi32 -luser32 */
 #include "../probe.h"
 #include <dshow.h>
+#include <d3d9.h>
+#include <vmr9.h>
 
 #define W 64
 #define H 48
@@ -138,6 +141,130 @@ static void events(const char *l, int ms, int lo, int hi) {
         }
     }
     if (!got) printf("%s: no EC_COMPLETE in %d ms\n", l, ms);
+}
+
+/* a VMR (7 or 9: the same calls) in windowless mode on window `win`, as Artemis builds it (the
+ * VMR-7): AddFilter, the rendering mode, the clipping window, then RenderFile (which renders
+ * into it) */
+static void vmr(HWND win, const char *L, REFCLSID clsid, REFIID config, REFIID windowless) {
+    IGraphBuilder *gb;
+    IBaseFilter *vmr;
+    HRESULT hr = CoCreateInstance(&CLSID_FilterGraph, NULL, CLSCTX_INPROC_SERVER, &IID_IGraphBuilder, (void **)&gb);
+    hr = CoCreateInstance(clsid, NULL, CLSCTX_INPROC_SERVER, &IID_IBaseFilter, (void **)&vmr);
+    printf("%s: create %08lx\n", L, hr);
+    if (FAILED(hr)) return;
+    printf("%s: AddFilter %08lx\n", L, gb->lpVtbl->AddFilter(gb, vmr, L"Video Mixing Renderer"));
+    IVMRWindowlessControl9 *wc = NULL;
+    hr = vmr->lpVtbl->QueryInterface(vmr, windowless, (void **)&wc);
+    printf("%s: windowless control before the mode %08lx\n", L, hr);
+    if (wc) wc->lpVtbl->Release(wc), wc = NULL;
+    IVMRFilterConfig9 *fc;
+    hr = vmr->lpVtbl->QueryInterface(vmr, config, (void **)&fc);
+    printf("%s: filter config %08lx\n", L, hr);
+    if (FAILED(hr)) return;
+    DWORD mode = 0;
+    hr = fc->lpVtbl->GetRenderingMode(fc, &mode);
+    printf("%s: GetRenderingMode %08lx %lu\n", L, hr, mode);
+    printf("%s: SetRenderingMode %08lx\n", L, fc->lpVtbl->SetRenderingMode(fc, VMR9Mode_Windowless));
+    hr = fc->lpVtbl->GetRenderingMode(fc, &mode);
+    printf("%s: GetRenderingMode now %08lx %lu\n", L, hr, mode);
+    fc->lpVtbl->Release(fc);
+    hr = vmr->lpVtbl->QueryInterface(vmr, windowless, (void **)&wc);
+    printf("%s: windowless control %08lx\n", L, hr);
+    if (FAILED(hr)) return;
+    printf("%s: SetVideoClippingWindow %08lx\n", L, wc->lpVtbl->SetVideoClippingWindow(wc, win));
+    long w = -1, h = -1, aw = -1, ah = -1;
+    hr = wc->lpVtbl->GetNativeVideoSize(wc, &w, &h, &aw, &ah);
+    printf("%s: GetNativeVideoSize before %08lx %ldx%ld %ld:%ld\n", L, hr, w, h, aw, ah);
+    hr = gb->lpVtbl->RenderFile(gb, L"probe.avi", NULL);
+    printf("%s: RenderFile %08lx\n", L, hr);
+    if (FAILED(hr)) return;
+    IEnumFilters *ef;
+    IBaseFilter *f;
+    int filters = 0, ours = 0;
+    gb->lpVtbl->EnumFilters(gb, &ef);
+    while (ef->lpVtbl->Next(ef, 1, &f, NULL) == S_OK) filters++, ours |= f == vmr, f->lpVtbl->Release(f);
+    ef->lpVtbl->Release(ef);
+    printf("%s: our renderer among the filters %d\n", L, ours);
+    hr = wc->lpVtbl->GetNativeVideoSize(wc, &w, &h, &aw, &ah);
+    printf("%s: GetNativeVideoSize %08lx %ldx%ld %ld:%ld\n", L, hr, w, h, aw, ah);
+    hr = wc->lpVtbl->GetMinIdealVideoSize(wc, &w, &h);
+    printf("%s: GetMinIdealVideoSize %08lx %ldx%ld\n", L, hr, w, h);
+    hr = wc->lpVtbl->GetMaxIdealVideoSize(wc, &w, &h);
+    printf("%s: GetMaxIdealVideoSize %08lx %ldx%ld\n", L, hr, w, h);
+    DWORD ar = 99;
+    hr = wc->lpVtbl->GetAspectRatioMode(wc, &ar);
+    printf("%s: GetAspectRatioMode %08lx %lu\n", L, hr, ar);
+    RECT s = { -1, -1, -1, -1 }, d = { -1, -1, -1, -1 };
+    hr = wc->lpVtbl->GetVideoPosition(wc, &s, &d);
+    printf("%s: GetVideoPosition %08lx src %ld %ld %ld %ld dst %ld %ld %ld %ld\n", L, hr, s.left, s.top, s.right, s.bottom, d.left, d.top, d.right, d.bottom);
+    RECT nd = { 8, 4, 136, 100 };
+    printf("%s: SetVideoPosition dst %08lx\n", L, wc->lpVtbl->SetVideoPosition(wc, NULL, &nd));
+    RECT ns = { 0, 0, 32, 24 };
+    printf("%s: SetVideoPosition src %08lx\n", L, wc->lpVtbl->SetVideoPosition(wc, &ns, NULL));
+    RECT bad = { 0, 0, 128, 24 };
+    printf("%s: SetVideoPosition src too big %08lx\n", L, wc->lpVtbl->SetVideoPosition(wc, &bad, NULL));
+    printf("%s: SetVideoPosition none %08lx\n", L, wc->lpVtbl->SetVideoPosition(wc, NULL, NULL));
+    hr = wc->lpVtbl->GetVideoPosition(wc, &s, &d);
+    printf("%s: GetVideoPosition now %08lx src %ld %ld %ld %ld dst %ld %ld %ld %ld\n", L, hr, s.left, s.top, s.right, s.bottom, d.left, d.top, d.right, d.bottom);
+    printf("%s: SetAspectRatioMode %08lx\n", L, wc->lpVtbl->SetAspectRatioMode(wc, VMR9ARMode_LetterBox));
+    hr = wc->lpVtbl->GetAspectRatioMode(wc, &ar);
+    printf("%s: GetAspectRatioMode now %08lx %lu\n", L, hr, ar);
+    /* the graph's own video window and basic video: no filter of it has a window */
+    IVideoWindow *vw;
+    IBasicVideo *bv;
+    gb->lpVtbl->QueryInterface(gb, &IID_IVideoWindow, (void **)&vw);
+    gb->lpVtbl->QueryInterface(gb, &IID_IBasicVideo, (void **)&bv);
+    long v = 0;
+    printf("%s: get_Visible %08lx\n", L, vw->lpVtbl->get_Visible(vw, &v));
+    hr = bv->lpVtbl->GetVideoSize(bv, &w, &h);
+    printf("%s: GetVideoSize %08lx\n", L, hr);
+    vw->lpVtbl->Release(vw);
+    bv->lpVtbl->Release(bv);
+
+    IMediaControl *mc;
+    gb->lpVtbl->QueryInterface(gb, &IID_IMediaControl, (void **)&mc);
+    gb->lpVtbl->QueryInterface(gb, &IID_IMediaEventEx, (void **)&ev);
+    OAFilterState st;
+    mc->lpVtbl->Pause(mc);
+    mc->lpVtbl->GetState(mc, 5000, &st);
+    BYTE *dib = NULL;
+    hr = wc->lpVtbl->GetCurrentImage(wc, &dib);
+    printf("%s: GetCurrentImage %08lx", L, hr);
+    if (SUCCEEDED(hr) && dib) {
+        BITMAPINFOHEADER *bi = (BITMAPINFOHEADER *)dib;
+        printf(" %ldx%ld %d bits", bi->biWidth, bi->biHeight, bi->biBitCount);
+        if (bi->biBitCount == 32) {
+            unsigned char *bits = dib + bi->biSize;
+            int row = bi->biHeight > 0 ? bi->biHeight - 1 - 2 : 2;
+            unsigned char *p = bits + row * bi->biWidth * 4 + 5 * 4;
+            int frame = -1;
+            for (int k = 0; k < FRAMES; k++)
+                if (abs(gray(gray_y(k, 0)) - p[1]) <= 2) frame = k;
+            printf(" top frame %d", frame);
+        }
+        CoTaskMemFree(dib);
+    }
+    printf("\n");
+    HDC dc = GetDC(win);
+    printf("%s: RepaintVideo %08lx\n", L, wc->lpVtbl->RepaintVideo(wc, win, dc));
+    ReleaseDC(win, dc);
+    printf("%s: DisplayModeChanged %08lx\n", L, wc->lpVtbl->DisplayModeChanged(wc));
+    printf("%s: SetBorderColor %08lx\n", L, wc->lpVtbl->SetBorderColor(wc, 0x123456));
+    COLORREF bc = 0;
+    hr = wc->lpVtbl->GetBorderColor(wc, &bc);
+    printf("%s: GetBorderColor %08lx %06lx\n", L, hr, bc);
+    printf("%s: Run %08lx\n", L, mc->lpVtbl->Run(mc));
+    char l[32];
+    snprintf(l, sizeof l, "%s run", L);
+    events(l, 4000, 0, 3000);
+    mc->lpVtbl->Stop(mc);
+    ev->lpVtbl->Release(ev);
+    mc->lpVtbl->Release(mc);
+    wc->lpVtbl->Release(wc);
+    vmr->lpVtbl->Release(vmr);
+    gb->lpVtbl->Release(gb);
+    printf("%s: released\n", L);
 }
 
 static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l) { return DefWindowProcA(h, m, w, l); }
@@ -307,6 +434,8 @@ int main(void) {
     mc->lpVtbl->Release(mc);
     gb->lpVtbl->Release(gb);
     printf("released\n");
+    vmr(win, "vmr7", &CLSID_VideoMixingRenderer, &IID_IVMRFilterConfig, &IID_IVMRWindowlessControl);
+    vmr(win, "vmr9", &CLSID_VideoMixingRenderer9, &IID_IVMRFilterConfig9, &IID_IVMRWindowlessControl9);
     DestroyWindow(win);
     CoUninitialize();
     return 0;

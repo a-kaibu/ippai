@@ -49,7 +49,11 @@ const MP: u32 = 4; // IMediaPosition
 const BA: u32 = 5; // IBasicAudio
 const VW: u32 = 6; // IVideoWindow
 const BV: u32 = 7; // IBasicVideo(2)
-const NI: u32 = 8;
+// (the two as the graph hands them out when its renderer is windowless: every call
+// E_NOINTERFACE, as no filter of it has a window)
+const VW_NONE: u32 = 8;
+const BV_NONE: u32 = 9;
+const NI: u32 = 10;
 
 fn slot_of(iid: u32) -> Option<u32> {
     Some(match r32(iid) {
@@ -125,7 +129,16 @@ fn qi_k(c: &mut Ctx, k: u32) -> u32 {
     }
     match slot_of(c.a(1)) {
         Some(s) => {
-            with(b, |g| g.refs += 1);
+            let windowless = with(b, |g| {
+                g.refs += 1;
+                g.evr != 0 && evr_with(g.evr, |e| e.windowless).unwrap_or(false)
+            })
+            .unwrap_or(false);
+            let s = match s {
+                VW if windowless => VW_NONE,
+                BV if windowless => BV_NONE,
+                s => s,
+            };
             putp(c.a(2), b + ps() * s);
             0
         }
@@ -182,6 +195,9 @@ fn ok(_: &mut Ctx) -> u32 {
 fn notimpl(_: &mut Ctx) -> u32 {
     E_NOTIMPL
 }
+fn nointerface(_: &mut Ctx) -> u32 {
+    E_NOINTERFACE
+}
 
 /// A double argument: x86 stack slots `slot`, `slot + 1`; x64 argument `arg` (its XMM register).
 fn dbl(c: &Ctx, slot: u32, arg: u32) -> f64 {
@@ -195,10 +211,15 @@ fn put_dbl(p: u32, v: f64) -> u32 {
     0
 }
 
-/// IFilterGraph::EnumFilters: an IEnumFilters with nothing in it (there are no filters)
+/// IFilterGraph::EnumFilters: an IEnumFilters of the renderer added to it (ours: its AddRef and
+/// Release count nothing), if any (there are no other filters). The enumerator is a block of
+/// its vtable, the renderer and where it is (0 or 1).
 fn enum_filters(c: &mut Ctx) -> u32 {
+    if c.a(1) == 0 {
+        return E_POINTER;
+    }
     static E: OnceLock<u32> = OnceLock::new();
-    let e = *E.get_or_init(|| {
+    let v = *E.get_or_init(|| {
         fn qi(c: &mut Ctx) -> u32 {
             let ok = r32(c.a(1)) == 0x56a8_6893 || r32(c.a(1)) == 0;
             putp(c.a(2), if ok { c.a(0) } else { 0 });
@@ -207,15 +228,39 @@ fn enum_filters(c: &mut Ctx) -> u32 {
         fn one(_: &mut Ctx) -> u32 {
             1
         }
+        /// Next(n, filters, fetched)
         fn next(c: &mut Ctx) -> u32 {
-            put32(c.a(3), 0);
-            1 // S_FALSE
+            let (e, n) = (c.a(0), c.a(1));
+            let (f, at) = (r32(e + ps()), r32(e + 2 * ps()));
+            let got = (n > 0 && f != 0 && at == 0) as u32;
+            if got == 1 {
+                putp(c.a(2), f);
+                w32(e + 2 * ps(), 1);
+            }
+            if c.a(3) != 0 {
+                put32(c.a(3), got);
+            }
+            if got == n { 0 } else { S_FALSE }
         }
-        let v = vtable("IEnumFilters", &[(qi, 12), (one, 4), (one, 4), (next, 16), (one, 8), (ok, 4), (notimpl, 8)]);
-        let o = mem::heap_alloc(2 * ps(), true);
-        wp(o, v);
-        o
+        /// Skip(n)
+        fn skip(c: &mut Ctx) -> u32 {
+            let e = c.a(0);
+            let left = (r32(e + ps()) != 0 && r32(e + 2 * ps()) == 0) as u32;
+            if c.a(1) > 0 {
+                w32(e + 2 * ps(), 1);
+            }
+            if c.a(1) <= left { 0 } else { S_FALSE }
+        }
+        fn reset(c: &mut Ctx) -> u32 {
+            w32(c.a(0) + 2 * ps(), 0);
+            0
+        }
+        vtable("IEnumFilters", &[(qi, 12), (one, 4), (one, 4), (next, 16), (skip, 8), (reset, 4), (notimpl, 8)])
     });
+    let f = with(base(c, GB), |g| g.evr).unwrap_or(0);
+    let e = mem::heap_alloc(3 * ps(), true);
+    wp(e, v);
+    wp(e + ps(), f);
     putp(c.a(1), e);
     0
 }
@@ -805,11 +850,16 @@ fn sync(b: u32) {
         let video = g.video;
         let src = g.src.unwrap_or((0, 0, video.0, video.1));
         if g.evr != 0 {
-            if let Some(e) = evr_with(g.evr, |e| *e) {
-                let dst = if e.dst.2 > 0 && e.dst.3 > 0 { e.dst } else { crate::user::client_rect_screen(e.hwnd).map_or((0, 0, 0, 0), |r| (0, 0, r.r - r.l, r.b - r.t)) };
-                // (the source as fractions of the picture)
+            if let Some(e) = evr_with(g.evr, |e| *e).filter(|e| e.windowless) {
+                // (a VMR-9 shows nothing until it is given a destination; the EVR fills the window)
+                let dst = if (e.dst.2 > 0 && e.dst.3 > 0) || e.vmr { e.dst } else { crate::user::client_rect_screen(e.hwnd).map_or((0, 0, 0, 0), |r| (0, 0, r.r - r.l, r.b - r.t)) };
+                // (the EVR's source as fractions of the picture)
                 let s = e.src;
-                let src = ((s[0] * video.0 as f32) as i32, (s[1] * video.1 as f32) as i32, ((s[2] - s[0]) * video.0 as f32) as i32, ((s[3] - s[1]) * video.1 as f32) as i32);
+                let src = if e.vmr {
+                    e.src_px.unwrap_or((0, 0, video.0, video.1))
+                } else {
+                    ((s[0] * video.0 as f32) as i32, (s[1] * video.1 as f32) as i32, ((s[2] - s[0]) * video.0 as f32) as i32, ((s[3] - s[1]) * video.1 as f32) as i32)
+                };
                 return (Place { hwnd: e.hwnd, dst, src, letterbox: e.mode & 1 != 0, visible: e.hwnd != 0 && (g.state != 0 || g.visible) }, g.volume);
             }
         }
@@ -1028,8 +1078,7 @@ fn bv_image(c: &mut Ctx) -> u32 {
     if psize == 0 {
         return E_POINTER;
     }
-    let t = now();
-    let Some((stream, n, w, h)) = play::with(|m| m.get(&b).map(|p| (p.movie.stream, play::frame_at(p.tl.position(t), p.movie.rate, p.movie.frames), p.movie.w, p.movie.h))) else {
+    let Some((w, h)) = play::with(|m| m.get(&b).map(|p| (p.movie.w, p.movie.h))) else {
         return E_NOTIMPL;
     };
     let need = 40 + 4 * w * h;
@@ -1040,10 +1089,23 @@ fn bv_image(c: &mut Ctx) -> u32 {
     if r32(psize) < need {
         return E_INVALIDARG;
     }
-    let mut px = vec![0u8; (4 * w * h) as usize];
-    if !unsafe { kura::video::frame(stream, n as i32, px.as_mut_ptr(), 4 * w as usize, w, h, kura::video::Out::Rgb601) } {
+    if !put_dib(b, img) {
         // E_UNEXPECTED
         return 0x8000_ffff;
+    }
+    put32(psize, need);
+    0
+}
+/// The frame graph `b` shows as a 32-bit bottom-up DIB at `img` (a BITMAPINFOHEADER, then
+/// 4 * w * h bytes).
+fn put_dib(b: u32, img: u32) -> bool {
+    let t = now();
+    let Some((stream, n, w, h)) = play::with(|m| m.get(&b).map(|p| (p.movie.stream, play::frame_at(p.tl.position(t), p.movie.rate, p.movie.frames), p.movie.w, p.movie.h))) else {
+        return false;
+    };
+    let mut px = vec![0u8; (4 * w * h) as usize];
+    if !unsafe { kura::video::frame(stream, n as i32, px.as_mut_ptr(), 4 * w as usize, w, h, kura::video::Out::Rgb601) } {
+        return false;
     }
     mem::fill(img, 40, 0);
     w32(img, 40);
@@ -1056,8 +1118,7 @@ fn bv_image(c: &mut Ctx) -> u32 {
         let row = &px[(4 * w * (h - 1 - y)) as usize..][..(4 * w) as usize];
         mem::write(img + 40 + 4 * w * y, row);
     }
-    put32(psize, need);
-    0
+    true
 }
 
 const IDISPATCH: [(Handler, u32); 4] = [(notimpl, 8), (notimpl, 16), (notimpl, 24), (notimpl, 36)];
@@ -1223,7 +1284,7 @@ fn vtables() -> &'static [u32; NI as usize] {
         fn is_dst(c: &mut Ctx) -> u32 {
             bv_is_default(c, true)
         }
-        bv.extend([
+        let bv_tail = [
             (set_src as Handler, 20),
             (get_src, 20),
             (def_src, 4),
@@ -1236,7 +1297,12 @@ fn vtables() -> &'static [u32; NI as usize] {
             (is_src, 4),
             (is_dst, 4),
             (bv_aspect, 12), // IBasicVideo2::GetPreferredAspectRatio
-        ]);
+        ];
+        bv.extend(bv_tail);
+        // (the same calls, each E_NOINTERFACE)
+        let none = |unk: [(Handler, u32); 3], v: &[(Handler, u32)]| -> Vec<(Handler, u32)> { unk.into_iter().chain(v[3..].iter().map(|&(_, n)| (nointerface as Handler, n))).collect() };
+        let vw_none = none(iunknown!(VW_NONE), &vw);
+        let bv_none = none(iunknown!(BV_NONE), &bv);
         [
             vtable("IGraphBuilder", &gb),
             vtable("IMediaControl", &mc),
@@ -1246,6 +1312,8 @@ fn vtables() -> &'static [u32; NI as usize] {
             vtable("IBasicAudio", &ba),
             vtable("IVideoWindow", &vw),
             vtable("IBasicVideo", &bv),
+            vtable("IVideoWindow(windowless)", &vw_none),
+            vtable("IBasicVideo(windowless)", &bv_none),
         ]
     })
 }
@@ -1255,6 +1323,10 @@ pub fn create_instance(clsid: u32, iid: u32) -> Option<u32> {
     // CLSID_EnhancedVideoRenderer {fa10746c-9b63-4b6c-bc49-fc300ea5f256}
     if r32(clsid) == 0xfa10_746c && r32(clsid + 4) == 0x4b6c_9b63 {
         return evr(iid);
+    }
+    // CLSID_VideoMixingRenderer {b87beb7b-8d29-423f-ae4d-6582c10175ac}, ...9 {51b4abf3-748f-4e3b-...}
+    if (r32(clsid) == 0xb87b_eb7b && r32(clsid + 4) == 0x423f_8d29) || (r32(clsid) == 0x51b4_abf3 && r32(clsid + 4) == 0x4e3b_748f) {
+        return vmr(iid);
     }
     // CLSID_FilterGraph {e436ebb3-524f-11ce-9f53-0020af0ba770}, FilterGraphNoThread {e436ebb8-...}
     if !matches!(r32(clsid), 0xe436_ebb3 | 0xe436_ebb8) || r32(clsid + 4) != 0x11ce_524f {
@@ -1309,8 +1381,16 @@ struct Evr {
     /// the source as fractions (left top right bottom), the destination in the window
     src: [f32; 4],
     dst: (i32, i32, i32, i32),
-    /// MFVideoARMode (1: keep the picture's shape)
+    /// MFVideoARMode / VMR9AspectRatioMode (1: keep the picture's shape)
     mode: u32,
+    /// a VMR-9 (not an EVR): its source rectangle is in pixels (`src_px`, None: all of it)
+    vmr: bool,
+    src_px: Option<(i32, i32, i32, i32)>,
+    /// it draws into `hwnd` itself (the EVR always; a VMR-9 once in VMR9Mode_Windowless): the
+    /// graph's video window is not used
+    windowless: bool,
+    border: u32,
+    key: u32,
 }
 
 static EVRS: Mutex<Option<HashMap<u32, Evr>>> = Mutex::new(None);
@@ -1367,10 +1447,13 @@ fn one(_: &mut Ctx) -> u32 {
 fn dc_block(c: &Ctx) -> u32 {
     c.a(0) - 2 * ps()
 }
+/// The picture size of the movie a graph renders into renderer `e` (0x0: none).
+fn native(e: u32) -> (i32, i32) {
+    GRAPHS.lock().unwrap_or_else(|x| x.into_inner()).get_or_insert_with(HashMap::new).values().find(|g| g.evr == e && g.playing).map(|g| g.video).unwrap_or((0, 0))
+}
 /// GetNativeVideoSize(size, aspect): the movie's of a graph it renders for
 fn dc_native(c: &mut Ctx) -> u32 {
-    let e = dc_block(c);
-    let v = GRAPHS.lock().unwrap_or_else(|x| x.into_inner()).get_or_insert_with(HashMap::new).values().find(|g| g.evr == e).map(|g| g.video).unwrap_or((0, 0));
+    let v = native(dc_block(c));
     for p in [c.a(1), c.a(2)] {
         if p != 0 {
             w32(p, v.0 as u32);
@@ -1488,7 +1571,252 @@ fn evr(iid: u32) -> Option<u32> {
     for (k, t) in v.iter().enumerate() {
         wp(b + ps() * k as u32, *t);
     }
-    EVRS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(b, Evr { hwnd: 0, src: [0.0, 0.0, 1.0, 1.0], dst: (0, 0, 0, 0), mode: 1 });
+    EVRS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(b, Evr { hwnd: 0, src: [0.0, 0.0, 1.0, 1.0], dst: (0, 0, 0, 0), mode: 1, vmr: false, src_px: None, windowless: true, border: 0, key: 0 });
+    Some(b + ps() * s)
+}
+
+// ---------------------------------------------------------------------------------------------
+// The VMR-7 and VMR-9 (CLSID_VideoMixingRenderer(9)), as games add one by hand before
+// RenderFile (Artemis: the VMR-7, windowless): IBaseFilter, IVMRFilterConfig(9) and, once
+// windowless, IVMRWindowlessControl(9) (one word of the block each, its state an `Evr` with
+// `vmr`; the two VMRs' interfaces are the same calls). Windowed (their default), the graph's
+// video window shows the picture as without one.
+
+const VMR_CONFIG: u32 = 1;
+const VMR_WINDOWLESS: u32 = 2;
+/// VMR9Mode_Windowless
+const VMR9_WINDOWLESS: u32 = 2;
+
+fn vmr_qi(c: &mut Ctx, k: u32) -> u32 {
+    let b = c.a(0) - ps() * k;
+    if c.a(2) == 0 {
+        return E_POINTER;
+    }
+    let windowless = evr_with(b, |e| e.windowless).unwrap_or(false);
+    let s = match r32(c.a(1)) {
+        0 | 0x56a8_6895 | 0x0000_010c | 0x56a8_6899 => Some(0), // IBaseFilter, IPersist, IMediaFilter
+        0x9e55_30c5 | 0x5a80_4648 => Some(VMR_CONFIG),                    // IVMRFilterConfig(9)
+        0x0eb1_088c | 0x8f53_7d09 if windowless => Some(VMR_WINDOWLESS), // IVMRWindowlessControl(9)
+        _ => None,
+    };
+    match s {
+        Some(s) => {
+            putp(c.a(2), b + ps() * s);
+            0
+        }
+        None => {
+            if crate::env_on!("SAKE_TRACE_COM") {
+                eprintln!("sake: VMR-9 QueryInterface {:08x}: no", r32(c.a(1)));
+            }
+            putp(c.a(2), 0);
+            E_NOINTERFACE
+        }
+    }
+}
+fn vmr_block(c: &Ctx, k: u32) -> u32 {
+    c.a(0) - ps() * k
+}
+/// IVMRFilterConfig9::SetRenderingMode(mode)
+fn vmr_set_mode(c: &mut Ctx) -> u32 {
+    let (b, m) = (vmr_block(c, VMR_CONFIG), c.a(1));
+    if !(1..=4).contains(&m) || m == 3 {
+        return E_INVALIDARG;
+    }
+    evr_with(b, |e| e.windowless = m == VMR9_WINDOWLESS);
+    evr_changed(b);
+    0
+}
+fn vmr_get_mode(c: &mut Ctx) -> u32 {
+    if c.a(1) == 0 {
+        return E_POINTER;
+    }
+    let w = evr_with(vmr_block(c, VMR_CONFIG), |e| e.windowless).unwrap_or(false);
+    put32(c.a(1), if w { VMR9_WINDOWLESS } else { 1 });
+    0
+}
+fn wl_block(c: &Ctx) -> u32 {
+    vmr_block(c, VMR_WINDOWLESS)
+}
+/// GetNativeVideoSize(w, h, aspect w, aspect h)
+fn wl_native(c: &mut Ctx) -> u32 {
+    let v = native(wl_block(c));
+    for (i, x) in [v.0, v.1, v.0, v.1].into_iter().enumerate() {
+        if c.a(1 + i as u32) != 0 {
+            put32(c.a(1 + i as u32), x as u32);
+        }
+    }
+    0
+}
+/// Get{Min,Max}IdealVideoSize(w, h)
+fn wl_ideal(c: &mut Ctx) -> u32 {
+    let v = native(wl_block(c));
+    put32(c.a(1), v.0 as u32);
+    put32(c.a(2), v.1 as u32);
+    0
+}
+fn rect_at(p: u32) -> (i32, i32, i32, i32) {
+    let (l, t, r, b) = (r32(p) as i32, r32(p + 4) as i32, r32(p + 8) as i32, r32(p + 12) as i32);
+    (l, t, r - l, b - t)
+}
+fn put_rect(p: u32, r: (i32, i32, i32, i32)) {
+    for (i, v) in [r.0, r.1, r.0 + r.2, r.1 + r.3].into_iter().enumerate() {
+        w32(p + 4 * i as u32, v as u32);
+    }
+}
+/// SetVideoPosition(const RECT *src, const RECT *dst)
+fn wl_set_pos(c: &mut Ctx) -> u32 {
+    let e = wl_block(c);
+    let (s, d) = (c.a(1), c.a(2));
+    if s == 0 && d == 0 {
+        return E_POINTER;
+    }
+    if s != 0 {
+        let r = rect_at(s);
+        let v = native(e);
+        if r.0 < 0 || r.1 < 0 || r.2 <= 0 || r.3 <= 0 || r.0 + r.2 > v.0 || r.1 + r.3 > v.1 {
+            return E_INVALIDARG;
+        }
+    }
+    evr_with(e, |v| {
+        if s != 0 {
+            v.src_px = Some(rect_at(s));
+        }
+        if d != 0 {
+            v.dst = rect_at(d);
+        }
+    });
+    evr_changed(e);
+    0
+}
+fn wl_get_pos(c: &mut Ctx) -> u32 {
+    let b = wl_block(c);
+    let Some(e) = evr_with(b, |v| *v) else { return E_POINTER };
+    let v = native(b);
+    if c.a(1) != 0 {
+        put_rect(c.a(1), e.src_px.unwrap_or((0, 0, v.0, v.1)));
+    }
+    if c.a(2) != 0 {
+        put_rect(c.a(2), e.dst);
+    }
+    0
+}
+fn wl_get_mode(c: &mut Ctx) -> u32 {
+    if c.a(1) == 0 {
+        return E_POINTER;
+    }
+    put32(c.a(1), evr_with(wl_block(c), |v| v.mode).unwrap_or(0));
+    0
+}
+fn wl_set_mode(c: &mut Ctx) -> u32 {
+    let (e, m) = (wl_block(c), c.a(1));
+    evr_with(e, |v| v.mode = m);
+    evr_changed(e);
+    0
+}
+fn wl_set_window(c: &mut Ctx) -> u32 {
+    let (e, h) = (wl_block(c), c.a(1));
+    evr_with(e, |v| v.hwnd = h);
+    evr_changed(e);
+    0
+}
+/// GetCurrentImage(BYTE **dib): the frame shown, a CoTaskMemAlloc'd 32-bit DIB
+fn wl_image(c: &mut Ctx) -> u32 {
+    let e = wl_block(c);
+    if c.a(1) == 0 {
+        return E_POINTER;
+    }
+    let g = GRAPHS.lock().unwrap_or_else(|x| x.into_inner()).get_or_insert_with(HashMap::new).iter().find(|(_, g)| g.evr == e && g.playing).map(|(&b, g)| (b, g.video));
+    let Some((b, (w, h))) = g else { return E_NOTIMPL };
+    let img = mem::heap_alloc(40 + 4 * (w * h) as u32, false);
+    if !put_dib(b, img) {
+        mem::heap_free(img);
+        return 0x8000_ffff;
+    }
+    putp(c.a(1), img);
+    0
+}
+fn wl_set_border(c: &mut Ctx) -> u32 {
+    let v = c.a(1);
+    evr_with(wl_block(c), |e| e.border = v);
+    0
+}
+fn wl_get_border(c: &mut Ctx) -> u32 {
+    if c.a(1) == 0 {
+        return E_POINTER;
+    }
+    put32(c.a(1), evr_with(wl_block(c), |e| e.border).unwrap_or(0));
+    0
+}
+/// (the VMR-7's) SetColorKey / GetColorKey
+fn wl_set_key(c: &mut Ctx) -> u32 {
+    let v = c.a(1);
+    evr_with(wl_block(c), |e| e.key = v);
+    0
+}
+fn wl_get_key(c: &mut Ctx) -> u32 {
+    if c.a(1) == 0 {
+        return E_POINTER;
+    }
+    put32(c.a(1), evr_with(wl_block(c), |e| e.key).unwrap_or(0));
+    0
+}
+
+fn vmr(iid: u32) -> Option<u32> {
+    static V: OnceLock<[u32; 3]> = OnceLock::new();
+    let v = V.get_or_init(|| {
+        fn q0(c: &mut Ctx) -> u32 {
+            vmr_qi(c, 0)
+        }
+        fn q1(c: &mut Ctx) -> u32 {
+            vmr_qi(c, VMR_CONFIG)
+        }
+        fn q2(c: &mut Ctx) -> u32 {
+            vmr_qi(c, VMR_WINDOWLESS)
+        }
+        let unk = |q: Handler| -> Vec<(Handler, u32)> { vec![(q, 12), (one as Handler, 4), (one as Handler, 4)] };
+        let mut bf = unk(q0);
+        bf.extend([(notimpl as Handler, 8), (ok, 4), (ok, 4), (ok, 12), (notimpl, 12), (ok, 8), (notimpl, 8)]);
+        bf.extend([(notimpl as Handler, 8), (notimpl, 12), (notimpl, 8), (ok, 12), (notimpl, 8)]);
+        let mut fc = unk(q1);
+        fc.extend([
+            (ok as Handler, 8), // SetImageCompositor
+            (ok, 8),            // SetNumberOfStreams
+            (get0, 8),          // GetNumberOfStreams
+            (ok, 8),            // SetRenderingPrefs
+            (get0, 8),          // GetRenderingPrefs
+            (vmr_set_mode, 8),
+            (vmr_get_mode, 8),
+        ]);
+        let mut wl = unk(q2);
+        wl.extend([
+            (wl_native as Handler, 20),
+            (wl_ideal, 12), // GetMinIdealVideoSize
+            (wl_ideal, 12), // GetMaxIdealVideoSize
+            (wl_set_pos, 12),
+            (wl_get_pos, 12),
+            (wl_get_mode, 8),
+            (wl_set_mode, 8),
+            (wl_set_window, 8),
+            (ok, 12), // RepaintVideo
+            (ok, 4),  // DisplayModeChanged
+            (wl_image, 8),
+            (wl_set_border, 8),
+            (wl_get_border, 8),
+            (wl_set_key, 8), // (the VMR-7's)
+            (wl_get_key, 8),
+        ]);
+        [vtable("VMR::IBaseFilter", &bf), vtable("VMR::IVMRFilterConfig", &fc), vtable("VMR::IVMRWindowlessControl", &wl)]
+    });
+    let s = match r32(iid) {
+        0 | 0x56a8_6895 | 0x0000_010c | 0x56a8_6899 => 0,
+        0x9e55_30c5 | 0x5a80_4648 => VMR_CONFIG,
+        _ => return None,
+    };
+    let b = mem::heap_alloc(8 * 3, true);
+    for (k, t) in v.iter().enumerate() {
+        wp(b + ps() * k as u32, *t);
+    }
+    EVRS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(b, Evr { hwnd: 0, src: [0.0, 0.0, 1.0, 1.0], dst: (0, 0, 0, 0), mode: 0, vmr: true, src_px: None, windowless: false, border: 0, key: 0 });
     Some(b + ps() * s)
 }
 
