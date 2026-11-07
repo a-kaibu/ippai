@@ -1,0 +1,28 @@
+cache: rop 16 window 1
+release 1 again 0 null 0
+released: rop 0 set 0 horzres 0 window 0
+again: reset 1 same handle 1
+noresetattrs: found 1 rop kept 0
+screen: horzres>0 1 released 0
+cache intersectrgn: clip 2 (10,10)-(20,20)
+region kept while used 1, deleted on release 1
+own: release 1 1 window 1 same 1 rop 16 wrong window release 1
+own intersectrgn after release: clip 2 (10,10)-(20,20)
+own GetDCEx again: clip 2 (10,10)-(20,20)
+own region kept 1, deleted by the next 1
+own after excludergn: clip 2 client
+class: same 1 rop 1 window2 1
+class: after release window2 1
+cache paint: clip 2 (10,10)-(20,20)
+paint rect (10,10)-(20,20)
+after EndPaint rop 0
+own paint after ReleaseDC: clip 2 (10,10)-(20,20)
+own paint GetDC same 1
+own after EndPaint: clip 2 client
+validated: update 0
+parentdc: clip is the parent's client 1, pixel drawn 1
+scroll: 3 update inside the clip 1 not empty 1
+scroll: paint inside the clip 1
+destroyed cache: rop 0 release 0 getdc 0
+destroyed class: rop 16 window 0 release 0
+destroyed own: rop 0 release 0 getdc 0
