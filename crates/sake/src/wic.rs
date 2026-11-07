@@ -1239,12 +1239,26 @@ fn pfi_channels(c: &mut Ctx) -> u32 {
     info_u32(c, channels)
 }
 fn pfi_transparency(c: &mut Ctx) -> u32 {
-    use Fmt::*;
-    info_u32(c, |f| matches!(f, Idx1 | Idx2 | Idx4 | Idx8 | Bgra | Pbgra | Rgba | Prgba | Rgba64 | Alpha8) as u32)
+    info_u32(c, transparency)
 }
 fn pfi_numeric(c: &mut Ctx) -> u32 {
-    // WICPixelFormatNumericRepresentationIndexed 1 / UnsignedInteger 3
-    info_u32(c, |f| if f.indexed() { 1 } else { 3 })
+    info_u32(c, numeric)
+}
+/// WICPixelFormatNumericRepresentation: Indexed 1, UnsignedInteger 2 (3 is SignedInteger);
+/// Windows answers UnsignedInteger for every non-indexed format here, CMYK and alpha too
+/// (winref wicconv info lines)
+fn numeric(f: Fmt) -> u32 {
+    if f.indexed() {
+        1
+    } else {
+        2
+    }
+}
+/// SupportsTransparency: formats with an alpha channel; the indexed ones answer FALSE on
+/// Windows (a palette entry's alpha does not count: winref wicconv)
+fn transparency(f: Fmt) -> u32 {
+    use Fmt::*;
+    matches!(f, Bgra | Pbgra | Rgba | Prgba | Rgba64 | Alpha8) as u32
 }
 
 /// CreateComponentInfo(clsid, out): pixel formats only (IWICPixelFormatInfo2); other components
@@ -1254,10 +1268,8 @@ fn f_component_info(c: &mut Ctx) -> u32 {
     if clsid == 0 || out == 0 {
         return E_INVALIDARG;
     }
-    let Some(f) = fmt_of(read_guid(clsid)) else {
-        mem::putp(out, 0);
-        return WINCODEC_ERR_COMPONENTNOTFOUND;
-    };
+    // (Windows leaves *out as it was for a component it does not know: winref wicconv)
+    let Some(f) = fmt_of(read_guid(clsid)) else { return WINCODEC_ERR_COMPONENTNOTFOUND };
     let p = new(
         "IWICPixelFormatInfo2",
         &[
@@ -1312,6 +1324,52 @@ mod tests {
         assert_eq!(&s.px[12..16], &[200, 200, 200, 255]);
         let c = crop(&img, (1, 0, 1, 1));
         assert_eq!(c.px, vec![200, 200, 200, 255]);
+    }
+
+    /// Every pixel format's IWICPixelFormatInfo2 answers (bits, channels, transparency,
+    /// numeric representation) as Windows gave them to the winref wicconv probe.
+    #[test]
+    fn pixel_format_info_as_windows() {
+        use Fmt::*;
+        let names = [
+            ("BlackWhite", BlackWhite),
+            ("2bppGray", Gray2),
+            ("4bppGray", Gray4),
+            ("8bppGray", Gray8),
+            ("16bppGray", Gray16),
+            ("16bppBGR555", Bgr555),
+            ("16bppBGR565", Bgr565),
+            ("24bppBGR", Bgr24),
+            ("24bppRGB", Rgb24),
+            ("32bppBGR", Bgr32),
+            ("32bppBGRA", Bgra),
+            ("32bppPBGRA", Pbgra),
+            ("32bppRGB", Rgb32),
+            ("32bppRGBA", Rgba),
+            ("32bppPRGBA", Prgba),
+            ("48bppRGB", Rgb48),
+            ("64bppRGBA", Rgba64),
+            ("32bppCMYK", Cmyk),
+            ("8bppAlpha", Alpha8),
+            ("1bppIndexed", Idx1),
+            ("2bppIndexed", Idx2),
+            ("4bppIndexed", Idx4),
+            ("8bppIndexed", Idx8),
+        ];
+        for golden in [include_str!("../../../tests/winref/golden/wicconv-32/stdout.txt"), include_str!("../../../tests/winref/golden/wicconv-64/stdout.txt")] {
+            let mut seen = 0;
+            for l in golden.lines().filter(|l| l.starts_with("info ") && !l.starts_with("info unknown")) {
+                let w: Vec<&str> = l.split_whitespace().collect();
+                let f = names.iter().find(|n| n.0 == w[1]).unwrap_or_else(|| panic!("{l}")).1;
+                let field = |k: &str| w[w.iter().position(|x| *x == k).unwrap() + 1].parse::<u32>().unwrap();
+                assert_eq!(field("bits"), f.bits(), "{l}");
+                assert_eq!(field("channels"), channels(f), "{l}");
+                assert_eq!(field("transparency"), transparency(f), "{l}");
+                assert_eq!(field("numeric"), numeric(f), "{l}");
+                seen += 1;
+            }
+            assert_eq!(seen, picture::ALL.len());
+        }
     }
 
     #[test]
