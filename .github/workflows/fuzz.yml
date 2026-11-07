@@ -53,7 +53,7 @@ jobs:
             ~/.cargo/bin/cargo-fuzz
             fuzz/target
             crates/*/fuzz/target
-          key: fuzz-build-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock', 'crates/*/fuzz/Cargo.lock') }}-${{ github.run_id }}
+          key: fuzz-build-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock', 'crates/*/fuzz/Cargo.lock') }}
           restore-keys: |
             fuzz-build-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock', 'crates/*/fuzz/Cargo.lock') }}-
             fuzz-build-${{ runner.os }}-${{ env.RUST_KEY }}-
@@ -89,7 +89,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 tools/ci/cache-prune.py fuzz/target crates/*/fuzz/target
       # (saved when the tests fail too: the registry crates' builds are good either way)
-      - if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' }}
+      - if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' && steps.cargo-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v6.1.0
         with:
           path: |

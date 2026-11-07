@@ -54,7 +54,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: tlc-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-${{ github.run_id }}
+          key: tlc-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             tlc-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-
             tlc-${{ runner.os }}-${{ env.RUST_KEY }}-
@@ -75,7 +75,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 tools/ci/cache-prune.py target
       # (saved when the tests fail too: the registry crates' builds are good either way)
-      - if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' }}
+      - if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' && steps.cargo-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v6.1.0
         with:
           path: |
@@ -132,7 +132,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target/miri
-          key: miri-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-${{ github.run_id }}
+          key: miri-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             miri-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-
             miri-${{ runner.os }}-${{ env.RUST_KEY }}-
@@ -142,7 +142,7 @@ jobs:
       - name: Shrink the cargo cache
         if: ${{ !cancelled() }}
         run: python3 tools/ci/cache-prune.py target/miri
-      - if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' }}
+      - if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' && steps.cargo-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v6.1.0
         with:
           path: |
@@ -166,7 +166,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: render-model-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-${{ github.run_id }}
+          key: render-model-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             render-model-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-
             render-model-${{ runner.os }}-${{ env.RUST_KEY }}-
@@ -177,7 +177,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 tools/ci/cache-prune.py target
       # (saved when the tests fail too: the registry crates' builds are good either way)
-      - if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' }}
+      - if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' && steps.cargo-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v6.1.0
         with:
           path: |
@@ -211,7 +211,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: shaders-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-${{ github.run_id }}
+          key: shaders-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             shaders-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-
             shaders-${{ runner.os }}-${{ env.RUST_KEY }}-
@@ -266,7 +266,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 tools/ci/cache-prune.py target
       # (saved when the tests fail too: the registry crates' builds are good either way)
-      - if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' }}
+      - if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' && steps.cargo-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v6.1.0
         with:
           path: |

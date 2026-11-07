@@ -119,7 +119,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: winref-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock', 'tools/ci/emsdk.sh') }}-${{ github.run_id }}
+          key: winref-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock', 'tools/ci/emsdk.sh') }}
           restore-keys: |
             winref-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock', 'tools/ci/emsdk.sh') }}-
             winref-${{ runner.os }}-${{ env.RUST_KEY }}-
@@ -192,7 +192,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 tools/ci/cache-prune.py target
       # (saved when the tests fail too: the registry crates' builds are good either way)
-      - if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' }}
+      - if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' && steps.cargo-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v6.1.0
         with:
           path: |
