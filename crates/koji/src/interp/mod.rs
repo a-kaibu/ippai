@@ -96,14 +96,14 @@ pub fn step_cached<M: Memory>(cpu: &mut Cpu, mem: &mut M, cache: Option<&mut Dec
     let locked_mem = (ins.has_lock_prefix() || ins.mnemonic() == Mnemonic::Xchg)
         && (0..ins.op_count()).any(|i| ins.op_kind(i) == OpKind::Memory);
     if !locked_mem {
-        let mut x = X { cpu, mem, ins: &ins, lock: None };
+        let mut x = X { cpu, mem, ins: &ins, lock: None, daz: None, tiny: 0 };
         return (single(x.exec()), branch || tf);
     }
     // a locked read-modify-write: its store is a compare-and-swap against what it read, and
     // the instruction runs again if another thread changed the memory in between
     let (regs, hi, r8, eflags) = (cpu.regs, cpu.hi, cpu.r8, cpu.eflags);
     loop {
-        let mut x = X { cpu: &mut *cpu, mem: &mut *mem, ins: &ins, lock: Some(Lock::default()) };
+        let mut x = X { cpu: &mut *cpu, mem: &mut *mem, ins: &ins, lock: Some(Lock::default()), daz: None, tiny: 0 };
         let exit = x.exec();
         if !x.lock.is_some_and(|l| l.lost) {
             return (single(exit), branch || tf);
@@ -183,6 +183,11 @@ pub(crate) struct X<'a, M: Memory> {
     pub(crate) mem: &'a mut M,
     pub(crate) ins: &'a Instruction,
     pub(crate) lock: Option<Lock>,
+    /// MXCSR.DAZ for the SSE instruction running: its operands' lanes read as zero when
+    /// denormal (sse.rs, [`sse::Flush`])
+    pub(crate) daz: Option<sse::Flush>,
+    /// MXCSR.FTZ: the result lanes of the SSE instruction running that are tiny (flushed to zero)
+    pub(crate) tiny: u32,
 }
 
 impl<'a, M: Memory> X<'a, M> {

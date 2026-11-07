@@ -120,6 +120,14 @@ impl<'a, M: Memory> X<'a, M> {
     }
 
     pub(super) fn read_v(&mut self, i: u32) -> Result<u128, Fault> {
+        let v = self.read_raw(i)?;
+        Ok(match self.daz {
+            Some(f) if i == 1 || (i == 0 && f.op0) => f.zero_denormals(v, f.bits, f.lanes),
+            _ => v,
+        })
+    }
+
+    fn read_raw(&mut self, i: u32) -> Result<u128, Fault> {
         match self.ins.op_kind(i) {
             OpKind::Register => {
                 let r = self.ins.op_register(i);
@@ -203,7 +211,36 @@ impl<'a, M: Memory> X<'a, M> {
         if r >= -9223372036854775808.0 && r < 9223372036854775808.0 { r as i64 as u64 } else { 1 << 63 }
     }
 
+    /// SSE instructions; with MXCSR.DAZ (bit 6) the floating-point ones read denormal operand
+    /// lanes as zero (no DE), with FTZ (bit 15) and underflow masked a denormal result lane
+    /// becomes zero of its sign with UE and PE (Intel SDM 10.2.3.3, 10.2.3.4).
     pub(super) fn sse(&mut self) -> Exit {
+        let mx = self.cpu.mxcsr;
+        let Some(f) = (mx & 0x8040 != 0).then(|| Flush::of(self.ins)).flatten() else { return self.sse_ops() };
+        self.daz = (mx & 0x40 != 0).then_some(f);
+        self.tiny = 0;
+        let r = self.sse_ops();
+        self.daz = None;
+        if self.tiny != 0 && matches!(r, Exit::Continue | Exit::SingleStep) && self.ins.op_kind(0) == OpKind::Register {
+            let r0 = self.ins.op_register(0);
+            if r0.is_xmm() {
+                let k = r0 as usize - Register::XMM0 as usize;
+                let b = f.out_bits;
+                let mut v = self.cpu.xmm(k);
+                for i in 0..f.out_lanes {
+                    if self.tiny & (1 << i) != 0 {
+                        // zero of the lane's sign
+                        v &= !((((1u128 << b) - 1) >> 1) << (i * b));
+                    }
+                }
+                self.cpu.set_xmm(k, v);
+            }
+        }
+        self.tiny = 0;
+        r
+    }
+
+    fn sse_ops(&mut self) -> Exit {
         use Mnemonic::*;
         let ins = self.ins;
         let mn = ins.mnemonic();
@@ -234,6 +271,7 @@ impl<'a, M: Memory> X<'a, M> {
             Ldmxcsr => {
                 let a = self.addr();
                 self.cpu.mxcsr = tryf!(self.mem.read32(a));
+                crate::jit::mx_modes(self.cpu.mxcsr, self.cpu.eip);
                 self.done()
             }
             Stmxcsr => {
@@ -1315,6 +1353,60 @@ pub(super) fn cmp_lanes_flags(a: u128, b: u128, n: u32, single: bool, signaling:
     })
 }
 
+/// Which lanes of an SSE floating-point instruction DAZ and FTZ touch: its operands' (`bits`
+/// wide, the low `lanes`; operand 0 too when `op0`, the instruction reads it as a number) and
+/// its result's (`out_lanes` 0: no float result, or one that can't be denormal).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct Flush {
+    pub bits: u32,
+    pub lanes: u32,
+    pub op0: bool,
+    pub out_bits: u32,
+    pub out_lanes: u32,
+}
+
+impl Flush {
+    pub(crate) fn of(ins: &iced_x86::Instruction) -> Option<Flush> {
+        use Mnemonic::*;
+        let f = |bits, lanes, op0, out_bits, out_lanes| Some(Flush { bits, lanes, op0, out_bits, out_lanes });
+        match ins.mnemonic() {
+            Addss | Subss | Mulss | Divss => f(32, 1, true, 32, 1),
+            Addps | Subps | Mulps | Divps | Haddps | Hsubps | Addsubps | Dpps => f(32, 4, true, 32, 4),
+            Addsd | Subsd | Mulsd | Divsd => f(64, 1, true, 64, 1),
+            Addpd | Subpd | Mulpd | Divpd | Haddpd | Hsubpd | Addsubpd | Dppd => f(64, 2, true, 64, 2),
+            Sqrtss => f(32, 1, false, 0, 0),
+            Sqrtps => f(32, 4, false, 0, 0),
+            Sqrtsd => f(64, 1, false, 0, 0),
+            Sqrtpd => f(64, 2, false, 0, 0),
+            Minss | Maxss | Cmpss | Comiss | Ucomiss => f(32, 1, true, 0, 0),
+            Minps | Maxps | Cmpps => f(32, 4, true, 0, 0),
+            Minsd | Maxsd | Cmpsd | Comisd | Ucomisd => f(64, 1, true, 0, 0),
+            Minpd | Maxpd | Cmppd => f(64, 2, true, 0, 0),
+            Cvtss2sd | Cvttss2si | Cvtss2si | Roundss => f(32, 1, false, 0, 0),
+            Cvtps2pd | Cvtps2pi | Cvttps2pi => f(32, 2, false, 0, 0),
+            Cvtps2dq | Cvttps2dq | Roundps => f(32, 4, false, 0, 0),
+            Cvtsd2ss => f(64, 1, false, 32, 1),
+            Cvtpd2ps => f(64, 2, false, 32, 2),
+            Cvttsd2si | Cvtsd2si | Roundsd => f(64, 1, false, 0, 0),
+            Cvtpd2dq | Cvttpd2dq | Cvtpd2pi | Cvttpd2pi | Roundpd => f(64, 2, false, 0, 0),
+            _ => None,
+        }
+    }
+
+    /// `v` with its denormal lanes (the low `lanes` of `bits`) zero, their signs kept.
+    pub(crate) fn zero_denormals(self, v: u128, bits: u32, lanes: u32) -> u128 {
+        let (exp, mant): (u128, u128) = if bits == 32 { (0x7f80_0000, 0x7f_ffff) } else { (0x7ff << 52, (1 << 52) - 1) };
+        let mut v = v;
+        for i in 0..lanes {
+            let sh = i * bits;
+            if (v >> sh) & exp == 0 && (v >> sh) & mant != 0 {
+                v &= !(mant << sh);
+            }
+        }
+        v
+    }
+}
+
 fn or2(a: (u32, u32), b: (u32, u32)) -> (u32, u32) {
     (a.0 | b.0, a.1 | b.1)
 }
@@ -1336,9 +1428,21 @@ impl<'a, M: Memory> X<'a, M> {
     fn mx_flags(&mut self) -> Option<(u32, u32)> {
         use Mnemonic::*;
         let mn = self.ins.mnemonic();
-        let ue = self.cpu.mxcsr & 0x800 == 0;
+        // FTZ with underflow masked: a tiny result (the unmasked condition) is flushed, the
+        // lane noted in `tiny` for sse() to zero, with UE and PE
+        let ftz = self.cpu.mxcsr & 0x8800 == 0x8800;
+        let ue = self.cpu.mxcsr & 0x800 == 0 || ftz;
         let rc = (self.cpu.mxcsr >> 13) & 3;
         let mut f = (0u32, 0u32);
+        let mut tiny = 0u32;
+        let mut fz = |g: (u32, u32), lanes: u32| -> (u32, u32) {
+            if ftz && g.1 & UE != 0 {
+                tiny |= lanes;
+                (g.0, UE | PE)
+            } else {
+                g
+            }
+        };
         let op = |mn: Mnemonic| match mn {
             Addss | Addps | Addsd | Addpd => FOp::Add,
             Subss | Subps | Subsd | Subpd => FOp::Sub,
@@ -1369,7 +1473,7 @@ impl<'a, M: Memory> X<'a, M> {
                 let a = self.read_v(0).ok()?;
                 let b = self.read_v(1).ok()?;
                 for i in 0..n {
-                    f = or2(f, flags32(op(mn), f32x(a, i), f32x(b, i), ue, rc));
+                    f = or2(f, fz(flags32(op(mn), f32x(a, i), f32x(b, i), ue, rc), 1 << i));
                 }
             }
             Addsd | Subsd | Mulsd | Divsd | Minsd | Maxsd | Sqrtsd | Addpd | Subpd | Mulpd | Divpd | Minpd | Maxpd
@@ -1378,7 +1482,7 @@ impl<'a, M: Memory> X<'a, M> {
                 let a = self.read_v(0).ok()?;
                 let b = self.read_v(1).ok()?;
                 for i in 0..n {
-                    f = or2(f, flags64(op(mn), f64x(a, i), f64x(b, i), ue, rc));
+                    f = or2(f, fz(flags64(op(mn), f64x(a, i), f64x(b, i), ue, rc), 1 << i));
                 }
             }
             Haddps | Hsubps | Addsubps => {
@@ -1393,7 +1497,7 @@ impl<'a, M: Memory> X<'a, M> {
                             (f32x(v, j), f32x(v, j + 1), if mn == Hsubps { FOp::Sub } else { FOp::Add })
                         }
                     };
-                    f = or2(f, flags32(o, x, y, ue, rc));
+                    f = or2(f, fz(flags32(o, x, y, ue, rc), 1 << i));
                 }
             }
             Haddpd | Hsubpd | Addsubpd => {
@@ -1407,7 +1511,7 @@ impl<'a, M: Memory> X<'a, M> {
                             (f64x(v, 0), f64x(v, 1), if mn == Hsubpd { FOp::Sub } else { FOp::Add })
                         }
                     };
-                    f = or2(f, flags64(o, x, y, ue, rc));
+                    f = or2(f, fz(flags64(o, x, y, ue, rc), 1 << i));
                 }
             }
             // each selected product, then the sums of the rounded products
@@ -1417,13 +1521,13 @@ impl<'a, M: Memory> X<'a, M> {
                 let mut p = [0f32; 4];
                 for i in 0..4 {
                     if imm & (16 << i) != 0 {
-                        f = or2(f, flags32(FOp::Mul, f32x(a, i), f32x(b, i), ue, rc));
+                        f = or2(f, fz(flags32(FOp::Mul, f32x(a, i), f32x(b, i), ue, rc), 0));
                         p[i as usize] = nan_op32(Op::Mul, f32x(a, i), f32x(b, i), mx);
                     }
                 }
                 let (s0, s1) = (nan_op32(Op::Add, p[0], p[1], mx), nan_op32(Op::Add, p[2], p[3], mx));
-                for (x, y) in [(p[0], p[1]), (p[2], p[3]), (s0, s1)] {
-                    f = or2(f, flags32(FOp::Add, x, y, ue, rc));
+                for (k, (x, y)) in [(p[0], p[1]), (p[2], p[3]), (s0, s1)].into_iter().enumerate() {
+                    f = or2(f, fz(flags32(FOp::Add, x, y, ue, rc), if k == 2 { imm & 15 } else { 0 }));
                 }
             }
             Dppd => {
@@ -1432,11 +1536,11 @@ impl<'a, M: Memory> X<'a, M> {
                 let mut p = [0f64; 2];
                 for i in 0..2 {
                     if imm & (16 << i) != 0 {
-                        f = or2(f, flags64(FOp::Mul, f64x(a, i), f64x(b, i), ue, rc));
+                        f = or2(f, fz(flags64(FOp::Mul, f64x(a, i), f64x(b, i), ue, rc), 0));
                         p[i as usize] = nan_op64(Op::Mul, f64x(a, i), f64x(b, i), mx);
                     }
                 }
-                f = or2(f, flags64(FOp::Add, p[0], p[1], ue, rc));
+                f = or2(f, fz(flags64(FOp::Add, p[0], p[1], ue, rc), imm & 3));
             }
             Cmpss | Cmpps | Cmpsd | Cmppd | Comiss | Ucomiss | Comisd | Ucomisd => {
                 let a = self.read_v(0).ok()?;
@@ -1498,7 +1602,7 @@ impl<'a, M: Memory> X<'a, M> {
             Cvtsd2ss | Cvtpd2ps => {
                 let v = self.read_v(1).ok()?;
                 for i in 0..(if mn == Cvtsd2ss { 1 } else { 2 }) {
-                    f = or2(f, narrow_flags(f64x(v, i), ue, rc));
+                    f = or2(f, fz(narrow_flags(f64x(v, i), ue, rc), 1 << i));
                 }
             }
             Roundss | Roundsd | Roundps | Roundpd => {
@@ -1530,6 +1634,7 @@ impl<'a, M: Memory> X<'a, M> {
             }
             _ => return None,
         }
+        self.tiny = tiny;
         Some(f)
     }
 }

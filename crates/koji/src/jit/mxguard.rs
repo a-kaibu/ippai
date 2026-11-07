@@ -96,16 +96,18 @@ pub(super) struct R {
 }
 
 /// The ranges of the operand-0 and source lanes. A product or quotient of magnitudes in
-/// [2^-63, 2^63) (f64: 2^-511, 2^511) is a normal number: no overflow, no underflow.
+/// [2^-63, 2^63) (f64: 2^-511, 2^511) is a normal number: no overflow, no underflow. A sum or
+/// difference of magnitudes from 2^-102 (f64: 2^-969) up is 0 or normal (a multiple of their
+/// ulp, 2^-125 at least): no denormal result for MXCSR.FTZ to flush.
 fn ranges(g: G, b64: bool) -> (R, R) {
-    let (normal, inf, add_hi, mul_lo, mul_hi, int_hi) = if b64 {
-        (1i64 << 52, 0x7ff0i64 << 48, 0x7fe0i64 << 48, 0x2000i64 << 48, 0x5fe0i64 << 48, 1053i64 << 52)
+    let (normal, inf, add_lo, add_hi, mul_lo, mul_hi, int_hi) = if b64 {
+        (1i64 << 52, 0x7ff0i64 << 48, 54i64 << 52, 0x7fe0i64 << 48, 0x2000i64 << 48, 0x5fe0i64 << 48, 1053i64 << 52)
     } else {
-        (0x0080_0000, 0x7f80_0000, 0x7f00_0000, 0x2000_0000, 0x5f00_0000, 0x4e80_0000)
+        (0x0080_0000, 0x7f80_0000, 25 << 23, 0x7f00_0000, 0x2000_0000, 0x5f00_0000, 0x4e80_0000)
     };
     let r = |lo, hi, zero| R { lo, hi, zero, abs: true };
     match g {
-        G::Add => (r(normal, add_hi, true), r(normal, add_hi, true)),
+        G::Add => (r(add_lo, add_hi, true), r(add_lo, add_hi, true)),
         G::Mul => (r(mul_lo, mul_hi, true), r(mul_lo, mul_hi, true)),
         G::Div => (r(mul_lo, mul_hi, true), r(mul_lo, mul_hi, false)),
         // (the sign bit makes a negative x below lo; -0 goes to the interpreter too)
@@ -243,4 +245,62 @@ pub(super) fn rounds(g: G) -> bool {
 /// is fine. RC is to nearest whenever translated code runs, see jit::sse_ok.)
 pub(super) fn mode(c: &mut Code, cpu: u32, mxcsr: u32) {
     c.get(cpu).load32(mxcsr).i32c(0x20).and().eqz();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every sum, difference, product and quotient of operands the ranges let translated code
+    /// handle is 0 or normal in every rounding mode: nothing MXCSR.FTZ would flush, no UE
+    /// (the range edges and random bits inside them, both signs).
+    #[test]
+    fn guarded_results_are_never_tiny() {
+        let mut s = 0x9e37_79b9_7f4a_7c15u64;
+        let mut rnd = || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        for g in [G::Add, G::Mul, G::Div] {
+            for b64 in [false, true] {
+                let (ra, rb) = ranges(g, b64);
+                let pick = |r: R, x: u64| -> i64 {
+                    let span = (r.hi - r.lo) as u64;
+                    match x % 5 {
+                        0 => r.lo,
+                        1 => r.hi - 1,
+                        2 if r.zero => 0,
+                        _ => r.lo + ((x >> 8) % span) as i64,
+                    }
+                };
+                for _ in 0..200_000 {
+                    let (x, y) = (rnd(), rnd());
+                    let (a, b) = (pick(ra, x), pick(rb, y));
+                    let (sa, sb) = (x & 1 != 0, y & 1 != 0);
+                    let tiny = if b64 {
+                        let (a, b) = (f64::from_bits(a as u64 | (sa as u64) << 63), f64::from_bits(b as u64 | (sb as u64) << 63));
+                        let r = match g {
+                            G::Add => a + b,
+                            G::Mul => a * b,
+                            _ => a / b,
+                        };
+                        // (rounded to nearest: the bounds' own extreme results, 2^-1022 and
+                        // the ulp multiples, are representable, so no rounding mode goes below)
+                        r != 0.0 && r.abs() < f64::MIN_POSITIVE
+                    } else {
+                        let (a, b) = (f32::from_bits(a as u32 | (sa as u32) << 31), f32::from_bits(b as u32 | (sb as u32) << 31));
+                        let r = match g {
+                            G::Add => a + b,
+                            G::Mul => a * b,
+                            _ => a / b,
+                        };
+                        r != 0.0 && r.abs() < f32::MIN_POSITIVE
+                    };
+                    assert!(!tiny, "{g:?} b64={b64} {a:#x} {b:#x}");
+                }
+            }
+        }
+    }
 }

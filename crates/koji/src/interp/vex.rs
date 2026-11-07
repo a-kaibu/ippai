@@ -211,7 +211,7 @@ impl<'a, M: Memory> X<'a, M> {
         let mut li = *ins;
         li.set_code(lc);
         if !t.nds[code] {
-            let mut x = X { cpu: &mut *self.cpu, mem: &mut *self.mem, ins: &li, lock: None };
+            let mut x = X { cpu: &mut *self.cpu, mem: &mut *self.mem, ins: &li, lock: None, daz: None, tiny: 0 };
             return x.exec();
         }
         let (dst, src1) = (ins.op0_register(), ins.op1_register());
@@ -251,12 +251,12 @@ impl<'a, M: Memory> X<'a, M> {
             mx = self.cpu.mxcsr;
             self.cpu.mxcsr |= 0x1f80;
         }
-        let exit = X { cpu: &mut *self.cpu, mem: &mut *self.mem, ins: &li, lock: None }.exec();
+        let exit = X { cpu: &mut *self.cpu, mem: &mut *self.mem, ins: &li, lock: None, daz: None, tiny: 0 }.exec();
         if exit == Exit::Continue && p & 8 != 0 {
             let r = self.cpu.vex_tmp;
             self.cpu.vex_tmp = src1v;
             li.set_immediate8(3);
-            let exit = X { cpu: &mut *self.cpu, mem: &mut *self.mem, ins: &li, lock: None }.exec();
+            let exit = X { cpu: &mut *self.cpu, mem: &mut *self.mem, ins: &li, lock: None, daz: None, tiny: 0 }.exec();
             if exit != Exit::Continue {
                 self.cpu.mxcsr = mx;
                 return exit;

@@ -135,7 +135,7 @@ impl<'a, M: Memory> X<'a, M> {
     /// destination's).
     fn run_keep_h(&mut self, li: &Instruction) -> Exit {
         let h = self.cpu.ymmh;
-        let e = X { cpu: &mut *self.cpu, mem: &mut *self.mem, ins: li, lock: None }.exec();
+        let e = X { cpu: &mut *self.cpu, mem: &mut *self.mem, ins: li, lock: None, daz: None, tiny: 0 }.exec();
         self.cpu.ymmh = h;
         e
     }

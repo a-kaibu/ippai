@@ -362,6 +362,7 @@ pub fn fxrstor<M: Memory + ?Sized>(cpu: &mut Cpu, mem: &mut M, a: u32) -> Result
         f.regs[p] = *r;
     }
     cpu.mxcsr = mxcsr;
+    crate::jit::mx_modes(mxcsr, cpu.eip);
     for (i, x) in xmm.iter().enumerate().take(if cpu.mode64 != 0 { 16 } else { 8 }) {
         cpu.set_xmm(i, *x);
     }

@@ -109,9 +109,19 @@ pub fn mx_exact() -> bool {
 
 /// Whether translated code may run with this MXCSR: SSE exceptions masked and rounding to
 /// nearest (the JIT's SSE is the plain wasm ops; other modes are the interpreter's, and a step
-/// that changes MXCSR leaves the region: see the `step` import)
+/// that changes MXCSR leaves the region: see the `step` import). With FTZ or DAZ only under
+/// [`MX_EXACT`]: jit::mxguard then sends every operation with a denormal operand, or one whose
+/// result may be denormal, to the interpreter, which flushes them (a program setting either
+/// turns MX_EXACT on: [`mx_modes`]).
 pub fn sse_ok(mxcsr: u32) -> bool {
-    mxcsr & 0x7f80 == 0x1f80
+    mxcsr & 0x7f80 == 0x1f80 && (mxcsr & 0x8040 == 0 || mx_exact())
+}
+
+/// MXCSR was loaded with `mxcsr` (LDMXCSR, FXRSTOR) at `at`: FTZ or DAZ turn [`MX_EXACT`] on.
+pub fn mx_modes(mxcsr: u32, at: u32) {
+    if mxcsr & 0x8040 != 0 && !mx_exact() {
+        mx_read(at);
+    }
 }
 /// Debugging (IPPAI_JIT_COUNT): counters of control transfers the generated code bumps
 /// (wasm32 only: their addresses are i32 constants). See [`COUNTER_NAMES`].
