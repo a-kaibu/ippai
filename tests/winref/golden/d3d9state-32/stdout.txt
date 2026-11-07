@@ -1,0 +1,527 @@
+rs 0 = 0xbaadcafe
+rs 1: Get 0x8876086c
+rs 2: Get 0x8876086c
+rs 3: Get 0x8876086c
+rs 4: Get 0x8876086c
+rs 5: Get 0x8876086c
+rs 6: Get 0x8876086c
+rs 7 = 0x1
+rs 8 = 0x3
+rs 9 = 0x2
+rs 10: Get 0x8876086c
+rs 11: Get 0x8876086c
+rs 12: Get 0x8876086c
+rs 13: Get 0x8876086c
+rs 14 = 0x1
+rs 15 = 0
+rs 16 = 0x1
+rs 17: Get 0x8876086c
+rs 18: Get 0x8876086c
+rs 19 = 0x2
+rs 20 = 0x1
+rs 21: Get 0x8876086c
+rs 22 = 0x3
+rs 23 = 0x4
+rs 24 = 0
+rs 25 = 0x8
+rs 26 = 0
+rs 27 = 0
+rs 28 = 0
+rs 29 = 0
+rs 30: Get 0x8876086c
+rs 31: Get 0x8876086c
+rs 32: Get 0x8876086c
+rs 33: Get 0x8876086c
+rs 34 = 0
+rs 35 = 0
+rs 36 = 0
+rs 37 = 0x3f800000
+rs 38 = 0x3f800000
+rs 39: Get 0x8876086c
+rs 40 = 0
+rs 41: Get 0x8876086c
+rs 42 = 0xbaadcafe
+rs 43: Get 0x8876086c
+rs 44: Get 0x8876086c
+rs 45: Get 0x8876086c
+rs 46: Get 0x8876086c
+rs 47 = 0xbaadcafe
+rs 48 = 0
+rs 49: Get 0x8876086c
+rs 50 = 0xbaadcafe
+rs 51: Get 0x8876086c
+rs 52 = 0
+rs 53 = 0x1
+rs 54 = 0x1
+rs 55 = 0x1
+rs 56 = 0x8
+rs 57 = 0
+rs 58 = 0xffffffff
+rs 59 = 0xffffffff
+rs 60 = 0xffffffff
+rs 61 = 0xbaadcafe
+rs 62 = 0xbaadcafe
+rs 63 = 0xbaadcafe
+rs 64: Get 0x8876086c
+rs 65: Get 0x8876086c
+rs 66: Get 0x8876086c
+rs 67: Get 0x8876086c
+rs 68: Get 0x8876086c
+rs 69: Get 0x8876086c
+rs 70: Get 0x8876086c
+rs 71: Get 0x8876086c
+rs 72: Get 0x8876086c
+rs 73: Get 0x8876086c
+rs 74: Get 0x8876086c
+rs 75: Get 0x8876086c
+rs 76: Get 0x8876086c
+rs 77: Get 0x8876086c
+rs 78: Get 0x8876086c
+rs 79: Get 0x8876086c
+rs 80: Get 0x8876086c
+rs 81: Get 0x8876086c
+rs 82: Get 0x8876086c
+rs 83: Get 0x8876086c
+rs 84: Get 0x8876086c
+rs 85: Get 0x8876086c
+rs 86: Get 0x8876086c
+rs 87: Get 0x8876086c
+rs 88: Get 0x8876086c
+rs 89: Get 0x8876086c
+rs 90: Get 0x8876086c
+rs 91: Get 0x8876086c
+rs 92: Get 0x8876086c
+rs 93: Get 0x8876086c
+rs 94: Get 0x8876086c
+rs 95: Get 0x8876086c
+rs 96 = 0xbaadcafe
+rs 97 = 0xbaadcafe
+rs 98 = 0xbaadcafe
+rs 99 = 0xbaadcafe
+rs 100 = 0xbaadcafe
+rs 101 = 0xbaadcafe
+rs 102 = 0xbaadcafe
+rs 103 = 0xbaadcafe
+rs 104 = 0xbaadcafe
+rs 105 = 0xbaadcafe
+rs 106 = 0xbaadcafe
+rs 107 = 0xbaadcafe
+rs 108 = 0xbaadcafe
+rs 109 = 0xbaadcafe
+rs 110 = 0xbaadcafe
+rs 111 = 0xbaadcafe
+rs 112 = 0xbaadcafe
+rs 113 = 0xbaadcafe
+rs 114 = 0xbaadcafe
+rs 115 = 0xbaadcafe
+rs 116 = 0xbaadcafe
+rs 117 = 0xbaadcafe
+rs 118 = 0xbaadcafe
+rs 119 = 0xbaadcafe
+rs 120 = 0xbaadcafe
+rs 121 = 0xbaadcafe
+rs 122 = 0xbaadcafe
+rs 123 = 0xbaadcafe
+rs 124 = 0xbaadcafe
+rs 125 = 0xbaadcafe
+rs 126 = 0xbaadcafe
+rs 127 = 0xbaadcafe
+rs 128 = 0
+rs 129 = 0
+rs 130 = 0
+rs 131 = 0
+rs 132 = 0
+rs 133 = 0
+rs 134 = 0
+rs 135 = 0
+rs 136 = 0x1
+rs 137 = 0x1
+rs 138 = 0xbaadcafe
+rs 139 = 0
+rs 140 = 0
+rs 141 = 0x1
+rs 142 = 0x1
+rs 143 = 0
+rs 144: Get 0x8876086c
+rs 145 = 0x1
+rs 146 = 0x2
+rs 147 = 0
+rs 148 = 0
+rs 149 = 0xbaadcafe
+rs 150 = 0xbaadcafe
+rs 151 = 0
+rs 152 = 0
+rs 153: Get 0x8876086c
+rs 154 = 0x3f800000
+rs 155 = 0x3f800000
+rs 156 = 0
+rs 157 = 0
+rs 158 = 0x3f800000
+rs 159 = 0
+rs 160 = 0
+rs 161 = 0x1
+rs 162 = 0xffffffff
+rs 163 = 0
+rs 164: Get 0x8876086c
+rs 165 = 0xbaadcafe
+rs 166 = 0x46000000
+rs 167 = 0
+rs 168 = 0xf
+rs 169 = 0xbaadcafe
+rs 170 = 0
+rs 171 = 0x1
+rs 172 = 0x3
+rs 173 = 0x1
+rs 174 = 0
+rs 175 = 0
+rs 176 = 0
+rs 177 = 0xbaadcafe
+rs 178 = 0x3f800000
+rs 179 = 0x3f800000
+rs 180 = 0
+rs 181 = 0
+rs 182 = 0x3f800000
+rs 183 = 0
+rs 184 = 0
+rs 185 = 0
+rs 186 = 0x1
+rs 187 = 0x1
+rs 188 = 0x1
+rs 189 = 0x8
+rs 190 = 0xf
+rs 191 = 0xf
+rs 192 = 0xf
+rs 193 = 0xffffffff
+rs 194 = 0
+rs 195 = 0
+rs 196: Get 0x8876086c
+rs 197: Get 0x8876086c
+rs 198 = 0
+rs 199 = 0
+rs 200 = 0
+rs 201 = 0
+rs 202 = 0
+rs 203 = 0
+rs 204 = 0
+rs 205 = 0
+rs 206 = 0
+rs 207 = 0x2
+rs 208 = 0x1
+rs 209 = 0x1
+rs 210 = 0xbaadcafe
+rs 211 = 0xbaadcafe
+rs 212 = 0xbaadcafe
+rs 213 = 0xbaadcafe
+rs 214 = 0xbaadcafe
+rs 215 = 0xbaadcafe
+rs 216 = 0xbaadcafe
+rs 217 = 0xbaadcafe
+rs 218 = 0xbaadcafe
+rs 219 = 0xbaadcafe
+rs 220 = 0xbaadcafe
+rs 221 = 0xbaadcafe
+rs 222 = 0xbaadcafe
+rs 223 = 0xbaadcafe
+rs 224 = 0xbaadcafe
+rs 225 = 0xbaadcafe
+rs 226 = 0xbaadcafe
+rs 227 = 0xbaadcafe
+rs 228 = 0xbaadcafe
+rs 229 = 0xbaadcafe
+rs 230 = 0xbaadcafe
+rs 231 = 0xbaadcafe
+rs 232 = 0xbaadcafe
+rs 233 = 0xbaadcafe
+rs 234 = 0xbaadcafe
+rs 235 = 0xbaadcafe
+rs 236 = 0xbaadcafe
+rs 237 = 0xbaadcafe
+rs 238 = 0xbaadcafe
+rs 239 = 0xbaadcafe
+rs 240 = 0xbaadcafe
+rs 241 = 0xbaadcafe
+rs 242 = 0xbaadcafe
+rs 243 = 0xbaadcafe
+rs 244 = 0xbaadcafe
+rs 245 = 0xbaadcafe
+rs 246 = 0xbaadcafe
+rs 247 = 0xbaadcafe
+rs 248 = 0xbaadcafe
+rs 249 = 0xbaadcafe
+rs 250 = 0xbaadcafe
+rs 251 = 0xbaadcafe
+rs 252 = 0xbaadcafe
+rs 253 = 0xbaadcafe
+rs 254 = 0xbaadcafe
+rs 255 = 0xbaadcafe
+tss 0 0: 0 = 0xbaadcafe
+tss 0 1: 0 = 0x4
+tss 0 2: 0 = 0x2
+tss 0 3: 0 = 0x1
+tss 0 4: 0 = 0x2
+tss 0 5: 0 = 0x2
+tss 0 6: 0 = 0x1
+tss 0 7: 0 = 0
+tss 0 8: 0 = 0
+tss 0 9: 0 = 0
+tss 0 10: 0 = 0
+tss 0 11: 0 = 0
+tss 0 12: 0 = 0xbaadcafe
+tss 0 13: 0 = 0xbaadcafe
+tss 0 14: 0 = 0xbaadcafe
+tss 0 15: 0 = 0xbaadcafe
+tss 0 16: 0 = 0xbaadcafe
+tss 0 17: 0 = 0xbaadcafe
+tss 0 18: 0 = 0xbaadcafe
+tss 0 19: 0 = 0xbaadcafe
+tss 0 20: 0 = 0xbaadcafe
+tss 0 21: 0 = 0xbaadcafe
+tss 0 22: 0 = 0
+tss 0 23: 0 = 0
+tss 0 24: 0 = 0
+tss 0 25: 0 = 0xbaadcafe
+tss 0 26: 0 = 0x1
+tss 0 27: 0 = 0x1
+tss 0 28: 0 = 0x1
+tss 0 29: 0 = 0xbaadcafe
+tss 0 30: 0 = 0xbaadcafe
+tss 0 31: 0 = 0xbaadcafe
+tss 0 32: 0 = 0
+tss 0 33: 0 = 0
+tss 1 0: 0 = 0xbaadcafe
+tss 1 1: 0 = 0x1
+tss 1 2: 0 = 0x2
+tss 1 3: 0 = 0x1
+tss 1 4: 0 = 0x1
+tss 1 5: 0 = 0x2
+tss 1 6: 0 = 0x1
+tss 1 7: 0 = 0
+tss 1 8: 0 = 0
+tss 1 9: 0 = 0
+tss 1 10: 0 = 0
+tss 1 11: 0 = 0x1
+tss 1 12: 0 = 0xbaadcafe
+tss 1 13: 0 = 0xbaadcafe
+tss 1 14: 0 = 0xbaadcafe
+tss 1 15: 0 = 0xbaadcafe
+tss 1 16: 0 = 0xbaadcafe
+tss 1 17: 0 = 0xbaadcafe
+tss 1 18: 0 = 0xbaadcafe
+tss 1 19: 0 = 0xbaadcafe
+tss 1 20: 0 = 0xbaadcafe
+tss 1 21: 0 = 0xbaadcafe
+tss 1 22: 0 = 0
+tss 1 23: 0 = 0
+tss 1 24: 0 = 0
+tss 1 25: 0 = 0xbaadcafe
+tss 1 26: 0 = 0x1
+tss 1 27: 0 = 0x1
+tss 1 28: 0 = 0x1
+tss 1 29: 0 = 0xbaadcafe
+tss 1 30: 0 = 0xbaadcafe
+tss 1 31: 0 = 0xbaadcafe
+tss 1 32: 0 = 0
+tss 1 33: 0 = 0
+tss 7 0: 0 = 0xbaadcafe
+tss 7 1: 0 = 0x1
+tss 7 2: 0 = 0x2
+tss 7 3: 0 = 0x1
+tss 7 4: 0 = 0x1
+tss 7 5: 0 = 0x2
+tss 7 6: 0 = 0x1
+tss 7 7: 0 = 0
+tss 7 8: 0 = 0
+tss 7 9: 0 = 0
+tss 7 10: 0 = 0
+tss 7 11: 0 = 0x7
+tss 7 12: 0 = 0xbaadcafe
+tss 7 13: 0 = 0xbaadcafe
+tss 7 14: 0 = 0xbaadcafe
+tss 7 15: 0 = 0xbaadcafe
+tss 7 16: 0 = 0xbaadcafe
+tss 7 17: 0 = 0xbaadcafe
+tss 7 18: 0 = 0xbaadcafe
+tss 7 19: 0 = 0xbaadcafe
+tss 7 20: 0 = 0xbaadcafe
+tss 7 21: 0 = 0xbaadcafe
+tss 7 22: 0 = 0
+tss 7 23: 0 = 0
+tss 7 24: 0 = 0
+tss 7 25: 0 = 0xbaadcafe
+tss 7 26: 0 = 0x1
+tss 7 27: 0 = 0x1
+tss 7 28: 0 = 0x1
+tss 7 29: 0 = 0xbaadcafe
+tss 7 30: 0 = 0xbaadcafe
+tss 7 31: 0 = 0xbaadcafe
+tss 7 32: 0 = 0
+tss 7 33: 0 = 0
+tss 8 0: 0 = 0xbaadcafe
+tss 8 1: 0 = 0x1
+tss 8 2: 0 = 0x2
+tss 8 3: 0 = 0x1
+tss 8 4: 0 = 0x1
+tss 8 5: 0 = 0x2
+tss 8 6: 0 = 0x1
+tss 8 7: 0 = 0
+tss 8 8: 0 = 0
+tss 8 9: 0 = 0
+tss 8 10: 0 = 0
+tss 8 11: 0 = 0x7
+tss 8 12: 0 = 0xbaadcafe
+tss 8 13: 0 = 0xbaadcafe
+tss 8 14: 0 = 0xbaadcafe
+tss 8 15: 0 = 0xbaadcafe
+tss 8 16: 0 = 0xbaadcafe
+tss 8 17: 0 = 0xbaadcafe
+tss 8 18: 0 = 0xbaadcafe
+tss 8 19: 0 = 0xbaadcafe
+tss 8 20: 0 = 0xbaadcafe
+tss 8 21: 0 = 0xbaadcafe
+tss 8 22: 0 = 0
+tss 8 23: 0 = 0
+tss 8 24: 0 = 0
+tss 8 25: 0 = 0xbaadcafe
+tss 8 26: 0 = 0x1
+tss 8 27: 0 = 0x1
+tss 8 28: 0 = 0x1
+tss 8 29: 0 = 0xbaadcafe
+tss 8 30: 0 = 0xbaadcafe
+tss 8 31: 0 = 0xbaadcafe
+tss 8 32: 0 = 0
+tss 8 33: 0 = 0
+ss 0 0: 0 = 0xbaadcafe
+ss 0 1: 0 = 0x1
+ss 0 2: 0 = 0x1
+ss 0 3: 0 = 0x1
+ss 0 4: 0 = 0
+ss 0 5: 0 = 0x1
+ss 0 6: 0 = 0x1
+ss 0 7: 0 = 0
+ss 0 8: 0 = 0
+ss 0 9: 0 = 0
+ss 0 10: 0 = 0x1
+ss 0 11: 0 = 0
+ss 0 12: 0 = 0
+ss 0 13: 0 = 0
+ss 0 14: 0 = 0xbaadcafe
+ss 15 0: 0 = 0xbaadcafe
+ss 15 1: 0 = 0x1
+ss 15 2: 0 = 0x1
+ss 15 3: 0 = 0x1
+ss 15 4: 0 = 0
+ss 15 5: 0 = 0x1
+ss 15 6: 0 = 0x1
+ss 15 7: 0 = 0
+ss 15 8: 0 = 0
+ss 15 9: 0 = 0
+ss 15 10: 0 = 0x1
+ss 15 11: 0 = 0
+ss 15 12: 0 = 0
+ss 15 13: 0 = 0
+ss 15 14: 0 = 0xbaadcafe
+ss 16 0: 0 = 0xbaadcafe
+ss 16 1: 0 = 0x1
+ss 16 2: 0 = 0x1
+ss 16 3: 0 = 0x1
+ss 16 4: 0 = 0
+ss 16 5: 0 = 0x1
+ss 16 6: 0 = 0x1
+ss 16 7: 0 = 0
+ss 16 8: 0 = 0
+ss 16 9: 0 = 0
+ss 16 10: 0 = 0x1
+ss 16 11: 0 = 0
+ss 16 12: 0 = 0
+ss 16 13: 0 = 0
+ss 16 14: 0 = 0xbaadcafe
+ss 256 0: 0 = 0xbaadcafe
+ss 256 1: 0 = 0x1
+ss 256 2: 0 = 0x1
+ss 256 3: 0 = 0x1
+ss 256 4: 0 = 0
+ss 256 5: 0 = 0x1
+ss 256 6: 0 = 0x1
+ss 256 7: 0 = 0
+ss 256 8: 0 = 0
+ss 256 9: 0 = 0
+ss 256 10: 0 = 0x1
+ss 256 11: 0 = 0
+ss 256 12: 0 = 0
+ss 256 13: 0 = 0
+ss 256 14: 0 = 0xbaadcafe
+ss 257 0: 0 = 0xbaadcafe
+ss 257 1: 0 = 0x1
+ss 257 2: 0 = 0x1
+ss 257 3: 0 = 0x1
+ss 257 4: 0 = 0
+ss 257 5: 0 = 0x1
+ss 257 6: 0 = 0x1
+ss 257 7: 0 = 0
+ss 257 8: 0 = 0
+ss 257 9: 0 = 0
+ss 257 10: 0 = 0x1
+ss 257 11: 0 = 0
+ss 257 12: 0 = 0
+ss 257 13: 0 = 0
+ss 257 14: 0 = 0xbaadcafe
+ss 260 0: 0 = 0xbaadcafe
+ss 260 1: 0 = 0x1
+ss 260 2: 0 = 0x1
+ss 260 3: 0 = 0x1
+ss 260 4: 0 = 0
+ss 260 5: 0 = 0x1
+ss 260 6: 0 = 0x1
+ss 260 7: 0 = 0
+ss 260 8: 0 = 0
+ss 260 9: 0 = 0
+ss 260 10: 0 = 0x1
+ss 260 11: 0 = 0
+ss 260 12: 0 = 0
+ss 260 13: 0 = 0
+ss 260 14: 0 = 0x124e640
+ss 261 0: 0 = 0xbaadcafe
+ss 261 1: 0 = 0x1
+ss 261 2: 0 = 0x1
+ss 261 3: 0 = 0x1
+ss 261 4: 0 = 0
+ss 261 5: 0 = 0x1
+ss 261 6: 0 = 0x1
+ss 261 7: 0 = 0
+ss 261 8: 0 = 0
+ss 261 9: 0 = 0
+ss 261 10: 0 = 0x1
+ss 261 11: 0 = 0
+ss 261 12: 0 = 0
+ss 261 13: 0 = 0
+ss 261 14: 0 = 0xbaadcafe
+transform 2: 0 1 0 1 1
+transform 3: 0 1 0 1 1
+transform 16: 0 1 0 1 1
+transform 23: 0 1 0 1 1
+transform 256: 0 1 0 1 1
+transform 511: 0 1 0 1 1
+transform 0: 0x8876086c 1.46602e+013 1.46602e+013 1.46602e+013 1.46602e+013
+transform 1: 0x8876086c 1.46602e+013 1.46602e+013 1.46602e+013 1.46602e+013
+transform 24: 0x8876086c 1.46602e+013 1.46602e+013 1.46602e+013 1.46602e+013
+transform 512: 0x8876086c 1.46602e+013 1.46602e+013 1.46602e+013 1.46602e+013
+viewport 0 0 64 48 0 1
+scissor 0 1431655765 1431655765 1431655765 1431655765
+material 0 1.46602e+013 1.46602e+013 1.46602e+013
+light 0 0x8876086c enable 0x8876086c 7
+clipplane 0 0 0 0; 6 0
+freq 0 0 1; 16 0
+fvf 0 npatch 0
+vsf 0 0 0; 256 0
+psf 0 0 0; 224 0x8876086c
+vsi 0 0 0; 16 0; vsb 0 0 0; 16 0
+SetRenderState 0 0 300 0
+SetTextureStageState 8 0 type 40 0
+SetSamplerState 16 0 type 20 0
+SetTexture 16 0 261 0
+SetStreamSource 16 0
+SetStreamSourceFreq 0 0 0x8876086c
+SetVertexShaderConstantF 255+2 0
+SetClipPlane 6 0
+LightEnable 1000 0
+GetLight 1000 after LightEnable 0 type 1431655765 range 1.46602e+013
