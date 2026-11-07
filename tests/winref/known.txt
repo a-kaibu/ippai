@@ -73,3 +73,10 @@ d3d8-32 ^(want|got) +fpu default: 1/3
 # ellipse outline is its tessellated stroke (sake: a ring), and an antialiased clip still fades
 # an aliased fill at its edges (sake: clips by the pixel center there)
 d2d-* ^image (fills_aa|outlines|transforms):
+# OpenGL on the runner is Microsoft's GDI Generic software GL 1.1, not a GPU driver: its pixel
+# formats have no alpha bits; it fills pixels whose centres lie exactly on an edge into both
+# triangles (sake follows the GPU top-left rule); GL_CLAMP with linear filtering blends in the
+# border color (NVIDIA's drivers treat it as clamp-to-edge, as sake does); and it rounds colors
+# a few levels differently (formats/blend_depth: within 4)
+gl-* ^(want|got) +pixel format: 
+gl-* ^image (raster|textures):

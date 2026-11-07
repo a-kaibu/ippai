@@ -190,7 +190,7 @@ int main(void) {
         quad(32, 14, 64, 46, 0, 0, 1, 1);
         glDeleteTextures(1, &u);
         reset();
-        shot("formats", 2);
+        shot("formats", 4);
     }
 
     /* blending factors, alpha test, depth */
@@ -230,7 +230,7 @@ int main(void) {
         glColor3f(0, 1, 0); glVertex3f(40, 63, -0.5f); glVertex3f(2, 50, 0); glVertex3f(30, 46, 0);
         glEnd();
         reset();
-        shot("blend_depth", 2);
+        shot("blend_depth", 4);
     }
     /* transforms: viewport, rotation, scaling on the modelview */
     {
