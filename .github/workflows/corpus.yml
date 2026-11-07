@@ -140,6 +140,8 @@ jobs:
           echo "build $V ($BUILT)"
           python3 tools/ci/sake-fonts.py "$RUNNER_TEMP/fonts"
           wait
+      - name: Extraction of zips unar fails on (tests/test_unzip_cp932.py)
+        run: python3 tests/test_unzip_cp932.py
       - if: steps.cache-1.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6.1.0
         with:

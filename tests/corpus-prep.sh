@@ -31,7 +31,12 @@ if [ ! -d x ]; then
     # Shift-JIS names are converted below)
     *.lzh) (cd x.part && LC_ALL=C.UTF-8 7z x -y ../$f >/dev/null 2>&1 ||
              LC_ALL=C.UTF-8 unar -q -f -e cp932 -o . ../$f >/dev/null 2>&1 || [ -n "$(ls)" ]) ;;
-    *.zip) (cd x.part && LC_ALL=C.UTF-8 unar -q -e cp932 -o . ../$f >/dev/null 2>&1 || [ -n "$(ls)" ]) ;;
+    # (unar makes a 0-byte file of a directory entry named with backslashes, "Game\MonoBleedingEdge\",
+    # and then fails on the files inside it; unzip-cp932.py takes either separator. Its zipfile
+    # lacks some methods unar has, so unar's partial result stays the last resort.)
+    *.zip) (cd x.part && { LC_ALL=C.UTF-8 unar -q -e cp932 -o . ../$f >/dev/null 2>&1 ||
+             { find . -mindepth 1 -delete && python3 -I "$HERE/unzip-cp932.py" ../$f . >/dev/null 2>&1 && [ -n "$(ls)" ]; } ||
+             { find . -mindepth 1 -delete; LC_ALL=C.UTF-8 unar -q -e cp932 -o . ../$f >/dev/null 2>&1 || [ -n "$(ls)" ]; }; }) ;;
     *.rar|*.7z) (cd x.part && LC_ALL=C.UTF-8 unar -q -o . ../$f >/dev/null 2>&1 || [ -n "$(ls)" ]) ;;
     *.exe)
       # InstallShield setup with its files in the exe, a zlib-stream setup (zsfx.py), self-extracting

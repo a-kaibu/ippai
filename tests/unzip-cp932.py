@@ -5,7 +5,7 @@ import os
 import sys
 import zipfile
 
-src, out = sys.argv[1], sys.argv[2]
+src, out = sys.argv[1], os.path.abspath(sys.argv[2])
 with zipfile.ZipFile(src) as z:
     for i in z.infolist():
         name = i.filename
