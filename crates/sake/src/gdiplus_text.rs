@@ -18,12 +18,16 @@ use std::sync::Mutex;
 
 const OK: u32 = 0;
 const INVALID_PARAMETER: u32 = 2;
+const OUT_OF_MEMORY: u32 = 3;
+const NOT_TRUETYPE_FONT: u32 = 16;
 
 enum Obj {
-    /// target bitmap (0: a window or DC, measuring only), page unit and scale
-    Graphics { img: u32, unit: u32, scale: f32 },
-    Font { lf: LogFont, em: f32 },
-    Brush { argb: u32 },
+    /// target bitmap, or the DC drawn into (both 0: a window, measuring only), page unit and
+    /// scale, rendering origin (where hatches start)
+    Graphics { img: u32, hdc: u32, unit: u32, scale: f32, origin: (i32, i32) },
+    /// its LOGFONT (made from the family), em in pixels, family (gdiplus_font), size in its
+    /// unit, FontStyle (bold 1, italic 2, underline 4, strikeout 8)
+    Font { lf: LogFont, em: f32, family: u32, size: f32, unit: u32, style: u32 },
     Pen { argb: u32, width: f32 },
     Format { flags: u32, align: u32, ranges: Vec<(i32, i32)> },
     /// a rectangle (x, y, w, h) in world units; empty when w or h is 0
@@ -59,17 +63,51 @@ fn fl(v: u32) -> f32 {
 
 // ---- graphics ----
 
+fn new_graphics(img: u32, hdc: u32, out: u32) -> u32 {
+    new_obj(Obj::Graphics { img, hdc, unit: 1, scale: 1.0, origin: (0, 0) }, out)
+}
 fn GdipCreateFromHDC(c: &mut Ctx) -> u32 {
-    new_obj(Obj::Graphics { img: 0, unit: 1, scale: 1.0 }, c.a(1))
+    if c.a(0) == 0 {
+        return OUT_OF_MEMORY;
+    }
+    new_graphics(0, c.a(0), c.a(1))
 }
 fn GdipCreateFromHWND(c: &mut Ctx) -> u32 {
-    new_obj(Obj::Graphics { img: 0, unit: 1, scale: 1.0 }, c.a(1))
+    new_graphics(0, 0, c.a(1))
+}
+/// GdipCreateBitmapFromGraphics(width, height, graphics, &bitmap): a 32bppPARGB bitmap
+fn GdipCreateBitmapFromGraphics(c: &mut Ctx) -> u32 {
+    if graphics(c.a(2)).is_none() || c.i(0) <= 0 || c.i(1) <= 0 {
+        return INVALID_PARAMETER;
+    }
+    crate::gdiplus::new_bitmap(c.a(0), c.a(1), 0x000e_200b, c.a(3))
+}
+fn GdipGetRenderingOrigin(c: &mut Ctx) -> u32 {
+    let (xp, yp) = (c.a(1), c.a(2));
+    with(|m| match m.get(&c.a(0)) {
+        Some(Obj::Graphics { origin, .. }) if xp != 0 && yp != 0 => {
+            w32(xp, origin.0 as u32);
+            w32(yp, origin.1 as u32);
+            OK
+        }
+        _ => INVALID_PARAMETER,
+    })
+}
+fn GdipSetRenderingOrigin(c: &mut Ctx) -> u32 {
+    let o = (c.i(1), c.i(2));
+    with(|m| match m.get_mut(&c.a(0)) {
+        Some(Obj::Graphics { origin, .. }) => {
+            *origin = o;
+            OK
+        }
+        _ => INVALID_PARAMETER,
+    })
 }
 fn GdipGetImageGraphicsContext(c: &mut Ctx) -> u32 {
     if !crate::gdiplus::is_image(c.a(0)) {
         return INVALID_PARAMETER;
     }
-    new_obj(Obj::Graphics { img: c.a(0), unit: 1, scale: 1.0 }, c.a(1))
+    new_graphics(c.a(0), 0, c.a(1))
 }
 fn GdipSetPageUnit(c: &mut Ctx) -> u32 {
     let u = c.a(1);
@@ -82,7 +120,7 @@ fn GdipSetPageUnit(c: &mut Ctx) -> u32 {
     })
 }
 fn GdipSetPageScale(c: &mut Ctx) -> u32 {
-    let s = fl(c.a(1));
+    let s = c.f(1);
     with(|m| match m.get_mut(&c.a(0)) {
         Some(Obj::Graphics { scale, .. }) if s > 0.0 => {
             *scale = s;
@@ -104,28 +142,69 @@ fn px_per_unit(unit: u32, scale: f32) -> f32 {
     u * scale
 }
 fn graphics(g: u32) -> Option<(u32, f32)> {
+    target(g).map(|(img, _, k, _)| (img, k))
+}
+/// a graphics' bitmap, DC, pixels per unit and rendering origin
+fn target(g: u32) -> Option<(u32, u32, f32, (i32, i32))> {
     with(|m| match m.get(&g) {
-        Some(Obj::Graphics { img, unit, scale }) => Some((*img, px_per_unit(*unit, *scale))),
+        Some(Obj::Graphics { img, hdc, unit, scale, origin }) => Some((*img, *hdc, px_per_unit(*unit, *scale), *origin)),
         _ => None,
     })
 }
 
 // ---- fonts, brushes, pens, formats ----
 
+/// The LOGFONT GDI+ reports for a font: its family's face, the em as a negative height, the
+/// style's weight and flags, the rest 0 (Wine's tests)
+fn logfont_of(family: u32, em: f32, style: u32, charset: u8) -> LogFont {
+    let name = crate::gdiplus_font::family(family).map_or_else(String::new, |f| f.name);
+    LogFont {
+        height: -(em.round() as i32),
+        width: 0,
+        esc: 0,
+        orient: 0,
+        weight: if style & 1 != 0 { 700 } else { 400 },
+        italic: (style & 2 != 0) as u8,
+        underline: (style & 4 != 0) as u8,
+        strike: (style & 8 != 0) as u8,
+        charset,
+        out_prec: 0,
+        clip_prec: 0,
+        quality: 0,
+        pitch: 0,
+        face: name,
+    }
+}
+/// The charset of a family's LOGFONT: SHIFTJIS for the built-in Japanese faces
+fn charset_of(family: u32) -> u8 {
+    match crate::gdiplus_font::family(family) {
+        Some(f) if crate::gdi::find_face(&f.name).is_some() && crate::gdi::face_names(f.face).first().is_some_and(|n| !n.is_ascii()) => 128,
+        _ => 0,
+    }
+}
+
 /// GdipCreateFontFromLogfont{A,W}(hdc, LOGFONT*, &font): its em in pixels (a negative
-/// lfHeight is the em, a positive one the cell height)
+/// lfHeight is the em, a positive one the cell height: the em that fits the family's ascent
+/// and descent in it), unit World. A face GDI+ does not have is Arial, unless the LOGFONT
+/// has neither a weight nor a charset (NotTrueTypeFont; Wine's tests)
 fn font_from_logfont(c: &mut Ctx, wide: bool) -> u32 {
-    let lf = crate::gdi::read_logfont(c.a(1), wide);
+    let (lp, out) = (c.a(1), c.a(2));
+    if c.a(0) == 0 || lp == 0 || out == 0 {
+        return INVALID_PARAMETER;
+    }
+    let lf = crate::gdi::read_logfont(lp, wide);
+    let known = !lf.face.is_empty() && crate::gdi::find_face(&lf.face).is_some() || crate::gdiplus_font::is_family_name(&lf.face);
+    if !known && lf.weight == 0 && lf.charset == 0 {
+        return NOT_TRUETYPE_FONT;
+    }
+    let family = crate::gdiplus_font::family_for(&lf.face);
+    let Some(fam) = crate::gdiplus_font::family(family) else { return NOT_TRUETYPE_FONT };
     let h = if lf.height == 0 { 16 } else { lf.height };
-    let em = if h < 0 {
-        -h as f32
-    } else {
-        crate::gdi::text_font(&lf.face, h as f32, lf.weight).map_or(h as f32, |f| {
-            let (a, d, _) = f.metrics();
-            h as f32 * h as f32 / (a + d).max(1.0)
-        })
-    };
-    new_obj(Obj::Font { lf, em }, c.a(2))
+    let em = em_for_height(h, crate::gdiplus_font::design_metrics(fam.face));
+    let style = (lf.weight >= 600) as u32 | (lf.italic != 0) as u32 * 2 | (lf.underline != 0) as u32 * 4 | (lf.strike != 0) as u32 * 8;
+    let charset = if lf.charset == 1 { charset_of(family) } else { lf.charset };
+    let lf = logfont_of(family, em, style, charset);
+    new_obj(Obj::Font { lf, em, family, size: em, unit: 0, style }, out)
 }
 fn GdipCreateFontFromLogfontA(c: &mut Ctx) -> u32 {
     font_from_logfont(c, false)
@@ -133,19 +212,60 @@ fn GdipCreateFontFromLogfontA(c: &mut Ctx) -> u32 {
 fn GdipCreateFontFromLogfontW(c: &mut Ctx) -> u32 {
     font_from_logfont(c, true)
 }
+/// GdipCreateFont(family, size, style, unit, &font): a positive size in a unit other than
+/// UnitDisplay
+fn GdipCreateFont(c: &mut Ctx) -> u32 {
+    let (family, size, style, unit, out) = (c.a(0), c.f(1), c.a(2), c.a(3), c.a(4));
+    if crate::gdiplus_font::family(family).is_none() || out == 0 || !(size > 0.0) || unit == 1 || unit > 6 {
+        return INVALID_PARAMETER;
+    }
+    let em = size * px_per_unit(unit, 1.0);
+    let lf = logfont_of(family, em, style, charset_of(family));
+    new_obj(Obj::Font { lf, em, family, size, unit, style }, out)
+}
+fn GdipCloneFont(c: &mut Ctx) -> u32 {
+    let o = with(|m| match m.get(&c.a(0)) {
+        Some(Obj::Font { lf, em, family, size, unit, style }) => Some(Obj::Font { lf: lf.clone(), em: *em, family: *family, size: *size, unit: *unit, style: *style }),
+        _ => None,
+    });
+    let Some(o) = o else { return INVALID_PARAMETER };
+    new_obj(o, c.a(1))
+}
+fn GdipDeleteFont(c: &mut Ctx) -> u32 {
+    if font(c.a(0)).is_none() {
+        return INVALID_PARAMETER;
+    }
+    delete(c)
+}
 fn font(f: u32) -> Option<(LogFont, f32)> {
     with(|m| match m.get(&f) {
-        Some(Obj::Font { lf, em }) => Some((lf.clone(), *em)),
+        Some(Obj::Font { lf, em, .. }) => Some((lf.clone(), *em)),
+        _ => None,
+    })
+}
+/// a font's family, size, unit and style
+fn font_info(f: u32) -> Option<(u32, f32, u32, u32)> {
+    with(|m| match m.get(&f) {
+        Some(Obj::Font { family, size, unit, style, .. }) => Some((*family, *size, *unit, *style)),
         _ => None,
     })
 }
 fn text_font(f: u32) -> Option<(TextFont, f32)> {
     let (lf, em) = font(f)?;
-    Some((crate::gdi::text_font(&lf.face, em, lf.weight.max(400))?, em))
+    let face = crate::gdiplus_font::family(with(|m| match m.get(&f) {
+        Some(Obj::Font { family, .. }) => *family,
+        _ => 0,
+    }))
+    .map(|fam| crate::gdi::face_names(fam.face).pop().unwrap_or(lf.face.clone()))
+    .unwrap_or(lf.face.clone());
+    Some((crate::gdi::text_font(&face, em, lf.weight.max(400))?, em))
 }
+/// GdipGetLogFont{A,W}(font, graphics, &LOGFONT)
 fn get_logfont(c: &mut Ctx, wide: bool) -> u32 {
-    let Some((mut lf, em)) = font(c.a(0)) else { return INVALID_PARAMETER };
-    lf.height = -(em.round() as i32);
+    let Some((lf, _)) = font(c.a(0)) else { return INVALID_PARAMETER };
+    if graphics(c.a(1)).is_none() || c.a(2) == 0 {
+        return INVALID_PARAMETER;
+    }
     crate::gdi::write_logfont(c.a(2), &lf, wide);
     OK
 }
@@ -155,24 +275,76 @@ fn GdipGetLogFontA(c: &mut Ctx) -> u32 {
 fn GdipGetLogFontW(c: &mut Ctx) -> u32 {
     get_logfont(c, true)
 }
-/// (the font's size in its unit: UnitPixel)
+/// (the size in the font's own unit)
 fn GdipGetFontSize(c: &mut Ctx) -> u32 {
-    let Some((_, em)) = font(c.a(0)) else { return INVALID_PARAMETER };
-    put32(c.a(1), em.to_bits());
+    let (Some((_, size, _, _)), out) = (font_info(c.a(0)), c.a(1)) else { return INVALID_PARAMETER };
+    if out == 0 {
+        return INVALID_PARAMETER;
+    }
+    put32(out, size.to_bits());
     OK
 }
 fn GdipGetFontUnit(c: &mut Ctx) -> u32 {
-    if font(c.a(0)).is_none() {
+    let (Some((_, _, unit, _)), out) = (font_info(c.a(0)), c.a(1)) else { return INVALID_PARAMETER };
+    if out == 0 {
         return INVALID_PARAMETER;
     }
-    put32(c.a(1), 2);
+    put32(out, unit);
     OK
 }
-/// GdipGetFontHeight(font, graphics, &height): the line spacing in the graphics' units
+fn GdipGetFontStyle(c: &mut Ctx) -> u32 {
+    let (Some((_, _, _, style)), out) = (font_info(c.a(0)), c.a(1)) else { return INVALID_PARAMETER };
+    if out == 0 {
+        return INVALID_PARAMETER;
+    }
+    put32(out, style);
+    OK
+}
+/// GdipGetFamily(font, &family): the family it was made from, the same object
+fn GdipGetFamily(c: &mut Ctx) -> u32 {
+    let (Some((family, _, _, _)), out) = (font_info(c.a(0)), c.a(1)) else { return INVALID_PARAMETER };
+    if out == 0 {
+        return INVALID_PARAMETER;
+    }
+    mem::putp(out, family);
+    OK
+}
+/// The line spacing of a font in pixels at `dpi`: its size in pixels there times the
+/// family's line spacing over its em height
+fn line_spacing_at(f: u32, dpi: f32) -> Option<f32> {
+    let (family, size, unit, _) = font_info(f)?;
+    let fam = crate::gdiplus_font::family(family)?;
+    Some(spacing_px(size, unit, dpi, crate::gdiplus_font::design_metrics(fam.face)))
+}
+/// a font's line spacing in pixels at `dpi`: its size in pixels times line spacing / em
+/// (pixel and world sizes ignore the dpi)
+fn spacing_px(size: f32, unit: u32, dpi: f32, m: [u16; 4]) -> f32 {
+    let px = size * px_per_unit(unit, 1.0) * if matches!(unit, 3..=6) { dpi / 96.0 } else { 1.0 };
+    px * m[3] as f32 / m[0].max(1) as f32
+}
+/// the em size a positive LOGFONT height (a cell height) asks for: the height scaled by
+/// em / (win ascent + win descent), rounded; a negative height is the em itself
+fn em_for_height(h: i32, m: [u16; 4]) -> f32 {
+    if h < 0 {
+        -h as f32
+    } else {
+        (h as f32 * m[0] as f32 / (m[1] as f32 + m[2] as f32).max(1.0)).round()
+    }
+}
+/// GdipGetFontHeight(font, graphics, &height): the line spacing in the graphics' units (no
+/// graphics: pixels at 96 dpi)
 fn GdipGetFontHeight(c: &mut Ctx) -> u32 {
-    let Some((tf, _)) = text_font(c.a(0)) else { return INVALID_PARAMETER };
+    let out = c.a(2);
+    let Some(h) = line_spacing_at(c.a(0), 96.0).filter(|_| out != 0) else { return INVALID_PARAMETER };
     let k = graphics(c.a(1)).map_or(1.0, |g| g.1);
-    put32(c.a(2), (line_height(&tf) / k).to_bits());
+    put32(out, (h / k).to_bits());
+    OK
+}
+/// GdipGetFontHeightGivenDPI(font, dpi, &height)
+fn GdipGetFontHeightGivenDPI(c: &mut Ctx) -> u32 {
+    let out = c.a(2);
+    let Some(h) = line_spacing_at(c.a(0), c.f(1)).filter(|_| out != 0) else { return INVALID_PARAMETER };
+    put32(out, h.to_bits());
     OK
 }
 fn line_height(tf: &TextFont) -> f32 {
@@ -180,26 +352,17 @@ fn line_height(tf: &TextFont) -> f32 {
     a + d + g
 }
 
-fn GdipCreateSolidFill(c: &mut Ctx) -> u32 {
-    new_obj(Obj::Brush { argb: c.a(0) }, c.a(1))
-}
-fn GdipCloneBrush(c: &mut Ctx) -> u32 {
-    let Some(argb) = with(|m| match m.get(&c.a(0)) {
-        Some(Obj::Brush { argb }) => Some(*argb),
-        _ => None,
-    }) else {
-        return INVALID_PARAMETER;
-    };
-    new_obj(Obj::Brush { argb }, c.a(1))
-}
 /// GdipCreatePen1(argb, width, unit, &pen)
 fn GdipCreatePen1(c: &mut Ctx) -> u32 {
-    new_obj(Obj::Pen { argb: c.a(0), width: fl(c.a(1)) }, c.a(3))
+    new_obj(Obj::Pen { argb: c.a(0), width: c.f(1) }, c.a(3))
 }
+/// a brush's (gdiplus_brush) or pen's color
 fn color_of(b: u32) -> Option<u32> {
-    with(|m| match m.get(&b) {
-        Some(Obj::Brush { argb }) | Some(Obj::Pen { argb, .. }) => Some(*argb),
-        _ => None,
+    crate::gdiplus_brush::main_color(b).or_else(|| {
+        with(|m| match m.get(&b) {
+            Some(Obj::Pen { argb, .. }) => Some(*argb),
+            _ => None,
+        })
     })
 }
 
@@ -472,29 +635,51 @@ pub(crate) fn blend(px: &mut [u8], i: usize, argb: u32, cov: u8) {
     px[i + 3] = oa.min(255) as u8;
 }
 
-/// GdipFillRectangle(graphics, brush, x, y, w, h) (REAL) / ..I (INT)
+/// GdipFillRectangle(graphics, brush, x, y, w, h) (REAL) / ..I (INT): each pixel the brush's
+/// color there (gdiplus_brush), source-over, into the bitmap or the DC
 fn fill(c: &mut Ctx, r: [f32; 4]) -> u32 {
-    let Some((img, k)) = graphics(c.a(0)) else { return INVALID_PARAMETER };
-    let Some(argb) = color_of(c.a(1)) else { return INVALID_PARAMETER };
-    if img == 0 {
+    let Some((img, hdc, k, origin)) = target(c.a(0)) else { return INVALID_PARAMETER };
+    let Some(paint) = crate::gdiplus_brush::painter(c.a(1)) else { return INVALID_PARAMETER };
+    if img == 0 && hdc == 0 {
         return OK;
     }
     let r = r.map(|v| v * k);
-    crate::gdiplus::with_pixels(img, |w, h, px| {
-        let x0 = r[0].round().clamp(0.0, w as f32) as u32;
-        let y0 = r[1].round().clamp(0.0, h as f32) as u32;
-        let x1 = (r[0] + r[2]).round().clamp(0.0, w as f32) as u32;
-        let y1 = (r[1] + r[3]).round().clamp(0.0, h as f32) as u32;
-        for y in y0..y1 {
-            for x in x0..x1 {
-                blend(px, ((y * w + x) * 4) as usize, argb, 255);
-            }
+    let (mut x0, mut y0) = (r[0].round() as i32, r[1].round() as i32);
+    let (mut x1, mut y1) = ((r[0] + r[2]).round() as i32, (r[1] + r[3]).round() as i32);
+    if img != 0 {
+        let Some((w, h)) = crate::gdiplus::size_of(img) else { return INVALID_PARAMETER };
+        (x0, y0, x1, y1) = (x0.clamp(0, w as i32), y0.clamp(0, h as i32), x1.clamp(0, w as i32), y1.clamp(0, h as i32));
+    } else {
+        (x0, y0, x1, y1) = (x0.max(-(1 << 14)), y0.max(-(1 << 14)), x1.min(1 << 14), y1.min(1 << 14));
+    }
+    if x1 <= x0 || y1 <= y0 {
+        return OK;
+    }
+    let (fw, fh) = ((x1 - x0) as usize, (y1 - y0) as usize);
+    // (the colors first: no lock of the bitmaps or DCs is held while sampling the brush)
+    let mut cols = Vec::with_capacity(fw * fh);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            cols.push(paint.at(x, y, origin));
         }
-    });
+    }
+    if img != 0 {
+        crate::gdiplus::with_pixels(img, |w, _, px| {
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    if let Some(argb) = cols[(y - y0) as usize * fw + (x - x0) as usize] {
+                        blend(px, ((y as u32 * w + x as u32) * 4) as usize, argb, 255);
+                    }
+                }
+            }
+        });
+    } else {
+        crate::gdi::blend_argb(hdc, x0, y0, fw as i32, fh as i32, &cols);
+    }
     OK
 }
 fn GdipFillRectangle(c: &mut Ctx) -> u32 {
-    let r = [2, 3, 4, 5].map(|i| fl(c.a(i)));
+    let r = [2, 3, 4, 5].map(|i| c.f(i));
     fill(c, r)
 }
 fn GdipFillRectangleI(c: &mut Ctx) -> u32 {
@@ -536,6 +721,9 @@ pub fn init() {
     let fns: &[(&str, Handler)] = &[
         ("GdipCreateFromHDC", GdipCreateFromHDC),
         ("GdipCreateFromHWND", GdipCreateFromHWND),
+        ("GdipCreateBitmapFromGraphics", GdipCreateBitmapFromGraphics),
+        ("GdipGetRenderingOrigin", GdipGetRenderingOrigin),
+        ("GdipSetRenderingOrigin", GdipSetRenderingOrigin),
         ("GdipGetImageGraphicsContext", GdipGetImageGraphicsContext),
         ("GdipDeleteGraphics", delete),
         ("GdipFlush", ok),
@@ -552,10 +740,12 @@ pub fn init() {
         ("GdipGetFontSize", GdipGetFontSize),
         ("GdipGetFontUnit", GdipGetFontUnit),
         ("GdipGetFontHeight", GdipGetFontHeight),
-        ("GdipDeleteFont", delete),
-        ("GdipCreateSolidFill", GdipCreateSolidFill),
-        ("GdipCloneBrush", GdipCloneBrush),
-        ("GdipDeleteBrush", delete),
+        ("GdipDeleteFont", GdipDeleteFont),
+        ("GdipCreateFont", GdipCreateFont),
+        ("GdipCloneFont", GdipCloneFont),
+        ("GdipGetFontStyle", GdipGetFontStyle),
+        ("GdipGetFamily", GdipGetFamily),
+        ("GdipGetFontHeightGivenDPI", GdipGetFontHeightGivenDPI),
         ("GdipCreatePen1", GdipCreatePen1),
         ("GdipDeletePen", delete),
         ("GdipCreateStringFormat", GdipCreateStringFormat),
@@ -586,6 +776,49 @@ pub fn init() {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    // Tahoma's design metrics: em 2048, win ascent 2049, win descent 423, spacing 2472
+    const TAHOMA: [u16; 4] = [2048, 2049, 423, 2472];
+
+    #[test]
+    fn font_height_units() {
+        // a 30-unit Tahoma in pixel, point, inch, document and millimetre units at 96 dpi
+        let close = |a: f32, b: f32| (a - b).abs() < 0.01;
+        for (unit, want) in [(2, 36.2109), (3, 48.2812), (4, 3476.25), (5, 11.5875), (6, 136.8602)] {
+            let got = spacing_px(30.0, unit, 96.0, TAHOMA);
+            assert!(close(got, want), "unit {unit}: {got} vs {want}");
+        }
+        // point sizes follow the dpi; pixel and world sizes don't
+        assert!(close(spacing_px(30.0, 3, 192.0, TAHOMA), 96.5625));
+        assert_eq!(spacing_px(30.0, 2, 192.0, TAHOMA), spacing_px(30.0, 2, 96.0, TAHOMA));
+        assert_eq!(spacing_px(30.0, 0, 192.0, TAHOMA), spacing_px(30.0, 2, 96.0, TAHOMA));
+    }
+
+    #[test]
+    fn logfont_heights() {
+        assert_eq!(em_for_height(-16, TAHOMA), 16.0);
+        // a cell height of 30 is an em of 30 * 2048 / 2472 = 24.85 -> 25
+        assert_eq!(em_for_height(30, TAHOMA), 25.0);
+        assert_eq!(em_for_height(0, TAHOMA), 0.0);
+        assert_eq!(em_for_height(12, [0, 0, 0, 0]), 0.0);
+    }
+
+    proptest! {
+        #[test]
+        fn spacing_scales_linearly(size in 0.5f32..500.0, unit in 0u32..7, dpi in 24f32..600.0) {
+            let one = spacing_px(1.0, unit, dpi, TAHOMA);
+            let got = spacing_px(size, unit, dpi, TAHOMA);
+            prop_assert!((got - one * size).abs() <= 1e-4 * got.max(1.0));
+            prop_assert!(got > 0.0);
+        }
+
+        #[test]
+        fn cell_height_em_never_exceeds_cell(h in 1i32..2000) {
+            let em = em_for_height(h, TAHOMA);
+            prop_assert!(em <= h as f32);
+            prop_assert!((em - h as f32 * 2048.0 / 2472.0).abs() <= 0.5);
+        }
+    }
 
     fn ws(s: &str) -> Vec<u16> {
         s.encode_utf16().collect()

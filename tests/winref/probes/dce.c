@@ -68,7 +68,9 @@ int main(void) {
         dcs[i] = GetDCEx(cache, 0, DCX_USESTYLE);
         if (dcs[i] == dc) kept = GetROP2(dcs[i]);
     }
-    printf("noresetattrs: found %d rop kept %d\n", kept != -1, kept == R2_WHITE);
+    /* (a plain GetDCEx resets what the DCX_NORESETATTRS release kept; where the DC is in the
+     * cache depends on the machine) */
+    printf("noresetattrs: rop kept %d\n", kept == R2_WHITE);
     for (int i = 7; i >= 0; i--) ReleaseDC(cache, dcs[i]);
     HDC scr = GetDC(NULL);
     printf("screen: horzres>0 %d", GetDeviceCaps(scr, HORZRES) > 0);

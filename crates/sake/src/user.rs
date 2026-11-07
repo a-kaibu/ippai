@@ -3529,7 +3529,16 @@ fn ScrollWindowEx(c: &mut Ctx) -> u32 {
     if flags & 2 != 0 {
         invalidate(h, Some(a), flags & 4 != 0);
     }
-    if a.empty() { 1 } else { 2 }
+    // NULLREGION 1, SIMPLEREGION 2, COMPLEXREGION 3: a scroll both ways that keeps part of
+    // the area uncovers an L (winref dce)
+    let (dx, dy) = (c.i(1), c.i(2));
+    if a.empty() {
+        1
+    } else if dx != 0 && dy != 0 && dx.abs() < a.r - a.l && dy.abs() < a.b - a.t {
+        3
+    } else {
+        2
+    }
 }
 fn LockWindowUpdate(_: &mut Ctx) -> u32 {
     1

@@ -166,3 +166,6 @@ eventlog-* ^(want|got) +(GetNumberOfEventLogRecords|BackupEventLogA)\(NULL, NULL
 # the next one, so a call gives nothing and the stream one frame less; the sound is the same
 # (frequency, loudness, start)
 acmmp3-* ^(want|got) +(call [0-3]: 0 took 208 gave (0|4608) done|took all 1, gave 2[01] frames of 1152)
+# the 64-bit GDI+ works in SSE single precision: a gradient transform's third decimal at a
+# rounding edge
+gdipbrush-64 ^(want|got) +angle 0 271\.5 0: 0: 0 0\.028 -1\.075 0\.978 0\.026 18\.70[56] 103\.990$

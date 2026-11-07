@@ -669,6 +669,12 @@ pub fn get_dce(hwnd: u32, win: Option<(u32, usize)>, rgn: u32, flags: u32) -> u3
             if let Dce::Cache { .. } = d.dce {
                 d.dce = Dce::Cache { busy: true, noreset: flags & DCX_NORESETATTRS != 0 };
                 (d.rgn, d.vis, d.paint) = (None, None, None);
+                // (what a DCX_NORESETATTRS release kept goes when the DC is taken again
+                // without the flag: winref dce)
+                if flags & DCX_NORESETATTRS == 0 {
+                    d.s = fresh_state();
+                    d.saved.clear();
+                }
             }
             if d.kind != kind {
                 d.kind = kind;
@@ -1216,6 +1222,32 @@ fn blit(c: &mut Canvas, dst: (i32, i32, i32, i32), src: Option<Src>, op: u8, pat
     r
 }
 
+/// GDI+ painting into a DC: the w x h straight ARGB colors (None: left alone) from logical
+/// (x0, y0), each source-over onto the pixel there (a 32 bpp pixel gets an opaque alpha byte,
+/// as GDI+ leaves one)
+pub fn blend_argb(dc: u32, x0: i32, y0: i32, w: i32, h: i32, cols: &[Option<u32>]) {
+    draw(dc, |_, _, cv| {
+        let mut out = Rect::default();
+        for y in 0..h {
+            for x in 0..w {
+                let Some(argb) = cols[(y * w + x) as usize] else { continue };
+                let (dx, dy) = cv.dev(x0 + x, y0 + y);
+                let a = argb >> 24;
+                if a == 0 || !cv.clip.has(dx, dy) {
+                    continue;
+                }
+                let old = rgb(cv.v.color_of(cv.v.raw(dx, dy)));
+                let mix = |s: u32| ((argb >> s & 255) * a + (old >> s & 255) * (255 - a) + 127) / 255;
+                let col = mix(16) << 16 | mix(8) << 8 | mix(0);
+                let alpha = if cv.v.bpp == 32 { 0xff00_0000 } else { 0 };
+                cv.v.set_raw(dx, dy, (cv.v.pixel(col) | alpha) & cv.v.raw_mask());
+                out = out.or(&Rect { l: dx, t: dy, r: dx + 1, b: dy + 1 });
+            }
+        }
+        out
+    });
+}
+
 pub fn fill_rect_brush(dc: u32, r: Rect, brush: u32) {
     pat_rect(dc, r, Some(brush), 0xf0);
 }
@@ -1361,8 +1393,22 @@ static ADDED: Mutex<Vec<(Vec<String>, Arc<FontVec>)>> = Mutex::new(Vec::new());
 
 /// Registers a TrueType font file's data; returns how many fonts it held (0 if none).
 fn add_font(data: Vec<u8>) -> u32 {
+    let names = font_names(&data);
+    let Ok(f) = FontVec::try_from_vec(data) else { return 0 };
+    if names.is_empty() {
+        return 0;
+    }
+    let mut g = ADDED.lock().unwrap();
+    if !g.iter().any(|(n, _)| n == &names) {
+        g.push((names, Arc::new(f)));
+    }
+    1
+}
+
+/// A font file's family names (family, full, typographic family; the Japanese family first)
+fn font_names(data: &[u8]) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
-    if let Ok(face) = ttf_parser::Face::parse(&data, 0) {
+    if let Ok(face) = ttf_parser::Face::parse(data, 0) {
         for n in face.names() {
             if matches!(n.name_id, 1 | 4 | 16) {
                 if let Some(s) = n.to_string() {
@@ -1374,22 +1420,14 @@ fn add_font(data: Vec<u8>) -> u32 {
         }
     }
     // the Japanese family name first: what a Japanese Windows enumerates (Siglus looks for it)
-    if let Ok(face) = ttf_parser::Face::parse(&data, 0) {
+    if let Ok(face) = ttf_parser::Face::parse(data, 0) {
         let ja = face.names().into_iter().find(|n| n.name_id == 1 && n.platform_id == ttf_parser::PlatformId::Windows && n.language_id == 0x411);
         if let Some(j) = ja.and_then(|n| n.to_string()).filter(|j| !j.is_empty()) {
             names.retain(|n| n != &j);
             names.insert(0, j);
         }
     }
-    let Ok(f) = FontVec::try_from_vec(data) else { return 0 };
-    if names.is_empty() {
-        return 0;
-    }
-    let mut g = ADDED.lock().unwrap();
-    if !g.iter().any(|(n, _)| n == &names) {
-        g.push((names, Arc::new(f)));
-    }
-    1
+    names
 }
 
 /// A face's name (as GetTextFace reports it).
@@ -1475,6 +1513,31 @@ pub fn sys_face_design_metrics(i: usize) -> Option<[u16; 10]> {
     let st = t.strikeout_metrics().map_or((0, 0), |u| (u.position, u.thickness));
     Some([m.upem as u16, m.win_asc as u16, m.win_desc as u16, gap as u16, cap as u16, x as u16, u.0 as u16, u.1 as u16, st.0 as u16, st.1 as u16])
 }
+/// For GDI+'s font families: how many faces there are (built-in and added), a face's family
+/// names (the Japanese one first), the face of a family name (no fallback), and a font's data
+/// added as AddFontMemResourceEx does (its face, None: no font in it).
+pub fn face_count() -> usize {
+    FACES.len() + ADDED.lock().unwrap().len()
+}
+pub fn face_names(i: usize) -> Vec<String> {
+    match FACES.get(i) {
+        Some(f) => f.names.iter().map(|s| s.to_string()).collect(),
+        None => ADDED.lock().unwrap().get(i - FACES.len()).map_or_else(Vec::new, |(n, _)| n.clone()),
+    }
+}
+pub fn find_face(name: &str) -> Option<usize> {
+    let added = ADDED.lock().unwrap().iter().position(|(n, _)| n.iter().any(|n| n.eq_ignore_ascii_case(name)));
+    added.map(|i| FACES.len() + i).or_else(|| FACES.iter().position(|f| f.names.iter().any(|n| n.eq_ignore_ascii_case(name))))
+}
+pub fn add_font_data(data: Vec<u8>) -> Option<usize> {
+    let names = font_names(&data);
+    if add_font(data) == 0 {
+        return None;
+    }
+    let g = ADDED.lock().unwrap();
+    g.iter().position(|(n, _)| *n == names).map(|i| FACES.len() + i)
+}
+
 /// Whether built-in face `i` has a glyph for `ch`.
 pub fn sys_face_has(i: usize, ch: u32) -> bool {
     font_file(i).is_some_and(|f| char::from_u32(ch).is_some_and(|c| f.glyph_id(c).0 != 0))
@@ -1492,6 +1555,11 @@ fn face_index(lf: &LogFont) -> usize {
         if f.names.iter().any(|n| n.eq_ignore_ascii_case(name)) {
             return i;
         }
+    }
+    // (Arial, Times New Roman, Courier New: the face GDI+ draws them with)
+    // (only when its font is there: a face without one is not realized)
+    if let Some(i) = crate::gdiplus_font::stand_in_face(name).filter(|&i| font_file(i).is_some()) {
+        return i;
     }
     let family = lf.pitch & 0xf0;
     let variable = lf.pitch & 3 == 2;
@@ -4366,7 +4434,9 @@ fn outline_metrics(c: &mut Ctx, wide: bool) -> u32 {
     let names = [enc(&face), enc(&face), enc(if r.bold { "Bold" } else { "Regular" }), enc(&face)];
     // (TEXTMETRICA is 4 bytes shorter: its characters are bytes)
     let d = if wide { 0 } else { 4u32 };
-    let base = 216 - d;
+    // (x64: the four name offsets are pointer-sized, 8-aligned at 200 either way)
+    let x64 = mem::x64();
+    let base = if x64 { 232 } else { 216 - d };
     let size = base + names.iter().map(|n| n.len() as u32).sum::<u32>();
     if p == 0 {
         return size;
@@ -4401,7 +4471,12 @@ fn outline_metrics(c: &mut Ctx, wide: bool) -> u32 {
     put(&mut buf, 196, -(desc / 2).max(1));
     let mut off = base;
     for (i, n) in names.iter().enumerate() {
-        put(&mut buf, 200 + 4 * i as u32, off as i32);
+        if x64 {
+            let at = 200 + 8 * i;
+            buf[at..at + 8].copy_from_slice(&(off as u64).to_le_bytes());
+        } else {
+            put(&mut buf, 200 + 4 * i as u32, off as i32);
+        }
         buf[off as usize..off as usize + n.len()].copy_from_slice(n);
         off += n.len() as u32;
     }
@@ -4551,6 +4626,13 @@ fn enum_fonts(c: &mut Ctx, filter: Option<String>, proc_: u32, lp: u32, wide: bo
     for (n, _) in ADDED.lock().unwrap().iter() {
         let hit = filter.as_ref().and_then(|fl| n.iter().find(|x| x.eq_ignore_ascii_case(fl)));
         names.push((hit.unwrap_or(&n[0]).clone(), face_pitch(false, false)));
+    }
+    // (a family GDI+ stands a face in for, Arial and Tahoma: under its own name, as the face
+    // CreateFont gives for it, so GDI and GDI+ agree it is there)
+    if let Some(fl) = filter.as_ref().filter(|fl| !fl.is_empty() && !names.iter().any(|(n, _)| n.eq_ignore_ascii_case(fl))) {
+        if crate::gdiplus_font::stand_in_face(fl).is_some_and(|i| font_file(i).is_some()) {
+            names.push((fl.clone(), face_pitch(false, false)));
+        }
     }
     for (name, pitch) in names {
         if let Some(fl) = &filter {

@@ -84,6 +84,9 @@ static void elems(const char *what, GpMatrix *m) {
     printf("\n");
 }
 
+/* (-0 as 0: the 64-bit GDI+ gets tiny negatives where the 32-bit one has 0) */
+static double z(double v) { return v > -0.0005 && v < 0.0005 ? 0 : v; }
+
 static void line(const char *what, GpBrush *b) {
     RectF r = {0};
     GdipGetLineRect(b, &r);
@@ -230,6 +233,15 @@ int main(void) {
         if (n > 0 && n <= 512 && !GdipGetLineBlend(b, f, q, n))
             for (int i = 0; i < n; i += n / 8 > 0 ? n / 8 : 1) printf("sigma %d %.3f %.3f\n", i, q[i], f[i]);
     }
+    for (int k = 0; k < 2; k++) {
+        int n = -1;
+        GdipSetLineSigmaBlend(b, (float)k, 0.5f);
+        GdipGetLineBlendCount(b, &n);
+        printf("sigma focus %d count %d\n", k, n);
+        float f[512], q[512];
+        if (n > 0 && n <= 512 && !GdipGetLineBlend(b, f, q, n))
+            for (int i = 0; i < n; i += n / 4 > 0 ? n / 4 : 1) printf("sigma %d %.3f %.3f\n", i, q[i], f[i]);
+    }
     GdipSetLineLinearBlend(b, 0.25f, 0.5f);
     {
         int n = -1;
@@ -300,7 +312,7 @@ int main(void) {
         RectF r;
         GdipGetPathGradientCenterPoint(b, &c);
         GdipGetPathGradientRect(b, &r);
-        printf("ellipse points %d center %.3f %.3f rect %.3f %.3f %.3f %.3f\n", np, c.X, c.Y, r.X, r.Y, r.Width, r.Height);
+        printf("ellipse points %d center %.3f %.3f rect %.3f %.3f %.3f %.3f\n", np, z(c.X), z(c.Y), z(r.X), z(r.Y), z(r.Width), z(r.Height));
     }
     GdipDeleteBrush(b);
     GdipDeletePath(path);

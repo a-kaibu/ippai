@@ -66,6 +66,28 @@ pub(crate) fn with_pixels(h: u32, f: impl FnOnce(u32, u32, &mut [u8])) {
     })
 }
 
+/// An image's straight BGRA pixels, top row first (for gdiplus_brush's textures)
+pub(crate) fn pixels(h: u32) -> Option<(u32, u32, Vec<u8>)> {
+    with(|m| {
+        let b = m.get(&h)?;
+        Some((b.w, b.h, (0..(b.w * b.h) as usize).flat_map(|i| b.straight(i)).collect()))
+    })
+}
+
+/// A new w x h bitmap of `fmt`, zeroed (gdiplus_text's GdipCreateBitmapFromGraphics)
+pub(crate) fn new_bitmap(w: u32, h: u32, fmt: u32, out: u32) -> u32 {
+    if w == 0 || h == 0 || out == 0 || w.checked_mul(h).is_none_or(|n| n > 1 << 26) {
+        return INVALID_PARAMETER;
+    }
+    let alpha = if has_alpha(fmt) { 0 } else { 0xff };
+    let mut px = vec![0u8; (w * h * 4) as usize];
+    for p in px.chunks_mut(4) {
+        p[3] = alpha;
+    }
+    let flags = if has_alpha(fmt) { FLAG_HAS_ALPHA } else { 0 };
+    add(Bitmap { w, h, px, fmt, flags, palette: Vec::new(), idx: Vec::new(), locked: None }, out)
+}
+
 struct Bitmap {
     w: u32,
     h: u32,
@@ -213,7 +235,7 @@ fn from_file(c: &mut Ctx) -> u32 {
     new_image(&data, c.a(1), UNKNOWN_IMAGE_FORMAT)
 }
 
-fn size_of(img: u32) -> Option<(u32, u32)> {
+pub(crate) fn size_of(img: u32) -> Option<(u32, u32)> {
     with(|m| m.get(&img).map(|b| (b.w, b.h)))
 }
 fn GdipGetImageWidth(c: &mut Ctx) -> u32 {
