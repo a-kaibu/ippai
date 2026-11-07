@@ -37,6 +37,8 @@ mod msaa_tests;
 mod bits_tests;
 #[cfg(test)]
 mod compute_tests;
+#[cfg(test)]
+mod dxgi_tests;
 
 use crate::d3d9::gpu;
 use crate::d3d9::HostCalls;
@@ -105,9 +107,23 @@ const IIDS: &[(u32, &[u32])] = &[
     (0x7b7166ec, &[IF_FACTORY]),
     (0x770aae78, &[IF_FACTORY]),
     (0x50c83a1c, &[IF_FACTORY]),
+    (0x25483823, &[IF_FACTORY]), // IDXGIFactory3
+    (0x1bc6ea02, &[IF_FACTORY]), // IDXGIFactory4
+    (0x7632e1f5, &[IF_FACTORY]), // IDXGIFactory5
+    (0xc1b6694f, &[IF_FACTORY]), // IDXGIFactory6
+    (0xa4966eed, &[IF_FACTORY]), // IDXGIFactory7
     (0x2411e7e1, &[IF_ADAPTER]),
     (0x29038f61, &[IF_ADAPTER]),
+    (0x0aa1ae0a, &[IF_ADAPTER]), // IDXGIAdapter2
+    (0x645967a4, &[IF_ADAPTER]), // IDXGIAdapter3
+    (0x3c8d99d1, &[IF_ADAPTER]), // IDXGIAdapter4
     (0xae02eedb, &[IF_OUTPUT]),
+    (0x00cddea8, &[IF_OUTPUT]), // IDXGIOutput1
+    (0x595e39d1, &[IF_OUTPUT]), // IDXGIOutput2
+    (0x8a6bb301, &[IF_OUTPUT]), // IDXGIOutput3
+    (0xdc7dca35, &[IF_OUTPUT]), // IDXGIOutput4
+    (0x80a07424, &[IF_OUTPUT]), // IDXGIOutput5
+    (0x068346e8, &[IF_OUTPUT]), // IDXGIOutput6
     (0x310d36a0, &[IF_SWAPCHAIN]),
     (0x790a45f7, &[IF_SWAPCHAIN]),
     (0x54ec77fa, &[IF_DXGIDEVICE]),
@@ -400,6 +416,9 @@ pub struct D11 {
     context: u32,
     factory: u32,
     adapter: u32,
+    /// the second adapter, Microsoft Basic Render Driver (WARP: no outputs), last on every
+    /// Windows since 8
+    warp: u32,
     output: u32,
     st: State,
     /// the ID3DDeviceContextState whose state `st` is (0: the context's own)
@@ -711,6 +730,7 @@ pub unsafe fn init(vtbls: *const u32, count: u32) -> u32 {
                 context: 0,
                 factory: 0,
                 adapter: 0,
+                warp: 0,
                 output: 0,
                 st: default_state(),
                 st_owner: 0,
@@ -869,11 +889,13 @@ fn dxgi_objects(d: &mut D11) -> u32 {
         d.factory = d.id_of(f);
         let a = d.new_obj(IF_ADAPTER, Data::Adapter);
         d.adapter = d.id_of(a);
+        let w = d.new_obj(IF_ADAPTER, Data::Adapter);
+        d.warp = d.id_of(w);
         let o = d.new_obj(IF_OUTPUT, Data::Output);
         d.output = d.id_of(o);
-        // (the adapter and the output: only the application's references count, as in Windows'
+        // (the adapters and the output: only the application's references count, as in Windows'
         // "Adapter has N references left")
-        for id in [d.adapter, d.output] {
+        for id in [d.adapter, d.warp, d.output] {
             d.objs.get_mut(&id).unwrap().refs = 0;
         }
     } else {
@@ -1347,49 +1369,7 @@ unsafe fn method(d: &mut D11, iface: u32, m: u32, this: u32, args: *const u32, a
         // IDXGIObject: SetPrivateData, SetPrivateDataInterface, GetPrivateData
         IF_FACTORY | IF_ADAPTER | IF_OUTPUT | IF_SWAPCHAIN | IF_DXGIDEVICE | IF_SURFACE | IF_DXGIRES if (3..=5).contains(&m) => private_data(d, [5, 6, 4][m as usize - 3], this, &a),
         IF_FACTORY => factory_call(d, m, this, &a),
-        IF_ADAPTER => match m {
-            6 => parent(d, d.factory, a(1), a(2)),
-            7 => {
-                // EnumOutputs
-                if a(1) != 0 {
-                    wrp(a(2), 0, 0);
-                    return DXGI_ERROR_NOT_FOUND;
-                }
-                d.add_ref(d.output);
-                wrp(a(2), 0, d.addr_of(d.output));
-                S_OK
-            }
-            8 | 10 if a(1) == 0 => E_INVALIDARG,
-            8 | 10 => {
-                // GetDesc/GetDesc1: Description[128] WCHAR, ids, memory sizes
-                let n = match (m, ptr()) {
-                    (8, 4) => 292,
-                    (_, 4) => 296,
-                    (8, _) => 304,
-                    _ => 312,
-                };
-                std::ptr::write_bytes(a(1) as *mut u8, 0, n);
-                for (i, c) in "vnvm WebGPU".encode_utf16().enumerate() {
-                    *((a(1) + i as u32 * 2) as *mut u16) = c;
-                }
-                wr(a(1) + 256, 0, 0x10de); // VendorId
-                wr(a(1) + 256, 1, 0x1c82);
-                wrp(a(1) + 272, 0, 512 << 20); // DedicatedVideoMemory (SIZE_T)
-                wrp(a(1) + 272, 2, 1024 << 20); // SharedSystemMemory
-                S_OK
-            }
-            9 => {
-                // CheckInterfaceSupport(iid, umd version): only the D3D10 devices answer
-                if a(1) == 0 || !matches!(rd(a(1), 0), 0x9b7e4c0f | 0x9b7e4c8f) || rd(a(1), 1) != 0x4106_342c {
-                    return DXGI_ERROR_UNSUPPORTED;
-                }
-                // (30.0.15.1179)
-                wr(a(2), 0, 15 << 16 | 1179);
-                wr(a(2), 1, 30 << 16);
-                S_OK
-            }
-            _ => E_NOTIMPL,
-        },
+        IF_ADAPTER => adapter_call(d, m, this, &a),
         IF_OUTPUT => output_call(d, m, &a),
         IF_SWAPCHAIN => swapchain_call(d, m, this, &a, after),
         // Enter/Leave: every call already runs under the host's lock
@@ -1529,18 +1509,144 @@ unsafe fn parent(d: &mut D11, id: u32, riid: u32, out: u32) -> u32 {
     query_interface(d, id, iface, riid, out)
 }
 
+/// IDXGIAdapter..IDXGIAdapter4 of sake's GPU (`d.adapter`) and of WARP (`d.warp`).
+unsafe fn adapter_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) -> u32 {
+    let warp = this == d.warp;
+    match m {
+        6 => parent(d, d.factory, a(1), a(2)),
+        7 => {
+            // EnumOutputs (WARP has none)
+            if a(2) == 0 {
+                return E_INVALIDARG;
+            }
+            if a(1) != 0 || warp {
+                wrp(a(2), 0, 0);
+                return DXGI_ERROR_NOT_FOUND;
+            }
+            d.add_ref(d.output);
+            wrp(a(2), 0, d.addr_of(d.output));
+            S_OK
+        }
+        8 | 10 | 11 | 18 if a(1) == 0 => E_INVALIDARG,
+        8 | 10 | 11 | 18 => {
+            adapter_desc(a(1), warp, adapter_luid(d, this), m);
+            S_OK
+        }
+        9 => {
+            // CheckInterfaceSupport(iid, umd version): only the D3D10 devices answer
+            if a(1) == 0 || !matches!(rd(a(1), 0), 0x9b7e4c0f | 0x9b7e4c8f) || rd(a(1), 1) != 0x4106_342c {
+                return DXGI_ERROR_UNSUPPORTED;
+            }
+            // (30.0.15.1179)
+            wr(a(2), 0, 15 << 16 | 1179);
+            wr(a(2), 1, 30 << 16);
+            S_OK
+        }
+        12 | 14 | 16 => {
+            // Register*Event(event, cookie)
+            if a(1) == 0 || a(2) == 0 {
+                return DXGI_ERROR_INVALID_CALL;
+            }
+            wr(a(2), 0, 1);
+            S_OK
+        }
+        13 | 17 => 0, // Unregister*
+        15 => {
+            // QueryVideoMemoryInfo(node, segment group local / non-local, info)
+            if a(1) != 0 || a(2) > 1 || a(3) == 0 {
+                return E_INVALIDARG;
+            }
+            let budget: u64 = match (warp, a(2)) {
+                (true, 0) | (false, 1) => 0,
+                (true, _) => 1 << 30,
+                (false, _) => 512 << 20,
+            };
+            for (i, v) in [budget, 0, budget / 2, 0].into_iter().enumerate() {
+                wr(a(3), 2 * i, v as u32);
+                wr(a(3), 2 * i + 1, (v >> 32) as u32);
+            }
+            S_OK
+        }
+        // SetVideoMemoryReservation(node, group, bytes)
+        19 => {
+            if a(1) != 0 || a(2) > 1 {
+                return E_INVALIDARG;
+            }
+            S_OK
+        }
+        _ => E_NOTIMPL,
+    }
+}
+
+/// DXGI_ADAPTER_DESC (m 8), DESC1 (10), DESC2 (11) or DESC3 (18) of sake's GPU or WARP:
+/// Description[128] WCHAR, the ids, three SIZE_T memory sizes, the LUID; then Flags
+/// (DXGI_ADAPTER_FLAG_SOFTWARE for WARP) and the two preemption granularities.
+unsafe fn adapter_desc(p: u32, warp: bool, luid: u32, m: u32) {
+    let at = 272 + 3 * ptr();
+    let n = match m {
+        8 => at + 8,
+        10 => (at + 12).next_multiple_of(ptr()),
+        _ => (at + 20).next_multiple_of(ptr()),
+    };
+    std::ptr::write_bytes(p as *mut u8, 0, n as usize);
+    let (name, vendor, device, dedicated, shared) =
+        if warp { ("Microsoft Basic Render Driver", 0x1414, 0x8c, 0, 0xffff_0000) } else { ("vnvm WebGPU", 0x10de, 0x1c82, 512 << 20, 1024 << 20) };
+    for (i, c) in name.encode_utf16().enumerate() {
+        *((p + i as u32 * 2) as *mut u16) = c;
+    }
+    wr(p + 256, 0, vendor);
+    wr(p + 256, 1, device);
+    wrp(p + 272, 0, dedicated); // DedicatedVideoMemory (SIZE_T)
+    wrp(p + 272, 2, shared); // SharedSystemMemory
+    wr(p + at, 0, luid);
+    if m != 8 {
+        wr(p + at, 2, if warp { 2 } else { 0 });
+    }
+    if m == 11 || m == 18 {
+        // (DXGI_GRAPHICS_PREEMPTION_PRIMITIVE_BOUNDARY, DXGI_COMPUTE_PREEMPTION_DISPATCH_BOUNDARY)
+        wr(p + at, 3, 1);
+        wr(p + at, 4, 1);
+    }
+}
+
+/// The adapters in EnumAdapters' order: sake's GPU, then WARP
+fn adapters(d: &D11) -> [u32; 2] {
+    [d.adapter, d.warp]
+}
+
+/// An adapter's LUID (AdapterLuid): its place in the list, from 0x1000
+fn adapter_luid(d: &D11, id: u32) -> u32 {
+    0x1000 + (id == d.warp) as u32
+}
+
+/// EnumAdapters(1), EnumAdapterByGpuPreference, EnumAdapterByLuid, EnumWarpAdapter: adapter
+/// `id` (0: none such) as `riid` (None: IDXGIAdapter itself)
+unsafe fn give_adapter(d: &mut D11, id: u32, riid: Option<u32>, out: u32) -> u32 {
+    if out == 0 {
+        return if id == 0 { DXGI_ERROR_NOT_FOUND } else { E_INVALIDARG };
+    }
+    if id == 0 {
+        wrp(out, 0, 0);
+        return DXGI_ERROR_NOT_FOUND;
+    }
+    match riid {
+        Some(riid) => query_interface(d, id, IF_ADAPTER, riid, out),
+        None => {
+            d.add_ref(id);
+            wrp(out, 0, d.addr_of(id));
+            S_OK
+        }
+    }
+}
+
 unsafe fn factory_call(d: &mut D11, m: u32, _this: u32, a: &dyn Fn(usize) -> u32) -> u32 {
     match m {
         3..=5 => S_OK,
         6 => E_NOINTERFACE,
         7 | 12 => {
-            if a(1) != 0 {
-                wrp(a(2), 0, 0);
-                return DXGI_ERROR_NOT_FOUND;
-            }
-            d.add_ref(d.adapter);
-            wrp(a(2), 0, d.addr_of(d.adapter));
-            S_OK
+            // EnumAdapters / EnumAdapters1(index, out)
+            let id = adapters(d).get(a(1) as usize).copied().unwrap_or(0);
+            give_adapter(d, id, None, a(2))
         }
         8 => S_OK,
         9 => {
@@ -1573,6 +1679,54 @@ unsafe fn factory_call(d: &mut D11, m: u32, _this: u32, a: &dyn Fn(usize) -> u32
         }
         16 | 24 => DXGI_ERROR_UNSUPPORTED,
         17..=23 => E_NOTIMPL,
+        25 => 0, // GetCreationFlags
+        26 => {
+            // EnumAdapterByLuid(luid, riid, out): the LUID two stack dwords on x86, one
+            // register (its low half here) on x64
+            let (high, riid, out) = if ptr() == 8 { (0, a(2), a(3)) } else { (a(2), a(3), a(4)) };
+            let id = adapters(d).into_iter().find(|&x| high == 0 && adapter_luid(d, x) == a(1)).unwrap_or(0);
+            if riid == 0 {
+                return E_INVALIDARG;
+            }
+            if id == 0 {
+                wrp(out, 0, 0);
+                return E_INVALIDARG; // (an unknown LUID, as Windows answers it)
+            }
+            give_adapter(d, id, Some(riid), out)
+        }
+        27 => {
+            // EnumWarpAdapter(riid, out)
+            if a(1) == 0 {
+                return E_INVALIDARG;
+            }
+            give_adapter(d, d.warp, Some(a(1)), a(2))
+        }
+        28 => {
+            // CheckFeatureSupport(feature, data, size): DXGI_FEATURE_PRESENT_ALLOW_TEARING, FALSE
+            if a(1) != 0 || a(2) == 0 || a(3) != 4 {
+                return E_INVALIDARG;
+            }
+            wr(a(2), 0, 0);
+            S_OK
+        }
+        29 => {
+            // EnumAdapterByGpuPreference(index, preference, riid, out): one order whatever the
+            // preference (UNSPECIFIED, MINIMUM_POWER, HIGH_PERFORMANCE)
+            if a(2) > 2 || a(3) == 0 {
+                return E_INVALIDARG;
+            }
+            let id = adapters(d).get(a(1) as usize).copied().unwrap_or(0);
+            give_adapter(d, id, Some(a(3)), a(4))
+        }
+        30 => {
+            // RegisterAdaptersChangedEvent(event, cookie): adapters never change here
+            if a(1) == 0 || a(2) == 0 {
+                return DXGI_ERROR_INVALID_CALL;
+            }
+            wr(a(2), 0, 1);
+            S_OK
+        }
+        31 => S_OK, // UnregisterAdaptersChangedNotification
         _ => E_NOTIMPL,
     }
 }
@@ -1636,6 +1790,66 @@ unsafe fn output_call(d: &mut D11, m: u32, a: &dyn Fn(usize) -> u32) -> u32 {
             S_OK
         }
         11..=18 => S_OK,
+        19 => {
+            // GetDisplayModeList1(format, flags, count, modes): DXGI_MODE_DESC1 (Stereo after)
+            let (count, modes) = (a(3), a(4));
+            if count == 0 {
+                return E_INVALIDARG;
+            }
+            if modes != 0 {
+                let n = rd(count, 0).min(MODES.len() as u32);
+                for (i, (w, h)) in MODES.iter().take(n as usize).enumerate() {
+                    let p = modes + i as u32 * 32;
+                    for (k, v) in [*w, *h, 60, 1, a(1), 0, 0, 0].into_iter().enumerate() {
+                        wr(p, k, v);
+                    }
+                }
+                wr(count, 0, n);
+            } else {
+                wr(count, 0, MODES.len() as u32);
+            }
+            S_OK
+        }
+        20 => {
+            // FindClosestMatchingMode1(mode1, closest1, device)
+            let r = output_call(d, 9, a);
+            wr(a(2), 7, 0);
+            r
+        }
+        21 => E_NOTIMPL,                // GetDisplaySurfaceData1
+        22 | 26 => E_NOTIMPL,           // DuplicateOutput(1): no desktop duplication
+        23 => 0,                        // SupportsOverlays: FALSE
+        24 | 25 => {
+            // CheckOverlaySupport / CheckOverlayColorSpaceSupport(.., flags): none
+            let out = if m == 24 { a(3) } else { a(4) };
+            if out == 0 {
+                return E_INVALIDARG;
+            }
+            wr(out, 0, 0);
+            DXGI_ERROR_UNSUPPORTED
+        }
+        27 => {
+            // GetDesc1: GetDesc's, then BitsPerColor, ColorSpace (G22 P709), the sRGB primaries
+            // and white point, and luminances
+            if a(1) == 0 {
+                return E_INVALIDARG;
+            }
+            output_call(d, 7, a);
+            let p = a(1) + 88 + ptr();
+            let f = |x: f32| x.to_bits();
+            for (k, v) in [8, 0, f(0.64), f(0.33), f(0.30), f(0.60), f(0.15), f(0.06), f(0.3127), f(0.3290), f(0.5), f(270.0), f(270.0)].into_iter().enumerate() {
+                wr(p, k, v);
+            }
+            S_OK
+        }
+        28 => {
+            // CheckHardwareCompositionSupport(flags): none
+            if a(1) == 0 {
+                return E_INVALIDARG;
+            }
+            wr(a(1), 0, 0);
+            S_OK
+        }
         _ => E_NOTIMPL,
     }
 }

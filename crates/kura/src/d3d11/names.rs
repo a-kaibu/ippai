@@ -2,9 +2,9 @@
 
 /// (interface name, method names) by interface number - 64
 pub const NAMES: &[(&str, &[&str])] = &[
-    ("IDXGIFactory2", &["QueryInterface", "AddRef", "Release", "SetPrivateData", "SetPrivateDataInterface", "GetPrivateData", "GetParent", "EnumAdapters", "MakeWindowAssociation", "GetWindowAssociation", "CreateSwapChain", "CreateSoftwareAdapter", "EnumAdapters1", "IsCurrent", "IsWindowedStereoEnabled", "CreateSwapChainForHwnd", "CreateSwapChainForCoreWindow", "GetSharedResourceAdapterLuid", "RegisterStereoStatusWindow", "RegisterStereoStatusEvent", "UnregisterStereoStatus", "RegisterOcclusionStatusWindow", "RegisterOcclusionStatusEvent", "UnregisterOcclusionStatus", "CreateSwapChainForComposition"]),
-    ("IDXGIAdapter1", &["QueryInterface", "AddRef", "Release", "SetPrivateData", "SetPrivateDataInterface", "GetPrivateData", "GetParent", "EnumOutputs", "GetDesc", "CheckInterfaceSupport", "GetDesc1"]),
-    ("IDXGIOutput", &["QueryInterface", "AddRef", "Release", "SetPrivateData", "SetPrivateDataInterface", "GetPrivateData", "GetParent", "GetDesc", "GetDisplayModeList", "FindClosestMatchingMode", "WaitForVBlank", "TakeOwnership", "ReleaseOwnership", "GetGammaControlCapabilities", "SetGammaControl", "GetGammaControl", "SetDisplaySurface", "GetDisplaySurfaceData", "GetFrameStatistics"]),
+    ("IDXGIFactory7", &["QueryInterface", "AddRef", "Release", "SetPrivateData", "SetPrivateDataInterface", "GetPrivateData", "GetParent", "EnumAdapters", "MakeWindowAssociation", "GetWindowAssociation", "CreateSwapChain", "CreateSoftwareAdapter", "EnumAdapters1", "IsCurrent", "IsWindowedStereoEnabled", "CreateSwapChainForHwnd", "CreateSwapChainForCoreWindow", "GetSharedResourceAdapterLuid", "RegisterStereoStatusWindow", "RegisterStereoStatusEvent", "UnregisterStereoStatus", "RegisterOcclusionStatusWindow", "RegisterOcclusionStatusEvent", "UnregisterOcclusionStatus", "CreateSwapChainForComposition", "GetCreationFlags", "EnumAdapterByLuid", "EnumWarpAdapter", "CheckFeatureSupport", "EnumAdapterByGpuPreference", "RegisterAdaptersChangedEvent", "UnregisterAdaptersChangedEvent"]),
+    ("IDXGIAdapter4", &["QueryInterface", "AddRef", "Release", "SetPrivateData", "SetPrivateDataInterface", "GetPrivateData", "GetParent", "EnumOutputs", "GetDesc", "CheckInterfaceSupport", "GetDesc1", "GetDesc2", "RegisterHardwareContentProtectionTeardownStatusEvent", "UnregisterHardwareContentProtectionTeardownStatus", "QueryVideoMemoryInfo", "SetVideoMemoryReservation", "RegisterVideoMemoryBudgetChangeNotificationEvent", "UnregisterVideoMemoryBudgetChangeNotification", "GetDesc3"]),
+    ("IDXGIOutput6", &["QueryInterface", "AddRef", "Release", "SetPrivateData", "SetPrivateDataInterface", "GetPrivateData", "GetParent", "GetDesc", "GetDisplayModeList", "FindClosestMatchingMode", "WaitForVBlank", "TakeOwnership", "ReleaseOwnership", "GetGammaControlCapabilities", "SetGammaControl", "GetGammaControl", "SetDisplaySurface", "GetDisplaySurfaceData", "GetFrameStatistics", "GetDisplayModeList1", "FindClosestMatchingMode1", "GetDisplaySurfaceData1", "DuplicateOutput", "SupportsOverlays", "CheckOverlaySupport", "CheckOverlayColorSpaceSupport", "DuplicateOutput1", "GetDesc1", "CheckHardwareCompositionSupport"]),
     ("IDXGISwapChain1", &["QueryInterface", "AddRef", "Release", "SetPrivateData", "SetPrivateDataInterface", "GetPrivateData", "GetParent", "GetDevice", "Present", "GetBuffer", "SetFullscreenState", "GetFullscreenState", "GetDesc", "ResizeBuffers", "ResizeTarget", "GetContainingOutput", "GetFrameStatistics", "GetLastPresentCount", "GetDesc1", "GetFullscreenDesc", "GetHwnd", "GetCoreWindow", "Present1", "IsTemporaryMonoSupported", "GetRestrictToOutput", "SetBackgroundColor", "GetBackgroundColor", "SetRotation", "GetRotation"]),
     ("IDXGIDevice3", &["QueryInterface", "AddRef", "Release", "SetPrivateData", "SetPrivateDataInterface", "GetPrivateData", "GetParent", "GetAdapter", "CreateSurface", "QueryResourceResidency", "SetGPUThreadPriority", "GetGPUThreadPriority", "SetMaximumFrameLatency", "GetMaximumFrameLatency", "OfferResources", "ReclaimResources", "EnqueueSetEvent", "Trim"]),
     ("IDXGISurface2", &["QueryInterface", "AddRef", "Release", "SetPrivateData", "SetPrivateDataInterface", "GetPrivateData", "GetParent", "GetDevice", "GetDesc", "Map", "Unmap", "GetDC", "ReleaseDC", "GetResource"]),
@@ -56,9 +56,9 @@ pub const NAMES: &[(&str, &[&str])] = &[
 
 /// Each method's argument count (dwords, `this` included) by interface number - 64
 pub const ARGS: &[&[u8]] = &[
-    &[3, 1, 1, 4, 3, 4, 3, 3, 3, 2, 4, 3, 3, 1, 1, 7, 6, 3, 4, 3, 2, 4, 3, 2, 5],
-    &[3, 1, 1, 4, 3, 4, 3, 3, 2, 3, 2],
-    &[3, 1, 1, 4, 3, 4, 3, 2, 5, 4, 1, 3, 1, 2, 2, 2, 2, 2, 2],
+    &[3, 1, 1, 4, 3, 4, 3, 3, 3, 2, 4, 3, 3, 1, 1, 7, 6, 3, 4, 3, 2, 4, 3, 2, 5, 1, 5, 3, 4, 5, 3, 2],
+    &[3, 1, 1, 4, 3, 4, 3, 3, 2, 3, 2, 2, 3, 2, 4, 5, 3, 2, 2],
+    &[3, 1, 1, 4, 3, 4, 3, 2, 5, 4, 1, 3, 1, 2, 2, 2, 2, 2, 2, 5, 4, 2, 3, 1, 4, 5, 6, 2, 2],
     &[3, 1, 1, 4, 3, 4, 3, 3, 3, 4, 3, 3, 2, 6, 2, 2, 2, 2, 2, 2, 2, 3, 4, 1, 2, 2, 2, 2, 2],
     &[3, 1, 1, 4, 3, 4, 3, 2, 6, 4, 2, 2, 2, 2, 4, 4, 2, 1],
     &[3, 1, 1, 4, 3, 4, 3, 3, 2, 3, 1, 3, 2, 4],
