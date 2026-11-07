@@ -694,18 +694,10 @@ impl<'a> Gen<'a> {
     /// Puts the lazy flags into the Cpu (state Cpu afterwards).
     fn flags_to_cpu(&mut self) {
         let Flags::Lazy(kind, bits) = self.flags else { return };
+        use crate::lazy::Lazy;
         let lazy = offset_of!(Cpu, lazy) as u32;
-        if bits == 64 && matches!(kind, ADD | SUB | LOGIC | INC | DEC) {
-            // a record with the upper halves (size code 3, Cpu::lazy_hi): cheaper than the
-            // flags themselves at exits, where the next code mostly sets its own
-            let hi = offset_of!(Cpu, lazy_hi) as u32;
-            self.c.get(L_CPU).u32c(kind * 4 + 3).store32(lazy);
-            for (k, l) in [(0, L_FA), (1, L_FB), (2, L_FR)] {
-                self.c.get(L_CPU).get(l).x(I32_WRAP).store32(lazy + 4 + 4 * k);
-                self.c.get(L_CPU).get(l).i64c(32).x(I64_SHR_U).x(I32_WRAP).store32(hi + 4 * k);
-            }
-            self.c.get(L_CPU).get(L_FC).store32(lazy + 16);
-        } else if bits == 64 {
+        if bits == 64 && !matches!(kind, ADD | SUB | ADC | SBB | LOGIC | INC | DEC | MUL) {
+            // (64-bit shifts: the flags themselves)
             self.c.get(L_CPU);
             self.c.get(L_CPU).load32(cpu_off!(eflags)).u32c(!STATUS).and();
             self.status(kind, 64);
@@ -715,11 +707,12 @@ impl<'a> Gen<'a> {
             let size = match bits {
                 8 => 0,
                 16 => 1,
-                _ => 2,
+                32 => 2,
+                _ => 3,
             };
             self.c.get(L_CPU).u32c(kind * 4 + size).store32(lazy);
-            for (k, l) in [(1, L_FA), (2, L_FB), (3, L_FR)] {
-                self.c.get(L_CPU).get(l).x(I32_WRAP).store32(lazy + 4 * k);
+            for (o, l) in [(offset_of!(Lazy, a), L_FA), (offset_of!(Lazy, b), L_FB), (offset_of!(Lazy, r), L_FR)] {
+                self.c.get(L_CPU).get(l).store64(lazy + o as u32);
             }
             self.c.get(L_CPU);
             if kind == MUL {
@@ -727,7 +720,7 @@ impl<'a> Gen<'a> {
             } else {
                 self.c.get(L_FC);
             }
-            self.c.store32(lazy + 16);
+            self.c.store32(lazy + offset_of!(Lazy, c) as u32);
         }
         self.flags = Flags::Cpu;
     }

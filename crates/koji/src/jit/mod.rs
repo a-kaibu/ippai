@@ -3457,12 +3457,13 @@ fn fn_adapter() -> Func {
 
 /// Stores the lazy operation in the locals to the Cpu (L_OP holds it).
 fn lazy_store(c: &mut Code) {
+    use crate::lazy::Lazy;
     let lo = Off::lazy();
     c.get(L_CPU).get(L_OP).store32(lo);
-    c.get(L_CPU).get(L_FA).store32(lo + 4);
-    c.get(L_CPU).get(L_FB).store32(lo + 8);
-    c.get(L_CPU).get(L_FR).store32(lo + 12);
-    c.get(L_CPU).get(L_FC).store32(lo + 16);
+    c.get(L_CPU).get(L_FA).i64_extend_u().store64(lo + offset_of!(Lazy, a) as u32);
+    c.get(L_CPU).get(L_FB).i64_extend_u().store64(lo + offset_of!(Lazy, b) as u32);
+    c.get(L_CPU).get(L_FR).i64_extend_u().store64(lo + offset_of!(Lazy, r) as u32);
+    c.get(L_CPU).get(L_FC).store32(lo + offset_of!(Lazy, c) as u32);
 }
 
 /// Opens `if L_OP != -1` and stores the lazy operation; the caller closes the `if`.

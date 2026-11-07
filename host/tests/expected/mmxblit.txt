@@ -1,0 +1,12 @@
+copy 0: f12971c5
+blend 0: b458205d
+misc 0: 27a8c896
+copy 1: 4497d4d4
+blend 1: 8f55ff45
+misc 1: e29e9881
+copy 2: 16be079d
+blend 2: d0d4f808
+misc 2: c7a9908b
+copy 3: f97698d4
+blend 3: d3364509
+misc 3: 578bf2a9

@@ -1761,7 +1761,7 @@ pub extern "C" fn vnhost_jit_status(op: u32, a: u32, b: u32, r: u32, c: u32) -> 
         eprintln!("vnjit64 check: condition {b} at {a:#x}: lazy {r}, eflags {c:#x}");
         return 0;
     }
-    koji::lazy::Lazy { op, a, b, r, c }.status()
+    koji::lazy::Lazy { op, a: a as u64, b: b as u64, r: r as u64, c }.status()
 }
 
 /// IPPAI_JIT_PROFILE: every region's blocks (address, entry counter, instruction keys).

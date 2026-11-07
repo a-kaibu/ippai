@@ -3,16 +3,16 @@
 
 use crate::flags::{self, *};
 
-/// `op` = kind * 4 + size (0: 8 bits, 1: 16, 2: 32); 0: EFLAGS are exact.
+/// `op` = kind * 4 + size (0: 8 bits, 1: 16, 2: 32, 3: 64); 0: EFLAGS are exact.
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(C)]
 pub struct Lazy {
     pub op: u32,
-    pub a: u32,
-    pub b: u32,
-    pub r: u32,
     /// carry in (ADC/SBB), CF kept through INC/DEC, or the overflow bit of MUL/IMUL
     pub c: u32,
+    pub a: u64,
+    pub b: u64,
+    pub r: u64,
 }
 
 pub const ADD: u32 = 1;
@@ -42,33 +42,20 @@ pub fn op(kind: u32, bits: u32) -> u32 {
 }
 
 impl Lazy {
-    /// A 64-bit operation's status flags (size code 3: the long-mode JIT records only ADD,
-    /// SUB, LOGIC, INC and DEC this way), the operands' upper halves in `hi` (a, b, r).
-    pub fn status64(&self, hi: [u32; 3]) -> u32 {
-        let w = |lo: u32, h: u32| (h as u64) << 32 | lo as u64;
-        let (a, b, r) = (w(self.a, hi[0]), w(self.b, hi[1]), w(self.r, hi[2]));
-        match self.op >> 2 {
-            ADD => flags::add64(a, b, 0, 64).1,
-            SUB => flags::sub64(a, b, 0, 64).1,
-            LOGIC => flags::szp64(r, 64),
-            INC => (flags::add64(a, 1, 0, 64).1 & !CF) | (self.c & CF),
-            DEC => (flags::sub64(a, 1, 0, 64).1 & !CF) | (self.c & CF),
-            _ => 0,
-        }
-    }
-
     /// The status flags (CF PF AF ZF SF OF) this operation produced.
     pub fn status(&self) -> u32 {
         let bits = 8 << (self.op & 3);
-        let (a, b, r, c) = (self.a, self.b, self.r, self.c);
+        let (a64, b64, r64, c) = (self.a, self.b, self.r, self.c);
+        // (shifts: up to 32 bits only, the long-mode JIT works out 64-bit ones itself)
+        let (a, b) = (a64 as u32, b64 as u32);
         match self.op >> 2 {
-            ADD => flags::add(a, b, 0, bits).1,
-            SUB => flags::sub(a, b, 0, bits).1,
-            ADC => flags::add(a, b, c, bits).1,
-            SBB => flags::sub(a, b, c, bits).1,
-            LOGIC => flags::logic(r, bits),
-            INC => (flags::add(a, 1, 0, bits).1 & !CF) | (c & CF),
-            DEC => (flags::sub(a, 1, 0, bits).1 & !CF) | (c & CF),
+            ADD => flags::add64(a64, b64, 0, bits).1,
+            SUB => flags::sub64(a64, b64, 0, bits).1,
+            ADC => flags::add64(a64, b64, c, bits).1,
+            SBB => flags::sub64(a64, b64, c, bits).1,
+            LOGIC => flags::szp64(r64, bits),
+            INC => (flags::add64(a64, 1, 0, bits).1 & !CF) | (c & CF),
+            DEC => (flags::sub64(a64, 1, 0, bits).1 & !CF) | (c & CF),
             SHL => {
                 let m = flags::mask(bits);
                 let wide = ((a & m) as u64) << b;
@@ -91,8 +78,34 @@ impl Lazy {
                 let cf = if b > 31 { (sx < 0) as u32 } else { ((sx >> (k - 1).min(31)) & 1) as u32 };
                 flags::szp(r, bits) | cf * CF
             }
-            MUL => flags::szp(r, bits) | if c != 0 { CF | OF } else { 0 },
+            MUL => flags::szp64(r64, bits) | if c != 0 { CF | OF } else { 0 },
             _ => 0,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The 64-bit helpers give the 32-bit ones' flags at 8, 16 and 32 bits.
+    #[test]
+    fn widths_agree() {
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        for _ in 0..200_000 {
+            let (a, b, c) = (next(), next(), (next() & 1) as u32);
+            for bits in [8, 16, 32] {
+                let (a32, b32) = (a as u32, b as u32);
+                assert_eq!(flags::add(a32, b32, c, bits).1, flags::add64(a, b, c, bits).1, "add {a:x} {b:x} {c} {bits}");
+                assert_eq!(flags::sub(a32, b32, c, bits).1, flags::sub64(a, b, c, bits).1, "sub {a:x} {b:x} {c} {bits}");
+                assert_eq!(flags::logic(a32, bits), flags::szp64(a, bits), "logic {a:x} {bits}");
+            }
         }
     }
 }

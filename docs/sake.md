@@ -154,10 +154,11 @@
     (host/tests/gxxunwind.cpp: x86 と x64 で同じ結果)。
   - MMX (movq/movd/movntq/emms、レーンごとの演算、シフト、punpckl/h、pack) も x64 の JIT で訳す
     (MMX レジスタは v128 の下半分、jit/packed.rs と同じ)。SDL 1.2 の MMX ブリットが解釈器で
-    動いていて、ONScripter x64 の花びら演出は 1 フレーム 159 → 20 ms (x86 版は 65 ms)。
-  - 64 ビットの ADD/SUB/LOGIC/INC/DEC のフラグは、出口で計算せず記録だけ残す (lazy の
-    サイズ 3、上半分は Cpu::lazy_hi)。Cpu にある記録を EFLAGS にするのはホスト (以前は
-    その命令をインタプリタに回していた)。
+    動いていて、ONScripter x64 の花びら演出は 1 フレーム 159 → 17 ms。x86 の JIT にも movntq
+    を足した (SDL_BlitCopy が解釈器だった): x86 版 65 → 16 ms (host/tests/mmxblit.c、実機と同じ値)。
+  - フラグの記録 (koji::lazy::Lazy) は a/b/r が u64、サイズ 3 = 64 ビット。32 ビットも 64 ビットも
+    同じ記録で、64 ビットの ADD/SUB/LOGIC/INC/DEC/MUL も出口で計算せず記録だけ残す
+    (EFLAGS にするのはホスト)。64 ビットのシフトだけは出口で計算する。
   - 残り: script 1.7 倍、C++ の std::map 2〜4 倍、x87 と minss の JIT。
 - gl.rs: x64 では引数を位置で並べる ('d'/'f' は xmm、他は a64 の下位)。glShaderSource の
   ポインタ配列は 8 バイト刻み。拡張関数名は ARB/EXT を外した名前でも探す。

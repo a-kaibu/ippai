@@ -122,6 +122,7 @@ pub(super) fn supported(ins: &Instruction) -> bool {
     if ins.op_count() == 0 || ins.op_kind(0) != OpKind::Register {
         let from = ins.op_count() == 2 && ins.op_kind(1) == OpKind::Register && super::mem_ok(ins);
         return (matches!(m, Movd | Movq) && from && vreg(ins.op_register(1)))
+            || (m == Movntq && from && ins.op_register(1).is_mm())
             || (matches!(m, Movss | Movsd) && from && ins.op_register(1).is_xmm())
             || (m == Stmxcsr && ins.op_count() == 1 && ins.op_kind(0) == OpKind::Memory && super::mem_ok(ins));
     }
@@ -295,7 +296,8 @@ impl Gen<'_> {
         use Mnemonic::*;
         let ins = self.ins;
         let m = ins.mnemonic();
-        if matches!(m, Movd | Movq) {
+        // (MOVNTQ: MOVQ m64, mm, the non-temporal hint meaning nothing here)
+        if matches!(m, Movd | Movq | Movntq) {
             return self.movdq();
         }
         if m == Pmovmskb {
@@ -763,7 +765,7 @@ impl Gen<'_> {
     /// MOVD / MOVQ between MMX/XMM registers, general registers and memory.
     fn movdq(&mut self) {
         let ins = self.ins;
-        let q = ins.mnemonic() == Mnemonic::Movq;
+        let q = matches!(ins.mnemonic(), Mnemonic::Movq | Mnemonic::Movntq);
         let size = if q { 8 } else { 4 };
         let a = self.mem_addr_sized(size);
         if q && ins.op_kind(0) == OpKind::Register && ins.op_register(0).is_mm() && ins.op_kind(1) == OpKind::Register && ins.op_register(1).is_mm() {
