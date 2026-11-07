@@ -928,6 +928,23 @@ fn cache_put(h: &Hash, data: Arc<Vec<u8>>, read: bool) -> Arc<Vec<u8>> {
     data
 }
 
+/// Where each file's last read ended (a read that starts there reads on: SEQ_AHEAD chunks
+/// are fetched ahead, not one).
+static LAST_END: Mutex<Option<HashMap<Ino, u64>>> = Mutex::new(None);
+
+/// Chunks fetched ahead for a sequential read: Godot reads its .pck front to back in small
+/// reads, one network round trip a chunk when only the next one was fetched ahead.
+const SEQ_AHEAD: usize = 8;
+
+/// The chunk numbers to fetch ahead for a read of `off..end` (end > off) of a file of `n`
+/// chunks `chunk` bytes each: the read's chunks after its first, then the next one, or the next
+/// SEQ_AHEAD when the read follows the file's last.
+fn ahead(off: u64, end: u64, chunk: u64, n: usize, sequential: bool) -> std::ops::Range<usize> {
+    let (first, last) = ((off / chunk) as usize, ((end - 1) / chunk) as usize);
+    let more = if sequential { SEQ_AHEAD } else { 1 };
+    (first + 1).min(n)..(last + 1 + more).min(n)
+}
+
 /// Reads file content at `off` (the lock is not held while chunks are fetched).
 fn read_at(ino: Ino, buf: &mut [u8], off: u64) -> Result<usize, c_int> {
     let lower = with(|fs| match fs.node(ino).map(|n| &n.data) {
@@ -950,10 +967,17 @@ fn read_at(ino: Ino, buf: &mut [u8], off: u64) -> Result<usize, c_int> {
         return Ok(0);
     }
     let end = (off + buf.len() as u64).min(size);
-    // the read's other chunks and the one after it: fetched at once by the fetcher threads while
-    // this one fetches the first
-    let (first, last) = ((off / chunk) as usize, ((end - 1) / chunk) as usize + 1);
-    for i in first + 1..=last.min(chunks.len().saturating_sub(1)) {
+    // the read's other chunks and the ones after it: fetched at once by the fetcher threads
+    // while this one fetches the first
+    let sequential = {
+        let mut g = LAST_END.lock().unwrap_or_else(|e| e.into_inner());
+        let m = g.get_or_insert_with(HashMap::default);
+        if m.len() > 256 {
+            m.clear();
+        }
+        m.insert(ino, end) == Some(off)
+    };
+    for i in ahead(off, end, chunk, chunks.len(), sequential) {
         if let Some(h) = chunks.get(i).copied().flatten() {
             fetch_ahead(&h);
         }
@@ -1631,6 +1655,41 @@ mod tests {
                     assert_eq!(&buf[..n], want);
                 }
             }
+        }
+    }
+
+    /// The chunks fetched ahead: past the read's first chunk, within the file, through the read's
+    /// last chunk and then one more, or SEQ_AHEAD more for a sequential read.
+    #[test]
+    fn ahead_cases() {
+        // (a read inside chunk 0 of 10: chunk 1; sequential: 1..=8)
+        assert_eq!(ahead(0, 100, 1000, 10, false), 1..2);
+        assert_eq!(ahead(0, 100, 1000, 10, true), 1..9);
+        // (over chunks 2..=4: 3, 4 and 5)
+        assert_eq!(ahead(2500, 4100, 1000, 10, false), 3..6);
+        // (the file's end)
+        assert_eq!(ahead(9000, 9500, 1000, 10, true), 10..10);
+        assert_eq!(ahead(8999, 9500, 1000, 10, true), 9..10);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn ahead_bounds(chunk in 1u64..5000, n in 1usize..50, a in 0u64..250_000, len in 1u64..20_000, seq in proptest::bool::ANY) {
+            let size = chunk * n as u64;
+            let off = a % size;
+            let end = (off + len).min(size);
+            let r = ahead(off, end, chunk, n, seq);
+            let (first, last) = ((off / chunk) as usize, ((end - 1) / chunk) as usize);
+            // within the file, never the read's first chunk (this thread fetches that one)
+            proptest::prop_assert!(r.start == first + 1 || r.is_empty());
+            proptest::prop_assert!(r.end <= n);
+            // every other chunk the read needs
+            for i in first + 1..=last {
+                proptest::prop_assert!(r.contains(&i));
+            }
+            // and as many past it as the file has, up to the window
+            let past = if seq { SEQ_AHEAD } else { 1 };
+            proptest::prop_assert_eq!(r.end, (last + 1 + past).min(n));
         }
     }
 

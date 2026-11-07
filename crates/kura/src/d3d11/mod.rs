@@ -3321,9 +3321,11 @@ fn buffer_gpu(d: &mut D11, id: u32) -> u32 {
 /// writeBuffer writes them; the end may be `new`'s length); None when equal.
 pub(crate) fn changed_range(old: &[u8], new: &[u8]) -> Option<(usize, usize)> {
     let n = new.len().min(old.len());
-    // (8 bytes at a time from each end)
+    // (8 bytes at a time from each end, as words: a slice compare is a memcmp call, and this
+    // runs over a megabyte a draw)
+    let word = |b: &[u8], at: usize| u64::from_ne_bytes(b[at..at + 8].try_into().unwrap());
     let mut lo = 0;
-    while lo + 8 <= n && old[lo..lo + 8] == new[lo..lo + 8] {
+    while lo + 8 <= n && word(old, lo) == word(new, lo) {
         lo += 8;
     }
     while lo < n && old[lo] == new[lo] {
@@ -3333,7 +3335,7 @@ pub(crate) fn changed_range(old: &[u8], new: &[u8]) -> Option<(usize, usize)> {
         return None;
     }
     let mut hi = n;
-    while hi >= lo + 8 && old[hi - 8..hi] == new[hi - 8..hi] {
+    while hi >= lo + 8 && word(old, hi - 8) == word(new, hi - 8) {
         hi -= 8;
     }
     while old[hi - 1] == new[hi - 1] {
