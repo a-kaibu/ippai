@@ -700,7 +700,7 @@ mod bc67_tests {
                 b[8..].copy_from_slice(&rnd().to_le_bytes());
                 if conv == BC7 {
                     // (m 8: no bit in byte 0 = reserved)
-                    b[0] = if m == 8 { 0 } else { (b[0] & !((2u8 << m) - 1)) | (1 << m) };
+                    b[0] = if m == 8 { 0 } else { (b[0] & !(((2u16 << m) - 1) as u8)) | (1 << m) };
                 } else if m < 2 {
                     b[0] = (b[0] & !3) | m as u8;
                 } else {

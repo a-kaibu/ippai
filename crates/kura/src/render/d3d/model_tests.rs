@@ -1045,12 +1045,20 @@ fn run_cut(batches: &[Batch], cut: usize, snap: bool) -> Vec<Vec<Obs>> {
             out.push(obs);
         }
         if k == cut && !snap {
-            // (what a state leaves out: depth and stencil, as last cleared)
+            // (what a state leaves out: depth and stencil, as last cleared; multisampled targets)
             let mut c = Vec::new();
             for (&id, t) in d.textures.iter().filter(|(_, t)| is_depth(t.format)) {
                 c.extend(snap::depth_clears(id, t));
             }
+            // (and multisampled color: zeros)
+            for (&id, _) in d.textures.iter().filter(|(_, t)| t.samples > 1 && !is_depth(t.format)) {
+                c.extend(snap::ms_clears(id));
+            }
             d.run_batch(&c, &[], &[]);
+            if d.overlay.is_some() && d.textures.get(&d.overlay_tex).is_some_and(|t| t.samples > 1) {
+                let view = d.present_view(d.overlay_tex);
+                d.overlay.as_mut().unwrap().view = view;
+            }
             model::with(|m| m.obs.clear());
             // (what the page shows right then)
             out.push(d.overlay.iter().map(|o| Obs::Frame("restored".into(), model::with(|m| m.view_values(o.view)))).collect());

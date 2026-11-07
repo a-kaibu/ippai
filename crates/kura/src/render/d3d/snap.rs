@@ -6,7 +6,7 @@
 //!
 //! Depth and stencil can't be read back (WebGPU): they come back as they were last cleared
 //! (games clear them every frame). Neither can multisampled textures: they come back
-//! uninitialized (games draw and resolve them every frame).
+//! cleared to zeros (games draw and resolve them every frame).
 
 use super::*;
 
@@ -113,6 +113,8 @@ impl D3d {
             c.extend_from_slice(&t.make);
             if is_depth(t.format) {
                 c.extend(depth_clears(id, t));
+            } else if t.samples > 1 {
+                c.extend(ms_clears(id));
             }
         }
         let mut ids: Vec<u32> = self.shader_src.keys().copied().collect();
@@ -176,8 +178,10 @@ impl D3d {
     pub fn snap_restore(&mut self, s: &Saved) {
         self.run_batch(&s.c, &[], &s.blob);
         if let Some((id, rect, flip)) = s.overlay {
-            if let Some(t) = self.textures.get(&id) {
-                self.overlay = Some(Overlay { view: t.view, rect, flip });
+            if self.textures.contains_key(&id) {
+                // (a multisampled one shows its resolve: of zeros, until the game presents again)
+                let view = self.present_view(id);
+                self.overlay = Some(Overlay { view, rect, flip });
                 self.overlay_tex = id;
                 self.tex_gen += 1;
             }
@@ -190,6 +194,12 @@ pub(super) fn depth_clears(id: u32, t: &Tex) -> Vec<u32> {
     let (z, s) = t.zclear.unwrap_or((1.0, 0));
     let layers = if t.dim == "3d" { 1 } else { t.layers };
     (0..t.levels).flat_map(|level| (0..layers).flat_map(move |layer| [CLEAR_VIEW, id, level, layer, 6, 0, 0, 0, 0, z.to_bits(), s])).collect()
+}
+
+/// What a multisampled color texture comes back as (not read back): zeros, as a new one, made
+/// explicit so that what restores it is the same command whatever the page did before.
+pub(super) fn ms_clears(id: u32) -> Vec<u32> {
+    vec![CLEAR_VIEW, id, 0, 0, 1, 0, 0, 0, 0, 0, 0]
 }
 
 fn pad4(b: &mut Vec<u8>) {

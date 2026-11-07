@@ -2799,7 +2799,7 @@ mod ms_tests {
         m.copy_texture(a, 0, [0; 3], c, 0, [0; 3], [8, 8, 1]);
         assert!(!errs(&mut m).is_empty());
         let buf = m.buffer(4096, 0xc);
-        m.copy_to_buffer(a, 0, 0, 0, buf, 256, 8, 8);
+        m.copy_to_buffer(a, 0, [0, 0, 0], buf, 256, 8, 8);
         assert!(!errs(&mut m).is_empty());
         m.copy_from_buffer(buf, 256, a, 0, 0, 0, 8, 8);
         assert!(!errs(&mut m).is_empty());

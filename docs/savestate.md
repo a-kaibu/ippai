@@ -87,6 +87,8 @@ A state holds the game's own save files as they were then: loading one goes back
 
 * Depth and stencil buffers can't be read back (WebGPU): they come back as last cleared (games
   clear them every frame).
+* Neither can Direct3D 11 multisampled (4x) targets: they come back as zeros, and a 4x back
+  buffer shown at the save shows black until the game presents again.
 * Under node, files opened outside kura's file system (NODERAWFS) are not in a state.
 * Node 22's V8 loses `i32.atomic.store` to constant addresses at 2 GiB and up in its first tier,
   where all of the host's statics are: run sake.js under node 24 or later.
