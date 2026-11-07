@@ -2880,8 +2880,10 @@ fn Wow64EnableWow64FsRedirection(c: &mut Ctx) -> u32 {
 // ---------------------------------------------------------------------------------------------
 // version, locale
 
+/// GetVersion: build << 16 | minor << 8 | major (Windows 7: 0x1db10106)
 fn GetVersion(_: &mut Ctx) -> u32 {
-    0x1db1_0106
+    let v = os_version();
+    v.build << 16 | v.minor << 8 | v.major
 }
 /// The Windows version programs see: GetVersionEx's (Windows 7 SP1, what Windows 10 tells a
 /// program without a manifest for 8.1+... and what games of that era expect), or the real one
@@ -2900,8 +2902,24 @@ pub struct OsVer {
 pub const OS_VERSION: OsVer = OsVer { major: 6, minor: 1, build: 7601, platform: 2, sp_major: 1, sp_minor: 0, suite: 0x100, product: 1 };
 pub const OS_VERSION_REAL: OsVer = OsVer { major: 10, minor: 0, build: 19045, ..OS_VERSION };
 
+/// The version GetVersionEx and VerifyVersionInfo answer with: Windows 10's to a program whose
+/// manifest declares it supports Windows 10 (supportedOS {8e0f7a12-...}; Ren'Py's launcher
+/// refuses to start otherwise), Windows 7's to the others, as Windows 10 does
+pub fn os_version() -> OsVer {
+    static WIN10: OnceLock<bool> = OnceLock::new();
+    let exe = module_handle(0, false);
+    let win10 = |exe: u32| {
+        let Some(e) = crate::pe::find_resource(exe, &crate::pe::ResId::Int(24), &crate::pe::ResId::Int(1)) else { return false };
+        let (p, n) = crate::pe::resource_data(exe, e);
+        String::from_utf8_lossy(mem::slice(p, n.min(0x10000))).to_ascii_lowercase().contains("8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a")
+    };
+    // (decided once the program is loaded)
+    let w = if exe == 0 { false } else { *WIN10.get_or_init(|| win10(exe)) };
+    if w { OS_VERSION_REAL } else { OS_VERSION }
+}
+
 fn version_info(p: u32, wide: bool) -> u32 {
-    let v = OS_VERSION;
+    let v = os_version();
     let size = r32(p);
     w32(p + 4, v.major);
     w32(p + 8, v.minor);
@@ -3084,7 +3102,7 @@ fn cond_mask_arg(c: &Ctx) -> u64 {
     if mem::x64() { c.a64(2) } else { c.a(2) as u64 | (c.a(3) as u64) << 32 }
 }
 fn verify_version_info(c: &mut Ctx, wide: bool) -> u32 {
-    match verify_version(&OS_VERSION, &read_osver(c.a(0), wide), c.a(1), cond_mask_arg(c)) {
+    match verify_version(&os_version(), &read_osver(c.a(0), wide), c.a(1), cond_mask_arg(c)) {
         Ok(()) => 1,
         Err(e) => {
             last_error(if e == VerFail::BadArgs { 160 } else { 1150 });

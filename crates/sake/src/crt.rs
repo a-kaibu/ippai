@@ -1919,15 +1919,6 @@ fn fsetpos(c: &mut Ctx) -> u32 {
     })
     .unwrap_or(u32::MAX)
 }
-/// strerror(errno): one fixed message
-fn strerror(_: &mut Ctx) -> u32 {
-    static S: OnceLock<u32> = OnceLock::new();
-    *S.get_or_init(|| {
-        let p = mem::heap_alloc(16, true);
-        mem::write(p, b"Unknown error\0");
-        p
-    })
-}
 fn ___lc_collate_cp_func(_: &mut Ctx) -> u32 {
     932
 }
@@ -3411,7 +3402,7 @@ pub fn init() {
     implement("msvcrt", "_wfindfirsti64", _wfindfirst32i64);
     implement("msvcrt", "_wfindnexti64", _wfindnext32i64);
     reg!(_get_stream_buffer_pointers);
-    reg!(fgetpos, fsetpos, strerror, ___lc_collate_cp_func);
+    reg!(fgetpos, fsetpos, ___lc_collate_cp_func);
     implement("msvcrt", "_fsopen", fopen);
     implement("msvcrt", "_wfsopen", _wfopen);
     reg!(_aligned_malloc, _aligned_free, _aligned_realloc, _aligned_msize, _mkdir, _wmkdir);

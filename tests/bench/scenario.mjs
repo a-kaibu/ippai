@@ -251,15 +251,29 @@ export async function runScenario(browser, build, c, timeout) {
       else if (r.what.startsWith("fx_")) metrics[r.what] = Math.max(metrics[r.what] ?? 0, r.t - at);
       // (after the movie the game goes on by itself: the next wait comes after its scene)
       if (r.what === "saved") {
-        // the save must reach the browser's storage before the page goes (web/src/saves.ts)
-        const until = Date.now() + 30000;
-        while (!(await page.evaluate(async () => {
-          try {
-            const d = await (await navigator.storage.getDirectory()).getDirectoryHandle("saves");
-            for await (const _ of d.values()) return true;
-          } catch {}
-          return false;
-        })) && Date.now() < until) await page.waitForTimeout(250);
+        // the save must reach the browser's storage before the page goes (web/src/saves.ts
+        // stores every 5 s what changed): what is stored changes after the save, or a store came
+        // in between (a store found from before, of the game's persistent data, is not enough)
+        const stored = () =>
+          page.evaluate(async () => {
+            try {
+              const d = await (await navigator.storage.getDirectory()).getDirectoryHandle("saves");
+              const out = [];
+              for await (const [n, h] of d.entries()) {
+                const f = h.kind === "file" ? await h.getFile() : null;
+                out.push(`${n}:${f?.size}:${f?.lastModified}`);
+              }
+              return out.sort().join(",");
+            } catch {}
+            return "";
+          });
+        const before = await stored();
+        const until = Date.now() + 30000, settled = Date.now() + 7000;
+        for (;;) {
+          const now = await stored();
+          if ((now && now !== before) || (now && Date.now() > settled) || Date.now() > until) break;
+          await page.waitForTimeout(250);
+        }
       }
     }
     clearInterval(sampler);

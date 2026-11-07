@@ -1404,6 +1404,28 @@ const MESSAGES: [&str; 43] = [
 pub(super) fn message(e: u32) -> &'static str {
     MESSAGES.get(e as usize).copied().unwrap_or("Unknown error")
 }
+/// strerror(errnum) / _wcserror(errnum): the message, in a buffer kept per message (Windows'
+/// per thread one is overwritten by the next call; nothing relies on that)
+fn errmsg(e: u32, wide: bool) -> u32 {
+    static BUFS: Mutex<Vec<(u32, bool, u32)>> = Mutex::new(Vec::new());
+    let e = if (e as usize) < MESSAGES.len() { e } else { MESSAGES.len() as u32 };
+    let mut b = BUFS.lock().unwrap();
+    if let Some(&(_, _, p)) = b.iter().find(|x| x.0 == e && x.1 == wide) {
+        return p;
+    }
+    let m = message(e);
+    let bytes: Vec<u8> = if wide { m.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect() } else { m.bytes().chain([0]).collect() };
+    let p = mem::heap_alloc(bytes.len() as u32, true);
+    mem::write(p, &bytes);
+    b.push((e, wide, p));
+    p
+}
+fn strerror(c: &mut Ctx) -> u32 {
+    errmsg(c.a(0), false)
+}
+fn _wcserror(c: &mut Ctx) -> u32 {
+    errmsg(c.a(0), true)
+}
 /// strerror_s(buf, n, errnum)
 fn strerror_s(c: &mut Ctx) -> u32 {
     let (buf, n, e) = (c.a(0), c.a(1), c.a(2));
@@ -1795,7 +1817,7 @@ pub(super) fn init() {
     reg!(_wgetenv, _wgetenv_s, _wputenv, _putenv, _putenv_s, _wputenv_s);
     implement("msvcrt", "getenv_s", getenv_s_a);
     reg!(_tzset, __timezone, __daylight, __dstbias, __tzname, _get_tzname, _get_timezone, _get_daylight, _get_dstbias);
-    reg!(setlocale, _wsetlocale, _mbtowc_l, mbrtowc, mbrlen, btowc, wctob, wcrtomb, wcrtomb_s, mbstowcs, mbsrtowcs, wcstombs);
+    reg!(strerror, _wcserror, setlocale, _wsetlocale, _mbtowc_l, mbrtowc, mbrlen, btowc, wctob, wcrtomb, wcrtomb_s, mbstowcs, mbsrtowcs, wcstombs);
     implement("msvcrt", "mbtowc", _mbtowc_l);
     implement("msvcrt", "_mbstowcs_l", mbstowcs);
     implement("msvcrt", "_wcstombs_l", wcstombs);

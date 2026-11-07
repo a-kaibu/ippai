@@ -216,6 +216,8 @@ int main(void) {
         strerror_s(buf, sizeof buf, e);
         printf("strerror %d %s\n", e, buf);
     }
+    printf("strerror %s | %s\n", strerror(ENOENT), strerror(200));
+    printf("wcserror %d\n", wcscmp(_wcserror(EACCES), L"Permission denied") == 0);
     r = strerror_s(buf, 5, 2);
     printf("strerror_s small %d '%s'\n", r, buf);
 
