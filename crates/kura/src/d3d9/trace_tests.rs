@@ -31,14 +31,7 @@ pub(crate) unsafe extern "C" fn alloc(n: u32) -> *mut u8 {
     let mut a = ARENA.lock().unwrap();
     if a.0 == 0 {
         let size = 512 << 20;
-        let p = libc::mmap(
-            std::ptr::null_mut(),
-            size,
-            libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_32BIT,
-            -1,
-            0,
-        );
+        let p = libc::mmap(std::ptr::null_mut(), size, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_32BIT, -1, 0);
         assert!(p != libc::MAP_FAILED);
         *a = (p as usize as u32, p as usize as u32 + size as u32);
     }
@@ -53,14 +46,7 @@ unsafe extern "C" fn free(_: *mut u8) {}
 pub(crate) fn on_low_stack(f: fn()) {
     unsafe {
         let size = 16 << 20;
-        let st = libc::mmap(
-            std::ptr::null_mut(),
-            size,
-            libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_32BIT,
-            -1,
-            0,
-        );
+        let st = libc::mmap(std::ptr::null_mut(), size, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_32BIT, -1, 0);
         assert!(st != libc::MAP_FAILED);
         let mut attr: libc::pthread_attr_t = std::mem::zeroed();
         libc::pthread_attr_init(&mut attr);
@@ -76,10 +62,7 @@ pub(crate) fn on_low_stack(f: fn()) {
             }
         }
         let mut t: libc::pthread_t = 0;
-        assert_eq!(
-            libc::pthread_create(&mut t, &attr, start, f as *mut libc::c_void),
-            0
-        );
+        assert_eq!(libc::pthread_create(&mut t, &attr, start, f as *mut libc::c_void), 0);
         let mut ret = std::ptr::null_mut();
         libc::pthread_join(t, &mut ret);
         libc::munmap(st, size);
@@ -114,19 +97,9 @@ unsafe impl std::alloc::GlobalAlloc for LowHeap {
         }
         use std::sync::atomic::Ordering::*;
         if LOW.load(Acquire) == 0 {
-            let p = libc::mmap(
-                std::ptr::null_mut(),
-                LOW_SIZE,
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_32BIT | libc::MAP_NORESERVE,
-                -1,
-                0,
-            );
+            let p = libc::mmap(std::ptr::null_mut(), LOW_SIZE, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_32BIT | libc::MAP_NORESERVE, -1, 0);
             assert!(p != libc::MAP_FAILED);
-            if LOW
-                .compare_exchange(0, p as usize, AcqRel, Acquire)
-                .is_err()
-            {
+            if LOW.compare_exchange(0, p as usize, AcqRel, Acquire).is_err() {
                 libc::munmap(p, LOW_SIZE);
             }
         }
@@ -153,10 +126,7 @@ unsafe impl std::alloc::GlobalAlloc for LowHeap {
         if !Self::low(p) && !LOW_HEAP.try_with(|x| x.get()).unwrap_or(false) {
             return std::alloc::System.realloc(p, l, size);
         }
-        let n = self.alloc(std::alloc::Layout::from_size_align_unchecked(
-            size,
-            l.align(),
-        ));
+        let n = self.alloc(std::alloc::Layout::from_size_align_unchecked(size, l.align()));
         if !n.is_null() {
             std::ptr::copy_nonoverlapping(p, n, l.size().min(size));
             self.dealloc(p, l);
@@ -173,11 +143,7 @@ unsafe extern "C" fn client_rect(_: u32, r: *mut i32) -> i32 {
     }
     1
 }
-pub(crate) static CALLS: HostCalls = HostCalls {
-    alloc,
-    free,
-    client_rect,
-};
+pub(crate) static CALLS: HostCalls = HostCalls { alloc, free, client_rect };
 
 /// One trace step, as a ComRefs.tla record.
 #[derive(Default, Clone)]
@@ -213,9 +179,7 @@ pub(crate) fn hr(r: u32) -> String {
 /// Writes `dir/name/<module>.tla` (the trace) and `dir/name/SPEC` (the spec it is checked
 /// against: formal/tla/<spec>.tla with <spec>Trace.tla and .cfg) when IPPAI_TRACE_DIR is set.
 pub(crate) fn write_module(name: &str, spec: &str, module: &str, text: &str) {
-    let Some(dir) = std::env::var_os("IPPAI_TRACE_DIR") else {
-        return;
-    };
+    let Some(dir) = std::env::var_os("IPPAI_TRACE_DIR") else { return };
     let dir = std::path::Path::new(&dir).join(name);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join(format!("{module}.tla")), text).unwrap();
@@ -223,12 +187,7 @@ pub(crate) fn write_module(name: &str, spec: &str, module: &str, text: &str) {
 }
 
 pub(crate) fn write_trace(name: &str, steps: &[Step]) {
-    let set = |v: &[u32]| {
-        v.iter()
-            .map(|x| x.to_string())
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
+    let set = |v: &[u32]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", ");
     let mut s = String::from("---- MODULE ComTrace ----\nEXTENDS Sequences\nTrace == <<\n");
     for (i, t) in steps.iter().enumerate() {
         let _ = write!(
@@ -243,10 +202,7 @@ pub(crate) fn write_trace(name: &str, steps: &[Step]) {
 }
 
 pub(crate) fn seeds() -> u64 {
-    std::env::var("IPPAI_TRACE_SEEDS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(20)
+    std::env::var("IPPAI_TRACE_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(20)
 }
 
 /// The page's executor (render/d3d.rs) on a fresh model of WebGPU (render/model.rs), run in this
@@ -311,38 +267,18 @@ struct App {
 
 impl App {
     fn push(&mut self, mut t: Step) {
-        for x in [t.o, t.got, t.bb, t.sc, t.ads]
-            .into_iter()
-            .chain(t.lv.iter().copied())
-        {
+        for x in [t.o, t.got, t.bb, t.sc, t.ads].into_iter().chain(t.lv.iter().copied()) {
             if x != 0 && !self.known.contains(&x) {
                 self.known.push(x);
             }
         }
-        t.alive = with(|d| {
-            self.known
-                .iter()
-                .copied()
-                .filter(|x| d.objs.contains_key(x))
-                .collect()
-        });
+        t.alive = with(|d| self.known.iter().copied().filter(|x| d.objs.contains_key(x)).collect());
         t.alive.sort();
         self.steps.push(t);
     }
     /// A held reference whose object `f` accepts.
     fn pick(&self, r: &mut Rng, f: impl Fn(u32, u32) -> bool) -> Option<u32> {
-        let c: Vec<u32> = self
-            .held
-            .iter()
-            .copied()
-            .filter(|&a| {
-                with(|d| {
-                    d.objs
-                        .get(&d.id_of(a))
-                        .is_some_and(|o| f(o.iface, o.data_kind()))
-                })
-            })
-            .collect();
+        let c: Vec<u32> = self.held.iter().copied().filter(|&a| with(|d| d.objs.get(&d.id_of(a)).is_some_and(|o| f(o.iface, o.data_kind())))).collect();
         (!c.is_empty()).then(|| c[r.below(c.len())])
     }
     fn release(&mut self, addr: u32) {
@@ -351,12 +287,7 @@ impl App {
         let o = id(addr);
         let iface = with(|d| d.objs[&o].iface);
         let r = call(iface, 2, &[addr]);
-        self.push(Step {
-            op: "Release",
-            o,
-            ret: r.to_string(),
-            ..Default::default()
-        });
+        self.push(Step { op: "Release", o, ret: r.to_string(), ..Default::default() });
     }
 }
 
@@ -379,37 +310,20 @@ fn buffers(t: &mut Step) {
 
 fn run(seed: u64) {
     let mut r = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
-    let mut app = App {
-        held: Vec::new(),
-        known: Vec::new(),
-        steps: Vec::new(),
-    };
+    let mut app = App { held: Vec::new(), known: Vec::new(), steps: Vec::new() };
     let o = out();
     unsafe { vnhost_d3d9_create(0x20, o as *mut u32, &CALLS) };
     let d3d_addr = rd(o);
     let d3d = id(d3d_addr);
     app.held.push(d3d_addr);
-    app.push(Step {
-        op: "CreateD3D",
-        o: d3d,
-        ret: hr(0),
-        got: d3d,
-        ..Default::default()
-    });
+    app.push(Step { op: "CreateD3D", o: d3d, ret: hr(0), got: d3d, ..Default::default() });
     let o = out();
     let res = call(IF_D3D9, 16, &[d3d_addr, 0, 1, 1, 0x40, pp(r.chance(50)), o]);
     assert_eq!(res, 0);
     let dev_addr = rd(o);
     let dev = id(dev_addr);
     app.held.push(dev_addr);
-    let mut t = Step {
-        op: "CreateDevice",
-        o: dev,
-        d3d,
-        ret: hr(0),
-        got: dev,
-        ..Default::default()
-    };
+    let mut t = Step { op: "CreateDevice", o: dev, d3d, ret: hr(0), got: dev, ..Default::default() };
     buffers(&mut t);
     app.push(t);
     let tex_slots = ["tex0", "tex1"];
@@ -423,21 +337,7 @@ fn run(seed: u64) {
             0 => {
                 let rt = r.chance(50);
                 let o = out();
-                let res = call(
-                    IF_DEVICE,
-                    23,
-                    &[
-                        dev_addr,
-                        4,
-                        4,
-                        r.below(4) as u32,
-                        rt as u32,
-                        22,
-                        if rt { 0 } else { r.below(2) as u32 },
-                        o,
-                        0,
-                    ],
-                );
+                let res = call(IF_DEVICE, 23, &[dev_addr, 4, 4, r.below(4) as u32, rt as u32, 22, if rt { 0 } else { r.below(2) as u32 }, o, 0]);
                 let a = rd(o);
                 app.held.push(a);
                 let tid = id(a);
@@ -445,39 +345,19 @@ fn run(seed: u64) {
                     Data::Texture(t) => t.levels.clone(),
                     _ => unreachable!(),
                 });
-                app.push(Step {
-                    op: "CreateTexture",
-                    o: tid,
-                    lv,
-                    ret: hr(res),
-                    got: tid,
-                    ..Default::default()
-                });
+                app.push(Step { op: "CreateTexture", o: tid, lv, ret: hr(res), got: tid, ..Default::default() });
             }
             1 | 2 => {
                 let (m, kind) = if k == 1 { (28, "surface") } else { (26, "vb") };
                 let o = out();
-                let args = if k == 1 {
-                    vec![dev_addr, 4, 4, 22, 0, 0, 0, o, 0]
-                } else {
-                    vec![dev_addr, 64, 0, 0, 0, o, 0]
-                };
+                let args = if k == 1 { vec![dev_addr, 4, 4, 22, 0, 0, 0, o, 0] } else { vec![dev_addr, 64, 0, 0, 0, o, 0] };
                 let res = call(IF_DEVICE, m, &args);
                 let a = rd(o);
                 app.held.push(a);
-                app.push(Step {
-                    op: "Create",
-                    o: id(a),
-                    slot: kind,
-                    ret: hr(res),
-                    got: id(a),
-                    ..Default::default()
-                });
+                app.push(Step { op: "Create", o: id(a), slot: kind, ret: hr(res), got: id(a), ..Default::default() });
             }
             3 => {
-                let Some(t) = app.pick(&mut r, |i, _| i == IF_TEXTURE) else {
-                    continue;
-                };
+                let Some(t) = app.pick(&mut r, |i, _| i == IF_TEXTURE) else { continue };
                 let n = with(|d| match &d.objs[&d.id_of(t)].data {
                     Data::Texture(x) => x.levels.len() as u32,
                     _ => 0,
@@ -485,37 +365,14 @@ fn run(seed: u64) {
                 let l = r.below(n as usize + 1) as u32;
                 let o = out();
                 let res = call(IF_TEXTURE, 18, &[t, l, o]);
-                let got = if res == 0 {
-                    app.held.push(rd(o));
-                    id(rd(o))
-                } else {
-                    0
-                };
-                app.push(Step {
-                    op: "GetLevel",
-                    o: id(t),
-                    l,
-                    ret: hr(res),
-                    got,
-                    ..Default::default()
-                });
+                let got = if res == 0 { app.held.push(rd(o)); id(rd(o)) } else { 0 };
+                app.push(Step { op: "GetLevel", o: id(t), l, ret: hr(res), got, ..Default::default() });
             }
             4 => {
                 let stage = r.below(2);
-                let t = if r.chance(25) {
-                    None
-                } else {
-                    app.pick(&mut r, |i, _| i == IF_TEXTURE)
-                };
+                let t = if r.chance(25) { None } else { app.pick(&mut r, |i, _| i == IF_TEXTURE) };
                 let res = call(IF_DEVICE, 65, &[dev_addr, stage as u32, t.unwrap_or(0)]);
-                app.push(Step {
-                    op: "Set",
-                    dev,
-                    slot: tex_slots[stage],
-                    v: t.map_or(0, id),
-                    ret: hr(res),
-                    ..Default::default()
-                });
+                app.push(Step { op: "Set", dev, slot: tex_slots[stage], v: t.map_or(0, id), ret: hr(res), ..Default::default() });
             }
             5 => {
                 let stage = r.below(2);
@@ -525,30 +382,12 @@ fn run(seed: u64) {
                 if got != 0 {
                     app.held.push(rd(o));
                 }
-                app.push(Step {
-                    op: "Get",
-                    dev,
-                    slot: tex_slots[stage],
-                    ret: hr(res),
-                    got,
-                    ..Default::default()
-                });
+                app.push(Step { op: "Get", dev, slot: tex_slots[stage], ret: hr(res), got, ..Default::default() });
             }
             6 => {
-                let b = if r.chance(25) {
-                    None
-                } else {
-                    app.pick(&mut r, |i, _| i == IF_VB)
-                };
+                let b = if r.chance(25) { None } else { app.pick(&mut r, |i, _| i == IF_VB) };
                 let res = call(IF_DEVICE, 100, &[dev_addr, 0, b.unwrap_or(0), 0, 16]);
-                app.push(Step {
-                    op: "Set",
-                    dev,
-                    slot: "vb0",
-                    v: b.map_or(0, id),
-                    ret: hr(res),
-                    ..Default::default()
-                });
+                app.push(Step { op: "Set", dev, slot: "vb0", v: b.map_or(0, id), ret: hr(res), ..Default::default() });
             }
             7 => {
                 let (o, off, stride) = (out(), out(), out());
@@ -557,31 +396,13 @@ fn run(seed: u64) {
                 if got != 0 {
                     app.held.push(rd(o));
                 }
-                app.push(Step {
-                    op: "Get",
-                    dev,
-                    slot: "vb0",
-                    ret: hr(res),
-                    got,
-                    ..Default::default()
-                });
+                app.push(Step { op: "Get", dev, slot: "vb0", ret: hr(res), got, ..Default::default() });
             }
             8 => {
                 let i = r.below(2);
-                let s = if r.chance(20) {
-                    None
-                } else {
-                    app.pick(&mut r, |i, k| i == IF_SURFACE && k == 1)
-                };
+                let s = if r.chance(20) { None } else { app.pick(&mut r, |i, k| i == IF_SURFACE && k == 1) };
                 let res = call(IF_DEVICE, 37, &[dev_addr, i as u32, s.unwrap_or(0)]);
-                app.push(Step {
-                    op: "Set",
-                    dev,
-                    slot: ["rt0", "rt1"][i],
-                    v: s.map_or(0, id),
-                    ret: hr(res),
-                    ..Default::default()
-                });
+                app.push(Step { op: "Set", dev, slot: ["rt0", "rt1"][i], v: s.map_or(0, id), ret: hr(res), ..Default::default() });
             }
             9 => {
                 let i = r.below(2);
@@ -589,50 +410,25 @@ fn run(seed: u64) {
                 let (res, slot) = if r.chance(30) {
                     (call(IF_DEVICE, 18, &[dev_addr, 0, 0, 0, o]), "bb")
                 } else {
-                    (
-                        call(IF_DEVICE, 38, &[dev_addr, i as u32, o]),
-                        ["rt0", "rt1"][i],
-                    )
+                    (call(IF_DEVICE, 38, &[dev_addr, i as u32, o]), ["rt0", "rt1"][i])
                 };
                 let got = if res == 0 { id(rd(o)) } else { 0 };
                 if got != 0 {
                     app.held.push(rd(o));
                 }
-                app.push(Step {
-                    op: "Get",
-                    dev,
-                    slot,
-                    ret: hr(res),
-                    got,
-                    ..Default::default()
-                });
+                app.push(Step { op: "Get", dev, slot, ret: hr(res), got, ..Default::default() });
             }
             10 => {
                 let o = out();
                 let res = call(IF_DEVICE, 59, &[dev_addr, 1, o]);
                 app.held.push(rd(o));
-                app.push(Step {
-                    op: "CreateStateBlock",
-                    o: id(rd(o)),
-                    dev,
-                    ret: hr(res),
-                    got: id(rd(o)),
-                    ..Default::default()
-                });
+                app.push(Step { op: "CreateStateBlock", o: id(rd(o)), dev, ret: hr(res), got: id(rd(o)), ..Default::default() });
             }
             11 => {
-                let Some(sb) = app.pick(&mut r, |i, _| i == IF_STATEBLOCK) else {
-                    continue;
-                };
+                let Some(sb) = app.pick(&mut r, |i, _| i == IF_STATEBLOCK) else { continue };
                 let cap = r.chance(50);
                 let res = call(IF_STATEBLOCK, if cap { 4 } else { 5 }, &[sb]);
-                app.push(Step {
-                    op: if cap { "Capture" } else { "Apply" },
-                    sb: id(sb),
-                    dev,
-                    ret: hr(res),
-                    ..Default::default()
-                });
+                app.push(Step { op: if cap { "Capture" } else { "Apply" }, sb: id(sb), dev, ret: hr(res), ..Default::default() });
             }
             12 => {
                 let a = app.held[r.below(app.held.len())];
@@ -641,24 +437,13 @@ fn run(seed: u64) {
                 if r.chance(50) {
                     let res = call(iface, 1, &[a]);
                     app.held.push(a);
-                    app.push(Step {
-                        op: "AddRef",
-                        o,
-                        ret: res.to_string(),
-                        ..Default::default()
-                    });
+                    app.push(Step { op: "AddRef", o, ret: res.to_string(), ..Default::default() });
                 } else {
                     let iid = out_n(4);
                     let po = out();
                     let res = call(iface, 0, &[a, iid, po]);
                     app.held.push(rd(po));
-                    app.push(Step {
-                        op: "QueryInterface",
-                        o,
-                        ret: hr(res),
-                        got: id(rd(po)),
-                        ..Default::default()
-                    });
+                    app.push(Step { op: "QueryInterface", o, ret: hr(res), got: id(rd(po)), ..Default::default() });
                 }
             }
             13 => {
@@ -673,12 +458,7 @@ fn run(seed: u64) {
                     continue;
                 }
                 let res = call(IF_DEVICE, 16, &[dev_addr, pp(r.chance(50))]);
-                let mut t = Step {
-                    op: "Reset",
-                    dev,
-                    ret: hr(res),
-                    ..Default::default()
-                };
+                let mut t = Step { op: "Reset", dev, ret: hr(res), ..Default::default() };
                 buffers(&mut t);
                 app.push(t);
             }
@@ -691,10 +471,7 @@ fn run(seed: u64) {
     }
     let left = app.steps.last().unwrap().alive.clone();
     write_trace(&format!("d3d9-{seed}"), &app.steps);
-    assert!(
-        left.is_empty(),
-        "seed {seed}: alive after every reference was released: {left:?}"
-    );
+    assert!(left.is_empty(), "seed {seed}: alive after every reference was released: {left:?}");
 }
 
 #[test]

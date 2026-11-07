@@ -122,13 +122,7 @@ fn gpu_cells(s: &Surf, n: &mut u32) -> Vec<i64> {
     assert!(gpu::wait_readback(req));
     if std::env::var_os("IPPAI_LOCK_DUMP").is_some() {
         for y in 0..s.h.min(16) {
-            let row: Vec<String> = (0..s.w.min(16))
-                .map(|x| {
-                    format!("{:08x}", unsafe {
-                        *((dst + y * pitch + x * 4) as *const u32)
-                    })
-                })
-                .collect();
+            let row: Vec<String> = (0..s.w.min(16)).map(|x| format!("{:08x}", unsafe { *((dst + y * pitch + x * 4) as *const u32) })).collect();
             eprintln!("  {}", row.join(" "));
         }
     }
@@ -137,20 +131,12 @@ fn gpu_cells(s: &Surf, n: &mut u32) -> Vec<i64> {
 
 pub(crate) fn random_rect(r: &mut Rng) -> [u32; 4] {
     let (x0, y0) = (r.below(4) as u32, r.below(4) as u32);
-    let (x1, y1) = (
-        x0 + 1 + r.below(4 - x0 as usize) as u32,
-        y0 + 1 + r.below(4 - y0 as usize) as u32,
-    );
+    let (x1, y1) = (x0 + 1 + r.below(4 - x0 as usize) as u32, y0 + 1 + r.below(4 - y0 as usize) as u32);
     [x0, y0, x1, y1]
 }
 
 fn px(s: &Surf, r: [u32; 4]) -> [u32; 4] {
-    [
-        r[0] * s.w / 4,
-        r[1] * s.h / 4,
-        r[2] * s.w / 4,
-        r[3] * s.h / 4,
-    ]
+    [r[0] * s.w / 4, r[1] * s.h / 4, r[2] * s.w / 4, r[3] * s.h / 4]
 }
 
 /// `script`: (op, surface, cells or [0; 4] for all, a write's bytes: those of write k, 0 new)
@@ -164,10 +150,7 @@ fn run(seed: u64, script: Option<&[(u32, usize, [u32; 4], u32)]>) {
     let d3d = rd(o);
     let o = out();
     let pp = unsafe { alloc(56) as u32 };
-    for (i, x) in [64, 64, 22, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0]
-        .into_iter()
-        .enumerate()
-    {
+    for (i, x) in [64, 64, 22, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0].into_iter().enumerate() {
         unsafe { *((pp + 4 * i as u32) as *mut u32) = x };
     }
     assert_eq!(call(IF_D3D9, 16, &[d3d, 0, 1, 1, 0x40, pp, o]), 0);
@@ -175,13 +158,7 @@ fn run(seed: u64, script: Option<&[(u32, usize, [u32; 4], u32)]>) {
     let surf = |a: u32, tex: u32| {
         let s = with(|d| d.id_of(a));
         with(|d| match &d.objs[&s].data {
-            Data::Surface(x) => Surf {
-                tex,
-                addr: a,
-                w: x.w,
-                h: x.h,
-                gpu: x.gpu,
-            },
+            Data::Surface(x) => Surf { tex, addr: a, w: x.w, h: x.h, gpu: x.gpu },
             _ => unreachable!(),
         })
     };
@@ -217,10 +194,7 @@ fn run(seed: u64, script: Option<&[(u32, usize, [u32; 4], u32)]>) {
             i = sc[step].1;
         }
         let s = ss[i];
-        let mut t = Step {
-            s: i as u32,
-            ..Default::default()
-        };
+        let mut t = Step { s: i as u32, ..Default::default() };
         // (locked: mostly writes, then the unlock; else locks, fills, copies, reads)
         let op = if locks[i].is_some() {
             [3, 3, 3, 4, 4, 2, 2, 2, 0, 9][r.below(10)]
@@ -234,11 +208,7 @@ fn run(seed: u64, script: Option<&[(u32, usize, [u32; 4], u32)]>) {
         match op {
             0 | 1 => {
                 let whole = if full { given.is_none() } else { r.chance(30) };
-                let cr = if whole {
-                    [0, 0, 4, 4]
-                } else {
-                    given.unwrap_or_else(|| random_rect(&mut r))
-                };
+                let cr = if whole { [0, 0, 4, 4] } else { given.unwrap_or_else(|| random_rect(&mut r)) };
                 let (kind, flags) = match if full { 2 } else { r.below(4) } {
                     0 => ("ro", 0x10),
                     1 => ("discard", 0x2000),
@@ -246,11 +216,7 @@ fn run(seed: u64, script: Option<&[(u32, usize, [u32; 4], u32)]>) {
                 };
                 let o = unsafe { alloc(8) as u32 };
                 let rp = if whole { 0 } else { rect(px(&s, cr)) };
-                let res = if s.tex != 0 {
-                    call(IF_TEXTURE, 19, &[s.tex, 0, o, rp, flags])
-                } else {
-                    call(IF_SURFACE, 13, &[s.addr, o, rp, flags])
-                };
+                let res = if s.tex != 0 { call(IF_TEXTURE, 19, &[s.tex, 0, o, rp, flags]) } else { call(IF_SURFACE, 13, &[s.addr, o, rp, flags]) };
                 (t.op, t.r, t.kind, t.ret) = ("Lock", cr, kind, hr(res));
                 if res == 0 {
                     let (pitch, bits) = (rd(o), rd(o + 4));
@@ -259,11 +225,7 @@ fn run(seed: u64, script: Option<&[(u32, usize, [u32; 4], u32)]>) {
                 }
             }
             2 => {
-                let res = if s.tex != 0 {
-                    call(IF_TEXTURE, 20, &[s.tex, 0])
-                } else {
-                    call(IF_SURFACE, 14, &[s.addr])
-                };
+                let res = if s.tex != 0 { call(IF_TEXTURE, 20, &[s.tex, 0]) } else { call(IF_SURFACE, 14, &[s.addr]) };
                 (t.op, t.ret) = ("Unlock", hr(res));
                 if res == 0 {
                     locks[i] = None;
@@ -271,18 +233,12 @@ fn run(seed: u64, script: Option<&[(u32, usize, [u32; 4], u32)]>) {
             }
             3 | 4 => {
                 // (through the pointer of a lock that may write)
-                let Some((true, lr, bits, pitch)) = locks[i] else {
-                    continue;
-                };
+                let Some((true, lr, bits, pitch)) = locks[i] else { continue };
                 let x0 = lr[0] + r.below((lr[2] - lr[0]) as usize) as u32;
                 let y0 = lr[1] + r.below((lr[3] - lr[1]) as usize) as u32;
                 let x1 = x0 + 1 + r.below((lr[2] - x0) as usize) as u32;
                 let y1 = y0 + 1 + r.below((lr[3] - y0) as usize) as u32;
-                let [x0, y0, x1, y1] = if full {
-                    given.unwrap_or(lr)
-                } else {
-                    [x0, y0, x1, y1]
-                };
+                let [x0, y0, x1, y1] = if full { given.unwrap_or(lr) } else { [x0, y0, x1, y1] };
                 // (sometimes the bytes of an earlier write: unchanged pixels must still reach
                 // the page when it has others)
                 let k = if reuse != 0 {
@@ -307,22 +263,9 @@ fn run(seed: u64, script: Option<&[(u32, usize, [u32; 4], u32)]>) {
                     continue;
                 }
                 let whole = r.chance(30);
-                let cr = if whole {
-                    [0, 0, 4, 4]
-                } else {
-                    random_rect(&mut r)
-                };
+                let cr = if whole { [0, 0, 4, 4] } else { random_rect(&mut r) };
                 n += 1;
-                let res = call(
-                    IF_DEVICE,
-                    35,
-                    &[
-                        dev,
-                        s.addr,
-                        if whole { 0 } else { rect(px(&s, cr)) },
-                        fill_color(n),
-                    ],
-                );
+                let res = call(IF_DEVICE, 35, &[dev, s.addr, if whole { 0 } else { rect(px(&s, cr)) }, fill_color(n)]);
                 (t.op, t.r, t.k, t.ret) = ("Fill", cr, n, hr(res));
             }
             6 => {
@@ -341,58 +284,22 @@ fn run(seed: u64, script: Option<&[(u32, usize, [u32; 4], u32)]>) {
                     continue;
                 }
                 let cr = random_rect(&mut r);
-                let p = [
-                    r.below(5 - (cr[2] - cr[0]) as usize) as u32,
-                    r.below(5 - (cr[3] - cr[1]) as usize) as u32,
-                ];
+                let p = [r.below(5 - (cr[2] - cr[0]) as usize) as u32, r.below(5 - (cr[3] - cr[1]) as usize) as u32];
                 let pt = rect([p[0] * 4, p[1] * 4, 0, 0]);
-                let res = call(
-                    IF_DEVICE,
-                    30,
-                    &[dev, ss[3].addr, rect(px(&ss[3], cr)), ss[dst].addr, pt],
-                );
+                let res = call(IF_DEVICE, 30, &[dev, ss[3].addr, rect(px(&ss[3], cr)), ss[dst].addr, pt]);
                 (t.op, t.s, t.d, t.r, t.p, t.ret) = ("Copy", 3, dst as u32, cr, p, hr(res));
             }
             8 => {
                 // between the render targets, the same size
-                let (src, dst) = if full {
-                    (i, 6 - i)
-                } else if r.chance(50) {
-                    (2, 4)
-                } else {
-                    (4, 2)
-                };
+                let (src, dst) = if full { (i, 6 - i) } else if r.chance(50) { (2, 4) } else { (4, 2) };
                 if locks[dst].is_some() || locks[src].is_some() {
                     continue;
                 }
-                let cr = if full {
-                    [0, 0, 4, 4]
-                } else {
-                    random_rect(&mut r)
-                };
-                let p = if full {
-                    [0, 0]
-                } else {
-                    [
-                        r.below(5 - (cr[2] - cr[0]) as usize) as u32,
-                        r.below(5 - (cr[3] - cr[1]) as usize) as u32,
-                    ]
-                };
+                let cr = if full { [0, 0, 4, 4] } else { random_rect(&mut r) };
+                let p = if full { [0, 0] } else { [r.below(5 - (cr[2] - cr[0]) as usize) as u32, r.below(5 - (cr[3] - cr[1]) as usize) as u32] };
                 let dr = [p[0], p[1], p[0] + cr[2] - cr[0], p[1] + cr[3] - cr[1]];
-                let res = call(
-                    IF_DEVICE,
-                    34,
-                    &[
-                        dev,
-                        ss[src].addr,
-                        rect(px(&ss[src], cr)),
-                        ss[dst].addr,
-                        rect(px(&ss[dst], dr)),
-                        1,
-                    ],
-                );
-                (t.op, t.s, t.d, t.r, t.p, t.ret) =
-                    ("Copy", src as u32, dst as u32, cr, p, hr(res));
+                let res = call(IF_DEVICE, 34, &[dev, ss[src].addr, rect(px(&ss[src], cr)), ss[dst].addr, rect(px(&ss[dst], dr)), 1]);
+                (t.op, t.s, t.d, t.r, t.p, t.ret) = ("Copy", src as u32, dst as u32, cr, p, hr(res));
             }
             _ => {
                 if script.is_none() && r.chance(50) {
@@ -412,19 +319,10 @@ fn run(seed: u64, script: Option<&[(u32, usize, [u32; 4], u32)]>) {
     }
     gpu::set_pump(None);
     let errors = model::with(|m| std::mem::take(&mut m.errors));
-    assert!(
-        errors.is_empty(),
-        "seed {seed}: WebGPU errors {:?}",
-        &errors[..errors.len().min(10)]
-    );
+    assert!(errors.is_empty(), "seed {seed}: WebGPU errors {:?}", &errors[..errors.len().min(10)]);
     let mut s = String::from("---- MODULE LockData ----\nEXTENDS Integers\nTrace == <<\n");
     for (i, t) in steps.iter().enumerate() {
-        let obs = t
-            .obs
-            .iter()
-            .map(|x| x.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
+        let obs = t.obs.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", ");
         let _ = write!(
             s,
             "  [op |-> \"{}\", s |-> {}, d |-> {}, r |-> <<{}, {}, {}, {}>>, p |-> <<{}, {}>>, kind |-> \"{}\", k |-> {}, ret |-> {}, obs |-> <<{obs}>>]{}\n",
@@ -445,23 +343,15 @@ fn check(steps: &[Step], seed: u64) {
     let mut lock: Vec<Option<(&str, [u32; 4])>> = vec![None; 5];
     for (n, t) in steps.iter().enumerate() {
         let s = t.s as usize;
-        let cells_of = |r: [u32; 4]| {
-            (r[1]..r[3]).flat_map(move |y| (r[0]..r[2]).map(move |x| (y * 4 + x) as usize))
-        };
-        let seen =
-            |obs: &[i64], c: &[i64], r: [u32; 4]| cells_of(r).all(|i| c[i] == -1 || obs[i] == c[i]);
+        let cells_of = |r: [u32; 4]| (r[1]..r[3]).flat_map(move |y| (r[0]..r[2]).map(move |x| (y * 4 + x) as usize));
+        let seen = |obs: &[i64], c: &[i64], r: [u32; 4]| cells_of(r).all(|i| c[i] == -1 || obs[i] == c[i]);
         let want = match t.op {
             "Lock" => {
                 if lock[s].is_some() {
                     "\"invalid\""
                 } else {
                     if t.kind != "discard" {
-                        assert!(
-                            seen(&t.obs, &content[s], t.r),
-                            "seed {seed} step {n}: lock read {:?}, content {:?}",
-                            t.obs,
-                            content[s]
-                        );
+                        assert!(seen(&t.obs, &content[s], t.r), "seed {seed} step {n}: lock read {:?}, content {:?}", t.obs, content[s]);
                     } else {
                         for i in cells_of(t.r) {
                             content[s][i] = -1;
@@ -502,19 +392,13 @@ fn check(steps: &[Step], seed: u64) {
                 let src = content[s].clone();
                 for y in 0..t.r[3] - t.r[1] {
                     for x in 0..t.r[2] - t.r[0] {
-                        content[t.d as usize][((t.p[1] + y) * 4 + t.p[0] + x) as usize] =
-                            src[((t.r[1] + y) * 4 + t.r[0] + x) as usize];
+                        content[t.d as usize][((t.p[1] + y) * 4 + t.p[0] + x) as usize] = src[((t.r[1] + y) * 4 + t.r[0] + x) as usize];
                     }
                 }
                 "\"ok\""
             }
             "GpuRead" => {
-                assert!(
-                    seen(&t.obs, &content[s], [0, 0, 4, 4]),
-                    "seed {seed} step {n}: page read {:?}, content {:?}",
-                    t.obs,
-                    content[s]
-                );
+                assert!(seen(&t.obs, &content[s], [0, 0, 4, 4]), "seed {seed} step {n}: page read {:?}, content {:?}", t.obs, content[s]);
                 "\"ok\""
             }
             _ => "\"ok\"",
@@ -546,19 +430,7 @@ fn d3d9_lock_copy_between_uploads() {
     }
     // lock 2, write, unlock; copy 2 to 4; lock 2, write, unlock; read 4 on the page
     let all = [0; 4];
-    run(
-        0,
-        Some(&[
-            (0, 2, all, 0),
-            (3, 2, all, 0),
-            (2, 2, all, 0),
-            (8, 2, all, 0),
-            (0, 2, all, 0),
-            (3, 2, all, 0),
-            (2, 2, all, 0),
-            (9, 4, all, 0),
-        ]),
-    );
+    run(0, Some(&[(0, 2, all, 0), (3, 2, all, 0), (2, 2, all, 0), (8, 2, all, 0), (0, 2, all, 0), (3, 2, all, 0), (2, 2, all, 0), (9, 4, all, 0)]));
 }
 
 /// The big surface's whole-surface locks upload only the rows that changed since the last one
@@ -572,22 +444,11 @@ fn d3d9_lock_changed_rows_after_part() {
     }
     let (all, part) = ([0; 4], [1, 1, 2, 2]);
     // whole: write 1 (twice: the copy is made); part: write 2; whole: write 1 again where 2 is
-    run(
-        0,
-        Some(&[
-            (0, 1, all, 0),
-            (3, 1, all, 0),
-            (2, 1, all, 0),
-            (0, 1, all, 0),
-            (3, 1, all, 1),
-            (2, 1, all, 0),
-            (0, 1, part, 0),
-            (3, 1, part, 0),
-            (2, 1, all, 0),
-            (0, 1, all, 0),
-            (3, 1, part, 1),
-            (2, 1, all, 0),
-            (9, 1, all, 0),
-        ]),
-    );
+    run(0, Some(&[
+        (0, 1, all, 0), (3, 1, all, 0), (2, 1, all, 0),
+        (0, 1, all, 0), (3, 1, all, 1), (2, 1, all, 0),
+        (0, 1, part, 0), (3, 1, part, 0), (2, 1, all, 0),
+        (0, 1, all, 0), (3, 1, part, 1), (2, 1, all, 0),
+        (9, 1, all, 0),
+    ]));
 }

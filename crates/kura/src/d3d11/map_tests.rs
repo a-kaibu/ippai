@@ -49,9 +49,7 @@ fn cells(tex: bool, bits: u32, pitch: u32, r: [u32; 4]) -> Vec<i64> {
             if tex {
                 for y in 0..4 {
                     for x in 0..4 {
-                        px.push(unsafe {
-                            *((bits + (cy * 4 + y) * pitch + (cx * 4 + x) * 4) as *const [u8; 4])
-                        });
+                        px.push(unsafe { *((bits + (cy * 4 + y) * pitch + (cx * 4 + x) * 4) as *const [u8; 4]) });
                     }
                 }
             } else {
@@ -71,9 +69,7 @@ fn paint(tex: bool, bits: u32, pitch: u32, r: [u32; 4], k: u32) {
             if tex {
                 for y in 0..4 {
                     for x in 0..4 {
-                        unsafe {
-                            *((bits + (cy * 4 + y) * pitch + (cx * 4 + x) * 4) as *mut [u8; 4]) = b
-                        };
+                        unsafe { *((bits + (cy * 4 + y) * pitch + (cx * 4 + x) * 4) as *mut [u8; 4]) = b };
                     }
                 }
             } else {
@@ -112,13 +108,7 @@ fn run(seed: u64) {
     let desc = mem(16);
     put(desc, &[64, 64, 60, 1, 28, 0, 0, 1, 0, 0x20, 1, 1, 1, 0, 0]);
     let (sc_out, dev_out, level, ctx_out) = (mem(2), mem(2), mem(2), mem(2));
-    assert_eq!(
-        call1(
-            CREATE_DEVICE,
-            &[0, 1, 0, 0, 0, 0, 7, desc, sc_out, dev_out, level, ctx_out]
-        ),
-        0
-    );
+    assert_eq!(call1(CREATE_DEVICE, &[0, 1, 0, 0, 0, 0, 7, desc, sc_out, dev_out, level, ctx_out]), 0);
     let (sc, dev, ctx) = (rd1(sc_out), rd1(dev_out), rd1(ctx_out));
     let mut res = Vec::new();
     // textures: (usage, bind, cpu access)
@@ -156,15 +146,8 @@ fn run(seed: u64) {
     for _ in 0..300 {
         let i = r.below(5);
         let tex = TEX[i];
-        let mut t = Step {
-            s: i as u32,
-            ..Default::default()
-        };
-        let op = if maps[i].is_some() {
-            [3, 3, 3, 2, 2][r.below(5)]
-        } else {
-            [0, 0, 0, 1, 4, 5, 6, 7, 9, 9][r.below(10)]
-        };
+        let mut t = Step { s: i as u32, ..Default::default() };
+        let op = if maps[i].is_some() { [3, 3, 3, 2, 2][r.below(5)] } else { [0, 0, 0, 1, 4, 5, 6, 7, 9, 9][r.below(10)] };
         match op {
             0 => {
                 // Map(resource, 0, type, 0, out)
@@ -175,12 +158,7 @@ fn run(seed: u64) {
                 if ret == 0 {
                     let (bits, pitch) = (rd1(o), rd1(o + 4));
                     maps[i] = Some((ty != 1, bits, pitch));
-                    t.obs = cells(
-                        tex,
-                        bits,
-                        pitch,
-                        if tex { [0, 0, 4, 4] } else { [0, 0, 16, 1] },
-                    );
+                    t.obs = cells(tex, bits, pitch, if tex { [0, 0, 4, 4] } else { [0, 0, 16, 1] });
                 }
             }
             2 => {
@@ -189,9 +167,7 @@ fn run(seed: u64) {
                 (t.op, t.ret) = ("Unmap", hr(0));
             }
             3 => {
-                let Some((true, bits, pitch)) = maps[i] else {
-                    continue;
-                };
+                let Some((true, bits, pitch)) = maps[i] else { continue };
                 let c = random_cells(&mut r, tex);
                 n += 1;
                 paint(tex, bits, pitch, c, n);
@@ -209,11 +185,7 @@ fn run(seed: u64) {
                 let data = unsafe { alloc(16 * 64) as u32 };
                 let (pitch, at) = (64, data);
                 // (the box's first texel at `data`)
-                let shifted = if tex {
-                    [0, 0, c[2] - c[0], c[3] - c[1]]
-                } else {
-                    [0, 0, c[2] - c[0], 1]
-                };
+                let shifted = if tex { [0, 0, c[2] - c[0], c[3] - c[1]] } else { [0, 0, c[2] - c[0], 1] };
                 paint(tex, at, pitch, shifted, n);
                 let bx = mem(6);
                 if tex {
@@ -231,10 +203,7 @@ fn run(seed: u64) {
                 n += 1;
                 let b = fill_color(n).to_le_bytes();
                 let color = mem(4);
-                put(
-                    color,
-                    &[b[2], b[1], b[0], b[3]].map(|x| (x as f32 / 255.0).to_bits()),
-                );
+                put(color, &[b[2], b[1], b[0], b[3]].map(|x| (x as f32 / 255.0).to_bits()));
                 call1(m(IF_CONTEXT, 50), &[ctx, rtv, color]);
                 (t.op, t.s, t.r, t.k, t.ret) = ("Fill", 0, [0, 0, 4, 4], n, hr(0));
             }
@@ -262,27 +231,14 @@ fn run(seed: u64) {
                 let tex = TEX[s];
                 let c = random_cells(&mut r, tex);
                 let (wmax, hmax) = if tex { (4, 4) } else { (16, 1) };
-                let p = [
-                    r.below((wmax + 1 - (c[2] - c[0])) as usize) as u32,
-                    if tex {
-                        r.below((hmax + 1 - (c[3] - c[1])) as usize) as u32
-                    } else {
-                        0
-                    },
-                ];
+                let p = [r.below((wmax + 1 - (c[2] - c[0])) as usize) as u32, if tex { r.below((hmax + 1 - (c[3] - c[1])) as usize) as u32 } else { 0 }];
                 let bx = mem(6);
                 if tex {
                     put(bx, &[c[0] * 4, c[1] * 4, 0, c[2] * 4, c[3] * 4, 1]);
-                    call1(
-                        m(IF_CONTEXT, 46),
-                        &[ctx, res[d], 0, p[0] * 4, p[1] * 4, 0, res[s], 0, bx],
-                    );
+                    call1(m(IF_CONTEXT, 46), &[ctx, res[d], 0, p[0] * 4, p[1] * 4, 0, res[s], 0, bx]);
                 } else {
                     put(bx, &[c[0] * 4, 0, 0, c[2] * 4, 1, 1]);
-                    call1(
-                        m(IF_CONTEXT, 46),
-                        &[ctx, res[d], 0, p[0] * 4, 0, 0, res[s], 0, bx],
-                    );
+                    call1(m(IF_CONTEXT, 46), &[ctx, res[d], 0, p[0] * 4, 0, 0, res[s], 0, bx]);
                 }
                 (t.op, t.s, t.d, t.r, t.p, t.ret) = ("Copy", s as u32, d as u32, c, p, hr(0));
             }
@@ -309,12 +265,7 @@ fn run(seed: u64) {
         let iface = {
             let g = D11S.lock().unwrap();
             let d = g.as_ref().unwrap();
-            d.objs[&d.id_of(a)]
-                .faces
-                .iter()
-                .find(|f| f.1 == a)
-                .unwrap()
-                .0
+            d.objs[&d.id_of(a)].faces.iter().find(|f| f.1 == a).unwrap().0
         };
         call1(m(iface, 2), &[a]);
     };
@@ -323,19 +274,10 @@ fn run(seed: u64) {
     }
     gpu::set_pump(None);
     let errors = model::with(|m| std::mem::take(&mut m.errors));
-    assert!(
-        errors.is_empty(),
-        "seed {seed}: WebGPU errors {:?}",
-        &errors[..errors.len().min(10)]
-    );
+    assert!(errors.is_empty(), "seed {seed}: WebGPU errors {:?}", &errors[..errors.len().min(10)]);
     let mut s = String::from("---- MODULE MapData ----\nEXTENDS Integers\nTrace == <<\n");
     for (i, t) in steps.iter().enumerate() {
-        let obs = t
-            .obs
-            .iter()
-            .map(|x| x.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
+        let obs = t.obs.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", ");
         let _ = write!(
             s,
             "  [op |-> \"{}\", s |-> {}, d |-> {}, r |-> <<{}, {}, {}, {}>>, p |-> <<{}, {}>>, ty |-> {}, k |-> {}, ret |-> {}, obs |-> <<{obs}>>]{}\n",
@@ -352,10 +294,7 @@ fn run(seed: u64) {
 fn check(steps: &[Step], seed: u64) {
     if std::env::var_os("IPPAI_MAP_DUMP").is_some() {
         for (n, t) in steps.iter().enumerate() {
-            eprintln!(
-                "{n}: {} s{} d{} r{:?} p{:?} ty{} k{} {} {:?}",
-                t.op, t.s, t.d, t.r, t.p, t.ty, t.k, t.ret, t.obs
-            );
+            eprintln!("{n}: {} s{} d{} r{:?} p{:?} ty{} k{} {} {:?}", t.op, t.s, t.d, t.r, t.p, t.ty, t.k, t.ret, t.obs);
         }
     }
     // (usage of each resource: 0 default, 2 dynamic, 3 staging)
@@ -363,11 +302,8 @@ fn check(steps: &[Step], seed: u64) {
     let mut content = vec![vec![-1i64; 16]; 5];
     for (n, t) in steps.iter().enumerate() {
         let s = t.s as usize;
-        let cells_of = |r: [u32; 4]| {
-            (r[1]..r[3]).flat_map(move |y| (r[0]..r[2]).map(move |x| (y * 4 + x) as usize))
-        };
-        let seen =
-            |obs: &[i64], c: &[i64]| (0..16).all(|i| obs[i] == -9 || c[i] == -1 || obs[i] == c[i]);
+        let cells_of = |r: [u32; 4]| (r[1]..r[3]).flat_map(move |y| (r[0]..r[2]).map(move |x| (y * 4 + x) as usize));
+        let seen = |obs: &[i64], c: &[i64]| (0..16).all(|i| obs[i] == -9 || c[i] == -1 || obs[i] == c[i]);
         let want = match t.op {
             "Map" => {
                 // (D3D11_MAP: 1 read, 2 write, 3 read and write, 4 write discard, 5 no overwrite)
@@ -382,12 +318,7 @@ fn check(steps: &[Step], seed: u64) {
                     if t.ty == 4 {
                         content[s] = vec![-1; 16];
                     } else if t.ty != 2 && t.ty != 5 {
-                        assert!(
-                            seen(&t.obs, &content[s]),
-                            "seed {seed} step {n}: map read {:?}, content {:?}",
-                            t.obs,
-                            content[s]
-                        );
+                        assert!(seen(&t.obs, &content[s]), "seed {seed} step {n}: map read {:?}, content {:?}", t.obs, content[s]);
                     }
                     "\"ok\""
                 }
@@ -406,28 +337,18 @@ fn check(steps: &[Step], seed: u64) {
                 let src = content[s].clone();
                 for y in 0..t.r[3] - t.r[1] {
                     for x in 0..t.r[2] - t.r[0] {
-                        content[t.d as usize][((t.p[1] + y) * 4 + t.p[0] + x) as usize] =
-                            src[((t.r[1] + y) * 4 + t.r[0] + x) as usize];
+                        content[t.d as usize][((t.p[1] + y) * 4 + t.p[0] + x) as usize] = src[((t.r[1] + y) * 4 + t.r[0] + x) as usize];
                     }
                 }
                 "\"ok\""
             }
             "GpuRead" => {
-                assert!(
-                    seen(&t.obs, &content[s]),
-                    "seed {seed} step {n}: page read {:?}, content {:?}",
-                    t.obs,
-                    content[s]
-                );
+                assert!(seen(&t.obs, &content[s]), "seed {seed} step {n}: page read {:?}, content {:?}", t.obs, content[s]);
                 "\"ok\""
             }
             _ => "\"ok\"",
         };
-        assert_eq!(
-            t.ret, want,
-            "seed {seed} step {n}: {} of resource {s} (type {})",
-            t.op, t.ty
-        );
+        assert_eq!(t.ret, want, "seed {seed} step {n}: {} of resource {s} (type {})", t.op, t.ty);
     }
 }
 

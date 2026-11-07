@@ -15,11 +15,7 @@ type Hash = [u8; 16];
 
 enum Content {
     /// From the store; `None` chunks are all zero.
-    Lower {
-        size: u64,
-        chunk: u32,
-        chunks: Arc<Vec<Option<Hash>>>,
-    },
+    Lower { size: u64, chunk: u32, chunks: Arc<Vec<Option<Hash>>> },
     Upper(Vec<u8>),
 }
 
@@ -168,11 +164,7 @@ mod net {
 pub unsafe extern "C" fn vnhost_net_stats(out: *mut f64) {
     use std::sync::atomic::Ordering::Relaxed;
     let ms = |us: u64| us as f64 / 1000.0;
-    let cache = CACHE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-        .map_or(0, |c| c.bytes);
+    let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map_or(0, |c| c.bytes);
     let v = [
         net::REQUESTS.load(Relaxed) as f64,
         net::CACHED.load(Relaxed) as f64,
@@ -231,10 +223,7 @@ fn fetch(name: &str) -> Option<Vec<u8>> {
             }
         }
         if trace() {
-            eprintln!(
-                "vfs: fetch {name}: {}",
-                if p.is_null() { -1 } else { len as isize }
-            );
+            eprintln!("vfs: fetch {name}: {}", if p.is_null() { -1 } else { len as isize });
         }
         if p.is_null() {
             return None;
@@ -280,25 +269,15 @@ fn hex16(s: &str) -> Option<Hash> {
 }
 
 fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64)
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
 
 impl Fs {
     fn load() -> Fs {
-        let mut fs = Fs {
-            next_handle: 1,
-            ..Default::default()
-        };
-        let Ok(spec) = std::env::var("IPPAI_MOUNTS") else {
-            return fs;
-        };
-        let mut mounts: Vec<(String, &str)> = spec
-            .split(':')
-            .filter_map(|m| m.split_once('='))
-            .map(|(at, name)| (clean(at), name))
-            .collect();
+        let mut fs = Fs { next_handle: 1, ..Default::default() };
+        let Ok(spec) = std::env::var("IPPAI_MOUNTS") else { return fs };
+        let mut mounts: Vec<(String, &str)> =
+            spec.split(':').filter_map(|m| m.split_once('=')).map(|(at, name)| (clean(at), name)).collect();
         // "/" first (the page mounts an empty one: then nothing is emscripten's), the others
         // inside it as directories of its tree
         mounts.sort_by_key(|(at, _)| at.len());
@@ -337,22 +316,16 @@ impl Fs {
     fn split_mount<'a>(&self, path: &'a str) -> Option<(Ino, &'a str)> {
         self.mounts
             .iter()
-            .filter(|(at, _)| {
-                path == at || path.starts_with(&format!("{}/", at.trim_end_matches('/')))
-            })
+            .filter(|(at, _)| path == at || path.starts_with(&format!("{}/", at.trim_end_matches('/'))))
             .max_by_key(|(at, _)| at.len())
             .map(|(at, ino)| (*ino, &path[at.len()..]))
     }
 
     /// Writes a whole file (and its directories) into a mounted tree.
     fn put_file(&mut self, path: &str, data: Vec<u8>, mtime: i64) {
-        let Some((mut at, rel)) = self.split_mount(path) else {
-            return;
-        };
+        let Some((mut at, rel)) = self.split_mount(path) else { return };
         let parts: Vec<&str> = rel.split('/').filter(|c| !c.is_empty()).collect();
-        let Some((name, dirs)) = parts.split_last() else {
-            return;
-        };
+        let Some((name, dirs)) = parts.split_last() else { return };
         for d in dirs {
             let next = match &self.node(at).map(|n| &n.data) {
                 Some(Data::Dir(ch)) => ch.get(*d).copied(),
@@ -391,19 +364,13 @@ impl Fs {
     /// The files written here (in memory) under `path`, as records: path length (u32), path,
     /// mtime (i64), size (u32), bytes; little-endian.
     fn export(&self, path: &str, out: &mut Vec<u8>) {
-        let Some((at, rel)) = self.split_mount(path) else {
-            return;
-        };
-        let Some(ino) = self.walk(at, rel) else {
-            return;
-        };
+        let Some((at, rel)) = self.split_mount(path) else { return };
+        let Some(ino) = self.walk(at, rel) else { return };
         let mut todo = vec![(ino, path.trim_end_matches('/').to_string())];
         while let Some((ino, p)) = todo.pop() {
             let Some(n) = self.node(ino) else { continue };
             match &n.data {
-                Data::Dir(ch) => {
-                    todo.extend(ch.iter().map(|(name, &i)| (i, format!("{p}/{name}"))))
-                }
+                Data::Dir(ch) => todo.extend(ch.iter().map(|(name, &i)| (i, format!("{p}/{name}")))),
                 Data::File(Content::Upper(v)) => {
                     out.extend_from_slice(&(p.len() as u32).to_le_bytes());
                     out.extend_from_slice(p.as_bytes());
@@ -418,10 +385,7 @@ impl Fs {
 
     fn load_tree(&mut self, root: Ino, tsv: &str) {
         let mut lines = tsv.lines();
-        let chunk: u32 = lines
-            .next()
-            .and_then(|h| h.split('\t').nth(2)?.parse().ok())
-            .unwrap_or(1 << 18);
+        let chunk: u32 = lines.next().and_then(|h| h.split('\t').nth(2)?.parse().ok()).unwrap_or(1 << 18);
         for line in lines {
             let f: Vec<&str> = line.split('\t').collect();
             if f.len() < 4 {
@@ -434,24 +398,14 @@ impl Fs {
                 Some((d, n)) => (d, n),
                 None => ("", path.as_str()),
             };
-            let Some(parent) = self.walk(root, dir) else {
-                continue;
-            };
+            let Some(parent) = self.walk(root, dir) else { continue };
             let data = match f[0] {
                 "d" => Data::Dir(BTreeMap::new()),
                 "l" if f.len() > 4 => Data::Link(unesc(f[4])),
                 "f" if f.len() > 5 => {
                     let size = f[4].parse().unwrap_or(0);
-                    let chunks = if f[5].is_empty() {
-                        Vec::new()
-                    } else {
-                        f[5].split(',').map(hex16).collect()
-                    };
-                    Data::File(Content::Lower {
-                        size,
-                        chunk,
-                        chunks: Arc::new(chunks),
-                    })
+                    let chunks = if f[5].is_empty() { Vec::new() } else { f[5].split(',').map(hex16).collect() };
+                    Data::File(Content::Lower { size, chunk, chunks: Arc::new(chunks) })
                 }
                 _ => continue,
             };
@@ -498,12 +452,7 @@ impl Fs {
 
     fn add(&mut self, data: Data, mode: u32, mtime: i64) -> Ino {
         CHANGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let n = Node {
-            nlink: if matches!(data, Data::Dir(_)) { 2 } else { 1 },
-            data,
-            mode,
-            mtime,
-        };
+        let n = Node { nlink: if matches!(data, Data::Dir(_)) { 2 } else { 1 }, data, mode, mtime };
         if let Some(i) = self.free.pop() {
             self.nodes[i as usize] = Some(n);
             return i;
@@ -529,11 +478,7 @@ impl Fs {
 
     /// Resolves an absolute path.
     fn resolve(&self, path: &str, follow_last: bool) -> Result<Found, c_int> {
-        let mut todo: VecDeque<String> = path
-            .split('/')
-            .filter(|c| !c.is_empty() && *c != ".")
-            .map(String::from)
-            .collect();
+        let mut todo: VecDeque<String> = path.split('/').filter(|c| !c.is_empty() && *c != ".").map(String::from).collect();
         let mut cur: Vec<String> = Vec::new();
         let mut node = self.mount_at("/");
         let mut links = 0;
@@ -549,27 +494,14 @@ impl Fs {
                 node = self.mount_at(&join(&cur));
                 continue;
             };
-            let Some(Node {
-                data: Data::Dir(ch),
-                ..
-            }) = self.node(dir)
-            else {
-                return Err(libc::ENOTDIR);
-            };
+            let Some(Node { data: Data::Dir(ch), .. }) = self.node(dir) else { return Err(libc::ENOTDIR) };
             let Some(&child) = ch.get(&c) else {
                 if last {
-                    return Ok(Found::Missing {
-                        parent: dir,
-                        name: c,
-                    });
+                    return Ok(Found::Missing { parent: dir, name: c });
                 }
                 return Err(libc::ENOENT);
             };
-            if let Some(Node {
-                data: Data::Link(target),
-                ..
-            }) = self.node(child)
-            {
+            if let Some(Node { data: Data::Link(target), .. }) = self.node(child) {
                 if !last || follow_last {
                     links += 1;
                     if links > 40 {
@@ -579,11 +511,7 @@ impl Fs {
                         cur.clear();
                         node = self.mount_at("/");
                     }
-                    for (i, t) in target
-                        .split('/')
-                        .filter(|t| !t.is_empty() && *t != ".")
-                        .enumerate()
-                    {
+                    for (i, t) in target.split('/').filter(|t| !t.is_empty() && *t != ".").enumerate() {
                         todo.insert(i, t.to_string());
                     }
                     continue;
@@ -630,9 +558,7 @@ impl Fs {
     }
 
     fn unlink_name(&mut self, parent: Ino, name: &str) {
-        let Some(Data::Dir(ch)) = self.data_mut(parent) else {
-            return;
-        };
+        let Some(Data::Dir(ch)) = self.data_mut(parent) else { return };
         let Some(ino) = ch.remove(name) else { return };
         if let Some(n) = self.node_mut(ino) {
             n.nlink = n.nlink.saturating_sub(1);
@@ -642,9 +568,7 @@ impl Fs {
 
     /// Frees a node once no name or open handle refers to it.
     fn gc(&mut self, ino: Ino) {
-        let linked = self
-            .node(ino)
-            .is_some_and(|n| n.nlink > 0 && !(matches!(n.data, Data::Dir(_)) && n.nlink < 2));
+        let linked = self.node(ino).is_some_and(|n| n.nlink > 0 && !(matches!(n.data, Data::Dir(_)) && n.nlink < 2));
         if !linked && !self.handles.values().any(|h| h.ino == ino) {
             if let Some(slot @ Some(_)) = self.nodes.get_mut(ino as usize) {
                 *slot = None;
@@ -701,9 +625,7 @@ impl Cache {
 
     fn trim(&mut self, limit: usize) {
         while self.bytes > limit {
-            let Some(old) = self.order.pop_front() else {
-                break;
-            };
+            let Some(old) = self.order.pop_front() else { break };
             if let Some(d) = self.map.remove(&old) {
                 self.bytes -= d.len();
             }
@@ -729,13 +651,7 @@ static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
 
 fn cache_limit() -> usize {
     static LIMIT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *LIMIT.get_or_init(|| {
-        std::env::var("IPPAI_CHUNK_CACHE_MB")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(128usize)
-            << 20
-    })
+    *LIMIT.get_or_init(|| std::env::var("IPPAI_CHUNK_CACHE_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(128usize) << 20)
 }
 
 /// The chunks this run read, in the order of their first read (the first FETCHED_MAX): the
@@ -747,11 +663,7 @@ const FETCHED_MAX: usize = 8192;
 
 /// [`FETCHED`] as concatenated hashes.
 pub fn fetched() -> Vec<u8> {
-    FETCHED
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-        .map_or(Vec::new(), |f| f.0.concat())
+    FETCHED.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map_or(Vec::new(), |f| f.0.concat())
 }
 
 fn note_read(h: &Hash) {
@@ -781,11 +693,7 @@ static AHEAD_WORK: std::sync::Condvar = std::sync::Condvar::new();
 static AHEAD_DONE: std::sync::Condvar = std::sync::Condvar::new();
 
 fn cached(h: &Hash) -> bool {
-    CACHE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-        .is_some_and(|c| c.map.contains_key(h))
+    CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|c| c.map.contains_key(h))
 }
 
 /// Has chunk `h` fetched by a fetcher thread unless it is here already.
@@ -794,11 +702,7 @@ fn fetch_ahead(h: &Hash) {
         return;
     }
     let mut g = AHEAD.lock().unwrap_or_else(|e| e.into_inner());
-    let a = g.get_or_insert_with(|| Ahead {
-        queue: VecDeque::new(),
-        busy: Default::default(),
-        started: false,
-    });
+    let a = g.get_or_insert_with(|| Ahead { queue: VecDeque::new(), busy: Default::default(), started: false });
     if !a.busy.insert(*h) {
         return;
     }
@@ -806,9 +710,7 @@ fn fetch_ahead(h: &Hash) {
     if !a.started {
         a.started = true;
         for i in 0..FETCHERS {
-            let _ = std::thread::Builder::new()
-                .name(format!("vfs fetch {i}"))
-                .spawn(fetcher);
+            let _ = std::thread::Builder::new().name(format!("vfs fetch {i}")).spawn(fetcher);
         }
     }
     AHEAD_WORK.notify_one();
@@ -863,12 +765,7 @@ fn chunk_data(h: &Hash, len: usize) -> Result<Arc<Vec<u8>>, c_int> {
 
 fn chunk_data_wait(h: &Hash, len: usize) -> Result<Arc<Vec<u8>>, c_int> {
     wait_ahead(h);
-    if let Some(d) = CACHE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_mut()
-        .and_then(|c| c.get(h, len, cache_limit()))
-    {
+    if let Some(d) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_mut().and_then(|c| c.get(h, len, cache_limit())) {
         return Ok(d);
     }
     let mut data = fetch_chunk(h).ok_or(libc::EIO)?;
@@ -885,11 +782,7 @@ pub unsafe extern "C" fn vnhost_vfs_put_chunk(hash: *const u8, data: *mut u8, le
 }
 
 fn cache_put(h: &Hash, data: Arc<Vec<u8>>) -> Arc<Vec<u8>> {
-    CACHE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get_or_insert_with(Cache::default)
-        .put(h, data.clone(), cache_limit());
+    CACHE.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Cache::default).put(h, data.clone(), cache_limit());
     data
 }
 
@@ -902,11 +795,7 @@ fn read_at(ino: Ino, buf: &mut [u8], off: u64) -> Result<usize, c_int> {
             buf[..n].copy_from_slice(&v[start..start + n]);
             Ok(Err(n))
         }
-        Some(Data::File(Content::Lower {
-            size,
-            chunk,
-            chunks,
-        })) => Ok(Ok((*size, *chunk as u64, chunks.clone()))),
+        Some(Data::File(Content::Lower { size, chunk, chunks })) => Ok(Ok((*size, *chunk as u64, chunks.clone()))),
         Some(Data::Dir(_)) => Err(libc::EISDIR),
         _ => Err(libc::EBADF),
     })?;
@@ -958,10 +847,7 @@ fn copy_up(ino: Ino, keep: u64) -> Result<(), c_int> {
     let Some(size) = size else { return Ok(()) };
     let size = size.min(keep);
     if size >= COPY_UP_NOTE {
-        eprintln!(
-            "kura: a write copies {} MiB of a file from the store into memory (inode {ino})",
-            size >> 20
-        );
+        eprintln!("kura: a write copies {} MiB of a file from the store into memory (inode {ino})", size >> 20);
     }
     let mut v = vec![0; size as usize];
     read_at(ino, &mut v, 0)?;
@@ -976,9 +862,7 @@ fn copy_up(ino: Ino, keep: u64) -> Result<(), c_int> {
 fn write_at(ino: Ino, data: &[u8], off: u64) -> Result<usize, c_int> {
     copy_up(ino, u64::MAX)?;
     with(|fs| {
-        let Some(Data::File(Content::Upper(v))) = fs.data_mut(ino) else {
-            return Err(libc::EBADF);
-        };
+        let Some(Data::File(Content::Upper(v))) = fs.data_mut(ino) else { return Err(libc::EBADF) };
         let end = off as usize + data.len();
         if v.len() < end {
             v.resize(end, 0);
@@ -1024,12 +908,7 @@ pub(crate) struct Info {
 impl Fs {
     fn info(&self, ino: Ino) -> Info {
         let n = self.node(ino).unwrap();
-        Info {
-            dir: matches!(n.data, Data::Dir(_)),
-            len: self.file_size(ino),
-            mtime: n.mtime,
-            mode: n.mode,
-        }
+        Info { dir: matches!(n.data, Data::Dir(_)), len: self.file_size(ino), mtime: n.mtime, mode: n.mode }
     }
 }
 
@@ -1117,13 +996,11 @@ pub(crate) fn open_handle(p: &str, flags: c_int, mode: u32) -> At<u32> {
             })
         }
     };
-    let kind = with(|fs| {
-        fs.node(ino).map(|n| match n.data {
-            Data::Dir(_) => 0,
-            Data::File(_) => 1,
-            Data::Link(_) => 2,
-        })
-    });
+    let kind = with(|fs| fs.node(ino).map(|n| match n.data {
+        Data::Dir(_) => 0,
+        Data::File(_) => 1,
+        Data::Link(_) => 2,
+    }));
     match kind {
         Some(0) if flags & libc::O_ACCMODE != libc::O_RDONLY => return At::Ours(Err(libc::EISDIR)),
         Some(2) => return At::Ours(Err(libc::ELOOP)),
@@ -1167,14 +1044,8 @@ pub(crate) fn mkdir_at(p: &str) -> At<()> {
 
 /// unlink (dir: false) or rmdir (dir: true)
 pub(crate) fn remove_at(p: &str, dir: bool) -> At<()> {
-    let Some((parent_path, name)) = p.rsplit_once('/') else {
-        return At::Ours(Err(libc::EINVAL));
-    };
-    let parent_path = if parent_path.is_empty() {
-        "/"
-    } else {
-        parent_path
-    };
+    let Some((parent_path, name)) = p.rsplit_once('/') else { return At::Ours(Err(libc::EINVAL)) };
+    let parent_path = if parent_path.is_empty() { "/" } else { parent_path };
     with(|fs| {
         let parent = match fs.resolve(parent_path, true) {
             Err(e) => return At::Ours(Err(e)),
@@ -1182,12 +1053,8 @@ pub(crate) fn remove_at(p: &str, dir: bool) -> At<()> {
             Ok(Found::Missing { .. }) => return At::Ours(Err(libc::ENOENT)),
             Ok(Found::Node { ino, .. }) => ino,
         };
-        let Some(Data::Dir(ch)) = fs.node(parent).map(|n| &n.data) else {
-            return At::Ours(Err(libc::ENOTDIR));
-        };
-        let Some(&ino) = ch.get(name) else {
-            return At::Ours(Err(libc::ENOENT));
-        };
+        let Some(Data::Dir(ch)) = fs.node(parent).map(|n| &n.data) else { return At::Ours(Err(libc::ENOTDIR)) };
+        let Some(&ino) = ch.get(name) else { return At::Ours(Err(libc::ENOENT)) };
         match (&fs.node(ino).unwrap().data, dir) {
             (Data::Dir(c), true) => {
                 if !c.is_empty() {
@@ -1246,9 +1113,7 @@ pub(crate) fn rename_at(a: &str, b: &str) -> At<()> {
                     }
                 }
                 let (d, n) = path.rsplit_once('/').unwrap();
-                let Ok(Found::Node { ino: parent, .. }) =
-                    fs.resolve(if d.is_empty() { "/" } else { d }, true)
-                else {
+                let Ok(Found::Node { ino: parent, .. }) = fs.resolve(if d.is_empty() { "/" } else { d }, true) else {
                     return At::Ours(Err(libc::EXDEV));
                 };
                 fs.unlink_name(parent, n);
@@ -1301,11 +1166,7 @@ pub(crate) fn h_write(h: u32, data: &[u8]) -> Result<usize, c_int> {
     if flags & libc::O_ACCMODE == libc::O_RDONLY {
         return Err(libc::EBADF);
     }
-    let at = if flags & libc::O_APPEND != 0 {
-        with(|fs| fs.file_size(ino))
-    } else {
-        pos
-    };
+    let at = if flags & libc::O_APPEND != 0 { with(|fs| fs.file_size(ino)) } else { pos };
     let n = write_at(ino, data, at)?;
     set_pos(h, at + n as u64);
     Ok(n)
@@ -1388,10 +1249,7 @@ mod tests {
                 assert_eq!(c.bytes, sum);
                 assert!(c.bytes <= limit);
                 assert_eq!(c.order.len(), c.map.len());
-                assert_eq!(
-                    c.order.iter().cloned().collect::<Vec<_>>(),
-                    model.iter().map(|m| m.0).collect::<Vec<_>>()
-                );
+                assert_eq!(c.order.iter().cloned().collect::<Vec<_>>(), model.iter().map(|m| m.0).collect::<Vec<_>>());
                 for (h, len) in &model {
                     assert_eq!(c.map[h].len(), *len);
                 }
@@ -1404,15 +1262,11 @@ mod tests {
 
     #[no_mangle]
     extern "C" fn vnvm_fetch(name: *const c_char, len: *mut size_t) -> *mut u8 {
-        let name = unsafe { std::ffi::CStr::from_ptr(name) }
-            .to_string_lossy()
-            .into_owned();
+        let name = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned();
         let mut g = STORE.lock().unwrap();
         let (m, log) = g.get_or_insert_with(Default::default);
         log.push(name.clone());
-        let Some(d) = m.get(&name) else {
-            return std::ptr::null_mut();
-        };
+        let Some(d) = m.get(&name) else { return std::ptr::null_mut() };
         unsafe {
             let p = libc::malloc(d.len().max(1)) as *mut u8;
             std::ptr::copy_nonoverlapping(d.as_ptr(), p, d.len());
@@ -1433,25 +1287,14 @@ mod tests {
             seed ^= seed << 17;
             seed % n
         };
-        let mut fs = Fs {
-            next_handle: 1,
-            ..Default::default()
-        };
+        let mut fs = Fs { next_handle: 1, ..Default::default() };
         let root = fs.add(Data::Dir(BTreeMap::new()), 0o755, 0);
         let mut tsv = String::from("vnvm-tree\t1\t64\n");
         let mut models = Vec::new();
         let mut chunks = HashMap::new();
         for f in 0..12 {
             let size = rnd(64 * 9) + 1;
-            let data: Vec<u8> = (0..size)
-                .map(|i| {
-                    if (i / 64) % 4 == 2 {
-                        0
-                    } else {
-                        1 + rnd(255) as u8
-                    }
-                })
-                .collect();
+            let data: Vec<u8> = (0..size).map(|i| if (i / 64) % 4 == 2 { 0 } else { 1 + rnd(255) as u8 }).collect();
             let mut names = Vec::new();
             for c in data.chunks(64) {
                 if c.iter().all(|&b| b == 0) {
@@ -1471,12 +1314,10 @@ mod tests {
             models.push(data);
         }
         fs.load_tree(root, &tsv);
-        let inos: Vec<Ino> = (0..12)
-            .map(|f| match fs.node(root).map(|n| &n.data) {
-                Some(Data::Dir(c)) => c[&format!("f{f}")],
-                _ => unreachable!(),
-            })
-            .collect();
+        let inos: Vec<Ino> = (0..12).map(|f| match fs.node(root).map(|n| &n.data) {
+            Some(Data::Dir(c)) => c[&format!("f{f}")],
+            _ => unreachable!(),
+        }).collect();
         *FS.lock().unwrap() = Some(fs);
         *STORE.lock().unwrap() = Some((chunks, Vec::new()));
         // (what was fetched since, once the fetcher threads are done: a chunk fetched ahead
@@ -1491,22 +1332,14 @@ mod tests {
         };
         // the first operation on each file: a truncation, checked for what it fetched
         for (f, &ino) in inos.iter().enumerate() {
-            let n = if f % 3 == 0 {
-                0
-            } else {
-                rnd(models[f].len() as u64 + 100)
-            };
+            let n = if f % 3 == 0 { 0 } else { rnd(models[f].len() as u64 + 100) };
             fetched();
             set_size(ino, n).unwrap();
             let got = fetched();
             // (and the chunk after them, fetched ahead as after any read)
             let need = (n.min(models[f].len() as u64)).div_ceil(64) as usize;
             let need = if need == 0 { 0 } else { need + 1 };
-            assert!(
-                got.len() <= need,
-                "f{f} cut to {n}: fetched {} chunks, needs {need}",
-                got.len()
-            );
+            assert!(got.len() <= need, "f{f} cut to {n}: fetched {} chunks, needs {need}", got.len());
             models[f].resize(n as usize, 0);
         }
         for _ in 0..2000 {
@@ -1532,8 +1365,7 @@ mod tests {
                     let off = rnd(m.len() as u64 + 10);
                     let mut buf = vec![0xaa; rnd(200) as usize];
                     let n = read_at(ino, &mut buf, off).unwrap();
-                    let want =
-                        &m[(off as usize).min(m.len())..(off as usize + buf.len()).min(m.len())];
+                    let want = &m[(off as usize).min(m.len())..(off as usize + buf.len()).min(m.len())];
                     assert_eq!(&buf[..n], want);
                 }
             }
@@ -1549,10 +1381,7 @@ mod tests {
         let p = Arc::as_ptr(&c.map[&h]);
         let d = c.get(&h, 20, 1000).unwrap();
         assert_eq!(Arc::as_ptr(&d), p);
-        assert_eq!(
-            (&d[..10], &d[10..], c.bytes),
-            (&[7u8; 10][..], &[0u8; 10][..], 20)
-        );
+        assert_eq!((&d[..10], &d[10..], c.bytes), (&[7u8; 10][..], &[0u8; 10][..], 20));
         let d2 = c.get(&h, 30, 1000).unwrap();
         assert_ne!(Arc::as_ptr(&d2), Arc::as_ptr(&d));
         assert_eq!((d.len(), d2.len(), c.bytes), (20, 30, 30));
@@ -1567,16 +1396,11 @@ mod proptests {
 
     /// `ippai pack`'s escaping for the tree list (crates/ippai/src/pack.rs).
     fn esc(s: &str) -> String {
-        s.replace('\\', "\\\\")
-            .replace('\t', "\\t")
-            .replace('\n', "\\n")
+        s.replace('\\', "\\\\").replace('\t', "\\t").replace('\n', "\\n")
     }
 
     fn mounted() -> (Fs, Ino) {
-        let mut fs = Fs {
-            next_handle: 1,
-            ..Default::default()
-        };
+        let mut fs = Fs { next_handle: 1, ..Default::default() };
         let root = fs.add(Data::Dir(BTreeMap::new()), 0o755, 0);
         fs.mounts.push(("/".into(), root));
         (fs, root)
@@ -1585,13 +1409,7 @@ mod proptests {
     /// A saved file's place: up to two directory levels, a file name (never one of the
     /// directory names, so no path is both).
     fn save_path() -> impl Strategy<Value = String> {
-        (
-            vec(
-                prop::sample::select(vec!["a", "b", "セーブ", "dir with space"]),
-                0..3,
-            ),
-            prop::sample::select(vec!["x.sav", "y.dat", "global.sav", "名前.bin"]),
-        )
+        (vec(prop::sample::select(vec!["a", "b", "セーブ", "dir with space"]), 0..3), prop::sample::select(vec!["x.sav", "y.dat", "global.sav", "名前.bin"]))
             .prop_map(|(dirs, f)| dirs.iter().map(|d| format!("{d}/")).collect::<String>() + f)
     }
 

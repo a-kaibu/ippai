@@ -26,12 +26,7 @@ fn m(iface: u32, m: u32) -> u32 {
 fn iface_of(a: u32) -> u32 {
     let g = D11S.lock().unwrap();
     let d = g.as_ref().unwrap();
-    d.objs[&d.id_of(a)]
-        .faces
-        .iter()
-        .find(|f| f.1 == a)
-        .unwrap()
-        .0
+    d.objs[&d.id_of(a)].faces.iter().find(|f| f.1 == a).unwrap().0
 }
 fn release(a: u32) -> u32 {
     call1(m(iface_of(a), 2), &[a])
@@ -44,12 +39,8 @@ fn refs(a: u32) -> u32 {
 fn contents(a: u32, n: usize) -> Vec<u32> {
     let g = D11S.lock().unwrap();
     let d = g.as_ref().unwrap();
-    let Data::Buffer(b) = &d.objs[&d.id_of(a)].data else {
-        panic!("not a buffer")
-    };
-    (0..n)
-        .map(|i| unsafe { *((b.mem + 4 * i as u32) as *const u32) })
-        .collect()
+    let Data::Buffer(b) = &d.objs[&d.id_of(a)].data else { panic!("not a buffer") };
+    (0..n).map(|i| unsafe { *((b.mem + 4 * i as u32) as *const u32) }).collect()
 }
 
 struct Ctx {
@@ -61,18 +52,8 @@ struct Ctx {
 impl Ctx {
     fn new() -> Ctx {
         let (dev_out, level, ctx_out) = (mem(2), mem(2), mem(2));
-        assert_eq!(
-            call1(
-                CREATE_DEVICE,
-                &[0, 1, 0, 0, 0, 0, 7, 0, 0, dev_out, level, ctx_out]
-            ),
-            0
-        );
-        Ctx {
-            dev: rd1(dev_out),
-            imm: rd1(ctx_out),
-            o: mem(2),
-        }
+        assert_eq!(call1(CREATE_DEVICE, &[0, 1, 0, 0, 0, 0, 7, 0, 0, dev_out, level, ctx_out]), 0);
+        Ctx { dev: rd1(dev_out), imm: rd1(ctx_out), o: mem(2) }
     }
     fn buffer(&self, size: u32, usage: u32, bind: u32, cpu: u32, data: Option<&[u32]>) -> u32 {
         let d = mem(6);
@@ -220,11 +201,7 @@ fn deferred_map() {
     let def = c.deferred();
     // only WRITE_DISCARD first; a failed map clears pData and leaves the pitches
     for ty in [1, 3, 2] {
-        assert_eq!(
-            c.map(def, buf, ty),
-            (E_INVALIDARG, [0, 0xabab, 0xcdcd]),
-            "type {ty}"
-        );
+        assert_eq!(c.map(def, buf, ty), (E_INVALIDARG, [0, 0xabab, 0xcdcd]), "type {ty}");
     }
     assert_eq!(c.map(def, buf, 5).0, 0x887c_0004);
     let (hr, [p, ..]) = c.map(def, buf, 4);
@@ -273,10 +250,7 @@ fn deferred_queries() {
     let q = rd1(c.o);
     let data = mem(4);
     let get = |ctx: u32| call1(m(IF_CONTEXT, 29), &[ctx, q, data, 8, 0]);
-    assert_eq!(
-        call1(m(IF_CONTEXT, 29), &[def, q, 0, 0, 0]),
-        DXGI_ERROR_INVALID_CALL
-    );
+    assert_eq!(call1(m(IF_CONTEXT, 29), &[def, q, 0, 0, 0]), DXGI_ERROR_INVALID_CALL);
     call1(m(IF_CONTEXT, 27), &[def, q]);
     assert_eq!(get(def), DXGI_ERROR_INVALID_CALL);
     call1(m(IF_CONTEXT, 28), &[def, q]);
@@ -443,13 +417,7 @@ fn device_in_its_own_private_data() {
     let _g = setup();
     let c = Ctx::new();
     let (dev_out, level, ctx_out) = (mem(2), mem(2), mem(2));
-    assert_eq!(
-        call1(
-            CREATE_DEVICE,
-            &[0, 1, 0, 0, 0, 0, 7, 0, 0, dev_out, level, 0]
-        ),
-        0
-    );
+    assert_eq!(call1(CREATE_DEVICE, &[0, 1, 0, 0, 0, 0, 7, 0, 0, dev_out, level, 0]), 0);
     let _ = ctx_out;
     let test_object = rd1(dev_out);
     release(c.imm);
@@ -465,12 +433,7 @@ fn device_in_its_own_private_data() {
     let surface = rd1(c.o);
     let base = refs(test_object);
     // SetPrivateDataInterface(device, guid, test_object) twice, NULL, again, then data over it
-    let spdi = |o: u32, v: u32| {
-        call1(
-            m(iface_of(o), if iface_of(o) == IF_DEVICE { 36 } else { 6 }),
-            &[o, guid, v],
-        )
-    };
+    let spdi = |o: u32, v: u32| call1(m(iface_of(o), if iface_of(o) == IF_DEVICE { 36 } else { 6 }), &[o, guid, v]);
     assert_eq!(spdi(c.dev, test_object), 0);
     assert_eq!(refs(test_object), base + 1);
     assert_eq!(spdi(c.dev, test_object), 0);
@@ -499,10 +462,7 @@ fn device_in_its_own_private_data() {
     if call1(m(IF_TEX2D, 0), &[tex, iid, c.o]) == 0 {
         let t10 = rd1(c.o);
         put(size, &[4]);
-        assert_eq!(
-            call1(m(d3d10::IF10_TEX2D, 4), &[t10, guid, size, ptr_out]),
-            0
-        );
+        assert_eq!(call1(m(d3d10::IF10_TEX2D, 4), &[t10, guid, size, ptr_out]), 0);
         release(rd1(ptr_out));
         release(t10);
     }

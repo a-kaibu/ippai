@@ -100,20 +100,14 @@ pub extern "C" fn vnhost_render_input(kind: u32, x: i32, y: i32, data: u32) -> i
     let [rx, ry, rw, rh, l, t, r, b, w, h] = *LAYOUT.lock().unwrap_or_else(|e| e.into_inner());
     let fx = l + ((x - rx) as i64 * (r - l) as i64 / rw.max(1) as i64) as i32;
     let fy = t + ((y - ry) as i64 * (b - t) as i64 / rh.max(1) as i64) as i32;
-    crate::display::vnhost_input_push(
-        kind,
-        fx.clamp(0, (w - 1).max(0)),
-        fy.clamp(0, (h - 1).max(0)),
-        data,
-    )
+    crate::display::vnhost_input_push(kind, fx.clamp(0, (w - 1).max(0)), fy.clamp(0, (h - 1).max(0)), data)
 }
 
 /// Where the shown part of the screen is on the canvas: `out` = x y w h (canvas pixels), the
 /// view l t r b, the screen's w h.
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_render_layout(out: *mut i32) {
-    std::slice::from_raw_parts_mut(out, 10)
-        .copy_from_slice(&*LAYOUT.lock().unwrap_or_else(|e| e.into_inner()));
+    std::slice::from_raw_parts_mut(out, 10).copy_from_slice(&*LAYOUT.lock().unwrap_or_else(|e| e.into_inner()));
 }
 
 /// Tests: asks for the picture shown (at the screen's pixels) and gives the last one taken:
@@ -213,12 +207,7 @@ fn letterbox(cw: u32, ch: u32, width: i32, height: i32) -> Rect {
     }
     let w = (width * scale).round();
     let h = (height * scale).round();
-    Rect {
-        x: ((cw as f64 - w) / 2.0).floor() as f32,
-        y: ((ch as f64 - h) / 2.0).floor() as f32,
-        w: w as f32,
-        h: h as f32,
-    }
+    Rect { x: ((cw as f64 - w) / 2.0).floor() as f32, y: ((ch as f64 - h) / 2.0).floor() as f32, w: w as f32, h: h as f32 }
 }
 
 struct Pipe {
@@ -270,9 +259,7 @@ struct Stats {
 impl Render {
     fn new() -> Render {
         let headless = crate::env_on!("IPPAI_HEADLESS");
-        let uv = (0..10)
-            .map(|_| gpu::buffer(16, usage::UNIFORM | usage::COPY_DST))
-            .collect();
+        let uv = (0..10).map(|_| gpu::buffer(16, usage::UNIFORM | usage::COPY_DST)).collect();
         Render {
             d3d: d3d::D3d::new(),
             headless,
@@ -293,14 +280,7 @@ impl Render {
             serial: None,
             above: Vec::new(),
             d3d_frames: 0,
-            stats: crate::env_on!("IPPAI_D3DSTATS").then_some(Stats {
-                t0: 0.0,
-                last: 0.0,
-                frames: 0,
-                slow: 0,
-                at: [0; 6],
-                d3d_at: 0,
-            }),
+            stats: crate::env_on!("IPPAI_D3DSTATS").then_some(Stats { t0: 0.0, last: 0.0, frames: 0, slow: 0, at: [0; 6], d3d_at: 0 }),
             shot: None,
             shot_done: 0,
         }
@@ -332,11 +312,7 @@ impl Render {
         }
         let mut v = [0i32; 4];
         unsafe { crate::display::vnhost_display_view(v.as_mut_ptr()) };
-        let v = if v[2] > v[0] && v[3] > v[1] {
-            v
-        } else {
-            [0, 0, w, h]
-        };
+        let v = if v[2] > v[0] && v[3] > v[1] { v } else { [0, 0, w, h] };
         let c = CANVAS.load(Relaxed);
         let canvas = ((c >> 16).max(1), (c & 0xffff).max(1));
         let mut redraw = false;
@@ -348,19 +324,9 @@ impl Render {
             gpu::canvas_size(canvas.0, canvas.1);
             self.rect = letterbox(canvas.0, canvas.1, v[2] - v[0], v[3] - v[1]);
             let r = self.rect;
-            *LAYOUT.lock().unwrap_or_else(|e| e.into_inner()) = [
-                r.x as i32, r.y as i32, r.w as i32, r.h as i32, v[0], v[1], v[2], v[3], w, h,
-            ];
+            *LAYOUT.lock().unwrap_or_else(|e| e.into_inner()) = [r.x as i32, r.y as i32, r.w as i32, r.h as i32, v[0], v[1], v[2], v[3], w, h];
             let (fw, fh) = (w.max(1) as f32, h.max(1) as f32);
-            write_f32(
-                self.uv[0],
-                &[
-                    v[0] as f32 / fw,
-                    v[1] as f32 / fh,
-                    v[2] as f32 / fw,
-                    v[3] as f32 / fh,
-                ],
-            );
+            write_f32(self.uv[0], &[v[0] as f32 / fw, v[1] as f32 / fh, v[2] as f32 / fw, v[3] as f32 / fh]);
             // (the sampler: nearest when the screen is scaled by a whole number)
             self.group_main = [0, 0];
             redraw = true;
@@ -375,14 +341,9 @@ impl Render {
         if let Some(o) = self.d3d.overlay {
             let mut buf = [0i32; 32];
             let n = unsafe { crate::display::vnhost_display_windows(buf.as_mut_ptr(), 8) } as usize;
-            let rs: Vec<[i32; 4]> = (0..n)
-                .map(|k| [buf[4 * k], buf[4 * k + 1], buf[4 * k + 2], buf[4 * k + 3]])
-                .collect();
+            let rs: Vec<[i32; 4]> = (0..n).map(|k| [buf[4 * k], buf[4 * k + 1], buf[4 * k + 2], buf[4 * k + 3]]).collect();
             let [ol, ot, or, ob] = o.rect;
-            if let Some(i) = rs
-                .iter()
-                .position(|&[l, t, r, b]| l <= ol && t <= ot && r >= or && b >= ob)
-            {
+            if let Some(i) = rs.iter().position(|&[l, t, r, b]| l <= ol && t <= ot && r >= or && b >= ob) {
                 above = rs[..i].to_vec();
             }
         }
@@ -426,10 +387,7 @@ impl Render {
         if new_tex {
             gpu::destroy(self.tex);
             gpu::drop(self.tex_view);
-            self.tex = gpu::texture(&format!(
-                r#"{{"size":[{width},{height}],"format":"bgra8unorm","usage":{}}}"#,
-                usage::T_BINDING | usage::T_COPY_DST
-            ));
+            self.tex = gpu::texture(&format!(r#"{{"size":[{width},{height}],"format":"bgra8unorm","usage":{}}}"#, usage::T_BINDING | usage::T_COPY_DST));
             self.tex_view = gpu::view(self.tex, "");
             self.tex_size = (width, height);
             self.group_main = [0, 0];
@@ -454,16 +412,7 @@ impl Render {
                 let off = ptr + (((t2 - t) * stride + (x0 - l)) * 4) as usize;
                 let bpr = (stride * 4) as u32;
                 let n = ((b2 - t2 - 1) * stride * 4 + (x1 - x0) * 4) as usize;
-                gpu::write_texture(
-                    self.tex,
-                    0,
-                    [x0 as u32, t2 as u32, 0],
-                    off as *const u8,
-                    n,
-                    bpr,
-                    (b2 - t2) as u32,
-                    [(x1 - x0) as u32, (b2 - t2) as u32, 1],
-                );
+                gpu::write_texture(self.tex, 0, [x0 as u32, t2 as u32, 0], off as *const u8, n, bpr, (b2 - t2) as u32, [(x1 - x0) as u32, (b2 - t2) as u32, 1]);
                 SCREEN_STATS[1].fetch_add(((x1 - x0) * (b2 - t2) * 4) as u64, Relaxed);
             }
             frame = [io[0], ptr as u32, stride as u32, (b - t) as u32];
@@ -471,16 +420,7 @@ impl Render {
             let stride = width * 4;
             let p = bits as usize + (y0 * stride + x0 * 4) as usize;
             let n = ((y1 - y0 - 1) * stride + (x1 - x0) * 4) as usize;
-            gpu::write_texture(
-                self.tex,
-                0,
-                [x0 as u32, y0 as u32, 0],
-                p as *const u8,
-                n,
-                stride as u32,
-                (y1 - y0) as u32,
-                [(x1 - x0) as u32, (y1 - y0) as u32, 1],
-            );
+            gpu::write_texture(self.tex, 0, [x0 as u32, y0 as u32, 0], p as *const u8, n, stride as u32, (y1 - y0) as u32, [(x1 - x0) as u32, (y1 - y0) as u32, 1]);
             SCREEN_STATS[1].fetch_add(((x1 - x0) * (y1 - y0) * 4) as u64, Relaxed);
         }
         self.serial = Some(io[0]);
@@ -498,18 +438,9 @@ impl Render {
         let gi = nearest as usize;
         if self.group_main[gi] == 0 {
             let smp = if nearest { self.nearest } else { self.linear };
-            self.group_main[gi] = gpu::bind_group(
-                layout,
-                &[
-                    (0, Res::Obj(self.tex_view)),
-                    (1, Res::Obj(smp)),
-                    (2, Res::Buffer(self.uv[0], 0, 16)),
-                ],
-            );
+            self.group_main[gi] = gpu::bind_group(layout, &[(0, Res::Obj(self.tex_view)), (1, Res::Obj(smp)), (2, Res::Buffer(self.uv[0], 0, 16))]);
         }
-        gpu::begin_pass(&format!(
-            r#"{{"colorAttachments":[{{"view":{target},"loadOp":"clear","storeOp":"store","clearValue":[0,0,0,1]}}]}}"#
-        ));
+        gpu::begin_pass(&format!(r#"{{"colorAttachments":[{{"view":{target},"loadOp":"clear","storeOp":"store","clearValue":[0,0,0,1]}}]}}"#));
         gpu::set_viewport(r.x, r.y, r.w, r.h, 0.0, 1.0);
         gpu::set_pipeline(pipeline);
         gpu::set_bind_group(0, self.group_main[gi], &[]);
@@ -517,18 +448,7 @@ impl Render {
         if let Some(o) = self.d3d.overlay {
             if (self.group_overlay.0, self.group_overlay.1) != (o.view, self.d3d.tex_gen) {
                 gpu::drop(self.group_overlay.2);
-                self.group_overlay = (
-                    o.view,
-                    self.d3d.tex_gen,
-                    gpu::bind_group(
-                        layout,
-                        &[
-                            (0, Res::Obj(o.view)),
-                            (1, Res::Obj(self.linear)),
-                            (2, Res::Buffer(self.uv[1], 0, 16)),
-                        ],
-                    ),
-                );
+                self.group_overlay = (o.view, self.d3d.tex_gen, gpu::bind_group(layout, &[(0, Res::Obj(o.view)), (1, Res::Obj(self.linear)), (2, Res::Buffer(self.uv[1], 0, 16))]));
             }
             let [ol, ot, or, ob] = o.rect;
             let (l, t, rr, b) = (ol.max(vl), ot.max(vt), or.min(vr), ob.min(vb));
@@ -540,12 +460,7 @@ impl Render {
             let y1 = (th as f32).min(r.y + (b - vt) as f32 * sy);
             if x1 > x0 && y1 > y0 && or > ol && ob > ot {
                 let (ow, oh) = ((or - ol) as f32, (ob - ot) as f32);
-                let mut uv = [
-                    (l - ol) as f32 / ow,
-                    (t - ot) as f32 / oh,
-                    (rr - ol) as f32 / ow,
-                    (b - ot) as f32 / oh,
-                ];
+                let mut uv = [(l - ol) as f32 / ow, (t - ot) as f32 / oh, (rr - ol) as f32 / ow, (b - ot) as f32 / oh];
                 // (OpenGL frames are stored bottom row first)
                 if o.flip {
                     uv[1] = 1.0 - uv[1];
@@ -571,18 +486,8 @@ impl Render {
                     continue;
                 }
                 let buf = self.uv[2 + k];
-                write_f32(
-                    buf,
-                    &[l as f32 / fw, t as f32 / fh, rr as f32 / fw, b as f32 / fh],
-                );
-                let g = gpu::bind_group(
-                    layout,
-                    &[
-                        (0, Res::Obj(self.tex_view)),
-                        (1, Res::Obj(self.nearest)),
-                        (2, Res::Buffer(buf, 0, 16)),
-                    ],
-                );
+                write_f32(buf, &[l as f32 / fw, t as f32 / fh, rr as f32 / fw, b as f32 / fh]);
+                let g = gpu::bind_group(layout, &[(0, Res::Obj(self.tex_view)), (1, Res::Obj(self.nearest)), (2, Res::Buffer(buf, 0, 16))]);
                 gpu::set_viewport(x0, y0, x1 - x0, y1 - y0, 0.0, 1.0);
                 gpu::set_bind_group(0, g, &[]);
                 gpu::draw(3, 1, 0, 0);
@@ -602,23 +507,9 @@ impl Render {
             return;
         }
         let (w, h) = ((vr - vl) as u32, (vb - vt) as u32);
-        let tex = gpu::texture(&format!(
-            r#"{{"size":[{w},{h}],"format":"bgra8unorm","usage":{}}}"#,
-            usage::T_RENDER | usage::T_COPY_SRC
-        ));
+        let tex = gpu::texture(&format!(r#"{{"size":[{w},{h}],"format":"bgra8unorm","usage":{}}}"#, usage::T_RENDER | usage::T_COPY_SRC));
         let view = gpu::view(tex, "");
-        self.draw(
-            view,
-            "bgra8unorm",
-            Rect {
-                x: 0.0,
-                y: 0.0,
-                w: w as f32,
-                h: h as f32,
-            },
-            w,
-            h,
-        );
+        self.draw(view, "bgra8unorm", Rect { x: 0.0, y: 0.0, w: w as f32, h: h as f32 }, w, h);
         gpu::drop(view);
         let bpr = (w * 4).div_ceil(256) * 256;
         let buf = gpu::buffer(bpr * h, usage::COPY_DST | usage::MAP_READ);
@@ -630,9 +521,7 @@ impl Render {
     }
 
     fn shot_mapped(&mut self, ok: bool) {
-        let Some((buf, tex, w, h, px, bpr)) = self.shot.take() else {
-            return;
-        };
+        let Some((buf, tex, w, h, px, bpr)) = self.shot.take() else { return };
         gpu::destroy(buf);
         gpu::destroy(tex);
         if !ok {
@@ -640,18 +529,11 @@ impl Render {
         }
         let mut out = vec![0u8; (w * h * 4) as usize];
         for y in 0..h as usize {
-            out[y * w as usize * 4..(y + 1) * w as usize * 4]
-                .copy_from_slice(&px[y * bpr as usize..y * bpr as usize + w as usize * 4]);
+            out[y * w as usize * 4..(y + 1) * w as usize * 4].copy_from_slice(&px[y * bpr as usize..y * bpr as usize + w as usize * 4]);
         }
         let mut s = SHOT.lock().unwrap_or_else(|e| e.into_inner());
         if s.1 != 0 {
-            unsafe {
-                drop(Vec::from_raw_parts(
-                    s.1 as *mut u8,
-                    (s.2 * s.3 * 4) as usize,
-                    (s.2 * s.3 * 4) as usize,
-                ))
-            };
+            unsafe { drop(Vec::from_raw_parts(s.1 as *mut u8, (s.2 * s.3 * 4) as usize, (s.2 * s.3 * 4) as usize)) };
         }
         let mut out = std::mem::ManuallyDrop::new(out.into_boxed_slice());
         *s = (s.0 + 1, out.as_mut_ptr() as usize, w, h);
@@ -694,14 +576,7 @@ impl Render {
                 SCREEN_STATS[0].swap(0, Relaxed),
                 SCREEN_STATS[1].swap(0, Relaxed) as f64 / 1e6
             );
-            *s = Stats {
-                t0: t,
-                last: t,
-                frames: 0,
-                slow: 0,
-                at: now,
-                d3d_at: self.d3d.frames,
-            };
+            *s = Stats { t0: t, last: t, frames: 0, slow: 0, at: now, d3d_at: self.d3d.frames };
         }
     }
 }

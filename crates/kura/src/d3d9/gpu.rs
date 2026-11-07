@@ -13,9 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Milliseconds by Date.now(): the clock all threads share (performance.now() differs per worker).
 fn now() -> f64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0.0, |d| d.as_secs_f64() * 1000.0)
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64() * 1000.0)
 }
 
 pub const CREATE_TEXTURE: u32 = 1; // id w h levels format usage
@@ -31,7 +29,7 @@ pub const COPY: u32 = 10; // src_tex src_level sx sy sw sh dst_tex dst_level dx 
 pub const READBACK: u32 = 11; // request tex level x y w h dst_ptr pitch
 pub const FILL: u32 = 12; // tex level x y w h color(bgra u32)
 pub const WRITE_TEXTURE_MEM: u32 = 13; // id level x y w h pitch ptr: rows straight from guest memory
-                                       // Direct3D 11 (crates/kura/src/d3d11)
+// Direct3D 11 (crates/kura/src/d3d11)
 pub const CREATE_BUFFER: u32 = 20; // id size
 pub const DESTROY_BUFFER: u32 = 21; // id
 pub const WRITE_BUFFER: u32 = 22; // id offset blob_offset len
@@ -84,8 +82,7 @@ impl Batch {
             let (h, pitch, ptr) = (c[6], c[7], c[8]);
             let len = pitch as usize * h as usize;
             if (ptr as u64) < hi as u64 && ptr as u64 + len as u64 > lo as u64 {
-                let off = self
-                    .blob(unsafe { std::slice::from_raw_parts(ptr as usize as *const u8, len) });
+                let off = self.blob(unsafe { std::slice::from_raw_parts(ptr as usize as *const u8, len) });
                 self.cmds[at] = WRITE_TEXTURE;
                 self.cmds[at + 8] = off;
                 self.mems.swap_remove(i);
@@ -304,10 +301,7 @@ pub fn present() {
         if q.presented <= q.shown + 2 || now() >= deadline {
             return;
         }
-        g = WAKE
-            .wait_timeout(g, Duration::from_millis(20))
-            .unwrap_or_else(|e| e.into_inner())
-            .0;
+        g = WAKE.wait_timeout(g, Duration::from_millis(20)).unwrap_or_else(|e| e.into_inner()).0;
     }
 }
 
@@ -333,10 +327,7 @@ pub fn wait_done(gen: u64) {
             q.closed.push_back(b);
             q.gen += 1;
         }
-        g = WAKE
-            .wait_timeout(g, Duration::from_millis(5))
-            .unwrap_or_else(|e| e.into_inner())
-            .0;
+        g = WAKE.wait_timeout(g, Duration::from_millis(5)).unwrap_or_else(|e| e.into_inner()).0;
     }
 }
 
@@ -350,10 +341,7 @@ pub fn detach_mem(lo: u32, hi: u32) -> Option<u64> {
         }
         q.open.detach(lo, hi);
         let done = q.done;
-        q.reading
-            .as_ref()
-            .filter(|b| b.gen >= done && b.reads(lo, hi))
-            .map(|b| b.gen)
+        q.reading.as_ref().filter(|b| b.gen >= done && b.reads(lo, hi)).map(|b| b.gen)
     })
 }
 
@@ -396,21 +384,11 @@ pub fn wait_readback(id: u32) -> bool {
         // giving up (the page is gone or stalled): the page must not write the pixels later,
         // into memory the guest may have freed and reused by then
         if (now() >= deadline || !page_attached(q)) && !q.readbacks_writing.contains(&id) {
-            eprintln!(
-                "kura: readback {id:#x} given up ({})",
-                if page_attached(q) {
-                    "timed out"
-                } else {
-                    "page not polling"
-                }
-            );
+            eprintln!("kura: readback {id:#x} given up ({})", if page_attached(q) { "timed out" } else { "page not polling" });
             q.readbacks_dropped.push(id);
             return false;
         }
-        g = WAKE
-            .wait_timeout(g, Duration::from_millis(5))
-            .unwrap_or_else(|e| e.into_inner())
-            .0;
+        g = WAKE.wait_timeout(g, Duration::from_millis(5)).unwrap_or_else(|e| e.into_inner()).0;
     }
 }
 

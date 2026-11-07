@@ -2,15 +2,12 @@
 
 use super::format as fmt;
 use super::gpu::{self, Batch};
-use super::stateblock as sb;
-use super::{After, D3d, Data, D3DERR_INVALIDCALL, D3DERR_NOTAVAILABLE, E_NOTIMPL, S_OK};
-use super::{
-    IF_CUBE, IF_D3D9, IF_DECL, IF_DEVICE, IF_IB, IF_PS, IF_QUERY, IF_STATEBLOCK, IF_SURFACE,
-    IF_SWAPCHAIN,
-};
-use super::{IF_TEXTURE, IF_VB, IF_VOLUME, IF_VOLUMETEX, IF_VS};
 use dxwgsl::d3d9::{self as shader, Shader};
 use dxwgsl::d3d9ff as ff;
+use super::{After, D3d, Data, D3DERR_INVALIDCALL, D3DERR_NOTAVAILABLE, E_NOTIMPL, S_OK};
+use super::stateblock as sb;
+use super::{IF_CUBE, IF_D3D9, IF_DECL, IF_DEVICE, IF_IB, IF_PS, IF_QUERY, IF_STATEBLOCK, IF_SURFACE, IF_SWAPCHAIN};
+use super::{IF_TEXTURE, IF_VB, IF_VOLUME, IF_VOLUMETEX, IF_VS};
 use std::collections::HashMap;
 
 const POOL_DEFAULT: u32 = 0;
@@ -191,12 +188,7 @@ pub struct Device {
 
 /// The render states Direct3D 9 has (GetRenderState of the others: D3DERR_INVALIDCALL), as
 /// Windows answers (winref d3d9state)
-pub const RS_VALID: [u64; 4] = [
-    0xfff5_857c_3fd9_c381,
-    0xffff_ffff_0000_0000,
-    0xffff_ffef_fdfe_ffff,
-    0xffff_ffff_ffff_ffcf,
-];
+pub const RS_VALID: [u64; 4] = [0xfff5_857c_3fd9_c381, 0xffff_ffff_0000_0000, 0xffff_ffef_fdfe_ffff, 0xffff_ffff_ffff_ffcf];
 pub fn rs_valid(i: u32) -> bool {
     i < 256 && RS_VALID[i as usize / 64] >> (i % 64) & 1 != 0
 }
@@ -206,62 +198,58 @@ const UNSET: u32 = 0xbaad_cafe;
 fn default_state() -> State {
     let mut rs = vec![0u32; 256];
     let f1 = 1.0f32.to_bits();
-    for i in [0, 42, 47, 50, 61, 62, 63, 138, 149, 150, 165, 169, 177]
-        .into_iter()
-        .chain(96..128)
-        .chain(210..256)
-    {
+    for i in [0, 42, 47, 50, 61, 62, 63, 138, 149, 150, 165, 169, 177].into_iter().chain(96..128).chain(210..256) {
         rs[i] = UNSET;
     }
     // (Windows' defaults, winref d3d9state; ZENABLE as the auto depth buffer: set at creation)
     for (k, v) in [
-        (7, 1),   // ZENABLE
-        (8, 3),   // FILLMODE solid
-        (9, 2),   // SHADEMODE gouraud
-        (14, 1),  // ZWRITEENABLE
-        (16, 1),  // LASTPIXEL
-        (19, 2),  // SRCBLEND one
-        (20, 1),  // DESTBLEND zero
-        (22, 3),  // CULLMODE ccw
-        (23, 4),  // ZFUNC lessequal
-        (25, 8),  // ALPHAFUNC always
-        (37, f1), // FOGEND
-        (38, f1), // FOGDENSITY
-        (53, 1),  // STENCILFAIL keep
+        (7, 1),    // ZENABLE
+        (8, 3),    // FILLMODE solid
+        (9, 2),    // SHADEMODE gouraud
+        (14, 1),   // ZWRITEENABLE
+        (16, 1),   // LASTPIXEL
+        (19, 2),   // SRCBLEND one
+        (20, 1),   // DESTBLEND zero
+        (22, 3),   // CULLMODE ccw
+        (23, 4),   // ZFUNC lessequal
+        (25, 8),   // ALPHAFUNC always
+        (37, f1),  // FOGEND
+        (38, f1),  // FOGDENSITY
+        (53, 1),   // STENCILFAIL keep
         (54, 1),
         (55, 1),
-        (56, 8), // STENCILFUNC always
+        (56, 8),   // STENCILFUNC always
         (58, 0xffffffff),
         (59, 0xffffffff),
         (60, 0xffffffff), // TEXTUREFACTOR
-        (136, 1),         // CLIPPING
-        (137, 1),         // LIGHTING
-        (141, 1),         // COLORVERTEX
-        (142, 1),         // LOCALVIEWER
-        (145, 1),         // DIFFUSEMATERIALSOURCE color1
-        (146, 2),         // SPECULARMATERIALSOURCE color2
-        (154, f1),        // POINTSIZE
-        (155, f1),        // POINTSIZE_MIN
-        (158, f1),        // POINTSCALE_A
-        (161, 1),         // MULTISAMPLEANTIALIAS
+        (136, 1),  // CLIPPING
+        (137, 1),  // LIGHTING
+        (141, 1),  // COLORVERTEX
+        (142, 1),  // LOCALVIEWER
+        (145, 1),  // DIFFUSEMATERIALSOURCE color1
+        (146, 2),  // SPECULARMATERIALSOURCE color2
+        (154, f1), // POINTSIZE
+        (155, f1), // POINTSIZE_MIN
+        (158, f1), // POINTSCALE_A
+        (161, 1),  // MULTISAMPLEANTIALIAS
         (162, 0xffffffff),
         (166, 8192f32.to_bits()), // POINTSIZE_MAX (a hardware device: its MaxPointSize)
-        (168, 0xf),               // COLORWRITEENABLE
-        (171, 1),                 // BLENDOP add
-        (172, 3),                 // POSITIONDEGREE cubic
-        (173, 1),                 // NORMALDEGREE linear
-        (178, f1),                // MINTESSELLATIONLEVEL
+        (168, 0xf), // COLORWRITEENABLE
+        (171, 1),  // BLENDOP add
+        (172, 3),  // POSITIONDEGREE cubic
+        (173, 1),  // NORMALDEGREE linear
+        (178, f1), // MINTESSELLATIONLEVEL
         (179, f1),
         (182, f1), // ADAPTIVETESS_Z
         (186, 1),  // CCW_STENCILFAIL keep
         (187, 1),
         (188, 1),
-        (189, 8), // CCW_STENCILFUNC always
+        (189, 8),  // CCW_STENCILFUNC always
         (190, 0xf),
         (191, 0xf),
         (192, 0xf),
         (193, 0xffffffff), // BLENDFACTOR
-        (207, 2),          // SRCBLENDALPHA one
+        (207, 2),  // SRCBLENDALPHA one
         (208, 1),
         (209, 1),
     ] {
@@ -329,11 +317,7 @@ impl Device {
         let st = &self.st;
         let mut held: Vec<u32> = st.textures.iter().copied().filter(|&t| t != 0).collect();
         held.extend(st.streams.iter().map(|s| s.0).filter(|&s| s != 0));
-        held.extend(
-            [st.indices, st.decl, st.vs, st.ps]
-                .into_iter()
-                .filter(|&x| x != 0),
-        );
+        held.extend([st.indices, st.decl, st.vs, st.ps].into_iter().filter(|&x| x != 0));
         held.extend(self.rt.iter().copied().filter(|&x| x != 0));
         if self.ds != 0 {
             held.push(self.ds);
@@ -385,11 +369,7 @@ pub(crate) unsafe fn wrp(p: u32, i: usize, v: u32) {
 /// D3DPRESENT_PARAMETERS as 14 dwords in its 32-bit layout (hDeviceWindow at 7; 64-bit: 8-byte
 /// aligned at dword 8, the rest 2 dwords later)
 fn pp_index(i: usize) -> usize {
-    if ptr() == 8 && i >= 7 {
-        i + 1 + (i > 7) as usize
-    } else {
-        i
-    }
+    if ptr() == 8 && i >= 7 { i + 1 + (i > 7) as usize } else { i }
 }
 unsafe fn read_pp(pp: u32) -> [u32; 14] {
     let mut p = [0u32; 14];
@@ -411,14 +391,7 @@ fn f2u(v: f32) -> u32 {
     v.to_bits()
 }
 
-pub unsafe fn call(
-    d: &mut D3d,
-    iface: u32,
-    m: u32,
-    this: u32,
-    args: *const u32,
-    after: &mut After,
-) -> u32 {
+pub unsafe fn call(d: &mut D3d, iface: u32, m: u32, this: u32, args: *const u32, after: &mut After) -> u32 {
     let a = |i: usize| *args.add(i);
     match iface {
         IF_D3D9 => d3d9_call(d, m, this, &a),
@@ -431,9 +404,7 @@ pub unsafe fn call(
             7 => display_mode(a(1)),
             8 => device_out(d, a(1)),
             9 => {
-                let Some(dev) = &d.dev else {
-                    return D3DERR_INVALIDCALL;
-                };
+                let Some(dev) = &d.dev else { return D3DERR_INVALIDCALL };
                 write_pp(a(1), &dev.pp);
                 S_OK
             }
@@ -445,18 +416,12 @@ pub unsafe fn call(
         IF_DECL => match m {
             3 => device_out(d, a(1)),
             4 => {
-                let Some(Data::Decl(decl)) = d.objs.get(&this).map(|o| &o.data) else {
-                    return D3DERR_INVALIDCALL;
-                };
+                let Some(Data::Decl(decl)) = d.objs.get(&this).map(|o| &o.data) else { return D3DERR_INVALIDCALL };
                 if a(2) == 0 {
                     return D3DERR_INVALIDCALL;
                 }
                 if a(1) != 0 {
-                    std::ptr::copy_nonoverlapping(
-                        decl.raw.as_ptr() as *const u32,
-                        a(1) as *mut u32,
-                        decl.raw.len() * 2,
-                    );
+                    std::ptr::copy_nonoverlapping(decl.raw.as_ptr() as *const u32, a(1) as *mut u32, decl.raw.len() * 2);
                 }
                 wr(a(2), 0, decl.raw.len() as u32);
                 S_OK
@@ -466,9 +431,7 @@ pub unsafe fn call(
         IF_VS | IF_PS => match m {
             3 => device_out(d, a(1)),
             4 => {
-                let Some(Data::Shader(s)) = d.objs.get(&this).map(|o| &o.data) else {
-                    return D3DERR_INVALIDCALL;
-                };
+                let Some(Data::Shader(s)) = d.objs.get(&this).map(|o| &o.data) else { return D3DERR_INVALIDCALL };
                 let size = s.code.len() as u32 * 4;
                 if a(1) != 0 {
                     if rd(a(2), 0) < size {
@@ -485,9 +448,7 @@ pub unsafe fn call(
             3 => device_out(d, a(1)),
             4 => {
                 // Capture
-                let Some(dev) = &d.dev else {
-                    return D3DERR_INVALIDCALL;
-                };
+                let Some(dev) = &d.dev else { return D3DERR_INVALIDCALL };
                 if let Some(Data::StateBlock(b)) = d.objs.get_mut(&this).map(|o| &mut o.data) {
                     let old = state_binds(&b.st);
                     sb::copy_masked(&mut b.st, &dev.st, &b.mask);
@@ -498,10 +459,7 @@ pub unsafe fn call(
                 S_OK
             }
             5 => {
-                if !matches!(
-                    d.objs.get(&this).map(|o| &o.data),
-                    Some(Data::StateBlock(_))
-                ) {
+                if !matches!(d.objs.get(&this).map(|o| &o.data), Some(Data::StateBlock(_))) {
                     return D3DERR_INVALIDCALL;
                 }
                 apply_state(d, this);
@@ -547,19 +505,17 @@ pub unsafe fn call(
 
 fn query_size(t: u32) -> u32 {
     match t {
-        8 => 4,  // EVENT: BOOL
-        9 => 4,  // OCCLUSION: DWORD
-        10 => 8, // TIMESTAMP
-        11 => 4, // TIMESTAMPDISJOINT
-        12 => 8, // TIMESTAMPFREQ
+        8 => 4,     // EVENT: BOOL
+        9 => 4,     // OCCLUSION: DWORD
+        10 => 8,    // TIMESTAMP
+        11 => 4,    // TIMESTAMPDISJOINT
+        12 => 8,    // TIMESTAMPFREQ
         _ => 4,
     }
 }
 
 unsafe fn device_out(d: &mut D3d, out: u32) -> u32 {
-    let Some(dev) = &d.dev else {
-        return D3DERR_INVALIDCALL;
-    };
+    let Some(dev) = &d.dev else { return D3DERR_INVALIDCALL };
     let obj = dev.obj;
     d.add_ref(obj);
     wrp(out, 0, d.addr_of(obj));
@@ -578,12 +534,7 @@ unsafe fn raster_status(d: &D3d, out: u32) -> u32 {
     }
     let h = d.dev.as_ref().map_or(768, |dev| dev.pp[1].max(1));
     let total = h + h / 20 + 1; // ~5% of the lines in vertical blank
-    let phase = (T0
-        .get_or_init(std::time::Instant::now)
-        .elapsed()
-        .as_secs_f64()
-        * 60.0)
-        .fract();
+    let phase = (T0.get_or_init(std::time::Instant::now).elapsed().as_secs_f64() * 60.0).fract();
     let line = (phase * total as f64) as u32;
     let vblank = line >= h;
     wr(out, 0, vblank as u32);
@@ -595,22 +546,11 @@ unsafe fn adapter_modes() -> Vec<(u32, u32)> {
     let (mut w, mut h) = (0, 0);
     crate::display::vnhost_display_size(&mut w, &mut h);
     let (w, h) = (w.max(640) as u32, h.max(480) as u32);
-    let mut v: Vec<(u32, u32)> = [
-        (640, 480),
-        (800, 600),
-        (1024, 768),
-        (1280, 720),
-        (1280, 768),
-        (1280, 800),
-        (1280, 960),
-        (1280, 1024),
-        (1366, 768),
-        (1600, 900),
-        (1920, 1080),
-    ]
-    .into_iter()
-    .filter(|&(x, y)| x <= w && y <= h)
-    .collect();
+    let mut v: Vec<(u32, u32)> = [(640, 480), (800, 600), (1024, 768), (1280, 720), (1280, 768), (1280, 800), (1280, 960),
+        (1280, 1024), (1366, 768), (1600, 900), (1920, 1080)]
+        .into_iter()
+        .filter(|&(x, y)| x <= w && y <= h)
+        .collect();
     if !v.contains(&(w, h)) {
         v.push((w, h));
     }
@@ -640,28 +580,18 @@ const CAPS: [u32; 76] = {
     c[5] = 0x8000_0000 | 1; // PresentationIntervals: IMMEDIATE | ONE
     c[6] = 1; // CursorCaps: COLOR
     c[7] = 0x10 | 0x40 | 0x80 | 0x200 | 0x400 | 0x2000 | 0x4000 | 0x8_0000 | 0x10_0000 | 0x20_0000; // DevCaps
-                                                                                                    // PrimitiveMiscCaps (not 0x1000, NULLREFERENCE: the D3D sample framework then refuses the device)
+    // PrimitiveMiscCaps (not 0x1000, NULLREFERENCE: the D3D sample framework then refuses the device)
     c[8] = 0x2 | 0x4 | 0x10 | 0x20 | 0x40 | 0x80 | 0x100 | 0x800 | 0x2_0000 | 0x4_0000;
     // RasterCaps (SCISSORTEST: games check it before they use the scissor rect)
-    c[9] = 0x1
-        | 0x10
-        | 0x80
-        | 0x100
-        | 0x2000
-        | 0x8_0000
-        | 0x20_0000
-        | 0x40_0000
-        | 0x100_0000
-        | 0x200_0000
-        | 0x400_0000;
+    c[9] = 0x1 | 0x10 | 0x80 | 0x100 | 0x2000 | 0x8_0000 | 0x20_0000 | 0x40_0000 | 0x100_0000 | 0x200_0000 | 0x400_0000;
     c[10] = 0xff; // ZCmpCaps
-                  // Src/DestBlendCaps: through BLENDFACTOR (0x2000; no dual-source SRCCOLOR2)
+    // Src/DestBlendCaps: through BLENDFACTOR (0x2000; no dual-source SRCCOLOR2)
     c[11] = 0x3fff;
     c[12] = 0x3fff;
     c[13] = 0xff; // AlphaCmpCaps
     c[14] = 0x8 | 0x80 | 0x200 | 0x4000 | 0x8_0000; // ShadeCaps
-                                                    // TextureCaps: PERSPECTIVE, ALPHA, TEXREPEATNOTSCALEDBYSIZE, CUBEMAP, MIPMAP, MIPVOLUMEMAP; no POW2 or
-                                                    // CUBEMAP_POW2: WebGPU textures have any size (AdvHD refuses to start without that)
+    // TextureCaps: PERSPECTIVE, ALPHA, TEXREPEATNOTSCALEDBYSIZE, CUBEMAP, MIPMAP, MIPVOLUMEMAP; no POW2 or
+    // CUBEMAP_POW2: WebGPU textures have any size (AdvHD refuses to start without that)
     c[15] = 0x1 | 0x4 | 0x40 | 0x800 | 0x4000 | 0x8000;
     c[16] = 0x0300_0000 | 0x0001_0000 | 0x0002_0000 | 0x0100 | 0x0200 | 0x0400; // TextureFilterCaps
     c[17] = c[16];
@@ -732,9 +662,7 @@ unsafe fn d3d9_call(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32) ->
                 return D3DERR_INVALIDCALL;
             }
             std::ptr::write_bytes(p, 0, 1100);
-            let put = |off: usize, s: &[u8]| {
-                std::ptr::copy_nonoverlapping(s.as_ptr(), p.add(off), s.len())
-            };
+            let put = |off: usize, s: &[u8]| std::ptr::copy_nonoverlapping(s.as_ptr(), p.add(off), s.len());
             put(0, b"vnvm.dll");
             put(512, b"vnvm WebGPU");
             put(1024, b"\\\\.\\DISPLAY1");
@@ -747,17 +675,11 @@ unsafe fn d3d9_call(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32) ->
             S_OK
         }
         6 => {
-            if a(2) == fmt::X8R8G8B8 || a(2) == fmt::A8R8G8B8 {
-                adapter_modes().len() as u32
-            } else {
-                0
-            }
+            if a(2) == fmt::X8R8G8B8 || a(2) == fmt::A8R8G8B8 { adapter_modes().len() as u32 } else { 0 }
         }
         7 => {
             let modes = adapter_modes();
-            let Some(&(w, h)) = modes.get(a(3) as usize) else {
-                return D3DERR_INVALIDCALL;
-            };
+            let Some(&(w, h)) = modes.get(a(3) as usize) else { return D3DERR_INVALIDCALL };
             if a(2) != fmt::X8R8G8B8 && a(2) != fmt::A8R8G8B8 {
                 return D3DERR_INVALIDCALL;
             }
@@ -770,11 +692,7 @@ unsafe fn d3d9_call(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32) ->
         8 => display_mode(a(2)),
         9 => {
             // CheckDeviceType(adapter, type, adapter fmt, backbuffer fmt, windowed)
-            if a(3) == fmt::X8R8G8B8 || a(3) == fmt::A8R8G8B8 || a(3) == 0 {
-                S_OK
-            } else {
-                D3DERR_NOTAVAILABLE
-            }
+            if a(3) == fmt::X8R8G8B8 || a(3) == fmt::A8R8G8B8 || a(3) == 0 { S_OK } else { D3DERR_NOTAVAILABLE }
         }
         10 => {
             // CheckDeviceFormat(adapter, type, adapter fmt, usage, rtype, fmt)
@@ -788,24 +706,15 @@ unsafe fn d3d9_call(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32) ->
             } else if rtype == RT_VB || rtype == RT_IB {
                 true
             } else {
-                fmt::supported(f) && !fmt::is_depth(f) && f != fmt::R8G8B8
-                    || (fmt::is_depth(f) && rtype == RT_SURFACE)
+                fmt::supported(f) && !fmt::is_depth(f) && f != fmt::R8G8B8 || (fmt::is_depth(f) && rtype == RT_SURFACE)
             };
-            if ok {
-                S_OK
-            } else {
-                D3DERR_NOTAVAILABLE
-            }
+            if ok { S_OK } else { D3DERR_NOTAVAILABLE }
         }
         11 => {
             if a(6) != 0 {
                 wr(a(6), 0, 1);
             }
-            if a(5) == 0 {
-                S_OK
-            } else {
-                D3DERR_NOTAVAILABLE
-            }
+            if a(5) == 0 { S_OK } else { D3DERR_NOTAVAILABLE }
         }
         12 => S_OK,
         13 => S_OK,
@@ -839,31 +748,11 @@ fn gpu_id() -> u32 {
 fn gpu_texture(w: u32, h: u32, levels: u32, f: u32, usage: u32) -> u32 {
     let id = gpu_id();
     let rt = usage & (USAGE_RENDERTARGET | USAGE_DEPTHSTENCIL) != 0 || fmt::is_depth(f);
-    gpu::record(|b| {
-        b.cmd(&[
-            gpu::CREATE_TEXTURE,
-            id,
-            w.max(1),
-            h.max(1),
-            levels.max(1),
-            fmt::page_format(f),
-            rt as u32,
-        ])
-    });
+    gpu::record(|b| b.cmd(&[gpu::CREATE_TEXTURE, id, w.max(1), h.max(1), levels.max(1), fmt::page_format(f), rt as u32]));
     id
 }
 
-fn new_surface(
-    d: &mut D3d,
-    w: u32,
-    h: u32,
-    f: u32,
-    pool: u32,
-    usage: u32,
-    container: u32,
-    gpu: u32,
-    level: u32,
-) -> u32 {
+fn new_surface(d: &mut D3d, w: u32, h: u32, f: u32, pool: u32, usage: u32, container: u32, gpu: u32, level: u32) -> u32 {
     let (own_gpu, gpu) = if gpu != 0 {
         (false, gpu)
     } else if pool == POOL_SYSTEMMEM || pool == POOL_SCRATCH {
@@ -896,15 +785,7 @@ fn new_surface(
     d.new_obj(IF_SURFACE, container, Data::Surface(s))
 }
 
-unsafe fn create_device(
-    d: &mut D3d,
-    d3d: u32,
-    ty: u32,
-    focus: u32,
-    behavior: u32,
-    pp: u32,
-    out: u32,
-) -> u32 {
+unsafe fn create_device(d: &mut D3d, d3d: u32, ty: u32, focus: u32, behavior: u32, pp: u32, out: u32) -> u32 {
     let _ = ty;
     if pp == 0 || out == 0 {
         return D3DERR_INVALIDCALL;
@@ -934,10 +815,7 @@ unsafe fn create_device(
     p[5] = 0;
     write_pp(pp, &p);
     if d.trace {
-        eprintln!(
-            "d3d9: device {}x{} format {:#x} window {:?}",
-            p[0], p[1], p[2], rect
-        );
+        eprintln!("d3d9: device {}x{} format {:#x} window {:?}", p[0], p[1], p[2], rect);
     }
     let obj_addr = d.new_obj(IF_DEVICE, 0, Data::Device);
     let obj = d.id_of(obj_addr);
@@ -977,10 +855,7 @@ unsafe fn create_device(
     d.dev = Some(dev);
     reset_buffers(d);
     if d.trace {
-        eprintln!(
-            "d3d9: CreateDevice hwnd {hwnd:#x} {}x{} fmt {} depth {}/{} behavior {behavior:#x}",
-            p[0], p[1], p[2], p[9], p[10]
-        );
+        eprintln!("d3d9: CreateDevice hwnd {hwnd:#x} {}x{} fmt {} depth {}/{} behavior {behavior:#x}", p[0], p[1], p[2], p[9], p[10]);
     }
     wrp(out, 0, obj_addr);
     S_OK
@@ -998,32 +873,12 @@ fn reset_buffers(d: &mut D3d) {
             d.unbind(s);
         }
     }
-    let bb = new_surface(
-        d,
-        p[0],
-        p[1],
-        p[2],
-        POOL_DEFAULT,
-        USAGE_RENDERTARGET,
-        0,
-        0,
-        0,
-    );
+    let bb = new_surface(d, p[0], p[1], p[2], POOL_DEFAULT, USAGE_RENDERTARGET, 0, 0, 0);
     let bb = d.id_of(bb);
     d.bind(bb);
     d.release(bb);
     let ds = if p[9] != 0 {
-        let s = new_surface(
-            d,
-            p[0],
-            p[1],
-            p[10],
-            POOL_DEFAULT,
-            USAGE_DEPTHSTENCIL,
-            0,
-            0,
-            0,
-        );
+        let s = new_surface(d, p[0], p[1], p[10], POOL_DEFAULT, USAGE_DEPTHSTENCIL, 0, 0, 0);
         let s = d.id_of(s);
         d.bind(s);
         d.release(s);
@@ -1076,9 +931,7 @@ fn reset_buffers(d: &mut D3d) {
 }
 
 unsafe fn get_backbuffer(d: &mut D3d, out: u32) -> u32 {
-    let Some(dev) = &d.dev else {
-        return D3DERR_INVALIDCALL;
-    };
+    let Some(dev) = &d.dev else { return D3DERR_INVALIDCALL };
     let bb = dev.backbuffer;
     d.add_ref(bb);
     wrp(out, 0, d.addr_of(bb));
@@ -1198,11 +1051,7 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
             let st = std::mem::replace(&mut dev.st, default_state());
             let mut held: Vec<u32> = st.textures.iter().copied().filter(|&t| t != 0).collect();
             held.extend(st.streams.iter().map(|s| s.0).filter(|&s| s != 0));
-            held.extend(
-                [st.indices, st.decl, st.vs, st.ps]
-                    .into_iter()
-                    .filter(|&x| x != 0),
-            );
+            held.extend([st.indices, st.decl, st.vs, st.ps].into_iter().filter(|&x| x != 0));
             for h in held {
                 d.unbind(h);
             }
@@ -1240,24 +1089,14 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
             if mem == 0 {
                 return super::E_OUTOFMEMORY;
             }
-            let b = Buffer {
-                len,
-                usage,
-                fmt: f,
-                pool,
-                mem,
-            };
+            let b = Buffer { len, usage, fmt: f, pool, mem };
             let o = d.new_obj(if m == 26 { IF_VB } else { IF_IB }, 0, Data::Buffer(b));
             wrp(out, 0, o);
             S_OK
         }
         28 | 29 => {
             // CreateRenderTarget / CreateDepthStencilSurface(w, h, fmt, ms, quality, lockable/discard, out)
-            let usage = if m == 28 {
-                USAGE_RENDERTARGET
-            } else {
-                USAGE_DEPTHSTENCIL
-            };
+            let usage = if m == 28 { USAGE_RENDERTARGET } else { USAGE_DEPTHSTENCIL };
             if !fmt::supported(a(3)) {
                 return D3DERR_INVALIDCALL;
             }
@@ -1395,27 +1234,19 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
         }
         52 => {
             let dev = dev!(d);
-            let Some((l, _)) = dev.st.lights.get(&a(1)) else {
-                return D3DERR_INVALIDCALL;
-            };
+            let Some((l, _)) = dev.st.lights.get(&a(1)) else { return D3DERR_INVALIDCALL };
             std::ptr::copy_nonoverlapping(l.as_ptr(), a(2) as *mut u8, 104);
             S_OK
         }
         53 => {
             let dev = dev!(d);
-            let e = dev
-                .st
-                .lights
-                .entry(a(1))
-                .or_insert_with(|| (vec![0; 104], false));
+            let e = dev.st.lights.entry(a(1)).or_insert_with(|| (vec![0; 104], false));
             e.1 = a(2) != 0;
             S_OK
         }
         54 => {
             let dev = dev!(d);
-            let Some((_, on)) = dev.st.lights.get(&a(1)) else {
-                return D3DERR_INVALIDCALL;
-            };
+            let Some((_, on)) = dev.st.lights.get(&a(1)) else { return D3DERR_INVALIDCALL };
             wr(a(2), 0, if *on { 128 } else { 0 });
             S_OK
         }
@@ -1464,11 +1295,7 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
             };
             let st = sb::masked_copy(&dev.st, &mask);
             bind_all(d, &state_binds(&st));
-            let o = d.new_obj(
-                IF_STATEBLOCK,
-                0,
-                Data::StateBlock(Box::new(sb::Block { st, mask })),
-            );
+            let o = d.new_obj(IF_STATEBLOCK, 0, Data::StateBlock(Box::new(sb::Block { st, mask })));
             wrp(a(2), 0, o);
             S_OK
         }
@@ -1480,10 +1307,7 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
             }
             let st = dev.st.clone();
             bind_all(d, &state_binds(&st));
-            d.dev.as_mut().unwrap().recording = Some(Box::new(sb::Recording {
-                st,
-                mask: sb::Mask::default(),
-            }));
+            d.dev.as_mut().unwrap().recording = Some(Box::new(sb::Recording { st, mask: sb::Mask::default() }));
             S_OK
         }
         61 => {
@@ -1496,11 +1320,7 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
             let st = sb::masked_copy(&rec.st, &rec.mask);
             bind_all(d, &state_binds(&st));
             unbind_all(d, &state_binds(&rec.st));
-            let o = d.new_obj(
-                IF_STATEBLOCK,
-                0,
-                Data::StateBlock(Box::new(sb::Block { st, mask: rec.mask })),
-            );
+            let o = d.new_obj(IF_STATEBLOCK, 0, Data::StateBlock(Box::new(sb::Block { st, mask: rec.mask })));
             wrp(a(1), 0, o);
             S_OK
         }
@@ -1518,9 +1338,7 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
             let stage = a(1) as usize;
             let t = d.id_of(a(2));
             let dev = dev!(d);
-            let Some(slot) = sampler_slot(stage as u32).map(|s| &mut dev.st.textures[s]) else {
-                return S_OK;
-            };
+            let Some(slot) = sampler_slot(stage as u32).map(|s| &mut dev.st.textures[s]) else { return S_OK };
             let old = *slot;
             *slot = t;
             set_bound(d, t, old);
@@ -1528,34 +1346,20 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
         }
         66 => {
             let dev = dev!(d);
-            let v = dev
-                .st
-                .tss
-                .get(a(1) as usize)
-                .and_then(|s| s.get(a(2) as usize))
-                .copied()
-                .unwrap_or(0);
+            let v = dev.st.tss.get(a(1) as usize).and_then(|s| s.get(a(2) as usize)).copied().unwrap_or(0);
             wr(a(3), 0, v);
             S_OK
         }
         67 => {
             let dev = dev!(d);
-            if let Some(v) = dev
-                .st
-                .tss
-                .get_mut(a(1) as usize)
-                .and_then(|s| s.get_mut(a(2) as usize))
-            {
+            if let Some(v) = dev.st.tss.get_mut(a(1) as usize).and_then(|s| s.get_mut(a(2) as usize)) {
                 *v = a(3);
             }
             S_OK
         }
         68 => {
             let dev = dev!(d);
-            let v = sampler_slot(a(1))
-                .and_then(|s| dev.st.ss[s].get(a(2) as usize))
-                .copied()
-                .unwrap_or(0);
+            let v = sampler_slot(a(1)).and_then(|s| dev.st.ss[s].get(a(2) as usize)).copied().unwrap_or(0);
             wr(a(3), 0, v);
             S_OK
         }
@@ -1596,46 +1400,13 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
         81 => draw(d, a(1), Src::Streams(a(2)), a(3), None),
         82 => {
             // DrawIndexedPrimitive(type, base vertex, min index, num vertices, start index, prims)
-            draw(
-                d,
-                a(1),
-                Src::Indexed {
-                    base: a(2) as i32,
-                    min: a(3),
-                    num: a(4),
-                    start: a(5),
-                },
-                a(6),
-                None,
-            )
+            draw(d, a(1), Src::Indexed { base: a(2) as i32, min: a(3), num: a(4), start: a(5) }, a(6), None)
         }
-        83 => draw(
-            d,
-            a(1),
-            Src::Up {
-                data: a(3),
-                stride: a(4),
-            },
-            a(2),
-            None,
-        ),
+        83 => draw(d, a(1), Src::Up { data: a(3), stride: a(4) }, a(2), None),
         84 => {
             // DrawIndexedPrimitiveUP(type, min index, num vertices, prims, indices, index fmt, data, stride)
             let isize = if a(6) == fmt::INDEX32 { 4 } else { 2 };
-            draw(
-                d,
-                a(1),
-                Src::UpIndexed {
-                    min: a(2),
-                    num: a(3),
-                    idx: a(5),
-                    isize,
-                    data: a(7),
-                    stride: a(8),
-                },
-                a(4),
-                None,
-            )
+            draw(d, a(1), Src::UpIndexed { min: a(2), num: a(3), idx: a(5), isize, data: a(7), stride: a(8) }, a(4), None)
         }
         85 => D3DERR_INVALIDCALL,
         86 => create_decl(d, a(1), a(2)),
@@ -1660,26 +1431,12 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
                     Some(&id) => id,
                     None => {
                         let elems = fvf_elems(fvf).0;
-                        let mut raw: Vec<[u32; 2]> = elems
-                            .iter()
-                            .map(|e| {
-                                [
-                                    e.stream | e.offset << 16,
-                                    e.ty | e.usage << 16 | e.index << 24,
-                                ]
-                            })
-                            .collect();
+                        let mut raw: Vec<[u32; 2]> = elems.iter().map(|e| [e.stream | e.offset << 16, e.ty | e.usage << 16 | e.index << 24]).collect();
                         // (blend weights, and indices in the last beta: in the declaration only)
                         let pos = fvf & 0x400e;
                         if (6..=0xe).contains(&pos) {
                             let n = (pos - 6) / 2 + 1;
-                            let idx = if fvf & 0x1000 != 0 {
-                                Some(5)
-                            } else if fvf & 0x8000 != 0 {
-                                Some(4)
-                            } else {
-                                None
-                            };
+                            let idx = if fvf & 0x1000 != 0 { Some(5) } else if fvf & 0x8000 != 0 { Some(4) } else { None };
                             let w = n - idx.is_some() as u32;
                             let mut at = 1;
                             if w > 0 {
@@ -1725,11 +1482,7 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
         92 | 107 => {
             let s = d.id_of(a(1));
             let dev = dev!(d);
-            let slot = if m == 92 {
-                &mut dev.st.vs
-            } else {
-                &mut dev.st.ps
-            };
+            let slot = if m == 92 { &mut dev.st.vs } else { &mut dev.st.ps };
             let old = *slot;
             *slot = s;
             set_bound(d, s, old);
@@ -1746,11 +1499,7 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
         }
         94 | 95 | 109 | 110 => {
             let dev = dev!(d);
-            let regs = if m < 100 {
-                &mut dev.st.vsf
-            } else {
-                &mut dev.st.psf
-            };
+            let regs = if m < 100 { &mut dev.st.vsf } else { &mut dev.st.psf };
             let (start, n) = (a(1) as usize, a(3) as usize);
             if start + n > regs.len() {
                 return D3DERR_INVALIDCALL;
@@ -1827,9 +1576,7 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
             let (n, vb, off, stride) = (a(1) as usize, d.id_of(a(2)), a(3), a(4));
             let dev = dev!(d);
             // (Windows takes streams past 15 and keeps nothing)
-            let Some(slot) = dev.st.streams.get_mut(n) else {
-                return S_OK;
-            };
+            let Some(slot) = dev.st.streams.get_mut(n) else { return S_OK };
             let old = slot.0;
             *slot = (vb, off, stride);
             set_bound(d, vb, old);
@@ -1837,9 +1584,7 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
         }
         101 => {
             let dev = dev!(d);
-            let Some(&(vb, off, stride)) = dev.st.streams.get(a(1) as usize) else {
-                return D3DERR_INVALIDCALL;
-            };
+            let Some(&(vb, off, stride)) = dev.st.streams.get(a(1) as usize) else { return D3DERR_INVALIDCALL };
             if vb != 0 {
                 d.add_ref(vb);
             }
@@ -1861,11 +1606,7 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
         }
         103 => {
             let dev = dev!(d);
-            wr(
-                a(2),
-                0,
-                dev.st.freq.get(a(1) as usize).copied().unwrap_or(1),
-            );
+            wr(a(2), 0, dev.st.freq.get(a(1) as usize).copied().unwrap_or(1));
             S_OK
         }
         104 => {
@@ -1910,9 +1651,7 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
 
 const D3DERR_NOTFOUND: u32 = super::D3DERR_NOTFOUND;
 
-const IDENT: [f32; 16] = [
-    1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-];
+const IDENT: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
 
 /// a * b (row-major, D3D's order: v * a * b)
 fn mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
@@ -1955,10 +1694,7 @@ pub(crate) fn unbind_all(d: &mut D3d, ids: &[u32]) {
 
 /// the device state = state block `sb`'s
 fn apply_state(d: &mut D3d, sb: u32) {
-    let (Some(dev), Some(Data::StateBlock(b))) = (d.dev.as_mut(), d.objs.get(&sb).map(|o| &o.data))
-    else {
-        return;
-    };
+    let (Some(dev), Some(Data::StateBlock(b))) = (d.dev.as_mut(), d.objs.get(&sb).map(|o| &o.data)) else { return };
     let unbind = state_binds(&dev.st);
     super::stateblock::copy_masked(&mut dev.st, &b.st, &b.mask);
     let bind = state_binds(&dev.st);
@@ -1984,16 +1720,7 @@ fn apply_state(d: &mut D3d, sb: u32) {
 // ---------------------------------------------------------------------------------------------
 // resources
 
-unsafe fn create_texture(
-    d: &mut D3d,
-    w: u32,
-    h: u32,
-    levels: u32,
-    usage: u32,
-    f: u32,
-    pool: u32,
-    out: u32,
-) -> u32 {
+unsafe fn create_texture(d: &mut D3d, w: u32, h: u32, levels: u32, usage: u32, f: u32, pool: u32, out: u32) -> u32 {
     if out == 0 || w == 0 || h == 0 || !fmt::supported(f) {
         if d.trace {
             eprintln!("d3d9: CreateTexture {w}x{h} format {f:#x}: not supported");
@@ -2001,44 +1728,15 @@ unsafe fn create_texture(
         return D3DERR_INVALIDCALL;
     }
     let max = 32 - w.max(h).leading_zeros();
-    let levels = if usage & 0x400 != 0 {
-        1
-    } else if levels == 0 {
-        max
-    } else {
-        levels.min(max)
-    };
-    let gpu = if pool == POOL_SYSTEMMEM || pool == POOL_SCRATCH {
-        0
-    } else {
-        gpu_texture(w, h, levels, f, usage)
-    };
-    let tex = Texture {
-        w,
-        h,
-        fmt: f,
-        pool,
-        usage,
-        gpu,
-        levels: Vec::new(),
-        lod: 0,
-    };
+    let levels = if usage & 0x400 != 0 { 1 } else if levels == 0 { max } else { levels.min(max) };
+    let gpu = if pool == POOL_SYSTEMMEM || pool == POOL_SCRATCH { 0 } else { gpu_texture(w, h, levels, f, usage) };
+    let tex = Texture { w, h, fmt: f, pool, usage, gpu, levels: Vec::new(), lod: 0 };
     let addr = d.new_obj(IF_TEXTURE, 0, Data::Texture(tex));
     let id = d.id_of(addr);
     let mut lv = Vec::new();
     for l in 0..levels {
         let (lw, lh) = ((w >> l).max(1), (h >> l).max(1));
-        let s = new_surface(
-            d,
-            lw,
-            lh,
-            f,
-            pool,
-            usage,
-            id,
-            if gpu == 0 { u32::MAX } else { gpu },
-            l,
-        );
+        let s = new_surface(d, lw, lh, f, pool, usage, id, if gpu == 0 { u32::MAX } else { gpu }, l);
         let sid = d.id_of(s);
         if let Some(Data::Surface(sf)) = d.objs.get_mut(&sid).map(|o| &mut o.data) {
             if gpu == 0 {
@@ -2060,9 +1758,7 @@ unsafe fn create_texture(
 
 /// The surface's guest copy, made on first use (and read back from the page if it rendered).
 unsafe fn surface_mem(d: &mut D3d, s: u32) -> Option<u32> {
-    let Some(Data::Surface(sf)) = d.objs.get(&s).map(|o| &o.data) else {
-        return None;
-    };
+    let Some(Data::Surface(sf)) = d.objs.get(&s).map(|o| &o.data) else { return None };
     if sf.mem != 0 {
         return Some(sf.mem);
     }
@@ -2077,29 +1773,15 @@ unsafe fn surface_mem(d: &mut D3d, s: u32) -> Option<u32> {
 
 /// The box (x0, y0, x1, y1 in pixels) where `rows` (h rows of `row` bytes, `pitch` apart)
 /// differ from `shadow` (packed rows), which takes the new rows. None: all the same.
-fn changed_box(
-    rows: &[u8],
-    pitch: usize,
-    row: usize,
-    h: usize,
-    bpp: usize,
-    shadow: &mut [u8],
-) -> Option<[u32; 4]> {
+fn changed_box(rows: &[u8], pitch: usize, row: usize, h: usize, bpp: usize, shadow: &mut [u8]) -> Option<[u32; 4]> {
     let mut b: Option<[usize; 4]> = None;
     for y in 0..h {
-        let (a, s) = (
-            &rows[y * pitch..y * pitch + row],
-            &mut shadow[y * row..(y + 1) * row],
-        );
+        let (a, s) = (&rows[y * pitch..y * pitch + row], &mut shadow[y * row..(y + 1) * row]);
         // 8 bytes at a time from each end (the tail bytes by themselves)
         let words = row / 8;
         let w = |x: &[u8], i: usize| u64::from_ne_bytes(x[i * 8..i * 8 + 8].try_into().unwrap());
-        let l = (0..words)
-            .find(|&i| w(a, i) != w(s, i))
-            .map_or(words * 8, |i| i * 8);
-        let Some(l) = (l..row).find(|&i| a[i] != s[i]) else {
-            continue;
-        };
+        let l = (0..words).find(|&i| w(a, i) != w(s, i)).map_or(words * 8, |i| i * 8);
+        let Some(l) = (l..row).find(|&i| a[i] != s[i]) else { continue };
         let r = match (words * 8..row).rev().find(|&i| a[i] != s[i]) {
             Some(i) => i + 1,
             None => {
@@ -2113,47 +1795,29 @@ fn changed_box(
             Some(o) => [o[0].min(l), o[1], o[2].max(r), y + 1],
         });
     }
-    b.map(|b| {
-        [
-            (b[0] / bpp) as u32,
-            b[1] as u32,
-            b[2].div_ceil(bpp) as u32,
-            b[3] as u32,
-        ]
-    })
+    b.map(|b| [(b[0] / bpp) as u32, b[1] as u32, b[2].div_ceil(bpp) as u32, b[3] as u32])
 }
 
 /// After a whole-surface lock: uploads only what changed since the last upload (a movie frame
 /// written into the corner of a bigger texture: ANEMOI's 1920x1080 frames in 2048x2048, every
 /// frame). From the second such lock on (the first makes the copy); big surfaces only.
 unsafe fn upload_changed(d: &mut D3d, s: u32) {
-    let Some(Data::Surface(sf)) = d.objs.get_mut(&s).map(|o| &mut o.data) else {
-        return;
-    };
+    let Some(Data::Surface(sf)) = d.objs.get_mut(&s).map(|o| &mut o.data) else { return };
     let (bpb, bs) = fmt::layout(sf.fmt).unwrap_or((4, 1));
     let (w, h) = (sf.w, sf.h);
     let row = (w * bpb) as usize;
-    if bs != 1
-        || sf.mem == 0
-        || sf.gpu == 0
-        || row * (h as usize) < 1 << 18
-        || fmt::is_depth(sf.fmt)
-    {
+    if bs != 1 || sf.mem == 0 || sf.gpu == 0 || row * (h as usize) < 1 << 18 || fmt::is_depth(sf.fmt) {
         return upload(d, s, [0, 0, w, h]);
     }
     sf.full_locks += 1;
-    let rows = std::slice::from_raw_parts(
-        sf.mem as *const u8,
-        sf.pitch as usize * (h as usize - 1) + row,
-    );
+    let rows = std::slice::from_raw_parts(sf.mem as *const u8, sf.pitch as usize * (h as usize - 1) + row);
     let r = match sf.shadow.as_mut() {
         Some(sh) => changed_box(rows, sf.pitch as usize, row, h as usize, bpb as usize, sh),
         None => {
             if sf.full_locks >= 2 {
                 let mut sh = vec![0u8; row * h as usize].into_boxed_slice();
                 for y in 0..h as usize {
-                    sh[y * row..(y + 1) * row]
-                        .copy_from_slice(&rows[y * sf.pitch as usize..][..row]);
+                    sh[y * row..(y + 1) * row].copy_from_slice(&rows[y * sf.pitch as usize..][..row]);
                 }
                 sf.shadow = Some(sh);
             }
@@ -2178,9 +1842,7 @@ unsafe fn upload(d: &mut D3d, s: u32, r: [u32; 4]) {
 }
 
 unsafe fn upload_keep(d: &mut D3d, s: u32, r: [u32; 4]) {
-    let Some(Data::Surface(sf)) = d.objs.get_mut(&s).map(|o| &mut o.data) else {
-        return;
-    };
+    let Some(Data::Surface(sf)) = d.objs.get_mut(&s).map(|o| &mut o.data) else { return };
     if sf.gpu == 0 || sf.mem == 0 || fmt::is_depth(sf.fmt) {
         return;
     }
@@ -2209,13 +1871,9 @@ unsafe fn upload_keep(d: &mut D3d, s: u32, r: [u32; 4]) {
                 return; // already in this batch (it reads the newest pixels)
             }
         }
-        let ((), g) = gpu::record_gen(|b: &mut Batch| {
-            b.cmd_mem(&[gpu::WRITE_TEXTURE_MEM, gpu, level, x0, y0, w, h, pitch, src])
-        });
+        let ((), g) = gpu::record_gen(|b: &mut Batch| b.cmd_mem(&[gpu::WRITE_TEXTURE_MEM, gpu, level, x0, y0, w, h, pitch, src]));
         sf.pending = Some(match sf.pending {
-            Some((pg, p)) if pg == g => {
-                (g, [p[0].min(x0), p[1].min(y0), p[2].max(x1), p[3].max(y1)])
-            }
+            Some((pg, p)) if pg == g => (g, [p[0].min(x0), p[1].min(y0), p[2].max(x1), p[3].max(y1)]),
             _ => (g, r),
         });
         return;
@@ -2224,17 +1882,7 @@ unsafe fn upload_keep(d: &mut D3d, s: u32, r: [u32; 4]) {
         let at = b.blob.len().next_multiple_of(4);
         b.blob.resize(at, 0);
         fmt::convert(f, src as *const u8, pitch as usize, w, h, &mut b.blob);
-        b.cmd(&[
-            gpu::WRITE_TEXTURE,
-            gpu,
-            level,
-            x0,
-            y0,
-            w,
-            h,
-            w * bpp,
-            at as u32,
-        ]);
+        b.cmd(&[gpu::WRITE_TEXTURE, gpu, level, x0, y0, w, h, w * bpp, at as u32]);
     });
 }
 
@@ -2254,23 +1902,12 @@ fn settle(d: &mut D3d, s: u32) {
     }
 }
 
-unsafe fn lock_surface(
-    d: &mut D3d,
-    s: u32,
-    out: u32,
-    rect: u32,
-    flags: u32,
-    after: &mut After,
-) -> u32 {
-    let Some(mem) = surface_mem(d, s) else {
-        return D3DERR_INVALIDCALL;
-    };
+unsafe fn lock_surface(d: &mut D3d, s: u32, out: u32, rect: u32, flags: u32, after: &mut After) -> u32 {
+    let Some(mem) = surface_mem(d, s) else { return D3DERR_INVALIDCALL };
     if flags & LOCK_READONLY == 0 {
         settle(d, s);
     }
-    let Some(Data::Surface(sf)) = d.objs.get_mut(&s).map(|o| &mut o.data) else {
-        return D3DERR_INVALIDCALL;
-    };
+    let Some(Data::Surface(sf)) = d.objs.get_mut(&s).map(|o| &mut o.data) else { return D3DERR_INVALIDCALL };
     if sf.lock.is_some() {
         return D3DERR_INVALIDCALL;
     }
@@ -2280,21 +1917,14 @@ unsafe fn lock_surface(
         [0, 0, sf.w, sf.h]
     };
     let (bpb, bs) = fmt::layout(sf.fmt).unwrap_or((4, 1));
-    sf.lock = Some(if flags & LOCK_READONLY != 0 {
-        [0, 0, 0, 0]
-    } else {
-        r
-    });
+    sf.lock = Some(if flags & LOCK_READONLY != 0 { [0, 0, 0, 0] } else { r });
     let bits = mem + (r[1] / bs) * sf.pitch + (r[0] / bs) * bpb;
     wr(out, 0, sf.pitch);
     wrp(out + ptr(), 0, bits);
     if sf.gpu_newer {
         sf.shadow = None;
     }
-    if sf.gpu_newer
-        && flags & LOCK_DISCARD == 0
-        && fmt::layout(sf.fmt) == Some((fmt::page_bpp(sf.fmt), 1))
-    {
+    if sf.gpu_newer && flags & LOCK_DISCARD == 0 && fmt::layout(sf.fmt) == Some((fmt::page_bpp(sf.fmt), 1)) {
         // the page has the pixels: read them back first (only when its rows are the guest's:
         // the page writes w * its bpp bytes a row, past the end of a smaller guest copy)
         sf.gpu_newer = false;
@@ -2314,22 +1944,12 @@ fn readback(d: &mut D3d, gpu: u32, level: u32, w: u32, h: u32, mem: u32, pitch: 
 }
 
 unsafe fn unlock_surface(d: &mut D3d, s: u32) -> u32 {
-    let Some(Data::Surface(sf)) = d.objs.get_mut(&s).map(|o| &mut o.data) else {
-        return D3DERR_INVALIDCALL;
-    };
-    let Some(r) = sf.lock.take() else {
-        return D3DERR_INVALIDCALL;
-    };
+    let Some(Data::Surface(sf)) = d.objs.get_mut(&s).map(|o| &mut o.data) else { return D3DERR_INVALIDCALL };
+    let Some(r) = sf.lock.take() else { return D3DERR_INVALIDCALL };
     if d.trace && sf.mem != 0 {
         let n = (sf.pitch * sf.h) as usize;
-        let nz = std::slice::from_raw_parts(sf.mem as *const u8, n)
-            .iter()
-            .filter(|&&b| b != 0)
-            .count();
-        eprintln!(
-            "d3d9: unlock surface {s} {}x{} fmt {} pool {} rect {r:?}: {nz} of {n} bytes non-zero",
-            sf.w, sf.h, sf.fmt, sf.pool
-        );
+        let nz = std::slice::from_raw_parts(sf.mem as *const u8, n).iter().filter(|&&b| b != 0).count();
+        eprintln!("d3d9: unlock surface {s} {}x{} fmt {} pool {} rect {r:?}: {nz} of {n} bytes non-zero", sf.w, sf.h, sf.fmt, sf.pool);
     }
     if r == [0, 0, sf.w, sf.h] {
         upload_changed(d, s);
@@ -2339,13 +1959,7 @@ unsafe fn unlock_surface(d: &mut D3d, s: u32) -> u32 {
     S_OK
 }
 
-unsafe fn surface_call(
-    d: &mut D3d,
-    m: u32,
-    this: u32,
-    a: &dyn Fn(usize) -> u32,
-    after: &mut After,
-) -> u32 {
+unsafe fn surface_call(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32, after: &mut After) -> u32 {
     match m {
         3 => device_out(d, a(1)),
         4..=6 => private_data(d, m, this, a),
@@ -2354,14 +1968,8 @@ unsafe fn surface_call(
         10 => RT_SURFACE,
         11 => {
             // GetContainer(riid, out)
-            let Some(Data::Surface(sf)) = d.objs.get(&this).map(|o| &o.data) else {
-                return D3DERR_INVALIDCALL;
-            };
-            let c = if sf.container != 0 {
-                sf.container
-            } else {
-                d.dev.as_ref().map_or(0, |x| x.obj)
-            };
+            let Some(Data::Surface(sf)) = d.objs.get(&this).map(|o| &o.data) else { return D3DERR_INVALIDCALL };
+            let c = if sf.container != 0 { sf.container } else { d.dev.as_ref().map_or(0, |x| x.obj) };
             if c == 0 {
                 return super::E_NOINTERFACE;
             }
@@ -2370,9 +1978,7 @@ unsafe fn surface_call(
             S_OK
         }
         12 => {
-            let Some(Data::Surface(sf)) = d.objs.get(&this).map(|o| &o.data) else {
-                return D3DERR_INVALIDCALL;
-            };
+            let Some(Data::Surface(sf)) = d.objs.get(&this).map(|o| &o.data) else { return D3DERR_INVALIDCALL };
             let desc = [sf.fmt, RT_SURFACE, sf.usage, sf.pool, 0, 0, sf.w, sf.h];
             std::ptr::copy_nonoverlapping(desc.as_ptr(), a(1) as *mut u32, 8);
             S_OK
@@ -2382,9 +1988,7 @@ unsafe fn surface_call(
         0xf0 => {
             // (PE side) GetDC: remember (dc, bitmap); ReleaseDC: hand the bitmap back
             let s = d.id_of(a(0));
-            let Some(Data::Surface(sf)) = d.objs.get_mut(&s).map(|o| &mut o.data) else {
-                return D3DERR_INVALIDCALL;
-            };
+            let Some(Data::Surface(sf)) = d.objs.get_mut(&s).map(|o| &mut o.data) else { return D3DERR_INVALIDCALL };
             if a(1) != 0 {
                 sf.dc = a(1);
                 sf.dc_bitmap = a(2);
@@ -2405,9 +2009,7 @@ unsafe fn private_data(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32)
         return D3DERR_INVALIDCALL;
     }
     std::ptr::copy_nonoverlapping(a(1) as *const u8, guid.as_mut_ptr(), 16);
-    let Some(o) = d.objs.get_mut(&this) else {
-        return D3DERR_INVALIDCALL;
-    };
+    let Some(o) = d.objs.get_mut(&this) else { return D3DERR_INVALIDCALL };
     match m {
         4 => {
             // SetPrivateData(guid, data, size, flags): (IUnknown flag: keeps the pointer only)
@@ -2417,9 +2019,7 @@ unsafe fn private_data(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32)
             S_OK
         }
         5 => {
-            let Some(p) = o.private.iter().find(|p| p.0 == guid) else {
-                return D3DERR_NOTFOUND;
-            };
+            let Some(p) = o.private.iter().find(|p| p.0 == guid) else { return D3DERR_NOTFOUND };
             let size = a(3);
             if size == 0 {
                 return D3DERR_INVALIDCALL;
@@ -2442,20 +2042,11 @@ unsafe fn private_data(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32)
     }
 }
 
-unsafe fn texture_call(
-    d: &mut D3d,
-    iface: u32,
-    m: u32,
-    this: u32,
-    a: &dyn Fn(usize) -> u32,
-    after: &mut After,
-) -> u32 {
+unsafe fn texture_call(d: &mut D3d, iface: u32, m: u32, this: u32, a: &dyn Fn(usize) -> u32, after: &mut After) -> u32 {
     if iface != IF_TEXTURE {
         return D3DERR_INVALIDCALL;
     }
-    let Some(Data::Texture(t)) = d.objs.get_mut(&this).map(|o| &mut o.data) else {
-        return D3DERR_INVALIDCALL;
-    };
+    let Some(Data::Texture(t)) = d.objs.get_mut(&this).map(|o| &mut o.data) else { return D3DERR_INVALIDCALL };
     let level = |t: &Texture, l: u32| t.levels.get(l as usize).copied();
     match m {
         3 => device_out(d, a(1)),
@@ -2474,29 +2065,21 @@ unsafe fn texture_call(
         15 => 2,
         16 => 0,
         17 => {
-            let Some(s) = level(t, a(1)) else {
-                return D3DERR_INVALIDCALL;
-            };
+            let Some(s) = level(t, a(1)) else { return D3DERR_INVALIDCALL };
             surface_call(d, 12, s, &|i| if i == 1 { a(2) } else { 0 }, after)
         }
         18 => {
-            let Some(s) = level(t, a(1)) else {
-                return D3DERR_INVALIDCALL;
-            };
+            let Some(s) = level(t, a(1)) else { return D3DERR_INVALIDCALL };
             d.add_ref(s);
             wrp(a(2), 0, d.addr_of(s));
             S_OK
         }
         19 => {
-            let Some(s) = level(t, a(1)) else {
-                return D3DERR_INVALIDCALL;
-            };
+            let Some(s) = level(t, a(1)) else { return D3DERR_INVALIDCALL };
             lock_surface(d, s, a(2), a(3), a(4), after)
         }
         20 => {
-            let Some(s) = level(t, a(1)) else {
-                return D3DERR_INVALIDCALL;
-            };
+            let Some(s) = level(t, a(1)) else { return D3DERR_INVALIDCALL };
             unlock_surface(d, s)
         }
         21 => S_OK,
@@ -2510,36 +2093,22 @@ unsafe fn buffer_call(d: &mut D3d, iface: u32, m: u32, this: u32, a: &dyn Fn(usi
         4..=6 => private_data(d, m, this, a),
         7 | 8 => 0,
         9 => 0,
-        10 => {
-            if iface == IF_VB {
-                RT_VB
-            } else {
-                RT_IB
-            }
-        }
+        10 => if iface == IF_VB { RT_VB } else { RT_IB },
         11 => {
-            let Some(Data::Buffer(b)) = d.objs.get(&this).map(|o| &o.data) else {
-                return D3DERR_INVALIDCALL;
-            };
+            let Some(Data::Buffer(b)) = d.objs.get(&this).map(|o| &o.data) else { return D3DERR_INVALIDCALL };
             let off = a(1).min(b.len);
             wrp(a(3), 0, b.mem + off);
             S_OK
         }
         12 => S_OK,
         13 => {
-            let Some(Data::Buffer(b)) = d.objs.get(&this).map(|o| &o.data) else {
-                return D3DERR_INVALIDCALL;
-            };
+            let Some(Data::Buffer(b)) = d.objs.get(&this).map(|o| &o.data) else { return D3DERR_INVALIDCALL };
             let desc = if iface == IF_VB {
                 [fmt::A8R8G8B8.min(100), RT_VB, b.usage, b.pool, b.len, b.fmt]
             } else {
                 [b.fmt, RT_IB, b.usage, b.pool, b.len, 0]
             };
-            let desc = if iface == IF_VB {
-                [100, desc[1], desc[2], desc[3], desc[4], desc[5]]
-            } else {
-                desc
-            };
+            let desc = if iface == IF_VB { [100, desc[1], desc[2], desc[3], desc[4], desc[5]] } else { desc };
             let n = if iface == IF_VB { 6 } else { 5 };
             std::ptr::copy_nonoverlapping(desc.as_ptr(), a(1) as *mut u32, n);
             S_OK
@@ -2550,29 +2119,17 @@ unsafe fn buffer_call(d: &mut D3d, iface: u32, m: u32, this: u32, a: &dyn Fn(usi
 
 unsafe fn update_surface(d: &mut D3d, src: u32, srect: u32, dst: u32, dpoint: u32) -> u32 {
     let (s, t) = (d.id_of(src), d.id_of(dst));
-    let (Some(sm), Some(tm)) = (surface_mem(d, s), surface_mem(d, t)) else {
-        return D3DERR_INVALIDCALL;
-    };
+    let (Some(sm), Some(tm)) = (surface_mem(d, s), surface_mem(d, t)) else { return D3DERR_INVALIDCALL };
     settle(d, t);
-    let (Some(Data::Surface(a)), Some(Data::Surface(b))) = (
-        d.objs.get(&s).map(|o| &o.data),
-        d.objs.get(&t).map(|o| &o.data),
-    ) else {
+    let (Some(Data::Surface(a)), Some(Data::Surface(b))) = (d.objs.get(&s).map(|o| &o.data), d.objs.get(&t).map(|o| &o.data))
+    else {
         return D3DERR_INVALIDCALL;
     };
     if a.fmt != b.fmt {
         return D3DERR_INVALIDCALL;
     }
-    let r = if srect != 0 {
-        [rd(srect, 0), rd(srect, 1), rd(srect, 2), rd(srect, 3)]
-    } else {
-        [0, 0, a.w, a.h]
-    };
-    let (dx, dy) = if dpoint != 0 {
-        (rd(dpoint, 0), rd(dpoint, 1))
-    } else {
-        (0, 0)
-    };
+    let r = if srect != 0 { [rd(srect, 0), rd(srect, 1), rd(srect, 2), rd(srect, 3)] } else { [0, 0, a.w, a.h] };
+    let (dx, dy) = if dpoint != 0 { (rd(dpoint, 0), rd(dpoint, 1)) } else { (0, 0) };
     let (bpb, bs) = fmt::layout(a.fmt).unwrap_or((4, 1));
     let w = (r[2] - r[0]).min(b.w.saturating_sub(dx));
     let h = (r[3] - r[1]).min(b.h.saturating_sub(dy));
@@ -2588,18 +2145,11 @@ unsafe fn update_surface(d: &mut D3d, src: u32, srect: u32, dst: u32, dpoint: u3
 
 unsafe fn update_texture(d: &mut D3d, src: u32, dst: u32) -> u32 {
     let (s, t) = (d.id_of(src), d.id_of(dst));
-    let (Some(Data::Texture(a)), Some(Data::Texture(b))) = (
-        d.objs.get(&s).map(|o| &o.data),
-        d.objs.get(&t).map(|o| &o.data),
-    ) else {
+    let (Some(Data::Texture(a)), Some(Data::Texture(b))) = (d.objs.get(&s).map(|o| &o.data), d.objs.get(&t).map(|o| &o.data))
+    else {
         return D3DERR_INVALIDCALL;
     };
-    let pairs: Vec<(u32, u32)> = a
-        .levels
-        .iter()
-        .copied()
-        .zip(b.levels.iter().copied())
-        .collect();
+    let pairs: Vec<(u32, u32)> = a.levels.iter().copied().zip(b.levels.iter().copied()).collect();
     for (x, y) in pairs {
         let sa = d.addr_of(x);
         let sb = d.addr_of(y);
@@ -2610,16 +2160,10 @@ unsafe fn update_texture(d: &mut D3d, src: u32, dst: u32) -> u32 {
 
 unsafe fn get_rt_data(d: &mut D3d, rt: u32, dst: u32, after: &mut After) -> u32 {
     let (s, t) = (d.id_of(rt), d.id_of(dst));
-    let Some(Data::Surface(a)) = d.objs.get(&s).map(|o| &o.data) else {
-        return D3DERR_INVALIDCALL;
-    };
+    let Some(Data::Surface(a)) = d.objs.get(&s).map(|o| &o.data) else { return D3DERR_INVALIDCALL };
     let (gpu, level, w, h, page) = (a.gpu, a.level, a.w, a.h, fmt::page_bpp(a.fmt));
-    let Some(mem) = surface_mem(d, t) else {
-        return D3DERR_INVALIDCALL;
-    };
-    let Some(Data::Surface(b)) = d.objs.get(&t).map(|o| &o.data) else {
-        return D3DERR_INVALIDCALL;
-    };
+    let Some(mem) = surface_mem(d, t) else { return D3DERR_INVALIDCALL };
+    let Some(Data::Surface(b)) = d.objs.get(&t).map(|o| &o.data) else { return D3DERR_INVALIDCALL };
     if b.w != w || b.h != h || gpu == 0 || fmt::layout(b.fmt) != Some((page, 1)) {
         return D3DERR_INVALIDCALL;
     }
@@ -2644,34 +2188,17 @@ fn mark_rendered(d: &mut D3d, s: u32) {
     }
 }
 
-unsafe fn stretch_rect(
-    d: &mut D3d,
-    src: u32,
-    srect: u32,
-    dst: u32,
-    drect: u32,
-    filter: u32,
-) -> u32 {
+unsafe fn stretch_rect(d: &mut D3d, src: u32, srect: u32, dst: u32, drect: u32, filter: u32) -> u32 {
     let (s, t) = (d.id_of(src), d.id_of(dst));
     let (Some(a), Some(b)) = (surface_gpu(d, s), surface_gpu(d, t)) else {
         // system memory source: upload through the destination's copy
-        if let (Some(Data::Surface(_)), Some(_)) =
-            (d.objs.get(&s).map(|o| &o.data), surface_gpu(d, t))
-        {
+        if let (Some(Data::Surface(_)), Some(_)) = (d.objs.get(&s).map(|o| &o.data), surface_gpu(d, t)) {
             return update_surface(d, src, srect, dst, if drect != 0 { drect } else { 0 });
         }
         return D3DERR_INVALIDCALL;
     };
-    let sr = if srect != 0 {
-        [rd(srect, 0), rd(srect, 1), rd(srect, 2), rd(srect, 3)]
-    } else {
-        [0, 0, a.2, a.3]
-    };
-    let dr = if drect != 0 {
-        [rd(drect, 0), rd(drect, 1), rd(drect, 2), rd(drect, 3)]
-    } else {
-        [0, 0, b.2, b.3]
-    };
+    let sr = if srect != 0 { [rd(srect, 0), rd(srect, 1), rd(srect, 2), rd(srect, 3)] } else { [0, 0, a.2, a.3] };
+    let dr = if drect != 0 { [rd(drect, 0), rd(drect, 1), rd(drect, 2), rd(drect, 3)] } else { [0, 0, b.2, b.3] };
     gpu::record(|bt| {
         bt.cmd(&[
             gpu::COPY,
@@ -2700,30 +2227,12 @@ unsafe fn stretch_rect(
 unsafe fn color_fill(d: &mut D3d, s: u32, rect: u32, color: u32) -> u32 {
     let s = d.id_of(s);
     // (D3DPOOL_DEFAULT surfaces only: a managed texture's level is not filled on Windows)
-    if !matches!(d.objs.get(&s).map(|o| &o.data), Some(Data::Surface(sf)) if sf.pool == POOL_DEFAULT)
-    {
+    if !matches!(d.objs.get(&s).map(|o| &o.data), Some(Data::Surface(sf)) if sf.pool == POOL_DEFAULT) {
         return D3DERR_INVALIDCALL;
     }
-    let Some(g) = surface_gpu(d, s) else {
-        return D3DERR_INVALIDCALL;
-    };
-    let r = if rect != 0 {
-        [rd(rect, 0), rd(rect, 1), rd(rect, 2), rd(rect, 3)]
-    } else {
-        [0, 0, g.2, g.3]
-    };
-    gpu::record(|b| {
-        b.cmd(&[
-            gpu::FILL,
-            g.0,
-            g.1,
-            r[0],
-            r[1],
-            r[2] - r[0],
-            r[3] - r[1],
-            color,
-        ])
-    });
+    let Some(g) = surface_gpu(d, s) else { return D3DERR_INVALIDCALL };
+    let r = if rect != 0 { [rd(rect, 0), rd(rect, 1), rd(rect, 2), rd(rect, 3)] } else { [0, 0, g.2, g.3] };
+    gpu::record(|b| b.cmd(&[gpu::FILL, g.0, g.1, r[0], r[1], r[2] - r[0], r[3] - r[1], color]));
     if let Some(dev) = d.dev.as_mut() {
         dev.batch_target = None;
     }
@@ -2744,27 +2253,13 @@ unsafe fn create_decl(d: &mut D3d, elems: u32, out: u32) -> u32 {
             break;
         }
         // { WORD stream, offset; BYTE type, method, usage, usage index }
-        el.push(Elem {
-            stream,
-            offset: w0 >> 16,
-            ty: w1 & 0xff,
-            usage: (w1 >> 16) & 0xff,
-            index: w1 >> 24,
-        });
+        el.push(Elem { stream, offset: w0 >> 16, ty: w1 & 0xff, usage: (w1 >> 16) & 0xff, index: w1 >> 24 });
         p += 8;
         if raw.len() > 64 {
             return D3DERR_INVALIDCALL;
         }
     }
-    let o = d.new_obj(
-        IF_DECL,
-        0,
-        Data::Decl(Decl {
-            elems: el,
-            raw,
-            fvf: 0,
-        }),
-    );
+    let o = d.new_obj(IF_DECL, 0, Data::Decl(Decl { elems: el, raw, fvf: 0 }));
     wrp(out, 0, o);
     S_OK
 }
@@ -2774,13 +2269,7 @@ pub fn fvf_elems(fvf: u32) -> (Vec<Elem>, u32) {
     let mut e = Vec::new();
     let mut off = 0;
     let mut push = |ty: u32, usage: u32, index: u32, size: u32, off: &mut u32| {
-        e.push(Elem {
-            stream: 0,
-            offset: *off,
-            ty,
-            usage,
-            index,
-        });
+        e.push(Elem { stream: 0, offset: *off, ty, usage, index });
         *off += size;
     };
     let pos = fvf & 0x400e;
@@ -2851,47 +2340,21 @@ unsafe fn create_shader(d: &mut D3d, pixel: bool, code: u32, out: u32) -> u32 {
             (ver >> 8) & 0xff,
             ver & 0xff,
             n,
-            if parsed.is_none() {
-                ": can't parse"
-            } else {
-                ""
-            }
+            if parsed.is_none() { ": can't parse" } else { "" }
         );
     }
     let dev = dev!(d);
     dev.serial += 1;
     let serial = dev.serial;
-    let o = d.new_obj(
-        if pixel { IF_PS } else { IF_VS },
-        0,
-        Data::Shader(ShaderObj {
-            code,
-            parsed,
-            serial,
-        }),
-    );
+    let o = d.new_obj(if pixel { IF_PS } else { IF_VS }, 0, Data::Shader(ShaderObj { code, parsed, serial }));
     wrp(out, 0, o);
     S_OK
 }
 
-unsafe fn clear(
-    d: &mut D3d,
-    count: u32,
-    rects: u32,
-    flags: u32,
-    color: u32,
-    z: f32,
-    stencil: u32,
-) -> u32 {
-    let Some(dev) = d.dev.as_ref() else {
-        return D3DERR_INVALIDCALL;
-    };
+unsafe fn clear(d: &mut D3d, count: u32, rects: u32, flags: u32, color: u32, z: f32, stencil: u32) -> u32 {
+    let Some(dev) = d.dev.as_ref() else { return D3DERR_INVALIDCALL };
     let rt = dev.rt[0];
-    let ds = if dev.ds != 0 && dev.st.rs.get(7).copied().unwrap_or(0) != 0 || dev.ds != 0 {
-        dev.ds
-    } else {
-        0
-    };
+    let ds = if dev.ds != 0 && dev.st.rs.get(7).copied().unwrap_or(0) != 0 || dev.ds != 0 { dev.ds } else { 0 };
     let vp = dev.st.viewport;
     let sc = dev.st.scissor;
     let scissor = dev.st.rs[174] != 0;
@@ -2903,41 +2366,19 @@ unsafe fn clear(
     if flags & 6 != 0 && ds == 0 {
         return D3DERR_INVALIDCALL;
     }
-    let (Some(target), dsg) = (surface_gpu(d, rt), surface_gpu(d, ds)) else {
-        return S_OK;
-    };
+    let (Some(target), dsg) = (surface_gpu(d, rt), surface_gpu(d, ds)) else { return S_OK };
     ensure_target(d, rt, ds);
-    let mut area = [
-        vp[0] as i32,
-        vp[1] as i32,
-        (vp[0] + vp[2]) as i32,
-        (vp[1] + vp[3]) as i32,
-    ];
+    let mut area = [vp[0] as i32, vp[1] as i32, (vp[0] + vp[2]) as i32, (vp[1] + vp[3]) as i32];
     if scissor {
-        area = [
-            area[0].max(sc[0]),
-            area[1].max(sc[1]),
-            area[2].min(sc[2]),
-            area[3].min(sc[3]),
-        ];
+        area = [area[0].max(sc[0]), area[1].max(sc[1]), area[2].min(sc[2]), area[3].min(sc[3])];
     }
     let mut list = Vec::new();
     if count == 0 || rects == 0 {
         list.push(area);
     } else {
         for i in 0..count as usize {
-            let r = [
-                rd(rects, i * 4) as i32,
-                rd(rects, i * 4 + 1) as i32,
-                rd(rects, i * 4 + 2) as i32,
-                rd(rects, i * 4 + 3) as i32,
-            ];
-            list.push([
-                r[0].max(area[0]),
-                r[1].max(area[1]),
-                r[2].min(area[2]),
-                r[3].min(area[3]),
-            ]);
+            let r = [rd(rects, i * 4) as i32, rd(rects, i * 4 + 1) as i32, rd(rects, i * 4 + 2) as i32, rd(rects, i * 4 + 3) as i32];
+            list.push([r[0].max(area[0]), r[1].max(area[1]), r[2].min(area[2]), r[3].min(area[3])]);
         }
     }
     let flags = if dsg.is_none() { flags & 1 } else { flags };
@@ -2945,22 +2386,12 @@ unsafe fn clear(
     let more: Vec<(u32, (u32, u32, u32, u32, u32))> = if flags & 1 != 0 {
         d.dev.as_ref().unwrap().rt[1..]
             .iter()
-            .map_while(|&r| {
-                surface_gpu(d, r)
-                    .filter(|g| (g.2, g.3) == (target.2, target.3))
-                    .map(|g| (r, g))
-            })
+            .map_while(|&r| surface_gpu(d, r).filter(|g| (g.2, g.3) == (target.2, target.3)).map(|g| (r, g)))
             .collect()
     } else {
         Vec::new()
     };
-    let c = [
-        (color >> 16) & 0xff,
-        (color >> 8) & 0xff,
-        color & 0xff,
-        color >> 24,
-    ]
-    .map(|v| f2u(v as f32 / 255.0));
+    let c = [(color >> 16) & 0xff, (color >> 8) & 0xff, color & 0xff, color >> 24].map(|v| f2u(v as f32 / 255.0));
     for r in list {
         if r[2] <= r[0] || r[3] <= r[1] {
             continue;
@@ -2971,24 +2402,10 @@ unsafe fn clear(
             if full {
                 b.cmd(&[0, 0, 0, 0]);
             } else {
-                b.cmd(&[
-                    r[0] as u32,
-                    r[1] as u32,
-                    (r[2] - r[0]) as u32,
-                    (r[3] - r[1]) as u32,
-                ]);
+                b.cmd(&[r[0] as u32, r[1] as u32, (r[2] - r[0]) as u32, (r[3] - r[1]) as u32]);
             }
             for (_, g) in &more {
-                b.cmd(&[
-                    gpu::FILL,
-                    g.0,
-                    g.1,
-                    r[0] as u32,
-                    r[1] as u32,
-                    (r[2] - r[0]) as u32,
-                    (r[3] - r[1]) as u32,
-                    color,
-                ]);
+                b.cmd(&[gpu::FILL, g.0, g.1, r[0] as u32, r[1] as u32, (r[2] - r[0]) as u32, (r[3] - r[1]) as u32, color]);
             }
         });
     }
@@ -3037,40 +2454,21 @@ fn ensure_target(d: &mut D3d, rt: u32, ds: u32) {
 unsafe fn present(d: &mut D3d, after: &mut After) -> u32 {
     // IPPAI_D3D_TRACE_EVERY=n: trace one whole frame in n
     static EVERY: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
-    let every = *EVERY.get_or_init(|| {
-        std::env::var("IPPAI_D3D_TRACE_EVERY")
-            .ok()
-            .and_then(|v| v.parse().ok())
-    });
+    let every = *EVERY.get_or_init(|| std::env::var("IPPAI_D3D_TRACE_EVERY").ok().and_then(|v| v.parse().ok()));
     if let (Some(n), Some(dev)) = (every, d.dev.as_ref()) {
         d.trace = (dev.frames + 1) % n == 0;
     }
-    let Some(dev) = d.dev.as_mut() else {
-        return D3DERR_INVALIDCALL;
-    };
+    let Some(dev) = d.dev.as_mut() else { return D3DERR_INVALIDCALL };
     let (bb, hwnd) = (dev.backbuffer, dev.hwnd);
     dev.frames += 1;
     if d.trace && dev.frames % 100 == 1 {
-        eprintln!(
-            "d3d9: present #{} backbuffer {bb} hwnd {hwnd:#x}",
-            dev.frames
-        );
+        eprintln!("d3d9: present #{} backbuffer {bb} hwnd {hwnd:#x}", dev.frames);
     }
     let mut rect = [0i32; 4];
     (d.calls().client_rect)(hwnd, rect.as_mut_ptr());
     if let Some(g) = surface_gpu(d, bb) {
         gpu::record(|b| {
-            b.cmd(&[
-                gpu::PRESENT,
-                g.0,
-                rect[0] as u32,
-                rect[1] as u32,
-                rect[2] as u32,
-                rect[3] as u32,
-                g.2,
-                g.3,
-                hwnd,
-            ])
+            b.cmd(&[gpu::PRESENT, g.0, rect[0] as u32, rect[1] as u32, rect[2] as u32, rect[3] as u32, g.2, g.3, hwnd])
         });
     }
     let dev = d.dev.as_mut().unwrap();
@@ -3087,24 +2485,9 @@ unsafe fn present(d: &mut D3d, after: &mut After) -> u32 {
 pub enum Src {
     /// DrawPrimitive: from this vertex of the streams
     Streams(u32),
-    Indexed {
-        base: i32,
-        min: u32,
-        num: u32,
-        start: u32,
-    },
-    Up {
-        data: u32,
-        stride: u32,
-    },
-    UpIndexed {
-        min: u32,
-        num: u32,
-        idx: u32,
-        isize: u32,
-        data: u32,
-        stride: u32,
-    },
+    Indexed { base: i32, min: u32, num: u32, start: u32 },
+    Up { data: u32, stride: u32 },
+    UpIndexed { min: u32, num: u32, idx: u32, isize: u32, data: u32, stride: u32 },
 }
 
 fn vertex_count(prim: u32, n: u32) -> u32 {
@@ -3163,66 +2546,28 @@ const PRIM_TOPOLOGY: [u32; 7] = [3, 0, 1, 2, 3, 4, 3];
 /// (sx * x + ox, sy * y + oy) for pixel (x, y) (the f32 bits of sx ox sy oy), and what else
 /// the draw reads (its key). All zero: neither.
 #[allow(clippy::too_many_arguments)]
-unsafe fn rect_draw(
-    d: &D3d,
-    elems: &[Elem],
-    streams: &[(u32, u32, u32)],
-    first: u32,
-    count: u32,
-    prim: u32,
-    ff: bool,
-    samplers: &[u32],
-    wmask: u32,
-    ds: u32,
-) -> [u32; 5] {
+unsafe fn rect_draw(d: &D3d, elems: &[Elem], streams: &[(u32, u32, u32)], first: u32, count: u32, prim: u32, ff: bool, samplers: &[u32], wmask: u32, ds: u32) -> [u32; 5] {
     let none = [0u32; 5];
-    let Some(dev) = d.dev.as_ref() else {
-        return none;
-    };
+    let Some(dev) = d.dev.as_ref() else { return none };
     let st = &dev.st;
     // (four corners as a strip or a fan)
     if !ff || count != 4 || !(prim == 5 || prim == 6) {
         return none;
     }
-    let Some(pe) = elems
-        .iter()
-        .find(|e| e.usage == shader::USAGE_POSITIONT && e.stream == 0)
-    else {
-        return none;
-    };
-    let Some(&(_, ptr, stride)) = streams.first() else {
-        return none;
-    };
-    let vtx =
-        |v: u32, off: u32, k: usize| *((ptr + (first + v) * stride + off) as *const f32).add(k);
-    let pos: Vec<(f32, f32)> = (0..4)
-        .map(|v| (vtx(v, pe.offset, 0), vtx(v, pe.offset, 1)))
-        .collect();
-    let (x0, x1) = pos
-        .iter()
-        .fold((f32::MAX, f32::MIN), |a, p| (a.0.min(p.0), a.1.max(p.0)));
-    let (y0, y1) = pos
-        .iter()
-        .fold((f32::MAX, f32::MIN), |a, p| (a.0.min(p.1), a.1.max(p.1)));
+    let Some(pe) = elems.iter().find(|e| e.usage == shader::USAGE_POSITIONT && e.stream == 0) else { return none };
+    let Some(&(_, ptr, stride)) = streams.first() else { return none };
+    let vtx = |v: u32, off: u32, k: usize| *((ptr + (first + v) * stride + off) as *const f32).add(k);
+    let pos: Vec<(f32, f32)> = (0..4).map(|v| (vtx(v, pe.offset, 0), vtx(v, pe.offset, 1))).collect();
+    let (x0, x1) = pos.iter().fold((f32::MAX, f32::MIN), |a, p| (a.0.min(p.0), a.1.max(p.0)));
+    let (y0, y1) = pos.iter().fold((f32::MAX, f32::MIN), |a, p| (a.0.min(p.1), a.1.max(p.1)));
     // (an axis-aligned rectangle: every corner once)
     let corners = [(x0, y0), (x1, y0), (x0, y1), (x1, y1)];
-    if !(x1 > x0 && y1 > y0 && x0.is_finite() && x1.is_finite() && y0.is_finite() && y1.is_finite())
-        || !corners
-            .iter()
-            .all(|c| pos.iter().filter(|p| **p == *c).count() == 1)
-    {
+    if !(x1 > x0 && y1 > y0 && x0.is_finite() && x1.is_finite() && y0.is_finite() && y1.is_finite()) || !corners.iter().all(|c| pos.iter().filter(|p| **p == *c).count() == 1) {
         return none;
     }
     let rs = &st.rs;
     let mut flags = 0;
-    if rs[27] == 0
-        && rs[15] == 0
-        && ds == 0
-        && rs[52] == 0
-        && rs[174] == 0
-        && rs[22] == 1
-        && wmask == 0xf
-    {
+    if rs[27] == 0 && rs[15] == 0 && ds == 0 && rs[52] == 0 && rs[174] == 0 && rs[22] == 1 && wmask == 0xf {
         flags |= 1;
     }
     let mut m = [0f32; 4];
@@ -3232,27 +2577,18 @@ unsafe fn rect_draw(
         Some(Data::Texture(t)) if t.levels.len() == 1 => Some((t.w as f32, t.h as f32)),
         _ => None,
     };
-    let tc = elems
-        .iter()
-        .find(|e| e.usage == shader::USAGE_TEXCOORD && e.index == 0 && e.stream == 0 && e.ty == 1);
+    let tc = elems.iter().find(|e| e.usage == shader::USAGE_TEXCOORD && e.index == 0 && e.stream == 0 && e.ty == 1);
     if let (Some((tw, th)), Some(tc), [0]) = (tsize, tc, samplers) {
         let one_stage = st.tss[1][1] == 1 && st.tss[0][11] & 0xffff == 0 && st.tss[0][24] == 0;
-        let uv: Vec<(f32, f32)> = (0..4)
-            .map(|v| (vtx(v, tc.offset, 0) * tw, vtx(v, tc.offset, 1) * th))
-            .collect();
+        let uv: Vec<(f32, f32)> = (0..4).map(|v| (vtx(v, tc.offset, 0) * tw, vtx(v, tc.offset, 1) * th)).collect();
         // texel = s * position + o, from two corners, true for all four; inside the texture
         // (no wrapping), at most 4 times larger or smaller
         let at = |c: (f32, f32)| uv[pos.iter().position(|p| *p == c).unwrap()];
         let (a, b) = (at((x0, y0)), at((x1, y1)));
         let (sx, sy) = ((b.0 - a.0) / (x1 - x0), (b.1 - a.1) / (y1 - y0));
         let (ox, oy) = (a.0 - sx * x0, a.1 - sy * y0);
-        let fits = (0..4).all(|v| {
-            (sx * pos[v].0 + ox - uv[v].0).abs() < 0.01
-                && (sy * pos[v].1 + oy - uv[v].1).abs() < 0.01
-        });
-        let inside = uv
-            .iter()
-            .all(|t| t.0 >= -0.01 && t.1 >= -0.01 && t.0 <= tw + 0.01 && t.1 <= th + 0.01);
+        let fits = (0..4).all(|v| (sx * pos[v].0 + ox - uv[v].0).abs() < 0.01 && (sy * pos[v].1 + oy - uv[v].1).abs() < 0.01);
+        let inside = uv.iter().all(|t| t.0 >= -0.01 && t.1 >= -0.01 && t.0 <= tw + 0.01 && t.1 <= th + 0.01);
         let scale = |s: f32| (0.25..=4.0).contains(&s.abs());
         if one_stage && fits && inside && scale(sx) && scale(sy) {
             flags |= 2;
@@ -3269,17 +2605,11 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     if prims == 0 || !(1..=6).contains(&prim) {
         return S_OK;
     }
-    let Some(dev) = d.dev.as_ref() else {
-        return D3DERR_INVALIDCALL;
-    };
+    let Some(dev) = d.dev.as_ref() else { return D3DERR_INVALIDCALL };
     let st = &dev.st;
     let rt = dev.rt[0];
     // (the depth buffer for the depth test or the stencil test)
-    let ds = if st.rs[7] != 0 || st.rs[52] != 0 {
-        dev.ds
-    } else {
-        0
-    };
+    let ds = if st.rs[7] != 0 || st.rs[52] != 0 { dev.ds } else { 0 };
     let rts = dev.rt;
     // the vertex layout
     let (elems, fvf_stride) = if st.decl != 0 {
@@ -3297,11 +2627,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     let range = |iptr: u32, isize: u32| -> (u32, u32) {
         let (mut lo, mut hi) = (u32::MAX, 0);
         for k in 0..nverts {
-            let v = if isize == 4 {
-                *((iptr + 4 * k) as *const u32)
-            } else {
-                *((iptr + 2 * k) as *const u16) as u32
-            };
+            let v = if isize == 4 { *((iptr + 4 * k) as *const u32) } else { *((iptr + 2 * k) as *const u16) as u32 };
             lo = lo.min(v);
             hi = hi.max(v);
         }
@@ -3310,9 +2636,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     let (first, count, index): (u32, u32, Option<(u32, u32, u32)>) = match &src {
         Src::Streams(start) => (*start, nverts, None),
         Src::Indexed { base, start, .. } => {
-            let Some(Data::Buffer(ib)) = d.objs.get(&st.indices).map(|o| &o.data) else {
-                return D3DERR_INVALIDCALL;
-            };
+            let Some(Data::Buffer(ib)) = d.objs.get(&st.indices).map(|o| &o.data) else { return D3DERR_INVALIDCALL };
             let isize = if ib.fmt == fmt::INDEX32 { 4 } else { 2 };
             let iptr = ib.mem + start * isize;
             if (start + nverts) * isize > ib.len {
@@ -3332,21 +2656,9 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     };
     // geometry instancing (SetStreamSourceFreq): stream 0 INDEXEDDATA | instances, the streams
     // of INSTANCEDATA | divider step once every `divider` instances; indexed draws only
-    let instances = if index.is_some() && st.freq[0] & 0x4000_0000 != 0 {
-        (st.freq[0] & 0x3fff_ffff).max(1)
-    } else {
-        1
-    };
-    let freq = if index.is_some() && st.freq[0] & 0x4000_0000 != 0 {
-        st.freq
-    } else {
-        [1; 16]
-    };
-    let divider = move |s: u32| -> Option<u32> {
-        Some(freq[s as usize & 15])
-            .filter(|f| f & 0x8000_0000 != 0)
-            .map(|f| (f & 0x3fff_ffff).max(1))
-    };
+    let instances = if index.is_some() && st.freq[0] & 0x4000_0000 != 0 { (st.freq[0] & 0x3fff_ffff).max(1) } else { 1 };
+    let freq = if index.is_some() && st.freq[0] & 0x4000_0000 != 0 { st.freq } else { [1; 16] };
+    let divider = move |s: u32| -> Option<u32> { Some(freq[s as usize & 15]).filter(|f| f & 0x8000_0000 != 0).map(|f| (f & 0x3fff_ffff).max(1)) };
     let mut streams: Vec<(u32, u32, u32)> = Vec::new(); // (stream, ptr, stride)
     let mut used: Vec<u32> = elems.iter().map(|e| e.stream).collect();
     used.sort();
@@ -3383,20 +2695,9 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
             }
             eprintln!("d3d9:   viewport {:?}", st.viewport);
         }
-        eprintln!(
-            "d3d9:   rt {rt} ds {ds} viewport {:?} cull {} z {} {}",
-            st.viewport, st.rs[22], st.rs[7], st.rs[14]
-        );
+        eprintln!("d3d9:   rt {rt} ds {ds} viewport {:?} cull {} z {} {}", st.viewport, st.rs[22], st.rs[7], st.rs[14]);
         if let Some((iptr, isize, _)) = index {
-            let ix: Vec<u32> = (0..nverts.min(12))
-                .map(|k| {
-                    if isize == 4 {
-                        *((iptr + 4 * k) as *const u32)
-                    } else {
-                        *((iptr + 2 * k) as *const u16) as u32
-                    }
-                })
-                .collect();
+            let ix: Vec<u32> = (0..nverts.min(12)).map(|k| if isize == 4 { *((iptr + 4 * k) as *const u32) } else { *((iptr + 2 * k) as *const u16) as u32 }).collect();
             eprintln!("d3d9:   indices {ix:?}");
         }
         if st.vs != 0 {
@@ -3406,25 +2707,15 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
             eprintln!("d3d9:   ps c0..3 {:?}", &st.psf[..st.psf.len().min(3)]);
         }
         for &(s, ptr, stride) in streams.iter().skip(1) {
-            let w: Vec<String> = (0..stride)
-                .map(|k| format!("{:08x}", *((ptr + 4 * k) as *const u32)))
-                .collect();
-            eprintln!(
-                "d3d9:   stream {s} {ptr:#x} stride {stride}: {}",
-                w.join(" ")
-            );
+            let w: Vec<String> = (0..stride).map(|k| format!("{:08x}", *((ptr + 4 * k) as *const u32))).collect();
+            eprintln!("d3d9:   stream {s} {ptr:#x} stride {stride}: {}", w.join(" "));
         }
         if let Some(&(_, ptr, stride)) = streams.first() {
             eprintln!("d3d9:   data {ptr:#x} stride {stride}");
-            let max = std::env::var("IPPAI_D3D_TRACE_VERTS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(6);
+            let max = std::env::var("IPPAI_D3D_TRACE_VERTS").ok().and_then(|v| v.parse().ok()).unwrap_or(6);
             for v in 0..count.min(max) {
                 let p = ptr + (first + v) * stride;
-                let w: Vec<String> = (0..stride / 4)
-                    .map(|k| format!("{:08x}", *((p + 4 * k) as *const u32)))
-                    .collect();
+                let w: Vec<String> = (0..stride / 4).map(|k| format!("{:08x}", *((p + 4 * k) as *const u32))).collect();
                 eprintln!("d3d9:   v{v} {}", w.join(" "));
             }
         }
@@ -3447,18 +2738,12 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     } else {
         None
     };
-    let Some(target) = surface_gpu(d, rt) else {
-        return S_OK;
-    };
+    let Some(target) = surface_gpu(d, rt) else { return S_OK };
     let dsg = surface_gpu(d, ds).filter(|z| z.2 >= target.2 && z.3 >= target.3);
     // render targets 1-3 (in a row from 1, of the size of 0)
     let more: Vec<(u32, (u32, u32, u32, u32, u32))> = rts[1..]
         .iter()
-        .map_while(|&r| {
-            surface_gpu(d, r)
-                .filter(|g| (g.2, g.3) == (target.2, target.3))
-                .map(|g| (r, g))
-        })
+        .map_while(|&r| surface_gpu(d, r).filter(|g| (g.2, g.3) == (target.2, target.3)).map(|g| (r, g)))
         .collect();
     let ntargets = 1 + more.len() as u32;
 
@@ -3471,9 +2756,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     let mut vs_inputs: Vec<(u32, u32, u32)> = Vec::new(); // (register, location, kind)
     let mut ff_inputs: Vec<(u32, u32, u32, u32)> = Vec::new();
     for e in &elems {
-        let Some((pf, kind)) = vertex_format(e.ty) else {
-            continue;
-        };
+        let Some((pf, kind)) = vertex_format(e.ty) else { continue };
         // (an FVF can declare more than the stride holds: QLIE draws TEX8 vertices with a
         // 32-byte stride; Direct3D reads past the vertex, WebGPU refuses the layout)
         let stride = streams.iter().find(|x| x.0 == e.stream).map_or(0, |x| x.2);
@@ -3484,9 +2767,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         match vs_shader {
             Some(sh) => {
                 // vs 1.x without dcl: register = usage order... (vs 1.1 has dcl too)
-                if let Some(&(reg, _, _)) =
-                    sh.inputs.iter().find(|i| i.1 == e.usage && i.2 == e.index)
-                {
+                if let Some(&(reg, _, _)) = sh.inputs.iter().find(|i| i.1 == e.usage && i.2 == e.index) {
                     if !vs_inputs.iter().any(|v| v.0 == reg) {
                         let loc = vs_inputs.len() as u32;
                         vs_inputs.push((reg, loc, kind));
@@ -3517,14 +2798,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
             let m = match d.dev.as_ref().unwrap().modules.get(&key) {
                 Some(&m) => Ok(m),
                 None => {
-                    let opts = shader::Options {
-                        link: 0,
-                        vs_inputs: vs_inputs.clone(),
-                        alpha_test: None,
-                        fog: false,
-                        addr: Vec::new(),
-                        targets: 1,
-                    };
+                    let opts = shader::Options { link: 0, vs_inputs: vs_inputs.clone(), alpha_test: None, fog: false, addr: Vec::new(), targets: 1 };
                     let w = shader::Gen::new(sh).vertex(&opts);
                     Err((key, w))
                 }
@@ -3535,24 +2809,13 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
             let mut tci = [(0u8, 0u8); 8];
             for (i, t) in tci.iter_mut().enumerate() {
                 let ttff = st.tss[i][24] & 0xff;
-                *t = (
-                    (st.tss[i][11] & 0xff) as u8,
-                    if ttff == 0 { 0 } else { ttff as u8 },
-                );
+                *t = ((st.tss[i][11] & 0xff) as u8, if ttff == 0 { 0 } else { ttff as u8 });
             }
-            let key = ModKey::FfVs(ff::VsKey {
-                inputs: ff_inputs.clone(),
-                rhw,
-                lighting: st.rs[137] != 0,
-                tci,
-                flat: st.rs[9] == 1 && st.vs == 0 && st.ps == 0,
-            });
+            let key = ModKey::FfVs(ff::VsKey { inputs: ff_inputs.clone(), rhw, lighting: st.rs[137] != 0, tci, flat: st.rs[9] == 1 && st.vs == 0 && st.ps == 0 });
             let m = match d.dev.as_ref().unwrap().modules.get(&key) {
                 Some(&m) => Ok(m),
                 None => {
-                    let ModKey::FfVs(k) = &key else {
-                        unreachable!()
-                    };
+                    let ModKey::FfVs(k) = &key else { unreachable!() };
                     let w = ff::vertex(k);
                     Err((key, w))
                 }
@@ -3586,14 +2849,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
             let m = match d.dev.as_ref().unwrap().modules.get(&key) {
                 Some(&m) => Ok(m),
                 None => {
-                    let opts = shader::Options {
-                        link,
-                        vs_inputs: Vec::new(),
-                        alpha_test,
-                        fog: false,
-                        addr,
-                        targets: ntargets,
-                    };
+                    let opts = shader::Options { link, vs_inputs: Vec::new(), alpha_test, fog: false, addr, targets: ntargets };
                     let w = shader::Gen::new(sh).pixel(&opts);
                     Err((key, w))
                 }
@@ -3615,25 +2871,14 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
                     samplers.push(i as u32);
                 }
                 let projected = (st.tss[i][24] & 0x100 != 0) as u32;
-                stages.push([
-                    s[1], s[2], s[3], s[26], s[4], s[5], s[6], s[27], s[28], projected,
-                ]);
+                stages.push([s[1], s[2], s[3], s[26], s[4], s[5], s[6], s[27], s[28], projected]);
             }
             let addr = samplers.iter().filter_map(|&s| addr_of(s)).collect();
-            let key = ModKey::FfPs(ff::PsKey {
-                stages,
-                specular: st.rs[29] != 0,
-                alpha_test,
-                tex,
-                flat: st.rs[9] == 1 && st.vs == 0 && st.ps == 0,
-                addr,
-            });
+            let key = ModKey::FfPs(ff::PsKey { stages, specular: st.rs[29] != 0, alpha_test, tex, flat: st.rs[9] == 1 && st.vs == 0 && st.ps == 0, addr });
             let m = match d.dev.as_ref().unwrap().modules.get(&key) {
                 Some(&m) => Ok(m),
                 None => {
-                    let ModKey::FfPs(k) = &key else {
-                        unreachable!()
-                    };
+                    let ModKey::FfPs(k) = &key else { unreachable!() };
                     let w = ff::pixel(k);
                     Err((key, w))
                 }
@@ -3668,16 +2913,8 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     // (WebGPU restarts an indexed strip at an index of all ones, Direct3D 9 never does: 16-bit
     // strips with a 0xffff go out as 32-bit indices)
     let widen = matches!(index, Some((iptr, 2, _)) if (topo == 2 || topo == 4) && (0..nverts).any(|k| *((iptr + 2 * k) as *const u16) == 0xffff));
-    let isize = if widen {
-        4
-    } else {
-        index.map_or(if prim == 6 { 2 } else { 0 }, |i| i.1)
-    };
-    let strip_fmt = if indexed && (topo == 2 || topo == 4) {
-        isize
-    } else {
-        0
-    };
+    let isize = if widen { 4 } else { index.map_or(if prim == 6 { 2 } else { 0 }, |i| i.1) };
+    let strip_fmt = if indexed && (topo == 2 || topo == 4) { isize } else { 0 };
     let mut key: Vec<u32> = vec![
         vs_mod,
         ps_mod,
@@ -3696,14 +2933,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     for (i, &(sn, _, stride)) in streams.iter().enumerate() {
         let list: Vec<&(u32, u32, u32, u32)> = attrs.iter().filter(|a| a.0 == i as u32).collect();
         // (bit 31: a buffer of per-instance data)
-        key.push(
-            stride
-                | if divider(sn).is_some() {
-                    0x8000_0000
-                } else {
-                    0
-                },
-        );
+        key.push(stride | if divider(sn).is_some() { 0x8000_0000 } else { 0 });
         key.push(list.len() as u32);
         for a in list {
             key.extend_from_slice(&[a.1, a.2, a.3]);
@@ -3715,11 +2945,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     if dsg.is_some() && st.rs[52] != 0 {
         let rs = &st.rs;
         let cw = [rs[53], rs[54], rs[55], rs[56]];
-        let ccw = if rs[185] != 0 {
-            [rs[186], rs[187], rs[188], rs[189]]
-        } else {
-            cw
-        };
+        let ccw = if rs[185] != 0 { [rs[186], rs[187], rs[188], rs[189]] } else { cw };
         key.extend_from_slice(&[1, rs[57] & 0xff, rs[58] & 0xff, rs[59] & 0xff]);
         key.extend_from_slice(&ccw);
         key.extend_from_slice(&cw);
@@ -3731,10 +2957,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     // (only shader model 2+ pixel shaders write them: see dxwgsl::d3d9::Options::targets)
     let writes_more = ps_shader.is_some_and(|s| s.major >= 2);
     for (i, (_, g)) in more.iter().enumerate() {
-        key.extend_from_slice(&[
-            fmt::page_format(g.4),
-            if writes_more { st.rs[190 + i] & 0xf } else { 0 },
-        ]);
+        key.extend_from_slice(&[fmt::page_format(g.4), if writes_more { st.rs[190 + i] & 0xf } else { 0 }]);
     }
     let pipe = match dev.pipelines.get(&key) {
         Some(&p) => {
@@ -3757,8 +2980,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     let (vpw, vph) = (vp[2].max(1) as f32, vp[3].max(1) as f32);
     let mut vsu = vec![0u8; shader::uniform_size(vs_consts) as usize];
     let mut psu = vec![0u8; shader::uniform_size(ps_consts) as usize];
-    let put =
-        |buf: &mut Vec<u8>, at: usize, v: u32| buf[at..at + 4].copy_from_slice(&v.to_le_bytes());
+    let put = |buf: &mut Vec<u8>, at: usize, v: u32| buf[at..at + 4].copy_from_slice(&v.to_le_bytes());
     put(&mut vsu, 0, f2u(1.0 / vpw));
     put(&mut vsu, 4, f2u(1.0 / vph));
     put(&mut vsu, 16, st.vsb);
@@ -3799,12 +3021,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
                 regs[4 + t * 4 + r] = [m[4 * r], m[4 * r + 1], m[4 * r + 2], m[4 * r + 3]];
             }
         }
-        regs[12] = [
-            st.material[0],
-            st.material[1],
-            st.material[2],
-            st.material[3],
-        ];
+        regs[12] = [st.material[0], st.material[1], st.material[2], st.material[3]];
         consts(&mut vsu, &regs, ff::VS_CONSTS);
     }
     // alpha-less textures and alpha ref
@@ -3822,11 +3039,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         let ss = &st.ss[s as usize];
         let mip = if levels > 1 { ss[7] } else { 0 };
         let am = dxwgsl::addr::sampler_mode;
-        let skey = (am(ss[1]) & 7)
-            | (am(ss[2]) & 7) << 3
-            | (ss[5] & 3) << 6
-            | (ss[6] & 3) << 8
-            | (mip & 3) << 10;
+        let skey = (am(ss[1]) & 7) | (am(ss[2]) & 7) << 3 | (ss[5] & 3) << 6 | (ss[6] & 3) << 8 | (mip & 3) << 10;
         texs.push((s, gpu_tex, skey));
     }
     put(&mut psu, 8, alpha_bits);
@@ -3834,14 +3047,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     if ps.is_some() {
         consts(&mut psu, &st.psf, ps_consts);
     } else {
-        let c = |v: u32| {
-            [
-                ((v >> 16) & 0xff) as f32 / 255.0,
-                ((v >> 8) & 0xff) as f32 / 255.0,
-                (v & 0xff) as f32 / 255.0,
-                (v >> 24) as f32 / 255.0,
-            ]
-        };
+        let c = |v: u32| [((v >> 16) & 0xff) as f32 / 255.0, ((v >> 8) & 0xff) as f32 / 255.0, (v & 0xff) as f32 / 255.0, (v >> 24) as f32 / 255.0];
         let mut regs = vec![[0f32; 4]; ff::PS_CONSTS as usize];
         regs[0] = c(st.rs[60]);
         for i in 0..8 {
@@ -3862,32 +3068,18 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     let mut h = Fnv::default();
     for &(sn, ptr, stride) in &streams {
         match divider(sn) {
-            Some(dv) => h.add(std::slice::from_raw_parts(
-                ptr as *const u8,
-                (instances.div_ceil(dv) * stride) as usize,
-            )),
-            None => h.add(std::slice::from_raw_parts(
-                (ptr + first * stride) as *const u8,
-                (count * stride) as usize,
-            )),
+            Some(dv) => h.add(std::slice::from_raw_parts(ptr as *const u8, (instances.div_ceil(dv) * stride) as usize)),
+            None => h.add(std::slice::from_raw_parts((ptr + first * stride) as *const u8, (count * stride) as usize)),
         }
     }
     h.add(&instances.to_le_bytes());
     if let Some((iptr, isz, _)) = index {
-        h.add(std::slice::from_raw_parts(
-            iptr as *const u8,
-            (nverts * isz) as usize,
-        ));
+        h.add(std::slice::from_raw_parts(iptr as *const u8, (nverts * isz) as usize));
     }
     h.add(&vsu);
     h.add(&psu);
     let mut bbox = [u32::MAX; 4];
-    if let (true, Some(e)) = (
-        pretransformed,
-        elems
-            .iter()
-            .find(|e| e.usage == shader::USAGE_POSITIONT && e.stream == 0),
-    ) {
+    if let (true, Some(e)) = (pretransformed, elems.iter().find(|e| e.usage == shader::USAGE_POSITIONT && e.stream == 0)) {
         if let Some(&(_, ptr, stride)) = streams.first() {
             let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
             for v in 0..count {
@@ -3898,37 +3090,15 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
                 x1 = x1.max(x);
                 y1 = y1.max(y);
             }
-            if x0.is_finite()
-                && y0.is_finite()
-                && x1.is_finite()
-                && y1.is_finite()
-                && x1 >= x0
-                && y1 >= y0
-            {
+            if x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite() && x1 >= x0 && y1 >= y0 {
                 // (a pixel of margin: sampling and the half-pixel offset)
                 let c = |v: f32| (v.max(0.0).min(65535.0)) as u32;
-                bbox = [
-                    c(x0.floor() - 1.0),
-                    c(y0.floor() - 1.0),
-                    c(x1.ceil() + 1.0),
-                    c(y1.ceil() + 1.0),
-                ];
+                bbox = [c(x0.floor() - 1.0), c(y0.floor() - 1.0), c(x1.ceil() + 1.0), c(y1.ceil() + 1.0)];
             }
         }
     }
     let hash = h.0 as u32 ^ (h.0 >> 32) as u32;
-    let ext = rect_draw(
-        d,
-        &elems,
-        &streams,
-        first,
-        count,
-        prim,
-        index.is_none() && vs.is_none() && ps.is_none(),
-        &samplers,
-        wmask,
-        ds,
-    );
+    let ext = rect_draw(d, &elems, &streams, first, count, prim, index.is_none() && vs.is_none() && ps.is_none(), &samplers, wmask, ds);
 
     let more_rts: Vec<u32> = more.iter().map(|m| m.0).collect();
     ensure_targets(d, rt, &more_rts, ds);
@@ -3946,10 +3116,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
                 Some(dv) => {
                     let mut v = Vec::with_capacity((instances * stride) as usize);
                     for i in 0..instances {
-                        v.extend_from_slice(std::slice::from_raw_parts(
-                            (ptr + i / dv * stride) as *const u8,
-                            stride as usize,
-                        ));
+                        v.extend_from_slice(std::slice::from_raw_parts((ptr + i / dv * stride) as *const u8, stride as usize));
                     }
                     offs.push(b.data(&v, 4));
                 }
@@ -3965,11 +3132,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
                 // fan, indexed
                 let mut ix: Vec<u32> = Vec::new();
                 let get = |i: u32| -> u32 {
-                    if *isz == 4 {
-                        *((iptr + i * 4) as *const u32)
-                    } else {
-                        *((iptr + i * 2) as *const u16) as u32
-                    }
+                    if *isz == 4 { *((iptr + i * 4) as *const u32) } else { *((iptr + i * 2) as *const u16) as u32 }
                 };
                 for t in 0..prims {
                     ix.extend_from_slice(&[get(0), get(t + 1), get(t + 2)]);
@@ -3978,19 +3141,12 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
                 (4, b.data(&bytes, 4), ix.len() as u32, -(*min as i32))
             }
             (Some((iptr, _, min)), _) if widen => {
-                let bytes: Vec<u8> = (0..nverts)
-                    .flat_map(|k| (*((iptr + 2 * k) as *const u16) as u32).to_le_bytes())
-                    .collect();
+                let bytes: Vec<u8> = (0..nverts).flat_map(|k| (*((iptr + 2 * k) as *const u16) as u32).to_le_bytes()).collect();
                 (4, b.data(&bytes, 4), nverts, -(*min as i32))
             }
             (Some((iptr, isz, min)), _) => {
                 let len = (nverts * isz) as usize;
-                (
-                    *isz,
-                    b.data(std::slice::from_raw_parts(*iptr as *const u8, len), 4),
-                    nverts,
-                    -(*min as i32),
-                )
+                (*isz, b.data(std::slice::from_raw_parts(*iptr as *const u8, len), 4), nverts, -(*min as i32))
             }
             (None, 6) => {
                 let mut ix: Vec<u16> = Vec::new();
@@ -4003,16 +3159,8 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
             (None, _) => (0, 0, count, 0),
         };
         // uniforms (the same block as the last draw's when nothing changed)
-        let vso = if dev.last_vs.0 == vsu && same_batch && !b.data.is_empty() {
-            dev.last_vs.1
-        } else {
-            b.data(&vsu, 256)
-        };
-        let pso = if dev.last_ps.0 == psu && same_batch && !b.data.is_empty() {
-            dev.last_ps.1
-        } else {
-            b.data(&psu, 256)
-        };
+        let vso = if dev.last_vs.0 == vsu && same_batch && !b.data.is_empty() { dev.last_vs.1 } else { b.data(&vsu, 256) };
+        let pso = if dev.last_ps.0 == psu && same_batch && !b.data.is_empty() { dev.last_ps.1 } else { b.data(&psu, 256) };
         let mut c = vec![
             gpu::DRAW,
             pipe,
@@ -4039,12 +3187,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         c.push(offs.len() as u32);
         c.extend_from_slice(&offs);
         // (the index format, instances above it)
-        c.extend_from_slice(&[
-            ifmt | if instances > 1 { instances << 8 } else { 0 },
-            ioff,
-            icount,
-            base as u32,
-        ]);
+        c.extend_from_slice(&[ifmt | if instances > 1 { instances << 8 } else { 0 }, ioff, icount, base as u32]);
         c.push(hash);
         c.extend_from_slice(&bbox);
         c.extend_from_slice(&ext);
@@ -4134,28 +3277,16 @@ mod tests {
         let (w, h, pitch) = (64usize, 8usize, 300usize);
         let mut mem = vec![0u8; pitch * h];
         let mut shadow = vec![0u8; w * 4 * h];
-        assert_eq!(
-            super::changed_box(&mem, pitch, w * 4, h, 4, &mut shadow),
-            None
-        );
+        assert_eq!(super::changed_box(&mem, pitch, w * 4, h, 4, &mut shadow), None);
         for y in 2..5 {
             for x in 3..41 {
                 mem[y * pitch + x * 4 + 1] = 7;
             }
         }
-        assert_eq!(
-            super::changed_box(&mem, pitch, w * 4, h, 4, &mut shadow),
-            Some([3, 2, 41, 5])
-        );
+        assert_eq!(super::changed_box(&mem, pitch, w * 4, h, 4, &mut shadow), Some([3, 2, 41, 5]));
         // the shadow took the new rows: nothing changed now
-        assert_eq!(
-            super::changed_box(&mem, pitch, w * 4, h, 4, &mut shadow),
-            None
-        );
+        assert_eq!(super::changed_box(&mem, pitch, w * 4, h, 4, &mut shadow), None);
         mem[7 * pitch + 63 * 4 + 3] = 1;
-        assert_eq!(
-            super::changed_box(&mem, pitch, w * 4, h, 4, &mut shadow),
-            Some([63, 7, 64, 8])
-        );
+        assert_eq!(super::changed_box(&mem, pitch, w * 4, h, 4, &mut shadow), Some([63, 7, 64, 8]));
     }
 }
