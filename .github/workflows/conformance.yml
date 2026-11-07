@@ -9,17 +9,24 @@
 #    (the program under Wine runs natively) and on sake (tests/diff/fpu.py).
 name: Conformance
 
+#
+# On main one run at a time with only the newest commit waiting (a running one is not cancelled:
+# with threads pushing minutes apart, cancelling meant no run ever finished). Nightly and on
+# release tags too.
 on:
   push:
     branches: [main]
+    tags: ["v*"]
+  schedule:
+    - cron: "7 20 * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: conformance-${{ github.ref }}
-  cancel-in-progress: true
+  group: conformance-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: false
 
 jobs:
   sake:

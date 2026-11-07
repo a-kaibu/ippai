@@ -7,6 +7,7 @@ locally and in CI without running Windows each time.
                                                       than their source (prints names; exit 0)
     golden.py expand <out dir>                        golden/ -> run.sh's layout with pictures
                                                       inline (what compare.py reads)
+    golden.py src <probe>                             the sha256 of the probe's sources here
 
 golden/<probe>/ holds stdout.txt (an "image" line's rows go to <name>.png beside it), exit, and
 src: the sha256 of the probe's sources, so a changed probe shows up as stale.
@@ -140,6 +141,8 @@ if __name__ == "__main__":
         import_(a[1], set(a[2:]))
     elif a[:1] == ["expand"]:
         expand(a[1])
+    elif a[:1] == ["src"] and len(a) == 2:
+        print(src_hash(a[1]))
     elif a[:1] == ["stale"]:
         stale(a[1] if len(a) > 1 else None)
     else:

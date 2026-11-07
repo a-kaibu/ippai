@@ -1,12 +1,18 @@
 # Mutation testing (cargo-mutants, tools/ci/mutants.sh): each push and pull request mutates the
 # Rust lines it changed and runs those crates' tests; a mutant the tests do not notice is a gap.
 # Missed mutants fail the run only in the files of tools/ci/mutants-gate.txt (all caught there
-# today); elsewhere they are listed in the job summary. The gate files' full run is weekly.
+# today); elsewhere they are listed in the job summary. The gate files' full run is weekly and on
+# release tags.
+#
+# On main one run at a time, the newest commit's waiting (many threads push minutes apart; a run
+# per commit used to hold half of the 20 runners). No change goes unmutated: a push run mutates
+# everything since the commit the last successful push run tested, not only its own commit.
 name: Mutants
 
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
   schedule:
     - cron: "17 3 * * 0"
@@ -14,11 +20,11 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
-  # one group per pushed commit: other threads push often, and a pending run replaced by a newer one would skip its diff
-  group: mutants-${{ github.event_name == 'push' && github.sha || github.ref }}-${{ github.event_name }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  group: mutants-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   mutants:
@@ -41,14 +47,22 @@ jobs:
           key: mutants-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: mutants-${{ runner.os }}-
       - name: Mutants of the change
-        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        if: (github.event_name == 'push' && github.ref_type == 'branch') || github.event_name == 'pull_request'
         env:
+          GH_TOKEN: ${{ github.token }}
           BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
         run: |
+          if [ "${{ github.event_name }}" = push ]; then
+            # (the commit the last successful push run on this branch mutated up to)
+            last=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow mutants.yml --branch "${{ github.ref_name }}" \
+              --event push --status success --limit 1 --json headSha --jq '.[0].headSha // ""')
+            if [ -n "$last" ] && git merge-base --is-ancestor "$last" HEAD; then BASE=$last; fi
+            echo "mutants: changes since ${BASE::7}"
+          fi
           if ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then BASE=HEAD~1; fi
           tools/ci/mutants.sh diff "$BASE"
       - name: Mutants of the gate files
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
         run: tools/ci/mutants.sh gate
       - name: Summary
         if: always()

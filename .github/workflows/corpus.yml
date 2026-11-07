@@ -31,8 +31,10 @@ permissions:
   actions: read
 
 concurrency:
+  # (one at a time per kind, the newest waiting; a running one isn't cancelled, or with CI
+  # finishing every few minutes no smoke run would ever finish)
   group: corpus-${{ github.event_name }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   plan:

@@ -18,7 +18,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: fuzz-${{ github.ref }}
+  # (one run at a time, the newest commit's waiting; the nightly one has its own group so a push
+  # doesn't replace it)
+  group: fuzz-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: false
 
 jobs:

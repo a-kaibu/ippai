@@ -5,23 +5,30 @@
 # the 16-bit formats, every f32 to f16, every DXT endpoint pair) run with cargo test in CI.
 name: Formal
 
+#
+# On main one run at a time with only the newest commit waiting. Timeouts are a few times each
+# job's usual time: a hung job used to hold the group (and its runner) for the 6 h maximum while
+# every later commit's run waited and was dropped. Nightly and on release tags too.
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
+  schedule:
+    - cron: "37 20 * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: formal-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  group: formal-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   tlc:
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    timeout-minutes: 45
     env:
       # (yashikota/tlc-static: static TLC without a JVM; checksum of the linux-amd64 archive)
       TLC_VERSION: v2026.11.02.163154
@@ -48,7 +55,7 @@ jobs:
 
   kani:
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    timeout-minutes: 60
     env:
       KANI_VERSION: 0.68.0
     steps:
@@ -71,7 +78,7 @@ jobs:
 
   miri:
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Miri
@@ -83,7 +90,7 @@ jobs:
   # many more random command streams than cargo test runs)
   render-model:
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Optimized and plain runs draw the same
@@ -91,7 +98,7 @@ jobs:
 
   shaders:
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-node@v7.1.0

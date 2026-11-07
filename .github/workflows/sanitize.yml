@@ -3,9 +3,10 @@
 # between guest threads, the JIT's compiler thread, movie and audio workers): tools/ci/sanitize.sh.
 #
 # How often: ASan on every push to main that touches Rust or C (memory safety is never left
-# out), only the newest commit's run kept: a push cancels the run of the one before, whose
-# changes the newer commit holds too, so a burst of commits doesn't queue a run per commit.
-# Both sanitizers every night, on pull requests, on release tags (v*) and by hand.
+# out): one run at a time, and of the commits pushed meanwhile only the newest waits (it holds the
+# others' changes too), so a burst of commits doesn't queue a run per commit. A running run is not
+# cancelled: ASan takes over an hour, longer than threads go between pushes, so cancelling would
+# never let one finish. Both sanitizers every night, on pull requests, on release tags (v*) and by hand.
 name: Sanitize
 
 on:
@@ -31,9 +32,9 @@ permissions:
 
 concurrency:
   # (per branch, tag or pull request; the nightly and manual runs have their own group, so a
-  # push doesn't cancel them)
-  group: sanitize-${{ github.event_name == 'push' && github.ref || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'push' }}
+  # push doesn't replace them)
+  group: sanitize-${{ (github.event_name == 'push' || github.event_name == 'pull_request') && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   sanitize:

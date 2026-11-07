@@ -3,17 +3,27 @@
 # (JIT and interpreter; tests/winref/known.txt lists the differences already understood), with
 # no Windows involved, as tests/winref/check.sh does locally (GPU probes in headless Chromium). The Windows runner only runs when a
 # probe changed or has no answer yet (or by hand): it records the new answers and commits them.
+#
+# Many threads push to main minutes apart, so the runs don't queue one per commit: the jobs that
+# hold a runner (sake, windows, golden) each have their own concurrency group with at most one
+# running and the newest commit's waiting (a waiting job of an older commit is dropped: the newer
+# commit has its probes too, and `golden.py stale` asks Windows for every probe whose answer is
+# missing or out of date, whichever commit changed it). Recording Windows' answers doesn't wait
+# for the slower sake comparison. Nightly and on release tags too.
 name: winref
 
 on:
   push:
     branches: [main]
+    tags: ["v*"]
     paths:
       - 'crates/**'
       - 'host/tests/**'
       - 'tests/winref/**'
       - 'Cargo.lock'
       - '.github/workflows/winref.yml'
+  schedule:
+    - cron: "23 19 * * *"
   workflow_dispatch:
     inputs:
       all:
@@ -23,9 +33,6 @@ on:
 
 permissions:
   contents: read
-
-concurrency:
-  group: winref-${{ github.sha }}
 
 jobs:
   probes:
@@ -56,6 +63,9 @@ jobs:
     needs: probes
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    concurrency:
+      group: winref-sake-${{ github.ref }}-${{ github.event_name }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Tools
@@ -124,6 +134,9 @@ jobs:
     if: needs.probes.outputs.stale != ''
     runs-on: windows-2025
     timeout-minutes: 20
+    concurrency:
+      group: winref-windows-${{ github.ref }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/download-artifact@v8.0.2
@@ -139,11 +152,17 @@ jobs:
           path: ref
           retention-days: 30
 
-  # Windows' new answers into tests/winref/golden (a commit on main; text and small PNGs)
+  # Windows' answers into tests/winref/golden (a commit on main; text and small PNGs). They are
+  # imported at this run's commit (src = the sources the probes were built from), then copied onto
+  # the newest main for each probe whose sources there are still the same (one changed since is
+  # left stale for a later run); main moved on before the push -> again from a fresh main.
   golden:
     needs: [probes, windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    concurrency:
+      group: winref-golden-${{ github.ref }}
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:
@@ -156,14 +175,27 @@ jobs:
         run: |
           l="${{ needs.probes.outputs.stale }}"
           [ "$l" = all ] && l=
-          python3 tests/winref/golden.py import ref $l
-          git add tests/winref/golden
-          if git diff --cached --quiet; then echo "no change"; exit 0; fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -qm "winref: Windows' answers for ${l:-every probe} (${GITHUB_SHA::7})"
-          for i in 1 2 3 4; do
-            git pull -q --rebase origin main && git push -q origin HEAD:main && exit 0
+          python3 tests/winref/golden.py import ref $l > "$RUNNER_TEMP/imported"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          M=$RUNNER_TEMP/main
+          for i in 1 2 3 4 5 6; do
+            git fetch -q origin main
+            git worktree remove --force "$M" 2>/dev/null || true
+            git worktree add -q --detach "$M" FETCH_HEAD
+            took=
+            while read -r p; do
+              if [ "$(cat "tests/winref/golden/$p/src")" = "$(python3 "$M/tests/winref/golden.py" src "$p")" ]; then
+                rm -rf "$M/tests/winref/golden/$p" && cp -r "tests/winref/golden/$p" "$M/tests/winref/golden/$p"
+                took="$took $p"
+              else
+                echo "$p: its sources changed on main since ${GITHUB_SHA::7}, left for a later run"
+              fi
+            done < "$RUNNER_TEMP/imported"
+            git -C "$M" add tests/winref/golden
+            if git -C "$M" diff --cached --quiet; then echo "no change"; exit 0; fi
+            git -C "$M" commit -qm "winref: Windows' answers for${took} (${GITHUB_SHA::7})"
+            git -C "$M" push -q origin HEAD:main && exit 0
             sleep $((i * 5))
           done
           exit 1
