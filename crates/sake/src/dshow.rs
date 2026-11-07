@@ -18,10 +18,11 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::api::{Ctx, Handler};
 use crate::dshow_play::{self as play, now, Place, Play, SEC};
-use crate::mem::{self, ps, put32, put64, putp, r32, w32, w64, wp};
+use crate::mem::{self, ps, put32, put64, putp, r32, rp, w32, w64, wp};
 
 const E_NOINTERFACE: u32 = 0x8000_4002;
 const E_POINTER: u32 = 0x8000_4003;
+const VFW_E_NOT_STOPPED: u32 = 0x8004_0224;
 const E_NOTIMPL: u32 = 0x8000_4001;
 const E_ABORT: u32 = 0x8000_4004;
 const E_INVALIDARG: u32 = 0x8007_0057;
@@ -108,6 +109,11 @@ struct Graph {
     balance: i32,
     /// the EVR added to it (its picture goes where the EVR says)
     evr: u32,
+    /// the filters added (each joined to the graph, one reference held)
+    filters: Vec<u32>,
+    /// pins were connected through it (ConnectDirect): its state changes go to the filters
+    /// from then on (a graph a game only renders a file in keeps them to itself)
+    wired: bool,
 }
 
 static GRAPHS: Mutex<Option<HashMap<u32, Graph>>> = Mutex::new(None);
@@ -283,10 +289,61 @@ fn add_filter(c: &mut Ctx) -> u32 {
     if f == 0 {
         return E_POINTER;
     }
-    if evr_with(f, |_| ()).is_some() {
-        with(base(c, GB), |g| g.evr = f);
+    let b = base(c, GB);
+    // (one added again stays added once)
+    if with(b, |g| g.filters.contains(&f)).unwrap_or(false) {
+        return 0;
     }
+    if evr_with(f, |_| ()).is_some() {
+        with(b, |g| g.evr = f);
+    }
+    com(c, f, 1, &[]);
+    with(b, |g| g.filters.push(f));
+    // IBaseFilter::JoinFilterGraph(graph, name)
+    com(c, f, 13, &[b + ps() * GB, c.a(2)]);
     0
+}
+
+/// COM method `slot` of `obj` (`this` first)
+fn com(c: &mut Ctx, obj: u32, slot: u32, args: &[u32]) -> u32 {
+    let f = rp(rp(obj) + ps() * slot);
+    let mut a = vec![obj];
+    a.extend_from_slice(args);
+    c.call(f, &a)
+}
+
+/// ConnectDirect(out, in, mt): out->Connect(in, mt), only while stopped
+fn connect_direct(c: &mut Ctx) -> u32 {
+    let b = base(c, GB);
+    let (out, inp, mt) = (c.a(1), c.a(2), c.a(3));
+    if out == 0 || inp == 0 {
+        return E_POINTER;
+    }
+    if with(b, |g| g.state).unwrap_or(0) != 0 {
+        return VFW_E_NOT_STOPPED;
+    }
+    let r = com(c, out, 3, &[inp, mt]);
+    if r == 0 {
+        with(b, |g| g.wired = true);
+    }
+    r
+}
+/// Disconnect(pin): pin->Disconnect
+fn disconnect(c: &mut Ctx) -> u32 {
+    let pin = c.a(1);
+    if pin == 0 {
+        return E_POINTER;
+    }
+    com(c, pin, 5, &[])
+}
+/// Stop/Pause/Run (IBaseFilter slots 4, 5, 6) of each filter of a wired graph
+fn filters_to(c: &mut Ctx, b: u32, slot: u32) {
+    let fs = with(b, |g| if g.wired { g.filters.clone() } else { Vec::new() }).unwrap_or_default();
+    for f in fs {
+        // (Run's start time: 0, a REFERENCE_TIME that is two words on x86)
+        let start: &[u32] = if slot != 6 { &[] } else if ps() == 4 { &[0, 0] } else { &[0] };
+        com(c, f, slot, start);
+    }
 }
 
 /// A movie at guest path `w`: its `.vnv` played, or (no `.vnv`, or no page to decode it) none.
@@ -379,6 +436,7 @@ fn set_state(b: u32, s: u32) -> u32 {
 /// From stopped it answers S_FALSE (Windows: the change is still under way), else S_OK.
 fn run(c: &mut Ctx) -> u32 {
     let b = base(c, MC);
+    filters_to(c, b, 6);
     let was = set_state(b, 2);
     let run = with(b, |g| {
         // (a Run again, after a Pause, keeps the end to come)
@@ -445,12 +503,14 @@ fn end_later(b: u32, n: u32) {
 /// Queues EC_PAUSED; S_FALSE from stopped, as Run.
 fn pause(c: &mut Ctx) -> u32 {
     let b = base(c, MC);
+    filters_to(c, b, 5);
     let was = set_state(b, 1);
     queue(b, EC_PAUSED, 0);
     if was == 0 { S_FALSE } else { 0 }
 }
 fn stop(c: &mut Ctx) -> u32 {
     let b = base(c, MC);
+    filters_to(c, b, 4);
     set_state(b, 0);
     // (without a movie, one run again after a stop plays to its end again; one ending now
     // doesn't)
@@ -1156,9 +1216,9 @@ fn vtables() -> &'static [u32; NI as usize] {
                 (ok, 8),                     // RemoveFilter
                 (enum_filters, 8),           // EnumFilters
                 (notimpl, 12),               // FindFilterByName
-                (ok, 16),                    // ConnectDirect
+                (connect_direct, 16),        // ConnectDirect
                 (ok, 8),                     // Reconnect
-                (ok, 8),                     // Disconnect
+                (disconnect, 8),             // Disconnect
                 (ok, 4),                     // SetDefaultSyncSource
                 (ok, 12),                    // Connect
                 (ok, 8),                     // Render
@@ -1324,8 +1384,8 @@ pub fn create_instance(clsid: u32, iid: u32) -> Option<u32> {
     if r32(clsid) == 0xfa10_746c && r32(clsid + 4) == 0x4b6c_9b63 {
         return evr(iid);
     }
-    // CLSID_VideoMixingRenderer {b87beb7b-8d29-423f-ae4d-6582c10175ac}, ...9 {51b4abf3-748f-4e3b-...}
-    if (r32(clsid) == 0xb87b_eb7b && r32(clsid + 4) == 0x423f_8d29) || (r32(clsid) == 0x51b4_abf3 && r32(clsid + 4) == 0x4e3b_748f) {
+    // CLSID_VideoMixingRenderer {b87beb7b-8d29-423f-ae4d-6582c10175ac} (the VMR-9 is vmr9.rs's)
+    if r32(clsid) == 0xb87b_eb7b && r32(clsid + 4) == 0x423f_8d29 {
         return vmr(iid);
     }
     // CLSID_FilterGraph {e436ebb3-524f-11ce-9f53-0020af0ba770}, FilterGraphNoThread {e436ebb8-...}
@@ -1365,6 +1425,8 @@ pub fn create_instance(clsid: u32, iid: u32) -> Option<u32> {
         volume: 0,
         balance: 0,
         evr: 0,
+        filters: Vec::new(),
+        wired: false,
     };
     GRAPHS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(b, g);
     Some(b + ps() * s)
@@ -1399,11 +1461,24 @@ fn evr_with<R>(b: u32, f: impl FnOnce(&mut Evr) -> R) -> Option<R> {
     EVRS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).get_mut(&b).map(f)
 }
 /// The graphs an EVR renders for take its new settings.
-fn evr_changed(e: u32) {
+pub(crate) fn evr_changed(e: u32) {
     let gs: Vec<u32> = GRAPHS.lock().unwrap_or_else(|x| x.into_inner()).get_or_insert_with(HashMap::new).iter().filter(|(_, g)| g.evr == e).map(|(&b, _)| b).collect();
     for b in gs {
         sync(b);
     }
+}
+
+/// A VMR-9 of vmr9.rs at `key` (its IBaseFilter): drawn as the old ones were; `windowless`
+/// once it is in VMR9Mode_Windowless.
+pub(crate) fn vmr_evr(key: u32, windowless: Option<bool>) {
+    let mut g = EVRS.lock().unwrap_or_else(|e| e.into_inner());
+    let m = g.get_or_insert_with(HashMap::new);
+    let e = m.entry(key).or_insert(Evr { hwnd: 0, src: [0.0, 0.0, 1.0, 1.0], dst: (0, 0, 0, 0), mode: 0, vmr: true, src_px: None, windowless: false, border: 0, key: 0 });
+    if let Some(w) = windowless {
+        e.windowless = w;
+    }
+    drop(g);
+    evr_changed(key);
 }
 
 fn evr_slot(iid: u32) -> Option<u32> {
@@ -1638,7 +1713,7 @@ fn wl_block(c: &Ctx) -> u32 {
     vmr_block(c, VMR_WINDOWLESS)
 }
 /// GetNativeVideoSize(w, h, aspect w, aspect h)
-fn wl_native(c: &mut Ctx) -> u32 {
+pub(crate) fn wl_native(c: &mut Ctx) -> u32 {
     let v = native(wl_block(c));
     for (i, x) in [v.0, v.1, v.0, v.1].into_iter().enumerate() {
         if c.a(1 + i as u32) != 0 {
@@ -1648,14 +1723,14 @@ fn wl_native(c: &mut Ctx) -> u32 {
     0
 }
 /// GetMinIdealVideoSize(w, h): 1x1, as Windows answers (tests/winref dshow)
-fn wl_min_ideal(c: &mut Ctx) -> u32 {
+pub(crate) fn wl_min_ideal(c: &mut Ctx) -> u32 {
     put32(c.a(1), 1);
     put32(c.a(2), 1);
     0
 }
 /// GetMaxIdealVideoSize(w, h): one more than the screen each way (Windows on a 1024x768 screen:
 /// 1025x769)
-fn wl_max_ideal(c: &mut Ctx) -> u32 {
+pub(crate) fn wl_max_ideal(c: &mut Ctx) -> u32 {
     let (w, h) = crate::user::screen();
     put32(c.a(1), (w + 1) as u32);
     put32(c.a(2), (h + 1) as u32);
@@ -1671,7 +1746,7 @@ fn put_rect(p: u32, r: (i32, i32, i32, i32)) {
     }
 }
 /// SetVideoPosition(const RECT *src, const RECT *dst)
-fn wl_set_pos(c: &mut Ctx) -> u32 {
+pub(crate) fn wl_set_pos(c: &mut Ctx) -> u32 {
     let e = wl_block(c);
     let (s, d) = (c.a(1), c.a(2));
     if s == 0 && d == 0 {
@@ -1695,7 +1770,7 @@ fn wl_set_pos(c: &mut Ctx) -> u32 {
     evr_changed(e);
     0
 }
-fn wl_get_pos(c: &mut Ctx) -> u32 {
+pub(crate) fn wl_get_pos(c: &mut Ctx) -> u32 {
     let b = wl_block(c);
     let Some(e) = evr_with(b, |v| *v) else { return E_POINTER };
     let v = native(b);
@@ -1707,27 +1782,27 @@ fn wl_get_pos(c: &mut Ctx) -> u32 {
     }
     0
 }
-fn wl_get_mode(c: &mut Ctx) -> u32 {
+pub(crate) fn wl_get_mode(c: &mut Ctx) -> u32 {
     if c.a(1) == 0 {
         return E_POINTER;
     }
     put32(c.a(1), evr_with(wl_block(c), |v| v.mode).unwrap_or(0));
     0
 }
-fn wl_set_mode(c: &mut Ctx) -> u32 {
+pub(crate) fn wl_set_mode(c: &mut Ctx) -> u32 {
     let (e, m) = (wl_block(c), c.a(1));
     evr_with(e, |v| v.mode = m);
     evr_changed(e);
     0
 }
-fn wl_set_window(c: &mut Ctx) -> u32 {
+pub(crate) fn wl_set_window(c: &mut Ctx) -> u32 {
     let (e, h) = (wl_block(c), c.a(1));
     evr_with(e, |v| v.hwnd = h);
     evr_changed(e);
     0
 }
 /// GetCurrentImage(BYTE **dib): the frame shown, a CoTaskMemAlloc'd 32-bit DIB
-fn wl_image(c: &mut Ctx) -> u32 {
+pub(crate) fn wl_image(c: &mut Ctx) -> u32 {
     let e = wl_block(c);
     if c.a(1) == 0 {
         return E_POINTER;
@@ -1742,12 +1817,12 @@ fn wl_image(c: &mut Ctx) -> u32 {
     putp(c.a(1), img);
     0
 }
-fn wl_set_border(c: &mut Ctx) -> u32 {
+pub(crate) fn wl_set_border(c: &mut Ctx) -> u32 {
     let v = c.a(1);
     evr_with(wl_block(c), |e| e.border = v);
     0
 }
-fn wl_get_border(c: &mut Ctx) -> u32 {
+pub(crate) fn wl_get_border(c: &mut Ctx) -> u32 {
     if c.a(1) == 0 {
         return E_POINTER;
     }

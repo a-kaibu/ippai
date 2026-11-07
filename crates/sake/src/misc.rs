@@ -1128,6 +1128,10 @@ fn dxdiag_provider() -> u32 {
 
 fn CoCreateInstance(c: &mut Ctx) -> u32 {
     let (clsid, iid, out) = (c.a(0), c.a(3), c.a(4));
+    // (the VMR-9 can be aggregated)
+    if let Some(hr) = crate::vmr9::create_instance(c, clsid, c.a(1), iid, out) {
+        return hr;
+    }
     create_object(c, clsid, iid, out)
 }
 
@@ -1151,6 +1155,9 @@ fn create_object(c: &mut Ctx, clsid: u32, iid: u32, out: u32) -> u32 {
     if let Some(obj) = crate::mf::create_instance(clsid, iid) {
         mem::putp(out, obj);
         return if obj == 0 { 0x8000_4002 } else { 0 };
+    }
+    if let Some(hr) = crate::vmr9::create_instance(c, clsid, 0, iid, out) {
+        return hr;
     }
     if let Some(obj) = crate::dshow::create_instance(clsid, iid) {
         mem::putp(out, obj);

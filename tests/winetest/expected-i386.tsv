@@ -79,8 +79,8 @@ d3dx9_36:texture	crash	49	0
 d3dx9_36:volume	crash	1	0
 d3dx9_36:xfile	crash	1	0
 dbghelp:dbghelp	timeout	1	0
-dbghelp:minidump	crash	21	0
-dbghelp:path	crash	551	0
+dbghelp:minidump	crash	9	0
+dbghelp:path	fail	342	3114
 dhcpcsvc:dhcpcsvc	ok	0	4
 dinput:device8	crash	80	0
 dinput:dinput	crash	9	0
@@ -110,7 +110,7 @@ gdi32:brush	fail	557	699
 gdi32:clipping	fail	43	129
 gdi32:dc	crash	17	0
 gdi32:dib	fail	5731	2369628
-gdi32:font	fail	714	68637
+gdi32:font	fail	713	68636
 gdi32:gdiobj	fail	13	49
 gdi32:generated	ok	0	0
 gdi32:icm	fail	27	53
@@ -119,13 +119,13 @@ gdi32:metafile	fail	3720	4999
 gdi32:palette	fail	1585	1618
 gdi32:path	fail	74	124
 gdi32:pen	fail	432	917
-gdiplus:brush	fail	569	1178
+gdiplus:brush	ok	0	1178
 gdiplus:customlinecap	fail	51	123
-gdiplus:font	fail	207	544
+gdiplus:font	fail	132	588
 gdiplus:graphics	crash	1944	0
 gdiplus:graphicspath	crash	3	0
 gdiplus:image	crash	34	0
-gdiplus:matrix	fail	79	115
+gdiplus:matrix	ok	0	115
 gdiplus:metafile	fail	408	1030
 gdiplus:pathiterator	fail	153	253
 gdiplus:pen	fail	132	509
@@ -193,7 +193,7 @@ msvcp90:string	fail	1	1
 msvcr100:msvcr100	crash	7	0
 msvcr120:msvcr120	crash	269	0
 msvcr90:msvcr90	crash	3	0
-msvcrt:cpp	fail	183	231
+msvcrt:cpp	fail	13	541
 msvcrt:data	fail	5	15
 msvcrt:dir	crash	7	0
 msvcrt:environ	crash	4	0
@@ -270,7 +270,7 @@ quartz:avisplit	ok	0	0
 quartz:colorconv	crash	1	0
 quartz:dsoundrender	crash	1	0
 quartz:filesource	crash	1	0
-quartz:filtergraph	crash	65	0
+quartz:filtergraph	crash	31	0
 quartz:filtermapper	crash	1	0
 quartz:memallocator	crash	1	0
 quartz:mpegaudio	ok	0	0
@@ -281,7 +281,7 @@ quartz:passthrough	crash	2	0
 quartz:systemclock	crash	1	0
 quartz:videorenderer	crash	1	0
 quartz:vmr7	crash	1	0
-quartz:vmr9	ok	0	0
+quartz:vmr9	crash	1464	0
 quartz:waveparser	ok	0	0
 secur32:main	fail	5	10
 secur32:negotiate	crash	0	0

@@ -58,6 +58,7 @@ pub mod gdiplus_text;
 pub mod gdiplus_brush;
 pub mod gdiplus_font;
 pub mod undname;
+pub mod vmr9;
 pub mod d3dx9shader;
 pub mod vcomp;
 pub mod nt;
