@@ -243,6 +243,28 @@ const TWIN_SHADER: &str = r#"
 }
 "#;
 
+/// (TWIN_SHADER's 24-bit UNORM rounding)
+const TWIN_Q24: &str = r#"
+fn q24(z: f32) -> f32 {
+  let k = round(clamp(z, 0.0, 1.0) * 16777215.0);
+  let a = k * 5.9604644775390625e-8;
+  let b = k * 3.552713678800501e-15;
+  let s = a + b;
+  // (a + b rounded down at a tie: k / (2^24 - 1) is above it, the next float up)
+  let e = (a - s) + b;
+  if (e > 0.0 && (s + 2.0 * e) - s == 2.0 * e) {
+    return s + 2.0 * e;
+  }
+  return s;
+}
+"#;
+
+/// A depth in 0..1 as Direct3D's 24-bit UNORM depth reads back (TWIN_Q24's value).
+pub(crate) fn q24(z: f32) -> f32 {
+    let k = (z.clamp(0.0, 1.0) as f64 * 16777215.0).round_ties_even();
+    (k / 16777215.0) as f32
+}
+
 const RESOLVE_SHADER: &str = r#"
 @group(0) @binding(0) var tex: texture_multisampled_2d<f32>;
 @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
@@ -323,6 +345,9 @@ struct Tex {
     samples: u32,
     /// a multisampled texture shown on the screen: what it resolves to (texture, view)
     shown: Option<(Id, Id)>,
+    /// Direct3D's 24-bit UNORM depth (D24_UNORM_S8_UINT, R24G8_TYPELESS): read as floats, its
+    /// depth is rounded to the 24-bit value Windows holds (see `depth_twin`)
+    d24: bool,
 }
 
 impl Tex {
@@ -568,7 +593,8 @@ pub struct D3d {
     twins: HashMap<u32, (u32, u64)>,
     next_twin: u32,
     /// the copy's pipeline and layout (0: not made yet)
-    twin_pipe: (Id, Id),
+    /// (pipeline, layout) of the depth twins: as floats, as 24-bit UNORM
+    twin_pipe: [(Id, Id); 2],
 }
 
 impl D3d {
@@ -656,7 +682,7 @@ impl D3d {
             resolve_pipes: HashMap::new(),
             twins: HashMap::new(),
             next_twin: TWIN_IDS,
-            twin_pipe: (0, 0),
+            twin_pipe: [(0, 0); 2],
         }
     }
 
@@ -850,7 +876,7 @@ impl D3d {
                     self.clear_groups2();
                     self.created.set(self.created.get() + 1);
                     let view = gpu::view(tex, "");
-                    self.textures.insert(id, Tex { tex, w, h, levels, format: fmt, view, layers: 1, dim: "2d", views: HashMap::new(), fits: HashMap::new(), zclear: None, zused: 0, halved: halved(format), storage: false, make: c[i..i + 7].to_vec(), samples: 1, shown: None });
+                    self.textures.insert(id, Tex { tex, w, h, levels, format: fmt, view, layers: 1, dim: "2d", views: HashMap::new(), fits: HashMap::new(), zclear: None, zused: 0, halved: halved(format), storage: false, make: c[i..i + 7].to_vec(), samples: 1, shown: None, d24: false });
                     i += 7;
                 }
                 DESTROY_TEXTURE => {
@@ -2583,20 +2609,25 @@ impl D3d {
         };
         self.end_pass();
         self.flush_if_used(tid);
-        if self.twin_pipe.0 == 0 {
-            let m = gpu::shader(TWIN_SHADER);
+        let q = self.textures[&id].d24 as usize;
+        if self.twin_pipe[q].0 == 0 {
+            // (24-bit: the UNORM value k / (2^24 - 1) of k = round(z * (2^24 - 1)), as
+            // k 2^-24 + k 2^-48 (the series' first terms) rounded as k / (2^24 - 1): a tie
+            // rounded down goes up, the rest being above it)
+            let src = if q == 1 { TWIN_SHADER.replace("textureLoad(z, vec2<i32>(p.xy), 0)", "q24(textureLoad(z, vec2<i32>(p.xy), 0))") + TWIN_Q24 } else { TWIN_SHADER.to_string() };
+            let m = gpu::shader(&src);
             let layout = gpu::bind_group_layout(r#"{"entries":[{"binding":0,"visibility":2,"texture":{"sampleType":"depth","viewDimension":"2d"}}]}"#);
             let pl = gpu::pipeline_layout(&format!(r#"{{"bindGroupLayouts":[{layout}]}}"#));
             let p = gpu::render_pipeline(&format!(
                 r#"{{"layout":{pl},"vertex":{{"module":{m},"entryPoint":"vs"}},"fragment":{{"module":{m},"entryPoint":"fs","targets":[{{"format":"r32float"}}]}},"primitive":{{"topology":"triangle-list"}}}}"#
             ));
             gpu::drop(pl);
-            self.twin_pipe = (p, layout);
+            self.twin_pipe[q] = (p, layout);
         }
         let t = &self.textures[&id];
         // (depth no draw has used yet: what its last clear left, see `zused`; its passes may not
         // have stored it)
-        let cleared = (t.zused & 1 == 0 && !self.no_pass_opt).then(|| t.zclear.map_or(1.0, |z| z.0));
+        let cleared = (t.zused & 1 == 0 && !self.no_pass_opt).then(|| t.zclear.map_or(1.0, |z| z.0)).map(|z| if t.d24 { q24(z) } else { z });
         self.use_tex(id);
         self.use_tex(tid);
         self.open = true;
@@ -2609,9 +2640,9 @@ impl D3d {
                 }
                 None => {
                     let zv = self.view2(id, 1, 0, 1, layer, 1, true);
-                    let group = gpu::bind_group(self.twin_pipe.1, &[(0, Res::Obj(zv))]);
+                    let group = gpu::bind_group(self.twin_pipe[q].1, &[(0, Res::Obj(zv))]);
                     gpu::begin_pass(&format!(r#"{{"colorAttachments":[{{"view":{dv},"loadOp":"clear","storeOp":"store"}}]}}"#));
-                    gpu::set_pipeline(self.twin_pipe.0);
+                    gpu::set_pipeline(self.twin_pipe[q].0);
                     gpu::set_bind_group(0, group, &[]);
                     gpu::draw(3, 1, 0, 0);
                     gpu::end_pass();
@@ -2659,8 +2690,8 @@ impl D3d {
     fn create_texture2(&mut self, a: [u32; 7]) {
         let [id, w, h, layers, mips, format, dim_code] = a;
         self.drop_twin(id);
-        // (bit 8: bound for unordered access; bit 9: multisampled)
-        let (uav, ms, dim_code) = (dim_code & 0x100 != 0, dim_code & 0x200 != 0, dim_code & 0xff);
+        // (bit 8: bound for unordered access; bit 9: multisampled; bit 10: 24-bit UNORM depth)
+        let (uav, ms, d24, dim_code) = (dim_code & 0x100 != 0, dim_code & 0x200 != 0, dim_code & 0x400 != 0, dim_code & 0xff);
         let fmt = tex_format(format);
         // 1D textures are 2D ones of height 1: WebGPU's 1D textures have neither array layers
         // nor mips (dxwgsl declares Texture1D[Array] as texture_2d[_array] to match)
@@ -2714,7 +2745,7 @@ impl D3d {
         );
         let mut make = vec![CREATE_TEXTURE2];
         make.extend_from_slice(&a);
-        self.textures.insert(id, Tex { tex, w, h, levels, format: fmt, view, layers: layers.max(1), dim, views: HashMap::new(), fits: HashMap::new(), zclear: None, zused: 0, halved: halved(format), storage, make, samples, shown: None });
+        self.textures.insert(id, Tex { tex, w, h, levels, format: fmt, view, layers: layers.max(1), dim, views: HashMap::new(), fits: HashMap::new(), zclear: None, zused: 0, halved: halved(format), storage, make, samples, shown: None, d24 });
         // A depth buffer starts at depth 1 (what Direct3D leaves undefined; WebGPU's zeros fail
         // every LESS test), and the passes that clear rather than load an aspect no draw used
         // yet (see `zused`) start from that too.
@@ -3876,5 +3907,36 @@ mod damage_tests {
         }
         // (more than the last 8 since s2: not known)
         assert_eq!(d.changed_since(7, s2), None);
+    }
+}
+
+#[cfg(test)]
+mod q24_tests {
+    /// Windows' reads of 24-bit UNORM depth (winref d3d11depth: R24G8_TYPELESS read through
+    /// R24_UNORM_X8_TYPELESS after a clear to 0.25 and a draw at 0.5).
+    #[test]
+    fn as_windows_reads_it() {
+        assert_eq!(super::q24(0.5).to_bits(), 0x3f00_0001, "0.5: 3fe0000020000000 as a double");
+        assert_eq!(super::q24(0.25).to_bits(), 0x3e80_0001);
+        assert_eq!((super::q24(0.0), super::q24(1.0), super::q24(-3.0), super::q24(7.0)), (0.0, 1.0, 0.0, 1.0));
+    }
+
+    /// TWIN_Q24's shader formula (k 2^-24 + k 2^-48 in f32, a tie rounded down moved up) is k / (2^24 - 1)
+    /// correctly rounded, for every one of the 2^24 values k (exhaustive), and q24 of a value
+    /// is the nearest of them.
+    #[test]
+    fn shader_formula_is_exact_for_every_value() {
+        for k in 0..1u32 << 24 {
+            let kf = k as f32;
+            let (a, b) = (kf * 5.960_464_5e-8, kf * 3.552_713_7e-15);
+            let s = a + b;
+            let e = (a - s) + b;
+            let shader = if e > 0.0 && (s + 2.0 * e) - s == 2.0 * e { s + 2.0 * e } else { s };
+            let exact = (k as f64 / 16777215.0) as f32;
+            assert_eq!(shader.to_bits(), exact.to_bits(), "k {k}");
+            if k % 4099 == 0 {
+                assert_eq!(super::q24(exact).to_bits(), exact.to_bits(), "q24 keeps k {k}");
+            }
+        }
     }
 }

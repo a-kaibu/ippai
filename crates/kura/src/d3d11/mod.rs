@@ -1235,8 +1235,9 @@ fn new_texture(d: &mut D11, dim: u32, w: u32, h: u32, layers: u32, mips: u32, fm
     let mips = if mips == 0 { max } else { mips.min(max) };
     let gpu = page_id();
     let layers = layers.max(1);
-    // (bit 8: bound for unordered access, a storage texture on the page)
-    let uav = if bind & 0x80 != 0 { 0x100 } else { 0 } | if samples > 1 { 0x200 } else { 0 };
+    // (bit 8: bound for unordered access, a storage texture on the page; bit 9: multisampled;
+    // bit 10: 24-bit UNORM depth, which the page's depth24plus may hold as floats)
+    let uav = if bind & 0x80 != 0 { 0x100 } else { 0 } | if samples > 1 { 0x200 } else { 0 } | if (44..=47).contains(&fmt) { 0x400 } else { 0 };
     gpu::record(|q| q.cmd(&[gpu::CREATE_TEXTURE2, gpu, w.max(1), h.max(1), layers, mips, page, uav | match dim {
         3 => 1,
         1 => 2,
@@ -3887,7 +3888,7 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
                     }
                     // (a stencil view, X32_TYPELESS_G8X24_UINT or X24_TYPELESS_G8_UINT: not the
                     // page's float copy of the depth, which depth views read: unbound)
-                    if e[1] == 1 && matches!(d.objs.get(&sv).map(|o| &o.data), Some(Data::View(v)) if matches!(v.fmt, 22 | 46)) {
+                    if e[1] == 1 && matches!(d.objs.get(&sv).map(|o| &o.data), Some(Data::View(v)) if matches!(v.fmt, 22 | 47)) {
                         e[2] = 0;
                     }
                     entries.push(e);
