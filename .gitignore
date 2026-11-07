@@ -4,7 +4,6 @@
 /web/public/sake
 /node_modules
 /logs
-/crates/ippai/target
 /dist
 /web/public/benchwasm
 
@@ -15,5 +14,5 @@
 /fuzz/seeds
 /fuzz/coverage
 __pycache__/
-# sake's fonts the release makes (release.yml: tools/ci/sake-fonts.py fonts; GoReleaser wants a clean tree)
+# sake's fonts the release makes (release.yml: tools/ci/sake-fonts.py fonts)
 /fonts/

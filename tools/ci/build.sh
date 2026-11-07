@@ -1,8 +1,8 @@
 #!/bin/bash
 # Builds ippai from a fresh checkout: sake.wasm, the page (web/dist), and the ippai binary
 # with the page built in, then packs them into $DIST/ippai-<version>.tar.zst (+ .sha256) for the
-# corpus runs (tests/corpus/ci.sh: they serve web/ from it). The releases are GoReleaser's
-# (.goreleaser.yaml, .github/workflows/release.yml), from the web/dist this makes.
+# corpus runs (tests/corpus/ci.sh: they serve web/ from it). The releases are
+# .github/workflows/release.yml's.
 # Used by .github/workflows/ci.yml and runnable anywhere with the same tools:
 #   apt: mingw-w64 zstd; rustup (rust-src,
 #   wasm32-unknown-emscripten); node 26+. Emscripten is downloaded into $EMSDK4.
