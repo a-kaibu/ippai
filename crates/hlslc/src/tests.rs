@@ -421,3 +421,25 @@ fn malformed_sources_are_errors() {
         let _ = super::d3d9asm::assemble(asm);
     }
 }
+
+/// ANGLE's D3D11 back end (Godot's GL compatibility renderer on Windows): arrays of textures and
+/// samplers indexed by a constant that arrives through a function argument
+const ANGLE_TEX_ARRAY: &str = "struct PS_INPUT { float4 dx_Position : SV_Position; float2 v0 : TEXCOORD0; };\n\
+static const uint _source = 0; static const uint _second = 1;\n\
+uniform Texture2D<float4> textures2D[2] : register(t0);\n\
+uniform SamplerState samplers2D[2] : register(s0);\n\
+float4 gl_texture2D(uint samplerIndex, float2 t) { return textures2D[samplerIndex].Sample(samplers2D[samplerIndex], float2(t.x, t.y)); }\n\
+float4 main(PS_INPUT input) : SV_Target { return gl_texture2D(_source, input.v0) + gl_texture2D(_second, input.v0.yx); }\n";
+
+#[test]
+fn texture_arrays() {
+    let p = compile(ANGLE_TEX_ARRAY, "main", "ps_5_0");
+    let w = wgsl(&p, true, None);
+    // both elements are bound: t0/s0 and t1/s1
+    assert!(w.matches("textureSample").count() >= 2, "{w}");
+    assert!(w.contains("t1") && w.contains("s1"), "{w}");
+    let mut inc = |_: &str, _: bool| None;
+    let bad = ANGLE_TEX_ARRAY.replace("gl_texture2D(_second", "gl_texture2D(5");
+    let e = super::compile(&bad, &[], &mut inc, "main", "ps_5_0", 0).unwrap_err();
+    assert!(e.contains("out of range"), "{e}");
+}

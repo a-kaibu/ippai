@@ -82,8 +82,13 @@ impl Ty {
             t => t.clone(),
         }
     }
+    /// a texture or sampler, or an array of them
     pub fn is_object(&self) -> bool {
-        matches!(self, Ty::Tex(..) | Ty::Sampler(_) | Ty::Legacy(_))
+        match self {
+            Ty::Tex(..) | Ty::Sampler(_) | Ty::Legacy(_) => true,
+            Ty::Array(e, _) => e.is_object(),
+            _ => false,
+        }
     }
     /// vector (or scalar for 1) of `n`
     pub fn vec(b: B, n: usize) -> Ty {

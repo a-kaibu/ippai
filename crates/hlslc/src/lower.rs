@@ -22,6 +22,10 @@ pub enum Obj {
     Samp(u32),
     /// sampler2D: texture and sampler
     Legacy(u32, u32),
+    /// an array of them: element i is the first's descriptor + i (the length is the type's)
+    TexArr(u32),
+    SampArr(u32),
+    LegacyArr(u32, u32),
 }
 
 #[derive(Clone, Debug)]
@@ -849,7 +853,8 @@ impl<'a> L<'a> {
                         self.texs[t as usize].used = true;
                         self.samps[s as usize].used = true;
                     }
-                    Obj::None => {}
+                    // (arrays: the elements indexed are marked)
+                    Obj::None | Obj::TexArr(_) | Obj::SampArr(_) | Obj::LegacyArr(..) => {}
                 }
                 // (bools of constant buffers are 0/1: canonical masks)
                 if self.cbvar.contains_key(name) && v.ty.base() == B::Bool && v.ty.numeric() {
@@ -1026,7 +1031,28 @@ impl<'a> L<'a> {
                 self.samps.push(SampD { name: v.name.clone(), cmp: false, reg, used: false });
                 Obj::Legacy(self.texs.len() as u32 - 1, self.samps.len() as u32 - 1)
             }
-            Ty::Array(..) => return Err(format!("line {}: arrays of textures or samplers are not supported", v.line)),
+            Ty::Array(e, n) => {
+                // one descriptor per element, on consecutive registers
+                let (t0, s0) = (self.texs.len() as u32, self.samps.len() as u32);
+                for i in 0..*n {
+                    let name = format!("{}[{i}]", v.name);
+                    let reg = reg.map(|r| r + i);
+                    match &**e {
+                        Ty::Tex(d, el) => self.texs.push(TexD { name, dim: *d, el: (**el).clone(), reg, used: false }),
+                        Ty::Sampler(cmp) => self.samps.push(SampD { name, cmp: *cmp, reg, used: false }),
+                        Ty::Legacy(d) => {
+                            self.texs.push(TexD { name: name.clone(), dim: *d, el: Ty::Vec(B::Float, 4), reg, used: false });
+                            self.samps.push(SampD { name, cmp: false, reg, used: false });
+                        }
+                        _ => return Err(format!("line {}: arrays of arrays of textures or samplers are not supported", v.line)),
+                    }
+                }
+                match &**e {
+                    Ty::Tex(..) => Obj::TexArr(t0),
+                    Ty::Sampler(_) => Obj::SampArr(s0),
+                    _ => Obj::LegacyArr(t0, s0),
+                }
+            }
             _ => return Ok(()),
         };
         self.globals.insert(v.name.clone(), Val { ty: v.ty().clone(), c: Vec::new(), obj });
@@ -2014,6 +2040,31 @@ impl<'a> L<'a> {
     }
 
     fn index(&mut self, v: Val, iv: Val) -> R<Val> {
+        if let (Ty::Array(e, n), Obj::TexArr(_) | Obj::SampArr(_) | Obj::LegacyArr(..)) = (&v.ty, v.obj) {
+            // an element of an array of textures/samplers: the index must be known when compiling
+            let i = match iv.c.first() {
+                Some(&C::I(i)) if iv.c.len() == 1 && (i as u32) < *n => i as u32,
+                Some(&C::I(_)) => return Err("texture or sampler array index out of range".into()),
+                _ => return Err("a texture or sampler array needs a constant index".into()),
+            };
+            let obj = match v.obj {
+                Obj::TexArr(t) => {
+                    self.texs[(t + i) as usize].used = true;
+                    Obj::Tex(t + i)
+                }
+                Obj::SampArr(s) => {
+                    self.samps[(s + i) as usize].used = true;
+                    Obj::Samp(s + i)
+                }
+                Obj::LegacyArr(t, s) => {
+                    self.texs[(t + i) as usize].used = true;
+                    self.samps[(s + i) as usize].used = true;
+                    Obj::Legacy(t + i, s + i)
+                }
+                _ => unreachable!(),
+            };
+            return Ok(Val { ty: (**e).clone(), c: Vec::new(), obj });
+        }
         match &v.ty {
             Ty::Array(e, n) => {
                 let k = ncomp(self.prog, e);
