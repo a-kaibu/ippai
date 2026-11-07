@@ -134,7 +134,7 @@ fn run(seed: u64) {
         let flat = r.chance(30);
         glShadeModel(if flat { 0x1D00 } else { 0x1D01 });
         // the arrays (or the current values)
-        let mut arr = |r: &mut Rng, sizes: &[i32], types: &[u32]| -> Option<Arr> {
+        let arr = |r: &mut Rng, sizes: &[i32], types: &[u32]| -> Option<Arr> {
             if !r.chance(75) {
                 return None;
             }

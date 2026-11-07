@@ -41,6 +41,102 @@ pub(crate) unsafe extern "C" fn alloc(n: u32) -> *mut u8 {
     p as *mut u8
 }
 unsafe extern "C" fn free(_: *mut u8) {}
+/// Runs `f` on a thread whose stack and heap are below 4 GB: the Direct3D 8 layer hands the
+/// Direct3D 9 one structures on its stack and heap by 32-bit address, as it does in wasm32.
+pub(crate) fn on_low_stack(f: fn()) {
+    unsafe {
+        let size = 16 << 20;
+        let st = libc::mmap(std::ptr::null_mut(), size, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_32BIT, -1, 0);
+        assert!(st != libc::MAP_FAILED);
+        let mut attr: libc::pthread_attr_t = std::mem::zeroed();
+        libc::pthread_attr_init(&mut attr);
+        libc::pthread_attr_setstack(&mut attr, st, size);
+        extern "C" fn start(f: *mut libc::c_void) -> *mut libc::c_void {
+            let f: fn() = unsafe { std::mem::transmute(f) };
+            LOW_HEAP.with(|l| l.set(true));
+            let r = std::panic::catch_unwind(f);
+            LOW_HEAP.with(|l| l.set(false));
+            match r {
+                Ok(()) => std::ptr::null_mut(),
+                Err(e) => Box::into_raw(Box::new(e)) as *mut libc::c_void,
+            }
+        }
+        let mut t: libc::pthread_t = 0;
+        assert_eq!(libc::pthread_create(&mut t, &attr, start, f as *mut libc::c_void), 0);
+        let mut ret = std::ptr::null_mut();
+        libc::pthread_join(t, &mut ret);
+        libc::munmap(st, size);
+        if !ret.is_null() {
+            std::panic::resume_unwind(*Box::from_raw(ret as *mut Box<dyn std::any::Any + Send>));
+        }
+    }
+}
+
+thread_local! {
+    static LOW_HEAP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The test binary's allocator: the system's, but on `on_low_stack`'s thread a bump heap
+/// below 4 GB (never freed: those tests allocate little).
+struct LowHeap;
+static LOW: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static LOW_AT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+const LOW_SIZE: usize = 256 << 20;
+
+impl LowHeap {
+    fn low(p: *mut u8) -> bool {
+        let b = LOW.load(std::sync::atomic::Ordering::Relaxed);
+        b != 0 && (p as usize).wrapping_sub(b) < LOW_SIZE
+    }
+}
+
+unsafe impl std::alloc::GlobalAlloc for LowHeap {
+    unsafe fn alloc(&self, l: std::alloc::Layout) -> *mut u8 {
+        if !LOW_HEAP.try_with(|x| x.get()).unwrap_or(false) {
+            return std::alloc::System.alloc(l);
+        }
+        use std::sync::atomic::Ordering::*;
+        if LOW.load(Acquire) == 0 {
+            let p = libc::mmap(std::ptr::null_mut(), LOW_SIZE, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_32BIT | libc::MAP_NORESERVE, -1, 0);
+            assert!(p != libc::MAP_FAILED);
+            if LOW.compare_exchange(0, p as usize, AcqRel, Acquire).is_err() {
+                libc::munmap(p, LOW_SIZE);
+            }
+        }
+        let base = LOW.load(Acquire);
+        let mut at = LOW_AT.load(Relaxed);
+        loop {
+            let start = (at + l.align() - 1) & !(l.align() - 1);
+            let end = start + l.size().max(1);
+            if end > LOW_SIZE {
+                return std::ptr::null_mut();
+            }
+            match LOW_AT.compare_exchange_weak(at, end, Relaxed, Relaxed) {
+                Ok(_) => return (base + start) as *mut u8,
+                Err(a) => at = a,
+            }
+        }
+    }
+    unsafe fn dealloc(&self, p: *mut u8, l: std::alloc::Layout) {
+        if !Self::low(p) {
+            std::alloc::System.dealloc(p, l)
+        }
+    }
+    unsafe fn realloc(&self, p: *mut u8, l: std::alloc::Layout, size: usize) -> *mut u8 {
+        if !Self::low(p) && !LOW_HEAP.try_with(|x| x.get()).unwrap_or(false) {
+            return std::alloc::System.realloc(p, l, size);
+        }
+        let n = self.alloc(std::alloc::Layout::from_size_align_unchecked(size, l.align()));
+        if !n.is_null() {
+            std::ptr::copy_nonoverlapping(p, n, l.size().min(size));
+            self.dealloc(p, l);
+        }
+        n
+    }
+}
+
+#[global_allocator]
+static HEAP: LowHeap = LowHeap;
 unsafe extern "C" fn client_rect(_: u32, r: *mut i32) -> i32 {
     for (i, v) in [0, 0, 64, 64].into_iter().enumerate() {
         *r.add(i) = v;

@@ -12,27 +12,27 @@ use super::trace_tests::{alloc, attach_page, Rng, CALLS, SERIAL};
 use super::*;
 use crate::render::model;
 
-fn call(iface: u32, m: u32, args: &[u32]) -> u32 {
+pub(super) fn call(iface: u32, m: u32, args: &[u32]) -> u32 {
     unsafe { vnhost_d3d9_call(iface << 8 | m, args.as_ptr(), &CALLS) }
 }
-fn out() -> u32 {
+pub(super) fn out() -> u32 {
     unsafe { alloc(16) as u32 }
 }
-fn rd(p: u32) -> u32 {
+pub(super) fn rd(p: u32) -> u32 {
     unsafe { *(p as *const u32) }
 }
-fn put_bytes(p: u32, b: &[u8]) {
+pub(super) fn put_bytes(p: u32, b: &[u8]) {
     unsafe { std::ptr::copy_nonoverlapping(b.as_ptr(), p as *mut u8, b.len()) };
 }
 
 /// A layout: elements (stream, offset, type, usage, usage index) and the stream strides it
 /// needs at least.
-struct Layout {
-    elems: Vec<(u32, u32, u32, u32, u32)>,
-    fvf: u32,
+pub(super) struct Layout {
+    pub(super) elems: Vec<(u32, u32, u32, u32, u32)>,
+    pub(super) fvf: u32,
 }
 
-fn type_bytes(t: u32) -> u32 {
+pub(super) fn type_bytes(t: u32) -> u32 {
     match t {
         0 => 4,
         1 => 8,
@@ -43,7 +43,7 @@ fn type_bytes(t: u32) -> u32 {
     }
 }
 
-fn layouts() -> Vec<Layout> {
+pub(super) fn layouts() -> Vec<Layout> {
     vec![
         // one stream: position, colour, a texture coordinate
         Layout { elems: vec![(0, 0, 2, 0, 0), (0, 12, 4, 10, 0), (0, 16, 1, 5, 0)], fvf: 0 },
@@ -51,13 +51,15 @@ fn layouts() -> Vec<Layout> {
         Layout { elems: vec![(0, 0, 2, 0, 0), (1, 0, 4, 10, 0), (1, 4, 1, 5, 0)], fvf: 0 },
         // position and a normal, coordinates in the other order
         Layout { elems: vec![(0, 16, 2, 0, 0), (0, 0, 2, 3, 0), (0, 28, 1, 5, 0)], fvf: 0 },
+        // a specular colour and two coordinate sets (usage indices 1)
+        Layout { elems: vec![(0, 0, 2, 0, 0), (0, 12, 4, 10, 1), (0, 16, 1, 5, 1), (0, 24, 1, 5, 0)], fvf: 0 },
         // FVF XYZ | DIFFUSE | TEX1
         Layout { elems: vec![(0, 0, 2, 0, 0), (0, 12, 4, 10, 0), (0, 16, 1, 5, 0)], fvf: 0x142 },
     ]
 }
 
 /// D3D9's primitives of `prim` over vertex numbers `v` (fans: (v0, v[i+1], v[i+2])).
-fn d3d_prims(prim: u32, v: &[i64], n: u32) -> Vec<Vec<i64>> {
+pub(super) fn d3d_prims(prim: u32, v: &[i64], n: u32) -> Vec<Vec<i64>> {
     let n = n as usize;
     match prim {
         1 => v.iter().take(n).map(|&x| vec![x]).collect(),
@@ -70,7 +72,7 @@ fn d3d_prims(prim: u32, v: &[i64], n: u32) -> Vec<Vec<i64>> {
 }
 
 /// (a triangle's vertices from its smallest: the same triangle, the same winding)
-fn rotated<T: Ord + Clone>(p: &[T]) -> Vec<T> {
+pub(super) fn rotated<T: Ord + Clone>(p: &[T]) -> Vec<T> {
     if p.len() != 3 {
         return p.to_vec();
     }
@@ -163,7 +165,6 @@ fn run(seed: u64) {
         let n = 1 + r.below(6) as u32;
         let count = [0, n, 2 * n, n + 1, 3 * n, n + 2, n + 2][prim as usize];
         let kind = r.below(4);
-        let indexed = kind == 1 || kind == 3;
         let isz = if r.chance(50) { 2 } else { 4 };
         // the index values, and where the vertex numbers start
         let mut base: i64 = r.below(12) as i64 - 4;

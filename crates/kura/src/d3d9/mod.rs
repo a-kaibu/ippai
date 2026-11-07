@@ -20,6 +20,8 @@ pub(crate) mod lock_tests;
 #[cfg(test)]
 mod draw_tests;
 #[cfg(test)]
+mod draw8_tests;
+#[cfg(test)]
 pub(crate) mod sb_tests;
 
 use std::collections::HashMap;
