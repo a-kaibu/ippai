@@ -1260,6 +1260,12 @@ fn wcstombs(c: &mut Ctx) -> u32 {
     let mut k = 0usize;
     for ch in wstr(src) {
         let Some(cb) = wc_bytes(ch) else {
+            // (counting does not fail: Windows' msvcrt counts such a character as one byte,
+            // winref trialapis)
+            if dst == 0 {
+                k += 1;
+                continue;
+            }
             set_errno(42);
             return u32::MAX;
         };

@@ -75,7 +75,7 @@ enum Cmd {
     #[command(flatten)]
     Pack(pack::Cmd),
     /// One TrueType collection from fonts that share their glyphs (sake's MS-named fonts:
-    /// msgothic.ttc from msgothic, mspgothic, msuigothic.ttf; msmincho.ttc from msmincho,
+    /// msgothic.ttc from msgothic, msuigothic, mspgothic.ttf (Windows' order); msmincho.ttc from msmincho,
     /// mspmincho.ttf), the first font's glyphs shared by the others where theirs are the same.
     #[command(hide = true)]
     Ttc { out: PathBuf, fonts: Vec<PathBuf> },

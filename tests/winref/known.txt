@@ -108,3 +108,7 @@ res-* ^(want|got) +item 0: 1 id \d+ type 0 state 0 sub 1 text \[&File\] cch 5$  
 # not implemented yet (thread "ソフト電池をsakeで正常に動かす"): named pipes, then processes
 pipes-* .  # in progress
 procs-* .  # in progress
+# sake's MS-named fonts are IPA fonts under those names (tools/ci/sake-fonts.py), as separate
+# .ttf files in a game's store or one msgothic.ttc from `ippai ttc`: other design metrics, and the
+# file, its type and face count differ when the store has the .ttf files
+dwfont-* ^(want|got) +(metrics em|face 00000000 type|local loader|analyze)

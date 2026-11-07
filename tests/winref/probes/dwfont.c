@@ -1,5 +1,5 @@
 /* DirectWrite's system font collection for the Japanese faces games and engines ask for (MS
- * Gothic, MS PGothic, MS UI Gothic, MS Mincho, MS PMincho): FindFamilyName by English and
+ * Gothic, MS PGothic, MS UI Gothic; the runner has no MS Mincho): FindFamilyName by English and
  * Japanese names in any case, the family's localized names, the matching font's properties,
  * HasCharacter and design metrics, its font face's type, index and file (the local loader's
  * path), and the system font fallback's MapCharacters (Godot finds fonts for text its own
@@ -102,7 +102,7 @@ static void face(IDWriteFontCollection *coll, const WCHAR *name) {
         WCHAR *nm = wcsrchr(p, L'\\');
         nm = nm ? nm + 1 : p;
         for (WCHAR *q = nm; *q; q++) *q = towlower(*q);
-        printf(" path %08lx len ok %d %ls short %08lx", hr, len == wcslen(p), nm, IDWriteLocalFontFileLoader_GetFilePathFromKey(local, key, ks, p, len));
+        printf(" path %08lx len %d %ls short %08lx", hr, (int)len - (int)wcslen(p), nm, IDWriteLocalFontFileLoader_GetFilePathFromKey(local, key, ks, p, len));
         IDWriteLocalFontFileLoader_Release(local);
     }
     BOOL sup = 0;
@@ -153,17 +153,18 @@ static void fallback(IDWriteFactory *fac, IDWriteFontCollection *coll) {
     printf("number substitution %08lx %d\n", hr, ns != NULL);
     if (ns) IDWriteNumberSubstitution_Release(ns);
     static const struct { const WCHAR *text, *family; UINT32 pos; } t[] = {
-        { L"abc\x3042\x3044\x3046", L"MS Gothic", 0 }, { L"\x6f22\x5b57 abc", L"MS PMincho", 0 }, { L"\xff21\xff22\x3000\x3042", L"\xff2d\xff33 \x660e\x671d", 0 },
+        { L"abc\x3042\x3044\x3046", L"MS Gothic", 0 }, { L"\x6f22\x5b57 abc", L"MS PGothic", 0 }, { L"\xff21\xff22\x3000\x3042", L"\xff2d\xff33 \x30b4\x30b7\x30c3\x30af", 0 },
         { L"xyz\x3042\x3044", L"MS UI Gothic", 3 }, { L"\x3042\x3044\x3046", L"MS PGothic", 1 },
     };
     for (unsigned i = 0; i < sizeof t / sizeof *t; i++) {
         Source s = { { &svt }, t[i].text, (UINT32)wcslen(t[i].text) };
+        printf("  map "); hexw(t[i].text); printf(" at %u\n", t[i].pos);
         UINT32 mapped = 99;
         IDWriteFont *font = NULL;
         FLOAT scale = -1;
         hr = IDWriteFontFallback_MapCharacters(fb, &s.src, t[i].pos, s.len - t[i].pos, coll, t[i].family, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
                                                DWRITE_FONT_STRETCH_NORMAL, &mapped, &font, &scale);
-        printf("  map "); hexw(t[i].text); printf(" at %u %08lx mapped %u scale %d font ", t[i].pos, hr, mapped, (int)(scale * 100));
+        printf("   %08lx mapped %u scale %d font ", hr, mapped, (int)(scale * 100));
         if (font) { family_name(font); IDWriteFont_Release(font); }
         printf("\n");
     }
@@ -194,8 +195,8 @@ int main(void) {
     ex = 7;
     IDWriteFontCollection_FindFamilyName(coll, L"No Such Family", &i, &ex);
     printf("missing exists %d index %d\n", ex, (int)i);
-    const WCHAR *fams[] = { L"MS Gothic", L"\xff2d\xff33 \x30b4\x30b7\x30c3\x30af", L"ms pgothic", L"MS UI Gothic", L"MS Mincho", L"\xff2d\xff33 \xff30\x660e\x671d" };
-    for (int k = 0; k < 6; k++) face(coll, fams[k]);
+    const WCHAR *fams[] = { L"MS Gothic", L"\xff2d\xff33 \x30b4\x30b7\x30c3\x30af", L"ms pgothic", L"MS UI Gothic" };
+    for (int k = 0; k < 4; k++) face(coll, fams[k]);
     fallback(f, coll);
     IDWriteFontCollection_Release(coll);
     IDWriteFactory_Release(f);

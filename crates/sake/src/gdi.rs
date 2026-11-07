@@ -1097,8 +1097,10 @@ fn dc_palette(t: &Objs, s: &DcState) -> Vec<u32> {
 
 struct Face {
     names: &'static [&'static str],
-    /// the collection and the face in it (as Windows has them: `ippai ttc` makes them from the
-    /// separate files, a third of their size), else the font's own file
+    /// the collection and the face in it as Windows has them (msgothic.ttc: MS Gothic, MS UI
+    /// Gothic, MS PGothic; winref dwfont), else the font's own file. `ippai ttc` makes the
+    /// collections from the separate files (a third of their size); a face is found in one by
+    /// its family name, so a collection in another order works too.
     ttc: (&'static str, u32),
     file: &'static str,
     fixed: bool,
@@ -1107,10 +1109,10 @@ struct Face {
 
 const FACES: &[Face] = &[
     Face { names: &["ＭＳ ゴシック", "MS Gothic"], ttc: ("msgothic.ttc", 0), file: "msgothic.ttf", fixed: true, roman: false },
-    Face { names: &["ＭＳ Ｐゴシック", "MS PGothic"], ttc: ("msgothic.ttc", 1), file: "mspgothic.ttf", fixed: false, roman: false },
+    Face { names: &["ＭＳ Ｐゴシック", "MS PGothic"], ttc: ("msgothic.ttc", 2), file: "mspgothic.ttf", fixed: false, roman: false },
     Face { names: &["ＭＳ 明朝", "MS Mincho"], ttc: ("msmincho.ttc", 0), file: "msmincho.ttf", fixed: true, roman: true },
     Face { names: &["ＭＳ Ｐ明朝", "MS PMincho"], ttc: ("msmincho.ttc", 1), file: "mspmincho.ttf", fixed: false, roman: true },
-    Face { names: &["MS UI Gothic"], ttc: ("msgothic.ttc", 2), file: "msuigothic.ttf", fixed: false, roman: false },
+    Face { names: &["MS UI Gothic"], ttc: ("msgothic.ttc", 1), file: "msuigothic.ttf", fixed: false, roman: false },
 ];
 
 /// Face `index` of a TrueType collection as a font file of its own (its tables copied out),
@@ -1197,7 +1199,7 @@ fn font_file(i: usize) -> Option<Arc<FontVec>> {
             for d in dirs.into_iter().flatten() {
                 let d = d.trim_end_matches('/');
                 let data = match kura::fs::read(format!("{d}/{ttc}")) {
-                    Ok(c) => ttc_face(&c, index),
+                    Ok(c) => ttc_face(&c, ttc_index(&c, FACES[i].names).unwrap_or(index)),
                     Err(_) => kura::fs::read(format!("{d}/{}", FACES[i].file)).ok(),
                 };
                 if let Some(f) = data.and_then(|v| FontVec::try_from_vec(v).ok()) {
@@ -1219,12 +1221,30 @@ pub fn sys_face_names(i: usize) -> &'static [&'static str] {
     FACES[i].names
 }
 pub fn sys_face_file(i: usize) -> (String, u32) {
+    static KNOWN: Mutex<Vec<Option<(String, u32)>>> = Mutex::new(Vec::new());
+    if let Some(Some(k)) = KNOWN.lock().unwrap().get(i) {
+        return k.clone();
+    }
     let (ttc, index) = FACES[i].ttc;
     let p = format!("C:\\Windows\\Fonts\\{ttc}");
-    if crate::files::resolve(&p).is_some() {
-        return (p, index);
+    let k = match crate::files::resolve(&p).and_then(|h| kura::fs::read(h).ok()) {
+        Some(d) => (p, ttc_index(&d, FACES[i].names).unwrap_or(index)),
+        None => (format!("C:\\Windows\\Fonts\\{}", FACES[i].file), 0),
+    };
+    let mut g = KNOWN.lock().unwrap();
+    if g.len() <= i {
+        g.resize(i + 1, None);
     }
-    (format!("C:\\Windows\\Fonts\\{}", FACES[i].file), 0)
+    g[i] = Some(k.clone());
+    k
+}
+
+/// The face of collection `d` whose family name is one of `names`.
+fn ttc_index(d: &[u8], names: &[&str]) -> Option<u32> {
+    (0..ttf_parser::fonts_in_collection(d)?).find(|&k| {
+        ttf_parser::Face::parse(d, k)
+            .is_ok_and(|f| f.names().into_iter().any(|n| n.name_id == 1 && n.to_string().is_some_and(|s| names.iter().any(|m| *m == s))))
+    })
 }
 /// DWRITE_FONT_METRICS of built-in face `i` in design units: em, ascent, descent, line gap,
 /// cap height, x height, underline position and thickness, strikethrough position and

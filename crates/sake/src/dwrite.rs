@@ -460,11 +460,8 @@ fn GetFamilyNames(c: &mut Ctx) -> u32 {
 /// (locale, name): the English name, then the Japanese one when the face has one
 fn family_names(i: usize) -> Vec<(String, String)> {
     let n = crate::gdi::sys_face_names(i);
-    let mut v = vec![("en-us".to_string(), n[n.len() - 1].to_string())];
-    if n.len() > 1 {
-        v.push(("ja-jp".to_string(), n[0].to_string()));
-    }
-    v
+    // (a face without a Japanese name has its English one under ja-jp too, as MS UI Gothic)
+    vec![("en-us".to_string(), n[n.len() - 1].to_string()), ("ja-jp".to_string(), n[0].to_string())]
 }
 fn GetFirstMatchingFont(c: &mut Ctx) -> u32 {
     // (this, weight, stretch, style, out)
@@ -481,7 +478,7 @@ fn FontGetFontFamily(c: &mut Ctx) -> u32 {
     0
 }
 fn GetFaceNames(c: &mut Ctx) -> u32 {
-    mem::putp(c.a(1), strings(vec![("en-us".to_string(), "Regular".to_string())]));
+    mem::putp(c.a(1), strings(vec![("en-us".to_string(), "Regular".to_string()), ("ja-jp".to_string(), "標準".to_string())]));
     0
 }
 fn GetInformationalStrings(c: &mut Ctx) -> u32 {

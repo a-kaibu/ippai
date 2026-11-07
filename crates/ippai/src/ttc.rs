@@ -1,6 +1,6 @@
 //! `ippai ttc <out.ttc> <a.ttf> <b.ttf>...`: one TrueType collection from several fonts that
-//! share most of their data, as Windows ships MS Gothic (msgothic.ttc: MS Gothic, MS PGothic,
-//! MS UI Gothic). Identical tables are stored once, and so are glyphs: one `glyf` holds per
+//! share most of their data, as Windows ships MS Gothic (msgothic.ttc: MS Gothic, MS UI Gothic,
+//! MS PGothic). Identical tables are stored once, and so are glyphs: one `glyf` holds per
 //! glyph id the first font's glyph and the others' where theirs differ, each font's `loca`
 //! pointing into it. Hinting instructions are dropped (sake draws unhinted; the MS-named
 //! fonts' glyphs differ only there). The page downloads the fonts before a game draws text.
