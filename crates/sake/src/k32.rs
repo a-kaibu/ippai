@@ -482,16 +482,15 @@ fn K32GetPerformanceInfo(c: &mut Ctx) -> u32 {
     w32(at(10) + 8, tids.len().max(1) as u32);
     1
 }
-/// NtQuerySystemInformation(class, buffer, bytes, &needed): SystemBasicInformation,
-/// SystemPerformanceInformation, SystemProcessInformation (this process, its threads); other
-/// classes STATUS_NOT_IMPLEMENTED
-fn NtQuerySystemInformation(c: &mut Ctx) -> u32 {
+/// NtQuerySystemInformation's classes sysinfo.rs leaves to us (class, buffer, bytes, &needed):
+/// SystemPerformanceInformation, SystemProcessInformation (this process, its threads); others
+/// STATUS_INVALID_INFO_CLASS
+pub(crate) fn query_system_processes(c: &mut Ctx) -> u32 {
     let (class, p, len, pr) = (c.a(0), c.a(1), c.a(2), c.a(3));
     let ps = mem::ps();
     let x64 = mem::x64();
-    let [phys, avail, commit, limit, peak, paged, nonpaged] = perf_pages();
+    let [_, avail, commit, limit, peak, paged, nonpaged] = perf_pages();
     let (need, exact) = match class {
-        0 => (if x64 { 64 } else { 44 }, true),
         2 => (312, false),
         5 => {
             let (tids, _) = counts();
@@ -499,7 +498,7 @@ fn NtQuerySystemInformation(c: &mut Ctx) -> u32 {
             let (fixed, ti) = if x64 { (0x100, 0x50) } else { (0xb8, 0x40) };
             (fixed + ti * tids.len().max(1) as u32 + 2 * (name.encode_utf16().count() as u32 + 1), false)
         }
-        _ => return 0xc000_0002,
+        _ => return 0xc000_0003,
     };
     if pr != 0 {
         w32(pr, need);
@@ -509,23 +508,6 @@ fn NtQuerySystemInformation(c: &mut Ctx) -> u32 {
     }
     mem::fill(p, need, 0);
     match class {
-        0 => {
-            w32(p + 4, 156_250); // the timer's increment (15.625 ms)
-            w32(p + 8, 4096);
-            w32(p + 12, phys);
-            w32(p + 16, 1);
-            w32(p + 20, phys);
-            mem::wp(p + 24, 0x10000);
-            mem::wp(p + 24 + ps, 0x10000);
-            // (as GetSystemInfo tells it)
-            if x64 {
-                mem::w64(p + 24 + 2 * ps, 0x7fff_fffe_ffff);
-            } else {
-                w32(p + 24 + 2 * ps, 0x7ffe_ffff);
-            }
-            mem::wp(p + 24 + 3 * ps, (1u32 << ncpu()) - 1);
-            mem::w8(p + 24 + 4 * ps, ncpu() as u8);
-        }
         2 => {
             for (o, v) in [(44, avail), (48, commit), (52, limit), (56, peak), (112, paged), (116, nonpaged)] {
                 w32(p + o, v);
@@ -667,7 +649,8 @@ fn psapi_name(c: &mut Ctx, base_only: bool, wide: bool) -> u32 {
     if !base_only {
         let n = if wide { name.encode_utf16().count() } else { crate::text::s2a(&name).len() } as u32;
         put_name(dst, cap, &name, wide);
-        return n.min(cap);
+        // (the ANSI one cut short counts what it kept before its 0, as Windows 10)
+        return if !wide && n >= cap { cap - 1 } else { n.min(cap) };
     }
     if wide {
         let v: Vec<u16> = name.encode_utf16().collect();
@@ -680,13 +663,17 @@ fn psapi_name(c: &mut Ctx, base_only: bool, wide: bool) -> u32 {
         }
         n as u32
     } else {
+        // (cut short: what fits before a 0, yet the count of characters asked for, as Windows 10
+        // answers; the wide name is converted into the caller's buffer)
         let v = crate::text::s2a(&name);
-        let n = v.len().min(cap as usize);
-        mem::write(dst, &v[..n]);
-        if n < cap as usize {
-            mem::w8(dst + n as u32, 0);
+        if v.len() >= cap as usize {
+            mem::write(dst, &v[..cap as usize - 1]);
+            mem::w8(dst + cap - 1, 0);
+            return cap;
         }
-        n as u32
+        mem::write(dst, &v);
+        mem::w8(dst + v.len() as u32, 0);
+        v.len() as u32
     }
 }
 fn K32GetModuleBaseNameA(c: &mut Ctx) -> u32 {
@@ -3149,13 +3136,18 @@ thread_local! {
     /// redirects nothing; programs only read back what they set.
     static FS_REDIR_OFF: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
-/// RtlWow64EnableFsRedirectionEx(disable, &old): any value is kept as given; a bad pointer is
-/// STATUS_ACCESS_VIOLATION and changes nothing.
+/// RtlWow64EnableFsRedirectionEx(disable, &old): any value is kept as given, also when `old`
+/// is a bad pointer (STATUS_ACCESS_VIOLATION then: Windows sets it before writing the old one).
+/// A 64-bit process is not WoW64: STATUS_NOT_IMPLEMENTED, nothing kept.
 fn fs_redirection(disable: u32, old: u32) -> u32 {
+    if mem::x64() {
+        return 0xc000_0002;
+    }
+    let was = FS_REDIR_OFF.with(|r| r.replace(disable));
     if old == 0 || is_bad(old, 4) {
         return 0xc000_0005;
     }
-    put32(old, FS_REDIR_OFF.with(|r| r.replace(disable)));
+    put32(old, was);
     0
 }
 pub(crate) fn fs_redirection_off() -> u32 {
@@ -3169,11 +3161,22 @@ fn RtlWow64EnableFsRedirectionEx(c: &mut Ctx) -> u32 {
 }
 /// RtlWow64EnableFsRedirection(enable)
 fn RtlWow64EnableFsRedirection(c: &mut Ctx) -> u32 {
+    if mem::x64() {
+        return 0xc000_0002;
+    }
     FS_REDIR_OFF.with(|r| r.set((c.a(0) == 0) as u32));
+    0
+}
+/// kernel32's switches in a 64-bit process (not WoW64): FALSE, ERROR_INVALID_FUNCTION
+fn not_wow64() -> u32 {
+    last_error(1);
     0
 }
 /// Wow64DisableWow64FsRedirection(PVOID* old)
 fn Wow64DisableWow64FsRedirection(c: &mut Ctx) -> u32 {
+    if mem::x64() {
+        return not_wow64();
+    }
     let old = c.a(0);
     if old == 0 || is_bad(old, mem::ps()) {
         last_error(998);
@@ -3184,11 +3187,17 @@ fn Wow64DisableWow64FsRedirection(c: &mut Ctx) -> u32 {
 }
 /// Wow64RevertWow64FsRedirection(old)
 fn Wow64RevertWow64FsRedirection(c: &mut Ctx) -> u32 {
+    if mem::x64() {
+        return not_wow64();
+    }
     FS_REDIR_OFF.with(|r| r.set(c.a(0)));
     1
 }
 /// Wow64EnableWow64FsRedirection(enable): BOOLEAN
 fn Wow64EnableWow64FsRedirection(c: &mut Ctx) -> u32 {
+    if mem::x64() {
+        return not_wow64();
+    }
     FS_REDIR_OFF.with(|r| r.set((c.a(0) & 0xff == 0) as u32));
     1
 }
@@ -6375,8 +6384,6 @@ pub fn init() {
     implement("msvcrt", "_endthread", _endthread);
     implement("kernel32", "SetThreadExecutionState", SetThreadExecutionState);
     implement("psapi", "GetProcessMemoryInfo", K32GetProcessMemoryInfo);
-    implement("ntdll", "NtQuerySystemInformation", NtQuerySystemInformation);
-    implement("ntdll", "ZwQuerySystemInformation", NtQuerySystemInformation);
     for (n, f) in [
         ("EnumProcessModules", K32EnumProcessModules as crate::api::Handler),
         ("EnumProcessModulesEx", K32EnumProcessModulesEx),

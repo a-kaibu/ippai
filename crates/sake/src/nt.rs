@@ -530,7 +530,12 @@ fn nt_query_directory_file(c: &mut Ctx) -> u32 {
         // a directory of files, once the buffer holds one
         return match class {
             29 | 32 | 33 if len < [72, 56, 16][[29, 32, 33].iter().position(|&x| x == class).unwrap()] => 0xc000_0004,
-            _ => 0xc000_0003, // STATUS_INVALID_INFO_CLASS
+            29 | 32 | 33 => 0xc000_0003,
+            // STATUS_INVALID_INFO_CLASS; WoW64's thunk has no conversion for a class past
+            // FileMaximumInformation (84 in Wine's headers; 99 is one): STATUS_NOT_IMPLEMENTED in
+            // a 32-bit process (Wine's directory test: class 50 is INVALID_INFO_CLASS there)
+            c if c >= 84 && !mem::x64() => 0xc000_0002,
+            _ => 0xc000_0003,
         };
     };
     let f = crate::obj::with(|t| match t.objs.get(&h) {
@@ -567,6 +572,12 @@ fn nt_query_directory_file(c: &mut Ctx) -> u32 {
             // (nothing at all on a handle's first call; a restart that finds nothing has
             // reached the end)
             if first {
+                // (an error, yet the IO_STATUS_BLOCK gets it unless the scan restarts, as
+                // Windows answers both ways: winref ntdir, Wine's directory test)
+                if io != 0 && !restart {
+                    mem::wp(io, 0xc000_000f);
+                    mem::wp(io + mem::ps(), 0);
+                }
                 return 0xc000_000f; // STATUS_NO_SUCH_FILE
             }
             iosb(io, 0x8000_0006, 0);

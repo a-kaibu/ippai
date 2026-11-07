@@ -85,10 +85,12 @@ fn NtQuerySystemInformation(c: &mut Ctx) -> u32 {
     let (class, buf, len, ret) = (c.a(0), c.a(1), c.a(2), c.a(3));
     let ptr = if mem::x64() { 8 } else { 4 };
     let Some(data) = system_information(class, ptr) else {
-        if crate::env_on!("SAKE_TRACE_SYSINFO") {
+        // (the process list and performance counters: k32.rs, from the running threads)
+        let st = crate::k32::query_system_processes(c);
+        if st == STATUS_INVALID_INFO_CLASS && crate::env_on!("SAKE_TRACE_SYSINFO") {
             eprintln!("sake: NtQuerySystemInformation class {class:#x} not answered");
         }
-        return STATUS_INVALID_INFO_CLASS;
+        return st;
     };
     let n = data.len() as u32;
     put32(ret, n);
@@ -213,28 +215,6 @@ fn GetPhysicallyInstalledSystemMemory(c: &mut Ctx) -> u32 {
     w32(p + 4, (kb >> 32) as u32);
     1
 }
-/// GetPerformanceInfo(PERFORMANCE_INFORMATION*, size): page counts of the PHYS machine
-fn GetPerformanceInfo(c: &mut Ctx) -> u32 {
-    let (p, size) = (c.a(0), c.a(1));
-    let ptr = if mem::x64() { 8 } else { 4 };
-    let need = 4 + 10 * ptr + 3 * 4;
-    if size < need {
-        last_error(24); // ERROR_BAD_LENGTH
-        return 0;
-    }
-    let pages = PHYS >> 12;
-    let mut v = Vec::new();
-    v.extend_from_slice(&need.to_le_bytes());
-    for x in [pages / 4, 2 * pages, 2 * pages, pages, pages / 4 * 3, pages / 8, pages / 16, pages / 32, pages / 64, 0x1000] {
-        v.extend_from_slice(&x.to_le_bytes()[..ptr as usize]);
-    }
-    for x in [1000u32, 100, 2000] {
-        v.extend_from_slice(&x.to_le_bytes());
-    }
-    mem::write(p, &v);
-    1
-}
-
 // ---------------------------------------------------------------------------------------------
 // power schemes (powrprof): Windows' three, in the registry's order, Balanced active
 
@@ -337,9 +317,7 @@ fn GetActivePwrScheme(_: &mut Ctx) -> u32 {
 
 pub fn init() {
     reg!("ntdll"; NtQuerySystemInformation, ZwQuerySystemInformation);
-    reg!("kernel32"; GetSystemFirmwareTable, EnumSystemFirmwareTables, GetPhysicallyInstalledSystemMemory, GetPerformanceInfo);
-    implement("kernel32", "K32GetPerformanceInfo", GetPerformanceInfo);
-    implement("psapi", "GetPerformanceInfo", GetPerformanceInfo);
+    reg!("kernel32"; GetSystemFirmwareTable, EnumSystemFirmwareTables, GetPhysicallyInstalledSystemMemory);
     reg!("powrprof"; PowerEnumerate, PowerGetActiveScheme, PowerReadFriendlyName, PowerReadDescription, EnumPwrSchemes, GetActivePwrScheme);
 }
 

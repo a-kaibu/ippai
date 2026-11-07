@@ -45,8 +45,13 @@ int main(void) {
     IMAGE_NT_HEADERS *nh = (IMAGE_NT_HEADERS *)((char *)exe + ((IMAGE_DOS_HEADER *)exe)->e_lfanew);
     printf("exe info: %d, base %d, size %d, entry %d\n", r, mi.lpBaseOfDll == exe, mi.SizeOfImage == nh->OptionalHeader.SizeOfImage,
            mi.EntryPoint == (char *)exe + nh->OptionalHeader.AddressOfEntryPoint);
+    memset(&mi, 0x55, sizeof mi);
     r = GetModuleInformation(self, 0, &mi, sizeof mi);
-    printf("module 0 info: %d, the exe %d\n", r, mi.lpBaseOfDll == exe);
+    int at = -1;
+    for (int i = 0; i < n; i++)
+        if (all[i] == (HMODULE)mi.lpBaseOfDll) at = i;
+    printf("module 0 info: %d, the exe %d, untouched %d, null %d, listed at %d, ntdll %d, kernel32 %d\n", r, mi.lpBaseOfDll == exe,
+           mi.lpBaseOfDll == (void *)(ULONG_PTR)0x5555555555555555ull, mi.lpBaseOfDll == 0, at, mi.lpBaseOfDll == nt, mi.lpBaseOfDll == k32);
     SetLastError(0);
     r = GetModuleInformation(self, exe, &mi, sizeof mi - 1);
     printf("info, short: %d, error %lu\n", r, GetLastError());
@@ -63,14 +68,17 @@ int main(void) {
     printf("kernel32 base name: %lu, '%s' ignoring case %d\n", len, "kernel32.dll", _stricmp(base, "kernel32.dll") == 0);
     memset(base, 'x', 8);
     len = GetModuleBaseNameA(self, exe, base, 4);
-    printf("base name in 4: %lu, copied %d, byte 4 untouched %d\n", len, memcmp(base, slash + 1, 4) == 0, base[4] == 'x');
+    printf("base name in 4: %lu, copied %d, byte 4 untouched %d, bytes 0-3 are the name's 0-2 and a 0 %d, same 0-2 %d %d %d, byte 3 %02x\n", len,
+           memcmp(base, slash + 1, 4) == 0, base[4] == 'x', memcmp(base, slash + 1, 3) == 0 && base[3] == 0,
+           (unsigned char)base[0] == (unsigned char)slash[1], (unsigned char)base[1] == (unsigned char)slash[2],
+           (unsigned char)base[2] == (unsigned char)slash[3], (unsigned char)base[3]);
     WCHAR wb[MAX_PATH];
     len = GetModuleBaseNameW(self, exe, wb, MAX_PATH);
     printf("base name W: %lu chars, ends %d\n", len, wb[len] == 0);
     len = GetModuleFileNameExA(self, 0, ex, MAX_PATH);
-    printf("file name Ex: %lu, same as GetModuleFileName %d\n", len, strcmp(ex, full) == 0 && len == strlen(full));
+    printf("file name Ex: same as GetModuleFileName %d\n", strcmp(ex, full) == 0 && len == strlen(full));
     len = GetModuleFileNameExW(self, exe, wb, MAX_PATH);
-    printf("file name Ex W: %lu chars, same length %d\n", len, len == strlen(full));
+    printf("file name Ex W: same length %d\n", len == strlen(full));
     SetLastError(0);
     len = GetModuleBaseNameA(self, (HMODULE)0x10000, base, MAX_PATH);
     printf("base name, no module: %lu, error %lu\n", len, GetLastError());
@@ -138,9 +146,18 @@ int main(void) {
     printf("performance class: %lx, %lu bytes, available ~ %d\n", (unsigned long)st, got, b[11] > 0);
     st = qsi(5, 0, 0, &got);
     printf("processes, no buffer: %lx, needed some %d\n", (unsigned long)st, got > 0);
-    st = qsi(5, sb, sizeof sb, &got);
+    /* (the runner has many processes: a buffer of the size asked for, and some, until it fits) */
+    unsigned char *pb = 0;
+    for (int tries = 0; tries < 8; tries++) {
+        free(pb);
+        ULONG want = got + 65536;
+        pb = malloc(want);
+        st = qsi(5, pb, want, &got);
+        if (st != (LONG)0xc0000004) break;
+    }
+    printf("processes: %lx\n", (unsigned long)st);
     int found = 0;
-    for (unsigned char *e = sb;; e += *(ULONG *)e) {
+    for (unsigned char *e = pb; st == 0; e += *(ULONG *)e) {
         HANDLE pid = *(HANDLE *)(e + (sizeof(void *) == 8 ? 0x50 : 0x44));
         if ((DWORD)(ULONG_PTR)pid == GetCurrentProcessId()) {
             US_ *n = (US_ *)(e + 0x38);
@@ -155,7 +172,7 @@ int main(void) {
                 HANDLE *ci = (HANDLE *)((unsigned char *)cid + i * (sizeof(void *) == 8 ? 0x50 : 0x40));
                 mine |= (DWORD)(ULONG_PTR)ci[1] == GetCurrentThreadId() && (DWORD)(ULONG_PTR)ci[0] == GetCurrentProcessId();
             }
-            printf("processes: %lx, ours: name is the exe %d, threads >= 1 %d, this thread listed %d, handles > 0 %d\n", (unsigned long)st,
+            printf("ours: name is the exe %d, threads >= 1 %d, this thread listed %d, handles > 0 %d\n",
                    !_stricmp(a, slash + 1), th >= 1, mine, *(ULONG *)(e + (sizeof(void *) == 8 ? 0x60 : 0x4c)) > 0);
             found = 1;
         }

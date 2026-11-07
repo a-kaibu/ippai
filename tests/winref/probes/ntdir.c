@@ -140,6 +140,22 @@ int main(void) {
     printf("again: %lx\n", (unsigned long)st);
     st = qdf(h, 0, 0, 0, &io, buf, sizeof buf, 99, FALSE, 0, FALSE);
     printf("bad class: %lx\n", (unsigned long)st);
+    /* classes from FileMaximumInformation (84 in Wine's headers) on, and below it */
+    for (int k = 76; k <= 100; k += 4) {
+        st = qdf(h, 0, 0, 0, &io, buf, sizeof buf, k, FALSE, 0, FALSE);
+        printf("class %d: %lx\n", k, (unsigned long)st);
+    }
+    CloseHandle(h);
+    /* nothing matches on a handle's first call: which ways the IO_STATUS_BLOCK gets the status
+     * (single entry, restart scan; classes 1 and 3) */
+    for (int k = 0; k < 8; k++) {
+        h = opendir(".");
+        memset(&io, 0x77, sizeof io);
+        st = qdf(h, 0, 0, 0, &io, buf, sizeof buf, k & 4 ? 3 : 1, k & 1, &none, (k & 2) != 0);
+        printf("nothing, class %d single %d restart %d: %lx, iosb %lx\n", k & 4 ? 3 : 1, k & 1, (k & 2) != 0, (unsigned long)st, (unsigned long)io.Status);
+        CloseHandle(h);
+    }
+    h = opendir(".");
     CloseHandle(h);
     h = CreateFileA("a.txt", GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
     st = qdf(h, 0, 0, 0, &io, buf, sizeof buf, 1, FALSE, 0, FALSE);
