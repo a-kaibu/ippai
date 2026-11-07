@@ -28,3 +28,29 @@ FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM, NULL, 0x12345678, 0, sm, sizeof sm, N
 FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, 2, 0, sm, 3, NULL) = 0 err 122
 FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM, NULL, 2, MAKELANGID(LANG_ZULU, SUBLANG_DEFAULT), sm, sizeof sm, NULL) = 0 err 15100
 FormatMessageA(0, NULL, 2, 0, sm, sizeof sm, NULL)                       = 0 err 87
+GetModuleHandleA(NULL) != NULL                                           = 1 err 57005
+GetModuleHandleA("kernel32") != NULL                                     = 1 err 57005
+GetModuleHandleA("KERNEL32.DLL") == GetModuleHandleA("kernel32.dll")     = 1 err 57005
+GetModuleHandleA("kernel32.") != NULL                                    = 0 err 126
+GetModuleHandleA("nosuch.dll") != NULL                                   = 0 err 126
+LoadLibraryA("nosuch.dll") != NULL                                       = 0 err 126
+LoadLibraryA("") != NULL                                                 = 0 err 87
+LoadLibraryA("kernel32.dll") == k                                        = 1 err 57005
+GetProcAddress(k, "NoSuchFunction") != NULL                              = 0 err 127
+GetProcAddress(k, "getlasterror") != NULL                                = 0 err 127
+GetProcAddress(k, "GetLastError") == (FARPROC)GetLastError               = 1 err 57005
+GetProcAddress(k, MAKEINTRESOURCEA(60000)) != NULL                       = 0 err 182
+GetProcAddress(NULL, "GetLastError") != NULL                             = 0 err 127
+GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)main, &k) && k == GetModuleHandleA(NULL) = 1 err 57005
+FreeLibrary(NULL)                                                        = 0 err 126
+module file name ends [fmt-64.exe] length matches 1
+truncated 8 err 122 nul at end 1
+GetModuleFileNameA((HMODULE)(ULONG_PTR)0x12340000, p, sizeof p)          = 0 err 126
+truncated W 4 err 122 last 0000
+command line quoted 0 ends with exe 1
+startupinfo cb 104 reserved null 0 desktop set 1 flags-show 0
+GetCurrentProcessId() == GetProcessId(GetCurrentProcess())               = 1 err 57005
+GetCurrentThreadId() == GetThreadId(GetCurrentThread())                  = 1 err 57005
+GetPriorityClass(GetCurrentProcess())                                    = 16384 err 57005
+GetExitCodeProcess(GetCurrentProcess(), &code)                           = 1 err 57005
+exit code while running 259

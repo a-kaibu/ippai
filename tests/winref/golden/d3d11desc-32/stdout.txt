@@ -1,0 +1,119 @@
+blend base 0 0 0 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f same -
+blend base_again 0 0 0 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f same base
+blend src0 0x80070057 same -
+blend src_srccolor 0 0 0 1 3 6 1 2 1 1 f 1 3 6 1 2 1 1 f 1 3 6 1 2 1 1 f 1 3 6 1 2 1 1 f 1 3 6 1 2 1 1 f 1 3 6 1 2 1 1 f 1 3 6 1 2 1 1 f 1 3 6 1 2 1 1 f same -
+blend src12 0x80070057 same -
+blend src13 0x80070057 same -
+blend src14 0 0 0 1 e 6 1 2 1 1 f 1 e 6 1 2 1 1 f 1 e 6 1 2 1 1 f 1 e 6 1 2 1 1 f 1 e 6 1 2 1 1 f 1 e 6 1 2 1 1 f 1 e 6 1 2 1 1 f 1 e 6 1 2 1 1 f same -
+blend src19 0 0 0 1 13 6 1 2 1 1 f 1 13 6 1 2 1 1 f 1 13 6 1 2 1 1 f 1 13 6 1 2 1 1 f 1 13 6 1 2 1 1 f 1 13 6 1 2 1 1 f 1 13 6 1 2 1 1 f 1 13 6 1 2 1 1 f same -
+blend src20 0x80070057 same -
+blend dest0 0x80070057 same -
+blend op0 0x80070057 same -
+blend op5 0 0 0 1 5 6 5 2 1 1 f 1 5 6 5 2 1 1 f 1 5 6 5 2 1 1 f 1 5 6 5 2 1 1 f 1 5 6 5 2 1 1 f 1 5 6 5 2 1 1 f 1 5 6 5 2 1 1 f 1 5 6 5 2 1 1 f same -
+blend op6 0x80070057 same -
+blend srcalpha_srccolor 0x80070057 same -
+blend srcalpha_invdestcolor 0x80070057 same -
+blend srcalpha_blendfactor 0 0 0 1 5 6 1 e 1 1 f 1 5 6 1 e 1 1 f 1 5 6 1 e 1 1 f 1 5 6 1 e 1 1 f 1 5 6 1 e 1 1 f 1 5 6 1 e 1 1 f 1 5 6 1 e 1 1 f 1 5 6 1 e 1 1 f same -
+blend srcalpha_src1color 0x80070057 same -
+blend destalpha_srccolor 0x80070057 same -
+blend opalpha0 0x80070057 same -
+blend mask0 0 0 0 1 5 6 1 2 1 1 0 1 5 6 1 2 1 1 0 1 5 6 1 2 1 1 0 1 5 6 1 2 1 1 0 1 5 6 1 2 1 1 0 1 5 6 1 2 1 1 0 1 5 6 1 2 1 1 0 1 5 6 1 2 1 1 0 same -
+blend mask10 0x80070057 same -
+blend mask_ff 0x80070057 same -
+blend enable2 0 0 0 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f same base
+blend disabled 0 0 0 0 2 1 1 2 1 1 f 0 2 1 1 2 1 1 f 0 2 1 1 2 1 1 f 0 2 1 1 2 1 1 f 0 2 1 1 2 1 1 f 0 2 1 1 2 1 1 f 0 2 1 1 2 1 1 f 0 2 1 1 2 1 1 f same -
+blend disabled_src0 0 0 0 0 2 1 1 2 1 1 f 0 2 1 1 2 1 1 f 0 2 1 1 2 1 1 f 0 2 1 1 2 1 1 f 0 2 1 1 2 1 1 f 0 2 1 1 2 1 1 f 0 2 1 1 2 1 1 f 0 2 1 1 2 1 1 f same disabled
+blend disabled_src20 0 0 0 0 2 1 1 2 1 1 f 0 2 1 1 2 1 1 f 0 2 1 1 2 1 1 f 0 2 1 1 2 1 1 f 0 2 1 1 2 1 1 f 0 2 1 1 2 1 1 f 0 2 1 1 2 1 1 f 0 2 1 1 2 1 1 f same disabled
+blend disabled_mask10 0x80070057 same -
+blend rt1_bad 0 0 0 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f same base
+blend rt7_other 0 0 0 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f same base
+blend indep 0 0 1 1 5 6 1 2 1 1 f 0 2 1 1 2 1 1 0 0 2 1 1 2 1 1 0 0 2 1 1 2 1 1 0 0 2 1 1 2 1 1 0 0 2 1 1 2 1 1 0 0 2 1 1 2 1 1 0 0 2 1 1 2 1 1 0 same -
+blend indep_rt1_bad 0x80070057 same -
+blend indep_rt1_badmask 0x80070057 same -
+blend indep_rt1_src20_disabled 0 0 1 1 5 6 1 2 1 1 f 0 2 1 1 2 1 1 0 0 2 1 1 2 1 1 0 0 2 1 1 2 1 1 0 0 2 1 1 2 1 1 0 0 2 1 1 2 1 1 0 0 2 1 1 2 1 1 0 0 2 1 1 2 1 1 0 same indep
+blend indep_rt1_as_rt0 0x80070057 same -
+blend a2c 0 1 0 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f same -
+blend a2c2 0 1 0 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f 1 5 6 1 2 1 1 f same a2c
+blend indep2 0 0 1 1 5 6 1 2 1 1 f 0 2 1 1 2 1 1 0 0 2 1 1 2 1 1 0 0 2 1 1 2 1 1 0 0 2 1 1 2 1 1 0 0 2 1 1 2 1 1 0 0 2 1 1 2 1 1 0 0 2 1 1 2 1 1 0 same indep
+depth base 0 1 1 2 0 ffff 1 1 1 8 1 1 1 8 same -
+depth write2 0x80070057 same -
+depth write0 0 1 0 2 0 ffff 1 1 1 8 1 1 1 8 same -
+depth func0 0x80070057 same -
+depth func8 0 1 1 8 0 ffff 1 1 1 8 1 1 1 8 same -
+depth func9 0x80070057 same -
+depth enable2 0 1 1 2 0 ffff 1 1 1 8 1 1 1 8 same base
+depth off 0 0 1 2 0 ffff 1 1 1 8 1 1 1 8 same -
+depth off_func0 0 0 1 2 0 ffff 1 1 1 8 1 1 1 8 same off
+depth off_func9 0 0 1 2 0 ffff 1 1 1 8 1 1 1 8 same off
+depth off_write0_func5 0 0 1 2 0 ffff 1 1 1 8 1 1 1 8 same off
+depth off_write2 0x80070057 same -
+depth stencil 0 1 1 2 1 ffff 1 1 1 8 1 1 1 8 same -
+depth stencil2 0 1 1 2 1 ffff 1 1 1 8 1 1 1 8 same stencil
+depth stencil_fail0 0x80070057 same -
+depth stencil_fail9 0x80070057 same -
+depth stencil_dfail0 0x80070057 same -
+depth stencil_pass9 0x80070057 same -
+depth stencil_func0 0x80070057 same -
+depth stencil_func9 0x80070057 same -
+depth stencil_back_func0 0x80070057 same -
+depth stencil_masks 0 1 1 2 1 f3c 1 1 1 8 1 1 1 8 same -
+depth nostencil_fail0 0 1 1 2 0 ffff 1 1 1 8 1 1 1 8 same base
+depth nostencil_func9 0 1 1 2 0 ffff 1 1 1 8 1 1 1 8 same base
+depth nostencil_masks 0 1 1 2 0 ffff 1 1 1 8 1 1 1 8 same base
+depth nostencil_ops 0 1 1 2 0 ffff 1 1 1 8 1 1 1 8 same base
+depth off_nostencil_all 0 0 1 2 0 ffff 1 1 1 8 1 1 1 8 same off
+raster base 0 3 3 0 0 0 0 1 0 0 0 same -
+raster fill0 0x80070057 same -
+raster fill1 0x80070057 same -
+raster fill2 0 2 3 0 0 0 0 1 0 0 0 same -
+raster fill4 0x80070057 same -
+raster cull0 0x80070057 same -
+raster cull1 0 3 1 0 0 0 0 1 0 0 0 same -
+raster cull4 0x80070057 same -
+raster ccw2 0 3 3 1 0 0 0 1 0 0 0 same -
+raster bias 0 3 3 0 fffffffb 0 0 1 0 0 0 same -
+raster clamp_nan 0x80070057 same -
+raster slope_inf 0 3 3 0 0 0 7f800000 1 0 0 0 same -
+raster noclip 0 3 3 0 0 0 0 0 0 0 0 same -
+raster clip2 0 3 3 0 0 0 0 1 0 0 0 same base
+raster scissor 0 3 3 0 0 0 0 1 1 0 0 same -
+raster ms_aa 0 3 3 0 0 0 0 1 0 1 1 same -
+raster aa2 0 3 3 0 0 0 0 1 0 0 1 same -
+sampler base 0 15 1 1 1 0 0 1 0 0 0 0 0 7f7fffff same -
+sampler point 0 0 1 1 1 0 0 1 0 0 0 0 0 7f7fffff same -
+sampler filter16 0x80070057 same -
+sampler filter2 0x80070057 same -
+sampler aniso 0 55 1 1 1 0 1 1 0 0 0 0 0 7f7fffff same -
+sampler aniso_no_mip 0x80070057 same -
+sampler cmp_point 0 80 1 1 1 0 0 1 0 0 0 0 0 7f7fffff same -
+sampler cmp_linear 0 95 1 1 1 0 0 1 0 0 0 0 0 7f7fffff same -
+sampler cmp_aniso 0 d5 1 1 1 0 1 1 0 0 0 0 0 7f7fffff same -
+sampler min_linear 0 115 1 1 1 0 0 1 0 0 0 0 0 7f7fffff same -
+sampler max_linear 0 195 1 1 1 0 0 1 0 0 0 0 0 7f7fffff same -
+sampler max_aniso 0 1d5 1 1 1 0 1 1 0 0 0 0 0 7f7fffff same -
+sampler filter200 0x80070057 same -
+sampler addr0 0x80070057 same -
+sampler addr5 0 15 1 5 1 0 0 1 0 0 0 0 0 7f7fffff same -
+sampler addr6 0x80070057 same -
+sampler aniso0 0 15 1 1 1 0 0 1 0 0 0 0 0 7f7fffff same base
+sampler aniso16 0 15 1 1 1 0 0 1 0 0 0 0 0 7f7fffff same base
+sampler aniso17 0x80070057 same -
+sampler anisof_0 0 55 1 1 1 0 0 1 0 0 0 0 0 7f7fffff same -
+sampler anisof_16 0 55 1 1 1 0 10 1 0 0 0 0 0 7f7fffff same -
+sampler anisof_17 0x80070057 same -
+sampler cmp0 0 15 1 1 1 0 0 1 0 0 0 0 0 7f7fffff same base
+sampler cmp9 0 15 1 1 1 0 0 1 0 0 0 0 0 7f7fffff same base
+sampler cmpf_0 0x80070057 same -
+sampler cmpf_9 0x80070057 same -
+sampler cmpf_less 0 95 1 1 1 0 0 2 0 0 0 0 0 7f7fffff same -
+sampler lod_swapped 0 15 1 1 1 0 0 1 0 0 0 0 40a00000 3f800000 same -
+sampler lod_neg 0 15 1 1 1 0 0 1 0 0 0 0 c0a00000 c0000000 same -
+sampler lod_nan 0x80070057 same -
+sampler bias20 0x80070057 same -
+sampler bias_neg20 0x80070057 same -
+sampler border 0 15 1 1 1 0 0 1 0 0 0 0 0 7f7fffff same base
+sampler border_nan 0 15 1 1 1 0 0 1 0 0 0 0 0 7f7fffff same base
+sampler nonborder_color 0 15 1 1 1 0 0 1 0 0 0 0 0 7f7fffff same base
+null desc blend 0x80070057 depth 0x80070057 raster 0x80070057 sampler 0x80070057
+null out blend 0x1 depth 0x1 raster 0x1 sampler 0x1
+release device 0

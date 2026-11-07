@@ -1,0 +1,60 @@
+create 00000000
+RenderFile missing 80040216
+RenderFile 00000000
+GetDuration 00000000 20000000
+GetStopPosition 00000000 20000000
+GetCurrentPosition 00000000 0
+caps absolute 1 forwards 1 backwards 1 current 0 stop 1 duration 1
+time format media 1, IsFormatSupported media 00000000
+get_Duration 2.000
+GetVideoSize 00000000 64x48
+get_AvgTimePerFrame 00000000 0.1000
+source 0 0 64 48 default 00000000
+destination 0 0 120 48 default 00000000
+AutoShow -1
+Visible 0
+WindowStyle child 0 caption 1
+put_Owner 00000000
+put_WindowStyle 00000000
+SetWindowPosition 00000000
+window 10 10 128 96
+destination now 0 0 128 96
+owner is ours 1
+SetNotifyWindow 00000000
+Pause 00000001
+GetState 00000000 1
+Visible after pause -1
+paused at 0: GetCurrentImage size 00000000 get 00000000 64x48 top 000000 frame 0 bottom 2f2f2f frame 0
+SetPositions 00000000 returned 7500000
+position 7500000
+paused at 0.75: GetCurrentImage size 00000000 get 00000000 64x48 top 414141 frame 7 bottom 707070 frame 7
+event set before 0
+Run 00000000
+state 2
+position after 0.5 s within 0.25 1
+WaitForSingleObject ended 1
+run: EC_COMPLETE p1 00000000 after the expected time
+event set after 258
+position at the end 20000000
+state at the end 2
+notify lParam 1234
+notify lParam 1234
+notifications 2
+WaitForCompletion running 80040227 0
+Stop 00000000
+position after stop 20000000
+WaitForCompletion stopped 80040227
+Run 00000001
+run after stop: EC_COMPLETE p1 00000000 after the expected time
+put_CurrentPosition 00000000
+get_CurrentPosition 1.000
+SetRate 00000000
+GetRate 2.00
+twice the speed: EC_COMPLETE p1 00000000 after the expected time
+SetPositions with stop 00000000
+GetStopPosition 5000000
+to the stop: EC_COMPLETE p1 00000000 after the expected time
+position at the stop 5000000
+put_Visible 00000000
+put_Owner 0 00000000
+released

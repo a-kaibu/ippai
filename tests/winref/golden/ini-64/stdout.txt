@@ -17,3 +17,78 @@ get [Spaced] k def d cap 64: 14 err 0 [spaced section|#]
 get [ Spaced ] k def d cap 64: 14 err 0 [spaced section|#]
 get [Unclosed] u def d cap 64: 1 err 0 [1|#]
 get [Last] nonl def d cap 64: 3 err 0 [end|#]
+get [Nope] x def default cap 64: 7 err 2 [default|#]
+get [Main] Name def d cap 5: 4 err 234 [Alic|#]
+get [Main] Name def d cap 6: 5 err 234 [Alice|#]
+get [Main] Name def d cap 1: 0 err 234 [|#]
+get [Main] Name def d cap 0: 0 err 234 [#]
+get [Main] missing def longdefault cap 4: 3 err 2 [lon|#]
+get [Main] (null) def d cap 256: 81 err 0 [Name|quoted|single|half|num|neg|hex|big|lead|empty|dup|DUP|indented key|semi|tab||#]
+get [Main] (null) def d cap 20: 18 err 234 [Name|quoted|single||]
+get [(null)] (null) def d cap 256: 41 err 0 [Main|Spaced|main|Unclosed|Empty|Bin|Last||#]
+get [(null)] (null) def d cap 12: 10 err 234 [Main|Space||]
+get [Empty] (null) def d cap 64: 0 err 0 [|#]
+int num = 42
+int neg = -7
+int hex = 31
+int big = 1215752191
+int lead = 12
+int Name = 0
+int missing = 5
+int empty = 5
+section Main 170 [Name=Alice|quoted="  spaced  "|single='x'|half="open|num=42|neg=-7|hex=0x1F|big=99999999999|lead=12abc|empty=|noequals|dup=first|DUP=second|indented key=v|semi=a;b|tab=t||]
+section Main cap 30 28 [Name=Alice|quoted="  spaced |]
+names 41 [Main|Spaced|main|Unclosed|Empty|Bin|Last||]
+names cap 10 8 [Main|Spa|]
+GetPrivateProfileStructA("Bin", "data", st, 5, path)                         = 0 err 13
+GetPrivateProfileStructA("Bin", "data", st, 6, path)                         = 0 err 24
+GetPrivateProfileStructA("Bin", "data", st, 4, path)                         = 0 err 24
+WritePrivateProfileStructA("Bin", "out", (BYTE *)"\x10\x20\xff", 3, path)    = 1 err 57005
+WritePrivateProfileStringA("Main", "num", "43", path)                        = 1 err 57005
+WritePrivateProfileStringA("main", "NewKey", "  new value  ", path)          = 1 err 57005
+WritePrivateProfileStringA("Main", "Name", NULL, path)                       = 1 err 57005
+WritePrivateProfileStringA("Fresh", "a", "1", path)                          = 1 err 57005
+WritePrivateProfileStringA("Fresh", "b", "\"q\"", path)                      = 1 err 57005
+WritePrivateProfileStringA("Unclosed", "u", "2", path)                       = 1 err 57005
+WritePrivateProfileStringA("Last", "added", "x", path)                       = 1 err 57005
+WritePrivateProfileStringA("Spaced", NULL, NULL, path)                       = 1 err 57005
+WritePrivateProfileStringA(NULL, NULL, NULL, path)                           = 0 err 2
+WritePrivateProfileSectionA("Sec", "k1=v1\0k2=v2\0", path)                   = 1 err 57005
+WritePrivateProfileSectionA("Main", "only=this\0", path)                     = 1 err 57005
+file 220 bytes:
+; comment line\r\n
+top=before any section\r\n
+[Main]\r\n
+only=this\r\n
+[main]\r\n
+extra=second main\r\n
+[Unclosed\r\n
+u=2\r\n
+[Empty]\r\n
+[Bin]\r\n
+data=0102030405D2\r\n
+out=1020FF2F\r\n
+[Last]\r\n
+nonl=end\r\n
+added=x\r\n
+[Fresh]\r\n
+a=1\r\n
+b="q"\r\n
+[Sec]\r\n
+k1=v1\r\n
+k2=v2\r\n
+|
+missing file: 4 err 2 [dflt]
+WritePrivateProfileStringA("S", "k", "v", p2)                                = 1 err 57005
+file 10 bytes:
+[S]\r\n
+k=v\r\n
+|
+WritePrivateProfileStringA("S", "k", NULL, p2)                               = 1 err 57005
+file 5 bytes:
+[S]\r\n
+|
+WritePrivateProfileStringA("S", NULL, NULL, p2)                              = 1 err 57005
+file 0 bytes:
+|
+GetPrivateProfileIntA("S", "k", -3, p2)                                      = 4294967293 err 2

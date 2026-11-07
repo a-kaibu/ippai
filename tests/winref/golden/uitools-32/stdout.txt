@@ -1,0 +1,106 @@
+GetSysColor(0) = c8c8c8
+GetSysColor(1) = 000000
+GetSysColor(2) = d1b499
+GetSysColor(3) = dbcdbf
+GetSysColor(4) = f0f0f0
+GetSysColor(5) = ffffff
+GetSysColor(6) = 646464
+GetSysColor(7) = 000000
+GetSysColor(8) = 000000
+GetSysColor(9) = 000000
+GetSysColor(10) = b4b4b4
+GetSysColor(11) = fcf7f4
+GetSysColor(12) = ababab
+GetSysColor(13) = d47800
+GetSysColor(14) = ffffff
+GetSysColor(15) = f0f0f0
+GetSysColor(16) = a0a0a0
+GetSysColor(17) = 6d6d6d
+GetSysColor(18) = 000000
+GetSysColor(19) = 000000
+GetSysColor(20) = ffffff
+GetSysColor(21) = 696969
+GetSysColor(22) = e3e3e3
+GetSysColor(23) = 000000
+GetSysColor(24) = e1ffff
+GetSysColor(25) = 000000
+GetSysColor(26) = cc6600
+GetSysColor(27) = ead1b9
+GetSysColor(28) = f2e4d7
+GetSysColor(29) = d47800
+GetSysColor(30) = f0f0f0
+GetSysColorBrush(0) style 0 color c8c8c8
+GetSysColorBrush(1) style 0 color 000000
+GetSysColorBrush(2) style 0 color d1b499
+GetSysColorBrush(3) style 0 color dbcdbf
+GetSysColorBrush(4) style 0 color f0f0f0
+GetSysColorBrush(5) style 0 color ffffff
+GetSysColorBrush(6) style 0 color 646464
+GetSysColorBrush(7) style 0 color 000000
+GetSysColorBrush(8) style 0 color 000000
+GetSysColorBrush(9) style 0 color 000000
+GetSysColorBrush(10) style 0 color b4b4b4
+GetSysColorBrush(11) style 0 color fcf7f4
+GetSysColorBrush(12) style 0 color ababab
+GetSysColorBrush(13) style 0 color d47800
+GetSysColorBrush(14) style 0 color ffffff
+GetSysColorBrush(15) style 0 color f0f0f0
+GetSysColorBrush(16) style 0 color a0a0a0
+GetSysColorBrush(17) style 0 color 6d6d6d
+GetSysColorBrush(18) style 0 color 000000
+GetSysColorBrush(19) style 0 color 000000
+GetSysColorBrush(20) style 0 color ffffff
+GetSysColorBrush(21) style 0 color 696969
+GetSysColorBrush(22) style 0 color e3e3e3
+GetSysColorBrush(23) style 0 color 000000
+GetSysColorBrush(24) style 0 color e1ffff
+GetSysColorBrush(25) style 0 color 000000
+GetSysColorBrush(26) style 0 color cc6600
+GetSysColorBrush(27) style 0 color ead1b9
+GetSysColorBrush(28) style 0 color f2e4d7
+GetSysColorBrush(29) style 0 color d47800
+GetSysColorBrush(30) style 0 color f0f0f0
+image fillrect_syscolor 96 8 0
+drawedge rect returns 1 1 1 0 1 1 1 0 1 1 1 0 0 0 0 0
+image drawedge_rect 96 48 0
+drawedge soft returns 1 1 1 0 1 1 1 0 1 1 1 0 0 0 0 0
+image drawedge_soft 96 48 0
+drawedge flat returns 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+image drawedge_flat 96 48 0
+drawedge mono returns 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+image drawedge_mono 96 48 0
+drawedge middle returns 1 1 1 0 1 1 1 0 1 1 1 0 0 0 0 0
+image drawedge_middle 96 48 0
+drawedge soft_middle returns 1 1 1 0 1 1 1 0 1 1 1 0 0 0 0 0
+image drawedge_soft_middle 96 48 0
+drawedge flat_middle returns 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+image drawedge_flat_middle 96 48 0
+drawedge mono_middle returns 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+image drawedge_mono_middle 96 48 0
+image drawedge_sides 96 48 0
+adjust edge 5 flags f -> 1 12,22,48,58
+adjust edge 5 flags 3 -> 1 12,22,50,60
+adjust edge 5 flags 4 -> 1 10,20,48,60
+adjust edge 5 flags 400f -> 1 12,22,48,58
+adjust edge 5 flags 800f -> 1 12,22,48,58
+adjust edge 5 flags 808 -> 1 10,20,50,58
+adjust edge a flags f -> 1 12,22,48,58
+adjust edge a flags 3 -> 1 12,22,50,60
+adjust edge a flags 4 -> 1 10,20,48,60
+adjust edge a flags 400f -> 1 12,22,48,58
+adjust edge a flags 800f -> 1 12,22,48,58
+adjust edge a flags 808 -> 1 10,20,50,58
+adjust edge 6 flags f -> 1 12,22,48,58
+adjust edge 6 flags 3 -> 1 12,22,50,60
+adjust edge 6 flags 4 -> 1 10,20,48,60
+adjust edge 6 flags 400f -> 1 12,22,48,58
+adjust edge 6 flags 800f -> 1 12,22,48,58
+adjust edge 6 flags 808 -> 1 10,20,50,58
+adjust edge 9 flags f -> 1 12,22,48,58
+adjust edge 9 flags 3 -> 1 12,22,50,60
+adjust edge 9 flags 4 -> 1 10,20,48,60
+adjust edge 9 flags 400f -> 1 12,22,48,58
+adjust edge 9 flags 800f -> 1 12,22,48,58
+adjust edge 9 flags 808 -> 1 10,20,50,58
+drawedge empty 1
+drawedge inverted 1

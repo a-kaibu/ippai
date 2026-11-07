@@ -1,0 +1,648 @@
+device 0: CreateDevice 0
+0 rs 0 = 0xbaadcafe
+0 rs 1: Get 0x8876086c
+0 rs 2: Get 0x8876086c
+0 rs 3: Get 0x8876086c
+0 rs 4: Get 0x8876086c
+0 rs 5: Get 0x8876086c
+0 rs 6: Get 0x8876086c
+0 rs 7 = 0x1
+0 rs 8 = 0x3
+0 rs 9 = 0x2
+0 rs 10 = 0
+0 rs 11: Get 0x8876086c
+0 rs 12: Get 0x8876086c
+0 rs 13: Get 0x8876086c
+0 rs 14 = 0x1
+0 rs 15 = 0
+0 rs 16 = 0x1
+0 rs 17: Get 0x8876086c
+0 rs 18: Get 0x8876086c
+0 rs 19 = 0x2
+0 rs 20 = 0x1
+0 rs 21: Get 0x8876086c
+0 rs 22 = 0x3
+0 rs 23 = 0x4
+0 rs 24 = 0
+0 rs 25 = 0x8
+0 rs 26 = 0
+0 rs 27 = 0
+0 rs 28 = 0
+0 rs 29 = 0
+0 rs 30 = 0
+0 rs 31: Get 0x8876086c
+0 rs 32: Get 0x8876086c
+0 rs 33: Get 0x8876086c
+0 rs 34 = 0
+0 rs 35 = 0
+0 rs 36 = 0
+0 rs 37 = 0x3f800000
+0 rs 38 = 0x3f800000
+0 rs 39: Get 0x8876086c
+0 rs 40 = 0
+0 rs 41: Get 0x8876086c
+0 rs 42 = 0xbaadcafe
+0 rs 43: Get 0x8876086c
+0 rs 44: Get 0x8876086c
+0 rs 45: Get 0x8876086c
+0 rs 46: Get 0x8876086c
+0 rs 47 = 0
+0 rs 48 = 0
+0 rs 49: Get 0x8876086c
+0 rs 50 = 0xbaadcafe
+0 rs 51: Get 0x8876086c
+0 rs 52 = 0
+0 rs 53 = 0x1
+0 rs 54 = 0x1
+0 rs 55 = 0x1
+0 rs 56 = 0x8
+0 rs 57 = 0
+0 rs 58 = 0xffffffff
+0 rs 59 = 0xffffffff
+0 rs 60 = 0xffffffff
+0 rs 61 = 0xbaadcafe
+0 rs 62 = 0xbaadcafe
+0 rs 63 = 0xbaadcafe
+0 rs 64: Get 0x8876086c
+0 rs 65: Get 0x8876086c
+0 rs 66: Get 0x8876086c
+0 rs 67: Get 0x8876086c
+0 rs 68: Get 0x8876086c
+0 rs 69: Get 0x8876086c
+0 rs 70: Get 0x8876086c
+0 rs 71: Get 0x8876086c
+0 rs 72: Get 0x8876086c
+0 rs 73: Get 0x8876086c
+0 rs 74: Get 0x8876086c
+0 rs 75: Get 0x8876086c
+0 rs 76: Get 0x8876086c
+0 rs 77: Get 0x8876086c
+0 rs 78: Get 0x8876086c
+0 rs 79: Get 0x8876086c
+0 rs 80: Get 0x8876086c
+0 rs 81: Get 0x8876086c
+0 rs 82: Get 0x8876086c
+0 rs 83: Get 0x8876086c
+0 rs 84: Get 0x8876086c
+0 rs 85: Get 0x8876086c
+0 rs 86: Get 0x8876086c
+0 rs 87: Get 0x8876086c
+0 rs 88: Get 0x8876086c
+0 rs 89: Get 0x8876086c
+0 rs 90: Get 0x8876086c
+0 rs 91: Get 0x8876086c
+0 rs 92: Get 0x8876086c
+0 rs 93: Get 0x8876086c
+0 rs 94: Get 0x8876086c
+0 rs 95: Get 0x8876086c
+0 rs 96 = 0xbaadcafe
+0 rs 97 = 0xbaadcafe
+0 rs 98 = 0xbaadcafe
+0 rs 99 = 0xbaadcafe
+0 rs 100 = 0xbaadcafe
+0 rs 101 = 0xbaadcafe
+0 rs 102 = 0xbaadcafe
+0 rs 103 = 0xbaadcafe
+0 rs 104 = 0xbaadcafe
+0 rs 105 = 0xbaadcafe
+0 rs 106 = 0xbaadcafe
+0 rs 107 = 0xbaadcafe
+0 rs 108 = 0xbaadcafe
+0 rs 109 = 0xbaadcafe
+0 rs 110 = 0xbaadcafe
+0 rs 111 = 0xbaadcafe
+0 rs 112 = 0xbaadcafe
+0 rs 113 = 0xbaadcafe
+0 rs 114 = 0xbaadcafe
+0 rs 115 = 0xbaadcafe
+0 rs 116 = 0xbaadcafe
+0 rs 117 = 0xbaadcafe
+0 rs 118 = 0xbaadcafe
+0 rs 119 = 0xbaadcafe
+0 rs 120 = 0xbaadcafe
+0 rs 121 = 0xbaadcafe
+0 rs 122 = 0xbaadcafe
+0 rs 123 = 0xbaadcafe
+0 rs 124 = 0xbaadcafe
+0 rs 125 = 0xbaadcafe
+0 rs 126 = 0xbaadcafe
+0 rs 127 = 0xbaadcafe
+0 rs 128 = 0
+0 rs 129 = 0
+0 rs 130 = 0
+0 rs 131 = 0
+0 rs 132 = 0
+0 rs 133 = 0
+0 rs 134 = 0
+0 rs 135 = 0
+0 rs 136 = 0x1
+0 rs 137 = 0x1
+0 rs 138 = 0xbaadcafe
+0 rs 139 = 0
+0 rs 140 = 0
+0 rs 141 = 0x1
+0 rs 142 = 0x1
+0 rs 143 = 0
+0 rs 144: Get 0x8876086c
+0 rs 145 = 0x1
+0 rs 146 = 0x2
+0 rs 147 = 0
+0 rs 148 = 0
+0 rs 149 = 0xbaadcafe
+0 rs 150 = 0xbaadcafe
+0 rs 151 = 0
+0 rs 152 = 0
+0 rs 153 = 0x1
+0 rs 154 = 0x3f800000
+0 rs 155 = 0
+0 rs 156 = 0
+0 rs 157 = 0
+0 rs 158 = 0x3f800000
+0 rs 159 = 0
+0 rs 160 = 0
+0 rs 161 = 0x1
+0 rs 162 = 0xffffffff
+0 rs 163 = 0
+0 rs 164 = 0x3f800000
+0 rs 165 = 0xbaadcafe
+0 rs 166 = 0x46000000
+0 rs 167 = 0
+0 rs 168 = 0xf
+0 rs 169 = 0xbaadcafe
+0 rs 170 = 0
+0 rs 171 = 0x1
+0 rs 172 = 0x3
+0 rs 173 = 0x1
+0 rs 174 = 0xbaadcafe
+0 rs 175 = 0xbaadcafe
+0 rs 176 = 0xbaadcafe
+0 rs 177 = 0xbaadcafe
+0 rs 178 = 0xbaadcafe
+0 rs 179 = 0xbaadcafe
+0 rs 180 = 0xbaadcafe
+0 rs 181 = 0xbaadcafe
+0 rs 182 = 0xbaadcafe
+0 rs 183 = 0xbaadcafe
+0 rs 184 = 0xbaadcafe
+0 rs 185 = 0xbaadcafe
+0 rs 186 = 0xbaadcafe
+0 rs 187 = 0xbaadcafe
+0 rs 188 = 0xbaadcafe
+0 rs 189 = 0xbaadcafe
+0 rs 190 = 0xbaadcafe
+0 rs 191 = 0xbaadcafe
+0 rs 192 = 0xbaadcafe
+0 rs 193 = 0xbaadcafe
+0 rs 194 = 0xbaadcafe
+0 rs 195 = 0xbaadcafe
+0 rs 196 = 0xbaadcafe
+0 rs 197 = 0xbaadcafe
+0 rs 198 = 0xbaadcafe
+0 rs 199 = 0xbaadcafe
+0 rs 200 = 0xbaadcafe
+0 rs 201 = 0xbaadcafe
+0 rs 202 = 0xbaadcafe
+0 rs 203 = 0xbaadcafe
+0 rs 204 = 0xbaadcafe
+0 rs 205 = 0xbaadcafe
+0 rs 206 = 0xbaadcafe
+0 rs 207 = 0xbaadcafe
+0 rs 208 = 0xbaadcafe
+0 rs 209 = 0xbaadcafe
+0 rs 210 = 0xbaadcafe
+0 rs 211 = 0xbaadcafe
+0 rs 212 = 0xbaadcafe
+0 rs 213 = 0xbaadcafe
+0 rs 214 = 0xbaadcafe
+0 rs 215 = 0xbaadcafe
+0 rs 216 = 0xbaadcafe
+0 rs 217 = 0xbaadcafe
+0 rs 218 = 0xbaadcafe
+0 rs 219 = 0xbaadcafe
+0 rs 220 = 0xbaadcafe
+0 rs 221 = 0xbaadcafe
+0 rs 222 = 0xbaadcafe
+0 rs 223 = 0xbaadcafe
+0 rs 224 = 0xbaadcafe
+0 rs 225 = 0xbaadcafe
+0 rs 226 = 0xbaadcafe
+0 rs 227 = 0xbaadcafe
+0 rs 228 = 0xbaadcafe
+0 rs 229 = 0xbaadcafe
+0 rs 230 = 0xbaadcafe
+0 rs 231 = 0xbaadcafe
+0 rs 232 = 0xbaadcafe
+0 rs 233 = 0xbaadcafe
+0 rs 234 = 0xbaadcafe
+0 rs 235 = 0xbaadcafe
+0 rs 236 = 0xbaadcafe
+0 rs 237 = 0xbaadcafe
+0 rs 238 = 0xbaadcafe
+0 rs 239 = 0xbaadcafe
+0 rs 240 = 0xbaadcafe
+0 rs 241 = 0xbaadcafe
+0 rs 242 = 0xbaadcafe
+0 rs 243 = 0xbaadcafe
+0 rs 244 = 0xbaadcafe
+0 rs 245 = 0xbaadcafe
+0 rs 246 = 0xbaadcafe
+0 rs 247 = 0xbaadcafe
+0 rs 248 = 0xbaadcafe
+0 rs 249 = 0xbaadcafe
+0 rs 250 = 0xbaadcafe
+0 rs 251 = 0xbaadcafe
+0 rs 252 = 0xbaadcafe
+0 rs 253 = 0xbaadcafe
+0 rs 254 = 0xbaadcafe
+0 rs 255 = 0xbaadcafe
+0 tss 0 0: 0 = 0xbaadcafe
+0 tss 0 1: 0 = 0x4
+0 tss 0 2: 0 = 0x2
+0 tss 0 3: 0 = 0x1
+0 tss 0 4: 0 = 0x2
+0 tss 0 5: 0 = 0x2
+0 tss 0 6: 0 = 0x1
+0 tss 0 7: 0 = 0
+0 tss 0 8: 0 = 0
+0 tss 0 9: 0 = 0
+0 tss 0 10: 0 = 0
+0 tss 0 11: 0 = 0
+0 tss 0 12: 0 = 0xbaadcafe
+0 tss 0 13: 0 = 0x1
+0 tss 0 14: 0 = 0x1
+0 tss 0 15: 0 = 0
+0 tss 0 16: 0 = 0x1
+0 tss 0 17: 0 = 0x1
+0 tss 0 18: 0 = 0
+0 tss 0 19: 0 = 0
+0 tss 0 20: 0 = 0
+0 tss 0 21: 0 = 0x1
+0 tss 0 22: 0 = 0
+0 tss 0 23: 0 = 0
+0 tss 0 24: 0 = 0
+0 tss 0 25: 0 = 0x1
+0 tss 0 26: 0 = 0x1
+0 tss 0 27: 0 = 0x1
+0 tss 0 28: 0 = 0x1
+0 tss 0 29: 0 = 0xbaadcafe
+0 tss 7 0: 0 = 0xbaadcafe
+0 tss 7 1: 0 = 0x1
+0 tss 7 2: 0 = 0x2
+0 tss 7 3: 0 = 0x1
+0 tss 7 4: 0 = 0x1
+0 tss 7 5: 0 = 0x2
+0 tss 7 6: 0 = 0x1
+0 tss 7 7: 0 = 0
+0 tss 7 8: 0 = 0
+0 tss 7 9: 0 = 0
+0 tss 7 10: 0 = 0
+0 tss 7 11: 0 = 0x7
+0 tss 7 12: 0 = 0xbaadcafe
+0 tss 7 13: 0 = 0x1
+0 tss 7 14: 0 = 0x1
+0 tss 7 15: 0 = 0
+0 tss 7 16: 0 = 0x1
+0 tss 7 17: 0 = 0x1
+0 tss 7 18: 0 = 0
+0 tss 7 19: 0 = 0
+0 tss 7 20: 0 = 0
+0 tss 7 21: 0 = 0x1
+0 tss 7 22: 0 = 0
+0 tss 7 23: 0 = 0
+0 tss 7 24: 0 = 0
+0 tss 7 25: 0 = 0x1
+0 tss 7 26: 0 = 0x1
+0 tss 7 27: 0 = 0x1
+0 tss 7 28: 0 = 0x1
+0 tss 7 29: 0 = 0xbaadcafe
+0 set rs 10 to 1: 0, reads 0 0x1
+0 set rs 30 to 1: 0, reads 0 0x1
+0 set rs 40 to 1: 0, reads 0 0x1
+0 set rs 47 to 1: 0, reads 0 0x1
+0 set rs 153 to 1: 0, reads 0 0x1
+0 set rs 164 to 1: 0, reads 0 0x1
+0 Release 0
+device 1: CreateDevice 0
+1 rs 0 = 0xbaadcafe
+1 rs 1: Get 0x8876086c
+1 rs 2: Get 0x8876086c
+1 rs 3: Get 0x8876086c
+1 rs 4: Get 0x8876086c
+1 rs 5: Get 0x8876086c
+1 rs 6: Get 0x8876086c
+1 rs 7 = 0x1
+1 rs 8 = 0x3
+1 rs 9 = 0x2
+1 rs 10 = 0
+1 rs 11: Get 0x8876086c
+1 rs 12: Get 0x8876086c
+1 rs 13: Get 0x8876086c
+1 rs 14 = 0x1
+1 rs 15 = 0
+1 rs 16 = 0x1
+1 rs 17: Get 0x8876086c
+1 rs 18: Get 0x8876086c
+1 rs 19 = 0x2
+1 rs 20 = 0x1
+1 rs 21: Get 0x8876086c
+1 rs 22 = 0x3
+1 rs 23 = 0x4
+1 rs 24 = 0
+1 rs 25 = 0x8
+1 rs 26 = 0
+1 rs 27 = 0
+1 rs 28 = 0
+1 rs 29 = 0
+1 rs 30 = 0
+1 rs 31: Get 0x8876086c
+1 rs 32: Get 0x8876086c
+1 rs 33: Get 0x8876086c
+1 rs 34 = 0
+1 rs 35 = 0
+1 rs 36 = 0
+1 rs 37 = 0x3f800000
+1 rs 38 = 0x3f800000
+1 rs 39: Get 0x8876086c
+1 rs 40 = 0
+1 rs 41: Get 0x8876086c
+1 rs 42 = 0xbaadcafe
+1 rs 43: Get 0x8876086c
+1 rs 44: Get 0x8876086c
+1 rs 45: Get 0x8876086c
+1 rs 46: Get 0x8876086c
+1 rs 47 = 0
+1 rs 48 = 0
+1 rs 49: Get 0x8876086c
+1 rs 50 = 0xbaadcafe
+1 rs 51: Get 0x8876086c
+1 rs 52 = 0
+1 rs 53 = 0x1
+1 rs 54 = 0x1
+1 rs 55 = 0x1
+1 rs 56 = 0x8
+1 rs 57 = 0
+1 rs 58 = 0xffffffff
+1 rs 59 = 0xffffffff
+1 rs 60 = 0xffffffff
+1 rs 61 = 0xbaadcafe
+1 rs 62 = 0xbaadcafe
+1 rs 63 = 0xbaadcafe
+1 rs 64: Get 0x8876086c
+1 rs 65: Get 0x8876086c
+1 rs 66: Get 0x8876086c
+1 rs 67: Get 0x8876086c
+1 rs 68: Get 0x8876086c
+1 rs 69: Get 0x8876086c
+1 rs 70: Get 0x8876086c
+1 rs 71: Get 0x8876086c
+1 rs 72: Get 0x8876086c
+1 rs 73: Get 0x8876086c
+1 rs 74: Get 0x8876086c
+1 rs 75: Get 0x8876086c
+1 rs 76: Get 0x8876086c
+1 rs 77: Get 0x8876086c
+1 rs 78: Get 0x8876086c
+1 rs 79: Get 0x8876086c
+1 rs 80: Get 0x8876086c
+1 rs 81: Get 0x8876086c
+1 rs 82: Get 0x8876086c
+1 rs 83: Get 0x8876086c
+1 rs 84: Get 0x8876086c
+1 rs 85: Get 0x8876086c
+1 rs 86: Get 0x8876086c
+1 rs 87: Get 0x8876086c
+1 rs 88: Get 0x8876086c
+1 rs 89: Get 0x8876086c
+1 rs 90: Get 0x8876086c
+1 rs 91: Get 0x8876086c
+1 rs 92: Get 0x8876086c
+1 rs 93: Get 0x8876086c
+1 rs 94: Get 0x8876086c
+1 rs 95: Get 0x8876086c
+1 rs 96 = 0xbaadcafe
+1 rs 97 = 0xbaadcafe
+1 rs 98 = 0xbaadcafe
+1 rs 99 = 0xbaadcafe
+1 rs 100 = 0xbaadcafe
+1 rs 101 = 0xbaadcafe
+1 rs 102 = 0xbaadcafe
+1 rs 103 = 0xbaadcafe
+1 rs 104 = 0xbaadcafe
+1 rs 105 = 0xbaadcafe
+1 rs 106 = 0xbaadcafe
+1 rs 107 = 0xbaadcafe
+1 rs 108 = 0xbaadcafe
+1 rs 109 = 0xbaadcafe
+1 rs 110 = 0xbaadcafe
+1 rs 111 = 0xbaadcafe
+1 rs 112 = 0xbaadcafe
+1 rs 113 = 0xbaadcafe
+1 rs 114 = 0xbaadcafe
+1 rs 115 = 0xbaadcafe
+1 rs 116 = 0xbaadcafe
+1 rs 117 = 0xbaadcafe
+1 rs 118 = 0xbaadcafe
+1 rs 119 = 0xbaadcafe
+1 rs 120 = 0xbaadcafe
+1 rs 121 = 0xbaadcafe
+1 rs 122 = 0xbaadcafe
+1 rs 123 = 0xbaadcafe
+1 rs 124 = 0xbaadcafe
+1 rs 125 = 0xbaadcafe
+1 rs 126 = 0xbaadcafe
+1 rs 127 = 0xbaadcafe
+1 rs 128 = 0
+1 rs 129 = 0
+1 rs 130 = 0
+1 rs 131 = 0
+1 rs 132 = 0
+1 rs 133 = 0
+1 rs 134 = 0
+1 rs 135 = 0
+1 rs 136 = 0x1
+1 rs 137 = 0x1
+1 rs 138 = 0xbaadcafe
+1 rs 139 = 0
+1 rs 140 = 0
+1 rs 141 = 0x1
+1 rs 142 = 0x1
+1 rs 143 = 0
+1 rs 144: Get 0x8876086c
+1 rs 145 = 0x1
+1 rs 146 = 0x2
+1 rs 147 = 0
+1 rs 148 = 0
+1 rs 149 = 0xbaadcafe
+1 rs 150 = 0xbaadcafe
+1 rs 151 = 0
+1 rs 152 = 0
+1 rs 153 = 0
+1 rs 154 = 0x3f800000
+1 rs 155 = 0
+1 rs 156 = 0
+1 rs 157 = 0
+1 rs 158 = 0x3f800000
+1 rs 159 = 0
+1 rs 160 = 0
+1 rs 161 = 0x1
+1 rs 162 = 0xffffffff
+1 rs 163 = 0
+1 rs 164 = 0x3f800000
+1 rs 165 = 0xbaadcafe
+1 rs 166 = 0x46000000
+1 rs 167 = 0
+1 rs 168 = 0xf
+1 rs 169 = 0xbaadcafe
+1 rs 170 = 0
+1 rs 171 = 0x1
+1 rs 172 = 0x3
+1 rs 173 = 0x1
+1 rs 174 = 0xbaadcafe
+1 rs 175 = 0xbaadcafe
+1 rs 176 = 0xbaadcafe
+1 rs 177 = 0xbaadcafe
+1 rs 178 = 0xbaadcafe
+1 rs 179 = 0xbaadcafe
+1 rs 180 = 0xbaadcafe
+1 rs 181 = 0xbaadcafe
+1 rs 182 = 0xbaadcafe
+1 rs 183 = 0xbaadcafe
+1 rs 184 = 0xbaadcafe
+1 rs 185 = 0xbaadcafe
+1 rs 186 = 0xbaadcafe
+1 rs 187 = 0xbaadcafe
+1 rs 188 = 0xbaadcafe
+1 rs 189 = 0xbaadcafe
+1 rs 190 = 0xbaadcafe
+1 rs 191 = 0xbaadcafe
+1 rs 192 = 0xbaadcafe
+1 rs 193 = 0xbaadcafe
+1 rs 194 = 0xbaadcafe
+1 rs 195 = 0xbaadcafe
+1 rs 196 = 0xbaadcafe
+1 rs 197 = 0xbaadcafe
+1 rs 198 = 0xbaadcafe
+1 rs 199 = 0xbaadcafe
+1 rs 200 = 0xbaadcafe
+1 rs 201 = 0xbaadcafe
+1 rs 202 = 0xbaadcafe
+1 rs 203 = 0xbaadcafe
+1 rs 204 = 0xbaadcafe
+1 rs 205 = 0xbaadcafe
+1 rs 206 = 0xbaadcafe
+1 rs 207 = 0xbaadcafe
+1 rs 208 = 0xbaadcafe
+1 rs 209 = 0xbaadcafe
+1 rs 210 = 0xbaadcafe
+1 rs 211 = 0xbaadcafe
+1 rs 212 = 0xbaadcafe
+1 rs 213 = 0xbaadcafe
+1 rs 214 = 0xbaadcafe
+1 rs 215 = 0xbaadcafe
+1 rs 216 = 0xbaadcafe
+1 rs 217 = 0xbaadcafe
+1 rs 218 = 0xbaadcafe
+1 rs 219 = 0xbaadcafe
+1 rs 220 = 0xbaadcafe
+1 rs 221 = 0xbaadcafe
+1 rs 222 = 0xbaadcafe
+1 rs 223 = 0xbaadcafe
+1 rs 224 = 0xbaadcafe
+1 rs 225 = 0xbaadcafe
+1 rs 226 = 0xbaadcafe
+1 rs 227 = 0xbaadcafe
+1 rs 228 = 0xbaadcafe
+1 rs 229 = 0xbaadcafe
+1 rs 230 = 0xbaadcafe
+1 rs 231 = 0xbaadcafe
+1 rs 232 = 0xbaadcafe
+1 rs 233 = 0xbaadcafe
+1 rs 234 = 0xbaadcafe
+1 rs 235 = 0xbaadcafe
+1 rs 236 = 0xbaadcafe
+1 rs 237 = 0xbaadcafe
+1 rs 238 = 0xbaadcafe
+1 rs 239 = 0xbaadcafe
+1 rs 240 = 0xbaadcafe
+1 rs 241 = 0xbaadcafe
+1 rs 242 = 0xbaadcafe
+1 rs 243 = 0xbaadcafe
+1 rs 244 = 0xbaadcafe
+1 rs 245 = 0xbaadcafe
+1 rs 246 = 0xbaadcafe
+1 rs 247 = 0xbaadcafe
+1 rs 248 = 0xbaadcafe
+1 rs 249 = 0xbaadcafe
+1 rs 250 = 0xbaadcafe
+1 rs 251 = 0xbaadcafe
+1 rs 252 = 0xbaadcafe
+1 rs 253 = 0xbaadcafe
+1 rs 254 = 0xbaadcafe
+1 rs 255 = 0xbaadcafe
+1 tss 0 0: 0 = 0xbaadcafe
+1 tss 0 1: 0 = 0x4
+1 tss 0 2: 0 = 0x2
+1 tss 0 3: 0 = 0x1
+1 tss 0 4: 0 = 0x2
+1 tss 0 5: 0 = 0x2
+1 tss 0 6: 0 = 0x1
+1 tss 0 7: 0 = 0
+1 tss 0 8: 0 = 0
+1 tss 0 9: 0 = 0
+1 tss 0 10: 0 = 0
+1 tss 0 11: 0 = 0
+1 tss 0 12: 0 = 0xbaadcafe
+1 tss 0 13: 0 = 0x1
+1 tss 0 14: 0 = 0x1
+1 tss 0 15: 0 = 0
+1 tss 0 16: 0 = 0x1
+1 tss 0 17: 0 = 0x1
+1 tss 0 18: 0 = 0
+1 tss 0 19: 0 = 0
+1 tss 0 20: 0 = 0
+1 tss 0 21: 0 = 0x1
+1 tss 0 22: 0 = 0
+1 tss 0 23: 0 = 0
+1 tss 0 24: 0 = 0
+1 tss 0 25: 0 = 0x1
+1 tss 0 26: 0 = 0x1
+1 tss 0 27: 0 = 0x1
+1 tss 0 28: 0 = 0x1
+1 tss 0 29: 0 = 0xbaadcafe
+1 tss 7 0: 0 = 0xbaadcafe
+1 tss 7 1: 0 = 0x1
+1 tss 7 2: 0 = 0x2
+1 tss 7 3: 0 = 0x1
+1 tss 7 4: 0 = 0x1
+1 tss 7 5: 0 = 0x2
+1 tss 7 6: 0 = 0x1
+1 tss 7 7: 0 = 0
+1 tss 7 8: 0 = 0
+1 tss 7 9: 0 = 0
+1 tss 7 10: 0 = 0
+1 tss 7 11: 0 = 0x7
+1 tss 7 12: 0 = 0xbaadcafe
+1 tss 7 13: 0 = 0x1
+1 tss 7 14: 0 = 0x1
+1 tss 7 15: 0 = 0
+1 tss 7 16: 0 = 0x1
+1 tss 7 17: 0 = 0x1
+1 tss 7 18: 0 = 0
+1 tss 7 19: 0 = 0
+1 tss 7 20: 0 = 0
+1 tss 7 21: 0 = 0x1
+1 tss 7 22: 0 = 0
+1 tss 7 23: 0 = 0
+1 tss 7 24: 0 = 0
+1 tss 7 25: 0 = 0x1
+1 tss 7 26: 0 = 0x1
+1 tss 7 27: 0 = 0x1
+1 tss 7 28: 0 = 0x1
+1 tss 7 29: 0 = 0xbaadcafe
+1 set rs 10 to 1: 0, reads 0 0x1
+1 set rs 30 to 1: 0, reads 0 0x1
+1 set rs 40 to 1: 0, reads 0 0x1
+1 set rs 47 to 1: 0, reads 0 0x1
+1 set rs 153 to 1: 0, reads 0 0x1
+1 set rs 164 to 1: 0, reads 0 0x1
+1 Release 0

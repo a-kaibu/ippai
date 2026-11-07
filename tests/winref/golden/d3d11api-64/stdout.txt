@@ -157,6 +157,7 @@ tex staging_rw ok mips 1 misc 0
 tex default_cpu ok mips 1 misc 0
 tex cube5 inval
 tex cube12 ok mips 1 misc 0x4
+tex cube9 ok mips 1 misc 0x4
 tex cube_rect inval
 tex genmips_nort inval
 tex genmips_nosrv inval

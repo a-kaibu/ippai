@@ -1,0 +1,2 @@
+lock 0
+owns 1

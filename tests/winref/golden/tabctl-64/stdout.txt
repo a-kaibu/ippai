@@ -1,0 +1,200 @@
+InitCommonControlsEx(&icc)                                       = 1
+SendMessageW(tab, WM_GETFONT, 0, 0) == (LRESULT)font             = 1
+GetWindowLongW(tab, GWL_STYLE) & 0xffff                          = 0
+SendMessageW(tab, TCM_GETITEMCOUNT, 0, 0)                        = 0
+SendMessageW(tab, TCM_GETCURSEL, 0, 0)                           = -1
+SendMessageW(tab, TCM_GETROWCOUNT, 0, 0)                         = 0
+SendMessageW(tab, TCM_GETITEMRECT, 0, (LPARAM)&r)                = 0
+empty itemrect 0,0,0 height-tm 5
+empty: 0 items, 0 rows, cursel -1
+  display 4,-14,-4,-4 of client 500x300 (top-item0bottom -14)
+  larger again 0,0,0,0
+insert 0 -> 0
+SendMessageW(tab, TCM_GETCURSEL, 0, 0)                           = 0
+insert 6 -> 1
+insert 7 -> 2
+insert 8 -> 3
+insert 9 -> 4
+insert 10 -> 5
+insert 11 -> 6
+insert 12 -> 7
+insert -1 -> -1
+SendMessageW(tab, TCM_DELETEITEM, 8, 0)                          = 0
+SendMessageW(tab, TCM_DELETEITEM, 8, 0)                          = 0
+eight: 8 items, 1 rows, cursel 0
+  item 0 ret 1 top 2 height-tm 5 left-prev 2 width-text 22 width-avechar 12
+  item 1 ret 1 top 2 height-tm 5 left-prev 0 width-text 12 width-avechar 17
+  item 2 ret 1 top 2 height-tm 5 left-prev 0 width-text 12 width-avechar 32
+  item 3 ret 1 top 2 height-tm 5 left-prev 0 width-text 12 width-avechar 20
+  item 4 ret 1 top 2 height-tm 5 left-prev 0 width-text 23 width-avechar 12
+  item 5 ret 1 top 2 height-tm 5 left-prev 0 width-text 12 width-avechar 23
+  item 6 ret 1 top 2 height-tm 5 left-prev 0 width-text 13 width-avechar 12
+  item 7 ret 1 top 2 height-tm 5 left-prev 0 width-text 13 width-avechar 12
+  display 4,2,-4,-4 of client 500x300 (top-item0bottom 2)
+  larger again 0,0,0,0
+SendMessageW(tab, TCM_GETITEMW, 2, (LPARAM)&it)                  = 1
+item 2 text 'Mai' (same buffer 1) param 102
+SendMessageA(tab, TCM_GETITEMA, 5, (LPARAM)&ia)                  = 1
+item 5 text A 'Graphics'
+SendMessageW(tab, TCM_GETITEMW, 99, (LPARAM)&it)                 = 0
+SendMessageW(tab, TCM_SETITEMW, 2, (LPARAM)&it)                  = 1
+longer text: 8 items, 1 rows, cursel 0
+  item 0 ret 1 top 2 height-tm 5 left-prev 2 width-text 22 width-avechar 12
+  item 1 ret 1 top 2 height-tm 5 left-prev 0 width-text 12 width-avechar 17
+  item 2 ret 1 top 2 height-tm 5 left-prev 0 width-text 12 width-avechar 80
+  item 3 ret 1 top 2 height-tm 5 left-prev 0 width-text 12 width-avechar 20
+  item 4 ret 1 top 2 height-tm 5 left-prev 0 width-text 23 width-avechar 12
+  item 5 ret 1 top 2 height-tm 5 left-prev 0 width-text 12 width-avechar 23
+  item 6 ret 1 top 2 height-tm 5 left-prev 0 width-text 13 width-avechar 12
+  item 7 ret 1 top 2 height-tm 5 left-prev 0 width-text 13 width-avechar 12
+  display 4,2,-4,-4 of client 500x300 (top-item0bottom 2)
+  larger again 0,0,0,0
+hittest left of the tabs -> -1 flags 1
+hittest item 3 middle -> 3 flags 4
+hittest item 3 top left -> 3 flags 6
+hittest item 3 top right -> 4 flags 6
+hittest item 3 bottom -> -1 flags 1
+hittest display area -> -1 flags 1
+SendMessageW(tab, TCM_SETCURSEL, 2, 0)                           = 0
+SendMessageW(tab, TCM_SETCURSEL, 2, 0)                           = 2
+SendMessageW(tab, TCM_SETCURSEL, 99, 0)                          = -1
+SendMessageW(tab, TCM_GETCURSEL, 0, 0)                           = 2
+SendMessageW(tab, TCM_GETCURFOCUS, 0, 0)                         = 2
+selected 2: 8 items, 1 rows, cursel 2
+  item 0 ret 1 top 2 height-tm 5 left-prev 2 width-text 22 width-avechar 12
+  item 1 ret 1 top 2 height-tm 5 left-prev 0 width-text 12 width-avechar 17
+  item 2 ret 1 top 2 height-tm 5 left-prev 0 width-text 12 width-avechar 32
+  item 3 ret 1 top 2 height-tm 5 left-prev 0 width-text 12 width-avechar 20
+  item 4 ret 1 top 2 height-tm 5 left-prev 0 width-text 23 width-avechar 12
+  item 5 ret 1 top 2 height-tm 5 left-prev 0 width-text 12 width-avechar 23
+  item 6 ret 1 top 2 height-tm 5 left-prev 0 width-text 13 width-avechar 12
+  item 7 ret 1 top 2 height-tm 5 left-prev 0 width-text 13 width-avechar 12
+  display 4,2,-4,-4 of client 500x300 (top-item0bottom 2)
+  larger again 0,0,0,0
+click 4 (veto 0)
+  notify code -552 id 77 from-tab 1 wparam 77 cursel 2
+  notify code -551 id 77 from-tab 1 wparam 77 cursel 4
+  notify code -2 id 77 from-tab 1 wparam 77 cursel 4
+  cursel 4
+click 4 (veto 0)
+  notify code -2 id 77 from-tab 1 wparam 77 cursel 4
+  cursel 4
+click 6 (veto 1)
+  notify code -552 id 77 from-tab 1 wparam 77 cursel 4
+  notify code -2 id 77 from-tab 1 wparam 77 cursel 4
+  cursel 4
+click 0 (veto 0)
+  notify code -552 id 77 from-tab 1 wparam 77 cursel 4
+  notify code -551 id 77 from-tab 1 wparam 77 cursel 0
+  notify code -2 id 77 from-tab 1 wparam 77 cursel 0
+  cursel 0
+SendMessageW(tab, TCM_SETCURSEL, 5, 0)                           = 0
+SendMessageW(tab, TCM_DELETEITEM, 2, 0)                          = 1
+SendMessageW(tab, TCM_GETCURSEL, 0, 0)                           = 4
+SendMessageW(tab, TCM_DELETEITEM, 4, 0)                          = 1
+SendMessageW(tab, TCM_GETCURSEL, 0, 0)                           = -1
+after deletes: 6 items, 1 rows, cursel -1
+  item 0 ret 1 top 2 height-tm 5 left-prev 2 width-text 22 width-avechar 12
+  item 1 ret 1 top 2 height-tm 5 left-prev 0 width-text 12 width-avechar 17
+  item 2 ret 1 top 2 height-tm 5 left-prev 0 width-text 12 width-avechar 20
+  item 3 ret 1 top 2 height-tm 5 left-prev 0 width-text 23 width-avechar 12
+  item 4 ret 1 top 2 height-tm 5 left-prev 0 width-text 13 width-avechar 12
+  item 5 ret 1 top 2 height-tm 5 left-prev 0 width-text 13 width-avechar 12
+  display 4,2,-4,-4 of client 500x300 (top-item0bottom 2)
+  larger again 0,0,0,0
+SendMessageW(tab, TCM_SETMINTABWIDTH, 0, 80)                     = 42
+SendMessageW(tab, TCM_SETMINTABWIDTH, 0, -1)                     = 80
+SendMessageW(tab, TCM_SETPADDING, 0, MAKELPARAM(10, 5))          = 0
+padding 10,5: 6 items, 1 rows, cursel -1
+  item 0 ret 1 top 2 height-tm 9 left-prev 2 width-text 30 width-avechar 20
+  item 1 ret 1 top 2 height-tm 9 left-prev 0 width-text 20 width-avechar 25
+  item 2 ret 1 top 2 height-tm 9 left-prev 0 width-text 20 width-avechar 28
+  item 3 ret 1 top 2 height-tm 9 left-prev 0 width-text 31 width-avechar 20
+  item 4 ret 1 top 2 height-tm 9 left-prev 0 width-text 21 width-avechar 20
+  item 5 ret 1 top 2 height-tm 9 left-prev 0 width-text 21 width-avechar 20
+  display 4,2,-4,-4 of client 500x300 (top-item0bottom 2)
+  larger again 0,0,0,0
+padding 6,3: 6 items, 1 rows, cursel -1
+  item 0 ret 1 top 2 height-tm 9 left-prev 2 width-text 30 width-avechar 20
+  item 1 ret 1 top 2 height-tm 9 left-prev 0 width-text 20 width-avechar 25
+  item 2 ret 1 top 2 height-tm 9 left-prev 0 width-text 20 width-avechar 28
+  item 3 ret 1 top 2 height-tm 9 left-prev 0 width-text 31 width-avechar 20
+  item 4 ret 1 top 2 height-tm 9 left-prev 0 width-text 21 width-avechar 20
+  item 5 ret 1 top 2 height-tm 9 left-prev 0 width-text 21 width-avechar 20
+  display 4,2,-4,-4 of client 500x300 (top-item0bottom 2)
+  larger again 0,0,0,0
+SendMessageW(tab, TCM_SETITEMSIZE, 0, MAKELPARAM(70, 30))        = 96
+SendMessageW(tab, TCM_SETITEMSIZE, 0, MAKELPARAM(70, 30))        = 1966150
+item size 70x30: 6 items, 1 rows, cursel -1
+  item 0 ret 1 top 2 height-tm 17 left-prev 2 width-text 22 width-avechar 12
+  item 1 ret 1 top 2 height-tm 17 left-prev 0 width-text 12 width-avechar 17
+  item 2 ret 1 top 2 height-tm 17 left-prev 0 width-text 12 width-avechar 20
+  item 3 ret 1 top 2 height-tm 17 left-prev 0 width-text 23 width-avechar 12
+  item 4 ret 1 top 2 height-tm 17 left-prev 0 width-text 13 width-avechar 12
+  item 5 ret 1 top 2 height-tm 17 left-prev 0 width-text 13 width-avechar 12
+  display 4,2,-4,-4 of client 500x300 (top-item0bottom 2)
+  larger again 0,0,0,0
+SendMessageW(tab, TCM_DELETEALLITEMS, 0, 0)                      = 1
+SendMessageW(tab, TCM_GETCURSEL, 0, 0)                           = -1
+SendMessageW(tab, TCM_GETITEMCOUNT, 0, 0)                        = 0
+SendMessageW(tab, TCM_SETITEMSIZE, 0, MAKELPARAM(90, 0))         = 96
+insert 0 -> 0
+insert 1 -> 1
+insert 2 -> 2
+insert 3 -> 3
+fixed width 90: 4 items, 1 rows, cursel 0
+  item 0 ret 1 top 2 height-tm 5 left-prev 2 width-text 70 width-avechar 60
+  item 1 ret 1 top 2 height-tm 5 left-prev 0 width-text 55 width-avechar 60
+  item 2 ret 1 top 2 height-tm 5 left-prev 0 width-text 40 width-avechar 60
+  item 3 ret 1 top 2 height-tm 5 left-prev 0 width-text 52 width-avechar 60
+  display 4,2,-4,-4 of client 500x300 (top-item0bottom 2)
+  larger again 0,0,0,0
+insert 0 -> 0
+insert 1 -> 1
+insert 2 -> 2
+insert 3 -> 3
+insert 4 -> 4
+insert 5 -> 5
+insert 6 -> 6
+insert 7 -> 7
+multiline: 8 items, 2 rows, cursel 0
+  item 0 ret 1 top 20 height-tm 5 left-prev 2 width-text 26 width-avechar 16
+  item 1 ret 1 top 20 height-tm 5 left-prev 0 width-text 16 width-avechar 21
+  item 2 ret 1 top 20 height-tm 5 left-prev 0 width-text 16 width-avechar 36
+  item 3 ret 1 top 20 height-tm 5 left-prev 0 width-text 15 width-avechar 23
+  item 4 ret 1 top 2 height-tm 5 left-prev -216 width-text 33 width-avechar 22
+  item 5 ret 1 top 2 height-tm 5 left-prev 0 width-text 21 width-avechar 32
+  item 6 ret 1 top 2 height-tm 5 left-prev 0 width-text 22 width-avechar 21
+  item 7 ret 1 top 2 height-tm 5 left-prev 0 width-text 22 width-avechar 21
+  display 4,2,-4,-4 of client 220x300 (top-item0bottom 2)
+  larger again 0,0,0,0
+multiline sel 0: 8 items, 2 rows, cursel 0
+  item 0 ret 1 top 20 height-tm 5 left-prev 2 width-text 26 width-avechar 16
+  item 1 ret 1 top 20 height-tm 5 left-prev 0 width-text 16 width-avechar 21
+  item 2 ret 1 top 20 height-tm 5 left-prev 0 width-text 16 width-avechar 36
+  item 3 ret 1 top 20 height-tm 5 left-prev 0 width-text 15 width-avechar 23
+  item 4 ret 1 top 2 height-tm 5 left-prev -216 width-text 33 width-avechar 22
+  item 5 ret 1 top 2 height-tm 5 left-prev 0 width-text 21 width-avechar 32
+  item 6 ret 1 top 2 height-tm 5 left-prev 0 width-text 22 width-avechar 21
+  item 7 ret 1 top 2 height-tm 5 left-prev 0 width-text 22 width-avechar 21
+  display 4,2,-4,-4 of client 220x300 (top-item0bottom 2)
+  larger again 0,0,0,0
+insert 0 -> 0
+insert 1 -> 1
+insert 2 -> 2
+insert 3 -> 3
+insert 4 -> 4
+insert 5 -> 5
+insert 6 -> 6
+insert 7 -> 7
+narrow: 8 items, 1 rows, cursel 0
+  item 0 ret 1 top 2 height-tm 5 left-prev 2 width-text 22 width-avechar 12
+  item 1 ret 1 top 2 height-tm 5 left-prev 0 width-text 12 width-avechar 17
+  item 2 ret 1 top 2 height-tm 5 left-prev 0 width-text 12 width-avechar 32
+  item 3 ret 1 top 2 height-tm 5 left-prev 0 width-text 12 width-avechar 20
+  item 4 ret 1 top 2 height-tm 5 left-prev 0 width-text 23 width-avechar 12
+  item 5 ret 1 top 2 height-tm 5 left-prev 0 width-text 12 width-avechar 23
+  item 6 ret 1 top 2 height-tm 5 left-prev 0 width-text 13 width-avechar 12
+  item 7 ret 1 top 2 height-tm 5 left-prev 0 width-text 13 width-avechar 12
+  display 4,2,-4,-4 of client 200x100 (top-item0bottom 2)
+  larger again 0,0,0,0

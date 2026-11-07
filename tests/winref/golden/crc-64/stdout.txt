@@ -1,0 +1,11 @@
+check e3069283
+start 00000000 byte 2300cae4 word 391bcade dword 950a96ec qword 950a96ec
+start ffffffff byte 50d78791 word 8494afcb dword e0645fb9 qword e0645fb9
+start 12345678 byte 694aa7f3 word b48c0bb3 dword 8f59d6db qword 8f59d6db
+start 80000000 byte 4da21fb8 word 21a320c6 dword c4005376 qword c4005376
+popcnt 00000000 0 zf 1
+popcnt 00000001 1 zf 0
+popcnt ffffffff 32 zf 0
+popcnt 80000001 2 zf 0
+popcnt 55555555 16 zf 0
+popcnt 00f0f000 8 zf 0
