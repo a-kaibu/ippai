@@ -127,47 +127,11 @@ jobs:
             target
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
-  # koji's long-mode JIT against its interpreter (random x64 code, run by wasmtime)
-  jit64:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7.0.1
-      - run: tools/ci/rust-key.sh
-      - id: cargo-cache
-        uses: actions/cache/restore@v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            tools/jit64test/target
-          key: jit64-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('tools/jit64test/Cargo.lock') }}-${{ github.run_id }}
-          restore-keys: |
-            jit64-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('tools/jit64test/Cargo.lock') }}-
-            jit64-${{ runner.os }}-${{ env.RUST_KEY }}-
-      - name: Differential test (new seed per run)
-        working-directory: tools/jit64test
-        run: cargo run --release --locked -- 20000 ${{ github.run_number }}
-      - name: Interpreter against the runner's CPU, one instruction at a time
-        working-directory: tools/jit64test
-        run: cargo run --release --locked -- native 30000 ${{ github.run_number }}
-      # (before the cache is saved: only the registry crates' builds are worth keeping)
-      - name: Shrink the cargo cache
-        if: ${{ !cancelled() }}
-        run: python3 tools/ci/cache-prune.py tools/jit64test/target
-      # (saved when the tests fail too: the registry crates' builds are good either way)
-      - if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' }}
-        uses: actions/cache/save@v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            tools/jit64test/target
-          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
-
-  # koji's 32-bit JIT (regions and function mode, through its dispatcher) against its
-  # interpreter (random x86 integer/MMX/SSE/x87 code, run by wasmtime)
-  jit32:
+  # koji's JITs against its interpreter (random code, run by wasmtime) and the interpreter
+  # against the runner's CPU: long mode (jit64test) and 32-bit (jit32test: regions and function
+  # mode through its dispatcher; integer/MMX/SSE/x87). One job: the four runs are single-threaded,
+  # so they run side by side as background steps on the runner's cores (one runner, not two).
+  jit:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -179,23 +143,48 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            tools/jit64test/target
             tools/jit32test/target
-          key: jit32-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('tools/jit32test/Cargo.lock') }}-${{ github.run_id }}
+          key: jit-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('tools/jit64test/Cargo.lock', 'tools/jit32test/Cargo.lock') }}-${{ github.run_id }}
           restore-keys: |
-            jit32-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('tools/jit32test/Cargo.lock') }}-
-            jit32-${{ runner.os }}-${{ env.RUST_KEY }}-
-      - name: Differential test (new seed per run)
+            jit-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('tools/jit64test/Cargo.lock', 'tools/jit32test/Cargo.lock') }}-
+            jit-${{ runner.os }}-${{ env.RUST_KEY }}-
+      - name: gcc-multilib (jit32test native)
+        id: apt
+        background: true
+        run: sudo apt-get update -q && sudo apt-get install -y -q gcc-multilib
+      - name: Build jit64test and jit32test
+        run: |
+          (cd tools/jit64test && cargo build --release --locked) & p=$!
+          (cd tools/jit32test && cargo build --release --locked)
+          wait $p
+      - name: Long mode, JIT against the interpreter (new seed per run)
+        id: jit64-diff
+        background: true
+        working-directory: tools/jit64test
+        run: cargo run --release --locked -- 20000 ${{ github.run_number }}
+      - name: Long mode, interpreter against the runner's CPU, one instruction at a time
+        id: jit64-native
+        background: true
+        working-directory: tools/jit64test
+        run: cargo run --release --locked -- native 30000 ${{ github.run_number }}
+      - name: 32-bit, JIT against the interpreter (new seed per run)
+        id: jit32-diff
+        background: true
         working-directory: tools/jit32test
         run: cargo run --release --locked -- 10000 ${{ github.run_number }}
-      - name: Against the runner's CPU (random rounding modes and precisions)
+      - wait: apt
+      - name: 32-bit, against the runner's CPU (random rounding modes and precisions)
+        id: jit32-native
+        background: true
         working-directory: tools/jit32test
-        run: |
-          sudo apt-get update -q && sudo apt-get install -y -q gcc-multilib
-          cargo run --release --locked -- native 3000 ${{ github.run_number }}
+        run: cargo run --release --locked -- native 3000 ${{ github.run_number }}
+      - name: Wait for the four runs
+        wait: [jit64-diff, jit64-native, jit32-diff, jit32-native]
       # (before the cache is saved: only the registry crates' builds are worth keeping)
       - name: Shrink the cargo cache
         if: ${{ !cancelled() }}
-        run: python3 tools/ci/cache-prune.py tools/jit32test/target
+        run: python3 tools/ci/cache-prune.py tools/jit64test/target tools/jit32test/target
       # (saved when the tests fail too: the registry crates' builds are good either way)
       - if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' }}
         uses: actions/cache/save@v6.1.0
@@ -203,6 +192,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            tools/jit64test/target
             tools/jit32test/target
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 

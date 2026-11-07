@@ -75,6 +75,13 @@ jobs:
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: 22
+      # (independent of the build: in the background meanwhile)
+      - name: Browser tools
+        id: browser-tools
+        background: true
+        run: |
+          npm install --prefix "$RUNNER_TEMP/pw" --no-audit --no-fund playwright@1.56.1
+          "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install --with-deps chromium
       - run: tools/ci/rust-key.sh
       - id: cargo-cache
         uses: actions/cache/restore@v6.1.0
@@ -96,17 +103,26 @@ jobs:
         with:
           name: winref-exe
           path: exe
-      - name: Run on sake (JIT, interpreter)
-        run: |
-          SAKE=$PWD/target/sake-out/sake.js tests/winref/run.sh exe out/jit
-          IPPAI_JIT=0 SAKE=$PWD/target/sake-out/sake.js tests/winref/run.sh exe out/interp
+      # (the node runs are single-threaded: JIT, interpreter and the build for the browser runs
+      # side by side)
+      - name: Run on sake (JIT)
+        id: node-jit
+        background: true
+        run: SAKE=$PWD/target/sake-out/sake.js tests/winref/run.sh exe out/jit
+      - name: Run on sake (interpreter)
+        id: node-interp
+        background: true
+        run: IPPAI_JIT=0 SAKE=$PWD/target/sake-out/sake.js tests/winref/run.sh exe out/interp
       # GPU probes (Direct3D ...): sake in headless Chromium, WebGPU (software)
-      - name: Browser tools, the web app and ippai
+      - name: The web app and ippai
+        id: web
+        background: true
         run: |
-          npm install --prefix "$RUNNER_TEMP/pw" --no-audit --no-fund playwright@1.56.1
-          "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install --with-deps chromium
           (cd web && npm ci --no-audit --no-fund && npx vp build)
           cargo build --release -p ippai
+      - name: Wait for the browser tools, the web app and ippai
+        wait: [browser-tools, web]
+      # (one after the other: two software-rendering Chromiums at once could time probes out)
       - name: Run the GPU probes on sake in the browser (JIT, interpreter)
         env:
           PLAYWRIGHT: ${{ runner.temp }}/pw/node_modules/playwright/index.mjs
@@ -114,6 +130,8 @@ jobs:
         run: |
           node tests/winref/run-browser.mjs exe out/jit
           IPPAI_JIT=0 node tests/winref/run-browser.mjs exe out/interp
+      - name: Wait for the node runs
+        wait: [node-jit, node-interp]
       - name: sake (JIT) against Windows
         run: python3 tests/winref/compare.py tests/winref/golden out/jit --known tests/winref/known.txt --png png --report jit.md
       - name: sake (interpreter) against Windows

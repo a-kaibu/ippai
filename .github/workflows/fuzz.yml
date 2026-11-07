@@ -1,5 +1,6 @@
 # Coverage-guided fuzzing (fuzz/README.md): every cargo-fuzz target in fuzz/ and crates/*/fuzz/,
-# a minute each on every push to main, five minutes each (and the corpus shrunk) once a day.
+# a minute each on every push to main, five minutes each (and the corpus shrunk) once a day,
+# three targets at a time (fuzz/run.sh JOBS).
 # The corpus is kept in the Actions cache from run to run; crash inputs go up as an artifact.
 name: Fuzz
 
@@ -60,6 +61,8 @@ jobs:
       - name: Fuzz
         env:
           MERGE: ${{ github.event_name == 'schedule' && '1' || '0' }}
+          # (three targets at once on the 4 cores; x86_jit maps 4 GB of guest memory, -rss_limit_mb 4 GB each)
+          JOBS: "3"
         run: fuzz/run.sh ${{ inputs.seconds || (github.event_name == 'schedule' && '300') || '60' }}
       - uses: actions/upload-artifact@v7.0.2
         if: failure()
