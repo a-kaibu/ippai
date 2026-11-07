@@ -1,4 +1,3 @@
-hr 4 IDirect3DDevice9::GetDepthStencilSurface 0x8876086c want 0x88760866
 image r6 16 16 2
 image r10 16 16 2
 image r14 16 16 2

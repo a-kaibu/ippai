@@ -4,3 +4,10 @@ image r307 64 64 2
 image r371 64 64 2
 image r443 64 64 2
 image r592 64 64 2
+image r752 64 64 2
+image r844 64 64 2
+image r948 64 64 2
+image r1012 64 64 2
+image r1023 64 64 2
+image f0 64 64 2
+calls 900 frames 1
