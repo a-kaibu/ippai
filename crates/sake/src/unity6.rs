@@ -207,27 +207,38 @@ pub fn same_instructions(code: &[u8], ip: u64, edits: &[Edit]) -> bool {
 
 /// Patches UnityPlayer.dll of a 64-bit Unity 6 program, mapped at `base` (`size` bytes).
 pub fn patch(name: &str, base: u32, size: u32) {
-    if !crate::mem::x64() || !crate::pe::base_name(name).eq_ignore_ascii_case("unityplayer.dll") || std::env::var_os("SAKE_NO_UNITY6").is_some() {
+    if !wanted(name, crate::mem::x64(), std::env::var_os("SAKE_NO_UNITY6").is_some()) {
         return;
     }
     let img = unsafe { std::slice::from_raw_parts(base as usize as *const u8, size as usize) };
-    let ip = crate::mem::widen(base);
-    for (va, end) in code_sections(img) {
-        let Some((edits, f)) = plan(&img[va..end], ip + va as u64) else { continue };
-        for e in &edits {
-            crate::mem::write(base + (va + e.at) as u32, &e.bytes);
-        }
-        eprintln!(
-            "sake: Unity 6 allocator buckets of {} MB ({} shifts, {} sizes, {} masks, {} round-ups near {:#x})",
-            1 << (SHIFT - 20),
-            f.shifts,
-            f.sizes,
-            f.masks,
-            f.rounds,
-            f.anchor
-        );
-        return;
+    let Some((edits, f)) = image_plan(img, crate::mem::widen(base)) else { return };
+    for e in &edits {
+        crate::mem::write(base + e.at as u32, &e.bytes);
     }
+    eprintln!(
+        "sake: Unity 6 allocator buckets of {} MB ({} shifts, {} sizes, {} masks, {} round-ups near {:#x})",
+        1 << (SHIFT - 20),
+        f.shifts,
+        f.sizes,
+        f.masks,
+        f.rounds,
+        f.anchor
+    );
+}
+
+/// Whether a module loaded as `name` is patched: UnityPlayer.dll of a 64-bit program, unless
+/// SAKE_NO_UNITY6 is set (`off`).
+fn wanted(name: &str, x64: bool, off: bool) -> bool {
+    x64 && !off && crate::pe::base_name(name).eq_ignore_ascii_case("unityplayer.dll")
+}
+
+/// [`plan`] for a mapped image at `ip`: the first code section with the allocator, edits at
+/// offsets in the image.
+fn image_plan(img: &[u8], ip: u64) -> Option<(Vec<Edit>, Found)> {
+    code_sections(img).into_iter().find_map(|(va, end)| {
+        let (edits, f) = plan(&img[va..end], ip + va as u64)?;
+        Some((edits.into_iter().map(|e| Edit { at: va + e.at, bytes: e.bytes }).collect(), f))
+    })
 }
 
 /// [start, end) of a mapped image's code sections.
@@ -426,6 +437,9 @@ mod tests {
             "48c1e81c8120ffffff003d000000ffc3", // and dword [rax],0xffffff; cmp
             "48c1e81c25feffff003d000000ffc3",   // and eax,0xfffffe; cmp
             "48c1e01c25ffffff003d000000ffc3",   // shl, not shr
+            "48c1e81cb8ffffff003d000000ffc3",   // mov eax,0xffffff; cmp
+            "48c1e81c25ffffff0083f801c3",       // and; cmp eax,1
+            "48c1e81c25ffffff0025000000ffc3",   // and; and eax,0xff000000 (no cmp)
         ];
         for d in decoys {
             let code = module(&[d, REG, LOOKUP, RESERVE, CTOR], ROUND, 0);
@@ -461,6 +475,93 @@ mod tests {
             edits.iter().map(|e| (e.at - 0x2_0000, e.bytes.clone())).collect::<Vec<_>>(),
             near.iter().map(|e| (e.at, e.bytes.clone())).collect::<Vec<_>>()
         );
+    }
+
+    /// A mapped image with a header page and the given sections (virtual address, size,
+    /// characteristics, contents)
+    fn image(sections: &[(usize, usize, u32, &[u8])]) -> Vec<u8> {
+        let end = sections.iter().map(|s| s.0 + s.1).max().unwrap_or(0x1000).max(0x1000);
+        let mut img = vec![0u8; end];
+        let pe = 0x80;
+        img[0x3c..0x40].copy_from_slice(&(pe as u32).to_le_bytes());
+        img[pe + 6..pe + 8].copy_from_slice(&(sections.len() as u16).to_le_bytes());
+        let opt = 0xf0usize;
+        img[pe + 20..pe + 22].copy_from_slice(&(opt as u16).to_le_bytes());
+        for (k, &(va, size, ch, data)) in sections.iter().enumerate() {
+            let s = pe + 24 + opt + 40 * k;
+            img[s + 8..s + 12].copy_from_slice(&(size as u32).to_le_bytes());
+            img[s + 12..s + 16].copy_from_slice(&(va as u32).to_le_bytes());
+            img[s + 36..s + 40].copy_from_slice(&ch.to_le_bytes());
+            img[va..va + data.len()].copy_from_slice(data);
+        }
+        img
+    }
+
+    #[test]
+    fn whole_images() {
+        let body = module(&[REG, LOOKUP, FIELD, RESERVE, FLAG, CTOR], ROUND, 0);
+        let (near, nf) = plan(&body, IP + 0x3000).unwrap();
+        // data first (not code: the same bytes there are not looked at), then the code section
+        let img = image(&[(0x1000, 0x2000, 0x4000_0040, &body), (0x3000, body.len(), 0x6000_0020, &body)]);
+        assert_eq!(code_sections(&img), [(0x3000, 0x3000 + body.len())]);
+        let (edits, f) = image_plan(&img, IP).expect("found");
+        assert_eq!(f, nf);
+        assert_eq!(
+            edits.iter().map(|e| (e.at, e.bytes.clone())).collect::<Vec<_>>(),
+            near.iter().map(|e| (0x3000 + e.at, e.bytes.clone())).collect::<Vec<_>>()
+        );
+        // a section reaching past the image is cut at its end; one starting at the end is left out
+        let img = image(&[(0x1000, 0x1000, 0x20, &body), (0x2000, 0x10, 0x20, &[])]);
+        assert_eq!(code_sections(&img), [(0x1000, 0x2000), (0x2000, 0x2010)]);
+        assert_eq!(code_sections(&img[..0x2000]), [(0x1000, 0x2000)]);
+        assert_eq!(code_sections(&img[..0x1800]), [(0x1000, 0x1800)]);
+        // no PE header, no sections; code without the allocator
+        assert!(code_sections(&[0u8; 0x20]).is_empty());
+        assert!(image_plan(&image(&[(0x1000, 0x100, 0x20, &[0x90; 0x100])]), IP).is_none());
+    }
+
+    #[test]
+    fn only_unity_player_of_64_bit_programs() {
+        assert!(wanted("Z:\\game\\UnityPlayer.dll", true, false));
+        assert!(wanted("unityplayer.DLL", true, false));
+        assert!(!wanted("UnityPlayer.dll", false, false));
+        assert!(!wanted("UnityPlayer.dll", true, true));
+        assert!(!wanted("GameAssembly.dll", true, false));
+        assert!(!wanted("UnityPlayer.dll.bak", true, false));
+    }
+
+    #[test]
+    fn edits_keep_their_instructions() {
+        // and rdx, 0xfffffffff0000000 at 0, shr r8, 0x1c at 7
+        let code = hex("4881e2000000f049c1e81c");
+        let e = |at: usize, b: &str| Edit { at, bytes: hex(b) };
+        assert!(same_instructions(&code, IP, &[e(0, "4881e2000000fc"), e(7, "49c1e81a")]));
+        assert!(same_instructions(&code, IP, &[e(7, "49c1e81a"), e(0, "4881e2000000fc")]));
+        assert!(same_instructions(&code, IP, &[]));
+        // another register, another mnemonic, another length, an invalid encoding
+        assert!(!same_instructions(&code, IP, &[e(7, "49c1e91a")]));
+        assert!(!same_instructions(&code, IP, &[e(7, "49c1e01a")]));
+        assert!(!same_instructions(&code, IP, &[e(0, "4883e2f0")]));
+        assert!(!same_instructions(&code, IP, &[e(7, "0f0b0f0b")]));
+        // overlapping, reaching past the end of the code
+        assert!(!same_instructions(&code, IP, &[e(0, "4881e2000000fc"), e(6, "fc49c1e81a")]));
+        assert!(!same_instructions(&code, IP, &[e(9, "c1e81a00")]));
+        // memory operands: the base and index stay
+        let m = hex("49c786e800000000000010");
+        assert!(same_instructions(&m, IP, &[e(0, "49c786e800000000000004")]));
+        assert!(!same_instructions(&m, IP, &[e(0, "49c787e800000000000004")]));
+        assert!(!same_instructions(&hex("488d3c88"), IP, &[e(0, "488d3c89")]));
+        // a branch: the target moves (its operand stays a near branch)
+        assert!(same_instructions(&hex("e800000000"), IP, &[e(0, "e810000000")]));
+        // the edit's address: a RIP-relative operand decodes the same anywhere, a second
+        // instruction's offset is its own
+        assert!(same_instructions(&hex("90488b0500000000"), IP, &[e(1, "488b0510000000")]));
+    }
+
+    #[test]
+    fn anchor_at_the_start() {
+        let reg = hex(REG);
+        assert_eq!(anchor(&reg[0x15..], IP), Some(0));
     }
 
     #[test]
