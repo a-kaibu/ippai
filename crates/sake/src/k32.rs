@@ -3568,12 +3568,11 @@ fn ver_language_name(c: &mut Ctx, wide: bool) -> u32 {
         0x12 => "韓国語",
         _ => "言語ニュートラル",
     };
-    // (a short buffer gets what fits and a NUL, winref strapis; the returns there are a guess
-    // until the probe's "returns" line has Windows' answer)
+    // (winref strapis: a short buffer gets what fits and a NUL, and the count copied; no buffer
+    // gives 0, not the length)
     let (buf, cap) = (c.a(1), c.a(2));
-    let full = if wide { name.encode_utf16().count() } else { crate::text::s2a(name).len() } as u32;
     if buf == 0 || cap == 0 {
-        return full + 1;
+        return 0;
     }
     if wide {
         mem::put_wstr(buf, cap, &name.encode_utf16().collect::<Vec<_>>())

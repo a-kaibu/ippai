@@ -73,7 +73,8 @@ int main(void) {
     printf("VerLanguageNameA 0411 4 chars: ret==full %d strlen %d after %d\n", vs == vl, (int)strnlen(vn, 8), vn[4] == 'x');
     DWORD vnull = VerLanguageNameA(0x411, NULL, 0);
     printf("VerLanguageNameA 0411 NULL buffer: ret==full %d\n", vnull == vl);
-    printf("VerLanguageNameA 0411 returns: 4 chars full%+d, NULL buffer full%+d\n", (int)(vs - vl), (int)(vnull - vl));
+    /* (Windows 11: 3 and 0, whatever the name's length) */
+    printf("VerLanguageNameA 0411 returns: 4 chars %d, NULL buffer %d\n", (int)vs, (int)vnull);
     WCHAR vw[256];
     DWORD wl = VerLanguageNameW(0x409, vw, 256);
     printf("VerLanguageNameW 0409: %d terminated %d\n", wl > 0, wl > 0 && wcslen(vw) == wl);
