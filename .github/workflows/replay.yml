@@ -1,0 +1,148 @@
+# Records with apitrace (github.com/apitrace/apitrace) on Windows the D3D9 calls of the winref
+# probes tests/replay/record.txt lists, into tests/replay/traces/<probe>.trace (a commit on main,
+# with <probe>.src: the probe's sources' hash, so a changed probe is recorded again). winref then
+# builds each trace into a probe of its own (replay_<probe>-32.exe: tests/replay/d3d9replay.c
+# playing it back), takes Windows' answers for it and checks sake against them; check.py checks
+# that the replay on Windows reads back the probe's own pictures. Games' traces never come here
+# (they hold the games' pictures): docs/replay.md.
+name: replay
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tests/winref/probes/**'
+      - 'tests/winref/probe.h'
+      - 'tests/replay/record.txt'
+      - '.github/workflows/replay.yml'
+  workflow_dispatch:
+    inputs:
+      all:
+        description: 'Record every probe of record.txt again'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: replay-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  probes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      stale: ${{ steps.stale.outputs.list }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: tools/ci/cache-keys.sh
+      - uses: actions/cache@v6.1.0
+        with:
+          path: ~/.apt-cache
+          key: apt-${{ env.CI_IMAGE }}-mingw-w64-clang-lld-llvm
+      - name: mingw-w64
+        run: tools/ci/apt.sh mingw-w64 clang lld llvm
+      - name: Probes to record
+        id: stale
+        run: |
+          if [ "${{ github.event_name }}" = workflow_dispatch ] && [ "${{ inputs.all }}" = true ]; then
+            l=$(grep -v '^#' tests/replay/record.txt | tr '\n' ' ')
+          else
+            l=$(python3 tests/replay/check.py stale | tr '\n' ' ')
+          fi
+          echo "list=$l" >> "$GITHUB_OUTPUT"
+          echo "to record: $l"
+      - name: Build the probes
+        if: steps.stale.outputs.list != ''
+        run: tests/winref/build.sh "$RUNNER_TEMP/exe"
+      - uses: actions/upload-artifact@v7.0.2
+        if: steps.stale.outputs.list != ''
+        with:
+          name: replay-exe
+          path: ${{ runner.temp }}/exe
+          retention-days: 7
+
+  record:
+    needs: probes
+    if: needs.probes.outputs.stale != ''
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: replay-exe
+          path: exe
+      # (apitrace's latest release, its 32-bit build: the probes are 32-bit)
+      - name: apitrace
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view -R apitrace/apitrace --json tagName,assets -q '.tagName, (.assets[].name)'
+          gh release download -R apitrace/apitrace --pattern '*win32*' -D "$RUNNER_TEMP/at"
+          ls -l "$RUNNER_TEMP/at"
+          sha256sum "$RUNNER_TEMP"/at/*
+          (cd "$RUNNER_TEMP/at" && 7z x -y ./*win32* > /dev/null)
+          a=$(find "$RUNNER_TEMP/at" -name apitrace.exe | head -1)
+          echo "APITRACE=$a" >> "$GITHUB_ENV"
+          "$a" version || true
+      - name: Record
+        shell: bash
+        run: |
+          mkdir -p traces
+          for p in ${{ needs.probes.outputs.stale }}; do
+            (cd exe && "$APITRACE" trace --api d3d9 -o "../traces/$p.trace" "./$p.exe" > "../traces/$p.stdout" 2> "../traces/$p.stderr"; echo "$p exit $?")
+            python tests/winref/golden.py src "$p" > "traces/$p.src"
+            ls -l "traces/$p.trace"
+            tail -3 "traces/$p.stderr"
+          done
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: replay-traces
+          path: traces
+          retention-days: 30
+
+  # the traces into tests/replay/traces (a commit on main; one whose probe changed on main since
+  # is left for a later run)
+  commit:
+    needs: [probes, record]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: replay-traces
+          path: traces
+      - name: Commit the traces
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          M=$RUNNER_TEMP/main
+          for i in 1 2 3 4 5 6; do
+            git fetch -q origin main
+            git worktree remove --force "$M" 2>/dev/null || true
+            git worktree add -q --detach "$M" FETCH_HEAD
+            took=
+            for p in ${{ needs.probes.outputs.stale }}; do
+              [ -s "traces/$p.trace" ] || { echo "$p: no trace"; continue; }
+              if [ "$(cat "traces/$p.src")" = "$(python3 "$M/tests/winref/golden.py" src "$p")" ]; then
+                mkdir -p "$M/tests/replay/traces"
+                cp "traces/$p.trace" "traces/$p.src" "$M/tests/replay/traces/"
+                took="$took $p"
+              else
+                echo "$p: its sources changed on main since ${GITHUB_SHA::7}, left for a later run"
+              fi
+            done
+            git -C "$M" add tests/replay/traces
+            if git -C "$M" diff --cached --quiet; then echo "no change"; exit 0; fi
+            git -C "$M" commit -qm "replay: apitrace traces of${took} recorded on Windows (${GITHUB_SHA::7})"
+            git -C "$M" push -q origin HEAD:main && exit 0
+            sleep $((i * 5))
+          done
+          exit 1

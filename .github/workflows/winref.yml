@@ -20,6 +20,7 @@ on:
       - 'crates/**'
       - 'host/tests/**'
       - 'tests/winref/**'
+      - 'tests/replay/**'
       - 'Cargo.lock'
       - '.github/workflows/winref.yml'
   schedule:
@@ -52,6 +53,9 @@ jobs:
         run: tools/ci/apt.sh mingw-w64 clang lld llvm
       - name: Build the probes
         run: tests/winref/build.sh "$RUNNER_TEMP/exe" && tests/winref/build-msvc.sh "$RUNNER_TEMP/exe"
+      # (a probe's trace replayed on Windows reads back the probe's own pictures: tests/replay)
+      - name: Replays of the probes' traces against the probes
+        run: python3 tests/replay/check.py
       - name: Probes without a current Windows answer
         id: stale
         run: |

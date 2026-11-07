@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 7f4c0b6645acb0618f7be2349b33ac3b5dc27571887fc5574b8f5f85655e0576 # shrinks to calls = [([Array([Struct(StructSig { name: "S", members: ["a", "b"] }, [Null, Float(NaN)])])], Some(Struct(StructSig { name: "S", members: ["a", "b"] }, [Opaque(228576924), Struct(StructSig { name: "S", members: ["a", "b"] }, [Bool(false), Null])])), false, 1)], chunk = 273, reverse = false
