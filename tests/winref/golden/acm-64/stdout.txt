@@ -62,3 +62,11 @@ pcm 1/22050/16 -> 1/44100/16: open 0 size 0 256 convert 0 used 128 -> 256 hash d
 pcm 2/44100/16 -> 2/22050/16: open 0 size 0 128 convert 0 used 256 -> 128 hash cd62b35e: 99 8a 71 63 22 9e 82 c3 ee 39 0d 83
 pcm 1/11025/8 -> 2/44100/16: open 0 size 0 1024 convert 0 used 64 -> 1020 hash 043abe1d: 00 23 00 23 00 23 00 23 00 23 00 23
 pcm 2/48000/16 -> 2/44100/16: open 0 size 0 236 convert 0 used 256 -> 236 hash 29402015: 12 2b a1 bd 1f fc cd f3 b5 87 90 da
+pcm 1/11025/16 -> 1/22050/16: open 0 size 0 256 convert 0 used 128 -> 256 hash 7da19905: 4d 4a 4d 4a d4 74 d4 74 0a 0b 0a 0b
+pcm 1/8000/16 -> 1/44100/16: open 0 size 0 706 convert 0 used 128 -> 702 hash 35dafc64: 6a da 6a da 6a da ed 4f ed 4f ed 4f
+pcm 1/11025/16 -> 1/44100/16: open 0 size 0 512 convert 0 used 128 -> 510 hash d57e9532: 88 69 88 69 88 69 07 2b 07 2b 07 2b
+pcm 1/44100/16 -> 1/11025/16: open 0 size 0 32 convert 0 used 128 -> 32 hash 041ce5c7: 6a 22 db fe 8f 61 e6 2b 40 3c fd 74
+pcm 1/44100/16 -> 1/48000/16: open 0 size 0 140 convert 0 used 128 -> 140 hash a39d4c94: c3 88 3a e2 e0 29 f6 68 86 84 49 9f
+pcm 1/32000/16 -> 1/44100/16: open 0 size 0 178 convert 0 used 128 -> 176 hash ba09bb57: e0 18 53 bd 53 bd 55 31 27 7c d4 84
+pcm 1/44100/16 -> 1/8000/16: open 0 size 0 24 convert 0 used 128 -> 24 hash cb8095bc: cb 38 57 77 7b 9d dd 2c 6f ab 70 1f
+pcm 2/22050/8 -> 2/44100/16: open 0 size 0 512 convert 0 used 128 -> 512 hash 5f9c0a95: 00 9b 00 b7 00 9b 00 b7 00 06 00 f4
