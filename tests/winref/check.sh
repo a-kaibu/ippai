@@ -18,6 +18,7 @@ if [ ! -f "$SAKE" ]; then
   OUT=$(dirname "$SAKE") bash "$ROOT/crates/sake/build.sh"
 fi
 "$HERE/build.sh" "$EXE" > /dev/null
+"$HERE/build-msvc.sh" "$EXE" > /dev/null
 rm -rf "$OUT"
 SAKE=$SAKE "$HERE/run.sh" "$EXE" "$OUT" "${1:-}" > /dev/null
 [ -n "${BROWSER:-}" ] && WEB=${WEB:-$ROOT/web/dist} node "$HERE/run-browser.mjs" "$EXE" "$OUT" "${1:-}" > /dev/null

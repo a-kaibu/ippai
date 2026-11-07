@@ -36,9 +36,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
       - name: mingw-w64
-        run: sudo apt-get update -q && sudo apt-get install -yq --no-install-recommends mingw-w64
+        run: sudo apt-get update -q && sudo apt-get install -yq --no-install-recommends mingw-w64 clang lld llvm
       - name: Build the probes
-        run: tests/winref/build.sh "$RUNNER_TEMP/exe"
+        run: tests/winref/build.sh "$RUNNER_TEMP/exe" && tests/winref/build-msvc.sh "$RUNNER_TEMP/exe"
       - name: Probes without a current Windows answer
         id: stale
         run: |

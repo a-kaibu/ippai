@@ -107,20 +107,31 @@ pub fn s2a(s: &str) -> Vec<u8> {
     w2a(&s.encode_utf16().collect::<Vec<_>>())
 }
 
+/// Windows' case tables (LCMapString, CharUpper, towupper outside "C"): Unicode's simple 1:1
+/// mappings within the BMP; a character whose mapping is several (ß, ŉ) stays.
 pub fn upper16(c: u16) -> u16 {
-    match c {
-        0x61..=0x7a => c - 32,
-        0xe0..=0xfe if c != 0xf7 => c - 32,
-        0xff41..=0xff5a => c - 32,
-        _ => c,
+    if c < 0x80 {
+        return if (0x61..=0x7a).contains(&c) { c - 32 } else { c };
     }
+    case16(c, |ch| ch.to_uppercase())
 }
 
 pub fn lower16(c: u16) -> u16 {
-    match c {
-        0x41..=0x5a => c + 32,
-        0xc0..=0xde if c != 0xd7 => c + 32,
-        0xff21..=0xff3a => c + 32,
+    if c < 0x80 {
+        return if (0x41..=0x5a).contains(&c) { c + 32 } else { c };
+    }
+    // (İ: its full lower case is i + a dot, its simple one i)
+    if c == 0x130 {
+        return 0x69;
+    }
+    case16(c, |ch| ch.to_lowercase())
+}
+
+fn case16<I: Iterator<Item = char>>(c: u16, f: fn(char) -> I) -> u16 {
+    let Some(ch) = char::from_u32(c as u32) else { return c };
+    let mut m = f(ch);
+    match (m.next(), m.next()) {
+        (Some(x), None) if (x as u32) < 0x10000 => x as u32 as u16,
         _ => c,
     }
 }
@@ -155,8 +166,40 @@ mod proptests {
     use super::*;
     use proptest::prelude::*;
 
+    #[test]
+    fn case_tables() {
+        // ASCII, Latin-1, Greek, Cyrillic, full-width, and the ones Windows keeps or maps simply
+        let pairs = [(0x41, 0x61), (0xc0, 0xe0), (0xde, 0xfe), (0x178, 0xff), (0x391, 0x3b1), (0x410, 0x430), (0xff21, 0xff41), (0x100, 0x101)];
+        for (u, l) in pairs {
+            assert_eq!(lower16(u), l, "{u:x}");
+            assert_eq!(upper16(l), u, "{l:x}");
+        }
+        assert_eq!(upper16(0xdf), 0xdf); // ß
+        assert_eq!(lower16(0x130), 0x69); // İ
+        assert_eq!(upper16(0x131), 0x49); // ı
+        assert_eq!(lower16(0xd7), 0xd7); // ×
+        assert_eq!(upper16(0xf7), 0xf7); // ÷
+        assert_eq!(lower16(0x3042), 0x3042); // あ
+        assert_eq!(lower16(0xd800), 0xd800); // (a lone surrogate)
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(512))]
+
+        /// Case mapping never leaves the BMP, ASCII stays ASCII, and a letter with a 1:1 mapping
+        /// round-trips (lower of upper of a lower-case letter is itself).
+        #[test]
+        fn case_maps(c in any::<u16>()) {
+            let (l, u) = (lower16(c), upper16(c));
+            if c < 0x80 {
+                prop_assert!(l < 0x80 && u < 0x80);
+            }
+            if let Some(ch) = char::from_u32(c as u32) {
+                if ch.is_lowercase() && u != c && c != 0x131 && c != 0x17f && c != 0x3c2 && c != 0xb5 {
+                    prop_assert_eq!(lower16(u), c, "{:x}", c);
+                }
+            }
+        }
 
         /// Text a Japanese game writes (ASCII, kana, kanji, full-width, half-width katakana; the
         /// wave dash is U+FF5E in Windows-31J, U+301C has no code; NEC/IBM extensions included)

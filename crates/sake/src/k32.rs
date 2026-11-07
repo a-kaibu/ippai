@@ -2787,7 +2787,7 @@ fn WideCharToMultiByte(c: &mut Ctx) -> u32 {
     a.len() as u32
 }
 
-fn ctype1(ch: u16) -> u16 {
+pub(crate) fn ctype1(ch: u16) -> u16 {
     let c = ch as u32;
     let mut t = 0u16;
     if let Some(x) = char::from_u32(c) {
@@ -2941,7 +2941,7 @@ fn LCMapStringA(c: &mut Ctx) -> u32 {
     mem::write(dst, &s[..k]);
     k as u32
 }
-fn LCMapStringW(c: &mut Ctx) -> u32 {
+pub(crate) fn LCMapStringW(c: &mut Ctx) -> u32 {
     let (flags, src, n, dst, cap) = (c.a(1), c.a(2), c.i(3), c.a(4), c.a(5));
     let mut w: Vec<u16> = if n < 0 { let mut v = wstr(src); v.push(0); v } else { (0..n as u32).map(|i| r16(src + 2 * i)).collect() };
     for ch in w.iter_mut() {

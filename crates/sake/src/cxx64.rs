@@ -353,6 +353,14 @@ fn throw(c: &mut Ctx) -> u32 {
     0
 }
 
+/// throw; from a trap: the exception being handled again
+pub fn rethrow(c: &mut Ctx) {
+    let Some(a) = ACTIVE.with(|l| l.borrow().last().copied()) else {
+        crate::fatal(c.cpu, "C++ rethrow without an exception (terminate)");
+    };
+    raise_cxx(c, [info(a.rec, 0), info(a.rec, 1), info(a.rec, 2), info(a.rec, 3)]);
+}
+
 /// Throws `object` of ThrowInfo `ti` from a trap (msvcp's _X* functions).
 pub fn throw_object(c: &mut Ctx, object: u64, ti: u32) {
     raise_cxx(c, [MAGIC_VC6 as u64, object, ti as u64, image_base_of(ti)]);

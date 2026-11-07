@@ -452,7 +452,7 @@ fn _errno(_: &mut Ctx) -> u32 {
 fn __doserrno(_: &mut Ctx) -> u32 {
     crate::cur().teb + ERRNO_TEB + 4
 }
-fn set_errno(v: u32) {
+pub(crate) fn set_errno(v: u32) {
     w32(crate::cur().teb + ERRNO_TEB, v);
 }
 
@@ -2914,6 +2914,12 @@ fn _difftime64(c: &mut Ctx) -> u32 {
 }
 
 
+/// wcsftime's C locale text of `fmt` for the tm at `tm` (None: an invalid field)
+pub(crate) fn strftime_w(fmt: &[u16], tm: u32) -> Option<Vec<u16>> {
+    let bias = crate::k32::tz_bias();
+    let name = if bias == 9 * 3600 { "Tokyo Standard Time" } else { "Coordinated Universal Time" };
+    crt::time::strftime(fmt, &read_tm(tm), (bias, name))
+}
 /// strftime / wcsftime (buf, max, fmt, tm): crt::time's C locale output and its length, or 0
 /// with an empty buffer when it does not fit (an invalid field or conversion: EINVAL too)
 fn strftime_into(c: &mut Ctx, wide: bool) -> u32 {

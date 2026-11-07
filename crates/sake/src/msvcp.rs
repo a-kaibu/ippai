@@ -12,10 +12,10 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::OnceLock;
 
 use crate::api::{host_fn, implement, Ctx, Handler};
-use crate::mem::{self, cstr, ps, r8, rp, w32, w8, wp};
+use crate::mem::{self, cstr, ps, r8, rp, w32, w64, w8, wp};
 
 /// _X_CTYPE (LC_CTYPE): the category ctype<char>::_Getcat gives
-const X_CTYPE: u32 = 2;
+pub(crate) const X_CTYPE: u32 = 2;
 
 fn align(v: u32, a: u32) -> u32 {
     (v + a - 1) & !(a - 1)
@@ -37,21 +37,21 @@ fn refs(this: u32) -> u32 {
     this + ps()
 }
 /// ?_Incref@facet@locale@std@@UEAAXXZ
-fn facet_incref(c: &mut Ctx) -> u32 {
+pub(crate) fn facet_incref(c: &mut Ctx) -> u32 {
     let p = refs(c.a(0));
     wp(p, rp(p).wrapping_add(1));
     0
 }
 /// ?_Decref@facet@locale@std@@UEAAPEAV_Facet_base@3@XZ: the facet to delete when the last
 /// reference went
-fn facet_decref(c: &mut Ctx) -> u32 {
+pub(crate) fn facet_decref(c: &mut Ctx) -> u32 {
     let this = c.a(0);
     let n = rp(refs(this)).wrapping_sub(1);
     wp(refs(this), n);
     if n == 0 { this } else { 0 }
 }
 /// the scalar deleting destructor of the facets made here (flags bit 0: free it)
-fn facet_delete(c: &mut Ctx) -> u32 {
+pub(crate) fn facet_delete(c: &mut Ctx) -> u32 {
     let (this, flags) = (c.a(0), c.a(1));
     if flags & 1 != 0 {
         mem::heap_free(this);
@@ -69,7 +69,7 @@ fn facet_ctor(c: &mut Ctx) -> u32 {
     wp(refs(this), c.a(1));
     this
 }
-fn nothing(c: &mut Ctx) -> u32 {
+pub(crate) fn nothing(c: &mut Ctx) -> u32 {
     c.a(0)
 }
 
@@ -102,6 +102,65 @@ fn locale_init(c: &mut Ctx) -> u32 {
     }
     l
 }
+/// A locale object is 16 bytes: its two empty bases take the first 8 (MSVC lays a second
+/// empty base out at offset 1), _Ptr is at 8.
+pub const LOCALE_SIZE: u32 = 16;
+const LOCALE_PTR: u32 = 8;
+
+/// A new locale object (locale(): the global locale, referenced).
+pub fn new_locale() -> u32 {
+    let p = mem::heap_alloc(LOCALE_SIZE, true);
+    let l = locimp();
+    wp(refs(l), rp(refs(l)).wrapping_add(1));
+    wp(p + LOCALE_PTR, l);
+    p
+}
+/// facet::_Incref / _Decref through the _Locimp's vftable
+fn locimp_incref(c: &mut Ctx, l: u32) {
+    if l != 0 {
+        let f = rp(rp(l) + ps());
+        c.call(f, &[l]);
+    }
+}
+fn locimp_release(c: &mut Ctx, l: u32) {
+    if l == 0 {
+        return;
+    }
+    let f = rp(rp(l) + 2 * ps());
+    let del = c.call(f, &[l]);
+    if del != 0 {
+        let d = rp(rp(del));
+        c.call(d, &[del, 1]);
+    }
+}
+/// ~locale of the locale object at `p` (its storage stays)
+pub fn delete_locale_value(c: &mut Ctx, p: u32) {
+    let l = rp(p + LOCALE_PTR);
+    locimp_release(c, l);
+    wp(p + LOCALE_PTR, 0);
+}
+/// delete of a locale object made with new
+pub fn delete_locale(c: &mut Ctx, p: u32) {
+    delete_locale_value(c, p);
+    mem::heap_free(p);
+}
+/// locale(const locale&) at `dst` from the locale object at `src`
+pub fn locale_copy(c: &mut Ctx, dst: u32, src: u32) {
+    let l = rp(src + LOCALE_PTR);
+    w64(dst, 0);
+    w64(dst + LOCALE_PTR, mem::widen(l));
+    locimp_incref(c, l);
+}
+/// locale::operator=
+pub fn locale_assign(c: &mut Ctx, dst: u32, src: u32) {
+    let (a, b) = (rp(dst + LOCALE_PTR), rp(src + LOCALE_PTR));
+    if a != b {
+        locimp_release(c, a);
+        w64(dst + LOCALE_PTR, mem::widen(b));
+        locimp_incref(c, b);
+    }
+}
+
 /// ?_Getgloballocale@locale@std@@CAPEAV_Locimp@12@XZ
 fn locale_global(_: &mut Ctx) -> u32 {
     locimp()
@@ -117,6 +176,9 @@ fn locale_id(c: &mut Ctx) -> u32 {
 }
 /// The locale::id data exports (one zero word each, numbered by locale_id).
 pub fn data(name: &str) -> Option<u32> {
+    if let Some(a) = crate::msvcp_io::data(name) {
+        return Some(a);
+    }
     static IDS: std::sync::Mutex<Vec<(String, u32)>> = std::sync::Mutex::new(Vec::new());
     if !(name.starts_with("?id@?$") && name.ends_with("@std@@2V0locale@2@A")) {
         return None;
@@ -173,9 +235,10 @@ fn _Strxfrm(c: &mut Ctx) -> u32 {
 
 // ---------------------------------------------------------------------------------------------
 // ctype<char> : facet { _Ctypevec { code page, const short* table, int delfl, wchar_t* locale
-// name } }; vtable: destructor, _Incref, _Decref, do_tolower(c), do_tolower(first, last),
-// do_toupper x2, do_widen(c), do_widen(first, last, dest), do_narrow(c, dflt),
-// do_narrow(first, last, dflt, dest)
+// name } }; vtable (MSVC puts an overload set in reverse order of declaration): destructor,
+// _Incref, _Decref, do_tolower(first, last), do_tolower(c), do_toupper x2 (the same),
+// do_widen(first, last, dest), do_widen(c), do_narrow(first, last, dflt, dest),
+// do_narrow(c, dflt)
 
 fn lower(b: u8) -> u8 {
     b.to_ascii_lowercase()
@@ -223,7 +286,7 @@ fn ctype_vtable() -> u32 {
     *V.get_or_init(|| {
         table(
             "ctype",
-            &[facet_delete, facet_incref, facet_decref, ct_tolower, ct_tolower_range, ct_toupper, ct_toupper_range, ct_widen, ct_widen_range, ct_narrow, ct_narrow_range],
+            &[facet_delete, facet_incref, facet_decref, ct_tolower_range, ct_tolower, ct_toupper_range, ct_toupper, ct_widen_range, ct_widen, ct_narrow_range, ct_narrow],
         )
     })
 }
@@ -243,12 +306,12 @@ fn ctype_getcat(c: &mut Ctx) -> u32 {
 /// ctype<char>::tolower(c) / tolower(first, last): the virtual do_tolower
 fn ctype_tolower(c: &mut Ctx) -> u32 {
     let this = c.a(0);
-    let f = rp(rp(this) + 3 * ps());
+    let f = rp(rp(this) + 4 * ps());
     c.call(f, &[this, c.a(1)]) & 0xff
 }
 fn ctype_tolower_range(c: &mut Ctx) -> u32 {
     let this = c.a(0);
-    let f = rp(rp(this) + 4 * ps());
+    let f = rp(rp(this) + 3 * ps());
     c.call(f, &[this, c.a(1), c.a(2)])
 }
 
@@ -390,6 +453,35 @@ fn generic_category() -> u32 {
 }
 /// Throws system_error(error_code(errno, generic_category())) with message `what`
 /// (runtime_error's data, then the error_code { int, const error_category * }).
+/// iostream_category(): what ios_base::failure's error_code (io_errc::stream) points to
+fn iostream_category() -> u32 {
+    static C: OnceLock<u32> = OnceLock::new();
+    *C.get_or_init(|| {
+        let p = mem::heap_alloc(2 * ps(), true);
+        wp(p, table("iostream_category", &[nothing, nothing, nothing, nothing, nothing, nothing]));
+        wp(p + ps(), 5);
+        p
+    })
+}
+const FAILURE: Class = Class {
+    names: &[".?AVfailure@ios_base@std@@", ".?AVsystem_error@std@@", ".?AV_System_error@std@@", ".?AVruntime_error@std@@", ".?AVexception@std@@"],
+    size: 40,
+};
+/// Throws ios_base::failure(msg) (error_code(io_errc::stream, iostream_category()); what() as
+/// system_error makes it: "msg: iostream stream error").
+pub fn throw_failure(c: &mut Ctx, msg: &str) {
+    let o = mem::heap_alloc(FAILURE.size, true);
+    wp(o, ex_vtable());
+    wp(o + ps(), static_str(&format!("{msg}: iostream stream error")));
+    w32(o + 3 * ps(), 1);
+    wp(o + 4 * ps(), iostream_category());
+    crate::cxx64::throw_object(c, o as u64, throw_info(&FAILURE));
+}
+/// throw; (the exception being handled)
+pub fn rethrow(c: &mut Ctx) {
+    crate::cxx64::rethrow(c);
+}
+
 pub fn throw_system_error(c: &mut Ctx, errno: u32, what: u32) -> u32 {
     let o = mem::heap_alloc(SYSTEM_ERROR.size, true);
     wp(o, ex_vtable());
@@ -474,6 +566,8 @@ pub fn init() {
         return;
     }
     crate::msvcp_thr::init();
+    crate::msvcp_io::init();
+    crate::msvcp_loc::init();
     for (name, f) in [
         ("??0_Lockit@std@@QEAA@H@Z", lockit_ctor as Handler),
         ("??1_Lockit@std@@QEAA@XZ", nothing),
@@ -501,6 +595,8 @@ pub fn init() {
         ("?_Xoverflow_error@std@@YAXPEBD@Z", x_overflow_error),
         ("?_Xbad_function_call@std@@YAXXZ", x_bad_function_call),
         ("?uncaught_exceptions@std@@YAHXZ", uncaught),
+        ("?uncaught_exception@std@@YA_NXZ", uncaught),
+        ("?_Facet_Register@std@@YAXPEAV_Facet_base@1@@Z", nothing),
     ] {
         implement("msvcp140", name, f);
     }
