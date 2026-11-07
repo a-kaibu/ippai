@@ -580,7 +580,14 @@ fn pack_tree(store: &Path, root: &Path, name: &str, follow: bool, chunk: u64) ->
                     }
                 }
                 // other movies (DirectShow, Media Foundation): VP9 and Vorbis (see movie.rs)
-                if crate::movie::is_movie(&fname) && *MOVIES {
+                // (by name, or by its first bytes when it is not an .omv)
+                let by_name = crate::movie::is_movie(&fname);
+                let sniffed = || {
+                    let mut head = [0u8; 40];
+                    let n = File::open(&disk).and_then(|mut f| std::io::Read::read(&mut f, &mut head)).unwrap_or(0);
+                    crate::movie::sniff(&head[..n])
+                };
+                if *MOVIES && !fname.to_ascii_lowercase().ends_with(".omv") && (by_name || sniffed()) {
                     match crate::movie::movie_vnv_for(store, &disk) {
                         Ok(v) => {
                             let len = fs::metadata(&v)?.len();

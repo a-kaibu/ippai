@@ -130,12 +130,27 @@ pub fn is_movie(name: &str) -> bool {
     matches!(ext, "mpg" | "mpeg" | "mpe" | "m1v" | "m2v" | "wmv" | "asf" | "avi" | "mp4" | "m4v" | "mov" | "ogv" | "webm" | "mkv" | "flv")
 }
 
+/// Whether a file's first bytes are a movie container's (ASF, AVI, MP4/MOV, MPEG program or
+/// video stream, Matroska/WebM, Ogg Theora, FLV): games name them anything (Artemis: `.dat`).
+pub fn sniff(head: &[u8]) -> bool {
+    let at = |o: usize, m: &[u8]| head.get(o..o + m.len()) == Some(m);
+    at(0, &[0x30, 0x26, 0xb2, 0x75, 0x8e, 0x66, 0xcf, 0x11])
+        || (at(0, b"RIFF") && at(8, b"AVI "))
+        || at(4, b"ftyp")
+        || at(0, &[0, 0, 1, 0xba])
+        || at(0, &[0, 0, 1, 0xb3])
+        || at(0, &[0x1a, 0x45, 0xdf, 0xa3])
+        || (at(0, b"OggS") && at(28, b"\x80theora"))
+        || at(0, b"FLV\x01")
+}
+
 /// How a movie's frames are stored.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Codec {
     /// VP9, decoded by the page (WebCodecs)
     Vp9,
     /// uncompressed I420, read by sake itself (tests under node)
+    #[cfg_attr(not(test), allow(dead_code))]
     Raw,
 }
 
@@ -278,6 +293,33 @@ mod tests {
         }
         for n in ["a.omv", "mpg", "x.mpg.vnv", "data.xp3", "b.ogg", "c.wav"] {
             assert!(!is_movie(n), "{n}");
+        }
+    }
+
+    #[test]
+    fn sniffing() {
+        let mut ogg = b"OggS".to_vec();
+        ogg.resize(28, 0);
+        let (mut theora, mut vorbis) = (ogg.clone(), ogg);
+        theora.extend(b"\x80theora");
+        vorbis.extend(b"\x01vorbis");
+        let asf = [0x30, 0x26, 0xb2, 0x75, 0x8e, 0x66, 0xcf, 0x11, 0xa6, 0xd9];
+        for (h, want) in [
+            (&asf[..], true),
+            (b"RIFF\0\0\0\0AVI LIST", true),
+            (b"RIFF\0\0\0\0WAVEfmt ", false),
+            (b"\0\0\0\x20ftypisom", true),
+            (&[0, 0, 1, 0xba, 0x44], true),
+            (&[0, 0, 1, 0xb3, 0x40], true),
+            (&[0x1a, 0x45, 0xdf, 0xa3, 1], true),
+            (&theora[..], true),
+            (&vorbis[..], false),
+            (b"FLV\x01\x05", true),
+            (b"PNG", false),
+            (b"", false),
+            (&asf[..4], false),
+        ] {
+            assert_eq!(sniff(h), want, "{h:?}");
         }
     }
 
