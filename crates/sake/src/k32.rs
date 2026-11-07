@@ -3314,7 +3314,7 @@ fn write_systemtime(p: u32, secs: i64, ms: u32) {
     w16(p + 12, (rem % 60) as u16);
     w16(p + 14, ms as u16);
 }
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+pub fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = y.div_euclid(400);
     let yoe = y - era * 400;

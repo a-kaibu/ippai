@@ -8,7 +8,7 @@ use crate::HashMap;
 use std::sync::Mutex;
 
 use crate::api::{implement, Ctx};
-use crate::mem::{self, put32, r16, r32, r8, w16, w32};
+use crate::mem::{self, put32, putp, r16, r32, r8, rp, w16, w32};
 
 const DRIVER: u32 = 0x00ac_0001;
 const IMA: u16 = 0x11;
@@ -26,19 +26,23 @@ struct Fmt {
     bits: u16,
     /// samples per block (ADPCM)
     spb: u32,
+    /// IMA ADPCM with a samples-per-block field that doesn't fit its block size (imaadp32
+    /// refuses those)
+    bad: bool,
 }
 
 fn read_fmt(p: u32) -> Fmt {
     let (tag, channels, rate, align, bits) = (r16(p), r16(p + 2), r32(p + 4), r16(p + 12), r16(p + 14));
     let ch = channels.max(1) as u32;
+    let ima_spb = (align as u32).saturating_sub(4 * ch) * 8 / (4 * ch) + 1;
+    let bad = tag == IMA && r16(p + 16) >= 2 && r16(p + 18) as u32 != ima_spb;
     let spb = match tag {
-        IMA if r16(p + 16) >= 2 => r16(p + 18) as u32,
-        IMA => (align as u32).saturating_sub(4 * ch) * 8 / (4 * ch) + 1,
+        IMA => ima_spb,
         MSADPCM if r16(p + 16) >= 2 => r16(p + 18) as u32,
         MSADPCM => ((align as u32).saturating_sub(7 * ch)) * 8 / (4 * ch) + 2,
         _ => 1,
     };
-    Fmt { tag, channels, rate, align, bits, spb }
+    Fmt { tag, channels, rate, align, bits, spb, bad }
 }
 
 struct Stream {
@@ -49,9 +53,63 @@ struct Stream {
 static STREAMS: Mutex<Option<HashMap<u32, Stream>>> = Mutex::new(None);
 static NEXT: Mutex<u32> = Mutex::new(0x00ac_1000);
 
+fn pcm_ok(f: &Fmt) -> bool {
+    f.tag == PCM && matches!(f.bits, 8 | 16) && matches!(f.channels, 1 | 2) && f.rate != 0 && f.align == f.channels * f.bits / 8
+}
 fn supported(s: &Fmt, d: &Fmt) -> bool {
-    d.tag == PCM && d.bits == 16 && d.channels == s.channels && d.rate == s.rate && matches!(s.tag, IMA | MSADPCM)
-        || s.tag == PCM && d.tag == PCM && s.channels == d.channels && s.rate == d.rate && s.bits == d.bits
+    d.tag == PCM && d.bits == 16 && d.channels == s.channels && d.rate == s.rate && matches!(s.tag, IMA | MSADPCM) && !s.bad
+        || pcm_ok(s) && pcm_ok(d)
+}
+
+/// Whether every block header is one the codec takes: Windows' imaadp32/msadp32 convert
+/// nothing (and say so with no error) when any block has a step index past 88 or a
+/// predictor past the coefficient table.
+fn headers_ok(s: &Fmt, src: u32, blocks: u32) -> bool {
+    let ch = s.channels.max(1) as u32;
+    (0..blocks).all(|k| {
+        let b = src + k * s.align as u32;
+        (0..ch).all(|c| if s.tag == IMA { r8(b + 4 * c + 2) <= 88 } else { r8(b + c) < 7 })
+    })
+}
+
+/// PCM to PCM as msacm32's converter does it: 8-bit samples are (b - 128) << 8 and back,
+/// stereo to mono adds the channels (clamped), mono to stereo copies; another rate repeats
+/// or skips frames, output frame i taking source frame (i * src + c) / dst, with c fitted
+/// to Windows' answers (half a source frame, a quarter of a destination one when that is
+/// more), while that frame exists.
+fn pcm_convert(s: &Fmt, d: &Fmt, src: &[u8]) -> Vec<u8> {
+    let sa = s.align as usize;
+    let frame = |i: usize| -> [i32; 2] {
+        let get = |k: usize| -> i32 {
+            let o = i * sa + k * (s.bits as usize / 8);
+            if s.bits == 8 { (src[o] as i32 - 128) << 8 } else { i16::from_le_bytes([src[o], src[o + 1]]) as i32 }
+        };
+        let l = get(0);
+        let r = if s.channels == 2 { get(1) } else { l };
+        match (s.channels, d.channels) {
+            (2, 1) => [(l + r).clamp(-32768, 32767), 0],
+            _ => [l, r],
+        }
+    };
+    let n = src.len() / sa.max(1);
+    let (sr, dr) = (s.rate as u64, d.rate as u64);
+    let c = (sr / 2).max(dr / 4);
+    let mut out = Vec::new();
+    for i in 0u64.. {
+        let k = ((i * sr + c) / dr) as usize;
+        if k >= n {
+            break;
+        }
+        let f = frame(k);
+        for v in &f[..d.channels as usize] {
+            if d.bits == 8 {
+                out.push(((v >> 8) + 128) as u8);
+            } else {
+                out.extend_from_slice(&(*v as i16).to_le_bytes());
+            }
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -148,7 +206,7 @@ pub fn ms_block(b: &[u8], ch: usize, spb: usize, out: &mut Vec<i16>) {
 // the API
 
 fn acmGetVersion(_: &mut Ctx) -> u32 {
-    0x0400_0000
+    0x0500_0000
 }
 fn acmDriverEnum(c: &mut Ctx) -> u32 {
     let (cb, inst) = (c.a(0), c.a(1));
@@ -266,6 +324,9 @@ fn acmFormatSuggest(c: &mut Ctx) -> u32 {
     if n < 16 {
         return MMSYSERR_INVALPARAM;
     }
+    if !matches!(s.tag, IMA | MSADPCM | PCM) || s.bad {
+        return ACMERR_NOTPOSSIBLE;
+    }
     let ch = s.channels.max(1) as u32;
     w16(dst, PCM);
     w16(dst + 2, ch as u16);
@@ -276,7 +337,7 @@ fn acmFormatSuggest(c: &mut Ctx) -> u32 {
     if n >= 18 {
         w16(dst + 16, 0);
     }
-    if matches!(s.tag, IMA | MSADPCM | PCM) { 0 } else { ACMERR_NOTPOSSIBLE }
+    0
 }
 /// acmStreamOpen(phas, had, src, dst, filter, cb, inst, flags)
 fn acmStreamOpen(c: &mut Ctx) -> u32 {
@@ -284,7 +345,7 @@ fn acmStreamOpen(c: &mut Ctx) -> u32 {
     let (s, d) = (read_fmt(src), read_fmt(dst));
     if !supported(&s, &d) {
         if ph != 0 {
-            put32(ph, 0);
+            putp(ph, 0);
         }
         return ACMERR_NOTPOSSIBLE;
     }
@@ -298,7 +359,7 @@ fn acmStreamOpen(c: &mut Ctx) -> u32 {
         *n
     };
     STREAMS.lock().unwrap().get_or_insert_with(HashMap::default).insert(h, Stream { src: s, dst: d });
-    put32(ph, h);
+    putp(ph, h);
     0
 }
 fn with<R>(h: u32, f: impl FnOnce(&Stream) -> R) -> Option<R> {
@@ -314,16 +375,20 @@ fn acmStreamSize(c: &mut Ctx) -> u32 {
     let Some((s, d)) = with(h, |st| (st.src, st.dst)) else { return 5 };
     let ch = s.channels.max(1) as u32;
     let v = if s.tag == PCM {
-        n
+        // frames at the other rate, rounded up
+        let (from, to) = if flags & 0xf == 0 { (s, d) } else { (d, s) };
+        let frames = (n / from.align.max(1) as u32) as u64;
+        ((frames * to.rate as u64).div_ceil(from.rate.max(1) as u64) * to.align as u64) as u32
     } else if flags & 0xf == 0 {
-        // the output of n source bytes (whole blocks)
-        n / s.align.max(1) as u32 * s.spb * ch * 2
+        // the output of n source bytes: a partial block counts once there is a whole one
+        let align = s.align.max(1) as u32;
+        let blocks = if n < align { 0 } else { n.div_ceil(align) };
+        blocks * s.spb * ch * 2
     } else {
         // the source for n output bytes
         let per = (s.spb * ch * 2).max(1);
         (n / per) * s.align as u32
     };
-    let _ = d;
     put32(out, v);
     if v == 0 { ACMERR_NOTPOSSIBLE } else { 0 }
 }
@@ -340,17 +405,37 @@ fn acmStreamUnprepareHeader(c: &mut Ctx) -> u32 {
 /// acmStreamConvert(has, ACMSTREAMHEADER*, flags)
 fn acmStreamConvert(c: &mut Ctx) -> u32 {
     let (h, hdr) = (c.a(0), c.a(1));
-    let Some((s, _d)) = with(h, |st| (st.src, st.dst)) else { return 5 };
-    let (src, slen, dst, dlen) = (r32(hdr + 12), r32(hdr + 16), r32(hdr + 28), r32(hdr + 32));
+    let Some((s, d)) = with(h, |st| (st.src, st.dst)) else { return 5 };
+    // ACMSTREAMHEADER: cbStruct, fdwStatus, dwUser, pbSrc, cbSrcLength, cbSrcLengthUsed,
+    // dwSrcUser, pbDst, cbDstLength, cbDstLengthUsed (the pointer-sized ones 8 bytes on x64)
+    let p = mem::ps();
+    let (o_src, o_dst) = (8 + p, 8 + 3 * p + 8);
+    let (src, slen, dst, dlen) = (rp(hdr + o_src), r32(hdr + o_src + p), rp(hdr + o_dst), r32(hdr + o_dst + p));
+    let (o_sused, o_dused) = (o_src + p + 4, o_dst + p + 4);
     let (used_in, used_out) = if s.tag == PCM {
-        let n = slen.min(dlen);
-        mem::copy(dst, src, n);
-        (n, n)
+        let sa = s.align.max(1) as u32;
+        let input: Vec<u8> = (0..slen / sa * sa).map(|i| r8(src + i)).collect();
+        let mut out = pcm_convert(&s, &d, &input);
+        out.truncate((dlen / d.align.max(1) as u32 * d.align as u32) as usize);
+        mem::write(dst, &out);
+        (input.len() as u32, out.len() as u32)
     } else {
         let ch = s.channels.max(1) as usize;
         let align = s.align.max(1) as u32;
         let per_block = s.spb * ch as u32 * 2;
         let blocks = (slen / align).min(dlen / per_block.max(1));
+        if blocks == 0 {
+            // (less than a block, without ACM_STREAMCONVERTF_BLOCKALIGN too)
+            w32(hdr + o_sused, 0);
+            w32(hdr + o_dused, 0);
+            return MMSYSERR_INVALPARAM;
+        }
+        if !headers_ok(&s, src, blocks) {
+            w32(hdr + o_sused, blocks * align);
+            w32(hdr + o_dused, 0);
+            w32(hdr + 4, r32(hdr + 4) | 0x0001_0000);
+            return 0;
+        }
         let mut out = Vec::with_capacity((blocks * per_block / 2) as usize);
         for k in 0..blocks {
             let b: Vec<u8> = (0..align).map(|i| r8(src + k * align + i)).collect();
@@ -364,8 +449,8 @@ fn acmStreamConvert(c: &mut Ctx) -> u32 {
         mem::write(dst, &bytes);
         (blocks * align, bytes.len() as u32)
     };
-    w32(hdr + 20, used_in);
-    w32(hdr + 36, used_out);
+    w32(hdr + o_sused, used_in);
+    w32(hdr + o_dused, used_out);
     // ACMSTREAMHEADER_STATUSF_DONE
     w32(hdr + 4, r32(hdr + 4) | 0x0001_0000);
     0

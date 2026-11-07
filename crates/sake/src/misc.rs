@@ -1485,8 +1485,75 @@ fn variant_val(v: u32) -> Option<Val> {
         _ => return None,
     })
 }
-/// VariantChangeType(dst, src, flags, vt): the numeric, boolean and string conversions.
-fn variant_change(dst: u32, src: u32, vt: u16) -> u32 {
+/// A number in a string as VarParseNumFromStr reads it: spaces around, full-width digits,
+/// thousands separators, "&H"/"&O" prefixes; no "0x"
+fn parse_num(s: &str) -> Option<f64> {
+    let t: String = s
+        .chars()
+        .map(|c| match c {
+            '\u{ff10}'..='\u{ff19}' => char::from(b'0' + (c as u32 - 0xff10) as u8),
+            '\u{ff0b}' => '+',
+            '\u{ff0d}' => '-',
+            '\u{ff0e}' => '.',
+            '\u{ff0c}' => ',',
+            c => c,
+        })
+        .collect();
+    let t = t.trim();
+    if let Some(h) = t.strip_prefix("&H").or_else(|| t.strip_prefix("&h")) {
+        return i64::from_str_radix(h, 16).ok().map(|x| x as f64);
+    }
+    if let Some(o) = t.strip_prefix("&O").or_else(|| t.strip_prefix("&o")) {
+        return i64::from_str_radix(o, 8).ok().map(|x| x as f64);
+    }
+    let body = t.strip_prefix(['+', '-']).unwrap_or(t);
+    let n = body.find(['.', 'e', 'E']).unwrap_or(body.len());
+    let (int_part, rest) = body.split_at(n);
+    // (separators only between digits of the integer part)
+    if rest.contains(',') || int_part.starts_with(',') || int_part.ends_with(',') || int_part.contains(",,") {
+        return None;
+    }
+    let plain: String = t.chars().filter(|&c| c != ',').collect();
+    plain.parse::<f64>().ok()
+}
+/// A date in a string ("2024/03/05", "2024-3-5 12:30:00") as a DATE (days since 1899-12-30)
+fn parse_date(s: &str) -> Option<f64> {
+    let s = s.trim();
+    let (d, t) = s.split_once(' ').map_or((s, ""), |(a, b)| (a, b.trim()));
+    let f: Vec<i64> = d.split(['/', '-', '.']).map(|x| x.parse().ok()).collect::<Option<_>>()?;
+    let [y, m, dd] = f[..] else { return None };
+    if !(1..=12).contains(&m) || !(1..=31).contains(&dd) || !(100..=9999).contains(&y) {
+        return None;
+    }
+    let mut v = (crate::k32::days_from_civil(y, m, dd) + 25569) as f64;
+    if !t.is_empty() {
+        let h: Vec<u32> = t.split(':').map(|x| x.parse().ok()).collect::<Option<_>>()?;
+        let (hh, mm, ss) = (h[0], *h.get(1).unwrap_or(&0), *h.get(2).unwrap_or(&0));
+        if h.len() > 3 || hh > 23 || mm > 59 || ss > 59 {
+            return None;
+        }
+        v += (hh * 3600 + mm * 60 + ss) as f64 / 86400.0;
+    }
+    Some(v)
+}
+/// A double as VarBstrFromR8 writes it: 15 significant digits (7 for a float), trailing zeros
+/// dropped, an exponent ("1E+20") past them
+fn real_str(f: f64, digits: usize) -> String {
+    if f == 0.0 {
+        return if f.is_sign_negative() { "-0".into() } else { "0".into() };
+    }
+    let e = format!("{:.*e}", digits - 1, f);
+    let (m, x) = e.split_once('e').unwrap();
+    let x: i32 = x.parse().unwrap();
+    if x < -(digits as i32) || x >= digits as i32 {
+        let m = if m.contains('.') { m.trim_end_matches('0').trim_end_matches('.') } else { m };
+        return format!("{m}E{}{:02}", if x < 0 { '-' } else { '+' }, x.abs());
+    }
+    let s = format!("{:.*}", (digits as i32 - 1 - x).max(0) as usize, f);
+    if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s }
+}
+/// VariantChangeType(dst, src, flags, vt): the numeric, boolean, date and string conversions.
+fn variant_change(dst: u32, src: u32, flags: u32, vt: u16) -> u32 {
     let sty = r16(src) & !0x4000;
     if sty == vt || vt == 0x0c {
         return variant_copy(dst, src);
@@ -1497,17 +1564,15 @@ fn variant_change(dst: u32, src: u32, vt: u16) -> u32 {
             Val::Empty => Some(0.0),
             Val::Int(i) => Some(*i as f64),
             Val::F(f) => Some(*f),
-            Val::Str(s) => {
-                let t = s.trim();
-                match t.to_ascii_lowercase().as_str() {
+            // strings: dates only as dates, "True"/"False" only as booleans
+            Val::Str(s) if vt == 7 => parse_date(s),
+            Val::Str(s) => parse_num(s).or_else(|| {
+                (vt == 11).then(|| match s.trim().to_ascii_lowercase().as_str() {
                     "true" | "#true#" => Some(-1.0),
                     "false" | "#false#" => Some(0.0),
-                    _ => t.parse::<f64>().ok().or_else(|| {
-                        let h = t.strip_prefix("&H").or_else(|| t.strip_prefix("&h"))?;
-                        i64::from_str_radix(h, 16).ok().map(|x| x as f64)
-                    }),
-                }
-            }
+                    _ => None,
+                })?
+            }),
         }
     };
     let mut out = [0u8; 16];
@@ -1517,9 +1582,11 @@ fn variant_change(dst: u32, src: u32, vt: u16) -> u32 {
         8 => {
             let s = match &val {
                 Val::Empty => String::new(),
-                Val::Int(i) if sty == 11 => if *i != 0 { "True".into() } else { "False".into() },
+                // (VARIANT_ALPHABOOL, VARIANT_LOCALBOOL: words; else -1 / 0)
+                Val::Int(i) if sty == 11 && flags & 0x12 != 0 => if *i != 0 { "True".into() } else { "False".into() },
                 Val::Int(i) => i.to_string(),
-                Val::F(f) => format!("{f}"),
+                Val::F(f) if sty == 4 => real_str(*f, 7),
+                Val::F(f) => real_str(*f, 15),
                 Val::Str(s) => s.clone(),
             };
             let w: Vec<u16> = s.encode_utf16().collect();
@@ -1527,6 +1594,11 @@ fn variant_change(dst: u32, src: u32, vt: u16) -> u32 {
         }
         _ => {
             let Some(f) = num(&val) else { return 0x8002_0005 };
+            if f.is_infinite() || vt == 4 && f.abs() > f32::MAX as f64 || vt == 7 && !(-657434.0..2958466.0).contains(&f) {
+                return 0x8002_000a; // DISP_E_OVERFLOW
+            }
+            // (a boolean to a byte is its low byte: True is 255)
+            let f = if sty == 11 && vt == 17 { (f as i64 & 0xff) as f64 } else { f };
             let r = |f: f64| f.round_ties_even();
             let i = r(f) as i64;
             let range = |lo: i64, hi: i64| (lo..=hi).contains(&i);
@@ -1563,10 +1635,10 @@ fn variant_change(dst: u32, src: u32, vt: u16) -> u32 {
     0
 }
 fn VariantChangeTypeEx(c: &mut Ctx) -> u32 {
-    variant_change(c.a(0), c.a(1), c.a(4) as u16)
+    variant_change(c.a(0), c.a(1), c.a(3), c.a(4) as u16)
 }
 fn VariantChangeType(c: &mut Ctx) -> u32 {
-    variant_change(c.a(0), c.a(1), c.a(3) as u16)
+    variant_change(c.a(0), c.a(1), c.a(2), c.a(3) as u16)
 }
 fn GetErrorInfo(c: &mut Ctx) -> u32 {
     put32(c.a(1), 0);
@@ -2060,9 +2132,90 @@ fn path_op(c: &mut Ctx, wide: bool, f: impl Fn(&str) -> Option<String>) -> u32 {
         None => 0,
     }
 }
-fn remove_spec(s: &str) -> Option<String> {
-    let k = s.rfind('\\')?;
-    Some(if k == 2 && s.as_bytes().get(1) == Some(&b':') { s[..3].to_string() } else { s[..k].to_string() })
+/// A path's characters (DBCS pairs as one in the A forms, each with its byte offset; the
+/// offsets have one more entry, the end), shlwapi walking with CharNext.
+struct PathChars {
+    ch: Vec<u32>,
+    off: Vec<u32>,
+}
+fn path_chars(p: u32, wide: bool) -> PathChars {
+    let (mut ch, mut off) = (Vec::new(), Vec::new());
+    if wide {
+        for (i, u) in wstr(p).into_iter().enumerate() {
+            ch.push(u as u32);
+            off.push(2 * i as u32);
+        }
+        off.push(2 * ch.len() as u32);
+    } else {
+        let b = cstr(p);
+        let mut i = 0;
+        while i < b.len() {
+            off.push(i as u32);
+            if crate::text::is_lead(b[i]) && i + 1 < b.len() {
+                ch.push((b[i] as u32) << 8 | b[i + 1] as u32);
+                i += 2;
+            } else {
+                ch.push(b[i] as u32);
+                i += 1;
+            }
+        }
+        off.push(b.len() as u32);
+    }
+    PathChars { ch, off }
+}
+const BS: u32 = b'\\' as u32;
+fn path_is_root(c: &[u32]) -> bool {
+    match c {
+        [] => false,
+        [BS] => true,
+        [BS, BS, rest @ ..] => rest.iter().filter(|&&x| x == BS).count() <= 1,
+        [_, 0x3a, BS] => true,
+        _ => false,
+    }
+}
+/// PathFindFileName: past the last separator ('\\', '/', ':') that something other than a
+/// separator follows ("C:\\dir\\" -> "dir\\", "C:\\" stays)
+fn file_name_at(c: &[u32]) -> usize {
+    let sep = |x: u32| x == BS || x == b'/' as u32;
+    let mut last = 0;
+    for i in 0..c.len() {
+        if (sep(c[i]) || c[i] == b':' as u32) && c.get(i + 1).is_some_and(|&n| !sep(n)) {
+            last = i + 1;
+        }
+    }
+    last
+}
+/// PathRemoveFileSpec: where the cut goes (None: nothing to remove)
+fn file_spec_at(c: &[u32]) -> Option<usize> {
+    let mut i = 0;
+    let mut spec = 0;
+    for _ in 0..2 {
+        if c.get(i) == Some(&BS) {
+            i += 1;
+            spec = i;
+        }
+    }
+    while i < c.len() {
+        if c[i] == BS {
+            spec = i;
+        } else if c[i] == b':' as u32 {
+            i += 1;
+            spec = i;
+            if c.get(i) == Some(&BS) {
+                spec += 1;
+            }
+            // (the character after the colon is stepped over)
+        }
+        i += 1;
+    }
+    (spec < c.len()).then_some(spec)
+}
+fn put_nul(p: u32, at: u32, wide: bool) {
+    if wide {
+        w16(p + at, 0);
+    } else {
+        crate::mem::w8(p + at, 0);
+    }
 }
 /// "C:\\x\\y" -> "C:\\", "\\\\srv\\share\\x" -> "\\\\srv\\share"
 fn strip_to_root(s: &str) -> Option<String> {
@@ -2107,30 +2260,36 @@ fn PathAddBackslashW(c: &mut Ctx) -> u32 {
     path_op(c, true, add_backslash);
     c.a(0) + 2 * wstr(c.a(0)).len() as u32
 }
-/// PathRemoveBackslash: the trailing backslash off, except a root's ("C:\\"); returns where the
-/// string now ends
-fn remove_backslash(s: &str) -> Option<String> {
-    let root = s.len() == 3 && s.as_bytes()[1] == b':' || s == "\\";
-    Some(if s.ends_with('\\') && !root { s[..s.len() - 1].to_string() } else { s.to_string() })
+/// PathRemoveBackslash: the trailing backslash off, except a root's ("C:\\"); returns the
+/// last character (where the backslash was)
+fn remove_backslash(c: &mut Ctx, wide: bool) -> u32 {
+    let p = c.a(0);
+    let pc = path_chars(p, wide);
+    let last = pc.ch.len().saturating_sub(1);
+    if pc.ch.last() == Some(&BS) && !path_is_root(&pc.ch) {
+        put_nul(p, pc.off[last], wide);
+    }
+    p + pc.off[last]
 }
 fn PathRemoveBackslashA(c: &mut Ctx) -> u32 {
-    path_op(c, false, remove_backslash);
-    c.a(0) + crate::mem::cstr(c.a(0)).len() as u32
+    remove_backslash(c, false)
 }
 fn PathRemoveBackslashW(c: &mut Ctx) -> u32 {
-    path_op(c, true, remove_backslash);
-    c.a(0) + 2 * wstr(c.a(0)).len() as u32
+    remove_backslash(c, true)
 }
-fn strip_path(s: &str) -> Option<String> {
-    Some(s.rsplit(['\\', '/']).next().unwrap_or(s).to_string())
+fn strip_path(c: &mut Ctx, wide: bool) -> u32 {
+    let p = c.a(0);
+    let pc = path_chars(p, wide);
+    let at = pc.off[file_name_at(&pc.ch)];
+    let end = pc.off[pc.ch.len()] + if wide { 2 } else { 1 };
+    mem::copy(p, p + at, end - at);
+    0
 }
 fn PathStripPathA(c: &mut Ctx) -> u32 {
-    path_op(c, false, strip_path);
-    0
+    strip_path(c, false)
 }
 fn PathStripPathW(c: &mut Ctx) -> u32 {
-    path_op(c, true, strip_path);
-    0
+    strip_path(c, true)
 }
 fn path_add_extension(c: &mut Ctx, wide: bool) -> u32 {
     let ext = if c.a(1) == 0 { ".exe".to_string() } else { arg_str(c.a(1), wide) };
@@ -2175,11 +2334,21 @@ fn IsNetworkAlive(c: &mut Ctx) -> u32 {
     put32(c.a(0), 1);
     1
 }
+fn remove_file_spec(c: &mut Ctx, wide: bool) -> u32 {
+    let p = c.a(0);
+    if p == 0 {
+        return 0;
+    }
+    let pc = path_chars(p, wide);
+    let Some(at) = file_spec_at(&pc.ch) else { return 0 };
+    put_nul(p, pc.off[at], wide);
+    1
+}
 fn PathRemoveFileSpecA(c: &mut Ctx) -> u32 {
-    path_op(c, false, remove_spec)
+    remove_file_spec(c, false)
 }
 fn PathRemoveFileSpecW(c: &mut Ctx) -> u32 {
-    path_op(c, true, remove_spec)
+    remove_file_spec(c, true)
 }
 fn PathFileExistsA(c: &mut Ctx) -> u32 {
     crate::files::resolve(&arg_str(c.a(0), false)).is_some() as u32
@@ -2193,34 +2362,76 @@ fn PathIsDirectoryA(c: &mut Ctx) -> u32 {
 fn PathIsDirectoryW(c: &mut Ctx) -> u32 {
     crate::files::resolve(&arg_str(c.a(0), true)).is_some_and(|h| crate::files::is_dir(&h)) as u32 * 16
 }
-fn append(a: &str, b: &str) -> String {
-    if a.is_empty() {
-        return b.into();
-    }
-    format!("{}\\{}", a.trim_end_matches('\\'), b.trim_start_matches('\\'))
+fn is_relative(s: &str) -> bool {
+    !(s.starts_with('\\') || s.as_bytes().get(1) == Some(&b':'))
+}
+/// PathCombine: the file alone when it is absolute, the directory's root plus a rooted file
+/// ("\\x"), else directory\\file; then canonicalized. None: neither given.
+fn combine(dir: Option<&str>, file: Option<&str>) -> Option<String> {
+    let t = match (dir, file) {
+        (None, None) => return None,
+        (d, None | Some("")) => d.unwrap_or("").to_string(),
+        (None | Some(""), Some(f)) => f.to_string(),
+        (Some(d), Some(f)) if !is_relative(f) => {
+            if f.starts_with('\\') && !f.starts_with("\\\\") {
+                format!("{}{}", strip_to_root(d).unwrap_or_default().trim_end_matches('\\'), f)
+            } else {
+                f.to_string()
+            }
+        }
+        (Some(d), Some(f)) => format!("{}{}{f}", d, if d.ends_with('\\') { "" } else { "\\" }),
+    };
+    Some(canonicalize(&t))
+}
+fn opt_str(p: u32, wide: bool) -> Option<String> {
+    (p != 0).then(|| arg_str(p, wide))
+}
+/// PathAppend: PathCombine of the path and the more part without its leading backslashes
+fn path_append(c: &mut Ctx, wide: bool) -> u32 {
+    let (p, more) = (c.a(0), opt_str(c.a(1), wide));
+    let (Some(more), true) = (more, p != 0) else { return 0 };
+    let more = if more.starts_with("\\\\") { &more[..] } else { more.trim_start_matches('\\') };
+    let Some(r) = combine(Some(&arg_str(p, wide)), Some(more)) else { return 0 };
+    ret_str(p, 260, &r, wide);
+    1
 }
 fn PathAppendA(c: &mut Ctx) -> u32 {
-    let b = arg_str(c.a(1), false);
-    path_op(c, false, |a| Some(append(a, &b)))
+    path_append(c, false)
 }
 fn PathAppendW(c: &mut Ctx) -> u32 {
-    let b = arg_str(c.a(1), true);
-    path_op(c, true, |a| Some(append(a, &b)))
+    path_append(c, true)
+}
+fn path_combine(c: &mut Ctx, wide: bool) -> u32 {
+    let d = c.a(0);
+    if d == 0 {
+        return 0;
+    }
+    match combine(opt_str(c.a(1), wide).as_deref(), opt_str(c.a(2), wide).as_deref()) {
+        Some(r) => {
+            ret_str(d, 260, &r, wide);
+            d
+        }
+        None => {
+            put_nul(d, 0, wide);
+            0
+        }
+    }
 }
 fn PathCombineA(c: &mut Ctx) -> u32 {
-    let (d, a, b) = (c.a(0), arg_str(c.a(1), false), arg_str(c.a(2), false));
-    ret_str(d, 260, &append(&a, &b), false);
-    d
+    path_combine(c, false)
 }
 fn PathCombineW(c: &mut Ctx) -> u32 {
-    let (d, a, b) = (c.a(0), arg_str(c.a(1), true), arg_str(c.a(2), true));
-    ret_str(d, 260, &append(&a, &b), true);
-    d
+    path_combine(c, true)
 }
 /// PathCanonicalize: "." and ".." parts resolved ("C:\\a\\..\\b" -> "C:\\b"; Unity builds its
-/// _Data folder's path with it)
+/// _Data folder's path with it). As Windows: ".." stops at the root and at a UNC server,
+/// a relative path backed up past its start becomes rooted ("a\\.." -> "\\"), doubled
+/// backslashes stay, "..." is a name, a bare drive gets its backslash.
 fn canonicalize(p: &str) -> String {
-    let (root, rest) = if p.as_bytes().get(1) == Some(&b':') {
+    if p.is_empty() {
+        return "\\".into();
+    }
+    let (mut root, rest) = if p.as_bytes().get(1) == Some(&b':') {
         let n = if p.as_bytes().get(2) == Some(&b'\\') { 3 } else { 2 };
         p.split_at(n)
     } else if let Some(r) = p.strip_prefix("\\\\") {
@@ -2230,18 +2441,30 @@ fn canonicalize(p: &str) -> String {
     } else {
         ("", p)
     };
+    let unc = root == "\\\\";
     let mut out: Vec<&str> = Vec::new();
-    for part in rest.split('\\') {
+    let parts: Vec<&str> = rest.split('\\').collect();
+    for (i, &part) in parts.iter().enumerate() {
         match part {
-            "" | "." => {}
+            "." => {}
+            // (a trailing empty part keeps the trailing backslash; others are doubled ones)
+            "" if i + 1 == parts.len() && out.is_empty() => {}
             ".." => {
-                out.pop();
+                if !(unc && out.len() <= 1) {
+                    out.pop();
+                }
+                if out.is_empty() && root.is_empty() {
+                    root = "\\";
+                }
             }
             x => out.push(x),
         }
     }
-    let tail = if rest.ends_with('\\') && !out.is_empty() { "\\" } else { "" };
-    format!("{root}{}{tail}", out.join("\\"))
+    let mut r = format!("{root}{}", out.join("\\"));
+    if r.len() == 2 && r.ends_with(':') {
+        r.push('\\');
+    }
+    r
 }
 fn PathCanonicalizeA(c: &mut Ctx) -> u32 {
     let (d, s) = (c.a(0), arg_str(c.a(1), false));
@@ -2253,29 +2476,36 @@ fn PathCanonicalizeW(c: &mut Ctx) -> u32 {
     ret_str(d, 260, &canonicalize(&s), true);
     1
 }
-fn PathFindFileNameA(c: &mut Ctx) -> u32 {
+fn find_file_name(c: &mut Ctx, wide: bool) -> u32 {
     let p = c.a(0);
-    let s = cstr(p);
-    let k = s.iter().rposition(|&b| b == b'\\' || b == b'/').map_or(0, |k| k + 1);
-    p + k as u32
+    let pc = path_chars(p, wide);
+    p + pc.off[file_name_at(&pc.ch)]
+}
+fn PathFindFileNameA(c: &mut Ctx) -> u32 {
+    find_file_name(c, false)
 }
 fn PathFindFileNameW(c: &mut Ctx) -> u32 {
+    find_file_name(c, true)
+}
+/// PathFindExtension: the last '.' after the last backslash or space, else the end
+fn find_extension(c: &mut Ctx, wide: bool) -> u32 {
     let p = c.a(0);
-    let s = wstr(p);
-    let k = s.iter().rposition(|&b| b == b'\\' as u16 || b == b'/' as u16).map_or(0, |k| k + 1);
-    p + 2 * k as u32
+    let pc = path_chars(p, wide);
+    let mut dot = None;
+    for (i, &x) in pc.ch.iter().enumerate() {
+        if x == BS || x == b' ' as u32 {
+            dot = None;
+        } else if x == b'.' as u32 {
+            dot = Some(i);
+        }
+    }
+    p + pc.off[dot.unwrap_or(pc.ch.len())]
 }
 fn PathFindExtensionA(c: &mut Ctx) -> u32 {
-    let p = c.a(0);
-    let s = cstr(p);
-    let start = s.iter().rposition(|&b| b == b'\\').map_or(0, |k| k + 1);
-    p + s[start..].iter().rposition(|&b| b == b'.').map_or(s.len(), |k| start + k) as u32
+    find_extension(c, false)
 }
 fn PathFindExtensionW(c: &mut Ctx) -> u32 {
-    let p = c.a(0);
-    let s = wstr(p);
-    let start = s.iter().rposition(|&b| b == b'\\' as u16).map_or(0, |k| k + 1);
-    p + 2 * s[start..].iter().rposition(|&b| b == b'.' as u16).map_or(s.len(), |k| start + k) as u32
+    find_extension(c, true)
 }
 /// PathRenameExtensionA/W(path, ext): replaces (or appends) the extension; FALSE past MAX_PATH
 fn PathRenameExtensionA(c: &mut Ctx) -> u32 {
@@ -2846,4 +3076,64 @@ fn wts_init() {
         }
         1 // S_FALSE
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // the answers of Windows (tests/winref/golden/shell-*)
+    #[test]
+    fn path_strings_follow_windows() {
+        assert_eq!(canonicalize("C:\\a\\.\\b\\..\\c"), "C:\\a\\c");
+        assert_eq!(canonicalize("C:\\..\\.."), "C:\\");
+        assert_eq!(canonicalize("\\a\\..\\..\\b"), "\\b");
+        assert_eq!(canonicalize("a\\.."), "\\");
+        assert_eq!(canonicalize("C:\\a\\...\\b"), "C:\\a\\...\\b");
+        assert_eq!(canonicalize("C:\\a\\."), "C:\\a");
+        assert_eq!(canonicalize("\\\\s\\h\\..\\x"), "\\\\s\\x");
+        assert_eq!(canonicalize("C:\\a\\\\b"), "C:\\a\\\\b");
+        assert_eq!(canonicalize("C:\\dir\\"), "C:\\dir\\");
+        let c = |a: Option<&str>, b: Option<&str>| combine(a, b);
+        assert_eq!(c(Some("C:\\dir\\"), Some("\\file")).unwrap(), "C:\\file");
+        assert_eq!(c(Some("C:\\dir"), Some("..\\x")).unwrap(), "C:\\x");
+        assert_eq!(c(Some("C:\\dir"), Some("D:\\abs")).unwrap(), "D:\\abs");
+        assert_eq!(c(Some("C:\\dir"), Some("")).unwrap(), "C:\\dir");
+        assert_eq!(c(None, Some("file")).unwrap(), "file");
+        assert_eq!(c(Some("C:\\a\\b"), Some(".\\..\\..\\..\\c")).unwrap(), "C:\\c");
+        assert_eq!(c(Some("rel"), Some("x")).unwrap(), "rel\\x");
+        assert!(c(None, None).is_none());
+        let ch = |s: &str| s.bytes().map(u32::from).collect::<Vec<_>>();
+        assert_eq!(file_name_at(&ch("C:\\dir\\")), 3);
+        assert_eq!(file_name_at(&ch("C:\\")), 0);
+        assert_eq!(file_name_at(&ch("\\\\srv\\share")), 6);
+        assert_eq!(file_spec_at(&ch("C:\\")), None);
+        assert_eq!(file_spec_at(&ch("file")), Some(0));
+        assert_eq!(file_spec_at(&ch("\\\\srv\\share")), Some(5));
+        assert_eq!(file_spec_at(&ch("\\rooted\\x")), Some(7));
+        assert!(path_is_root(&ch("\\\\srv\\share")) && !path_is_root(&ch("\\\\srv\\share\\a")));
+    }
+
+    #[test]
+    fn variant_strings_follow_windows() {
+        assert_eq!(parse_num(" 12 "), Some(12.0));
+        assert_eq!(parse_num("1,234.5"), Some(1234.5));
+        assert_eq!(parse_num("0x10"), None);
+        assert_eq!(parse_num("&H10"), Some(16.0));
+        assert_eq!(parse_num("abc"), None);
+        assert_eq!(parse_num(""), None);
+        assert_eq!(parse_num("True"), None);
+        assert_eq!(parse_num("\u{ff11}\u{ff12}"), Some(12.0));
+        assert_eq!(parse_num("1e400"), Some(f64::INFINITY));
+        assert_eq!(parse_num("1,,2"), None);
+        assert_eq!(parse_num("1.5,0"), None);
+        assert_eq!(parse_date("2024/03/05"), Some(45356.0));
+        assert_eq!(parse_date("123"), None);
+        assert_eq!(real_str(1.0 / 3.0, 15), "0.333333333333333");
+        assert_eq!(real_str(1e10, 15), "10000000000");
+        assert_eq!(real_str(45000.75, 15), "45000.75");
+        assert_eq!(real_str(-2.5, 15), "-2.5");
+        assert_eq!(real_str(0.1, 15), "0.1");
+        assert_eq!(real_str(1e20, 15), "1E+20");
+    }
 }
