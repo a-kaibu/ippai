@@ -104,6 +104,17 @@ image discard 64 64 1
 image depth_stencil 64 64 1
 Map WRITE_DISCARD 0 pitch>=32 1
 image copies 64 64 0
+msaa levels 1:1 2:1 4:1 8:1 16:1
+4x quality 1 failed
+4x mips 2 failed
+4x desc samples 4 quality 0 mips 1
+4x rtv dimension 6
+image msaa 64 64 2
+image msaa_alpha 64 64 2
+4x srv dimension 6
+image msaa_samples 64 64 1
+sample positions 40802060 408060df 40809f20 4080df9f
+copied 4x resolved ff400000 80ff8000 ff00ff00
 f0.add 00000000 00000000 80000001 -> 00000000
 f0.add 80000000 c0200000 33d6bf95 -> c0200000
 f0.add 3f800000 7f7fffff cb000001 -> 7f7fffff
