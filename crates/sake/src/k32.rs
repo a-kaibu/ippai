@@ -211,6 +211,23 @@ fn GetCurrentProcessId(_: &mut Ctx) -> u32 {
 fn GetCurrentThread(_: &mut Ctx) -> u32 {
     obj::CURRENT_THREAD
 }
+/// GetThreadId(h): 0 (ERROR_INVALID_HANDLE) for what is not a thread
+fn GetThreadId(c: &mut Ctx) -> u32 {
+    let h = c.a(0);
+    if h == obj::CURRENT_THREAD {
+        return crate::cur().tid;
+    }
+    match obj::with(|t| match t.objs.get(&h) {
+        Some((Obj::Thread { tid, .. }, _)) => Some(*tid),
+        _ => None,
+    }) {
+        Some(tid) => tid,
+        None => {
+            last_error(6);
+            0
+        }
+    }
+}
 fn GetCurrentThreadId(_: &mut Ctx) -> u32 {
     crate::cur().tid
 }
@@ -4474,6 +4491,21 @@ fn WinExec(c: &mut Ctx) -> u32 {
 fn OpenProcess(_: &mut Ctx) -> u32 {
     0
 }
+/// OpenThread(access, inherit, id): a handle of the thread with that id (mono opens its own
+/// threads by id)
+fn OpenThread(c: &mut Ctx) -> u32 {
+    let tid = c.a(2);
+    let h = obj::with(|t| {
+        t.objs.iter().filter(|(_, (o, _))| matches!(o, Obj::Thread { tid: x, .. } if *x == tid && tid != 0)).map(|(&h, (o, _))| (matches!(o, Obj::Thread { done: true, .. }), h)).min()
+    });
+    match h {
+        Some((_, h)) => obj::dup(h),
+        None => {
+            last_error(87);
+            0
+        }
+    }
+}
 fn GetStartupInfoA(c: &mut Ctx) -> u32 {
     let p = c.a(0);
     mem::fill(p, 68, 0);
@@ -4856,7 +4888,7 @@ pub fn init() {
         GetCommandLineA, GetCommandLineW, GetEnvironmentStrings, GetEnvironmentStringsA, GetEnvironmentStringsW,
         FreeEnvironmentStringsA, FreeEnvironmentStringsW, GetEnvironmentVariableA, GetEnvironmentVariableW,
         SetEnvironmentVariableA, SetEnvironmentVariableW, ExpandEnvironmentStringsA, ExpandEnvironmentStringsW,
-        GetCurrentProcess, GetCurrentProcessId, GetCurrentThread, GetCurrentThreadId, ExitProcess, TerminateProcess,
+        GetCurrentProcess, GetCurrentProcessId, GetCurrentThread, GetCurrentThreadId, GetThreadId, ExitProcess, TerminateProcess,
         FatalAppExitA, ExitThread, CreateThread, ResumeThread, SuspendThread, GetExitCodeThread, GetExitCodeProcess,
         TerminateThread, GetThreadPriority, SetThreadPriority, SetPriorityClass, GetPriorityClass, SetThreadAffinityMask,
         SetProcessAffinityMask, GetProcessAffinityMask, SetThreadIdealProcessor, Sleep, SleepEx, SwitchToThread,
@@ -4920,7 +4952,7 @@ pub fn init() {
         GetDiskFreeSpaceA, GetDiskFreeSpaceExA, GetDiskFreeSpaceExW, GetVolumeInformationA, GetVolumeInformationW,
         SearchPathA,
         CreateFileMappingA, CreateFileMappingW, MapViewOfFile, MapViewOfFileEx, UnmapViewOfFile, CreatePipe,
-        CreateProcessA, CreateProcessW, WinExec, OpenProcess, GetStartupInfoA, GetStartupInfoW, SetHandleCount,
+        CreateProcessA, CreateProcessW, WinExec, OpenProcess, OpenThread, GetStartupInfoA, GetStartupInfoW, SetHandleCount,
         FormatMessageA, FormatMessageW, Beep, GetComputerNameA, GetComputerNameW, InitializeSListHead, GetCurrentPackageId,
         CreateToolhelp32Snapshot, Process32First, Process32FirstW, ConvertDefaultLocale,
         InterlockedPushEntrySList, InterlockedPopEntrySList, InterlockedFlushSList, QueryDepthSList, InterlockedPushListSListEx,

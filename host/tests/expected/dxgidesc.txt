@@ -1,0 +1,6 @@
+factory: ok
+adapter: ok
+adapter desc: the rest kept 1
+adapter desc1: the rest kept 1
+output: ok
+output desc: the rest kept 1, attached 1, monitor set 1

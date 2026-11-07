@@ -1187,8 +1187,10 @@ unsafe fn output_call(d: &mut D11, m: u32, a: &dyn Fn(usize) -> u32) -> u32 {
         6 => parent(d, d.adapter, a(1), a(2)),
         7 => {
             // GetDesc: DeviceName[32] WCHAR, DesktopCoordinates, AttachedToDesktop, Rotation, Monitor
+            // (92 bytes; 96 on x64, where the HMONITOR is 8: writing 96 on x86 overwrote what
+            // follows, Unity 2019's factory pointer)
             let p = a(1);
-            std::ptr::write_bytes(p as *mut u8, 0, 96);
+            std::ptr::write_bytes(p as *mut u8, 0, (88 + ptr()) as usize);
             for (i, c) in "\\\\.\\DISPLAY1".encode_utf16().enumerate() {
                 *((p + i as u32 * 2) as *mut u16) = c;
             }

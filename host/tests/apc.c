@@ -84,6 +84,15 @@ int main(void)
     Sleep(200);
     QueueUserAPC(bump, t, 10);
     printf("thread ended: %lu\n", WaitForSingleObject(t, 20000));
+    HANDLE o = OpenThread(THREAD_ALL_ACCESS, FALSE, GetCurrentThreadId());
+    printf("OpenThread self: %d, same id %d\n", o != 0, GetThreadId(o) == GetCurrentThreadId());
+    CloseHandle(o);
+    o = OpenThread(SYNCHRONIZE, FALSE, GetThreadId(t));
+    printf("OpenThread of the ended thread: %d, signaled %lu\n", o != 0, WaitForSingleObject(o, 0));
+    CloseHandle(o);
+    SetLastError(0);
+    o = OpenThread(SYNCHRONIZE, FALSE, 0x7ffffff0);
+    printf("OpenThread of no thread: %d, error %lu\n", o != 0, GetLastError());
 
     DWORD old = 77;
     BOOL ok = SetThreadErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX, &old);

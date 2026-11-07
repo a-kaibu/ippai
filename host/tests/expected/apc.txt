@@ -13,6 +13,9 @@ queue to a bad handle: 0
 thread: alertable wait woken by an APC: WAIT_IO_COMPLETION, ran 1
 thread: SleepEx woken by an APC: WAIT_IO_COMPLETION, ran 11
 thread ended: 0
+OpenThread self: 1, same id 1
+OpenThread of the ended thread: 1, signaled 0
+OpenThread of no thread: 0, error 87
 SetThreadErrorMode: 1, old 0
 SetThreadErrorMode again: 1, old 8001
 SetThreadErrorMode bad flags: 0, error 87

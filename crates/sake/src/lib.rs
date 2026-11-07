@@ -65,6 +65,7 @@ pub mod wic;
 pub mod wmi;
 pub mod winrt;
 pub mod pe;
+pub mod rawinput;
 pub mod seh;
 pub mod seh64;
 pub mod cxx;
@@ -425,6 +426,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     guest::init();
     k32::init();
     user::init();
+    rawinput::init();
     gdi::init();
     misc::init();
     gdiplus::init();

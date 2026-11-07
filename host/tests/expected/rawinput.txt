@@ -1,0 +1,32 @@
+device list, count: 0, 2 devices
+device list, too small: -1, error 122, 2
+device list: 2, mice 1 keyboards 1
+mouse info: 32, type 0
+mouse name: all 1 chars, starts with \\?\ 1
+register, bad size: 0, error 87
+register: 1
+registered: 2
+SendInput: 6
+WM_INPUT keyboard: size ok 1, vk 41 flags 0 message 100
+WM_INPUT keyboard: size ok 1, vk 41 flags 1 message 101
+WM_INPUT mouse: size ok 1, buttons 1
+WM_INPUT mouse: size ok 1, buttons 2
+WM_INPUT mouse: size ok 1, buttons 4
+WM_INPUT mouse: size ok 1, buttons 8
+WM_INPUT 6, legacy keys 2, legacy buttons 4
+SendInput: 6
+WM_INPUT keyboard: size ok 1, vk 41 flags 0 message 100
+WM_INPUT keyboard: size ok 1, vk 41 flags 1 message 101
+WM_INPUT mouse: size ok 1, buttons 1
+WM_INPUT mouse: size ok 1, buttons 2
+WM_INPUT mouse: size ok 1, buttons 4
+WM_INPUT mouse: size ok 1, buttons 8
+keyboard no legacy: WM_INPUT 6, legacy keys 0, legacy buttons 4
+remove: 1
+registered: 1
+SendInput: 6
+WM_INPUT mouse: size ok 1, buttons 1
+WM_INPUT mouse: size ok 1, buttons 2
+WM_INPUT mouse: size ok 1, buttons 4
+WM_INPUT mouse: size ok 1, buttons 8
+keyboard removed: WM_INPUT 4, legacy keys 2, legacy buttons 4

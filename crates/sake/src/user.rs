@@ -3021,6 +3021,55 @@ fn ReleaseCapture(_: &mut Ctx) -> u32 {
 fn GetCapture(_: &mut Ctx) -> u32 {
     with(|s| s.capture)
 }
+/// SendInput(n, inputs, size): mouse and keyboard events, as if from the devices (hardware
+/// events are not simulated)
+fn SendInput(c: &mut Ctx) -> u32 {
+    let (n, p, size) = (c.a(0), c.a(1), c.a(2));
+    let k = mem::ps();
+    if size != if mem::x64() { 40 } else { 28 } {
+        crate::k32::last_error(87);
+        return 0;
+    }
+    for i in 0..n {
+        let e = p + i * size;
+        let u = e + k; // the union, pointer-aligned
+        match r32(e) {
+            0 => {
+                let (dx, dy, data, flags) = (r32(u) as i32, r32(u + 4) as i32, r32(u + 8), r32(u + 12));
+                if flags & 1 != 0 {
+                    let (cx, cy) = with(|s| s.cursor);
+                    let (x, y) = if flags & 0x8000 != 0 {
+                        // MOUSEEVENTF_ABSOLUTE: 0..65535 over the screen
+                        let (w, h) = screen();
+                        ((dx as i64 * w as i64 / 65536) as i32, (dy as i64 * h as i64 / 65536) as i32)
+                    } else {
+                        (cx + dx, cy + dy)
+                    };
+                    input(1, x, y, 0);
+                }
+                let (x, y) = with(|s| s.cursor);
+                for (bit, kind, b) in [(2, 2, 0), (4, 3, 0), (8, 2, 1), (0x10, 3, 1), (0x20, 2, 2), (0x40, 3, 2)] {
+                    if flags & bit != 0 {
+                        input(kind, x, y, b);
+                    }
+                }
+                if flags & 0x800 != 0 {
+                    input(4, x, y, data & 0xffff);
+                }
+            }
+            1 => {
+                let (vk, scan, flags) = (r16(u) as u32, r16(u + 2) as u32, r32(u + 4));
+                if flags & 4 != 0 {
+                    continue; // KEYEVENTF_UNICODE: no key
+                }
+                input(if flags & 2 != 0 { 6 } else { 5 }, 0, 0, vk & 0xff | (scan & 0xff) << 16);
+            }
+            _ => {}
+        }
+    }
+    crate::obj::signal();
+    n
+}
 fn GetCursorPos(c: &mut Ctx) -> u32 {
     let (x, y) = with(|s| s.cursor);
     w32(c.a(0), x as u32);
@@ -4384,13 +4433,39 @@ fn start_input() {
     });
 }
 
+/// WM_INPUT with raw input event `h`, to `hwnd` (0: the window with the focus)
+fn raw_post(s: &mut State, hwnd: u32, h: u32, t: u32) {
+    let hwnd = if hwnd != 0 { hwnd } else if s.focus != 0 { s.focus } else { s.active };
+    let Some(tid) = s.wins.get(&hwnd).map(|w| w.tid) else { return };
+    let (x, y) = s.cursor;
+    s.queues.entry(tid).or_default().input.push_back(Msg { hwnd, msg: crate::rawinput::WM_INPUT, w: 0, l: h, time: t, x, y });
+}
+
 fn input(kind: u32, x: i32, y: i32, data: u32) {
     crate::dinput::input(kind, x, y, data);
     with(|s| {
         let t = now_ms();
         match kind {
             1..=4 => {
+                let (dx, dy) = (x - s.cursor.0, y - s.cursor.1);
                 s.cursor = (x, y);
+                if let Some((rw, nolegacy)) = crate::rawinput::registered(true) {
+                    let (buttons, wheel) = match kind {
+                        2 | 3 => ((if kind == 2 { 1u16 } else { 2 }) << (2 * data.min(2)), 0),
+                        4 => (0x400, data as u16 as i16), // RI_MOUSE_WHEEL
+                        _ => (0, 0),
+                    };
+                    raw_post(s, rw, crate::rawinput::mouse_event(buttons, wheel, dx, dy), t);
+                    if nolegacy {
+                        // (the button state still changes)
+                        match (kind, data) {
+                            (2, b) => s.keys[[1, 2, 4][b.min(2) as usize]] |= 0x80,
+                            (3, b) => s.keys[[1, 2, 4][b.min(2) as usize]] &= 1,
+                            _ => {}
+                        }
+                        return;
+                    }
+                }
                 let target = if s.capture != 0 { s.capture } else { window_at(s, x, y) };
                 let Some(w) = s.wins.get(&target) else { return };
                 let tid = w.tid;
@@ -4466,6 +4541,13 @@ fn input(kind: u32, x: i32, y: i32, data: u32) {
                     _ => 0x105,
                 };
                 let lp = 1 | scan << 16 | if kind == 6 { 0xc000_0000 } else { 0 } | if alt { 0x2000_0000 } else { 0 };
+                if let Some((rw, nolegacy)) = crate::rawinput::registered(false) {
+                    let h = crate::rawinput::key_event(scan as u16, (kind == 6) as u16, vk as u16, msg);
+                    raw_post(s, rw, h, t);
+                    if nolegacy {
+                        return;
+                    }
+                }
                 s.queues.entry(tid).or_default().input.push_back(Msg { hwnd: target, msg, w: vk as u32, l: lp, time: t, x: s.cursor.0, y: s.cursor.1 });
             }
             _ => {}
@@ -4900,7 +4982,7 @@ pub fn init() {
         GetUpdateRect, GetUpdateRgn, BeginPaint, EndPaint, GetDC, GetDCEx, GetWindowDC, ReleaseDC, WindowFromDC,
         ScrollWindow, ScrollWindowEx, LockWindowUpdate, SetFocus, GetFocus, SetActiveWindow, GetActiveWindow,
         GetForegroundWindow, SetForegroundWindow, BringWindowToTop, SetCapture, ReleaseCapture, GetCapture,
-        GetCursorPos, SetCursorPos, SetCursor, GetCursor, ShowCursor, ClipCursor, GetKeyState, GetAsyncKeyState,
+        SendInput, GetCursorPos, SetCursorPos, SetCursor, GetCursor, ShowCursor, ClipCursor, GetKeyState, GetAsyncKeyState,
         GetKeyboardState, SetKeyboardState, GetKeyboardType, GetKeyboardLayout, GetKeyboardLayoutList,
         ActivateKeyboardLayout, LoadKeyboardLayoutA, MapVirtualKeyA, MapVirtualKeyW, GetKeyNameTextA, GetKeyNameTextW,
         GetDoubleClickTime, MessageBeep, MessageBoxA, MessageBoxW, MessageBoxExA, MessageBoxIndirectA,
