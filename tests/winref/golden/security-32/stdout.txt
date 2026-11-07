@@ -1,0 +1,122 @@
+AllocateAndInitializeSid(&nt, 2, SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &admins) = 1 (err 57005)
+AllocateAndInitializeSid(&world, 1, SECURITY_WORLD_RID, 0, 0, 0, 0, 0, 0, 0, &everyone) = 1 (err 57005)
+AllocateAndInitializeSid(&nt, 1, SECURITY_LOCAL_SYSTEM_RID, 0, 0, 0, 0, 0, 0, 0, &system) = 1 (err 57005)
+AllocateAndInitializeSid(&nt, 9, 1, 2, 3, 4, 5, 6, 7, 8, &(PSID){ 0 })   = 0 (err 1337)
+lengths 16 12 12 valid 1 1
+admins bytes: 01 02 00 00 00 00 00 05 20 00 00 00 20 02 00 00
+subauthorities 2 last 544
+EqualSid(admins, everyone)                                               = 0 (err 0)
+CopySid(sizeof copy, copy, admins)                                       = 1 (err 57005)
+EqualSid(admins, copy)                                                   = 1 (err 0)
+CopySid(8, copy, admins)                                                 = 0 (err 122)
+GetSidLengthRequired(2)                                                  = 16 (err 57005)
+InitializeAcl(acl, 7, ACL_REVISION)                                      = 0 (err 122)
+InitializeAcl(acl, sizeof buf, 1)                                        = 0 (err 87)
+InitializeAcl(acl, sizeof buf, ACL_REVISION)                             = 1 (err 57005)
+empty: revision 2 aces 0 in use 8 free 248 valid 1
+AddAccessAllowedAce(acl, ACL_REVISION, GENERIC_ALL, admins)              = 1 (err 57005)
+AddAccessDeniedAce(acl, ACL_REVISION, 2, everyone)                       = 1 (err 57005)
+allow admins, deny everyone 2: revision 2 aces 2 in use 52 free 204 valid 1
+  ace 0 type 0 flags 00 size 24 mask 10000000 sid-len 16
+  ace 1 type 1 flags 00 size 20 mask 00000002 sid-len 12
+InitializeAcl(acl2, sizeof buf2, ACL_REVISION)                           = 1 (err 57005)
+AddAccessAllowedAce(acl2, ACL_REVISION, 0x10, system)                    = 1 (err 57005)
+GetAce(acl2, 0, &ace)                                                    = 1 (err 57005)
+AddAce(acl, ACL_REVISION, 0, ace, ((ACE_HEADER *)ace)->AceSize)          = 1 (err 57005)
+AddAce(acl, ACL_REVISION, MAXDWORD, ace, ((ACE_HEADER *)ace)->AceSize)   = 1 (err 57005)
+AddAce(acl, ACL_REVISION, 50, ace, ((ACE_HEADER *)ace)->AceSize)         = 1 (err 57005)
+AddAce(acl, ACL_REVISION, 2, ace, ((ACE_HEADER *)ace)->AceSize)          = 1 (err 57005)
+after AddAce: revision 2 aces 6 in use 132 free 124 valid 1
+  ace 0 type 0 flags 00 size 20 mask 00000010 sid-len 12
+  ace 1 type 0 flags 00 size 24 mask 10000000 sid-len 16
+  ace 2 type 0 flags 00 size 20 mask 00000010 sid-len 12
+  ace 3 type 1 flags 00 size 20 mask 00000002 sid-len 12
+  ace 4 type 0 flags 00 size 20 mask 00000010 sid-len 12
+  ace 5 type 0 flags 00 size 20 mask 00000010 sid-len 12
+AddAce(acl, 9, 0, ace, ((ACE_HEADER *)ace)->AceSize)                     = 1 (err 57005)
+AddAce(acl, ACL_REVISION, 0, ace, ((ACE_HEADER *)ace)->AceSize - 1)      = 0 (err 87)
+InitializeAcl((PACL)small, sizeof small, ACL_REVISION)                   = 1 (err 57005)
+AddAccessAllowedAce((PACL)small, ACL_REVISION, 1, admins)                = 1 (err 57005)
+AddAccessAllowedAce((PACL)small, ACL_REVISION, 1, admins)                = 0 (err 1344)
+AddAce((PACL)small, ACL_REVISION, MAXDWORD, ace, ((ACE_HEADER *)ace)->AceSize) = 0 (err 122)
+small: revision 2 aces 1 in use 32 free 8 valid 1
+  ace 0 type 0 flags 00 size 24 mask 00000001 sid-len 16
+InitializeAcl((PACL)two, sizeof two, ACL_REVISION)                       = 1 (err 57005)
+AddAce((PACL)two, ACL_REVISION, MAXDWORD, first, first->AceSize * 2)     = 1 (err 57005)
+two at once: revision 2 aces 2 in use 48 free 80 valid 1
+  ace 0 type 0 flags 00 size 20 mask 00000010 sid-len 12
+  ace 1 type 0 flags 00 size 20 mask 00000020 sid-len 12
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES | TOKEN_DUPLICATE, &token) = 1 (err 57005)
+GetTokenInformation(token, TokenElevationType, &et, sizeof et, &len)     = 1 (err 57005)
+elevation type 1 len 4
+GetTokenInformation(token, TokenElevation, &el, sizeof el, &len)         = 1 (err 57005)
+elevated 1 len 4
+GetTokenInformation(token, TokenGroups, NULL, 0, &len)                   = 0 (err 122)
+groups need more than a header 1
+CheckTokenMembership(NULL, admins, &member)                              = 1 (err 57005)
+admins member 1
+CheckTokenMembership(NULL, everyone, &member)                            = 1 (err 57005)
+everyone member 1
+CheckTokenMembership(token, admins, &member)                             = 0 (err 1309)
+LookupPrivilegeValueA(NULL, "SeLoadDriverPrivilege", &luid)              = 1 (err 0)
+SeLoadDriverPrivilege 10 0
+LookupPrivilegeValueW(NULL, L"SeDebugPrivilege", &luid)                  = 1 (err 0)
+SeDebugPrivilege 20 0
+LookupPrivilegeValueA(NULL, "seshutdownprivilege", &luid)                = 1 (err 0)
+seshutdownprivilege 19
+LookupPrivilegeValueA(NULL, "SeNoSuchPrivilege", &luid)                  = 0 (err 1313)
+LookupPrivilegeNameW(NULL, &luid, name, &n)                              = 1 (err 0)
+name of 10: SeLoadDriverPrivilege (21)
+LookupPrivilegeNameW(NULL, &luid, name, &n)                              = 0 (err 122)
+needed 22
+AdjustTokenPrivileges(token, FALSE, &tp, sizeof old, &old, &ol)          = 1 (err 0)
+previous count 1 len 16
+AdjustTokenPrivileges(token, FALSE, &tp, 0, NULL, NULL)                  = 1 (err 0)
+AdjustTokenPrivileges(token, FALSE, &tp, 0, NULL, NULL)                  = 1 (err 1300)
+InitializeSecurityDescriptor(sd, SECURITY_DESCRIPTOR_REVISION)           = 1 (err 57005)
+IsValidSecurityDescriptor(sd)                                            = 1 (err 57005)
+InitializeAcl((PACL)abuf, sizeof abuf, ACL_REVISION)                     = 1 (err 57005)
+AddAccessAllowedAce((PACL)abuf, ACL_REVISION, 3, admins)                 = 1 (err 57005)
+SetSecurityDescriptorDacl(sd, TRUE, (PACL)abuf, FALSE)                   = 1 (err 57005)
+SetSecurityDescriptorOwner(sd, admins, FALSE)                            = 1 (err 57005)
+SetSecurityDescriptorGroup(sd, admins, FALSE)                            = 1 (err 57005)
+IsValidSecurityDescriptor(sd)                                            = 1 (err 57005)
+GetSecurityDescriptorLength(sd)                                          = 116 (err 57005)
+  AccessCheck(1) -> 0 err 1309 granted dead status 57005
+OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, FALSE, &thread)         = 0 (err 1008)
+thread token without impersonation null 1
+ImpersonateSelf(SecurityImpersonation)                                   = 1 (err 57005)
+OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, FALSE, &thread)         = 1 (err 57005)
+admins-only DACL:
+  AccessCheck(1) -> 1 err 0 granted 1 status 1
+  AccessCheck(3) -> 1 err 0 granted 3 status 1
+  AccessCheck(4) -> 1 err 0 granted 0 status 0
+  AccessCheck(2000000) -> 1 err 0 granted 60003 status 1
+  AccessCheck(80000000) -> 0 err 1360 granted dead status 57005
+AddAccessDeniedAce((PACL)abuf, ACL_REVISION, 1, everyone)                = 1 (err 57005)
+deny everyone 1 after the allow:
+  AccessCheck(1) -> 1 err 0 granted 1 status 1
+  AccessCheck(2) -> 1 err 0 granted 2 status 1
+InitializeAcl((PACL)abuf, sizeof abuf, ACL_REVISION)                     = 1 (err 57005)
+AddAccessDeniedAce((PACL)abuf, ACL_REVISION, 1, everyone)                = 1 (err 57005)
+AddAccessAllowedAce((PACL)abuf, ACL_REVISION, 3, admins)                 = 1 (err 57005)
+deny everyone 1 first:
+  AccessCheck(1) -> 1 err 0 granted 0 status 0
+  AccessCheck(2) -> 1 err 0 granted 2 status 1
+  AccessCheck(2000000) -> 1 err 0 granted 60002 status 1
+SetSecurityDescriptorDacl(sd, TRUE, NULL, FALSE)                         = 1 (err 57005)
+NULL DACL:
+  AccessCheck(7) -> 1 err 0 granted 7 status 1
+InitializeAcl((PACL)abuf, sizeof abuf, ACL_REVISION)                     = 1 (err 57005)
+SetSecurityDescriptorDacl(sd, TRUE, (PACL)abuf, FALSE)                   = 1 (err 57005)
+empty DACL:
+  AccessCheck(1) -> 1 err 0 granted 0 status 0
+CloseHandle(thread)                                                      = 1 (err 57005)
+RevertToSelf()                                                           = 1 (err 57005)
+OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, FALSE, &thread)         = 0 (err 1008)
+OpenSCManagerA ok 1
+OpenServiceA missing 0 err 1060
+OpenServiceW missing 0 err 1060
+CloseServiceHandle(scm)                                                  = 1 (err 57005)
+CloseServiceHandle(NULL)                                                 = 0 (err 6)
+CloseHandle(token)                                                       = 1 (err 57005)
