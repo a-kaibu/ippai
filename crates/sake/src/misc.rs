@@ -974,6 +974,10 @@ fn CoCreateInstance(c: &mut Ctx) -> u32 {
         put32(c.a(4), obj);
         return 0;
     }
+    if let Some(obj) = crate::jscript::create_instance(clsid) {
+        mem::putp(c.a(4), obj);
+        return 0;
+    }
     if let Some(obj) = crate::sound::create_instance(c, clsid, iid) {
         mem::putp(c.a(4), obj);
         return 0;
@@ -1106,6 +1110,20 @@ fn guid_from_string(c: &mut Ctx) -> u32 {
     }
     0
 }
+/// CLSIDFromProgID: the script engines' names (other ProgIDs are not registered).
+fn CLSIDFromProgID(c: &mut Ctx) -> u32 {
+    let name = String::from_utf16_lossy(&wstr(c.a(0)));
+    match crate::jscript::progid(&name) {
+        Some(g) => {
+            mem::write(c.a(1), &g);
+            0
+        }
+        None => {
+            eprintln!("sake: CLSIDFromProgID {name}: not registered");
+            0x8004_01f3 // CO_E_CLASSSTRING
+        }
+    }
+}
 fn CLSIDFromString(c: &mut Ctx) -> u32 {
     guid_from_string(c)
 }
@@ -1204,7 +1222,7 @@ pub(crate) fn bstr_alloc(chars: &[u16]) -> u32 {
     }
     p + 4
 }
-fn bstr_free(b: u32) {
+pub(crate) fn bstr_free(b: u32) {
     if b != 0 {
         mem::heap_free(b - 4);
     }
@@ -2426,7 +2444,7 @@ pub fn init() {
     implement("rpcrt4", "UuidCreateSequential", UuidCreate);
     implement("rpcrt4", "RpcStringFreeW", RpcStringFreeA);
     reg!("ole32"; CoInitialize, CoInitializeEx, OleInitialize, CoUninitialize, OleUninitialize, CoCreateInstance,
-        CoTaskMemAlloc, CoTaskMemRealloc, CoTaskMemFree, CoGetMalloc, CoCreateGuid, IsEqualGUID, StringFromGUID2, CLSIDFromString, IIDFromString,
+        CoTaskMemAlloc, CoTaskMemRealloc, CoTaskMemFree, CoGetMalloc, CoCreateGuid, IsEqualGUID, StringFromGUID2, CLSIDFromString, CLSIDFromProgID, IIDFromString,
         RegisterDragDrop, RevokeDragDrop);
     reg!("oleaut32"; SysAllocString, SysAllocStringLen, SysAllocStringByteLen, SysReAllocString,
         SysReAllocStringLen, SysFreeString, SysStringLen, SysStringByteLen, VariantInit, VariantClear, VariantCopy,

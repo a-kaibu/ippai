@@ -40,6 +40,8 @@ pub mod vcomp;
 pub mod nt;
 pub mod dwrite;
 pub mod ddraw;
+pub mod typelib;
+pub mod jscript;
 pub mod ini;
 pub mod dinput;
 pub mod fast;
@@ -426,6 +428,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     nt::init();
     ini::init();
     ddraw::init();
+    typelib::init();
     ole::init();
     winrt::init();
     usp::init();

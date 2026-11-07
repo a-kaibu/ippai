@@ -313,6 +313,17 @@ pub fn size(addr: u32) -> Option<(u32, u32)> {
     g.as_ref().and_then(|d| texture(d, addr)).map(|t| (t.1, t.2))
 }
 
+/// The GPU texture behind a D3D11 texture or DXGI surface address (to draw it as a bitmap).
+pub fn texture_gpu(addr: u32) -> Option<u32> {
+    let g = D11S.lock().unwrap_or_else(|e| e.into_inner());
+    let d = g.as_ref()?;
+    let (id, _, _) = texture(d, addr)?;
+    match d.objs.get(&id).map(|o| &o.data) {
+        Some(Data::Texture(t)) => Some(t.gpu),
+        _ => None,
+    }
+}
+
 /// Fills the whole texture with `rgba` (straight floats).
 pub fn clear(addr: u32, rgba: [f32; 4]) {
     let mut g = D11S.lock().unwrap_or_else(|e| e.into_inner());

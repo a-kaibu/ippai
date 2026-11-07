@@ -103,6 +103,10 @@ struct State {
     stops: HashMap<u32, Vec<(f32, [f32; 4])>>,
     /// device -> factory, context/device -> device
     parents: HashMap<u32, u32>,
+    /// HWND render target -> (its swap chain, window)
+    hwnds: HashMap<u32, (u32, u32)>,
+    /// HWND / compatible render target -> the D3D11 device its textures come from
+    d3d: HashMap<u32, u32>,
 }
 
 static S: Mutex<Option<State>> = Mutex::new(None);
@@ -133,11 +137,170 @@ fn factory() -> u32 {
         &[
             ("CreateDevice", CreateDevice as Handler),
             ("CreateDxgiSurfaceRenderTarget", CreateDxgiSurfaceRenderTarget),
+            ("CreateHwndRenderTarget", CreateHwndRenderTarget),
             ("GetDesktopDpi", GetDpi),
             ("ReloadSystemMetrics", ok),
         ],
         8,
     )
+}
+
+// ---- HWND render targets: a D3D11 swap chain on the window, presented by EndDraw ----
+
+/// The swap chain's back buffer (ID3D11Texture2D) as a D2D bitmap.
+fn back_buffer(c: &mut Ctx, sc: u32) -> u32 {
+    // IID_ID3D11Texture2D {6f15aaf2-d208-4e89-9ab4-489535d34f9c}
+    let iid = mem::heap_alloc(24, true);
+    mem::write(iid, &[0xf2, 0xaa, 0x15, 0x6f, 0x08, 0xd2, 0x89, 0x4e, 0x9a, 0xb4, 0x48, 0x95, 0x35, 0xd3, 0x4f, 0x9c]);
+    c.call(r32(r32(sc) + 4 * 9), &[sc, 0, iid, iid + 16]);
+    let tex = r32(iid + 16);
+    mem::heap_free(iid);
+    new_bitmap(tex)
+}
+
+/// CreateHwndRenderTarget(render target properties, HWND properties, out)
+fn CreateHwndRenderTarget(c: &mut Ctx) -> u32 {
+    let (factory, hp, out) = (c.a(0), c.a(2), c.a(3));
+    let hwnd = r32(hp);
+    let (mut w, mut h) = (r32(hp + 4), r32(hp + 8));
+    if w == 0 || h == 0 {
+        if let Some(r) = crate::user::client_rect_screen(hwnd) {
+            (w, h) = ((r.r - r.l).max(1) as u32, (r.b - r.t).max(1) as u32);
+        }
+    }
+    // DXGI_SWAP_CHAIN_DESC: w, h, refresh, B8G8R8A8, ..., 1 sample, render target output, 1
+    // buffer, the window, windowed, discard
+    let desc = mem::heap_alloc(60 + 16, true);
+    for (o, v) in [(0, w), (4, h), (16, 87), (28, 1), (36, 0x20), (40, 1), (44, hwnd), (48, 1)] {
+        w32(desc + o, v);
+    }
+    let (sc_out, dev_out, ctx_out) = (desc + 60, desc + 64, desc + 68);
+    let create = crate::api::export("d3d11", "D3D11CreateDeviceAndSwapChain");
+    let hr = c.call(create, &[0, 1, 0, 0x20, 0, 0, 7, desc, sc_out, dev_out, 0, ctx_out]);
+    let (sc, d3d) = (r32(sc_out), r32(dev_out));
+    mem::heap_free(desc);
+    if hr != 0 || sc == 0 {
+        mem::putp(out, 0);
+        return if hr != 0 { hr } else { 0x8000_4005 };
+    }
+    let dev_out = mem::heap_alloc(8, true);
+    new_device(factory, dev_out);
+    let device = mem::rp(dev_out);
+    mem::heap_free(dev_out);
+    // (first match wins: these before the device context's)
+    let mut methods: Vec<(&str, Handler)> = vec![
+        ("EndDraw", HwndEndDraw as Handler),
+        ("Flush", EndDraw),
+        ("CheckWindowState", zero),
+        ("Resize", Resize),
+        ("GetHwnd", GetHwnd),
+        ("GetPixelFormat", GetPixelFormat),
+        ("GetMaximumBitmapSize", GetMaximumBitmapSize),
+        ("CreateCompatibleRenderTarget", CreateCompatibleRenderTarget),
+    ];
+    methods.extend(context_methods());
+    let o = com::object("ID2D1HwndRenderTarget", &methods, 8);
+    st(|s| {
+        s.parents.insert(o, device);
+        s.dcs.insert(o, Dc { device, ..Default::default() });
+        s.hwnds.insert(o, (sc, hwnd));
+        s.d3d.insert(o, d3d);
+    });
+    let bmp = back_buffer(c, sc);
+    set_target(o, bmp);
+    mem::putp(out, o);
+    0
+}
+
+/// CreateCompatibleRenderTarget(size in DIPs *, size in pixels *, pixel format *, options, out):
+/// a render target on a texture of its own, which GetBitmap hands out to draw elsewhere.
+fn CreateCompatibleRenderTarget(c: &mut Ctx) -> u32 {
+    let (parent, ps, pp, out) = (c.a(0), c.a(1), c.a(2), c.a(5));
+    let (pw, ph, device, d3d) = st(|s| {
+        let (w, h, dev) = s.dcs.get(&parent).map_or((1, 1, 0), |d| (d.w, d.h, d.device));
+        (w, h, dev, s.d3d.get(&parent).copied().unwrap_or(0))
+    });
+    let (w, h) = if pp != 0 {
+        (r32(pp), r32(pp + 4))
+    } else if ps != 0 {
+        (rf(ps, 0).ceil() as u32, rf(ps, 1).ceil() as u32)
+    } else {
+        (pw, ph)
+    };
+    let (w, h) = (w.max(1), h.max(1));
+    if d3d == 0 {
+        mem::putp(out, 0);
+        return 0x8899_000c; // D2DERR_UNSUPPORTED_OPERATION
+    }
+    // ID3D11Device::CreateTexture2D(D3D11_TEXTURE2D_DESC: w, h, 1 mip, 1 layer, B8G8R8A8, 1
+    // sample, default usage, render target | shader resource)
+    let desc = mem::heap_alloc(44 + 4, true);
+    for (o, v) in [(0, w), (4, h), (8, 1), (12, 1), (16, 87), (20, 1), (32, 0x28)] {
+        w32(desc + o, v);
+    }
+    c.call(r32(r32(d3d) + 4 * 5), &[d3d, desc, 0, desc + 44]);
+    let tex = r32(desc + 44);
+    mem::heap_free(desc);
+    if tex == 0 {
+        mem::putp(out, 0);
+        return 0x8007_000e;
+    }
+    let bmp = new_bitmap(tex);
+    if let Some(gpu) = gpu2d::texture_gpu(tex) {
+        st(|s| s.images.insert(bmp, Image { gpu, w, h, opaque: false }));
+    }
+    gpu2d::clear(tex, [0.0; 4]);
+    let mut methods: Vec<(&str, Handler)> = vec![("GetBitmap", GetBitmap as Handler), ("CreateCompatibleRenderTarget", CreateCompatibleRenderTarget)];
+    methods.extend(context_methods());
+    let o = com::object("ID2D1BitmapRenderTarget", &methods, 8);
+    st(|s| {
+        s.parents.insert(o, device);
+        s.dcs.insert(o, Dc { device, ..Default::default() });
+        s.d3d.insert(o, d3d);
+    });
+    set_target(o, bmp);
+    mem::putp(out, o);
+    0
+}
+fn GetBitmap(c: &mut Ctx) -> u32 {
+    let t = st(|s| s.dcs.get(&c.a(0)).map_or(0, |d| d.target));
+    if t != 0 {
+        com::add_ref_obj(t);
+    }
+    mem::putp(c.a(1), t);
+    0
+}
+
+fn HwndEndDraw(c: &mut Ctx) -> u32 {
+    let r = EndDraw(c);
+    if let Some((sc, _)) = st(|s| s.hwnds.get(&c.a(0)).copied()) {
+        // IDXGISwapChain::Present(sync 0, flags 0)
+        c.call(r32(r32(sc) + 4 * 8), &[sc, 0, 0]);
+    }
+    r
+}
+/// Resize(D2D1_SIZE_U*)
+fn Resize(c: &mut Ctx) -> u32 {
+    let (o, p) = (c.a(0), c.a(1));
+    let Some((sc, _)) = st(|s| s.hwnds.get(&o).copied()) else { return 0x8007_0057 };
+    flush(o);
+    // IDXGISwapChain::ResizeBuffers(0 = keep the count, w, h, keep the format, flags)
+    c.call(r32(r32(sc) + 4 * 13), &[sc, 0, r32(p), r32(p + 4), 0, 0]);
+    let bmp = back_buffer(c, sc);
+    set_target(o, bmp);
+    0
+}
+fn GetHwnd(c: &mut Ctx) -> u32 {
+    st(|s| s.hwnds.get(&c.a(0)).map_or(0, |x| x.1))
+}
+/// GetPixelFormat (a structure result: the hidden pointer): B8G8R8A8, premultiplied
+fn GetPixelFormat(c: &mut Ctx) -> u32 {
+    w32(c.a(1), 87);
+    w32(c.a(1) + 4, 1);
+    c.a(1)
+}
+fn GetMaximumBitmapSize(_: &mut Ctx) -> u32 {
+    8192
 }
 
 fn D2D1CreateFactory(c: &mut Ctx) -> u32 {
@@ -477,6 +640,10 @@ fn DrawBitmap(c: &mut Ctx) -> u32 {
         }
         return 0;
     };
+    // a compatible render target's bitmap: what was drawn into it first
+    if let Some(owner) = st(|s| s.dcs.iter().find(|(&k, d)| k != dc && d.target == bmp && !d.items.is_empty()).map(|(&k, _)| k)) {
+        flush(owner);
+    }
     let src = if ps != 0 { [rf(ps, 0), rf(ps, 1), rf(ps, 2), rf(ps, 3)] } else { [0.0, 0.0, im.w as f32, im.h as f32] };
     let dst = if pd != 0 { [rf(pd, 0), rf(pd, 1), rf(pd, 2), rf(pd, 3)] } else { [0.0, 0.0, src[2] - src[0], src[3] - src[1]] };
     let xf = st(|s| s.dcs.get(&dc).and_then(eff));
