@@ -514,13 +514,18 @@ fn check(seeds: std::ops::Range<u64>, make: impl Fn(u64, u32) -> Vec<Batch>) -> 
     stats
 }
 
+/// (IPPAI_MODEL_FIRST: the first seed, to rerun a failing one)
+fn first() -> u64 {
+    std::env::var("IPPAI_MODEL_FIRST").ok().and_then(|s| s.parse().ok()).unwrap_or(0)
+}
+
 fn seeds() -> u64 {
     std::env::var("IPPAI_MODEL_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(200)
 }
 
 #[test]
 fn optimizations_draw_the_same_d3d9() {
-    let s = check(0..seeds(), |seed, dst| {
+    let s = check(first()..seeds(), |seed, dst| {
         let mut g = Gen::new(seed);
         let mut v = vec![g.setup()];
         for _ in 0..12 {

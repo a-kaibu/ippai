@@ -850,6 +850,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)] // (a file: Miri isolates the file system)
     fn raw_frames_from_a_file() {
         let d = raw(5, 3, 300, 128, 128);
         let f = TempVnv::new(&d);
@@ -871,6 +872,7 @@ mod tests {
         /// track's from its key frame before the request to READ_LOW frames past it), byte for
         /// byte the file's, and holds little more than READ_HIGH frames past it.
         #[test]
+        #[cfg_attr(miri, ignore)] // (files, and proptest's regression file: Miri isolates the file system)
         fn file_frames_around_the_request(
             sizes in proptest::collection::vec((1usize..60, proptest::bool::weighted(0.05)), 1..500),
             alpha: bool,
@@ -1067,6 +1069,7 @@ mod tests {
         /// The table path gives the general loop's bytes: any planes, sizes (odd ones too),
         /// strides, I420 / NV12, both RGB outputs (the truncating one takes the general loop).
         #[test]
+        #[cfg_attr(miri, ignore)] // (proptest's regression file: Miri isolates the file system)
         fn to_rgb_as_any(seed in proptest::prelude::any::<u64>(), w in 1u32..40, h in 1u32..12, pad in 0u32..5, nv12 in proptest::prelude::any::<bool>(), r601 in proptest::prelude::any::<bool>()) {
             let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
             let ys = w + pad;
@@ -1089,6 +1092,7 @@ mod tests {
     /// Every Y, Cb, Cr: the fixed-point tables as ycc601_to_rgb, but for a sum within a hair of
     /// a half (where f64's own rounding of the terms decides): those within 1, and few.
     #[test]
+    #[cfg_attr(miri, ignore)] // (16M pixels: hours under Miri; convert_planes runs the table path there)
     fn terms_as_the_function() {
         let mut off = 0;
         for cb in 0..=255u8 {

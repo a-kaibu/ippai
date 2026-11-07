@@ -413,6 +413,8 @@ pub struct Pipeline {
     /// "uint16" / "uint32": an index of all ones restarts the strip
     pub strip_format: Option<String>,
     pub clear_shader: bool,
+    /// a stencil test or stencil writes: the draw reads the pass's stencil reference
+    pub uses_stencil: bool,
 }
 
 /// A vertex as the shader gets it: (location, the bytes of that attribute; empty when the
@@ -1097,7 +1099,10 @@ impl Model {
             // (the error was given)
         }
         let strip_format = prim.and_then(|p| p.s("stripIndexFormat")).map(str::to_string);
-        let p = Pipeline { hash: h, groups, targets, depth: depth.map(|d| (d.0, d.1, d.2)), buffers, attrs, per_instance, topology: topo.to_string(), strip_format, clear_shader: clear };
+        let uses_stencil = depth.as_ref().is_some_and(|d| {
+            ["stencilFront", "stencilBack"].iter().filter_map(|f| d.3.get(f)).any(|s| s.s("compare").unwrap_or("always") != "always" || ["failOp", "depthFailOp", "passOp"].iter().any(|k| s.s(k).unwrap_or("keep") != "keep"))
+        });
+        let p = Pipeline { hash: h, groups, targets, depth: depth.map(|d| (d.0, d.1, d.2)), buffers, attrs, per_instance, topology: topo.to_string(), strip_format, clear_shader: clear, uses_stencil };
         self.put(Obj::Pipeline(p))
     }
 
@@ -1969,7 +1974,11 @@ impl Model {
         for c in d.st.blend {
             h = mix(h, c.to_bits());
         }
-        h = mix(h, d.st.stencil_ref as u64);
+        // (the reference only where the pipeline tests or writes stencil: WebGPU's dynamic
+        // state, reset to 0 by each pass, means nothing to the others)
+        if p.uses_stencil {
+            h = mix(h, d.st.stencil_ref as u64);
+        }
         if std::env::var_os("IPPAI_MODEL_SIGS").is_some() {
             eprintln!("    sig parts: pipe {:x} after groups/verts/args {:x}", p.hash, h);
         }

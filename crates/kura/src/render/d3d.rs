@@ -1617,6 +1617,18 @@ impl D3d {
         }
     }
 
+    /// Direct3D 9: from now on passes load and store the stencil of depth buffer `z` (see
+    /// `zused`). The passes before discarded it, so the next one starts from the last clear's.
+    fn keep_stencil(&mut self, z: u32) {
+        let Some(t) = self.textures.get_mut(&z).filter(|t| t.zused & 2 == 0) else { return };
+        t.zused |= 2;
+        let (zd, zs) = t.zclear.unwrap_or((1.0, 0));
+        self.end_pass();
+        if !self.no_pass_opt {
+            self.defer_clear(z, Clear { level: 0, layer: 0, flags: 4, color: [0.0; 4], z: zd, stencil: zs });
+        }
+    }
+
     /// The clear not done yet of this view, taken (the caller's pass does it). One of another
     /// view of the texture is done first.
     fn take_clear(&mut self, tex: u32, level: u32, layer: u32) -> Option<Clear> {
@@ -1804,10 +1816,7 @@ impl D3d {
         }
         // (stencil written in a part: passes keep it from now on, see `draw`)
         if flags & 4 != 0 {
-            if let Some(t) = self.textures.get_mut(&ds).filter(|t| t.zused & 2 == 0) {
-                t.zused |= 2;
-                self.end_pass();
-            }
+            self.keep_stencil(ds);
         }
         if !self.begin_pass() {
             return;
@@ -2032,10 +2041,7 @@ impl D3d {
         }
         // (the first draw that tests stencil: from now on passes load and store it)
         if stencil_ref.is_some() && self.targets2.is_none() {
-            if let Some(z) = self.textures.get_mut(&self.target[2]).filter(|z| z.zused & 2 == 0) {
-                z.zused |= 2;
-                self.end_pass();
-            }
+            self.keep_stencil(self.target[2]);
         }
         if !self.begin_pass() {
             return p;
