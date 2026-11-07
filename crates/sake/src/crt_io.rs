@@ -1191,8 +1191,15 @@ fn btowc(c: &mut Ctx) -> u32 {
     if v > 255 || lead(v as u8) {
         return 0xffff;
     }
-    // (a byte that is no character alone, as 0x82 in 932, is WEOF: winref crt_io)
-    to_wide(&[v as u8]).first().filter(|&&u| u != 0xfffd).map_or(0xffff, |&u| u as u32)
+    // (a byte that is no character alone, as 0x82 or 0xA0 in 932, is WEOF: winref crt_io)
+    let cp = lc_cp();
+    if cp == 0 {
+        return v;
+    }
+    match crate::text::mb2w_checked(cp, &[v as u8]) {
+        (w, false) if w.len() == 1 => w[0] as u32,
+        _ => 0xffff,
+    }
 }
 /// wctob(wc): the single byte of a wide character, EOF when it takes two or none
 fn wctob(c: &mut Ctx) -> u32 {

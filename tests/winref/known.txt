@@ -140,3 +140,13 @@ fmt-* ^(want|got) +GetPriorityClass\(GetCurrentProcess\(\)\)
 # the runner's account is an administrator without UAC's split token (TokenElevationTypeDefault);
 # sake plays an elevated one (TokenElevationTypeFull), which CPU-Z-like tools look for
 security-* ^(want|got) +elevation type [12] len 4$
+# HeapReAlloc(HEAP_REALLOC_IN_PLACE_ONLY) of a 15..17-byte block: those sizes are in an LFH bucket
+# on the runner (the CRT's startup allocations turned it on), and an LFH block can't change its
+# bucket in place, so Windows fails there; whether a bucket is LFH depends on the process's past
+# allocations, so programs can't count on either answer. sake shrinks in place.
+heap-* ^(want|got) +  in-place shrink (0 size -1|1 size (7|8))$
+# user32's CharNextA and IsCharAlphaW on the runner: CharNextA steps over 0x82 as one byte (user32
+# keeps the system's code page, 1252 on the en-US runner, while the probe's manifest makes the
+# process ACP 932; CharUpperA, CharNextExA(932) and kernel32 do use 932), and IsCharAlphaW(あ)
+# is 0 although GetStringTypeW gives C1_ALPHA. sake plays a Japanese Windows (932 everywhere).
+nls-* ^(want|got) +(CharNextA|IsCharAlphaA 1 0 IsCharAlphaW) 

@@ -102,6 +102,8 @@ pub mod ws2name;
 pub mod iocp;
 pub mod gl_sigs;
 pub mod text;
+pub mod collate;
+mod casemap_table;
 pub mod user;
 pub mod w16;
 pub mod w16api;

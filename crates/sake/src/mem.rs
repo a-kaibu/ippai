@@ -697,7 +697,8 @@ pub fn heap_free_small(p: u32) -> bool {
 }
 
 pub fn heap_alloc(size: u32, zero: bool) -> u32 {
-    let p = unsafe { HEAP.lock().unwrap().malloc((size + HDR) as usize, 16) } as usize as u32;
+    let Some(total) = size.checked_add(HDR) else { return 0 };
+    let p = unsafe { HEAP.lock().unwrap().malloc(total as usize, 16) } as usize as u32;
     if p == 0 {
         return 0;
     }
@@ -734,14 +735,22 @@ pub fn heap_free(p: u32) -> bool {
     true
 }
 
+/// Whether block `p` can take `size` bytes in place: a small block within its class, or any
+/// block shrinking
+pub fn heap_fits(p: u32, size: u32) -> bool {
+    if p == 0 {
+        return false;
+    }
+    let old = heap_size(p);
+    if r32(p - 4) == SLAB { size <= SLAB_MAX && slab_class(size) <= slab_class(old) } else { size <= old }
+}
+
 pub fn heap_realloc(p: u32, size: u32, zero: bool) -> u32 {
     if p == 0 {
         return heap_alloc_small(size, zero);
     }
     let old = heap_size(p);
-    // in place: a small block within its class, or any block shrinking
-    let fits = if r32(p - 4) == SLAB { size <= SLAB_MAX && slab_class(size) <= slab_class(old) } else { size <= old };
-    if fits {
+    if heap_fits(p, size) {
         if zero && size > old {
             fill(p + old, size - old, 0);
         }

@@ -5050,11 +5050,7 @@ fn char_case(c: &mut Ctx, upper: bool) -> u32 {
         return if upper { b.to_ascii_uppercase() } else { b.to_ascii_lowercase() } as u32;
     }
     let mut s = cstr(p);
-    if upper {
-        crate::text::upper_a(&mut s);
-    } else {
-        crate::text::lower_a(&mut s);
-    }
+    crate::text::case_a(&mut s, upper);
     mem::write(p, &s);
     p
 }
@@ -5090,24 +5086,20 @@ fn CharUpperW(c: &mut Ctx) -> u32 {
 fn CharLowerBuffA(c: &mut Ctx) -> u32 {
     let (p, n) = (c.a(0), c.a(1));
     let s = mem::slice_mut(p, n);
-    crate::text::lower_a(s);
+    crate::text::case_a(s, false);
     n
 }
 fn CharUpperBuffA(c: &mut Ctx) -> u32 {
     let (p, n) = (c.a(0), c.a(1));
     let s = mem::slice_mut(p, n);
-    crate::text::upper_a(s);
+    crate::text::case_a(s, true);
     n
 }
 fn char_buff_w(c: &mut Ctx, upper: bool) -> u32 {
     let (p, n) = (c.a(0), c.a(1));
     for i in 0..n {
         let ch = r16(p + 2 * i);
-        let s: String = char::from_u32(ch as u32).map_or(String::new(), |x| if upper { x.to_uppercase().collect() } else { x.to_lowercase().collect() });
-        let mut u = s.encode_utf16();
-        if let (Some(v), None) = (u.next(), u.next()) {
-            w16(p + 2 * i, v);
-        }
+        w16(p + 2 * i, if upper { crate::text::upper16(ch) } else { crate::text::lower16(ch) });
     }
     n
 }

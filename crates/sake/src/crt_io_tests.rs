@@ -152,7 +152,6 @@ fn every_character_round_trips() {
                 continue;
             }
             let Some(b) = wc_bytes_in(cp, u) else { continue };
-            have += 1;
             assert!(b.len() == 1 || b.len() == 2, "cp {cp} {u:#x} {b:x?}");
             assert_eq!(lead_in(cp, b[0]), b.len() == 2, "cp {cp} {u:#x} {b:x?}");
             // the bytes read back as one character whose bytes they are (several characters can
@@ -160,6 +159,12 @@ fn every_character_round_trips() {
             let back = to_wide_in(cp, &b);
             assert_eq!(back.len(), 1, "cp {cp} {u:#x} {b:x?}");
             assert_eq!(wc_bytes_in(cp, back[0]).as_deref(), Some(&b[..]), "cp {cp} {u:#x} {b:x?}");
+            // (Windows' best fit: 932 é is 'e', as WideCharToMultiByte gives it; WorstFit)
+            let fit = char::from_u32(u as u32).and_then(crate::text::best_fit);
+            if fit.is_some_and(|f| b == [f]) && back[0] != u {
+                continue;
+            }
+            have += 1;
             if back[0] != u {
                 shared.push(u);
             }

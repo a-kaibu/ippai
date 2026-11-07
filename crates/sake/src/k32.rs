@@ -13,7 +13,7 @@ use crate::api::{implement, Ctx};
 use crate::files;
 use crate::mem::{self, cstr, put32, put_cstr, put_wstr, r16, r32, w16, w32, w8, wstr};
 use crate::obj::{self, Obj};
-use crate::text::{a2s, a2w, mb2w};
+use crate::text::{a2s, a2w};
 
 pub const PROCESS_HEAP: u32 = 0x0015_0000;
 
@@ -2043,7 +2043,13 @@ fn VirtualAlloc(c: &mut Ctx) -> u32 {
 fn VirtualFree(c: &mut Ctx) -> u32 {
     let (addr, size, ty) = (c.a(0), c.a(1), c.a(2));
     if ty & 0x8000 != 0 {
-        if size != 0 || mem::find(addr).is_none_or(|(b, _)| b != addr) {
+        // an address in no allocation is ERROR_INVALID_ADDRESS, one inside but not its base (or
+        // a size with MEM_RELEASE) ERROR_INVALID_PARAMETER
+        if mem::find(addr).is_none() {
+            last_error(487);
+            return 0;
+        }
+        if size != 0 || mem::find(addr).is_some_and(|(b, _)| b != addr) {
             last_error(87);
             return 0;
         }
@@ -2131,17 +2137,13 @@ fn FlushInstructionCache(c: &mut Ctx) -> u32 {
     }
     1
 }
+/// IsBad*Ptr: whether any of the `n` bytes at `p` cannot be read (or written): reserved,
+/// decommitted, PAGE_NOACCESS / guard pages, or read-only ones for a write
+fn is_bad_for(p: u32, n: u32, write: bool) -> bool {
+    n != 0 && mem::accessible(p, n, write, false) < n
+}
 fn is_bad(p: u32, n: u32) -> bool {
-    if n == 0 {
-        return false;
-    }
-    if p < mem::LO {
-        return true;
-    }
-    match mem::find(p) {
-        Some((b, r)) => r.state != 0x1000 || p as u64 + n as u64 > b as u64 + r.size as u64,
-        None => true,
-    }
+    is_bad_for(p, n, false)
 }
 /// Read/WriteProcessMemory(process, addr, buffer, n, done): the one process; a write may patch
 /// code (Delphi programs hook their own functions this way: QLIE). As on Windows
@@ -2185,7 +2187,7 @@ fn IsBadReadPtr(c: &mut Ctx) -> u32 {
     ok(is_bad(c.a(0), c.a(1)))
 }
 fn IsBadWritePtr(c: &mut Ctx) -> u32 {
-    ok(is_bad(c.a(0), c.a(1)))
+    ok(is_bad_for(c.a(0), c.a(1), true))
 }
 fn IsBadCodePtr(c: &mut Ctx) -> u32 {
     ok(is_bad(c.a(0), 1))
@@ -2500,14 +2502,31 @@ fn GetProcessHeap(_: &mut Ctx) -> u32 {
     PROCESS_HEAP
 }
 static NEXT_HEAP: AtomicU32 = AtomicU32::new(0x0016_0000);
-fn HeapCreate(_: &mut Ctx) -> u32 {
-    NEXT_HEAP.fetch_add(0x10000, Ordering::Relaxed)
+/// The maximum size of each fixed-size heap (HeapCreate with dwMaximumSize != 0)
+static HEAP_MAX: Mutex<Option<HashMap<u32, u32>>> = Mutex::new(None);
+fn HeapCreate(c: &mut Ctx) -> u32 {
+    let h = NEXT_HEAP.fetch_add(0x10000, Ordering::Relaxed);
+    if c.a(2) != 0 {
+        HEAP_MAX.lock().unwrap().get_or_insert_with(HashMap::default).insert(h, c.a(2));
+    }
+    h
 }
-fn HeapDestroy(_: &mut Ctx) -> u32 {
+fn HeapDestroy(c: &mut Ctx) -> u32 {
+    HEAP_MAX.lock().unwrap().get_or_insert_with(HashMap::default).remove(&c.a(0));
     1
 }
+/// Whether heap `h` can never hold a block of `size` bytes: a fixed heap's blocks fit in its
+/// maximum size, and no block reaches the top of the address space
+fn heap_refuses(h: u32, size: u32) -> bool {
+    let max = if mem::x64() { 0x7fff_0000 } else { 0x7ffd_ffff };
+    size > max || HEAP_MAX.lock().unwrap().get_or_insert_with(HashMap::default).get(&h).is_some_and(|&m| size > m)
+}
 fn HeapAlloc(c: &mut Ctx) -> u32 {
-    let p = mem::heap_alloc_small(c.a(2), c.a(1) & 8 != 0);
+    let p = if heap_refuses(c.a(0), c.a(2)) { 0 } else { mem::heap_alloc_small(c.a(2), c.a(1) & 8 != 0) };
+    if p == 0 {
+        // (the error is ERROR_NOT_ENOUGH_MEMORY, which RtlAllocateHeap's caller sets)
+        last_error(8);
+    }
     if p == 0 && c.a(1) & 4 != 0 {
         let ret = r32(c.esp);
         c.cpu.eip = ret;
@@ -2522,13 +2541,17 @@ fn HeapFree(c: &mut Ctx) -> u32 {
 }
 fn HeapReAlloc(c: &mut Ctx) -> u32 {
     let (flags, p, size) = (c.a(1), c.a(2), c.a(3));
-    if flags & 0x10 != 0 && size > mem::heap_size(p) {
-        return 0;
+    // HEAP_REALLOC_IN_PLACE_ONLY: the block keeps its address and takes the new size, or the
+    // call fails
+    let r = if heap_refuses(c.a(0), size) || flags & 0x10 != 0 && !mem::heap_fits(p, size) {
+        0
+    } else {
+        mem::heap_realloc(p, size, flags & 8 != 0)
+    };
+    if r == 0 {
+        last_error(8);
     }
-    if flags & 0x10 != 0 {
-        return p;
-    }
-    mem::heap_realloc(p, size, flags & 8 != 0)
+    r
 }
 fn HeapSize(c: &mut Ctx) -> u32 {
     mem::heap_size(c.a(2))
@@ -2554,25 +2577,76 @@ fn RtlAllocateHeap(c: &mut Ctx) -> u32 {
 fn RtlFreeHeap(c: &mut Ctx) -> u32 {
     ok(mem::heap_free(c.a(2)))
 }
-fn GlobalAlloc(c: &mut Ctx) -> u32 {
-    mem::heap_alloc(c.a(1).max(1), c.a(0) & 0x40 != 0)
+/// The lock counts of the moveable Global/Local blocks (GMEM_MOVEABLE = LMEM_MOVEABLE = 2):
+/// sake's handle of one is its address, as for a fixed block, so this tells the two apart
+static MOVEABLE: Mutex<Option<HashMap<u32, u32>>> = Mutex::new(None);
+fn moveable<R>(f: impl FnOnce(&mut HashMap<u32, u32>) -> R) -> R {
+    f(MOVEABLE.lock().unwrap().get_or_insert_with(HashMap::default))
 }
-fn GlobalFree(c: &mut Ctx) -> u32 {
-    mem::heap_free(c.a(0));
+fn global_alloc(flags: u32, size: u32) -> u32 {
+    let p = mem::heap_alloc(size.max(1), flags & 0x40 != 0);
+    if p != 0 && flags & 2 != 0 {
+        moveable(|m| m.insert(p, 0));
+    }
+    if p == 0 {
+        last_error(8);
+    }
+    p
+}
+fn global_free(h: u32) -> u32 {
+    moveable(|m| m.remove(&h));
+    mem::heap_free(h);
     0
 }
-fn GlobalReAlloc(c: &mut Ctx) -> u32 {
-    if c.a(2) & 0x80 != 0 {
+fn global_realloc(h: u32, size: u32, flags: u32) -> u32 {
+    if flags & 0x80 != 0 {
         // GMEM_MODIFY
-        return c.a(0);
+        return h;
     }
-    mem::heap_realloc(c.a(0), c.a(1).max(1), c.a(2) & 0x40 != 0)
+    let n = mem::heap_realloc(h, size.max(1), flags & 0x40 != 0);
+    if n != 0 && n != h {
+        moveable(|m| m.remove(&h).map(|k| m.insert(n, k)));
+    }
+    n
+}
+fn global_lock(h: u32) -> u32 {
+    moveable(|m| m.get_mut(&h).map(|k| *k = (*k + 1).min(0xff)));
+    h
+}
+/// Whether the block stays locked; unlocking one that is not locked is ERROR_NOT_LOCKED, the
+/// last unlock clears the error
+fn global_unlock(h: u32) -> u32 {
+    match moveable(|m| m.get_mut(&h).map(|k| std::mem::replace(k, k.saturating_sub(1)))) {
+        Some(0) => {
+            last_error(158);
+            0
+        }
+        Some(1) => {
+            last_error(0);
+            0
+        }
+        Some(_) => 1,
+        None => 1,
+    }
+}
+/// GMEM_* flags: the lock count in the low byte
+fn global_flags(h: u32) -> u32 {
+    moveable(|m| m.get(&h).copied()).unwrap_or(0)
+}
+fn GlobalAlloc(c: &mut Ctx) -> u32 {
+    global_alloc(c.a(0), c.a(1))
+}
+fn GlobalFree(c: &mut Ctx) -> u32 {
+    global_free(c.a(0))
+}
+fn GlobalReAlloc(c: &mut Ctx) -> u32 {
+    global_realloc(c.a(0), c.a(1), c.a(2))
 }
 fn GlobalLock(c: &mut Ctx) -> u32 {
-    c.a(0)
+    global_lock(c.a(0))
 }
-fn GlobalUnlock(_: &mut Ctx) -> u32 {
-    1
+fn GlobalUnlock(c: &mut Ctx) -> u32 {
+    global_unlock(c.a(0))
 }
 fn GlobalHandle(c: &mut Ctx) -> u32 {
     c.a(0)
@@ -2580,30 +2654,29 @@ fn GlobalHandle(c: &mut Ctx) -> u32 {
 fn GlobalSize(c: &mut Ctx) -> u32 {
     mem::heap_size(c.a(0))
 }
-fn GlobalFlags(_: &mut Ctx) -> u32 {
-    0
+fn GlobalFlags(c: &mut Ctx) -> u32 {
+    global_flags(c.a(0))
 }
 fn LocalAlloc(c: &mut Ctx) -> u32 {
-    mem::heap_alloc(c.a(1).max(1), c.a(0) & 0x40 != 0)
+    global_alloc(c.a(0), c.a(1))
 }
 fn LocalFree(c: &mut Ctx) -> u32 {
-    mem::heap_free(c.a(0));
-    0
+    global_free(c.a(0))
 }
 fn LocalReAlloc(c: &mut Ctx) -> u32 {
-    mem::heap_realloc(c.a(0), c.a(1).max(1), c.a(2) & 0x40 != 0)
+    global_realloc(c.a(0), c.a(1), c.a(2))
 }
 fn LocalLock(c: &mut Ctx) -> u32 {
-    c.a(0)
+    global_lock(c.a(0))
 }
-fn LocalUnlock(_: &mut Ctx) -> u32 {
-    1
+fn LocalUnlock(c: &mut Ctx) -> u32 {
+    global_unlock(c.a(0))
 }
 fn LocalSize(c: &mut Ctx) -> u32 {
     mem::heap_size(c.a(0))
 }
-fn LocalFlags(_: &mut Ctx) -> u32 {
-    0
+fn LocalFlags(c: &mut Ctx) -> u32 {
+    global_flags(c.a(0))
 }
 fn LocalHandle(c: &mut Ctx) -> u32 {
     c.a(0)
@@ -3740,10 +3813,10 @@ fn MultiByteToWideChar(c: &mut Ctx) -> u32 {
         return 0;
     }
     let s = if n < 0 { let mut v = cstr(src); v.push(0); v } else { mem::slice(src, n as u32).to_vec() };
-    let w = mb2w(cp, &s);
+    let (w, bad) = crate::text::mb2w_checked(cp, &s);
     // MB_ERR_INVALID_CHARS: bytes that are no character (a lone lead byte) fail with
     // ERROR_NO_UNICODE_TRANSLATION (mingw's btowc relies on it, winref crt_io)
-    if flags & 8 != 0 && w.contains(&0xfffd) && (cp != 65001 || std::str::from_utf8(&s).is_err()) {
+    if flags & 8 != 0 && bad {
         last_error(1113);
         return 0;
     }
@@ -3780,7 +3853,9 @@ fn WideCharToMultiByte(c: &mut Ctx) -> u32 {
     let utf = matches!(cp, 65000 | 65001);
     let (def, pused) = if utf { (0, 0) } else { (def, pused) };
     let d = if def != 0 { vec![mem::r8(def)] } else { b"?".to_vec() };
-    let (a, used) = crate::text::w2mb_def(cp, &s, &d);
+    // (WC_NO_BEST_FIT_CHARS: a character the code page lacks is the default one, never a
+    // look-alike)
+    let (a, used) = crate::text::w2mb_flags(cp, &s, &d, c.a(1) & 0x400 == 0);
     put32(pused, used as u32);
     if cap == 0 {
         return a.len() as u32;
@@ -3793,10 +3868,12 @@ fn WideCharToMultiByte(c: &mut Ctx) -> u32 {
     a.len() as u32
 }
 
+/// CT_CTYPE1, with C1_DEFINED (0x200) on every character but the surrogates
 pub(crate) fn ctype1(ch: u16) -> u16 {
     let c = ch as u32;
     let mut t = 0u16;
     if let Some(x) = char::from_u32(c) {
+        t |= 0x200;
         if x.is_uppercase() {
             t |= 1;
         }
@@ -3846,8 +3923,10 @@ fn ctype2(ch: u16) -> u16 {
     }
 }
 
-/// CT_CTYPE3: Japanese text layout reads C3_FULLWIDTH / C3_HALFWIDTH (SiglusEngine spaces a
-/// character by half the font size without C3_FULLWIDTH), C3_HIRAGANA, C3_KATAKANA, C3_IDEOGRAPH.
+/// CT_CTYPE3: C3_FULLWIDTH only for the East Asian "fullwidth" forms (U+3000, U+FF01..FF60,
+/// U+FFE0..FFE6), C3_HALFWIDTH for ASCII and the half-width forms; kana and ideographs are
+/// neither (Windows Server 2025, winref nls: あ 0x8020, 一 0x8100), C3_HIRAGANA, C3_KATAKANA,
+/// C3_IDEOGRAPH. The space is a symbol.
 fn ctype3(ch: u16) -> u16 {
     const NONSPACING: u16 = 1;
     const DIACRITIC: u16 = 2;
@@ -3861,24 +3940,23 @@ fn ctype3(ch: u16) -> u16 {
     let c = ch as u32;
     let t1 = ctype1(ch);
     let alpha = if t1 & 0x100 != 0 { ALPHA } else { 0 };
-    let symbol = if t1 & 0x10 != 0 { SYMBOL } else { 0 };
+    let symbol = if t1 & 0x10 != 0 || c == 0x20 || c == 0x3000 { SYMBOL } else { 0 };
     match c {
-        0x3099..=0x309a => NONSPACING | DIACRITIC | HIRAGANA | FULLWIDTH,
-        0x309b..=0x309c => DIACRITIC | SYMBOL | FULLWIDTH,
-        0x3041..=0x309f => HIRAGANA | FULLWIDTH | ALPHA,
-        0x30fb => SYMBOL | FULLWIDTH,
-        0x30a0..=0x30ff | 0x31f0..=0x31ff => KATAKANA | FULLWIDTH | ALPHA,
-        0x3005..=0x3007 | 0x3021..=0x3029 | 0x3400..=0x4dbf | 0x4e00..=0x9fff | 0xf900..=0xfaff => IDEOGRAPH | FULLWIDTH | ALPHA,
-        0xd800..=0xdfff => FULLWIDTH, // (supplementary ideographs come as surrogate pairs)
-        0x3000..=0x303f | 0x3200..=0x33ff | 0xfe30..=0xfe4f => symbol | FULLWIDTH,
+        0x3099..=0x309a => NONSPACING | DIACRITIC | HIRAGANA,
+        0x309b..=0x309c => DIACRITIC | SYMBOL,
+        0x3041..=0x309f => HIRAGANA | ALPHA,
+        0x30fb => SYMBOL,
+        0x30a0..=0x30ff | 0x31f0..=0x31ff => KATAKANA | ALPHA,
+        0x3005..=0x3007 | 0x3021..=0x3029 | 0x3400..=0x4dbf | 0x4e00..=0x9fff | 0xf900..=0xfaff => IDEOGRAPH | ALPHA,
+        0xd800..=0xdfff => 0,
+        0x3000 => SYMBOL | FULLWIDTH,
+        0x3001..=0x303f | 0x3200..=0x33ff | 0xfe30..=0xfe4f => symbol,
         0xff61..=0xff65 => SYMBOL | HALFWIDTH,
         0xff9e..=0xff9f => DIACRITIC | SYMBOL | KATAKANA | HALFWIDTH,
         0xff66..=0xff9d => KATAKANA | HALFWIDTH | ALPHA,
         0xffa0..=0xffdc | 0xffe8..=0xffee => alpha | symbol | HALFWIDTH,
         0xff01..=0xff60 | 0xffe0..=0xffe6 => alpha | symbol | FULLWIDTH,
-        0x1100..=0x115f | 0xac00..=0xd7a3 | 0x3130..=0x318f => FULLWIDTH | ALPHA,
-        // (box drawing, arrows, math, Greek and Cyrillic are full width in the Japanese fonts,
-        // but Windows marks them by script: only symbols, letters)
+        0x1100..=0x115f | 0xac00..=0xd7a3 | 0x3130..=0x318f => ALPHA,
         0x0300..=0x036f => NONSPACING | DIACRITIC,
         0..=0x7f => alpha | symbol | HALFWIDTH,
         _ => alpha | symbol,
@@ -3931,14 +4009,27 @@ fn GetStringTypeExW(c: &mut Ctx) -> u32 {
     string_type(ty, &w, out);
     1
 }
+/// LCMapString's case, kana and width maps (no sort keys)
+fn lcmap(w: &[u16], flags: u32) -> Vec<u16> {
+    let mut w = if flags & 0xf00000 != 0 { crate::text::map_kana_width(w, flags) } else { w.to_vec() };
+    for ch in w.iter_mut() {
+        if flags & 0x100 != 0 {
+            *ch = crate::text::lower16(*ch);
+        }
+        if flags & 0x200 != 0 {
+            *ch = crate::text::upper16(*ch);
+        }
+    }
+    w
+}
+/// LCMapStringA: through Unicode in the ANSI code page (CharUpperA's rules for case)
 fn LCMapStringA(c: &mut Ctx) -> u32 {
     let (flags, src, n, dst, cap) = (c.a(1), c.a(2), c.i(3), c.a(4), c.a(5));
     let mut s = if n < 0 { let mut v = cstr(src); v.push(0); v } else { mem::slice(src, n as u32).to_vec() };
-    if flags & 0x100 != 0 {
-        crate::text::lower_a(&mut s);
-    }
-    if flags & 0x200 != 0 {
-        crate::text::upper_a(&mut s);
+    if flags & 0xf00000 != 0 {
+        s = crate::text::w2a(&lcmap(&a2w(&s), flags));
+    } else if flags & 0x300 != 0 {
+        crate::text::case_a(&mut s, flags & 0x200 != 0);
     }
     if cap == 0 {
         return s.len() as u32;
@@ -3949,15 +4040,8 @@ fn LCMapStringA(c: &mut Ctx) -> u32 {
 }
 pub(crate) fn LCMapStringW(c: &mut Ctx) -> u32 {
     let (flags, src, n, dst, cap) = (c.a(1), c.a(2), c.i(3), c.a(4), c.a(5));
-    let mut w: Vec<u16> = if n < 0 { let mut v = wstr(src); v.push(0); v } else { (0..n as u32).map(|i| r16(src + 2 * i)).collect() };
-    for ch in w.iter_mut() {
-        if flags & 0x100 != 0 {
-            *ch = crate::text::lower16(*ch);
-        }
-        if flags & 0x200 != 0 {
-            *ch = crate::text::upper16(*ch);
-        }
-    }
+    let w: Vec<u16> = if n < 0 { let mut v = wstr(src); v.push(0); v } else { (0..n as u32).map(|i| r16(src + 2 * i)).collect() };
+    let w = lcmap(&w, flags);
     if cap == 0 {
         return w.len() as u32;
     }
@@ -3968,19 +4052,18 @@ pub(crate) fn LCMapStringW(c: &mut Ctx) -> u32 {
     k as u32
 }
 fn cmp_w(a: &[u16], b: &[u16], nocase: bool) -> std::cmp::Ordering {
-    let f = |c: u16| if nocase { crate::text::lower16(c) } else { c };
-    a.iter().map(|&c| f(c)).cmp(b.iter().map(|&c| f(c)))
+    crate::collate::compare(a, b, if nocase { crate::collate::NORM_IGNORECASE } else { 0 })
 }
 fn CompareStringA(c: &mut Ctx) -> u32 {
     let (flags, s1, n1, s2, n2) = (c.a(1), c.a(2), c.i(3), c.a(4), c.i(5));
     let a = if n1 < 0 { cstr(s1) } else { mem::cstrn(s1, n1 as u32) };
     let b = if n2 < 0 { cstr(s2) } else { mem::cstrn(s2, n2 as u32) };
-    cmp_w(&a2w(&a), &a2w(&b), flags & 1 != 0) as i32 as u32 + 2
+    crate::collate::compare(&a2w(&a), &a2w(&b), flags) as i32 as u32 + 2
 }
 fn CompareStringW(c: &mut Ctx) -> u32 {
     let (flags, s1, n1, s2, n2) = (c.a(1), c.a(2), c.i(3), c.a(4), c.i(5));
     let rd = |p: u32, n: i32| -> Vec<u16> { if n < 0 { wstr(p) } else { (0..n as u32).map(|i| r16(p + 2 * i)).take_while(|&x| x != 0).collect() } };
-    cmp_w(&rd(s1, n1), &rd(s2, n2), flags & 1 != 0) as i32 as u32 + 2
+    crate::collate::compare(&rd(s1, n1), &rd(s2, n2), flags) as i32 as u32 + 2
 }
 /// A date/time picture (GetDateFormat/GetTimeFormat) into text: fields are runs of one letter,
 /// '...' is literal text ('' a quote). `skip` drops fields of those letters with the literal
