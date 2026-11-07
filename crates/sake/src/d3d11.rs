@@ -89,7 +89,7 @@ fn D3D11CreateDevice(c: &mut Ctx) -> u32 {
 }
 /// (factory, adapter, flags, levels, count, device)
 fn D3D11CoreCreateDevice(c: &mut Ctx) -> u32 {
-    let a = [c.a(1), 0, 0, c.a(2), c.a(3), c.a(4), 7, 0, 0, c.a(5), 0, 0];
+    let a = [c.a(1), (c.a(1) == 0) as u32, 0, c.a(2), c.a(3), c.a(4), 7, 0, 0, c.a(5), 0, 0];
     host(CREATE_DEVICE, &a)
 }
 /// d3d10.dll / d3d10_1.dll: the D3D11 device's D3D10 face (crates/kura/src/d3d11/d3d10.rs)

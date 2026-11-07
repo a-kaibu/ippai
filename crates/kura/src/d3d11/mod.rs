@@ -231,7 +231,8 @@ pub enum Data {
     Layout(Vec<Elem>),
     /// state objects: their description's dwords
     State(Vec<u32>),
-    Query(u32),
+    /// (type, state: 0 never begun or ended, 1 between Begin and End, 2 ended; timestamp)
+    Query(u32, u32, u64),
     /// ID3DDeviceContextState: the context state it holds while another one is current
     CtxState(Option<Box<State>>),
     Other,
@@ -270,6 +271,8 @@ pub struct State {
 }
 
 pub struct D11 {
+    /// (queries' End count: their timestamps)
+    ticks: u64,
     vtbls: Vec<u32>,
     pub objs: HashMap<u32, Obj>,
     next: u32,
@@ -414,6 +417,9 @@ impl D11 {
         let id = self.next;
         let addr = self.block(iface, id);
         self.objs.insert(id, Obj { iface, refs: 1, binds: 0, faces: vec![(iface, addr)], data, private: Vec::new() });
+        if holds_device(iface) && iface != IF_CONTEXT && self.device != 0 {
+            self.add_ref(self.device);
+        }
         addr
     }
 
@@ -444,7 +450,12 @@ impl D11 {
         match self.objs.get_mut(&id) {
             Some(o) => {
                 o.refs += 1;
-                o.refs
+                let r = o.refs;
+                // (a device child holds the device while anyone holds the child)
+                if r == 1 && holds_device(o.iface) {
+                    self.add_ref(self.device);
+                }
+                r
             }
             None => 0,
         }
@@ -452,9 +463,14 @@ impl D11 {
 
     fn release(&mut self, id: u32) -> u32 {
         let Some(o) = self.objs.get_mut(&id) else { return 0 };
+        let was = o.refs;
         o.refs = o.refs.saturating_sub(1);
         let r = o.refs;
-        if r == 0 && o.binds == 0 {
+        let (iface, binds) = (o.iface, o.binds);
+        if was == 1 && holds_device(iface) {
+            self.release(self.device);
+        }
+        if r == 0 && binds == 0 {
             self.destroy(id);
         }
         r
@@ -510,10 +526,11 @@ impl D11 {
                 }
             }
             Data::View(v) => {
+                // (a view holds its resource privately: the resource's own count does not change)
                 if let Some(b) = &v.buf {
-                    self.release(b.buf);
+                    self.unbind(b.buf);
                 }
-                self.release(v.res);
+                self.unbind(v.res);
             }
             Data::SwapChain(s) => {
                 self.release(s.buffer);
@@ -533,6 +550,7 @@ pub unsafe fn init(vtbls: *const u32, count: u32) -> u32 {
         Some(d) => d.vtbls = v,
         None => {
             *g = Some(D11 {
+                ticks: 0,
                 vtbls: v,
                 objs: HashMap::new(),
                 next: 0,
@@ -681,7 +699,15 @@ fn dxgi_objects(d: &mut D11) -> u32 {
 /// D3D11CreateDeviceAndSwapChain's arguments
 unsafe fn create_device(d: &mut D11, args: *const u32) -> u32 {
     let a = |i: usize| *args.add(i);
-    let (levels, nlevels, desc, sc_out, dev_out, level_out, ctx_out) = (a(4), a(5), a(7), a(8), a(9), a(10), a(11));
+    let (adapter, driver, levels, nlevels, desc, sc_out, dev_out, level_out, ctx_out) = (a(0), a(1), a(4), a(5), a(7), a(8), a(9), a(10), a(11));
+    // (an adapter goes with D3D_DRIVER_TYPE_UNKNOWN, and only with it)
+    if (adapter != 0) != (driver == 0) {
+        for o in [sc_out, dev_out, ctx_out] {
+            wrp(o, 0, 0);
+        }
+        wr(level_out, 0, 0);
+        return E_INVALIDARG;
+    }
     // feature level: the first asked for that is 11_0 or lower
     let mut level = 0xb000;
     if levels != 0 && nlevels > 0 {
@@ -697,8 +723,15 @@ unsafe fn create_device(d: &mut D11, args: *const u32) -> u32 {
         d.device = d.id_of(dev);
         let ctx = d.new_obj(IF_CONTEXT, Data::Context);
         d.context = d.id_of(ctx);
+        // (unreferenced until handed out: see `add_ref`)
+        d.objs.get_mut(&d.context).unwrap().refs = 0;
         d.st = default_state();
     } else {
+        // (a device nobody holds any more: the new one starts from the default state)
+        if d.objs.get(&d.device).is_some_and(|o| o.refs == 0) && d.objs.get(&d.context).is_some_and(|o| o.refs == 0) {
+            let old = std::mem::replace(&mut d.st, default_state());
+            unbind_state(d, &old);
+        }
         d.add_ref(d.device);
     }
     wr(level_out, 0, level);
@@ -722,6 +755,10 @@ unsafe fn create_device(d: &mut D11, args: *const u32) -> u32 {
     if d.trace {
         eprintln!("d3d11: device, feature level {level:#x}");
     }
+    // (nothing asked for back: only a check that the device can be made)
+    if dev_out == 0 && ctx_out == 0 && sc_out == 0 {
+        return S_FALSE;
+    }
     S_OK
 }
 
@@ -744,6 +781,28 @@ unsafe fn create_device10(d: &mut D11, args: *const u32) -> u32 {
         d.release(id);
     }
     S_OK
+}
+
+/// Whether an object of this interface is a device child: one that holds a reference to the
+/// device while the application holds one to it (as in Windows: "Device has N references left").
+fn holds_device(iface: u32) -> bool {
+    !matches!(iface, IF_DEVICE | IF_FACTORY | IF_ADAPTER | IF_OUTPUT)
+}
+
+/// Lets go of everything a state binds (ClearState, a new device).
+fn unbind_state(d: &mut D11, old: &State) {
+    let mut held: Vec<u32> = Vec::new();
+    held.extend(old.vbs.iter().map(|v| v.0));
+    held.extend([old.ib.0, old.layout, old.vs, old.ps, old.dsv, old.blend, old.depth, old.raster]);
+    for s in 0..2 {
+        held.extend(old.cbs[s]);
+        held.extend(old.srvs[s]);
+        held.extend(old.samplers[s]);
+    }
+    held.extend(old.rtvs);
+    for h in held.into_iter().filter(|&h| h != 0) {
+        d.unbind(h);
+    }
 }
 
 fn default_state() -> State {
@@ -1318,7 +1377,7 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             if a(2) == 0 {
                 return S_FALSE;
             }
-            let o = d.new_obj(IF_QUERY, Data::Query(t));
+            let o = d.new_obj(IF_QUERY, Data::Query(t, 0, 0));
             wrp(a(2), 0, o);
             S_OK
         }
@@ -1553,7 +1612,7 @@ unsafe fn create_view(d: &mut D11, m: u32, res: u32, desc: u32, out: u32) -> u32
     if out == 0 {
         return S_FALSE;
     }
-    d.add_ref(rid);
+    d.bind(rid);
     let o = d.new_obj([IF_SRV, IF_UAV, IF_RTV, IF_DSV][m as usize - 7], Data::View(v));
     wrp(out, 0, o);
     S_OK
@@ -1570,7 +1629,10 @@ unsafe fn create_buffer_srv(d: &mut D11, rid: u32, size: u32, desc: u32, out: u3
     }
     let tex = new_texture(d, 2, n, 1, 1, 1, fmt, 0, 8, false);
     let tid = d.id_of(tex);
-    d.add_ref(rid);
+    // (the view's own texture and the buffer: held privately, see `destroy`)
+    d.bind(tid);
+    d.release(tid);
+    d.bind(rid);
     let buf = Some(BufSrc { buf: rid, off: first * f.bpp, bytes: n * f.bpp, last: Vec::new() });
     let v = View { res: tid, fmt, vdim: 1, mip: 0, mips: 1, layer: 0, layers: 1, buf };
     let o = d.new_obj(IF_SRV, Data::View(v));
@@ -1649,7 +1711,7 @@ unsafe fn child_call(d: &mut D11, iface: u32, m: u32, this: u32, a: &dyn Fn(usiz
         }
         // views: GetResource, GetDesc
         (IF_SRV | IF_RTV | IF_DSV | IF_UAV, 7, Some(Data::View(v))) => {
-            let r = v.res;
+            let r = v.buf.as_ref().map_or(v.res, |b| b.buf);
             d.add_ref(r);
             wrp(a(1), 0, d.addr_of(r));
             S_OK
@@ -1690,8 +1752,8 @@ unsafe fn child_call(d: &mut D11, iface: u32, m: u32, this: u32, a: &dyn Fn(usiz
             S_OK
         }
         // queries: GetDataSize, GetDesc
-        (IF_QUERY, 7, Some(Data::Query(t))) => query_size(*t),
-        (IF_QUERY, 8, Some(Data::Query(t))) => {
+        (IF_QUERY, 7, Some(Data::Query(t, ..))) => query_size(*t),
+        (IF_QUERY, 8, Some(Data::Query(t, ..))) => {
             wr(a(1), 0, *t);
             wr(a(1), 1, 0);
             S_OK
@@ -1708,7 +1770,9 @@ fn query_size(t: u32) -> u32 {
         3 => 16,    // TIMESTAMP_DISJOINT
         4 => 88,    // PIPELINE_STATISTICS
         5 => 4,     // OCCLUSION_PREDICATE
-        _ => 16,
+        7 => 4,     // SO_OVERFLOW_PREDICATE
+        12..=15 => 4, // SO_OVERFLOW_PREDICATE_STREAM0..3
+        _ => 16,    // SO_STATISTICS(_STREAM0..3)
     }
 }
 
@@ -1803,24 +1867,44 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
         20 => draw(d, st, true, a(1), a(2).max(1), a(3), a(4) as i32, a(5)),
         21 => draw(d, st, false, a(1), a(2).max(1), a(3), 0, a(4)),
         24 => st.topology = a(1),
-        27 | 28 => {}
-        29 => {
-            // GetData(query, data, size, flags): everything is done at once
+        27 | 28 => {
+            // Begin, End: an event or a timestamp has no Begin
             let q = d.id_of(a(1));
-            let t = match d.objs.get(&q).map(|o| &o.data) {
-                Some(Data::Query(t)) => *t,
-                _ => 0,
-            };
-            if a(2) != 0 && a(3) != 0 {
-                std::ptr::write_bytes(a(2) as *mut u8, 0, a(3) as usize);
-                match t {
-                    0 | 5 => wr(a(2), 0, 1),
-                    1 => wr(a(2), 0, 1000),
-                    3 => {
-                        wr(a(2), 0, 1_000_000_000);
-                    }
-                    _ => {}
+            d.ticks += 1;
+            let now = d.ticks;
+            if let Some(Data::Query(t, state, stamp)) = d.objs.get_mut(&q).map(|o| &mut o.data) {
+                if m == 28 {
+                    *state = 2;
+                    *stamp = now * 1000;
+                } else if !matches!(*t, 0 | 2) {
+                    *state = 1;
                 }
+            }
+        }
+        29 => {
+            // GetData(query, data, size, flags): everything is done at once; the data only once
+            // the query has ended, and only all of it
+            let q = d.id_of(a(1));
+            let Some(&Data::Query(t, state, stamp)) = d.objs.get(&q).map(|o| &o.data) else { return E_INVALIDARG };
+            if state != 2 {
+                return DXGI_ERROR_INVALID_CALL;
+            }
+            if a(2) == 0 {
+                return if a(3) == 0 { S_OK } else { E_INVALIDARG };
+            }
+            if a(3) != query_size(t) {
+                return E_INVALIDARG;
+            }
+            std::ptr::write_bytes(a(2) as *mut u8, 0, a(3) as usize);
+            match t {
+                0 | 5 => wr(a(2), 0, 1),
+                1 => wr(a(2), 0, 1000),
+                2 => {
+                    wr(a(2), 0, stamp as u32);
+                    wr(a(2), 1, (stamp >> 32) as u32);
+                }
+                3 => wr(a(2), 0, 1_000_000_000),
+                _ => {}
             }
         }
         33 | 34 => {
@@ -2002,18 +2086,7 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
         110 => {
             // ClearState
             let old = std::mem::replace(st, default_state());
-            let mut held: Vec<u32> = Vec::new();
-            held.extend(old.vbs.iter().map(|v| v.0));
-            held.extend([old.ib.0, old.layout, old.vs, old.ps, old.dsv, old.blend, old.depth, old.raster]);
-            for s in 0..2 {
-                held.extend(old.cbs[s]);
-                held.extend(old.srvs[s]);
-                held.extend(old.samplers[s]);
-            }
-            held.extend(old.rtvs);
-            for h in held.into_iter().filter(|&h| h != 0) {
-                d.unbind(h);
-            }
+            unbind_state(d, &old);
         }
         111 => gpu::flush(),
         112 => return 0, // immediate
