@@ -176,6 +176,7 @@ impl Input {
         let hex = |s: &str| s.split_whitespace().map(|w| u32::from_str_radix(w, 16).ok()).collect::<Option<Vec<u32>>>();
         Some(match head {
             "HLSL (ps_4_0)" => Input::Hlsl(rest.trim_start_matches(['\n']).to_string(), "ps_4_0"),
+            "HLSL (cs_5_0)" => Input::Hlsl(rest.trim_start_matches(['\n']).to_string(), "cs_5_0"),
             "HLSL (ps_3_0)" => Input::Hlsl(rest.trim_start_matches(['\n']).to_string(), "ps_3_0"),
             "D3D9 assembly" => Input::Asm(rest.trim_start_matches(['\n']).to_string()),
             "GLSL" => Input::Glsl(rest.trim_start_matches(['\n']).to_string()),
@@ -200,6 +201,13 @@ impl Input {
     fn run(&self) -> Result<Option<Vec<String>>, String> {
         let mut inc = |_: &str, _: bool| None;
         Ok(match self {
+            Input::Hlsl(s, t) if t.starts_with("cs") => match hlslc::compile(s, &[], &mut inc, "main", t, 0) {
+                Err(_) => None,
+                Ok(code) => match dxwgsl::translate_compute(&code, &[]) {
+                    Ok(w) => Some(vec![w.code]),
+                    Err(e) => return Err(format!("hlslc output dxwgsl rejects: {e}")),
+                },
+            },
             Input::Hlsl(s, t) => match hlslc::compile(s, &[], &mut inc, "ps", t, 0) {
                 Err(_) => None,
                 Ok(code) if t.starts_with("ps_4") || t.starts_with("ps_5") => match dxwgsl::translate(&code, true, None) {
@@ -212,7 +220,11 @@ impl Input {
                 Err(_) => None,
                 Ok(w) => d3d9_wgsl(&w),
             },
-            Input::Dxbc(b) => dxwgsl::translate(b, true, None).ok().map(|w| vec![w.code]),
+            // (as a pixel shader and as a compute shader: each front end checks the program type)
+            Input::Dxbc(b) => {
+                let w: Vec<String> = [dxwgsl::translate(b, true, None), dxwgsl::translate_compute(b, &[])].into_iter().flatten().map(|w| w.code).collect();
+                (!w.is_empty()).then_some(w)
+            }
             Input::D3d9(w) => d3d9_wgsl(w),
             Input::Glsl(s) => glwgsl::link(crate::cases::GL_VS, s, &Default::default()).ok().map(|p| vec![p.vs.wgsl, p.ps.wgsl]),
         })
@@ -252,6 +264,15 @@ pub fn run(cases: &[Case], n: usize, seed: u64) -> bool {
             _ => seeds.push(Input::Glsl(c.src.clone())),
         }
     }
+    // (the compute shaders, few next to the cases, each 20 times: a tenth of the inputs)
+    for s in crate::compute::fuzz_sources() {
+        for _ in 0..20 {
+            if let Ok(b) = hlslc::compile(&s, &[], &mut inc, "main", "cs_5_0", 0) {
+                seeds.push(Input::Dxbc(b));
+            }
+            seeds.push(Input::Hlsl(s.clone(), "cs_5_0"));
+        }
+    }
     // (a panic is caught and reported, not printed by the default hook)
     let msg = Arc::new(Mutex::new(String::new()));
     let m2 = msg.clone();
@@ -273,6 +294,9 @@ pub fn run(cases: &[Case], n: usize, seed: u64) -> bool {
                 std::process::exit(2);
             }
         });
+        // (a stack overflow aborts with no report: the input each run is on, written to this file
+        // first, tells which)
+        let last = std::env::var_os("SHADERCONF_FUZZ_LAST");
         let mut r = Rng(seed | 1);
         let mut bad = 0usize;
         let (mut accepted, mut seen) = (0usize, std::collections::HashSet::new());
@@ -299,6 +323,9 @@ pub fn run(cases: &[Case], n: usize, seed: u64) -> bool {
             };
             *current.lock().unwrap() = input.show();
             *CURRENT.lock().unwrap() = input.show();
+            if let Some(p) = &last {
+                let _ = std::fs::write(p, input.show());
+            }
             started.store(t0.elapsed().as_millis() as u64 + 1, Ordering::Relaxed);
             let (took, fail) = input.failure(&msg);
             accepted += took as usize;

@@ -805,7 +805,8 @@ impl<'a> L<'a> {
             B::Int
         };
         Ok(match (a, b) {
-            (Ty::Scalar(_), t) | (t, Ty::Scalar(_)) => t.with_base(base),
+            // (an array, struct or object with a scalar: no common type)
+            (Ty::Scalar(_), t) | (t, Ty::Scalar(_)) if t.numeric() => t.with_base(base),
             (Ty::Vec(_, n), Ty::Vec(_, m)) => Ty::vec(base, (*n).min(*m) as usize),
             (Ty::Mat(_, r, c), Ty::Mat(_, r2, c2)) => Ty::Mat(base, (*r).min(*r2), (*c).min(*c2)),
             (Ty::Vec(_, n), Ty::Mat(_, r, c)) | (Ty::Mat(_, r, c), Ty::Vec(_, n)) if *n as usize == (*r * *c) as usize => {
@@ -1108,6 +1109,21 @@ impl<'a> L<'a> {
         if let Expr::List(items) = e {
             let mut flat = Vec::new();
             self.flatten_list(items, &mut flat)?;
+            // (`T a[] = { .. }`: as many elements as the list fills)
+            let sized;
+            let t = match t {
+                Ty::Array(el, 0) => {
+                    let mut eb = Vec::new();
+                    leaf_bases(self.prog, el, &mut eb);
+                    let total: usize = flat.iter().map(|v| v.c.len()).sum();
+                    if eb.is_empty() || total == 0 {
+                        return Err("an empty initializer for an array without a size".into());
+                    }
+                    sized = Ty::Array(el.clone(), total.div_ceil(eb.len()) as u32);
+                    &sized
+                }
+                t => t,
+            };
             let mut tb = Vec::new();
             leaf_bases(self.prog, t, &mut tb);
             let mut comps = Vec::new();
@@ -1658,6 +1674,14 @@ impl<'a> L<'a> {
                         Some(e) => Some(self.init_value(&t, e)?),
                         None => None,
                     };
+                    let t = init.as_ref().map_or(t, |i| i.ty.clone());
+                    // (`T a[];` takes its size from an initializer list; without one it has none)
+                    fn no_size(t: &Ty) -> bool {
+                        matches!(t, Ty::Array(e, n) if *n == 0 || no_size(e))
+                    }
+                    if no_size(&t) {
+                        return Err(format!("line {}: array {} without a size or an initializer", v.line, v.name));
+                    }
                     // (a constant: no storage)
                     if v.is_const && !matches!(t, Ty::Array(..)) {
                         if let Some(i) = &init {
@@ -2045,7 +2069,7 @@ impl<'a> L<'a> {
             Obj::Shared(..) => self.shared_place(v)?,
             _ => v,
         };
-        if v.c.iter().any(|c| !matches!(c, C::R(Reg { f: RegF::Temp(_) | RegF::Output(_) | RegF::X(..) | RegF::Depth, .. }, _))) {
+        if !v.c.iter().all(writable) {
             return Err("assignment to a constant, a uniform or an input".into());
         }
         Ok(v)
@@ -2106,6 +2130,11 @@ impl<'a> L<'a> {
                             Ty::Mat(_, _, c) => *c as usize,
                             _ => 1,
                         };
+                        // (the elements are written back: a constant buffer's or an input's are not
+                        // places)
+                        if !v.c.iter().all(writable) {
+                            return Err("assignment to a constant, a uniform or an input".into());
+                        }
                         let elems: Vec<Vec<C>> = v.c.chunks(k.max(1)).map(|e| e.to_vec()).collect();
                         // (the select may hand back an element itself: write to a copy)
                         let cp = if r.c.iter().any(|c| v.c.contains(c)) { self.copy(&r.c) } else { r.c.clone() };
@@ -2241,6 +2270,10 @@ impl<'a> L<'a> {
             if matches!(v.ty, Ty::Struct(_)) {
                 return self.shared_member(v, name);
             }
+            // (an array stays a place in shared_value: .x of it is no member)
+            if matches!(v.ty, Ty::Array(..)) {
+                return Err(format!(".{name} of a groupshared array"));
+            }
             let v = self.shared_value(v);
             return self.member(v, name);
         }
@@ -2306,7 +2339,7 @@ impl<'a> L<'a> {
             C::R(Reg { f: RegF::X(_, r) | RegF::Cb(_, r) | RegF::Icb(r), .. }, _) => *r,
             _ => 0,
         };
-        let e0 = &elems[0];
+        let e0 = elems.first().ok_or("index into an array of no elements")?;
         // (shader model 3 pixel shaders: no address register)
         if !e0.is_empty() && e0.iter().all(addressable) && !(self.sm3() && self.o.pixel) {
             let stride = if elems.len() > 1 { regno(&elems[1][0]).wrapping_sub(regno(&e0[0])) } else { 1 };
@@ -2696,4 +2729,9 @@ impl<'a> L<'a> {
     pub(super) fn x_major(&self) -> u32 {
         self.o.major
     }
+}
+
+/// Whether a component is storage an assignment may write: a temp, an output, an indexable temp.
+fn writable(c: &C) -> bool {
+    matches!(c, C::R(Reg { f: RegF::Temp(_) | RegF::Output(_) | RegF::X(..) | RegF::Depth, .. }, _))
 }

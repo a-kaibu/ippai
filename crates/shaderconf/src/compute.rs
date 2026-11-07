@@ -81,6 +81,40 @@ fn string(s: &str) -> String {
     o
 }
 
+/// The prefix sum of the groupshared case (a barrier in a loop counted in a register).
+const SCAN: &str = "RWTexture2D<uint> u : register(u1); groupshared uint a[64], b[64];\n\
+        [numthreads(64, 1, 1)] void main(uint3 t : SV_DispatchThreadID, uint i : SV_GroupIndex, uint3 g : SV_GroupID) {\n\
+          a[i] = (i * 7 + g.y * 3) % 13; GroupMemoryBarrierWithGroupSync();\n\
+          [loop] for (uint s = 1; s < 64; s <<= 1) {\n\
+            b[i] = i >= s ? a[i] + a[i - s] : a[i]; GroupMemoryBarrierWithGroupSync();\n\
+            a[i] = b[i]; GroupMemoryBarrierWithGroupSync(); }\n\
+          u[t.xy] = a[63 - i] * 1000 + a[i]; }\n";
+
+/// Compute shader sources for the fuzzer (entry main, cs_5_0, nothing to include): the scan, a
+/// read-modify-write of a UAV, and the NIS scaler and sharpener with their defines and header
+/// written in.
+pub fn fuzz_sources() -> Vec<String> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/compute/nis");
+    let main = std::fs::read_to_string(dir.join("NIS_Main.hlsl")).unwrap_or_default();
+    let header = std::fs::read_to_string(dir.join("NIS_Scaler.h")).unwrap_or_default();
+    let mut out = vec![
+        SCAN.to_string(),
+        "Texture2D<float4> t : register(t0); RWTexture2D<unorm float4> u : register(u0);\n\
+         [numthreads(8, 8, 1)] void main(uint3 i : SV_DispatchThreadID, uint3 l : SV_GroupThreadID) {\n\
+           u[i.xy] = u[i.xy] * 0.5 + t.Load(int3(i.xy, 0)) * float(l.x) / 8; }\n"
+            .to_string(),
+    ];
+    for (sc, hdr, half, vp) in [(1, 0, 0, 0), (0, 0, 0, 1), (1, 1, 1, 0)] {
+        let (bw, bh) = if sc == 1 { (32, 24) } else { (32, 32) };
+        let defs = format!(
+            "#define NIS_SCALER {sc}\n#define NIS_HDR_MODE {hdr}\n#define NIS_BLOCK_WIDTH {bw}\n#define NIS_BLOCK_HEIGHT {bh}\n\
+             #define NIS_THREAD_GROUP_SIZE 128\n#define NIS_VIEWPORT_SUPPORT {vp}\n#define NIS_USE_HALF_PRECISION {half}\n"
+        );
+        out.push(defs + &main.replace("#include \"NIS_Scaler.h\"", &header));
+    }
+    out
+}
+
 /// The cases as compute.mjs reads them.
 pub fn cases() -> Result<String, String> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/compute");
@@ -139,14 +173,7 @@ pub fn cases() -> Result<String, String> {
     }
     // a prefix sum in groupshared memory with a barrier in a loop counted in a register (WGSL's
     // uniformity rules: a barrier only in uniform control flow), against its answer
-    let scan = "RWTexture2D<uint> u : register(u1); groupshared uint a[64], b[64];\n\
-        [numthreads(64, 1, 1)] void main(uint3 t : SV_DispatchThreadID, uint i : SV_GroupIndex, uint3 g : SV_GroupID) {\n\
-          a[i] = (i * 7 + g.y * 3) % 13; GroupMemoryBarrierWithGroupSync();\n\
-          [loop] for (uint s = 1; s < 64; s <<= 1) {\n\
-            b[i] = i >= s ? a[i] + a[i - s] : a[i]; GroupMemoryBarrierWithGroupSync();\n\
-            a[i] = b[i]; GroupMemoryBarrierWithGroupSync(); }\n\
-          u[t.xy] = a[63 - i] * 1000 + a[i]; }\n";
-    let code = hlslc::compile(scan, &[], &mut |_, _| None, "main", "cs_5_0", 0).map_err(|e| format!("scan: {e}"))?;
+    let code = hlslc::compile(SCAN, &[], &mut |_, _| None, "main", "cs_5_0", 0).map_err(|e| format!("scan: {e}"))?;
     let ours = dxwgsl::translate_compute(&code, &[(1, "r32uint")]).map_err(|e| format!("scan: {e}"))?.code;
     let mut want = Vec::new();
     for gy in 0..4u32 {

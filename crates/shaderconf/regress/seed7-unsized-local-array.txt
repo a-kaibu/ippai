@@ -1,0 +1,11 @@
+# shaderconf --fuzz 300000 7 (with the compute seeds): panic in hlslc lower.rs select
+# an array without a size or an initializer, indexed: an error
+HLSL (ps_3_0):
+float4 A : register(c0); float4 B : register(c1); float4 Cc : register(c2);
+float4 ps() : COLOR {
+  float4 arr[];
+  for (int k = 0; k < 8; k++) arr[k] = float4(k, 0, 0, 1);
+  arr[(int)A.x] = B;
+  arr[(int)A.y].y += 5;
+  return float4(arr[2].x, arr[2].y, arr[(int)A.z].x, arr[1].y);
+}

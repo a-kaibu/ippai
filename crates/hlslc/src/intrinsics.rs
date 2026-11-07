@@ -225,6 +225,9 @@ impl L<'_> {
         let coord = self.x_cast(coord.clone(), &coord.ty.with_base(B::Int))?;
         let n = dim.coords() + dim.array() as usize;
         let c = &coord.c;
+        if c.len() < n {
+            return Err(format!("Load with {} coordinates, {n} wanted", c.len()));
+        }
         let mip = if has_mip { c.get(n).copied().unwrap_or(C::I(0)) } else { C::I(0) };
         let z = C::I(0);
         let addr: Vec<C> = match dim {

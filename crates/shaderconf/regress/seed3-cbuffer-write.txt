@@ -1,0 +1,24 @@
+# shaderconf --fuzz 300000 3: hlslc wrote to a constant buffer through a run-time index (dxwgsl: register type 8 as a destination)
+# an assignment to a constant buffer member: an error
+HLSL (ps_4_0):
+cbuffer C : register(b0) { float4 A; float4 B; float4 Cc; };
+float4 ps() : SV_Target {
+  float4 t0 = float4(0.0, 0.0, 0.0, 0.0);
+  float4 t1 = float4(0.0, 0.0, 0.0, 0.0);
+  float4 t2 = float4(0.0, 0.0, 0.0, 0.0);
+  float4 arr[4];
+  arr[0] = float4(0.0, 1.0, 2.0, 3.0);
+  arr[1] = float4(1.0, 1.0, 2.0, 3.0);
+  arr[2] = float4(2.0, 1.0, 2.0, 3.0);
+  arr[3] = float4(3.0, 1.0, 2.0, 3.0);
+  t1.yz = (A).rr[(int)clamp((max(A, A)).x, 0.0, 3.0)] = ((((float4(5.0, -1.0, 1.0, 1.0)).x < (A).x) ? float4(-7.0, 5.0, -2.0, -6.0) : t0) * max(t0, t2));
+  t0 = abs(t2);
+  for (int i1 = 0; i1 < 2; i1++) {
+    for (int i2 = 0; i2 < 2; i2++) {
+      t2.y = (((A + float4(-5.0, 7.0, 4.0, 2.0)) + (Cc - float4(4.0, -4.0, -6.0, 8.0)))).y;
+      t2.y = (float4(1.0, 0.0, 0.0, 1.0)).y;
+    }
+    arr[(int)clamp((abs(A)).x, 0.0, 3.0)] = float4(-2.0, -3.0, 4.0, -8.0);
+  }
+  return t0;
+}

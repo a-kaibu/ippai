@@ -279,10 +279,12 @@ jobs:
         if: always()
         run: |
           ulimit -v 6000000
-          ./target/release/shaderconf --fuzz 300000 7 > "$RUNNER_TEMP/fuzz.txt" || { cat "$RUNNER_TEMP/fuzz.txt"; exit 1; }
+          # (a stack overflow aborts without a report: the input it was on is in fuzz-last.txt)
+          export SHADERCONF_FUZZ_LAST="$RUNNER_TEMP/fuzz-last.txt"
+          ./target/release/shaderconf --fuzz 300000 7 > "$RUNNER_TEMP/fuzz.txt" || { cat "$RUNNER_TEMP/fuzz.txt"; echo "---- last input"; cat "$SHADERCONF_FUZZ_LAST"; exit 1; }
           tail -1 "$RUNNER_TEMP/fuzz.txt"
           echo "seed ${{ github.run_number }}"
-          ./target/release/shaderconf --fuzz 300000 ${{ github.run_number }} > "$RUNNER_TEMP/fuzz2.txt" || { cat "$RUNNER_TEMP/fuzz2.txt"; exit 1; }
+          ./target/release/shaderconf --fuzz 300000 ${{ github.run_number }} > "$RUNNER_TEMP/fuzz2.txt" || { cat "$RUNNER_TEMP/fuzz2.txt"; echo "---- last input"; cat "$SHADERCONF_FUZZ_LAST"; exit 1; }
           tail -1 "$RUNNER_TEMP/fuzz2.txt"
       - uses: actions/upload-artifact@v7.0.2
         if: always()

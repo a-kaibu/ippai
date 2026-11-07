@@ -1,0 +1,10 @@
+# shaderconf --fuzz 300000 99 (with the compute seeds): panic in hlslc lower.rs alu_m
+# a groupshared array as an operand of +: an error
+HLSL (cs_5_0):
+RWTexture2D<uint> u : register(u1); groupshared uint a[64], b[64];
+[numthreads(64, 1, 1)] void main(uint3 t : SV_DispatchThreadID, uint i : SV_GroupIndex, uint3 g : SV_GroupID) {
+a[i] = (i * 7 + g.y * 3) % 13; GroupMemoryBarrierWithGroupSync();
+[loop] for (uint s = 1; s < 64; s <<= 1) {
+b[i] = i >= s ? a[i] + a: a[i]; GroupMemoryBarrierWithGroupSync();
+a[i] = b[i]; GroupMemoryBarrierWithGroupSync(); }
+u[t.xy] = a[63 - i] * 1000 + a[i]; }

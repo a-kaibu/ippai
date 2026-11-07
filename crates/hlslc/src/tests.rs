@@ -406,6 +406,15 @@ fn malformed_sources_are_errors() {
         ("cbuffer C : register(c3) { float4 A; };\nfloat4 ps() : SV_Target { return A; }\n", "ps_4_0"),
         ("cbuffer C : register(b14) { float4 A; };\nfloat4 ps() : SV_Target { return A; }\n", "ps_4_0"),
         ("float4 A : register(c0);\nfloat4 ps() : COLOR4 { return A; }\n", "ps_3_0"),
+        // (a constant buffer member written through a run-time index)
+        ("cbuffer C : register(b0) { float4 A; float4 B; };\nfloat4 ps() : SV_Target { B[(int)A.x] = 1; return A; }\n", "ps_4_0"),
+        ("cbuffer C : register(b0) { float4 A; float4 B; };\nfloat4 ps() : SV_Target { float4 t = 0; t.yz = A.rr[(int)A.x] = 2; return t; }\n", "ps_4_0"),
+        ("cbuffer C : register(b0) { float4 A; float4 B[2]; };\nfloat4 ps() : SV_Target { B[(int)A.x].y = 1; return A; }\n", "ps_4_0"),
+        ("float4 A : register(c0); float4 B : register(c1);\nfloat4 ps() : COLOR { B[(int)A.x] = 1; return A; }\n", "ps_3_0"),
+        // (an array without a size or an initializer, indexed: it has no elements)
+        ("float4 A : register(c0);\nfloat4 ps() : COLOR { float4 a[]; a[(int)A.x] = A; return a[1]; }\n", "ps_3_0"),
+        ("float4 A : register(c0);\nfloat4 ps() : SV_Target { float4 a[]; a[(int)A.x] = A; return a[1]; }\n", "ps_4_0"),
+        ("float4 A : register(c0);\nfloat4 ps() : COLOR { float a[2][]; return A; }\n", "ps_3_0"),
     ] {
         assert!(super::compile(src, &[], &mut inc, "ps", t, 0).is_err(), "{src}");
     }
@@ -414,8 +423,21 @@ fn malformed_sources_are_errors() {
         ("cbuffer C : register(ps_5_0, b1) { float4 A; };\nfloat4 ps() : SV_Target { return A; }\n", "ps_5_0"),
         ("cbuffer C : register(b0, space0) { float4 A; };\nfloat4 ps() : SV_Target { return A; }\n", "ps_5_0"),
         ("float4 A : register(c0);\nfloat4 ps() : COLOR3 { return A; }\n", "ps_3_0"),
+        // (the size from the initializer list)
+        ("float4 A : register(c0);\nfloat4 ps() : COLOR { float a[] = { 1, 2, 3 }; return A * a[(int)A.x]; }\n", "ps_3_0"),
+        ("float4 A : register(c0);\nfloat4 ps() : SV_Target { float a[] = { 1, 2, 3 }; return A * a[(int)A.x]; }\n", "ps_4_0"),
     ] {
-        assert!(super::compile(src, &[], &mut inc, "ps", t, 0).is_ok(), "{src}");
+        if let Err(e) = super::compile(src, &[], &mut inc, "ps", t, 0) { panic!("{src}: {e}") }
+    }
+    // (an array sized by its initializer list is the array of that size)
+    for t in ["ps_3_0", "ps_4_0"] {
+        for (a, b, pick) in [("float a[]", "float a[6]", ""), ("float2 a[]", "float2 a[3]", ".y")] {
+            let out = if t == "ps_3_0" { "COLOR" } else { "SV_Target" };
+            let src = |d: &str| format!("float4 A : register(c0);\nfloat4 ps() : {out} {{ {d} = {{ 1, 2, 3, 4, 5, 6 }}; return A * a[(int)A.x]{pick}; }}\n");
+            let x = super::compile(&src(a), &[], &mut inc, "ps", t, 0).unwrap();
+            let y = super::compile(&src(b), &[], &mut inc, "ps", t, 0).unwrap();
+            assert_eq!(x, y, "{t} {a}");
+        }
     }
     for asm in ["ps_3_0\nexp , c0.x\nmov oCswitch\n", "ps_3_0\nlog r0.x,.y\nmov odcl_te0.5rd0 r0\n", "ps_3_0\nmov r0, ]c[\n", "ps_3_0\nmov r0, [1]\n"] {
         let _ = super::d3d9asm::assemble(asm);
@@ -586,6 +608,13 @@ fn compute_errors() {
         ("RWTexture2D<float4> u : register(t0); [numthreads(1,1,1)] void main(uint3 t : SV_DispatchThreadID) { u[t.xy] = 1; }", "cs_5_0", "register"),
         ("Texture2D t : register(t0); SamplerState s : register(s0); RWTexture2D<float4> u : register(u0); [numthreads(1,1,1)] void main(uint3 i : SV_DispatchThreadID) { u[i.xy] = t.Sample(s, i.xy); }", "cs_5_0", ""),
         ("RWTexture2D<float4> u : register(u0); [numthreads(1,1,1)] void main(uint3 i : SV_DispatchThreadID) { float x = i.x; u[i.xy] = ddx(x); }", "cs_5_0", ""),
+        // (shaderconf --fuzz: a Load of too few coordinates, an array as an operand)
+        ("Texture2D t : register(t0); RWTexture2D<float4> u : register(u0); [numthreads(1,1,1)] void main(uint3 i : SV_DispatchThreadID) { u[i.xy] = t.Load((i.x, i.y)); }", "cs_5_0", "coordinates"),
+        ("RWTexture2D<uint> u : register(u0); groupshared uint a[4]; [numthreads(4,1,1)] void main(uint i : SV_GroupIndex) { a[i] = i; u[uint2(i, 0)] = a[i] + a; }", "cs_5_0", "types"),
+        ("RWTexture2D<uint> u : register(u0); [numthreads(4,1,1)] void main(uint i : SV_GroupIndex) { uint a[2] = { 1, 2 }; u[uint2(i, 0)] = 1 + a; }", "cs_5_0", "types"),
+        // (shaderconf --fuzz: a swizzle of a groupshared array recursed until the stack ran out)
+        ("RWTexture2D<uint> u : register(u0); groupshared uint a[4]; [numthreads(4,1,1)] void main(uint i : SV_GroupIndex) { a[i] = i; u[uint2(i, 0)] = a.wzyx[i]; }", "cs_5_0", "groupshared array"),
+        ("RWTexture2D<uint> u : register(u0); groupshared uint a[4]; [numthreads(4,1,1)] void main(uint i : SV_GroupIndex) { a.x = i; u[uint2(i, 0)] = a[i]; }", "cs_5_0", "groupshared array"),
     ] {
         let e = cs_err(src, target);
         assert!(e.to_lowercase().contains(want), "{src}: {e}");
@@ -661,4 +690,107 @@ float4 ps(float4 pos : SV_Position, uint si : SV_SampleIndex) : SV_Target {
         assert!(b.iter().filter(|x| matches!(x.1, dxwgsl::Binding::Texture(6, _))).count() == 3, "{b:?}");
         assert!(b.contains(&(17, dxwgsl::Binding::Texture(6, 1))), "{b:?}");
     }
+}
+
+/// `code` with the instruction `inst` put before its last one (ret), its SHDR/SHEX chunk and the
+/// container's chunk offsets after it moved on (the checksum is not read).
+fn splice(code: &[u8], inst: &[u32]) -> Vec<u8> {
+    let rd = |b: &[u8], at: usize| u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
+    let n = rd(code, 28) as usize;
+    let offs: Vec<usize> = (0..n).map(|i| rd(code, 32 + 4 * i) as usize).collect();
+    let k = offs.iter().position(|&o| &code[o..o + 4] == b"SHEX" || &code[o..o + 4] == b"SHDR").unwrap();
+    let (o, size) = (offs[k], rd(code, offs[k] + 4) as usize);
+    let at = o + 8 + size - 4;
+    assert_eq!(rd(code, at), 0x0100_003e, "ends with ret");
+    let mut out = code[..at].to_vec();
+    out.extend(inst.iter().flat_map(|w| w.to_le_bytes()));
+    out.extend_from_slice(&code[at..]);
+    let grow = 4 * inst.len() as u32;
+    let put = |b: &mut Vec<u8>, at: usize, v: u32| b[at..at + 4].copy_from_slice(&v.to_le_bytes());
+    let total = rd(&out, 24) + grow;
+    put(&mut out, 24, total);
+    put(&mut out, o + 4, size as u32 + grow);
+    let len = rd(&out, o + 12) + inst.len() as u32;
+    put(&mut out, o + 12, len);
+    for (i, &off) in offs.iter().enumerate() {
+        if off > o {
+            put(&mut out, 32 + 4 * i, off as u32 + grow);
+        }
+    }
+    out
+}
+
+/// Every opcode with 0 to 6 operands of each register type a shader declares (temps, immediates,
+/// constant buffers, textures, samplers, UAVs, groupshared memory), in a pixel and a compute
+/// shader: the translators give an error or valid WGSL, never a panic (fuzzing found an
+/// ld_structured of 3 operands read past them; this is every such count, not a sample).
+#[test]
+fn every_opcode_with_any_operand_count() {
+    let ps = compile(
+        "cbuffer C : register(b0) { float4 k; }; Texture2D t : register(t0); SamplerState s : register(s0);\n\
+         float4 main(float4 p : SV_Position) : SV_Target { return t.Sample(s, k.xy) + k; }",
+        "main",
+        "ps_5_0",
+    );
+    let mut inc = |_: &str, _: bool| None;
+    let cs = super::compile(
+        "cbuffer C : register(b0) { float4 k; }; Texture2D t : register(t0); SamplerState s : register(s0);\n\
+         RWTexture2D<float4> u : register(u1); groupshared uint g[64];\n\
+         [numthreads(64, 1, 1)] void main(uint i : SV_GroupIndex) { g[i] = i; GroupMemoryBarrierWithGroupSync();\n\
+           u[uint2(i, 0)] = t.SampleLevel(s, k.xy, 0) + g[63 - i] + k; }",
+        &[],
+        &mut inc,
+        "main",
+        "cs_5_0",
+        0,
+    )
+    .unwrap();
+    // (operand tokens: r0.xyzw / r0 masked, an immediate vector, cb0[0], t0, s0, u1, g0)
+    let kinds: [&[u32]; 8] = [
+        &[0x0010_0e46, 0],
+        &[0x0010_00f2, 0],
+        &[0x0000_4002, 0x3f80_0000, 1, 2, 0xffff_ffff],
+        &[0x0020_8e46, 0, 0],
+        &[0x0010_7e46, 0],
+        &[0x0010_6000, 0],
+        &[0x0011_ee46, 1],
+        &[0x0011_f006, 0],
+    ];
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let mut bad = Vec::new();
+    let (mut tried, mut took) = (0, 0);
+    for op in (0..0x100u32).filter(|&op| op != 0x35) {
+        for n in 0..=6usize {
+            for p in 0..kinds.len() * 2 {
+                // (all operands of one kind, or a masked r0 destination and the rest of one kind)
+                let mut body = Vec::new();
+                for j in 0..n {
+                    body.extend_from_slice(if p >= kinds.len() && j == 0 { kinds[1] } else { kinds[p % kinds.len()] });
+                }
+                let mut inst = vec![op | ((body.len() as u32 + 1) << 24)];
+                inst.extend(body);
+                for (code, compute) in [(&ps, false), (&cs, true)] {
+                    let b = splice(code, &inst);
+                    tried += 1;
+                    let r = std::panic::catch_unwind(|| if compute { dxwgsl::translate_compute(&b, &[]) } else { dxwgsl::translate(&b, true, None) });
+                    match r {
+                        Err(_) => bad.push(format!("op {op:#x} {n} operands kind {p} compute {compute}: panic")),
+                        Ok(Err(_)) => {}
+                        Ok(Ok(w)) => {
+                            took += 1;
+                            if let Err(e) = naga::front::wgsl::parse_str(&w.code).map_err(|e| e.emit_to_string(&w.code)).and_then(|m| {
+                                naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&m).map(|_| ()).map_err(|e| format!("{e:?}"))
+                            }) {
+                                bad.push(format!("op {op:#x} {n} operands kind {p} compute {compute}: invalid WGSL {}", e.lines().next().unwrap_or("")));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    std::panic::set_hook(hook);
+    assert!(bad.is_empty(), "{} of {tried} ({took} translated):\n{}", bad.len(), bad.join("\n"));
+    assert!(took > 1000, "{took} of {tried} translated: the splicing is wrong");
 }
