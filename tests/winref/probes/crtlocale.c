@@ -1,8 +1,10 @@
 /* _create_locale's _locale_t as the CRT's inline code reads it (#58): { locinfo, mbcinfo },
  * and where in each the code page, the ctype table and the case maps are, for msvcrt.dll (its
  * threadlocinfo) and ucrtbase.dll (__crt_locale_data, whose public prefix comes first). The
- * user's locale (""): its code page is GetACP() on any machine, and 'A' / 'a' have the same
- * classes and cases in any ANSI code page, so the offsets printed hold everywhere. */
+ * user's locale (""): 'A' / 'a' have the same classes and cases in any ANSI code page, so the
+ * offsets printed hold everywhere. Its code page is the user locale's: ucrtbase takes GetACP(),
+ * msvcrt.dll the locale's own ANSI code page (on the runner, en-US with a system code page of
+ * 932, 1252: no GetACP() in msvcrt.dll's). */
 #include "../probe.h"
 #include <locale.h>
 
@@ -24,7 +26,9 @@ static void scan(const char *dll, const char *what, const unsigned char *s, int 
     printf("\n%s %s pctype at", dll, what);
     for (int o = 0; o + (int)sizeof(void *) <= n; o += sizeof(void *)) {
         const unsigned short *t = *(const unsigned short *const *)(s + o);
-        if (readable(t, 512) && t['A'] == 0x181 && t['a'] == 0x182 && t['0'] == 0x84) printf(" %#x", o);
+        /* (the classes but C1_DEFINED 0x200, which GetStringTypeA adds outside the "C" locale;
+         * then what 'A' is there, with it) */
+        if (readable(t, 512) && (t['A'] & 0x1ff) == 0x181 && (t['a'] & 0x1ff) == 0x182 && (t['0'] & 0x1ff) == 0x84) printf(" %#x ('A' %#x)", o, t['A']);
     }
     printf("\n%s %s lower map at", dll, what);
     for (int o = 0; o + (int)sizeof(void *) <= n; o += sizeof(void *)) {

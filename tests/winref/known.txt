@@ -192,3 +192,10 @@ gdipbrush-64 ^(want|got) +angle 0 271\.5 0: 0: 0 0\.028 -1\.075 0\.978 0\.026 18
 # on that one frame without an ended. Games wait for those events, so sake keeps the HTML
 # media element's order (seeked at once, frames on, ended at the end)
 mfengine-* ^(want|got) +(event 1009 seen|loaded: (OnVideoStreamTick|TransferVideoFrame)|seeked|playing|ended|pause event at the end|again:|paused:)
+# _create_locale(LC_ALL, ""): the runner's user locale is en-US over a system code page of 932,
+# and msvcrt.dll takes the locale's own ANSI code page (1252) where ucrtbase takes GetACP();
+# sake is a Japanese Windows, where both are 932
+crtlocale-* ^(want|got) +msvcrt\.dll (locinfo|mbcinfo) acp at
+# (32-bit ucrtbase holds the code page once more at 0xc4, past the fields inline code reads)
+crtlocale-32 ^want +ucrtbase\.dll locinfo acp at 0x8 0x10 0x14 0xc4$
+crtlocale-32 ^got +ucrtbase\.dll locinfo acp at 0x8 0x10 0x14$

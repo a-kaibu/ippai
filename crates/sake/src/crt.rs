@@ -139,9 +139,7 @@ pub fn data(name: &str) -> Option<u32> {
         "_mbctype" => {
             let t = mem::heap_alloc(257, true);
             for b in 0..=255u8 {
-                if crate::text::is_lead(b) {
-                    w8(t + 1 + b as u32, 4);
-                }
+                w8(t + 1 + b as u32, mbctype_flags(crate::text::acp(), b));
             }
             t
         }
@@ -2915,6 +2913,35 @@ fn locale_layout(ucrt: bool, ps: u32) -> LocaleLayout {
         LocaleLayout { size: p(10), cps: [4, 8, 8], handles: Some(0xc), mb_cur_max: after + 4, pctype: p(6), pclmap: p(7), pcumap: p(8), refcount: 0, mbctype: 0x1c }
     }
 }
+const MB_SBUP: u8 = 0x10;
+const MB_SBLOW: u8 = 0x20;
+/// A byte's _mbctype flags in code page `cp`, as _setmbcp(_MB_CP_ANSI) at the CRT's start makes
+/// them: _SBUP / _SBLOW for single-byte letters with the other case (ASCII; sake's code pages
+/// are DBCS ones or 1252, whose accented letters are left out), _M1 lead bytes, and for 932 its
+/// own table: _MS (1) the katakana A6-DF, _MP (2) the kana punctuation A1-A5, _M2 (8) the trail
+/// bytes 40-7E and 80-FC.
+pub fn mbctype_flags(cp: u32, b: u8) -> u8 {
+    let mut f = match b {
+        b'A'..=b'Z' => MB_SBUP,
+        b'a'..=b'z' => MB_SBLOW,
+        _ => 0,
+    };
+    if crate::text::is_lead_cp(cp, b) {
+        f |= 0x04;
+    }
+    if cp == 932 {
+        f |= match b {
+            0xa6..=0xdf => 0x01,
+            0xa1..=0xa5 => 0x02,
+            _ => 0,
+        };
+        if matches!(b, 0x40..=0x7e | 0x80..=0xfc) {
+            f |= 0x08;
+        }
+    }
+    f
+}
+
 fn make_locale(l: LocaleLayout) -> u32 {
     let cp = crate::text::acp();
     let loc = mem::heap_alloc(2 * ps(), true);
@@ -2945,11 +2972,12 @@ fn make_locale(l: LocaleLayout) -> u32 {
     if l.mbctype == 0x1c {
         w32(mb + 12, 0x411);
     }
-    // mbctype[257] (index 0 is EOF), then mbcasemap[256]
-    let t = data("_mbctype").unwrap();
-    mem::copy(mb + l.mbctype, t, 257);
+    // mbctype[257] (index 0 is EOF), then mbcasemap[256]: the other case of a _SBUP / _SBLOW byte
     for b in 0..=255u8 {
-        w8(mb + l.mbctype + 257 + b as u32, b);
+        let f = mbctype_flags(cp, b);
+        w8(mb + l.mbctype + 1 + b as u32, f);
+        let other = if f & (MB_SBUP | MB_SBLOW) != 0 { b ^ 0x20 } else { 0 };
+        w8(mb + l.mbctype + 257 + b as u32, other);
     }
     wp(loc, li);
     wp(loc + ps(), mb);
@@ -3880,6 +3908,38 @@ pub fn init() {
 
 #[cfg(test)]
 mod tests {
+
+    /// _mbctype as _setmbcp(_MB_CP_ANSI) makes it (#58; the probe crtlocale finds a locale's
+    /// mbctype on Windows by the _SBUP / _SBLOW of 'A' / 'a')
+    mod mbctype {
+        use super::super::mbctype_flags;
+        use proptest::prelude::*;
+
+        #[test]
+        fn cp932_as_ucrt_tables() {
+            let f = |b| mbctype_flags(932, b);
+            // ('A' is a trail byte too)
+            assert_eq!((f(b'A'), f(b'z'), f(b'0'), f(b'@')), (0x18, 0x28, 0, 0x08));
+            assert_eq!((f(0x81), f(0x9f), f(0xa0), f(0xa1), f(0xa5), f(0xa6), f(0xdf), f(0xe0), f(0xfc), f(0xfd)), (0x0c, 0x0c, 0x08, 0x0a, 0x0a, 0x09, 0x09, 0x0c, 0x0c, 0));
+            assert_eq!((f(0x7f), f(0x3f), f(0xff)), (0, 0, 0));
+            // a single-byte code page: the letters' cases only
+            assert_eq!((mbctype_flags(1252, b'A'), mbctype_flags(1252, 0x81), mbctype_flags(1252, 0xb1)), (0x10, 0, 0));
+        }
+
+        proptest! {
+            /// _M1 is the code page's lead byte; _SBUP and _SBLOW are each other's pair
+            #[test]
+            fn flags_agree_with_the_code_page(cp in prop::sample::select(vec![932u32, 936, 949, 950, 1252]), b: u8) {
+                let f = mbctype_flags(cp, b);
+                prop_assert_eq!(f & 0x04 != 0, crate::text::is_lead_cp(cp, b));
+                prop_assert!(f & 0x30 != 0x30);
+                if f & 0x10 != 0 { prop_assert!(mbctype_flags(cp, b ^ 0x20) & 0x20 != 0); }
+                if f & 0x20 != 0 { prop_assert!(mbctype_flags(cp, b ^ 0x20) & 0x10 != 0); }
+                // (kana and trail flags are 932's alone)
+                if cp != 932 { prop_assert_eq!(f & 0x0b, 0); }
+            }
+        }
+    }
 
     /// _locale_t's layouts (#58): msvcr80/90's threadlocinfo at 32 bits (what AdvHD's static
     /// _Mbrtowc read before), the same with 8-byte pointers, and the UCRT's public prefix first
