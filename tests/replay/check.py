@@ -45,6 +45,11 @@ def main():
         if not (os.path.exists(want_d) and os.path.exists(got_d)):
             print(f"{probe}: no answer yet")
             continue
+        # (answers of older sources: Windows has not answered for these yet)
+        stale = [p for p in (probe, "replay_" + probe + "-32") if open(os.path.join(root, p, "src")).read().strip() != golden.src_hash(p)]
+        if stale:
+            print(f"{probe}: waiting for Windows' answers for {' '.join(stale)}")
+            continue
         want = images(want_d)
         got = [g for g in images(got_d) if g[0].startswith("r")]
         # (a probe that reads pixels with LockRect prints values, not pictures: nothing to match)
