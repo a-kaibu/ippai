@@ -6,6 +6,7 @@
 #   Locks     D3D9 surface locks and copies: results, what locks and page readbacks show
 #   Maps      D3D11 maps and copies: results, what maps and page readbacks show
 #   GlNames   GL names: glGen/glDelete/glBind/glIs, attachments, binding queries, glGetError
+#   StateBlocks D3D9 state blocks: types' masks, recording, Capture/Apply: results, what Get reads
 #   D2dDraw   sake's D2D BeginDraw/EndDraw/Flush, drawing calls and clips: what each returns
 #
 #   formal/trace.sh       TLC=path/to/tlc; IPPAI_TRACE_SEEDS (default 20 per test);

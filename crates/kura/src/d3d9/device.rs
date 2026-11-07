@@ -5,6 +5,7 @@ use super::gpu::{self, Batch};
 use dxwgsl::d3d9::{self as shader, Shader};
 use dxwgsl::d3d9ff as ff;
 use super::{After, D3d, Data, D3DERR_INVALIDCALL, D3DERR_NOTAVAILABLE, E_NOTIMPL, S_OK};
+use super::stateblock as sb;
 use super::{IF_CUBE, IF_D3D9, IF_DECL, IF_DEVICE, IF_IB, IF_PS, IF_QUERY, IF_STATEBLOCK, IF_SURFACE, IF_SWAPCHAIN};
 use super::{IF_TEXTURE, IF_VB, IF_VOLUME, IF_VOLUMETEX, IF_VS};
 use std::collections::HashMap;
@@ -141,7 +142,7 @@ pub struct Device {
     pub rt: [u32; 4],
     pub ds: u32,
     pub st: State,
-    pub recording: Option<u32>,
+    pub recording: Option<Box<super::stateblock::Recording>>,
     /// draw state the page has (per batch)
     batch_target: Option<(u32, u32, u32)>,
     pipelines: HashMap<Vec<u32>, u32, super::FastHash>,
@@ -440,10 +441,10 @@ pub unsafe fn call(d: &mut D3d, iface: u32, m: u32, this: u32, args: *const u32,
             4 => {
                 // Capture
                 let Some(dev) = &d.dev else { return D3DERR_INVALIDCALL };
-                if let Some(Data::StateBlock(sb)) = d.objs.get_mut(&this).map(|o| &mut o.data) {
-                    let old = state_binds(sb);
-                    copy_state(sb, &dev.st);
-                    let new = state_binds(sb);
+                if let Some(Data::StateBlock(b)) = d.objs.get_mut(&this).map(|o| &mut o.data) {
+                    let old = state_binds(&b.st);
+                    sb::copy_masked(&mut b.st, &dev.st, &b.mask);
+                    let new = state_binds(&b.st);
                     bind_all(d, &new);
                     unbind_all(d, &old);
                 }
@@ -940,6 +941,24 @@ unsafe fn set_bound(d: &mut D3d, new: u32, old: u32) {
 }
 
 unsafe fn device_call(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &mut After) -> u32 {
+    // (while recording a state block, the Set* calls change the recording, not the device)
+    if sb::records(m) {
+        if let Some(rec) = d.dev.as_mut().and_then(|dev| dev.recording.as_mut()) {
+            rec.mask.record(m, a);
+            let swap = |d: &mut D3d| {
+                let dev = d.dev.as_mut().unwrap();
+                std::mem::swap(&mut dev.st, &mut dev.recording.as_mut().unwrap().st);
+            };
+            swap(d);
+            let r = device_method(d, m, a, after);
+            swap(d);
+            return r;
+        }
+    }
+    device_method(d, m, a, after)
+}
+
+unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &mut After) -> u32 {
     match m {
         3 => S_OK, // TestCooperativeLevel
         4 => 1024 * 1024 * 1024,
@@ -1235,26 +1254,45 @@ unsafe fn device_call(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &mut
             S_OK
         }
         59 => {
-            // CreateStateBlock(type): all types capture everything (simple)
+            // CreateStateBlock(type, out)
             let dev = dev!(d);
-            let st = dev.st.clone();
+            if dev.recording.is_some() || a(2) == 0 {
+                return D3DERR_INVALIDCALL;
+            }
+            let mask = match a(1) {
+                1 => sb::Mask::all(&dev.st),
+                2 => sb::Mask::pixel(&dev.st),
+                3 => sb::Mask::vertex(&dev.st),
+                _ => return D3DERR_INVALIDCALL,
+            };
+            let st = sb::masked_copy(&dev.st, &mask);
             bind_all(d, &state_binds(&st));
-            let o = d.new_obj(IF_STATEBLOCK, 0, Data::StateBlock(Box::new(st)));
+            let o = d.new_obj(IF_STATEBLOCK, 0, Data::StateBlock(Box::new(sb::Block { st, mask })));
             wrp(a(2), 0, o);
             S_OK
         }
         60 => {
-            // BeginStateBlock: record into a copy of the state (changes still apply: simple)
+            // BeginStateBlock: the Set* calls go to a copy of the state until EndStateBlock
             let dev = dev!(d);
-            dev.recording = Some(0);
+            if dev.recording.is_some() {
+                return D3DERR_INVALIDCALL;
+            }
+            let st = dev.st.clone();
+            bind_all(d, &state_binds(&st));
+            d.dev.as_mut().unwrap().recording = Some(Box::new(sb::Recording { st, mask: sb::Mask::default() }));
             S_OK
         }
         61 => {
+            // EndStateBlock(out): a block of what was recorded
             let dev = dev!(d);
-            dev.recording = None;
-            let st = dev.st.clone();
+            if a(1) == 0 || dev.recording.is_none() {
+                return D3DERR_INVALIDCALL;
+            }
+            let rec = dev.recording.take().unwrap();
+            let st = sb::masked_copy(&rec.st, &rec.mask);
             bind_all(d, &state_binds(&st));
-            let o = d.new_obj(IF_STATEBLOCK, 0, Data::StateBlock(Box::new(st)));
+            unbind_all(d, &state_binds(&rec.st));
+            let o = d.new_obj(IF_STATEBLOCK, 0, Data::StateBlock(Box::new(sb::Block { st, mask: rec.mask })));
             wrp(a(1), 0, o);
             S_OK
         }
@@ -1565,34 +1603,6 @@ fn mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
     r
 }
 
-/// `dst = src` reusing dst's allocations (state blocks are captured and applied hundreds of
-/// times a frame: Siglus around every draw)
-fn copy_state(dst: &mut State, src: &State) {
-    dst.rs.clone_from(&src.rs);
-    dst.tss = src.tss;
-    dst.ss = src.ss;
-    dst.textures = src.textures;
-    dst.streams = src.streams;
-    dst.freq = src.freq;
-    dst.indices = src.indices;
-    dst.fvf = src.fvf;
-    dst.decl = src.decl;
-    dst.vs = src.vs;
-    dst.ps = src.ps;
-    dst.vsf.clone_from(&src.vsf);
-    dst.psf.clone_from(&src.psf);
-    dst.vsi = src.vsi;
-    dst.psi = src.psi;
-    dst.vsb = src.vsb;
-    dst.psb = src.psb;
-    dst.transforms.clone_from(&src.transforms);
-    dst.viewport = src.viewport;
-    dst.scissor = src.scissor;
-    dst.material = src.material;
-    dst.lights.clone_from(&src.lights);
-    dst.clip = src.clip;
-}
-
 /// the objects a state holds a binding on
 pub(crate) fn state_binds(st: &State) -> [u32; 36] {
     let mut b = [0u32; 36];
@@ -1623,9 +1633,9 @@ pub(crate) fn unbind_all(d: &mut D3d, ids: &[u32]) {
 
 /// the device state = state block `sb`'s
 fn apply_state(d: &mut D3d, sb: u32) {
-    let (Some(dev), Some(Data::StateBlock(st))) = (d.dev.as_mut(), d.objs.get(&sb).map(|o| &o.data)) else { return };
+    let (Some(dev), Some(Data::StateBlock(b))) = (d.dev.as_mut(), d.objs.get(&sb).map(|o| &o.data)) else { return };
     let unbind = state_binds(&dev.st);
-    copy_state(&mut dev.st, st);
+    super::stateblock::copy_masked(&mut dev.st, &b.st, &b.mask);
     let bind = state_binds(&dev.st);
     // (objects released since the capture are gone: drop them from the state)
     for b in bind {

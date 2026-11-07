@@ -12,10 +12,13 @@ pub mod d3d8;
 pub mod device;
 pub mod format;
 pub mod gpu;
+pub mod stateblock;
 #[cfg(test)]
 pub(crate) mod trace_tests;
 #[cfg(test)]
 pub(crate) mod lock_tests;
+#[cfg(test)]
+pub(crate) mod sb_tests;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -75,7 +78,7 @@ pub enum Data {
     Buffer(device::Buffer),
     Decl(device::Decl),
     Shader(device::ShaderObj),
-    StateBlock(Box<device::Snapshot>),
+    StateBlock(Box<stateblock::Block>),
     Query(u32),
     Other,
 }
@@ -236,7 +239,7 @@ impl D3d {
                     dev.release_all(self);
                 }
             }
-            Data::StateBlock(sb) => device::unbind_all(self, &device::state_binds(&sb)),
+            Data::StateBlock(sb) => device::unbind_all(self, &device::state_binds(&sb.st)),
             _ => {}
         }
     }
