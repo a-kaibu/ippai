@@ -1,0 +1,15 @@
+[package]
+name = "jit16test"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Differential test of koji's 16-bit translation (jit::translate_region16) against its interpreter, the wasm run by wasmtime"
+
+# (its own workspace: wasmtime stays out of the main one's builds)
+[workspace]
+
+[dependencies]
+koji = { path = "../../crates/koji" }
+iced-x86 = { version = "1.21", default-features = false, features = ["std", "decoder", "instr_info", "encoder", "code_asm", "op_code_info", "fast_fmt"] }
+flate2 = "1"
+wasmtime = { version = "29", default-features = false, features = ["cranelift", "runtime", "threads"] }

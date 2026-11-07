@@ -91,7 +91,6 @@ jobs:
             target/krkrz
             target/krkr2
             target/renpy
-            target/crt64
             target/onscripter
             target/watcom
             target/fpc16

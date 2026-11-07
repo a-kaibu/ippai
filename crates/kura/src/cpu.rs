@@ -384,7 +384,7 @@ fn unmasked_note(mx: u32) {
 fn cpu_run(cpu: &mut Cpu) -> Stop {
     let mut mem = Linear;
     // long mode: IPPAI_JIT64=0 leaves it to the interpreter
-    let jit = crate::jit::enabled() && (cpu.mode64 == 0 || crate::jit::enabled64()) && cpu.mode16 == 0;
+    let jit = crate::jit::enabled() && (cpu.mode64 == 0 || crate::jit::enabled64()) && (cpu.mode16 == 0 || crate::jit::enabled16());
     crate::jit::count_entry(cpu.eip);
     loop {
         trace_call(cpu);
@@ -394,7 +394,20 @@ fn cpu_run(cpu: &mut Cpu) -> Stop {
             unmasked_note(cpu.mxcsr);
         }
         if jit && cpu.eflags & koji::flags::TF == 0 && cpu.mxcsr & 0x1f80 == 0x1f80 {
-            match crate::jit::run(cpu) {
+            // (16-bit code: the JIT's eip is the linear CS:IP, see jit::to_linear16)
+            let m16 = cpu.mode16 != 0;
+            if m16 {
+                crate::jit::to_linear16(cpu);
+            }
+            let ran = crate::jit::run(cpu);
+            let compiled = matches!(ran, crate::jit::Ran::Missed) && {
+                crate::jit::count_miss(cpu.eip);
+                crate::jit::maybe_compile(cpu, &mut mem)
+            };
+            if m16 {
+                crate::jit::from_linear16(cpu);
+            }
+            match ran {
                 crate::jit::Ran::Stopped => {
                     crate::jit::count_entry(cpu.eip | 0x8000_0000);
                     continue;
@@ -404,8 +417,7 @@ fn cpu_run(cpu: &mut Cpu) -> Stop {
                     None => continue,
                 },
                 crate::jit::Ran::Missed => {
-                    crate::jit::count_miss(cpu.eip);
-                    if crate::jit::maybe_compile(cpu, &mut mem) {
+                    if compiled {
                         continue;
                     }
                 }

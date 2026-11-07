@@ -186,6 +186,13 @@ fn FreeEnvironmentStringsW(c: &mut Ctx) -> u32 {
     mem::heap_free(c.a(0));
     1
 }
+/// The environment as the C runtime sees it: get, set (None removes), all variables.
+pub(crate) fn env_set(name: &str, value: Option<&str>) {
+    with_env(|e| env_put(e, name, value));
+}
+pub(crate) fn env_vars() -> Vec<(String, String)> {
+    with_env(|e| e.clone())
+}
 fn env_get(name: &str) -> Option<String> {
     let key = name.to_ascii_uppercase();
     with_env(|e| e.iter().find(|(k, _)| k.to_ascii_uppercase() == key).map(|(_, v)| v.clone()))
@@ -698,6 +705,11 @@ fn SetWaitableTimer(c: &mut Ctx) -> u32 {
         last_error(0);
     }
     ok(r)
+}
+/// SetWaitableTimerEx(h, due, period, apc, arg, wake context, tolerable delay): as SetWaitableTimer
+/// (Python's time.sleep waits on a high-resolution timer set this way)
+fn SetWaitableTimerEx(c: &mut Ctx) -> u32 {
+    SetWaitableTimer(c)
 }
 fn CancelWaitableTimer(c: &mut Ctx) -> u32 {
     ok(obj::with(|t| match t.objs.get_mut(&c.a(0)) {
@@ -4005,13 +4017,16 @@ fn SizeofResource(c: &mut Ctx) -> u32 {
 // ---------------------------------------------------------------------------------------------
 // files
 
-fn GetStdHandle(c: &mut Ctx) -> u32 {
+/// The handle of standard stream `i` (0 in, 1 out, 2 error).
+pub(crate) fn std_handle(i: usize) -> u32 {
     static STD: OnceLock<[u32; 3]> = OnceLock::new();
-    let s = STD.get_or_init(|| [obj::add(Obj::Other("stdin")), obj::add(Obj::Other("stdout")), obj::add(Obj::Other("stderr"))]);
+    STD.get_or_init(|| [obj::add(Obj::Other("stdin")), obj::add(Obj::Other("stdout")), obj::add(Obj::Other("stderr"))])[i]
+}
+fn GetStdHandle(c: &mut Ctx) -> u32 {
     match c.a(0) {
-        0xffff_fff6 => s[0],
-        0xffff_fff5 => s[1],
-        0xffff_fff4 => s[2],
+        0xffff_fff6 => std_handle(0),
+        0xffff_fff5 => std_handle(1),
+        0xffff_fff4 => std_handle(2),
         _ => 0xffff_ffff,
     }
 }
@@ -4187,7 +4202,7 @@ pub(crate) fn console_write(t: &str) {
 }
 /// SAKE_ECHO_FILE=name: what the program writes to files of that name also goes to the log, a
 /// line at a time (a game's own log file: 吉里吉里2 writes Debug.message only to krkr.console.log)
-fn echo_write(path: &str, buf: u32, n: u32) {
+pub(crate) fn echo_write(path: &str, buf: u32, n: u32) {
     static NAME: OnceLock<Option<String>> = OnceLock::new();
     let Some(name) = NAME.get_or_init(|| std::env::var("SAKE_ECHO_FILE").ok().map(|s| s.to_ascii_lowercase())) else { return };
     if !path.to_ascii_lowercase().ends_with(name.as_str()) {
@@ -4575,7 +4590,7 @@ fn CreateDirectoryA(c: &mut Ctx) -> u32 {
 fn CreateDirectoryW(c: &mut Ctx) -> u32 {
     mkdir(&arg_str(c.a(0), true))
 }
-fn rmdir(name: &str) -> u32 {
+pub(crate) fn rmdir(name: &str) -> u32 {
     if let Some(e) = bad_dir_name(name) {
         last_error(e);
         return 0;
@@ -5384,7 +5399,7 @@ pub fn init() {
         TerminateThread, GetThreadPriority, SetThreadPriority, SetPriorityClass, GetPriorityClass, SetThreadAffinityMask,
         SetProcessAffinityMask, GetProcessAffinityMask, SetThreadIdealProcessor, Sleep, SleepEx, SwitchToThread,
         CreateEventA, CreateEventW, CreateEventExW, CreateWaitableTimerA, CreateWaitableTimerW, CreateWaitableTimerExW,
-        OpenWaitableTimerA, OpenWaitableTimerW, SetWaitableTimer, CancelWaitableTimer, OpenEventA, OpenEventW, SetEvent, ResetEvent, PulseEvent,
+        OpenWaitableTimerA, OpenWaitableTimerW, SetWaitableTimer, SetWaitableTimerEx, CancelWaitableTimer, OpenEventA, OpenEventW, SetEvent, ResetEvent, PulseEvent,
         CreateMutexA, CreateMutexW, OpenMutexA, OpenMutexW, ReleaseMutex, CreateSemaphoreA, CreateSemaphoreW, ReleaseSemaphore,
         WaitForSingleObject, WaitForSingleObjectEx, WaitForMultipleObjects, WaitForMultipleObjectsEx, CloseHandle,
         DuplicateHandle, InitializeCriticalSection, InitializeCriticalSectionAndSpinCount, SetCriticalSectionSpinCount, GetHandleInformation,

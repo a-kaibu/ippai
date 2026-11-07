@@ -19,6 +19,9 @@ macro_rules! reg {
     ($($f:ident),* $(,)?) => { $( implement("msvcrt", stringify!($f), $f); )* };
 }
 
+#[path = "crt_io.rs"]
+mod io;
+
 // ---------------------------------------------------------------------------------------------
 // what differs between x86 and x64: argument positions, size_t, float results
 
@@ -113,7 +116,7 @@ static DATA: Mutex<Option<HashMap<String, u32>>> = Mutex::new(None);
 pub fn data(name: &str) -> Option<u32> {
     const NAMES: &[&str] = &["_adjust_fdiv", "_fmode", "_commode", "__argc", "__argv", "__wargv", "_environ", "_wenviron",
         "__initenv", "__winitenv", "_acmdln", "_wcmdln", "_osver", "_winver", "_winmajor", "_winminor", "__mb_cur_max",
-        "_pctype", "_pwctype", "_timezone", "_daylight", "_mbctype", "_HUGE", "_iob"];
+        "_pctype", "_pwctype", "_timezone", "_daylight", "_dstbias", "_tzname", "_mbctype", "_HUGE", "_iob"];
     if !NAMES.contains(&name) {
         return None;
     }
@@ -146,8 +149,9 @@ pub fn data(name: &str) -> Option<u32> {
         "__wargv" => var(wargs().1),
         "_acmdln" => var(crate::k32::cmdline().0),
         "_wcmdln" => var(crate::k32::cmdline().1),
-        "_environ" | "__initenv" => var(env()),
-        "_wenviron" | "__winitenv" => var(mem::heap_alloc(8, true)),
+        "_environ" | "__initenv" => var(io::environ(false)),
+        "_wenviron" | "__winitenv" => var(io::environ(true)),
+        "_tzname" => io::tzname_array(),
         "_osver" => var(2600),
         "_winver" => var(0x501),
         "_winmajor" => var(5),
@@ -284,10 +288,6 @@ fn wargs() -> (u32, u32) {
 }
 
 /// an empty environment block (one NULL pointer)
-fn env() -> u32 {
-    mem::heap_alloc(8, true)
-}
-
 // ---------------------------------------------------------------------------------------------
 // startup and exit
 
@@ -352,7 +352,7 @@ fn __getmainargs(c: &mut Ctx) -> u32 {
     let (argc, argv) = args();
     w32(c.a(0), argc);
     wp(c.a(1), argv);
-    wp(c.a(2), env());
+    wp(c.a(2), rp(data("_environ").unwrap()));
     0
 }
 fn __set_app_type(_: &mut Ctx) -> u32 {
@@ -1695,6 +1695,8 @@ fn file_size() -> u32 {
 
 struct Stream {
     f: Option<Arc<File>>,
+    /// its descriptor (_fileno)
+    fd: u32,
     eof: bool,
     unget: Option<u8>,
 }
@@ -1706,7 +1708,7 @@ fn iob() -> u32 {
     let mut g = FILES.lock().unwrap();
     let m = g.get_or_insert_with(HashMap::default);
     for i in 0..3 {
-        m.insert(p + file_size() * i, Stream { f: None, eof: true, unget: None });
+        m.insert(p + file_size() * i, Stream { f: None, fd: i, eof: true, unget: None });
     }
     p
 }
@@ -1730,8 +1732,14 @@ fn fopen_mode(path: &str, mode: &[u8]) -> Option<File> {
     Some(f)
 }
 fn new_stream(f: File) -> u32 {
+    let f = Arc::new(f);
+    let fd = io::fd_of_file(f.clone());
+    new_stream_of(f, fd)
+}
+/// A stream over descriptor `fd`'s file (fclose closes the descriptor too).
+fn new_stream_of(f: Arc<File>, fd: u32) -> u32 {
     let fp = mem::heap_alloc(file_size(), true);
-    FILES.lock().unwrap().get_or_insert_with(HashMap::default).insert(fp, Stream { f: Some(Arc::new(f)), eof: false, unget: None });
+    FILES.lock().unwrap().get_or_insert_with(HashMap::default).insert(fp, Stream { f: Some(f), fd, eof: false, unget: None });
     fp
 }
 /// _get_stream_buffer_pointers(stream, &base, &ptr, &cnt): the FILE's buffer fields (UCRT
@@ -1787,8 +1795,11 @@ fn rename(c: &mut Ctx) -> u32 {
 }
 fn fclose(c: &mut Ctx) -> u32 {
     let fp = c.a(0);
-    let had = FILES.lock().unwrap().get_or_insert_with(HashMap::default).remove(&fp).is_some();
-    if had {
+    let had = FILES.lock().unwrap().get_or_insert_with(HashMap::default).remove(&fp);
+    if let Some(s) = had {
+        if s.fd > 2 {
+            io::close_fd(s.fd);
+        }
         mem::heap_free(fp);
         0
     } else {
@@ -2138,23 +2149,19 @@ fn wcsncmp(c: &mut Ctx) -> u32 {
     a.cmp(&b) as i32 as u32
 }
 fn getenv(c: &mut Ctx) -> u32 {
-    // the process environment (GetEnvironmentVariableA), kept in a guest buffer per name
+    // the CRT's environment (io::env_get), kept in a guest buffer per name
     static VALS: Mutex<Option<HashMap<Vec<u8>, u32>>> = Mutex::new(None);
     let name = cstr(c.a(0));
-    let f = crate::api::export("kernel32", "GetEnvironmentVariableA");
-    let n = c.call(f, &[c.a(0), 0, 0]);
-    if n == 0 {
-        return 0;
-    }
+    let Some(v) = io::env_get(&a2s(&name)) else { return 0 };
+    let bytes = crate::text::s2a(&v);
     let mut g = VALS.lock().unwrap();
     let m = g.get_or_insert_with(HashMap::default);
-    if let Some(&p) = m.get(&name) {
+    if let Some(&p) = m.get(&name.to_ascii_uppercase()) {
         mem::heap_free(p);
     }
-    let p = mem::heap_alloc(n + 1, true);
-    m.insert(name, p);
-    drop(g);
-    c.call(f, &[c.a(0), p, n + 1]);
+    let p = mem::heap_alloc(bytes.len() as u32 + 1, true);
+    mem::write(p, &bytes);
+    m.insert(name.to_ascii_uppercase(), p);
     p
 }
 fn _ismbblead(c: &mut Ctx) -> u32 {
@@ -2456,119 +2463,12 @@ fn _seh_filter_exe(_: &mut Ctx) -> u32 {
     0
 }
 
-/// wcstombs(dst, src, size) in the "C" locale (setlocale's only one): a character above 0xff
-/// fails with EILSEQ (-1); a null dst counts the bytes (without the terminator).
-fn wcstombs(c: &mut Ctx) -> u32 {
-    let (dst, src, n) = (c.a(0), c.a(1), c.a(2));
-    let mut i = 0u32;
-    loop {
-        if dst != 0 && i >= n {
-            return i;
-        }
-        let ch = r16(src + 2 * i);
-        if ch > 0xff {
-            set_errno(42);
-            return u32::MAX;
-        }
-        if dst != 0 {
-            w8(dst + i, ch as u8);
-        }
-        if ch == 0 {
-            return i;
-        }
-        i += 1;
-    }
-}
-/// mbstowcs(dst, src, size) in the "C" locale: each byte its character.
-fn mbstowcs(c: &mut Ctx) -> u32 {
-    let (dst, src, n) = (c.a(0), c.a(1), c.a(2));
-    let mut i = 0u32;
-    loop {
-        if dst != 0 && i >= n {
-            return i;
-        }
-        let b = r8(src + i);
-        if dst != 0 {
-            w16(dst + 2 * i, b as u16);
-        }
-        if b == 0 {
-            return i;
-        }
-        i += 1;
-    }
-}
-/// _chdir/_wchdir(path): 0, or -1 with errno ENOENT
-fn chdir(c: &mut Ctx, wide: bool) -> u32 {
-    if crate::k32::set_dir(&crate::k32::arg_str(c.a(0), wide)) != 0 {
-        return 0;
-    }
-    set_errno(2);
-    u32::MAX
-}
-fn _chdir(c: &mut Ctx) -> u32 {
-    chdir(c, false)
-}
-fn _wchdir(c: &mut Ctx) -> u32 {
-    chdir(c, true)
-}
 /// _setmaxstdio(n): the new limit (msvcrt allows 20..=2048), else -1
 fn _setmaxstdio(c: &mut Ctx) -> u32 {
     let n = c.a(0);
     if (20..=2048).contains(&n) { n } else { u32::MAX }
 }
 
-/// File descriptors handed out by _fileno: 0..2 the standard streams, then streams by
-/// first use (sake has no descriptor layer: _filelength is what they are asked for).
-static FDS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
-/// _fileno(stream)
-fn _fileno(c: &mut Ctx) -> u32 {
-    let fp = c.a(0);
-    if with_file(fp, |_| ()).is_none() {
-        set_errno(22);
-        return u32::MAX;
-    }
-    let base = data("_iob").unwrap_or(0);
-    if fp >= base && fp < base + 3 * file_size() && (fp - base) % file_size() == 0 {
-        return (fp - base) / file_size();
-    }
-    let mut g = FDS.lock().unwrap();
-    let i = g.iter().position(|&p| p == fp).unwrap_or_else(|| {
-        g.push(fp);
-        g.len() - 1
-    });
-    3 + i as u32
-}
-/// The length of descriptor `fd`'s file (None: not one, or no file behind it).
-fn fd_length(fd: u32) -> Option<u64> {
-    let fp = *FDS.lock().unwrap().get(fd.checked_sub(3)? as usize)?;
-    with_file(fp, |s| s.f.as_ref().map(|f| f.size())).flatten()
-}
-fn _filelength(c: &mut Ctx) -> u32 {
-    fd_length(c.a(0)).map_or_else(
-        || {
-            set_errno(9);
-            u32::MAX
-        },
-        |n| n.min(i32::MAX as u64) as u32,
-    )
-}
-fn _filelengthi64(c: &mut Ctx) -> u32 {
-    let n = fd_length(c.a(0)).unwrap_or_else(|| {
-        set_errno(9);
-        u64::MAX
-    });
-    c.ret64(n)
-}
-
-/// setlocale: only "C"
-fn setlocale(_: &mut Ctx) -> u32 {
-    static C: OnceLock<u32> = OnceLock::new();
-    *C.get_or_init(|| {
-        let p = mem::heap_alloc(2, true);
-        w8(p, b'C');
-        p
-    })
-}
 /// the "C" locale's struct lconv: 10 char* fields, 8 chars (CHAR_MAX), then (msvcr100+ / the
 /// UCRT) 8 wchar_t* fields, _W_decimal_point first (read by std::numpunct<wchar_t>)
 fn localeconv(_: &mut Ctx) -> u32 {
@@ -2595,9 +2495,6 @@ fn localeconv(_: &mut Ctx) -> u32 {
         }
         l
     })
-}
-fn _putenv(_: &mut Ctx) -> u32 {
-    0
 }
 fn fputc(c: &mut Ctx) -> u32 {
     let ch = c.a(0) & 0xff;
@@ -2700,7 +2597,7 @@ fn _get_initial_narrow_environment(_: &mut Ctx) -> u32 {
     r32(data("_environ").unwrap())
 }
 fn _get_initial_wide_environment(_: &mut Ctx) -> u32 {
-    r32(data("_wenviron").unwrap())
+    rp(data("_wenviron").unwrap())
 }
 fn ucrt_zero(_: &mut Ctx) -> u32 {
     0
@@ -3382,6 +3279,8 @@ fn asctime(c: &mut Ctx) -> u32 {
 pub fn init() {
     // crtdll's __GetMainArgs(argc, argv, envp, expand): __getmainargs without the startup info
     implement("crtdll", "__GetMainArgs", __getmainargs);
+    io::init();
+    io::init2();
     implement("msvcrt", "_strtof_l", strtof);
     reg!(strtof, wcstof, _strtoi64, _strtoui64, _wcstoi64, _wcstoui64, _atoi64, _wtoi64, _wtof);
     for (alias, f) in [
@@ -3486,7 +3385,7 @@ pub fn init() {
     reg!(_wcsdup, _wcslwr, _wcsupr, wcstok_s, strtok_s, strtok, wcstok);
     // (ucrtbase's wcstok takes a context)
     implement("ucrtbase", "wcstok", wcstok_s);
-    reg!(localeconv, setlocale);
+    reg!(localeconv);
     reg!(strcpy_s, wcscpy_s, strcat_s, wcscat_s, wcsncpy_s);
     reg!(_itoa_s, _ultoa_s, _i64toa_s, _ui64toa_s);
     reg!(puts, putchar, setvbuf, _strrev, _ultoa, _i64toa, _ui64toa, _atoi64, div, _isnan, _finite, _fpclass, _hypot,
@@ -3519,10 +3418,10 @@ pub fn init() {
     reg!(fread_s, _time64, _splitpath, _wsplitpath, _splitpath_s, _wsplitpath_s);
     reg!(_get_narrow_winmain_command_line, _get_wide_winmain_command_line);
     implement("msvcrt", "_time32", _time32);
-    reg!(_putenv, fputc, __acrt_iob_func, _create_locale, _free_locale, _fdclass, _dclass, _fdsign, _dsign, strnlen);
+    reg!(fputc, __acrt_iob_func, _create_locale, _free_locale, _fdclass, _dclass, _fdsign, _dsign, strnlen);
     implement("ucrtbase", "__stdio_common_vsprintf", __stdio_common_vsprintf);
     implement("ucrtbase", "__stdio_common_vswprintf", __stdio_common_vswprintf);
-    reg!(wcstombs, mbstowcs, _chdir, _wchdir, _setmaxstdio, _fileno, _filelength, _filelengthi64);
+    reg!(_setmaxstdio);
     reg!(wcsncmp, getenv, _ismbblead, memcpy_s, memmove_s, _controlfp_s, __iob_func, __p__iob, fopen_s, _wfopen_s, _setjmp3, longjmp, remove, rename);
     implement("msvcrt", "_setjmp", _setjmp3);
     reg!(_encode_pointer, _encoded_null, _crt_debugger_hook, _configthreadlocale, ___mb_cur_max_l_func);

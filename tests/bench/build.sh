@@ -28,13 +28,10 @@ node "$ROOT/tests/bench/pack-kirikiri.mjs" "$OUT" "$KRKRZ_CACHE/krkrz" >/dev/nul
 KRKR2_CACHE=${KRKR2_CACHE:-$ROOT/target/krkr2}
 "$ROOT/tests/bench/fetch-krkr2.sh" "$KRKR2_CACHE"
 node "$ROOT/tests/bench/pack-kirikiri.mjs" "$OUT" "$KRKR2_CACHE/krkr2/kirikiri2" >/dev/null
-# (the 64-bit ucrtbase.dll Ren'Py ships app-local, fetched into CRT64_CACHE once)
-CRT64_CACHE=${CRT64_CACHE:-$ROOT/target}
-"$ROOT/tests/bench/fetch-crt64.sh" "$CRT64_CACHE"
 # (the Ren'Py game: testdata/renpy compiled and packed, with Ren'Py's SDK fetched into RENPY_CACHE once)
 RENPY_CACHE=${RENPY_CACHE:-$ROOT/target/renpy}
 "$ROOT/tests/bench/fetch-renpy.sh" "$RENPY_CACHE"
-python3 -I "$ROOT/tests/bench/pack-renpy.py" "$OUT" "$RENPY_CACHE/renpy-sdk" "$CRT64_CACHE/crt64" >/dev/null
+python3 -I "$ROOT/tests/bench/pack-renpy.py" "$OUT" "$RENPY_CACHE/renpy-sdk" >/dev/null
 # (the ONScripter game: the engine built from pinned sources into ONS_CACHE once)
 ONS_CACHE=${ONS_CACHE:-$ROOT/target/onscripter}
 "$ROOT/tests/bench/build-onscripter.sh" "$ONS_CACHE"

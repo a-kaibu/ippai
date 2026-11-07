@@ -42,7 +42,8 @@ init -100 python:
         return True
 
     for _c in ("gl", "angle", "gl_load", "angle_load"):
-        renpy.arguments.register_command(_c, _bench_command)
+        # (uses_display: otherwise Ren'Py starts SDL's dummy video driver and draws in software)
+        renpy.arguments.register_command(_c, _bench_command, uses_display=True)
 
     # ---- 台詞: 表示し終えたら line、クリックを待つ (idle なら 3 秒待たれる) ----
     def bench_line_cb(event, interact=True, **kw):

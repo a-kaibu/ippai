@@ -205,6 +205,13 @@ pub fn find_impl(dll: &str, name: &str) -> Option<Handler> {
             return Some(*f);
         }
     }
+    // the UCRT's _o_ exports (api-ms-win-crt-private, for Windows' own DLLs) are its plain ones
+    if dll == "ucrtbase" {
+        if let Some(plain) = name.strip_prefix("_o_") {
+            drop(g);
+            return find_impl(dll, plain);
+        }
+    }
     None
 }
 

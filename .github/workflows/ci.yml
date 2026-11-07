@@ -201,6 +201,34 @@ jobs:
             tools/jit32test/target
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
+  # koji's 16-bit JIT (Win16 code) against its interpreter (random 16-bit code) and against a
+  # real 386 (SingleStepTests/80386: every test of what it translates, 200 per opcode file)
+  jit16:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            tools/jit16test/target
+          key: jit16-${{ runner.os }}-${{ hashFiles('tools/jit16test/Cargo.lock') }}
+          restore-keys: jit16-${{ runner.os }}-
+      - uses: actions/cache@v6.1.0
+        with:
+          path: target/sst
+          key: sst-${{ hashFiles('tests/sst/fetch.sh') }}
+      - name: SingleStepTests/80386
+        run: tests/sst/fetch.sh
+      - name: Differential test (new seed per run)
+        working-directory: tools/jit16test
+        run: cargo run --release --locked -- 1500 ${{ github.run_number }}
+      - name: Against the 386
+        working-directory: tools/jit16test
+        run: SST_N=200 cargo run --release --locked -- sst
+
   rustfs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20

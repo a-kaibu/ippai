@@ -108,7 +108,7 @@ const L_FB: u32 = 12;
 const L_FR: u32 = 13;
 const L_FC: u32 = 14;
 const L_BUD: u32 = 15; // cpu.jit_budget while inside
-pub(crate) const N_PARAMS: u32 = 16;
+pub const N_PARAMS: u32 = 16;
 // locals
 const L_NEXT: u32 = 16;
 const L_ST: u32 = 17;
@@ -186,6 +186,74 @@ pub fn set_deny(f: fn(u32) -> bool) {
     DENY.set(f);
 }
 
+/// 16-bit code (Win16, `Cpu::mode16`): while [`translate_region16`] runs, the code segment's
+/// base. Its blocks are translated at linear addresses: the host keeps `cpu.eip` = CS base + IP
+/// while JIT code runs (the step import going back to IP for the interpreter), jumps and
+/// branches inside the segment get their linear targets (NearBranch32), and only instructions
+/// whose 16-bit semantics the generator has are translated ([`ok16`]: data operations on
+/// registers, immediates and [seg:bx+si+disp]-style operands, conditional and direct jumps);
+/// everything else (the stack, calls and returns, segment loads, string ops...) is stepped.
+static SEG16: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static SEG16_ON: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+fn seg16() -> Option<u32> {
+    SEG16_ON.load(core::sync::atomic::Ordering::Relaxed).then(|| SEG16.load(core::sync::atomic::Ordering::Relaxed))
+}
+
+/// Translates the 16-bit code at linear `root` (CS base `cs_base`): see [`SEG16`]. One root, no
+/// merges (regions of other code segments would need their own base).
+pub fn translate_region16<M: Memory>(module: &mut Module, mem: &mut M, root: u32, cs_base: u32, max_blocks: usize, accept: impl FnMut(u32) -> bool) -> Option<Region> {
+    SEG16.store(cs_base, core::sync::atomic::Ordering::Relaxed);
+    SEG16_ON.store(true, core::sync::atomic::Ordering::Relaxed);
+    let r = translate(module, mem, &[root], max_blocks, MAX_REGION_INS, accept, None, &|_| None, &|_| false);
+    SEG16_ON.store(false, core::sync::atomic::Ordering::Relaxed);
+    r
+}
+
+/// A segment register's index in `Cpu::sbase` (ES CS SS DS FS GS).
+fn sreg_index(r: Register) -> u32 {
+    match r {
+        Register::ES => 0,
+        Register::CS => 1,
+        Register::SS => 2,
+        Register::FS => 4,
+        Register::GS => 5,
+        _ => 3,
+    }
+}
+
+/// A 16-bit addressing memory operand ([bx+si+disp] and the like, or a 16-bit absolute one).
+fn mem16_ok(ins: &Instruction) -> bool {
+    let (b, x) = (ins.memory_base(), ins.memory_index());
+    let ok = |r: Register| r == Register::None || r.is_gpr16();
+    ok(b) && ok(x) && (b != Register::None || x != Register::None || ins.memory_displ_size() < 4)
+}
+
+/// Whether the generator translates 16-bit instruction `ins` (see [`SEG16`]); the others are
+/// stepped by the interpreter.
+pub fn ok16(ins: &Instruction) -> bool {
+    use Mnemonic::*;
+    let operands = (0..ins.op_count()).all(|i| match ins.op_kind(i) {
+        OpKind::Register => reg_index(ins.op_register(i)).is_some(),
+        OpKind::Memory => mem16_ok(ins) && matches!(ins.memory_size().size(), 1 | 2 | 4),
+        OpKind::Immediate8 | OpKind::Immediate16 | OpKind::Immediate32 | OpKind::Immediate8to16 | OpKind::Immediate8to32 => true,
+        OpKind::NearBranch32 => matches!(ins.flow_control(), FlowControl::ConditionalBranch | FlowControl::UnconditionalBranch),
+        _ => false,
+    });
+    operands
+        && !ins.has_lock_prefix()
+        && !ins.has_rep_prefix()
+        && !ins.has_repne_prefix()
+        && match ins.mnemonic() {
+            Mov | Movzx | Movsx | Add | Adc | Sub | Sbb | And | Or | Xor | Cmp | Test | Inc | Dec | Neg | Not | Shl | Shr | Sar
+            | Rol | Ror | Nop => true,
+            Xchg => (0..ins.op_count()).all(|i| ins.op_kind(i) == OpKind::Register),
+            Jmp => ins.op0_kind() == OpKind::NearBranch32,
+            Jo | Jno | Jb | Jae | Je | Jne | Jbe | Ja | Js | Jns | Jp | Jnp | Jl | Jge | Jle | Jg => true,
+            _ => false,
+        }
+}
+
 /// Inlined callees: at most this many instructions each, and in all in a region.
 const MAX_INLINE: usize = 128;
 const MAX_INLINE_TOTAL: usize = 400;
@@ -207,6 +275,9 @@ impl Off {
     }
     fn fs() -> u32 {
         offset_of!(Cpu, fs_base) as u32
+    }
+    fn sbase(i: u32) -> u32 {
+        (offset_of!(Cpu, sbase) + 4 * i as usize) as u32
     }
     fn gs() -> u32 {
         offset_of!(Cpu, gs_base) as u32
@@ -560,6 +631,7 @@ fn mask(bits: u32) -> u32 {
 fn simple_operand(ins: &Instruction, i: u32) -> bool {
     match ins.op_kind(i) {
         OpKind::Register => reg_index(ins.op_register(i)).is_some(),
+        OpKind::Memory if seg16().is_some() => mem16_ok(ins) && matches!(ins.memory_size().size(), 1 | 2 | 4),
         OpKind::Memory => {
             let ok_reg = |r: Register| r == Register::None || r.is_gpr32();
             ok_reg(ins.memory_base())
@@ -574,6 +646,9 @@ fn simple_operand(ins: &Instruction, i: u32) -> bool {
 
 /// A memory operand with 32-bit registers and an ordinary segment.
 fn mem_ok(ins: &Instruction) -> bool {
+    if seg16().is_some() {
+        return mem16_ok(ins);
+    }
     let ok_reg = |r: Register| r == Register::None || r.is_gpr32();
     ok_reg(ins.memory_base())
         && ok_reg(ins.memory_index())
@@ -1044,6 +1119,19 @@ impl<'a> Gen<'a> {
         let ins = self.ins;
         let t = self.temp();
         let prot = page_check();
+        if seg16().is_some() {
+            // (16-bit: (base + index + disp) mod 64K, then the segment's base; the registers'
+            // upper halves are not part of it)
+            self.c.u32c(ins.memory_displacement32() & 0xffff);
+            for r in [ins.memory_base(), ins.memory_index()] {
+                if r != Register::None {
+                    self.c.get(L_REG + r.number() as u32).add();
+                }
+            }
+            self.c.u32c(0xffff).and();
+            self.c.get(L_CPU).load32(Off::sbase(sreg_index(ins.memory_segment()))).add().set(t);
+            return self.addr_check(t, size);
+        }
         if !prot {
             if let Some(t) = self.addr_pair(t, size) {
                 return t;
@@ -1095,6 +1183,12 @@ impl<'a> Gen<'a> {
                 return t;
             }
         }
+        self.addr_check(t, size)
+    }
+
+    /// Checks the address in local `t` (leaving the block if outside the guest range or on a
+    /// marked page); returns `t`.
+    fn addr_check(&mut self, t: u32, size: u32) -> u32 {
         if nocheck() {
             return t;
         }
@@ -1925,7 +2019,7 @@ impl<'a> Gen<'a> {
         // ESP is taken to point into a stack at every block start (as on real hardware,
         // running off the stack needs a broken program), so an instruction that sets it to
         // something new has it checked here, before the next block relies on that
-        if written & (1 << 4) != 0 && r {
+        if written & (1 << 4) != 0 && r && seg16().is_none() {
             let imm = ins.op_count() == 2 && matches!(ins.op_kind(1), OpKind::Immediate8to32 | OpKind::Immediate32);
             let drift = match ins.mnemonic() {
                 Call | Ret | Pushad | Popad | Pushfd | Popfd | Enter => true,
@@ -1956,6 +2050,14 @@ impl<'a> Gen<'a> {
     fn emit_ins(&mut self, last: bool, next: u32, simple: bool) -> bool {
         use Mnemonic::*;
         let ins = self.ins;
+        if seg16().is_some() && !ok16(ins) {
+            let ends = ins.flow_control() != FlowControl::Next;
+            self.fallback(ends);
+            if ends {
+                return false;
+            }
+            return self.after(last, next);
+        }
         match ins.mnemonic() {
             Nop | Pause | Wait | Endbr32 | Prefetchnta | Prefetcht0 | Prefetcht1 | Prefetcht2 | Prefetchw | Lfence | Sfence => {}
             // (x86 orders other accesses itself, TSO; wasm on ARM64 doesn't: MFENCE, which code
@@ -3653,11 +3755,17 @@ fn ring_write_with(c: &mut Code, h: u32, e: u32, to: u32, from: impl FnOnce(&mut
 fn decode<M: Memory>(mem: &mut M, eip: u32) -> Vec<Instruction> {
     let mut out = Vec::new();
     let mut ip = eip;
+    let cs16 = seg16();
     while out.len() < MAX_INS {
         let mut buf = [0u8; 15];
         let n = mem.fetch(ip, &mut buf);
-        let mut dec = Decoder::with_ip(32, &buf[..n], ip as u64, DecoderOptions::NONE);
-        let ins = dec.decode();
+        let ins = match cs16 {
+            Some(cs) => match decode16(&buf[..n], ip, cs) {
+                Some(i) => i,
+                None => break,
+            },
+            None => Decoder::with_ip(32, &buf[..n], ip as u64, DecoderOptions::NONE).decode(),
+        };
         if ins.is_invalid() {
             break;
         }
@@ -3669,6 +3777,41 @@ fn decode<M: Memory>(mem: &mut M, eip: u32) -> Vec<Instruction> {
         }
     }
     out
+}
+
+/// One 16-bit instruction at linear `ip` of the code segment at `cs`, as the generator sees it:
+/// at its linear address, a near jump's or branch's target linear too (NearBranch32). None for
+/// code running off the end of the segment.
+pub fn decode16(bytes: &[u8], ip: u32, cs: u32) -> Option<Instruction> {
+    let off = ip.wrapping_sub(cs);
+    if off > 0xffff {
+        return None;
+    }
+    let mut ins = Decoder::with_ip(16, bytes, off as u64, DecoderOptions::NONE).decode();
+    if ins.is_invalid() {
+        return Some(ins);
+    }
+    if off as usize + ins.len() > 0x10000 {
+        return None;
+    }
+    let counted = matches!(ins.mnemonic(), Mnemonic::Loop | Mnemonic::Loope | Mnemonic::Loopne | Mnemonic::Jcxz | Mnemonic::Jecxz);
+    // (an operand-size prefix makes a near branch's target 32 bits: past FFFF it faults, #GP,
+    // the interpreter's to raise)
+    if ins.op_count() > 0 && ins.op0_kind() == OpKind::NearBranch32 {
+        let t = ins.near_branch32();
+        if t > 0xffff {
+            return None;
+        }
+        ins.set_op0_kind(OpKind::NearBranch16);
+        ins.set_near_branch16(t as u16);
+    }
+    if ins.op_count() > 0 && ins.op0_kind() == OpKind::NearBranch16 && matches!(ins.flow_control(), FlowControl::ConditionalBranch | FlowControl::UnconditionalBranch) && !counted {
+        let target = cs.wrapping_add(ins.near_branch16() as u32);
+        ins.set_op0_kind(OpKind::NearBranch32);
+        ins.set_near_branch32(target);
+    }
+    ins.set_ip(ip as u64);
+    Some(ins)
 }
 
 /// C library functions done in wasm (by [`Gen::hle`]) where the guest has them: the start of
@@ -4359,6 +4502,11 @@ fn liveness(list: &[Instruction], out: u32) -> (Vec<u32>, u32) {
         if ins.condition_code() != ConditionCode::None {
             read |= cc_reads(cc_index(ins.condition_code()));
         }
+        // 16-bit code the interpreter steps (see ok16) reads them all: it may leave the region
+        // there (HLT, INT, a fault), the flags of what came before in the Cpu
+        if seg16().is_some() && !ok16(ins) {
+            read = STATUS_BITS;
+        }
         l = if keeps { l | read } else { (l & !written) | read };
     }
     (live, l)
@@ -4660,7 +4808,7 @@ fn translate<M: Memory>(
         if targets.contains_key(&a) || !(GUEST_LO..GUEST_HI).contains(&a) || !(forced.contains(&a) || accept(a)) || DENY.get().is_some_and(|d| d(a)) {
             continue;
         }
-        let list = match hle_at(mem, a) {
+        let list = match if seg16().is_some() { None } else { hle_at(mem, a) } {
             Some(h) => {
                 hle.insert(a, h);
                 alloc::vec![ret_at(a)]

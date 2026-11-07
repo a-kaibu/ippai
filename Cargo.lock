@@ -2753,6 +2753,7 @@ dependencies = [
  "koji",
  "kura",
  "libc",
+ "libm",
  "md5",
  "naga",
  "png",

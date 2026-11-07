@@ -4,12 +4,13 @@ scenario.mjs): testdata/renpy (scripts, the movie) with the KiriKiri game's pict
 (testdata/kirikiri), compiled by the SDK's Linux runtime and packed into game/data.rpa as games
 ship, next to the Windows x64 runtime: OUT_DIR/renpy/RenBench.exe.
 
-  python3 -I tests/bench/pack-renpy.py OUT_DIR SDK_DIR CRT64_DIR
-    SDK_DIR: tests/bench/fetch-renpy.sh's DIR/renpy-sdk; CRT64_DIR: fetch-crt64.sh's DIR/crt64
+  python3 -I tests/bench/pack-renpy.py OUT_DIR SDK_DIR
+    SDK_DIR: tests/bench/fetch-renpy.sh's DIR/renpy-sdk
+(no C runtime of its own: the x64 ucrtbase.dll is sake's)
 """
 import os, pickle, random, shutil, subprocess, sys, zlib
 
-out, sdk, crt64 = sys.argv[1], sys.argv[2], sys.argv[3]
+out, sdk = sys.argv[1], sys.argv[2]
 root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "testdata")
 kk = os.path.join(root, "kirikiri")
 dst = os.path.join(out, "renpy")
@@ -22,8 +23,6 @@ for d in ("renpy", "lib/python3.12", "lib/py3-windows-x86_64"):
 shutil.copy(os.path.join(sdk, "renpy.exe"), os.path.join(dst, "RenBench.exe"))
 shutil.copy(os.path.join(sdk, "renpy.py"), os.path.join(dst, "RenBench.py"))
 shutil.copy(os.path.join(sdk, "LICENSE.txt"), os.path.join(dst, "LICENSE.txt"))
-# (the 64-bit C runtime, app-local)
-shutil.copy(os.path.join(crt64, "ucrtbase.dll"), dst)
 
 # the game: scripts, movie, and the KiriKiri game's pictures and sounds
 shutil.copytree(os.path.join(root, "renpy", "game"), game)

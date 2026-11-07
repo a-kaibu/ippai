@@ -321,6 +321,22 @@ pub fn enabled() -> bool {
     *ON.get_or_init(|| cfg!(target_os = "emscripten") && std::env::var("IPPAI_JIT").map_or(true, |v| v != "0"))
 }
 
+/// 16-bit code (Win16) through the JIT too (IPPAI_JIT16=0: the interpreter only).
+pub fn enabled16() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("IPPAI_JIT16").map_or(true, |v| v != "0"))
+}
+
+/// 16-bit code runs translated with `cpu.eip` the linear CS:IP (see koji's `jit::SEG16`):
+/// into that form before the dispatcher, back to IP after.
+pub fn to_linear16(cpu: &mut Cpu) {
+    cpu.eip = cpu.pc16();
+}
+pub fn from_linear16(cpu: &mut Cpu) {
+    cpu.eip = cpu.eip.wrapping_sub(cpu.sbase[1]) & 0xffff;
+}
+
 pub fn enabled64() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
@@ -586,8 +602,13 @@ pub fn run(cpu: &mut Cpu) -> Ran {
         if !st.pending.is_empty() {
             take_built(st, &mut Linear);
         }
+        // (16-bit regions stay one per root: each translated with its own code segment's base)
         if st.ring[0] >= jit::RING_SIZE {
-            merge_hot(st, cpu);
+            if cpu.mode16 != 0 {
+                st.ring[0] = 0;
+            } else {
+                merge_hot(st, cpu);
+            }
         }
         cpu.jit_hash = st.hash.as_ptr() as usize as u32;
         cpu.jit_mask = st.hash.len() as u32 - 1;
@@ -1275,7 +1296,8 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
             return false;
         }
         // another thread's region from the same code goes in at once
-        if st.misses.get(&eip).is_none() {
+        // (16-bit regions are neither shared nor saved: their code is decoded with a segment base)
+        if st.misses.get(&eip).is_none() && cpu.mode16 == 0 {
             if jit::FN.load(std::sync::atomic::Ordering::Relaxed) {
                 if let Some(r) = shared(mem, &fn_key(eip)) {
                     st.fn_builds.insert(eip, r.build);
@@ -1316,6 +1338,9 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         st.misses.remove(&eip);
         if cpu.mode64 != 0 {
             return compile_long(st, cpu, mem);
+        }
+        if cpu.mode16 != 0 {
+            return compile16(st, cpu, mem);
         }
         if fnm {
             // (part: not a function's entry, as where a function's blocks that had not run yet
@@ -1360,6 +1385,36 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         }
         ok
     })
+}
+
+/// Compiles the 16-bit region at cpu.eip (linear; koji's jit::SEG16): one root, not shared or saved.
+fn compile16(st: &mut State, cpu: &Cpu, mem: &mut Linear) -> bool {
+    let eip = cpu.eip;
+    let mut m = Module { name: Some(format!("x16_{eip:08x}")), ..Module::default() };
+    let (lo, hi) = (cpu.trap_lo, cpu.trap_hi);
+    let (misses, known) = (&st.misses, &st.known);
+    if crate::env_on!("IPPAI_JIT_LAYOUT") {
+        jit::LAYOUT.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    let t0 = std::time::Instant::now();
+    let Some(region) = jit::translate_region16(&mut m, mem, eip, cpu.sbase[1], MAX_BLOCKS, |a| {
+        debug_allowed(a) && !(a >= lo && a < hi) && !known.contains(&a) && (a == eip || misses.contains_key(&a))
+    }) else {
+        st.known.insert(eip);
+        return false;
+    };
+    if crate::env_on!("IPPAI_JIT_LAYOUT") {
+        eprintln!("vnjit16 region {eip:#x}\n{}", region.layout);
+    }
+    let bytes = m.finish();
+    let ok = load(st, &bytes, vec![eip], &region.starts);
+    count_compile(0, t0);
+    if ok {
+        mark_code(&region.code);
+    } else {
+        st.known.insert(eip);
+    }
+    ok
 }
 
 /// Compiles the long-mode region at cpu.eip (jit::long; no FN mode or merges yet).
@@ -1739,7 +1794,15 @@ pub unsafe extern "C" fn vnhost_jit_step(cpu: u32) -> i32 {
         eprintln!("vnjit probe {:#x}: regs {:x?} xmm0 {:?} xmm1 {:?} xmm2 {:?} xmm3 {:?}", c.eip, c.regs, f(c.xmm[0]), f(c.xmm[1]), f(c.xmm[2]), f(c.xmm[3]));
     }
     let g = GENERATION.load(Ordering::Relaxed);
-    match step(&mut *cpu, &mut Linear).0 {
+    let m16 = (*cpu).mode16 != 0;
+    if m16 {
+        from_linear16(&mut *cpu);
+    }
+    let r = step(&mut *cpu, &mut Linear).0;
+    if m16 {
+        to_linear16(&mut *cpu);
+    }
+    match r {
         // (it rewrote translated code: the block leaves)
         Exit::Continue if GENERATION.load(Ordering::Relaxed) != g => 2,
         // (POPF set TF, or LDMXCSR / FXRSTOR unmasked an SSE exception: from here on the

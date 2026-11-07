@@ -48,8 +48,8 @@ export const GROUPS = {
   // the same story on Ren'Py 8.5 (testdata/renpy, tests/bench/pack-renpy.py): a 64-bit program,
   // Python 3, SDL2, ffmpeg (WAV, a VP9 movie), GLSL shaders (blur, sepia, a ripple of its own),
   // through OpenGL (gl2) or ANGLE's Direct3D 11 (angle2). ('""': Ren'Py's base directory, the exe's)
-  "renpy-gl": [{ exe: "renpy\\RenBench.exe", name: "renpy-gl", args: '"",gl', load: '"",gl_load', scenario: true }],
-  "renpy-angle": [{ exe: "renpy\\RenBench.exe", name: "renpy-angle", args: '"",angle', load: '"",angle_load', scenario: true }],
+  "renpy-gl": [{ exe: "renpy\\RenBench.exe", name: "renpy-gl", args: '"",gl', load: '"",gl_load', env: ["SAKE_ECHO_FILE=log.txt"], scenario: true }],
+  "renpy-angle": [{ exe: "renpy\\RenBench.exe", name: "renpy-angle", args: '"",angle', load: '"",angle_load', env: ["SAKE_ECHO_FILE=log.txt"], scenario: true }],
   // the same story on ONScripter (testdata/onscripter, tests/bench/build-onscripter.sh): the
   // NScripter clone many doujin games ship with, SDL 1.2 through GDI, its own sprite compositing
   // and effects (rule images, mosaic, breakup.dll), FreeType text. The mode comes from a .reg file
