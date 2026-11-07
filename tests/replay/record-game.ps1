@@ -73,7 +73,7 @@ function Play([string] $a) {
     $copied += $to
   }
   if (-not $copied) { throw "no wrapper for $a in $wrappers" }
-  Write-Host "== $a: beside the game: $(($copied | ForEach-Object { Split-Path -Leaf $_ }) -join ' ')"
+  Write-Host "== ${a}: beside the game: $(($copied | ForEach-Object { Split-Path -Leaf $_ }) -join ' ')"
   $log = [IO.Path]::GetTempFileName()
   $watch = Start-Process -FilePath $ps -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$watchPs1`"", "`"$dir`"", "`"$log`"" -PassThru -WindowStyle Hidden
   Remove-Item -LiteralPath $Shots -Recurse -ErrorAction SilentlyContinue

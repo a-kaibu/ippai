@@ -53,6 +53,7 @@ jobs:
           AGAIN: ${{ inputs.again }}
         run: |
           python3 tests/replay/games_test.py
+          pwsh -NoProfile -File tests/replay/ps1-parse.ps1
           ids=$(python3 tests/replay/games.py todo ${AGAIN:+--again=$AGAIN} $ONLY)
           echo "ids=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' $ids)" >> "$GITHUB_OUTPUT"
           echo "to record: $ids"
@@ -251,8 +252,12 @@ jobs:
             printf '%s\n' "$api" "$EXE" "$SECONDS_" > "pack/$ID-$BITS.rec"
           else
             how=$(python3 -c 'import json, sys; r = json.load(open(sys.argv[1], encoding="utf-8")); print("title screen at %ss" % round(r["title"]) if r.get("title") else "no title screen" + (", ended" if r.get("crashed") else ""))' shots/result.json 2>/dev/null || echo "winplay wrote nothing")
-            IFS=$'\t' read -r why what < out/game.trace.why 2>/dev/null || { why=notrace; what="record-game.ps1 said nothing"; }
-            printf '%s\t%s: %s; %s\n' "$why" "$EXE" "$how" "$what" > "pack/$ID.skip"
+            # (record-game.ps1 itself failed: no .why, nothing written down, tried again next time)
+            if { IFS=$'\t' read -r why what || [ -n "$why" ]; } < out/game.trace.why; then
+              printf '%s\t%s: %s; %s\n' "$why" "$EXE" "$how" "$what" > "pack/$ID.skip"
+            else
+              echo "record-game.ps1 left no reason: not skipped"
+            fi
           fi
           ls -l pack; cat pack/*.skip 2>/dev/null || true
       - if: ${{ !cancelled() && hashFiles('pack/*') != '' }}
