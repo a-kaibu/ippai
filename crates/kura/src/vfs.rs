@@ -1320,7 +1320,16 @@ mod tests {
         }).collect();
         *FS.lock().unwrap() = Some(fs);
         *STORE.lock().unwrap() = Some((chunks, Vec::new()));
-        let fetched = || std::mem::take(&mut STORE.lock().unwrap().as_mut().unwrap().1);
+        // (what was fetched since, once the fetcher threads are done: a chunk fetched ahead
+        // for one file must not land in the next one's count)
+        let fetched = || {
+            let mut g = AHEAD.lock().unwrap_or_else(|e| e.into_inner());
+            while g.as_ref().is_some_and(|a| !a.busy.is_empty()) {
+                g = AHEAD_DONE.wait(g).unwrap_or_else(|e| e.into_inner());
+            }
+            drop(g);
+            std::mem::take(&mut STORE.lock().unwrap().as_mut().unwrap().1)
+        };
         // the first operation on each file: a truncation, checked for what it fetched
         for (f, &ino) in inos.iter().enumerate() {
             let n = if f % 3 == 0 { 0 } else { rnd(models[f].len() as u64 + 100) };
