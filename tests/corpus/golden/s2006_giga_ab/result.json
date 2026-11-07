@@ -1,0 +1,25 @@
+{
+ "crashed": false,
+ "errors": [],
+ "firstWindow": 1.0291149616241455,
+ "leftTitle": true,
+ "manifests": [
+  "angelbreath.exe",
+  "Filechk.exe",
+  "Setup.exe",
+  "StartUpTool.exe",
+  "Uninstall.exe"
+ ],
+ "shots": [
+  "title",
+  "steps"
+ ],
+ "size": [
+  800,
+  600
+ ],
+ "steps": "key:Return wait:3",
+ "storyFrames": 1,
+ "title": 8.336018562316895,
+ "titleStill": 34.37357568740845
+}

@@ -1,0 +1,19 @@
+{
+ "crashed": false,
+ "errors": [],
+ "firstWindow": 3.0615153312683105,
+ "leftTitle": true,
+ "manifests": [],
+ "shots": [
+  "title",
+  "steps"
+ ],
+ "size": [
+  800,
+  600
+ ],
+ "steps": "key:Return wait:3",
+ "storyFrames": 1,
+ "title": 5.136211633682251,
+ "titleStill": 15.532603025436401
+}

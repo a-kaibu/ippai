@@ -1,0 +1,21 @@
+{
+ "crashed": false,
+ "errors": [],
+ "firstWindow": 1.0472455024719238,
+ "leftTitle": true,
+ "manifests": [
+  "verdia.exe"
+ ],
+ "shots": [
+  "title",
+  "steps"
+ ],
+ "size": [
+  800,
+  600
+ ],
+ "steps": "click:400,340 wait:6",
+ "storyFrames": 1,
+ "title": 4.156170845031738,
+ "titleStill": 30.083553314208984
+}
