@@ -427,6 +427,23 @@ mod tests {
     }
 
     #[test]
+    fn only_64_bit_registers() {
+        // 32-bit shifts, masks and adds of the same constants are not about pointers: the
+        // same edits with them next to the allocator as without
+        let (want, _) = plan(&module(&[REG, LOOKUP, RESERVE, CTOR], ROUND, 0), IP).expect("recognized");
+        // shr eax,0x1c; shl edx,0x1c; add ecx,0xfffffff; and ecx,0xf0000000
+        let decoy = "c1e81cc1e21c81c1ffffff0f81e1000000f0c3";
+        let code = module(&[REG, LOOKUP, RESERVE, CTOR, decoy], ROUND, 0);
+        let (edits, f) = plan(&code, IP).expect("recognized");
+        assert_eq!((f.shifts, f.rounds, f.masks), (5, 1, 2));
+        assert_eq!(edits.iter().map(|e| &e.bytes).collect::<Vec<_>>(), want.iter().map(|e| &e.bytes).collect::<Vec<_>>());
+        let after = listing(&apply(&code, &edits));
+        for d in ["shr eax,0x1c", "shl edx,0x1c", "add ecx,0xfffffff", "and ecx,0xf0000000"] {
+            assert!(after.contains(&d.to_string()), "{d} {after:?}");
+        }
+    }
+
+    #[test]
     fn anchor_is_the_registration_loop() {
         // shifts by 28 before it that lack the id mask or the continuation mark (or have them in
         // another form) are not the anchor
