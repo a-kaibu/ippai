@@ -218,6 +218,18 @@ mod tests {
         texture(&Tex { dim: 2, w, h, layers, mips, fmt: 28, samples, quality: 0, usage, bind, cpu, misc }, false)
     }
 
+    /// sake's stand-in for ANGLE's point sprite geometry shader is a geometry shader (ANGLE
+    /// compiles it again on every draw when its creation fails), and only that
+    #[test]
+    fn point_sprite_stand_in() {
+        let mut tag = dxwgsl::POINT_SPRITE_GS.to_vec();
+        tag.extend_from_slice(&64f32.to_le_bytes());
+        assert_eq!(shader(&tag, 13, 0xb000), Ok(()));
+        assert_eq!(shader(&tag, 12, 0xb000), Err(E_INVALIDARG));
+        assert_eq!(shader(&tag, 15, 0xb000), Err(E_INVALIDARG));
+        assert_eq!(shader(&tag[..8], 13, 0xb000), Err(E_INVALIDARG));
+    }
+
     /// the probe's texture cases, with Windows' answers
     #[test]
     fn texture_cases() {
@@ -821,6 +833,11 @@ mod buffer_view_tests {
 /// a 4_0_level_9_x vertex or pixel shader (one with an Aon9 chunk) is taken.
 pub fn shader(code: &[u8], method: u32, level: u32) -> Result<(), u32> {
     let bad = Err(E_INVALIDARG);
+    // (sake's D3DCompile stands ANGLE's point sprite geometry shader in with a tag: draws
+    // expand the points themselves)
+    if method == 13 && dxwgsl::point_sprite_gs(code).is_some() {
+        return Ok(());
+    }
     let Ok(c) = dxwgsl::dxbc::Container::parse(code) else { return bad };
     let Some(prog) = c.chunk(b"SHEX").or_else(|| c.chunk(b"SHDR")) else { return bad };
     let Some(v) = prog.get(..4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])) else { return bad };
