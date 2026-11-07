@@ -67,6 +67,11 @@ pub enum Cmd {
         /// Store symlinks that point outside DIR as what they point to.
         #[arg(long)]
         follow: bool,
+        /// Chunk size of the files (KiB). Bigger for an S3 store with a request rate limit
+        /// (Hugging Face Buckets answer SlowDown at a few PUTs a second): 4096 sends 16 times
+        /// fewer objects; a file smaller than a chunk is one chunk of its own size either way.
+        #[arg(long, default_value_t = 256)]
+        chunk_kib: u64,
     },
     /// Unpack an archive or installer as `add` does (prints the exe it would start).
     #[command(hide = true)]
@@ -283,6 +288,7 @@ pub(crate) fn add_for_test(store: &Path, dir: &Path, id: &str, mount: Vec<String
             meta_id: None,
             no_meta: true,
             follow: false,
+            chunk_kib: 256,
         },
     )
 }
@@ -489,7 +495,7 @@ pub fn run(store: &Path, cmd: Cmd) -> Result<()> {
             }
             println!("{}", unpack::pick_exe(&out, None).unwrap_or_default());
         }
-        Cmd::Add { dir, exe, id, title, engine, cover, args, env, mount, meta_id, no_meta, follow } => {
+        Cmd::Add { dir, exe, id, title, engine, cover, args, env, mount, meta_id, no_meta, follow, chunk_kib } => {
             let path = dir.canonicalize().with_context(|| dir.display().to_string())?;
             let package = unpack::is_package(&path);
             let name = if package { path.file_stem() } else { path.file_name() }.map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -524,7 +530,7 @@ pub fn run(store: &Path, cmd: Cmd) -> Result<()> {
                     Some(e) => unpack::pick_exe(&root, Some(e)).with_context(|| format!("{e} is not in {}", dir.display()))?,
                     None => unpack::pick_exe(&root, None).with_context(|| format!("no program in {} (--exe)", dir.display()))?,
                 };
-                let list = pack_tree(store, &root, &id, follow, 256 << 10)?;
+                let list = pack_tree(store, &root, &id, follow, chunk_kib.clamp(4, 1 << 16) << 10)?;
                 add_game(store, id.clone(), title.unwrap_or(name), id.clone(), exe, engine, cover, args, env, mount, meta_id, no_meta, Some(list), issues)
             })();
             if package {
@@ -886,6 +892,7 @@ mod tests {
                 meta_id: None,
                 no_meta: true,
                 follow: false,
+                chunk_kib: 256,
             },
         )
     }
@@ -965,6 +972,36 @@ mod tests {
 
     fn remove_game_blocking(store: &Path, id: &str) -> Result<Vec<String>> {
         tokio::runtime::Runtime::new().unwrap().block_on(remove_game(store, id, None))
+    }
+
+    /// `add --chunk-kib 4096`: the tree says its chunk size, a big file is cut in 4 MiB chunks
+    /// that read back as the file, a small file is one chunk of its own size.
+    #[test]
+    fn add_with_bigger_chunks() {
+        let t = std::env::temp_dir().join(format!("ippai-bigchunk-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&t);
+        let (store, game) = (t.join("store"), t.join("game"));
+        fs::create_dir_all(&game).unwrap();
+        fs::write(game.join("game.exe"), b"MZ small").unwrap();
+        let big: Vec<u8> = (0..10_000_000u32).map(|i| (i.wrapping_mul(2654435761) >> 24) as u8).collect();
+        fs::write(game.join("data.arc"), &big).unwrap();
+        let cmd = Cmd::Add { dir: game.clone(), exe: Some("game.exe".into()), id: Some("big".into()), title: None, engine: None, cover: None, args: vec![], env: vec![], mount: vec![], meta_id: None, no_meta: true, follow: false, chunk_kib: 4096 };
+        run(&store, cmd).unwrap();
+        let list = fs::read_to_string(store.join("trees/big.tsv")).unwrap();
+        assert_eq!(list.lines().next().unwrap().split('\t').nth(2), Some("4194304"));
+        let chunks_of = |name: &str| -> Vec<String> {
+            let line = list.lines().find(|l| l.split('\t').nth(3) == Some(name)).unwrap();
+            line.split('\t').nth(5).unwrap().split(',').map(String::from).collect()
+        };
+        let parts = chunks_of("data.arc");
+        assert_eq!(parts.len(), 3, "10 MB in 4 MiB chunks");
+        let mut back = Vec::new();
+        for c in &parts {
+            back.extend(zstd::decode_all(&fs::read(store.join("chunks").join(&c[..2]).join(c)).unwrap()[..]).unwrap());
+        }
+        assert_eq!(back, big);
+        assert_eq!(chunks_of("game.exe").len(), 1);
+        let _ = fs::remove_dir_all(&t);
     }
 
     /// A store without sake's C:\ gets it from the fonts (a release's fonts/): the fonts under
