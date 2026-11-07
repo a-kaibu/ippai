@@ -129,6 +129,10 @@ pub struct State {
     pub clip: [[f32; 4]; 6],
     /// SetNPatchMode's segments (f32 bits)
     pub npatch: u32,
+    /// a software vertex processing device's integer and boolean vertex shader constants past
+    /// the first 16 (2048 of each there)
+    pub vsi_more: Vec<[i32; 4]>,
+    pub vsb_more: Vec<u32>,
 }
 
 pub const SAMPLERS: usize = 21;
@@ -182,11 +186,24 @@ pub struct Device {
     pub fvf_decls: HashMap<u32, u32>,
 }
 
+/// The render states Direct3D 9 has (GetRenderState of the others: D3DERR_INVALIDCALL), as
+/// Windows answers (winref d3d9state)
+pub const RS_VALID: [u64; 4] = [0xfff5_857c_3fd9_c381, 0xffff_ffff_0000_0000, 0xffff_ffef_fdfe_ffff, 0xffff_ffff_ffff_ffcf];
+pub fn rs_valid(i: u32) -> bool {
+    i < 256 && RS_VALID[i as usize / 64] >> (i % 64) & 1 != 0
+}
+/// (what Windows has in the states no one sets: legacy and unused ones)
+const UNSET: u32 = 0xbaad_cafe;
+
 fn default_state() -> State {
     let mut rs = vec![0u32; 256];
     let f1 = 1.0f32.to_bits();
+    for i in [0, 42, 47, 50, 61, 62, 63, 138, 149, 150, 165, 169, 177].into_iter().chain(96..128).chain(210..256) {
+        rs[i] = UNSET;
+    }
+    // (Windows' defaults, winref d3d9state; ZENABLE as the auto depth buffer: set at creation)
     for (k, v) in [
-        (7, 1),    // ZENABLE (with auto depth; set at creation)
+        (7, 1),    // ZENABLE
         (8, 3),    // FILLMODE solid
         (9, 2),    // SHADEMODE gouraud
         (14, 1),   // ZWRITEENABLE
@@ -196,74 +213,43 @@ fn default_state() -> State {
         (22, 3),   // CULLMODE ccw
         (23, 4),   // ZFUNC lessequal
         (25, 8),   // ALPHAFUNC always
-        (26, 0),   // DITHERENABLE
-        (34, 0),   // FOGCOLOR
-        (35, 0),   // FOGTABLEMODE
-        (36, 0),
         (37, f1),  // FOGEND
         (38, f1),  // FOGDENSITY
-        (48, 0),
-        (52, 0),   // STENCILENABLE
-        (53, 1),
+        (53, 1),   // STENCILFAIL keep
         (54, 1),
         (55, 1),
         (56, 8),   // STENCILFUNC always
-        (57, 0),
         (58, 0xffffffff),
         (59, 0xffffffff),
         (60, 0xffffffff), // TEXTUREFACTOR
         (136, 1),  // CLIPPING
         (137, 1),  // LIGHTING
-        (139, 0),  // AMBIENT
-        (140, 0),
         (141, 1),  // COLORVERTEX
         (142, 1),  // LOCALVIEWER
-        (143, 0),
         (145, 1),  // DIFFUSEMATERIALSOURCE color1
         (146, 2),  // SPECULARMATERIALSOURCE color2
-        (147, 0),
-        (148, 0),
-        (151, 0),
-        (152, 0),
         (154, f1), // POINTSIZE
-        (155, f1),
-        (156, 0),
-        (157, 1),
-        (158, f1),
-        (159, 0),
-        (160, 0),
+        (155, f1), // POINTSIZE_MIN
+        (158, f1), // POINTSCALE_A
         (161, 1),  // MULTISAMPLEANTIALIAS
         (162, 0xffffffff),
-        (163, 0),
-        (165, 64f32.to_bits()),
-        (166, 0),
-        (167, 0),
+        (166, 8192f32.to_bits()), // POINTSIZE_MAX (a hardware device: its MaxPointSize)
         (168, 0xf), // COLORWRITEENABLE
-        (170, 0),
         (171, 1),  // BLENDOP add
-        (172, 3),
-        (173, 3),
-        (174, 0),  // SCISSORTESTENABLE
-        (175, 0),
-        (176, 0),
-        (177, 0),
-        (178, 0),
-        (179, 0),
-        (180, 0),
-        (181, 0),
-        (182, 1),
-        (183, 1),
-        (184, 1),
-        (185, 1),
-        (186, 8),
+        (172, 3),  // POSITIONDEGREE cubic
+        (173, 1),  // NORMALDEGREE linear
+        (178, f1), // MINTESSELLATIONLEVEL
+        (179, f1),
+        (182, f1), // ADAPTIVETESS_Z
+        (186, 1),  // CCW_STENCILFAIL keep
+        (187, 1),
+        (188, 1),
+        (189, 8),  // CCW_STENCILFUNC always
         (190, 0xf),
         (191, 0xf),
         (192, 0xf),
         (193, 0xffffffff), // BLENDFACTOR
-        (194, 0),
-        (195, 0),
-        (206, 0),  // SEPARATEALPHABLENDENABLE
-        (207, 2),
+        (207, 2),  // SRCBLENDALPHA one
         (208, 1),
         (209, 1),
     ] {
@@ -281,6 +267,9 @@ fn default_state() -> State {
         s[26] = 1;
         s[27] = 1;
         s[28] = 1; // RESULTARG current
+        for t in [0, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 25, 29, 30, 31] {
+            s[t] = UNSET;
+        }
     }
     let mut ss = [[0u32; 14]; SAMPLERS];
     for s in ss.iter_mut() {
@@ -291,6 +280,7 @@ fn default_state() -> State {
         s[6] = 1;
         s[7] = 0;
         s[10] = 1;
+        s[0] = UNSET;
     }
     State {
         rs,
@@ -317,6 +307,8 @@ fn default_state() -> State {
         lights: HashMap::new(),
         clip: [[0.0; 4]; 6],
         npatch: 0,
+        vsi_more: Vec::new(),
+        vsb_more: Vec::new(),
     }
 }
 
@@ -911,6 +903,15 @@ fn reset_buffers(d: &mut D3d) {
     dev.ds = ds;
     dev.st = default_state();
     dev.st.rs[7] = (ds != 0) as u32;
+    // (software vertex processing: 8192 float, 2048 integer and boolean vertex shader
+    // constants; a hardware device the caps' MaxPointSize)
+    if dev.behavior & 0x20 != 0 {
+        dev.st.vsf.resize(8192, [0.0; 4]);
+        dev.st.vsi_more = vec![[0; 4]; 2048 - 16];
+        dev.st.vsb_more = vec![0; 2048 - 16];
+    } else {
+        dev.st.rs[166] = 32f32.to_bits();
+    }
     dev.st.viewport = [0, 0, p[0], p[1], 0, 1f32.to_bits()];
     dev.st.scissor = [0, 0, p[0] as i32, p[1] as i32];
     d.bind(bb);
@@ -1193,6 +1194,10 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
             S_OK
         }
         45 => {
+            // (the transforms: VIEW, PROJECTION, TEXTURE0-7, WORLDMATRIX(0-255))
+            if !matches!(a(1), 2 | 3 | 16..=23 | 256..=511) {
+                return D3DERR_INVALIDCALL;
+            }
             let dev = dev!(d);
             let mtx = dev.st.transforms.get(&a(1)).copied().unwrap_or(IDENT);
             std::ptr::copy_nonoverlapping(mtx.as_ptr(), a(2) as *mut f32, 16);
@@ -1252,9 +1257,9 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
         }
         56 => {
             let dev = dev!(d);
-            if let Some(c) = dev.st.clip.get(a(1) as usize) {
-                std::ptr::copy_nonoverlapping(c.as_ptr(), a(2) as *mut f32, 4);
-            }
+            // (past the 6 planes: zeros, as Windows)
+            let c = dev.st.clip.get(a(1) as usize).copied().unwrap_or([0.0; 4]);
+            std::ptr::copy_nonoverlapping(c.as_ptr(), a(2) as *mut f32, 4);
             S_OK
         }
         57 => {
@@ -1265,8 +1270,11 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
             S_OK
         }
         58 => {
+            if !rs_valid(a(1)) {
+                return D3DERR_INVALIDCALL;
+            }
             let dev = dev!(d);
-            wr(a(2), 0, dev.st.rs.get(a(1) as usize).copied().unwrap_or(0));
+            wr(a(2), 0, dev.st.rs[a(1) as usize]);
             S_OK
         }
         59 => {
@@ -1504,31 +1512,54 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
         }
         96 | 97 | 111 | 112 => {
             let dev = dev!(d);
-            let regs = if m < 100 { &mut dev.st.vsi } else { &mut dev.st.psi };
+            let st = &mut dev.st;
+            let more = if m < 100 { st.vsi_more.len() } else { 0 };
             let (start, n) = (a(1) as usize, a(3) as usize);
-            if start + n > 16 {
+            if start.saturating_add(n) > 16 + more {
                 return D3DERR_INVALIDCALL;
             }
             let p = a(2) as *mut [i32; 4];
-            if m == 96 || m == 111 {
-                std::ptr::copy_nonoverlapping(p, regs[start..].as_mut_ptr(), n);
-            } else {
-                std::ptr::copy_nonoverlapping(regs[start..].as_ptr(), p, n);
+            for i in 0..n {
+                let r = start + i;
+                let reg = match (m < 100, r < 16) {
+                    (true, true) => &mut st.vsi[r],
+                    (true, false) => &mut st.vsi_more[r - 16],
+                    _ => &mut st.psi[r],
+                };
+                if m == 96 || m == 111 {
+                    *reg = *p.add(i);
+                } else {
+                    *p.add(i) = *reg;
+                }
             }
             S_OK
         }
         98 | 99 | 113 | 114 => {
             let dev = dev!(d);
-            let bits = if m < 100 { &mut dev.st.vsb } else { &mut dev.st.psb };
+            let st = &mut dev.st;
+            let more = if m < 100 { st.vsb_more.len() } else { 0 };
             let (start, n) = (a(1), a(3));
-            if start + n > 16 {
+            if start.saturating_add(n) > 16 + more as u32 {
                 return D3DERR_INVALIDCALL;
             }
             let p = a(2) as *mut u32;
             for i in 0..n {
-                let b = 1 << (start + i);
-                if m == 98 || m == 113 {
-                    if *p.add(i as usize) != 0 {
+                let r = start + i;
+                let set = m == 98 || m == 113;
+                let v = *p.add(i as usize) != 0;
+                if r >= 16 {
+                    let x = &mut st.vsb_more[r as usize - 16];
+                    if set {
+                        *x = v as u32;
+                    } else {
+                        *p.add(i as usize) = *x;
+                    }
+                    continue;
+                }
+                let bits = if m < 100 { &mut st.vsb } else { &mut st.psb };
+                let b = 1 << r;
+                if set {
+                    if v {
                         *bits |= b;
                     } else {
                         *bits &= !b;
@@ -1542,7 +1573,8 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
         100 => {
             let (n, vb, off, stride) = (a(1) as usize, d.id_of(a(2)), a(3), a(4));
             let dev = dev!(d);
-            let Some(slot) = dev.st.streams.get_mut(n) else { return D3DERR_INVALIDCALL };
+            // (Windows takes streams past 15 and keeps nothing)
+            let Some(slot) = dev.st.streams.get_mut(n) else { return S_OK };
             let old = slot.0;
             *slot = (vb, off, stride);
             set_bound(d, vb, old);
@@ -1560,6 +1592,10 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
             S_OK
         }
         102 => {
+            // (a divider of 0: D3DERR_INVALIDCALL)
+            if a(2) & 0x3fff_ffff == 0 {
+                return D3DERR_INVALIDCALL;
+            }
             let dev = dev!(d);
             if let Some(f) = dev.st.freq.get_mut(a(1) as usize) {
                 *f = a(2);

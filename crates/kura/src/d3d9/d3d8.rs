@@ -204,6 +204,15 @@ unsafe fn d3d8_call(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32, af
             let r = c9(d, IF_D3D9, 16, this, &[me, a(1), a(2), a(3), a(4), p.as_mut_ptr() as u32, a(6)], after);
             pp8(a(5), &p);
             d.d8 = State::default();
+            // (Direct3D 8's own states: ZBIAS and the rest 0, PATCHSEGMENTS 1.0,
+            // SOFTWAREVERTEXPROCESSING as created)
+            if let Some(dev) = d.dev.as_mut().filter(|_| r == S_OK) {
+                for k in [10, 30, 40, 47] {
+                    dev.st.rs[k] = 0;
+                }
+                dev.st.rs[153] = (a(4) & 0x20 != 0) as u32;
+                dev.st.rs[164] = 1f32.to_bits();
+            }
             r
         }
         _ => device::call(d, IF_D3D9, m, this, [me, a(1), a(2), a(3), a(4), a(5), a(6)].as_ptr(), after),
@@ -381,7 +390,18 @@ unsafe fn device_call(d: &mut D3d, m: u32, this: u32, a: &dyn Fn(usize) -> u32, 
         }
         32 => c9(d, dev, 38, this, &[me, 0, a(1)], after),
         33 => same(d, 40, after),
-        34..=51 => same(d, m + 7, after),
+        51 => {
+            // GetRenderState: Direct3D 8's states (LINEPATTERN, ZVISIBLE, EDGEANTIALIAS, ZBIAS,
+            // SOFTWAREVERTEXPROCESSING, PATCHSEGMENTS are not Direct3D 9's)
+            let (st, out) = (a(1), a(2));
+            if out == 0 || !(device::rs_valid(st) || matches!(st, 10 | 30 | 153 | 164)) || matches!(st, 0 | 42 | 50 | 61..=63 | 96..=127 | 138 | 149 | 150 | 165 | 169 | 174..) {
+                return D3DERR_INVALIDCALL;
+            }
+            let Some(dev) = d.dev.as_ref() else { return D3DERR_INVALIDCALL };
+            wr(out, 0, dev.st.rs[st as usize]);
+            S_OK
+        }
+        34..=50 => same(d, m + 7, after),
         52 => same(d, 60, after),
         53 => {
             let mut o = 0u32;

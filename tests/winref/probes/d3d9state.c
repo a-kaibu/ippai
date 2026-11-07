@@ -2,6 +2,8 @@
  * texture stage state (stages 0, 1, 7) and sampler state (0, 15, displacement map, vertex
  * texture 0) a new device reports, transforms, viewport, material, lights, clip planes, stream
  * frequencies; Set and Get calls with indices out of range (their results, and what reads back).
+ * (Not asked: stage 8, samplers 16 and 261, sampler state 14 read memory past Windows' arrays;
+ * SetLight / SetMaterial / SetViewport of NULL crash there.)
  * libs: -ld3d9
  * run: browser (sake's Direct3D 9 runs in the page: tests/winref/run-browser.mjs) */
 #define COBJMACROS
@@ -29,16 +31,16 @@ int main(void) {
         if (h == D3D_OK) printf("rs %d = %#lx\n", i, v);
         else printf("rs %d: Get %#lx\n", i, h);
     }
-    static const int stages[] = { 0, 1, 7, 8 };
-    for (int k = 0; k < 4; k++)
+    static const int stages[] = { 0, 1, 7 };
+    for (int k = 0; k < 3; k++)
         for (int i = 0; i <= 33; i++) {
             DWORD v = 0xdeadbeef;
             HRESULT h = IDirect3DDevice9_GetTextureStageState(dev, stages[k], i, &v);
             printf("tss %d %d: %#lx = %#lx\n", stages[k], i, h, v);
         }
-    static const int samplers[] = { 0, 15, 16, D3DDMAPSAMPLER, D3DVERTEXTEXTURESAMPLER0, D3DVERTEXTEXTURESAMPLER3, D3DVERTEXTEXTURESAMPLER3 + 1 };
-    for (int k = 0; k < 7; k++)
-        for (int i = 0; i <= 14; i++) {
+    static const int samplers[] = { 0, 15, D3DDMAPSAMPLER, D3DVERTEXTEXTURESAMPLER0, D3DVERTEXTEXTURESAMPLER3 };
+    for (int k = 0; k < 5; k++)
+        for (int i = 0; i <= 13; i++) {
             DWORD v = 0xdeadbeef;
             HRESULT h = IDirect3DDevice9_GetSamplerState(dev, samplers[k], i, &v);
             printf("ss %d %d: %#lx = %#lx\n", samplers[k], i, h, v);
@@ -86,7 +88,6 @@ int main(void) {
         printf("LightEnable 1000 %#lx\n", IDirect3DDevice9_LightEnable(dev, 1000, TRUE));
         D3DLIGHT9 l; memset(&l, 0x55, sizeof l);
         printf("GetLight 1000 after LightEnable %#lx type %d range %g\n", IDirect3DDevice9_GetLight(dev, 1000, &l), l.Type, l.Range);
-        printf("SetLight NULL %#lx SetMaterial NULL %#lx SetViewport NULL %#lx\n", IDirect3DDevice9_SetLight(dev, 1, NULL), IDirect3DDevice9_SetMaterial(dev, NULL), IDirect3DDevice9_SetViewport(dev, NULL));
         D3DVIEWPORT9 vp = { 60, 40, 32, 32, 0, 1 };
         printf("SetViewport past the target %#lx\n", IDirect3DDevice9_SetViewport(dev, &vp));
         D3DVIEWPORT9 g; IDirect3DDevice9_GetViewport(dev, &g);
