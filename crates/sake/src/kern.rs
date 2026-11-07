@@ -813,6 +813,10 @@ impl Kern {
         Ok((id, false))
     }
     /// The kind of the named object `name`, if there is one.
+    /// A named sync object's state (NtQueryEvent / NtQueryMutant / NtQuerySemaphore)
+    pub fn sync_state(&self, id: u32) -> Option<Sync> {
+        self.sync.get(&id).map(|o| o.sync.clone())
+    }
     pub fn sync_kind(&self, name: &str) -> Option<u8> {
         self.sync_names.get(name).map(|id| self.sync[id].sync.kind())
     }

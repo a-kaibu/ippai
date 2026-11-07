@@ -107,6 +107,7 @@ pub mod fxdsp;
 pub mod ws2;
 pub mod ws2name;
 pub mod iocp;
+pub mod ntsync;
 pub mod gl_sigs;
 pub mod text;
 pub mod collate;
@@ -676,6 +677,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     ws2name::init();
     ws2::init();
     iocp::init();
+    ntsync::init();
     xaudio2::init();
     xapo::init();
     d3d9::register();

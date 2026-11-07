@@ -105,6 +105,27 @@ pub fn forget(h: u32) {
     });
 }
 
+/// A port handle was closed: its packets go, its waiters end (ERROR_ABANDONED_WAIT_0)
+pub fn closed(h: u32) {
+    with(|s| {
+        s.ports.remove(&h);
+        s.assoc.retain(|_, (p, _)| *p != h);
+    });
+    obj::signal();
+}
+
+/// Whether a port has packets (a port handle is signaled then)
+pub fn has_packets(h: u32) -> bool {
+    with(|s| s.ports.get(&h).is_some_and(|q| !q.is_empty()))
+}
+
+/// A new port's handle
+pub fn new_port() -> u32 {
+    let p = obj::add(Obj::Other("iocp"));
+    with(|s| s.ports.insert(p, VecDeque::new()));
+    p
+}
+
 fn is_port(h: u32) -> bool {
     obj::with(|t| matches!(t.objs.get(&h), Some((Obj::Other("iocp"), _))))
 }
@@ -126,9 +147,7 @@ fn CreateIoCompletionPort(c: &mut Ctx) -> u32 {
         return 0;
     }
     let port = if port == 0 {
-        let p = obj::add(Obj::Other("iocp"));
-        with(|s| s.ports.insert(p, VecDeque::new()));
-        p
+        new_port()
     } else {
         port
     };
@@ -153,6 +172,10 @@ fn wait_packet(c: &mut Ctx, port: u32, ms: u32, alertable: bool) -> Result<Packe
         if let Some(p) = take(port) {
             return Ok(p);
         }
+        // (closed while waiting)
+        if !with(|s| s.ports.contains_key(&port)) {
+            return Err(735); // ERROR_ABANDONED_WAIT_0
+        }
         if alertable && crate::apc::run(c) {
             return Err(crate::apc::WAIT_IO_COMPLETION);
         }
@@ -166,7 +189,7 @@ fn wait_packet(c: &mut Ctx, port: u32, ms: u32, alertable: bool) -> Result<Packe
                 (d - now).as_millis().max(1) as u32
             }
         };
-        let ready = || with(|s| s.ports.get(&port).is_some_and(|q| !q.is_empty())) || (alertable && crate::apc::pending(tid));
+        let ready = || with(|s| s.ports.get(&port).is_none_or(|q| !q.is_empty())) || (alertable && crate::apc::pending(tid));
         obj::wait(&[], false, left, Some(&ready));
     }
 }
@@ -308,6 +331,84 @@ fn overlapped_result(c: &mut Ctx, ex: bool) -> u32 {
     // (success clears the last error: tests/winref/golden/pipes-32)
     last_error(0);
     1
+}
+
+/// A wait_packet error as an NTSTATUS
+fn status_of(e: u32) -> u32 {
+    match e {
+        735 => 0x80,  // STATUS_ABANDONED_WAIT_0
+        258 => 0x102, // STATUS_TIMEOUT
+        6 => 0xc000_0008,
+        e => e,
+    }
+}
+
+/// ntdll's completion calls: NtCreateIoCompletion(&h, access, attr, threads),
+/// NtSetIoCompletion(port, key, value, status, information),
+/// NtRemoveIoCompletion(port, &key, &value, iosb, timeout),
+/// NtRemoveIoCompletionEx(port, FILE_IO_COMPLETION_INFORMATION[], count, &removed, timeout,
+/// alertable): { key, value, iosb { status, information } }
+pub fn init_nt() {
+    let d = "ntdll";
+    implement(d, "NtCreateIoCompletion", |c| {
+        if c.a(0) == 0 {
+            return 0xc000_0005;
+        }
+        wp(c.a(0), new_port());
+        0
+    });
+    let set = |c: &mut Ctx| {
+        let (port, key, value, status, info) = (c.a(0), if mem::x64() { c.a64(1) } else { c.a(1) as u64 }, c.a(2), c.a(3), c.a(4));
+        if !is_port(port) {
+            return 0xc000_0008;
+        }
+        post(port, info, key, value, status);
+        0
+    };
+    implement(d, "NtSetIoCompletion", set);
+    implement(d, "NtRemoveIoCompletion", |c| {
+        let (port, pkey, pval, iosb, ms) = (c.a(0), c.a(1), c.a(2), c.a(3), crate::ntsync::timeout_ms(c.a(4)));
+        match wait_packet(c, port, ms, false) {
+            Ok((bytes, key, ov, status)) => {
+                wp(pkey, key as u32);
+                if mem::x64() {
+                    mem::w64(pkey, key);
+                }
+                wp(pval, ov);
+                wp(iosb, status);
+                wp(iosb + ps(), bytes);
+                0
+            }
+            Err(e) => status_of(e),
+        }
+    });
+    implement(d, "NtRemoveIoCompletionEx", |c| {
+        let (port, info, count, removed, ms, alertable) = (c.a(0), c.a(1), c.a(2), c.a(3), crate::ntsync::timeout_ms(c.a(4)), c.a(5) & 0xff != 0);
+        let k = ps();
+        match wait_packet(c, port, ms, alertable) {
+            Ok(first) => {
+                let (mut n, mut p) = (0, Some(first));
+                while let Some((bytes, key, ov, status)) = p {
+                    let e = info + 4 * k * n;
+                    wp(e, key as u32);
+                    if mem::x64() {
+                        mem::w64(e, key);
+                    }
+                    wp(e + k, ov);
+                    wp(e + 2 * k, status);
+                    wp(e + 3 * k, bytes);
+                    n += 1;
+                    p = if n < count { take(port) } else { None };
+                }
+                mem::put32(removed, n);
+                0
+            }
+            Err(e) => {
+                mem::put32(removed, 0);
+                if e == crate::apc::WAIT_IO_COMPLETION { 0xc0 } else { status_of(e) }
+            }
+        }
+    });
 }
 
 pub fn init() {

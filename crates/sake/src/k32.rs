@@ -24,6 +24,9 @@ macro_rules! reg {
 pub fn last_error(e: u32) {
     w32(crate::cur().teb + crate::teb_last_error(), e);
 }
+pub fn get_last_error() -> u32 {
+    r32(crate::cur().teb + crate::teb_last_error())
+}
 
 fn ok(b: bool) -> u32 {
     b as u32
@@ -912,15 +915,23 @@ fn value_at(a: u32, size: u32) -> Option<u64> {
 /// WaitOnAddress(address, &compare, size, ms): TRUE once woken (or the value already differs),
 /// FALSE with ERROR_TIMEOUT
 fn WaitOnAddress(c: &mut Ctx) -> u32 {
-    let (a, cmp, size, ms) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    match wait_on_address(c.a(0), c.a(1), c.a(2), c.a(3)) {
+        Ok(()) => 1,
+        Err(e) => {
+            last_error(e);
+            0
+        }
+    }
+}
+/// WaitOnAddress's wait: Err(ERROR_INVALID_PARAMETER for a bad size, ERROR_TIMEOUT)
+pub(crate) fn wait_on_address(a: u32, cmp: u32, size: u32, ms: u32) -> Result<(), u32> {
     let (Some(_), Some(want)) = (value_at(a, size), value_at(cmp, size)) else {
-        last_error(87);
-        return 0;
+        return Err(87);
     };
     let g = ADDR_GEN.lock().unwrap_or_else(|e| e.into_inner());
     // (checked under the lock: a waker changes the value, then takes it to wake)
     if value_at(a, size) != Some(want) {
-        return 1;
+        return Ok(());
     }
     let start = *g;
     let end = (ms != 0xffff_ffff).then(|| std::time::Instant::now() + std::time::Duration::from_millis(ms as u64));
@@ -935,16 +946,13 @@ fn WaitOnAddress(c: &mut Ctx) -> u32 {
         let left = match end {
             Some(e) => match e.checked_duration_since(std::time::Instant::now()) {
                 Some(d) if !d.is_zero() => d,
-                _ => {
-                    last_error(1460);
-                    return 0;
-                }
+                _ => return Err(1460),
             },
             None => std::time::Duration::from_secs(3600),
         };
         g = ADDR_CV.wait_timeout(g, left).unwrap_or_else(|e| e.into_inner()).0;
     }
-    1
+    Ok(())
 }
 fn WakeByAddressAll(_: &mut Ctx) -> u32 {
     *ADDR_GEN.lock().unwrap_or_else(|e| e.into_inner()) += 1;
@@ -998,7 +1006,7 @@ fn kern_sync(o: &Obj) -> Option<crate::kern::Sync> {
         _ => return None,
     })
 }
-fn create_named(name: Option<String>, o: Obj) -> u32 {
+pub(crate) fn create_named(name: Option<String>, o: Obj) -> u32 {
     if let Some(n) = &name {
         if !name_ok(n) {
             last_error(3);
@@ -1041,7 +1049,11 @@ fn create_named(name: Option<String>, o: Obj) -> u32 {
     h
 }
 fn open_named(name: u32, wide: bool, want: u8) -> u32 {
-    let n = arg_str(name, wide);
+    open_sync(arg_str(name, wide), want)
+}
+/// Opens a named event (1), mutex (2), semaphore (3) or timer (4); 0 and the last error
+/// (ERROR_FILE_NOT_FOUND, ERROR_INVALID_HANDLE for another kind)
+pub(crate) fn open_sync(n: String, want: u8) -> u32 {
     if let Some(k) = crate::kern::with(|kk| kk.sync_kind(&n)).0 {
         if k != want {
             last_error(6);
@@ -1251,26 +1263,30 @@ fn OpenMutexW(c: &mut Ctx) -> u32 {
     open_named(c.a(2), true, 2)
 }
 /// The kernel's id of a named event, mutex or semaphore handle
-fn shared_id(h: u32) -> Option<u32> {
+pub(crate) fn shared_id(h: u32) -> Option<u32> {
     obj::with(|t| match t.objs.get(&h) {
         Some((Obj::Shared(id), _)) => Some(*id),
         _ => None,
     })
 }
 fn ReleaseMutex(c: &mut Ctx) -> u32 {
+    match release_mutex(c.a(0)) {
+        Ok(()) => 1,
+        Err(e) => {
+            last_error(e);
+            0
+        }
+    }
+}
+/// Releases a mutex the thread owns: Err(ERROR_NOT_OWNER / ERROR_INVALID_HANDLE)
+pub(crate) fn release_mutex(h: u32) -> Result<(), u32> {
     let tid = crate::cur().tid;
-    if let Some(id) = shared_id(c.a(0)) {
+    if let Some(id) = shared_id(h) {
         let r = crate::kern::with(|k| k.release_mutex(id, tid)).0;
         obj::signal();
-        return match r {
-            Ok(()) => 1,
-            Err(e) => {
-                last_error(e);
-                0
-            }
-        };
+        return r;
     }
-    let r = obj::with(|t| match t.objs.get_mut(&c.a(0)) {
+    let r = obj::with(|t| match t.objs.get_mut(&h) {
         Some((Obj::Mutex { owner, count }, _)) if *owner == tid => {
             *count -= 1;
             if *count == 0 {
@@ -1282,13 +1298,7 @@ fn ReleaseMutex(c: &mut Ctx) -> u32 {
         _ => Err(6),
     });
     obj::signal();
-    match r {
-        Ok(()) => 1,
-        Err(e) => {
-            last_error(e);
-            0
-        }
-    }
+    r
 }
 fn CreateSemaphoreA(c: &mut Ctx) -> u32 {
     if !semaphore_counts(c.i(1), c.i(2)) {
@@ -1311,22 +1321,26 @@ fn CreateSemaphoreW(c: &mut Ctx) -> u32 {
     create_named(named(c.a(3), true), Obj::Semaphore { count: c.i(1), max: c.i(2) })
 }
 fn ReleaseSemaphore(c: &mut Ctx) -> u32 {
-    let n = c.i(1);
-    if let Some(id) = shared_id(c.a(0)) {
+    match release_semaphore(c.a(0), c.i(1)) {
+        Ok(p) => {
+            put32(c.a(2), p as u32);
+            1
+        }
+        Err(e) => {
+            last_error(e);
+            0
+        }
+    }
+}
+/// Adds `n` to a semaphore: Ok(the previous count), Err(ERROR_INVALID_PARAMETER,
+/// ERROR_TOO_MANY_POSTS, ERROR_INVALID_HANDLE)
+pub(crate) fn release_semaphore(h: u32, n: i32) -> Result<i32, u32> {
+    if let Some(id) = shared_id(h) {
         let r = if n <= 0 { Err(87) } else { crate::kern::with(|k| k.release_semaphore(id, n)).0 };
         obj::signal();
-        return match r {
-            Ok(p) => {
-                put32(c.a(2), p as u32);
-                1
-            }
-            Err(e) => {
-                last_error(e);
-                0
-            }
-        };
+        return r.map(|p| p as i32);
     }
-    let r = obj::with(|t| match t.objs.get_mut(&c.a(0)) {
+    let r = obj::with(|t| match t.objs.get_mut(&h) {
         Some(_) if n <= 0 => Err(87),
         Some((Obj::Semaphore { count, max }, _)) => {
             let prev = *count;
@@ -1339,16 +1353,7 @@ fn ReleaseSemaphore(c: &mut Ctx) -> u32 {
         _ => Err(6),
     });
     obj::signal();
-    match r {
-        Ok(p) => {
-            put32(c.a(2), p as u32);
-            1
-        }
-        Err(e) => {
-            last_error(e);
-            0
-        }
-    }
+    r
 }
 fn WaitForSingleObject(c: &mut Ctx) -> u32 {
     obj::wait(&[c.a(0)], false, c.a(1), None)
@@ -6981,6 +6986,13 @@ pub fn init() {
     implement("kernelbase", "WakeByAddressAll", WakeByAddressAll);
     implement("kernelbase", "WakeByAddressSingle", WakeByAddressAll);
     implement("ntdll", "RtlWakeAddressAll", WakeByAddressAll);
+    implement("ntdll", "RtlWakeAddressSingle", WakeByAddressAll);
+    // RtlWaitOnAddress(address, &compare, size, timeout): STATUS_SUCCESS / TIMEOUT / INVALID_PARAMETER
+    implement("ntdll", "RtlWaitOnAddress", |c| match wait_on_address(c.a(0), c.a(1), c.a(2), crate::ntsync::timeout_ms(c.a(3))) {
+        Ok(()) => 0,
+        Err(87) => 0xc000_000d,
+        Err(_) => 0x102,
+    });
     implement("ntdll", "RtlWakeAddressSingle", WakeByAddressAll);
     implement("kernelbase", "VirtualProtectFromApp", VirtualProtect);
     reg!("bcrypt"; BCryptOpenAlgorithmProvider, BCryptCloseAlgorithmProvider, BCryptGenRandom, BCryptGetProperty);

@@ -230,7 +230,7 @@ ntdll:rtl	crash	2	0
 ntdll:rtlbitmap	fail	338	376
 ntdll:rtlstr	crash	237	0
 ntdll:string	crash	183947	0
-ntdll:sync	fail	236	431
+ntdll:sync	fail	145	431
 ntdll:thread	crash	4	0
 ntdll:threadpool	crash	90	0
 ntdll:time	fail	10615	10657

@@ -168,6 +168,7 @@ pub fn close(h: u32) -> bool {
     // (outside the table's lock: the kernel's comes after it, never before)
     match gone {
         Some(Obj::Pipe(p)) => crate::pipe::closed(p),
+        Some(Obj::Other("iocp")) => crate::iocp::closed(h),
         Some(Obj::Shared(id)) => {
             crate::kern::with(|k| k.release_sync(id, crate::pid()));
         }
@@ -242,6 +243,8 @@ fn try_take(t: &mut Table, h: u32, tid: u32, take: bool) -> Option<bool> {
         Obj::Thread { done, .. } => *done,
         Obj::Shared(id) => crate::kern::with(|k| k.try_take(*id, crate::pid(), tid, take)).0.is_some_and(|r| r.0),
         Obj::Process { pid, .. } | Obj::RemoteThread { pid, .. } => crate::process::ended(*pid),
+        // a completion port: while it holds packets (waiting on it takes none)
+        Obj::Other("iocp") => crate::iocp::has_packets(h),
         // files and the like count as signaled
         _ => true,
     })
