@@ -1,0 +1,54 @@
+missing file: 0x80070003
+m4a from its file: 0
+m4a: select 0, selected 1; stream 5 0xc00d36b3
+  native 0
+  native: audio 1 subtype 0x1610 compressed 0 ch 2 rate 44100 bits 16 align 1 independent 1
+  native 1: 0xc00d36b9
+  duration 0 vt 21 500 ms
+  set PCM 0
+  current: audio 1 subtype 0x1 compressed 0 ch 2 rate 44100 bits 16 align 4 avg 176400 independent 1
+  wave: size 18 tag 0x1 ch 2 rate 44100 avg 176400 align 4 bits 16 extra 0
+  end of stream: flags 0x2 sample 0
+  pcm: first at 0 ms, 23 frames of 1024, last sample before 500 ms
+  pcm ch 0: 440 Hz, rms 7/20
+  pcm ch 1: 660 Hz, rms 4/20
+  set PCM at another rate: failed 0
+  set float 0
+  current: audio 1 subtype 0x3 compressed 0 ch 2 rate 44100 bits 32 align 8 avg 352800 independent 1
+  seek 0
+  after the seek: 0 flags 0, at or before 250 ms: 1, within 100 ms of it: 1
+mp3 from its file: 0
+mp3: select 0, selected 1; stream 5 0xc00d36b3
+  native 0
+  native: audio 1 subtype 0x55 compressed 1 ch 2 rate 44100 bits - align 1 independent -
+  native 1: 0xc00d36b9
+  duration 0 vt 21 550 ms
+  set PCM 0
+  current: audio 1 subtype 0x1 compressed 0 ch 2 rate 44100 bits 16 align 4 avg 176400 independent 1
+  wave: size 18 tag 0x1 ch 2 rate 44100 avg 176400 align 4 bits 16 extra 0
+  end of stream: flags 0x2 sample 0
+  pcm: first at 0 ms, 21 frames of 1152, last sample before 0 ms
+  pcm ch 0: 440 Hz, rms 7/20
+  pcm ch 1: 660 Hz, rms 3/20
+  set PCM at another rate: failed 0
+  set float 0
+  current: audio 1 subtype 0x3 compressed 0 ch 2 rate 44100 bits 32 align 8 avg 352800 independent 1
+  seek 0
+  after the seek: 0 flags 0, at or before 250 ms: 1, within 100 ms of it: 1
+wav from its file: 0
+wav: select 0, selected 1; stream 5 0xc00d36b3
+  native 0
+  native: audio 1 subtype 0x1 compressed 0 ch 1 rate 22050 bits 16 align 2 independent 1
+  native 1: 0xc00d36b9
+  duration 0 vt 21 300 ms
+  set PCM 0
+  current: audio 1 subtype 0x1 compressed 0 ch 1 rate 22050 bits 16 align 2 avg 44100 independent 1
+  wave: size 18 tag 0x1 ch 1 rate 22050 avg 44100 align 2 bits 16 extra 0
+  end of stream: flags 0x2 sample 0
+  pcm: first at 0 ms, 6 frames of 1024, last sample before 200 ms
+  pcm ch 0: 550 Hz, rms 7/20
+  set PCM at another rate: failed 0
+  set float 0
+  current: audio 1 subtype 0x3 compressed 0 ch 1 rate 22050 bits 32 align 4 avg 88200 independent 1
+  seek 0
+  after the seek: 0 flags 0, at or before 250 ms: 0, within 100 ms of it: 1
