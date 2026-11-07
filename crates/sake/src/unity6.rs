@@ -153,7 +153,9 @@ pub fn plan(code: &[u8], ip: u64) -> Option<(Vec<Edit>, Found)> {
             edits.push(put_imm(new_size, 4));
             found.sizes += 1;
             div_size |= i.mnemonic() == Mnemonic::Mov && ins.get(k + 1).is_some_and(|n| n.mnemonic() == Mnemonic::Div);
-            region_size |= i.mnemonic() == Mnemonic::Mov && i.op0_kind() == OpKind::Memory;
+            // (stored by 6000.x's region constructor, handed to it as the third argument by
+            // 2022.3's)
+            region_size |= i.mnemonic() == Mnemonic::Mov && (i.op0_kind() == OpKind::Memory || matches!(i.op0_register(), Register::R8D | Register::R8));
         } else if i.mnemonic() == Mnemonic::And && i.op0_kind() == OpKind::Register && gpr64(i.op0_register()) && imm(i) == Some(!0x0fff_ffffu64) && offs.immediate_size() == 4 {
             edits.push(put_imm(new_size.wrapping_neg(), 4));
             found.masks += 1;
@@ -256,6 +258,9 @@ pub mod samples {
     pub const RESERVE: &str = "33d2488bf0b80000001049f7f5c3";
     pub const CTOR: &str = "b900000010483d0000001077028bc84881f90000001049898ee000000049c786e800000000000010c3";
     pub const ROUND: &str = "498dbeffffff0f440fb746084881e7000000f0c3";
+    // 2022.3.22f1: the region's size passed in a register (0x18035771c), a request clamped to it
+    // (0x1803615a3)
+    pub const CTOR22: &str = "41b8000000100fb6442460b800000010483bd0480f47d0c3";
     // 6000.5.4f1 0x18172170f: a 4 + 28 bit field next to the allocator code (not buckets)
     pub const FIELD: &str = "81e2ffffff0f49c1ea1c8910418bd2488b810002000081e2ffffff0f49c1ea1c8910c3";
     // a flag test with the same constant
@@ -381,6 +386,20 @@ mod tests {
             let parts: Vec<&str> = all.iter().enumerate().filter(|&(k, _)| k != skip).map(|(_, p)| *p).collect();
             assert!(plan(&module(&parts, FLAG, 0), IP).is_none(), "without part {skip}");
         }
+    }
+
+    #[test]
+    fn region_size_in_a_register() {
+        // 2022.3 passes the region's size to the constructor in R8D instead of storing it
+        let code = module(&[REG, LOOKUP, RESERVE, CTOR22], ROUND, 0);
+        let (edits, f) = plan(&code, IP).expect("recognized");
+        let after = listing(&apply(&code, &edits));
+        assert!(after.contains(&"mov r8d,0x4000000".to_string()), "{after:?}");
+        assert!(after.contains(&"mov eax,0x4000000".to_string()), "{after:?}");
+        assert_eq!(f.sizes, 3);
+        // the clamp alone (no size handed on) is not enough
+        let clamp_only = "b800000010483bd0480f47d0c3";
+        assert!(plan(&module(&[REG, LOOKUP, RESERVE, clamp_only], ROUND, 0), IP).is_none());
     }
 
     #[test]
@@ -533,11 +552,15 @@ mod tests {
             u32::from_le_bytes(f[o..o + 4].try_into().unwrap()) as usize
         }
 
-        /// The first instruction after int3 padding in the window that `is` accepts.
+        /// The first instruction after int3 padding or a ret (2022.3 does not align it) in the
+        /// window that `is` accepts.
         fn function_starting(code: &[u8], ip: u64, a: usize, is: impl Fn(&Instruction) -> bool) -> u64 {
             let lo = sync_point(code, a - WINDOW as usize);
             let ins = decode(code, ip, lo, a + WINDOW as usize);
-            ins.windows(3).find(|w| w[0].mnemonic() == Mnemonic::Int3 && w[1].mnemonic() != Mnemonic::Int3 && is(&w[1])).unwrap()[1].ip()
+            ins.windows(3)
+                .find(|w| matches!(w[0].mnemonic(), Mnemonic::Int3 | Mnemonic::Ret) && w[1].mnemonic() != Mnemonic::Int3 && is(&w[1]))
+                .unwrap()[1]
+                .ip()
         }
 
         fn image() -> &'static Mutex<Img> {
