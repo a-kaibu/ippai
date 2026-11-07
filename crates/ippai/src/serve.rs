@@ -37,7 +37,7 @@
 //! - `GET`/`PUT /saves/<name>`: saved games backed up to S3 (see saves.rs)
 //! - `PUT /log-save/<name>`: a run's log from the page (web/src/crashlog.ts: crash reports,
 //!   sessions a killed tab left, ...), kept as `<logs>/<name>.txt`; `GET /log-list` lists them
-//!   (JSON, newest first), `/logs/<name>.txt` serves one; web/logs.html shows them
+//!   (JSON, newest first), `/logs/<name>.txt` serves one
 //!
 //! - the web app's files are sent zstd-compressed to browsers that accept it: at the start the
 //!   server writes `<file>.zst` beside each script, wasm, page and style sheet of `--web` (again

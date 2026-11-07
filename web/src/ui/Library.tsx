@@ -1,24 +1,24 @@
-import { api } from "../library-data";
-import { Personal, Statistics } from "./Personal";
-// The game list (play.html without ?run=): cards with cover, brand, year and score from
-// `ippai meta`, a filter, and a dialog with the game's details. Picking a game starts it from
-// that click (audio and fullscreen need the user gesture).
+// The game list (play.html without ?run=): a header (name, search, 統計 at the top right), the
+// game last played to continue, the cards with cover, brand, year and score from `ippai meta`,
+// and a dialog with the game's details and records. Picking a game starts it from that click
+// (audio and fullscreen need the user gesture).
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
-  Bug,
+  BarChart3,
   Download,
   ExternalLink,
-  Gamepad2,
   HardDrive,
+  Heart,
   Info,
   MonitorDown,
+  NotebookPen,
   Play,
   RefreshCw,
-  ScrollText,
   Search,
   Star,
   Trash2,
+  TriangleAlert,
   WifiOff,
   X,
 } from "lucide-react";
@@ -26,18 +26,27 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { coverUrl, played, type GameEntry } from "../launcher";
+import { api } from "../library-data";
+import { sortGames, visibleGames, when, type Filter } from "../library-view";
 import { dropOffline, offlineState, saveOffline, type OfflineState } from "../offline";
 import { useApp } from "../pwa";
+import { Backup, Note, Statistics, useProfile } from "./Personal";
 import { renderShell } from "./Shell";
-import { setDebug, useUi } from "./store";
 
-function when(t: number): string {
-  const d = new Date(t);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getMonth() + 1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+/** The app's mark: the sake bottle (the same as the favicon and app icons). */
+export function Logo({ className }: { className?: string }) {
+  return (
+    <img
+      src="./icons/icon-192.png"
+      alt=""
+      aria-hidden
+      draggable={false}
+      className={cn("size-7 select-none", className)}
+    />
+  );
 }
 
 function Cover({ game, className }: { game: GameEntry; className?: string }) {
@@ -45,30 +54,35 @@ function Cover({ game, className }: { game: GameEntry; className?: string }) {
   return url ? (
     <img src={url} alt="" loading="lazy" className={cn("size-full object-cover", className)} />
   ) : (
-    <div className="grid size-full place-items-center bg-gradient-to-br from-secondary to-background p-3 text-center font-semibold text-balance text-muted-foreground">
+    <div className="grid size-full place-items-center bg-gradient-to-br from-secondary via-card to-background p-3 text-center font-semibold text-balance text-muted-foreground">
       {game.title}
     </div>
   );
 }
 
+const subtitle = (g: GameEntry) => [g.meta?.brand, g.meta?.release?.slice(0, 4)].filter(Boolean).join(" · ");
+
 function GameCard({
   game,
   last,
+  favorite,
   onPick,
   onInfo,
 }: {
   game: GameEntry;
   last?: number;
+  favorite: boolean;
   onPick: () => void;
   onInfo: () => void;
 }) {
   const m = game.meta;
-  const sub = [m?.brand, m?.release?.slice(0, 4)].filter(Boolean).join(" · ");
+  const sub = subtitle(game);
   return (
-    <li className="group relative">
+    <li className="group relative" data-game={game.id}>
       <button
         type="button"
         onClick={onPick}
+        aria-label={`${game.title} を起動`}
         className="block w-full rounded-xl text-left outline-none focus-visible:ring-[3px] focus-visible:ring-ring/60"
       >
         <div className="relative aspect-[4/3] overflow-hidden rounded-xl border bg-card shadow-sm transition duration-200 group-hover:-translate-y-0.5 group-hover:shadow-lg group-hover:ring-2 group-hover:ring-primary/70">
@@ -78,6 +92,14 @@ function GameCard({
               <Play className="size-5 fill-current" />
             </span>
           </div>
+          {favorite && (
+            <span
+              title="お気に入り"
+              className="absolute top-2 left-2 grid size-7 place-items-center rounded-full bg-black/60 text-rose-400 backdrop-blur"
+            >
+              <Heart className="size-3.5 fill-current" />
+            </span>
+          )}
         </div>
         <div className="px-0.5 pt-2">
           <div className="line-clamp-2 text-sm leading-snug font-semibold">{game.title}</div>
@@ -99,19 +121,77 @@ function GameCard({
           </div>
         </div>
       </button>
-      {
-        <Button
-          size="icon-sm"
-          variant="secondary"
-          onClick={onInfo}
-          aria-label={`${game.title} の情報`}
-          title="ゲーム情報"
-          className="absolute top-2 right-2 rounded-full bg-black/60 text-white backdrop-blur hover:bg-primary hover:text-primary-foreground"
-        >
-          <Info />
-        </Button>
-      }
+      <Button
+        size="icon-sm"
+        variant="secondary"
+        onClick={onInfo}
+        aria-label={`${game.title} の情報`}
+        title="ゲーム情報"
+        className="absolute top-2 right-2 rounded-full bg-black/60 text-white backdrop-blur hover:bg-primary hover:text-primary-foreground"
+      >
+        <Info />
+      </Button>
     </li>
+  );
+}
+
+/** The game last played here, large, to go on with it. */
+function Continue({
+  game,
+  last,
+  onPick,
+  onInfo,
+}: {
+  game: GameEntry;
+  last: number;
+  onPick: () => void;
+  onInfo: () => void;
+}) {
+  const url = coverUrl(game);
+  return (
+    <section
+      aria-label="続きから遊ぶ"
+      className="relative mb-8 overflow-hidden rounded-2xl border bg-card shadow-sm"
+    >
+      {url && (
+        <img
+          src={url}
+          alt=""
+          aria-hidden
+          className="absolute inset-0 size-full scale-110 object-cover opacity-30 blur-2xl"
+        />
+      )}
+      <div className="relative flex items-center gap-4 p-3 sm:gap-6 sm:p-5">
+        <div className="aspect-[4/3] w-28 shrink-0 overflow-hidden rounded-lg border text-xs shadow-lg sm:w-56 sm:rounded-xl sm:text-base">
+          <Cover game={game} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-medium tracking-wide text-primary">前回のつづき・{when(last)}</p>
+          <h2 className="mt-1 line-clamp-2 text-lg font-bold text-balance sm:text-2xl">{game.title}</h2>
+          {subtitle(game) && <p className="mt-1 text-sm text-muted-foreground">{subtitle(game)}</p>}
+          <div className="mt-3 flex flex-wrap gap-2 sm:mt-4">
+            <Button className="sm:h-10 sm:px-6" onClick={onPick}>
+              <Play className="fill-current" /> つづきから遊ぶ
+            </Button>
+            <Button variant="outline" className="sm:h-10" onClick={onInfo} aria-label="詳細">
+              <Info /> <span className="max-sm:hidden">詳細</span>
+            </Button>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function Section({ title, icon, children }: { title: string; icon: ReactNode; children: ReactNode }) {
+  return (
+    <section className="grid gap-2.5 rounded-xl border bg-card/60 p-3.5">
+      <h3 className="flex items-center gap-2 text-sm font-semibold [&_svg]:size-4 [&_svg]:text-muted-foreground">
+        {icon}
+        {title}
+      </h3>
+      {children}
+    </section>
   );
 }
 
@@ -129,7 +209,10 @@ function Offline({ game }: { game: GameEntry }) {
     });
   useEffect(refresh, [game]);
   if (state === null && !error) return null;
-  if (!state) return error ? <p className="text-sm text-muted-foreground">{error}</p> : null;
+  if (!state)
+    return error ? (
+      <p className="text-sm text-muted-foreground">保存の状態を読めませんでした（{error}）</p>
+    ) : null;
   const save = () => {
     const stop = new AbortController();
     setError("");
@@ -148,7 +231,7 @@ function Offline({ game }: { game: GameEntry }) {
   const all = state.complete;
   const pct = Math.floor((state.have / Math.max(1, state.total)) * 100);
   return (
-    <div className="grid gap-2 rounded-lg border p-3 text-sm">
+    <div className="grid gap-2 text-sm">
       <div className="flex items-center gap-2">
         <HardDrive className="size-4 shrink-0 text-muted-foreground" />
         <span className="flex-1">
@@ -190,9 +273,21 @@ function Offline({ game }: { game: GameEntry }) {
   );
 }
 
-function GameInfo({ game, onPick, onClose }: { game: GameEntry; onPick: () => void; onClose: () => void }) {
+function GameInfo({
+  game,
+  onPick,
+  onClose,
+  onFavorite,
+}: {
+  game: GameEntry;
+  onPick: () => void;
+  onClose: () => void;
+  onFavorite: (on: boolean) => void;
+}) {
   const m = game.meta ?? { source: "", title: game.title };
   const url = coverUrl(game);
+  const record = useProfile(game.id, onFavorite);
+  const favorite = !!record.profile?.favorite;
   const facts: [string, string | undefined][] = [
     ["ブランド", m.brand],
     ["発売日", m.release],
@@ -205,13 +300,38 @@ function GameInfo({ game, onPick, onClose }: { game: GameEntry; onPick: () => vo
   ];
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="gap-0 p-0">
-        {url && <img src={url} alt="" className="max-h-80 w-full bg-black object-contain" />}
+      <DialogContent className="max-w-2xl gap-0 p-0">
+        {url && (
+          <div className="relative bg-black">
+            <img src={url} alt="" className="max-h-80 w-full object-contain" />
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-background to-transparent" />
+          </div>
+        )}
         <div className="grid gap-4 p-5">
           <DialogHeader>
-            <DialogTitle className="pr-8">{m.title || game.title}</DialogTitle>
-            <DialogDescription>{m.furigana || game.title}</DialogDescription>
+            <DialogTitle className="pr-8 text-xl">{m.title || game.title}</DialogTitle>
+            {m.furigana && m.furigana !== (m.title || game.title) ? (
+              <DialogDescription>{m.furigana}</DialogDescription>
+            ) : (
+              <DialogDescription className="sr-only">ゲームの情報</DialogDescription>
+            )}
           </DialogHeader>
+          <div className="flex gap-2">
+            <Button size="lg" className="flex-1" onClick={onPick}>
+              <Play className="fill-current" /> 起動
+            </Button>
+            <Button
+              size="lg"
+              variant="outline"
+              aria-pressed={favorite}
+              disabled={!record.profile || record.busy}
+              onClick={() => void record.toggleFavorite()}
+              title={favorite ? "お気に入りから外す" : "お気に入りに追加"}
+            >
+              <Heart className={cn(favorite && "fill-current text-rose-400")} />
+              <span className="max-sm:sr-only">{favorite ? "お気に入り" : "お気に入りに追加"}</span>
+            </Button>
+          </div>
           <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
             {facts
               .filter(([, v]) => v)
@@ -249,7 +369,8 @@ function GameInfo({ game, onPick, onClose }: { game: GameEntry; onPick: () => vo
           )}
           {!!game.unpack_issues?.length && (
             <div className="grid gap-1.5 rounded-lg border border-destructive/40 p-3 text-sm">
-              <p className="font-medium text-destructive">
+              <p className="flex items-center gap-2 font-medium text-destructive">
+                <TriangleAlert className="size-4 shrink-0" />
                 取り込み時に展開できなかったものがあります（動かない場面があるかもしれません）
               </p>
               <ul className="grid gap-1 text-xs break-all text-muted-foreground">
@@ -259,11 +380,18 @@ function GameInfo({ game, onPick, onClose }: { game: GameEntry; onPick: () => vo
               </ul>
             </div>
           )}
-          <Personal game={game.id} />
-          <Offline game={game} />
-          <Button size="lg" className="w-full" onClick={onPick}>
-            <Play className="fill-current" /> 起動
-          </Button>
+          <Section title="メモ" icon={<NotebookPen />}>
+            <Note state={record} />
+          </Section>
+          <Section title="端末に保存" icon={<HardDrive />}>
+            <Offline game={game} />
+          </Section>
+          <Section title="バックアップ" icon={<Download />}>
+            <p className="text-xs text-muted-foreground">
+              セーブデータとメモを 1 つのファイルにして持ち運べます。
+            </p>
+            <Backup game={game.id} state={record} />
+          </Section>
         </div>
       </DialogContent>
     </Dialog>
@@ -272,13 +400,12 @@ function GameInfo({ game, onPick, onClose }: { game: GameEntry; onPick: () => vo
 
 export function Library({ games, onPick }: { games: GameEntry[]; onPick: (g: GameEntry) => void }) {
   const [favorites, setFavorites] = useState<string[]>([]);
-  const [onlyFavorites, setOnlyFavorites] = useState(false);
   const [favoriteError, setFavoriteError] = useState("");
+  const [filter, setFilter] = useState<Filter>("all");
   const [stats, setStats] = useState(false);
   const [query, setQuery] = useState("");
   const [info, setInfo] = useState<GameEntry | null>(null);
   useEffect(() => {
-    if (info) return;
     void api<string[]>("favorites")
       .then((ids) => {
         setFavorites(ids);
@@ -286,77 +413,63 @@ export function Library({ games, onPick }: { games: GameEntry[]; onPick: (g: Gam
       })
       // (offline: the list shows no favorites, without an error)
       .catch((e: unknown) => setFavoriteError(navigator.onLine ? String(e) : ""));
-  }, [info]);
-  const { debug } = useUi();
+  }, []);
   const app = useApp();
   const last = useMemo(played, []);
-  const sorted = useMemo(
-    () =>
-      [...games].sort(
-        (a, b) => (last[b.id] ?? 0) - (last[a.id] ?? 0) || a.title.localeCompare(b.title, "ja"),
-      ),
-    [games, last],
-  );
-  const q = query.trim().toLowerCase();
-  const searched = q
-    ? sorted.filter((g) => {
-        const m = g.meta;
-        const key = [g.title, g.engine, g.id, m?.title, m?.furigana, m?.brand, m?.series, ...(m?.tags ?? [])];
-        return key.filter(Boolean).join(" ").toLowerCase().includes(q);
-      })
-    : sorted;
-  const shown = onlyFavorites ? searched.filter((g) => favorites.includes(g.id)) : searched;
+  const sorted = useMemo(() => sortGames(games, last), [games, last]);
+  const shown = visibleGames(sorted, query, filter, favorites);
+  const recent = sorted[0] && last[sorted[0].id] ? sorted[0] : null;
+  const favoriteCount = games.filter((g) => favorites.includes(g.id)).length;
+  const setFavorite = (id: string, on: boolean) =>
+    setFavorites((f) => (on ? [...new Set([...f, id])] : f.filter((x) => x !== id)));
   return (
     <main className="fixed inset-0 z-40 overflow-y-auto bg-background">
-      <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-3">
-          <Button variant="outline" onClick={() => setStats(true)}>
-            統計
-          </Button>
-          <Gamepad2 className="size-5 shrink-0 text-primary" />
-          <h1 className="text-lg font-bold tracking-tight">vnvm</h1>
-          <Badge variant="secondary">{games.length} 本</Badge>
-          <div className="relative ml-auto w-full max-w-72">
-            {games.length > 6 && (
-              <>
-                <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  type="search"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="タイトル・ブランド・タグ"
-                  aria-label="タイトル・ブランド・タグで絞り込み"
-                  className="pl-8"
-                />
-              </>
-            )}
-          </div>
-          <label
-            className="flex shrink-0 cursor-pointer items-center gap-1.5 text-sm text-muted-foreground"
-            title="プレイ中に通信量・読み込み待ち・メモリ・fpsを表示（Ctrl+Shift+Dでも切り替え）"
+      <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur-md">
+        <div className="mx-auto flex h-14 max-w-7xl items-center gap-3 px-4">
+          <a
+            href="./"
+            className="flex shrink-0 items-center gap-2 rounded-md outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
           >
-            <Switch checked={debug} onCheckedChange={setDebug} aria-label="デバッグモード" />
-            <Bug className="size-4 sm:hidden" />
-            <span className="max-sm:hidden">デバッグ</span>
-          </label>
-          {app.install && (
+            <Logo />
+            <h1 className="text-lg font-bold tracking-tight">ippai</h1>
+          </a>
+          {games.length > 0 && (
+            <div className="relative mx-auto w-full max-w-md min-w-0">
+              <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                type="search"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="ゲームを探す"
+                aria-label="タイトル・ブランド・タグで絞り込み"
+                className="rounded-full pl-8"
+              />
+            </div>
+          )}
+          <div className="ml-auto flex shrink-0 items-center gap-1.5" data-header-actions>
+            {app.install && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={app.install}
+                title="ホーム画面・デスクトップにアプリとして追加"
+              >
+                <MonitorDown /> <span className="max-md:hidden">アプリにする</span>
+              </Button>
+            )}
             <Button
               variant="outline"
               size="sm"
-              onClick={app.install}
-              title="ホーム画面・デスクトップにアプリとして追加"
+              onClick={() => setStats(true)}
+              aria-label="統計"
+              title="プレイ統計"
             >
-              <MonitorDown /> <span className="max-sm:hidden">アプリにする</span>
+              <BarChart3 /> <span className="max-sm:hidden">統計</span>
             </Button>
-          )}
-          <Button asChild variant="ghost" size="sm">
-            <a href="logs.html">
-              <ScrollText /> <span className="max-sm:hidden">ログ</span>
-            </a>
-          </Button>
+          </div>
         </div>
       </header>
-      <div className="mx-auto max-w-7xl px-4 pt-5 pb-10">
+      <div className="mx-auto max-w-7xl px-4 pt-5 pb-12">
         {!app.online && (
           <p className="mb-4 flex items-center gap-2 rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
             <WifiOff className="size-4 shrink-0" />
@@ -372,56 +485,96 @@ export function Library({ games, onPick }: { games: GameEntry[]; onPick: (g: Gam
             </Button>
           </p>
         )}
-        <label className="mb-4 flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={onlyFavorites}
-            onChange={(e) => setOnlyFavorites(e.target.checked)}
-          />
-          お気に入りのみ
-        </label>
-        {favoriteError && <p role="alert">{favoriteError}</p>}
-        {!games.length ? (
-          <div className="mx-auto mt-16 max-w-xl rounded-xl border border-dashed p-8 text-center text-sm leading-relaxed text-muted-foreground">
-            <p className="mb-3 text-base font-medium text-foreground">ゲームがまだありません</p>
-            ゲームのフォルダを{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5">ippai pack &lt;dir&gt; &lt;tree&gt;</code>{" "}
-            で入れて、
-            <code className="rounded bg-muted px-1.5 py-0.5">
-              ippai add-game &lt;id&gt; --title ... --tree &lt;tree&gt; --exe &lt;exe&gt;
-            </code>{" "}
-            で一覧に追加します。
-          </div>
-        ) : !shown.length ? (
-          <p className="mt-16 text-center text-sm text-muted-foreground">
-            「{query}」に合うゲームはありません
+        {favoriteError && (
+          <p role="alert" className="mb-4 text-sm text-destructive">
+            {favoriteError}
           </p>
+        )}
+        {!games.length ? (
+          <div className="mx-auto mt-16 grid max-w-xl justify-items-center gap-3 rounded-2xl border border-dashed p-10 text-center text-sm leading-relaxed text-muted-foreground">
+            <Logo className="size-14" />
+            <p className="text-base font-medium text-foreground">ゲームがまだありません</p>
+            <p>
+              ゲームのフォルダを{" "}
+              <code className="rounded bg-muted px-1.5 py-0.5">ippai add &lt;dir&gt; --exe &lt;exe&gt;</code>{" "}
+              で追加すると、ここに並びます。
+            </p>
+          </div>
         ) : (
-          <ul className="grid grid-cols-2 gap-x-3 gap-y-5 sm:grid-cols-[repeat(auto-fill,minmax(200px,1fr))] sm:gap-x-4">
-            {shown.map((g) => (
-              <GameCard
-                key={g.id}
-                game={g}
-                last={last[g.id]}
-                onPick={() => onPick(g)}
-                onInfo={() => setInfo(g)}
+          <>
+            {recent && !query.trim() && filter === "all" && (
+              <Continue
+                game={recent}
+                last={last[recent.id]}
+                onPick={() => onPick(recent)}
+                onInfo={() => setInfo(recent)}
               />
-            ))}
-          </ul>
+            )}
+            <div className="mb-4 flex flex-wrap items-center gap-3">
+              <h2 className="text-base font-semibold">ライブラリ</h2>
+              <Tabs value={filter} onValueChange={(v) => setFilter(v as Filter)}>
+                <TabsList aria-label="表示するゲーム">
+                  <TabsTrigger value="all">
+                    すべて <span className="text-xs text-muted-foreground tabular-nums">{games.length}</span>
+                  </TabsTrigger>
+                  <TabsTrigger value="favorites">
+                    <Heart className="size-3.5" /> お気に入り{" "}
+                    <span className="text-xs text-muted-foreground tabular-nums">{favoriteCount}</span>
+                  </TabsTrigger>
+                </TabsList>
+              </Tabs>
+            </div>
+            {!shown.length ? (
+              <div className="mt-12 grid justify-items-center gap-3 text-center text-sm text-muted-foreground">
+                {query.trim() ? (
+                  <>
+                    <p>「{query.trim()}」に合うゲームはありません</p>
+                    <Button size="sm" variant="outline" onClick={() => setQuery("")}>
+                      <X /> 検索をクリア
+                    </Button>
+                  </>
+                ) : (
+                  <p>お気に入りはまだありません。ゲームの詳細から ♡ で追加できます。</p>
+                )}
+              </div>
+            ) : (
+              <ul className="grid grid-cols-2 gap-x-3 gap-y-6 sm:grid-cols-[repeat(auto-fill,minmax(200px,1fr))] sm:gap-x-4">
+                {shown.map((g) => (
+                  <GameCard
+                    key={g.id}
+                    game={g}
+                    last={last[g.id]}
+                    favorite={favorites.includes(g.id)}
+                    onPick={() => onPick(g)}
+                    onInfo={() => setInfo(g)}
+                  />
+                ))}
+              </ul>
+            )}
+          </>
         )}
       </div>
       {stats && (
         <Dialog open onOpenChange={setStats}>
-          <DialogContent>
+          <DialogContent className="max-w-xl gap-4 p-5">
             <DialogHeader>
-              <DialogTitle>プレイ統計</DialogTitle>
+              <DialogTitle className="flex items-center gap-2">
+                <BarChart3 className="size-5 text-primary" /> プレイ統計
+              </DialogTitle>
               <DialogDescription>ゲーム別のプレイ時間</DialogDescription>
             </DialogHeader>
             <Statistics games={games} />
           </DialogContent>
         </Dialog>
       )}
-      {info && <GameInfo game={info} onClose={() => setInfo(null)} onPick={() => onPick(info)} />}
+      {info && (
+        <GameInfo
+          game={info}
+          onClose={() => setInfo(null)}
+          onPick={() => onPick(info)}
+          onFavorite={(on) => setFavorite(info.id, on)}
+        />
+      )}
     </main>
   );
 }

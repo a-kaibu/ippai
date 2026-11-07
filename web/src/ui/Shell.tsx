@@ -8,7 +8,6 @@ import { Button } from "@/components/ui/button";
 import { Toaster } from "@/components/ui/sonner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
-import { DebugOverlay } from "./Debug";
 import { States } from "./States";
 import { useUi, type BenchView } from "./store";
 
@@ -104,7 +103,6 @@ function Shell({ children }: { children?: ReactNode }) {
       )}
       {ui.bench && <BenchPanel bench={ui.bench} />}
       {ui.states && !ui.back && <States states={ui.states} />}
-      {ui.debug && !children && <DebugOverlay />}
       {ui.back && (
         <div className="fixed inset-0 z-30 grid place-items-center">
           <Button

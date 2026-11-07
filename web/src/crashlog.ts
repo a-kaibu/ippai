@@ -18,7 +18,7 @@
 // - Ctrl+Shift+L or a four-finger tap: "<id>-manual"
 // - when the game ends: "<id>-end"
 //
-// logs.html lists the server's and this browser's logs.
+// ippai serve keeps the server's copies under --logs (GET /log-list, /logs/<name>.txt).
 
 import { toast as sonner } from "sonner";
 import { meter, meterLine } from "./meter";

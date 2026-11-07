@@ -1,5 +1,5 @@
-// The game list's data (play.html without ?run=; shown by ui/Library.tsx): the games vnvm
-// add-game put in the store, served as one list by ippai serve (GET /games). Picking one fills
+// The game list's data (play.html without ?run=; shown by ui/Library.tsx): the games `ippai add` (or
+// add-game) put in the store, served as one list by ippai serve (GET /games). Picking one fills
 // play.html's parameters (run, mount, args, env) and starts it in the same page, from the same
 // click (the audio and fullscreen need a user gesture).
 

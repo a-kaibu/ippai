@@ -1,7 +1,7 @@
 {
-  "name": "vnvm-web",
+  "name": "ippai-web",
   "private": true,
-  "description": "vnvm's page: the game list (React, Tailwind CSS, shadcn/ui) and sake (crates/sake) running games with WebGPU display, audio and streamed file trees.",
+  "description": "ippai's page: the game list (React, Tailwind CSS, shadcn/ui) and sake (crates/sake) running games with WebGPU display, audio and streamed file trees.",
   "type": "module",
   "scripts": {
     "dev": "vp dev",

@@ -24,8 +24,6 @@ export interface UiState {
   bench: BenchView | null;
   /** a "back to the list" button (after a crash or an error) */
   back: (() => void) | null;
-  /** debug mode: network, memory and fps over the game (ui/Debug.tsx) */
-  debug: boolean;
   /** requests are being retried: the link dropped or stalls (web/src/net.ts) */
   net: boolean;
   /** save states of the running game (ui/States.tsx, web/src/savestate.ts); null: none here */
@@ -43,22 +41,6 @@ export interface StatesView {
   load: (slot: number) => void;
 }
 
-const DEBUG = "vnvm.debug";
-
-/**
- * Debug mode: the list's switch (kept in localStorage), ?debugmode=1, Ctrl+Shift+D or a
- * three-finger tap over the game (play.ts).
- */
-function debugAtStart(): boolean {
-  const q = new URLSearchParams(location.search).get("debugmode");
-  if (q !== null) return q !== "0";
-  try {
-    return localStorage.getItem(DEBUG) === "1";
-  } catch {
-    return false;
-  }
-}
-
 let state: UiState = {
   status: "準備中",
   start: { label: "起動", shown: false, disabled: false },
@@ -66,7 +48,6 @@ let state: UiState = {
   stats: [],
   bench: null,
   back: null,
-  debug: debugAtStart(),
   net: false,
   states: null,
 };
@@ -98,24 +79,3 @@ export function useUi(): UiState {
     () => state,
   );
 }
-
-export function setDebug(on: boolean): void {
-  try {
-    localStorage.setItem(DEBUG, on ? "1" : "0");
-  } catch {
-    // (no storage: this page only)
-  }
-  setUi({ debug: on });
-}
-
-addEventListener(
-  "keydown",
-  (e) => {
-    if (e.ctrlKey && e.shiftKey && e.code === "KeyD") {
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      setDebug(!state.debug);
-    }
-  },
-  true,
-);

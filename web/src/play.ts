@@ -21,7 +21,7 @@ import { linuxKeycode } from "./keymap";
 import { AudioOut } from "./audio";
 import { Video } from "./video";
 import { applyGame, coverUrl, fetchGames, type GameEntry } from "./launcher";
-import { getUi, setDebug, setStart, setUi } from "./ui/store";
+import { getUi, setStart, setUi } from "./ui/store";
 import { renderShell } from "./ui/Shell";
 import { showLibrary } from "./ui/Library";
 import { FlightRecorder, sendLeftovers } from "./crashlog";
@@ -173,16 +173,6 @@ function virtualKey(code: string): number {
 }
 
 async function boot(audio: Promise<AudioOut>): Promise<void> {
-  // a three-finger tap over the game: debug mode on/off (Ctrl+Shift+D on a phone; four fingers
-  // save the log, crashlog.ts). On the last finger up: a four-finger tap has three down first.
-  let fingers = 0;
-  addEventListener("touchstart", (e) => (fingers = Math.max(fingers, e.touches.length)));
-  addEventListener("touchend", (e) => {
-    if (e.touches.length) return;
-    if (fingers === 3) setDebug(!getUi().debug);
-    fingers = 0;
-  });
-  addEventListener("touchcancel", (e) => e.touches.length || (fingers = 0));
   const run = params.get("run") ?? "C:\\wintest.exe";
   // saved games: per program and mounts; what it writes in its folders and the user folders
   // (&saves: the launcher's, kept by the program it started: BISHOP's startup.exe writes the
@@ -671,7 +661,7 @@ async function main(): Promise<void> {
     const g = (await fetchGames()).find((x) => x.id === id);
     if (!g) throw new Error(`ゲーム ${id} が一覧にありません`);
     applyGame(params, g);
-    document.title = `${g.title} - vnvm`;
+    document.title = `${g.title} - ippai`;
     setStart({ label: `${g.title} を起動` });
     splash(g);
   }

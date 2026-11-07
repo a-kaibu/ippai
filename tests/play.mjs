@@ -7,7 +7,7 @@
 // instead, then CLICK_EVERY takes over (SHOT_COORDS=1: click coordinates are screenshot pixels). CHROME_ARGS adds browser flags; USER_DATA_DIR keeps the
 // browser profile (its HTTP and code caches) there across runs. NET="kbit/s,ms" throttles the
 // network; NET_DROP="at,seconds" cuts it off at `at` s for `seconds` (repeatable: "a,s;a,s"; a
-// phone out of coverage); DEBUG_TEXT=1 logs the debug overlay (?debugmode=1) after every shot.
+// phone out of coverage). (The network numbers are in the run log's perf lines.)
 //
 //   node tests/play.mjs URL OUT_DIR [SECONDS] [INTERVAL]
 const pw = await import(process.env.PLAYWRIGHT ?? "playwright");
@@ -154,11 +154,6 @@ while (Date.now() < end) {
     while (mashing && Date.now() < next) await click(Number(mash[0]), Number(mash[1])), await page.waitForTimeout(Number(mash[2]));
   await page.waitForTimeout(Math.max(0, next - Date.now()));
   await shot(++n);
-  // the debug overlay's numbers (play.html?debugmode=1: network, memory, fps)
-  if (process.env.DEBUG_TEXT) {
-    const t = await page.evaluate(() => document.querySelector("[data-debug-overlay]")?.innerText ?? "");
-    appendFileSync(logFile, `${stamp()} [debug] ${t.replace(/\n/g, " | ")}\n`);
-  }
   if (n === 1) {
     for (const xy of process.env.CLICKS?.split(";") ?? []) {
       const [x, y] = xy.split(",").map(Number);

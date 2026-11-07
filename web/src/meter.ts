@@ -1,10 +1,7 @@
 // Network and memory of the running game, polled once a second: the store's requests (counted
 // in crates/kura/src/vfs.rs, vnhost_net_stats: the game's threads read files chunk by chunk
 // with synchronous requests), the page's own fetches (read-ahead chunks, saved regions), wasm
-// heap, JS heap and fps. The debug overlay (ui/Debug.tsx) shows the last seconds, the run log's
-// perf lines (crashlog.ts) the last 10 s.
-
-import { useSyncExternalStore } from "react";
+// heap, JS heap and fps, for the run log's perf lines (crashlog.ts, the last 10 s).
 
 export interface MeterWasm {
   wasmMemory: WebAssembly.Memory;
@@ -263,10 +260,6 @@ class Meter {
 
 export const meter = new Meter();
 
-export function useMeter(): MeterView | null {
-  return useSyncExternalStore(meter.subscribe, meter.current);
-}
-
 const mb = (n: number) => (n / 2 ** 20).toFixed(n < 10 * 2 ** 20 ? 2 : 1);
 
 /** The run log's network and memory part of a perf line. */
@@ -284,5 +277,3 @@ export function meterLine(v: MeterView | null): string {
       : "")
   );
 }
-
-export { mb };

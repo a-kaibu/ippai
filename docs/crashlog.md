@@ -19,8 +19,8 @@ worker2 では `/home/kota/vnvm/vnvm-bench/logs/`) に `<名前>.txt` で置き�
 
 見るには:
 
-* ブラウザ: `logs.html` (ゲーム一覧の右上「ログ」)。サーバーのログと、そのブラウザの OPFS のログ
-  (表示・ダウンロード・サーバーへ送る) が並びます。
+* ブラウザの画面はありません (2026-11-07 に一覧の「ログ」画面は外しました)。OPFS に残ったログは
+  次にページを開いたときにサーバーへ送られます。
 * サーバー: `ls -t /home/kota/vnvm/vnvm-bench/logs/`、`GET /log-list` (JSON)、`/logs/<名前>.txt`。
   保存のたびにサーバーの標準エラーに `log <path>: <KB>, <reason>` が出ます。
 

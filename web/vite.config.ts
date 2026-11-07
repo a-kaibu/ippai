@@ -27,7 +27,7 @@ const frame = (): Plugin => ({
 // or with 端末に保存) and an id from their contents
 const PUBLIC_SHELL = [
   "manifest.webmanifest",
-  "icons/icon.svg",
+  "icons/favicon-48.png",
   "icons/icon-192.png",
   "icons/icon-512.png",
   "icons/maskable-512.png",
@@ -80,15 +80,13 @@ export default defineConfig({
     target: "es2022",
     // index.html = play.html: sake (crates/sake, files in public/sake/), the game list
     // without ?run=;
-    // bench.html: bench.exe on play.html with the native numbers next to it; logs.html: the runs'
-    // logs (crash reports)
+    // bench.html: bench.exe on play.html with the native numbers next to it
     rollupOptions: {
       input: {
         main: "index.html",
         play: "play.html",
         bench: "bench.html",
         game: "game.html",
-        logs: "logs.html",
       },
     },
   },
