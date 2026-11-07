@@ -1,0 +1,42 @@
+# The Rust tests under AddressSanitizer (out of bounds, use after free, leaks: guest memory
+# through raw pointers, MAP_32BIT arenas, the C runtime's heap) and ThreadSanitizer (races
+# between guest threads, the JIT's compiler thread, movie and audio workers): tools/ci/sanitize.sh.
+# On every push to main (one run per commit, never cancelled by the next push) and weekly.
+name: Sanitize
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "41 4 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sanitize-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  sanitize:
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [address, thread]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/sanitize-${{ matrix.kind }}
+          key: sanitize-${{ matrix.kind }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: sanitize-${{ matrix.kind }}-
+      - name: Tools
+        run: rustup toolchain install nightly --profile minimal --component rust-src
+      - name: Tests under ${{ matrix.kind }} sanitizer
+        run: tools/ci/sanitize.sh ${{ matrix.kind }}

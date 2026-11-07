@@ -1,0 +1,3 @@
+# iced-x86 keeps its decoder tables in a lazily built static (spin::Once) whose boxed handlers
+# LeakSanitizer cannot reach through the table's encoding: kept for the process's life on purpose.
+leak:iced_x86::decoder::table_de

@@ -47,6 +47,9 @@ workflows:
         - 'goreleaser/goreleaser-action@v7.3.0'
         - 'mlugg/setup-zig@v2.2.1'
         - 'taiki-e/install-action@v2.88.1'
+    '.github/workflows/sanitize.yml':
+        - 'actions/cache@v6.1.0'
+        - 'actions/checkout@v7.0.1'
     '.github/workflows/winref.yml':
         - 'actions/cache@v6.1.0'
         - 'actions/checkout@v7.0.1'
