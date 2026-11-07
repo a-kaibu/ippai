@@ -118,7 +118,8 @@ static void objects(HWND hwnd) {
 struct v { float x, y, z, rhw; DWORD c; };
 
 static void tri(IDirect3DDevice7 *dev, DWORD color) {
-    struct v t[3] = { { 2, 2, 0.5f, 1, color }, { 30, 4, 0.5f, 1, color }, { 6, 28, 0.5f, 1, color } };
+    /* (off the pixel centers: which edge keeps a pixel exactly on it is not what this probe is about) */
+    struct v t[3] = { { 2.3f, 2.2f, 0.5f, 1, color }, { 30.1f, 4.6f, 0.5f, 1, color }, { 6.4f, 28.3f, 0.5f, 1, color } };
     HRESULT hr = IDirect3DDevice7_DrawPrimitive(dev, D3DPT_TRIANGLELIST, D3DFVF_XYZRHW | D3DFVF_DIFFUSE, t, 3, 0);
     if (FAILED(hr)) printf("DrawPrimitive %#lx\n", hr);
 }
@@ -230,14 +231,14 @@ static void device(HWND hwnd) {
     D3DLIGHT7 l = { D3DLIGHT_DIRECTIONAL };
     l.dcvDiffuse.r = l.dcvDiffuse.g = l.dcvDiffuse.b = 1;
     l.dvDirection.z = 1;
-    DWORD idx[4] = { 0, 7, 100000, 0xfffffffe };
+    DWORD idx[4] = { 0, 7, 100000, 200000 }; /* (Windows grows an array up to the index: 0xfffffffe crashes it) */
     for (int i = 0; i < 4; i++) printf("SetLight %#lx %#lx\n", idx[i], IDirect3DDevice7_SetLight(dev, idx[i], &l));
     D3DLIGHT7 g;
     printf("GetLight 3 (never set) %#lx\n", IDirect3DDevice7_GetLight(dev, 3, &g));
     printf("GetLight 100000 %#lx\n", IDirect3DDevice7_GetLight(dev, 100000, &g));
-    printf("LightEnable 0x7ffffff0 (never set) %#lx\n", IDirect3DDevice7_LightEnable(dev, 0x7ffffff0, TRUE));
+    printf("LightEnable 150000 (never set) %#lx\n", IDirect3DDevice7_LightEnable(dev, 150000, TRUE));
     BOOL on = 9;
-    printf("GetLightEnable 0x7ffffff0 %#lx\n", IDirect3DDevice7_GetLightEnable(dev, 0x7ffffff0, &on));
+    printf("GetLightEnable 150000 %#lx\n", IDirect3DDevice7_GetLightEnable(dev, 150000, &on));
     printf("  on %d\n", on);
     on = 9;
     printf("GetLightEnable 7 %#lx\n", IDirect3DDevice7_GetLightEnable(dev, 7, &on));

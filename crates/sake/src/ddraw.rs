@@ -65,6 +65,9 @@ struct Surf {
     zbuf: u32,
     /// the DirectDraw object that made it
     dd: u32,
+    /// the IDirectDraw4/7 interface it holds a reference of (made through one of those, as on
+    /// Windows; 0: none)
+    dd_held: u32,
 }
 
 struct State {
@@ -255,6 +258,7 @@ fn new_surface_pf(w: i32, h: i32, bpp: u16, r565: bool, pf: [u32; 5], caps: u32)
                 lock: None,
                 zbuf: 0,
                 dd: 0,
+                dd_held: 0,
             },
         );
         id
@@ -423,6 +427,9 @@ fn free_surface(c: &mut Ctx, id: u32) {
     mem::release(s.bits);
     if s.zbuf != 0 {
         release_surface(c, s.zbuf);
+    }
+    if s.dd_held != 0 {
+        dd_release(s.dd_held);
     }
 }
 
@@ -1221,7 +1228,16 @@ fn D_CreateSurface(c: &mut Ctx) -> u32 {
     let pf = pfv.filter(|p| p[1] | p[2] | p[3] != 0).unwrap_or_else(|| plain_pf(bpp, r565));
     let Some(id) = new_surface_pf(w, h, bpp, r565, pf, caps) else { return DDERR_OUTOFMEMORY };
     let owner = dd_of(c.a(0)).0;
-    with(|s| s.surfs.get_mut(&id).map(|x| x.dd = owner));
+    let held = if kind >= 1 { c.a(0) } else { 0 };
+    if held != 0 {
+        dd_addref(held);
+    }
+    with(|s| {
+        s.surfs.get_mut(&id).map(|x| {
+            x.dd = owner;
+            x.dd_held = held;
+        })
+    });
     if flags & 0x10000 != 0 {
         let key = (r32(d + 64), r32(d + 68));
         with(|s| s.surfs.get_mut(&id).map(|x| x.ck_src = Some(key)));

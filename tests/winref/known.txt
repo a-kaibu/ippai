@@ -80,3 +80,6 @@ d2d-* ^image (fills_aa|outlines|transforms):
 # a few levels differently (formats/blend_depth: within 4)
 gl-* ^(want|got) +pixel format: 
 gl-* ^image (raster|textures):
+# Windows' Direct3D 7 device takes several references of its IDirect3D7 for itself (9 in all
+# after CreateDevice); sake's device holds one, dropped with the device as Windows' are
+ddrefs-* ^(want|got) +refs d3d7 after CreateDevice 

@@ -10,6 +10,7 @@ use super::*;
 
 const D3D_OK: u32 = 0;
 const D3DERR_INVALIDCALL: u32 = 0x8007_0057;
+const D3DERR_VBUF_CREATE_FAILED: u32 = 0x8876_0825;
 
 const RS_ZENABLE: usize = 7;
 const RS_SHADEMODE: usize = 9;
@@ -61,6 +62,8 @@ struct Dev {
     rt: u32,
     /// the DirectDraw object (GetDirect3D)
     dd: u32,
+    /// the IDirect3D7 interface that made it, of which it holds a reference
+    d3d_held: u32,
     /// x, y, width, height
     vp: [i32; 4],
     zr: (f32, f32),
@@ -136,7 +139,7 @@ impl Dev {
         }
         let mut mat = [0f32; 17];
         mat[..4].copy_from_slice(&[1., 1., 1., 1.]);
-        Dev { rt, dd, vp: [0, 0, w, h], zr: (0., 1.), xf: [IDENT; 3], rs, tss, tex: [0; 8], mat, lights: Default::default(), rec: None }
+        Dev { rt, dd, d3d_held: 0, vp: [0, 0, w, h], zr: (0., 1.), xf: [IDENT; 3], rs, tss, tex: [0; 8], mat, lights: Default::default(), rec: None }
     }
 
     /// Applies a change; a texture change takes a reference of the new texture and returns
@@ -275,20 +278,10 @@ fn release_surfs(c: &mut Ctx, ids: &[u32]) {
     }
 }
 
-/// The textures a state block's changes name: the block holds a reference of each.
-fn block_texs(v: &[Ch]) -> Vec<u32> {
-    v.iter().filter_map(|ch| if let Ch::Tex(_, t) = ch { Some(*t) } else { None }).collect()
-}
-
-/// Stores state block `h` (taking references of its textures), dropping the one it replaces.
-fn store_block(c: &mut Ctx, h: u32, v: Vec<Ch>) {
-    for t in block_texs(&v) {
-        hold_surf(t);
-    }
-    let old = d3d(|d| d.blocks.insert(h, v));
-    if let Some(old) = old {
-        release_surfs(c, &block_texs(&old));
-    }
+/// Stores state block `h`. A block holds no reference of the textures it names (Windows'
+/// don't: tests/winref ddrefs); surface ids are never reused, so one gone is skipped.
+fn store_block(h: u32, v: Vec<Ch>) {
+    d3d(|d| d.blocks.insert(h, v));
 }
 
 fn rf(a: u32) -> f32 {
@@ -475,10 +468,13 @@ fn Q_CreateDevice(c: &mut Ctx) -> u32 {
     };
     let dd = dd_of(c.a(0)).0;
     hold_surf(rt);
+    dd_addref(c.a(0));
+    let mut dv = Dev::new(rt, dd);
+    dv.d3d_held = c.a(0);
     let id = d3d(|d| {
         let id = d.next;
         d.next += 1;
-        d.devs.insert(id, Dev::new(rt, dd));
+        d.devs.insert(id, dv);
         id
     });
     let b = mem::heap_alloc(12, true);
@@ -516,10 +512,13 @@ fn Q_CreateVertexBuffer(c: &mut Ctx) -> u32 {
         return D3DERR_INVALIDCALL;
     }
     let (fvf, n) = (r32(desc + 8), r32(desc + 12));
-    let Some(size) = vb_size(fvf, n) else { return D3DERR_INVALIDCALL };
+    if n == 0 {
+        return D3DERR_INVALIDCALL;
+    }
+    let Some(size) = vb_size(fvf, n) else { return D3DERR_VBUF_CREATE_FAILED };
     let m = mem::heap_alloc(size.max(4), true);
     if m == 0 {
-        return DDERR_OUTOFMEMORY;
+        return D3DERR_VBUF_CREATE_FAILED;
     }
     let b = mem::heap_alloc(12, true);
     w32(b, vb_vtbl());
@@ -575,13 +574,11 @@ fn B_Release(c: &mut Ctx) -> u32 {
     }
     n
 }
-/// The bytes of `n` vertices of `fvf` (None: no position, or past what the guest can hold).
+/// The bytes of `n` vertices of `fvf` (None: past 32 bits or the cap). An FVF without a
+/// position is sized as with D3DFVF_XYZ, as Windows does (tests/winref ddrefs).
 fn vb_size(fvf: u32, n: u32) -> Option<u32> {
-    let l = Layout::of(fvf);
-    if fvf & 0xe == 0 || l.size == 0 {
-        return None;
-    }
-    l.size.checked_mul(n).filter(|&s| s <= MAX_VB)
+    let fvf = if fvf & 0xe == 0 { fvf | 0x2 } else { fvf };
+    Layout::of(fvf).size.checked_mul(n).filter(|&s| s <= MAX_VB)
 }
 
 /// The largest vertex buffer made (bigger ones fail as out of memory would)
@@ -672,6 +669,9 @@ fn V_Release(c: &mut Ctx) -> u32 {
             let mut held = d.tex.to_vec();
             held.push(d.rt);
             release_surfs(c, &held);
+            if d.d3d_held != 0 {
+                dd_release(d.d3d_held);
+            }
         }
     }
     n
@@ -873,24 +873,24 @@ fn V_ValidateDevice(c: &mut Ctx) -> u32 {
 fn V_BeginStateBlock(c: &mut Ctx) -> u32 {
     dev(c, |d| d.rec = Some(Vec::new())).map_or(D3DERR_INVALIDCALL, |_| D3D_OK)
 }
-fn new_block(c: &mut Ctx, v: Vec<Ch>) -> u32 {
+fn new_block(v: Vec<Ch>) -> u32 {
     let h = d3d(|d| {
         let h = d.next;
         d.next += 1;
         h
     });
-    store_block(c, h, v);
+    store_block(h, v);
     h
 }
 fn V_EndStateBlock(c: &mut Ctx) -> u32 {
     let Some(v) = dev(c, |d| d.rec.take()).flatten() else { return D3DERR_INVALIDCALL };
-    let h = new_block(c, v);
+    let h = new_block(v);
     put32(c.a(1), h);
     D3D_OK
 }
 fn V_CreateStateBlock(c: &mut Ctx) -> u32 {
     let Some(all) = dev(c, |d| d.all()) else { return D3DERR_INVALIDCALL };
-    let h = new_block(c, all);
+    let h = new_block(all);
     put32(c.a(2), h);
     D3D_OK
 }
@@ -904,12 +904,13 @@ fn V_CaptureStateBlock(c: &mut Ctx) -> u32 {
     let h = c.a(1);
     let Some(v) = d3d(|d| d.blocks.get(&h).cloned()) else { return D3DERR_INVALIDCALL };
     let Some(nv) = dev(c, |d| v.iter().map(|ch| d.capture(ch)).collect::<Vec<_>>()) else { return D3DERR_INVALIDCALL };
-    store_block(c, h, nv);
+    store_block(h, nv);
     D3D_OK
 }
 fn V_DeleteStateBlock(c: &mut Ctx) -> u32 {
-    let Some(old) = d3d(|d| d.blocks.remove(&c.a(1))) else { return D3DERR_INVALIDCALL };
-    release_surfs(c, &block_texs(&old));
+    if d3d(|d| d.blocks.remove(&c.a(1))).is_none() {
+        return D3DERR_INVALIDCALL;
+    }
     D3D_OK
 }
 fn V_ComputeSphereVisibility(c: &mut Ctx) -> u32 {
@@ -1930,12 +1931,11 @@ mod tests {
         assert_eq!(vb_size(tl, u32::MAX), None);
         assert_eq!(vb_size(tl, MAX_VB / 32), Some(MAX_VB));
         assert_eq!(vb_size(tl, MAX_VB / 32 + 1), None);
-        assert_eq!(vb_size(FVF_DIFFUSE, 3), None, "no position");
-        for fvf in (0..0x1000u32).step_by(2) {
+        assert_eq!(vb_size(FVF_DIFFUSE, 3), Some(48), "no position: sized as XYZ");
+        for fvf in (2..0x1000u32).step_by(2).filter(|f| f & 0xe != 0) {
             for n in [1u32, 7, 0x0010_0000, 0x7fff_ffff, u32::MAX] {
-                if let Some(s) = vb_size(fvf, n) {
-                    assert_eq!(s as u64, Layout::of(fvf).size as u64 * n as u64, "{fvf:#x} x {n}");
-                }
+                let want = Layout::of(fvf).size as u64 * n as u64;
+                assert_eq!(vb_size(fvf, n), (want <= MAX_VB as u64).then_some(want as u32), "{fvf:#x} x {n}");
             }
         }
     }
