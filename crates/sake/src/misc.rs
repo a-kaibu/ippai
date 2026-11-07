@@ -1218,6 +1218,18 @@ fn StringFromGUID2(c: &mut Ctx) -> u32 {
     }
     mem::put_wstr(out, n, &s) + 1
 }
+/// StringFromCLSID / StringFromIID: the "{...}" string in CoTaskMem
+fn StringFromCLSID(c: &mut Ctx) -> u32 {
+    let (g, out) = (c.a(0), c.a(1));
+    let s: Vec<u16> = guid_string(g).encode_utf16().collect();
+    let p = mem::heap_alloc(2 * s.len() as u32 + 2, false);
+    mem::put_wstr(p, s.len() as u32 + 1, &s);
+    mem::putp(out, p);
+    0
+}
+fn StringFromIID(c: &mut Ctx) -> u32 {
+    StringFromCLSID(c)
+}
 /// CLSIDFromString / IIDFromString: "{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}" (ProgIDs are not
 /// registered: CO_E_CLASSSTRING).
 fn guid_from_string(c: &mut Ctx) -> u32 {
@@ -2853,11 +2865,16 @@ pub fn init() {
     implement("rpcrt4", "UuidCreateSequential", UuidCreate);
     implement("rpcrt4", "RpcStringFreeW", RpcStringFreeA);
     reg!("ole32"; CoInitialize, CoInitializeEx, OleInitialize, CoUninitialize, OleUninitialize, CoCreateInstance,
-        CoTaskMemAlloc, CoTaskMemRealloc, CoTaskMemFree, CoGetMalloc, CoCreateGuid, IsEqualGUID, StringFromGUID2, CLSIDFromString, CLSIDFromProgID, IIDFromString,
+        CoTaskMemAlloc, CoTaskMemRealloc, CoTaskMemFree, CoGetMalloc, CoCreateGuid, IsEqualGUID, StringFromGUID2, StringFromCLSID, StringFromIID, CLSIDFromString, CLSIDFromProgID, IIDFromString,
         RegisterDragDrop, RevokeDragDrop);
     reg!("oleaut32"; SysAllocString, SysAllocStringLen, SysAllocStringByteLen, SysReAllocString,
         SysReAllocStringLen, SysFreeString, SysStringLen, SysStringByteLen, VariantInit, VariantClear, VariantCopy,
         VariantCopyInd, VariantChangeTypeEx, VariantChangeType, GetErrorInfo, SetErrorInfo);
+    reg!("oleaut32"; SafeArrayCreate, SafeArrayCreateEx, SafeArrayCreateVector, SafeArrayAllocDescriptor,
+        SafeArrayAllocDescriptorEx, SafeArrayAllocData, SafeArrayGetDim, SafeArrayGetElemsize, SafeArrayGetVartype,
+        SafeArrayGetLBound, SafeArrayGetUBound, SafeArrayLock, SafeArrayUnlock, SafeArrayAccessData,
+        SafeArrayUnaccessData, SafeArrayPtrOfIndex, SafeArrayPutElement, SafeArrayGetElement, SafeArrayDestroyData,
+        SafeArrayDestroyDescriptor, SafeArrayDestroy, SafeArrayRedim);
     reg!("shfolder"; SHGetFolderPathA, SHGetFolderPathW);
     reg!("shell32"; SHCreateDirectoryExA, SHCreateDirectoryExW, SHCreateDirectory, SHGetSpecialFolderPathA, SHGetSpecialFolderPathW, SHGetFolderPathA, SHGetFolderPathW,
         SHGetSpecialFolderLocation, SHGetFolderLocation, SHGetPathFromIDListA, SHGetPathFromIDListW, ILFree, SHGetMalloc, IsUserAnAdmin,
@@ -3163,3 +3180,419 @@ mod tests {
         assert_eq!(real_str(1e20, 15), "1E+20");
     }
 }
+
+/// SAFEARRAY (oleaut32): {cDims u16, fFeatures u16, cbElements u32, cLocks u32, pvData ptr,
+/// rgsabound[cDims] of {cElements, lLbound}} with the bounds stored right to left (struct
+/// bound 0 is the last dimension), the first index varying fastest, and the vartype in the
+/// hidden dword 4 bytes before the struct (16 bytes hold an IID for interface arrays).
+mod safearray {
+    use super::*;
+    const BADINDEX: u32 = 0x8002_000b;
+    const LOCKED: u32 = 0x8002_000d;
+    const INVALIDARG: u32 = 0x8007_0057;
+    const UNEXPECTED: u32 = 0x8000_ffff;
+    const F_BSTR: u16 = 0x100;
+    const F_UNKNOWN: u16 = 0x200;
+    const F_DISPATCH: u16 = 0x400;
+    const F_VARIANT: u16 = 0x800;
+    const F_HAVEIID: u16 = 0x40;
+    const F_HAVEVARTYPE: u16 = 0x80;
+    const F_FIXEDSIZE: u16 = 0x10;
+    const F_CREATEVECTOR: u16 = 0x2000;
+
+    fn data_at(sa: u32) -> u32 {
+        sa + 12 + (mem::ps() - 4)
+    }
+    fn bounds(sa: u32) -> u32 {
+        data_at(sa) + mem::ps()
+    }
+    fn dims(sa: u32) -> u32 {
+        r16(sa) as u32
+    }
+    /// The bound of dimension `d` (1-based, left to right).
+    fn bound(sa: u32, d: u32) -> u32 {
+        bounds(sa) + 8 * (dims(sa) - d)
+    }
+    pub(super) fn elem_size(vt: u32) -> u32 {
+        match vt {
+            16 | 17 => 1,
+            2 | 18 | 11 => 2,
+            3 | 19 | 4 | 10 | 22 | 23 => 4,
+            5 | 6 | 7 | 20 | 21 => 8,
+            8 | 9 | 13 => mem::ps(),
+            12 => 8 + 2 * mem::ps(),
+            14 => 16,
+            _ => 0,
+        }
+    }
+    fn cells(sa: u32) -> u32 {
+        (0..dims(sa)).map(|i| r32(bounds(sa) + 8 * i)).product()
+    }
+    fn alloc_desc(vt: u32, n: u32, extra: u32) -> u32 {
+        let size = 16 + 4 * mem::ps() + 8 * n.max(1);
+        let p = mem::heap_alloc(size + extra, true);
+        let sa = p + 16;
+        w16(sa, n as u16);
+        let f = match vt {
+            8 => F_BSTR | F_HAVEVARTYPE,
+            13 => F_UNKNOWN | F_HAVEIID,
+            9 => F_DISPATCH | F_HAVEIID,
+            12 => F_VARIANT | F_HAVEVARTYPE,
+            _ => F_HAVEVARTYPE,
+        };
+        w16(sa + 2, f);
+        w32(sa + 4, elem_size(vt));
+        w32(sa - 4, vt);
+        if f & F_HAVEIID != 0 {
+            // IID_IUnknown / IID_IDispatch
+            let iid: [u8; 16] = [if vt == 9 { 4 } else { 0 }, if vt == 9 { 4 } else { 0 }, 2, 0, 0, 0, 0, 0, 0xc0, 0, 0, 0, 0, 0, 0, 0x46];
+            mem::write(sa - 16, &iid);
+        }
+        sa
+    }
+    fn free_elems(sa: u32, from: u32) {
+        let (f, es, n) = (r16(sa + 2), r32(sa + 4), cells(sa));
+        let d = mem::rp(data_at(sa));
+        if d == 0 {
+            return;
+        }
+        for i in from..n {
+            let e = d + i * es;
+            if f & F_BSTR != 0 {
+                bstr_free(mem::rp(e));
+                mem::wp(e, 0);
+            } else if f & F_VARIANT != 0 {
+                if r16(e) == 8 {
+                    bstr_free(mem::rp(e + 8));
+                }
+                mem::fill(e, es, 0);
+            }
+        }
+    }
+    fn index(sa: u32, ix: u32) -> Option<u32> {
+        let n = dims(sa);
+        let mut cell = 0u32;
+        let mut stride = 1u32;
+        for d in 1..=n {
+            let b = bound(sa, d);
+            let (cnt, lb) = (r32(b), r32(b + 4) as i32);
+            let i = r32(ix + 4 * (d - 1)) as i32;
+            if i < lb || (i as i64) >= lb as i64 + cnt as i64 {
+                return None;
+            }
+            cell += (i - lb) as u32 * stride;
+            stride *= cnt;
+        }
+        Some(mem::rp(data_at(sa)) + cell * r32(sa + 4))
+    }
+    fn create(vt: u32, n: u32, sab: u32) -> u32 {
+        let es = elem_size(vt);
+        if es == 0 || n == 0 || n > 0xffff {
+            return 0;
+        }
+        let sa = alloc_desc(vt, n, 0);
+        for d in 1..=n {
+            mem::copy(bound(sa, d), sab + 8 * (d - 1), 8);
+        }
+        let data = mem::heap_alloc((cells(sa) * es).max(1), true);
+        mem::wp(data_at(sa), data);
+        sa
+    }
+    pub(super) fn SafeArrayCreate(c: &mut Ctx) -> u32 {
+        if c.a(2) == 0 {
+            return 0;
+        }
+        create(c.a(0), c.a(1), c.a(2))
+    }
+    pub(super) fn SafeArrayCreateEx(c: &mut Ctx) -> u32 {
+        SafeArrayCreate(c)
+    }
+    pub(super) fn SafeArrayCreateVector(c: &mut Ctx) -> u32 {
+        let (vt, lb, n) = (c.a(0), c.a(1), c.a(2));
+        let es = elem_size(vt);
+        if es == 0 {
+            return 0;
+        }
+        let sa = alloc_desc(vt, 1, n * es);
+        w16(sa + 2, r16(sa + 2) | F_CREATEVECTOR);
+        w32(bounds(sa), n);
+        w32(bounds(sa) + 4, lb);
+        mem::wp(data_at(sa), bounds(sa) + 8);
+        sa
+    }
+    pub(super) fn SafeArrayAllocDescriptor(c: &mut Ctx) -> u32 {
+        let (n, out) = (c.a(0), c.a(1));
+        if n == 0 || n > 0xffff || out == 0 {
+            return INVALIDARG;
+        }
+        let sa = alloc_desc(0, n, 0);
+        w32(sa + 2, 0);
+        w16(sa, n as u16);
+        w32(sa + 4, 0);
+        w32(sa - 4, 0);
+        mem::wp(out, sa);
+        0
+    }
+    pub(super) fn SafeArrayAllocDescriptorEx(c: &mut Ctx) -> u32 {
+        let (vt, n, out) = (c.a(0), c.a(1), c.a(2));
+        if n == 0 || n > 0xffff || out == 0 {
+            return INVALIDARG;
+        }
+        let es = elem_size(vt);
+        if es == 0 {
+            return INVALIDARG;
+        }
+        mem::wp(out, alloc_desc(vt, n, 0));
+        0
+    }
+    pub(super) fn SafeArrayAllocData(c: &mut Ctx) -> u32 {
+        let sa = c.a(0);
+        if sa == 0 {
+            return INVALIDARG;
+        }
+        let d = mem::heap_alloc((cells(sa) * r32(sa + 4)).max(1), true);
+        mem::wp(data_at(sa), d);
+        0
+    }
+    pub(super) fn SafeArrayGetDim(c: &mut Ctx) -> u32 {
+        if c.a(0) == 0 { 0 } else { dims(c.a(0)) }
+    }
+    pub(super) fn SafeArrayGetElemsize(c: &mut Ctx) -> u32 {
+        if c.a(0) == 0 { 0 } else { r32(c.a(0) + 4) }
+    }
+    pub(super) fn SafeArrayGetVartype(c: &mut Ctx) -> u32 {
+        let (sa, out) = (c.a(0), c.a(1));
+        if sa == 0 || out == 0 {
+            return INVALIDARG;
+        }
+        let f = r16(sa + 2);
+        let vt = if f & F_HAVEVARTYPE != 0 {
+            r32(sa - 4)
+        } else if f & F_BSTR != 0 {
+            8
+        } else if f & F_VARIANT != 0 {
+            12
+        } else if f & F_DISPATCH != 0 {
+            9
+        } else if f & F_UNKNOWN != 0 {
+            13
+        } else {
+            return INVALIDARG;
+        };
+        w16(out, vt as u16);
+        0
+    }
+    fn get_bound(c: &mut Ctx, upper: bool) -> u32 {
+        let (sa, d, out) = (c.a(0), c.a(1), c.a(2));
+        if sa == 0 || out == 0 {
+            return INVALIDARG;
+        }
+        if d == 0 || d > dims(sa) {
+            return BADINDEX;
+        }
+        let b = bound(sa, d);
+        let lb = r32(b + 4);
+        w32(out, if upper { lb.wrapping_add(r32(b)).wrapping_sub(1) } else { lb });
+        0
+    }
+    pub(super) fn SafeArrayGetLBound(c: &mut Ctx) -> u32 {
+        get_bound(c, false)
+    }
+    pub(super) fn SafeArrayGetUBound(c: &mut Ctx) -> u32 {
+        get_bound(c, true)
+    }
+    pub(super) fn SafeArrayLock(c: &mut Ctx) -> u32 {
+        let sa = c.a(0);
+        if sa == 0 {
+            return INVALIDARG;
+        }
+        let n = r32(sa + 8) + 1;
+        if n > 0xffff {
+            return UNEXPECTED;
+        }
+        w32(sa + 8, n);
+        0
+    }
+    pub(super) fn SafeArrayUnlock(c: &mut Ctx) -> u32 {
+        let sa = c.a(0);
+        if sa == 0 {
+            return INVALIDARG;
+        }
+        let n = r32(sa + 8);
+        if n == 0 {
+            return UNEXPECTED;
+        }
+        w32(sa + 8, n - 1);
+        0
+    }
+    pub(super) fn SafeArrayAccessData(c: &mut Ctx) -> u32 {
+        let (sa, out) = (c.a(0), c.a(1));
+        if sa == 0 || out == 0 {
+            return INVALIDARG;
+        }
+        let r = SafeArrayLock(c);
+        if r != 0 {
+            mem::wp(out, 0);
+            return r;
+        }
+        mem::wp(out, mem::rp(data_at(sa)));
+        0
+    }
+    pub(super) fn SafeArrayUnaccessData(c: &mut Ctx) -> u32 {
+        SafeArrayUnlock(c)
+    }
+    pub(super) fn SafeArrayPtrOfIndex(c: &mut Ctx) -> u32 {
+        let (sa, ix, out) = (c.a(0), c.a(1), c.a(2));
+        if sa == 0 || ix == 0 || out == 0 {
+            return INVALIDARG;
+        }
+        match index(sa, ix) {
+            Some(p) => {
+                mem::wp(out, p);
+                0
+            }
+            None => BADINDEX,
+        }
+    }
+    pub(super) fn SafeArrayPutElement(c: &mut Ctx) -> u32 {
+        let (sa, ix, v) = (c.a(0), c.a(1), c.a(2));
+        if sa == 0 || ix == 0 {
+            return INVALIDARG;
+        }
+        let Some(p) = index(sa, ix) else { return BADINDEX };
+        let (f, es) = (r16(sa + 2), r32(sa + 4));
+        if f & F_BSTR != 0 {
+            bstr_free(mem::rp(p));
+            let n = if v == 0 { 0 } else { r32(v - 4) / 2 };
+            let s: Vec<u16> = (0..n).map(|i| r16(v + 2 * i)).collect();
+            mem::wp(p, if v == 0 { 0 } else { bstr_alloc(&s) });
+        } else if f & F_VARIANT != 0 {
+            if r16(p) == 8 {
+                bstr_free(mem::rp(p + 8));
+            }
+            mem::fill(p, es, 0);
+            variant_copy(p, v);
+        } else if f & (F_UNKNOWN | F_DISPATCH) != 0 {
+            let old = mem::rp(p);
+            if v != 0 {
+                com_call(c, v, 1);
+            }
+            if old != 0 {
+                com_call(c, old, 2);
+            }
+            mem::wp(p, v);
+        } else {
+            mem::copy(p, v, es);
+        }
+        0
+    }
+    pub(super) fn SafeArrayGetElement(c: &mut Ctx) -> u32 {
+        let (sa, ix, v) = (c.a(0), c.a(1), c.a(2));
+        if sa == 0 || ix == 0 || v == 0 {
+            return INVALIDARG;
+        }
+        let Some(p) = index(sa, ix) else { return BADINDEX };
+        let (f, es) = (r16(sa + 2), r32(sa + 4));
+        if f & F_BSTR != 0 {
+            let b = mem::rp(p);
+            let n = if b == 0 { 0 } else { r32(b - 4) / 2 };
+            let s: Vec<u16> = (0..n).map(|i| r16(b + 2 * i)).collect();
+            mem::wp(v, if b == 0 { 0 } else { bstr_alloc(&s) });
+        } else if f & F_VARIANT != 0 {
+            mem::fill(v, es, 0);
+            variant_copy(v, p);
+        } else {
+            mem::copy(v, p, es);
+            if f & (F_UNKNOWN | F_DISPATCH) != 0 && mem::rp(p) != 0 {
+                com_call(c, mem::rp(p), 1);
+            }
+        }
+        0
+    }
+    pub(super) fn SafeArrayDestroyData(c: &mut Ctx) -> u32 {
+        let sa = c.a(0);
+        if sa == 0 {
+            return 0;
+        }
+        if r32(sa + 8) != 0 {
+            return LOCKED;
+        }
+        free_elems(sa, 0);
+        let f = r16(sa + 2);
+        if f & F_CREATEVECTOR != 0 {
+            mem::fill(bounds(sa) + 8, cells(sa) * r32(sa + 4), 0);
+        } else {
+            let d = mem::rp(data_at(sa));
+            if d != 0 {
+                mem::heap_free(d);
+            }
+            mem::wp(data_at(sa), 0);
+        }
+        0
+    }
+    pub(super) fn SafeArrayDestroyDescriptor(c: &mut Ctx) -> u32 {
+        let sa = c.a(0);
+        if sa == 0 {
+            return 0;
+        }
+        if r32(sa + 8) != 0 {
+            return LOCKED;
+        }
+        mem::heap_free(sa - 16);
+        0
+    }
+    pub(super) fn SafeArrayDestroy(c: &mut Ctx) -> u32 {
+        let sa = c.a(0);
+        if sa == 0 {
+            return 0;
+        }
+        if r32(sa + 8) != 0 {
+            return LOCKED;
+        }
+        SafeArrayDestroyData(c);
+        SafeArrayDestroyDescriptor(c)
+    }
+    /// SafeArrayRedim changes the last (rightmost) dimension, keeping the elements that fit.
+    pub(super) fn SafeArrayRedim(c: &mut Ctx) -> u32 {
+        let (sa, nb) = (c.a(0), c.a(1));
+        if sa == 0 || nb == 0 {
+            return INVALIDARG;
+        }
+        if r32(sa + 8) != 0 {
+            return LOCKED;
+        }
+        if r16(sa + 2) & F_FIXEDSIZE != 0 {
+            return 0x8002_000c; // DISP_E_ARRAYISLOCKED's neighbour: FADF_FIXEDSIZE refuses
+        }
+        let es = r32(sa + 4);
+        let old_cells = cells(sa);
+        let b = bounds(sa);
+        let (old_n, new_n) = (r32(b), r32(nb));
+        let new_cells = if old_n == 0 { 0 } else { old_cells / old_n * new_n };
+        if new_cells < old_cells {
+            free_elems_from(sa, new_cells);
+        }
+        let old = mem::rp(data_at(sa));
+        let nd = mem::heap_alloc((new_cells * es).max(1), true);
+        if old != 0 {
+            mem::copy(nd, old, old_cells.min(new_cells) * es);
+            if r16(sa + 2) & F_CREATEVECTOR == 0 {
+                mem::heap_free(old);
+            }
+        }
+        mem::wp(data_at(sa), nd);
+        let f = r16(sa + 2) & !F_CREATEVECTOR;
+        w16(sa + 2, f);
+        mem::copy(b, nb, 8);
+        0
+    }
+    fn free_elems_from(sa: u32, from: u32) {
+        free_elems(sa, from)
+    }
+    /// AddRef (1) or Release (2) of an interface pointer, guest or sake object alike.
+    fn com_call(c: &mut Ctx, obj: u32, slot: u32) {
+        let f = mem::rp(mem::rp(obj) + slot * mem::ps());
+        c.call(f, &[obj]);
+    }
+}
+use safearray::*;

@@ -364,6 +364,7 @@ fn dispatch(cpu: &mut Cpu, rec: u32, orig: u32) {
         cpu.set_gpr(4, ptrs as u64 - 0x40);
         for f in veh {
             if crate::call(cpu, f, &[ptrs]) == 0xffff_ffff {
+                crate::seh::continue_handlers(cpu, ptrs);
                 load_context(cpu, orig);
                 return;
             }

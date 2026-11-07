@@ -2997,9 +2997,6 @@ fn IsDialogMessageW(c: &mut Ctx) -> u32 {
 fn TranslateMDISysAccel(_: &mut Ctx) -> u32 {
     0
 }
-fn TranslateAcceleratorA(_: &mut Ctx) -> u32 {
-    0
-}
 fn GetMessagePos(_: &mut Ctx) -> u32 {
     with(|s| ((s.last_msg_pos.1 as u32) << 16) | (s.last_msg_pos.0 as u32 & 0xffff))
 }
@@ -4387,14 +4384,183 @@ fn LoadBitmapW(c: &mut Ctx) -> u32 {
     let (inst, name) = (c.a(0), c.a(1));
     crate::gdi::load_bitmap(inst, name, true)
 }
-fn LoadAcceleratorsA(_: &mut Ctx) -> u32 {
-    fake_handle()
+/// A resource's data (module 0: the exe), or None with ERROR_RESOURCE_NAME_NOT_FOUND.
+fn resource(inst: u32, name: u32, ty: u32, wide: bool) -> Option<(u32, u32)> {
+    let m = if inst == 0 { crate::k32::module_handle(0, false) } else { inst };
+    let r = crate::pe::find_resource(m, &crate::pe::ResId::Int(ty), &crate::pe::ResId::from_arg(name, wide));
+    match r {
+        Some(e) => Some(crate::pe::resource_data(m, e)),
+        None => {
+            crate::k32::last_error(1814);
+            None
+        }
+    }
 }
-fn LoadMenuA(_: &mut Ctx) -> u32 {
-    new_menu()
+
+// accelerator tables: (fVirt, key, cmd) entries
+static ACCELS: Mutex<Option<HashMap<u32, Vec<(u8, u16, u16)>>>> = Mutex::new(None);
+fn new_accel(t: Vec<(u8, u16, u16)>) -> u32 {
+    let h = fake_handle();
+    ACCELS.lock().unwrap().get_or_insert_with(HashMap::default).insert(h, t);
+    h
 }
-fn LoadMenuW(_: &mut Ctx) -> u32 {
-    new_menu()
+/// LoadAccelerators: RT_ACCELERATOR entries are 8 bytes (flags, key, id, pad); 0x80 ends them
+fn load_accelerators(c: &mut Ctx, wide: bool) -> u32 {
+    let Some((p, size)) = resource(c.a(0), c.a(1), 9, wide) else { return 0 };
+    let mut t = Vec::new();
+    for i in 0..size / 8 {
+        let e = p + 8 * i;
+        let f = r16(e);
+        t.push(((f & 0x7f) as u8, r16(e + 2), r16(e + 4)));
+        if f & 0x80 != 0 {
+            break;
+        }
+    }
+    new_accel(t)
+}
+fn LoadAcceleratorsA(c: &mut Ctx) -> u32 {
+    load_accelerators(c, false)
+}
+fn LoadAcceleratorsW(c: &mut Ctx) -> u32 {
+    load_accelerators(c, true)
+}
+/// CreateAcceleratorTable(ACCEL*, n): ACCEL is fVirt (byte), key, cmd (6 bytes)
+fn CreateAcceleratorTableA(c: &mut Ctx) -> u32 {
+    let (p, n) = (c.a(0), c.a(1));
+    if p == 0 || n == 0 {
+        crate::k32::last_error(87);
+        return 0;
+    }
+    new_accel((0..n).map(|i| (crate::mem::r8(p + 6 * i), r16(p + 6 * i + 2), r16(p + 6 * i + 4))).collect())
+}
+fn CreateAcceleratorTableW(c: &mut Ctx) -> u32 {
+    CreateAcceleratorTableA(c)
+}
+fn DestroyAcceleratorTable(c: &mut Ctx) -> u32 {
+    ACCELS.lock().unwrap().get_or_insert_with(HashMap::default).remove(&c.a(0)).is_some() as u32
+}
+/// CopyAcceleratorTable(h, ACCEL*, n): the entry count with a null buffer, else how many
+/// were copied
+fn CopyAcceleratorTableA(c: &mut Ctx) -> u32 {
+    let (h, p, n) = (c.a(0), c.a(1), c.a(2));
+    let Some(t) = ACCELS.lock().unwrap().get_or_insert_with(HashMap::default).get(&h).cloned() else { return 0 };
+    if p == 0 {
+        return t.len() as u32;
+    }
+    let k = t.len().min(n as usize);
+    for (i, &(f, key, cmd)) in t[..k].iter().enumerate() {
+        let e = p + 6 * i as u32;
+        crate::mem::w8(e, f);
+        crate::mem::w8(e + 1, 0);
+        w16(e + 2, key);
+        w16(e + 4, cmd);
+    }
+    k as u32
+}
+fn CopyAcceleratorTableW(c: &mut Ctx) -> u32 {
+    CopyAcceleratorTableA(c)
+}
+/// TranslateAccelerator(hwnd, haccel, msg): a key down matching an entry (virtual key with
+/// its Shift/Ctrl/Alt, or the character for WM_CHAR) becomes WM_COMMAND (1, cmd)
+fn TranslateAcceleratorA(c: &mut Ctx) -> u32 {
+    let (hwnd, h, m) = (c.a(0), c.a(1), c.a(2));
+    if m == 0 {
+        return 0;
+    }
+    let (msg, wp) = (r32(m + 4), r32(m + 8));
+    let Some(t) = ACCELS.lock().unwrap().get_or_insert_with(HashMap::default).get(&h).cloned() else { return 0 };
+    let down = |k: usize| with(|s| s.keys[k] & 0x80 != 0);
+    let mods = (if down(0x10) { 4 } else { 0 }) | (if down(0x11) { 8 } else { 0 }) | (if down(0x12) { 16 } else { 0 });
+    let hit = t.iter().find(|&&(f, key, _)| {
+        if f & 1 != 0 {
+            matches!(msg, 0x100 | 0x104) && key as u32 == wp & 0xffff && (f & 0x1c) == mods
+        } else {
+            matches!(msg, 0x102 | 0x106) && key as u32 == wp & 0xffff
+        }
+    });
+    let Some(&(_, _, cmd)) = hit else { return 0 };
+    send(c, hwnd, 0x111, 0x1_0000 | cmd as u32, 0);
+    1
+}
+fn TranslateAcceleratorW(c: &mut Ctx) -> u32 {
+    TranslateAcceleratorA(c)
+}
+
+/// The items of a menu template at `p` into menu `h` (MENUITEMTEMPLATE: flags, id unless a
+/// popup, text; MF_END on the last of each level); returns where the level ended.
+fn menu_items(h: u32, mut p: u32) -> u32 {
+    loop {
+        let f = r16(p) as u32;
+        p += 2;
+        let id = if f & 0x10 == 0 {
+            p += 2;
+            r16(p - 2) as u32
+        } else {
+            0
+        };
+        let text = wstr(p);
+        p += 2 * text.len() as u32 + 2;
+        // (an item without text or id is a separator, as RC's MENUITEM SEPARATOR writes it)
+        let mut flags = f & !0x80;
+        if f & 0x10 == 0 && id == 0 && text.is_empty() {
+            flags |= 0x800;
+        }
+        if f & 0x10 != 0 {
+            let sub = new_menu();
+            p = menu_items(sub, p);
+            insert_item(h, 0xffff_ffff, true, MenuItem { id: 0xffff_ffff, flags, text, sub, data: 0 });
+        } else {
+            insert_item(h, 0xffff_ffff, true, MenuItem { id, flags, text, sub: 0, data: 0 });
+        }
+        if f & 0x80 != 0 {
+            return p;
+        }
+    }
+}
+/// MENUEX items: type, state, id (dwords), flags word (1 popup, 0x80 last), text, dword aligned;
+/// a popup has a help id and then its items
+fn menuex_items(h: u32, mut p: u32) -> u32 {
+    loop {
+        let (ty, state, id, res) = (r32(p), r32(p + 4), r32(p + 8), r16(p + 12) as u32);
+        let text = wstr(p + 14);
+        p = (p + 14 + 2 * text.len() as u32 + 2 + 3) & !3;
+        let flags = ty | state | if res & 1 != 0 { 0x10 } else { 0 };
+        if res & 1 != 0 {
+            let sub = new_menu();
+            p = menuex_items(sub, p + 4);
+            insert_item(h, 0xffff_ffff, true, MenuItem { id, flags, text, sub, data: 0 });
+        } else {
+            insert_item(h, 0xffff_ffff, true, MenuItem { id, flags, text, sub: 0, data: 0 });
+        }
+        if res & 0x80 != 0 {
+            return p;
+        }
+    }
+}
+fn menu_from_template(p: u32) -> u32 {
+    let h = new_menu();
+    match r16(p) {
+        0 => {
+            menu_items(h, p + 4 + r16(p + 2) as u32);
+        }
+        1 => {
+            menuex_items(h, p + 4 + r16(p + 2) as u32);
+        }
+        _ => {}
+    }
+    h
+}
+fn LoadMenuA(c: &mut Ctx) -> u32 {
+    resource(c.a(0), c.a(1), 4, false).map_or(0, |(p, _)| menu_from_template(p))
+}
+fn LoadMenuW(c: &mut Ctx) -> u32 {
+    resource(c.a(0), c.a(1), 4, true).map_or(0, |(p, _)| menu_from_template(p))
+}
+fn LoadMenuIndirectA(c: &mut Ctx) -> u32 {
+    menu_from_template(c.a(0))
+}
+fn LoadMenuIndirectW(c: &mut Ctx) -> u32 {
+    menu_from_template(c.a(0))
 }
 
 // strings
@@ -5169,7 +5335,8 @@ pub fn init() {
         SendMessageW, SendMessageTimeoutA, SendNotifyMessageA, InSendMessage, ReplyMessage, GetMessageA,
         GetMessageW, PeekMessageA, PeekMessageW, WaitMessage, MsgWaitForMultipleObjects,
         MsgWaitForMultipleObjectsEx, GetQueueStatus, GetInputState, TranslateMessage, DispatchMessageA,
-        DispatchMessageW, IsDialogMessageA, IsDialogMessageW, TranslateMDISysAccel, TranslateAcceleratorA,
+        DispatchMessageW, IsDialogMessageA, IsDialogMessageW, TranslateMDISysAccel, TranslateAcceleratorA, TranslateAcceleratorW, CopyAcceleratorTableA, CopyAcceleratorTableW,
+        CreateAcceleratorTableA, CreateAcceleratorTableW, DestroyAcceleratorTable, LoadAcceleratorsW, LoadMenuIndirectA, LoadMenuIndirectW,
         GetMessagePos, GetMessageTime, GetMessageExtraInfo, RegisterWindowMessageA, RegisterWindowMessageW,
         SetTimer, KillTimer, InvalidateRect, InvalidateRgn, ValidateRect, ValidateRgn, RedrawWindow,
         GetUpdateRect, GetUpdateRgn, BeginPaint, EndPaint, GetDC, GetDCEx, GetWindowDC, ReleaseDC, WindowFromDC,

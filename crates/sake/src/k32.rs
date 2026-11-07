@@ -3733,6 +3733,74 @@ fn FindResourceExW(c: &mut Ctx) -> u32 {
     let (m, t, n) = (c.a(0), c.a(1), c.a(2));
     find_res(c, m, n, t, true)
 }
+/// EnumResourceTypes/Names/Languages: the callback gets each id (a name as a temporary string)
+/// until it returns FALSE; ERROR_RESOURCE_DATA/TYPE/NAME_NOT_FOUND when there is nothing.
+fn enum_resources(c: &mut Ctx, level: usize, wide: bool) -> u32 {
+    let m = if c.a(0) == 0 { module_handle(0, false) } else { c.a(0) };
+    let path: Vec<crate::pe::ResId> = (0..level).map(|i| crate::pe::ResId::from_arg(c.a(1 + i as u32), wide)).collect();
+    let (cb, param) = (c.a(1 + level as u32), c.a(2 + level as u32));
+    let Some(ids) = crate::pe::resource_ids(m, &path) else {
+        last_error([1812, 1813, 1814][level.min(2)]);
+        return 0;
+    };
+    if ids.is_empty() {
+        last_error([1812, 1813, 1815][level.min(2)]);
+        return 0;
+    }
+    for id in ids {
+        let (arg, tmp) = match id {
+            crate::pe::ResId::Int(n) => (n, 0),
+            crate::pe::ResId::Name(w) => {
+                let bytes: Vec<u8> = if wide {
+                    w.iter().chain(&[0]).flat_map(|u| u.to_le_bytes()).collect()
+                } else {
+                    let mut a = crate::text::w2a(&w);
+                    a.push(0);
+                    a
+                };
+                let p = mem::heap_alloc(bytes.len() as u32, false);
+                mem::write(p, &bytes);
+                (p, p)
+            }
+        };
+        // the callback's arguments: module, then the path so far, then this id, then the param
+        let mut args = vec![m];
+        args.extend((0..level).map(|i| c.a(1 + i as u32)));
+        if level == 2 {
+            // EnumResourceLanguages' id is a WORD language
+            args.push(arg & 0xffff);
+        } else {
+            args.push(arg);
+        }
+        args.push(param);
+        let go = c.call(cb, &args);
+        if tmp != 0 {
+            mem::heap_free(tmp);
+        }
+        if go == 0 {
+            break;
+        }
+    }
+    1
+}
+fn EnumResourceTypesA(c: &mut Ctx) -> u32 {
+    enum_resources(c, 0, false)
+}
+fn EnumResourceTypesW(c: &mut Ctx) -> u32 {
+    enum_resources(c, 0, true)
+}
+fn EnumResourceNamesA(c: &mut Ctx) -> u32 {
+    enum_resources(c, 1, false)
+}
+fn EnumResourceNamesW(c: &mut Ctx) -> u32 {
+    enum_resources(c, 1, true)
+}
+fn EnumResourceLanguagesA(c: &mut Ctx) -> u32 {
+    enum_resources(c, 2, false)
+}
+fn EnumResourceLanguagesW(c: &mut Ctx) -> u32 {
+    enum_resources(c, 2, true)
+}
 fn LoadResource(c: &mut Ctx) -> u32 {
     let m = if c.a(0) == 0 { module_handle(0, false) } else { c.a(0) };
     if c.a(1) == 0 {
@@ -5244,7 +5312,7 @@ pub fn init() {
         GetProcessTimes, GetThreadTimes,
         GetModuleFileNameA, GetModuleFileNameW, GetModuleHandleA, GetModuleHandleW, GetModuleHandleExA,
         GetModuleHandleExW, LoadLibraryA, LoadLibraryW, LoadLibraryExA, LoadLibraryExW, FreeLibrary,
-        DisableThreadLibraryCalls, GetProcAddress, FindResourceA, FindResourceW, FindResourceExA, FindResourceExW,
+        DisableThreadLibraryCalls, GetProcAddress, FindResourceA, FindResourceW, FindResourceExA, EnumResourceTypesA, EnumResourceTypesW, EnumResourceNamesA, EnumResourceNamesW, EnumResourceLanguagesA, EnumResourceLanguagesW, FindResourceExW,
         LoadResource, LockResource, FreeResource, SizeofResource,
         GetStdHandle, SetStdHandle, SetDllDirectoryA, SetDllDirectoryW, GetFileInformationByHandleEx, PathCchSkipRoot, VerifyConsoleIoHandle, SetHandleInformation, GetFileType, GetConsoleMode, WriteConsoleA, WriteConsoleW, GetConsoleCP, GetConsoleOutputCP, CreateFileA, CreateFileW, _lopen, _lcreat, _lclose, _lread,
         _llseek, ReadFile, WriteFile, SetFilePointer, SetFilePointerEx, GetFileSize, GetFileSizeEx, SetEndOfFile,

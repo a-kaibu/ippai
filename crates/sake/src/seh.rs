@@ -190,6 +190,7 @@ pub fn raise(cpu: &mut Cpu, code: u32, flags: u32, addr: u32, params: &[u32]) {
         w32(ptrs + 4, ctx);
         for f in veh {
             if crate::call(cpu, f, &[ptrs]) == 0xffff_ffff {
+                continue_handlers(cpu, ptrs);
                 load_context(cpu, ctx);
                 return;
             }
@@ -218,6 +219,24 @@ pub fn veh_list() -> Vec<u32> {
 /// RemoveVectoredExceptionHandler(handle)
 pub fn remove_veh(c: &mut Ctx) -> u32 {
     let mut v = VEH.lock().unwrap();
+    let n = v.len();
+    v.retain(|&(h, _)| h != c.a(0));
+    (v.len() != n) as u32
+}
+
+/// Vectored continue handlers: called, in order, once a handler continues execution (until
+/// one of them returns EXCEPTION_CONTINUE_EXECUTION too).
+static VCH: std::sync::Mutex<Vec<(u32, u32)>> = std::sync::Mutex::new(Vec::new());
+pub fn continue_handlers(cpu: &mut Cpu, ptrs: u32) {
+    let list: Vec<u32> = VCH.lock().unwrap().iter().map(|&(_, f)| f).collect();
+    for f in list {
+        if crate::call(cpu, f, &[ptrs]) == 0xffff_ffff {
+            break;
+        }
+    }
+}
+fn remove_vch(c: &mut Ctx) -> u32 {
+    let mut v = VCH.lock().unwrap();
     let n = v.len();
     v.retain(|&(h, _)| h != c.a(0));
     (v.len() != n) as u32
@@ -328,8 +347,11 @@ pub fn raise_exception(c: &mut Ctx) -> u32 {
 }
 
 fn continue_handler(c: &mut Ctx) -> u32 {
-    // (vectored continue handlers: kept nowhere; a handle the program can remove)
-    c.a(1)
+    static NEXT: AtomicU32 = AtomicU32::new(0x7f00);
+    let h = NEXT.fetch_add(1, Ordering::Relaxed);
+    let mut v = VCH.lock().unwrap();
+    if c.a(0) != 0 { v.insert(0, (h, c.a(1))) } else { v.push((h, c.a(1))) }
+    h
 }
 
 pub fn register() {
@@ -339,7 +361,7 @@ pub fn register() {
         implement(d, &format!("{p}AddVectoredExceptionHandler"), add_veh);
         implement(d, &format!("{p}RemoveVectoredExceptionHandler"), remove_veh);
         implement(d, &format!("{p}AddVectoredContinueHandler"), continue_handler);
-        implement(d, &format!("{p}RemoveVectoredContinueHandler"), remove_veh);
+        implement(d, &format!("{p}RemoveVectoredContinueHandler"), remove_vch);
     }
     for d in ["msvcrt", "ucrtbase"] {
         implement(d, "_except_handler3", except_handler3);

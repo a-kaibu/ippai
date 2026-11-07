@@ -389,6 +389,41 @@ pub fn first_resource(module: u32, ty: u32) -> Option<u32> {
     (first & 0x8000_0000 == 0).then_some(root + first)
 }
 
+/// The ids of directory `dir`'s entries, in their order (names first, as linkers sort them).
+fn dir_ids(root: u32, dir: u32) -> Vec<(ResId, u32)> {
+    let n = r16(dir + 12) as u32 + r16(dir + 14) as u32;
+    (0..n)
+        .map(|i| {
+            let e = dir + 16 + 8 * i;
+            let id = r32(e);
+            let key = if id & 0x8000_0000 != 0 {
+                let p = root + (id & 0x7fff_ffff);
+                ResId::Name((0..r16(p) as u32).map(|k| r16(p + 2 + 2 * k)).collect())
+            } else {
+                ResId::Int(id)
+            };
+            (key, r32(e + 4))
+        })
+        .collect()
+}
+/// What EnumResourceTypes / Names / Languages walk: the ids one level down `path` (types for
+/// an empty path, names of a type, languages of a type and name). None: no resources there.
+pub fn resource_ids(module: u32, path: &[ResId]) -> Option<Vec<ResId>> {
+    let root = with(module, |m| m.resources)?;
+    if root == 0 {
+        return None;
+    }
+    let mut dir = root;
+    for id in path {
+        let e = find_entry(root, dir, id)?;
+        if e & 0x8000_0000 == 0 {
+            return None;
+        }
+        dir = root + (e & 0x7fff_ffff);
+    }
+    Some(dir_ids(root, dir).into_iter().map(|x| x.0).collect())
+}
+
 /// (address, size) of a found resource's data.
 pub fn resource_data(module: u32, entry: u32) -> (u32, u32) {
     (module + r32(entry), r32(entry + 4))

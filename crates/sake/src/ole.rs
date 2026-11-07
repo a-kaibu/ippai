@@ -81,9 +81,9 @@ fn s_write(c: &mut Ctx) -> u32 {
     0
 }
 fn s_seek(c: &mut Ctx) -> u32 {
-    // (this, LARGE_INTEGER move, origin, ULARGE_INTEGER* new)
-    let (this, lo, hi, origin, out) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
-    let mv = (hi as u64) << 32 | lo as u64;
+    // (this, LARGE_INTEGER move, origin, ULARGE_INTEGER* new): the 8-byte argument is one on x64
+    let (this, mv, origin, out) =
+        if mem::x64() { (c.a(0), c.a64(1), c.a(2), c.a(3)) } else { (c.a(0), (c.a(2) as u64) << 32 | c.a(1) as u64, c.a(3), c.a(4)) };
     let base = match origin {
         1 => r32(this + 12) as i64,
         2 => r32(this + 8) as i64,
@@ -114,6 +114,27 @@ fn s_stat(c: &mut Ctx) -> u32 {
     w32(p + 8, r32(this + 8));
     0
 }
+/// CopyTo(this, dest, ULARGE_INTEGER cb, read*, written*): through the destination's Write
+fn s_copy_to(c: &mut Ctx) -> u32 {
+    let (this, dst, cb, rd, wr) =
+        if mem::x64() { (c.a(0), c.a(1), c.a64(2), c.a(3), c.a(4)) } else { (c.a(0), c.a(1), (c.a(3) as u64) << 32 | c.a(2) as u64, c.a(4), c.a(5)) };
+    let (h, size, pos) = (r32(this + 4), r32(this + 8), r32(this + 12));
+    let n = (cb.min(size.saturating_sub(pos) as u64)) as u32;
+    let done = mem::heap_alloc(4, true);
+    // (IStream::Write is the 5th method)
+    let f = mem::rp(mem::rp(dst) + 4 * mem::ps());
+    let hr = c.call(f, &[dst, h + pos, n, done]);
+    let w = r32(done);
+    mem::heap_free(done);
+    w32(this + 12, pos + n);
+    for (p, v) in [(rd, n), (wr, w)] {
+        if p != 0 {
+            w32(p, v);
+            w32(p + 4, 0);
+        }
+    }
+    hr
+}
 fn s_clone(c: &mut Ctx) -> u32 {
     let (this, out) = (c.a(0), c.a(1));
     let o = new_stream(r32(this + 4), r32(this + 8), false);
@@ -135,7 +156,7 @@ fn stream_vtbl() -> u32 {
                 (s_write, 16),
                 (s_seek, 20),
                 (s_set_size, 12),
-                (notimpl, 24),
+                (s_copy_to, 24),
                 (ok, 8),
                 (ok, 4),
                 (notimpl, 24),
