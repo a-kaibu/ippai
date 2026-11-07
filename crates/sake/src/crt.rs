@@ -1722,6 +1722,66 @@ struct Stream {
     /// text mode (no "b" in the mode and _fmode not _O_BINARY): CR LF reads as LF, LF writes as
     /// CR LF, and Ctrl+Z ends the file (winref stdioflag)
     text: bool,
+    /// text mode, reading: where msvcrt's 4096-byte buffers started (since the open or the last
+    /// seek), for its ftell (msvcrt_text_tell)
+    chunk: Option<u64>,
+}
+
+/// msvcrt's ftell of a text stream it reads through 4096-byte buffers starting at `b0`, the
+/// file at raw position `p`: within a buffer it takes the position after that buffer's read
+/// less what the buffer held (at the file's end the translated characters, one more per LF and
+/// one for a Ctrl+Z; else 4096), plus what was read of it, one more per LF; an emptied buffer
+/// says the position after its read (past a Ctrl+Z: the file's end). So "a\r\nb\rc\n\r\r\nd^Z.."
+/// (17 bytes) tells 7 after fgets "a\n" and 17 at its end (winref textmode).
+fn msvcrt_text_tell(raw_at: impl Fn(u64, usize) -> Vec<u8>, size: u64, b0: u64, p: u64) -> u64 {
+    const BUF: u64 = 4096;
+    // (the buffers in turn: one that ends in CR takes the LF after it too)
+    let mut b = b0;
+    let mut crlf;
+    let rawlen = loop {
+        let mut n = BUF.min(size.saturating_sub(b));
+        crlf = n == BUF && raw_at(b + BUF - 1, 2) == b"\r\n";
+        n += crlf as u64;
+        if p < b + n || n == 0 {
+            break n;
+        }
+        b += n;
+    };
+    if p <= b {
+        return p;
+    }
+    let raw = raw_at(b, rawlen as usize);
+    let (mut t, mut nl, mut ctrlz, mut used, mut used_nl) = (0u64, 0u64, false, 0u64, 0u64);
+    let mut i = 0;
+    while i < raw.len() {
+        let before = (i as u64) < p - b;
+        let lf = match raw[i] {
+            0x1a => {
+                ctrlz = true;
+                break;
+            }
+            b'\r' if raw.get(i + 1) == Some(&b'\n') => {
+                i += 2;
+                true
+            }
+            x => {
+                i += 1;
+                x == b'\n'
+            }
+        };
+        t += 1;
+        nl += lf as u64;
+        if before {
+            used += 1;
+            used_nl += lf as u64;
+        }
+    }
+    let filepos = b + rawlen;
+    if used >= t {
+        return filepos;
+    }
+    let held = if filepos >= size { t + nl + ctrlz as u64 } else { BUF + crlf as u64 };
+    (filepos - held.min(filepos)) + used + used_nl
 }
 
 // msvcrt FILE._flag bits (mingw's and old MSVC's feof / ferror / fileno macros read the FILE)
@@ -1737,7 +1797,7 @@ impl Stream {
     fn new(at: u32, f: Option<Arc<File>>, fd: u32, flag: u32, eof: bool) -> Stream {
         w32(at + flag_off(), flag);
         w32(at + flag_off() + 4, fd);
-        Stream { at, f, fd, eof, unget: None, text: false }
+        Stream { at, f, fd, eof, unget: None, text: false, chunk: None }
     }
     /// One character: the ungot one, else the file's (text mode translated); None at the end
     fn getc(&mut self) -> Option<u8> {
@@ -1745,6 +1805,9 @@ impl Stream {
             return Some(b);
         }
         let f = self.f.clone()?;
+        if self.text && self.chunk.is_none() {
+            self.chunk = f.seek(SeekFrom::Current(0));
+        }
         let b = *f.read_vec(1).first()?;
         if !self.text {
             return Some(b);
@@ -1775,6 +1838,9 @@ impl Stream {
         if !self.text {
             out.extend(f.read_vec(n - out.len()));
             return out;
+        }
+        if self.chunk.is_none() {
+            self.chunk = f.seek(SeekFrom::Current(0));
         }
         while out.len() < n {
             let raw = f.read_vec((n - out.len()).max(1));
@@ -2022,6 +2088,7 @@ fn seek(fp: u32, off: i64, whence: u32) -> u32 {
         };
         if f.seek(pos).is_some() {
             s.unget = None;
+            s.chunk = None;
             s.set_eof(false);
             0
         } else {
@@ -2035,6 +2102,15 @@ fn ftell(c: &mut Ctx) -> u32 {
     with_file(c.a(0), |s| {
         let Some(f) = &s.f else { return u32::MAX };
         let p = f.seek(SeekFrom::Current(0)).unwrap_or(0) as u32;
+        if let (true, Some(b0), None) = (s.text, s.chunk, s.unget) {
+            let raw_at = |at: u64, n: usize| {
+                f.seek(SeekFrom::Start(at));
+                let v = f.read_vec(n);
+                f.seek(SeekFrom::Start(p as u64));
+                v
+            };
+            return msvcrt_text_tell(raw_at, f.size(), b0, p as u64) as u32;
+        }
         p - s.unget.is_some() as u32
     })
     .unwrap_or(u32::MAX)
@@ -2157,6 +2233,7 @@ finds! {
 fn rewind(c: &mut Ctx) -> u32 {
     with_file(c.a(0), |s| {
         s.unget = None;
+        s.chunk = None;
         s.set_eof(false);
         if let Some(f) = &s.f {
             f.seek(SeekFrom::Start(0));
@@ -3593,6 +3670,50 @@ pub fn init() {
 
 #[cfg(test)]
 mod tests {
+
+    /// msvcrt's text-mode ftell: Windows' answers (winref textmode), and for well-formed text
+    /// (every LF after a CR, no Ctrl+Z) the true position, across buffers
+    mod text_tell {
+        use super::super::msvcrt_text_tell;
+        use proptest::prelude::*;
+
+        fn tell(data: &[u8], b0: u64, p: u64) -> u64 {
+            let at = |a: u64, n: usize| data[a as usize..(a as usize + n).min(data.len())].to_vec();
+            msvcrt_text_tell(at, data.len() as u64, b0, p)
+        }
+
+        #[test]
+        fn windows_answers() {
+            let d = b"a\r\nb\rc\n\r\r\nd\x1aafter";
+            // fgets from the start: after "a\n", "b\rc\n", "\r\n", "d" (stopped at the Ctrl+Z)
+            assert_eq!([3, 7, 10, 11].map(|p| tell(d, 0, p)), [7, 12, 15, 17]);
+            // fseek 2 or 1 then one fgetc (the LF)
+            assert_eq!([tell(d, 2, 3), tell(d, 1, 3)], [7, 7]);
+            // nothing read yet
+            assert_eq!(tell(d, 0, 0), 0);
+            // a CR LF across the first buffer's end: that buffer takes the LF too
+            let mut d = vec![b'a'; 4095];
+            d.extend_from_slice(b"\r\nb\r\nc\r\n");
+            assert_eq!([4097, 4100, 4103].map(|p| tell(&d, 0, p)), [4097, 4100, 4103]);
+        }
+
+        proptest! {
+            #[test]
+            fn crlf_text_is_exact(lines in proptest::collection::vec(proptest::collection::vec(b'a'..=b'z', 0..300), 1..60), start in 0usize..3) {
+                let mut d = Vec::new();
+                let mut ends = Vec::new();
+                for l in &lines {
+                    d.extend_from_slice(l);
+                    d.extend_from_slice(b"\r\n");
+                    ends.push(d.len() as u64);
+                }
+                let b0 = ends[..start.min(ends.len() - 1)].last().copied().unwrap_or(0);
+                for &e in ends.iter().filter(|&&e| e > b0) {
+                    prop_assert_eq!(tell(&d, b0, e), e);
+                }
+            }
+        }
+    }
     use super::split_words;
     use proptest::prelude::*;
 

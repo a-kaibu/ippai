@@ -201,6 +201,8 @@ fn GetSystemFirmwareTable(c: &mut Ctx) -> u32 {
         return n;
     }
     mem::write(buf, &t);
+    // (a table written clears the last error: winref sysinfo)
+    last_error(0);
     n
 }
 /// EnumSystemFirmwareTables(provider, buffer, size): the ids, as DWORDs (RSMB has the one, 0)
