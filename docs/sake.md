@@ -117,8 +117,9 @@
   - msvcp140 (msvcp.rs、x64 のみ): locale の最小限 (_Locimp "C"、_Lockit、_Locinfo、
     ctype<char>)、_Xbad_alloc/_Xlength_error/_Xout_of_range/_Xregex_error (std の例外を
     throw)。iarsys64.dll (Artemis) が使う分。それ以外の msvcp140 の関数は未実装で呼ぶと止まる。
-  - 未対応: printf の位置指定引数 (%1$d)、x64 の _create_locale (x86 の配置のまま)、
-    _set_se_translator。x86 の msvcp は thiscall の橋渡しが要るので #30 で。
+  - _create_locale: msvcrt / msvcr* は threadlocinfo (x64 はポインタ幅で並べ直す)、UCRT は
+    __crt_locale_data (先頭が pctype / mb_cur_max / コードページ)。winref crtlocale (#58)。
+  - 未対応: printf の位置指定引数 (%1$d)、_set_se_translator。x86 の msvcp は thiscall の橋渡しが要るので #30 で。
   - テスト: host/tests/x64crt.cpp (clang の x86_64-pc-windows-msvc、ucrtbase/vcruntime140 を
     import する /MD 相当のプログラム。printf/scanf/変換/_s/時刻/C++ 例外/SEH)、
     host/tests の crtstdio・crtfiles・fileseek・cmp64・x64seh を x86-64 でもビルドして

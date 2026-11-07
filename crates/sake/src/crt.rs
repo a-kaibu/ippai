@@ -2867,47 +2867,93 @@ fn fputc(c: &mut Ctx) -> u32 {
 fn __acrt_iob_func(c: &mut Ctx) -> u32 {
     data("_iob").unwrap_or(0) + file_size() * c.a(0)
 }
-/// _locale_t: always the process's (ja-JP, code page 932) as { threadlocinfo*, threadmbcinfo* }
-/// with the fields the CRT's inline code reads (msvcr80/90 layout): locinfo's code page,
-/// handles, mb_cur_max and ctype tables; mbcinfo's code page and lead-byte table (AdvHD's
-/// statically linked _Mbrtowc reads it).
-fn _create_locale(_: &mut Ctx) -> u32 {
-    static LOC: OnceLock<u32> = OnceLock::new();
-    *LOC.get_or_init(|| {
-        let cp = crate::text::acp();
-        let loc = mem::heap_alloc(8, true);
-        let li = mem::heap_alloc(0x100, true);
-        w32(li, 1);
-        w32(li + 4, cp);
-        w32(li + 8, cp);
+/// _locale_t: always the process's (ja-JP, code page 932) as { locinfo*, mbcinfo* } with the
+/// fields the CRT's inline code reads: the code page, mb_cur_max, the ctype table and the case
+/// maps; mbcinfo's code page and lead-byte table (AdvHD's statically linked _Mbrtowc reads it).
+/// msvcrt / msvcr*: threadlocinfo (msvcr80/90, pointers as wide as the process's); the UCRT:
+/// __crt_locale_data, whose public prefix (pctype, mb_cur_max, code page) comes first, and
+/// __crt_multibyte_data without mblcid (#58, winref crtlocale).
+fn _create_locale(c: &mut Ctx) -> u32 {
+    static LOC: Mutex<[u32; 2]> = Mutex::new([0; 2]);
+    let ucrt = is_ucrt(c);
+    let mut cache = LOC.lock().unwrap();
+    if cache[ucrt as usize] == 0 {
+        cache[ucrt as usize] = make_locale(locale_layout(ucrt, ps()));
+    }
+    cache[ucrt as usize]
+}
+
+/// Where a _locale_t's fields go: locinfo's size, code pages (lc_codepage, collate, time),
+/// lc_handle (msvcr only), mb_cur_max, pctype, pclmap, pcumap, refcount; mbcinfo's mbctype
+#[derive(Debug, PartialEq)]
+struct LocaleLayout {
+    size: u32,
+    cps: [u32; 3],
+    handles: Option<u32>,
+    mb_cur_max: u32,
+    pctype: u32,
+    pclmap: u32,
+    pcumap: u32,
+    refcount: u32,
+    mbctype: u32,
+}
+fn locale_layout(ucrt: bool, ps: u32) -> LocaleLayout {
+    if ucrt {
+        // { pctype, mb_cur_max, lc_codepage }, refcount, lc_collate_cp, lc_time_cp, lc_clike,
+        // lc_category[6] { locale, wlocale, refcount, wrefcount }, 3 lconv refcounts, lconv,
+        // ctype1_refcount, ctype1, pclmap, pcumap
+        let cat = (ps + 24 + ps - 1) & !(ps - 1);
+        let after = cat + 6 * 4 * ps;
+        LocaleLayout { size: after + 12 * ps, cps: [ps + 4, ps + 12, ps + 16], handles: None, mb_cur_max: ps, pctype: 0, pclmap: after + 6 * ps, pcumap: after + 7 * ps, refcount: ps + 8, mbctype: 0x18 }
+    } else {
+        // refcount, lc_codepage, lc_collate_cp, lc_handle[6], lc_id[6] (6 bytes each),
+        // lc_category[6] (as above), lc_clike, mb_cur_max, 3 lconv refcounts, lconv,
+        // ctype1_refcount, ctype1, pctype, pclmap, pcumap
+        let cat = (0x48 + ps - 1) & !(ps - 1);
+        let after = cat + 6 * 4 * ps;
+        let p = |i: u32| after + 8 + i * ps;
+        LocaleLayout { size: p(10), cps: [4, 8, 8], handles: Some(0xc), mb_cur_max: after + 4, pctype: p(6), pclmap: p(7), pcumap: p(8), refcount: 0, mbctype: 0x1c }
+    }
+}
+fn make_locale(l: LocaleLayout) -> u32 {
+    let cp = crate::text::acp();
+    let loc = mem::heap_alloc(2 * ps(), true);
+    let li = mem::heap_alloc(l.size + 0x40, true);
+    w32(li + l.refcount, 1);
+    for o in l.cps {
+        w32(li + o, cp);
+    }
+    if let Some(h) = l.handles {
         for i in 0..6 {
-            w32(li + 0xc + 4 * i, 0x411);
+            w32(li + h + 4 * i, 0x411);
         }
-        w32(li + 0xac, if crate::text::is_dbcs() { 2 } else { 1 });
-        w32(li + 0xc8, r32(data("_pctype").unwrap()));
-        // pclmap / pcumap: ASCII case tables
-        let (lo, up) = (mem::heap_alloc(256, true), mem::heap_alloc(256, true));
-        for b in 0..=255u8 {
-            w8(lo + b as u32, b.to_ascii_lowercase());
-            w8(up + b as u32, b.to_ascii_uppercase());
-        }
-        w32(li + 0xcc, lo);
-        w32(li + 0xd0, up);
-        let mb = mem::heap_alloc(0x220, true);
-        w32(mb, 1);
-        w32(mb + 4, cp);
-        w32(mb + 8, crate::text::is_dbcs() as u32);
+    }
+    w32(li + l.mb_cur_max, if crate::text::is_dbcs() { 2 } else { 1 });
+    wp(li + l.pctype, rp(data("_pctype").unwrap()));
+    // pclmap / pcumap: ASCII case tables
+    let (lo, up) = (mem::heap_alloc(256, true), mem::heap_alloc(256, true));
+    for b in 0..=255u8 {
+        w8(lo + b as u32, b.to_ascii_lowercase());
+        w8(up + b as u32, b.to_ascii_uppercase());
+    }
+    wp(li + l.pclmap, lo);
+    wp(li + l.pcumap, up);
+    let mb = mem::heap_alloc(0x220, true);
+    w32(mb, 1);
+    w32(mb + 4, cp);
+    w32(mb + 8, crate::text::is_dbcs() as u32);
+    if l.mbctype == 0x1c {
         w32(mb + 12, 0x411);
-        // mbctype[257] at 0x1c (index 0 is EOF), then mbcasemap[256]
-        let t = data("_mbctype").unwrap();
-        mem::copy(mb + 0x1c, t, 257);
-        for b in 0..=255u8 {
-            w8(mb + 0x11d + b as u32, b);
-        }
-        w32(loc, li);
-        w32(loc + 4, mb);
-        loc
-    })
+    }
+    // mbctype[257] (index 0 is EOF), then mbcasemap[256]
+    let t = data("_mbctype").unwrap();
+    mem::copy(mb + l.mbctype, t, 257);
+    for b in 0..=255u8 {
+        w8(mb + l.mbctype + 257 + b as u32, b);
+    }
+    wp(loc, li);
+    wp(loc + ps(), mb);
+    loc
 }
 fn _free_locale(_: &mut Ctx) -> u32 {
     0
@@ -3834,6 +3880,45 @@ pub fn init() {
 
 #[cfg(test)]
 mod tests {
+
+    /// _locale_t's layouts (#58): msvcr80/90's threadlocinfo at 32 bits (what AdvHD's static
+    /// _Mbrtowc read before), the same with 8-byte pointers, and the UCRT's public prefix first
+    mod locale_layout {
+        use super::super::{locale_layout, LocaleLayout};
+
+        #[test]
+        fn offsets_as_the_crt_headers() {
+            let l = locale_layout(false, 4);
+            assert_eq!((l.cps, l.handles, l.mb_cur_max, l.pctype, l.pclmap, l.pcumap, l.mbctype), ([4, 8, 8], Some(0xc), 0xac, 0xc8, 0xcc, 0xd0, 0x1c));
+            let l = locale_layout(false, 8);
+            assert_eq!((l.mb_cur_max, l.pctype, l.pclmap, l.pcumap), (0x10c, 0x140, 0x148, 0x150));
+            let l = locale_layout(true, 4);
+            assert_eq!((l.pctype, l.mb_cur_max, l.cps, l.refcount, l.pclmap, l.pcumap, l.mbctype), (0, 4, [8, 0x10, 0x14], 0xc, 0x94, 0x98, 0x18));
+            let l = locale_layout(true, 8);
+            assert_eq!((l.pctype, l.mb_cur_max, l.cps, l.refcount, l.pclmap, l.pcumap), (0, 8, [0xc, 0x14, 0x18], 0x10, 0x110, 0x118));
+        }
+
+        #[test]
+        fn fields_are_aligned_apart_and_inside() {
+            for ucrt in [false, true] {
+                for ps in [4, 8] {
+                    let LocaleLayout { size, cps, handles, mb_cur_max, pctype, pclmap, pcumap, refcount, .. } = locale_layout(ucrt, ps);
+                    let mut f: Vec<(u32, u32)> = vec![(mb_cur_max, 4), (pctype, ps), (pclmap, ps), (pcumap, ps), (refcount, 4)];
+                    f.extend(cps.iter().map(|&o| (o, 4)));
+                    f.extend(handles.map(|h| (h, 24)));
+                    f.sort();
+                    f.dedup();
+                    for (o, n) in &f {
+                        assert_eq!(o % if *n == ps { ps } else { 4 }, 0, "{ucrt} {ps} {o:#x}");
+                        assert!(o + n <= size);
+                    }
+                    for w in f.windows(2) {
+                        assert!(w[0].0 + w[0].1 <= w[1].0, "{ucrt} {ps} {w:x?}");
+                    }
+                }
+            }
+        }
+    }
 
     /// msvcrt's text-mode ftell: Windows' answers (winref textmode), and for well-formed text
     /// (every LF after a CR, no Ctrl+Z) the true position, across buffers
