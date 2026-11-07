@@ -24,6 +24,7 @@ use std::path::Path;
 use std::process::Command;
 
 #[path = "../../kura/src/vnv.rs"]
+#[allow(dead_code)]
 pub mod vnv;
 
 /// Whether `ffmpeg` (with libvpx) can be run.
