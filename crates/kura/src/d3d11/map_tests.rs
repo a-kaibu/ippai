@@ -362,3 +362,78 @@ fn d3d11_map_trace() {
         run(seed);
     }
 }
+
+/// A staging texture's first Map: zeros when it was made without data and nothing wrote it
+/// (no readback then), its initial data when made with some, and what a CopyResource,
+/// CopySubresourceRegion or UpdateSubresource put there before (read back). ANGLE makes a
+/// staging texture per upload and maps it once to write; the rest of what it maps keeps.
+#[test]
+fn staging_first_map() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let vt = mem(256);
+    put(vt, &(1..=256).map(|i| 0x1000 * i).collect::<Vec<_>>());
+    call1(INIT, &[vt, 256]);
+    attach_page();
+    let desc = mem(16);
+    put(desc, &[64, 64, 60, 1, 28, 0, 0, 1, 0, 0x20, 1, 1, 1, 0, 0]);
+    let (sc_out, dev_out, level, ctx_out) = (mem(2), mem(2), mem(2), mem(2));
+    assert_eq!(call1(CREATE_DEVICE, &[0, 1, 0, 0, 0, 0, 7, desc, sc_out, dev_out, level, ctx_out]), 0);
+    let (dev, ctx) = (rd1(dev_out), rd1(ctx_out));
+    // 16x16 B8G8R8A8: (usage, bind, cpu access), initial data
+    let make = |usage: u32, bind: u32, cpu: u32, init: Option<u32>| {
+        let d = mem(11);
+        put(d, &[16, 16, 1, 1, 87, 1, 0, usage, bind, cpu, 0]);
+        let sd = mem(3);
+        if let Some(p) = init {
+            put(sd, &[p, 64, 0]);
+        }
+        let o = mem(2);
+        assert_eq!(call1(m(IF_DEVICE, 5), &[dev, d, if init.is_some() { sd } else { 0 }, o]), 0);
+        rd1(o)
+    };
+    let pixels = |v: u32| {
+        let p = unsafe { alloc(1024) as u32 };
+        put(p, &[v; 256]);
+        p
+    };
+    // Map(READ) then Unmap: the first texel and whether all are alike
+    let read = |t: u32| {
+        let o = mem(4);
+        assert_eq!(call1(m(IF_CONTEXT, 14), &[ctx, t, 0, 1, 0, o]), 0);
+        let (bits, pitch) = (rd1(o), rd1(o + 4));
+        let px: Vec<u32> = (0..16).flat_map(|y| (0..16).map(move |x| unsafe { *((bits + y * pitch + 4 * x) as *const u32) })).collect();
+        call1(m(IF_CONTEXT, 15), &[ctx, t, 0]);
+        assert!(px.iter().all(|&p| p == px[0]), "texels differ: {:x?}", &px[..4]);
+        px[0]
+    };
+    let staging = |init| make(3, 0, 0x30000, init);
+    let src = make(0, 0x8, 0, Some(pixels(0x11223344)));
+    let fresh = staging(None);
+    assert_eq!(read(fresh), 0, "a new staging texture");
+    let given = staging(Some(pixels(0x55667788)));
+    assert_eq!(read(given), 0x55667788, "initial data");
+    let copied = staging(None);
+    call1(m(IF_CONTEXT, 47), &[ctx, copied, src]);
+    assert_eq!(read(copied), 0x11223344, "after CopyResource");
+    let region = staging(None);
+    call1(m(IF_CONTEXT, 46), &[ctx, region, 0, 0, 0, 0, src, 0, 0]);
+    assert_eq!(read(region), 0x11223344, "after CopySubresourceRegion");
+    let updated = staging(None);
+    call1(m(IF_CONTEXT, 48), &[ctx, updated, 0, 0, pixels(0x0a0b0c0d), 64, 0]);
+    assert_eq!(read(updated), 0x0a0b0c0d, "after UpdateSubresource");
+    // written through a Map, then a copy over it: the copy's
+    let o = mem(4);
+    let again = staging(None);
+    assert_eq!(call1(m(IF_CONTEXT, 14), &[ctx, again, 0, 2, 0, o]), 0);
+    let (bits, pitch) = (rd1(o), rd1(o + 4));
+    for y in 0..16 {
+        put(bits + y * pitch, &[0x99999999; 16]);
+    }
+    call1(m(IF_CONTEXT, 15), &[ctx, again, 0]);
+    assert_eq!(read(again), 0x99999999, "its own write");
+    call1(m(IF_CONTEXT, 47), &[ctx, again, src]);
+    assert_eq!(read(again), 0x11223344, "a copy over its write");
+    gpu::set_pump(None);
+    let errors = model::with(|m| std::mem::take(&mut m.errors));
+    assert!(errors.is_empty(), "WebGPU errors {:?}", &errors[..errors.len().min(10)]);
+}

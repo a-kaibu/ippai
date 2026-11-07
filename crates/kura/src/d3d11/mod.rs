@@ -220,6 +220,9 @@ pub struct Texture {
     /// slice), for formats the page keeps converted (see `keeps_bits`): what Map and copies give
     /// back, as Windows' are the bits written
     pub bits: HashMap<u32, Vec<u8>>,
+    /// a staging texture made without initial data that nothing wrote on the page yet: zeros
+    /// there (a new WebGPU texture), so a subresource's first Map reads nothing back
+    pub pristine: bool,
 }
 
 /// The page's texels are the guest's bytes (read back as they are).
@@ -1244,6 +1247,7 @@ fn new_texture(d: &mut D11, dim: u32, w: u32, h: u32, layers: u32, mips: u32, fm
         maps: Vec::new(),
         clean: Vec::new(),
         bits: HashMap::new(),
+        pristine: false,
     }))
 }
 
@@ -1797,6 +1801,8 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             let id = d.id_of(o);
             if let Some(Data::Texture(x)) = d.objs.get_mut(&id).map(|o| &mut o.data) {
                 (x.cpu, x.misc, x.samples) = (t.cpu, misc, (t.samples, t.quality));
+                // (ANGLE makes a staging texture for each upload and maps it once to write)
+                x.pristine = usage == 3 && a(2) == 0;
             }
             if a(2) != 0 {
                 let Some(Data::Texture(t)) = d.objs.get_mut(&id).map(|o| &mut o.data) else { return E_FAIL };
@@ -2871,11 +2877,15 @@ unsafe fn map(d: &mut D11, res: u32, sub: u32, ty: u32, out: u32, dxgi: bool, af
                 }
                 None => 0,
             };
+            let fresh = mem == 0;
             let mem = if mem != 0 {
                 mem
             } else {
                 let p = (*d.calls).alloc;
                 let mem = p(size.max(16)) as u32;
+                if t.pristine {
+                    std::ptr::write_bytes(mem as *mut u8, 0, size.max(16) as usize);
+                }
                 if let Some(Data::Texture(t)) = d.objs.get_mut(&id).map(|o| &mut o.data) {
                     t.maps.push((sub, mem, pitch, write));
                 }
@@ -2889,7 +2899,7 @@ unsafe fn map(d: &mut D11, res: u32, sub: u32, ty: u32, out: u32, dxgi: bool, af
                 // the subresource: ANGLE uploads every texture through a staging one mapped so, and
                 // the waits cost Godot seconds)
                 let (_, layer, ..) = sub_size(t, sub);
-                if ty != 4 && holds_bits(t) && !keeps_bits(t) && !t.clean.contains(&sub) {
+                if ty != 4 && holds_bits(t) && !keeps_bits(t) && !t.clean.contains(&sub) && !(fresh && t.pristine) {
                     for z in 0..depth {
                         d.next_gpu += 1;
                         let req = 0x4000_0000 | d.next_gpu;
@@ -2945,6 +2955,7 @@ unsafe fn unmap(d: &mut D11, res: u32, sub: u32) {
 fn texture_written(d: &mut D11, id: u32) {
     if let Some(Data::Texture(t)) = d.objs.get_mut(&id).map(|o| &mut o.data) {
         t.clean.clear();
+        t.pristine = false;
     }
 }
 
@@ -2968,6 +2979,7 @@ unsafe fn update_subresource(d: &mut D11, res: u32, sub: u32, bx: u32, data: u32
         Some(Data::Texture(t)) => {
             // the box's texels start at `data`
             t.clean.clear();
+            t.pristine = false;
             match b {
                 // (upload_texture reads the box's rows from `data` on: the box's first texel)
                 Some(bb) => upload_texture(t, sub, data, pitch, slice, Some(bb)),
