@@ -1,0 +1,27 @@
+blend: same desc same object 1, refs 2; other desc other object 1, refs 1
+blend: bound refs 2
+blend: Release 0 1
+blend: still bound 1, refs after Get 1
+blend: made again while the other lives: same 1
+blend: differs only in a disabled factor: same 1
+sampler: same desc same object 1 refs 2
+rasterizer: same desc same object 1 refs 2
+depthstencil: same desc same object 1 refs 2
+rt mip 0 after srv: ps0 0 ps1(mip 1) 1 vs0 0 cs0 0 ps2(other) 1 rt 1
+srv after rt mip 0: ps0 0 ps1(mip 1) 1 rt 1
+rt moved away: ps0 0 (refused binds stay NULL)
+srv again: ps0 1
+cs uav after cs srv: cs srv 0 uav 1 ps0 0
+cs srv after cs uav: cs srv 0 uav 1
+dsv after its srv: ps3 0 ds 1
+srv after dsv: ps3 0 ds 1
+srv with read-only dsv: ps3 1 ds 1
+so after vb: vb 0 so 1
+vb after so: vb 0 so 1
+srv refs: bound +0, bound twice +0, after Get +1
+texture refs with views bound 1
+ClearState: ps5 0 rt 0 srv refs +0
+Release of a bound srv 0
+still bound 1
+Release textures 0 0
+Release device 0
