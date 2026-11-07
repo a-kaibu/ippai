@@ -35,6 +35,8 @@ on:
 
 permissions:
   contents: read
+  # (the trial games' traces on ghcr.io: tests/replay/games.py)
+  packages: read
 
 jobs:
   probes:
@@ -58,7 +60,15 @@ jobs:
         with:
           path: ~/.apt-cache
           key: apt-${{ env.CI_IMAGE }}-mingw-w64-clang-lld-llvm
+      # (the trial games' traces pulled from ghcr.io, kept: tests/replay/games.py)
+      - uses: actions/cache@v6.1.0
+        with:
+          path: ~/.cache/ippai-traces
+          key: traces-${{ hashFiles('testdata/apitrace/*.txt') }}
+          restore-keys: traces-
       - name: Build the probes
+        env:
+          GHCR_TOKEN: ${{ github.token }}
         run: tests/winref/build.sh "$RUNNER_TEMP/exe" && tests/winref/build-msvc.sh "$RUNNER_TEMP/exe"
       # (the replay's layouts are the headers' (clang) and gcc's; check.py's matching; asset.sh)
       - name: The replay's own checks

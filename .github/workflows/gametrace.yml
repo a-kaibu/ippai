@@ -1,5 +1,6 @@
 # Trial games' Direct3D calls (tests/replay/games.txt: ids of tests/corpus/titles.tsv) recorded
-# with apitrace on Windows, once, into testdata/apitrace/ (a commit on main): winref then builds
+# with apitrace on Windows, once, onto ghcr.io (tests/replay/games.py; testdata/apitrace/ says what
+# and where, a commit on main): winref then builds
 # each into a probe of its own (replay_<id>-<bits>: tests/replay/build.sh), takes Windows'
 # answers for it once and checks sake against them on every push, as for the probes' traces
 # (docs/replay.md, "Games"). Nobody runs the games again unless asked (`again`).
@@ -8,8 +9,9 @@
 #   record  on Windows: the game under apitrace, played as corpusref.yml plays it (Japanese
 #           fonts, a sound card, tests/corpus/winplay.py: to its title screen, its steps, then
 #           `seconds` of story clicks; tests/replay/record-game.ps1)
-#   commit  the traces that convert (the apitrace crate) into testdata/apitrace: zstd, in parts
-#           under 100 MB (GitHub's limit)
+#   commit  the traces that convert (the apitrace crate) onto ghcr.io/a-kaibu/ippai-traces (zstd,
+#           a public package: free, no size limit), their .txt into testdata/apitrace
+#   migrate traces still in parts in the repository (the old way) onto ghcr.io
 name: Game traces
 
 on:
@@ -17,6 +19,7 @@ on:
     branches: [main]
     paths:
       - 'tests/replay/games.txt'
+      - 'tests/replay/games.py'
   # (100 titles a run: each night takes the next until all of games.txt has a trace or a reason)
   schedule:
     - cron: '0 18 * * *'
@@ -270,14 +273,50 @@ jobs:
           path: pack
           retention-days: 7
 
-  # the traces into testdata/apitrace (a commit on main): only those the converter takes
-  commit:
-    needs: [plan, record]
-    if: ${{ !cancelled() && needs.plan.outputs.ids != '[]' }}
+  # traces still in parts in the repository (before 2026-11-07's move): onto ghcr.io, their
+  # parts out of testdata/apitrace (a commit on main); nothing to do once all have moved
+  migrate:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Migrate
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          python3 tests/replay/games_test.py
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          M=$RUNNER_TEMP/main
+          for i in 1 2 3 4 5 6; do
+            git fetch -q origin main
+            git worktree remove --force "$M" 2>/dev/null || true
+            git worktree add -q --detach "$M" FETCH_HEAD
+            moved=$(python3 tests/replay/games.py migrate "$M/testdata/apitrace")
+            echo "$moved"
+            git -C "$M" add -A testdata/apitrace
+            if git -C "$M" diff --cached --quiet; then exit 0; fi
+            # (each pulls back as it was before its parts go)
+            for n in $moved; do python3 tests/replay/games.py unpack "$M/testdata/apitrace/$n" "$RUNNER_TEMP/check.trace"; done
+            git -C "$M" commit -qm "replay: trial games' traces onto ghcr.io: $moved (${GITHUB_SHA::7})"
+            git -C "$M" push -q origin HEAD:main && exit 0
+            sleep $((i * 5))
+          done
+          exit 1
+
+  # the traces onto ghcr.io, their .txt into testdata/apitrace (a commit on main): only those the
+  # converter takes
+  commit:
+    needs: [plan, record, migrate]
+    if: ${{ !cancelled() && needs.plan.outputs.ids != '[]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      packages: write
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/download-artifact@v8.0.2
@@ -285,8 +324,10 @@ jobs:
           pattern: trace-*
           path: pack
           merge-multiple: true
-      # (only a trace the converter takes; zstd, in parts under GitHub's 100 MB: games.py)
-      - name: Convert (the check) and pack
+      # (only a trace the converter takes; zstd, onto ghcr.io: games.py)
+      - name: Convert (the check) and push
+        env:
+          GHCR_TOKEN: ${{ github.token }}
         run: |
           python3 tests/replay/games_test.py
           cargo build -q --release -p apitrace
@@ -296,8 +337,9 @@ jobs:
             n=$(basename "$r" .rec)
             { read -r api; read -r exe; read -r secs; } < "$r"
             if target/release/apitrace "pack/$n.trace" "$RUNNER_TEMP/$n.rpl"; then
-              python3 tests/replay/games.py pack "pack/$n.trace" "ok/$n" --api "$api" --exe "$exe" --seconds "$secs"
-              python3 tests/replay/games.py unpack "ok/$n" "$RUNNER_TEMP/check.trace" && cmp "$RUNNER_TEMP/check.trace" "pack/$n.trace"
+              python3 tests/replay/games.py push "pack/$n.trace" "ok/$n" --api "$api" --exe "$exe" --seconds "$secs"
+              # (pulled back from the registry, not the cache: what winref will get)
+              TRACES_CACHE=$RUNNER_TEMP/nocache python3 tests/replay/games.py unpack "ok/$n" "$RUNNER_TEMP/check.trace" && cmp "$RUNNER_TEMP/check.trace" "pack/$n.trace"
             else
               echo "$n: does not convert, not committed"
               printf 'noconvert\t%s: %s\n' "$exe" "$api" > "pack/${n%-*}.skip"
@@ -321,9 +363,9 @@ jobs:
             took= skip=
             for m in "${o[@]}"; do
               n=$(basename "$m" .txt)
-              # (a title recorded again: its old parts go)
+              # (a title recorded again: its old .txt, and parts of the old way, go)
               rm -f "$M/testdata/apitrace/$n".*
-              cp ok/"$n".* "$M/testdata/apitrace/"
+              cp "ok/$n.txt" "$M/testdata/apitrace/"
               python3 tests/replay/games.py took "${n%-*}" --dir "$M/testdata/apitrace"
               took="$took $n"
             done

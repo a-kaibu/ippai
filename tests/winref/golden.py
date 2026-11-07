@@ -43,9 +43,10 @@ def sources(probe):
         # (a recorded D3D trace played back: tests/replay; the converter is part of it)
         rep = os.path.join(ROOT, "tests", "replay")
         conv = os.path.join(ROOT, "crates", "apitrace", "src")
-        # (a trial game's trace: its parts, tests/replay/games.py)
+        # (a trial game's trace: its .txt, whose sha256 is the trace's; it is on ghcr.io,
+        # tests/replay/games.py)
         game = os.path.join(ROOT, "testdata", "apitrace", base[7:])
-        trace = sorted(glob.glob(glob.escape(game) + ".trace.zst.*")) + [game + ".txt"] if os.path.exists(game + ".txt") else [os.path.join(rep, "traces", base[7:] + ".trace")]
+        trace = [game + ".txt"] if os.path.exists(game + ".txt") else [os.path.join(rep, "traces", base[7:] + ".trace")]
         return trace + [os.path.join(rep, f) for f in ("replay.c", "replay.h", "d3d9img.c", "d3d8img.c", "d3d11img.c", "build.sh")] + [os.path.join(conv, f) for f in ("replay.rs", "layout.rs", "layouts.txt", "trace.rs", "snappy.rs")] + [os.path.join(HERE, f) for f in COMMON]
     else:
         main = os.path.join(HERE, "probes", base + ".c")
@@ -59,7 +60,11 @@ def src_hash(probe):
     h = hashlib.sha256()
     for f in sources(probe):
         if os.path.exists(f):
-            h.update(os.path.basename(f).encode() + b"\0" + open(f, "rb").read())
+            b = open(f, "rb").read()
+            # (a game's trace by what it is, not where it is kept: the same after it moved)
+            if os.path.dirname(os.path.abspath(f)) == os.path.join(ROOT, "testdata", "apitrace"):
+                b = b"".join(l + b"\n" for l in b.splitlines() if l.split(b" ")[0] in (b"api", b"exe", b"seconds", b"bytes", b"sha256"))
+            h.update(os.path.basename(f).encode() + b"\0" + b)
     return h.hexdigest()
 
 

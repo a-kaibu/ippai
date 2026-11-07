@@ -71,9 +71,15 @@ virtual sound card, `tests/corpus/winplay.py`: code page 932, through a launcher
 screen, the title's steps, then 30 s of story clicks) and ended (`record-game.ps1`). apitrace's
 wrapper DLL goes beside the exe with `TRACE_FILE` naming the trace (its injector starts the game
 through the ANSI code page, which has no Japanese folder names on the en-US runner). winplay's
-pictures are an artifact of the run (what the game got to), never committed. A trace that converts goes to `testdata/apitrace/<id>-<bits>`: zstd, in
-parts of at most 90 MiB (GitHub refuses files over 100 MB), with `<id>-<bits>.txt` (api, exe,
-seconds, the trace's sha256: `games.py`). The trace ends where the game was killed: the
+pictures are an artifact of the run (what the game got to), never committed. A trace that converts goes, zstd-compressed, onto GitHub Packages as an
+OCI artifact, `ghcr.io/a-kaibu/ippai-traces:<id>-<bits>` (a public package: free, no size limit,
+so no trace is cut short), and `testdata/apitrace/<id>-<bits>.txt` says what was recorded (api,
+exe, seconds, the trace's size and sha256) and where (ref, the blob's digest and size:
+`games.py`). `games.py unpack` pulls it (anonymously while the package is public; `GHCR_TOKEN`,
+in CI the job's token with `packages: read`, otherwise) into `TRACES_CACHE` (default
+`~/.cache/ippai-traces`, cached in CI by the .txt files' hash) and checks both digests. Traces
+committed in parts before (the old way) still unpack, and gametrace.yml's `migrate` moves them.
+winref's answers for a game's replay go by the trace's sha256, not by where it is kept. The trace ends where the game was killed: the
 converter keeps the calls up to the last whole one (`-strict`, which build.sh uses for the
 probes' traces, refuses such a trace).
 

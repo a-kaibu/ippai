@@ -25,6 +25,8 @@ on:
 
 permissions:
   contents: read
+  # (the trial games' traces on ghcr.io: tests/replay/games.py)
+  packages: read
 
 concurrency:
   group: replay-${{ github.ref }}
@@ -63,7 +65,15 @@ jobs:
           fi
           echo "list=$l" >> "$GITHUB_OUTPUT"
           echo "to record: $l"
+      # (the trial games' traces pulled from ghcr.io, kept: tests/replay/games.py)
+      - uses: actions/cache@v6.1.0
+        with:
+          path: ~/.cache/ippai-traces
+          key: traces-${{ hashFiles('testdata/apitrace/*.txt') }}
+          restore-keys: traces-
       - name: Build the probes
+        env:
+          GHCR_TOKEN: ${{ github.token }}
         if: steps.stale.outputs.list != ''
         run: tests/winref/build.sh "$RUNNER_TEMP/exe"
       - uses: actions/upload-artifact@v7.0.2
