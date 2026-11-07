@@ -85,6 +85,32 @@ mbtowc 1 0192
 wcrtomb -1 3fa0
 btowc 0041 201a 00b1
 wctob 65 -1 -1
+setlocale .932 1 MB_CUR_MAX 2
+932 mbstowcs 3 3042 0061 30a2
+932 mbstowcs len 3
+932 wcstombs 5 82a0
+932 wcstombs cut 0
+932 mbrtowc 2 3042
+932 mbrtowc ascii 1 007a
+932 mbrtowc nul 0
+932 mbrlen 2 1
+932 mbtowc 2 30a2
+932 wcrtomb 2 82a0
+932 btowc 0041 ffff ff71
+932 wctob 65 -1 -79
+setlocale C 1 MB_CUR_MAX 1
+C mbstowcs 5 0082 00a0 0061
+C mbstowcs len 5
+C wcstombs 5 82a0
+C wcstombs cut 1
+C mbrtowc 1 0082
+C mbrtowc ascii 1 007a
+C mbrtowc nul 0
+C mbrlen 1 1
+C mbtowc 1 0083
+C wcrtomb -1 82a0
+C btowc 0041 ffff ff71
+C wctob 65 -1 -79
 strerror 0 No error
 strerror 1 Operation not permitted
 strerror 2 No such file or directory
