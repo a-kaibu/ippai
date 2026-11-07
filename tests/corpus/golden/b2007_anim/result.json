@@ -1,0 +1,15 @@
+{
+ "crashed": true,
+ "errors": [],
+ "firstWindow": 1.0322275161743164,
+ "manifests": [
+  "ck.exe"
+ ],
+ "shots": [],
+ "size": [
+  408,
+  127
+ ],
+ "steps": "key:Return wait:3",
+ "title": null
+}

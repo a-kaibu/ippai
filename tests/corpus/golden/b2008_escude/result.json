@@ -1,0 +1,15 @@
+{
+ "crashed": false,
+ "errors": [],
+ "firstWindow": 1.0353894233703613,
+ "manifests": [
+  "verdia.exe"
+ ],
+ "shots": [],
+ "size": [
+  640,
+  480
+ ],
+ "steps": "click:400,340 wait:6",
+ "title": null
+}

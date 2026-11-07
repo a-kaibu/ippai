@@ -1,0 +1,15 @@
+{
+ "crashed": true,
+ "errors": [],
+ "firstWindow": 1.02840256690979,
+ "manifests": [
+  "lyrical.exe"
+ ],
+ "shots": [],
+ "size": [
+  297,
+  127
+ ],
+ "steps": "key:Return wait:3",
+ "title": null
+}
