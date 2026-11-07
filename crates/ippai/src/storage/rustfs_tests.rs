@@ -1,6 +1,7 @@
 //! Explicitly run against a disposable RustFS server; never uses a production bucket.
 use super::*;
 use crate::{library::Profile, saves::Saves};
+use std::sync::{atomic::{AtomicUsize, Ordering::SeqCst}, Arc};
 
 async fn raw_objects(s: &Storage) -> Result<BTreeMap<String, Vec<u8>>> {
     let mut objects = BTreeMap::new();
@@ -164,6 +165,120 @@ async fn rustfs_encrypted_storage() -> Result<()> {
         }
     }
     s.bucket.delete().await?;
+    std::fs::remove_dir_all(dir)?;
+    result
+}
+
+/// A proxy in front of the S3 server at `upstream` that answers 503 to every `every`-th
+/// request (as Hugging Face Buckets do under load) and passes the others through as they are,
+/// Host header included so the signatures still hold. Gives its endpoint and how many
+/// requests it refused and passed.
+async fn flaky_proxy(upstream: String, every: usize) -> (String, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+    use axum::{body::Body, extract::{Request, State}, http::StatusCode, response::Response, Router};
+    #[derive(Clone)]
+    struct P {
+        upstream: String,
+        every: usize,
+        seen: Arc<AtomicUsize>,
+        refused: Arc<AtomicUsize>,
+        passed: Arc<AtomicUsize>,
+        client: reqwest::Client,
+    }
+    async fn pass(State(p): State<P>, req: Request) -> Response {
+        let n = p.seen.fetch_add(1, SeqCst) + 1;
+        if n % p.every == 0 {
+            p.refused.fetch_add(1, SeqCst);
+            return Response::builder().status(StatusCode::SERVICE_UNAVAILABLE).body(Body::from("SlowDown")).unwrap();
+        }
+        let (parts, body) = req.into_parts();
+        let body = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        let path = parts.uri.path_and_query().map_or("/", |p| p.as_str());
+        let r = p.client.request(parts.method, format!("{}{path}", p.upstream)).headers(parts.headers).body(body).send().await.unwrap();
+        p.passed.fetch_add(1, SeqCst);
+        let mut out = Response::builder().status(r.status());
+        for (k, v) in r.headers() {
+            if k != "transfer-encoding" && k != "connection" {
+                out = out.header(k, v);
+            }
+        }
+        out.body(Body::from(r.bytes().await.unwrap())).unwrap()
+    }
+    let p = P {
+        upstream,
+        every,
+        seen: Default::default(),
+        refused: Default::default(),
+        passed: Default::default(),
+        client: reqwest::Client::new(),
+    };
+    let (refused, passed) = (p.refused.clone(), p.passed.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let app = Router::new().fallback(pass).with_state(p);
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (endpoint, refused, passed)
+}
+
+/// RustFS behind a proxy that refuses every third request: push_store uploads the whole
+/// store anyway (no object missing, none twice), and everything reads back through the
+/// proxy. Without retrying, the first refusal ended the push ("S3 upload failed: 503").
+#[tokio::test]
+#[ignore = "requires disposable RustFS; run tools/ci/test-rustfs.sh"]
+async fn rustfs_push_through_503() -> Result<()> {
+    let upstream = std::env::var("IPPAI_TEST_S3_ENDPOINT")
+        .context("IPPAI_TEST_S3_ENDPOINT must point to disposable RustFS")?;
+    let bucket_name = format!("ippai-test-{}", Uuid::new_v4());
+    let direct = Bucket::create_with_path_style(
+        &bucket_name,
+        Region::Custom { region: "us-east-1".into(), endpoint: upstream.clone() },
+        Credentials::default()?,
+        s3::BucketConfiguration::default(),
+    )
+    .await?;
+    ensure!((200..300).contains(&direct.response_code), "bucket creation failed");
+    let direct = direct.bucket;
+    let (endpoint, refused, passed) = flaky_proxy(upstream, 3).await;
+    let dir = std::env::temp_dir().join(&bucket_name);
+    let db = Library::new(&dir)?;
+    let config = dir.join("storage.toml");
+    std::fs::write(&config, format!(
+        "bucket = {bucket_name:?}\nregion = 'us-east-1'\nendpoint = {endpoint:?}\nprefix = 'test/'\nactive_key = 'k'\n[keys]\nk = '{}'\n",
+        "04".repeat(32)
+    ))?;
+    let s = Storage::open(db.clone(), &config)?;
+    let mut files = Vec::new();
+    for i in 0..48u32 {
+        files.push((format!("chunks/{:02x}/c{i}", i % 4), zstd::encode_all(&i.to_le_bytes().repeat(1000)[..], 3)?));
+    }
+    files.push(("trees/t".into(), b"catalog".to_vec()));
+    files.push(("games/g".into(), b"game metadata".to_vec()));
+    for (logical, bytes) in &files {
+        let path = dir.join(logical);
+        std::fs::create_dir_all(path.parent().unwrap())?;
+        std::fs::write(path, bytes)?;
+    }
+    let result: Result<()> = async {
+        s.push_store(&dir).await?;
+        assert!(refused.load(SeqCst) >= files.len() / 3, "refused {}", refused.load(SeqCst));
+        let mut stored = 0;
+        for page in direct.list("test/".into(), None).await? {
+            stored += page.contents.len();
+        }
+        assert_eq!(stored, files.len(), "one object for each file");
+        *s.cache.lock().unwrap() = Default::default();
+        for (logical, bytes) in &files {
+            assert_eq!(s.get(logical).await?.as_deref(), Some(&bytes[..]), "{logical}");
+        }
+        eprintln!("through the proxy: {} refused, {} passed", refused.load(SeqCst), passed.load(SeqCst));
+        Ok(())
+    }
+    .await;
+    for page in direct.list(String::new(), None).await? {
+        for object in page.contents {
+            direct.delete_object(object.key).await?;
+        }
+    }
+    direct.delete().await?;
     std::fs::remove_dir_all(dir)?;
     result
 }

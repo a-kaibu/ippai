@@ -1671,6 +1671,7 @@ dependencies = [
  "proptest",
  "rayon",
  "regex",
+ "reqwest",
  "ring",
  "rusqlite",
  "rust-embed",

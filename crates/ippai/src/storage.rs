@@ -144,6 +144,36 @@ pub(crate) mod gc_tests {
         now: Arc<AtomicUsize>,
         most: Arc<AtomicUsize>,
         gets: Arc<AtomicUsize>,
+        /// requests of any kind, answered or refused
+        requests: Arc<AtomicUsize>,
+        /// refuse the next this many requests with `fail_status`
+        fail_next: Arc<AtomicUsize>,
+        /// refuse every n-th request with `fail_status` (0: none)
+        fail_every: Arc<AtomicUsize>,
+        /// what a refused request gets (0: 503)
+        fail_status: Arc<AtomicUsize>,
+    }
+
+    impl Fake {
+        /// Some(status) when this request is refused.
+        fn refuse(&self) -> Option<StatusCode> {
+            let n = self.requests.fetch_add(1, SeqCst) + 1;
+            let mut left = self.fail_next.load(SeqCst);
+            let burst = loop {
+                if left == 0 {
+                    break false;
+                }
+                match self.fail_next.compare_exchange(left, left - 1, SeqCst, SeqCst) {
+                    Ok(_) => break true,
+                    Err(now) => left = now,
+                }
+            };
+            let every = self.fail_every.load(SeqCst);
+            (burst || (every > 0 && n % every == 0)).then(|| match self.fail_status.load(SeqCst) {
+                0 => StatusCode::SERVICE_UNAVAILABLE,
+                s => StatusCode::from_u16(s as u16).unwrap(),
+            })
+        }
     }
 
     pub(crate) async fn serve(delay_ms: u64) -> (Fake, Storage, std::path::PathBuf) {
@@ -154,16 +184,25 @@ pub(crate) mod gc_tests {
             f.now.fetch_sub(1, SeqCst);
         }
         async fn put(State(f): State<Fake>, UrlPath(p): UrlPath<String>, b: Bytes) -> StatusCode {
+            if let Some(s) = f.refuse() {
+                return s;
+            }
             busy(&f).await;
             f.objects.lock().unwrap().insert(p, b.to_vec());
             StatusCode::OK
         }
         async fn read(State(f): State<Fake>, UrlPath(p): UrlPath<String>) -> axum::response::Response {
+            if let Some(s) = f.refuse() {
+                return s.into_response();
+            }
             f.gets.fetch_add(1, SeqCst);
             busy(&f).await;
             f.objects.lock().unwrap().get(&p).cloned().map(IntoResponse::into_response).unwrap_or_else(|| StatusCode::NOT_FOUND.into_response())
         }
         async fn delete(State(f): State<Fake>, UrlPath(p): UrlPath<String>) -> StatusCode {
+            if let Some(s) = f.refuse() {
+                return s;
+            }
             f.objects.lock().unwrap().remove(&p);
             StatusCode::NO_CONTENT
         }
@@ -321,6 +360,63 @@ pub(crate) mod gc_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// A bucket that turns requests away with 503 (as Hugging Face Buckets do under load):
+    /// push_store still uploads the whole store, every object reads back, and gc's deletes go
+    /// through; the refused requests were tried again, not skipped.
+    #[tokio::test]
+    async fn push_store_rides_out_503() {
+        let (f, s, dir) = serve(0).await;
+        let store = dir.join("store");
+        for i in 0..64 {
+            let d = store.join(format!("chunks/{:02x}", i % 4));
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join(format!("c{i}")), [i as u8; 100]).unwrap();
+        }
+        std::fs::create_dir_all(store.join("trees")).unwrap();
+        std::fs::write(store.join("trees/t.tsv"), "tree").unwrap();
+        std::fs::create_dir_all(store.join("games")).unwrap();
+        std::fs::write(store.join("games/g.json"), "game").unwrap();
+        // a burst at the start (more than PUTS at once, so every upload sees one), then every third
+        f.fail_next.store(PUTS * 2, SeqCst);
+        f.fail_every.store(3, SeqCst);
+        s.push_store(&store).await.unwrap();
+        assert_eq!(names(&f).len(), 66);
+        assert!(f.requests.load(SeqCst) > 66 + PUTS * 2, "{}", f.requests.load(SeqCst));
+        for i in 0..64 {
+            let logical = format!("chunks/{:02x}/c{i}", i % 4);
+            assert_eq!(&*s.get(&logical).await.unwrap().unwrap(), &[i as u8; 100][..], "{logical}");
+        }
+        assert_eq!(&*s.get("games/g.json").await.unwrap().unwrap(), b"game");
+        // replaced objects are retired, and gc deletes them through the refusals too
+        std::fs::write(store.join("games/g.json"), "game 2").unwrap();
+        s.push_store(&store).await.unwrap();
+        age_retired(&s, 30 * 86_400_000);
+        let r = s.gc(std::time::Duration::from_secs(86_400), None).await.unwrap();
+        assert!(r.deleted >= 1, "{r:?}");
+        assert_eq!(names(&f), named(&s));
+        f.fail_every.store(0, SeqCst);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A bucket that keeps refusing: the upload fails after RETRIES more tries (not forever);
+    /// an answer that will not change (403) fails at the first.
+    #[tokio::test]
+    async fn retries_end() {
+        let (f, s, dir) = serve(0).await;
+        f.fail_next.store(1000, SeqCst);
+        let e = s.put("chunks/x", b"x").await.unwrap_err();
+        assert!(e.to_string().contains("503"), "{e}");
+        assert_eq!(f.requests.load(SeqCst), RETRIES as usize + 1);
+        f.fail_next.store(1000, SeqCst);
+        f.fail_status.store(403, SeqCst);
+        f.requests.store(0, SeqCst);
+        let e = s.put("chunks/x", b"x").await.unwrap_err();
+        assert!(e.to_string().contains("403"), "{e}");
+        assert_eq!(f.requests.load(SeqCst), 1);
+        assert!(names(&f).is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// The same object asked for many times at once: one download; the cache holds what it
     /// says it holds.
     #[tokio::test]
@@ -411,6 +507,44 @@ impl Cache {
 const PUTS: usize = 8;
 /// Revisions of a save kept in S3 (older ones are retired, see [`Storage::gc`]).
 pub const SAVE_REVISIONS: i64 = 8;
+
+/// Tries after the first for a request the bucket could not answer (see [`retrying`]).
+pub(crate) const RETRIES: u32 = 8;
+/// Wait before the first try again; doubled each time, at most [`RETRY_MAX`].
+#[cfg(not(test))]
+const RETRY_FIRST: std::time::Duration = std::time::Duration::from_secs(1);
+#[cfg(test)]
+const RETRY_FIRST: std::time::Duration = std::time::Duration::from_millis(1);
+const RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Whether a request that got `status` may succeed when tried again: throttling (429) and the
+/// server's own errors (5xx). Hugging Face Buckets answer 503 often while uploading many
+/// objects at once; a store of 60k chunks never got through in one push without this.
+fn retryable(status: u16) -> bool {
+    status == 429 || status / 100 == 5
+}
+
+/// `request`, tried again with doubling waits ([`RETRIES`] times at most) when it fails to
+/// connect or the bucket answers [`retryable`]; the last answer otherwise (a 404 or 403 at once).
+async fn retrying<F, Fut>(mut request: F) -> Result<s3::request::ResponseData>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<s3::request::ResponseData, s3::error::S3Error>>,
+{
+    let mut wait = RETRY_FIRST;
+    for attempt in 0..=RETRIES {
+        let last = attempt == RETRIES;
+        match request().await {
+            Ok(r) if !retryable(r.status_code()) || last => return Ok(r),
+            Ok(r) => eprintln!("S3: {}, trying again in {wait:?}", r.status_code()),
+            Err(e) if last => return Err(e.into()),
+            Err(e) => eprintln!("S3: {e}, trying again in {wait:?}"),
+        }
+        tokio::time::sleep(wait).await;
+        wait = (wait * 2).min(RETRY_MAX);
+    }
+    unreachable!()
+}
 
 fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
@@ -519,7 +653,8 @@ impl Storage {
     }
 
     async fn upload(&self, id: Uuid, bytes: &[u8]) -> Result<()> {
-        let r = self.bucket.put_object(self.path(id), bytes).await?;
+        let path = self.path(id);
+        let r = retrying(|| self.bucket.put_object(&path, bytes)).await?;
         ensure!(
             r.status_code() / 100 == 2,
             "S3 upload failed: {}",
@@ -529,7 +664,8 @@ impl Storage {
     }
 
     async fn download(&self, id: Uuid) -> Result<Vec<u8>> {
-        let r = self.bucket.get_object(self.path(id)).await?;
+        let path = self.path(id);
+        let r = retrying(|| self.bucket.get_object(&path)).await?;
         ensure!(
             r.status_code() == 200,
             "S3 download failed: {}",
@@ -631,7 +767,8 @@ impl Storage {
     }
 
     async fn delete(&self, id: Uuid) -> Result<()> {
-        let r = self.bucket.delete_object(self.path(id)).await?;
+        let path = self.path(id);
+        let r = retrying(|| self.bucket.delete_object(&path)).await?;
         ensure!(r.status_code() / 100 == 2 || r.status_code() == 404, "S3 delete failed: {}", r.status_code());
         Ok(())
     }
