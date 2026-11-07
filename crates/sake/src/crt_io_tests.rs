@@ -59,11 +59,12 @@ fn stat_names_are_windows() {
             assert_eq!(stat_name_ok(path), windows_ok, "{b}-bit {label} {path:?}");
         }
     }
-    // roots keep their separator; anything else with one does not (Windows' msvcrt)
-    for p in ["\\", "/", "C:\\", "c:/", "C:", "a", "dir\\x", "..\\..\\x.exe"] {
+    // roots keep their separator; anything else with one does not, and a bare drive is no
+    // name (Windows' msvcrt: stat("C:") is ENOENT)
+    for p in ["\\", "/", "C:\\", "c:/", "a", "dir\\x", "..\\..\\x.exe"] {
         assert!(stat_name_ok(p), "{p:?}");
     }
-    for p in ["", ".\\", "./", "dir\\", "dir/", "C:\\dir\\", "a?", "*", "..\\"] {
+    for p in ["", ".\\", "./", "dir\\", "dir/", "C:\\dir\\", "a?", "*", "..\\", "C:", "z:"] {
         assert!(!stat_name_ok(p), "{p:?}");
     }
 }
@@ -75,7 +76,8 @@ proptest! {
         let base = if drive { format!("C:{name}") } else { name.clone() };
         let root = name.is_empty();
         prop_assert_eq!(stat_name_ok(&format!("{base}{sep}")), root);
-        prop_assert_eq!(stat_name_ok(&base), !base.is_empty());
+        // (a bare drive "C:" is no name)
+        prop_assert_eq!(stat_name_ok(&base), !base.is_empty() && base != "C:");
     }
 }
 

@@ -90,7 +90,7 @@ int main(void) {
     free(t);
     SetLastError(0xdead);
     UINT t1 = GetSystemFirmwareTable(rsmb, 1, buf, sizeof buf);
-    printf("RSMB table 1: %u err %lu\n", t1, GetLastError());
+    printf("RSMB table 1: the same size %d err %lu\n", t1 == need, GetLastError());
     DWORD ids[8] = { 0xdead };
     UINT en = EnumSystemFirmwareTables(rsmb, ids, sizeof ids);
     printf("EnumSystemFirmwareTables RSMB: %u first %lu\n", en, ids[0]);

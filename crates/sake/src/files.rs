@@ -352,6 +352,24 @@ impl File {
         }
         got as u32
     }
+    /// Up to `n` bytes into host memory (fewer at the end of the file)
+    pub fn read_vec(&self, n: usize) -> Vec<u8> {
+        let mut buf = vec![0; n];
+        let mut f = self.f.lock().unwrap();
+        let mut got = 0;
+        while got < n {
+            match f.read(&mut buf[got..]) {
+                Ok(0) | Err(_) => break,
+                Ok(k) => got += k,
+            }
+        }
+        buf.truncate(got);
+        buf
+    }
+    pub fn write_bytes(&self, b: &[u8]) -> u32 {
+        let mut f = self.f.lock().unwrap();
+        f.write_all(b).map_or(0, |_| b.len() as u32)
+    }
     pub fn write_from(&self, src: u32, n: u32) -> u32 {
         let mut f = self.f.lock().unwrap();
         f.write_all(crate::mem::slice(src, n)).map_or(0, |_| n)

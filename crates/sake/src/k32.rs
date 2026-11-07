@@ -3732,7 +3732,7 @@ fn IsDBCSLeadByteEx(c: &mut Ctx) -> u32 {
 }
 
 fn MultiByteToWideChar(c: &mut Ctx) -> u32 {
-    let (cp, _flags, src, n, dst, cap) = (c.a(0), c.a(1), c.a(2), c.i(3), c.a(4), c.a(5));
+    let (cp, flags, src, n, dst, cap) = (c.a(0), c.a(1), c.a(2), c.i(3), c.a(4), c.a(5));
     // (Windows: any negative length means NUL-terminated; no output buffer with a size is
     // ERROR_INVALID_PARAMETER)
     if src == 0 || n == 0 || cap > i32::MAX as u32 || src == dst || cap != 0 && dst == 0 {
@@ -3741,6 +3741,12 @@ fn MultiByteToWideChar(c: &mut Ctx) -> u32 {
     }
     let s = if n < 0 { let mut v = cstr(src); v.push(0); v } else { mem::slice(src, n as u32).to_vec() };
     let w = mb2w(cp, &s);
+    // MB_ERR_INVALID_CHARS: bytes that are no character (a lone lead byte) fail with
+    // ERROR_NO_UNICODE_TRANSLATION (mingw's btowc relies on it, winref crt_io)
+    if flags & 8 != 0 && w.contains(&0xfffd) && (cp != 65001 || std::str::from_utf8(&s).is_err()) {
+        last_error(1113);
+        return 0;
+    }
     if cap == 0 {
         return w.len() as u32;
     }
@@ -3768,12 +3774,11 @@ fn WideCharToMultiByte(c: &mut Ctx) -> u32 {
     } else {
         (0..n as u32).map(|i| r16(src + 2 * i)).collect()
     };
-    // (lpDefaultChar / lpUsedDefaultChar: not for UTF-7/8)
+    // (lpDefaultChar / lpUsedDefaultChar with UTF-7/8: documented as ERROR_INVALID_PARAMETER,
+    // but Windows Server 2025 converts and leaves the flag alone, winref crt_io)
     let (def, pused) = (c.a(6), c.a(7));
-    if matches!(cp, 65000 | 65001) && (def != 0 || pused != 0) {
-        last_error(87);
-        return 0;
-    }
+    let utf = matches!(cp, 65000 | 65001);
+    let (def, pused) = if utf { (0, 0) } else { (def, pused) };
     let d = if def != 0 { vec![mem::r8(def)] } else { b"?".to_vec() };
     let (a, used) = crate::text::w2mb_def(cp, &s, &d);
     put32(pused, used as u32);
@@ -4555,11 +4560,12 @@ fn module_name(h: u32, wide: bool, dst: u32, cap: u32) -> u32 {
     };
     let n = if wide { path.encode_utf16().count() } else { crate::text::s2a(&path).len() } as u32;
     if n >= cap {
-        // cut short: W ends with a 0, A fills the buffer and has none (Windows 10, winref fmt)
+        // cut short: cap-1 characters and a 0, and cap (Windows Server 2025, winref fmt;
+        // Windows XP left A without the 0)
         if wide {
             put_name(dst, cap, &path, true);
         } else {
-            mem::write(dst, &crate::text::s2a(&path)[..cap as usize]);
+            mem::put_cstr(dst, cap, &crate::text::s2a(&path));
         }
         last_error(122);
         return cap;
@@ -4605,21 +4611,25 @@ fn GetModuleHandleExA(c: &mut Ctx) -> u32 {
     mem::put_addr(c.a(2), h);
     ok(h != 0)
 }
-fn LoadLibraryA(c: &mut Ctx) -> u32 {
-    let n = arg_str(c.a(0), false);
-    let r = crate::pe::load_library(c.cpu, &n);
+/// LoadLibrary: "" is ERROR_INVALID_PARAMETER, a module not found ERROR_MOD_NOT_FOUND (winref fmt)
+fn load_library_named(c: &mut Ctx, n: &str) -> u32 {
+    if n.is_empty() {
+        last_error(87);
+        return 0;
+    }
+    let r = crate::pe::load_library(c.cpu, n);
     if r == 0 {
         last_error(126);
     }
     r
 }
+fn LoadLibraryA(c: &mut Ctx) -> u32 {
+    let n = arg_str(c.a(0), false);
+    load_library_named(c, &n)
+}
 fn LoadLibraryW(c: &mut Ctx) -> u32 {
     let n = arg_str(c.a(0), true);
-    let r = crate::pe::load_library(c.cpu, &n);
-    if r == 0 {
-        last_error(126);
-    }
-    r
+    load_library_named(c, &n)
 }
 fn LoadLibraryExA(c: &mut Ctx) -> u32 {
     LoadLibraryA(c)
@@ -4645,7 +4655,13 @@ fn SetDllDirectoryW(c: &mut Ctx) -> u32 {
 fn LoadLibraryExW(c: &mut Ctx) -> u32 {
     LoadLibraryW(c)
 }
-fn FreeLibrary(_: &mut Ctx) -> u32 {
+/// (modules stay loaded; a handle that is no module is ERROR_MOD_NOT_FOUND, winref fmt)
+fn FreeLibrary(c: &mut Ctx) -> u32 {
+    // (a data-file module is its base | 1 or | 2)
+    if crate::pe::with(c.a(0) & !3, |_| ()).is_none() {
+        last_error(126);
+        return 0;
+    }
     1
 }
 fn DisableThreadLibraryCalls(_: &mut Ctx) -> u32 {
@@ -4671,7 +4687,8 @@ fn GetProcAddress(c: &mut Ctx) -> u32 {
         eprintln!("sake: GetProcAddress({h:#x}, {}) = {r:#x}", if p < 0x10000 { format!("#{p}") } else { a2s(&cstr(p)) });
     }
     if r == 0 {
-        last_error(127);
+        // (an ordinal not exported: ERROR_INVALID_ORDINAL, winref fmt)
+        last_error(if p < 0x10000 && h != 0 { 182 } else { 127 });
     }
     r
 }
@@ -6067,10 +6084,25 @@ fn OpenThread(c: &mut Ctx) -> u32 {
 }
 /// GetStartupInfo: STARTF_USESTDHANDLES and the handles when the process was started with them
 fn GetStartupInfoA(c: &mut Ctx) -> u32 {
-    let p = c.a(0);
+    startup_info(c.a(0), false)
+}
+/// STARTUPINFO: the desktop is "Winsta0\Default" as for every interactive program (winref fmt)
+fn startup_info(p: u32, wide: bool) -> u32 {
+    static DESKTOP: std::sync::OnceLock<(u32, u32)> = std::sync::OnceLock::new();
+    let (da, dw) = *DESKTOP.get_or_init(|| {
+        let t = "Winsta0\\Default";
+        let a = mem::heap_alloc(t.len() as u32 + 1, true);
+        mem::write(a, t.as_bytes());
+        let w = mem::heap_alloc(2 * t.len() as u32 + 2, true);
+        for (i, u) in t.encode_utf16().enumerate() {
+            w16(w + 2 * i as u32, u);
+        }
+        (a, w)
+    });
     let (size, flags, std) = if mem::x64() { (104, 60, 80) } else { (68, 44, 56) };
     mem::fill(p, size, 0);
     w32(p, size);
+    mem::wp(p + 2 * mem::ps(), if wide { dw } else { da });
     if STD_GIVEN.load(Ordering::Relaxed) {
         w32(p + flags, 0x100);
         for i in 0..3 {
@@ -6080,7 +6112,7 @@ fn GetStartupInfoA(c: &mut Ctx) -> u32 {
     0
 }
 fn GetStartupInfoW(c: &mut Ctx) -> u32 {
-    GetStartupInfoA(c)
+    startup_info(c.a(0), true)
 }
 fn SetHandleCount(c: &mut Ctx) -> u32 {
     c.a(0)

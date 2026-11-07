@@ -195,8 +195,13 @@ fn sid_alloc(s: &Sid) -> u32 {
 
 fn AllocateAndInitializeSid(c: &mut Ctx) -> u32 {
     let (auth, n, out) = (c.a(0), c.a(1) & 0xff, c.a(10));
-    if n > 8 || auth == 0 {
+    // (more than 8 sub-authorities: ERROR_INVALID_SID, winref security)
+    if auth == 0 {
         last_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    if n > 8 {
+        last_error(ERROR_INVALID_SID);
         return 0;
     }
     let a = (0..6).fold(0u64, |a, i| a << 8 | r8(auth + i) as u64);
@@ -419,7 +424,8 @@ fn AddAce(c: &mut Ctx) -> u32 {
         last_error(ERROR_INVALID_ACL);
         return 0;
     }
-    if !(2..=4).contains(&rev) {
+    // (any revision from 2 is taken, winref security: AddAce(acl, 9, ..) succeeds)
+    if rev < 2 {
         last_error(ERROR_INVALID_PARAMETER);
         return 0;
     }
@@ -439,8 +445,10 @@ fn AddAce(c: &mut Ctx) -> u32 {
         return 0;
     }
     let end = used(acl);
+    // (no room: AddAce's ERROR_INSUFFICIENT_BUFFER where AddAccessAllowedAce gives
+    // ERROR_ALLOTTED_SPACE_EXCEEDED, winref security)
     if end + len > r16(acl + 2) as u32 {
-        last_error(ERROR_ALLOTTED_SPACE_EXCEEDED);
+        last_error(ERROR_INSUFFICIENT_BUFFER);
         return 0;
     }
     let count = r16(acl + 4) as u32;
@@ -451,7 +459,7 @@ fn AddAce(c: &mut Ctx) -> u32 {
     mem::copy(acl + at + len, acl + at, end - at);
     mem::copy(acl + at, list, len);
     w16(acl + 4, (count + n) as u16);
-    if rev > r8(acl) as u32 {
+    if rev > r8(acl) as u32 && rev <= 4 {
         w8(acl, rev as u8);
     }
     1
@@ -676,6 +684,11 @@ fn AccessCheck(c: &mut Ctx) -> u32 {
         last_error(ERROR_INVALID_SECURITY_DESCR);
         return 0;
     }
+    // (generic rights must be mapped first: ERROR_GENERIC_NOT_MAPPED, winref security)
+    if want & 0xf000_0000 != 0 {
+        last_error(1360);
+        return 0;
+    }
     if privlen != 0 && r32(privlen) < 8 {
         put32(privlen, 8);
         last_error(ERROR_INSUFFICIENT_BUFFER);
@@ -728,7 +741,10 @@ fn OpenThreadToken(c: &mut Ctx) -> u32 {
     let tid = crate::cur().tid;
     let imp = IMPERSONATING.lock().unwrap().as_ref().is_some_and(|s| s.contains(&tid));
     if !imp {
-        putp(out, 0);
+        // (the handle is cleared through WoW64's thunk; 64-bit Windows leaves it, winref security)
+        if !mem::x64() {
+            putp(out, 0);
+        }
         last_error(ERROR_NO_TOKEN);
         return 0;
     }
@@ -812,6 +828,7 @@ fn put_luid(p: u32, l: Option<u32>) -> u32 {
         Some(l) => {
             put32(p, l);
             put32(p + 4, 0);
+            last_error(0); // (as Windows: success clears it, winref security)
             1
         }
         None => {
@@ -835,6 +852,7 @@ fn LookupPrivilegeNameW(c: &mut Ctx) -> u32 {
     }
     mem::put_wstr(out, have, &w);
     put32(lenp, w.len() as u32);
+    last_error(0);
     1
 }
 

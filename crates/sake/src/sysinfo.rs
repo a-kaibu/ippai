@@ -93,9 +93,18 @@ fn NtQuerySystemInformation(c: &mut Ctx) -> u32 {
         return st;
     };
     let n = data.len() as u32;
+    // (WoW64 gives a 32-bit program's per-processor times as many whole entries as fit, winref
+    // sysinfo-32)
+    if class == 8 && !mem::x64() && len < n && len >= 48 {
+        let k = len / 48 * 48;
+        put32(ret, k);
+        mem::write(buf, &data[..k as usize]);
+        return 0;
+    }
     put32(ret, n);
-    // fixed-size classes want the exact size; the per-processor one at least the whole array
-    if len < n || (class != 8 && len != n) {
+    // fixed-size classes want the exact size; the processor's (1) and the per-processor one (8)
+    // at least theirs (winref sysinfo)
+    if len < n || (!matches!(class, 1 | 8) && len != n) {
         return STATUS_INFO_LENGTH_MISMATCH;
     }
     mem::write(buf, &data);
@@ -166,7 +175,9 @@ fn smbios() -> Vec<u8> {
     t
 }
 fn firmware_table(provider: u32, id: u32) -> Option<Vec<u8>> {
-    if provider != RSMB || id != 0 {
+    // (RSMB has the one table, whatever the id: winref sysinfo)
+    let _ = id;
+    if provider != RSMB {
         return None;
     }
     let t = smbios();
@@ -251,8 +262,9 @@ fn PowerEnumerate(c: &mut Ctx) -> u32 {
         return ERROR_NO_MORE_ITEMS;
     }
     if buf == 0 {
+        // (the size query is ERROR_MORE_DATA, winref sysinfo)
         put32(sizep, 16);
-        return 0;
+        return ERROR_MORE_DATA;
     }
     if sizep == 0 || mem::r32(sizep) < 16 {
         put32(sizep, 16);

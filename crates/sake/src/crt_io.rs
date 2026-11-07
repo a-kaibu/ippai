@@ -539,10 +539,12 @@ fn fstat(c: &mut Ctx, k: StatKind) -> u32 {
 }
 
 /// Whether _stat may look `path` up at all: never an empty name or wildcards, and a trailing
-/// separator only on a root ("X:\\", "\\"): "dir\\" and ".\\" are ENOENT on Windows
+/// separator only on a root ("X:\\", "\\"): "dir\\" and ".\\" are ENOENT on Windows, and so
+/// is a bare drive ("C:", winref crt_io)
 fn stat_name_ok(path: &str) -> bool {
     let trimmed = path.trim_end_matches(['\\', '/']);
-    !path.is_empty() && !path.contains(['*', '?']) && (trimmed.len() == path.len() || trimmed.is_empty() || trimmed.ends_with(':'))
+    let bare_drive = path.len() == 2 && path.ends_with(':');
+    !path.is_empty() && !bare_drive && !path.contains(['*', '?']) && (trimmed.len() == path.len() || trimmed.is_empty() || trimmed.ends_with(':'))
 }
 fn stat(c: &mut Ctx, k: StatKind, wide: bool) -> u32 {
     let (path, p) = (path_arg(c.a(0), wide), c.a(1));
@@ -618,7 +620,7 @@ fn _fileno(c: &mut Ctx) -> u32 {
 /// _fdopen / _wfdopen (fd, mode): a stream over the descriptor's file
 fn fdopen(fd: u32, mode: &[u8]) -> u32 {
     match get(fd).map(|d| d.kind) {
-        Some(Kind::File(f)) => new_stream_of(f, fd, mode_flag(mode)),
+        Some(Kind::File(f)) => new_stream_of(f, fd, mode),
         Some(Kind::Std(i)) => data("_iob").unwrap() + file_size() * i as u32,
         None => {
             set_errno(EBADF);
@@ -1189,7 +1191,8 @@ fn btowc(c: &mut Ctx) -> u32 {
     if v > 255 || lead(v as u8) {
         return 0xffff;
     }
-    to_wide(&[v as u8]).first().map_or(0xffff, |&u| u as u32)
+    // (a byte that is no character alone, as 0x82 in 932, is WEOF: winref crt_io)
+    to_wide(&[v as u8]).first().filter(|&&u| u != 0xfffd).map_or(0xffff, |&u| u as u32)
 }
 /// wctob(wc): the single byte of a wide character, EOF when it takes two or none
 fn wctob(c: &mut Ctx) -> u32 {

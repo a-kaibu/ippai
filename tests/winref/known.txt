@@ -120,7 +120,7 @@ shell-* ^(want|got) +(name|removespec|strip) .*(2e747874\]|955c|835c\]|835c5c95\
 # setlocale(LC_ALL, "") takes the user locale's code page (not GetACP's, which the probes'
 # manifest makes 932): 1252 for the runner's en-US user, 932 for sake's Japanese one. crt_io's
 # unlabelled multibyte lines follow it (SAKE_ACP=1252 sake matches them); its "932 " lines name .932
-crt_io-* ^(want|got) +(mbstowcs|wcstombs cut|mbrtowc|mbrlen|mbtowc|wcrtomb|btowc|wctob) 
+crt_io-* ^(want|got) +(mbstowcs|wcstombs cut|mbrtowc|mbrlen|mbtowc|wcrtomb|btowc|wctob|_mbstrlen|fgetwc) 
 res-* ^(want|got) +item 0: 1 id \d+ type 0 state 0 sub 1 text \[&File\] cch 5$  # a popup's wID is its HMENU, whose number differs
 # sake's MS-named fonts are IPA fonts under those names (tools/ci/sake-fonts.py), as separate
 # .ttf files in a game's store or one msgothic.ttc from `ippai ttc`: other design metrics, and the
@@ -132,3 +132,11 @@ dwfont-* ^(want|got) +(metrics em|face 00000000 type|local loader|analyze)
 dshow-* ^(want|got) +vmr9: (GetNativeVideoSize 0|GetVideoPosition|SetVideoPosition src [08]|get_Visible|GetVideoSize|GetCurrentImage|RepaintVideo)
 # the screen plus 1 each way: the runner's is 1024x768, sake's 1366x768
 dshow-* ^(want|got) +vmr[79]: GetMaxIdealVideoSize 00000000 (1025|1367)x769$
+# how the exe was started: run.sh's Git Bash passes an unquoted command line and its own
+# lpReserved, and the runner's job runs BELOW_NORMAL; sake plays a program started from Explorer
+fmt-* ^(want|got) +command line quoted 
+fmt-* ^(want|got) +startupinfo cb [0-9]+ reserved null 
+fmt-* ^(want|got) +GetPriorityClass\(GetCurrentProcess\(\)\) 
+# the runner's account is an administrator without UAC's split token (TokenElevationTypeDefault);
+# sake plays an elevated one (TokenElevationTypeFull), which CPU-Z-like tools look for
+security-* ^(want|got) +elevation type [12] len 4$

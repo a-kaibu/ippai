@@ -624,10 +624,12 @@ mod tests {
         proptest! {
             #![proptest_config(ProptestConfig { cases: 500, ..ProptestConfig::default() })]
 
-            /// Any order and spacing of the pieces (int3 padding, as between functions): all
-            /// found, each change only a constant, and the decoys untouched.
+            /// Any order and spacing of the pieces (int3 padding, as between functions) within
+            /// WINDOW of the registration: all found, each change only a constant, and the decoys
+            /// untouched. (Gaps up to 0x3000 could put a piece past WINDOW, where plan rightly
+            /// finds nothing: 1 run in a few thousand failed so. far_piece tests that side.)
             #[test]
-            fn every_layout(order in Just((0..PARTS.len()).collect::<Vec<_>>()).prop_shuffle(), gaps in proptest::collection::vec(0usize..0x3000, PARTS.len())) {
+            fn every_layout(order in Just((0..PARTS.len()).collect::<Vec<_>>()).prop_shuffle(), gaps in proptest::collection::vec(0usize..0x2000, PARTS.len())) {
                 let mut code = vec![0xcc; 16];
                 for (&k, &g) in order.iter().zip(&gaps) {
                     code.extend(hex(PARTS[k].0));
@@ -648,6 +650,22 @@ mod tests {
                     }
                     o += n + 2 + g;
                 }
+            }
+
+            /// A needed piece farther than WINDOW from the registration: not recognized (the
+            /// allocator's code is one compilation unit; farther code is something else)
+            #[test]
+            fn far_piece(last in 2usize..PARTS.len(), extra in 0usize..0x1000) {
+                let mut code = vec![0xcc; 16];
+                for k in (0..PARTS.len()).filter(|&k| k != last) {
+                    code.extend(hex(PARTS[k].0));
+                    code.extend([0xcc; 2]);
+                }
+                code.extend(vec![0xcc; WINDOW as usize + extra]);
+                code.extend(hex(PARTS[last].0));
+                code.extend([0xcc; 16]);
+                // (FIELD and FLAG are decoys: without them it is still found)
+                prop_assert_eq!(plan(&code, IP).is_some(), matches!(PARTS[last].0, FIELD | FLAG));
             }
 
             /// Random bytes, alone or around the pieces: no panic, and whatever is planned keeps

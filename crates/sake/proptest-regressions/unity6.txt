@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 73e0237c8b4b936ebc726687d0255055ab3b00c32da49ac352815006e92d67e3 # shrinks to ops = [Register(0, 67108864, 1)]
+cc 602d4ed84f500834923971da25f96775d51d327a1b9304a56e2e4e18872772b6 # shrinks to order = [0, 2, 3, 1, 5, 6, 4], gaps = [10102, 9541, 12237, 11265, 10851, 11011, 0]

@@ -1719,6 +1719,9 @@ struct Stream {
     fd: u32,
     eof: bool,
     unget: Option<u8>,
+    /// text mode (no "b" in the mode and _fmode not _O_BINARY): CR LF reads as LF, LF writes as
+    /// CR LF, and Ctrl+Z ends the file (winref stdioflag)
+    text: bool,
 }
 
 // msvcrt FILE._flag bits (mingw's and old MSVC's feof / ferror / fileno macros read the FILE)
@@ -1734,7 +1737,102 @@ impl Stream {
     fn new(at: u32, f: Option<Arc<File>>, fd: u32, flag: u32, eof: bool) -> Stream {
         w32(at + flag_off(), flag);
         w32(at + flag_off() + 4, fd);
-        Stream { at, f, fd, eof, unget: None }
+        Stream { at, f, fd, eof, unget: None, text: false }
+    }
+    /// One character: the ungot one, else the file's (text mode translated); None at the end
+    fn getc(&mut self) -> Option<u8> {
+        if let Some(b) = self.unget.take() {
+            return Some(b);
+        }
+        let f = self.f.clone()?;
+        let b = *f.read_vec(1).first()?;
+        if !self.text {
+            return Some(b);
+        }
+        match b {
+            0x1a => {
+                f.seek(SeekFrom::Current(-1));
+                None
+            }
+            b'\r' => match f.read_vec(1).first() {
+                Some(b'\n') => Some(b'\n'),
+                Some(_) => {
+                    f.seek(SeekFrom::Current(-1));
+                    Some(b'\r')
+                }
+                None => Some(b'\r'),
+            },
+            b => Some(b),
+        }
+    }
+    /// Up to `n` characters (fread): chunks of the file, translated in text mode
+    fn read(&mut self, n: usize) -> Vec<u8> {
+        let mut out = Vec::with_capacity(n.min(1 << 20));
+        if let Some(b) = self.unget.take() {
+            out.push(b);
+        }
+        let Some(f) = self.f.clone() else { return out };
+        if !self.text {
+            out.extend(f.read_vec(n - out.len()));
+            return out;
+        }
+        while out.len() < n {
+            let raw = f.read_vec((n - out.len()).max(1));
+            if raw.is_empty() {
+                break;
+            }
+            let mut i = 0;
+            while i < raw.len() && out.len() < n {
+                match raw[i] {
+                    0x1a => {
+                        f.seek(SeekFrom::Current(i as i64 - raw.len() as i64));
+                        return out;
+                    }
+                    b'\r' if raw.get(i + 1) == Some(&b'\n') => {
+                        out.push(b'\n');
+                        i += 2;
+                    }
+                    // (a CR at the chunk's end: the next byte decides)
+                    b'\r' if i + 1 == raw.len() => {
+                        match f.read_vec(1).first() {
+                            Some(b'\n') => out.push(b'\n'),
+                            Some(_) => {
+                                f.seek(SeekFrom::Current(-1));
+                                out.push(b'\r');
+                            }
+                            None => out.push(b'\r'),
+                        }
+                        i += 1;
+                    }
+                    b => {
+                        out.push(b);
+                        i += 1;
+                    }
+                }
+            }
+            if i < raw.len() {
+                f.seek(SeekFrom::Current(i as i64 - raw.len() as i64));
+            }
+        }
+        out
+    }
+    /// Writes `b` (LF as CR LF in text mode); whether all of it went
+    fn write(&self, b: &[u8]) -> bool {
+        let Some(f) = &self.f else {
+            eprint!("{}", a2s(b));
+            return true;
+        };
+        if self.text && b.contains(&b'\n') {
+            let mut v = Vec::with_capacity(b.len() + 16);
+            for &x in b {
+                if x == b'\n' {
+                    v.push(b'\r');
+                }
+                v.push(x);
+            }
+            return f.write_bytes(&v) == v.len() as u32;
+        }
+        f.write_bytes(b) == b.len() as u32
     }
     /// The end-of-file indicator, in the guest's FILE too.
     fn set_eof(&mut self, v: bool) {
@@ -1789,12 +1887,18 @@ fn fopen_mode(path: &str, mode: &[u8]) -> Option<File> {
 fn new_stream(f: File, mode: &[u8]) -> u32 {
     let f = Arc::new(f);
     let fd = io::fd_of_file(f.clone());
-    new_stream_of(f, fd, mode_flag(mode))
+    new_stream_of(f, fd, mode)
+}
+/// Whether fopen's mode opens in text mode: "t", or no "b" while _fmode is not _O_BINARY
+fn text_mode(mode: &[u8]) -> bool {
+    mode.contains(&b't') || !mode.contains(&b'b') && data("_fmode").map_or(0, r32) & 0x8000 == 0
 }
 /// A stream over descriptor `fd`'s file (fclose closes the descriptor too).
-fn new_stream_of(f: Arc<File>, fd: u32, flag: u32) -> u32 {
+fn new_stream_of(f: Arc<File>, fd: u32, mode: &[u8]) -> u32 {
     let fp = mem::heap_alloc(file_size(), true);
-    FILES.lock().unwrap().get_or_insert_with(HashMap::default).insert(fp, Stream::new(fp, Some(f), fd, flag, false));
+    let mut st = Stream::new(fp, Some(f), fd, mode_flag(mode), false);
+    st.text = text_mode(mode);
+    FILES.lock().unwrap().get_or_insert_with(HashMap::default).insert(fp, st);
     fp
 }
 /// _get_stream_buffer_pointers(stream, &base, &ptr, &cnt): the FILE's buffer fields (UCRT
@@ -1878,20 +1982,16 @@ fn fread_to(buf: u32, size: u32, n: u32, fp: u32) -> u32 {
         return 0;
     }
     with_file(fp, |s| {
-        let Some(f) = s.f.clone() else { return 0 };
-        let mut at = buf;
-        let mut got = 0;
-        if let Some(b) = s.unget.take() {
-            w8(at, b);
-            at += 1;
-            got = 1;
-        }
-        got += f.read_into(at, total - got);
+        s.f.as_ref()?;
+        let v = s.read(total as usize);
+        mem::write(buf, &v);
+        let got = v.len() as u32;
         if got < total {
             s.set_eof(true);
         }
-        got / size
+        Some(got / size)
     })
+    .flatten()
     .unwrap_or(0)
 }
 fn fwrite(c: &mut Ctx) -> u32 {
@@ -1900,13 +2000,7 @@ fn fwrite(c: &mut Ctx) -> u32 {
     if total == 0 {
         return 0;
     }
-    with_file(fp, |s| match &s.f {
-        Some(f) => f.write_from(buf, total) / size,
-        None => {
-            eprint!("{}", a2s(mem::slice(buf, total)));
-            n
-        }
-    })
+    with_file(fp, |s| if s.write(mem::slice(buf, total)) { n } else { 0 })
     .unwrap_or(0)
 }
 fn fseek(c: &mut Ctx) -> u32 {
@@ -2081,19 +2175,15 @@ fn fflush(_: &mut Ctx) -> u32 {
 }
 fn getc_of(fp: u32) -> u32 {
     with_file(fp, |s| {
-        if let Some(b) = s.unget.take() {
-            return b as u32;
+        if s.f.is_none() && s.unget.is_none() {
+            return u32::MAX;
         }
-        let Some(f) = s.f.clone() else { return u32::MAX };
-        let tmp = mem::heap_alloc(4, false);
-        let got = f.read_into(tmp, 1);
-        let b = r8(tmp);
-        mem::heap_free(tmp);
-        if got == 0 {
-            s.set_eof(true);
-            u32::MAX
-        } else {
-            b as u32
+        match s.getc() {
+            Some(b) => b as u32,
+            None => {
+                s.set_eof(true);
+                u32::MAX
+            }
         }
     })
     .unwrap_or(u32::MAX)
@@ -2138,26 +2228,12 @@ fn fgets(c: &mut Ctx) -> u32 {
 }
 fn fputs(c: &mut Ctx) -> u32 {
     let s = cstr(c.a(0));
-    with_file(c.a(1), |st| match &st.f {
-        Some(f) => f.write_from(c.a(0), s.len() as u32),
-        None => {
-            eprint!("{}", a2s(&s));
-            0
-        }
-    });
+    write_stream(c.a(1), &s);
     0
 }
 /// Writes `s` to the stream (stdout / stderr: the log).
 fn write_stream(fp: u32, s: &[u8]) {
-    let tmp = mem::heap_alloc(s.len() as u32 + 1, false);
-    mem::write(tmp, s);
-    with_file(fp, |st| match &st.f {
-        Some(f) => {
-            f.write_from(tmp, s.len() as u32);
-        }
-        None => eprint!("{}", a2s(s)),
-    });
-    mem::heap_free(tmp);
+    with_file(fp, |st| st.write(s));
 }
 fn fprintf(c: &mut Ctx) -> u32 {
     let Some(s) = legacy::<u8>(c.a(1), &mut VaArgs::arg(c, 2)) else { return u32::MAX };
@@ -2545,15 +2621,7 @@ fn localeconv(_: &mut Ctx) -> u32 {
 }
 fn fputc(c: &mut Ctx) -> u32 {
     let ch = c.a(0) & 0xff;
-    let tmp = mem::heap_alloc(1, false);
-    mem::write(tmp, &[ch as u8]);
-    with_file(c.a(1), |st| match &st.f {
-        Some(f) => {
-            f.write_from(tmp, 1);
-        }
-        None => eprint!("{}", ch as u8 as char),
-    });
-    mem::heap_free(tmp);
+    write_stream(c.a(1), &[ch as u8]);
     ch
 }
 fn __acrt_iob_func(c: &mut Ctx) -> u32 {
