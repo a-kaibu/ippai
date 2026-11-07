@@ -1,0 +1,53 @@
+NtQueryDirectoryFile: 1
+class 1 a.txt: size 5 alloc>=size 1 attrs 20 name length 10 times set 1
+class 1 sub: size 0 attrs 10
+class 1 call: information is the end of the last entry 1
+class 1 end: 80000006, iosb status 80000006, calls 1, aligned 1
+class 1: . .. a.txt b.dat Long File Name.text sub
+class 2 a.txt: size 5 alloc>=size 1 attrs 20 name length 10 times set 1
+class 2 sub: size 0 attrs 10
+class 2 call: information is the end of the last entry 1
+class 2 end: 80000006, iosb status 80000006, calls 1, aligned 1
+class 2: . .. a.txt b.dat Long File Name.text sub
+class 3 a.txt: size 5 alloc>=size 1 attrs 20 name length 10 times set 1
+class 3 sub: size 0 attrs 10
+class 3 call: information is the end of the last entry 1
+class 3 end: 80000006, iosb status 80000006, calls 1, aligned 1
+class 3: . .. a.txt b.dat Long File Name.text sub
+class 12 call: information is the end of the last entry 1
+class 12 end: 80000006, iosb status 80000006, calls 1, aligned 1
+class 12: . .. a.txt b.dat Long File Name.text sub
+class 37 a.txt: size 5 alloc>=size 1 attrs 20 name length 10 times set 1
+class 37 sub: size 0 attrs 10
+class 37 call: information is the end of the last entry 1
+class 37 end: 80000006, iosb status 80000006, calls 1, aligned 1
+class 37: . .. a.txt b.dat Long File Name.text sub
+class 38 a.txt: size 5 alloc>=size 1 attrs 20 name length 10 times set 1
+class 38 sub: size 0 attrs 10
+class 38 call: information is the end of the last entry 1
+class 38 end: 80000006, iosb status 80000006, calls 1, aligned 1
+class 38: . .. a.txt b.dat Long File Name.text sub
+class 1 a.txt: size 5 alloc>=size 1 attrs 20 name length 10 times set 1
+class 1 call: information is the end of the last entry 1
+class 1 end: 80000006, iosb status 80000006, calls 1, aligned 1
+class 1 mask *.txt: a.txt
+class 1 call: information is the end of the last entry 1
+class 1 end: 80000006, iosb status 80000006, calls 1, aligned 1
+class 1 mask b.dat: b.dat
+class 1 a.txt: size 5 alloc>=size 1 attrs 20 name length 10 times set 1
+class 1 call: information is the end of the last entry 1
+class 1 end: 80000006, iosb status 80000006, calls 1, aligned 1
+class 1 mask ?.*: a.txt b.dat
+single: 0, next offset 0, information 1
+later mask ignored, end 80000006
+first mask kept: a.txt
+restart with a new mask: 0
+restart: b.dat
+shorter than the fixed part: c0000004
+name cut: c0000004, iosb 77777777 information 2004318071, name length 1431655765, 'Lon' 0, past the buffer untouched 1
+then with room: 0, length 38
+nothing matches: c000000f, iosb c000000f
+again: 80000006
+bad class: c0000003
+a file, not a directory: c000000d
+bad handle: c0000008
