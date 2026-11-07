@@ -28,3 +28,4 @@ Push-Location $env:RUNNER_TEMP
 cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" x86 >nul && cl /nologo /EHsc /MD /D_AFXDLL /std:c++17 `"$PSScriptRoot\layout.cpp`" /Fe:layout.exe 2>&1" | Set-Content -Encoding utf8 "$out\layout-build.txt"
 if (Test-Path layout.exe) { .\layout.exe | Set-Content -Encoding utf8 "$out\layout.tsv" }
 Pop-Location
+exit 0  # (cl failing is in layout-build.txt)
