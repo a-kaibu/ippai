@@ -94,8 +94,11 @@ fn run(seed: u64) {
     for _ in 0..120 {
         match r.below(14) {
             0 => {
+                // (a texture for reading or for drawing to, not both: one bound for output
+                // leaves the input slots reading it (hazards.rs), which Binds11.tla checks)
                 let d = mem(11);
-                put(d, &[4, 4, r.below(3) as u32, 1, 28, 1, 0, 0, 0x28, 0, 0]);
+                let bind = if r.chance(50) { 0x8 } else { 0x20 };
+                put(d, &[4, 4, r.below(3) as u32, 1, 28, 1, 0, 0, bind, 0, 0]);
                 let o = mem(2);
                 let res = call1(m(IF_DEVICE, 5), &[dev, d, 0, o]);
                 app.held.push(rd1(o));
@@ -112,7 +115,7 @@ fn run(seed: u64) {
             2 => {
                 // a shader resource or render target view of a texture
                 let Some(t) = app.pick(&mut r, |i| i == IF_TEX2D) else { continue };
-                let srv = r.chance(50);
+                let srv = with(|d| matches!(&d.objs[&d.id_of(t)].data, Data::Texture(x) if x.bind & 0x8 != 0));
                 let o = mem(2);
                 let res = call1(m(IF_DEVICE, if srv { 7 } else { 9 }), &[dev, t, 0, o]);
                 app.held.push(rd1(o));

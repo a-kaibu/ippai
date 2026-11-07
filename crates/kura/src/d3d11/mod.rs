@@ -11,6 +11,7 @@
 
 pub mod d2d;
 pub mod d3d10;
+mod deferred;
 pub mod check;
 pub mod format;
 mod hazards;
@@ -24,6 +25,8 @@ mod map_tests;
 mod bind_tests;
 #[cfg(test)]
 mod draw_tests;
+#[cfg(test)]
+mod deferred_tests;
 
 use crate::d3d9::gpu;
 use crate::d3d9::HostCalls;
@@ -258,6 +261,9 @@ pub enum Data {
     Query(u32, u32, u64),
     /// ID3DDeviceContextState: the context state it holds while another one is current
     CtxState(Option<Box<State>>),
+    /// a deferred context: its state and the list it records
+    Deferred(Box<deferred::Deferred>),
+    CmdList(Box<deferred::CmdList>),
     Other,
 }
 
@@ -513,6 +519,20 @@ impl D11 {
         o.refs = o.refs.saturating_sub(1);
         let r = o.refs;
         let (iface, binds) = (o.iface, o.binds);
+        // (one device per process here: "two" devices, one stored in the other's private data,
+        // are one holding itself. Once only those references are left, nobody holds it)
+        let selfs = o.private.iter().filter(|p| p.2 == id).count() as u32;
+        if r > 0 && r == selfs && id == self.device {
+            o.private.retain(|p| p.2 != id);
+            o.refs = 0;
+            if holds_device(iface) {
+                self.release(self.device);
+            }
+            if binds == 0 {
+                self.destroy(id);
+            }
+            return 0;
+        }
         if was == 1 && holds_device(iface) {
             self.release(self.device);
         }
@@ -583,6 +603,9 @@ impl D11 {
                 }
                 self.unbind(v.res);
             }
+            Data::Deferred(x) => deferred::drop_deferred(self, *x),
+            Data::CmdList(l) => deferred::drop_list(self, *l),
+            Data::CtxState(Some(s)) => unbind_state(self, &s),
             Data::SwapChain(s) => {
                 self.release(s.buffer);
                 // (the reference new_swapchain took)
@@ -745,6 +768,8 @@ unsafe fn query_interface(d: &mut D11, id: u32, iface: u32, riid: u32, out: u32)
         }
         None => 0,
     };
+    // (a deferred context is no ID3D11Multithread)
+    let want = if want == IF_MULTITHREAD && primary == IF_CONTEXT && id != d.context { 0 } else { want };
     if want == 0 {
         if d.trace {
             eprintln!("d3d11: QueryInterface({first:08x}) on {}: no", name(iface, 0));
@@ -831,6 +856,15 @@ unsafe fn create_device(d: &mut D11, args: *const u32) -> u32 {
         if d.objs.get(&d.device).is_some_and(|o| o.refs == 0) && d.objs.get(&d.context).is_some_and(|o| o.refs == 0) {
             let old = std::mem::replace(&mut d.st, default_state());
             unbind_state(d, &old);
+            // (and without what the old one kept in its private data)
+            for id in [d.device, d.context] {
+                let old = d.objs.get_mut(&id).map(|o| std::mem::take(&mut o.private)).unwrap_or_default();
+                for (_, _, held) in old {
+                    if held != 0 && held != id {
+                        d.release(held);
+                    }
+                }
+            }
         }
         d.add_ref(d.device);
     }
@@ -905,19 +939,7 @@ fn stage_of(m: u32) -> usize {
 
 /// Lets go of everything a state binds (ClearState, a new device).
 fn unbind_state(d: &mut D11, old: &State) {
-    let mut held: Vec<u32> = Vec::new();
-    held.extend(old.vbs.iter().map(|v| v.0));
-    held.extend([old.ib.0, old.layout, old.vs, old.ps, old.dsv, old.blend, old.depth, old.raster, old.predicate.0]);
-    held.extend(old.shaders);
-    held.extend(old.uavs.iter().flatten());
-    held.extend(old.so);
-    for s in 0..6 {
-        held.extend(old.cbs[s]);
-        held.extend(old.srvs[s]);
-        held.extend(old.samplers[s]);
-    }
-    held.extend(old.rtvs);
-    for h in held.into_iter().filter(|&h| h != 0) {
+    for h in deferred::state_objects(old) {
         d.unbind(h);
     }
 }
@@ -1238,6 +1260,7 @@ unsafe fn method(d: &mut D11, iface: u32, m: u32, this: u32, args: *const u32, a
             _ => E_NOTIMPL,
         },
         IF_DEVICE => device_call(d, m, this, &a),
+        IF_CONTEXT if this != d.context => deferred::call(d, this, m, &a, after),
         IF_CONTEXT => context_call(d, m, &a, after),
         d3d10::IF10_DEVICE => d3d10::device(d, m, this, &a, after),
         d3d10::IF10_BUFFER..=d3d10::IF10_QUERY => d3d10::child(d, iface, m, this, &a, after),
@@ -1671,7 +1694,7 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             S_OK
         }
         26 => E_INVALIDARG,
-        27 => DXGI_ERROR_INVALID_CALL, // deferred contexts
+        27 => deferred::create(d, a(1), a(2)),
         28 => E_NOTIMPL,
         29 => {
             // CheckFormatSupport(format, out)
@@ -1729,7 +1752,7 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
         42 => 0,
         // ID3D11Device1/2 (Direct2D uses these)
         43 | 50 => device_call(d, 40, this, a),
-        44 | 51 => DXGI_ERROR_INVALID_CALL, // deferred contexts
+        44 | 51 => deferred::create(d, a(1), a(2)), // CreateDeferredContext1/2
         45 => {
             // CreateBlendState1(desc, out): render targets of 10 dwords (LogicOpEnable, LogicOp)
             // to the 8 of D3D11_BLEND_DESC
@@ -2297,7 +2320,7 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
             st.so = so;
             hazards::after_buffers(d, st);
         }
-        49 | 51 | 52 | 55 | 57 | 58 => {}
+        49 | 51 | 52 | 55 | 57 => {}
         38..=42 => {}
         72 | 77 => get_slots(d, &st.cbs[(m == 77) as usize], a(1), a(2), a(3)),
         73 | 84 => get_slots(d, &st.srvs[(m == 73) as usize], a(1), a(2), a(3)),
@@ -2398,6 +2421,7 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
         119..=124 => return context_call2(d, st, [7, 62, 66, 22, 16, 71][m as usize - 119], a, after),
         125..=130 => return context_call2(d, st, [72, 100, 104, 81, 77, 109][m as usize - 125], a, after),
         131 => swap_state(d, st, a(1), a(2)),
+        58 => deferred::execute(d, st, a(1), a(2), after),
         132 => {} // ClearView
         // ID3D11DeviceContext2: tiled resources and annotations
         134..=139 | 141..=143 => {}
