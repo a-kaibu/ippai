@@ -545,8 +545,9 @@ fn sections(m: &[u8]) -> Option<Vec<(u8, &[u8])>> {
         let id = m[p];
         p += 1;
         let n = read_uleb(m, &mut p)? as usize;
-        out.push((id, m.get(p..p + n)?));
-        p += n;
+        let end = p.checked_add(n)?;
+        out.push((id, m.get(p..end)?));
+        p = end;
     }
     Some(out)
 }
@@ -571,7 +572,7 @@ fn parts(m: &[u8]) -> Option<Parts<'_>> {
     for _ in 0..read_uleb(imports, &mut p)? {
         for _ in 0..2 {
             let l = read_uleb(imports, &mut p)? as usize;
-            p += l;
+            p = p.checked_add(l)?;
         }
         match *imports.get(p)? {
             0x00 => {
@@ -603,10 +604,114 @@ fn parts(m: &[u8]) -> Option<Parts<'_>> {
         let ty = read_uleb(f, &mut p)?;
         let at = q;
         let n = read_uleb(c, &mut q)? as usize;
-        q += n;
+        q = q.checked_add(n)?;
         funcs.push((ty, c.get(at..q)?));
     }
     Some(Parts { types, imports, nimp, funcs })
+}
+
+/// What a translated module may import from `env` (the translators' helpers, the guest memory
+/// and the function table): [`check`] refuses any other.
+pub const IMPORTS: &[&str] = &["memory", "table", "step", "eflags", "status", "x87", "callmiss", "round"];
+
+/// Whether `m` is shaped like a module the translators make ([`Module::finish`], [`merge`],
+/// [`select`]) with `funcs` functions: only the sections those write (custom, types, imports,
+/// functions, exports, code), each once and in order, so no start function, data, memory or
+/// table of its own; imports only [`IMPORTS`] from `env`, each of its kind; exports only its
+/// functions. The server checks a run's regions with it before keeping them for other pages
+/// (the browser validates the code itself when it compiles them).
+pub fn check(m: &[u8], funcs: usize) -> bool {
+    check_(m, funcs).is_some()
+}
+
+fn check_(m: &[u8], funcs: usize) -> Option<()> {
+    let s = sections(m)?;
+    let mut last = 0u8;
+    for &(id, body) in &s {
+        let order = match id {
+            0 => {
+                // custom: only "name"
+                let mut p = 0;
+                let l = read_uleb(body, &mut p)? as usize;
+                if body.get(p..p.checked_add(l)?)? != b"name" {
+                    return None;
+                }
+                continue;
+            }
+            1..=3 => id,
+            7 => 4,
+            10 => 5,
+            _ => return None,
+        };
+        if order <= last {
+            return None;
+        }
+        last = order;
+    }
+    let imports = sec(&s, 2)?;
+    let mut p = 0;
+    for _ in 0..read_uleb(imports, &mut p)? {
+        let mut names = [&b""[..]; 2];
+        for n in &mut names {
+            let l = read_uleb(imports, &mut p)? as usize;
+            let end = p.checked_add(l)?;
+            *n = imports.get(p..end)?;
+            p = end;
+        }
+        if names[0] != b"env" || !IMPORTS.iter().any(|i| i.as_bytes() == names[1]) {
+            return None;
+        }
+        let kind = *imports.get(p)?;
+        let want = match names[1] {
+            b"memory" => 0x02,
+            b"table" => 0x01,
+            _ => 0x00,
+        };
+        if kind != want {
+            return None;
+        }
+        match kind {
+            0x00 => {
+                p += 1;
+                read_uleb(imports, &mut p)?;
+            }
+            0x01 => p += 4,
+            _ => {
+                let flags = *imports.get(p + 1)?;
+                p += 2;
+                read_uleb(imports, &mut p)?;
+                if flags & 1 != 0 {
+                    read_uleb(imports, &mut p)?;
+                }
+            }
+        }
+    }
+    if p != imports.len() {
+        return None;
+    }
+    let parts = parts(m)?;
+    if parts.funcs.len() != funcs {
+        return None;
+    }
+    if let Some(e) = sec(&s, 7) {
+        let mut p = 0;
+        for _ in 0..read_uleb(e, &mut p)? {
+            let l = read_uleb(e, &mut p)? as usize;
+            p = p.checked_add(l)?;
+            if *e.get(p)? != 0x00 {
+                return None;
+            }
+            p += 1;
+            let f = read_uleb(e, &mut p)?;
+            if f < parts.nimp || f >= parts.nimp + funcs as u64 {
+                return None;
+            }
+        }
+        if p != e.len() {
+            return None;
+        }
+    }
+    Some(())
 }
 
 /// A module of `funcs` (exported as "f0", "f1", ... and named `names` if there is one each).
@@ -747,5 +852,91 @@ mod tests {
         let mut want = Code::default();
         want.get(0).set(2).i32c(200).get(3).tee(3).get(1);
         assert_eq!(out.b, want.b);
+    }
+
+    fn sample(nfuncs: usize) -> Vec<u8> {
+        let mut m = Module::default();
+        m.types.push(FuncType { params: alloc::vec![I32], results: alloc::vec![I32] });
+        m.imports.push(Import::Memory);
+        m.imports.push(Import::Func("step", 0));
+        m.imports.push(Import::Table("table"));
+        for k in 0..nfuncs {
+            let mut code = Code::default();
+            code.get(0).i32c(k as i32).op(0x6a);
+            m.funcs.push(Func { ty: 0, locals: alloc::vec![], code });
+        }
+        m.name = Some("x86_00401000_1".into());
+        m.finish()
+    }
+
+    #[test]
+    fn check_takes_what_the_translators_make() {
+        let a = sample(3);
+        assert!(check(&a, 3));
+        assert!(!check(&a, 2), "the index says another count");
+        let b = sample(2);
+        let m = merge(&[&a, &b], &[]).unwrap();
+        assert!(check(&m, 5));
+        let s = select(&m, &[true, false, true, false, false]).unwrap();
+        assert!(check(&s, 2));
+    }
+
+    #[test]
+    fn check_refuses_what_they_never_make() {
+        let a = sample(1);
+        // a start function (section 8) after the exports
+        let mut start = a.clone();
+        start.extend_from_slice(&[8, 1, 1]);
+        assert!(!check(&start, 1));
+        // a data section
+        let mut data = a.clone();
+        data.extend_from_slice(&[11, 1, 0]);
+        assert!(!check(&data, 1));
+        // another import name, another module, a kind that does not match
+        for (from, to) in [(&b"\x04step"[..], &b"\x04fetc"[..]), (&b"\x03env\x04step"[..], &b"\x03enx\x04step"[..])] {
+            let at = a.windows(from.len()).position(|w| w == from).unwrap();
+            let mut m = a.clone();
+            m[at..at + from.len()].copy_from_slice(to);
+            assert!(!check(&m, 1));
+        }
+        let at = a.windows(5).position(|w| w == b"\x04step").unwrap() + 5;
+        let mut kind = a.clone();
+        kind[at] = 0x03;
+        assert!(!check(&kind, 1));
+        // custom sections other than "name"
+        let mut custom = a.clone();
+        custom.extend_from_slice(&[0, 3, 2, b'x', b'y']);
+        assert!(!check(&custom, 1));
+    }
+
+    #[test]
+    fn check_survives_any_cut_or_changed_byte() {
+        let a = sample(2);
+        for n in 0..a.len() {
+            let _ = check(&a[..n], 2);
+        }
+        for at in 0..a.len() {
+            for v in [0x00, 0x01, 0x7f, 0x80, 0xff] {
+                let mut m = a.clone();
+                m[at] = v;
+                let _ = check(&m, 2);
+                let _ = select(&m, &[true, true]);
+            }
+        }
+    }
+
+    /// Every helper a translator imports is one [`IMPORTS`] lets through: a new one not listed
+    /// would make the server drop every run's regions.
+    #[test]
+    fn imports_lists_every_helper() {
+        for src in [include_str!("mod.rs"), include_str!("long.rs"), include_str!("dispatch.rs")] {
+            for pat in ["Import::Func(\"", "Import::Table(\""] {
+                for (at, _) in src.match_indices(pat) {
+                    let rest = &src[at + pat.len()..];
+                    let name = &rest[..rest.find('"').unwrap()];
+                    assert!(IMPORTS.contains(&name), "{name} is not in IMPORTS");
+                }
+            }
+        }
     }
 }

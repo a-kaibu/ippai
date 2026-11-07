@@ -11,6 +11,7 @@
 //! `ttc` (hidden) makes sake's font collections. `pack` and `add-game` (hidden) are the two halves of `add`, for trees that are no game
 //! (sake's C:\ with the fonts) and for scripts.
 
+mod auth;
 mod daemon;
 mod dirs;
 mod envelope;
@@ -56,6 +57,12 @@ enum Cmd {
     Stop,
     /// Whether the server runs, and its URL.
     Status,
+    /// The token other devices' browsers sign in with, and the URL that does it.
+    Token {
+        /// Make another one (the old one stops working when the server starts again).
+        #[arg(long)]
+        new: bool,
+    },
     /// The server's log.
     Logs {
         /// Keep printing what the server writes.
@@ -125,6 +132,15 @@ fn main() -> anyhow::Result<()> {
         Cmd::Serve(a) => daemon::start(&dirs, &a),
         Cmd::Stop => daemon::stop(&dirs),
         Cmd::Status => daemon::status(&dirs),
+        Cmd::Token { new } => {
+            let t = auth::token(&dirs.token, new)?;
+            println!("{t}");
+            eprintln!("on another device, open <the server's URL>/login?token={t} once (http://{}/login?token={t} here)", dirs.listen);
+            if new {
+                eprintln!("restart the server (ippai stop; ippai serve) for the new one");
+            }
+            Ok(())
+        }
         Cmd::Logs { follow, lines } => daemon::logs(&dirs, follow, lines),
         Cmd::Pack(c) => pack::run(&dirs.store, c),
         Cmd::Ttc { out, fonts } => ttc::run(&out, &fonts),

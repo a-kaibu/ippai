@@ -21,7 +21,8 @@
 //!   listener (`--game-listen`, the next port by default): another origin than the app's, so their
 //!   scripts cannot reach the page, the saves or anything else here. It serves only `/tree/...`
 //!   and `/frame.js` (web/src/frame.ts); `GET /game-origin` tells the page where it is
-//! - writes (PUT) come only from the app's own pages (`Sec-Fetch-Site`)
+//! - other devices need the server's token (auth.rs); writes (PUT) come only from the app's own
+//!   pages (`Sec-Fetch-Site`, `Origin`), with a body limit each
 //! - `GET /games`: the launcher's list, the store's `games/<id>.json` (`ippai add-game`) as
 //!   one JSON array; covers are under `/store/games/`
 //! - pre-runs: at the start and when the launcher lists the games, each listed game with no
@@ -90,14 +91,26 @@ pub struct Args {
 }
 
 /// Whether `req` may change things: reads always; writes not from another site's or origin's
-/// page (a web game's, on the game listener: `Sec-Fetch-Site: same-site`). Requests without the
-/// header (curl, the tests, older browsers) are let through.
+/// page (a web game's, on the game listener: `Sec-Fetch-Site: same-site`), nor, for browsers
+/// without that header, with an `Origin` of another host than the request's (`Host`, or the
+/// proxy's `X-Forwarded-Host`). Requests with neither (curl, the tests) are let through: who
+/// may send any is auth.rs's.
 fn same_origin_write<B>(req: &Request<B>) -> bool {
     use axum::http::Method;
     if matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
         return true;
     }
-    req.headers().get("sec-fetch-site").is_none_or(|v| v == "same-origin" || v == "none")
+    let h = req.headers();
+    if !h.get("sec-fetch-site").is_none_or(|v| v == "same-origin" || v == "none") {
+        return false;
+    }
+    let Some(origin) = h.get(header::ORIGIN).and_then(|v| v.to_str().ok()) else { return true };
+    let Some(from) = origin.split_once("://").map(|x| x.1) else { return false };
+    let host = |k: &str| h.get(k).and_then(|v| v.to_str().ok()).map(|v| v.split(',').next().unwrap_or("").trim().to_ascii_lowercase());
+    let from = from.to_ascii_lowercase();
+    // (an origin leaves out the scheme's default port, a Host header may not)
+    let bare = |h: &str| h.strip_suffix(":80").or(h.strip_suffix(":443")).unwrap_or(h).to_string();
+    [host("host"), host("x-forwarded-host")].into_iter().flatten().any(|h| bare(&h) == bare(&from))
 }
 
 /// The game listener: web games' files and the frame's script, nothing else. Pages there may
@@ -117,6 +130,11 @@ fn games_router(trees: crate::treefiles::Trees, web: &std::path::Path) -> Router
         .route_service("/frame.js", tower_http::services::ServeFile::new(web.join("frame.js")))
         .layer(middleware::from_fn(game_headers))
 }
+
+/// The largest run log a page sends (web/src/crashlog.ts keeps its last lines).
+const LOG_MAX: usize = 32 << 20;
+/// The largest one run's new regions (a whole game's are ~15 MB of wasm).
+const JIT_SAVE_MAX: usize = 128 << 20;
 
 /// The jit directory; the lock keeps merges one at a time.
 type Jit = Arc<(PathBuf, tokio::sync::Mutex<()>)>;
@@ -193,6 +211,11 @@ async fn save_jit(State(jit): State<Jit>, Path(name): Path<String>, body: Bytes)
     let (Some(new_wasm), Some(new_idx)) = (body.get(4..4 + n), body.get(4 + n..).and_then(saved::decode)) else {
         return StatusCode::BAD_REQUEST;
     };
+    // (kept for every page of this build: only modules shaped like the translators', see
+    // wasm::check)
+    if !wasm::check(new_wasm, new_idx.iter().map(|e| e.width() as usize).sum()) {
+        return StatusCode::BAD_REQUEST;
+    }
     let n_funcs = new_idx.len();
     let all_idx = new_idx.clone();
     let _g = jit.1.lock().await;
@@ -753,6 +776,7 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
     if let Some(storage) = crate::storage::Storage::configured(crate::library::Library::new(&store)?)? {
         storage.hydrate_catalog(&store).await?;
     }
+    let auth = crate::auth::Auth::load(&dirs.token)?;
     let jit: Jit = Arc::new((args.jit.clone(), tokio::sync::Mutex::new(())));
     let pre = Arc::new(Prerun {
         store: store.clone(),
@@ -778,12 +802,13 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
     let trees = crate::treefiles::Trees::new(store.clone())?;
     let game_origin = serde_json::json!({ "port": args.game_listen.port(), "url": args.game_url });
     let app = Router::new()
-        .route("/log-save/{name}", put(save_log).with_state(logs.clone()))
+        // (each write its own limit: a run's log, one run's new regions, a result line; the
+        // rest axum's 2 MB, saves and packages their own)
+        .route("/log-save/{name}", put(save_log).layer(DefaultBodyLimit::max(LOG_MAX)).with_state(logs.clone()))
         .route("/log-list", get(log_list).with_state(logs))
         .nest_service("/logs", ServeDir::new(&args.logs))
-        .route("/jit-save/{name}", put(save_jit))
-        .route("/bench-log", put(bench_log))
-        .layer(DefaultBodyLimit::max(1 << 30))
+        .route("/jit-save/{name}", put(save_jit).layer(DefaultBodyLimit::max(JIT_SAVE_MAX)))
+        .route("/bench-log", put(bench_log).layer(DefaultBodyLimit::max(1 << 20)))
         .with_state(jit)
         .merge(crate::library_api::router(crate::library::Library::new(&store)?))
         .merge(saves::router(saves.clone()))
@@ -801,8 +826,9 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
         .route("/tree/{name}/{*path}", get(crate::treefiles::file).with_state(trees.clone()))
         .route("/game-origin", get(move || async move { axum::Json(game_origin) }))
         .fallback_service(ServeDir::new(&args.web).precompressed_zstd())
-        .layer(middleware::from_fn(headers));
-    let games = games_router(trees, &args.web);
+        .layer(middleware::from_fn(headers))
+        .layer(middleware::from_fn_with_state(auth.clone(), crate::auth::guard));
+    let games = games_router(trees, &args.web).layer(middleware::from_fn_with_state(auth, crate::auth::guard));
     // without TCP_NODELAY a kept-alive connection waits out the peer's delayed ACK (~40ms) on
     // every small response; the page reads the store one chunk at a time
     let listener = tokio::net::TcpListener::bind(args.listen).await?.tap_io(|tcp| {
@@ -814,7 +840,7 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
     let url = format!("http://{}", args.listen);
     crate::daemon::listen(dirs, url.clone(), store.display().to_string()).await?;
     eprintln!(
-        "ippai {} on {url}, web games on http://{} (store {}, web {})",
+        "ippai {} on {url}, web games on http://{} (store {}, web {}; other devices sign in with `ippai token`)",
         env!("IPPAI_VERSION"),
         args.game_listen,
         store.display(),
@@ -822,7 +848,10 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
     );
     tokio::spawn(prerun_games(pre));
     use std::future::IntoFuture;
-    tokio::try_join!(axum::serve(listener, app).into_future(), axum::serve(game_listener, games).into_future())?;
+    tokio::try_join!(
+        axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).into_future(),
+        axum::serve(game_listener, games.into_make_service_with_connect_info::<SocketAddr>()).into_future()
+    )?;
     Ok(())
 }
 
@@ -844,5 +873,18 @@ mod tests {
         assert!(!super::same_origin_write(&req("PUT", Some("same-site"))), "a web game on the game listener");
         assert!(!super::same_origin_write(&req("POST", Some("cross-site"))));
         assert!(super::same_origin_write(&req("GET", Some("cross-site"))));
+        let with = |origin: &str, hosts: &[(&str, &str)]| {
+            let mut r = Request::builder().method("PUT").uri("/saves/x").header("origin", origin);
+            for (k, v) in hosts {
+                r = r.header(*k, *v);
+            }
+            super::same_origin_write(&r.body(()).unwrap())
+        };
+        assert!(with("http://127.0.0.1:8656", &[("host", "127.0.0.1:8656")]));
+        assert!(with("https://box.ts.net", &[("host", "box.ts.net:443")]));
+        assert!(with("https://box.ts.net", &[("host", "127.0.0.1:8080"), ("x-forwarded-host", "box.ts.net")]), "tailscale serve");
+        assert!(!with("http://127.0.0.1:8657", &[("host", "127.0.0.1:8656")]), "the game listener's pages");
+        assert!(!with("https://evil.example", &[("host", "box.ts.net")]));
+        assert!(!with("null", &[("host", "box.ts.net")]));
     }
 }

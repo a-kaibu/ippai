@@ -7,6 +7,7 @@
 //! ~/.cache/ippai/web            ~/Library/Caches/ippai/web             the built-in web app, unpacked
 //! ~/.local/state/ippai/logs     <data>/logs                            server.log, the pages' run logs
 //! ~/.config/ippai/config.toml   ~/Library/Application Support/ippai/config.toml
+//! ~/.config/ippai/token         ~/Library/Application Support/ippai/token  other devices' key (auth.rs)
 //! $XDG_RUNTIME_DIR/ippai        <cache>/run (0700)                     server-<store>.sock
 //! ```
 //!
@@ -35,6 +36,8 @@ pub struct Dirs {
     /// the servers' control sockets
     pub run: PathBuf,
     pub listen: SocketAddr,
+    /// the key other devices' browsers sign in with (auth.rs)
+    pub token: PathBuf,
 }
 
 pub const DEFAULT_LISTEN: SocketAddr = SocketAddr::V4(std::net::SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 8656));
@@ -54,6 +57,7 @@ impl Dirs {
             store: store.or(cfg.store).unwrap_or_else(|| data.join("store")),
             logs: cfg.logs.unwrap_or_else(|| p.state_dir().unwrap_or(&data).join("logs")),
             listen: cfg.listen.unwrap_or(DEFAULT_LISTEN),
+            token: p.config_dir().join("token"),
             cache,
             run,
         })

@@ -94,6 +94,17 @@ Web ゲーム (NW.js / Electron) は管理画面と別オリジンで動かす�
 そのポートも公開し、ブラウザから見える URL が「同じホスト・そのポート」でなければ `--game-url` で指定します
 (例: `tailscale serve --bg --https 8657 http://127.0.0.1:8657`)。
 
+### ほかの端末から使う
+
+サーバーは、同じマシンのブラウザ (`localhost` / `127.0.0.1` で開いたとき) にはそのまま応えます。
+ほかの端末 (`--listen 0.0.0.0:8656`、または `tailscale serve` やリバースプロキシ、トンネル経由。これらは
+転送元を示すヘッダで見分けます) からは、サーバーのトークンが要ります。サーバーのマシンで `ippai token`
+を実行すると `~/.config/ippai/token` のトークンと URL が出るので、端末のブラウザで一度
+`https://<サーバー>/login?token=<トークン>` を開いてください (Cookie で以後は不要。スクリプトは
+`Authorization: Bearer <トークン>`)。`ippai token --new` で作り直せます (サーバーの再起動後に有効)。
+書き込み (PUT) は、さらにこのサーバー自身のページから (`Sec-Fetch-Site` / `Origin`) のものだけ受け付けます。
+詳しくは `crates/ippai/src/auth.rs`。
+
 ### アプリとして使う・オフラインで遊ぶ
 
 ページは PWA です。Chrome ならライブラリの「アプリにする」(またはブラウザのメニューの「インストール」) で
@@ -117,8 +128,21 @@ target/release/ippai pack ~/prefix32 prefix32   # sake の C:\ (フォント)
 target/release/ippai serve --foreground --web web/dist --listen 127.0.0.1:8080
 ```
 
+## 対応状況
+
+| 対象 | 状態 |
+| --- | --- |
+| x86 32bit (PE32) の Windows ゲーム | 対応 (主な対象) |
+| x86-64 (PE32+) | 実験的: JIT と独自 CRT あり。ゲストのアドレスは下位 32bit で 4GiB の Wasm メモリに写します (4GiB より上は exe のイメージ 1 つだけ別名で扱う)。4GiB より上を指定して確保する、再配置できない高位の DLL が複数ある、といったプログラムは動きません ([docs/sake.md](docs/sake.md)) |
+| 16bit (Win16 / NE) | 実験的 |
+| Web ゲーム (NW.js / Electron) | 対応 (別オリジンの iframe) |
+| DOS、ARM64 の exe | 未対応 |
+| デスクトップの Chrome / Edge (Windows・Mac・Linux) | 対応 |
+| Android の Chrome | 主な対象。固定 4GiB の Wasm メモリが実機で確保できるかは検証中 |
+| iOS、Firefox、Safari | 未対応 |
+
 ## 制約
 
 * SharedArrayBuffer が要るので COOP/COEP ヘッダ付き (cross-origin isolated) で配信すること。
-* x86 は 32bit のみ。描画は WebGPU のみ (WebGL2/Canvas2D へのフォールバックはしません)。
+* 描画は WebGPU のみ (WebGL2/Canvas2D へのフォールバックはしません)。
 * DRM (PlayDRM、ソフト電池など) の解析や回避は扱いません。
