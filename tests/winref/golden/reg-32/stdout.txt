@@ -98,7 +98,7 @@ disp 2
 key 0: 0 Alpha len 5
 key 1: 0 beta len 4
 key 2: 0 zeta len 4
-key 3: 0 ƒeƒXƒg len 6
+key 3: 0 \x83e\x83X\x83g len 6
 key 4: 259
 RegEnumKeyExA(k, 0, small, &sl, NULL, NULL, NULL, NULL)                = 234
 len 3
