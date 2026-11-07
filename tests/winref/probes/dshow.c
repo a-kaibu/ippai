@@ -254,10 +254,11 @@ int main(void) {
     printf("position at the end %lld\n", cur);
     mc->lpVtbl->GetState(mc, 5000, &st);
     printf("state at the end %ld\n", st);
+    /* (how many: one per event or fewer, by timing: Windows posted 2 on x86, 3 on x64) */
     MSG m;
-    int notes = 0;
-    while (PeekMessageA(&m, win, WM_APP + 1, WM_APP + 1, PM_REMOVE)) notes++, printf("notify lParam %lx\n", (long)m.lParam);
-    printf("notifications %d\n", notes);
+    int notes = 0, ours = 1;
+    while (PeekMessageA(&m, win, WM_APP + 1, WM_APP + 1, PM_REMOVE)) notes++, ours &= m.lParam == 0x1234;
+    printf("notified %d, every lParam ours %d\n", notes > 0, ours);
     long code = 0;
     hr = ev->lpVtbl->WaitForCompletion(ev, 0, &code);
     printf("WaitForCompletion running %08lx %ld\n", hr, code);

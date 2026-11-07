@@ -27,8 +27,12 @@ const E_ABORT: u32 = 0x8000_4004;
 const E_INVALIDARG: u32 = 0x8007_0057;
 const S_FALSE: u32 = 1;
 const EC_COMPLETE: u32 = 1;
-/// HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)
-const NOT_FOUND: u32 = 0x8007_0002;
+/// VFW_E_NOT_FOUND (RenderFile of a file not there, as Windows answers: tests/winref dshow)
+const NOT_FOUND: u32 = 0x8004_0216;
+/// EC_PAUSED: a Pause done (p1 S_OK)
+const EC_PAUSED: u32 = 0x0e;
+/// VFW_E_WRONG_STATE
+const WRONG_STATE: u32 = 0x8004_0227;
 /// AM_MEDIAEVENT_NONOTIFY: the event handle is not signalled
 const NONOTIFY: u32 = 1;
 const OATRUE: u32 = 0xffff_ffff;
@@ -73,6 +77,9 @@ struct Graph {
     /// no movie to play (none, or no `.vnv` for it): EC_COMPLETE went out since RenderFile (a
     /// Run again, of a looping movie rewound by SetPositions, then "plays" on without end)
     done: bool,
+    /// EC_COMPLETE went out since it last ran from the start or was seeked (WaitForCompletion
+    /// then answers VFW_E_WRONG_STATE, as Windows does)
+    ended: bool,
     /// a movie plays (dshow_play's PLAYS holds it)
     playing: bool,
     /// the movie's picture size (1280x720 without a movie: CatSystem2 asks before it plays)
@@ -261,7 +268,10 @@ fn load(b: u32, w: &str) -> Result<(), u32> {
         g.video = (movie.w as i32, movie.h as i32);
         g.duration = movie.duration;
         g.rate = movie.rate;
-        g.window = (0, 0, movie.w as i32, movie.h as i32);
+        // (the video renderer's own window: its client area is at least 120 wide, Windows'
+        // smallest overlapped window)
+        g.window = (0, 0, (movie.w as i32).max(120), movie.h as i32);
+        g.ended = false;
         g.src = None;
         g.dst = None;
         g.events.clear();
@@ -290,17 +300,18 @@ fn render_file_mc(c: &mut Ctx) -> u32 {
 // ---------------------------------------------------------------------------------------------
 // IMediaControl
 
-/// The video window shows itself when the graph pauses or runs (AutoShow).
-fn set_state(b: u32, s: u32) {
+/// The video window shows itself when the graph pauses or runs (AutoShow). Returns the state
+/// before.
+fn set_state(b: u32, s: u32) -> u32 {
     let t = now();
-    let playing = with(b, |g| {
-        g.state = s;
+    let (playing, was) = with(b, |g| {
+        let was = std::mem::replace(&mut g.state, s);
         if s != 0 && g.auto_show {
             g.visible = true;
         }
-        g.playing
+        (g.playing, was)
     })
-    .unwrap_or(false);
+    .unwrap_or((false, 0));
     if playing {
         play::with(|m| {
             if let Some(p) = m.get_mut(&b) {
@@ -313,13 +324,15 @@ fn set_state(b: u32, s: u32) {
         });
         sync(b);
     }
+    was
 }
 
 /// Without a movie, it ends as soon as it runs: queue EC_COMPLETE, signal the event, notify
 /// the window (once a movie: see Graph::done).
+/// From stopped it answers S_FALSE (Windows: the change is still under way), else S_OK.
 fn run(c: &mut Ctx) -> u32 {
     let b = base(c, MC);
-    set_state(b, 2);
+    let was = set_state(b, 2);
     let instant = with(b, |g| {
         if g.playing || g.done {
             return false;
@@ -330,17 +343,23 @@ fn run(c: &mut Ctx) -> u32 {
     if instant == Some(true) {
         completed(b);
     }
-    0
+    if was == 0 { S_FALSE } else { 0 }
 }
+/// Queues EC_PAUSED; S_FALSE from stopped, as Run.
 fn pause(c: &mut Ctx) -> u32 {
-    set_state(base(c, MC), 1);
-    0
+    let b = base(c, MC);
+    let was = set_state(b, 1);
+    queue(b, EC_PAUSED, 0);
+    if was == 0 { S_FALSE } else { 0 }
 }
 fn stop(c: &mut Ctx) -> u32 {
     let b = base(c, MC);
     set_state(b, 0);
     // (without a movie, one run again after a stop plays to its end again)
-    with(b, |g| g.done = false);
+    with(b, |g| {
+        g.done = false;
+        g.ended = false;
+    });
     0
 }
 fn get_state(c: &mut Ctx) -> u32 {
@@ -356,8 +375,14 @@ fn get_state(c: &mut Ctx) -> u32 {
 
 /// The movie of graph `b` ended: EC_COMPLETE (from the movie thread too).
 pub fn completed(b: u32) {
+    with(b, |g| g.ended = true);
+    queue(b, EC_COMPLETE, 0);
+}
+
+/// Queues an event: the event handle set, the notify window told.
+fn queue(b: u32, code: u32, p1: u32) {
     let Some((ev, (hwnd, msg, lp), flags)) = with(b, |g| {
-        g.events.push_back((EC_COMPLETE, 0, 0));
+        g.events.push_back((code, p1, 0));
         (g.event, g.notify, g.flags)
     }) else {
         return;
@@ -409,7 +434,8 @@ fn get_event(c: &mut Ctx) -> u32 {
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
 }
-/// WaitForCompletion(timeout, code): until EC_COMPLETE is queued (left in the queue)
+/// WaitForCompletion(timeout, code): until EC_COMPLETE is queued (left in the queue); after one
+/// was taken, VFW_E_WRONG_STATE (Windows)
 fn wait_for_completion(c: &mut Ctx) -> u32 {
     let b = base(c, ME);
     let (ms, pc) = (c.a(1), c.a(2));
@@ -418,15 +444,14 @@ fn wait_for_completion(c: &mut Ctx) -> u32 {
     }
     let until = std::time::Instant::now() + std::time::Duration::from_millis(if ms == u32::MAX { u64::MAX / 4 } else { ms as u64 });
     loop {
-        let (done, running) = with(b, |g| (g.events.iter().any(|e| e.0 == EC_COMPLETE), g.state == 2)).unwrap_or((true, false));
+        let (done, running) = with(b, |g| (g.events.iter().any(|e| e.0 == EC_COMPLETE), g.state == 2 && !g.ended)).unwrap_or((true, false));
         if done {
             put32(pc, EC_COMPLETE);
             return 0;
         }
         if !running {
             put32(pc, 0);
-            // VFW_E_WRONG_STATE
-            return 0x8004_0227;
+            return WRONG_STATE;
         }
         if std::time::Instant::now() >= until {
             put32(pc, 0);
@@ -475,9 +500,9 @@ fn write_media_time(p: u32) {
         w32(p + 4 * i as u32, v);
     }
 }
-/// AM_SEEKING_CanSeekAbsolute | Forwards | Backwards | CanGetCurrentPos | CanGetStopPos |
-/// CanGetDuration
-const CAPS: u32 = 0x3f;
+/// AM_SEEKING_CanSeekAbsolute | Forwards | Backwards | CanGetStopPos | CanGetDuration (not
+/// CanGetCurrentPos: Windows' graph does not say so, though GetCurrentPosition works)
+const CAPS: u32 = 0x37;
 fn ms_caps(c: &mut Ctx) -> u32 {
     if c.a(1) == 0 {
         return E_POINTER;
@@ -586,6 +611,7 @@ fn ms_set_positions(c: &mut Ctx) -> u32 {
         // (a seek: an EC_COMPLETE of before is old news)
         if fc & 3 != 0 {
             with(b, |g| {
+                g.ended = false;
                 g.events.retain(|e| e.0 != EC_COMPLETE);
                 if g.events.is_empty() {
                     crate::k32::event_set(g.event, false);
@@ -644,7 +670,10 @@ fn mp_put_cur(c: &mut Ctx) -> u32 {
     let b = base(c, MP);
     let s = dbl(c, 1, 1);
     timeline(b, |tl, t| tl.seek(t, from_secs(s)));
-    with(b, |g| g.events.retain(|e| e.0 != EC_COMPLETE));
+    with(b, |g| {
+        g.ended = false;
+        g.events.retain(|e| e.0 != EC_COMPLETE);
+    });
     0
 }
 fn mp_get_cur(c: &mut Ctx) -> u32 {
@@ -1189,6 +1218,7 @@ pub fn create_instance(clsid: u32, iid: u32) -> Option<u32> {
         notify: (0, 0, 0),
         flags: 0,
         events: VecDeque::new(),
+        ended: false,
         state: 0,
         done: false,
         playing: false,
