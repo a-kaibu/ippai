@@ -265,6 +265,18 @@ impl Converter {
                 }
             }
         }
+        // apitrace's d3d8 spec records CopyRects' rects and points as one each (a pointer, not
+        // an array of cRects): the rest are lost, a replay copies the first only
+        if name == "IDirect3DDevice8::CopyRects" {
+            if let Some(Value::Array(r)) = call.arg("pSourceRectsArray") {
+                if let Some(Arg::Word(n)) = args.get_mut(3) {
+                    if *n > r.len() as u64 {
+                        *self.stats.dropped.entry("IDirect3DDevice8::CopyRects (rects apitrace did not record)".into()).or_default() += *n - r.len() as u64;
+                        *n = r.len() as u64;
+                    }
+                }
+            }
+        }
         let ret = call.ret.as_ref();
         let mut flags = 0;
         let mut ret_word = None;

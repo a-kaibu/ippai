@@ -438,8 +438,18 @@ fn d3d8_shader_handles_follow_the_device() {
         let n = w.enter(0, &svs, &[(0, Value::Opaque(0x200)), (1, Value::UInt(h))]);
         w.leave(n, &[], Some(&Value::UInt(0)), false);
     }
-    let (out, _) = replay::convert(&w.b, None).unwrap();
+    // CopyRects of 2 rects apitrace recorded one of: one replayed
+    let cr = f("IDirect3DDevice8::CopyRects", &["this", "pSourceSurface", "pSourceRectsArray", "cRects", "pDestinationSurface", "pDestPointsArray"]);
+    let rect = st("RECT", &["left", "top", "right", "bottom"], vec![Value::UInt(0), Value::UInt(0), Value::UInt(8), Value::UInt(8)]);
+    let pt = st("POINT", &["x", "y"], vec![Value::UInt(30), Value::UInt(2)]);
+    let n = w.enter(0, &cr, &[(0, Value::Opaque(0x200)), (1, Value::Null), (2, Value::Array(vec![rect])), (3, Value::UInt(2)), (4, Value::Null), (5, Value::Array(vec![pt]))]);
+    w.leave(n, &[], Some(&Value::UInt(0)), false);
+    let (out, stats) = replay::convert(&w.b, None).unwrap();
+    assert_eq!(stats.dropped.values().collect::<Vec<_>>(), [&1]);
     let r = calls(&out);
+    let (_, _, a) = call_of(&r[5]);
+    assert_eq!(a[2..4], [Arg::Blob(Blob::raw(le32(&[0, 0, 8, 8]))), Arg::Word(1)]);
+    assert_eq!(a[5], Arg::Blob(Blob::raw(le32(&[30, 2]))));
     let (_, _, a) = call_of(&r[1]);
     let Arg::Blob(pp) = &a[5] else { panic!() };
     // (windowed, in the replay's window, the default interval a windowed D3D8 device wants)
@@ -550,7 +560,9 @@ fn the_recorded_traces_convert() {
         let ev = unpack(&std::fs::read(&p).unwrap()).unwrap();
         assert_eq!(replay::ptrbits(&ev).unwrap(), bits, "{name}");
         let (out, stats) = replay::convert(&ev, None).unwrap_or_else(|e| panic!("{name}: {e}"));
-        assert!(stats.dropped.is_empty(), "{name}: dropped {:?}", stats.dropped);
+        // (apitrace's d3d8 spec keeps one of CopyRects' rects: the d3d8 probe copies two)
+        let known: Vec<_> = stats.dropped.keys().filter(|k| *k != "IDirect3DDevice8::CopyRects (rects apitrace did not record)").collect();
+        assert!(known.is_empty(), "{name}: dropped {:?}", stats.dropped);
         let (b, recs) = replay::read(&out).unwrap();
         assert_eq!(b, bits);
         let mut handles = std::collections::HashSet::new();

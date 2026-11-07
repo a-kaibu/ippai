@@ -79,6 +79,28 @@ with tempfile.TemporaryDirectory() as root:
     answer(root, "t-32", "a", [("shot", A), ("shot2", B)])
     answer(root, "replay_t-32-32", "b", [("m5", A), ("f0", B)])
     expect("a frame is not a read", check.check(root, "t-32", hashes.get)[0], False)
+with tempfile.TemporaryDirectory() as root:
+    # known.txt: a picture the recording cannot replay is left out, and one the probe does not
+    # show is an error (a stale entry)
+    answer(root, "t-32", "a", [("shot", A), ("lost", C), ("shot2", B)])
+    answer(root, "replay_t-32-32", "b", [("m5", A), ("m9", B)])
+    expect("unknown miss", check.check(root, "t-32", hashes.get)[0], False)
+    expect("known miss", check.check(root, "t-32", hashes.get, {"lost"}), (True, "t-32: 2 pictures found in the replay's 2 (1 known not to be)"))
+    expect("stale known", check.check(root, "t-32", hashes.get, {"lost", "gone"})[0], False)
+    kt = os.path.join(root, "known.txt")
+    open(kt, "w").write("# c\nt-32 lost  # why\n\nt-32 other\nu-64 x\n")
+    expect("known.txt", check.known(kt), {"t-32": {"lost", "other"}, "u-64": {"x"}})
+    open(kt, "w").write("t-32\n")
+    try:
+        check.known(kt)
+        expect("bad known.txt", "read", "error")
+    except ValueError:
+        pass
+# (the real known.txt reads, and names pictures its probes show)
+for p, pics in check.known().items():
+    d = os.path.join(golden.GOLDEN, p)
+    if os.path.exists(d):
+        expect(f"known {p}", pics - {n for n, _ in check.images(d)}, set())
 
 if fails:
     sys.exit(1)

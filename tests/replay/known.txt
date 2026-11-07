@@ -1,0 +1,3 @@
+# Pictures of a probe its replay cannot read back, because the recording lacks what made them:
+#   <probe> <picture>   # why
+d3d8-32 copyrects   # apitrace's d3d8 spec records only the first of CopyRects' rects (pSourceRectsArray and pDestPointsArray as one element); the converter plays that one alone

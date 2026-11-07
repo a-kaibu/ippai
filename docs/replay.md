@@ -55,7 +55,8 @@ the probe's sources' hash: a changed probe is recorded again). winref then treat
 `replay_<probe>-<bits>` as any probe: Windows' answers in `tests/winref/golden`, sake compared
 against them. `tests/replay/check.py` checks the chain itself: the probe's own pictures have to
 be found, in order and pixel for pixel, among what the replay on Windows reads back
-(`check_test.py` tests that matching).
+(`check_test.py` tests that matching); `known.txt` names a probe's pictures the recording cannot
+replay (D3D8 CopyRects: apitrace records only its first rect).
 
 ## Games (local only)
 

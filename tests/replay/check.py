@@ -49,12 +49,24 @@ def match(want, got):
     return out, None
 
 
+def known(path=os.path.join(HERE, "known.txt")):
+    """{probe: {picture}}: the probe's pictures the replay cannot have (known.txt)"""
+    out = {}
+    for l in open(path):
+        l = l.split("#")[0].split()
+        if l:
+            if len(l) != 2:
+                raise ValueError(f"known.txt: {' '.join(l)}: want <probe> <picture>")
+            out.setdefault(l[0], set()).add(l[1])
+    return out
+
+
 def replay_name(probe):
     return f"replay_{probe}-{probe.rsplit('-', 1)[1]}"
 
 
-def check(root, probe, src_hash=golden.src_hash):
-    """-> (ok, message)"""
+def check(root, probe, src_hash=golden.src_hash, skip=frozenset()):
+    """-> (ok, message); skip: the probe's pictures known not to be in the replay"""
     rp = replay_name(probe)
     want_d, got_d = os.path.join(root, probe), os.path.join(root, rp)
     if not (os.path.exists(want_d) and os.path.exists(got_d)):
@@ -64,22 +76,26 @@ def check(root, probe, src_hash=golden.src_hash):
     if old:
         return True, f"{probe}: waiting for Windows' answers for {' '.join(old)}"
     want = images(want_d)
+    gone = [n for n in skip if n not in [w[0] for w in want]]
+    if gone:
+        return False, f"{probe}: known.txt names {' '.join(sorted(gone))}, which the probe does not show"
+    want = [w for w in want if w[0] not in skip]
     # (the back buffer at each Present is the replay's own look, not a read of the probe's)
     got = [g for g in images(got_d) if not g[0].startswith("f")]
     pairs, missing = match(want, got)
     if missing is not None:
         return False, f"{probe}: the probe's {missing} is not among the replay's pictures after {pairs[-1][1] if pairs else 'the start'} ({len(pairs)} of {len(want)} found)"
-    return True, f"{probe}: {len(want)} pictures found in the replay's {len(got)}"
+    return True, f"{probe}: {len(want)} pictures found in the replay's {len(got)}" + (f" ({len(skip)} known not to be)" if skip else "")
 
 
 def main():
     if sys.argv[1:2] == ["stale"]:
         return stale()
     root = sys.argv[1] if len(sys.argv) > 1 else golden.GOLDEN
-    bad = 0
+    bad, k = 0, known()
     for t in sorted(os.listdir(os.path.join(HERE, "traces"))):
         if t.endswith(".trace"):
-            ok, msg = check(root, t[:-6])
+            ok, msg = check(root, t[:-6], skip=k.get(t[:-6], frozenset()))
             print(msg)
             bad += not ok
     sys.exit(1 if bad else 0)

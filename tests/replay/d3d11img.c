@@ -75,15 +75,16 @@ static void dump_texture(const char *name, ID3D11Texture2D *t) {
     ID3D11Device_Release(dev);
 }
 
-/* the part of a resource last copied into it (x, y, w, h; w 0: the whole) */
+/* the part of a resource last copied into it (sub ~0: the whole resource by CopyResource; w 0:
+ * all of the subresource), one per resource: the latest copy */
 static struct copied { void *res; UINT sub, x, y, w, h; } copies[64];
-static int ncopies;
+static int ncopies, copies_next;
 static void copied(void *res, UINT sub, UINT x, UINT y, UINT w, UINT h) {
     int i;
-    for (i = 0; i < ncopies; i++) if (copies[i].res == res && copies[i].sub == sub) break;
+    for (i = 0; i < ncopies; i++) if (copies[i].res == res) break;
     if (i == ncopies) {
         if (ncopies < 64) ncopies++;
-        else i = 0;
+        else i = copies_next++ % 64;
     }
     copies[i] = (struct copied){ res, sub, x, y, w, h };
 }
@@ -135,7 +136,7 @@ void d3d11_after(const char *iface, const char *method, W *a, int n, UINT no, HR
             if (!w) w = 1;
             if (!h) h = 1;
             for (int i = 0; i < ncopies; i++)
-                if (copies[i].res == r && (copies[i].sub == sub || copies[i].sub == ~0u) && copies[i].w) {
+                if (copies[i].res == r && copies[i].sub == sub && copies[i].w) {
                     x = copies[i].x; y = copies[i].y;
                     if (x < w && y < h) {
                         w = copies[i].w < w - x ? copies[i].w : w - x;
