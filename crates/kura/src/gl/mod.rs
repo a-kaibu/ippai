@@ -1039,14 +1039,17 @@ fn type_size(ty: u32) -> usize {
     }
 }
 
-/// Element `i` of array `a` as 4 floats (missing ones from `def`).
+/// Element `i` of array `a` as 4 floats (missing ones from `def`; normalized as GL 2.1's table
+/// 2.9 says: unsigned c / (2^b - 1), signed (2c + 1) / (2^b - 1)).
 pub(crate) fn fetch(g: &Gl, a: &Array, i: u32, def: [f32; 4]) -> [f32; 4] {
     let ts = type_size(a.ty);
-    let stride = if a.stride > 0 { a.stride as usize } else { ts * a.size.max(1) as usize };
+    // (size GL_BGRA: four components)
+    let n = if a.size == 0x80E1 { 4 } else { a.size.clamp(1, 4) as usize };
+    let stride = if a.stride > 0 { a.stride as usize } else { ts * n };
     let off = a.ptr as usize + stride * i as usize;
     let base: *const u8 = if a.buffer != 0 {
         match g.buffers.get(&a.buffer) {
-            Some(b) if off + ts * a.size as usize <= b.data.len() => unsafe { b.data.as_ptr().add(off) },
+            Some(b) if off + ts * n <= b.data.len() => unsafe { b.data.as_ptr().add(off) },
             _ => return def,
         }
     } else {
@@ -1056,14 +1059,13 @@ pub(crate) fn fetch(g: &Gl, a: &Array, i: u32, def: [f32; 4]) -> [f32; 4] {
         off as *const u8
     };
     let mut v = def;
-    let n = if a.size == 0x80E1 { 4 } else { a.size.clamp(1, 4) as usize };
     for k in 0..n {
         let p = unsafe { base.add(k * ts) };
         v[k] = unsafe {
             match a.ty {
                 0x1400 => {
                     let x = *(p as *const i8) as f32;
-                    if a.normalized { (x / 127.0).max(-1.0) } else { x }
+                    if a.normalized { (2.0 * x + 1.0) / 255.0 } else { x }
                 }
                 0x1401 => {
                     let x = *p as f32;
@@ -1071,7 +1073,7 @@ pub(crate) fn fetch(g: &Gl, a: &Array, i: u32, def: [f32; 4]) -> [f32; 4] {
                 }
                 0x1402 => {
                     let x = std::ptr::read_unaligned(p as *const i16) as f32;
-                    if a.normalized { (x / 32767.0).max(-1.0) } else { x }
+                    if a.normalized { (2.0 * x + 1.0) / 65535.0 } else { x }
                 }
                 0x1403 => {
                     let x = std::ptr::read_unaligned(p as *const u16) as f32;
@@ -1330,9 +1332,20 @@ pub(crate) fn draw_state(c: &Ctx, w: u32, h: u32) -> Vec<u32> {
     out
 }
 
-/// Flat shading: triangles as a list, each vertex with the color of the triangle's provoking
-/// vertex (its last one; a quad's or quad strip quad's last one).
-fn flat_order(mode: u32, n: usize) -> Option<Vec<(usize, usize)>> {
+/// Flat shading: lines and triangles as lists (mode 1 or 4), each vertex with the color of
+/// its primitive's provoking vertex (GL 2.1 table 2.12: a line's second, a triangle's last; a
+/// quad's or quad strip quad's last one; a polygon's first).
+fn flat_order(mode: u32, n: usize) -> Option<(u32, Vec<(usize, usize)>)> {
+    let lines: Option<Vec<[usize; 2]>> = match mode {
+        1 => Some((0..n / 2).map(|i| [2 * i, 2 * i + 1]).collect()),
+        2 if n >= 2 => Some((0..n).map(|i| [i, (i + 1) % n]).collect()),
+        3 => Some((1..n).map(|i| [i - 1, i]).collect()),
+        2 => Some(Vec::new()),
+        _ => None,
+    };
+    if let Some(l) = lines {
+        return Some((1, l.iter().flat_map(|&[a, b]| [(a, b), (b, b)]).collect()));
+    }
     let tris: Vec<([usize; 3], usize)> = match mode {
         4 => (0..n / 3).map(|t| ([3 * t, 3 * t + 1, 3 * t + 2], 3 * t + 2)).collect(),
         5 => (0..n.saturating_sub(2)).map(|i| (if i % 2 == 0 { [i, i + 1, i + 2] } else { [i + 1, i, i + 2] }, i + 2)).collect(),
@@ -1343,12 +1356,12 @@ fn flat_order(mode: u32, n: usize) -> Option<Vec<(usize, usize)>> {
         9 => (1..n.saturating_sub(1)).map(|i| ([0, i, i + 1], 0)).collect(),
         _ => return None,
     };
-    Some(tris.iter().flat_map(|&(t, p)| t.map(|i| (i, p))).collect())
+    Some((4, tris.iter().flat_map(|&(t, p)| t.map(|i| (i, p))).collect()))
 }
 
 fn draw(g: &mut Gl, c: &mut Ctx, mode: u32, v: Vec<[f32; 16]>) {
     if c.flat {
-        if let Some(fo) = flat_order(mode, v.len()) {
+        if let Some((list, fo)) = flat_order(mode, v.len()) {
             let nv: Vec<[f32; 16]> = fo
                 .iter()
                 .map(|&(i, p)| {
@@ -1358,7 +1371,7 @@ fn draw(g: &mut Gl, c: &mut Ctx, mode: u32, v: Vec<[f32; 16]>) {
                 })
                 .collect();
             c.flat = false;
-            draw(g, c, 4, nv);
+            draw(g, c, list, nv);
             c.flat = true;
             return;
         }
@@ -2228,5 +2241,7 @@ fn unused() -> u32 {
 mod glsl;
 #[cfg(test)]
 mod names_tests;
+#[cfg(test)]
+mod draw_tests;
 #[cfg(test)]
 mod unpack_tests;
