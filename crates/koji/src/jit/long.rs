@@ -249,7 +249,9 @@ impl<'a> Gen<'a> {
         if high {
             self.c.i64c(8).x(I64_SHR_U);
         }
-        if bits < 64 {
+        if bits == 32 {
+            self.c.x(I32_WRAP).x(I64_EXT_U);
+        } else if bits < 64 {
             self.c.i64c(mask(bits)).x(I64_AND);
         }
     }
@@ -263,7 +265,7 @@ impl<'a> Gen<'a> {
                 self.c.get(v).set(l);
             }
             (32, _) => {
-                self.c.get(v).i64c(0xffff_ffff).x(I64_AND).set(l);
+                self.c.get(v).x(I32_WRAP).x(I64_EXT_U).set(l);
             }
             (8, true) => {
                 self.c.get(l).i64c(!0xff00).x(I64_AND);
@@ -410,9 +412,25 @@ impl<'a> Gen<'a> {
 
     /// Sign-extends the i64 on the stack from `bits`.
     fn sext(&mut self, bits: u32) {
-        if bits < 64 {
-            let s = 64 - bits as i64;
-            self.c.i64c(s).x(I64_SHL).i64c(s).x(I64_SHR_S);
+        match bits {
+            8 => self.c.x(0xc2),  // i64.extend8_s
+            16 => self.c.x(0xc3), // i64.extend16_s
+            32 => self.c.x(0xc4), // i64.extend32_s
+            _ => &mut self.c,
+        };
+    }
+
+    /// Pushes `a op b` (i64 locals; `op` an i64 binary opcode) cut to `bits`, zero-extended.
+    /// 32 bits: the i32 form (no masks for V8 to keep).
+    fn bin(&mut self, a: u32, b: u32, op: u8, bits: u32) {
+        if bits == 32 {
+            // (each i64 opcode here is its i32 one + 0x12)
+            self.c.get(a).x(I32_WRAP).get(b).x(I32_WRAP).x(op - 0x12).x(I64_EXT_U);
+        } else {
+            self.c.get(a).get(b).x(op);
+            if bits < 64 {
+                self.c.i64c(mask(bits)).x(I64_AND);
+            }
         }
     }
 
@@ -426,7 +444,11 @@ impl<'a> Gen<'a> {
     }
     fn sf(&mut self, bits: u32) {
         self.c.get(L_FR);
-        self.sign_bit(bits);
+        if bits == 32 {
+            self.c.x(I32_WRAP).i32c(0).lt_s();
+        } else {
+            self.sign_bit(bits);
+        }
     }
     fn pf(&mut self) {
         self.c.get(L_FR).i64c(0xff).x(I64_AND).x(I64_POPCNT).i64c(1).x(I64_AND).x(I64_EQZ);
@@ -575,12 +597,18 @@ impl<'a> Gen<'a> {
             (SUB, C::be) => {
                 self.c.get(L_FA).get(L_FB).x(I64_LE_U);
             }
+            (SUB, C::l) if bits == 32 => {
+                self.c.get(L_FA).x(I32_WRAP).get(L_FB).x(I32_WRAP).lt_s();
+            }
             (SUB, C::l) => {
                 self.c.get(L_FA);
                 self.sext(bits);
                 self.c.get(L_FB);
                 self.sext(bits);
                 self.c.x(I64_LT_S);
+            }
+            (SUB, C::le) if bits == 32 => {
+                self.c.get(L_FA).x(I32_WRAP).get(L_FB).x(I32_WRAP).le_s();
             }
             (SUB, C::le) => {
                 self.c.get(L_FA);
@@ -1424,7 +1452,7 @@ impl<'a> Gen<'a> {
             Lea => {
                 let db = self.op_bits(0);
                 let t = self.temp();
-                if !self.lea_value() {
+                if !self.lea_value(db) {
                     return false;
                 }
                 self.c.set(t);
@@ -1441,32 +1469,14 @@ impl<'a> Gen<'a> {
                 self.c.set(L_FA);
                 self.read_op(1, bits);
                 self.c.set(L_FB);
-                self.c.get(L_FA).get(L_FB);
-                let kind = match m {
-                    Add => {
-                        self.c.x(I64_ADD);
-                        ADD
-                    }
-                    Sub | Cmp => {
-                        self.c.x(I64_SUB);
-                        SUB
-                    }
-                    And | Test => {
-                        self.c.x(I64_AND);
-                        LOGIC
-                    }
-                    Or => {
-                        self.c.x(I64_OR);
-                        LOGIC
-                    }
-                    _ => {
-                        self.c.x(I64_XOR);
-                        LOGIC
-                    }
+                let (op, kind) = match m {
+                    Add => (I64_ADD, ADD),
+                    Sub | Cmp => (I64_SUB, SUB),
+                    And | Test => (I64_AND, LOGIC),
+                    Or => (I64_OR, LOGIC),
+                    _ => (I64_XOR, LOGIC),
                 };
-                if bits < 64 {
-                    self.c.i64c(mask(bits)).x(I64_AND);
-                }
+                self.bin(L_FA, L_FB, op, bits);
                 self.c.set(L_FR);
                 self.set_flags(kind, bits);
                 if m != Cmp && m != Test {
@@ -1546,25 +1556,29 @@ impl<'a> Gen<'a> {
                 self.read_op(0, bits);
                 self.c.set(L_FA);
                 self.c.i64c(count as i64).set(L_FB);
-                self.c.get(L_FA);
                 let kind = match m {
                     Shl | Sal => {
-                        self.c.i64c(count as i64).x(I64_SHL);
+                        self.bin(L_FA, L_FB, I64_SHL, bits);
                         SHL
                     }
                     Shr => {
-                        self.c.i64c(count as i64).x(I64_SHR_U);
+                        self.bin(L_FA, L_FB, I64_SHR_U, bits);
                         SHR
                     }
+                    _ if bits == 32 => {
+                        self.bin(L_FA, L_FB, I64_SHR_S, 32);
+                        SAR
+                    }
                     _ => {
+                        self.c.get(L_FA);
                         self.sext(bits);
                         self.c.i64c(count as i64).x(I64_SHR_S);
+                        if bits < 64 {
+                            self.c.i64c(mask(bits)).x(I64_AND);
+                        }
                         SAR
                     }
                 };
-                if bits < 64 {
-                    self.c.i64c(mask(bits)).x(I64_AND);
-                }
                 self.c.set(L_FR);
                 self.set_flags(kind, bits);
                 self.write_op(0, bits, L_FR);
@@ -1580,10 +1594,7 @@ impl<'a> Gen<'a> {
                 self.c.set(L_FA);
                 self.read_op(b, bits);
                 self.c.set(L_FB);
-                self.c.get(L_FA).get(L_FB).x(I64_MUL);
-                if bits < 64 {
-                    self.c.i64c(mask(bits)).x(I64_AND);
-                }
+                self.bin(L_FA, L_FB, I64_MUL, bits);
                 self.c.set(L_FR);
                 self.set_flags(MUL, bits);
                 self.write_op(0, bits, L_FR);
@@ -1720,18 +1731,9 @@ impl<'a> Gen<'a> {
                 true
             }
             Jo | Jno | Jb | Jae | Je | Jne | Jbe | Ja | Js | Jns | Jp | Jnp | Jl | Jge | Jle | Jg if ins.op0_kind() == OpKind::NearBranch64 => {
-                // (a jump to a block that reads the flags puts them in the Cpu: on both paths)
+                // (each path puts the flags in the Cpu itself if its target reads them)
                 let (t, f) = (ins.near_branch64(), ins.next_ip());
-                let live = |a: u64| self.index.get(&a).is_none_or(|&k| self.blocks[k].flags_in);
-                if live(t) || live(f) {
-                    // the condition from the lazy record, then the record to the Cpu
-                    self.cond(ins.condition_code());
-                    self.c.set(L_A);
-                    self.flags_to_cpu();
-                    self.c.get(L_A);
-                } else {
-                    self.cond(ins.condition_code());
-                }
+                self.cond(ins.condition_code());
                 self.c.if_();
                 self.depth += 1;
                 let fl = self.flags;
@@ -1793,7 +1795,9 @@ impl<'a> Gen<'a> {
     }
 
     /// LEA's address (i64, without the modulo) on the stack.
-    fn lea_value(&mut self) -> bool {
+    /// Pushes LEA's address (i64), cut to `db` bits when the destination is 32 bits (worked
+    /// out in i32 then: only the low halves count).
+    fn lea_value(&mut self, db: u32) -> bool {
         let ins = self.ins;
         let base = ins.memory_base();
         let usable = |r: Register| r == Register::None || Self::reg(r).is_some_and(|(_, bits, high)| !high && bits >= 32);
@@ -1804,6 +1808,7 @@ impl<'a> Gen<'a> {
             self.c.i64c(ins.memory_displacement64() as i64);
             return true;
         }
+        let w32 = db == 32;
         let mut any = false;
         for (r, scale) in [(base, 1u32), (ins.memory_index(), ins.memory_index_scale())] {
             if r == Register::None {
@@ -1811,19 +1816,36 @@ impl<'a> Gen<'a> {
             }
             let (l, bits, _) = Self::reg(r).unwrap();
             self.c.get(l);
-            if bits == 32 {
-                self.c.i64c(0xffff_ffff).x(I64_AND);
-            }
-            if scale > 1 {
-                self.c.i64c(scale.trailing_zeros() as i64).x(I64_SHL);
-            }
-            if any {
-                self.c.x(I64_ADD);
+            if w32 {
+                self.c.x(I32_WRAP);
+                if scale > 1 {
+                    self.c.i32c(scale.trailing_zeros() as i32).shl();
+                }
+                if any {
+                    self.c.add();
+                }
+            } else {
+                if bits == 32 {
+                    self.c.i64c(0xffff_ffff).x(I64_AND);
+                }
+                if scale > 1 {
+                    self.c.i64c(scale.trailing_zeros() as i64).x(I64_SHL);
+                }
+                if any {
+                    self.c.x(I64_ADD);
+                }
             }
             any = true;
         }
         let d = ins.memory_displacement64() as i64;
-        if !any {
+        if w32 {
+            if !any {
+                self.c.i32c(d as i32);
+            } else if d as i32 != 0 {
+                self.c.i32c(d as i32).add();
+            }
+            self.c.x(I64_EXT_U);
+        } else if !any {
             self.c.i64c(d);
         } else if d != 0 {
             self.c.i64c(d).x(I64_ADD);

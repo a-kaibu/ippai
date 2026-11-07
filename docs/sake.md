@@ -159,7 +159,12 @@
   - フラグの記録 (koji::lazy::Lazy) は a/b/r が u64、サイズ 3 = 64 ビット。32 ビットも 64 ビットも
     同じ記録で、64 ビットの ADD/SUB/LOGIC/INC/DEC/MUL も出口で計算せず記録だけ残す
     (EFLAGS にするのはホスト)。64 ビットのシフトだけは出口で計算する。
-  - 残り: script 1.7 倍、C++ の std::map 2〜4 倍、x87 と minss の JIT。
+  - 32 ビット幅の演算 (add/sub/and/or/xor/imul/シフト、32 ビット先の lea、符号付き比較) は
+    i32 で出す (wrap → i32 演算 → extend_u)。i64 の `& 0xffffffff` や shl/shr_s の符号拡張は
+    V8 が消してくれない。符号拡張は i64.extend32_s など。条件分岐はフラグを両方の行き先の前で
+    Cpu へ書かず、読む行き先 (と出口) だけが書く。cpu.exe yuv 120 → 51 ms (x86 61 ms)、
+    mix 458 → 342 ms、unfilter 610 → 526 ms。
+  - 残り: script 1.5 倍、C++ の std::map 2〜4 倍、x87 と minss の JIT。
 - gl.rs: x64 では引数を位置で並べる ('d'/'f' は xmm、他は a64 の下位)。glShaderSource の
   ポインタ配列は 8 バイト刻み。拡張関数名は ARB/EXT を外した名前でも探す。
 - user: DPI API (GetDpiForWindow など 96 固定)、ShowWindow(SW_MAXIMIZE) で画面いっぱいに広げる。
