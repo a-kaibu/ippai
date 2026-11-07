@@ -84,6 +84,11 @@ function GameCard({
           {sub && <div className="mt-0.5 truncate text-xs text-muted-foreground">{sub}</div>}
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
             {game.engine && <Badge variant="secondary">{game.engine}</Badge>}
+            {!!game.unpack_issues?.length && (
+              <Badge variant="destructive" title={game.unpack_issues.join("\n")}>
+                一部未展開
+              </Badge>
+            )}
             {!!m?.score && (
               <span className="inline-flex items-center gap-0.5 font-medium text-star">
                 <Star className="size-3 fill-current" />
@@ -233,6 +238,18 @@ function GameInfo({ game, onPick, onClose }: { game: GameEntry; onPick: () => vo
                   </a>
                 </Button>
               ))}
+            </div>
+          )}
+          {!!game.unpack_issues?.length && (
+            <div className="grid gap-1.5 rounded-lg border border-destructive/40 p-3 text-sm">
+              <p className="font-medium text-destructive">
+                取り込み時に展開できなかったものがあります（動かない場面があるかもしれません）
+              </p>
+              <ul className="grid gap-1 text-xs break-all text-muted-foreground">
+                {game.unpack_issues.map((t) => (
+                  <li key={t}>{t}</li>
+                ))}
+              </ul>
             </div>
           )}
           <Personal game={game.id} />

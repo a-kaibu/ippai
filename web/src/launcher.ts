@@ -36,6 +36,9 @@ export interface GameEntry {
   /** NAME=value */
   env: string[];
   meta?: GameMeta;
+  /** what did not unpack of the download it was added from (`ippai add` of an archive a tool
+   * failed on in part: crates/ippai/src/unpack.rs) */
+  unpack_issues?: string[];
 }
 
 const PLAYED = "vnvm-played";

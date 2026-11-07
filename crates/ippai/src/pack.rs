@@ -161,6 +161,10 @@ struct GameEntry {
     /// From ErogameScape / VNDB (meta.rs)
     #[serde(skip_serializing_if = "Option::is_none", default)]
     meta: Option<meta::Info>,
+    /// What did not unpack of the download the game was added from (`ippai add` of an archive
+    /// a tool failed on in part, unpack.rs); the list shows the game as partly unpacked.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    unpack_issues: Vec<String>,
 }
 
 fn game_path(store: &Path, id: &str) -> PathBuf {
@@ -252,6 +256,7 @@ fn add_game(
     meta_id: Option<String>,
     no_meta: bool,
     new_list: Option<String>,
+    unpack_issues: Vec<String>,
 ) -> Result<()> {
     if !valid_id(&id) {
         bail!("id {id:?}: use letters, digits, _ and -");
@@ -307,6 +312,7 @@ fn add_game(
         args,
         env,
         meta: old.and_then(|o| o.meta),
+        unpack_issues,
     };
     if !no_meta && (entry.meta.is_none() || meta_id.is_some()) {
         fetch_meta(store, &mut entry, None, meta_id.as_deref());
@@ -327,7 +333,7 @@ pub fn run(store: &Path, cmd: Cmd) -> Result<()> {
     match cmd {
         Cmd::Pack { dir, name, follow, chunk_kib } => tree(store, &dir, &name, follow, chunk_kib << 10)?,
         Cmd::AddGame { id, title, tree, exe, engine, cover, args, env, mount, meta_id, no_meta } => {
-            add_game(store, id, title, tree, exe, engine, cover, args, env, mount, meta_id, no_meta, None)?
+            add_game(store, id, title, tree, exe, engine, cover, args, env, mount, meta_id, no_meta, None, vec![])?
         }
         Cmd::Meta { ids, all, meta_id, title, search } => {
             if let Some(k) = search {
@@ -366,7 +372,10 @@ pub fn run(store: &Path, cmd: Cmd) -> Result<()> {
             if out.exists() && fs::read_dir(&out)?.next().is_some() {
                 bail!("{}: not empty", out.display());
             }
-            unpack::unpack(&src, &out)?;
+            let issues = unpack::unpack(&src, &out)?;
+            if !issues.is_empty() {
+                eprintln!("{}: unpacked in part ({} issues)", src.display(), issues.len());
+            }
             println!("{}", unpack::pick_exe(&out, None).unwrap_or_default());
         }
         Cmd::Add { dir, exe, id, title, engine, cover, args, env, mount, meta_id, no_meta, follow } => {
@@ -381,9 +390,13 @@ pub fn run(store: &Path, cmd: Cmd) -> Result<()> {
             let staged = store.join("tmp").join(format!("unpack-{id}-{}", std::process::id()));
             let r = (|| {
                 let mut root = path.clone();
+                let mut issues = vec![];
                 if package {
                     let _ = fs::remove_dir_all(&staged);
-                    unpack::unpack(&path, &staged)?;
+                    issues = unpack::unpack(&path, &staged)?;
+                    if !issues.is_empty() {
+                        eprintln!("{}: unpacked in part, added all the same ({} issues, kept in the game's entry)", dir.display(), issues.len());
+                    }
                     root = staged.clone();
                     // (the usual one folder holding the game: its files at the tree's top)
                     let top: Vec<_> = fs::read_dir(&root)?.collect::<Result<_, _>>()?;
@@ -401,7 +414,7 @@ pub fn run(store: &Path, cmd: Cmd) -> Result<()> {
                     None => unpack::pick_exe(&root, None).with_context(|| format!("no program in {} (--exe)", dir.display()))?,
                 };
                 let list = pack_tree(store, &root, &id, follow, 256 << 10)?;
-                add_game(store, id.clone(), title.unwrap_or(name), id.clone(), exe, engine, cover, args, env, mount, meta_id, no_meta, Some(list))
+                add_game(store, id.clone(), title.unwrap_or(name), id.clone(), exe, engine, cover, args, env, mount, meta_id, no_meta, Some(list), issues)
             })();
             if package {
                 let _ = fs::remove_dir_all(&staged);

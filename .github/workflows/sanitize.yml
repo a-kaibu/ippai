@@ -1,29 +1,47 @@
 # The Rust tests under AddressSanitizer (out of bounds, use after free, leaks: guest memory
 # through raw pointers, MAP_32BIT arenas, the C runtime's heap) and ThreadSanitizer (races
 # between guest threads, the JIT's compiler thread, movie and audio workers): tools/ci/sanitize.sh.
-# On every push to main (one run per commit, never cancelled by the next push) and weekly.
+#
+# How often: ASan on every push to main that touches Rust or C (memory safety is never left
+# out), only the newest commit's run kept: a push cancels the run of the one before, whose
+# changes the newer commit holds too, so a burst of commits doesn't queue a run per commit.
+# Both sanitizers every night, on pull requests, on release tags (v*) and by hand.
 name: Sanitize
 
 on:
   push:
     branches: [main]
+    tags: ["v*"]
+    paths:
+      - "**.rs"
+      - "**.c"
+      - "**.h"
+      - "**/Cargo.toml"
+      - Cargo.lock
+      - tools/ci/sanitize.sh
+      - tools/ci/lsan.supp
+      - .github/workflows/sanitize.yml
+  pull_request:
   schedule:
-    - cron: "41 4 * * 0"
+    - cron: "41 4 * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: sanitize-${{ github.sha }}
-  cancel-in-progress: false
+  # (per branch, tag or pull request; the nightly and manual runs have their own group, so a
+  # push doesn't cancel them)
+  group: sanitize-${{ github.event_name == 'push' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 
 jobs:
   sanitize:
     strategy:
       fail-fast: false
       matrix:
-        kind: [address, thread]
+        # (a push to main: ASan; the rest: both)
+        kind: ${{ fromJSON(github.event_name == 'push' && github.ref_type == 'branch' && '["address"]' || '["address", "thread"]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:

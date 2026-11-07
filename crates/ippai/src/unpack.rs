@@ -8,48 +8,188 @@
 
 use anyhow::{bail, Context, Result};
 use flate2::bufread::ZlibDecoder;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
 
 /// What `unpack` takes: an archive or an installer (not a folder).
 pub fn is_package(p: &Path) -> bool {
     p.is_file() && ["zip", "exe", "lzh", "lha", "rar", "7z", "cab", "msi"].contains(&ext(p).as_str())
 }
 
-/// Unpacks `src` into the folder `out` (made here, empty), then the installers in it.
-pub fn unpack(src: &Path, out: &Path) -> Result<()> {
+/// Caps on what one `unpack` writes, the installers inside included: a zip bomb or a damaged
+/// header stops with an error once a cap is reached, instead of filling the disk. The tools
+/// (7z, unar, ...) are watched the same way and killed when over (or over `tool_time`).
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    /// Files and folders.
+    pub files: u64,
+    /// One file's size.
+    pub file_bytes: u64,
+    /// All files together.
+    pub total_bytes: u64,
+    /// How long one tool may run.
+    pub tool_time: Duration,
+    /// Whether the installed tools are used at all.
+    pub tools: bool,
+}
+
+const GIB: u64 = 1 << 30;
+
+impl Limits {
+    /// For a download of `len` bytes: 64 times that in all, at least 2 GiB and at most 64 GiB
+    /// (IPPAI_UNPACK_MAX_GIB instead), one file at most 16 GiB, 250000 files, 2 hours a tool.
+    /// Games' downloads unpack to 1-3 times their size; a nested installer adds its contents
+    /// once more.
+    pub fn for_input(len: u64) -> Limits {
+        let total = match std::env::var("IPPAI_UNPACK_MAX_GIB").ok().and_then(|v| v.trim().parse::<f64>().ok()).filter(|g| *g >= 0.0) {
+            // (a fraction too: 0.5)
+            Some(g) => (g * GIB as f64) as u64,
+            None => len.saturating_mul(64).clamp(2 * GIB, 64 * GIB),
+        };
+        Limits { files: 250_000, file_bytes: total.min(16 * GIB), total_bytes: total, tool_time: Duration::from_secs(2 * 3600), tools: true }
+    }
+}
+
+/// A cap reached (`is_limit`): ends the whole unpack, other ways to unpack aren't tried.
+#[derive(Debug)]
+struct Limit(String);
+
+impl std::fmt::Display for Limit {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{} (IPPAI_UNPACK_MAX_GIB raises the cap)", self.0)
+    }
+}
+
+impl std::error::Error for Limit {}
+
+fn over(msg: String) -> io::Error {
+    io::Error::other(Limit(msg))
+}
+
+fn is_limit(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.is::<Limit>() || c.downcast_ref::<io::Error>().and_then(|e| e.get_ref()).is_some_and(|i| i.is::<Limit>()))
+}
+
+/// One unpack: its caps, what it wrote so far and what went wrong without failing it.
+struct Job {
+    lim: Limits,
+    files: Cell<u64>,
+    bytes: Cell<u64>,
+    issues: RefCell<Vec<String>>,
+}
+
+impl Job {
+    fn new(lim: Limits) -> Job {
+        Job { lim, files: Cell::new(0), bytes: Cell::new(0), issues: RefCell::new(vec![]) }
+    }
+
+    /// Counts `n` more files (or folders).
+    fn add_files(&self, n: u64) -> io::Result<()> {
+        let f = self.files.get().saturating_add(n);
+        if f > self.lim.files {
+            return Err(over(format!("more than {} files", self.lim.files)));
+        }
+        self.files.set(f);
+        Ok(())
+    }
+
+    /// Counts `n` more bytes written.
+    fn add_bytes(&self, n: u64) -> io::Result<()> {
+        let b = self.bytes.get().saturating_add(n);
+        if b > self.lim.total_bytes {
+            return Err(over(format!("more than {} bytes in all", self.lim.total_bytes)));
+        }
+        self.bytes.set(b);
+        Ok(())
+    }
+
+    fn mark(&self) -> (u64, u64) {
+        (self.files.get(), self.bytes.get())
+    }
+
+    /// Back to `mark`: what was written since has been removed.
+    fn reset(&self, m: (u64, u64)) {
+        self.files.set(m.0);
+        self.bytes.set(m.1);
+    }
+
+    fn issue(&self, s: String) {
+        eprintln!("  {s}");
+        self.issues.borrow_mut().push(s);
+    }
+}
+
+/// Writes through to `w`, counting against the job's caps (nothing over a cap is written).
+struct Capped<'a, W> {
+    w: W,
+    job: &'a Job,
+    n: u64,
+    name: &'a str,
+}
+
+impl<W: Write> Write for Capped<'_, W> {
+    fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+        let k = b.len() as u64;
+        if self.n.saturating_add(k) > self.job.lim.file_bytes {
+            return Err(over(format!("{}: more than {} bytes", self.name, self.job.lim.file_bytes)));
+        }
+        self.job.add_bytes(k)?;
+        self.w.write_all(b)?;
+        self.n += k;
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.w.flush()
+    }
+}
+
+/// Unpacks `src` into the folder `out` (made here, empty), then the installers in it. The
+/// result is what went wrong without stopping it (empty: all of it unpacked): files a tool
+/// failed on in an archive that still gave a game, names outside the folder, packages left as
+/// they are. Over a cap of `Limits::for_input` it fails.
+pub fn unpack(src: &Path, out: &Path) -> Result<Vec<String>> {
+    unpack_with(src, out, Limits::for_input(src.metadata()?.len()))
+}
+
+pub fn unpack_with(src: &Path, out: &Path, lim: Limits) -> Result<Vec<String>> {
     fs::create_dir_all(out)?;
     // (absolute: the tools run in the folder they unpack into)
     let (src, out) = (&src.canonicalize()?, &out.canonicalize()?);
+    let job = Job::new(lim);
     let e = ext(src);
-    let ours: &[fn(&Path, &Path) -> Result<bool>] = match e.as_str() {
+    let ours: &[fn(&Job, &Path, &Path) -> Result<bool>] = match e.as_str() {
         "zip" => &[unzip],
         "exe" => &[installshield, zsfx, unzip],
         _ => &[],
     };
     let mut done = false;
     for f in ours {
-        match f(src, out) {
+        match f(&job, src, out) {
             Ok(true) if !empty(out) => {
                 done = true;
                 break;
             }
             Ok(_) => {}
+            Err(err) if is_limit(&err) => return Err(err.context(src.display().to_string())),
             Err(err) => eprintln!("  {}: {err:#}", src.display()),
         }
         clear(out)?;
+        job.reset((0, 0));
+        job.issues.borrow_mut().clear();
     }
-    if !done && !tools(src, out, &e)? {
+    if !done && !(lim.tools && tools(&job, src, out, &e)?) {
         bail!("{}: not an archive or installer this can unpack (lzh, rar, 7z, Inno Setup and msi need 7z, unar, innoextract or msiextract installed)", src.display());
     }
     fix_names(out)?;
-    nested(out)?;
-    Ok(())
+    nested(&job, out)?;
+    Ok(job.issues.into_inner())
 }
 
 /// The program to start, relative to `root` with `/`: `hint` (also found one folder further
@@ -128,17 +268,22 @@ fn safe_path(out: &Path, name: &str) -> Option<PathBuf> {
     any.then_some(p)
 }
 
-/// Writes `r` to `out`/`name`; returns the size (None: a name outside `out`, skipped).
-fn save(out: &Path, name: &str, r: &mut dyn Read) -> Result<Option<u64>> {
+/// Writes `r` to `out`/`name` within the job's caps; returns the size (None: a name outside
+/// `out`, skipped).
+fn save(job: &Job, out: &Path, name: &str, r: &mut dyn Read) -> Result<Option<u64>> {
     let Some(p) = safe_path(out, name) else {
-        eprintln!("  {name:?}: outside the folder, skipped");
+        job.issue(format!("{name:?}: outside the folder, skipped"));
         return Ok(None);
     };
+    job.add_files(1)?;
     if let Some(d) = p.parent() {
         fs::create_dir_all(d)?;
     }
-    let mut f = File::create(&p).with_context(|| p.display().to_string())?;
-    Ok(Some(io::copy(r, &mut f)?))
+    let f = File::create(&p).with_context(|| p.display().to_string())?;
+    let mut w = Capped { w: io::BufWriter::with_capacity(1 << 20, f), job, n: 0, name };
+    let n = io::copy(r, &mut w)?;
+    w.flush()?;
+    Ok(Some(n))
 }
 
 fn cp932(b: &[u8]) -> String {
@@ -148,19 +293,28 @@ fn cp932(b: &[u8]) -> String {
 // --- zip ---
 
 /// A zip (also one at the end of an exe): names not in UTF-8 are Shift-JIS, as Japanese zips' are.
-fn unzip(src: &Path, out: &Path) -> Result<bool> {
+fn unzip(job: &Job, src: &Path, out: &Path) -> Result<bool> {
     let mut z = zip::ZipArchive::new(BufReader::new(File::open(src)?))?;
+    // (the directory says how many and how big: refused before anything is written, the
+    // writes are counted again as they happen since a zip's sizes can lie)
+    if z.len() as u64 > job.lim.files.saturating_sub(job.files.get()) {
+        return Err(over(format!("{} entries, more than {} files", z.len(), job.lim.files)).into());
+    }
     for i in 0..z.len() {
         let mut e = z.by_index(i)?;
+        if e.size() > job.lim.file_bytes {
+            return Err(over(format!("{}: {} bytes, more than {}", e.name(), e.size(), job.lim.file_bytes)).into());
+        }
         let raw = e.name_raw();
         let name = std::str::from_utf8(raw).map(String::from).unwrap_or_else(|_| cp932(raw));
         if name.ends_with('/') || name.ends_with('\\') {
             if let Some(p) = safe_path(out, &name) {
+                job.add_files(1)?;
                 fs::create_dir_all(p)?;
             }
             continue;
         }
-        save(out, &name, &mut e)?;
+        save(job, out, &name, &mut e)?;
     }
     Ok(true)
 }
@@ -226,18 +380,22 @@ impl<R: Read> Read for Unmask<R> {
 }
 
 /// One entry's data: unmasked when `flags & 6`, inflated when it then starts as zlib.
-fn is_entry(f: &mut File, at: u64, len: u64, flags: u32, key: &[u8], out: &Path, name: &str) -> Result<()> {
+fn is_entry(job: &Job, f: &mut File, at: u64, len: u64, flags: u32, key: &[u8], out: &Path, name: &str) -> Result<()> {
     f.seek(SeekFrom::Start(at))?;
     let raw = f.take(len);
     let r: Box<dyn Read + '_> = if flags & 6 != 0 && !key.is_empty() { Box::new(Unmask::new(raw, key)) } else { Box::new(raw) };
     let mut r = BufReader::with_capacity(1 << 20, r);
     let zlib = r.fill_buf()?.starts_with(b"x\x9c");
-    let n = if zlib { save(out, name, &mut ZlibDecoder::new(r))? } else { save(out, name, &mut r)? };
+    let n = if zlib { save(job, out, name, &mut ZlibDecoder::new(r))? } else { save(job, out, name, &mut r)? };
     eprintln!("  {name} {}", n.unwrap_or(0));
     Ok(())
 }
 
-fn installshield(src: &Path, out: &Path) -> Result<bool> {
+/// The longest entry name read (bytes; UTF-16 in ISSetupStream): names are paths, MAX_PATH is
+/// 260 characters.
+const IS_NAME_MAX: usize = 4096;
+
+fn installshield(job: &Job, src: &Path, out: &Path) -> Result<bool> {
     let mut f = File::open(src)?;
     let size = f.metadata()?.len();
     let Some(end) = pe_end(&mut f) else { return Ok(false) };
@@ -258,7 +416,12 @@ fn installshield(src: &Path, out: &Path) -> Result<bool> {
     }
     let count = u16::from_le_bytes([h[14], h[15]]);
     let mut pos = end + at + 46;
+    // (every read is checked against the file's size first: a damaged length is an error,
+    // never an allocation as big as it says)
     let mut rd = |pos: u64, n: usize| -> Result<Vec<u8>> {
+        if pos.checked_add(n as u64).is_none_or(|e| e > size) {
+            bail!("truncated setup");
+        }
         let mut b = vec![0; n];
         f.seek(SeekFrom::Start(pos))?;
         f.read_exact(&mut b).context("truncated setup")?;
@@ -268,17 +431,21 @@ fn installshield(src: &Path, out: &Path) -> Result<bool> {
     let mut entries = vec![];
     if &h[..14] == b"ISSetupStream\0" {
         let ver = u16::from_le_bytes([h[16], h[17]]);
-        for _ in 0..count {
+        for i in 0..count {
             // (version 4 on: 64-bit sizes, 48-byte entry headers)
             let (hl, b) = if ver >= 4 { (48, rd(pos, 18)?) } else { (24, rd(pos, 14)?) };
             let (nl, flags) = (u32_at(&b, 0) as usize, u32_at(&b, 4));
             let len = if ver >= 4 { u64::from_le_bytes(b[10..18].try_into().unwrap()) } else { u32_at(&b, 10) as u64 };
-            let nb = rd(pos + hl, nl)?;
+            if nl % 2 != 0 || nl > IS_NAME_MAX {
+                bail!("entry {i}: a name of {nl} bytes");
+            }
+            let at = pos.checked_add(hl).context("truncated setup")?;
+            let nb = rd(at, nl)?;
             let u: Vec<u16> = nb.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
             let name = String::from_utf16_lossy(&u);
-            let data = pos + hl + nl as u64;
+            let data = at + nl as u64;
+            pos = data.checked_add(len).filter(|&e| e <= size).context("truncated setup")?;
             entries.push((data, len, flags, name.as_bytes().to_vec(), name));
-            pos = data + len;
         }
     } else if &h[..14] == b"InstallShield\0" {
         for _ in 0..count {
@@ -286,23 +453,20 @@ fn installshield(src: &Path, out: &Path) -> Result<bool> {
             let raw = &a[..a[..260].iter().position(|&c| c == 0).unwrap_or(260)];
             let (flags, len) = (u32_at(&a, 260), u32_at(&a, 268) as u64);
             entries.push((pos + 312, len, flags, raw.to_vec(), cp932(raw)));
-            pos += 312 + len;
+            pos = (pos + 312).checked_add(len).filter(|&e| e <= size).context("truncated setup")?;
         }
     } else {
-        return is_plain(&mut f, end, size, out);
-    }
-    if pos > size {
-        bail!("truncated setup");
+        return is_plain(job, &mut f, end, size, out);
     }
     for (at, len, flags, key, name) in entries {
-        is_entry(&mut f, at, len, flags, &key, out, &name)?;
+        is_entry(job, &mut f, at, len, flags, &key, out, &name)?;
     }
     Ok(count > 0)
 }
 
 /// Older setups (ojyonana_trial.exe): name, path, version and decimal size as NUL-ended
 /// strings, then the file as is; the path (Disk1\AdvHD.exe) is where the file goes.
-fn is_plain(f: &mut File, end: u64, size: u64, out: &Path) -> Result<bool> {
+fn is_plain(job: &Job, f: &mut File, end: u64, size: u64, out: &Path) -> Result<bool> {
     let mut pos = end;
     while pos < size {
         let mut h = vec![0; 1024];
@@ -314,14 +478,12 @@ fn is_plain(f: &mut File, end: u64, size: u64, out: &Path) -> Result<bool> {
         }
         let len: u64 = std::str::from_utf8(parts[3])?.parse()?;
         pos += parts[..4].iter().map(|p| p.len() as u64 + 1).sum::<u64>();
-        if pos + len > size {
-            bail!("truncated setup");
-        }
+        let next = pos.checked_add(len).filter(|&e| e <= size).context("truncated setup")?;
         let name = cp932(parts[1]);
         f.seek(SeekFrom::Start(pos))?;
-        save(out, &name, &mut (&mut *f).take(len))?;
+        save(job, out, &name, &mut (&mut *f).take(len))?;
         eprintln!("  {name} {len}");
-        pos += len;
+        pos = next;
     }
     Ok(pos > end)
 }
@@ -344,12 +506,13 @@ fn find_from(f: &mut File, mut pos: u64, pat: &[u8]) -> Result<Option<u64>> {
     }
 }
 
-/// Inflates the zlib stream at `pos` into `w`; the compressed size, None when it's no stream.
-fn inflate_at(f: &mut File, pos: u64, w: &mut dyn Write) -> Result<Option<u64>> {
+/// Inflates the zlib stream at `pos` into `w`, at most `max` bytes of it (and one more, to tell
+/// a longer one); its compressed size and the bytes written, None when it's no stream.
+fn inflate_at(f: &mut File, pos: u64, w: &mut dyn Write, max: u64) -> Result<Option<(u64, u64)>> {
     f.seek(SeekFrom::Start(pos))?;
     let mut z = ZlibDecoder::new(BufReader::with_capacity(1 << 20, &mut *f));
-    match io::copy(&mut z, w) {
-        Ok(_) => Ok(Some(z.total_in())),
+    match io::copy(&mut (&mut z).take(max.saturating_add(1)), w) {
+        Ok(n) => Ok(Some((z.total_in(), n))),
         Err(e) if e.kind() == io::ErrorKind::InvalidInput || e.kind() == io::ErrorKind::InvalidData || e.kind() == io::ErrorKind::UnexpectedEof => Ok(None),
         Err(e) => Err(e.into()),
     }
@@ -377,20 +540,22 @@ const ZLIB9: &[u8] = b"\x78\xda";
 /// A setup.exe that carries its files as zlib streams after an INI header (Ver=, AppName=,
 /// FileCount=, FileN=name,dir,No,size,...): one stream per file, in FileN order, each as big
 /// as the header says.
-fn zsfx(src: &Path, out: &Path) -> Result<bool> {
+fn zsfx(job: &Job, src: &Path, out: &Path) -> Result<bool> {
     let mut f = File::open(src)?;
     let mut pos = 0;
     let ini = loop {
         let Some(i) = find_from(&mut f, pos, ZLIB9)? else { return Ok(false) };
         let mut h = Head { buf: vec![], cap: 1 << 20 };
-        match inflate_at(&mut f, i, &mut h)? {
-            Some(n) => {
+        // (streams before the header are skipped whole; one inflating to more than 64 MiB is
+        // looked into further as if it were none)
+        match inflate_at(&mut f, i, &mut h, 64 << 20)? {
+            Some((n, got)) if got <= 64 << 20 => {
                 pos = i + n;
                 if h.buf.windows(10).any(|w| w == b"FileCount=") && h.buf.windows(7).any(|w| w == b"\nFile0=") {
                     break cp932(&h.buf);
                 }
             }
-            None => pos = i + 2,
+            _ => pos = i + 2,
         }
     };
     // sub folders made with MAKESUBDIR: their last path part
@@ -407,24 +572,31 @@ fn zsfx(src: &Path, out: &Path) -> Result<bool> {
             (name, c[3].parse().unwrap_or(u64::MAX))
         })
         .collect();
+    job.add_files(files.len() as u64)?;
     for (name, size) in &files {
         let Some(p) = safe_path(out, name) else { bail!("{name:?}: outside the folder") };
+        if *size > job.lim.file_bytes {
+            return Err(over(format!("{name}: {size} bytes, more than {}", job.lim.file_bytes)).into());
+        }
         fs::create_dir_all(p.parent().unwrap())?;
         loop {
             let Some(i) = find_from(&mut f, pos, ZLIB9)? else { bail!("{name}: no stream left") };
-            let mut w = io::BufWriter::new(File::create(&p)?);
-            match inflate_at(&mut f, i, &mut w)? {
-                Some(n) => {
+            let m = job.mark();
+            let mut w = Capped { w: io::BufWriter::new(File::create(&p)?), job, n: 0, name };
+            match inflate_at(&mut f, i, &mut w, *size)? {
+                Some((n, got)) => {
                     w.flush()?;
-                    let got = p.metadata()?.len();
                     if got != *size {
-                        bail!("{name}: {got} bytes, the list says {size}");
+                        bail!("{name}: {} bytes, the list says {size}", if got > *size { format!("more than {size}") } else { got.to_string() });
                     }
                     pos = i + n;
                     eprintln!("  {name} {size}");
                     break;
                 }
-                None => pos = i + 2,
+                None => {
+                    job.reset(m);
+                    pos = i + 2;
+                }
             }
         }
     }
@@ -433,21 +605,147 @@ fn zsfx(src: &Path, out: &Path) -> Result<bool> {
 
 // --- the tools ---
 
-/// Runs a tool (missing: false); true when it exited 0.
-fn run(tool: &str, args: &[&OsStr], cwd: &Path) -> bool {
-    Command::new(tool)
-        .args(args)
-        .current_dir(cwd)
-        .env("LC_ALL", "C.UTF-8")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+/// A tool's run: whether it exited 0, how (or that it isn't installed) and the end of what it
+/// printed.
+#[derive(Debug)]
+struct Ran {
+    ok: bool,
+    status: String,
+    log: String,
 }
 
-/// Unpacks with the installed tools; true when one left files in `out`.
-fn tools(src: &Path, out: &Path, e: &str) -> Result<bool> {
+/// Files, bytes and the biggest file under `d` (not following links).
+fn du(d: &Path) -> (u64, u64, u64) {
+    let (mut n, mut b, mut big) = (0, 0, 0);
+    let mut stack = vec![d.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(r) = fs::read_dir(&d) else { continue };
+        for e in r.flatten() {
+            let Ok(m) = e.path().symlink_metadata() else { continue };
+            n += 1;
+            if m.is_dir() {
+                stack.push(e.path());
+            } else {
+                b += m.len();
+                big = big.max(m.len());
+            }
+        }
+    }
+    (n, b, big)
+}
+
+/// Waits for `c` while what it adds under `watch` (to `base`, `du` before it started) stays
+/// within the job's caps and its time; kills it otherwise (an error). What it added is counted
+/// into the job.
+fn watch_child(job: &Job, watch: &Path, base: (u64, u64, u64), mut c: Child, name: &str) -> Result<ExitStatus> {
+    let start = Instant::now();
+    let mut wait = Duration::from_millis(10);
+    let check = |c: &mut Child| -> Result<(u64, u64)> {
+        let (n, b, big) = du(watch);
+        let (n, b) = (n.saturating_sub(base.0), b.saturating_sub(base.1));
+        let why = if n > job.lim.files.saturating_sub(job.files.get()) {
+            Some(format!("{name}: more than {} files", job.lim.files))
+        } else if b > job.lim.total_bytes.saturating_sub(job.bytes.get()) {
+            Some(format!("{name}: more than {} bytes in all", job.lim.total_bytes))
+        } else if big > job.lim.file_bytes {
+            Some(format!("{name}: a file of more than {} bytes", job.lim.file_bytes))
+        } else if start.elapsed() > job.lim.tool_time {
+            Some(format!("{name}: still running after {} s", job.lim.tool_time.as_secs()))
+        } else {
+            None
+        };
+        if let Some(w) = why {
+            let _ = c.kill();
+            let _ = c.wait();
+            return Err(over(w).into());
+        }
+        Ok((n, b))
+    };
+    loop {
+        if let Some(s) = c.try_wait()? {
+            let (n, b) = check(&mut c)?;
+            job.add_files(n)?;
+            job.add_bytes(b)?;
+            return Ok(s);
+        }
+        check(&mut c)?;
+        std::thread::sleep(wait);
+        // (often at first: a small archive is done in milliseconds; a big one is walked every
+        // half second)
+        wait = (wait * 2).min(Duration::from_millis(500));
+    }
+}
+
+/// The lines of a tool's output that tell what failed (else its last lines), at most 20.
+fn failures(log: &str) -> String {
+    let re = regex::Regex::new(r"(?i)error|fail|crc|corrupt|cannot|can't|unexpected|broken|damaged|unsupported").unwrap();
+    let lines: Vec<&str> = log.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let hit: Vec<&str> = lines.iter().copied().filter(|l| re.is_match(l)).collect();
+    let pick = if hit.is_empty() { &lines[lines.len().saturating_sub(5)..] } else { &hit[..] };
+    pick.iter().take(20).map(|l| l.chars().take(300).collect::<String>()).collect::<Vec<_>>().join(" / ")
+}
+
+/// Runs `c` (its output to `stdout` if given) under `watch_child`; a missing tool is not ok.
+fn run_cmd(job: &Job, watch: &Path, mut c: Command, stdout: Option<File>) -> Result<Ran> {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let name = c.get_program().to_string_lossy().into_owned();
+    // (the output goes to a file outside `watch`, its end read back; a tool printing on and on
+    // is stopped by the time cap)
+    let log_path = std::env::temp_dir().join(format!("ippai-unpack-{}-{}.log", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    let log = File::create(&log_path)?;
+    let out = match stdout {
+        Some(f) => Stdio::from(f),
+        None => Stdio::from(log.try_clone()?),
+    };
+    c.env("LC_ALL", "C.UTF-8").stdin(Stdio::null()).stdout(out).stderr(log);
+    let base = du(watch);
+    let child = match c.spawn() {
+        Ok(ch) => ch,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            let _ = fs::remove_file(&log_path);
+            return Ok(Ran { ok: false, status: "not installed".into(), log: String::new() });
+        }
+        Err(e) => {
+            let _ = fs::remove_file(&log_path);
+            return Err(anyhow::Error::from(e).context(name));
+        }
+    };
+    let r = watch_child(job, watch, base, child, &name);
+    let mut text = vec![];
+    if let Ok(mut f) = File::open(&log_path) {
+        let len = f.metadata().map_or(0, |m| m.len());
+        let _ = f.seek(SeekFrom::Start(len.saturating_sub(64 << 10)));
+        let _ = f.read_to_end(&mut text);
+    }
+    let _ = fs::remove_file(&log_path);
+    let s = r?;
+    Ok(Ran { ok: s.success(), status: s.to_string(), log: String::from_utf8_lossy(&text).into_owned() })
+}
+
+/// Runs a tool in `cwd`, watching `cwd`.
+fn run(job: &Job, tool: &str, args: &[&OsStr], cwd: &Path) -> Result<Ran> {
+    let mut c = Command::new(tool);
+    c.args(args).current_dir(cwd);
+    run_cmd(job, cwd, c, None)
+}
+
+/// A tool's standard output, at most 64 MiB of it (None: it failed, isn't there or printed more).
+fn output_capped(mut c: Command) -> Option<Vec<u8>> {
+    let mut ch = c.env("LC_ALL", "C.UTF-8").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut b = vec![];
+    let r = ch.stdout.take()?.take((64 << 20) + 1).read_to_end(&mut b);
+    if r.is_err() || b.len() > 64 << 20 {
+        let _ = ch.kill();
+        let _ = ch.wait();
+        return None;
+    }
+    ch.wait().ok()?.success().then_some(b)
+}
+
+/// Unpacks with the installed tools; true when one left files in `out`. An archive with a file
+/// or two failing (a damaged Thumbs.db) still gives a game: what failed goes into the job's
+/// issues. An exe has to unpack without errors.
+fn tools(job: &Job, src: &Path, out: &Path, e: &str) -> Result<bool> {
     let src = &src.canonicalize()?;
     let s = src.as_os_str();
     let o = out.as_os_str();
@@ -458,36 +756,40 @@ fn tools(src: &Path, out: &Path, e: &str) -> Result<bool> {
         x.push(o);
         x
     };
-    let sz = || run("7z", &["x".as_ref(), "-y".as_ref(), o7.as_os_str(), s], out);
+    let sz = || run(job, "7z", &["x".as_ref(), "-y".as_ref(), o7.as_os_str(), s], out);
     // (on an exe only a 7z self-extractor: 7z otherwise unpacks any PE's sections)
-    let sz_sfx = || run("7z", &["x".as_ref(), "-y".as_ref(), "-t7z".as_ref(), o7.as_os_str(), s], out);
+    let sz_sfx = || run(job, "7z", &["x".as_ref(), "-y".as_ref(), "-t7z".as_ref(), o7.as_os_str(), s], out);
     let unar = |cp: bool| {
         let mut a: Vec<&OsStr> = vec!["-q".as_ref(), "-f".as_ref()];
         if cp {
             a.extend::<[&OsStr; 2]>(["-e".as_ref(), "cp932".as_ref()]);
         }
         a.extend::<[&OsStr; 3]>(["-o".as_ref(), o, s]);
-        run("unar", &a, out)
+        run(job, "unar", &a, out)
     };
-    let unrar = || run("unrar", &["x".as_ref(), "-y".as_ref(), s, o_slash.as_os_str()], out);
-    let inno = || run("innoextract", &["-s".as_ref(), "-q".as_ref(), "-e".as_ref(), "-d".as_ref(), o, s], out);
-    // (an archive with a file or two failing, e.g. a damaged Thumbs.db, still gives a game; an
-    // exe has to unpack without errors)
-    let steps: Vec<(Box<dyn Fn() -> bool + '_>, bool)> = match e {
+    let unrar = || run(job, "unrar", &["x".as_ref(), "-y".as_ref(), s, o_slash.as_os_str()], out);
+    let inno = || run(job, "innoextract", &["-s".as_ref(), "-q".as_ref(), "-e".as_ref(), "-d".as_ref(), o, s], out);
+    type Step<'a> = (&'static str, Box<dyn Fn() -> Result<Ran> + 'a>, bool);
+    let steps: Vec<Step> = match e {
         // (unar leaves some -lh5- members of PrismRhythm_trial_Web.lzh empty; 7z reads them)
-        "lzh" | "lha" => vec![(Box::new(sz), false), (Box::new(|| unar(true)), false)],
-        "zip" => vec![(Box::new(|| unar(true)), false), (Box::new(sz), false)],
-        "rar" | "7z" | "cab" => vec![(Box::new(|| unar(false)), false), (Box::new(sz), false), (Box::new(unrar), false)],
-        "exe" => vec![(Box::new(inno), true), (Box::new(|| unar(true)), true), (Box::new(sz_sfx), true), (Box::new(unrar), true)],
-        "msi" => return msi(src, out),
+        "lzh" | "lha" => vec![("7z", Box::new(sz), false), ("unar", Box::new(|| unar(true)), false)],
+        "zip" => vec![("unar", Box::new(|| unar(true)), false), ("7z", Box::new(sz), false)],
+        "rar" | "7z" | "cab" => vec![("unar", Box::new(|| unar(false)), false), ("7z", Box::new(sz), false), ("unrar", Box::new(unrar), false)],
+        "exe" => vec![("innoextract", Box::new(inno), true), ("unar", Box::new(|| unar(true)), true), ("7z", Box::new(sz_sfx), true), ("unrar", Box::new(unrar), true)],
+        "msi" => return msi(job, src, out),
         _ => vec![],
     };
-    for (step, strict) in steps {
-        let ok = step();
-        if (ok || !strict) && !empty(out) {
+    let m = job.mark();
+    for (name, step, strict) in steps {
+        let r = step()?;
+        if (r.ok || !strict) && !empty(out) {
+            if !r.ok {
+                job.issue(format!("{name}: {}, kept what it unpacked: {}", r.status, failures(&r.log)));
+            }
             return Ok(true);
         }
         clear(out)?;
+        job.reset(m);
     }
     Ok(false)
 }
@@ -495,17 +797,18 @@ fn tools(src: &Path, out: &Path, e: &str) -> Result<bool> {
 /// A Windows Installer package: msiextract, else (packages split over several cabinets, which
 /// msiextract can't do) every embedded cabinet through cabextract and each file moved to its
 /// install path from the Directory/Component/File tables (tests/msiunpack.py).
-fn msi(src: &Path, out: &Path) -> Result<bool> {
-    if run("msiextract", &["-C".as_ref(), out.as_os_str(), src.as_os_str()], out) && !empty(out) {
+fn msi(job: &Job, src: &Path, out: &Path) -> Result<bool> {
+    let m = job.mark();
+    if run(job, "msiextract", &["-C".as_ref(), out.as_os_str(), src.as_os_str()], out)?.ok && !empty(out) {
         return Ok(true);
     }
     clear(out)?;
+    job.reset(m);
     let table = |name: &str| -> Vec<Vec<String>> {
-        let Ok(o) = Command::new("msiinfo").args(["export".as_ref(), src.as_os_str(), name.as_ref()]).env("LC_ALL", "C.UTF-8").stderr(Stdio::null()).output() else { return vec![] };
-        if !o.status.success() {
-            return vec![];
-        }
-        String::from_utf8_lossy(&o.stdout).replace("\r\n", "\n").lines().skip(3).filter(|l| !l.is_empty()).map(|l| l.split('\t').map(String::from).collect()).collect()
+        let mut c = Command::new("msiinfo");
+        c.args(["export".as_ref(), src.as_os_str(), name.as_ref()]);
+        let Some(o) = output_capped(c) else { return vec![] };
+        String::from_utf8_lossy(&o).replace("\r\n", "\n").lines().skip(3).filter(|l| !l.is_empty()).map(|l| l.split('\t').map(String::from).collect()).collect()
     };
     let long = |n: &str| n.rsplit('|').next().unwrap_or("").to_string();
     let dirs: HashMap<String, (String, String)> = table("Directory").into_iter().filter(|r| r.len() >= 3).map(|r| (r[0].clone(), (r[1].clone(), r[2].clone()))).collect();
@@ -526,18 +829,22 @@ fn msi(src: &Path, out: &Path) -> Result<bool> {
         let p = path(parent, dirs, depth + 1, long);
         if name == "." || name == "SourceDir" { p } else if p.is_empty() { name } else { format!("{p}/{name}") }
     }
-    let Ok(o) = Command::new("msiinfo").args(["streams".as_ref(), src.as_os_str()]).output() else { return Ok(false) };
+    let mut c = Command::new("msiinfo");
+    c.args(["streams".as_ref(), src.as_os_str()]);
+    let Some(streams) = output_capped(c) else { return Ok(false) };
     let tmp = out.join(".msi-cabs");
     fs::create_dir_all(tmp.join("files"))?;
     // (a cabinet set spans several streams: keep their names so cabextract can follow the set,
     // and let the ones that continue a set fail on their own)
-    let cabs: Vec<String> = String::from_utf8_lossy(&o.stdout).split_whitespace().filter(|s| s.to_lowercase().ends_with(".cab") && !s.contains('/')).map(String::from).collect();
+    let cabs: Vec<String> = String::from_utf8_lossy(&streams).split_whitespace().filter(|s| s.to_lowercase().ends_with(".cab") && !s.contains('/')).map(String::from).collect();
     for c in &cabs {
         let f = File::create(tmp.join(c))?;
-        Command::new("msiinfo").args(["extract".as_ref(), src.as_os_str(), c.as_ref()]).stdout(f).status()?;
+        let mut cmd = Command::new("msiinfo");
+        cmd.args(["extract".as_ref(), src.as_os_str(), c.as_ref()]);
+        run_cmd(job, &tmp, cmd, Some(f))?;
     }
     for c in &cabs {
-        run("cabextract", &["-q".as_ref(), "-d".as_ref(), tmp.join("files").as_os_str(), tmp.join(c).as_os_str()], out);
+        run(job, "cabextract", &["-q".as_ref(), "-d".as_ref(), tmp.join("files").as_os_str(), tmp.join(c).as_os_str()], &tmp)?;
     }
     let mut n = 0;
     for e in fs::read_dir(tmp.join("files"))? {
@@ -578,7 +885,7 @@ fn fix_names(d: &Path) -> Result<()> {
 /// Installers inside (vnbox ran the installed game): InstallShield setups, Inno Setup
 /// installers and self-extracting zips of a game unpacked next to them, as NAME.is, NAME.inno and
 /// NAME.zip; Windows Installer packages as NAME.x. The BGI install media marker goes.
-fn nested(root: &Path) -> Result<()> {
+fn nested(job: &Job, root: &Path) -> Result<()> {
     let mut files = vec![];
     walk(root, &mut |p| {
         files.push(p.to_path_buf());
@@ -591,20 +898,26 @@ fn nested(root: &Path) -> Result<()> {
     };
     for s in files.iter().filter(|p| ext(p) == "exe") {
         let tries: [(&str, &dyn Fn(&Path, &Path) -> Result<bool>); 3] = [
-            (".is", &installshield),
-            (".inno", &|s: &Path, o: &Path| Ok(run("innoextract", &["-s".as_ref(), "-q".as_ref(), "-e".as_ref(), "-d".as_ref(), o.as_os_str(), s.as_os_str()], o))),
-            (".zip", &|s: &Path, o: &Path| if game_sfx(s) { unzip(s, o) } else { Ok(false) }),
+            (".is", &|s: &Path, o: &Path| installshield(job, s, o)),
+            (".inno", &|s: &Path, o: &Path| Ok(job.lim.tools && run(job, "innoextract", &["-s".as_ref(), "-q".as_ref(), "-e".as_ref(), "-d".as_ref(), o.as_os_str(), s.as_os_str()], o)?.ok)),
+            (".zip", &|s: &Path, o: &Path| if game_sfx(s) { unzip(job, s, o) } else { Ok(false) }),
         ];
         for (suffix, f) in tries {
             let o = with(s, suffix);
             fs::create_dir_all(&o)?;
-            if matches!(f(s, &o), Ok(true)) && !empty(&o) {
-                eprintln!("{}: unpacked into {}", s.display(), o.display());
-                fs::remove_file(s)?;
-                fix_names(&o)?;
-                break;
+            let m = job.mark();
+            match f(s, &o) {
+                Ok(true) if !empty(&o) => {
+                    eprintln!("{}: unpacked into {}", s.display(), o.display());
+                    fs::remove_file(s)?;
+                    fix_names(&o)?;
+                    break;
+                }
+                Err(e) if is_limit(&e) => return Err(e.context(s.display().to_string())),
+                _ => {}
             }
             fs::remove_dir_all(&o)?;
+            job.reset(m);
         }
         // BGI install media: a 16-byte "0123456789ABCDEF" file next to BGIForInstalling.exe
         // marks the media, and the game run from there quits at once
@@ -627,12 +940,19 @@ fn nested(root: &Path) -> Result<()> {
     for m in files.iter().filter(|p| ext(p) == "msi") {
         let o = with(m, ".x");
         fs::create_dir_all(&o)?;
-        if msi(m, &o).unwrap_or(false) {
-            eprintln!("{}: unpacked into {}", m.display(), o.display());
-            fs::remove_file(m)?;
-        } else {
-            eprintln!("{}: left as is (needs msiextract, or msiinfo and cabextract)", m.display());
-            fs::remove_dir_all(&o)?;
+        let mark = job.mark();
+        match if job.lim.tools { msi(job, m, &o) } else { Ok(false) } {
+            Ok(true) => {
+                eprintln!("{}: unpacked into {}", m.display(), o.display());
+                fs::remove_file(m)?;
+            }
+            Err(e) if is_limit(&e) => return Err(e.context(m.display().to_string())),
+            _ => {
+                let rel = m.strip_prefix(root).unwrap_or(m).display();
+                job.issue(format!("{rel}: left as is (needs msiextract, or msiinfo and cabextract)"));
+                fs::remove_dir_all(&o)?;
+                job.reset(mark);
+            }
         }
     }
     Ok(())
@@ -643,6 +963,15 @@ mod tests {
     use super::*;
     use flate2::{write::ZlibEncoder, Compression};
     use proptest::prelude::*;
+
+    fn job() -> Job {
+        Job::new(Limits::for_input(1 << 20))
+    }
+
+    /// Small caps for the tests (and no tools: the result must not depend on what is installed).
+    fn small() -> Limits {
+        Limits { files: 64, file_bytes: 1 << 20, total_bytes: 4 << 20, tool_time: Duration::from_secs(20), tools: false }
+    }
 
     fn tmp(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("ippai-unpack-{tag}-{}-{:?}", std::process::id(), std::thread::current().id()));
@@ -794,7 +1123,7 @@ mod tests {
             fs::write(&exe, installshield_setup(&kind, &files)).unwrap();
             let out = d.join("out");
             fs::create_dir_all(&out).unwrap();
-            prop_assert!(installshield(&exe, &out).unwrap());
+            prop_assert!(installshield(&job(), &exe, &out).unwrap());
             let mut want: Vec<(String, Vec<u8>)> = files.iter().map(|(n, d, _)| (n.replace('\\', "/"), d.clone())).collect();
             want.sort();
             prop_assert_eq!(read_tree(&out), want);
@@ -810,14 +1139,14 @@ mod tests {
             fs::write(&exe, body).unwrap();
             let out = d.join(format!("{name}.out"));
             fs::create_dir_all(&out).unwrap();
-            assert!(!installshield(&exe, &out).unwrap_or(false), "{name}");
+            assert!(!installshield(&job(), &exe, &out).unwrap_or(false), "{name}");
         }
         // a truncated stream setup is an error, not a partial game
         let mut s = installshield_setup(&Is::Stream(2), &[("a.dat".into(), vec![1; 5000], false)]);
         s.truncate(s.len() - 10);
         fs::write(d.join("cut.exe"), s).unwrap();
         fs::create_dir_all(d.join("cut")).unwrap();
-        assert!(installshield(&d.join("cut.exe"), &d.join("cut")).is_err());
+        assert!(installshield(&job(), &d.join("cut.exe"), &d.join("cut")).is_err());
         fs::remove_dir_all(&d).unwrap();
     }
 
@@ -850,7 +1179,7 @@ mod tests {
             fs::write(&exe, zsfx_setup(&files, sub)).unwrap();
             let out = d.join(format!("out{sub}"));
             fs::create_dir_all(&out).unwrap();
-            assert!(zsfx(&exe, &out).unwrap());
+            assert!(zsfx(&job(), &exe, &out).unwrap());
             let p = if sub { "ゲーム/" } else { "" };
             let mut want = vec![("LsUninst.tmp".to_string(), b"u".to_vec()), (format!("{p}Game.exe"), big.clone()), (format!("{p}データ.dat"), vec![])];
             want.sort();
@@ -861,7 +1190,7 @@ mod tests {
         s.extend(zlib(b"abc", 9));
         fs::write(d.join("bad.exe"), &s).unwrap();
         fs::create_dir_all(d.join("bad")).unwrap();
-        assert!(zsfx(&d.join("bad.exe"), &d.join("bad")).is_err());
+        assert!(zsfx(&job(), &d.join("bad.exe"), &d.join("bad")).is_err());
         fs::remove_dir_all(&d).unwrap();
     }
 
@@ -971,5 +1300,386 @@ mod tests {
         fs::write(d.join("x.exe"), pe(b"nothing here")).unwrap();
         assert!(unpack(&d.join("x.exe"), &d.join("out")).is_err());
         fs::remove_dir_all(&d).unwrap();
+    }
+
+    // --- caps and damaged headers (the 385a9f7 review) ---
+
+    /// The biggest single allocation made on this thread (the test allocator below).
+    mod peak {
+        use std::alloc::{GlobalAlloc, Layout, System};
+        use std::cell::Cell;
+
+        thread_local! {
+            static MAX: Cell<usize> = const { Cell::new(0) };
+        }
+
+        fn note(n: usize) {
+            let _ = MAX.try_with(|m| m.set(m.get().max(n)));
+        }
+
+        /// Runs `f`; the biggest allocation it made.
+        pub fn of<T>(f: impl FnOnce() -> T) -> (T, usize) {
+            MAX.with(|m| m.set(0));
+            let t = f();
+            (t, MAX.with(|m| m.get()))
+        }
+
+        struct Counting;
+
+        unsafe impl GlobalAlloc for Counting {
+            unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+                note(l.size());
+                unsafe { System.alloc(l) }
+            }
+            unsafe fn alloc_zeroed(&self, l: Layout) -> *mut u8 {
+                note(l.size());
+                unsafe { System.alloc_zeroed(l) }
+            }
+            unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
+                note(n);
+                unsafe { System.realloc(p, l, n) }
+            }
+            unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+                unsafe { System.dealloc(p, l) }
+            }
+        }
+
+        #[global_allocator]
+        static A: Counting = Counting;
+    }
+
+    /// What unpacking wrote: (files and folders, bytes).
+    fn written(d: &Path) -> (u64, u64) {
+        let (n, b, _) = du(d);
+        (n, b)
+    }
+
+    fn limit_err<T: std::fmt::Debug>(r: Result<T>) -> String {
+        let e = r.expect_err("should hit a cap");
+        assert!(is_limit(&e), "not a cap: {e:#}");
+        format!("{e:#}")
+    }
+
+    #[test]
+    fn zip_bomb_stops_at_the_file_cap() {
+        let d = tmp("bomb1");
+        // 16 MiB of zeros deflate to ~16 KiB
+        let z = zip_with(&[(b"bomb.bin", &vec![0u8; 16 << 20])], b"");
+        assert!(z.len() < 1 << 20);
+        fs::write(d.join("b.zip"), &z).unwrap();
+        // the zip's own size field says 64 MiB: refused before writing
+        let e = limit_err(unpack_with(&d.join("b.zip"), &d.join("out"), small()));
+        assert!(e.contains("bomb.bin"), "{e}");
+        assert!(written(&d.join("out")).1 <= small().file_bytes);
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// A zip whose directory says `claim` bytes for one entry holding `real` zeros (a header
+    /// that lies about the size).
+    fn lying_zip(real: usize, claim: u32) -> Vec<u8> {
+        let mut z = zip_with(&[(b"lie.bin", &vec![0u8; real])], b"");
+        let real = real as u32;
+        // the local header (offset 22) and the central directory entry (offset 24) hold the
+        // uncompressed size
+        let pos: Vec<usize> = z.windows(4).enumerate().filter(|(_, w)| *w == real.to_le_bytes()).map(|(i, _)| i).collect();
+        assert!(!pos.is_empty());
+        for p in pos {
+            z[p..p + 4].copy_from_slice(&claim.to_le_bytes());
+        }
+        z
+    }
+
+    #[test]
+    fn zip_with_a_lying_size_is_capped_while_writing() {
+        let d = tmp("bomb2");
+        fs::write(d.join("l.zip"), lying_zip(8 << 20, 100)).unwrap();
+        let r = unpack_with(&d.join("l.zip"), &d.join("out"), small());
+        // (the zip crate may notice the lie itself; either way no more than the cap is written)
+        assert!(r.is_err());
+        assert!(written(&d.join("out")).1 <= small().file_bytes, "{:?}", written(&d.join("out")));
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn zip_total_and_file_count_caps() {
+        let d = tmp("bomb3");
+        // 8 files of 900 KiB: each under the 1 MiB file cap, 7.2 MiB over the 4 MiB total
+        let data = vec![7u8; 900 << 10];
+        let names: Vec<Vec<u8>> = (0..8).map(|i| format!("f{i}.bin").into_bytes()).collect();
+        let entries: Vec<(&[u8], &[u8])> = names.iter().map(|n| (n.as_slice(), data.as_slice())).collect();
+        fs::write(d.join("t.zip"), zip_with(&entries, b"")).unwrap();
+        let e = limit_err(unpack_with(&d.join("t.zip"), &d.join("out"), small()));
+        assert!(e.contains("in all"), "{e}");
+        assert!(written(&d.join("out")).1 <= small().total_bytes);
+        // 100 empty files over a cap of 64: refused before any is written
+        let mut w = zip::ZipWriter::new(io::Cursor::new(vec![]));
+        for i in 0..100 {
+            w.start_file(format!("e{i}"), zip::write::SimpleFileOptions::default()).unwrap();
+        }
+        fs::write(d.join("n.zip"), w.finish().unwrap().into_inner()).unwrap();
+        let e = limit_err(unpack_with(&d.join("n.zip"), &d.join("out2"), small()));
+        assert!(e.contains("files"), "{e}");
+        assert_eq!(written(&d.join("out2")), (0, 0));
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn caps_span_nested_installers() {
+        // an InstallShield setup inside a zip: the zip's files and the setup's count together
+        let d = tmp("bomb4");
+        let setup = installshield_setup(&Is::Stream(4), &[("Disk1\\big.bin".into(), vec![0; 3 << 20], true)]);
+        let z = zip_with(&[(b"setup.exe", &setup), (b"pad.bin", &vec![1u8; 900 << 10])], b"");
+        fs::write(d.join("g.zip"), &z).unwrap();
+        let lim = Limits { total_bytes: 2 << 20, file_bytes: 4 << 20, ..small() };
+        limit_err(unpack_with(&d.join("g.zip"), &d.join("out"), lim));
+        // within the caps it unpacks
+        let lim = Limits { total_bytes: 8 << 20, file_bytes: 4 << 20, ..small() };
+        assert_eq!(unpack_with(&d.join("g.zip"), &d.join("out2"), lim).unwrap(), Vec::<String>::new());
+        assert!(d.join("out2/setup.exe.is/Disk1/big.bin").is_file());
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn installshield_zlib_bomb() {
+        let d = tmp("isbomb");
+        for kind in [Is::Stream(2), Is::Stream(4), Is::Old] {
+            let s = installshield_setup(&kind, &[("bomb.bin".into(), vec![0; 8 << 20], true)]);
+            assert!(s.len() < 1 << 20);
+            fs::write(d.join("s.exe"), &s).unwrap();
+            let out = d.join(format!("{kind:?}"));
+            limit_err(unpack_with(&d.join("s.exe"), &out, small()));
+            assert!(written(&out).1 <= small().file_bytes);
+        }
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// An ISSetupStream setup with one entry whose header fields are given.
+    fn is_stream_raw(ver: u16, nl: u32, len: u64, name: &[u8], data: &[u8]) -> Vec<u8> {
+        let mut o = b"ISSetupStream\0".to_vec();
+        o.extend_from_slice(&1u16.to_le_bytes());
+        o.extend_from_slice(&ver.to_le_bytes());
+        o.resize(46, 0);
+        o.extend_from_slice(&nl.to_le_bytes());
+        o.extend_from_slice(&0u32.to_le_bytes());
+        o.extend_from_slice(&[0, 0]);
+        if ver >= 4 {
+            o.extend_from_slice(&len.to_le_bytes());
+            o.extend_from_slice(&[0; 30]);
+        } else {
+            o.extend_from_slice(&(len as u32).to_le_bytes());
+            o.extend_from_slice(&[0; 10]);
+        }
+        o.extend_from_slice(name);
+        o.extend_from_slice(data);
+        pe(&o)
+    }
+
+    #[test]
+    fn installshield_damaged_headers() {
+        let d = tmp("isbad");
+        let name: Vec<u8> = "a.bin".encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            // name lengths: huge (never allocated), odd, just over the cap
+            ("huge name", is_stream_raw(2, 0xffff_fffe, 3, &name, b"abc")),
+            ("huge name v4", is_stream_raw(4, 0xffff_fffe, 3, &name, b"abc")),
+            ("odd name", is_stream_raw(2, 9, 3, &name, b"abc")),
+            ("name over the cap", is_stream_raw(2, IS_NAME_MAX as u32 + 2, 3, &name, b"abc")),
+            ("name past the end", is_stream_raw(2, 4000, 0, &name, b"")),
+            // sizes past the end, and one that wraps a u64 offset
+            ("size past the end", is_stream_raw(2, name.len() as u32, 0xffff_fff0, &name, b"abc")),
+            ("size wraps", is_stream_raw(4, name.len() as u32, u64::MAX - 8, &name, b"abc")),
+            ("size wraps 2", is_stream_raw(4, name.len() as u32, u64::MAX, &name, b"abc")),
+        ];
+        for (what, s) in cases {
+            fs::write(d.join("s.exe"), &s).unwrap();
+            let out = d.join("out");
+            fs::create_dir_all(&out).unwrap();
+            let (r, max) = peak::of(|| installshield(&Job::new(small()), &d.join("s.exe"), &out));
+            assert!(r.is_err(), "{what}: {r:?}");
+            assert!(max < 2 << 20, "{what}: an allocation of {max} bytes");
+            assert_eq!(written(&out), (0, 0), "{what}");
+            fs::remove_dir_all(&out).unwrap();
+        }
+        // old format: a size past the end
+        let mut s = installshield_setup(&Is::Old, &[("a.bin".into(), b"abc".to_vec(), false)]);
+        let at = s.len() - 3 - 312 + 268;
+        s[at..at + 4].copy_from_slice(&0xffff_ff00u32.to_le_bytes());
+        fs::write(d.join("o.exe"), &s).unwrap();
+        assert!(installshield(&Job::new(small()), &d.join("o.exe"), &d.join("out")).is_err());
+        // plain: a decimal size that would wrap the offset
+        let mut p = b"file.bin\0a.bin\x001.0\018446744073709551615\0".to_vec();
+        p.extend_from_slice(&[b'a'; 100]);
+        fs::write(d.join("p.exe"), pe(&p)).unwrap();
+        fs::create_dir_all(d.join("pout")).unwrap();
+        assert!(installshield(&Job::new(small()), &d.join("p.exe"), &d.join("pout")).is_err());
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn zsfx_caps() {
+        let d = tmp("zsfxcap");
+        // the list says 100 MiB: over the file cap before anything is inflated
+        let mut s = pe(&zlib(b"[S]\r\nFileCount=1\r\nFile0=a,APP,1,104857600,0\r\n", 9));
+        s.extend(zlib(b"abc", 9));
+        fs::write(d.join("big.exe"), &s).unwrap();
+        fs::create_dir_all(d.join("big")).unwrap();
+        limit_err(zsfx(&Job::new(small()), &d.join("big.exe"), &d.join("big")));
+        // the list says 10 bytes, the stream inflates to 8 MiB: stops after 11
+        let mut s = pe(&zlib(b"[S]\r\nFileCount=1\r\nFile0=a,APP,1,10,0\r\n", 9));
+        s.extend(zlib(&vec![0; 8 << 20], 9));
+        fs::write(d.join("lie.exe"), &s).unwrap();
+        fs::create_dir_all(d.join("lie")).unwrap();
+        let r = zsfx(&Job::new(small()), &d.join("lie.exe"), &d.join("lie"));
+        assert!(format!("{:#}", r.unwrap_err()).contains("more than 10"));
+        assert!(written(&d.join("lie")).1 <= 11);
+        // more files listed than the cap
+        let mut ini = String::from("[S]\r\nFileCount=100\r\n");
+        for i in 0..100 {
+            ini += &format!("File{i}=f{i},APP,1,1,0\r\n");
+        }
+        fs::write(d.join("many.exe"), pe(&zlib(ini.as_bytes(), 9))).unwrap();
+        fs::create_dir_all(d.join("many")).unwrap();
+        limit_err(zsfx(&Job::new(small()), &d.join("many.exe"), &d.join("many")));
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn zsfx_skips_a_bomb_before_the_header() {
+        // a stream inflating to 80 MiB before the INI header: inflated only up to 64 MiB
+        // (and the 1 MiB kept), then looked past
+        let d = tmp("zsfxhead");
+        let mut bomb = zlib(&vec![0; 80 << 20], 1);
+        bomb[..2].copy_from_slice(ZLIB9);
+        let mut s = pe(&bomb);
+        s.extend(zlib(b"[S]\r\nFileCount=1\r\nFile0=a.txt,APP,1,3,0\r\n", 9));
+        s.extend(zlib(b"abc", 9));
+        fs::write(d.join("s.exe"), &s).unwrap();
+        fs::create_dir_all(d.join("out")).unwrap();
+        let (r, max) = peak::of(|| zsfx(&Job::new(small()), &d.join("s.exe"), &d.join("out")));
+        assert!(r.unwrap());
+        assert!(max <= 4 << 20, "an allocation of {max} bytes");
+        assert_eq!(read_tree(&d.join("out")), vec![("a.txt".into(), b"abc".to_vec())]);
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    fn sh(script: &str) -> Command {
+        let mut c = Command::new("sh");
+        c.args(["-c", script]);
+        c
+    }
+
+    #[test]
+    fn tools_are_watched() {
+        let d = tmp("watch");
+        let lim = Limits { tool_time: Duration::from_millis(300), ..small() };
+        // writing on and on: killed at the file cap
+        let t = Instant::now();
+        let e = limit_err(run_cmd(&Job::new(lim), &d, { let mut c = sh("yes > big"); c.current_dir(&d); c }, None));
+        assert!(e.contains("sh:"), "{e}");
+        assert!(t.elapsed() < Duration::from_secs(10));
+        // (written between two looks: at most half a second's worth past the cap)
+        fs::remove_file(d.join("big")).unwrap();
+        // done before the first look: still counted, over the cap
+        limit_err(run_cmd(&Job::new(lim), &d, { let mut c = sh("head -c 3000000 /dev/zero > a"); c.current_dir(&d); c }, None));
+        fs::remove_file(d.join("a")).unwrap();
+        // too many files
+        limit_err(run_cmd(&Job::new(lim), &d, { let mut c = sh("for i in $(seq 100); do : > f$i; done"); c.current_dir(&d); c }, None));
+        clear(&d).unwrap();
+        // running too long
+        let t = Instant::now();
+        let e = limit_err(run_cmd(&Job::new(lim), &d, sh("sleep 30"), None));
+        assert!(e.contains("still running"), "{e}");
+        assert!(t.elapsed() < Duration::from_secs(5));
+        // within the caps: counted into the job, exit status and output kept
+        let job = Job::new(lim);
+        let r = run_cmd(&job, &d, { let mut c = sh("printf abc > x; echo 'x.dat: CRC failed' >&2; exit 2"); c.current_dir(&d); c }, None).unwrap();
+        assert!(!r.ok);
+        assert!(r.status.contains('2'), "{}", r.status);
+        assert_eq!(failures(&r.log), "x.dat: CRC failed");
+        assert_eq!(job.mark(), (1, 3));
+        // not installed
+        assert_eq!(run(&job, "ippai-no-such-tool", &[], &d).unwrap().status, "not installed");
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn failure_lines() {
+        assert_eq!(failures("Extracting a\nExtracting b\nERROR: b: CRC Failed\nDone\n"), "ERROR: b: CRC Failed");
+        assert_eq!(failures("1\n2\n3\n4\n5\n6\n7\n"), "3 / 4 / 5 / 6 / 7");
+        assert_eq!(failures(""), "");
+        assert_eq!(failures(&"error\n".repeat(50)).matches("error").count(), 20);
+    }
+
+    #[test]
+    fn names_outside_are_issues() {
+        let d = tmp("issues");
+        let z = zip_with(&[(b"Game.exe", b"MZ"), (b"../evil.txt", b"x")], b"");
+        fs::write(d.join("g.zip"), &z).unwrap();
+        let issues = unpack_with(&d.join("g.zip"), &d.join("out"), small()).unwrap();
+        assert_eq!(issues, vec!["\"../evil.txt\": outside the folder, skipped".to_string()]);
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Damages `b`: each (offset, kind) puts a byte, a u32 or a u64 of an extreme or random value
+    /// there.
+    fn damage(b: &mut [u8], edits: &[(usize, u8, u64)]) {
+        for &(at, kind, v) in edits {
+            if b.is_empty() {
+                return;
+            }
+            let at = at % b.len();
+            let v = match v % 4 {
+                0 => 0,
+                1 => u64::MAX,
+                2 => 0x7fff_fffe,
+                _ => v,
+            };
+            let bytes = v.to_le_bytes();
+            let n = [1, 2, 4, 8][kind as usize % 4].min(b.len() - at);
+            b[at..at + n].copy_from_slice(&bytes[..n]);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(160))]
+        /// Damaged setups and zips: an error or a result, never a panic, a big allocation,
+        /// more written than the caps or a file outside the folder.
+        #[test]
+        fn damaged_packages_stay_within_the_caps(
+            kind in 0..5u8,
+            files in prop::collection::vec((names(), prop::collection::vec(any::<u8>(), 0..2000), any::<bool>()), 1..4),
+            edits in prop::collection::vec((any::<usize>(), any::<u8>(), any::<u64>()), 1..6),
+        ) {
+            let files: Vec<(String, Vec<u8>, bool)> = files;
+            let (mut bytes, ext) = match kind {
+                0 => (installshield_setup(&Is::Stream(2), &files), "exe"),
+                1 => (installshield_setup(&Is::Stream(4), &files), "exe"),
+                2 => (installshield_setup(&Is::Old, &files), "exe"),
+                3 => {
+                    let f: Vec<(&str, Vec<u8>)> = files.iter().map(|(n, d, _)| (n.as_str(), d.clone())).collect();
+                    (zsfx_setup(&f, false), "exe")
+                }
+                _ => {
+                    let raw: Vec<(Vec<u8>, Vec<u8>)> = files.iter().map(|(n, d, _)| (encoding_rs::SHIFT_JIS.encode(n).0.into_owned(), d.clone())).collect();
+                    let e: Vec<(&[u8], &[u8])> = raw.iter().map(|(n, d)| (n.as_slice(), d.as_slice())).collect();
+                    (zip_with(&e, b""), "zip")
+                }
+            };
+            damage(&mut bytes, &edits);
+            let d = tmp("damaged");
+            let src = d.join(format!("x.{ext}"));
+            fs::write(&src, &bytes).unwrap();
+            let out = d.join("out");
+            let lim = Limits { files: 16, file_bytes: 256 << 10, total_bytes: 512 << 10, ..small() };
+            let (_, max) = peak::of(|| unpack_with(&src, &out, lim));
+            prop_assert!(max <= 4 << 20, "an allocation of {} bytes", max);
+            let (n, b) = written(&out);
+            // (a folder per path part is not counted when its file is: a few more entries)
+            prop_assert!(n <= lim.files * 4 && b <= lim.total_bytes, "{} entries, {} bytes", n, b);
+            let mut top: Vec<_> = fs::read_dir(&d).unwrap().map(|e| e.unwrap().file_name()).collect();
+            top.sort();
+            prop_assert_eq!(top, vec![std::ffi::OsString::from("out"), src.file_name().unwrap().to_os_string()]);
+            fs::remove_dir_all(&d).unwrap();
+        }
     }
 }
