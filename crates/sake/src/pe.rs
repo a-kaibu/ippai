@@ -737,6 +737,7 @@ fn load_dll_file(dll: &str) -> Result<u32, String> {
     }
     let base = load(&data, &win, &mut resolve_import)?;
     crate::vorbis_hook::patch(base, with(base, |m| m.size).unwrap_or(0));
+    crate::unity6::patch(&win, base, with(base, |m| m.size).unwrap_or(0));
     tls_module(base);
     PENDING.lock().unwrap().push(base);
     Ok(base)

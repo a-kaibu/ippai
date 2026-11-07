@@ -1444,8 +1444,8 @@ fn VirtualAlloc(c: &mut Ctx) -> u32 {
     }
     // the guest has 2 GB of address space, not 128 TB: a reservation that only wants an aligned
     // block inside (twice the block less a page) gets that block, aligned; else Unity 6, which
-    // reserves 512 MB for each 256 MB allocator block, runs out after three (it wants 14 and
-    // more such blocks: 7 fit, which is not enough yet)
+    // reserves twice each allocator region, runs out after a few (its regions are 64 MB here,
+    // unity6.rs)
     let over = mem::over_reserved_block(size).filter(|_| addr == 0 && !commit);
     let b = over.and_then(|s| mem::reserve_aligned(s, s, prot, 0x20000)).or_else(|| mem::reserve(addr, size, prot, 0x20000, ty & 0x10_0000 != 0));
     let Some(b) = b else {
@@ -2429,12 +2429,30 @@ fn IsWow64Process(c: &mut Ctx) -> u32 {
 fn GetVersion(_: &mut Ctx) -> u32 {
     0x1db1_0106
 }
+/// The Windows version programs see: GetVersionEx's (Windows 7 SP1, what Windows 10 tells a
+/// program without a manifest for 8.1+... and what games of that era expect), or the real one
+/// (RtlGetVersion: 10.0.19045).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct OsVer {
+    pub major: u32,
+    pub minor: u32,
+    pub build: u32,
+    pub platform: u32,
+    pub sp_major: u16,
+    pub sp_minor: u16,
+    pub suite: u16,
+    pub product: u8,
+}
+pub const OS_VERSION: OsVer = OsVer { major: 6, minor: 1, build: 7601, platform: 2, sp_major: 1, sp_minor: 0, suite: 0x100, product: 1 };
+pub const OS_VERSION_REAL: OsVer = OsVer { major: 10, minor: 0, build: 19045, ..OS_VERSION };
+
 fn version_info(p: u32, wide: bool) -> u32 {
+    let v = OS_VERSION;
     let size = r32(p);
-    w32(p + 4, 6);
-    w32(p + 8, 1);
-    w32(p + 12, 7601);
-    w32(p + 16, 2);
+    w32(p + 4, v.major);
+    w32(p + 8, v.minor);
+    w32(p + 12, v.build);
+    w32(p + 16, v.platform);
     if wide {
         put_wstr(p + 20, 128, &"Service Pack 1".encode_utf16().collect::<Vec<_>>());
     } else {
@@ -2443,10 +2461,10 @@ fn version_info(p: u32, wide: bool) -> u32 {
     let ext = if wide { 284 } else { 156 };
     if size >= ext {
         let o = if wide { 276 } else { 148 };
-        w16(p + o, 1);
-        w16(p + o + 2, 0);
-        w16(p + o + 4, 0x100);
-        w8(p + o + 6, 1);
+        w16(p + o, v.sp_major);
+        w16(p + o + 2, v.sp_minor);
+        w16(p + o + 4, v.suite);
+        w8(p + o + 6, v.product);
     }
     1
 }
@@ -2471,9 +2489,9 @@ fn RtlGetVersion(c: &mut Ctx) -> u32 {
     let p = c.a(0);
     version_info(p, true);
     // the real version, as Windows 10 gives it to programs without a manifest
-    w32(p + 4, 10);
-    w32(p + 8, 0);
-    w32(p + 12, 19045);
+    w32(p + 4, OS_VERSION_REAL.major);
+    w32(p + 8, OS_VERSION_REAL.minor);
+    w32(p + 12, OS_VERSION_REAL.build);
     put_wstr(p + 20, 128, &[]);
     0
 }
@@ -2483,14 +2501,161 @@ fn RtlGetNtVersionNumbers(c: &mut Ctx) -> u32 {
     put32(c.a(2), 0xf000_0000 | 19045);
     0
 }
-fn VerifyVersionInfoW(_: &mut Ctx) -> u32 {
-    1
+// ---- VerifyVersionInfo (as Wine's kernel32 and ntdll, which its tests check against Windows)
+
+pub const VER_EQUAL: u8 = 1;
+pub const VER_LESS_EQUAL: u8 = 5;
+pub const VER_AND: u8 = 6;
+pub const VER_OR: u8 = 7;
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum VerFail {
+    /// ERROR_OLD_WIN_VERSION / STATUS_REVISION_MISMATCH
+    Mismatch,
+    /// ERROR_BAD_ARGUMENTS / STATUS_INVALID_PARAMETER
+    BadArgs,
 }
-fn VerifyVersionInfoA(_: &mut Ctx) -> u32 {
-    1
+
+/// The condition for one of major, minor, service pack major and minor, which are compared as
+/// one number: the first one sets the direction, later EQUALs follow it.
+fn ver_update_condition(last: &mut u8, c: u8) -> u8 {
+    match *last {
+        0 => *last = c,
+        1 => {
+            if (VER_EQUAL..=VER_LESS_EQUAL).contains(&c) {
+                *last = c;
+                return c;
+            }
+        }
+        2 | 3 => {
+            if (1..=3).contains(&c) {
+                return c;
+            }
+        }
+        4 | 5 => {
+            if c == 1 || (4..=5).contains(&c) {
+                return c;
+            }
+        }
+        _ => {}
+    }
+    if c == 0 {
+        *last |= 0x10;
+    }
+    *last & 0xf
+}
+
+fn ver_compare(left: u32, right: u32, c: u8) -> bool {
+    match c {
+        1 => left == right,
+        2 => left > right,
+        3 => left >= right,
+        4 => left < right,
+        5 => left <= right,
+        _ => false,
+    }
+}
+
+/// Whether the running version `cur` meets `want` for the fields in `types` (VER_MINORVERSION
+/// 1 ... VER_PRODUCT_TYPE 0x80) under the conditions `cond` (3 bits per field,
+/// VerSetConditionMask).
+pub fn verify_version(cur: &OsVer, want: &OsVer, types: u32, cond: u64) -> Result<(), VerFail> {
+    if types == 0 || cond == 0 {
+        return Err(VerFail::BadArgs);
+    }
+    let c = |k: u32| (cond >> (3 * k) & 7) as u8;
+    let check = |ok: bool| if ok { Ok(()) } else { Err(VerFail::Mismatch) };
+    if types & 0x80 != 0 {
+        check(ver_compare(cur.product as u32, want.product as u32, c(7)))?;
+    }
+    if types & 0x40 != 0 {
+        match c(6) {
+            VER_AND => check(want.suite & cur.suite == want.suite)?,
+            VER_OR => check(want.suite & cur.suite != 0 || want.suite == 0)?,
+            _ => return Err(VerFail::BadArgs),
+        }
+    }
+    if types & 8 != 0 {
+        check(ver_compare(cur.platform, want.platform, c(3)))?;
+    }
+    if types & 4 != 0 {
+        check(ver_compare(cur.build, want.build, c(2)))?;
+    }
+    if types & (1 | 2 | 0x10 | 0x20) != 0 {
+        let mut last = 0;
+        let (mut ok, mut next) = (true, true);
+        // (type bit, condition slot, current, wanted) from the most significant
+        let parts = [
+            (2, 1, cur.major, want.major),
+            (1, 0, cur.minor, want.minor),
+            (0x20, 5, cur.sp_major as u32, want.sp_major as u32),
+            (0x10, 4, cur.sp_minor as u32, want.sp_minor as u32),
+        ];
+        for (bit, slot, l, r) in parts {
+            if types & bit != 0 && next {
+                let cnd = ver_update_condition(&mut last, c(slot));
+                ok = ver_compare(l, r, cnd);
+                next = l == r && (VER_EQUAL..=VER_LESS_EQUAL).contains(&cnd);
+            }
+        }
+        check(ok)?;
+    }
+    Ok(())
+}
+
+/// VerSetConditionMask(mask, type, condition): the condition goes to the slot of the type's
+/// highest bit among those it checks first (product type, suite, service pack, ...).
+pub fn ver_set_condition_mask(mask: u64, types: u32, cond: u8) -> u64 {
+    let c = (cond & 7) as u64;
+    let slot = [(0x80, 7), (0x40, 6), (0x20, 5), (0x10, 4), (8, 3), (4, 2), (2, 1), (1, 0)].into_iter().find(|&(b, _)| types & b != 0);
+    slot.map_or(mask, |(_, k)| mask | c << (3 * k))
+}
+
+/// OSVERSIONINFOEX(A/W) at `p`: the fields compared
+fn read_osver(p: u32, wide: bool) -> OsVer {
+    let o = if wide { 276 } else { 148 };
+    OsVer {
+        major: r32(p + 4),
+        minor: r32(p + 8),
+        build: r32(p + 12),
+        platform: r32(p + 16),
+        sp_major: r16(p + o),
+        sp_minor: r16(p + o + 2),
+        suite: r16(p + o + 4),
+        product: crate::mem::r8(p + o + 6),
+    }
+}
+/// The condition mask argument (a 64-bit value: two stack slots on x86, after two 32-bit ones)
+fn cond_mask_arg(c: &Ctx) -> u64 {
+    if mem::x64() { c.a64(2) } else { c.a(2) as u64 | (c.a(3) as u64) << 32 }
+}
+fn verify_version_info(c: &mut Ctx, wide: bool) -> u32 {
+    match verify_version(&OS_VERSION, &read_osver(c.a(0), wide), c.a(1), cond_mask_arg(c)) {
+        Ok(()) => 1,
+        Err(e) => {
+            last_error(if e == VerFail::BadArgs { 160 } else { 1150 });
+            0
+        }
+    }
+}
+fn VerifyVersionInfoW(c: &mut Ctx) -> u32 {
+    verify_version_info(c, true)
+}
+fn VerifyVersionInfoA(c: &mut Ctx) -> u32 {
+    verify_version_info(c, false)
+}
+/// (against the real version; libcurl takes a missing one for Windows 9x and loads
+/// security.dll)
+fn RtlVerifyVersionInfo(c: &mut Ctx) -> u32 {
+    match verify_version(&OS_VERSION_REAL, &read_osver(c.a(0), true), c.a(1), cond_mask_arg(c)) {
+        Ok(()) => 0,
+        Err(VerFail::Mismatch) => 0xc000_0059, // STATUS_REVISION_MISMATCH
+        Err(VerFail::BadArgs) => 0xc000_000d, // STATUS_INVALID_PARAMETER
+    }
 }
 fn VerSetConditionMask(c: &mut Ctx) -> u32 {
-    let v = if mem::x64() { c.a64(0) } else { c.a(0) as u64 | (c.a(1) as u64) << 32 };
+    let (m, t, k) = if mem::x64() { (c.a64(0), c.a(1), c.a(2)) } else { (c.a(0) as u64 | (c.a(1) as u64) << 32, c.a(2), c.a(3)) };
+    let v = ver_set_condition_mask(m, t, k as u8);
     c.ret64(v)
 }
 
@@ -3580,6 +3745,25 @@ pub fn module_handle(name: u32, wide: bool) -> u32 {
 }
 fn GetModuleHandleA(c: &mut Ctx) -> u32 {
     module_handle(c.a(0), false)
+}
+/// The loaded modules' handles as EnumProcessModules lists them: the exe first, then the DLLs
+/// in load order. (Mono looks for a P/Invoke's function in each when the exe has none.)
+pub fn module_handles(mods: &[(u32, bool)]) -> Vec<u64> {
+    let exe = mods.iter().filter(|m| !m.1);
+    let dlls = mods.iter().filter(|m| m.1);
+    exe.chain(dlls).map(|m| mem::widen(m.0)).collect()
+}
+/// EnumProcessModules(Ex)(process, HMODULE* out, cb, &needed[, filter]): only our own process.
+fn EnumProcessModules(c: &mut Ctx) -> u32 {
+    let (out, cb, needed) = (c.a(1), c.a(2), c.a(3));
+    let mods: Vec<(u32, bool)> = crate::pe::MODULES.read().unwrap().iter().map(|m| (m.base, m.dll)).collect();
+    let h = module_handles(&mods);
+    let ps = mem::ps();
+    for (k, &b) in h.iter().enumerate().take((cb / ps) as usize) {
+        if ps == 8 { mem::w64(out + 8 * k as u32, b) } else { w32(out + 4 * k as u32, b as u32) }
+    }
+    put32(needed, ps * h.len() as u32);
+    1
 }
 fn GetModuleHandleW(c: &mut Ctx) -> u32 {
     module_handle(c.a(0), true)
@@ -5299,6 +5483,11 @@ pub fn init() {
     }
     implement("avrt", "AvRevertMmThreadCharacteristics", av_true);
     implement("avrt", "AvSetMmThreadPriority", av_true);
+    for d in ["kernel32", "kernelbase", "psapi"] {
+        for n in ["K32EnumProcessModules", "K32EnumProcessModulesEx", "EnumProcessModules", "EnumProcessModulesEx"] {
+            implement(d, n, EnumProcessModules);
+        }
+    }
     for n in ["Process32Next", "Process32NextW", "Module32First", "Module32FirstW", "Module32Next", "Module32NextW", "Thread32First", "Thread32Next"] {
         implement("kernel32", n, no_more);
     }
@@ -5307,7 +5496,7 @@ pub fn init() {
     reg!("mpr"; WNetGetUniversalNameA);
     implement("mpr", "WNetGetUniversalNameW", WNetGetUniversalNameA);
     reg!("advapi32"; RegisterTraceGuidsW, UnregisterTraceGuids, TraceEvent, GetTraceLoggerHandle, GetTraceEnableFlags, GetTraceEnableLevel);
-    reg!("ntdll"; RtlGetVersion, RtlGetNtVersionNumbers, RtlFirstEntrySList);
+    reg!("ntdll"; RtlGetVersion, RtlGetNtVersionNumbers, RtlVerifyVersionInfo, RtlFirstEntrySList);
     reg!("kernel32"; DeviceIoControl, QueryDosDeviceA, QueryDosDeviceW, GetLogicalDriveStringsA, GetLogicalDriveStringsW, GetProductInfo);
     reg!("ntdll"; RtlInitUnicodeString, RtlInitAnsiString, RtlFreeUnicodeString, RtlAnsiStringToUnicodeString,
         RtlUnicodeStringToAnsiString, RtlDosPathNameToNtPathName_U, RtlFormatCurrentUserKeyPath, LdrGetProcedureAddress,
@@ -5337,4 +5526,151 @@ pub fn pulse_event(h: u32) {
     event_set(h, true);
     std::thread::yield_now();
     event_set(h, false);
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Wine's kernel32 tests/version.c test_VerifyVersionInfo table (checked on Windows by Wine):
+    /// (VerifyVersionInfo type mask, how the asked version differs from GetVersionEx's: 0 all zero,
+    /// 1 same, 2 minor+1, 3 SP minor+1, 4 SP major+1, 5 SP major-1, 6 major-1, 7 build+1,
+    /// expected error (0: TRUE), VerSetConditionMask calls)
+    const WINE: &[(u32, u32, u32, &[(u32, u8)])] = &[
+    // 49 cases
+        (0x33, 2, 0, &[(0x2, 1), (0x1, 4)]),
+        (0x33, 2, 1150, &[(0x2, 3), (0x1, 4)]),
+        (0x33, 1, 0, &[(0x2, 3), (0x1, 4)]),
+        (0x33, 1, 0, &[(0x2, 3), (0x1, 6)]),
+        (0x33, 2, 0, &[(0x2, 5), (0x1, 4)]),
+        (0x33, 2, 1150, &[(0x2, 6), (0x1, 4)]),
+        (0x33, 2, 1150, &[(0x2, 7), (0x1, 4)]),
+        (0x33, 3, 1150, &[(0x1, 1), (0x10, 4)]),
+        (0x33, 3, 1150, &[(0x2, 1), (0x10, 4)]),
+        (0x33, 4, 1150, &[(0x2, 1), (0x20, 1)]),
+        (0x30, 3, 0, &[(0x20, 1), (0x10, 4)]),
+        (0x33, 3, 1150, &[(0x20, 1), (0x10, 4)]),
+        (0x31, 3, 0, &[(0x1, 1), (0x20, 1), (0x10, 4)]),
+        (0x33, 3, 1150, &[(0x1, 1), (0x20, 1), (0x10, 4)]),
+        (0x33, 3, 0, &[(0x2, 1), (0x1, 1), (0x20, 1), (0x10, 4)]),
+        (0x33, 3, 1150, &[(0x2, 1), (0x1, 3), (0x20, 1), (0x10, 4)]),
+        (0x33, 4, 0, &[(0x2, 5), (0x20, 2)]),
+        (0x31, 4, 1150, &[(0x2, 1), (0x20, 4)]),
+        (0x33, 4, 1150, &[(0x1, 1), (0x20, 4)]),
+        (0x32, 4, 0, &[(0x2, 1), (0x20, 4)]),
+        (0x33, 4, 1150, &[(0x2, 1), (0x20, 4)]),
+        (0x33, 4, 0, &[(0x2, 1), (0x1, 1), (0x20, 4)]),
+        (0x33, 4, 1150, &[(0x2, 3), (0x20, 4)]),
+        (0x33, 6, 0, &[(0x2, 3), (0x20, 4)]),
+        (0x33, 1, 0, &[(0x2, 3), (0x20, 4)]),
+        (0x33, 4, 1150, &[(0x2, 3), (0x1, 1), (0x20, 4)]),
+        (0x33, 4, 1150, &[(0x2, 3), (0x1, 3), (0x20, 5)]),
+        (0x33, 4, 1150, &[(0x2, 3), (0x20, 6)]),
+        (0x3, 0, 0, &[(0x2, 3)]),
+        (0x7, 0, 1150, &[(0x2, 3)]),
+        (0x40, 0, 0, &[(0x40, 6)]),
+        (0x40, 0, 0, &[(0x40, 7)]),
+        (0x31, 3, 1150, &[(0x1, 3)]),
+        (0x31, 4, 0, &[(0x1, 4)]),
+        (0x31, 4, 0, &[(0x1, 5)]),
+        (0x31, 4, 1150, &[(0x1, 1)]),
+        (0x31, 4, 1150, &[(0x1, 3)]),
+        (0x31, 2, 1150, &[(0x1, 3)]),
+        (0x33, 2, 1150, &[(0x1, 3)]),
+        (0x31, 1, 0, &[(0x1, 3)]),
+        (0x33, 7, 1150, &[(0x1, 3)]),
+        (0x31, 7, 0, &[(0x1, 3)]),
+        (0x31, 5, 0, &[(0x1, 2)]),
+        (0x31, 5, 0, &[(0x1, 3)]),
+        (0x33, 5, 1150, &[(0x2, 1), (0x20, 2)]),
+        (0x33, 5, 0, &[(0x2, 3), (0x1, 1), (0x20, 2)]),
+        (0x33, 5, 0, &[(0x2, 3), (0x1, 5), (0x20, 2)]),
+        (0x33, 5, 0, &[(0x2, 3), (0x1, 6), (0x20, 2)]),
+        (0x33, 5, 1150, &[(0x20, 2), (0x10, 1)]),
+    ];
+
+    #[test]
+    fn wine_verify_version_table() {
+        for (i, &(types, src, err, conds)) in WINE.iter().enumerate() {
+            let mut v = OS_VERSION;
+            match src {
+                0 => v = OsVer::default(),
+                2 => v.minor += 1,
+                3 => v.sp_minor += 1,
+                4 => v.sp_major += 1,
+                5 => v.sp_major -= 1,
+                6 => v.major -= 1,
+                7 => v.build += 1,
+                _ => {}
+            }
+            let mask = conds.iter().fold(0, |m, &(t, c)| ver_set_condition_mask(m, t, c));
+            let got = verify_version(&OS_VERSION, &v, types, mask);
+            let want = if err == 0 { Ok(()) } else { Err(VerFail::Mismatch) };
+            assert_eq!(got, want, "case {i}");
+        }
+        // (the checks after the table)
+        let mask = ver_set_condition_mask(ver_set_condition_mask(0, 1, 3), 2, 3);
+        let mut v = OS_VERSION;
+        (v.major, v.minor) = (3, 10);
+        assert_eq!(verify_version(&OS_VERSION, &v, 0x33, mask), Ok(()));
+        (v.minor, v.sp_major) = (0, 10);
+        assert_eq!(verify_version(&OS_VERSION, &v, 0x33, mask), Ok(()));
+        (v.sp_major, v.sp_minor) = (0, 10);
+        assert_eq!(verify_version(&OS_VERSION, &v, 0x31, mask), Ok(()));
+        assert_eq!(verify_version(&OS_VERSION, &v, 0, mask), Err(VerFail::BadArgs));
+        assert_eq!(verify_version(&OS_VERSION, &v, 1, 0), Err(VerFail::BadArgs));
+        assert_eq!(verify_version(&OS_VERSION, &v, 0x40, ver_set_condition_mask(0, 0x40, 1)), Err(VerFail::BadArgs));
+    }
+
+    #[test]
+    fn module_handles_exe_first() {
+        let mods = [(0x7fd9_0000, true), (0x40_0000, false), (0x1000_0000, true)];
+        assert_eq!(module_handles(&mods), vec![0x40_0000, 0x7fd9_0000, 0x1000_0000]);
+        assert!(module_handles(&[]).is_empty());
+    }
+
+    #[test]
+    fn condition_mask_slots() {
+        // (VerSetConditionMask: the highest-priority type bit picks the slot; conditions are 3 bits)
+        assert_eq!(ver_set_condition_mask(0, 2, 3), 3 << 3);
+        assert_eq!(ver_set_condition_mask(0, 1, 0xff), 7);
+        assert_eq!(ver_set_condition_mask(0, 0x80 | 1, 1), 1 << 21);
+        assert_eq!(ver_set_condition_mask(5, 0, 1), 5);
+        assert_eq!(ver_set_condition_mask(0, 0x20 | 0x10, 2), 2 << 15);
+    }
+
+    fn ver() -> impl Strategy<Value = OsVer> {
+        (0u32..4, 0u32..4, 0u16..3, 0u16..3).prop_map(|(major, minor, sp_major, sp_minor)| OsVer { major, minor, sp_major, sp_minor, ..OS_VERSION })
+    }
+
+    proptest! {
+        /// One condition for major, minor and the service pack numbers compares them as one
+        /// number (Windows: "v3.10 is less than v4.x").
+        #[test]
+        fn same_condition_is_a_version_compare(cur in ver(), want in ver(), c in 1u8..=5) {
+            let mask = [2u32, 1, 0x20, 0x10].iter().fold(0, |m, &t| ver_set_condition_mask(m, t, c));
+            let key = |v: &OsVer| (v.major, v.minor, v.sp_major, v.sp_minor);
+            let (a, b) = (key(&cur), key(&want));
+            let want_ok = match c { 1 => a == b, 2 => a > b, 3 => a >= b, 4 => a < b, _ => a <= b };
+            prop_assert_eq!(verify_version(&cur, &want, 0x33, mask).is_ok(), want_ok);
+        }
+
+        /// The other fields are compared on their own.
+        #[test]
+        fn single_fields(cur in 0u32..5, want in 0u32..5, c in 0u8..8, field in 0usize..3) {
+            let (bit, set): (u32, fn(&mut OsVer, u32)) = [(4u32, (|v: &mut OsVer, x| v.build = x) as fn(&mut OsVer, u32)), (8, |v, x| v.platform = x), (0x80, |v, x| v.product = x as u8)][field];
+            let (mut a, mut b) = (OS_VERSION, OS_VERSION);
+            set(&mut a, cur);
+            set(&mut b, want);
+            let mask = ver_set_condition_mask(0, bit, c);
+            let r = verify_version(&a, &b, bit, mask);
+            if c == 0 {
+                prop_assert_eq!(r, Err(VerFail::BadArgs));
+            } else {
+                let ok = match c { 1 => cur == want, 2 => cur > want, 3 => cur >= want, 4 => cur < want, 5 => cur <= want, _ => false };
+                prop_assert_eq!(r.is_ok(), ok);
+            }
+        }
+    }
 }

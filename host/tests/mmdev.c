@@ -53,6 +53,20 @@ int main(void) {
     printf("get bad id %08lx\n", IMMDeviceEnumerator_GetDevice(en, L"{nope}", &again));
     pCoTaskMemFree(id);
 
+    // the device's IMMEndpoint (Windows' device object has it; Unity 6 asks for it): its data
+    // flow, and COM identity through it
+    IMMEndpoint *ep = NULL;
+    printf("qi endpoint %08lx %d\n", IMMDevice_QueryInterface(dev, &IID_IMMEndpoint, (void **)&ep), ep != NULL);
+    EDataFlow flow = 7;
+    printf("flow %08lx %d null %08lx\n", IMMEndpoint_GetDataFlow(ep, &flow), flow, IMMEndpoint_GetDataFlow(ep, NULL));
+    IUnknown *u1 = NULL, *u2 = NULL;
+    IMMDevice *back = NULL;
+    IMMEndpoint_QueryInterface(ep, &IID_IUnknown, (void **)&u1);
+    IMMDevice_QueryInterface(dev, &IID_IUnknown, (void **)&u2);
+    printf("identity %d device back %08lx same %d\n", u1 == u2 && u1 != NULL, IMMEndpoint_QueryInterface(ep, &IID_IMMDevice, (void **)&back), back == dev);
+    void *none = (void *)1;
+    printf("endpoint qi store %08lx %p\n", IMMEndpoint_QueryInterface(ep, &IID_IPropertyStore, &none), none);
+
     IPropertyStore *ps = NULL;
     printf("store %08lx %d\n", IMMDevice_OpenPropertyStore(dev, STGM_READ, &ps), ps != NULL);
     DWORD n = 0;

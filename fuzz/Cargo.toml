@@ -62,3 +62,10 @@ path = "fuzz_targets/pixels.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "unity6"
+path = "fuzz_targets/unity6.rs"
+test = false
+doc = false
+bench = false

@@ -55,6 +55,7 @@ pub mod k32;
 pub mod mem;
 pub mod misc;
 pub mod movie;
+pub mod unity6;
 pub mod vorbis_hook;
 pub mod obj;
 pub mod dshow;

@@ -9,6 +9,10 @@ id [{0.0.0.00000000}.{5a2c1e0b-7f3d-4e8a-9c61-3b8d0f4a2e17}]
 state 00000000 1
 get by id 00000000 same 1
 get bad id 80070490
+qi endpoint 00000000 1
+flow 00000000 0 null 80004003
+identity 1 device back 00000000 same 1
+endpoint qi store 80004002 0000000000000000
 store 00000000 1
 props 3
 friendly 00000000 vt 31

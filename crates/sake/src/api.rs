@@ -140,6 +140,10 @@ pub fn dll_key(dll: &str) -> String {
     if k.starts_with("api-ms-win-crt-") {
         return "ucrtbase".into();
     }
+    // (Windows' security.dll forwards everything to secur32)
+    if k == "security" {
+        return "secur32".into();
+    }
     for (pre, dll) in [("api-ms-win-core-winrt-", "combase"), ("api-ms-win-core-com-", "ole32"), ("api-ms-win-core-registry-", "advapi32"), ("api-ms-win-core-shlwapi-", "shlwapi")] {
         if k.starts_with(pre) {
             return dll.into();

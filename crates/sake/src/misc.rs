@@ -3260,6 +3260,61 @@ fn ProcessPrng(c: &mut Ctx) -> u32 {
     1
 }
 
+// ---------------------------------------------------------------------------------------------
+// secur32 (SSPI): no security packages. libcurl's global init (Unity 6 runs it at startup and
+// gives up without it) wants the function table only; every package call fails.
+
+/// SecurityFunctionTable (version 1) entries, in order; None: reserved.
+const SSPI_TABLE: [Option<&str>; 26] = [
+    Some("EnumerateSecurityPackages"), Some("QueryCredentialsAttributes"), Some("AcquireCredentialsHandle"),
+    Some("FreeCredentialsHandle"), None, Some("InitializeSecurityContext"), Some("AcceptSecurityContext"),
+    Some("CompleteAuthToken"), Some("DeleteSecurityContext"), Some("ApplyControlToken"), Some("QueryContextAttributes"),
+    Some("ImpersonateSecurityContext"), Some("RevertSecurityContext"), Some("MakeSignature"), Some("VerifySignature"),
+    Some("FreeContextBuffer"), Some("QuerySecurityPackageInfo"), None, None, Some("ExportSecurityContext"),
+    Some("ImportSecurityContext"), Some("AddCredentials"), None, Some("QuerySecurityContextToken"),
+    Some("EncryptMessage"), Some("DecryptMessage"),
+];
+/// The A/W-less names of [`SSPI_TABLE`] that have no A and W forms
+const SSPI_PLAIN: [&str; 14] = [
+    "FreeCredentialsHandle", "AcceptSecurityContext", "CompleteAuthToken", "DeleteSecurityContext", "ApplyControlToken",
+    "ImpersonateSecurityContext", "RevertSecurityContext", "MakeSignature", "VerifySignature", "FreeContextBuffer",
+    "ExportSecurityContext", "QuerySecurityContextToken", "EncryptMessage", "DecryptMessage",
+];
+
+/// The exported name of table entry `n` in the A or W table.
+fn sspi_name(n: &str, wide: bool) -> String {
+    if SSPI_PLAIN.contains(&n) { n.to_string() } else { format!("{n}{}", if wide { 'W' } else { 'A' }) }
+}
+
+fn sspi_init() {
+    for n in SSPI_TABLE.iter().flatten() {
+        for wide in [false, true] {
+            // SEC_E_UNSUPPORTED_FUNCTION (FreeContextBuffer: nothing was handed out to free)
+            implement("secur32", &sspi_name(n, wide), if *n == "FreeContextBuffer" { |_| 0 } else { |_| 0x8009_0302 });
+        }
+    }
+    implement("secur32", "InitSecurityInterfaceA", |_| sspi_table(false));
+    implement("secur32", "InitSecurityInterfaceW", |_| sspi_table(true));
+}
+
+/// The A or W function table (made once; Windows' is static too).
+fn sspi_table(wide: bool) -> u32 {
+    static TABLES: Mutex<[u32; 2]> = Mutex::new([0; 2]);
+    let mut t = TABLES.lock().unwrap();
+    if t[wide as usize] == 0 {
+        let ps = mem::ps();
+        let p = mem::heap_alloc(ps * (1 + SSPI_TABLE.len() as u32), true);
+        mem::w32(p, 1); // SECURITY_SUPPORT_PROVIDER_INTERFACE_VERSION
+        for (i, n) in SSPI_TABLE.iter().enumerate() {
+            if let Some(n) = n {
+                mem::wp(p + ps * (1 + i as u32), crate::api::export("secur32", &sspi_name(n, wide)));
+            }
+        }
+        t[wide as usize] = p;
+    }
+    t[wide as usize]
+}
+
 fn wts_init() {
     // session change notifications: registered, and none come (the session never changes)
     for n in ["WTSRegisterSessionNotification", "WTSUnRegisterSessionNotification", "WTSRegisterSessionNotificationEx", "WTSUnRegisterSessionNotificationEx"] {
@@ -3281,6 +3336,7 @@ fn wts_init() {
     }
     implement("kernel32", "WTSGetActiveConsoleSessionId", |_| SESSION);
     reg!("bcryptprimitives"; ProcessPrng);
+    sspi_init();
     // wmvcore (Windows Media Format SDK): krmovie.dll of KiriKiri Z imports WMCreateSyncReader
     // (its own WMV demuxer); nothing reads ASF here (movies "play" to their end at once, as in
     // dshow.rs), so the readers, writers and editors can't be made
@@ -4100,3 +4156,28 @@ mod vararith {
     }
 }
 use vararith::*;
+
+#[cfg(test)]
+mod sspi_tests {
+    use super::*;
+
+    /// Every entry of the A and W tables is a secur32 export Windows has (specs.txt), and the
+    /// table has the layout of SecurityFunctionTable version 1 (26 slots after dwVersion; the
+    /// reserved ones where sspi.h has them).
+    #[test]
+    fn table_entries_are_exports() {
+        let names = crate::api::spec_names("secur32");
+        for n in SSPI_TABLE.iter().flatten() {
+            for wide in [false, true] {
+                let e = sspi_name(n, wide);
+                assert!(names.contains(&e), "{e}");
+            }
+        }
+        let reserved: Vec<usize> = SSPI_TABLE.iter().enumerate().filter(|e| e.1.is_none()).map(|e| e.0).collect();
+        assert_eq!(reserved, [4, 17, 18, 22]);
+        assert_eq!(SSPI_TABLE[15], Some("FreeContextBuffer"));
+        assert_eq!(SSPI_TABLE[25], Some("DecryptMessage"));
+        assert_eq!(sspi_name("InitializeSecurityContext", true), "InitializeSecurityContextW");
+        assert_eq!(sspi_name("MakeSignature", true), "MakeSignature");
+    }
+}

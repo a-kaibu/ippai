@@ -165,7 +165,14 @@ fn collection(has: bool) -> u32 {
 // ---------------------------------------------------------------------------------------------
 // IMMDevice {d666063f-1587-4e43-81f1-b948e807363f}
 
+/// IMMDevice and, as Windows' device object has, IMMEndpoint (Unity 6's audio setup asks for it
+/// and uses the pointer without checking the result)
 fn dev_qi(c: &mut Ctx) -> u32 {
+    let (iid, out) = (c.a(1), c.a(2));
+    if out != 0 && guid_is(iid, ENDPOINT.0, ENDPOINT.1, ENDPOINT.2) {
+        putp(out, endpoint());
+        return S_OK;
+    }
     qi(c, (0xd666_063f, 0x1587, 0x4e43))
 }
 /// Activate(iid, clsctx, params, void**): no audio client of its own (games here play through
@@ -209,6 +216,40 @@ fn dev_state(c: &mut Ctx) -> u32 {
 fn device() -> u32 {
     static O: OnceLock<u32> = OnceLock::new();
     singleton("IMMDevice", &[(dev_qi, b(3)), (one, b(1)), (one, b(1)), (dev_activate, b(5)), (dev_store, b(3)), (dev_id, b(2)), (dev_state, b(2))], &O)
+}
+
+// ---------------------------------------------------------------------------------------------
+// IMMEndpoint {1be09788-6894-4089-8586-9a2a6c265ac5}: the device's second interface (IUnknown
+// and IMMDevice through it are the device, as COM's identity rule wants)
+
+const ENDPOINT: (u32, u16, u16) = (0x1be0_9788, 0x6894, 0x4089);
+fn ep_qi(c: &mut Ctx) -> u32 {
+    let (this, iid, out) = (c.a(0), c.a(1), c.a(2));
+    if out == 0 {
+        return E_POINTER;
+    }
+    let to = if guid_is(iid, ENDPOINT.0, ENDPOINT.1, ENDPOINT.2) {
+        this
+    } else if is_unknown(iid) || guid_is(iid, 0xd666_063f, 0x1587, 0x4e43) {
+        device()
+    } else {
+        putp(out, 0);
+        return E_NOINTERFACE;
+    };
+    putp(out, to);
+    S_OK
+}
+/// GetDataFlow(EDataFlow*): the one endpoint renders
+fn ep_flow(c: &mut Ctx) -> u32 {
+    if c.a(1) == 0 {
+        return E_POINTER;
+    }
+    w32(c.a(1), E_RENDER);
+    S_OK
+}
+fn endpoint() -> u32 {
+    static O: OnceLock<u32> = OnceLock::new();
+    singleton("IMMEndpoint", &[(ep_qi, b(3)), (one, b(1)), (one, b(1)), (ep_flow, b(2))], &O)
 }
 
 // ---------------------------------------------------------------------------------------------
