@@ -28,27 +28,37 @@ use std::sync::{Arc, Mutex};
 
 use crate::api::{self, Ctx};
 use crate::mem::{self, r32, w32};
-use koji::iced_x86::{Decoder, DecoderOptions, FlowControl};
+use koji::iced_x86::{Decoder, DecoderOptions, FlowControl, Register};
 use vorbis::decode::{self, State};
 use vorbis::{Bits, Ident, Setup, Window};
 
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
-    /// with vi in ecx (whole-program optimization moves a direct callee's first argument
-    /// there: vi in ecx, then vc and op on the stack)
-    Headerin { vi_in_ecx: bool },
-    Mapping,
+    /// Arguments in registers: whole-program optimization moves a direct callee's first
+    /// argument to ecx (vi; vc and op on the stack); a __fastcall build (KiriKiri's
+    /// wuvorbis.dll) has vi in ecx, vc in edx, op on the stack.
+    Headerin { ecx: bool, edx: bool },
+    /// __fastcall: vb in ecx, the look in edx
+    Mapping { fastcall: bool },
 }
 
 /// trap address -> (what was patched, its trampoline)
 static HOOKS: Mutex<Option<HashMap<u32, (Kind, u32)>>> = Mutex::new(None);
 
 struct Stream {
-    ident: Option<Vec<u8>>,
     dec: Option<Arc<Mutex<(Arc<Setup>, State, Window)>>>,
+    /// the codec_setup's first bytes when its first block came: its sizes, counts and first
+    /// mode's address. A codec_setup freed and allocated again for a stream whose headers did
+    /// not come through headerin (KiriKiri keeps decoders' vorbis_info) must not pass for it.
+    seen: Option<[u8; 36]>,
+    /// when its headers came (the oldest go first past MAX_STREAMS)
+    born: u64,
 }
 
-/// vorbis_info address -> its stream
+/// streams kept (a game opens a stream per voice line and frees it, unseen by us)
+const MAX_STREAMS: usize = 64;
+
+/// vorbis_info's codec_setup -> its stream
 static STREAMS: Mutex<Option<HashMap<u32, Stream>>> = Mutex::new(None);
 /// (ident, setup) headers -> the setup read from them (a game's voices share theirs)
 static SETUPS: Mutex<Option<HashMap<(Vec<u8>, Vec<u8>), Arc<Setup>>>> = Mutex::new(None);
@@ -163,7 +173,9 @@ fn locate(m: &Image) -> Option<(Vec<u32>, u32)> {
     let table: Vec<u8> = vorbis::floor1_table::INVERSE_DB.iter().flat_map(|f| f.to_le_bytes()).collect();
     // (a game may hold two copies: libvorbis's and another decoder's)
     let lut_refs: Vec<u32> = [m.find(&table, &m.data), m.find(&table, &m.code)].concat().into_iter().flat_map(|l| m.refs(l, &m.code)).collect();
-    if lut_refs.is_empty() {
+    // (a build may compute the table instead: KiriKiri's wuvorbis.dll. Then a module that has
+    // the string is searched through the registry's tables, below)
+    if lut_refs.is_empty() && m.find(b"vorbis\0", &m.data).is_empty() {
         return None;
     }
     // every call target: functions
@@ -217,10 +229,13 @@ fn locate(m: &Image) -> Option<(Vec<u32>, u32)> {
         let (s, e) = body(f);
         m.img[s..e].windows(4).any(|w| w == v.to_le_bytes())
     };
-    let table_at = |at: u32, n: usize| -> Option<Vec<u32>> {
+    // a table of `n` functions; `null`: a bit for each entry that may be 0 (an encoder's
+    // functions in a build without it)
+    let table_or_null = |at: u32, n: usize, null: u32| -> Option<Vec<u32>> {
         let o = at.checked_sub(m.base)? as usize;
-        (0..n).map(|k| m.img.get(o + 4 * k..o + 4 * k + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap())).filter(|&v| m.in_code(v) && is_start(v))).collect()
+        (0..n).map(|k| m.img.get(o + 4 * k..o + 4 * k + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap())).filter(|&v| (m.in_code(v) && is_start(v)) || (v == 0 && null >> k & 1 != 0))).collect()
     };
+    let table_at = |at: u32, n: usize| table_or_null(at, n, 0);
     // floor 1's table: entry 6 is the function using the dB table
     let mut floor1 = Vec::new();
     for &r in &lut_refs {
@@ -256,6 +271,18 @@ fn locate(m: &Image) -> Option<(Vec<u32>, u32)> {
             }
         }
     }
+    // no dB table: _floor_P is just before _residue_P (registry.c), its entry 1 a floor table
+    if lut_refs.is_empty() {
+        for &r in &residue_p {
+            let t = m.u32_at((r - 4 - m.base) as usize);
+            if !m.in_code(t) && table_or_null(t, 7, 1).is_some() && table_or_null(m.u32_at((r - 8 - m.base) as usize), 7, 1).is_some() {
+                floor1.push(t);
+            }
+        }
+        if floor1.is_empty() {
+            return None;
+        }
+    }
     // _floor_P points at floor 1's table (entry 1); mapping0_inverse is entry 4 of mapping 0's
     // table and uses both _floor_P and _residue_P
     let (mut mapping, mut old_mapping) = (Vec::new(), Vec::new());
@@ -268,7 +295,8 @@ fn locate(m: &Image) -> Option<(Vec<u32>, u32)> {
                         continue;
                     }
                     for &loc in &ptrs[&f] {
-                        if table_at(loc - 16, 5).is_some_and(|t| t[4] == f) {
+                        // (pack and forward null without the encoder)
+                        if table_or_null(loc - 16, 5, 0b1001).is_some_and(|t| t[4] == f) {
                             mapping.push(f);
                         }
                         // libvorbis 1.0 betas: an 8-entry table (pack, unpack, look, copy_info,
@@ -334,7 +362,7 @@ fn hook(f: u32, kind: Kind) -> Option<()> {
     tr.push(0xe9);
     tr.extend((f + len as u32).wrapping_sub(t + len as u32 + 5).to_le_bytes());
     mem::write(t, &tr);
-    let name = format!("vorbis_{}_{f:x}", if kind == Kind::Mapping { "mapping0_inverse" } else { "headerin" });
+    let name = format!("vorbis_{}_{f:x}", if matches!(kind, Kind::Mapping { .. }) { "mapping0_inverse" } else { "headerin" });
     let h = api::host_fn(&name, handler, 0);
     HOOKS.lock().unwrap().get_or_insert_with(HashMap::new).insert(h, (kind, t));
     let mut jmp = vec![0xe9];
@@ -350,18 +378,20 @@ pub fn patch(base: u32, size: u32) {
     }
     let Some(m) = Image::new(base, size) else { return };
     let Some((headerin, mapping)) = locate(&m) else { return };
-    if hook(mapping, Kind::Mapping).is_none() {
+    let code = |f: u32| unsafe { std::slice::from_raw_parts(f as usize as *const u8, 96) };
+    let fastcall = reads(code(mapping), Register::ECX) && reads(code(mapping), Register::EDX);
+    if hook(mapping, Kind::Mapping { fastcall }).is_none() {
         eprintln!("sake: vorbis: mapping0_inverse at {mapping:#x} could not be patched");
         return;
     }
-    let n = headerin.iter().filter(|&&f| hook(f, Kind::Headerin { vi_in_ecx: reads_ecx(unsafe { std::slice::from_raw_parts(f as usize as *const u8, 96) }) }).is_some()).count();
+    let n = headerin.iter().filter(|&&f| hook(f, Kind::Headerin { ecx: reads(code(f), Register::ECX), edx: reads(code(f), Register::EDX) }).is_some()).count();
     eprintln!("sake: vorbis: decoding natively (mapping0_inverse {mapping:#x}, {n} header readers {headerin:x?})");
 }
 
-/// Whether the function at `f` reads ecx before it sets it (in its straight first part): an
-/// argument comes in it.
-fn reads_ecx(code: &[u8]) -> bool {
-    use koji::iced_x86::{InstructionInfoFactory, OpAccess, Register};
+/// Whether a function (its code) reads `reg` before it sets it (in its straight first part): an
+/// argument comes in it. (push ecx makes room on the stack, it does not count.)
+fn reads(code: &[u8], reg: Register) -> bool {
+    use koji::iced_x86::{InstructionInfoFactory, Mnemonic, OpAccess};
     let mut d = Decoder::new(32, code, DecoderOptions::NONE);
     let mut info = InstructionInfoFactory::new();
     for _ in 0..24 {
@@ -369,8 +399,11 @@ fn reads_ecx(code: &[u8]) -> bool {
         if ins.is_invalid() {
             return false;
         }
+        if ins.mnemonic() == Mnemonic::Push && ins.op0_register() == Register::ECX {
+            continue;
+        }
         for r in info.info(&ins).used_registers() {
-            if r.register().full_register32() != Register::ECX {
+            if r.register().full_register32() != reg {
                 continue;
             }
             match r.access() {
@@ -397,15 +430,15 @@ fn handler(c: &mut Ctx) -> u32 {
         panic!("vorbis hook without an entry");
     };
     match kind {
-        Kind::Headerin { vi_in_ecx } => {
-            if vi_in_ecx {
-                headerin(c.cpu.regs[1], c.a(1));
-            } else {
-                headerin(c.a(0), c.a(2));
+        Kind::Headerin { ecx, edx } => {
+            match (ecx, edx) {
+                (true, true) => headerin(c.cpu.regs[1], c.a(0)),
+                (true, false) => headerin(c.cpu.regs[1], c.a(1)),
+                _ => headerin(c.a(0), c.a(2)),
             }
             on_to(c, t)
         }
-        Kind::Mapping => match mapping(c, t) {
+        Kind::Mapping { fastcall } => match mapping(c, t, fastcall) {
             Some(r) => r,
             None => on_to(c, t),
         },
@@ -414,7 +447,7 @@ fn handler(c: &mut Ctx) -> u32 {
 
 /// vorbis_synthesis_headerin(vi, vc, op): keeps the identification and setup headers.
 fn headerin(vi: u32, op: u32) {
-    if !readable(op, 8) || !readable(vi, 4) {
+    if !readable(op, 8) || !readable(vi, VI_SETUP[1] + 4) {
         return;
     }
     let (p, n) = (r32(op), r32(op + 4));
@@ -425,15 +458,17 @@ fn headerin(vi: u32, op: u32) {
     if &pkt[1..7] != b"vorbis" {
         return;
     }
-    let mut g = STREAMS.lock().unwrap();
-    let streams = g.get_or_insert_with(HashMap::new);
     match pkt[0] {
         1 => {
-            streams.insert(vi, Stream { ident: Some(pkt.to_vec()), dec: None });
+            let mut g = IDENTS.lock().unwrap();
+            let m = g.get_or_insert_with(HashMap::new);
+            if m.len() >= MAX_STREAMS {
+                m.clear();
+            }
+            m.insert(vi, pkt.to_vec());
         }
         5 => {
-            let Some(s) = streams.get_mut(&vi) else { return };
-            let Some(ident) = s.ident.clone() else { return };
+            let Some(ident) = IDENTS.lock().unwrap().as_mut().and_then(|m| m.remove(&vi)) else { return };
             let key = (ident, pkt.to_vec());
             let setup = {
                 let mut c = SETUPS.lock().unwrap();
@@ -459,11 +494,28 @@ fn headerin(vi: u32, op: u32) {
                     }
                 }
             };
-            s.dec = setup.map(|setup| {
-                let st = State::new(&setup);
-                let win = Window::new(setup.ident.blocksize);
-                Arc::new(Mutex::new((setup, st, win)))
-            });
+            let Some(setup) = setup else { return };
+            // the codec_setup (its blocksizes are in from the identification header)
+            let Some(cs) = codec_setup(vi, &setup) else {
+                eprintln!("sake: vorbis: no codec_setup found for vorbis_info {vi:#x}: a stream left to the game's decoder");
+                return;
+            };
+            let st = State::new(&setup);
+            let win = Window::new(setup.ident.blocksize);
+            let dec = Arc::new(Mutex::new((setup, st, win)));
+            static BORN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let born = BORN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mut g = STREAMS.lock().unwrap();
+            let m = g.get_or_insert_with(HashMap::new);
+            if m.len() >= MAX_STREAMS {
+                // those whose codec_setup is gone or another's, then the oldest
+                m.retain(|&k, s| s.seen.is_none_or(|seen| readable(k, 36) && mem::slice(k, 36) == seen));
+                while m.len() >= MAX_STREAMS {
+                    let oldest = *m.iter().min_by_key(|(_, s)| s.born).unwrap().0;
+                    m.remove(&oldest);
+                }
+            }
+            m.insert(cs, Stream { dec: Some(dec), seen: None, born });
         }
         _ => {}
     }
@@ -480,6 +532,19 @@ const VB_MODE: u32 = 40;
 const VB_VD: u32 = 64;
 /// vorbis_dsp_state's vi
 const VD_VI: u32 = 4;
+/// where vorbis_info's codec_setup may be: what streams are known by (KiriKiri's wuvorbis.dll
+/// decodes with a copy of the vorbis_info its headers went into; the copy shares the
+/// codec_setup). Its vorbis_info has a field more.
+const VI_SETUP: [u32; 2] = [28, 32];
+
+/// identification headers, by the vorbis_info they went into, until its setup header comes
+static IDENTS: Mutex<Option<HashMap<u32, Vec<u8>>>> = Mutex::new(None);
+
+/// The codec_setup of a vorbis_info whose identification header is in: its blocksizes are
+/// that header's.
+fn codec_setup(vi: u32, setup: &Setup) -> Option<u32> {
+    VI_SETUP.iter().map(|&o| r32(vi + o)).find(|&cs| readable(cs, 8) && [r32(cs) as usize, r32(cs + 4) as usize] == setup.ident.blocksize)
+}
 
 /// What a build's mapping0_inverse leaves in vb->pcm: libvorbis 1.0.x windows the block there,
 /// later versions leave that to vorbis_synthesis_blockin. Told apart on a build's first
@@ -490,6 +555,9 @@ enum Shape {
     Unknown(u8),
     Raw,
     Windowed,
+    /// in 16-bit units, not windowed, floor lines drawn in fixed point (KiriKiri's
+    /// wuvorbis.dll)
+    Scaled16,
     /// matches neither: the build is left alone
     Off,
 }
@@ -513,27 +581,33 @@ fn largest_diff(a: &[Vec<f32>], outs: &[u32]) -> (f32, f32) {
 }
 
 /// On a build whose shape is not known: runs its own code too and compares.
-fn learn(c: &mut Ctx, tramp: u32, vb: u32, map: u32, raw: &[Vec<f32>], windowed: &[Vec<f32>], outs: &[u32], misses: u8) -> u32 {
-    let r = c.call(tramp, &[vb, map]);
-    let (d_raw, peak) = largest_diff(raw, outs);
+/// Runs the game's own mapping0_inverse.
+fn original(c: &mut Ctx, tramp: u32, vb: u32, map: u32, fastcall: bool) -> u32 {
+    if fastcall {
+        c.cpu.regs[1] = vb;
+        c.cpu.regs[2] = map;
+        c.call(tramp, &[])
+    } else {
+        c.call(tramp, &[vb, map])
+    }
+}
+
+fn learn(c: &mut Ctx, tramp: u32, vb: u32, map: u32, fastcall: bool, shapes: &[(Shape, Vec<Vec<f32>>)], outs: &[u32], misses: u8) -> u32 {
+    let r = original(c, tramp, vb, map, fastcall);
+    let peak = largest_diff(&shapes[0].1, outs).1;
     if peak < 1e-2 {
         // too quiet to tell
         return r;
     }
-    let (d_win, _) = largest_diff(windowed, outs);
-    let tol = 1e-4 * peak.max(1.0);
-    let s = if d_raw < tol {
-        Shape::Raw
-    } else if d_win < tol {
-        Shape::Windowed
-    } else if misses >= 3 {
-        Shape::Off
-    } else {
-        Shape::Unknown(misses + 1)
+    let diffs: Vec<f32> = shapes.iter().map(|(_, b)| largest_diff(b, outs).0).collect();
+    let s = match shapes.iter().zip(&diffs).find(|((_, _), &d)| d < 1e-4 * peak.max(1.0)) {
+        Some(((s, _), _)) => *s,
+        None if misses >= 3 => Shape::Off,
+        None => Shape::Unknown(misses + 1),
     };
     match s {
         Shape::Unknown(_) => {}
-        Shape::Off => eprintln!("sake: vorbis: decoder at {tramp:#x} left to the game (its samples match neither shape: {d_raw:e} / {d_win:e})"),
+        Shape::Off => eprintln!("sake: vorbis: decoder at {tramp:#x} left to the game (its samples match no shape: {diffs:?})"),
         _ => eprintln!("sake: vorbis: decoder at {tramp:#x} gives {s:?} blocks"),
     }
     SHAPES.lock().unwrap().get_or_insert_with(HashMap::new).insert(tramp, s);
@@ -564,8 +638,8 @@ fn pass(why: &'static str) -> Option<u32> {
 
 /// mapping0_inverse(vb, map): the block's samples (before windowing) into vb->pcm. None: the
 /// game's own code is to do it.
-fn mapping(c: &mut Ctx, tramp: u32) -> Option<u32> {
-    let (vb, map) = (c.a(0), c.a(1));
+fn mapping(c: &mut Ctx, tramp: u32, fastcall: bool) -> Option<u32> {
+    let (vb, map) = if fastcall { (c.cpu.regs[1], c.cpu.regs[2]) } else { (c.a(0), c.a(1)) };
     let sh = shape(tramp);
     if sh == Shape::Off || !readable(vb, VB_VD + 4) {
         return pass("off or vb unreadable");
@@ -575,8 +649,33 @@ fn mapping(c: &mut Ctx, tramp: u32) -> Option<u32> {
         return pass("vd unreadable");
     }
     let vi = r32(vd + VD_VI);
-    let Some(dec) = STREAMS.lock().unwrap().as_ref().and_then(|m| m.get(&vi)).and_then(|s| s.dec.clone()) else {
-        return pass("no headers for its vorbis_info");
+    if !readable(vi, VI_SETUP[1] + 4) {
+        return pass("vi unreadable");
+    }
+    let dec = {
+        let mut g = STREAMS.lock().unwrap();
+        let Some(m) = g.as_mut() else { return pass("no headers for its vorbis_info") };
+        let Some(key) = VI_SETUP.iter().map(|&o| r32(vi + o)).find(|k| m.contains_key(k)) else {
+            return pass("no headers for its vorbis_info");
+        };
+        if !readable(key, 36) {
+            return pass("codec_setup unreadable");
+        }
+        let now: [u8; 36] = mem::slice(key, 36).try_into().unwrap();
+        let s = m.get_mut(&key).unwrap();
+        let Some(dec) = s.dec.clone() else {
+            return pass("no headers for its vorbis_info");
+        };
+        match s.seen {
+            Some(seen) if seen != now => {
+                // another stream's now
+                s.dec = None;
+                return pass("codec_setup used again");
+            }
+            Some(_) => {}
+            None => s.seen = Some(now),
+        }
+        dec
     };
     let mut g = dec.lock().unwrap();
     let (setup, st, win) = &mut *g;
@@ -599,12 +698,19 @@ fn mapping(c: &mut Ctx, tramp: u32) -> Option<u32> {
     if !outs.iter().all(|&p| readable(p, 4 * n as u32)) {
         return pass("pcm buffers unreadable");
     }
-    let mut bufs = vec![vec![0f32; n]; ch];
-    {
+    let mut decode_as = |down: bool| {
+        st.lines_round_down = down;
+        let mut bufs = vec![vec![0f32; n]; ch];
         let mut b = Bits::at(mem::slice(buffer, storage), endbyte as usize * 8 + endbit as usize);
         let mut v: Vec<&mut [f32]> = bufs.iter_mut().map(|b| &mut b[..]).collect();
         decode::mapping_inverse(setup, st, &mut b, mode, &mut v);
-    }
+        bufs
+    };
+    let mut bufs = decode_as(sh == Shape::Scaled16);
+    let scaled16 = |mut b: Vec<Vec<f32>>| {
+        b.iter_mut().flatten().for_each(|v| *v *= 32768.0);
+        b
+    };
     let (lw, nw) = (r32(vb + VB_LW) as usize, r32(vb + VB_NW) as usize);
     let window = |bufs: &mut Vec<Vec<f32>>| {
         for b in bufs.iter_mut() {
@@ -615,27 +721,32 @@ fn mapping(c: &mut Ctx, tramp: u32) -> Option<u32> {
         Shape::Unknown(misses) => {
             let mut windowed = bufs.clone();
             window(&mut windowed);
+            let fixed = scaled16(decode_as(true));
             drop(g);
-            return Some(learn(c, tramp, vb, map, &bufs, &windowed, &outs, misses));
+            let shapes = [(Shape::Raw, bufs), (Shape::Windowed, windowed), (Shape::Scaled16, fixed)];
+            return Some(learn(c, tramp, vb, map, fastcall, &shapes, &outs, misses));
         }
         Shape::Windowed => window(&mut bufs),
+        Shape::Scaled16 => bufs = scaled16(bufs),
         _ => {}
     }
+    // (differences in the stream's units)
+    let unit = if sh == Shape::Scaled16 { 32768.0 } else { 1.0 };
     drop(g);
     if crate::env_on!("SAKE_VORBIS_CHECK") {
         // the game's own result stays
-        let r = c.call(tramp, &[vb, map]);
+        let r = original(c, tramp, vb, map, fastcall);
         let mut k = CHECK.lock().unwrap();
         let mut bad = None;
         for (i, &p) in outs.iter().enumerate() {
             for (j, &ours) in bufs[i].iter().enumerate() {
                 let theirs = f32::from_bits(r32(p + 4 * j as u32));
-                let d = (ours - theirs).abs();
+                let d = (ours - theirs).abs() / unit;
                 if d > 1e-3 && bad.is_none() {
                     bad = Some((i, j, ours, theirs));
                 }
                 k.worst = k.worst.max(d);
-                k.peak = k.peak.max(theirs.abs());
+                k.peak = k.peak.max(theirs.abs() / unit);
             }
         }
         if let Some((i, j, ours, theirs)) = bad {
@@ -669,11 +780,18 @@ mod tests {
         // Rance 01's headerin: sub esp,24h; mov eax,[cookie]; xor eax,esp; mov [esp+20h],eax;
         // push ebx; mov ebx,[esp+30h]; push ebp; mov ebp,[esp+30h]; push esi; push edi; mov esi,ecx
         let lto = hex("83ec24a174c47800 33c4894424205 38b5c2430558b6c243056578bf1");
-        assert!(reads_ecx(&lto));
+        assert!(reads(&lto, Register::ECX));
         // cdecl: push esi; mov esi,[esp+8]; mov ecx,[esp+10h]; test ecx,ecx
-        assert!(!reads_ecx(&hex("568b7424088b4c241085c9")));
+        assert!(!reads(&hex("568b7424088b4c241085c9"), Register::ECX));
         // never touched before a branch
-        assert!(!reads_ecx(&hex("5633c0eb00")));
+        assert!(!reads(&hex("5633c0eb00"), Register::ECX));
+        // push ecx (room for a local) is not a use: push ecx; mov ecx, [esp+8]
+        assert!(!reads(&hex("518b4c2408"), Register::ECX));
+        // wuvorbis.dll's mapping0_inverse (__fastcall): push ebp; mov ebp,esp; sub esp,38h;
+        // push ebx; mov ebx,ecx; push esi; push edi; mov eax,[ebx+40h]; mov edi,edx
+        let fc = hex("558bec83ec38538bd956578b43408bfa");
+        assert!(reads(&fc, Register::ECX) && reads(&fc, Register::EDX));
+        assert!(!reads(&lto, Register::EDX));
     }
 
     fn hex(s: &str) -> Vec<u8> {

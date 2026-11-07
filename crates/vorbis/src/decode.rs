@@ -15,12 +15,15 @@ pub struct State {
     /// per channel: whether its floor gave a curve (libvorbis's floormemo)
     curve: Vec<bool>,
     nonzero: Vec<bool>,
+    /// floor lines drawn in fixed point (KiriKiri's wuvorbis.dll): y rounded down, not towards
+    /// the line's start
+    pub lines_round_down: bool,
 }
 
 impl State {
     pub fn new(setup: &Setup) -> State {
         let [s, l] = setup.ident.blocksize;
-        State { imdct: [Imdct::new(s), Imdct::new(l)], floor: vec![Vec::new(); setup.ident.channels], curve: vec![false; setup.ident.channels], nonzero: vec![false; setup.ident.channels] }
+        State { imdct: [Imdct::new(s), Imdct::new(l)], floor: vec![Vec::new(); setup.ident.channels], curve: vec![false; setup.ident.channels], nonzero: vec![false; setup.ident.channels], lines_round_down: false }
     }
 }
 
@@ -85,7 +88,17 @@ fn render_point(x0: i32, x1: i32, y0: i32, y1: i32, x: i32) -> i32 {
     }
 }
 
-fn render_line(n: usize, x0: i32, x1: i32, y0: i32, y1: i32, d: &mut [f32]) {
+fn render_line(n: usize, x0: i32, x1: i32, y0: i32, y1: i32, d: &mut [f32], down: bool) {
+    if down {
+        // in 10.22 fixed point: the slope truncated, y rounded down
+        let slope = ((y1 - y0) << 22) / (x1 - x0);
+        let mut acc = y0 << 22;
+        for x in x0..(n as i32).min(x1) {
+            d[x as usize] *= INVERSE_DB[(acc >> 22).clamp(0, 255) as usize];
+            acc = acc.wrapping_add(slope);
+        }
+        return;
+    }
     let dy = y1 - y0;
     let adx = x1 - x0;
     let mut ady = dy.abs();
@@ -116,7 +129,7 @@ fn render_line(n: usize, x0: i32, x1: i32, y0: i32, y1: i32, d: &mut [f32]) {
 }
 
 /// libvorbis's floor1_inverse2: the curve multiplied into the spectrum (n / 2 values).
-fn floor1_apply(f: &Floor1, fit: &[i32], out: &mut [f32]) {
+fn floor1_apply(f: &Floor1, fit: &[i32], out: &mut [f32], down: bool) {
     let n = out.len();
     let clamp = |v: i32| v.clamp(0, 255);
     let (mut lx, mut hx) = (0, 0);
@@ -126,7 +139,7 @@ fn floor1_apply(f: &Floor1, fit: &[i32], out: &mut [f32]) {
         if hy == fit[cur] {
             hx = f.x[cur];
             let hy = clamp(hy * f.multiplier);
-            render_line(n, lx, hx, ly, hy, out);
+            render_line(n, lx, hx, ly, hy, out, down);
             lx = hx;
             ly = hy;
         }
@@ -322,7 +335,7 @@ pub fn mapping_inverse(setup: &Setup, st: &mut State, b: &mut Bits, mode: usize,
     for i in 0..ch {
         let f = &setup.floors[m.submaps[m.mux[i]].0];
         if st.curve[i] {
-            floor1_apply(f, &st.floor[i], &mut pcm[i][..half]);
+            floor1_apply(f, &st.floor[i], &mut pcm[i][..half], st.lines_round_down);
         } else {
             pcm[i][..half].fill(0.0);
         }
@@ -372,6 +385,41 @@ mod proofs {
         kani::assume((0..4).contains(&x0) && (1..=8).contains(&len) && n <= 12);
         kani::assume((0..=255).contains(&y0) && (0..=255).contains(&y1));
         let mut d = [1f32; 12];
-        render_line(n, x0, x0 + len, y0, y1, &mut d[..n.max((x0 + len) as usize).min(12)]);
+        render_line(n, x0, x0 + len, y0, y1, &mut d[..n.max((x0 + len) as usize).min(12)], kani::any());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The y each x of a line got (d starts at 1).
+    fn ys(x0: i32, x1: i32, y0: i32, y1: i32, down: bool) -> Vec<usize> {
+        let mut d = vec![1f32; x1 as usize];
+        render_line(x1 as usize, x0, x1, y0, y1, &mut d, down);
+        d[x0 as usize..].iter().map(|v| INVERSE_DB.iter().position(|t| t == v).unwrap()).collect()
+    }
+
+    /// wuvorbis.dll's fixed-point lines start where libvorbis's do and stay within one step
+    /// below them (libvorbis rounds towards the start, they round down); rising lines that
+    /// meet whole steps exactly agree.
+    #[test]
+    fn fixed_point_lines() {
+        for dx in 1..70 {
+            for y0 in (0..256).step_by(17) {
+                for y1 in (0..256).step_by(13) {
+                    let a = ys(3, 3 + dx, y0, y1, false);
+                    let b = ys(3, 3 + dx, y0, y1, true);
+                    assert_eq!(a[0], b[0]);
+                    for (k, (&a, &b)) in a.iter().zip(&b).enumerate() {
+                        assert!(b <= a && a - b <= 1, "dx {dx} y {y0}->{y1} x+{k}: {a} {b}");
+                        let exact = (y1 - y0) * k as i32 % dx == 0;
+                        if y1 >= y0 && exact && ((y1 - y0) << 22) % dx == 0 {
+                            assert_eq!(a, b);
+                        }
+                    }
+                }
+            }
+        }
     }
 }
