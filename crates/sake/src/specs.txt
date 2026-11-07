@@ -33316,6 +33316,7 @@ ncrypt BCryptVerifySignature stdcall 28 -
 ncrypt NCryptCreatePersistedKey stdcall 24 -
 ncrypt NCryptDecrypt stdcall 32 -
 ncrypt NCryptDeleteKey stdcall 8 -
+ncrypt NCryptDeriveKey stdcall 28 -
 ncrypt NCryptEncrypt stdcall 32 -
 ncrypt NCryptEnumAlgorithms stdcall 20 -
 ncrypt NCryptEnumKeys stdcall 20 -
@@ -33329,6 +33330,7 @@ ncrypt NCryptIsAlgSupported stdcall 12 -
 ncrypt NCryptIsKeyHandle stdcall 4 -
 ncrypt NCryptOpenKey stdcall 20 -
 ncrypt NCryptOpenStorageProvider stdcall 12 -
+ncrypt NCryptSecretAgreement stdcall 16 -
 ncrypt NCryptSetProperty stdcall 20 -
 ncrypt NCryptSignHash stdcall 32 -
 ncrypt NCryptVerifySignature stdcall 28 -
