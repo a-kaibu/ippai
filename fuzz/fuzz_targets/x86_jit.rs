@@ -194,7 +194,7 @@ fuzz_target!(|data: &[u8]| {
         })
         .unwrap();
     linker
-        .func_wrap("env", "status", |op: u32, a: u32, b: u32, r: u32, cc: u32| -> u32 { koji::lazy::Lazy { op, a, b, r, c: cc }.status() })
+        .func_wrap("env", "status", |op: u32, a: u32, b: u32, r: u32, cc: u32| -> u32 { koji::lazy::Lazy { op, a: a.into(), b: b.into(), r: r.into(), c: cc }.status() })
         .unwrap();
     linker
         .func_wrap(
