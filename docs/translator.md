@@ -215,3 +215,18 @@ collect the module. The saved bundle stays (one instance; its regions are entere
 Slots are not reused. Counts: `IPPAI_JIT_COUNT` (`freed N (KiB)`) and the crash log's
 `jit modules` line. flatbench reps=3: 869 modules loaded (8.4 MB), 105 freed (1.5 MB).
 host/tests pass with `IPPAI_JIT_RECLAIM=1` (CI runs them so on sake-grow).
+
+## Why modules are compiled synchronously (2026-11-07)
+
+A review asked for `WebAssembly.compile` (asynchronous) instead of `new WebAssembly.Module`.
+It cannot help here: a promise resolves on its thread's event loop, and the program's threads
+(pthreads, workers) never return to theirs; a module compiled on another worker reaches this
+one only by `postMessage`, which the same loop delivers. The compiler thread already does the
+translation off the program's thread; V8 compiles each function only when it is first called
+(lazy compilation), so `vnvm_jit_load` is decoding, validation and instantiation.
+
+Measured (`IPPAI_JIT_COUNT`'s `loading N ms`, the crash log's `jit modules` line), flatbench
+reps=3 in node: 844 modules (8.9 MB) loaded in 505 ms in all, about 0.6 ms each: 5 to 15% of
+each second while the code warms up (the first 5 s), nothing once the hot code is loaded. Less
+of it means fewer and smaller modules (batches, merges, the saved bundle with
+`compileStreaming`, which the page compiles asynchronously before the program starts).

@@ -322,11 +322,24 @@ static SHARED: Mutex<Option<HashMap<Vec<u32>, Vec<Arc<Shared>>>>> = Mutex::new(N
 /// What the translations hold (IPPAI_JIT_COUNT prints it, jit_modules): modules loaded (each
 /// thread's own), their bytes, the highest table index they took (all threads), modules freed
 /// (reclaim) and their bytes.
-static MODULES: [std::sync::atomic::AtomicU64; 5] = [const { std::sync::atomic::AtomicU64::new(0) }; 5];
+static MODULES: [std::sync::atomic::AtomicU64; 6] = [const { std::sync::atomic::AtomicU64::new(0) }; 6];
 
-/// [`MODULES`]: loaded, bytes, table, freed, freed bytes (the run log's perf lines).
-pub(crate) fn jit_modules() -> [u64; 5] {
+/// [`MODULES`]: loaded, bytes, table, freed, freed bytes, µs in vnvm_jit_load (V8's
+/// `new WebAssembly.Module` + `Instance` on the thread itself; the run log's perf lines).
+pub(crate) fn jit_modules() -> [u64; 6] {
     MODULES.each_ref().map(|c| c.load(Ordering::Relaxed))
+}
+
+/// Compiles and instantiates `bytes` (`n` functions) on this thread: the table index of the
+/// first, or -1. Synchronous: the program's threads never return to their event loop, so a
+/// promise (WebAssembly.compile) would never resolve on them, and V8 compiles a function only
+/// when first called (lazy compilation): this decodes and validates (docs/translator.md).
+#[cfg(target_os = "emscripten")]
+fn load_module(bytes: &[u8], n: u32) -> i32 {
+    let t0 = Instant::now();
+    let base = unsafe { vnvm_jit_load(bytes.as_ptr(), bytes.len(), n) };
+    MODULES[5].fetch_add(t0.elapsed().as_micros() as u64, Ordering::Relaxed);
+    loaded(base, n, bytes.len())
 }
 
 #[cfg(target_os = "emscripten")]
@@ -634,8 +647,8 @@ fn init_flags() {
                     let (sn, sb) = shared_size();
                     let m: Vec<u64> = MODULES.iter().map(|c| c.load(Relaxed)).collect();
                     eprintln!(
-                        "vnjit count/{secs}s {} | regions {} {} ms, functions {} {} ms (rebuilt {}, {} ms) | shared {sn} ({} KiB), loaded {} modules ({} KiB), table {}, freed {} ({} KiB)",
-                        v.join(" "), c[0], c[1] / 1000, c[2], c[3] / 1000, c[4], c[5] / 1000, sb >> 10, m[0], m[1] >> 10, m[2], m[3], m[4] >> 10
+                        "vnjit count/{secs}s {} | regions {} {} ms, functions {} {} ms (rebuilt {}, {} ms) | shared {sn} ({} KiB), loaded {} modules ({} KiB), table {}, freed {} ({} KiB), loading {} ms",
+                        v.join(" "), c[0], c[1] / 1000, c[2], c[3] / 1000, c[4], c[5] / 1000, sb >> 10, m[0], m[1] >> 10, m[2], m[3], m[4] >> 10, m[5] / 1000
                     );
                 });
             }
@@ -869,7 +882,7 @@ fn load(st: &mut State, bytes: &[u8], roots: Vec<u32>, starts: &[(u32, u32)]) ->
         let _ = std::fs::write(std::path::Path::new(&dir).join(name), bytes);
     }
     #[cfg(target_os = "emscripten")]
-    let base = loaded(unsafe { vnvm_jit_load(bytes.as_ptr(), bytes.len(), 1) }, 1, bytes.len());
+    let base = load_module(bytes, 1);
     #[cfg(not(target_os = "emscripten"))]
     let base = { let _ = bytes; -1 };
     if base < 0 {
@@ -1683,7 +1696,7 @@ fn take_built(st: &mut State, mem: &mut Linear) {
             Some(m) if kept.iter().all(|&k| k) => {
                 let n = 2 * items.iter().filter(|i| i.2.is_some()).count();
                 #[cfg(target_os = "emscripten")]
-                let b = loaded(unsafe { vnvm_jit_load(m.as_ptr(), m.len(), n as u32) }, n as u32, m.len());
+                let b = load_module(&m, n as u32);
                 #[cfg(not(target_os = "emscripten"))]
                 let b = { let _ = (&m, n); -1 };
                 note_load(st, b, n as u32, m.len());
@@ -1769,7 +1782,7 @@ fn finish_fn(st: &mut State, eip: u32, build: u32, built: Built, at: Option<u32>
 /// Compiles a function's module (adapter, function) and points the hash table at its blocks.
 fn install_fn(st: &mut State, eip: u32, bytes: &[u8], starts: &[(u32, u32)], sites: &[u32], code: &[(u32, u32)]) -> bool {
     #[cfg(target_os = "emscripten")]
-    let base = loaded(unsafe { vnvm_jit_load(bytes.as_ptr(), bytes.len(), 2) }, 2, bytes.len());
+    let base = load_module(bytes, 2);
     #[cfg(not(target_os = "emscripten"))]
     let base = { let _ = bytes; -1 };
     st.known.insert(eip);
