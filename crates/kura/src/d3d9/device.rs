@@ -2518,19 +2518,37 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     };
     let nverts = vertex_count(prim, prims);
     // where the vertices come from: (stream, data pointer of the first used vertex, stride, count)
+    // (the vertices the indices name: Direct3D's hardware path reads BaseVertexIndex + index
+    // whatever MinVertexIndex and NumVertices say, and games pass those wrong)
+    let range = |iptr: u32, isize: u32| -> (u32, u32) {
+        let (mut lo, mut hi) = (u32::MAX, 0);
+        for k in 0..nverts {
+            let v = if isize == 4 { *((iptr + 4 * k) as *const u32) } else { *((iptr + 2 * k) as *const u16) as u32 };
+            lo = lo.min(v);
+            hi = hi.max(v);
+        }
+        (lo.min(hi), hi.saturating_sub(lo.min(hi)) + 1)
+    };
     let (first, count, index): (u32, u32, Option<(u32, u32, u32)>) = match &src {
         Src::Streams(start) => (*start, nverts, None),
-        Src::Indexed { base, min, num, start } => {
+        Src::Indexed { base, start, .. } => {
             let Some(Data::Buffer(ib)) = d.objs.get(&st.indices).map(|o| &o.data) else { return D3DERR_INVALIDCALL };
             let isize = if ib.fmt == fmt::INDEX32 { 4 } else { 2 };
             let iptr = ib.mem + start * isize;
             if (start + nverts) * isize > ib.len {
                 return D3DERR_INVALIDCALL;
             }
-            ((*base + *min as i32).max(0) as u32, *num, Some((iptr, isize, *min)))
+            let (lo, n) = range(iptr, isize);
+            if *base + (lo as i32) < 0 {
+                return D3DERR_INVALIDCALL;
+            }
+            ((*base + lo as i32) as u32, n, Some((iptr, isize, lo)))
         }
         Src::Up { .. } => (0, nverts, None),
-        Src::UpIndexed { min, num, idx, isize, .. } => (*min, *num, Some((*idx, *isize, *min))),
+        Src::UpIndexed { idx, isize, .. } => {
+            let (lo, n) = range(*idx, *isize);
+            (lo, n, Some((*idx, *isize, lo)))
+        }
     };
     let mut streams: Vec<(u32, u32, u32)> = Vec::new(); // (stream, ptr, stride)
     let mut used: Vec<u32> = elems.iter().map(|e| e.stream).collect();
@@ -2769,7 +2787,10 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     };
     let topo = PRIM_TOPOLOGY[prim as usize];
     let indexed = index.is_some() || prim == 6;
-    let isize = index.map_or(if prim == 6 { 2 } else { 0 }, |i| i.1);
+    // (WebGPU restarts an indexed strip at an index of all ones, Direct3D 9 never does: 16-bit
+    // strips with a 0xffff go out as 32-bit indices)
+    let widen = matches!(index, Some((iptr, 2, _)) if (topo == 2 || topo == 4) && (0..nverts).any(|k| *((iptr + 2 * k) as *const u16) == 0xffff));
+    let isize = if widen { 4 } else { index.map_or(if prim == 6 { 2 } else { 0 }, |i| i.1) };
     let strip_fmt = if indexed && (topo == 2 || topo == 4) { isize } else { 0 };
     let mut key: Vec<u32> = vec![
         vs_mod,
@@ -2956,6 +2977,10 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
                 }
                 let bytes: Vec<u8> = ix.iter().flat_map(|v| v.to_le_bytes()).collect();
                 (4, b.data(&bytes, 4), ix.len() as u32, -(*min as i32))
+            }
+            (Some((iptr, _, min)), _) if widen => {
+                let bytes: Vec<u8> = (0..nverts).flat_map(|k| (*((iptr + 2 * k) as *const u16) as u32).to_le_bytes()).collect();
+                (4, b.data(&bytes, 4), nverts, -(*min as i32))
             }
             (Some((iptr, isz, min)), _) => {
                 let len = (nverts * isz) as usize;

@@ -390,8 +390,17 @@ pub struct Pipeline {
     pub targets: Vec<(String, u32, bool)>,
     pub depth: Option<(String, bool, String)>,
     pub buffers: Vec<u32>,
+    /// per vertex buffer: its attributes (offset, size, shader location)
+    pub attrs: Vec<Vec<(u32, u32, u32)>>,
+    pub topology: String,
+    /// "uint16" / "uint32": an index of all ones restarts the strip
+    pub strip_format: Option<String>,
     pub clear_shader: bool,
 }
+
+/// A vertex as the shader gets it: (location, the bytes of that attribute; empty when the
+/// fetch was outside the buffer), by location.
+pub type Vertex = Vec<(u32, Vec<u8>)>;
 
 #[derive(Clone)]
 pub enum Entry {
@@ -480,6 +489,9 @@ pub struct Model {
     pub obs: Vec<Obs>,
     /// calls made, by name (for coverage)
     pub calls: HashMap<&'static str, u64>,
+    /// Some: each draw submitted adds the primitives it assembles (its vertices in order),
+    /// for tests of what draws read
+    pub prims: Option<Vec<Vec<Vec<Vertex>>>>,
 }
 
 thread_local! {
@@ -904,9 +916,11 @@ impl Model {
         }
         // vertex buffers
         let mut buffers = Vec::new();
+        let mut attrs = Vec::new();
         let mut locs = Vec::new();
         if let Some(v) = j.get("vertex") {
             for b in v.arr("buffers") {
+                let mut list = Vec::new();
                 let stride = b.u("arrayStride").unwrap_or(0);
                 if stride % 4 != 0 || stride > 2048 {
                     self.err(format!("{what}: arrayStride {stride}"));
@@ -927,8 +941,10 @@ impl Model {
                         self.err(format!("{what}: shader location {loc}"));
                     }
                     locs.push(loc);
+                    list.push((off, vertex_format_size(f).unwrap_or(0), loc));
                 }
                 buffers.push(stride);
+                attrs.push(list);
             }
             if buffers.len() > 8 {
                 self.err(format!("{what}: {} vertex buffers", buffers.len()));
@@ -1036,7 +1052,8 @@ impl Model {
         if fs.is_none() && j.get("fragment").is_some() {
             // (the error was given)
         }
-        let p = Pipeline { hash: h, groups, targets, depth: depth.map(|d| (d.0, d.1, d.2)), buffers, clear_shader: clear };
+        let strip_format = prim.and_then(|p| p.s("stripIndexFormat")).map(str::to_string);
+        let p = Pipeline { hash: h, groups, targets, depth: depth.map(|d| (d.0, d.1, d.2)), buffers, attrs, topology: topo.to_string(), strip_format, clear_shader: clear };
         self.put(Obj::Pipeline(p))
     }
 
@@ -1633,6 +1650,69 @@ impl Model {
         mix(h, hash_str(&v.format))
     }
 
+    /// The primitives a draw assembles (WebGPU's vertex fetch and primitive assembly: index
+    /// buffer, baseVertex, topology, strip restart), one instance.
+    fn assemble(&self, d: &Draw) -> Vec<Vec<Vertex>> {
+        let Obj::Pipeline(p) = &self.objs[d.st.pipeline.unwrap()] else { return Vec::new() };
+        let (n, first, base) = (d.args[0], d.args[2], d.args[3] as i32);
+        // the vertex index of each invocation (None: a strip restart)
+        let ids: Vec<Option<i64>> = if d.indexed {
+            let Some((b, u32_, off)) = d.st.ibuf else { return Vec::new() };
+            let Obj::Buffer(bf) = &self.objs[b] else { return Vec::new() };
+            let sz = if u32_ { 4 } else { 2 };
+            (0..n as usize)
+                .map(|i| {
+                    let at = off as usize + (first as usize + i) * sz;
+                    let ix = bf.data.get(at..at + sz).map(|c| if sz == 4 { u32::from_le_bytes(c.try_into().unwrap()) } else { u16::from_le_bytes(c.try_into().unwrap()) as u32 });
+                    let ix = ix.unwrap_or(0);
+                    let restart = p.strip_format.is_some() && ix == if u32_ { u32::MAX } else { 0xffff };
+                    (!restart).then_some(ix as i64 + base as i64)
+                })
+                .collect()
+        } else {
+            (0..n).map(|i| Some(first as i64 + i as i64)).collect()
+        };
+        let vertex = |v: i64| -> Vertex {
+            let mut out = Vec::new();
+            for (k, list) in p.attrs.iter().enumerate() {
+                let stride = p.buffers[k] as i64;
+                let src = d.st.vbufs.get(k).copied().flatten().and_then(|(b, off)| match &self.objs[b] {
+                    Obj::Buffer(bf) => Some((bf, off)),
+                    _ => None,
+                });
+                for &(aoff, size, loc) in list {
+                    let bytes = src
+                        .and_then(|(bf, off)| {
+                            let at = off as i64 + v * stride + aoff as i64;
+                            (at >= 0).then(|| bf.data.get(at as usize..at as usize + size as usize)).flatten()
+                        })
+                        .map(|b| b.to_vec())
+                        .unwrap_or_default();
+                    out.push((loc, bytes));
+                }
+            }
+            out.sort_by_key(|x| x.0);
+            out
+        };
+        let mut prims = Vec::new();
+        // (runs between restarts)
+        for run in ids.split(|x| x.is_none()) {
+            let vs: Vec<Vertex> = run.iter().map(|x| vertex(x.unwrap())).collect();
+            match p.topology.as_str() {
+                "point-list" => prims.extend(vs.into_iter().map(|v| vec![v])),
+                "line-list" => prims.extend(vs.chunks_exact(2).map(|c| c.to_vec())),
+                "line-strip" => prims.extend(vs.windows(2).map(|c| c.to_vec())),
+                "triangle-list" => prims.extend(vs.chunks_exact(3).map(|c| c.to_vec())),
+                _ => {
+                    for (i, w) in vs.windows(3).enumerate() {
+                        prims.push(if i % 2 == 0 { w.to_vec() } else { vec![w[1].clone(), w[0].clone(), w[2].clone()] });
+                    }
+                }
+            }
+        }
+        prims
+    }
+
     /// What a draw reads, hashed (its "signature"), and for the clear shader: the color and
     /// depth it writes.
     fn draw_sig(&mut self, d: &Draw) -> (u64, Option<([f32; 4], f32)>) {
@@ -1738,6 +1818,10 @@ impl Model {
             }
         }
         for d in draws {
+            if self.prims.is_some() {
+                let p = self.assemble(d);
+                self.prims.as_mut().unwrap().push(p);
+            }
             let (sig, clear) = self.draw_sig(d);
             if std::env::var_os("IPPAI_MODEL_SIGS").is_some() {
                 eprintln!("  model draw into {:?} {sig:x} vp {:?} sc {:?} bounds {:?} load {:?} zload {:?}", colors.iter().chain(depth.iter()).map(|a| self.view_of(a.view).map(|v| v.tex)).collect::<Vec<_>>(), d.st.viewport, d.st.scissor, d.bounds, colors.iter().map(|a| a.load_clear).collect::<Vec<_>>(), depth.as_ref().map(|a| a.load_clear));
