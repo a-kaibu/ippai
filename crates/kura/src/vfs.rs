@@ -159,12 +159,13 @@ mod net {
 /// The network counters into `out` (f64 each): requests, from the HTTP cache, failed, bytes
 /// over the network, bytes decoded, request time (ms), requests on their way, the game's
 /// threads' wait for chunks (ms), the longest such wait and the longest request since the
-/// last call (ms), the chunk cache (bytes).
+/// last call (ms), the chunk cache (bytes), chunks a read fetched again after the cache dropped
+/// them.
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_net_stats(out: *mut f64) {
     use std::sync::atomic::Ordering::Relaxed;
     let ms = |us: u64| us as f64 / 1000.0;
-    let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map_or(0, |c| c.bytes);
+    let (cache, refetched) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map_or((0, 0), |c| (c.bytes, c.refetched));
     let v = [
         net::REQUESTS.load(Relaxed) as f64,
         net::CACHED.load(Relaxed) as f64,
@@ -177,6 +178,7 @@ pub unsafe extern "C" fn vnhost_net_stats(out: *mut f64) {
         ms(net::STALL_MAX_US.swap(0, Relaxed)),
         ms(net::REQ_MAX_US.swap(0, Relaxed)),
         cache as f64,
+        refetched as f64,
     ];
     std::ptr::copy_nonoverlapping(v.as_ptr(), out, v.len());
 }
@@ -599,51 +601,154 @@ fn join(cur: &[String]) -> String {
 // ---------------------------------------------------------------------------------------------
 // chunk cache
 
-/// Chunks by hash, the oldest put dropped first once they hold more than the limit. `bytes`
-/// is the sum of the lengths of what `map` holds: every change goes through [`Cache::put`].
+/// Chunks by hash, in two segments (a segmented LRU, like 2Q): a chunk comes in on probation
+/// (fetched ahead, or read once) and is protected once read again; protected ones are kept in
+/// the order of their last read and hold at most PROTECTED of the limit (the least recent goes
+/// back on probation). Over the limit the oldest on probation goes first, then the least recent
+/// protected one. A VN reads its scripts, UI pictures and fonts again and again but a voice or
+/// a movie once: a long one read through no longer pushes the others out (it did when this was
+/// one queue in the order of the puts). `bytes` is the sum of the lengths of what `map` holds.
 #[derive(Default)]
 struct Cache {
-    map: HashMap<Hash, Arc<Vec<u8>>>,
-    /// each hash in `map` once, oldest first
-    order: VecDeque<Hash>,
+    map: HashMap<Hash, Entry>,
+    /// on probation and protected, by their tick (oldest first)
+    probation: BTreeMap<u64, Hash>,
+    protected: BTreeMap<u64, Hash>,
     bytes: usize,
+    protected_bytes: usize,
+    tick: u64,
+    /// chunks dropped (the latest GONE_MAX or so), and how many reads fetched one again
+    gone: std::collections::HashSet<Hash>,
+    refetched: u64,
 }
 
+const GONE_MAX: usize = 1 << 16;
+
+struct Entry {
+    data: Arc<Vec<u8>>,
+    /// reads so far (a chunk fetched ahead has none)
+    reads: u32,
+    protected: bool,
+    tick: u64,
+}
+
+/// The share of the limit protected chunks may hold.
+const PROTECTED: (usize, usize) = (3, 4);
+
 impl Cache {
-    /// Holds `data` as `h` (in place of what `h` held: it keeps its place in the order), then
-    /// drops the oldest while over `limit` (`h` itself last).
-    fn put(&mut self, h: &Hash, data: Arc<Vec<u8>>, limit: usize) {
-        match self.map.insert(*h, data.clone()) {
-            Some(old) => self.bytes = self.bytes - old.len() + data.len(),
-            None => {
-                self.order.push_back(*h);
-                self.bytes += data.len();
-            }
-        }
-        self.trim(limit);
-    }
-
-    fn trim(&mut self, limit: usize) {
-        while self.bytes > limit {
-            let Some(old) = self.order.pop_front() else { break };
-            if let Some(d) = self.map.remove(&old) {
-                self.bytes -= d.len();
-            }
-        }
-    }
-
-    /// Chunk `h` at `len` bytes: one the page fetched ahead comes as stored (a file's last
-    /// chunk short) and is padded in place (a copy only if someone holds it).
-    fn get(&mut self, h: &Hash, len: usize, limit: usize) -> Option<Arc<Vec<u8>>> {
-        let c = self.map.get_mut(h)?;
-        let had = c.len();
-        if had != len {
-            Arc::make_mut(c).resize(len, 0);
+    /// Holds `data` as `h`, `read` if a read is what fetched it (in place of what `h` held: it
+    /// keeps its place), then drops what is over `limit` (`h` itself last).
+    fn put(&mut self, h: &Hash, data: Arc<Vec<u8>>, read: bool, limit: usize) {
+        let len = data.len();
+        if let Some(e) = self.map.get_mut(h) {
+            let had = e.data.len();
+            e.data = data;
             self.bytes = self.bytes - had + len;
+            if e.protected {
+                self.protected_bytes = self.protected_bytes - had + len;
+            }
+            if read {
+                self.read(h);
+            }
+        } else {
+            if read && self.gone.remove(h) {
+                self.refetched += 1;
+            }
+            self.tick += 1;
+            self.probation.insert(self.tick, *h);
+            self.map.insert(*h, Entry { data, reads: read as u32, protected: false, tick: self.tick });
+            self.bytes += len;
         }
-        let d = c.clone();
-        self.trim(limit);
+        self.trim(limit, h);
+    }
+
+    /// A read of `h` (in `map`): protected from the second on, and the most recent.
+    fn read(&mut self, h: &Hash) {
+        let Some(e) = self.map.get_mut(h) else { return };
+        e.reads = e.reads.saturating_add(1);
+        if !e.protected && e.reads < 2 {
+            return;
+        }
+        if e.protected {
+            self.protected.remove(&e.tick);
+        } else {
+            self.probation.remove(&e.tick);
+            e.protected = true;
+            self.protected_bytes += e.data.len();
+        }
+        self.tick += 1;
+        e.tick = self.tick;
+        self.protected.insert(self.tick, *h);
+    }
+
+    /// Back on probation (as read once), the most recent there.
+    fn demote(&mut self, h: &Hash) {
+        let Some(e) = self.map.get_mut(h) else { return };
+        if !e.protected {
+            return;
+        }
+        self.protected.remove(&e.tick);
+        self.protected_bytes -= e.data.len();
+        e.protected = false;
+        e.reads = 1;
+        self.tick += 1;
+        e.tick = self.tick;
+        self.probation.insert(self.tick, *h);
+    }
+
+    fn remove(&mut self, h: &Hash) {
+        if let Some(e) = self.map.remove(h) {
+            if self.gone.len() >= GONE_MAX {
+                self.gone.clear();
+            }
+            self.gone.insert(*h);
+            self.bytes -= e.data.len();
+            if e.protected {
+                self.protected.remove(&e.tick);
+                self.protected_bytes -= e.data.len();
+            } else {
+                self.probation.remove(&e.tick);
+            }
+        }
+    }
+
+    /// Drops what is over `limit`, `keep` last.
+    fn trim(&mut self, limit: usize, keep: &Hash) {
+        while self.protected_bytes > limit / PROTECTED.1 * PROTECTED.0 {
+            let Some((_, h)) = self.protected.first_key_value().map(|(t, h)| (*t, *h)) else { break };
+            self.demote(&h);
+        }
+        while self.bytes > limit {
+            let first = |m: &BTreeMap<u64, Hash>| m.values().find(|h| *h != keep).copied();
+            let Some(h) = first(&self.probation).or_else(|| first(&self.protected)) else {
+                // only `keep` left
+                self.remove(&keep.clone());
+                break;
+            };
+            self.remove(&h);
+        }
+    }
+
+    /// Chunk `h` at `len` bytes (a read): one the page fetched ahead comes as stored (a file's
+    /// last chunk short) and is padded in place (a copy only if someone holds it).
+    fn get(&mut self, h: &Hash, len: usize, limit: usize) -> Option<Arc<Vec<u8>>> {
+        let e = self.map.get_mut(h)?;
+        let had = e.data.len();
+        if had != len {
+            Arc::make_mut(&mut e.data).resize(len, 0);
+            self.bytes = self.bytes - had + len;
+            if e.protected {
+                self.protected_bytes = self.protected_bytes - had + len;
+            }
+        }
+        let d = e.data.clone();
+        self.read(h);
+        self.trim(limit, h);
         Some(d)
+    }
+
+    fn contains(&self, h: &Hash) -> bool {
+        self.map.contains_key(h)
     }
 }
 
@@ -693,7 +798,7 @@ static AHEAD_WORK: std::sync::Condvar = std::sync::Condvar::new();
 static AHEAD_DONE: std::sync::Condvar = std::sync::Condvar::new();
 
 fn cached(h: &Hash) -> bool {
-    CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|c| c.map.contains_key(h))
+    CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|c| c.contains(h))
 }
 
 /// Has chunk `h` fetched by a fetcher thread unless it is here already.
@@ -728,7 +833,7 @@ fn fetcher() {
             }
         };
         if let Some(data) = fetch_chunk(&h) {
-            cache_put(&h, Arc::new(data));
+            cache_put(&h, Arc::new(data), false);
         }
         if let Some(a) = AHEAD.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
             a.busy.remove(&h);
@@ -770,7 +875,7 @@ fn chunk_data_wait(h: &Hash, len: usize) -> Result<Arc<Vec<u8>>, c_int> {
     }
     let mut data = fetch_chunk(h).ok_or(libc::EIO)?;
     data.resize(len, 0);
-    Ok(cache_put(h, Arc::new(data)))
+    Ok(cache_put(h, Arc::new(data), true))
 }
 
 /// A chunk the page fetched ahead: `hash` (16 bytes) and the `data` it malloc'ed, which this
@@ -778,11 +883,12 @@ fn chunk_data_wait(h: &Hash, len: usize) -> Result<Arc<Vec<u8>>, c_int> {
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_vfs_put_chunk(hash: *const u8, data: *mut u8, len: size_t) {
     let h: Hash = std::slice::from_raw_parts(hash, 16).try_into().unwrap();
-    cache_put(&h, Arc::new(Vec::from_raw_parts(data, len, len)));
+    cache_put(&h, Arc::new(Vec::from_raw_parts(data, len, len)), false);
 }
 
-fn cache_put(h: &Hash, data: Arc<Vec<u8>>) -> Arc<Vec<u8>> {
-    CACHE.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Cache::default).put(h, data.clone(), cache_limit());
+/// `read`: a read fetched it (else fetched ahead, by a fetcher or the page).
+fn cache_put(h: &Hash, data: Arc<Vec<u8>>, read: bool) -> Arc<Vec<u8>> {
+    CACHE.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Cache::default).put(h, data.clone(), read, cache_limit());
     data
 }
 
@@ -1240,43 +1346,141 @@ mod tests {
             seed ^= seed << 17;
             seed % n
         };
+        /// The policy again, written plainly: two lists, oldest (least recent) first.
+        #[derive(Default)]
+        struct Model {
+            prob: Vec<(Hash, usize, u32)>,
+            prot: Vec<(Hash, usize)>,
+        }
+        impl Model {
+            fn bytes(&self) -> usize {
+                self.prob.iter().map(|e| e.1).sum::<usize>() + self.prot.iter().map(|e| e.1).sum::<usize>()
+            }
+            fn read(&mut self, h: Hash) {
+                if let Some(i) = self.prot.iter().position(|e| e.0 == h) {
+                    let e = self.prot.remove(i);
+                    self.prot.push(e);
+                } else if let Some(i) = self.prob.iter().position(|e| e.0 == h) {
+                    self.prob[i].2 += 1;
+                    if self.prob[i].2 >= 2 {
+                        let e = self.prob.remove(i);
+                        self.prot.push((e.0, e.1));
+                    }
+                }
+            }
+            fn set_len(&mut self, h: Hash, len: usize) -> bool {
+                if let Some(e) = self.prob.iter_mut().find(|e| e.0 == h) {
+                    e.1 = len;
+                } else if let Some(e) = self.prot.iter_mut().find(|e| e.0 == h) {
+                    e.1 = len;
+                } else {
+                    return false;
+                }
+                true
+            }
+            fn trim(&mut self, limit: usize, keep: Hash) {
+                while self.prot.iter().map(|e| e.1).sum::<usize>() > limit / PROTECTED.1 * PROTECTED.0 {
+                    let e = self.prot.remove(0);
+                    self.prob.push((e.0, e.1, 1));
+                }
+                while self.bytes() > limit {
+                    if let Some(i) = self.prob.iter().position(|e| e.0 != keep) {
+                        self.prob.remove(i);
+                    } else if let Some(i) = self.prot.iter().position(|e| e.0 != keep) {
+                        self.prot.remove(i);
+                    } else {
+                        self.prob.retain(|e| e.0 != keep);
+                        self.prot.retain(|e| e.0 != keep);
+                    }
+                }
+            }
+        }
         for _ in 0..300 {
             let limit = 1 + rnd(4000) as usize;
             let keys = 1 + rnd(12);
             let mut c = Cache::default();
-            let mut model: Vec<(Hash, usize)> = Vec::new();
+            let mut m = Model::default();
             for _ in 0..200 {
                 let mut h = [0u8; 16];
                 h[0] = rnd(keys) as u8;
                 let len = rnd(1200) as usize;
                 if rnd(3) == 0 {
                     let got = c.get(&h, len, limit);
-                    let i = model.iter().position(|m| m.0 == h);
-                    assert_eq!(got.is_some(), i.is_some());
-                    if let (Some(d), Some(i)) = (got, i) {
+                    let had = m.set_len(h, len);
+                    assert_eq!(got.is_some(), had);
+                    if let Some(d) = got {
                         assert_eq!(d.len(), len);
-                        model[i].1 = len;
+                        m.read(h);
+                        m.trim(limit, h);
                     }
                 } else {
-                    c.put(&h, Arc::new(vec![h[0]; len]), limit);
-                    match model.iter().position(|m| m.0 == h) {
-                        Some(i) => model[i].1 = len,
-                        None => model.push((h, len)),
+                    let read = rnd(2) == 0;
+                    c.put(&h, Arc::new(vec![h[0]; len]), read, limit);
+                    if !m.set_len(h, len) {
+                        m.prob.push((h, len, read as u32));
+                    } else if read {
+                        m.read(h);
                     }
+                    m.trim(limit, h);
                 }
-                while model.iter().map(|m| m.1).sum::<usize>() > limit && !model.is_empty() {
-                    model.remove(0);
-                }
-                let sum: usize = c.map.values().map(|d| d.len()).sum();
-                assert_eq!(c.bytes, sum);
+                let sum: usize = c.map.values().map(|e| e.data.len()).sum();
+                let psum: usize = c.map.values().filter(|e| e.protected).map(|e| e.data.len()).sum();
+                assert_eq!((c.bytes, c.protected_bytes), (sum, psum));
                 assert!(c.bytes <= limit);
-                assert_eq!(c.order.len(), c.map.len());
-                assert_eq!(c.order.iter().cloned().collect::<Vec<_>>(), model.iter().map(|m| m.0).collect::<Vec<_>>());
-                for (h, len) in &model {
-                    assert_eq!(c.map[h].len(), *len);
+                assert_eq!(c.probation.len() + c.protected.len(), c.map.len());
+                assert_eq!(c.probation.values().copied().collect::<Vec<_>>(), m.prob.iter().map(|e| e.0).collect::<Vec<_>>());
+                assert_eq!(c.protected.values().copied().collect::<Vec<_>>(), m.prot.iter().map(|e| e.0).collect::<Vec<_>>());
+                for e in m.prob.iter().map(|e| (e.0, e.1)).chain(m.prot.iter().copied()) {
+                    assert_eq!(c.map[&e.0].data.len(), e.1);
                 }
             }
         }
+    }
+
+    /// What the two segments are for: chunks read again and again (scripts, the UI) stay while
+    /// a voice or a movie is read through once, and while chunks are fetched ahead of it.
+    #[test]
+    fn cache_keeps_what_is_read_again_past_a_long_read() {
+        let limit = 64 * 1000;
+        let mut c = Cache::default();
+        let h = |i: u32| {
+            let mut h = [0u8; 16];
+            h[..4].copy_from_slice(&i.to_le_bytes());
+            h
+        };
+        // 20 chunks of 1000 read twice: protected
+        for i in 0..20 {
+            c.put(&h(i), Arc::new(vec![0; 1000]), true, limit);
+            assert!(c.get(&h(i), 1000, limit).is_some());
+        }
+        // a movie: 500 chunks fetched ahead, each read once
+        for i in 1000..1500 {
+            c.put(&h(i), Arc::new(vec![0; 1000]), false, limit);
+            assert!(c.get(&h(i), 1000, limit).is_some());
+        }
+        for i in 0..20 {
+            assert!(c.contains(&h(i)), "chunk {i} read twice went");
+        }
+        assert!(c.bytes <= limit);
+        // read again and again but more than the protected share: the least recent go
+        for r in 0..3 {
+            for i in 2000..2060 {
+                if r == 0 {
+                    c.put(&h(i), Arc::new(vec![0; 1000]), true, limit);
+                } else {
+                    let _ = c.get(&h(i), 1000, limit);
+                }
+            }
+        }
+        assert!(c.protected_bytes <= limit / 4 * 3);
+        assert!(c.bytes <= limit);
+        // the movie's first chunk went: read again, it counts
+        assert!(!c.contains(&h(1000)));
+        let before = c.refetched;
+        c.put(&h(1000), Arc::new(vec![0; 1000]), true, limit);
+        assert_eq!(c.refetched, before + 1);
+        c.put(&h(1001), Arc::new(vec![0; 1000]), false, limit);
+        assert_eq!(c.refetched, before + 1, "fetched ahead: not a read");
     }
 
     /// The store, for these tests: chunks by name, and the names fetched.
@@ -1399,8 +1603,8 @@ mod tests {
     fn cache_pads_in_place() {
         let mut c = Cache::default();
         let h = [1u8; 16];
-        c.put(&h, Arc::new(vec![7; 10]), 1000);
-        let p = Arc::as_ptr(&c.map[&h]);
+        c.put(&h, Arc::new(vec![7; 10]), false, 1000);
+        let p = Arc::as_ptr(&c.map[&h].data);
         let d = c.get(&h, 20, 1000).unwrap();
         assert_eq!(Arc::as_ptr(&d), p);
         assert_eq!((&d[..10], &d[10..], c.bytes), (&[7u8; 10][..], &[0u8; 10][..], 20));

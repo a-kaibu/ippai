@@ -48,7 +48,8 @@ function Lines({ v }: { v: MeterView }) {
       </Row>
       <Row k="メモリ">
         {v.heapUsed >= 0 ? `wasm ${mb(v.heapUsed)} MB（最大 ${mb(v.heapTop)}）・` : ""}
-        {v.jsHeap >= 0 ? `JS ${mb(v.jsHeap)} MB・` : ""}キャッシュ {mb(v.cacheBytes)} MB
+        {v.jsHeap >= 0 ? `JS ${mb(v.jsHeap)} MB・` : ""}キャッシュ {mb(v.cacheBytes)} MB（再取得 {v.refetched}
+        ）
       </Row>
       {v.pipeHits >= 0 && (
         <Row k="パイプライン" bad={v.pipeMade > 0 && v.pipeP95 > 16}>

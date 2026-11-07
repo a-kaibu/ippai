@@ -60,8 +60,9 @@ export interface MeterView {
   stallPerSec: number;
   stallMaxMs: number;
   reqMaxMs: number;
-  /** chunks kept in memory (bytes) */
+  /** chunks kept in memory (bytes); chunks a read fetched again after the cache dropped them */
   cacheBytes: number;
+  refetched: number;
   /** malloc's high-water mark and what it has handed out (bytes; -1 unknown) */
   heapTop: number;
   heapUsed: number;
@@ -87,7 +88,16 @@ class Meter {
   private wasm: MeterWasm | null = null;
   private buf = 0;
   private hist: (Totals & { stallMax: number; reqMax: number })[] = [];
-  private now = { inflight: 0, cacheBytes: 0, heapTop: -1, heapUsed: -1, pipeP50: 0, pipeP95: 0, pipeMax: 0 };
+  private now = {
+    inflight: 0,
+    cacheBytes: 0,
+    refetched: 0,
+    heapTop: -1,
+    heapUsed: -1,
+    pipeP50: 0,
+    pipeP95: 0,
+    pipeMax: 0,
+  };
   private frames = 0;
   private raf = 0;
   private pageReqs = 0;
@@ -130,7 +140,7 @@ class Meter {
 
   private poll(): void {
     const w = this.wasm;
-    const v = Array.from({ length: 11 }, () => 0);
+    const v = Array.from({ length: 12 }, () => 0);
     let d3dFrames = 0;
     let busy = 0;
     let pipeHits = -1;
@@ -138,10 +148,10 @@ class Meter {
     try {
       if (w?._malloc && w.HEAPF64) {
         this.buf ||= w._malloc(128) >>> 0;
-        const f64 = () => new Float64Array(w.wasmMemory.buffer, this.buf, 11);
+        const f64 = () => new Float64Array(w.wasmMemory.buffer, this.buf, 12);
         if (w._vnhost_net_stats) {
           w._vnhost_net_stats(this.buf);
-          v.splice(0, 11, ...f64());
+          v.splice(0, 12, ...f64());
         }
         if (w._vnhost_mem_info) {
           w._vnhost_mem_info(this.buf);
@@ -166,6 +176,7 @@ class Meter {
     }
     this.now.inflight = v[6]!;
     this.now.cacheBytes = v[10]!;
+    this.now.refetched = v[11]!;
     this.hist.push({
       t: performance.now(),
       requests: v[0]!,
@@ -216,6 +227,7 @@ class Meter {
       stallMaxMs: Math.max(0, ...span.map((x) => x.stallMax)),
       reqMaxMs: Math.max(0, ...span.map((x) => x.reqMax)),
       cacheBytes: this.now.cacheBytes,
+      refetched: this.now.refetched,
       heapTop: this.now.heapTop,
       heapUsed: this.now.heapUsed,
       jsHeap: pm?.usedJSHeapSize ?? -1,
@@ -264,7 +276,7 @@ export function meterLine(v: MeterView | null): string {
     `net ${mb(v.wirePerSec)} MB/s (${v.requests} requests, ${v.cached} from cache, ${v.failed} failed, ` +
     `avg ${v.reqAvgMs.toFixed(0)} ms, longest ${v.reqMaxMs.toFixed(0)} ms), total ${mb(v.wireTotal)} MB over the network ` +
     `(${mb(v.bytesTotal)} MB decoded, ${v.requestsTotal} requests), waiting for files ${v.stallPerSec.toFixed(0)} ms/s ` +
-    `(longest ${v.stallMaxMs.toFixed(0)} ms), in flight ${v.inflight}, chunk cache ${mb(v.cacheBytes)} MB` +
+    `(longest ${v.stallMaxMs.toFixed(0)} ms), in flight ${v.inflight}, chunk cache ${mb(v.cacheBytes)} MB (${v.refetched} fetched again)` +
     (v.heapTop >= 0 ? `, heap ${mb(v.heapUsed)} MB in use (top ${mb(v.heapTop)} MB)` : "") +
     (v.pipeHits >= 0
       ? `, pipelines ${v.pipeHits} hits ${v.pipeMade} made (${v.pipeTotal} in all; ` +
