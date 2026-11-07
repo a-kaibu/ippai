@@ -174,6 +174,8 @@ pub struct Texture {
     pub cpu: u32,
     pub misc: u32,
     pub samples: (u32, u32),
+    /// a swap chain's buffer
+    pub backbuffer: bool,
     pub gpu: u32,
     /// mapped subresources: (subresource, guest memory, pitch, write)
     pub maps: Vec<(u32, u32, u32, bool)>,
@@ -916,7 +918,7 @@ unsafe fn new_swapchain(d: &mut D11, hwnd: u32, w: u32, h: u32, fmt: u32, count:
     let w = if w == 0 { (rect[2] - rect[0]).max(1) as u32 } else { w };
     let h = if h == 0 { (rect[3] - rect[1]).max(1) as u32 } else { h };
     let fmt = if format::info(fmt).is_some() { fmt } else { 28 };
-    let buffer = new_texture(d, 2, w, h, 1, 1, fmt, 0, 0x8 | 0x20, false);
+    let buffer = new_backbuffer(d, w, h, fmt);
     let bid = d.id_of(buffer);
     d.add_ref(d.device);
     let sc = d.new_obj(IF_SWAPCHAIN, Data::SwapChain(SwapChain { device: d.device, hwnd, w, h, fmt, buffer: bid, presents: 0 }));
@@ -924,6 +926,17 @@ unsafe fn new_swapchain(d: &mut D11, hwnd: u32, w: u32, h: u32, fmt: u32, count:
         eprintln!("d3d11: swap chain {w}x{h} format {fmt} window {hwnd:#x}");
     }
     sc
+}
+
+/// A swap chain's buffer (address): views of it may take the sRGB twin of its format
+/// (DXGI's back buffer cast).
+fn new_backbuffer(d: &mut D11, w: u32, h: u32, fmt: u32) -> u32 {
+    let o = new_texture(d, 2, w, h, 1, 1, fmt, 0, 0x8 | 0x20, false);
+    let id = d.id_of(o);
+    if let Some(Data::Texture(t)) = d.objs.get_mut(&id).map(|o| &mut o.data) {
+        t.backbuffer = true;
+    }
+    o
 }
 
 /// A texture object (address).
@@ -961,6 +974,7 @@ fn new_texture(d: &mut D11, dim: u32, w: u32, h: u32, layers: u32, mips: u32, fm
         },
         misc: if cube { 4 } else { 0 },
         samples: (1, 0),
+        backbuffer: false,
         gpu,
         maps: Vec::new(),
     }))
@@ -1321,7 +1335,7 @@ unsafe fn swapchain_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u3
             let nw = if a(2) == 0 { (rect[2] - rect[0]).max(1) as u32 } else { a(2) };
             let nh = if a(3) == 0 { (rect[3] - rect[1]).max(1) as u32 } else { a(3) };
             let nf = if a(4) == 0 { fmt } else { a(4) };
-            let nb = new_texture(d, 2, nw, nh, 1, 1, nf, 0, 0x8 | 0x20, false);
+            let nb = new_backbuffer(d, nw, nh, nf);
             let nb = d.id_of(nb);
             if let Some(Data::SwapChain(sc)) = d.objs.get_mut(&this).map(|o| &mut o.data) {
                 sc.w = nw;
@@ -1755,24 +1769,27 @@ unsafe fn private_data(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32)
 /// Create{ShaderResource, UnorderedAccess, RenderTarget, DepthStencil}View(resource, desc, out)
 unsafe fn create_view(d: &mut D11, m: u32, res: u32, desc: u32, out: u32) -> u32 {
     let rid = d.id_of(res);
-    if m == 7 && desc != 0 && matches!(rd(desc, 1), 1 | 11) {
-        if let Some(Data::Buffer(b)) = d.objs.get(&rid).map(|o| &o.data) {
-            return create_buffer_srv(d, rid, b.size, desc, out);
-        }
-    }
-    let Some(Data::Texture(t)) = d.objs.get(&rid).map(|o| &o.data) else {
-        // (other buffer views are not supported)
-        if out != 0 {
-            let o = d.new_obj([IF_SRV, IF_UAV, IF_RTV, IF_DSV][m as usize - 7], Data::Other);
-            wrp(out, 0, o);
-            return S_OK;
-        }
-        return E_INVALIDARG;
-    };
-    let r = check::Res { dim: t.dim, fmt: t.fmt, mips: t.mips, layers: t.layers, bind: t.bind, cube: t.cube, samples: t.samples.0 };
     let kind = [check::SRV, check::UAV, check::RTV, check::DSV][m as usize - 7];
     // (the description's words: SRV 6, RTV and UAV 5, DSV 6)
     let words: Option<Vec<u32>> = (desc != 0).then(|| (0..if kind == check::RTV || kind == check::UAV { 5 } else { 6 }).map(|i| rd(desc, i)).collect());
+    if let Some(Data::Buffer(b)) = d.objs.get(&rid).map(|o| &o.data) {
+        let bv = match check::buffer_view(kind, b.size, b.bind, b.misc, b.stride, words.as_deref()) {
+            Ok(v) => v,
+            Err(hr) => return hr,
+        };
+        if out == 0 {
+            return S_FALSE;
+        }
+        if kind == check::SRV {
+            return create_buffer_srv(d, rid, bv, out);
+        }
+        // (buffer UAVs and render targets: kept, not drawn with)
+        let o = d.new_obj([IF_SRV, IF_UAV, IF_RTV, IF_DSV][m as usize - 7], Data::Other);
+        wrp(out, 0, o);
+        return S_OK;
+    }
+    let Some(Data::Texture(t)) = d.objs.get(&rid).map(|o| &o.data) else { return E_INVALIDARG };
+    let r = check::Res { dim: t.dim, fmt: t.fmt, mips: t.mips, layers: t.layers, bind: t.bind, cube: t.cube, samples: t.samples.0, backbuffer: t.backbuffer };
     let c = match check::view(kind, &r, words.as_deref()) {
         Ok(c) => c,
         Err(hr) => {
@@ -1792,28 +1809,21 @@ unsafe fn create_view(d: &mut D11, m: u32, res: u32, desc: u32, out: u32) -> u32
     S_OK
 }
 
-/// CreateShaderResourceView of a buffer (BUFFER or BUFFEREX: format, dimension, first element,
-/// elements): a view of a one-row texture with the elements (at most 8192, WebGPU's width limit)
-unsafe fn create_buffer_srv(d: &mut D11, rid: u32, size: u32, desc: u32, out: u32) -> u32 {
-    let (fmt, dim, first, n) = (rd(desc, 0), rd(desc, 1), rd(desc, 2), rd(desc, 3));
-    if !check::format(fmt).is_some_and(|f| f.5 & winfmt::BSRV != 0) {
-        return E_INVALIDARG;
-    }
+/// CreateShaderResourceView of a buffer (checked: `bv`): a view of a one-row texture with the
+/// elements (at most 8192, WebGPU's width limit; raw and structured views as R32_UINT elements)
+unsafe fn create_buffer_srv(d: &mut D11, rid: u32, bv: check::BufView, out: u32) -> u32 {
+    let fmt = if matches!(bv.fmt, 0 | 39) { 42 } else { bv.fmt };
     // (the 96-bit formats have no texels on the page: a view of nothing, as Windows takes it)
     let f = format::info(fmt).filter(|f| f.block == 1).unwrap_or(format::Format { page: format::P_R32UI, bpp: 4, block: 1, conv: 0, no_alpha: false });
-    let words = if dim == 11 { vec![fmt, dim, first, n, rd(desc, 4), 0] } else { vec![fmt, dim, first, n, 0, 0] };
-    let n = n.min(size.saturating_sub(first * f.bpp) / f.bpp.max(1)).clamp(1, 8192);
-    if out == 0 {
-        return S_FALSE;
-    }
+    let n = (bv.bytes / f.bpp.max(1)).clamp(1, 8192);
     let tex = new_texture(d, 2, n, 1, 1, 1, fmt, 0, 8, false);
     let tid = d.id_of(tex);
     // (the view's own texture and the buffer: held privately, see `destroy`)
     d.bind(tid);
     d.release(tid);
     d.bind(rid);
-    let buf = Some(BufSrc { buf: rid, off: first * f.bpp, bytes: n * f.bpp, last: Vec::new() });
-    let v = View { res: tid, fmt, desc: words, mip: 0, mips: 1, layer: 0, layers: 1, buf };
+    let buf = Some(BufSrc { buf: rid, off: bv.offset, bytes: n * f.bpp, last: Vec::new() });
+    let v = View { res: tid, fmt: bv.fmt, desc: bv.desc, mip: 0, mips: 1, layer: 0, layers: 1, buf };
     let o = d.new_obj(IF_SRV, Data::View(v));
     wrp(out, 0, o);
     S_OK

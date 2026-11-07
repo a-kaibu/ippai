@@ -64,7 +64,8 @@ fn check(steps: &[(usize, i64)], seed: u64) {
                 if drawing {
                     fail(1);
                 } else {
-                    (drawing, error, clips) = (true, 0, 0);
+                    // (an error from outside drawing stays)
+                    (drawing, clips) = (true, 0);
                 }
                 0
             }
@@ -82,7 +83,7 @@ fn check(steps: &[(usize, i64)], seed: u64) {
                     fail(1);
                     0
                 } else if clips == 0 {
-                    fail(23);
+                    fail(22);
                     0
                 } else {
                     clips -= 1;
@@ -90,7 +91,11 @@ fn check(steps: &[(usize, i64)], seed: u64) {
                 }
             }
             "Flush" => {
-                if drawing { error } else { 1 }
+                if drawing {
+                    std::mem::take(&mut error)
+                } else {
+                    1
+                }
             }
             _ => {
                 let r = if !drawing { 1 } else if error != 0 { error } else if clips != 0 { 22 } else { 0 };

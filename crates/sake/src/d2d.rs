@@ -40,11 +40,12 @@ struct Dc {
 
 pub(crate) const WRONG_STATE: u32 = 0x8899_0001;
 pub(crate) const PUSH_POP_UNBALANCED: u32 = 0x8899_0016;
-pub(crate) const POP_MISMATCH: u32 = 0x8899_0017;
 
 /// A context between BeginDraw and EndDraw (formal/tla/D2dDraw.tla): drawing outside them, a
-/// second BeginDraw or a Pop with no Push puts the context in error and EndDraw (or Flush) says
-/// so; EndDraw with clips still pushed fails with D2DERR_PUSH_POP_UNBALANCED and drops them.
+/// second BeginDraw or a Pop with no Push puts the context in error and EndDraw (or Flush, which
+/// then clears it) says so; an error from outside drawing stays for the next BeginDraw/EndDraw
+/// (as Windows, winref probe d2d). EndDraw with clips still pushed fails with
+/// D2DERR_PUSH_POP_UNBALANCED and drops them.
 #[derive(Default, Clone, Copy, PartialEq, Debug)]
 pub(crate) struct Drawing {
     pub drawing: bool,
@@ -64,7 +65,7 @@ impl Drawing {
         if self.drawing {
             self.fail(WRONG_STATE);
         } else {
-            *self = Drawing { drawing: true, ..Default::default() };
+            *self = Drawing { drawing: true, error: self.error, clips: 0 };
         }
     }
     /// Whether a drawing call may draw.
@@ -85,14 +86,17 @@ impl Drawing {
             return false;
         }
         if self.clips == 0 {
-            self.fail(POP_MISMATCH);
+            self.fail(PUSH_POP_UNBALANCED);
             return false;
         }
         self.clips -= 1;
         true
     }
-    pub fn flush(&self) -> u32 {
-        if self.drawing { self.error } else { WRONG_STATE }
+    pub fn flush(&mut self) -> u32 {
+        if !self.drawing {
+            return WRONG_STATE;
+        }
+        std::mem::take(&mut self.error)
     }
     pub fn end(&mut self) -> u32 {
         if !self.drawing {
@@ -872,7 +876,7 @@ fn Flush(c: &mut Ctx) -> u32 {
     let dc = c.a(0);
     flush(dc);
     tags(c);
-    st(|s| s.dcs.get(&dc).map_or(0, |d| d.drawing.flush()))
+    st(|s| s.dcs.get_mut(&dc).map_or(0, |d| d.drawing.flush()))
 }
 
 fn tags(c: &Ctx) {

@@ -4588,6 +4588,9 @@ fn translate<M: Memory>(
     let mut total = 0;
     let mut hle = BTreeMap::new();
     let mut thunks = BTreeMap::new();
+    // (the thunks' own bytes: a call through one reads its slot directly, so the code depends on
+    // the thunk too, for page checks and for saved regions checked against the guest's code)
+    let mut thunk_code: Vec<(u32, u32)> = Vec::new();
     while let Some(a) = queue.pop_front() {
         if blocks.len() >= max_blocks.min(MAX_BLOCKS) || total >= max_ins {
             break;
@@ -4609,6 +4612,7 @@ fn translate<M: Memory>(
                 let f = last.near_branch32();
                 if let Some(j) = decode(mem, f).first().filter(|j| j.mnemonic() == Mnemonic::Jmp && j.op0_kind() == OpKind::Memory && j.memory_base() == Register::None && j.memory_index() == Register::None && j.memory_segment() == Register::DS) {
                     thunks.insert(f, j.memory_displacement32());
+                    thunk_code.push((f, j.len() as u32));
                 }
             }
             // a small callee comes along to be inlined (see `inline` below)
@@ -4655,6 +4659,7 @@ fn translate<M: Memory>(
             let end = last.next_ip32() + if last.flow_control() == FlowControl::Next { 15 } else { 0 };
             (*a, end.wrapping_sub(*a))
         })
+        .chain(thunk_code.iter().copied())
         .collect();
     // address order: guest loops become contiguous ranges
     blocks.sort_unstable_by_key(|b| b.0);

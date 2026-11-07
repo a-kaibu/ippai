@@ -407,7 +407,7 @@ mod tests {
             ("uav_of_srv", 41, 1, 1, 8, UAV, 0, 0, [0; 4], None),
         ];
         for &(name, tf, mips, layers, bind, kind, vf, dim, [a, b, c, dd], want) in cases {
-            let r = Res { dim: 2, fmt: tf, mips, layers, bind, cube: false, samples: 1 };
+            let r = Res { dim: 2, fmt: tf, mips, layers, bind, cube: false, samples: 1, backbuffer: false };
             // (the probe's union: SRV (a, b, c, d), the others (a, b, c); a DSV's flags in d)
             let words: Vec<u32> = match kind {
                 SRV => vec![vf, dim, a, b, c, dd],
@@ -483,6 +483,8 @@ pub struct Res {
     pub bind: u32,
     pub cube: bool,
     pub samples: u32,
+    /// a swap chain's buffer: viewed in its format's sRGB twin too (BACK_BUFFER_CAST)
+    pub backbuffer: bool,
 }
 
 /// A view as Windows keeps it: the description GetDesc gives back (format, dimension, the DSV's
@@ -546,7 +548,9 @@ pub fn view(kind: u32, r: &Res, desc: Option<&[u32]>) -> Result<View, u32> {
     }
     let same_family = family(fmt) == family(r.fmt) && typeless(r.fmt);
     let r32_of_32 = kind == UAV && typeless(r.fmt) && texel_bytes(r.fmt) == 4 && matches!(fmt, 41..=43);
-    if fmt != r.fmt && !same_family && !r32_of_32 {
+    let srgb_twin = |a: u32, b: u32| matches!((a.min(b), a.max(b)), (28, 29) | (87, 91) | (88, 93));
+    let cast = r.backbuffer && srgb_twin(fmt, r.fmt);
+    if fmt != r.fmt && !same_family && !r32_of_32 && !cast {
         return bad;
     }
     let cap = [0x100, 0x4000, 0x10000, 0x2000000][kind as usize & 3];
@@ -648,5 +652,110 @@ mod coverage {
     fn page_formats() {
         let missing: Vec<u32> = (1..=132).filter(|&f| super::support(f).is_some() && !super::typeless(f) && super::super::format::info(f).is_none()).collect();
         println!("missing {missing:?}");
+    }
+}
+
+/// A buffer view: its format (R32_UINT's 4 bytes for raw and structured views), the first
+/// byte and the bytes it covers, and the description GetDesc gives back.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BufView {
+    pub fmt: u32,
+    pub offset: u32,
+    pub bytes: u32,
+    pub desc: Vec<u32>,
+}
+
+/// Whether a view (`kind`) of a buffer (`size` bytes, its bind and misc flags and structure
+/// stride) with description `w` is taken. SRV: BUFFER (first, n) or BUFFEREX (first, n,
+/// flags); UAV: BUFFER (first, n, flags); RTV: BUFFER (first, n).
+pub fn buffer_view(kind: u32, size: u32, bind: u32, misc: u32, stride: u32, w: Option<&[u32]>) -> Result<BufView, u32> {
+    let bad = Err(E_INVALIDARG);
+    let need = [BIND_SRV, BIND_RT, BIND_DS, BIND_UAV][kind as usize & 3];
+    if bind & need == 0 || kind == DSV {
+        return bad;
+    }
+    let structured = misc & MISC_STRUCTURED != 0;
+    // NULL: only for a structured buffer, all of it
+    let Some(w) = w else {
+        if !structured || kind == RTV {
+            return bad;
+        }
+        let n = size / stride;
+        let desc = if kind == SRV { vec![0, 1, 0, n, 0, 0] } else { vec![0, 1, 0, n, 0] };
+        return Ok(BufView { fmt: 0, offset: 0, bytes: n * stride, desc });
+    };
+    let at = |i: usize| w.get(i).copied().unwrap_or(0);
+    let (fmt, dim, first, n) = (at(0), at(1), at(2), at(3));
+    let flags = match (kind, dim) {
+        (SRV, 1) | (RTV, 1) => 0,
+        (SRV, 11) => at(4),
+        (UAV, 1) => at(4),
+        _ => return bad,
+    };
+    // SRV BUFFEREX flags: RAW; UAV: RAW, APPEND, COUNTER
+    let raw = flags & 1 != 0;
+    if flags & !if kind == UAV { 7 } else { 1 } != 0 || n == 0 {
+        return bad;
+    }
+    let elem = if raw {
+        if fmt != 39 || misc & MISC_RAW == 0 || flags & 6 != 0 {
+            return bad;
+        }
+        4
+    } else if structured {
+        if fmt != 0 {
+            return bad;
+        }
+        stride
+    } else {
+        if flags & 6 != 0 {
+            return bad;
+        }
+        let cap = [0x1, 0x4000, 0, 0x2000000][kind as usize & 3];
+        let ok = if kind == SRV { format(fmt).is_some_and(|f| f.5 & winfmt::BSRV != 0) } else { support(fmt).is_some_and(|s| s & cap != 0) };
+        let bytes = texel_bytes(fmt);
+        if !ok || bytes == 0 {
+            return bad;
+        }
+        bytes
+    };
+    if first.checked_add(n).is_none_or(|end| end as u64 * elem as u64 > size as u64) {
+        return bad;
+    }
+    let mut desc = vec![fmt, dim, first, n];
+    if kind != RTV {
+        desc.push(flags);
+    }
+    if kind == SRV {
+        desc.resize(6, 0);
+    }
+    Ok(BufView { fmt, offset: first * elem, bytes: n * elem, desc })
+}
+
+#[cfg(test)]
+mod buffer_view_tests {
+    use super::*;
+
+    #[test]
+    fn raw_structured_typed() {
+        // (Wine's d3d11 test_unaligned_raw_buffer_access, test_buffer_srv)
+        assert!(buffer_view(SRV, 64, BIND_SRV, MISC_RAW, 0, Some(&[39, 11, 0, 16, 1])).is_ok());
+        assert!(buffer_view(SRV, 64, BIND_SRV, 0, 0, Some(&[39, 11, 0, 16, 1])).is_err());
+        assert!(buffer_view(SRV, 64, BIND_SRV, 0, 0, Some(&[28, 1, 0, 16])).is_ok());
+        assert!(buffer_view(SRV, 64, BIND_SRV, 0, 0, Some(&[28, 1, 1, 16])).is_err());
+        assert!(buffer_view(SRV, 64, BIND_SRV, MISC_STRUCTURED, 16, Some(&[0, 1, 0, 4])).is_ok());
+        assert!(buffer_view(SRV, 64, BIND_SRV, MISC_STRUCTURED, 16, Some(&[28, 1, 0, 4])).is_err());
+        assert_eq!(buffer_view(UAV, 64, BIND_UAV, MISC_STRUCTURED, 16, None).map(|v| v.desc), Ok(vec![0, 1, 0, 4, 0]));
+        assert!(buffer_view(UAV, 64, BIND_UAV, MISC_RAW, 0, Some(&[39, 1, 0, 16, 1])).is_ok());
+        assert!(buffer_view(UAV, 64, BIND_SRV, MISC_RAW, 0, Some(&[39, 1, 0, 16, 1])).is_err());
+    }
+
+    /// the probe's typed buffer view of every format (4 elements of a 256-byte buffer)
+    #[test]
+    fn typed_rows() {
+        for f in 1..=132u32 {
+            let want = format(f).unwrap().5 & winfmt::BSRV != 0;
+            assert_eq!(buffer_view(SRV, 256, BIND_SRV, 0, 0, Some(&[f, 1, 0, 4])).is_ok(), want, "format {f}");
+        }
     }
 }
