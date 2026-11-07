@@ -1,0 +1,6 @@
+api dxgi
+exe 騎士見習いと村娘（体験版）/game.exe
+seconds 60
+bytes 14608556
+sha256 de30fe9c6bcf2b836ae6b2d76999feab6cef0c9bff756b8e2fbb53fcb39c430d
+parts 1

@@ -1,0 +1,6 @@
+api d3d8
+exe 都合のよいセックスフレンド？体験版/gamedata/都合のよいセックスフレンド？体験版.exe
+seconds 60
+bytes 503810
+sha256 90b82aed8d91f041098a65f8ddbb0c293cba3663bf59bb9dc2510946a734f6fd
+parts 1
