@@ -845,12 +845,21 @@ impl Storage {
 
     /// Drops `logical`; its object is retired.
     pub fn forget(&self, logical: &str) -> Result<()> {
+        self.forget_all(&[logical])
+    }
+
+    /// Drops every name in `logicals` in one transaction (a game's thousands of chunks: one
+    /// commit, not one each); their objects are retired.
+    pub fn forget_all<S: AsRef<str>>(&self, logicals: &[S]) -> Result<()> {
         let mut c = self.db.connect()?;
         let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let old: Option<String> = tx.query_row("SELECT envelope FROM objects WHERE logical=?", [logical], |r| r.get(0)).optional()?;
-        if let Some(old) = old {
-            tx.execute("DELETE FROM objects WHERE logical=?", [logical])?;
-            retire(&tx, serde_json::from_str::<Envelope>(&old)?.object)?;
+        for logical in logicals {
+            let logical = logical.as_ref();
+            let old: Option<String> = tx.query_row("SELECT envelope FROM objects WHERE logical=?", [logical], |r| r.get(0)).optional()?;
+            if let Some(old) = old {
+                tx.execute("DELETE FROM objects WHERE logical=?", [logical])?;
+                retire(&tx, serde_json::from_str::<Envelope>(&old)?.object)?;
+            }
         }
         tx.commit()?;
         Ok(())
@@ -981,7 +990,13 @@ impl Storage {
                         dirs.push(entry.path());
                     } else if kind.is_file() {
                         let path = entry.path();
-                        let logical = path.strip_prefix(store)?.to_str().context("non-UTF8 store path")?.to_string();
+                        // (with / between the parts on Windows too: the names the S3 store knows)
+                        let logical = path
+                            .strip_prefix(store)?
+                            .components()
+                            .map(|c| c.as_os_str().to_str().context("non-UTF8 store path"))
+                            .collect::<Result<Vec<_>>>()?
+                            .join("/");
                         files.push((path, logical));
                     }
                 }

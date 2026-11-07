@@ -12,6 +12,7 @@
 //! (sake's C:\ with the fonts) and for scripts.
 
 mod auth;
+#[cfg(unix)]
 mod daemon;
 mod dirs;
 mod envelope;
@@ -140,9 +141,16 @@ fn main() -> anyhow::Result<()> {
     match cli.cmd {
         Cmd::Storage { action } => storage_command(&dirs.store, action),
         Cmd::Serve(a) if a.foreground => serve::run(&dirs, a),
+        #[cfg(unix)]
         Cmd::Serve(a) => daemon::start(&dirs, &a),
+        #[cfg(unix)]
         Cmd::Stop => daemon::stop(&dirs),
+        #[cfg(unix)]
         Cmd::Status => daemon::status(&dirs),
+        #[cfg(not(unix))]
+        Cmd::Serve(_) | Cmd::Stop | Cmd::Status | Cmd::Logs { .. } => {
+            anyhow::bail!("the server in the background is for Linux and macOS: on Windows, `ippai serve --foreground` (pack, add, storage work as on Linux)")
+        }
         Cmd::Token { new } => {
             let t = auth::token(&dirs.token, new)?;
             println!("{t}");
@@ -153,6 +161,7 @@ fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
+        #[cfg(unix)]
         Cmd::Logs { follow, lines } => daemon::logs(&dirs, follow, lines),
         Cmd::Pack(c) => pack::run(&dirs.store, c),
         Cmd::Ttc { out, fonts } => ttc::run(&out, &fonts),

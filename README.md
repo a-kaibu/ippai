@@ -72,6 +72,10 @@ flowchart TB
 curl -fsSL https://raw.githubusercontent.com/a-kaibu/ippai/main/install.sh | sh
 ```
 
+Windows 用の `ippai_<版>_windows_amd64.zip` もあります (Releases から手で展開)。Windows ではゲームのフォルダを
+`ippai add` でパックして `ippai storage push` で暗号化 S3 に上げる用途向けです (`serve` はフォアグラウンドのみ、
+`stop` / `status` / `logs` はありません)。
+
 リリースには sake の C:\ のフォント (`fonts/`、IPA フォントを Windows の名前にしたもの) も入っていて、
 install.sh が `~/.local/share/ippai/fonts` に置きます。`ippai serve` はストアに C:\ の tree (`prefix32`) が
 なければ、起動時にそのフォントから作ります。

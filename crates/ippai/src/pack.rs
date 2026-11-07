@@ -23,7 +23,6 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::Read;
-use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 
 #[derive(Subcommand)]
@@ -254,9 +253,7 @@ pub async fn remove_game(store: &Path, id: &str, storage: Option<&crate::storage
     }
     let gone = removal(store, id)?;
     if let Some(s) = storage {
-        for l in &gone {
-            s.forget(l)?;
-        }
+        s.forget_all(&gone)?;
     }
     // (the entry first: a removal cut short leaves no game that names a missing tree)
     for l in &gone {
@@ -648,6 +645,42 @@ pub fn ensure_prefix(store: &Path, fonts: &Path) -> Result<bool> {
     made.map(|()| true)
 }
 
+/// Reads `buf.len()` bytes at `off` (pread; on Windows seek_read, which takes the offset too).
+#[cfg(unix)]
+fn read_exact_at(f: &File, buf: &mut [u8], off: u64) -> std::io::Result<()> {
+    std::os::unix::fs::FileExt::read_exact_at(f, buf, off)
+}
+#[cfg(windows)]
+fn read_exact_at(f: &File, mut buf: &mut [u8], mut off: u64) -> std::io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    while !buf.is_empty() {
+        match f.seek_read(buf, off)? {
+            0 => return Err(std::io::ErrorKind::UnexpectedEof.into()),
+            n => {
+                buf = &mut buf[n..];
+                off += n as u64;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A file's mode for the tree's list (Windows has none: 755 for folders, 644 or 444 read-only).
+fn mode(m: &fs::Metadata) -> u32 {
+    #[cfg(unix)]
+    return std::os::unix::fs::MetadataExt::mode(m);
+    #[cfg(not(unix))]
+    return if m.is_dir() { 0o755 } else if m.permissions().readonly() { 0o444 } else { 0o644 };
+}
+
+/// A file's modification time for the tree's list (seconds since 1970).
+fn mtime(m: &fs::Metadata) -> i64 {
+    #[cfg(unix)]
+    return std::os::unix::fs::MetadataExt::mtime(m);
+    #[cfg(not(unix))]
+    return m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs() as i64);
+}
+
 /// Packs `root` as tree `name` and publishes its list.
 fn tree(store: &Path, root: &Path, name: &str, follow: bool, chunk: u64) -> Result<()> {
     let list = pack_tree(store, root, name, follow, chunk)?;
@@ -667,7 +700,6 @@ fn publish_tree(store: &Path, name: &str, list: &str) -> Result<()> {
 /// Stores the chunks of `root`'s files and returns the tree's list (not yet published: the
 /// chunks are named by their content, so a list never published leaves nothing wrong behind).
 fn pack_tree(store: &Path, root: &Path, name: &str, follow: bool, chunk: u64) -> Result<String> {
-    use std::os::unix::fs::MetadataExt;
     let root = root.canonicalize()?;
     let mut lines = Vec::new();
     let mut files = Vec::new();
@@ -702,30 +734,30 @@ fn pack_tree(store: &Path, root: &Path, name: &str, follow: bool, chunk: u64) ->
                 let resolved = fs::canonicalize(&disk).ok();
                 let inside = resolved.as_ref().is_some_and(|r| r.starts_with(&root));
                 if !follow || inside || target == Path::new("/") || resolved.is_none() {
-                    lines.push(format!("l\t{:o}\t{}\t{}\t{}", 0o777, meta.mtime(), esc(&path), esc(&target.to_string_lossy())));
+                    lines.push(format!("l\t{:o}\t{}\t{}\t{}", 0o777, mtime(&meta), esc(&path), esc(&target.to_string_lossy())));
                     continue;
                 }
                 disk = resolved.unwrap();
                 meta = fs::metadata(&disk)?;
             }
-            let mode = meta.mode() & 0o7777;
+            let mode = mode(&meta) & 0o7777;
             if meta.is_dir() {
                 if first {
-                    lines.push(format!("d\t{mode:o}\t{}\t{}", meta.mtime(), esc(&path)));
+                    lines.push(format!("d\t{mode:o}\t{}\t{}", mtime(&meta), esc(&path)));
                 }
                 todo.push((disk, path));
             } else if !first {
                 continue;
             } else if meta.is_file() {
                 lines.push(String::new());
-                files.push((lines.len() - 1, disk.clone(), path.clone(), mode, meta.mtime(), meta.len()));
+                files.push((lines.len() - 1, disk.clone(), path.clone(), mode, mtime(&meta), meta.len()));
                 // Siglus movies: a VP9 copy the browser decodes in hardware (see movie.rs)
                 if fname.to_ascii_lowercase().ends_with(".omv") && *MOVIES {
                     match crate::movie::vnv_for(store, &disk) {
                         Ok(v) => {
                             let len = fs::metadata(&v)?.len();
                             lines.push(String::new());
-                            files.push((lines.len() - 1, v, format!("{path}.vnv"), mode, meta.mtime(), len));
+                            files.push((lines.len() - 1, v, format!("{path}.vnv"), mode, mtime(&meta), len));
                         }
                         Err(e) => eprintln!("{path}: no VP9 copy: {e:#}"),
                     }
@@ -743,7 +775,7 @@ fn pack_tree(store: &Path, root: &Path, name: &str, follow: bool, chunk: u64) ->
                         Ok(v) => {
                             let len = fs::metadata(&v)?.len();
                             lines.push(String::new());
-                            files.push((lines.len() - 1, v, format!("{path}.vnv"), mode, meta.mtime(), len));
+                            files.push((lines.len() - 1, v, format!("{path}.vnv"), mode, mtime(&meta), len));
                         }
                         Err(e) => eprintln!("{path}: not made playable: {e:#}"),
                     }
@@ -763,7 +795,7 @@ fn pack_tree(store: &Path, root: &Path, name: &str, follow: bool, chunk: u64) ->
                 .map(|i| {
                     let off = i * chunk;
                     let mut buf = vec![0u8; chunk.min(size - off) as usize];
-                    f.read_exact_at(&mut buf, off)?;
+                    read_exact_at(&f, &mut buf, off)?;
                     put_chunk(store, &buf)
                 })
                 .collect::<Result<_>>()?;

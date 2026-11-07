@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -257,7 +258,7 @@ fn safe_path(out: &Path, name: &str) -> Option<PathBuf> {
     let mut any = false;
     for c in Path::new(&name).components() {
         match c {
-            Component::Normal(s) if !s.as_bytes().contains(&b':') => {
+            Component::Normal(s) if !s.to_string_lossy().contains(':') => {
                 p.push(s);
                 any = true;
             }
@@ -883,10 +884,12 @@ fn msi(job: &Job, src: &Path, out: &Path) -> Result<bool> {
 fn fix_names(d: &Path) -> Result<()> {
     for e in fs::read_dir(d)? {
         let e = e?;
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut p = e.path();
-        let n = e.file_name();
-        if std::str::from_utf8(n.as_bytes()).is_err() {
-            let to = d.join(cp932(n.as_bytes()));
+        // (Windows names are always Unicode)
+        #[cfg(unix)]
+        if std::str::from_utf8(e.file_name().as_bytes()).is_err() {
+            let to = d.join(cp932(e.file_name().as_bytes()));
             if !to.exists() {
                 fs::rename(&p, &to)?;
                 p = to;
@@ -1283,6 +1286,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn shift_jis_names_renamed() {
         let d = tmp("names");
         let raw = encoding_rs::SHIFT_JIS.encode("体験版").0.into_owned();

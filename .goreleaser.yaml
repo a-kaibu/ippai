@@ -15,6 +15,8 @@ builds:
     targets:
       - x86_64-unknown-linux-gnu
       - aarch64-unknown-linux-gnu
+      # (pack, add and storage on the PC that has the games; serve runs in the foreground only)
+      - x86_64-pc-windows-gnu
     env:
       - IPPAI_VERSION={{ .Version }}
       # (GoReleaser looks for the binary under dir/target: a workspace would build into ../../target)
@@ -25,6 +27,9 @@ builds:
 
 archives:
   - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - README.md

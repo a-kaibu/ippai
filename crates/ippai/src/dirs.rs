@@ -36,6 +36,7 @@ pub struct Dirs {
     pub cache: PathBuf,
     pub logs: PathBuf,
     /// the servers' control sockets
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub run: PathBuf,
     pub listen: SocketAddr,
     /// the key other devices' browsers sign in with (auth.rs)
@@ -73,21 +74,24 @@ impl Dirs {
 
     /// The control socket of the server of this store (one per store: `stop` and `status` with
     /// `--store` find the server of that store).
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub fn socket(&self) -> PathBuf {
         let store = std::path::absolute(&self.store).unwrap_or_else(|_| self.store.clone());
         let key = blake3::hash(store.as_os_str().as_encoded_bytes()).to_hex();
         self.run.join(format!("server-{}.sock", &key[..12]))
     }
 
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub fn server_log(&self) -> PathBuf {
         self.logs.join("server.log")
     }
 
     /// The runtime directory, made private (the socket stops the server).
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub fn make_run(&self) -> Result<()> {
-        use std::os::unix::fs::PermissionsExt;
         std::fs::create_dir_all(&self.run).with_context(|| self.run.display().to_string())?;
-        std::fs::set_permissions(&self.run, std::fs::Permissions::from_mode(0o700))?;
+        #[cfg(unix)]
+        std::fs::set_permissions(&self.run, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
         Ok(())
     }
 }

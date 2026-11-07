@@ -63,10 +63,13 @@ pub fn token(path: &Path, new: bool) -> Result<String> {
         std::fs::create_dir_all(d).with_context(|| d.display().to_string())?;
     }
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
     let tmp = path.with_extension("tmp");
     let _ = std::fs::remove_file(&tmp);
-    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp).with_context(|| tmp.display().to_string())?;
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+    let mut f = o.open(&tmp).with_context(|| tmp.display().to_string())?;
     writeln!(f, "{t}")?;
     drop(f);
     std::fs::rename(&tmp, path)?;
@@ -414,6 +417,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn token_is_made_once_and_private() {
         use std::os::unix::fs::PermissionsExt;
         let d = std::env::temp_dir().join(format!("ippai-token-{}", std::process::id()));

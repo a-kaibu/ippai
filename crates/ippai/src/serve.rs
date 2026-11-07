@@ -644,6 +644,7 @@ async fn prerun_games(p: Arc<Prerun>) {
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true);
         // (Chromium's sandbox refuses to run as root)
+        #[cfg(unix)]
         if std::fs::metadata("/proc/self").is_ok_and(|m| std::os::unix::fs::MetadataExt::uid(&m) == 0) {
             cmd.arg("--no-sandbox");
         }
@@ -888,6 +889,8 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
         let _ = tcp.set_nodelay(true);
     });
     let url = format!("http://{}", args.listen);
+    // (the control socket for `ippai stop` and `status`: Linux and macOS)
+    #[cfg(unix)]
     crate::daemon::listen(dirs, url.clone(), store.display().to_string()).await?;
     eprintln!(
         "ippai {} on {url}, web games on http://{} (store {}, web {}; {}sign in with `ippai token`)",

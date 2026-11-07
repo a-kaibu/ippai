@@ -89,7 +89,7 @@ jobs:
           echo "Created release tag: $version"
 
       - name: Rust targets
-        run: rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
+        run: rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-pc-windows-gnu
 
       - uses: mlugg/setup-zig@v2.2.1
         with:

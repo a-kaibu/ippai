@@ -443,6 +443,11 @@ jobs:
           key: apt-${{ env.CI_IMAGE }}-mingw-w64-zstd-clang-lld-llvm
       - name: Build
         run: tools/ci/build.sh
+      # (the release's Windows build: pack, add and storage on the PC that has the games)
+      - name: ippai for Windows builds without warnings
+        run: |
+          rustup target add x86_64-pc-windows-gnu
+          RUSTFLAGS="-D warnings" cargo build --release -p ippai --target x86_64-pc-windows-gnu
       - name: host/tests on sake
         run: SAKE=$PWD/target/sake-out/sake.js tests/host-tests.sh
       # (the page's fallback build where 4 GB at once is refused: web/src/runtime.ts sakeBuild;
