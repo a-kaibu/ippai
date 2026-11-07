@@ -62,6 +62,64 @@ pub unsafe fn bc67_texels(conv: u32, src: *const u8, pitch: usize, w: u32, h: u3
     Some(out)
 }
 
+/// Format::conv codes of the formats the page has no format of its own for, widened on upload:
+/// R32G32B32 FLOAT (and TYPELESS) / UINT / SINT to four channels (alpha 1.0 / 1), the packed
+/// 4:2:2 R8G8_B8G8 / G8R8_G8B8 to RGBA8 (each pair of texels shares R and B), and
+/// R10G10B10_XR_BIAS_A2 to RGBA halves ((n - 0x180) / 510, alpha a / 3)
+pub const RGB32F: u32 = 0x9601;
+pub const RGB32I: u32 = 0x9602;
+pub const RGBG: u32 = 0x6801;
+pub const GRGB: u32 = 0x6901;
+pub const XR_BIAS: u32 = 0x8901;
+
+/// The texels of a w x h box (rows `pitch` apart) of those formats as the page keeps them.
+/// None: not one of them.
+///
+/// # Safety
+/// `src` must hold the box.
+pub unsafe fn widened_texels(conv: u32, src: *const u8, pitch: usize, w: u32, h: u32) -> Option<Vec<u8>> {
+    let (w, h) = (w as usize, h as usize);
+    let rd = |y: usize, at: usize| u32::from_le_bytes(std::slice::from_raw_parts(src.add(y * pitch + at), 4).try_into().unwrap());
+    let mut out = Vec::new();
+    match conv {
+        RGB32F | RGB32I => {
+            let one = if conv == RGB32F { 1f32.to_bits() } else { 1 };
+            for y in 0..h {
+                for x in 0..w {
+                    for c in 0..3 {
+                        out.extend(rd(y, x * 12 + c * 4).to_le_bytes());
+                    }
+                    out.extend(one.to_le_bytes());
+                }
+            }
+        }
+        RGBG | GRGB => {
+            for y in 0..h {
+                for x in 0..w {
+                    let b = rd(y, x / 2 * 4).to_le_bytes();
+                    // R8G8_B8G8: R, G0, B, G1; G8R8_G8B8: G0, R, G1, B
+                    let (r, g, bl) = if conv == RGBG { (b[0], b[1 + 2 * (x % 2)], b[2]) } else { (b[1], b[2 * (x % 2)], b[3]) };
+                    out.extend([r, g, bl, 255]);
+                }
+            }
+        }
+        XR_BIAS => {
+            for y in 0..h {
+                for x in 0..w {
+                    let v = rd(y, x * 4);
+                    for c in 0..3 {
+                        let n = (v >> (10 * c)) & 0x3ff;
+                        out.extend(f16_bits((n as f32 - 384.0) / 510.0).to_le_bytes());
+                    }
+                    out.extend(f16_bits((v >> 30) as f32 / 3.0).to_le_bytes());
+                }
+            }
+        }
+        _ => return None,
+    }
+    Some(out)
+}
+
 /// Texels of a w x h box in the guest's layout (rows `pitch` apart; rows of 4x4 blocks for BC)
 /// as 32-bit floats, `n` channels a texel (conversions above). None: not one of them.
 ///
@@ -296,6 +354,13 @@ pub fn info(dxgi: u32) -> Option<Format> {
         96 => Format { page: P_RGBA16F, bpp: 16, block: 4, conv: BC6S, no_alpha: false },
         97 | 98 => Format { page: P_RGBA8, bpp: 16, block: 4, conv: BC7, no_alpha: false },
         99 => Format { page: P_RGBA8_SRGB, bpp: 16, block: 4, conv: BC7, no_alpha: false },
+        5 | 6 => Format { page: P_RGBA32F, bpp: 12, block: 1, conv: RGB32F, no_alpha: false },
+        7 => Format { page: P_RGBA32UI, bpp: 12, block: 1, conv: RGB32I, no_alpha: false },
+        8 => Format { page: P_RGBA32SI, bpp: 12, block: 1, conv: RGB32I, no_alpha: false },
+        47 => f(P_D24S8, 4),
+        68 => Format { page: P_RGBA8, bpp: 2, block: 1, conv: RGBG, no_alpha: false },
+        69 => Format { page: P_RGBA8, bpp: 2, block: 1, conv: GRGB, no_alpha: false },
+        89 => Format { page: P_RGBA16F, bpp: 4, block: 1, conv: XR_BIAS, no_alpha: false },
         60 | 61 => f(P_R8, 1),
         63 => f(P_R8SN, 1),
         67 => f(P_RGB9E5, 4),
@@ -645,6 +710,58 @@ mod bc67_tests {
                     }
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod widened_tests {
+    use super::*;
+
+    fn run(conv: u32, src: &[u32], pitch: usize, w: u32, h: u32) -> Vec<u8> {
+        unsafe { widened_texels(conv, src.as_ptr() as *const u8, pitch, w, h) }.unwrap()
+    }
+
+    #[test]
+    fn rgb32_gets_alpha_one() {
+        let px = [1.5f32.to_bits(), (-2f32).to_bits(), 0x7fc00000, 7, 8, 9];
+        let t = run(RGB32F, &px, 24, 2, 1);
+        let words: Vec<u32> = t.chunks(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect();
+        assert_eq!(words, [px[0], px[1], px[2], 1f32.to_bits(), 7, 8, 9, 1f32.to_bits()]);
+        let t = run(RGB32I, &px, 24, 2, 1);
+        assert_eq!(u32::from_le_bytes(t[12..16].try_into().unwrap()), 1);
+    }
+
+    #[test]
+    fn packed_422_shares_r_and_b() {
+        // bytes R=0x10 G0=0x20 B=0x30 G1=0x40 (R8G8_B8G8); G0 R G1 B (G8R8_G8B8)
+        let t = run(RGBG, &[0x40302010], 4, 2, 1);
+        assert_eq!(t, [0x10, 0x20, 0x30, 255, 0x10, 0x40, 0x30, 255]);
+        let t = run(GRGB, &[0x40302010], 4, 2, 1);
+        assert_eq!(t, [0x20, 0x10, 0x40, 255, 0x20, 0x30, 0x40, 255]);
+        // the second pair's texels read its own word
+        let t = run(RGBG, &[0x40302010, 0x80706050], 8, 4, 1);
+        assert_eq!(&t[4..8], &[0x10, 0x40, 0x30, 255]);
+        assert_eq!(&t[8..12], &[0x50, 0x60, 0x70, 255]);
+        assert_eq!(&t[12..16], &[0x50, 0x80, 0x70, 255]);
+    }
+
+    #[test]
+    fn xr_bias_values() {
+        // 0x180 is 0.0, 0x37e is 1.0, alpha 3 is 1.0; 0 is -0.7529 (the format's -0.75 floor)
+        let v = 0x180 | 0x37e << 10 | 0 << 20 | 3 << 30;
+        let t = run(XR_BIAS, &[v], 4, 1, 1);
+        let h: Vec<u16> = t.chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        assert_eq!(h, [f16_bits(0.0), f16_bits(1.0), f16_bits(-384.0 / 510.0), f16_bits(1.0)]);
+    }
+
+    #[test]
+    fn widened_formats_map() {
+        for (dxgi, page, bpp, conv) in [(5, P_RGBA32F, 12, RGB32F), (6, P_RGBA32F, 12, RGB32F), (7, P_RGBA32UI, 12, RGB32I), (8, P_RGBA32SI, 12, RGB32I), (68, P_RGBA8, 2, RGBG), (69, P_RGBA8, 2, GRGB), (89, P_RGBA16F, 4, XR_BIAS)] {
+            let f = info(dxgi).unwrap();
+            assert_eq!((f.page, f.bpp, f.conv), (page, bpp, conv), "format {dxgi}");
+            // the page's texel is what widened_texels writes
+            assert_eq!(page_bpp(page) as usize, unsafe { widened_texels(conv, [0u32; 4].as_ptr() as *const u8, 16, 1, 1) }.unwrap().len(), "format {dxgi}");
         }
     }
 }

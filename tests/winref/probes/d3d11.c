@@ -531,6 +531,34 @@ static void pictures(void) {
         }
         shot("formats", 1, 1);
         reset();
+        /* the formats the page widens or decodes on upload (kura d3d11/format.rs): BC6H and
+         * BC7 blocks of every mode the bytes pick, three-channel floats, the packed 4:2:2
+         * ones, XR_BIAS */
+        float rgb32[8 * 8 * 3];
+        for (int i = 0; i < 192; i++) rgb32[i] = (i % 17) / 16.0f * 1.1f - 0.05f;
+        static const struct { DXGI_FORMAT f; const char *n; int kind, pitch; } fm2[] = {
+            { DXGI_FORMAT_BC6H_UF16, "BC6H_UF16", 0, 32 }, { DXGI_FORMAT_BC6H_SF16, "BC6H_SF16", 0, 32 },
+            { DXGI_FORMAT_BC7_UNORM, "BC7_UNORM", 0, 32 }, { DXGI_FORMAT_BC7_UNORM_SRGB, "BC7_UNORM_SRGB", 0, 32 },
+            { DXGI_FORMAT_R32G32B32_FLOAT, "R32G32B32_FLOAT", 1, 96 }, { DXGI_FORMAT_R8G8_B8G8_UNORM, "R8G8_B8G8_UNORM", 0, 16 },
+            { DXGI_FORMAT_G8R8_G8B8_UNORM, "G8R8_G8B8_UNORM", 0, 16 }, { DXGI_FORMAT_R10G10B10_XR_BIAS_A2_UNORM, "R10G10B10_XR_BIAS_A2_UNORM", 0, 32 },
+        };
+        const void *srcs2[2] = { raw, rgb32 };
+        begin(0.5f, 0.5f, 0.5f, 0.5f);
+        use(vs, layout, ps_load);
+        for (int i = 0; i < (int)(sizeof fm2 / sizeof fm2[0]); i++) {
+            ID3D11Texture2D *t = texture(fm2[i].f, 8, 8, 1, srcs2[fm2[i].kind], fm2[i].pitch);
+            ID3D11ShaderResourceView *v = t ? srv_of(t) : NULL;
+            printf("texture %s %s\n", fm2[i].n, v ? "ok" : "failed");
+            if (v) {
+                bind_srv(v);
+                float x = (i % 7) * 9 + 1, y = (i / 7) * 9 + 1;
+                quad(x, y, x + 8, y + 8, 0xffffffff, 0, 0, 1, 1);
+                ID3D11ShaderResourceView_Release(v);
+            }
+            if (t) ID3D11Texture2D_Release(t);
+        }
+        shot("formats2", 1, 1);
+        reset();
     }
     /* blending over a gradient: factors, ops, separate alpha, blend factor, write masks */
     {

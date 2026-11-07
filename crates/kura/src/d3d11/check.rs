@@ -31,9 +31,12 @@ const MISC_STRUCTURED: u32 = 0x40;
 const MISC_KEYEDMUTEX: u32 = 0x100;
 const MISC_GDI: u32 = 0x200;
 
-/// Windows' row for a DXGI format (None: no such format)
+/// Windows' row for a DXGI format (None: no such format). The video and palette formats
+/// (AYUV..A8P8, 100-115: optional, a device without video support answers E_FAIL for them)
+/// as that device has them: the page keeps none of them, and a texture said to work but kept
+/// nowhere would draw black.
 pub fn format(fmt: u32) -> Option<(bool, u32, bool, u32, [u8; 3], u32)> {
-    FORMATS.get(fmt as usize).copied().filter(|_| fmt != 0)
+    FORMATS.get(fmt as usize).copied().filter(|_| fmt != 0).map(|f| if (100..=115).contains(&fmt) { (false, 0, false, 0, [0; 3], f.5) } else { f })
 }
 
 /// CheckFormatSupport: the bits, or None (E_FAIL)
@@ -382,6 +385,8 @@ mod tests {
     fn format_rows() {
         for f in 1..=132u32 {
             let (_, _, _, _, _, cases) = format(f).unwrap();
+            // (the video and palette formats: a device without them makes no such texture)
+            let cases = if (100..=115).contains(&f) { 0 } else { cases };
             let t = |bind, usage, cpu, misc, mips, layers, samples| texture(&Tex { dim: 2, w: 16, h: 16, layers, mips, fmt: f, samples, quality: 0, usage, bind, cpu, misc }, false).is_ok();
             let got = [
                 t(0, 0, 0, 0, 1, 1, 1),
@@ -1036,5 +1041,17 @@ mod input_layout_tests {
         // a compute shader (no ISGN) or no bytecode: nothing needed
         assert_eq!(ok(&[], b"DXBC"), Ok(()));
         assert_eq!(ok(&[], &[]), Ok(()));
+    }
+}
+
+#[cfg(test)]
+mod page_coverage {
+    /// Every format Windows says a texture can have (D3D11_FORMAT_SUPPORT_TEXTURE1D/2D/3D/CUBE)
+    /// has a page format to upload it to: a format said to work but kept nowhere draws black
+    /// (BC6H/BC7 after 105584b, Unity 2019's title screen).
+    #[test]
+    fn texture_formats_reach_the_page() {
+        let missing: Vec<u32> = (1..200).filter(|&f| super::support(f).is_some_and(|b| b & 0xf0 != 0) && crate::d3d11::format::info(f).is_none()).collect();
+        assert!(missing.is_empty(), "texture formats without a page format: {missing:?}");
     }
 }
