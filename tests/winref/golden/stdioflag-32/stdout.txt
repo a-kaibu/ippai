@@ -1,0 +1,27 @@
+w mode bits read 0 write 1
+w: eof bit 0 feof 0 err bit 0 file==fileno 1
+r mode bits read 1 write 0
+open: eof bit 0 feof 0 err bit 0 file==fileno 1
+fgetc 0 -> 97: eof bit 0 feof 0 err bit 0 file==fileno 1
+fgetc 1 -> 98: eof bit 0 feof 0 err bit 0 file==fileno 1
+fgetc 2 -> 10: eof bit 0 feof 0 err bit 0 file==fileno 1
+fgetc 3 -> 99: eof bit 0 feof 0 err bit 0 file==fileno 1
+fgetc 4 -> -1: eof bit 1 feof 1 err bit 0 file==fileno 1
+fgetc 5 -> -1: eof bit 1 feof 1 err bit 0 file==fileno 1
+rewind: eof bit 0 feof 0 err bit 0 file==fileno 1
+loop read 5 lines 2
+fseek: eof bit 0 feof 0 err bit 0 file==fileno 1
+fread 4
+fread past end: eof bit 1 feof 1 err bit 0 file==fileno 1
+ungetc 120
+ungetc: eof bit 0 feof 0 err bit 0 file==fileno 1
+fgetc 120
+fgetc -1
+end again: eof bit 1 feof 1 err bit 0 file==fileno 1
+clearerr: eof bit 0 feof 0 err bit 0 file==fileno 1
+fgets 
+
+fgets to end: eof bit 0 feof 0 err bit 0 file==fileno 1
+fgets again c
+fgets at end: eof bit 1 feof 1 err bit 0 file==fileno 1
+std files 1 2

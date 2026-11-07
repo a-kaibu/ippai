@@ -1,0 +1,133 @@
+EnumDisplaySettingsA current dmSize 0: ret 1 err 0 size 124 name 1 beyond 1 bpp>0 1 screen 1
+EnumDisplaySettingsA current dmSize 1: ret 1 err 0 size 124 name 1 beyond 1 bpp>0 1 screen 1
+EnumDisplaySettingsA current dmSize 60: ret 1 err 0 size 124 name 1 beyond 1 bpp>0 1 screen 1
+EnumDisplaySettingsA current dmSize 124: ret 1 err 0 size 124 name 1 beyond 0 bpp>0 1 screen 1
+EnumDisplaySettingsA current dmSize 148: ret 1 err 0 size 124 name 1 beyond 0 bpp>0 1 screen 1
+EnumDisplaySettingsA current dmSize 156: ret 1 err 0 size 124 name 1 beyond 0 bpp>0 1 screen 1
+EnumDisplaySettingsA current dmSize 300: ret 1 err 0 size 124 name 1 beyond 0 bpp>0 1 screen 1
+EnumDisplaySettingsA mode 100000: ret 0 beyond 0
+EnumDisplaySettingsA mode 0 dmSize old: ret 1 size 124 beyond 0
+EnumDisplaySettingsW current dmSize 0: ret 1 err 0 size 188 name 1 beyond 1 bpp>0 1 screen 1
+EnumDisplaySettingsW current dmSize 1: ret 1 err 0 size 188 name 1 beyond 1 bpp>0 1 screen 1
+EnumDisplaySettingsW current dmSize 92: ret 1 err 0 size 188 name 1 beyond 1 bpp>0 1 screen 1
+EnumDisplaySettingsW current dmSize 188: ret 1 err 0 size 188 name 1 beyond 0 bpp>0 1 screen 1
+EnumDisplaySettingsW current dmSize 212: ret 1 err 0 size 188 name 1 beyond 0 bpp>0 1 screen 1
+EnumDisplaySettingsW current dmSize 220: ret 1 err 0 size 188 name 1 beyond 0 bpp>0 1 screen 1
+EnumDisplaySettingsW current dmSize 300: ret 1 err 0 size 188 name 1 beyond 0 bpp>0 1 screen 1
+EnumDisplaySettingsW mode 100000: ret 0 beyond 0
+EnumDisplaySettingsW mode 0 dmSize old: ret 1 size 188 beyond 0
+EnumDisplayDevicesA adapter 0 cb 0: ret 1 err 0 cb 0 beyond 0
+EnumDisplayDevicesA adapter 0 cb 3: ret 1 err 0 cb 3 beyond 0
+EnumDisplayDevicesA adapter 0 cb 4: ret 1 err 0 cb 4 beyond 0
+EnumDisplayDevicesA adapter 0 cb 36: ret 1 err 0 cb 36 beyond 0 name terminated 1
+EnumDisplayDevicesA adapter 0 cb 164: ret 1 err 0 cb 164 beyond 0 name terminated 1
+EnumDisplayDevicesA adapter 0 cb 168: ret 1 err 0 cb 168 beyond 0 primary 1 name terminated 1
+EnumDisplayDevicesA adapter 0 cb 423: ret 1 err 0 cb 423 beyond 0 primary 1 name terminated 1
+EnumDisplayDevicesA adapter 0 cb 424: ret 1 err 0 cb 424 beyond 0 primary 1 name terminated 1
+EnumDisplayDevicesA adapter 0 cb 524: ret 1 err 0 cb 524 beyond 0 primary 1 name terminated 1
+EnumDisplayDevicesA adapter 1000: ret 0 beyond 1
+EnumDisplayDevicesW adapter 0 cb 0: ret 1 err 0 cb 0 beyond 0
+EnumDisplayDevicesW adapter 0 cb 3: ret 1 err 0 cb 3 beyond 0
+EnumDisplayDevicesW adapter 0 cb 4: ret 1 err 0 cb 4 beyond 0
+EnumDisplayDevicesW adapter 0 cb 68: ret 1 err 0 cb 68 beyond 0 name terminated 1
+EnumDisplayDevicesW adapter 0 cb 324: ret 1 err 0 cb 324 beyond 0 name terminated 1
+EnumDisplayDevicesW adapter 0 cb 328: ret 1 err 0 cb 328 beyond 0 primary 1 name terminated 1
+EnumDisplayDevicesW adapter 0 cb 839: ret 1 err 0 cb 839 beyond 0 primary 1 name terminated 1
+EnumDisplayDevicesW adapter 0 cb 840: ret 1 err 0 cb 840 beyond 0 primary 1 name terminated 1
+EnumDisplayDevicesW adapter 0 cb 940: ret 1 err 0 cb 940 beyond 0 primary 1 name terminated 1
+EnumDisplayDevicesW adapter 1000: ret 0 beyond 1
+GetMonitorInfoA cbSize 0: ret 0 err 87 cbSize 0 beyond 0
+GetMonitorInfoA cbSize 39: ret 0 err 87 cbSize 39 beyond 0
+GetMonitorInfoA cbSize 40: ret 1 err 0 cbSize 40 beyond 0 monitor 1 primary 1
+GetMonitorInfoA cbSize 41: ret 0 err 87 cbSize 41 beyond 0
+GetMonitorInfoA cbSize 71: ret 0 err 87 cbSize 71 beyond 0
+GetMonitorInfoA cbSize 72: ret 1 err 0 cbSize 72 beyond 0 monitor 1 primary 1 device 1
+GetMonitorInfoA cbSize 104: ret 0 err 87 cbSize 104 beyond 0
+GetMonitorInfoA cbSize 200: ret 0 err 87 cbSize 200 beyond 0
+GetMonitorInfoW cbSize 0: ret 0 err 87 cbSize 0 beyond 0
+GetMonitorInfoW cbSize 39: ret 0 err 87 cbSize 39 beyond 0
+GetMonitorInfoW cbSize 40: ret 1 err 0 cbSize 40 beyond 0 monitor 1 primary 1
+GetMonitorInfoW cbSize 41: ret 0 err 87 cbSize 41 beyond 0
+GetMonitorInfoW cbSize 71: ret 0 err 87 cbSize 71 beyond 0
+GetMonitorInfoW cbSize 72: ret 0 err 87 cbSize 72 beyond 0
+GetMonitorInfoW cbSize 104: ret 1 err 0 cbSize 104 beyond 0 monitor 1 primary 1 device 1
+GetMonitorInfoW cbSize 200: ret 0 err 87 cbSize 200 beyond 0
+SystemParametersInfoA NONCLIENTMETRICS cbSize 0 uiParam 0: ret 0 err 57005 cbSize 0 beyond 0
+SystemParametersInfoA NONCLIENTMETRICS cbSize 0 uiParam 344: ret 0 err 57005 cbSize 0 beyond 0
+SystemParametersInfoA NONCLIENTMETRICS cbSize 336 uiParam 336: ret 0 err 57005 cbSize 336 beyond 0
+SystemParametersInfoA NONCLIENTMETRICS cbSize 336 uiParam 344: ret 0 err 57005 cbSize 336 beyond 0
+SystemParametersInfoA NONCLIENTMETRICS cbSize 340 uiParam 340: ret 1 err 0 cbSize 340 beyond 0 metrics 1 small caption 1 menu 1 faces 1
+SystemParametersInfoA NONCLIENTMETRICS cbSize 340 uiParam 344: ret 1 err 0 cbSize 340 beyond 0 metrics 1 small caption 1 menu 1 faces 1
+SystemParametersInfoA NONCLIENTMETRICS cbSize 344 uiParam 344: ret 1 err 0 cbSize 344 beyond 0 metrics 1 small caption 1 menu 1 faces 1
+SystemParametersInfoA NONCLIENTMETRICS cbSize 344 uiParam 344: ret 1 err 0 cbSize 344 beyond 0 metrics 1 small caption 1 menu 1 faces 1
+SystemParametersInfoA NONCLIENTMETRICS cbSize 348 uiParam 348: ret 0 err 57005 cbSize 348 beyond 0
+SystemParametersInfoA NONCLIENTMETRICS cbSize 348 uiParam 344: ret 0 err 57005 cbSize 348 beyond 0
+SystemParametersInfoA NONCLIENTMETRICS cbSize 1000 uiParam 1000: ret 0 err 57005 cbSize 1000 beyond 0
+SystemParametersInfoA NONCLIENTMETRICS cbSize 1000 uiParam 344: ret 0 err 57005 cbSize 1000 beyond 0
+SystemParametersInfoW NONCLIENTMETRICS cbSize 0 uiParam 0: ret 0 err 57005 cbSize 0 beyond 0
+SystemParametersInfoW NONCLIENTMETRICS cbSize 0 uiParam 504: ret 0 err 57005 cbSize 0 beyond 0
+SystemParametersInfoW NONCLIENTMETRICS cbSize 496 uiParam 496: ret 0 err 57005 cbSize 496 beyond 0
+SystemParametersInfoW NONCLIENTMETRICS cbSize 496 uiParam 504: ret 0 err 57005 cbSize 496 beyond 0
+SystemParametersInfoW NONCLIENTMETRICS cbSize 500 uiParam 500: ret 1 err 0 cbSize 500 beyond 0 metrics 1 small caption 1 menu 1 faces 1
+SystemParametersInfoW NONCLIENTMETRICS cbSize 500 uiParam 504: ret 1 err 0 cbSize 500 beyond 0 metrics 1 small caption 1 menu 1 faces 1
+SystemParametersInfoW NONCLIENTMETRICS cbSize 504 uiParam 504: ret 1 err 0 cbSize 504 beyond 0 metrics 1 small caption 1 menu 1 faces 1
+SystemParametersInfoW NONCLIENTMETRICS cbSize 504 uiParam 504: ret 1 err 0 cbSize 504 beyond 0 metrics 1 small caption 1 menu 1 faces 1
+SystemParametersInfoW NONCLIENTMETRICS cbSize 508 uiParam 508: ret 0 err 57005 cbSize 508 beyond 0
+SystemParametersInfoW NONCLIENTMETRICS cbSize 508 uiParam 504: ret 0 err 57005 cbSize 508 beyond 0
+SystemParametersInfoW NONCLIENTMETRICS cbSize 1000 uiParam 1000: ret 0 err 57005 cbSize 1000 beyond 0
+SystemParametersInfoW NONCLIENTMETRICS cbSize 1000 uiParam 504: ret 0 err 57005 cbSize 1000 beyond 0
+GetVersionExA size 0: ret 0 err 122 size 0 beyond 0
+GetVersionExA size 147: ret 0 err 122 size 147 beyond 0
+GetVersionExA size 148: ret 1 err 0 size 148 beyond 0 major>=5 1 platform 2
+GetVersionExA size 149: ret 0 err 122 size 149 beyond 0
+GetVersionExA size 155: ret 0 err 122 size 155 beyond 0
+GetVersionExA size 156: ret 1 err 0 size 156 beyond 0 major>=5 1 platform 2
+GetVersionExA size 256: ret 0 err 122 size 256 beyond 0
+GetVersionExW size 0: ret 0 err 122 size 0 beyond 0
+GetVersionExW size 275: ret 0 err 122 size 275 beyond 0
+GetVersionExW size 276: ret 1 err 0 size 276 beyond 0 major>=5 1 platform 2
+GetVersionExW size 277: ret 0 err 122 size 277 beyond 0
+GetVersionExW size 283: ret 0 err 122 size 283 beyond 0
+GetVersionExW size 284: ret 1 err 0 size 284 beyond 0 major>=5 1 platform 2
+GetVersionExW size 384: ret 0 err 122 size 384 beyond 0
+GlobalMemoryStatusEx dwLength 0: ret 0 err 87 length 0 beyond 0
+GlobalMemoryStatusEx dwLength 32: ret 0 err 87 length 32 beyond 0
+GlobalMemoryStatusEx dwLength 63: ret 0 err 87 length 63 beyond 0
+GlobalMemoryStatusEx dwLength 64: ret 1 err 0 length 64 beyond 0 load<=100 1 total>0 1
+GlobalMemoryStatusEx dwLength 65: ret 0 err 87 length 65 beyond 0
+GlobalMemoryStatusEx dwLength 128: ret 0 err 87 length 128 beyond 0
+GlobalMemoryStatus dwLength 0: length 32 beyond 0
+GlobalMemoryStatus dwLength 32: length 32 beyond 0
+GlobalMemoryStatus dwLength 100: length 32 beyond 0
+SetScrollInfo vert: 30
+SetScrollInfo horz cbSize 0: 30 err 57005
+GetScrollInfo cbSize 0: ret 1 err 0 beyond 1 min 0 max 100 page 10 pos 30
+GetScrollInfo cbSize 24: ret 1 err 0 beyond 1 min 0 max 100 page 10 pos 30
+GetScrollInfo cbSize 27: ret 1 err 0 beyond 1 min 0 max 100 page 10 pos 30
+GetScrollInfo cbSize 28: ret 1 err 0 beyond 0 min 0 max 100 page 10 pos 30
+GetScrollInfo cbSize 29: ret 1 err 0 beyond 0 min 0 max 100 page 10 pos 30
+GetScrollInfo cbSize 100: ret 1 err 0 beyond 0 min 0 max 100 page 10 pos 30
+GetScrollInfo SIF_POS: ret 1 range written 0 page written 0 pos 30
+GetScrollPos vert 30 horz 30
+GetScrollRange vert 0 100
+SetScrollPos vert 50 -> 30 now 50
+SetScrollPos vert 500 -> 50 now 91
+timeGetDevCaps size 0: ret 97 beyond 0
+timeGetDevCaps size 4: ret 97 beyond 0
+timeGetDevCaps size 7: ret 97 beyond 0
+timeGetDevCaps size 8: ret 0 beyond 0 min 1 max>=1000000 1
+timeGetDevCaps size 16: ret 0 beyond 0 min 1 max>=1000000 1
+GetStartupInfoA: cb 68 beyond 0
+GetStartupInfoW: cb 68 beyond 0
+sweep EnumDisplaySettingsA dmSize: 0-123: ret 1 err 0 size 124 beyond 1; 124-124: ret 1 err 0 size same beyond 0; 125-200: ret 1 err 0 size 124 beyond 0;
+sweep EnumDisplaySettingsW dmSize: 0-187: ret 1 err 0 size 188 beyond 1; 188-188: ret 1 err 0 size same beyond 0; 189-260: ret 1 err 0 size 188 beyond 0;
+sweep EnumDisplayDevicesA cb: 0-450: ret 1 err 0 size same beyond 0;
+sweep EnumDisplayDevicesW cb: 0-860: ret 1 err 0 size same beyond 0;
+sweep GetMonitorInfoA cbSize: 0-39: ret 0 err 87 size same beyond 0; 40-40: ret 1 err 0 size same beyond 0; 41-71: ret 0 err 87 size same beyond 0; 72-72: ret 1 err 0 size same beyond 0; 73-120: ret 0 err 87 size same beyond 0;
+sweep GetMonitorInfoW cbSize: 0-39: ret 0 err 87 size same beyond 0; 40-40: ret 1 err 0 size same beyond 0; 41-103: ret 0 err 87 size same beyond 0; 104-104: ret 1 err 0 size same beyond 0; 105-120: ret 0 err 87 size same beyond 0;
+sweep SystemParametersInfoA NONCLIENTMETRICS cbSize=uiParam: 0-339: ret 0 err 57005 size same beyond 0; 340-340: ret 1 err 0 size same beyond 0; 341-343: ret 0 err 57005 size same beyond 0; 344-344: ret 1 err 0 size same beyond 0; 345-360: ret 0 err 57005 size same beyond 0;
+sweep SystemParametersInfoW NONCLIENTMETRICS cbSize=uiParam: 0-499: ret 0 err 57005 size same beyond 0; 500-500: ret 1 err 0 size same beyond 0; 501-503: ret 0 err 57005 size same beyond 0; 504-504: ret 1 err 0 size same beyond 0; 505-520: ret 0 err 57005 size same beyond 0;
+sweep GetVersionExA: 0-147: ret 0 err 122 size same beyond 0; 148-148: ret 1 err 0 size same beyond 0; 149-155: ret 0 err 122 size same beyond 0; 156-156: ret 1 err 0 size same beyond 0; 157-300: ret 0 err 122 size same beyond 0;
+sweep GetVersionExW: 0-275: ret 0 err 122 size same beyond 0; 276-276: ret 1 err 0 size same beyond 0; 277-283: ret 0 err 122 size same beyond 0; 284-284: ret 1 err 0 size same beyond 0; 285-299: ret 0 err 122 size same beyond 0; 300-300: ret 0 err 57005 size same beyond 0;
+sweep GlobalMemoryStatusEx: 0-63: ret 0 err 87 size same beyond 0; 64-64: ret 1 err 0 size same beyond 0; 65-100: ret 0 err 87 size same beyond 0;
+sweep timeGetDevCaps cbtc: 0-7: ret 0 err 57005 beyond 0; 8-24: ret 1 err 0 beyond 0;

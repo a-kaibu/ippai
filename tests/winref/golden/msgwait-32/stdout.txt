@@ -1,0 +1,41 @@
+nothing queued: timeout
+posted, mask QS_TIMER: timeout
+posted, mask QS_KEY: timeout
+posted, mask QS_POSTMESSAGE: 1
+posted again, same mask: 1
+Ex MWMO_INPUTAVAILABLE: 1
+GetQueueStatus post: 00080008
+drained, QS_ALLINPUT: timeout
+event set and posted: 1
+event set, zero handles: timeout
+wait all, one set: timeout
+wait all, both set: timeout auto-reset now 0
+timer, mask QS_TIMER: 0
+bad handle: failed err 6
+QueueUserWorkItem: 1
+work item ran: 0 value 1
+long work item ran: 0
+DdeInitialize: 0 inst 1
+DdeQueryString: 10 Sake Topic
+DdeQueryString length only: 10
+DdeQueryString 5: 4 Sake
+DdeQueryStringW: 9 Wide Name
+DdeQueryStringA of a wide one: 9 Wide Name
+DdeCmpStringHandles same text other case 0, other -1 1, null -1 0
+same handle for other case: 1
+DdeFreeStringHandle 1 1 1
+DdeUninitialize 1
+FindWindow class 1 title 1 both 1 wrong title 1
+FindWindowEx first child of class 1 next 1 after last 1
+FindWindowEx by title 1 any 1 static 1
+FindWindowExW 1 top level 1
+FindWindowEx child of child 1
+dialog 1
+default id 534b0001
+enter, escape in the edit: 1 2
+focus on cancel 1
+enter on cancel: 100 1
+default id after set 534b0002
+enter with cancel default: 100 2
+IsDialogMessage WM_CHAR: 1 commands 0
+edit text "a"
