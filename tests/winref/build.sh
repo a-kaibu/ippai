@@ -21,9 +21,15 @@ for src in "$HERE"/probes/*.c; do
     grep -q 'arch: 32' "$src" || echo "$n-64" >> "$OUT/browser.txt"
   fi
   l=$(libs "$src")
-  i686-w64-mingw32-gcc -O2 -msse2 -Wall -Wno-format -Wno-unused -o "$OUT/$n-32.exe" "$src" "$OUT/ja32.res" "$HERE/fpu53.c" $l
+  # (a probe with its own resources: probes/<name>.rc, which carries the manifest too)
+  r32=$OUT/ja32.res r64=$OUT/ja64.res
+  if [ -f "$HERE/probes/$n.rc" ]; then
+    r32=$OUT/$n-32.res r64=$OUT/$n-64.res
+    (cd "$HERE" && i686-w64-mingw32-windres "probes/$n.rc" -O coff -o "$r32" && x86_64-w64-mingw32-windres "probes/$n.rc" -O coff -o "$r64")
+  fi
+  i686-w64-mingw32-gcc -O2 -msse2 -Wall -Wno-format -Wno-unused -o "$OUT/$n-32.exe" "$src" "$r32" "$HERE/fpu53.c" $l
   if ! grep -q 'arch: 32' "$src"; then
-    x86_64-w64-mingw32-gcc -O2 -Wall -Wno-format -Wno-unused -o "$OUT/$n-64.exe" "$src" "$OUT/ja64.res" $l
+    x86_64-w64-mingw32-gcc -O2 -Wall -Wno-format -Wno-unused -o "$OUT/$n-64.exe" "$src" "$r64" $l
   fi
 done
 # host/tests checks that print results (tests/host-tests.sh compares them with expected/*.txt;
@@ -36,5 +42,5 @@ for t in nullcall intops simd atomics smc cmp64 ssecvt textbounds crtstdio files
   i686-w64-mingw32-gcc -O2 -mmmx -msse2 -mssse3 -o "$OUT/host_$t-32.exe" "$src" "$OUT/ja32.res" $fpu $l
 done
 x86_64-w64-mingw32-gcc -O2 -o "$OUT/host_struct64-64.exe" "$ROOT/host/tests/struct64.c" "$OUT/ja64.res" $(libs "$ROOT/host/tests/struct64.c")
-rm "$OUT"/ja*.res
+rm "$OUT"/*.res
 ls "$OUT" | wc -l

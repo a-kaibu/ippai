@@ -1,0 +1,74 @@
+/* resources of the res probe (tests/winref/build.sh compiles <probe>.rc in place of ja.rc) */
+#pragma code_page(65001)
+#include <windows.h>
+1 24 "ja.manifest"
+
+STRINGTABLE
+LANGUAGE LANG_NEUTRAL, SUBLANG_NEUTRAL
+BEGIN
+    1 "hello"
+    2 "日本語の文字列"
+    3 ""
+    17 "second block"
+    100 "a longer string to see truncation at small buffers"
+END
+
+STRINGTABLE
+LANGUAGE LANG_JAPANESE, SUBLANG_DEFAULT
+BEGIN
+    5 "japanese only"
+END
+
+200 RCDATA { "rcdata bytes\0", 0x1234, 0x5678 }
+201 RCDATA { 1, 2, 3 }
+NAMED RCDATA { "named\0" }
+300 MYTYPE { "custom type\0" }
+"lower" MYTYPE { "lower name\0" }
+
+400 MENU
+BEGIN
+    POPUP "&File"
+    BEGIN
+        MENUITEM "&Open\tCtrl+O", 401
+        MENUITEM SEPARATOR
+        MENUITEM "E&xit", 402, GRAYED
+    END
+    MENUITEM "&Help", 403, CHECKED
+END
+
+500 DIALOGEX 10, 20, 200, 100
+STYLE DS_SETFONT | WS_POPUP | WS_CAPTION
+CAPTION "dialog"
+FONT 9, "MS Shell Dlg"
+BEGIN
+    LTEXT "text", 501, 5, 5, 50, 10
+    PUSHBUTTON "OK", IDOK, 5, 20, 40, 14
+END
+
+600 ACCELERATORS
+BEGIN
+    "O", 401, VIRTKEY, CONTROL
+    VK_F1, 403, VIRTKEY
+END
+
+1 VERSIONINFO
+FILEVERSION 1, 2, 3, 4
+PRODUCTVERSION 5, 6, 7, 8
+FILEFLAGSMASK 0x3f
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "041104b0"
+        BEGIN
+            VALUE "CompanyName", "winref"
+            VALUE "FileDescription", "リソースの試験"
+            VALUE "ProductName", "ippai"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x411, 1200
+    END
+END
