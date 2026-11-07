@@ -5,7 +5,7 @@
 //!
 //! The states (a key each): ALPHAREF (pixel), CULLMODE (vertex), SHADEMODE (both), stage 0's
 //! COLOROP (pixel) and TEXCOORDINDEX (both), sampler 0's ADDRESSU (pixel) and DMAPOFFSET
-//! (vertex), texture 0, the vertex and pixel shaders, constant 0 of each, the view transform,
+//! (D3DSBT_ALL's only), texture 0, the vertex and pixel shaders, constant 0 of each, the view transform,
 //! the viewport, light 2. A value is 0..3 (objects: 0 none, 1 or 2 one of two).
 //!
 //! `IPPAI_TRACE_DIR=dir` writes `dir/d3d9sb-<seed>/`; `IPPAI_TRACE_SEEDS=n` (default 20).
@@ -263,9 +263,10 @@ fn run(seed: u64) -> Vec<Step> {
 /// Which keys a type of block holds (StateBlocks.tla's Pixel / Vertex).
 pub(crate) fn holds(ty: i64, k: usize) -> bool {
     match ty {
+        0 => false,
         1 => true,
         2 => matches!(KEYS[k], "rsP" | "rsB" | "tssP" | "tssB" | "ssP" | "ps" | "psf"),
-        _ => matches!(KEYS[k], "rsV" | "rsB" | "tssB" | "ssV" | "vs" | "vsf" | "light"),
+        _ => matches!(KEYS[k], "rsV" | "rsB" | "tssB" | "vs" | "vsf" | "light"),
     }
 }
 
@@ -291,7 +292,7 @@ fn check(steps: &[Step], seed: u64) {
             }
             "Get" => ("ok", dev[t.k as usize]),
             "Create" => {
-                if rec.is_some() || !(1..=3).contains(&t.k) {
+                if rec.is_some() || !(0..=3).contains(&t.k) {
                     ("invalid", 0)
                 } else {
                     let m: Vec<bool> = (0..n).map(|k| holds(t.k, k)).collect();

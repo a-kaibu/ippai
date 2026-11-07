@@ -899,6 +899,39 @@ unsafe fn create_device(d: &mut D11, args: *const u32) -> u32 {
     S_OK
 }
 
+/// A state description as the state object keeps it (what GetDesc gives and what two
+/// descriptions are compared by): fields the state ignores set as Windows sets them. Blend:
+/// without IndependentBlendEnable every target is the first's; a target that does not blend
+/// has ONE, ZERO, ADD. Depth stencil: no depth test, LESS and a full write mask; no stencil,
+/// masks 0xff and KEEP, KEEP, KEEP, ALWAYS; the bytes after the two stencil masks are padding.
+fn normalize_state(m: u32, desc: &mut [u32]) {
+    match m {
+        20 => {
+            for t in 0..8 {
+                let src = if desc[1] != 0 { t } else { 0 };
+                let mut rt: Vec<u32> = desc[2 + src * 8..2 + src * 8 + 8].to_vec();
+                if rt[0] == 0 {
+                    rt[1..7].copy_from_slice(&[2, 1, 1, 2, 1, 1]);
+                }
+                desc[2 + t * 8..2 + t * 8 + 8].copy_from_slice(&rt);
+            }
+        }
+        21 => {
+            if desc[0] == 0 {
+                (desc[1], desc[2]) = (1, 2);
+            }
+            desc[4] &= 0xffff;
+            if desc[3] == 0 {
+                desc[4] = 0xffff;
+                for f in 0..2 {
+                    desc[5 + 4 * f..9 + 4 * f].copy_from_slice(&[1, 1, 1, 8]);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 /// D3D10CreateDevice(AndSwapChain)(1): the D3D11 device's D3D10 face
 unsafe fn create_device10(d: &mut D11, args: *const u32) -> u32 {
     let a = |i: usize| *args.add(i);
@@ -1661,7 +1694,8 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             if a(1) == 0 {
                 return E_INVALIDARG;
             }
-            let desc: Vec<u32> = (0..n).map(|i| rd(a(1), i)).collect();
+            let mut desc: Vec<u32> = (0..n).map(|i| rd(a(1), i)).collect();
+            normalize_state(m, &mut desc);
             if a(2) == 0 {
                 return S_FALSE;
             }

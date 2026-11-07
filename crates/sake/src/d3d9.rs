@@ -181,9 +181,10 @@ fn method(c: &mut Ctx) -> u32 {
         return r;
     }
     match id {
-        // a float in ST0
+        // a float in ST0 (x64: XMM0)
         GETNPATCHMODE => {
-            c.st0 = Some(0.0);
+            let bits = d3d_call(id, &[c.a(0)]);
+            c.st0 = Some(if mem::x64() { f64::from_bits(bits as u64) } else { f32::from_bits(bits) as f64 });
             0
         }
         SURFACE_GETDC => surface_get_dc(c),

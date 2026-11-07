@@ -3,14 +3,18 @@
 //! (D3DSBT_PIXELSTATE / VERTEXSTATE, the lists the Direct3D 9 docs give for each), or what was
 //! set between BeginStateBlock and EndStateBlock. Capture takes the masked states from the
 //! device, Apply puts them back; the rest of the device state is left alone. While recording,
-//! the Set* calls go to the recording, not to the device.
+//! the Set* calls go to the recording, not to the device. The lists are Windows' (the
+//! winref probe's answers): D3DSBT_ALL holds the defined states only (the pixel ones, the
+//! vertex ones, and render state 40, D3D8's EDGEANTIALIAS, a pixel state still), a vertex
+//! block no sampler state (D3DSAMP_DMAPOFFSET is ALL's alone), a pixel block those of every
+//! sampler (the displacement map and vertex texture samplers too).
 
-use super::device::State;
+use super::device::{State, SAMPLERS};
 use std::collections::BTreeSet;
 
 /// (render states)
 const PIXEL_RS: &[u32] = &[
-    7, 8, 9, 14, 15, 16, 19, 20, 23, 24, 25, 26, 27, 36, 37, 38, 52, 53, 54, 55, 56, 57, 58, 59, 60, 128, 129, 130,
+    7, 8, 9, 14, 15, 16, 19, 20, 23, 24, 25, 26, 27, 36, 37, 38, 40, 52, 53, 54, 55, 56, 57, 58, 59, 60, 128, 129, 130,
     131, 132, 133, 134, 135, 168, 171, 174, 175, 176, 185, 186, 187, 188, 189, 190, 191, 192, 193, 194, 195, 198,
     199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209,
 ];
@@ -23,15 +27,16 @@ const PIXEL_TSS: &[u32] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 22, 23, 24, 26, 2
 const VERTEX_TSS: &[u32] = &[11, 24];
 /// (sampler states)
 const PIXEL_SS: &[u32] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-const VERTEX_SS: &[u32] = &[13];
+const VERTEX_SS: &[u32] = &[];
+const ALL_SS: &[u32] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
 
 /// Which parts of the device state a block holds.
 #[derive(Clone, Default, PartialEq, Debug)]
 pub struct Mask {
     pub rs: [u64; 4],
     pub tss: [u64; 8],
-    pub ss: [u16; 16],
-    pub textures: u16,
+    pub ss: [u16; SAMPLERS],
+    pub textures: u32,
     pub streams: u16,
     pub freq: u16,
     pub indices: bool,
@@ -54,6 +59,7 @@ pub struct Mask {
     /// lights (their parameters and whether they are on)
     pub lights: BTreeSet<u32>,
     pub clip: u8,
+    pub npatch: bool,
 }
 
 fn bit(b: &[u64], i: usize) -> bool {
@@ -68,7 +74,16 @@ fn set_bit(b: &mut Vec<u64>, i: usize) {
 
 impl Mask {
     pub fn all(st: &State) -> Mask {
-        let mut m = Mask { rs: [!0; 4], tss: [!0; 8], ss: [!0; 16], textures: !0, streams: !0, freq: !0, ..Default::default() };
+        let mut m = Mask { textures: !0, streams: !0, freq: !0, npatch: true, ..Default::default() };
+        for &r in PIXEL_RS.iter().chain(VERTEX_RS) {
+            m.rs[r as usize / 64] |= 1 << (r % 64);
+        }
+        for t in m.tss.iter_mut() {
+            *t = PIXEL_TSS.iter().chain(VERTEX_TSS).fold(0, |a, &s| a | 1 << s);
+        }
+        for s in m.ss.iter_mut() {
+            *s = ALL_SS.iter().fold(0, |a, &x| a | 1 << x);
+        }
         (m.indices, m.decl, m.vs, m.ps, m.viewport, m.scissor, m.material) = (true, true, true, true, true, true, true);
         m.vsf = vec![!0; st.vsf.len().div_ceil(64)];
         m.psf = vec![!0; st.psf.len().div_ceil(64)];
@@ -105,7 +120,7 @@ impl Mask {
         for s in m.ss.iter_mut() {
             *s = VERTEX_SS.iter().fold(0, |a, &x| a | 1 << x);
         }
-        (m.vs, m.decl, m.freq) = (true, true, !0);
+        (m.vs, m.decl, m.freq, m.npatch) = (true, true, !0, true);
         m.vsf = vec![!0; st.vsf.len().div_ceil(64)];
         (m.vsi, m.vsb) = (!0, !0);
         m.lights = st.lights.keys().copied().collect();
@@ -126,9 +141,18 @@ impl Mask {
             }
             55 if a(1) < 6 => self.clip |= 1 << a(1),
             57 if a(1) < 256 => self.rs[a(1) as usize / 64] |= 1 << (a(1) % 64),
-            65 if a(1) < 16 => self.textures |= 1 << a(1),
+            65 => {
+                if let Some(s) = super::device::sampler_slot(a(1)) {
+                    self.textures |= 1 << s;
+                }
+            }
             67 if a(1) < 8 && a(2) < 33 => self.tss[a(1) as usize] |= 1 << a(2),
-            69 if a(1) < 16 && a(2) < 14 => self.ss[a(1) as usize] |= 1 << a(2),
+            69 if a(2) < 14 => {
+                if let Some(s) = super::device::sampler_slot(a(1)) {
+                    self.ss[s] |= 1 << a(2);
+                }
+            }
+            79 => self.npatch = true,
             75 => self.scissor = true,
             87 | 89 => self.decl = true,
             92 => self.vs = true,
@@ -158,19 +182,20 @@ impl Mask {
 
 /// Whether device method `m` is a Set* call a recording takes.
 pub fn records(m: u32) -> bool {
-    matches!(m, 44 | 46 | 47 | 49 | 51 | 53 | 55 | 57 | 65 | 67 | 69 | 75 | 87 | 89 | 92 | 94 | 96 | 98 | 100 | 102 | 104 | 107 | 109 | 111 | 113)
+    matches!(m, 44 | 46 | 47 | 49 | 51 | 53 | 55 | 57 | 65 | 67 | 69 | 75 | 79 | 87 | 89 | 92 | 94 | 96 | 98 | 100 | 102 | 104 | 107 | 109 | 111 | 113)
 }
 
 /// `dst`'s masked states = `src`'s (the bindings: the caller counts them).
 pub fn copy_masked(dst: &mut State, src: &State, m: &Mask) {
     // (D3DSBT_ALL blocks are captured and applied hundreds of times a frame: Siglus around
     // every draw; whole arrays at once there)
-    if m.rs == [!0; 4] {
-        dst.rs.clone_from(&src.rs);
-    } else {
-        for i in 0..256 {
-            if bit(&m.rs, i) {
-                dst.rs[i] = src.rs[i];
+    for (w, &bits) in m.rs.iter().enumerate() {
+        let mut b = bits;
+        while b != 0 {
+            let i = w * 64 + b.trailing_zeros() as usize;
+            b &= b - 1;
+            if let (Some(d), Some(s)) = (dst.rs.get_mut(i), src.rs.get(i)) {
+                *d = *s;
             }
         }
     }
@@ -181,7 +206,7 @@ pub fn copy_masked(dst: &mut State, src: &State, m: &Mask) {
             }
         }
     }
-    for s in 0..16 {
+    for s in 0..SAMPLERS {
         for t in 0..14 {
             if m.ss[s] >> t & 1 != 0 {
                 dst.ss[s][t] = src.ss[s][t];
@@ -190,6 +215,8 @@ pub fn copy_masked(dst: &mut State, src: &State, m: &Mask) {
         if m.textures >> s & 1 != 0 {
             dst.textures[s] = src.textures[s];
         }
+    }
+    for s in 0..16 {
         if m.streams >> s & 1 != 0 {
             dst.streams[s] = src.streams[s];
         }
@@ -259,16 +286,21 @@ pub fn copy_masked(dst: &mut State, src: &State, m: &Mask) {
             dst.clip[i] = src.clip[i];
         }
     }
+    if m.npatch {
+        dst.npatch = src.npatch;
+    }
 }
 
 /// A block's own copy: the masked states of `st`, no objects outside the mask (so that the
 /// block binds only what it holds).
 pub fn masked_copy(st: &State, m: &Mask) -> State {
     let mut b = st.clone();
-    for s in 0..16 {
+    for s in 0..SAMPLERS {
         if m.textures >> s & 1 == 0 {
             b.textures[s] = 0;
         }
+    }
+    for s in 0..16 {
         if m.streams >> s & 1 == 0 {
             b.streams[s] = (0, 0, 0);
         }

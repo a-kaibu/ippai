@@ -105,8 +105,9 @@ pub struct ShaderObj {
 pub struct State {
     pub rs: Vec<u32>,
     pub tss: [[u32; 33]; 8],
-    pub ss: [[u32; 14]; 16],
-    pub textures: [u32; 16],
+    /// (samplers and textures by `sampler_slot`: 0-15, the displacement map, vertex textures 0-3)
+    pub ss: [[u32; 14]; SAMPLERS],
+    pub textures: [u32; SAMPLERS],
     pub streams: [(u32, u32, u32); 16],
     pub freq: [u32; 16],
     pub indices: u32,
@@ -126,6 +127,20 @@ pub struct State {
     pub material: [f32; 17],
     pub lights: HashMap<u32, (Vec<u8>, bool)>,
     pub clip: [[f32; 4]; 6],
+    /// SetNPatchMode's segments (f32 bits)
+    pub npatch: u32,
+}
+
+pub const SAMPLERS: usize = 21;
+
+/// A sampler's (or texture stage's) slot: 0-15, D3DDMAPSAMPLER (256), D3DVERTEXTEXTURESAMPLER0-3
+/// (257-260)
+pub fn sampler_slot(s: u32) -> Option<usize> {
+    match s {
+        0..=15 => Some(s as usize),
+        256..=260 => Some(s as usize - 240),
+        _ => None,
+    }
 }
 
 pub type Snapshot = State;
@@ -267,7 +282,7 @@ fn default_state() -> State {
         s[27] = 1;
         s[28] = 1; // RESULTARG current
     }
-    let mut ss = [[0u32; 14]; 16];
+    let mut ss = [[0u32; 14]; SAMPLERS];
     for s in ss.iter_mut() {
         s[1] = 1;
         s[2] = 1;
@@ -281,7 +296,7 @@ fn default_state() -> State {
         rs,
         tss,
         ss,
-        textures: [0; 16],
+        textures: [0; SAMPLERS],
         streams: [(0, 0, 0); 16],
         freq: [1; 16],
         indices: 0,
@@ -301,6 +316,7 @@ fn default_state() -> State {
         material: [0.0; 17],
         lights: HashMap::new(),
         clip: [[0.0; 4]; 6],
+        npatch: 0,
     }
 }
 
@@ -1263,6 +1279,8 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
                 1 => sb::Mask::all(&dev.st),
                 2 => sb::Mask::pixel(&dev.st),
                 3 => sb::Mask::vertex(&dev.st),
+                // (Windows takes 0: a block of nothing)
+                0 => sb::Mask::default(),
                 _ => return D3DERR_INVALIDCALL,
             };
             let st = sb::masked_copy(&dev.st, &mask);
@@ -1299,7 +1317,7 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
         62 | 63 => S_OK,
         64 => {
             let dev = dev!(d);
-            let t = dev.st.textures.get(a(1) as usize).copied().unwrap_or(0);
+            let t = sampler_slot(a(1)).map_or(0, |s| dev.st.textures[s]);
             if t != 0 {
                 d.add_ref(t);
             }
@@ -1310,7 +1328,7 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
             let stage = a(1) as usize;
             let t = d.id_of(a(2));
             let dev = dev!(d);
-            let Some(slot) = dev.st.textures.get_mut(stage) else { return S_OK };
+            let Some(slot) = sampler_slot(stage as u32).map(|s| &mut dev.st.textures[s]) else { return S_OK };
             let old = *slot;
             *slot = t;
             set_bound(d, t, old);
@@ -1331,13 +1349,13 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
         }
         68 => {
             let dev = dev!(d);
-            let v = dev.st.ss.get(a(1) as usize).and_then(|s| s.get(a(2) as usize)).copied().unwrap_or(0);
+            let v = sampler_slot(a(1)).and_then(|s| dev.st.ss[s].get(a(2) as usize)).copied().unwrap_or(0);
             wr(a(3), 0, v);
             S_OK
         }
         69 => {
             let dev = dev!(d);
-            if let Some(v) = dev.st.ss.get_mut(a(1) as usize).and_then(|s| s.get_mut(a(2) as usize)) {
+            if let Some(v) = sampler_slot(a(1)).and_then(|s| dev.st.ss[s].get_mut(a(2) as usize)) {
                 *v = a(3);
             }
             S_OK
@@ -1363,7 +1381,12 @@ unsafe fn device_method(d: &mut D3d, m: u32, a: &dyn Fn(usize) -> u32, after: &m
         }
         77 => S_OK,
         78 => 0,
-        79 => S_OK,
+        79 => {
+            let dev = dev!(d);
+            dev.st.npatch = a(1);
+            S_OK
+        }
+        80 => dev!(d).st.npatch,
         81 => draw(d, a(1), Src::Streams(a(2)), a(3), None),
         82 => {
             // DrawIndexedPrimitive(type, base vertex, min index, num vertices, start index, prims)
@@ -1604,13 +1627,13 @@ fn mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
 }
 
 /// the objects a state holds a binding on
-pub(crate) fn state_binds(st: &State) -> [u32; 36] {
-    let mut b = [0u32; 36];
-    b[..16].copy_from_slice(&st.textures);
+pub(crate) fn state_binds(st: &State) -> [u32; SAMPLERS + 20] {
+    let mut b = [0u32; SAMPLERS + 20];
+    b[..SAMPLERS].copy_from_slice(&st.textures);
     for (i, s) in st.streams.iter().enumerate() {
-        b[16 + i] = s.0;
+        b[SAMPLERS + i] = s.0;
     }
-    b[32..].copy_from_slice(&[st.indices, st.decl, st.vs, st.ps]);
+    b[SAMPLERS + 16..].copy_from_slice(&[st.indices, st.decl, st.vs, st.ps]);
     b
 }
 

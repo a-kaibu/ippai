@@ -9,10 +9,12 @@
    EndStateBlock. CreateStateBlock and Capture take the masked states from the device, Apply
    puts them back and leaves the rest alone. While recording, a Set changes the recording, not
    the device (Get reads the device). Out of order: a second BeginStateBlock, EndStateBlock
-   without Begin, CreateStateBlock while recording or of another type: D3DERR_INVALIDCALL.
+   without Begin, CreateStateBlock while recording or of a type above 3: D3DERR_INVALIDCALL;
+   type 0 makes a block of nothing (Windows, the winref probe d3d9sb).
 
    Keys: render states rsP (ALPHAREF), rsV (CULLMODE), rsB (SHADEMODE); texture stage states
-   tssP (COLOROP), tssB (TEXCOORDINDEX); sampler states ssP (ADDRESSU), ssV (DMAPOFFSET);
+   tssP (COLOROP), tssB (TEXCOORDINDEX); sampler states ssP (ADDRESSU), ssV (DMAPOFFSET:
+   in D3DSBT_ALL only, not a vertex state on Windows);
    texture 0, the shaders, constant 0 of each, the view transform, the viewport, light 2.
    A key is its index in Keys; -1: not known (a block's states outside its mask). *)
 EXTENDS Integers, Sequences
@@ -21,8 +23,8 @@ Keys == <<"rsP", "rsV", "rsB", "tssP", "tssB", "ssP", "ssV", "tex", "vs", "ps", 
 K == 1..Len(Keys)
 Named(S) == {k \in K : Keys[k] \in S}
 Pixel == Named({"rsP", "rsB", "tssP", "tssB", "ssP", "ps", "psf"})
-Vertex == Named({"rsV", "rsB", "tssB", "ssV", "vs", "vsf", "light"})
-TypeMask(t) == CASE t = 1 -> K [] t = 2 -> Pixel [] t = 3 -> Vertex
+Vertex == Named({"rsV", "rsB", "tssB", "vs", "vsf", "light"})
+TypeMask(t) == CASE t = 0 -> {} [] t = 1 -> K [] t = 2 -> Pixel [] t = 3 -> Vertex
 
 \* State: the device's states; the recording (rec: on, its states, what it set); the blocks
 \* (a sequence: their states and masks); the last call's result and what it gave.
@@ -41,7 +43,7 @@ Do(s, t) ==
             ELSE Res([s EXCEPT !.dev[t.k + 1] = t.v], "ok", 0)
       [] t.op = "Get" -> Res(s, "ok", s.dev[t.k + 1])
       [] t.op = "Create" ->
-            IF s.recording \/ t.k \notin 1..3 THEN Res(s, "invalid", 0)
+            IF s.recording \/ t.k \notin 0..3 THEN Res(s, "invalid", 0)
             ELSE NewBlock(s, s.dev, TypeMask(t.k))
       [] t.op = "Begin" ->
             IF s.recording THEN Res(s, "invalid", 0)

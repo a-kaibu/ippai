@@ -429,8 +429,11 @@ pub(super) unsafe fn child(d: &mut D11, iface: u32, m: u32, this: u32, a: &dyn F
                 wr(p, 1 + t, s[2 + t * 8]);
                 *((p + 60 + t as u32) as *mut u8) = s[2 + t * 8 + 7] as u8;
             }
+            // (the factors: a target that blends has them; the D3D11 description sets those
+            // of one that does not to ONE, ZERO, ADD)
+            let t = (0..8).find(|&t| s[2 + t * 8] != 0).unwrap_or(0);
             for k in 0..6 {
-                wr(p, 9 + k, s[3 + k]);
+                wr(p, 9 + k, s[3 + t * 8 + k]);
             }
             S_OK
         }

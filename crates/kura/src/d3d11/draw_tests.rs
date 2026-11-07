@@ -350,3 +350,62 @@ fn d3d10_descriptions_and_viewports() {
         gpu::set_pump(None);
     });
 }
+
+/// State descriptions as Windows keeps them: one object for descriptions that differ only in
+/// what the state ignores (winref d3d11bind), GetDesc's normalized description.
+#[test]
+fn state_descriptions_normalized() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let vt = mem(256);
+    put(vt, &(1..=256).map(|i| 0x1000 * i).collect::<Vec<_>>());
+    call1(INIT, &[vt, 256]);
+    attach_page();
+    let desc = mem(16);
+    put(desc, &[64, 64, 60, 1, 28, 0, 0, 1, 0, 0x20, 1, 1, 1, 0, 0]);
+    let (sc_out, dev_out, level, ctx_out) = (mem(2), mem(2), mem(2), mem(2));
+    assert_eq!(call1(CREATE_DEVICE, &[0, 1, 0, 0, 0, 0, 7, desc, sc_out, dev_out, level, ctx_out]), 0);
+    let dev = rd1(dev_out);
+    let make = |m11: u32, d: &[u32]| {
+        let p = mem(d.len() as u32);
+        put(p, d);
+        let o = mem(2);
+        assert_eq!(call1(m(IF_DEVICE, m11), &[dev, p, o]), 0);
+        rd1(o)
+    };
+    let get = |iface: u32, o: u32, n: u32| {
+        let p = mem(n);
+        call1(m(iface, 7), &[o, p]);
+        (0..n).map(|i| rd1(p + 4 * i)).collect::<Vec<_>>()
+    };
+    // blend: a disabled target's factors; the targets after the first without IndependentBlendEnable
+    let mut b = vec![0u32; 66];
+    for t in 0..8 {
+        b[2 + t * 8..2 + t * 8 + 8].copy_from_slice(&[0, 5, 6, 1, 2, 1, 1, 0xf]);
+    }
+    let b1 = make(20, &b);
+    let mut b2 = b.clone();
+    b2[3] = 2;
+    b2[10..18].copy_from_slice(&[1, 4, 4, 3, 4, 4, 3, 1]);
+    let b2 = make(20, &b2);
+    assert_eq!(b1, b2, "blend: differs only in a disabled factor and an unused target");
+    let mut want = vec![0u32; 66];
+    for t in 0..8 {
+        want[2 + t * 8..2 + t * 8 + 8].copy_from_slice(&[0, 2, 1, 1, 2, 1, 1, 0xf]);
+    }
+    assert_eq!(get(IF_BLEND, b1, 66), want);
+    b[1] = 1;
+    b[10] = 1;
+    let b3 = make(20, &b);
+    assert_ne!(b3, b1);
+    let got = get(IF_BLEND, b3, 66);
+    assert_eq!(&got[10..18], &[1, 5, 6, 1, 2, 1, 1, 0xf], "an independent target that blends keeps its factors");
+    assert_eq!(&got[2..10], &[0, 2, 1, 1, 2, 1, 1, 0xf]);
+    // depth stencil: no depth test, no stencil; the padding after the stencil masks
+    let d1 = make(21, &[0, 0, 4, 0, 0xdead_0f0f, 2, 3, 4, 5, 6, 7, 8, 1]);
+    let d2 = make(21, &[0, 1, 7, 0, 0x0000_1234, 1, 1, 1, 8, 1, 1, 1, 8]);
+    assert_eq!(d1, d2);
+    assert_eq!(get(IF_DEPTH, d1, 13), vec![0, 1, 2, 0, 0xffff, 1, 1, 1, 8, 1, 1, 1, 8]);
+    let d3 = make(21, &[1, 0, 4, 1, 0xbeef_0f0f, 2, 3, 4, 5, 6, 7, 8, 1]);
+    assert_eq!(get(IF_DEPTH, d3, 13), vec![1, 0, 4, 1, 0x0f0f, 2, 3, 4, 5, 6, 7, 8, 1]);
+    gpu::set_pump(None);
+}
