@@ -21,6 +21,10 @@ pub struct Config {
     active_key: String,
     /// Hex encoded 256-bit keys. This file must be backed up separately from S3.
     keys: BTreeMap<String, String>,
+    /// Uploads at once in `push` [default: PUTS]. Each object is a 256 KiB chunk: with a far
+    /// gateway a round trip, not the line, bounds one upload, so more at once go faster.
+    #[serde(default)]
+    uploads: Option<usize>,
 }
 
 #[cfg(test)]
@@ -85,6 +89,7 @@ mod tests {
                 ("old".into(), "01".repeat(32)),
                 ("new".into(), "02".repeat(32)),
             ]),
+            uploads: None,
         };
         let bucket = Bucket::new(
             "test",
@@ -219,6 +224,7 @@ pub(crate) mod gc_tests {
             prefix: "".into(),
             active_key: "k".into(),
             keys: BTreeMap::from([("k".into(), "03".repeat(32))]),
+            uploads: None,
         };
         let bucket = Bucket::new("test", Region::Custom { region: "us-east-1".into(), endpoint }, Credentials::new(Some("t"), Some("t"), None, None, None).unwrap()).unwrap().with_path_style();
         let s = Storage { db: Library::new(&dir).unwrap(), bucket, config, cache: Default::default(), inflight: Default::default(), requests: tokio::sync::Semaphore::new(8) };
@@ -294,7 +300,7 @@ pub(crate) mod gc_tests {
         for (i, (b, then)) in backups.iter().enumerate() {
             let out = dir.join(format!("restored{i}.db"));
             s.restore(*b, &out).await.unwrap();
-            let r = Storage { db: Library(out), bucket: s.bucket.clone(), config: Config { keys: s.config.keys.clone(), active_key: "k".into(), bucket: "test".into(), region: "us-east-1".into(), endpoint: None, prefix: "".into() }, cache: Default::default(), inflight: Default::default(), requests: tokio::sync::Semaphore::new(8) };
+            let r = Storage { db: Library(out), bucket: s.bucket.clone(), config: Config { keys: s.config.keys.clone(), active_key: "k".into(), bucket: "test".into(), region: "us-east-1".into(), endpoint: None, prefix: "".into(), uploads: None }, cache: Default::default(), inflight: Default::default(), requests: tokio::sync::Semaphore::new(8) };
             for (l, v) in then {
                 assert_eq!(&*r.get(l).await.unwrap().unwrap(), &v[..], "backup {i} {l}");
             }
@@ -374,7 +380,7 @@ pub(crate) mod gc_tests {
         let pc = Storage {
             db: pc_db.clone(),
             bucket: s.bucket.clone(),
-            config: Config { keys: s.config.keys.clone(), active_key: s.config.active_key.clone(), bucket: "test".into(), region: "us-east-1".into(), endpoint: None, prefix: "".into() },
+            config: Config { keys: s.config.keys.clone(), active_key: s.config.active_key.clone(), bucket: "test".into(), region: "us-east-1".into(), endpoint: None, prefix: "".into(), uploads: None },
             cache: Default::default(),
             inflight: Default::default(),
             requests: tokio::sync::Semaphore::new(8),
@@ -550,6 +556,25 @@ pub(crate) mod gc_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// storage.toml's `uploads` sets how many go up at once (a far gateway: the round trip
+    /// bounds one upload), and every chunk is named once all is through.
+    #[tokio::test]
+    async fn uploads_at_once_as_configured() {
+        let (f, mut s, dir) = serve(40).await;
+        s.config.uploads = Some(40);
+        let store = dir.join("store");
+        for i in 0..200 {
+            let d = store.join(format!("chunks/{:02x}", i % 4));
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join(format!("c{i}")), (i as u32).to_le_bytes()).unwrap();
+        }
+        s.push_store(&store).await.unwrap();
+        assert!(f.most.load(SeqCst) > PUTS, "{} at once", f.most.load(SeqCst));
+        assert_eq!(names(&f).len(), 200);
+        assert_eq!(named(&s).len(), 200);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     /// The same object asked for many times at once: one download; the cache holds what it
     /// says it holds.
     #[tokio::test]
@@ -636,8 +661,17 @@ impl Cache {
     }
 }
 
-/// Uploads at once (push_store).
-const PUTS: usize = 8;
+/// Uploads at once in push_store unless storage.toml says `uploads`.
+const PUTS: usize = 16;
+/// Objects push_store names in one transaction.
+const RECORD_BATCH: usize = 64;
+
+/// An object uploaded, not yet named (Storage::send, Storage::record).
+struct Sent {
+    logical: String,
+    envelope: Envelope,
+    size: i64,
+}
 /// Revisions of a save kept in S3 (older ones are retired, see [`Storage::gc`]).
 pub const SAVE_REVISIONS: i64 = 8;
 
@@ -825,19 +859,33 @@ impl Storage {
     }
 
     pub async fn put(&self, logical: &str, bytes: &[u8]) -> Result<()> {
+        let sent = self.send(logical, bytes).await?;
+        self.record(&[sent])
+    }
+
+    /// Encrypts `bytes` as a new object and uploads it (not yet named: see [`Storage::record`]).
+    async fn send(&self, logical: &str, bytes: &[u8]) -> Result<Sent> {
         let (envelope, ciphertext) = Envelope::encrypt(
             &self.key(&self.config.active_key)?,
             &self.config.active_key,
             bytes,
         )?;
         self.upload(envelope.object, &ciphertext).await?;
+        Ok(Sent { logical: logical.to_string(), envelope, size: bytes.len() as i64 })
+    }
+
+    /// Names the objects `sent` in one transaction (one commit for many: a commit is a few
+    /// fsyncs, and a push sends thousands of chunks); what they replace is retired.
+    fn record(&self, sent: &[Sent]) -> Result<()> {
         let mut c = self.db.connect()?;
         let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let old: Option<String> = tx.query_row("SELECT envelope FROM objects WHERE logical=?", [logical], |r| r.get(0)).optional()?;
-        tx.execute("INSERT INTO objects(logical,envelope,size) VALUES(?,?,?) ON CONFLICT(logical) DO UPDATE SET envelope=excluded.envelope,size=excluded.size",
-            rusqlite::params![logical, serde_json::to_string(&envelope)?, bytes.len() as i64])?;
-        if let Some(old) = old {
-            retire(&tx, serde_json::from_str::<Envelope>(&old)?.object)?;
+        for s in sent {
+            let old: Option<String> = tx.query_row("SELECT envelope FROM objects WHERE logical=?", [&s.logical], |r| r.get(0)).optional()?;
+            tx.execute("INSERT INTO objects(logical,envelope,size) VALUES(?,?,?) ON CONFLICT(logical) DO UPDATE SET envelope=excluded.envelope,size=excluded.size",
+                rusqlite::params![s.logical, serde_json::to_string(&s.envelope)?, s.size])?;
+            if let Some(old) = old {
+                retire(&tx, serde_json::from_str::<Envelope>(&old)?.object)?;
+            }
         }
         tx.commit()?;
         Ok(())
@@ -972,10 +1020,19 @@ impl Storage {
         Ok(Some(data?))
     }
 
-    /// Uploads the store's files not uploaded yet, [`PUTS`] at once: chunks first, then trees,
-    /// then games (a game's description goes up once what it names is there).
+    /// Uploads the store's files not uploaded yet, `uploads` (storage.toml, [`PUTS`]) at once:
+    /// chunks first, then trees, then games (a game's description goes up once what it names
+    /// is there). The objects sent are named [`RECORD_BATCH`] at a time (a push cut short can
+    /// leave up to that many sent and never named in the bucket).
     pub async fn push_store(&self, store: &Path) -> Result<()> {
         use futures_util::TryStreamExt;
+        // (chunks are named by their content: one uploaded is never again)
+        let have: std::collections::HashSet<String> = {
+            let c = self.db.connect()?;
+            let mut q = c.prepare("SELECT logical FROM objects WHERE logical LIKE 'chunks/%'")?;
+            let rows = q.query_map([], |r| r.get(0))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
         for top in ["chunks", "trees", "games"] {
             let mut files = Vec::new();
             let mut dirs = vec![store.join(top)];
@@ -1002,25 +1059,22 @@ impl Storage {
                 }
             }
             files.sort();
-            futures_util::stream::iter(files.into_iter().map(Ok::<_, anyhow::Error>))
+            files.retain(|(_, logical)| !have.contains(logical));
+            let mut sent = futures_util::stream::iter(files.into_iter().map(Ok::<_, anyhow::Error>))
                 .map_ok(|(path, logical)| async move {
-                    // (chunks are named by their content: one uploaded is never again)
-                    if logical.starts_with("chunks/") {
-                        let exists: bool = self.db.connect()?.query_row(
-                            "SELECT EXISTS(SELECT 1 FROM objects WHERE logical=?)",
-                            [&logical],
-                            |r| r.get(0),
-                        )?;
-                        if exists {
-                            return Ok(());
-                        }
-                    }
                     let data = tokio::fs::read(&path).await?;
-                    self.put(&logical, &data).await
+                    self.send(&logical, &data).await
                 })
-                .try_buffer_unordered(PUTS)
-                .try_collect::<Vec<()>>()
-                .await?;
+                .try_buffer_unordered(self.config.uploads.unwrap_or(PUTS).max(1));
+            let mut batch = Vec::new();
+            while let Some(s) = sent.try_next().await? {
+                batch.push(s);
+                if batch.len() >= RECORD_BATCH {
+                    self.record(&batch)?;
+                    batch.clear();
+                }
+            }
+            self.record(&batch)?;
         }
         Ok(())
     }
