@@ -1,0 +1,12 @@
+try exclusive, free: 1
+try exclusive, held exclusive: 0
+try shared, held exclusive: 0
+try shared, free: 1
+try shared, held shared: 1
+try exclusive, held shared: 0
+try exclusive, held shared once: 0
+try exclusive, released: 1
+exclusive counter: 300000 (want 300000)
+writes 60000/60000, torn reads 0
+blocked acquirer woken within 15 ms: yes
+consumed 6000 items, sum 606003000 (want 6000, 606003000)

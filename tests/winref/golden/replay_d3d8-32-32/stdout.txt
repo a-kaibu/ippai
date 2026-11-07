@@ -1,0 +1,9 @@
+image l113 64 64 2
+image l175 64 64 2
+image l296 64 64 2
+image l385 64 64 2
+image l439 64 64 2
+hr 450 IDirect3DDevice8::CopyRects 0x8876086c want 0
+image l457 64 64 2
+image f0 64 64 2
+calls 426 frames 1
