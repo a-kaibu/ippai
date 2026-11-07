@@ -1818,7 +1818,9 @@ impl D3d {
                 attrs.push(format!(r#"{{"format":{},"offset":{},"shaderLocation":{}}}"#, q(pick(&VERTEX_FORMATS, k[p], "float32x4")), k[p + 1], k[p + 2]));
                 p += 3;
             }
-            buffers.push(format!(r#"{{"arrayStride":{},"attributes":[{}]}}"#, stride.div_ceil(4) * 4, attrs.join(",")));
+            // (bit 31: per-instance data)
+            let step = if stride & 0x8000_0000 != 0 { r#","stepMode":"instance""# } else { "" };
+            buffers.push(format!(r#"{{"arrayStride":{}{step},"attributes":[{}]}}"#, (stride & 0x7fff_ffff).div_ceil(4) * 4, attrs.join(",")));
         }
         let format = tex_format(color_fmt);
         let depth = depth_fmt != 0xff;
@@ -1901,6 +1903,8 @@ impl D3d {
         let offs = c[p..p + nbuf].to_vec();
         p += nbuf;
         let (ifmt, ioff, count, base) = (c[p], c[p + 1], c[p + 2], c[p + 3] as i32);
+        // (instances above the index format)
+        let (ifmt, instances) = (ifmt & 0xff, (ifmt >> 8).max(1));
         p += 4 + 5 + 5;
         if pipe == 0 || self.data_buf == 0 || count == 0 {
             return p;
@@ -1972,7 +1976,7 @@ impl D3d {
         super::model::set_bounds(Some([c[p - 9], c[p - 8], c[p - 7], c[p - 6]]));
         if ifmt != 0 {
             gpu::set_index_buffer(self.data_buf, ifmt == 4, ioff);
-            gpu::draw_indexed(count, 1, 0, base, 0);
+            gpu::draw_indexed(count, instances, 0, base, 0);
         } else {
             gpu::draw(count, 1, 0, 0);
         }

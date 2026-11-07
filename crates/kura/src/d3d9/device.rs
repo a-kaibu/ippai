@@ -2550,6 +2550,11 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
             (lo, n, Some((*idx, *isize, lo)))
         }
     };
+    // geometry instancing (SetStreamSourceFreq): stream 0 INDEXEDDATA | instances, the streams
+    // of INSTANCEDATA | divider step once every `divider` instances; indexed draws only
+    let instances = if index.is_some() && st.freq[0] & 0x4000_0000 != 0 { (st.freq[0] & 0x3fff_ffff).max(1) } else { 1 };
+    let freq = if index.is_some() && st.freq[0] & 0x4000_0000 != 0 { st.freq } else { [1; 16] };
+    let divider = move |s: u32| -> Option<u32> { Some(freq[s as usize & 15]).filter(|f| f & 0x8000_0000 != 0).map(|f| (f & 0x3fff_ffff).max(1)) };
     let mut streams: Vec<(u32, u32, u32)> = Vec::new(); // (stream, ptr, stride)
     let mut used: Vec<u32> = elems.iter().map(|e| e.stream).collect();
     used.sort();
@@ -2806,9 +2811,10 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     key.extend_from_slice(&blend);
     key.push(wmask);
     key.push(streams.len() as u32);
-    for (i, &(_, _, stride)) in streams.iter().enumerate() {
+    for (i, &(sn, _, stride)) in streams.iter().enumerate() {
         let list: Vec<&(u32, u32, u32, u32)> = attrs.iter().filter(|a| a.0 == i as u32).collect();
-        key.push(stride);
+        // (bit 31: a buffer of per-instance data)
+        key.push(stride | if divider(sn).is_some() { 0x8000_0000 } else { 0 });
         key.push(list.len() as u32);
         for a in list {
             key.extend_from_slice(&[a.1, a.2, a.3]);
@@ -2922,9 +2928,13 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     // where it draws when its vertices are in pixels already (XYZRHW): the page redraws only
     // the parts of a target that changed since the last frame (render/d3d.rs, segments).
     let mut h = Fnv::default();
-    for &(_, ptr, stride) in &streams {
-        h.add(std::slice::from_raw_parts((ptr + first * stride) as *const u8, (count * stride) as usize));
+    for &(sn, ptr, stride) in &streams {
+        match divider(sn) {
+            Some(dv) => h.add(std::slice::from_raw_parts(ptr as *const u8, (instances.div_ceil(dv) * stride) as usize)),
+            None => h.add(std::slice::from_raw_parts((ptr + first * stride) as *const u8, (count * stride) as usize)),
+        }
     }
+    h.add(&instances.to_le_bytes());
     if let Some((iptr, isz, _)) = index {
         h.add(std::slice::from_raw_parts(iptr as *const u8, (nverts * isz) as usize));
     }
@@ -2960,10 +2970,23 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     // data: vertices, indices, uniforms
     let ((cmd, ok), gen) = gpu::record_gen(|b| {
         let mut offs = Vec::new();
-        for &(_, ptr, stride) in &streams {
-            let start = ptr + first * stride;
-            let len = (count * stride) as usize;
-            offs.push(b.data(std::slice::from_raw_parts(start as *const u8, len), 4));
+        for &(sn, ptr, stride) in &streams {
+            match divider(sn) {
+                // (instance i reads element i / divider: WebGPU steps once per instance, so
+                // each element goes `divider` times)
+                Some(dv) => {
+                    let mut v = Vec::with_capacity((instances * stride) as usize);
+                    for i in 0..instances {
+                        v.extend_from_slice(std::slice::from_raw_parts((ptr + i / dv * stride) as *const u8, stride as usize));
+                    }
+                    offs.push(b.data(&v, 4));
+                }
+                None => {
+                    let start = ptr + first * stride;
+                    let len = (count * stride) as usize;
+                    offs.push(b.data(std::slice::from_raw_parts(start as *const u8, len), 4));
+                }
+            }
         }
         let (ifmt, ioff, icount, base) = match (&index, prim) {
             (Some((iptr, isz, min)), 6) => {
@@ -3024,7 +3047,8 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
         }
         c.push(offs.len() as u32);
         c.extend_from_slice(&offs);
-        c.extend_from_slice(&[ifmt, ioff, icount, base as u32]);
+        // (the index format, instances above it)
+        c.extend_from_slice(&[ifmt | if instances > 1 { instances << 8 } else { 0 }, ioff, icount, base as u32]);
         c.push(hash);
         c.extend_from_slice(&bbox);
         c.extend_from_slice(&ext);

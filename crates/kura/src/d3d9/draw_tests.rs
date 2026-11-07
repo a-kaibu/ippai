@@ -191,6 +191,12 @@ fn run(seed: u64) {
         if verts.iter().any(|&v| v < 0) {
             continue;
         }
+        // geometry instancing: indexed draws of the two-stream layout, stream 1 per instance
+        let (instances, divider) = if kind == 1 && streams.len() == 2 && r.chance(50) { (1 + r.below(4) as u32, 1 + r.below(3) as u32) } else { (1, 0) };
+        if divider != 0 {
+            call(IF_DEVICE, 102, &[dev, 0, 0x4000_0000 | instances]);
+            call(IF_DEVICE, 102, &[dev, 1, 0x8000_0000 | divider]);
+        }
         let res = match kind {
             0 | 1 => {
                 for &s in &streams {
@@ -226,14 +232,19 @@ fn run(seed: u64) {
             }
         };
         assert_eq!(res, 0, "seed {seed} step {step}");
+        if divider != 0 {
+            call(IF_DEVICE, 102, &[dev, 0, 1]);
+            call(IF_DEVICE, 102, &[dev, 1, 1]);
+        }
         gpu::flush();
         gpu::pump();
         // Direct3D 9's primitives: each vertex the elements' bytes, by element
-        let vertex = |v: i64| -> Vec<Vec<u8>> {
+        let vertex = |v: i64, inst: u32| -> Vec<Vec<u8>> {
             let mut a: Vec<Vec<u8>> = l
                 .elems
                 .iter()
                 .map(|&(s, off, t, _, _)| {
+                    let v = if divider != 0 && s == 1 { (inst / divider) as i64 } else { v };
                     let at = (offset[s as usize] as i64 + v * stride[s as usize] as i64 + off as i64) as usize;
                     vbs[s as usize].1.get(at..at + type_bytes(t) as usize).map(|b| b.to_vec()).unwrap_or_default()
                 })
@@ -241,7 +252,7 @@ fn run(seed: u64) {
             a.sort();
             a
         };
-        let want: Vec<Vec<Vec<Vec<u8>>>> = d3d_prims(prim, &verts, n).iter().map(|p| rotated(&p.iter().map(|&v| vertex(v)).collect::<Vec<_>>())).collect();
+        let want: Vec<Vec<Vec<Vec<u8>>>> = (0..instances).flat_map(|i| d3d_prims(prim, &verts, n).into_iter().map(move |p| (i, p))).map(|(i, p)| rotated(&p.iter().map(|&v| vertex(v, i)).collect::<Vec<_>>())).collect();
         let got = model::with(|m| m.prims.as_mut().unwrap().drain(..).collect::<Vec<_>>());
         assert_eq!(got.len(), 1, "seed {seed} step {step}: {} draws on the page for one", got.len());
         let got: Vec<Vec<Vec<Vec<u8>>>> = got[0]
