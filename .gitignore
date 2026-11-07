@@ -17,3 +17,5 @@
 /fuzz/seeds
 /fuzz/coverage
 __pycache__/
+# sake's fonts the release makes (release.yml: tools/ci/sake-fonts.py fonts; GoReleaser wants a clean tree)
+/fonts/
