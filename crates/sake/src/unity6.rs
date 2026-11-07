@@ -296,8 +296,37 @@ mod tests {
         c
     }
 
+    /// The instructions as mnemonic and operands, in a form of our own (an iced formatter's text
+    /// depends on which of its formatters the build's features bring in)
     fn listing(code: &[u8]) -> Vec<String> {
-        decode(code, IP, 0, code.len()).iter().filter(|i| i.mnemonic() != Mnemonic::Int3).map(|i| format!("{i}")).collect()
+        decode(code, IP, 0, code.len()).iter().filter(|i| i.mnemonic() != Mnemonic::Int3).map(canon).collect()
+    }
+
+    fn canon(i: &Instruction) -> String {
+        let ops: Vec<String> = (0..i.op_count())
+            .map(|k| match i.op_kind(k) {
+                OpKind::Register => format!("{:?}", i.op_register(k)).to_lowercase(),
+                OpKind::Memory => {
+                    let mut m = format!("{:?}[{:?}", i.memory_size(), i.memory_base()).to_lowercase();
+                    if i.memory_index() != Register::None {
+                        m += &format!("+{:?}*{}", i.memory_index(), i.memory_index_scale()).to_lowercase();
+                    }
+                    format!("{m}+{:#x}]", i.memory_displacement64())
+                }
+                OpKind::NearBranch16 | OpKind::NearBranch32 | OpKind::NearBranch64 => format!("{:#x}", i.near_branch_target()),
+                OpKind::Immediate8
+                | OpKind::Immediate8_2nd
+                | OpKind::Immediate16
+                | OpKind::Immediate32
+                | OpKind::Immediate64
+                | OpKind::Immediate8to16
+                | OpKind::Immediate8to32
+                | OpKind::Immediate8to64
+                | OpKind::Immediate32to64 => format!("{:#x}", i.immediate(k)),
+                other => format!("{other:?}").to_lowercase(),
+            })
+            .collect();
+        format!("{:?} {}", i.mnemonic(), ops.join(",")).to_lowercase()
     }
 
     #[test]
@@ -318,19 +347,19 @@ mod tests {
         let after = listing(&apply(&code, &edits));
         let changed: Vec<(String, String)> = before.iter().zip(&after).filter(|(a, b)| a != b).map(|(a, b)| (a.clone(), b.clone())).collect();
         let want = [
-            ("shr r12,1Ch", "shr r12,1Ah"),
-            ("shr rdi,1Ch", "shr rdi,1Ah"),
-            ("and rdx,0FFFFFFFFF0000000h", "and rdx,0FFFFFFFFFC000000h"),
-            ("shr r8,1Ch", "shr r8,1Ah"),
-            ("shl rcx,1Ch", "shl rcx,1Ah"),
-            ("shl rcx,1Ch", "shl rcx,1Ah"),
-            ("mov eax,10000000h", "mov eax,4000000h"),
-            ("mov ecx,10000000h", "mov ecx,4000000h"),
-            ("cmp rax,10000000h", "cmp rax,4000000h"),
-            ("cmp rcx,10000000h", "cmp rcx,4000000h"),
-            ("mov qword ptr [r14+0E8h],10000000h", "mov qword ptr [r14+0E8h],4000000h"),
-            ("lea rdi,[r14+0FFFFFFFh]", "lea rdi,[r14+3FFFFFFh]"),
-            ("and rdi,0FFFFFFFFF0000000h", "and rdi,0FFFFFFFFFC000000h"),
+            ("shr r12,0x1c", "shr r12,0x1a"),
+            ("shr rdi,0x1c", "shr rdi,0x1a"),
+            ("and rdx,0xfffffffff0000000", "and rdx,0xfffffffffc000000"),
+            ("shr r8,0x1c", "shr r8,0x1a"),
+            ("shl rcx,0x1c", "shl rcx,0x1a"),
+            ("shl rcx,0x1c", "shl rcx,0x1a"),
+            ("mov eax,0x10000000", "mov eax,0x4000000"),
+            ("mov ecx,0x10000000", "mov ecx,0x4000000"),
+            ("cmp rax,0x10000000", "cmp rax,0x4000000"),
+            ("cmp rcx,0x10000000", "cmp rcx,0x4000000"),
+            ("mov uint64[r14+0xe8],0x10000000", "mov uint64[r14+0xe8],0x4000000"),
+            ("lea rdi,unknown[r14+0xfffffff]", "lea rdi,unknown[r14+0x3ffffff]"),
+            ("and rdi,0xfffffffff0000000", "and rdi,0xfffffffffc000000"),
         ];
         let want: Vec<(String, String)> = want.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
         assert_eq!(changed, want);
