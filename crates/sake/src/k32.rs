@@ -1542,6 +1542,9 @@ pub(crate) fn srw_acquire(l: u32, shared: bool) {
         std::hint::spin_loop();
     }
     let mut g = SYNC.lock().unwrap();
+    // (counted before the retry: a release that misses the count frees the lock before it, so
+    // the retry takes it; one that sees it notifies under SYNC, after this thread waits)
+    SRW_WAITERS.fetch_add(1, Ordering::SeqCst);
     while !srw_try(l, shared) {
         if kura::snap::pausing() {
             drop(g);
@@ -1551,13 +1554,20 @@ pub(crate) fn srw_acquire(l: u32, shared: bool) {
         }
         g = SYNC_CV.wait_timeout(g, std::time::Duration::from_millis(20)).unwrap().0;
     }
+    SRW_WAITERS.fetch_sub(1, Ordering::SeqCst);
 }
+/// Threads in srw_acquire's slow path (any lock): a release with none skips SYNC and the wake,
+/// which cost Godot's loading thread seconds (one futex wake per release).
+static SRW_WAITERS: AtomicU32 = AtomicU32::new(0);
 pub(crate) fn srw_release(l: u32, shared: bool) {
     let a = atomic(l);
     if shared {
         a.fetch_sub(2, Ordering::SeqCst);
     } else {
         a.store(0, Ordering::SeqCst);
+    }
+    if SRW_WAITERS.load(Ordering::SeqCst) == 0 {
+        return;
     }
     let _g = SYNC.lock().unwrap();
     SYNC_CV.notify_all();

@@ -1572,12 +1572,15 @@ impl D3d {
                 2
             }
             _ => {
-                let (id, at, off, len) = (a(1), a(2), a(3) as usize, a(4));
+                let (id, at, off, len) = (a(1), a(2) & !WRITE_UNUSED, a(3) as usize, a(4));
+                // (WRITE_UNUSED: bytes no draw recorded before reads, a D3D11 Map NO_OVERWRITE's:
+                // written in place, the pass goes on)
+                let unused = a(2) & WRITE_UNUSED != 0;
                 if let Some(&(mut b, size)) = self.buffers.get(&id) {
                     // (the bytes the command names that the blob and the buffer hold)
                     let n = (len as usize).min(size.saturating_sub(at) as usize).min(blob.len().saturating_sub(off));
                     if n > 0 {
-                        if self.bused.contains(&id) {
+                        if self.bused.contains(&id) && !unused {
                             if at == 0 && n as u32 + 16 > size {
                                 // all of it (but the padding to 16): a new GPU buffer, draws before keep the old one
                                 self.doomed.push(b);

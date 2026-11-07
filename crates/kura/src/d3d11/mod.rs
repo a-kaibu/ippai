@@ -182,6 +182,11 @@ pub struct Buffer {
     pub gpu: u32,
     /// the guest wrote since `gpu` was made
     pub dirty: bool,
+    /// every write since the last upload was through a Map NO_OVERWRITE (bytes no draw before
+    /// reads: only the changed ones go up, in place)
+    pub stream: bool,
+    /// a dynamic buffer's bytes as last uploaded (what `stream` uploads are diffed against)
+    pub shadow: Vec<u8>,
 }
 
 pub struct Texture {
@@ -206,6 +211,9 @@ pub struct Texture {
     pub gpu: u32,
     /// mapped subresources: (subresource, guest memory, pitch, write)
     pub maps: Vec<(u32, u32, u32, bool)>,
+    /// a staging texture's subresources whose map memory holds what the page has (since their
+    /// last Unmap nothing wrote them): a Map reads no pixels back
+    pub clean: Vec<u32>,
 }
 
 #[derive(Clone)]
@@ -1202,6 +1210,7 @@ fn new_texture(d: &mut D11, dim: u32, w: u32, h: u32, layers: u32, mips: u32, fm
         backbuffer: false,
         gpu,
         maps: Vec::new(),
+        clean: Vec::new(),
     }))
 }
 
@@ -1685,7 +1694,7 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             if a(2) != 0 {
                 std::ptr::copy_nonoverlapping(rdp(a(2), 0) as *const u8, mem as *mut u8, size as usize);
             }
-            let o = d.new_obj(IF_BUFFER, Data::Buffer(Buffer { size, usage, bind, cpu, misc, stride, mem, gpu: 0, dirty: true }));
+            let o = d.new_obj(IF_BUFFER, Data::Buffer(Buffer { size, usage, bind, cpu, misc, stride, mem, gpu: 0, dirty: true, stream: false, shadow: Vec::new() }));
             if d.trace && size <= 256 {
                 let f: Vec<f32> = (0..size / 4).map(|i| *((mem + 4 * i) as *const f32)).collect();
                 eprintln!("d3d11: new buffer {o} bind {bind:#x} usage {usage} = {f:?}");
@@ -2779,6 +2788,8 @@ unsafe fn map(d: &mut D11, res: u32, sub: u32, ty: u32, out: u32, dxgi: bool, af
     }
     let r = match d.objs.get_mut(&id).map(|o| &mut o.data) {
         Some(Data::Buffer(b)) => {
+            // (D3D11_MAP_WRITE_NO_OVERWRITE: 5)
+            b.stream = ty == 5 && (b.stream || !b.dirty);
             b.dirty = true;
             put_mapped(out, b.mem, b.size, b.size, dxgi);
             S_OK
@@ -2814,13 +2825,10 @@ unsafe fn map(d: &mut D11, res: u32, sub: u32, ty: u32, out: u32, dxgi: bool, af
             if let Some(Data::Texture(t)) = d.objs.get(&id).map(|o| &o.data) {
                 // reading or writing part: the page's pixels (formats the page keeps as they are: the page writes
                 // lw * its bpp bytes a row, past the end of a smaller guest copy, e.g. A8 or BC)
-                let same = match format::info(t.fmt) {
-                    Some(f) => f.bpp == format::page_bpp(t.page) && f.block == 1 && f.conv == 0,
-                    None => format::page_bpp(t.page) == 4,
-                };
                 // (D3D11_MAP_WRITE keeps what is there too: a part written goes back with the
-                // rest as the page has it, a copy into the texture included)
-                if ty != 4 && same && t.dim != 3 {
+                // rest as the page has it, a copy into the texture included; ANGLE uploads every
+                // texture through a staging one mapped so, and the waits cost Godot seconds)
+                if ty != 4 && read_back(t) && !t.clean.contains(&sub) {
                     d.next_gpu += 1;
                     req = 0x4000_0000 | d.next_gpu;
                     let (g, l) = (t.gpu, level);
@@ -2848,12 +2856,33 @@ unsafe fn unmap(d: &mut D11, res: u32, sub: u32) {
             }
         }
     }
-    if let Some(Data::Texture(t)) = d.objs.get(&id).map(|o| &o.data) {
+    if let Some(Data::Texture(t)) = d.objs.get_mut(&id).map(|o| &mut o.data) {
         if let Some(&(_, mem, pitch, write)) = t.maps.iter().find(|m| m.0 == sub) {
             if write {
                 upload_texture(t, sub, mem, pitch, None);
             }
+            // (the memory holds what the page has now: read back at the Map, or sent up here)
+            if t.usage == 3 && read_back(t) && !t.clean.contains(&sub) {
+                t.clean.push(sub);
+            }
         }
+    }
+}
+
+/// A Map of `t` reads the page's pixels back into the map memory: formats the page keeps as
+/// they are (bytes for bytes), not 3D.
+fn read_back(t: &Texture) -> bool {
+    let same = match format::info(t.fmt) {
+        Some(f) => f.bpp == format::page_bpp(t.page) && f.block == 1 && f.conv == 0,
+        None => format::page_bpp(t.page) == 4,
+    };
+    same && t.dim != 3
+}
+
+/// The page's copy of texture `id` changed (a copy or update into it): its map memory is stale.
+fn texture_written(d: &mut D11, id: u32) {
+    if let Some(Data::Texture(t)) = d.objs.get_mut(&id).map(|o| &mut o.data) {
+        t.clean.clear();
     }
 }
 
@@ -2867,6 +2896,7 @@ unsafe fn update_subresource(d: &mut D11, res: u32, sub: u32, bx: u32, data: u32
             if x1 > x0 {
                 std::ptr::copy(data as *const u8, (buf.mem + x0) as *mut u8, (x1 - x0) as usize);
                 buf.dirty = true;
+                buf.stream = false;
                 if d.trace && buf.size <= 256 {
                     let f: Vec<f32> = (0..buf.size / 4).map(|i| *((buf.mem + 4 * i) as *const f32)).collect();
                     eprintln!("d3d11: buffer {id} = {f:?}");
@@ -2875,6 +2905,7 @@ unsafe fn update_subresource(d: &mut D11, res: u32, sub: u32, bx: u32, data: u32
         }
         Some(Data::Texture(t)) => {
             // the box's texels start at `data`
+            t.clean.clear();
             let t: &Texture = t;
             match b {
                 // (upload_texture reads the box's rows from `data` on: the box's first texel)
@@ -2888,11 +2919,13 @@ unsafe fn update_subresource(d: &mut D11, res: u32, sub: u32, bx: u32, data: u32
 
 unsafe fn copy_resource(d: &mut D11, dst: u32, src: u32) {
     let (di, si) = (d.id_of(dst), d.id_of(src));
+    texture_written(d, di);
     match (d.objs.get(&di).map(|o| &o.data), d.objs.get(&si).map(|o| &o.data)) {
         (Some(Data::Buffer(a)), Some(Data::Buffer(b))) => {
             std::ptr::copy(b.mem as *const u8, a.mem as *mut u8, a.size.min(b.size) as usize);
             if let Some(Data::Buffer(a)) = d.objs.get_mut(&di).map(|o| &mut o.data) {
                 a.dirty = true;
+                a.stream = false;
             }
         }
         (Some(Data::Texture(a)), Some(Data::Texture(b))) => {
@@ -2945,6 +2978,7 @@ unsafe fn resolve(d: &mut D11, dst: u32, dsub: u32, src: u32, ssub: u32, fmt: u3
 /// CopySubresourceRegion(dst, dst sub, x, y, z, src, src sub, box)
 unsafe fn copy_region(d: &mut D11, dst: u32, dsub: u32, x: u32, y: u32, _z: u32, src: u32, ssub: u32, bx: u32) {
     let (di, si) = (d.id_of(dst), d.id_of(src));
+    texture_written(d, di);
     match (d.objs.get(&di).map(|o| &o.data), d.objs.get(&si).map(|o| &o.data)) {
         (Some(Data::Buffer(a)), Some(Data::Buffer(b))) => {
             let (s0, s1) = if bx != 0 { (rd(bx, 0), rd(bx, 3)) } else { (0, b.size) };
@@ -2952,6 +2986,7 @@ unsafe fn copy_region(d: &mut D11, dst: u32, dsub: u32, x: u32, y: u32, _z: u32,
             std::ptr::copy((b.mem + s0) as *const u8, (a.mem + x) as *mut u8, n as usize);
             if let Some(Data::Buffer(a)) = d.objs.get_mut(&di).map(|o| &mut o.data) {
                 a.dirty = true;
+                a.stream = false;
             }
         }
         (Some(Data::Texture(a)), Some(Data::Texture(b))) => {
@@ -3067,6 +3102,24 @@ fn buffer_gpu(d: &mut D11, id: u32) -> u32 {
         b.gpu = g;
         b.dirty = false;
         let bytes = unsafe { std::slice::from_raw_parts(mem as *const u8, size as usize) };
+        if made != 0 && b.stream && b.shadow.len() == bytes.len() {
+            // (ANGLE streams each draw's vertices into a big dynamic buffer: uploading all of it
+            // per draw cost Godot seconds)
+            b.stream = false;
+            if let Some((lo, hi)) = changed_range(&b.shadow, bytes) {
+                b.shadow[lo..hi].copy_from_slice(&bytes[lo..hi]);
+                gpu::record(|q| {
+                    let off = q.blob(&bytes[lo..hi]);
+                    q.cmd(&[gpu::WRITE_BUFFER, g, lo as u32 | gpu::WRITE_UNUSED, off, (hi - lo) as u32]);
+                });
+            }
+            return g;
+        }
+        b.stream = false;
+        if b.usage == 2 {
+            b.shadow.clear();
+            b.shadow.extend_from_slice(bytes);
+        }
         gpu::record(|q| {
             let off = q.blob(bytes);
             if made == 0 {
@@ -3076,6 +3129,31 @@ fn buffer_gpu(d: &mut D11, id: u32) -> u32 {
         });
     }
     b.gpu
+}
+
+/// The bytes where `new` differs from `old` (same length), widened to whole 4-byte words (as
+/// writeBuffer writes them; the end may be `new`'s length); None when equal.
+pub(crate) fn changed_range(old: &[u8], new: &[u8]) -> Option<(usize, usize)> {
+    let n = new.len().min(old.len());
+    // (8 bytes at a time from each end)
+    let mut lo = 0;
+    while lo + 8 <= n && old[lo..lo + 8] == new[lo..lo + 8] {
+        lo += 8;
+    }
+    while lo < n && old[lo] == new[lo] {
+        lo += 1;
+    }
+    if lo == n {
+        return None;
+    }
+    let mut hi = n;
+    while hi >= lo + 8 && old[hi - 8..hi] == new[hi - 8..hi] {
+        hi -= 8;
+    }
+    while old[hi - 1] == new[hi - 1] {
+        hi -= 1;
+    }
+    Some((lo & !3, hi.next_multiple_of(4).min(n)))
 }
 
 /// WebGPU has 8 vertex buffers, D3D11 16 slots, and ANGLE gives every GL attribute its own
@@ -3627,6 +3705,57 @@ mod vb_merge_tests {
             }
             got.sort();
             prop_assert_eq!(got, want);
+        }
+    }
+}
+
+#[cfg(test)]
+mod changed_range_tests {
+    use super::changed_range;
+    use proptest::prelude::*;
+
+    #[test]
+    fn cases() {
+        assert_eq!(changed_range(&[0; 16], &[0; 16]), None);
+        assert_eq!(changed_range(&[], &[]), None);
+        let mut b = [0u8; 16];
+        b[5] = 1;
+        assert_eq!(changed_range(&[0; 16], &b), Some((4, 8)));
+        b[15] = 1;
+        assert_eq!(changed_range(&[0; 16], &b), Some((4, 16)));
+        // (a length not a multiple of 4: the end stops at it)
+        let mut c = [0u8; 10];
+        c[9] = 2;
+        assert_eq!(changed_range(&[0; 10], &c), Some((8, 10)));
+        c[0] = 2;
+        assert_eq!(changed_range(&[0; 10], &c), Some((0, 10)));
+    }
+
+    proptest! {
+        /// Copying the range from `new` onto `old` gives `new`; the range is word-aligned and
+        /// starts and ends within a word of the first and last difference.
+        #[test]
+        fn covers_every_difference(old in proptest::collection::vec(0u8..3, 0..300), flips in proptest::collection::vec((0usize..300, 1u8..3), 0..6)) {
+            let mut new = old.clone();
+            for (at, x) in flips {
+                if at < new.len() {
+                    new[at] ^= x;
+                }
+            }
+            let diffs: Vec<usize> = (0..old.len()).filter(|&i| old[i] != new[i]).collect();
+            match changed_range(&old, &new) {
+                None => prop_assert!(diffs.is_empty()),
+                Some((lo, hi)) => {
+                    prop_assert!(!diffs.is_empty());
+                    prop_assert!(lo % 4 == 0 && (hi % 4 == 0 || hi == new.len()) && lo < hi && hi <= new.len());
+                    let (first, last) = (diffs[0], *diffs.last().unwrap());
+                    prop_assert!(lo <= first && first < lo + 4, "lo {} first {}", lo, first);
+                    prop_assert!(last < hi && hi <= (last + 4) & !3 || hi == new.len(), "hi {} last {}", hi, last);
+                    let mut patched = old.clone();
+                    patched[lo..hi].copy_from_slice(&new[lo..hi]);
+                    prop_assert_eq!(patched, new);
+                }
+            }
         }
     }
 }

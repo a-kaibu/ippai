@@ -409,3 +409,132 @@ fn state_descriptions_normalized() {
     assert_eq!(get(IF_DEPTH, d3, 13), vec![1, 0, 4, 1, 0x0f0f, 2, 3, 4, 5, 6, 7, 8, 1]);
     gpu::set_pump(None);
 }
+
+/// ANGLE's streaming: each draw's vertices go into a dynamic buffer through a Map
+/// NO_OVERWRITE after the last draw's (in place, only the new bytes uploaded), a Map DISCARD
+/// when they don't fit (the buffer anew). Several draws per batch: each must read the
+/// vertices written for it, not ones written after (the page writes the new bytes while the
+/// pass with the earlier draws is still open), and not lose the ones before.
+fn stream_run(seed: u64, vs: &[u8], ps: &[u8]) {
+    let mut r = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 5);
+    attach_page();
+    model::with(|m| m.prims = Some(Vec::new()));
+    let desc = mem(16);
+    put(desc, &[64, 64, 60, 1, 28, 0, 0, 1, 0, 0x20, 1, 1, 1, 0, 0]);
+    let (sc_out, dev_out, level, ctx_out) = (mem(2), mem(2), mem(2), mem(2));
+    assert_eq!(call1(CREATE_DEVICE, &[0, 1, 0, 0, 0, 0, 7, desc, sc_out, dev_out, level, ctx_out]), 0);
+    let (dev, ctx) = (rd1(dev_out), rd1(ctx_out));
+    let dc = |m11: u32, a: &[u32]| call1(m(IF_DEVICE, m11), a);
+    let cc = |m11: u32, a: &[u32]| call1(m(IF_CONTEXT, m11), a);
+    let o = mem(2);
+    let d = mem(11);
+    put(d, &[64, 64, 1, 1, 28, 1, 0, 0, 0x20, 0, 0]);
+    assert_eq!(dc(5, &[dev, d, 0, o]), 0);
+    let rt = rd1(o);
+    let vd = mem(4);
+    put(vd, &[28, 4, 0, 0]);
+    assert_eq!(dc(9, &[dev, rt, vd, o]), 0);
+    let arr = mem(4);
+    put(arr, &[rd1(o)]);
+    cc(33, &[ctx, 1, arr, 0]);
+    let vp = mem(6);
+    put(vp, &[0, 0, 64f32.to_bits(), 64f32.to_bits(), 0, 1f32.to_bits()]);
+    cc(44, &[ctx, 1, vp]);
+    let code = |c: &[u8]| {
+        let p = unsafe { alloc(c.len() as u32) as u32 };
+        put_bytes(p, c);
+        p
+    };
+    let (vsc, psc) = (code(vs), code(ps));
+    assert_eq!(dc(12, &[dev, vsc, vs.len() as u32, 0, o]), 0);
+    cc(11, &[ctx, rd1(o), 0, 0]);
+    assert_eq!(dc(15, &[dev, psc, ps.len() as u32, 0, o]), 0);
+    cc(9, &[ctx, rd1(o), 0, 0]);
+    // every element in slot 0, packed: 40 bytes a vertex
+    const STRIDE: u32 = 40;
+    let ed = mem(7 * 4);
+    let mut at = 0;
+    for (k, e) in ELEMS.iter().enumerate() {
+        let p = unsafe { alloc(e.0.len() as u32 + 1) as u32 };
+        put_bytes(p, e.0.as_bytes());
+        put_bytes(p + e.0.len() as u32, &[0]);
+        put(ed + 28 * k as u32, &[p, e.1, e.2, 0, at, 0, 0]);
+        at += e.3;
+    }
+    assert_eq!(dc(11, &[dev, ed, 4, vsc, vs.len() as u32, o]), 0);
+    cc(17, &[ctx, rd1(o)]);
+    cc(24, &[ctx, 1]);
+    // the dynamic vertex buffer (usage dynamic, vertex binding, CPU write)
+    const SIZE: u32 = 1200;
+    let bd = mem(6);
+    put(bd, &[SIZE, 2, 1, 0x10000, 0, 0]);
+    assert_eq!(dc(3, &[dev, bd, 0, o]), 0);
+    let vb = rd1(o);
+    let (bufs, strides, offs, mapped) = (mem(1), mem(1), mem(1), mem(4));
+    put(bufs, &[vb]);
+    put(strides, &[STRIDE]);
+    let mut cursor = SIZE;
+    let mut checked = 0;
+    for batch in 0..60 {
+        let mut want: Vec<Vec<Vec<Vec<u8>>>> = Vec::new();
+        for _ in 0..1 + r.below(6) {
+            let n = 1 + r.below(8) as u32;
+            // (DISCARD when the vertices don't fit, now and then anyway; the first Map too)
+            let discard = cursor + n * STRIDE > SIZE || r.chance(10);
+            if discard {
+                cursor = 0;
+            }
+            assert_eq!(cc(14, &[ctx, vb, 0, if discard { 4 } else { 5 }, 0, mapped]), 0);
+            let p = rd1(mapped);
+            // (some vertices the same bytes as the buffer held there: no change to upload)
+            let same = r.chance(20);
+            let bytes: Vec<u8> = (0..n * STRIDE / 4).flat_map(|_| (((r.next() as u32) & 0x3fff_ffff) | 0x3000_0000).to_le_bytes()).collect();
+            if !same {
+                put_bytes(p + cursor, &bytes);
+            }
+            let bytes = unsafe { std::slice::from_raw_parts((p + cursor) as *const u8, (n * STRIDE) as usize) }.to_vec();
+            cc(15, &[ctx, vb, 0]);
+            put(offs, &[cursor]);
+            cc(18, &[ctx, 0, 1, bufs, strides, offs]);
+            cc(13, &[ctx, n, 0]);
+            for v in bytes.chunks(STRIDE as usize) {
+                let mut a: Vec<Vec<u8>> = ELEMS.iter().scan(0usize, |o, e| { let s = v[*o..*o + e.3 as usize].to_vec(); *o += e.3 as usize; Some(s) }).collect();
+                a.sort();
+                want.push(vec![a]);
+            }
+            cursor += n * STRIDE;
+        }
+        cc(111, &[ctx]);
+        gpu::pump();
+        let got = model::with(|m| m.prims.as_mut().unwrap().drain(..).collect::<Vec<_>>());
+        let got: Vec<Vec<Vec<Vec<u8>>>> = got
+            .iter()
+            .flatten()
+            .map(|p| p.iter().map(|v| { let mut a: Vec<Vec<u8>> = v.iter().map(|x| x.1.clone()).collect(); a.sort(); a }).collect())
+            .collect();
+        assert_eq!(got.len(), want.len(), "seed {seed} batch {batch}: points");
+        for (k, (g, w)) in got.iter().zip(&want).enumerate() {
+            assert!(g == w, "seed {seed} batch {batch}: point {k} differs\n got  {g:?}\n want {w:?}");
+        }
+        checked += want.len();
+    }
+    assert!(checked > 200, "seed {seed}: {checked} points");
+    gpu::set_pump(None);
+    let errors = model::with(|m| std::mem::take(&mut m.errors));
+    assert!(errors.is_empty(), "seed {seed}: WebGPU errors {:?}", &errors[..errors.len().min(10)]);
+    model::with(|m| m.prims = None);
+    cc(110, &[ctx]);
+}
+
+#[test]
+fn d3d11_streamed_vertices_in_one_batch() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let vs = hlslc::compile(VS, &[], &mut |_, _| None, "main", "vs_4_0", 0).expect("vs");
+    let ps = hlslc::compile(PS, &[], &mut |_, _| None, "main", "ps_4_0", 0).expect("ps");
+    let vt = mem(256);
+    put(vt, &(1..=256).map(|i| 0x1000 * i).collect::<Vec<_>>());
+    call1(INIT, &[vt, 256]);
+    for seed in 0..8 {
+        stream_run(seed, &vs, &ps);
+    }
+}

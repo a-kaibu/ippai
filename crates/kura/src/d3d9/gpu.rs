@@ -33,6 +33,8 @@ pub const WRITE_TEXTURE_MEM: u32 = 13; // id level x y w h pitch ptr: rows strai
 pub const CREATE_BUFFER: u32 = 20; // id size
 pub const DESTROY_BUFFER: u32 = 21; // id
 pub const WRITE_BUFFER: u32 = 22; // id offset blob_offset len
+/// In WRITE_BUFFER's offset: the bytes are ones no draw before reads (written without ending the pass).
+pub const WRITE_UNUSED: u32 = 0x8000_0000;
 pub const CREATE_PIPELINE2: u32 = 23; // id len key[len] (see d3d11::draw)
 pub const SET_TARGETS2: u32 = 24; // n (tex level layer)*n dtex dlevel dlayer
 pub const DRAW2: u32 = 25; // see d3d11::draw (ends with the hash of what it reads from its buffers, 0: unknown)
