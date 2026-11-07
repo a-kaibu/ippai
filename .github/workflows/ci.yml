@@ -145,6 +145,72 @@ jobs:
   # against the runner's CPU: long mode (jit64test) and 32-bit (jit32test: regions and function
   # mode through its dispatcher; integer/MMX/SSE/x87). One job: the four runs are single-threaded,
   # so they run side by side as background steps on the runner's cores (one runner, not two).
+  # koji's x86-64 JIT: 20000 random programs against the interpreter (a new seed per run, in four
+  # parts at once: the runner's four cores; one part alone took over 30 minutes), and the
+  # interpreter against the runner's CPU
+  jit64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: tools/ci/rust-key.sh
+      - id: cargo-cache
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            tools/jit64test/target
+          key: jit64-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('tools/jit64test/Cargo.lock') }}
+          restore-keys: |
+            jit64-${{ runner.os }}-${{ env.RUST_KEY }}-
+      - name: Build jit64test
+        working-directory: tools/jit64test
+        run: cargo build --release --locked
+      - name: Long mode, JIT against the interpreter, part 1 of 4
+        id: jit64-diff0
+        background: true
+        working-directory: tools/jit64test
+        run: target/release/jit64test 5000 $(( ${{ github.run_number }} * 4 + 0 ))
+      - name: Long mode, JIT against the interpreter, part 2 of 4
+        id: jit64-diff1
+        background: true
+        working-directory: tools/jit64test
+        run: target/release/jit64test 5000 $(( ${{ github.run_number }} * 4 + 1 ))
+      - name: Long mode, JIT against the interpreter, part 3 of 4
+        id: jit64-diff2
+        background: true
+        working-directory: tools/jit64test
+        run: target/release/jit64test 5000 $(( ${{ github.run_number }} * 4 + 2 ))
+      - name: Long mode, JIT against the interpreter, part 4 of 4
+        id: jit64-diff3
+        background: true
+        working-directory: tools/jit64test
+        run: target/release/jit64test 5000 $(( ${{ github.run_number }} * 4 + 3 ))
+      - name: Long mode, interpreter against the runner's CPU, one instruction at a time
+        id: jit64-native
+        background: true
+        working-directory: tools/jit64test
+        run: target/release/jit64test native 30000 ${{ github.run_number }}
+      - name: Wait for the five runs
+        wait: [jit64-diff0, jit64-diff1, jit64-diff2, jit64-diff3, jit64-native]
+      # (before the cache is saved: only the registry crates' builds are worth keeping)
+      - name: Shrink the cargo cache
+        if: ${{ !cancelled() }}
+        run: python3 tools/ci/cache-prune.py tools/jit64test/target
+      # (saved when the tests fail too: the registry crates' builds are good either way)
+      - if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' && steps.cargo-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            tools/jit64test/target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
+  # koji's 32-bit JIT against the interpreter (two parts at once) and the runner's CPU; its 16-bit
+  # JIT (Win16 code) against its interpreter and a real 386 (SingleStepTests/80386: every test of
+  # what it translates, 200 per opcode file)
   jit:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -158,12 +224,10 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            tools/jit64test/target
             tools/jit32test/target
             tools/jit16test/target
-          key: jit-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('tools/jit64test/Cargo.lock', 'tools/jit32test/Cargo.lock', 'tools/jit16test/Cargo.lock') }}
+          key: jit-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('tools/jit32test/Cargo.lock', 'tools/jit16test/Cargo.lock') }}
           restore-keys: |
-            jit-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('tools/jit64test/Cargo.lock', 'tools/jit32test/Cargo.lock', 'tools/jit16test/Cargo.lock') }}-
             jit-${{ runner.os }}-${{ env.RUST_KEY }}-
       # (SingleStepTests/80386 for jit16test, pinned by fetch.sh)
       - uses: actions/cache@v6.1.0
@@ -183,52 +247,44 @@ jobs:
         id: apt
         background: true
         run: tools/ci/apt.sh gcc-multilib
-      - name: Build jit64test, jit32test and jit16test
+      - name: Build jit32test and jit16test
         run: |
-          (cd tools/jit64test && cargo build --release --locked) & p=$!
           (cd tools/jit16test && cargo build --release --locked) & q=$!
           (cd tools/jit32test && cargo build --release --locked)
-          wait $p
           wait $q
-      - name: Long mode, JIT against the interpreter (new seed per run)
-        id: jit64-diff
-        background: true
-        working-directory: tools/jit64test
-        run: cargo run --release --locked -- 20000 ${{ github.run_number }}
-      - name: Long mode, interpreter against the runner's CPU, one instruction at a time
-        id: jit64-native
-        background: true
-        working-directory: tools/jit64test
-        run: cargo run --release --locked -- native 30000 ${{ github.run_number }}
-      - name: 32-bit, JIT against the interpreter (new seed per run)
-        id: jit32-diff
+      - name: 32-bit, JIT against the interpreter, part 1 of 2
+        id: jit32-diff0
         background: true
         working-directory: tools/jit32test
-        run: cargo run --release --locked -- 10000 ${{ github.run_number }}
-      # koji's 16-bit JIT (Win16 code) against its interpreter (random 16-bit code) and against a
-      # real 386 (SingleStepTests/80386: every test of what it translates, 200 per opcode file)
+        run: cargo run --release --locked -- 5000 $(( ${{ github.run_number }} * 2 ))
+      - name: 32-bit, JIT against the interpreter, part 2 of 2
+        id: jit32-diff1
+        background: true
+        working-directory: tools/jit32test
+        run: cargo run --release --locked -- 5000 $(( ${{ github.run_number }} * 2 + 1 ))
       - name: 16-bit, JIT against the interpreter (new seed per run)
         id: jit16-diff
         background: true
         working-directory: tools/jit16test
         run: cargo run --release --locked -- 1500 ${{ github.run_number }}
-      - wait: [apt, sst]
+      - wait: sst
       - name: 16-bit, against the 386
         id: jit16-sst
         background: true
         working-directory: tools/jit16test
         run: SST_N=200 cargo run --release --locked -- sst
+      - wait: apt
       - name: 32-bit, against the runner's CPU (random rounding modes and precisions)
         id: jit32-native
         background: true
         working-directory: tools/jit32test
         run: cargo run --release --locked -- native 3000 ${{ github.run_number }}
-      - name: Wait for the six runs
-        wait: [jit64-diff, jit64-native, jit32-diff, jit32-native, jit16-diff, jit16-sst]
+      - name: Wait for the five runs
+        wait: [jit32-diff0, jit32-diff1, jit32-native, jit16-diff, jit16-sst]
       # (before the cache is saved: only the registry crates' builds are worth keeping)
       - name: Shrink the cargo cache
         if: ${{ !cancelled() }}
-        run: python3 tools/ci/cache-prune.py tools/jit64test/target tools/jit32test/target tools/jit16test/target
+        run: python3 tools/ci/cache-prune.py tools/jit32test/target tools/jit16test/target
       # (saved when the tests fail too: the registry crates' builds are good either way)
       - if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' && steps.cargo-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v6.1.0
@@ -236,7 +292,6 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            tools/jit64test/target
             tools/jit32test/target
             tools/jit16test/target
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
