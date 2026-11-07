@@ -211,6 +211,10 @@ fn num(f: f32) -> String {
     if f.is_finite() { format!("{f}") } else { "0".into() }
 }
 
+/// The first line of a save state's sample copy shader (d3d/snap.rs; the model copies texels
+/// for it).
+pub(crate) const SAMPLE_COPY: &str = "// ippai: sample copy\n";
+
 pub(crate) const CLEAR_SHADER: &str = r#"
 struct C { color: vec4f, z: vec4f };
 @group(0) @binding(0) var<uniform> c: C;

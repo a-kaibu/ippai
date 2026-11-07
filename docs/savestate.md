@@ -12,7 +12,7 @@ from. Everything outside the memory is made again from it:
 | outside the memory | how it comes back |
 | --- | --- |
 | the threads' host stacks | every thread stands where nothing on its stack matters (below); a restored module starts a thread per record |
-| the GPU (textures, buffers, shaders, pipelines) | the drawing thread reads it all back into one batch that makes it again (`crates/kura/src/render/d3d/snap.rs`) |
+| the GPU (textures, buffers, shaders, pipelines) | the drawing thread reads it all back into one batch that makes it again (`crates/kura/src/render/d3d/snap.rs`); a 4x texture (which WebGPU can't copy) sample by sample: each drawn into a 1x texture of its format and read, restored by drawing each into its samples with a multisample mask |
 | translated x86 code (JIT) | per thread, translated again (the shared cache is in memory) |
 | clocks | an offset makes the program's time go on from the state's (`kura::wrap` clock_gettime) |
 | the page (audio, movies, input) | the page is new; the guest's rings and queues are in memory |
@@ -87,8 +87,6 @@ A state holds the game's own save files as they were then: loading one goes back
 
 * Depth and stencil buffers can't be read back (WebGPU): they come back as last cleared (games
   clear them every frame).
-* Neither can Direct3D 11 multisampled (4x) targets: they come back as zeros, and a 4x back
-  buffer shown at the save shows black until the game presents again.
 * Under node, files opened outside kura's file system (NODERAWFS) are not in a state.
 * Node 22's V8 loses `i32.atomic.store` to constant addresses at 2 GiB and up in its first tier,
   where all of the host's statics are: run sake.js under node 24 or later.
@@ -109,6 +107,8 @@ host/snap.js (the node build's pre-js):
 * `a_state_draws_the_same_d3d9/11` (crates/kura/src/render/d3d/model_tests.rs): random Direct3D
   command streams on the WebGPU model, with the GPU read back after a random batch and made again
   in a fresh model: every later frame and readback the same.
-* `tests/savestate-browser.mjs`: in Chromium with ippai serve, a state from the dialog, loaded,
+* `tests/savestate-browser.mjs`: in Chromium with ippai serve (also host/tests/snapmsaa.c:
+  Direct3D 11 4x targets of 4 formats drawn once, every sample read back each step, the same
+  bits after the state; it fails without the sample copies), a state from the dialog, loaded,
   and loaded in a browser with nothing of its own (the server's copy); again on sake-grow with
   its memory grown by 512 MiB before the state, loaded without `&memory=grow`.

@@ -5,8 +5,9 @@
 //! drawing thread runs it before anything else (render/mod.rs), then the guest's batches go on.
 //!
 //! Depth and stencil can't be read back (WebGPU): they come back as they were last cleared
-//! (games clear them every frame). Neither can multisampled textures: they come back
-//! cleared to zeros (games draw and resolve them every frame).
+//! (games clear them every frame). Multisampled color textures can't be copied either: each
+//! sample is drawn into a 1x texture of the format and read back (`samples_out`), and a
+//! restored one is drawn sample by sample (multisample mask) from those (`samples_in`).
 
 use super::*;
 
@@ -14,12 +15,19 @@ use super::*;
 pub struct Saved {
     pub c: Vec<u32>,
     pub blob: Vec<u8>,
+    /// multisampled textures' samples: id, and per sample (bytes per row, the rows)
+    ms: Vec<(u32, Samples)>,
     /// the texture the page showed, where, flipped, in which window
     overlay: Option<(u32, [i32; 4], bool, u32)>,
 }
 
+/// A multisampled texture's samples read back: per sample, bytes per row and the rows.
+type Samples = Vec<(u32, Vec<u8>)>;
+
 enum What {
     Tex { id: u32, level: u32, layer: u32, w: u32, h: u32, bpr: u32, halved: bool },
+    /// sample `sample` of multisampled `id`, drawn into `tex` (1x) to be read
+    Sample { id: u32, sample: u32, bpr: u32, tex: Id },
     Buf { id: u32 },
 }
 
@@ -45,7 +53,13 @@ impl D3d {
         ids.sort_unstable();
         for id in ids {
             let t = &self.textures[&id];
-            if is_depth(t.format) || t.samples > 1 || t.make.is_empty() {
+            if is_depth(t.format) || t.make.is_empty() {
+                continue;
+            }
+            if t.samples > 1 {
+                if !t.halved {
+                    reads.extend(self.samples_out(id));
+                }
                 continue;
             }
             let bpp = bpp(t.format);
@@ -86,6 +100,9 @@ impl D3d {
         if let Some(r) = self.snap_reads.as_mut().and_then(|v| v.get_mut(k)) {
             r.state = if ok { 1 } else { 2 };
             gpu::destroy(r.buf);
+            if let What::Sample { tex, .. } = r.what {
+                gpu::destroy(tex);
+            }
         }
         true
     }
@@ -144,8 +161,17 @@ impl D3d {
         for (id, size) in ids {
             c.extend_from_slice(&[CREATE_BUFFER, id, size]);
         }
+        let mut ms: Vec<(u32, Samples)> = Vec::new();
         for r in reads.iter().filter(|r| r.state == 1) {
             match r.what {
+                What::Sample { id, sample, bpr, .. } => {
+                    match ms.last_mut() {
+                        Some((i, v)) if *i == id && v.len() == sample as usize => v.push((bpr, r.data.clone())),
+                        _ if sample == 0 => ms.push((id, vec![(bpr, r.data.clone())])),
+                        _ => {}
+                    }
+                    continue;
+                }
                 What::Tex { id, level, layer, w, h, bpr, halved } => {
                     let off = blob.len() as u32;
                     let bpr = if halved {
@@ -171,12 +197,17 @@ impl D3d {
             c.extend_from_slice(t);
         }
         let overlay = self.overlay.and_then(|o| self.textures.contains_key(&self.overlay_tex).then_some((self.overlay_tex, o.rect, o.flip, o.hwnd)));
-        Saved { c, blob, overlay }
+        // (all four samples, or none: the texture comes back as zeros)
+        ms.retain(|(_, v)| v.len() == 4);
+        Saved { c, blob, ms, overlay }
     }
 
     /// A fresh D3d (a restored module's): makes what `s` holds.
     pub fn snap_restore(&mut self, s: &Saved) {
         self.run_batch(&s.c, &[], &s.blob);
+        for (id, samples) in &s.ms {
+            self.samples_in(*id, samples);
+        }
         if let Some((id, rect, flip, hwnd)) = s.overlay {
             if self.textures.contains_key(&id) {
                 // (a multisampled one shows its resolve: of zeros, until the game presents again)
@@ -189,6 +220,112 @@ impl D3d {
     }
 }
 
+/// The sample type of a color format: WGSL's and the bind group layout's.
+fn sample_kind(format: &str) -> (&'static str, &'static str) {
+    if format.ends_with("uint") {
+        ("u32", "uint")
+    } else if format.ends_with("sint") {
+        ("i32", "sint")
+    } else {
+        ("f32", "unfilterable-float")
+    }
+}
+
+/// The sample copy shader: sample `sample` of a multisampled texture (None: the texel of a 1x
+/// one) at the fragment's pixel, of WGSL type `ty`.
+pub(crate) fn sample_copy_shader(ty: &str, sample: Option<u32>) -> String {
+    let (src, load) = match sample {
+        Some(k) => (format!("texture_multisampled_2d<{ty}>"), format!("{k}")),
+        None => (format!("texture_2d<{ty}>"), "0".into()),
+    };
+    format!(
+        "{SAMPLE_COPY}@group(0) @binding(0) var src: {src};
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {{
+  let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
+  return vec4f(p * 2.0 - 1.0, 0.0, 1.0);
+}}
+@fragment fn fs(@builtin(position) p: vec4f) -> @location(0) vec4<{ty}> {{ return textureLoad(src, vec2<i32>(p.xy), {load}); }}
+"
+    )
+}
+
+impl D3d {
+    /// A pipeline drawing the sample copy into `format` with `samples` and multisample `mask`;
+    /// its bind group layout (the caller drops both).
+    fn sample_copy_pipe(&mut self, format: &'static str, sample: Option<u32>, samples: u32, mask: u32) -> (Id, Id, Id) {
+        let (ty, st) = sample_kind(format);
+        let m = gpu::shader(&sample_copy_shader(ty, sample));
+        let layout = gpu::bind_group_layout(&format!(
+            r#"{{"entries":[{{"binding":0,"visibility":2,"texture":{{"sampleType":{},"viewDimension":"2d","multisampled":{}}}}}]}}"#,
+            q(st),
+            sample.is_some()
+        ));
+        let pl = gpu::pipeline_layout(&format!(r#"{{"bindGroupLayouts":[{layout}]}}"#));
+        let p = gpu::render_pipeline(&format!(
+            r#"{{"layout":{pl},"vertex":{{"module":{m},"entryPoint":"vs"}},"fragment":{{"module":{m},"entryPoint":"fs","targets":[{{"format":{}}}]}},"primitive":{{"topology":"triangle-list"}},"multisample":{{"count":{samples},"mask":{mask}}}}}"#,
+            q(format)
+        ));
+        gpu::drop(pl);
+        (p, layout, m)
+    }
+
+    /// Multisampled `id`'s four samples drawn into 1x textures and read back (snap_begin's).
+    fn samples_out(&mut self, id: u32) -> Vec<Read> {
+        let t = &self.textures[&id];
+        let (w, h, format, view) = (t.w, t.h, t.format, t.view);
+        let bpr = (w * bpp(format)).div_ceil(256) * 256;
+        let mut reads = Vec::new();
+        self.end_pass();
+        for sample in 0..4 {
+            let (pipe, layout, module) = self.sample_copy_pipe(format, Some(sample), 1, 0xf);
+            let tex = gpu::texture(&format!(r#"{{"size":[{w},{h}],"format":{},"usage":{}}}"#, q(format), usage::T_RENDER | usage::T_COPY_SRC));
+            let tv = gpu::view(tex, "");
+            let group = gpu::bind_group(layout, &[(0, Res::Obj(view))]);
+            self.open = true;
+            gpu::begin_pass(&format!(r#"{{"colorAttachments":[{{"view":{tv},"loadOp":"clear","storeOp":"store"}}]}}"#));
+            gpu::set_pipeline(pipe);
+            gpu::set_bind_group(0, group, &[]);
+            gpu::draw(3, 1, 0, 0);
+            gpu::end_pass();
+            let buf = gpu::buffer(bpr * h, usage::COPY_DST | usage::MAP_READ);
+            gpu::copy_layer_to_buffer(tex, 0, [0, 0, 0], buf, bpr, w, h);
+            [group, tv, pipe, layout, module].into_iter().for_each(gpu::drop);
+            reads.push(Read { what: What::Sample { id, sample, bpr, tex }, buf, data: vec![0; (bpr * h) as usize], state: 0 });
+        }
+        reads
+    }
+
+    /// Multisampled `id` (made again, its clears done) filled from its samples' rows: each drawn
+    /// into the samples of one bit of the mask.
+    fn samples_in(&mut self, id: u32, samples: &[(u32, Vec<u8>)]) {
+        let Some(t) = self.textures.get(&id) else { return };
+        if t.samples != 4 || samples.len() != 4 {
+            return;
+        }
+        let (w, h, format) = (t.w, t.h, t.format);
+        self.settle(id);
+        self.end_pass();
+        let target = self.textures[&id].view;
+        for (k, (bpr, rows)) in samples.iter().enumerate() {
+            let tex = gpu::texture(&format!(r#"{{"size":[{w},{h}],"format":{},"usage":{}}}"#, q(format), usage::T_BINDING | usage::T_COPY_DST));
+            gpu::write_texture(tex, 0, [0, 0, 0], rows.as_ptr(), rows.len(), *bpr, h, [w, h, 1]);
+            let tv = gpu::view(tex, "");
+            let (pipe, layout, module) = self.sample_copy_pipe(format, None, 4, 1 << k);
+            let group = gpu::bind_group(layout, &[(0, Res::Obj(tv))]);
+            self.open = true;
+            gpu::begin_pass(&format!(r#"{{"colorAttachments":[{{"view":{target},"loadOp":"load","storeOp":"store"}}]}}"#));
+            gpu::set_pipeline(pipe);
+            gpu::set_bind_group(0, group, &[]);
+            gpu::draw(3, 1, 0, 0);
+            gpu::end_pass();
+            [group, tv, pipe, layout, module].into_iter().for_each(gpu::drop);
+            self.doomed.push(tex);
+        }
+        self.use_tex(id);
+        self.submit();
+    }
+}
+
 /// What a depth-stencil texture comes back as: its last clear (or depth 1, as a new one).
 pub(super) fn depth_clears(id: u32, t: &Tex) -> Vec<u32> {
     let (z, s) = t.zclear.unwrap_or((1.0, 0));
@@ -196,8 +333,9 @@ pub(super) fn depth_clears(id: u32, t: &Tex) -> Vec<u32> {
     (0..t.levels).flat_map(|level| (0..layers).flat_map(move |layer| [CLEAR_VIEW, id, level, layer, 6, 0, 0, 0, 0, z.to_bits(), s])).collect()
 }
 
-/// What a multisampled color texture comes back as (not read back): zeros, as a new one, made
-/// explicit so that what restores it is the same command whatever the page did before.
+/// What a multisampled color texture comes back as before its samples are drawn (or if they
+/// could not be read): zeros, as a new one, made explicit so that what restores it is the same
+/// command whatever the page did before.
 pub(super) fn ms_clears(id: u32) -> Vec<u32> {
     vec![CLEAR_VIEW, id, 0, 0, 1, 0, 0, 0, 0, 0, 0]
 }

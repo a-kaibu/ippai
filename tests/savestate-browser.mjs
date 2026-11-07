@@ -5,7 +5,8 @@
 // from where the state was). Then a browser with nothing of its own (another device) goes on
 // from the server's copy of the state. Then again on sake-grow.wasm (the build of a device that
 // can't reserve 4 GB) with its memory grown before the state: loaded without asking for that
-// build, the page takes the state's.
+// build, the page takes the state's. And host/tests/snapmsaa.c: Direct3D 11 4x targets drawn
+// once, read back sample by sample every step: the same bits after the state.
 //
 //   node tests/savestate-browser.mjs [path to ippai] [snaptest.exe]
 //   (web/dist built with sake in it: crates/sake/build.sh, then pnpm build; PLAYWRIGHT as elsewhere)
@@ -36,6 +37,11 @@ mkdirSync(game);
 cpSync(exe, join(game, "snaptest.exe"));
 run("pack", game, "g");
 run("add-game", "g", "--title", "ステートの試験", "--tree", "g", "--exe", "snaptest.exe", "--no-meta");
+const msaa = join(work, "msaa");
+mkdirSync(msaa);
+execFileSync("i686-w64-mingw32-gcc", ["-O2", "host/tests/snapmsaa.c", "-o", join(msaa, "snapmsaa.exe"), "-ld3d11", "-ld3dcompiler_47"]);
+run("pack", msaa, "m");
+run("add-game", "m", "--title", "ステートの試験 4x", "--tree", "m", "--exe", "snapmsaa.exe", "--no-meta");
 
 const port = 8900 + Math.floor(Math.random() * 200) * 2;
 const server = spawn(
@@ -63,7 +69,7 @@ async function device(name) {
   page.on("dialog", (d) => d.accept());
   return { ctx, page, lines };
 }
-const program = (lines) => lines.filter((l) => /^(step \d+|late thread|clocks|sleeper|end)/.test(l));
+const program = (lines) => lines.filter((l) => /^(step \d+|late thread|clocks|sleeper|changed at|samples differ|end)/.test(l));
 async function until(lines, re, ms = 120000) {
   const t = Date.now();
   while (!lines.some((l) => re.test(l))) {
@@ -71,10 +77,10 @@ async function until(lines, re, ms = 120000) {
     await new Promise((r) => setTimeout(r, 100));
   }
 }
-const play = `${base}play.html?game=g&headless&autostart`;
-
-/** The whole round: `start`, the page's extra parameters for the run the state is taken in. */
-async function round(tag, start) {
+/** The whole round: `start`, the page's extra parameters for the run the state is taken in;
+ * `whole` checks the whole run's lines. */
+async function round(tag, start, game = "g", wholeOk = (w) => w.includes("clocks: ok")) {
+  const play = `${base}play.html?game=${game}&headless&autostart`;
   // the whole run, a state taken in the middle (from the dialog)
   const a = await device(`a${tag}`);
   await a.page.goto(`${play}${start}`);
@@ -86,7 +92,7 @@ async function round(tag, start) {
   await until(a.lines, /^end$/);
   const whole = program(a.lines);
   assert.equal(whole.at(-1), "end");
-  assert.ok(whole.includes("clocks: ok"), whole.join("\n"));
+  assert.ok(wholeOk(whole), whole.join("\n"));
   // (and on the server)
   await a.page.waitForFunction(() => !document.body.textContent?.includes("サーバーに送信中"), null, { timeout: 120000 });
 
@@ -118,6 +124,8 @@ try {
   await round("", "");
   // (&grow: 512 MiB of sake's memory taken at once, so that it grows mid-run)
   await round(" (sake-grow, grown)", "&memory=grow&grow=512");
+  // (4x targets: every sample of each, bit for bit, and the samples of edge pixels differ)
+  await round(" (Direct3D 11 4x targets)", "", "m", (w) => w.includes("samples differ: all") && !w.some((l) => l.startsWith("changed at")));
 } catch (e) {
   failed = true;
   console.error(`FAIL ${e.stack ?? e}`);

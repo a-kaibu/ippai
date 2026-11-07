@@ -440,6 +440,8 @@ pub struct Pipeline {
     /// "uint16" / "uint32": an index of all ones restarts the strip
     pub strip_format: Option<String>,
     pub clear_shader: bool,
+    /// a save state's sample copy (Shader::copy)
+    pub copy_shader: bool,
     /// a stencil test or stencil writes: the draw reads the pass's stencil reference
     pub uses_stencil: bool,
     /// multisample.count
@@ -478,6 +480,9 @@ pub enum Obj {
 pub struct Shader {
     pub entries: Vec<(String, naga::ShaderStage, Vec<(u32, u32, char, String, String)>)>,
     pub clear: bool,
+    /// one of the save states' sample copies (d3d/snap.rs): writes what binding 0 holds at the
+    /// fragment's pixel
+    pub copy: bool,
 }
 
 #[derive(Clone)]
@@ -808,7 +813,7 @@ impl Model {
     }
 
     pub fn shader(&mut self, code: &str) -> u32 {
-        let mut sh = Shader { clear: code == super::d3d::CLEAR_SHADER, ..Default::default() };
+        let mut sh = Shader { clear: code == super::d3d::CLEAR_SHADER, copy: code.starts_with(super::d3d::SAMPLE_COPY), ..Default::default() };
         match naga::front::wgsl::parse_str(code) {
             Err(e) => self.err(format!("createShaderModule: {}", e.emit_to_string(code))),
             Ok(m) => {
@@ -952,9 +957,11 @@ impl Model {
         let mut used = Vec::new();
         let mut h = hash_desc(&j);
         let mut clear = false;
+        let mut copy = false;
         if let Some((mh, sh, u)) = &vs {
             h = mix(h, *mh);
             clear = sh.clear;
+            copy = sh.copy;
             used.extend(u.iter().cloned());
         }
         if let Some((mh, _, u)) = &fs {
@@ -1177,7 +1184,7 @@ impl Model {
         let uses_stencil = depth.as_ref().is_some_and(|d| {
             ["stencilFront", "stencilBack"].iter().filter_map(|f| d.3.get(f)).any(|s| s.s("compare").unwrap_or("always") != "always" || ["failOp", "depthFailOp", "passOp"].iter().any(|k| s.s(k).unwrap_or("keep") != "keep"))
         });
-        let p = Pipeline { hash: h, groups, targets, depth: depth.map(|d| (d.0, d.1, d.2)), buffers, attrs, per_instance, topology: topo.to_string(), strip_format, clear_shader: clear, uses_stencil, samples };
+        let p = Pipeline { hash: h, groups, targets, depth: depth.map(|d| (d.0, d.1, d.2)), buffers, attrs, per_instance, topology: topo.to_string(), strip_format, clear_shader: clear, copy_shader: copy, uses_stencil, samples };
         self.put(Obj::Pipeline(p))
     }
 
@@ -2049,6 +2056,20 @@ impl Model {
         prims
     }
 
+    /// A sample copy's source: the texture, subresource and width of the view at group 0
+    /// binding 0.
+    fn copy_source(&self, d: &Draw) -> Option<(usize, usize, u32)> {
+        let (g, _) = d.st.groups.first()?.as_ref()?;
+        let Obj::Group(_, entries) = &self.objs[*g] else { return None };
+        let v = entries.iter().find_map(|(b, e)| match e {
+            Entry::View(v) if *b == 0 => Some(*v),
+            _ => None,
+        })?;
+        let vw = self.view_of(v)?;
+        let t = self.tex(vw.tex);
+        Some((vw.tex, t.sub(vw.mip, vw.layer), t.size(vw.mip).0))
+    }
+
     /// What a draw reads, hashed (its "signature"), and for the clear shader: the color and
     /// depth it writes.
     fn draw_sig(&mut self, d: &Draw) -> (u64, Option<([f32; 4], f32)>) {
@@ -2176,6 +2197,9 @@ impl Model {
                 (x0, y0, x1, y1) = (x0.max(b[0]), y0.max(b[1]), x1.min(b[2]), y1.min(b[3]));
             }
             let zatt = depth.as_ref().map(|a| sub(self, a));
+            // (a sample copy: the texels of the view bound at 0/0, one value per pixel as the
+            // model keeps of a multisampled one)
+            let copy_src = if p.copy_shader { self.copy_source(d) } else { None };
             for (ci, a) in colors.iter().enumerate() {
                 let (t, si, (w, h, _)) = sub(self, a);
                 let format = self.tex(t).format.clone();
@@ -2189,6 +2213,10 @@ impl Model {
                         let old = self.tex(t).texels[si][at];
                         let oz = zatt.map_or(0, |(zt, zs, _)| self.tex(zt).texels[zs][at]);
                         let new = match clear {
+                            _ if copy_src.is_some() => {
+                                let (st, ss, sw) = copy_src.unwrap();
+                                self.tex(st).texels[ss].get((y * sw + x) as usize).copied().unwrap_or(0)
+                            }
                             Some((c, _)) if p.clear_shader => clear_texel(&self.tex(t).format, c),
                             _ => mix(mix(mix(sig, (x as u64) << 32 | y as u64), if blends { old } else { 0 }), if p.depth.as_ref().is_some_and(|d| d.2 != "always") { oz } else { 0 }),
                         };
