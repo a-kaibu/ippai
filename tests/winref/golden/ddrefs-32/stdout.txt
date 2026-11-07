@@ -1,0 +1,76 @@
+DirectDrawCreate a 0
+DirectDrawCreate b 0
+separate objects 1
+a AddRef 2
+b Release 0
+a refs 2
+a Release 1
+a Release 0
+DirectDrawCreateEx 0
+QI IDirectDraw 0
+QI IDirectDraw4 0
+refs dd7 1 dd1 1 dd4 1
+QI IDirect3D7 0
+refs dd7 2 d3d7 2
+QI again same interface 1 refs dd1 2
+refs dd7 after CreateSurface 3
+GetDDInterface 0
+GetDDInterface is dd7 1
+refs dd7 4
+surface Release 0
+refs dd7 2
+CreateSurface primary 0
+refs primary 1
+GetGDISurface 0
+GetGDISurface is primary 1
+refs primary 2
+gdi Release 1
+primary Release 0
+d3d7 Release 1
+dd4 Release 0
+dd1 Release 0
+dd7 Release 0
+CreateDevice ok
+refs rt after CreateDevice 2
+refs d3d7 after CreateDevice 9 dd7 9
+rt Release 1
+Clear 0
+BeginScene 0
+EndScene 0
+GetRenderTarget 0
+refs rt via GetRenderTarget 2
+image orphan_rt 32 32 2
+refs tex 1
+SetTexture 0
+  refs tex 2
+SetTexture again 0
+  refs tex 2
+SetTexture stage 1 0
+  refs tex 3
+CreateStateBlock 0
+  refs tex 3
+SetTexture NULL 0
+  refs tex 2
+refs tex with no stage 1
+ApplyStateBlock 0
+  refs tex 3
+DeleteStateBlock 0
+  refs tex 1
+refs rt2 1
+SetRenderTarget 0 refs rt2 2
+GetRenderTarget is rt2 1
+CreateVertexBuffer fvf 0x1c4 count 0x3: 0
+  Lock 0 size 96
+CreateVertexBuffer fvf 0x1c4 count 0: 0x80070057
+CreateVertexBuffer fvf 0x1c4 count 0x8000000: 0x88760825
+CreateVertexBuffer fvf 0x1c4 count 0x10000001: 0x88760825
+CreateVertexBuffer fvf 0x1c4 count 0xffffffff: 0x88760825
+CreateVertexBuffer fvf 0x40 count 0x3: 0
+  Lock 0 size 48
+CreateVertexBuffer fvf 0x40 count 0: 0x80070057
+CreateVertexBuffer fvf 0x40 count 0x8000000: 0x88760825
+CreateVertexBuffer fvf 0x40 count 0x10000001: 0x88760825
+CreateVertexBuffer fvf 0x40 count 0xffffffff: 0x88760825
+SetLight 0 0
+SetLight 0x7 0
+SetLight 0x186a0 0
