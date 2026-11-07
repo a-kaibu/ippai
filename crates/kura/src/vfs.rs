@@ -790,7 +790,20 @@ struct Ahead {
     queue: VecDeque<Hash>,
     /// queued or being fetched
     busy: std::collections::HashSet<Hash>,
-    started: bool,
+    /// fetcher threads running (none when they could not be made: a thread limit, little
+    /// memory; tried again at the next read)
+    threads: usize,
+}
+
+#[cfg(test)]
+static SPAWN_FAILS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn spawn_fetcher(i: usize) -> std::io::Result<()> {
+    #[cfg(test)]
+    if SPAWN_FAILS.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(std::io::Error::other("no threads (test)"));
+    }
+    std::thread::Builder::new().name(format!("vfs fetch {i}")).spawn(fetcher).map(drop)
 }
 
 static AHEAD: Mutex<Option<Ahead>> = Mutex::new(None);
@@ -801,23 +814,24 @@ fn cached(h: &Hash) -> bool {
     CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|c| c.contains(h))
 }
 
-/// Has chunk `h` fetched by a fetcher thread unless it is here already.
+/// Has chunk `h` fetched by a fetcher thread unless it is here already. With no fetcher
+/// thread (none could be made) nothing is queued: the read fetches it itself, as before.
 fn fetch_ahead(h: &Hash) {
     if cached(h) {
         return;
     }
     let mut g = AHEAD.lock().unwrap_or_else(|e| e.into_inner());
-    let a = g.get_or_insert_with(|| Ahead { queue: VecDeque::new(), busy: Default::default(), started: false });
+    let a = g.get_or_insert_with(|| Ahead { queue: VecDeque::new(), busy: Default::default(), threads: 0 });
+    if a.threads == 0 {
+        a.threads = (0..FETCHERS).filter(|&i| spawn_fetcher(i).is_ok()).count();
+        if a.threads == 0 {
+            return;
+        }
+    }
     if !a.busy.insert(*h) {
         return;
     }
     a.queue.push_back(*h);
-    if !a.started {
-        a.started = true;
-        for i in 0..FETCHERS {
-            let _ = std::thread::Builder::new().name(format!("vfs fetch {i}")).spawn(fetcher);
-        }
-    }
     AHEAD_WORK.notify_one();
 }
 
@@ -1599,6 +1613,23 @@ mod tests {
     }
 
     /// A padded get copies only a chunk someone else holds.
+    #[test]
+    fn no_fetcher_threads_no_wait() {
+        // (a thread limit, little memory: a read must not wait on a queue no thread takes)
+        SPAWN_FAILS.store(true, std::sync::atomic::Ordering::Relaxed);
+        let h: Hash = *b"no-fetcher-test!";
+        fetch_ahead(&h);
+        let busy = AHEAD.lock().unwrap().as_ref().is_some_and(|a| a.busy.contains(&h));
+        SPAWN_FAILS.store(false, std::sync::atomic::Ordering::Relaxed);
+        assert!(!busy, "queued with no thread to take it");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            wait_ahead(&h);
+            let _ = tx.send(());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(5)).expect("wait_ahead waited for ever");
+    }
+
     #[test]
     fn cache_pads_in_place() {
         let mut c = Cache::default();
