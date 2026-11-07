@@ -1,0 +1,306 @@
+create check false
+create level_only false 0xb000
+create unknown_no_adapter inval 1
+create device refs 2 context refs 1
+fmt 1 ok 0x1210f0 ok 0x600 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv inval
+fmt 2 ok 0x2f6f3fb ok 0x6c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 3 ok 0x27251fb ok 0x7c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 4 ok 0x27251fb ok 0x6c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 5 ok 0x1210f0 fail 0 ms 1 1 1 tex ok inval inval inval ok inval ok inval inval | ok ok ok ok ok ok ok ok bsrv inval
+fmt 6 ok 0xf6f3fb fail 0 ms 1 1 1 tex ok inval inval inval ok inval ok inval inval | ok ok ok ok ok ok ok ok bsrv ok
+fmt 7 ok 0x7251fb ok 0x100 ms 1 1 1 tex ok inval inval inval ok inval ok inval inval | ok ok ok ok ok ok ok ok bsrv ok
+fmt 8 ok 0x7251fb fail 0 ms 1 1 1 tex ok inval inval inval ok inval ok inval inval | ok ok ok ok ok ok ok ok bsrv ok
+fmt 9 ok 0x1210f0 ok 0x600 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv inval
+fmt 10 ok 0x2fef3f3 ok 0x106c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 11 ok 0x2f6f3f3 ok 0x6c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 12 ok 0x27251f3 ok 0x7c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 13 ok 0x2f6f3f3 ok 0x6c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 14 ok 0x27251f3 ok 0x6c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 15 ok 0x1210f0 ok 0x200 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv inval
+fmt 16 ok 0x2f6f3fb ok 0x2c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 17 ok 0x27251fb ok 0x3c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 18 ok 0x27251fb ok 0x2c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 19 ok 0x1210b0 fail 0 ms 1 1 1 tex ok inval inval inval ok inval inval ok inval | ok ok ok ok inval inval ok inval bsrv inval
+fmt 20 ok 0x3310b0 fail 0 ms 1 1 1 tex ok inval inval inval inval inval inval ok inval | inval ok inval inval inval inval inval inval bsrv inval
+fmt 21 ok 0x4d217b0 fail 0 ms 0 0 0 tex ok inval inval inval ok inval inval inval inval | ok ok ok ok inval inval ok inval bsrv inval
+fmt 22 ok 0x5211b0 fail 0 ms 0 0 0 tex ok inval inval inval ok inval inval inval inval | ok ok ok ok inval inval ok inval bsrv inval
+fmt 23 ok 0x1210f0 ok 0x600 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv inval
+fmt 24 ok 0x3fef3f3 ok 0x106c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 25 ok 0x27251f3 ok 0x7c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 26 ok 0x2e6f3f3 ok 0x6c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 27 ok 0x1210f0 ok 0x600 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv inval
+fmt 28 ok 0x3fef3f3 ok 0x106c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 29 ok 0x1fef3f0 ok 0x600 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv inval
+fmt 30 ok 0x27251f3 ok 0x7c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 31 ok 0x2f6f3f3 ok 0x6c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 32 ok 0x27251f3 ok 0x6c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 33 ok 0x1210f0 ok 0x600 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv inval
+fmt 34 ok 0x2f6f3f3 ok 0x6c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 35 ok 0x2f6f3f3 ok 0x6c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 36 ok 0x27251f3 ok 0x7c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 37 ok 0x2f6f3f3 ok 0x6c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 38 ok 0x27251f3 ok 0x6c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 39 ok 0x1210f0 ok 0x600 ms 1 1 1 tex ok inval inval inval ok inval ok ok ok | ok ok ok ok ok ok ok ok bsrv inval
+fmt 40 ok 0x3310b0 ok 0x600 ms 1 1 1 tex ok inval inval inval inval inval inval ok inval | inval ok inval inval inval inval inval inval bsrv inval
+fmt 41 ok 0x6f6f7fb ok 0x6c8 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 42 ok 0x27251ff ok 0x7ff ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 43 ok 0x27251fb ok 0x6ff ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 44 ok 0x1210b0 fail 0 ms 1 1 1 tex ok inval inval inval ok inval inval ok inval | ok ok ok ok inval inval ok inval bsrv inval
+fmt 45 ok 0x3310b0 fail 0 ms 1 1 1 tex ok inval inval inval inval inval inval ok inval | inval ok inval inval inval inval inval inval bsrv inval
+fmt 46 ok 0x4d217b0 fail 0 ms 0 0 0 tex ok inval inval inval ok inval inval inval inval | ok ok ok ok inval inval ok inval bsrv inval
+fmt 47 ok 0x5211b0 fail 0 ms 0 0 0 tex ok inval inval inval ok inval inval inval inval | ok ok ok ok inval inval ok inval bsrv inval
+fmt 48 ok 0x1210f0 ok 0x600 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv inval
+fmt 49 ok 0x2f6f3f3 ok 0x6c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 50 ok 0x27251f3 ok 0x7c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 51 ok 0x2f6f3f3 ok 0x6c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 52 ok 0x27251f3 ok 0x6c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 53 ok 0x1210f0 ok 0x600 ms 1 1 1 tex ok inval inval inval ok inval ok ok ok | ok ok ok ok ok ok ok ok bsrv inval
+fmt 54 ok 0x2f6f3f3 ok 0x6c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 55 ok 0x3310b0 ok 0x600 ms 1 1 1 tex ok inval inval inval inval inval inval ok inval | inval ok inval inval inval inval inval inval bsrv inval
+fmt 56 ok 0x6f6f7f3 ok 0x6c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 57 ok 0x27251f7 ok 0x7c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 58 ok 0x2f6f3f3 ok 0x6c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 59 ok 0x27251f3 ok 0x6c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 60 ok 0x1210f0 ok 0x600 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv inval
+fmt 61 ok 0x2f6f3f3 ok 0x6c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 62 ok 0x27251f3 ok 0x7c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 63 ok 0x2f6f3f3 ok 0x6c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 64 ok 0x27251f3 ok 0x6c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 65 ok 0x2e6f3f0 ok 0x6c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv inval
+fmt 66 fail 0 fail 0 ms 0 0 0 tex inval inval inval inval inval inval inval inval inval | inval inval inval inval inval inval inval inval bsrv inval
+fmt 67 ok 0x8213f0 ok 0x200 ms 1 1 1 tex ok inval inval inval ok inval inval inval inval | ok ok ok ok inval inval ok ok bsrv inval
+fmt 68 ok 0x8213f0 fail 0 ms 0 0 0 tex ok inval inval inval ok inval inval inval inval | ok ok ok ok inval inval ok ok bsrv inval
+fmt 69 ok 0x8213f0 fail 0 ms 0 0 0 tex ok inval inval inval ok inval inval inval inval | ok ok ok ok inval inval ok ok bsrv inval
+fmt 70 ok 0x1210e0 ok 0x600 ms 0 0 0 tex ok inval inval inval ok inval inval inval inval | ok ok ok ok inval inval inval ok bsrv inval
+fmt 71 ok 0x9213e0 ok 0x600 ms 0 0 0 tex ok inval inval inval ok inval inval inval inval | ok ok ok ok inval inval inval ok bsrv inval
+fmt 72 ok 0x9213e0 ok 0x600 ms 0 0 0 tex ok inval inval inval ok inval inval inval inval | ok ok ok ok inval inval inval ok bsrv inval
+fmt 73 ok 0x1210e0 ok 0x600 ms 0 0 0 tex ok inval inval inval ok inval inval inval inval | ok ok ok ok inval inval inval ok bsrv inval
+fmt 74 ok 0x9213e0 ok 0x600 ms 0 0 0 tex ok inval inval inval ok inval inval inval inval | ok ok ok ok inval inval inval ok bsrv inval
+fmt 75 ok 0x9213e0 ok 0x600 ms 0 0 0 tex ok inval inval inval ok inval inval inval inval | ok ok ok ok inval inval inval ok bsrv inval
+fmt 76 ok 0x1210e0 ok 0x600 ms 0 0 0 tex ok inval inval inval ok inval inval inval inval | ok ok ok ok inval inval inval ok bsrv inval
+fmt 77 ok 0x9213e0 ok 0x600 ms 0 0 0 tex ok inval inval inval ok inval inval inval inval | ok ok ok ok inval inval inval ok bsrv inval
+fmt 78 ok 0x9213e0 ok 0x600 ms 0 0 0 tex ok inval inval inval ok inval inval inval inval | ok ok ok ok inval inval inval ok bsrv inval
+fmt 79 ok 0x1210e0 ok 0x200 ms 0 0 0 tex ok inval inval inval ok inval inval inval inval | ok ok ok ok inval inval inval ok bsrv inval
+fmt 80 ok 0x9213e0 ok 0x200 ms 0 0 0 tex ok inval inval inval ok inval inval inval inval | ok ok ok ok inval inval inval ok bsrv inval
+fmt 81 ok 0x9213e0 ok 0x200 ms 0 0 0 tex ok inval inval inval ok inval inval inval inval | ok ok ok ok inval inval inval ok bsrv inval
+fmt 82 ok 0x1210e0 ok 0x200 ms 0 0 0 tex ok inval inval inval ok inval inval inval inval | ok ok ok ok inval inval inval ok bsrv inval
+fmt 83 ok 0x9213e0 ok 0x200 ms 0 0 0 tex ok inval inval inval ok inval inval inval inval | ok ok ok ok inval inval inval ok bsrv inval
+fmt 84 ok 0x9213e0 ok 0x200 ms 0 0 0 tex ok inval inval inval ok inval inval inval inval | ok ok ok ok inval inval inval ok bsrv inval
+fmt 85 ok 0x2e6f3f3 ok 0x2c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 86 ok 0x2e6f3f3 ok 0x2c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 87 ok 0x3fef3f3 ok 0x106c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 88 ok 0xf6f3f3 ok 0x600 ms 1 1 1 tex ok inval inval inval ok inval ok inval inval | ok ok ok ok ok ok ok ok bsrv ok
+fmt 89 ok 0x11a0020 ok 0x600 ms 0 0 0 tex ok inval inval inval ok inval ok inval ok | inval ok ok inval inval inval inval inval bsrv inval
+fmt 90 ok 0x1210f0 ok 0x600 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv inval
+fmt 91 ok 0x1fef3f0 ok 0x600 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv inval
+fmt 92 ok 0x1210f0 ok 0x600 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv inval
+fmt 93 ok 0xf6f3f0 ok 0x600 ms 1 1 1 tex ok inval inval inval ok inval ok inval inval | ok ok ok ok ok ok ok ok bsrv inval
+fmt 94 ok 0x1210e0 ok 0x200 ms 0 0 0 tex ok inval inval inval ok inval inval inval inval | ok ok ok ok inval inval inval ok bsrv inval
+fmt 95 ok 0x9213e0 ok 0x200 ms 0 0 0 tex ok inval inval inval ok inval inval inval inval | ok ok ok ok inval inval inval ok bsrv inval
+fmt 96 ok 0x9213e0 ok 0x200 ms 0 0 0 tex ok inval inval inval ok inval inval inval inval | ok ok ok ok inval inval inval ok bsrv inval
+fmt 97 ok 0x1210e0 ok 0x200 ms 0 0 0 tex ok inval inval inval ok inval inval inval inval | ok ok ok ok inval inval inval ok bsrv inval
+fmt 98 ok 0x9213e0 ok 0x200 ms 0 0 0 tex ok inval inval inval ok inval inval inval inval | ok ok ok ok inval inval inval ok bsrv inval
+fmt 99 ok 0x9213e0 ok 0x200 ms 0 0 0 tex ok inval inval inval ok inval inval inval inval | ok ok ok ok inval inval inval ok bsrv inval
+fmt 100 ok 0x282f320 ok 0x480 ms 0 0 0 tex ok inval inval inval ok inval ok inval ok | ok ok ok inval ok inval inval inval bsrv inval
+fmt 101 ok 0x2820320 ok 0x480 ms 0 0 0 tex ok inval inval inval ok inval inval inval ok | inval ok ok inval inval inval inval inval bsrv inval
+fmt 102 ok 0x2821320 ok 0x480 ms 0 0 0 tex ok inval inval inval ok inval inval inval ok | ok ok ok inval inval inval inval inval bsrv inval
+fmt 103 ok 0xc282c320 ok 0x10480 ms 0 0 0 tex ok inval inval inval ok inval ok inval ok | inval ok ok inval inval inval inval inval bsrv inval
+fmt 104 ok 0x282c320 ok 0x480 ms 0 0 0 tex ok inval inval inval ok inval ok inval ok | inval ok ok inval inval inval inval inval bsrv inval
+fmt 105 ok 0x282c320 ok 0x480 ms 0 0 0 tex ok inval inval inval ok inval ok inval ok | inval ok ok inval inval inval inval inval bsrv inval
+fmt 106 ok 0x20 ok 0x400 ms 0 0 0 tex ok inval inval inval inval inval inval inval inval | inval inval inval inval inval inval inval inval bsrv inval
+fmt 107 ok 0x2820320 ok 0x10480 ms 0 0 0 tex ok inval inval inval ok inval inval inval ok | inval ok ok inval inval inval inval inval bsrv inval
+fmt 108 ok 0x2820320 ok 0x480 ms 0 0 0 tex ok inval inval inval ok inval inval inval ok | inval ok ok inval inval inval inval inval bsrv inval
+fmt 109 ok 0x2820320 ok 0x480 ms 0 0 0 tex ok inval inval inval ok inval inval inval ok | inval ok ok inval inval inval inval inval bsrv inval
+fmt 110 fail 0 fail 0 ms 0 0 0 tex inval inval inval inval inval inval inval inval inval | inval inval inval inval inval inval inval inval bsrv inval
+fmt 111 fail 0 fail 0 ms 0 0 0 tex inval inval inval inval inval inval inval inval inval | inval inval inval inval inval inval inval inval bsrv inval
+fmt 112 fail 0 fail 0 ms 0 0 0 tex inval inval inval inval inval inval inval inval inval | inval inval inval inval inval inval inval inval bsrv inval
+fmt 113 ok 0x20020 fail 0 ms 0 0 0 tex ok inval inval inval inval inval inval inval inval | inval ok inval inval inval inval inval inval bsrv inval
+fmt 114 ok 0x20020 fail 0 ms 0 0 0 tex ok inval inval inval inval inval inval inval inval | inval ok inval inval inval inval inval inval bsrv inval
+fmt 115 ok 0x2e6f3f3 ok 0x2c0 ms 1 1 1 tex ok inval inval inval ok inval ok inval ok | ok ok ok ok ok ok ok ok bsrv ok
+fmt 116 fail 0 fail 0 ms 0 0 0 tex inval inval inval inval inval inval inval inval inval | inval inval inval inval inval inval inval inval bsrv inval
+fmt 117 fail 0 fail 0 ms 0 0 0 tex inval inval inval inval inval inval inval inval inval | inval inval inval inval inval inval inval inval bsrv inval
+fmt 118 fail 0 fail 0 ms 0 0 0 tex inval inval inval inval inval inval inval inval inval | inval inval inval inval inval inval inval inval bsrv inval
+fmt 119 fail 0 fail 0 ms 0 0 0 tex inval inval inval inval inval inval inval inval inval | inval inval inval inval inval inval inval inval bsrv inval
+fmt 120 fail 0 fail 0 ms 0 0 0 tex inval inval inval inval inval inval inval inval inval | inval inval inval inval inval inval inval inval bsrv inval
+fmt 121 fail 0 fail 0 ms 0 0 0 tex inval inval inval inval inval inval inval inval inval | inval inval inval inval inval inval inval inval bsrv inval
+fmt 122 fail 0 fail 0 ms 0 0 0 tex inval inval inval inval inval inval inval inval inval | inval inval inval inval inval inval inval inval bsrv inval
+fmt 123 fail 0 fail 0 ms 0 0 0 tex inval inval inval inval inval inval inval inval inval | inval inval inval inval inval inval inval inval bsrv inval
+fmt 124 fail 0 fail 0 ms 0 0 0 tex inval inval inval inval inval inval inval inval inval | inval inval inval inval inval inval inval inval bsrv inval
+fmt 125 fail 0 fail 0 ms 0 0 0 tex inval inval inval inval inval inval inval inval inval | inval inval inval inval inval inval inval inval bsrv inval
+fmt 126 fail 0 fail 0 ms 0 0 0 tex inval inval inval inval inval inval inval inval inval | inval inval inval inval inval inval inval inval bsrv inval
+fmt 127 fail 0 fail 0 ms 0 0 0 tex inval inval inval inval inval inval inval inval inval | inval inval inval inval inval inval inval inval bsrv inval
+fmt 128 fail 0 fail 0 ms 0 0 0 tex inval inval inval inval inval inval inval inval inval | inval inval inval inval inval inval inval inval bsrv inval
+fmt 129 fail 0 fail 0 ms 0 0 0 tex inval inval inval inval inval inval inval inval inval | inval inval inval inval inval inval inval inval bsrv inval
+fmt 130 fail 0 fail 0 ms 0 0 0 tex inval inval inval inval inval inval inval inval inval | inval inval inval inval inval inval inval inval bsrv inval
+fmt 131 fail 0 fail 0 ms 0 0 0 tex inval inval inval inval inval inval inval inval inval | inval inval inval inval inval inval inval inval bsrv inval
+fmt 132 fail 0 fail 0 ms 0 0 0 tex inval inval inval inval inval inval inval inval inval | inval inval inval inval inval inval inval inval bsrv inval
+tex w0 inval
+tex h0 inval
+tex layers0 inval
+tex samples0 inval
+tex w16384 ok mips 1 misc 0
+tex w16385 ok mips 1 misc 0
+tex layers2048 ok mips 1 misc 0
+tex layers2049 inval
+tex mips5of16 ok mips 5 misc 0
+tex mips6of16 inval
+tex mips6of17 inval
+tex immutable inval
+tex dynamic_nocpu inval
+tex dynamic_read inval
+tex dynamic_mips2 inval
+tex dynamic_layers2 inval
+tex dynamic_rt inval
+tex staging_bind inval
+tex staging_nocpu inval
+tex staging_rw ok mips 1 misc 0
+tex default_cpu ok mips 1 misc 0
+tex cube5 inval
+tex cube12 ok mips 1 misc 0x4
+tex cube_rect inval
+tex genmips_nort inval
+tex genmips_nosrv inval
+tex shared ok mips 1 misc 0x2
+tex shared_mutex inval
+tex gdi inval
+tex raw inval
+tex ms4_mips2 inval
+tex ms3 inval
+tex ms8 ok mips 1 misc 0
+tex ms16 ok mips 1 misc 0
+tex ms4_staging inval
+tex bind_decoder inval
+tex bind_bad inval
+tex nulldata inval
+tex immutable_nodata inval
+tex null_desc inval
+tex null_out false
+buf size0 inval
+buf vb1 ok size 1 stride 0 misc 0
+buf cb1 inval
+buf cb15 inval
+buf cb16 ok size 16 stride 0 misc 0
+buf cb17 inval
+buf cb65536 ok size 65536 stride 0 misc 0
+buf cb65552 ok size 65552 stride 0 misc 0
+buf cb_vb inval
+buf cb_srv inval
+buf vb_ib_srv ok size 16 stride 0 misc 0
+buf vb_rt ok size 16 stride 0 misc 0
+buf vb_ds inval
+buf so ok size 16 stride 0 misc 0
+buf uav ok size 16 stride 0 misc 0
+buf nobind ok size 16 stride 0 misc 0
+buf dynamic_vb ok size 16 stride 0 misc 0
+buf dynamic_nocpu inval
+buf dynamic_read inval
+buf dynamic_uav inval
+buf dynamic_so inval
+buf immutable inval
+buf staging ok size 16 stride 0 misc 0
+buf staging_bind inval
+buf staging_nocpu inval
+buf default_cpu inval
+buf structured ok size 64 stride 16 misc 0x40
+buf structured_s0 inval
+buf structured_s3 inval
+buf structured_s6 inval
+buf structured_s2052 inval
+buf structured_s2056 inval
+buf structured_odd inval
+buf structured_vb inval
+buf structured_cb inval
+buf raw ok size 64 stride 0 misc 0x20
+buf raw_vb inval
+buf raw_structured inval
+buf indirect ok size 64 stride 0 misc 0x10
+buf indirect_vb ok size 64 stride 0 misc 0x10
+buf cube inval
+buf genmips inval
+buf stride_unused ok size 64 stride 0 misc 0
+buf immutable_nodata inval
+buf null_sysmem inval
+buf null_desc inval
+buf null_out false
+view srv_null ok fmt 28 dim 4 0 3 0 0 texrefs 1->1
+view srv_same ok fmt 28 dim 4 0 3 0 0 texrefs 1->1
+view srv_fmt0 ok fmt 28 dim 4 0 3 0 0 texrefs 1->1
+view srv_srgb inval texrefs 1->1
+view srv_typeless_unorm ok fmt 28 dim 4 0 3 0 0 texrefs 1->1
+view srv_typeless_uint ok fmt 30 dim 4 0 3 0 0 texrefs 1->1
+view srv_typeless_null inval texrefs 1->1
+view srv_typeless_typeless inval texrefs 1->1
+view srv_other_family inval texrefs 1->1
+view srv_bgra_typeless ok fmt 91 dim 4 0 3 0 0 texrefs 1->1
+view srv_r32_float_of_d32 ok fmt 41 dim 4 0 1 0 0 texrefs 1->1
+view srv_d32_of_d32 inval texrefs 1->1
+view srv_r24x8 ok fmt 46 dim 4 0 1 0 0 texrefs 1->1
+view srv_x24g8 ok fmt 47 dim 4 0 1 0 0 texrefs 1->1
+view srv_mips_all ok fmt 28 dim 4 1 2 0 0 texrefs 1->1
+view srv_mips_over inval texrefs 1->1
+view srv_mips0 inval texrefs 1->1
+view srv_mip3 inval texrefs 1->1
+view srv_array_of_single ok fmt 28 dim 5 0 1 0 1 texrefs 1->1
+view srv_2d_of_array ok fmt 28 dim 4 0 1 0 0 texrefs 1->1
+view srv_array_range ok fmt 28 dim 5 0 1 1 3 texrefs 1->1
+view srv_array_over inval texrefs 1->1
+view srv_array_all ok fmt 28 dim 5 0 1 0 4 texrefs 1->1
+view srv_array_none inval texrefs 1->1
+view srv_cube_of_2d inval texrefs 1->1
+view srv_3d_of_2d inval texrefs 1->1
+view srv_1d_of_2d inval texrefs 1->1
+view srv_ms_of_2d ok fmt 28 dim 6 0 0 0 0 texrefs 1->1
+view srv_dim0 inval texrefs 1->1
+view srv_nobind inval texrefs 1->1
+view rtv_null ok fmt 28 dim 4 0 0 0 texrefs 1->1
+view rtv_mip2 ok fmt 28 dim 4 2 0 0 texrefs 1->1
+view rtv_mip3 inval texrefs 1->1
+view rtv_fmt0 ok fmt 28 dim 4 0 0 0 texrefs 1->1
+view rtv_typeless_null inval texrefs 1->1
+view rtv_typeless_srgb ok fmt 29 dim 4 0 0 0 texrefs 1->1
+view rtv_typeless_snorm ok fmt 31 dim 4 0 0 0 texrefs 1->1
+view rtv_unorm_as_srgb inval texrefs 1->1
+view rtv_array_slice ok fmt 28 dim 5 0 3 1 texrefs 1->1
+view rtv_array_over inval texrefs 1->1
+view rtv_array_all ok fmt 28 dim 5 0 0 4 texrefs 1->1
+view rtv_of_srv_only inval texrefs 1->1
+view rtv_d24 inval texrefs 1->1
+view dsv_null ok fmt 45 dim 3 flags 0 0 0 0 texrefs 1->1
+view dsv_typeless_null inval texrefs 1->1
+view dsv_typeless_d24 ok fmt 45 dim 3 flags 0 0 0 0 texrefs 1->1
+view dsv_r32_typeless_d32 ok fmt 40 dim 3 flags 0 0 0 0 texrefs 1->1
+view dsv_r32_float inval texrefs 1->1
+view dsv_fmt0 ok fmt 40 dim 3 flags 0 0 0 0 texrefs 1->1
+view dsv_flags_ro ok fmt 45 dim 3 flags 3 0 0 0 texrefs 1->1
+view dsv_flags_bad inval texrefs 1->1
+view dsv_d32_stencil_ro inval texrefs 1->1
+view dsv_of_rt inval texrefs 1->1
+view uav_null ok fmt 41 dim 4 0 0 0 texrefs 1->1
+view uav_typeless_r32_uint ok fmt 42 dim 4 0 0 0 texrefs 1->1
+view uav_rgba8_typeless_uint ok fmt 30 dim 4 0 0 0 texrefs 1->1
+view uav_rgba8_typeless_r32 ok fmt 42 dim 4 0 0 0 texrefs 1->1
+view uav_of_srv inval texrefs 1->1
+query 0 ok pred inval size 4 fresh invcall begun invcall ended ok data ok short inval long inval nodata inval nosize ok rebegun ok
+query 1 ok pred inval size 8 fresh invcall begun invcall ended ok data ok short inval long inval nodata inval nosize ok rebegun invcall
+query 2 ok pred inval size 8 fresh invcall begun invcall ended ok data ok short inval long inval nodata inval nosize ok rebegun ok
+query 3 ok pred inval size 16 fresh invcall begun invcall ended ok data ok short inval long inval nodata inval nosize ok rebegun invcall
+query 4 ok pred inval size 88 fresh invcall begun invcall ended ok data ok short inval long inval nodata inval nosize ok rebegun invcall
+query 5 ok pred ok size 4 fresh invcall begun invcall ended ok data ok short inval long inval nodata inval nosize ok rebegun invcall
+query 6 ok pred inval size 16 fresh invcall begun invcall ended ok data ok short inval long inval nodata inval nosize ok rebegun invcall
+query 7 ok pred ok size 4 fresh invcall begun invcall ended ok data ok short inval long inval nodata inval nosize ok rebegun invcall
+query 8 ok pred inval size 16 fresh invcall begun invcall ended ok data ok short inval long inval nodata inval nosize ok rebegun invcall
+query 9 ok pred inval size 4 fresh invcall begun invcall ended ok data ok short inval long inval nodata inval nosize ok rebegun invcall
+query 10 ok pred inval size 16 fresh invcall begun invcall ended ok data ok short inval long inval nodata inval nosize ok rebegun invcall
+query 11 ok pred inval size 4 fresh invcall begun invcall ended ok data ok short inval long inval nodata inval nosize ok rebegun invcall
+query 12 ok pred inval size 16 fresh invcall begun invcall ended ok data ok short inval long inval nodata inval nosize ok rebegun invcall
+query 13 ok pred inval size 4 fresh invcall begun invcall ended ok data ok short inval long inval nodata inval nosize ok rebegun invcall
+query 14 ok pred inval size 16 fresh invcall begun invcall ended ok data ok short inval long inval nodata inval nosize ok rebegun invcall
+query 15 ok pred inval size 4 fresh invcall begun invcall ended ok data ok short inval long inval nodata inval nosize ok rebegun invcall
+query 16 inval pred inval
+query misc1 inval
+query null_desc inval
+query null_out false
+refs device 2 buffer 3 getdevice 4 context 3 (context 2) released 2
+refs view_of_buffer buffer 1 device 4 bound view 1 device 4 got_back 1 resource_is_buffer 1
+refs end device 2
+release device 0
