@@ -19,6 +19,11 @@ const STACK: u32 = 0x30_0000;
 const MEM: usize = 0x40_0000;
 /// accessible guest memory (bigger for `exe`)
 static LIMIT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(MEM as u32);
+
+/// Float edge values for the MXCSR flags (zeros, infinities, NaNs, denormals, the JIT's range ends)
+const FS32: &[u32] = &[0, 0x8000_0000, 0x7f80_0000, 0xff80_0000, 0x7fc0_0000, 0x7fa0_0000, 1, 0x8000_0001, 0x007f_ffff, 0x0080_0000, 0x7f7f_ffff, 0x3f80_0000, 0x2000_0000, 0x5f00_0000, 0x4e80_0000, 0x7f00_0000];
+const FS64: &[u64] = &[0, 1 << 63, 0x7ff0 << 48, 0xfff0 << 48, 0x7ff8 << 48, 0x7ff4 << 48, 1, (1 << 52) - 1, 1 << 52, 0x7fef_ffff_ffff_ffff, 0x3ff0 << 48, 0x2000 << 48, 0x5fe0 << 48, 0x41d0 << 48, 0x47e0 << 48, 0x3810 << 48];
+
 fn limit() -> u32 {
     LIMIT.load(std::sync::atomic::Ordering::Relaxed)
 }
@@ -801,11 +806,14 @@ fn initial(rng: &mut Rng, rip_hi: u32) -> Cpu {
     c.eflags = 0x202 | (rng.next() as u32 & 0x8d5);
     // xmm: random bits, or floats / doubles / small integers (fewer NaNs)
     for i in 0..16 {
-        let v: u128 = match rng.below(4) {
+        let v: u128 = match rng.below(6) {
             0 => rng.next() as u128 | (rng.next() as u128) << 64,
             1 => (0..4).fold(0, |v, k| v | ((((rng.next() as i32) >> rng.below(31)) as f32 / 8.0).to_bits() as u128) << (32 * k)),
             2 => (0..2).fold(0, |v, k| v | ((((rng.next() as i64) >> rng.below(63)) as f64 / 8.0).to_bits() as u128) << (64 * k)),
-            _ => (0..8).fold(0, |v, k| v | ((rng.below(512) as u16).wrapping_sub(256) as u128) << (16 * k)),
+            3 => (0..8).fold(0, |v, k| v | ((rng.below(512) as u16).wrapping_sub(256) as u128) << (16 * k)),
+            // the MXCSR flags' edge cases: zeros, infinities, NaNs, denormals, range ends
+            4 => (0..4).fold(0, |v, k| v | (if rng.below(2) == 0 { FS32[rng.below(FS32.len() as u64) as usize] } else { (1.5f32 * k as f32).to_bits() } as u128) << (32 * k)),
+            _ => (0..2).fold(0, |v, k| v | (if rng.below(2) == 0 { FS64[rng.below(FS64.len() as u64) as usize] } else { (1.5 * k as f64).to_bits() } as u128) << (64 * k)),
         };
         if i < 8 {
             c.xmm[i] = v;
@@ -816,7 +824,7 @@ fn initial(rng: &mut Rng, rip_hi: u32) -> Cpu {
     for i in 0..8 {
         c.mm[i] = rng.next();
     }
-    c.mxcsr = 0x1f80 | if rng.below(4) == 0 { (rng.below(4) as u32) << 13 } else { 0 };
+    c.mxcsr = 0x1f80 | if rng.below(4) == 0 { (rng.below(4) as u32) << 13 } else { 0 } | if rng.below(2) == 0 { rng.below(64) as u32 } else { 0 };
     c
 }
 
@@ -883,6 +891,9 @@ fn run_case(engine: &Engine, memory: &SharedMemory, base: usize, list0: &[Instru
         }
         if want_cpu.fpu.empty != got_cpu.fpu.empty {
             diffs.push(format!("fpu empty: want {:#x} got {:#x}", want_cpu.fpu.empty, got_cpu.fpu.empty));
+        }
+        if want_cpu.mxcsr != got_cpu.mxcsr {
+            diffs.push(format!("mxcsr: want {:#x} got {:#x}", want_cpu.mxcsr, got_cpu.mxcsr));
         }
         if want_cpu.rip_hi != got_cpu.rip_hi {
             diffs.push(format!("rip_hi: want {} got {}", want_cpu.rip_hi, got_cpu.rip_hi));

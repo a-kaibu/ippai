@@ -195,10 +195,10 @@ impl<'a, M: Memory> X<'a, M> {
         use Mnemonic::*;
         let ins = self.ins;
         let mn = ins.mnemonic();
-        // With an exception unmasked, the instruction's MXCSR flags are found first (and a
-        // trap leaves the destination alone). Fully masked, nothing is tracked: the JIT does
-        // not track the sticky flags either.
-        if self.cpu.mxcsr & 0x1f80 != 0x1f80 {
+        // The instruction's MXCSR flags are found first (sticky, as the hardware sets them:
+        // the JIT leaves an instruction that may set one to here, see jit::mxguard); one
+        // unmasked traps, leaving the destination alone.
+        {
             if let Some((pre, post)) = self.mx_flags() {
                 let mask = (self.cpu.mxcsr >> 7) & 0x3f;
                 // an unmasked invalid, denormal or divide exception comes before the result

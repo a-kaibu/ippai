@@ -442,12 +442,18 @@ fn compare(insn: &[u8], st: &State, data: &[u8], fl_lanes: u32, bits: u32) -> Re
         return Err(format!("{:02x?} {:?}: exit {:?}", insn, ins.mnemonic(), exit));
     }
     let got_mem = unsafe { core::slice::from_raw_parts(data_ptr, data.len()).to_vec() };
+    let mut want_mx = 0u32;
     // then the host
     unsafe {
         core::ptr::copy_nonoverlapping(data.as_ptr(), data_ptr, data.len());
         put_state(st);
         let f: extern "C" fn() = core::mem::transmute(code_ptr);
+        // (the MXCSR flags the instruction sets, from the default control)
+        let mx0 = 0x1f80u32;
+        core::arch::asm!("ldmxcsr [{0}]", in(reg) &mx0);
         f();
+        core::arch::asm!("stmxcsr [{0}]", in(reg) &mut want_mx);
+        core::arch::asm!("ldmxcsr [{0}]", in(reg) &mx0);
     }
     let want = unsafe { get_state() };
     let want_mem = unsafe { core::slice::from_raw_parts(data_ptr, data.len()).to_vec() };
@@ -458,6 +464,7 @@ fn compare(insn: &[u8], st: &State, data: &[u8], fl_lanes: u32, bits: u32) -> Re
     let mut diff = Vec::new();
     let (wf, gf) = (want.flags as u32 & STATUS & !undef, cpu.flags() & STATUS & !undef);
     if wf != gf { diff.push(format!("flags want {:03x} got {:03x}", wf, gf)); }
+    if want_mx & 0x3f != cpu.mxcsr & 0x3f { diff.push(format!("mxcsr flags want {:02x} got {:02x}", want_mx & 0x3f, cpu.mxcsr & 0x3f)); }
     for i in 0..16 {
         if want.r[i] != cpu.gpr(i) { diff.push(format!("r{} in {:x} want {:x} got {:x}", i, st.r[i], want.r[i], cpu.gpr(i))); }
         let (w, g) = (want.xmm[i], cpu.xmm(i));
@@ -628,6 +635,25 @@ const SSE_OPS: &[SseOp] = &[
     SseOp(0xf2, 0x2d, false, 0, b'g', b'x', true), SseOp(0x66, 0x2f, false, 64, b'x', b'x', false),
     SseOp(0x66, 0x57, false, 64, b'x', b'x', false), SseOp(0x66, 0x14, false, 64, b'x', b'x', false),
     SseOp(0x66, 0x5a, false, 32, b'x', b'x', false), SseOp(0x66, 0xe6, false, 0, b'x', b'x', false),
+    // floating point arithmetic, compares and conversions of every width (their MXCSR flags too)
+    SseOp(0x00, 0x5c, false, 32, b'x', b'x', false), SseOp(0x00, 0x5e, false, 32, b'x', b'x', false),
+    SseOp(0x00, 0x51, false, 32, b'x', b'x', false), SseOp(0x00, 0x5d, false, 32, b'x', b'x', false),
+    SseOp(0x00, 0x5f, false, 32, b'x', b'x', false), SseOp(0x00, 0xc2, true, 32, b'x', b'x', false),
+    SseOp(0x00, 0x5a, false, 64, b'x', b'x', false), SseOp(0x00, 0x5b, false, 32, b'x', b'x', false),
+    SseOp(0x00, 0x2f, false, 32, b'x', b'x', false),
+    SseOp(0xf3, 0x58, false, 32, b'x', b'x', false), SseOp(0xf3, 0x59, false, 32, b'x', b'x', false),
+    SseOp(0xf3, 0x5c, false, 32, b'x', b'x', false), SseOp(0xf3, 0x5e, false, 32, b'x', b'x', false),
+    SseOp(0xf3, 0x51, false, 32, b'x', b'x', false), SseOp(0xf3, 0x5d, false, 32, b'x', b'x', false),
+    SseOp(0xf3, 0x5f, false, 32, b'x', b'x', false), SseOp(0xf3, 0xc2, true, 32, b'x', b'x', false),
+    SseOp(0xf3, 0x5b, false, 0, b'x', b'x', false),
+    SseOp(0x66, 0x58, false, 64, b'x', b'x', false), SseOp(0x66, 0x59, false, 64, b'x', b'x', false),
+    SseOp(0x66, 0x5c, false, 64, b'x', b'x', false), SseOp(0x66, 0x5e, false, 64, b'x', b'x', false),
+    SseOp(0x66, 0x51, false, 64, b'x', b'x', false), SseOp(0x66, 0x5d, false, 64, b'x', b'x', false),
+    SseOp(0x66, 0xc2, true, 64, b'x', b'x', false), SseOp(0x66, 0x5b, false, 0, b'x', b'x', false),
+    SseOp(0x66, 0x2e, false, 64, b'x', b'x', false),
+    SseOp(0xf2, 0x59, false, 64, b'x', b'x', false), SseOp(0xf2, 0x5c, false, 64, b'x', b'x', false),
+    SseOp(0xf2, 0x5d, false, 64, b'x', b'x', false), SseOp(0xf2, 0xc2, true, 64, b'x', b'x', false),
+    SseOp(0xf2, 0x5a, false, 32, b'x', b'x', false),
 ];
 
 #[test]
@@ -636,7 +662,7 @@ fn random_long_mode_sse_ops_match_the_host_cpu() {
     let mut rng = Rng(0x2545_f491_4f6c_dd1d);
     let mut failures = Vec::new();
     let mut done = 0;
-    for _ in 0..60_000 {
+    for _ in 0..200_000 {
         let op = &SSE_OPS[rng.below(SSE_OPS.len() as u64) as usize];
         let pick = |rng: &mut Rng, c: u8| match c { b'g' => reg(rng), b'm' => rng.below(8) as u8, _ => rng.below(16) as u8 };
         let (r, m) = (pick(&mut rng, op.4), pick(&mut rng, op.5));
@@ -655,8 +681,16 @@ fn random_long_mode_sse_ops_match_the_host_cpu() {
         let mut st = random_state(&mut rng);
         for x in st.xmm.iter_mut() {
             if rng.below(2) == 0 {
-                let f: f64 = [0.0, -0.0, 1.0, -1.5, 0.5, 1e300, 2.5e9, -7.5e9, 9.3e18, -9.3e18, f64::NAN][rng.below(11) as usize];
+                let f: f64 = [0.0, -0.0, 1.0, -1.5, 0.5, 1e300, 2.5e9, -7.5e9, 9.3e18, -9.3e18, f64::NAN, 5e-324,
+                    f64::INFINITY, f64::NEG_INFINITY, 2.2250738585072014e-308, f64::from_bits(0x7ff4 << 48), 0.1, 3.4e38, 1e-40][rng.below(19) as usize];
                 *x = (*x & !(u64::MAX as u128)) | f.to_bits() as u128;
+            } else if rng.below(2) == 0 {
+                // float lanes: zeros, denormals, the normal range's edges, infinities, NaNs
+                for k in 0..4 {
+                    let f: u32 = [0, 0x8000_0000, 0x3f80_0000, 0xbfc0_0000, 0x7f7f_ffff, 1, 0x0080_0000, 0x7f80_0000, 0xff80_0000,
+                        0x7fc0_0000, 0x7fa0_0000, 0x3dcc_cccd, 0x4b80_0001, 0x4f00_0000, 0x0040_0000][rng.below(15) as usize];
+                    *x = (*x & !(0xffff_ffffu128 << (32 * k))) | (f as u128) << (32 * k);
+                }
             }
         }
         let data = vec![0u8; DATA_LEN];

@@ -310,6 +310,10 @@ impl Gen<'_> {
             self.c.set(t);
             return self.set_reg_from(ins.op_register(0), t);
         }
+        // (the MXCSR flags: the interpreter sets them)
+        if let Some(k) = super::mxguard::kind(&ins) {
+            self.mx_guard(k);
+        }
         if m == Movss || farith(m).is_some_and(|f| !f.1) {
             return self.scalar();
         }
@@ -623,6 +627,28 @@ impl Gen<'_> {
             self.smc_check(e);
             self.temps -= 1;
         }
+    }
+
+    /// Leaves for the interpreter when the instruction may set an MXCSR flag (see mxguard).
+    fn mx_guard(&mut self, k: (super::mxguard::G, u32, u32, bool)) {
+        let ins = self.ins;
+        if k.0 != super::mxguard::G::Inexact {
+            let size = if ins.op_kind(1) == OpKind::Memory { ins.memory_size().size() as u32 } else { 16 };
+            let a = self.mem_addr_sized(size);
+            if k.3 {
+                self.vread(0, None, false);
+                self.c.set(L_V0);
+            }
+            self.vlow(a, size);
+            self.c.set(L_V1);
+        }
+        let t = self.temp();
+        super::mxguard::emit(&mut self.c, k, k.3.then_some(L_V0), L_V1, (t, super::L_W), L_CPU, Off::mxcsr());
+        self.c.if_();
+        self.depth += 1;
+        self.bail();
+        self.depth -= 1;
+        self.c.end();
     }
 
     /// Pushes operand 1 as a v128 whose low `size` bytes are the operand (memory: zeros above).

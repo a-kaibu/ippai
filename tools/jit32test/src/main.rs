@@ -86,6 +86,10 @@ const S32: [AsmRegister32; 8] = [eax, ecx, edx, esi, edi, ebx, ebp, esp];
 const MM: [AsmRegisterMm; 8] = [mm0, mm1, mm2, mm3, mm4, mm5, mm6, mm7];
 const XMM: [AsmRegisterXmm; 8] = [xmm0, xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, xmm7];
 
+/// Float edge values for the MXCSR flags (zeros, infinities, NaNs, denormals, the JIT's range ends)
+const FS32: &[u32] = &[0, 0x8000_0000, 0x7f80_0000, 0xff80_0000, 0x7fc0_0000, 0x7fa0_0000, 1, 0x8000_0001, 0x007f_ffff, 0x0080_0000, 0x7f7f_ffff, 0x3f80_0000, 0x2000_0000, 0x5f00_0000, 0x4e80_0000, 0x7f00_0000];
+const FS64: &[u64] = &[0, 1 << 63, 0x7ff0 << 48, 0xfff0 << 48, 0x7ff8 << 48, 0x7ff4 << 48, 1, (1 << 52) - 1, 1 << 52, 0x7fef_ffff_ffff_ffff, 0x3ff0 << 48, 0x2000 << 48, 0x5fe0 << 48, 0x41d0 << 48, 0x47e0 << 48, 0x3810 << 48];
+
 /// A memory operand in DATA (or the stack), `n` bytes fitting.
 fn mem(rng: &mut Rng, n: i32) -> AsmMemoryOperand {
     mem_a(rng, n, 1)
@@ -1060,15 +1064,18 @@ fn initial(rng: &mut Rng) -> Cpu {
     c.regs[5] = DATA + 0x100; // ebp
     c.eflags = 0x202 | (rng.next() as u32 & 0x8d5);
     for i in 0..8 {
-        c.xmm[i] = match rng.below(4) {
+        c.xmm[i] = match rng.below(6) {
             0 => rng.next() as u128 | (rng.next() as u128) << 64,
             1 => (0..4).fold(0, |v, k| v | ((((rng.next() as i32) >> rng.below(31)) as f32 / 8.0).to_bits() as u128) << (32 * k)),
             2 => (0..2).fold(0, |v, k| v | ((((rng.next() as i64) >> rng.below(63)) as f64 / 8.0).to_bits() as u128) << (64 * k)),
-            _ => (0..8).fold(0, |v, k| v | ((rng.below(512) as u16).wrapping_sub(256) as u128) << (16 * k)),
+            3 => (0..8).fold(0, |v, k| v | ((rng.below(512) as u16).wrapping_sub(256) as u128) << (16 * k)),
+            // the MXCSR flags' edge cases: zeros, infinities, NaNs, denormals, range ends
+            4 => (0..4).fold(0, |v, k| v | (if rng.below(2) == 0 { FS32[rng.below(FS32.len() as u64) as usize] } else { (1.5f32 * k as f32).to_bits() } as u128) << (32 * k)),
+            _ => (0..2).fold(0, |v, k| v | (if rng.below(2) == 0 { FS64[rng.below(FS64.len() as u64) as usize] } else { (1.5 * k as f64).to_bits() } as u128) << (64 * k)),
         };
         c.mm[i] = rng.next();
     }
-    c.mxcsr = 0x1f80 | if rng.below(4) == 0 { (rng.below(4) as u32) << 13 } else { 0 };
+    c.mxcsr = 0x1f80 | if rng.below(4) == 0 { (rng.below(4) as u32) << 13 } else { 0 } | if rng.below(2) == 0 { rng.below(64) as u32 } else { 0 };
     // (the x87's: double, single or extended precision (f64 in koji), any rounding mode)
     if rng.below(3) == 0 {
         c.fpu.cw = [0x027f, 0x007f, 0x037f][rng.below(3) as usize] | (rng.below(4) as u16) << 10;
@@ -1101,6 +1108,7 @@ fn state(c: &Cpu) -> Vec<(String, String)> {
     }
     v.push(("eip".into(), format!("{:#x}", c.eip)));
     v.push(("flags".into(), format!("{:#x}", c.eflags & 0x8d5)));
+    v.push(("mxcsr".into(), format!("{:#x}", c.mxcsr)));
     for i in 0..8 {
         v.push((format!("mm{i}"), format!("{:016x}", c.mm[i])));
         v.push((format!("xmm{i}"), format!("{:032x}", c.xmm[i])));

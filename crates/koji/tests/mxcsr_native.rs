@@ -200,7 +200,7 @@ fn masked_runs_on() {
     let (cpu, e) = run(CVT, 0x1f80);
     assert_eq!(e, Exit::Continue);
     assert_eq!(cpu.regs[0], 0x8000_0000);
-    assert_eq!(cpu.mxcsr, 0x1f80, "fully masked: flags not tracked");
+    assert_eq!(cpu.mxcsr, 0x1f81, "the invalid flag set, masked");
     let (cpu, e) = run(DIV0, 0x1f80 & !0x400); // (overflow unmasked: divide stays masked)
     assert_eq!(e, Exit::Continue);
     assert_eq!(cpu.xmm(0) as u32, 0x7f80_0000);

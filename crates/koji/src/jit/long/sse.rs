@@ -193,6 +193,24 @@ impl Gen<'_> {
         }
         let saved = self.ins;
         self.ins = li;
+        // (the MXCSR flags: the interpreter sets them, see mxguard)
+        if let Some(k) = crate::jit::mxguard::kind(&li) {
+            if k.0 != crate::jit::mxguard::G::Inexact {
+                if k.3 {
+                    self.vfirst(src1);
+                    self.c.set(L_V0);
+                }
+                self.vsrc(1, size.unwrap_or(16));
+                self.c.set(L_V1);
+            }
+            let t = self.temp();
+            crate::jit::mxguard::emit(&mut self.c, k, k.3.then_some(L_V0), L_V1, (super::L_E, t), L_CPU, offset_of!(Cpu, mxcsr) as u32);
+            self.c.if_();
+            self.depth += 1;
+            self.bail();
+            self.depth -= 1;
+            self.c.end();
+        }
         self.emit_sse(src1);
         self.ins = saved;
         true
