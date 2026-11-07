@@ -1731,6 +1731,31 @@ fn SHGetFolderPathA(c: &mut Ctx) -> u32 {
     }
 }
 /// SHGetKnownFolderPath(rfid, flags, token, PWSTR *out): the known folders that have a CSIDL.
+/// SHStrDupA/W(src, &copy): a wide copy in CoTaskMemAlloc memory
+fn sh_str_dup(c: &mut Ctx, wide: bool) -> u32 {
+    let (src, out) = (c.a(0), c.a(1));
+    if src == 0 || out == 0 {
+        return 0x8007_0057;
+    }
+    let w: Vec<u16> = if wide { mem::wstr(src) } else { crate::text::a2w(&mem::cstr(src)) };
+    let p = mem::heap_alloc(2 * w.len() as u32 + 2, true);
+    for (i, v) in w.iter().enumerate() {
+        mem::w16(p + 2 * i as u32, *v);
+    }
+    mem::putp(out, p);
+    0
+}
+fn SHStrDupA(c: &mut Ctx) -> u32 {
+    sh_str_dup(c, false)
+}
+fn SHStrDupW(c: &mut Ctx) -> u32 {
+    sh_str_dup(c, true)
+}
+/// SHGetPropertyStoreForWindow(hwnd, riid, &store): no property stores (taskbar app ids)
+fn SHGetPropertyStoreForWindow(c: &mut Ctx) -> u32 {
+    mem::putp(c.a(2), 0);
+    0x8000_4001
+}
 fn SHGetKnownFolderPath(c: &mut Ctx) -> u32 {
     let (id, out) = (c.a(0), c.a(3));
     let path = match r32(id) {
@@ -2849,7 +2874,8 @@ pub fn init() {
         PathIsDirectoryW, PathAppendA, PathAppendW, PathCombineA, PathCombineW, PathCanonicalizeA, PathCanonicalizeW, PathFindFileNameA,
         PathFindFileNameW, PathFindExtensionA, PathFindExtensionW, PathRenameExtensionA, PathRenameExtensionW, PathIsRelativeA, PathIsRelativeW, PathUnquoteSpacesA,
         PathUnquoteSpacesW, PathAddBackslashA, PathAddBackslashW, PathRemoveBackslashA, PathRemoveBackslashW, PathStripPathA, PathStripPathW, PathAddExtensionA, PathAddExtensionW);
-    reg!("shlwapi"; StrStrA, StrStrW, StrStrIA, StrStrIW);
+    reg!("shlwapi"; StrStrA, StrStrW, StrStrIA, StrStrIW, SHStrDupA, SHStrDupW);
+    reg!("shell32"; SHGetPropertyStoreForWindow);
     reg!("sensapi"; IsNetworkAlive);
     reg!("ws2_32"; WSAStartup, WSACleanup);
 }

@@ -144,6 +144,8 @@ impl Rng {
 /// An instruction being generated: prefixes, REX bits, opcode, ModRM operands.
 struct Gen {
     p66: bool,
+    /// a mandatory F2/F3 prefix (after 66, before REX)
+    pfx: Option<u8>,
     w: bool,
     rex: bool,
     op: Vec<u8>,
@@ -162,6 +164,7 @@ impl Gen {
     fn encode(&self) -> Vec<u8> {
         let mut v = Vec::new();
         if self.p66 { v.push(0x66); }
+        v.extend(self.pfx);
         let mut rex = 0x40 | (self.w as u8) << 3 | (self.reg >> 3) << 2;
         let mut modrm_rest = Vec::new();
         let modrm;
@@ -210,7 +213,7 @@ fn reg(rng: &mut Rng) -> u8 {
 }
 
 fn gen(rng: &mut Rng) -> (Gen, bool) {
-    let mut g = Gen { p66: false, w: rng.below(3) != 0, rex: rng.below(4) == 0, op: vec![], reg: reg(rng), rm: Some(reg(rng)),
+    let mut g = Gen { p66: false, pfx: None, w: rng.below(3) != 0, rex: rng.below(4) == 0, op: vec![], reg: reg(rng), rm: Some(reg(rng)),
         imm: vec![], mem: None, rip: false, raw: None };
     if !g.w && rng.below(6) == 0 { g.p66 = true; }
     let wide = if g.p66 && !g.w { 2 } else { 4 };
@@ -320,6 +323,17 @@ fn gen(rng: &mut Rng) -> (Gen, bool) {
             }
             g.raw = Some(v);
             return (g, false);
+        }
+        18 if rng.below(2) == 0 => {
+            // SSE4.2 CRC32 (F2 0F 38 F0 byte source / F1) and POPCNT (F3 0F B8)
+            g.pfx = Some(0xf2);
+            byte = rng.below(3) == 0;
+            g.op = vec![0x0f, 0x38, if byte { 0xf0 } else { 0xf1 }];
+            if byte { g.p66 = false; }
+        }
+        18 => {
+            g.pfx = Some(0xf3);
+            g.op = vec![0x0f, 0xb8];
         }
         17 => {
             // LEA

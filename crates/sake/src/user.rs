@@ -2243,7 +2243,7 @@ fn GetClassNameW(c: &mut Ctx) -> u32 {
 }
 fn SetPropA(c: &mut Ctx) -> u32 {
     let (h, k, v) = (c.a(0), c.a(1), c.a(2));
-    let key = if k < 0x10000 { format!("#{k}") } else { arg_str(k, false) };
+    let key = prop_key(k, false);
     with(|s| {
         let Some(w) = s.wins.get_mut(&h) else { return 0 };
         w.props.retain(|(x, _)| *x != key);
@@ -2253,7 +2253,7 @@ fn SetPropA(c: &mut Ctx) -> u32 {
 }
 fn SetPropW(c: &mut Ctx) -> u32 {
     let (h, k, v) = (c.a(0), c.a(1), c.a(2));
-    let key = if k < 0x10000 { format!("#{k}") } else { arg_str(k, true) };
+    let key = prop_key(k, true);
     with(|s| {
         let Some(w) = s.wins.get_mut(&h) else { return 0 };
         w.props.retain(|(x, _)| *x != key);

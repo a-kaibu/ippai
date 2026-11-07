@@ -1012,6 +1012,16 @@ impl<'a, M: Memory> X<'a, M> {
                 self.done()
             }
 
+            // SSE4.2 CRC32 (Castagnoli, bit-reflected): the source's bytes from the lowest; a 32-bit
+            // result, zero-extended into a 64-bit destination; no flags
+            Crc32 => {
+                let n = self.op_bits(1) / 8;
+                let v = tryf!(self.read_op(1));
+                let crc = (0..n).fold(self.get_reg(ins.op0_register()) as u32, |c, i| crc32c_byte(c, (v >> (8 * i)) as u8));
+                tryf!(self.write_op(0, crc as u64));
+                self.done()
+            }
+
             Cmpxchg => {
                 let bits = self.op_bits(0);
                 let d = tryf!(self.read_op(0));
@@ -1098,7 +1108,7 @@ impl<'a, M: Memory> X<'a, M> {
             }
 
             Cpuid => {
-                let (a, b, c, d) = cpuid(self.cpu.regs[EAX], self.cpu.regs[ECX]);
+                let (a, b, c, d) = cpuid_mode(self.cpu.regs[EAX], self.cpu.regs[ECX], self.m64());
                 self.set_reg(Register::EAX, a as u64);
                 self.set_reg(Register::EBX, b as u64);
                 self.set_reg(Register::ECX, c as u64);
@@ -1619,10 +1629,24 @@ impl<'a, M: Memory> X<'a, M> {
     }
 }
 
+/// One byte of CRC-32C (polynomial 0x1EDC6F41, reflected 0x82F63B78), no pre/post inversion
+pub(crate) fn crc32c_byte(c: u32, b: u8) -> u32 {
+    (0..8).fold(c ^ b as u32, |c, _| if c & 1 != 0 { c >> 1 ^ 0x82f6_3b78 } else { c >> 1 })
+}
+
 /// A Pentium 4 class CPU with SSE2 (what VN-era code checks for).
 /// CPUID as seen by guest code: a Pentium 4 class CPU with SSE2.
-pub fn cpuid(leaf: u32, _sub: u32) -> (u32, u32, u32, u32) {
+pub fn cpuid(leaf: u32, sub: u32) -> (u32, u32, u32, u32) {
+    cpuid_mode(leaf, sub, false)
+}
+
+/// Long mode reports what x64 programs of today require on top (Godot 4 refuses to start
+/// without SSE4.2): SSE3, SSSE3, CMPXCHG16B, SSE4.1, SSE4.2, POPCNT, all of which the
+/// interpreter runs. 32-bit code keeps the Pentium 4 view, so VN-era code stays on its SSE2 paths.
+pub fn cpuid_mode(leaf: u32, _sub: u32, long: bool) -> (u32, u32, u32, u32) {
+    const LONG_ECX: u32 = (1 << 0) | (1 << 9) | (1 << 13) | (1 << 19) | (1 << 20) | (1 << 23);
     match leaf {
+        1 if long => (0x0000_06f1, 0, LONG_ECX, (1 << 0) | (1 << 4) | (1 << 8) | (1 << 15) | (1 << 23) | (1 << 24) | (1 << 25) | (1 << 26)),
         0 => (1, u32::from_le_bytes(*b"Genu"), u32::from_le_bytes(*b"ntel"), u32::from_le_bytes(*b"ineI")),
         // family 6 model 15; FPU TSC CX8 CMOV MMX FXSR SSE SSE2
         1 => (0x0000_06f1, 0, 0, (1 << 0) | (1 << 4) | (1 << 8) | (1 << 15) | (1 << 23) | (1 << 24) | (1 << 25) | (1 << 26)),
@@ -1637,5 +1661,28 @@ pub fn cpuid(leaf: u32, _sub: u32) -> (u32, u32, u32, u32) {
             (w(0), w(1), w(2), w(3))
         }
         _ => (0, 0, 0, 0),
+    }
+}
+
+#[cfg(test)]
+mod cpuid_tests {
+    use super::*;
+
+    #[test]
+    fn long_mode_adds_sse42_and_32_bit_stays_p4() {
+        let (_, _, c32, d32) = cpuid_mode(1, 0, false);
+        let (_, _, c64, d64) = cpuid_mode(1, 0, true);
+        assert_eq!((c32, d32), (0, d64));
+        for bit in [0, 9, 13, 19, 20, 23] {
+            assert_ne!(c64 & 1 << bit, 0, "bit {bit}");
+        }
+        assert_eq!(cpuid(1, 0), cpuid_mode(1, 0, false));
+    }
+
+    #[test]
+    fn crc32c_check_value() {
+        // CRC-32C of "123456789" with the usual inversions is 0xE3069283
+        let c = b"123456789".iter().fold(!0u32, |c, &b| crc32c_byte(c, b));
+        assert_eq!(!c, 0xe306_9283);
     }
 }
