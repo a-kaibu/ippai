@@ -1,0 +1,7 @@
+# trial games with no trace, not recorded again unless asked (games.py; gametrace.yml's again)
+b2008_hook	notrace	FairlyLife WEB体験版02 H_Only/FairlyLife.exe: winplay wrote nothing; record-game.ps1 said nothing
+b2012_alicesoft	notrace	dl/母娘乱館体験版/OyakorankanTrial.exe: winplay wrote nothing; record-game.ps1 said nothing
+b2023_appetite	notrace	apt246_tr/sennokoro_tr.exe: winplay wrote nothing; record-game.ps1 said nothing
+s2006_giga_ab	notrace	angelbreath_trial/angelbreath.exe: winplay wrote nothing; record-game.ps1 said nothing
+s2006_pulltop_haruka	notrace	『遥かに仰ぎ、麗しの』体験版/haruuru_t.exe: winplay wrote nothing; record-game.ps1 said nothing
+s2008_clochette_suzunone7	notrace	dl/スズノネセブン！体験版/suzunone7_trial.exe: winplay wrote nothing; record-game.ps1 said nothing
