@@ -51,6 +51,13 @@ d3d11api-* ^(want|got) +fmt 10[3-9]
 # B4G4R4A4 is widened to 8 bits a channel (WebGPU has no 4-bit format): c * 17 / 255 on the GPU
 # is a float ulp off WARP's c / 15 in places
 d3d11tex-* ^(want|got) +format 115 row 
+# UNORM / SNORM texels read as floats on the CI's GPU (SwiftShader: v times the reciprocal of
+# 2^n - 1) are at most one float ulp above WARP's correctly rounded v / (2^n - 1); kura
+# uploads the bytes as they are (R16G16B16A16_SNORM 13, R10G10B10A2_UNORM 24,
+# R8G8B8A8_UNORM 28, R16G16_SNORM 37, R8G8_UNORM 49, R8_UNORM 61, A8_UNORM 65, the 2x1
+# R8G8_B8G8 / G8R8_G8B8 68 / 69, B8G8R8A8 / B8G8R8X8_UNORM 87 / 88, BC7_UNORM 98; measured
+# 2026-11-07 in headless Chromium: no texel more than 1 ulp off)
+d3d11tex-* ^(want|got) +format (13|24|28|37|49|61|65|68|69|87|88|98) row 
 d3d11copy-* ^(want|got) +depth R32_FLOAT D32_FLOAT   # WebGPU's depth32float holds 0..1 only (frag_depth clamps, NaN undefined): the probe's NaN/inf/out-of-range bits do not survive; 0..1 values do ("depth in01" lines)
 # WARP flushes float denormals on every operation (abs(denormal) = 0, clamp to -0); WebGPU
 # leaves denormals to the GPU and sake does not flush them but in log; log2 just below 1 is
