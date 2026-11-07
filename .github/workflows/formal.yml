@@ -40,6 +40,17 @@ jobs:
           curl -sSLf --retry 4 -o /tmp/tlc.tgz "https://github.com/yashikota/tlc-static/releases/download/$TLC_VERSION/tlc-linux-amd64.tar.gz"
           echo "$TLC_SHA256  /tmp/tlc.tgz" | sha256sum -c
           mkdir -p ~/.local/bin && tar xzf /tmp/tlc.tgz -C ~/.local/bin tlc
+      - run: tools/ci/rust-key.sh
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: tlc-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            tlc-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-
+            tlc-${{ runner.os }}-${{ env.RUST_KEY }}-
       - name: Model checks
         run: TLC=~/.local/bin/tlc formal/run.sh
       # (kura's real D3D9/D3D11/GL code, random calls, each run checked against its spec in formal/tla)
@@ -52,6 +63,9 @@ jobs:
           name: failed-traces
           path: ${{ runner.temp }}/failed-traces
           if-no-files-found: ignore
+      # (before the cache is saved: only the registry crates' builds are worth keeping)
+      - name: Shrink the cargo cache
+        run: python3 tools/ci/cache-prune.py target
 
   kani:
     runs-on: ubuntu-24.04
@@ -93,8 +107,22 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7.0.1
+      - run: tools/ci/rust-key.sh
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: render-model-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            render-model-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-
+            render-model-${{ runner.os }}-${{ env.RUST_KEY }}-
       - name: Optimized and plain runs draw the same
         run: IPPAI_MODEL_SEEDS=100000 cargo test --release -p kura --lib optimizations_draw_the_same -- --nocapture
+      # (before the cache is saved: only the registry crates' builds are worth keeping)
+      - name: Shrink the cargo cache
+        run: python3 tools/ci/cache-prune.py target
 
   shaders:
     runs-on: ubuntu-24.04
@@ -104,14 +132,17 @@ jobs:
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: 22
+      - run: tools/ci/rust-key.sh
       - uses: actions/cache@v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: shaders-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: shaders-${{ runner.os }}-
+          key: shaders-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            shaders-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-
+            shaders-${{ runner.os }}-${{ env.RUST_KEY }}-
       - name: Browser
         run: |
           npm install --prefix "$RUNNER_TEMP/pw" --no-audit --no-fund playwright@1.56.1
@@ -153,3 +184,6 @@ jobs:
           name: shaders-report
           path: ${{ runner.temp }}/shaders-report.json
           retention-days: 14
+      # (before the cache is saved: only the registry crates' builds are worth keeping)
+      - name: Shrink the cargo cache
+        run: python3 tools/ci/cache-prune.py target

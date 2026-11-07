@@ -42,14 +42,17 @@ jobs:
         run: node tests/net-browser.mjs
       - name: Bench report (a failed run stays out of the history)
         run: python3 tests/bench/test_report.py
+      - run: tools/ci/rust-key.sh
       - uses: actions/cache@v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: browser-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: browser-${{ runner.os }}-
+          key: browser-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            browser-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-
+            browser-${{ runner.os }}-${{ env.RUST_KEY }}-
       - name: Web games run isolated from the app
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
@@ -61,6 +64,9 @@ jobs:
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
         run: node tests/offline-browser.mjs target/debug/ippai
+      # (before the cache is saved: only the registry crates' builds are worth keeping)
+      - name: Shrink the cargo cache
+        run: python3 tools/ci/cache-prune.py target
 
   test:
     runs-on: ubuntu-24.04
@@ -68,14 +74,17 @@ jobs:
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v7.0.1
+      - run: tools/ci/rust-key.sh
       - uses: actions/cache@v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: test-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: test-${{ runner.os }}-
+          key: test-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            test-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-
+            test-${{ runner.os }}-${{ env.RUST_KEY }}-
       # (SingleStepTests/80386: real-mode tests recorded on a real 386, ~430 MB, which
       # crates/koji/tests/singlestep.rs runs when they are there)
       - uses: actions/cache@v6.1.0
@@ -92,6 +101,9 @@ jobs:
         run: cargo test -p crt
       - name: Check all Rust targets without warnings
         run: cargo check --workspace --all-targets --locked
+      # (before the cache is saved: only the registry crates' builds are worth keeping)
+      - name: Shrink the cargo cache
+        run: python3 tools/ci/cache-prune.py target
 
   # koji's long-mode JIT against its interpreter (random x64 code, run by wasmtime)
   jit64:
@@ -99,20 +111,26 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7.0.1
+      - run: tools/ci/rust-key.sh
       - uses: actions/cache@v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             tools/jit64test/target
-          key: jit64-${{ runner.os }}-${{ hashFiles('tools/jit64test/Cargo.lock') }}
-          restore-keys: jit64-${{ runner.os }}-
+          key: jit64-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('tools/jit64test/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            jit64-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('tools/jit64test/Cargo.lock') }}-
+            jit64-${{ runner.os }}-${{ env.RUST_KEY }}-
       - name: Differential test (new seed per run)
         working-directory: tools/jit64test
         run: cargo run --release --locked -- 20000 ${{ github.run_number }}
       - name: Interpreter against the runner's CPU, one instruction at a time
         working-directory: tools/jit64test
         run: cargo run --release --locked -- native 30000 ${{ github.run_number }}
+      # (before the cache is saved: only the registry crates' builds are worth keeping)
+      - name: Shrink the cargo cache
+        run: python3 tools/ci/cache-prune.py tools/jit64test/target
 
   # koji's 32-bit JIT (regions and function mode, through its dispatcher) against its
   # interpreter (random x86 integer/MMX/SSE/x87 code, run by wasmtime)
@@ -121,14 +139,17 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7.0.1
+      - run: tools/ci/rust-key.sh
       - uses: actions/cache@v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             tools/jit32test/target
-          key: jit32-${{ runner.os }}-${{ hashFiles('tools/jit32test/Cargo.lock') }}
-          restore-keys: jit32-${{ runner.os }}-
+          key: jit32-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('tools/jit32test/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            jit32-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('tools/jit32test/Cargo.lock') }}-
+            jit32-${{ runner.os }}-${{ env.RUST_KEY }}-
       - name: Differential test (new seed per run)
         working-directory: tools/jit32test
         run: cargo run --release --locked -- 10000 ${{ github.run_number }}
@@ -137,22 +158,31 @@ jobs:
         run: |
           sudo apt-get update -q && sudo apt-get install -y -q gcc-multilib
           cargo run --release --locked -- native 3000 ${{ github.run_number }}
+      # (before the cache is saved: only the registry crates' builds are worth keeping)
+      - name: Shrink the cargo cache
+        run: python3 tools/ci/cache-prune.py tools/jit32test/target
 
   rustfs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7.0.1
+      - run: tools/ci/rust-key.sh
       - uses: actions/cache@v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: rustfs-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: rustfs-${{ runner.os }}-
+          key: rustfs-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rustfs-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-
+            rustfs-${{ runner.os }}-${{ env.RUST_KEY }}-
       - name: Encrypted storage against RustFS
         run: bash tools/ci/test-rustfs.sh
+      # (before the cache is saved: only the registry crates' builds are worth keeping)
+      - name: Shrink the cargo cache
+        run: python3 tools/ci/cache-prune.py target
 
   build:
     runs-on: ubuntu-24.04
@@ -169,6 +199,7 @@ jobs:
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: 22
+      - run: tools/ci/rust-key.sh
       - uses: actions/cache@v6.1.0
         with:
           path: |
@@ -176,8 +207,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: build-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'tools/ci/build.sh', 'tools/ci/emsdk.sh') }}
-          restore-keys: build-${{ runner.os }}-
+          key: build-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock', 'tools/ci/build.sh', 'tools/ci/emsdk.sh') }}-${{ github.run_id }}
+          restore-keys: |
+            build-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock', 'tools/ci/build.sh', 'tools/ci/emsdk.sh') }}-
+            build-${{ runner.os }}-${{ env.RUST_KEY }}-
       - name: Web check (Oxfmt, Oxlint, types; warnings are errors)
         working-directory: web
         run: npm ci --no-audit --no-fund && npm run check && npx vp test
@@ -198,3 +231,6 @@ jobs:
           path: web/dist
           retention-days: 14
 
+      # (before the cache is saved: only the registry crates' builds are worth keeping)
+      - name: Shrink the cargo cache
+        run: python3 tools/ci/cache-prune.py target

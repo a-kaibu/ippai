@@ -47,15 +47,21 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7.0.1
+      - run: rustup toolchain install nightly --profile minimal --component rust-src && tools/ci/rust-key.sh nightly
       - uses: actions/cache@v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target/sanitize-${{ matrix.kind }}
-          key: sanitize-${{ matrix.kind }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: sanitize-${{ matrix.kind }}-
+          key: sanitize-${{ matrix.kind }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            sanitize-${{ matrix.kind }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-
+            sanitize-${{ matrix.kind }}-${{ env.RUST_KEY }}-
       - name: Tools
         run: rustup toolchain install nightly --profile minimal --component rust-src
       - name: Tests under ${{ matrix.kind }} sanitizer
         run: tools/ci/sanitize.sh ${{ matrix.kind }}
+      # (before the cache is saved: only the registry crates' builds are worth keeping)
+      - name: Shrink the cargo cache
+        run: python3 tools/ci/cache-prune.py target/sanitize-${{ matrix.kind }}

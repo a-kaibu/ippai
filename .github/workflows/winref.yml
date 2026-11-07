@@ -75,6 +75,7 @@ jobs:
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: 22
+      - run: tools/ci/rust-key.sh
       - uses: actions/cache@v6.1.0
         with:
           path: |
@@ -82,8 +83,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: winref-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'tools/ci/emsdk.sh') }}
-          restore-keys: winref-${{ runner.os }}-
+          key: winref-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock', 'tools/ci/emsdk.sh') }}-${{ github.run_id }}
+          restore-keys: |
+            winref-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock', 'tools/ci/emsdk.sh') }}-
+            winref-${{ runner.os }}-${{ env.RUST_KEY }}-
       - name: Build sake (node)
         run: |
           . tools/ci/emsdk.sh
@@ -128,6 +131,9 @@ jobs:
             interp.md
             png
           retention-days: 30
+      # (before the cache is saved: only the registry crates' builds are worth keeping)
+      - name: Shrink the cargo cache
+        run: python3 tools/ci/cache-prune.py target
 
   windows:
     needs: probes

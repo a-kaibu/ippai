@@ -38,6 +38,7 @@ jobs:
         run: |
           rustup component add rust-src
           rustup target add wasm32-unknown-emscripten
+      - run: tools/ci/rust-key.sh
       - uses: actions/cache@v6.1.0
         with:
           path: |
@@ -45,8 +46,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: conformance-sake-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'tools/ci/emsdk.sh') }}
-          restore-keys: conformance-sake-${{ runner.os }}-
+          key: conformance-sake-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock', 'tools/ci/emsdk.sh') }}-${{ github.run_id }}
+          restore-keys: |
+            conformance-sake-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock', 'tools/ci/emsdk.sh') }}-
+            conformance-sake-${{ runner.os }}-${{ env.RUST_KEY }}-
       - name: sake (node build)
         run: |
           . tools/ci/emsdk.sh
@@ -59,6 +62,9 @@ jobs:
             target/sake-out/sake.wasm
             target/sake-web
           retention-days: 3
+      # (before the cache is saved: only the registry crates' builds are worth keeping)
+      - name: Shrink the cargo cache
+        run: python3 tools/ci/cache-prune.py target
 
   winetest-build:
     runs-on: ubuntu-24.04
@@ -137,14 +143,17 @@ jobs:
         with:
           name: winetest-bin
           path: target/winetest/bin
+      - run: tools/ci/rust-key.sh
       - uses: actions/cache@v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target/release
-          key: conformance-ippai-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: conformance-ippai-${{ runner.os }}-
+          key: conformance-ippai-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            conformance-ippai-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-
+            conformance-ippai-${{ runner.os }}-${{ env.RUST_KEY }}-
       - name: Browser, fonts, the page and ippai
         run: |
           npm install --prefix "$RUNNER_TEMP/pw" --no-audit --no-fund playwright@1.56.1
@@ -170,6 +179,9 @@ jobs:
             target/winetest/report-*.md
             target/winetest/results-*.tsv
           retention-days: 14
+      # (before the cache is saved: only the registry crates' builds are worth keeping)
+      - name: Shrink the cargo cache
+        run: python3 tools/ci/cache-prune.py target/release
 
   diff:
     needs: [sake]

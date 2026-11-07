@@ -29,6 +29,7 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7.0.1
+      - run: rustup toolchain install nightly --profile minimal && tools/ci/rust-key.sh nightly
       - uses: actions/cache@v6.1.0
         with:
           path: |
@@ -37,8 +38,10 @@ jobs:
             ~/.cargo/bin/cargo-fuzz
             fuzz/target
             crates/*/fuzz/target
-          key: fuzz-build-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock', 'crates/*/fuzz/Cargo.lock') }}
-          restore-keys: fuzz-build-${{ runner.os }}-
+          key: fuzz-build-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock', 'crates/*/fuzz/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            fuzz-build-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock', 'crates/*/fuzz/Cargo.lock') }}-
+            fuzz-build-${{ runner.os }}-${{ env.RUST_KEY }}-
       - name: Tools
         run: |
           sudo apt-get update -q && sudo apt-get install -yq gcc-multilib imagemagick
@@ -65,3 +68,6 @@ jobs:
             fuzz/artifacts
             crates/*/fuzz/artifacts
           retention-days: 30
+      # (before the cache is saved: only the registry crates' builds are worth keeping)
+      - name: Shrink the cargo cache
+        run: python3 tools/ci/cache-prune.py fuzz/target crates/*/fuzz/target
