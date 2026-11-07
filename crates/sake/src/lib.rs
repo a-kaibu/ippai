@@ -196,6 +196,8 @@ pub fn run(cpu: &mut Cpu, until: u32) {
                     seh64::handler_done(cpu);
                 } else if a == seh64::CONSOLIDATE_TRAP {
                     seh64::consolidated(cpu);
+                } else if a == seh64::UNWIND_TRAP {
+                    seh64::unwind_handler_done(cpu);
                 } else {
                     api::dispatch(cpu, a);
                 }

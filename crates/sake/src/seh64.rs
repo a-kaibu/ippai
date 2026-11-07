@@ -34,6 +34,8 @@ const STATUS_UNWIND_CONSOLIDATE: u32 = 0x8000_0029;
 
 /// A catch block (the consolidation callback) returns here.
 pub const CONSOLIDATE_TRAP: u32 = 0xffff_0040;
+/// An unwind's call of a frame's handler returns here (`unwind_go`).
+pub const UNWIND_TRAP: u32 = 0xffff_0050;
 
 fn trace() -> bool {
     static T: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -265,6 +267,13 @@ fn step(cpu: &mut Cpu, kind: u32, ctx: u32, seen: &mut usize, rec: u32) -> Optio
         crate::mem::copy(ctx, r64(sp as u32) as u32, CONTEXT_SIZE);
         return Some((0, 0, sp, 0, 0));
     }
+    if pc == UNWIND_TRAP as u64 {
+        let sp = rsp(ctx);
+        if let Some(orig) = UNWINDS.with(|u| u.borrow().iter().rev().find(|e| e.handler_sp == sp).map(|e| e.orig)) {
+            crate::mem::copy(ctx, orig, CONTEXT_SIZE);
+            return Some((0, 0, sp, 0, 0));
+        }
+    }
     if (pc as u32) >= crate::api::TRAP_LO && pc >> 32 == 0 {
         return None;
     }
@@ -304,6 +313,11 @@ struct Dispatch {
 
 thread_local! {
     static STACK: RefCell<Vec<Dispatch>> = const { RefCell::new(Vec::new()) };
+    /// Unwinds in progress on this thread (each waiting for a handler's return to UNWIND_TRAP).
+    /// An exception raised in a handler goes on past it to the frames above RtlUnwindEx's
+    /// caller (libgcc's cleanups raise STATUS_GCC_UNWIND from their unwind handler, for the
+    /// frame being unwound to catch); an unwind that one starts leaves this one behind.
+    static UNWINDS: RefCell<Vec<Unwind>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Raises exception `code` at `addr` with `cpu` as the context, and starts the dispatch: the
@@ -460,6 +474,7 @@ fn unhandled(cpu: &mut Cpu, d: Dispatch) {
 /// Drops the dispatches whose blocks are below `sp` (the program unwound past them).
 fn drop_below(sp: u64) {
     STACK.with(|s| s.borrow_mut().retain(|d| (d.rec as u64) > sp));
+    UNWINDS.with(|u| u.borrow_mut().retain(|e| e.handler_sp > sp));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -536,6 +551,26 @@ fn RtlUnwind(c: &mut Ctx) -> u32 {
     0
 }
 
+/// An unwind in progress (its blocks in guest memory below RtlUnwindEx's caller).
+#[derive(Clone, Copy)]
+struct Unwind {
+    target: u64,
+    ip: u64,
+    rec: u32,
+    retval: u64,
+    /// the frame being unwound, the one above, the dispatcher context
+    ctx: u32,
+    next: u32,
+    disp: u32,
+    /// RtlUnwindEx's caller
+    orig: u32,
+    seen: usize,
+    /// the frame whose handler was called
+    frame: u64,
+    /// RSP after the handler's return to UNWIND_TRAP
+    handler_sp: u64,
+}
+
 pub fn unwind(c: &mut Ctx, target: u64, ip: u64, rec_in: u32, retval: u64, ctx_in: u32) {
     // scratch below the caller's stack
     let sp = c.esp;
@@ -543,7 +578,9 @@ pub fn unwind(c: &mut Ctx, target: u64, ip: u64, rec_in: u32, retval: u64, ctx_i
     let next = ctx - CONTEXT_SIZE;
     let disp = (next - DISP_SIZE) & !15;
     let recb = (disp - RECORD_SIZE) & !15;
+    let orig = (recb - CONTEXT_SIZE) & !15;
     caller_context(c, ctx);
+    crate::mem::copy(orig, ctx, CONTEXT_SIZE);
     let rec = if rec_in != 0 {
         rec_in
     } else {
@@ -556,45 +593,83 @@ pub fn unwind(c: &mut Ctx, target: u64, ip: u64, rec_in: u32, retval: u64, ctx_i
     if trace() {
         eprintln!("sake: x64 unwind to frame {target:#x} ip {ip:#x} code {:08x} from {:#x}", r32(rec), rip(ctx));
     }
+    let _ = ctx_in;
+    let u = Unwind { target, ip, rec, retval, ctx, next, disp, orig, seen: 0, frame: 0, handler_sp: 0 };
+    UNWINDS.with(|s| s.borrow_mut().push(u));
+    c.jumped = true;
+    unwind_go(c.cpu, false);
+}
+
+/// UNWIND_TRAP: the handler of the topmost unwind's frame returned.
+pub fn unwind_handler_done(cpu: &mut Cpu) {
+    unwind_go(cpu, true);
+}
+
+/// Goes on with the topmost unwind: up the frames until one has a handler (called, returning
+/// to UNWIND_TRAP) or the target is reached (its context loaded).
+fn unwind_go(cpu: &mut Cpu, resumed: bool) {
+    let Some(mut u) = UNWINDS.with(|s| s.borrow().last().copied()) else {
+        crate::fatal(cpu, "x64 unwind trap without an unwind");
+    };
     let limit = r64(crate::cur().teb + 8);
-    c.cpu.set_gpr(4, disp as u64 - 0x40);
-    let mut seen = 0;
-    loop {
+    let (ctx, next, rec) = (u.ctx, u.next, u.rec);
+    // (resumed: past the frame whose handler returned)
+    let mut done = resumed && u.frame == u.target;
+    if resumed && !done {
+        crate::mem::copy(ctx, next, CONTEXT_SIZE);
+    }
+    while !done {
         crate::mem::copy(next, ctx, CONTEXT_SIZE);
         let pc = rip(ctx);
-        let Some((h, data, frame, f, base)) = step(c.cpu, UNW_FLAG_UHANDLER, next, &mut seen, rec) else {
-            crate::fatal(c.cpu, &format!("x64 unwind to {target:#x}: ran out of frames at {pc:#x}"));
+        let Some((h, data, frame, f, base)) = step(cpu, UNW_FLAG_UHANDLER, next, &mut u.seen, rec) else {
+            crate::fatal(cpu, &format!("x64 unwind to {:#x}: ran out of frames at {pc:#x}", u.target));
         };
-        if frame > limit || (target != 0 && frame > target) {
-            crate::fatal(c.cpu, &format!("x64 unwind to {target:#x}: frame {frame:#x} beyond it"));
+        if frame > limit || (u.target != 0 && frame > u.target) {
+            crate::fatal(cpu, &format!("x64 unwind to {:#x}: frame {frame:#x} beyond it", u.target));
         }
-        if frame == target {
+        if frame == u.target {
             w32(rec + 4, r32(rec + 4) | EXCEPTION_TARGET_UNWIND);
         }
+        u.frame = frame;
         if h != 0 {
+            let disp = u.disp;
             crate::mem::fill(disp, DISP_SIZE, 0);
             w64(disp, pc);
             w64(disp + 8, crate::mem::widen(base));
             w64(disp + 0x10, f as u64);
             w64(disp + 0x18, frame);
-            w64(disp + 0x20, ip);
+            w64(disp + 0x20, u.ip);
             w64(disp + 0x28, ctx as u64);
             w64(disp + 0x30, h);
             w64(disp + 0x38, data as u64);
             if trace() {
                 eprintln!("sake: x64 unwind: frame {frame:#x} (pc {pc:#x}) handler {h:#x}");
             }
-            crate::call64(c.cpu, h, &[rec as u64, frame, ctx as u64, disp as u64]);
+            // the handler's call: (record, frame, context, dispatcher context) -> UNWIND_TRAP
+            let sp = ((u.orig - 0x40) & !15) - 8;
+            w64(sp, UNWIND_TRAP as u64);
+            u.handler_sp = sp as u64 + 8;
+            UNWINDS.with(|s| *s.borrow_mut().last_mut().unwrap() = u);
+            cpu.set_gpr(4, sp as u64);
+            cpu.set_gpr(1, rec as u64);
+            cpu.set_gpr(2, frame);
+            cpu.set_gpr(8, ctx as u64);
+            cpu.set_gpr(9, disp as u64);
+            cpu.eip = h as u32;
+            cpu.rip_hi = (h >> 32) as u32;
+            return;
         }
-        if frame == target {
-            break;
+        done = frame == u.target;
+        if !done {
+            crate::mem::copy(ctx, next, CONTEXT_SIZE);
         }
-        crate::mem::copy(ctx, next, CONTEXT_SIZE);
     }
-    set_reg(ctx, 0, retval);
-    set_rip(ctx, ip);
-    restore(c, ctx, rec);
-    let _ = ctx_in;
+    UNWINDS.with(|s| s.borrow_mut().pop());
+    set_reg(ctx, 0, u.retval);
+    set_rip(ctx, u.ip);
+    // (below everything the unwind used)
+    cpu.set_gpr(4, u.orig as u64 - 0x40);
+    restore_cpu(cpu, ctx, rec);
 }
 
 /// RtlRestoreContext(CONTEXT*, record)
@@ -606,9 +681,14 @@ fn RtlRestoreContext(c: &mut Ctx) -> u32 {
 
 /// Continues at `ctx` (a longjmp's buffer, or a catch block first, as `rec` says).
 fn restore(c: &mut Ctx, ctx: u32, rec: u32) {
+    restore_cpu(c.cpu, ctx, rec);
+    c.jumped = true;
+}
+
+fn restore_cpu(cpu: &mut Cpu, ctx: u32, rec: u32) {
     let code = if rec != 0 { r32(rec) } else { 0 };
     // (below everything the unwind still uses: the exception's record and object)
-    let deep = c.cpu.gpr(4) as u32;
+    let deep = cpu.gpr(4) as u32;
     if code == STATUS_LONGJUMP && r32(rec + 0x18) >= 1 {
         // _JUMP_BUFFER: Frame, Rbx, Rsp, Rbp, Rsi, Rdi, R12-R15, Rip, MxCsr, FpCsr, Spare, Xmm6-15
         let jb = r64(rec + 0x20) as u32;
@@ -623,8 +703,7 @@ fn restore(c: &mut Ctx, ctx: u32, rec: u32) {
         }
     }
     drop_below(rsp(ctx));
-    load_context(c.cpu, ctx);
-    c.jumped = true;
+    load_context(cpu, ctx);
     if code == STATUS_UNWIND_CONSOLIDATE && r32(rec + 0x18) >= 1 {
         // the callback (a catch block) runs below the stack the unwind was called on (the
         // thrown object may be in a frame unwound) and returns where to go on; its return
@@ -637,10 +716,10 @@ fn restore(c: &mut Ctx, ctx: u32, rec: u32) {
         let frame = saved - 0x38;
         w64(frame, CONSOLIDATE_TRAP as u64);
         w64(frame + 8, saved as u64);
-        c.cpu.set_gpr(4, frame as u64);
-        c.cpu.set_gpr(1, rec as u64);
-        c.cpu.eip = cb as u32;
-        c.cpu.rip_hi = (cb >> 32) as u32;
+        cpu.set_gpr(4, frame as u64);
+        cpu.set_gpr(1, rec as u64);
+        cpu.eip = cb as u32;
+        cpu.rip_hi = (cb >> 32) as u32;
         if trace() {
             eprintln!("sake: x64 consolidate: callback {cb:#x}");
         }

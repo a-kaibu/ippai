@@ -1,0 +1,14 @@
+deep 0: derived 0 [~0 ]
+deep 1: derived 10 [~1 ~0 ]
+deep 2: derived 20 [~2 ~1 ~0 ]
+deep 3: derived 30 [~3 ~2 ~1 ~0 ]
+rethrow: 20 [~2 ~1 ~0 inner ~102 ]
+none 1
+none 2
+int 3 [all(3) ]
+int 4 [all(4) ]
+strings: 100 100
+nested: nested
+double: 2.5
+exception_ptr: 10
+loop: 60000

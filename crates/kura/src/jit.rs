@@ -508,16 +508,18 @@ fn count_compile(k: usize, t0: Instant) {
 /// Switches read once: IPPAI_JIT_COUNT=<secs> (transfer counters),
 /// IPPAI_JIT_NOCHECK=1 (measuring only: no range checks).
 fn init_flags() {
-    if std::env::var("IPPAI_JIT_FN_ENTRIES").is_ok_and(|v| v == "0") {
-        jit::FN_ENTRIES.store(false, Ordering::Relaxed);
-    }
-    if let Ok(v) = std::env::var("IPPAI_JIT_PROBE") {
-        for (p, a) in jit::PROBES.iter().zip(v.split('_').filter_map(|a| u32::from_str_radix(a.trim_start_matches("0x"), 16).ok())) {
-            p.store(a, Ordering::Relaxed);
-        }
-    }
+    // (once: this runs on every entry into translated code, and std::env::var takes a lock
+    // and walks the environment)
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
+        if std::env::var("IPPAI_JIT_FN_ENTRIES").is_ok_and(|v| v == "0") {
+            jit::FN_ENTRIES.store(false, Ordering::Relaxed);
+        }
+        if let Ok(v) = std::env::var("IPPAI_JIT_PROBE") {
+            for (p, a) in jit::PROBES.iter().zip(v.split('_').filter_map(|a| u32::from_str_radix(a.trim_start_matches("0x"), 16).ok())) {
+                p.store(a, Ordering::Relaxed);
+            }
+        }
         if std::env::var("IPPAI_JIT_HOIST").is_ok_and(|v| v == "0") {
             jit::HOIST.store(false, Ordering::Relaxed);
         }

@@ -15,6 +15,8 @@ OUT=${OUT:-$(mktemp -d)}
 TESTS=${*:-nullcall intops simd atomics smc cmp64 ssecvt dinputtest textbounds crtstdio fileseek crtfiles hlsltest d3dx9shader d3dx9effect struct64 guard sse4 xaudio2 winrt wtsapi fastpaths}
 X64=" struct64 guard xaudio2 crtstdio fileseek crtfiles cmp64 winrt wtsapi atomics fastpaths "
 CLANG64=${CLANG64-x64seh x64crt}
+# C++ (g++, static libstdc++) built for x86 and x64, one expected output for both
+GXX=${GXX-gxxunwind}
 # Tests in VEX are also built with -mavx (the VEX forms of their SSE instructions)
 VEX=" sse4 "
 fail=0
@@ -82,5 +84,20 @@ for t in $CLANG64; do
   else
     echo "ok   $t"
   fi
+done
+for t in $GXX; do
+  want=$ROOT/host/tests/expected/$t.txt
+  for arch in i686 x86_64; do
+    if ! $arch-w64-mingw32-g++ -O2 -static "$ROOT/host/tests/$t.cpp" -o "$OUT/$t-$arch.exe"; then
+      echo "FAIL $t ($arch): build"; fail=1; continue
+    fi
+    got=$( (cd "$(dirname "$SAKE")" && timeout 300 node "$SAKE" "$OUT/$t-$arch.exe" 2>&1 | grep -v '^sake:') )
+    [ -n "${UPDATE:-}" ] && [ $arch = i686 ] && echo "$got" > "$want"
+    if [ "$got" != "$(cat "$want" 2>/dev/null)" ]; then
+      echo "FAIL $t ($arch):"; diff <(echo "$got") "$want" | head -10; fail=1
+    else
+      echo "ok   $t ($arch)"
+    fi
+  done
 done
 exit $fail

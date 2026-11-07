@@ -908,7 +908,11 @@ impl<'a> Gen<'a> {
     fn emit(&mut self) -> bool {
         let ins = self.ins;
         self.temps = 0;
-        if ins.has_lock_prefix() || ins.has_rep_prefix() || ins.has_repne_prefix() {
+        let xchg_mem = ins.mnemonic() == Mnemonic::Xchg && self.has_mem();
+        if (ins.has_lock_prefix() || xchg_mem) && !ins.has_rep_prefix() && !ins.has_repne_prefix() && self.locked() {
+            return true;
+        }
+        if ins.has_lock_prefix() || ins.has_rep_prefix() || ins.has_repne_prefix() || xchg_mem {
             let ends = ins.flow_control() != FlowControl::Next;
             self.fallback(ends);
             return !ends;
@@ -933,6 +937,100 @@ impl<'a> Gen<'a> {
 
     /// SHL/SHR/SAR r/m32 or r/m64 by CL. A count of 0 (CL masked) changes no flag, so the
     /// flags are set (into the Cpu) only when it isn't.
+    /// A locked read-modify-write (or xchg with memory) of an aligned dword or qword: one wasm
+    /// atomic (else nothing emitted; unaligned: the interpreter).
+    fn locked(&mut self) -> bool {
+        use Mnemonic::*;
+        let ins = self.ins;
+        let m = ins.mnemonic();
+        let n = ins.op_count();
+        let Some(mi) = (0..n).find(|&i| ins.op_kind(i) == OpKind::Memory) else {
+            return false;
+        };
+        let bits = self.op_bits(mi);
+        let shape = match m {
+            Inc | Dec => n == 1,
+            Xadd | Cmpxchg => n == 2 && mi == 0 && ins.op1_kind() == OpKind::Register,
+            Xchg => n == 2 && ins.op_kind(1 - mi) == OpKind::Register,
+            Add | Sub | And | Or | Xor => n == 2 && mi == 0,
+            _ => false,
+        };
+        let other_ok = n == 1 || matches!(self.op_bits(1 - mi), 0) || self.op_bits(1 - mi) == bits;
+        if !shape || (bits != 32 && bits != 64) || !(0..n).all(|i| self.simple(i)) || !other_ok || !self.addr(bits / 8) {
+            return false;
+        }
+        self.c.get(L_A).i32c(bits as i32 / 8 - 1).and().if_();
+        self.depth += 1;
+        self.bail();
+        self.depth -= 1;
+        self.c.end();
+        // (i64.atomic.rmw.* or i64.atomic.rmw32.*_u: the group's first opcode + 1 or + 6)
+        let (sub, align) = if bits == 64 { (1, 3) } else { (6, 2) };
+        let (b, old) = (self.temp(), self.temp());
+        if matches!(m, Inc | Dec) {
+            // CF stays
+            self.cond(ConditionCode::b);
+            self.c.set(L_FC);
+            self.c.i64c(1);
+        } else {
+            self.read_op(1 - mi, bits);
+        }
+        self.c.set(b);
+        if m == Cmpxchg {
+            let acc = if bits == 64 { Register::RAX } else { Register::EAX };
+            self.c.get(L_A);
+            self.get_reg(acc);
+            self.c.set(L_FA).get(L_FA).get(b);
+            self.c.op(0xfe).mem(0x48 + sub, align, 0).set(old);
+            // ZF from acc - old; the accumulator gets the old value when they differ
+            self.c.get(old).set(L_FB);
+            self.c.get(L_FA).get(L_FB).x(I64_SUB);
+            if bits < 64 {
+                self.c.i64c(mask(bits)).x(I64_AND);
+            }
+            self.c.set(L_FR);
+            self.set_flags(SUB, bits);
+            self.c.get(L_FA).get(L_FB).x(I64_NE).if_();
+            self.depth += 1;
+            self.set_reg(acc, old);
+            self.depth -= 1;
+            self.c.end();
+            return true;
+        }
+        let group = match m {
+            Add | Inc | Xadd => 0x1e,
+            Sub | Dec => 0x25,
+            And => 0x2c,
+            Or => 0x33,
+            Xor => 0x3a,
+            _ => 0x41,
+        };
+        self.c.get(L_A).get(b).op(0xfe).mem(group + sub, align, 0).set(old);
+        if m == Xchg || m == Xadd {
+            self.set_reg(ins.op_register(1 - mi), old);
+        }
+        if m == Xchg {
+            return true;
+        }
+        self.c.get(old).set(L_FA).get(b).set(L_FB);
+        self.c.get(L_FA).get(L_FB);
+        let kind = match m {
+            Add | Xadd => { self.c.x(I64_ADD); ADD }
+            Inc => { self.c.x(I64_ADD); INC }
+            Sub => { self.c.x(I64_SUB); SUB }
+            Dec => { self.c.x(I64_SUB); DEC }
+            And => { self.c.x(I64_AND); LOGIC }
+            Or => { self.c.x(I64_OR); LOGIC }
+            _ => { self.c.x(I64_XOR); LOGIC }
+        };
+        if bits < 64 {
+            self.c.i64c(mask(bits)).x(I64_AND);
+        }
+        self.c.set(L_FR);
+        self.set_flags(kind, bits);
+        true
+    }
+
     fn shift_cl(&mut self, bits: u32) -> bool {
         use Mnemonic::*;
         let m = self.ins.mnemonic();

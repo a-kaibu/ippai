@@ -412,6 +412,44 @@ fn random_ins(rng: &mut Rng, out: &mut Vec<Instruction>, rip_hi: u32) {
                 _ => Instruction::with1(if b == 64 { C::Bswap_r64 } else { C::Bswap_r32 }, sized(r(rng), b)).unwrap(),
             }
         }
+        28 => {
+            // locked read-modify-writes and xchg with memory: aligned (wasm atomics) or not
+            let b = rng.pick(&[32u32, 64]);
+            let mem = if rng.below(4) == 0 {
+                m(rng)
+            } else {
+                // rbx (= DATA) + an aligned offset
+                let off = rng.below(DATA_LEN as u64 / 2) as i64 & !(b as i64 / 8 - 1);
+                MemoryOperand::new(Register::RBX, Register::None, 1, off, 4, false, Register::None)
+            };
+            let x = sized(r(rng), b);
+            let w = b == 64;
+            let mut i = match rng.below(10) {
+                0 => Instruction::with2(if w { C::Xchg_rm64_r64 } else { C::Xchg_rm32_r32 }, mem, x).unwrap(),
+                1 => Instruction::with2(if w { C::Cmpxchg_rm64_r64 } else { C::Cmpxchg_rm32_r32 }, mem, x).unwrap(),
+                2 => Instruction::with2(if w { C::Xadd_rm64_r64 } else { C::Xadd_rm32_r32 }, mem, x).unwrap(),
+                3 => Instruction::with1(rng.pick(&if w { [C::Inc_rm64, C::Dec_rm64] } else { [C::Inc_rm32, C::Dec_rm32] }), mem).unwrap(),
+                4 | 5 => {
+                    let code = rng.pick(&if w { [C::Add_rm64_r64, C::Sub_rm64_r64, C::And_rm64_r64, C::Or_rm64_r64, C::Xor_rm64_r64] } else { [C::Add_rm32_r32, C::Sub_rm32_r32, C::And_rm32_r32, C::Or_rm32_r32, C::Xor_rm32_r32] });
+                    Instruction::with2(code, mem, x).unwrap()
+                }
+                6 => {
+                    let code = rng.pick(&if w { [C::Add_rm64_imm8, C::Sub_rm64_imm32, C::And_rm64_imm32, C::Or_rm64_imm8, C::Xor_rm64_imm32] } else { [C::Add_rm32_imm8, C::Sub_rm32_imm32, C::And_rm32_imm32, C::Or_rm32_imm8, C::Xor_rm32_imm32] });
+                    let imm = if matches!(code, C::Add_rm64_imm8 | C::Or_rm64_imm8 | C::Add_rm32_imm8 | C::Or_rm32_imm8) { rng.next() as i8 as i32 } else { rng.next() as i32 };
+                    Instruction::with2(code, mem, imm).unwrap()
+                }
+                7 => {
+                    // cmpxchg that succeeds: the accumulator loaded from memory first
+                    out.push(Instruction::with2(if w { C::Mov_r64_rm64 } else { C::Mov_r32_rm32 }, sized(Register::RAX, b), mem).unwrap());
+                    Instruction::with2(if w { C::Cmpxchg_rm64_r64 } else { C::Cmpxchg_rm32_r32 }, mem, x).unwrap()
+                }
+                _ => Instruction::with2(if w { C::Xchg_rm64_r64 } else { C::Xchg_rm32_r32 }, mem, x).unwrap(),
+            };
+            if rng.below(8) != 0 || !matches!(i.mnemonic(), iced_x86::Mnemonic::Xchg) {
+                i.set_has_lock_prefix(true);
+            }
+            i
+        }
         _ => {
             let b = bitsel(rng);
             let code = match b { 8 => C::Mov_r8_rm8, 16 => C::Mov_r16_rm16, 32 => C::Mov_r32_rm32, _ => C::Mov_r64_rm64 };

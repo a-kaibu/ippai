@@ -143,8 +143,16 @@
   - テスト: tools/jit64test に新命令とリージョン連鎖 (1〜3 ブロックの小さいリージョンを全命令で
     先に作る) のケース、CI の jit64 ジョブが毎回別の seed で 2 万件。host/tests/fastpaths.c
     (CS 4 スレッド、TLS、ヒープ、errno など) は x86 と x64 で同じ期待値。
-  - 残り: strings 1.6 倍、sync_lock 12 倍 (メモリへの xchg がインタプリタ)、x87 と minss の JIT、
-    x64 の mingw C++ 例外が落ちる。
+  - lock 付きの add/sub/and/or/xor/inc/dec/xadd/cmpxchg とメモリとの xchg は、4/8 バイト境界なら
+    wasm の atomic 命令 1 つ (境界を外れるとインタプリタ)。sync_lock 202 → 35 ms (x86 29 ms)。
+  - kura の jit::run が入るたびに環境変数を 2 つ読んでいた (std::env::var はロックを取って環境を
+    なめる) のを 1 回だけに。strings は x86 も x64 も 3 割ほど速くなった。
+  - 例外: RtlUnwindEx はホストで再帰しない (各フレームのハンドラは UNWIND_TRAP へ戻り、
+    `unwind_go` が続ける)。ハンドラの中で投げた例外は、RtlUnwindEx の呼び出し元より上の
+    フレームへ進む。MinGW の libgcc は後始末 (デストラクタ) のたびに unwind ハンドラから
+    STATUS_GCC_UNWIND を投げるので、これまで x64 の g++ の例外は落ちていた
+    (host/tests/gxxunwind.cpp: x86 と x64 で同じ結果)。
+  - 残り: script 1.7 倍 (間接ジャンプの出口で 64 ビットのフラグを計算する)、x87 と minss の JIT。
 - gl.rs: x64 では引数を位置で並べる ('d'/'f' は xmm、他は a64 の下位)。glShaderSource の
   ポインタ配列は 8 バイト刻み。拡張関数名は ARB/EXT を外した名前でも探す。
 - user: DPI API (GetDpiForWindow など 96 固定)、ShowWindow(SW_MAXIMIZE) で画面いっぱいに広げる。
