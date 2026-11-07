@@ -18,6 +18,8 @@ on:
     paths:
       - 'tests/corpus/winplay.py'
       - 'tests/corpus/titles.tsv'
+      # (an answer deleted by hand: that title is played again; the bot's commits start no run)
+      - 'tests/corpus/golden/**'
       - '.github/workflows/corpusref.yml'
   workflow_dispatch:
     inputs:
