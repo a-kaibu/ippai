@@ -1,0 +1,46 @@
+CryptAcquireContext PROV_RSA_FULL verify: 1
+md5 0 bytes in 1: size 16 short buffer ret 0 err 234 need 16 ret 1 d41d8cd98f00b204e9800998ecf8427e more data ret 0 err 8009000c
+md5 43 bytes in 1: size 16 short buffer ret 0 err 234 need 16 ret 1 9e107d9d372bb6826bd81d3542a419d6 more data ret 0 err 8009000c
+md5 43 bytes in 5: size 16 short buffer ret 0 err 234 need 16 ret 1 9e107d9d372bb6826bd81d3542a419d6 more data ret 0 err 8009000c
+md5 100000 bytes in 7: size 16 short buffer ret 0 err 234 need 16 ret 1 2dc29e5babf440db9204914bcbe05fbf more data ret 0 err 8009000c
+sha1 0 bytes in 1: size 20 short buffer ret 0 err 234 need 20 ret 1 da39a3ee5e6b4b0d3255bfef95601890afd80709 more data ret 0 err 8009000c
+sha1 43 bytes in 1: size 20 short buffer ret 0 err 234 need 20 ret 1 2fd4e1c67a2d28fced849ee1bb76e7391b93eb12 more data ret 0 err 8009000c
+sha1 100000 bytes in 3: size 20 short buffer ret 0 err 234 need 20 ret 1 557878b8118e7a9bdc75bcfc419f9b082ce073e6 more data ret 0 err 8009000c
+rc4 md5 default: keylen 128 encrypt ret 1 n 43 bc904e1d042e0c821a18c51390f11671b969787520d99f2d92a33f6b76fb1eab111f13a263133433bdf2c3 then c025002d37f251 after final 899a4859103d02
+rc4 md5 default: decrypt ret 1 The quick brown fox jumps over the lazy dog
+rc4 md5 default: destroy 1, again 0 err 57
+rc4 md5 128: keylen 128 encrypt ret 1 n 43 bc904e1d042e0c821a18c51390f11671b969787520d99f2d92a33f6b76fb1eab111f13a263133433bdf2c3 then c025002d37f251 after final 899a4859103d02
+rc4 md5 128: decrypt ret 1 The quick brown fox jumps over the lazy dog
+rc4 md5 128: destroy 1, again 0 err 57
+rc4 md5 40: keylen 40 encrypt ret 1 n 43 e236ae6c5f2e0712f3e35c3ea8d7bc7143c304fba565c2fa0f2c42a7547dacc57fec66c729ac636c37ce8c then d71b112aebd51b after final d73ca8284b3d09
+rc4 md5 40: decrypt ret 1 The quick brown fox jumps over the lazy dog
+rc4 md5 40: destroy 1, again 0 err 57
+rc4 md5 128 nosalt: keylen 128 encrypt ret 1 n 43 bc904e1d042e0c821a18c51390f11671b969787520d99f2d92a33f6b76fb1eab111f13a263133433bdf2c3 then c025002d37f251 after final 899a4859103d02
+rc4 md5 128 nosalt: decrypt ret 1 The quick brown fox jumps over the lazy dog
+rc4 md5 128 nosalt: destroy 1, again 0 err 57
+rc4 md5 40 nosalt: keylen 40 encrypt ret 1 n 43 4b1cd27fec67fbbd3e5f292a893c4341b36d567984cb805e95d9b80b6f2c50e2393ffd6662b654ce39e922 then b3df9a0fbba6d4 after final 7e16d43bf874f5
+rc4 md5 40 nosalt: decrypt ret 1 The quick brown fox jumps over the lazy dog
+rc4 md5 40 nosalt: destroy 1, again 0 err 57
+rc4 sha1 128: keylen 128 encrypt ret 1 n 43 6c0fafca0ad3f08ac26cefacfd54f2499eeb12a685b224c968ceb5a85f29b36c1e336b8add3c0c6577dc52 then d8000314994ea1 after final 5905a98e1ec0fe
+rc4 sha1 128: decrypt ret 1 The quick brown fox jumps over the lazy dog
+rc4 sha1 128: destroy 1, again 0 err 57
+CryptAcquireContext PROV_RSA_AES verify: 1
+sha256 43 bytes in 1: size 32 short buffer ret 0 err 234 need 32 ret 1 d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592 more data ret 0 err 8009000c
+sha256 100000 bytes in 2: size 32 short buffer ret 0 err 234 need 32 ret 1 55af394c980c7a7fb68aa904c4afdd93d76e5f826487105fc06f92a25bab8cbe more data ret 0 err 8009000c
+SystemFunction036 found 1
+RtlGenRandom: 1 1 zero length 1 differ 1 nonzero bytes>32 1
+rand_s: 0 0 differ 1
+UuidFromString "6B29FC40-CA47-1067-B31D-00DD010662DA": 0 40fc296b47ca6710b31d00dd010662da back 6b29fc40-ca47-1067-b31d-00dd010662da
+UuidFromString "6b29fc40-ca47-1067-b31d-00dd010662da": 0 40fc296b47ca6710b31d00dd010662da back 6b29fc40-ca47-1067-b31d-00dd010662da
+UuidFromString "{6B29FC40-CA47-1067-B31D-00DD010662DA}": 1705 cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd
+UuidFromString "6B29FC40-CA47-1067-B31D-00DD010662D": 1705 cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd
+UuidFromString "6B29FC40CA47-1067-B31D-00DD010662DA": 1705 cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd
+UuidFromString "6B29FC40-CA47-1067-B31D-00DD010662DAX": 1705 cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd
+UuidFromString "G B29FC40-CA47-1067-B31D-00DD010662DA": 1705 cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd
+UuidFromString "": 1705 cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd
+UuidFromString "00000000-0000-0000-0000-000000000000": 0 00000000000000000000000000000000 back 00000000-0000-0000-0000-000000000000
+UuidFromString NULL: 0 00000000000000000000000000000000
+UuidToStringW 6b29fc40-ca47-1067-b31d-00dd010662da
+UuidCreate: 0 0 version 4 variant 2 differ 1 compare 0
+UuidIsNil nil 1 created 0
+UuidEqual 1 0

@@ -1,0 +1,39 @@
+wvsprintfA 68 [-42|   42|42   |00042|4294967295|ff|FF|00abcdef|str|z|%|123456789|-1]
+wvsprintfA 29 [abc][     right][left      ]
+wvsprintfA 20 wide|WIDE|narrow|n|w
+wvsprintfA unsupported 23 f|e|4609434218613702656
+wvsprintfA long: 1024 strlen 1024 after 120
+wvsprintfW 24 7|wide|narrow|c|beef|l|h
+wsprintfA 3 k=5
+VerLanguageNameA 0411: 1 terminated 1
+VerLanguageNameA 0411 4 chars: ret==full 0 strlen 3 after 1
+VerLanguageNameA 0411 NULL buffer: ret==full 0
+VerLanguageNameW 0409: 1 terminated 1
+VerLanguageNameA 9999: 1
+GetThreadPreferredUILanguages size query: ret 1 count>0 1 size>2 1 short buffer ret 0 err 122 list ret 1 double-terminated 1
+GetThreadPreferredUILanguages ids: ret 1 size count*5+1
+GetUserPreferredUILanguages size query: ret 1 count>0 1 size>2 1 short buffer ret 0 err 122 list ret 1 double-terminated 1
+GetUserPreferredUILanguages ids: ret 1 size count*5+1
+GetProcessPreferredUILanguages size query: ret 1 count>0 1 size>2 0 short buffer ret 0 err 122 list ret 1 double-terminated 1
+GetProcessPreferredUILanguages ids: ret 1 size other
+GetSystemPreferredUILanguages size query: ret 1 count>0 1 size>2 1 short buffer ret 0 err 122 list ret 1 double-terminated 1
+GetSystemPreferredUILanguages ids: ret 1 size count*5+1
+QueryDosDevice C: 1 device 1 double-terminated 1
+QueryDosDevice C: 3 chars: 0 err 122
+QueryDosDevice NOSUCHDEV: 0 err 2
+QueryDosDevice all: 0
+GetLogicalDriveStrings: need==got+1 1 starts C 1
+GetLogicalDriveStringsW: 1
+FindFirstFileExA * level 0 op 0 flags 0: ./(empty) ../(empty) file_a.txt(empty) file_b.dat(empty) subdir/(empty) next err 18
+FindFirstFileExA * level 1 op 0 flags 0: ./(empty) ../(empty) file_a.txt(empty) file_b.dat(empty) subdir/(empty) next err 18
+FindFirstFileExA file_?.txt level 1 op 0 flags 2: file_a.txt(empty) next err 18
+FindFirstFileExA * level 0 op 1 flags 0: ./(empty) ../(empty) file_a.txt(empty) file_b.dat(empty) subdir/(empty) next err 18
+FindFirstFileExA nothing* level 0 op 0 flags 0: invalid err 2
+FindFirstFileExA subdir\* level 1 op 0 flags 0: ./(empty) ../(empty) next err 18
+FindFirstFileExA  level 0 op 0 flags 0: invalid err 3
+FindFirstFileExW file_b*: 1 file_b.dat
+FindFirstFileExA bad level: 0 err 87
+LoadCursorFromFileA: 1
+cursor info: 1 icon 0 hotspot 3,4 mask 32x64
+LoadCursorFromFileW: 1
+LoadCursorFromFileA missing: 0 err 2

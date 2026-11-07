@@ -1,0 +1,28 @@
+pseudo read 26: ret 1 count 26 same 1
+pseudo read 0: ret 1 err 0 count 0
+pseudo read without count: ret 1
+pseudo read NULL: ret 0 err 299 count 0
+pseudo write NULL: ret 0 err 998 count 18446744073709551615
+pseudo write 3: ret 1 count 3 text XYZde
+OpenProcess self: 1
+handle read 26: ret 1 count 26 same 1
+handle read 0: ret 1 err 0 count 0
+handle read without count: ret 1
+handle read NULL: ret 0 err 299 count 0
+handle write NULL: ret 0 err 998 count 18446744073709551615
+handle write 3: ret 1 count 3 text XYZde
+read across into reserved: ret 0 err 299 count 0
+read reserved: ret 0 err 299 count 0
+write across into reserved: ret 0 err 299 count 8 first 0
+read into reserved: ret 0 err 299 count 8
+write read-only page: ret 0 err 998 text readonly protect after 2
+read no-access page: ret 0 err 299
+write no-access page: ret 0 err 998 protect after 1
+heap code before: 700000
+heap code patched: ret 1 900000
+heap code stored: 1100000
+image code protect 20
+image code before: 100000
+image code patched: ret 1 err 0 count 4 protect after 20
+image code after: 300000
+image code hooked: ret 1 500000
