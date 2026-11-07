@@ -9,8 +9,13 @@
    live as long as their texture, and their references and bindings count on it. AddRef and
    Release return the public count: the application's references to the group plus those live objects hold.
 
-   Left out on purpose, as kura does them: resources do not hold a reference on their device (a
-   game that releases its device first destroys it at once), and Reset and ResizeBuffers do not
+   As Windows reports them (Wine's d3d11 tests, tests/winref d3d11api): a D3D11 view holds its
+   resource privately (the resource's count does not change), and every D3D11 device child (the
+   immediate context included) holds a public reference on the device while it has public
+   references itself. The immediate context starts with none.
+
+   Left out on purpose, as kura does them: D3D9 resources do not hold a reference on their device
+   (a game that releases its device first destroys it at once), and Reset and ResizeBuffers do not
    fail while the application still holds the old buffers (those buffers live on, unbound). *)
 EXTENDS Naturals, Sequences, FiniteSets
 
@@ -39,8 +44,18 @@ SumApp(st, S) == IF S = {} THEN 0 ELSE LET o == CHOOSE x \in S : TRUE IN st.app[
 
 AppCount(st, g) == SumApp(st, {o \in st.known : Group(st, o) = g})
 
-\* (references live objects hold on g)
-Refs(st, g) == AppCount(st, g) + Cardinality({h \in st.alive : g \in st.held[h]})
+\* (D3D11 objects whose references are private: views on their resources)
+Views == {"view"}
+\* (D3D11 device children: they hold the device while they have public references)
+Children11 == {"texture", "buffer", "view", "context"}
+
+\* (the public references on g: the application's and those live objects hold, but views')
+Pub(st, g) == AppCount(st, g) + Cardinality({h \in st.alive : g \in st.held[h] /\ st.kind[h] \notin Views})
+
+Refs(st, g) ==
+    Pub(st, g) + IF st.kind[g] = "device11"
+                 THEN Cardinality({h \in st.alive : st.kind[h] \in Children11 /\ st.parent[h] = 0 /\ Pub(st, h) > 0})
+                 ELSE 0
 
 Reaches(st, S, o) ==
     IF st.parent[o] # 0 THEN st.parent[o] \in S
@@ -93,9 +108,9 @@ Do(st, t) ==
                 sl == [NoSlots EXCEPT !["bb"] = t.bb, !["sc"] = t.sc, !["ads"] = t.ads, !["rt0"] = t.bb, !["ds"] = t.ads]
             IN Done([a EXCEPT !.slots[t.dev] = sl], "ok", 0)
       [] t.op = "CreateDevice11" ->
-            \* (the device t.dev, which holds its context t.sb; the swap chain t.o holds its buffer
-            \* t.v and the device)
-            LET a == Make(Make(st, <<t.sb>>, "context", 0, {}, NoSlots), <<t.dev>>, "device11", 0, {t.sb}, NoSlots)
+            \* (the device t.dev and its context t.sb; the swap chain t.o holds its buffer t.v and
+            \* the device)
+            LET a == Make(Make(st, <<t.sb>>, "context", 0, {}, NoSlots), <<t.dev>>, "device11", 0, {}, NoSlots)
                 b == Make(Make(a, <<t.v>>, "texture", 0, {}, NoSlots), <<t.o>>, "swapchain", 0, {t.v, t.dev}, NoSlots)
             IN Done(GiveApp(GiveApp(GiveApp(b, t.dev), t.sb), t.o), "ok", t.o)
       [] t.op = "CreateTexture" ->

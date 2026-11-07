@@ -135,7 +135,9 @@ const IIDS: &[(u32, &[u32])] = &[
 /// Interfaces another face of the same object can answer (device <-> IDXGIDevice, 2D textures
 /// <-> IDXGISurface)
 fn other_face(primary: u32, want: u32) -> bool {
-    matches!((primary, want), (IF_DEVICE, IF_DXGIDEVICE) | (IF_TEX2D, IF_SURFACE) | (IF_DEVICE | IF_CONTEXT, IF_MULTITHREAD)) || d3d10::ten(primary) == Some(want)
+    matches!((primary, want), (IF_DEVICE, IF_DXGIDEVICE) | (IF_TEX2D, IF_SURFACE) | (IF_DEVICE | IF_CONTEXT, IF_MULTITHREAD))
+        // (a D3D11 device has no ID3D10Device face to ask for: D3D10CreateDevice makes it)
+        || (primary != IF_DEVICE && d3d10::ten(primary) == Some(want))
 }
 
 pub struct Buffer {
@@ -247,7 +249,8 @@ pub struct Obj {
     /// (interface, guest block)
     pub faces: Vec<(u32, u32)>,
     pub data: Data,
-    pub private: Vec<([u8; 16], Vec<u8>)>,
+    /// (guid, data, the object of SetPrivateDataInterface it holds a reference to)
+    pub private: Vec<([u8; 16], Vec<u8>, u32)>,
 }
 
 #[derive(Clone)]
@@ -270,6 +273,8 @@ pub struct State {
     depth: u32,
     stencil_ref: u32,
     raster: u32,
+    /// SetPredication (predicate, value): kept for GetPredication, draws are not predicated
+    predicate: (u32, u32),
 }
 
 pub struct D11 {
@@ -508,6 +513,11 @@ impl D11 {
             return;
         }
         let o = self.objs.remove(&id).unwrap();
+        for &(_, _, held) in &o.private {
+            if held != 0 {
+                self.release(held);
+            }
+        }
         for (_, a) in &o.faces {
             unsafe { *((a + ptr()) as *mut u32) = 0 };
             self.free_blocks.push(*a);
@@ -663,7 +673,7 @@ unsafe fn query_interface(d: &mut D11, id: u32, iface: u32, riid: u32, out: u32)
                 iface
             } else if ifs.contains(&primary) {
                 primary
-            } else if let Some(&f) = ifs.iter().find(|&&f| other_face(primary, f)) {
+            } else if let Some(&f) = ifs.iter().find(|&&f| other_face(primary, f) || (d3d10::eleven(iface).is_some() && d3d10::ten(primary) == Some(f))) {
                 f
             } else {
                 0
@@ -692,6 +702,11 @@ fn dxgi_objects(d: &mut D11) -> u32 {
         d.adapter = d.id_of(a);
         let o = d.new_obj(IF_OUTPUT, Data::Output);
         d.output = d.id_of(o);
+        // (the adapter and the output: only the application's references count, as in Windows'
+        // "Adapter has N references left")
+        for id in [d.adapter, d.output] {
+            d.objs.get_mut(&id).unwrap().refs = 0;
+        }
     } else {
         d.add_ref(d.factory);
     }
@@ -709,6 +724,25 @@ unsafe fn create_device(d: &mut D11, args: *const u32) -> u32 {
         }
         wr(level_out, 0, 0);
         return E_INVALIDARG;
+    }
+    // (the swap chain's description is checked before anything is made: no window, or a format
+    // a swap chain can't have, and nothing comes back)
+    if desc != 0 && sc_out != 0 {
+        let p = swap_desc(desc);
+        let bad = if p[11] == 0 {
+            DXGI_ERROR_INVALID_CALL
+        } else if !matches!(p[4], 10 | 24 | 28 | 29 | 87 | 91) {
+            E_INVALIDARG
+        } else {
+            S_OK
+        };
+        if bad != S_OK {
+            for o in [sc_out, dev_out, ctx_out] {
+                wrp(o, 0, 0);
+            }
+            wr(level_out, 0, 0);
+            return bad;
+        }
     }
     // feature level: the first asked for that is 11_0 or lower
     let mut level = 0xb000;
@@ -788,14 +822,15 @@ unsafe fn create_device10(d: &mut D11, args: *const u32) -> u32 {
 /// Whether an object of this interface is a device child: one that holds a reference to the
 /// device while the application holds one to it (as in Windows: "Device has N references left").
 fn holds_device(iface: u32) -> bool {
-    !matches!(iface, IF_DEVICE | IF_FACTORY | IF_ADAPTER | IF_OUTPUT)
+    // (a swap chain holds its device for as long as it lives: new_swapchain)
+    !matches!(iface, IF_DEVICE | IF_FACTORY | IF_ADAPTER | IF_OUTPUT | IF_SWAPCHAIN)
 }
 
 /// Lets go of everything a state binds (ClearState, a new device).
 fn unbind_state(d: &mut D11, old: &State) {
     let mut held: Vec<u32> = Vec::new();
     held.extend(old.vbs.iter().map(|v| v.0));
-    held.extend([old.ib.0, old.layout, old.vs, old.ps, old.dsv, old.blend, old.depth, old.raster]);
+    held.extend([old.ib.0, old.layout, old.vs, old.ps, old.dsv, old.blend, old.depth, old.raster, old.predicate.0]);
     for s in 0..2 {
         held.extend(old.cbs[s]);
         held.extend(old.srvs[s]);
@@ -827,6 +862,7 @@ fn default_state() -> State {
         depth: 0,
         stencil_ref: 0,
         raster: 0,
+        predicate: (0, 0),
     }
 }
 
@@ -926,6 +962,8 @@ unsafe fn upload_texture(t: &Texture, sub: u32, mem: u32, pitch: u32, bx: Option
 unsafe fn method(d: &mut D11, iface: u32, m: u32, this: u32, args: *const u32, after: &mut After) -> u32 {
     let a = |i: usize| *args.add(i);
     match iface {
+        // IDXGIObject: SetPrivateData, SetPrivateDataInterface, GetPrivateData
+        IF_FACTORY | IF_ADAPTER | IF_OUTPUT | IF_SWAPCHAIN | IF_DXGIDEVICE | IF_SURFACE if (3..=5).contains(&m) => private_data(d, [5, 6, 4][m as usize - 3], this, &a),
         IF_FACTORY => factory_call(d, m, this, &a),
         IF_ADAPTER => match m {
             6 => parent(d, d.factory, a(1), a(2)),
@@ -939,6 +977,7 @@ unsafe fn method(d: &mut D11, iface: u32, m: u32, this: u32, args: *const u32, a
                 wrp(a(2), 0, d.addr_of(d.output));
                 S_OK
             }
+            8 | 10 if a(1) == 0 => E_INVALIDARG,
             8 | 10 => {
                 // GetDesc/GetDesc1: Description[128] WCHAR, ids, memory sizes
                 let n = match (m, ptr()) {
@@ -957,7 +996,16 @@ unsafe fn method(d: &mut D11, iface: u32, m: u32, this: u32, args: *const u32, a
                 wrp(a(1) + 272, 2, 1024 << 20); // SharedSystemMemory
                 S_OK
             }
-            9 => S_OK,
+            9 => {
+                // CheckInterfaceSupport(iid, umd version): only the D3D10 devices answer
+                if a(1) == 0 || !matches!(rd(a(1), 0), 0x9b7e4c0f | 0x9b7e4c8f) || rd(a(1), 1) != 0x4106_342c {
+                    return DXGI_ERROR_UNSUPPORTED;
+                }
+                // (30.0.15.1179)
+                wr(a(2), 0, 15 << 16 | 1179);
+                wr(a(2), 1, 30 << 16);
+                S_OK
+            }
             _ => E_NOTIMPL,
         },
         IF_OUTPUT => output_call(d, m, &a),
@@ -976,6 +1024,29 @@ unsafe fn method(d: &mut D11, iface: u32, m: u32, this: u32, args: *const u32, a
                 }
                 d.add_ref(d.adapter);
                 wrp(a(1), 0, d.addr_of(d.adapter));
+                S_OK
+            }
+            8 => {
+                // CreateSurface(desc, count, usage, shared, out[count]): 2D textures
+                if a(1) == 0 || a(2) == 0 || a(5) == 0 {
+                    return E_INVALIDARG;
+                }
+                let (w, h, fmt) = (rd(a(1), 0), rd(a(1), 1), rd(a(1), 2));
+                if format::info(fmt).is_none() {
+                    return E_INVALIDARG;
+                }
+                let usage = a(3);
+                let bind = if usage & 0x20 != 0 { 0x20 } else { 0 } | if usage & 0x10 != 0 { 8 } else { 0 } | if usage & 0x400 != 0 { 0x80 } else { 0 };
+                for i in 0..a(2) {
+                    let o = new_texture(d, 2, w, h, 1, 1, fmt, 0, bind, false);
+                    let f = d.face(d.id_of(o), IF_SURFACE);
+                    wrp(a(5), i as usize, f);
+                }
+                S_OK
+            }
+            9 => {
+                // QueryResourceResidency(resources, status, n): all in memory
+                std::ptr::write_bytes(a(2) as *mut u8, 0, 4 * a(3) as usize);
                 S_OK
             }
             10 | 12 => S_OK,
@@ -1246,6 +1317,9 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
                 return E_INVALIDARG;
             }
             let (size, usage, bind) = (rd(desc, 0), rd(desc, 1), rd(desc, 2));
+            if size == 0 || (usage == 1 && a(2) == 0) || (a(2) != 0 && rdp(a(2), 0) == 0) {
+                return E_INVALIDARG;
+            }
             if a(3) == 0 {
                 return S_FALSE;
             }
@@ -1281,6 +1355,19 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
                     eprintln!("d3d11: texture format {fmt} not supported");
                 }
                 return E_INVALIDARG;
+            }
+            // (empty sizes, no samples, an immutable texture without its texels, initial data
+            // with a missing level)
+            let samples = if m == 5 { rd(desc, 5) } else { 1 };
+            if w == 0 || h == 0 || layers == 0 || samples == 0 || (usage == 1 && a(2) == 0) {
+                return E_INVALIDARG;
+            }
+            if a(2) != 0 {
+                let max = 32 - w.max(h).max(if dim == 3 { layers } else { 1 }).leading_zeros();
+                let n = if mips == 0 { max } else { mips.min(max) } * if dim == 3 { 1 } else { layers };
+                if (0..n).any(|sub| rdp(a(2) + sub * (ptr() + 8), 0) == 0) {
+                    return E_INVALIDARG;
+                }
             }
             if a(3) == 0 {
                 return S_FALSE;
@@ -1369,6 +1456,13 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             let desc: Vec<u32> = (0..n).map(|i| rd(a(1), i)).collect();
             if a(2) == 0 {
                 return S_FALSE;
+            }
+            // (one object per description while it lives, as Windows gives back)
+            let same = d.objs.iter().find(|(_, o)| o.iface == iface && matches!(&o.data, Data::State(x) if *x == desc)).map(|(&id, _)| id);
+            if let Some(id) = same {
+                d.add_ref(id);
+                wrp(a(2), 0, d.addr_of(id));
+                return S_OK;
             }
             let o = d.new_obj(iface, Data::State(desc));
             wrp(a(2), 0, o);
@@ -1483,39 +1577,66 @@ fn vertex_size(f: u32) -> u32 {
 
 /// Get/Set/SetInterface PrivateData as methods 4/5/6 of a device child (`m` in that numbering).
 unsafe fn private_data(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) -> u32 {
+    // (as Windows: Get/Set/SetInterface on a store per object; an interface stored holds a
+    // reference to the object, given out again with one more by Get)
     let mut guid = [0u8; 16];
     if a(1) == 0 {
         return E_INVALIDARG;
     }
     std::ptr::copy_nonoverlapping(a(1) as *const u8, guid.as_mut_ptr(), 16);
+    let iface_obj = if m == 6 { d.id_of(a(2)) } else { 0 };
     let Some(o) = d.objs.get_mut(&this) else { return E_FAIL };
+    let found = o.private.iter().position(|x| x.0 == guid);
     match m {
         4 => {
             // GetPrivateData(guid, size*, data)
-            let Some((_, v)) = o.private.iter().find(|x| x.0 == guid) else {
+            if a(2) == 0 {
+                return E_INVALIDARG;
+            }
+            let Some(i) = found else {
                 wr(a(2), 0, 0);
                 return DXGI_ERROR_NOT_FOUND;
             };
-            if a(3) != 0 {
-                if rd(a(2), 0) < v.len() as u32 {
-                    return 0x887a_0003; // DXGI_ERROR_MORE_DATA
-                }
-                std::ptr::copy_nonoverlapping(v.as_ptr(), a(3) as *mut u8, v.len());
-            }
+            let (v, held) = (o.private[i].1.clone(), o.private[i].2);
+            let room = rd(a(2), 0);
             wr(a(2), 0, v.len() as u32);
-            S_OK
-        }
-        5 => {
-            o.private.retain(|x| x.0 != guid);
-            if a(3) != 0 {
-                o.private.push((guid, std::slice::from_raw_parts(a(3) as *const u8, a(2) as usize).to_vec()));
+            if a(3) == 0 {
+                return S_OK;
             }
+            if room < v.len() as u32 {
+                return 0x887a_0003; // DXGI_ERROR_MORE_DATA
+            }
+            if held != 0 {
+                d.add_ref(held);
+            }
+            std::ptr::copy_nonoverlapping(v.as_ptr(), a(3) as *mut u8, v.len());
             S_OK
         }
         _ => {
-            o.private.retain(|x| x.0 != guid);
-            if a(2) != 0 {
-                o.private.push((guid, a(2).to_le_bytes().to_vec()));
+            // SetPrivateData(guid, size, data) / SetPrivateDataInterface(guid, object)
+            let (bytes, held) = if m == 5 {
+                if a(3) == 0 {
+                    // (no data: the entry goes, if there is one)
+                    let Some(i) = found else { return S_FALSE };
+                    let old = o.private.remove(i).2;
+                    if old != 0 {
+                        d.release(old);
+                    }
+                    return S_OK;
+                }
+                (std::slice::from_raw_parts(a(3) as *const u8, a(2) as usize).to_vec(), 0)
+            } else {
+                let mut b = a(2).to_le_bytes().to_vec();
+                b.resize(ptr() as usize, 0);
+                (b, iface_obj)
+            };
+            let old = found.map_or(0, |i| o.private.remove(i).2);
+            o.private.push((guid, bytes, held));
+            if held != 0 {
+                d.add_ref(held);
+            }
+            if old != 0 {
+                d.release(old);
             }
             S_OK
         }
@@ -1990,7 +2111,16 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
                 }
             }
         }
-        22 | 23 | 30..=32 | 37 | 49 | 51 | 52 | 55 | 57 | 58 | 59..=71 => {}
+        30 => {
+            let mut p = st.predicate.0;
+            set_one(d, &mut p, a(1));
+            st.predicate = (p, a(2));
+        }
+        86 => {
+            get_one(d, st.predicate.0, a(1));
+            wr(a(2), 0, st.predicate.1);
+        }
+        22 | 23 | 31 | 32 | 37 | 49 | 51 | 52 | 55 | 57 | 58 | 59..=71 => {}
         38..=42 => {}
         72 | 77 => get_slots(d, &st.cbs[(m == 77) as usize], a(1), a(2), a(3)),
         73 | 84 => get_slots(d, &st.srvs[(m == 73) as usize], a(1), a(2), a(3)),
@@ -2034,10 +2164,6 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
             }
         }
         83 => wr(a(1), 0, st.topology),
-        86 => {
-            wrp(a(1), 0, 0);
-            wr(a(2), 0, 0);
-        }
         89 | 90 => {
             if a(2) != 0 {
                 get_slots(d, &st.rtvs, 0, a(1), a(2));
