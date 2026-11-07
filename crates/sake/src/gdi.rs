@@ -1624,7 +1624,7 @@ fn real_of(dc: u32) -> Option<(Real, LogFont, DcState)> {
     Some((realize(&lf)?, lf, s))
 }
 
-fn read_logfont(p: u32, wide: bool) -> LogFont {
+pub(crate) fn read_logfont(p: u32, wide: bool) -> LogFont {
     let face = if wide {
         let v: Vec<u16> = (0..32).map(|i| r16(p + 28 + 2 * i)).take_while(|&c| c != 0).collect();
         String::from_utf16_lossy(&v)
@@ -1649,7 +1649,7 @@ fn read_logfont(p: u32, wide: bool) -> LogFont {
     }
 }
 
-fn write_logfont(p: u32, lf: &LogFont, wide: bool) {
+pub(crate) fn write_logfont(p: u32, lf: &LogFont, wide: bool) {
     for (i, v) in [lf.height, lf.width, lf.esc, lf.orient, lf.weight].iter().enumerate() {
         w32(p + 4 * i as u32, *v as u32);
     }

@@ -18,6 +18,45 @@ const FMT_24RGB: u32 = 0x0002_1808;
 const FMT_32RGB: u32 = 0x0002_2009;
 const FMT_32ARGB: u32 = 0x0026_200a;
 const FMT_32PARGB: u32 = 0x000e_200b;
+const FMT_16RGB555: u32 = 0x0002_1005;
+const FMT_16RGB565: u32 = 0x0002_1006;
+
+fn bytes_per_pixel(fmt: u32) -> u32 {
+    match fmt {
+        FMT_24RGB => 3,
+        FMT_16RGB555 | FMT_16RGB565 => 2,
+        _ => 4,
+    }
+}
+
+/// BGRA -> 16-bit pixel and back (5-bit channels widened by bit replication)
+fn pack16(fmt: u32, [b, g, r]: [u8; 3]) -> u16 {
+    let (b, r) = ((b >> 3) as u16, (r >> 3) as u16);
+    if fmt == FMT_16RGB565 { r << 11 | ((g >> 2) as u16) << 5 | b } else { r << 10 | ((g >> 3) as u16) << 5 | b }
+}
+fn unpack16(fmt: u32, v: u16) -> [u8; 3] {
+    let x5 = |c: u16| ((c << 3) | (c >> 2)) as u8;
+    let b = x5(v & 31);
+    if fmt == FMT_16RGB565 {
+        let g = (v >> 5) & 63;
+        [b, ((g << 2) | (g >> 4)) as u8, x5(v >> 11)]
+    } else {
+        [b, x5((v >> 5) & 31), x5((v >> 10) & 31)]
+    }
+}
+
+pub(crate) fn is_image(h: u32) -> bool {
+    with(|m| m.contains_key(&h))
+}
+
+/// Runs `f(width, height, bgra)` over an image's pixels (for gdiplus_text's Graphics).
+pub(crate) fn with_pixels(h: u32, f: impl FnOnce(u32, u32, &mut [u8])) {
+    with(|m| {
+        if let Some(b) = m.get_mut(&h) {
+            f(b.w, b.h, &mut b.px)
+        }
+    })
+}
 
 struct Bitmap {
     w: u32,
@@ -156,10 +195,10 @@ fn GdipBitmapLockBits(c: &mut Ctx) -> u32 {
         if b.locked.is_some() || x.checked_add(w)? > b.w || y.checked_add(h)? > b.h {
             return None;
         }
-        if ![FMT_24RGB, FMT_32RGB, FMT_32ARGB, FMT_32PARGB].contains(&fmt) {
+        if ![FMT_24RGB, FMT_32RGB, FMT_32ARGB, FMT_32PARGB, FMT_16RGB555, FMT_16RGB565].contains(&fmt) {
             fmt = FMT_32ARGB;
         }
-        let bpp = if fmt == FMT_24RGB { 3 } else { 4 };
+        let bpp = bytes_per_pixel(fmt);
         let stride = (w * bpp + 3) & !3;
         let buf = mem::heap_alloc(stride * h.max(1), true);
         let mut row = vec![0u8; stride as usize];
@@ -170,6 +209,7 @@ fn GdipBitmapLockBits(c: &mut Ctx) -> u32 {
                 let d = (i * bpp) as usize;
                 match fmt {
                     FMT_24RGB => row[d..d + 3].copy_from_slice(&[bl, g, rd]),
+                    FMT_16RGB555 | FMT_16RGB565 => row[d..d + 2].copy_from_slice(&pack16(fmt, [bl, g, rd]).to_le_bytes()),
                     FMT_32RGB => row[d..d + 4].copy_from_slice(&[bl, g, rd, 0xff]),
                     FMT_32PARGB => {
                         let pm = |v: u8| (v as u32 * a as u32 / 255) as u8;
@@ -196,12 +236,17 @@ fn GdipBitmapUnlockBits(c: &mut Ctx) -> u32 {
         let Some(b) = m.get_mut(&bmp) else { return INVALID_PARAMETER };
         let Some((buf, x, y, w, fmt)) = b.locked.take() else { return INVALID_PARAMETER };
         let (h, stride) = (r32(data + 4), r32(data + 8));
-        let bpp = if fmt == FMT_24RGB { 3 } else { 4 };
+        let bpp = bytes_per_pixel(fmt);
         for j in 0..h.min(b.h - y) {
             let row = mem::slice(buf + j * stride, w * bpp);
             for i in 0..w {
                 let s = (i * bpp) as usize;
                 let d = (((y + j) * b.w + x + i) * 4) as usize;
+                if bpp == 2 {
+                    let [bl, g, rd] = unpack16(fmt, u16::from_le_bytes([row[s], row[s + 1]]));
+                    b.px[d..d + 4].copy_from_slice(&[bl, g, rd, 0xff]);
+                    continue;
+                }
                 let a = if bpp == 4 && fmt != FMT_32RGB { row[s + 3] } else { 0xff };
                 let un = |v: u8| if fmt == FMT_32PARGB && a != 0 { (v as u32 * 255 / a as u32).min(255) as u8 } else { v };
                 b.px[d..d + 4].copy_from_slice(&[un(row[s]), un(row[s + 1]), un(row[s + 2]), a]);
@@ -210,6 +255,43 @@ fn GdipBitmapUnlockBits(c: &mut Ctx) -> u32 {
         mem::heap_free(buf);
         OK
     })
+}
+
+/// GdipCreateBitmapFromScan0(width, height, stride, format, scan0, &bitmap): scan0 = 0 means a
+/// new zeroed bitmap; otherwise the caller's pixels are copied in (GDI+ would alias them).
+fn GdipCreateBitmapFromScan0(c: &mut Ctx) -> u32 {
+    let (w, h, stride, fmt, scan0, out) = (c.a(0), c.a(1), c.a(2) as i32, c.a(3), c.a(4), c.a(5));
+    if w == 0 || h == 0 || out == 0 || w.checked_mul(h).map_or(true, |n| n > 1 << 26) {
+        return INVALID_PARAMETER;
+    }
+    let alpha = if fmt & 0x0004_0000 != 0 { 0 } else { 0xff };
+    let mut px = vec![0u8; (w * h * 4) as usize];
+    for p in px.chunks_mut(4) {
+        p[3] = alpha;
+    }
+    if scan0 != 0 {
+        let bpp = bytes_per_pixel(fmt);
+        for j in 0..h {
+            let row = mem::slice((scan0 as i32 + j as i32 * stride) as u32, w * bpp);
+            for i in 0..w {
+                let s = (i * bpp) as usize;
+                let d = ((j * w + i) * 4) as usize;
+                let v = match bpp {
+                    2 => {
+                        let [b, g, r] = unpack16(fmt, u16::from_le_bytes([row[s], row[s + 1]]));
+                        [b, g, r, 0xff]
+                    }
+                    3 => [row[s], row[s + 1], row[s + 2], 0xff],
+                    _ => [row[s], row[s + 1], row[s + 2], if fmt == FMT_32RGB { 0xff } else { row[s + 3] }],
+                };
+                px[d..d + 4].copy_from_slice(&v);
+            }
+        }
+    }
+    let o = mem::heap_alloc(16, true);
+    with(|m| m.insert(o, Bitmap { w, h, px, fmt, locked: None }));
+    mem::putp(out, o);
+    OK
 }
 
 /// GdipCreateHBITMAPFromBitmap(bitmap, &hbitmap, background): a 32-bit top-down DIB section
@@ -260,8 +342,31 @@ pub fn init() {
         ("GdipBitmapLockBits", GdipBitmapLockBits),
         ("GdipBitmapUnlockBits", GdipBitmapUnlockBits),
         ("GdipCreateHBITMAPFromBitmap", GdipCreateHBITMAPFromBitmap),
+        ("GdipCreateBitmapFromScan0", GdipCreateBitmapFromScan0),
     ];
     for (n, f) in fns {
         implement("gdiplus", n, *f);
+    }
+}
+
+#[cfg(test)]
+mod pack_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn pack16_round_trip(v in any::<u16>()) {
+            // every 565 value survives unpack -> pack; 555 ignores the top bit
+            prop_assert_eq!(pack16(FMT_16RGB565, unpack16(FMT_16RGB565, v)), v);
+            prop_assert_eq!(pack16(FMT_16RGB555, unpack16(FMT_16RGB555, v)), v & 0x7fff);
+        }
+    }
+
+    #[test]
+    fn pack16_extremes() {
+        assert_eq!(unpack16(FMT_16RGB565, 0xffff), [255, 255, 255]);
+        assert_eq!(unpack16(FMT_16RGB565, 0xf800), [0, 0, 255]);
+        assert_eq!(pack16(FMT_16RGB555, [255, 0, 0]), 0x1f);
     }
 }

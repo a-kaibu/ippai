@@ -4121,6 +4121,18 @@ fn CharNextA(c: &mut Ctx) -> u32 {
         p + 1
     }
 }
+/// CharNextExA(codepage, p, flags): CharNextA with the system code page (932)
+fn CharNextExA(c: &mut Ctx) -> u32 {
+    let p = c.a(1);
+    let b = mem::r8(p);
+    if b == 0 {
+        p
+    } else if crate::text::is_lead(b) && mem::r8(p + 1) != 0 {
+        p + 2
+    } else {
+        p + 1
+    }
+}
 fn CharNextW(c: &mut Ctx) -> u32 {
     let p = c.a(0);
     if r16(p) == 0 { p } else { p + 2 }
@@ -4791,7 +4803,7 @@ pub fn init() {
         LoadStringA, LoadStringW, LoadCursorA, LoadCursorW, LoadCursorFromFileA, LoadCursorFromFileW, LoadIconA, LoadIconW, LoadImageA,
         LoadImageW, CreateIcon, CreateIconIndirect, CreateCursor, CopyIcon, DestroyCursor, DestroyIcon,
         GetIconInfo, LoadBitmapA, LoadBitmapW, LoadAcceleratorsA, LoadMenuA, LoadMenuW,
-        CharLowerA, CharUpperA, CharLowerW, CharUpperW, CharLowerBuffA, CharUpperBuffA, CharLowerBuffW, CharUpperBuffW, CharNextA, CharNextW,
+        CharLowerA, CharUpperA, CharLowerW, CharUpperW, CharLowerBuffA, CharUpperBuffA, CharLowerBuffW, CharUpperBuffW, CharNextA, CharNextExA, CharNextW,
         CharPrevA, CharToOemA, OemToCharA, OemToCharBuffA, CharToOemBuffA, IsCharAlphaA, IsCharAlphaNumericA,
         IsCharUpperA, IsCharLowerA, IsCharAlphaW, wsprintfA, wvsprintfA, wsprintfW, wvsprintfW, GetGUIThreadInfo,
         AttachThreadInput, FlashWindow, GetProcessWindowStation, GetUserObjectInformationA, SetProcessDPIAware,

@@ -35,6 +35,7 @@ pub mod d3dreflect;
 pub mod d3dx9fx;
 pub mod d3dx9sprite;
 pub mod gdiplus;
+pub mod gdiplus_text;
 pub mod d3dx9shader;
 pub mod vcomp;
 pub mod nt;
@@ -424,6 +425,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     gdi::init();
     misc::init();
     gdiplus::init();
+    gdiplus_text::init();
     crt::init();
     msvcp::init();
     vcomp::init();

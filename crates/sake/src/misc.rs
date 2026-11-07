@@ -2200,6 +2200,33 @@ fn PathFindExtensionW(c: &mut Ctx) -> u32 {
     let start = s.iter().rposition(|&b| b == b'\\' as u16).map_or(0, |k| k + 1);
     p + 2 * s[start..].iter().rposition(|&b| b == b'.' as u16).map_or(s.len(), |k| start + k) as u32
 }
+/// PathRenameExtensionA/W(path, ext): replaces (or appends) the extension; FALSE past MAX_PATH
+fn PathRenameExtensionA(c: &mut Ctx) -> u32 {
+    let (p, mut s, ext) = (c.a(0), cstr(c.a(0)), cstr(c.a(1)));
+    let start = s.iter().rposition(|&b| b == b'\\').map_or(0, |k| k + 1);
+    s.truncate(s[start..].iter().rposition(|&b| b == b'.').map_or(s.len(), |k| start + k));
+    if s.len() + ext.len() >= 260 {
+        return 0;
+    }
+    s.extend_from_slice(&ext);
+    s.push(0);
+    mem::write(p, &s);
+    1
+}
+fn PathRenameExtensionW(c: &mut Ctx) -> u32 {
+    let (p, mut s, ext) = (c.a(0), wstr(c.a(0)), wstr(c.a(1)));
+    let start = s.iter().rposition(|&b| b == b'\\' as u16).map_or(0, |k| k + 1);
+    s.truncate(s[start..].iter().rposition(|&b| b == b'.' as u16).map_or(s.len(), |k| start + k));
+    if s.len() + ext.len() >= 260 {
+        return 0;
+    }
+    s.extend_from_slice(&ext);
+    s.push(0);
+    for (i, v) in s.iter().enumerate() {
+        w16(p + 2 * i as u32, *v);
+    }
+    1
+}
 fn PathIsRelativeA(c: &mut Ctx) -> u32 {
     let s = cstr(c.a(0));
     !(s.first() == Some(&b'\\') || s.get(1) == Some(&b':')) as u32
@@ -2513,7 +2540,7 @@ pub fn init() {
     reg!("shlwapi"; PathStripToRootA, PathStripToRootW, PathIsUNCA, PathIsUNCW);
     reg!("shlwapi"; PathRemoveFileSpecA, PathRemoveFileSpecW, PathFileExistsA, PathFileExistsW, PathIsDirectoryA,
         PathIsDirectoryW, PathAppendA, PathAppendW, PathCombineA, PathCombineW, PathCanonicalizeA, PathCanonicalizeW, PathFindFileNameA,
-        PathFindFileNameW, PathFindExtensionA, PathFindExtensionW, PathIsRelativeA, PathIsRelativeW, PathUnquoteSpacesA,
+        PathFindFileNameW, PathFindExtensionA, PathFindExtensionW, PathRenameExtensionA, PathRenameExtensionW, PathIsRelativeA, PathIsRelativeW, PathUnquoteSpacesA,
         PathUnquoteSpacesW, PathAddBackslashA, PathAddBackslashW, PathRemoveBackslashA, PathRemoveBackslashW, PathStripPathA, PathStripPathW, PathAddExtensionA, PathAddExtensionW);
     reg!("shlwapi"; StrStrA, StrStrW, StrStrIA, StrStrIW);
     reg!("sensapi"; IsNetworkAlive);
