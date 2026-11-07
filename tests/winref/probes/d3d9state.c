@@ -1,7 +1,7 @@
 /* Direct3D 9 device state at creation and what the Set* calls take: every render state,
  * texture stage state (stages 0, 1, 7) and sampler state (0, 15, displacement map, vertex
  * texture 0) a new device reports, transforms, viewport, material, lights, clip planes, stream
- * frequencies; Set*/Get* with indices out of range (their results, and what reads back).
+ * frequencies; Set and Get calls with indices out of range (their results, and what reads back).
  * libs: -ld3d9
  * run: browser (sake's Direct3D 9 runs in the page: tests/winref/run-browser.mjs) */
 #define COBJMACROS
