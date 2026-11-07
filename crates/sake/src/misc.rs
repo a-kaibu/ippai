@@ -3451,9 +3451,13 @@ fn sspi_table(wide: bool) -> u32 {
         let ps = mem::ps();
         let p = mem::heap_alloc(ps * (1 + SSPI_TABLE.len() as u32), true);
         mem::w32(p, 1); // SECURITY_SUPPORT_PROVIDER_INTERFACE_VERSION
+        // (the addresses GetProcAddress gives for secur32's exports: programs compare them)
+        let module = crate::pe::by_name("secur32.dll");
         for (i, n) in SSPI_TABLE.iter().enumerate() {
             if let Some(n) = n {
-                mem::wp(p + ps * (1 + i as u32), crate::api::export("secur32", &sspi_name(n, wide)));
+                let name = sspi_name(n, wide);
+                let f = module.and_then(|m| crate::pe::proc_address(m, crate::pe::Import::Name(&name)));
+                mem::wp(p + ps * (1 + i as u32), f.unwrap_or_else(|| crate::api::export("secur32", &name)));
             }
         }
         t[wide as usize] = p;
