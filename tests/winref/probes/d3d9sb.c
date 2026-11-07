@@ -36,6 +36,30 @@ static void held(const char *what, int i, setter set, getter get, DWORD a, DWORD
     printf("%s %d all %c pixel %c vertex %c\n", what, i, res[0], res[1], res[2]);
 }
 
+/* The registers 0..n-1 a state block of each type holds, as runs "a-b" */
+static void runs(const char *what, int n, setter set, getter get) {
+    for (int k = 0; k < 3; k++) {
+        printf("%s runs %s", what, k == 0 ? "all" : k == 1 ? "pixel" : "vertex");
+        int start = -1;
+        for (int i = 0; i <= n; i++) {
+            int h = 0;
+            if (i < n) {
+                IDirect3DStateBlock9 *sb = NULL;
+                set(i, 3);
+                if (SUCCEEDED(IDirect3DDevice9_CreateStateBlock(dev, types[k], &sb))) {
+                    set(i, 4);
+                    IDirect3DStateBlock9_Apply(sb);
+                    h = get(i) == 3;
+                    IDirect3DStateBlock9_Release(sb);
+                }
+            }
+            if (h && start < 0) start = i;
+            if (!h && start >= 0) { printf(" %d-%d", start, i - 1); start = -1; }
+        }
+        printf("\n");
+    }
+}
+
 static void set_rs(int i, DWORD v) { IDirect3DDevice9_SetRenderState(dev, i, v); }
 static DWORD get_rs(int i) { DWORD v = 0; IDirect3DDevice9_GetRenderState(dev, i, &v); return v; }
 /* (texture stage states and sampler states: stage or sampler * 100 + state) */
@@ -194,6 +218,9 @@ int main(void) {
     for (int i = 0; i < (int)(sizeof vsfs / sizeof *vsfs); i++) held("vsf", vsfs[i], set_vsf, get_vsf, 3, 4);
     static const int psfs[] = { 1, 7, 8, 15, 16, 31, 32, 63, 64, 95, 96, 127, 128, 191, 192, 207, 208, 215, 216, 219, 220, 221, 222 };
     for (int i = 0; i < (int)(sizeof psfs / sizeof *psfs); i++) held("psf", psfs[i], set_psf, get_psf, 3, 4);
+    /* (every register: the runs a state block of each type holds, "vsf runs all 0-224 256-...") */
+    runs("vsf", 8192, set_vsf, get_vsf);
+    runs("psf", 224, set_psf, get_psf);
     held("vsi", 0, set_vsi, get_vsi, 3, 4);
     held("psi", 15, set_psi, get_psi, 3, 4);
     held("vsb", 0, set_vsb, get_vsb, 1, 0);
