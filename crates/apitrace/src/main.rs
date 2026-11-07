@@ -28,6 +28,7 @@ fn main() {
     };
     if let Err(e) = run() {
         eprintln!("{e}");
-        std::process::exit(1);
+        // (3: a trace of what the converter does not replay yet: tests/replay/build.sh skips it)
+        std::process::exit(if e.starts_with("unsupported:") { 3 } else { 1 });
     }
 }

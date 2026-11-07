@@ -1,7 +1,15 @@
-# winref probes (tests/winref/probes, 32-bit) whose D3D9 calls .github/workflows/replay.yml records
-# with apitrace on Windows into traces/<probe>.trace. Replaying a probe's trace has to draw the
-# probe's own pictures (check.py): the recorder, the converter and the replayer are tested on them
-# before games' traces are trusted.
-d3d9-32
-d3d9clear-32
-d3d9rtfmt-32
+# winref probes (tests/winref/probes) whose calls .github/workflows/replay.yml records with
+# apitrace on Windows into traces/<probe>.trace, and the API apitrace traces (its --api: d3d9,
+# d3d8, dxgi for Direct3D 10/11). Replaying a probe's trace has to draw the probe's own pictures
+# (check.py): the recorder, the converter and the replayer are tested on them before games'
+# traces are trusted.
+d3d9-32 d3d9
+d3d9clear-32 d3d9
+d3d9rtfmt-32 d3d9
+d3d9-64 d3d9
+d3d9sb-32 d3d9
+d3d8-32 d3d8
+d3d8state-32 d3d8
+d3d11-32 dxgi
+d3d11-64 dxgi
+d3d11bind-32 dxgi

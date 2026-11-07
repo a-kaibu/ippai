@@ -24,7 +24,7 @@ def images(d):
 
 def stale():
     for l in open(os.path.join(HERE, "record.txt")):
-        p = l.split("#")[0].strip()
+        p = l.split("#")[0].split()[0] if l.split("#")[0].strip() else ""
         if not p:
             continue
         f = os.path.join(HERE, "traces", p + ".src")
@@ -46,9 +46,9 @@ def main():
             print(f"{probe}: no answer yet")
             continue
         # (answers of older sources: Windows has not answered for these yet)
-        stale = [p for p in (probe, "replay_" + probe + "-32") if open(os.path.join(root, p, "src")).read().strip() != golden.src_hash(p)]
-        if stale:
-            print(f"{probe}: waiting for Windows' answers for {' '.join(stale)}")
+        old = [p for p in (probe, "replay_" + probe + "-32") if open(os.path.join(root, p, "src")).read().strip() != golden.src_hash(p)]
+        if old:
+            print(f"{probe}: waiting for Windows' answers for {' '.join(old)}")
             continue
         want = images(want_d)
         got = [g for g in images(got_d) if g[0].startswith("r")]

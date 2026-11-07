@@ -54,7 +54,7 @@ jobs:
         id: stale
         run: |
           if [ "${{ github.event_name }}" = workflow_dispatch ] && [ "${{ inputs.all }}" = true ]; then
-            l=$(grep -v '^#' tests/replay/record.txt | tr '\n' ' ')
+            l=$(grep -v '^#' tests/replay/record.txt | awk '{print $1}' | tr '\n' ' ')
           else
             l=$(python3 tests/replay/check.py stale | tr '\n' ' ')
           fi
@@ -81,26 +81,28 @@ jobs:
         with:
           name: replay-exe
           path: exe
-      # (apitrace's latest release, its 32-bit build: the probes are 32-bit)
+      # (apitrace's latest release: its 32-bit build for 32-bit probes, its 64-bit one for -64)
       - name: apitrace
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view -R apitrace/apitrace --json tagName,assets -q '.tagName, (.assets[].name)'
-          gh release download -R apitrace/apitrace --pattern '*win32*' -D "$RUNNER_TEMP/at"
-          ls -l "$RUNNER_TEMP/at"
-          sha256sum "$RUNNER_TEMP"/at/*
-          (cd "$RUNNER_TEMP/at" && 7z x -y ./*win32* > /dev/null)
-          a=$(find "$RUNNER_TEMP/at" -name apitrace.exe | head -1)
-          echo "APITRACE=$a" >> "$GITHUB_ENV"
-          "$a" version || true
+          for a in win32 win64; do
+            gh release download -R apitrace/apitrace --pattern "*$a*" -D "$RUNNER_TEMP/at-$a"
+            sha256sum "$RUNNER_TEMP"/at-$a/*
+            (cd "$RUNNER_TEMP/at-$a" && 7z x -y ./*$a* > /dev/null)
+            echo "APITRACE_$a=$(find "$RUNNER_TEMP/at-$a" -name apitrace.exe | head -1)" >> "$GITHUB_ENV"
+          done
       - name: Record
         shell: bash
         run: |
           mkdir -p traces
           for p in ${{ needs.probes.outputs.stale }}; do
-            (cd exe && "$APITRACE" trace --api d3d9 -o "../traces/$p.trace" "./$p.exe" > "../traces/$p.stdout" 2> "../traces/$p.stderr"; echo "$p exit $?")
+            api=$(awk -v p="$p" '$1 == p { print $2 }' tests/replay/record.txt)
+            at=$APITRACE_win32
+            [[ "$p" == *-64 ]] && at=$APITRACE_win64
+            (cd exe && "$at" trace --api "${api:-d3d9}" -o "../traces/$p.trace" "./$p.exe" > "../traces/$p.stdout" 2> "../traces/$p.stderr"; echo "$p ($api) exit $?")
             ls -l "traces/$p.trace"
             tail -3 "traces/$p.stderr"
           done

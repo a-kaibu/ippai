@@ -102,6 +102,12 @@ impl Converter {
     fn call(&mut self, call: &Call) -> Result<(), String> {
         self.stats.calls += 1;
         let name = call.sig.name.as_str();
+        if ["IDirect3D8", "Direct3DCreate8", "ID3D1", "IDXGI", "D3D1", "CreateDXGI"].iter().any(|p| name.starts_with(p)) {
+            return Err(format!("unsupported: {name} (D3D9 only so far)"));
+        }
+        if call.args_in.first().and_then(|v| v.as_ref()).is_some_and(|v| matches!(v, Value::Opaque(a) if *a > u32::MAX as u64)) {
+            return Err(format!("unsupported: a 64-bit trace ({name})"));
+        }
         if name == "memcpy" {
             return self.memcpy(call);
         }

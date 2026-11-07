@@ -26,7 +26,9 @@ if [ ${#traces[@]} -gt 0 ]; then
   fi
   for t in "${traces[@]}"; do
     n=$(basename "$t" .trace)
-    "$APITRACE" "$t" "$OUT/$n.rpl"
+    st=0; "$APITRACE" "$t" "$OUT/$n.rpl" || st=$?
+    if [ $st = 3 ]; then echo "$n: not replayed yet"; continue; fi
+    [ $st = 0 ] || exit $st
     cc -DSTREAM="\"$OUT/$n.rpl\"" -o "$OUT/replay_$n-32.exe" "$HERE/d3d9replay.c"
     rm "$OUT/$n.rpl"
     [ -f "$OUT/browser.txt" ] && echo "replay_$n-32" >> "$OUT/browser.txt"
