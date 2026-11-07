@@ -23,6 +23,10 @@ use koji::{Cpu, EAX, ESP};
 
 pub mod acm;
 pub mod mp3frame;
+pub mod audiofile;
+/// Tests that run a page for kura::adec (one at a time: its streams are global).
+#[cfg(test)]
+pub(crate) static ADEC_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 pub mod apc;
 pub mod api;
 pub mod d3d9;

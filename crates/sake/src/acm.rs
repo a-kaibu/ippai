@@ -724,9 +724,6 @@ mod mp3_tests {
         ((k as f32 / 256.0 + c as f32 / 1024.0) * 32768.0).round() as i16
     }
 
-    /// The page's tests share kura's stream table and page flag.
-    static SERIAL: Mutex<()> = Mutex::new(());
-
     fn stream(ch: u32) -> Mp3 {
         let dec = kura::adec::open("mp3", 44100, ch, &[]).expect("a page");
         Mp3 { dec, split: Default::default(), pending: Default::default() }
@@ -734,7 +731,7 @@ mod mp3_tests {
 
     #[test]
     fn frames_across_calls_and_small_buffers() {
-        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::ADEC_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         // (a page has listed: kura::adec::available)
         kura::adec::test_page_pass(&mut |_, _| Vec::new());
         let stop = Arc::new(AtomicBool::new(false));
@@ -769,7 +766,7 @@ mod mp3_tests {
 
     #[test]
     fn no_answer_gives_what_there_is() {
-        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::ADEC_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         kura::adec::test_page_pass(&mut |_, _| Vec::new());
         let mut m = stream(1);
         // no page running: the wait ends, nothing out, nothing lost later

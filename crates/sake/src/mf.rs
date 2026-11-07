@@ -6,8 +6,8 @@
 //! A movie with a `.vnv` next to it (`ippai pack`) plays through dshow_play's movie thread
 //! (its clock and sound; no window of its own: the game draws the frames it takes); any other
 //! source fails to load (MF_MEDIA_ENGINE_ERR_SRC_NOT_SUPPORTED), so the game goes on past it.
-//! The Media Session and Source Reader are not there (their creators answer E_NOTIMPL: Artemis
-//! then plays its movies with DirectShow).
+//! The Media Session is not there (its creators answer E_NOTIMPL: Artemis then plays its movies
+//! with DirectShow). The Source Reader reads sound files (mf/reader.rs).
 //!
 //! The engine's state follows the HTML media element it is modelled on (`State`, kept free of
 //! the guest and tested here); winref's mfengine probe has Windows' answers.
@@ -1804,10 +1804,11 @@ pub fn init() {
     implement("mf", "MFGetService", |c| none(c, 3));
     implement("mf", "MFCreateVideoRendererActivate", |c| none(c, 1));
     implement("mf", "MFCreateAudioRendererActivate", |c| none(c, 0));
-    implement("mfreadwrite", "MFCreateSourceReaderFromURL", |c| none(c, 2));
-    implement("mfreadwrite", "MFCreateSourceReaderFromByteStream", |c| none(c, 2));
     implement("mfreadwrite", "MFCreateSourceReaderFromMediaSource", |c| none(c, 2));
+    reader::init();
 }
+
+mod reader;
 
 #[cfg(test)]
 mod tests;
