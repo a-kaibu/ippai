@@ -16,3 +16,4 @@
 /fuzz/artifacts
 /fuzz/seeds
 /fuzz/coverage
+__pycache__/
