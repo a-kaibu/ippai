@@ -4462,9 +4462,13 @@ fn SetStdHandle(_: &mut Ctx) -> u32 {
     1
 }
 fn GetFileType(c: &mut Ctx) -> u32 {
-    match obj::with(|t| t.objs.get(&c.a(0)).map(|(o, _)| matches!(o, Obj::Other(_)))) {
-        Some(true) => 2,
-        Some(false) => 1,
+    // FILE_TYPE_DISK, CHAR (the console), PIPE
+    match obj::with(|t| t.objs.get(&c.a(0)).map(|(o, _)| match o {
+        Obj::Other(_) => 2,
+        Obj::Pipe(_) => 3,
+        _ => 1,
+    })) {
+        Some(k) => k,
         None => 0,
     }
 }
@@ -4500,6 +4504,9 @@ fn create_file(c: &mut Ctx, wide: bool) -> u32 {
     }
     if name.eq_ignore_ascii_case("CONOUT$") || name.eq_ignore_ascii_case("CONIN$") {
         return obj::add(Obj::Other("console"));
+    }
+    if let Some(n) = crate::kern::pipe_name(&name) {
+        return crate::pipe::open(&n, access, c.a(5));
     }
     match files::open_shared(&name, access, disp, Some(c.a(2))) {
         // a directory opens only with FILE_FLAG_BACKUP_SEMANTICS
@@ -4561,6 +4568,9 @@ fn _llseek(c: &mut Ctx) -> u32 {
 }
 fn ReadFile(c: &mut Ctx) -> u32 {
     let (h, buf, n, pread, ov) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
+    if let Some(p) = crate::pipe::handle(h) {
+        return crate::pipe::read(c, h, p);
+    }
     let Some(f) = obj::file(h) else {
         last_error(6);
         return 0;
@@ -4597,6 +4607,9 @@ fn WriteFile(c: &mut Ctx) -> u32 {
         } else {
             a2s(b).encode_utf16().collect()
         }));
+    }
+    if let Some(p) = crate::pipe::handle(h) {
+        return crate::pipe::write(c, h, p);
     }
     let kind = obj::with(|t| match t.objs.get(&h) {
         Some((Obj::Other(k), _)) => Some(*k),
@@ -4702,6 +4715,11 @@ fn SetFilePointerEx(c: &mut Ctx) -> u32 {
     }
 }
 fn GetFileSize(c: &mut Ctx) -> u32 {
+    // (a pipe: what there is to read)
+    if let Some(p) = crate::pipe::handle(c.a(0)) {
+        put32(c.a(1), 0);
+        return crate::kern::with(|k| k.avail(p.end)).0;
+    }
     let Some(f) = obj::file(c.a(0)) else {
         last_error(6);
         return 0xffff_ffff;
@@ -5503,9 +5521,6 @@ fn K32GetProcessImageFileNameW(c: &mut Ctx) -> u32 {
     image_file_name(c, true)
 }
 
-fn CreatePipe(_: &mut Ctx) -> u32 {
-    0
-}
 /// Splits a command line into the program and the rest.
 fn split_command(cmd: &str) -> (String, String) {
     let cmd = cmd.trim_start();
@@ -6009,7 +6024,7 @@ pub fn init() {
         GetSystemDirectoryW, GetSystemWindowsDirectoryA, GetDriveTypeA, GetDriveTypeW, GetLogicalDrives,
         GetDiskFreeSpaceA, GetDiskFreeSpaceExA, GetDiskFreeSpaceExW, GetVolumeInformationA, GetVolumeInformationW,
         SearchPathA,
-        CreateFileMappingA, CreateFileMappingW, MapViewOfFile, MapViewOfFileEx, UnmapViewOfFile, CreatePipe,
+        CreateFileMappingA, CreateFileMappingW, MapViewOfFile, MapViewOfFileEx, UnmapViewOfFile,
         CreateProcessA, CreateProcessW, WinExec, OpenProcess, OpenThread, GetStartupInfoA, GetStartupInfoW, SetHandleCount,
         FormatMessageA, FormatMessageW, Beep, GetComputerNameA, GetComputerNameW, InitializeSListHead, GetCurrentPackageId,
         CreateToolhelp32Snapshot, Process32First, Process32FirstW, ConvertDefaultLocale,

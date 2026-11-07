@@ -159,7 +159,7 @@ int main(void) {
     E(CloseHandle(m2));
 
     /* one-way pipes and access */
-    HANDLE in1 = CreateNamedPipeA(P("in"), PIPE_ACCESS_INBOUND, 0, 1, 0, 0, 0, NULL);
+    HANDLE in1 = CreateNamedPipeA(P("in"), PIPE_ACCESS_INBOUND, 0, 1, 512, 512, 0, NULL); /* (0: a write waits for the reader) */
     E(in1 != INVALID_HANDLE_VALUE);
     client(P("in"), GENERIC_READ | GENERIC_WRITE); /* the client may only write */
     HANDLE cw = client(P("in"), GENERIC_WRITE);

@@ -19,6 +19,8 @@ pub enum Obj {
     /// it was opened with
     Process { access: u32 },
     File(Arc<crate::files::File>),
+    /// an end of a pipe (crate::kern)
+    Pipe(crate::pipe::Handle),
     Find(Arc<Mutex<crate::files::Find>>),
     Mapping { file: Option<Arc<crate::files::File>>, size: u32, view: u32 },
     Key(crate::misc::Key),
@@ -108,16 +110,22 @@ pub fn dup(h: u32) -> u32 {
 
 /// Closes one handle; the object goes with its last one.
 pub fn close(h: u32) -> bool {
-    with(|t| {
-        let Some(k) = t.objs.handles.remove(&h) else { return false };
+    let (r, gone) = with(|t| {
+        let Some(k) = t.objs.handles.remove(&h) else { return (false, None) };
         let rc = &mut t.objs.map.get_mut(&k).unwrap().1;
         *rc -= 1;
+        let mut gone = None;
         if *rc == 0 {
-            t.objs.map.remove(&k);
+            gone = t.objs.map.remove(&k).map(|o| o.0);
             t.names.retain(|_, v| *v != k);
         }
-        true
-    })
+        (true, gone)
+    });
+    // (outside the table's lock: the kernel's comes after it, never before)
+    if let Some(Obj::Pipe(p)) = gone {
+        crate::pipe::closed(p);
+    }
+    r
 }
 
 pub fn file(h: u32) -> Option<Arc<crate::files::File>> {

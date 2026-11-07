@@ -52,6 +52,8 @@ pub mod fmtmsg;
 pub mod gdi;
 pub mod gdi_geom;
 pub mod k32;
+pub mod kern;
+pub mod pipe;
 pub mod mem;
 pub mod misc;
 pub mod movie;
@@ -607,6 +609,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     smalldlls::init();
     security::init();
     sysinfo::init();
+    pipe::register();
     xaudio2::init();
     xapo::init();
     d3d9::register();
