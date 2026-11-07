@@ -34,24 +34,3 @@ hr 633 IDirect3DDevice9::CreateTexture 0x8876086c want 0
 hr 641 IDirect3DDevice9::CreateTexture 0x8876086c want 0
 hr 649 IDirect3DDevice9::CreateTexture 0x8876086c want 0
 hr 657 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 671 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 679 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 687 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 695 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 703 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 752 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 844 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 847 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 851 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 948 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 1012 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 1015 IDirect3DDevice9::CreateOffscreenPlainSurface 0x8876086c want 0
-hr 1017 IDirect3DDevice9::ColorFill 0x8876086c want 0
-hr 1018 IDirect3DDevice9::ColorFill 0x8876086c want 0
-hr 1019 IDirect3DDevice9::StretchRect 0x8876086c want 0
-hr 1020 IDirect3DDevice9::StretchRect 0x8876086c want 0
-hr 1021 IDirect3DDevice9::StretchRect 0x8876086c want 0
-hr 1023 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-no object IDirect3DSurface9::Release
-image f0 64 64 2
-calls 900 frames 1
