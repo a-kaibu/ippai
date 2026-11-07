@@ -4,6 +4,7 @@
  * HasCharacter and design metrics, its font face's type, index and file (the local loader's
  * path), and the system font fallback's MapCharacters (Godot finds fonts for text its own
  * fonts lack this way) for text those faces cover.
+ * needs: fonts
  * libs: -ldwrite -luuid */
 #define COBJMACROS
 #include "../probe.h"
