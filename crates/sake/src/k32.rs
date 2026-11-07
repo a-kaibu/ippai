@@ -396,6 +396,124 @@ fn K32GetProcessMemoryInfo(c: &mut Ctx) -> u32 {
     1
 }
 
+/// The process's modules in load order, as EnumProcessModules lists them: the exe, then ntdll,
+/// kernel32 and kernelbase (always there on Windows), then every DLL loaded (mono finds a
+/// P/Invoke into "__Internal" or an unmapped DLL by GetProcAddress on each)
+fn process_modules() -> Vec<u32> {
+    let exe = crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.base);
+    let mut v: Vec<u32> = exe.into_iter().collect();
+    for d in ["ntdll", "kernel32", "kernelbase"] {
+        let b = crate::pe::hle_module(d);
+        if !v.contains(&b) {
+            v.push(b);
+        }
+    }
+    for m in crate::pe::MODULES.read().unwrap().iter() {
+        if !v.contains(&m.base) {
+            v.push(m.base);
+        }
+    }
+    v
+}
+/// EnumProcessModules(process, modules, bytes, &needed): as many handles as fit, and the bytes
+/// all of them take
+fn K32EnumProcessModules(c: &mut Ctx) -> u32 {
+    let (h, p, cb, pn) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    if h != obj::CURRENT_PROCESS {
+        last_error(6);
+        return 0;
+    }
+    if pn == 0 {
+        last_error(998);
+        return 0;
+    }
+    let all = process_modules();
+    let ps = mem::ps();
+    for (i, &b) in all.iter().enumerate().take((cb / ps) as usize) {
+        mem::wp(p + i as u32 * ps, b);
+    }
+    w32(pn, all.len() as u32 * ps);
+    1
+}
+/// EnumProcessModulesEx(.., filter): a process of one kind has its own modules only
+fn K32EnumProcessModulesEx(c: &mut Ctx) -> u32 {
+    if c.a(4) > 3 {
+        last_error(87);
+        return 0;
+    }
+    K32EnumProcessModules(c)
+}
+/// The module a psapi call names (0: the exe), or ERROR_INVALID_HANDLE
+fn psapi_module(process: u32, h: u32) -> Option<u32> {
+    let base = if h == 0 { crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.base) } else { crate::pe::by_base(h).map(|_| h) };
+    if process != obj::CURRENT_PROCESS || base.is_none() {
+        last_error(6);
+        return None;
+    }
+    base
+}
+/// GetModuleInformation(process, module, MODULEINFO*, bytes): base, size, entry point
+fn K32GetModuleInformation(c: &mut Ctx) -> u32 {
+    let (p, cb) = (c.a(2), c.a(3));
+    let Some(b) = psapi_module(c.a(0), c.a(1)) else { return 0 };
+    let ps = mem::ps();
+    if cb < 3 * ps {
+        last_error(122);
+        return 0;
+    }
+    let (size, entry) = crate::pe::with(b, |m| (m.size, m.entry)).unwrap();
+    mem::wp(p, b);
+    w32(p + ps, size);
+    if mem::x64() {
+        w32(p + 12, 0);
+    }
+    mem::wp(p + 2 * ps, entry);
+    1
+}
+/// GetModuleBaseName / GetModuleFileNameEx(process, module, buffer, chars): as much of the name
+/// as fits, ended by a 0 when there is room for one; the characters copied
+fn psapi_name(c: &mut Ctx, base_only: bool, wide: bool) -> u32 {
+    let (dst, cap) = (c.a(2), c.a(3));
+    let Some(b) = psapi_module(c.a(0), c.a(1)) else { return 0 };
+    let path = crate::pe::with(b, |m| m.path.clone()).unwrap();
+    let name = if base_only { path.rsplit(['\\', '/']).next().unwrap_or(&path).to_string() } else { path };
+    if cap == 0 {
+        last_error(122);
+        return 0;
+    }
+    if wide {
+        let v: Vec<u16> = name.encode_utf16().collect();
+        let n = v.len().min(cap as usize);
+        for (i, &u) in v[..n].iter().enumerate() {
+            mem::w16(dst + 2 * i as u32, u);
+        }
+        if n < cap as usize {
+            mem::w16(dst + 2 * n as u32, 0);
+        }
+        n as u32
+    } else {
+        let v = crate::text::s2a(&name);
+        let n = v.len().min(cap as usize);
+        mem::write(dst, &v[..n]);
+        if n < cap as usize {
+            mem::w8(dst + n as u32, 0);
+        }
+        n as u32
+    }
+}
+fn K32GetModuleBaseNameA(c: &mut Ctx) -> u32 {
+    psapi_name(c, true, false)
+}
+fn K32GetModuleBaseNameW(c: &mut Ctx) -> u32 {
+    psapi_name(c, true, true)
+}
+fn K32GetModuleFileNameExA(c: &mut Ctx) -> u32 {
+    psapi_name(c, false, false)
+}
+fn K32GetModuleFileNameExW(c: &mut Ctx) -> u32 {
+    psapi_name(c, false, true)
+}
+
 /// Threads created suspended wait here: tid -> suspend count.
 static GATE: Mutex<Vec<(u32, u32)>> = Mutex::new(Vec::new());
 static GATE_CV: Condvar = Condvar::new();
@@ -3769,25 +3887,6 @@ pub fn module_handle(name: u32, wide: bool) -> u32 {
 fn GetModuleHandleA(c: &mut Ctx) -> u32 {
     module_handle(c.a(0), false)
 }
-/// The loaded modules' handles as EnumProcessModules lists them: the exe first, then the DLLs
-/// in load order. (Mono looks for a P/Invoke's function in each when the exe has none.)
-pub fn module_handles(mods: &[(u32, bool)]) -> Vec<u64> {
-    let exe = mods.iter().filter(|m| !m.1);
-    let dlls = mods.iter().filter(|m| m.1);
-    exe.chain(dlls).map(|m| mem::widen(m.0)).collect()
-}
-/// EnumProcessModules(Ex)(process, HMODULE* out, cb, &needed[, filter]): only our own process.
-fn EnumProcessModules(c: &mut Ctx) -> u32 {
-    let (out, cb, needed) = (c.a(1), c.a(2), c.a(3));
-    let mods: Vec<(u32, bool)> = crate::pe::MODULES.read().unwrap().iter().map(|m| (m.base, m.dll)).collect();
-    let h = module_handles(&mods);
-    let ps = mem::ps();
-    for (k, &b) in h.iter().enumerate().take((cb / ps) as usize) {
-        if ps == 8 { mem::w64(out + 8 * k as u32, b) } else { w32(out + 4 * k as u32, b as u32) }
-    }
-    put32(needed, ps * h.len() as u32);
-    1
-}
 fn GetModuleHandleW(c: &mut Ctx) -> u32 {
     module_handle(c.a(0), true)
 }
@@ -5371,6 +5470,19 @@ pub fn init() {
     implement("msvcrt", "_endthread", _endthread);
     implement("kernel32", "SetThreadExecutionState", SetThreadExecutionState);
     implement("psapi", "GetProcessMemoryInfo", K32GetProcessMemoryInfo);
+    for (n, f) in [
+        ("EnumProcessModules", K32EnumProcessModules as crate::api::Handler),
+        ("EnumProcessModulesEx", K32EnumProcessModulesEx),
+        ("GetModuleInformation", K32GetModuleInformation),
+        ("GetModuleBaseNameA", K32GetModuleBaseNameA),
+        ("GetModuleBaseNameW", K32GetModuleBaseNameW),
+        ("GetModuleFileNameExA", K32GetModuleFileNameExA),
+        ("GetModuleFileNameExW", K32GetModuleFileNameExW),
+    ] {
+        implement("psapi", n, f);
+        implement("kernel32", &format!("K32{n}"), f);
+        implement("kernelbase", &format!("K32{n}"), f);
+    }
     implement("kernel32", "ResolveDelayLoadedAPI", ResolveDelayLoadedAPI);
     implement("kernel32", "IsBadStringPtrW", IsBadStringPtrW);
     implement("kernel32", "GetUserDefaultLocaleName", GetUserDefaultLocaleName);
@@ -5509,11 +5621,6 @@ pub fn init() {
     }
     implement("avrt", "AvRevertMmThreadCharacteristics", av_true);
     implement("avrt", "AvSetMmThreadPriority", av_true);
-    for d in ["kernel32", "kernelbase", "psapi"] {
-        for n in ["K32EnumProcessModules", "K32EnumProcessModulesEx", "EnumProcessModules", "EnumProcessModulesEx"] {
-            implement(d, n, EnumProcessModules);
-        }
-    }
     for n in ["Process32Next", "Process32NextW", "Module32First", "Module32FirstW", "Module32Next", "Module32NextW", "Thread32First", "Thread32Next"] {
         implement("kernel32", n, no_more);
     }
@@ -5649,12 +5756,6 @@ mod version_tests {
         assert_eq!(verify_version(&OS_VERSION, &v, 0x40, ver_set_condition_mask(0, 0x40, 1)), Err(VerFail::BadArgs));
     }
 
-    #[test]
-    fn module_handles_exe_first() {
-        let mods = [(0x7fd9_0000, true), (0x40_0000, false), (0x1000_0000, true)];
-        assert_eq!(module_handles(&mods), vec![0x40_0000, 0x7fd9_0000, 0x1000_0000]);
-        assert!(module_handles(&[]).is_empty());
-    }
 
     #[test]
     fn condition_mask_slots() {

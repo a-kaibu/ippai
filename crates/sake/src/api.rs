@@ -132,6 +132,18 @@ pub fn spec_names(dll: &str) -> Vec<String> {
     v
 }
 
+/// Whether a system DLL has this export on Windows: its spec lists it, or we implement it under
+/// that DLL's own name (DLLs without a spec: assumed). find_impl's forwarder fallback (kernel32
+/// <-> ntdll, msvcrt) is for imports; GetProcAddress on ntdll or msvcrt for a kernel32 function
+/// gives NULL on Windows, and mono takes the first module that answers
+pub fn exported_by(dll: &str, name: &str) -> bool {
+    let d = dll_key(dll);
+    let sp = specs();
+    !sp.dlls.contains(&d)
+        || sp.by_name.contains_key(&(d.clone(), name.to_string()))
+        || IMPLS.read().unwrap().as_ref().is_some_and(|m| m.contains_key(&format!("{d}!{name}")))
+}
+
 /// "KERNEL32.dll" -> "kernel32"
 pub fn dll_key(dll: &str) -> String {
     let d = crate::pe::base_name(dll);

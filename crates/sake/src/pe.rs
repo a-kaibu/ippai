@@ -698,6 +698,9 @@ fn lookup_proc(base: u32, imp: Import, bind_known: bool) -> Option<u32> {
     if let Some(g) = crate::guest::lookup(&api::dll_key(&name), &n) {
         return Some(g);
     }
+    if !bind_known && !api::exported_by(&name, &n) {
+        return None;
+    }
     let a = api::export(&name, &n);
     // an unimplemented export of a system DLL resolves to its trap (logged, returns 0) as a static
     // import does: programs that look up a whole API by name call some unchecked (騎士見習いと村娘).
