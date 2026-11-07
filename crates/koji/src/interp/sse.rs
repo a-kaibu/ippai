@@ -198,15 +198,9 @@ impl<'a, M: Memory> X<'a, M> {
         // The instruction's MXCSR flags are found first (sticky, as the hardware sets them:
         // the JIT leaves an instruction that may set one to here, see jit::mxguard); one
         // unmasked traps, leaving the destination alone.
-        {
-            if let Some((pre, post)) = self.mx_flags() {
-                let mask = (self.cpu.mxcsr >> 7) & 0x3f;
-                // an unmasked invalid, denormal or divide exception comes before the result
-                let f = if pre & !mask != 0 { pre } else { pre | post };
-                self.cpu.mxcsr |= f;
-                if f & !mask != 0 {
-                    return Exit::SimdException;
-                }
+        if let Some(f) = self.mx_flags() {
+            if self.raise_mx(f) {
+                return Exit::SimdException;
             }
         }
         let w = if ins.op_count() > 0 { self.vbits(0) } else { 128 };
@@ -680,33 +674,34 @@ impl<'a, M: Memory> X<'a, M> {
                 tryf!(self.write_v(0, set64(v as u128, 1, v)));
                 self.done()
             }
+            // (x86's NaN rule spelled out: Rust may give a NaN result any sign, and LLVM made
+            // x - y into x + -y here)
             Haddps | Hsubps => {
-                let sub = mn == Hsubps;
+                let op = if mn == Hsubps { Op::Sub } else { Op::Add };
+                let mx = self.cpu.mxcsr;
                 binop(self, &|a, b| {
-                    let h = |v: u128, i: u32| {
-                        let (x, y) = (f32x(v, 2 * i), f32x(v, 2 * i + 1));
-                        (if sub { x - y } else { x + y }).to_bits()
-                    };
+                    let h = |v: u128, i: u32| nan_op32(op, f32x(v, 2 * i), f32x(v, 2 * i + 1), mx).to_bits();
                     set32(set32(set32(set32(0, 0, h(a, 0)), 1, h(a, 1)), 2, h(b, 0)), 3, h(b, 1))
                 })
             }
             Haddpd | Hsubpd => {
-                let sub = mn == Hsubpd;
+                let op = if mn == Hsubpd { Op::Sub } else { Op::Add };
+                let mx = self.cpu.mxcsr;
                 binop(self, &|a, b| {
-                    let h = |v: u128| {
-                        let (x, y) = (f64x(v, 0), f64x(v, 1));
-                        (if sub { x - y } else { x + y }).to_bits()
-                    };
+                    let h = |v: u128| nan_op64(op, f64x(v, 0), f64x(v, 1), mx).to_bits();
                     set64(set64(0, 0, h(a)), 1, h(b))
                 })
             }
-            Addsubps => binop(self, &|a, b| {
-                (0..4).fold(0, |r, i| {
-                    let (x, y) = (f32x(a, i), f32x(b, i));
-                    set32(r, i, (if i % 2 == 0 { x - y } else { x + y }).to_bits())
+            Addsubps => {
+                let mx = self.cpu.mxcsr;
+                binop(self, &|a, b| {
+                    (0..4).fold(0, |r, i| set32(r, i, nan_op32(if i % 2 == 0 { Op::Sub } else { Op::Add }, f32x(a, i), f32x(b, i), mx).to_bits()))
                 })
-            }),
-            Addsubpd => binop(self, &|a, b| set64(set64(0, 0, (f64x(a, 0) - f64x(b, 0)).to_bits()), 1, (f64x(a, 1) + f64x(b, 1)).to_bits())),
+            }
+            Addsubpd => {
+                let mx = self.cpu.mxcsr;
+                binop(self, &|a, b| set64(set64(0, 0, nan_op64(Op::Sub, f64x(a, 0), f64x(b, 0), mx).to_bits()), 1, nan_op64(Op::Add, f64x(a, 1), f64x(b, 1), mx).to_bits()))
+            }
             // (SSE4.2)
             Pcmpgtq => binop(self, &|a, b| lanes(a, b, 64, |x, y| if (x as i64) > (y as i64) { u64::MAX } else { 0 })),
 
@@ -889,17 +884,20 @@ impl<'a, M: Memory> X<'a, M> {
             // SSE4.1: dot products (each product rounded, then the sums in pairs)
             Dpps => {
                 let imm = ins.immediate8() as u32;
+                let mx = self.cpu.mxcsr;
+                // (each product and sum rounded, with x86's NaN results; masked products are +0)
                 binop(self, &|a, b| {
-                    let p = |i: u32| if imm & (16 << i) != 0 { f32x(a, i) * f32x(b, i) } else { 0.0 };
-                    let sum = (p(0) + p(1)) + (p(2) + p(3));
+                    let p = |i: u32| if imm & (16 << i) != 0 { nan_op32(Op::Mul, f32x(a, i), f32x(b, i), mx) } else { 0.0 };
+                    let sum = nan_op32(Op::Add, nan_op32(Op::Add, p(0), p(1), mx), nan_op32(Op::Add, p(2), p(3), mx), mx);
                     (0..4).fold(0, |r, i| if imm & (1 << i) != 0 { set32(r, i, sum.to_bits()) } else { r })
                 })
             }
             Dppd => {
                 let imm = ins.immediate8() as u32;
+                let mx = self.cpu.mxcsr;
                 binop(self, &|a, b| {
-                    let p = |i: u32| if imm & (16 << i) != 0 { f64x(a, i) * f64x(b, i) } else { 0.0 };
-                    let sum = p(0) + p(1);
+                    let p = |i: u32| if imm & (16 << i) != 0 { nan_op64(Op::Mul, f64x(a, i), f64x(b, i), mx) } else { 0.0 };
+                    let sum = nan_op64(Op::Add, p(0), p(1), mx);
                     (0..2).fold(0, |r, i| if imm & (1 << i) != 0 { set64(r, i, sum.to_bits()) } else { r })
                 })
             }
@@ -988,11 +986,14 @@ impl<'a, M: Memory> X<'a, M> {
                 };
                 let a = tryf!(self.read_v(0));
                 let v = tryf!(self.read_v(1));
+                // (a NaN comes back quieted)
+                let r32 = |x: f32| if x.is_nan() { x.to_bits() | 0x40_0000 } else { (rnd(x as f64) as f32).to_bits() };
+                let r64 = |x: f64| if x.is_nan() { x.to_bits() | 1 << 51 } else { rnd(x).to_bits() };
                 let r = match mn {
-                    Roundss => set32(a, 0, (rnd(f32x(v, 0) as f64) as f32).to_bits()),
-                    Roundsd => set64(a, 0, rnd(f64x(v, 0)).to_bits()),
-                    Roundps => (0..4).fold(0, |r, i| set32(r, i, (rnd(f32x(v, i) as f64) as f32).to_bits())),
-                    _ => (0..2).fold(0, |r, i| set64(r, i, rnd(f64x(v, i)).to_bits())),
+                    Roundss => set32(a, 0, r32(f32x(v, 0))),
+                    Roundsd => set64(a, 0, r64(f64x(v, 0))),
+                    Roundps => (0..4).fold(0, |r, i| set32(r, i, r32(f32x(v, i)))),
+                    _ => (0..2).fold(0, |r, i| set64(r, i, r64(f64x(v, i)))),
                 };
                 tryf!(self.write_v(0, r));
                 self.done()
@@ -1003,7 +1004,7 @@ impl<'a, M: Memory> X<'a, M> {
 }
 
 // ---- MXCSR exception flags
-const IE: u32 = 1;
+pub(super) const IE: u32 = 1;
 const DE: u32 = 2;
 const ZE: u32 = 4;
 const OE: u32 = 8;
@@ -1018,6 +1019,30 @@ pub enum FOp {
     Div,
     Sqrt,
     MinMax,
+}
+
+/// An SSE add/sub/mul/div with x86's NaN results: the first NaN operand, quieted, or the
+/// default NaN (negative) for an invalid operation.
+fn nan_op32(op: Op, x: f32, y: f32, mx: u32) -> f32 {
+    if x.is_nan() {
+        return f32::from_bits(x.to_bits() | 0x40_0000);
+    }
+    if y.is_nan() {
+        return f32::from_bits(y.to_bits() | 0x40_0000);
+    }
+    let r = round::sse32(op, x, y, mx);
+    if r.is_nan() { f32::from_bits(0xffc0_0000) } else { r }
+}
+
+fn nan_op64(op: Op, x: f64, y: f64, mx: u32) -> f64 {
+    if x.is_nan() {
+        return f64::from_bits(x.to_bits() | 1 << 51);
+    }
+    if y.is_nan() {
+        return f64::from_bits(y.to_bits() | 1 << 51);
+    }
+    let r = round::sse64(op, x, y, mx);
+    if r.is_nan() { f64::from_bits(0xfff8_0000_0000_0000) } else { r }
 }
 
 fn snan32(x: f32) -> bool {
@@ -1137,6 +1162,76 @@ fn arith_flags(op: FOp, x: f64, y: f64, single: bool, sn: bool, den: bool, ue_un
     (pre, post)
 }
 
+/// The MXCSR flags of a fused x * y + z (signs already applied; widened exactly from f32 when
+/// `single`), in the order of [`arith_flags`]: an SNaN operand, a QNaN operand (no flag, even with
+/// 0 * inf), an invalid 0 * inf or inf - inf, a denormal operand, then the once-rounded result.
+pub(super) fn fma_flags(x: f64, y: f64, z: f64, single: bool, sn: bool, den: bool, ue_unmasked: bool) -> (u32, u32) {
+    if sn {
+        return (IE, 0);
+    }
+    if x.is_nan() || y.is_nan() || z.is_nan() {
+        return (0, 0);
+    }
+    if (x == 0.0 && y.is_infinite()) || (y == 0.0 && x.is_infinite()) {
+        return (IE, 0);
+    }
+    let pinf = x.is_infinite() || y.is_infinite();
+    if pinf && z.is_infinite() && (x.is_sign_negative() ^ y.is_sign_negative()) != z.is_sign_negative() {
+        return (IE, 0);
+    }
+    let pre = if den { DE } else { 0 };
+    if pinf || z.is_infinite() {
+        return (pre, 0);
+    }
+    let r = if single { libm::fmaf(x as f32, y as f32, z as f32) as f64 } else { libm::fma(x, y, z) };
+    let (sub, inf) = if single { ((r as f32).is_subnormal(), (r as f32).is_infinite()) } else { (r.is_subnormal(), r.is_infinite()) };
+    if inf {
+        return (pre, OE | PE);
+    }
+    let inexact = !fma_exact(x, y, z, r);
+    let tiny = sub || (r == 0.0 && inexact);
+    let mut post = if inexact { PE } else { 0 };
+    if tiny && (inexact || ue_unmasked) {
+        post |= UE;
+    }
+    (pre, post)
+}
+
+/// Whether x * y + z is exactly `r` (all finite): the terms as integers times powers of two,
+/// summed exactly.
+fn fma_exact(x: f64, y: f64, z: f64, r: f64) -> bool {
+    fn parts(v: f64) -> (bool, u128, i32) {
+        let b = v.to_bits();
+        let (e, f) = (((b >> 52) & 0x7ff) as i32, (b & ((1 << 52) - 1)) as u128);
+        if e == 0 { (b >> 63 != 0, f, -1074) } else { (b >> 63 != 0, f | 1 << 52, e - 1075) }
+    }
+    let ((sx, mx, ex), (sy, my, ey), (sz, mz, ez), (sr, mr, er)) = (parts(x), parts(y), parts(z), parts(r));
+    let terms = [(sx ^ sy, mx * my, ex + ey), (sz, mz, ez), (!sr, mr, er)];
+    let Some(emin) = terms.iter().filter(|t| t.1 != 0).map(|t| t.2).min() else { return true };
+    let n = terms.iter().filter(|t| t.1 != 0).map(|t| (t.2 - emin) as usize).max().unwrap_or(0) / 64 + 4;
+    let (mut pos, mut neg) = (alloc::vec![0u64; n], alloc::vec![0u64; n]);
+    for (s, m, e) in terms {
+        if m == 0 {
+            continue;
+        }
+        let a = if s { &mut neg } else { &mut pos };
+        let sh = (e - emin) as usize;
+        let (w, b) = (sh / 64, sh % 64);
+        let (p0, p1) = (m as u64, (m >> 64) as u64);
+        let l = if b == 0 { [p0, p1, 0] } else { [p0 << b, p1 << b | p0 >> (64 - b), p1 >> (64 - b)] };
+        let mut c = 0u128;
+        for (i, slot) in a.iter_mut().enumerate().skip(w) {
+            let t = *slot as u128 + c + if i - w < 3 { l[i - w] as u128 } else { 0 };
+            *slot = t as u64;
+            c = t >> 64;
+            if c == 0 && i - w >= 2 {
+                break;
+            }
+        }
+    }
+    pos == neg
+}
+
 /// arith_flags for f32 operands.
 pub fn flags32(op: FOp, x: f32, y: f32, ue_unmasked: bool) -> (u32, u32) {
     let ops: &[f32] = if op == FOp::Sqrt { &[y] } else { &[x, y] };
@@ -1185,11 +1280,34 @@ fn cmp_flags(nan: bool, sn: bool, den: bool, signaling: bool) -> u32 {
     }
 }
 
+/// [`cmp_flags`] over the first `n` lanes of `a` and `b`.
+pub(super) fn cmp_lanes_flags(a: u128, b: u128, n: u32, single: bool, signaling: bool) -> u32 {
+    (0..n).fold(0, |f, i| {
+        f | if single {
+            let (x, y) = (f32x(a, i), f32x(b, i));
+            cmp_flags(x.is_nan() || y.is_nan(), snan32(x) || snan32(y), x.is_subnormal() || y.is_subnormal(), signaling)
+        } else {
+            let (x, y) = (f64x(a, i), f64x(b, i));
+            cmp_flags(x.is_nan() || y.is_nan(), snan64(x) || snan64(y), x.is_subnormal() || y.is_subnormal(), signaling)
+        }
+    })
+}
+
 fn or2(a: (u32, u32), b: (u32, u32)) -> (u32, u32) {
     (a.0 | b.0, a.1 | b.1)
 }
 
 impl<'a, M: Memory> X<'a, M> {
+    /// Sets an instruction's MXCSR flags (before, after the result); true when one is unmasked
+    /// (the instruction then traps, leaving its destination alone).
+    pub(super) fn raise_mx(&mut self, (pre, post): (u32, u32)) -> bool {
+        let mask = (self.cpu.mxcsr >> 7) & 0x3f;
+        // an unmasked invalid, denormal or divide exception comes before the result
+        let f = if pre & !mask != 0 { pre } else { pre | post };
+        self.cpu.mxcsr |= f;
+        f & !mask != 0
+    }
+
     /// The MXCSR flags the current SSE instruction raises (before, after the result); None
     /// for an instruction that raises none, or an operand that faults (the instruction then
     /// faults when it runs).
@@ -1269,6 +1387,34 @@ impl<'a, M: Memory> X<'a, M> {
                     f = or2(f, flags64(o, x, y, ue));
                 }
             }
+            // each selected product, then the sums of the rounded products
+            Dpps => {
+                let (a, b) = (self.read_v(0).ok()?, self.read_v(1).ok()?);
+                let (imm, mx) = (self.ins.immediate8() as u32, self.cpu.mxcsr);
+                let mut p = [0f32; 4];
+                for i in 0..4 {
+                    if imm & (16 << i) != 0 {
+                        f = or2(f, flags32(FOp::Mul, f32x(a, i), f32x(b, i), ue));
+                        p[i as usize] = nan_op32(Op::Mul, f32x(a, i), f32x(b, i), mx);
+                    }
+                }
+                let (s0, s1) = (nan_op32(Op::Add, p[0], p[1], mx), nan_op32(Op::Add, p[2], p[3], mx));
+                for (x, y) in [(p[0], p[1]), (p[2], p[3]), (s0, s1)] {
+                    f = or2(f, flags32(FOp::Add, x, y, ue));
+                }
+            }
+            Dppd => {
+                let (a, b) = (self.read_v(0).ok()?, self.read_v(1).ok()?);
+                let (imm, mx) = (self.ins.immediate8() as u32, self.cpu.mxcsr);
+                let mut p = [0f64; 2];
+                for i in 0..2 {
+                    if imm & (16 << i) != 0 {
+                        f = or2(f, flags64(FOp::Mul, f64x(a, i), f64x(b, i), ue));
+                        p[i as usize] = nan_op64(Op::Mul, f64x(a, i), f64x(b, i), mx);
+                    }
+                }
+                f = or2(f, flags64(FOp::Add, p[0], p[1], ue));
+            }
             Cmpss | Cmpps | Cmpsd | Cmppd | Comiss | Ucomiss | Comisd | Ucomisd => {
                 let a = self.read_v(0).ok()?;
                 let b = self.read_v(1).ok()?;
@@ -1283,15 +1429,7 @@ impl<'a, M: Memory> X<'a, M> {
                     Cmppd => (2, false),
                     _ => (1, false),
                 };
-                for i in 0..n {
-                    f.0 |= if single {
-                        let (x, y) = (f32x(a, i), f32x(b, i));
-                        cmp_flags(x.is_nan() || y.is_nan(), snan32(x) || snan32(y), x.is_subnormal() || y.is_subnormal(), signaling)
-                    } else {
-                        let (x, y) = (f64x(a, i), f64x(b, i));
-                        cmp_flags(x.is_nan() || y.is_nan(), snan64(x) || snan64(y), x.is_subnormal() || y.is_subnormal(), signaling)
-                    };
-                }
+                f.0 |= cmp_lanes_flags(a, b, n, single, signaling);
             }
             Cvttss2si | Cvtss2si | Cvttsd2si | Cvtsd2si => {
                 let v = self.read_v(1).ok()?;

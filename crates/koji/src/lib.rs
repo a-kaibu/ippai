@@ -21,7 +21,7 @@ pub use fpu::Fpu;
 /// The MXCSR exception flags of an SSE operation (for tests against the host CPU).
 #[doc(hidden)]
 pub use interp::sse::{flags32, flags64, narrow_flags, FOp};
-pub use interp::{cpuid, cpuid_mode, step, step_cached, step_flow, DecodeCache};
+pub use interp::{cpuid, cpuid_mode, CPUID_AVX, step, step_cached, step_flow, DecodeCache};
 
 impl Cpu {
     /// EFLAGS with the lazy status flags worked out.
@@ -55,6 +55,18 @@ impl Cpu {
     #[inline]
     pub fn set_xmm(&mut self, i: usize, v: u128) {
         if i < 8 { self.xmm[i] = v } else if i < 16 { self.xmm8[i - 8] = v } else { self.vex_tmp = v }
+    }
+
+    /// YMM register `i` (0..16, 16: the scratch): [low half (the XMM register), upper half].
+    #[inline]
+    pub fn ymm(&self, i: usize) -> [u128; 2] {
+        [self.xmm(i), self.ymmh[i]]
+    }
+
+    #[inline]
+    pub fn set_ymm(&mut self, i: usize, v: [u128; 2]) {
+        self.set_xmm(i, v[0]);
+        self.ymmh[i] = v[1];
     }
 
     /// Makes `eflags` exact again.
@@ -230,6 +242,9 @@ pub struct Cpu {
     /// 16-bit mode: a table of segment bases (u32 per selector index, sel >> 3) that loading
     /// a segment register reads
     pub ldt: u32,
+    /// The upper halves (bits 128..255) of YMM0..15, and of the scratch register (16). Legacy
+    /// SSE instructions keep them; VEX.128 instructions clear their destination's.
+    pub ymmh: [u128; 17],
 }
 
 /// `Cpu::ldt` value for real-mode segment loading in 16-bit mode (base = selector * 16): what
@@ -251,7 +266,7 @@ impl Default for Cpu {
             jit_budget: 0, jit_ring: 0, fs_base: 0, gs_base: 0, trap_lo: 0, trap_hi: 0, tsc: 0,
             fpu: Fpu::default(), mm: [0; 8], xmm: [0; 8], mxcsr: 0x1f80,
             mode64: 0, hi: [0; 8], r8: [0; 8], xmm8: [0; 8], jit_depth: 0, rip_hi: 0, jit_calls: 0, jit_code_pages: 0, jit_smc: 0,
-            vex_tmp: 0, mode16: 0, sreg: [0; 6], sbase: [0; 6], ldt: 0,
+            vex_tmp: 0, mode16: 0, sreg: [0; 6], sbase: [0; 6], ldt: 0, ymmh: [0; 17],
         }
     }
 }

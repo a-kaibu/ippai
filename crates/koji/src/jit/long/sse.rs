@@ -2,8 +2,8 @@
 //! SIMD. The XMM registers stay in the Cpu: each instruction loads its operands from there and
 //! stores its result. A VEX instruction is translated as its legacy form (the interpreter's
 //! table, interp::vex): with VEX.vvvv as the first source, `dst = src1 op src2` reads src1
-//! where the legacy form reads its destination. VEX.128's clearing of the upper YMM half has
-//! nothing to clear (no YMM state is kept).
+//! where the legacy form reads its destination; then the destination's upper YMM half
+//! (`Cpu::ymmh`) is cleared, as VEX.128 does. 256-bit forms go to the interpreter.
 
 use super::{Flags, Gen, I64Ops, F_ROUND, I32_WRAP, I64_EXT_U, L_A, L_CPU, L_F0, L_V0, L_V1, STATUS};
 use crate::jit::rounding::{self, kind, Mode};
@@ -181,7 +181,12 @@ impl Gen<'_> {
     /// Translates an instruction [`plan`] accepts; false (nothing emitted) if it can't.
     pub(super) fn sse(&mut self) -> bool {
         let Some((li, src1)) = plan(&self.ins) else { return false };
+        let ymmh = |r: usize| (offset_of!(Cpu, ymmh) + 16 * r) as u32;
         if li.mnemonic() == Mnemonic::Vzeroupper {
+            for r in 0..16 {
+                self.c.get(L_CPU).i64c(0).store64(ymmh(r));
+                self.c.get(L_CPU).i64c(0).store64(ymmh(r) + 8);
+            }
             return true;
         }
         // the memory operand's address first (it may leave for the interpreter)
@@ -213,6 +218,16 @@ impl Gen<'_> {
         }
         self.emit_sse(src1);
         self.ins = saved;
+        // VEX.128 clears the upper half of the YMM register it writes
+        use Mnemonic::*;
+        if saved.encoding() == EncodingKind::VEX
+            && is_x(&saved, 0)
+            && !matches!(saved.mnemonic(), Vcomiss | Vcomisd | Vucomiss | Vucomisd | Vptest | Vtestps | Vtestpd | Vmaskmovdqu)
+        {
+            let r = ymmh(saved.op0_register() as usize - Register::XMM0 as usize);
+            self.c.get(L_CPU).i64c(0).store64(r);
+            self.c.get(L_CPU).i64c(0).store64(r + 8);
+        }
         true
     }
 

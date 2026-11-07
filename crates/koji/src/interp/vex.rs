@@ -153,16 +153,49 @@ impl<'a, M: Memory> X<'a, M> {
     pub(super) fn vex(&mut self) -> Exit {
         use iced_x86::Mnemonic::*;
         let ins = self.ins;
-        match ins.mnemonic() {
-            Vzeroupper => return self.done(),
+        let mn = ins.mnemonic();
+        match mn {
+            Vzeroupper => {
+                self.cpu.ymmh[..16].fill(0);
+                return self.done();
+            }
             Vzeroall => {
                 for i in 0..16 {
-                    self.cpu.set_xmm(i, 0);
+                    self.cpu.set_ymm(i, [0, 0]);
                 }
                 return self.done();
             }
             _ => {}
         }
+        if super::bmi::is_bmi(mn) {
+            return self.bmi();
+        }
+        if matches!(mn, Vgatherdps | Vgatherdpd | Vgatherqps | Vgatherqpd | Vpgatherdd | Vpgatherdq | Vpgatherqd | Vpgatherqq) {
+            return self.gather();
+        }
+        if (0..ins.op_count()).any(|i| ins.op_kind(i) == OpKind::Register && ins.op_register(i).is_ymm() || ins.op_kind(i) == OpKind::Memory && ins.memory_size().size() == 32) {
+            return self.vex256();
+        }
+        let e = self.vex128();
+        // a VEX.128 instruction clears bits 255:128 of the register it writes
+        if e == Exit::Continue {
+            if matches!(mn, Vpcmpestrm | Vpcmpestrm64 | Vpcmpistrm) {
+                self.cpu.ymmh[0] = 0;
+            } else if ins.op_count() > 0
+                && ins.op0_kind() == OpKind::Register
+                && ins.op0_register().is_xmm()
+                && !matches!(mn, Vcomiss | Vcomisd | Vucomiss | Vucomisd | Vptest | Vtestps | Vtestpd | Vpcmpestri | Vpcmpestri64 | Vpcmpistri | Vmaskmovdqu)
+            {
+                self.cpu.ymmh[xi(ins.op0_register())] = 0;
+            }
+        }
+        e
+    }
+
+    /// A VEX.128 instruction (the upper halves aside).
+    fn vex128(&mut self) -> Exit {
+        use iced_x86::Mnemonic::*;
+        let ins = self.ins;
         if vex_only(ins.mnemonic()) {
             return self.vex_only();
         }
@@ -195,15 +228,29 @@ impl<'a, M: Memory> X<'a, M> {
                 li.set_op_register(j, ins.op_register(j + 1));
             }
         }
-        // VCMPxx has 32 predicates (legacy CMPxx: 8). Bit 4 only picks signaling, which with masked
-        // exceptions changes nothing; bit 3 flips the answer for unordered lanes, so run the low
-        // three bits and xor in the UNORD mask.
+        // VCMPxx has 32 predicates (legacy CMPxx: 8). Bit 4 flips whether a QNaN is invalid;
+        // bit 3 flips the answer for unordered lanes, so run the low three bits and xor in the
+        // UNORD mask. The flags are found here, the legacy runs masked and leave none.
         let vcmp = matches!(ins.mnemonic(), Vcmpps | Vcmppd | Vcmpss | Vcmpsd);
         let p = if vcmp { ins.immediate8() & 0x1f } else { 0 };
+        let src1v = self.cpu.vex_tmp;
+        let mut mx = self.cpu.mxcsr;
         if vcmp {
             li.set_immediate8(p & 7);
+            let b = tryf!(self.read_v(2));
+            let (n, single) = match ins.mnemonic() {
+                Vcmpss => (1, true),
+                Vcmpps => (4, true),
+                Vcmppd => (2, false),
+                _ => (1, false),
+            };
+            let signaling = matches!(p & 7, 1 | 2 | 5 | 6) ^ (p & 0x10 != 0);
+            if self.raise_mx((super::sse::cmp_lanes_flags(src1v, b, n, single, signaling), 0)) {
+                return Exit::SimdException;
+            }
+            mx = self.cpu.mxcsr;
+            self.cpu.mxcsr |= 0x1f80;
         }
-        let src1v = self.cpu.vex_tmp;
         let exit = X { cpu: &mut *self.cpu, mem: &mut *self.mem, ins: &li, lock: None }.exec();
         if exit == Exit::Continue && p & 8 != 0 {
             let r = self.cpu.vex_tmp;
@@ -211,6 +258,7 @@ impl<'a, M: Memory> X<'a, M> {
             li.set_immediate8(3);
             let exit = X { cpu: &mut *self.cpu, mem: &mut *self.mem, ins: &li, lock: None }.exec();
             if exit != Exit::Continue {
+                self.cpu.mxcsr = mx;
                 return exit;
             }
             let lanes: u128 = match ins.mnemonic() {
@@ -220,13 +268,17 @@ impl<'a, M: Memory> X<'a, M> {
             };
             self.cpu.vex_tmp = r ^ (self.cpu.vex_tmp & lanes);
         }
+        if vcmp {
+            self.cpu.mxcsr = mx;
+        }
         if exit == Exit::Continue {
             self.cpu.set_xmm(dst as usize - Register::XMM0 as usize, self.cpu.vex_tmp);
         }
         exit
     }
 
-    /// FMA3: a (dst), b (vvvv), c (xmm/mem), rounded once (libm's fma).
+    /// FMA3: a (dst), b (vvvv), c (xmm/mem), rounded once (libm's fma). A NaN operand: the
+    /// first in the expression's order (x * y + z), quieted, as Intel's.
     fn fma(&mut self, k: u8) -> Exit {
         let ins = self.ins;
         if !ins.op0_register().is_xmm() {
@@ -246,6 +298,35 @@ impl<'a, M: Memory> X<'a, M> {
         let lane = if double { 64 } else { 32 };
         let n = if packed { 128 / lane } else { 1 };
         let mut r = a; // scalar: the rest of dst stays
+        let ue = self.cpu.mxcsr & 0x800 == 0;
+        let mut fl = (0, 0);
+        for i in 0..n {
+            let sub = match kind {
+                1 | 3 => true,
+                4 => i % 2 == 0,
+                5 => i % 2 == 1,
+                _ => false,
+            };
+            let neg = matches!(kind, 2 | 3);
+            let f = if double {
+                let g = |v: u128| f64::from_bits((v >> (64 * i)) as u64);
+                let (p, q, s) = (g(x), g(y), g(z));
+                let sn = [p, q, s].iter().any(|v| v.is_nan() && v.to_bits() & 1 << 51 == 0);
+                let den = [p, q, s].iter().any(|v| v.is_subnormal());
+                super::sse::fma_flags(if neg { -p } else { p }, q, if sub { -s } else { s }, false, sn, den, ue)
+            } else {
+                let g = |v: u128| f32::from_bits((v >> (32 * i)) as u32);
+                let (p, q, s) = (g(x), g(y), g(z));
+                let sn = [p, q, s].iter().any(|v| v.is_nan() && v.to_bits() & 1 << 22 == 0);
+                let den = [p, q, s].iter().any(|v| v.is_subnormal());
+                let w = |v: f32| v as f64;
+                super::sse::fma_flags(w(if neg { -p } else { p }), w(q), w(if sub { -s } else { s }), true, sn, den, ue)
+            };
+            fl = (fl.0 | f.0, fl.1 | f.1);
+        }
+        if self.raise_mx(fl) {
+            return Exit::SimdException;
+        }
         for i in 0..n {
             // (maddsub: even lanes subtract; msubadd: odd lanes)
             let sub = match kind {
@@ -259,7 +340,7 @@ impl<'a, M: Memory> X<'a, M> {
                 let g = |v: u128| f64::from_bits((v >> (64 * i)) as u64);
                 let (p, q, s) = (g(x), g(y), g(z));
                 let v = if p.is_nan() || q.is_nan() || s.is_nan() {
-                    [g(a), g(b), g(c)].into_iter().find(|v| v.is_nan()).unwrap().to_bits() | 1 << 51
+                    [p, q, s].into_iter().find(|v| v.is_nan()).unwrap().to_bits() | 1 << 51
                 } else {
                     libm::fma(if neg { -p } else { p }, q, if sub { -s } else { s }).to_bits()
                 };
@@ -268,7 +349,7 @@ impl<'a, M: Memory> X<'a, M> {
                 let g = |v: u128| f32::from_bits((v >> (32 * i)) as u32);
                 let (p, q, s) = (g(x), g(y), g(z));
                 let v = if p.is_nan() || q.is_nan() || s.is_nan() {
-                    [g(a), g(b), g(c)].into_iter().find(|v| v.is_nan()).unwrap().to_bits() | 1 << 22
+                    [p, q, s].into_iter().find(|v| v.is_nan()).unwrap().to_bits() | 1 << 22
                 } else {
                     libm::fmaf(if neg { -p } else { p }, q, if sub { -s } else { s }).to_bits()
                 };

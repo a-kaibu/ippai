@@ -478,9 +478,9 @@ fn sse_codes() -> &'static [Code] {
                     return false;
                 }
                 let kinds: Vec<K> = (0..o.op_count()).map(|i| o.op_kind(i)).collect();
-                let ok = kinds.iter().all(|k| matches!(k, K::xmm_reg | K::xmm_rm | K::xmm_or_mem | K::xmm_vvvv | K::mm_reg | K::mm_rm | K::mm_or_mem | K::r32_reg | K::r64_reg | K::r32_rm | K::r64_rm | K::r32_or_mem | K::r64_or_mem | K::imm8 | K::mem));
+                let ok = kinds.iter().all(|k| matches!(k, K::xmm_reg | K::xmm_rm | K::xmm_or_mem | K::xmm_vvvv | K::ymm_reg | K::ymm_rm | K::ymm_or_mem | K::ymm_vvvv | K::mm_reg | K::mm_rm | K::mm_or_mem | K::r32_reg | K::r64_reg | K::r32_rm | K::r64_rm | K::r32_or_mem | K::r64_or_mem | K::imm8 | K::mem));
                 // (MMX forms too: an MMX register is the low half of a v128 in the JIT)
-                let any_x = kinds.iter().any(|k| matches!(k, K::xmm_reg | K::xmm_rm | K::xmm_or_mem | K::xmm_vvvv | K::mm_reg | K::mm_rm | K::mm_or_mem));
+                let any_x = kinds.iter().any(|k| matches!(k, K::xmm_reg | K::xmm_rm | K::xmm_or_mem | K::xmm_vvvv | K::ymm_reg | K::ymm_rm | K::ymm_or_mem | K::ymm_vvvv | K::mm_reg | K::mm_rm | K::mm_or_mem));
                 let m = format!("{:?}", c.mnemonic());
                 // (side effects outside the compared state, or not in CPUID)
                 let skip = ["Maskmov", "Vmaskmov", "Ldmxcsr", "Stmxcsr", "Aes", "Pclmul", "Sha", "Gf2p8", "Vcvtph2ps", "Vcvtps2ph", "Extrq", "Insertq", "Movnt", "Crc32", "Vfm", "Vfnm", "Vgather", "Vpgather", "Vpdpb", "Vpdpw", "Vpmadd52", "Kmov", "Vpbroadcast", "Vbroadcast", "Vperm", "Vtest", "Vpblendd", "Vpsllv", "Vpsrlv", "Vpsrav", "Vblendv", "Vpblendv", "Rdrand", "Rdseed", "Pconfig", "Bndc", "Bndm", "Senduipi"];
@@ -502,14 +502,14 @@ fn random_sse(rng: &mut Rng) -> Option<Instruction> {
     let mut ins = Instruction::with(c);
     for i in 0..o.op_count() {
         let k = o.op_kind(i);
-        let memory = matches!(k, K::mem) || (matches!(k, K::xmm_or_mem | K::mm_or_mem | K::r32_or_mem | K::r64_or_mem) && rng.below(3) == 0);
+        let memory = matches!(k, K::mem) || (matches!(k, K::xmm_or_mem | K::ymm_or_mem | K::mm_or_mem | K::r32_or_mem | K::r64_or_mem) && rng.below(3) == 0);
         if memory {
-            // rbx (= DATA) + a 16-aligned offset (aligned forms don't fault)
+            // rbx (= DATA) + a 32-aligned offset (aligned forms don't fault)
             ins.set_op_kind(i, OpKind::Memory);
             ins.set_memory_base(Register::RBX);
             ins.set_memory_index(Register::None);
             ins.set_memory_index_scale(1);
-            ins.set_memory_displacement64(rng.below((DATA_LEN as u64 - 64) / 16) * 16);
+            ins.set_memory_displacement64(rng.below((DATA_LEN as u64 - 64) / 32) * 32);
             ins.set_memory_displ_size(1);
             continue;
         }
@@ -517,6 +517,10 @@ fn random_sse(rng: &mut Rng) -> Option<Instruction> {
             K::xmm_reg | K::xmm_rm | K::xmm_or_mem | K::xmm_vvvv => {
                 ins.set_op_kind(i, OpKind::Register);
                 ins.set_op_register(i, rand_xmm(rng));
+            }
+            K::ymm_reg | K::ymm_rm | K::ymm_or_mem | K::ymm_vvvv => {
+                ins.set_op_kind(i, OpKind::Register);
+                ins.set_op_register(i, Register::YMM0 + rng.below(16) as u32);
             }
             K::mm_reg | K::mm_rm | K::mm_or_mem => {
                 ins.set_op_kind(i, OpKind::Register);
@@ -820,6 +824,8 @@ fn initial(rng: &mut Rng, rip_hi: u32) -> Cpu {
         } else {
             c.xmm8[i - 8] = v;
         }
+        // the upper YMM halves: VEX.128 must clear the destination's, legacy SSE keep them
+        c.ymmh[i] = rng.next() as u128 | (rng.next() as u128) << 64;
     }
     for i in 0..8 {
         c.mm[i] = rng.next();
@@ -882,6 +888,9 @@ fn run_case(engine: &Engine, memory: &SharedMemory, base: usize, list0: &[Instru
             let (w, g) = if i < 8 { (want_cpu.xmm[i], got_cpu.xmm[i]) } else { (want_cpu.xmm8[i - 8], got_cpu.xmm8[i - 8]) };
             if w != g {
                 diffs.push(format!("xmm{i}: want {w:032x} got {g:032x}"));
+            }
+            if want_cpu.ymmh[i] != got_cpu.ymmh[i] {
+                diffs.push(format!("ymm{i} upper: want {:032x} got {:032x}", want_cpu.ymmh[i], got_cpu.ymmh[i]));
             }
         }
         for i in 0..8 {

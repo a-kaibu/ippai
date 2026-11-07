@@ -6,6 +6,8 @@ use crate::{Cpu, Exit, Fault, Memory, ESP, EAX, ECX, EDX, EBP, ESI, EDI};
 use iced_x86::{ConditionCode, Decoder, DecoderOptions, Instruction, Mnemonic, OpKind, Register};
 
 mod x87;
+mod avx;
+mod bmi;
 pub(crate) mod sse;
 pub(crate) mod vex;
 
@@ -1118,6 +1120,15 @@ impl<'a, M: Memory> X<'a, M> {
                 self.set_reg(Register::EDX, d as u64);
                 self.done()
             }
+            // XCR0: x87, SSE and AVX state (OSXSAVE is reported with AVX); other XCRs: #GP
+            Xgetbv => {
+                if self.cpu.regs[ECX] != 0 {
+                    return Exit::InvalidOpcode;
+                }
+                self.set_reg(Register::EAX, 7);
+                self.set_reg(Register::EDX, 0);
+                self.done()
+            }
             Rdtsc => {
                 self.set_reg(Register::EAX, self.cpu.tsc as u32 as u64);
                 self.set_reg(Register::EDX, self.cpu.tsc >> 32);
@@ -1637,26 +1648,43 @@ pub(crate) fn crc32c_byte(c: u32, b: u8) -> u32 {
     (0..8).fold(c ^ b as u32, |c, _| if c & 1 != 0 { c >> 1 ^ 0x82f6_3b78 } else { c >> 1 })
 }
 
-/// A Pentium 4 class CPU with SSE2 (what VN-era code checks for).
 /// CPUID as seen by guest code: a Pentium 4 class CPU with SSE2.
 pub fn cpuid(leaf: u32, sub: u32) -> (u32, u32, u32, u32) {
     cpuid_mode(leaf, sub, false)
 }
 
+/// Whether CPUID reports AVX, AVX2, FMA3, BMI1/BMI2 and the OS's YMM state (OSXSAVE, leaf 7).
+/// The interpreter runs all of them, but the JITs translate no 256-bit instruction, so a program
+/// that picks its code path by CPUID (memcpy, codecs) runs faster on its SSE path: off unless the
+/// embedder sets it (kura: IPPAI_CPUID_AVX). Code built for AVX that uses it unconditionally runs
+/// either way.
+pub static CPUID_AVX: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 /// Long mode reports what x64 programs of today require on top (Godot 4 refuses to start
 /// without SSE4.2): SSE3, SSSE3, CMPXCHG16B, SSE4.1, SSE4.2, POPCNT, all of which the
 /// interpreter runs. 32-bit code keeps the Pentium 4 view, so VN-era code stays on its SSE2 paths.
-pub fn cpuid_mode(leaf: u32, _sub: u32, long: bool) -> (u32, u32, u32, u32) {
+/// With [`CPUID_AVX`], both modes report the long-mode set plus AVX, AVX2, FMA3, BMI1, BMI2,
+/// LZCNT and OSXSAVE (XGETBV: x87, SSE and AVX state enabled).
+pub fn cpuid_mode(leaf: u32, sub: u32, long: bool) -> (u32, u32, u32, u32) {
     const LONG_ECX: u32 = (1 << 0) | (1 << 9) | (1 << 13) | (1 << 19) | (1 << 20) | (1 << 23);
+    // FMA, OSXSAVE, AVX
+    const AVX_ECX: u32 = LONG_ECX | (1 << 12) | (1 << 27) | (1 << 28);
+    // FPU TSC CX8 CMOV MMX FXSR SSE SSE2
+    const EDX: u32 = (1 << 0) | (1 << 4) | (1 << 8) | (1 << 15) | (1 << 23) | (1 << 24) | (1 << 25) | (1 << 26);
+    let avx = CPUID_AVX.load(core::sync::atomic::Ordering::Relaxed);
     match leaf {
-        1 if long => (0x0000_06f1, 0, LONG_ECX, (1 << 0) | (1 << 4) | (1 << 8) | (1 << 15) | (1 << 23) | (1 << 24) | (1 << 25) | (1 << 26)),
-        0 => (1, u32::from_le_bytes(*b"Genu"), u32::from_le_bytes(*b"ntel"), u32::from_le_bytes(*b"ineI")),
-        // family 6 model 15; FPU TSC CX8 CMOV MMX FXSR SSE SSE2
-        1 => (0x0000_06f1, 0, 0, (1 << 0) | (1 << 4) | (1 << 8) | (1 << 15) | (1 << 23) | (1 << 24) | (1 << 25) | (1 << 26)),
+        0 => (if avx { 7 } else { 1 }, u32::from_le_bytes(*b"Genu"), u32::from_le_bytes(*b"ntel"), u32::from_le_bytes(*b"ineI")),
+        // family 6 model 15
+        1 => (0x0000_06f1, 0, if avx { AVX_ECX } else if long { LONG_ECX } else { 0 }, EDX),
+        // BMI1, AVX2, BMI2
+        7 if avx && sub == 0 => (0, (1 << 3) | (1 << 5) | (1 << 8), 0, 0),
         // the extended leaves exist on every x86 since the Pentium 4: programs loop from
         // 0x80000000 up to the highest one with a signed compare (AdvHD: 0 there meant 2^31
         // rounds, appending each result to a vector until memory ran out)
         0x8000_0000 => (0x8000_0004, 0, 0, 0),
+        // long mode: LAHF/SAHF, SYSCALL, NX, LM (what an x64 CPU says, CPU-Z checks LM);
+        // LZCNT (ABM) with AVX
+        0x8000_0001 => (0, 0, (long as u32) | (avx as u32) << 5, if long { (1 << 11) | (1 << 20) | (1 << 29) } else { 0 }),
         0x8000_0002..=0x8000_0004 => {
             const BRAND: &[u8; 48] = b"vnvm virtual x86 processor\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
             let o = (leaf - 0x8000_0002) as usize * 16;
@@ -1680,6 +1708,24 @@ mod cpuid_tests {
             assert_ne!(c64 & 1 << bit, 0, "bit {bit}");
         }
         assert_eq!(cpuid(1, 0), cpuid_mode(1, 0, false));
+        assert_eq!(cpuid_mode(0x8000_0001, 0, false), (0, 0, 0, 0));
+        assert_eq!(cpuid_mode(0x8000_0001, 0, true), (0, 0, 1, (1 << 11) | (1 << 20) | (1 << 29)));
+        // (one test: CPUID_AVX is global)
+        use core::sync::atomic::Ordering::Relaxed;
+        assert_eq!(cpuid_mode(0, 0, true).0, 1);
+        assert_eq!(cpuid_mode(7, 0, true), (0, 0, 0, 0));
+        CPUID_AVX.store(true, Relaxed);
+        let (max, ..) = cpuid_mode(0, 0, false);
+        let (_, _, c, _) = cpuid_mode(1, 0, false);
+        let (_, b, ..) = cpuid_mode(7, 0, false);
+        let (_, _, e, _) = cpuid_mode(0x8000_0001, 0, true);
+        CPUID_AVX.store(false, Relaxed);
+        assert_eq!(max, 7);
+        for bit in [0, 9, 12, 13, 19, 20, 23, 27, 28] {
+            assert_ne!(c & 1 << bit, 0, "leaf 1 ecx bit {bit}");
+        }
+        assert_eq!(b, (1 << 3) | (1 << 5) | (1 << 8));
+        assert_eq!(e, 1 | 1 << 5);
     }
 
     #[test]

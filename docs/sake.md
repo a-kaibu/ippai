@@ -118,8 +118,22 @@
   2026-11-06 に自前の x64 CRT (プレフィックスはフォントだけ) で 4 本とも本編まで再確認。
 - SakanaGL の sakanagl.dll は /arch:AVX2。koji のインタプリタが VEX の 128 ビット形
   (AVX/AVX2)、FMA3、SSE3/SSSE3/SSE4.1 を実行する (interp/vex.rs: VEX のコードを名前で
-  旧来のコードに写し、NDS は Cpu::vex_tmp (xmm16) に src1 を写してから実行)。ymm (256 ビット)
-  は #UD、CPUID は AVX を報告しない。
+  旧来のコードに写し、NDS は Cpu::vex_tmp (xmm16) に src1 を写してから実行)。
+- 256 ビット (2026-11-07): ymm の上半分は Cpu::ymmh。VEX.128 は書いた先の上半分を 0 にする
+  (インタプリタと 64 ビット JIT)。VEX.256 は interp/avx.rs: レーンごとの命令は VEX.128 の形を
+  2 回 (2 回目は上半分を xmm に入れ替え、m256 は +16、レーンごとの即値は次のビット)、
+  レーンをまたぐもの (broadcast、vperm*、vinsert/vextract128、vpmovsx/zx と cvt の拡大・縮小、
+  movmsk、vptest) は直接。AVX2 の gather 全種、BMI1/BMI2 (interp/bmi.rs)、XGETBV (XCR0 = 7)。
+  JIT は 256 ビットを訳さずインタプリタに回す。CPUID は既定では AVX 系を報告しない (CPUID で
+  経路を選ぶ memcpy やコーデックが遅いインタプリタ経路に入るため)。IPPAI_CPUID_AVX を付けると
+  AVX/AVX2/FMA/BMI1/BMI2/LZCNT/OSXSAVE と leaf 7 を報告する (koji::CPUID_AVX)。
+  確認は crates/koji/tests/diff_isa.rs: MMX〜SSE4.2、AVX、AVX2、FMA3、BMI、POPCNT、LZCNT の
+  iced の Code 全部 (1078) を各 48 回 (IPPAI_ISA_CASES で増やせる)、NaN や非正規数を含む値で
+  実 CPU と比べる (YMM 全体、MMX、汎用レジスタ、フラグ、MXCSR の例外フラグまで、メモリ)。これで見つかった
+  既存のずれ: HADD/HSUB/ADDSUB と DPPS/DPPD の NaN と丸めモード、ROUND* が SNaN を quiet に
+  しない、FMA の NaN の優先順 (式の順 x*y+z)、MXCSR の例外フラグ (FMA は一度だけ丸めた結果が
+  正確かを整数で確かめる、0*inf+QNaN は IE なし。DPPS/DPPD は各積と和。VCMP の述語 8〜31)。DPPS/DPPD の NaN の中身はレーンごとに違う
+  (Intel の内部の順序) ので NaN であることだけ見る。
 - 64 ビットの JIT (koji jit/long.rs、long/sse.rs) は SSE〜SSE4.1 と VEX.128 の主な形を wasm SIMD
   に訳す (VEX はインタプリタと同じ表で旧来の形に写し、NDS は src1 を読むだけ)。CL 指定の
   シフト (32/64 ビット)、bsf/bsr、bt/bts/btr/btc も訳す (未定義のフラグはインタプリタと同じく
