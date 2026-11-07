@@ -58,6 +58,85 @@ impl Value {
     }
 }
 
+/// apitrace dump's way of showing a value: enums by name, structs as {Member = value}, blobs
+/// by length
+impl std::fmt::Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Value::Null => write!(f, "NULL"),
+            Value::Bool(b) => write!(f, "{b}"),
+            Value::SInt(v) => write!(f, "{v}"),
+            Value::UInt(v) => write!(f, "{v}"),
+            Value::Float(v) => write!(f, "{v}f"),
+            Value::Double(v) => write!(f, "{v}d"),
+            Value::Str(s) => write!(f, "{:?}", String::from_utf8_lossy(s)),
+            Value::WStr(s) => write!(f, "L{:?}", s.iter().map(|&c| char::from_u32(c).unwrap_or('?')).collect::<String>()),
+            Value::Blob(b) => write!(f, "blob({})", b.len()),
+            Value::Enum(sig, v) => match sig.values.iter().find(|(_, x)| x == v) {
+                Some((n, _)) => write!(f, "{n}"),
+                None => write!(f, "{v}"),
+            },
+            Value::Bitmask(sig, v) => {
+                let mut rest = *v;
+                let mut names = vec![];
+                for (n, x) in &sig.flags {
+                    if *x != 0 && rest & x == *x {
+                        names.push(n.as_str());
+                        rest &= !x;
+                    }
+                }
+                if rest != 0 || names.is_empty() {
+                    write!(f, "{}", names.iter().map(|s| s.to_string()).chain([format!("{rest:#x}")]).collect::<Vec<_>>().join("|"))
+                } else {
+                    write!(f, "{}", names.join("|"))
+                }
+            }
+            Value::Array(a) => {
+                write!(f, "[")?;
+                for (i, x) in a.iter().enumerate() {
+                    write!(f, "{}{x}", if i > 0 { ", " } else { "" })?;
+                }
+                write!(f, "]")
+            }
+            Value::Struct(sig, m) => {
+                write!(f, "{}{{", sig.name)?;
+                for (i, (n, x)) in sig.members.iter().zip(m).enumerate() {
+                    write!(f, "{}{n} = {x}", if i > 0 { ", " } else { "" })?;
+                }
+                write!(f, "}}")
+            }
+            Value::Opaque(a) => write!(f, "{a:#x}"),
+            Value::Repr(h, m) => match (&**h, &**m) {
+                (Value::Str(s), m) => write!(f, "repr({} chars, {m})", s.len()),
+                (h, m) => write!(f, "repr({h}, {m})"),
+            },
+        }
+    }
+}
+
+impl std::fmt::Display for Call {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{} {}{}(", self.no, self.sig.name, if self.fake { " (fake)" } else { "" })?;
+        let n = self.sig.args.len().max(self.args_in.len()).max(self.args_out.len());
+        for i in 0..n {
+            let name = self.sig.args.get(i).map(|s| s.as_str()).unwrap_or("?");
+            write!(f, "{}{name} = ", if i > 0 { ", " } else { "" })?;
+            match (self.args_in.get(i).and_then(|v| v.as_ref()), self.args_out.get(i).and_then(|v| v.as_ref())) {
+                (Some(a), Some(b)) if a == b => write!(f, "{a}")?,
+                (Some(a), Some(b)) => write!(f, "{a} -> {b}")?,
+                (Some(a), None) => write!(f, "{a}")?,
+                (None, Some(b)) => write!(f, "-> {b}")?,
+                (None, None) => write!(f, "?")?,
+            }
+        }
+        write!(f, ")")?;
+        if let Some(r) = &self.ret {
+            write!(f, " = {r}")?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub struct FunctionSig {
     pub name: String,

@@ -1,0 +1,2542 @@
+R 8.HMONITOR__ 4 4 struct d3d8
+ 0 0 unused i4
+R 8._D3DADAPTER_IDENTIFIER8 1068 1072 struct d3d8
+ 0 0 Driver [512]i1
+ 512 512 Description [512]i1
+ 1024 1024 DriverVersion S:8._LARGE_INTEGER
+ 1032 1032 VendorId i4
+ 1036 1036 DeviceId i4
+ 1040 1040 SubSysId i4
+ 1044 1044 Revision i4
+ 1048 1048 DeviceIdentifier S:8._GUID
+ 1064 1064 WHQLLevel i4
+R 8._D3DBOX 24 24 struct d3d8
+ 0 0 Left i4
+ 4 4 Top i4
+ 8 8 Right i4
+ 12 12 Bottom i4
+ 16 16 Front i4
+ 20 20 Back i4
+R 8._D3DCAPS8 212 212 struct d3d8
+ 0 0 DeviceType i4
+ 4 4 AdapterOrdinal i4
+ 8 8 Caps i4
+ 12 12 Caps2 i4
+ 16 16 Caps3 i4
+ 20 20 PresentationIntervals i4
+ 24 24 CursorCaps i4
+ 28 28 DevCaps i4
+ 32 32 PrimitiveMiscCaps i4
+ 36 36 RasterCaps i4
+ 40 40 ZCmpCaps i4
+ 44 44 SrcBlendCaps i4
+ 48 48 DestBlendCaps i4
+ 52 52 AlphaCmpCaps i4
+ 56 56 ShadeCaps i4
+ 60 60 TextureCaps i4
+ 64 64 TextureFilterCaps i4
+ 68 68 CubeTextureFilterCaps i4
+ 72 72 VolumeTextureFilterCaps i4
+ 76 76 TextureAddressCaps i4
+ 80 80 VolumeTextureAddressCaps i4
+ 84 84 LineCaps i4
+ 88 88 MaxTextureWidth i4
+ 92 92 MaxTextureHeight i4
+ 96 96 MaxVolumeExtent i4
+ 100 100 MaxTextureRepeat i4
+ 104 104 MaxTextureAspectRatio i4
+ 108 108 MaxAnisotropy i4
+ 112 112 MaxVertexW f4
+ 116 116 GuardBandLeft f4
+ 120 120 GuardBandTop f4
+ 124 124 GuardBandRight f4
+ 128 128 GuardBandBottom f4
+ 132 132 ExtentsAdjust f4
+ 136 136 StencilCaps i4
+ 140 140 FVFCaps i4
+ 144 144 TextureOpCaps i4
+ 148 148 MaxTextureBlendStages i4
+ 152 152 MaxSimultaneousTextures i4
+ 156 156 VertexProcessingCaps i4
+ 160 160 MaxActiveLights i4
+ 164 164 MaxUserClipPlanes i4
+ 168 168 MaxVertexBlendMatrices i4
+ 172 172 MaxVertexBlendMatrixIndex i4
+ 176 176 MaxPointSize f4
+ 180 180 MaxPrimitiveCount i4
+ 184 184 MaxVertexIndex i4
+ 188 188 MaxStreams i4
+ 192 192 MaxStreamStride i4
+ 196 196 VertexShaderVersion i4
+ 200 200 MaxVertexShaderConst i4
+ 204 204 PixelShaderVersion i4
+ 208 208 MaxPixelShaderValue f4
+R 8._D3DCLIPSTATUS8 8 8 struct d3d8
+ 0 0 ClipUnion i4
+ 4 4 ClipIntersection i4
+R 8._D3DCOLORVALUE 16 16 struct d3d8
+ 0 0 r f4
+ 4 4 g f4
+ 8 8 b f4
+ 12 12 a f4
+R 8._D3DDEVICE_CREATION_PARAMETERS 16 24 struct d3d8
+ 0 0 AdapterOrdinal i4
+ 4 4 DeviceType i4
+ 8 8 hFocusWindow H
+ 12 16 BehaviorFlags i4
+R 8._D3DDISPLAYMODE 16 16 struct d3d8
+ 0 0 Width i4
+ 4 4 Height i4
+ 8 8 RefreshRate i4
+ 12 12 Format i4
+R 8._D3DGAMMARAMP 1536 1536 struct d3d8
+ 0 0 red [256]i2
+ 512 512 green [256]i2
+ 1024 1024 blue [256]i2
+R 8._D3DINDEXBUFFER_DESC 20 20 struct d3d8
+ 0 0 Format i4
+ 4 4 Type i4
+ 8 8 Usage i4
+ 12 12 Pool i4
+ 16 16 Size i4
+R 8._D3DLIGHT8 104 104 struct d3d8
+ 0 0 Type i4
+ 4 4 Diffuse S:8._D3DCOLORVALUE
+ 20 20 Specular S:8._D3DCOLORVALUE
+ 36 36 Ambient S:8._D3DCOLORVALUE
+ 52 52 Position S:8._D3DVECTOR
+ 64 64 Direction S:8._D3DVECTOR
+ 76 76 Range f4
+ 80 80 Falloff f4
+ 84 84 Attenuation0 f4
+ 88 88 Attenuation1 f4
+ 92 92 Attenuation2 f4
+ 96 96 Theta f4
+ 100 100 Phi f4
+R 8._D3DLOCKED_BOX 12 16 struct d3d8
+ 0 0 RowPitch i4
+ 4 4 SlicePitch i4
+ 8 8 pBits *v
+R 8._D3DLOCKED_RECT 8 16 struct d3d8
+ 0 0 Pitch i4
+ 4 8 pBits *v
+R 8._D3DMATERIAL8 68 68 struct d3d8
+ 0 0 Diffuse S:8._D3DCOLORVALUE
+ 16 16 Ambient S:8._D3DCOLORVALUE
+ 32 32 Specular S:8._D3DCOLORVALUE
+ 48 48 Emissive S:8._D3DCOLORVALUE
+ 64 64 Power f4
+R 8._D3DMATRIX 64 64 struct d3d8
+ 0 0 - S:8._D3DMATRIX::@1109_5
+R 8._D3DMATRIX::@1109_5 64 64 union d3d8
+ 0 0 - S:8._D3DMATRIX::@1110_9
+ 0 0 m [4][4]f4
+R 8._D3DMATRIX::@1110_9 64 64 struct d3d8
+ 0 0 _11 f4
+ 4 4 _12 f4
+ 8 8 _13 f4
+ 12 12 _14 f4
+ 16 16 _21 f4
+ 20 20 _22 f4
+ 24 24 _23 f4
+ 28 28 _24 f4
+ 32 32 _31 f4
+ 36 36 _32 f4
+ 40 40 _33 f4
+ 44 44 _34 f4
+ 48 48 _41 f4
+ 52 52 _42 f4
+ 56 56 _43 f4
+ 60 60 _44 f4
+R 8._D3DPRESENT_PARAMETERS_ 52 56 struct d3d8
+ 0 0 BackBufferWidth i4
+ 4 4 BackBufferHeight i4
+ 8 8 BackBufferFormat i4
+ 12 12 BackBufferCount i4
+ 16 16 MultiSampleType i4
+ 20 20 SwapEffect i4
+ 24 24 hDeviceWindow H
+ 28 32 Windowed i4
+ 32 36 EnableAutoDepthStencil i4
+ 36 40 AutoDepthStencilFormat i4
+ 40 44 Flags i4
+ 44 48 FullScreen_RefreshRateInHz i4
+ 48 52 FullScreen_PresentationInterval i4
+R 8._D3DRASTER_STATUS 8 8 struct d3d8
+ 0 0 InVBlank i4
+ 4 4 ScanLine i4
+R 8._D3DRECT 16 16 struct d3d8
+ 0 0 x1 i4
+ 4 4 y1 i4
+ 8 8 x2 i4
+ 12 12 y2 i4
+R 8._D3DRECTPATCH_INFO 28 28 struct d3d8
+ 0 0 StartVertexOffsetWidth i4
+ 4 4 StartVertexOffsetHeight i4
+ 8 8 Width i4
+ 12 12 Height i4
+ 16 16 Stride i4
+ 20 20 Basis i4
+ 24 24 Order i4
+R 8._D3DSURFACE_DESC 32 32 struct d3d8
+ 0 0 Format i4
+ 4 4 Type i4
+ 8 8 Usage i4
+ 12 12 Pool i4
+ 16 16 Size i4
+ 20 20 MultiSampleType i4
+ 24 24 Width i4
+ 28 28 Height i4
+R 8._D3DTRIPATCH_INFO 16 16 struct d3d8
+ 0 0 StartVertexOffset i4
+ 4 4 NumVertices i4
+ 8 8 Basis i4
+ 12 12 Order i4
+R 8._D3DVECTOR 12 12 struct d3d8
+ 0 0 x f4
+ 4 4 y f4
+ 8 8 z f4
+R 8._D3DVERTEXBUFFER_DESC 24 24 struct d3d8
+ 0 0 Format i4
+ 4 4 Type i4
+ 8 8 Usage i4
+ 12 12 Pool i4
+ 16 16 Size i4
+ 20 20 FVF i4
+R 8._D3DVIEWPORT8 24 24 struct d3d8
+ 0 0 X i4
+ 4 4 Y i4
+ 8 8 Width i4
+ 12 12 Height i4
+ 16 16 MinZ f4
+ 20 20 MaxZ f4
+R 8._D3DVOLUME_DESC 32 32 struct d3d8
+ 0 0 Format i4
+ 4 4 Type i4
+ 8 8 Usage i4
+ 12 12 Pool i4
+ 16 16 Size i4
+ 20 20 Width i4
+ 24 24 Height i4
+ 28 28 Depth i4
+R 8._GUID 16 16 struct d3d8
+ 0 0 Data1 i4
+ 4 4 Data2 i2
+ 6 6 Data3 i2
+ 8 8 Data4 [8]i1
+R 8._LARGE_INTEGER 8 8 union d3d8
+ 0 0 - S:8._LARGE_INTEGER::@516_20
+ 0 0 u S:8._LARGE_INTEGER::@520_5
+ 0 0 QuadPart i8
+R 8._LARGE_INTEGER::@516_20 8 8 struct d3d8
+ 0 0 LowPart i4
+ 4 4 HighPart i4
+R 8._LARGE_INTEGER::@520_5 8 8 struct d3d8
+ 0 0 LowPart i4
+ 4 4 HighPart i4
+R 8._RGNDATA 36 36 struct d3d8
+ 0 0 rdh S:8._RGNDATAHEADER
+ 32 32 Buffer [1]i1
+R 8._RGNDATAHEADER 32 32 struct d3d8
+ 0 0 dwSize i4
+ 4 4 iType i4
+ 8 8 nCount i4
+ 12 12 nRgnSize i4
+ 16 16 rcBound S:8.tagRECT
+R 8.tagPALETTEENTRY 4 4 struct d3d8
+ 0 0 peRed i1
+ 1 1 peGreen i1
+ 2 2 peBlue i1
+ 3 3 peFlags i1
+R 8.tagPOINT 8 8 struct d3d8
+ 0 0 x i4
+ 4 4 y i4
+R 8.tagRECT 16 16 struct d3d8
+ 0 0 left i4
+ 4 4 top i4
+ 8 8 right i4
+ 12 12 bottom i4
+R D3D11_AUTHENTICATED_CONFIGURE_OUTPUT 44 48 struct d3d11
+ 0 0 omac S:D3D11_OMAC
+ 16 16 ConfigureType S:_GUID
+ 32 32 hChannel *v
+ 36 40 SequenceNumber i4
+ 40 44 ReturnCode i4
+R D3D11_BLEND_DESC 264 264 struct d3d11
+ 0 0 AlphaToCoverageEnable i4
+ 4 4 IndependentBlendEnable i4
+ 8 8 RenderTarget [8]S:D3D11_RENDER_TARGET_BLEND_DESC
+R D3D11_BLEND_DESC1 328 328 struct d3d11
+ 0 0 AlphaToCoverageEnable i4
+ 4 4 IndependentBlendEnable i4
+ 8 8 RenderTarget [8]S:D3D11_RENDER_TARGET_BLEND_DESC1
+R D3D11_BOX 24 24 struct d3d11
+ 0 0 left i4
+ 4 4 top i4
+ 8 8 front i4
+ 12 12 right i4
+ 16 16 bottom i4
+ 20 20 back i4
+R D3D11_BUFFEREX_SRV 12 12 struct d3d11
+ 0 0 FirstElement i4
+ 4 4 NumElements i4
+ 8 8 Flags i4
+R D3D11_BUFFER_DESC 24 24 struct d3d11
+ 0 0 ByteWidth i4
+ 4 4 Usage i4
+ 8 8 BindFlags i4
+ 12 12 CPUAccessFlags i4
+ 16 16 MiscFlags i4
+ 20 20 StructureByteStride i4
+R D3D11_BUFFER_RTV 8 8 struct d3d11
+ 0 0 - S:D3D11_BUFFER_RTV::@1016_20
+ 4 4 - S:D3D11_BUFFER_RTV::@1020_20
+R D3D11_BUFFER_RTV::@1016_20 4 4 union d3d11
+ 0 0 FirstElement i4
+ 0 0 ElementOffset i4
+R D3D11_BUFFER_RTV::@1020_20 4 4 union d3d11
+ 0 0 NumElements i4
+ 0 0 ElementWidth i4
+R D3D11_BUFFER_SRV 8 8 struct d3d11
+ 0 0 - S:D3D11_BUFFER_SRV::@1026_20
+ 4 4 - S:D3D11_BUFFER_SRV::@1030_20
+R D3D11_BUFFER_SRV::@1026_20 4 4 union d3d11
+ 0 0 FirstElement i4
+ 0 0 ElementOffset i4
+R D3D11_BUFFER_SRV::@1030_20 4 4 union d3d11
+ 0 0 NumElements i4
+ 0 0 ElementWidth i4
+R D3D11_BUFFER_UAV 12 12 struct d3d11
+ 0 0 FirstElement i4
+ 4 4 NumElements i4
+ 8 8 Flags i4
+R D3D11_CLASS_INSTANCE_DESC 32 32 struct d3d11
+ 0 0 InstanceId i4
+ 4 4 InstanceIndex i4
+ 8 8 TypeId i4
+ 12 12 ConstantBuffer i4
+ 16 16 BaseConstantBufferOffset i4
+ 20 20 BaseTexture i4
+ 24 24 BaseSampler i4
+ 28 28 Created i4
+R D3D11_COUNTER_DESC 8 8 struct d3d11
+ 0 0 Counter i4
+ 4 4 MiscFlags i4
+R D3D11_COUNTER_INFO 12 12 struct d3d11
+ 0 0 LastDeviceDependentCounter i4
+ 4 4 NumSimultaneousCounters i4
+ 8 8 NumDetectableParallelUnits i1
+R D3D11_DEPTH_STENCILOP_DESC 16 16 struct d3d11
+ 0 0 StencilFailOp i4
+ 4 4 StencilDepthFailOp i4
+ 8 8 StencilPassOp i4
+ 12 12 StencilFunc i4
+R D3D11_DEPTH_STENCIL_DESC 52 52 struct d3d11
+ 0 0 DepthEnable i4
+ 4 4 DepthWriteMask i4
+ 8 8 DepthFunc i4
+ 12 12 StencilEnable i4
+ 16 16 StencilReadMask i1
+ 17 17 StencilWriteMask i1
+ 20 20 FrontFace S:D3D11_DEPTH_STENCILOP_DESC
+ 36 36 BackFace S:D3D11_DEPTH_STENCILOP_DESC
+R D3D11_DEPTH_STENCIL_VIEW_DESC 24 24 struct d3d11
+ 0 0 Format i4
+ 4 4 ViewDimension i4
+ 8 8 Flags i4
+ 12 12 - S:D3D11_DEPTH_STENCIL_VIEW_DESC::@1824_20
+R D3D11_DEPTH_STENCIL_VIEW_DESC::@1824_20 12 12 union d3d11
+ 0 0 Texture1D S:D3D11_TEX1D_DSV
+ 0 0 Texture1DArray S:D3D11_TEX1D_ARRAY_DSV
+ 0 0 Texture2D S:D3D11_TEX2D_DSV
+ 0 0 Texture2DArray S:D3D11_TEX2D_ARRAY_DSV
+ 0 0 Texture2DMS S:D3D11_TEX2DMS_DSV
+ 0 0 Texture2DMSArray S:D3D11_TEX2DMS_ARRAY_DSV
+R D3D11_ENCRYPTED_BLOCK_INFO 12 12 struct d3d11
+ 0 0 NumEncryptedBytesAtBeginning i4
+ 4 4 NumBytesInSkipPattern i4
+ 8 8 NumBytesInEncryptPattern i4
+R D3D11_INFO_QUEUE_FILTER 48 96 struct d3d11
+ 0 0 AllowList S:D3D11_INFO_QUEUE_FILTER_DESC
+ 24 48 DenyList S:D3D11_INFO_QUEUE_FILTER_DESC
+R D3D11_INFO_QUEUE_FILTER_DESC 24 48 struct d3d11
+ 0 0 NumCategories i4
+ 4 8 pCategoryList *i4
+ 8 16 NumSeverities i4
+ 12 24 pSeverityList *i4
+ 16 32 NumIDs i4
+ 20 40 pIDList *i4
+R D3D11_INPUT_ELEMENT_DESC 28 32 struct d3d11
+ 0 0 SemanticName *i1
+ 4 8 SemanticIndex i4
+ 8 12 Format i4
+ 12 16 InputSlot i4
+ 16 20 AlignedByteOffset i4
+ 20 24 InputSlotClass i4
+ 24 28 InstanceDataStepRate i4
+R D3D11_MAPPED_SUBRESOURCE 12 16 struct d3d11
+ 0 0 pData *v
+ 4 8 RowPitch i4
+ 8 12 DepthPitch i4
+R D3D11_MESSAGE 20 32 struct d3d11
+ 0 0 Category i4
+ 4 4 Severity i4
+ 8 8 ID i4
+ 12 16 pDescription *i1
+ 16 24 DescriptionByteLength i4
+R D3D11_OMAC 16 16 struct d3d11
+ 0 0 Omac [16]i1
+R D3D11_PACKED_MIP_DESC 12 12 struct d3d11
+ 0 0 NumStandardMips i1
+ 1 1 NumPackedMips i1
+ 4 4 NumTilesForPackedMips i4
+ 8 8 StartTileIndexInOverallResource i4
+R D3D11_QUERY_DESC 8 8 struct d3d11
+ 0 0 Query i4
+ 4 4 MiscFlags i4
+R D3D11_QUERY_DESC1 12 12 struct d3d11
+ 0 0 Query i4
+ 4 4 MiscFlags i4
+ 8 8 ContextType i4
+R D3D11_RASTERIZER_DESC 40 40 struct d3d11
+ 0 0 FillMode i4
+ 4 4 CullMode i4
+ 8 8 FrontCounterClockwise i4
+ 12 12 DepthBias i4
+ 16 16 DepthBiasClamp f4
+ 20 20 SlopeScaledDepthBias f4
+ 24 24 DepthClipEnable i4
+ 28 28 ScissorEnable i4
+ 32 32 MultisampleEnable i4
+ 36 36 AntialiasedLineEnable i4
+R D3D11_RASTERIZER_DESC1 44 44 struct d3d11
+ 0 0 FillMode i4
+ 4 4 CullMode i4
+ 8 8 FrontCounterClockwise i4
+ 12 12 DepthBias i4
+ 16 16 DepthBiasClamp f4
+ 20 20 SlopeScaledDepthBias f4
+ 24 24 DepthClipEnable i4
+ 28 28 ScissorEnable i4
+ 32 32 MultisampleEnable i4
+ 36 36 AntialiasedLineEnable i4
+ 40 40 ForcedSampleCount i4
+R D3D11_RASTERIZER_DESC2 48 48 struct d3d11
+ 0 0 FillMode i4
+ 4 4 CullMode i4
+ 8 8 FrontCounterClockwise i4
+ 12 12 DepthBias i4
+ 16 16 DepthBiasClamp f4
+ 20 20 SlopeScaledDepthBias f4
+ 24 24 DepthClipEnable i4
+ 28 28 ScissorEnable i4
+ 32 32 MultisampleEnable i4
+ 36 36 AntialiasedLineEnable i4
+ 40 40 ForcedSampleCount i4
+ 44 44 ConservativeRaster i4
+R D3D11_RENDER_TARGET_BLEND_DESC 32 32 struct d3d11
+ 0 0 BlendEnable i4
+ 4 4 SrcBlend i4
+ 8 8 DestBlend i4
+ 12 12 BlendOp i4
+ 16 16 SrcBlendAlpha i4
+ 20 20 DestBlendAlpha i4
+ 24 24 BlendOpAlpha i4
+ 28 28 RenderTargetWriteMask i1
+R D3D11_RENDER_TARGET_BLEND_DESC1 40 40 struct d3d11
+ 0 0 BlendEnable i4
+ 4 4 LogicOpEnable i4
+ 8 8 SrcBlend i4
+ 12 12 DestBlend i4
+ 16 16 BlendOp i4
+ 20 20 SrcBlendAlpha i4
+ 24 24 DestBlendAlpha i4
+ 28 28 BlendOpAlpha i4
+ 32 32 LogicOp i4
+ 36 36 RenderTargetWriteMask i1
+R D3D11_RENDER_TARGET_VIEW_DESC 20 20 struct d3d11
+ 0 0 Format i4
+ 4 4 ViewDimension i4
+ 8 8 - S:D3D11_RENDER_TARGET_VIEW_DESC::@1902_20
+R D3D11_RENDER_TARGET_VIEW_DESC1 24 24 struct d3d11
+ 0 0 Format i4
+ 4 4 ViewDimension i4
+ 8 8 - S:D3D11_RENDER_TARGET_VIEW_DESC1::@232_20
+R D3D11_RENDER_TARGET_VIEW_DESC1::@232_20 16 16 union d3d11
+ 0 0 Buffer S:D3D11_BUFFER_RTV
+ 0 0 Texture1D S:D3D11_TEX1D_RTV
+ 0 0 Texture1DArray S:D3D11_TEX1D_ARRAY_RTV
+ 0 0 Texture2D S:D3D11_TEX2D_RTV1
+ 0 0 Texture2DArray S:D3D11_TEX2D_ARRAY_RTV1
+ 0 0 Texture2DMS S:D3D11_TEX2DMS_RTV
+ 0 0 Texture2DMSArray S:D3D11_TEX2DMS_ARRAY_RTV
+ 0 0 Texture3D S:D3D11_TEX3D_RTV
+R D3D11_RENDER_TARGET_VIEW_DESC::@1902_20 12 12 union d3d11
+ 0 0 Buffer S:D3D11_BUFFER_RTV
+ 0 0 Texture1D S:D3D11_TEX1D_RTV
+ 0 0 Texture1DArray S:D3D11_TEX1D_ARRAY_RTV
+ 0 0 Texture2D S:D3D11_TEX2D_RTV
+ 0 0 Texture2DArray S:D3D11_TEX2D_ARRAY_RTV
+ 0 0 Texture2DMS S:D3D11_TEX2DMS_RTV
+ 0 0 Texture2DMSArray S:D3D11_TEX2DMS_ARRAY_RTV
+ 0 0 Texture3D S:D3D11_TEX3D_RTV
+R D3D11_SAMPLER_DESC 52 52 struct d3d11
+ 0 0 Filter i4
+ 4 4 AddressU i4
+ 8 8 AddressV i4
+ 12 12 AddressW i4
+ 16 16 MipLODBias f4
+ 20 20 MaxAnisotropy i4
+ 24 24 ComparisonFunc i4
+ 28 28 BorderColor [4]f4
+ 44 44 MinLOD f4
+ 48 48 MaxLOD f4
+R D3D11_SHADER_RESOURCE_VIEW_DESC 24 24 struct d3d11
+ 0 0 Format i4
+ 4 4 ViewDimension i4
+ 8 8 - S:D3D11_SHADER_RESOURCE_VIEW_DESC::@2034_20
+R D3D11_SHADER_RESOURCE_VIEW_DESC1 28 28 struct d3d11
+ 0 0 Format i4
+ 4 4 ViewDimension i4
+ 8 8 - S:D3D11_SHADER_RESOURCE_VIEW_DESC1::@205_20
+R D3D11_SHADER_RESOURCE_VIEW_DESC1::@205_20 20 20 union d3d11
+ 0 0 Buffer S:D3D11_BUFFER_SRV
+ 0 0 Texture1D S:D3D11_TEX1D_SRV
+ 0 0 Texture1DArray S:D3D11_TEX1D_ARRAY_SRV
+ 0 0 Texture2D S:D3D11_TEX2D_SRV1
+ 0 0 Texture2DArray S:D3D11_TEX2D_ARRAY_SRV1
+ 0 0 Texture2DMS S:D3D11_TEX2DMS_SRV
+ 0 0 Texture2DMSArray S:D3D11_TEX2DMS_ARRAY_SRV
+ 0 0 Texture3D S:D3D11_TEX3D_SRV
+ 0 0 TextureCube S:D3D11_TEXCUBE_SRV
+ 0 0 TextureCubeArray S:D3D11_TEXCUBE_ARRAY_SRV
+ 0 0 BufferEx S:D3D11_BUFFEREX_SRV
+R D3D11_SHADER_RESOURCE_VIEW_DESC::@2034_20 16 16 union d3d11
+ 0 0 Buffer S:D3D11_BUFFER_SRV
+ 0 0 Texture1D S:D3D11_TEX1D_SRV
+ 0 0 Texture1DArray S:D3D11_TEX1D_ARRAY_SRV
+ 0 0 Texture2D S:D3D11_TEX2D_SRV
+ 0 0 Texture2DArray S:D3D11_TEX2D_ARRAY_SRV
+ 0 0 Texture2DMS S:D3D11_TEX2DMS_SRV
+ 0 0 Texture2DMSArray S:D3D11_TEX2DMS_ARRAY_SRV
+ 0 0 Texture3D S:D3D11_TEX3D_SRV
+ 0 0 TextureCube S:D3D11_TEXCUBE_SRV
+ 0 0 TextureCubeArray S:D3D11_TEXCUBE_ARRAY_SRV
+ 0 0 BufferEx S:D3D11_BUFFEREX_SRV
+R D3D11_SO_DECLARATION_ENTRY 16 24 struct d3d11
+ 0 0 Stream i4
+ 4 8 SemanticName *i1
+ 8 16 SemanticIndex i4
+ 12 20 StartComponent i1
+ 13 21 ComponentCount i1
+ 14 22 OutputSlot i1
+R D3D11_SUBRESOURCE_DATA 12 16 struct d3d11
+ 0 0 pSysMem *v
+ 4 8 SysMemPitch i4
+ 8 12 SysMemSlicePitch i4
+R D3D11_SUBRESOURCE_TILING 12 12 struct d3d11
+ 0 0 WidthInTiles i4
+ 4 4 HeightInTiles i2
+ 6 6 DepthInTiles i2
+ 8 8 StartTileIndexInOverallResource i4
+R D3D11_TEX1D_ARRAY_DSV 12 12 struct d3d11
+ 0 0 MipSlice i4
+ 4 4 FirstArraySlice i4
+ 8 8 ArraySize i4
+R D3D11_TEX1D_ARRAY_RTV 12 12 struct d3d11
+ 0 0 MipSlice i4
+ 4 4 FirstArraySlice i4
+ 8 8 ArraySize i4
+R D3D11_TEX1D_ARRAY_SRV 16 16 struct d3d11
+ 0 0 MostDetailedMip i4
+ 4 4 MipLevels i4
+ 8 8 FirstArraySlice i4
+ 12 12 ArraySize i4
+R D3D11_TEX1D_ARRAY_UAV 12 12 struct d3d11
+ 0 0 MipSlice i4
+ 4 4 FirstArraySlice i4
+ 8 8 ArraySize i4
+R D3D11_TEX1D_DSV 4 4 struct d3d11
+ 0 0 MipSlice i4
+R D3D11_TEX1D_RTV 4 4 struct d3d11
+ 0 0 MipSlice i4
+R D3D11_TEX1D_SRV 8 8 struct d3d11
+ 0 0 MostDetailedMip i4
+ 4 4 MipLevels i4
+R D3D11_TEX1D_UAV 4 4 struct d3d11
+ 0 0 MipSlice i4
+R D3D11_TEX2DMS_ARRAY_DSV 8 8 struct d3d11
+ 0 0 FirstArraySlice i4
+ 4 4 ArraySize i4
+R D3D11_TEX2DMS_ARRAY_RTV 8 8 struct d3d11
+ 0 0 FirstArraySlice i4
+ 4 4 ArraySize i4
+R D3D11_TEX2DMS_ARRAY_SRV 8 8 struct d3d11
+ 0 0 FirstArraySlice i4
+ 4 4 ArraySize i4
+R D3D11_TEX2DMS_DSV 4 4 struct d3d11
+ 0 0 UnusedField_NothingToDefine i4
+R D3D11_TEX2DMS_RTV 4 4 struct d3d11
+ 0 0 UnusedField_NothingToDefine i4
+R D3D11_TEX2DMS_SRV 4 4 struct d3d11
+ 0 0 UnusedField_NothingToDefine i4
+R D3D11_TEX2D_ARRAY_DSV 12 12 struct d3d11
+ 0 0 MipSlice i4
+ 4 4 FirstArraySlice i4
+ 8 8 ArraySize i4
+R D3D11_TEX2D_ARRAY_RTV 12 12 struct d3d11
+ 0 0 MipSlice i4
+ 4 4 FirstArraySlice i4
+ 8 8 ArraySize i4
+R D3D11_TEX2D_ARRAY_RTV1 16 16 struct d3d11
+ 0 0 MipSlice i4
+ 4 4 FirstArraySlice i4
+ 8 8 ArraySize i4
+ 12 12 PlaneSlice i4
+R D3D11_TEX2D_ARRAY_SRV 16 16 struct d3d11
+ 0 0 MostDetailedMip i4
+ 4 4 MipLevels i4
+ 8 8 FirstArraySlice i4
+ 12 12 ArraySize i4
+R D3D11_TEX2D_ARRAY_SRV1 20 20 struct d3d11
+ 0 0 MostDetailedMip i4
+ 4 4 MipLevels i4
+ 8 8 FirstArraySlice i4
+ 12 12 ArraySize i4
+ 16 16 PlaneSlice i4
+R D3D11_TEX2D_ARRAY_UAV 12 12 struct d3d11
+ 0 0 MipSlice i4
+ 4 4 FirstArraySlice i4
+ 8 8 ArraySize i4
+R D3D11_TEX2D_ARRAY_UAV1 16 16 struct d3d11
+ 0 0 MipSlice i4
+ 4 4 FirstArraySlice i4
+ 8 8 ArraySize i4
+ 12 12 PlaneSlice i4
+R D3D11_TEX2D_ARRAY_VPOV 12 12 struct d3d11
+ 0 0 MipSlice i4
+ 4 4 FirstArraySlice i4
+ 8 8 ArraySize i4
+R D3D11_TEX2D_DSV 4 4 struct d3d11
+ 0 0 MipSlice i4
+R D3D11_TEX2D_RTV 4 4 struct d3d11
+ 0 0 MipSlice i4
+R D3D11_TEX2D_RTV1 8 8 struct d3d11
+ 0 0 MipSlice i4
+ 4 4 PlaneSlice i4
+R D3D11_TEX2D_SRV 8 8 struct d3d11
+ 0 0 MostDetailedMip i4
+ 4 4 MipLevels i4
+R D3D11_TEX2D_SRV1 12 12 struct d3d11
+ 0 0 MostDetailedMip i4
+ 4 4 MipLevels i4
+ 8 8 PlaneSlice i4
+R D3D11_TEX2D_UAV 4 4 struct d3d11
+ 0 0 MipSlice i4
+R D3D11_TEX2D_UAV1 8 8 struct d3d11
+ 0 0 MipSlice i4
+ 4 4 PlaneSlice i4
+R D3D11_TEX2D_VDOV 4 4 struct d3d11
+ 0 0 ArraySlice i4
+R D3D11_TEX2D_VPIV 8 8 struct d3d11
+ 0 0 MipSlice i4
+ 4 4 ArraySlice i4
+R D3D11_TEX2D_VPOV 4 4 struct d3d11
+ 0 0 MipSlice i4
+R D3D11_TEX3D_RTV 12 12 struct d3d11
+ 0 0 MipSlice i4
+ 4 4 FirstWSlice i4
+ 8 8 WSize i4
+R D3D11_TEX3D_SRV 8 8 struct d3d11
+ 0 0 MostDetailedMip i4
+ 4 4 MipLevels i4
+R D3D11_TEX3D_UAV 12 12 struct d3d11
+ 0 0 MipSlice i4
+ 4 4 FirstWSlice i4
+ 8 8 WSize i4
+R D3D11_TEXCUBE_ARRAY_SRV 16 16 struct d3d11
+ 0 0 MostDetailedMip i4
+ 4 4 MipLevels i4
+ 8 8 First2DArrayFace i4
+ 12 12 NumCubes i4
+R D3D11_TEXCUBE_SRV 8 8 struct d3d11
+ 0 0 MostDetailedMip i4
+ 4 4 MipLevels i4
+R D3D11_TEXTURE1D_DESC 32 32 struct d3d11
+ 0 0 Width i4
+ 4 4 MipLevels i4
+ 8 8 ArraySize i4
+ 12 12 Format i4
+ 16 16 Usage i4
+ 20 20 BindFlags i4
+ 24 24 CPUAccessFlags i4
+ 28 28 MiscFlags i4
+R D3D11_TEXTURE2D_DESC 44 44 struct d3d11
+ 0 0 Width i4
+ 4 4 Height i4
+ 8 8 MipLevels i4
+ 12 12 ArraySize i4
+ 16 16 Format i4
+ 20 20 SampleDesc S:DXGI_SAMPLE_DESC
+ 28 28 Usage i4
+ 32 32 BindFlags i4
+ 36 36 CPUAccessFlags i4
+ 40 40 MiscFlags i4
+R D3D11_TEXTURE2D_DESC1 48 48 struct d3d11
+ 0 0 Width i4
+ 4 4 Height i4
+ 8 8 MipLevels i4
+ 12 12 ArraySize i4
+ 16 16 Format i4
+ 20 20 SampleDesc S:DXGI_SAMPLE_DESC
+ 28 28 Usage i4
+ 32 32 BindFlags i4
+ 36 36 CPUAccessFlags i4
+ 40 40 MiscFlags i4
+ 44 44 TextureLayout i4
+R D3D11_TEXTURE3D_DESC 36 36 struct d3d11
+ 0 0 Width i4
+ 4 4 Height i4
+ 8 8 Depth i4
+ 12 12 MipLevels i4
+ 16 16 Format i4
+ 20 20 Usage i4
+ 24 24 BindFlags i4
+ 28 28 CPUAccessFlags i4
+ 32 32 MiscFlags i4
+R D3D11_TEXTURE3D_DESC1 40 40 struct d3d11
+ 0 0 Width i4
+ 4 4 Height i4
+ 8 8 Depth i4
+ 12 12 MipLevels i4
+ 16 16 Format i4
+ 20 20 Usage i4
+ 24 24 BindFlags i4
+ 28 28 CPUAccessFlags i4
+ 32 32 MiscFlags i4
+ 36 36 TextureLayout i4
+R D3D11_TILED_RESOURCE_COORDINATE 16 16 struct d3d11
+ 0 0 X i4
+ 4 4 Y i4
+ 8 8 Z i4
+ 12 12 Subresource i4
+R D3D11_TILE_REGION_SIZE 16 16 struct d3d11
+ 0 0 NumTiles i4
+ 4 4 bUseBox i4
+ 8 8 Width i4
+ 12 12 Height i2
+ 14 14 Depth i2
+R D3D11_TILE_SHAPE 12 12 struct d3d11
+ 0 0 WidthInTexels i4
+ 4 4 HeightInTexels i4
+ 8 8 DepthInTexels i4
+R D3D11_UNORDERED_ACCESS_VIEW_DESC 20 20 struct d3d11
+ 0 0 Format i4
+ 4 4 ViewDimension i4
+ 8 8 - S:D3D11_UNORDERED_ACCESS_VIEW_DESC::@1661_20
+R D3D11_UNORDERED_ACCESS_VIEW_DESC1 24 24 struct d3d11
+ 0 0 Format i4
+ 4 4 ViewDimension i4
+ 8 8 - S:D3D11_UNORDERED_ACCESS_VIEW_DESC1::@256_20
+R D3D11_UNORDERED_ACCESS_VIEW_DESC1::@256_20 16 16 union d3d11
+ 0 0 Buffer S:D3D11_BUFFER_UAV
+ 0 0 Texture1D S:D3D11_TEX1D_UAV
+ 0 0 Texture1DArray S:D3D11_TEX1D_ARRAY_UAV
+ 0 0 Texture2D S:D3D11_TEX2D_UAV1
+ 0 0 Texture2DArray S:D3D11_TEX2D_ARRAY_UAV1
+ 0 0 Texture3D S:D3D11_TEX3D_UAV
+R D3D11_UNORDERED_ACCESS_VIEW_DESC::@1661_20 12 12 union d3d11
+ 0 0 Buffer S:D3D11_BUFFER_UAV
+ 0 0 Texture1D S:D3D11_TEX1D_UAV
+ 0 0 Texture1DArray S:D3D11_TEX1D_ARRAY_UAV
+ 0 0 Texture2D S:D3D11_TEX2D_UAV
+ 0 0 Texture2DArray S:D3D11_TEX2D_ARRAY_UAV
+ 0 0 Texture3D S:D3D11_TEX3D_UAV
+R D3D11_VIDEO_COLOR 16 16 struct d3d11
+ 0 0 - S:D3D11_VIDEO_COLOR::@2404_20
+R D3D11_VIDEO_COLOR::@2404_20 16 16 union d3d11
+ 0 0 YCbCr S:D3D11_VIDEO_COLOR_YCbCrA
+ 0 0 RGBA S:D3D11_VIDEO_COLOR_RGBA
+R D3D11_VIDEO_COLOR_RGBA 16 16 struct d3d11
+ 0 0 R f4
+ 4 4 G f4
+ 8 8 B f4
+ 12 12 A f4
+R D3D11_VIDEO_COLOR_YCbCrA 16 16 struct d3d11
+ 0 0 Y f4
+ 4 4 Cb f4
+ 8 8 Cr f4
+ 12 12 A f4
+R D3D11_VIDEO_CONTENT_PROTECTION_CAPS 24 24 struct d3d11
+ 0 0 Caps i4
+ 4 4 KeyExchangeTypeCount i4
+ 8 8 BlockAlignmentSize i4
+ 16 16 ProtectedMemorySize i8
+R D3D11_VIDEO_DECODER_BUFFER_DESC 64 72 struct d3d11
+ 0 0 BufferType i4
+ 4 4 BufferIndex i4
+ 8 8 DataOffset i4
+ 12 12 DataSize i4
+ 16 16 FirstMBaddress i4
+ 20 20 NumMBsInBuffer i4
+ 24 24 Width i4
+ 28 28 Height i4
+ 32 32 Stride i4
+ 36 36 ReservedBits i4
+ 40 40 pIV *v
+ 44 48 IVSize i4
+ 48 52 PartialEncryption i4
+ 52 56 EncryptedBlockInfo S:D3D11_ENCRYPTED_BLOCK_INFO
+R D3D11_VIDEO_DECODER_BUFFER_DESC1 28 48 struct d3d11
+ 0 0 BufferType i4
+ 4 4 DataOffset i4
+ 8 8 DataSize i4
+ 12 16 pIV *v
+ 16 24 IVSize i4
+ 20 32 pSubSampleMappingBlock *S:D3D11_VIDEO_DECODER_SUB_SAMPLE_MAPPING_BLOCK
+ 24 40 SubSampleMappingCount i4
+R D3D11_VIDEO_DECODER_CONFIG 100 100 struct d3d11
+ 0 0 guidConfigBitstreamEncryption S:_GUID
+ 16 16 guidConfigMBcontrolEncryption S:_GUID
+ 32 32 guidConfigResidDiffEncryption S:_GUID
+ 48 48 ConfigBitstreamRaw i4
+ 52 52 ConfigMBcontrolRasterOrder i4
+ 56 56 ConfigResidDiffHost i4
+ 60 60 ConfigSpatialResid8 i4
+ 64 64 ConfigResid8Subtraction i4
+ 68 68 ConfigSpatialHost8or9Clipping i4
+ 72 72 ConfigSpatialResidInterleaved i4
+ 76 76 ConfigIntraResidUnsigned i4
+ 80 80 ConfigResidDiffAccelerator i4
+ 84 84 ConfigHostInverseScan i4
+ 88 88 ConfigSpecificIDCT i4
+ 92 92 Config4GroupedCoefs i4
+ 96 96 ConfigMinRenderTargetBuffCount i2
+ 98 98 ConfigDecoderSpecific i2
+R D3D11_VIDEO_DECODER_DESC 28 28 struct d3d11
+ 0 0 Guid S:_GUID
+ 16 16 SampleWidth i4
+ 20 20 SampleHeight i4
+ 24 24 OutputFormat i4
+R D3D11_VIDEO_DECODER_EXTENSION 28 48 struct d3d11
+ 0 0 Function i4
+ 4 8 pPrivateInputData *v
+ 8 16 PrivateInputDataSize i4
+ 12 24 pPrivateOutputData *v
+ 16 32 PrivateOutputDataSize i4
+ 20 36 ResourceCount i4
+ 24 40 ppResourceList **O:ID3D11Resource
+R D3D11_VIDEO_DECODER_OUTPUT_VIEW_DESC 24 24 struct d3d11
+ 0 0 DecodeProfile S:_GUID
+ 16 16 ViewDimension i4
+ 20 20 - S:D3D11_VIDEO_DECODER_OUTPUT_VIEW_DESC::@2316_20
+R D3D11_VIDEO_DECODER_OUTPUT_VIEW_DESC::@2316_20 4 4 union d3d11
+ 0 0 Texture2D S:D3D11_TEX2D_VDOV
+R D3D11_VIDEO_DECODER_SUB_SAMPLE_MAPPING_BLOCK 8 8 struct d3d11
+ 0 0 ClearSize i4
+ 4 4 EncryptedSize i4
+R D3D11_VIDEO_PROCESSOR_CAPS 36 36 struct d3d11
+ 0 0 DeviceCaps i4
+ 4 4 FeatureCaps i4
+ 8 8 FilterCaps i4
+ 12 12 InputFormatCaps i4
+ 16 16 AutoStreamCaps i4
+ 20 20 StereoCaps i4
+ 24 24 RateConversionCapsCount i4
+ 28 28 MaxInputStreams i4
+ 32 32 MaxStreamStates i4
+R D3D11_VIDEO_PROCESSOR_COLOR_SPACE 4 4 struct d3d11
+ 0 0 Usage b1
+ 0 0 RGB_Range b1
+ 0 0 YCbCr_Matrix b1
+ 0 0 YCbCr_xvYCC b1
+ 0 0 Nominal_Range b2
+ 0 0 Reserved b26
+R D3D11_VIDEO_PROCESSOR_CONTENT_DESC 40 40 struct d3d11
+ 0 0 InputFrameFormat i4
+ 4 4 InputFrameRate S:DXGI_RATIONAL
+ 12 12 InputWidth i4
+ 16 16 InputHeight i4
+ 20 20 OutputFrameRate S:DXGI_RATIONAL
+ 28 28 OutputWidth i4
+ 32 32 OutputHeight i4
+ 36 36 Usage i4
+R D3D11_VIDEO_PROCESSOR_CUSTOM_RATE 20 20 struct d3d11
+ 0 0 CustomRate S:DXGI_RATIONAL
+ 8 8 OutputFrames i4
+ 12 12 InputInterlaced i4
+ 16 16 InputFramesOrFields i4
+R D3D11_VIDEO_PROCESSOR_FILTER_RANGE 16 16 struct d3d11
+ 0 0 Minimum i4
+ 4 4 Maximum i4
+ 8 8 Default i4
+ 12 12 Multiplier f4
+R D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC 16 16 struct d3d11
+ 0 0 FourCC i4
+ 4 4 ViewDimension i4
+ 8 8 - S:D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC::@2331_20
+R D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC::@2331_20 8 8 union d3d11
+ 0 0 Texture2D S:D3D11_TEX2D_VPIV
+R D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC 16 16 struct d3d11
+ 0 0 ViewDimension i4
+ 4 4 - S:D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC::@2350_20
+R D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC::@2350_20 12 12 union d3d11
+ 0 0 Texture2D S:D3D11_TEX2D_VPOV
+ 0 0 Texture2DArray S:D3D11_TEX2D_ARRAY_VPOV
+R D3D11_VIDEO_PROCESSOR_RATE_CONVERSION_CAPS 20 20 struct d3d11
+ 0 0 PastFrames i4
+ 4 4 FutureFrames i4
+ 8 8 ProcessorCaps i4
+ 12 12 ITelecineCaps i4
+ 16 16 CustomRateCount i4
+R D3D11_VIDEO_PROCESSOR_STREAM 44 72 struct d3d11
+ 0 0 Enable i4
+ 4 4 OutputIndex i4
+ 8 8 InputFrameOrField i4
+ 12 12 PastFrames i4
+ 16 16 FutureFrames i4
+ 20 24 ppPastSurfaces **O:ID3D11VideoProcessorInputView
+ 24 32 pInputSurface *O:ID3D11VideoProcessorInputView
+ 28 40 ppFutureSurfaces **O:ID3D11VideoProcessorInputView
+ 32 48 ppPastSurfacesRight **O:ID3D11VideoProcessorInputView
+ 36 56 pInputSurfaceRight *O:ID3D11VideoProcessorInputView
+ 40 64 ppFutureSurfacesRight **O:ID3D11VideoProcessorInputView
+R D3D11_VIDEO_PROCESSOR_STREAM_BEHAVIOR_HINT 16 16 struct d3d11
+ 0 0 Enable i4
+ 4 4 Width i4
+ 8 8 Height i4
+ 12 12 Format i4
+R D3D11_VIDEO_SAMPLE_DESC 16 16 struct d3d11
+ 0 0 Width i4
+ 4 4 Height i4
+ 8 8 Format i4
+ 12 12 ColorSpace i4
+R D3D11_VIEWPORT 24 24 struct d3d11
+ 0 0 TopLeftX f4
+ 4 4 TopLeftY f4
+ 8 8 Width f4
+ 12 12 Height f4
+ 16 16 MinDepth f4
+ 20 20 MaxDepth f4
+R D3DDISPLAYMODEEX 24 24 struct d3d9
+ 0 0 Size i4
+ 4 4 Width i4
+ 8 8 Height i4
+ 12 12 RefreshRate i4
+ 16 16 Format i4
+ 20 20 ScanLineOrdering i4
+R D3DDISPLAYMODEFILTER 12 12 struct d3d9
+ 0 0 Size i4
+ 4 4 Format i4
+ 8 8 ScanLineOrdering i4
+R DXGI_ADAPTER_DESC 292 304 struct d3d11
+ 0 0 Description [128]i2
+ 256 256 VendorId i4
+ 260 260 DeviceId i4
+ 264 264 SubSysId i4
+ 268 268 Revision i4
+ 272 272 DedicatedVideoMemory i4
+ 276 280 DedicatedSystemMemory i4
+ 280 288 SharedSystemMemory i4
+ 284 296 AdapterLuid S:_LUID
+R DXGI_ADAPTER_DESC1 296 312 struct d3d11
+ 0 0 Description [128]i2
+ 256 256 VendorId i4
+ 260 260 DeviceId i4
+ 264 264 SubSysId i4
+ 268 268 Revision i4
+ 272 272 DedicatedVideoMemory i4
+ 276 280 DedicatedSystemMemory i4
+ 280 288 SharedSystemMemory i4
+ 284 296 AdapterLuid S:_LUID
+ 292 304 Flags i4
+R DXGI_ADAPTER_DESC2 304 320 struct d3d11
+ 0 0 Description [128]i2
+ 256 256 VendorId i4
+ 260 260 DeviceId i4
+ 264 264 SubSysId i4
+ 268 268 Revision i4
+ 272 272 DedicatedVideoMemory i4
+ 276 280 DedicatedSystemMemory i4
+ 280 288 SharedSystemMemory i4
+ 284 296 AdapterLuid S:_LUID
+ 292 304 Flags i4
+ 296 308 GraphicsPreemptionGranularity i4
+ 300 312 ComputePreemptionGranularity i4
+R DXGI_ADAPTER_DESC3 304 320 struct d3d11
+ 0 0 Description [128]i2
+ 256 256 VendorId i4
+ 260 260 DeviceId i4
+ 264 264 SubSysId i4
+ 268 268 Revision i4
+ 272 272 DedicatedVideoMemory i4
+ 276 280 DedicatedSystemMemory i4
+ 280 288 SharedSystemMemory i4
+ 284 296 AdapterLuid S:_LUID
+ 292 304 Flags i4
+ 296 308 GraphicsPreemptionGranularity i4
+ 300 312 ComputePreemptionGranularity i4
+R DXGI_DECODE_SWAP_CHAIN_DESC 4 4 struct d3d11
+ 0 0 Flags i4
+R DXGI_FRAME_STATISTICS 32 32 struct d3d11
+ 0 0 PresentCount i4
+ 4 4 PresentRefreshCount i4
+ 8 8 SyncRefreshCount i4
+ 16 16 SyncQPCTime S:_LARGE_INTEGER
+ 24 24 SyncGPUTime S:_LARGE_INTEGER
+R DXGI_FRAME_STATISTICS_MEDIA 40 40 struct d3d11
+ 0 0 PresentCount i4
+ 4 4 PresentRefreshCount i4
+ 8 8 SyncRefreshCount i4
+ 16 16 SyncQPCTime S:_LARGE_INTEGER
+ 24 24 SyncGPUTime S:_LARGE_INTEGER
+ 32 32 CompositionMode i4
+ 36 36 ApprovedPresentDuration i4
+R DXGI_GAMMA_CONTROL 12324 12324 struct d3d11
+ 0 0 Scale S:DXGI_RGB
+ 12 12 Offset S:DXGI_RGB
+ 24 24 GammaCurve [1025]S:DXGI_RGB
+R DXGI_GAMMA_CONTROL_CAPABILITIES 4116 4116 struct d3d11
+ 0 0 ScaleAndOffsetSupported i4
+ 4 4 MaxConvertedValue f4
+ 8 8 MinConvertedValue f4
+ 12 12 NumGammaControlPoints i4
+ 16 16 ControlPointPositions [1025]f4
+R DXGI_MAPPED_RECT 8 16 struct d3d11
+ 0 0 Pitch i4
+ 4 8 pBits *i1
+R DXGI_MATRIX_3X2_F 24 24 struct d3d11
+ 0 0 _11 f4
+ 4 4 _12 f4
+ 8 8 _21 f4
+ 12 12 _22 f4
+ 16 16 _31 f4
+ 20 20 _32 f4
+R DXGI_MODE_DESC 28 28 struct d3d11
+ 0 0 Width i4
+ 4 4 Height i4
+ 8 8 RefreshRate S:DXGI_RATIONAL
+ 16 16 Format i4
+ 20 20 ScanlineOrdering i4
+ 24 24 Scaling i4
+R DXGI_MODE_DESC1 32 32 struct d3d11
+ 0 0 Width i4
+ 4 4 Height i4
+ 8 8 RefreshRate S:DXGI_RATIONAL
+ 16 16 Format i4
+ 20 20 ScanlineOrdering i4
+ 24 24 Scaling i4
+ 28 28 Stereo i4
+R DXGI_OUTDUPL_DESC 36 36 struct d3d11
+ 0 0 ModeDesc S:DXGI_MODE_DESC
+ 28 28 Rotation i4
+ 32 32 DesktopImageInSystemMemory i4
+R DXGI_OUTDUPL_FRAME_INFO 48 48 struct d3d11
+ 0 0 LastPresentTime S:_LARGE_INTEGER
+ 8 8 LastMouseUpdateTime S:_LARGE_INTEGER
+ 16 16 AccumulatedFrames i4
+ 20 20 RectsCoalesced i4
+ 24 24 ProtectedContentMaskedOut i4
+ 28 28 PointerPosition S:DXGI_OUTDUPL_POINTER_POSITION
+ 40 40 TotalMetadataBufferSize i4
+ 44 44 PointerShapeBufferSize i4
+R DXGI_OUTDUPL_MOVE_RECT 24 24 struct d3d11
+ 0 0 SourcePoint S:tagPOINT
+ 8 8 DestinationRect S:tagRECT
+R DXGI_OUTDUPL_POINTER_POSITION 12 12 struct d3d11
+ 0 0 Position S:tagPOINT
+ 8 8 Visible i4
+R DXGI_OUTDUPL_POINTER_SHAPE_INFO 24 24 struct d3d11
+ 0 0 Type i4
+ 4 4 Width i4
+ 8 8 Height i4
+ 12 12 Pitch i4
+ 16 16 HotSpot S:tagPOINT
+R DXGI_OUTPUT_DESC 92 96 struct d3d11
+ 0 0 DeviceName [32]i2
+ 64 64 DesktopCoordinates S:tagRECT
+ 80 80 AttachedToDesktop i4
+ 84 84 Rotation i4
+ 88 88 Monitor *S:HMONITOR__
+R DXGI_OUTPUT_DESC1 144 152 struct d3d11
+ 0 0 DeviceName [32]i2
+ 64 64 DesktopCoordinates S:tagRECT
+ 80 80 AttachedToDesktop i4
+ 84 84 Rotation i4
+ 88 88 Monitor *S:HMONITOR__
+ 92 96 BitsPerColor i4
+ 96 100 ColorSpace i4
+ 100 104 RedPrimary [2]f4
+ 108 112 GreenPrimary [2]f4
+ 116 120 BluePrimary [2]f4
+ 124 128 WhitePoint [2]f4
+ 132 136 MinLuminance f4
+ 136 140 MaxLuminance f4
+ 140 144 MaxFullFrameLuminance f4
+R DXGI_PRESENT_PARAMETERS 16 32 struct d3d11
+ 0 0 DirtyRectsCount i4
+ 4 8 pDirtyRects *S:tagRECT
+ 8 16 pScrollRect *S:tagRECT
+ 12 24 pScrollOffset *S:tagPOINT
+R DXGI_QUERY_VIDEO_MEMORY_INFO 32 32 struct d3d11
+ 0 0 Budget i8
+ 8 8 CurrentUsage i8
+ 16 16 AvailableForReservation i8
+ 24 24 CurrentReservation i8
+R DXGI_RATIONAL 8 8 struct d3d11
+ 0 0 Numerator i4
+ 4 4 Denominator i4
+R DXGI_RGB 12 12 struct d3d11
+ 0 0 Red f4
+ 4 4 Green f4
+ 8 8 Blue f4
+R DXGI_SAMPLE_DESC 8 8 struct d3d11
+ 0 0 Count i4
+ 4 4 Quality i4
+R DXGI_SHARED_RESOURCE 4 8 struct d3d11
+ 0 0 Handle *v
+R DXGI_SURFACE_DESC 20 20 struct d3d11
+ 0 0 Width i4
+ 4 4 Height i4
+ 8 8 Format i4
+ 12 12 SampleDesc S:DXGI_SAMPLE_DESC
+R DXGI_SWAP_CHAIN_DESC 60 72 struct d3d11
+ 0 0 BufferDesc S:DXGI_MODE_DESC
+ 28 28 SampleDesc S:DXGI_SAMPLE_DESC
+ 36 36 BufferUsage i4
+ 40 40 BufferCount i4
+ 44 48 OutputWindow H
+ 48 56 Windowed i4
+ 52 60 SwapEffect i4
+ 56 64 Flags i4
+R DXGI_SWAP_CHAIN_DESC1 48 48 struct d3d11
+ 0 0 Width i4
+ 4 4 Height i4
+ 8 8 Format i4
+ 12 12 Stereo i4
+ 16 16 SampleDesc S:DXGI_SAMPLE_DESC
+ 24 24 BufferUsage i4
+ 28 28 BufferCount i4
+ 32 32 Scaling i4
+ 36 36 SwapEffect i4
+ 40 40 AlphaMode i4
+ 44 44 Flags i4
+R DXGI_SWAP_CHAIN_FULLSCREEN_DESC 20 20 struct d3d11
+ 0 0 RefreshRate S:DXGI_RATIONAL
+ 8 8 ScanlineOrdering i4
+ 12 12 Scaling i4
+ 16 16 Windowed i4
+R HDC__ 4 4 struct d3d9
+ 0 0 unused i4
+R HINSTANCE__ 4 4 struct d3d9
+ 0 0 unused i4
+R HMONITOR__ 4 4 struct d3d9
+ 0 0 unused i4
+R _D3DADAPTER_IDENTIFIER9 1100 1104 struct d3d9
+ 0 0 Driver [512]i1
+ 512 512 Description [512]i1
+ 1024 1024 DeviceName [32]i1
+ 1056 1056 DriverVersion S:_LARGE_INTEGER
+ 1064 1064 VendorId i4
+ 1068 1068 DeviceId i4
+ 1072 1072 SubSysId i4
+ 1076 1076 Revision i4
+ 1080 1080 DeviceIdentifier S:_GUID
+ 1096 1096 WHQLLevel i4
+R _D3DBOX 24 24 struct d3d9
+ 0 0 Left i4
+ 4 4 Top i4
+ 8 8 Right i4
+ 12 12 Bottom i4
+ 16 16 Front i4
+ 20 20 Back i4
+R _D3DCAPS9 304 304 struct d3d9
+ 0 0 DeviceType i4
+ 4 4 AdapterOrdinal i4
+ 8 8 Caps i4
+ 12 12 Caps2 i4
+ 16 16 Caps3 i4
+ 20 20 PresentationIntervals i4
+ 24 24 CursorCaps i4
+ 28 28 DevCaps i4
+ 32 32 PrimitiveMiscCaps i4
+ 36 36 RasterCaps i4
+ 40 40 ZCmpCaps i4
+ 44 44 SrcBlendCaps i4
+ 48 48 DestBlendCaps i4
+ 52 52 AlphaCmpCaps i4
+ 56 56 ShadeCaps i4
+ 60 60 TextureCaps i4
+ 64 64 TextureFilterCaps i4
+ 68 68 CubeTextureFilterCaps i4
+ 72 72 VolumeTextureFilterCaps i4
+ 76 76 TextureAddressCaps i4
+ 80 80 VolumeTextureAddressCaps i4
+ 84 84 LineCaps i4
+ 88 88 MaxTextureWidth i4
+ 92 92 MaxTextureHeight i4
+ 96 96 MaxVolumeExtent i4
+ 100 100 MaxTextureRepeat i4
+ 104 104 MaxTextureAspectRatio i4
+ 108 108 MaxAnisotropy i4
+ 112 112 MaxVertexW f4
+ 116 116 GuardBandLeft f4
+ 120 120 GuardBandTop f4
+ 124 124 GuardBandRight f4
+ 128 128 GuardBandBottom f4
+ 132 132 ExtentsAdjust f4
+ 136 136 StencilCaps i4
+ 140 140 FVFCaps i4
+ 144 144 TextureOpCaps i4
+ 148 148 MaxTextureBlendStages i4
+ 152 152 MaxSimultaneousTextures i4
+ 156 156 VertexProcessingCaps i4
+ 160 160 MaxActiveLights i4
+ 164 164 MaxUserClipPlanes i4
+ 168 168 MaxVertexBlendMatrices i4
+ 172 172 MaxVertexBlendMatrixIndex i4
+ 176 176 MaxPointSize f4
+ 180 180 MaxPrimitiveCount i4
+ 184 184 MaxVertexIndex i4
+ 188 188 MaxStreams i4
+ 192 192 MaxStreamStride i4
+ 196 196 VertexShaderVersion i4
+ 200 200 MaxVertexShaderConst i4
+ 204 204 PixelShaderVersion i4
+ 208 208 PixelShader1xMaxValue f4
+ 212 212 DevCaps2 i4
+ 216 216 MaxNpatchTessellationLevel f4
+ 220 220 Reserved5 i4
+ 224 224 MasterAdapterOrdinal i4
+ 228 228 AdapterOrdinalInGroup i4
+ 232 232 NumberOfAdaptersInGroup i4
+ 236 236 DeclTypes i4
+ 240 240 NumSimultaneousRTs i4
+ 244 244 StretchRectFilterCaps i4
+ 248 248 VS20Caps S:_D3DVSHADERCAPS2_0
+ 264 264 PS20Caps S:_D3DPSHADERCAPS2_0
+ 284 284 VertexTextureFilterCaps i4
+ 288 288 MaxVShaderInstructionsExecuted i4
+ 292 292 MaxPShaderInstructionsExecuted i4
+ 296 296 MaxVertexShader30InstructionSlots i4
+ 300 300 MaxPixelShader30InstructionSlots i4
+R _D3DCLIPSTATUS9 8 8 struct d3d9
+ 0 0 ClipUnion i4
+ 4 4 ClipIntersection i4
+R _D3DCOLORVALUE 16 16 struct d3d9
+ 0 0 r f4
+ 4 4 g f4
+ 8 8 b f4
+ 12 12 a f4
+R _D3DDEVICE_CREATION_PARAMETERS 16 24 struct d3d9
+ 0 0 AdapterOrdinal i4
+ 4 4 DeviceType i4
+ 8 8 hFocusWindow H
+ 12 16 BehaviorFlags i4
+R _D3DDISPLAYMODE 16 16 struct d3d9
+ 0 0 Width i4
+ 4 4 Height i4
+ 8 8 RefreshRate i4
+ 12 12 Format i4
+R _D3DGAMMARAMP 1536 1536 struct d3d9
+ 0 0 red [256]i2
+ 512 512 green [256]i2
+ 1024 1024 blue [256]i2
+R _D3DINDEXBUFFER_DESC 20 20 struct d3d9
+ 0 0 Format i4
+ 4 4 Type i4
+ 8 8 Usage i4
+ 12 12 Pool i4
+ 16 16 Size i4
+R _D3DLIGHT9 104 104 struct d3d9
+ 0 0 Type i4
+ 4 4 Diffuse S:_D3DCOLORVALUE
+ 20 20 Specular S:_D3DCOLORVALUE
+ 36 36 Ambient S:_D3DCOLORVALUE
+ 52 52 Position S:_D3DVECTOR
+ 64 64 Direction S:_D3DVECTOR
+ 76 76 Range f4
+ 80 80 Falloff f4
+ 84 84 Attenuation0 f4
+ 88 88 Attenuation1 f4
+ 92 92 Attenuation2 f4
+ 96 96 Theta f4
+ 100 100 Phi f4
+R _D3DLOCKED_BOX 12 16 struct d3d9
+ 0 0 RowPitch i4
+ 4 4 SlicePitch i4
+ 8 8 pBits *v
+R _D3DLOCKED_RECT 8 16 struct d3d9
+ 0 0 Pitch i4
+ 4 8 pBits *v
+R _D3DMATERIAL9 68 68 struct d3d9
+ 0 0 Diffuse S:_D3DCOLORVALUE
+ 16 16 Ambient S:_D3DCOLORVALUE
+ 32 32 Specular S:_D3DCOLORVALUE
+ 48 48 Emissive S:_D3DCOLORVALUE
+ 64 64 Power f4
+R _D3DMATRIX 64 64 struct d3d9
+ 0 0 - S:_D3DMATRIX::@1450_5
+R _D3DMATRIX::@1450_5 64 64 union d3d9
+ 0 0 - S:_D3DMATRIX::@1451_9
+ 0 0 m [4][4]f4
+R _D3DMATRIX::@1451_9 64 64 struct d3d9
+ 0 0 _11 f4
+ 4 4 _12 f4
+ 8 8 _13 f4
+ 12 12 _14 f4
+ 16 16 _21 f4
+ 20 20 _22 f4
+ 24 24 _23 f4
+ 28 28 _24 f4
+ 32 32 _31 f4
+ 36 36 _32 f4
+ 40 40 _33 f4
+ 44 44 _34 f4
+ 48 48 _41 f4
+ 52 52 _42 f4
+ 56 56 _43 f4
+ 60 60 _44 f4
+R _D3DPRESENTSTATS 28 32 struct d3d9
+ 0 0 PresentCount i4
+ 4 4 PresentRefreshCount i4
+ 8 8 SyncRefreshCount i4
+ 12 16 SyncQPCTime S:_LARGE_INTEGER
+ 20 24 SyncGPUTime S:_LARGE_INTEGER
+R _D3DPRESENT_PARAMETERS_ 56 64 struct d3d9
+ 0 0 BackBufferWidth i4
+ 4 4 BackBufferHeight i4
+ 8 8 BackBufferFormat i4
+ 12 12 BackBufferCount i4
+ 16 16 MultiSampleType i4
+ 20 20 MultiSampleQuality i4
+ 24 24 SwapEffect i4
+ 28 32 hDeviceWindow H
+ 32 40 Windowed i4
+ 36 44 EnableAutoDepthStencil i4
+ 40 48 AutoDepthStencilFormat i4
+ 44 52 Flags i4
+ 48 56 FullScreen_RefreshRateInHz i4
+ 52 60 PresentationInterval i4
+R _D3DPSHADERCAPS2_0 20 20 struct d3d9
+ 0 0 Caps i4
+ 4 4 DynamicFlowControlDepth i4
+ 8 8 NumTemps i4
+ 12 12 StaticFlowControlDepth i4
+ 16 16 NumInstructionSlots i4
+R _D3DRASTER_STATUS 8 8 struct d3d9
+ 0 0 InVBlank i4
+ 4 4 ScanLine i4
+R _D3DRECT 16 16 struct d3d9
+ 0 0 x1 i4
+ 4 4 y1 i4
+ 8 8 x2 i4
+ 12 12 y2 i4
+R _D3DRECTPATCH_INFO 28 28 struct d3d9
+ 0 0 StartVertexOffsetWidth i4
+ 4 4 StartVertexOffsetHeight i4
+ 8 8 Width i4
+ 12 12 Height i4
+ 16 16 Stride i4
+ 20 20 Basis i4
+ 24 24 Degree i4
+R _D3DSURFACE_DESC 32 32 struct d3d9
+ 0 0 Format i4
+ 4 4 Type i4
+ 8 8 Usage i4
+ 12 12 Pool i4
+ 16 16 MultiSampleType i4
+ 20 20 MultiSampleQuality i4
+ 24 24 Width i4
+ 28 28 Height i4
+R _D3DTRIPATCH_INFO 16 16 struct d3d9
+ 0 0 StartVertexOffset i4
+ 4 4 NumVertices i4
+ 8 8 Basis i4
+ 12 12 Degree i4
+R _D3DVECTOR 12 12 struct d3d9
+ 0 0 x f4
+ 4 4 y f4
+ 8 8 z f4
+R _D3DVERTEXBUFFER_DESC 24 24 struct d3d9
+ 0 0 Format i4
+ 4 4 Type i4
+ 8 8 Usage i4
+ 12 12 Pool i4
+ 16 16 Size i4
+ 20 20 FVF i4
+R _D3DVERTEXELEMENT9 8 8 struct d3d9
+ 0 0 Stream i2
+ 2 2 Offset i2
+ 4 4 Type i1
+ 5 5 Method i1
+ 6 6 Usage i1
+ 7 7 UsageIndex i1
+R _D3DVIEWPORT9 24 24 struct d3d9
+ 0 0 X i4
+ 4 4 Y i4
+ 8 8 Width i4
+ 12 12 Height i4
+ 16 16 MinZ f4
+ 20 20 MaxZ f4
+R _D3DVOLUME_DESC 28 28 struct d3d9
+ 0 0 Format i4
+ 4 4 Type i4
+ 8 8 Usage i4
+ 12 12 Pool i4
+ 16 16 Width i4
+ 20 20 Height i4
+ 24 24 Depth i4
+R _D3DVSHADERCAPS2_0 16 16 struct d3d9
+ 0 0 Caps i4
+ 4 4 DynamicFlowControlDepth i4
+ 8 8 NumTemps i4
+ 12 12 StaticFlowControlDepth i4
+R _GUID 16 16 struct d3d9
+ 0 0 Data1 i4
+ 4 4 Data2 i2
+ 6 6 Data3 i2
+ 8 8 Data4 [8]i1
+R _LARGE_INTEGER 8 8 union d3d9
+ 0 0 - S:_LARGE_INTEGER::@516_20
+ 0 0 u S:_LARGE_INTEGER::@520_5
+ 0 0 QuadPart i8
+R _LARGE_INTEGER::@516_20 8 8 struct d3d9
+ 0 0 LowPart i4
+ 4 4 HighPart i4
+R _LARGE_INTEGER::@520_5 8 8 struct d3d9
+ 0 0 LowPart i4
+ 4 4 HighPart i4
+R _LUID 8 8 struct d3d9
+ 0 0 LowPart i4
+ 4 4 HighPart i4
+R _RGNDATA 36 36 struct d3d9
+ 0 0 rdh S:_RGNDATAHEADER
+ 32 32 Buffer [1]i1
+R _RGNDATAHEADER 32 32 struct d3d9
+ 0 0 dwSize i4
+ 4 4 iType i4
+ 8 8 nCount i4
+ 12 12 nRgnSize i4
+ 16 16 rcBound S:tagRECT
+R _SECURITY_ATTRIBUTES 12 24 struct d3d9
+ 0 0 nLength i4
+ 4 8 lpSecurityDescriptor *v
+ 8 16 bInheritHandle i4
+R tagPALETTEENTRY 4 4 struct d3d9
+ 0 0 peRed i1
+ 1 1 peGreen i1
+ 2 2 peBlue i1
+ 3 3 peFlags i1
+R tagPOINT 8 8 struct d3d9
+ 0 0 x i4
+ 4 4 y i4
+R tagRECT 16 16 struct d3d9
+ 0 0 left i4
+ 4 4 top i4
+ 8 8 right i4
+ 12 12 bottom i4
+R tagSIZE 8 8 struct d3d9
+ 0 0 cx i4
+ 4 4 cy i4
+V ID3D11Asynchronous ID3D11DeviceChild
+ 7 GetDataSize i4 
+V ID3D11AuthenticatedChannel ID3D11DeviceChild
+ 7 GetCertificateSize hr *i4
+ 8 GetCertificate hr i4,*i1
+ 9 GetChannelHandle v **v
+V ID3D11BlendState ID3D11DeviceChild
+ 7 GetDesc v *S:D3D11_BLEND_DESC
+V ID3D11BlendState1 ID3D11BlendState
+ 8 GetDesc1 v *S:D3D11_BLEND_DESC1
+V ID3D11Buffer ID3D11Resource
+ 10 GetDesc v *S:D3D11_BUFFER_DESC
+V ID3D11ClassInstance ID3D11DeviceChild
+ 7 GetClassLinkage v **O:ID3D11ClassLinkage
+ 8 GetDesc v *S:D3D11_CLASS_INSTANCE_DESC
+ 9 GetInstanceName v *i1,*i4
+ 10 GetTypeName v *i1,*i4
+V ID3D11ClassLinkage ID3D11DeviceChild
+ 7 GetClassInstance hr *i1,i4,**O:ID3D11ClassInstance
+ 8 CreateClassInstance hr *i1,i4,i4,i4,i4,**O:ID3D11ClassInstance
+V ID3D11CommandList ID3D11DeviceChild
+ 7 GetContextFlags i4 
+V ID3D11ComputeShader ID3D11DeviceChild
+V ID3D11Counter ID3D11Asynchronous
+ 8 GetDesc v *S:D3D11_COUNTER_DESC
+V ID3D11CryptoSession ID3D11DeviceChild
+ 7 GetCryptoType v *S:_GUID
+ 8 GetDecoderProfile v *S:_GUID
+ 9 GetCertificateSize hr *i4
+ 10 GetCertificate hr i4,*i1
+ 11 GetCryptoSessionHandle v **v
+V ID3D11Debug IUnknown
+ 3 SetFeatureMask hr i4
+ 4 GetFeatureMask i4 
+ 5 SetPresentPerRenderOpDelay hr i4
+ 6 GetPresentPerRenderOpDelay i4 
+ 7 SetSwapChain hr *O:IDXGISwapChain
+ 8 GetSwapChain hr **O:IDXGISwapChain
+ 9 ValidateContext hr *O:ID3D11DeviceContext
+ 10 ReportLiveDeviceObjects hr i4
+ 11 ValidateContextForDispatch hr *O:ID3D11DeviceContext
+V ID3D11DepthStencilState ID3D11DeviceChild
+ 7 GetDesc v *S:D3D11_DEPTH_STENCIL_DESC
+V ID3D11DepthStencilView ID3D11View
+ 8 GetDesc v *S:D3D11_DEPTH_STENCIL_VIEW_DESC
+V ID3D11Device IUnknown
+ 3 CreateBuffer hr *S:D3D11_BUFFER_DESC,*S:D3D11_SUBRESOURCE_DATA,**O:ID3D11Buffer
+ 4 CreateTexture1D hr *S:D3D11_TEXTURE1D_DESC,*S:D3D11_SUBRESOURCE_DATA,**O:ID3D11Texture1D
+ 5 CreateTexture2D hr *S:D3D11_TEXTURE2D_DESC,*S:D3D11_SUBRESOURCE_DATA,**O:ID3D11Texture2D
+ 6 CreateTexture3D hr *S:D3D11_TEXTURE3D_DESC,*S:D3D11_SUBRESOURCE_DATA,**O:ID3D11Texture3D
+ 7 CreateShaderResourceView hr *O:ID3D11Resource,*S:D3D11_SHADER_RESOURCE_VIEW_DESC,**O:ID3D11ShaderResourceView
+ 8 CreateUnorderedAccessView hr *O:ID3D11Resource,*S:D3D11_UNORDERED_ACCESS_VIEW_DESC,**O:ID3D11UnorderedAccessView
+ 9 CreateRenderTargetView hr *O:ID3D11Resource,*S:D3D11_RENDER_TARGET_VIEW_DESC,**O:ID3D11RenderTargetView
+ 10 CreateDepthStencilView hr *O:ID3D11Resource,*S:D3D11_DEPTH_STENCIL_VIEW_DESC,**O:ID3D11DepthStencilView
+ 11 CreateInputLayout hr *S:D3D11_INPUT_ELEMENT_DESC,i4,*v,i4,**O:ID3D11InputLayout
+ 12 CreateVertexShader hr *v,i4,*O:ID3D11ClassLinkage,**O:ID3D11VertexShader
+ 13 CreateGeometryShader hr *v,i4,*O:ID3D11ClassLinkage,**O:ID3D11GeometryShader
+ 14 CreateGeometryShaderWithStreamOutput hr *v,i4,*S:D3D11_SO_DECLARATION_ENTRY,i4,*i4,i4,i4,*O:ID3D11ClassLinkage,**O:ID3D11GeometryShader
+ 15 CreatePixelShader hr *v,i4,*O:ID3D11ClassLinkage,**O:ID3D11PixelShader
+ 16 CreateHullShader hr *v,i4,*O:ID3D11ClassLinkage,**O:ID3D11HullShader
+ 17 CreateDomainShader hr *v,i4,*O:ID3D11ClassLinkage,**O:ID3D11DomainShader
+ 18 CreateComputeShader hr *v,i4,*O:ID3D11ClassLinkage,**O:ID3D11ComputeShader
+ 19 CreateClassLinkage hr **O:ID3D11ClassLinkage
+ 20 CreateBlendState hr *S:D3D11_BLEND_DESC,**O:ID3D11BlendState
+ 21 CreateDepthStencilState hr *S:D3D11_DEPTH_STENCIL_DESC,**O:ID3D11DepthStencilState
+ 22 CreateRasterizerState hr *S:D3D11_RASTERIZER_DESC,**O:ID3D11RasterizerState
+ 23 CreateSamplerState hr *S:D3D11_SAMPLER_DESC,**O:ID3D11SamplerState
+ 24 CreateQuery hr *S:D3D11_QUERY_DESC,**O:ID3D11Query
+ 25 CreatePredicate hr *S:D3D11_QUERY_DESC,**O:ID3D11Predicate
+ 26 CreateCounter hr *S:D3D11_COUNTER_DESC,**O:ID3D11Counter
+ 27 CreateDeferredContext hr i4,**O:ID3D11DeviceContext
+ 28 OpenSharedResource hr *v,*S:_GUID,**v
+ 29 CheckFormatSupport hr i4,*i4
+ 30 CheckMultisampleQualityLevels hr i4,i4,*i4
+ 31 CheckCounterInfo v *S:D3D11_COUNTER_INFO
+ 32 CheckCounter hr *S:D3D11_COUNTER_DESC,*i4,*i4,*i1,*i4,*i1,*i4,*i1,*i4
+ 33 CheckFeatureSupport hr i4,*v,i4
+ 34 GetPrivateData hr *S:_GUID,*i4,*v
+ 35 SetPrivateData hr *S:_GUID,i4,*v
+ 36 SetPrivateDataInterface hr *S:_GUID,*O:IUnknown
+ 37 GetFeatureLevel i4 
+ 38 GetCreationFlags i4 
+ 39 GetDeviceRemovedReason hr 
+ 40 GetImmediateContext v **O:ID3D11DeviceContext
+ 41 SetExceptionMode hr i4
+ 42 GetExceptionMode i4 
+V ID3D11Device1 ID3D11Device
+ 43 GetImmediateContext1 v **O:ID3D11DeviceContext1
+ 44 CreateDeferredContext1 hr i4,**O:ID3D11DeviceContext1
+ 45 CreateBlendState1 hr *S:D3D11_BLEND_DESC1,**O:ID3D11BlendState1
+ 46 CreateRasterizerState1 hr *S:D3D11_RASTERIZER_DESC1,**O:ID3D11RasterizerState1
+ 47 CreateDeviceContextState hr i4,*i4,i4,i4,*S:_GUID,*i4,**O:ID3DDeviceContextState
+ 48 OpenSharedResource1 hr *v,*S:_GUID,**v
+ 49 OpenSharedResourceByName hr *i2,i4,*S:_GUID,**v
+V ID3D11Device2 ID3D11Device1
+ 50 GetImmediateContext2 v **O:ID3D11DeviceContext2
+ 51 CreateDeferredContext2 hr i4,**O:ID3D11DeviceContext2
+ 52 GetResourceTiling v *O:ID3D11Resource,*i4,*S:D3D11_PACKED_MIP_DESC,*S:D3D11_TILE_SHAPE,*i4,i4,*S:D3D11_SUBRESOURCE_TILING
+ 53 CheckMultisampleQualityLevels1 hr i4,i4,i4,*i4
+V ID3D11Device3 ID3D11Device2
+ 54 CreateTexture2D1 hr *S:D3D11_TEXTURE2D_DESC1,*S:D3D11_SUBRESOURCE_DATA,**O:ID3D11Texture2D1
+ 55 CreateTexture3D1 hr *S:D3D11_TEXTURE3D_DESC1,*S:D3D11_SUBRESOURCE_DATA,**O:ID3D11Texture3D1
+ 56 CreateRasterizerState2 hr *S:D3D11_RASTERIZER_DESC2,**O:ID3D11RasterizerState2
+ 57 CreateShaderResourceView1 hr *O:ID3D11Resource,*S:D3D11_SHADER_RESOURCE_VIEW_DESC1,**O:ID3D11ShaderResourceView1
+ 58 CreateUnorderedAccessView1 hr *O:ID3D11Resource,*S:D3D11_UNORDERED_ACCESS_VIEW_DESC1,**O:ID3D11UnorderedAccessView1
+ 59 CreateRenderTargetView1 hr *O:ID3D11Resource,*S:D3D11_RENDER_TARGET_VIEW_DESC1,**O:ID3D11RenderTargetView1
+ 60 CreateQuery1 hr *S:D3D11_QUERY_DESC1,**O:ID3D11Query1
+ 61 GetImmediateContext3 v **O:ID3D11DeviceContext3
+ 62 CreateDeferredContext3 hr i4,**O:ID3D11DeviceContext3
+ 63 WriteToSubresource v *O:ID3D11Resource,i4,*S:D3D11_BOX,*v,i4,i4
+ 64 ReadFromSubresource v *v,i4,i4,*O:ID3D11Resource,i4,*S:D3D11_BOX
+V ID3D11Device4 ID3D11Device3
+ 65 RegisterDeviceRemovedEvent hr *v,*i4
+ 66 UnregisterDeviceRemoved v i4
+V ID3D11Device5 ID3D11Device4
+ 67 OpenSharedFence hr *v,*S:_GUID,**v
+ 68 CreateFence hr i8,i4,*S:_GUID,**v
+V ID3D11DeviceChild IUnknown
+ 3 GetDevice v **O:ID3D11Device
+ 4 GetPrivateData hr *S:_GUID,*i4,*v
+ 5 SetPrivateData hr *S:_GUID,i4,*v
+ 6 SetPrivateDataInterface hr *S:_GUID,*O:IUnknown
+V ID3D11DeviceContext ID3D11DeviceChild
+ 7 VSSetConstantBuffers v i4,i4,**O:ID3D11Buffer
+ 8 PSSetShaderResources v i4,i4,**O:ID3D11ShaderResourceView
+ 9 PSSetShader v *O:ID3D11PixelShader,**O:ID3D11ClassInstance,i4
+ 10 PSSetSamplers v i4,i4,**O:ID3D11SamplerState
+ 11 VSSetShader v *O:ID3D11VertexShader,**O:ID3D11ClassInstance,i4
+ 12 DrawIndexed v i4,i4,i4
+ 13 Draw v i4,i4
+ 14 Map hr *O:ID3D11Resource,i4,i4,i4,*S:D3D11_MAPPED_SUBRESOURCE
+ 15 Unmap v *O:ID3D11Resource,i4
+ 16 PSSetConstantBuffers v i4,i4,**O:ID3D11Buffer
+ 17 IASetInputLayout v *O:ID3D11InputLayout
+ 18 IASetVertexBuffers v i4,i4,**O:ID3D11Buffer,*i4,*i4
+ 19 IASetIndexBuffer v *O:ID3D11Buffer,i4,i4
+ 20 DrawIndexedInstanced v i4,i4,i4,i4,i4
+ 21 DrawInstanced v i4,i4,i4,i4
+ 22 GSSetConstantBuffers v i4,i4,**O:ID3D11Buffer
+ 23 GSSetShader v *O:ID3D11GeometryShader,**O:ID3D11ClassInstance,i4
+ 24 IASetPrimitiveTopology v i4
+ 25 VSSetShaderResources v i4,i4,**O:ID3D11ShaderResourceView
+ 26 VSSetSamplers v i4,i4,**O:ID3D11SamplerState
+ 27 Begin v *O:ID3D11Asynchronous
+ 28 End v *O:ID3D11Asynchronous
+ 29 GetData hr *O:ID3D11Asynchronous,*v,i4,i4
+ 30 SetPredication v *O:ID3D11Predicate,i4
+ 31 GSSetShaderResources v i4,i4,**O:ID3D11ShaderResourceView
+ 32 GSSetSamplers v i4,i4,**O:ID3D11SamplerState
+ 33 OMSetRenderTargets v i4,**O:ID3D11RenderTargetView,*O:ID3D11DepthStencilView
+ 34 OMSetRenderTargetsAndUnorderedAccessViews v i4,**O:ID3D11RenderTargetView,*O:ID3D11DepthStencilView,i4,i4,**O:ID3D11UnorderedAccessView,*i4
+ 35 OMSetBlendState v *O:ID3D11BlendState,*f4,i4
+ 36 OMSetDepthStencilState v *O:ID3D11DepthStencilState,i4
+ 37 SOSetTargets v i4,**O:ID3D11Buffer,*i4
+ 38 DrawAuto v 
+ 39 DrawIndexedInstancedIndirect v *O:ID3D11Buffer,i4
+ 40 DrawInstancedIndirect v *O:ID3D11Buffer,i4
+ 41 Dispatch v i4,i4,i4
+ 42 DispatchIndirect v *O:ID3D11Buffer,i4
+ 43 RSSetState v *O:ID3D11RasterizerState
+ 44 RSSetViewports v i4,*S:D3D11_VIEWPORT
+ 45 RSSetScissorRects v i4,*S:tagRECT
+ 46 CopySubresourceRegion v *O:ID3D11Resource,i4,i4,i4,i4,*O:ID3D11Resource,i4,*S:D3D11_BOX
+ 47 CopyResource v *O:ID3D11Resource,*O:ID3D11Resource
+ 48 UpdateSubresource v *O:ID3D11Resource,i4,*S:D3D11_BOX,*v,i4,i4
+ 49 CopyStructureCount v *O:ID3D11Buffer,i4,*O:ID3D11UnorderedAccessView
+ 50 ClearRenderTargetView v *O:ID3D11RenderTargetView,*f4
+ 51 ClearUnorderedAccessViewUint v *O:ID3D11UnorderedAccessView,*i4
+ 52 ClearUnorderedAccessViewFloat v *O:ID3D11UnorderedAccessView,*f4
+ 53 ClearDepthStencilView v *O:ID3D11DepthStencilView,i4,f4,i1
+ 54 GenerateMips v *O:ID3D11ShaderResourceView
+ 55 SetResourceMinLOD v *O:ID3D11Resource,f4
+ 56 GetResourceMinLOD f4 *O:ID3D11Resource
+ 57 ResolveSubresource v *O:ID3D11Resource,i4,*O:ID3D11Resource,i4,i4
+ 58 ExecuteCommandList v *O:ID3D11CommandList,i4
+ 59 HSSetShaderResources v i4,i4,**O:ID3D11ShaderResourceView
+ 60 HSSetShader v *O:ID3D11HullShader,**O:ID3D11ClassInstance,i4
+ 61 HSSetSamplers v i4,i4,**O:ID3D11SamplerState
+ 62 HSSetConstantBuffers v i4,i4,**O:ID3D11Buffer
+ 63 DSSetShaderResources v i4,i4,**O:ID3D11ShaderResourceView
+ 64 DSSetShader v *O:ID3D11DomainShader,**O:ID3D11ClassInstance,i4
+ 65 DSSetSamplers v i4,i4,**O:ID3D11SamplerState
+ 66 DSSetConstantBuffers v i4,i4,**O:ID3D11Buffer
+ 67 CSSetShaderResources v i4,i4,**O:ID3D11ShaderResourceView
+ 68 CSSetUnorderedAccessViews v i4,i4,**O:ID3D11UnorderedAccessView,*i4
+ 69 CSSetShader v *O:ID3D11ComputeShader,**O:ID3D11ClassInstance,i4
+ 70 CSSetSamplers v i4,i4,**O:ID3D11SamplerState
+ 71 CSSetConstantBuffers v i4,i4,**O:ID3D11Buffer
+ 72 VSGetConstantBuffers v i4,i4,**O:ID3D11Buffer
+ 73 PSGetShaderResources v i4,i4,**O:ID3D11ShaderResourceView
+ 74 PSGetShader v **O:ID3D11PixelShader,**O:ID3D11ClassInstance,*i4
+ 75 PSGetSamplers v i4,i4,**O:ID3D11SamplerState
+ 76 VSGetShader v **O:ID3D11VertexShader,**O:ID3D11ClassInstance,*i4
+ 77 PSGetConstantBuffers v i4,i4,**O:ID3D11Buffer
+ 78 IAGetInputLayout v **O:ID3D11InputLayout
+ 79 IAGetVertexBuffers v i4,i4,**O:ID3D11Buffer,*i4,*i4
+ 80 IAGetIndexBuffer v **O:ID3D11Buffer,*i4,*i4
+ 81 GSGetConstantBuffers v i4,i4,**O:ID3D11Buffer
+ 82 GSGetShader v **O:ID3D11GeometryShader,**O:ID3D11ClassInstance,*i4
+ 83 IAGetPrimitiveTopology v *i4
+ 84 VSGetShaderResources v i4,i4,**O:ID3D11ShaderResourceView
+ 85 VSGetSamplers v i4,i4,**O:ID3D11SamplerState
+ 86 GetPredication v **O:ID3D11Predicate,*i4
+ 87 GSGetShaderResources v i4,i4,**O:ID3D11ShaderResourceView
+ 88 GSGetSamplers v i4,i4,**O:ID3D11SamplerState
+ 89 OMGetRenderTargets v i4,**O:ID3D11RenderTargetView,**O:ID3D11DepthStencilView
+ 90 OMGetRenderTargetsAndUnorderedAccessViews v i4,**O:ID3D11RenderTargetView,**O:ID3D11DepthStencilView,i4,i4,**O:ID3D11UnorderedAccessView
+ 91 OMGetBlendState v **O:ID3D11BlendState,*f4,*i4
+ 92 OMGetDepthStencilState v **O:ID3D11DepthStencilState,*i4
+ 93 SOGetTargets v i4,**O:ID3D11Buffer
+ 94 RSGetState v **O:ID3D11RasterizerState
+ 95 RSGetViewports v *i4,*S:D3D11_VIEWPORT
+ 96 RSGetScissorRects v *i4,*S:tagRECT
+ 97 HSGetShaderResources v i4,i4,**O:ID3D11ShaderResourceView
+ 98 HSGetShader v **O:ID3D11HullShader,**O:ID3D11ClassInstance,*i4
+ 99 HSGetSamplers v i4,i4,**O:ID3D11SamplerState
+ 100 HSGetConstantBuffers v i4,i4,**O:ID3D11Buffer
+ 101 DSGetShaderResources v i4,i4,**O:ID3D11ShaderResourceView
+ 102 DSGetShader v **O:ID3D11DomainShader,**O:ID3D11ClassInstance,*i4
+ 103 DSGetSamplers v i4,i4,**O:ID3D11SamplerState
+ 104 DSGetConstantBuffers v i4,i4,**O:ID3D11Buffer
+ 105 CSGetShaderResources v i4,i4,**O:ID3D11ShaderResourceView
+ 106 CSGetUnorderedAccessViews v i4,i4,**O:ID3D11UnorderedAccessView
+ 107 CSGetShader v **O:ID3D11ComputeShader,**O:ID3D11ClassInstance,*i4
+ 108 CSGetSamplers v i4,i4,**O:ID3D11SamplerState
+ 109 CSGetConstantBuffers v i4,i4,**O:ID3D11Buffer
+ 110 ClearState v 
+ 111 Flush v 
+ 112 GetType i4 
+ 113 GetContextFlags i4 
+ 114 FinishCommandList hr i4,**O:ID3D11CommandList
+V ID3D11DeviceContext1 ID3D11DeviceContext
+ 115 CopySubresourceRegion1 v *O:ID3D11Resource,i4,i4,i4,i4,*O:ID3D11Resource,i4,*S:D3D11_BOX,i4
+ 116 UpdateSubresource1 v *O:ID3D11Resource,i4,*S:D3D11_BOX,*v,i4,i4,i4
+ 117 DiscardResource v *O:ID3D11Resource
+ 118 DiscardView v *O:ID3D11View
+ 119 VSSetConstantBuffers1 v i4,i4,**O:ID3D11Buffer,*i4,*i4
+ 120 HSSetConstantBuffers1 v i4,i4,**O:ID3D11Buffer,*i4,*i4
+ 121 DSSetConstantBuffers1 v i4,i4,**O:ID3D11Buffer,*i4,*i4
+ 122 GSSetConstantBuffers1 v i4,i4,**O:ID3D11Buffer,*i4,*i4
+ 123 PSSetConstantBuffers1 v i4,i4,**O:ID3D11Buffer,*i4,*i4
+ 124 CSSetConstantBuffers1 v i4,i4,**O:ID3D11Buffer,*i4,*i4
+ 125 VSGetConstantBuffers1 v i4,i4,**O:ID3D11Buffer,*i4,*i4
+ 126 HSGetConstantBuffers1 v i4,i4,**O:ID3D11Buffer,*i4,*i4
+ 127 DSGetConstantBuffers1 v i4,i4,**O:ID3D11Buffer,*i4,*i4
+ 128 GSGetConstantBuffers1 v i4,i4,**O:ID3D11Buffer,*i4,*i4
+ 129 PSGetConstantBuffers1 v i4,i4,**O:ID3D11Buffer,*i4,*i4
+ 130 CSGetConstantBuffers1 v i4,i4,**O:ID3D11Buffer,*i4,*i4
+ 131 SwapDeviceContextState v *O:ID3DDeviceContextState,**O:ID3DDeviceContextState
+ 132 ClearView v *O:ID3D11View,*f4,*S:tagRECT,i4
+ 133 DiscardView1 v *O:ID3D11View,*S:tagRECT,i4
+V ID3D11DeviceContext2 ID3D11DeviceContext1
+ 134 UpdateTileMappings hr *O:ID3D11Resource,i4,*S:D3D11_TILED_RESOURCE_COORDINATE,*S:D3D11_TILE_REGION_SIZE,*O:ID3D11Buffer,i4,*i4,*i4,*i4,i4
+ 135 CopyTileMappings hr *O:ID3D11Resource,*S:D3D11_TILED_RESOURCE_COORDINATE,*O:ID3D11Resource,*S:D3D11_TILED_RESOURCE_COORDINATE,*S:D3D11_TILE_REGION_SIZE,i4
+ 136 CopyTiles v *O:ID3D11Resource,*S:D3D11_TILED_RESOURCE_COORDINATE,*S:D3D11_TILE_REGION_SIZE,*O:ID3D11Buffer,i8,i4
+ 137 UpdateTiles v *O:ID3D11Resource,*S:D3D11_TILED_RESOURCE_COORDINATE,*S:D3D11_TILE_REGION_SIZE,*v,i4
+ 138 ResizeTilePool hr *O:ID3D11Buffer,i8
+ 139 TiledResourceBarrier v *O:ID3D11DeviceChild,*O:ID3D11DeviceChild
+ 140 IsAnnotationEnabled i4 
+ 141 SetMarkerInt v *i2,i4
+ 142 BeginEventInt v *i2,i4
+ 143 EndEvent v 
+V ID3D11DeviceContext3 ID3D11DeviceContext2
+ 144 Flush1 v i4,*v
+ 145 SetHardwareProtectionState v i4
+ 146 GetHardwareProtectionState v *i4
+V ID3D11DeviceContext4 ID3D11DeviceContext3
+ 147 Signal hr *O:ID3D11Fence,i8
+ 148 Wait hr *O:ID3D11Fence,i8
+V ID3D11DomainShader ID3D11DeviceChild
+V ID3D11Fence ID3D11DeviceChild
+ 7 CreateSharedHandle hr *S:_SECURITY_ATTRIBUTES,i4,*i2,**v
+ 8 GetCompletedValue i8 
+ 9 SetEventOnCompletion hr i8,*v
+V ID3D11GeometryShader ID3D11DeviceChild
+V ID3D11HullShader ID3D11DeviceChild
+V ID3D11InfoQueue IUnknown
+ 3 SetMessageCountLimit hr i8
+ 4 ClearStoredMessages v 
+ 5 GetMessageA hr i8,*S:D3D11_MESSAGE,*i4
+ 6 GetNumMessagesAllowedByStorageFilter i8 
+ 7 GetNumMessagesDeniedByStorageFilter i8 
+ 8 GetNumStoredMessages i8 
+ 9 GetNumStoredMessagesAllowedByRetrievalFilter i8 
+ 10 GetNumMessagesDiscardedByMessageCountLimit i8 
+ 11 GetMessageCountLimit i8 
+ 12 AddStorageFilterEntries hr *S:D3D11_INFO_QUEUE_FILTER
+ 13 GetStorageFilter hr *S:D3D11_INFO_QUEUE_FILTER,*i4
+ 14 ClearStorageFilter v 
+ 15 PushEmptyStorageFilter hr 
+ 16 PushCopyOfStorageFilter hr 
+ 17 PushStorageFilter hr *S:D3D11_INFO_QUEUE_FILTER
+ 18 PopStorageFilter v 
+ 19 GetStorageFilterStackSize i4 
+ 20 AddRetrievalFilterEntries hr *S:D3D11_INFO_QUEUE_FILTER
+ 21 GetRetrievalFilter hr *S:D3D11_INFO_QUEUE_FILTER,*i4
+ 22 ClearRetrievalFilter v 
+ 23 PushEmptyRetrievalFilter hr 
+ 24 PushCopyOfRetrievalFilter hr 
+ 25 PushRetrievalFilter hr *S:D3D11_INFO_QUEUE_FILTER
+ 26 PopRetrievalFilter v 
+ 27 GetRetrievalFilterStackSize i4 
+ 28 AddMessage hr i4,i4,i4,*i1
+ 29 AddApplicationMessage hr i4,*i1
+ 30 SetBreakOnCategory hr i4,i4
+ 31 SetBreakOnSeverity hr i4,i4
+ 32 SetBreakOnID hr i4,i4
+ 33 GetBreakOnCategory i4 i4
+ 34 GetBreakOnSeverity i4 i4
+ 35 GetBreakOnID i4 i4
+ 36 SetMuteDebugOutput v i4
+ 37 GetMuteDebugOutput i4 
+V ID3D11InputLayout ID3D11DeviceChild
+V ID3D11Multithread IUnknown
+ 3 Enter v 
+ 4 Leave v 
+ 5 SetMultithreadProtected i4 i4
+ 6 GetMultithreadProtected i4 
+V ID3D11PixelShader ID3D11DeviceChild
+V ID3D11Predicate ID3D11Query
+V ID3D11Query ID3D11Asynchronous
+ 8 GetDesc v *S:D3D11_QUERY_DESC
+V ID3D11Query1 ID3D11Query
+ 9 GetDesc1 v *S:D3D11_QUERY_DESC1
+V ID3D11RasterizerState ID3D11DeviceChild
+ 7 GetDesc v *S:D3D11_RASTERIZER_DESC
+V ID3D11RasterizerState1 ID3D11RasterizerState
+ 8 GetDesc1 v *S:D3D11_RASTERIZER_DESC1
+V ID3D11RasterizerState2 ID3D11RasterizerState1
+ 9 GetDesc2 v *S:D3D11_RASTERIZER_DESC2
+V ID3D11RenderTargetView ID3D11View
+ 8 GetDesc v *S:D3D11_RENDER_TARGET_VIEW_DESC
+V ID3D11RenderTargetView1 ID3D11RenderTargetView
+ 9 GetDesc1 v *S:D3D11_RENDER_TARGET_VIEW_DESC1
+V ID3D11Resource ID3D11DeviceChild
+ 7 GetType v *i4
+ 8 SetEvictionPriority v i4
+ 9 GetEvictionPriority i4 
+V ID3D11SamplerState ID3D11DeviceChild
+ 7 GetDesc v *S:D3D11_SAMPLER_DESC
+V ID3D11ShaderResourceView ID3D11View
+ 8 GetDesc v *S:D3D11_SHADER_RESOURCE_VIEW_DESC
+V ID3D11ShaderResourceView1 ID3D11ShaderResourceView
+ 9 GetDesc1 v *S:D3D11_SHADER_RESOURCE_VIEW_DESC1
+V ID3D11SwitchToRef IUnknown
+ 3 SetUseRef i4 i4
+ 4 GetUseRef i4 
+V ID3D11Texture1D ID3D11Resource
+ 10 GetDesc v *S:D3D11_TEXTURE1D_DESC
+V ID3D11Texture2D ID3D11Resource
+ 10 GetDesc v *S:D3D11_TEXTURE2D_DESC
+V ID3D11Texture2D1 ID3D11Texture2D
+ 11 GetDesc1 v *S:D3D11_TEXTURE2D_DESC1
+V ID3D11Texture3D ID3D11Resource
+ 10 GetDesc v *S:D3D11_TEXTURE3D_DESC
+V ID3D11Texture3D1 ID3D11Texture3D
+ 11 GetDesc1 v *S:D3D11_TEXTURE3D_DESC1
+V ID3D11UnorderedAccessView ID3D11View
+ 8 GetDesc v *S:D3D11_UNORDERED_ACCESS_VIEW_DESC
+V ID3D11UnorderedAccessView1 ID3D11UnorderedAccessView
+ 9 GetDesc1 v *S:D3D11_UNORDERED_ACCESS_VIEW_DESC1
+V ID3D11VertexShader ID3D11DeviceChild
+V ID3D11VideoContext ID3D11DeviceChild
+ 7 GetDecoderBuffer hr *O:ID3D11VideoDecoder,i4,*i4,**v
+ 8 ReleaseDecoderBuffer hr *O:ID3D11VideoDecoder,i4
+ 9 DecoderBeginFrame hr *O:ID3D11VideoDecoder,*O:ID3D11VideoDecoderOutputView,i4,*v
+ 10 DecoderEndFrame hr *O:ID3D11VideoDecoder
+ 11 SubmitDecoderBuffers hr *O:ID3D11VideoDecoder,i4,*S:D3D11_VIDEO_DECODER_BUFFER_DESC
+ 12 DecoderExtension hr *O:ID3D11VideoDecoder,*S:D3D11_VIDEO_DECODER_EXTENSION
+ 13 VideoProcessorSetOutputTargetRect v *O:ID3D11VideoProcessor,i4,*S:tagRECT
+ 14 VideoProcessorSetOutputBackgroundColor v *O:ID3D11VideoProcessor,i4,*S:D3D11_VIDEO_COLOR
+ 15 VideoProcessorSetOutputColorSpace v *O:ID3D11VideoProcessor,*S:D3D11_VIDEO_PROCESSOR_COLOR_SPACE
+ 16 VideoProcessorSetOutputAlphaFillMode v *O:ID3D11VideoProcessor,i4,i4
+ 17 VideoProcessorSetOutputConstriction v *O:ID3D11VideoProcessor,i4,S:tagSIZE
+ 18 VideoProcessorSetOutputStereoMode v *O:ID3D11VideoProcessor,i4
+ 19 VideoProcessorSetOutputExtension hr *O:ID3D11VideoProcessor,*S:_GUID,i4,*v
+ 20 VideoProcessorGetOutputTargetRect v *O:ID3D11VideoProcessor,*i4,*S:tagRECT
+ 21 VideoProcessorGetOutputBackgroundColor v *O:ID3D11VideoProcessor,*i4,*S:D3D11_VIDEO_COLOR
+ 22 VideoProcessorGetOutputColorSpace v *O:ID3D11VideoProcessor,*S:D3D11_VIDEO_PROCESSOR_COLOR_SPACE
+ 23 VideoProcessorGetOutputAlphaFillMode v *O:ID3D11VideoProcessor,*i4,*i4
+ 24 VideoProcessorGetOutputConstriction v *O:ID3D11VideoProcessor,*i4,*S:tagSIZE
+ 25 VideoProcessorGetOutputStereoMode v *O:ID3D11VideoProcessor,*i4
+ 26 VideoProcessorGetOutputExtension hr *O:ID3D11VideoProcessor,*S:_GUID,i4,*v
+ 27 VideoProcessorSetStreamFrameFormat v *O:ID3D11VideoProcessor,i4,i4
+ 28 VideoProcessorSetStreamColorSpace v *O:ID3D11VideoProcessor,i4,*S:D3D11_VIDEO_PROCESSOR_COLOR_SPACE
+ 29 VideoProcessorSetStreamOutputRate v *O:ID3D11VideoProcessor,i4,i4,i4,*S:DXGI_RATIONAL
+ 30 VideoProcessorSetStreamSourceRect v *O:ID3D11VideoProcessor,i4,i4,*S:tagRECT
+ 31 VideoProcessorSetStreamDestRect v *O:ID3D11VideoProcessor,i4,i4,*S:tagRECT
+ 32 VideoProcessorSetStreamAlpha v *O:ID3D11VideoProcessor,i4,i4,f4
+ 33 VideoProcessorSetStreamPalette v *O:ID3D11VideoProcessor,i4,i4,*i4
+ 34 VideoProcessorSetStreamPixelAspectRatio v *O:ID3D11VideoProcessor,i4,i4,*S:DXGI_RATIONAL,*S:DXGI_RATIONAL
+ 35 VideoProcessorSetStreamLumaKey v *O:ID3D11VideoProcessor,i4,i4,f4,f4
+ 36 VideoProcessorSetStreamStereoFormat v *O:ID3D11VideoProcessor,i4,i4,i4,i4,i4,i4,i4
+ 37 VideoProcessorSetStreamAutoProcessingMode v *O:ID3D11VideoProcessor,i4,i4
+ 38 VideoProcessorSetStreamFilter v *O:ID3D11VideoProcessor,i4,i4,i4,i4
+ 39 VideoProcessorSetStreamExtension hr *O:ID3D11VideoProcessor,i4,*S:_GUID,i4,*v
+ 40 VideoProcessorGetStreamFrameFormat v *O:ID3D11VideoProcessor,i4,*i4
+ 41 VideoProcessorGetStreamColorSpace v *O:ID3D11VideoProcessor,i4,*S:D3D11_VIDEO_PROCESSOR_COLOR_SPACE
+ 42 VideoProcessorGetStreamOutputRate v *O:ID3D11VideoProcessor,i4,*i4,*i4,*S:DXGI_RATIONAL
+ 43 VideoProcessorGetStreamSourceRect v *O:ID3D11VideoProcessor,i4,*i4,*S:tagRECT
+ 44 VideoProcessorGetStreamDestRect v *O:ID3D11VideoProcessor,i4,*i4,*S:tagRECT
+ 45 VideoProcessorGetStreamAlpha v *O:ID3D11VideoProcessor,i4,*i4,*f4
+ 46 VideoProcessorGetStreamPalette v *O:ID3D11VideoProcessor,i4,i4,*i4
+ 47 VideoProcessorGetStreamPixelAspectRatio v *O:ID3D11VideoProcessor,i4,*i4,*S:DXGI_RATIONAL,*S:DXGI_RATIONAL
+ 48 VideoProcessorGetStreamLumaKey v *O:ID3D11VideoProcessor,i4,*i4,*f4,*f4
+ 49 VideoProcessorGetStreamStereoFormat v *O:ID3D11VideoProcessor,i4,*i4,*i4,*i4,*i4,*i4,*i4
+ 50 VideoProcessorGetStreamAutoProcessingMode v *O:ID3D11VideoProcessor,i4,*i4
+ 51 VideoProcessorGetStreamFilter v *O:ID3D11VideoProcessor,i4,i4,*i4,*i4
+ 52 VideoProcessorGetStreamExtension hr *O:ID3D11VideoProcessor,i4,*S:_GUID,i4,*v
+ 53 VideoProcessorBlt hr *O:ID3D11VideoProcessor,*O:ID3D11VideoProcessorOutputView,i4,i4,*S:D3D11_VIDEO_PROCESSOR_STREAM
+ 54 NegotiateCryptoSessionKeyExchange hr *O:ID3D11CryptoSession,i4,*v
+ 55 EncryptionBlt v *O:ID3D11CryptoSession,*O:ID3D11Texture2D,*O:ID3D11Texture2D,i4,*v
+ 56 DecryptionBlt v *O:ID3D11CryptoSession,*O:ID3D11Texture2D,*O:ID3D11Texture2D,*S:D3D11_ENCRYPTED_BLOCK_INFO,i4,*v,i4,*v
+ 57 StartSessionKeyRefresh v *O:ID3D11CryptoSession,i4,*v
+ 58 FinishSessionKeyRefresh v *O:ID3D11CryptoSession
+ 59 GetEncryptionBltKey hr *O:ID3D11CryptoSession,i4,*v
+ 60 NegotiateAuthenticatedChannelKeyExchange hr *O:ID3D11AuthenticatedChannel,i4,*v
+ 61 QueryAuthenticatedChannel hr *O:ID3D11AuthenticatedChannel,i4,*v,i4,*v
+ 62 ConfigureAuthenticatedChannel hr *O:ID3D11AuthenticatedChannel,i4,*v,*S:D3D11_AUTHENTICATED_CONFIGURE_OUTPUT
+ 63 VideoProcessorSetStreamRotation v *O:ID3D11VideoProcessor,i4,i4,i4
+ 64 VideoProcessorGetStreamRotation v *O:ID3D11VideoProcessor,i4,*i4,*i4
+V ID3D11VideoContext1 ID3D11VideoContext
+ 65 SubmitDecoderBuffers1 hr *O:ID3D11VideoDecoder,i4,*S:D3D11_VIDEO_DECODER_BUFFER_DESC1
+ 66 GetDataForNewHardwareKey hr *O:ID3D11CryptoSession,i4,*v,*i8
+ 67 CheckCryptoSessionStatus hr *O:ID3D11CryptoSession,*i4
+ 68 DecoderEnableDownsampling hr *O:ID3D11VideoDecoder,i4,*S:D3D11_VIDEO_SAMPLE_DESC,i4
+ 69 DecoderUpdateDownsampling hr *O:ID3D11VideoDecoder,*S:D3D11_VIDEO_SAMPLE_DESC
+ 70 VideoProcessorSetOutputColorSpace1 v *O:ID3D11VideoProcessor,i4
+ 71 VideoProcessorSetOutputShaderUsage v *O:ID3D11VideoProcessor,i4
+ 72 VideoProcessorGetOutputColorSpace1 v *O:ID3D11VideoProcessor,*i4
+ 73 VideoProcessorGetOutputShaderUsage v *O:ID3D11VideoProcessor,*i4
+ 74 VideoProcessorSetStreamColorSpace1 v *O:ID3D11VideoProcessor,i4,i4
+ 75 VideoProcessorSetStreamMirror v *O:ID3D11VideoProcessor,i4,i4,i4,i4
+ 76 VideoProcessorGetStreamColorSpace1 v *O:ID3D11VideoProcessor,i4,*i4
+ 77 VideoProcessorGetStreamMirror v *O:ID3D11VideoProcessor,i4,*i4,*i4,*i4
+ 78 VideoProcessorGetBehaviorHints hr *O:ID3D11VideoProcessor,i4,i4,i4,i4,*S:D3D11_VIDEO_PROCESSOR_STREAM_BEHAVIOR_HINT,*i4
+V ID3D11VideoContext2 ID3D11VideoContext1
+ 79 VideoProcessorSetOutputHDRMetaData v *O:ID3D11VideoProcessor,i4,i4,*v
+ 80 VideoProcessorGetOutputHDRMetaData v *O:ID3D11VideoProcessor,*i4,i4,*v
+ 81 VideoProcessorSetStreamHDRMetaData v *O:ID3D11VideoProcessor,i4,i4,i4,*v
+ 82 VideoProcessorGetStreamHDRMetaData v *O:ID3D11VideoProcessor,i4,*i4,i4,*v
+V ID3D11VideoDecoder ID3D11DeviceChild
+ 7 GetCreationParameters hr *S:D3D11_VIDEO_DECODER_DESC,*S:D3D11_VIDEO_DECODER_CONFIG
+ 8 GetDriverHandle hr **v
+V ID3D11VideoDecoderOutputView ID3D11View
+ 8 GetDesc v *S:D3D11_VIDEO_DECODER_OUTPUT_VIEW_DESC
+V ID3D11VideoDevice IUnknown
+ 3 CreateVideoDecoder hr *S:D3D11_VIDEO_DECODER_DESC,*S:D3D11_VIDEO_DECODER_CONFIG,**O:ID3D11VideoDecoder
+ 4 CreateVideoProcessor hr *O:ID3D11VideoProcessorEnumerator,i4,**O:ID3D11VideoProcessor
+ 5 CreateAuthenticatedChannel hr i4,**O:ID3D11AuthenticatedChannel
+ 6 CreateCryptoSession hr *S:_GUID,*S:_GUID,*S:_GUID,**O:ID3D11CryptoSession
+ 7 CreateVideoDecoderOutputView hr *O:ID3D11Resource,*S:D3D11_VIDEO_DECODER_OUTPUT_VIEW_DESC,**O:ID3D11VideoDecoderOutputView
+ 8 CreateVideoProcessorInputView hr *O:ID3D11Resource,*O:ID3D11VideoProcessorEnumerator,*S:D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC,**O:ID3D11VideoProcessorInputView
+ 9 CreateVideoProcessorOutputView hr *O:ID3D11Resource,*O:ID3D11VideoProcessorEnumerator,*S:D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC,**O:ID3D11VideoProcessorOutputView
+ 10 CreateVideoProcessorEnumerator hr *S:D3D11_VIDEO_PROCESSOR_CONTENT_DESC,**O:ID3D11VideoProcessorEnumerator
+ 11 GetVideoDecoderProfileCount i4 
+ 12 GetVideoDecoderProfile hr i4,*S:_GUID
+ 13 CheckVideoDecoderFormat hr *S:_GUID,i4,*i4
+ 14 GetVideoDecoderConfigCount hr *S:D3D11_VIDEO_DECODER_DESC,*i4
+ 15 GetVideoDecoderConfig hr *S:D3D11_VIDEO_DECODER_DESC,i4,*S:D3D11_VIDEO_DECODER_CONFIG
+ 16 GetContentProtectionCaps hr *S:_GUID,*S:_GUID,*S:D3D11_VIDEO_CONTENT_PROTECTION_CAPS
+ 17 CheckCryptoKeyExchange hr *S:_GUID,*S:_GUID,i4,*S:_GUID
+ 18 SetPrivateData hr *S:_GUID,i4,*v
+ 19 SetPrivateDataInterface hr *S:_GUID,*O:IUnknown
+V ID3D11VideoDevice1 ID3D11VideoDevice
+ 20 GetCryptoSessionPrivateDataSize hr *S:_GUID,*S:_GUID,*S:_GUID,*i4,*i4
+ 21 GetVideoDecoderCaps hr *S:_GUID,i4,i4,*S:DXGI_RATIONAL,i4,*S:_GUID,*i4
+ 22 CheckVideoDecoderDownsampling hr *S:D3D11_VIDEO_DECODER_DESC,i4,*S:D3D11_VIDEO_DECODER_CONFIG,*S:DXGI_RATIONAL,*S:D3D11_VIDEO_SAMPLE_DESC,*i4,*i4
+ 23 RecommendVideoDecoderDownsampleParameters hr *S:D3D11_VIDEO_DECODER_DESC,i4,*S:D3D11_VIDEO_DECODER_CONFIG,*S:DXGI_RATIONAL,*S:D3D11_VIDEO_SAMPLE_DESC
+V ID3D11VideoProcessor ID3D11DeviceChild
+ 7 GetContentDesc v *S:D3D11_VIDEO_PROCESSOR_CONTENT_DESC
+ 8 GetRateConversionCaps v *S:D3D11_VIDEO_PROCESSOR_RATE_CONVERSION_CAPS
+V ID3D11VideoProcessorEnumerator ID3D11DeviceChild
+ 7 GetVideoProcessorContentDesc hr *S:D3D11_VIDEO_PROCESSOR_CONTENT_DESC
+ 8 CheckVideoProcessorFormat hr i4,*i4
+ 9 GetVideoProcessorCaps hr *S:D3D11_VIDEO_PROCESSOR_CAPS
+ 10 GetVideoProcessorRateConversionCaps hr i4,*S:D3D11_VIDEO_PROCESSOR_RATE_CONVERSION_CAPS
+ 11 GetVideoProcessorCustomRate hr i4,i4,*S:D3D11_VIDEO_PROCESSOR_CUSTOM_RATE
+ 12 GetVideoProcessorFilterRange hr i4,*S:D3D11_VIDEO_PROCESSOR_FILTER_RANGE
+V ID3D11VideoProcessorEnumerator1 ID3D11VideoProcessorEnumerator
+ 13 CheckVideoProcessorFormatConversion hr i4,i4,i4,i4,*i4
+V ID3D11VideoProcessorInputView ID3D11View
+ 8 GetDesc v *S:D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC
+V ID3D11VideoProcessorOutputView ID3D11View
+ 8 GetDesc v *S:D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC
+V ID3D11View ID3D11DeviceChild
+ 7 GetResource v **O:ID3D11Resource
+V IDXGIAdapter IDXGIObject
+ 7 EnumOutputs hr i4,**O:IDXGIOutput
+ 8 GetDesc hr *S:DXGI_ADAPTER_DESC
+ 9 CheckInterfaceSupport hr *S:_GUID,*S:_LARGE_INTEGER
+V IDXGIAdapter1 IDXGIAdapter
+ 10 GetDesc1 hr *S:DXGI_ADAPTER_DESC1
+V IDXGIAdapter2 IDXGIAdapter1
+ 11 GetDesc2 hr *S:DXGI_ADAPTER_DESC2
+V IDXGIAdapter3 IDXGIAdapter2
+ 12 RegisterHardwareContentProtectionTeardownStatusEvent hr *v,*i4
+ 13 UnregisterHardwareContentProtectionTeardownStatus v i4
+ 14 QueryVideoMemoryInfo hr i4,i4,*S:DXGI_QUERY_VIDEO_MEMORY_INFO
+ 15 SetVideoMemoryReservation hr i4,i4,i8
+ 16 RegisterVideoMemoryBudgetChangeNotificationEvent hr *v,*i4
+ 17 UnregisterVideoMemoryBudgetChangeNotification v i4
+V IDXGIAdapter4 IDXGIAdapter3
+ 18 GetDesc3 hr *S:DXGI_ADAPTER_DESC3
+V IDXGIDecodeSwapChain IUnknown
+ 3 PresentBuffer hr i4,i4,i4
+ 4 SetSourceRect hr *S:tagRECT
+ 5 SetTargetRect hr *S:tagRECT
+ 6 SetDestSize hr i4,i4
+ 7 GetSourceRect hr *S:tagRECT
+ 8 GetTargetRect hr *S:tagRECT
+ 9 GetDestSize hr *i4,*i4
+ 10 SetColorSpace hr i4
+ 11 GetColorSpace i4 
+V IDXGIDevice IDXGIObject
+ 7 GetAdapter hr **O:IDXGIAdapter
+ 8 CreateSurface hr *S:DXGI_SURFACE_DESC,i4,i4,*S:DXGI_SHARED_RESOURCE,**O:IDXGISurface
+ 9 QueryResourceResidency hr **O:IUnknown,*i4,i4
+ 10 SetGPUThreadPriority hr i4
+ 11 GetGPUThreadPriority hr *i4
+V IDXGIDevice1 IDXGIDevice
+ 12 SetMaximumFrameLatency hr i4
+ 13 GetMaximumFrameLatency hr *i4
+V IDXGIDevice2 IDXGIDevice1
+ 14 OfferResources hr i4,**O:IDXGIResource,i4
+ 15 ReclaimResources hr i4,**O:IDXGIResource,*i4
+ 16 EnqueueSetEvent hr *v
+V IDXGIDevice3 IDXGIDevice2
+ 17 Trim v 
+V IDXGIDevice4 IDXGIDevice3
+ 18 OfferResources1 hr i4,**O:IDXGIResource,i4,i4
+ 19 ReclaimResources1 hr i4,**O:IDXGIResource,*i4
+V IDXGIDeviceSubObject IDXGIObject
+ 7 GetDevice hr *S:_GUID,**v
+V IDXGIDisplayControl IUnknown
+ 3 IsStereoEnabled i4 
+ 4 SetStereoEnabled v i4
+V IDXGIFactory IDXGIObject
+ 7 EnumAdapters hr i4,**O:IDXGIAdapter
+ 8 MakeWindowAssociation hr H,i4
+ 9 GetWindowAssociation hr *H
+ 10 CreateSwapChain hr *O:IUnknown,*S:DXGI_SWAP_CHAIN_DESC,**O:IDXGISwapChain
+ 11 CreateSoftwareAdapter hr *S:HINSTANCE__,**O:IDXGIAdapter
+V IDXGIFactory1 IDXGIFactory
+ 12 EnumAdapters1 hr i4,**O:IDXGIAdapter1
+ 13 IsCurrent i4 
+V IDXGIFactory2 IDXGIFactory1
+ 14 IsWindowedStereoEnabled i4 
+ 15 CreateSwapChainForHwnd hr *O:IUnknown,H,*S:DXGI_SWAP_CHAIN_DESC1,*S:DXGI_SWAP_CHAIN_FULLSCREEN_DESC,*O:IDXGIOutput,**O:IDXGISwapChain1
+ 16 CreateSwapChainForCoreWindow hr *O:IUnknown,*O:IUnknown,*S:DXGI_SWAP_CHAIN_DESC1,*O:IDXGIOutput,**O:IDXGISwapChain1
+ 17 GetSharedResourceAdapterLuid hr *v,*S:_LUID
+ 18 RegisterStereoStatusWindow hr H,i4,*i4
+ 19 RegisterStereoStatusEvent hr *v,*i4
+ 20 UnregisterStereoStatus v i4
+ 21 RegisterOcclusionStatusWindow hr H,i4,*i4
+ 22 RegisterOcclusionStatusEvent hr *v,*i4
+ 23 UnregisterOcclusionStatus v i4
+ 24 CreateSwapChainForComposition hr *O:IUnknown,*S:DXGI_SWAP_CHAIN_DESC1,*O:IDXGIOutput,**O:IDXGISwapChain1
+V IDXGIFactory3 IDXGIFactory2
+ 25 GetCreationFlags i4 
+V IDXGIFactory4 IDXGIFactory3
+ 26 EnumAdapterByLuid hr S:_LUID,*S:_GUID,**v
+ 27 EnumWarpAdapter hr *S:_GUID,**v
+V IDXGIFactory5 IDXGIFactory4
+ 28 CheckFeatureSupport hr i4,*v,i4
+V IDXGIFactory6 IDXGIFactory5
+ 29 EnumAdapterByGpuPreference hr i4,i4,*S:_GUID,**v
+V IDXGIFactory7 IDXGIFactory6
+ 30 RegisterAdaptersChangedEvent hr *v,*i4
+ 31 UnregisterAdaptersChangedEvent hr i4
+V IDXGIFactoryMedia IUnknown
+ 3 CreateSwapChainForCompositionSurfaceHandle hr *O:IUnknown,*v,*S:DXGI_SWAP_CHAIN_DESC1,*O:IDXGIOutput,**O:IDXGISwapChain1
+ 4 CreateDecodeSwapChainForCompositionSurfaceHandle hr *O:IUnknown,*v,*S:DXGI_DECODE_SWAP_CHAIN_DESC,*O:IDXGIResource,*O:IDXGIOutput,**O:IDXGIDecodeSwapChain
+V IDXGIKeyedMutex IDXGIDeviceSubObject
+ 8 AcquireSync hr i8,i4
+ 9 ReleaseSync hr i8
+V IDXGIObject IUnknown
+ 3 SetPrivateData hr *S:_GUID,i4,*v
+ 4 SetPrivateDataInterface hr *S:_GUID,*O:IUnknown
+ 5 GetPrivateData hr *S:_GUID,*i4,*v
+ 6 GetParent hr *S:_GUID,**v
+V IDXGIOutput IDXGIObject
+ 7 GetDesc hr *S:DXGI_OUTPUT_DESC
+ 8 GetDisplayModeList hr i4,i4,*i4,*S:DXGI_MODE_DESC
+ 9 FindClosestMatchingMode hr *S:DXGI_MODE_DESC,*S:DXGI_MODE_DESC,*O:IUnknown
+ 10 WaitForVBlank hr 
+ 11 TakeOwnership hr *O:IUnknown,i4
+ 12 ReleaseOwnership v 
+ 13 GetGammaControlCapabilities hr *S:DXGI_GAMMA_CONTROL_CAPABILITIES
+ 14 SetGammaControl hr *S:DXGI_GAMMA_CONTROL
+ 15 GetGammaControl hr *S:DXGI_GAMMA_CONTROL
+ 16 SetDisplaySurface hr *O:IDXGISurface
+ 17 GetDisplaySurfaceData hr *O:IDXGISurface
+ 18 GetFrameStatistics hr *S:DXGI_FRAME_STATISTICS
+V IDXGIOutput1 IDXGIOutput
+ 19 GetDisplayModeList1 hr i4,i4,*i4,*S:DXGI_MODE_DESC1
+ 20 FindClosestMatchingMode1 hr *S:DXGI_MODE_DESC1,*S:DXGI_MODE_DESC1,*O:IUnknown
+ 21 GetDisplaySurfaceData1 hr *O:IDXGIResource
+ 22 DuplicateOutput hr *O:IUnknown,**O:IDXGIOutputDuplication
+V IDXGIOutput2 IDXGIOutput1
+ 23 SupportsOverlays i4 
+V IDXGIOutput3 IDXGIOutput2
+ 24 CheckOverlaySupport hr i4,*O:IUnknown,*i4
+V IDXGIOutput4 IDXGIOutput3
+ 25 CheckOverlayColorSpaceSupport hr i4,i4,*O:IUnknown,*i4
+V IDXGIOutput5 IDXGIOutput4
+ 26 DuplicateOutput1 hr *O:IUnknown,i4,i4,*i4,**O:IDXGIOutputDuplication
+V IDXGIOutput6 IDXGIOutput5
+ 27 GetDesc1 hr *S:DXGI_OUTPUT_DESC1
+ 28 CheckHardwareCompositionSupport hr *i4
+V IDXGIOutputDuplication IDXGIObject
+ 7 GetDesc v *S:DXGI_OUTDUPL_DESC
+ 8 AcquireNextFrame hr i4,*S:DXGI_OUTDUPL_FRAME_INFO,**O:IDXGIResource
+ 9 GetFrameDirtyRects hr i4,*S:tagRECT,*i4
+ 10 GetFrameMoveRects hr i4,*S:DXGI_OUTDUPL_MOVE_RECT,*i4
+ 11 GetFramePointerShape hr i4,*v,*i4,*S:DXGI_OUTDUPL_POINTER_SHAPE_INFO
+ 12 MapDesktopSurface hr *S:DXGI_MAPPED_RECT
+ 13 UnMapDesktopSurface hr 
+ 14 ReleaseFrame hr 
+V IDXGIResource IDXGIDeviceSubObject
+ 8 GetSharedHandle hr **v
+ 9 GetUsage hr *i4
+ 10 SetEvictionPriority hr i4
+ 11 GetEvictionPriority hr *i4
+V IDXGIResource1 IDXGIResource
+ 12 CreateSubresourceSurface hr i4,**O:IDXGISurface2
+ 13 CreateSharedHandle hr *S:_SECURITY_ATTRIBUTES,i4,*i2,**v
+V IDXGISurface IDXGIDeviceSubObject
+ 8 GetDesc hr *S:DXGI_SURFACE_DESC
+ 9 Map hr *S:DXGI_MAPPED_RECT,i4
+ 10 Unmap hr 
+V IDXGISurface1 IDXGISurface
+ 11 GetDC hr i4,**S:HDC__
+ 12 ReleaseDC hr *S:tagRECT
+V IDXGISurface2 IDXGISurface1
+ 13 GetResource hr *S:_GUID,**v,*i4
+V IDXGISwapChain IDXGIDeviceSubObject
+ 8 Present hr i4,i4
+ 9 GetBuffer hr i4,*S:_GUID,**v
+ 10 SetFullscreenState hr i4,*O:IDXGIOutput
+ 11 GetFullscreenState hr *i4,**O:IDXGIOutput
+ 12 GetDesc hr *S:DXGI_SWAP_CHAIN_DESC
+ 13 ResizeBuffers hr i4,i4,i4,i4,i4
+ 14 ResizeTarget hr *S:DXGI_MODE_DESC
+ 15 GetContainingOutput hr **O:IDXGIOutput
+ 16 GetFrameStatistics hr *S:DXGI_FRAME_STATISTICS
+ 17 GetLastPresentCount hr *i4
+V IDXGISwapChain1 IDXGISwapChain
+ 18 GetDesc1 hr *S:DXGI_SWAP_CHAIN_DESC1
+ 19 GetFullscreenDesc hr *S:DXGI_SWAP_CHAIN_FULLSCREEN_DESC
+ 20 GetHwnd hr *H
+ 21 GetCoreWindow hr *S:_GUID,**v
+ 22 Present1 hr i4,i4,*S:DXGI_PRESENT_PARAMETERS
+ 23 IsTemporaryMonoSupported i4 
+ 24 GetRestrictToOutput hr **O:IDXGIOutput
+ 25 SetBackgroundColor hr *S:_D3DCOLORVALUE
+ 26 GetBackgroundColor hr *S:_D3DCOLORVALUE
+ 27 SetRotation hr i4
+ 28 GetRotation hr *i4
+V IDXGISwapChain2 IDXGISwapChain1
+ 29 SetSourceSize hr i4,i4
+ 30 GetSourceSize hr *i4,*i4
+ 31 SetMaximumFrameLatency hr i4
+ 32 GetMaximumFrameLatency hr *i4
+ 33 GetFrameLatencyWaitableObject *v 
+ 34 SetMatrixTransform hr *S:DXGI_MATRIX_3X2_F
+ 35 GetMatrixTransform hr *S:DXGI_MATRIX_3X2_F
+V IDXGISwapChain3 IDXGISwapChain2
+ 36 GetCurrentBackBufferIndex i4 
+ 37 CheckColorSpaceSupport hr i4,*i4
+ 38 SetColorSpace1 hr i4
+ 39 ResizeBuffers1 hr i4,i4,i4,i4,i4,*i4,**O:IUnknown
+V IDXGISwapChain4 IDXGISwapChain3
+ 40 SetHDRMetaData hr i4,i4,*v
+V IDXGISwapChainMedia IUnknown
+ 3 GetFrameStatisticsMedia hr *S:DXGI_FRAME_STATISTICS_MEDIA
+ 4 SetPresentDuration hr i4
+ 5 CheckPresentDurationSupport hr i4,*i4,*i4
+V IDirect3D8 IUnknown
+ 3 RegisterSoftwareDevice hr *v
+ 4 GetAdapterCount i4 
+ 5 GetAdapterIdentifier hr i4,i4,*S:8._D3DADAPTER_IDENTIFIER8
+ 6 GetAdapterModeCount i4 i4
+ 7 EnumAdapterModes hr i4,i4,*S:8._D3DDISPLAYMODE
+ 8 GetAdapterDisplayMode hr i4,*S:8._D3DDISPLAYMODE
+ 9 CheckDeviceType hr i4,i4,i4,i4,i4
+ 10 CheckDeviceFormat hr i4,i4,i4,i4,i4,i4
+ 11 CheckDeviceMultiSampleType hr i4,i4,i4,i4,i4
+ 12 CheckDepthStencilMatch hr i4,i4,i4,i4,i4
+ 13 GetDeviceCaps hr i4,i4,*S:8._D3DCAPS8
+ 14 GetAdapterMonitor *S:8.HMONITOR__ i4
+ 15 CreateDevice hr i4,i4,H,i4,*S:8._D3DPRESENT_PARAMETERS_,**O:IDirect3DDevice8
+V IDirect3D9 IUnknown
+ 3 RegisterSoftwareDevice hr *v
+ 4 GetAdapterCount i4 
+ 5 GetAdapterIdentifier hr i4,i4,*S:_D3DADAPTER_IDENTIFIER9
+ 6 GetAdapterModeCount i4 i4,i4
+ 7 EnumAdapterModes hr i4,i4,i4,*S:_D3DDISPLAYMODE
+ 8 GetAdapterDisplayMode hr i4,*S:_D3DDISPLAYMODE
+ 9 CheckDeviceType hr i4,i4,i4,i4,i4
+ 10 CheckDeviceFormat hr i4,i4,i4,i4,i4,i4
+ 11 CheckDeviceMultiSampleType hr i4,i4,i4,i4,i4,*i4
+ 12 CheckDepthStencilMatch hr i4,i4,i4,i4,i4
+ 13 CheckDeviceFormatConversion hr i4,i4,i4,i4
+ 14 GetDeviceCaps hr i4,i4,*S:_D3DCAPS9
+ 15 GetAdapterMonitor *S:HMONITOR__ i4
+ 16 CreateDevice hr i4,i4,H,i4,*S:_D3DPRESENT_PARAMETERS_,**O:IDirect3DDevice9
+V IDirect3D9Ex IDirect3D9
+ 17 GetAdapterModeCountEx i4 i4,*S:D3DDISPLAYMODEFILTER
+ 18 EnumAdapterModesEx hr i4,*S:D3DDISPLAYMODEFILTER,i4,*S:D3DDISPLAYMODEEX
+ 19 GetAdapterDisplayModeEx hr i4,*S:D3DDISPLAYMODEEX,*i4
+ 20 CreateDeviceEx hr i4,i4,H,i4,*S:_D3DPRESENT_PARAMETERS_,*S:D3DDISPLAYMODEEX,**O:IDirect3DDevice9Ex
+ 21 GetAdapterLUID hr i4,*S:_LUID
+V IDirect3DBaseTexture8 IDirect3DResource8
+ 11 SetLOD i4 i4
+ 12 GetLOD i4 
+ 13 GetLevelCount i4 
+V IDirect3DBaseTexture9 IDirect3DResource9
+ 11 SetLOD i4 i4
+ 12 GetLOD i4 
+ 13 GetLevelCount i4 
+ 14 SetAutoGenFilterType hr i4
+ 15 GetAutoGenFilterType i4 
+ 16 GenerateMipSubLevels v 
+V IDirect3DCubeTexture8 IDirect3DBaseTexture8
+ 14 GetLevelDesc hr i4,*S:8._D3DSURFACE_DESC
+ 15 GetCubeMapSurface hr i4,i4,**O:IDirect3DSurface8
+ 16 LockRect hr i4,i4,*S:8._D3DLOCKED_RECT,*S:8.tagRECT,i4
+ 17 UnlockRect hr i4,i4
+ 18 AddDirtyRect hr i4,*S:8.tagRECT
+V IDirect3DCubeTexture9 IDirect3DBaseTexture9
+ 17 GetLevelDesc hr i4,*S:_D3DSURFACE_DESC
+ 18 GetCubeMapSurface hr i4,i4,**O:IDirect3DSurface9
+ 19 LockRect hr i4,i4,*S:_D3DLOCKED_RECT,*S:tagRECT,i4
+ 20 UnlockRect hr i4,i4
+ 21 AddDirtyRect hr i4,*S:tagRECT
+V IDirect3DDevice8 IUnknown
+ 3 TestCooperativeLevel hr 
+ 4 GetAvailableTextureMem i4 
+ 5 ResourceManagerDiscardBytes hr i4
+ 6 GetDirect3D hr **O:IDirect3D8
+ 7 GetDeviceCaps hr *S:8._D3DCAPS8
+ 8 GetDisplayMode hr *S:8._D3DDISPLAYMODE
+ 9 GetCreationParameters hr *S:8._D3DDEVICE_CREATION_PARAMETERS
+ 10 SetCursorProperties hr i4,i4,*O:IDirect3DSurface8
+ 11 SetCursorPosition v i4,i4,i4
+ 12 ShowCursor i4 i4
+ 13 CreateAdditionalSwapChain hr *S:8._D3DPRESENT_PARAMETERS_,**O:IDirect3DSwapChain8
+ 14 Reset hr *S:8._D3DPRESENT_PARAMETERS_
+ 15 Present hr *S:8.tagRECT,*S:8.tagRECT,H,*S:8._RGNDATA
+ 16 GetBackBuffer hr i4,i4,**O:IDirect3DSurface8
+ 17 GetRasterStatus hr *S:8._D3DRASTER_STATUS
+ 18 SetGammaRamp v i4,*S:8._D3DGAMMARAMP
+ 19 GetGammaRamp v *S:8._D3DGAMMARAMP
+ 20 CreateTexture hr i4,i4,i4,i4,i4,i4,**O:IDirect3DTexture8
+ 21 CreateVolumeTexture hr i4,i4,i4,i4,i4,i4,i4,**O:IDirect3DVolumeTexture8
+ 22 CreateCubeTexture hr i4,i4,i4,i4,i4,**O:IDirect3DCubeTexture8
+ 23 CreateVertexBuffer hr i4,i4,i4,i4,**O:IDirect3DVertexBuffer8
+ 24 CreateIndexBuffer hr i4,i4,i4,i4,**O:IDirect3DIndexBuffer8
+ 25 CreateRenderTarget hr i4,i4,i4,i4,i4,**O:IDirect3DSurface8
+ 26 CreateDepthStencilSurface hr i4,i4,i4,i4,**O:IDirect3DSurface8
+ 27 CreateImageSurface hr i4,i4,i4,**O:IDirect3DSurface8
+ 28 CopyRects hr *O:IDirect3DSurface8,*S:8.tagRECT,i4,*O:IDirect3DSurface8,*S:8.tagPOINT
+ 29 UpdateTexture hr *O:IDirect3DBaseTexture8,*O:IDirect3DBaseTexture8
+ 30 GetFrontBuffer hr *O:IDirect3DSurface8
+ 31 SetRenderTarget hr *O:IDirect3DSurface8,*O:IDirect3DSurface8
+ 32 GetRenderTarget hr **O:IDirect3DSurface8
+ 33 GetDepthStencilSurface hr **O:IDirect3DSurface8
+ 34 BeginScene hr 
+ 35 EndScene hr 
+ 36 Clear hr i4,*S:8._D3DRECT,i4,i4,f4,i4
+ 37 SetTransform hr i4,*S:8._D3DMATRIX
+ 38 GetTransform hr i4,*S:8._D3DMATRIX
+ 39 MultiplyTransform hr i4,*S:8._D3DMATRIX
+ 40 SetViewport hr *S:8._D3DVIEWPORT8
+ 41 GetViewport hr *S:8._D3DVIEWPORT8
+ 42 SetMaterial hr *S:8._D3DMATERIAL8
+ 43 GetMaterial hr *S:8._D3DMATERIAL8
+ 44 SetLight hr i4,*S:8._D3DLIGHT8
+ 45 GetLight hr i4,*S:8._D3DLIGHT8
+ 46 LightEnable hr i4,i4
+ 47 GetLightEnable hr i4,*i4
+ 48 SetClipPlane hr i4,*f4
+ 49 GetClipPlane hr i4,*f4
+ 50 SetRenderState hr i4,i4
+ 51 GetRenderState hr i4,*i4
+ 52 BeginStateBlock hr 
+ 53 EndStateBlock hr *i4
+ 54 ApplyStateBlock hr i4
+ 55 CaptureStateBlock hr i4
+ 56 DeleteStateBlock hr i4
+ 57 CreateStateBlock hr i4,*i4
+ 58 SetClipStatus hr *S:8._D3DCLIPSTATUS8
+ 59 GetClipStatus hr *S:8._D3DCLIPSTATUS8
+ 60 GetTexture hr i4,**O:IDirect3DBaseTexture8
+ 61 SetTexture hr i4,*O:IDirect3DBaseTexture8
+ 62 GetTextureStageState hr i4,i4,*i4
+ 63 SetTextureStageState hr i4,i4,i4
+ 64 ValidateDevice hr *i4
+ 65 GetInfo hr i4,*v,i4
+ 66 SetPaletteEntries hr i4,*S:8.tagPALETTEENTRY
+ 67 GetPaletteEntries hr i4,*S:8.tagPALETTEENTRY
+ 68 SetCurrentTexturePalette hr i4
+ 69 GetCurrentTexturePalette hr *i4
+ 70 DrawPrimitive hr i4,i4,i4
+ 71 DrawIndexedPrimitive hr i4,i4,i4,i4,i4
+ 72 DrawPrimitiveUP hr i4,i4,*v,i4
+ 73 DrawIndexedPrimitiveUP hr i4,i4,i4,i4,*v,i4,*v,i4
+ 74 ProcessVertices hr i4,i4,i4,*O:IDirect3DVertexBuffer8,i4
+ 75 CreateVertexShader hr *i4,*i4,*i4,i4
+ 76 SetVertexShader hr i4
+ 77 GetVertexShader hr *i4
+ 78 DeleteVertexShader hr i4
+ 79 SetVertexShaderConstant hr i4,*v,i4
+ 80 GetVertexShaderConstant hr i4,*v,i4
+ 81 GetVertexShaderDeclaration hr i4,*v,*i4
+ 82 GetVertexShaderFunction hr i4,*v,*i4
+ 83 SetStreamSource hr i4,*O:IDirect3DVertexBuffer8,i4
+ 84 GetStreamSource hr i4,**O:IDirect3DVertexBuffer8,*i4
+ 85 SetIndices hr *O:IDirect3DIndexBuffer8,i4
+ 86 GetIndices hr **O:IDirect3DIndexBuffer8,*i4
+ 87 CreatePixelShader hr *i4,*i4
+ 88 SetPixelShader hr i4
+ 89 GetPixelShader hr *i4
+ 90 DeletePixelShader hr i4
+ 91 SetPixelShaderConstant hr i4,*v,i4
+ 92 GetPixelShaderConstant hr i4,*v,i4
+ 93 GetPixelShaderFunction hr i4,*v,*i4
+ 94 DrawRectPatch hr i4,*f4,*S:8._D3DRECTPATCH_INFO
+ 95 DrawTriPatch hr i4,*f4,*S:8._D3DTRIPATCH_INFO
+ 96 DeletePatch hr i4
+V IDirect3DDevice9 IUnknown
+ 3 TestCooperativeLevel hr 
+ 4 GetAvailableTextureMem i4 
+ 5 EvictManagedResources hr 
+ 6 GetDirect3D hr **O:IDirect3D9
+ 7 GetDeviceCaps hr *S:_D3DCAPS9
+ 8 GetDisplayMode hr i4,*S:_D3DDISPLAYMODE
+ 9 GetCreationParameters hr *S:_D3DDEVICE_CREATION_PARAMETERS
+ 10 SetCursorProperties hr i4,i4,*O:IDirect3DSurface9
+ 11 SetCursorPosition v i4,i4,i4
+ 12 ShowCursor i4 i4
+ 13 CreateAdditionalSwapChain hr *S:_D3DPRESENT_PARAMETERS_,**O:IDirect3DSwapChain9
+ 14 GetSwapChain hr i4,**O:IDirect3DSwapChain9
+ 15 GetNumberOfSwapChains i4 
+ 16 Reset hr *S:_D3DPRESENT_PARAMETERS_
+ 17 Present hr *S:tagRECT,*S:tagRECT,H,*S:_RGNDATA
+ 18 GetBackBuffer hr i4,i4,i4,**O:IDirect3DSurface9
+ 19 GetRasterStatus hr i4,*S:_D3DRASTER_STATUS
+ 20 SetDialogBoxMode hr i4
+ 21 SetGammaRamp v i4,i4,*S:_D3DGAMMARAMP
+ 22 GetGammaRamp v i4,*S:_D3DGAMMARAMP
+ 23 CreateTexture hr i4,i4,i4,i4,i4,i4,**O:IDirect3DTexture9,**v
+ 24 CreateVolumeTexture hr i4,i4,i4,i4,i4,i4,i4,**O:IDirect3DVolumeTexture9,**v
+ 25 CreateCubeTexture hr i4,i4,i4,i4,i4,**O:IDirect3DCubeTexture9,**v
+ 26 CreateVertexBuffer hr i4,i4,i4,i4,**O:IDirect3DVertexBuffer9,**v
+ 27 CreateIndexBuffer hr i4,i4,i4,i4,**O:IDirect3DIndexBuffer9,**v
+ 28 CreateRenderTarget hr i4,i4,i4,i4,i4,i4,**O:IDirect3DSurface9,**v
+ 29 CreateDepthStencilSurface hr i4,i4,i4,i4,i4,i4,**O:IDirect3DSurface9,**v
+ 30 UpdateSurface hr *O:IDirect3DSurface9,*S:tagRECT,*O:IDirect3DSurface9,*S:tagPOINT
+ 31 UpdateTexture hr *O:IDirect3DBaseTexture9,*O:IDirect3DBaseTexture9
+ 32 GetRenderTargetData hr *O:IDirect3DSurface9,*O:IDirect3DSurface9
+ 33 GetFrontBufferData hr i4,*O:IDirect3DSurface9
+ 34 StretchRect hr *O:IDirect3DSurface9,*S:tagRECT,*O:IDirect3DSurface9,*S:tagRECT,i4
+ 35 ColorFill hr *O:IDirect3DSurface9,*S:tagRECT,i4
+ 36 CreateOffscreenPlainSurface hr i4,i4,i4,i4,**O:IDirect3DSurface9,**v
+ 37 SetRenderTarget hr i4,*O:IDirect3DSurface9
+ 38 GetRenderTarget hr i4,**O:IDirect3DSurface9
+ 39 SetDepthStencilSurface hr *O:IDirect3DSurface9
+ 40 GetDepthStencilSurface hr **O:IDirect3DSurface9
+ 41 BeginScene hr 
+ 42 EndScene hr 
+ 43 Clear hr i4,*S:_D3DRECT,i4,i4,f4,i4
+ 44 SetTransform hr i4,*S:_D3DMATRIX
+ 45 GetTransform hr i4,*S:_D3DMATRIX
+ 46 MultiplyTransform hr i4,*S:_D3DMATRIX
+ 47 SetViewport hr *S:_D3DVIEWPORT9
+ 48 GetViewport hr *S:_D3DVIEWPORT9
+ 49 SetMaterial hr *S:_D3DMATERIAL9
+ 50 GetMaterial hr *S:_D3DMATERIAL9
+ 51 SetLight hr i4,*S:_D3DLIGHT9
+ 52 GetLight hr i4,*S:_D3DLIGHT9
+ 53 LightEnable hr i4,i4
+ 54 GetLightEnable hr i4,*i4
+ 55 SetClipPlane hr i4,*f4
+ 56 GetClipPlane hr i4,*f4
+ 57 SetRenderState hr i4,i4
+ 58 GetRenderState hr i4,*i4
+ 59 CreateStateBlock hr i4,**O:IDirect3DStateBlock9
+ 60 BeginStateBlock hr 
+ 61 EndStateBlock hr **O:IDirect3DStateBlock9
+ 62 SetClipStatus hr *S:_D3DCLIPSTATUS9
+ 63 GetClipStatus hr *S:_D3DCLIPSTATUS9
+ 64 GetTexture hr i4,**O:IDirect3DBaseTexture9
+ 65 SetTexture hr i4,*O:IDirect3DBaseTexture9
+ 66 GetTextureStageState hr i4,i4,*i4
+ 67 SetTextureStageState hr i4,i4,i4
+ 68 GetSamplerState hr i4,i4,*i4
+ 69 SetSamplerState hr i4,i4,i4
+ 70 ValidateDevice hr *i4
+ 71 SetPaletteEntries hr i4,*S:tagPALETTEENTRY
+ 72 GetPaletteEntries hr i4,*S:tagPALETTEENTRY
+ 73 SetCurrentTexturePalette hr i4
+ 74 GetCurrentTexturePalette hr *i4
+ 75 SetScissorRect hr *S:tagRECT
+ 76 GetScissorRect hr *S:tagRECT
+ 77 SetSoftwareVertexProcessing hr i4
+ 78 GetSoftwareVertexProcessing i4 
+ 79 SetNPatchMode hr f4
+ 80 GetNPatchMode f4 
+ 81 DrawPrimitive hr i4,i4,i4
+ 82 DrawIndexedPrimitive hr i4,i4,i4,i4,i4,i4
+ 83 DrawPrimitiveUP hr i4,i4,*v,i4
+ 84 DrawIndexedPrimitiveUP hr i4,i4,i4,i4,*v,i4,*v,i4
+ 85 ProcessVertices hr i4,i4,i4,*O:IDirect3DVertexBuffer9,*O:IDirect3DVertexDeclaration9,i4
+ 86 CreateVertexDeclaration hr *S:_D3DVERTEXELEMENT9,**O:IDirect3DVertexDeclaration9
+ 87 SetVertexDeclaration hr *O:IDirect3DVertexDeclaration9
+ 88 GetVertexDeclaration hr **O:IDirect3DVertexDeclaration9
+ 89 SetFVF hr i4
+ 90 GetFVF hr *i4
+ 91 CreateVertexShader hr *i4,**O:IDirect3DVertexShader9
+ 92 SetVertexShader hr *O:IDirect3DVertexShader9
+ 93 GetVertexShader hr **O:IDirect3DVertexShader9
+ 94 SetVertexShaderConstantF hr i4,*f4,i4
+ 95 GetVertexShaderConstantF hr i4,*f4,i4
+ 96 SetVertexShaderConstantI hr i4,*i4,i4
+ 97 GetVertexShaderConstantI hr i4,*i4,i4
+ 98 SetVertexShaderConstantB hr i4,*i4,i4
+ 99 GetVertexShaderConstantB hr i4,*i4,i4
+ 100 SetStreamSource hr i4,*O:IDirect3DVertexBuffer9,i4,i4
+ 101 GetStreamSource hr i4,**O:IDirect3DVertexBuffer9,*i4,*i4
+ 102 SetStreamSourceFreq hr i4,i4
+ 103 GetStreamSourceFreq hr i4,*i4
+ 104 SetIndices hr *O:IDirect3DIndexBuffer9
+ 105 GetIndices hr **O:IDirect3DIndexBuffer9
+ 106 CreatePixelShader hr *i4,**O:IDirect3DPixelShader9
+ 107 SetPixelShader hr *O:IDirect3DPixelShader9
+ 108 GetPixelShader hr **O:IDirect3DPixelShader9
+ 109 SetPixelShaderConstantF hr i4,*f4,i4
+ 110 GetPixelShaderConstantF hr i4,*f4,i4
+ 111 SetPixelShaderConstantI hr i4,*i4,i4
+ 112 GetPixelShaderConstantI hr i4,*i4,i4
+ 113 SetPixelShaderConstantB hr i4,*i4,i4
+ 114 GetPixelShaderConstantB hr i4,*i4,i4
+ 115 DrawRectPatch hr i4,*f4,*S:_D3DRECTPATCH_INFO
+ 116 DrawTriPatch hr i4,*f4,*S:_D3DTRIPATCH_INFO
+ 117 DeletePatch hr i4
+ 118 CreateQuery hr i4,**O:IDirect3DQuery9
+V IDirect3DDevice9Ex IDirect3DDevice9
+ 119 SetConvolutionMonoKernel hr i4,i4,*f4,*f4
+ 120 ComposeRects hr *O:IDirect3DSurface9,*O:IDirect3DSurface9,*O:IDirect3DVertexBuffer9,i4,*O:IDirect3DVertexBuffer9,i4,i4,i4
+ 121 PresentEx hr *S:tagRECT,*S:tagRECT,H,*S:_RGNDATA,i4
+ 122 GetGPUThreadPriority hr *i4
+ 123 SetGPUThreadPriority hr i4
+ 124 WaitForVBlank hr i4
+ 125 CheckResourceResidency hr **O:IDirect3DResource9,i4
+ 126 SetMaximumFrameLatency hr i4
+ 127 GetMaximumFrameLatency hr *i4
+ 128 CheckDeviceState hr H
+ 129 CreateRenderTargetEx hr i4,i4,i4,i4,i4,i4,**O:IDirect3DSurface9,**v,i4
+ 130 CreateOffscreenPlainSurfaceEx hr i4,i4,i4,i4,**O:IDirect3DSurface9,**v,i4
+ 131 CreateDepthStencilSurfaceEx hr i4,i4,i4,i4,i4,i4,**O:IDirect3DSurface9,**v,i4
+ 132 ResetEx hr *S:_D3DPRESENT_PARAMETERS_,*S:D3DDISPLAYMODEEX
+ 133 GetDisplayModeEx hr i4,*S:D3DDISPLAYMODEEX,*i4
+V IDirect3DIndexBuffer8 IDirect3DResource8
+ 11 Lock hr i4,i4,**i1,i4
+ 12 Unlock hr 
+ 13 GetDesc hr *S:8._D3DINDEXBUFFER_DESC
+V IDirect3DIndexBuffer9 IDirect3DResource9
+ 11 Lock hr i4,i4,**v,i4
+ 12 Unlock hr 
+ 13 GetDesc hr *S:_D3DINDEXBUFFER_DESC
+V IDirect3DPixelShader9 IUnknown
+ 3 GetDevice hr **O:IDirect3DDevice9
+ 4 GetFunction hr *v,*i4
+V IDirect3DQuery9 IUnknown
+ 3 GetDevice hr **O:IDirect3DDevice9
+ 4 GetType i4 
+ 5 GetDataSize i4 
+ 6 Issue hr i4
+ 7 GetData hr *v,i4,i4
+V IDirect3DResource8 IUnknown
+ 3 GetDevice hr **O:IDirect3DDevice8
+ 4 SetPrivateData hr *S:8._GUID,*v,i4,i4
+ 5 GetPrivateData hr *S:8._GUID,*v,*i4
+ 6 FreePrivateData hr *S:8._GUID
+ 7 SetPriority i4 i4
+ 8 GetPriority i4 
+ 9 PreLoad v 
+ 10 GetType i4 
+V IDirect3DResource9 IUnknown
+ 3 GetDevice hr **O:IDirect3DDevice9
+ 4 SetPrivateData hr *S:_GUID,*v,i4,i4
+ 5 GetPrivateData hr *S:_GUID,*v,*i4
+ 6 FreePrivateData hr *S:_GUID
+ 7 SetPriority i4 i4
+ 8 GetPriority i4 
+ 9 PreLoad v 
+ 10 GetType i4 
+V IDirect3DStateBlock9 IUnknown
+ 3 GetDevice hr **O:IDirect3DDevice9
+ 4 Capture hr 
+ 5 Apply hr 
+V IDirect3DSurface8 IUnknown
+ 3 GetDevice hr **O:IDirect3DDevice8
+ 4 SetPrivateData hr *S:8._GUID,*v,i4,i4
+ 5 GetPrivateData hr *S:8._GUID,*v,*i4
+ 6 FreePrivateData hr *S:8._GUID
+ 7 GetContainer hr *S:8._GUID,**v
+ 8 GetDesc hr *S:8._D3DSURFACE_DESC
+ 9 LockRect hr *S:8._D3DLOCKED_RECT,*S:8.tagRECT,i4
+ 10 UnlockRect hr 
+V IDirect3DSurface9 IDirect3DResource9
+ 11 GetContainer hr *S:_GUID,**v
+ 12 GetDesc hr *S:_D3DSURFACE_DESC
+ 13 LockRect hr *S:_D3DLOCKED_RECT,*S:tagRECT,i4
+ 14 UnlockRect hr 
+ 15 GetDC hr **S:HDC__
+ 16 ReleaseDC hr *S:HDC__
+V IDirect3DSwapChain8 IUnknown
+ 3 Present hr *S:8.tagRECT,*S:8.tagRECT,H,*S:8._RGNDATA
+ 4 GetBackBuffer hr i4,i4,**O:IDirect3DSurface8
+V IDirect3DSwapChain9 IUnknown
+ 3 Present hr *S:tagRECT,*S:tagRECT,H,*S:_RGNDATA,i4
+ 4 GetFrontBufferData hr *O:IDirect3DSurface9
+ 5 GetBackBuffer hr i4,i4,**O:IDirect3DSurface9
+ 6 GetRasterStatus hr *S:_D3DRASTER_STATUS
+ 7 GetDisplayMode hr *S:_D3DDISPLAYMODE
+ 8 GetDevice hr **O:IDirect3DDevice9
+ 9 GetPresentParameters hr *S:_D3DPRESENT_PARAMETERS_
+V IDirect3DSwapChain9Ex IDirect3DSwapChain9
+ 10 GetLastPresentCount hr *i4
+ 11 GetPresentStats hr *S:_D3DPRESENTSTATS
+ 12 GetDisplayModeEx hr *S:D3DDISPLAYMODEEX,*i4
+V IDirect3DTexture8 IDirect3DBaseTexture8
+ 14 GetLevelDesc hr i4,*S:8._D3DSURFACE_DESC
+ 15 GetSurfaceLevel hr i4,**O:IDirect3DSurface8
+ 16 LockRect hr i4,*S:8._D3DLOCKED_RECT,*S:8.tagRECT,i4
+ 17 UnlockRect hr i4
+ 18 AddDirtyRect hr *S:8.tagRECT
+V IDirect3DTexture9 IDirect3DBaseTexture9
+ 17 GetLevelDesc hr i4,*S:_D3DSURFACE_DESC
+ 18 GetSurfaceLevel hr i4,**O:IDirect3DSurface9
+ 19 LockRect hr i4,*S:_D3DLOCKED_RECT,*S:tagRECT,i4
+ 20 UnlockRect hr i4
+ 21 AddDirtyRect hr *S:tagRECT
+V IDirect3DVertexBuffer8 IDirect3DResource8
+ 11 Lock hr i4,i4,**i1,i4
+ 12 Unlock hr 
+ 13 GetDesc hr *S:8._D3DVERTEXBUFFER_DESC
+V IDirect3DVertexBuffer9 IDirect3DResource9
+ 11 Lock hr i4,i4,**v,i4
+ 12 Unlock hr 
+ 13 GetDesc hr *S:_D3DVERTEXBUFFER_DESC
+V IDirect3DVertexDeclaration9 IUnknown
+ 3 GetDevice hr **O:IDirect3DDevice9
+ 4 GetDeclaration hr *S:_D3DVERTEXELEMENT9,*i4
+V IDirect3DVertexShader9 IUnknown
+ 3 GetDevice hr **O:IDirect3DDevice9
+ 4 GetFunction hr *v,*i4
+V IDirect3DVolume8 IUnknown
+ 3 GetDevice hr **O:IDirect3DDevice8
+ 4 SetPrivateData hr *S:8._GUID,*v,i4,i4
+ 5 GetPrivateData hr *S:8._GUID,*v,*i4
+ 6 FreePrivateData hr *S:8._GUID
+ 7 GetContainer hr *S:8._GUID,**v
+ 8 GetDesc hr *S:8._D3DVOLUME_DESC
+ 9 LockBox hr *S:8._D3DLOCKED_BOX,*S:8._D3DBOX,i4
+ 10 UnlockBox hr 
+V IDirect3DVolume9 IUnknown
+ 3 GetDevice hr **O:IDirect3DDevice9
+ 4 SetPrivateData hr *S:_GUID,*v,i4,i4
+ 5 GetPrivateData hr *S:_GUID,*v,*i4
+ 6 FreePrivateData hr *S:_GUID
+ 7 GetContainer hr *S:_GUID,**v
+ 8 GetDesc hr *S:_D3DVOLUME_DESC
+ 9 LockBox hr *S:_D3DLOCKED_BOX,*S:_D3DBOX,i4
+ 10 UnlockBox hr 
+V IDirect3DVolumeTexture8 IDirect3DBaseTexture8
+ 14 GetLevelDesc hr i4,*S:8._D3DVOLUME_DESC
+ 15 GetVolumeLevel hr i4,**O:IDirect3DVolume8
+ 16 LockBox hr i4,*S:8._D3DLOCKED_BOX,*S:8._D3DBOX,i4
+ 17 UnlockBox hr i4
+ 18 AddDirtyBox hr *S:8._D3DBOX
+V IDirect3DVolumeTexture9 IDirect3DBaseTexture9
+ 17 GetLevelDesc hr i4,*S:_D3DVOLUME_DESC
+ 18 GetVolumeLevel hr i4,**O:IDirect3DVolume9
+ 19 LockBox hr i4,*S:_D3DLOCKED_BOX,*S:_D3DBOX,i4
+ 20 UnlockBox hr i4
+ 21 AddDirtyBox hr *S:_D3DBOX
+V IUnknown -
+ 0 QueryInterface hr *S:_GUID,**v
+ 1 AddRef i4 
+ 2 Release i4 
+F CreateDXGIFactory hr *S:_GUID,**v
+F CreateDXGIFactory1 hr *S:_GUID,**v
+F D3D11CreateDevice hr *O:IDXGIAdapter,i4,*S:HINSTANCE__,i4,*i4,i4,i4,**O:ID3D11Device,*i4,**O:ID3D11DeviceContext
+F D3D11CreateDeviceAndSwapChain hr *O:IDXGIAdapter,i4,*S:HINSTANCE__,i4,*i4,i4,i4,*S:DXGI_SWAP_CHAIN_DESC,**O:IDXGISwapChain,**O:ID3D11Device,*i4,**O:ID3D11DeviceContext
+F Direct3DCreate8 *O:IDirect3D8 i4
+F Direct3DCreate9 *O:IDirect3D9 i4
+F Direct3DCreate9Ex hr i4,**O:IDirect3D9Ex

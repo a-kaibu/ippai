@@ -1,7 +1,7 @@
-# Records with apitrace (github.com/apitrace/apitrace) on Windows the D3D9 calls of the winref
+# Records with apitrace (github.com/apitrace/apitrace) on Windows the D3D8/9/11 calls of the winref
 # probes tests/replay/record.txt lists, into tests/replay/traces/<probe>.trace (a commit on main,
 # with <probe>.src: the probe's sources' hash, so a changed probe is recorded again). winref then
-# builds each trace into a probe of its own (replay_<probe>-32.exe: tests/replay/d3d9replay.c
+# builds each trace into a probe of its own (replay_<probe>-<bits>.exe: tests/replay/replay.c
 # playing it back), takes Windows' answers for it and checks sake against them; check.py checks
 # that the replay on Windows reads back the probe's own pictures. Games' traces never come here
 # (they hold the games' pictures): docs/replay.md.

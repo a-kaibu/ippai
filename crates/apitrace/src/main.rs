@@ -1,5 +1,6 @@
-//! apitrace <trace> <stream>: an apitrace D3D9 trace (32-bit, recorded on Windows) as the call
-//! stream tests/replay/d3d9replay.c plays back (docs/replay.md); apitrace dump <trace>: its calls
+//! apitrace [-32|-64] <trace> <stream>: an apitrace D3D8 / D3D9 / D3D11 trace (recorded on
+//! Windows) as the call stream tests/replay/replay.c plays back (docs/replay.md);
+//! apitrace dump <trace>: its calls
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     if a.len() == 3 && a[1] == "dump" {
@@ -8,19 +9,22 @@ fn main() {
         let mut p = apitrace::trace::Parser::new(&ev).unwrap();
         println!("{:?}", p.properties);
         while let Some(c) = p.next_call().unwrap() {
-            println!("{} {}{} in {:?} out {:?} ret {:?}", c.no, c.sig.name, if c.fake { " (fake)" } else { "" }, c.args_in, c.args_out, c.ret);
+            println!("{c}");
         }
         return;
     }
+    // (-32 / -64: the trace's pointer width, found from its addresses otherwise)
+    let bits = a.iter().find_map(|x| match x.as_str() { "-32" => Some(32), "-64" => Some(64), _ => None });
+    let a: Vec<String> = a.into_iter().filter(|x| x != "-32" && x != "-64").collect();
     if a.len() != 3 {
-        eprintln!("usage: apitrace <in.trace> <out.rpl>");
+        eprintln!("usage: apitrace [-32|-64] <in.trace> <out.rpl>");
         std::process::exit(2);
     }
     let run = || -> Result<(), String> {
         let file = std::fs::read(&a[1]).map_err(|e| format!("{}: {e}", a[1]))?;
-        let (out, stats) = apitrace::replay::convert(&apitrace::trace::unpack(&file)?)?;
+        let (out, stats) = apitrace::replay::convert(&apitrace::trace::unpack(&file)?, bits)?;
         std::fs::write(&a[2], out).map_err(|e| format!("{}: {e}", a[2]))?;
-        eprintln!("{}: {} calls, {} replayed, {} memcpy", a[1], stats.calls, stats.written, stats.memcpys);
+        eprintln!("{}: {}-bit, {} calls, {} replayed, {} memcpy", a[1], stats.ptrbits, stats.calls, stats.written, stats.memcpys);
         for (name, n) in &stats.dropped {
             eprintln!("  not replayed: {name} x{n}");
         }

@@ -39,10 +39,10 @@ def sources(probe):
                 extra += [os.path.join(shim, f) for f in sorted(os.listdir(shim))]
             return [cpp] + extra
     elif base.startswith("replay_"):
-        # (a recorded D3D9 trace played back: tests/replay; the converter is part of it)
+        # (a recorded D3D trace played back: tests/replay; the converter is part of it)
         rep = os.path.join(ROOT, "tests", "replay")
         conv = os.path.join(ROOT, "crates", "apitrace", "src")
-        return [os.path.join(rep, "traces", base[7:] + ".trace")] + [os.path.join(rep, f) for f in ("d3d9replay.c", "methods.sh", "build.sh")] + [os.path.join(conv, f) for f in ("replay.rs", "trace.rs", "snappy.rs")] + [os.path.join(HERE, f) for f in COMMON]
+        return [os.path.join(rep, "traces", base[7:] + ".trace")] + [os.path.join(rep, f) for f in ("replay.c", "replay.h", "d3d9img.c", "d3d8img.c", "d3d11img.c", "build.sh")] + [os.path.join(conv, f) for f in ("replay.rs", "layout.rs", "layouts.txt", "trace.rs", "snappy.rs")] + [os.path.join(HERE, f) for f in COMMON]
     else:
         main = os.path.join(HERE, "probes", base + ".c")
     # (a probe's data header, e.g. imaging_data.h)

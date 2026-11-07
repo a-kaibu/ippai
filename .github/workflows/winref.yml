@@ -59,6 +59,9 @@ jobs:
           key: apt-${{ env.CI_IMAGE }}-mingw-w64-clang-lld-llvm
       - name: Build the probes
         run: tests/winref/build.sh "$RUNNER_TEMP/exe" && tests/winref/build-msvc.sh "$RUNNER_TEMP/exe"
+      # (the replay's layouts are the headers' (clang) and gcc's; check.py's matching; asset.sh)
+      - name: The replay's own checks
+        run: python3 tests/replay/layouts.py --check && python3 tests/replay/layouts_test.py && python3 tests/replay/check_test.py && sh tests/replay/asset_test.sh
       # (a probe's trace replayed on Windows reads back the probe's own pictures: tests/replay)
       - name: Replays of the probes' traces against the probes
         run: python3 tests/replay/check.py
