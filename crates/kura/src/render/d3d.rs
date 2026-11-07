@@ -2300,7 +2300,10 @@ impl D3d {
             self.use_tex(dt);
             return;
         }
-        if st == dt || t_fmt == DS {
+        // (stretching blits draw a level of one 2D layer: none of array or 3D textures, which no
+        // Direct3D 11 copy stretches; their views would be arrays, invalid for the blit, and take
+        // the command buffer with them)
+        if st == dt || t_fmt == DS || [st, dt].iter().any(|i| self.textures.get(i).is_none_or(|x| x.layers > 1 || x.dim != "2d")) {
             return;
         }
         let pipe = self.blit_pipe(t_fmt);

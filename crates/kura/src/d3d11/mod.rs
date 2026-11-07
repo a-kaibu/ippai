@@ -2584,6 +2584,7 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
             // ClearRenderTargetView(view, color)
             let v = d.id_of(a(1));
             if let Some((tex, level, layer)) = view_target(d, v) {
+                let layers = view_layers(d, v);
                 let mut c = [rd(a(2), 0), rd(a(2), 1), rd(a(2), 2), rd(a(2), 3)];
                 // 8-bit UNORM targets: the color as the runtime converts it (each channel
                 // clamped, times 255 in floats, rounded to even), not left to the GPU's own
@@ -2594,7 +2595,10 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
                         *x = ((f * 255.0).round_ties_even() / 255.0).to_bits();
                     }
                 }
-                gpu::record(|q| q.cmd(&[gpu::CLEAR_VIEW, tex, level, layer, 1, c[0], c[1], c[2], c[3], 0, 0]));
+                // (every layer (or 3D slice) the view has)
+                for l in layer..layer + layers {
+                    gpu::record(|q| q.cmd(&[gpu::CLEAR_VIEW, tex, level, l, 1, c[0], c[1], c[2], c[3], 0, 0]));
+                }
                 d.targets = None;
             }
         }
@@ -2602,7 +2606,9 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
             // ClearDepthStencilView(view, flags, depth, stencil)
             let v = d.id_of(a(1));
             if let Some((tex, level, layer)) = view_target(d, v) {
-                gpu::record(|q| q.cmd(&[gpu::CLEAR_VIEW, tex, level, layer, (a(2) & 3) << 1, 0, 0, 0, 0, a(3), a(4) & 0xff]));
+                for l in layer..layer + view_layers(d, v) {
+                    gpu::record(|q| q.cmd(&[gpu::CLEAR_VIEW, tex, level, l, (a(2) & 3) << 1, 0, 0, 0, 0, a(3), a(4) & 0xff]));
+                }
                 d.targets = None;
             }
         }
@@ -2828,6 +2834,14 @@ fn view_target(d: &D11, v: u32) -> Option<(u32, u32, u32)> {
     let Some(Data::View(v)) = d.objs.get(&v).map(|o| &o.data) else { return None };
     let Some(Data::Texture(t)) = d.objs.get(&v.res).map(|o| &o.data) else { return None };
     Some((t.gpu, v.mip, v.layer))
+}
+
+/// How many array layers (3D slices) a view covers (1 at least).
+fn view_layers(d: &D11, v: u32) -> u32 {
+    match d.objs.get(&v).map(|o| &o.data) {
+        Some(Data::View(v)) => v.layers.max(1),
+        _ => 1,
+    }
 }
 
 /// Map(resource, subresource, type, flags, out); `dxgi`: IDXGISurface::Map's DXGI_MAPPED_RECT

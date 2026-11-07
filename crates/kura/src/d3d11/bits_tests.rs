@@ -385,3 +385,159 @@ fn random_regions_move_the_bytes() {
     assert!(ran.get() >= 96, "{} cases ran", ran.get());
     dev.done();
 }
+
+fn gpu_of(t: u32) -> u32 {
+    let g = D11S.lock().unwrap();
+    let d = g.as_ref().unwrap();
+    match &d.objs[&d.id_of(t)].data {
+        Data::Texture(t) => t.gpu,
+        _ => 0,
+    }
+}
+
+/// The page's pixels of a level and layer (READBACK, 4 bytes a texel), None: refused (the
+/// readback answered, the memory untouched).
+fn page_read(g: u32, word: u32, w: u32, h: u32, req: u32) -> Option<Vec<u8>> {
+    let rb = mem(4 * w * h);
+    unsafe { std::ptr::write_bytes(rb as *mut u8, 0xa5, (4 * w * h) as usize) };
+    gpu::pump();
+    gpu::record(|b| b.cmd(&[gpu::READBACK, req, g, word, 0, 0, w, h, rb, 4 * w]));
+    assert!(gpu::wait_readback(req));
+    let v = unsafe { std::slice::from_raw_parts(rb as *const u8, (4 * w * h) as usize) }.to_vec();
+    (!v.iter().all(|&b| b == 0xa5)).then_some(v)
+}
+
+/// The page's COPY and READBACK with layers and 3D slices: within one texture between layers,
+/// several slices between formats the page copies through a buffer, every level's slice count,
+/// and nothing (no WebGPU error, nothing changed) for a level, layer or slice past the texture
+/// or a stretching copy of layers.
+#[test]
+fn page_copies_and_readbacks_stay_inside() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    *D11S.lock().unwrap() = None;
+    let dev = Dev::new();
+    let mut rng = Rng(0x1234_5678_9abc_def1);
+    // a 4x4 array of 2 layers and 2 levels: layer 0 level 0 to layer 1 level 0 of itself
+    let arr = Shape(2, 4, 4, 2, 2);
+    let data = random_subs(&mut rng, arr, 28);
+    let a = dev.tex(arr, 28, false, Some(&data));
+    call1(m(IF_CONTEXT, 46), &[dev.ctx, a, 2, 0, 0, 0, a, 0, 0]);
+    let ga = gpu_of(a);
+    assert_eq!(page_read(ga, 1 << 16, 4, 4, 0x5400_0001).as_deref(), Some(&data[0][..]), "layer 1 after the copy");
+    assert_eq!(page_read(ga, 1 | 1 << 16, 2, 2, 0x5400_0002).as_deref(), Some(&data[3][..]), "layer 1 level 1 kept");
+    // refused: level 2 of 2, layer 2 of 2
+    assert_eq!(page_read(ga, 2, 1, 1, 0x5400_0003), None);
+    assert_eq!(page_read(ga, 2 << 16, 4, 4, 0x5400_0004), None);
+    // a 3D texture 4x4x4 of 3 levels (4, 2, 1 slices) to one of another format of the group
+    // (R8G8B8A8 UNORM to UINT: through a buffer), every slice of every level
+    let vol = Shape(3, 4, 4, 4, 3);
+    let vdata = random_subs(&mut rng, vol, 28);
+    let v = dev.tex(vol, 28, false, Some(&vdata));
+    let v2 = dev.tex(vol, 30, false, None);
+    call1(m(IF_CONTEXT, 47), &[dev.ctx, v2, v]);
+    let gv2 = gpu_of(v2);
+    for (l, (w, slices)) in [(4u32, 4u32), (2, 2), (1, 1)].into_iter().enumerate() {
+        let n = (4 * w * w) as usize;
+        for z in 0..slices {
+            let got = page_read(gv2, l as u32 | z << 16, w, w, 0x5400_0010 + 4 * l as u32 + z);
+            assert_eq!(got.as_deref(), Some(&vdata[l][z as usize * n..(z as usize + 1) * n]), "3D level {l} slice {z}");
+        }
+        assert_eq!(page_read(gv2, l as u32 | slices << 16, w, w, 0x5400_0020 + l as u32), None, "3D level {l} slice {slices}");
+    }
+    // slices 1-2 of the 3D texture's level 0 to slices 2-3 of another format's (through a buffer)
+    let v3 = dev.tex(vol, 30, false, None);
+    let bx = mem(24);
+    put(bx, &[0, 0, 1, 4, 4, 3]);
+    call1(m(IF_CONTEXT, 46), &[dev.ctx, v3, 0, 0, 0, 2, v, 0, bx]);
+    let gv3 = gpu_of(v3);
+    for z in 0..4u32 {
+        let want = if z >= 2 { vdata[0][(z as usize - 1) * 64..z as usize * 64].to_vec() } else { vec![0; 64] };
+        assert_eq!(page_read(gv3, z << 16, 4, 4, 0x5400_0028 + z).unwrap(), want, "3D slice {z} after the region copy");
+    }
+    // a wide one through a buffer (rows of more than 256 bytes)
+    let wide = Shape(2, 128, 2, 1, 1);
+    let wdata = random_subs(&mut rng, wide, 28);
+    let w1 = dev.tex(wide, 28, false, Some(&wdata));
+    let w2 = dev.tex(wide, 30, false, None);
+    call1(m(IF_CONTEXT, 47), &[dev.ctx, w2, w1]);
+    assert_eq!(page_read(gpu_of(w2), 0, 128, 2, 0x5400_002f).unwrap(), wdata[0], "128 wide through a buffer");
+    // readbacks of boxes past a level (level 1 is 2x2): refused
+    assert_eq!(page_read(ga, 1, 4, 4, 0x5400_0005), None);
+    assert_eq!(page_read(ga, 1, 2, 1, 0x5400_0006).map(|v| v.len()), Some(8));
+    let rb = mem(64);
+    for (k, (x, y, w, h)) in [(1u32, 0u32, 2u32, 1u32), (0, 1, 1, 2)].into_iter().enumerate() {
+        unsafe { std::ptr::write_bytes(rb as *mut u8, 0xa5, 64) };
+        gpu::pump();
+        let req = 0x5400_0007 + k as u32;
+        gpu::record(|b| b.cmd(&[gpu::READBACK, req, ga, 1, x, y, w, h, rb, 16]));
+        assert!(gpu::wait_readback(req));
+        assert!(unsafe { std::slice::from_raw_parts(rb as *const u8, 64) }.iter().all(|&b| b == 0xa5), "box {x},{y} {w}x{h} of a 2x2 level read");
+    }
+    // page COPY commands past the textures, or stretching layers: nothing
+    let other = dev.tex(arr, 28, false, Some(&random_subs(&mut rng, arr, 28)));
+    let (g, go) = (gpu_of(a), gpu_of(other));
+    let before: Vec<_> = (0..2).map(|k| page_read(ga, k << 16, 4, 4, 0x5400_0030 + k)).collect();
+    let vol_before: Vec<_> = (0..2).map(|k| page_read(gv2, 1 | k << 16, 2, 2, 0x5400_0034 + k)).collect();
+    for c in [
+        [gpu::COPY, go, 2 << 16, 0, 0, 4, 4, g, 0, 0, 0, 4, 4, 0],
+        [gpu::COPY, go, 0, 0, 0, 4, 4, g, 2 << 16, 0, 0, 4, 4, 0],
+        [gpu::COPY, go, 0, 0, 0, 4, 4, g, 1 << 16, 0, 0, 4, 4, 2 << 16],
+        [gpu::COPY, go, 1 << 16, 0, 0, 4, 4, g, 0, 0, 0, 2, 2, 1],
+        [gpu::COPY, go, 0, 0, 0, 4, 4, g, 1 << 16, 0, 0, 2, 2, 1],
+        [gpu::COPY, go, 0, 0, 0, 4, 4, g, 0, 0, 0, 4, 4, 1 | 2 << 16],
+        [gpu::COPY, go, 1 << 16, 0, 0, 4, 4, g, 1 << 16, 0, 0, 2, 2, 1],
+        // (level 1 of the 3D textures has 2 slices)
+        [gpu::COPY, gpu_of(v), 1 | 2 << 16, 0, 0, 2, 2, gv2, 1, 0, 0, 2, 2, 0],
+        [gpu::COPY, gpu_of(v), 1, 0, 0, 2, 2, gv2, 1 | 2 << 16, 0, 0, 2, 2, 0],
+    ] {
+        gpu::record(|b| b.cmd(&c));
+    }
+    let after: Vec<_> = (0..2).map(|k| page_read(ga, k << 16, 4, 4, 0x5400_0040 + k)).collect();
+    assert_eq!(before, after, "copies past the texture or stretching layers changed it");
+    let vol_after: Vec<_> = (0..2).map(|k| page_read(gv2, 1 | k << 16, 2, 2, 0x5400_0044 + k)).collect();
+    assert_eq!(vol_before, vol_after, "copies past a 3D level's slices changed it");
+    // a stretching copy (Direct3D 9's StretchRect) of 2D textures of one layer: drawn; of an
+    // array's layer 0: nothing (above), no WebGPU error
+    let flat = Shape(2, 4, 4, 1, 1);
+    let (p1, p2) = (dev.tex_bound(flat, 28, 0x28, Some(&random_subs(&mut rng, flat, 28))), dev.tex_bound(flat, 28, 0x28, None));
+    gpu::record(|b| b.cmd(&[gpu::COPY, gpu_of(p1), 0, 0, 0, 4, 4, gpu_of(p2), 0, 0, 0, 2, 2, 1]));
+    assert_ne!(page_read(gpu_of(p2), 0, 4, 4, 0x5400_0050).unwrap(), vec![0; 64], "a linear stretch drew nothing");
+    gpu::record(|b| b.cmd(&[gpu::COPY, go, 0, 0, 0, 4, 4, g, 0, 0, 0, 2, 2, 1]));
+    assert_eq!(page_read(ga, 0, 4, 4, 0x5400_0051), before[0], "a stretch into an array's layer drew");
+    dev.release(p1);
+    dev.release(p2);
+    for t in [a, v, v2, v3, w1, w2, other] {
+        dev.release(t);
+    }
+    dev.done();
+}
+
+/// ClearRenderTargetView of an array view clears every layer it has, no other (Wine's
+/// test_clear_render_target_view_2d: layers 1-3 of 5).
+#[test]
+fn array_view_clears_its_layers() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    *D11S.lock().unwrap() = None;
+    let dev = Dev::new();
+    let s = Shape(2, 4, 4, 5, 1);
+    let t = dev.tex_bound(s, 28, 0x28, None);
+    assert_ne!(t, 0);
+    // D3D11_RENDER_TARGET_VIEW_DESC: R8G8B8A8_UNORM, TEXTURE2DARRAY, mip 0, layers 1..4
+    let desc = mem(24);
+    put(desc, &[28, 5, 0, 1, 3]);
+    let out = mem(8);
+    assert_eq!(call1(m(IF_DEVICE, 9), &[dev.dev, t, desc, out]), 0);
+    let rtv = rd1(out);
+    let red = mem(16);
+    put(red, &[1f32.to_bits(), 0, 0, 1f32.to_bits()]);
+    let g = gpu_of(t);
+    call1(m(IF_CONTEXT, 50), &[dev.ctx, rtv, red]);
+    for layer in 0..5u32 {
+        let got = page_read(g, layer << 16, 4, 4, 0x5500_0000 + layer).unwrap();
+        let want: Vec<u8> = if (1..4).contains(&layer) { [255u8, 0, 0, 255].repeat(16) } else { vec![0; 64] };
+        assert_eq!(got, want, "layer {layer}");
+    }
+    call1(m(IF_RTV, 2), &[rtv]);
+    dev.release(t);
+    dev.done();
+}
