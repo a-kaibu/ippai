@@ -950,6 +950,8 @@ depth D32_FLOAT R32_FLOAT 0000c03e0000c03e0000c03e0000c03e.0000c03e0000c03e0000c
 depth R32_FLOAT D32_FLOAT 00ff807f01fe7f800000c07f0000807f.01fe817e00ff7e810101c17e0101817e.02fd827d03fc7d820202c27d0202827d.03fc837c02fd7c830303c37c0303837c
 depth D16_UNORM D16_UNORM 0060006000600060.0060006000600060.0060006000600060.0060006000600060
 depth D32_FLOAT D32_FLOAT 0000c03e0000c03e0000c03e0000c03e.0000c03e0000c03e0000c03e0000c03e.0000c03e0000c03e0000c03e0000c03e.0000c03e0000c03e0000c03e0000c03e
+depth in01 R32_FLOAT D32_FLOAT 000000008988883d8988083ecdcc4c3e.8988883eabaaaa3ecdcccc3eefeeee3e.8988083f9a99193fabaa2a3fbcbb3b3f.cdcc4c3fdedd5d3fefee6e3f0000803f
+depth in01 R32_UINT box D32_FLOAT 000000008988883d8988083ecdcc4c3e.8988883eabaaaa3ecdcccc3eefeeee3e.8988083f9a99193fabaa2a3fbcbb3b3f.cdcc4c3fdedd5d3fefee6e3f0000803f
 resource R8G8B8A8_UNORM 2d sub 0 22911ac5
 resource R8G8B8A8_UNORM 2d sub 1 a29a2085
 resource R8G8B8A8_UNORM 2d sub 2 9bc69d0d
@@ -962,66 +964,342 @@ resource R8G8B8A8_UNORM 2d sub 8 ba23cfc5
 resource R8G8B8A8_UNORM 2d sub 9 b85d1565
 resource R8G8B8A8_UNORM 2d sub 10 c32a9acd
 resource R8G8B8A8_UNORM 2d sub 11 a596a641
-region R8G8B8A8_UNORM 2d sub 0 map 0x887a0005
-update R8G8B8A8_UNORM 2d sub 0 map 0x887a0005
-sub R32_FLOAT 2d failed
-sub R16G16B16A16_UNORM 2d failed
-sub R16_SNORM 2d failed
-sub B5G6R5_UNORM 2d failed
-sub A8_UNORM 2d failed
-sub BC1_UNORM 2d failed
-sub BC3_UNORM 2d failed
-sub BC7_UNORM 2d failed
-sub R32G32B32A32_FLOAT 2d failed
-sub R16G16B16A16_UINT>UNORM 2d failed
-sub R16G16B16A16_UNORM>UINT 2d failed
-sub R16_UINT>SNORM 2d failed
-sub R16_SNORM>UINT 2d failed
-sub R16G16B16A16_FLOAT>UNORM 2d failed
-sub BC1_UNORM>SRGB 2d failed
-sub R32G32B32A32_FLOAT>UINT 2d failed
-sub R8G8B8A8_UNORM 3d failed
-sub R32_FLOAT 3d failed
-sub R16G16B16A16_UNORM 3d failed
-sub R16_SNORM 3d failed
-sub B5G6R5_UNORM 3d failed
-sub A8_UNORM 3d failed
-sub BC1_UNORM 3d failed
-sub BC3_UNORM 3d failed
-sub BC7_UNORM 3d failed
-sub R32G32B32A32_FLOAT 3d failed
-sub R16G16B16A16_UINT>UNORM 3d failed
-sub R16G16B16A16_UNORM>UINT 3d failed
-sub R16_UINT>SNORM 3d failed
-sub R16_SNORM>UINT 3d failed
-sub R16G16B16A16_FLOAT>UNORM 3d failed
-sub BC1_UNORM>SRGB 3d failed
-sub R32G32B32A32_FLOAT>UINT 3d failed
+region R8G8B8A8_UNORM 2d sub 0 d8793405
+update R8G8B8A8_UNORM 2d sub 0 22911ac5
+resource R32_FLOAT 2d sub 0 baa6f245
+resource R32_FLOAT 2d sub 1 c8a3be65
+resource R32_FLOAT 2d sub 2 380f03ed
+resource R32_FLOAT 2d sub 3 3f0e15c1
+resource R32_FLOAT 2d sub 4 bd8817c5
+resource R32_FLOAT 2d sub 5 3023ed25
+resource R32_FLOAT 2d sub 6 5203a6ad
+resource R32_FLOAT 2d sub 7 de7372c1
+resource R32_FLOAT 2d sub 8 fd27f785
+resource R32_FLOAT 2d sub 9 cba4e205
+resource R32_FLOAT 2d sub 10 0e2c262d
+resource R32_FLOAT 2d sub 11 d346e5b1
+region R32_FLOAT 2d sub 0 3d913545
+update R32_FLOAT 2d sub 0 baa6f245
+resource R16G16B16A16_UNORM 2d sub 0 e981c3c5
+resource R16G16B16A16_UNORM 2d sub 1 848ef925
+resource R16G16B16A16_UNORM 2d sub 2 96c42485
+resource R16G16B16A16_UNORM 2d sub 3 183876a5
+resource R16G16B16A16_UNORM 2d sub 4 57b19f45
+resource R16G16B16A16_UNORM 2d sub 5 2fb92225
+resource R16G16B16A16_UNORM 2d sub 6 87160cf5
+resource R16G16B16A16_UNORM 2d sub 7 2c1b1ee5
+resource R16G16B16A16_UNORM 2d sub 8 62666045
+resource R16G16B16A16_UNORM 2d sub 9 366d4085
+resource R16G16B16A16_UNORM 2d sub 10 b7792a35
+resource R16G16B16A16_UNORM 2d sub 11 f58ad105
+region R16G16B16A16_UNORM 2d sub 0 4528fd85
+update R16G16B16A16_UNORM 2d sub 0 e981c3c5
+resource R16_SNORM 2d sub 0 1adad265
+resource R16_SNORM 2d sub 1 ff23e405
+resource R16_SNORM 2d sub 2 0a2521dd
+resource R16_SNORM 2d sub 3 f52f089e
+resource R16_SNORM 2d sub 4 f3866ce5
+resource R16_SNORM 2d sub 5 e9805e15
+resource R16_SNORM 2d sub 6 65c9f08d
+resource R16_SNORM 2d sub 7 47e7cafe
+resource R16_SNORM 2d sub 8 37533945
+resource R16_SNORM 2d sub 9 42f6f615
+resource R16_SNORM 2d sub 10 e671646d
+resource R16_SNORM 2d sub 11 cd43e45e
+region R16_SNORM 2d sub 0 7a96d355
+update R16_SNORM 2d sub 0 1adad265
+resource B5G6R5_UNORM 2d sub 0 9ef15345
+resource B5G6R5_UNORM 2d sub 1 36880235
+resource B5G6R5_UNORM 2d sub 2 45c1ca25
+resource B5G6R5_UNORM 2d sub 3 88b7fa78
+resource B5G6R5_UNORM 2d sub 4 636589c5
+resource B5G6R5_UNORM 2d sub 5 26696ee5
+resource B5G6R5_UNORM 2d sub 6 1b0f9525
+resource B5G6R5_UNORM 2d sub 7 335c2ca8
+resource B5G6R5_UNORM 2d sub 8 7752aea5
+resource B5G6R5_UNORM 2d sub 9 6242aea5
+resource B5G6R5_UNORM 2d sub 10 cfd102e5
+resource B5G6R5_UNORM 2d sub 11 e07c5ad8
+region B5G6R5_UNORM 2d sub 0 8a37db95
+update B5G6R5_UNORM 2d sub 0 9ef15345
+resource A8_UNORM 2d sub 0 d67a05e5
+resource A8_UNORM 2d sub 1 f39ad40d
+resource A8_UNORM 2d sub 2 0b59b6e9
+resource A8_UNORM 2d sub 3 0e0c6b4a
+resource A8_UNORM 2d sub 4 024fb205
+resource A8_UNORM 2d sub 5 4119c86d
+resource A8_UNORM 2d sub 6 043d4ab9
+resource A8_UNORM 2d sub 7 820b8ee6
+resource A8_UNORM 2d sub 8 0d521005
+resource A8_UNORM 2d sub 9 8774475d
+resource A8_UNORM 2d sub 10 97758989
+resource A8_UNORM 2d sub 11 160c77e2
+region A8_UNORM 2d sub 0 876502ed
+update A8_UNORM 2d sub 0 d67a05e5
+resource BC1_UNORM 2d sub 0 5806b155
+resource BC1_UNORM 2d sub 1 3430b3ad
+resource BC1_UNORM 2d sub 2 df334f85
+resource BC1_UNORM 2d sub 3 a3da0895
+resource BC1_UNORM 2d sub 4 692e8f65
+resource BC1_UNORM 2d sub 5 e6aec41d
+resource BC1_UNORM 2d sub 6 21bc22d5
+resource BC1_UNORM 2d sub 7 58c9b495
+resource BC1_UNORM 2d sub 8 9f044225
+resource BC1_UNORM 2d sub 9 7e70d5dd
+resource BC1_UNORM 2d sub 10 d58cb005
+resource BC1_UNORM 2d sub 11 410d0a95
+region BC1_UNORM 2d sub 0 ee3f8fad
+update BC1_UNORM 2d sub 0 5806b155
+resource BC3_UNORM 2d sub 0 e578bfe5
+resource BC3_UNORM 2d sub 1 2e9e0a7d
+resource BC3_UNORM 2d sub 2 9a03ee7d
+resource BC3_UNORM 2d sub 3 538e54dd
+resource BC3_UNORM 2d sub 4 ed23d6c5
+resource BC3_UNORM 2d sub 5 98f9594d
+resource BC3_UNORM 2d sub 6 3b624d0d
+resource BC3_UNORM 2d sub 7 c42a773d
+resource BC3_UNORM 2d sub 8 e042a6e5
+resource BC3_UNORM 2d sub 9 09b82a7d
+resource BC3_UNORM 2d sub 10 1aaf7b8d
+resource BC3_UNORM 2d sub 11 7bcc0bad
+region BC3_UNORM 2d sub 0 1db4773d
+update BC3_UNORM 2d sub 0 e578bfe5
+resource BC7_UNORM 2d sub 0 913078c5
+resource BC7_UNORM 2d sub 1 ed73346d
+resource BC7_UNORM 2d sub 2 b35d1f8d
+resource BC7_UNORM 2d sub 3 d061978d
+resource BC7_UNORM 2d sub 4 7d442805
+resource BC7_UNORM 2d sub 5 69092b2d
+resource BC7_UNORM 2d sub 6 bab5540d
+resource BC7_UNORM 2d sub 7 976941cd
+resource BC7_UNORM 2d sub 8 dfb650e5
+resource BC7_UNORM 2d sub 9 83d9cdbd
+resource BC7_UNORM 2d sub 10 1c99e28d
+resource BC7_UNORM 2d sub 11 1354bdcd
+region BC7_UNORM 2d sub 0 e8d433bd
+update BC7_UNORM 2d sub 0 913078c5
+resource R32G32B32A32_FLOAT 2d sub 0 bea3bdc5
+resource R32G32B32A32_FLOAT 2d sub 1 610f2685
+resource R32G32B32A32_FLOAT 2d sub 2 c501bd75
+resource R32G32B32A32_FLOAT 2d sub 3 ac9a7afd
+resource R32G32B32A32_FLOAT 2d sub 4 42fc04c5
+resource R32G32B32A32_FLOAT 2d sub 5 becac885
+resource R32G32B32A32_FLOAT 2d sub 6 62a35115
+resource R32G32B32A32_FLOAT 2d sub 7 79549e7d
+resource R32G32B32A32_FLOAT 2d sub 8 cd7ceac5
+resource R32G32B32A32_FLOAT 2d sub 9 f7ebdd05
+resource R32G32B32A32_FLOAT 2d sub 10 b673b795
+resource R32G32B32A32_FLOAT 2d sub 11 9bf10d7d
+region R32G32B32A32_FLOAT 2d sub 0 bd3ee9c5
+update R32G32B32A32_FLOAT 2d sub 0 bea3bdc5
+resource R16G16B16A16_UINT>UNORM 2d sub 0 254fd8c5
+resource R16G16B16A16_UINT>UNORM 2d sub 1 7d026425
+resource R16G16B16A16_UINT>UNORM 2d sub 2 37ecf2d5
+resource R16G16B16A16_UINT>UNORM 2d sub 3 6bb32435
+resource R16G16B16A16_UINT>UNORM 2d sub 4 9537d345
+resource R16G16B16A16_UINT>UNORM 2d sub 5 36a075a5
+resource R16G16B16A16_UINT>UNORM 2d sub 6 8bbbeac5
+resource R16G16B16A16_UINT>UNORM 2d sub 7 e32300d5
+resource R16G16B16A16_UINT>UNORM 2d sub 8 51872145
+resource R16G16B16A16_UINT>UNORM 2d sub 9 4653e785
+resource R16G16B16A16_UINT>UNORM 2d sub 10 072d4085
+resource R16G16B16A16_UINT>UNORM 2d sub 11 a65de235
+region R16G16B16A16_UINT>UNORM 2d sub 0 4a05ee05
+update R16G16B16A16_UINT>UNORM 2d sub 0 254fd8c5
+resource R16G16B16A16_UNORM>UINT 2d sub 0 db94a845
+resource R16G16B16A16_UNORM>UINT 2d sub 1 056e5b05
+resource R16G16B16A16_UNORM>UINT 2d sub 2 ae545605
+resource R16G16B16A16_UNORM>UINT 2d sub 3 f17ef14d
+resource R16G16B16A16_UNORM>UINT 2d sub 4 84b5cfc5
+resource R16G16B16A16_UNORM>UINT 2d sub 5 5c486805
+resource R16G16B16A16_UNORM>UINT 2d sub 6 74129ed5
+resource R16G16B16A16_UNORM>UINT 2d sub 7 bb04372d
+resource R16G16B16A16_UNORM>UINT 2d sub 8 3e4606c5
+resource R16G16B16A16_UNORM>UINT 2d sub 9 1b3e57a5
+resource R16G16B16A16_UNORM>UINT 2d sub 10 c7164795
+resource R16G16B16A16_UNORM>UINT 2d sub 11 8e1ac9dd
+region R16G16B16A16_UNORM>UINT 2d sub 0 a844cc45
+update R16G16B16A16_UNORM>UINT 2d sub 0 db94a845
+resource R16_UINT>SNORM 2d sub 0 cf578845
+resource R16_UINT>SNORM 2d sub 1 65325f45
+resource R16_UINT>SNORM 2d sub 2 0fd60d45
+resource R16_UINT>SNORM 2d sub 3 9f65d108
+resource R16_UINT>SNORM 2d sub 4 05708645
+resource R16_UINT>SNORM 2d sub 5 706f39d5
+resource R16_UINT>SNORM 2d sub 6 f4670605
+resource R16_UINT>SNORM 2d sub 7 ecac7788
+resource R16_UINT>SNORM 2d sub 8 8457a6a5
+resource R16_UINT>SNORM 2d sub 9 6c5f9b95
+resource R16_UINT>SNORM 2d sub 10 60f45285
+resource R16_UINT>SNORM 2d sub 11 87522388
+region R16_UINT>SNORM 2d sub 0 d035fa55
+update R16_UINT>SNORM 2d sub 0 cf578845
+resource R16_SNORM>UINT 2d sub 0 0e9f21e5
+resource R16_SNORM>UINT 2d sub 1 891a6b55
+resource R16_SNORM>UINT 2d sub 2 a2707ecd
+resource R16_SNORM>UINT 2d sub 3 123ba50a
+resource R16_SNORM>UINT 2d sub 4 b8354225
+resource R16_SNORM>UINT 2d sub 5 c65ddca5
+resource R16_SNORM>UINT 2d sub 6 f9a8e58d
+resource R16_SNORM>UINT 2d sub 7 478225c2
+resource R16_SNORM>UINT 2d sub 8 4e9bac85
+resource R16_SNORM>UINT 2d sub 9 8f2f2405
+resource R16_SNORM>UINT 2d sub 10 2a06ab6d
+resource R16_SNORM>UINT 2d sub 11 ba7744aa
+region R16_SNORM>UINT 2d sub 0 d129e895
+update R16_SNORM>UINT 2d sub 0 0e9f21e5
+resource R16G16B16A16_FLOAT>UNORM 2d sub 0 cdc20e45
+resource R16G16B16A16_FLOAT>UNORM 2d sub 1 b28d22a5
+resource R16G16B16A16_FLOAT>UNORM 2d sub 2 c72141a5
+resource R16G16B16A16_FLOAT>UNORM 2d sub 3 c0c06185
+resource R16G16B16A16_FLOAT>UNORM 2d sub 4 3bd846c5
+resource R16G16B16A16_FLOAT>UNORM 2d sub 5 44af1de5
+resource R16G16B16A16_FLOAT>UNORM 2d sub 6 9a80e075
+resource R16G16B16A16_FLOAT>UNORM 2d sub 7 43687fe5
+resource R16G16B16A16_FLOAT>UNORM 2d sub 8 c1733dc5
+resource R16G16B16A16_FLOAT>UNORM 2d sub 9 c6ec6d45
+resource R16G16B16A16_FLOAT>UNORM 2d sub 10 96971615
+resource R16G16B16A16_FLOAT>UNORM 2d sub 11 026e48c5
+region R16G16B16A16_FLOAT>UNORM 2d sub 0 80f1f305
+update R16G16B16A16_FLOAT>UNORM 2d sub 0 cdc20e45
+resource BC1_UNORM>SRGB 2d sub 0 01ed2a55
+resource BC1_UNORM>SRGB 2d sub 1 6882cf45
+resource BC1_UNORM>SRGB 2d sub 2 4e9b638d
+resource BC1_UNORM>SRGB 2d sub 3 8f77277d
+resource BC1_UNORM>SRGB 2d sub 4 84890dc5
+resource BC1_UNORM>SRGB 2d sub 5 bbb19005
+resource BC1_UNORM>SRGB 2d sub 6 447b712d
+resource BC1_UNORM>SRGB 2d sub 7 c0a53e1d
+resource BC1_UNORM>SRGB 2d sub 8 dd29bf85
+resource BC1_UNORM>SRGB 2d sub 9 b5ec5455
+resource BC1_UNORM>SRGB 2d sub 10 4c04095d
+resource BC1_UNORM>SRGB 2d sub 11 7687decd
+region BC1_UNORM>SRGB 2d sub 0 0b38bd75
+update BC1_UNORM>SRGB 2d sub 0 01ed2a55
+resource R32G32B32A32_FLOAT>UINT 2d sub 0 d9e8b7c5
+resource R32G32B32A32_FLOAT>UINT 2d sub 1 ec40c305
+resource R32G32B32A32_FLOAT>UINT 2d sub 2 e7e20d75
+resource R32G32B32A32_FLOAT>UINT 2d sub 3 0d94ea0d
+resource R32G32B32A32_FLOAT>UINT 2d sub 4 520390c5
+resource R32G32B32A32_FLOAT>UINT 2d sub 5 0d2c4805
+resource R32G32B32A32_FLOAT>UINT 2d sub 6 9ea322b5
+resource R32G32B32A32_FLOAT>UINT 2d sub 7 b9227f0d
+resource R32G32B32A32_FLOAT>UINT 2d sub 8 671f02c5
+resource R32G32B32A32_FLOAT>UINT 2d sub 9 2cd12fc5
+resource R32G32B32A32_FLOAT>UINT 2d sub 10 f8a10a55
+resource R32G32B32A32_FLOAT>UINT 2d sub 11 a84faaad
+region R32G32B32A32_FLOAT>UINT 2d sub 0 300681c5
+update R32G32B32A32_FLOAT>UINT 2d sub 0 d9e8b7c5
+resource R8G8B8A8_UNORM 3d sub 0 a50fd1c5
+resource R8G8B8A8_UNORM 3d sub 1 a29a2085
+resource R8G8B8A8_UNORM 3d sub 2 2acd7885
+region R8G8B8A8_UNORM 3d sub 0 48fd1d05
+update R8G8B8A8_UNORM 3d sub 0 a50fd1c5
+resource R32_FLOAT 3d sub 0 3741cac5
+resource R32_FLOAT 3d sub 1 c8a3be65
+resource R32_FLOAT 3d sub 2 a09c640d
+region R32_FLOAT 3d sub 0 092c1105
+update R32_FLOAT 3d sub 0 3741cac5
+resource R16G16B16A16_UNORM 3d sub 0 da3e92c5
+resource R16G16B16A16_UNORM 3d sub 1 848ef925
+resource R16G16B16A16_UNORM 3d sub 2 044be11d
+region R16G16B16A16_UNORM 3d sub 0 5cd75fc5
+update R16G16B16A16_UNORM 3d sub 0 da3e92c5
+resource R16_SNORM 3d sub 0 74d4c745
+resource R16_SNORM 3d sub 1 ff23e405
+resource R16_SNORM 3d sub 2 e8b775dd
+region R16_SNORM 3d sub 0 537cd6c5
+update R16_SNORM 3d sub 0 74d4c745
+resource B5G6R5_UNORM 3d sub 0 ace9f805
+resource B5G6R5_UNORM 3d sub 1 36880235
+resource B5G6R5_UNORM 3d sub 2 1e1a94d5
+region B5G6R5_UNORM 3d sub 0 846e00a5
+update B5G6R5_UNORM 3d sub 0 ace9f805
+resource A8_UNORM 3d sub 0 5317df65
+resource A8_UNORM 3d sub 1 f39ad40d
+resource A8_UNORM 3d sub 2 689535d6
+region A8_UNORM 3d sub 0 7e5a8825
+update A8_UNORM 3d sub 0 5317df65
+resource BC1_UNORM 3d sub 0 218d9da5
+resource BC1_UNORM 3d sub 1 52faa36d
+resource BC1_UNORM 3d sub 2 df334f85
+region BC1_UNORM 3d sub 0 3a59fa35
+update BC1_UNORM 3d sub 0 218d9da5
+resource BC3_UNORM 3d sub 0 126ab165
+resource BC3_UNORM 3d sub 1 d74a6005
+resource BC3_UNORM 3d sub 2 9a03ee7d
+region BC3_UNORM 3d sub 0 2234a385
+update BC3_UNORM 3d sub 0 126ab165
+resource BC7_UNORM 3d sub 0 974d0e05
+resource BC7_UNORM 3d sub 1 35051365
+resource BC7_UNORM 3d sub 2 b35d1f8d
+region BC7_UNORM 3d sub 0 9bfb8ab5
+update BC7_UNORM 3d sub 0 974d0e05
+resource R32G32B32A32_FLOAT 3d sub 0 9ef2ffc5
+resource R32G32B32A32_FLOAT 3d sub 1 610f2685
+resource R32G32B32A32_FLOAT 3d sub 2 2cb5eb05
+region R32G32B32A32_FLOAT 3d sub 0 6fc1cdc5
+update R32G32B32A32_FLOAT 3d sub 0 9ef2ffc5
+resource R16G16B16A16_UINT>UNORM 3d sub 0 c1f639c5
+resource R16G16B16A16_UINT>UNORM 3d sub 1 7d026425
+resource R16G16B16A16_UINT>UNORM 3d sub 2 301bd4ad
+region R16G16B16A16_UINT>UNORM 3d sub 0 1a8725c5
+update R16G16B16A16_UINT>UNORM 3d sub 0 c1f639c5
+resource R16G16B16A16_UNORM>UINT 3d sub 0 613942c5
+resource R16G16B16A16_UNORM>UINT 3d sub 1 056e5b05
+resource R16G16B16A16_UNORM>UINT 3d sub 2 3604d13d
+region R16G16B16A16_UNORM>UINT 3d sub 0 f57207c5
+update R16G16B16A16_UNORM>UINT 3d sub 0 613942c5
+resource R16_UINT>SNORM 3d sub 0 016e8e85
+resource R16_UINT>SNORM 3d sub 1 65325f45
+resource R16_UINT>SNORM 3d sub 2 d5a3a6e5
+region R16_UINT>SNORM 3d sub 0 1391e125
+update R16_UINT>SNORM 3d sub 0 016e8e85
+resource R16_SNORM>UINT 3d sub 0 76643105
+resource R16_SNORM>UINT 3d sub 1 891a6b55
+resource R16_SNORM>UINT 3d sub 2 88d77659
+region R16_SNORM>UINT 3d sub 0 aee53045
+update R16_SNORM>UINT 3d sub 0 76643105
+resource R16G16B16A16_FLOAT>UNORM 3d sub 0 36bd47c5
+resource R16G16B16A16_FLOAT>UNORM 3d sub 1 b28d22a5
+resource R16G16B16A16_FLOAT>UNORM 3d sub 2 078a3b3d
+region R16G16B16A16_FLOAT>UNORM 3d sub 0 f5a9dc45
+update R16G16B16A16_FLOAT>UNORM 3d sub 0 36bd47c5
+resource BC1_UNORM>SRGB 3d sub 0 e573f045
+resource BC1_UNORM>SRGB 3d sub 1 26ca3cdd
+resource BC1_UNORM>SRGB 3d sub 2 4e9b638d
+region BC1_UNORM>SRGB 3d sub 0 b98ac185
+update BC1_UNORM>SRGB 3d sub 0 e573f045
+resource R32G32B32A32_FLOAT>UINT 3d sub 0 407bb7c5
+resource R32G32B32A32_FLOAT>UINT 3d sub 1 ec40c305
+resource R32G32B32A32_FLOAT>UINT 3d sub 2 eefb3465
+region R32G32B32A32_FLOAT>UINT 3d sub 0 1b8bfdc5
+update R32G32B32A32_FLOAT>UINT 3d sub 0 407bb7c5
 layout shader 0 none inval out null
-layout shader 0 pos 0x887a0005 out null
-layout shader 0 pos_lower 0x887a0005 out null
+layout shader 0 pos ok out set
+layout shader 0 pos_lower ok out set
 layout shader 0 pos1 inval out null
-layout shader 0 pos_pos1 0x887a0005 out null
-layout shader 0 pos_color_tex1 0x887a0005 out null
-layout shader 0 pos_color_tex0 0x887a0005 out null
+layout shader 0 pos_pos1 ok out set
+layout shader 0 pos_color_tex1 ok out set
+layout shader 0 pos_color_tex0 ok out set
 layout shader 0 pos_inst_color_vert_same_slot inval out null
-layout shader 0 pos_inst_color_vert_two_slots 0x887a0005 out null
-layout shader 0 pos_sv_ids 0x887a0005 out null
+layout shader 0 pos_inst_color_vert_two_slots ok out set
+layout shader 0 pos_sv_ids ok out set
 layout shader 0 sv_position_clip inval out null
 layout shader 0 pos_vert_step1 inval out null
-layout shader 0 pos_slot15 0x887a0005 out null
+layout shader 0 pos_slot15 ok out set
 layout shader 0 pos_slot32 inval out null
 layout shader 0 pos_unknown_format inval out null
 layout shader 0 pos_bc1 inval out null
 layout shader 0 pos_twice inval out null
-layout shader 0 pos_append 0x887a0005 out null
+layout shader 0 pos_append ok out set
 layout shader 0 null_descs inval out null
 layout shader 1 none inval out null
 layout shader 1 pos inval out null
 layout shader 1 pos_lower inval out null
 layout shader 1 pos1 inval out null
 layout shader 1 pos_pos1 inval out null
-layout shader 1 pos_color_tex1 0x887a0005 out null
+layout shader 1 pos_color_tex1 ok out set
 layout shader 1 pos_color_tex0 inval out null
 layout shader 1 pos_inst_color_vert_same_slot inval out null
 layout shader 1 pos_inst_color_vert_two_slots inval out null
@@ -1036,48 +1314,48 @@ layout shader 1 pos_twice inval out null
 layout shader 1 pos_append inval out null
 layout shader 1 null_descs inval out null
 layout shader 2 none inval out null
-layout shader 2 pos 0x887a0005 out null
-layout shader 2 pos_lower 0x887a0005 out null
+layout shader 2 pos ok out set
+layout shader 2 pos_lower ok out set
 layout shader 2 pos1 inval out null
-layout shader 2 pos_pos1 0x887a0005 out null
-layout shader 2 pos_color_tex1 0x887a0005 out null
-layout shader 2 pos_color_tex0 0x887a0005 out null
+layout shader 2 pos_pos1 ok out set
+layout shader 2 pos_color_tex1 ok out set
+layout shader 2 pos_color_tex0 ok out set
 layout shader 2 pos_inst_color_vert_same_slot inval out null
-layout shader 2 pos_inst_color_vert_two_slots 0x887a0005 out null
-layout shader 2 pos_sv_ids 0x887a0005 out null
+layout shader 2 pos_inst_color_vert_two_slots ok out set
+layout shader 2 pos_sv_ids ok out set
 layout shader 2 sv_position_clip inval out null
 layout shader 2 pos_vert_step1 inval out null
-layout shader 2 pos_slot15 0x887a0005 out null
+layout shader 2 pos_slot15 ok out set
 layout shader 2 pos_slot32 inval out null
 layout shader 2 pos_unknown_format inval out null
 layout shader 2 pos_bc1 inval out null
 layout shader 2 pos_twice inval out null
-layout shader 2 pos_append 0x887a0005 out null
+layout shader 2 pos_append ok out set
 layout shader 2 null_descs inval out null
-layout shader 3 none 0x887a0005 out null
-layout shader 3 pos 0x887a0005 out null
-layout shader 3 pos_lower 0x887a0005 out null
-layout shader 3 pos1 0x887a0005 out null
-layout shader 3 pos_pos1 0x887a0005 out null
-layout shader 3 pos_color_tex1 0x887a0005 out null
-layout shader 3 pos_color_tex0 0x887a0005 out null
+layout shader 3 none ok out set
+layout shader 3 pos ok out set
+layout shader 3 pos_lower ok out set
+layout shader 3 pos1 ok out set
+layout shader 3 pos_pos1 ok out set
+layout shader 3 pos_color_tex1 ok out set
+layout shader 3 pos_color_tex0 ok out set
 layout shader 3 pos_inst_color_vert_same_slot inval out null
-layout shader 3 pos_inst_color_vert_two_slots 0x887a0005 out null
-layout shader 3 pos_sv_ids 0x887a0005 out null
-layout shader 3 sv_position_clip 0x887a0005 out null
+layout shader 3 pos_inst_color_vert_two_slots ok out set
+layout shader 3 pos_sv_ids ok out set
+layout shader 3 sv_position_clip ok out set
 layout shader 3 pos_vert_step1 inval out null
-layout shader 3 pos_slot15 0x887a0005 out null
+layout shader 3 pos_slot15 ok out set
 layout shader 3 pos_slot32 inval out null
 layout shader 3 pos_unknown_format inval out null
 layout shader 3 pos_bc1 inval out null
 layout shader 3 pos_twice inval out null
-layout shader 3 pos_append 0x887a0005 out null
+layout shader 3 pos_append ok out set
 layout shader 3 null_descs inval out null
 layout shader 4 none inval out null
 layout shader 4 pos inval out null
 layout shader 4 pos_lower inval out null
 layout shader 4 pos1 inval out null
-layout shader 4 pos_pos1 0x887a0005 out null
+layout shader 4 pos_pos1 ok out set
 layout shader 4 pos_color_tex1 inval out null
 layout shader 4 pos_color_tex0 inval out null
 layout shader 4 pos_inst_color_vert_same_slot inval out null
@@ -1102,7 +1380,7 @@ layout shader 5 pos_color_tex0 inval out null
 layout shader 5 pos_inst_color_vert_same_slot inval out null
 layout shader 5 pos_inst_color_vert_two_slots inval out null
 layout shader 5 pos_sv_ids inval out null
-layout shader 5 sv_position_clip 0x887a0005 out null
+layout shader 5 sv_position_clip ok out set
 layout shader 5 pos_vert_step1 inval out null
 layout shader 5 pos_slot15 inval out null
 layout shader 5 pos_slot32 inval out null
@@ -1116,13 +1394,13 @@ device3 ok
 raster qi1 ok qi2 ok
 raster desc2 of plain 3 3 0 0 0 0 1 0 0 0 0 0
 raster1 forced 0 ms 0 ok same 1 desc1 forced 0 ms 0 desc ms 0
-raster1 forced 0 ms 1 0x887a0005 same 0
-raster1 forced 1 ms 0 0x887a0005 same 0
+raster1 forced 0 ms 1 ok same 0 desc1 forced 0 ms 1 desc ms 1
+raster1 forced 1 ms 0 ok same 0 desc1 forced 1 ms 0 desc ms 0
 raster1 forced 1 ms 1 inval same 0
-raster1 forced 4 ms 0 0x887a0005 same 0
-raster1 forced 4 ms 1 0x887a0005 same 0
-raster1 forced 8 ms 0 0x887a0005 same 0
-raster1 forced 8 ms 1 0x887a0005 same 0
+raster1 forced 4 ms 0 ok same 0 desc1 forced 4 ms 0 desc ms 0
+raster1 forced 4 ms 1 ok same 0 desc1 forced 4 ms 1 desc ms 1
+raster1 forced 8 ms 0 ok same 0 desc1 forced 8 ms 0 desc ms 0
+raster1 forced 8 ms 1 ok same 0 desc1 forced 8 ms 1 desc ms 1
 raster1 forced 16 ms 0 inval same 0
 raster1 forced 16 ms 1 inval same 0
 raster1 forced 3 ms 0 inval same 0
@@ -1131,10 +1409,10 @@ raster1 forced 32 ms 0 inval same 0
 raster1 forced 32 ms 1 inval same 0
 options logic_op 1
 blend1 logic 0 independent 0 ok rt0 0 0 4 rt1 0 0 4
-blend1 logic 0 independent 1 0x887a0005
-blend1 logic 1 independent 0 0x887a0005
+blend1 logic 0 independent 1 ok rt0 0 0 4 rt1 0 0 4
+blend1 logic 1 independent 0 ok rt0 0 1 0 rt1 0 1 0
 blend1 logic 1 independent 1 inval
-blend1 logic 2 independent 0 0x887a0005
+blend1 logic 2 independent 0 ok rt0 0 1 10 rt1 0 1 10
 blend1 logic 2 independent 1 inval
 raster2 conservative 0 ok desc2 0 0
 raster2 conservative 1 inval
