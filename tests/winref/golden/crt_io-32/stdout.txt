@@ -1,0 +1,142 @@
+open 1
+write 13
+lseeki64 13
+lseek set 7
+read 6 'world
+'
+read at end 0
+tell 13 eof 1
+filelength 13
+lseek end 7
+lseek bad origin -1 errno 22
+lseek negative -1 errno 22
+chsize 0 length 20
+read zeros 7 0 0
+chsize down 0 length 5
+fstat64 mode 0100666 nlink 1 size 5
+dup 1
+dup shares position 0
+dup2 0
+close dup2 0 close dup 0
+setmode 0x8000 0x4000
+get_osfhandle 1
+close 0
+close again -1 errno 9
+read closed -1 errno 9
+get_osfhandle closed -1 errno 9
+write stdin -1 errno 9
+open missing -1 errno 2
+open excl -1 errno 17
+open dir -1 errno 13
+append 'helloXYZ' 8
+write readonly -1 errno 9
+trunc length 0
+sopen_s 2 -1
+open_osfhandle 1 same handle 1
+fdopen 1 fileno 1
+fgetc a
+closed with the stream -1 errno 9
+fileno std 0 1 2
+fopen fileno 1
+stat file mode 0100666 nlink 1 size 0
+stat dir mode 040777 nlink 1 size 0
+stat dir slash -1 errno 2
+stat file slash -1 errno 2
+stat missing -1 errno 2
+stat wildcard -1 errno 2
+stat exe -1 errno 2
+stat32 0 size 4
+wstat64i32 0 size 4 mode 0100666
+access 0 0
+access missing -1 errno 2
+access bad mode 0 errno 0
+access readonly -1 errno 13
+unlink 0
+unlink again -1 errno 2
+wremove 0
+unlink dir -1 errno 13
+chdir 0
+getcwd moved 1 ends io_dir
+wgetcwd same 1
+getcwd small 0 errno 34
+getcwd alloc 1
+chdir up 0
+chdir missing -1 errno 2
+fullpath 1
+putenv 0 getenv one two
+wgetenv 1
+wputenv 0 getenv three
+putenv_s 0 getenv four
+environ has it 1
+putenv empty 0 getenv 00000000
+putenv bad -1 errno 22
+getenv after SetEnvironmentVariable 0
+putenv reaches kernel32 0 1
+getenv_s 0 need 0
+mbstowcs 5 201a 00a0 0061
+mbstowcs len 5
+wcstombs 5 82a0
+wcstombs cut 1
+mbrtowc 1 201a
+mbrtowc ascii 1 007a
+mbrtowc nul 0
+mbrlen 1 1
+mbtowc 1 0192
+wcrtomb -1 3fa0
+btowc 0041 201a 00b1
+wctob 65 -1 -1
+strerror 0 No error
+strerror 1 Operation not permitted
+strerror 2 No such file or directory
+strerror 3 No such process
+strerror 4 Interrupted function call
+strerror 5 Input/output error
+strerror 6 No such device or address
+strerror 7 Arg list too long
+strerror 8 Exec format error
+strerror 9 Bad file descriptor
+strerror 10 No child processes
+strerror 11 Resource temporarily unavailable
+strerror 12 Not enough space
+strerror 13 Permission denied
+strerror 14 Bad address
+strerror 15 Unknown error
+strerror 16 Resource device
+strerror 17 File exists
+strerror 18 Improper link
+strerror 19 No such device
+strerror 20 Not a directory
+strerror 21 Is a directory
+strerror 22 Invalid argument
+strerror 23 Too many open files in system
+strerror 24 Too many open files
+strerror 25 Inappropriate I/O control operation
+strerror 26 Unknown error
+strerror 27 File too large
+strerror 28 No space left on device
+strerror 29 Invalid seek
+strerror 30 Read-only file system
+strerror 31 Too many links
+strerror 32 Broken pipe
+strerror 33 Domain error
+strerror 34 Result too large
+strerror 35 Unknown error
+strerror 36 Resource deadlock avoided
+strerror 37 Unknown error
+strerror 38 Filename too long
+strerror 39 No locks available
+strerror 40 Function not implemented
+strerror 41 Directory not empty
+strerror 42 Illegal byte sequence
+strerror 43 Unknown error
+strerror_s small 0 'No s'
+ulp 1 erf 3fe0a7ef5c18edd2
+ulp 1 erfc 3fa15aaa8ec85205
+ulp 0 fma 3c90000000000000
+ulp 0 rint 4000000000000000
+ulp 0 rint- c010000000000000
+lrint 2 4
+ulp 0 nextafter 3ff0000000000001
+ulp 0 nearbyint 0000000000000000
+isblank 1 1 0
+iswctype 1 0
