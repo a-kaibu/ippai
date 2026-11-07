@@ -1068,12 +1068,7 @@ fn snan64(x: f64) -> bool {
     x.is_nan() && x.to_bits() & (1 << 51) == 0
 }
 
-/// s + e == a + b exactly (Knuth's TwoSum).
-fn two_sum(a: f64, b: f64) -> (f64, f64) {
-    let s = a + b;
-    let bb = s - a;
-    (s, (a - (s - bb)) + (b - bb))
-}
+use crate::round::two_sum;
 
 /// a * b == c exactly, for finite values (on the integer significands, so that it holds
 /// where an FMA residual would underflow).
@@ -1101,7 +1096,7 @@ fn product_is(a: f64, b: f64, c: f64) -> bool {
 /// zero, a denormal operand, then the result. `x` and `y` are widened exactly from f32 when
 /// `single`; `sn`/`den` say whether an operand was a signaling NaN / denormal in its own
 /// format. For Sqrt the operand is `y`.
-fn arith_flags(op: FOp, x: f64, y: f64, single: bool, sn: bool, den: bool, ue_unmasked: bool) -> (u32, u32) {
+fn arith_flags(op: FOp, x: f64, y: f64, single: bool, sn: bool, den: bool, ue_unmasked: bool, rc: u32) -> (u32, u32) {
     let x = if op == FOp::Sqrt { y } else { x };
     if x.is_nan() || y.is_nan() {
         return (if sn || op == FOp::MinMax { IE } else { 0 }, 0);
@@ -1163,25 +1158,54 @@ fn arith_flags(op: FOp, x: f64, y: f64, single: bool, sn: bool, den: bool, ue_un
             };
         (r.is_infinite(), r.is_subnormal(), r == 0.0, inexact)
     };
-    let mut post = 0;
-    if inf {
-        post = OE | PE;
-    } else {
-        let tiny = sub || (zero && inexact);
-        if tiny && (inexact || ue_unmasked) {
-            post |= UE;
+    let _ = (inf, sub, zero);
+    (pre, result_flags(op, x, y, single, inexact, ue_unmasked, rc))
+}
+
+/// Overflow, underflow and inexact of a finite, nonzero exact result (`inexact`: not
+/// representable), decided as x86 does on the result rounded in MXCSR's direction to the
+/// format's precision with an unbounded exponent ("after rounding"): overflow when that is
+/// past the largest finite value (so rounding toward zero just past it does not overflow),
+/// tiny when it is below the smallest normal (a result rounding up to the smallest normal from
+/// below is still tiny when the unbounded rounding is not)
+fn result_flags(op: FOp, x: f64, y: f64, single: bool, inexact: bool, ue_unmasked: bool, rc: u32) -> u32 {
+    let rop = match op {
+        FOp::Add => Op::Add,
+        FOp::Sub => Op::Sub,
+        FOp::Mul => Op::Mul,
+        FOp::Div => Op::Div,
+        _ => Op::Sqrt,
+    };
+    let (a, b) = if op == FOp::Sqrt { (y, 0.0) } else { (x, y) };
+    // (an exact zero: no flags)
+    let zero = match op {
+        FOp::Add | FOp::Sub => {
+            let (s, e) = two_sum(x, if op == FOp::Sub { -y } else { y });
+            s == 0.0 && e == 0.0
         }
-        if inexact {
-            post |= PE;
-        }
+        _ => a == 0.0 || (op == FOp::Mul && b == 0.0),
+    };
+    if zero {
+        return 0;
     }
-    (pre, post)
+    let ex = round::unbounded_exp(rop, a, b, if single { 24 } else { 53 }, round::Rc::from_bits(rc));
+    exp_flags(ex, single, inexact, ue_unmasked)
+}
+
+/// The flags of a result whose after-rounding exponent (frexp's) is `ex`
+fn exp_flags(ex: i32, single: bool, inexact: bool, ue_unmasked: bool) -> u32 {
+    let (emin, emax) = if single { (-125, 128) } else { (-1021, 1024) };
+    if ex > emax {
+        return OE | PE;
+    }
+    let tiny = ex < emin;
+    (if tiny && (inexact || ue_unmasked) { UE } else { 0 }) | if inexact { PE } else { 0 }
 }
 
 /// The MXCSR flags of a fused x * y + z (signs already applied; widened exactly from f32 when
 /// `single`), in the order of [`arith_flags`]: an SNaN operand, a QNaN operand (no flag, even with
 /// 0 * inf), an invalid 0 * inf or inf - inf, a denormal operand, then the once-rounded result.
-pub(super) fn fma_flags(x: f64, y: f64, z: f64, single: bool, sn: bool, den: bool, ue_unmasked: bool) -> (u32, u32) {
+pub(super) fn fma_flags(x: f64, y: f64, z: f64, single: bool, sn: bool, den: bool, ue_unmasked: bool, rc: u32) -> (u32, u32) {
     if sn {
         return (IE, 0);
     }
@@ -1199,89 +1223,71 @@ pub(super) fn fma_flags(x: f64, y: f64, z: f64, single: bool, sn: bool, den: boo
     if pinf || z.is_infinite() {
         return (pre, 0);
     }
-    let r = if single { libm::fmaf(x as f32, y as f32, z as f32) as f64 } else { libm::fma(x, y, z) };
-    let (sub, inf) = if single { ((r as f32).is_subnormal(), (r as f32).is_infinite()) } else { (r.is_subnormal(), r.is_infinite()) };
-    if inf {
-        return (pre, OE | PE);
+    let r = if single { round::fma32(x as f32, y as f32, z as f32, rc) as f64 } else { round::fma64(x, y, z, rc) };
+    let inexact = r.is_infinite() || round::fma_err(x, y, z, r) != 0;
+    // (an exact zero)
+    if !inexact && r == 0.0 {
+        return (pre, 0);
     }
-    let inexact = !fma_exact(x, y, z, r);
-    let tiny = sub || (r == 0.0 && inexact);
-    let mut post = if inexact { PE } else { 0 };
-    if tiny && (inexact || ue_unmasked) {
-        post |= UE;
-    }
-    (pre, post)
+    (pre, fma_post(x, y, z, r, single, inexact, ue_unmasked, rc))
 }
 
-/// Whether x * y + z is exactly `r` (all finite): the terms as integers times powers of two,
-/// summed exactly.
-fn fma_exact(x: f64, y: f64, z: f64, r: f64) -> bool {
-    fn parts(v: f64) -> (bool, u128, i32) {
-        let b = v.to_bits();
-        let (e, f) = (((b >> 52) & 0x7ff) as i32, (b & ((1 << 52) - 1)) as u128);
-        if e == 0 { (b >> 63 != 0, f, -1074) } else { (b >> 63 != 0, f | 1 << 52, e - 1075) }
+/// [`exp_flags`] for x * y + z rounded (in direction `rc`) to `r`: the after-rounding value
+/// against the thresholds, on the exact sum
+fn fma_post(x: f64, y: f64, z: f64, r: f64, single: bool, inexact: bool, ue_unmasked: bool, rc: u32) -> u32 {
+    let (p, emin, emax, max) = if single { (24, -126, 128, f32::MAX as f64) } else { (53, -1022, 1024, f64::MAX) };
+    let [t0, t1] = round::fma_terms(x, y, z);
+    // sign(|v| - m * 2^e)
+    let neg = r.is_sign_negative();
+    let cmp_abs = |m: u128, e: i32| {
+        let s = round::sum_sign(&[t0, t1, (!neg, m, e)]);
+        if neg { -s } else { s }
+    };
+    let rc = round::Rc::from_bits(rc);
+    let toward = rc == round::Rc::Zero || (rc == round::Rc::Down) != neg && rc != round::Rc::Near;
+    // overflow: rounded to infinity, or (toward zero) at the largest value from 2^emax on
+    if r.is_infinite() || (r.abs() == max && inexact && toward && cmp_abs(1, emax) >= 0) {
+        return OE | PE;
     }
-    let ((sx, mx, ex), (sy, my, ey), (sz, mz, ez), (sr, mr, er)) = (parts(x), parts(y), parts(z), parts(r));
-    let terms = [(sx ^ sy, mx * my, ex + ey), (sz, mz, ez), (!sr, mr, er)];
-    let Some(emin) = terms.iter().filter(|t| t.1 != 0).map(|t| t.2).min() else { return true };
-    let n = terms.iter().filter(|t| t.1 != 0).map(|t| (t.2 - emin) as usize).max().unwrap_or(0) / 64 + 4;
-    let (mut pos, mut neg) = (alloc::vec![0u64; n], alloc::vec![0u64; n]);
-    for (s, m, e) in terms {
-        if m == 0 {
-            continue;
-        }
-        let a = if s { &mut neg } else { &mut pos };
-        let sh = (e - emin) as usize;
-        let (w, b) = (sh / 64, sh % 64);
-        let (p0, p1) = (m as u64, (m >> 64) as u64);
-        let l = if b == 0 { [p0, p1, 0] } else { [p0 << b, p1 << b | p0 >> (64 - b), p1 >> (64 - b)] };
-        let mut c = 0u128;
-        for (i, slot) in a.iter_mut().enumerate().skip(w) {
-            let t = *slot as u128 + c + if i - w < 3 { l[i - w] as u128 } else { 0 };
-            *slot = t as u64;
-            c = t >> 64;
-            if c == 0 && i - w >= 2 {
-                break;
-            }
-        }
-    }
-    pos == neg
+    let tiny = r.abs() <= libm::ldexp(1.0, emin)
+        && cmp_abs(1, emin) < 0
+        && match rc {
+            round::Rc::Near => cmp_abs((1 << (p + 1)) - 1, emin - p - 1) < 0,
+            _ if toward => true,
+            _ => cmp_abs((1 << p) - 1, emin - p) <= 0,
+        };
+    (if tiny && (inexact || ue_unmasked) { UE } else { 0 }) | if inexact { PE } else { 0 }
 }
 
 /// arith_flags for f32 operands.
-pub fn flags32(op: FOp, x: f32, y: f32, ue_unmasked: bool) -> (u32, u32) {
+pub fn flags32(op: FOp, x: f32, y: f32, ue_unmasked: bool, rc: u32) -> (u32, u32) {
     let ops: &[f32] = if op == FOp::Sqrt { &[y] } else { &[x, y] };
     let sn = ops.iter().any(|&v| snan32(v));
     let den = ops.iter().any(|v| v.is_subnormal());
-    arith_flags(op, x as f64, y as f64, true, sn, den, ue_unmasked)
+    arith_flags(op, x as f64, y as f64, true, sn, den, ue_unmasked, rc)
 }
 
 /// arith_flags for f64 operands.
-pub fn flags64(op: FOp, x: f64, y: f64, ue_unmasked: bool) -> (u32, u32) {
+pub fn flags64(op: FOp, x: f64, y: f64, ue_unmasked: bool, rc: u32) -> (u32, u32) {
     let ops: &[f64] = if op == FOp::Sqrt { &[y] } else { &[x, y] };
     let sn = ops.iter().any(|&v| snan64(v));
     let den = ops.iter().any(|v| v.is_subnormal());
-    arith_flags(op, x, y, false, sn, den, ue_unmasked)
+    arith_flags(op, x, y, false, sn, den, ue_unmasked, rc)
 }
 
 /// f64 -> f32 (CVTSD2SS, CVTPD2PS).
-pub fn narrow_flags(x: f64, ue_unmasked: bool) -> (u32, u32) {
+pub fn narrow_flags(x: f64, ue_unmasked: bool, rc: u32) -> (u32, u32) {
     if x.is_nan() {
         return (if snan64(x) { IE } else { 0 }, 0);
     }
     let pre = if x.is_subnormal() { DE } else { 0 };
-    if x.is_infinite() {
+    if x.is_infinite() || x == 0.0 {
         return (pre, 0);
     }
     let r = x as f32;
     let inexact = r as f64 != x;
-    let post = if r.is_infinite() {
-        OE | PE
-    } else {
-        let tiny = r.is_subnormal() || (r == 0.0 && x != 0.0);
-        (if tiny && (inexact || ue_unmasked) { UE } else { 0 }) | if inexact { PE } else { 0 }
-    };
-    (pre, post)
+    let ex = round::unbounded_exp_of(x, 0, 0, 24, round::Rc::from_bits(rc));
+    (pre, exp_flags(ex, true, inexact, ue_unmasked))
 }
 
 /// A comparison: an SNaN operand is invalid, a QNaN too when `signaling` (COMISS, the
@@ -1331,6 +1337,7 @@ impl<'a, M: Memory> X<'a, M> {
         use Mnemonic::*;
         let mn = self.ins.mnemonic();
         let ue = self.cpu.mxcsr & 0x800 == 0;
+        let rc = (self.cpu.mxcsr >> 13) & 3;
         let mut f = (0u32, 0u32);
         let op = |mn: Mnemonic| match mn {
             Addss | Addps | Addsd | Addpd => FOp::Add,
@@ -1362,7 +1369,7 @@ impl<'a, M: Memory> X<'a, M> {
                 let a = self.read_v(0).ok()?;
                 let b = self.read_v(1).ok()?;
                 for i in 0..n {
-                    f = or2(f, flags32(op(mn), f32x(a, i), f32x(b, i), ue));
+                    f = or2(f, flags32(op(mn), f32x(a, i), f32x(b, i), ue, rc));
                 }
             }
             Addsd | Subsd | Mulsd | Divsd | Minsd | Maxsd | Sqrtsd | Addpd | Subpd | Mulpd | Divpd | Minpd | Maxpd
@@ -1371,7 +1378,7 @@ impl<'a, M: Memory> X<'a, M> {
                 let a = self.read_v(0).ok()?;
                 let b = self.read_v(1).ok()?;
                 for i in 0..n {
-                    f = or2(f, flags64(op(mn), f64x(a, i), f64x(b, i), ue));
+                    f = or2(f, flags64(op(mn), f64x(a, i), f64x(b, i), ue, rc));
                 }
             }
             Haddps | Hsubps | Addsubps => {
@@ -1386,7 +1393,7 @@ impl<'a, M: Memory> X<'a, M> {
                             (f32x(v, j), f32x(v, j + 1), if mn == Hsubps { FOp::Sub } else { FOp::Add })
                         }
                     };
-                    f = or2(f, flags32(o, x, y, ue));
+                    f = or2(f, flags32(o, x, y, ue, rc));
                 }
             }
             Haddpd | Hsubpd | Addsubpd => {
@@ -1400,7 +1407,7 @@ impl<'a, M: Memory> X<'a, M> {
                             (f64x(v, 0), f64x(v, 1), if mn == Hsubpd { FOp::Sub } else { FOp::Add })
                         }
                     };
-                    f = or2(f, flags64(o, x, y, ue));
+                    f = or2(f, flags64(o, x, y, ue, rc));
                 }
             }
             // each selected product, then the sums of the rounded products
@@ -1410,13 +1417,13 @@ impl<'a, M: Memory> X<'a, M> {
                 let mut p = [0f32; 4];
                 for i in 0..4 {
                     if imm & (16 << i) != 0 {
-                        f = or2(f, flags32(FOp::Mul, f32x(a, i), f32x(b, i), ue));
+                        f = or2(f, flags32(FOp::Mul, f32x(a, i), f32x(b, i), ue, rc));
                         p[i as usize] = nan_op32(Op::Mul, f32x(a, i), f32x(b, i), mx);
                     }
                 }
                 let (s0, s1) = (nan_op32(Op::Add, p[0], p[1], mx), nan_op32(Op::Add, p[2], p[3], mx));
                 for (x, y) in [(p[0], p[1]), (p[2], p[3]), (s0, s1)] {
-                    f = or2(f, flags32(FOp::Add, x, y, ue));
+                    f = or2(f, flags32(FOp::Add, x, y, ue, rc));
                 }
             }
             Dppd => {
@@ -1425,11 +1432,11 @@ impl<'a, M: Memory> X<'a, M> {
                 let mut p = [0f64; 2];
                 for i in 0..2 {
                     if imm & (16 << i) != 0 {
-                        f = or2(f, flags64(FOp::Mul, f64x(a, i), f64x(b, i), ue));
+                        f = or2(f, flags64(FOp::Mul, f64x(a, i), f64x(b, i), ue, rc));
                         p[i as usize] = nan_op64(Op::Mul, f64x(a, i), f64x(b, i), mx);
                     }
                 }
-                f = or2(f, flags64(FOp::Add, p[0], p[1], ue));
+                f = or2(f, flags64(FOp::Add, p[0], p[1], ue, rc));
             }
             Cmpss | Cmpps | Cmpsd | Cmppd | Comiss | Ucomiss | Comisd | Ucomisd => {
                 let a = self.read_v(0).ok()?;
@@ -1491,7 +1498,7 @@ impl<'a, M: Memory> X<'a, M> {
             Cvtsd2ss | Cvtpd2ps => {
                 let v = self.read_v(1).ok()?;
                 for i in 0..(if mn == Cvtsd2ss { 1 } else { 2 }) {
-                    f = or2(f, narrow_flags(f64x(v, i), ue));
+                    f = or2(f, narrow_flags(f64x(v, i), ue, rc));
                 }
             }
             Roundss | Roundsd | Roundps | Roundpd => {

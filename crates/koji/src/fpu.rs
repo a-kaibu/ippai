@@ -27,6 +27,24 @@ impl Default for Fpu {
     }
 }
 
+/// `v` with an SNaN made quiet (the x87's loads of f32/f64 and its arithmetic)
+pub fn quiet(v: f64) -> f64 {
+    if v.is_nan() { f64::from_bits(v.to_bits() | 1 << 51) } else { v }
+}
+
+/// An integer as the 80-bit format (exact: 64-bit significand)
+pub fn int_to_f80(i: i64) -> [u8; 10] {
+    let mut b = [0u8; 10];
+    if i != 0 {
+        let m = i.unsigned_abs();
+        let lz = m.leading_zeros();
+        b[..8].copy_from_slice(&(m << lz).to_le_bytes());
+        let e = 16383 + 63 - lz as u16 | if i < 0 { 0x8000 } else { 0 };
+        b[8..].copy_from_slice(&e.to_le_bytes());
+    }
+    b
+}
+
 pub const C0: u16 = 1 << 8;
 pub const C1: u16 = 1 << 9;
 pub const C2: u16 = 1 << 10;

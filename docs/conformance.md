@@ -1,7 +1,8 @@
 # Conformance tests from outside references
 
-Two suites check sake against references it did not write itself. Both run in
-`.github/workflows/conformance.yml` (push to main, or by hand) and locally.
+Suites that check sake and koji against references they did not write themselves. Wine's tests
+and the differential tests run in `.github/workflows/conformance.yml` (push to main, or by
+hand); TestFloat and SingleStepTests in ci.yml (`test`, `jit`). All run locally too.
 
 ## Wine's conformance tests (tests/winetest)
 
@@ -60,6 +61,48 @@ Known differences (2026-11-06): hatch brushes (drawn solid), ellipses, round rec
 polygon fill and wide/styled pens (sake draws outlines with 1-pixel solid lines), AlphaBlend
 rounding, StretchBlt/StretchDIBits stretching and mirroring rules, TransparentBlt stretching,
 the null brush in ROP3 blits.
+
+## Berkeley TestFloat (tests/testfloat)
+
+[TestFloat 3e](http://www.jhauser.us/arithmetic/TestFloat.html)'s `testfloat_gen`, built on
+SoftFloat 3e specialized for x86 SSE (`8086-SSE`: x86's default NaN, NaN propagation and
+integer-overflow results), writes test cases for an operation and rounding mode (operands, the
+correctly rounded result, the IEEE exception flags), made to hit the corners: ties, carries out
+of the significand, the exponent range's boundaries, subnormals, infinities, NaNs, integer
+limits. `tests/testfloat/build.sh` builds it from pinned commits into `target/testfloat`
+(nothing of it is in this repository; CI caches the build per script hash).
+`tests/testfloat/ops.rs` maps ~70 x86 instructions to TestFloat functions: SSE scalar,
+packed and VEX arithmetic, FMA (vfmadd132ss/sd), every conversion (cvt*, cvtt*), ROUNDSS/SD
+(immediate and MXCSR modes), CMPSS/SD and VCMPSS predicates, (U)COMISS/SD; x87 arithmetic at
+single and double precision, m32 operands, FLD/FST conversions, FILD/FIST/FISTP/FISTTP,
+FRNDINT, FPREM1 and FUCOMIP/FCOMIP.
+
+- `crates/koji/tests/testfloat.rs` runs every case (level 1: 6.6 M) through the interpreter in
+  each rounding mode (MXCSR.RC or the x87 control word) and compares the result and MXCSR's
+  exception flags; `tests/testfloat/expected.tsv` has the passing count per instruction and
+  mode (all of them, 2026-11-07). `TF_FILTER`, `TF_SHOW=<n>`, `TF_LEVEL=2`, `TF_UPDATE=1`.
+- `tools/jit32test testfloat` runs a sample of each instruction's cases (TF_N per mode) as
+  translated loops (several cases per program; the 32-bit JIT's modes), against TestFloat.
+- Not compared: the x87's exception flags (koji keeps none), and two x87 behaviours SoftFloat
+  doesn't model: double rounding below the normal range (the FPU's 64-bit register, then the
+  store), and which of two NaN operands an x87 operation returns. FMA's 0 * inf + NaN returns
+  the NaN on x86 (diff_isa checks this against the CPU), not SoftFloat's default NaN.
+
+Found and fixed (2026-11-07): overflow and underflow flags under directed rounding (x86 tests
+both after rounding: tininess on the value rounded with an unbounded exponent, so a result
+rounded toward zero just past MAX does not overflow), sums near f64::MAX (TwoSum's error term
+overflowed: Fast2Sum), FMA ignoring MXCSR.RC (koji::round::fma32/fma64), FILD m64 stored to
+m32/m64/m80 (rounded once from the exact integer; the JIT gives a 64-bit integer f64 can't hold
+to the interpreter), FLD of an f32/f64 SNaN and FRNDINT of one (quieted).
+`crates/koji/tests/fp_regress.rs` keeps one case of each, and `diff_isa` now runs every case in
+a random MXCSR rounding mode against the host CPU.
+
+## SingleStepTests (tests/sst)
+
+Single-instruction tests recorded on real 80386EX, 80286, 8086, 8088 and NEC V20 chips, all in
+real mode (9 M tests run): `crates/koji/tests/singlestep.rs` (the interpreter, every test) and
+`tools/jit16test sst` (the 16-bit JIT, what it translates). What is run, what is not and the
+known differences: tests/sst/README.md.
 
 ## Differential floating point test (tests/diff/fpudiff.c, fpu.py)
 

@@ -126,8 +126,8 @@ jobs:
           restore-keys: |
             test-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-
             test-${{ runner.os }}-${{ env.RUST_KEY }}-
-      # (SingleStepTests/80386: real-mode tests recorded on a real 386, ~430 MB, which
-      # crates/koji/tests/singlestep.rs runs when they are there)
+      # (SingleStepTests: real-mode tests recorded on a real 80386EX, 80286, 8086, 8088 and
+      # NEC V20, ~1.9 GB, which crates/koji/tests/singlestep.rs runs when they are there)
       - id: cache-2
         uses: actions/cache/restore@v6.1.0
         with:
@@ -140,6 +140,20 @@ jobs:
         with:
           path: target/sst
           key: sst-${{ hashFiles('tests/sst/fetch.sh') }}
+      # (Berkeley TestFloat 3e's testfloat_gen, pinned by build.sh, for
+      # crates/koji/tests/testfloat.rs)
+      - id: cache-tf
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: target/testfloat
+          key: testfloat-${{ runner.os }}-${{ hashFiles('tests/testfloat/build.sh') }}
+      - name: Build TestFloat
+        run: tests/testfloat/build.sh
+      - if: steps.cache-tf.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: target/testfloat
+          key: testfloat-${{ runner.os }}-${{ hashFiles('tests/testfloat/build.sh') }}
       - name: cargo test
         run: cargo test --workspace --release
       # (the C runtime's property tests once more with overflow checks: fuzzing found an
@@ -148,10 +162,11 @@ jobs:
         run: cargo test -p crt
       - name: Check all Rust targets without warnings
         run: cargo check --workspace --all-targets --locked
-      # (before the cache is saved: only the registry crates' builds are worth keeping)
+      # (before the cache is saved: only the registry crates' builds are worth keeping;
+      # target/sst and target/testfloat have caches of their own)
       - name: Shrink the cargo cache
         if: ${{ !cancelled() }}
-        run: python3 tools/ci/cache-prune.py target
+        run: rm -rf target/sst target/testfloat && python3 tools/ci/cache-prune.py target
       # (saved when the tests fail too: the registry crates' builds are good either way)
       - if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' && steps.cargo-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v6.1.0
@@ -229,9 +244,10 @@ jobs:
             tools/jit64test/target
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
-  # koji's 32-bit JIT against the interpreter (two parts at once) and the runner's CPU; its 16-bit
-  # JIT (Win16 code) against its interpreter and a real 386 (SingleStepTests/80386: every test of
-  # what it translates, 200 per opcode file)
+  # koji's 32-bit JIT against the interpreter (two parts at once), the runner's CPU and TestFloat
+  # (x87/SSE results and MXCSR flags, a sample per instruction and rounding mode); its 16-bit
+  # JIT (Win16 code) against its interpreter and real chips (SingleStepTests: 80386, 80286,
+  # 8086, 8088, V20; what it translates, SST_N per opcode file)
   jit:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -250,13 +266,13 @@ jobs:
           key: jit-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('tools/jit32test/Cargo.lock', 'tools/jit16test/Cargo.lock') }}
           restore-keys: |
             jit-${{ runner.os }}-${{ env.RUST_KEY }}-
-      # (SingleStepTests/80386 for jit16test, pinned by fetch.sh)
+      # (SingleStepTests for jit16test, pinned by fetch.sh)
       - id: cache-3
         uses: actions/cache/restore@v6.1.0
         with:
           path: target/sst
           key: sst-${{ hashFiles('tests/sst/fetch.sh') }}
-      - name: SingleStepTests/80386
+      - name: SingleStepTests
         id: sst
         background: true
         run: tests/sst/fetch.sh
@@ -270,6 +286,18 @@ jobs:
         id: apt
         background: true
         run: tools/ci/apt.sh gcc-multilib
+      - id: cache-tf
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: target/testfloat
+          key: testfloat-${{ runner.os }}-${{ hashFiles('tests/testfloat/build.sh') }}
+      - name: Build TestFloat
+        run: tests/testfloat/build.sh
+      - if: steps.cache-tf.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: target/testfloat
+          key: testfloat-${{ runner.os }}-${{ hashFiles('tests/testfloat/build.sh') }}
       - name: Build jit32test and jit16test
         run: |
           (cd tools/jit16test && cargo build --release --locked) & q=$!
@@ -290,17 +318,22 @@ jobs:
         background: true
         working-directory: tools/jit16test
         run: cargo run --release --locked -- 1500 ${{ github.run_number }}
+      - name: 32-bit, JIT against TestFloat
+        id: jit32-tf
+        background: true
+        working-directory: tools/jit32test
+        run: cargo run --release --locked -- testfloat
       - wait: sst
       - if: steps.cache-3.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6.1.0
         with:
           path: target/sst
           key: sst-${{ hashFiles('tests/sst/fetch.sh') }}
-      - name: 16-bit, against the 386
+      - name: 16-bit, against the chips (SingleStepTests)
         id: jit16-sst
         background: true
         working-directory: tools/jit16test
-        run: SST_N=200 cargo run --release --locked -- sst
+        run: SST_N=80 cargo run --release --locked -- sst
       - wait: apt
       - if: steps.cache-4.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6.1.0
@@ -312,8 +345,8 @@ jobs:
         background: true
         working-directory: tools/jit32test
         run: cargo run --release --locked -- native 3000 ${{ github.run_number }}
-      - name: Wait for the five runs
-        wait: [jit32-diff0, jit32-diff1, jit32-native, jit16-diff, jit16-sst]
+      - name: Wait for the six runs
+        wait: [jit32-diff0, jit32-diff1, jit32-native, jit32-tf, jit16-diff, jit16-sst]
       # (before the cache is saved: only the registry crates' builds are worth keeping)
       - name: Shrink the cargo cache
         if: ${{ !cancelled() }}

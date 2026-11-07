@@ -167,6 +167,149 @@ fn place(p: f64, es: i32, k: i32, rc: Rc, prec: Prec) -> f64 {
     }
 }
 
+/// s + e == a + b exactly, s the nearest (Fast2Sum on the larger magnitude first: TwoSum's
+/// s - a overflows when s and a are near f64::MAX with opposite signs). s infinite: e is NaN.
+pub(crate) fn two_sum(a: f64, b: f64) -> (f64, f64) {
+    let (a, b) = if a.abs() >= b.abs() { (a, b) } else { (b, a) };
+    let s = a + b;
+    (s, b - (s - a))
+}
+
+/// The exact result of `a op b` (finite operands, the result not an exact zero, b > 0 for
+/// Sqrt's a): (p, sign of e, k) with the exact value (p + e) * 2^k and p its nearest f64
+fn exact_parts(op: Op, a: f64, b: f64) -> (f64, i32, i32) {
+    match op {
+        Op::Add | Op::Sub => {
+            let b = if op == Op::Sub { -b } else { b };
+            let (s, e) = two_sum(a, b);
+            if s.is_finite() {
+                return (s, sign(e), 0);
+            }
+            // (past f64::MAX: on the halves, exact there: both operands are large)
+            let (s, e) = two_sum(a * 0.5, b * 0.5);
+            (s, sign(e), 1)
+        }
+        Op::Mul => {
+            let ((ma, ea), (mb, eb)) = (libm::frexp(a), libm::frexp(b));
+            let p = ma * mb;
+            (p, sign(libm::fma(ma, mb, -p)), ea + eb)
+        }
+        Op::Div => {
+            let ((ma, ea), (mb, eb)) = (libm::frexp(a), libm::frexp(b));
+            let q = ma / mb;
+            (q, sign(-libm::fma(q, mb, -ma)) * sign(mb), ea - eb)
+        }
+        Op::Sqrt => {
+            let (mut m, mut e) = libm::frexp(a);
+            if e % 2 != 0 {
+                m *= 2.0;
+                e -= 1;
+            }
+            let q = libm::sqrt(m);
+            (q, sign(-libm::fma(q, q, -m)), e / 2)
+        }
+    }
+}
+
+/// The exponent (frexp's: value = m * 2^exp, 0.5 <= |m| < 1) of the exact value (p + e) * 2^k
+/// rounded to `bits` (24 or 53) bits in direction `rc` with an unbounded exponent range: the
+/// IEEE "after rounding" value overflow and tininess are decided on (x86 detects underflow
+/// after rounding). Overflow: exp > 128 (f32) / 1024 (f64); tiny: exp < -125 / -1021.
+pub fn unbounded_exp_of(p: f64, es: i32, k: i32, bits: u32, rc: Rc) -> i32 {
+    let (m, e) = libm::frexp(p);
+    let r = if bits == 24 { f32_grid(m, es, rc) } else { regrid(m, es, rc, |x| x, next_up, next_down) };
+    e + k + libm::frexp(r).1
+}
+
+/// [`unbounded_exp_of`] the exact `a op b` (finite operands, not an exact zero)
+pub fn unbounded_exp(op: Op, a: f64, b: f64, bits: u32, rc: Rc) -> i32 {
+    let (p, es, k) = exact_parts(op, a, b);
+    unbounded_exp_of(p, es, k, bits, rc)
+}
+
+/// A finite value as (negative, integer significand, exponent): v = ±m * 2^e
+pub(crate) fn parts(v: f64) -> (bool, u128, i32) {
+    let b = v.to_bits();
+    let (e, f) = (((b >> 52) & 0x7ff) as i32, (b & ((1 << 52) - 1)) as u128);
+    if e == 0 { (b >> 63 != 0, f, -1074) } else { (b >> 63 != 0, f | 1 << 52, e - 1075) }
+}
+
+/// The sign (-1, 0, 1) of a sum of terms ±m * 2^e (m up to 2^120), summed exactly
+pub(crate) fn sum_sign(terms: &[(bool, u128, i32)]) -> i32 {
+    let live = || terms.iter().filter(|t| t.1 != 0);
+    let Some(emin) = live().map(|t| t.2).min() else { return 0 };
+    let n = live().map(|t| (t.2 - emin) as usize).max().unwrap_or(0) / 64 + 4;
+    let (mut pos, mut neg) = (alloc::vec![0u64; n], alloc::vec![0u64; n]);
+    for &(s, m, e) in live() {
+        let a = if s { &mut neg } else { &mut pos };
+        let sh = (e - emin) as usize;
+        let (w, b) = (sh / 64, sh % 64);
+        let (p0, p1) = (m as u64, (m >> 64) as u64);
+        let l = if b == 0 { [p0, p1, 0] } else { [p0 << b, p1 << b | p0 >> (64 - b), p1 >> (64 - b)] };
+        let mut c = 0u128;
+        for (i, slot) in a.iter_mut().enumerate().skip(w) {
+            let t = *slot as u128 + c + if i - w < 3 { l[i - w] as u128 } else { 0 };
+            *slot = t as u64;
+            c = t >> 64;
+            if c == 0 && i - w >= 2 {
+                break;
+            }
+        }
+    }
+    match pos.iter().rev().cmp(neg.iter().rev()) {
+        core::cmp::Ordering::Greater => 1,
+        core::cmp::Ordering::Less => -1,
+        core::cmp::Ordering::Equal => 0,
+    }
+}
+
+/// The terms of x * y + z (finite), for [`sum_sign`]
+pub(crate) fn fma_terms(x: f64, y: f64, z: f64) -> [(bool, u128, i32); 2] {
+    let ((sx, mx, ex), (sy, my, ey)) = (parts(x), parts(y));
+    [(sx ^ sy, mx * my, ex + ey), parts(z)]
+}
+
+/// sign(x * y + z - r), all finite
+pub(crate) fn fma_err(x: f64, y: f64, z: f64, r: f64) -> i32 {
+    let [p, q] = fma_terms(x, y, z);
+    let (sr, mr, er) = parts(r);
+    sum_sign(&[p, q, (!sr, mr, er)])
+}
+
+/// x * y + z rounded once in direction `rc` (FMA3; non-NaN operands)
+pub fn fma64(x: f64, y: f64, z: f64, rc_bits: u32) -> f64 {
+    let rc = Rc::from_bits(rc_bits);
+    let r = libm::fma(x, y, z);
+    if rc == Rc::Near || !x.is_finite() || !y.is_finite() || !z.is_finite() || r.is_nan() {
+        return r;
+    }
+    if r.is_infinite() {
+        return overflowed(r, f64::MAX, rc);
+    }
+    let es = fma_err(x, y, z, r);
+    if r == 0.0 && es == 0 {
+        return zero_sum(x * y, z, rc);
+    }
+    place(r, es, 0, rc, Prec::Sse)
+}
+
+/// The same for f32 operands and result
+pub fn fma32(x: f32, y: f32, z: f32, rc_bits: u32) -> f32 {
+    let rc = Rc::from_bits(rc_bits);
+    let r = libm::fmaf(x, y, z);
+    if rc == Rc::Near || !x.is_finite() || !y.is_finite() || !z.is_finite() || r.is_nan() {
+        return r;
+    }
+    if r.is_infinite() {
+        return overflowed(r as f64, f32::MAX as f64, rc) as f32;
+    }
+    let es = fma_err(x as f64, y as f64, z as f64, r as f64);
+    if r == 0.0 && es == 0 {
+        return zero_sum(x as f64 * y as f64, z as f64, rc) as f32;
+    }
+    f32_grid(r as f64, es, rc) as f32
+}
+
 /// The exact sum's zero: -0 rounding down, else +0 (an exact zero of nonzero operands, or
 /// zeros of opposite signs)
 fn zero_sum(a: f64, b: f64, rc: Rc) -> f64 {
@@ -191,13 +334,10 @@ fn rounded64(op: Op, a: f64, b: f64, rc: Rc, prec: Prec) -> f64 {
         _ if special => plain,
         Op::Add | Op::Sub => {
             let b = if op == Op::Sub { -b } else { b };
-            let s = a + b;
+            let (s, e) = two_sum(a, b);
             if s.is_infinite() {
                 return overflowed(s, f64::MAX, rc);
             }
-            // TwoSum
-            let bb = s - a;
-            let e = (a - (s - bb)) + (b - bb);
             if s == 0.0 && e == 0.0 {
                 return zero_sum(a, b, rc);
             }

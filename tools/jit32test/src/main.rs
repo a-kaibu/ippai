@@ -7,6 +7,7 @@
 //! the loop knobs (range check hoisting, stack slots in locals).
 //!
 //!   cargo run --release -- [count] [seed]
+//!   cargo run --release -- testfloat    (Berkeley TestFloat's cases: src/testfloat.rs)
 use iced_x86::code_asm::*;
 use iced_x86::{BlockEncoder, BlockEncoderOptions, Code, Instruction, InstructionBlock, MemoryOperand, Register};
 use koji::{Cpu, Exit, Fault};
@@ -14,6 +15,7 @@ use std::sync::atomic::Ordering::Relaxed;
 use wasmtime::*;
 mod native;
 mod sweep;
+mod testfloat;
 
 const CPU: u32 = 0x2000;
 const HASH: u32 = 0x8000;
@@ -1173,12 +1175,19 @@ impl Jit {
                 1 if c.eip == END => return Ok(()),
                 1 if !self.known.contains(&c.eip) && self.translate(base, c.eip).is_ok() => {}
                 1 => {
+                    // (as kura: the interpreter up to the next branch)
                     let mut c = c;
-                    let r = koji::step(&mut c, &mut Mem(m));
-                    unsafe { put_cpu(m, &c) };
-                    if r != Exit::Continue {
-                        return Err(format!("interpreter exit {r:?} at {:#x}", c.eip));
+                    for _ in 0..4096 {
+                        let (r, branch) = koji::step_flow(&mut c, &mut Mem(m));
+                        if r != Exit::Continue {
+                            unsafe { put_cpu(m, &c) };
+                            return Err(format!("interpreter exit {r:?} at {:#x}", c.eip));
+                        }
+                        if branch || c.eip == END {
+                            break;
+                        }
                     }
+                    unsafe { put_cpu(m, &c) };
                 }
                 koji::jit::RET_FN => {}
                 // (a step that changed MXCSR: on in the interpreter; one that read its flags)
@@ -1415,6 +1424,13 @@ fn main() {
     assert!(memory.data().len() >= SCRATCH_END);
     let base = memory.data().as_ptr() as *mut u8 as usize;
     let dispatch = Module::new(&engine, koji::jit::dispatch::module()).unwrap();
+    // Berkeley TestFloat's cases through the JIT (`testfloat`)
+    if args.get(1).map(|s| s.as_str()) == Some("testfloat") {
+        if testfloat::run(&engine, &dispatch, &memory, base) > 0 {
+            std::process::exit(1);
+        }
+        return;
+    }
     let mut fails = 0;
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     // fixed programs first, in every mode

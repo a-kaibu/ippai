@@ -299,6 +299,7 @@ impl<'a, M: Memory> X<'a, M> {
         let n = if packed { 128 / lane } else { 1 };
         let mut r = a; // scalar: the rest of dst stays
         let ue = self.cpu.mxcsr & 0x800 == 0;
+        let rc = (self.cpu.mxcsr >> 13) & 3;
         let mut fl = (0, 0);
         for i in 0..n {
             let sub = match kind {
@@ -313,14 +314,14 @@ impl<'a, M: Memory> X<'a, M> {
                 let (p, q, s) = (g(x), g(y), g(z));
                 let sn = [p, q, s].iter().any(|v| v.is_nan() && v.to_bits() & 1 << 51 == 0);
                 let den = [p, q, s].iter().any(|v| v.is_subnormal());
-                super::sse::fma_flags(if neg { -p } else { p }, q, if sub { -s } else { s }, false, sn, den, ue)
+                super::sse::fma_flags(if neg { -p } else { p }, q, if sub { -s } else { s }, false, sn, den, ue, rc)
             } else {
                 let g = |v: u128| f32::from_bits((v >> (32 * i)) as u32);
                 let (p, q, s) = (g(x), g(y), g(z));
                 let sn = [p, q, s].iter().any(|v| v.is_nan() && v.to_bits() & 1 << 22 == 0);
                 let den = [p, q, s].iter().any(|v| v.is_subnormal());
                 let w = |v: f32| v as f64;
-                super::sse::fma_flags(w(if neg { -p } else { p }), w(q), w(if sub { -s } else { s }), true, sn, den, ue)
+                super::sse::fma_flags(w(if neg { -p } else { p }), w(q), w(if sub { -s } else { s }), true, sn, den, ue, rc)
             };
             fl = (fl.0 | f.0, fl.1 | f.1);
         }
@@ -342,7 +343,7 @@ impl<'a, M: Memory> X<'a, M> {
                 let v = if p.is_nan() || q.is_nan() || s.is_nan() {
                     [p, q, s].into_iter().find(|v| v.is_nan()).unwrap().to_bits() | 1 << 51
                 } else {
-                    libm::fma(if neg { -p } else { p }, q, if sub { -s } else { s }).to_bits()
+                    crate::round::fma64(if neg { -p } else { p }, q, if sub { -s } else { s }, rc).to_bits()
                 };
                 v as u128
             } else {
@@ -351,7 +352,7 @@ impl<'a, M: Memory> X<'a, M> {
                 let v = if p.is_nan() || q.is_nan() || s.is_nan() {
                     [p, q, s].into_iter().find(|v| v.is_nan()).unwrap().to_bits() | 1 << 22
                 } else {
-                    libm::fmaf(if neg { -p } else { p }, q, if sub { -s } else { s }).to_bits()
+                    crate::round::fma32(if neg { -p } else { p }, q, if sub { -s } else { s }, rc).to_bits()
                 };
                 v as u128
             };

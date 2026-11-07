@@ -1,185 +1,29 @@
-//! koji's 16-bit translation against SingleStepTests/80386 (real-mode tests recorded on a real
-//! 386EX, tests/sst/fetch.sh): each test whose instruction the translator does itself (`ok16`)
-//! runs as a translated region (a block of its own, then the interpreter for the HLT that ends
-//! the test, an INT or a jump's target), and registers, flags and memory must be the 386's.
-//! crates/koji/tests/singlestep.rs checks the interpreter on the same suite; this checks the
-//! wasm the translator makes, real hardware the reference.
+//! koji's 16-bit translation against SingleStepTests (real-mode tests recorded on real chips:
+//! 80386EX, 80286, 8086, 8088, NEC V20; tests/sst/fetch.sh): each test whose instruction the
+//! translator does itself (`ok16`) runs as a translated region (a block of its own, then the
+//! interpreter for the HLT that ends the 386's and 286's tests, an INT or a jump's target), and
+//! registers, flags and memory must be the chip's. crates/koji/tests/singlestep.rs checks the
+//! interpreter on the same suites (tests/sst/moo.rs: the format, the tests not run); a test the
+//! interpreter gets wrong too (a chip's quirk, counted in expected-<cpu>.tsv) is not run here,
+//! so this checks the wasm the translator makes, real hardware the reference.
 //!
-//!   cargo run --release -- sst [dir (target/sst/v1_ex_real_mode)] [file filter]
-//!   SST_N=<n> tests per file (default all), SST_SHOW=<n> failures shown per file
+//!   cargo run --release -- sst [cpu (all suites)] [file filter]
+//!   SST_N=<n> tests per file (default all), SST_SHOW=<n> failures shown per file,
+//!   SST_ROOT=<dir> (default target/sst)
 //!
 //! The guest's linear 0 sits at G in the wasm memory (the harness's Cpu, dispatch table and ring
 //! are below): segment bases are selector * 16 + G. Instructions that load a segment register
 //! are interpreter-only (not ok16), so no base is ever made without G.
 use crate::*;
-use iced_x86::{Decoder, DecoderOptions, Mnemonic, OpKind, RflagsBits};
+use iced_x86::Instruction;
 use std::io::Read;
+
+#[path = "../../../tests/sst/moo.rs"]
+mod moo;
+use moo::*;
 
 const G: u32 = 0x20_0000;
 const SPAN: u32 = 0x12_0000;
-
-fn u32le(b: &[u8], o: usize) -> u32 {
-    u32::from_le_bytes(b[o..o + 4].try_into().unwrap())
-}
-
-fn chunks(mut b: &[u8]) -> Vec<([u8; 4], &[u8])> {
-    let mut out = Vec::new();
-    while b.len() >= 8 {
-        let id: [u8; 4] = b[..4].try_into().unwrap();
-        let n = (u32le(b, 4) as usize).min(b.len() - 8);
-        out.push((id, &b[8..8 + n]));
-        b = &b[8 + n..];
-    }
-    out
-}
-
-#[derive(Default, Clone)]
-struct State {
-    /// RG32 order: cr0 cr3 eax ebx ecx edx esi edi ebp esp cs ds es fs gs ss eip eflags dr6 dr7
-    regs: [Option<u32>; 20],
-    ram: Vec<(u32, u8)>,
-}
-
-struct Test {
-    bytes: Vec<u8>,
-    init: State,
-    fina: State,
-    mask: [u32; 20],
-    hash: String,
-    excp: Option<(u8, u32)>,
-}
-
-const NAMES: [&str; 20] = [
-    "cr0", "cr3", "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp", "cs", "ds", "es", "fs", "gs", "ss", "eip", "eflags", "dr6", "dr7",
-];
-
-fn regs32(p: &[u8], into: &mut [Option<u32>; 20]) {
-    let m = u32le(p, 0);
-    let mut o = 4;
-    for (i, r) in into.iter_mut().enumerate() {
-        if m & 1 << i != 0 {
-            *r = Some(u32le(p, o));
-            o += 4;
-        }
-    }
-}
-
-fn masks32(p: &[u8], into: &mut [u32; 20]) {
-    let mut v = [None; 20];
-    regs32(p, &mut v);
-    for (m, x) in into.iter_mut().zip(v) {
-        if let Some(x) = x {
-            *m = x;
-        }
-    }
-}
-
-fn state(p: &[u8]) -> (State, Option<[u32; 20]>) {
-    let mut s = State::default();
-    let mut mask = None;
-    for (id, c) in chunks(p) {
-        match &id {
-            b"RG32" => regs32(c, &mut s.regs),
-            b"RM32" => {
-                let mut m = [u32::MAX; 20];
-                masks32(c, &mut m);
-                mask = Some(m);
-            }
-            b"RAM " => {
-                let n = u32le(c, 0) as usize;
-                s.ram = (0..n).map(|k| (u32le(c, 4 + 5 * k), c[8 + 5 * k])).collect();
-            }
-            _ => {}
-        }
-    }
-    (s, mask)
-}
-
-fn parse(data: &[u8]) -> Vec<Test> {
-    let mut file_mask = [u32::MAX; 20];
-    let mut tests = Vec::new();
-    for (id, c) in chunks(data) {
-        match &id {
-            b"RM32" => masks32(c, &mut file_mask),
-            b"TEST" => {
-                let mut t = Test {
-                    bytes: Vec::new(),
-                    init: State::default(),
-                    fina: State::default(),
-                    mask: file_mask,
-                    hash: String::new(),
-                    excp: None,
-                };
-                for (id, c) in chunks(&c[4..]) {
-                    match &id {
-                        b"BYTS" => t.bytes = c[4..4 + u32le(c, 0) as usize].to_vec(),
-                        b"INIT" => t.init = state(c).0,
-                        b"FINA" => {
-                            let (s, m) = state(c);
-                            t.fina = s;
-                            if let Some(m) = m {
-                                for (a, b) in t.mask.iter_mut().zip(m) {
-                                    *a &= b;
-                                }
-                            }
-                        }
-                        b"EXCP" => t.excp = Some((c[0], u32le(c, 1))),
-                        b"HASH" => t.hash = c.iter().map(|b| format!("{b:02x}")).collect(),
-                        _ => {}
-                    }
-                }
-                tests.push(t);
-            }
-            _ => {}
-        }
-    }
-    tests
-}
-
-/// Flags compared (as singlestep.rs): CF PF AF ZF SF TF DF OF
-const FLAGS: u32 = 0x0dd5;
-
-/// EFLAGS bits the instruction leaves undefined (as singlestep.rs)
-fn undefined_flags(ins: &iced_x86::Instruction, ecx: u32) -> u32 {
-    let u = ins.rflags_undefined();
-    let mut f = [
-        (RflagsBits::OF, 0x800),
-        (RflagsBits::SF, 0x80),
-        (RflagsBits::ZF, 0x40),
-        (RflagsBits::AF, 0x10),
-        (RflagsBits::CF, 1),
-        (RflagsBits::PF, 4),
-    ]
-    .iter()
-    .filter(|(r, _)| u & r != 0)
-    .map(|(_, b)| b)
-    .sum();
-    if matches!(ins.mnemonic(), Mnemonic::Shl | Mnemonic::Sal | Mnemonic::Shr | Mnemonic::Sar) && ins.op_count() == 2 && ins.op1_kind() == OpKind::Register {
-        let bits = ins.memory_size().size() as u32 * 8;
-        let bits = if bits == 0 { ins.op0_register().size() as u32 * 8 } else { bits };
-        if ecx & 31 >= bits {
-            f |= 0x801;
-        }
-    }
-    f
-}
-
-/// A SIB without an index but with a scale (the 386 scales the base; undefined): not run
-fn invalid_sib(ins: &iced_x86::Instruction, bytes: &[u8]) -> bool {
-    if ins.memory_index() != Register::None || !(0..ins.op_count()).any(|i| ins.op_kind(i) == OpKind::Memory) {
-        return false;
-    }
-    let code = &bytes[..ins.len()];
-    let Some(p) = code.iter().position(|b| !matches!(b, 0x26 | 0x2e | 0x36 | 0x3e | 0x64 | 0x65 | 0x66 | 0x67 | 0xf0 | 0xf2 | 0xf3)) else {
-        return false;
-    };
-    let a32 = code[..p].contains(&0x67);
-    let op = if code[p] == 0x0f { p + 2 } else { p + 1 };
-    match (a32, code.get(op), code.get(op + 1)) {
-        (true, Some(&m), Some(&sib)) => m >> 6 != 3 && m & 7 == 4 && (sib >> 3) & 7 == 4 && sib >> 6 != 0,
-        _ => false,
-    }
-}
 
 /// Real-mode interrupt delivery through the vector table (as singlestep.rs), G added
 fn interrupt(cpu: &mut Cpu, mem: &mut Mem, n: u8, ret: u32) -> Result<(), Fault> {
@@ -201,32 +45,48 @@ fn interrupt(cpu: &mut Cpu, mem: &mut Mem, n: u8, ret: u32) -> Result<(), Fault>
     Ok(())
 }
 
-/// What a test's exit leaves to do (as singlestep.rs's loop): false to stop
-fn after_exit(c: &mut Cpu, mem: &mut Mem, e: Exit) -> Result<bool, String> {
+/// Where the interrupt an exit asks for returns to (None: no interrupt): the 808x's and V20's
+/// exceptions (divide error, BOUND) are interrupts after the instruction, later chips' return
+/// to the faulting one; an INT n returns past it
+fn deliver(kind: Kind, e: Exit, c: &Cpu, next: u32) -> Option<(u8, u32)> {
     match e {
-        Exit::Continue => Ok(true),
-        Exit::Halt => {
-            c.eip = c.eip.wrapping_add(1);
-            Ok(false)
-        }
-        Exit::Interrupt(n) => {
-            let ip = c.eip;
-            interrupt(c, mem, n, ip).map_err(|f| format!("fault {f:?} delivering int {n}"))?;
-            Ok(true)
-        }
-        e @ (Exit::DivideError | Exit::InvalidOpcode) => {
-            let n = if e == Exit::DivideError { 0 } else { 6 };
-            let ip = c.eip;
-            interrupt(c, mem, n, ip).map_err(|f| format!("fault {f:?} delivering #{n}"))?;
-            Ok(true)
-        }
+        Exit::Interrupt(n) if !kind.ends_with_hlt() => Some((n, next)),
+        Exit::DivideError if !kind.ends_with_hlt() => Some((0, next)),
+        Exit::Interrupt(n) => Some((n, c.eip)),
+        Exit::DivideError => Some((0, c.eip)),
+        Exit::InvalidOpcode => Some((6, c.eip)),
+        _ => None,
+    }
+}
+
+/// What an exit does (as singlestep.rs's loop): Ok(false) to stop. `pushed`: where an
+/// interrupt put FLAGS.
+fn exit(kind: Kind, c: &mut Cpu, mem: &mut Mem, e: Exit, next: u32, pushed: &mut Option<u32>) -> Result<bool, String> {
+    if e == Exit::Halt && kind.ends_with_hlt() {
+        c.eip = c.eip.wrapping_add(1);
+        return Ok(false);
+    }
+    // (the 808x: the HLT run() put after the instruction)
+    if e == Exit::Halt && c.eip == next {
+        return Ok(false);
+    }
+    if let Some((n, ip)) = deliver(kind, e, c, next) {
+        let at = c.sbase[2] - G + (c.regs[koji::ESP].wrapping_sub(2) & 0xffff);
+        interrupt(c, mem, n, ip).map_err(|f| format!("fault {f:?} delivering int {n}"))?;
+        *pushed = Some(at);
+        return Ok(kind.ends_with_hlt());
+    }
+    match e {
+        // (the 808x suites end at the next instruction)
+        Exit::Continue => Ok(kind.ends_with_hlt()),
         e => Err(format!("exit {e:?}")),
     }
 }
 
-/// One test: the instruction in a region, the rest stepped; None when it matched. `Err` when
-/// the region was refused (not counted).
-fn run(engine: &Engine, memory: &SharedMemory, base: usize, t: &Test, ins: &iced_x86::Instruction) -> Result<Option<String>, ()> {
+/// One test (as singlestep.rs): with `jit` the instruction in a region, the rest stepped;
+/// without, the interpreter alone. None when it matched the chip; `Err` when the region was
+/// refused (not counted).
+fn run(engine: &Engine, memory: &SharedMemory, base: usize, t: &Test, ins: &Instruction, kind: Kind, jit: bool) -> Result<Option<String>, ()> {
     let m = base as *mut u8;
     unsafe { std::ptr::write_bytes(m.add(G as usize), 0, SPAN as usize) };
     for &(a, v) in &t.init.ram {
@@ -247,30 +107,52 @@ fn run(engine: &Engine, memory: &SharedMemory, base: usize, t: &Test, ins: &iced
         c.sreg[k] = r(i) as u16;
         c.sbase[k] = ((r(i) & 0xffff) << 4) + G;
     }
-    unsafe { put_cpu(m, &c) };
-    let mut jit = Jit::new(engine, memory, base, true);
-    *LAST_EXIT.lock().unwrap() = None;
-    let status = match jit.once(base) {
-        Ok(s) => s,
-        Err(e) if e == "refused" => return Err(()),
-        Err(e) => return Ok(Some(e)),
-    };
-    let mut c = unsafe { get_cpu(m) };
+    let start = c.eip;
+    let next = start.wrapping_add(t.bytes.len() as u32) & 0xffff;
+    // (where FLAGS went: an interrupt this harness delivered, a PUSHF on the 16-bit chips,
+    // whose reserved bits are the chip's own)
+    let mut pushed = None;
+    if t.bytes.iter().find(|b| !matches!(b, 0x26 | 0x2e | 0x36 | 0x3e | 0xf0 | 0xf2 | 0xf3)) == Some(&0x9c) && kind.regs16() {
+        pushed = Some(c.sbase[2] - G + (c.regs[koji::ESP].wrapping_sub(2) & 0xffff));
+    }
+    // (the 808x suites have NOPs after the instruction, which a block would run on: a HLT
+    // there ends it, put back before the memory is compared)
+    let stop = (!kind.ends_with_hlt()).then(|| c.sbase[1] + next);
+    let kept = stop.map(|a| unsafe { std::ptr::replace(m.add(a as usize), 0xf4) });
     let mut mem = Mem(m);
     let mut fail = None;
-    // a region left by an instruction the interpreter stepped: what that exit does
+    // the translated instruction first (a region of its own), then the interpreter: to the
+    // HLT on the 386 and 286; on the 808x only what the region left to it
     let mut go = true;
-    if status == 2 {
-        let e = LAST_EXIT.lock().unwrap().take().unwrap();
-        match after_exit(&mut c, &mut mem, e) {
-            Ok(g) => go = g,
-            Err(e) => fail = Some(e),
+    if jit {
+        unsafe { put_cpu(m, &c) };
+        let mut j = Jit::new(engine, memory, base, true);
+        *LAST_EXIT.lock().unwrap() = None;
+        let status = match j.once(base) {
+            Ok(s) => s,
+            Err(e) if e == "refused" => return Err(()),
+            Err(e) => return Ok(Some(e)),
+        };
+        c = unsafe { get_cpu(m) };
+        match status {
+            // (a region left by an instruction the interpreter stepped: what that exit does)
+            2 => {
+                let e = LAST_EXIT.lock().unwrap().take().unwrap();
+                match exit(kind, &mut c, &mut mem, e, next, &mut pushed) {
+                    Ok(g) => go = g,
+                    Err(e) => fail = Some(e),
+                }
+            }
+            // (the 386's and 286's tests run on to their HLT; on the 808x the interpreter runs
+            // the instruction when the region left it to it, or finishes a REP string
+            // instruction the region broke off)
+            _ => go = kind.ends_with_hlt() || (c.eip == start && (status == 1 || ins.is_string_instruction() && c.regs[koji::ECX] & 0xffff != 0)),
         }
     }
     if fail.is_none() && go {
         for _ in 0..100_000 {
             let e = koji::step(&mut c, &mut mem);
-            match after_exit(&mut c, &mut mem, e) {
+            match exit(kind, &mut c, &mut mem, e, next, &mut pushed) {
                 Ok(true) => {}
                 Ok(false) => break,
                 Err(e) => {
@@ -279,6 +161,9 @@ fn run(engine: &Engine, memory: &SharedMemory, base: usize, t: &Test, ins: &iced
                 }
             }
         }
+    }
+    if let (Some(a), Some(b)) = (stop, kept) {
+        unsafe { *m.add(a as usize) = b };
     }
     if let Some(f) = fail {
         return Ok(Some(f));
@@ -306,18 +191,19 @@ fn run(engine: &Engine, memory: &SharedMemory, base: usize, t: &Test, ins: &iced
         if i == 17 {
             mk &= FLAGS & !undef;
         }
-        if (10..=15).contains(&i) {
+        if (10..=15).contains(&i) || kind.regs16() {
             mk &= 0xffff;
         }
         if (got(i) ^ want) & mk != 0 {
             diffs.push(format!("{} want {want:08x} got {:08x}", NAMES[i], got(i)));
         }
     }
+    let flags_at = t.excp.map(|e| e.1).or(pushed);
     for &(a, v) in &t.fina.ram {
         let g = unsafe { *m.add((G + a) as usize) };
-        let mk = match t.excp {
-            Some((_, f)) if a == f => (FLAGS & !undef) as u8,
-            Some((_, f)) if a == f + 1 => ((FLAGS & !undef) >> 8) as u8,
+        let mk = match flags_at {
+            Some(f) if a == f => (FLAGS & !undef) as u8,
+            Some(f) if a == f + 1 => ((FLAGS & !undef) >> 8) as u8,
             _ => 0xff,
         };
         if (g ^ v) & mk != 0 {
@@ -327,24 +213,18 @@ fn run(engine: &Engine, memory: &SharedMemory, base: usize, t: &Test, ins: &iced
     Ok((!diffs.is_empty()).then(|| diffs.join(", ")))
 }
 
+/// Whether a segment of the test reaches past the 808x's 1 MB (its linear address wraps to 0
+/// there, which this harness's flat memory doesn't; singlestep.rs's memory does)
+fn past_lines(t: &Test, kind: Kind) -> bool {
+    matches!(kind, Kind::I86 | Kind::V20) && [10, 11, 12, 15].iter().any(|&i| ((t.init.regs[i].unwrap_or(0) & 0xffff) << 4) + 0x10000 > 0x10_0000)
+}
+
 pub fn main(args: &[String]) {
-    let dir = args.first().cloned().unwrap_or_else(|| concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/sst/v1_ex_real_mode").into());
+    let only = args.first().cloned().unwrap_or_default();
     let filter = args.get(1).cloned().unwrap_or_default();
     let per_file: usize = std::env::var("SST_N").ok().and_then(|s| s.parse().ok()).unwrap_or(usize::MAX);
     let show: usize = std::env::var("SST_SHOW").ok().and_then(|s| s.parse().ok()).unwrap_or(3);
-    let dir = std::path::PathBuf::from(dir);
-    let revoked: Vec<String> = std::fs::read_to_string(dir.join("../revocation_list.txt"))
-        .unwrap_or_default()
-        .lines()
-        .filter(|l| !l.starts_with('#'))
-        .map(|l| l.trim().to_string())
-        .collect();
-    let mut files: Vec<_> = std::fs::read_dir(&dir)
-        .expect("no suite (tests/sst/fetch.sh)")
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.to_string_lossy().ends_with(".MOO.gz"))
-        .collect();
-    files.sort();
+    let root = std::env::var_os("SST_ROOT").map(std::path::PathBuf::from).unwrap_or_else(|| concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/sst").into());
     let mut config = Config::new();
     config.wasm_threads(true);
     let engine = Engine::new(&config).unwrap();
@@ -352,46 +232,64 @@ pub fn main(args: &[String]) {
     let base = memory.data().as_ptr() as *mut u8 as usize;
     LO.store(G, Relaxed);
     HI.store(G + SPAN, Relaxed);
-    let (mut total, mut failed, mut refused) = (0, 0, 0);
-    for f in files {
-        let name = f.file_name().unwrap().to_string_lossy().trim_end_matches(".MOO.gz").to_string();
-        if !name.contains(&filter) {
+    let (mut total, mut failed, mut refused, mut suites) = (0, 0, 0, 0);
+    for s in SUITES.iter().filter(|s| only.is_empty() || s.cpu == only) {
+        let Ok(rd) = std::fs::read_dir(suite_dir(&root, s)) else {
+            println!("sst: no {} suite at {} (tests/sst/fetch.sh)", s.cpu, suite_dir(&root, s).display());
             continue;
-        }
-        let mut data = Vec::new();
-        flate2::read::GzDecoder::new(std::fs::File::open(&f).unwrap()).read_to_end(&mut data).unwrap();
-        let (mut n, mut bad, mut shown) = (0, 0, 0);
-        for t in parse(&data) {
-            if n >= per_file {
-                break;
-            }
-            let ins = Decoder::with_ip(16, &t.bytes, t.init.regs[16].unwrap_or(0) as u64, DecoderOptions::NONE).decode();
-            // what the translator does itself, as singlestep.rs filters (revoked tests, #SS/#GP
-            // of real-mode limits, the undefined SIB)
-            if !koji::jit::ok16(&ins) || revoked.contains(&t.hash) || matches!(t.excp, Some((12 | 13, _))) || invalid_sib(&ins, &t.bytes) {
+        };
+        suites += 1;
+        let revoked = revoked(&root, s);
+        let mut files: Vec<_> = rd.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.to_string_lossy().ends_with(".MOO.gz")).collect();
+        files.sort();
+        let (mut sn, mut sbad, mut interp) = (0, 0, 0);
+        for f in files {
+            let name = f.file_name().unwrap().to_string_lossy().trim_end_matches(".MOO.gz").to_string();
+            if !name.contains(&filter) {
                 continue;
             }
-            match run(&engine, &memory, base, &t, &ins) {
-                Err(()) => refused += 1,
-                Ok(None) => n += 1,
-                Ok(Some(d)) => {
-                    n += 1;
-                    bad += 1;
-                    if shown < show {
-                        shown += 1;
-                        let b: String = t.bytes.iter().take(ins.len()).map(|b| format!("{b:02x}")).collect();
-                        println!("{name} {b} {ins}: {d}");
+            let mut data = Vec::new();
+            flate2::read::GzDecoder::new(std::fs::File::open(&f).unwrap()).read_to_end(&mut data).unwrap();
+            let (mut n, mut bad, mut shown) = (0, 0, 0);
+            for t in parse(&data) {
+                if n >= per_file {
+                    break;
+                }
+                let ins = decode(&t.bytes);
+                // what the translator does itself, of the tests singlestep.rs runs
+                if !koji::jit::ok16(&ins) || skip(s.kind, &t, &revoked).is_some() || past_lines(&t, s.kind) {
+                    continue;
+                }
+                // (the interpreter differs from the chip too: its quirk, singlestep.rs's count)
+                if !matches!(run(&engine, &memory, base, &t, &ins, s.kind, false), Ok(None)) {
+                    interp += 1;
+                    continue;
+                }
+                match run(&engine, &memory, base, &t, &ins, s.kind, true) {
+                    Err(()) => refused += 1,
+                    Ok(None) => n += 1,
+                    Ok(Some(d)) => {
+                        n += 1;
+                        bad += 1;
+                        if shown < show {
+                            shown += 1;
+                            let b: String = t.bytes.iter().take(ins.len()).map(|b| format!("{b:02x}")).collect();
+                            println!("{} {name} {b} {ins}: {d}", s.cpu);
+                        }
                     }
                 }
             }
+            if bad > 0 {
+                println!("{} {name}: {} of {n} match", s.cpu, n - bad);
+            }
+            sn += n;
+            sbad += bad;
         }
-        if n > 0 {
-            println!("{name}: {} of {n} match", n - bad);
-        }
-        total += n;
-        failed += bad;
+        println!("sst {}: {sn} tests through the translator, {sbad} differ ({interp} the interpreter gets wrong too: not run)", s.cpu);
+        total += sn;
+        failed += sbad;
     }
-    println!("sst: {total} tests through the translator, {failed} differ, {refused} refused");
+    println!("sst: {total} tests in {suites} suites through the translator, {failed} differ, {refused} refused");
     if failed > 0 {
         std::process::exit(1);
     }

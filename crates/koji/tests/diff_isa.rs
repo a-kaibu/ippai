@@ -399,7 +399,8 @@ fn every_simd_and_bit_instruction_matches_the_host_cpu() {
                 s.ymm[n] = v;
             }
             s.flags = 0x202 | (rng.next() & 0x8d5);
-            s.mxcsr = 0x1f80;
+            // (any rounding mode: the flags and results of every RC against the CPU)
+            s.mxcsr = 0x1f80 | rng.below(4) << 13;
             let mut ptrs = vec![3usize, 4];
             s.gpr[3] = 0;
             s.gpr[4] = 0x800;
@@ -426,6 +427,7 @@ fn every_simd_and_bit_instruction_matches_the_host_cpu() {
                 cpu.set_gpr(p, s.gpr[p] + G_DATA as u64);
             }
             cpu.eflags = s.flags as u32;
+            cpu.mxcsr = s.mxcsr as u32;
             mem.0[G_CODE as usize..G_CODE as usize + bytes.len()].copy_from_slice(&bytes);
             mem.0[G_DATA as usize..G_DATA as usize + BUF].copy_from_slice(&data);
             let e = koji::step(&mut cpu, &mut mem);
@@ -433,7 +435,13 @@ fn every_simd_and_bit_instruction_matches_the_host_cpu() {
                 *unimpl.entry(format!("{c:?}")).or_default() += 1;
                 continue;
             }
-            unsafe { native(&bytes, &mut ns, page) };
+            // (the host's own MXCSR comes back: the interpreter's arithmetic runs on it)
+            #[allow(deprecated)]
+            unsafe {
+                let host = std::arch::x86_64::_mm_getcsr();
+                native(&bytes, &mut ns, page);
+                std::arch::x86_64::_mm_setcsr(host);
+            }
             cpu.materialize();
             ran += 1;
             let undef: u64 = FLAG_MAP.iter().filter(|(b, _)| ins.rflags_undefined() & b != 0).map(|(_, f)| *f).sum();
@@ -507,7 +515,7 @@ fn every_simd_and_bit_instruction_matches_the_host_cpu() {
                 if e.1.is_empty() {
                     let y: Vec<String> = (0..16).map(|i| format!("{:032x}{:032x}", s.ymm[i][1], s.ymm[i][0])).collect();
                     let g: Vec<String> = (0..16).map(|i| format!("{:x}", s.gpr[i])).collect();
-                    e.1 = format!("{txt}: {}\n    in flags {:#x} gpr {}\n    in ymm {}", d.join("; "), s.flags, g.join(" "), y.join(" "));
+                    e.1 = format!("{txt}: {}\n    in flags {:#x} mxcsr {:#x} gpr {}\n    in ymm {}", d.join("; "), s.flags, s.mxcsr, g.join(" "), y.join(" "));
                 }
             }
         }

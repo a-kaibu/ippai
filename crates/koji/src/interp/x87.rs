@@ -24,8 +24,9 @@ impl<'a, M: Memory> X<'a, M> {
     fn fload(&mut self) -> Result<f64, crate::Fault> {
         let a = self.addr();
         Ok(match self.ins.memory_size() {
-            MemorySize::Float32 => f32::from_bits(self.mem.read32(a)?) as f64,
-            MemorySize::Float64 => f64::from_bits(self.mem.read64(a)?),
+            // (an SNaN loads as its QNaN, as the x87 converts it)
+            MemorySize::Float32 => fpu::quiet(f32::from_bits(self.mem.read32(a)?) as f64),
+            MemorySize::Float64 => fpu::quiet(f64::from_bits(self.mem.read64(a)?)),
             MemorySize::Float80 => {
                 let mut b = [0u8; 10];
                 for (i, x) in b.iter_mut().enumerate() {
@@ -42,6 +43,21 @@ impl<'a, M: Memory> X<'a, M> {
 
     fn fstore(&mut self, v: f64) -> Result<(), crate::Fault> {
         let a = self.addr();
+        // an integer FILD loaded (64 bits: more than the f64 register holds) rounds once, as
+        // the control word says, from its exact value
+        if let Some(i) = self.cpu.fpu.exact_int() {
+            let rc = (self.cpu.fpu.cw >> 10) as u32;
+            return match self.ins.memory_size() {
+                MemorySize::Float32 => self.mem.write32(a, crate::round::i64_to_f32(i, rc).to_bits()),
+                MemorySize::Float64 => self.mem.write64(a, crate::round::i64_to_f64(i, rc).to_bits()),
+                _ => {
+                    for (k, x) in fpu::int_to_f80(i).iter().enumerate() {
+                        self.mem.write8(a.wrapping_add(k as u32), *x)?;
+                    }
+                    Ok(())
+                }
+            };
+        }
         match self.ins.memory_size() {
             MemorySize::Float32 => self.mem.write32(a, crate::round::f64_to_f32(v, (self.cpu.fpu.cw >> 10) as u32).to_bits()),
             MemorySize::Float64 => self.mem.write64(a, v.to_bits()),
@@ -273,7 +289,8 @@ impl<'a, M: Memory> X<'a, M> {
             Frndint => {
                 if self.cpu.fpu.exact_int().is_none() {
                     let v = self.cpu.fpu.st(0);
-                    let r = self.cpu.fpu.round(v);
+                    // (an SNaN comes out quiet)
+                    let r = fpu::quiet(self.cpu.fpu.round(v));
                     self.cpu.fpu.set_st(0, r);
                 }
             }

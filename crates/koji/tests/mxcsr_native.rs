@@ -102,7 +102,7 @@ fn single_precision_flags_match_the_host() {
     for _ in 0..300_000 {
         let (x, y) = (v32(&mut r), v32(&mut r));
         for op in OPS {
-            let (pre, post) = flags32(op, x, y, false);
+            let (pre, post) = flags32(op, x, y, false, 0);
             assert_eq!(pre | post, host32(op, x, y), "{op:?} {:#x} {:#x}", x.to_bits(), y.to_bits());
         }
     }
@@ -114,7 +114,7 @@ fn double_precision_flags_match_the_host() {
     for _ in 0..300_000 {
         let (x, y) = (v64(&mut r), v64(&mut r));
         for op in OPS {
-            let (pre, post) = flags64(op, x, y, false);
+            let (pre, post) = flags64(op, x, y, false, 0);
             assert_eq!(pre | post, host64(op, x, y), "{op:?} {:#x} {:#x}", x.to_bits(), y.to_bits());
         }
     }
@@ -125,7 +125,7 @@ fn narrowing_flags_match_the_host() {
     let mut r = Rng(0x5555_aaaa_3333_cccc);
     for _ in 0..300_000 {
         let x = v64(&mut r);
-        let (pre, post) = narrow_flags(x, false);
+        let (pre, post) = narrow_flags(x, false, 0);
         let (a, b) = unsafe { (_mm_setzero_ps(), _mm_set_sd(x)) };
         let h = host!("cvtsd2ss", a, b);
         assert_eq!(pre | post, h, "{:#x}", x.to_bits());

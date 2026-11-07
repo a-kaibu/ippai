@@ -1,0 +1,217 @@
+# instruction	rounding	passing	cases  (crates/koji/tests/testfloat.rs; TF_UPDATE=1 rewrites)
+addps	down	46464	46464
+addps	near	46464	46464
+addps	up	46464	46464
+addps	zero	46464	46464
+addsd	down	46464	46464
+addsd	near	46464	46464
+addsd	up	46464	46464
+addsd	zero	46464	46464
+addss	down	46464	46464
+addss	near	46464	46464
+addss	up	46464	46464
+addss	zero	46464	46464
+addss reg	down	46464	46464
+addss reg	near	46464	46464
+addss reg	up	46464	46464
+addss reg	zero	46464	46464
+cmpeqsd	near	46464	46464
+cmpeqss	near	46464	46464
+cmplesd	near	46464	46464
+cmpless	near	46464	46464
+cmpltsd	near	46464	46464
+cmpltss	near	46464	46464
+comisd lt	near	46464	46464
+comiss eq	near	46464	46464
+comiss le	near	46464	46464
+cvtps2dq	down	600	600
+cvtps2dq	near	600	600
+cvtps2dq	up	600	600
+cvtps2dq	zero	600	600
+cvtsd2si	down	768	768
+cvtsd2si	near	768	768
+cvtsd2si	up	768	768
+cvtsd2si	zero	768	768
+cvtsd2ss	down	768	768
+cvtsd2ss	near	768	768
+cvtsd2ss	up	768	768
+cvtsd2ss	zero	768	768
+cvtsi2sd	near	372	372
+cvtsi2ss	down	372	372
+cvtsi2ss	near	372	372
+cvtsi2ss	up	372	372
+cvtsi2ss	zero	372	372
+cvtss2sd	near	600	600
+cvtss2si	down	600	600
+cvtss2si	near	600	600
+cvtss2si	up	600	600
+cvtss2si	zero	600	600
+cvttpd2dq	near	768	768
+cvttsd2si	near	768	768
+cvttss2si	near	600	600
+divpd	down	46464	46464
+divpd	near	46464	46464
+divpd	up	46464	46464
+divpd	zero	46464	46464
+divsd	down	46464	46464
+divsd	near	46464	46464
+divsd	up	46464	46464
+divsd	zero	46464	46464
+divss	down	46464	46464
+divss	near	46464	46464
+divss	up	46464	46464
+divss	zero	46464	46464
+fadd m32 pc24	down	46392	46392
+fadd m32 pc24	near	46392	46392
+fadd m32 pc24	up	46392	46392
+fadd m32 pc24	zero	46392	46392
+fadd m64	down	46408	46408
+fadd m64	near	46408	46408
+fadd m64	up	46408	46408
+fadd m64	zero	46408	46408
+fcomip le	near	46408	46408
+fdiv m32 pc24	down	43005	43005
+fdiv m32 pc24	near	43005	43005
+fdiv m32 pc24	up	43005	43005
+fdiv m32 pc24	zero	43005	43005
+fdiv m64	down	43466	43466
+fdiv m64	near	43466	43466
+fdiv m64	up	43466	43466
+fdiv m64	zero	43466	43466
+fdivrp	down	43466	43466
+fdivrp	near	43466	43466
+fdivrp	up	43466	43466
+fdivrp	zero	43466	43466
+fild m32	near	372	372
+fild m64, fstp m32	down	756	756
+fild m64, fstp m32	near	756	756
+fild m64, fstp m32	up	756	756
+fild m64, fstp m32	zero	756	756
+fild m64, fstp m64	down	756	756
+fild m64, fstp m64	near	756	756
+fild m64, fstp m64	up	756	756
+fild m64, fstp m64	zero	756	756
+fist m32 (f32)	down	600	600
+fist m32 (f32)	near	600	600
+fist m32 (f32)	up	600	600
+fist m32 (f32)	zero	600	600
+fistp m32	down	768	768
+fistp m32	near	768	768
+fistp m32	up	768	768
+fistp m32	zero	768	768
+fistp m64	down	768	768
+fistp m64	near	768	768
+fistp m64	up	768	768
+fistp m64	zero	768	768
+fisttp m32	near	768	768
+fisttp m64	near	768	768
+fld m32, fstp m64	near	600	600
+fld m64, fstp m32	down	768	768
+fld m64, fstp m32	near	768	768
+fld m64, fstp m32	up	768	768
+fld m64, fstp m32	zero	768	768
+fmul m32 pc24	down	43118	43118
+fmul m32 pc24	near	43130	43130
+fmul m32 pc24	up	43118	43118
+fmul m32 pc24	zero	43106	43106
+fmul m64	down	43319	43319
+fmul m64	near	43331	43331
+fmul m64	up	43319	43319
+fmul m64	zero	43307	43307
+fprem1	near	46408	46408
+frndint	down	768	768
+frndint	near	768	768
+frndint	up	768	768
+frndint	zero	768	768
+fsqrt	down	768	768
+fsqrt	near	768	768
+fsqrt	up	768	768
+fsqrt	zero	768	768
+fsqrt pc24	down	600	600
+fsqrt pc24	near	600	600
+fsqrt pc24	up	600	600
+fsqrt pc24	zero	600	600
+fsub m64	down	46408	46408
+fsub m64	near	46408	46408
+fsub m64	up	46408	46408
+fsub m64	zero	46408	46408
+fsubr m64	down	46408	46408
+fsubr m64	near	46408	46408
+fsubr m64	up	46408	46408
+fsubr m64	zero	46408	46408
+fucomip eq	near	46408	46408
+fucomip lt	near	46408	46408
+mulsd	down	46464	46464
+mulsd	near	46464	46464
+mulsd	up	46464	46464
+mulsd	zero	46464	46464
+mulsd reg	down	46464	46464
+mulsd reg	near	46464	46464
+mulsd reg	up	46464	46464
+mulsd reg	zero	46464	46464
+mulss	down	46464	46464
+mulss	near	46464	46464
+mulss	up	46464	46464
+mulss	zero	46464	46464
+roundsd imm	down	768	768
+roundsd imm	near	768	768
+roundsd imm	up	768	768
+roundsd imm	zero	768	768
+roundsd imm|8	down	768	768
+roundsd imm|8	near	768	768
+roundsd imm|8	up	768	768
+roundsd imm|8	zero	768	768
+roundsd mxcsr	down	768	768
+roundsd mxcsr	near	768	768
+roundsd mxcsr	up	768	768
+roundsd mxcsr	zero	768	768
+roundss imm	down	600	600
+roundss imm	near	600	600
+roundss imm	up	600	600
+roundss imm	zero	600	600
+roundss imm|8	down	600	600
+roundss imm|8	near	600	600
+roundss imm|8	up	600	600
+roundss imm|8	zero	600	600
+roundss mxcsr	down	600	600
+roundss mxcsr	near	600	600
+roundss mxcsr	up	600	600
+roundss mxcsr	zero	600	600
+sqrtsd	down	768	768
+sqrtsd	near	768	768
+sqrtsd	up	768	768
+sqrtsd	zero	768	768
+sqrtss	down	600	600
+sqrtss	near	600	600
+sqrtss	up	600	600
+sqrtss	zero	600	600
+subsd	down	46464	46464
+subsd	near	46464	46464
+subsd	up	46464	46464
+subsd	zero	46464	46464
+subss	down	46464	46464
+subss	near	46464	46464
+subss	up	46464	46464
+subss	zero	46464	46464
+ucomisd le	near	46464	46464
+ucomiss eq	near	46464	46464
+ucomiss lt	near	46464	46464
+vaddss	down	46464	46464
+vaddss	near	46464	46464
+vaddss	up	46464	46464
+vaddss	zero	46464	46464
+vcmpss eq_os	near	46464	46464
+vcmpss le_oq	near	46464	46464
+vcmpss lt_oq	near	46464	46464
+vfmadd132sd	down	199986	199986
+vfmadd132sd	near	199986	199986
+vfmadd132sd	up	199986	199986
+vfmadd132sd	zero	199986	199986
+vfmadd132ss	down	199987	199987
+vfmadd132ss	near	199987	199987
+vfmadd132ss	up	199987	199987
+vfmadd132ss	zero	199987	199987
+vsqrtsd	down	768	768
+vsqrtsd	near	768	768
+vsqrtsd	up	768	768
+vsqrtsd	zero	768	768

@@ -2954,6 +2954,17 @@ impl<'a> Gen<'a> {
                         _ => self.c.load64(o),
                     };
                     self.c.set(L_W);
+                    if size == 8 {
+                        // a 64-bit integer the f64 register can't hold exactly: the
+                        // interpreter, which rounds it once from the exact value where it is
+                        // stored (FST m32/m64 under RC; tests/testfloat: fild m64, fstp m64)
+                        self.c.get(L_W).op(0xb9).op(0xfc).op(0x06 /* i64.trunc_sat_f64_s */).get(L_W).op(0x52 /* i64.ne */);
+                        self.c.if_();
+                        self.depth += 1;
+                        self.bail();
+                        self.depth -= 1;
+                        self.c.end();
+                    }
                     self.c.get(L_W).op(0xb9 /* f64.convert_i64_s */);
                 } else if ins.mnemonic() == Fld && ins.op_kind(0) == OpKind::Memory {
                     let a = self.addr(ins.memory_size().size() as u32);

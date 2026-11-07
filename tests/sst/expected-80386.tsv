@@ -1,4 +1,4 @@
-# file	passing	tests  (crates/koji/tests/singlestep.rs; SST_UPDATE=1 rewrites)
+# file	passing	tests  (80386 suite; crates/koji/tests/singlestep.rs; SST_UPDATE=1 rewrites)
 00	2500	2500
 01	2491	2491
 02	2500	2500
