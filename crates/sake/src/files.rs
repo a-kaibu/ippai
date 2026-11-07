@@ -69,15 +69,16 @@ pub fn missing(w: &str) -> u32 {
     }
 }
 
-/// FILE_ATTRIBUTE_READONLY and the like set by SetFileAttributes (the host files keep none):
-/// host path in lower case -> attributes
+/// FILE_ATTRIBUTE_READONLY and the like set by SetFileAttributes or asked of CreateFile (the
+/// host files keep none): host path in lower case -> attributes. FILE_ATTRIBUTE_ARCHIVE is kept
+/// beside read-only / hidden / system: a file made hidden is 0x22, one set hidden 0x2.
 pub static ATTRS: Mutex<Vec<(String, u32)>> = Mutex::new(Vec::new());
 pub fn set_attrs(host: &str, a: u32) {
     let key = host.to_lowercase();
     let mut t = ATTRS.lock().unwrap();
     t.retain(|x| x.0 != key);
-    if a & !0x80 & 0x7 != 0 {
-        t.push((key, a & 0x7));
+    if a & 0x7 != 0 {
+        t.push((key, a & 0x27));
     }
 }
 pub fn extra_attrs(host: &str) -> u32 {
@@ -111,7 +112,14 @@ pub fn set_cwd(d: &str) {
 
 fn c_root() -> String {
     static C: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    C.get_or_init(|| std::env::var("SAKE_C").unwrap_or_else(|_| "/tmp/sake-c".into())).clone()
+    C.get_or_init(|| drive_root(std::env::var("SAKE_C").unwrap_or_else(|_| "/tmp/sake-c".into()))).clone()
+}
+
+/// The host directory of a drive, made when missing: C:\ is always there on Windows (stat,
+/// GetFileAttributes and FindFirstFile of "C:\" find a directory; winref crt_io, #72)
+fn drive_root(h: String) -> String {
+    let _ = kura::fs::create_dir_all(&h);
+    h
 }
 
 /// Host path of a host file as a Windows path.
@@ -473,4 +481,53 @@ pub fn find(w: &str) -> Option<Find> {
         return None;
     }
     Some(Find { entries, at: 0 })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_drive_root_is_made_when_missing() {
+        let h = std::env::temp_dir().join(format!("sake-drive-{}", std::process::id())).join("c");
+        let h = h.to_string_lossy().into_owned();
+        let _ = std::fs::remove_dir_all(&h);
+        assert_eq!(drive_root(h.clone()), h);
+        assert!(kura::fs::metadata(&h).unwrap().is_dir());
+        // (and again, when it is there)
+        assert_eq!(drive_root(h.clone()), h);
+        // C:\ itself, as stat and GetFileAttributes look it up
+        let c = resolve("C:\\").expect("C:\\ is there");
+        assert!(kura::fs::metadata(&c).unwrap().is_dir());
+        assert!(resolve("C:/").is_some() && resolve("c:\\").is_some());
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&h).parent().unwrap());
+    }
+
+    #[test]
+    fn attributes_made_and_set_as_windows() {
+        let f = std::env::temp_dir().join(format!("sake-attrs-{}", std::process::id()));
+        std::fs::write(&f, b"abc").unwrap();
+        let (h, m) = (f.to_string_lossy().into_owned(), kura::fs::metadata(&f).unwrap());
+        assert_eq!(attrs_of(&h, &m), 0x20);
+        // made hidden by CreateFile / CreateFile2: hidden and archive (winref files: 34)
+        set_attrs(&h, 2 | 0x20);
+        assert_eq!(attrs_of(&h, &m), 0x22);
+        // SetFileAttributes replaces: hidden alone, then read-only alone (winref files c.dat: 1)
+        set_attrs(&h, 2);
+        assert_eq!(attrs_of(&h, &m), 2);
+        set_attrs(&h, 1);
+        assert_eq!(attrs_of(&h, &m), 1);
+        set_attrs(&h, 0x23);
+        assert_eq!(attrs_of(&h, &m), 0x23);
+        // normal, or archive alone: what the host file shows
+        set_attrs(&h, 0x80);
+        assert_eq!(attrs_of(&h, &m), 0x20);
+        set_attrs(&h, 0x20);
+        assert_eq!(attrs_of(&h, &m), 0x20);
+        // the case of the host path does not matter
+        set_attrs(&h.to_uppercase(), 4);
+        assert_eq!(extra_attrs(&h), 4);
+        set_attrs(&h, 0x80);
+        let _ = std::fs::remove_file(&f);
+    }
 }

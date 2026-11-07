@@ -93,6 +93,13 @@ int main(void) {
     list(".", 12, 8, 12, 0);
     list(".", 37, 60, 104, 0);
     list(".", 38, 60, 80, 0);
+    /* the 128-bit and 64-bit file id classes (Ext, Both with the short name) */
+    list(".", 60, 60, 88, 0);
+    list(".", 63, 60, 114, 0);
+    list(".", 78, 60, 80, 0);
+    list(".", 79, 60, 106, 0);
+    list(".", 80, 60, 96, 0);
+    list(".", 81, 60, 122, 0);
     list(".", 1, 60, 64, L"*.txt");
     list(".", 1, 60, 64, L"b.dat");
     list(".", 1, 60, 64, L"?.*");

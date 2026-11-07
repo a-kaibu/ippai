@@ -25,6 +25,19 @@ pub mod acm;
 pub mod mp3frame;
 pub mod audiofile;
 /// Tests that run a page for kura::adec (one at a time: its streams are global).
+/// What the page or emscripten gives sake's file system, for the tests on the host that
+/// reach kura::fs: no store to fetch from, and a clock at 0
+#[cfg(all(test, not(target_os = "emscripten")))]
+mod host_stubs {
+    #[no_mangle]
+    extern "C" fn vnvm_fetch(_name: *const std::ffi::c_char, _len: *mut usize) -> *mut u8 {
+        std::ptr::null_mut()
+    }
+    #[no_mangle]
+    extern "C" fn emscripten_get_now() -> f64 {
+        0.0
+    }
+}
 #[cfg(test)]
 pub(crate) static ADEC_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 pub mod apc;

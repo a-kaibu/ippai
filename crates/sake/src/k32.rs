@@ -620,6 +620,7 @@ fn psapi_module(process: u32, h: u32) -> Option<u32> {
     base
 }
 /// GetModuleInformation(process, module, MODULEINFO*, bytes): base, size, entry point
+/// (module 0: TRUE with a NULL base, not the exe's as for the names; winref modules)
 fn K32GetModuleInformation(c: &mut Ctx) -> u32 {
     let (p, cb) = (c.a(2), c.a(3));
     let Some(b) = psapi_module(c.a(0), c.a(1)) else { return 0 };
@@ -628,7 +629,7 @@ fn K32GetModuleInformation(c: &mut Ctx) -> u32 {
         last_error(122);
         return 0;
     }
-    let (size, entry) = crate::pe::with(b, |m| (m.size, m.entry)).unwrap();
+    let (b, size, entry) = if c.a(1) == 0 { (0, 0, 0) } else { crate::pe::with(b, |m| (b, m.size, m.entry)).unwrap() };
     mem::wp(p, b);
     w32(p + ps, size);
     if mem::x64() {
@@ -5308,9 +5309,10 @@ fn open_file(name: String, access: u32, share: u32, disp: u32, attrs: u32) -> u3
         Ok((f, existed)) => {
             // CREATE_ALWAYS / OPEN_ALWAYS of an existing file: ERROR_ALREADY_EXISTS
             last_error(if existed && (disp == 2 || disp == 4) { 183 } else { 0 });
-            // a file made (or remade) here takes the read-only / hidden / system attributes asked
+            // a file made (or remade) here takes the read-only / hidden / system attributes asked,
+            // and the archive bit every new file has (winref files: CreateFile2 hidden is 0x22)
             if !f.dir && (!existed || disp == 2) && attrs & 7 != 0 {
-                files::set_attrs(&f.path, attrs & 7);
+                files::set_attrs(&f.path, attrs & 7 | 0x20);
             }
             obj::add(Obj::File(std::sync::Arc::new(f)))
         }

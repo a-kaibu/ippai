@@ -496,6 +496,14 @@ fn dir_class(class: u32) -> Option<(u32, u32, u32)> {
         12 => (12, 8, 12),   // FileNamesInformation
         37 => (104, 60, 104), // FileIdBothDirectoryInformation
         38 => (80, 60, 80),  // FileIdFullDirectoryInformation
+        // (ReFS's 128-bit ids and Windows 11's 64-bit + 128-bit ones, after EaSize and
+        // ReparsePointTag; the Both ones with the short name between)
+        60 => (88, 60, 88),   // FileIdExtdDirectoryInformation
+        63 => (114, 60, 114), // FileIdExtdBothDirectoryInformation
+        78 => (80, 60, 80),   // FileId64ExtdDirectoryInformation
+        79 => (106, 60, 106), // FileId64ExtdBothDirectoryInformation
+        80 => (96, 60, 96),   // FileIdAllExtdDirectoryInformation
+        81 => (122, 60, 122), // FileIdAllExtdBothDirectoryInformation
         _ => return None,
     })
 }
@@ -537,10 +545,11 @@ fn nt_query_directory_file(c: &mut Ctx) -> u32 {
         return match class {
             29 | 32 | 33 if len < [72, 56, 16][[29, 32, 33].iter().position(|&x| x == class).unwrap()] => 0xc000_0004,
             29 | 32 | 33 => 0xc000_0003,
-            // STATUS_INVALID_INFO_CLASS; WoW64's thunk has no conversion for a class past
-            // FileMaximumInformation (84 in Wine's headers; 99 is one): STATUS_NOT_IMPLEMENTED in
-            // a 32-bit process (Wine's directory test: class 50 is INVALID_INFO_CLASS there)
-            c if c >= 84 && !mem::x64() => 0xc000_0002,
+            // STATUS_INVALID_INFO_CLASS; WoW64's thunk has no conversion for the classes from
+            // 76 on that are not a directory's (76, 84..100 and 99 in winref ntdir):
+            // STATUS_NOT_IMPLEMENTED in a 32-bit process (Wine's directory test: class 50 is
+            // INVALID_INFO_CLASS there)
+            c if c >= 76 && !mem::x64() => 0xc000_0002,
             _ => 0xc000_0003,
         };
     };
@@ -578,9 +587,9 @@ fn nt_query_directory_file(c: &mut Ctx) -> u32 {
             // (nothing at all on a handle's first call; a restart that finds nothing has
             // reached the end)
             if first {
-                // (an error, yet the IO_STATUS_BLOCK gets it unless the scan restarts, as
-                // Windows answers both ways: winref ntdir, Wine's directory test)
-                if io != 0 && !restart {
+                // (an error, yet the IO_STATUS_BLOCK gets it, single or not, restarting or
+                // not: winref ntdir)
+                if io != 0 {
                     mem::wp(io, 0xc000_000f);
                     mem::wp(io + mem::ps(), 0);
                 }
@@ -707,6 +716,73 @@ mod tests {
             (".<", "a.", false),
         ] {
             assert_eq!(m(e, n), want, "{e:?} {n:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod dir_class_tests {
+    use super::dir_class;
+    use std::mem::offset_of;
+
+    // the directory information structures as ntifs.h lays them out (FILE_ID_128 is 16 bytes,
+    // LARGE_INTEGER 8-aligned), up to FileName
+    #[repr(C)]
+    struct Head {
+        next: u32,
+        index: u32,
+        times: [i64; 4],
+        eof: i64,
+        alloc: i64,
+        attrs: u32,
+        name_len: u32,
+    }
+    #[repr(C)]
+    struct Dir { h: Head, name: u16 }
+    #[repr(C)]
+    struct Full { h: Head, ea: u32, name: u16 }
+    #[repr(C)]
+    struct Both { h: Head, ea: u32, short_len: i8, short: [u16; 12], name: u16 }
+    #[repr(C)]
+    struct IdBoth { h: Head, ea: u32, short_len: i8, short: [u16; 12], id: i64, name: u16 }
+    #[repr(C)]
+    struct IdFull { h: Head, ea: u32, id: i64, name: u16 }
+    #[repr(C)]
+    struct IdExtd { h: Head, ea: u32, tag: u32, id: [u8; 16], name: u16 }
+    #[repr(C)]
+    struct IdExtdBoth { h: Head, ea: u32, tag: u32, id: [u8; 16], short_len: i8, short: [u16; 12], name: u16 }
+    #[repr(C)]
+    struct Id64Extd { h: Head, ea: u32, tag: u32, id: i64, name: u16 }
+    #[repr(C)]
+    struct Id64ExtdBoth { h: Head, ea: u32, tag: u32, id: i64, short_len: i8, short: [u16; 12], name: u16 }
+    #[repr(C)]
+    struct IdAllExtd { h: Head, ea: u32, tag: u32, id: i64, id128: [u8; 16], name: u16 }
+    #[repr(C)]
+    struct IdAllExtdBoth { h: Head, ea: u32, tag: u32, id: i64, id128: [u8; 16], short_len: i8, short: [u16; 12], name: u16 }
+
+    #[test]
+    fn layouts_as_the_headers() {
+        let len_at = offset_of!(Head, name_len) as u32;
+        assert_eq!(len_at, 60);
+        for (class, name_at) in [
+            (1, offset_of!(Dir, name) as u32),
+            (2, offset_of!(Full, name) as u32),
+            (3, offset_of!(Both, name) as u32),
+            (37, offset_of!(IdBoth, name) as u32),
+            (38, offset_of!(IdFull, name) as u32),
+            (60, offset_of!(IdExtd, name) as u32),
+            (63, offset_of!(IdExtdBoth, name) as u32),
+            (78, offset_of!(Id64Extd, name) as u32),
+            (79, offset_of!(Id64ExtdBoth, name) as u32),
+            (80, offset_of!(IdAllExtd, name) as u32),
+            (81, offset_of!(IdAllExtdBoth, name) as u32),
+        ] {
+            assert_eq!(dir_class(class), Some((name_at, len_at, name_at)), "class {class}");
+        }
+        assert_eq!(dir_class(12), Some((12, 8, 12)));
+        // not a directory's, or past the classes
+        for c in [0, 4, 29, 50, 76, 77, 82, 84, 99] {
+            assert_eq!(dir_class(c), None, "class {c}");
         }
     }
 }
