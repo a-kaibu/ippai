@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 #[path = "com_methods.rs"]
-mod methods;
+pub(crate) mod methods;
 pub use methods::Guid;
 
 pub const E_NOTIMPL: u32 = 0x8000_4001;
@@ -193,8 +193,8 @@ pub fn is(obj: u32, iface: &str) -> bool {
 
 // ---- WIC ----
 
-const CLSID_WIC_FACTORY: u32 = 0xcaca_f262;
-const CLSID_WIC_FACTORY2: u32 = 0x317d_06e8;
+pub const CLSID_WIC_FACTORY: u32 = 0xcaca_f262;
+pub const CLSID_WIC_FACTORY2: u32 = 0x317d_06e8;
 
 /// CoCreateInstance of the WIC imaging factory.
 pub fn create_instance(clsid: u32) -> Option<u32> {

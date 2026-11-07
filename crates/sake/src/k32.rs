@@ -1675,9 +1675,6 @@ fn LCIDToLocaleName(c: &mut Ctx) -> u32 {
     }
     w.len() as u32
 }
-fn wine_dbg_strdup(c: &mut Ctx) -> u32 {
-    c.a(0)
-}
 /// LdrGetDllHandle(path, flags, UNICODE_STRING *name, HMODULE *out)
 fn LdrGetDllHandle(c: &mut Ctx) -> u32 {
     let us = c.a(2);
@@ -5156,50 +5153,6 @@ fn SetFileApisToANSI(_: &mut Ctx) -> u32 {
     0
 }
 
-// Wine's PE DLLs (msvcr90, d3dx9...) log through these: their ERR lines go to stderr.
-// SAKE_WINEDEBUG=<flags>[:channel,...] shows more (FIXME 1, ERR 2, WARN 4, TRACE 8), for
-// the listed channels only when given ("15:dwrite,d2d").
-fn wine_dbg_flags(ch: u32) -> u8 {
-    static CFG: OnceLock<(u8, Vec<String>)> = OnceLock::new();
-    let (flags, chans) = CFG.get_or_init(|| {
-        let v = std::env::var("SAKE_WINEDEBUG").unwrap_or_default();
-        let (f, c) = v.split_once(':').unwrap_or((&v, ""));
-        let chans = c.split(',').filter(|s| !s.is_empty()).map(String::from).collect();
-        (f.parse().unwrap_or(0), chans)
-    });
-    let name = if ch != 0 { crate::text::a2s(&cstr(ch + 1)) } else { String::new() };
-    if chans.is_empty() || chans.contains(&name) { *flags | 2 } else { 2 }
-}
-fn wine_dbg_header(c: &mut Ctx) -> u32 {
-    // -1 makes the caller skip the message (their channels default to everything on)
-    let ch = c.a(1);
-    let flags = wine_dbg_flags(ch);
-    if ch != 0 {
-        w8(ch, flags);
-    }
-    if flags & 1 << c.a(0).min(7) == 0 {
-        return u32::MAX;
-    }
-    let name = if ch != 0 { crate::text::a2s(&cstr(ch + 1)) } else { String::new() };
-    let class = ["fixme", "err", "warn", "trace"].get(c.a(0) as usize).copied().unwrap_or("?");
-    eprint!("sake wine {class}:{name}:{} ", crate::text::a2s(&cstr(c.a(2))));
-    0
-}
-/// Stored in the channel too: the DLLs check its flags inline before every message (they
-/// start as 0xff, "everything, not looked up yet").
-fn wine_dbg_channel_flags(c: &mut Ctx) -> u32 {
-    let flags = wine_dbg_flags(c.a(0));
-    if c.a(0) != 0 {
-        w8(c.a(0), flags);
-    }
-    flags as u32
-}
-fn wine_dbg_output(c: &mut Ctx) -> u32 {
-    let s = cstr(c.a(0));
-    eprint!("{}", crate::text::a2s(&s));
-    s.len() as u32
-}
-
 pub fn init() {
     implement("kernel32", "SetThreadDescription", |_| 0);
     implement("msvcrt", "_beginthreadex", CreateThread);
@@ -5208,7 +5161,6 @@ pub fn init() {
     implement("msvcrt", "_endthread", _endthread);
     implement("kernel32", "SetThreadExecutionState", SetThreadExecutionState);
     implement("psapi", "GetProcessMemoryInfo", K32GetProcessMemoryInfo);
-    implement("ntdll", "__wine_dbg_header", wine_dbg_header);
     implement("kernel32", "ResolveDelayLoadedAPI", ResolveDelayLoadedAPI);
     implement("kernel32", "IsBadStringPtrW", IsBadStringPtrW);
     implement("kernel32", "GetUserDefaultLocaleName", GetUserDefaultLocaleName);
@@ -5221,7 +5173,6 @@ pub fn init() {
         last_error(259); // ERROR_NO_MORE_ITEMS
         0
     });
-    implement("ntdll", "__wine_dbg_strdup", wine_dbg_strdup);
     implement("ntdll", "LdrGetDllHandle", LdrGetDllHandle);
     implement("ntdll", "RtlFindExportedRoutineByName", RtlFindExportedRoutineByName);
     implement("ntdll", "NtQueryVirtualMemory", NtQueryVirtualMemory);
@@ -5240,8 +5191,6 @@ pub fn init() {
     }
     implement("kernel32", "GetLocaleInfoEx", GetLocaleInfoEx);
     implement("kernel32", "GetSystemDefaultLocaleName", GetUserDefaultLocaleName);
-    implement("ntdll", "__wine_dbg_get_channel_flags", wine_dbg_channel_flags);
-    implement("ntdll", "__wine_dbg_output", wine_dbg_output);
     reg!("kernel32";
         GetCommandLineA, GetCommandLineW, GetEnvironmentStrings, GetEnvironmentStringsA, GetEnvironmentStringsW,
         FreeEnvironmentStringsA, FreeEnvironmentStringsW, GetEnvironmentVariableA, GetEnvironmentVariableW,

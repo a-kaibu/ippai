@@ -60,3 +60,8 @@ shcore
 propsys
 msvfw32
 avifil32
+msdmo
+dnsapi
+dxva2
+ncrypt
+dhcpcsvc

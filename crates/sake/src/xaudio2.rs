@@ -1,4 +1,7 @@
-//! XAudio2 2.7 (CoCreateInstance CLSID_XAudio2): source voices play queued XAUDIO2_BUFFERs
+//! XAudio2 2.7 (CoCreateInstance CLSID_XAudio2, xaudio2_7's DllGetClassObject) and 2.8 / 2.9
+//! (xaudio2_8 / xaudio2_9's XAudio2Create: no device enumeration or Initialize, the mastering
+//! voice takes a device id and a stream category, voice details have ActiveFlags, GetState takes
+//! flags, the mastering voice has GetChannelMask): source voices play queued XAUDIO2_BUFFERs
 //! from guest memory, through submix voices' volumes, into a mastering voice that is a stream
 //! of kura's audio output. The engine is one guest thread: each 10 ms pass it calls the
 //! voices' OnVoiceProcessingPassStart, mixes, delivers OnBufferStart / OnBufferEnd /
@@ -67,6 +70,8 @@ struct Engine {
     running: bool,
     stream: i32,
     thread: bool,
+    /// the 2.8 interfaces (XAudio2Create)
+    v28: bool,
 }
 
 static ENGINE: Mutex<Option<Engine>> = Mutex::new(None);
@@ -74,7 +79,7 @@ static WAKE: Condvar = Condvar::new();
 
 fn with<R>(f: impl FnOnce(&mut Engine) -> R) -> R {
     let mut g = ENGINE.lock().unwrap_or_else(|e| e.into_inner());
-    f(g.get_or_insert_with(|| Engine { voices: HashMap::default(), master: 0, callbacks: Vec::new(), running: false, stream: -1, thread: false }))
+    f(g.get_or_insert_with(|| Engine { voices: HashMap::default(), master: 0, callbacks: Vec::new(), running: false, stream: -1, thread: false, v28: false }))
 }
 
 fn with_voice<R>(this: u32, f: impl FnOnce(&mut Voice) -> R) -> Option<R> {
@@ -282,11 +287,58 @@ fn xa_vtbl() -> u32 {
     })
 }
 
+/// IXAudio2 2.8 / 2.9
+fn xa28_vtbl() -> u32 {
+    static V: OnceLock<u32> = OnceLock::new();
+    *V.get_or_init(|| {
+        vtable(
+            "IXAudio2_28",
+            &[
+                (X_QueryInterface, 12),
+                (X_AddRef, 4),
+                (X_Release, 4),
+                (X_RegisterForCallbacks, 8),
+                (X_UnregisterForCallbacks, 8),
+                (X_CreateSourceVoice, 32),
+                (X_CreateSubmixVoice, 32),
+                (X_CreateMasteringVoice, 32),
+                (X_StartEngine, 4),
+                (X_StopEngine, 4),
+                (X_CommitChanges, 8),
+                (X_GetPerformanceData, 8),
+                (X_SetDebugConfiguration, 12),
+            ],
+        )
+    })
+}
+
+/// XAudio2Create(ppXAudio2, Flags, XAudio2Processor) (xaudio2_8, xaudio2_9)
+fn XAudio2Create(c: &mut Ctx) -> u32 {
+    let pp = c.a(0);
+    if pp == 0 {
+        return E_INVALIDARG;
+    }
+    with(|e| e.v28 = true);
+    let o = mem::heap_alloc(16, true);
+    mem::wp(o, xa28_vtbl());
+    w32(refs(o), 1);
+    putp(pp, o);
+    0
+}
+
+pub fn init() {
+    crate::api::implement("xaudio2_8", "XAudio2Create", XAudio2Create);
+    // (XAudio2CreateWithVersionInfo: the same, with the NTDDI version it was built for)
+    crate::api::implement("xaudio2_8", "XAudio2CreateWithVersionInfo", XAudio2Create);
+    crate::x3daudio::init();
+}
+
 /// CoCreateInstance(CLSID_XAudio2 / CLSID_XAudio2_Debug, 2.7)
 pub fn create_instance(clsid: u32) -> Option<u32> {
     if !matches!(r32(clsid), 0x5a50_8685 | 0xdb05_ea35) {
         return None;
     }
+    with(|e| e.v28 = false);
     let o = mem::heap_alloc(16, true);
     mem::wp(o, xa_vtbl());
     w32(refs(o), 1);
@@ -295,8 +347,9 @@ pub fn create_instance(clsid: u32) -> Option<u32> {
 
 fn X_QueryInterface(c: &mut Ctx) -> u32 {
     let (this, iid, out) = (c.a(0), c.a(1), c.a(2));
-    // IUnknown, IXAudio2 (2.7)
-    if matches!(r32(iid), 0 | 0x8bcf_1f58) {
+    // IUnknown and the object's own IXAudio2: 2.7's, or 2.8's and 2.9's (one engine serves both)
+    let v27 = mem::rp(this) == xa_vtbl();
+    if matches!((r32(iid), v27), (0, _) | (0x8bcf_1f58, true) | (0x60d8_dac8 | 0x2b02_e3cf, false)) {
         w32(refs(this), r32(refs(this)) + 1);
         putp(out, this);
         return 0;
@@ -383,7 +436,13 @@ fn first_send(sends: u32) -> u32 {
 }
 
 fn new_voice(kind: Kind, fmt: Fmt, dest: u32, cb: u32) -> u32 {
-    let vt = if kind == Kind::Source { src_vtbl() } else { voice_vtbl() };
+    let v28 = with(|e| e.v28);
+    let vt = match kind {
+        Kind::Source if v28 => src28_vtbl(),
+        Kind::Source => src_vtbl(),
+        Kind::Master if v28 => master28_vtbl(),
+        _ => voice_vtbl(),
+    };
     let o = mem::heap_alloc(8, true);
     mem::wp(o, vt);
     let v = Voice { kind, fmt, volume: 1.0, dest, cb, started: false, queue: VecDeque::new(), pos: 0.0, began: false, ratio: 1.0, played: 0.0, pending: Vec::new() };
@@ -506,11 +565,63 @@ fn src_vtbl() -> u32 {
     })
 }
 
-/// XAUDIO2_VOICE_DETAILS: CreationFlags, InputChannels, InputSampleRate
+/// IXAudio2SourceVoice 2.8: GetState(pVoiceState, Flags)
+fn src28_vtbl() -> u32 {
+    static V: OnceLock<u32> = OnceLock::new();
+    *V.get_or_init(|| {
+        let mut m = VOICE_METHODS.to_vec();
+        m.extend_from_slice(&[
+            (S_Start, 12),
+            (S_Stop, 12),
+            (S_SubmitSourceBuffer, 12),
+            (S_FlushSourceBuffers, 4),
+            (S_Discontinuity, 4),
+            (S_ExitLoop, 8),
+            (S_GetState28, 12),
+            (S_SetFrequencyRatio, 12),
+            (S_GetFrequencyRatio, 8),
+            (S_SetSourceSampleRate, 8),
+        ]);
+        vtable("IXAudio2SourceVoice_28", &m)
+    })
+}
+
+/// IXAudio2MasteringVoice 2.8: GetChannelMask
+fn master28_vtbl() -> u32 {
+    static V: OnceLock<u32> = OnceLock::new();
+    *V.get_or_init(|| {
+        let mut m = VOICE_METHODS.to_vec();
+        m.push((M_GetChannelMask, 8));
+        vtable("IXAudio2MasteringVoice_28", &m)
+    })
+}
+
+/// the speakers of the mastering voice's channels (SPEAKER_STEREO for 2, else the first n)
+fn M_GetChannelMask(c: &mut Ctx) -> u32 {
+    let ch = with_voice(c.a(0), |v| v.fmt.channels).unwrap_or(2);
+    let mask = match ch {
+        1 => 0x4,
+        2 => 0x3,
+        n => (1u32 << n.min(18)) - 1,
+    };
+    if c.a(1) == 0 {
+        return E_INVALIDARG;
+    }
+    put32(c.a(1), mask);
+    0
+}
+
+/// XAUDIO2_VOICE_DETAILS: CreationFlags, (2.8: ActiveFlags,) InputChannels, InputSampleRate
 fn V_GetVoiceDetails(c: &mut Ctx) -> u32 {
     let p = c.a(1);
+    let v28 = with(|e| e.v28);
     if let Some((ch, rate)) = with_voice(c.a(0), |v| (v.fmt.channels, v.fmt.rate)) {
+        let mut p = p;
         w32(p, 0);
+        if v28 {
+            p += 4;
+            w32(p, 0);
+        }
         w32(p + 4, ch);
         w32(p + 8, rate);
     }
@@ -657,6 +768,18 @@ fn S_ExitLoop(c: &mut Ctx) -> u32 {
         }
     });
     0
+}
+/// GetState(pVoiceState, Flags): XAUDIO2_VOICE_NOSAMPLESPLAYED (0x100) leaves SamplesPlayed
+fn S_GetState28(c: &mut Ctx) -> u32 {
+    let p = c.a(1);
+    if c.a(2) & 0x100 != 0 {
+        let k = ps();
+        let (ctx, n) = with_voice(c.a(0), |v| (v.queue.front().map_or(0, |b| b.ctx), v.queue.len() as u32)).unwrap_or((0, 0));
+        mem::wp(p, ctx);
+        w32(p + k, n);
+        return 0;
+    }
+    S_GetState(c)
 }
 /// XAUDIO2_VOICE_STATE: pCurrentBufferContext, BuffersQueued, SamplesPlayed (u64; 8-aligned)
 fn S_GetState(c: &mut Ctx) -> u32 {

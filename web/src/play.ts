@@ -9,7 +9,6 @@ let stopPlay: (() => void) | undefined;
 //   /play.html?game=id              a game from the list (its run, mount, args and env)
 //   /play.html?run=C:\path\to.exe   program to start
 //   &args=a,b                       its arguments
-//   &debug=<flags>[:channel,...]    SAKE_WINEDEBUG (crates/sake/src/k32.rs)
 //   &mount=/vnvm/game=tree          also mount a store tree (repeatable; Z:\vnvm\game\...)
 //   &env=NAME=value                 extra environment variable (repeatable, e.g. SAKE_TRACE_FILES=1)
 //   &nosave                         no saved games (ippai serve's pre-run: its x86 regions only)
@@ -233,7 +232,6 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       LANG: "ja_JP.UTF-8",
       // sake's C:\ (the prefix's fonts)
       SAKE_C: "/vnvm/prefix/drive_c",
-      SAKE_WINEDEBUG: params.get("debug") ?? "",
       ...(jitName ? { IPPAI_JIT_URL: new URL(`jit-save/${await jitName}`, location.href).href } : {}),
       // count the threads' CPU time (vnhost_load_busy: the run log's perf lines, game.html);
       // &noload: off

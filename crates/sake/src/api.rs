@@ -135,7 +135,7 @@ pub fn spec_names(dll: &str) -> Vec<String> {
 /// "KERNEL32.dll" -> "kernel32"
 pub fn dll_key(dll: &str) -> String {
     let d = crate::pe::base_name(dll);
-    let k = d.strip_suffix(".dll").or_else(|| d.strip_suffix(".drv")).unwrap_or(&d);
+    let k = [".dll", ".drv", ".ax", ".ocx"].iter().find_map(|x| d.strip_suffix(x)).unwrap_or(&d);
     // API sets (Wine's PE DLLs and VC++ 2015+ programs import these)
     if k.starts_with("api-ms-win-crt-") {
         return "ucrtbase".into();
@@ -195,15 +195,27 @@ pub fn find_impl(dll: &str, name: &str) -> Option<Handler> {
     if let Some(f) = m.get(&format!("{dll}!{name}")) {
         return Some(*f);
     }
-    // kernel32 <-> kernelbase <-> ntdll forwarders; shcore exports shlwapi's string, registry
-    // and stream helpers (shlwapi forwards them there since Windows 8)
-    let shl: &[&str] = if dll == "shcore" { &["shlwapi"] } else { &[] };
-    for d in shl.iter().chain(&["kernel32", "kernelbase", "ntdll", "msvcrt", "user32"]) {
+    // kernel32 <-> kernelbase <-> ntdll forwarders, and the DLLs that export another's functions
+    for d in forwards(dll).iter().chain(&["kernel32", "kernelbase", "ntdll", "msvcrt", "user32"]) {
         if let Some(f) = m.get(&format!("{d}!{name}")) {
             return Some(*f);
         }
     }
     None
+}
+
+/// The DLLs whose implementations `dll` (a key) also exports: shcore has shlwapi's string,
+/// registry and stream helpers (shlwapi forwards them there since Windows 8), olepro32 is
+/// oleaut32's OLE Automation picture/font functions, xaudio2_9 is xaudio2_8 (and both carry
+/// X3DAudio, x3daudio1_7's).
+fn forwards(dll: &str) -> &'static [&'static str] {
+    match dll {
+        "shcore" => &["shlwapi"],
+        "olepro32" => &["oleaut32"],
+        "xaudio2_9" => &["xaudio2_8", "x3daudio1_7"],
+        "xaudio2_8" => &["x3daudio1_7"],
+        _ => &[],
+    }
 }
 
 /// Name of ordinal `ord` of a system DLL.
@@ -222,8 +234,7 @@ pub fn export(dll: &str, name: &str) -> u32 {
     }
     let sp = specs();
     let spec = sp.by_name.get(&key).copied().or_else(|| {
-        let shl: &[&str] = if d == "shcore" { &["shlwapi"] } else { &[] };
-        shl.iter().chain(&["kernel32", "kernelbase", "ntdll"]).find_map(|k| sp.by_name.get(&(k.to_string(), name.to_string())).copied())
+        forwards(&d).iter().chain(&["kernel32", "kernelbase", "ntdll"]).find_map(|k| sp.by_name.get(&(k.to_string(), name.to_string())).copied())
     });
     let f = find_impl(&d, name);
     let mut e = ENTRIES.write().unwrap();

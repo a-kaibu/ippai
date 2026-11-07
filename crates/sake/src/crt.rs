@@ -158,6 +158,30 @@ pub fn data(name: &str) -> Option<u32> {
     Some(a)
 }
 
+/// crtdll.dll's data exports: msvcrt's under their `_dll` names (`_osmajor_dll` is
+/// `_winmajor`, `_osversion_dll` `_winver`, `_baseversion_dll` `_osver`), `_ctype` the table
+/// itself (EOF first), and crtdll's own `_basemajor_dll` / `_baseminor_dll` / `_cpumode_dll` /
+/// `_osmode_dll` (0).
+pub fn crtdll_data(name: &str) -> Option<u32> {
+    if name == "_ctype" {
+        return Some(ctype_table());
+    }
+    let msvcrt = match name {
+        "_osmajor_dll" => "_winmajor",
+        "_osminor_dll" => "_winminor",
+        "_osversion_dll" => "_winver",
+        "_baseversion_dll" => "_osver",
+        "_timezone_dll" => "_timezone",
+        "_daylight_dll" => "_daylight",
+        "_basemajor_dll" | "_baseminor_dll" | "_cpumode_dll" | "_osmode_dll" => {
+            static OWN: Mutex<Option<HashMap<String, u32>>> = Mutex::new(None);
+            return Some(*OWN.lock().unwrap().get_or_insert_with(HashMap::default).entry(name.into()).or_insert_with(|| var(0)));
+        }
+        n => n.strip_suffix("_dll").unwrap_or(n),
+    };
+    data(msvcrt)
+}
+
 fn var(v: u32) -> u32 {
     let p = mem::heap_alloc(16, true);
     w32(p, v);
@@ -3356,6 +3380,8 @@ fn asctime(c: &mut Ctx) -> u32 {
 }
 
 pub fn init() {
+    // crtdll's __GetMainArgs(argc, argv, envp, expand): __getmainargs without the startup info
+    implement("crtdll", "__GetMainArgs", __getmainargs);
     implement("msvcrt", "_strtof_l", strtof);
     reg!(strtof, wcstof, _strtoi64, _strtoui64, _wcstoi64, _wcstoui64, _atoi64, _wtoi64, _wtof);
     for (alias, f) in [

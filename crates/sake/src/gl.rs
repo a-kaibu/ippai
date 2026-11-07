@@ -90,6 +90,16 @@ fn dispatch(c: &mut Ctx) -> u32 {
     }
 }
 
+/// Calls kura's GL function `name` with the stdcall argument words `w` (doubles as two words,
+/// low first; floats as their bits): its integer result, or 0 (none, or no such function).
+pub fn call_gl(name: &str, w: &[u32]) -> u32 {
+    let Some((f, sig)) = host_proc(name) else { return 0 };
+    match unsafe { gl_sigs::call(sig, f as *const (), w) } {
+        Ret::I(v) => v,
+        _ => 0,
+    }
+}
+
 fn string_i_trap() -> u32 {
     PROCS.lock().unwrap().get_or_insert_with(HashMap::default).get("glGetStringi").copied().unwrap_or(0)
 }

@@ -52,7 +52,9 @@
   文字の配置は CPU で決めて、矩形・楕円・グリフを kura::d3d11::d2d の Item として集め、EndDraw/Flush
   で 1 回のインスタンス描画にする (グリフは R8 のアトラス、グラデーションは 256 texel のランプ
   テクスチャ)。確認は tests/gfx.mjs の d2dtest。
-- specs.txt にない DLL は C:\ の `windows\system32` にあれば x86 として読む。
+- DLL はゲームが同梱しているもの (exe のフォルダ、カレントディレクトリ、SetDllDirectory) と sake 自身のものだけ。
+  C:\windows\system32 (SysWOW64) からは読まない: そこに古い Wine prefix の PE DLL が残っていても使わない。
+  sake が実装していない DLL は、それが無い Windows と同じく LoadLibrary が失敗する。
 - フォント一覧はレジストリの Fonts キー (DirectWrite のシステムコレクションが読む)。
 - WH_CBT フック (HCBT_CREATEWND): MFC はこれでウィンドウを結び付けるので、無いと LiveMaker が
   ウィンドウを作れずに終わる。
@@ -247,7 +249,6 @@ node では D3D9 は描かれない (WebGPU がない) ので、D3D9 のゲー�
   `SAKE_TRACE=3` (落ちたときにスレッドごとの直前の呼び出し)、`SAKE_API_STATS=秒`、
   `SAKE_TRACE_FAULT`、`SAKE_TRACE_FILES`、`SAKE_TRACE_LOAD`、`SAKE_TRACE_MSG`、
   `SAKE_TRACE_INPUT`、`SAKE_TRACE_FONT`、`IPPAI_JIT_STATS` (JIT が実行ループに戻る場所)、
-  `SAKE_WINEDEBUG=<flags>[:chan,...]` (Wine の PE DLL のデバッグ出力。1 FIXME、2 ERR、4 WARN、8 TRACE)、
   `IPPAI_D3D_SPV=<dir>` (D3D11 シェーダの SPIR-V を書き出す)。
 - 確認用の小さなテスト: `ENGINE=sake node tests/gfx.mjs` (d3d11test、d2dtest、ddrawtest が通る。
   d3d8test は sake に D3D8 が無いので落ちる)。

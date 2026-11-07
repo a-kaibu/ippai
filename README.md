@@ -138,8 +138,8 @@ target/release/ippai pack ~/prefix32 prefix32   # sake の C:\ (フォント)
 target/release/ippai serve --foreground --web web/dist --listen 127.0.0.1:8080
 ```
 
-sake の C:\ はフォントだけです (`tools/ci/sake-fonts.py`)。64 ビットの C/C++ ランタイムだけは
-まだ自前がなく、C:\ の `windows\system64` にある PE ビルドを読みます。
+sake の C:\ はフォントだけです (`tools/ci/sake-fonts.py`)。Wine の DLL は使いません: Windows の DLL は
+すべて sake 自身の実装で、`windows\system32` に何か置いてあっても読みません。
 Direct3D 10/11 のシェーダーは DXBC から WGSL へ直接翻訳します (`crates/dxwgsl`)。
 
 ## 制約

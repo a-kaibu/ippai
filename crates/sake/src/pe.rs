@@ -583,10 +583,16 @@ use crate::mem::w16;
 pub static DLL_DIRS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// The guest file of a DLL the program ships (exe directory, then the current directory).
+/// C:\windows\system32 (and SysWOW64) never give one: the system's DLLs are sake's own, and a
+/// DLL sake does not implement is missing there, as on a Windows without it (a C:\ that still
+/// has an old Wine prefix's PE builds in it is not read).
 fn find_dll_file(dll: &str) -> Option<(String, String)> {
     let name = if dll.contains('.') { dll.to_string() } else { format!("{dll}.dll") };
     if name.contains('\\') || name.contains('/') || name.contains(':') {
         let w = crate::files::full_path(&name);
+        if is_system_dir(w.rsplit_once('\\').map_or("", |x| x.0)) {
+            return None;
+        }
         return crate::files::resolve(&w).map(|h| (h, w));
     }
     let exe_dir = MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.path.rsplit_once('\\').map_or(String::new(), |x| x.0.to_string()));
@@ -596,32 +602,30 @@ fn find_dll_file(dll: &str) -> Option<(String, String)> {
     // the folders of DLLs loaded by path (LOAD_WITH_ALTERED_SEARCH_PATH finds their dependencies there)
     for m in MODULES.read().unwrap().iter().filter(|m| m.dll && !m.hle) {
         if let Some((d, _)) = m.path.rsplit_once('\\') {
-            // (not system32, where Wine's own builds of the DLLs we implement also are)
-            if !dirs.iter().any(|x| x.eq_ignore_ascii_case(d)) && !d.eq_ignore_ascii_case("C:\\windows\\system32") {
+            if !dirs.iter().any(|x| x.eq_ignore_ascii_case(d)) {
                 dirs.push(d.to_string());
             }
         }
     }
-    // then the Wine prefix's system32 for DLLs we do not implement at all (msvcr90 and other
-    // side-by-side runtimes, d3dx9_43...: Wine's 32-bit PE builds; a 64-bit program has none)
-    if !api::is_system(dll) && !mem::x64() {
-        dirs.push("C:\\windows\\system32".into());
-    }
-    for d in dirs {
+    for d in dirs.iter().filter(|d| !is_system_dir(d)) {
         let w = format!("{d}\\{name}");
         if let Some(h) = crate::files::resolve(&w) {
             // (as Windows' loader, one of the other architecture is passed over: a 64-bit game
             // shipping a 32-bit d3dcompiler_47.dll gets the system's)
             if is_64bit_file(&h) == mem::x64() {
-                // (the DLLs still taken from the prefix: what sake has yet to implement)
-                if d.eq_ignore_ascii_case("C:\\windows\\system32") {
-                    eprintln!("sake: prefix DLL {w}");
-                }
                 return Some((h, w));
             }
         }
     }
     None
+}
+
+/// C:\windows\system32 or C:\windows\SysWOW64 (a game run from there, or one that adds it with
+/// SetDllDirectory, still gets sake's DLLs only)
+fn is_system_dir(d: &str) -> bool {
+    let d = crate::files::full_path(d).to_ascii_lowercase();
+    let d = d.trim_end_matches('\\');
+    d == "c:\\windows\\system32" || d == "c:\\windows\\syswow64" || d == "c:\\windows\\system"
 }
 
 
@@ -718,6 +722,9 @@ fn hle_data(dll: &str, name: &str) -> Option<u32> {
     let k = api::dll_key(dll);
     if k.starts_with("msvcp") {
         return crate::msvcp::data(name);
+    }
+    if k == "crtdll" {
+        return crate::crt::crtdll_data(name);
     }
     (api::is_crt(&k) && !k.starts_with("vcruntime")).then(|| crate::crt::data(name)).flatten()
 }

@@ -1078,8 +1078,13 @@ fn dxdiag_provider() -> u32 {
 }
 
 fn CoCreateInstance(c: &mut Ctx) -> u32 {
-    let clsid = c.a(0);
-    let iid = c.a(3);
+    let (clsid, iid, out) = (c.a(0), c.a(3), c.a(4));
+    create_object(c, clsid, iid, out)
+}
+
+/// The object of class `clsid` into *out (what CoCreateInstance and the class factories of
+/// DllGetClassObject make): S_OK, or REGDB_E_CLASSNOTREG with *out NULL.
+fn create_object(c: &mut Ctx, clsid: u32, iid: u32, out: u32) -> u32 {
     let g = |p: u32| -> String {
         if p == 0 {
             return "null".into();
@@ -1087,19 +1092,19 @@ fn CoCreateInstance(c: &mut Ctx) -> u32 {
         format!("{:08x}-{:04x}-{:04x}", r32(p), r16(p + 4), r16(p + 6))
     };
     if r32(clsid) == 0xa65b_8071 {
-        put32(c.a(4), dxdiag_provider());
+        put32(out, dxdiag_provider());
         return 0;
     }
     if let Some(obj) = crate::ddraw::create_instance(clsid, iid) {
-        mem::putp(c.a(4), obj);
+        mem::putp(out, obj);
         return 0;
     }
     if let Some(obj) = crate::dshow::create_instance(clsid, iid) {
-        mem::putp(c.a(4), obj);
+        mem::putp(out, obj);
         return 0;
     }
     if let Some(obj) = crate::dinput::create_instance(clsid) {
-        mem::putp(c.a(4), obj);
+        mem::putp(out, obj);
         return 0;
     }
     if let Some(obj) = crate::mmdevapi::create_instance(clsid) {
@@ -1107,25 +1112,116 @@ fn CoCreateInstance(c: &mut Ctx) -> u32 {
         return 0;
     }
     if let Some(obj) = crate::com::create_instance(clsid) {
-        mem::putp(c.a(4), obj);
+        mem::putp(out, obj);
         return 0;
     }
     if let Some(obj) = crate::xaudio2::create_instance(clsid) {
-        put32(c.a(4), obj);
+        mem::putp(out, obj);
+        return 0;
+    }
+    if let Some(obj) = crate::xapo::create_instance(clsid) {
+        mem::putp(out, obj);
         return 0;
     }
     if let Some(obj) = crate::jscript::create_instance(clsid) {
-        mem::putp(c.a(4), obj);
+        mem::putp(out, obj);
         return 0;
     }
     if let Some(obj) = crate::sound::create_instance(c, clsid, iid) {
-        mem::putp(c.a(4), obj);
+        mem::putp(out, obj);
         return 0;
     }
     eprintln!("sake: CoCreateInstance {{{}}} iid {{{}}}: not registered", g(clsid), g(iid));
-    mem::putp(c.a(4), 0);
+    mem::putp(out, 0);
     0x8004_0154
 }
+
+/// The classes each COM DLL serves from DllGetClassObject (first CLSID dwords; sake's
+/// classes are told apart by them, as create_object does).
+fn dll_classes(dll: &str) -> &'static [u32] {
+    match dll {
+        // CLSID_XAudio2, CLSID_XAudio2_Debug, CLSID_AudioVolumeMeter, CLSID_AudioReverb (2.7)
+        "xaudio2_7" => &[0x5a50_8685, 0xdb05_ea35, 0xcac1_105f, 0x6a93_130e],
+        // CLSID_WICImagingFactory, CLSID_WICImagingFactory2
+        "windowscodecs" => &[crate::com::CLSID_WIC_FACTORY, crate::com::CLSID_WIC_FACTORY2],
+        _ => &[],
+    }
+}
+
+/// DllGetClassObject(rclsid, riid, ppv) of `dll`: an IClassFactory for one of its classes, or
+/// CLASS_E_CLASSNOTAVAILABLE.
+fn dll_get_class_object(c: &mut Ctx, dll: &str) -> u32 {
+    let (clsid, iid, out) = (c.a(0), c.a(1), c.a(2));
+    if out == 0 {
+        return 0x8000_4003; // E_POINTER
+    }
+    mem::putp(out, 0);
+    if !dll_classes(dll).contains(&r32(clsid)) {
+        return 0x8004_0111;
+    }
+    // IUnknown or IClassFactory {00000001-0000-0000-c000-000000000046}
+    if !(matches!(r32(iid), 0 | 1) && r16(iid + 4) == 0 && r16(iid + 6) == 0 && r32(iid + 8) == 0xc0 && r32(iid + 12) == 0x4600_0000) {
+        return 0x8000_4002; // E_NOINTERFACE
+    }
+    mem::putp(out, class_factory(clsid));
+    0
+}
+
+/// An IClassFactory making objects of class `clsid` (CreateInstance = CoCreateInstance).
+/// Layout: vtable, refs, the CLSID.
+fn class_factory(clsid: u32) -> u32 {
+    use crate::api::Handler;
+    fn qi(c: &mut Ctx) -> u32 {
+        let (this, iid, out) = (c.a(0), c.a(1), c.a(2));
+        let unk_or_cf = matches!(r32(iid), 0 | 1) && r16(iid + 4) == 0 && r16(iid + 6) == 0 && r32(iid + 8) == 0xc0 && r32(iid + 12) == 0x4600_0000;
+        if !unk_or_cf {
+            mem::putp(out, 0);
+            return 0x8000_4002;
+        }
+        add_ref(c);
+        mem::putp(out, this);
+        0
+    }
+    fn add_ref(c: &mut Ctx) -> u32 {
+        let r = c.a(0) + mem::ps();
+        w32(r, r32(r) + 1);
+        r32(r)
+    }
+    fn release(c: &mut Ctx) -> u32 {
+        let r = c.a(0) + mem::ps();
+        let n = r32(r).saturating_sub(1);
+        w32(r, n);
+        n
+    }
+    /// CreateInstance(this, outer, riid, ppv)
+    fn create(c: &mut Ctx) -> u32 {
+        let (this, outer, iid, out) = (c.a(0), c.a(1), c.a(2), c.a(3));
+        if out == 0 {
+            return 0x8000_4003;
+        }
+        if outer != 0 {
+            mem::putp(out, 0);
+            return 0x8004_0110; // CLASS_E_NOAGGREGATION
+        }
+        create_object(c, this + mem::ps() + 4, iid, out)
+    }
+    fn lock(_: &mut Ctx) -> u32 {
+        0
+    }
+    static VT: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    let vt = *VT.get_or_init(|| {
+        let m: [(Handler, u32); 5] = [(qi, 12), (add_ref, 4), (release, 4), (create, 16), (lock, 8)];
+        crate::api::vtable("IClassFactory", &m)
+    });
+    let o = mem::heap_alloc(mem::ps() + 4 + 16, true);
+    mem::wp(o, vt);
+    w32(o + mem::ps(), 1);
+    for i in 0..4 {
+        w32(o + mem::ps() + 4 + 4 * i, r32(clsid + 4 * i));
+    }
+    o
+}
+
 fn CoTaskMemAlloc(c: &mut Ctx) -> u32 {
     mem::heap_alloc(c.a(0), false)
 }
@@ -2964,6 +3060,16 @@ pub fn init() {
     reg!("rpcrt4"; UuidCreate, UuidCreateNil, UuidToStringA, UuidToStringW, RpcStringFreeA, UuidFromStringA, UuidFromStringW,
         UuidEqual, UuidIsNil);
     implement("rpcrt4", "UuidCreateSequential", UuidCreate);
+    // the COM DLLs' class objects (CoCreateInstance's classes; programs that load the DLL
+    // themselves, or check for it, get them here)
+    implement("xaudio2_7", "DllGetClassObject", |c| dll_get_class_object(c, "xaudio2_7"));
+    implement("windowscodecs", "DllGetClassObject", |c| dll_get_class_object(c, "windowscodecs"));
+    implement("olepro32", "DllGetClassObject", |c| dll_get_class_object(c, "olepro32"));
+    for d in ["xaudio2_7", "windowscodecs", "olepro32", "ksproxy", "hhctrl", "msdmo"] {
+        implement(d, "DllCanUnloadNow", |_| 1); // S_FALSE
+        implement(d, "DllRegisterServer", |_| 0);
+        implement(d, "DllUnregisterServer", |_| 0);
+    }
     implement("rpcrt4", "RpcStringFreeW", RpcStringFreeA);
     reg!("ole32"; CoInitialize, CoInitializeEx, OleInitialize, CoUninitialize, OleUninitialize, CoCreateInstance,
         CoTaskMemAlloc, CoTaskMemRealloc, CoTaskMemFree, PropVariantClear, CoGetMalloc, CoCreateGuid, IsEqualGUID, StringFromGUID2, StringFromCLSID, StringFromIID, CLSIDFromString, CLSIDFromProgID, IIDFromString,

@@ -1,0 +1,84 @@
+xaudio2_7 load 1
+procs 1 1
+bad class 80040111 null 1
+factory 00000000
+factory qi unknown 00000000 same 1
+aggregate 80040110 null 1
+create 00000000
+lock 00000000
+unlock 00000000
+2.7 qi 2.8 80004002 null 1
+release 0
+xaudio2_9 load 1
+procs 1 1 1
+XAudio2Create 00000000
+qi IXAudio2 00000000 same 1
+release 0
+CreateFX reverb 00000000
+qi xapo 00000000 params 00000000
+params 1500 2500 3500
+fx release 0
+meter 00000000
+meter lock 00000000 peak 500 1000 rms 500 707
+meter release 0
+init bad speed 88780001
+init stereo 00000000
+emitter 0: L 0 R 1000 distance 1000 angle 1571
+emitter 1: L 500 R 0 distance 2000 angle 1571
+emitter 2: L 177 R 177 distance 4000 angle 3142
+emitter 3: L 707 R 707 distance 500 angle 3142
+approaching doppler 1111
+crtdll load 1
+procs 1 1 1 1
+ctype A 181 a 182 0 84 space 48
+pctype A 181
+sprintf 42-ab-ff 8
+olepro32 load 1
+procs 1 1 1
+dnsapi load 1
+procs 1 1 1 1
+validate 0: 123 123
+validate 1: 0 0
+validate 2: 0 123
+validate 3: 0 123
+validate 4: 9556 9556
+validate 5: 9560 9560
+validate 6: 9560 9560
+validate 7: 9560 123
+validate 8: 123 123
+validate 9: 0 123
+validate 10: 0 123
+compare 1 0 1
+query literal 0 type 1 len 4 ip 127.0.0.1
+query bad name 9560
+query localhost 0 ip 127.0.0.1
+extract 0 type 1 ttl 4050607 ip 4.4.81.124 section 1 charset 1
+extract short 87
+compare same 1 changed 0
+dhcpcsvc load 1
+initialize 0 version 2
+ncrypt load 1
+open 00000000 1
+free 00000000 free null 80090026
+dxva2 load 1
+manager 00000000 1
+open no device 80041000
+reset null 80070057
+release 0
+msdmo load 1
+init 00000000
+free 00000000
+create 00000000 1
+delete 00000000
+windowscodecs load 1
+procs 1 1 1 1 1 1
+factory 00000000
+from memory 00000000
+size 00000000 2x1
+convert 00000000
+format pbgra 1
+copy 00000000 100 50 25 128 / 10 20 30 255
+convert same 00000000
+missing 0 error 126
+missing system32 0 error 126
+kernel32 by path 1 same 1
