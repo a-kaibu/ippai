@@ -672,3 +672,105 @@ fn random_sse3_ssse3_sse41_ops_match_the_host_cpu() {
     }
     assert!(failures.is_empty(), "{} checked, first mismatch per mnemonic:\n{}", done, failures.join("\n"));
 }
+
+/// FMA3 (VEX 0F38, W picks ps/pd and ss/sd): (opcode, W, float lane bits)
+const FMA_OPS: &[(u8, u8, u32)] = &[
+    (0x98, 0, 32), (0x98, 1, 64), (0xa8, 0, 32), (0xa8, 1, 64), (0xb8, 0, 32), (0xb8, 1, 64), (0x99, 0, 32), (0x99, 1, 64),
+    (0xa9, 0, 32), (0xa9, 1, 64), (0xb9, 0, 32), (0xb9, 1, 64), (0x9a, 0, 32), (0xaa, 1, 64), (0xba, 0, 32), (0x9c, 0, 32),
+    (0xac, 1, 64), (0xbc, 0, 32), (0x9e, 0, 32), (0xae, 1, 64), (0xbe, 0, 32), (0x96, 0, 32), (0xa6, 1, 64), (0xb7, 0, 32),
+];
+
+/// The VEX.128 forms (AVX, AVX2's 128-bit integer ops, FMA3) of the SSE ops above, which the
+/// interpreter runs with the extra source register (crates/koji/src/interp/vex.rs), against the
+/// host. Ops without a VEX form, or encodings the decoder rejects, are skipped.
+#[test]
+fn random_vex128_ops_match_the_host_cpu() {
+    if !(std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("fma")) {
+        eprintln!("host CPU without AVX2/FMA: skipped");
+        return;
+    }
+    // (pp, map, opcode, imm, lane bits, reg class, rm class, fixed /n, W)
+    let mut ops: Vec<(u8, u8, u8, bool, u32, u8, u8, u8, u8)> = Vec::new();
+    let pp = |p: u8| match p { 0x66 => 1, 0xf3 => 2, 0xf2 => 3, _ => 0 };
+    for o in SSE_OPS.iter().filter(|o| o.4 != b'm' && o.5 != b'm') {
+        ops.push((pp(o.0), 1, o.1, o.2, o.3, o.4, o.5, 0xff, 0));
+    }
+    for o in SSE4_OPS.iter().filter(|o| o.5 != b'm') {
+        ops.push((pp(o.0), if o.1 == 0 { 1 } else if o.1 == 0x38 { 2 } else { 3 }, o.2, o.3, o.4, o.5, o.6, o.7, 0));
+    }
+    for &(opc, w, fl) in FMA_OPS {
+        ops.push((1, 2, opc, false, fl, b'x', b'x', 0xff, w));
+    }
+    // AVX2 variable shifts (66 0F38 45-47, W: d/q)
+    for (opc, w) in [(0x45, 0), (0x45, 1), (0x46, 0), (0x47, 0), (0x47, 1)] {
+        ops.push((1, 2, opc, false, 0, b'x', b'x', 0xff, w));
+    }
+    let native = Native::new();
+    let mut rng = Rng(0x0123_4567_89ab_cdef);
+    let mut failures = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let (mut done, mut skipped) = (0, std::collections::BTreeSet::new());
+    for _ in 0..150_000 {
+        let o = ops[rng.below(ops.len() as u64) as usize];
+        let pick = |rng: &mut Rng, c: u8| if c == b'g' { reg(rng, false) } else { rng.below(8) as u8 };
+        let r = if o.7 != 0xff { o.7 } else { pick(&mut rng, o.5) };
+        let m = pick(&mut rng, o.6);
+        let v = rng.below(8) as u8;
+        let mut insn = vec![0xc4, 0xe0 | o.1, o.8 << 7 | (!v & 0xf) << 3 | o.0, o.2, 0xc0 | r << 3 | m];
+        if o.3 {
+            insn.push(match rng.below(4) {
+                0 => [0, 1, 7, 8, 15, 16, 17, 31, 32, 63, 64, 255][rng.below(12) as usize],
+                _ => rng.next() as u8,
+            });
+        }
+        let ins = Decoder::new(32, &insn, DecoderOptions::NONE).decode();
+        if ins.is_invalid() || ins.len() != insn.len() || !format!("{:?}", ins.mnemonic()).starts_with('V') {
+            continue;
+        }
+        let mut cpu = Cpu::default();
+        for (i, x) in cpu.regs.iter_mut().enumerate() {
+            if i != 4 { *x = rng.value(); }
+        }
+        cpu.regs[4] = 0x8000;
+        cpu.eflags = 0x202 | (rng.next() as u32 & STATUS);
+        for x in cpu.xmm.iter_mut() {
+            *x = u128::from_le_bytes(rand_vec(&mut rng));
+        }
+        let before = cpu.clone();
+        let mut mem = Vecmem(vec![0; 0x10000]);
+        mem.0[0x1000..0x1000 + insn.len()].copy_from_slice(&insn);
+        cpu.eip = 0x1000;
+        let exit = step(&mut cpu, &mut mem);
+        if exit != Exit::Continue {
+            if seen.insert(ins.mnemonic()) {
+                failures.push(format!("{:02x?} {:?}: {:?}", insn, ins.mnemonic(), exit));
+            }
+            skipped.insert(ins.mnemonic());
+            continue;
+        }
+        let mut st = State::default();
+        for i in 0..8 {
+            st.r[i] = before.regs[i] as u64;
+            st.xmm[i] = before.xmm[i].to_le_bytes();
+            st.mm[i] = before.mm[i];
+        }
+        st.flags = before.eflags as u64;
+        native.run(&insn, &mut st);
+        let mut ok = (st.flags as u32 & STATUS) == (cpu.eflags & STATUS);
+        for i in 0..8 {
+            if i != 4 && st.r[i] as u32 != cpu.regs[i] { ok = false; }
+            if !lanes_equal(u128::from_le_bytes(st.xmm[i]), cpu.xmm[i], o.4) { ok = false; }
+        }
+        if !ok && seen.insert(ins.mnemonic()) {
+            let diff: Vec<String> = (0..8)
+                .filter(|&i| u128::from_le_bytes(st.xmm[i]) != cpu.xmm[i])
+                .map(|i| format!("xmm{} in {:032x} want {:032x} got {:032x}", i, before.xmm[i], u128::from_le_bytes(st.xmm[i]), cpu.xmm[i]))
+                .chain((0..8).filter(|&i| i != 4 && st.r[i] as u32 != cpu.regs[i]).map(|i| format!("r{} in {:08x} want {:08x} got {:08x}", i, before.regs[i], st.r[i] as u32, cpu.regs[i])))
+                .collect();
+            failures.push(format!("{:02x?} {:?} flags want {:03x} got {:03x}\n  {}", insn, ins.mnemonic(), st.flags as u32 & STATUS, cpu.eflags & STATUS, diff.join("\n  ")));
+        }
+        done += 1;
+    }
+    assert!(done > 50_000, "only {done} VEX ops ran");
+    assert!(failures.is_empty(), "{} checked, first mismatch per mnemonic:\n{}", done, failures.join("\n"));
+}

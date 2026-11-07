@@ -44,6 +44,10 @@ pub(super) fn plan(ins: &Instruction) -> Option<(Instruction, Option<Register>)>
             return Some((*ins, None));
         }
         let (lc, nds) = crate::interp::vex::legacy_of(ins.code())?;
+        // VCMPxx predicates 8..31 have no legacy form: the interpreter runs them
+        if matches!(ins.mnemonic(), Mnemonic::Vcmpps | Mnemonic::Vcmppd | Mnemonic::Vcmpss | Mnemonic::Vcmpsd) && ins.immediate8() & 0x18 != 0 {
+            return None;
+        }
         let mut li = *ins;
         li.set_code(lc);
         if nds {

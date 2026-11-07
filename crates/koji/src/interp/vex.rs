@@ -195,7 +195,31 @@ impl<'a, M: Memory> X<'a, M> {
                 li.set_op_register(j, ins.op_register(j + 1));
             }
         }
+        // VCMPxx has 32 predicates (legacy CMPxx: 8). Bit 4 only picks signaling, which with masked
+        // exceptions changes nothing; bit 3 flips the answer for unordered lanes, so run the low
+        // three bits and xor in the UNORD mask.
+        let vcmp = matches!(ins.mnemonic(), Vcmpps | Vcmppd | Vcmpss | Vcmpsd);
+        let p = if vcmp { ins.immediate8() & 0x1f } else { 0 };
+        if vcmp {
+            li.set_immediate8(p & 7);
+        }
+        let src1v = self.cpu.vex_tmp;
         let exit = X { cpu: &mut *self.cpu, mem: &mut *self.mem, ins: &li, lock: None }.exec();
+        if exit == Exit::Continue && p & 8 != 0 {
+            let r = self.cpu.vex_tmp;
+            self.cpu.vex_tmp = src1v;
+            li.set_immediate8(3);
+            let exit = X { cpu: &mut *self.cpu, mem: &mut *self.mem, ins: &li, lock: None }.exec();
+            if exit != Exit::Continue {
+                return exit;
+            }
+            let lanes: u128 = match ins.mnemonic() {
+                Vcmpss => u32::MAX as u128,
+                Vcmpsd => u64::MAX as u128,
+                _ => u128::MAX,
+            };
+            self.cpu.vex_tmp = r ^ (self.cpu.vex_tmp & lanes);
+        }
         if exit == Exit::Continue {
             self.cpu.set_xmm(dst as usize - Register::XMM0 as usize, self.cpu.vex_tmp);
         }
