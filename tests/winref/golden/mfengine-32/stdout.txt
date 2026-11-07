@@ -1,0 +1,66 @@
+MFStartup 00000000
+D3D11CreateDevice 00000000
+MFCreateDXGIDeviceManager 00000000 token 1
+ResetDevice 00000000
+ResetDevice wrong token 80070057
+factory 00000000
+MFCreateAttributes 00000000
+attributes 3, format 00000000 87
+GetUINT64 of a UINT32 c00d36bd
+GetUINT32 missing c00d36e6
+CreateInstance without a callback c00d36e6
+CreateInstance 00000000
+QueryInterface IMFMediaEngineEx 00000000
+empty: ready 0 paused 1 ended 0 seeking 0 time 0.0
+empty: duration nan 1, network 0, autoplay 0, loop 0, volume 1.00, muted 0, rate 1.00, video 0, audio 0
+empty: GetNativeVideoSize 80004005 0x0
+empty: OnVideoStreamTick 00000001
+empty: TransferVideoFrame c00d4e26
+SetSource missing 00000000
+missing: error event 1
+missing: GetError 00000000 code 4
+missing: ready 0 paused 1 ended 0 seeking 0 time 0.0
+SetSource 00000000
+can play 1
+event 1 seen 1
+event 21 seen 1
+event 10 seen 1
+event 11 seen 1
+event 14 seen 1
+event 15 seen 1
+event 1009 seen 0
+load start before metadata 1, metadata before data 1, data before can play 1
+loaded: ready 4 paused 1 ended 0 seeking 0 time 0.0
+loaded: duration 2.00, size 00000000 64x48, video 1, audio 0, network 1
+loaded: OnVideoStreamTick 00000001 pts -1
+loaded: TransferVideoFrame 00000000 top frame 0 bottom frame -1
+SetCurrentTime 00000000
+seeked 0, seeking seen 1
+seeked: ready 4 paused 1 ended 0 seeking 1 time 0.8
+seeked: OnVideoStreamTick 00000000 pts within a frame 0
+seeked: TransferVideoFrame 00000000 top frame 0 bottom frame 0
+Play 00000000
+play event 1
+playing event 0
+playing: paused 0 ended 0, time moved 0
+ended event 0 after the expected time 0
+pause event at the end 0
+ended: ready 4 paused 0 ended 0 seeking 1 time 0.8
+ended: TransferVideoFrame 00000000 top frame 7 bottom frame 7
+Play again 00000000
+again: from the start 1, ended 0
+Pause 00000000
+pause event 1
+paused: ready 4 paused 1 ended 0 seeking 1 time 0.8
+Pause again 00000000
+SetVolume 00000000
+volume 0.50
+SetLoop 00000000 loop 0
+SetAutoPlay 00000000 autoplay 0
+Shutdown 00000000
+after shutdown: Play c00d3e85
+after shutdown: SetSource c00d3e85
+after shutdown: GetNativeVideoSize c00d3e85
+after shutdown: Shutdown c00d3e85
+released 1
+MFShutdown 00000000
