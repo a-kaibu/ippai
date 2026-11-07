@@ -233,6 +233,24 @@ static void buffers(void) {
     printf("buf null_out %s\n", code(ID3D11Device_CreateBuffer(dev, &d, NULL, NULL)));
 }
 
+/* the union fields a view dimension has (Windows leaves the others as they happen to be) */
+static int union_words(int kind, UINT dim) {
+    static const int srv[] = {0, 0, 2, 4, 2, 4, 0, 2, 2, 2, 4, 3}, rtv[] = {0, 2, 1, 3, 1, 3, 0, 2, 3}, dsv[] = {0, 1, 3, 1, 3, 0, 2}, uav[] = {0, 3, 1, 3, 1, 3, 0, 0, 3};
+    switch (kind) {
+    case 0: return dim < 12 ? srv[dim] : 0;
+    case 1: return dim < 9 ? rtv[dim] : 0;
+    case 2: return dim < 7 ? dsv[dim] : 0;
+    default: return dim < 9 ? uav[dim] : 0;
+    }
+}
+
+static void print_union(char *out, size_t size, const void *u, int n) {
+    UINT w[4];
+    memcpy(w, u, n * sizeof *w);
+    size_t at = strlen(out);
+    for (int i = 0; i < n; i++) at += snprintf(out + at, size - at, " %u", w[i]);
+}
+
 /* views of a texture: the view's format against the texture's (typeless families), mips and
  * array ranges, NULL descriptions */
 static void views(void) {
@@ -320,8 +338,8 @@ static void views(void) {
             hr = ID3D11Device_CreateShaderResourceView(dev, r, nul ? NULL : &d, (ID3D11ShaderResourceView **)&o);
             if (o) {
                 ID3D11ShaderResourceView_GetDesc((ID3D11ShaderResourceView *)o, &d);
-                snprintf(got, sizeof got, " fmt %u dim %u %u %u %u %u", d.Format, d.ViewDimension, d.Texture2DArray.MostDetailedMip, d.Texture2DArray.MipLevels,
-                    d.Texture2DArray.FirstArraySlice, d.Texture2DArray.ArraySize);
+                snprintf(got, sizeof got, " fmt %u dim %u", d.Format, d.ViewDimension);
+                print_union(got, sizeof got, &d.Texture2DArray, union_words(0, d.ViewDimension));
             }
             break;
         }
@@ -333,7 +351,8 @@ static void views(void) {
             hr = ID3D11Device_CreateRenderTargetView(dev, r, nul ? NULL : &d, (ID3D11RenderTargetView **)&o);
             if (o) {
                 ID3D11RenderTargetView_GetDesc((ID3D11RenderTargetView *)o, &d);
-                snprintf(got, sizeof got, " fmt %u dim %u %u %u %u", d.Format, d.ViewDimension, d.Texture2DArray.MipSlice, d.Texture2DArray.FirstArraySlice, d.Texture2DArray.ArraySize);
+                snprintf(got, sizeof got, " fmt %u dim %u", d.Format, d.ViewDimension);
+                print_union(got, sizeof got, &d.Texture2DArray, union_words(1, d.ViewDimension));
             }
             break;
         }
@@ -345,8 +364,8 @@ static void views(void) {
             hr = ID3D11Device_CreateDepthStencilView(dev, r, nul ? NULL : &d, (ID3D11DepthStencilView **)&o);
             if (o) {
                 ID3D11DepthStencilView_GetDesc((ID3D11DepthStencilView *)o, &d);
-                snprintf(got, sizeof got, " fmt %u dim %u flags %u %u %u %u", d.Format, d.ViewDimension, d.Flags, d.Texture2DArray.MipSlice, d.Texture2DArray.FirstArraySlice,
-                    d.Texture2DArray.ArraySize);
+                snprintf(got, sizeof got, " fmt %u dim %u flags %u", d.Format, d.ViewDimension, d.Flags);
+                print_union(got, sizeof got, &d.Texture2DArray, union_words(2, d.ViewDimension));
             }
             break;
         }
@@ -358,7 +377,8 @@ static void views(void) {
             hr = ID3D11Device_CreateUnorderedAccessView(dev, r, nul ? NULL : &d, (ID3D11UnorderedAccessView **)&o);
             if (o) {
                 ID3D11UnorderedAccessView_GetDesc((ID3D11UnorderedAccessView *)o, &d);
-                snprintf(got, sizeof got, " fmt %u dim %u %u %u %u", d.Format, d.ViewDimension, d.Texture2DArray.MipSlice, d.Texture2DArray.FirstArraySlice, d.Texture2DArray.ArraySize);
+                snprintf(got, sizeof got, " fmt %u dim %u", d.Format, d.ViewDimension);
+                print_union(got, sizeof got, &d.Texture2DArray, union_words(3, d.ViewDimension));
             }
         }
         }

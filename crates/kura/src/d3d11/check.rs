@@ -1,0 +1,652 @@
+//! What CreateTexture1D/2D/3D and CreateBuffer accept, as Windows decides it (the d3d11api
+//! winref probe's golden output; per-format answers in `winfmt`).
+
+use super::winfmt::{self, FORMATS};
+
+pub const E_INVALIDARG: u32 = 0x8007_0057;
+
+const USAGE_DEFAULT: u32 = 0;
+const USAGE_IMMUTABLE: u32 = 1;
+const USAGE_DYNAMIC: u32 = 2;
+const USAGE_STAGING: u32 = 3;
+
+const CPU_WRITE: u32 = 0x10000;
+const CPU_READ: u32 = 0x20000;
+
+const BIND_VB: u32 = 0x1;
+const BIND_IB: u32 = 0x2;
+const BIND_CB: u32 = 0x4;
+const BIND_SRV: u32 = 0x8;
+const BIND_SO: u32 = 0x10;
+const BIND_RT: u32 = 0x20;
+const BIND_DS: u32 = 0x40;
+const BIND_UAV: u32 = 0x80;
+
+const MISC_GENMIPS: u32 = 0x1;
+const MISC_SHARED: u32 = 0x2;
+const MISC_CUBE: u32 = 0x4;
+const MISC_INDIRECT: u32 = 0x10;
+const MISC_RAW: u32 = 0x20;
+const MISC_STRUCTURED: u32 = 0x40;
+const MISC_KEYEDMUTEX: u32 = 0x100;
+const MISC_GDI: u32 = 0x200;
+
+/// Windows' row for a DXGI format (None: no such format)
+pub fn format(fmt: u32) -> Option<(bool, u32, bool, u32, [u8; 3], u32)> {
+    FORMATS.get(fmt as usize).copied().filter(|_| fmt != 0)
+}
+
+/// CheckFormatSupport: the bits, or None (E_FAIL)
+pub fn support(fmt: u32) -> Option<u32> {
+    format(fmt).filter(|f| f.0).map(|f| f.1)
+}
+
+/// CheckFeatureSupport(FORMAT_SUPPORT2): the bits, or None (E_FAIL)
+pub fn support2(fmt: u32) -> Option<u32> {
+    format(fmt).filter(|f| f.2).map(|f| f.3)
+}
+
+/// CheckMultisampleQualityLevels: levels at `count` samples (0: not supported)
+pub fn quality_levels(fmt: u32, count: u32) -> u32 {
+    let Some(f) = format(fmt).filter(|f| f.0) else { return 0 };
+    match count {
+        1 => 1,
+        2 => f.4[0] as u32,
+        4 => f.4[1] as u32,
+        // (16: what the probe's runner took for 8 bits of RGBA, the most a format has)
+        8 | 16 => f.4[2] as u32,
+        _ => 0,
+    }
+}
+
+/// A texture's description: dimension 1, 2 or 3; `layers` is the depth of a 3D one.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Tex {
+    pub dim: u32,
+    pub w: u32,
+    pub h: u32,
+    pub layers: u32,
+    pub mips: u32,
+    pub fmt: u32,
+    pub samples: u32,
+    pub quality: u32,
+    pub usage: u32,
+    pub bind: u32,
+    pub cpu: u32,
+    pub misc: u32,
+}
+
+/// Levels of a full chain for these sizes.
+pub fn full_chain(w: u32, h: u32, d: u32) -> u32 {
+    32 - w.max(h).max(d).max(1).leading_zeros()
+}
+
+/// Whether CreateTexture* takes `t` (`init`: initial data given); its mip count if it does.
+pub fn texture(t: &Tex, init: bool) -> Result<u32, u32> {
+    let bad = Err(E_INVALIDARG);
+    let Some((ok, _, _, _, _, cases)) = format(t.fmt) else { return bad };
+    if !ok || t.w == 0 || t.h == 0 || t.layers == 0 || t.samples == 0 {
+        return bad;
+    }
+    if t.dim != 3 && t.layers > 2048 || t.dim == 3 && t.layers > 2048 {
+        return bad;
+    }
+    let max = full_chain(t.w, t.h, if t.dim == 3 { t.layers } else { 1 });
+    if t.mips > max {
+        return bad;
+    }
+    let mips = if t.mips == 0 { max } else { t.mips };
+    let need = |case: u32| cases & case != 0;
+    // the bind flags a texture takes, each as the format allows it
+    if t.bind & !(BIND_VB | BIND_IB | BIND_CB | BIND_SRV | BIND_SO | BIND_RT | BIND_DS | BIND_UAV) != 0 {
+        return bad;
+    }
+    let per_bind =
+        [(BIND_VB, winfmt::VB), (BIND_IB, winfmt::IB), (BIND_CB, winfmt::CB), (BIND_SRV, winfmt::SRV), (BIND_SO, winfmt::SO), (BIND_RT, winfmt::RT), (BIND_DS, winfmt::DS), (BIND_UAV, winfmt::UAV)];
+    if per_bind.iter().any(|&(b, case)| t.bind & b != 0 && !need(case)) || !need(winfmt::NONE) {
+        return bad;
+    }
+    match t.usage {
+        USAGE_DEFAULT => {}
+        USAGE_IMMUTABLE => {
+            if !init || t.cpu != 0 || t.bind & (BIND_RT | BIND_DS | BIND_UAV | BIND_SO) != 0 {
+                return bad;
+            }
+        }
+        USAGE_DYNAMIC => {
+            if t.cpu != CPU_WRITE || mips != 1 || t.layers != 1 && t.dim != 3 || t.bind & (BIND_RT | BIND_DS | BIND_UAV | BIND_SO) != 0 || !need(winfmt::DYNAMIC) {
+                return bad;
+            }
+        }
+        USAGE_STAGING => {
+            if t.bind != 0 || t.cpu & (CPU_READ | CPU_WRITE) == 0 || t.samples > 1 || !need(winfmt::STAGING) {
+                return bad;
+            }
+        }
+        _ => return bad,
+    }
+    if t.cpu & !(CPU_READ | CPU_WRITE) != 0 {
+        return bad;
+    }
+    // multisampling: 2D, one level, a sample count with quality levels
+    if t.samples > 1 || t.quality > 0 {
+        let levels = quality_levels(t.fmt, t.samples);
+        if t.dim != 2 || mips != 1 || levels == 0 || t.quality >= levels || t.misc & (MISC_CUBE | MISC_GENMIPS) != 0 || t.samples > 1 && !need(winfmt::MS4) {
+            return bad;
+        }
+    }
+    if mips > 1 && !need(winfmt::MIPS) {
+        return bad;
+    }
+    if t.misc & (MISC_INDIRECT | MISC_RAW | MISC_STRUCTURED) != 0 || t.misc & MISC_SHARED != 0 && t.misc & MISC_KEYEDMUTEX != 0 {
+        return bad;
+    }
+    if t.misc & MISC_CUBE != 0 && (t.dim != 2 || t.layers % 6 != 0 || t.w != t.h || !need(winfmt::CUBE)) {
+        return bad;
+    }
+    if t.misc & MISC_GENMIPS != 0 && (t.bind & (BIND_RT | BIND_SRV) != BIND_RT | BIND_SRV || !need(winfmt::GENMIPS)) {
+        return bad;
+    }
+    if t.misc & MISC_GDI != 0 && (!matches!(t.fmt, 87 | 90 | 91) || t.bind & BIND_RT == 0) {
+        return bad;
+    }
+    if t.dim == 1 && t.bind & BIND_SRV != 0 && !need(winfmt::TEX1D) || t.dim == 3 && t.bind & BIND_SRV != 0 && !need(winfmt::TEX3D) {
+        return bad;
+    }
+    Ok(mips)
+}
+
+/// Whether CreateBuffer takes a buffer of this description; the stride it keeps if it does
+/// (only a structured buffer keeps one).
+pub fn buffer(size: u32, usage: u32, bind: u32, cpu: u32, misc: u32, stride: u32, init: bool) -> Result<u32, u32> {
+    let bad = Err(E_INVALIDARG);
+    if size == 0 || bind & !(BIND_VB | BIND_IB | BIND_CB | BIND_SRV | BIND_SO | BIND_RT | BIND_UAV) != 0 || cpu & !(CPU_READ | CPU_WRITE) != 0 {
+        return bad;
+    }
+    // a constant buffer: 16-byte multiples, no other binding
+    if bind & BIND_CB != 0 && (size % 16 != 0 || bind != BIND_CB) {
+        return bad;
+    }
+    match usage {
+        USAGE_DEFAULT => {
+            if cpu != 0 {
+                return bad;
+            }
+        }
+        USAGE_IMMUTABLE => {
+            if !init || cpu != 0 || bind & (BIND_SO | BIND_RT | BIND_UAV) != 0 {
+                return bad;
+            }
+        }
+        USAGE_DYNAMIC => {
+            if cpu != CPU_WRITE || bind & (BIND_SO | BIND_RT | BIND_UAV) != 0 {
+                return bad;
+            }
+        }
+        USAGE_STAGING => {
+            if bind != 0 || cpu == 0 {
+                return bad;
+            }
+        }
+        _ => return bad,
+    }
+    if misc & (MISC_GENMIPS | MISC_CUBE | MISC_GDI | MISC_KEYEDMUTEX) != 0 {
+        return bad;
+    }
+    if misc & MISC_STRUCTURED != 0 {
+        if misc & MISC_RAW != 0 || stride == 0 || stride % 4 != 0 || stride > 2048 || size % stride != 0 || bind & (BIND_VB | BIND_IB | BIND_CB) != 0 {
+            return bad;
+        }
+        return Ok(stride);
+    }
+    if misc & MISC_RAW != 0 && bind & (BIND_SRV | BIND_UAV) == 0 {
+        return bad;
+    }
+    Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rgba(w: u32, h: u32, mips: u32, layers: u32, bind: u32, usage: u32, cpu: u32, misc: u32, samples: u32) -> Result<u32, u32> {
+        texture(&Tex { dim: 2, w, h, layers, mips, fmt: 28, samples, quality: 0, usage, bind, cpu, misc }, false)
+    }
+
+    /// the probe's texture cases, with Windows' answers
+    #[test]
+    fn texture_cases() {
+        let ok = |r: Result<u32, u32>| r.is_ok();
+        assert!(!ok(rgba(0, 16, 1, 1, 8, 0, 0, 0, 1)));
+        assert!(!ok(rgba(16, 16, 1, 1, 8, 0, 0, 0, 0)));
+        assert!(ok(rgba(16385, 1, 1, 1, 8, 0, 0, 0, 1)));
+        assert!(ok(rgba(4, 4, 1, 2048, 8, 0, 0, 0, 1)));
+        assert!(!ok(rgba(4, 4, 1, 2049, 8, 0, 0, 0, 1)));
+        assert_eq!(rgba(16, 16, 5, 1, 8, 0, 0, 0, 1), Ok(5));
+        assert!(!ok(rgba(16, 16, 6, 1, 8, 0, 0, 0, 1)));
+        assert!(!ok(rgba(17, 3, 6, 1, 8, 0, 0, 0, 1)));
+        assert!(!ok(rgba(16, 16, 1, 1, 8, 1, 0, 0, 1)));
+        assert!(!ok(rgba(16, 16, 1, 1, 8, 2, 0, 0, 1)));
+        assert!(!ok(rgba(16, 16, 1, 1, 8, 2, CPU_READ, 0, 1)));
+        assert!(ok(rgba(16, 16, 1, 1, 8, 2, CPU_WRITE, 0, 1)));
+        assert!(!ok(rgba(16, 16, 2, 1, 8, 2, CPU_WRITE, 0, 1)));
+        assert!(!ok(rgba(16, 16, 1, 2, 8, 2, CPU_WRITE, 0, 1)));
+        assert!(!ok(rgba(16, 16, 1, 1, 0x28, 2, CPU_WRITE, 0, 1)));
+        assert!(!ok(rgba(16, 16, 1, 1, 8, 3, CPU_READ, 0, 1)));
+        assert!(!ok(rgba(16, 16, 1, 1, 0, 3, 0, 0, 1)));
+        assert!(ok(rgba(16, 16, 1, 1, 0, 3, CPU_READ | CPU_WRITE, 0, 1)));
+        assert!(ok(rgba(16, 16, 1, 1, 8, 0, CPU_WRITE, 0, 1)));
+        assert!(!ok(rgba(16, 16, 1, 5, 8, 0, 0, 4, 1)));
+        assert!(ok(rgba(16, 16, 1, 12, 8, 0, 0, 4, 1)));
+        assert!(!ok(rgba(16, 8, 1, 6, 8, 0, 0, 4, 1)));
+        assert!(!ok(rgba(16, 16, 0, 1, 8, 0, 0, 1, 1)));
+        assert!(!ok(rgba(16, 16, 0, 1, 0x20, 0, 0, 1, 1)));
+        assert!(ok(rgba(16, 16, 0, 1, 0x28, 0, 0, 1, 1)));
+        assert!(ok(rgba(16, 16, 1, 1, 0x28, 0, 0, 2, 1)));
+        assert!(!ok(rgba(16, 16, 1, 1, 0x28, 0, 0, 0x102, 1)));
+        assert!(!ok(rgba(16, 16, 1, 1, 0x28, 0, 0, 0x200, 1)));
+        assert!(!ok(rgba(16, 16, 1, 1, 8, 0, 0, 0x20, 1)));
+        assert!(!ok(rgba(16, 16, 2, 1, 0x20, 0, 0, 0, 4)));
+        assert!(!ok(rgba(16, 16, 1, 1, 0x20, 0, 0, 0, 3)));
+        assert!(ok(rgba(16, 16, 1, 1, 0x20, 0, 0, 0, 8)));
+        assert!(ok(rgba(16, 16, 1, 1, 0x20, 0, 0, 0, 16)));
+        assert!(!ok(rgba(16, 16, 1, 1, 0, 3, CPU_READ, 0, 4)));
+        assert!(!ok(rgba(16, 16, 1, 1, 0x200, 0, 0, 0, 1)));
+        assert!(!ok(rgba(16, 16, 1, 1, 0x1000, 0, 0, 0, 1)));
+        assert!(texture(&Tex { dim: 2, w: 4, h: 4, layers: 1, mips: 1, fmt: 28, samples: 1, usage: 1, bind: 8, ..Tex::default() }, true).is_ok());
+    }
+
+    /// the probe's buffer cases
+    #[test]
+    fn buffer_cases() {
+        let b = |size, usage, bind, cpu, misc, stride| buffer(size, usage, bind, cpu, misc, stride, false);
+        let cases: &[(&str, u32, u32, u32, u32, u32, u32, Option<u32>)] = &[
+            ("size0", 0, 0, 1, 0, 0, 0, None),
+            ("vb1", 1, 0, 1, 0, 0, 0, Some(0)),
+            ("cb1", 1, 0, 4, 0, 0, 0, None),
+            ("cb15", 15, 0, 4, 0, 0, 0, None),
+            ("cb16", 16, 0, 4, 0, 0, 0, Some(0)),
+            ("cb17", 17, 0, 4, 0, 0, 0, None),
+            ("cb65552", 65552, 0, 4, 0, 0, 0, Some(0)),
+            ("cb_vb", 16, 0, 5, 0, 0, 0, None),
+            ("cb_srv", 16, 0, 0xc, 0, 0, 0, None),
+            ("vb_ib_srv", 16, 0, 0xb, 0, 0, 0, Some(0)),
+            ("vb_rt", 16, 0, 0x21, 0, 0, 0, Some(0)),
+            ("vb_ds", 16, 0, 0x41, 0, 0, 0, None),
+            ("so", 16, 0, 0x10, 0, 0, 0, Some(0)),
+            ("uav", 16, 0, 0x80, 0, 0, 0, Some(0)),
+            ("nobind", 16, 0, 0, 0, 0, 0, Some(0)),
+            ("dynamic_vb", 16, 2, 1, CPU_WRITE, 0, 0, Some(0)),
+            ("dynamic_nocpu", 16, 2, 1, 0, 0, 0, None),
+            ("dynamic_read", 16, 2, 1, CPU_READ | CPU_WRITE, 0, 0, None),
+            ("dynamic_uav", 16, 2, 0x80, CPU_WRITE, 0, 0, None),
+            ("dynamic_so", 16, 2, 0x10, CPU_WRITE, 0, 0, None),
+            ("immutable", 16, 1, 1, 0, 0, 0, None),
+            ("staging", 16, 3, 0, CPU_READ, 0, 0, Some(0)),
+            ("staging_bind", 16, 3, 1, CPU_READ, 0, 0, None),
+            ("staging_nocpu", 16, 3, 0, 0, 0, 0, None),
+            ("default_cpu", 16, 0, 1, CPU_WRITE, 0, 0, None),
+            ("structured", 64, 0, 8, 0, 0x40, 16, Some(16)),
+            ("structured_s0", 64, 0, 8, 0, 0x40, 0, None),
+            ("structured_s3", 64, 0, 8, 0, 0x40, 3, None),
+            ("structured_s6", 66, 0, 8, 0, 0x40, 6, None),
+            ("structured_s2052", 2052, 0, 8, 0, 0x40, 2052, None),
+            ("structured_s2056", 2056, 0, 8, 0, 0x40, 2056, None),
+            ("structured_odd", 60, 0, 8, 0, 0x40, 16, None),
+            ("structured_vb", 64, 0, 1, 0, 0x40, 16, None),
+            ("structured_cb", 64, 0, 4, 0, 0x40, 16, None),
+            ("raw", 64, 0, 8, 0, 0x20, 0, Some(0)),
+            ("raw_vb", 64, 0, 1, 0, 0x20, 0, None),
+            ("raw_structured", 64, 0, 8, 0, 0x60, 16, None),
+            ("indirect", 64, 0, 0, 0, 0x10, 0, Some(0)),
+            ("indirect_vb", 64, 0, 1, 0, 0x10, 0, Some(0)),
+            ("cube", 64, 0, 1, 0, 4, 0, None),
+            ("genmips", 64, 0, 0x28, 0, 1, 0, None),
+            ("stride_unused", 64, 0, 1, 0, 0, 7, Some(0)),
+        ];
+        for &(name, size, usage, bind, cpu, misc, stride, want) in cases {
+            assert_eq!(b(size, usage, bind, cpu, misc, stride).ok(), want, "{name}");
+        }
+    }
+
+    /// every format's row of texture cases (the table and the rules agree)
+    #[test]
+    fn format_rows() {
+        for f in 1..=132u32 {
+            let (_, _, _, _, _, cases) = format(f).unwrap();
+            let t = |bind, usage, cpu, misc, mips, layers, samples| texture(&Tex { dim: 2, w: 16, h: 16, layers, mips, fmt: f, samples, quality: 0, usage, bind, cpu, misc }, false).is_ok();
+            let got = [
+                t(0, 0, 0, 0, 1, 1, 1),
+                t(1, 0, 0, 0, 1, 1, 1),
+                t(2, 0, 0, 0, 1, 1, 1),
+                t(4, 0, 0, 0, 1, 1, 1),
+                t(8, 0, 0, 0, 1, 1, 1),
+                t(0x10, 0, 0, 0, 1, 1, 1),
+                t(0x20, 0, 0, 0, 1, 1, 1),
+                t(0x40, 0, 0, 0, 1, 1, 1),
+                t(0x80, 0, 0, 0, 1, 1, 1),
+                t(8, 0, 0, 0, 0, 1, 1),
+                t(0, 3, CPU_READ, 0, 1, 1, 1),
+                t(8, 2, CPU_WRITE, 0, 1, 1, 1),
+                t(8, 0, 0, 4, 1, 6, 1),
+                t(0x28, 0, 0, 1, 0, 1, 1),
+                t(0x20, 0, 0, 0, 1, 1, 4),
+                texture(&Tex { dim: 1, w: 16, h: 1, layers: 1, mips: 1, fmt: f, samples: 1, bind: 8, ..Tex::default() }, false).is_ok(),
+                texture(&Tex { dim: 3, w: 8, h: 8, layers: 8, mips: 1, fmt: f, samples: 1, bind: 8, ..Tex::default() }, false).is_ok(),
+            ];
+            for (i, g) in got.iter().enumerate() {
+                assert_eq!(*g, cases & (1 << i) != 0, "format {f} case {i}");
+            }
+        }
+    }
+
+    /// the probe's view cases: (name, texture format, mips, layers, bind, kind, view format,
+    /// dimension, a, b, c, d (DSV: flags)), Windows' answer (GetDesc's format, dimension, fields)
+    #[test]
+    fn view_cases() {
+        const M: u32 = u32::MAX;
+        #[rustfmt::skip]
+        let cases: &[(&str, u32, u32, u32, u32, u32, u32, u32, [u32; 4], Option<&[u32]>)] = &[
+            ("srv_null", 28, 3, 1, 8, SRV, 0, 0, [0; 4], Some(&[28, 4, 0, 3])),
+            ("srv_same", 28, 3, 1, 8, SRV, 28, 4, [0, 3, 0, 0], Some(&[28, 4, 0, 3])),
+            ("srv_fmt0", 28, 3, 1, 8, SRV, 0, 4, [0, 3, 0, 0], Some(&[28, 4, 0, 3])),
+            ("srv_srgb", 28, 3, 1, 8, SRV, 29, 4, [0, 3, 0, 0], None),
+            ("srv_typeless_unorm", 27, 3, 1, 8, SRV, 28, 4, [0, 3, 0, 0], Some(&[28, 4, 0, 3])),
+            ("srv_typeless_uint", 27, 3, 1, 8, SRV, 30, 4, [0, 3, 0, 0], Some(&[30, 4, 0, 3])),
+            ("srv_typeless_null", 27, 3, 1, 8, SRV, 0, 0, [0; 4], None),
+            ("srv_typeless_typeless", 27, 3, 1, 8, SRV, 27, 4, [0, 3, 0, 0], None),
+            ("srv_other_family", 27, 3, 1, 8, SRV, 87, 4, [0, 3, 0, 0], None),
+            ("srv_bgra_typeless", 90, 3, 1, 8, SRV, 91, 4, [0, 3, 0, 0], Some(&[91, 4, 0, 3])),
+            ("srv_r32_float_of_d32", 39, 1, 1, 0x48, SRV, 41, 4, [0, 1, 0, 0], Some(&[41, 4, 0, 1])),
+            ("srv_d32_of_d32", 39, 1, 1, 0x48, SRV, 40, 4, [0, 1, 0, 0], None),
+            ("srv_r24x8", 44, 1, 1, 0x48, SRV, 46, 4, [0, 1, 0, 0], Some(&[46, 4, 0, 1])),
+            ("srv_x24g8", 44, 1, 1, 0x48, SRV, 47, 4, [0, 1, 0, 0], Some(&[47, 4, 0, 1])),
+            ("srv_mips_all", 28, 3, 1, 8, SRV, 28, 4, [1, M, 0, 0], Some(&[28, 4, 1, 2])),
+            ("srv_mips_over", 28, 3, 1, 8, SRV, 28, 4, [1, 3, 0, 0], None),
+            ("srv_mips0", 28, 3, 1, 8, SRV, 28, 4, [0, 0, 0, 0], None),
+            ("srv_mip3", 28, 3, 1, 8, SRV, 28, 4, [3, 1, 0, 0], None),
+            ("srv_array_of_single", 28, 1, 1, 8, SRV, 28, 5, [0, 1, 0, 1], Some(&[28, 5, 0, 1, 0, 1])),
+            ("srv_2d_of_array", 28, 1, 4, 8, SRV, 28, 4, [0, 1, 0, 0], Some(&[28, 4, 0, 1])),
+            ("srv_array_range", 28, 1, 4, 8, SRV, 28, 5, [0, 1, 1, 3], Some(&[28, 5, 0, 1, 1, 3])),
+            ("srv_array_over", 28, 1, 4, 8, SRV, 28, 5, [0, 1, 2, 3], None),
+            ("srv_array_all", 28, 1, 4, 8, SRV, 28, 5, [0, 1, 0, M], Some(&[28, 5, 0, 1, 0, 4])),
+            ("srv_array_none", 28, 1, 4, 8, SRV, 28, 5, [0, 1, 0, 0], None),
+            ("srv_cube_of_2d", 28, 1, 6, 8, SRV, 28, 9, [0, 1, 0, 0], None),
+            ("srv_3d_of_2d", 28, 1, 1, 8, SRV, 28, 8, [0, 1, 0, 0], None),
+            ("srv_1d_of_2d", 28, 1, 1, 8, SRV, 28, 2, [0, 1, 0, 0], None),
+            ("srv_ms_of_2d", 28, 1, 1, 8, SRV, 28, 6, [0; 4], Some(&[28, 6])),
+            ("srv_dim0", 28, 1, 1, 8, SRV, 28, 0, [0; 4], None),
+            ("srv_nobind", 28, 1, 1, 0x20, SRV, 0, 0, [0; 4], None),
+            ("rtv_null", 28, 3, 1, 0x20, RTV, 0, 0, [0; 4], Some(&[28, 4, 0])),
+            ("rtv_mip2", 28, 3, 1, 0x20, RTV, 28, 4, [2, 0, 0, 0], Some(&[28, 4, 2])),
+            ("rtv_mip3", 28, 3, 1, 0x20, RTV, 28, 4, [3, 0, 0, 0], None),
+            ("rtv_fmt0", 28, 1, 1, 0x20, RTV, 0, 4, [0; 4], Some(&[28, 4, 0])),
+            ("rtv_typeless_null", 27, 1, 1, 0x20, RTV, 0, 0, [0; 4], None),
+            ("rtv_typeless_srgb", 27, 1, 1, 0x20, RTV, 29, 4, [0; 4], Some(&[29, 4, 0])),
+            ("rtv_typeless_snorm", 27, 1, 1, 0x20, RTV, 31, 4, [0; 4], Some(&[31, 4, 0])),
+            ("rtv_unorm_as_srgb", 28, 1, 1, 0x20, RTV, 29, 4, [0; 4], None),
+            ("rtv_array_slice", 28, 1, 4, 0x20, RTV, 28, 5, [0, 3, 1, 0], Some(&[28, 5, 0, 3, 1])),
+            ("rtv_array_over", 28, 1, 4, 0x20, RTV, 28, 5, [0, 3, 2, 0], None),
+            ("rtv_array_all", 28, 1, 4, 0x20, RTV, 28, 5, [0, 0, M, 0], Some(&[28, 5, 0, 0, 4])),
+            ("rtv_of_srv_only", 28, 1, 1, 8, RTV, 0, 0, [0; 4], None),
+            ("rtv_d24", 44, 1, 1, 0x48, RTV, 45, 4, [0; 4], None),
+            ("dsv_null", 45, 1, 1, 0x40, DSV, 0, 0, [0; 4], Some(&[45, 3, 0, 0])),
+            ("dsv_typeless_null", 44, 1, 1, 0x40, DSV, 0, 0, [0; 4], None),
+            ("dsv_typeless_d24", 44, 1, 1, 0x40, DSV, 45, 3, [0; 4], Some(&[45, 3, 0, 0])),
+            ("dsv_r32_typeless_d32", 39, 1, 1, 0x40, DSV, 40, 3, [0; 4], Some(&[40, 3, 0, 0])),
+            ("dsv_r32_float", 39, 1, 1, 0x40, DSV, 41, 3, [0; 4], None),
+            ("dsv_fmt0", 40, 1, 1, 0x40, DSV, 0, 3, [0; 4], Some(&[40, 3, 0, 0])),
+            ("dsv_flags_ro", 45, 1, 1, 0x40, DSV, 45, 3, [0, 0, 0, 3], Some(&[45, 3, 3, 0])),
+            ("dsv_flags_bad", 45, 1, 1, 0x40, DSV, 45, 3, [0, 0, 0, 4], None),
+            ("dsv_d32_stencil_ro", 40, 1, 1, 0x40, DSV, 40, 3, [0, 0, 0, 2], None),
+            ("dsv_of_rt", 28, 1, 1, 0x20, DSV, 0, 0, [0; 4], None),
+            ("uav_null", 41, 1, 1, 0x80, UAV, 0, 0, [0; 4], Some(&[41, 4, 0])),
+            ("uav_typeless_r32_uint", 39, 1, 1, 0x80, UAV, 42, 4, [0; 4], Some(&[42, 4, 0])),
+            ("uav_rgba8_typeless_uint", 27, 1, 1, 0x80, UAV, 30, 4, [0; 4], Some(&[30, 4, 0])),
+            ("uav_rgba8_typeless_r32", 27, 1, 1, 0x80, UAV, 42, 4, [0; 4], Some(&[42, 4, 0])),
+            ("uav_of_srv", 41, 1, 1, 8, UAV, 0, 0, [0; 4], None),
+        ];
+        for &(name, tf, mips, layers, bind, kind, vf, dim, [a, b, c, dd], want) in cases {
+            let r = Res { dim: 2, fmt: tf, mips, layers, bind, cube: false, samples: 1 };
+            // (the probe's union: SRV (a, b, c, d), the others (a, b, c); a DSV's flags in d)
+            let words: Vec<u32> = match kind {
+                SRV => vec![vf, dim, a, b, c, dd],
+                DSV => vec![vf, dim, dd, a, b, c],
+                _ => vec![vf, dim, a, b, c],
+            };
+            let desc = if vf == 0 && dim == 0 { None } else { Some(&words[..]) };
+            let got = view(kind, &r, desc).ok().map(|v| v.desc);
+            // (Windows' GetDesc fields past those the dimension has are left out of `want`)
+            let got = got.map(|g| {
+                let n = want.map_or(0, |w| w.len());
+                g[..n.min(g.len())].to_vec()
+            });
+            assert_eq!(got.as_deref(), want, "{name}");
+        }
+    }
+}
+
+/// The typeless format a format belongs to (itself when it has no family).
+pub fn family(fmt: u32) -> u32 {
+    match fmt {
+        1..=4 => 1,
+        5..=8 => 5,
+        9..=14 => 9,
+        15..=18 => 15,
+        19..=22 => 19,
+        23..=25 => 23,
+        27..=32 => 27,
+        33..=38 => 33,
+        39..=43 => 39,
+        44..=47 => 44,
+        48..=52 => 48,
+        53..=59 => 53,
+        60..=64 => 60,
+        70..=72 => 70,
+        73..=75 => 73,
+        76..=78 => 76,
+        79..=81 => 79,
+        82..=84 => 82,
+        90 | 87 | 91 => 90,
+        92 | 88 | 93 => 92,
+        94..=96 => 94,
+        97..=99 => 97,
+        _ => fmt,
+    }
+}
+
+pub fn typeless(fmt: u32) -> bool {
+    matches!(fmt, 1 | 5 | 9 | 15 | 19 | 23 | 27 | 33 | 39 | 44 | 48 | 53 | 60 | 70 | 73 | 76 | 79 | 82 | 90 | 92 | 94 | 97)
+}
+
+/// bytes per texel of the uncompressed formats (0 for the others)
+fn texel_bytes(fmt: u32) -> u32 {
+    match family(fmt) {
+        1 => 16,
+        5 => 12,
+        9 | 15 | 19 => 8,
+        23 | 26 | 27 | 33 | 39 | 44 | 67 | 90 | 92 => 4,
+        48 | 53 | 85 | 86 | 115 => 2,
+        60 | 65 => 1,
+        _ => 0,
+    }
+}
+
+/// The texture a view is made of.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Res {
+    pub dim: u32,
+    pub fmt: u32,
+    pub mips: u32,
+    /// array size, depth of a 3D texture
+    pub layers: u32,
+    pub bind: u32,
+    pub cube: bool,
+    pub samples: u32,
+}
+
+/// A view as Windows keeps it: the description GetDesc gives back (format, dimension, the DSV's
+/// flags, then the union, unused fields 0) and what it covers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct View {
+    pub desc: Vec<u32>,
+    pub mip: u32,
+    pub mips: u32,
+    pub layer: u32,
+    pub layers: u32,
+}
+
+pub const SRV: u32 = 0;
+pub const RTV: u32 = 1;
+pub const DSV: u32 = 2;
+pub const UAV: u32 = 3;
+
+/// Whether Create{ShaderResource, RenderTarget, DepthStencil, UnorderedAccess}View (`kind`)
+/// takes `desc` (its words; None: NULL) for a view of texture `r`, and the view if it does.
+pub fn view(kind: u32, r: &Res, desc: Option<&[u32]>) -> Result<View, u32> {
+    let bad = Err(E_INVALIDARG);
+    let need = [BIND_SRV, BIND_RT, BIND_DS, BIND_UAV][kind as usize & 3];
+    if r.bind & need == 0 {
+        return bad;
+    }
+    let ms = r.samples > 1;
+    let arr = r.layers > 1;
+    // NULL: the whole texture, in its own format
+    let (fmt, dim, flags, u): (u32, u32, u32, [u32; 4]) = match desc {
+        None => {
+            let (m, n) = (r.mips, r.layers);
+            let (dim, u) = match (kind, r.dim) {
+                (SRV, 1) => (if arr { 3 } else { 2 }, [0, m, 0, n]),
+                (SRV, 3) => (8, [0, m, 0, 0]),
+                (SRV, _) if ms => (if arr { 7 } else { 6 }, [0, n, 0, 0]),
+                (SRV, _) if r.cube => (if n == 6 { 9 } else { 10 }, [0, m, 0, n / 6]),
+                (SRV, _) => (if arr { 5 } else { 4 }, [0, m, 0, n]),
+                (DSV, 3) => return bad,
+                (DSV, 1) => (if arr { 2 } else { 1 }, [0, 0, n, 0]),
+                (DSV, _) if ms => (if arr { 6 } else { 5 }, [0, n, 0, 0]),
+                (DSV, _) => (if arr { 4 } else { 3 }, [0, 0, n, 0]),
+                (UAV, _) if ms => return bad,
+                (_, 1) => (if arr { 3 } else { 2 }, [0, 0, n, 0]),
+                (_, 3) => (8, [0, 0, n, 0]),
+                (_, _) if ms => (if arr { 7 } else { 6 }, [0, n, 0, 0]),
+                (_, _) => (if arr { 5 } else { 4 }, [0, 0, n, 0]),
+            };
+            (r.fmt, dim, 0, u)
+        }
+        Some(w) => {
+            let at = |i: usize| w.get(i).copied().unwrap_or(0);
+            let base = if kind == DSV { 3 } else { 2 };
+            (at(0), at(1), if kind == DSV { at(2) } else { 0 }, [at(base), at(base + 1), at(base + 2), at(base + 3)])
+        }
+    };
+    // the format: the texture's own (a typeless one needs a typed format of its family)
+    let fmt = if fmt == 0 { r.fmt } else { fmt };
+    if typeless(fmt) {
+        return bad;
+    }
+    let same_family = family(fmt) == family(r.fmt) && typeless(r.fmt);
+    let r32_of_32 = kind == UAV && typeless(r.fmt) && texel_bytes(r.fmt) == 4 && matches!(fmt, 41..=43);
+    if fmt != r.fmt && !same_family && !r32_of_32 {
+        return bad;
+    }
+    let cap = [0x100, 0x4000, 0x10000, 0x2000000][kind as usize & 3];
+    if support(fmt).is_none_or(|s| s & cap == 0) {
+        return bad;
+    }
+    if kind == DSV && (flags & !3 != 0 || flags & 2 != 0 && !matches!(fmt, 20 | 45)) {
+        return bad;
+    }
+    let dims: &[u32] = match (kind, r.dim) {
+        (SRV, 1) => &[2, 3],
+        (SRV, 2) => &[4, 5, 6, 7, 9, 10],
+        (SRV, 3) => &[8],
+        (RTV, 1) | (UAV, 1) => &[2, 3],
+        (RTV, 2) => &[4, 5, 6, 7],
+        (UAV, 2) => &[4, 5],
+        (RTV, 3) | (UAV, 3) => &[8],
+        (DSV, 1) => &[1, 2],
+        (DSV, 2) => &[3, 4, 5, 6],
+        _ => &[],
+    };
+    if !dims.contains(&dim) || matches!((kind, dim), (SRV, 9 | 10)) && !r.cube {
+        return bad;
+    }
+    // what the union says, checked against the texture
+    let all = u32::MAX;
+    let levels = |first: u32, n: u32| -> Option<u32> {
+        let n = if n == all { r.mips.checked_sub(first)? } else { n };
+        (first < r.mips && n > 0 && first + n <= r.mips).then_some(n)
+    };
+    let slices = |first: u32, n: u32, total: u32| -> Option<u32> {
+        let n = if n == all { total.checked_sub(first)? } else { n };
+        (first < total && n > 0 && first.checked_add(n)? <= total).then_some(n)
+    };
+    let mip_ok = |m: u32| m < r.mips;
+    let v = |desc: Vec<u32>, mip, mips, layer, layers| Ok(View { desc, mip, mips, layer, layers });
+    let head = |rest: &[u32], n: usize| -> Vec<u32> {
+        let mut d = Vec::from([fmt, dim]);
+        if kind == DSV {
+            d.push(flags);
+        }
+        d.extend_from_slice(rest);
+        d.resize(d.len() + n - rest.len(), 0);
+        d
+    };
+    match (kind, dim) {
+        (SRV, 2 | 4 | 8 | 9) => {
+            let Some(n) = levels(u[0], u[1]) else { return bad };
+            let layers = if dim == 9 { 6 } else { 1 };
+            v(head(&[u[0], n], 4), u[0], n, 0, layers)
+        }
+        (SRV, 3 | 5) => {
+            let (Some(n), Some(k)) = (levels(u[0], u[1]), slices(u[2], u[3], r.layers)) else { return bad };
+            v(head(&[u[0], n, u[2], k], 4), u[0], n, u[2], k)
+        }
+        (SRV, 10) => {
+            let cubes = if u[3] == all { r.layers.saturating_sub(u[2]) / 6 } else { u[3] };
+            let Some(n) = levels(u[0], u[1]) else { return bad };
+            if cubes == 0 || u[2] + cubes * 6 > r.layers {
+                return bad;
+            }
+            v(head(&[u[0], n, u[2], cubes], 4), u[0], n, u[2], cubes * 6)
+        }
+        (SRV, 6) | (RTV, 6) | (DSV, 5) => v(head(&[], if kind == SRV { 4 } else { 3 }), 0, 1, 0, 1),
+        (SRV, 7) | (RTV, 7) | (DSV, 6) => {
+            let Some(k) = slices(u[0], u[1], r.layers) else { return bad };
+            v(head(&[u[0], k], if kind == SRV { 4 } else { 3 }), 0, 1, u[0], k)
+        }
+        (RTV | UAV, 2 | 4) | (DSV, 1 | 3) => {
+            if !mip_ok(u[0]) {
+                return bad;
+            }
+            v(head(&[u[0]], 3), u[0], 1, 0, 1)
+        }
+        (RTV | UAV, 3 | 5) | (DSV, 2 | 4) => {
+            let Some(k) = slices(u[1], u[2], r.layers) else { return bad };
+            if !mip_ok(u[0]) {
+                return bad;
+            }
+            v(head(&[u[0], u[1], k], 3), u[0], 1, u[1], k)
+        }
+        (RTV | UAV, 8) => {
+            if !mip_ok(u[0]) {
+                return bad;
+            }
+            let depth = (r.layers >> u[0]).max(1);
+            let Some(k) = slices(u[1], u[2], depth) else { return bad };
+            v(head(&[u[0], u[1], k], 3), u[0], 1, u[1], k)
+        }
+        _ => bad,
+    }
+}
+
+#[cfg(test)]
+mod coverage {
+    /// (not a check: lists the formats Windows takes that the page has no texels for)
+    #[test]
+    #[ignore]
+    fn page_formats() {
+        let missing: Vec<u32> = (1..=132).filter(|&f| super::support(f).is_some() && !super::typeless(f) && super::super::format::info(f).is_none()).collect();
+        println!("missing {missing:?}");
+    }
+}

@@ -14,7 +14,7 @@ use crate::d3d9::gpu::*;
 const DATA: u32 = 0xffff_ffff;
 
 // (crates/kura/src/d3d11/format.rs P_*)
-const TEX_FORMATS: [&str; 30] = [
+const TEX_FORMATS: [&str; 41] = [
     "bgra8unorm",
     "depth24plus-stencil8",
     "rgba16float",
@@ -45,6 +45,17 @@ const TEX_FORMATS: [&str; 30] = [
     "r8snorm",
     "rg8snorm",
     "rgb9e5ufloat",
+    "rgba16uint",
+    "rgba16sint",
+    "rgb10a2uint",
+    "rg16uint",
+    "rg16sint",
+    "rg8uint",
+    "rg8sint",
+    "r16uint",
+    "r16sint",
+    "r8uint",
+    "r8sint",
 ];
 /// (index of rgba32float)
 const P_RGBA32F: u32 = 22;
@@ -62,9 +73,9 @@ fn halved(i: u32) -> bool {
 }
 fn bpp(f: &str) -> u32 {
     match f {
-        "r8unorm" | "r8snorm" => 1,
-        "rg8unorm" | "rg8snorm" | "r16float" | "depth16unorm" => 2,
-        "rgba16float" | "rg32float" | "rg32uint" | "rg32sint" => 8,
+        "r8unorm" | "r8snorm" | "r8uint" | "r8sint" => 1,
+        "rg8unorm" | "rg8snorm" | "r16float" | "depth16unorm" | "rg8uint" | "rg8sint" | "r16uint" | "r16sint" => 2,
+        "rgba16float" | "rg32float" | "rg32uint" | "rg32sint" | "rgba16uint" | "rgba16sint" => 8,
         "rgba32float" | "rgba32uint" | "rgba32sint" => 16,
         _ => 4,
     }

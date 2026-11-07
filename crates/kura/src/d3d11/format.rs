@@ -141,6 +141,17 @@ pub const P_RG32SI: u32 = 26;
 pub const P_R8SN: u32 = 27;
 pub const P_RG8SN: u32 = 28;
 pub const P_RGB9E5: u32 = 29;
+pub const P_RGBA16UI: u32 = 30;
+pub const P_RGBA16SI: u32 = 31;
+pub const P_RGB10A2UI: u32 = 32;
+pub const P_RG16UI: u32 = 33;
+pub const P_RG16SI: u32 = 34;
+pub const P_RG8UI: u32 = 35;
+pub const P_RG8SI: u32 = 36;
+pub const P_R16UI: u32 = 37;
+pub const P_R16SI: u32 = 38;
+pub const P_R8UI: u32 = 39;
+pub const P_R8SI: u32 = 40;
 
 pub struct Format {
     /// page format
@@ -179,6 +190,18 @@ pub fn info(dxgi: u32) -> Option<Format> {
         27 | 28 => f(P_RGBA8, 4),
         29 => f(P_RGBA8_SRGB, 4),
         30 => f(P_RGBA8UI, 4),
+        // (the integer ones: the same bytes on the page)
+        12 => f(P_RGBA16UI, 8),
+        14 => f(P_RGBA16SI, 8),
+        25 => f(P_RGB10A2UI, 4),
+        36 => f(P_RG16UI, 4),
+        38 => f(P_RG16SI, 4),
+        50 => f(P_RG8UI, 2),
+        52 => f(P_RG8SI, 2),
+        57 => f(P_R16UI, 2),
+        59 => f(P_R16SI, 2),
+        62 => f(P_R8UI, 1),
+        64 => f(P_R8SI, 1),
         31 => f(P_RGBA8SN, 4),
         32 => f(P_RGBA8SI, 4),
         33 | 34 => f(P_RG16F, 4),
@@ -250,7 +273,7 @@ pub fn support(dxgi: u32) -> u32 {
         return s | 0x10 | 0x20 | 0x80 | MIP | DS | COMPARISON;
     }
     s |= TEX | LOAD | MIP | LOCK;
-    let int = matches!(f.page, P_RGBA8UI | P_RGBA8SI | P_R32UI | P_R32SI | P_RGBA32UI | P_RGBA32SI | P_RG32UI | P_RG32SI);
+    let int = matches!(f.page, P_RGBA8UI | P_RGBA8SI | P_R32UI | P_R32SI | P_RGBA32UI | P_RGBA32SI | P_RG32UI | P_RG32SI) || (P_RGBA16UI..=P_R8SI).contains(&f.page);
     if !int {
         s |= SAMPLE | 0x80_0000; // (and SHADER_GATHER)
     }
@@ -275,9 +298,9 @@ pub fn is_depth(page: u32) -> bool {
 /// bytes per texel on the page
 pub fn page_bpp(page: u32) -> u32 {
     match page {
-        P_R8 | P_R8SN => 1,
-        P_RG8 | P_RG8SN | P_R16F | P_D16 => 2,
-        P_RGBA16F | P_RG32F | P_RG32UI | P_RG32SI => 8,
+        P_R8 | P_R8SN | P_R8UI | P_R8SI => 1,
+        P_RG8 | P_RG8SN | P_R16F | P_D16 | P_RG8UI | P_RG8SI | P_R16UI | P_R16SI => 2,
+        P_RGBA16F | P_RG32F | P_RG32UI | P_RG32SI | P_RGBA16UI | P_RGBA16SI => 8,
         P_RGBA32F | P_RGBA32UI | P_RGBA32SI => 16,
         _ => 4,
     }

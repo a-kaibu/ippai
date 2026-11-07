@@ -11,8 +11,10 @@
 
 pub mod d2d;
 pub mod d3d10;
+pub mod check;
 pub mod format;
 pub mod names;
+pub mod winfmt;
 #[cfg(test)]
 mod trace_tests;
 #[cfg(test)]
@@ -144,6 +146,10 @@ pub struct Buffer {
     pub size: u32,
     pub usage: u32,
     pub bind: u32,
+    /// what GetDesc gives back
+    pub cpu: u32,
+    pub misc: u32,
+    pub stride: u32,
     pub mem: u32,
     /// page buffer with the current contents (0: none yet)
     pub gpu: u32,
@@ -164,6 +170,10 @@ pub struct Texture {
     pub usage: u32,
     pub bind: u32,
     pub cube: bool,
+    /// what GetDesc gives back: CPU access, misc flags, (samples, quality)
+    pub cpu: u32,
+    pub misc: u32,
+    pub samples: (u32, u32),
     pub gpu: u32,
     /// mapped subresources: (subresource, guest memory, pitch, write)
     pub maps: Vec<(u32, u32, u32, bool)>,
@@ -173,8 +183,8 @@ pub struct Texture {
 pub struct View {
     pub res: u32,
     pub fmt: u32,
-    /// shader view dimension (dxwgsl::Binding::Texture's numbering)
-    pub vdim: u32,
+    /// what GetDesc gives back (format, dimension, a DSV's flags, the union)
+    pub desc: Vec<u32>,
     pub mip: u32,
     pub mips: u32,
     pub layer: u32,
@@ -933,7 +943,27 @@ fn new_texture(d: &mut D11, dim: u32, w: u32, h: u32, layers: u32, mips: u32, fm
         3 => IF_TEX3D,
         _ => IF_TEX2D,
     };
-    d.new_obj(iface, Data::Texture(Texture { dim, w, h, layers, mips, fmt, page, usage, bind, cube, gpu, maps: Vec::new() }))
+    d.new_obj(iface, Data::Texture(Texture {
+        dim,
+        w,
+        h,
+        layers,
+        mips,
+        fmt,
+        page,
+        usage,
+        bind,
+        cube,
+        cpu: match usage {
+            2 => 0x10000,
+            3 => 0x30000,
+            _ => 0,
+        },
+        misc: if cube { 4 } else { 0 },
+        samples: (1, 0),
+        gpu,
+        maps: Vec::new(),
+    }))
 }
 
 /// Uploads a subresource from guest memory (`pitch` bytes per row) to the page texture.
@@ -1351,8 +1381,13 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             if desc == 0 {
                 return E_INVALIDARG;
             }
-            let (size, usage, bind) = (rd(desc, 0), rd(desc, 1), rd(desc, 2));
-            if size == 0 || (usage == 1 && a(2) == 0) || (a(2) != 0 && rdp(a(2), 0) == 0) {
+            // D3D11_BUFFER_DESC { ByteWidth, Usage, BindFlags, CPUAccessFlags, MiscFlags, StructureByteStride }
+            let (size, usage, bind, cpu, misc) = (rd(desc, 0), rd(desc, 1), rd(desc, 2), rd(desc, 3), rd(desc, 4));
+            let stride = match check::buffer(size, usage, bind, cpu, misc, rd(desc, 5), a(2) != 0) {
+                Ok(s) => s,
+                Err(hr) => return hr,
+            };
+            if a(2) != 0 && rdp(a(2), 0) == 0 {
                 return E_INVALIDARG;
             }
             if a(3) == 0 {
@@ -1366,7 +1401,7 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             if a(2) != 0 {
                 std::ptr::copy_nonoverlapping(rdp(a(2), 0) as *const u8, mem as *mut u8, size as usize);
             }
-            let o = d.new_obj(IF_BUFFER, Data::Buffer(Buffer { size, usage, bind, mem, gpu: 0, dirty: true }));
+            let o = d.new_obj(IF_BUFFER, Data::Buffer(Buffer { size, usage, bind, cpu, misc, stride, mem, gpu: 0, dirty: true }));
             if d.trace && size <= 256 {
                 let f: Vec<f32> = (0..size / 4).map(|i| *((mem + 4 * i) as *const f32)).collect();
                 eprintln!("d3d11: new buffer {o} bind {bind:#x} usage {usage} = {f:?}");
@@ -1380,26 +1415,26 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             if desc == 0 {
                 return E_INVALIDARG;
             }
-            let (dim, w, h, layers, mips, fmt, usage, bind, misc) = match m {
-                4 => (1, rd(desc, 0), 1, rd(desc, 2), rd(desc, 1), rd(desc, 3), rd(desc, 4), rd(desc, 5), rd(desc, 7)),
-                5 => (2, rd(desc, 0), rd(desc, 1), rd(desc, 3), rd(desc, 2), rd(desc, 4), rd(desc, 7), rd(desc, 8), rd(desc, 10)),
-                _ => (3, rd(desc, 0), rd(desc, 1), rd(desc, 2), rd(desc, 3), rd(desc, 4), rd(desc, 5), rd(desc, 6), rd(desc, 8)),
+            // D3D11_TEXTURE1D/2D/3D_DESC
+            let r = |i| rd(desc, i);
+            let t = match m {
+                4 => check::Tex { dim: 1, w: r(0), h: 1, layers: r(2), mips: r(1), fmt: r(3), samples: 1, quality: 0, usage: r(4), bind: r(5), cpu: r(6), misc: r(7) },
+                5 => check::Tex { dim: 2, w: r(0), h: r(1), layers: r(3), mips: r(2), fmt: r(4), samples: r(5), quality: r(6), usage: r(7), bind: r(8), cpu: r(9), misc: r(10) },
+                _ => check::Tex { dim: 3, w: r(0), h: r(1), layers: r(2), mips: r(3), fmt: r(4), samples: 1, quality: 0, usage: r(5), bind: r(6), cpu: r(7), misc: r(8) },
             };
-            if format::info(fmt).is_none() {
-                if d.trace {
-                    eprintln!("d3d11: texture format {fmt} not supported");
+            let mips = match check::texture(&t, a(2) != 0) {
+                Ok(n) => n,
+                Err(hr) => {
+                    if d.trace {
+                        eprintln!("d3d11: texture {t:?} refused");
+                    }
+                    return hr;
                 }
-                return E_INVALIDARG;
-            }
-            // (empty sizes, no samples, an immutable texture without its texels, initial data
-            // with a missing level)
-            let samples = if m == 5 { rd(desc, 5) } else { 1 };
-            if w == 0 || h == 0 || layers == 0 || samples == 0 || (usage == 1 && a(2) == 0) {
-                return E_INVALIDARG;
-            }
+            };
+            let check::Tex { dim, w, h, layers, fmt, usage, bind, misc, .. } = t;
+            // (initial data with a missing level)
             if a(2) != 0 {
-                let max = 32 - w.max(h).max(if dim == 3 { layers } else { 1 }).leading_zeros();
-                let n = if mips == 0 { max } else { mips.min(max) } * if dim == 3 { 1 } else { layers };
+                let n = mips * if dim == 3 { 1 } else { layers };
                 if (0..n).any(|sub| rdp(a(2) + sub * (ptr() + 8), 0) == 0) {
                     return E_INVALIDARG;
                 }
@@ -1409,6 +1444,9 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             }
             let o = new_texture(d, dim, w, h, layers, mips, fmt, usage, bind, misc & 4 != 0);
             let id = d.id_of(o);
+            if let Some(Data::Texture(x)) = d.objs.get_mut(&id).map(|o| &mut o.data) {
+                (x.cpu, x.misc, x.samples) = (t.cpu, misc, (t.samples, t.quality));
+            }
             if a(2) != 0 {
                 let Some(Data::Texture(t)) = d.objs.get(&id).map(|o| &o.data) else { return E_FAIL };
                 for sub in 0..t.mips * if dim == 3 { 1 } else { t.layers } {
@@ -1504,7 +1542,16 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             S_OK
         }
         24 | 25 => {
-            let t = if a(1) != 0 { rd(a(1), 0) } else { 0 };
+            // CreateQuery/CreatePredicate(desc { Query, MiscFlags }, out): the predicates are
+            // OCCLUSION_PREDICATE and SO_OVERFLOW_PREDICATE, PREDICATEHINT only for them
+            if a(1) == 0 {
+                return E_INVALIDARG;
+            }
+            let (t, misc) = (rd(a(1), 0), rd(a(1), 1));
+            let predicate = matches!(t, 5 | 7);
+            if t > 15 || misc & !1 != 0 || misc != 0 && !predicate || m == 25 && !predicate {
+                return E_INVALIDARG;
+            }
             if a(2) == 0 {
                 return S_FALSE;
             }
@@ -1517,12 +1564,20 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
         28 => E_NOTIMPL,
         29 => {
             // CheckFormatSupport(format, out)
-            let bits = format::support(a(1));
-            wr(a(2), 0, bits);
-            if bits != 0 { S_OK } else { E_FAIL }
+            // (Windows' answers: what the page does with a format is its own business)
+            if a(2) == 0 {
+                return E_INVALIDARG;
+            }
+            let bits = check::support(a(1));
+            wr(a(2), 0, bits.unwrap_or(0));
+            if bits.is_some() { S_OK } else { E_FAIL }
         }
         30 => {
-            wr(a(3), 0, if a(2) == 1 { 1 } else { 0 });
+            // CheckMultisampleQualityLevels(format, count, out)
+            if a(3) == 0 {
+                return E_INVALIDARG;
+            }
+            wr(a(3), 0, check::quality_levels(a(1), a(2)));
             S_OK
         }
         31 => {
@@ -1534,6 +1589,16 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             // CheckFeatureSupport(feature, data, size): nothing optional, but for what WARP
             // answers too: concurrent creates (THREADING) and compute on 10.x (the device is
             // free-threaded here and compute runs at every level)
+            // FORMAT_SUPPORT(2): { InFormat, OutFormatSupport(2) }, Windows' answers
+            if a(1) == 2 || a(1) == 3 {
+                if a(2) == 0 || a(3) != 8 {
+                    return E_INVALIDARG;
+                }
+                let f = rd(a(2), 0);
+                let bits = if a(1) == 2 { check::support(f) } else { check::support2(f) };
+                wr(a(2), 1, bits.unwrap_or(0));
+                return if bits.is_some() { S_OK } else { E_FAIL };
+            }
             std::ptr::write_bytes(a(2) as *mut u8, 0, a(3) as usize);
             if (a(1) == 0 || a(1) == 4) && a(3) >= 4 {
                 wr(a(2), 0, 1);
@@ -1597,7 +1662,10 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
         52 => 0,
         53 => {
             // CheckMultisampleQualityLevels1(format, count, flags, out)
-            wr(a(4), 0, if a(2) == 1 { 1 } else { 0 });
+            if a(4) == 0 {
+                return E_INVALIDARG;
+            }
+            wr(a(4), 0, check::quality_levels(a(1), a(2)));
             S_OK
         }
         _ => E_NOTIMPL,
@@ -1701,78 +1769,20 @@ unsafe fn create_view(d: &mut D11, m: u32, res: u32, desc: u32, out: u32) -> u32
         }
         return E_INVALIDARG;
     };
-    let (tdim, tmips, tlayers, tfmt, cube) = (t.dim, t.mips, t.layers, t.fmt, t.cube);
-    let mut v = View {
-        res: rid,
-        fmt: tfmt,
-        vdim: match tdim {
-            1 => 0,
-            3 => 5,
-            _ if cube => 3,
-            _ if tlayers > 1 => 2,
-            _ => 1,
-        },
-        mip: 0,
-        mips: tmips,
-        layer: 0,
-        layers: tlayers,
-        buf: None,
+    let r = check::Res { dim: t.dim, fmt: t.fmt, mips: t.mips, layers: t.layers, bind: t.bind, cube: t.cube, samples: t.samples.0 };
+    let kind = [check::SRV, check::UAV, check::RTV, check::DSV][m as usize - 7];
+    // (the description's words: SRV 6, RTV and UAV 5, DSV 6)
+    let words: Option<Vec<u32>> = (desc != 0).then(|| (0..if kind == check::RTV || kind == check::UAV { 5 } else { 6 }).map(|i| rd(desc, i)).collect());
+    let c = match check::view(kind, &r, words.as_deref()) {
+        Ok(c) => c,
+        Err(hr) => {
+            if d.trace {
+                eprintln!("d3d11: view {kind} of {r:?} as {words:?} refused");
+            }
+            return hr;
+        }
     };
-    if desc != 0 {
-        let fmt = rd(desc, 0);
-        if fmt != 0 {
-            v.fmt = fmt;
-        }
-        let vd = rd(desc, 1);
-        let u = |i: usize| rd(desc, 2 + i + (m == 10) as usize);
-        match m {
-            7 => {
-                // SRV: dimension, then (most detailed mip, mips[, first slice, slices])
-                v.mip = u(0);
-                v.mips = if u(1) == 0xffff_ffff { tmips - v.mip } else { u(1) };
-                match vd {
-                    2 | 4 | 8 => {}
-                    3 | 5 => {
-                        v.layer = u(2);
-                        v.layers = u(3);
-                    }
-                    9 => v.vdim = 3,
-                    10 => v.vdim = 4,
-                    _ => {}
-                }
-                v.vdim = match vd {
-                    2 | 3 => 0,
-                    4 => 1,
-                    5 => 2,
-                    9 => 3,
-                    10 => 4,
-                    8 => 5,
-                    _ => v.vdim,
-                };
-            }
-            9 => {
-                // RTV: (mip slice[, first slice, slices])
-                v.mip = u(0);
-                v.mips = 1;
-                if matches!(vd, 3 | 5 | 8) {
-                    v.layer = u(1);
-                    v.layers = u(2);
-                }
-            }
-            10 => {
-                // DSV (after Flags): (mip slice[, first slice, slices])
-                v.mip = u(0);
-                v.mips = 1;
-                if matches!(vd, 2 | 4) {
-                    v.layer = u(1);
-                    v.layers = u(2);
-                }
-            }
-            _ => {}
-        }
-    } else if m != 7 {
-        v.mips = 1;
-    }
+    let v = View { res: rid, fmt: c.desc[0], desc: c.desc, mip: c.mip, mips: c.mips, layer: c.layer, layers: c.layers, buf: None };
     if out == 0 {
         return S_FALSE;
     }
@@ -1785,8 +1795,13 @@ unsafe fn create_view(d: &mut D11, m: u32, res: u32, desc: u32, out: u32) -> u32
 /// CreateShaderResourceView of a buffer (BUFFER or BUFFEREX: format, dimension, first element,
 /// elements): a view of a one-row texture with the elements (at most 8192, WebGPU's width limit)
 unsafe fn create_buffer_srv(d: &mut D11, rid: u32, size: u32, desc: u32, out: u32) -> u32 {
-    let (fmt, first, n) = (rd(desc, 0), rd(desc, 2), rd(desc, 3));
-    let Some(f) = format::info(fmt).filter(|f| f.block == 1) else { return E_INVALIDARG };
+    let (fmt, dim, first, n) = (rd(desc, 0), rd(desc, 1), rd(desc, 2), rd(desc, 3));
+    if !check::format(fmt).is_some_and(|f| f.5 & winfmt::BSRV != 0) {
+        return E_INVALIDARG;
+    }
+    // (the 96-bit formats have no texels on the page: a view of nothing, as Windows takes it)
+    let f = format::info(fmt).filter(|f| f.block == 1).unwrap_or(format::Format { page: format::P_R32UI, bpp: 4, block: 1, conv: 0, no_alpha: false });
+    let words = if dim == 11 { vec![fmt, dim, first, n, rd(desc, 4), 0] } else { vec![fmt, dim, first, n, 0, 0] };
     let n = n.min(size.saturating_sub(first * f.bpp) / f.bpp.max(1)).clamp(1, 8192);
     if out == 0 {
         return S_FALSE;
@@ -1798,7 +1813,7 @@ unsafe fn create_buffer_srv(d: &mut D11, rid: u32, size: u32, desc: u32, out: u3
     d.release(tid);
     d.bind(rid);
     let buf = Some(BufSrc { buf: rid, off: first * f.bpp, bytes: n * f.bpp, last: Vec::new() });
-    let v = View { res: tid, fmt, vdim: 1, mip: 0, mips: 1, layer: 0, layers: 1, buf };
+    let v = View { res: tid, fmt, desc: words, mip: 0, mips: 1, layer: 0, layers: 1, buf };
     let o = d.new_obj(IF_SRV, Data::View(v));
     wrp(out, 0, o);
     S_OK
@@ -1851,21 +1866,16 @@ unsafe fn child_call(d: &mut D11, iface: u32, m: u32, this: u32, a: &dyn Fn(usiz
         (IF_BUFFER | IF_TEX1D | IF_TEX2D | IF_TEX3D, 8, _) => S_OK,
         (IF_BUFFER | IF_TEX1D | IF_TEX2D | IF_TEX3D, 9, _) => 0,
         (IF_BUFFER, 10, Some(Data::Buffer(b))) => {
-            for (i, v) in [b.size, b.usage, b.bind, if b.usage == 2 { 0x10000 } else { 0 }, 0, 0].into_iter().enumerate() {
+            for (i, v) in [b.size, b.usage, b.bind, b.cpu, b.misc, b.stride].into_iter().enumerate() {
                 wr(a(1), i, v);
             }
             S_OK
         }
         (IF_TEX1D | IF_TEX2D | IF_TEX3D, 10, Some(Data::Texture(t))) => {
-            let cpu = match t.usage {
-                2 => 0x10000,
-                3 => 0x30000,
-                _ => 0,
-            };
-            let misc = if t.cube { 4 } else { 0 };
+            let (cpu, misc) = (t.cpu, t.misc);
             let v: Vec<u32> = match iface {
                 IF_TEX1D => vec![t.w, t.mips, t.layers, t.fmt, t.usage, t.bind, cpu, misc],
-                IF_TEX2D => vec![t.w, t.h, t.mips, t.layers, t.fmt, 1, 0, t.usage, t.bind, cpu, misc],
+                IF_TEX2D => vec![t.w, t.h, t.mips, t.layers, t.fmt, t.samples.0, t.samples.1, t.usage, t.bind, cpu, misc],
                 _ => vec![t.w, t.h, t.layers, t.mips, t.fmt, t.usage, t.bind, cpu, misc],
             };
             for (i, x) in v.into_iter().enumerate() {
@@ -1881,30 +1891,7 @@ unsafe fn child_call(d: &mut D11, iface: u32, m: u32, this: u32, a: &dyn Fn(usiz
             S_OK
         }
         (IF_SRV | IF_RTV | IF_DSV | IF_UAV, 8, Some(Data::View(v))) => {
-            let vd = match (iface, v.vdim) {
-                (IF_SRV, 0) => 2,
-                (IF_SRV, 1) => 4,
-                (IF_SRV, 2) => 5,
-                (IF_SRV, 3) => 9,
-                (IF_SRV, 4) => 10,
-                (IF_SRV, _) => 8,
-                (IF_DSV, 2) => 4,
-                (IF_DSV, _) => 3,
-                (_, 2) => 5,
-                (_, 5) => 8,
-                _ => 4,
-            };
-            let mut w = vec![v.fmt, vd];
-            if iface == IF_DSV {
-                w.push(0);
-            }
-            // (the union: SRV MostDetailedMip MipLevels FirstArraySlice ArraySize; RTV DSV UAV
-            // MipSlice FirstArraySlice ArraySize. RTV and UAV descs are 20 bytes, DSV 24, SRV 24)
-            if iface == IF_SRV {
-                w.extend_from_slice(&[v.mip, v.mips, v.layer, v.layers]);
-            } else {
-                w.extend_from_slice(&[v.mip, v.layer, v.layers]);
-            }
+            let w = v.desc.clone();
             for (i, x) in w.into_iter().enumerate() {
                 wr(a(1), i, x);
             }
@@ -1934,9 +1921,10 @@ fn query_size(t: u32) -> u32 {
         3 => 16,    // TIMESTAMP_DISJOINT
         4 => 88,    // PIPELINE_STATISTICS
         5 => 4,     // OCCLUSION_PREDICATE
-        7 => 4,     // SO_OVERFLOW_PREDICATE
-        12..=15 => 4, // SO_OVERFLOW_PREDICATE_STREAM0..3
-        _ => 16,    // SO_STATISTICS(_STREAM0..3)
+        // SO_OVERFLOW_PREDICATE(_STREAM0..3) at 7, 9, 11, 13, 15; SO_STATISTICS(_STREAM0..3)
+        // at 6, 8, 10, 12, 14
+        7..=15 if t % 2 == 1 => 4,
+        _ => 16,
     }
 }
 
@@ -2053,10 +2041,11 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
             if state != 2 {
                 return DXGI_ERROR_INVALID_CALL;
             }
-            if a(2) == 0 {
-                return if a(3) == 0 { S_OK } else { E_INVALIDARG };
+            // (no size: only whether it is done; a size: all of it, somewhere)
+            if a(3) == 0 {
+                return S_OK;
             }
-            if a(3) != query_size(t) {
+            if a(2) == 0 || a(3) != query_size(t) {
                 return E_INVALIDARG;
             }
             std::ptr::write_bytes(a(2) as *mut u8, 0, a(3) as usize);
