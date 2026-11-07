@@ -5,10 +5,13 @@
 //! offset, base vertex locations, start instances, strip cuts, zero instances, every
 //! topology. The vertex shader (compiled by hlslc) reads every input. The page runs each draw
 //! on the model of WebGPU (render/model.rs); the primitives it assembles must be the ones
-//! Direct3D 11 assembles, vertex for vertex and attribute for attribute.
+//! Direct3D 11 assembles, vertex for vertex and attribute for attribute. The same through
+//! Direct3D 10's ID3D10Device (d3d10.rs: its methods become the D3D11 ones), on a stack and
+//! heap below 4 GB as in wasm32.
 
 use super::*;
-use crate::d3d9::trace_tests::{alloc, attach_page, Rng, CALLS, SERIAL};
+use crate::d3d9::trace_tests::{alloc, attach_page, on_low_stack, Rng, CALLS, SERIAL};
+use d3d10::*;
 use crate::render::model;
 
 fn mem(n: u32) -> u32 {
@@ -58,31 +61,46 @@ fn d3d_prims(topology: u32, v: &[Option<i64>]) -> Vec<Vec<i64>> {
     out
 }
 
-fn run(seed: u64, vs: &[u8], ps: &[u8]) {
+fn run(seed: u64, vs: &[u8], ps: &[u8], ten: bool) {
     let mut r = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 3);
     attach_page();
     model::with(|m| m.prims = Some(Vec::new()));
     let desc = mem(16);
     put(desc, &[64, 64, 60, 1, 28, 0, 0, 1, 0, 0x20, 1, 1, 1, 0, 0]);
     let (sc_out, dev_out, level, ctx_out) = (mem(2), mem(2), mem(2), mem(2));
-    assert_eq!(call1(CREATE_DEVICE, &[0, 1, 0, 0, 0, 0, 7, desc, sc_out, dev_out, level, ctx_out]), 0);
-    let (sc, dev, ctx) = (rd1(sc_out), rd1(dev_out), rd1(ctx_out));
+    if ten {
+        assert_eq!(call1(CREATE_DEVICE10, &[0, 1, 0, 0, 0xa100, 0, desc, sc_out, dev_out]), 0);
+    } else {
+        assert_eq!(call1(CREATE_DEVICE, &[0, 1, 0, 0, 0, 0, 7, desc, sc_out, dev_out, level, ctx_out]), 0);
+    }
+    let (sc, dev) = (rd1(sc_out), rd1(dev_out));
+    let ctx = if ten { dev } else { rd1(ctx_out) };
+    // (the D3D11 interfaces and methods, or D3D10's)
+    let (idev, ictx, ibuf, ilayout) = if ten { (IF10_DEVICE, IF10_DEVICE, IF10_BUFFER, IF10_LAYOUT) } else { (IF_DEVICE, IF_CONTEXT, IF_BUFFER, IF_LAYOUT) };
+    let dm = |m11: u32| if !ten { m11 } else { [(3, 71), (5, 73), (9, 76), (11, 78), (12, 79), (15, 82)].iter().find(|x| x.0 == m11).unwrap().1 };
+    let cm = |m11: u32| if !ten { m11 } else { [(9, 5), (11, 7), (12, 8), (13, 9), (17, 11), (18, 12), (19, 13), (20, 14), (21, 15), (24, 18), (33, 24), (44, 30), (110, 69), (111, 70)].iter().find(|x| x.0 == m11).unwrap().1 };
+    let dc = |m11: u32, a: &[u32]| call1(m(idev, dm(m11)), a);
+    let cc = |m11: u32, a: &[u32]| call1(m(ictx, cm(m11)), a);
     let o = mem(2);
     // a render target and its view, the viewport
     let d = mem(11);
     put(d, &[64, 64, 1, 1, 28, 1, 0, 0, 0x20, 0, 0]);
-    assert_eq!(call1(m(IF_DEVICE, 5), &[dev, d, 0, o]), 0);
+    assert_eq!(dc(5, &[dev, d, 0, o]), 0);
     let rt = rd1(o);
     let vd = mem(4);
     put(vd, &[28, 4, 0, 0]);
-    assert_eq!(call1(m(IF_DEVICE, 9), &[dev, rt, vd, o]), 0);
+    assert_eq!(dc(9, &[dev, rt, vd, o]), 0);
     let rtv = rd1(o);
     let arr = mem(4);
     put(arr, &[rtv]);
-    call1(m(IF_CONTEXT, 33), &[ctx, 1, arr, 0]);
+    cc(33, &[ctx, 1, arr, 0]);
     let vp = mem(6);
-    put(vp, &[0, 0, 64f32.to_bits(), 64f32.to_bits(), 0, 1f32.to_bits()]);
-    call1(m(IF_CONTEXT, 44), &[ctx, 1, vp]);
+    if ten {
+        put(vp, &[0, 0, 64, 64, 0, 1f32.to_bits()]);
+    } else {
+        put(vp, &[0, 0, 64f32.to_bits(), 64f32.to_bits(), 0, 1f32.to_bits()]);
+    }
+    cc(44, &[ctx, 1, vp]);
     // the shaders
     let code = |c: &[u8]| {
         let p = unsafe { alloc(c.len() as u32) as u32 };
@@ -90,12 +108,13 @@ fn run(seed: u64, vs: &[u8], ps: &[u8]) {
         p
     };
     let (vsc, psc) = (code(vs), code(ps));
-    assert_eq!(call1(m(IF_DEVICE, 12), &[dev, vsc, vs.len() as u32, 0, o]), 0);
+    let linkage: &[u32] = if ten { &[] } else { &[0] };
+    assert_eq!(dc(12, &[&[dev, vsc, vs.len() as u32][..], linkage, &[o]].concat()), 0);
     let vsh = rd1(o);
-    assert_eq!(call1(m(IF_DEVICE, 15), &[dev, psc, ps.len() as u32, 0, o]), 0);
+    assert_eq!(dc(15, &[&[dev, psc, ps.len() as u32][..], linkage, &[o]].concat()), 0);
     let psh = rd1(o);
-    call1(m(IF_CONTEXT, 11), &[ctx, vsh, 0, 0]);
-    call1(m(IF_CONTEXT, 9), &[ctx, psh, 0, 0]);
+    cc(11, &[ctx, vsh, 0, 0]);
+    cc(9, &[ctx, psh, 0, 0]);
     // three vertex buffers of random bytes (finite floats), one index buffer per format
     const VB: u32 = 4096;
     let mut vbs = Vec::new();
@@ -105,9 +124,10 @@ fn run(seed: u64, vs: &[u8], ps: &[u8]) {
         let p = unsafe { alloc(VB) as u32 };
         put_bytes(p, &bytes);
         put(init, &[p, 0, 0]);
+        // (D3D10's description has 5 dwords: what follows is not a StructureByteStride)
         let bd = mem(6);
-        put(bd, &[VB, 0, 1, 0, 0, 0]);
-        assert_eq!(call1(m(IF_DEVICE, 3), &[dev, bd, init, o]), 0);
+        put(bd, &[VB, 0, 1, 0, 0, if ten { 0xdead } else { 0 }]);
+        assert_eq!(dc(3, &[dev, bd, init, o]), 0);
         vbs.push((rd1(o), bytes));
     }
     let names: Vec<u32> = ELEMS
@@ -139,9 +159,9 @@ fn run(seed: u64, vs: &[u8], ps: &[u8]) {
             elems.push((s, off, e.3));
             put(ed + 28 * k as u32, &[names[k], e.1, e.2, s, if append { 0xffff_ffff } else { off }, (k == 3 && inst) as u32, (k == 3 && inst) as u32]);
         }
-        assert_eq!(call1(m(IF_DEVICE, 11), &[dev, ed, 4, vsc, vs.len() as u32, o]), 0, "seed {seed} step {step}: CreateInputLayout");
+        assert_eq!(dc(11, &[dev, ed, 4, vsc, vs.len() as u32, o]), 0, "seed {seed} step {step}: CreateInputLayout");
         let layout = rd1(o);
-        call1(m(IF_CONTEXT, 17), &[ctx, layout]);
+        cc(17, &[ctx, layout]);
         let mut stride = [0u32; 3];
         let mut offset = [0u32; 3];
         for s in 0..3 {
@@ -152,9 +172,9 @@ fn run(seed: u64, vs: &[u8], ps: &[u8]) {
         put(bufs, &[vbs[0].0, vbs[1].0, vbs[2].0]);
         put(strides, &stride);
         put(offs, &offset);
-        call1(m(IF_CONTEXT, 18), &[ctx, 0, 3, bufs, strides, offs]);
+        cc(18, &[ctx, 0, 3, bufs, strides, offs]);
         let topology = 1 + r.below(5) as u32;
-        call1(m(IF_CONTEXT, 24), &[ctx, topology]);
+        cc(24, &[ctx, topology]);
         let count = r.below(10) as u32;
         let indexed = r.chance(50);
         let instanced = r.chance(50);
@@ -173,7 +193,7 @@ fn run(seed: u64, vs: &[u8], ps: &[u8]) {
             (0..count).map(|k| Some(start as i64 + k as i64)).collect()
         };
         if verts.iter().any(|v| v.is_some_and(|v| v < 0)) {
-            call1(m(IF_LAYOUT, 2), &[layout]);
+            call1(m(ilayout, 2), &[layout]);
             continue;
         }
         if indexed {
@@ -186,18 +206,18 @@ fn run(seed: u64, vs: &[u8], ps: &[u8]) {
             put(init, &[p, 0, 0]);
             let bd = mem(6);
             put(bd, &[(all.len() as u32).next_multiple_of(4).max(4), 0, 2, 0, 0, 0]);
-            assert_eq!(call1(m(IF_DEVICE, 3), &[dev, bd, init, o]), 0);
+            assert_eq!(dc(3, &[dev, bd, init, o]), 0);
             let ib = rd1(o);
-            call1(m(IF_CONTEXT, 19), &[ctx, ib, if i32 { 42 } else { 57 }, ib_off]);
-            call1(m(IF_BUFFER, 2), &[ib]);
+            cc(19, &[ctx, ib, if i32 { 42 } else { 57 }, ib_off]);
+            call1(m(ibuf, 2), &[ib]);
         }
         match (indexed, instanced) {
-            (false, false) => call1(m(IF_CONTEXT, 13), &[ctx, count, start]),
-            (true, false) => call1(m(IF_CONTEXT, 12), &[ctx, count, start, base as u32]),
-            (false, true) => call1(m(IF_CONTEXT, 21), &[ctx, count, instances, start, start_instance]),
-            (true, true) => call1(m(IF_CONTEXT, 20), &[ctx, count, instances, start, base as u32, start_instance]),
+            (false, false) => cc(13, &[ctx, count, start]),
+            (true, false) => cc(12, &[ctx, count, start, base as u32]),
+            (false, true) => cc(21, &[ctx, count, instances, start, start_instance]),
+            (true, true) => cc(20, &[ctx, count, instances, start, base as u32, start_instance]),
         };
-        call1(m(IF_CONTEXT, 111), &[ctx]);
+        cc(111, &[ctx]);
         gpu::pump();
         let vertex = |v: i64, instance: i64| -> Vec<Vec<u8>> {
             let mut a: Vec<Vec<u8>> = elems
@@ -232,12 +252,13 @@ fn run(seed: u64, vs: &[u8], ps: &[u8]) {
                     .collect()
             })
             .collect();
-        let what = format!("seed {seed} step {step}: topology {topology} count {count} indexed {indexed} (start {start} base {base} 32-bit {i32} offset {ib_off} {ix:?}) instances {instances} from {start_instance} per-instance {inst}");
+        let api = if ten { "D3D10" } else { "D3D11" };
+        let what = format!("{api} seed {seed} step {step}: topology {topology} count {count} indexed {indexed} (start {start} base {base} 32-bit {i32} offset {ib_off} {ix:?}) instances {instances} from {start_instance} per-instance {inst}");
         assert_eq!(got.len(), want.len(), "{what}: primitives");
         for (k, (g, w)) in got.iter().zip(&want).enumerate() {
             assert!(g == w, "{what}: primitive {k} differs\n got  {g:?}\n want {w:?}");
         }
-        call1(m(IF_LAYOUT, 2), &[layout]);
+        call1(m(ilayout, 2), &[layout]);
         drawn += 1;
     }
     assert!(drawn > 50, "seed {seed}: {drawn} draws checked");
@@ -245,7 +266,7 @@ fn run(seed: u64, vs: &[u8], ps: &[u8]) {
     let errors = model::with(|m| std::mem::take(&mut m.errors));
     assert!(errors.is_empty(), "seed {seed}: WebGPU errors {:?}", &errors[..errors.len().min(10)]);
     model::with(|m| m.prims = None);
-    call1(m(IF_CONTEXT, 110), &[ctx]);
+    cc(110, &[ctx]);
     let _ = (sc, level);
 }
 
@@ -258,6 +279,74 @@ fn d3d11_draws_read_what_direct3d_reads() {
     put(vt, &(1..=256).map(|i| 0x1000 * i).collect::<Vec<_>>());
     call1(INIT, &[vt, 256]);
     for seed in 0..6 {
-        run(seed, &vs, &ps);
+        run(seed, &vs, &ps, false);
     }
+}
+
+#[test]
+fn d3d10_draws_read_what_direct3d_reads() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    on_low_stack(|| {
+        let vs = hlslc::compile(VS, &[], &mut |_, _| None, "main", "vs_4_0", 0).expect("vs");
+        let ps = hlslc::compile(PS, &[], &mut |_, _| None, "main", "ps_4_0", 0).expect("ps");
+        let vt = mem(256);
+        put(vt, &(1..=256).map(|i| 0x1000 * i).collect::<Vec<_>>());
+        call1(INIT, &[vt, 256]);
+        for seed in 0..4 {
+            run(seed, &vs, &ps, true);
+        }
+    });
+}
+
+/// D3D10's resource misc flags (SHARED_KEYEDMUTEX 0x10 and GDI_COMPATIBLE 0x20 are other bits in
+/// D3D11) and its integer viewports, all of them, there and back.
+#[test]
+fn d3d10_descriptions_and_viewports() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    on_low_stack(|| {
+        let vt = mem(256);
+        put(vt, &(1..=256).map(|i| 0x1000 * i).collect::<Vec<_>>());
+        call1(INIT, &[vt, 256]);
+        attach_page();
+        let desc = mem(16);
+        put(desc, &[64, 64, 60, 1, 28, 0, 0, 1, 0, 0x20, 1, 1, 1, 0, 0]);
+        let (sc_out, dev_out) = (mem(2), mem(2));
+        assert_eq!(call1(CREATE_DEVICE10, &[0, 1, 0, 0, 0xa100, 0, desc, sc_out, dev_out]), 0);
+        let dev = rd1(dev_out);
+        let o = mem(2);
+        // a GDI compatible render target (B8G8R8A8), a keyed mutex texture, a plain one
+        for (fmt, misc, ok) in [(87, 0x20, true), (28, 0x20, false), (28, 0x10, true), (28, 0x12, false), (28, 0, true), (28, 0x4, false)] {
+            let d = mem(11);
+            put(d, &[16, 16, 1, 1, fmt, 1, 0, 0, 0x28, 0, misc]);
+            let r = call1(m(IF10_DEVICE, 73), &[dev, d, 0, o]);
+            assert_eq!(r == 0, ok, "Texture2D format {fmt} misc {misc:#x}: {r:#x}");
+            if ok {
+                let t = rd1(o);
+                let g = mem(11);
+                assert_eq!(call1(m(IF10_TEX2D, 12), &[t, g]), 0);
+                assert_eq!((0..11).map(|i| rd1(g + 4 * i)).collect::<Vec<_>>(), vec![16, 16, 1, 1, fmt, 1, 0, 0, 0x28, 0, misc]);
+                call1(m(IF10_TEX2D, 2), &[t]);
+            }
+        }
+        let bd = mem(6);
+        put(bd, &[64, 0, 1, 0, 0, 0xdead]);
+        assert_eq!(call1(m(IF10_DEVICE, 71), &[dev, bd, 0, o]), 0);
+        let b = rd1(o);
+        let g = mem(6);
+        put(g, &[7; 6]);
+        assert_eq!(call1(m(IF10_BUFFER, 12), &[b, g]), 0);
+        assert_eq!((0..6).map(|i| rd1(g + 4 * i)).collect::<Vec<_>>(), vec![64, 0, 1, 0, 0, 7]);
+        // three viewports: RSGetViewports gives each back
+        let vp = mem(18);
+        let want: Vec<u32> = (0..3).flat_map(|k| [k, 2 * k, 10 + k, 20 + k, 0, 1f32.to_bits()]).collect();
+        put(vp, &want);
+        call1(m(IF10_DEVICE, 30), &[dev, 3, vp]);
+        let (n, back) = (mem(1), mem(24));
+        put(n, &[4]);
+        call1(m(IF10_DEVICE, 61), &[dev, n, back]);
+        assert_eq!(rd1(n), 3);
+        assert_eq!((0..18).map(|i| rd1(back + 4 * i)).collect::<Vec<_>>(), want);
+        assert_eq!((18..24).map(|i| rd1(back + 4 * i)).collect::<Vec<_>>(), vec![0; 6]);
+        gpu::set_pump(None);
+    });
 }

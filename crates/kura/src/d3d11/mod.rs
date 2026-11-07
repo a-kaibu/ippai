@@ -299,8 +299,9 @@ pub struct State {
     so: [u32; 4],
     rtvs: [u32; 8],
     dsv: u32,
-    viewport: [f32; 6],
-    scissor: [i32; 4],
+    /// (all 16: RSGetViewports gives them back; draws use the first)
+    viewport: [[f32; 6]; 16],
+    scissor: [[i32; 4]; 16],
     blend: u32,
     blend_factor: [f32; 4],
     depth: u32,
@@ -961,8 +962,8 @@ fn default_state() -> State {
         so: [0; 4],
         rtvs: [0; 8],
         dsv: 0,
-        viewport: [0.0; 6],
-        scissor: [0; 4],
+        viewport: [[0.0; 6]; 16],
+        scissor: [[0; 4]; 16],
         blend: 0,
         blend_factor: [1.0; 4],
         depth: 0,
@@ -2217,9 +2218,9 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
                 }
                 hazards::after_outputs(d, st);
                 // the viewport follows the first target when the game never set one
-                if st.viewport[2] == 0.0 {
+                if st.viewport[0][2] == 0.0 {
                     if let Some((w, h)) = view_size(d, st.rtvs[0]).or_else(|| view_size(d, st.dsv)) {
-                        st.viewport = [0.0, 0.0, w as f32, h as f32, 0.0, 1.0];
+                        st.viewport[0] = [0.0, 0.0, w as f32, h as f32, 0.0, 1.0];
                     }
                 }
             }
@@ -2236,20 +2237,24 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
         43 => set_one(d, &mut st.raster, a(1)),
         44 => {
             st.nviewports = if a(2) != 0 { a(1).min(16) } else { 0 };
-            if a(1) > 0 && a(2) != 0 {
-                for i in 0..6 {
-                    st.viewport[i] = rdf(a(2), i);
+            if a(2) != 0 {
+                for k in 0..st.nviewports as usize {
+                    for i in 0..6 {
+                        st.viewport[k][i] = rdf(a(2), 6 * k + i);
+                    }
                 }
                 if d.trace {
-                    eprintln!("d3d11: viewport {:?}", st.viewport);
+                    eprintln!("d3d11: viewport {:?}", st.viewport[0]);
                 }
             }
         }
         45 => {
             st.nscissors = if a(2) != 0 { a(1).min(16) } else { 0 };
-            if a(1) > 0 && a(2) != 0 {
-                for i in 0..4 {
-                    st.scissor[i] = rd(a(2), i) as i32;
+            if a(2) != 0 {
+                for k in 0..st.nscissors as usize {
+                    for i in 0..4 {
+                        st.scissor[k][i] = rd(a(2), 4 * k + i) as i32;
+                    }
                 }
             }
         }
@@ -2389,7 +2394,7 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
         94 => get_one(d, st.raster, a(1)),
         95 | 96 => {
             // RSGetViewports/RSGetScissorRects(count, out): the count set; the array gets those
-            // (only the first is kept: the rest read as the first) and zeros after them
+            // and zeros after them
             if a(1) != 0 {
                 let (have, words) = if m == 95 { (st.nviewports, 6) } else { (st.nscissors, 4) };
                 let room = rd(a(1), 0);
@@ -2397,7 +2402,7 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
                 if a(2) != 0 {
                     for k in 0..room as usize {
                         for i in 0..words {
-                            let v = if (k as u32) >= have { 0 } else if m == 95 { st.viewport[i].to_bits() } else { st.scissor[i] as u32 };
+                            let v = if (k as u32) >= have { 0 } else if m == 95 { st.viewport[k][i].to_bits() } else { st.scissor[k][i] as u32 };
                             wr(a(2), k * words + i, v);
                         }
                     }
@@ -2965,10 +2970,10 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
     };
     // draw
     let mut w = vec![gpu::DRAW2, pipe];
-    w.extend(st.viewport.iter().map(|f| f.to_bits()));
+    w.extend(st.viewport[0].iter().map(|f| f.to_bits()));
     let scissor_on = r.get(7).copied().unwrap_or(0) != 0;
     if scissor_on {
-        let s = st.scissor;
+        let s = st.scissor[0];
         w.extend_from_slice(&[s[0].max(0) as u32, s[1].max(0) as u32, (s[2] - s[0]).max(0) as u32, (s[3] - s[1]).max(0) as u32, 1]);
     } else {
         w.extend_from_slice(&[0, 0, 0, 0, 0]);
@@ -2994,7 +2999,7 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
         for (bi, kind) in binds.iter() {
             match kind {
                 dxwgsl::Binding::Uniform(_) if stage == 0 && *bi == 15 && sprite.is_some() => {
-                    let half = [st.viewport[2] * 0.5, st.viewport[3] * 0.5];
+                    let half = [st.viewport[0][2] * 0.5, st.viewport[0][3] * 0.5];
                     if d.sprite_view.0 == 0 || d.sprite_view.1 != half {
                         let made = d.sprite_view.0;
                         let g = if made != 0 { made } else { page_id() };

@@ -122,6 +122,18 @@ fn at(v: &mut [u32]) -> u32 {
     v.as_mut_ptr() as usize as u32
 }
 
+/// D3D10_{BUFFER, TEXTURE1D, TEXTURE2D, TEXTURE3D}_DESC: (dwords, MiscFlags' index)
+const DESC: [(usize, usize); 4] = [(5, 4), (8, 7), (11, 10), (9, 8)];
+
+/// D3D10_RESOURCE_MISC_* as D3D11's: SHARED_KEYEDMUTEX 0x10 and GDI_COMPATIBLE 0x20 are
+/// 0x100 and 0x200 there (0x10 and 0x20 D3D11's DRAWINDIRECT_ARGS and BUFFER_ALLOW_RAW_VIEWS)
+fn misc11(m: u32) -> u32 {
+    m & !0x30 | (m & 0x10) << 4 | (m & 0x20) << 4
+}
+fn misc10(m: u32) -> u32 {
+    m & !0x330 | (m & 0x100) >> 4 | (m & 0x200) >> 4
+}
+
 /// ID3D10Device1 methods.
 pub(super) unsafe fn device(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32, after: &mut After) -> u32 {
     let args: Vec<u32> = (0..12).map(a).collect();
@@ -177,26 +189,31 @@ pub(super) unsafe fn device(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) ->
             if args[1] == 0 || args[2] == 0 {
                 return S_OK;
             }
-            let p = args[2];
-            let mut v = scratch(6);
-            for i in 0..4 {
-                v[i] = if i < 2 { (rd(p, i) as i32 as f32).to_bits() } else { (rd(p, i) as f32).to_bits() };
+            let (p, n) = (args[2], args[1].min(16) as usize);
+            let mut v = scratch(6 * n);
+            for k in 0..n {
+                for i in 0..4 {
+                    let x = rd(p, 6 * k + i);
+                    v[6 * k + i] = if i < 2 { (x as i32 as f32).to_bits() } else { (x as f32).to_bits() };
+                }
+                v[6 * k + 4] = rd(p, 6 * k + 4);
+                v[6 * k + 5] = rd(p, 6 * k + 5);
             }
-            v[4] = rd(p, 4);
-            v[5] = rd(p, 5);
-            ctx(d, 44, &[args[0], 1, at(&mut v)], after)
+            ctx(d, 44, &[args[0], args[1], at(&mut v)], after)
         }
         61 => {
             // RSGetViewports(n*, out)
-            let mut v = scratch(6);
+            let mut v = scratch(6 * 16);
             let r = ctx(d, 95, &[args[0], args[1], if args[2] != 0 { at(&mut v) } else { 0 }], after);
-            if args[2] != 0 && args[1] != 0 && rd(args[1], 0) > 0 {
-                for i in 0..4 {
-                    let f = f32::from_bits(v[i]);
-                    wr(args[2], i, if i < 2 { f as i32 as u32 } else { f as u32 });
+            if args[2] != 0 && args[1] != 0 {
+                for k in 0..(rd(args[1], 0) as usize).min(16) {
+                    for i in 0..4 {
+                        let f = f32::from_bits(v[6 * k + i]);
+                        wr(args[2], 6 * k + i, if i < 2 { f as i32 as u32 } else { f as u32 });
+                    }
+                    wr(args[2], 6 * k + 4, v[6 * k + 4]);
+                    wr(args[2], 6 * k + 5, v[6 * k + 5]);
                 }
-                wr(args[2], 4, v[4]);
-                wr(args[2], 5, v[5]);
             }
             r
         }
@@ -214,10 +231,25 @@ pub(super) unsafe fn device(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) ->
         64 => S_OK,
         65 => 0,
         66..=68 => private_data(d, m - 62, this, a),
-        71..=74 | 78 => {
-            // Create{Buffer, Texture1D/2D/3D}(desc, init, out), CreateInputLayout(.., out at 5)
-            let m11 = if m == 78 { 11 } else { m - 68 };
-            let r = dev(d, m11, &args);
+        71..=74 => {
+            // Create{Buffer, Texture1D/2D/3D}(desc, init, out): the description with D3D11's
+            // misc flags (and a buffer's StructureByteStride 0)
+            if args[1] == 0 {
+                return E_INVALIDARG;
+            }
+            let (n, k) = DESC[m as usize - 71];
+            let mut desc = scratch(n.max(6));
+            for i in 0..n {
+                desc[i] = rd(args[1], i);
+            }
+            desc[k] = misc11(desc[k]);
+            let r = dev(d, m - 68, &[args[0], at(&mut desc), args[2], args[3]]);
+            reface(d, args[3], 1);
+            r
+        }
+        78 => {
+            // CreateInputLayout(.., out at 5)
+            let r = dev(d, 11, &args);
             reface(d, args[if m == 78 { 5 } else { 3 }], 1);
             r
         }
@@ -362,16 +394,17 @@ pub(super) unsafe fn child(d: &mut D11, iface: u32, m: u32, this: u32, a: &dyn F
             unmap(d, me, if iface == IF10_BUFFER { 0 } else { args[1] });
             S_OK
         }
-        (IF10_BUFFER, 12) => {
-            // GetDesc: D3D10_BUFFER_DESC has no StructureByteStride
-            let mut v = scratch(6);
+        (IF10_BUFFER | IF10_TEX1D | IF10_TEX2D | IF10_TEX3D, 12) => {
+            // GetDesc: D3D10's misc flags (and no StructureByteStride)
+            let (n, k) = DESC[(iface - IF10_BUFFER) as usize];
+            let mut v = scratch(12);
             let r = with(&[args[0], at(&mut v)], |b| child_call(d, i11, 10, this, b));
-            for i in 0..5 {
+            v[k] = misc10(v[k]);
+            for i in 0..n {
                 wr(args[1], i, v[i]);
             }
             r
         }
-        (IF10_TEX1D | IF10_TEX2D | IF10_TEX3D, 12) => with(&[args[0], args[1]], |b| child_call(d, i11, 10, this, b)),
         (IF10_SRV | IF10_RTV | IF10_DSV, 7) => {
             let r = child_call(d, i11, 7, this, a);
             reface(d, args[1], 1);
