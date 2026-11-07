@@ -3,4 +3,6 @@ exe dl/スズノネセブン！体験版/suzunone7_trial.exe
 seconds 30
 bytes 304283650
 sha256 0aa0cd291d96b89534bd19f94e3cf2fdf0a4d6b60c56307174066a3e0060e3c3
-parts 1
+ref ghcr.io/a-kaibu/ippai-traces:s2008_clochette_suzunone7-32
+zst sha256:25e1816f9c72b9758027828c1efc97052c02f8feead2c8b250e615f047d7175e
+zbytes 65474164

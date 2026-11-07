@@ -3,4 +3,6 @@ exe 都合のよいセックスフレンド？体験版/gamedata/都合のよい
 seconds 60
 bytes 503810
 sha256 90b82aed8d91f041098a65f8ddbb0c293cba3663bf59bb9dc2510946a734f6fd
-parts 1
+ref ghcr.io/a-kaibu/ippai-traces:s2011_waffle_sex_friend-32
+zst sha256:d6c9961a88a56ff6c68f3fd0b84c55b5bea6f1b5ce1e735236d03c655aaf2f90
+zbytes 28340

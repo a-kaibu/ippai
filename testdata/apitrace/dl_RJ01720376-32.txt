@@ -3,4 +3,6 @@ exe 騎士見習いと村娘（体験版）/game.exe
 seconds 60
 bytes 14608556
 sha256 de30fe9c6bcf2b836ae6b2d76999feab6cef0c9bff756b8e2fbb53fcb39c430d
-parts 1
+ref ghcr.io/a-kaibu/ippai-traces:dl_RJ01720376-32
+zst sha256:f7247cb8cd693cb9e2ceb5a2ad52e9fe419d7c93b68f799d5298859dff601cdd
+zbytes 3684733

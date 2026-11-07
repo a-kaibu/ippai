@@ -3,4 +3,6 @@ exe ドレスアップナイト -True Knight’s Refrain- 【体験版】/Game.e
 seconds 60
 bytes 12239615
 sha256 dd5d2ec63a7277a27b686e06ac7cdad48a8f1a35b735df322f8d974e71c43c0e
-parts 1
+ref ghcr.io/a-kaibu/ippai-traces:dl_RJ365650-32
+zst sha256:96197e6b156271796de881c5a73e3644aa98222e36541ec32bfd4cabfa7260a6
+zbytes 3780994
