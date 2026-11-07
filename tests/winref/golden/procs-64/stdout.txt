@@ -1,0 +1,64 @@
+spawn exit 42: 1 err 0
+GetExitCodeProcess(pi.hProcess, &code)                                 = 1 err 57005
+before 259
+GetProcessId(pi.hProcess) == pi.dwProcessId                            = 1 err 57005
+pi.dwProcessId != GetCurrentProcessId()                                = 1 err 57005
+op != NULL                                                             = 1 err 57005
+WaitForSingleObject(op, 0)                                             = 258 err 57005
+ResumeThread(pi.hThread)                                               = 1 err 57005
+WaitForSingleObject(op, 20000)                                         = 0 err 57005
+GetExitCodeProcess(op, &code)                                          = 1 err 57005
+through OpenProcess 42
+WaitForSingleObject(pi->hProcess, 20000)                               = 0 err 57005
+GetExitCodeProcess(pi->hProcess, &code)                                = 1 err 57005
+exit code 42
+spawn exit 1: 1 err 0
+TerminateProcess(pi.hProcess, 9)                                       = 1 err 57005
+WaitForSingleObject(pi->hProcess, 20000)                               = 0 err 57005
+GetExitCodeProcess(pi->hProcess, &code)                                = 1 err 57005
+exit code 9
+CreateProcessA("C:\\no\\such.exe", NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si0, &pi) = 0 err 3
+OpenProcess(SYNCHRONIZE, FALSE, 0xfffffff0) != NULL                    = 0 err 87
+CreatePipe(&inr, &inw, &sa, 0)                                         = 1 err 57005
+CreatePipe(&outr, &outw, &sa, 0)                                       = 1 err 57005
+spawn upper: 1 err 0
+WriteFile(inw, "hello, ", 7, &n, NULL)                                 = 1 err 57005
+WriteFile(inw, "child", 5, &n, NULL)                                   = 1 err 57005
+child wrote 'HELLO, CHILD' then err 109
+WaitForSingleObject(pi->hProcess, 20000)                               = 0 err 57005
+GetExitCodeProcess(pi->hProcess, &code)                                = 1 err 57005
+exit code 3
+s != INVALID_HANDLE_VALUE                                              = 1 err 57005
+spawn pipe: 1 err 0
+connect 1 err 0
+ReadFile(s, buf, sizeof buf, &n, NULL)                                 = 1 err 57005
+server got 'ping'
+WriteFile(s, "pong", 5, &n, NULL)                                      = 1 err 57005
+WaitForSingleObject(pi->hProcess, 20000)                               = 0 err 57005
+GetExitCodeProcess(pi->hProcess, &code)                                = 1 err 57005
+exit code 0
+ReadFile(s, buf, sizeof buf, &n, NULL)                                 = 0 err 109
+DisconnectNamedPipe(s)                                                 = 1 err 57005
+spawn event: 1 err 0
+WaitForSingleObject(ev, 20000)                                         = 0 err 57005
+SetEvent(back)                                                         = 1 err 57005
+WaitForSingleObject(pi->hProcess, 20000)                               = 0 err 57005
+GetExitCodeProcess(pi->hProcess, &code)                                = 1 err 57005
+exit code 21
+spawn mutex: 1 err 0
+WaitForSingleObject(pi->hProcess, 20000)                               = 0 err 57005
+GetExitCodeProcess(pi->hProcess, &code)                                = 1 err 57005
+exit code 258
+ReleaseMutex(mx)                                                       = 1 err 57005
+spawn mutex: 1 err 0
+WaitForSingleObject(pi->hProcess, 20000)                               = 0 err 57005
+GetExitCodeProcess(pi->hProcess, &code)                                = 1 err 57005
+exit code 0
+WaitForSingleObject(mx, 0)                                             = 128 err 57005
+ReleaseMutex(mx)                                                       = 1 err 57005
+w != NULL                                                              = 1 err 57005
+spawn window: 1 err 0
+WaitForSingleObject(pi->hProcess, 20000)                               = 0 err 57005
+GetExitCodeProcess(pi->hProcess, &code)                                = 1 err 57005
+exit code 42
+copied '7 5 copy' posted 56

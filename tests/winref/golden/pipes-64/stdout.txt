@@ -1,0 +1,102 @@
+CreatePipe(&r, &w, NULL, 0)                                                    = 1 err 57005
+write 'abc' 1 err 57005 wrote 3
+peek 1 err 57005 read 3 avail 3 left 4294967293 data 'abc'
+read(2) 1 err 57005 got 2 'ab'
+read(10) 1 err 57005 got 1 'c'
+GetFileType(r)                                                                 = 3 err 57005
+GetFileSize(r, NULL)                                                           = 0 err 57005
+write 'x' 0 err 5 wrote 0
+read(1) 0 err 5 got 0 ''
+write '' 1 err 57005 wrote 0
+peek 1 err 57005 read 0 avail 0 left 0 data ''
+CloseHandle(w)                                                                 = 1 err 57005
+read(4) 0 err 109 got 0 ''
+peek 0 err 109 read 57005 avail 57005 left 57005 data ''
+CloseHandle(r)                                                                 = 1 err 57005
+CreatePipe(&r, &w, NULL, 0)                                                    = 1 err 57005
+CloseHandle(r)                                                                 = 1 err 57005
+write 'q' 0 err 232 wrote 0
+CloseHandle(w)                                                                 = 1 err 57005
+CreateNamedPipeA("\\\\.\\pipe\\", PIPE_ACCESS_DUPLEX, 0, 1, 512, 512, 0, NULL) != INVALID_HANDLE_VALUE = 0 err 123
+CreateNamedPipeA("C:\\notapipe", PIPE_ACCESS_DUPLEX, 0, 1, 512, 512, 0, NULL) != INVALID_HANDLE_VALUE = 0 err 123
+CreateNamedPipeA(P("x"), PIPE_ACCESS_DUPLEX, 0, 0, 512, 512, 0, NULL) != INVALID_HANDLE_VALUE = 0 err 87
+CreateNamedPipeA(P("x"), 0, 0, 1, 512, 512, 0, NULL) != INVALID_HANDLE_VALUE   = 0 err 87
+client ippai_probe_none valid 0 err 2
+WaitNamedPipeA(P("none"), 0)                                                   = 0 err 2
+s != INVALID_HANDLE_VALUE                                                      = 1 err 57005
+GetFileType(s)                                                                 = 3 err 57005
+CreateNamedPipeA(P("byte"), PIPE_ACCESS_DUPLEX, 0, 1, 512, 512, 0, NULL) != INVALID_HANDLE_VALUE = 0 err 231
+WaitNamedPipeA(P("byte"), 0)                                                   = 1 err 57005
+peek 0 err 230 read 57005 avail 57005 left 57005 data ''
+client ippai_probe_byte valid 1 err 0
+client ippai_probe_byte valid 0 err 231
+WaitNamedPipeA(P("byte"), 0)                                                   = 0 err 121
+ConnectNamedPipe(s, NULL)                                                      = 0 err 535
+write 'hello' 1 err 57005 wrote 5
+write 'world' 1 err 57005 wrote 5
+peek 1 err 57005 read 4 avail 10 left 4294967292 data 'hell'
+read(3) 1 err 57005 got 3 'hel'
+read(100) 1 err 57005 got 7 'loworld'
+write 'reply' 1 err 57005 wrote 5
+read(100) 1 err 57005 got 5 'reply'
+GetNamedPipeHandleStateA(s, &state, &inst, NULL, NULL, NULL, 0)                = 1 err 57005
+state 0 instances 1
+GetNamedPipeInfo(s, &flags, &out, &in, &max)                                   = 1 err 57005
+server info flags 0x1 out 512 in 512 max 1
+GetNamedPipeInfo(c, &flags, &out, &in, &max)                                   = 1 err 57005
+client info flags 0 out 512 in 512 max 1
+SetNamedPipeHandleState(c, &mode, NULL, NULL)                                  = 0 err 87
+CloseHandle(c)                                                                 = 1 err 57005
+read(10) 0 err 109 got 0 ''
+peek 0 err 109 read 57005 avail 57005 left 57005 data ''
+write 'late' 0 err 232 wrote 0
+ConnectNamedPipe(s, NULL)                                                      = 0 err 232
+DisconnectNamedPipe(s)                                                         = 1 err 57005
+DisconnectNamedPipe(s)                                                         = 0 err 233
+read(10) 0 err 233 got 0 ''
+WaitNamedPipeA(P("byte"), 0)                                                   = 0 err 121
+client ippai_probe_byte valid 0 err 231
+CloseHandle(s)                                                                 = 1 err 57005
+client ippai_probe_byte valid 0 err 2
+m1 != INVALID_HANDLE_VALUE && m2 != INVALID_HANDLE_VALUE                       = 1 err 57005
+CreateNamedPipeA(P("msg"), PIPE_ACCESS_DUPLEX, PIPE_TYPE_MESSAGE, 2, 512, 512, 0, NULL) != INVALID_HANDLE_VALUE = 0 err 231
+CreateNamedPipeA(P("msg"), PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, 512, 512, 0, NULL) != INVALID_HANDLE_VALUE = 0 err 231
+client ippai_probe_msg valid 1 err 0
+client ippai_probe_msg valid 1 err 0
+client ippai_probe_msg valid 0 err 231
+write 'first message' 1 err 57005 wrote 13
+write 'second' 1 err 57005 wrote 6
+write 'to two' 1 err 57005 wrote 6
+peek 1 err 57005 read 4 avail 19 left 9 data 'firs'
+read(5) 0 err 234 got 5 'first'
+peek 1 err 57005 read 4 avail 14 left 4 data ' mes'
+read(100) 1 err 57005 got 8 ' message'
+read(100) 1 err 57005 got 6 'second'
+read(100) 1 err 57005 got 6 'to two'
+peek 1 err 57005 read 0 avail 0 left 0 data ''
+GetNamedPipeHandleStateA(c1, &state, &inst, NULL, NULL, NULL, 0)               = 1 err 57005
+client state 0 instances 2
+SetNamedPipeHandleState(c1, &mode, NULL, NULL)                                 = 1 err 57005
+GetNamedPipeHandleStateA(c1, &state, &inst, NULL, NULL, NULL, 0)               = 1 err 57005
+client state 0x2
+write 'ab' 1 err 57005 wrote 2
+write 'cd' 1 err 57005 wrote 2
+read(1) 0 err 234 got 1 'a'
+read(10) 1 err 57005 got 1 'b'
+read(10) 1 err 57005 got 2 'cd'
+SetNamedPipeHandleState(m2, &mode, NULL, NULL)                                 = 1 err 57005
+write 'xy' 1 err 57005 wrote 2
+write 'zw' 1 err 57005 wrote 2
+read(10) 1 err 57005 got 4 'xyzw'
+write 'pending' 1 err 57005 wrote 7
+TransactNamedPipe(c1, "q", 1, buf, sizeof buf, &n, NULL)                       = 0 err 231
+read(100) 1 err 57005 got 7 'pending'
+CloseHandle(c1)                                                                = 1 err 57005
+CloseHandle(c2)                                                                = 1 err 57005
+read(10) 0 err 109 got 0 ''
+write 'x' 0 err 232 wrote 0
+CloseHandle(m1)                                                                = 1 err 57005
+CloseHandle(m2)                                                                = 1 err 57005
+in1 != INVALID_HANDLE_VALUE                                                    = 1 err 57005
+client ippai_probe_in valid 0 err 5
+client ippai_probe_in valid 1 err 0
