@@ -1,0 +1,85 @@
+st2ft 1601-1-1 0:0:0.0 dow 0: 1 err 0 ft 0000000000000000
+  back 1601-1-1 dow 1 0:0:0.0
+st2ft 1600-12-31 23:59:59.999 dow 0: 0 err 87 ft deadbeefdeadbeef
+st2ft 2000-2-29 12:0:0.0 dow 3: 1 err 0 ft 01bf82ac81016000
+  back 2000-2-29 dow 2 12:0:0.0
+st2ft 1900-2-29 0:0:0.0 dow 0: 0 err 87 ft deadbeefdeadbeef
+st2ft 2100-2-29 0:0:0.0 dow 0: 0 err 87 ft deadbeefdeadbeef
+st2ft 2024-2-29 23:59:59.999 dow 6: 1 err 0 ft 01da6b6b675298f0
+  back 2024-2-29 dow 4 23:59:59.999
+st2ft 2024-13-1 0:0:0.0 dow 0: 0 err 87 ft deadbeefdeadbeef
+st2ft 2024-0-1 0:0:0.0 dow 0: 0 err 87 ft deadbeefdeadbeef
+st2ft 2024-4-31 0:0:0.0 dow 0: 0 err 87 ft deadbeefdeadbeef
+st2ft 2024-4-0 0:0:0.0 dow 0: 0 err 87 ft deadbeefdeadbeef
+st2ft 2024-4-30 24:0:0.0 dow 0: 0 err 87 ft deadbeefdeadbeef
+st2ft 2024-4-30 0:60:0.0 dow 0: 0 err 87 ft deadbeefdeadbeef
+st2ft 2024-4-30 0:0:60.0 dow 0: 0 err 87 ft deadbeefdeadbeef
+st2ft 2024-4-30 0:0:0.1000 dow 0: 0 err 87 ft deadbeefdeadbeef
+st2ft 2024-4-30 0:0:0.0 dow 9: 1 err 0 ft 01da9a91581bc000
+  back 2024-4-30 dow 2 0:0:0.0
+st2ft 30827-12-31 23:59:59.999 dow 0: 1 err 0 ft 7fff35f4f06c58f0
+  back 30827-12-31 dow 5 23:59:59.999
+st2ft 30828-1-1 0:0:0.0 dow 0: 0 err 87 ft deadbeefdeadbeef
+st2ft 9999-12-31 23:59:59.999 dow 0: 1 err 0 ft 24c85a5ed1c018f0
+  back 9999-12-31 dow 5 23:59:59.999
+ft2st 0000000000000000: 1 err 0
+   1601-1-1 dow 1 0:0:0.0
+ft2st 0000000000000001: 1 err 0
+   1601-1-1 dow 1 0:0:0.0
+ft2st 000000000098967f: 1 err 0
+   1601-1-1 dow 1 0:0:0.999
+ft2st 0000000000002710: 1 err 0
+   1601-1-1 dow 1 0:0:0.1
+ft2st 01d0000000000000: 1 err 0
+   2014-11-14 dow 5 11:41:59.374
+ft2st 7fffffffffffffff: 1 err 0
+   30828-9-14 dow 4 2:48:5.477
+ft2st 8000000000000000: 0 err 87
+ft2st 019db1ded53e8000: 1 err 0
+   1970-1-1 dow 4 0:0:0.0
+ft2st 01e9fd1ed4a5e980: 1 err 0
+   2038-1-19 dow 2 3:14:7.0
+dos 0021 0000: 1 ft 01a8e79fe1d58000 back 1 0021 0000
+dos 0000 0000: 0 ft 0000000000000000 back 0 dead dead
+dos 5a9e bf7d: 1 ft 01dbba2bfa1b1300 back 1 5a9e bf7d
+dos ff9f bf7d: 1 ft 023868b866d29300 back 1 ff9f bf7d
+dos 5a9f c000: 0 ft 0000000000000000 back 0 dead dead
+dos 5a9f 003e: 0 ft 0000000000000000 back 0 dead dead
+dos 5a80 0000: 0 ft 0000000000000000 back 0 dead dead
+dos 5abf 0000: 1 ft 01dbd1bef3b0c000 back 1 5abf 0000
+FileTimeToDosDateTime(&pre, &dd, &tt)                            = 0 err 87
+pre-1980 dead dead
+CompareFileTime(&a, &b)                                          = -1 err 0
+CompareFileTime(&b, &a)                                          = 1 err 0
+CompareFileTime(&a, &a)                                          = 0 err 57005
+CompareFileTime(&c, &a)                                          = -1 err 0
+tz bias -540 utc 2024-12-31 20:0: 1 -> 2025-1-1 5:0 dow 3 back 1 2024-12-31 20:0
+tz bias -540 utc 1601-1-1 0:0: 1 -> 1601-1-1 9:0 dow 1 back 1 1601-1-1 0:0
+tz bias 300 utc 2024-3-10 6:59: 1 -> 2024-3-10 1:59 dow 0 back 1 2024-3-10 6:59
+tz bias 300 utc 2024-3-10 7:0: 1 -> 2024-3-10 3:0 dow 0 back 1 2024-3-10 7:0
+tz bias 300 utc 2024-11-3 5:59: 1 -> 2024-11-3 1:59 dow 0 back 1 2024-11-3 5:59
+tz bias 300 utc 2024-11-3 6:0: 1 -> 2024-11-3 1:0 dow 0 back 1 2024-11-3 5:0
+tz bias 300 utc 2024-7-1 0:0: 1 -> 2024-6-30 20:0 dow 0 back 1 2024-7-1 0:0
+tz bias 300 utc 2024-1-1 0:0: 1 -> 2023-12-31 19:0 dow 0 back 1 2024-1-1 0:0
+date [(default)] -> 11 [323032342f30332f3035]
+date [yyyy'/'MM'/'dd] -> 11 [323032342f30332f3035]
+date [yy/M/d ddd dddd] -> 17 [32342f332f352089ce2089ce976a93fa]
+date [gg yyyy] -> 10 [90bc97ef2032303234]
+date [MMMM MMM] -> 6 [338c8e2033]
+date ['quote''s' d] -> 10 [71756f746527732035]
+date [yyyyy] -> 5 [32303234]
+GetDateFormatA(0x411, DATE_LONGDATE, &st, NULL, out, sizeof out) = 13 err 0
+32303234944e338c8e3593fa
+GetDateFormatA(0x411, 0, &st, "yyyy", out, 2)                    = 0 err 122
+GetDateFormatA(0x411, 0, &st, "yyyy", NULL, 0)                   = 5 err 0
+GetDateFormatA(0x411, 0, &bad, NULL, out, sizeof out)            = 0 err 87
+time [(default)] -> 8 [393a30373a3033]
+time [HH':'mm':'ss] -> 9 [30393a30373a3033]
+time [h:m:s tt] -> 11 [393a373a33208cdf914f]
+time [hh tt t] -> 11 [3039208cdf914f208cdf]
+time [H] -> 2 [39]
+GetTimeFormatA(0x411, TIME_NOSECONDS, &st, NULL, out, sizeof out) = 5 err 0
+9:07
+GetTimeFormatA(0x411, TIME_FORCE24HOURFORMAT | TIME_NOTIMEMARKER, &st, "h:mm tt", out, sizeof out) = 5 err 0
+9:07
+GetTimeFormatA(0x411, 0, &badt, NULL, out, sizeof out)           = 0 err 87

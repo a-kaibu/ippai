@@ -6,8 +6,8 @@ image clear 64 64 1
 image raster 64 64 2
 image textures 64 64 2
 glCopyTexImage2D 0
-image formats 64 64 2
-image blend_depth 64 64 2
+image formats 64 64 4
+image blend_depth 64 64 4
 image transforms 64 64 2
 glGetError 0
 wglDeleteContext 1

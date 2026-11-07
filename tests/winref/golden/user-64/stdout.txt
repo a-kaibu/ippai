@@ -1,0 +1,129 @@
+intersect 1  5,5,10,10
+intersect-empty 0  0,0,0,0
+intersect-inv 0  0,0,0,0
+intersect-apart 0  0,0,0,0
+intersect-touch 0  0,0,0,0
+union 1  0,0,15,15
+union-empty 1  0,0,10,10
+union-both-empty 0  0,0,0,0
+union-inv 1  0,0,10,10
+subtract-top 1  0,4,10,10
+subtract-hole 1  0,0,10,10
+subtract-left 1  4,0,10,10
+subtract-all 0  0,0,0,0
+offset -3,7,7,17
+inflate 6,-2,4,12
+IsRectEmpty(&e)                                                  = 1 err 57005
+IsRectEmpty(&inv)                                                = 1 err 57005
+IsRectEmpty(&a)                                                  = 0 err 57005
+EqualRect(&a, &a)                                                = 1 err 57005
+EqualRect(&e, &inv)                                              = 0 err 57005
+ptinrect 0,0 1
+ptinrect 9,9 1
+ptinrect 10,5 0
+ptinrect 5,10 0
+ptinrect -1,0 0
+SetRectEmpty(&o)                                                 = 1 err 57005
+empty 0,0,0,0
+CopyRect(&o, &b)                                                 = 1 err 57005
+copy 5,5,15,15
+RegisterClassA(&wc) != 0                                         = 1 err 57005
+RegisterClassA(&wc) != 0                                         = 0 err 1410
+GetClassInfoA(wc.hInstance, "ippai-winref", &got)                = 49482 err 57005
+GetClassInfoA(wc.hInstance, "ippai-nothere", &got)               = 0 err 1411
+-- create hidden
+WM_GETMINMAXINFO
+WM_NCCREATE
+WM_NCCALCSIZE
+WM_CREATE
+h != NULL                                                        = 1 err 57005
+window 640x480 client 634x451 at 100,50
+AdjustWindowRectEx(&adj, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE, 0) = 1 err 57005
+adjust -3,-26,643,483
+AdjustWindowRectEx(&adj, WS_POPUP, FALSE, 0)                     = 1 err 57005
+adjust-popup 0,0,640,480
+AdjustWindowRectEx(&adj, WS_OVERLAPPEDWINDOW, TRUE, 0)           = 1 err 57005
+adjust-menu -8,-51,648,488
+GetWindowLongA(h, GWL_STYLE)                                     = 80347136 err 57005
+GetWindowLongA(h, GWL_EXSTYLE)                                   = 256 err 57005
+IsWindowVisible(h)                                               = 0 err 57005
+GetWindowTextLengthA(h)                                          = 5 err 57005
+IsWindow(h)                                                      = 1 err 57005
+IsWindow((HWND)(ULONG_PTR)0x1234)                                = 0 err 57005
+-- SetWindowLong style
+WM_STYLECHANGING -16 4ca0000->80000000
+WM_STYLECHANGED -16 4ca0000->84000000
+SetWindowLongA(h, GWL_STYLE, WS_POPUP)                           = 80347136 err 0
+GetWindowLongA(h, GWL_STYLE)                                     = -2080374784 err 57005
+SetWindowLongA(h, GWLP_USERDATA, 0x1234)                         = 0 err 57005
+GetWindowLongA(h, GWLP_USERDATA)                                 = 4660 err 57005
+SetWindowLongA(h, 4000, 1)                                       = 0 err 1413
+-- SetWindowPos size
+WM_WINDOWPOSCHANGING 10,20 800x600 flags 14
+WM_NCCALCSIZE
+WM_WINDOWPOSCHANGED 10,20 800x600 flags 1c
+  WM_MOVE
+  WM_SIZE 0 800x600
+SetWindowPos(h, NULL, 10, 20, 800, 600, SWP_NOZORDER | SWP_NOACTIVATE) = 1 err 57005
+-- SetWindowPos same
+WM_WINDOWPOSCHANGING 10,20 800x600 flags 14
+SetWindowPos(h, NULL, 10, 20, 800, 600, SWP_NOZORDER | SWP_NOACTIVATE) = 1 err 57005
+-- SendMessage
+SendMessageA(h, WM_USER + 1, 5, 0)                               = 77 err 57005
+WM_SETTEXT
+SendMessageA(h, WM_SETTEXT, 0, (LPARAM)"new")                    = 1 err 57005
+GetWindowTextA(h, t, sizeof t)                                   = 3 err 57005
+text new
+GetWindowTextA(h, t, 2)                                          = 1 err 57005
+text n
+start: 0x31f 0x31f
+GetQueueStatus(QS_ALLINPUT)                                      = 524296 err 57005
+GetQueueStatus(QS_POSTMESSAGE)                                   = 524288 err 57005
+PeekMessageA(&msg, h, WM_USER + 4, WM_USER + 5, PM_REMOVE)       = 1 err 57005
+got 0x405 3
+PeekMessageA(&msg, NULL, WM_USER + 2, WM_USER + 2, PM_NOREMOVE)  = 1 err 57005
+got 0x402 2
+PeekMessageA(&msg, (HWND)-1, 0, 0, PM_REMOVE)                    = 1 err 57005
+got 0x404 4 hwnd-null 1
+PeekMessageA(&msg, NULL, WM_USER + 9, WM_USER + 9, PM_REMOVE)    = 0 err 57005
+posted: 0x403 0x402
+GetQueueStatus(QS_POSTMESSAGE)                                   = 524296 err 57005
+GetMessageA(&msg, NULL, 0, 0)                                    = 1 err 57005
+got 0x406 6
+GetMessageA(&msg, NULL, 0, 0)                                    = 0 err 57005
+got 0x12 3
+PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE)                        = 0 err 57005
+SetTimer(h, 9, 1, NULL)                                          = 9 err 57005
+GetQueueStatus(QS_TIMER | QS_POSTMESSAGE) & 0xffff               = 24 err 57005
+PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE)                        = 1 err 57005
+first 0x407
+KillTimer(h, 9)                                                  = 1 err 57005
+KillTimer(h, 9)                                                  = 0 err 57005
+SetTimer(NULL, 0, 10, NULL) != 0                                 = 1 err 57005
+SetPropA(h, "p1", (HANDLE)0x55)                                  = 1 err 57005
+GetPropA(h, "p1")                                                = 85 err 57005
+GetPropA(h, "P1")                                                = 85 err 57005
+RemovePropA(h, "p1")                                             = 85 err 57005
+GetPropA(h, "p1")                                                = 0 err 2
+-- ShowWindow
+WM_SHOWWINDOW w 1
+WM_WINDOWPOSCHANGING 0,0 0x0 flags 57
+WM_NCPAINT
+WM_ERASEBKGND
+WM_WINDOWPOSCHANGED 10,20 800x600 flags 10000057
+WM_SIZE 0 800x600
+WM_MOVE
+ShowWindow(h, SW_SHOWNOACTIVATE)                                 = 0 err 57005
+WM_SHOWWINDOW w 0
+WM_WINDOWPOSCHANGING 0,0 0x0 flags 97
+WM_WINDOWPOSCHANGED 10,20 800x600 flags 20000097
+ShowWindow(h, SW_HIDE)                                           = 24 err 57005
+ShowWindow(h, SW_HIDE)                                           = 0 err 57005
+-- DestroyWindow
+WM_DESTROY
+WM_NCDESTROY
+DestroyWindow(h)                                                 = 1 err 0
+DestroyWindow(h)                                                 = 0 err 1400
+IsWindow(h)                                                      = 0 err 57005
+UnregisterClassA("ippai-winref", wc.hInstance)                   = 1 err 57005
+UnregisterClassA("ippai-winref", wc.hInstance)                   = 0 err 1411

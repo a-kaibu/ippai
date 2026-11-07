@@ -1,0 +1,64 @@
+version 500
+ima ch 1 align 256: suggest 0 -> tag 1 ch 1 rate 22050 bits 16 align 2 avg 44100
+  size 0 5050; back 0 0; one byte 512 0
+  prepare 0 convert 0 used 1280 -> 5050 status 10000 hash 5c50a059: 10006 9886 9934 10007 10180 9825 9366 8688 8236 9469 12113 14759 17163 19974 16572 9710 4808 9265 3592 13169 22305 18746 32767 27034
+ima ch 1 align 512: suggest 0 -> tag 1 ch 1 rate 22050 bits 16 align 2 avg 44100
+  size 0 12204; back 0 0; one byte 512 0
+  prepare 0 convert 0 used 2560 -> 0 status 10000 hash 811c9dc5:
+  rest 11 used 0 -> 0
+ima ch 1 align 1024: suggest 0 -> tag 1 ch 1 rate 22050 bits 16 align 2 avg 44100
+  size 0 20410; back 0 0; one byte 512 0
+  prepare 0 convert 0 used 5120 -> 0 status 10000 hash 811c9dc5:
+ima ch 1 align 36: suggest 0 -> tag 1 ch 1 rate 22050 bits 16 align 2 avg 44100
+  size 0 650; back 0 0; one byte 512 0
+  prepare 0 convert 0 used 180 -> 0 status 10000 hash 811c9dc5:
+ima ch 2 align 512: suggest 0 -> tag 1 ch 2 rate 22050 bits 16 align 4 avg 88200
+  size 0 10100; back 0 0; one byte 512 0
+  prepare 0 convert 0 used 2560 -> 0 status 10000 hash 811c9dc5:
+ima ch 2 align 1024: suggest 0 -> tag 1 ch 2 rate 22050 bits 16 align 4 avg 88200
+  size 0 24408; back 0 0; one byte 512 0
+  prepare 0 convert 0 used 5120 -> 0 status 10000 hash 811c9dc5:
+  rest 11 used 0 -> 0
+ima ch 2 align 2048: suggest 0 -> tag 1 ch 2 rate 22050 bits 16 align 4 avg 88200
+  size 0 40820; back 0 0; one byte 512 0
+  prepare 0 convert 0 used 10240 -> 0 status 10000 hash 811c9dc5:
+ima ch 2 align 72: suggest 0 -> tag 1 ch 2 rate 22050 bits 16 align 4 avg 88200
+  size 0 1300; back 0 0; one byte 512 0
+  prepare 0 convert 0 used 360 -> 0 status 10000 hash 811c9dc5:
+msadpcm ch 1 align 256: suggest 0 -> tag 1 ch 1 rate 22050 bits 16 align 2 avg 44100
+  size 0 5000; back 0 0; one byte 512 0
+  prepare 0 convert 0 used 1280 -> 0 status 10000 hash 811c9dc5:
+msadpcm ch 1 align 512: suggest 0 -> tag 1 ch 1 rate 22050 bits 16 align 2 avg 44100
+  size 0 12144; back 0 0; one byte 512 0
+  prepare 0 convert 0 used 2560 -> 0 status 10000 hash 811c9dc5:
+  rest 11 used 0 -> 0
+msadpcm ch 1 align 1024: suggest 0 -> tag 1 ch 1 rate 22050 bits 16 align 2 avg 44100
+  size 0 20360; back 0 0; one byte 512 0
+  prepare 0 convert 0 used 5120 -> 0 status 10000 hash 811c9dc5:
+msadpcm ch 1 align 36: suggest 0 -> tag 1 ch 1 rate 22050 bits 16 align 2 avg 44100
+  size 0 600; back 0 0; one byte 512 0
+  prepare 0 convert 0 used 180 -> 0 status 10000 hash 811c9dc5:
+msadpcm ch 2 align 512: suggest 0 -> tag 1 ch 2 rate 22050 bits 16 align 4 avg 88200
+  size 0 10000; back 0 0; one byte 512 0
+  prepare 0 convert 0 used 2560 -> 0 status 10000 hash 811c9dc5:
+msadpcm ch 2 align 1024: suggest 0 -> tag 1 ch 2 rate 22050 bits 16 align 4 avg 88200
+  size 0 24288; back 0 0; one byte 512 0
+  prepare 0 convert 0 used 5120 -> 0 status 10000 hash 811c9dc5:
+  rest 11 used 0 -> 0
+msadpcm ch 2 align 2048: suggest 0 -> tag 1 ch 2 rate 22050 bits 16 align 4 avg 88200
+  size 0 40720; back 0 0; one byte 512 0
+  prepare 0 convert 0 used 10240 -> 0 status 10000 hash 811c9dc5:
+msadpcm ch 2 align 72: suggest 0 -> tag 1 ch 2 rate 22050 bits 16 align 4 avg 88200
+  size 0 1200; back 0 0; one byte 512 0
+  prepare 0 convert 0 used 360 -> 0 status 10000 hash 811c9dc5:
+ima-spb100 ch 1 align 256: suggest 512 -> tag 1 ch 2 rate 22050 bits 16 align 4 avg 88200
+  open 512
+pcm 1/22050/16 -> 1/22050/16: open 0 size 0 128 convert 0 used 128 -> 128 hash 8ce84417: 08 20 bb 05 fd b9 0f 44 fc 8c 7a b2
+pcm 1/22050/8 -> 1/22050/16: open 0 size 0 128 convert 0 used 64 -> 128 hash 71dddfc1: 00 a6 00 2f 00 55 00 61 00 f3 00 40
+pcm 1/22050/16 -> 1/22050/8: open 0 size 0 64 convert 0 used 128 -> 64 hash 35f5e060: 97 6e 64 01 ab 04 48 b2 d7 08 b3 c2
+pcm 2/44100/16 -> 1/44100/16: open 0 size 0 128 convert 0 used 256 -> 128 hash 44608e89: 0d 71 ff 7f 00 80 00 80 b0 0a 00 80
+pcm 1/44100/16 -> 2/44100/16: open 0 size 0 256 convert 0 used 128 -> 256 hash 53cfa961: 2d 45 2d 45 4e 01 4e 01 ae 7b ae 7b
+pcm 1/22050/16 -> 1/44100/16: open 0 size 0 256 convert 0 used 128 -> 256 hash dd0a6649: ca 55 ca 55 e7 5c e7 5c a4 02 a4 02
+pcm 2/44100/16 -> 2/22050/16: open 0 size 0 128 convert 0 used 256 -> 128 hash cd62b35e: 99 8a 71 63 22 9e 82 c3 ee 39 0d 83
+pcm 1/11025/8 -> 2/44100/16: open 0 size 0 1024 convert 0 used 64 -> 1020 hash 043abe1d: 00 23 00 23 00 23 00 23 00 23 00 23
+pcm 2/48000/16 -> 2/44100/16: open 0 size 0 236 convert 0 used 256 -> 236 hash 29402015: 12 2b a1 bd 1f fc cd f3 b5 87 90 da

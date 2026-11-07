@@ -14,4 +14,13 @@ CreateGradientStopCollection 0
 image gradient 64 64 3
 CreateBitmap 0
 image bitmaps 64 64 4
+state: EndDraw alone 0x88990001
+state: Flush alone 0x88990001
+state: Begin Begin End 0x88990001
+state: Begin Pop Flush 0x88990016
+state: ... End 0
+state: Begin Push End 0x88990016
+state: then Begin End 0
+state: Fill Begin End 0x88990001
+state: Begin Push Pop End 0
 Release target 0

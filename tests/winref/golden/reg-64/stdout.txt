@@ -1,0 +1,150 @@
+RegOpenKeyExA(HKEY_CURRENT_USER, BASE, 0, KEY_ALL_ACCESS, &k)          = 2
+RegCreateKeyExA(HKEY_CURRENT_USER, BASE, 0, NULL, 0, KEY_ALL_ACCESS, NULL, &k, &disp) = 0
+disp 1
+RegCreateKeyExA(HKEY_CURRENT_USER, BASE, 0, NULL, 0, KEY_ALL_ACCESS, NULL, &k, &disp) = 0
+disp 2
+RegSetValueExA(k, "dword", 0, REG_DWORD, (BYTE *)&dw, 4)               = 0
+RegSetValueExA(k, "qword", 0, REG_QWORD, (BYTE *)&qw, 8)               = 0
+RegSetValueExA(k, "sz", 0, REG_SZ, (BYTE *)"hello", 6)                 = 0
+RegSetValueExA(k, "sz-nonul", 0, REG_SZ, (BYTE *)"abc", 3)             = 0
+RegSetValueExA(k, "sz-empty", 0, REG_SZ, (BYTE *)"", 0)                = 0
+RegSetValueExA(k, "sjis", 0, REG_SZ, (BYTE *)"\x82\xa0\x8a\xbf", 5)    = 0
+RegSetValueExA(k, "expand", 0, REG_EXPAND_SZ, (BYTE *)"%WINDIR%\\x", 11) = 0
+RegSetValueExA(k, "multi", 0, REG_MULTI_SZ, (BYTE *)"a\0bc\0\0", 6)    = 0
+RegSetValueExA(k, "bin", 0, REG_BINARY, (BYTE *)"\x01\x02\x00\x03", 4) = 0
+RegSetValueExA(k, "bin-empty", 0, REG_BINARY, NULL, 0)                 = 0
+RegSetValueExA(k, "dword-short", 0, REG_DWORD, (BYTE *)&dw, 2)         = 0
+RegSetValueExA(k, "odd-type", 0, 0x1234, (BYTE *)"zz", 2)              = 0
+RegSetValueExA(k, NULL, 0, REG_SZ, (BYTE *)"default", 8)               = 0
+RegSetValueExA(k, "MiXeD", 0, REG_DWORD, (BYTE *)&dw, 4)               = 0
+RegSetValueExA(k, "mixed", 0, REG_SZ, (BYTE *)"replaced", 9)           = 0
+query dword (256): 0 type 4 size 4: 78 56 34 12 cc
+query dword (2): 234 type 4 size 4:
+query dword (999): 0 type 4 size 4:
+query qword (256): 0 type 11 size 8: 88 77 66 55 44 33 22 11 cc
+query qword (2): 234 type 11 size 8:
+query qword (999): 0 type 11 size 8:
+query sz (256): 0 type 1 size 6: 68 65 6c 6c 6f 00 6c
+query sz (2): 234 type 1 size 6:
+query sz (999): 0 type 1 size 6:
+query sz-nonul (256): 0 type 1 size 4: 61 62 63 00 63
+query sz-nonul (2): 234 type 1 size 4:
+query sz-nonul (999): 0 type 1 size 4:
+query sz-empty (256): 0 type 1 size 0: cc
+query sz-empty (2): 0 type 1 size 0: cc
+query sz-empty (999): 0 type 1 size 0:
+query sjis (256): 0 type 1 size 5: 82 a0 8a bf 00 00
+query sjis (2): 234 type 1 size 5:
+query sjis (999): 0 type 1 size 5:
+query expand (256): 0 type 2 size 11: 25 57 49 4e 44 49 52 25 5c 78 00 00
+query expand (2): 234 type 2 size 11:
+query expand (999): 0 type 2 size 11:
+query multi (256): 0 type 7 size 6: 61 00 62 63 00 00 63
+query multi (2): 234 type 7 size 6:
+query multi (999): 0 type 7 size 6:
+query bin (256): 0 type 3 size 4: 01 02 00 03 cc
+query bin (2): 234 type 3 size 4:
+query bin (999): 0 type 3 size 4:
+query bin-empty (256): 0 type 3 size 0: cc
+query bin-empty (2): 0 type 3 size 0: cc
+query bin-empty (999): 0 type 3 size 0:
+query dword-short (256): 0 type 4 size 2: 78 56 cc
+query dword-short (2): 0 type 4 size 2: 78 56
+query dword-short (999): 0 type 4 size 2:
+query odd-type (256): 0 type 4660 size 2: 7a 7a cc
+query odd-type (2): 0 type 4660 size 2: 7a 7a
+query odd-type (999): 0 type 4660 size 2:
+query (default) (256): 0 type 1 size 8: 64 65 66 61 75 6c 74 00 75
+query (default) (2): 234 type 1 size 8:
+query (default) (999): 0 type 1 size 8:
+query  (256): 0 type 1 size 8: 64 65 66 61 75 6c 74 00 75
+query  (2): 234 type 1 size 8:
+query  (999): 0 type 1 size 8:
+query MIXED (256): 0 type 1 size 9: 72 65 70 6c 61 63 65 64 00 00
+query MIXED (2): 234 type 1 size 9:
+query MIXED (999): 0 type 1 size 9:
+query missing (256): 2 type 0 size 256:
+query missing (2): 2 type 0 size 2:
+query missing (999): 2 type 0 size 0:
+queryw (256): 0 type 1 size 12: 68 00 65 00 6c 00 6c 00 6f 00 00 00 cc cc
+queryw (3): 234 type 1 size 12:
+queryw (256): 0 type 1 size 8: 61 00 62 00 63 00 00 00 cc cc
+queryw (3): 234 type 1 size 8:
+queryw (256): 0 type 1 size 6: 42 30 22 6f 00 00 cc cc
+queryw (3): 234 type 1 size 6:
+queryw (256): 0 type 7 size 12: 61 00 00 00 62 00 63 00 00 00 00 00 cc cc
+queryw (3): 234 type 7 size 12:
+queryw (256): 0 type 4 size 4: 78 56 34 12 cc cc
+queryw (3): 234 type 4 size 4:
+RegSetValueExW(k, L"wide", 0, REG_SZ, (BYTE *)wv, sizeof wv)           = 0
+query wide (256): 0 type 1 size 5: 82 a0 8a bf 00 00
+query wide (3): 234 type 1 size 5:
+RegGetValueA(k, NULL, "sz-nonul", RRF_RT_REG_SZ, &gt, gb, &gs)         = 0
+get 1 4 abc
+RegGetValueA(k, NULL, "dword", RRF_RT_REG_SZ, &gt, gb, &gs)            = 1630
+RegGetValueA(k, NULL, "expand", RRF_RT_REG_SZ | RRF_NOEXPAND, &gt, gb, &gs) = 1630
+RegCreateKeyExA(k, subs[i], 0, NULL, 0, KEY_ALL_ACCESS, NULL, &sub, &disp) = 0
+disp 1
+RegCreateKeyExA(k, subs[i], 0, NULL, 0, KEY_ALL_ACCESS, NULL, &sub, &disp) = 0
+disp 1
+RegCreateKeyExA(k, subs[i], 0, NULL, 0, KEY_ALL_ACCESS, NULL, &sub, &disp) = 0
+disp 1
+RegCreateKeyExA(k, subs[i], 0, NULL, 0, KEY_ALL_ACCESS, NULL, &sub, &disp) = 0
+disp 1
+RegCreateKeyExA(k, subs[i], 0, NULL, 0, KEY_ALL_ACCESS, NULL, &sub, &disp) = 0
+disp 1
+RegCreateKeyExA(k, "BETA", 0, NULL, 0, KEY_ALL_ACCESS, NULL, &sub, &disp) = 0
+disp 2
+key 0: 0 Alpha len 5
+key 1: 0 beta len 4
+key 2: 0 zeta len 4
+key 3: 0 ƒeƒXƒg len 6
+key 4: 259
+RegEnumKeyExA(k, 0, small, &sl, NULL, NULL, NULL, NULL)                = 234
+len 3
+value 0: 0 [dword] len 5 type 4 size 4
+value 1: 0 [qword] len 5 type 11 size 8
+value 2: 0 [sz] len 2 type 1 size 6
+value 3: 0 [sz-nonul] len 8 type 1 size 4
+value 4: 0 [sz-empty] len 8 type 1 size 0
+value 5: 0 [sjis] len 4 type 1 size 5
+value 6: 0 [expand] len 6 type 2 size 11
+value 7: 0 [multi] len 5 type 7 size 6
+value 8: 0 [bin] len 3 type 3 size 4
+value 9: 0 [bin-empty] len 9 type 3 size 0
+value 10: 0 [dword-short] len 11 type 4 size 2
+value 11: 0 [odd-type] len 8 type 4660 size 2
+value 12: 0 [] len 0 type 1 size 8
+value 13: 0 [MiXeD] len 5 type 1 size 9
+value 14: 0 [wide] len 4 type 1 size 5
+value 15: 259
+RegEnumValueA(k, 0, vn, &vl, NULL, NULL, NULL, NULL)                   = 234
+len 2
+RegQueryInfoKeyA(k, NULL, NULL, NULL, &nsub, &maxsub, &maxcls, &nval, &maxvn, &maxvd, NULL, NULL) = 0
+info 4 5 0 15 11 22
+RegDeleteKeyA(k, "beta")                                               = 5
+RegDeleteKeyA(k, "beta\\deep")                                         = 0
+RegDeleteKeyA(k, "beta")                                               = 0
+RegDeleteKeyA(k, "beta")                                               = 2
+RegDeleteValueA(k, "dword")                                            = 0
+RegDeleteValueA(k, "dword")                                            = 2
+RegDeleteValueA(k, NULL)                                               = 0
+query (default) (256): 2 type 0 size 256:
+RegOpenKeyExA(k, "ALPHA", 0, KEY_READ, &sub2)                          = 0
+RegOpenKeyExA(k, "alpha\\", 0, KEY_READ, &sub2)                        = 0
+RegOpenKeyExA(k, "\\alpha", 0, KEY_READ, &sub2)                        = 161
+RegOpenKeyExA(k, "", 0, KEY_READ, &sub2)                               = 0
+RegOpenKeyExA(k, NULL, 0, KEY_READ, &sub2)                             = 0
+RegSetValueA(k, "old", REG_SZ, "olddata", 7)                           = 0
+RegQueryValueA(k, "old", ob, &ol)                                      = 0
+old [olddata] 8
+RegQueryValueA(k, "old", ob, &ol)                                      = 234
+old size 8
+RegQueryValueA(k, "nothere", ob, &ol)                                  = 2
+RegCloseKey(k)                                                         = 0
+RegCloseKey(k)                                                         = 6
+RegCloseKey(HKEY_CURRENT_USER)                                         = 0
+RegQueryValueExA((HKEY)(ULONG_PTR)0x1234, "x", NULL, NULL, NULL, NULL) = 6
+RegOpenKeyExA(HKEY_LOCAL_MACHINE, "Software", 0, KEY_READ, &sub2)      = 0
+RegDeleteTreeA(HKEY_CURRENT_USER, BASE)                                = 0
+RegOpenKeyExA(HKEY_CURRENT_USER, BASE, 0, KEY_READ, &sub2)             = 2
