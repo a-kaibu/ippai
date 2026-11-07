@@ -96,15 +96,24 @@ addToLibrary({
   },
 
   // sends new regions to be saved (PUT to `url`; the server merges them in), from the main
-  // thread: the program's threads never return to their event loop
+  // thread: the program's threads never return to their event loop. The answer goes back to
+  // kura (vnhost_jit_saved: 1 taken, 2 refused for good, 0 failed: sent again later)
   vnvm_jit_save__proxy: 'sync',
-  vnvm_jit_save__sig: 'vppp',
-  vnvm_jit_save: (url, ptr, len) => {
+  vnvm_jit_save__sig: 'vpppi',
+  vnvm_jit_save: (url, ptr, len, id) => {
     ptr >>>= 0;
     const body = HEAPU8.slice(ptr, ptr + len);
+    const done = (a) => wasmExports.vnhost_jit_saved(id, a);
     fetch(UTF8ToString(url), { method: 'PUT', body }).then(
-      (r) => r.ok || err(`vnjit: save: HTTP ${r.status}`),
-      (e) => err(`vnjit: save: ${e}`));
+      (r) => {
+        if (!r.ok) err(`vnjit: save: HTTP ${r.status}`);
+        const lasting = (r.status >= 400 && r.status < 500 && r.status !== 408 && r.status !== 429) || r.status === 507;
+        done(r.ok ? 1 : lasting ? 2 : 0);
+      },
+      (e) => {
+        err(`vnjit: save: ${e}`);
+        done(0);
+      });
   },
 
   vnvm_jit_run__deps: ['$VNJIT'],

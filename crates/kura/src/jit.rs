@@ -189,7 +189,7 @@ extern "C" {
     fn vnvm_jit_run(cpu: *mut std::ffi::c_void) -> i32;
     fn vnvm_jit_bundle_idx(ptr: *mut u8, cap: usize) -> i32;
     fn vnvm_jit_bundle_load() -> i32;
-    fn vnvm_jit_save(url: *const std::ffi::c_char, ptr: *const u8, len: usize);
+    fn vnvm_jit_save(url: *const std::ffi::c_char, ptr: *const u8, len: usize, id: u32);
 }
 
 struct State {
@@ -1015,12 +1015,120 @@ fn load_saved_fn(st: &mut State, i: usize) -> bool {
 /// Sends the regions built since the last save to IPPAI_JIT_URL (as one module and its index)
 /// once the run is past its start, at most every SAVE_EVERY and only when there are enough to
 /// be worth it: each save changes the module, and Chromium then forgets its compiled code.
+/// What the page said of a save (`vnhost_jit_saved`; host/vnjit.js): taken (2xx), refused for
+/// good (a 4xx but 408/429, 507: sent again it would be again), or failed (no answer, 5xx,
+/// 408/429, or none in SAVE_TIMEOUT): sent again later.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Ack {
+    Failed = 0,
+    Taken = 1,
+    Refused = 2,
+}
+
+const SAVE_EVERY: Duration = Duration::from_secs(30);
+/// A save with no answer by then counts as failed (a slow phone's upload of a big one included).
+const SAVE_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// What has been sent to be saved and what came of it (maybe_save): a region counts as saved
+/// only once the server took it; one whose save failed goes again, the wait doubling (30 s up
+/// to 8 min) while saves keep failing.
+#[derive(Default)]
+struct SaveBook {
+    /// a region's newest build the server took (or refused for good)
+    done: HashMap<Vec<u32>, u32>,
+    /// sent, no answer yet: id -> (when, the regions' builds, whether it is the chunks list)
+    inflight: HashMap<u32, (Instant, Vec<(Vec<u32>, u32)>, bool)>,
+    next_id: u32,
+    /// failures in a row
+    fails: u32,
+    /// the store chunks the run read first: sent (or on their way)
+    chunks_sent: bool,
+}
+
+impl SaveBook {
+    /// Whether `build` of region `r` is to be sent: newer than the one taken, and not on its way.
+    fn wanted(&self, r: &[u32], build: u32) -> bool {
+        self.done.get(r).is_none_or(|&b| build > b) && !self.inflight.values().any(|(_, rs, _)| rs.iter().any(|(x, b)| x == r && *b >= build))
+    }
+
+    fn send(&mut self, now: Instant, regions: Vec<(Vec<u32>, u32)>, chunks: bool) -> u32 {
+        self.next_id = self.next_id.wrapping_add(1);
+        self.chunks_sent |= chunks;
+        self.inflight.insert(self.next_id, (now, regions, chunks));
+        self.next_id
+    }
+
+    fn answer(&mut self, id: u32, a: Ack) {
+        let Some((_, regions, chunks)) = self.inflight.remove(&id) else { return };
+        match a {
+            Ack::Taken | Ack::Refused => {
+                for (r, b) in regions {
+                    let d = self.done.entry(r).or_insert(b);
+                    *d = (*d).max(b);
+                }
+                if a == Ack::Taken {
+                    self.fails = 0;
+                }
+            }
+            Ack::Failed => {
+                self.fails += 1;
+                self.chunks_sent &= !chunks;
+            }
+        }
+    }
+
+    /// Saves past SAVE_TIMEOUT with no answer: failed.
+    fn expire(&mut self, now: Instant) {
+        let old: Vec<u32> = self.inflight.iter().filter(|(_, (t, ..))| now - *t >= SAVE_TIMEOUT).map(|(&id, _)| id).collect();
+        for id in old {
+            self.answer(id, Ack::Failed);
+        }
+    }
+
+    /// The wait before the next save.
+    fn wait(&self) -> Duration {
+        SAVE_EVERY * (1 << self.fails.min(4))
+    }
+}
+
+/// The page's answers to saves, slot `id % 32`: `1 << 63 | id << 8 | ack` (written on the page's
+/// main thread, read by maybe_save on the program's: atomics only, nothing that waits).
+static SAVE_ACKS: [std::sync::atomic::AtomicU64; 32] = [const { std::sync::atomic::AtomicU64::new(0) }; 32];
+
+fn ack(id: u32, a: Ack) {
+    SAVE_ACKS[id as usize % 32].store(1 << 63 | (id as u64) << 8 | a as u64, Ordering::Release);
+}
+
+/// host/vnjit.js, when the server answered save `id` (or the request failed): `ack` an [`Ack`].
+#[no_mangle]
+pub extern "C" fn vnhost_jit_saved(id: u32, a: u32) {
+    ack(id, match a {
+        1 => Ack::Taken,
+        2 => Ack::Refused,
+        _ => Ack::Failed,
+    });
+}
+
+/// The answers that came for the saves on their way.
+fn take_acks(book: &mut SaveBook) {
+    let ids: Vec<u32> = book.inflight.keys().copied().collect();
+    for id in ids {
+        let v = SAVE_ACKS[id as usize % 32].load(Ordering::Acquire);
+        if v >> 63 == 1 && (v >> 8) as u32 == id {
+            book.answer(id, match v & 0xff {
+                1 => Ack::Taken,
+                2 => Ack::Refused,
+                _ => Ack::Failed,
+            });
+        }
+    }
+}
+
 fn maybe_save() {
     const SAVE_AFTER: Duration = Duration::from_secs(20);
-    const SAVE_EVERY: Duration = Duration::from_secs(30);
     const SAVE_MIN: usize = 32;
     static URL: std::sync::OnceLock<Option<std::ffi::CString>> = std::sync::OnceLock::new();
-    static SAVE: Mutex<(Option<Instant>, Option<Instant>, Option<HashMap<Vec<u32>, u32>>, bool)> = Mutex::new((None, None, None, false));
+    static SAVE: Mutex<(Option<Instant>, Option<Instant>, Option<SaveBook>)> = Mutex::new((None, None, None));
     let Some(url) = URL.get_or_init(|| std::env::var("IPPAI_JIT_URL").ok().and_then(|u| std::ffi::CString::new(u).ok())) else {
         return;
     };
@@ -1031,31 +1139,31 @@ fn maybe_save() {
     let g = &mut *guard;
     let now = Instant::now();
     let start = *g.0.get_or_insert(now);
-    if now - start < SAVE_AFTER || g.1.is_some_and(|t| now - t < SAVE_EVERY) {
+    let book = g.2.get_or_insert_with(SaveBook::default);
+    take_acks(book);
+    book.expire(now);
+    if now - start < SAVE_AFTER || g.1.is_some_and(|t| now - t < book.wait()) {
         return;
     }
     // (a function's newest build; a newer one than saved goes again)
-    let done = g.2.get_or_insert_with(HashMap::new);
     let new: Vec<(Vec<u32>, Arc<Shared>)> = {
         let sh = SHARED.lock().unwrap();
         let Some(sh) = sh.as_ref() else { return };
         sh.iter()
             .filter_map(|(r, l)| {
                 let s = l.iter().max_by_key(|s| s.build)?;
-                (done.get(r).is_none_or(|&b| s.build > b)).then(|| (r.clone(), s.clone()))
+                book.wanted(r, s.build).then(|| (r.clone(), s.clone()))
             })
             .collect()
     };
-    if new.len() < SAVE_MIN {
+    // (fewer when they are what a failed save left: the run may have little more to add)
+    if new.len() < SAVE_MIN && (book.fails == 0 || new.is_empty()) {
         return;
     }
     g.1 = Some(now);
-    for (r, s) in &new {
-        done.insert(r.clone(), s.build);
-    }
+    let id = book.send(now, new.iter().map(|(r, s)| (r.clone(), s.build)).collect(), false);
     // the first time, the store chunks the run read so far too (for the page to fetch ahead)
-    let chunks = if g.3 { None } else { Some(crate::vfs::fetched()) };
-    g.3 = true;
+    let chunks = (!book.chunks_sent).then(|| (book.send(now, Vec::new(), true), crate::vfs::fetched()));
     drop(guard);
     // merged and sent on a thread of its own: the merge of a few hundred functions took the
     // game's thread tens of ms
@@ -1065,7 +1173,7 @@ fn maybe_save() {
         std::thread::Builder::new().name("vnjit-save".into()).spawn(move || rx.into_iter().for_each(save)).ok()?;
         Some(tx)
     });
-    let job = (url.as_c_str(), new, chunks);
+    let job = (url.as_c_str(), id, new, chunks);
     match tx {
         Some(tx) => {
             let _ = tx.send(job);
@@ -1074,10 +1182,11 @@ fn maybe_save() {
     }
 }
 
-/// What [`save`] sends: the URL, the new regions, the chunks read (the first time).
-type Save = (&'static std::ffi::CStr, Vec<(Vec<u32>, Arc<Shared>)>, Option<Vec<u8>>);
+/// What [`save`] sends: the URL, the save's id and new regions, the chunks read (the first
+/// time, with their id).
+type Save = (&'static std::ffi::CStr, u32, Vec<(Vec<u32>, Arc<Shared>)>, Option<(u32, Vec<u8>)>);
 
-fn save((url, new, chunks): Save) {
+fn save((url, id, new, chunks): Save) {
     let entries: Vec<jit::saved::Entry> = new
         .iter()
         .map(|(r, s)| jit::saved::Entry {
@@ -1093,6 +1202,11 @@ fn save((url, new, chunks): Save) {
     let names = jit::saved::func_names(&entries);
     let Some(wasm) = jit::wasm::merge(&mods, &names) else {
         eprintln!("vnjit: save: {} modules don't merge", mods.len());
+        // (they would not the next time either)
+        ack(id, Ack::Refused);
+        if let Some((c, _)) = chunks {
+            ack(c, Ack::Failed);
+        }
         return;
     };
     let idx = jit::saved::encode(&entries);
@@ -1104,10 +1218,10 @@ fn save((url, new, chunks): Save) {
     body.extend_from_slice(&idx);
     #[cfg(target_os = "emscripten")]
     unsafe {
-        vnvm_jit_save(url.as_ptr(), body.as_ptr(), body.len());
-        if let Some(c) = &chunks {
+        vnvm_jit_save(url.as_ptr(), body.as_ptr(), body.len(), id);
+        if let Some((cid, c)) = &chunks {
             let u = std::ffi::CString::new(format!("{}.chunks", url.to_str().unwrap_or(""))).unwrap();
-            vnvm_jit_save(u.as_ptr(), c.as_ptr(), c.len());
+            vnvm_jit_save(u.as_ptr(), c.as_ptr(), c.len(), *cid);
         }
     };
     let _ = (url, body, chunks);
@@ -2128,3 +2242,88 @@ pub(crate) fn count_entry(eip: u32) {
     });
 }
 
+
+#[cfg(test)]
+mod save_tests {
+    use super::*;
+
+    fn regions(n: u32, build: u32) -> Vec<(Vec<u32>, u32)> {
+        (0..n).map(|i| (vec![0x1000 + i], build)).collect()
+    }
+
+    #[test]
+    fn saved_only_once_taken() {
+        let t0 = Instant::now();
+        let mut b = SaveBook::default();
+        let id = b.send(t0, regions(3, 0), false);
+        // on its way: not sent again, not saved either
+        assert!(!b.wanted(&[0x1000], 0));
+        assert!(b.wanted(&[0x1000], 1), "a newer build goes");
+        b.answer(id, Ack::Taken);
+        assert!(!b.wanted(&[0x1000], 0) && b.wanted(&[0x1000], 1));
+        assert!(b.inflight.is_empty());
+        assert_eq!(b.wait(), SAVE_EVERY);
+    }
+
+    #[test]
+    fn a_failed_save_goes_again_later_and_later() {
+        let t0 = Instant::now();
+        let mut b = SaveBook::default();
+        let mut waits = Vec::new();
+        for _ in 0..6 {
+            let id = b.send(t0, regions(2, 0), false);
+            b.answer(id, Ack::Failed);
+            assert!(b.wanted(&[0x1000], 0) && b.wanted(&[0x1001], 0), "sent again");
+            waits.push(b.wait().as_secs());
+        }
+        assert_eq!(waits, [60, 120, 240, 480, 480, 480]);
+        let id = b.send(t0, regions(2, 0), false);
+        b.answer(id, Ack::Taken);
+        assert_eq!(b.wait(), SAVE_EVERY, "back to every 30 s once one is taken");
+        assert!(!b.wanted(&[0x1000], 0));
+    }
+
+    #[test]
+    fn refused_for_good_is_not_sent_again() {
+        let mut b = SaveBook::default();
+        let id = b.send(Instant::now(), regions(1, 2), false);
+        b.answer(id, Ack::Refused);
+        assert!(!b.wanted(&[0x1000], 2) && !b.wanted(&[0x1000], 1));
+        assert!(b.wanted(&[0x1000], 3));
+    }
+
+    #[test]
+    fn no_answer_counts_as_failed() {
+        let t0 = Instant::now();
+        let mut b = SaveBook::default();
+        b.send(t0, regions(1, 0), false);
+        let c = b.send(t0, Vec::new(), true);
+        assert!(b.chunks_sent);
+        b.expire(t0 + SAVE_TIMEOUT - Duration::from_secs(1));
+        assert_eq!(b.inflight.len(), 2);
+        b.expire(t0 + SAVE_TIMEOUT);
+        assert!(b.inflight.is_empty() && b.wanted(&[0x1000], 0));
+        assert!(!b.chunks_sent, "the chunks list goes again too");
+        // a late answer for one already given up: nothing
+        b.answer(c, Ack::Taken);
+        assert!(!b.chunks_sent);
+    }
+
+    #[test]
+    fn answers_come_through_the_slots() {
+        let mut b = SaveBook::default();
+        // (ids far from the other tests': slots are per process)
+        b.next_id = 1000;
+        let a = b.send(Instant::now(), regions(1, 0), false);
+        let c = b.send(Instant::now(), vec![(vec![0x2000], 0)], false);
+        vnhost_jit_saved(a, 1);
+        // a stale answer in c's slot (an id 32 before): not c's
+        ack(c.wrapping_sub(32), Ack::Taken);
+        take_acks(&mut b);
+        assert!(!b.wanted(&[0x1000], 0));
+        assert!(b.inflight.contains_key(&c));
+        vnhost_jit_saved(c, 0);
+        take_acks(&mut b);
+        assert!(b.inflight.is_empty() && b.wanted(&[0x2000], 0) && b.fails == 1);
+    }
+}
