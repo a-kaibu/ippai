@@ -151,3 +151,6 @@ heap-* ^(want|got) +  in-place shrink (0 size -1|1 size (7|8))$
 # process ACP 932; CharUpperA, CharNextExA(932) and kernel32 do use 932), and IsCharAlphaW(あ)
 # is 0 although GetStringTypeW gives C1_ALPHA. sake plays a Japanese Windows (932 everywhere).
 nls-* ^(want|got) +(CharNextA|IsCharAlphaA 1 0 IsCharAlphaW) 
+# a NULL handle with a NULL pointer: Windows Server 2025 checks the handle first (6), older
+# Windows and Wine's tests check the pointer first (87); sake follows the tests
+eventlog-* ^(want|got) +(GetNumberOfEventLogRecords|BackupEventLogA)\(NULL, NULL\): 0 (6|87)$

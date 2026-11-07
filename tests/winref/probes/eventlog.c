@@ -136,7 +136,9 @@ int main(void) {
     ERR(ClearEventLogA(b, NULL));
     if (b) {
         EVENTLOGRECORD *c = newest(b, TRUE, &len);
-        printf("backup has the record %d\n", c && c->RecordNumber == number && c->Length == w->Length && !memcmp(c, w, w->Length));
+        printf("backup: has a record %d", c != NULL);
+        if (c) printf(" same number %d same length %d same bytes %d", c->RecordNumber == number, c->Length == w->Length, c->Length == w->Length && !memcmp(c, w, w->Length));
+        printf("\n");
     }
     CloseEventLog(b);
     CloseEventLog(b2);
