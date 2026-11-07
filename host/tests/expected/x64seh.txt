@@ -2,3 +2,5 @@ none: 0/200 bad
 seh: 0/200 bad
 longjmp: 0/200 bad
 veh: 0/200 bad
+consolidate: 0/200 bad, went on at 2
+consolidate raise: 0/200 bad, went on at 3

@@ -264,7 +264,7 @@ fn step(cpu: &mut Cpu, kind: u32, ctx: u32, seen: &mut usize, rec: u32) -> Optio
         // exception leaving the catch)
         let sp = rsp(ctx);
         crate::cxx64::through_catch(cpu, sp as u32, kind == UNW_FLAG_UHANDLER, rec);
-        crate::mem::copy(ctx, r64(sp as u32) as u32, CONTEXT_SIZE);
+        crate::mem::copy(ctx, consolidate_saved(sp as u32), CONTEXT_SIZE);
         return Some((0, 0, sp, 0, 0));
     }
     if pc == UNWIND_TRAP as u64 {
@@ -389,8 +389,16 @@ fn walk(cpu: &mut Cpu) {
     loop {
         crate::mem::copy(d.next, d.cur, CONTEXT_SIZE);
         let pc = rip(d.cur);
-        let Some((h, data, frame, f, base)) = step(cpu, UNW_FLAG_EHANDLER, d.next, &mut 1, d.rec) else { break };
+        let Some((h, data, frame, f, base)) = step(cpu, UNW_FLAG_EHANDLER, d.next, &mut 1, d.rec) else {
+            if trace() {
+                eprintln!("sake: x64 walk: no frame above pc {pc:#x}");
+            }
+            break;
+        };
         if frame >= d.limit || rsp(d.next) > d.limit {
+            if trace() {
+                eprintln!("sake: x64 walk: frame {frame:#x} (pc {pc:#x}, next rsp {:#x}) past the stack base {:#x}", rsp(d.next), d.limit);
+            }
             break;
         }
         if h != 0 {
@@ -418,6 +426,9 @@ fn walk(cpu: &mut Cpu) {
             cpu.rip_hi = (h >> 32) as u32;
             // (the frame to go on with when it says "continue search")
             return;
+        }
+        if trace() {
+            eprintln!("sake: x64 walk: pc {pc:#x} -> {:#x} rsp {:#x} (frame {frame:#x})", rip(d.next), rsp(d.next));
         }
         crate::mem::copy(d.cur, d.next, CONTEXT_SIZE);
     }
@@ -734,7 +745,8 @@ fn restore_cpu(cpu: &mut Cpu, ctx: u32, rec: u32) {
     if code == STATUS_UNWIND_CONSOLIDATE && r32(rec + 0x18) >= 1 {
         // the callback (a catch block) runs below the stack the unwind was called on (the
         // thrown object may be in a frame unwound) and returns where to go on; its return
-        // address is CONSOLIDATE_TRAP with the target context above it
+        // address is CONSOLIDATE_TRAP with the target context above it, its pointer past the
+        // callee's home space (MSVC's code keeps registers there: rbx, rcx)
         let cb = r64(rec + 0x20);
         let sp = deep.min(rsp(ctx) as u32);
         let saved = ((sp - 0x100) & !15) - CONTEXT_SIZE;
@@ -742,7 +754,7 @@ fn restore_cpu(cpu: &mut Cpu, ctx: u32, rec: u32) {
         // (RSP+8 16-byte aligned at its entry, as after a call)
         let frame = saved - 0x38;
         w64(frame, CONSOLIDATE_TRAP as u64);
-        w64(frame + 8, saved as u64);
+        w64(frame + 8 + HOME, saved as u64);
         cpu.set_gpr(4, frame as u64);
         cpu.set_gpr(1, rec as u64);
         cpu.eip = cb as u32;
@@ -753,10 +765,18 @@ fn restore_cpu(cpu: &mut Cpu, ctx: u32, rec: u32) {
     }
 }
 
+/// The x64 home space of four registers above a return address (the callee's to write)
+const HOME: u32 = 0x20;
+/// The target context of the catch block that returns to CONSOLIDATE_TRAP with the stack at
+/// `sp` (past the return address)
+fn consolidate_saved(sp: u32) -> u32 {
+    r64(sp + HOME) as u32
+}
+
 /// CONSOLIDATE_TRAP: the catch block returned where to continue (RAX).
 pub fn consolidated(cpu: &mut Cpu) {
     let sp = cpu.gpr(4) as u32; // (past the return address)
-    let saved = r64(sp) as u32;
+    let saved = consolidate_saved(sp);
     let to = crate::cxx64::catch_done(cpu, sp, cpu.gpr(0));
     set_rip(saved, to);
     load_context(cpu, saved);

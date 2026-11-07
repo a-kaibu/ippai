@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <stdio.h>
 #include <setjmp.h>
+#include <intrin.h>
 static volatile int depth_hits;
 __declspec(noinline) static void deep(int n) {
     volatile char buf[48]; buf[0] = n;
@@ -62,13 +63,65 @@ static LONG CALLBACK veh(EXCEPTION_POINTERS *p) {
 }
 static void t_veh(void) { RaiseException(0xE0000002, 0, 0, NULL); }
 static void t_none(void) { Sleep(0); }
+
+/* RtlUnwindEx with a STATUS_UNWIND_CONSOLIDATE record (as the C++ runtimes run catch blocks):
+   the callback writes its home space, as MSVC's __CxxCallCatchBlock keeps registers there, and
+   returns where the target frame goes on; or it raises an exception, which the frames above the
+   target catch (a throw from a catch block) */
+static volatile int cons_raise, cons_where;
+extern void *cons_cb(EXCEPTION_RECORD *rec);
+__declspec(noinline) void *cons_body(EXCEPTION_RECORD *rec) {
+    if (cons_raise) RaiseException(0xE0000003, 0, 0, NULL);
+    return (void *)rec->ExceptionInformation[1];
+}
+__asm__(
+".globl cons_cb\n"
+".def cons_cb; .scl 2; .type 32; .endef\n"
+".seh_proc cons_cb\n"
+"cons_cb:\n"
+" mov %rcx,8(%rsp); movq $-1,16(%rsp); movq $-1,24(%rsp); movq $-1,32(%rsp)\n"
+" sub $0x28,%rsp\n"
+" .seh_stackalloc 0x28\n"
+" .seh_endprologue\n"
+" call cons_body\n"
+" add $0x28,%rsp\n"
+" ret\n"
+" .seh_endproc\n");
+__declspec(noinline) static ULONG64 caller_sp(void) { return (ULONG64)_AddressOfReturnAddress() + 8; }
+__declspec(noinline) static int cons_target(void) {
+    volatile int where = 1;
+    EXCEPTION_RECORD rec = {0};
+    CONTEXT ctx;
+    rec.ExceptionCode = STATUS_UNWIND_CONSOLIDATE;
+    rec.NumberParameters = 2;
+    rec.ExceptionInformation[0] = (ULONG_PTR)cons_cb;
+    rec.ExceptionInformation[1] = (ULONG_PTR)&&resume;
+    if (where == 1) {
+        where = 2;
+        RtlUnwindEx((void *)caller_sp(), &&resume, &rec, NULL, &ctx, NULL);
+        return -1;
+    }
+resume:
+    return where;
+}
+static void t_cons(void) {
+    cons_raise = 0;
+    cons_where = cons_target();
+}
+static void t_cons_raise(void) {
+    cons_raise = 1;
+    cons_where = 0;
+    __try { cons_where = cons_target(); } __except (GetExceptionCode() == 0xE0000003) { cons_where = 3; }
+}
 int main(void) {
     AddVectoredExceptionHandler(1, veh);
-    struct { const char *n; void (*f)(void); } t[] = {{"none", t_none}, {"seh", t_seh}, {"longjmp", t_jmp}, {"veh", t_veh}};
-    for (int i = 0; i < 4; i++) {
+    struct { const char *n; void (*f)(void); } t[] = {{"none", t_none}, {"seh", t_seh}, {"longjmp", t_jmp}, {"veh", t_veh}, {"consolidate", t_cons}, {"consolidate raise", t_cons_raise}};
+    for (int i = 0; i < 6; i++) {
         int bad = 0, r = 0;
         for (int k = 0; k < 200; k++) if ((r = check_regs(t[i].f))) { bad++; if (bad == 1) printf("%s: first bad reg %d\n", t[i].n, r); }
-        printf("%s: %d/200 bad\n", t[i].n, bad);
+        printf("%s: %d/200 bad", t[i].n, bad);
+        if (i >= 4) printf(", went on at %d", cons_where);
+        printf("\n");
     }
     return 0;
 }
