@@ -187,6 +187,10 @@ pub fn info(dxgi: u32) -> Option<Format> {
         42 => f(P_R32UI, 4),
         43 => f(P_R32SI, 4),
         44 | 45 | 46 => f(P_D24S8, 4),
+        // D32_FLOAT_S8X24 and its typeless / view formats (Unity's default depth buffer): the
+        // page has no 32-bit float depth with stencil everywhere (WebGPU's depth32float-stencil8
+        // is optional), so 24-bit depth + stencil; 8 bytes a texel in the guest's layout
+        19..=22 => f(P_D24S8, 8),
         48 | 49 => f(P_RG8, 2),
         53 | 54 => f(P_R16F, 2),
         55 => f(P_D16, 2),
@@ -383,8 +387,9 @@ mod proofs {
             assert!(f.block == 1 || f.block == 4);
             assert!(pitch == w.div_ceil(f.block) * f.bpp && rows == h.div_ceil(f.block));
             assert!(pitch as u64 * rows as u64 <= 16384 * 16384 * 16);
-            if f.conv == 0 {
-                // copied as is: the page format has the guest's texel size
+            if f.conv == 0 && !(19..=22).contains(&dxgi) {
+                // copied as is: the page format has the guest's texel size (but D32_FLOAT_S8X24,
+                // a depth buffer the page keeps as D24S8: never uploaded)
                 assert!(f.block == 1 && page_bpp(f.page) == f.bpp);
             }
         }
@@ -408,6 +413,17 @@ mod conv_tests {
         // signed: -128 reads as -127, the extremes are -1 and 1
         let v = bc4_block(&[0x80, 0x7f, 0b110 | 0b111 << 3, 0, 0, 0, 0, 0], true);
         assert_eq!((v[0], v[1], v[2]), (-1.0, 1.0, -1.0));
+    }
+
+    /// Unity's D32_FLOAT_S8X24 depth buffer and the views of it are depth-stencil formats
+    #[test]
+    fn d32s8_family_is_depth() {
+        for dxgi in 19..=22 {
+            let f = info(dxgi).unwrap();
+            assert!(is_depth(f.page), "{dxgi}");
+            assert_ne!(support(dxgi) & 0x10000, 0, "{dxgi}: DEPTH_STENCIL");
+            assert_eq!(pitch_rows(dxgi, 1280, 720), (1280 * 8, 720));
+        }
     }
 
     #[test]

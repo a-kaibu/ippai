@@ -937,19 +937,22 @@ fn InitOnceInitialize(c: &mut Ctx) -> u32 {
 }
 
 fn InterlockedIncrement(c: &mut Ctx) -> u32 {
-    atomic(c.a(0)).fetch_add(1, Ordering::SeqCst).wrapping_add(1)
+    mem::atomic_rmw32(c.a(0), |v| v.wrapping_add(1)).wrapping_add(1)
 }
 fn InterlockedDecrement(c: &mut Ctx) -> u32 {
-    atomic(c.a(0)).fetch_sub(1, Ordering::SeqCst).wrapping_sub(1)
+    mem::atomic_rmw32(c.a(0), |v| v.wrapping_sub(1)).wrapping_sub(1)
 }
 fn InterlockedExchange(c: &mut Ctx) -> u32 {
-    atomic(c.a(0)).swap(c.a(1), Ordering::SeqCst)
+    let v = c.a(1);
+    mem::atomic_rmw32(c.a(0), |_| v)
 }
 fn InterlockedExchangeAdd(c: &mut Ctx) -> u32 {
-    atomic(c.a(0)).fetch_add(c.a(1), Ordering::SeqCst)
+    let d = c.a(1);
+    mem::atomic_rmw32(c.a(0), |v| v.wrapping_add(d))
 }
 fn InterlockedCompareExchange(c: &mut Ctx) -> u32 {
-    atomic(c.a(0)).compare_exchange(c.a(2), c.a(1), Ordering::SeqCst, Ordering::SeqCst).unwrap_or_else(|v| v)
+    let (new, cmp) = (c.a(1), c.a(2));
+    mem::atomic_rmw32(c.a(0), |v| if v == cmp { new } else { v })
 }
 
 // TLS slots: TEB+0xE10 (64), then TEB+0xF94 -> 1024 more

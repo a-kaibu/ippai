@@ -661,3 +661,73 @@ pub fn heap_realloc(p: u32, size: u32, zero: bool) -> u32 {
     heap_free_small(p);
     n
 }
+
+/// A locked read-modify-write of the dword at `a` (the Interlocked* functions): returns the old
+/// value and stores `f(old)`. x86 allows the dword unaligned (mono's JIT keeps counters in
+/// packed structures) but wasm atomics fault on it: an unaligned one inside an aligned qword
+/// swaps that qword, one that straddles two takes a lock (atomic against the others that do).
+pub fn atomic_rmw32(a: u32, f: impl Fn(u32) -> u32) -> u32 {
+    rmw32_at(a as usize, f)
+}
+pub(crate) fn rmw32_at(p: usize, f: impl Fn(u32) -> u32) -> u32 {
+    use std::sync::atomic::{AtomicU32, AtomicU64, Ordering::SeqCst};
+    unsafe {
+        if p % 4 == 0 {
+            let a = &*(p as *const AtomicU32);
+            return a.fetch_update(SeqCst, SeqCst, |v| Some(f(v))).unwrap_or_else(|v| v);
+        }
+        let word = p & !7;
+        if p - word <= 4 {
+            let w = &*(word as *const AtomicU64);
+            let sh = (p - word) as u32 * 8;
+            let m = 0xffff_ffffu64 << sh;
+            let mut old = 0;
+            let _ = w.fetch_update(SeqCst, SeqCst, |cur| {
+                old = ((cur & m) >> sh) as u32;
+                Some((cur & !m) | ((f(old) as u64) << sh))
+            });
+            return old;
+        }
+        static SPLIT: Mutex<()> = Mutex::new(());
+        let _g = SPLIT.lock().unwrap_or_else(|e| e.into_inner());
+        let old = (p as *const u32).read_unaligned();
+        (p as *mut u32).write_unaligned(f(old));
+        old
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rmw32_at;
+
+    /// every offset in a 16-byte buffer: the dword changes, its neighbours don't
+    #[test]
+    fn rmw32_any_alignment() {
+        #[repr(align(8))]
+        struct B([u8; 16]);
+        for off in 0..=12usize {
+            let mut b = B([0xaa; 16]);
+            b.0[off..off + 4].copy_from_slice(&0x1122_3344u32.to_le_bytes());
+            let p = b.0.as_mut_ptr() as usize + off;
+            assert_eq!(rmw32_at(p, |v| v.wrapping_add(0x0101_0101)), 0x1122_3344);
+            assert_eq!(u32::from_le_bytes(b.0[off..off + 4].try_into().unwrap()), 0x1223_3445, "offset {off}");
+            assert!(b.0[..off].iter().chain(&b.0[off + 4..]).all(|&x| x == 0xaa), "offset {off}");
+        }
+    }
+
+    /// increments from several threads at an offset inside a qword and one across two: none lost
+    #[test]
+    fn rmw32_unaligned_threads() {
+        #[repr(align(8))]
+        struct B([u8; 24]);
+        let b = Box::leak(Box::new(B([0; 24])));
+        let base = b.0.as_mut_ptr() as usize;
+        for off in [1usize, 2, 6] {
+            let p = base + off;
+            let hs: Vec<_> = (0..4).map(|_| std::thread::spawn(move || (0..20000).for_each(|_| { rmw32_at(p, |v| v + 1); }))).collect();
+            hs.into_iter().for_each(|h| h.join().unwrap());
+            assert_eq!(unsafe { (p as *const u32).read_unaligned() }, 80000, "offset {off}");
+            unsafe { (p as *mut u32).write_unaligned(0) };
+        }
+    }
+}

@@ -151,6 +151,9 @@ fn value(class: &str, prop: &str) -> Option<Val> {
         ("win32_videocontroller", "name" | "caption" | "description" | "videoprocessor") => S("WebGPU Display Adapter"),
         ("win32_videocontroller", "adapterram") => I(0x4000_0000),
         ("win32_videocontroller", "driverversion") => S("31.0.101.1"),
+        // (the ids DXGI's adapter reports, kura/src/d3d11: Unity matches VEN_/DEV_ against them
+        // and reads the string without checking for VT_NULL)
+        ("win32_videocontroller", "pnpdeviceid") => S("PCI\\VEN_10DE&DEV_1C82&SUBSYS_00000000&REV_A1\\4&1A2B3C4D&0&0008"),
         ("win32_videocontroller", "currenthorizontalresolution") => I(1920),
         ("win32_videocontroller", "currentverticalresolution") => I(1080),
         ("win32_videocontroller", "currentbitsperpixel") => I(32),
