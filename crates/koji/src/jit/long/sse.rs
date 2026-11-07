@@ -13,6 +13,9 @@ use iced_x86::{EncodingKind, Instruction, Mnemonic, OpKind, Register};
 
 /// The Cpu offset of XMM register `r`.
 fn xoff(r: Register) -> u32 {
+    if r.is_mm() {
+        return (offset_of!(Cpu, mm) + 8 * (r as usize - Register::MM0 as usize)) as u32;
+    }
     let i = r as usize - Register::XMM0 as usize;
     if i < 8 {
         (offset_of!(Cpu, xmm) + 16 * i) as u32
@@ -23,6 +26,36 @@ fn xoff(r: Register) -> u32 {
 
 fn is_x(ins: &Instruction, i: u32) -> bool {
     ins.op_kind(i) == OpKind::Register && ins.op_register(i).is_xmm()
+}
+
+fn is_mm(ins: &Instruction, i: u32) -> bool {
+    ins.op_kind(i) == OpKind::Register && ins.op_register(i).is_mm()
+}
+
+/// An instruction with an MMX register: the forms translated (an MMX register is the low half
+/// of a v128, as in jit/packed.rs: lane-wise operations give the same low half).
+fn mmx(ins: &Instruction) -> bool {
+    use Mnemonic::*;
+    let m = ins.mnemonic();
+    let n = ins.op_count();
+    let full = || n == 2 && is_mm(ins, 0) && (is_mm(ins, 1) || mem(ins, 1)) && size_ok(ins, 8);
+    match m {
+        Movd | Movq => {
+            let size = if m == Movd { 4 } else { 8 };
+            n == 2
+                && size_ok(ins, size)
+                && ((is_mm(ins, 0) && (gpr(ins, 1) || mem(ins, 1) || (m == Movq && is_mm(ins, 1))))
+                    || ((gpr(ins, 0) || mem(ins, 0)) && is_mm(ins, 1)))
+        }
+        Movntq => n == 2 && mem(ins, 0) && is_mm(ins, 1) && size_ok(ins, 8),
+        Pandn | Pmulhw | Pmulhuw | Pmuludq | Packsswb | Packuswb | Packssdw | Psadbw => full(),
+        _ if super::super::packed::binop(m).is_some() => full(),
+        _ if super::super::packed::unpack(m).is_some_and(|(e, _)| e < 8) && matches!(m, Punpcklbw | Punpcklwd | Punpckldq | Punpckhbw | Punpckhwd | Punpckhdq) => full(),
+        _ if super::super::packed::shift(m).is_some() => {
+            n == 2 && is_mm(ins, 0) && (ins.op_kind(1) == OpKind::Immediate8 || ((is_mm(ins, 1) || mem(ins, 1)) && size_ok(ins, 8)))
+        }
+        _ => false,
+    }
 }
 
 fn gpr(ins: &Instruction, i: u32) -> bool {
@@ -66,6 +99,12 @@ pub(super) fn plan(ins: &Instruction) -> Option<(Instruction, Option<Register>)>
             (li, is_x(ins, 0).then(|| ins.op_register(0)))
         }
     } else if ins.encoding() == EncodingKind::Legacy {
+        if ins.mnemonic() == Mnemonic::Emms {
+            return Some((*ins, None));
+        }
+        if (0..ins.op_count()).any(|i| is_mm(ins, i)) {
+            return mmx(ins).then(|| (*ins, is_mm(ins, 0).then(|| ins.op_register(0))));
+        }
         (*ins, is_x(ins, 0).then(|| ins.op_register(0)))
     } else {
         return None;
@@ -160,7 +199,11 @@ impl Gen<'_> {
 
     /// Pushes XMM register `r`.
     fn xget(&mut self, r: Register) {
-        self.c.get(L_CPU).v128load(xoff(r));
+        if r.is_mm() {
+            self.c.get(L_CPU).v128load64(xoff(r));
+        } else {
+            self.c.get(L_CPU).v128load(xoff(r));
+        }
     }
 
     /// Pushes operand `i` as a v128 (memory: its `size` bytes, zeros above).
@@ -186,7 +229,11 @@ impl Gen<'_> {
     /// Stores the v128 in L_V0 to the destination register.
     fn vput(&mut self) {
         let d = self.ins.op_register(0);
-        self.c.get(L_CPU).get(L_V0).v128store(xoff(d));
+        if d.is_mm() {
+            self.c.get(L_CPU).get(L_V0).lane(0x1d, 0).store64(xoff(d));
+        } else {
+            self.c.get(L_CPU).get(L_V0).v128store(xoff(d));
+        }
     }
 
     /// Pushes the i64 of a GPR or memory operand `i` (`bits` wide, zero-extended).
@@ -226,12 +273,19 @@ impl Gen<'_> {
                     self.vput();
                 }
             }
+            Emms => {
+                let empty = (offset_of!(Cpu, fpu) + offset_of!(crate::fpu::Fpu, empty)) as u32;
+                self.c.get(L_CPU).i32c(0xff).store8(empty);
+            }
+            Movntq => {
+                self.c.get(L_A).get(L_CPU).load64(xoff(ins.op_register(1))).store64(0);
+            }
             Movd | Movq => {
                 let bits = if m == Movd { 32 } else { 64 };
-                if is_x(&ins, 0) {
+                if is_x(&ins, 0) || is_mm(&ins, 0) {
                     // zero-extended into the register
                     let d = ins.op_register(0);
-                    if is_x(&ins, 1) {
+                    if is_x(&ins, 1) || is_mm(&ins, 1) {
                         self.xget(ins.op_register(1));
                         self.c.lane(0x1d, 0); // i64x2.extract_lane 0
                     } else {
@@ -243,7 +297,9 @@ impl Gen<'_> {
                     let t = self.temp();
                     self.c.set(t);
                     self.c.get(L_CPU).get(t).store64(xoff(d));
-                    self.c.get(L_CPU).i64c(0).store64(xoff(d) + 8);
+                    if !d.is_mm() {
+                        self.c.get(L_CPU).i64c(0).store64(xoff(d) + 8);
+                    }
                 } else {
                     // out of the register's low bits
                     self.c.get(L_CPU).load64(xoff(ins.op_register(1)));
@@ -435,6 +491,7 @@ impl Gen<'_> {
         let src_size = match m {
             Cvtps2pd | Cvtdq2pd | Pmovzxbw | Pmovzxwd | Pmovzxdq | Pmovsxbw | Pmovsxwd | Pmovsxdq => 8,
             Pmovzxbd | Pmovzxwq | Pmovsxbd | Pmovsxwq => 4,
+            _ if is_mm(&ins, 0) => 8,
             _ => 16,
         };
         if src1.is_some() {
@@ -453,7 +510,8 @@ impl Gen<'_> {
             }
             self.c.get(b).simd(op);
         } else if let Some((e, high)) = unpack(m) {
-            let start = if high { 8 } else { 0 };
+            // (MMX: the high half of 8 bytes)
+            let start = if !high { 0 } else if is_mm(&ins, 0) { 4 } else { 8 };
             let mut l = [0u8; 16];
             for k in 0..16 / (2 * e) {
                 for t in 0..e {
@@ -564,6 +622,11 @@ impl Gen<'_> {
                 Packsswb | Packuswb | Packssdw | Packusdw => {
                     let op = match m { Packsswb => 0x65, Packuswb => 0x66, Packssdw => 0x85, _ => 0x86 };
                     self.c.get(a).get(b).simd(op);
+                    if is_mm(&ins, 0) {
+                        // (MMX: the first operand's 4 bytes, then the second's)
+                        let l: [u8; 16] = core::array::from_fn(|k| (if k < 4 { k } else if k < 8 { k + 4 } else { k }) as u8);
+                        self.c.set(a).get(a).get(a).shuffle(l);
+                    }
                 }
                 Pshufb => {
                     // swizzle gives 0 for indexes past 15: the high bit kept, the rest cut to 4 bits

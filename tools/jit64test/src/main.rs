@@ -412,6 +412,7 @@ fn random_ins(rng: &mut Rng, out: &mut Vec<Instruction>, rip_hi: u32) {
                 _ => Instruction::with1(if b == 64 { C::Bswap_r64 } else { C::Bswap_r32 }, sized(r(rng), b)).unwrap(),
             }
         }
+        29 if rng.below(8) == 0 => Instruction::with(C::Emms),
         28 => {
             // locked read-modify-writes and xchg with memory: aligned (wasm atomics) or not
             let b = rng.pick(&[32u32, 64]);
@@ -472,8 +473,9 @@ fn sse_codes() -> &'static [Code] {
                     return false;
                 }
                 let kinds: Vec<K> = (0..o.op_count()).map(|i| o.op_kind(i)).collect();
-                let ok = kinds.iter().all(|k| matches!(k, K::xmm_reg | K::xmm_rm | K::xmm_or_mem | K::xmm_vvvv | K::r32_reg | K::r64_reg | K::r32_rm | K::r64_rm | K::r32_or_mem | K::r64_or_mem | K::imm8 | K::mem));
-                let any_x = kinds.iter().any(|k| matches!(k, K::xmm_reg | K::xmm_rm | K::xmm_or_mem | K::xmm_vvvv));
+                let ok = kinds.iter().all(|k| matches!(k, K::xmm_reg | K::xmm_rm | K::xmm_or_mem | K::xmm_vvvv | K::mm_reg | K::mm_rm | K::mm_or_mem | K::r32_reg | K::r64_reg | K::r32_rm | K::r64_rm | K::r32_or_mem | K::r64_or_mem | K::imm8 | K::mem));
+                // (MMX forms too: an MMX register is the low half of a v128 in the JIT)
+                let any_x = kinds.iter().any(|k| matches!(k, K::xmm_reg | K::xmm_rm | K::xmm_or_mem | K::xmm_vvvv | K::mm_reg | K::mm_rm | K::mm_or_mem));
                 let m = format!("{:?}", c.mnemonic());
                 // (side effects outside the compared state, or not in CPUID)
                 let skip = ["Maskmov", "Vmaskmov", "Ldmxcsr", "Stmxcsr", "Aes", "Pclmul", "Sha", "Gf2p8", "Vcvtph2ps", "Vcvtps2ph", "Extrq", "Insertq", "Movnt", "Crc32", "Vfm", "Vfnm", "Vgather", "Vpgather", "Vpdpb", "Vpdpw", "Vpmadd52", "Kmov", "Vpbroadcast", "Vbroadcast", "Vperm", "Vtest", "Vpblendd", "Vpsllv", "Vpsrlv", "Vpsrav", "Vblendv", "Vpblendv", "Rdrand", "Rdseed", "Pconfig", "Bndc", "Bndm", "Senduipi"];
@@ -495,7 +497,7 @@ fn random_sse(rng: &mut Rng) -> Option<Instruction> {
     let mut ins = Instruction::with(c);
     for i in 0..o.op_count() {
         let k = o.op_kind(i);
-        let memory = matches!(k, K::mem) || (matches!(k, K::xmm_or_mem | K::r32_or_mem | K::r64_or_mem) && rng.below(3) == 0);
+        let memory = matches!(k, K::mem) || (matches!(k, K::xmm_or_mem | K::mm_or_mem | K::r32_or_mem | K::r64_or_mem) && rng.below(3) == 0);
         if memory {
             // rbx (= DATA) + a 16-aligned offset (aligned forms don't fault)
             ins.set_op_kind(i, OpKind::Memory);
@@ -510,6 +512,10 @@ fn random_sse(rng: &mut Rng) -> Option<Instruction> {
             K::xmm_reg | K::xmm_rm | K::xmm_or_mem | K::xmm_vvvv => {
                 ins.set_op_kind(i, OpKind::Register);
                 ins.set_op_register(i, rand_xmm(rng));
+            }
+            K::mm_reg | K::mm_rm | K::mm_or_mem => {
+                ins.set_op_kind(i, OpKind::Register);
+                ins.set_op_register(i, unsafe { std::mem::transmute::<u8, Register>(Register::MM0 as u8 + rng.below(8) as u8) });
             }
             K::r32_reg | K::r32_rm | K::r32_or_mem => {
                 ins.set_op_kind(i, OpKind::Register);
@@ -806,6 +812,9 @@ fn initial(rng: &mut Rng, rip_hi: u32) -> Cpu {
             c.xmm8[i - 8] = v;
         }
     }
+    for i in 0..8 {
+        c.mm[i] = rng.next();
+    }
     c.mxcsr = 0x1f80 | if rng.below(4) == 0 { (rng.below(4) as u32) << 13 } else { 0 };
     c
 }
@@ -865,6 +874,14 @@ fn run_case(engine: &Engine, memory: &SharedMemory, base: usize, list0: &[Instru
             if w != g {
                 diffs.push(format!("xmm{i}: want {w:032x} got {g:032x}"));
             }
+        }
+        for i in 0..8 {
+            if want_cpu.mm[i] != got_cpu.mm[i] {
+                diffs.push(format!("mm{i}: want {:016x} got {:016x}", want_cpu.mm[i], got_cpu.mm[i]));
+            }
+        }
+        if want_cpu.fpu.empty != got_cpu.fpu.empty {
+            diffs.push(format!("fpu empty: want {:#x} got {:#x}", want_cpu.fpu.empty, got_cpu.fpu.empty));
         }
         if want_cpu.rip_hi != got_cpu.rip_hi {
             diffs.push(format!("rip_hi: want {} got {}", want_cpu.rip_hi, got_cpu.rip_hi));

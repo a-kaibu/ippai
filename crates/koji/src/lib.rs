@@ -23,7 +23,13 @@ impl Cpu {
     /// EFLAGS with the lazy status flags worked out.
     #[inline]
     pub fn flags(&self) -> u32 {
-        if self.lazy.op == 0 { self.eflags } else { (self.eflags & !flags::STATUS) | self.lazy.status() }
+        if self.lazy.op == 0 {
+            self.eflags
+        } else if self.lazy.op & 3 == 3 {
+            (self.eflags & !flags::STATUS) | self.lazy.status64(self.lazy_hi)
+        } else {
+            (self.eflags & !flags::STATUS) | self.lazy.status()
+        }
     }
 
     /// 64-bit general register `i` (0..16, encoding order).
@@ -226,6 +232,9 @@ pub struct Cpu {
     /// 16-bit mode: a table of segment bases (u32 per selector index, sel >> 3) that loading
     /// a segment register reads
     pub ldt: u32,
+    /// Long-mode JIT: the upper halves of `lazy`'s a, b and r for a 64-bit operation (its
+    /// size code 3; at the end of the struct so the other offsets stay as they were)
+    pub lazy_hi: [u32; 3],
 }
 
 /// `Cpu::ldt` value for real-mode segment loading in 16-bit mode (base = selector * 16): what
@@ -247,7 +256,7 @@ impl Default for Cpu {
             jit_budget: 0, jit_ring: 0, fs_base: 0, gs_base: 0, trap_lo: 0, trap_hi: 0, tsc: 0,
             fpu: Fpu::default(), mm: [0; 8], xmm: [0; 8], mxcsr: 0x1f80,
             mode64: 0, hi: [0; 8], r8: [0; 8], xmm8: [0; 8], jit_depth: 0, rip_hi: 0, jit_calls: 0, jit_code_pages: 0, jit_smc: 0,
-            vex_tmp: 0, mode16: 0, sreg: [0; 6], sbase: [0; 6], ldt: 0,
+            vex_tmp: 0, mode16: 0, sreg: [0; 6], sbase: [0; 6], ldt: 0, lazy_hi: [0; 3],
         }
     }
 }

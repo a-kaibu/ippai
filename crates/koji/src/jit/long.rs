@@ -695,7 +695,17 @@ impl<'a> Gen<'a> {
     fn flags_to_cpu(&mut self) {
         let Flags::Lazy(kind, bits) = self.flags else { return };
         let lazy = offset_of!(Cpu, lazy) as u32;
-        if bits == 64 {
+        if bits == 64 && matches!(kind, ADD | SUB | LOGIC | INC | DEC) {
+            // a record with the upper halves (size code 3, Cpu::lazy_hi): cheaper than the
+            // flags themselves at exits, where the next code mostly sets its own
+            let hi = offset_of!(Cpu, lazy_hi) as u32;
+            self.c.get(L_CPU).u32c(kind * 4 + 3).store32(lazy);
+            for (k, l) in [(0, L_FA), (1, L_FB), (2, L_FR)] {
+                self.c.get(L_CPU).get(l).x(I32_WRAP).store32(lazy + 4 + 4 * k);
+                self.c.get(L_CPU).get(l).i64c(32).x(I64_SHR_U).x(I32_WRAP).store32(hi + 4 * k);
+            }
+            self.c.get(L_CPU).get(L_FC).store32(lazy + 16);
+        } else if bits == 64 {
             self.c.get(L_CPU);
             self.c.get(L_CPU).load32(cpu_off!(eflags)).u32c(!STATUS).and();
             self.status(kind, 64);
@@ -724,7 +734,7 @@ impl<'a> Gen<'a> {
 
     /// The status flags into EFLAGS itself (the lazy record cleared), for an instruction that
     /// changes some of them and keeps the rest. Flags already in the Cpu may still be a lazy
-    /// record (from the interpreter or a 32-bit operation): then the interpreter runs it.
+    /// record (from the interpreter or an exit): the host works it out first.
     fn flags_to_eflags(&mut self) {
         let lazy = offset_of!(Cpu, lazy) as u32;
         match self.flags {
@@ -737,10 +747,9 @@ impl<'a> Gen<'a> {
                 self.flags = Flags::Cpu;
             }
             Flags::Cpu => {
+                // (a lazy record left by an exit or the interpreter: EFLAGS worked out)
                 self.c.get(L_CPU).load32(lazy).if_();
-                self.depth += 1;
-                self.bail();
-                self.depth -= 1;
+                self.c.get(L_CPU).call(F_EFLAGS).drop_();
                 self.c.end();
             }
         }
@@ -920,8 +929,9 @@ impl<'a> Gen<'a> {
         let n = ins.op_count();
         let mi = ins.mnemonic() as usize;
         let off = DEBUG_OFF[mi / 64 % 32].load(Relaxed) & (1 << (mi % 64)) != 0;
-        let vector = (0..n).any(|i| ins.op_kind(i) == OpKind::Register && ins.op_register(i).is_vector_register())
-            || ins.encoding() != iced_x86::EncodingKind::Legacy;
+        let vector = (0..n).any(|i| ins.op_kind(i) == OpKind::Register && (ins.op_register(i).is_vector_register() || ins.op_register(i).is_mm()))
+            || ins.encoding() != iced_x86::EncodingKind::Legacy
+            || ins.mnemonic() == Mnemonic::Emms;
         if !off && vector && self.sse() {
             return true;
         }

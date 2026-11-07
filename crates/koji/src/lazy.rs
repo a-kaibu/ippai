@@ -42,6 +42,21 @@ pub fn op(kind: u32, bits: u32) -> u32 {
 }
 
 impl Lazy {
+    /// A 64-bit operation's status flags (size code 3: the long-mode JIT records only ADD,
+    /// SUB, LOGIC, INC and DEC this way), the operands' upper halves in `hi` (a, b, r).
+    pub fn status64(&self, hi: [u32; 3]) -> u32 {
+        let w = |lo: u32, h: u32| (h as u64) << 32 | lo as u64;
+        let (a, b, r) = (w(self.a, hi[0]), w(self.b, hi[1]), w(self.r, hi[2]));
+        match self.op >> 2 {
+            ADD => flags::add64(a, b, 0, 64).1,
+            SUB => flags::sub64(a, b, 0, 64).1,
+            LOGIC => flags::szp64(r, 64),
+            INC => (flags::add64(a, 1, 0, 64).1 & !CF) | (self.c & CF),
+            DEC => (flags::sub64(a, 1, 0, 64).1 & !CF) | (self.c & CF),
+            _ => 0,
+        }
+    }
+
     /// The status flags (CF PF AF ZF SF OF) this operation produced.
     pub fn status(&self) -> u32 {
         let bits = 8 << (self.op & 3);
