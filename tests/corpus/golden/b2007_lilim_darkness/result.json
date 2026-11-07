@@ -1,0 +1,23 @@
+{
+ "crashed": false,
+ "errors": [],
+ "firstWindow": 2.0336315631866455,
+ "leftTitle": false,
+ "manifests": [
+  "setup.exe",
+  "sfa9.exe",
+  "uninst.exe"
+ ],
+ "shots": [
+  "title",
+  "steps"
+ ],
+ "size": [
+  800,
+  600
+ ],
+ "steps": "key:Return wait:3",
+ "storyFrames": 1,
+ "title": 14.382770538330078,
+ "titleStill": 19.54818367958069
+}

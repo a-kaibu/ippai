@@ -1,0 +1,22 @@
+{
+ "crashed": false,
+ "errors": [],
+ "firstWindow": 1.0383574962615967,
+ "leftTitle": false,
+ "manifests": [
+  "OpenSaveFolder.exe",
+  "OyakorankanTrial.exe"
+ ],
+ "shots": [
+  "title",
+  "steps"
+ ],
+ "size": [
+  1024,
+  768
+ ],
+ "steps": "wait:25 click:512,600 wait:8",
+ "storyFrames": 1,
+ "title": 2.0765225887298584,
+ "titleStill": 5.163222551345825
+}

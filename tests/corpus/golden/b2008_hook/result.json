@@ -1,0 +1,21 @@
+{
+ "crashed": false,
+ "errors": [],
+ "firstWindow": 1.0323529243469238,
+ "leftTitle": false,
+ "manifests": [
+  "FairlyLife.exe"
+ ],
+ "shots": [
+  "title",
+  "steps"
+ ],
+ "size": [
+  800,
+  600
+ ],
+ "steps": "key:Return wait:3",
+ "storyFrames": 1,
+ "title": 24.788968324661255,
+ "titleStill": 36.23663353919983
+}

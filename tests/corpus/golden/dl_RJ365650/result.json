@@ -1,0 +1,22 @@
+{
+ "crashed": false,
+ "errors": [],
+ "firstWindow": 1.0458571910858154,
+ "leftTitle": true,
+ "manifests": [
+  "Config.exe",
+  "Game.exe"
+ ],
+ "shots": [
+  "title",
+  "steps"
+ ],
+ "size": [
+  640,
+  480
+ ],
+ "steps": "key:Return wait:3",
+ "storyFrames": 1,
+ "title": 7.275528907775879,
+ "titleStill": 10.370203256607056
+}

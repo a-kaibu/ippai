@@ -1,0 +1,23 @@
+{
+ "crashed": false,
+ "errors": [],
+ "firstWindow": 2.061457395553589,
+ "leftTitle": true,
+ "manifests": [
+  "Uninstall.exe",
+  "セーブデータフォルダを開く.exe",
+  "都合のよいセックスフレンド？体験版.exe"
+ ],
+ "shots": [
+  "title",
+  "steps"
+ ],
+ "size": [
+  800,
+  600
+ ],
+ "steps": "click:280,257 wait:3 click:385,428 wait:15 click:640,400 wait:5 key:Return wait:8 click:640,400 wait:5 key:Return wait:8",
+ "storyFrames": 1,
+ "title": 2.061457395553589,
+ "titleStill": 5.184012174606323
+}
