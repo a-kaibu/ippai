@@ -79,8 +79,8 @@ pub(super) fn kind(ins: &Instruction) -> Option<(G, u32, u32, bool)> {
 
 /// The magnitudes (the bits of |x|, or of x itself for a square root) translated code
 /// handles in an operand: [lo, hi), and 0 when `zero`.
-#[derive(Clone, Copy)]
-struct R {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct R {
     lo: i64,
     hi: i64,
     zero: bool,
@@ -122,93 +122,117 @@ fn vconst(c: &mut Code, b64: bool, v: i64) {
     }
 }
 
-/// Pushes an i32, nonzero when the instruction must go to the interpreter: `a` (when the
-/// check reads operand 0) and `b` are v128 locals with the operands (changed here), `t32`
-/// and `t64` an i32 and an i64 temporary, `cpu` the Cpu local, `mxcsr` the offset of
-/// Cpu::mxcsr.
-pub(super) fn emit(c: &mut Code, (g, bits, lanes, _): (G, u32, u32, bool), a: Option<u32>, b: u32, t: (u32, u32), cpu: u32, mxcsr: u32) {
+/// Pushes an i32, nonzero when an operand may raise a flag (the instruction must go to the
+/// interpreter): `a` (when the check reads operand 0) and `b` are v128 locals with the
+/// operands (left as they are). False (nothing pushed) for G::Inexact, which checks none. A
+/// scalar is checked the same way, on its lane only: float compares on |x| (a NaN fails them
+/// all).
+pub(super) fn operands(c: &mut Code, (g, bits, lanes, _): (G, u32, u32, bool), a: Option<u32>, b: Option<u32>, scratch: Option<u32>) -> bool {
     let b64 = bits == 64;
     let (ra, rb) = ranges(g, b64);
-    if g == G::Inexact {
-        c.i32c(0);
-    } else {
-        exact(c, b64, ra, rb, lanes, bits, a, b, t);
+    if g == G::Inexact || a.is_none() && b.is_none() {
+        return false;
     }
-    if g != G::Special {
-        // PE not set yet
-        c.get(cpu).load32(mxcsr).i32c(0x20).and().eqz().or();
-    }
-}
-
-/// The check: pushes an i32, nonzero when a lane is outside its range.
-#[allow(clippy::too_many_arguments)]
-fn exact(c: &mut Code, b64: bool, ra: R, rb: R, lanes: u32, bits: u32, a: Option<u32>, b: u32, t: (u32, u32)) {
-    if lanes == 1 {
-        // a scalar: on the low lane as an integer, x - lo >=u hi - lo
-        let mut first = true;
-        for (x, r) in [(Some(b), rb), (a, ra)] {
-            let Some(x) = x else { continue };
-            let l = if b64 { t.1 } else { t.0 };
-            c.get(x);
-            if b64 {
-                c.lane(0x1d, 0); // i64x2.extract_lane
-                if r.abs {
-                    c.i64c(i64::MAX).op(0x83); // i64.and
-                }
-                if r.zero {
-                    c.tee(l).get(l).op(0x50).i64_extend_u().i64c(62).op(0x86).op(0x84); // i64.eqz, shl, or
-                }
-                c.i64c(r.lo).op(0x7d).i64c(r.hi - r.lo).op(0x5a); // i64.sub, i64.ge_u
-            } else {
-                c.lane(0x1b, 0); // i32x4.extract_lane
-                if r.abs {
-                    c.i32c(i32::MAX).and();
-                }
-                if r.zero {
-                    c.tee(l).get(l).eqz().i32c(30).shl().or();
-                }
-                c.i32c(r.lo as i32).sub().i32c((r.hi - r.lo) as i32).ge_u();
-            }
-            if !first {
-                c.or();
-            }
-            first = false;
+    if let (Some(a), Some(b), Some(t)) = (a, b, scratch) {
+        if lanes * bits <= 64 && ra.abs && rb.abs && ra.lo != 0 && rb.lo != 0 {
+            paired(c, b64, lanes, (a, ra), (b, rb), t);
+            return true;
         }
-    } else {
-        // (float compares: lo <= |x| < hi; the bits of non-negative floats order as their
-        // values, NaNs compare false. V8 has no native i64x2 ordered compare on x64: it
-        // emulated them, 4-7x on SSE loops.)
-        let (abs, ge, lt, feq, ieq) = if b64 { (0xec, 0x4c, 0x49, 0x47, 0xd6) } else { (0xe0, 0x46, 0x43, 0x41, 0x37) };
+    }
+    {
+        let (abs, eq, lt, ge) = if b64 { (0xec, 0x47, 0x49, 0x4c) } else { (0xe0, 0x41, 0x43, 0x46) };
         let mut first = true;
-        for (x, r) in [(Some(b), rb), (a, ra)] {
+        for (x, r) in [(b, rb), (a, ra)] {
             let Some(x) = x else { continue };
-            c.get(x);
-            if r.abs {
-                c.simd(abs);
-            }
-            c.set(x).get(x);
-            vconst(c, b64, r.lo);
-            c.simd(ge).get(x);
+            // (the locals stay as they are: the instruction reads them)
+            let get = |c: &mut Code| {
+                c.get(x);
+                if r.abs {
+                    c.simd(abs);
+                }
+            };
+            // lo <= |x| < hi, or x = 0
+            get(c);
             vconst(c, b64, r.hi);
-            c.simd(lt).simd(0x4e); // and
-            if r.zero {
-                // (|x| == 0; not abs: +0 only, as bits)
-                c.get(x).v128zero().simd(if r.abs { feq } else { ieq }).simd(0x50);
+            c.simd(lt);
+            if r.lo != 0 {
+                get(c);
+                vconst(c, b64, r.lo);
+                c.simd(ge);
+                if r.zero {
+                    // (|x| == 0; not abs: +0 only, as bits)
+                    c.get(x).v128zero().simd(if r.abs { eq } else if b64 { 0xd6 } else { 0x37 }).simd(0x50); // or
+                }
+                c.simd(0x4e); // and
             }
-            c.simd(0x4d); // not: outside
             if !first {
-                c.simd(0x50);
+                c.simd(0x4e);
             }
             first = false;
         }
-        // the lanes the instruction reads
+        // the lanes the instruction doesn't read: fine
         if lanes * bits < 128 {
             c.simd(12);
             for i in 0..16 {
-                c.b.push(if i < (lanes * bits / 8) as usize { 0xff } else { 0 });
+                c.b.push(if i < (lanes * bits / 8) as usize { 0 } else { 0xff });
             }
-            c.simd(0x4e);
+            c.simd(0x50);
         }
-        c.simd(0x53); // v128.any_true
+        c.simd(0xa3).eqz(); // i32x4.all_true
     }
+    true
+}
+
+/// Both operands of a scalar (or two-lane f32) in one v128 (`t`), checked at once: the
+/// same as [`operands`]' two checks, lane by lane.
+fn paired(c: &mut Code, b64: bool, lanes: u32, (a, ra): (u32, R), (b, rb): (u32, R), t: u32) {
+    let (abs, eq, lt, ge) = if b64 { (0xec, 0x47, 0x49, 0x4c) } else { (0xe0, 0x41, 0x43, 0x46) };
+    let w = if b64 { 8 } else { 4 };
+    let n = 16 / w;
+    // lane j: b's lane j, a's lane j - lanes, then b's lane 0 again
+    let (mut idx, mut hi, mut lo, mut z) = ([0u8; 16], [0u8; 16], [0u8; 16], [0u8; 16]);
+    for j in 0..n {
+        let (from, lane, r) = if j < lanes as usize { (0, j, rb) } else if j < 2 * lanes as usize { (16, j - lanes as usize, ra) } else { (0, 0, rb) };
+        for k in 0..w {
+            idx[j * w + k] = (from + lane * w + k) as u8;
+            hi[j * w + k] = r.hi.to_le_bytes()[k];
+            lo[j * w + k] = r.lo.to_le_bytes()[k];
+            z[j * w + k] = if r.zero { 0xff } else { 0 };
+        }
+    }
+    let v = |c: &mut Code, x: [u8; 16]| {
+        c.simd(12);
+        c.b.extend_from_slice(&x);
+    };
+    c.get(b).get(a).shuffle(idx).simd(abs).set(t);
+    c.get(t);
+    v(c, hi);
+    c.simd(lt);
+    c.get(t);
+    v(c, lo);
+    c.simd(ge);
+    c.get(t).v128zero().simd(eq);
+    v(c, z);
+    c.simd(0x4e).simd(0x50).simd(0x4e); // and, or, and
+    c.simd(0xa3).eqz(); // i32x4.all_true
+}
+
+/// What the check of operand `i` (0 or 1) proves of its register, for [`operands`] to skip
+/// it while the register keeps its value: (range, lane bits, lanes)
+pub(super) type Key = (R, u32, u32);
+pub(super) fn key((g, bits, lanes, _): (G, u32, u32, bool), i: u32) -> Option<Key> {
+    let (ra, rb) = ranges(g, bits == 64);
+    (g != G::Inexact).then_some((if i == 0 { ra } else { rb }, bits, lanes))
+}
+
+/// Whether the instruction needs [`mode`] (it may round: not G::Special).
+pub(super) fn rounds(g: G) -> bool {
+    g != G::Special
+}
+
+/// Pushes an i32, nonzero when PE is not set yet: `cpu` the Cpu local, `mxcsr` the offset of
+/// Cpu::mxcsr. (Only the interpreter changes MXCSR: once a block has checked, the rest of it
+/// is fine. RC is to nearest whenever translated code runs, see jit::sse_ok.)
+pub(super) fn mode(c: &mut Code, cpu: u32, mxcsr: u32) {
+    c.get(cpu).load32(mxcsr).i32c(0x20).and().eqz();
 }

@@ -94,6 +94,7 @@ const L_E: u32 = L_FC + 6; // i32
 const N_I32: u32 = 7;
 const L_V0: u32 = L_FC + N_I32; // v128: SSE operands (long/sse.rs)
 const L_V1: u32 = L_V0 + 1;
+const L_V2: u32 = L_V1 + 1; // v128: the MXCSR guard's scratch (long/sse.rs)
 
 // EFLAGS bits
 const CF: u32 = 1;
@@ -187,6 +188,12 @@ struct Gen<'a> {
     depth: u32,
     ins: Instruction,
     temps: u32,
+    /// the depth at which this block's code has seen MXCSR.PE set (mxguard::mode): it stays
+    /// set until an interpreter step (fallback) could clear it
+    mx_checked: Option<u32>,
+    /// per XMM register, the (up to two) ranges it was checked for in this block and not
+    /// written since (mxguard::key): not checked again
+    mx_seen: [[Option<super::mxguard::Key>; 2]; 16],
 }
 
 impl<'a> Gen<'a> {
@@ -897,6 +904,8 @@ impl<'a> Gen<'a> {
         self.c.end();
         self.load_regs();
         self.flags = Flags::Cpu;
+        self.mx_checked = None;
+        self.mx_seen = [[None; 2]; 16];
     }
 
     /// `return status` with the state already in the Cpu.
@@ -955,6 +964,15 @@ impl<'a> Gen<'a> {
             || ins.encoding() != iced_x86::EncodingKind::Legacy
             || ins.mnemonic() == Mnemonic::Emms;
         if !off && vector && self.sse() {
+            if self.mx_seen.iter().any(|s| s[0].is_some()) {
+                // (what the instruction writes: checked no more)
+                use iced_x86::OpAccess;
+                for u in iced_x86::InstructionInfoFactory::new().info(&ins).used_registers() {
+                    if u.register().is_xmm() && !matches!(u.access(), OpAccess::Read | OpAccess::CondRead | OpAccess::None) {
+                        self.mx_seen[u.register() as usize - Register::XMM0 as usize] = [None; 2];
+                    }
+                }
+            }
             return true;
         }
         let all_simple = !off && (0..n).all(|i| self.simple(i));
@@ -2118,7 +2136,7 @@ pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[
     returns.sort_unstable();
     returns.dedup();
     returns.truncate(MAX_RETURNS);
-    let mut g = Gen { c: Code::default(), blocks: &blocks, index: &index, returns: &returns, flags: Flags::Cpu, depth: 0, ins: blocks[0].ins[0], temps: 0 };
+    let mut g = Gen { c: Code::default(), blocks: &blocks, index: &index, returns: &returns, flags: Flags::Cpu, depth: 0, ins: blocks[0].ins[0], temps: 0, mx_checked: None, mx_seen: [[None; 2]; 16] };
     // the dispatcher's key is the low 32 bits: code at another 4GB alias is left to the interpreter
     g.c.get(L_CPU).load32(cpu_off!(rip_hi)).u32c((entry >> 32) as u32).ne().if_();
     g.c.i32c(RET_INTERP).ret();
@@ -2153,6 +2171,8 @@ pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[
         // inside: blocks k+1..n-1, the exit block, the loop
         g.depth = n - 1 - k as u32;
         g.flags = Flags::Cpu;
+        g.mx_checked = None;
+        g.mx_seen = [[None; 2]; 16];
         let list = &blocks[k].ins;
         let mut open = true;
         for ins in list {
@@ -2183,6 +2203,7 @@ pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[
     let mut locals = alloc::vec![I64; N_I64 as usize];
     locals.extend_from_slice(&[I32; N_I32 as usize]);
     locals.extend_from_slice(&[V128; 2]);
+    locals.push(V128);
     let code = core::mem::take(&mut g.c);
     module.funcs.push(Func { ty: 2, locals, code });
     let starts = blocks.iter().enumerate().map(|(k, b)| (b.start as u32, k as u32)).collect();

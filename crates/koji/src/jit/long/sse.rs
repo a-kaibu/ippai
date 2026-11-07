@@ -210,21 +210,49 @@ impl Gen<'_> {
         self.ins = li;
         // (the MXCSR flags: the interpreter sets them, see mxguard)
         if let Some(k) = crate::jit::mxguard::kind(&li) {
-            if k.0 != crate::jit::mxguard::G::Inexact {
-                if k.3 {
+            use crate::jit::mxguard;
+            // (an XMM register checked for the same range earlier in the block and not written
+            // since: not again)
+            let reg = |i: u32| {
+                let r = if i == 0 { src1 } else { (li.op_kind(1) == OpKind::Register).then(|| li.op_register(1)) };
+                r.filter(|r| r.is_xmm()).map(|r| r as usize - Register::XMM0 as usize)
+            };
+            let seen = |g: &Self, i: u32| reg(i).is_some_and(|r| mxguard::key(k, i).is_some_and(|w| g.mx_seen[r].contains(&Some(w))));
+            let (a, b) = (k.3 && !seen(self, 0), !seen(self, 1));
+            if k.0 != mxguard::G::Inexact {
+                if a {
                     self.vfirst(src1);
                     self.c.set(L_V0);
                 }
-                self.vsrc(1, size.unwrap_or(16));
-                self.c.set(L_V1);
+                if b {
+                    self.vsrc(1, size.unwrap_or(16));
+                    self.c.set(L_V1);
+                }
             }
-            let t = self.temp();
-            crate::jit::mxguard::emit(&mut self.c, k, k.3.then_some(L_V0), L_V1, (super::L_E, t), L_CPU, offset_of!(Cpu, mxcsr) as u32);
-            self.c.if_();
-            self.depth += 1;
-            self.bail();
-            self.depth -= 1;
-            self.c.end();
+            let ops = mxguard::operands(&mut self.c, k, a.then_some(L_V0), b.then_some(L_V1), Some(super::L_V2));
+            for i in 0..2 {
+                if let (true, Some(r), Some(w)) = (i == 1 || k.3, reg(i), mxguard::key(k, i)) {
+                    if !self.mx_seen[r].contains(&Some(w)) {
+                        self.mx_seen[r] = [self.mx_seen[r][1], Some(w)];
+                    }
+                }
+            }
+            // (PE once seen set stays set in this block's straight-line code)
+            let pe = mxguard::rounds(k.0) && self.mx_checked != Some(self.depth);
+            if pe {
+                mxguard::mode(&mut self.c, L_CPU, offset_of!(Cpu, mxcsr) as u32);
+                if ops {
+                    self.c.or();
+                }
+                self.mx_checked = Some(self.depth);
+            }
+            if ops || pe {
+                self.c.if_();
+                self.depth += 1;
+                self.bail();
+                self.depth -= 1;
+                self.c.end();
+            }
         }
         self.emit_sse(src1);
         self.ins = saved;

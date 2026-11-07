@@ -230,6 +230,10 @@ impl Gen<'_> {
 
     /// Pushes operand `i` (register, or memory at `a`) as a v128; `mm` says the width.
     fn vread(&mut self, i: u32, a: Option<u32>, mm: bool) {
+        if !mm && (i == 0 && self.mx_ops.0 && self.ins.op_kind(0) == OpKind::Register || i == 1 && self.mx_ops.1 == Some(16)) {
+            self.c.get(super::L_MXV + i);
+            return;
+        }
         if self.ins.op_kind(i) == OpKind::Register && self.ins.op_register(i).is_mm() {
             let l = self.mm_get(self.ins.op_register(i));
             self.c.get(l);
@@ -634,24 +638,63 @@ impl Gen<'_> {
         if k.0 != super::mxguard::G::Inexact {
             let size = if ins.op_kind(1) == OpKind::Memory { ins.memory_size().size() as u32 } else { 16 };
             let a = self.mem_addr_sized(size);
+            self.mx_addr = a.map(|t| (size, t));
             if k.3 {
                 self.vread(0, None, false);
-                self.c.set(L_V0);
+                self.c.set(super::L_MXV);
             }
             self.vlow(a, size);
-            self.c.set(L_V1);
+            self.c.set(super::L_MXV + 1);
+            // (the instruction reads them from there)
+            self.mx_ops = (k.3, Some(if a.is_some() { size } else { 16 }));
         }
-        let t = self.temp();
-        super::mxguard::emit(&mut self.c, k, k.3.then_some(L_V0), L_V1, (t, super::L_W), L_CPU, Off::mxcsr());
-        self.c.if_();
-        self.depth += 1;
-        self.bail();
-        self.depth -= 1;
-        self.c.end();
+        // (a register checked for the same range earlier in the block, at this depth, and not
+        // written since: not again)
+        let depth = self.depth;
+        let seen = |g: &Self, i: u32| {
+            ins.op_kind(i) == OpKind::Register && ins.op_register(i).is_xmm() && {
+                let r = ins.op_register(i) as usize - Register::XMM0 as usize;
+                let want = super::mxguard::key(k, i).map(|k| (k, depth));
+                want.is_some() && g.mx_seen[r].contains(&want)
+            }
+        };
+        let (s0, s1) = (seen(self, 0), seen(self, 1));
+        let checks = super::mxguard::operands(&mut self.c, k, (k.3 && !s0).then_some(super::L_MXV), (!s1).then_some(super::L_MXV + 1), Some(L_V0));
+        for i in 0..2 {
+            if (i == 1 || k.3) && ins.op_kind(i) == OpKind::Register && ins.op_register(i).is_xmm() {
+                let r = ins.op_register(i) as usize - Register::XMM0 as usize;
+                let want = super::mxguard::key(k, i).map(|k| (k, depth));
+                if !self.mx_seen[r].contains(&want) {
+                    self.mx_seen[r] = [self.mx_seen[r][1], want];
+                }
+            }
+        }
+        if checks {
+            self.c.if_();
+            self.depth += 1;
+            self.bail();
+            self.depth -= 1;
+            self.c.end();
+        }
+        if super::mxguard::rounds(k.0) {
+            if self.mx_checked != Some(self.depth) {
+                super::mxguard::mode(&mut self.c, L_CPU, Off::mxcsr());
+                self.c.if_();
+                self.depth += 1;
+                self.bail();
+                self.depth -= 1;
+                self.c.end();
+                self.mx_checked = Some(self.depth);
+            }
+        }
     }
 
     /// Pushes operand 1 as a v128 whose low `size` bytes are the operand (memory: zeros above).
     fn vlow(&mut self, a: Option<u32>, size: u32) {
+        if a.is_some() && self.mx_ops.1 == Some(size) {
+            self.c.get(super::L_MXV + 1);
+            return;
+        }
         match a {
             Some(a) => {
                 let o = self.mem_at(a);

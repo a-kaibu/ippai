@@ -133,7 +133,8 @@ const L_FTOP: u32 = L_V1 + 1; // x87 TOP when the block's cache started (i32)
 const L_FREG: u32 = L_V1 + 2; // 8 f64: the cached x87 registers, by slot (see FCache)
 const L_MMX: u32 = L_FREG + 8; // 8 v128: the cached MMX registers (see Gen::mmx)
 const L_XMM: u32 = L_MMX + 8; // 8 v128: the cached XMM registers (see Gen::xmm)
-const L_AB: u32 = L_XMM + 8; // i32: the base register of the instruction's memory operand (see Gen::folded)
+const L_MXV: u32 = L_XMM + 8; // 2 v128: the operands an MXCSR guard read (see Gen::mx_ops)
+const L_AB: u32 = L_MXV + 2; // i32: the base register of the instruction's memory operand (see Gen::folded)
 const L_SLOT: u32 = L_AB + 1; // N_SLOTS i32: stack slots kept in locals in a loop (see Gen::slots)
 /// functions: ESP as the caller passed it (the third parameter once the locals are compacted)
 const L_ESPIN: u32 = L_SLOT + N_SLOTS;
@@ -520,6 +521,19 @@ struct Gen<'a> {
     /// then put in the load's or store's offset (the add can't wrap: the register is well
     /// inside the guest range)
     folded: Option<(u32, u32)>,
+    /// The memory operand's checked address an MXCSR guard computed: (size checked, local),
+    /// which the instruction's own access takes
+    mx_addr: Option<(u32, u32)>,
+    /// The operands the guard read into L_MXV, L_MXV + 1, which the instruction's reads take:
+    /// (operand 0, operand 1's size (16: a register))
+    mx_ops: (bool, Option<u32>),
+    /// The block has checked MXCSR's PE (see mxguard::mode) since its start or the latest
+    /// call that may have run the interpreter: at this depth (code nested deeper than the
+    /// check doesn't hold after it)
+    mx_checked: Option<u32>,
+    /// Per XMM register, the guard checks it passed since it was last written, and at what
+    /// depth (two kept)
+    mx_seen: [[Option<(mxguard::Key, u32)>; 2]; 8],
     /// A single-block loop whose MMX registers stay in locals across iterations: (block, the
     /// registers it names, loaded before the loop), and those of the block being emitted
     mm_pre: Option<(usize, u8)>,
@@ -1309,7 +1323,9 @@ impl<'a> Gen<'a> {
     /// interpreter at the loop's first block when one fails (as that block's own check would).
     fn loop_checks(&mut self, x: usize) {
         let Some(&(m, at)) = self.hoist.get(&x) else { return };
-        let saved = (self.flags, self.fc, self.mmx, self.xmm, self.dirty, self.block_index, self.ctx);
+        let saved = (self.flags, self.fc, self.mmx, self.xmm, self.dirty, self.block_index, self.ctx, self.mx_checked, self.mx_seen);
+        self.mx_checked = None;
+        self.mx_seen = [[None; 2]; 8];
         // (the state as the block starts)
         self.flags = Flags::Entry;
         self.fc = self.fc_in.get(&x).copied().unwrap_or_default();
@@ -1326,7 +1342,7 @@ impl<'a> Gen<'a> {
             self.depth -= 1;
             self.c.end();
         }
-        (self.flags, self.fc, self.mmx, self.xmm, self.dirty, self.block_index, self.ctx) = saved;
+        (self.flags, self.fc, self.mmx, self.xmm, self.dirty, self.block_index, self.ctx, self.mx_checked, self.mx_seen) = saved;
     }
 
     /// Whether [reg + disp, + size) is inside the guest range by what is known of `reg`,
@@ -1511,6 +1527,11 @@ impl<'a> Gen<'a> {
     /// The checked address of the instruction's memory operand, if it has one.
     /// The checked address of the memory operand, if any, for an access of `size` bytes.
     fn mem_addr_sized(&mut self, size: u32) -> Option<u32> {
+        if let Some((s, t)) = self.mx_addr {
+            if s >= size {
+                return Some(t);
+            }
+        }
         let ins = self.ins;
         (0..ins.op_count()).any(|i| ins.op_kind(i) == OpKind::Memory).then(|| self.addr(size))
     }
@@ -1920,6 +1941,8 @@ impl<'a> Gen<'a> {
         self.fc = FCache::default();
         self.mmx = (0, 0);
         self.xmm = (0, 0);
+        self.mx_checked = None;
+        self.mx_seen = [[None; 2]; 8];
         self.spill(self.eip());
         self.c.get(L_CPU).call(F_STEP).set(L_ST);
         self.reload();
@@ -2021,6 +2044,8 @@ impl<'a> Gen<'a> {
         let ins = self.ins;
         self.temps = 0;
         self.folded = None;
+        self.mx_addr = None;
+        self.mx_ops = (false, None);
         if ins.flow_control() == FlowControl::Next && PROBES.iter().any(|p| p.load(core::sync::atomic::Ordering::Relaxed) == ins.ip32()) {
             self.fallback(false);
             return true;
@@ -2059,6 +2084,15 @@ impl<'a> Gen<'a> {
             self.xmm = (0, 0);
         }
         let r = self.emit_ins(last, next, simple);
+        if self.mx_seen.iter().any(|s| s[1].is_some()) {
+            // (what the instruction writes: checked no more)
+            use iced_x86::OpAccess;
+            for u in iced_x86::InstructionInfoFactory::new().info(ins).used_registers() {
+                if u.register().is_xmm() && !matches!(u.access(), OpAccess::Read | OpAccess::CondRead | OpAccess::None) {
+                    self.mx_seen[u.register() as usize - Register::XMM0 as usize] = [None; 2];
+                }
+            }
+        }
         for i in 0..8 {
             if written & (1 << i) != 0 {
                 self.safe[i] = None;
@@ -3467,6 +3501,8 @@ impl<'a> Gen<'a> {
         // flushing them again after its return would undo that, as a vectorcall's results)
         self.mmx = (0, 0);
         self.xmm = (0, 0);
+        self.mx_checked = None;
+        self.mx_seen = [[None; 2]; 8];
         let (h, v) = (self.temp(), self.temp());
         let site = self.ins.ip32();
         if self.ins.flow_control() == FlowControl::IndirectCall {
@@ -3575,6 +3611,8 @@ impl<'a> Gen<'a> {
         self.flags = Flags::Entry;
         // (the MMX/XMM locals were flushed on the way here, and are stale after the call)
         (self.mmx, self.xmm) = ((0, 0), (0, 0));
+        self.mx_checked = None;
+        self.mx_seen = [[None; 2]; 8];
         let ctx = core::mem::replace(&mut self.ctx, 0);
         self.goto(r);
         self.ctx = ctx;
@@ -4423,6 +4461,8 @@ fn emit_block<'a>(g: &mut Gen<'a>, blocks: &'a [(u32, Vec<Instruction>)], k: usi
     let list = &blocks[k].1;
     g.block_index = k as u32;
     g.ctx = g.ctxs[k];
+    g.mx_checked = None;
+    g.mx_seen = [[None; 2]; 8];
     g.safe = [None; 8];
     g.safe2.clear();
     g.safe[4] = Some(0); // see Gen::emit
@@ -5128,6 +5168,10 @@ fn translate<M: Memory>(
         mmx: (0, 0),
         xmm: (0, 0),
         folded: None,
+        mx_addr: None,
+        mx_ops: (false, None),
+        mx_checked: None,
+        mx_seen: [[None; 2]; 8],
         mm_pre: None,
         mm_loop: 0,
         xm_pre: None,
@@ -5284,7 +5328,7 @@ fn translate<M: Memory>(
     let mut locals = alloc::vec![I32; if fnm { N_PARAMS as usize - 2 } else { 0 } + N_LOCALS_I32 as usize];
     locals.extend_from_slice(&[I64, F64, F64, V128, V128, I32]);
     locals.extend_from_slice(&[F64; 8]);
-    locals.extend_from_slice(&[V128; 16]);
+    locals.extend_from_slice(&[V128; 18]);
     locals.push(I32); // L_AB
     locals.extend_from_slice(&[I32; N_SLOTS as usize]);
     // L_ESPIN (functions only, else unused), L_RO, ROUND
