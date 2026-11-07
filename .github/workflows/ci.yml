@@ -111,6 +111,25 @@ jobs:
         working-directory: tools/jit64test
         run: cargo run --release --locked -- 20000 ${{ github.run_number }}
 
+  # koji's 32-bit JIT (regions and function mode, through its dispatcher) against its
+  # interpreter (random x86 integer/MMX/SSE/x87 code, run by wasmtime)
+  jit32:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            tools/jit32test/target
+          key: jit32-${{ runner.os }}-${{ hashFiles('tools/jit32test/Cargo.lock') }}
+          restore-keys: jit32-${{ runner.os }}-
+      - name: Differential test (new seed per run)
+        working-directory: tools/jit32test
+        run: cargo run --release --locked -- 10000 ${{ github.run_number }}
+
   rustfs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20

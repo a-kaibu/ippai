@@ -446,6 +446,9 @@ struct Gen<'a> {
     fc_range: Option<(usize, usize)>,
     fc_in: BTreeMap<usize, FCache>,
     fc_out: BTreeMap<usize, FCache>,
+    /// a jump in the loop moved TOP (pushes or pops that don't balance per iteration): the
+    /// caches' written and popped slots then differ between iterations, no loop cache
+    fc_moved: bool,
     /// The same across a whole function (structured): (its root, its number of blocks); the
     /// root and the dispatch nodes start with an empty cache
     fc_fn: Option<(usize, usize)>,
@@ -3183,6 +3186,9 @@ impl<'a> Gen<'a> {
         if cur.on && self.fc_out.get(&k).is_none() {
             self.fc_out.insert(k, canon);
         }
+        if cur.on && d != 0 {
+            self.fc_moved = true;
+        }
         let to = self.fc_in.get(&k).copied().unwrap_or_default();
         if !cur.on && !to.on {
             return;
@@ -3956,6 +3962,7 @@ fn emit_level<'a>(
                     let b0 = g.c.b.len();
                     let mut fin = BTreeMap::new();
                     g.fc_range = Some((h, e));
+                    g.fc_moved = false;
                     for _ in 0..8 {
                         g.fc_in = fin.clone();
                         g.fc_out.clear();
@@ -3966,6 +3973,9 @@ fn emit_level<'a>(
                             break;
                         }
                         fin = out;
+                    }
+                    if g.fc_moved {
+                        fin.clear();
                     }
                     if LAYOUT.load(core::sync::atomic::Ordering::Relaxed) {
                         use core::fmt::Write;
@@ -4863,6 +4873,7 @@ fn translate<M: Memory>(
         fc_fn: None,
         fc_in: BTreeMap::new(),
         fc_out: BTreeMap::new(),
+        fc_moved: false,
         notes: String::new(),
         fuse_zx: false,
         fell_back: false,
