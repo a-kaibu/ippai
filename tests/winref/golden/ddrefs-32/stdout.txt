@@ -74,3 +74,17 @@ CreateVertexBuffer fvf 0x40 count 0xffffffff: 0x88760825
 SetLight 0 0
 SetLight 0x7 0
 SetLight 0x186a0 0
+SetLight 0x30d40 0
+GetLight 3 (never set) 0x80070057
+GetLight 100000 0
+LightEnable 150000 (never set) 0
+GetLightEnable 150000 0
+  on 128
+GetLightEnable 7 0
+  on 0
+GetLightEnable 5 (never set) 0x80070057
+device Release 0
+tex Release 0
+rt2 Release 0
+d3d7 Release 1
+dd7 Release 0

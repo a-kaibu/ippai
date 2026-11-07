@@ -1,0 +1,34 @@
+set PROBE_A=alpha -> 1 err 57005
+get PROBE_A size 64 -> 5 err 57005 buf alpha
+get probe_a size 64 -> 5 err 57005 buf alpha
+get PROBE_A size 6 -> 5 err 57005 buf alpha
+get PROBE_A size 5 -> 6 err 57005 buf -
+get PROBE_A size 0 -> 6 err 57005 buf -
+get PROBE_MISSING size 64 -> 0 err 203 buf -
+getw size 64 -> 5 err 57005 first 0061
+getw size 3 -> 6 err 57005 first 0000
+set PROBE_A= -> 1 err 57005
+get PROBE_A size 64 -> 0 err 57005 buf -
+set PROBE_A=(null) -> 1 err 57005
+get PROBE_A size 64 -> 0 err 203 buf -
+set PROBE_NEVER=(null) -> 1 err 57005
+set =x -> 0 err 87
+set PROBE=B=x -> 0 err 87
+set Probe_Mixed=one -> 1 err 57005
+set PROBE_MIXED=two -> 1 err 57005
+get probe_mixed size 64 -> 3 err 57005 buf two
+set PROBE_Z=z -> 1 err 57005
+set PROBE_B=b -> 1 err 57005
+set PROBE_Y=y -> 1 err 57005
+expand "%PROBE_B%-%PROBE_Y%" size 128 -> 4 "b-y"
+expand "%PROBE_B%-%PROBE_Y%" size 3 -> 5 "-"
+expand "%PROBE_NONE%x" size 128 -> 14 "%PROBE_NONE%x"
+expand "%%PROBE_B%%" size 128 -> 4 "%b%"
+expand "%PROBE_B" size 128 -> 9 "%PROBE_B"
+expand "100%" size 128 -> 5 "100%"
+block: PROBE_B=b Probe_Mixed=two PROBE_Y=y PROBE_Z=z
+wblock probe vars 4
+getenv PROBE_B (null)
+_putenv 0
+getenv PROBE_C see
+get PROBE_C size 64 -> 3 err 57005 buf see
