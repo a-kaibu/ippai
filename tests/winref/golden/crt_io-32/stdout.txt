@@ -129,6 +129,8 @@ strerror 40 Function not implemented
 strerror 41 Directory not empty
 strerror 42 Illegal byte sequence
 strerror 43 Unknown error
+strerror No such file or directory | No such file or directory
+wcserror 1
 strerror_s small 0 'No s'
 ulp 1 erf 3fe0a7ef5c18edd2
 ulp 1 erfc 3fa15aaa8ec85205
