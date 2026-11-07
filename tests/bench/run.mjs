@@ -63,7 +63,7 @@ async function runOnce(build, c) {
   const scale = c.format === "plain" ? "" : SCALE;
   const args = [c.args, c.args && scale].filter(Boolean).join(",");
   const url =
-    `${build.url}/play.html?autostart&headless&env=IPPAI_NOPACE%3D1&mount=/vnvm/game=bench` +
+    `${build.url}/play.html?autostart&headless&env=IPPAI_NOPACE%3D1&mount=/vnvm/game=bench${c.page ? `&${c.page}` : ""}` +
     `${args ? `&args=${encodeURIComponent(args)}` : ""}&run=${encodeURIComponent(`Z:\\vnvm\\game\\${c.exe}`)}`;
   const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
   const page = await context.newPage();
@@ -71,6 +71,7 @@ async function runOnce(build, c) {
   const gpuAt = {}, pending = [];
   const gpuTotal = () => page.evaluate(() => window.vnvmSake?._vnhost_gpu_total?.() ?? -1).catch(() => -1);
   let nopace = false;
+  let grew = false;
   let error, ended = false, resolve;
   const finished = new Promise((r) => (resolve = r));
   // (after the program's last line, the page's own "the game ended" and the like don't count)
@@ -97,6 +98,8 @@ async function runOnce(build, c) {
       else if ((r = /^BENCH-CHECK (\S+) (\S+)$/.exec(line))) checks[r[1]] = r[2];
       else if ((r = /^BENCH-FAIL (.*)$/.exec(line))) return (error = r[1]), done();
       else if (line === "BENCH-END") return done();
+      // (c.grows: the page's &grow= must have grown the memory, web/src/play.ts)
+      else if ((r = /^sake memory: (\d+) -> (\d+) MiB$/.exec(line))) grew = +r[2] > +r[1];
       else if (c.format === "plain" && (r = /^(\w+)\s+([\d.]+) ms\s+([0-9a-f]{8})$/.exec(line.trim()))) {
         metrics[r[1]] = Number(r[2]);
         checks[r[1]] = r[3];
@@ -120,6 +123,7 @@ async function runOnce(build, c) {
   await context.close().catch(() => {});
   // (a program that ended without its results is a failure too)
   if (!error && !Object.keys(metrics).length) error = "no results";
+  if (!error && c.grows && !grew) error = "the memory did not grow (sake-grow.wasm)";
   return { metrics, checks, error, nopace, log: error ? log.slice(-40) : undefined };
 }
 

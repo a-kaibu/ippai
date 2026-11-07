@@ -394,6 +394,9 @@ jobs:
         run: tools/ci/build.sh
       - name: host/tests on sake
         run: SAKE=$PWD/target/sake-out/sake.js tests/host-tests.sh
+      # (the page's fallback build where 4 GB at once is refused: web/src/runtime.ts sakeBuild)
+      - name: host/tests on sake-grow (a memory that starts at 2.06 GB and grows)
+        run: SAKE=$PWD/target/sake-out/sake-grow.js tests/host-tests.sh
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: ippai

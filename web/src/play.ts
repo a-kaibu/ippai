@@ -26,7 +26,15 @@ import { renderShell } from "./ui/Shell";
 import { showLibrary } from "./ui/Library";
 import { FlightRecorder, sendLeftovers } from "./crashlog";
 import { fetchRetry, getChunk, chunkCache, HttpError, trimChunks, watchRetries, withRetries } from "./net";
-import { fileVersion, fnv, jitBase as jitBaseOf, sakeBase, translatorVersion, versioned } from "./runtime";
+import {
+  fileVersion,
+  fnv,
+  jitBase as jitBaseOf,
+  sakeBase,
+  sakeBuild,
+  translatorVersion,
+  versioned,
+} from "./runtime";
 import { checkOnline, startApp } from "./pwa";
 import { Budget, pool } from "./ahead";
 import { savedChunks } from "./offline";
@@ -176,7 +184,8 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   }
   log("sake を読み込み中");
   const BASE = sakeBase();
-  const WASM = "sake.wasm";
+  const build = sakeBuild(params.get("memory"));
+  const WASM = `${build.name}.wasm`;
   recorder = new FlightRecorder(params.get("game") ?? run.slice(run.lastIndexOf("\\") + 1), {
     game: params.get("game") ?? "",
     run,
@@ -189,7 +198,7 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   // x86 regions earlier runs of this program saved (ippai serve /jit), per build of sake.wasm
   // (which has the translator); &jit=0 for none
   const jitBase = params.get("jit") ?? jitBaseOf(run);
-  const jitVersion = translatorVersion(wasmVersion);
+  const jitVersion = translatorVersion(wasmVersion).then((v) => v + build.jit);
   const jitName = jitBase === "0" ? undefined : jitVersion.then((v) => `${jitBase}-${v}`);
   const jit = jitName
     ? jitName.then(async (name) => {
@@ -200,10 +209,12 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   const ahead = jitName ? readAhead(jitName, jit) : undefined;
   // versioned too: the game's threads past the pool each start a worker from it, and a URL the
   // browser must revalidate fails while the link is down (the game then hangs)
-  const scriptUrl = versioned(`${BASE}sake.js`, await fileVersion(`${BASE}sake.js`));
+  const scriptUrl = versioned(`${BASE}${build.name}.js`, await fileVersion(`${BASE}${build.name}.js`));
   const factory = (await import(/* @vite-ignore */ scriptUrl)).default as (m: object) => Promise<SakeModule>;
   const version = await wasmVersion;
-  recorder.note(`build: ${WASM} ${version}, translator ${await jitVersion}`);
+  recorder.note(
+    `build: ${WASM} ${version}, translator ${await jitVersion}, memory ${build.memory ? "4 GB fixed" : "growing from 2.06 GB (4 GB refused)"}`,
+  );
   const saveRoots = [...mounts.map((m) => m.slice(0, m.indexOf("="))), "/vnvm/prefix/drive_c/users"];
   const saved = nosave ? null : await loadSaves(saveName);
   // Preload tree manifests before the factory: initialization may read them on the page.
@@ -226,6 +237,8 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
       ...(params.get("args")?.split(",").filter(Boolean) ?? []),
     ],
     mainScriptUrlOrBlob: scriptUrl,
+    // (sake.wasm: the 4 GB the page could reserve, see sakeBuild)
+    ...(build.memory ? { wasmMemory: build.memory } : {}),
     locateFile: (path: string) => (path === WASM ? versioned(`${BASE}${path}`, version) : `${BASE}${path}`),
     vnvmEnv: {
       // "/=": an empty tree at the root, so every path is kura's (no emscripten file system)
@@ -287,6 +300,15 @@ async function boot(audio: Promise<AudioOut>): Promise<void> {
   if (!nosave) saveNow = keepSaving(sake as unknown as SavesModule, saveName, saveRoots, saved);
   // for tests/play.mjs (headless Chromium can't present WebGPU canvases)
   (window as unknown as { vnvmSake: SakeModule }).vnvmSake = sake;
+  // (tests: &grow=<MiB> takes that much of sake's memory at once while the game runs, so that
+  // sake-grow.wasm's memory grows mid-run; tests/bench/suite.mjs "memory-grow")
+  const grow = Number(params.get("grow"));
+  if (grow > 0) {
+    const before = sake.wasmMemory.buffer.byteLength;
+    if (!sake._malloc(grow * 2 ** 20)) console.log(`sake memory: ${grow} MiB refused`);
+    const mib = (n: number) => (n / 2 ** 20).toFixed(0);
+    console.log(`sake memory: ${mib(before)} -> ${mib(sake.wasmMemory.buffer.byteLength)} MiB`);
+  }
   ahead?.(sake);
   attachInput(sake);
   const resize = () => {

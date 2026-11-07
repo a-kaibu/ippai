@@ -138,7 +138,7 @@ target/release/ippai serve --foreground --web web/dist --listen 127.0.0.1:8080
 | Web ゲーム (NW.js / Electron) | 対応 (別オリジンの iframe) |
 | DOS、ARM64 の exe | 未対応 |
 | デスクトップの Chrome / Edge (Windows・Mac・Linux) | 対応 |
-| Android の Chrome | 主な対象。固定 4GiB の Wasm メモリが実機で確保できるかは検証中 |
+| Android の Chrome | 主な対象。4GiB の Wasm メモリを確保できない端末では 2.06GB から伸びる版 (sake-grow) に自動で切り替え (範囲チェックのある Android 相当で約 1 割遅い、[docs/translator.md](docs/translator.md))。実機での確認は未了 |
 | iOS、Firefox、Safari | 未対応 |
 
 ## 制約

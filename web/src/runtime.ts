@@ -5,6 +5,52 @@
 /** sake's files (crates/sake/build.sh → public/sake/) */
 export const sakeBase = () => new URL("sake/", location.href).href;
 
+/**
+ * The sake build this device runs. sake.wasm has the whole 4 GB memory from the start and never
+ * grows it (V8 then checks each access against a size it loads once per function, which matters
+ * on Android: no trap handler there, docs/translator.md); sake-grow.wasm starts at 2.06 GB and
+ * grows (crates/sake/build.sh), for a device that refuses 4 GB at once. The page tries the 4 GB
+ * memory itself and hands it to sake.js (`wasmMemory`), so it is allocated once. `jit`: what
+ * the translator's version gets for saved regions (the modules declare the memory they link
+ * to, koji::jit::wasm::memory_min_pages). `&memory=grow` forces the second.
+ */
+export interface SakeBuild {
+  name: "sake" | "sake-grow";
+  memory?: WebAssembly.Memory;
+  jit: "" | "g";
+}
+
+const BUILD_KEY = "ippai-sake-build";
+
+export function sakeBuild(force?: string | null): SakeBuild {
+  let build: SakeBuild = { name: "sake-grow", jit: "g" };
+  if (force !== "grow") {
+    try {
+      const memory = new WebAssembly.Memory({ initial: 65535, maximum: 65535, shared: true });
+      build = { name: "sake", memory, jit: "" };
+    } catch {
+      // (RangeError: the browser could not reserve it)
+    }
+  }
+  try {
+    localStorage.setItem(BUILD_KEY, build.name);
+  } catch {
+    // (no storage: offline.ts saves sake.wasm then)
+  }
+  return build;
+}
+
+/** The build this device ran last (offline.ts saves that one), without trying a memory. */
+export function lastSakeBuild(): SakeBuild {
+  let name: string | null = null;
+  try {
+    name = localStorage.getItem(BUILD_KEY);
+  } catch {
+    // (as below)
+  }
+  return name === "sake-grow" ? { name, jit: "g" } : { name: "sake", jit: "" };
+}
+
 /** `url`'s version as ippai serve tells it (Last-Modified and length), "" when out of reach. */
 export function fileVersion(url: string): Promise<string> {
   return fetch(url, { method: "HEAD" }).then(

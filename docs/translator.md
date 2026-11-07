@@ -170,6 +170,33 @@ initial memory read-write up front; Android's overcommit heuristics could refuse
 with little RAM (2.06 GB worked before). If it does, go back to a growable memory with the minimum
 at 33792 pages (5.1 s above).
 
+### The fallback: sake-grow.wasm (2026-11-07)
+
+crates/sake/build.sh links sake.wasm twice from the same objects: `sake.wasm` (4 GB fixed, as
+above) and `sake-grow.wasm` (-sINITIAL_MEMORY = koji::jit::wasm::GROW_MIN_PAGES = 33792 pages,
+2.06 GB: the guest's low 2 GB and 64 MB for sake; grows to 4 GB). The page (web/src/runtime.ts
+`sakeBuild`) tries `new WebAssembly.Memory({initial: 65535, maximum: 65535, shared: true})` itself
+and hands it to sake.js (`wasmMemory`, so it is reserved once); when the browser refuses it, it
+loads sake-grow. The JIT's modules declare `memory_min_pages()` (decided at the first module from
+the memory's size: 65535, or 33792 for sake-grow) to 65535, and their saved regions go by the
+translator's version + `g` (they would not link the other way round). `&memory=grow` forces it;
+`&grow=<MiB>` (tests) mallocs that much mid-run so that the memory grows. The run log's `build:`
+note says which ran.
+
+flatbench, desktop Chromium (Playwright's), FN mode, ms, 5 runs:
+
+| | default | `--wasm-enforce-bounds-checks` (Android-like) |
+|---|---|---|
+| sake.wasm (4 GB fixed) | 2511 2783 2685 2559 2647 | 3178 3031 3188 3093 3023 |
+| sake-grow.wasm | 2580 2597 2494 2668 2516 | 3401 3422 3401 3382 3382 |
+| sake-grow.wasm, grown 512 MiB mid-run | 2621 2534 2698 2666 2806 | 3444 3277 3400 3421 3394 |
+
+The fallback costs ~10 % with bounds checks, nothing without; node 22's V8 shows no difference
+(2.75 s both with checks). host/tests pass on the node sake-grow.js too; bench group
+`memory-grow` runs kernels on it (grown mid-run) with the same checks as cpu-game. Still open, on
+the real device: whether 4 GB is refused there at all (the run log tells), and the memory a long
+play uses.
+
 ## FN モードを既定に (2026-11-02)
 
 flatbench (Chromium、中央値): FN 3.4 s / リージョン 9.0 s。範囲チェックあり (Android 相当) で 4.6 / 10.8 s。

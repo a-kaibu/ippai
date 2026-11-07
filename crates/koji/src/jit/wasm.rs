@@ -15,12 +15,37 @@ pub struct Code {
     pub locs: Vec<u32>,
 }
 
-/// wine.wasm's (and sake's) memory in pages, which never grows (vnvm-wine hangover/build.sh
-/// -sINITIAL_MEMORY=4294901760 -sALLOW_MEMORY_GROWTH=0): every module the JIT makes declares it
-/// as its memory's minimum and maximum. Without V8's trap handler (Android) every access is
-/// checked against the memory's size: a growable shared memory's size is loaded again for each
-/// access, a fixed one's once per function.
-pub const MEMORY_MIN_PAGES: u32 = 65535;
+/// sake's memory in pages at most (crates/sake/build.sh -sINITIAL_MEMORY / -sMAXIMUM_MEMORY
+/// 4294901760): every module the JIT makes declares it as its memory's maximum.
+pub const MEMORY_MAX_PAGES: u32 = 65535;
+/// sake-grow.wasm's first size (build.sh's grow link, -sINITIAL_MEMORY): the low 2 GiB of the
+/// guest and 64 MiB for sake's own data; it grows from there.
+pub const GROW_MIN_PAGES: u32 = 33792;
+
+/// The minimum every module the JIT makes declares for its memory: the whole of it while sake's
+/// memory is fixed at MEMORY_MAX_PAGES (sake.wasm), so that min = max; GROW_MIN_PAGES with
+/// sake-grow.wasm, the build for devices that cannot have 4 GB at once (the page's choice,
+/// web/src/runtime.ts). Without V8's trap handler (Android) every access is checked against the
+/// memory's size: a growable shared memory's size is loaded again for each access, a fixed
+/// one's once per function (docs/translator.md: flatbench 5.1 s growable, 3.8-4.1 s fixed).
+/// Decided once, from the memory's size at the first module (it may grow later; saved modules
+/// must link in the next run too). 0: not yet.
+static MEMORY_MIN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+pub fn memory_min_pages() -> u32 {
+    use core::sync::atomic::Ordering::Relaxed;
+    let m = MEMORY_MIN.load(Relaxed);
+    if m != 0 {
+        return m;
+    }
+    #[cfg(target_arch = "wasm32")]
+    let now = core::arch::wasm32::memory_size(0) as u32;
+    #[cfg(not(target_arch = "wasm32"))]
+    let now = MEMORY_MAX_PAGES;
+    let m = if now < MEMORY_MAX_PAGES { GROW_MIN_PAGES } else { MEMORY_MAX_PAGES };
+    let _ = MEMORY_MIN.compare_exchange(0, m, Relaxed, Relaxed);
+    MEMORY_MIN.load(Relaxed)
+}
 
 pub fn uleb(out: &mut Vec<u8>, mut v: u64) {
     loop {
@@ -434,10 +459,10 @@ impl Module {
             match i {
                 Import::Memory => {
                     name(&mut s, "memory");
-                    // memory, shared, MEMORY_MIN_PAGES fixed
+                    // memory, shared, memory_min_pages() to MEMORY_MAX_PAGES
                     s.extend_from_slice(&[0x02, 0x03]);
-                    uleb(&mut s, MEMORY_MIN_PAGES as u64);
-                    uleb(&mut s, MEMORY_MIN_PAGES as u64);
+                    uleb(&mut s, memory_min_pages() as u64);
+                    uleb(&mut s, MEMORY_MAX_PAGES as u64);
                 }
                 Import::Table(n) => {
                     name(&mut s, n);

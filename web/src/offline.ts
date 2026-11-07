@@ -6,7 +6,7 @@
 
 import { coverUrl, type GameEntry } from "./launcher";
 import { chunkCache, chunkPath, fetchRetry, getChunk, HttpError, treeChunks } from "./net";
-import { fileVersion, jitBase, sakeBase, translatorVersion, versioned } from "./runtime";
+import { fileVersion, jitBase, lastSakeBuild, sakeBase, translatorVersion, versioned } from "./runtime";
 
 const store = () => new URL("store/", location.href).href;
 
@@ -88,13 +88,14 @@ export async function offlineState(g: GameEntry): Promise<OfflineState | null> {
 
 /**
  * Fetches what play.ts loads for `g` besides the chunks, at the URLs it uses: sake.js and
- * sake.wasm, the saved regions and the lists (sw.ts keeps them). Nothing when there is no
+ * sake.wasm (or the -grow ones this device ran last, runtime.ts sakeBuild), the saved regions and the lists (sw.ts keeps them). Nothing when there is no
  * service worker (dev, or a browser without one): the browser's HTTP cache only.
  */
 async function saveApp(g: GameEntry, signal: AbortSignal): Promise<void> {
   if (!navigator.serviceWorker?.controller) return;
   const base = sakeBase();
-  const wasm = fileVersion(`${base}sake.wasm`);
+  const build = lastSakeBuild();
+  const wasm = fileVersion(`${base}${build.name}.wasm`);
   const get = (u: string) => fetchRetry(u, {}, { signal, giveUpMs: 60000 });
   // (no saved regions yet, and the like: not needed to start)
   const maybe = (u: string) =>
@@ -102,7 +103,7 @@ async function saveApp(g: GameEntry, signal: AbortSignal): Promise<void> {
       if (!(e instanceof HttpError)) throw e;
       return new Uint8Array();
     });
-  const name = `${jitBase(g.run)}-${await translatorVersion(wasm)}`;
+  const name = `${jitBase(g.run)}-${await translatorVersion(wasm)}${build.jit}`;
   const parts = new TextDecoder()
     .decode(await maybe(`jit/${name}.parts`))
     .split("\n")
@@ -113,8 +114,8 @@ async function saveApp(g: GameEntry, signal: AbortSignal): Promise<void> {
     });
   const cover = coverUrl(g);
   await Promise.all([
-    get(versioned(`${base}sake.js`, await fileVersion(`${base}sake.js`))),
-    get(versioned(`${base}sake.wasm`, await wasm)),
+    get(versioned(`${base}${build.name}.js`, await fileVersion(`${base}${build.name}.js`))),
+    get(versioned(`${base}${build.name}.wasm`, await wasm)),
     maybe(`jit/${name}.chunks`),
     maybe("jit/_shared.chunks"),
     ...(cover ? [maybe(cover)] : []),

@@ -14,7 +14,7 @@
 export const VERSION = 3;
 
 // More rounds for the groups whose cases are short and noisy (run.mjs's default when ROUNDS isn't set)
-export const MIN_ROUNDS = { "cpu-kernels": 7, "cpu-game": 5, scenario: 5, kirikiri: 5, krkr2: 5, "renpy-gl": 5, "renpy-angle": 5, onscripter: 5, onscripter64: 5, win16: 5, "win16-pascal": 5 };
+export const MIN_ROUNDS = { "memory-grow": 5, "cpu-kernels": 7, "cpu-game": 5, scenario: 5, kirikiri: 5, krkr2: 5, "renpy-gl": 5, "renpy-angle": 5, onscripter: 5, onscripter64: 5, win16: 5, "win16-pascal": 5 };
 
 const cases = (exe, names, extra = {}) => names.map((c) => ({ exe, args: c, ...extra }));
 
@@ -62,5 +62,14 @@ export const GROUPS = {
   // tests/bench/build-novel16p.sh): it composes its 256-colour screen in its own 16-bit code
   // (sprites, a darkened text window, pixel transitions) and shows it with StretchDIBits
   "win16-pascal": [{ exe: "novel16p\\novel16p.exe", name: "win16-pascal", args: "", load: "load", scenario: true }],
+  // sake-grow.wasm, the page's fallback where 4 GB at once is refused (web/src/runtime.ts
+  // sakeBuild): its memory starts at 2.06 GB and grows (&grow takes 512 MiB mid-run so that it
+  // does). The same kernels as above, which must give the same checks; against cpu-game's numbers:
+  // what the growable memory costs (on desktop Chromium; Android's bounds checks cost more)
+  "memory-grow": [
+    { exe: "bench.exe", args: "2", format: "plain", page: "memory=grow&grow=512", grows: true },
+    ...cases("cpu.exe", ["script", "heap", "strings", "threads", "file"], { page: "memory=grow&grow=512", grows: true }),
+    ...cases("cxx.exe", ["map", "exceptions"], { page: "memory=grow&grow=512", grows: true }),
+  ],
   onscripter64: [{ exe: "onscripter64\\onscripter.exe", name: "onscripter64", args: "--registry,play.reg", load: "--registry,load.reg", scenario: true }],
 };

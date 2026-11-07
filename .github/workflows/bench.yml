@@ -4,7 +4,8 @@
 # artifact bench-report) says what got faster or slower; the history (artifact bench-history,
 # carried from run to run) keeps the medians of the last 300 commits. No game files and no
 # screenshots: only JSON and Markdown.
-#   groups: cpu-kernels, cpu-game (the x86 JIT and the Win32 layer), gdi, ddraw, d3d8, d3d9,
+#   groups: cpu-kernels, cpu-game (the x86 JIT and the Win32 layer), memory-grow (the same on
+#   sake-grow.wasm, the fallback memory), gdi, ddraw, d3d8, d3d9,
 #   d3d11, d2d, gl (each graphics API), scenario (a small game played through), kirikiri (the same made with 吉里吉里Z), krkr2 (on 吉里吉里2), renpy-gl and renpy-angle (with Ren'Py, through OpenGL and ANGLE), js (the kernels as plain wasm in V8 and JavaScriptCore)
 name: Bench
 
@@ -62,7 +63,7 @@ jobs:
             [ -n "$id" ] && [ "$sha" != "$SHA" ] && [ "$id" -lt "$RUN_ID" ] || continue
             if has_build "$id"; then OLD_RUN_ID=$id OLD_SHA=$sha; break; fi
           done <<< "$runs"
-          ALL="cpu-kernels cpu-game gdi ddraw d3d8 d3d9 d3d11 d2d gl scenario kirikiri krkr2 renpy-gl renpy-angle onscripter onscripter64 win16 win16-pascal"
+          ALL="cpu-kernels cpu-game memory-grow gdi ddraw d3d8 d3d9 d3d11 d2d gl scenario kirikiri krkr2 renpy-gl renpy-angle onscripter onscripter64 win16 win16-pascal"
           G=${GROUPS:-$ALL js}
           echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
