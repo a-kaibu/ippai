@@ -190,8 +190,10 @@ jobs:
             $store.Open('ReadWrite'); $store.Add($cert); $store.Close()
           }
           Set-Service Audiosrv -StartupType Automatic; Start-Service Audiosrv
-          # (staged first with pnputil, which never prompts: devcon then finds it in the store;
-          # each part has a time limit and its output in the log)
+          # (the runner is in test mode, but Windows still asks "Windows can't verify the publisher
+          # of this driver software" on the desktop: winplay.py answers it meanwhile. Staged with
+          # pnputil, then devcon makes the device; each part has a time limit and its output here)
+          $ans = Start-Process -FilePath python -ArgumentList "$env:GITHUB_WORKSPACE\tests\corpus\winplay.py", 'accept-driver-prompt', '200' -PassThru -NoNewWindow -RedirectStandardOutput "$env:RUNNER_TEMP\answer.txt"
           Push-Location $sys.DirectoryName
           $s = Start-Process -FilePath pnputil.exe -ArgumentList '/add-driver', 'Scream.inf', '/install' -PassThru -NoNewWindow -RedirectStandardOutput "$env:RUNNER_TEMP\pnputil.txt"
           if (-not $s.WaitForExit(120000)) { Stop-Process -Id $s.Id -Force; "pnputil did not finish" }
@@ -208,6 +210,8 @@ jobs:
           }
           Pop-Location
           "devcon exit $($p.ExitCode)"
+          Stop-Process -Id $ans.Id -Force -ErrorAction SilentlyContinue
+          Get-Content "$env:RUNNER_TEMP\answer.txt" -ErrorAction SilentlyContinue
           Get-CimInstance Win32_SoundDevice | Select-Object Name, Status
       - name: Windows
         if: steps.meta.outputs.ok

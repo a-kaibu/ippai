@@ -8,6 +8,7 @@ from 12 s on), waits until it holds still, shoots it (title.png), runs the title
 Writes OUT/result.json with the fields corpus.mjs writes. Standard library only (ctypes).
 
   python winplay.py setup                         once per runner: display mode, time zone
+  python winplay.py accept-driver-prompt SECONDS  answers the unsigned-driver prompt meanwhile
   python winplay.py meta TITLES.tsv ID EXE META.json   (any OS) what `play` needs of titles.tsv
   python winplay.py play GAME OUT                 GAME/meta.json + GAME/x: run with its settings
   python winplay.py run EXE OUT [STEPS]           env: ARGS, PRE=x,y, STORY_AT=x,y, STORY (30),
@@ -110,7 +111,7 @@ if os.name == 'nt':
     H = W.HANDLE
     ENUMPROC = ctypes.WINFUNCTYPE(W.BOOL, W.HWND, W.LPARAM)
     for f, a, r in [(u32.EnumWindows, [ENUMPROC, W.LPARAM], W.BOOL), (u32.GetWindowThreadProcessId, [W.HWND, ctypes.POINTER(W.DWORD)], W.DWORD),
-                    (u32.IsWindowVisible, [W.HWND], W.BOOL), (u32.GetClientRect, [W.HWND, ctypes.POINTER(W.RECT)], W.BOOL),
+                    (u32.IsWindowVisible, [W.HWND], W.BOOL), (u32.GetClientRect, [W.HWND, ctypes.POINTER(W.RECT)], W.BOOL), (u32.GetWindowRect, [W.HWND, ctypes.POINTER(W.RECT)], W.BOOL),
                     (u32.ClientToScreen, [W.HWND, ctypes.POINTER(W.POINT)], W.BOOL), (u32.GetDC, [W.HWND], H), (u32.ReleaseDC, [W.HWND, H], ctypes.c_int),
                     (u32.SetForegroundWindow, [W.HWND], W.BOOL), (u32.GetForegroundWindow, [], W.HWND), (u32.SetCursorPos, [ctypes.c_int, ctypes.c_int], W.BOOL),
                     (u32.ShowWindow, [W.HWND, ctypes.c_int], W.BOOL), (u32.IsIconic, [W.HWND], W.BOOL), (u32.MapVirtualKeyW, [W.UINT, W.UINT], W.UINT),
@@ -277,6 +278,34 @@ def dialogs(pids):
         return True
     u32.EnumWindows(ENUMPROC(cb), 0)
     return out
+
+
+def accept_driver_prompt(seconds):
+    """answers Windows Security's "Windows can't verify the publisher of this driver software"
+    with "Install this driver software anyway" (corpusref.yml's virtual sound card: the runner
+    is in test mode, the prompt is all that stands in the way) for that many seconds"""
+    t = time.time()
+    answered = 0
+    while time.time() - t < seconds:
+        found = []
+        def cb(hwnd, _):
+            b = ctypes.create_unicode_buffer(256)
+            u32.GetWindowTextW(hwnd, b, 256)
+            if b.value == 'Windows Security' and u32.IsWindowVisible(hwnd): found.append(hwnd)
+            return True
+        u32.EnumWindows(ENUMPROC(cb), 0)
+        for hwnd in found:
+            r = W.RECT()
+            u32.GetWindowRect(hwnd, ctypes.byref(r))
+            front(hwnd)
+            # (the second command link: measured on the runner's 500x298 dialog at 100 %)
+            x, y = r.left + round(0.394 * (r.right - r.left)), r.top + round(0.63 * (r.bottom - r.top))
+            u32.SetCursorPos(x, y)
+            mouse(0x2); time.sleep(0.1); mouse(0x4)
+            answered += 1
+            print('answered the driver prompt at', x, y, flush=True)
+        time.sleep(1)
+    return answered
 
 
 def front(hwnd):
@@ -454,6 +483,7 @@ def run(exe, out, steps):
 if __name__ == '__main__':
     a = sys.argv[1:]
     if a[:1] == ['setup']: setup()
+    elif a[:1] == ['accept-driver-prompt'] and len(a) == 2: print('answered', accept_driver_prompt(float(a[1])))
     elif a[:1] == ['run'] and len(a) in (3, 4): run(a[1], a[2], a[3] if len(a) == 4 else '')
     elif a[:1] == ['play'] and len(a) == 3:
         # (corpusref.yml: GAME/meta.json from `meta` on the Linux runner, the game in GAME/x)
