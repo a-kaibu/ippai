@@ -150,6 +150,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7.0.1
+      - run: tools/ci/cache-keys.sh
       - run: tools/ci/rust-key.sh
       - id: cargo-cache
         uses: actions/cache/restore@v6.1.0
@@ -159,19 +160,36 @@ jobs:
             ~/.cargo/git
             tools/jit64test/target
             tools/jit32test/target
-          key: jit-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('tools/jit64test/Cargo.lock', 'tools/jit32test/Cargo.lock') }}-${{ github.run_id }}
+            tools/jit16test/target
+          key: jit-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('tools/jit64test/Cargo.lock', 'tools/jit32test/Cargo.lock', 'tools/jit16test/Cargo.lock') }}-${{ github.run_id }}
           restore-keys: |
-            jit-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('tools/jit64test/Cargo.lock', 'tools/jit32test/Cargo.lock') }}-
+            jit-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('tools/jit64test/Cargo.lock', 'tools/jit32test/Cargo.lock', 'tools/jit16test/Cargo.lock') }}-
             jit-${{ runner.os }}-${{ env.RUST_KEY }}-
+      # (SingleStepTests/80386 for jit16test, pinned by fetch.sh)
+      - uses: actions/cache@v6.1.0
+        with:
+          path: target/sst
+          key: sst-${{ hashFiles('tests/sst/fetch.sh') }}
+      - name: SingleStepTests/80386
+        id: sst
+        background: true
+        run: tests/sst/fetch.sh
+      # (.debs per runner image: tools/ci/apt.sh)
+      - uses: actions/cache@v6.1.0
+        with:
+          path: ~/.apt-cache
+          key: apt-${{ env.CI_IMAGE }}-gcc-multilib
       - name: gcc-multilib (jit32test native)
         id: apt
         background: true
-        run: sudo apt-get update -q && sudo apt-get install -y -q gcc-multilib
-      - name: Build jit64test and jit32test
+        run: tools/ci/apt.sh gcc-multilib
+      - name: Build jit64test, jit32test and jit16test
         run: |
           (cd tools/jit64test && cargo build --release --locked) & p=$!
+          (cd tools/jit16test && cargo build --release --locked) & q=$!
           (cd tools/jit32test && cargo build --release --locked)
           wait $p
+          wait $q
       - name: Long mode, JIT against the interpreter (new seed per run)
         id: jit64-diff
         background: true
@@ -187,18 +205,30 @@ jobs:
         background: true
         working-directory: tools/jit32test
         run: cargo run --release --locked -- 10000 ${{ github.run_number }}
-      - wait: apt
+      # koji's 16-bit JIT (Win16 code) against its interpreter (random 16-bit code) and against a
+      # real 386 (SingleStepTests/80386: every test of what it translates, 200 per opcode file)
+      - name: 16-bit, JIT against the interpreter (new seed per run)
+        id: jit16-diff
+        background: true
+        working-directory: tools/jit16test
+        run: cargo run --release --locked -- 1500 ${{ github.run_number }}
+      - wait: [apt, sst]
+      - name: 16-bit, against the 386
+        id: jit16-sst
+        background: true
+        working-directory: tools/jit16test
+        run: SST_N=200 cargo run --release --locked -- sst
       - name: 32-bit, against the runner's CPU (random rounding modes and precisions)
         id: jit32-native
         background: true
         working-directory: tools/jit32test
         run: cargo run --release --locked -- native 3000 ${{ github.run_number }}
-      - name: Wait for the four runs
-        wait: [jit64-diff, jit64-native, jit32-diff, jit32-native]
+      - name: Wait for the six runs
+        wait: [jit64-diff, jit64-native, jit32-diff, jit32-native, jit16-diff, jit16-sst]
       # (before the cache is saved: only the registry crates' builds are worth keeping)
       - name: Shrink the cargo cache
         if: ${{ !cancelled() }}
-        run: python3 tools/ci/cache-prune.py tools/jit64test/target tools/jit32test/target
+        run: python3 tools/ci/cache-prune.py tools/jit64test/target tools/jit32test/target tools/jit16test/target
       # (saved when the tests fail too: the registry crates' builds are good either way)
       - if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' }}
         uses: actions/cache/save@v6.1.0
@@ -208,35 +238,8 @@ jobs:
             ~/.cargo/git
             tools/jit64test/target
             tools/jit32test/target
-          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
-
-  # koji's 16-bit JIT (Win16 code) against its interpreter (random 16-bit code) and against a
-  # real 386 (SingleStepTests/80386: every test of what it translates, 200 per opcode file)
-  jit16:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: actions/cache@v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
             tools/jit16test/target
-          key: jit16-${{ runner.os }}-${{ hashFiles('tools/jit16test/Cargo.lock') }}
-          restore-keys: jit16-${{ runner.os }}-
-      - uses: actions/cache@v6.1.0
-        with:
-          path: target/sst
-          key: sst-${{ hashFiles('tests/sst/fetch.sh') }}
-      - name: SingleStepTests/80386
-        run: tests/sst/fetch.sh
-      - name: Differential test (new seed per run)
-        working-directory: tools/jit16test
-        run: cargo run --release --locked -- 1500 ${{ github.run_number }}
-      - name: Against the 386
-        working-directory: tools/jit16test
-        run: SST_N=200 cargo run --release --locked -- sst
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   rustfs:
     runs-on: ubuntu-24.04
@@ -277,12 +280,16 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0 # (git describe names the build)
-      - name: Tools
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -yq --no-install-recommends mingw-w64 zstd clang lld llvm
-          rustup component add rust-src
-          rustup target add wasm32-unknown-emscripten
+      - run: tools/ci/cache-keys.sh
+      # (.debs per runner image: tools/ci/apt.sh)
+      - uses: actions/cache@v6.1.0
+        with:
+          path: ~/.apt-cache
+          key: apt-${{ env.CI_IMAGE }}-mingw-w64-zstd-clang-lld-llvm
+      - name: mingw-w64, zstd, clang
+        id: apt
+        background: true
+        run: tools/ci/apt.sh mingw-w64 zstd clang lld llvm
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: 22
@@ -296,6 +303,17 @@ jobs:
           restore-keys: pnpm-${{ runner.os }}-build-
       - run: tools/ci/pnpm.sh
       - run: tools/ci/rust-key.sh
+      # (rust-src and the emscripten std, per stable rustc)
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src
+            ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/wasm32-unknown-emscripten
+            ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/components
+            ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/manifest-rust-src
+            ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/manifest-rust-std-wasm32-unknown-emscripten
+          key: rust-wasm-${{ env.RUST_KEY }}
+      - run: tools/ci/rust-wasm.sh
       - id: cargo-cache
         uses: actions/cache/restore@v6.1.0
         with:
@@ -315,6 +333,7 @@ jobs:
         run: tools/ci/no-npm.sh
       - name: Fetch ordering tests
         run: node tests/fetch-bridge.test.mjs
+      - wait: apt
       - name: Build
         run: tools/ci/build.sh
       - name: host/tests on sake

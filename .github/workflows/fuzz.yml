@@ -30,7 +30,20 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7.0.1
-      - run: rustup toolchain install nightly --profile minimal && tools/ci/rust-key.sh nightly
+      - run: tools/ci/cache-keys.sh
+      # (the nightly toolchain, downloaded once a week: tools/ci/nightly.sh)
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu
+            ~/.rustup/update-hashes/nightly-x86_64-unknown-linux-gnu
+          key: rust-nightly-minimal-${{ env.CI_WEEK }}
+      - run: tools/ci/nightly.sh
+      # (.debs per runner image: tools/ci/apt.sh)
+      - uses: actions/cache@v6.1.0
+        with:
+          path: ~/.apt-cache
+          key: apt-${{ env.CI_IMAGE }}-gcc-multilib-imagemagick
       - id: cargo-cache
         uses: actions/cache/restore@v6.1.0
         with:
@@ -46,8 +59,7 @@ jobs:
             fuzz-build-${{ runner.os }}-${{ env.RUST_KEY }}-
       - name: Tools
         run: |
-          sudo apt-get update -q && sudo apt-get install -yq gcc-multilib imagemagick
-          rustup toolchain install nightly --profile minimal
+          tools/ci/apt.sh gcc-multilib imagemagick
           command -v cargo-fuzz || cargo install --locked cargo-fuzz --version 0.13.2
       # (saved after the job under a new key when it passes; a failing run's corpus is not
       # kept, its crash inputs are uploaded)

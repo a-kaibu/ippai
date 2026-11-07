@@ -35,7 +35,13 @@ jobs:
       TLC_SHA256: 84f1e3bf90cf845f0be2f3505a1f93673175122e8dbe76c092ce69f129f28cbc
     steps:
       - uses: actions/checkout@v7.0.1
+      - id: tlc
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/.local/bin/tlc
+          key: tlc-${{ env.TLC_VERSION }}-${{ env.TLC_SHA256 }}
       - name: TLC
+        if: steps.tlc.outputs.cache-hit != 'true'
         run: |
           curl -sSLf --retry 4 -o /tmp/tlc.tgz "https://github.com/yashikota/tlc-static/releases/download/$TLC_VERSION/tlc-linux-amd64.tar.gz"
           echo "$TLC_SHA256  /tmp/tlc.tgz" | sha256sum -c
@@ -91,6 +97,8 @@ jobs:
             ~/.cargo/bin/kani
             ~/.cargo/bin/cargo-kani
             ~/.kani
+            ~/.rustup/toolchains/nightly-20*
+            ~/.rustup/update-hashes/nightly-20*
             ~/.cargo/registry
           key: kani-${{ runner.os }}-${{ env.KANI_VERSION }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: kani-${{ runner.os }}-${{ env.KANI_VERSION }}-
@@ -106,10 +114,42 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7.0.1
+      - run: tools/ci/cache-keys.sh
+      # (the nightly toolchain, downloaded once a week: tools/ci/nightly.sh)
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu
+            ~/.rustup/update-hashes/nightly-x86_64-unknown-linux-gnu
+            ~/.cache/miri
+          key: rust-nightly-miri-rust-src-${{ env.CI_WEEK }}
       - name: Miri
-        run: rustup toolchain install nightly --profile minimal --component miri,rust-src
+        run: tools/ci/nightly.sh miri rust-src
+      - id: cargo-cache
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/miri
+          key: miri-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            miri-${{ runner.os }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-
+            miri-${{ runner.os }}-${{ env.RUST_KEY }}-
       - name: Tests under Miri
         run: formal/miri.sh
+      # (before the cache is saved: only the registry crates' builds are worth keeping)
+      - name: Shrink the cargo cache
+        if: ${{ !cancelled() }}
+        run: python3 tools/ci/cache-prune.py target/miri
+      - if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' }}
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/miri
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   # (the render optimizations against plain execution on the WebGPU model, render/model.rs:
   # many more random command streams than cargo test runs)

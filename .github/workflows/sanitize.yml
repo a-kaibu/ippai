@@ -47,7 +47,15 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7.0.1
-      - run: rustup toolchain install nightly --profile minimal --component rust-src && tools/ci/rust-key.sh nightly
+      - run: tools/ci/cache-keys.sh
+      # (the nightly toolchain, downloaded once a week: tools/ci/nightly.sh)
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu
+            ~/.rustup/update-hashes/nightly-x86_64-unknown-linux-gnu
+          key: rust-nightly-rust-src-${{ env.CI_WEEK }}
+      - run: tools/ci/nightly.sh rust-src
       - id: cargo-cache
         uses: actions/cache/restore@v6.1.0
         with:
@@ -59,8 +67,6 @@ jobs:
           restore-keys: |
             sanitize-${{ matrix.kind }}-${{ env.RUST_KEY }}-${{ hashFiles('Cargo.lock') }}-
             sanitize-${{ matrix.kind }}-${{ env.RUST_KEY }}-
-      - name: Tools
-        run: rustup toolchain install nightly --profile minimal --component rust-src
       - name: Tests under ${{ matrix.kind }} sanitizer
         run: tools/ci/sanitize.sh ${{ matrix.kind }}
       # (before the cache is saved: only the registry crates' builds are worth keeping)

@@ -42,8 +42,14 @@ jobs:
       stale: ${{ steps.stale.outputs.list }}
     steps:
       - uses: actions/checkout@v7.0.1
+      - run: tools/ci/cache-keys.sh
+      # (.debs per runner image: tools/ci/apt.sh)
+      - uses: actions/cache@v6.1.0
+        with:
+          path: ~/.apt-cache
+          key: apt-${{ env.CI_IMAGE }}-mingw-w64-clang-lld-llvm
       - name: mingw-w64
-        run: sudo apt-get update -q && sudo apt-get install -yq --no-install-recommends mingw-w64 clang lld llvm
+        run: tools/ci/apt.sh mingw-w64 clang lld llvm
       - name: Build the probes
         run: tests/winref/build.sh "$RUNNER_TEMP/exe" && tests/winref/build-msvc.sh "$RUNNER_TEMP/exe"
       - name: Probes without a current Windows answer
@@ -68,10 +74,6 @@ jobs:
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7.0.1
-      - name: Tools
-        run: |
-          rustup component add rust-src
-          rustup target add wasm32-unknown-emscripten
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: 22
@@ -97,6 +99,17 @@ jobs:
           mkdir -p "$RUNNER_TEMP/pw" && pnpm add --dir "$RUNNER_TEMP/pw" playwright@1.56.1
           "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install chromium
       - run: tools/ci/rust-key.sh
+      # (rust-src and the emscripten std, per stable rustc)
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src
+            ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/wasm32-unknown-emscripten
+            ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/components
+            ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/manifest-rust-src
+            ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/manifest-rust-std-wasm32-unknown-emscripten
+          key: rust-wasm-${{ env.RUST_KEY }}
+      - run: tools/ci/rust-wasm.sh
       - id: cargo-cache
         uses: actions/cache/restore@v6.1.0
         with:

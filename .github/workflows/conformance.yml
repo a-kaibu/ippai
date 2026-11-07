@@ -34,11 +34,18 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7.0.1
-      - name: Tools
-        run: |
-          rustup component add rust-src
-          rustup target add wasm32-unknown-emscripten
       - run: tools/ci/rust-key.sh
+      # (rust-src and the emscripten std, per stable rustc)
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src
+            ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/wasm32-unknown-emscripten
+            ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/components
+            ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/manifest-rust-src
+            ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/manifest-rust-std-wasm32-unknown-emscripten
+          key: rust-wasm-${{ env.RUST_KEY }}
+      - run: tools/ci/rust-wasm.sh
       - id: cargo-cache
         uses: actions/cache/restore@v6.1.0
         with:
@@ -83,6 +90,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7.0.1
+      - run: tools/ci/cache-keys.sh
       - id: key
         run: echo "key=winetest-${{ hashFiles('tests/winetest/build.sh', 'tests/winetest/dlls.txt') }}" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v6.1.0
@@ -90,11 +98,15 @@ jobs:
         with:
           path: target/winetest/bin
           key: ${{ steps.key.outputs.key }}
+      # (.debs per runner image: tools/ci/apt.sh)
+      - uses: actions/cache@v6.1.0
+        with:
+          path: ~/.apt-cache
+          key: apt-${{ env.CI_IMAGE }}-mingw-w64-flex-bison
       - name: Build Wine's tests
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -yq --no-install-recommends mingw-w64 flex bison
+          tools/ci/apt.sh mingw-w64 flex bison
           tests/winetest/build.sh
           rm -rf target/winetest/build target/winetest/wine-*
       - uses: actions/upload-artifact@v7.0.2
@@ -144,6 +156,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7.0.1
+      - run: tools/ci/cache-keys.sh
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: 22
@@ -181,12 +194,21 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-1.56.1
+      # (.debs per runner image: tools/ci/apt.sh)
+      - uses: actions/cache@v6.1.0
+        with:
+          path: ~/.apt-cache
+          key: apt-${{ env.CI_IMAGE }}-fonts-ipafont-gothic-fonts-ipafont-mincho
+      - uses: actions/cache@v6.1.0
+        with:
+          path: ~/.pip-wheels
+          key: pip-${{ runner.os }}-fonttools==4.59.0
       - name: Browser, fonts, the page and ippai
         run: |
           mkdir -p "$RUNNER_TEMP/pw" && pnpm add --dir "$RUNNER_TEMP/pw" playwright@1.56.1
           "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install chromium
-          sudo apt-get install -yq --no-install-recommends fonts-ipafont-gothic fonts-ipafont-mincho
-          pip install fonttools
+          tools/ci/apt.sh fonts-ipafont-gothic fonts-ipafont-mincho
+          tools/ci/pip.sh fonttools==4.59.0
           mkdir -p "$RUNNER_TEMP/fonts" && python3 tools/ci/sake-fonts.py "$RUNNER_TEMP/fonts"
           mkdir -p web/public/sake && cp target/sake-web/* web/public/sake/
           (cd web && pnpm install --frozen-lockfile && pnpm exec vp build)
@@ -226,6 +248,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7.0.1
+      - run: tools/ci/cache-keys.sh
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: 22
@@ -233,11 +256,15 @@ jobs:
         with:
           name: sake-node
           path: target
+      # (.debs per runner image: tools/ci/apt.sh)
+      - uses: actions/cache@v6.1.0
+        with:
+          path: ~/.apt-cache
+          key: apt-${{ env.CI_IMAGE }}-mingw-w64-wine-wine32_i386
       - name: Wine (the reference) and mingw-w64
         run: |
           sudo dpkg --add-architecture i386
-          sudo apt-get update -q
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends mingw-w64 wine wine32:i386
+          tools/ci/apt.sh mingw-w64 wine wine32:i386
       - name: GDI drawing, sake against Wine
         run: python3 tests/diff/gdi.py
       - name: Floating point, sake against the CPU
