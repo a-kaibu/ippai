@@ -126,6 +126,25 @@
   `tools/jit64test native` で実 CPU と照合済み (rcp/rsqrt の近似値を除き一致)。
   SSE4.1 の dpps/dppd、mpsadbw、phminposuw と SSE4.2 の pcmpXstrX も実行する
   (host/tests/sse4.c: native と一致、-mavx の VEX 形も)。
+- 64 ビットの速さ (2026-11-07): x86 と同じ bench.exe が 40.5 秒 → 1.82 秒 (x86 は 1.0 秒)。
+  - JIT (long.rs): リージョン内の直接 call は goto、ret はリージョン内の戻り先 (最大 8) と比べて
+    goto。リージョンの出口はハッシュを引いて、同じリージョンならレジスタを local に置いたまま
+    ループの先頭へ、別のリージョンなら return_call_indirect で直接つなぐ (jit_budget で打ち切り、
+    ring に記録)。`cmp + ja` に続く `jmp` のジャンプテーブル (lea rip + movsxd + add、
+    jmp [base+idx*8]) は表の行き先を全部ブロックにする。最大 256 ブロック / 1000 命令。
+  - kura: x64 の merge_hot64 は一番出口の多いブロックに、そこからよく行く先をまとめて足す
+    (ジャンプテーブルの基底が外にあってテーブルを読めないときの代わり)。
+  - ネイティブ化した命令: adc/sbb、1 オペランドの mul/imul/div/idiv (0 除算・桁あふれは
+    インタプリタ)、tzcnt/lzcnt/popcnt、rol/ror (即値)、bswap。
+  - sake: x64 のゲスト CRT (guest/crt.c を -m64 -mabi=ms でもビルド、guest_crt64.bin) が
+    EnterCriticalSection/LeaveCriticalSection、TlsGetValue、Get/SetLastError、HeapAlloc/HeapFree、
+    malloc/free を trap なしで済ませる。WaitForMultipleObjects / MsgWaitForMultipleObjects(Ex) の
+    ハンドル配列は x64 で 8 バイト刻み (これまで threads の結果が違っていた)。
+  - テスト: tools/jit64test に新命令とリージョン連鎖 (1〜3 ブロックの小さいリージョンを全命令で
+    先に作る) のケース、CI の jit64 ジョブが毎回別の seed で 2 万件。host/tests/fastpaths.c
+    (CS 4 スレッド、TLS、ヒープ、errno など) は x86 と x64 で同じ期待値。
+  - 残り: strings 1.6 倍、sync_lock 12 倍 (メモリへの xchg がインタプリタ)、x87 と minss の JIT、
+    x64 の mingw C++ 例外が落ちる。
 - gl.rs: x64 では引数を位置で並べる ('d'/'f' は xmm、他は a64 の下位)。glShaderSource の
   ポインタ配列は 8 バイト刻み。拡張関数名は ARB/EXT を外した名前でも探す。
 - user: DPI API (GetDpiForWindow など 96 固定)、ShowWindow(SW_MAXIMIZE) で画面いっぱいに広げる。

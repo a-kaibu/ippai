@@ -2693,7 +2693,7 @@ fn WaitMessage(_: &mut Ctx) -> u32 {
 }
 fn MsgWaitForMultipleObjects(c: &mut Ctx) -> u32 {
     let (n, hs, all, ms, mask) = (c.a(0), c.a(1), c.a(2) != 0, c.a(3), c.a(4));
-    let hs: Vec<u32> = (0..n.min(64)).map(|i| r32(hs + 4 * i)).collect();
+    let hs: Vec<u32> = (0..n.min(64)).map(|i| mem::rp(hs + mem::ps() * i)).collect();
     process_sent(c.cpu);
     if has_work_of(mask) {
         return n;
@@ -2702,7 +2702,7 @@ fn MsgWaitForMultipleObjects(c: &mut Ctx) -> u32 {
 }
 fn MsgWaitForMultipleObjectsEx(c: &mut Ctx) -> u32 {
     let (n, hs, ms, mask, flags) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
-    let hs: Vec<u32> = (0..n.min(64)).map(|i| r32(hs + 4 * i)).collect();
+    let hs: Vec<u32> = (0..n.min(64)).map(|i| mem::rp(hs + mem::ps() * i)).collect();
     process_sent(c.cpu);
     if has_work_of(mask) {
         return n;

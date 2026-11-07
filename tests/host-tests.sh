@@ -12,8 +12,8 @@ set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SAKE=${SAKE:-/home/user/work/sake-out/sake.js}
 OUT=${OUT:-$(mktemp -d)}
-TESTS=${*:-nullcall intops simd atomics smc cmp64 ssecvt dinputtest textbounds crtstdio fileseek crtfiles hlsltest d3dx9shader d3dx9effect struct64 guard sse4 xaudio2 winrt wtsapi}
-X64=" struct64 guard xaudio2 crtstdio fileseek crtfiles cmp64 winrt wtsapi "
+TESTS=${*:-nullcall intops simd atomics smc cmp64 ssecvt dinputtest textbounds crtstdio fileseek crtfiles hlsltest d3dx9shader d3dx9effect struct64 guard sse4 xaudio2 winrt wtsapi fastpaths}
+X64=" struct64 guard xaudio2 crtstdio fileseek crtfiles cmp64 winrt wtsapi atomics fastpaths "
 CLANG64=${CLANG64-x64seh x64crt}
 # Tests in VEX are also built with -mavx (the VEX forms of their SSE instructions)
 VEX=" sse4 "

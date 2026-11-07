@@ -656,7 +656,7 @@ fn WaitForMultipleObjects(c: &mut Ctx) -> u32 {
         last_error(87);
         return obj::WAIT_FAILED;
     }
-    let hs: Vec<u32> = (0..c.a(0).min(64)).map(|i| r32(c.a(1) + 4 * i)).collect();
+    let hs: Vec<u32> = (0..c.a(0).min(64)).map(|i| mem::rp(c.a(1) + mem::ps() * i)).collect();
     obj::wait(&hs, c.a(2) != 0, c.a(3), None)
 }
 fn WaitForMultipleObjectsEx(c: &mut Ctx) -> u32 {

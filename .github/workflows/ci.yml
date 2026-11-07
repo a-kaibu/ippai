@@ -93,6 +93,24 @@ jobs:
       - name: Check all Rust targets without warnings
         run: cargo check --workspace --all-targets --locked
 
+  # koji's long-mode JIT against its interpreter (random x64 code, run by wasmtime)
+  jit64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            tools/jit64test/target
+          key: jit64-${{ runner.os }}-${{ hashFiles('tools/jit64test/Cargo.lock') }}
+          restore-keys: jit64-${{ runner.os }}-
+      - name: Differential test (new seed per run)
+        working-directory: tools/jit64test
+        run: cargo run --release --locked -- 20000 ${{ github.run_number }}
+
   rustfs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20

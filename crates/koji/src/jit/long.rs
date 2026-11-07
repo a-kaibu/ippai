@@ -35,7 +35,14 @@ const F_EFLAGS: u32 = 1;
 const F_STATUS: u32 = 2;
 
 const MAX_INS: usize = 120;
-const MAX_BLOCKS: usize = 64;
+const MAX_BLOCKS: usize = 256;
+/// Instructions in a region at most (V8's optimizing compiler takes superlinear time on big
+/// functions; jit/mod.rs's MAX_REGION_INS)
+const MAX_REGION_INS: usize = 1000;
+/// Entries of a jump table at most
+const MAX_TABLE: u64 = 512;
+/// A RET compares its target with this many of the region's return addresses at most
+const MAX_RETURNS: usize = 8;
 
 /// Debugging a miscompile: instructions per block and blocks per region at most (0: the
 /// defaults), and mnemonics (by their `Mnemonic` number) left to the interpreter.
@@ -82,7 +89,9 @@ const L_BLK: u32 = L_FC + 1; // i32
 const L_A: u32 = L_FC + 2; // i32: the instruction's memory address
 const L_ST: u32 = L_FC + 3; // i32: an exit's status
 const L_DBG: u32 = L_FC + 4; // i32: debugging
-const N_I32: u32 = 5;
+const L_H: u32 = L_FC + 5; // i32: the exit's hash probe (see Gen::chain)
+const L_E: u32 = L_FC + 6; // i32
+const N_I32: u32 = 7;
 const L_V0: u32 = L_FC + N_I32; // v128: SSE operands (long/sse.rs)
 const L_V1: u32 = L_V0 + 1;
 
@@ -96,7 +105,7 @@ const OF: u32 = 0x800;
 const STATUS: u32 = CF | PF | AF | ZF | SF | OF;
 
 // lazy kinds (crate::lazy's)
-use crate::lazy::{ADD, DEC, INC, LOGIC, MUL, SAR, SHL, SHR, SUB};
+use crate::lazy::{ADC, ADD, DEC, INC, LOGIC, MUL, SAR, SBB, SHL, SHR, SUB};
 
 fn off_lo(i: usize) -> u32 {
     if i < 8 { (offset_of!(Cpu, regs) + 4 * i) as u32 } else { (offset_of!(Cpu, r8) + 8 * (i - 8)) as u32 }
@@ -131,6 +140,14 @@ const I64_ADD: u8 = 0x7c;
 const I64_SUB: u8 = 0x7d;
 const I64_MUL: u8 = 0x7e;
 const I64_DIV_S: u8 = 0x7f;
+const I64_DIV_U: u8 = 0x80;
+const I64_REM_S: u8 = 0x81;
+const I64_REM_U: u8 = 0x82;
+const I64_GE_U: u8 = 0x5a;
+const I64_CLZ: u8 = 0x79;
+const I64_CTZ: u8 = 0x7a;
+const I64_ROTL: u8 = 0x89;
+const I64_ROTR: u8 = 0x8a;
 const I64_AND: u8 = 0x83;
 const I64_OR: u8 = 0x84;
 const I64_XOR: u8 = 0x85;
@@ -163,6 +180,8 @@ struct Gen<'a> {
     c: Code,
     blocks: &'a [Block],
     index: &'a BTreeMap<u64, usize>,
+    /// return addresses of the region's calls into it (blocks of it)
+    returns: &'a [u64],
     flags: Flags,
     /// blocks between the current code and the dispatch loop
     depth: u32,
@@ -421,6 +440,28 @@ impl<'a> Gen<'a> {
         self.c.get(L_FA).get(L_FR).x(I64_XOR).x(I64_AND);
         self.sign_bit(bits);
     }
+    /// CF of ADC (`adc`) or SBB, the carry in in L_FC (i32 0/1): a + b + c wrapped below a (or
+    /// to a with a carry), a < b + c.
+    fn cf_carry(&mut self, adc: bool) {
+        if adc {
+            self.c.get(L_FR).get(L_FA).x(I64_LT_U);
+            self.c.get(L_FR).get(L_FA).x(I64_EQ).get(L_FC).and().or();
+        } else {
+            self.c.get(L_FA).get(L_FB).x(I64_LT_U);
+            self.c.get(L_FA).get(L_FB).x(I64_EQ).get(L_FC).and().or();
+        }
+    }
+
+    /// The status flags (i32 on the stack) into EFLAGS, all of them (no lazy record).
+    fn status_exact(&mut self) {
+        let t = L_ST; // (free outside exits)
+        self.c.set(t);
+        self.c.get(L_CPU);
+        self.c.get(L_CPU).load32(cpu_off!(eflags)).u32c(!STATUS).and().get(t).or().store32(cpu_off!(eflags));
+        self.c.get(L_CPU).i32c(0).store32(offset_of!(Cpu, lazy) as u32);
+        self.flags = Flags::Cpu;
+    }
+
     /// CF of a MUL: whether the product did not fit (i32 0/1)
     fn mul_overflow(&mut self, bits: u32) {
         if bits < 64 {
@@ -557,7 +598,9 @@ impl<'a> Gen<'a> {
                 self.zf();
                 self.c.or();
             }
-            (ADD, C::o) => self.of_addsub(true, bits),
+            (ADD, C::o) | (ADC, C::o) => self.of_addsub(true, bits),
+            (SBB, C::o) => self.of_addsub(false, bits),
+            (ADC, C::b) | (SBB, C::b) => self.cf_carry(kind == ADC),
             (ADD, C::l) => {
                 self.sf(bits);
                 self.of_addsub(true, bits);
@@ -607,6 +650,13 @@ impl<'a> Gen<'a> {
                 }
                 self.c.or();
                 self.of_addsub(kind == ADD, bits);
+                self.c.i32c(11).shl().or();
+                af(self);
+            }
+            ADC | SBB => {
+                self.cf_carry(kind == ADC);
+                self.c.or();
+                self.of_addsub(kind == ADC, bits);
                 self.c.i32c(11).shl().or();
                 af(self);
             }
@@ -712,8 +762,8 @@ impl<'a> Gen<'a> {
         self.flags_to_cpu();
         self.flags = f;
         self.c.i32c(st).set(L_ST);
-        // the dispatch loop, then the exit block
-        self.c.br(self.depth + 1);
+        // the exit block (inside the dispatch loop)
+        self.c.br(self.depth);
     }
 
     fn exit_to(&mut self, target: u64, st: i32) {
@@ -746,7 +796,56 @@ impl<'a> Gen<'a> {
             self.depth -= 1;
             self.c.end();
         }
-        self.c.u32c(k as u32).set(L_BLK).br(self.depth);
+        self.c.u32c(k as u32).set(L_BLK).br(self.depth + 1);
+    }
+
+    /// The exit block's way on when the target (L_NT) has a region and the budget lasts: a
+    /// block of this region goes on in the dispatch loop (the registers still in locals),
+    /// another region's is a tail call of it with the state in the Cpu (no dispatcher round
+    /// trip). Code here is inside the dispatch loop only; `hi` is the region's 4GB alias.
+    fn chain(&mut self, hi: u32) {
+        let c = &mut self.c;
+        let (hash, maskf, b) = (cpu_off!(jit_hash), cpu_off!(jit_mask), cpu_off!(jit_budget));
+        let mask = (1u32 << ENTRY_SHIFT) - 1;
+        c.get(L_ST).eqz().if_(); // loop 1
+        c.get(L_CPU).get(L_CPU).load32(b).i32c(1).sub().store32(b);
+        c.get(L_CPU).load32(b).i32c(0).gt_s();
+        // (address 0 is the key of an empty slot: never a region)
+        c.get(L_NT).x(I32_WRAP).i32c(0).ne().and().if_(); // loop 2
+        c.get(L_NT).x(I32_WRAP).u32c(0x9e37_79b1).mul().i32c(15).shr_u().get(L_CPU).load32(maskf).and().set(L_H);
+        c.block(); // miss: loop 3
+        c.loop_(); // probe: miss 1, loop 4
+        c.get(L_CPU).load32(hash).get(L_H).i32c(3).shl().add().tee(L_E).load32(0).set(L_DBG);
+        c.get(L_DBG).get(L_NT).x(I32_WRAP).eq().if_(); // probe 1, miss 2, loop 5
+        c.get(L_E).load32(4).set(L_DBG);
+        c.get(L_DBG).u32c(mask).and().get(L_ARG).u32c(mask).and().eq();
+        c.get(L_NT).i64c(32).x(I64_SHR_U).x(I32_WRAP).u32c(hi).eq().and().if_(); // loop 6
+        c.get(L_DBG).i32c(ENTRY_SHIFT as i32).shr_u().set(L_BLK).br(6);
+        c.end();
+        // (into the ring the host reads to merge regions that jump to each other a lot:
+        // ring[0] counts, then RING_SIZE (from, to) pairs)
+        let ring = cpu_off!(jit_ring);
+        c.get(L_CPU).load32(ring).tee(L_H).get(L_H).load32(0).tee(L_E).i32c(1).add().store32(0);
+        c.get(L_H).get(L_E).i32c(super::RING_SIZE as i32 - 1).and().i32c(3).shl().add().tee(L_H);
+        c.get(L_ARG).u32c(mask).and().store32(4);
+        c.get(L_H).get(L_NT).x(I32_WRAP).store32(8);
+        self.store_regs();
+        let c = &mut self.c;
+        c.get(L_CPU).get(L_NT).x(I32_WRAP).store32(cpu_off!(eip));
+        c.get(L_CPU).get(L_NT).i64c(32).x(I64_SHR_U).x(I32_WRAP).store32(cpu_off!(rip_hi));
+        c.get(L_CPU).get(L_DBG);
+        for _ in 2..N_PARAMS {
+            c.i32c(0);
+        }
+        c.get(L_DBG).u32c(mask).and();
+        c.op(0x13).op(2).op(0); // return_call_indirect (the region type), table 0
+        c.end();
+        c.get(L_DBG).eqz().br_if(1);
+        c.get(L_H).i32c(1).add().get(L_CPU).load32(maskf).and().set(L_H).br(0);
+        c.end(); // probe
+        c.end(); // miss
+        c.end();
+        c.end();
     }
 
     /// Runs the current instruction through the `step` import; with `ends`, leaves after it at
@@ -934,6 +1033,250 @@ impl<'a> Gen<'a> {
         self.c.set(r);
         self.write_op(0, bits, r);
         self.c.end();
+        true
+    }
+
+    /// MUL/IMUL r/m32 or r/m64: EDX:EAX or RDX:RAX = EAX or RAX times the operand. SF ZF PF
+    /// from the low half, CF = OF = the high half is not just the low half's extension, AF 0
+    /// (the interpreter's).
+    fn mul1(&mut self) -> bool {
+        let bits = self.op_bits(0);
+        let signed = self.ins.mnemonic() == Mnemonic::Imul;
+        if bits < 32 || (self.has_mem() && !self.addr(bits / 8)) {
+            return false;
+        }
+        let (a, b, lo, hi, t, u) = (self.temp(), self.temp(), self.temp(), self.temp(), self.temp(), self.temp());
+        self.read_op(0, bits);
+        self.c.set(b);
+        self.c.get(L_R);
+        if bits == 32 {
+            self.c.i64c(0xffff_ffff).x(I64_AND);
+            if signed {
+                self.sext(32);
+                self.c.set(a);
+                self.c.get(b);
+                self.sext(32);
+                self.c.set(b);
+                self.c.get(a);
+            }
+            self.c.get(b).x(I64_MUL).set(t);
+            self.c.get(t).i64c(0xffff_ffff).x(I64_AND).set(lo);
+            self.c.get(t).i64c(32).x(I64_SHR_U).i64c(0xffff_ffff).x(I64_AND).set(hi);
+            // (overflow: the product is not its low half extended)
+            self.c.get(t);
+            if signed {
+                self.c.get(lo);
+                self.sext(32);
+            } else {
+                self.c.get(lo);
+            }
+            self.c.x(I64_NE).set(L_A);
+        } else {
+            self.c.set(a);
+            // the high half from 32-bit pieces: a1:a0 * b1:b0
+            let m32 = 0xffff_ffffi64;
+            let half = |c: &mut Code, v: u32, high: bool| {
+                c.get(v);
+                if high {
+                    c.i64c(32).x(I64_SHR_U);
+                } else {
+                    c.i64c(m32).x(I64_AND);
+                }
+            };
+            // t = a0*b0 >> 32; u = a1*b0; mid = t + (u & m32) + a0*b1 (wraps? no: < 2^64 + ...)
+            half(&mut self.c, a, false);
+            half(&mut self.c, b, false);
+            self.c.x(I64_MUL).i64c(32).x(I64_SHR_U).set(t);
+            half(&mut self.c, a, true);
+            half(&mut self.c, b, false);
+            self.c.x(I64_MUL).set(u);
+            // t = t + lo32(u) + lo32(a0*b1); hi = a1*b1 + (u >> 32) + (a0*b1 >> 32) + (t >> 32)
+            self.c.get(t).get(u).i64c(m32).x(I64_AND).x(I64_ADD).set(t);
+            half(&mut self.c, a, false);
+            half(&mut self.c, b, true);
+            self.c.x(I64_MUL).set(lo); // (lo: a0*b1 for now)
+            self.c.get(t).get(lo).i64c(m32).x(I64_AND).x(I64_ADD).set(t);
+            half(&mut self.c, a, true);
+            half(&mut self.c, b, true);
+            self.c.x(I64_MUL);
+            self.c.get(u).i64c(32).x(I64_SHR_U).x(I64_ADD);
+            self.c.get(lo).i64c(32).x(I64_SHR_U).x(I64_ADD);
+            self.c.get(t).i64c(32).x(I64_SHR_U).x(I64_ADD).set(hi);
+            if signed {
+                // signed high half: minus b if a < 0, minus a if b < 0
+                self.c.get(hi);
+                self.c.get(b).i64c(0).get(a).i64c(0).x(I64_LT_S).select().x(I64_SUB);
+                self.c.get(a).i64c(0).get(b).i64c(0).x(I64_LT_S).select().x(I64_SUB).set(hi);
+            }
+            self.c.get(a).get(b).x(I64_MUL).set(lo);
+            self.c.get(hi);
+            if signed {
+                self.c.get(lo).i64c(63).x(I64_SHR_S);
+            } else {
+                self.c.i64c(0);
+            }
+            self.c.x(I64_NE).set(L_A);
+        }
+        let (rl, rh) = if bits == 32 { (Register::EAX, Register::EDX) } else { (Register::RAX, Register::RDX) };
+        self.set_reg(rl, lo);
+        self.set_reg(rh, hi);
+        self.c.get(lo).set(L_FR);
+        self.zf();
+        self.c.i32c(6).shl();
+        self.sf(bits);
+        self.c.i32c(7).shl().or();
+        self.pf();
+        self.c.i32c(2).shl().or();
+        self.c.get(L_A).u32c(CF | OF).mul().or();
+        self.status_exact();
+        true
+    }
+
+    /// DIV/IDIV r/m32 or r/m64 when the quotient fits (else, and for a zero divisor, the
+    /// interpreter raises the fault). 64-bit: only a dividend RDX:RAX that is RAX extended.
+    /// The flags stay (undefined).
+    fn div1(&mut self) -> bool {
+        let bits = self.op_bits(0);
+        let signed = self.ins.mnemonic() == Mnemonic::Idiv;
+        if bits < 32 || (self.has_mem() && !self.addr(bits / 8)) {
+            return false;
+        }
+        let (n, d, q, r) = (self.temp(), self.temp(), self.temp(), self.temp());
+        self.read_op(0, bits);
+        if signed {
+            self.sext(bits);
+        }
+        self.c.set(d);
+        // the cases to leave to the interpreter: L_A
+        self.c.get(d).x(I64_EQZ);
+        let m32 = 0xffff_ffffi64;
+        if bits == 32 {
+            self.c.get(L_R + 2).i64c(m32).x(I64_AND).i64c(32).x(I64_SHL).get(L_R).i64c(m32).x(I64_AND).x(I64_OR).set(n);
+            if signed {
+                self.c.get(n).i64c(i64::MIN).x(I64_EQ).get(d).i64c(-1).x(I64_EQ).and().or();
+            } else {
+                // (the quotient fits unless EDX >= the divisor)
+                self.c.get(L_R + 2).i64c(m32).x(I64_AND).get(d).x(I64_GE_U).or();
+            }
+        } else {
+            self.c.get(L_R).set(n);
+            if signed {
+                self.c.get(L_R + 2).get(n).i64c(63).x(I64_SHR_S).x(I64_NE).or();
+                self.c.get(n).i64c(i64::MIN).x(I64_EQ).get(d).i64c(-1).x(I64_EQ).and().or();
+            } else {
+                self.c.get(L_R + 2).i64c(0).x(I64_NE).or();
+            }
+        }
+        self.c.if_();
+        self.depth += 1;
+        self.bail();
+        self.depth -= 1;
+        self.c.end();
+        self.c.get(n).get(d).x(if signed { I64_DIV_S } else { I64_DIV_U }).set(q);
+        if bits == 32 && signed {
+            // (a quotient that doesn't fit 32 bits)
+            self.c.get(q);
+            self.sext(32);
+            self.c.get(q).x(I64_NE).if_();
+            self.depth += 1;
+            self.bail();
+            self.depth -= 1;
+            self.c.end();
+        }
+        self.c.get(n).get(d).x(if signed { I64_REM_S } else { I64_REM_U }).set(r);
+        let (rq, rr) = if bits == 32 { (Register::EAX, Register::EDX) } else { (Register::RAX, Register::RDX) };
+        self.set_reg(rq, q);
+        self.set_reg(rr, r);
+        true
+    }
+
+    /// TZCNT/LZCNT/POPCNT r, r/m (16 bits: the interpreter): ZF = a zero result, CF = a zero
+    /// source (LZCNT: a result of the width), the rest 0 (POPCNT: ZF = zero source, CF 0).
+    fn count_bits(&mut self) -> bool {
+        use Mnemonic::*;
+        let bits = self.op_bits(0);
+        if bits < 32 || (self.has_mem() && !self.addr(bits / 8)) {
+            return false;
+        }
+        let m = self.ins.mnemonic();
+        let (v, r) = (self.temp(), self.temp());
+        self.read_op(1, bits);
+        self.c.set(v);
+        match m {
+            Popcnt => {
+                self.c.get(v).x(I64_POPCNT).set(r);
+            }
+            Tzcnt => {
+                // (i64.ctz of 0 is 64: a 32-bit zero gives 32)
+                self.c.get(v);
+                if bits == 32 {
+                    self.c.i64c(1 << 32).x(I64_OR);
+                }
+                self.c.x(I64_CTZ).set(r);
+            }
+            _ => {
+                self.c.get(v).x(I64_CLZ);
+                if bits == 32 {
+                    self.c.i64c(32).x(I64_SUB);
+                }
+                self.c.set(r);
+            }
+        }
+        self.write_op(0, bits, r);
+        if m == Popcnt {
+            self.c.get(v).x(I64_EQZ).i32c(6).shl();
+        } else {
+            self.c.get(r).x(I64_EQZ).i32c(6).shl();
+            self.c.get(v).x(I64_EQZ);
+            if m == Lzcnt {
+                self.c.get(r).i64c(bits as i64).x(I64_EQ).or();
+            }
+            self.c.or();
+        }
+        self.status_exact();
+        true
+    }
+
+    /// ROL/ROR r/m32 or r/m64 by an immediate: CF and OF only (the others stay); a count of 0
+    /// (masked) changes nothing (a 32-bit register still zero-extended).
+    fn rotate(&mut self) -> bool {
+        let bits = self.op_bits(0);
+        if bits < 32 {
+            return false;
+        }
+        let ins = self.ins;
+        let count = (ins.immediate8() as u32) & (bits - 1);
+        if self.has_mem() && !self.addr(bits / 8) {
+            return false;
+        }
+        let (v, r) = (self.temp(), self.temp());
+        self.read_op(0, bits);
+        self.c.set(v);
+        if count == 0 {
+            self.write_op(0, bits, v);
+            return true;
+        }
+        let rol = ins.mnemonic() == Mnemonic::Rol;
+        if bits == 64 {
+            self.c.get(v).i64c(count as i64).x(if rol { I64_ROTL } else { I64_ROTR }).set(r);
+        } else {
+            let (k, j) = if rol { (count, 32 - count) } else { (32 - count, count) };
+            self.c.get(v).i64c(k as i64).x(I64_SHL).get(v).i64c(j as i64).x(I64_SHR_U).x(I64_OR).i64c(0xffff_ffff).x(I64_AND).set(r);
+        }
+        self.flags_to_eflags();
+        // CF: ROL the low bit, ROR the top; OF: ROL top ^ CF, ROR top ^ the bit below it
+        let ef = cpu_off!(eflags);
+        self.c.get(L_CPU);
+        self.c.get(L_CPU).load32(ef).u32c(!(CF | OF)).and();
+        if rol {
+            self.c.get(r).i64c(1).x(I64_AND).x(I32_WRAP);
+            self.c.get(r).i64c(bits as i64 - 1).x(I64_SHR_U).x(I32_WRAP).get(r).x(I32_WRAP).xor().i32c(1).and().i32c(11).shl().or().or();
+        } else {
+            self.c.get(r).i64c(bits as i64 - 1).x(I64_SHR_U).x(I32_WRAP).i32c(1).and();
+            self.c.get(r).i64c(bits as i64 - 1).x(I64_SHR_U).get(r).i64c(bits as i64 - 2).x(I64_SHR_U).x(I64_XOR).x(I32_WRAP).i32c(1).and().i32c(11).shl().or().or();
+        }
+        self.c.store32(ef);
+        self.write_op(0, bits, r);
         true
     }
 
@@ -1145,6 +1488,46 @@ impl<'a> Gen<'a> {
                 self.write_op(0, bits, L_FR);
                 true
             }
+            Adc | Sbb => {
+                let bits = self.op_bits(0);
+                if bits == 0 || (self.has_mem() && !self.addr(bits / 8)) {
+                    return false;
+                }
+                // the carry in (CF of what came before)
+                self.cond(ConditionCode::b);
+                self.c.set(L_FC);
+                self.read_op(0, bits);
+                self.c.set(L_FA);
+                self.read_op(1, bits);
+                self.c.set(L_FB);
+                let op = if m == Adc { I64_ADD } else { I64_SUB };
+                self.c.get(L_FA).get(L_FB).x(op).get(L_FC).x(I64_EXT_U).x(op);
+                if bits < 64 {
+                    self.c.i64c(mask(bits)).x(I64_AND);
+                }
+                self.c.set(L_FR);
+                self.set_flags(if m == Adc { ADC } else { SBB }, bits);
+                self.write_op(0, bits, L_FR);
+                true
+            }
+            Mul | Imul if n == 1 => self.mul1(),
+            Div | Idiv => self.div1(),
+            Tzcnt | Lzcnt | Popcnt => self.count_bits(),
+            Rol | Ror if ins.op_kind(1) == OpKind::Immediate8 => self.rotate(),
+            Bswap if self.op_bits(0) >= 32 => {
+                let bits = self.op_bits(0);
+                let (v, r) = (self.temp(), self.temp());
+                self.read_op(0, bits);
+                self.c.set(v);
+                // (bytes k and bits/8-1-k swap)
+                self.c.i64c(0).set(r);
+                for k in 0..bits / 8 {
+                    let to = bits - 8 - 8 * k;
+                    self.c.get(r).get(v).i64c(8 * k as i64).x(I64_SHR_U).i64c(0xff).x(I64_AND).i64c(to as i64).x(I64_SHL).x(I64_OR).set(r);
+                }
+                self.write_op(0, bits, r);
+                true
+            }
             Cmovo | Cmovno | Cmovb | Cmovae | Cmove | Cmovne | Cmovbe | Cmova | Cmovs | Cmovns | Cmovp | Cmovnp | Cmovl | Cmovge | Cmovle | Cmovg => {
                 let bits = self.op_bits(0);
                 if self.has_mem() && !self.addr(bits / 8) {
@@ -1270,7 +1653,7 @@ impl<'a> Gen<'a> {
                 let t = self.temp();
                 self.c.i64c(ins.next_ip() as i64).set(t);
                 self.push64(t);
-                self.exit_to(ins.near_branch64(), 0);
+                self.goto(ins.near_branch64());
                 true
             }
             Call if matches!(ins.op0_kind(), OpKind::Register | OpKind::Memory) && self.op_bits(0) == 64 => {
@@ -1290,6 +1673,16 @@ impl<'a> Gen<'a> {
                 let extra = if ins.op_count() == 1 { ins.immediate16() as u32 } else { 0 };
                 let t = self.temp();
                 self.pop64(t, extra);
+                // back to a call of the region: straight there (else through the exit's lookup)
+                for &r in self.returns {
+                    self.c.get(t).i64c(r as i64).x(I64_EQ).if_();
+                    self.depth += 1;
+                    let f = self.flags;
+                    self.goto(r);
+                    self.flags = f;
+                    self.depth -= 1;
+                    self.c.end();
+                }
                 self.c.get(t);
                 self.exit_dyn(0);
                 true
@@ -1360,6 +1753,119 @@ fn reads_flags(ins: &Instruction) -> (u32, u32) {
     (read, written)
 }
 
+/// The bound a block ending in an unsigned conditional jump after `cmp r, imm` puts on `r` in
+/// the block it goes to when r is in range: (block, r as 64-bit, values 0..n).
+fn bound(ins: &[Instruction]) -> Option<(u64, Register, u64)> {
+    let [.., c, j] = ins else { return None };
+    if c.mnemonic() != Mnemonic::Cmp || c.op0_kind() != OpKind::Register || !matches!(c.op1_kind(), OpKind::Immediate8to32 | OpKind::Immediate32 | OpKind::Immediate8to64 | OpKind::Immediate32to64 | OpKind::Immediate8) {
+        return None;
+    }
+    let r = c.op0_register();
+    if !(r.is_gpr32() || r.is_gpr64()) {
+        return None;
+    }
+    let v = c.immediate(1);
+    let (to, n) = match j.mnemonic() {
+        // ja default: the fall-through has r <= v; jae: r < v; jbe / jb: the target
+        Mnemonic::Ja => (j.next_ip(), v.checked_add(1)?),
+        Mnemonic::Jae => (j.next_ip(), v),
+        Mnemonic::Jbe => (j.near_branch64(), v.checked_add(1)?),
+        Mnemonic::Jb => (j.near_branch64(), v),
+        _ => return None,
+    };
+    Some((to, r.full_register(), n.min(MAX_TABLE)))
+}
+
+/// The targets of a block ending in a jump through a table indexed by a register `n` bounds
+/// (MinGW: `lea rB,[T]; movsxd rX,[rB+rI*4]; add rX,rB; jmp rX`; MSVC: `lea rB,[ImageBase];
+/// mov eX,[rB+rI*4+T]; add rX,rB; jmp rX`; or `jmp [rB+rI*8]` of absolute addresses). Only for
+/// finding blocks: the jump itself goes wherever the register says (Gen::chain).
+fn jump_table<M: Memory>(mem: &mut M, ins: &[Instruction], n: Option<(Register, u64)>) -> Vec<u64> {
+    use Mnemonic::*;
+    let Some((ireg, n)) = n else { return Vec::new() };
+    #[derive(Clone, Copy)]
+    enum V {
+        Const(u64),
+        /// a 4-byte entry of the table at .0 (sign-extended: .1)
+        Entry(u64, bool),
+        /// an entry plus a base
+        Target(u64, bool, u64),
+    }
+    let mut vals: Vec<(Register, V)> = Vec::new();
+    let get = |vals: &Vec<(Register, V)>, r: Register| vals.iter().rev().find(|v| v.0 == r.full_register()).map(|v| v.1);
+    let last = ins.last().unwrap();
+    // the table's address of a memory operand [base + ireg*scale + disp]
+    let table = |vals: &Vec<(Register, V)>, i: &Instruction, scale: u32| -> Option<u64> {
+        if i.memory_index().full_register() != ireg || i.memory_index_scale() != scale || i.memory_segment() != Register::DS && i.memory_segment() != Register::None {
+            return None;
+        }
+        let base = match i.memory_base() {
+            Register::None => 0,
+            b => match get(vals, b)? {
+                V::Const(c) => c,
+                _ => return None,
+            },
+        };
+        Some(base.wrapping_add(i.memory_displacement64()))
+    };
+    let mut targets = Vec::new();
+    for i in ins {
+        let dst = if i.op_count() > 0 && i.op0_kind() == OpKind::Register { Some(i.op0_register()) } else { None };
+        let v = match i.mnemonic() {
+            Lea if i.memory_base() == Register::RIP && i.memory_index() == Register::None => Some(V::Const(i.memory_displacement64())),
+            Movsxd if i.op1_kind() == OpKind::Memory => table(&vals, i, 4).map(|t| V::Entry(t, true)),
+            Mov if i.op1_kind() == OpKind::Memory && dst.is_some_and(|r| r.is_gpr32()) => table(&vals, i, 4).map(|t| V::Entry(t, false)),
+            Add if i.op1_kind() == OpKind::Register => match (get(&vals, dst.unwrap()), get(&vals, i.op1_register())) {
+                (Some(V::Entry(t, s)), Some(V::Const(b))) | (Some(V::Const(b)), Some(V::Entry(t, s))) => Some(V::Target(t, s, b)),
+                _ => None,
+            },
+            Jmp if i.ip() == last.ip() => {
+                let at = |mem: &mut M, a: u64, k: u32| -> Option<u64> {
+                    let mut b = [0u8; 8];
+                    (mem.fetch(a as u32, &mut b[..k as usize]) == k as usize).then(|| u64::from_le_bytes(b))
+                };
+                match i.op0_kind() {
+                    OpKind::Register => {
+                        if let Some(V::Target(t, signed, b)) = get(&vals, i.op0_register()) {
+                            for k in 0..n {
+                                let Some(e) = at(mem, t + 4 * k, 4) else { break };
+                                let e = if signed { e as u32 as i32 as i64 as u64 } else { e };
+                                targets.push(b.wrapping_add(e));
+                            }
+                        }
+                    }
+                    OpKind::Memory if i.memory_size().size() == 8 => {
+                        if let Some(t) = table(&vals, i, 8) {
+                            for k in 0..n {
+                                let Some(e) = at(mem, t + 8 * k, 8) else { break };
+                                targets.push(e);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                None
+            }
+            _ => None,
+        };
+        // (whatever else writes a register makes it unknown; the index must stay as checked
+        // until the table is read)
+        let reads_only = matches!(i.mnemonic(), Cmp | Test | Push | Jmp | Bt);
+        if let Some(r) = dst.filter(|_| !reads_only).map(|r| r.full_register()) {
+            if r == ireg && !matches!(v, Some(V::Entry(..))) && !vals.iter().any(|x| matches!(x.1, V::Entry(..))) {
+                return Vec::new();
+            }
+            vals.retain(|x| x.0 != r);
+            if let Some(v) = v {
+                vals.push((r, v));
+            }
+        }
+    }
+    targets.sort_unstable();
+    targets.dedup();
+    targets
+}
+
 fn decode<M: Memory>(mem: &mut M, ip: u64, trap: (u32, u32)) -> Vec<Instruction> {
     let mut out = Vec::new();
     let mut at = ip;
@@ -1385,18 +1891,26 @@ fn decode<M: Memory>(mem: &mut M, ip: u64, trap: (u32, u32)) -> Vec<Instruction>
     out
 }
 
-/// Translates the region at `entry` (its full RIP) into `module` as one function. `accept`:
-/// whether another block (by its low 32 bits) may join.
-pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, entry: u64, trap: (u32, u32), mut accept: impl FnMut(u32) -> bool) -> Option<Region> {
-    // blocks: the entry and what its direct jumps reach
+/// Translates the region at `roots` (full RIPs, one 4GB alias: the first's) into `module` as one
+/// function, entered at any of its blocks. `accept`: whether another block (by its low 32 bits)
+/// may join.
+pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u64], trap: (u32, u32), mut accept: impl FnMut(u32, bool) -> bool) -> Option<Region> {
+    let entry = roots[0];
+    // blocks: the entry and what its direct jumps reach (accept(a, false)), and what may run
+    // without having run yet (accept(a, true)): direct calls' targets and return addresses,
+    // the targets of a jump table. Exits to a block of the region go on in it (Gen::chain), so
+    // a call and its RET, or a switch, stay inside.
     let mut blocks: Vec<Block> = Vec::new();
     let mut index = BTreeMap::new();
-    let mut todo = alloc::vec![entry];
-    while let Some(a) = todo.pop() {
-        if index.contains_key(&a) || blocks.len() >= limit(&DEBUG_BLOCKS, MAX_BLOCKS) {
+    let mut todo: Vec<(u64, bool)> = roots.iter().rev().map(|&r| (r, false)).collect();
+    // (an unsigned bound of a register checked by the jump into a block: (block, register, n))
+    let mut bounds: Vec<(u64, Register, u64)> = Vec::new();
+    let mut total = 0;
+    while let Some((a, sure)) = todo.pop() {
+        if index.contains_key(&a) || blocks.len() >= limit(&DEBUG_BLOCKS, MAX_BLOCKS) || total >= MAX_REGION_INS {
             continue;
         }
-        if a != entry && !accept(a as u32) {
+        if !roots.contains(&a) && !accept(a as u32, sure) {
             continue;
         }
         let ins = decode(mem, a, trap);
@@ -1406,15 +1920,31 @@ pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, entry: u6
             }
             continue;
         }
+        total += ins.len();
         let last = *ins.last().unwrap();
         match last.flow_control() {
             FlowControl::UnconditionalBranch | FlowControl::ConditionalBranch if last.op0_kind() == OpKind::NearBranch64 => {
-                todo.push(last.near_branch64());
+                todo.push((last.near_branch64(), false));
                 if last.flow_control() == FlowControl::ConditionalBranch {
-                    todo.push(last.next_ip());
+                    todo.push((last.next_ip(), false));
+                    if let Some(b) = bound(&ins) {
+                        bounds.push(b);
+                    }
                 }
             }
-            FlowControl::Next => todo.push(last.next_ip()),
+            FlowControl::Call if last.op0_kind() == OpKind::NearBranch64 => {
+                // (the callee after the caller's own code)
+                todo.insert(0, (last.near_branch64(), true));
+                todo.push((last.next_ip(), true));
+            }
+            FlowControl::Call | FlowControl::IndirectCall => todo.push((last.next_ip(), true)),
+            FlowControl::IndirectBranch => {
+                let n = bounds.iter().find(|b| b.0 == a).map(|b| (b.1, b.2));
+                for t in jump_table(mem, &ins, n).into_iter().rev() {
+                    todo.push((t, true));
+                }
+            }
+            FlowControl::Next => todo.push((last.next_ip(), false)),
             _ => {}
         }
         index.insert(a, blocks.len());
@@ -1455,7 +1985,16 @@ pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, entry: u6
     }
 
     let n = blocks.len() as u32;
-    let mut g = Gen { c: Code::default(), blocks: &blocks, index: &index, flags: Flags::Cpu, depth: 0, ins: blocks[0].ins[0], temps: 0 };
+    let mut returns: Vec<u64> = blocks
+        .iter()
+        .filter_map(|b| b.ins.last())
+        .filter(|l| l.flow_control() == FlowControl::Call && l.op0_kind() == OpKind::NearBranch64 && index.contains_key(&l.near_branch64()) && index.contains_key(&l.next_ip()))
+        .map(|l| l.next_ip())
+        .collect();
+    returns.sort_unstable();
+    returns.dedup();
+    returns.truncate(MAX_RETURNS);
+    let mut g = Gen { c: Code::default(), blocks: &blocks, index: &index, returns: &returns, flags: Flags::Cpu, depth: 0, ins: blocks[0].ins[0], temps: 0 };
     // the dispatcher's key is the low 32 bits: code at another 4GB alias is left to the interpreter
     g.c.get(L_CPU).load32(cpu_off!(rip_hi)).u32c((entry >> 32) as u32).ne().if_();
     g.c.i32c(RET_INTERP).ret();
@@ -1463,9 +2002,9 @@ pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, entry: u6
     g.c.i32c(0).set(L_FC);
     g.load_regs();
     g.c.get(L_ARG).i32c(ENTRY_SHIFT as i32).shr_u().set(L_BLK);
-    // block $exit; loop $top; block b_{n-1} .. block b_0; br_table; end b_0: code; ...
-    g.c.block();
+    // loop $top; block $exit; block b_{n-1} .. block b_0; br_table; end b_0: code; ...
     g.c.loop_();
+    g.c.block();
     for _ in 0..n {
         g.c.block();
     }
@@ -1487,7 +2026,7 @@ pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, entry: u6
     let mut layout = String::new();
     for k in 0..n as usize {
         g.c.end();
-        // inside: blocks k+1..n-1, the loop, the exit block
+        // inside: blocks k+1..n-1, the exit block, the loop
         g.depth = n - 1 - k as u32;
         g.flags = Flags::Cpu;
         let list = &blocks[k].ins;
@@ -1509,13 +2048,14 @@ pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, entry: u6
             layout.push_str(&alloc::format!("{:#x} {}\n", blocks[k].start, list.len()));
         }
     }
-    g.c.end(); // loop (unreachable at its end: every block leaves by a branch)
-    g.c.op(0x00); // unreachable
-    g.c.end(); // exit: L_NT, L_ST
+    g.c.end(); // exit: L_NT, L_ST (every block leaves by a branch)
+    g.chain((entry >> 32) as u32);
     g.store_regs();
     g.c.get(L_CPU).get(L_NT).x(I32_WRAP).store32(cpu_off!(eip));
     g.c.get(L_CPU).get(L_NT).i64c(32).x(I64_SHR_U).x(I32_WRAP).store32(cpu_off!(rip_hi));
     Gen::ret_status(&mut g.c, L_ST);
+    g.c.end(); // loop
+    g.c.op(0x00); // unreachable
     let mut locals = alloc::vec![I64; N_I64 as usize];
     locals.extend_from_slice(&[I32; N_I32 as usize]);
     locals.extend_from_slice(&[V128; 2]);

@@ -1,0 +1,6 @@
+cs: 80000 (exit codes 1234), try 1
+last error 1234, tls 5678 error 0, unset 0
+heap 0ee5e33c
+malloc 649e429d, errno 34
+qsort 18a0e6ed, bsearch 130
+str 12 1 0 world 4 3 -1

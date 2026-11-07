@@ -726,6 +726,19 @@ fn check64(before: &Cpu, states: &[(Cpu, usize)], got: &Cpu, writes: &[(u32, u8)
 }
 
 /// Sets the entry of `eip`; true if it is new.
+/// Whether `eip` has a block in the hash table.
+fn compiled(hash: &[[u32; 2]], eip: u32) -> bool {
+    let mask = hash.len() as u32 - 1;
+    let mut h = jit::dispatch::slot(eip, mask);
+    while hash[h as usize][0] != 0 {
+        if hash[h as usize][0] == eip {
+            return true;
+        }
+        h = (h + 1) & mask;
+    }
+    false
+}
+
 fn insert(hash: &mut [[u32; 2]], eip: u32, idx: u32) -> bool {
     let mask = hash.len() as u32 - 1;
     let mut h = jit::dispatch::slot(eip, mask);
@@ -1017,6 +1030,9 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
     st.ring[0] = 0;
     // pairs by frequency (runs of equal ones once sorted)
     jumps.sort_unstable();
+    if cpu.mode64 != 0 {
+        return merge_hot64(st, cpu, &jumps);
+    }
     // (only the runs that could matter: both users below need FN_SAMPLES or more; this runs
     // every RING_SIZE hops, so no allocation for the usual none)
     let mut runs: Vec<(usize, u64)> = Vec::new();
@@ -1123,6 +1139,9 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
         return;
     }
     let (lo, hi) = (cpu.trap_lo, cpu.trap_hi);
+    if cpu.mode64 != 0 {
+        return merge_long(st, cpu, roots, from, to);
+    }
     let mut m = Module { name: Some(format!("x86_{:08x}_{}", roots[0], roots.len())), ..Module::default() };
     if let Some(n) = std::env::var("IPPAI_JIT_SLOTS").ok().and_then(|v| v.parse::<u32>().ok()) {
         jit::SLOTS_MAX.store(n.min(6), std::sync::atomic::Ordering::Relaxed);
@@ -1148,6 +1167,82 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
     mark_code(&region.code);
     if load(st, &bytes, roots.clone(), &region.starts) {
         keep_profile(&mut region);
+        share(&mut Linear, &roots, bytes, &region);
+        maybe_save();
+    }
+}
+
+/// merge_hot for long mode (jit::long): the region that left for others most (out of the
+/// ring's sorted samples `jumps`) is built again with the targets it went to more than once
+/// (a switch's cases, a callee, a virtual call's methods), once it topped MERGE_WINDOWS rings.
+fn merge_hot64(st: &mut State, cpu: &Cpu, jumps: &[u64]) {
+    let mut best = (0, 0u32);
+    let mut i = 0;
+    while i < jumps.len() {
+        let from = (jumps[i] >> 32) as u32;
+        let k = i + jumps[i..].iter().take_while(|j| (**j >> 32) as u32 == from).count();
+        if k - i > best.0 {
+            best = (k - i, from);
+        }
+        i = k;
+    }
+    let (n, from) = best;
+    if n < MERGE_SAMPLES || st.merges >= MAX_MERGES {
+        return;
+    }
+    let w = st.hot.entry((from, u32::MAX)).or_insert(0);
+    *w += 1;
+    if *w < MERGE_WINDOWS {
+        return;
+    }
+    st.hot.remove(&(from, u32::MAX));
+    let Some(roots) = st.roots.get(&from) else { return };
+    let mut roots = roots.clone();
+    let mut new = Vec::new();
+    let mut i = 0;
+    while i < jumps.len() {
+        let k = i + jumps[i..].iter().take_while(|j| **j == jumps[i]).count();
+        let to = jumps[i] as u32;
+        if (jumps[i] >> 32) as u32 == from && k - i >= 2 && !roots.contains(&to) && st.merged.insert((from, to)) {
+            new.push(to);
+        }
+        i = k;
+    }
+    if new.is_empty() || roots.len() + new.len() > 32 {
+        return;
+    }
+    let to = new[0];
+    roots.extend(new);
+    if let Some(r) = shared(&mut Linear, &roots) {
+        st.merges += 1;
+        mark_code(&r.code);
+        load(st, &r.bytes, roots, &r.starts);
+        return;
+    }
+    merge_long(st, cpu, roots, from, to);
+}
+
+/// merge_hot's region for long mode (jit::long): the roots' blocks and the ones that ran.
+fn merge_long(st: &mut State, cpu: &Cpu, roots: Vec<u32>, from: u32, to: u32) {
+    let (lo, hi) = (cpu.trap_lo, cpu.trap_hi);
+    let full: Vec<u64> = roots.iter().map(|&r| r as u64 | (cpu.rip_hi as u64) << 32).collect();
+    let mut m = Module { name: Some(format!("x64_{:x}{:08x}_{}", cpu.rip_hi, roots[0], roots.len())), ..Module::default() };
+    let (misses, known, hash) = (&st.misses, &st.known, &st.hash);
+    let Some(region) = jit::long::translate_region64(&mut m, &mut Linear, &full, (lo, hi), |a, sure| {
+        debug_allowed(a) && !(a >= lo && a < hi) && (misses.contains_key(&a) || compiled(hash, a) || sure && !known.contains(&a))
+    }) else {
+        return;
+    };
+    if !region.starts.iter().any(|s| s.0 == to) {
+        return; // too big already
+    }
+    st.merges += 1;
+    if stats() || crate::env_on!("IPPAI_JIT_LAYOUT") {
+        eprintln!("vnjit64 merge {from:#x} -> {to:#x}: {} blocks, roots {:x?}\n{}", region.starts.len(), roots, region.layout);
+    }
+    let bytes = m.finish();
+    mark_code(&region.code);
+    if load(st, &bytes, roots.clone(), &region.starts) {
         share(&mut Linear, &roots, bytes, &region);
         maybe_save();
     }
@@ -1259,15 +1354,23 @@ fn compile_long(st: &mut State, cpu: &Cpu, mem: &mut Linear) -> bool {
     let eip = cpu.eip;
     let mut m = Module { name: Some(format!("x64_{:x}{eip:08x}", cpu.rip_hi)), ..Module::default() };
     let (lo, hi) = (cpu.trap_lo, cpu.trap_hi);
-    let (misses, known) = (&st.misses, &st.known);
+    let (misses, known, hash) = (&st.misses, &st.known, &st.hash);
     let entry = eip as u64 | (cpu.rip_hi as u64) << 32;
+    if crate::env_on!("IPPAI_JIT_LAYOUT") {
+        jit::LAYOUT.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     let t0 = std::time::Instant::now();
-    let Some(region) = jit::long::translate_region64(&mut m, mem, entry, (lo, hi), |a| {
-        debug_allowed(a) && !(a >= lo && a < hi) && !known.contains(&a) && (a == eip || misses.contains_key(&a))
+    let Some(region) = jit::long::translate_region64(&mut m, mem, &[entry], (lo, hi), |a, sure| {
+        // (a block reached by a call or a jump table may be in another region already: it is
+        // taken in too, the jump staying inside; `known` has those and the refused ones)
+        debug_allowed(a) && !(a >= lo && a < hi) && (!known.contains(&a) || sure && compiled(hash, a)) && (a == eip || sure || misses.contains_key(&a))
     }) else {
         st.known.insert(eip);
         return false;
     };
+    if crate::env_on!("IPPAI_JIT_LAYOUT") {
+        eprintln!("vnjit64 region {entry:#x}\n{}", region.layout);
+    }
     let bytes = m.finish();
     let t1 = std::time::Instant::now();
     let ok = load(st, &bytes, vec![eip], &region.starts);

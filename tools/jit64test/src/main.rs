@@ -362,6 +362,56 @@ fn random_ins(rng: &mut Rng, out: &mut Vec<Instruction>, rip_hi: u32) {
                 _ => Instruction::with2(C::Xor_rm8_imm8, a, rng.next() as u8 as u32).unwrap(),
             }
         }
+        26 => {
+            // one-operand MUL/IMUL, DIV/IDIV (a dividend made to fit now and then)
+            let b = rng.pick(&[32u32, 64]);
+            let w = rng.below(4) as usize;
+            let codes = if b == 64 { [C::Mul_rm64, C::Imul_rm64, C::Div_rm64, C::Idiv_rm64] } else { [C::Mul_rm32, C::Imul_rm32, C::Div_rm32, C::Idiv_rm32] };
+            let src = rng.pick(&[Register::RCX, Register::RSI, Register::R9, Register::R13]);
+            if w >= 2 {
+                match rng.below(3) {
+                    0 => out.push(Instruction::with2(C::Xor_rm32_r32, Register::EDX, Register::EDX).unwrap()),
+                    1 => out.push(Instruction::with(if b == 64 { C::Cqo } else { C::Cdq })),
+                    _ => {}
+                }
+                if rng.below(2) == 0 {
+                    out.push(Instruction::with2(C::Or_rm64_imm8, src, rng.below(16) as i32 + 1).unwrap());
+                }
+            }
+            if rng.below(4) == 0 {
+                return out.push(Instruction::with1(codes[w], m(rng)).unwrap());
+            }
+            Instruction::with1(codes[w], sized(src, b)).unwrap()
+        }
+        27 => {
+            // TZCNT LZCNT POPCNT, ROL ROR by an immediate, BSWAP
+            let b = rng.pick(&[32u32, 64]);
+            match rng.below(4) {
+                0 => {
+                    let code = rng.pick(&if b == 64 { [C::Tzcnt_r64_rm64, C::Lzcnt_r64_rm64, C::Popcnt_r64_rm64] } else { [C::Tzcnt_r32_rm32, C::Lzcnt_r32_rm32, C::Popcnt_r32_rm32] });
+                    if rng.below(4) == 0 {
+                        let z = r(rng);
+                        out.push(Instruction::with2(C::Xor_rm32_r32, sized(z, 32), sized(z, 32)).unwrap());
+                        Instruction::with2(code, sized(r(rng), b), sized(z, b)).unwrap()
+                    } else if rng.below(3) == 0 {
+                        Instruction::with2(code, sized(r(rng), b), m(rng)).unwrap()
+                    } else {
+                        Instruction::with2(code, sized(r(rng), b), sized(r(rng), b)).unwrap()
+                    }
+                }
+                1 | 2 => {
+                    let code = rng.pick(&if b == 64 { [C::Rol_rm64_imm8, C::Ror_rm64_imm8, C::Rol_rm64_1, C::Ror_rm64_1] } else { [C::Rol_rm32_imm8, C::Ror_rm32_imm8, C::Rol_rm32_1, C::Ror_rm32_1] });
+                    let dst = if rng.below(4) == 0 { None } else { Some(sized(r(rng), b)) };
+                    let one = matches!(code, C::Rol_rm64_1 | C::Ror_rm64_1 | C::Rol_rm32_1 | C::Ror_rm32_1);
+                    let cnt = if one { 1 } else { rng.below(70) as u32 };
+                    match dst {
+                        Some(d) => Instruction::with2(code, d, cnt).unwrap(),
+                        None => Instruction::with2(code, m(rng), cnt).unwrap(),
+                    }
+                }
+                _ => Instruction::with1(if b == 64 { C::Bswap_r64 } else { C::Bswap_r32 }, sized(r(rng), b)).unwrap(),
+            }
+        }
         _ => {
             let b = bitsel(rng);
             let code = match b { 8 => C::Mov_r8_rm8, 16 => C::Mov_r16_rm16, 32 => C::Mov_r32_rm32, _ => C::Mov_r64_rm64 };
@@ -531,12 +581,19 @@ fn structure(rng: &mut Rng, body: Vec<Instruction>, sub: Vec<Instruction>, rip_h
     list
 }
 
+/// the dispatcher's hash table the regions chain through (Cpu::jit_hash: HASH_N (eip, entry)
+/// pairs), and the ring of jumps between regions (Cpu::jit_ring)
+const HASH: u32 = 0x8000;
+const HASH_N: u32 = 2048;
+const RING: u32 = 0xc000;
+
 struct Jit {
     engine: Engine,
     store: Store<()>,
     linker: Linker<()>,
-    /// eip -> (function, block)
-    entries: HashMap<u32, (Func, u32)>,
+    table: Table,
+    /// eip -> (function, block, table index)
+    entries: HashMap<u32, (Func, u32, u32)>,
     /// blocks a region may take in
     range: (u32, u32),
 }
@@ -578,14 +635,25 @@ impl Jit {
         linker
             .func_wrap("env", "x87", |_: i32, _: i32, _: i32, _: f64, _: f64, _: f64, _: f64, _: f64, _: f64, _: f64, _: f64| {})
             .unwrap();
-        Jit { engine: engine.clone(), store, linker, entries: HashMap::new(), range: (0, u32::MAX) }
+        unsafe { std::ptr::write_bytes((base + HASH as usize) as *mut u8, 0, (HASH_N * 8) as usize + 0x1000) };
+        Jit { engine: engine.clone(), store, linker, table, entries: HashMap::new(), range: (0, u32::MAX) }
+    }
+
+    /// Points the Cpu at the hash table and the ring (regions jump to each other through them).
+    fn chain(&self, base: usize) {
+        let m = base as *mut u8;
+        let mut c = unsafe { get_cpu(m) };
+        c.jit_hash = HASH;
+        c.jit_mask = HASH_N - 1;
+        c.jit_ring = RING;
+        unsafe { put_cpu(m, &c) };
     }
 
     fn translate(&mut self, base: usize, eip: u32, rip_hi: u32) -> Result<(), String> {
         let mut m = koji::jit::wasm::Module::default();
         let full = eip as u64 | (rip_hi as u64) << 32;
         let (lo, hi) = self.range;
-        let region = koji::jit::long::translate_region64(&mut m, &mut Mem(base as *mut u8), full, (END, END + 16), |a| a != END && a >= lo && a < hi).ok_or("refused")?;
+        let region = koji::jit::long::translate_region64(&mut m, &mut Mem(base as *mut u8), &[full], (END, END + 16), |a, _| a != END && a >= lo && a < hi).ok_or("refused")?;
         let bytes = m.finish();
         if std::env::var("JDUMP").is_ok() { std::fs::write("/tmp/jit64-last.wasm", &bytes).ok(); eprintln!("module {} bytes", bytes.len()); }
         let module = Module::new(&self.engine, &bytes).map_err(|e| {
@@ -594,8 +662,23 @@ impl Jit {
         })?;
         let inst = self.linker.instantiate(&mut self.store, &module).map_err(|e| format!("{e}"))?;
         let f = inst.get_func(&mut self.store, "f0").unwrap();
+        let idx = self.table.grow(&mut self.store, 1, Ref::Func(Some(f))).unwrap() as u32;
         for (a, k) in region.starts {
-            self.entries.insert(a, (f, k));
+            self.entries.insert(a, (f, k, idx));
+            // (the dispatcher's linear probing, newer regions taking over a block)
+            let mut h = koji::jit::dispatch::slot(a, HASH_N - 1);
+            loop {
+                let e = (base + (HASH + 8 * h) as usize) as *mut u32;
+                let key = unsafe { e.read() };
+                if key == 0 || key == a {
+                    unsafe {
+                        e.write(a);
+                        e.add(1).write(idx | k << koji::jit::ENTRY_SHIFT);
+                    }
+                    break;
+                }
+                h = (h + 1) & (HASH_N - 1);
+            }
         }
         Ok(())
     }
@@ -607,15 +690,19 @@ impl Jit {
         for _ in 0..100_000 {
             let c = unsafe { get_cpu(m) };
             if c.eip == END {
+                if std::env::var("JRING").is_ok() {
+                    eprintln!("regions {regions} chained {}", unsafe { ((base + RING as usize) as *const u32).read() });
+                }
                 return Ok(regions);
             }
             if !self.entries.contains_key(&c.eip) {
                 self.translate(base, c.eip, c.rip_hi)?;
             }
-            let (f, k) = self.entries[&c.eip];
+            let (f, k, idx) = self.entries[&c.eip];
+            self.chain(base);
             let mut params = vec![Val::I32(0); 16];
             params[0] = Val::I32(CPU as i32);
-            params[1] = Val::I32((k << koji::jit::ENTRY_SHIFT) as i32);
+            params[1] = Val::I32((idx | k << koji::jit::ENTRY_SHIFT) as i32);
             let mut results = vec![Val::I32(0); 1];
             f.call(&mut self.store, &params, &mut results).map_err(|e| format!("trap: {e:?}"))?;
             regions += 1;
@@ -700,6 +787,15 @@ fn run_case(engine: &Engine, memory: &SharedMemory, base: usize, list0: &[Instru
         let (mut want_cpu, want_data, want_stack) = unsafe { (get_cpu(m), std::slice::from_raw_parts(m.add(DATA as usize), DATA_LEN as usize).to_vec(), std::slice::from_raw_parts(m.add(STACK as usize - 0x1000), 0x1000).to_vec()) };
         setup(cpu0);
         let mut jit = Jit::new(engine, memory, base);
+        if koji::jit::long::DEBUG_BLOCKS.load(std::sync::atomic::Ordering::Relaxed) != 0 {
+            // (small regions at every instruction first, in reverse: nearly every exit then
+            // chains to another region, or back into its own)
+            let mut dec = iced_x86::Decoder::with_ip(64, &code, rip, iced_x86::DecoderOptions::NONE);
+            let ips: Vec<u64> = (&mut dec).into_iter().map(|i| i.ip()).collect();
+            for &ip in ips.iter().rev() {
+                let _ = jit.translate(base, ip as u32, (ip >> 32) as u32);
+            }
+        }
         let got = jit.run(base);
         let (mut got_cpu, got_data, got_stack) = unsafe { (get_cpu(m), std::slice::from_raw_parts(m.add(DATA as usize), DATA_LEN as usize).to_vec(), std::slice::from_raw_parts(m.add(STACK as usize - 0x1000), 0x1000).to_vec()) };
         want_cpu.materialize();
@@ -842,7 +938,7 @@ fn exe_mode(args: &[String]) {
             if !jit.entries.contains_key(&c.eip) && jit.translate(base, c.eip, c.rip_hi).is_err() {
                 break;
             }
-            let (f, k) = jit.entries[&c.eip];
+            let (f, k, _) = jit.entries[&c.eip];
             let mut params = vec![Val::I32(0); 16];
             params[0] = Val::I32(CPU as i32);
             params[1] = Val::I32((k << koji::jit::ENTRY_SHIFT) as i32);
@@ -922,6 +1018,9 @@ fn main() {
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     for t in 0..count {
         let rip_hi = (t % 3 == 2) as u32;
+        // (every other test in small regions: exits chain into other regions and back into a
+        // region's own blocks through the hash table)
+        koji::jit::long::DEBUG_BLOCKS.store(if t % 2 == 1 { 1 + t / 2 % 3 } else { 0 }, std::sync::atomic::Ordering::Relaxed);
         let mut list = Vec::new();
         let n = 5 + rng.below(40) as usize;
         while list.len() < n {
