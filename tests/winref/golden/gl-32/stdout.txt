@@ -1,0 +1,13 @@
+pixel format: color 32 alpha 0 depth 1 stencil 1 double 1
+current 1
+viewport 0 0 64 64
+max texture >= 1024 1
+image clear 64 64 1
+image raster 64 64 2
+image textures 64 64 2
+glCopyTexImage2D 0
+image formats 64 64 2
+image blend_depth 64 64 2
+image transforms 64 64 2
+glGetError 0
+wglDeleteContext 1
