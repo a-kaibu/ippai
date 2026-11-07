@@ -3917,15 +3917,74 @@ fn spi(c: &mut Ctx, wide: bool) -> u32 {
     1
 }
 fn ChangeDisplaySettingsA(c: &mut Ctx) -> u32 {
-    let p = c.a(0);
-    if p != 0 {
-        let fields = r32(p + 40);
-        if fields & 0x180000 == 0x180000 {
-            let (w, h) = (r32(p + 108) as i32, r32(p + 112) as i32);
+    let (p, flags) = (c.a(0), c.a(1));
+    change_display(c, p, 40, 108, flags)
+}
+fn ChangeDisplaySettingsW(c: &mut Ctx) -> u32 {
+    let (p, flags) = (c.a(0), c.a(1));
+    change_display(c, p, 72, 172, flags)
+}
+/// ChangeDisplaySettingsEx{A,W}(device, mode, hwnd, flags, param): the primary display's
+fn ChangeDisplaySettingsExA(c: &mut Ctx) -> u32 {
+    let (p, flags) = (c.a(1), c.a(3));
+    change_display(c, p, 40, 108, flags)
+}
+fn ChangeDisplaySettingsExW(c: &mut Ctx) -> u32 {
+    let (p, flags) = (c.a(1), c.a(3));
+    change_display(c, p, 72, 172, flags)
+}
+/// The ChangeDisplaySettings answer for DEVMODE `p` (its dmFields at `fields`, dmPelsWidth and
+/// dmPelsHeight at `size`): a size no display has, DISP_CHANGE_BADMODE (-2); CDS_TEST (2) only
+/// answers, the screen as it was (winref dispmode; LiveMaker tests every mode it lists, #81)
+fn change_display(c: &mut Ctx, p: u32, fields: u32, size: u32, flags: u32) -> u32 {
+    if p == 0 || r32(p + fields) & 0x180000 != 0x180000 {
+        return 0;
+    }
+    let (w, h) = (r32(p + size), r32(p + size + 4));
+    match display_change(w, h, flags) {
+        Some((w, h)) => {
             set_display(c, w, h);
+            0
+        }
+        None if mode_exists(w, h) => 0,
+        None => (-2i32) as u32,
+    }
+}
+/// A size the display can take (kura's screen: 1..=8192 each way)
+fn mode_exists(w: u32, h: u32) -> bool {
+    (1..=8192).contains(&w) && (1..=8192).contains(&h)
+}
+/// The screen size a ChangeDisplaySettings of `w` x `h` with `flags` switches to (None: none)
+fn display_change(w: u32, h: u32, flags: u32) -> Option<(i32, i32)> {
+    (mode_exists(w, h) && flags & 2 == 0).then_some((w as i32, h as i32))
+}
+#[cfg(test)]
+mod display_change_tests {
+    use super::{display_change, mode_exists};
+    /// winref dispmode's answers: CDS_TEST never switches, a size no display has is refused
+    #[test]
+    fn as_windows() {
+        assert_eq!(display_change(640, 480, 2), None);
+        assert!(mode_exists(640, 480));
+        assert_eq!(display_change(640, 480, 0), Some((640, 480)));
+        assert_eq!(display_change(1280, 720, 4), Some((1280, 720)));
+        assert_eq!(display_change(12345, 77, 0), None);
+        assert!(!mode_exists(12345, 77));
+        assert!(!mode_exists(0, 480));
+    }
+    /// every flag combination with CDS_TEST, any size: never a switch
+    #[test]
+    fn test_never_switches() {
+        let mut x = 0x9e37_79b9u32;
+        for _ in 0..100_000 {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            let (w, h, f) = (x % 9000, x.rotate_left(11) % 9000, x.rotate_left(22) | 2);
+            assert_eq!(display_change(w, h, f), None);
+            assert_eq!(display_change(w, h, f & !2).is_some(), mode_exists(w, h));
         }
     }
-    0
 }
 
 /// A new screen size; top-level windows get WM_DISPLAYCHANGE (CatSystem2 goes on from there)
@@ -3935,32 +3994,6 @@ fn set_display(c: &mut Ctx, w: i32, h: i32) {
         let f = crate::api::export("user32", "SendMessageA");
         c.call(f, &[0xffff, 0x7e, 32, (h as u32) << 16 | (w as u32 & 0xffff)]);
     }
-}
-/// ChangeDisplaySettingsEx{A,W}(device, mode, hwnd, flags, param): the primary display's
-fn ChangeDisplaySettingsExA(c: &mut Ctx) -> u32 {
-    let p = c.a(1);
-    if p != 0 && r32(p + 40) & 0x180000 == 0x180000 {
-        set_display(c, r32(p + 108) as i32, r32(p + 112) as i32);
-    }
-    0
-}
-fn ChangeDisplaySettingsExW(c: &mut Ctx) -> u32 {
-    let p = c.a(1);
-    if p != 0 && r32(p + 72) & 0x180000 == 0x180000 {
-        set_display(c, r32(p + 172) as i32, r32(p + 176) as i32);
-    }
-    0
-}
-fn ChangeDisplaySettingsW(c: &mut Ctx) -> u32 {
-    let p = c.a(0);
-    if p != 0 {
-        let fields = r32(p + 72);
-        if fields & 0x180000 == 0x180000 {
-            let (w, h) = (r32(p + 172) as i32, r32(p + 176) as i32);
-            set_display(c, w, h);
-        }
-    }
-    0
 }
 /// DEVMODE of mode `n` (ENUM_CURRENT_SETTINGS/ENUM_REGISTRY_SETTINGS: the screen's). The W
 /// layout has a 64-byte device name and a 64-byte form name: fields before dmFormName are 32
