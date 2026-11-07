@@ -701,7 +701,7 @@ fn main() {
     let mut config = Config::new();
     config.wasm_threads(true);
     let engine = Engine::new(&config).unwrap();
-    let memory = SharedMemory::new(&engine, MemoryType::shared(koji::jit::wasm::MEMORY_MIN_PAGES, koji::jit::wasm::MEMORY_MIN_PAGES)).unwrap();
+    let memory = SharedMemory::new(&engine, MemoryType::shared(koji::jit::wasm::memory_min_pages(), koji::jit::wasm::memory_min_pages())).unwrap();
     let base = memory.data().as_ptr() as *mut u8 as usize;
     let mut fails = 0;
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);

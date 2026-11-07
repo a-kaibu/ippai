@@ -87,7 +87,8 @@ jobs:
           ref: ${{ needs.plan.outputs.sha }}
       - run: tools/ci/cache-keys.sh
       # (the engines fetched or built from pinned sources: the same until their scripts change)
-      - uses: actions/cache@v6.1.0
+      - id: cache-1
+        uses: actions/cache/restore@v6.1.0
         with:
           path: |
             target/krkrz
@@ -98,11 +99,13 @@ jobs:
             target/fpc16
           key: bench-engines-${{ hashFiles('tests/bench/fetch-*.sh', 'tests/bench/build-*.sh', 'tests/bench/*.patch') }}
       # (.debs per runner image: tools/ci/apt.sh)
-      - uses: actions/cache@v6.1.0
+      - id: cache-2
+        uses: actions/cache/restore@v6.1.0
         with:
           path: ~/.apt-cache
           key: apt-${{ env.CI_IMAGE }}-gcc-mingw-w64-i686-g++-mingw-w64-i686-gcc-mingw-w64-x86-64-g++-mingw-w64-x86-64-fpc-nasm-fonts-ipafont-gothic-fonts-ipafont-mincho
-      - uses: actions/cache@v6.1.0
+      - id: cache-3
+        uses: actions/cache/restore@v6.1.0
         with:
           path: ~/.pip-wheels
           key: pip-${{ runner.os }}-fonttools==4.59.0-pillow==11.3.0
@@ -112,6 +115,27 @@ jobs:
           tools/ci/pip.sh fonttools==4.59.0 pillow==11.3.0
           tests/bench/build.sh inputs/exe
           python3 tools/ci/sake-fonts.py inputs/fonts
+      - if: steps.cache-1.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: |
+            target/krkrz
+            target/krkr2
+            target/renpy
+            target/onscripter
+            target/watcom
+            target/fpc16
+          key: bench-engines-${{ hashFiles('tests/bench/fetch-*.sh', 'tests/bench/build-*.sh', 'tests/bench/*.patch') }}
+      - if: steps.cache-2.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ~/.apt-cache
+          key: apt-${{ env.CI_IMAGE }}-gcc-mingw-w64-i686-g++-mingw-w64-i686-gcc-mingw-w64-x86-64-g++-mingw-w64-x86-64-fpc-nasm-fonts-ipafont-gothic-fonts-ipafont-mincho
+      - if: steps.cache-3.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ~/.pip-wheels
+          key: pip-${{ runner.os }}-fonttools==4.59.0-pillow==11.3.0
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: inputs
@@ -161,7 +185,8 @@ jobs:
           restore-keys: pnpm-${{ runner.os }}-bench-
       - run: tools/ci/pnpm.sh
       # (Playwright's Chromium, per Playwright version; the runner image has its libraries, as Bench found: no apt)
-      - uses: actions/cache@v6.1.0
+      - id: cache-4
+        uses: actions/cache/restore@v6.1.0
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-1.56.1
@@ -183,6 +208,11 @@ jobs:
           }
           unpack dist-new "$SHA" "$RUNNER_TEMP/new"
           if [ -d dist-old ]; then unpack dist-old "$OLD_SHA" "$RUNNER_TEMP/old"; fi
+      - if: steps.cache-4.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-1.56.1
       - name: Bench ${{ matrix.group }}
         env:
           ROUNDS: ${{ inputs.rounds }}
@@ -211,11 +241,13 @@ jobs:
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: 22
-      - uses: actions/cache@v6.1.0
+      - id: cache-5
+        uses: actions/cache/restore@v6.1.0
         with:
           path: ~/emsdk4
           key: emsdk-${{ runner.os }}-${{ hashFiles('tools/ci/emsdk.sh') }}
-      - uses: actions/cache@v6.1.0
+      - id: cache-6
+        uses: actions/cache/restore@v6.1.0
         with:
           # (the pinned JavaScriptCore bundle: webkitgtk.org drops old revisions)
           path: ~/.cache/ippai-jsc
@@ -224,6 +256,16 @@ jobs:
         env:
           ROUNDS: ${{ inputs.rounds }}
         run: tests/bench/js.sh results/js.json
+      - if: steps.cache-5.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ~/emsdk4
+          key: emsdk-${{ runner.os }}-${{ hashFiles('tools/ci/emsdk.sh') }}
+      - if: steps.cache-6.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ~/.cache/ippai-jsc
+          key: jsc-${{ hashFiles('tests/bench/js.sh') }}
       - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:

@@ -971,7 +971,7 @@ fn exe_mode(args: &[String]) {
     config.wasm_threads(true);
     let engine = Engine::new(&config).unwrap();
     let pages = (top + 0xffff) / 65536;
-    let memory = SharedMemory::new(&engine, MemoryType::shared(koji::jit::wasm::MEMORY_MIN_PAGES.max(pages as u32), koji::jit::wasm::MEMORY_MIN_PAGES.max(pages as u32))).unwrap();
+    let memory = SharedMemory::new(&engine, MemoryType::shared(koji::jit::wasm::memory_min_pages().max(pages as u32), koji::jit::wasm::memory_min_pages().max(pages as u32))).unwrap();
     let base = memory.data().as_ptr() as *mut u8 as usize;
     let m = base as *mut u8;
     // instruction boundaries in the range
@@ -1112,7 +1112,7 @@ fn main() {
     let mut config = Config::new();
     config.wasm_threads(true);
     let engine = Engine::new(&config).unwrap();
-    let memory = SharedMemory::new(&engine, MemoryType::shared(koji::jit::wasm::MEMORY_MIN_PAGES, koji::jit::wasm::MEMORY_MIN_PAGES)).unwrap();
+    let memory = SharedMemory::new(&engine, MemoryType::shared(koji::jit::wasm::memory_min_pages(), koji::jit::wasm::memory_min_pages())).unwrap();
     let base = memory.data().as_ptr() as *mut u8 as usize;
     let m = base as *mut u8;
     let mut fails = 0;

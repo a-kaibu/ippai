@@ -1209,7 +1209,7 @@ fn main() {
     let mut config = Config::new();
     config.wasm_threads(true);
     let engine = Engine::new(&config).unwrap();
-    let memory = SharedMemory::new(&engine, MemoryType::shared(koji::jit::wasm::MEMORY_MIN_PAGES, koji::jit::wasm::MEMORY_MIN_PAGES)).unwrap();
+    let memory = SharedMemory::new(&engine, MemoryType::shared(koji::jit::wasm::memory_min_pages(), koji::jit::wasm::memory_min_pages())).unwrap();
     assert!(memory.data().len() >= SCRATCH_END);
     let base = memory.data().as_ptr() as *mut u8 as usize;
     let dispatch = Module::new(&engine, koji::jit::dispatch::module()).unwrap();

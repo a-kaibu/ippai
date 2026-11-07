@@ -41,7 +41,7 @@ jobs:
         with:
           fetch-depth: 0
       - id: mutants-bin
-        uses: actions/cache@v6.1.0
+        uses: actions/cache/restore@v6.1.0
         with:
           path: ~/.cargo/bin/cargo-mutants
           key: cargo-mutants-${{ runner.os }}-27.1.0
@@ -49,6 +49,11 @@ jobs:
         uses: taiki-e/install-action@v2.88.1
         with:
           tool: cargo-mutants@27.1.0
+      - if: steps.mutants-bin.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-mutants
+          key: cargo-mutants-${{ runner.os }}-27.1.0
       - uses: actions/cache@v6.1.0
         with:
           path: |

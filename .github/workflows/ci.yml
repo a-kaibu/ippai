@@ -38,7 +38,8 @@ jobs:
           restore-keys: pnpm-${{ runner.os }}-browser-
       - run: tools/ci/pnpm.sh
       # (Playwright's Chromium, per Playwright version; the runner image has its libraries, as Bench found: no apt)
-      - uses: actions/cache@v6.1.0
+      - id: cache-1
+        uses: actions/cache/restore@v6.1.0
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-1.63.0
@@ -46,6 +47,11 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/ippai-browser" && pnpm add --dir "$RUNNER_TEMP/ippai-browser" playwright@1.63.0
           "$RUNNER_TEMP/ippai-browser/node_modules/.bin/playwright" install chromium
+      - if: steps.cache-1.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-1.63.0
       - name: Real browser fetch regression
         env:
           PLAYWRIGHT: ${{ runner.temp }}/ippai-browser/node_modules/playwright/index.mjs
@@ -113,12 +119,18 @@ jobs:
             test-${{ runner.os }}-${{ env.RUST_KEY }}-
       # (SingleStepTests/80386: real-mode tests recorded on a real 386, ~430 MB, which
       # crates/koji/tests/singlestep.rs runs when they are there)
-      - uses: actions/cache@v6.1.0
+      - id: cache-2
+        uses: actions/cache/restore@v6.1.0
         with:
           path: target/sst
           key: sst-${{ hashFiles('tests/sst/fetch.sh') }}
       - name: Fetch SingleStepTests
         run: tests/sst/fetch.sh
+      - if: steps.cache-2.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: target/sst
+          key: sst-${{ hashFiles('tests/sst/fetch.sh') }}
       - name: cargo test
         run: cargo test --workspace --release
       # (the C runtime's property tests once more with overflow checks: fuzzing found an
@@ -230,7 +242,8 @@ jobs:
           restore-keys: |
             jit-${{ runner.os }}-${{ env.RUST_KEY }}-
       # (SingleStepTests/80386 for jit16test, pinned by fetch.sh)
-      - uses: actions/cache@v6.1.0
+      - id: cache-3
+        uses: actions/cache/restore@v6.1.0
         with:
           path: target/sst
           key: sst-${{ hashFiles('tests/sst/fetch.sh') }}
@@ -239,7 +252,8 @@ jobs:
         background: true
         run: tests/sst/fetch.sh
       # (.debs per runner image: tools/ci/apt.sh)
-      - uses: actions/cache@v6.1.0
+      - id: cache-4
+        uses: actions/cache/restore@v6.1.0
         with:
           path: ~/.apt-cache
           key: apt-${{ env.CI_IMAGE }}-gcc-multilib
@@ -268,12 +282,22 @@ jobs:
         working-directory: tools/jit16test
         run: cargo run --release --locked -- 1500 ${{ github.run_number }}
       - wait: sst
+      - if: steps.cache-3.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: target/sst
+          key: sst-${{ hashFiles('tests/sst/fetch.sh') }}
       - name: 16-bit, against the 386
         id: jit16-sst
         background: true
         working-directory: tools/jit16test
         run: SST_N=200 cargo run --release --locked -- sst
       - wait: apt
+      - if: steps.cache-4.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ~/.apt-cache
+          key: apt-${{ env.CI_IMAGE }}-gcc-multilib
       - name: 32-bit, against the runner's CPU (random rounding modes and precisions)
         id: jit32-native
         background: true
@@ -337,7 +361,8 @@ jobs:
           fetch-depth: 0 # (git describe names the build)
       - run: tools/ci/cache-keys.sh
       # (.debs per runner image: tools/ci/apt.sh)
-      - uses: actions/cache@v6.1.0
+      - id: cache-5
+        uses: actions/cache/restore@v6.1.0
         with:
           path: ~/.apt-cache
           key: apt-${{ env.CI_IMAGE }}-mingw-w64-zstd-clang-lld-llvm
@@ -359,7 +384,8 @@ jobs:
       - run: tools/ci/pnpm.sh
       - run: tools/ci/rust-key.sh
       # (rust-src and the emscripten std, per stable rustc)
-      - uses: actions/cache@v6.1.0
+      - id: cache-6
+        uses: actions/cache/restore@v6.1.0
         with:
           path: |
             ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src
@@ -370,6 +396,17 @@ jobs:
             ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/multirust-config.toml
           key: rust-wasm-${{ env.RUST_KEY }}
       - run: tools/ci/rust-wasm.sh
+      - if: steps.cache-6.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: |
+            ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src
+            ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/wasm32-unknown-emscripten
+            ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/components
+            ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/manifest-rust-src
+            ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/manifest-rust-std-wasm32-unknown-emscripten
+            ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/multirust-config.toml
+          key: rust-wasm-${{ env.RUST_KEY }}
       - id: cargo-cache
         uses: actions/cache/restore@v6.1.0
         with:
@@ -390,6 +427,11 @@ jobs:
       - name: Fetch ordering tests
         run: node tests/fetch-bridge.test.mjs
       - wait: apt
+      - if: steps.cache-5.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ~/.apt-cache
+          key: apt-${{ env.CI_IMAGE }}-mingw-w64-zstd-clang-lld-llvm
       - name: Build
         run: tools/ci/build.sh
       - name: host/tests on sake

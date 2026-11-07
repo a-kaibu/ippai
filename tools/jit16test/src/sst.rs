@@ -348,7 +348,7 @@ pub fn main(args: &[String]) {
     let mut config = Config::new();
     config.wasm_threads(true);
     let engine = Engine::new(&config).unwrap();
-    let memory = SharedMemory::new(&engine, MemoryType::shared(koji::jit::wasm::MEMORY_MIN_PAGES, koji::jit::wasm::MEMORY_MIN_PAGES)).unwrap();
+    let memory = SharedMemory::new(&engine, MemoryType::shared(koji::jit::wasm::memory_min_pages(), koji::jit::wasm::memory_min_pages())).unwrap();
     let base = memory.data().as_ptr() as *mut u8 as usize;
     LO.store(G, Relaxed);
     HI.store(G + SPAN, Relaxed);

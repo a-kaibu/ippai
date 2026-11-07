@@ -50,13 +50,21 @@ jobs:
       - run: tools/ci/cache-keys.sh
       # (the nightly toolchain, downloaded once a week: tools/ci/nightly.sh; llvm-tools for its
       # llvm-symbolizer, which lsan.supp needs)
-      - uses: actions/cache@v6.1.0
+      - id: cache-1
+        uses: actions/cache/restore@v6.1.0
         with:
           path: |
             ~/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu
             ~/.rustup/update-hashes/nightly-x86_64-unknown-linux-gnu
           key: rust-nightly-rust-src-llvm-tools-${{ env.CI_WEEK }}
       - run: tools/ci/nightly.sh rust-src llvm-tools
+      - if: steps.cache-1.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: |
+            ~/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu
+            ~/.rustup/update-hashes/nightly-x86_64-unknown-linux-gnu
+          key: rust-nightly-rust-src-llvm-tools-${{ env.CI_WEEK }}
       - id: cargo-cache
         uses: actions/cache/restore@v6.1.0
         with:

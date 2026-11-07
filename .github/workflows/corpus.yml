@@ -101,16 +101,19 @@ jobs:
           restore-keys: pnpm-${{ runner.os }}-corpus-
       - run: tools/ci/pnpm.sh
       # (Playwright's Chromium, per Playwright version; the runner image has its libraries, as Bench found: no apt)
-      - uses: actions/cache@v6.1.0
+      - id: cache-1
+        uses: actions/cache/restore@v6.1.0
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-1.56.1
       # (.debs per runner image: tools/ci/apt.sh)
-      - uses: actions/cache@v6.1.0
+      - id: cache-2
+        uses: actions/cache/restore@v6.1.0
         with:
           path: ~/.apt-cache
           key: apt-${{ env.CI_IMAGE }}-unar-unrar-innoextract-convmv-p7zip-full-msitools-zstd-fonts-ipafont-gothic-fonts-ipafont-mincho
-      - uses: actions/cache@v6.1.0
+      - id: cache-3
+        uses: actions/cache/restore@v6.1.0
         with:
           path: ~/.pip-wheels
           key: pip-${{ runner.os }}-fonttools==4.59.0
@@ -136,6 +139,21 @@ jobs:
           echo "build $V ($BUILT)"
           python3 tools/ci/sake-fonts.py "$RUNNER_TEMP/fonts"
           wait
+      - if: steps.cache-1.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-1.56.1
+      - if: steps.cache-2.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ~/.apt-cache
+          key: apt-${{ env.CI_IMAGE }}-unar-unrar-innoextract-convmv-p7zip-full-msitools-zstd-fonts-ipafont-gothic-fonts-ipafont-mincho
+      - if: steps.cache-3.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ~/.pip-wheels
+          key: pip-${{ runner.os }}-fonttools==4.59.0
       - name: Corpus shard ${{ matrix.shard }}
         env:
           SET: ${{ needs.plan.outputs.set }}

@@ -32,15 +32,24 @@ jobs:
       - uses: actions/checkout@v7.0.1
       - run: tools/ci/cache-keys.sh
       # (the nightly toolchain, downloaded once a week: tools/ci/nightly.sh)
-      - uses: actions/cache@v6.1.0
+      - id: cache-1
+        uses: actions/cache/restore@v6.1.0
         with:
           path: |
             ~/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu
             ~/.rustup/update-hashes/nightly-x86_64-unknown-linux-gnu
           key: rust-nightly-minimal-${{ env.CI_WEEK }}
       - run: tools/ci/nightly.sh
+      - if: steps.cache-1.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: |
+            ~/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu
+            ~/.rustup/update-hashes/nightly-x86_64-unknown-linux-gnu
+          key: rust-nightly-minimal-${{ env.CI_WEEK }}
       # (.debs per runner image: tools/ci/apt.sh)
-      - uses: actions/cache@v6.1.0
+      - id: cache-2
+        uses: actions/cache/restore@v6.1.0
         with:
           path: ~/.apt-cache
           key: apt-${{ env.CI_IMAGE }}-gcc-multilib-imagemagick
@@ -61,6 +70,11 @@ jobs:
         run: |
           tools/ci/apt.sh gcc-multilib imagemagick
           command -v cargo-fuzz || cargo install --locked cargo-fuzz --version 0.13.2
+      - if: steps.cache-2.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ~/.apt-cache
+          key: apt-${{ env.CI_IMAGE }}-gcc-multilib-imagemagick
       # (saved after the job under a new key when it passes; a failing run's corpus is not
       # kept, its crash inputs are uploaded)
       - uses: actions/cache@v6.1.0
