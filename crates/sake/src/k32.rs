@@ -102,9 +102,59 @@ fn GetCommandLineW(_: &mut Ctx) -> u32 {
     CMDLINE.lock().unwrap().1
 }
 
+/// The process environment, in the order Windows keeps it (sorted, case-insensitively).
+/// Besides the defaults, the guest sees the host's WINETEST_* variables (what Wine passes its
+/// tests) and the NAME=VALUE pairs of SAKE_GUEST_ENV (`;` between them).
+static ENV: Mutex<Option<Vec<(String, String)>>> = Mutex::new(None);
+
+fn with_env<R>(f: impl FnOnce(&mut Vec<(String, String)>) -> R) -> R {
+    let mut g = ENV.lock().unwrap();
+    let e = g.get_or_insert_with(|| {
+        let mut e: Vec<(String, String)> = [
+            ("PATH", "C:\\windows\\system32;C:\\windows"),
+            ("TEMP", "C:\\windows\\temp"),
+            ("TMP", "C:\\windows\\temp"),
+            ("windir", "C:\\windows"),
+            ("SystemRoot", "C:\\windows"),
+            ("OS", "Windows_NT"),
+            ("COMPUTERNAME", "SAKE"),
+            ("USERNAME", "user"),
+        ]
+        .iter()
+        .map(|&(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let mut extra: Vec<(String, String)> = std::env::vars().filter(|(k, _)| k.starts_with("WINETEST_")).collect();
+        if let Ok(list) = std::env::var("SAKE_GUEST_ENV") {
+            extra.extend(list.split(';').filter_map(|kv| kv.split_once('=')).filter(|(k, _)| !k.is_empty()).map(|(k, v)| (k.to_string(), v.to_string())));
+        }
+        for (k, v) in extra {
+            env_put(&mut e, &k, Some(&v));
+        }
+        e.sort_by_key(|(k, _)| k.to_ascii_uppercase());
+        e
+    });
+    f(e)
+}
+
+/// Sets (or with None removes) a variable, keeping the order.
+fn env_put(e: &mut Vec<(String, String)>, name: &str, value: Option<&str>) {
+    let key = name.to_ascii_uppercase();
+    let at = e.iter().position(|(k, _)| k.to_ascii_uppercase() == key);
+    match (at, value) {
+        (Some(i), Some(v)) => e[i].1 = v.to_string(),
+        (Some(i), None) => {
+            e.remove(i);
+        }
+        (None, Some(v)) => {
+            let i = e.iter().position(|(k, _)| k.to_ascii_uppercase() > key).unwrap_or(e.len());
+            e.insert(i, (name.to_string(), v.to_string()));
+        }
+        (None, None) => {}
+    }
+}
+
 fn env_block(wide: bool) -> u32 {
-    let vars = ["PATH=C:\\windows\\system32;C:\\windows", "TEMP=C:\\windows\\temp", "TMP=C:\\windows\\temp", "windir=C:\\windows", "SystemRoot=C:\\windows", "OS=Windows_NT", "COMPUTERNAME=SAKE", "USERNAME=user"];
-    let s = vars.join("\0") + "\0\0";
+    let s: String = with_env(|e| e.iter().map(|(k, v)| format!("{k}={v}\0")).collect::<String>()) + "\0";
     if wide {
         let w: Vec<u16> = s.encode_utf16().collect();
         let p = mem::heap_alloc(2 * w.len() as u32, true);
@@ -113,8 +163,9 @@ fn env_block(wide: bool) -> u32 {
         }
         p
     } else {
-        let p = mem::heap_alloc(s.len() as u32, true);
-        mem::write(p, s.as_bytes());
+        let a = crate::text::s2a(&s);
+        let p = mem::heap_alloc(a.len() as u32, true);
+        mem::write(p, &a);
         p
     }
 }
@@ -136,14 +187,8 @@ fn FreeEnvironmentStringsW(c: &mut Ctx) -> u32 {
     1
 }
 fn env_get(name: &str) -> Option<String> {
-    let v = match name.to_ascii_uppercase().as_str() {
-        "TEMP" | "TMP" => "C:\\windows\\temp",
-        "WINDIR" | "SYSTEMROOT" => "C:\\windows",
-        "PATH" => "C:\\windows\\system32;C:\\windows",
-        "OS" => "Windows_NT",
-        _ => return None,
-    };
-    Some(v.into())
+    let key = name.to_ascii_uppercase();
+    with_env(|e| e.iter().find(|(k, _)| k.to_ascii_uppercase() == key).map(|(_, v)| v.clone()))
 }
 fn GetEnvironmentVariableA(c: &mut Ctx) -> u32 {
     match env_get(&arg_str(c.a(0), false)) {
@@ -163,11 +208,22 @@ fn GetEnvironmentVariableW(c: &mut Ctx) -> u32 {
         }
     }
 }
-fn SetEnvironmentVariableA(_: &mut Ctx) -> u32 {
+/// SetEnvironmentVariable(name, value): a NULL value removes the variable
+fn set_env(c: &mut Ctx, wide: bool) -> u32 {
+    let name = arg_str(c.a(0), wide);
+    if c.a(0) == 0 || name.is_empty() || name.contains('=') {
+        last_error(87);
+        return 0;
+    }
+    let value = (c.a(1) != 0).then(|| arg_str(c.a(1), wide));
+    with_env(|e| env_put(e, &name, value.as_deref()));
     1
 }
-fn SetEnvironmentVariableW(_: &mut Ctx) -> u32 {
-    1
+fn SetEnvironmentVariableA(c: &mut Ctx) -> u32 {
+    set_env(c, false)
+}
+fn SetEnvironmentVariableW(c: &mut Ctx) -> u32 {
+    set_env(c, true)
 }
 /// %NAME% replaced by its value (unknown names stay as written)
 fn expand_env(s: &str) -> String {

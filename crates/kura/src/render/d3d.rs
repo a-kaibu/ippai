@@ -2072,20 +2072,23 @@ impl D3d {
     fn create_texture2(&mut self, a: [u32; 7]) {
         let [id, w, h, layers, mips, format, dim_code] = a;
         let fmt = tex_format(format);
-        let dim = match dim_code {
-            1 => "3d",
-            2 => "1d",
-            _ => "2d",
+        // 1D textures are 2D ones of height 1: WebGPU's 1D textures have neither array layers
+        // nor mips (dxwgsl declares Texture1D[Array] as texture_2d[_array] to match)
+        let (dim, h) = match dim_code {
+            1 => ("3d", h),
+            2 => ("2d", 1),
+            _ => ("2d", h),
         };
+        // (WebGPU has no 3D depth textures: one of the same texel size that no shader samples as depth)
+        let fmt = if dim == "3d" && is_depth(fmt) { if fmt == "depth16unorm" { "r16float" } else { "r32float" } } else { fmt };
         let depth = is_depth(fmt);
         let renderable = dim == "2d" && !fmt.ends_with("snorm") && fmt != "rgb9e5ufloat" && (fmt != "rg11b10ufloat" || gpu::has_feature("rg11b10ufloat-renderable"));
         // (no more levels than the size has)
         let biggest = if dim == "3d" { w.max(h).max(layers) } else { w.max(h) };
-        let levels = if dim == "1d" { 1 } else { mips.max(1).min(32 - biggest.max(1).leading_zeros()) };
+        let levels = mips.max(1).min(32 - biggest.max(1).leading_zeros());
         let u = usage::T_BINDING | usage::T_COPY_DST | usage::T_COPY_SRC | if renderable || (depth && dim == "2d") { usage::T_RENDER } else { 0 };
         let tex = gpu::texture(&format!(
-            r#"{{"size":[{w},{},{}],"dimension":{},"format":{},"mipLevelCount":{levels},"usage":{u}}}"#,
-            if dim == "1d" { 1 } else { h },
+            r#"{{"size":[{w},{h},{}],"dimension":{},"format":{},"mipLevelCount":{levels},"usage":{u}}}"#,
             layers.max(1),
             q(dim),
             q(fmt)
@@ -2159,7 +2162,7 @@ impl D3d {
         let mut colors = Vec::new();
         for k in 0..n {
             let id = tg[1 + k * 3];
-            if !self.textures.contains_key(&id) {
+            if self.textures.get(&id).is_none_or(|t| t.dim == "3d") {
                 return false;
             }
             self.use_tex(id);
@@ -2727,9 +2730,14 @@ impl D3d {
                     let s = self.sampler2(a, b, cc);
                     entries.push((binding, Res::Obj(s)));
                 } else {
+                    // (a view of another dimension than the texture's, or a cube of fewer
+                    // than 6 square layers, is invalid in WebGPU and takes the command buffer
+                    // with it: unbound instead)
                     let ok = self.textures.get(&a).filter(|t| {
                         let depth = is_depth(t.format);
                         depth == (kind == 6)
+                            && (t.dim == "3d") == (b == 5)
+                            && (!matches!(b, 3 | 4) || (t.layers >= 6 && t.w == t.h))
                             && (kind != 1 || !t.format.ends_with("int"))
                             && (kind != 4 || t.format.ends_with("uint"))
                             && (kind != 5 || t.format.ends_with("sint"))

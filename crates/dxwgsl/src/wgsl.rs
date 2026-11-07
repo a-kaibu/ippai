@@ -637,7 +637,8 @@ impl W {
     /// Sampling coordinates for a resource dimension: (coordinates, array index).
     fn sample_coords(&mut self, o: &Operand, dim: u32) -> R<(String, Option<String>)> {
         Ok(match dim {
-            2 => (self.src(o, K::F, &[0])?, None),
+            2 => (format!("vec2<f32>({}, 0.5f)", self.src(o, K::F, &[0])?), None),
+            7 => (format!("vec2<f32>({}, 0.5f)", self.src(o, K::F, &[0])?), Some(format!("i32(round({}))", self.src(o, K::F, &[1])?))),
             3 => (self.src(o, K::F, &[0, 1])?, None),
             5 | 6 => (self.src(o, K::F, &[0, 1, 2])?, None),
             8 => (self.src(o, K::F, &[0, 1])?, Some(format!("i32(round({}))", self.src(o, K::F, &[2])?))),
@@ -652,6 +653,7 @@ impl W {
         }
         let o = i.offset;
         match dim {
+            2 | 7 => Some(format!("vec2<i32>({}, 0)", o[0])),
             3 | 8 => Some(format!("vec2<i32>({}, {})", o[0], o[1])),
             5 => Some(format!("vec3<i32>({}, {}, {})", o[0], o[1], o[2])),
             _ => None,
@@ -678,19 +680,18 @@ impl W {
             0x4a => ("textureSampleLevel", vec![if depth { "0i".into() } else { "0.0f".into() }], false),
             0x49 => {
                 let n: &[u8] = match dim {
-                    2 => &[0],
+                    2 | 7 => &[0],
                     3 | 8 => &[0, 1],
                     _ => &[0, 1, 2],
                 };
-                ("textureSampleGrad", vec![self.src(&i.ops[4], K::F, n)?, self.src(&i.ops[5], K::F, n)?], false)
+                let (dx, dy) = (self.src(&i.ops[4], K::F, n)?, self.src(&i.ops[5], K::F, n)?);
+                let (dx, dy) = if n.len() == 1 { (format!("vec2<f32>({dx}, 0.0f)"), format!("vec2<f32>({dy}, 0.0f)")) } else { (dx, dy) };
+                ("textureSampleGrad", vec![dx, dy], false)
             }
             0x46 if self.pixel => ("textureSampleCompare", vec![self.src(&i.ops[4], K::F, &[0])?], true),
             0x46 | 0x47 => ("textureSampleCompareLevel", vec![self.src(&i.ops[4], K::F, &[0])?], true),
             op => return Err(format!("sample opcode {op:#x}")),
         };
-        if dim == 2 && f != "textureSample" {
-            return Err("1D texture sampled with a level".into());
-        }
         args.extend(extra);
         args.extend(off);
         let call = format!("{f}({})", args.join(", "));
@@ -742,7 +743,9 @@ impl W {
         let mip = self.src(o, K::I, &[3])?;
         let args = match dim {
             1 => format!("vec2<i32>({}, 0), 0", self.src(o, K::I, &[0])?),
-            2 => format!("{}, {}", add(self.src(o, K::I, &[0])?, 1), self.src(o, K::I, &[1])?),
+            // (the level is in w for every dimension)
+            2 => format!("vec2<i32>({}, 0), {mip}", add(self.src(o, K::I, &[0])?, 1)),
+            7 => format!("vec2<i32>({}, 0), {}, {mip}", add(self.src(o, K::I, &[0])?, 1), self.src(o, K::I, &[1])?),
             3 => format!("{}, {mip}", add(self.src(o, K::I, &[0, 1])?, 2)),
             8 => format!("{}, {}, {mip}", add(self.src(o, K::I, &[0, 1])?, 2), self.src(o, K::I, &[2])?),
             5 => format!("{}, {mip}", add(self.src(o, K::I, &[0, 1, 2])?, 3)),
@@ -760,7 +763,8 @@ impl W {
         let dims = format!("textureDimensions(t{t}, {mip})");
         let levels = format!("textureNumLevels(t{t})");
         let u = match dim {
-            2 => format!("vec4<u32>({dims}, 0u, 0u, {levels})"),
+            2 => format!("vec4<u32>({dims}.x, 0u, 0u, {levels})"),
+            7 => format!("vec4<u32>({dims}.x, textureNumLayers(t{t}), 0u, {levels})"),
             3 | 6 => format!("vec4<u32>({dims}, 0u, {levels})"),
             8 | 10 => format!("vec4<u32>({dims}, textureNumLayers(t{t}), {levels})"),
             5 => format!("vec4<u32>({dims}, {levels})"),
@@ -1137,9 +1141,11 @@ fn same_place(d: &Operand, srcs: &[Operand]) -> bool {
 }
 
 fn texture_type(dim: u32, k: K, depth: bool) -> R<(String, u32)> {
+    // (1D textures and arrays are 2D ones of height 1 on the page: WebGPU's 1D textures have no
+    // levels or layers)
     let vd = match dim {
-        1 | 3 => 1,
-        2 => 0,
+        1..=3 => 1,
+        7 => 2,
         5 => 5,
         6 => 3,
         8 => 2,
