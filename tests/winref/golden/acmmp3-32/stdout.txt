@@ -1,0 +1,57 @@
+tag details 0: tag 0x55 size 30
+suggest 0: tag 1 ch 2 rate 44100 bits 16 align 4 avg 176400
+query to 16-bit stereo 44100: 0
+query to 8-bit stereo 44100: 0
+query to 16-bit mono 44100: 0
+query to 16-bit stereo 22050: 0
+open 0
+size of 1 source bytes: 0 4608
+size of 208 source bytes: 0 4608
+size of 209 source bytes: 0 9216
+size of 4096 source bytes: 0 92160
+size of 100000 source bytes: 0 2216448
+source for 1 bytes: 512 0
+source for 4608 bytes: 0 208
+source for 7608 bytes: 0 208
+source for 20000 bytes: 0 832
+44.1 kHz stereo 64 kbps, pieces of 4096: open 0
+  size 0 92160
+  call 0: 0 took 4096 gave 87552 done 1
+  call 1: 0 took 292 gave 9216 done 1
+  prepare 11
+  took all 1, gave 21 frames of 1152
+  44.1 kHz stereo 64 kbps ch 0: 440 Hz, rms 7/20, starts in the first frame
+  44.1 kHz stereo 64 kbps ch 1: 660 Hz, rms 3/20, starts in the first frame
+44.1 kHz stereo 64 kbps, pieces of 208: open 0
+  size 0 4608
+  call 0: 0 took 208 gave 0 done 1
+  call 1: 0 took 208 gave 4608 done 1
+  call 2: 0 took 208 gave 4608 done 1
+  call 3: 0 took 208 gave 4608 done 1
+  prepare 11
+  took all 1, gave 21 frames of 1152
+  44.1 kHz stereo 64 kbps ch 0: 440 Hz, rms 7/20, starts in the first frame
+  44.1 kHz stereo 64 kbps ch 1: 660 Hz, rms 3/20, starts in the first frame
+44.1 kHz stereo 64 kbps, pieces of 1000: open 0
+  size 0 23040
+  call 0: 0 took 1000 gave 18432 done 1
+  call 1: 0 took 1000 gave 23040 done 1
+  call 2: 0 took 1000 gave 23040 done 1
+  call 3: 0 took 1000 gave 23040 done 1
+  prepare 11
+  took all 1, gave 21 frames of 1152
+  44.1 kHz stereo 64 kbps ch 0: 440 Hz, rms 7/20, starts in the first frame
+  44.1 kHz stereo 64 kbps ch 1: 660 Hz, rms 3/20, starts in the first frame
+44.1 kHz stereo 64 kbps, pieces of 4388: open 0
+  size 0 101376
+  call 0: 0 took 4388 gave 96768 done 1
+  prepare 11
+  took all 1, gave 21 frames of 1152
+  44.1 kHz stereo 64 kbps ch 0: 440 Hz, rms 7/20, starts in the first frame
+  44.1 kHz stereo 64 kbps ch 1: 660 Hz, rms 3/20, starts in the first frame
+22.05 kHz mono 32 kbps, pieces of 4096: open 0
+  size 0 46080
+  call 0: 0 took 2299 gave 25344 done 1
+  prepare 11
+  took all 1, gave 11 frames of 1152
+  22.05 kHz mono 32 kbps ch 0: 550 Hz, rms 7/20, starts in the first frame
