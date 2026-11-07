@@ -53,7 +53,7 @@ whose calls `.github/workflows/replay.yml` records on the Windows runner (WARP; 
 build for -32 probes, win64 for -64) into `tests/replay/traces/` (committed with `<probe>.src`,
 the probe's sources' hash: a changed probe is recorded again). winref then treats
 `replay_<probe>-<bits>` as any probe: Windows' answers in `tests/winref/golden`, sake compared
-against them. `tests/replay/check.py` checks the chain itself: the probe's own pictures have to
+against them. `tests/replay/check.py` (its own job, which nothing waits on) checks the chain itself: the probe's own pictures have to
 be found, in order and pixel for pixel, among what the replay on Windows reads back
 (`check_test.py` tests that matching); `known.txt` names a probe's pictures the recording cannot
 replay (D3D8 CopyRects: apitrace records only its first rect).
