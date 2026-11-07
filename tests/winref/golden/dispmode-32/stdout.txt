@@ -1,0 +1,13 @@
+ChangeDisplaySettingsA 640x480 test 0 screen same
+ChangeDisplaySettingsW 640x480 test 0 screen same
+ChangeDisplaySettingsExA 640x480 test 0 screen same
+ChangeDisplaySettingsExW 640x480 test 0 screen same
+ChangeDisplaySettingsA current test 0 screen same
+ChangeDisplaySettingsW current test 0 screen same
+ChangeDisplaySettingsExA current test 0 screen same
+ChangeDisplaySettingsExW current test 0 screen same
+ChangeDisplaySettingsA 12345x77 test -2 screen same
+ChangeDisplaySettingsW 12345x77 test -2 screen same
+ChangeDisplaySettingsExA 12345x77 test -2 screen same
+ChangeDisplaySettingsExW 12345x77 test -2 screen same
+ChangeDisplaySettingsA 12345x77 -2 screen same
