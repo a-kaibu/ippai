@@ -720,6 +720,8 @@ pub fn heap_realloc(p: u32, size: u32, zero: bool) -> u32 {
 pub fn atomic_rmw32(a: u32, f: impl Fn(u32) -> u32) -> u32 {
     rmw32_at(a as usize, f)
 }
+// (fetch_update is try_update on newer toolchains, which the one pinned here lacks)
+#[allow(deprecated)]
 pub(crate) fn rmw32_at(p: usize, f: impl Fn(u32) -> u32) -> u32 {
     use std::sync::atomic::{AtomicU32, AtomicU64, Ordering::SeqCst};
     unsafe {
