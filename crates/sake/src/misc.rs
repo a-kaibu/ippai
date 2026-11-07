@@ -1797,7 +1797,11 @@ fn SHGetFolderPathA(c: &mut Ctx) -> u32 {
 /// SHStrDupA/W(src, &copy): a wide copy in CoTaskMemAlloc memory
 fn sh_str_dup(c: &mut Ctx, wide: bool) -> u32 {
     let (src, out) = (c.a(0), c.a(1));
-    if src == 0 || out == 0 {
+    if out == 0 {
+        return 0x8007_0057;
+    }
+    if src == 0 {
+        mem::putp(out, 0);
         return 0x8007_0057;
     }
     let w: Vec<u16> = if wide { mem::wstr(src) } else { crate::text::a2w(&mem::cstr(src)) };

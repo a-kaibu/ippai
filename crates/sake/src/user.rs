@@ -4702,11 +4702,11 @@ fn CharNextA(c: &mut Ctx) -> u32 {
 }
 /// CharNextExA(codepage, p, flags): CharNextA with the system code page (932)
 fn CharNextExA(c: &mut Ctx) -> u32 {
-    let p = c.a(1);
+    let (cp, p) = (c.a(0), c.a(1));
     let b = mem::r8(p);
     if b == 0 {
         p
-    } else if crate::text::is_lead(b) && mem::r8(p + 1) != 0 {
+    } else if crate::text::is_lead_cp(cp, b) && mem::r8(p + 1) != 0 {
         p + 2
     } else {
         p + 1
@@ -4717,13 +4717,19 @@ fn CharNextW(c: &mut Ctx) -> u32 {
     if r16(p) == 0 { p } else { p + 2 }
 }
 fn CharPrevA(c: &mut Ctx) -> u32 {
-    let (start, p) = (c.a(0), c.a(1));
+    char_prev(0, c.a(0), c.a(1))
+}
+/// CharPrevExA(code page, start, current, flags)
+fn CharPrevExA(c: &mut Ctx) -> u32 {
+    char_prev(c.a(0) & 0xffff, c.a(1), c.a(2))
+}
+fn char_prev(cp: u32, start: u32, p: u32) -> u32 {
     if p <= start {
         return start;
     }
     let mut q = start;
     loop {
-        let n = if crate::text::is_lead(mem::r8(q)) { q + 2 } else { q + 1 };
+        let n = if crate::text::is_lead_cp(cp, mem::r8(q)) { q + 2 } else { q + 1 };
         if n >= p {
             return q;
         }
@@ -5417,7 +5423,7 @@ pub fn init() {
         LoadImageW, CreateIcon, CreateIconIndirect, CreateCursor, CopyIcon, DestroyCursor, DestroyIcon,
         GetIconInfo, LoadBitmapA, LoadBitmapW, LoadAcceleratorsA, LoadMenuA, LoadMenuW,
         CharLowerA, CharUpperA, CharLowerW, CharUpperW, CharLowerBuffA, CharUpperBuffA, CharLowerBuffW, CharUpperBuffW, CharNextA, CharNextExA, CharNextW,
-        CharPrevA, CharToOemA, OemToCharA, OemToCharBuffA, CharToOemBuffA, IsCharAlphaA, IsCharAlphaNumericA,
+        CharPrevA, CharPrevExA, CharToOemA, OemToCharA, OemToCharBuffA, CharToOemBuffA, IsCharAlphaA, IsCharAlphaNumericA,
         IsCharUpperA, IsCharLowerA, IsCharAlphaW, wsprintfA, wvsprintfA, wsprintfW, wvsprintfW, GetGUIThreadInfo,
         AttachThreadInput, FlashWindow, GetProcessWindowStation, GetUserObjectInformationA, SetProcessDPIAware,
         IsWindowUnicode, RegisterHotKey, UnregisterHotKey,

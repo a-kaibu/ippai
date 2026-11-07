@@ -4539,7 +4539,7 @@ fn GetCurrentDirectoryA(c: &mut Ctx) -> u32 {
 fn GetCurrentDirectoryW(c: &mut Ctx) -> u32 {
     cur_dir(c, true)
 }
-fn set_dir(d: &str) -> u32 {
+pub(crate) fn set_dir(d: &str) -> u32 {
     let full = files::full_path(d);
     if crate::env_on!("SAKE_TRACE_FILES") {
         eprintln!("sake: SetCurrentDirectory({d}) -> {full}");

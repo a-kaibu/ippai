@@ -27,7 +27,13 @@ pub fn is_dbcs() -> bool {
 
 /// Lead byte of a double-byte character in the ANSI code page.
 pub fn is_lead(b: u8) -> bool {
-    match acp() {
+    is_lead_cp(0, b)
+}
+
+/// Lead byte of a double-byte character in code page `cp` (0 CP_ACP, 1 CP_OEMCP, 3
+/// CP_THREAD_ACP: the ANSI one).
+pub fn is_lead_cp(cp: u32, b: u8) -> bool {
+    match if matches!(cp, 0 | 1 | 3) { acp() } else { cp } {
         932 => matches!(b, 0x81..=0x9f | 0xe0..=0xfc),
         936 | 949 | 950 => b >= 0x81 && b != 0xff,
         _ => false,

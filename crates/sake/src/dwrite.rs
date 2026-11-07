@@ -97,6 +97,8 @@ fn factory_methods() -> Vec<(&'static str, crate::api::Handler)> {
         ("CreateMonitorRenderingParams", CreateRenderingParams),
         ("CreateCustomRenderingParams", CreateCustomRenderingParams),
         ("GetSystemFontCollection", GetSystemFontCollection),
+        ("GetSystemFontFallback", GetSystemFontFallback),
+        ("CreateNumberSubstitution", CreateNumberSubstitution),
     ]
 }
 
@@ -344,7 +346,381 @@ fn CreateCustomRenderingParams(c: &mut Ctx) -> u32 {
     0
 }
 fn GetSystemFontCollection(c: &mut Ctx) -> u32 {
-    mem::putp(c.a(1), com::object("IDWriteFontCollection", &[], 8));
+    mem::putp(c.a(1), collection());
+    0
+}
+
+// ---- the system font collection: gdi.rs's built-in faces, a family of one font each ----
+
+const E_INVALIDARG: u32 = 0x8007_0057;
+const E_NOT_SUFFICIENT_BUFFER: u32 = 0x8007_007a;
+
+/// An object whose value (a face index) follows the vtable pointer.
+fn with_value(iface: &'static str, methods: &[(&'static str, crate::api::Handler)], v: u32) -> u32 {
+    let o = com::object(iface, methods, 16);
+    w32(o + mem::ps(), v);
+    o
+}
+fn value(o: u32) -> u32 {
+    mem::r32(o + mem::ps())
+}
+
+fn collection() -> u32 {
+    with_value(
+        "IDWriteFontCollection",
+        &[("GetFontFamilyCount", GetFontFamilyCount), ("GetFontFamily", GetFontFamily), ("FindFamilyName", FindFamilyName), ("GetFontFromFontFace", GetFontFromFontFace)],
+        0,
+    )
+}
+fn family(i: u32) -> u32 {
+    let m: [(&'static str, crate::api::Handler); 6] = [
+        ("GetFontCollection", GetFontCollection),
+        ("GetFontCount", one),
+        ("GetFont", GetFont),
+        ("GetFamilyNames", GetFamilyNames),
+        ("GetFirstMatchingFont", GetFirstMatchingFont),
+        ("GetMatchingFonts", GetMatchingFonts),
+    ];
+    with_value("IDWriteFontFamily", &m, i)
+}
+fn font(i: u32) -> u32 {
+    let m: [(&'static str, crate::api::Handler); 11] = [
+        ("GetFontFamily", FontGetFontFamily),
+        ("GetWeight", weight),
+        ("GetStretch", five),
+        ("GetStyle", zero),
+        ("IsSymbolFont", zero),
+        ("GetFaceNames", GetFaceNames),
+        ("GetInformationalStrings", GetInformationalStrings),
+        ("GetSimulations", zero),
+        ("HasCharacter", HasCharacter),
+        ("CreateFontFace", CreateFontFace),
+        ("GetMetrics", FontGetMetrics),
+    ];
+    with_value("IDWriteFont", &m, i)
+}
+fn face(i: u32) -> u32 {
+    let m: [(&'static str, crate::api::Handler); 5] =
+        [("GetType", FaceGetType), ("GetFiles", GetFiles), ("GetIndex", FaceGetIndex), ("GetSimulations", zero), ("IsSymbolFont", zero)];
+    with_value("IDWriteFontFace", &m, i)
+}
+
+fn one(_: &mut Ctx) -> u32 {
+    1
+}
+fn weight(_: &mut Ctx) -> u32 {
+    400
+}
+
+/// The built-in face a family name (Japanese or English, any case) names.
+fn find_family(name: &str) -> Option<usize> {
+    (0..crate::gdi::sys_faces()).find(|&i| crate::gdi::sys_face_names(i).iter().any(|n| n.eq_ignore_ascii_case(name)))
+}
+
+fn GetFontFamilyCount(_: &mut Ctx) -> u32 {
+    crate::gdi::sys_faces() as u32
+}
+fn GetFontFamily(c: &mut Ctx) -> u32 {
+    let (i, out) = (c.a(1), c.a(2));
+    if i as usize >= crate::gdi::sys_faces() {
+        mem::putp(out, 0);
+        return E_INVALIDARG;
+    }
+    mem::putp(out, family(i));
+    0
+}
+fn FindFamilyName(c: &mut Ctx) -> u32 {
+    let name = String::from_utf16_lossy(&wstr(c.a(1), None));
+    let i = find_family(&name);
+    w32(c.a(2), i.map_or(u32::MAX, |i| i as u32));
+    w32(c.a(3), i.is_some() as u32);
+    0
+}
+fn GetFontFromFontFace(c: &mut Ctx) -> u32 {
+    mem::putp(c.a(2), font(value(c.a(1))));
+    0
+}
+fn GetFontCollection(c: &mut Ctx) -> u32 {
+    mem::putp(c.a(1), collection());
+    0
+}
+fn GetFont(c: &mut Ctx) -> u32 {
+    let (i, out) = (c.a(1), c.a(2));
+    if i != 0 {
+        mem::putp(out, 0);
+        return E_INVALIDARG;
+    }
+    mem::putp(out, font(value(c.a(0))));
+    0
+}
+fn GetFamilyNames(c: &mut Ctx) -> u32 {
+    mem::putp(c.a(1), strings(family_names(value(c.a(0)) as usize)));
+    0
+}
+/// (locale, name): the English name, then the Japanese one when the face has one
+fn family_names(i: usize) -> Vec<(String, String)> {
+    let n = crate::gdi::sys_face_names(i);
+    let mut v = vec![("en-us".to_string(), n[n.len() - 1].to_string())];
+    if n.len() > 1 {
+        v.push(("ja-jp".to_string(), n[0].to_string()));
+    }
+    v
+}
+fn GetFirstMatchingFont(c: &mut Ctx) -> u32 {
+    // (this, weight, stretch, style, out)
+    mem::putp(c.a(4), font(value(c.a(0))));
+    0
+}
+fn GetMatchingFonts(c: &mut Ctx) -> u32 {
+    let m: [(&'static str, crate::api::Handler); 3] = [("GetFontCollection", GetFontCollection), ("GetFontCount", one), ("GetFont", GetFont)];
+    mem::putp(c.a(4), with_value("IDWriteFontList", &m, value(c.a(0))));
+    0
+}
+fn FontGetFontFamily(c: &mut Ctx) -> u32 {
+    mem::putp(c.a(1), family(value(c.a(0))));
+    0
+}
+fn GetFaceNames(c: &mut Ctx) -> u32 {
+    mem::putp(c.a(1), strings(vec![("en-us".to_string(), "Regular".to_string())]));
+    0
+}
+fn GetInformationalStrings(c: &mut Ctx) -> u32 {
+    // (this, id, out strings, out exists)
+    mem::putp(c.a(2), 0);
+    w32(c.a(3), 0);
+    0
+}
+fn HasCharacter(c: &mut Ctx) -> u32 {
+    let has = crate::gdi::sys_face_has(value(c.a(0)) as usize, c.a(1));
+    w32(c.a(2), has as u32);
+    0
+}
+fn CreateFontFace(c: &mut Ctx) -> u32 {
+    mem::putp(c.a(1), face(value(c.a(0))));
+    0
+}
+/// DWRITE_FONT_METRICS in design units, from the face's tables.
+fn FontGetMetrics(c: &mut Ctx) -> u32 {
+    let (i, p) = (value(c.a(0)) as usize, c.a(1));
+    let Some(m) = crate::gdi::sys_face_design_metrics(i) else { return 0 };
+    for (k, v) in m.iter().enumerate() {
+        mem::w16(p + 2 * k as u32, *v);
+    }
+    0
+}
+fn FaceGetType(c: &mut Ctx) -> u32 {
+    // DWRITE_FONT_FACE_TYPE_TRUETYPE 1, _TRUETYPE_COLLECTION 2
+    if crate::gdi::sys_face_file(value(c.a(0)) as usize).0.ends_with(".ttc") { 2 } else { 1 }
+}
+fn FaceGetIndex(c: &mut Ctx) -> u32 {
+    crate::gdi::sys_face_file(value(c.a(0)) as usize).1
+}
+fn GetFiles(c: &mut Ctx) -> u32 {
+    // (this, in/out count, files)
+    let (i, n, out) = (value(c.a(0)), c.a(1), c.a(2));
+    if out == 0 {
+        w32(n, 1);
+        return 0;
+    }
+    if mem::r32(n) < 1 {
+        return E_INVALIDARG;
+    }
+    let path: Vec<u16> = crate::gdi::sys_face_file(i as usize).0.encode_utf16().chain([0]).collect();
+    let key = mem::heap_alloc(2 * path.len() as u32, false);
+    for (k, ch) in path.iter().enumerate() {
+        mem::w16(key + 2 * k as u32, *ch);
+    }
+    let m: [(&'static str, crate::api::Handler); 3] = [("GetReferenceKey", GetReferenceKey), ("GetLoader", GetLoader), ("Analyze", Analyze)];
+    let f = with_value("IDWriteFontFile", &m, i);
+    w32(f + mem::ps() + 4, key);
+    mem::putp(out, f);
+    w32(n, 1);
+    0
+}
+fn GetReferenceKey(c: &mut Ctx) -> u32 {
+    // (this, out key, out size): the key is the file's path
+    let key = mem::r32(c.a(0) + mem::ps() + 4);
+    mem::putp(c.a(1), key);
+    w32(c.a(2), 2 * (wstr(key, None).len() as u32 + 1));
+    0
+}
+fn GetLoader(c: &mut Ctx) -> u32 {
+    static LOADER: Mutex<u32> = Mutex::new(0);
+    let mut g = LOADER.lock().unwrap();
+    if *g == 0 {
+        let m: [(&'static str, crate::api::Handler); 3] =
+            [("GetFilePathLengthFromKey", GetFilePathLengthFromKey), ("GetFilePathFromKey", GetFilePathFromKey), ("GetLastWriteTimeFromKey", GetLastWriteTimeFromKey)];
+        *g = com::object("IDWriteLocalFontFileLoader", &m, 8);
+    }
+    com::add_ref_obj(*g);
+    mem::putp(c.a(1), *g);
+    0
+}
+fn Analyze(c: &mut Ctx) -> u32 {
+    // (this, out supported, out file type, out face type, out faces)
+    let i = value(c.a(0)) as usize;
+    let file = crate::gdi::sys_face_file(i).0;
+    let ttc = file.ends_with(".ttc");
+    let faces = (0..crate::gdi::sys_faces()).filter(|&k| crate::gdi::sys_face_file(k).0 == file).count() as u32;
+    w32(c.a(1), 1);
+    w32(c.a(2), if ttc { 3 } else { 2 });
+    w32(c.a(3), if ttc { 2 } else { 1 });
+    w32(c.a(4), faces);
+    0
+}
+fn GetFilePathLengthFromKey(c: &mut Ctx) -> u32 {
+    // (this, key, key size, out length without the terminator)
+    w32(c.a(3), wstr(c.a(1), None).len() as u32);
+    0
+}
+fn GetFilePathFromKey(c: &mut Ctx) -> u32 {
+    // (this, key, key size, buffer, buffer size with the terminator)
+    let (path, buf, n) = (wstr(c.a(1), None), c.a(3), c.a(4));
+    if (n as usize) < path.len() + 1 {
+        return E_NOT_SUFFICIENT_BUFFER;
+    }
+    mem::put_wstr(buf, n, &path);
+    0
+}
+fn GetLastWriteTimeFromKey(c: &mut Ctx) -> u32 {
+    mem::put64(c.a(3), 0);
+    0
+}
+
+// ---- localized strings ----
+
+static STRINGS: Mutex<Option<HashMap<u32, Vec<(String, String)>>>> = Mutex::new(None);
+
+fn strings(v: Vec<(String, String)>) -> u32 {
+    let m: [(&'static str, crate::api::Handler); 6] = [
+        ("GetCount", StrGetCount),
+        ("FindLocaleName", FindLocaleName),
+        ("GetLocaleNameLength", GetLocaleNameLength),
+        ("GetLocaleName", StrGetLocaleName),
+        ("GetStringLength", GetStringLength),
+        ("GetString", GetString),
+    ];
+    let o = com::object("IDWriteLocalizedStrings", &m, 8);
+    STRINGS.lock().unwrap().get_or_insert_with(HashMap::new).insert(o, v);
+    o
+}
+fn strings_of(o: u32) -> Vec<(String, String)> {
+    STRINGS.lock().unwrap().as_ref().and_then(|m| m.get(&o).cloned()).unwrap_or_default()
+}
+fn StrGetCount(c: &mut Ctx) -> u32 {
+    strings_of(c.a(0)).len() as u32
+}
+fn FindLocaleName(c: &mut Ctx) -> u32 {
+    // (this, locale, out index, out exists)
+    let want = String::from_utf16_lossy(&wstr(c.a(1), None));
+    let i = strings_of(c.a(0)).iter().position(|(l, _)| l.eq_ignore_ascii_case(&want));
+    w32(c.a(2), i.map_or(u32::MAX, |i| i as u32));
+    w32(c.a(3), i.is_some() as u32);
+    0
+}
+/// (this, index, out length) / (this, index, buffer, size): the locale (`name` false) or the
+/// string of entry `index`
+fn str_length(c: &mut Ctx, name: bool) -> u32 {
+    let v = strings_of(c.a(0));
+    let Some(e) = v.get(c.a(1) as usize) else {
+        w32(c.a(2), 0);
+        return E_INVALIDARG;
+    };
+    w32(c.a(2), if name { &e.1 } else { &e.0 }.encode_utf16().count() as u32);
+    0
+}
+fn str_get(c: &mut Ctx, name: bool) -> u32 {
+    let v = strings_of(c.a(0));
+    let (buf, n) = (c.a(2), c.a(3));
+    let Some(e) = v.get(c.a(1) as usize) else {
+        mem::put_wstr(buf, n, &[]);
+        return E_INVALIDARG;
+    };
+    let s: Vec<u16> = if name { &e.1 } else { &e.0 }.encode_utf16().collect();
+    if (n as usize) < s.len() + 1 {
+        mem::put_wstr(buf, n, &[]);
+        return E_NOT_SUFFICIENT_BUFFER;
+    }
+    mem::put_wstr(buf, n, &s);
+    0
+}
+fn GetLocaleNameLength(c: &mut Ctx) -> u32 {
+    str_length(c, false)
+}
+fn StrGetLocaleName(c: &mut Ctx) -> u32 {
+    str_get(c, false)
+}
+fn GetStringLength(c: &mut Ctx) -> u32 {
+    str_length(c, true)
+}
+fn GetString(c: &mut Ctx) -> u32 {
+    str_get(c, true)
+}
+
+// ---- font fallback ----
+
+fn GetSystemFontFallback(c: &mut Ctx) -> u32 {
+    mem::putp(c.a(1), com::object("IDWriteFontFallback", &[("MapCharacters", MapCharacters)], 8));
+    0
+}
+fn CreateNumberSubstitution(c: &mut Ctx) -> u32 {
+    // (this, method, locale, ignore user override, out)
+    mem::putp(c.a(4), com::object("IDWriteNumberSubstitution", &[], 8));
+    0
+}
+
+/// The faces fallback tries after the requested family, in order (the UI face first, as
+/// Japanese Windows falls back to its UI font).
+const FALLBACK: [&str; 5] = ["MS UI Gothic", "MS PGothic", "MS Gothic", "MS PMincho", "MS Mincho"];
+
+/// MapCharacters' choice for the start of `text`: how many code units one face covers and
+/// that face (None: a run no face has). A character goes to the requested face when it has it,
+/// else to the first fallback face that does; white space and controls stay with the run.
+fn map_chars(text: &[u16], requested: Option<usize>, has: &dyn Fn(usize, u32) -> bool) -> (usize, Option<usize>) {
+    let order: Vec<usize> = requested.into_iter().chain(FALLBACK.iter().filter_map(|n| find_family(n))).collect();
+    let pick = |ch: u32| order.iter().copied().find(|&i| has(i, ch));
+    let neutral = |ch: u32| ch < 0x20 || ch == 0x20 || ch == 0x3000 || ch == 0xa0;
+    let mut chars = char::decode_utf16(text.iter().copied()).map(|r| r.map_or(0xfffd, |c| c as u32));
+    let Some(first) = chars.next() else { return (0, None) };
+    let units = |ch: u32| if ch > 0xffff { 2 } else { 1 };
+    let chosen = pick(first);
+    let mut n = units(first);
+    for ch in chars {
+        let same = match chosen {
+            Some(f) => (neutral(ch) && has(f, ch)) || pick(ch) == Some(f),
+            None => pick(ch).is_none(),
+        };
+        if !same {
+            break;
+        }
+        n += units(ch);
+    }
+    (n, chosen)
+}
+
+fn MapCharacters(c: &mut Ctx) -> u32 {
+    // (this, source, position, length, collection, family, weight, style, stretch,
+    //  out mapped length, out font, out scale)
+    let (src, pos, len) = (c.a(1), c.a(2), c.a(3));
+    let family = String::from_utf16_lossy(&wstr(c.a(5), None));
+    let (out_len, out_font, out_scale) = (c.a(9), c.a(10), c.a(11));
+    // the text, from the source's GetTextAtPosition(position, out text, out length)
+    let get_text = mem::rp(mem::rp(src) + 3 * mem::ps());
+    let tmp = mem::heap_alloc(16, true);
+    let mut text = Vec::new();
+    while (text.len() as u32) < len {
+        c.call(get_text, &[src, pos + text.len() as u32, tmp, tmp + 8]);
+        let (p, n) = (mem::rp(tmp), mem::r32(tmp + 8));
+        if p == 0 || n == 0 {
+            break;
+        }
+        text.extend(wstr(p, Some(n.min(len - text.len() as u32))));
+    }
+    mem::heap_free(tmp);
+    let (n, f) = map_chars(&text, find_family(&family), &|i, ch| crate::gdi::sys_face_has(i, ch));
+    w32(out_len, if text.is_empty() { len } else { n as u32 });
+    mem::putp(out_font, f.map_or(0, |i| font(i as u32)));
+    w32(out_scale, f.map_or(0.0f32, |_| 1.0).to_bits());
     0
 }
 
@@ -446,6 +822,70 @@ pub fn chars(text: &[u16]) -> Vec<u32> {
 /// A text layout object's text, format and box.
 pub fn layout_of(obj: u32) -> Option<(Vec<u16>, Format, f32, f32)> {
     layouts(|m| m.get(&obj).map(|l| (l.text.clone(), l.fmt.clone(), l.max_w, l.max_h)))
+}
+
+#[cfg(test)]
+mod fallback_tests {
+    use super::*;
+
+    // stand-in faces: 0 MS Gothic, 1 MS PGothic, 2 MS Mincho, 3 MS PMincho, 4 MS UI Gothic
+    // (gdi.rs's order); `has` decides what each covers
+    fn run(s: &str, req: Option<usize>, has: &dyn Fn(usize, u32) -> bool) -> (usize, Option<usize>) {
+        map_chars(&s.encode_utf16().collect::<Vec<_>>(), req, has)
+    }
+    fn latin_only(i: usize, ch: u32) -> bool {
+        i == 9 && ch < 0x80 || i != 9 && ch != 0x1f600
+    }
+
+    #[test]
+    fn requested_face_keeps_what_it_has() {
+        let all = |_: usize, ch: u32| ch != 0x1f600;
+        assert_eq!(run("abcあいう", Some(0), &all), (6, Some(0)));
+        // no face named: the UI face
+        assert_eq!(run("あいう", None, &all), (3, Some(4)));
+    }
+
+    #[test]
+    fn runs_split_where_the_face_changes() {
+        // a requested face (9) with Latin only: the Latin run, then the Japanese one
+        let has = |i: usize, ch: u32| latin_only(i, ch);
+        assert_eq!(run("ab あい", Some(9), &has), (3, Some(9)));
+        assert_eq!(run("あい ab", Some(9), &has), (3, Some(4)));
+        // a space inside a Japanese run stays with it
+        assert_eq!(run("あ い", Some(9), &has), (3, Some(4)));
+    }
+
+    #[test]
+    fn characters_no_face_has() {
+        let all = |_: usize, ch: u32| ch != 0x1f600;
+        // a surrogate pair is two units; a run of them maps to no font
+        assert_eq!(run("\u{1f600}\u{1f600}あ", Some(0), &all), (4, None));
+        assert_eq!(run("あ\u{1f600}", Some(0), &all), (1, Some(0)));
+        assert_eq!(run("", Some(0), &all), (0, None));
+    }
+
+    proptest::proptest! {
+        /// The mapped length is never 0 for text, never passes the text, and every
+        /// non-neutral character of the run is one the chosen face has (and none has, for a
+        /// run without a face).
+        #[test]
+        fn mapped_runs_are_consistent(s in proptest::collection::vec(proptest::prop_oneof![
+            proptest::char::range('a', 'e'), proptest::char::range('あ', 'お'), proptest::strategy::Just(' '), proptest::strategy::Just('\u{1f600}')], 0..12),
+            req in proptest::option::of(0usize..10)) {
+            let text: String = s.into_iter().collect();
+            let u: Vec<u16> = text.encode_utf16().collect();
+            let has = |i: usize, ch: u32| latin_only(i, ch);
+            let (n, f) = map_chars(&u, req, &has);
+            proptest::prop_assert!(n <= u.len());
+            proptest::prop_assert_eq!(n == 0, u.is_empty());
+            for ch in char::decode_utf16(u[..n].iter().copied()).map(|r| r.unwrap() as u32) {
+                match f {
+                    Some(f) => proptest::prop_assert!(has(f, ch)),
+                    None => proptest::prop_assert!((0..10).all(|i| !has(i, ch))),
+                }
+            }
+        }
+    }
 }
 
 pub fn init() {

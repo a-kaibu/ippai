@@ -1230,6 +1230,42 @@ fn font_file(i: usize) -> Option<Arc<FontVec>> {
         .clone()
 }
 
+/// For DirectWrite's system font collection, the built-in faces: their family names (Japanese
+/// first), the guest path of the file that holds one and its index in that file.
+pub fn sys_faces() -> usize {
+    FACES.len()
+}
+pub fn sys_face_names(i: usize) -> &'static [&'static str] {
+    FACES[i].names
+}
+pub fn sys_face_file(i: usize) -> (String, u32) {
+    let (ttc, index) = FACES[i].ttc;
+    let p = format!("C:\\Windows\\Fonts\\{ttc}");
+    if crate::files::resolve(&p).is_some() {
+        return (p, index);
+    }
+    (format!("C:\\Windows\\Fonts\\{}", FACES[i].file), 0)
+}
+/// DWRITE_FONT_METRICS of built-in face `i` in design units: em, ascent, descent, line gap,
+/// cap height, x height, underline position and thickness, strikethrough position and
+/// thickness (the Windows ascent and descent; the gap is what hhea's line height adds).
+pub fn sys_face_design_metrics(i: usize) -> Option<[u16; 10]> {
+    let f = font_file(i)?;
+    let t = ttf_parser::Face::parse(f.as_slice(), 0).ok()?;
+    let m = font_metrics(i, &f);
+    let gap = (m.hhea_asc + m.hhea_desc + m.line_gap - m.win_asc - m.win_desc).max(0.0);
+    let os2 = t.tables().os2;
+    let cap = os2.and_then(|o| o.capital_height()).unwrap_or(0);
+    let x = os2.and_then(|o| o.x_height()).unwrap_or(0);
+    let u = t.underline_metrics().map_or((0, 0), |u| (u.position, u.thickness));
+    let st = t.strikeout_metrics().map_or((0, 0), |u| (u.position, u.thickness));
+    Some([m.upem as u16, m.win_asc as u16, m.win_desc as u16, gap as u16, cap as u16, x as u16, u.0 as u16, u.1 as u16, st.0 as u16, st.1 as u16])
+}
+/// Whether built-in face `i` has a glyph for `ch`.
+pub fn sys_face_has(i: usize, ch: u32) -> bool {
+    font_file(i).is_some_and(|f| char::from_u32(ch).is_some_and(|c| f.glyph_id(c).0 != 0))
+}
+
 /// The face for a LOGFONT face name (the Japanese and English names, '@' for vertical).
 fn face_index(lf: &LogFont) -> usize {
     let name = lf.face.trim_start_matches('@');

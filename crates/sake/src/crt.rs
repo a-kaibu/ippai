@@ -2432,6 +2432,67 @@ fn _seh_filter_exe(_: &mut Ctx) -> u32 {
     0
 }
 
+/// wcstombs(dst, src, size) in the "C" locale (setlocale's only one): a character above 0xff
+/// fails with EILSEQ (-1); a null dst counts the bytes (without the terminator).
+fn wcstombs(c: &mut Ctx) -> u32 {
+    let (dst, src, n) = (c.a(0), c.a(1), c.a(2));
+    let mut i = 0u32;
+    loop {
+        if dst != 0 && i >= n {
+            return i;
+        }
+        let ch = r16(src + 2 * i);
+        if ch > 0xff {
+            set_errno(42);
+            return u32::MAX;
+        }
+        if dst != 0 {
+            w8(dst + i, ch as u8);
+        }
+        if ch == 0 {
+            return i;
+        }
+        i += 1;
+    }
+}
+/// mbstowcs(dst, src, size) in the "C" locale: each byte its character.
+fn mbstowcs(c: &mut Ctx) -> u32 {
+    let (dst, src, n) = (c.a(0), c.a(1), c.a(2));
+    let mut i = 0u32;
+    loop {
+        if dst != 0 && i >= n {
+            return i;
+        }
+        let b = r8(src + i);
+        if dst != 0 {
+            w16(dst + 2 * i, b as u16);
+        }
+        if b == 0 {
+            return i;
+        }
+        i += 1;
+    }
+}
+/// _chdir/_wchdir(path): 0, or -1 with errno ENOENT
+fn chdir(c: &mut Ctx, wide: bool) -> u32 {
+    if crate::k32::set_dir(&crate::k32::arg_str(c.a(0), wide)) != 0 {
+        return 0;
+    }
+    set_errno(2);
+    u32::MAX
+}
+fn _chdir(c: &mut Ctx) -> u32 {
+    chdir(c, false)
+}
+fn _wchdir(c: &mut Ctx) -> u32 {
+    chdir(c, true)
+}
+/// _setmaxstdio(n): the new limit (msvcrt allows 20..=2048), else -1
+fn _setmaxstdio(c: &mut Ctx) -> u32 {
+    let n = c.a(0);
+    if (20..=2048).contains(&n) { n } else { u32::MAX }
+}
+
 /// setlocale: only "C"
 fn setlocale(_: &mut Ctx) -> u32 {
     static C: OnceLock<u32> = OnceLock::new();
@@ -3386,6 +3447,7 @@ pub fn init() {
     reg!(_putenv, fputc, __acrt_iob_func, _create_locale, _free_locale, _fdclass, _dclass, _fdsign, _dsign, strnlen);
     implement("ucrtbase", "__stdio_common_vsprintf", __stdio_common_vsprintf);
     implement("ucrtbase", "__stdio_common_vswprintf", __stdio_common_vswprintf);
+    reg!(wcstombs, mbstowcs, _chdir, _wchdir, _setmaxstdio);
     reg!(wcsncmp, getenv, _ismbblead, memcpy_s, memmove_s, _controlfp_s, __iob_func, __p__iob, fopen_s, _wfopen_s, _setjmp3, longjmp, remove, rename);
     implement("msvcrt", "_setjmp", _setjmp3);
     reg!(_encode_pointer, _encoded_null, _crt_debugger_hook, _configthreadlocale, ___mb_cur_max_l_func);
