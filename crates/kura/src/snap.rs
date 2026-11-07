@@ -648,7 +648,8 @@ mod tests {
             }
             for (a, n) in v {
                 if n == 0 { continue; }
-                let (a, e) = (a as u64, a as u64 + n as u64);
+                // (no byte past the 4 GiB address space: a range reaching past it ends there)
+                let (a, e) = (a as u64, (a as u64 + n as u64).min(1 << 32));
                 prop_assert!(pairs.iter().any(|&(lo, hi)| lo <= a && e <= hi), "{a:x}+{n:x} in {pairs:x?}");
             }
         });

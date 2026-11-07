@@ -282,3 +282,106 @@ fn every_subresource_keeps_the_bits() {
     }
     dev.done();
 }
+
+/// B8G8R8X8 UNORM and UNORM_SRGB: Map gives back the bytes written, but the page's texels (what
+/// shaders sample) hold alpha 1 (Windows' answer in winref d3d11tex: format 93 samples alpha 1.0)
+#[test]
+fn x_channels_sample_as_one() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    *D11S.lock().unwrap() = None;
+    let dev = Dev::new();
+    let s = Shape(2, 4, 4, 1, 1);
+    let data = vec![(0..64u32).map(|i| (i * 37 + 5) as u8).collect::<Vec<u8>>()];
+    for f in [88, 93] {
+        let t = dev.tex(s, f, false, Some(&data));
+        assert_ne!(t, 0);
+        let g = {
+            let g = D11S.lock().unwrap();
+            let d = g.as_ref().unwrap();
+            match &d.objs[&d.id_of(t)].data {
+                Data::Texture(t) => t.gpu,
+                _ => 0,
+            }
+        };
+        let rb = mem(64);
+        gpu::pump();
+        gpu::record(|b| b.cmd(&[gpu::READBACK, 0x5300_0000 | f, g, 0, 0, 0, 4, 4, rb, 16]));
+        assert!(gpu::wait_readback(0x5300_0000 | f));
+        let page = unsafe { std::slice::from_raw_parts(rb as *const u8, 64) }.to_vec();
+        let want: Vec<u8> = data[0].iter().enumerate().map(|(i, &b)| if i % 4 == 3 { 255 } else { b }).collect();
+        assert_eq!(page, want, "page texels of format {f}");
+        dev.release(t);
+    }
+    dev.done();
+}
+
+/// CopySubresourceRegion of random boxes (on blocks, inside the source) to random places of
+/// random subresources, between random formats of one group, against the bytes moved as Windows
+/// moves them; the destination's other bytes stay as they were.
+#[test]
+fn random_regions_move_the_bytes() {
+    use proptest::prelude::*;
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    *D11S.lock().unwrap() = None;
+    let dev = Dev::new();
+    // (source, destination) pairs: page-held, converted, block-compressed, across the ways
+    let pairs = [(28u32, 28u32), (28, 30), (41, 41), (11, 11), (12, 11), (11, 12), (58, 57), (85, 85), (65, 65), (71, 72), (77, 77), (98, 99), (2, 3), (10, 11)];
+    let cfg = ProptestConfig { cases: 96, failure_persistence: None, ..ProptestConfig::default() };
+    let ran = std::cell::Cell::new(0u32);
+    proptest!(cfg, |(pair in 0..pairs.len(), dim3 in any::<bool>(), sub_pick in 0u32..12, d_pick in 0u32..12,
+                     bx in (0u32..4, 0u32..4, 1u32..5, 1u32..5, 0u32..3, 1u32..3), at in (0u32..4, 0u32..4, 0u32..3), seed in any::<u64>())| {
+        let (f, g) = pairs[pair];
+        let fi = format::info(f).unwrap();
+        let blk = fi.block;
+        let shape = if dim3 { Shape(3, 16, 8, 4, 3) } else { Shape(2, 16, 16, 3, 4) };
+        let (ssub, dsub) = (sub_pick % shape.subs(), d_pick % shape.subs());
+        let lvl = |sub: u32| {
+            let l = sub % shape.4;
+            ((shape.1 >> l).max(1), (shape.2 >> l).max(1), if dim3 { (shape.3 >> l).max(1) } else { 1 })
+        };
+        let (sw, sh, sd) = lvl(ssub);
+        let (dw, dh, dd) = lvl(dsub);
+        // (a box of whole blocks inside the source, its place inside the destination)
+        let (bw_blocks, bh_blocks) = (sw.div_ceil(blk), sh.div_ceil(blk));
+        let x0 = bx.0 % bw_blocks;
+        let y0 = bx.1 % bh_blocks;
+        let w = bx.2.min(bw_blocks - x0);
+        let h = bx.3.min(bh_blocks - y0);
+        let z0 = bx.4 % sd;
+        let depth = bx.5.min(sd - z0);
+        let (dbw, dbh) = (dw.div_ceil(blk), dh.div_ceil(blk));
+        prop_assume!(w <= dbw && h <= dbh && depth <= dd);
+        let (ax, ay, az) = (at.0 % (dbw - w + 1), at.1 % (dbh - h + 1), at.2 % (dd - depth + 1));
+        ran.set(ran.get() + 1);
+        let mut rng = Rng(seed | 1);
+        let sdata = random_subs(&mut rng, shape, f);
+        let ddata = random_subs(&mut rng, shape, g);
+        let src = dev.tex(shape, f, false, Some(&sdata));
+        let dst = dev.tex(shape, g, true, Some(&ddata));
+        prop_assert!(src != 0 && dst != 0);
+        // (texel coordinates; a box's end past a level's edge is its last block's end)
+        let b = mem(24);
+        let ex = |v: u32, lim: u32| (v * blk).min(lim.div_ceil(blk) * blk);
+        put(b, &[x0 * blk, y0 * blk, z0, ex(x0 + w, sw).max(x0 * blk + 1), ex(y0 + h, sh).max(y0 * blk + 1), z0 + depth]);
+        let (zx, zy) = (ax * blk, ay * blk);
+        call1(m(IF_CONTEXT, 46), &[dev.ctx, dst, dsub, zx, zy, if dim3 { az } else { 0 }, src, ssub, b]);
+        let got = dev.read(dst, shape, g, dsub);
+        let (sp, srows, _) = shape.layout(f, ssub);
+        let (dp, drows, _) = shape.layout(g, dsub);
+        let mut want = ddata[dsub as usize].clone();
+        let (az, z0) = if dim3 { (az, z0) } else { (0, 0) };
+        let row = (w * fi.bpp) as usize;
+        for z in 0..depth {
+            for r in 0..h {
+                let from = (((z0 + z) * srows + y0 + r) * sp + x0 * fi.bpp) as usize;
+                let to = (((az + z) * drows + ay + r) * dp + ax * fi.bpp) as usize;
+                want[to..to + row].copy_from_slice(&sdata[ssub as usize][from..from + row]);
+            }
+        }
+        dev.release(src);
+        dev.release(dst);
+        prop_assert_eq!(seen(g, &got), seen(g, &want), "{} -> {} {}d sub {} -> {} box {:?} at {:?}", f, g, shape.0, ssub, dsub, (x0, y0, z0, w, h, depth), (ax, ay, az));
+    });
+    assert!(ran.get() >= 96, "{} cases ran", ran.get());
+    dev.done();
+}
