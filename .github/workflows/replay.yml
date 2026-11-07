@@ -14,6 +14,7 @@ on:
       - 'tests/winref/probes/**'
       - 'tests/winref/probe.h'
       - 'tests/replay/record.txt'
+      - 'tests/replay/asset*.sh'
       - '.github/workflows/replay.yml'
   workflow_dispatch:
     inputs:
@@ -50,6 +51,8 @@ jobs:
         with:
           path: ~/.apt-cache
           key: apt-${{ env.CI_IMAGE }}-mingw-w64-clang-lld-llvm
+      - name: asset.sh
+        run: sh tests/replay/asset_test.sh
       - name: Probes to record
         id: stale
         run: |
@@ -87,12 +90,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view -R apitrace/apitrace --json tagName,assets -q '.tagName, (.assets[].name)'
+          gh release view -R apitrace/apitrace --json assets -q '.assets[].name' > "$RUNNER_TEMP/assets"
+          cat "$RUNNER_TEMP/assets"
           for a in win32 win64; do
-            gh release download -R apitrace/apitrace --pattern "*$a*" -D "$RUNNER_TEMP/at-$a"
+            n=$(sh tests/replay/asset.sh $a < "$RUNNER_TEMP/assets")
+            gh release download -R apitrace/apitrace --pattern "$n" -D "$RUNNER_TEMP/at-$a"
             sha256sum "$RUNNER_TEMP"/at-$a/*
-            (cd "$RUNNER_TEMP/at-$a" && 7z x -y ./*$a* > /dev/null)
-            echo "APITRACE_$a=$(find "$RUNNER_TEMP/at-$a" -name apitrace.exe | head -1)" >> "$GITHUB_ENV"
+            (cd "$RUNNER_TEMP/at-$a" && 7z x -y ./*-$a.7z > /dev/null)
+            f=$(find "$RUNNER_TEMP/at-$a" -name apitrace.exe | head -1)
+            [ -n "$f" ] || { echo "no apitrace.exe in the $a build"; exit 1; }
+            echo "APITRACE_$a=$f" >> "$GITHUB_ENV"
           done
       - name: Record
         shell: bash
@@ -102,9 +109,9 @@ jobs:
             api=$(awk -v p="$p" '$1 == p { print $2 }' tests/replay/record.txt)
             at=$APITRACE_win32
             [[ "$p" == *-64 ]] && at=$APITRACE_win64
-            (cd exe && "$at" trace --api "${api:-d3d9}" -o "../traces/$p.trace" "./$p.exe" > "../traces/$p.stdout" 2> "../traces/$p.stderr"; echo "$p ($api) exit $?")
-            ls -l "traces/$p.trace"
-            tail -3 "traces/$p.stderr"
+            (cd exe && "$at" trace --api "${api:-d3d9}" -o "../traces/$p.trace" "./$p.exe" > "../traces/$p.stdout" 2> "../traces/$p.stderr" && echo "$p ($api) ok" || echo "$p ($api) exit $?")
+            ls -l "traces/$p.trace" || true
+            tail -3 "traces/$p.stderr" || true
           done
       - uses: actions/upload-artifact@v7.0.2
         with:
