@@ -96,6 +96,18 @@ fn sse_min(a: f64, b: f64) -> bool {
 }
 
 impl<'a, M: Memory> X<'a, M> {
+    /// The STMXCSR reads only the control bits (jit::control_read: the next two instructions).
+    fn control_read(&mut self) -> bool {
+        if self.cpu.mode16 != 0 {
+            return false;
+        }
+        let mut buf = [0u8; 30];
+        let n = self.mem.fetch(self.ins.next_ip() as u32, &mut buf);
+        let mut dec = iced_x86::Decoder::with_ip(if self.cpu.mode64 != 0 { 64 } else { 32 }, &buf[..n], self.ins.next_ip(), iced_x86::DecoderOptions::NONE);
+        let next = [dec.decode(), dec.decode()];
+        crate::jit::control_read(self.ins, &next)
+    }
+
     fn vbits(&self, i: u32) -> u32 {
         match self.ins.op_kind(i) {
             OpKind::Register => {
@@ -225,6 +237,10 @@ impl<'a, M: Memory> X<'a, M> {
                 self.done()
             }
             Stmxcsr => {
+                // (the program reads the flags: unless it masks them off right away)
+                if !crate::jit::mx_exact() && !self.control_read() {
+                    crate::jit::mx_read(self.cpu.eip);
+                }
                 let a = self.addr();
                 tryf!(self.mem.write32(a, self.cpu.mxcsr));
                 self.done()

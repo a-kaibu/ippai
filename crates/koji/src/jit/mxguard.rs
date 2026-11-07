@@ -13,6 +13,11 @@
 //!   had one inexact result PE stays set, so the check costs a load and a test.
 //!
 //! Neither JIT sets a flag itself: every set flag comes from the interpreter.
+//!
+//! Only once the program has read the flags (jit::MX_EXACT: its first STMXCSR or FXSAVE runs
+//! in the interpreter, which turns it on; the host then drops every translation): before
+//! that, translated code has no checks (SSE float loops run 2-3x faster) and what it raised is
+//! not in MXCSR.
 
 use super::wasm::Code;
 use iced_x86::{Instruction, Mnemonic, OpKind};
@@ -39,6 +44,9 @@ pub(super) enum G {
 /// too); None for an instruction that raises no flag.
 pub(super) fn kind(ins: &Instruction) -> Option<(G, u32, u32, bool)> {
     use Mnemonic::*;
+    if !super::mx_exact() {
+        return None; // (nobody has read the flags yet: see jit::MX_EXACT)
+    }
     let m = ins.mnemonic();
     let gpr64 = |i: u32| ins.op_kind(i) == OpKind::Register && ins.op_register(i).is_gpr64();
     Some(match m {

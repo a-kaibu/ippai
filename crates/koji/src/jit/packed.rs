@@ -116,6 +116,11 @@ fn vreg(r: Register) -> bool {
 }
 
 /// Whether [`Gen::packed`] translates `ins`.
+/// STMXCSR to memory the JIT can store to.
+pub(super) fn stmxcsr_ok(ins: &Instruction) -> bool {
+    ins.op_count() == 1 && ins.op_kind(0) == OpKind::Memory && super::mem_ok(ins)
+}
+
 pub(super) fn supported(ins: &Instruction) -> bool {
     use Mnemonic::*;
     let m = ins.mnemonic();
@@ -124,7 +129,8 @@ pub(super) fn supported(ins: &Instruction) -> bool {
         return (matches!(m, Movd | Movq) && from && vreg(ins.op_register(1)))
             || (m == Movntq && from && ins.op_register(1).is_mm())
             || (matches!(m, Movss | Movsd) && from && ins.op_register(1).is_xmm())
-            || (m == Stmxcsr && ins.op_count() == 1 && ins.op_kind(0) == OpKind::Memory && super::mem_ok(ins));
+            // (the first read of the flags is the interpreter's: it turns jit::MX_EXACT on)
+            || (m == Stmxcsr && super::mx_exact() && stmxcsr_ok(ins));
     }
     let d = ins.op_register(0);
     let width = if d.is_mm() { 8 } else { 16 };
@@ -296,6 +302,11 @@ impl Gen<'_> {
     }
 
     /// Translates an instruction [`supported`] says it can.
+    /// [`supported`], and the STMXCSR that read only the control bits (Gen::ctl_reads).
+    pub(super) fn packed_ok(&self, ins: &Instruction) -> bool {
+        supported(ins) || (ins.mnemonic() == Mnemonic::Stmxcsr && stmxcsr_ok(ins) && self.ctl_reads.contains(&ins.ip32()))
+    }
+
     pub(super) fn packed(&mut self) {
         use Mnemonic::*;
         let ins = self.ins;

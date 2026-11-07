@@ -484,6 +484,7 @@ impl<'a, M: Memory> X<'a, M> {
             Fxsave | Fxrstor => {
                 let a = self.addr();
                 if mn == Fxsave {
+                    crate::jit::mx_read(self.cpu.eip);
                     tryf!(crate::fxsave(self.cpu, self.mem, a));
                 } else {
                     tryf!(crate::fxrstor(self.cpu, self.mem, a));

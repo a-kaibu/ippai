@@ -78,6 +78,8 @@ fn cpu_in(mem: &[UnsafeCell<u8>], at: u32) -> &mut Cpu {
 struct Host {
     mem: SharedMemory,
     exit: Option<Exit>,
+    /// a step read the MXCSR flags first (jit::mx_switched)
+    read_flags: bool,
 }
 
 fn engine() -> &'static (Engine, Module) {
@@ -93,7 +95,12 @@ fn engine() -> &'static (Engine, Module) {
 
 /// `status`: compare the status flags too (not at an exception: the JIT keeps them only where
 /// later code reads them, which an exception handler is not).
+/// The JIT ran without the MXCSR flag checks (koji::jit::MX_EXACT off): the flags may be
+/// missing, nothing else.
+static FAST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn same(a: &Cpu, b: &Cpu, status: bool) -> bool {
+    let mx = if FAST.load(std::sync::atomic::Ordering::Relaxed) { !0x3f } else { !0 };
     let keep = if status { !0 } else { !STATUS };
     // x87: TOP, control and status words, and the registers both call valid (the JIT's
     // register cache does not keep the tags of a stack that underflows exactly: code that
@@ -109,7 +116,7 @@ fn same(a: &Cpu, b: &Cpu, status: bool) -> bool {
         && a.flags() & keep == b.flags() & keep
         && a.mm == b.mm
         && a.xmm == b.xmm
-        && a.mxcsr == b.mxcsr
+        && (a.mxcsr ^ b.mxcsr) & mx == 0
         && fp(a) == fp(b)
 }
 
@@ -145,7 +152,11 @@ fuzz_target!(|data: &[u8]| {
     let mut window = Window((LO..HI).map(pattern).collect());
     window.0[..code.len()].copy_from_slice(code);
 
-    // translate
+    // translate (with or without the MXCSR flag checks: from the program's first read of them)
+    let fast = (state[93] ^ state[94]) & 1 != 0;
+    FAST.store(fast, std::sync::atomic::Ordering::Relaxed);
+    jit::MX_EXACT.store(!fast, std::sync::atomic::Ordering::Relaxed);
+    jit::mx_switched();
     let mut m = JitModule::default();
     let mut tmem = Window(window.0.clone());
     let end = LO + code.len() as u32;
@@ -167,7 +178,7 @@ fuzz_target!(|data: &[u8]| {
     for b in &mem.data()[..PAGES_AT as usize + 0x2_0000] {
         unsafe { *b.get() = 0 };
     }
-    let mut store = Store::new(engine, Host { mem: mem.clone(), exit: None });
+    let mut store = Store::new(engine, Host { mem: mem.clone(), exit: None, read_flags: false });
     let table = Table::new(&mut store, TableType::new(RefType::FUNCREF, 0, None), Ref::Func(None)).unwrap();
     let mut linker = Linker::new(engine);
     linker.define(&store, "env", "memory", mem.clone()).unwrap();
@@ -178,8 +189,13 @@ fuzz_target!(|data: &[u8]| {
             let d = mem.data();
             let cpu = cpu_in(d, at);
             match koji::step(cpu, &mut Wasm(d)) {
-                // (as kura: another MXCSR mode leaves the region)
+                // (as kura: another MXCSR mode leaves the region, and so does the first read
+                // of its flags)
                 Exit::Continue if !koji::jit::sse_ok(cpu.mxcsr) => 2,
+                Exit::Continue if koji::jit::mx_switched() => {
+                    c.data_mut().read_flags = true;
+                    2
+                }
                 Exit::Continue => 0,
                 e => {
                     c.data_mut().exit = Some(e);
@@ -251,6 +267,11 @@ fuzz_target!(|data: &[u8]| {
     let got = cpu_in(d, CPU_AT).clone();
     let got_mem: Vec<u8> = (LO..HI).map(|a| unsafe { *d[a as usize].get() }).collect();
     let jit_exit = store.data().exit;
+    if store.data().read_flags {
+        // (the flags it read are what the translation without their checks left: the run is
+        // jit32test's and jit64test's, which clear them there)
+        return;
+    }
 
     // the interpreter: somewhere along its run, at the JIT's EIP, the same state but for
     // status flags the JIT left stale because the code overwrites them before reading them

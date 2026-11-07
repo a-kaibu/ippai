@@ -2037,6 +2037,7 @@ fn decode<M: Memory>(mem: &mut M, ip: u64, trap: (u32, u32)) -> Vec<Instruction>
 /// function, entered at any of its blocks. `accept`: whether another block (by its low 32 bits)
 /// may join.
 pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[u64], trap: (u32, u32), mut accept: impl FnMut(u32, bool) -> bool) -> Option<Region> {
+    let exact = super::mx_exact();
     let entry = roots[0];
     // blocks: the entry and what its direct jumps reach (accept(a, false)), and what may run
     // without having run yet (accept(a, true)): direct calls' targets and return addresses,
@@ -2211,5 +2212,5 @@ pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[
         let end = b.ins.last().unwrap().next_ip();
         (b.start as u32, (end - b.start) as u32)
     }).collect();
-    Some(Region { starts, instructions: count, code, layout, profile: Vec::new(), sites: Vec::new() })
+    Some(Region { starts, instructions: count, code, layout, profile: Vec::new(), sites: Vec::new(), exact })
 }

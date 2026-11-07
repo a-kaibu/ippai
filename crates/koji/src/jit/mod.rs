@@ -47,6 +47,65 @@ const MAX_INS: usize = 200;
 // block return codes
 pub const RET_CONTINUE: i32 = 0;
 pub const RET_INTERP: i32 = 1;
+/// Whether translated code keeps the MXCSR exception flags as the hardware (jit::mxguard's
+/// checks, which cost SSE float loops 2-3x). Off until the program first reads the flags
+/// ([`mx_read`]: STMXCSR, FXSAVE, the CRT's status functions); flags raised before that by
+/// translated code are not in MXCSR (the interpreter's are). Settled once: never off again.
+pub static MX_EXACT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// Set with [`MX_EXACT`]: the host drops every translation made without the checks
+/// ([`mx_switched`]).
+static MX_SWITCH: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Where the first read was (the instruction's address; 0: the CRT's status functions).
+pub static MX_AT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// The program reads the MXCSR flags (at `at`): translated code keeps them from now on.
+pub fn mx_read(at: u32) {
+    use core::sync::atomic::Ordering::SeqCst;
+    if !MX_EXACT.swap(true, SeqCst) {
+        // (a swap, not a store: node 22's V8 baseline compiler (Liftoff) stores a local to a
+        // constant address at or above 2 GB, where sake's statics are, at the local's value
+        // as an address: Chromium 153 does not)
+        MX_AT.swap(at, SeqCst);
+        MX_SWITCH.store(true, SeqCst);
+    }
+}
+
+/// Whether [`mx_read`] switched since the last call (the host then drops its translations).
+pub fn mx_switched() -> bool {
+    use core::sync::atomic::Ordering::Relaxed;
+    MX_SWITCH.load(Relaxed) && MX_SWITCH.swap(false, core::sync::atomic::Ordering::SeqCst)
+}
+
+/// Whether STMXCSR `ins` reads only the control bits: the next instructions load the value and
+/// mask the flags off (`mov r32, m` or `movzx r32, m16`, then `and r32, imm` with bits 0-5
+/// clear: MSVC's math functions checking for the default modes, most of the STMXCSR in games).
+/// Not a read of the flags ([`mx_read`]); translated without [`MX_EXACT`] too.
+pub fn control_read(ins: &Instruction, next: &[Instruction]) -> bool {
+    use iced_x86::Code as C;
+    let [n1, n2, ..] = next else { return false };
+    let same = ins.memory_base() == n1.memory_base()
+        && ins.memory_index() == n1.memory_index()
+        && ins.memory_index_scale() == n1.memory_index_scale()
+        && ins.memory_displacement64() == n1.memory_displacement64()
+        && ins.memory_segment() == n1.memory_segment();
+    ins.mnemonic() == Mnemonic::Stmxcsr
+        && ins.op_count() == 1
+        && ins.op_kind(0) == OpKind::Memory
+        && matches!(n1.code(), C::Mov_r32_rm32 | C::Mov_EAX_moffs32 | C::Movzx_r32_rm16)
+        && n1.op_kind(1) == OpKind::Memory
+        && same
+        && matches!(n2.code(), C::And_rm32_imm32 | C::And_rm32_imm8 | C::And_EAX_imm32)
+        && n2.op_kind(0) == OpKind::Register
+        && n2.op_register(0) == n1.op_register(0)
+        && n2.immediate(1) & 0x3f == 0
+}
+
+/// [`MX_EXACT`].
+pub fn mx_exact() -> bool {
+    MX_EXACT.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 /// Whether translated code may run with this MXCSR: SSE exceptions masked and rounding to
 /// nearest (the JIT's SSE is the plain wasm ops; other modes are the interpreter's, and a step
 /// that changes MXCSR leaves the region: see the `step` import)
@@ -362,6 +421,8 @@ pub struct Region {
     pub profile: Vec<(u32, u32, Vec<String>)>,
     /// functions: the indirect calls and jumps (addresses) whose targets the ring samples
     pub sites: Vec<u32>,
+    /// [`MX_EXACT`] was on when it was translated (it has the MXCSR flag checks)
+    pub exact: bool,
 }
 
 /// Debugging: count block entries (a u32 per block, leaked) and fill [`Region::profile`].
@@ -534,6 +595,8 @@ struct Gen<'a> {
     /// Per XMM register, the guard checks it passed since it was last written, and at what
     /// depth (two kept)
     mx_seen: [[Option<(mxguard::Key, u32)>; 2]; 8],
+    /// without [`MX_EXACT`]: the STMXCSR that read only the control bits ([`control_read`])
+    ctl_reads: Vec<u32>,
     /// A single-block loop whose MMX registers stay in locals across iterations: (block, the
     /// registers it names, loaded before the loop), and those of the block being emitted
     mm_pre: Option<(usize, u8)>,
@@ -2074,7 +2137,7 @@ impl<'a> Gen<'a> {
         if fc_handles(ins) {
             self.fc_begin();
         } else if fpu_neutral(ins) {
-        } else if touches_fpu(ins) && !packed::supported(ins) {
+        } else if touches_fpu(ins) && !self.packed_ok(ins) {
             // (the packed ops use the MMX cache and leave the x87 state alone)
             self.fc_flush();
             self.fc = FCache::default();
@@ -3256,7 +3319,7 @@ impl<'a> Gen<'a> {
                 return false;
             }
 
-            _ if packed::supported(ins) => self.packed(),
+            _ if self.packed_ok(ins) => self.packed(),
             _ => {
                 let ends = ins.flow_control() != FlowControl::Next;
                 self.fallback(ends);
@@ -4894,6 +4957,7 @@ fn translate<M: Memory>(
     hints: &dyn Fn(u32) -> Option<u32>,
     ran: &dyn Fn(u32) -> bool,
 ) -> Option<Region> {
+    let exact = mx_exact();
     let fnm = fn_trap.is_some();
     // blocks of small callees to inline (functions)
     let mut forced: Vec<u32> = Vec::new();
@@ -5172,6 +5236,7 @@ fn translate<M: Memory>(
         mx_ops: (false, None),
         mx_checked: None,
         mx_seen: [[None; 2]; 8],
+        ctl_reads: blocks.iter().flat_map(|(_, l)| (0..l.len()).filter(|&i| !exact && control_read(&l[i], &l[i + 1..])).map(|i| l[i].ip32())).collect(),
         mm_pre: None,
         mm_loop: 0,
         xm_pre: None,
@@ -5370,7 +5435,7 @@ fn translate<M: Memory>(
     } else {
         Vec::new()
     };
-    Some(Region { starts, instructions: count, code, layout, profile, sites })
+    Some(Region { starts, instructions: count, code, layout, profile, sites, exact })
 }
 
 #[cfg(test)]

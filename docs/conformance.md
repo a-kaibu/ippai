@@ -90,3 +90,20 @@ runs only while MXCSR.RC is to nearest (koji::jit::sse_ok); a step that sets ano
 the region and the interpreter runs on.) `jit32test` sweeps 38 FP instruction sequences over
 crafted operands (ties at 24/53 bits, zero sums, odd products, range edges, specials) in every
 x87 PC/RC and MXCSR.RC, with FLDCW/LDMXCSR inside the loop, JIT against the interpreter.
+
+MXCSR exception flags (2026-11-07): the interpreter sets them as the hardware does; translated
+code keeps them (koji::jit::mxguard: operands that may raise one go to the interpreter) only
+from the program's first read of them on: its first STMXCSR or FXSAVE, or the CRT's
+_statusfp/_clearfp, turn koji::jit::MX_EXACT on (an STMXCSR whose value the next two
+instructions load and mask to the control bits is no read: koji::jit::control_read, MSVC's math
+functions checking for the default modes, 449 of the 600 STMXCSR in 27 corpus executables, and
+what made 8 of them switch at startup) and kura drops every translation (also the
+shared and saved ones, which are kept per mode). Before that read SSE float loops run without
+the checks (2-3x faster), and what they raised is missing from MXCSR: a program that reads the
+flags once without clearing them first may see fewer. IPPAI_MX_EXACT=1 keeps them from the
+start. Tested: jit32test/jit64test run every program both ways (random clears of the flags,
+STMXCSR-AND-LDMXCSR, inside loops; fixed programs that read them after and inside a hot loop,
+also through FXSAVE), comparing the flags in full once the program read them; the fuzz target
+both ways; koji's tests/mx_lazy.rs the switch itself; the winref probe fpflags (a hot loop
+before any read, then the flags of each kind read through STMXCSR, _statusfp and _clearfp),
+against Windows.

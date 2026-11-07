@@ -7,6 +7,7 @@
 mod native;
 use iced_x86::{BlockEncoder, BlockEncoderOptions, Code, Instruction, InstructionBlock, MemoryOperand, Register};
 use std::collections::HashMap;
+use std::sync::atomic::Ordering::Relaxed;
 use koji::{Cpu, Exit, Fault};
 use wasmtime::*;
 
@@ -119,6 +120,25 @@ fn random_ins(rng: &mut Rng, out: &mut Vec<Instruction>, rip_hi: u32) {
             // a new MXCSR rounding mode (the region leaves: the interpreter runs on)
             let at = MemoryOperand::with_base_displ(Register::RSP, -8);
             out.push(Instruction::with2(Code::Mov_rm32_imm32, at, 0x1f80 | (rng.below(4) as u32) << 13).unwrap());
+            out.push(Instruction::with1(Code::Ldmxcsr_m32, at).unwrap());
+            return;
+        }
+        if rng.below(20) == 0 {
+            // MSVC's math functions: the control bits alone (no switch, koji::jit::control_read)
+            let at = MemoryOperand::with_base_displ(Register::RSP, -8);
+            out.push(Instruction::with1(Code::Stmxcsr_m32, at).unwrap());
+            out.push(Instruction::with2(Code::Mov_r32_rm32, Register::EAX, at).unwrap());
+            out.push(Instruction::with2(Code::And_EAX_imm32, Register::EAX, rng.pick(&[0x7f80u32, 0x1f80, 0xffc0])).unwrap());
+            // (the slot over: what it held of the flags may be what the JIT lost, not compared)
+            out.push(Instruction::with2(Code::Mov_rm32_r32, at, Register::EAX).unwrap());
+            return;
+        }
+        if rng.below(20) == 0 {
+            // _clearfp: the flags read (the JIT keeps them from then on, koji::jit::MX_EXACT),
+            // then cleared
+            let at = MemoryOperand::with_base_displ(Register::RSP, -8);
+            out.push(Instruction::with1(Code::Stmxcsr_m32, at).unwrap());
+            out.push(Instruction::with2(Code::And_rm32_imm8, at, -64i32).unwrap());
             out.push(Instruction::with1(Code::Ldmxcsr_m32, at).unwrap());
             return;
         }
@@ -572,6 +592,14 @@ const COUNTER: u64 = 0xff8;
 
 /// Labels every instruction (its IP: an id for the encoder), adds branches: forward jcc, a
 /// counted loop, a call to a subroutine after the final jmp.
+/// Whether `list[k]` is inside one of the MXCSR reads random_ins makes (_clearfp's STMXCSR,
+/// AND, LDMXCSR; the math functions' STMXCSR, MOV, AND, MOV back): nothing goes in there (a jump past
+/// the LDMXCSR would leave flags the JIT without their checks may have lost, and a read of
+/// the control bits is one only as the three instructions, see koji::jit::control_read).
+fn inner(list: &[Instruction], k: usize) -> bool {
+    k < list.len() && (1..=3).any(|d| k >= d && list[k - d].code() == Code::Stmxcsr_m32)
+}
+
 fn structure(rng: &mut Rng, body: Vec<Instruction>, sub: Vec<Instruction>, rip_hi: u32) -> Vec<Instruction> {
     let mut id = 0u64;
     let mut label = |mut i: Instruction| {
@@ -586,14 +614,16 @@ fn structure(rng: &mut Rng, body: Vec<Instruction>, sub: Vec<Instruction>, rip_h
         // loop over [i, j)
         let i = rng.below(list.len() as u64 - 1) as usize;
         let j = i + 1 + rng.below((list.len() - i - 1) as u64) as usize;
-        let head = list[i].ip();
-        let dec = label(Instruction::with1(Code::Dec_rm32, cnt).unwrap());
-        let jne = label(Instruction::with_branch(Code::Jne_rel32_64, head).unwrap());
-        list.insert(j, jne);
-        list.insert(j, dec);
-        let init = label(Instruction::with2(Code::Mov_rm32_imm32, cnt, 1 + rng.below(3) as u32).unwrap());
-        lp = Some((init.ip(), jne.ip()));
-        list.insert(i, init);
+        if !inner(&list, i) && !inner(&list, j) {
+            let head = list[i].ip();
+            let dec = label(Instruction::with1(Code::Dec_rm32, cnt).unwrap());
+            let jne = label(Instruction::with_branch(Code::Jne_rel32_64, head).unwrap());
+            list.insert(j, jne);
+            list.insert(j, dec);
+            let init = label(Instruction::with2(Code::Mov_rm32_imm32, cnt, 1 + rng.below(3) as u32).unwrap());
+            lp = Some((init.ip(), jne.ip()));
+            list.insert(i, init);
+        }
     }
     for _ in 0..rng.below(4) {
         // a forward jcc
@@ -613,6 +643,9 @@ fn structure(rng: &mut Rng, body: Vec<Instruction>, sub: Vec<Instruction>, rip_h
                 continue;
             }
         }
+        if inner(&list, i) {
+            continue;
+        }
         let jcc = label(Instruction::with_branch(code, target).unwrap());
         list.insert(i, jcc);
     }
@@ -626,6 +659,9 @@ fn structure(rng: &mut Rng, body: Vec<Instruction>, sub: Vec<Instruction>, rip_h
             if at == list.iter().position(|x| x.ip() == b).unwrap() {
                 at += 1;
             }
+        }
+        while at < list.len() && inner(&list, at) {
+            at += 1;
         }
         list.insert(at, call);
         list.insert(at, push);
@@ -675,8 +711,10 @@ impl Jit {
                 let r = koji::step(&mut c, &mut Mem(m));
                 unsafe { put_cpu(m, &c) };
                 match r {
-                    // (as kura: another MXCSR mode leaves the region)
+                    // (as kura: another MXCSR mode leaves the region, and so does the first
+                    // read of its flags)
                     Exit::Continue if !koji::jit::sse_ok(c.mxcsr) => 2,
+                    Exit::Continue if mx_check() => 2,
                     Exit::Continue => 0,
                     _ => 2,
                 }
@@ -759,6 +797,12 @@ impl Jit {
                 }
                 return Ok(regions);
             }
+            // (as kura: translations made without the MXCSR flag checks go)
+            mx_check();
+            if SWITCHED.swap(false, Relaxed) {
+                unsafe { std::ptr::write_bytes((base + HASH as usize) as *mut u8, 0, (HASH_N * 8) as usize + 0x1000) };
+                self.entries.clear();
+            }
             if !koji::jit::sse_ok(c.mxcsr) {
                 // (as kura: the interpreter while MXCSR isn't the JIT's)
                 let mut c = c;
@@ -790,8 +834,8 @@ impl Jit {
                         return Err(format!("interpreter exit {r:?} at {:#x}", c.eip));
                     }
                 }
-                // (a step that changed MXCSR: on in the interpreter)
-                2 if !koji::jit::sse_ok(unsafe { get_cpu(m) }.mxcsr) => {}
+                // (a step that changed MXCSR: on in the interpreter; one that read its flags)
+                2 if !koji::jit::sse_ok(unsafe { get_cpu(m) }.mxcsr) || SWITCHED.load(Relaxed) => {}
                 s => return Err(format!("status {s} at {:#x}", unsafe { get_cpu(m) }.eip)),
             }
         }
@@ -856,6 +900,22 @@ fn initial(rng: &mut Rng, rip_hi: u32) -> Cpu {
     c
 }
 
+/// MXCSR flags kept from the start (koji::jit::MX_EXACT); else from the program's first read
+/// of them (STMXCSR, FXSAVE), as a program that never reads them runs.
+static EXACT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// The JIT's MXCSR flag mode switched (a step read the flags): translations are dropped.
+static SWITCHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// As kura's mx_check: the program read the MXCSR flags first (in the interpreter).
+fn mx_check() -> bool {
+    let s = koji::jit::mx_switched();
+    if s {
+        SWITCHED.store(true, Relaxed);
+    }
+    s
+}
+
 fn run_case(engine: &Engine, memory: &SharedMemory, base: usize, list0: &[Instruction], data: &[u8], cpu0: &Cpu, rip_hi: u32) -> (Vec<String>, Vec<u8>) {
     let m = base as *mut u8;
     let rip = CODE as u64 | (rip_hi as u64) << 32;
@@ -867,7 +927,15 @@ fn run_case(engine: &Engine, memory: &SharedMemory, base: usize, list0: &[Instru
         put_cpu(m, cpu);
     };
         setup(cpu0);
+        // (whether the program reads the MXCSR flags: then, made without their checks until it
+        // does and cleared there, they must be the CPU's at the end)
+        koji::jit::MX_EXACT.store(false, Relaxed);
+        koji::jit::mx_switched();
         let want = interp(base);
+        let reads = koji::jit::mx_switched();
+        let exact = EXACT.load(Relaxed);
+        koji::jit::MX_EXACT.store(exact, Relaxed);
+        SWITCHED.store(false, Relaxed);
         let (mut want_cpu, want_data, want_stack) = unsafe { (get_cpu(m), std::slice::from_raw_parts(m.add(DATA as usize), DATA_LEN as usize).to_vec(), std::slice::from_raw_parts(m.add(STACK as usize - 0x1000), 0x1000).to_vec()) };
         setup(cpu0);
         let mut jit = Jit::new(engine, memory, base);
@@ -884,7 +952,16 @@ fn run_case(engine: &Engine, memory: &SharedMemory, base: usize, list0: &[Instru
         let (mut got_cpu, got_data, got_stack) = unsafe { (get_cpu(m), std::slice::from_raw_parts(m.add(DATA as usize), DATA_LEN as usize).to_vec(), std::slice::from_raw_parts(m.add(STACK as usize - 0x1000), 0x1000).to_vec()) };
         want_cpu.materialize();
         got_cpu.materialize();
+        if !exact && !reads {
+            // (made without the flag checks throughout, the flags may be missing: the rest
+            // must not)
+            want_cpu.mxcsr &= !0x3f;
+            got_cpu.mxcsr &= !0x3f;
+        }
         let mut diffs = Vec::new();
+        if !exact && !reads && koji::jit::mx_exact() {
+            diffs.push("mx: the JIT switched to the flag checks, the program read no flags".into());
+        }
         if want.is_err() && got.is_err() {
             return (diffs, code); // (both stopped: where differs)
         }
@@ -1121,6 +1198,7 @@ fn main() {
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     for t in 0..count {
         let rip_hi = (t % 3 == 2) as u32;
+        EXACT.store(t / 2 % 3 != 2, Relaxed);
         // (every other test in small regions: exits chain into other regions and back into a
         // region's own blocks through the hash table)
         koji::jit::long::DEBUG_BLOCKS.store(if t % 2 == 1 { 1 + t / 2 % 3 } else { 0 }, std::sync::atomic::Ordering::Relaxed);
@@ -1139,12 +1217,17 @@ fn main() {
         let mut list = structure(&mut rng, list, sub, rip_hi);
         let data: Vec<u8> = (0..DATA_LEN).map(|_| rng.next() as u8).collect();
         let cpu0 = initial(&mut rng, rip_hi);
+        // (JONLY=<test>: that one alone)
+        if std::env::var("JONLY").is_ok_and(|o| o != t.to_string()) {
+            continue;
+        }
         let (diffs, _) = run_case(&engine, &memory, base, &list, &data, &cpu0, rip_hi);
-        if !diffs.is_empty() {
+        // (JNOSHRINK: the program as generated)
+        if !diffs.is_empty() && std::env::var("JNOSHRINK").is_err() {
             // shrink: drop instructions while it still fails
             let mut i = 0;
             while i < list.len() {
-                if list[i].ip() == 1 || list[i].code() == Code::Retnq_imm16 || (list[i].op0_kind() == iced_x86::OpKind::Memory && list[i].memory_base() == Register::RBX && list[i].memory_displacement64() == COUNTER) {
+                if list[i].ip() == 1 || inner(&list, i) || list[i].code() == Code::Retnq_imm16 || (list[i].op0_kind() == iced_x86::OpKind::Memory && list[i].memory_base() == Register::RBX && list[i].memory_displacement64() == COUNTER) {
                     i += 1;
                     continue;
                 }

@@ -448,8 +448,25 @@ fn _control87(c: &mut Ctx) -> u32 {
     let (new, mask) = (c.a(0), c.a(1));
     set_fp_control(c, new, mask)
 }
-fn _clearfp(_: &mut Ctx) -> u32 {
-    0
+/// The floating-point status word (_SW_*): the x87's exception flags (32-bit) and MXCSR's.
+/// The program reads the MXCSR flags: the JIT keeps them from now on (koji::jit::mx_read).
+fn fp_status(c: &mut Ctx) -> u32 {
+    koji::jit::mx_read(0);
+    let f = (c.cpu.mxcsr & 0x3f) | if mem::x64() { 0 } else { c.cpu.fpu.sw as u32 & 0x3f };
+    // IE ZE OE UE PE -> _SW_INVALID _SW_ZERODIVIDE _SW_OVERFLOW _SW_UNDERFLOW _SW_INEXACT, DE -> _SW_DENORMAL
+    [(1, 0x10), (2, 0x80000), (4, 8), (8, 4), (0x10, 2), (0x20, 1)].iter().filter(|&&(b, _)| f & b != 0).fold(0, |a, &(_, s)| a | s)
+}
+fn _statusfp(c: &mut Ctx) -> u32 {
+    fp_status(c)
+}
+/// The status word, then the flags cleared (FNCLEX also clears the x87's ES and B).
+fn _clearfp(c: &mut Ctx) -> u32 {
+    let s = fp_status(c);
+    c.cpu.mxcsr &= !0x3f;
+    if !mem::x64() {
+        c.cpu.fpu.sw &= !0x80ff;
+    }
+    s
 }
 fn _purecall(_: &mut Ctx) -> u32 {
     eprintln!("sake: pure virtual call");
@@ -3458,7 +3475,7 @@ pub fn init() {
     reg!(_initterm, _initterm_e, _onexit, atexit, __dllonexit, exit, _exit, abort, __getmainargs, __set_app_type,
         __p__fmode, __p__commode, __p___argc, __p___argv, __p___wargv, __p__wcmdln, __p__wenviron, __wgetmainargs,
         __p__environ, __p___initenv, __p__acmdln,
-        __p___mb_cur_max, ___mb_cur_max_func, __pctype_func, _controlfp, _control87, _clearfp, _purecall,
+        __p___mb_cur_max, ___mb_cur_max_func, __pctype_func, _controlfp, _control87, _clearfp, _statusfp, _purecall,
         _XcptFilter, signal, _lock, _unlock, _errno, __doserrno,
         malloc, calloc, realloc, free, _msize,
         memcpy, memmove, memset, memcmp, memchr, strlen, strcpy, strncpy, strcat, strncat, strcmp, strncmp,

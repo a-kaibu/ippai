@@ -314,6 +314,8 @@ struct Shared {
     /// a function's (jit::FN): its build (1 up; 0 for a region) and indirect call sites
     build: u32,
     sites: Vec<u32>,
+    /// translated with the MXCSR flag checks (jit::Region::exact)
+    exact: bool,
 }
 
 /// Shared regions by their roots.
@@ -374,7 +376,8 @@ fn code_bytes(mem: &mut Linear, code: &[(u32, u32)]) -> Option<Vec<u8>> {
 /// A region for `roots` some thread built from the same code as ours.
 fn shared(mem: &mut Linear, roots: &[u32]) -> Option<Arc<Shared>> {
     let list = SHARED.lock().unwrap().as_ref()?.get(roots)?.clone();
-    list.into_iter().rev().find(|r| code_kept(&r.code) && code_bytes(mem, &r.code).is_some_and(|t| t == r.text))
+    let exact = jit::mx_exact();
+    list.into_iter().rev().find(|r| r.exact == exact && code_kept(&r.code) && code_bytes(mem, &r.code).is_some_and(|t| t == r.text))
 }
 
 fn share(mem: &mut Linear, roots: &[u32], bytes: Vec<u8>, region: &jit::Region) {
@@ -383,7 +386,7 @@ fn share(mem: &mut Linear, roots: &[u32], bytes: Vec<u8>, region: &jit::Region) 
 
 fn share_build(mem: &mut Linear, key: Vec<u32>, bytes: Vec<u8>, region: &jit::Region, build: u32) {
     let Some(text) = code_bytes(mem, &region.code) else { return };
-    let r = Arc::new(Shared { bytes, starts: region.starts.clone(), code: region.code.clone(), text, build, sites: region.sites.clone() });
+    let r = Arc::new(Shared { bytes, starts: region.starts.clone(), code: region.code.clone(), text, build, sites: region.sites.clone(), exact: region.exact });
     SHARED.lock().unwrap().get_or_insert_with(HashMap::new).entry(key).or_default().push(r);
 }
 
@@ -552,8 +555,22 @@ pub fn code_changed(addr: usize, len: usize) {
     }
 }
 
+/// The program read the MXCSR flags for the first time (koji::jit::MX_EXACT): every
+/// translation made without the flag checks goes. Whether it did.
+fn mx_check() -> bool {
+    if !jit::mx_switched() {
+        return false;
+    }
+    if stats() {
+        eprintln!("vnjit: the program reads the MXCSR flags (at {:#x}): translations dropped, flags kept from now on", jit::MX_AT.load(Ordering::Relaxed));
+    }
+    drop_translations();
+    true
+}
+
 /// Drops this thread's translations if code changed since it made them.
 fn check_generation() {
+    mx_check();
     let g = GENERATION.load(Ordering::Relaxed);
     if SEEN.with(|s| s.replace(g)) != g {
         STATE.with(|s| *s.borrow_mut() = None);
@@ -623,6 +640,10 @@ fn init_flags() {
     // and walks the environment)
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
+        // (the MXCSR flag checks from the start, not from the program's first read of them)
+        if crate::env_on!("IPPAI_MX_EXACT") {
+            jit::MX_EXACT.store(true, Ordering::SeqCst);
+        }
         if std::env::var("IPPAI_JIT_FN_ENTRIES").is_ok_and(|v| v == "0") {
             jit::FN_ENTRIES.store(false, Ordering::Relaxed);
         }
@@ -952,8 +973,8 @@ fn saved_regions() -> &'static Saved {
 /// A saved region for `roots` (any built from `roots[0]` when `exact` is off: the one with most
 /// roots) whose guest code is still there, and clear of the trap range `trap`.
 fn find_saved(mem: &mut Linear, roots: &[u32], exact: bool, trap: (u32, u32)) -> Option<usize> {
-    if profiling() || jit::page_check() {
-        return None; // saved regions have no counters, nor page checks
+    if profiling() || jit::page_check() || jit::mx_exact() {
+        return None; // saved regions have no counters, nor page checks, nor MXCSR flag checks
     }
     let s = saved_regions();
     s.by_root
@@ -984,7 +1005,7 @@ fn load_saved(st: &mut State, i: usize) -> bool {
 
 /// A saved function at `eip` (its newest build) whose guest code is still there.
 fn find_saved_fn(mem: &mut Linear, eip: u32) -> Option<usize> {
-    if profiling() || jit::page_check() {
+    if profiling() || jit::page_check() || jit::mx_exact() {
         return None;
     }
     let s = saved_regions();
@@ -1132,8 +1153,9 @@ fn maybe_save() {
     let Some(url) = URL.get_or_init(|| std::env::var("IPPAI_JIT_URL").ok().and_then(|u| std::ffi::CString::new(u).ok())) else {
         return;
     };
-    if profiling() {
-        return; // the counters' addresses are only this run's
+    if profiling() || jit::mx_exact() {
+        return; // the counters' addresses are only this run's (and saved regions are loaded
+                // only without the MXCSR flag checks, find_saved)
     }
     let Ok(mut guard) = SAVE.try_lock() else { return };
     let g = &mut *guard;
@@ -1761,6 +1783,8 @@ struct Batch {
     merged: Option<Vec<u8>>,
     /// built with page checks (koji's PAGE_MAP)
     checked: bool,
+    /// built with the MXCSR flag checks (koji::jit::MX_EXACT)
+    exact: bool,
 }
 
 /// Functions one batch takes, at most (one load: a longer pause of its own).
@@ -1799,6 +1823,7 @@ fn compiler() -> Option<std::sync::mpsc::Sender<Job>> {
                     }
                     let done = jobs[0].done.clone();
                     let checked = jit::page_check();
+                    let exact = jit::mx_exact();
                     let items: Vec<(u32, u32, Built)> = jobs
                         .into_iter()
                         .map(|j| (j.eip, j.build, build_fn(&mut Linear, j.eip, (j.lo, j.hi), j.part, j.build, &j.misses, &j.known, &j.hints)))
@@ -1806,7 +1831,7 @@ fn compiler() -> Option<std::sync::mpsc::Sender<Job>> {
                     let mods: Vec<&[u8]> = items.iter().filter_map(|(_, _, b)| b.as_ref().map(|b| &b.0[..])).collect();
                     let merged = if mods.len() > 1 { jit::wasm::merge(&mods, &[]) } else { None };
                     let n = items.len();
-                    let _ = done.send(Batch { items, merged, checked });
+                    let _ = done.send(Batch { items, merged, checked, exact });
                     drop(done);
                     (0..n).for_each(|_| crate::snap::drain_done());
                 }
@@ -1819,9 +1844,10 @@ fn compiler() -> Option<std::sync::mpsc::Sender<Job>> {
 
 /// Installs the functions the compiler thread finished for this thread.
 fn take_built(st: &mut State, mem: &mut Linear) {
-    while let Ok(Batch { items, merged, checked }) = st.done_rx.try_recv() {
-        // (built before the page checks came on: dropped, translated again when hot)
-        if jit::page_check() && !checked {
+    while let Ok(Batch { items, merged, checked, exact }) = st.done_rx.try_recv() {
+        // (built before the page checks or the MXCSR flag checks came on: dropped, translated
+        // again when hot)
+        if jit::page_check() && !checked || jit::mx_exact() && !exact {
             for (eip, _, _) in &items {
                 st.pending.remove(eip);
             }
@@ -1915,7 +1941,7 @@ fn finish_fn(st: &mut State, eip: u32, build: u32, built: Built, at: Option<u32>
     }
     if ok {
         keep_profile(&mut region);
-        let r = Arc::new(Shared { bytes, starts: region.starts, code: region.code, text, build, sites: region.sites });
+        let r = Arc::new(Shared { bytes, starts: region.starts, code: region.code, text, build, sites: region.sites, exact: region.exact });
         SHARED.lock().unwrap().get_or_insert_with(HashMap::new).entry(fn_key(eip).to_vec()).or_default().push(r);
         maybe_save();
     }
@@ -2045,6 +2071,8 @@ pub unsafe extern "C" fn vnhost_jit_step(cpu: u32) -> i32 {
         // (POPF set TF, or LDMXCSR / FXRSTOR unmasked an SSE exception or set a rounding mode
         // other than to nearest: from here on the interpreter runs the code, see cpu_run)
         Exit::Continue if (*cpu).eflags & koji::flags::TF != 0 || !jit::sse_ok((*cpu).mxcsr) => 2,
+        // (it read the MXCSR flags first: the region, made without their checks, leaves)
+        Exit::Continue if mx_check() => 2,
         Exit::Continue => 0,
         e => {
             EXIT.with(|x| x.set(Some(e)));
