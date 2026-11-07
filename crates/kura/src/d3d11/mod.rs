@@ -3681,6 +3681,43 @@ fn merge_vertex_buffers(vbs: &[(u32, u32, u32); 32], slots: &mut Vec<(u32, u32, 
 }
 
 #[allow(clippy::too_many_arguments)]
+/// The edges of a draw's triangles (list, or strip with `strip`) as line-list indices: each
+/// triangle's a-b, b-c, c-a, of its index buffer's indices (a strip's restart index cuts it)
+/// or of the vertex numbers. None when the indices are out of the buffer.
+unsafe fn wire_edges(d: &D11, st: &State, indexed: bool, count: u32, start: u32, strip: bool) -> Option<Vec<u32>> {
+    let idx: Vec<u32> = if indexed {
+        let isz = if st.ib.1 == 42 { 4u64 } else { 2 };
+        let Some(Data::Buffer(b)) = d.objs.get(&st.ib.0).map(|o| &o.data) else { return None };
+        if st.ib.2 as u64 + (start as u64 + count as u64) * isz > b.size as u64 {
+            return None;
+        }
+        let p = b.mem + st.ib.2 + start * isz as u32;
+        (0..count as usize).map(|k| if isz == 4 { rd(p, k) } else { *(p as *const u16).add(k) as u32 }).collect()
+    } else {
+        (start..start.saturating_add(count)).collect()
+    };
+    let restart = if !indexed { None } else if st.ib.1 == 42 { Some(u32::MAX) } else { Some(0xffff) };
+    Some(triangle_edges(&idx, strip, restart))
+}
+
+/// See `wire_edges`: the edges of the triangles of `idx`.
+fn triangle_edges(idx: &[u32], strip: bool, restart: Option<u32>) -> Vec<u32> {
+    let mut e = Vec::new();
+    let mut tri = |a: u32, b: u32, c: u32| e.extend_from_slice(&[a, b, b, c, c, a]);
+    if strip {
+        for run in idx.split(|&v| Some(v) == restart) {
+            for t in run.windows(3) {
+                tri(t[0], t[1], t[2]);
+            }
+        }
+    } else {
+        for t in idx.chunks_exact(3) {
+            tri(t[0], t[1], t[2]);
+        }
+    }
+    e
+}
+
 unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u32, start: u32, base: i32, first_instance: u32) {
     if count == 0 || instances == 0 || st.vs == 0 {
         return;
@@ -3794,10 +3831,13 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
         5 => 4,
         _ => 3,
     };
-    let strip = if indexed && matches!(topo, 2 | 4) { if st.ib.1 == 42 { 2 } else { 1 } } else { 0 };
+    let r = rs.unwrap_or_else(|| vec![3, 3, 0, 0, 0, 0, 1, 0, 0, 0]);
+    // FillMode WIREFRAME (2) of triangles: their edges as a line list of its own indices (#64)
+    let wire = if r[0] == 2 && matches!(topo, 3 | 4) && sprite.is_none() { wire_edges(d, st, indexed, count, start, topo == 4) } else { None };
+    let topo = if wire.is_some() { 1 } else { topo };
+    let strip = if wire.is_none() && indexed && matches!(topo, 2 | 4) { if st.ib.1 == 42 { 2 } else { 1 } } else { 0 };
     let mut key = vec![vs, ps.as_ref().map_or(0, |p| p.0), topo, strip];
     // rasterizer: cull, front ccw, depth bias, slope, clamp
-    let r = rs.unwrap_or_else(|| vec![3, 3, 0, 0, 0, 0, 1, 0, 0, 0]);
     // (front ccw in bit 0, DepthClipEnable off in bit 1)
     key.extend_from_slice(&[r[1], (r[2] != 0) as u32 | ((r[6] == 0) as u32) << 1, r[3], r[5], r[4]]);
     // depth stencil
@@ -3865,7 +3905,19 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
         let g = buffer_gpu(d, buf);
         w.extend_from_slice(&[g, off]);
     }
-    if indexed {
+    let wire_buf = wire.as_ref().map(|e| {
+        let g = page_id();
+        let bytes: Vec<u8> = e.iter().flat_map(|v| v.to_le_bytes()).collect();
+        gpu::record(|q| {
+            let off = q.blob(&bytes);
+            q.cmd(&[gpu::CREATE_BUFFER, g, bytes.len() as u32]);
+            q.cmd(&[gpu::WRITE_BUFFER, g, 0, off, bytes.len() as u32]);
+        });
+        g
+    });
+    if let Some(g) = wire_buf {
+        w.extend_from_slice(&[g, 0, 2]);
+    } else if indexed {
         let g = buffer_gpu(d, st.ib.0);
         w.extend_from_slice(&[g, st.ib.2, if st.ib.1 == 42 { 2 } else { 1 }]);
     } else {
@@ -3945,7 +3997,11 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
             w.extend_from_slice(&e);
         }
     }
-    w.extend_from_slice(&[indexed as u32, count, instances, start, base as u32, first_instance]);
+    match &wire {
+        // (the edges hold the vertex numbers of a draw without indices: no base then)
+        Some(e) => w.extend_from_slice(&[1, e.len() as u32, instances, 0, if indexed { base as u32 } else { 0 }, first_instance]),
+        None => w.extend_from_slice(&[indexed as u32, count, instances, start, base as u32, first_instance]),
+    }
     // What it reads from its buffers (vertices, indices, constants), hashed: the page tells a
     // frame that draws the same as the last one, though from another place in a ring buffer
     // and with other bytes written around it (0: unknown)
@@ -3999,8 +4055,12 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
             None => {}
         }
     }
-    w.push(if known { h | 1 } else { 0 });
+    // (a wireframe draw's edges are a buffer of its own, gone after it: never the same)
+    w.push(if known && wire_buf.is_none() { h | 1 } else { 0 });
     gpu::record(|q| q.cmd(&w));
+    if let Some(g) = wire_buf {
+        gpu::record(|q| q.cmd(&[gpu::DESTROY_BUFFER, g]));
+    }
 }
 
 /// A compute shader's page shader and bindings for UAVs of these page formats (slot, format).
@@ -4243,6 +4303,33 @@ mod changed_range_tests {
                     patched[lo..hi].copy_from_slice(&new[lo..hi]);
                     prop_assert_eq!(patched, new);
                 }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod wire_tests {
+    use super::triangle_edges;
+
+    #[test]
+    fn edges_of_lists_and_strips() {
+        assert_eq!(triangle_edges(&[0, 1, 2, 3, 4, 5, 6], false, None), [0, 1, 1, 2, 2, 0, 3, 4, 4, 5, 5, 3]);
+        assert_eq!(triangle_edges(&[0, 1, 2, 3], true, None), [0, 1, 1, 2, 2, 0, 1, 2, 2, 3, 3, 1]);
+        // a strip cut by the restart index
+        assert_eq!(triangle_edges(&[0, 1, 2, 0xffff, 5, 6, 7], true, Some(0xffff)), [0, 1, 1, 2, 2, 0, 5, 6, 6, 7, 7, 5]);
+        assert!(triangle_edges(&[0, 1], true, None).is_empty());
+    }
+
+    proptest::proptest! {
+        /// Every triangle gives three edges that chain back to its first vertex
+        #[test]
+        fn three_closed_edges_a_triangle(idx in proptest::collection::vec(0u32..50, 0..40), strip: bool) {
+            let e = triangle_edges(&idx, strip, None);
+            let tris = if strip { idx.len().saturating_sub(2) } else { idx.len() / 3 };
+            proptest::prop_assert_eq!(e.len(), tris * 6);
+            for t in e.chunks(6) {
+                proptest::prop_assert_eq!((t[1], t[3], t[5]), (t[2], t[4], t[0]));
             }
         }
     }
