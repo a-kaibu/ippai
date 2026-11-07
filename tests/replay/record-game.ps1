@@ -39,9 +39,37 @@ if (-not $copied) { throw "no wrapper for $Api in $wrappers" }
 Write-Host "beside the game: $(($copied | ForEach-Object { Split-Path -Leaf $_ }) -join ' ')"
 $env:TRACE_FILE = $Out
 $env:STORY = "$Story"
+# (what the game loaded, every 5 s: which D3D / DirectDraw / OpenGL DLLs, from where; a game that
+# made no trace shows whether the wrapper was loaded and which API it draws with. A process of the
+# other width shows only its own kind of modules: a 32-bit game is watched from 32-bit PowerShell)
+$pe = [IO.File]::ReadAllBytes($Exe)
+$machine = [BitConverter]::ToUInt16($pe, [BitConverter]::ToInt32($pe, 0x3c) + 4)
+$ps = if ($machine -eq 0x14c) { "$env:WINDIR\SysWOW64\WindowsPowerShell\v1.0\powershell.exe" } else { "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" }
+$watchLog = [IO.Path]::GetTempFileName()
+$watchPs1 = [IO.Path]::ChangeExtension([IO.Path]::GetTempFileName(), '.ps1')
+Set-Content -LiteralPath $watchPs1 -Encoding utf8 -Value @'
+param($dir, $log)
+$seen = @{}
+while ($true) {
+  foreach ($p in Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith($dir, [StringComparison]::OrdinalIgnoreCase) }) {
+    try { $ms = $p.Modules } catch { continue }
+    foreach ($m in $ms) {
+      if ($m.ModuleName -match '^(d3d\w*|ddraw|dxgi\w*|opengl32|d3dx9_\d+|dinput\w*)\.dll$' -and -not $seen[$m.FileName]) {
+        $seen[$m.FileName] = 1
+        Add-Content -LiteralPath $log -Encoding utf8 -Value "$($p.ProcessName): $($m.FileName)"
+      }
+    }
+  }
+  Start-Sleep -Seconds 5
+}
+'@
+$watch = Start-Process -FilePath $ps -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$watchPs1`"", "`"$dir`"", "`"$watchLog`"" -PassThru -WindowStyle Hidden
 try {
   python (Join-Path $PSScriptRoot '..\corpus\winplay.py') play $Game $Shots
 } finally {
+  Stop-Process -Id $watch.Id -Force -ErrorAction SilentlyContinue
+  Write-Host "loaded:"
+  Get-Content -LiteralPath $watchLog -Encoding utf8 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $_" }
   Start-Sleep -Seconds 2
   foreach ($c in $copied) { Remove-Item -LiteralPath $c -ErrorAction SilentlyContinue }
 }
