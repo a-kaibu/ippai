@@ -17,7 +17,10 @@ use crate::render::model;
 use std::fmt::Write as _;
 
 fn call(iface: u32, m: u32, args: &[u32]) -> u32 {
-    unsafe { vnhost_d3d9_call(iface << 8 | m, args.as_ptr(), &CALLS) }
+    // (padded like the guest stack: the Direct3D 8 forwards read 10 words)
+    let mut a = args.to_vec();
+    a.resize(a.len().max(16), 0);
+    unsafe { vnhost_d3d9_call(iface << 8 | m, a.as_ptr(), &CALLS) }
 }
 
 fn out() -> u32 {

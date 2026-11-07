@@ -21,6 +21,14 @@ export ASAN_OPTIONS="detect_leaks=1:allocator_may_return_null=1:detect_stack_use
 # ASan against rustc's LLVM runtime, which reports SQLite globals as ODR violations and a
 # stack-use-after-scope on a global in libzstd.
 export CFLAGS="-fno-sanitize=address" CXXFLAGS="-fno-sanitize=address"
+# A symbolizer is a must: LeakSanitizer matches lsan.supp against function names, so without
+# one iced-x86's tables (552 bytes in 12 allocations) are reported as leaks in every binary that
+# decodes, and reports show bare addresses. Nightly's own (llvm-tools) first, then the system's.
+sym=$(rustc +nightly --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-symbolizer
+[ -x "$sym" ] || sym=$(command -v llvm-symbolizer || ls /usr/bin/llvm-symbolizer-* /usr/lib/llvm-*/bin/llvm-symbolizer 2>/dev/null | sort -V | tail -1 || true)
+[ -x "$sym" ] || { echo "no llvm-symbolizer: rustup +nightly component add llvm-tools" >&2; exit 1; }
+export ASAN_SYMBOLIZER_PATH=$sym TSAN_SYMBOLIZER_PATH=$sym
+echo "symbolizer: $sym"
 export TSAN_OPTIONS="halt_on_error=1:second_deadlock_stack=1"
 extra=()
 [ "$kind" = thread ] && extra=(-Zbuild-std)
