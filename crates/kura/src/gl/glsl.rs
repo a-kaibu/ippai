@@ -569,27 +569,61 @@ unsafe extern "C" fn glVertexAttrib2fv(i: u32, v: *const f32) {
 /// Where vertices come from: array elements (indices) or glBegin/glEnd vertices.
 pub(crate) enum Src<'a> {
     Indices(&'a [u32]),
-    Immediate(&'a [[f32; 16]]),
+    /// (the vertices and, for each, units 2-7's coordinates and the normal)
+    Immediate(&'a [[f32; 16]], &'a [[f32; 28]]),
 }
 
 pub(crate) fn draw(g: &mut Gl, c: &mut Ctx, mode: u32, idx: &[u32]) {
     draw_from(g, c, mode, Src::Indices(idx))
 }
 
+/// A built-in attribute: 0 gl_Vertex, 1 gl_Color, 2 + n gl_MultiTexCoordn (n 0-7), 10 gl_Normal.
 fn builtin(name: &str) -> Option<usize> {
     Some(match name {
         "vn_Vertex" => 0,
         "vn_Color" => 1,
-        "vn_MultiTexCoord0" => 2,
-        "vn_MultiTexCoord1" => 3,
-        _ => return None,
+        "vn_Normal" => 10,
+        _ => match name.strip_prefix("vn_MultiTexCoord").and_then(|n| n.parse::<usize>().ok()) {
+            Some(n) if n < 8 => 2 + n,
+            _ => return None,
+        },
+    })
+}
+
+/// gl_NormalMatrix: the inverse transpose of the model-view matrix's upper 3x3 (column-major)
+fn normal_matrix(mv: &[f32; 16]) -> [f32; 9] {
+    let m = |c: usize, r: usize| mv[c * 4 + r] as f64;
+    // (cofactors: inverse = adjugate / det; its transpose is the cofactor matrix / det)
+    let cof = |c: usize, r: usize| {
+        let (c1, c2) = ((c + 1) % 3, (c + 2) % 3);
+        let (r1, r2) = ((r + 1) % 3, (r + 2) % 3);
+        m(c1, r1) * m(c2, r2) - m(c2, r1) * m(c1, r2)
+    };
+    let det = m(0, 0) * cof(0, 0) + m(1, 0) * cof(1, 0) + m(2, 0) * cof(2, 0);
+    let det = if det == 0.0 { 1.0 } else { det };
+    std::array::from_fn(|i| (cof(i / 3, i % 3) / det) as f32)
+}
+
+/// A built-in uniform's value (gl_ModelViewProjectionMatrix, gl_ModelViewMatrix,
+/// gl_ProjectionMatrix, gl_NormalMatrix, gl_TextureMatrix[n]), column-major.
+pub(crate) fn builtin_uniform(c: &Ctx, n: &str) -> Option<Vec<f32>> {
+    let mv = c.modelview.last().unwrap();
+    Some(match n {
+        "vn_MVP" => mul(c.projection.last().unwrap(), mv).to_vec(),
+        "vn_MV" => mv.to_vec(),
+        "vn_P" => c.projection.last().unwrap().to_vec(),
+        "vn_NM" => normal_matrix(mv).to_vec(),
+        _ => match n.strip_prefix("vn_TM").and_then(|t| t.parse::<usize>().ok()) {
+            Some(t) if t < 8 => c.units[t].matrices.last().unwrap().to_vec(),
+            _ => return None,
+        },
     })
 }
 
 pub(crate) fn draw_from(g: &mut Gl, c: &mut Ctx, mode: u32, src: Src) {
     let n = match src {
         Src::Indices(i) => i.len(),
-        Src::Immediate(v) => v.len(),
+        Src::Immediate(v, _) => v.len(),
     };
     let (topo, order) = assemble(mode, n);
     if order.is_empty() {
@@ -606,22 +640,24 @@ pub(crate) fn draw_from(g: &mut Gl, c: &mut Ctx, mode: u32, src: Src) {
     for &o in &order {
         for (name, loc) in &attribs {
             let v: [f32; 4] = match (&src, builtin(name)) {
-                (Src::Immediate(v), Some(b)) => v[o][b * 4..b * 4 + 4].try_into().unwrap(),
-                (Src::Immediate(_), None) => c.attrib_values[*loc as usize],
+                (Src::Immediate(v, _), Some(b)) if b < 4 => v[o][b * 4..b * 4 + 4].try_into().unwrap(),
+                (Src::Immediate(_, more), Some(10)) => [more[o][24], more[o][25], more[o][26], 1.0],
+                (Src::Immediate(_, more), Some(b)) => more[o][(b - 4) * 4..(b - 3) * 4].try_into().unwrap(),
+                (Src::Immediate(..), None) => c.attrib_values[*loc as usize],
                 (Src::Indices(ix), b) => {
                     let i = ix[o];
                     let arr = match b {
                         Some(0) => Some(c.vertex),
                         Some(1) => Some(c.colors),
-                        Some(2) => Some(c.units[0].array),
-                        Some(3) => Some(c.units[1].array),
+                        Some(10) => Some(c.normals),
+                        Some(t) => Some(c.units[t - 2].array),
                         _ => c.attribs.get(*loc as usize).copied(),
                     };
                     match (arr, b) {
                         (Some(a), _) if a.on => fetch(g, &a, i, [0.0, 0.0, 0.0, 1.0]),
                         (_, Some(1)) => c.color,
-                        (_, Some(2)) => c.units[0].coords,
-                        (_, Some(3)) => c.units[1].coords,
+                        (_, Some(10)) => [c.normal[0], c.normal[1], c.normal[2], 1.0],
+                        (_, Some(t)) if t >= 2 => c.units[t - 2].coords,
                         _ => c.attrib_values[(*loc as usize).min(15)],
                     }
                 }
@@ -640,19 +676,7 @@ pub(crate) fn draw_from(g: &mut Gl, c: &mut Ctx, mode: u32, src: Src) {
     // uniform blocks and textures
     let p = &g.programs[&c.program];
     let l = p.linked.as_ref().unwrap();
-    let mvp = mul(c.projection.last().unwrap(), c.modelview.last().unwrap());
-    let builtin_value = |n: &str| -> Option<Vec<u32>> {
-        let m: &[f32] = match n {
-            "vn_MVP" => &mvp,
-            "vn_MV" => c.modelview.last().unwrap(),
-            "vn_P" => c.projection.last().unwrap(),
-            "vn_TM0" => c.units[0].matrices.last().unwrap(),
-            "vn_TM1" => c.units[1].matrices.last().unwrap(),
-            "vn_NM" => &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
-            _ => return None,
-        };
-        Some(m.iter().map(|f| f.to_bits()).collect())
-    };
+    let builtin_value = |n: &str| builtin_uniform(c, n).map(|m| m.iter().map(|f| f.to_bits()).collect::<Vec<u32>>());
     let mut groups: Vec<(Vec<u8>, Vec<[u32; 8]>)> = Vec::new();
     for st in [&l.vs, &l.ps] {
         let mut block = Vec::new();
@@ -703,3 +727,5 @@ pub(crate) fn draw_from(g: &mut Gl, c: &mut Ctx, mode: u32, src: Src) {
 
 #[cfg(test)]
 mod programs_tests;
+#[cfg(test)]
+mod draw_tests;

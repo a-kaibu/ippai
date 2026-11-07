@@ -44,6 +44,7 @@ const GL_STENCIL_TEST: u32 = 0x0B90;
 const GL_VERTEX_ARRAY: u32 = 0x8074;
 const GL_COLOR_ARRAY: u32 = 0x8076;
 const GL_TEXTURE_COORD_ARRAY: u32 = 0x8078;
+const GL_NORMAL_ARRAY: u32 = 0x8075;
 const GL_MODELVIEW: u32 = 0x1700;
 const GL_PROJECTION: u32 = 0x1701;
 const GL_TEXTURE: u32 = 0x1702;
@@ -242,12 +243,17 @@ pub(crate) struct Ctx {
     color: [f32; 4],
     vertex: Array,
     colors: Array,
+    /// glNormal3f's normal and glNormalPointer's array (programs' gl_Normal)
+    normal: [f32; 3],
+    normals: Array,
     array_buffer: u32,
     element_buffer: u32,
     unpack: [i32; 4],
     pack: [i32; 4],
     begin: Option<u32>,
     verts: Vec<[f32; 16]>,
+    /// (each immediate vertex's coordinates of units 2-7 and normal, for programs)
+    verts_more: Vec<[f32; 28]>,
     // GLSL
     pub(crate) program: u32,
     pub(crate) attribs: [Array; 16],
@@ -296,12 +302,15 @@ impl Ctx {
             color: [1.0; 4],
             vertex: Array::default(),
             colors: Array::default(),
+            normal: [0.0, 0.0, 1.0],
+            normals: Array::default(),
             array_buffer: 0,
             element_buffer: 0,
             unpack: [4, 0, 0, 0],
             pack: [4, 0, 0, 0],
             begin: None,
             verts: Vec::new(),
+            verts_more: Vec::new(),
             program: 0,
             attribs: [Array::default(); 16],
             attrib_values: [[0.0, 0.0, 0.0, 1.0]; 16],
@@ -517,7 +526,7 @@ fn proc_of(n: &str) -> Option<*const c_void> {
         glVertex2f, glVertex2i, glVertex2d, glVertex2s, glVertex3f, glVertex3d, glVertex3i, glVertex4f, glVertex2fv,
         glVertex3fv, glVertex2iv, glColor3f, glColor4f, glColor3d, glColor4d, glColor3ub, glColor4ub, glColor3fv,
         glColor4fv, glColor3ubv, glColor4ubv, glTexCoord2f, glTexCoord2d, glTexCoord2i, glTexCoord2fv,
-        glMultiTexCoord2f, glMultiTexCoord2fv, glNormal3f, glVertexPointer, glColorPointer, glTexCoordPointer,
+        glMultiTexCoord2f, glMultiTexCoord2fv, glNormal3f, glNormal3fv, glVertexPointer, glColorPointer, glTexCoordPointer,
         glNormalPointer, glClientActiveTexture, glActiveTexture, glDrawArrays, glDrawElements, glDrawRangeElements,
         glGenTextures, glDeleteTextures, glBindTexture, glIsTexture, glTexImage2D, glTexSubImage2D,
         glTexParameteri, glTexParameterf, glTexParameteriv, glTexParameterfv, glTexEnvi, glTexEnvf, glTexEnviv,
@@ -675,6 +684,7 @@ fn client_state(cap: u32, on: bool) {
         GL_VERTEX_ARRAY => c.vertex.on = on,
         GL_COLOR_ARRAY => c.colors.on = on,
         GL_TEXTURE_COORD_ARRAY => c.units[c.client_active].array.on = on,
+        GL_NORMAL_ARRAY => c.normals.on = on,
         _ => {}
     })
 }
@@ -889,14 +899,16 @@ extern "C" fn glBegin(mode: u32) {
     with(|_, c| {
         c.begin = Some(mode);
         c.verts.clear();
+        c.verts_more.clear();
     })
 }
 extern "C" fn glEnd() {
     with(|g, c| {
         let Some(mode) = c.begin.take() else { return };
         let v = std::mem::take(&mut c.verts);
+        let more = std::mem::take(&mut c.verts_more);
         if c.program != 0 {
-            return glsl::draw_from(g, c, mode, glsl::Src::Immediate(&v));
+            return glsl::draw_from(g, c, mode, glsl::Src::Immediate(&v, &more));
         }
         draw(g, c, mode, v);
     })
@@ -909,6 +921,12 @@ fn vertex(x: f32, y: f32, z: f32, w: f32) {
         let (t0, t1) = (c.units[0].coords, c.units[1].coords);
         let col = c.color;
         c.verts.push([x, y, z, w, col[0], col[1], col[2], col[3], t0[0], t0[1], t0[2], t0[3], t1[0], t1[1], t1[2], t1[3]]);
+        let mut more = [0f32; 28];
+        for u in 2..8 {
+            more[(u - 2) * 4..(u - 1) * 4].copy_from_slice(&c.units[u].coords);
+        }
+        more[24..27].copy_from_slice(&c.normal);
+        c.verts_more.push(more);
     })
 }
 extern "C" fn glVertex2f(x: f32, y: f32) {
@@ -998,16 +1016,23 @@ extern "C" fn glMultiTexCoord2f(u: u32, s: f32, t: f32) {
 unsafe extern "C" fn glMultiTexCoord2fv(u: u32, v: *const f32) {
     texcoord(u.wrapping_sub(GL_TEXTURE0) as usize, *v, *v.add(1))
 }
-extern "C" fn glNormal3f(_: f32, _: f32, _: f32) {}
+extern "C" fn glNormal3f(x: f32, y: f32, z: f32) {
+    with(|_, c| c.normal = [x, y, z])
+}
+unsafe extern "C" fn glNormal3fv(v: *const f32) {
+    glNormal3f(*v, *v.add(1), *v.add(2))
+}
 
 // ---- arrays ----
 
 fn pointer(which: u32, size: i32, ty: u32, stride: i32, ptr: u32) {
     with(|_, c| {
-        let a = Array { on: false, size, ty, stride, ptr, buffer: c.array_buffer, normalized: which == 1 };
+        // (colours and normals of integer types are normalized)
+        let a = Array { on: false, size, ty, stride, ptr, buffer: c.array_buffer, normalized: which == 1 || which == 3 };
         let slot = match which {
             0 => &mut c.vertex,
             1 => &mut c.colors,
+            3 => &mut c.normals,
             _ => &mut c.units[c.client_active].array,
         };
         *slot = Array { on: slot.on, ..a };
@@ -1022,7 +1047,9 @@ extern "C" fn glColorPointer(size: i32, ty: u32, stride: i32, ptr: u32) {
 extern "C" fn glTexCoordPointer(size: i32, ty: u32, stride: i32, ptr: u32) {
     pointer(2, size, ty, stride, ptr)
 }
-extern "C" fn glNormalPointer(_: u32, _: i32, _: u32) {}
+extern "C" fn glNormalPointer(ty: u32, stride: i32, ptr: u32) {
+    pointer(3, 3, ty, stride, ptr)
+}
 extern "C" fn glClientActiveTexture(u: u32) {
     with(|_, c| c.client_active = (u.wrapping_sub(GL_TEXTURE0) as usize).min(7))
 }
