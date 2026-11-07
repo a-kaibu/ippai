@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-use std::sync::{Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 /// Frames decoded ahead of the newest request (and so slots per stream).
@@ -32,8 +32,40 @@ struct Slot {
     layout: [[u32; 7]; 2],
 }
 
+/// Where a stream's bytes are.
+enum Source {
+    /// all of the file
+    Mem(Vec<u8>),
+    /// read as its frames are wanted (`fill`): the header and tables (what the page parses),
+    /// and per track the bytes of a run of its frames (offset in the file, bytes)
+    File { file: Arc<Mutex<crate::fs::File>>, head: Vec<u8>, wins: Vec<(u64, Vec<u8>)> },
+}
+
+impl Source {
+    fn head(&self) -> &[u8] {
+        match self {
+            Source::Mem(d) => d,
+            Source::File { head, .. } => head,
+        }
+    }
+    /// Bytes `off..off + size` of the file, when they are here.
+    fn bytes(&self, off: u64, size: usize) -> Option<&[u8]> {
+        let at = |o: u64, b: &'_ [u8]| -> Option<std::ops::Range<usize>> {
+            let s = off.checked_sub(o)? as usize;
+            let e = s.checked_add(size)?;
+            (e <= b.len()).then_some(s..e)
+        };
+        match self {
+            Source::Mem(d) => d.get(at(0, d)?),
+            Source::File { wins, .. } => wins.iter().find_map(|(o, b)| Some(&b[at(*o, b)?])),
+        }
+    }
+}
+
 struct Stream {
-    data: Vec<u8>,
+    src: Source,
+    /// per track: its frames (offset, size, key frame)
+    index: Vec<crate::vnv::Frames>,
     w: u32,
     h: u32,
     tracks: u32,
@@ -48,8 +80,8 @@ struct Stream {
     shown: i32,
     opened: Instant,
     /// frames of uncompressed I420 ("raw-i420", for tests under node): `frame` reads them
-    /// itself, no page involved (where each frame is in `data`)
-    raw: Option<Vec<usize>>,
+    /// itself, no page involved
+    raw: bool,
 }
 
 static STREAMS: Mutex<Option<HashMap<u32, Stream>>> = Mutex::new(None);
@@ -74,6 +106,32 @@ pub use crate::vnv::{info, raw_size, Info};
 /// Opens the `.vnv` in `data`; None when it is not one.
 pub fn open(data: Vec<u8>) -> Option<u32> {
     let i = info(&data)?;
+    add(Source::Mem(data), i)
+}
+
+/// Opens the `.vnv` file at `path`, read as its frames are wanted (a movie can be hundreds of
+/// MiB: the store's chunks of it are fetched a few seconds ahead of the frame shown); the
+/// stream, and what the file says of itself. None when it is not one.
+pub fn open_file(path: impl AsRef<std::path::Path>) -> Option<(u32, Info)> {
+    let mut f = crate::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let (i, head_len) = crate::vnv::read_info(len, &mut |o, b| read_at(&mut f, o, b))?;
+    let mut head = vec![0; head_len];
+    if !read_at(&mut f, 0, &mut head) {
+        return None;
+    }
+    let wins = vec![(0, Vec::new()); i.tracks.len()];
+    let id = add(Source::File { file: Arc::new(Mutex::new(f)), head, wins }, i.clone())?;
+    Some((id, i))
+}
+
+/// Reads `buf.len()` bytes at `off`.
+pub fn read_at(f: &mut crate::fs::File, off: u64, buf: &mut [u8]) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    f.seek(SeekFrom::Start(off)).is_ok() && f.read_exact(buf).is_ok()
+}
+
+fn add(src: Source, i: Info) -> Option<u32> {
     let (w, h, tracks) = (i.w, i.h, i.tracks.len() as u32);
     // (raw: one track of whole frames)
     let raw = match &i.tracks[..] {
@@ -81,11 +139,12 @@ pub fn open(data: Vec<u8>) -> Option<u32> {
             if f.iter().any(|&(_, size, _)| (size as usize) < raw_size(w, h)) {
                 return None;
             }
-            Some(f.iter().map(|&(off, _, _)| off as usize).collect())
+            true
         }
         t if t.iter().any(|(c, _)| c == "raw-i420") => return None,
-        _ => None,
+        _ => false,
     };
+    let index = i.tracks.into_iter().map(|t| t.1).collect();
     static NEXT: AtomicI32 = AtomicI32::new(1);
     let id = NEXT.fetch_add(1, Ordering::Relaxed) as u32;
     let slots = (0..SLOTS)
@@ -93,13 +152,89 @@ pub fn open(data: Vec<u8>) -> Option<u32> {
         .collect();
     // (IPPAI_VIDEO_FAIL: every stream fails, as on a phone without decoders: tests the fallback)
     let failed = std::env::var_os("IPPAI_VIDEO_FAIL").is_some();
-    with(|m| m.insert(id, Stream { data, w, h, tracks, want: -1, slots, closed: false, failed, shown: -1, opened: Instant::now(), raw }));
+    with(|m| m.insert(id, Stream { src, index, w, h, tracks, want: -1, slots, closed: false, failed, shown: -1, opened: Instant::now(), raw }));
     Some(id)
+}
+
+/// Frames past the one asked for that `fill` keeps read, and how many it reads ahead once
+/// fewer are (seconds at a game's 30 fps); the store's chunks for twice as many are fetched
+/// meanwhile (not waited for), so a read rarely waits on the network.
+const READ_LOW: usize = 30;
+const READ_HIGH: usize = 120;
+/// At most this much of a track read at once (a bad table: no huge allocation).
+const READ_MAX: u64 = 64 << 20;
+
+/// Has the bytes of frame `n` of stream `id` read (a file's), from each track's key frame
+/// before it (where its decoder starts) to a few seconds past it; the bytes before go. Reads
+/// without holding the streams' lock (the page takes it every frame).
+fn fill(id: u32, n: i32) {
+    let plan = with(|m| {
+        let s = m.get(&id).filter(|s| !s.closed)?;
+        let Source::File { file, wins, .. } = &s.src else { return None };
+        let mut ahead = (u64::MAX, 0u64);
+        let reads: Vec<Option<(u64, u64, u64)>> = s
+            .index
+            .iter()
+            .zip(wins)
+            .map(|(frames, (o, b))| {
+                let last = frames.len().checked_sub(1)?;
+                let n = (n.max(0) as usize).min(last);
+                let k = (0..=n).rev().find(|&k| frames[k].2).unwrap_or(0);
+                let start = frames[k].0 as u64;
+                let end_of = |j: usize| {
+                    let f = frames[j.min(last)];
+                    f.0 as u64 + f.1 as u64
+                };
+                let far = end_of(n + 2 * READ_HIGH).max(start);
+                ahead = (ahead.0.min(start), ahead.1.max(far));
+                let have = (*o, *o + b.len() as u64);
+                if have.0 <= start && end_of(n + READ_LOW) <= have.1 {
+                    return None;
+                }
+                let end = end_of(n + READ_HIGH).clamp(start, start + READ_MAX);
+                // (what is here of it stays: only the rest is read)
+                let from = if have.0 <= start && start <= have.1 && have.1 <= end { have.1 } else { start };
+                Some((start, from, end))
+            })
+            .collect();
+        Some((file.clone(), reads, ahead))
+    });
+    let Some((file, reads, ahead)) = plan else { return };
+    let mut f = file.lock().unwrap_or_else(|e| e.into_inner());
+    if ahead.0 < ahead.1 {
+        f.prefetch(ahead.0, ahead.1 - ahead.0);
+    }
+    if reads.iter().all(Option::is_none) {
+        return;
+    }
+    let got: Vec<_> = reads
+        .into_iter()
+        .map(|r| {
+            let (start, from, end) = r?;
+            let mut b = vec![0; (end - from) as usize];
+            read_at(&mut f, from, &mut b).then_some((start, from, b))
+        })
+        .collect();
+    drop(f);
+    with(|m| {
+        let Some(Source::File { wins, .. }) = m.get_mut(&id).map(|s| &mut s.src) else { return };
+        for ((o, b), g) in wins.iter_mut().zip(got) {
+            let Some((start, from, tail)) = g else { continue };
+            if from == start || from != *o + b.len() as u64 || start < *o {
+                // (another thread changed it meanwhile: what was read alone)
+                (*o, *b) = (from, tail);
+            } else {
+                b.drain(..(start - *o) as usize);
+                b.extend_from_slice(&tail);
+                *o = start;
+            }
+        }
+    });
 }
 
 /// Whether stream `id`'s frames can be had: a page decodes, or it is uncompressed.
 pub fn decodable(id: u32) -> bool {
-    available() || with(|m| m.get(&id).is_some_and(|s| s.raw.is_some()))
+    available() || with(|m| m.get(&id).is_some_and(|s| s.raw))
 }
 
 /// Whether the page gave up on stream `id` (no decoder for it, or the decoder failed: Android
@@ -163,18 +298,20 @@ const FIRST: Duration = Duration::from_millis(500);
 /// `dst` must hold `h` rows of `pitch` bytes.
 pub unsafe fn frame(id: u32, n: i32, dst: *mut u8, pitch: usize, w: u32, h: u32, out: Out) -> bool {
     let start = Instant::now();
+    fill(id, n);
     let mut g = STREAMS.lock().unwrap_or_else(|e| e.into_inner());
     // uncompressed: straight from the file (frames past the end: the last one)
-    if let Some(s) = g.get_or_insert_with(HashMap::new).get_mut(&id).filter(|s| !s.closed && !s.failed && s.raw.is_some()) {
-        let offs = s.raw.as_ref().unwrap();
-        let Some(&off) = offs.get((n.max(0) as usize).min(offs.len().saturating_sub(1))) else { return false };
+    if let Some(s) = g.get_or_insert_with(HashMap::new).get_mut(&id).filter(|s| !s.closed && !s.failed && s.raw) {
+        let f = &s.index[0];
+        let Some(&(off, _, _)) = f.get((n.max(0) as usize).min(f.len().saturating_sub(1))) else { return false };
         let (sw, sh) = (s.w, s.h);
+        s.shown = n;
+        let Some(bytes) = s.src.bytes(off as u64, raw_size(sw, sh)) else { return false };
         let (pw, ph) = (sw.next_multiple_of(2), sh.next_multiple_of(2));
         let (y, c) = (pw * ph, (pw / 2) * (ph / 2));
         let layout = [[I420, 0, pw, y, pw / 2, y + c, pw / 2], [0; 7]];
-        s.shown = n;
         // (the stream stays while this reads it: the lock is held)
-        convert(s.data.as_ptr().add(off), &layout, 1, sw, sh, dst, pitch, w.min(sw), h.min(sh), out);
+        convert(bytes.as_ptr(), &layout, 1, sw, sh, dst, pitch, w.min(sw), h.min(sh), out);
         return true;
     }
     loop {
@@ -337,7 +474,8 @@ pub extern "C" fn vnhost_video_doorbell() -> u32 {
     DOORBELL.as_ptr() as u32
 }
 
-/// Lists up to `max` streams into `out`, 6 words each: id, data ptr, data bytes, newest
+/// Lists up to `max` streams into `out`, 6 words each: id, header ptr and bytes (the `.vnv`'s
+/// header and frame tables, `vnv::read_info`), newest
 /// request (-1: none yet), first frame held in a slot, last frame held (-1, -1: none).
 /// Returns how many.
 ///
@@ -356,8 +494,8 @@ pub unsafe extern "C" fn vnhost_video_list(out: *mut u32, max: u32) -> u32 {
             let held: Vec<i32> = s.slots.iter().filter(|sl| sl.frame >= 0).map(|sl| sl.frame).collect();
             out[n * 6..n * 6 + 6].copy_from_slice(&[
                 id,
-                s.data.as_ptr() as u32,
-                s.data.len() as u32,
+                s.src.head().as_ptr() as u32,
+                s.src.head().len() as u32,
                 s.want as u32,
                 held.iter().min().copied().unwrap_or(-1) as u32,
                 held.iter().max().copied().unwrap_or(-1) as u32,
@@ -366,6 +504,35 @@ pub unsafe extern "C" fn vnhost_video_list(out: *mut u32, max: u32) -> u32 {
         }
         n as u32
     })
+}
+
+/// The page's copy of a frame's bytes (`vnhost_video_chunk`): only the page's thread uses it,
+/// so it stays as it is while the page reads it, whatever the guest does to the stream.
+static CHUNK: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+
+/// The bytes of frame `n` of track `t` of stream `id`, copied for the page (and their size in
+/// `*size`); 0 when they are not read yet (`fill`: the page tries again on its next frame).
+///
+/// # Safety
+/// `size` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn vnhost_video_chunk(id: u32, t: u32, n: u32, size: *mut u32) -> u32 {
+    let mut c = CHUNK.lock().unwrap_or_else(|e| e.into_inner());
+    let ok = with(|m| {
+        let s = m.get(&id)?;
+        let &(off, sz, _) = s.index.get(t as usize)?.get(n as usize)?;
+        let b = s.src.bytes(off as u64, sz as usize)?;
+        c.clear();
+        c.extend_from_slice(b);
+        Some(())
+    });
+    if ok.is_none() {
+        return 0;
+    }
+    *size = c.len() as u32;
+    // (an empty frame still has an address the page can read nothing from)
+    c.reserve(1);
+    c.as_ptr() as u32
 }
 
 /// The page cannot decode stream `id`.
@@ -552,7 +719,7 @@ mod tests {
         let (pw, ph) = (w.next_multiple_of(2) as usize, h.next_multiple_of(2) as usize);
         let frames = (0..n)
             .map(|k| {
-                let mut f = vec![16 + k as u8; pw * ph];
+                let mut f = vec![16u8.wrapping_add(k as u8); pw * ph];
                 f.extend(std::iter::repeat_n(cb, pw / 2 * (ph / 2)));
                 f.extend(std::iter::repeat_n(cr, pw / 2 * (ph / 2)));
                 (f, true)
@@ -563,8 +730,16 @@ mod tests {
 
     #[test]
     fn raw_frames_need_no_page() {
-        let id = open(raw(5, 3, 4, 128, 128)).unwrap();
+        let d = raw(5, 3, 4, 128, 128);
+        let id = open(d.clone()).unwrap();
         assert!(decodable(id));
+        // (the page's copy of a frame: from memory as from a file)
+        let mut size = 0;
+        assert_ne!(unsafe { vnhost_video_chunk(id, 0, 1, &mut size) }, 0);
+        let (off, sz, _) = info(&d).unwrap().tracks[0].1[1];
+        assert_eq!(&CHUNK.lock().unwrap()[..], &d[off as usize..(off + sz) as usize]);
+        assert_eq!(unsafe { vnhost_video_chunk(id, 0, 4, &mut size) }, 0, "no frame 4");
+        assert_eq!(unsafe { vnhost_video_chunk(id, 1, 0, &mut size) }, 0, "no track 1");
         let mut px = vec![0xeeu8; 6 * 4 * 3];
         for n in [0, 3, 2, 9, -1] {
             assert!(unsafe { frame(id, n, px.as_mut_ptr(), 24, 5, 3, Out::Ycc) });
@@ -586,6 +761,99 @@ mod tests {
         assert!(open(d).is_none());
         let two = crate::vnv::write(4, 4, &[("raw-i420".into(), vec![(vec![0; 24], true)]), ("vp09".into(), vec![(vec![0; 3], true)])], None);
         assert!(open(two).is_none());
+    }
+
+    /// A `.vnv` written to a file of its own (removed when dropped).
+    struct TempVnv(std::path::PathBuf);
+    impl TempVnv {
+        fn new(d: &[u8]) -> TempVnv {
+            static N: AtomicI32 = AtomicI32::new(0);
+            let p = std::env::temp_dir().join(format!("kura-video-{}-{}.vnv", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+            std::fs::write(&p, d).unwrap();
+            TempVnv(p)
+        }
+    }
+    impl Drop for TempVnv {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    fn raw_frames_from_a_file() {
+        let d = raw(5, 3, 300, 128, 128);
+        let f = TempVnv::new(&d);
+        let (id, i) = open_file(&f.0).unwrap();
+        assert_eq!(i, info(&d).unwrap());
+        let mut px = vec![0u8; 6 * 4 * 3];
+        // (in order, a jump far ahead, back to the start, past the end)
+        for n in [0, 1, 2, 40, 41, 250, 3, 0, 299, 400, -1] {
+            assert!(unsafe { frame(id, n, px.as_mut_ptr(), 24, 5, 3, Out::Ycc) }, "frame {n}");
+            assert_eq!(px[..4], [16u8.wrapping_add(n.clamp(0, 299) as u8), 128, 128, 255], "frame {n}");
+        }
+        close(id);
+        assert!(open_file(std::env::temp_dir().join("kura-video-none.vnv")).is_none());
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(32))]
+        /// A file's stream has, after any request, every frame its page may decode next (each
+        /// track's from its key frame before the request to READ_LOW frames past it), byte for
+        /// byte the file's, and holds little more than READ_HIGH frames past it.
+        #[test]
+        fn file_frames_around_the_request(
+            sizes in proptest::collection::vec((1usize..60, proptest::bool::weighted(0.05)), 1..500),
+            alpha: bool,
+            asks in proptest::collection::vec(0usize..600, 1..12),
+        ) {
+            let track = |seed: u8| -> Vec<(Vec<u8>, bool)> {
+                sizes.iter().enumerate().map(|(k, &(n, key))| ((0..n).map(|j| (k * 7 + j) as u8 ^ seed).collect(), key || k == 0)).collect()
+            };
+            let mut tracks = vec![("vp09.00.31.08".to_string(), track(0))];
+            if alpha {
+                tracks.push(("vp09.00.31.08".to_string(), track(0x5a)));
+            }
+            let d = crate::vnv::write(32, 16, &tracks, None);
+            let f = TempVnv::new(&d);
+            let (id, i) = open_file(&f.0).unwrap();
+            // (closed however the case ends: a failing case must not leave streams to the others)
+            struct Closing(u32);
+            impl Drop for Closing {
+                fn drop(&mut self) {
+                    close(self.0);
+                }
+            }
+            let _c = Closing(id);
+            let last = sizes.len() - 1;
+            let mut most = 0usize;
+            for &ask in &asks {
+                fill(id, ask as i32);
+                let n = ask.min(last);
+                for (t, (_, frames)) in i.tracks.iter().enumerate() {
+                    let k = (0..=n).rev().find(|&k| frames[k].2).unwrap();
+                    for j in k..=(n + READ_LOW).min(last) {
+                        let mut size = 0u32;
+                        let p = unsafe { vnhost_video_chunk(id, t as u32, j as u32, &mut size) };
+                        proptest::prop_assert!(p != 0, "track {} frame {} after asking {}", t, j, ask);
+                        // (the pointer is a wasm address: the copy itself is looked at)
+                        let got = CHUNK.lock().unwrap().clone();
+                        proptest::prop_assert_eq!(size as usize, got.len());
+                        proptest::prop_assert_eq!(&got[..], &tracks[t].1[j].0[..]);
+                    }
+                }
+                let held: usize = with(|m| match &m[&id].src {
+                    Source::File { wins, .. } => wins.iter().map(|w| w.1.len()).sum(),
+                    Source::Mem(_) => unreachable!(),
+                });
+                // (a track's run is one read: from a key frame to READ_HIGH frames past a request,
+                // this one's or an earlier one's that still covers this)
+                most = most.max(i.tracks.iter().map(|(_, fr)| {
+                    let k = (0..=n).rev().find(|&k| fr[k].2).unwrap();
+                    fr[k..=(n + READ_HIGH).min(last)].iter().map(|f| f.1 as usize).sum::<usize>()
+                }).sum());
+                proptest::prop_assert!(held <= most, "{} bytes held, at most {}", held, most);
+            }
+        }
     }
 
     #[test]

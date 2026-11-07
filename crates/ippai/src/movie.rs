@@ -20,7 +20,8 @@
 
 use anyhow::{bail, Context, Result};
 use std::fs;
-use std::path::Path;
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[path = "../../kura/src/vnv.rs"]
@@ -34,7 +35,7 @@ pub fn available() -> bool {
 
 /// The `.vnv` for the `.omv` at `omv`, from the store's cache (`movies/`, by content) or made.
 pub fn vnv_for(store: &Path, omv: &Path) -> Result<std::path::PathBuf> {
-    let h = blake3::hash(&fs::read(omv)?).to_hex()[..32].to_string();
+    let h = hash_file(omv)?;
     let dir = store.join("movies");
     let path = dir.join(format!("{h}.vp9.vnv"));
     if !path.exists() {
@@ -46,10 +47,23 @@ pub fn vnv_for(store: &Path, omv: &Path) -> Result<std::path::PathBuf> {
     Ok(path)
 }
 
+/// The store's name of a file's content (read through, not held: movies are big).
+fn hash_file(p: &Path) -> Result<String> {
+    let mut h = blake3::Hasher::new();
+    h.update_reader(fs::File::open(p)?)?;
+    Ok(h.finalize().to_hex()[..32].to_string())
+}
+
 /// Writes `out` (.vnv) for the `.omv` at `omv`.
 pub fn transcode(omv: &Path, out: &Path) -> Result<()> {
-    let data = fs::read(omv)?;
+    // (the header is small: the Ogg stream starts in the first KiB)
+    let mut f = fs::File::open(omv)?;
+    let mut data = Vec::new();
+    (&mut f).take(64 << 10).read_to_end(&mut data)?;
     let ogg = data.windows(4).position(|w| w == b"OggS").context("no Ogg stream")?;
+    if data.len() < 0x40 {
+        bail!("not an .omv");
+    }
     let u32_at = |o: usize| u32::from_le_bytes(data[o..o + 4].try_into().unwrap());
     let (w, h, frame_us) = (u32_at(0x2c), u32_at(0x30), u32_at(0x3c));
     if w == 0 || h == 0 || w > 8192 || h > 8192 {
@@ -59,7 +73,8 @@ pub fn transcode(omv: &Path, out: &Path) -> Result<()> {
     fs::create_dir_all(&tmp)?;
     let res = (|| {
         let src = tmp.join("in.ogv");
-        fs::write(&src, &data[ogg..])?;
+        f.seek(SeekFrom::Start(ogg as u64))?;
+        std::io::copy(&mut f, &mut BufWriter::new(fs::File::create(&src)?))?;
         let probe = Command::new("ffprobe")
             .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=height", "-of", "csv=p=0"])
             .arg(&src)
@@ -78,17 +93,15 @@ pub fn transcode(omv: &Path, out: &Path) -> Result<()> {
             );
             tracks.push(encode(&src, &tmp.join("a.ivf"), &f, &rate)?);
         }
-        let head = vnv::write(w, h, &tracks, None);
-        fs::write(out, head)?;
-        Ok(())
+        write_vnv(out, w, h, &tracks, None)
     })();
     let _ = fs::remove_dir_all(&tmp);
     res
 }
 
-/// Encodes the frames `filter` makes of `src` (one a movie frame, gaps repeated); returns the
-/// codec string and the frames (with whether each is a key frame).
-fn encode(src: &Path, out: &Path, filter: &str, rate: &str) -> Result<vnv::Track> {
+/// Encodes the frames `filter` makes of `src` (one a movie frame, gaps repeated) into the IVF
+/// file `out`; returns it as a track.
+fn encode(src: &Path, out: &Path, filter: &str, rate: &str) -> Result<Src> {
     let st = Command::new("ffmpeg")
         .args(["-v", "error", "-y", "-i"])
         .arg(src)
@@ -103,24 +116,84 @@ fn encode(src: &Path, out: &Path, filter: &str, rate: &str) -> Result<vnv::Track
     if !st.success() {
         bail!("ffmpeg failed ({filter})");
     }
-    let ivf = fs::read(out)?;
-    if ivf.len() < 32 || &ivf[..4] != b"DKIF" {
-        bail!("not IVF");
-    }
-    let (w, h) = (u16::from_le_bytes([ivf[12], ivf[13]]) as u32, u16::from_le_bytes([ivf[14], ivf[15]]) as u32);
-    let mut frames = Vec::new();
-    let mut i = u16::from_le_bytes([ivf[6], ivf[7]]) as usize;
-    while i + 12 <= ivf.len() {
-        let size = u32::from_le_bytes(ivf[i..i + 4].try_into().unwrap()) as usize;
-        let f = ivf.get(i + 12..i + 12 + size).context("IVF cut short")?;
-        // the uncompressed header (profile 0), from the top bit: frame_marker(2) profile(2)
-        // show_existing_frame(1) frame_type(1, 0 = key)
-        frames.push((f.to_vec(), f.first().is_some_and(|b| b & 0x0c == 0)));
-        i += 12 + size;
-    }
+    let (w, h, frames) = ivf_frames(out)?;
     // profile 0, level (3.1 up to 720p, 4.1 up to 1080p, 5.1 above), 8 bits
     let level = if w * h <= 1280 * 720 { 31 } else if w * h <= 2048 * 1088 { 41 } else { 51 };
-    Ok((format!("vp09.00.{level}.08"), frames))
+    Ok(Src { codec: format!("vp09.00.{level}.08"), file: out.to_path_buf(), frames })
+}
+
+/// A track for `write_vnv`: its codec, and its frames in `file` (offset, size, key frame).
+pub struct Src {
+    codec: String,
+    file: PathBuf,
+    frames: Vec<(u64, u32, bool)>,
+}
+
+/// An IVF file's picture size and frames (offset, size, key frame), its headers read alone.
+fn ivf_frames(p: &Path) -> Result<(u32, u32, Vec<(u64, u32, bool)>)> {
+    let len = fs::metadata(p)?.len();
+    let mut r = BufReader::new(fs::File::open(p)?);
+    let mut head = [0u8; 32];
+    r.read_exact(&mut head).context("not IVF")?;
+    if &head[..4] != b"DKIF" {
+        bail!("not IVF");
+    }
+    let (w, h) = (u16::from_le_bytes([head[12], head[13]]) as u32, u16::from_le_bytes([head[14], head[15]]) as u32);
+    let mut at = u16::from_le_bytes([head[6], head[7]]) as u64;
+    r.seek(SeekFrom::Start(at))?;
+    let mut frames = Vec::new();
+    while at + 12 <= len {
+        let mut fh = [0u8; 13];
+        let size = {
+            r.read_exact(&mut fh[..12])?;
+            u32::from_le_bytes(fh[..4].try_into().unwrap())
+        };
+        if at + 12 + size as u64 > len {
+            bail!("IVF cut short");
+        }
+        // the uncompressed header (profile 0), from the top bit: frame_marker(2) profile(2)
+        // show_existing_frame(1) frame_type(1, 0 = key)
+        let key = size > 0 && {
+            r.read_exact(&mut fh[12..])?;
+            r.seek_relative(size as i64 - 1)?;
+            fh[12] & 0x0c == 0
+        };
+        frames.push((at + 12, size, key));
+        at += 12 + size as u64;
+    }
+    Ok((w, h, frames))
+}
+
+/// Writes the `.vnv` of `tracks` at `out` (with the trailer when there is one: frame rate,
+/// length, the file with the sound), copying the frames from their files: no movie is held in
+/// memory whole.
+fn write_vnv(out: &Path, w: u32, h: u32, tracks: &[Src], trailer: Option<((u32, u32), u64, Option<&Path>)>) -> Result<()> {
+    let mut o = BufWriter::new(fs::File::create(out)?);
+    let sizes: Vec<Vec<(u32, bool)>> = tracks.iter().map(|t| t.frames.iter().map(|f| (f.1, f.2)).collect()).collect();
+    let index: Vec<(&str, &[(u32, bool)])> = tracks.iter().zip(&sizes).map(|(t, s)| (t.codec.as_str(), &s[..])).collect();
+    let end = vnv::write_head(&mut o, w, h, &index)?;
+    let n = sizes.iter().map(Vec::len).min().unwrap_or(0);
+    for t in tracks {
+        let mut r = BufReader::new(fs::File::open(&t.file)?);
+        let mut pos = 0u64;
+        for &(off, size, _) in &t.frames[..n] {
+            r.seek_relative(off as i64 - pos as i64)?;
+            let copied = std::io::copy(&mut (&mut r).take(size as u64), &mut o)?;
+            if copied != size as u64 {
+                bail!("{} cut short", t.file.display());
+            }
+            pos = off + size as u64;
+        }
+    }
+    if let Some((rate, duration, audio)) = trailer {
+        let len = match audio {
+            Some(a) => std::io::copy(&mut fs::File::open(a)?, &mut o)?,
+            None => 0,
+        };
+        vnv::write_tail(&mut o, rate, duration, end, len)?;
+    }
+    o.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+    Ok(())
 }
 
 /// Movie files games play through DirectShow / Media Foundation (by extension; ffprobe decides).
@@ -156,7 +229,7 @@ pub enum Codec {
 
 /// The `.vnv` for the movie at `src`, from the store's cache or made (VP9).
 pub fn movie_vnv_for(store: &Path, src: &Path) -> Result<std::path::PathBuf> {
-    let h = blake3::hash(&fs::read(src)?).to_hex()[..32].to_string();
+    let h = hash_file(src)?;
     let dir = store.join("movies");
     let path = dir.join(format!("{h}.movie1.vnv"));
     if !path.exists() {
@@ -250,9 +323,9 @@ pub fn transcode_movie(src: &Path, out: &Path, codec: Codec) -> Result<()> {
                 if !st.success() {
                     bail!("ffmpeg failed (raw)");
                 }
-                let n = vnv::raw_size(p.w, p.h);
-                let d = fs::read(&f)?;
-                ("raw-i420".to_string(), d.chunks_exact(n).map(|c| (c.to_vec(), true)).collect())
+                let n = vnv::raw_size(p.w, p.h) as u64;
+                let count = fs::metadata(&f)?.len() / n;
+                Src { codec: "raw-i420".into(), file: f, frames: (0..count).map(|k| (k * n, n as u32, true)).collect() }
             }
         };
         let audio = if p.audio {
@@ -266,17 +339,15 @@ pub fn transcode_movie(src: &Path, out: &Path, codec: Codec) -> Result<()> {
             if !st.success() {
                 bail!("ffmpeg failed (sound)");
             }
-            fs::read(&a)?
+            Some(a)
         } else {
-            Vec::new()
+            None
         };
-        let frames = track.1.len() as u64;
+        let frames = track.frames.len() as u64;
         // (the container's length; else the frames')
         let from_frames = frames * 10_000_000 * p.rate.1 as u64 / p.rate.0 as u64;
         let duration = if p.seconds > 0.0 { (p.seconds * 1e7).round() as u64 } else { from_frames };
-        let t = vnv::Trailer { rate: p.rate, duration, audio };
-        fs::write(out, vnv::write(p.w, p.h, &[track], Some(&t)))?;
-        Ok(())
+        write_vnv(out, p.w, p.h, &[track], Some((p.rate, duration, audio.as_deref())))
     })();
     let _ = fs::remove_dir_all(&tmp);
     res
@@ -337,6 +408,99 @@ mod tests {
 
     /// With ffmpeg: a generated movie (test pattern, a tone) comes out as its frames at its
     /// rate, its length and its sound, in both codecs.
+    /// A handmade IVF (frames of any sizes, key or not) through `ivf_frames` and `write_vnv`:
+    /// each frame's bytes and key flag where the `.vnv` says, the sound after them.
+    #[test]
+    fn ivf_to_vnv() {
+        let dir = std::env::temp_dir().join(format!("ippai-ivf-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut rng = 0x1234_5678u32;
+        let mut next = || {
+            rng ^= rng << 13;
+            rng ^= rng >> 17;
+            rng ^= rng << 5;
+            rng
+        };
+        for case in 0..20 {
+            let n = (next() % 40) as usize;
+            let frames: Vec<Vec<u8>> = (0..n)
+                .map(|k| {
+                    let len = (next() % 300) as usize + 1;
+                    // (frame_type bit 0x04 clear: a key frame; frame 0 always one)
+                    let first = if k == 0 || next() % 4 == 0 { 0x82 } else { 0x86 };
+                    std::iter::once(first).chain((1..len).map(|_| next() as u8)).collect()
+                })
+                .collect();
+            let mut ivf = b"DKIF\0\0\x20\0VP90".to_vec();
+            ivf.extend(64u16.to_le_bytes());
+            ivf.extend(48u16.to_le_bytes());
+            ivf.extend([0; 16]);
+            for (k, f) in frames.iter().enumerate() {
+                ivf.extend((f.len() as u32).to_le_bytes());
+                ivf.extend((k as u64).to_le_bytes());
+                ivf.extend(f);
+            }
+            let (ip, sp, op) = (dir.join("c.ivf"), dir.join("a.ogg"), dir.join("o.vnv"));
+            fs::write(&ip, &ivf).unwrap();
+            let sound: Vec<u8> = (0..next() % 100).map(|_| next() as u8).collect();
+            fs::write(&sp, &sound).unwrap();
+            let (w, h, idx) = ivf_frames(&ip).unwrap();
+            assert_eq!((w, h, idx.len()), (64, 48, n));
+            let t = Src { codec: "vp09.00.31.08".into(), file: ip.clone(), frames: idx };
+            write_vnv(&op, w, h, &[t], Some(((30, 1), 12345, Some(&sp)))).unwrap();
+            let d = fs::read(&op).unwrap();
+            let i = vnv::info(&d).unwrap();
+            assert_eq!(i.frames() as usize, n, "case {case}");
+            for (k, &(off, size, key)) in i.tracks[0].1.iter().enumerate() {
+                assert_eq!(&d[off as usize..(off + size) as usize], &frames[k][..], "case {case} frame {k}");
+                assert_eq!(key, frames[k][0] == 0x82, "case {case} frame {k}");
+            }
+            assert_eq!((i.rate, i.duration), (Some((30, 1)), 12345));
+            match i.audio {
+                Some((o, l)) => assert_eq!(&d[o..o + l], &sound[..]),
+                None => assert!(sound.is_empty()),
+            }
+            // cut short: refused
+            fs::write(&ip, &ivf[..ivf.len().saturating_sub(1)]).unwrap();
+            if n > 0 {
+                assert!(ivf_frames(&ip).is_err(), "case {case}");
+            }
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A Siglus `.omv` (header, then Ogg Theora) made here, streamed through `transcode`.
+    #[test]
+    fn transcodes_an_omv() {
+        if !available() {
+            eprintln!("no ffmpeg: skipped");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("ippai-omv-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let ogv = dir.join("t.ogv");
+        let st = Command::new("ffmpeg")
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=64x48:rate=30:duration=1", "-c:v", "libtheora", "-q:v", "7"])
+            .arg(&ogv)
+            .status()
+            .unwrap();
+        assert!(st.success());
+        let mut omv = vec![0u8; 0x60];
+        omv[..4].copy_from_slice(b"TFTD");
+        omv[0x2c..0x30].copy_from_slice(&64u32.to_le_bytes());
+        omv[0x30..0x34].copy_from_slice(&48u32.to_le_bytes());
+        omv[0x3c..0x40].copy_from_slice(&33333u32.to_le_bytes());
+        omv.extend(fs::read(&ogv).unwrap());
+        let (src, out) = (dir.join("t.omv"), dir.join("t.vnv"));
+        fs::write(&src, &omv).unwrap();
+        transcode(&src, &out).unwrap();
+        let i = vnv::info(&fs::read(&out).unwrap()).unwrap();
+        assert_eq!((i.w, i.h, i.tracks.len(), i.rate), (64, 48, 1, None));
+        assert!((29..=31).contains(&i.frames()), "{} frames", i.frames());
+        assert!(i.tracks[0].1[0].2, "a key frame first");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn transcodes_a_movie() {
         if !available() {

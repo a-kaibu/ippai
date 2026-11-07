@@ -57,6 +57,7 @@ interface SakeModule {
   _vnhost_video_doorbell(): number;
   _vnhost_video_list(out: number, max: number): number;
   _vnhost_video_has(id: number, n: number): number;
+  _vnhost_video_chunk(id: number, t: number, n: number, size: number): number;
   _vnhost_video_begin(id: number, n: number, size: number): number;
   _vnhost_video_ready(id: number, buf: number, layout: number, ok: number): void;
   _vnhost_video_fail(id: number): void;

@@ -300,6 +300,13 @@ impl File {
             Inner::Std(f) => f.metadata().map(Metadata::from),
         }
     }
+    /// Starts fetching bytes `off..off + len` from the store (VFS files; nothing else), without
+    /// waiting: a later read of them finds them here.
+    pub fn prefetch(&self, off: u64, len: u64) {
+        if let Inner::Vfs(h) = &self.0 {
+            vfs::h_prefetch(*h, off, len);
+        }
+    }
     pub fn set_len(&self, size: u64) -> io::Result<()> {
         match &self.0 {
             Inner::Vfs(h) => vfs::h_set_len(*h, size).map_err(os),

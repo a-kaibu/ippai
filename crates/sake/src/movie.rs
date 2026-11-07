@@ -101,8 +101,7 @@ fn frame(c: &mut Ctx) -> u32 {
                 }
                 let found = movie_of(this);
                 let s = found.as_ref().filter(|_| video::available()).and_then(|(_, p)| {
-                    let data = kura::fs::read(format!("{p}.vnv")).ok()?;
-                    video::open(data)
+                    video::open_file(format!("{p}.vnv")).map(|(s, _)| s)
                 });
                 match &found {
                     Some((_, p)) => eprintln!("sake: movie {p}: {}", if s.is_some() { "WebCodecs" } else { "the game's decoder" }),

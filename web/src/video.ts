@@ -1,6 +1,7 @@
 // Movies decoded with WebCodecs for the guest (crates/kura/src/video.rs): each stream is a
-// `.vnv` (VP9 tracks: color, and alpha when the movie has one; crates/ippai/src/movie.rs) in
-// wasm memory. The guest asks for frame n; this decodes ahead of the newest request (hardware
+// `.vnv` (VP9 tracks: color, and alpha when the movie has one; crates/ippai/src/movie.rs): its
+// header and frame tables in wasm memory, each frame's bytes had from the guest when it has read
+// them (a movie file is read a few seconds ahead of the frame shown). The guest asks for frame n; this decodes ahead of the newest request (hardware
 // first) and copies whole frames into the stream's slots, where the guest takes them.
 
 export interface VideoWasm {
@@ -9,6 +10,7 @@ export interface VideoWasm {
   _vnhost_video_doorbell(): number;
   _vnhost_video_list(out: number, max: number): number;
   _vnhost_video_has(id: number, n: number): number;
+  _vnhost_video_chunk(id: number, t: number, n: number, size: number): number;
   _vnhost_video_begin(id: number, n: number, size: number): number;
   _vnhost_video_ready(id: number, buf: number, layout: number, ok: number): void;
   _vnhost_video_fail(id: number): void;
@@ -175,22 +177,17 @@ export class Video {
     if (s.want >= 0) this.serve(s, s.want);
   }
 
-  private chunk(s: Stream, t: Track, n: number): EncodedVideoChunk {
-    const [off, size, key] = [t.frames[n * 3]!, t.frames[n * 3 + 1]!, t.frames[n * 3 + 2]!];
-    // the stream's bytes, wherever its buffer is now (the list gives the pointer)
-    const ptr = this.dataPtr(s.id);
+  /** Frame n of track t, or null while the guest has not read its bytes yet. */
+  private chunk(s: Stream, t: number, n: number): EncodedVideoChunk | null {
+    const key = s.tracks[t]!.frames[n * 3 + 2]!;
+    const ptr = this.wasm._vnhost_video_chunk(s.id, t, n, this.layoutBuf) >>> 0;
+    if (!ptr) return null;
+    const size = new Uint32Array(this.wasm.wasmMemory.buffer, this.layoutBuf, 1)[0]!;
     return new EncodedVideoChunk({
       type: key ? "key" : "delta",
       timestamp: n * 1000,
-      data: new Uint8Array(this.wasm.wasmMemory.buffer, ptr + off, size).slice(),
+      data: new Uint8Array(this.wasm.wasmMemory.buffer, ptr, size).slice(),
     });
-  }
-
-  private dataPtr(id: number): number {
-    const n = this.wasm._vnhost_video_list(this.io, 16);
-    const u32 = new Uint32Array(this.wasm.wasmMemory.buffer, this.io, n * 6);
-    for (let k = 0; k < n; k++) if (u32[k * 6] === id) return u32[k * 6 + 1]!;
-    return 0;
   }
 
   private serve(s: Stream, want: number): void {
@@ -198,7 +195,7 @@ export class Video {
     s.want = want;
     if (s.tracks.some((t) => !t.dec || t.dec.state !== "configured")) return;
     const end = Math.min(s.frames, want + AHEAD);
-    for (const t of s.tracks) {
+    for (const [ti, t] of s.tracks.entries()) {
       // a jump back, or past a key frame not fed yet: from the track's key frame before it
       // (resetting a hardware decoder costs; the tracks' key frames need not line up)
       let k = want;
@@ -215,7 +212,13 @@ export class Video {
           f.close();
           t.out.delete(n);
         }
-      while (t.fed < end && t.dec!.decodeQueueSize < 4) t.dec!.decode(this.chunk(s, t, t.fed++));
+      while (t.fed < end && t.dec!.decodeQueueSize < 4) {
+        // (not read yet: on a later frame)
+        const c = this.chunk(s, ti, t.fed);
+        if (!c) break;
+        t.dec!.decode(c);
+        t.fed++;
+      }
     }
     this.copyReady(s);
   }

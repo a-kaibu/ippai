@@ -26,7 +26,13 @@ const browser = process.env.USER_DATA_DIR
   ? await chromium.launchPersistentContext(process.env.USER_DATA_DIR, { args, viewport })
   : await chromium.launch({ args });
 const page = await browser.newPage(process.env.USER_DATA_DIR ? undefined : { viewport });
-page.on("console", (m) => appendFileSync(logFile, `${stamp()} [${m.type()}] ${m.text()}\n`));
+// MASH="x,y,ms,n,regex": from shot n on, clicks x,y every ms until a console line matches regex
+const mash = process.env.MASH?.split(",");
+let mashing = !!mash;
+page.on("console", (m) => {
+  appendFileSync(logFile, `${stamp()} [${m.type()}] ${m.text()}\n`);
+  if (mashing && mash[4] && new RegExp(mash[4]).test(m.text())) mashing = false;
+});
 page.on("pageerror", (e) => appendFileSync(logFile, `${stamp()} [pageerror] ${e.message}\n`));
 page.on("crash", () => appendFileSync(logFile, `${stamp()} [crash] the page crashed\n`));
 if (process.env.THROTTLE) {
@@ -143,7 +149,10 @@ async function click(x, y) {
 const end = t0 + Number(seconds) * 1000;
 let n = 0;
 while (Date.now() < end) {
-  await page.waitForTimeout(Number(interval) * 1000);
+  const next = Date.now() + Number(interval) * 1000;
+  if (mashing && n >= Number(mash[3]))
+    while (mashing && Date.now() < next) await click(Number(mash[0]), Number(mash[1])), await page.waitForTimeout(Number(mash[2]));
+  await page.waitForTimeout(Math.max(0, next - Date.now()));
   await shot(++n);
   // the debug overlay's numbers (play.html?debugmode=1: network, memory, fps)
   if (process.env.DEBUG_TEXT) {
@@ -190,6 +199,8 @@ while (Date.now() < end) {
       appendFileSync(logFile, `${stamp()} [profile] worker-${i}: ${w.title}\n`);
     }
   }
+  // HOLD_KEY=Control HOLD_AT=n: holds the key down from shot n on (e.g. a game's Ctrl skip)
+  if (process.env.HOLD_KEY && n === Number(process.env.HOLD_AT ?? 1)) await page.keyboard.down(process.env.HOLD_KEY);
   const seq = process.env.CLICK_SEQ?.split(";");
   if (seq && n <= seq.length) {
     if (seq[n - 1]) {

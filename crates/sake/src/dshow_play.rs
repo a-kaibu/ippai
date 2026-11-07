@@ -166,32 +166,91 @@ pub fn clip(a: R, b: R) -> R {
 // ---------------------------------------------------------------------------------------------
 // the sound
 
-/// A movie's sound (Ogg Vorbis), decoded as it is wanted: stereo frames from any position (a
-/// position before what is kept decodes again from the start).
+/// Reads bytes of a movie's sound at an offset into a buffer (false: could not).
+pub type ReadAt = Box<dyn FnMut(u64, &mut [u8]) -> bool + Send>;
+
+/// Bytes of the sound read at once.
+const SOUND_READ: usize = 64 << 10;
+
+/// A movie's sound (Ogg Vorbis), read and decoded as it is wanted: stereo frames from any
+/// position (a position before what is kept decodes again from the start).
 pub struct Sound {
-    packets: Vec<Vec<u8>>,
+    read: ReadAt,
+    len: u64,
+    /// bytes read at once (SOUND_READ; small in tests)
+    step: usize,
+    /// the next byte to read, and the packets of what was read
+    pos: u64,
+    ogg: vorbis::ogg::Reader,
+    /// the identification and setup headers
+    heads: [Vec<u8>; 2],
     dec: Option<vorbis::Decoder>,
     channels: usize,
     pub rate: u32,
-    /// the next packet to decode
-    next: usize,
     /// decoded stereo frames, the first of them frame `base`
     pcm: VecDeque<[f32; 2]>,
     base: u64,
 }
 
 impl Sound {
+    /// The sound in memory (tests).
+    #[cfg(test)]
     pub fn new(ogg: &[u8]) -> Option<Sound> {
-        let (packets, _) = vorbis::ogg::packets(ogg);
-        let id = vorbis::Ident::read(packets.first()?).ok()?;
-        let mut s = Sound { packets, dec: None, channels: id.channels, rate: id.rate, next: 0, pcm: VecDeque::new(), base: 0 };
+        let d = ogg.to_vec();
+        let len = d.len() as u64;
+        Sound::read(
+            len,
+            Box::new(move |o, b| match d.get(o as usize..o as usize + b.len()) {
+                Some(s) => {
+                    b.copy_from_slice(s);
+                    true
+                }
+                None => false,
+            }),
+        )
+    }
+    /// The `len` bytes of sound `read` reads.
+    pub fn read(len: u64, read: ReadAt) -> Option<Sound> {
+        let mut s = Sound { read, len, step: SOUND_READ, pos: 0, ogg: Default::default(), heads: Default::default(), dec: None, channels: 0, rate: 0, pcm: VecDeque::new(), base: 0 };
+        let id = s.packet()?;
+        let _comment = s.packet()?;
+        let setup = s.packet()?;
+        let i = vorbis::Ident::read(&id).ok()?;
+        (s.channels, s.rate) = (i.channels, i.rate);
+        s.heads = [id, setup];
         s.restart();
         s.dec.as_ref()?;
         Some(s)
     }
+    /// The next packet (None: the end, or the sound could not be read).
+    fn packet(&mut self) -> Option<Vec<u8>> {
+        loop {
+            if let Some(p) = self.ogg.pop() {
+                return Some(p);
+            }
+            if self.pos >= self.len {
+                return None;
+            }
+            let n = (self.step as u64).min(self.len - self.pos) as usize;
+            let mut b = vec![0; n];
+            if !(self.read)(self.pos, &mut b) {
+                self.pos = self.len;
+                return None;
+            }
+            self.pos += n as u64;
+            self.ogg.push(&b);
+            if self.pos >= self.len {
+                self.ogg.finish();
+            }
+        }
+    }
     fn restart(&mut self) {
-        self.dec = self.packets.get(2).and_then(|setup| vorbis::Decoder::new(&self.packets[0], setup).ok());
-        self.next = 3;
+        self.dec = vorbis::Decoder::new(&self.heads[0], &self.heads[1]).ok();
+        self.pos = 0;
+        self.ogg = Default::default();
+        for _ in 0..3 {
+            self.packet();
+        }
         self.pcm.clear();
         self.base = 0;
     }
@@ -208,11 +267,13 @@ impl Sound {
             self.base += k as u64;
         }
         let mut buf = Vec::new();
-        while self.base + (self.pcm.len() as u64) < from + n as u64 && self.next < self.packets.len() {
-            let Some(d) = self.dec.as_mut() else { break };
+        while self.base + (self.pcm.len() as u64) < from + n as u64 {
+            if self.dec.is_none() {
+                break;
+            }
+            let Some(p) = self.packet() else { break };
             buf.clear();
-            d.packet(&self.packets[self.next], &mut buf);
-            self.next += 1;
+            self.dec.as_mut().unwrap().packet(&p, &mut buf);
             let ch = self.channels.max(1);
             self.pcm.extend(buf.chunks_exact(ch).map(|f| if ch == 1 { [f[0], f[0]] } else { [f[0], f[1]] }));
             // (far behind what is wanted: not kept)
@@ -245,14 +306,25 @@ pub struct Movie {
 }
 
 impl Movie {
-    /// The movie in a `.vnv` with the trailer; None for anything else.
-    pub fn open(data: Vec<u8>) -> Option<Movie> {
-        let i = video::info(&data)?;
-        let rate = i.rate?;
-        let sound = i.audio.and_then(|(o, l)| Sound::new(&data[o..o + l]));
-        let (w, h, frames, duration) = (i.w, i.h, i.frames(), i.duration);
-        let stream = video::open(data)?;
-        Some(Movie { stream, w, h, frames, rate, duration, sound })
+    /// The movie in the `.vnv` file at `path` (with the trailer), read as it plays; None for
+    /// anything else.
+    pub fn open(path: &str) -> Option<Movie> {
+        let (stream, i) = video::open_file(path)?;
+        let Some(rate) = i.rate else {
+            video::close(stream);
+            return None;
+        };
+        let sound = match i.audio {
+            Some((o, l)) => {
+                let Ok(mut f) = kura::fs::File::open(path) else {
+                    video::close(stream);
+                    return None;
+                };
+                Sound::read(l as u64, Box::new(move |at, b| video::read_at(&mut f, o as u64 + at, b)))
+            }
+            None => None,
+        };
+        Some(Movie { stream, w: i.w, h: i.h, frames: i.frames(), rate, duration: i.duration, sound })
     }
 }
 
@@ -617,6 +689,15 @@ mod tests {
             let mut s = Sound::new(&ogg).unwrap();
             let mut whole = Vec::new();
             s.take(0, 200_000, &mut whole);
+            // (read in small pieces, as a movie's sound is in 64 KiB ones: the same)
+            for step in [1, 97, 4096] {
+                let mut p = Sound::new(&ogg).unwrap();
+                p.step = step;
+                p.restart();
+                let mut got = Vec::new();
+                p.take(0, 200_000, &mut got);
+                assert!(got == whole, "{name} read {step} bytes at a time");
+            }
             let total = whole.chunks(2).rposition(|f| f[0] != 0.0 || f[1] != 0.0).unwrap_or(0) as u64 + 1;
             assert!(total > 10_000, "{name}: {total} frames");
             for (from, n) in [(0u64, 1000usize), (5000, 3000), (100, 50), (total - 10, 100), (2000, 7000), (0, 10), (total + 5, 10)] {

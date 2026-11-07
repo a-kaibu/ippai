@@ -1161,6 +1161,28 @@ pub(crate) fn h_read(h: u32, buf: &mut [u8]) -> Result<usize, c_int> {
     Ok(n)
 }
 
+/// Has the store's chunks of bytes `off..off + len` of handle `h`'s file fetched by the fetcher
+/// threads, without waiting for them (a movie's next seconds: kura::video).
+pub(crate) fn h_prefetch(h: u32, off: u64, len: u64) {
+    let Some((ino, _, _)) = handle(h) else { return };
+    // (only the hashes wanted are copied out: the list of a big archive is long)
+    let want: Vec<Hash> = with(|fs| match fs.node(ino).map(|n| &n.data) {
+        Some(Data::File(Content::Lower { size, chunk, chunks })) => {
+            let (size, chunk) = (*size, *chunk as u64);
+            let end = off.saturating_add(len).min(size);
+            if off >= end || chunk == 0 {
+                return Vec::new();
+            }
+            let (first, last) = ((off / chunk) as usize, ((end - 1) / chunk) as usize);
+            chunks.iter().skip(first).take(last + 1 - first).filter_map(|c| *c).collect()
+        }
+        _ => Vec::new(),
+    });
+    for h in &want {
+        fetch_ahead(h);
+    }
+}
+
 pub(crate) fn h_write(h: u32, data: &[u8]) -> Result<usize, c_int> {
     let (ino, pos, flags) = handle(h).ok_or(libc::EBADF)?;
     if flags & libc::O_ACCMODE == libc::O_RDONLY {

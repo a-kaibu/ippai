@@ -239,8 +239,8 @@ fn add_filter(c: &mut Ctx) -> u32 {
 /// Err when the movie itself is not there either.
 fn load(b: u32, w: &str) -> Result<(), u32> {
     play::end(b);
-    let vnv = crate::files::resolve(&format!("{w}.vnv")).and_then(|p| kura::fs::read(p).ok());
-    let movie = vnv.and_then(play::Movie::open).filter(|m| kura::video::decodable(m.stream));
+    let vnv = crate::files::resolve(&format!("{w}.vnv"));
+    let movie = vnv.and_then(|p| play::Movie::open(&p)).filter(|m| kura::video::decodable(m.stream));
     if movie.is_none() && crate::files::resolve(w).is_none() {
         return Err(NOT_FOUND);
     }
