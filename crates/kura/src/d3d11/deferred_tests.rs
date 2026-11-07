@@ -257,3 +257,75 @@ fn deferred_queries() {
     release(c.imm);
     release(c.dev);
 }
+
+fn recorded(ctx: u32) -> (usize, usize) {
+    let g = D11S.lock().unwrap();
+    let d = g.as_ref().unwrap();
+    deferred::recorded(d, d.id_of(ctx))
+}
+
+/// UpdateSubresource on a deferred context: what it reads is copied (no more: a box and the
+/// pitches decide it), sizes that do not fit are not recorded, and a list runs as often as it
+/// is executed with the same data.
+#[test]
+fn deferred_update_sizes() {
+    let _g = setup();
+    let c = Ctx::new();
+    let data: Vec<u32> = (0..16).collect();
+    let buf = c.buffer(64, 0, 1, 0, Some(&vec![0; 16]));
+    let def = c.deferred();
+    let src = mem(16);
+    put(src, &data);
+    // a box of bytes 8..24 of the buffer: 16 bytes from `src`
+    let bx = mem(6);
+    put(bx, &[8, 0, 0, 24, 1, 1]);
+    call1(m(IF_CONTEXT, 48), &[def, buf, 0, bx, src, 0, 0]);
+    // (a box past the end reads up to it)
+    let bx2 = mem(6);
+    put(bx2, &[56, 0, 0, 1000, 1, 1]);
+    call1(m(IF_CONTEXT, 48), &[def, buf, 0, bx2, src, 0, 0]);
+    assert_eq!(recorded(def), (2, 24 + 16 + 24 + 8));
+    // the source changes after recording: the list has its own copy
+    put(src, &[0xffff_ffff; 16]);
+    let list = c.finish(def, 0);
+    for _ in 0..2 {
+        c.execute(c.imm, list, 1);
+        let mut want = vec![0u32; 16];
+        want[2..6].copy_from_slice(&data[..4]);
+        want[14..16].copy_from_slice(&data[..2]);
+        assert_eq!(contents(buf, 16), want);
+    }
+    assert_eq!(release(list), 0);
+    // a texture: pitches the application gives that make the size overflow are not recorded
+    let td = mem(11);
+    put(td, &[64, 64, 1, 1, 28, 1, 0, 0, 0x8, 0, 0]);
+    assert_eq!(call1(m(IF_DEVICE, 5), &[c.dev, td, 0, c.o]), 0);
+    let tex = rd1(c.o);
+    let tb = mem(6);
+    put(tb, &[0, 0, 0, 64, 64, 1]);
+    for pitch in [0x8000_0000u32, 0xffff_ffff, 0x0400_0000] {
+        call1(m(IF_CONTEXT, 48), &[def, tex, 0, tb, src, pitch, 0]);
+    }
+    assert_eq!(recorded(def), (0, 0));
+    // ... and one that fits: 63 rows of 256 + one row of 64 texels of 4 bytes
+    let big = unsafe { alloc(63 * 256 + 256) } as u32;
+    call1(m(IF_CONTEXT, 48), &[def, tex, 0, tb, big, 256, 0]);
+    assert_eq!(recorded(def), (1, 24 + 63 * 256 + 256));
+    let list = c.finish(def, 0);
+    c.execute(c.imm, list, 0);
+    assert_eq!(release(list), 0);
+    // Map of a 2048^3 3D texture on a deferred context: too large, not a wrapped size
+    let d3 = mem(10);
+    put(d3, &[2048, 2048, 2048, 1, 2, 2, 0x8, 0x10000, 0]);
+    if call1(m(IF_DEVICE, 6), &[c.dev, d3, 0, c.o]) == 0 {
+        let t3 = rd1(c.o);
+        let (hr, [p, ..]) = c.map(def, t3, 4);
+        assert_eq!((hr, p), (E_OUTOFMEMORY, 0));
+        assert_eq!(release(t3), 0);
+    }
+    assert_eq!(release(tex), 0);
+    assert_eq!(release(def), 0);
+    assert_eq!(release(buf), 0);
+    release(c.imm);
+    release(c.dev);
+}

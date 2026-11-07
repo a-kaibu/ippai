@@ -2522,7 +2522,11 @@ unsafe fn map(d: &mut D11, res: u32, sub: u32, ty: u32, out: u32, dxgi: bool, af
             let (lw, lh) = ((t.w >> level).max(1), (t.h >> level).max(1));
             let (pitch, rows) = format::pitch_rows(t.fmt, lw, lh);
             let depth = if t.dim == 3 { (t.layers >> level).max(1) } else { 1 };
-            let size = pitch * rows * depth;
+            // (in 64 bits: a 2048^3 texture's level 0 does not fit in 32)
+            let Some(size) = u32::try_from(pitch as u64 * rows as u64 * depth as u64).ok().filter(|&n| n < 0x8000_0000) else {
+                wrp(out, 0, 0);
+                return E_OUTOFMEMORY;
+            };
             let write = ty != 1;
             let mem = match t.maps.iter().position(|m| m.0 == sub) {
                 Some(i) => {

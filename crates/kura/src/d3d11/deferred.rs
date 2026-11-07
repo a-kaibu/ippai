@@ -20,18 +20,21 @@ use super::*;
 /// D3D11_ERROR_DEFERRED_CONTEXT_MAP_WITHOUT_INITIAL_DISCARD
 const MAP_WITHOUT_DISCARD: u32 = 0x887c_0004;
 
-#[derive(Clone)]
+/// The most a recorded call copies from one pointer (an UpdateSubresource of 256 MB)
+const MAX_BLOB: u64 = 1 << 28;
+
 pub struct Rec {
     m: u32,
     args: [u32; 16],
     /// (argument, the bytes it pointed to)
-    blobs: Vec<(usize, Vec<u8>)>,
+    blobs: Vec<(usize, Box<[u8]>)>,
 }
 
 pub struct CmdList {
     /// the state the list starts from (held privately)
     start: State,
-    recs: Vec<Rec>,
+    /// (shared: a list executed runs its calls where they are, without copying them)
+    recs: std::sync::Arc<Vec<Rec>>,
     /// objects the calls name (held privately)
     held: Vec<u32>,
 }
@@ -70,7 +73,7 @@ fn clone_state(d: &mut D11, s: &State) -> State {
 }
 
 fn new_list(d: &mut D11, start: &State) -> CmdList {
-    CmdList { start: clone_state(d, start), recs: Vec::new(), held: Vec::new() }
+    CmdList { start: clone_state(d, start), recs: Default::default(), held: Vec::new() }
 }
 
 /// Lets go of what a list holds.
@@ -108,11 +111,12 @@ pub(super) unsafe fn create(d: &mut D11, flags: u32, out: u32) -> u32 {
     S_OK
 }
 
-/// What a call's pointers point to: (argument, bytes)
-unsafe fn pointed(d: &D11, m: u32, a: &dyn Fn(usize) -> u32) -> Vec<(usize, u32)> {
+/// What a call's pointers point to: (argument, bytes); None: more than it can be (a size
+/// that does not fit, or over MAX_BLOB)
+unsafe fn pointed(d: &D11, m: u32, a: &dyn Fn(usize) -> u32) -> Option<Vec<(usize, u32)>> {
     let ps = ptr();
     let n = |i: usize| a(i).min(128);
-    match m {
+    Some(match m {
         // *Set{ConstantBuffers, ShaderResources, Samplers}(start, n, objects)
         7 | 8 | 10 | 16 | 22 | 25 | 26 | 31 | 32 | 59 | 61 | 62 | 63 | 65 | 66 | 67 | 70 | 71 => vec![(3, n(2) * ps)],
         // *SetShader(shader, class instances, n)
@@ -128,32 +132,44 @@ unsafe fn pointed(d: &D11, m: u32, a: &dyn Fn(usize) -> u32) -> Vec<(usize, u32)
         44 => vec![(2, 24 * n(1))],
         45 => vec![(2, 16 * n(1))],
         46 | 115 => vec![(8, 24)],
-        48 | 116 => vec![(3, 24), (4, update_size(d, a))],
+        48 | 116 => vec![(3, 24), (4, update_size(d, a)?)],
         68 => vec![(3, n(2) * ps), (4, 4 * n(2))],
         119..=124 => vec![(3, n(2) * ps), (4, 4 * n(2)), (5, 4 * n(2))],
         132 => vec![(2, 16), (3, 16 * n(4))],
         _ => vec![],
-    }
+    })
 }
 
-/// The bytes UpdateSubresource(resource, sub, box, data, row pitch, depth pitch) reads.
-unsafe fn update_size(d: &D11, a: &dyn Fn(usize) -> u32) -> u32 {
+/// The bytes UpdateSubresource(resource, sub, box, data, row pitch, depth pitch) reads: as
+/// update_subresource and upload_texture read them (a texture's box from its block's corner).
+unsafe fn update_size(d: &D11, a: &dyn Fn(usize) -> u32) -> Option<u32> {
     let bx = (a(3) != 0).then(|| [rd(a(3), 0), rd(a(3), 1), rd(a(3), 2), rd(a(3), 3), rd(a(3), 4), rd(a(3), 5)]);
-    match d.objs.get(&d.id_of(a(1))).map(|o| &o.data) {
-        Some(Data::Buffer(b)) => bx.map_or(b.size, |x| x[3].min(b.size).saturating_sub(x[0])),
+    let size: u64 = match d.objs.get(&d.id_of(a(1))).map(|o| &o.data) {
+        Some(Data::Buffer(b)) => bx.map_or(b.size, |x| x[3].min(b.size).saturating_sub(x[0])) as u64,
         Some(Data::Texture(t)) => {
             let level = a(2) % t.mips.max(1);
             let (lw, lh) = ((t.w >> level).max(1), (t.h >> level).max(1));
             let ld = if t.dim == 3 { (t.layers >> level).max(1) } else { 1 };
+            let block = format::info(t.fmt).map_or(1, |f| f.block.max(1));
             let [x0, y0, z0, x1, y1, z1] = bx.unwrap_or([0, 0, 0, lw, lh, ld]);
+            let (x0, y0) = (x0 / block * block, y0 / block * block);
             let (w, h, dp) = (x1.min(lw).saturating_sub(x0), y1.min(lh).saturating_sub(y0), z1.min(ld).saturating_sub(z0));
             if w == 0 || h == 0 || dp == 0 {
-                return 0;
+                return Some(0);
             }
             let (row, rows) = format::pitch_rows(t.fmt, w, h);
-            (dp - 1) * a(6) + (rows - 1) * a(5) + row
+            // (in 64 bits: the pitches are the application's)
+            (dp as u64 - 1) * a(6) as u64 + (rows as u64 - 1) * a(5) as u64 + row as u64
         }
         _ => 0,
+    };
+    (size <= MAX_BLOB && (a(4) as u64) + size <= 1 << 32).then_some(size as u32)
+}
+
+/// A call onto the list being recorded (nobody else has it yet).
+fn push(l: &mut CmdList, r: Rec) {
+    if let Some(v) = std::sync::Arc::get_mut(&mut l.recs) {
+        v.push(r);
     }
 }
 
@@ -163,15 +179,22 @@ unsafe fn record(d: &mut D11, this: u32, m: u32, a: &dyn Fn(usize) -> u32) {
     for (i, v) in args.iter_mut().enumerate() {
         *v = a(i);
     }
+    let Some(ptrs) = pointed(d, m, a) else {
+        // (data past what any resource takes, or past the address space: not recorded)
+        if d.trace {
+            eprintln!("d3d11: deferred call {m} with data too large to record, dropped");
+        }
+        return;
+    };
     let mut blobs = Vec::new();
-    for (i, size) in pointed(d, m, a) {
+    for (i, size) in ptrs {
         if a(i) != 0 && size != 0 {
-            blobs.push((i, std::slice::from_raw_parts(a(i) as *const u8, size as usize).to_vec()));
+            blobs.push((i, Box::from(std::slice::from_raw_parts(a(i) as *const u8, size as usize))));
         }
     }
     hold(d, this, m, &args, &blobs);
     if let Some(Data::Deferred(x)) = d.objs.get_mut(&this).map(|o| &mut o.data) {
-        x.list.recs.push(Rec { m, args, blobs });
+        push(&mut x.list, Rec { m, args, blobs });
     }
 }
 
@@ -192,7 +215,7 @@ fn objects(m: u32) -> (&'static [usize], &'static [usize]) {
 }
 
 /// The objects a recorded call names, held by the list being recorded.
-fn hold(d: &mut D11, this: u32, m: u32, args: &[u32; 16], blobs: &[(usize, Vec<u8>)]) {
+fn hold(d: &mut D11, this: u32, m: u32, args: &[u32; 16], blobs: &[(usize, Box<[u8]>)]) {
     let ps = ptr() as usize;
     let (singles, arrays) = objects(m);
     let mut ids: Vec<u32> = singles.iter().map(|&i| d.id_of(args[i])).collect();
@@ -317,7 +340,7 @@ pub(super) unsafe fn execute(d: &mut D11, st: &mut State, list: u32, restore: u3
     d.bind(id);
     let start = clone_state(d, &start);
     let saved = std::mem::replace(st, start);
-    for r in &recs {
+    for r in recs.iter() {
         replay(d, st, r, after);
     }
     if restore != 0 {
@@ -341,8 +364,12 @@ unsafe fn replay(d: &mut D11, st: &mut State, r: &Rec, after: &mut After) {
         args[*i] = p;
         mem.push(p);
     }
+    // (an update reads no more than was copied for it: its box is the copy's)
     let a = |i: usize| args[i];
-    context_call2(d, st, r.m, &a, after);
+    let fits = !matches!(r.m, 48 | 116) || update_size(d, &a).is_some_and(|n| n <= r.blobs.iter().find(|b| b.0 == 4).map_or(0, |b| b.1.len() as u32));
+    if fits {
+        context_call2(d, st, r.m, &a, after);
+    }
     for p in mem {
         d.guest_free(p);
     }
@@ -358,7 +385,15 @@ unsafe fn map(d: &mut D11, this: u32, res: u32, sub: u32, ty: u32, out: u32) -> 
             let (lw, lh) = ((t.w >> level).max(1), (t.h >> level).max(1));
             let (pitch, rows) = format::pitch_rows(t.fmt, lw, lh);
             let ld = if t.dim == 3 { (t.layers >> level).max(1) } else { 1 };
-            (t.usage, false, pitch * rows * ld, pitch, pitch * rows)
+            // (in 64 bits: a 2048^3 texture's level 0 does not fit in 32)
+            let size = pitch as u64 * rows as u64 * ld as u64;
+            if size > MAX_BLOB {
+                if out != 0 {
+                    wrp(out, 0, 0);
+                }
+                return E_OUTOFMEMORY;
+            }
+            (t.usage, false, size as u32, pitch, pitch * rows)
         }
         _ => (0, false, 0, 0, 0),
     };
@@ -401,9 +436,18 @@ unsafe fn unmap(d: &mut D11, this: u32, res: u32, sub: u32) {
         return;
     };
     let args = [0, res, sub, 0, 0, pitch, depth, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-    let blobs = vec![(4, std::slice::from_raw_parts(mem as *const u8, size as usize).to_vec())];
+    let blobs: Vec<(usize, Box<[u8]>)> = vec![(4, Box::from(std::slice::from_raw_parts(mem as *const u8, size as usize)))];
     hold(d, this, 48, &args, &blobs);
     if let Some(Data::Deferred(x)) = d.objs.get_mut(&this).map(|o| &mut o.data) {
-        x.list.recs.push(Rec { m: 48, args, blobs });
+        push(&mut x.list, Rec { m: 48, args, blobs });
+    }
+}
+
+/// (tests: the calls recorded so far on a deferred context, the bytes they copied)
+#[cfg(test)]
+pub(super) fn recorded(d: &D11, this: u32) -> (usize, usize) {
+    match d.objs.get(&this).map(|o| &o.data) {
+        Some(Data::Deferred(x)) => (x.list.recs.len(), x.list.recs.iter().flat_map(|r| r.blobs.iter()).map(|b| b.1.len()).sum()),
+        _ => (0, 0),
     }
 }
