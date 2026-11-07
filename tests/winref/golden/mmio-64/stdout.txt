@@ -1,0 +1,71 @@
+fourcc 65766177 45564157 20206261
+open mem 1 err 0
+descend riff: 0 id RIFF size 78 type WAVE offset 8 flags 0
+descend first: 0 id fmt  size 16 type ---- offset 20 flags 0
+read 4 pos 24
+ascend: 0 id fmt  size 16 type ---- offset 20 flags 0
+pos 36
+descend next: 0 id junk size 3 type ---- offset 44 flags 0
+ascend odd: 0 id junk size 3 type ---- offset 44 flags 0
+pos after odd 48
+find list: 0 id LIST size 14 type INFO offset 56 flags 0
+find in list: 0 id INAM size 2 type ---- offset 68 flags 0
+ascend in: 0 id INAM size 2 type ---- offset 68 flags 0
+ascend list: 0 id LIST size 14 type INFO offset 56 flags 0
+find data: 0 id data size 8 type ---- offset 78 flags 0
+read past 8: 1 2 3 4 5 6 7 8 again 0
+seek end 86 set 12 past -1 neg -1
+find missing: 265
+pos after missing 86
+find riff avi: 265
+getinfo 0 next 4 end 86 buf 86 disk 0
+close 0
+open file 1
+descend riff: 0 id RIFF size 78 type WAVE offset 8 flags 0
+descend first: 0 id fmt  size 16 type ---- offset 20 flags 0
+read 4 pos 24
+ascend: 0 id fmt  size 16 type ---- offset 20 flags 0
+pos 36
+descend next: 0 id junk size 3 type ---- offset 44 flags 0
+ascend odd: 0 id junk size 3 type ---- offset 44 flags 0
+pos after odd 48
+find list: 0 id LIST size 14 type INFO offset 56 flags 0
+find in list: 0 id INAM size 2 type ---- offset 68 flags 0
+ascend in: 0 id INAM size 2 type ---- offset 68 flags 0
+ascend list: 0 id LIST size 14 type INFO offset 56 flags 0
+find data: 0 id data size 8 type ---- offset 78 flags 0
+read past 8: 1 2 3 4 5 6 7 8 again 0
+seek end 86 set 12 past 1000 neg -5
+find missing: 265
+pos after missing 86
+find riff avi: 265
+open buffered 1
+descend riff: 0 id RIFF size 78 type WAVE offset 8 flags 0
+descend first: 0 id fmt  size 16 type ---- offset 20 flags 0
+read 4 pos 24
+ascend: 0 id fmt  size 16 type ---- offset 20 flags 0
+pos 36
+descend next: 0 id junk size 3 type ---- offset 44 flags 0
+ascend odd: 0 id junk size 3 type ---- offset 44 flags 0
+pos after odd 48
+find list: 0 id LIST size 14 type INFO offset 56 flags 0
+find in list: 0 id INAM size 2 type ---- offset 68 flags 0
+ascend in: 0 id INAM size 2 type ---- offset 68 flags 0
+ascend list: 0 id LIST size 14 type INFO offset 56 flags 0
+find data: 0 id data size 8 type ---- offset 78 flags 0
+read past 8: 1 2 3 4 5 6 7 8 again 0
+seek end 86 set 12 past 1000 neg -5
+find missing: 265
+pos after missing 86
+find riff avi: 265
+open missing 0 err 257
+exist 1
+create riff: 0 id RIFF size 0 type WAVE offset 8 flags 10000000
+create fmt: 0 id fmt  size 0 type ---- offset 20 flags 10000000
+write 16
+ascend fmt: 0 id fmt  size 16 type ---- offset 20 flags 10000000
+write odd 3
+ascend odd: 0 id odd  size 3 type ---- offset 44 flags 10000000
+ascend riff: 0 id RIFF size 40 type WAVE offset 8 flags 10000000
+close 0
+written 48: 52 49 46 46 28 00 00 00 57 41 56 45 66 6d 74 20 10 00 00 00 01 00 01 00 22 56 00 00 44 ac 00 00 02 00 10 00 6f 64 64 20 03 00 00 00 78 79 7a 00

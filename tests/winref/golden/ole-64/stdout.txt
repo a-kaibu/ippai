@@ -1,0 +1,128 @@
+CreateStreamOnHGlobal(NULL, TRUE, &s)                                  = 00000000
+s->lpVtbl->Write(s, "hello world", 11, &n)                             = 00000000
+wrote 11
+s->lpVtbl->Seek(s, li, STREAM_SEEK_CUR, &pos)                          = 00000000
+pos 11
+s->lpVtbl->Seek(s, li, STREAM_SEEK_SET, &pos)                          = 00000000
+pos 20
+s->lpVtbl->Read(s, b, 4, &n)                                           = 00000000
+read past end 0
+s->lpVtbl->Write(s, "X", 1, &n)                                        = 00000000
+s->lpVtbl->Stat(s, &st, STATFLAG_NONAME)                               = 00000000
+size 21 type 2 name null 1
+s->lpVtbl->Seek(s, li, STREAM_SEEK_SET, &pos)                          = 80030019
+pos 21
+s->lpVtbl->Seek(s, li, STREAM_SEEK_END, &pos)                          = 00000000
+pos 18
+s->lpVtbl->Seek(s, li, 7, &pos)                                        = 80030019
+s->lpVtbl->Read(s, b, 64, &n)                                          = 00000000
+read 21: 68 65 6c 6c 6f 20 77 6f 72 6c 64 00 00 00 00 00 00 00 00 00 58
+s->lpVtbl->SetSize(s, sz)                                              = 00000000
+s->lpVtbl->Stat(s, &st, STATFLAG_NONAME)                               = 00000000
+size 5
+s->lpVtbl->Seek(s, li, STREAM_SEEK_CUR, &pos)                          = 00000000
+pos after shrink 21
+s->lpVtbl->Clone(s, &c)                                                = 00000000
+s->lpVtbl->Seek(s, li, STREAM_SEEK_CUR, &pos)                          = 00000000
+clone has its own position: 21
+c->lpVtbl->CopyTo(c, d, all, &rd, &wr)                                 = 00000000
+copied 4 4
+GetHGlobalFromStream(d, &g)                                            = 00000000
+hglobal size >= 4: 1 first ello
+s->lpVtbl->Commit(s, 0)                                                = 00000000
+s->lpVtbl->Revert(s)                                                   = 00000000
+s->lpVtbl->LockRegion(s, z0, sz, 0)                                    = 80030001
+release 0 0 0
+CreateStreamOnHGlobal(mine, FALSE, &s)                                 = 00000000
+s->lpVtbl->Stat(s, &st, STATFLAG_NONAME)                               = 00000000
+size on given hglobal 8
+hglobal still there 1
+CreateStreamOnHGlobal(NULL, TRUE, NULL)                                = 80070057
+CLSIDFromString(L"{00020400-0000-0000-C000-000000000046}", &id)        = 00000000
+parsed 00020400-0000-0000-c000-000000000046
+CLSIDFromString(L"{00020400-0000-0000-c000-000000000046}", &id)        = 00000000
+CLSIDFromString(L"00020400-0000-0000-C000-000000000046", &id)          = 800401f3
+CLSIDFromString(L"{00020400-0000-0000-C000-00000000004}", &id)         = 800401f3
+CLSIDFromString(L"{0002040G-0000-0000-C000-000000000046}", &id)        = 800401f3
+CLSIDFromString(L"", &id)                                              = 800401f3
+empty 00002040-0000-0000-c000-000000000000
+CLSIDFromString(NULL, &id)                                             = 00000000
+null 00000000-0000-0000-0000-000000000000
+IIDFromString(L"{00020400-0000-0000-C000-000000000046}", &id)          = 00000000
+IIDFromString(L"{00020400-0000-0000-C000-00000000004x}", &id)          = 800401f4
+StringFromGUID2 39 {00020400-0000-0000-C000-000000000046}
+StringFromGUID2 short 0
+StringFromCLSID(&id, &os)                                              = 00000000
+{00020400-0000-0000-C000-000000000046}
+CLSIDFromProgID(L"No.Such.ProgId", &id)                                = 800401f3
+IsEqualGUID 1
+realloc ok 1 zero alloc 1
+dims 2 elem 4 features 80
+SafeArrayGetLBound(sa, 1, &lb)                                         = 00000000
+SafeArrayGetUBound(sa, 1, &ub)                                         = 00000000
+dim1 1..3
+SafeArrayGetLBound(sa, 2, &lb)                                         = 00000000
+SafeArrayGetUBound(sa, 2, &ub)                                         = 00000000
+dim2 -1..0
+SafeArrayGetLBound(sa, 3, &lb)                                         = 8002000b
+SafeArrayPutElement(sa, ix, &val)                                      = 00000000
+SafeArrayPutElement(sa, ix, &val)                                      = 8002000b
+SafeArrayPutElement(sa, ix, &val)                                      = 00000000
+SafeArrayPutElement(sa, ix, &val)                                      = 8002000b
+SafeArrayGetElement(sa, ix, &val)                                      = 8002000b
+got 0
+SafeArrayAccessData(sa, (void **)&data)                                = 00000000
+layout: 5 0 0 0 0 9 locks 1
+SafeArrayDestroy(sa)                                                   = 8002000d
+SafeArrayUnaccessData(sa)                                              = 00000000
+SafeArrayUnaccessData(sa)                                              = 8000ffff
+SafeArrayRedim(v1, &nb)                                                = 00000000
+SafeArrayGetUBound(v1, 1, &ub)                                         = 00000000
+redim ub 4
+SafeArrayDestroy(v1)                                                   = 00000000
+SafeArrayDestroy(sa)                                                   = 00000000
+SafeArrayDestroy(NULL)                                                 = 00000000
+create bad vt 0
+realloc 1 len 3
+realloclen 1 len 13
+VarBstrCmp 0 1 0 1 2
+VarBstrCat(a1, NULL, &cat)                                             = 00000000
+cat len 3
+SysStringByteLen null 0 alloc null 1
+add 3+5 00000000 vt 5 9.5
+mul 3*5 00000000 vt 5 17.5
+cmp 3,5 2
+add 3+8 00000000 vt 5 17
+mul 3*8 00000000 vt 5 70
+cmp 3,8 0
+add 8+8 00000000 vt 8 "1010"
+mul 8*8 00000000 vt 5 100
+cmp 8,8 1
+add 3+11 00000000 vt 3 6
+mul 3*11 00000000 vt 3 -7
+cmp 3,11 2
+add 2+2 00000000 vt 3 60000
+mul 2*2 00000000 vt 3 900000000
+cmp 2,2 1
+add 17+17 00000000 vt 2 400
+mul 17*17 00000000 vt 3 40000
+cmp 17,17 1
+add 11+11 00000000 vt 2 -2
+mul 11*11 00000000 vt 2 1
+cmp 11,11 1
+add 8+5 00000000 vt 5 12.5
+mul 8*5 00000000 vt 5 25
+cmp 8,5 2
+VarNeg(&ne, &out)                                                      = 00000000
+neg vt 3 3
+VarDiv(&l, &r2, &out)                                                  = 00000000
+div vt 5 2.7999999999999998
+VarIdiv(&l, &r2, &out)                                                 = 00000000
+idiv vt 3 3
+VarMod(&l, &r2, &out)                                                  = 00000000
+mod vt 3 1
+VarDiv(&l, &zero, &out)                                                = 80020012
+VarIdiv(&l, &zero, &out)                                               = 80020012
+VariantClear(&bs)                                                      = 00000000
+cleared vt 0
+VariantClear(&bad)                                                     = 80020008

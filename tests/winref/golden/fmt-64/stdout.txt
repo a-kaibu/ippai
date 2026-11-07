@@ -1,0 +1,30 @@
+fmt [plain text] flags 0 cap 64: 10 err 0 [plain text] next 00
+fmt [a %1 b %2 c] flags 0 cap 64: 13 err 0 [a one b two c] next 00
+fmt [%2 before %1] flags 0 cap 64: 14 err 0 [two before one] next 00
+fmt [%1!d! %2!5d! %3!-5d!| %4!x! %5!08X!] flags 0 cap 64: 27 err 0 [42     7 3    | ff 0000BEEF] next 00
+fmt [%1!s! %2!.3s! %3!5s!|] flags 0 cap 64: 14 err 0 [abc abc    ab|] next 00
+fmt [%1!*d!|] flags 0 cap 64: 7 err 0 [    12|] next 00
+fmt [%1!c! %2!u! %3!ld!] flags 0 cap 64: 14 err 0 [Z 4294967295 5] next 00
+fmt [line1%nline2%r%t|%0 after zero] flags 0 cap 64: 15 err 0 [line1\r\nline2\r\x09|] next 00
+fmt [percent %% dot %. bang %!] flags 0 cap 64: 22 err 0 [percent % dot . bang !] next 00
+fmt [end\r\n] flags 0 cap 64: 5 err 0 [end\r\n] next 00
+fmt [trailing %] flags 0 cap 64: 0 err 87 [] next 23
+fmt [%1] flags 200 cap 64: 2 err 0 [%1] next 00
+fmt [%1 and %2!d!] flags 200 cap 64: 12 err 0 [%1 and %2!d!] next 00
+fmt [the quick brown fox jumps over the lazy dog again and again] flags 14 cap 128: 61 err 0 [the quick brown fox\r\njumps over the lazy\r\ndog again and again] next 00
+fmt [the quick brown fox\r\njumps] flags ff cap 128: 25 err 0 [the quick brown fox jumps] next 00
+fmt [  spaced   words  ] flags ff cap 128: 18 err 0 [  spaced   words  ] next 00
+fmt [verylongwordwithoutanyspaces here] flags a cap 128: 38 err 0 [verylongwo\r\nrdwithouta\r\nnyspaces\r\nhere] next 00
+fmt [hello world] flags 0 cap 5: 0 err 122 [] next 23
+fmt [hello world] flags 0 cap 11: 0 err 122 [] next 23
+fmt [hello world] flags 0 cap 12: 11 err 0 [hello world] next 00
+fmt [%1] flags 0 cap 3: 0 err 122 [] next 23
+array 20 [first 17 third first]
+alloc 15 [allocated first] local 1
+fmtW 9 err 0: 0077 0069 0064 0065 0020 65e5 672c 0020 0039
+fmtW 12 err 0: 0061 006e 0073 0069 0020 0069 006e 0020 0077 0069 0064 0065
+FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM, NULL, 2, 0, sm, sizeof sm, NULL) > 0 = 1 err 57005
+FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM, NULL, 0x12345678, 0, sm, sizeof sm, NULL) = 0 err 317
+FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, 2, 0, sm, 3, NULL) = 0 err 122
+FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM, NULL, 2, MAKELANGID(LANG_ZULU, SUBLANG_DEFAULT), sm, sizeof sm, NULL) = 0 err 15100
+FormatMessageA(0, NULL, 2, 0, sm, sizeof sm, NULL)                       = 0 err 87

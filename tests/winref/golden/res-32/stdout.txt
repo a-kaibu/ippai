@@ -1,0 +1,101 @@
+type MYTYPE
+  name LOWER langs 0409
+  name #300 langs 0409
+type #4
+  name #400 langs 0409
+type #5
+  name #500 langs 0409
+type #6
+  name #1 langs 0000 0411
+  name #2 langs 0000
+  name #7 langs 0000
+type #9
+  name #600 langs 0409
+type #10
+  name NAMED langs 0409
+  name #200 langs 0409
+  name #201 langs 0409
+type #16
+  name #1 langs 0409
+type #24
+  name #1 langs 0409
+stop at first type
+find #200 #10 lang ffff: 1 err 0 size 17 bytes 7263646174612062797465730034127856
+find #201 #10 lang ffff: 1 err 0 size 6 bytes 010002000300
+find NAMED #10 lang ffff: 1 err 0 size 6 bytes 6e616d656400
+find named #10 lang ffff: 1 err 0 size 6 bytes 6e616d656400
+find #200 #10 lang ffff: 1 err 0 size 17 bytes 7263646174612062797465730034127856
+find #300 MYTYPE lang ffff: 1 err 0 size 12 bytes 637573746f6d207479706500
+find #300 mytype lang ffff: 1 err 0 size 12 bytes 637573746f6d207479706500
+find LOWER MYTYPE lang ffff: 1 err 0 size 11 bytes 6c6f776572206e616d6500
+find #999 #10 lang ffff: 0 err 1814
+find #200 NOTYPE lang ffff: 0 err 1813
+find #200 #10 lang 0: 1 err 0 size 17 bytes 7263646174612062797465730034127856
+find #200 #10 lang 411: 0 err 1815
+find #200 #10 lang 409: 1 err 0 size 17 bytes 7263646174612062797465730034127856
+find #1 #6 lang ffff: 1 err 0 size 56 bytes 00000500680065006c006c006f000700e5652c679e8a6e30
+find #2 #6 lang ffff: 1 err 0 size 56 bytes 00000c007300650063006f006e006400200062006c006f00
+find #1 #6 lang 411: 1 err 0 size 58 bytes 000000000000000000000d006a006100700061006e006500
+find #1 #16 lang ffff: 1 err 0 size 368 bytes 700134000000560053005f00560045005200530049004f00
+SizeofResource(NULL, NULL)                                             = 0 err 87
+LoadResource(NULL, NULL) != NULL                                       = 0 err 87
+LockResource(NULL) != NULL                                             = 0 err 57005
+FreeResource(NULL)                                                     = 0 err 57005
+LoadStringA 1 cap 64: 5 err 57005 [68656c6c6f00] next 23
+LoadStringA 1 cap 3: 2 err 57005 [686500] next 23
+LoadStringA 1 cap 1: 0 err 57005 [00] next 23
+LoadStringA 1 cap 0: -1 err 57005 [] next 23
+LoadStringA 2 cap 64: 14 err 57005 [93fa967b8cea82cc95b68e9a97f100] next 23
+LoadStringA 2 cap 8: 6 err 57005 [93fa967b8cea00] next 23
+LoadStringA 2 cap 9: 8 err 57005 [93fa967b8cea82cc00] next 23
+LoadStringA 3 cap 64: 0 err 57005 [00] next 23
+LoadStringA 4 cap 64: 0 err 57005 [00] next 23
+LoadStringA 5 cap 64: 0 err 57005 [00] next 23
+LoadStringA 17 cap 64: 12 err 57005 [7365636f6e6420626c6f636b00] next 23
+LoadStringA 100 cap 10: 9 err 57005 [61206c6f6e6765722000] next 23
+LoadStringA 9999 cap 64: 0 err 1814 [00] next 23
+LoadStringW 1 cap 64: 5 err 57005 [00680065006c006c006f0000]
+LoadStringW 1 cap 3: 2 err 57005 [006800650000]
+LoadStringW 1 cap 1: 0 err 57005 [0000]
+LoadStringW 1 cap 0: 5 err 57005 [00680065006c006c006f after 0007]
+LoadStringW 2 cap 64: 7 err 57005 [65e5672c8a9e306e65875b5752170000]
+LoadStringW 2 cap 4: 3 err 57005 [65e5672c8a9e0000]
+LoadStringW 2 cap 0: 7 err 57005 [65e5672c8a9e306e65875b575217 after 0000]
+LoadStringW 3 cap 64: 0 err 57005 [0000]
+LoadStringW 3 cap 0: 0 err 57005 []
+LoadStringW 4 cap 64: 0 err 57005 [0000]
+LoadStringW 5 cap 64: 0 err 57005 [0000]
+LoadStringW 17 cap 64: 12 err 57005 [007300650063006f006e006400200062006c006f0063006b0000]
+LoadStringW 100 cap 10: 9 err 57005 [00610020006c006f006e00670065007200200000]
+LoadStringW 9999 cap 64: 0 err 1814 [0000]
+LoadStringW 9999 cap 0: 0 err 1814 []
+menu 1 count 2
+  item 0: 1 id 9502927 type 0 state 0 sub 1 text [&File] cch 5
+  item 1: 1 id 403 type 0 state 8 sub 0 text [&Help] cch 5
+  item 2: 0 id 0 type 0 state 0 sub 0 text [] cch 64
+sub count 3 id0 401 id1 0 state2 1
+  item 0: 1 id 401 type 0 state 0 sub 0 text [&Open	Ctrl+O] cch 12
+  item 1: 1 id 0 type 800 state 3 sub 0 text [] cch 0
+  item 2: 1 id 402 type 0 state 1 sub 0 text [E&xit] cch 5
+GetMenuStringA 5 [&Help]
+GetMenuState 403 8 401 0 999 ffffffff
+CheckMenuItem 0 0
+EnableMenuItem 1 -1
+DestroyMenu(m)                                                         = 1 err 57005
+LoadMenuA(NULL, MAKEINTRESOURCEA(401)) != NULL                         = 0 err 1814
+accel 1 count 2 [9 4f 401] [1 70 403] count only 2
+dialog size 152 head 0100ffff00000000000000004000c08002000a001400c8006400
+version size nonzero 1 handle 0
+GetFileVersionInfoA(path, 0, vs, vi)                                   = 1 err 0
+VerQueryValueA(vi, "\\", (void **)&ff, &len)                           = 1 err 0
+fixed len 52 sig feef04bd ver 10002.30004 prod 50006.70008 mask 3f os 40004 type 1
+VerQueryValueA(vi, "\\VarFileInfo\\Translation", (void **)&tr, &len)   = 1 err 0
+translation len 4 4b00411
+query \StringFileInfo\041104b0\CompanyName: 1 len 7 [77696e726566]
+query \StringFileInfo\041104b0\FileDescription: 1 len 15 [838a835c815b835882cc8e8e8cb1]
+query \StringFileInfo\041104B0\ProductName: 1 len 6 [6970706169]
+query \StringFileInfo\040904b0\CompanyName: 0 len 0 []
+query \StringFileInfo\041104b0\Missing: 0 len 0 []
+VerQueryValueW(vi, L"\\StringFileInfo\\041104b0\\FileDescription", (void **)&wv, &len) = 1 err 0
+wide len 8 [30ea30bd30fc30b9306e8a669a130000]
+GetFileVersionInfoSizeA("C:\\no\\such.exe", &hnd)                      = 0 err 2
