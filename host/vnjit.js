@@ -44,6 +44,14 @@ addToLibrary({
     return base;
   },
 
+  // a module nothing refers to any more (crates/kura/src/jit.rs reclaim): its slots cleared,
+  // so that V8 can collect it (the table holds the only reference)
+  vnvm_jit_free__deps: ['$VNJIT'],
+  vnvm_jit_free__sig: 'vii',
+  vnvm_jit_free: (base, n) => {
+    for (let i = 0; i < n; i++) VNJIT.table.set(base + i, null);
+  },
+
   // the index of the saved regions (see pre.js; the parts' indexes one after another): its
   // length, copied to `ptr` if it fits
   vnvm_jit_bundle_idx__sig: 'ipp',

@@ -589,6 +589,8 @@ fn detail(w: &mut impl Write, cpu: &Cpu, mods: &[Module], own_thread: bool, dept
     }
     let c = crate::jit::compiled_totals();
     let _ = write!(w, "\n  jit: on {} (x64 {}), regions built {}, functions {}, rebuilt {}, call depth {}", crate::jit::enabled(), crate::jit::enabled64(), c[0], c[1], c[2], cpu.jit_depth);
+    let m = crate::jit::jit_modules();
+    let _ = write!(w, "\n  jit modules: loaded {} ({} KiB), freed {} ({} KiB), table {}", m[0], m[1] >> 10, m[3], m[4] >> 10, m[2]);
 }
 
 fn find_thread(cpu: &Cpu) -> Option<&'static ThreadLog> {

@@ -202,3 +202,16 @@ play uses.
 flatbench (Chromium、中央値): FN 3.4 s / リージョン 9.0 s。範囲チェックあり (Android 相当) で 4.6 / 10.8 s。
 Reunion (キャッシュなし): FN タイトル 15〜17 s・本編 0.35〜0.37 コア、リージョン 14〜16 s・0.32〜0.36 コア (ノイズの範囲で
 ほぼ同じ)。直接呼び出しだけの合成ベンチ (cb.exe) はリージョンの方が速い (リージョンは呼び先を合併する)。
+
+## Freeing modules nothing refers to (2026-11-07)
+
+Each load (a region, a function's adapter and body, a batch of functions) is a module of its
+own, referenced only by this thread's table. A merge, a function built again, or a function
+taking a region's blocks leaves the old one unreachable: every jump into translated code reads
+its table index from the hash table or the call cache (koji never bakes one into code). Every
+64 loads (`IPPAI_JIT_RECLAIM`, 1 = every load, 0 = never) kura's `reclaim` marks the slots those
+two name and clears the slots of loads none of whose slots is named (`vnvm_jit_free`), so V8 can
+collect the module. The saved bundle stays (one instance; its regions are entered on demand).
+Slots are not reused. Counts: `IPPAI_JIT_COUNT` (`freed N (KiB)`) and the crash log's
+`jit modules` line. flatbench reps=3: 869 modules loaded (8.4 MB), 105 freed (1.5 MB).
+host/tests pass with `IPPAI_JIT_RECLAIM=1` (CI runs them so on sake-grow).

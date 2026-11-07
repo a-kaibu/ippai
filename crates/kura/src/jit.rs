@@ -184,6 +184,7 @@ const MAX_BLOCKS: usize = 1024;
 extern "C" {
     fn vnvm_jit_init(ptr: *const u8, len: usize);
     fn vnvm_jit_load(ptr: *const u8, len: usize, n: u32) -> i32;
+    fn vnvm_jit_free(base: u32, n: u32);
     // JavaScript forwards this address to generated Wasm; it does not use Cpu's Rust layout.
     fn vnvm_jit_run(cpu: *mut std::ffi::c_void) -> i32;
     fn vnvm_jit_bundle_idx(ptr: *mut u8, cap: usize) -> i32;
@@ -225,6 +226,68 @@ struct State {
     done_rx: std::sync::mpsc::Receiver<Batch>,
     /// sites whose hint changed (a site going to several targets keeps its second hint)
     rehinted: HashSet<u32>,
+    /// modules loaded one by one (not the saved bundle): (first table index, functions, bytes),
+    /// for reclaim
+    loads: Vec<(u32, u32, u32)>,
+    /// loads since the last reclaim
+    since_reclaim: u32,
+}
+
+/// Loads between two looks for modules nothing refers to any more (reclaim); IPPAI_JIT_RECLAIM
+/// sets it (1: after every load, the tests' stress), 0 never.
+static RECLAIM_EVERY: AtomicU32 = AtomicU32::new(64);
+
+/// Frees this thread's modules no entry refers to any more: a region merged into a bigger one,
+/// a function built again, a region a function took the place of. Every jump into translated
+/// code goes through the hash table or the call cache (koji never bakes a table index into
+/// code), so a module none of whose table slots either holds is never entered again; its slots
+/// are cleared (vnvm_jit_free) and V8 can collect it. Slots are not reused (the table only
+/// grows: a stale index in the ring never names another module). A module running further up
+/// this thread's stack is not affected: clearing a slot does not stop code already in it, and
+/// what it calls next is looked up again.
+fn reclaim(st: &mut State) {
+    st.since_reclaim = 0;
+    let mask = (1u32 << jit::ENTRY_SHIFT) - 1;
+    let mut live = HashSet::new();
+    // (a function's entry names its adapter; the function itself is the next slot)
+    let mut mark = |v: u32| {
+        live.insert(v & mask);
+        if v & jit::FN_TAG != 0 {
+            live.insert((v & mask) + 1);
+        }
+    };
+    st.hash.iter().filter(|e| e[0] != 0).for_each(|e| mark(e[1]));
+    st.calls.iter().filter(|c| c[0] != 0).for_each(|c| mark(c[1]));
+    let mut freed = (0u64, 0u64);
+    let mut gone = Vec::new();
+    st.loads.retain(|&(base, n, bytes)| {
+        if (base..base + n).any(|i| live.contains(&i)) {
+            return true;
+        }
+        gone.push((base, n));
+        freed.0 += 1;
+        freed.1 += bytes as u64;
+        false
+    });
+    for (base, n) in gone {
+        #[cfg(target_os = "emscripten")]
+        unsafe {
+            vnvm_jit_free(base, n)
+        };
+        for i in base..base + n {
+            st.roots.remove(&i);
+        }
+    }
+    MODULES[3].fetch_add(freed.0, Ordering::Relaxed);
+    MODULES[4].fetch_add(freed.1, Ordering::Relaxed);
+}
+
+/// Notes a module loaded at `base` (by itself: reclaim may free it once nothing refers to it).
+fn note_load(st: &mut State, base: i32, n: u32, bytes: usize) {
+    if base >= 0 {
+        st.loads.push((base as u32, n, bytes as u32));
+        st.since_reclaim += 1;
+    }
 }
 
 /// Samples of the same jump between regions (out of RING_SIZE) that make them merge.
@@ -256,9 +319,15 @@ struct Shared {
 /// Shared regions by their roots.
 static SHARED: Mutex<Option<HashMap<Vec<u32>, Vec<Arc<Shared>>>>> = Mutex::new(None);
 
-/// What the translations hold (IPPAI_JIT_COUNT prints it; never freed so far): modules loaded
-/// (each thread's own), their bytes, the highest table index they took (all threads).
-static MODULES: [std::sync::atomic::AtomicU64; 3] = [const { std::sync::atomic::AtomicU64::new(0) }; 3];
+/// What the translations hold (IPPAI_JIT_COUNT prints it, jit_modules): modules loaded (each
+/// thread's own), their bytes, the highest table index they took (all threads), modules freed
+/// (reclaim) and their bytes.
+static MODULES: [std::sync::atomic::AtomicU64; 5] = [const { std::sync::atomic::AtomicU64::new(0) }; 5];
+
+/// [`MODULES`]: loaded, bytes, table, freed, freed bytes (the run log's perf lines).
+pub(crate) fn jit_modules() -> [u64; 5] {
+    MODULES.each_ref().map(|c| c.load(Ordering::Relaxed))
+}
 
 #[cfg(target_os = "emscripten")]
 fn loaded(base: i32, n: u32, bytes: usize) -> i32 {
@@ -510,6 +579,8 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
                 site_fn: HashMap::new(),
                 hints: HashMap::new(),
                 rehinted: HashSet::new(),
+                loads: Vec::new(),
+                since_reclaim: 0,
             }
         });
         f(st)
@@ -547,6 +618,9 @@ fn init_flags() {
                 p.store(a, Ordering::Relaxed);
             }
         }
+        if let Some(n) = std::env::var("IPPAI_JIT_RECLAIM").ok().and_then(|v| v.parse().ok()) {
+            RECLAIM_EVERY.store(n, Ordering::Relaxed);
+        }
         if std::env::var("IPPAI_JIT_HOIST").is_ok_and(|v| v == "0") {
             jit::HOIST.store(false, Ordering::Relaxed);
         }
@@ -560,8 +634,8 @@ fn init_flags() {
                     let (sn, sb) = shared_size();
                     let m: Vec<u64> = MODULES.iter().map(|c| c.load(Relaxed)).collect();
                     eprintln!(
-                        "vnjit count/{secs}s {} | regions {} {} ms, functions {} {} ms (rebuilt {}, {} ms) | shared {sn} ({} KiB), loaded {} modules ({} KiB), table {}",
-                        v.join(" "), c[0], c[1] / 1000, c[2], c[3] / 1000, c[4], c[5] / 1000, sb >> 10, m[0], m[1] >> 10, m[2]
+                        "vnjit count/{secs}s {} | regions {} {} ms, functions {} {} ms (rebuilt {}, {} ms) | shared {sn} ({} KiB), loaded {} modules ({} KiB), table {}, freed {} ({} KiB)",
+                        v.join(" "), c[0], c[1] / 1000, c[2], c[3] / 1000, c[4], c[5] / 1000, sb >> 10, m[0], m[1] >> 10, m[2], m[3], m[4] >> 10
                     );
                 });
             }
@@ -601,6 +675,10 @@ pub fn run(cpu: &mut Cpu) -> Ran {
     with_state(|st| {
         if !st.pending.is_empty() {
             take_built(st, &mut Linear);
+        }
+        let every = RECLAIM_EVERY.load(Ordering::Relaxed);
+        if every != 0 && st.since_reclaim >= every {
+            reclaim(st);
         }
         // (16-bit regions stay one per root: each translated with its own code segment's base)
         if st.ring[0] >= jit::RING_SIZE {
@@ -797,6 +875,7 @@ fn load(st: &mut State, bytes: &[u8], roots: Vec<u32>, starts: &[(u32, u32)]) ->
     if base < 0 {
         return false;
     }
+    note_load(st, base, 1, bytes.len());
     enter(st, base as u32, roots, starts);
     true
 }
@@ -1606,7 +1685,8 @@ fn take_built(st: &mut State, mem: &mut Linear) {
                 #[cfg(target_os = "emscripten")]
                 let b = loaded(unsafe { vnvm_jit_load(m.as_ptr(), m.len(), n as u32) }, n as u32, m.len());
                 #[cfg(not(target_os = "emscripten"))]
-                let b = { let _ = (m, n); -1 };
+                let b = { let _ = (&m, n); -1 };
+                note_load(st, b, n as u32, m.len());
                 if crate::env_on!("IPPAI_JIT_TIME") {
                     eprintln!("vnjit time batch of {}: load {:?}", n / 2, t0.elapsed());
                 }
@@ -1696,6 +1776,7 @@ fn install_fn(st: &mut State, eip: u32, bytes: &[u8], starts: &[(u32, u32)], sit
     if base < 0 {
         return false;
     }
+    note_load(st, base, 2, bytes.len());
     enter_fn(st, base as u32, eip, starts, sites, code);
     true
 }
