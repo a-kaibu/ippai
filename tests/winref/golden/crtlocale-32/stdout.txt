@@ -1,0 +1,14 @@
+msvcrt.dll _create_locale ok
+msvcrt.dll locinfo acp at
+msvcrt.dll locinfo pctype at
+msvcrt.dll locinfo lower map at 0xcc
+msvcrt.dll locinfo upper map at 0xd0
+msvcrt.dll mbcinfo acp at
+msvcrt.dll mbcinfo mbctype at 0x1c 0x20
+ucrtbase.dll _create_locale ok
+ucrtbase.dll locinfo acp at 0x8 0x10 0x14 0xc4
+ucrtbase.dll locinfo pctype at
+ucrtbase.dll locinfo lower map at 0x94
+ucrtbase.dll locinfo upper map at 0x98
+ucrtbase.dll mbcinfo acp at 0x4
+ucrtbase.dll mbcinfo mbctype at 0x18 0x1c 0x20
