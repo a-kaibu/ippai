@@ -615,9 +615,9 @@ fn _fileno(c: &mut Ctx) -> u32 {
     }
 }
 /// _fdopen / _wfdopen (fd, mode): a stream over the descriptor's file
-fn fdopen(fd: u32) -> u32 {
+fn fdopen(fd: u32, mode: &[u8]) -> u32 {
     match get(fd).map(|d| d.kind) {
-        Some(Kind::File(f)) => new_stream_of(f, fd),
+        Some(Kind::File(f)) => new_stream_of(f, fd, mode_flag(mode)),
         Some(Kind::Std(i)) => data("_iob").unwrap() + file_size() * i as u32,
         None => {
             set_errno(EBADF);
@@ -626,10 +626,11 @@ fn fdopen(fd: u32) -> u32 {
     }
 }
 fn _fdopen(c: &mut Ctx) -> u32 {
-    fdopen(c.a(0))
+    fdopen(c.a(0), &cstr(c.a(1)))
 }
 fn _wfdopen(c: &mut Ctx) -> u32 {
-    fdopen(c.a(0))
+    let mode: Vec<u8> = wstr(c.a(1)).iter().map(|&u| u as u8).collect();
+    fdopen(c.a(0), &mode)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1621,7 +1622,7 @@ fn setbuf(_: &mut Ctx) -> u32 {
     0
 }
 fn clearerr(c: &mut Ctx) -> u32 {
-    with_file(c.a(0), |s| s.eof = false);
+    with_file(c.a(0), |s| s.set_eof(false));
     0
 }
 /// fputwc(wc, stream): the character's bytes in the locale, WEOF (EILSEQ) when it has none
@@ -1669,7 +1670,7 @@ fn ungetwc(c: &mut Ctx) -> u32 {
     }
     with_file(fp, |s| {
         s.unget = Some(u as u8);
-        s.eof = false;
+        s.set_eof(false);
         u
     })
     .unwrap_or(0xffff)

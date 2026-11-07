@@ -1695,11 +1695,46 @@ fn file_size() -> u32 {
 }
 
 struct Stream {
+    /// the guest FILE
+    at: u32,
     f: Option<Arc<File>>,
     /// its descriptor (_fileno)
     fd: u32,
     eof: bool,
     unget: Option<u8>,
+}
+
+// msvcrt FILE._flag bits (mingw's and old MSVC's feof / ferror / fileno macros read the FILE)
+const IOREAD: u32 = 1;
+const IOWRT: u32 = 2;
+const IOEOF: u32 = 0x10;
+const IORW: u32 = 0x80;
+/// FILE._flag and FILE._file: after _ptr, _cnt, _base
+fn flag_off() -> u32 {
+    3 * ps()
+}
+impl Stream {
+    fn new(at: u32, f: Option<Arc<File>>, fd: u32, flag: u32, eof: bool) -> Stream {
+        w32(at + flag_off(), flag);
+        w32(at + flag_off() + 4, fd);
+        Stream { at, f, fd, eof, unget: None }
+    }
+    /// The end-of-file indicator, in the guest's FILE too.
+    fn set_eof(&mut self, v: bool) {
+        self.eof = v;
+        let a = self.at + flag_off();
+        w32(a, (r32(a) & !IOEOF) | if v { IOEOF } else { 0 });
+    }
+}
+/// fopen's mode -> FILE._flag
+fn mode_flag(mode: &[u8]) -> u32 {
+    if mode.contains(&b'+') {
+        IORW
+    } else if mode.first() == Some(&b'r') {
+        IOREAD
+    } else {
+        IOWRT
+    }
 }
 
 static FILES: Mutex<Option<HashMap<u32, Stream>>> = Mutex::new(None);
@@ -1709,7 +1744,9 @@ fn iob() -> u32 {
     let mut g = FILES.lock().unwrap();
     let m = g.get_or_insert_with(HashMap::default);
     for i in 0..3 {
-        m.insert(p + file_size() * i, Stream { f: None, fd: i, eof: true, unget: None });
+        // (sake's stdin reads nothing: at its end, but feof says so only once read)
+        let st = Stream::new(p + file_size() * i, None, i, if i == 0 { IOREAD } else { IOWRT }, false);
+        m.insert(p + file_size() * i, Stream { eof: true, ..st });
     }
     p
 }
@@ -1732,15 +1769,15 @@ fn fopen_mode(path: &str, mode: &[u8]) -> Option<File> {
     }
     Some(f)
 }
-fn new_stream(f: File) -> u32 {
+fn new_stream(f: File, mode: &[u8]) -> u32 {
     let f = Arc::new(f);
     let fd = io::fd_of_file(f.clone());
-    new_stream_of(f, fd)
+    new_stream_of(f, fd, mode_flag(mode))
 }
 /// A stream over descriptor `fd`'s file (fclose closes the descriptor too).
-fn new_stream_of(f: Arc<File>, fd: u32) -> u32 {
+fn new_stream_of(f: Arc<File>, fd: u32, flag: u32) -> u32 {
     let fp = mem::heap_alloc(file_size(), true);
-    FILES.lock().unwrap().get_or_insert_with(HashMap::default).insert(fp, Stream { f: Some(f), fd, eof: false, unget: None });
+    FILES.lock().unwrap().get_or_insert_with(HashMap::default).insert(fp, Stream::new(fp, Some(f), fd, flag, false));
     fp
 }
 /// _get_stream_buffer_pointers(stream, &base, &ptr, &cnt): the FILE's buffer fields (UCRT
@@ -1753,9 +1790,9 @@ fn _get_stream_buffer_pointers(c: &mut Ctx) -> u32 {
     0
 }
 fn fopen(c: &mut Ctx) -> u32 {
-    let path = a2s(&cstr(c.a(0)));
-    match fopen_mode(&path, &cstr(c.a(1))) {
-        Some(f) => new_stream(f),
+    let (path, mode) = (a2s(&cstr(c.a(0))), cstr(c.a(1)));
+    match fopen_mode(&path, &mode) {
+        Some(f) => new_stream(f, &mode),
         None => {
             set_errno(2);
             0
@@ -1766,7 +1803,7 @@ fn _wfopen(c: &mut Ctx) -> u32 {
     let path = String::from_utf16_lossy(&wstr(c.a(0)));
     let mode: Vec<u8> = wstr(c.a(1)).iter().map(|&u| u as u8).collect();
     match fopen_mode(&path, &mode) {
-        Some(f) => new_stream(f),
+        Some(f) => new_stream(f, &mode),
         None => {
             set_errno(2);
             0
@@ -1834,7 +1871,7 @@ fn fread_to(buf: u32, size: u32, n: u32, fp: u32) -> u32 {
         }
         got += f.read_into(at, total - got);
         if got < total {
-            s.eof = true;
+            s.set_eof(true);
         }
         got / size
     })
@@ -1860,7 +1897,7 @@ fn fseek(c: &mut Ctx) -> u32 {
 }
 fn seek(fp: u32, off: i64, whence: u32) -> u32 {
     // (msvcrt clears the end-of-file flag first, also when the seek then fails)
-    with_file(fp, |s| s.eof = false);
+    with_file(fp, |s| s.set_eof(false));
     if fp == 0 || whence > 2 || (whence == 0 && off < 0) {
         set_errno(22); // EINVAL
         return u32::MAX;
@@ -1874,7 +1911,7 @@ fn seek(fp: u32, off: i64, whence: u32) -> u32 {
         };
         if f.seek(pos).is_some() {
             s.unget = None;
-            s.eof = false;
+            s.set_eof(false);
             0
         } else {
             set_errno(22);
@@ -1913,9 +1950,9 @@ fn _fseeki64(c: &mut Ctx) -> u32 {
 fn fsetpos(c: &mut Ctx) -> u32 {
     let (fp, off) = (c.a(0), mem::r64(c.a(1)));
     with_file(fp, |s| {
-        let Some(f) = &s.f else { return u32::MAX };
+        let Some(f) = s.f.clone() else { return u32::MAX };
         s.unget = None;
-        s.eof = false;
+        s.set_eof(false);
         if f.seek(SeekFrom::Start(off)).is_some() { 0 } else { u32::MAX }
     })
     .unwrap_or(u32::MAX)
@@ -2009,7 +2046,7 @@ finds! {
 fn rewind(c: &mut Ctx) -> u32 {
     with_file(c.a(0), |s| {
         s.unget = None;
-        s.eof = false;
+        s.set_eof(false);
         if let Some(f) = &s.f {
             f.seek(SeekFrom::Start(0));
         }
@@ -2036,7 +2073,7 @@ fn getc_of(fp: u32) -> u32 {
         let b = r8(tmp);
         mem::heap_free(tmp);
         if got == 0 {
-            s.eof = true;
+            s.set_eof(true);
             u32::MAX
         } else {
             b as u32
@@ -2054,7 +2091,7 @@ fn ungetc(c: &mut Ctx) -> u32 {
     }
     with_file(fp, |s| {
         s.unget = Some(ch as u8);
-        s.eof = false;
+        s.set_eof(false);
         ch
     })
     .unwrap_or(u32::MAX)
@@ -2196,7 +2233,7 @@ fn fopen_s(c: &mut Ctx) -> u32 {
     if pf == 0 {
         return 22;
     }
-    let fp = fopen_mode(&path, &mode).map_or(0, new_stream);
+    let fp = fopen_mode(&path, &mode).map_or(0, |f| new_stream(f, &mode));
     wp(pf, fp);
     if fp == 0 { 2 } else { 0 }
 }
@@ -2206,7 +2243,7 @@ fn _wfopen_s(c: &mut Ctx) -> u32 {
     }
     let path = String::from_utf16_lossy(&wstr(c.a(1)));
     let mode: Vec<u8> = wstr(c.a(2)).iter().map(|&u| u as u8).collect();
-    let fp = fopen_mode(&path, &mode).map_or(0, new_stream);
+    let fp = fopen_mode(&path, &mode).map_or(0, |f| new_stream(f, &mode));
     wp(c.a(0), fp);
     if fp == 0 { 2 } else { 0 }
 }
