@@ -5,9 +5,11 @@
 # (docs/replay.md, "Games"). Nobody runs the games again unless asked (`again`).
 #   prep    downloads and unpacks each trial (tests/corpus-prep.sh), finds its API and width
 #           (tests/replay/gameapi.py)
-#   record  on Windows: the game under apitrace for `seconds` to its title screen
-#           (tests/replay/record-game.ps1), zstd, in parts under 100 MB (GitHub's limit)
-#   commit  the traces that convert (the apitrace crate) into testdata/apitrace
+#   record  on Windows: the game under apitrace, played as corpusref.yml plays it (Japanese
+#           fonts, a sound card, tests/corpus/winplay.py: to its title screen, its steps, then
+#           `seconds` of story clicks; tests/replay/record-game.ps1)
+#   commit  the traces that convert (the apitrace crate) into testdata/apitrace: zstd, in parts
+#           under 100 MB (GitHub's limit)
 name: Game traces
 
 on:
@@ -21,8 +23,8 @@ on:
         description: "only these title ids (space-separated; default tests/replay/games.txt)"
         default: ""
       seconds:
-        description: "seconds each game runs under apitrace"
-        default: "60"
+        description: "seconds of story clicks after the title screen (tests/corpus/winplay.py STORY)"
+        default: "30"
       again:
         description: "record the titles that have a trace already too"
         type: boolean
@@ -93,6 +95,7 @@ jobs:
           echo "$ID: $e: $api, $bits-bit"
           mkdir -p game && mv "$g" game/x
           printf '%s\n%s\n%s\n' "$api" "$bits" "$e" > game/meta.txt
+          python3 tests/corpus/winplay.py meta tests/corpus/titles.tsv "$ID" "$e" game/meta.json
           # (a game without D3D8/9/11: only its meta goes on)
           [ "$api" = none ] && rm -rf game/x
           true
@@ -106,7 +109,7 @@ jobs:
     needs: [plan, prep]
     if: ${{ !cancelled() && needs.plan.outputs.ids != '[]' }}
     runs-on: windows-2025
-    timeout-minutes: 30
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       max-parallel: 8
@@ -167,16 +170,63 @@ jobs:
           f=$(find "$RUNNER_TEMP/at" -name apitrace.exe | head -1)
           [ -n "$f" ] || { echo "no apitrace.exe in the $a build"; exit 1; }
           echo "APITRACE=$(cygpath -w "$f")" >> "$GITHUB_ENV"
+      # (as corpusref.yml: MS Gothic and the other Japanese fonts, a feature on demand on an English
+      # Windows; a sound card, without which DirectSound fails and games stop at an error box:
+      # Scream, github.com/duncanthrax/scream, its author's certificate trusted)
+      - name: Japanese fonts
+        if: steps.meta.outputs.api != 'none'
+        shell: pwsh
+        timeout-minutes: 12
+        continue-on-error: true
+        run: |
+          if (Test-Path C:\Windows\Fonts\msgothic.ttc) { "MS Gothic is there"; exit 0 }
+          $j = Start-Job { Add-WindowsCapability -Online -Name 'Language.Fonts.Jpan~~~und-JPAN~0.0.1.0' }
+          if (-not (Wait-Job $j -Timeout 600)) { Stop-Job $j; throw "the Japanese fonts did not install in 10 minutes" }
+          Receive-Job $j
+          "msgothic.ttc: $(Test-Path C:\Windows\Fonts\msgothic.ttc)"
+      - name: Virtual sound card
+        if: steps.meta.outputs.api != 'none'
+        shell: pwsh
+        timeout-minutes: 5
+        continue-on-error: true
+        run: |
+          Invoke-WebRequest -Uri https://github.com/duncanthrax/scream/releases/download/4.0/Scream4.0.zip -OutFile Scream4.0.zip
+          "Scream4.0.zip sha256 $((Get-FileHash Scream4.0.zip).Hash)"
+          Expand-Archive -Path Scream4.0.zip -DestinationPath Scream
+          $sys = Get-ChildItem -Recurse Scream -Filter Scream.sys | Where-Object { $_.FullName -match 'x64' } | Select-Object -First 1
+          $cert = (Get-AuthenticodeSignature $sys.FullName).SignerCertificate
+          $store = [System.Security.Cryptography.X509Certificates.X509Store]::new('TrustedPublisher', 'LocalMachine')
+          $store.Open('ReadWrite'); $store.Add($cert); $store.Close()
+          $devcon = Get-ChildItem -Recurse Scream -Filter devcon-x64.exe | Select-Object -First 1
+          Push-Location $sys.DirectoryName
+          $p = Start-Process -FilePath $devcon.FullName -ArgumentList 'install', 'Scream.inf', '*Scream' -PassThru -NoNewWindow
+          if (-not $p.WaitForExit(120000)) { Stop-Process -Id $p.Id -Force; throw "devcon did not finish" }
+          Pop-Location
+          "devcon exit $($p.ExitCode)"
+          Set-Service Audiosrv -StartupType Automatic; Start-Service Audiosrv
+          Get-CimInstance Win32_SoundDevice | Select-Object Name, Status
+      - name: Windows
+        if: steps.meta.outputs.api != 'none'
+        shell: pwsh
+        run: python tests/corpus/winplay.py setup
       - name: Record ${{ matrix.id }}
         if: steps.meta.outputs.api != 'none'
         shell: pwsh
+        timeout-minutes: 15
         env:
           API: ${{ steps.meta.outputs.api }}
-          EXE: ${{ steps.meta.outputs.exe }}
-          SECONDS_: ${{ inputs.seconds || '60' }}
+          STORY_: ${{ inputs.seconds || '30' }}
         run: |
           New-Item -ItemType Directory -Force out | Out-Null
-          tests/replay/record-game.ps1 -Apitrace $env:APITRACE -Api $env:API -Exe "game/x/$env:EXE" -Out out/game.trace -Seconds ([int]$env:SECONDS_)
+          tests/replay/record-game.ps1 -Apitrace $env:APITRACE -Api $env:API -Game game -Out out/game.trace -Shots shots -Story ([int]$env:STORY_)
+      # (what the game got to: winplay's pictures, for a look; never committed)
+      - if: ${{ !cancelled() && steps.meta.outputs.api != 'none' }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: shots-${{ matrix.id }}
+          path: shots
+          retention-days: 7
+          if-no-files-found: ignore
       - name: What was recorded
         if: steps.meta.outputs.api != 'none'
         shell: bash
@@ -185,7 +235,7 @@ jobs:
           API: ${{ steps.meta.outputs.api }}
           BITS: ${{ steps.meta.outputs.bits }}
           EXE: ${{ steps.meta.outputs.exe }}
-          SECONDS_: ${{ inputs.seconds || '60' }}
+          SECONDS_: ${{ inputs.seconds || '30' }}
         run: |
           mkdir -p pack
           mv out/game.trace "pack/$ID-$BITS.trace"

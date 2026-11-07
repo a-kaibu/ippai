@@ -79,6 +79,22 @@ expect("games.txt", [i for i in games.listed() if i not in games.titles()], [])
 for n in games.names():
     with tempfile.TemporaryDirectory() as d:
         games.unpack(os.path.join(games.GAMES, n), os.path.join(d, "t"))
+# (gametrace.yml calls record-game.ps1 with the parameters it declares, and record-game.ps1
+# calls winplay.py's `play` with its usage: no Windows runner needed to find a renamed one)
+import re
+root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
+ps1 = open(os.path.join(root, "tests/replay/record-game.ps1"), encoding="utf-8").read()
+declared = set(re.findall(r"\[(?:string|int)\] \$(\w+)", ps1.split("$ErrorActionPreference")[0]))
+mandatory = set(re.findall(r"\[Parameter\(Mandatory\)\] \[\w+\] \$(\w+)", ps1))
+yml = open(os.path.join(root, ".github/workflows/gametrace.yml"), encoding="utf-8").read()
+call = [l for l in yml.splitlines() if "record-game.ps1 -" in l]
+expect("gametrace.yml: one record-game.ps1 call", len(call), 1)
+given = set(re.findall(r" -(\w+) ", call[0] + " ")) if call else set()
+expect("record-game.ps1: the parameters given are declared", sorted(given - declared), [])
+expect("record-game.ps1: the mandatory parameters are given", sorted(mandatory - given), [])
+winplay = open(os.path.join(root, "tests/corpus/winplay.py"), encoding="utf-8").read()
+expect("winplay.py: play GAME OUT", "a[:1] == ['play'] and len(a) == 3" in winplay and "winplay.py') play $Game $Shots" in ps1, True)
+expect("prep writes winplay's meta.json", "winplay.py meta tests/corpus/titles.tsv \"$ID\" \"$e\" game/meta.json" in yml, True)
 
 if fails:
     sys.exit(1)

@@ -64,8 +64,12 @@ replay (D3D8 CopyRects: apitrace records only its first rect).
 `.github/workflows/gametrace.yml` (when games.txt changes, or by hand) records each one once on
 the Windows runner: the trial downloaded and unpacked (`tests/corpus-prep.sh`), its API and width
 found (`gameapi.py`: the D3D DLLs its exe or the DLLs beside it name), the DirectX 9 runtime
-installed, the game run under apitrace for 60 s to its title screen and then closed
-(`record-game.ps1`). A trace that converts goes to `testdata/apitrace/<id>-<bits>`: zstd, in
+installed, and the game played under apitrace as `corpusref.yml` plays it (Japanese fonts, a
+virtual sound card, `tests/corpus/winplay.py`: code page 932, through a launcher to the title
+screen, the title's steps, then 30 s of story clicks) and ended (`record-game.ps1`). apitrace's
+wrapper DLL goes beside the exe with `TRACE_FILE` naming the trace (its injector starts the game
+through the ANSI code page, which has no Japanese folder names on the en-US runner). winplay's
+pictures are an artifact of the run (what the game got to), never committed. A trace that converts goes to `testdata/apitrace/<id>-<bits>`: zstd, in
 parts of at most 90 MiB (GitHub refuses files over 100 MB), with `<id>-<bits>.txt` (api, exe,
 seconds, the trace's sha256: `games.py`). The trace ends where the game was killed: the
 converter keeps the calls up to the last whole one (`-strict`, which build.sh uses for the
