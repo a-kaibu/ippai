@@ -13,6 +13,7 @@ pub mod d2d;
 pub mod d3d10;
 pub mod check;
 pub mod format;
+mod hazards;
 pub mod names;
 pub mod winfmt;
 #[cfg(test)]
@@ -1998,7 +1999,10 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
             return private_data(d, m, ctx, a);
         }
         7 | 16 => set_slots(d, &mut st.cbs[(m == 16) as usize], a(1), a(2), a(3)),
-        8 | 25 => set_slots(d, &mut st.srvs[(m == 8) as usize], a(1), a(2), a(3)),
+        8 | 25 => {
+            set_slots(d, &mut st.srvs[(m == 8) as usize], a(1), a(2), a(3));
+            hazards::after_srvs(d, st, (m == 8) as usize, a(1), a(2));
+        }
         9 => set_one(d, &mut st.ps, a(1)),
         10 | 26 => set_slots(d, &mut st.samplers[(m == 10) as usize], a(1), a(2), a(3)),
         11 => set_one(d, &mut st.vs, a(1)),
@@ -2019,6 +2023,7 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
                 st.vbs[s] = (new, if a(4) != 0 { rd(a(4), i as usize) } else { 0 }, if a(5) != 0 { rd(a(5), i as usize) } else { 0 });
                 d.rebind(new, old);
             }
+            hazards::after_buffers(d, st);
         }
         19 => {
             let new = d.id_of(a(1));
@@ -2090,6 +2095,7 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
                     set_slots(d, &mut u, 0, 8, 0);
                     st.uavs[0] = u;
                 }
+                hazards::after_outputs(d, st);
                 // the viewport follows the first target when the game never set one
                 if st.viewport[2] == 0.0 {
                     if let Some((w, h)) = view_size(d, st.rtvs[0]).or_else(|| view_size(d, st.dsv)) {
@@ -2176,16 +2182,23 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
         }
         // GS, HS, DS, CS: constant buffers, resources, samplers, shaders (kept, not drawn with)
         22 | 62 | 66 | 71 => set_slots(d, &mut st.cbs[stage_of(m)], a(1), a(2), a(3)),
-        31 | 59 | 63 | 67 => set_slots(d, &mut st.srvs[stage_of(m)], a(1), a(2), a(3)),
+        31 | 59 | 63 | 67 => {
+            set_slots(d, &mut st.srvs[stage_of(m)], a(1), a(2), a(3));
+            hazards::after_srvs(d, st, stage_of(m), a(1), a(2));
+        }
         32 | 61 | 65 | 70 => set_slots(d, &mut st.samplers[stage_of(m)], a(1), a(2), a(3)),
         23 | 60 | 64 | 69 => set_one(d, &mut st.shaders[stage_of(m) - 2], a(1)),
-        68 => set_slots(d, &mut st.uavs[1], a(1), a(2), a(3)),
+        68 => {
+            set_slots(d, &mut st.uavs[1], a(1), a(2), a(3));
+            hazards::after_outputs(d, st);
+        }
         37 => {
             // SOSetTargets(n, buffers, offsets): kept, nothing streams out
             let mut so = st.so;
             set_slots(d, &mut so, 0, 4, 0);
             set_slots(d, &mut so, 0, a(1).min(4), a(2));
             st.so = so;
+            hazards::after_buffers(d, st);
         }
         49 | 51 | 52 | 55 | 57 | 58 => {}
         38..=42 => {}
