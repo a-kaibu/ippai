@@ -112,8 +112,9 @@ var vnvmSnap = {
 // (the first process only: the ones it starts, host/node-main.js, have the host's kernel)
 if (ENVIRONMENT_IS_NODE && !ENVIRONMENT_IS_PTHREAD && !Module.vnvmKernel) {
   // (node 22's V8 12.4 drops i32 atomic stores to constant addresses at 2 GiB and above in its
-  // first tier, and the host's statics are all there: a store to a static atomic is lost)
-  if (+process.versions.node.split('.')[0] < 26) err(`sake: node ${process.versions.node}: use node 26 or later (node 22 loses atomic stores)`);
+  // first tier, and the host's statics are all there: a store to a static atomic is lost; a
+  // warning, by console.error: emscripten's err() isn't defined yet here)
+  if (+process.versions.node.split('.')[0] < 26) console.error(`sake: node ${process.versions.node}: use node 26 or later (node 22 loses atomic stores)`);
   if (process.env.IPPAI_SNAP_LOAD) {
     Module.wasmMemory = vnvmSnap.load(require('fs').readFileSync(process.env.IPPAI_SNAP_LOAD));
   }
