@@ -84,7 +84,7 @@ pub fn full_chain(w: u32, h: u32, d: u32) -> u32 {
 /// Whether CreateTexture* takes `t` (`init`: initial data given); its mip count if it does.
 pub fn texture(t: &Tex, init: bool) -> Result<u32, u32> {
     let bad = Err(E_INVALIDARG);
-    let Some((ok, _, _, _, _, cases)) = format(t.fmt) else { return bad };
+    let Some((ok, sup, _, _, _, cases)) = format(t.fmt) else { return bad };
     if !ok || t.w == 0 || t.h == 0 || t.layers == 0 || t.samples == 0 {
         return bad;
     }
@@ -97,6 +97,9 @@ pub fn texture(t: &Tex, init: bool) -> Result<u32, u32> {
     }
     let mips = if t.mips == 0 { max } else { t.mips };
     let need = |case: u32| cases & case != 0;
+    // (the probe asked for mips, cubes, 1D and 3D textures with a shader resource bind, and
+    // for multisampling with a render target one: without that bind, what the format supports)
+    let with = |case: u32, bind: u32, support: u32| need(case) || t.bind & bind == 0 && sup & support != 0;
     // the bind flags a texture takes, each as the format allows it
     if t.bind & !(BIND_VB | BIND_IB | BIND_CB | BIND_SRV | BIND_SO | BIND_RT | BIND_DS | BIND_UAV) != 0 {
         return bad;
@@ -128,20 +131,21 @@ pub fn texture(t: &Tex, init: bool) -> Result<u32, u32> {
     if t.cpu & !(CPU_READ | CPU_WRITE) != 0 {
         return bad;
     }
-    // multisampling: 2D, one level, a sample count with quality levels
+    // multisampling: 2D, one level, a sample count with quality levels (or the standard and
+    // center patterns, 0xffffffff and 0xfffffffe)
     if t.samples > 1 || t.quality > 0 {
         let levels = quality_levels(t.fmt, t.samples);
-        if t.dim != 2 || mips != 1 || levels == 0 || t.quality >= levels || t.misc & (MISC_CUBE | MISC_GENMIPS) != 0 || t.samples > 1 && !need(winfmt::MS4) {
+        if t.dim != 2 || mips != 1 || levels == 0 || t.quality >= levels && !(t.samples > 1 && t.quality >= 0xffff_fffe) || t.misc & (MISC_CUBE | MISC_GENMIPS) != 0 || t.samples > 1 && !with(winfmt::MS4, BIND_RT, 0x20_0000) {
             return bad;
         }
     }
-    if mips > 1 && !need(winfmt::MIPS) {
+    if mips > 1 && !with(winfmt::MIPS, BIND_SRV, 0x1000) {
         return bad;
     }
     if t.misc & (MISC_INDIRECT | MISC_RAW | MISC_STRUCTURED) != 0 || t.misc & MISC_SHARED != 0 && t.misc & MISC_KEYEDMUTEX != 0 {
         return bad;
     }
-    if t.misc & MISC_CUBE != 0 && (t.dim != 2 || t.layers % 6 != 0 || t.w != t.h || !need(winfmt::CUBE)) {
+    if t.misc & MISC_CUBE != 0 && (t.dim != 2 || t.layers < 6 || t.w != t.h || !with(winfmt::CUBE, BIND_SRV, 0x80)) {
         return bad;
     }
     if t.misc & MISC_GENMIPS != 0 && (t.bind & (BIND_RT | BIND_SRV) != BIND_RT | BIND_SRV || !need(winfmt::GENMIPS)) {
@@ -150,7 +154,7 @@ pub fn texture(t: &Tex, init: bool) -> Result<u32, u32> {
     if t.misc & MISC_GDI != 0 && (!matches!(t.fmt, 87 | 90 | 91) || t.bind & BIND_RT == 0) {
         return bad;
     }
-    if t.dim == 1 && t.bind & BIND_SRV != 0 && !need(winfmt::TEX1D) || t.dim == 3 && t.bind & BIND_SRV != 0 && !need(winfmt::TEX3D) {
+    if t.dim == 1 && !with(winfmt::TEX1D, BIND_SRV, 0x10) || t.dim == 3 && !with(winfmt::TEX3D, BIND_SRV, 0x40) {
         return bad;
     }
     Ok(mips)
@@ -190,7 +194,8 @@ pub fn buffer(size: u32, usage: u32, bind: u32, cpu: u32, misc: u32, stride: u32
         }
         _ => return bad,
     }
-    if misc & (MISC_GENMIPS | MISC_CUBE | MISC_GDI | MISC_KEYEDMUTEX) != 0 {
+    // (a keyed mutex alone is taken: Wine's test_create_buffer)
+    if misc & (MISC_GENMIPS | MISC_CUBE | MISC_GDI) != 0 || misc & MISC_SHARED != 0 && misc & MISC_KEYEDMUTEX != 0 {
         return bad;
     }
     if misc & MISC_STRUCTURED != 0 {
@@ -252,11 +257,62 @@ mod tests {
         assert!(ok(rgba(16, 16, 1, 1, 0x20, 0, 0, 0, 16)));
         assert!(!ok(rgba(16, 16, 1, 1, 0, 3, CPU_READ, 0, 4)));
         assert!(!ok(rgba(16, 16, 1, 1, 0x200, 0, 0, 0, 1)));
+        // (Wine's d3d11 test_create_depthstencil_view: a mip chain of a depth format)
+        assert!(texture(&Tex { dim: 2, w: 512, h: 512, layers: 1, mips: 10, fmt: 45, samples: 1, bind: 0x40, ..Tex::default() }, false).is_ok());
+        assert!(texture(&Tex { dim: 2, w: 512, h: 512, layers: 6, mips: 10, fmt: 45, samples: 1, bind: 0x40, misc: 4, ..Tex::default() }, false).is_ok());
+        assert!(texture(&Tex { dim: 2, w: 512, h: 512, layers: 1, mips: 1, fmt: 45, samples: 4, bind: 0x40, ..Tex::default() }, false).is_ok());
+        // (Wine's d3d11 test_standard_pattern)
+        assert!(texture(&Tex { dim: 2, w: 32, h: 32, layers: 1, mips: 1, fmt: 28, samples: 4, quality: 0xffff_ffff, bind: 0x28, ..Tex::default() }, false).is_ok());
+        assert!(texture(&Tex { dim: 2, w: 32, h: 32, layers: 1, mips: 1, fmt: 28, samples: 1, quality: 0xffff_ffff, bind: 0x28, ..Tex::default() }, false).is_err());
         assert!(!ok(rgba(16, 16, 1, 1, 0x1000, 0, 0, 0, 1)));
         assert!(texture(&Tex { dim: 2, w: 4, h: 4, layers: 1, mips: 1, fmt: 28, samples: 1, usage: 1, bind: 8, ..Tex::default() }, true).is_ok());
     }
 
     /// the probe's buffer cases
+    #[test]
+    fn cube_views() {
+        // a cube texture of 6 or more layers; NULL views are one cube below 12 layers
+        let cube = |mips, layers| Res { dim: 2, fmt: 28, mips, layers, bind: 8, cube: true, samples: 1, backbuffer: false };
+        let srv = |r: &Res, d: Option<&[u32]>| view(SRV, r, d).ok().map(|v| v.desc[..6].to_vec());
+        for (layers, want) in [(6, [28, 9, 0, 2, 0, 0]), (9, [28, 9, 0, 2, 0, 0]), (11, [28, 9, 0, 2, 0, 0]), (12, [28, 10, 0, 2, 0, 2]), (13, [28, 10, 0, 2, 0, 2]), (18, [28, 10, 0, 2, 0, 3])] {
+            let got = srv(&cube(2, layers), None).map(|mut g| {
+                if g[1] == 9 {
+                    g[4..].fill(0);
+                }
+                g
+            });
+            assert_eq!(got.as_deref(), Some(&want[..]), "{layers} layers");
+        }
+        // cube arrays: all (~0) of 8 layers is one cube
+        let m = u32::MAX;
+        assert_eq!(srv(&cube(1, 8), Some(&[0, 10, 0, m, 0, m])).as_deref(), Some(&[28, 10, 0, 1, 0, 1][..]));
+        assert_eq!(srv(&cube(1, 12), Some(&[0, 10, 0, m, 0, 1])).as_deref(), Some(&[28, 10, 0, 1, 0, 1][..]));
+        assert!(srv(&cube(1, 6), Some(&[28, 10, 0, 1, 1, 1])).is_none());
+        assert!(srv(&cube(1, 7), Some(&[28, 10, 0, 1, 0, 2])).is_none());
+        assert!(texture(&Tex { dim: 2, w: 16, h: 16, layers: 9, mips: 2, fmt: 28, samples: 1, bind: 8, misc: 4, ..Tex::default() }, false).is_ok());
+        assert!(texture(&Tex { dim: 2, w: 16, h: 16, layers: 5, mips: 2, fmt: 28, samples: 1, bind: 8, misc: 4, ..Tex::default() }, false).is_err());
+    }
+
+    #[test]
+    fn wine_create_buffer() {
+        // Wine's d3d11 test_create_buffer: 1024 bytes, DEFAULT, (bind, misc, stride, taken)
+        const RAW: u32 = 0x20;
+        const ST: u32 = 0x40;
+        #[rustfmt::skip]
+        let t: &[(u32, u32, u32, bool)] = &[
+            (1, 0, 0, true), (2, 0, 0, true), (4, 0, 0, true), (8, 0, 0, true), (0x10, 0, 0, true), (0x20, 0, 0, true), (0x80, 0, 0, true),
+            (0, 2, 0, true), (0, 0x10, 0, true),
+            (1, RAW, 0, false), (2, RAW, 0, false), (4, RAW, 0, false), (8, RAW, 0, true), (0x10, RAW, 0, false), (0x20, RAW, 0, false), (0x80, RAW, 0, true), (0, RAW, 0, false),
+            (0, ST, 16, true), (8, ST, 16, true), (8, ST, !0, false), (8, ST, 0, false), (8, ST, 1, false), (8, ST, 2, false), (8, ST, 3, false), (8, ST, 4, true),
+            (8, ST, 5, false), (8, ST, 8, true), (8, ST, 512, true), (8, ST, 513, false), (8, ST, 1024, true),
+            (0, 0, 513, true), (4, 0, 513, true), (8, 0, 513, true), (0x80, 0, 513, true),
+            (0, RAW | ST, 16, false), (8, RAW | ST, 16, false), (0, 0x100, 0, true),
+        ];
+        for (i, &(bind, misc, stride, ok)) in t.iter().enumerate() {
+            assert_eq!(buffer(1024, 0, bind, 0, misc, stride, false).is_ok(), ok, "test {i}");
+        }
+    }
+
     #[test]
     fn buffer_cases() {
         let b = |size, usage, bind, cpu, misc, stride| buffer(size, usage, bind, cpu, misc, stride, false);
@@ -521,7 +577,7 @@ pub fn view(kind: u32, r: &Res, desc: Option<&[u32]>) -> Result<View, u32> {
                 (SRV, 1) => (if arr { 3 } else { 2 }, [0, m, 0, n]),
                 (SRV, 3) => (8, [0, m, 0, 0]),
                 (SRV, _) if ms => (if arr { 7 } else { 6 }, [0, n, 0, 0]),
-                (SRV, _) if r.cube => (if n == 6 { 9 } else { 10 }, [0, m, 0, n / 6]),
+                (SRV, _) if r.cube => (if n / 6 == 1 { 9 } else { 10 }, [0, m, 0, n / 6]),
                 (SRV, _) => (if arr { 5 } else { 4 }, [0, m, 0, n]),
                 (DSV, 3) => return bad,
                 (DSV, 1) => (if arr { 2 } else { 1 }, [0, 0, n, 0]),
@@ -757,5 +813,112 @@ mod buffer_view_tests {
             let want = format(f).unwrap().5 & winfmt::BSRV != 0;
             assert_eq!(buffer_view(SRV, 256, BIND_SRV, 0, 0, Some(&[f, 1, 0, 4])).is_ok(), want, "format {f}");
         }
+    }
+}
+
+/// Create*Shader's checks (`method` the device method: 12 VS, 13 GS, 15 PS, 16 HS, 17 DS, 18 CS):
+/// DXBC whose program is that stage, at a shader model the feature level runs. Below 10_0 only
+/// a 4_0_level_9_x vertex or pixel shader (one with an Aon9 chunk) is taken.
+pub fn shader(code: &[u8], method: u32, level: u32) -> Result<(), u32> {
+    let bad = Err(E_INVALIDARG);
+    let Ok(c) = dxwgsl::dxbc::Container::parse(code) else { return bad };
+    let Some(prog) = c.chunk(b"SHEX").or_else(|| c.chunk(b"SHDR")) else { return bad };
+    let Some(v) = prog.get(..4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])) else { return bad };
+    let (kind, major, minor) = (v >> 16, v >> 4 & 0xf, v & 0xf);
+    let want = match method {
+        12 => 1,
+        13 => 2,
+        15 => 0,
+        16 => 3,
+        17 => 4,
+        _ => 5,
+    };
+    if kind != want {
+        return bad;
+    }
+    let ok = if level < 0xa000 {
+        c.chunk(b"Aon9").is_some() && kind <= 1 && (major, minor) == (4, 0)
+    } else if level < 0xa100 {
+        (major, minor) == (4, 0) && kind <= 2 || kind == 5 && (major, minor) == (4, 0)
+    } else if level < 0xb000 {
+        major == 4 && minor <= 1 && (kind <= 2 || kind == 5)
+    } else {
+        major == 4 && minor <= 1 && (kind <= 2 || kind == 5) || (major, minor) == (5, 0)
+    };
+    if ok {
+        Ok(())
+    } else {
+        bad
+    }
+}
+
+#[cfg(test)]
+mod shader_tests {
+    use super::*;
+
+    /// A DXBC container with a program chunk of version `v` (and an Aon9 chunk if `aon9`).
+    fn dxbc(tag: &[u8; 4], v: u32, aon9: bool) -> Vec<u8> {
+        let mut chunks: Vec<([u8; 4], Vec<u8>)> = vec![(*tag, [v.to_le_bytes(), 2u32.to_le_bytes()].concat())];
+        if aon9 {
+            chunks.push((*b"Aon9", vec![0; 8]));
+        }
+        let mut out = b"DXBC".to_vec();
+        out.extend([0u8; 16]);
+        out.extend(1u32.to_le_bytes());
+        let head = 32 + 4 * chunks.len();
+        let mut body = Vec::new();
+        let mut offs = Vec::new();
+        for (t, d) in &chunks {
+            offs.push((head + body.len()) as u32);
+            body.extend(t);
+            body.extend((d.len() as u32).to_le_bytes());
+            body.extend(d);
+        }
+        out.extend(((head + body.len()) as u32).to_le_bytes());
+        out.extend((chunks.len() as u32).to_le_bytes());
+        for o in offs {
+            out.extend(o.to_le_bytes());
+        }
+        out.extend(body);
+        out
+    }
+
+    fn ver(kind: u32, major: u32, minor: u32) -> u32 {
+        kind << 16 | major << 4 | minor
+    }
+
+    /// The cases of Wine's test_create_shader (d3d11.c), for every feature level it runs.
+    #[test]
+    fn create_shader_cases() {
+        let bad = Err(E_INVALIDARG);
+        let levels = [0x9100, 0x9200, 0x9300, 0xa000, 0xa100, 0xb000];
+        // SM1-3 bytecode (a version token, no container) is never taken
+        let vs_2_0 = 0xfffe0200u32.to_le_bytes().to_vec();
+        for &l in &levels {
+            assert_eq!(shader(&vs_2_0, 12, l), bad);
+            assert_eq!(shader(&vs_2_0, 15, l), bad);
+            // ps_4_0_level_9_x everywhere
+            assert_eq!(shader(&dxbc(b"SHDR", ver(0, 4, 0), true), 15, l), Ok(()));
+            // ps_4_0 as a vertex shader, gs_4_0 as hull, domain and compute
+            assert_eq!(shader(&dxbc(b"SHDR", ver(0, 4, 0), false), 12, l), bad);
+            for m in [16, 17, 18] {
+                assert_eq!(shader(&dxbc(b"SHDR", ver(2, 4, 0), false), m, l), bad);
+            }
+            let fl10 = l >= 0xa000;
+            let fl101 = l >= 0xa100;
+            let fl11 = l >= 0xb000;
+            for (m, kind) in [(12, 1), (15, 0), (13, 2)] {
+                assert_eq!(shader(&dxbc(b"SHDR", ver(kind, 4, 0), false), m, l).is_ok(), fl10, "{m} 4_0 at {l:#x}");
+                assert_eq!(shader(&dxbc(b"SHDR", ver(kind, 4, 1), false), m, l).is_ok(), fl101, "{m} 4_1 at {l:#x}");
+                assert_eq!(shader(&dxbc(b"SHEX", ver(kind, 5, 0), false), m, l).is_ok(), fl11, "{m} 5_0 at {l:#x}");
+            }
+            for (m, kind) in [(16, 3), (17, 4), (18, 5)] {
+                assert_eq!(shader(&dxbc(b"SHEX", ver(kind, 5, 0), false), m, l).is_ok(), fl11);
+            }
+            assert_eq!(shader(&dxbc(b"SHDR", ver(5, 4, 0), false), 18, l).is_ok(), fl10);
+        }
+        // nothing, or a container without a program
+        assert_eq!(shader(&[], 12, 0xb000), bad);
+        assert_eq!(shader(&dxbc(b"RDEF", ver(1, 4, 0), false), 12, 0xb000), bad);
     }
 }

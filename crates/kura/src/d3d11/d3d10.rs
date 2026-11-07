@@ -326,7 +326,11 @@ pub(super) unsafe fn child(d: &mut D11, iface: u32, m: u32, this: u32, a: &dyn F
     let me = d.face(this, iface);
     match (iface, m) {
         (_, 3) => {
-            // GetDevice: the D3D10 one
+            // GetDevice: the D3D10 one (none for a D3D11 device's resources)
+            if !d.made10 && !d.ten_faces {
+                wrp(args[1], 0, 0);
+                return S_OK;
+            }
             d.add_ref(d.device);
             let f = d.face(d.device, IF10_DEVICE);
             wrp(args[1], 0, f);

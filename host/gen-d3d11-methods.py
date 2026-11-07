@@ -24,6 +24,7 @@ IFACES = [  # (number, interface whose vtable is used)
     (105, 'ID3D10PixelShader'), (106, 'ID3D10InputLayout'), (107, 'ID3D10SamplerState'),
     (108, 'ID3D10BlendState1'), (109, 'ID3D10DepthStencilState'), (110, 'ID3D10RasterizerState'),
     (111, 'ID3D10Query'),
+    (112, 'IDXGIResource'),
 ]
 # methods returning a float (x87): their own stub returns 0.0
 FLOAT = {('ID3D11DeviceContext2', 'GetResourceMinLOD')}

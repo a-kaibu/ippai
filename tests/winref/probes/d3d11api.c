@@ -119,6 +119,7 @@ static void tex_descs(void) {
         {"default_cpu", 16, 16, 1, 1, 8, 0, D3D11_CPU_ACCESS_WRITE, 0, 1},
         {"cube5", 16, 16, 1, 5, 8, 0, 0, D3D11_RESOURCE_MISC_TEXTURECUBE, 1},
         {"cube12", 16, 16, 1, 12, 8, 0, 0, D3D11_RESOURCE_MISC_TEXTURECUBE, 1},
+        {"cube9", 16, 16, 1, 9, 8, 0, 0, D3D11_RESOURCE_MISC_TEXTURECUBE, 1},
         {"cube_rect", 16, 8, 1, 6, 8, 0, 0, D3D11_RESOURCE_MISC_TEXTURECUBE, 1},
         {"genmips_nort", 16, 16, 0, 1, 8, 0, 0, D3D11_RESOURCE_MISC_GENERATE_MIPS, 1},
         {"genmips_nosrv", 16, 16, 0, 1, 0x20, 0, 0, D3D11_RESOURCE_MISC_GENERATE_MIPS, 1},

@@ -78,6 +78,8 @@ pub const IF_LINKAGE: u32 = 92;
 pub const IF_CMDLIST: u32 = 93;
 /// ID3D10Multithread, on the device and the immediate context (Media Foundation asks for it)
 pub const IF_MULTITHREAD: u32 = 94;
+/// IDXGIResource, on every buffer and texture (crates/kura/src/d3d11/d3d10.rs has 95..=111)
+pub const IF_DXGIRES: u32 = 112;
 
 // IIDs (first dword) and the interfaces that answer them
 const IIDS: &[(u32, &[u32])] = &[
@@ -97,7 +99,7 @@ const IIDS: &[(u32, &[u32])] = &[
     (0x6007896c, &[IF_DXGIDEVICE]), // IDXGIDevice3
     (0xcafcb56c, &[IF_SURFACE]),
     (0x4ae63092, &[IF_SURFACE]),
-    (0x035f3ab4, &[IF_SURFACE]), // IDXGIResource (close enough: GetParent/GetDevice)
+    (0x035f3ab4, &[IF_DXGIRES]), // IDXGIResource
     (0x3d3e0379, &[IF_SWAPCHAIN, IF_SURFACE]),
     (0xdb6f6ddb, &[IF_DEVICE]),
     (0xa04bfb29, &[IF_DEVICE]), // ID3D11Device1
@@ -306,6 +308,11 @@ pub struct State {
 pub struct D11 {
     /// CreateDeviceContextState was called: QueryInterface gives the device's D3D10 faces
     ten_faces: bool,
+    /// the device was last made by D3D10CreateDevice*: its children's D3D10 faces give it back
+    /// (GetDevice), those of a D3D11 device's children give none
+    made10: bool,
+    /// the feature level the device was last made at (GetFeatureLevel, which shaders it takes)
+    level: u32,
     /// (queries' End count: their timestamps)
     ticks: u64,
     vtbls: Vec<u32>,
@@ -593,6 +600,8 @@ pub unsafe fn init(vtbls: *const u32, count: u32) -> u32 {
         None => {
             *g = Some(D11 {
                 ten_faces: false,
+                level: 0xb000,
+                made10: false,
                 ticks: 0,
                 vtbls: v,
                 objs: HashMap::new(),
@@ -699,6 +708,26 @@ unsafe fn query_interface(d: &mut D11, id: u32, iface: u32, riid: u32, out: u32)
     }
     let first = rd(riid, 0);
     let primary = d.objs.get(&id).map_or(0, |o| o.iface);
+    // (a resource's IDXGIObject, IDXGIDeviceSubObject and IDXGIResource are one face, its
+    // IDXGISurface another, only for a texture of one level and one layer (1D or 2D))
+    if matches!(primary, IF_BUFFER | IF_TEX1D | IF_TEX2D | IF_TEX3D) {
+        let surface = matches!(d.objs.get(&id).map(|o| &o.data), Some(Data::Texture(t)) if t.mips == 1 && t.layers == 1 && t.dim != 3);
+        let want = match first {
+            0xaec22fb8 | 0x3d3e0379 | 0x035f3ab4 => IF_DXGIRES,
+            0xcafcb56c | 0x4ae63092 if surface => IF_SURFACE,
+            0xcafcb56c | 0x4ae63092 => 0,
+            _ => u32::MAX,
+        };
+        if want != u32::MAX {
+            if want == 0 {
+                wrp(out, 0, 0);
+                return E_NOINTERFACE;
+            }
+            d.add_ref(id);
+            wrp(out, 0, d.face(id, want));
+            return S_OK;
+        }
+    }
     let want = match IIDS.iter().chain(d3d10::IIDS10).find(|x| x.0 == first) {
         Some((0, _)) => primary,
         Some((_, ifs)) => {
@@ -804,6 +833,8 @@ unsafe fn create_device(d: &mut D11, args: *const u32) -> u32 {
         d.add_ref(d.device);
     }
     wr(level_out, 0, level);
+    d.level = level;
+    d.made10 = false;
     if dev_out != 0 {
         wrp(dev_out, 0, d.addr_of(d.device));
     } else {
@@ -842,6 +873,7 @@ unsafe fn create_device10(d: &mut D11, args: *const u32) -> u32 {
     if r != S_OK {
         return r;
     }
+    d.made10 = true;
     let id = d.id_of(rdp(dev.as_mut_ptr() as usize as u32, 0));
     if dev_out != 0 {
         let f = d.face(id, d3d10::IF10_DEVICE);
@@ -1047,7 +1079,7 @@ unsafe fn method(d: &mut D11, iface: u32, m: u32, this: u32, args: *const u32, a
     let a = |i: usize| *args.add(i);
     match iface {
         // IDXGIObject: SetPrivateData, SetPrivateDataInterface, GetPrivateData
-        IF_FACTORY | IF_ADAPTER | IF_OUTPUT | IF_SWAPCHAIN | IF_DXGIDEVICE | IF_SURFACE if (3..=5).contains(&m) => private_data(d, [5, 6, 4][m as usize - 3], this, &a),
+        IF_FACTORY | IF_ADAPTER | IF_OUTPUT | IF_SWAPCHAIN | IF_DXGIDEVICE | IF_SURFACE | IF_DXGIRES if (3..=5).contains(&m) => private_data(d, [5, 6, 4][m as usize - 3], this, &a),
         IF_FACTORY => factory_call(d, m, this, &a),
         IF_ADAPTER => match m {
             6 => parent(d, d.factory, a(1), a(2)),
@@ -1145,6 +1177,39 @@ unsafe fn method(d: &mut D11, iface: u32, m: u32, this: u32, args: *const u32, a
                     std::ptr::write_bytes(a(3) as *mut u8, 0, 4 * a(1) as usize);
                 }
                 S_OK
+            }
+            _ => E_NOTIMPL,
+        },
+        IF_DXGIRES => match m {
+            6 | 7 => parent(d, d.device, a(1), a(2)),
+            8 => {
+                // GetSharedHandle: none (nothing is shared across processes)
+                wr(a(1), 0, 0);
+                S_OK
+            }
+            9 => {
+                // GetUsage: DXGI_USAGE_SHADER_INPUT / RENDER_TARGET_OUTPUT / UNORDERED_ACCESS by
+                // the bind flags (and BACK_BUFFER for a swap chain's)
+                let (bind, back) = match d.objs.get(&this).map(|o| &o.data) {
+                    Some(Data::Texture(t)) => (t.bind, t.backbuffer),
+                    Some(Data::Buffer(b)) => (b.bind, false),
+                    _ => (0, false),
+                };
+                let mut u = 0;
+                for (b, f) in [(0x8, 0x10), (0x20, 0x20), (0x80, 0x400)] {
+                    if bind & b != 0 {
+                        u |= f;
+                    }
+                }
+                if back {
+                    u |= 0x40;
+                }
+                wr(a(1), 0, u);
+                S_OK
+            }
+            10 | 11 => {
+                let primary = d.objs.get(&this).map_or(0, |o| o.iface);
+                child_call(d, primary, m - 2, this, &a)
             }
             _ => E_NOTIMPL,
         },
@@ -1479,7 +1544,14 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             wrp(a(3), 0, o);
             S_OK
         }
-        7..=10 => create_view(d, m, a(1), a(2), a(3)),
+        7..=10 => {
+            let hr = create_view(d, m, a(1), a(2), a(3));
+            // (a view refused: the out pointer cleared, as Windows does)
+            if hr & 0x8000_0000 != 0 && a(3) != 0 {
+                wrp(a(3), 0, 0);
+            }
+            hr
+        }
         11 => {
             // CreateInputLayout(elems, n, code, len, out)
             let mut v = Vec::new();
@@ -1518,6 +1590,12 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
                 17 => IF_DS,
                 _ => IF_CS,
             };
+            if let Err(hr) = check::shader(&code, m, d.level) {
+                if a(4) != 0 {
+                    wrp(a(4), 0, 0);
+                }
+                return hr;
+            }
             if a(4) == 0 {
                 return S_FALSE;
             }
@@ -1526,7 +1604,17 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             S_OK
         }
         14 => {
-            // CreateGeometryShaderWithStreamOutput(..., out at 9)
+            // CreateGeometryShaderWithStreamOutput(code, len, decls, n, strides, nstrides, stream,
+            // linkage, out): a geometry or vertex shader's bytecode (or none: SO of the VS)
+            if a(1) != 0 {
+                let code = std::slice::from_raw_parts(a(1) as *const u8, a(2) as usize);
+                if check::shader(code, 13, d.level).is_err() && check::shader(code, 12, d.level).is_err() {
+                    if a(9) != 0 {
+                        wrp(a(9), 0, 0);
+                    }
+                    return E_INVALIDARG;
+                }
+            }
             let o = d.new_obj(IF_GS, Data::Other);
             wrp(a(9), 0, o);
             S_OK
@@ -1627,7 +1715,7 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             S_OK
         }
         34..=36 => private_data(d, m - 30, this, a),
-        37 => 0xb000,
+        37 => d.level,
         38 => 0,
         39 => S_OK,
         40 => {
