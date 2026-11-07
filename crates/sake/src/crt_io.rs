@@ -544,7 +544,7 @@ fn stat(c: &mut Ctx, k: StatKind, wide: bool) -> u32 {
         set_errno(EINVAL);
         return u32::MAX;
     }
-    // (a trailing separator is allowed only on a directory, wildcards never)
+    // (a trailing separator is allowed only on a root such as "X:\\" or "\\", wildcards never)
     let trimmed = path.trim_end_matches(['\\', '/']);
     if path.contains(['*', '?']) || path.is_empty() {
         set_errno(ENOENT);
@@ -554,7 +554,7 @@ fn stat(c: &mut Ctx, k: StatKind, wide: bool) -> u32 {
         set_errno(ENOENT);
         return u32::MAX;
     };
-    if trimmed.len() != path.len() && !m.is_dir() && !trimmed.ends_with(':') {
+    if trimmed.len() != path.len() && !trimmed.is_empty() && !trimmed.ends_with(':') {
         set_errno(ENOENT);
         return u32::MAX;
     }
@@ -636,11 +636,8 @@ fn _wfdopen(c: &mut Ctx) -> u32 {
 // files by name
 
 fn access(c: &mut Ctx, wide: bool) -> u32 {
+    // (msvcrt ignores mode bits other than 2: _access(f, 1) answers 0)
     let (path, mode) = (path_arg(c.a(0), wide), c.a(1));
-    if mode & !6 != 0 {
-        set_errno(EINVAL);
-        return u32::MAX;
-    }
     let Some((host, m)) = crate::files::resolve(&path).and_then(|h| Some((h.clone(), kura::fs::metadata(h).ok()?))) else {
         set_errno(ENOENT);
         return u32::MAX;
@@ -998,6 +995,10 @@ static LC_CP: AtomicU32 = AtomicU32::new(0);
 /// each category's locale name (LC_COLLATE..LC_TIME), None for "C"
 static LC_NAMES: Mutex<[Option<String>; 5]> = Mutex::new([None, None, None, None, None]);
 
+/// LC_CTYPE's code page, 0 for "C" (___lc_codepage_func)
+pub(super) fn lc_cp() -> u32 {
+    LC_CP.load(Ordering::Relaxed)
+}
 fn c_locale() -> bool {
     LC_CP.load(Ordering::Relaxed) == 0
 }
@@ -1057,6 +1058,8 @@ fn set_locale(c: &mut Ctx, wide: bool) -> u32 {
         }
         if cat == 0 || cat == 2 {
             LC_CP.store(cp, Ordering::Relaxed);
+            let dbcs = cp != 0 && matches!(cp, 932 | 936 | 949 | 950);
+            w32(super::data("__mb_cur_max").unwrap(), if dbcs { 2 } else { 1 });
         }
     }
     let name = locale_name(cat);
@@ -1083,11 +1086,11 @@ fn _wsetlocale(c: &mut Ctx) -> u32 {
 
 /// a lead byte of the locale's code page (none in "C")
 fn lead(b: u8) -> bool {
-    !c_locale() && crate::text::is_dbcs() && crate::text::is_lead(b)
+    !c_locale() && crate::text::is_lead_cp(lc_cp(), b)
 }
 /// bytes of the locale as UTF-16 ("C": each byte its value)
 fn to_wide(b: &[u8]) -> Vec<u16> {
-    if c_locale() { b.iter().map(|&x| x as u16).collect() } else { crate::text::a2w(b) }
+    if c_locale() { b.iter().map(|&x| x as u16).collect() } else { crate::text::mb2w(lc_cp(), b) }
 }
 /// a character's bytes in the locale, None when it has none ("C": above 0xff; else what the
 /// code page lacks, which conversion would make the default '?')
@@ -1095,8 +1098,8 @@ fn wc_bytes(u: u16) -> Option<Vec<u8>> {
     if c_locale() {
         return (u <= 0xff).then(|| vec![u as u8]);
     }
-    let b = crate::text::w2a(&[u]);
-    (!(b == [b'?'] && u != u16::from(b'?')) && !b.is_empty()).then_some(b)
+    let (b, used) = crate::text::w2mb_def(lc_cp(), &[u], b"?");
+    (!used && !b.is_empty()).then_some(b)
 }
 
 /// One character from at most `n` bytes at `s`: (UTF-16 unit, bytes used); 0 bytes for NUL, None
@@ -1404,20 +1407,26 @@ const MESSAGES: [&str; 43] = [
 pub(super) fn message(e: u32) -> &'static str {
     MESSAGES.get(e as usize).copied().unwrap_or("Unknown error")
 }
-/// strerror(errnum) / _wcserror(errnum): the message, in a buffer kept per message (Windows'
-/// per thread one is overwritten by the next call; nothing relies on that)
+/// strerror(errnum) / _wcserror(errnum): the message, in one buffer per thread (and per kind)
+/// that the next call overwrites, as Windows: strerror(2) and strerror(200) evaluated for one
+/// printf both show the later message
 fn errmsg(e: u32, wide: bool) -> u32 {
     static BUFS: Mutex<Vec<(u32, bool, u32)>> = Mutex::new(Vec::new());
-    let e = if (e as usize) < MESSAGES.len() { e } else { MESSAGES.len() as u32 };
-    let mut b = BUFS.lock().unwrap();
-    if let Some(&(_, _, p)) = b.iter().find(|x| x.0 == e && x.1 == wide) {
-        return p;
-    }
+    let tid = crate::cur().tid;
+    let p = {
+        let mut b = BUFS.lock().unwrap();
+        match b.iter().find(|x| x.0 == tid && x.1 == wide) {
+            Some(&(_, _, p)) => p,
+            None => {
+                let p = mem::heap_alloc(256, true);
+                b.push((tid, wide, p));
+                p
+            }
+        }
+    };
     let m = message(e);
     let bytes: Vec<u8> = if wide { m.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect() } else { m.bytes().chain([0]).collect() };
-    let p = mem::heap_alloc(bytes.len() as u32, true);
     mem::write(p, &bytes);
-    b.push((e, wide, p));
     p
 }
 fn strerror(c: &mut Ctx) -> u32 {
@@ -1636,7 +1645,7 @@ fn fputws(c: &mut Ctx) -> u32 {
     }
     0
 }
-/// fgetwc(stream): one character from the ANSI code page's bytes; WEOF at the end
+/// fgetwc(stream): one character from the locale's bytes (as mbtowc); WEOF at the end
 fn fgetwc(c: &mut Ctx) -> u32 {
     let fp = c.a(0);
     let b = getc_of(fp);
@@ -1644,13 +1653,13 @@ fn fgetwc(c: &mut Ctx) -> u32 {
         return 0xffff;
     }
     let mut bytes = vec![b as u8];
-    if crate::text::is_dbcs() && crate::text::is_lead(b as u8) {
+    if lead(b as u8) {
         let t = getc_of(fp);
         if t != u32::MAX {
             bytes.push(t as u8);
         }
     }
-    crate::text::a2w(&bytes).first().map_or(0xffff, |&u| u as u32)
+    to_wide(&bytes).first().map_or(0xffff, |&u| u as u32)
 }
 /// ungetwc(wc, stream): a character below 0x80 goes back (others are not kept)
 fn ungetwc(c: &mut Ctx) -> u32 {
@@ -1905,12 +1914,12 @@ pub(super) fn init() {
     implement("msvcrt", "_nextafter", nextafter);
 }
 
-/// _mbstrlen(s): characters (a double-byte one counts once)
+/// _mbstrlen(s): characters in the locale (a double-byte one counts once)
 fn _mbstrlen(c: &mut Ctx) -> u32 {
     let s = cstr(c.a(0));
     let (mut i, mut n) = (0, 0);
     while i < s.len() {
-        i += if crate::text::is_dbcs() && crate::text::is_lead(s[i]) && i + 1 < s.len() { 2 } else { 1 };
+        i += if lead(s[i]) && i + 1 < s.len() { 2 } else { 1 };
         n += 1;
     }
     n

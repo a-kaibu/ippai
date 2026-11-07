@@ -109,6 +109,10 @@ user-* ^want +WM_(NCPAINT|ERASEBKGND)$
 user-* ^(want|got) +ShowWindow\(h, SW_HIDE\) 
 # the runner's ANSI code page is 1252: 0x95 0x5c is two characters there, one (表) in sake's 932
 shell-* ^(want|got) +(name|removespec|strip) .*(2e747874\]|955c|835c\]|835c5c95\]) 
+# setlocale(LC_ALL, "") takes the user locale's code page (not GetACP's, which the probes'
+# manifest makes 932): 1252 for the runner's en-US user, 932 for sake's Japanese one. crt_io's
+# unlabelled multibyte lines follow it (SAKE_ACP=1252 sake matches them); its "932 " lines name .932
+crt_io-* ^(want|got) +(mbstowcs|wcstombs cut|mbrtowc|mbrlen|mbtowc|wcrtomb|btowc|wctob) 
 res-* ^(want|got) +item 0: 1 id \d+ type 0 state 0 sub 1 text \[&File\] cch 5$  # a popup's wID is its HMENU, whose number differs
 # sake's MS-named fonts are IPA fonts under those names (tools/ci/sake-fonts.py), as separate
 # .ttf files in a game's store or one msgothic.ttc from `ippai ttc`: other design metrics, and the

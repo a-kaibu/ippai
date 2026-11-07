@@ -13,7 +13,7 @@ use crate::api::{implement, Ctx};
 use crate::files;
 use crate::mem::{self, cstr, put32, put_cstr, put_wstr, r16, r32, w16, w32, w8, wstr};
 use crate::obj::{self, Obj};
-use crate::text::{a2s, a2w, mb2w, w2mb};
+use crate::text::{a2s, a2w, mb2w};
 
 pub const PROCESS_HEAP: u32 = 0x0015_0000;
 
@@ -3475,7 +3475,7 @@ fn IsDBCSLeadByte(c: &mut Ctx) -> u32 {
     ok(crate::text::is_lead(c.a(0) as u8))
 }
 fn IsDBCSLeadByteEx(c: &mut Ctx) -> u32 {
-    ok(crate::text::is_lead(c.a(1) as u8))
+    ok(crate::text::is_lead_cp(c.a(0), c.a(1) as u8))
 }
 
 fn MultiByteToWideChar(c: &mut Ctx) -> u32 {
@@ -3515,8 +3515,15 @@ fn WideCharToMultiByte(c: &mut Ctx) -> u32 {
     } else {
         (0..n as u32).map(|i| r16(src + 2 * i)).collect()
     };
-    let a = w2mb(cp, &s);
-    put32(c.a(7), 0);
+    // (lpDefaultChar / lpUsedDefaultChar: not for UTF-7/8)
+    let (def, pused) = (c.a(6), c.a(7));
+    if matches!(cp, 65000 | 65001) && (def != 0 || pused != 0) {
+        last_error(87);
+        return 0;
+    }
+    let d = if def != 0 { vec![mem::r8(def)] } else { b"?".to_vec() };
+    let (a, used) = crate::text::w2mb_def(cp, &s, &d);
+    put32(pused, used as u32);
     if cap == 0 {
         return a.len() as u32;
     }

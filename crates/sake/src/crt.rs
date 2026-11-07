@@ -132,7 +132,8 @@ pub fn data(name: &str) -> Option<u32> {
             mem::write(p, &f64::INFINITY.to_le_bytes());
             p
         }
-        "__mb_cur_max" => var(if crate::text::is_dbcs() { 2 } else { 1 }),
+        // (1 in the "C" locale the CRT starts in; setlocale's LC_CTYPE changes it)
+        "__mb_cur_max" => var(1),
         "_pctype" => var(ctype_table() + 2),
         "_pwctype" => var(ctype_table() + 2),
         "_mbctype" => {
@@ -2130,7 +2131,7 @@ fn _configthreadlocale(_: &mut Ctx) -> u32 {
     2
 }
 fn ___mb_cur_max_l_func(_: &mut Ctx) -> u32 {
-    if crate::text::acp() == 932 { 2 } else { 1 }
+    r32(data("__mb_cur_max").unwrap())
 }
 
 fn wcsncmp(c: &mut Ctx) -> u32 {
@@ -2422,8 +2423,9 @@ fn strcat_s(c: &mut Ctx) -> u32 {
 fn wcscat_s(c: &mut Ctx) -> u32 {
     copy_s::<u16>(c, true)
 }
+/// the code page of LC_CTYPE: 0 in the "C" locale (mingw-w64's mbrtowc, btowc, wcrtomb... use it)
 fn ___lc_codepage_func(_: &mut Ctx) -> u32 {
-    932
+    io::lc_cp()
 }
 /// the locale names by category (LC_ALL..LC_TIME): all "ja-JP"
 fn ___lc_locale_name_func(_: &mut Ctx) -> u32 {

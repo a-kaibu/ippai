@@ -53,20 +53,25 @@ pub fn mb2w(cp: u32, s: &[u8]) -> Vec<u16> {
 }
 
 pub fn w2mb(cp: u32, s: &[u16]) -> Vec<u8> {
+    w2mb_def(cp, s, b"?").0
+}
+
+/// `s` in code page `cp`, a character the code page lacks as `def` (Windows' default character,
+/// '?' unless lpDefaultChar names one): (bytes, whether `def` was used)
+pub fn w2mb_def(cp: u32, s: &[u16], def: &[u8]) -> (Vec<u8>, bool) {
     let st = String::from_utf16_lossy(s);
     if cp == 65001 {
-        return st.into_bytes();
+        return (st.into_bytes(), false);
     }
     let e = enc(cp);
     if st.is_ascii() {
-        return st.into_bytes();
+        return (st.into_bytes(), false);
     }
-    // (unmappable characters become '?', the default character, as on Windows; encoding_rs's
-    // encode() would write HTML character references)
+    // (encoding_rs's encode() would write HTML character references)
     let mut encoder = e.new_encoder();
     let src: Vec<u16> = st.encode_utf16().collect();
     let mut out = vec![0u8; src.len() * 4 + 16];
-    let (mut read, mut written) = (0, 0);
+    let (mut read, mut written, mut used) = (0, 0, false);
     loop {
         let (r, n, w) = encoder.encode_from_utf16_without_replacement(&src[read..], &mut out[written..], true);
         read += n;
@@ -74,14 +79,18 @@ pub fn w2mb(cp: u32, s: &[u16]) -> Vec<u8> {
         match r {
             encoding_rs::EncoderResult::InputEmpty => break,
             encoding_rs::EncoderResult::Unmappable(_) => {
-                out[written] = b'?';
-                written += 1;
+                if out.len() < written + def.len() {
+                    out.resize(out.len() * 2 + def.len(), 0);
+                }
+                out[written..written + def.len()].copy_from_slice(def);
+                written += def.len();
+                used = true;
             }
             encoding_rs::EncoderResult::OutputFull => out.resize(out.len() * 2, 0),
         }
     }
     out.truncate(written);
-    out
+    (out, used)
 }
 
 pub fn a2w(s: &[u8]) -> Vec<u16> {

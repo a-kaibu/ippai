@@ -25,10 +25,43 @@ static void st(const char *label, int r, const struct _stat64 *s) {
     printf("%s mode %#o nlink %d size %lld\n", label, s->st_mode, s->st_nlink, (long long)s->st_size);
 }
 
+/* multibyte conversion in the locale set, each line labelled t */
+static void mb(const char *t) {
+    int n;
+    const char *sj = "\x82\xa0" "a\x83\x41";  /* あaア */
+    wchar_t w[8];
+    n = (int)mbstowcs(w, sj, 8);
+    printf("%smbstowcs %d %04x %04x %04x\n", t, n, w[0], w[1], w[2]);
+    printf("%smbstowcs len %d\n", t, (int)mbstowcs(NULL, sj, 0));
+    char back[16];
+    memset(back, 0, sizeof back);
+    n = (int)wcstombs(back, w, sizeof back);
+    printf("%swcstombs %d %02x%02x\n", t, n, (unsigned char)back[0], (unsigned char)back[1]);
+    printf("%swcstombs cut %d\n", t, (int)wcstombs(back, w, 1));
+    mbstate_t ms;
+    memset(&ms, 0, sizeof ms);
+    wchar_t wc = 0;
+    n = (int)mbrtowc(&wc, sj, 2, &ms);
+    printf("%smbrtowc %d %04x\n", t, n, wc);
+    n = (int)mbrtowc(&wc, "z", 1, &ms);
+    printf("%smbrtowc ascii %d %04x\n", t, n, wc);
+    printf("%smbrtowc nul %d\n", t, (int)mbrtowc(&wc, "", 1, &ms));
+    memset(&ms, 0, sizeof ms);
+    n = (int)mbrlen(sj, 2, &ms);
+    printf("%smbrlen %d %d\n", t, n, (int)mbrlen("q", 1, &ms));
+    n = mbtowc(&wc, sj + 3, 2);
+    printf("%smbtowc %d %04x\n", t, n, wc);
+    memset(&ms, 0, sizeof ms);
+    n = (int)wcrtomb(back, 0x3042, &ms);
+    printf("%swcrtomb %d %02x%02x\n", t, n, (unsigned char)back[0], (unsigned char)back[1]);
+    printf("%sbtowc %04x %04x %04x\n", t, btowc('A'), btowc(0x82), btowc(0xb1));
+    printf("%swctob %d %d %d\n", t, wctob(L'A'), wctob(0x3042), wctob(0xff71));
+}
+
 int main(void) {
     char buf[300];
     struct _stat64 s;
-    setlocale(LC_ALL, "");  /* (the ANSI code page: 932 from the manifest) */
+    setlocale(LC_ALL, "");  /* (the user locale's code page: 1252 on the en-US runner, 932 in sake) */
 
     /* descriptors */
     int fd = _open("io_a.bin", _O_CREAT | _O_TRUNC | _O_RDWR | _O_BINARY, _S_IREAD | _S_IWRITE);
@@ -181,35 +214,16 @@ int main(void) {
     r = getenv_s(&need, NULL, 0, "IO_NOT_SET_ANYWHERE");
     printf("getenv_s %d need %d\n", r, (int)need);
 
-    /* multibyte (932) */
-    const char *sj = "\x82\xa0" "a\x83\x41";  /* あaア */
-    wchar_t w[8];
-    n = (int)mbstowcs(w, sj, 8);
-    printf("mbstowcs %d %04x %04x %04x\n", n, w[0], w[1], w[2]);
-    printf("mbstowcs len %d\n", (int)mbstowcs(NULL, sj, 0));
-    char back[16];
-    memset(back, 0, sizeof back);
-    n = (int)wcstombs(back, w, sizeof back);
-    printf("wcstombs %d %02x%02x\n", n, (unsigned char)back[0], (unsigned char)back[1]);
-    printf("wcstombs cut %d\n", (int)wcstombs(back, w, 1));
-    mbstate_t ms;
-    memset(&ms, 0, sizeof ms);
-    wchar_t wc = 0;
-    n = (int)mbrtowc(&wc, sj, 2, &ms);
-    printf("mbrtowc %d %04x\n", n, wc);
-    n = (int)mbrtowc(&wc, "z", 1, &ms);
-    printf("mbrtowc ascii %d %04x\n", n, wc);
-    printf("mbrtowc nul %d\n", (int)mbrtowc(&wc, "", 1, &ms));
-    memset(&ms, 0, sizeof ms);
-    n = (int)mbrlen(sj, 2, &ms);
-    printf("mbrlen %d %d\n", n, (int)mbrlen("q", 1, &ms));
-    n = mbtowc(&wc, sj + 3, 2);
-    printf("mbtowc %d %04x\n", n, wc);
-    memset(&ms, 0, sizeof ms);
-    n = (int)wcrtomb(back, 0x3042, &ms);
-    printf("wcrtomb %d %02x%02x\n", n, (unsigned char)back[0], (unsigned char)back[1]);
-    printf("btowc %04x %04x %04x\n", btowc('A'), btowc(0x82), btowc(0xb1));
-    printf("wctob %d %d %d\n", wctob(L'A'), wctob(0x3042), wctob(0xff71));
+    /* multibyte: the ANSI code page's locale (932 in sake, 1252 on the runner), 932 named,
+     * and "C" (each byte its own character) */
+    mb("");
+    int ok = setlocale(LC_CTYPE, ".932") != NULL;
+    printf("setlocale .932 %d MB_CUR_MAX %d\n", ok, MB_CUR_MAX);
+    mb("932 ");
+    ok = setlocale(LC_CTYPE, "C") != NULL;
+    printf("setlocale C %d MB_CUR_MAX %d\n", ok, MB_CUR_MAX);
+    mb("C ");
+    setlocale(LC_ALL, "");
 
     /* messages */
     for (int e = 0; e < 44; e++) {
