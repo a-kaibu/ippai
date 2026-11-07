@@ -1,0 +1,364 @@
+encode 0 bytes fmt 00000001: ret 0 need 0 W need 0 same 0
+encode 1 bytes fmt 00000001: ret 1 need 7 wrote 6 "AQ==\r\n" W need 7 same 1
+encode 2 bytes fmt 00000001: ret 1 need 7 wrote 6 "AQg=\r\n" W need 7 same 1
+encode 3 bytes fmt 00000001: ret 1 need 7 wrote 6 "AQgP\r\n" W need 7 same 1
+encode 8 bytes fmt 00000001: ret 1 need 15 wrote 14 "AQgPFh0kKzI=\r\n" W need 15 same 1
+encode 16 bytes fmt 00000001: ret 1 need 27 wrote 26 "AQgPFh0kKzI5QEdOVVxjag==\r\n" W need 27 same 1
+encode 17 bytes fmt 00000001: ret 1 need 27 wrote 26 "AQgPFh0kKzI5QEdOVVxjanE=\r\n" W need 27 same 1
+encode 47 bytes fmt 00000001: ret 1 need 67 wrote 66 "AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PEM=\r\n" W need 67 same 1
+encode 48 bytes fmt 00000001: ret 1 need 67 wrote 66 "AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENK\r\n" W need 67 same 1
+encode 49 bytes fmt 00000001: ret 1 need 73 wrote 72 "AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENK\r\nUQ==\r\n" W need 73 same 1
+encode 100 bytes fmt 00000001: ret 1 need 143 wrote 142 "AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENK\r\nUVhfZm10e4KJkJeepayzusHIz9bd5Ovy+QAHDhUcIyoxOD9GTVRbYmlwd36FjJOa\r\noaivtg==\r\n" W need 143 same 1
+encode 0 bytes fmt 80000001: ret 0 need 0 W need 0 same 0
+encode 1 bytes fmt 80000001: ret 1 need 6 wrote 5 "AQ==\n" W need 6 same 1
+encode 2 bytes fmt 80000001: ret 1 need 6 wrote 5 "AQg=\n" W need 6 same 1
+encode 3 bytes fmt 80000001: ret 1 need 6 wrote 5 "AQgP\n" W need 6 same 1
+encode 8 bytes fmt 80000001: ret 1 need 14 wrote 13 "AQgPFh0kKzI=\n" W need 14 same 1
+encode 16 bytes fmt 80000001: ret 1 need 26 wrote 25 "AQgPFh0kKzI5QEdOVVxjag==\n" W need 26 same 1
+encode 17 bytes fmt 80000001: ret 1 need 26 wrote 25 "AQgPFh0kKzI5QEdOVVxjanE=\n" W need 26 same 1
+encode 47 bytes fmt 80000001: ret 1 need 66 wrote 65 "AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PEM=\n" W need 66 same 1
+encode 48 bytes fmt 80000001: ret 1 need 66 wrote 65 "AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENK\n" W need 66 same 1
+encode 49 bytes fmt 80000001: ret 1 need 71 wrote 70 "AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENK\nUQ==\n" W need 71 same 1
+encode 100 bytes fmt 80000001: ret 1 need 140 wrote 139 "AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENK\nUVhfZm10e4KJkJeepayzusHIz9bd5Ovy+QAHDhUcIyoxOD9GTVRbYmlwd36FjJOa\noaivtg==\n" W need 140 same 1
+encode 0 bytes fmt 40000001: ret 0 need 0 W need 0 same 0
+encode 1 bytes fmt 40000001: ret 1 need 5 wrote 4 "AQ==" W need 5 same 1
+encode 2 bytes fmt 40000001: ret 1 need 5 wrote 4 "AQg=" W need 5 same 1
+encode 3 bytes fmt 40000001: ret 1 need 5 wrote 4 "AQgP" W need 5 same 1
+encode 8 bytes fmt 40000001: ret 1 need 13 wrote 12 "AQgPFh0kKzI=" W need 13 same 1
+encode 16 bytes fmt 40000001: ret 1 need 25 wrote 24 "AQgPFh0kKzI5QEdOVVxjag==" W need 25 same 1
+encode 17 bytes fmt 40000001: ret 1 need 25 wrote 24 "AQgPFh0kKzI5QEdOVVxjanE=" W need 25 same 1
+encode 47 bytes fmt 40000001: ret 1 need 65 wrote 64 "AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PEM=" W need 65 same 1
+encode 48 bytes fmt 40000001: ret 1 need 65 wrote 64 "AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENK" W need 65 same 1
+encode 49 bytes fmt 40000001: ret 1 need 69 wrote 68 "AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENKUQ==" W need 69 same 1
+encode 100 bytes fmt 40000001: ret 1 need 137 wrote 136 "AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENKUVhfZm10e4KJkJeepayzusHIz9bd5Ovy+QAHDhUcIyoxOD9GTVRbYmlwd36FjJOaoaivtg==" W need 137 same 1
+encode 0 bytes fmt 00000000: ret 0 need 0 W need 0 same 0
+encode 1 bytes fmt 00000000: ret 1 need 63 wrote 62 "-----BEGIN CERTIFICATE-----\r\nAQ==\r\n-----END CERTIFICATE-----\r\n" W need 63 same 1
+encode 2 bytes fmt 00000000: ret 1 need 63 wrote 62 "-----BEGIN CERTIFICATE-----\r\nAQg=\r\n-----END CERTIFICATE-----\r\n" W need 63 same 1
+encode 3 bytes fmt 00000000: ret 1 need 63 wrote 62 "-----BEGIN CERTIFICATE-----\r\nAQgP\r\n-----END CERTIFICATE-----\r\n" W need 63 same 1
+encode 8 bytes fmt 00000000: ret 1 need 71 wrote 70 "-----BEGIN CERTIFICATE-----\r\nAQgPFh0kKzI=\r\n-----END CERTIFICATE-----\r\n" W need 71 same 1
+encode 16 bytes fmt 00000000: ret 1 need 83 wrote 82 "-----BEGIN CERTIFICATE-----\r\nAQgPFh0kKzI5QEdOVVxjag==\r\n-----END CERTIFICATE-----\r\n" W need 83 same 1
+encode 17 bytes fmt 00000000: ret 1 need 83 wrote 82 "-----BEGIN CERTIFICATE-----\r\nAQgPFh0kKzI5QEdOVVxjanE=\r\n-----END CERTIFICATE-----\r\n" W need 83 same 1
+encode 47 bytes fmt 00000000: ret 1 need 123 wrote 122 "-----BEGIN CERTIFICATE-----\r\nAQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PEM=\r\n-----END CERTIFICATE-----\r\n" W need 123 same 1
+encode 48 bytes fmt 00000000: ret 1 need 123 wrote 122 "-----BEGIN CERTIFICATE-----\r\nAQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENK\r\n-----END CERTIFICATE-----\r\n" W need 123 same 1
+encode 49 bytes fmt 00000000: ret 1 need 129 wrote 128 "-----BEGIN CERTIFICATE-----\r\nAQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENK\r\nUQ==\r\n-----END CERTIFICATE-----\r\n" W need 129 same 1
+encode 100 bytes fmt 00000000: ret 1 need 199 wrote 198 "-----BEGIN CERTIFICATE-----\r\nAQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENK\r\nUVhfZm10e4KJkJeepayzusHIz9bd5Ovy+QAHDhUcIyoxOD9GTVRbYmlwd36FjJOa\r\noaivtg==\r\n-----END CERTIFICATE-----\r\n" W need 199 same 1
+encode 0 bytes fmt 80000000: ret 0 need 0 W need 0 same 0
+encode 1 bytes fmt 80000000: ret 1 need 60 wrote 59 "-----BEGIN CERTIFICATE-----\nAQ==\n-----END CERTIFICATE-----\n" W need 60 same 1
+encode 2 bytes fmt 80000000: ret 1 need 60 wrote 59 "-----BEGIN CERTIFICATE-----\nAQg=\n-----END CERTIFICATE-----\n" W need 60 same 1
+encode 3 bytes fmt 80000000: ret 1 need 60 wrote 59 "-----BEGIN CERTIFICATE-----\nAQgP\n-----END CERTIFICATE-----\n" W need 60 same 1
+encode 8 bytes fmt 80000000: ret 1 need 68 wrote 67 "-----BEGIN CERTIFICATE-----\nAQgPFh0kKzI=\n-----END CERTIFICATE-----\n" W need 68 same 1
+encode 16 bytes fmt 80000000: ret 1 need 80 wrote 79 "-----BEGIN CERTIFICATE-----\nAQgPFh0kKzI5QEdOVVxjag==\n-----END CERTIFICATE-----\n" W need 80 same 1
+encode 17 bytes fmt 80000000: ret 1 need 80 wrote 79 "-----BEGIN CERTIFICATE-----\nAQgPFh0kKzI5QEdOVVxjanE=\n-----END CERTIFICATE-----\n" W need 80 same 1
+encode 47 bytes fmt 80000000: ret 1 need 120 wrote 119 "-----BEGIN CERTIFICATE-----\nAQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PEM=\n-----END CERTIFICATE-----\n" W need 120 same 1
+encode 48 bytes fmt 80000000: ret 1 need 120 wrote 119 "-----BEGIN CERTIFICATE-----\nAQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENK\n-----END CERTIFICATE-----\n" W need 120 same 1
+encode 49 bytes fmt 80000000: ret 1 need 125 wrote 124 "-----BEGIN CERTIFICATE-----\nAQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENK\nUQ==\n-----END CERTIFICATE-----\n" W need 125 same 1
+encode 100 bytes fmt 80000000: ret 1 need 194 wrote 193 "-----BEGIN CERTIFICATE-----\nAQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENK\nUVhfZm10e4KJkJeepayzusHIz9bd5Ovy+QAHDhUcIyoxOD9GTVRbYmlwd36FjJOa\noaivtg==\n-----END CERTIFICATE-----\n" W need 194 same 1
+encode 0 bytes fmt 40000000: ret 0 need 0 W need 0 same 0
+encode 1 bytes fmt 40000000: ret 1 need 57 wrote 56 "-----BEGIN CERTIFICATE-----AQ==-----END CERTIFICATE-----" W need 57 same 1
+encode 2 bytes fmt 40000000: ret 1 need 57 wrote 56 "-----BEGIN CERTIFICATE-----AQg=-----END CERTIFICATE-----" W need 57 same 1
+encode 3 bytes fmt 40000000: ret 1 need 57 wrote 56 "-----BEGIN CERTIFICATE-----AQgP-----END CERTIFICATE-----" W need 57 same 1
+encode 8 bytes fmt 40000000: ret 1 need 65 wrote 64 "-----BEGIN CERTIFICATE-----AQgPFh0kKzI=-----END CERTIFICATE-----" W need 65 same 1
+encode 16 bytes fmt 40000000: ret 1 need 77 wrote 76 "-----BEGIN CERTIFICATE-----AQgPFh0kKzI5QEdOVVxjag==-----END CERTIFICATE-----" W need 77 same 1
+encode 17 bytes fmt 40000000: ret 1 need 77 wrote 76 "-----BEGIN CERTIFICATE-----AQgPFh0kKzI5QEdOVVxjanE=-----END CERTIFICATE-----" W need 77 same 1
+encode 47 bytes fmt 40000000: ret 1 need 117 wrote 116 "-----BEGIN CERTIFICATE-----AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PEM=-----END CERTIFICATE-----" W need 117 same 1
+encode 48 bytes fmt 40000000: ret 1 need 117 wrote 116 "-----BEGIN CERTIFICATE-----AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENK-----END CERTIFICATE-----" W need 117 same 1
+encode 49 bytes fmt 40000000: ret 1 need 121 wrote 120 "-----BEGIN CERTIFICATE-----AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENKUQ==-----END CERTIFICATE-----" W need 121 same 1
+encode 100 bytes fmt 40000000: ret 1 need 189 wrote 188 "-----BEGIN CERTIFICATE-----AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENKUVhfZm10e4KJkJeepayzusHIz9bd5Ovy+QAHDhUcIyoxOD9GTVRbYmlwd36FjJOaoaivtg==-----END CERTIFICATE-----" W need 189 same 1
+encode 0 bytes fmt 00000003: ret 0 need 0 W need 0 same 0
+encode 1 bytes fmt 00000003: ret 1 need 87 wrote 86 "-----BEGIN NEW CERTIFICATE REQUEST-----\r\nAQ==\r\n-----END NEW CERTIFICATE REQUEST-----\r\n" W need 87 same 1
+encode 2 bytes fmt 00000003: ret 1 need 87 wrote 86 "-----BEGIN NEW CERTIFICATE REQUEST-----\r\nAQg=\r\n-----END NEW CERTIFICATE REQUEST-----\r\n" W need 87 same 1
+encode 3 bytes fmt 00000003: ret 1 need 87 wrote 86 "-----BEGIN NEW CERTIFICATE REQUEST-----\r\nAQgP\r\n-----END NEW CERTIFICATE REQUEST-----\r\n" W need 87 same 1
+encode 8 bytes fmt 00000003: ret 1 need 95 wrote 94 "-----BEGIN NEW CERTIFICATE REQUEST-----\r\nAQgPFh0kKzI=\r\n-----END NEW CERTIFICATE REQUEST-----\r\n" W need 95 same 1
+encode 16 bytes fmt 00000003: ret 1 need 107 wrote 106 "-----BEGIN NEW CERTIFICATE REQUEST-----\r\nAQgPFh0kKzI5QEdOVVxjag==\r\n-----END NEW CERTIFICATE REQUEST-----\r\n" W need 107 same 1
+encode 17 bytes fmt 00000003: ret 1 need 107 wrote 106 "-----BEGIN NEW CERTIFICATE REQUEST-----\r\nAQgPFh0kKzI5QEdOVVxjanE=\r\n-----END NEW CERTIFICATE REQUEST-----\r\n" W need 107 same 1
+encode 47 bytes fmt 00000003: ret 1 need 147 wrote 146 "-----BEGIN NEW CERTIFICATE REQUEST-----\r\nAQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PEM=\r\n-----END NEW CERTIFICATE REQUEST-----\r\n" W need 147 same 1
+encode 48 bytes fmt 00000003: ret 1 need 147 wrote 146 "-----BEGIN NEW CERTIFICATE REQUEST-----\r\nAQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENK\r\n-----END NEW CERTIFICATE REQUEST-----\r\n" W need 147 same 1
+encode 49 bytes fmt 00000003: ret 1 need 153 wrote 152 "-----BEGIN NEW CERTIFICATE REQUEST-----\r\nAQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENK\r\nUQ==\r\n-----END NEW CERTIFICATE REQUEST-----\r\n" W need 153 same 1
+encode 100 bytes fmt 00000003: ret 1 need 223 wrote 222 "-----BEGIN NEW CERTIFICATE REQUEST-----\r\nAQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENK\r\nUVhfZm10e4KJkJeepayzusHIz9bd5Ovy+QAHDhUcIyoxOD9GTVRbYmlwd36FjJOa\r\noaivtg==\r\n-----END NEW CERTIFICATE REQUEST-----\r\n" W need 223 same 1
+encode 0 bytes fmt 80000003: ret 0 need 0 W need 0 same 0
+encode 1 bytes fmt 80000003: ret 1 need 84 wrote 83 "-----BEGIN NEW CERTIFICATE REQUEST-----\nAQ==\n-----END NEW CERTIFICATE REQUEST-----\n" W need 84 same 1
+encode 2 bytes fmt 80000003: ret 1 need 84 wrote 83 "-----BEGIN NEW CERTIFICATE REQUEST-----\nAQg=\n-----END NEW CERTIFICATE REQUEST-----\n" W need 84 same 1
+encode 3 bytes fmt 80000003: ret 1 need 84 wrote 83 "-----BEGIN NEW CERTIFICATE REQUEST-----\nAQgP\n-----END NEW CERTIFICATE REQUEST-----\n" W need 84 same 1
+encode 8 bytes fmt 80000003: ret 1 need 92 wrote 91 "-----BEGIN NEW CERTIFICATE REQUEST-----\nAQgPFh0kKzI=\n-----END NEW CERTIFICATE REQUEST-----\n" W need 92 same 1
+encode 16 bytes fmt 80000003: ret 1 need 104 wrote 103 "-----BEGIN NEW CERTIFICATE REQUEST-----\nAQgPFh0kKzI5QEdOVVxjag==\n-----END NEW CERTIFICATE REQUEST-----\n" W need 104 same 1
+encode 17 bytes fmt 80000003: ret 1 need 104 wrote 103 "-----BEGIN NEW CERTIFICATE REQUEST-----\nAQgPFh0kKzI5QEdOVVxjanE=\n-----END NEW CERTIFICATE REQUEST-----\n" W need 104 same 1
+encode 47 bytes fmt 80000003: ret 1 need 144 wrote 143 "-----BEGIN NEW CERTIFICATE REQUEST-----\nAQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PEM=\n-----END NEW CERTIFICATE REQUEST-----\n" W need 144 same 1
+encode 48 bytes fmt 80000003: ret 1 need 144 wrote 143 "-----BEGIN NEW CERTIFICATE REQUEST-----\nAQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENK\n-----END NEW CERTIFICATE REQUEST-----\n" W need 144 same 1
+encode 49 bytes fmt 80000003: ret 1 need 149 wrote 148 "-----BEGIN NEW CERTIFICATE REQUEST-----\nAQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENK\nUQ==\n-----END NEW CERTIFICATE REQUEST-----\n" W need 149 same 1
+encode 100 bytes fmt 80000003: ret 1 need 218 wrote 217 "-----BEGIN NEW CERTIFICATE REQUEST-----\nAQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENK\nUVhfZm10e4KJkJeepayzusHIz9bd5Ovy+QAHDhUcIyoxOD9GTVRbYmlwd36FjJOa\noaivtg==\n-----END NEW CERTIFICATE REQUEST-----\n" W need 218 same 1
+encode 0 bytes fmt 40000003: ret 0 need 0 W need 0 same 0
+encode 1 bytes fmt 40000003: ret 1 need 81 wrote 80 "-----BEGIN NEW CERTIFICATE REQUEST-----AQ==-----END NEW CERTIFICATE REQUEST-----" W need 81 same 1
+encode 2 bytes fmt 40000003: ret 1 need 81 wrote 80 "-----BEGIN NEW CERTIFICATE REQUEST-----AQg=-----END NEW CERTIFICATE REQUEST-----" W need 81 same 1
+encode 3 bytes fmt 40000003: ret 1 need 81 wrote 80 "-----BEGIN NEW CERTIFICATE REQUEST-----AQgP-----END NEW CERTIFICATE REQUEST-----" W need 81 same 1
+encode 8 bytes fmt 40000003: ret 1 need 89 wrote 88 "-----BEGIN NEW CERTIFICATE REQUEST-----AQgPFh0kKzI=-----END NEW CERTIFICATE REQUEST-----" W need 89 same 1
+encode 16 bytes fmt 40000003: ret 1 need 101 wrote 100 "-----BEGIN NEW CERTIFICATE REQUEST-----AQgPFh0kKzI5QEdOVVxjag==-----END NEW CERTIFICATE REQUEST-----" W need 101 same 1
+encode 17 bytes fmt 40000003: ret 1 need 101 wrote 100 "-----BEGIN NEW CERTIFICATE REQUEST-----AQgPFh0kKzI5QEdOVVxjanE=-----END NEW CERTIFICATE REQUEST-----" W need 101 same 1
+encode 47 bytes fmt 40000003: ret 1 need 141 wrote 140 "-----BEGIN NEW CERTIFICATE REQUEST-----AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PEM=-----END NEW CERTIFICATE REQUEST-----" W need 141 same 1
+encode 48 bytes fmt 40000003: ret 1 need 141 wrote 140 "-----BEGIN NEW CERTIFICATE REQUEST-----AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENK-----END NEW CERTIFICATE REQUEST-----" W need 141 same 1
+encode 49 bytes fmt 40000003: ret 1 need 145 wrote 144 "-----BEGIN NEW CERTIFICATE REQUEST-----AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENKUQ==-----END NEW CERTIFICATE REQUEST-----" W need 145 same 1
+encode 100 bytes fmt 40000003: ret 1 need 213 wrote 212 "-----BEGIN NEW CERTIFICATE REQUEST-----AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENKUVhfZm10e4KJkJeepayzusHIz9bd5Ovy+QAHDhUcIyoxOD9GTVRbYmlwd36FjJOaoaivtg==-----END NEW CERTIFICATE REQUEST-----" W need 213 same 1
+encode 0 bytes fmt 00000009: ret 0 need 0 W need 0 same 0
+encode 1 bytes fmt 00000009: ret 1 need 57 wrote 56 "-----BEGIN X509 CRL-----\r\nAQ==\r\n-----END X509 CRL-----\r\n" W need 57 same 1
+encode 2 bytes fmt 00000009: ret 1 need 57 wrote 56 "-----BEGIN X509 CRL-----\r\nAQg=\r\n-----END X509 CRL-----\r\n" W need 57 same 1
+encode 3 bytes fmt 00000009: ret 1 need 57 wrote 56 "-----BEGIN X509 CRL-----\r\nAQgP\r\n-----END X509 CRL-----\r\n" W need 57 same 1
+encode 8 bytes fmt 00000009: ret 1 need 65 wrote 64 "-----BEGIN X509 CRL-----\r\nAQgPFh0kKzI=\r\n-----END X509 CRL-----\r\n" W need 65 same 1
+encode 16 bytes fmt 00000009: ret 1 need 77 wrote 76 "-----BEGIN X509 CRL-----\r\nAQgPFh0kKzI5QEdOVVxjag==\r\n-----END X509 CRL-----\r\n" W need 77 same 1
+encode 17 bytes fmt 00000009: ret 1 need 77 wrote 76 "-----BEGIN X509 CRL-----\r\nAQgPFh0kKzI5QEdOVVxjanE=\r\n-----END X509 CRL-----\r\n" W need 77 same 1
+encode 47 bytes fmt 00000009: ret 1 need 117 wrote 116 "-----BEGIN X509 CRL-----\r\nAQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PEM=\r\n-----END X509 CRL-----\r\n" W need 117 same 1
+encode 48 bytes fmt 00000009: ret 1 need 117 wrote 116 "-----BEGIN X509 CRL-----\r\nAQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENK\r\n-----END X509 CRL-----\r\n" W need 117 same 1
+encode 49 bytes fmt 00000009: ret 1 need 123 wrote 122 "-----BEGIN X509 CRL-----\r\nAQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENK\r\nUQ==\r\n-----END X509 CRL-----\r\n" W need 123 same 1
+encode 100 bytes fmt 00000009: ret 1 need 193 wrote 192 "-----BEGIN X509 CRL-----\r\nAQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENK\r\nUVhfZm10e4KJkJeepayzusHIz9bd5Ovy+QAHDhUcIyoxOD9GTVRbYmlwd36FjJOa\r\noaivtg==\r\n-----END X509 CRL-----\r\n" W need 193 same 1
+encode 0 bytes fmt 80000009: ret 0 need 0 W need 0 same 0
+encode 1 bytes fmt 80000009: ret 1 need 54 wrote 53 "-----BEGIN X509 CRL-----\nAQ==\n-----END X509 CRL-----\n" W need 54 same 1
+encode 2 bytes fmt 80000009: ret 1 need 54 wrote 53 "-----BEGIN X509 CRL-----\nAQg=\n-----END X509 CRL-----\n" W need 54 same 1
+encode 3 bytes fmt 80000009: ret 1 need 54 wrote 53 "-----BEGIN X509 CRL-----\nAQgP\n-----END X509 CRL-----\n" W need 54 same 1
+encode 8 bytes fmt 80000009: ret 1 need 62 wrote 61 "-----BEGIN X509 CRL-----\nAQgPFh0kKzI=\n-----END X509 CRL-----\n" W need 62 same 1
+encode 16 bytes fmt 80000009: ret 1 need 74 wrote 73 "-----BEGIN X509 CRL-----\nAQgPFh0kKzI5QEdOVVxjag==\n-----END X509 CRL-----\n" W need 74 same 1
+encode 17 bytes fmt 80000009: ret 1 need 74 wrote 73 "-----BEGIN X509 CRL-----\nAQgPFh0kKzI5QEdOVVxjanE=\n-----END X509 CRL-----\n" W need 74 same 1
+encode 47 bytes fmt 80000009: ret 1 need 114 wrote 113 "-----BEGIN X509 CRL-----\nAQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PEM=\n-----END X509 CRL-----\n" W need 114 same 1
+encode 48 bytes fmt 80000009: ret 1 need 114 wrote 113 "-----BEGIN X509 CRL-----\nAQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENK\n-----END X509 CRL-----\n" W need 114 same 1
+encode 49 bytes fmt 80000009: ret 1 need 119 wrote 118 "-----BEGIN X509 CRL-----\nAQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENK\nUQ==\n-----END X509 CRL-----\n" W need 119 same 1
+encode 100 bytes fmt 80000009: ret 1 need 188 wrote 187 "-----BEGIN X509 CRL-----\nAQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENK\nUVhfZm10e4KJkJeepayzusHIz9bd5Ovy+QAHDhUcIyoxOD9GTVRbYmlwd36FjJOa\noaivtg==\n-----END X509 CRL-----\n" W need 188 same 1
+encode 0 bytes fmt 40000009: ret 0 need 0 W need 0 same 0
+encode 1 bytes fmt 40000009: ret 1 need 51 wrote 50 "-----BEGIN X509 CRL-----AQ==-----END X509 CRL-----" W need 51 same 1
+encode 2 bytes fmt 40000009: ret 1 need 51 wrote 50 "-----BEGIN X509 CRL-----AQg=-----END X509 CRL-----" W need 51 same 1
+encode 3 bytes fmt 40000009: ret 1 need 51 wrote 50 "-----BEGIN X509 CRL-----AQgP-----END X509 CRL-----" W need 51 same 1
+encode 8 bytes fmt 40000009: ret 1 need 59 wrote 58 "-----BEGIN X509 CRL-----AQgPFh0kKzI=-----END X509 CRL-----" W need 59 same 1
+encode 16 bytes fmt 40000009: ret 1 need 71 wrote 70 "-----BEGIN X509 CRL-----AQgPFh0kKzI5QEdOVVxjag==-----END X509 CRL-----" W need 71 same 1
+encode 17 bytes fmt 40000009: ret 1 need 71 wrote 70 "-----BEGIN X509 CRL-----AQgPFh0kKzI5QEdOVVxjanE=-----END X509 CRL-----" W need 71 same 1
+encode 47 bytes fmt 40000009: ret 1 need 111 wrote 110 "-----BEGIN X509 CRL-----AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PEM=-----END X509 CRL-----" W need 111 same 1
+encode 48 bytes fmt 40000009: ret 1 need 111 wrote 110 "-----BEGIN X509 CRL-----AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENK-----END X509 CRL-----" W need 111 same 1
+encode 49 bytes fmt 40000009: ret 1 need 115 wrote 114 "-----BEGIN X509 CRL-----AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENKUQ==-----END X509 CRL-----" W need 115 same 1
+encode 100 bytes fmt 40000009: ret 1 need 183 wrote 182 "-----BEGIN X509 CRL-----AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09rh6O/2/QQLEhkgJy41PENKUVhfZm10e4KJkJeepayzusHIz9bd5Ovy+QAHDhUcIyoxOD9GTVRbYmlwd36FjJOaoaivtg==-----END X509 CRL-----" W need 183 same 1
+encode 0 bytes fmt 00000004: ret 0 need 0 W need 0 same 0
+encode 1 bytes fmt 00000004: ret 1 need 5 wrote 4 "01\r\n" W need 5 same 1
+encode 2 bytes fmt 00000004: ret 1 need 8 wrote 7 "01 08\r\n" W need 8 same 1
+encode 3 bytes fmt 00000004: ret 1 need 11 wrote 10 "01 08 0f\r\n" W need 11 same 1
+encode 8 bytes fmt 00000004: ret 1 need 26 wrote 25 "01 08 0f 16 1d 24 2b 32\r\n" W need 26 same 1
+encode 16 bytes fmt 00000004: ret 1 need 51 wrote 50 "01 08 0f 16 1d 24 2b 32  39 40 47 4e 55 5c 63 6a\r\n" W need 51 same 1
+encode 17 bytes fmt 00000004: ret 1 need 55 wrote 54 "01 08 0f 16 1d 24 2b 32  39 40 47 4e 55 5c 63 6a\r\n71\r\n" W need 55 same 1
+encode 47 bytes fmt 00000004: ret 1 need 148 wrote 147 "01 08 0f 16 1d 24 2b 32  39 40 47 4e 55 5c 63 6a\r\n71 78 7f 86 8d 94 9b a2  a9 b0 b7 be c5 cc d3 da\r\ne1 e8 ef f6 fd 04 0b 12  19 20 27 2e 35 3c 43\r\n" W need 148 same 1
+encode 48 bytes fmt 00000004: ret 1 need 151 wrote 150 "01 08 0f 16 1d 24 2b 32  39 40 47 4e 55 5c 63 6a\r\n71 78 7f 86 8d 94 9b a2  a9 b0 b7 be c5 cc d3 da\r\ne1 e8 ef f6 fd 04 0b 12  19 20 27 2e 35 3c 43 4a\r\n" W need 151 same 1
+encode 49 bytes fmt 00000004: ret 1 need 155 wrote 154 "01 08 0f 16 1d 24 2b 32  39 40 47 4e 55 5c 63 6a\r\n71 78 7f 86 8d 94 9b a2  a9 b0 b7 be c5 cc d3 da\r\ne1 e8 ef f6 fd 04 0b 12  19 20 27 2e 35 3c 43 4a\r\n51\r\n" W need 155 same 1
+encode 100 bytes fmt 00000004: ret 1 need 314 wrote 313 "01 08 0f 16 1d 24 2b 32  39 40 47 4e 55 5c 63 6a\r\n71 78 7f 86 8d 94 9b a2  a9 b0 b7 be c5 cc d3 da\r\ne1 e8 ef f6 fd 04 0b 12  19 20 27 2e 35 3c 43 4a\r\n51 58 5f 66 6d 74 7b 82  89 90 97 9e a5 ac b3 ba\r\nc1 c8 cf d6 dd e4 eb f2  f9 00 07 0e 15 1c 23 2a\r\n31 38 3f 46 4d 54 5b 62  69 70 77 7e 85 8c 93 9a\r\na1 a8 af b6\r\n" W need 314 same 1
+encode 0 bytes fmt 80000004: ret 0 need 0 W need 0 same 0
+encode 1 bytes fmt 80000004: ret 1 need 4 wrote 3 "01\n" W need 4 same 1
+encode 2 bytes fmt 80000004: ret 1 need 7 wrote 6 "01 08\n" W need 7 same 1
+encode 3 bytes fmt 80000004: ret 1 need 10 wrote 9 "01 08 0f\n" W need 10 same 1
+encode 8 bytes fmt 80000004: ret 1 need 25 wrote 24 "01 08 0f 16 1d 24 2b 32\n" W need 25 same 1
+encode 16 bytes fmt 80000004: ret 1 need 50 wrote 49 "01 08 0f 16 1d 24 2b 32  39 40 47 4e 55 5c 63 6a\n" W need 50 same 1
+encode 17 bytes fmt 80000004: ret 1 need 53 wrote 52 "01 08 0f 16 1d 24 2b 32  39 40 47 4e 55 5c 63 6a\n71\n" W need 53 same 1
+encode 47 bytes fmt 80000004: ret 1 need 145 wrote 144 "01 08 0f 16 1d 24 2b 32  39 40 47 4e 55 5c 63 6a\n71 78 7f 86 8d 94 9b a2  a9 b0 b7 be c5 cc d3 da\ne1 e8 ef f6 fd 04 0b 12  19 20 27 2e 35 3c 43\n" W need 145 same 1
+encode 48 bytes fmt 80000004: ret 1 need 148 wrote 147 "01 08 0f 16 1d 24 2b 32  39 40 47 4e 55 5c 63 6a\n71 78 7f 86 8d 94 9b a2  a9 b0 b7 be c5 cc d3 da\ne1 e8 ef f6 fd 04 0b 12  19 20 27 2e 35 3c 43 4a\n" W need 148 same 1
+encode 49 bytes fmt 80000004: ret 1 need 151 wrote 150 "01 08 0f 16 1d 24 2b 32  39 40 47 4e 55 5c 63 6a\n71 78 7f 86 8d 94 9b a2  a9 b0 b7 be c5 cc d3 da\ne1 e8 ef f6 fd 04 0b 12  19 20 27 2e 35 3c 43 4a\n51\n" W need 151 same 1
+encode 100 bytes fmt 80000004: ret 1 need 307 wrote 306 "01 08 0f 16 1d 24 2b 32  39 40 47 4e 55 5c 63 6a\n71 78 7f 86 8d 94 9b a2  a9 b0 b7 be c5 cc d3 da\ne1 e8 ef f6 fd 04 0b 12  19 20 27 2e 35 3c 43 4a\n51 58 5f 66 6d 74 7b 82  89 90 97 9e a5 ac b3 ba\nc1 c8 cf d6 dd e4 eb f2  f9 00 07 0e 15 1c 23 2a\n31 38 3f 46 4d 54 5b 62  69 70 77 7e 85 8c 93 9a\na1 a8 af b6\n" W need 307 same 1
+encode 0 bytes fmt 40000004: ret 0 need 0 W need 0 same 0
+encode 1 bytes fmt 40000004: ret 1 need 3 wrote 2 "01" W need 3 same 1
+encode 2 bytes fmt 40000004: ret 1 need 6 wrote 5 "01 08" W need 6 same 1
+encode 3 bytes fmt 40000004: ret 1 need 9 wrote 8 "01 08 0f" W need 9 same 1
+encode 8 bytes fmt 40000004: ret 1 need 24 wrote 23 "01 08 0f 16 1d 24 2b 32" W need 24 same 1
+encode 16 bytes fmt 40000004: ret 1 need 48 wrote 47 "01 08 0f 16 1d 24 2b 32 39 40 47 4e 55 5c 63 6a" W need 48 same 1
+encode 17 bytes fmt 40000004: ret 1 need 51 wrote 50 "01 08 0f 16 1d 24 2b 32 39 40 47 4e 55 5c 63 6a 71" W need 51 same 1
+encode 47 bytes fmt 40000004: ret 1 need 141 wrote 140 "01 08 0f 16 1d 24 2b 32 39 40 47 4e 55 5c 63 6a 71 78 7f 86 8d 94 9b a2 a9 b0 b7 be c5 cc d3 da e1 e8 ef f6 fd 04 0b 12 19 20 27 2e 35 3c 43" W need 141 same 1
+encode 48 bytes fmt 40000004: ret 1 need 144 wrote 143 "01 08 0f 16 1d 24 2b 32 39 40 47 4e 55 5c 63 6a 71 78 7f 86 8d 94 9b a2 a9 b0 b7 be c5 cc d3 da e1 e8 ef f6 fd 04 0b 12 19 20 27 2e 35 3c 43 4a" W need 144 same 1
+encode 49 bytes fmt 40000004: ret 1 need 147 wrote 146 "01 08 0f 16 1d 24 2b 32 39 40 47 4e 55 5c 63 6a 71 78 7f 86 8d 94 9b a2 a9 b0 b7 be c5 cc d3 da e1 e8 ef f6 fd 04 0b 12 19 20 27 2e 35 3c 43 4a 51" W need 147 same 1
+encode 100 bytes fmt 40000004: ret 1 need 300 wrote 299 "01 08 0f 16 1d 24 2b 32 39 40 47 4e 55 5c 63 6a 71 78 7f 86 8d 94 9b a2 a9 b0 b7 be c5 cc d3 da e1 e8 ef f6 fd 04 0b 12 19 20 27 2e 35 3c 43 4a 51 58 5f 66 6d 74 7b 82 89 90 97 9e a5 ac b3 ba c1 c8 cf d6 dd e4 eb f2 f9 00 07 0e 15 1c 23 2a 31 38 3f 46 4d 54 5b 62 69 70 77 7e 85 8c 93 9a a1 a8 af b6" W need 300 same 1
+encode 0 bytes fmt 0000000c: ret 0 need 0 W need 0 same 0
+encode 1 bytes fmt 0000000c: ret 1 need 5 wrote 4 "01\r\n" W need 5 same 1
+encode 2 bytes fmt 0000000c: ret 1 need 7 wrote 6 "0108\r\n" W need 7 same 1
+encode 3 bytes fmt 0000000c: ret 1 need 9 wrote 8 "01080f\r\n" W need 9 same 1
+encode 8 bytes fmt 0000000c: ret 1 need 19 wrote 18 "01080f161d242b32\r\n" W need 19 same 1
+encode 16 bytes fmt 0000000c: ret 1 need 35 wrote 34 "01080f161d242b323940474e555c636a\r\n" W need 35 same 1
+encode 17 bytes fmt 0000000c: ret 1 need 37 wrote 36 "01080f161d242b323940474e555c636a71\r\n" W need 37 same 1
+encode 47 bytes fmt 0000000c: ret 1 need 97 wrote 96 "01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c43\r\n" W need 97 same 1
+encode 48 bytes fmt 0000000c: ret 1 need 99 wrote 98 "01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a\r\n" W need 99 same 1
+encode 49 bytes fmt 0000000c: ret 1 need 101 wrote 100 "01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51\r\n" W need 101 same 1
+encode 100 bytes fmt 0000000c: ret 1 need 203 wrote 202 "01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6\r\n" W need 203 same 1
+encode 0 bytes fmt 8000000c: ret 0 need 0 W need 0 same 0
+encode 1 bytes fmt 8000000c: ret 1 need 4 wrote 3 "01\n" W need 4 same 1
+encode 2 bytes fmt 8000000c: ret 1 need 6 wrote 5 "0108\n" W need 6 same 1
+encode 3 bytes fmt 8000000c: ret 1 need 8 wrote 7 "01080f\n" W need 8 same 1
+encode 8 bytes fmt 8000000c: ret 1 need 18 wrote 17 "01080f161d242b32\n" W need 18 same 1
+encode 16 bytes fmt 8000000c: ret 1 need 34 wrote 33 "01080f161d242b323940474e555c636a\n" W need 34 same 1
+encode 17 bytes fmt 8000000c: ret 1 need 36 wrote 35 "01080f161d242b323940474e555c636a71\n" W need 36 same 1
+encode 47 bytes fmt 8000000c: ret 1 need 96 wrote 95 "01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c43\n" W need 96 same 1
+encode 48 bytes fmt 8000000c: ret 1 need 98 wrote 97 "01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a\n" W need 98 same 1
+encode 49 bytes fmt 8000000c: ret 1 need 100 wrote 99 "01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51\n" W need 100 same 1
+encode 100 bytes fmt 8000000c: ret 1 need 202 wrote 201 "01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6\n" W need 202 same 1
+encode 0 bytes fmt 4000000c: ret 0 need 0 W need 0 same 0
+encode 1 bytes fmt 4000000c: ret 1 need 3 wrote 2 "01" W need 3 same 1
+encode 2 bytes fmt 4000000c: ret 1 need 5 wrote 4 "0108" W need 5 same 1
+encode 3 bytes fmt 4000000c: ret 1 need 7 wrote 6 "01080f" W need 7 same 1
+encode 8 bytes fmt 4000000c: ret 1 need 17 wrote 16 "01080f161d242b32" W need 17 same 1
+encode 16 bytes fmt 4000000c: ret 1 need 33 wrote 32 "01080f161d242b323940474e555c636a" W need 33 same 1
+encode 17 bytes fmt 4000000c: ret 1 need 35 wrote 34 "01080f161d242b323940474e555c636a71" W need 35 same 1
+encode 47 bytes fmt 4000000c: ret 1 need 95 wrote 94 "01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c43" W need 95 same 1
+encode 48 bytes fmt 4000000c: ret 1 need 97 wrote 96 "01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a" W need 97 same 1
+encode 49 bytes fmt 4000000c: ret 1 need 99 wrote 98 "01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51" W need 99 same 1
+encode 100 bytes fmt 4000000c: ret 1 need 201 wrote 200 "01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6" W need 201 same 1
+encode 0 bytes fmt 00000002: ret 0 need 0 W need 0 same 0
+encode 1 bytes fmt 00000002: ret 1 need 1 wrote 1 "\x01" W need 1 same 1
+encode 2 bytes fmt 00000002: ret 1 need 2 wrote 2 "\x01\x08" W need 2 same 0
+encode 3 bytes fmt 00000002: ret 1 need 3 wrote 3 "\x01\x08\x0f" W need 3 same 0
+encode 8 bytes fmt 00000002: ret 1 need 8 wrote 8 "\x01\x08\x0f\x16\x1d$+2" W need 8 same 0
+encode 16 bytes fmt 00000002: ret 1 need 16 wrote 16 "\x01\x08\x0f\x16\x1d$+29@GNU\cj" W need 16 same 0
+encode 17 bytes fmt 00000002: ret 1 need 17 wrote 17 "\x01\x08\x0f\x16\x1d$+29@GNU\cjq" W need 17 same 0
+encode 47 bytes fmt 00000002: ret 1 need 47 wrote 47 "\x01\x08\x0f\x16\x1d$+29@GNU\cjqx\x7f\x86\x8d\x94\x9b\xa2\xa9\xb0\xb7\xbe\xc5\xcc\xd3\xda\xe1\xe8\xef\xf6\xfd\x04\x0b\x12\x19 '.5<C" W need 47 same 0
+encode 48 bytes fmt 00000002: ret 1 need 48 wrote 48 "\x01\x08\x0f\x16\x1d$+29@GNU\cjqx\x7f\x86\x8d\x94\x9b\xa2\xa9\xb0\xb7\xbe\xc5\xcc\xd3\xda\xe1\xe8\xef\xf6\xfd\x04\x0b\x12\x19 '.5<CJ" W need 48 same 0
+encode 49 bytes fmt 00000002: ret 1 need 49 wrote 49 "\x01\x08\x0f\x16\x1d$+29@GNU\cjqx\x7f\x86\x8d\x94\x9b\xa2\xa9\xb0\xb7\xbe\xc5\xcc\xd3\xda\xe1\xe8\xef\xf6\xfd\x04\x0b\x12\x19 '.5<CJQ" W need 49 same 0
+encode 100 bytes fmt 00000002: ret 1 need 100 wrote 100 "\x01\x08\x0f\x16\x1d$+29@GNU\cjqx\x7f\x86\x8d\x94\x9b\xa2\xa9\xb0\xb7\xbe\xc5\xcc\xd3\xda\xe1\xe8\xef\xf6\xfd\x04\x0b\x12\x19 '.5<CJQX_fmt{\x82\x89\x90\x97\x9e\xa5\xac\xb3\xba\xc1\xc8\xcf\xd6\xdd\xe4\xeb\xf2\xf9\x00\x07\x0e\x15\x1c#*18?FMT[bipw~\x85\x8c\x93\x9a\xa1\xa8\xaf\xb6" W need 100 same 0
+encode 0 bytes fmt 80000002: ret 0 need 0 W need 0 same 0
+encode 1 bytes fmt 80000002: ret 1 need 1 wrote 1 "\x01" W need 1 same 0
+encode 2 bytes fmt 80000002: ret 1 need 2 wrote 2 "\x01\x08" W need 2 same 0
+encode 3 bytes fmt 80000002: ret 1 need 3 wrote 3 "\x01\x08\x0f" W need 3 same 0
+encode 8 bytes fmt 80000002: ret 1 need 8 wrote 8 "\x01\x08\x0f\x16\x1d$+2" W need 8 same 0
+encode 16 bytes fmt 80000002: ret 1 need 16 wrote 16 "\x01\x08\x0f\x16\x1d$+29@GNU\cj" W need 16 same 0
+encode 17 bytes fmt 80000002: ret 1 need 17 wrote 17 "\x01\x08\x0f\x16\x1d$+29@GNU\cjq" W need 17 same 0
+encode 47 bytes fmt 80000002: ret 1 need 47 wrote 47 "\x01\x08\x0f\x16\x1d$+29@GNU\cjqx\x7f\x86\x8d\x94\x9b\xa2\xa9\xb0\xb7\xbe\xc5\xcc\xd3\xda\xe1\xe8\xef\xf6\xfd\x04\x0b\x12\x19 '.5<C" W need 47 same 0
+encode 48 bytes fmt 80000002: ret 1 need 48 wrote 48 "\x01\x08\x0f\x16\x1d$+29@GNU\cjqx\x7f\x86\x8d\x94\x9b\xa2\xa9\xb0\xb7\xbe\xc5\xcc\xd3\xda\xe1\xe8\xef\xf6\xfd\x04\x0b\x12\x19 '.5<CJ" W need 48 same 0
+encode 49 bytes fmt 80000002: ret 1 need 49 wrote 49 "\x01\x08\x0f\x16\x1d$+29@GNU\cjqx\x7f\x86\x8d\x94\x9b\xa2\xa9\xb0\xb7\xbe\xc5\xcc\xd3\xda\xe1\xe8\xef\xf6\xfd\x04\x0b\x12\x19 '.5<CJQ" W need 49 same 0
+encode 100 bytes fmt 80000002: ret 1 need 100 wrote 100 "\x01\x08\x0f\x16\x1d$+29@GNU\cjqx\x7f\x86\x8d\x94\x9b\xa2\xa9\xb0\xb7\xbe\xc5\xcc\xd3\xda\xe1\xe8\xef\xf6\xfd\x04\x0b\x12\x19 '.5<CJQX_fmt{\x82\x89\x90\x97\x9e\xa5\xac\xb3\xba\xc1\xc8\xcf\xd6\xdd\xe4\xeb\xf2\xf9\x00\x07\x0e\x15\x1c#*18?FMT[bipw~\x85\x8c\x93\x9a\xa1\xa8\xaf\xb6" W need 100 same 0
+encode 0 bytes fmt 40000002: ret 0 need 0 W need 0 same 0
+encode 1 bytes fmt 40000002: ret 1 need 1 wrote 1 "\x01" W need 1 same 0
+encode 2 bytes fmt 40000002: ret 1 need 2 wrote 2 "\x01\x08" W need 2 same 0
+encode 3 bytes fmt 40000002: ret 1 need 3 wrote 3 "\x01\x08\x0f" W need 3 same 0
+encode 8 bytes fmt 40000002: ret 1 need 8 wrote 8 "\x01\x08\x0f\x16\x1d$+2" W need 8 same 0
+encode 16 bytes fmt 40000002: ret 1 need 16 wrote 16 "\x01\x08\x0f\x16\x1d$+29@GNU\cj" W need 16 same 0
+encode 17 bytes fmt 40000002: ret 1 need 17 wrote 17 "\x01\x08\x0f\x16\x1d$+29@GNU\cjq" W need 17 same 0
+encode 47 bytes fmt 40000002: ret 1 need 47 wrote 47 "\x01\x08\x0f\x16\x1d$+29@GNU\cjqx\x7f\x86\x8d\x94\x9b\xa2\xa9\xb0\xb7\xbe\xc5\xcc\xd3\xda\xe1\xe8\xef\xf6\xfd\x04\x0b\x12\x19 '.5<C" W need 47 same 0
+encode 48 bytes fmt 40000002: ret 1 need 48 wrote 48 "\x01\x08\x0f\x16\x1d$+29@GNU\cjqx\x7f\x86\x8d\x94\x9b\xa2\xa9\xb0\xb7\xbe\xc5\xcc\xd3\xda\xe1\xe8\xef\xf6\xfd\x04\x0b\x12\x19 '.5<CJ" W need 48 same 0
+encode 49 bytes fmt 40000002: ret 1 need 49 wrote 49 "\x01\x08\x0f\x16\x1d$+29@GNU\cjqx\x7f\x86\x8d\x94\x9b\xa2\xa9\xb0\xb7\xbe\xc5\xcc\xd3\xda\xe1\xe8\xef\xf6\xfd\x04\x0b\x12\x19 '.5<CJQ" W need 49 same 0
+encode 100 bytes fmt 40000002: ret 1 need 100 wrote 100 "\x01\x08\x0f\x16\x1d$+29@GNU\cjqx\x7f\x86\x8d\x94\x9b\xa2\xa9\xb0\xb7\xbe\xc5\xcc\xd3\xda\xe1\xe8\xef\xf6\xfd\x04\x0b\x12\x19 '.5<CJQX_fmt{\x82\x89\x90\x97\x9e\xa5\xac\xb3\xba\xc1\xc8\xcf\xd6\xdd\xe4\xeb\xf2\xf9\x00\x07\x0e\x15\x1c#*18?FMT[bipw~\x85\x8c\x93\x9a\xa1\xa8\xaf\xb6" W need 100 same 0
+A cap 0 fmt 00000001: ret 0 err 234 len 0 bytes cc | W ret 0 err 87 len 0 first cccc
+A cap 0 fmt 00000004: ret 0 err 234 len 0 bytes cc | W ret 0 err 87 len 0 first cccc
+A cap 0 fmt 0000000c: ret 0 err 234 len 0 bytes cc | W ret 0 err 87 len 0 first cccc
+A cap 1 fmt 00000001: ret 0 err 234 len 1 bytes 41 cc | W ret 0 err 234 len 1 first cccc
+A cap 1 fmt 00000004: ret 0 err 234 len 1 bytes cc cc | W ret 0 err 234 len 1 first cccc
+A cap 1 fmt 0000000c: ret 0 err 234 len 1 bytes cc cc | W ret 0 err 234 len 1 first cccc
+A cap 2 fmt 00000001: ret 0 err 234 len 2 bytes 41 51 cc | W ret 0 err 234 len 2 first cccc
+A cap 2 fmt 00000004: ret 0 err 234 len 2 bytes cc cc cc | W ret 0 err 234 len 2 first cccc
+A cap 2 fmt 0000000c: ret 0 err 234 len 2 bytes cc cc cc | W ret 0 err 234 len 2 first cccc
+A cap 3 fmt 00000001: ret 0 err 234 len 3 bytes 41 51 67 cc | W ret 0 err 234 len 3 first cccc
+A cap 3 fmt 00000004: ret 0 err 234 len 3 bytes 30 31 00 cc | W ret 0 err 234 len 3 first cccc
+A cap 3 fmt 0000000c: ret 0 err 234 len 3 bytes 30 31 00 cc | W ret 0 err 234 len 3 first cccc
+A cap 4 fmt 00000001: ret 0 err 234 len 4 bytes 41 51 67 50 cc | W ret 0 err 234 len 4 first cccc
+A cap 4 fmt 00000004: ret 0 err 234 len 4 bytes 30 31 00 cc cc | W ret 0 err 234 len 4 first cccc
+A cap 4 fmt 0000000c: ret 0 err 234 len 4 bytes 30 31 00 cc cc | W ret 0 err 234 len 4 first cccc
+A cap 5 fmt 00000001: ret 0 err 234 len 5 bytes 41 51 67 50 0d cc | W ret 0 err 234 len 5 first cccc
+A cap 5 fmt 00000004: ret 0 err 234 len 5 bytes 30 31 00 cc cc cc | W ret 0 err 234 len 5 first cccc
+A cap 5 fmt 0000000c: ret 0 err 234 len 5 bytes 30 31 30 38 00 cc | W ret 0 err 234 len 5 first cccc
+A cap 6 fmt 00000001: ret 0 err 234 len 7 bytes 41 51 67 50 0d 0a cc | W ret 0 err 234 len 7 first cccc
+A cap 6 fmt 00000004: ret 0 err 234 len 6 bytes 30 31 20 30 38 00 cc | W ret 0 err 234 len 6 first cccc
+A cap 6 fmt 0000000c: ret 0 err 234 len 6 bytes 30 31 30 38 00 cc cc | W ret 0 err 234 len 6 first cccc
+A cap 7 fmt 00000001: ret 1 err 3735928559 len 6 bytes 41 51 67 50 0d 0a 00 cc | W ret 1 err 3735928559 len 6 first 0041
+A cap 7 fmt 00000004: ret 0 err 234 len 7 bytes 30 31 20 30 38 00 cc cc | W ret 0 err 234 len 7 first cccc
+A cap 7 fmt 0000000c: ret 0 err 234 len 7 bytes 30 31 30 38 30 66 00 cc | W ret 0 err 234 len 7 first cccc
+NULL data: 0 err 234
+decode "V" fmt 1: ret 1 len 1 skip 0 used 1 bytes 54 | NULL buffer ret 1 len 1
+decode "V" fmt 6: ret 1 len 1 skip 0 used 1 bytes 54 | NULL buffer ret 1 len 1
+decode "VV" fmt 1: ret 1 len 1 skip 0 used 1 bytes 55 | NULL buffer ret 1 len 1
+decode "VV" fmt 6: ret 1 len 1 skip 0 used 1 bytes 55 | NULL buffer ret 1 len 1
+decode "VVV" fmt 1: ret 1 len 2 skip 0 used 1 bytes 5555 | NULL buffer ret 1 len 2
+decode "VVV" fmt 6: ret 1 len 2 skip 0 used 1 bytes 5555 | NULL buffer ret 1 len 2
+decode "V=" fmt 1: ret 0 err 13 len 64 first cc skip 0 used 0 | NULL buffer ret 0 len 0
+decode "V=" fmt 6: ret 0 err 13 len 64 first cc skip 0 used 0 | NULL buffer ret 0 len 0
+decode "VV=" fmt 1: ret 0 err 13 len 64 first cc skip 0 used 0 | NULL buffer ret 0 len 0
+decode "VV=" fmt 6: ret 0 err 13 len 64 first cc skip 0 used 0 | NULL buffer ret 0 len 0
+decode "V==" fmt 1: ret 0 err 13 len 64 first cc skip 0 used 0 | NULL buffer ret 0 len 0
+decode "V==" fmt 6: ret 0 err 13 len 64 first cc skip 0 used 0 | NULL buffer ret 0 len 0
+decode "V===" fmt 1: ret 1 len 1 skip 0 used 1 bytes 54 | NULL buffer ret 1 len 1
+decode "V===" fmt 6: ret 1 len 1 skip 0 used 1 bytes 54 | NULL buffer ret 1 len 1
+decode "VV==" fmt 1: ret 1 len 1 skip 0 used 1 bytes 55 | NULL buffer ret 1 len 1
+decode "VV==" fmt 6: ret 1 len 1 skip 0 used 1 bytes 55 | NULL buffer ret 1 len 1
+decode "V========" fmt 1: ret 1 len 1 skip 0 used 1 bytes 54 | NULL buffer ret 1 len 1
+decode "V========" fmt 6: ret 1 len 1 skip 0 used 1 bytes 54 | NULL buffer ret 1 len 1
+decode "VV    VV" fmt 1: ret 1 len 3 skip 0 used 1 bytes 555555 | NULL buffer ret 1 len 3
+decode "VV    VV" fmt 6: ret 1 len 3 skip 0 used 1 bytes 555555 | NULL buffer ret 1 len 3
+decode "V\nVVV" fmt 1: ret 1 len 3 skip 0 used 1 bytes 555555 | NULL buffer ret 1 len 3
+decode "V\nVVV" fmt 6: ret 1 len 3 skip 0 used 1 bytes 555555 | NULL buffer ret 1 len 3
+decode "V===VVVV" fmt 1: ret 1 len 1 skip 0 used 1 bytes 54 | NULL buffer ret 1 len 1
+decode "V===VVVV" fmt 6: ret 1 len 1 skip 0 used 1 bytes 54 | NULL buffer ret 1 len 1
+decode "VVVV=VVVV" fmt 1: ret 1 len 3 skip 0 used 1 bytes 555555 | NULL buffer ret 1 len 3
+decode "VVVV=VVVV" fmt 6: ret 1 len 3 skip 0 used 1 bytes 555555 | NULL buffer ret 1 len 3
+decode "VV-V" fmt 1: ret 1 len 3 skip 0 used 13 bytes 555f95 | NULL buffer ret 1 len 3
+decode "VV-V" fmt 6: ret 1 len 3 skip 0 used 13 bytes 555f95 | NULL buffer ret 1 len 3
+decode "AA==\r\n" fmt 1: ret 1 len 1 skip 0 used 1 bytes 00 | NULL buffer ret 1 len 1
+decode "AA==\r\n" fmt 6: ret 1 len 1 skip 0 used 1 bytes 00 | NULL buffer ret 1 len 1
+decode "garbage\r\nAA==\r\n" fmt 1: ret 0 err 13 len 64 first cc skip 0 used 0 | NULL buffer ret 0 len 0
+decode "garbage\r\nAA==\r\n" fmt 6: ret 0 err 13 len 64 first cc skip 0 used 0 | NULL buffer ret 0 len 0
+decode "garbage\r\nAAAA\r\n" fmt 1: ret 1 len 8 skip 0 used 1 bytes 81aadb6a07800000 | NULL buffer ret 1 len 8
+decode "garbage\r\nAAAA\r\n" fmt 6: ret 1 len 8 skip 0 used 1 bytes 81aadb6a07800000 | NULL buffer ret 1 len 8
+decode "" fmt 1: ret 1 len 0 skip 0 used 1 bytes  | NULL buffer ret 1 len 0
+decode "" fmt 6: ret 1 len 0 skip 0 used 1 bytes  | NULL buffer ret 1 len 0
+decode "V" fmt 1: ret 1 len 1 skip 0 used 1 bytes 54 | NULL buffer ret 1 len 1
+decode "-----BEGIN-----VVVV-----END-----" fmt 0: ret 0 err 13 len 64 first cc skip 0 used 0 | NULL buffer ret 0 len 0
+decode "-----BEGIN-----VVVV-----END-----" fmt 1: ret 1 len 24 skip 0 used 13 bytes fbefbef8110620dfbefbef9555557efbefbe10d0fefbefbe | NULL buffer ret 1 len 24
+decode "-----BEGIN-----VVVV-----END-----" fmt 2: ret 1 len 64 skip 0 used 2 bytes 2d2d2d2d2d424547494e2d2d2d2d2d565656562d2d2d2d2d454e442d2d2d2d2d000000002d2d2d2d2d424547494e202d2d2d2d2d565656562d2d2d2d2d454e44 | NULL buffer ret 1 len 32
+decode "-----BEGIN-----VVVV-----END-----" fmt 3: ret 0 err 13 len 64 first cc skip 0 used 0 | NULL buffer ret 0 len 0
+decode "-----BEGIN-----VVVV-----END-----" fmt 6: ret 1 len 24 skip 0 used 13 bytes fbefbef8110620dfbefbef9555557efbefbe10d0fefbefbe | NULL buffer ret 1 len 24
+decode "-----BEGIN-----VVVV-----END-----" fmt 7: ret 1 len 24 skip 0 used 13 bytes fbefbef8110620dfbefbef9555557efbefbe10d0fefbefbe | NULL buffer ret 1 len 24
+decode "-----BEGIN -----VVVV-----END -----" fmt 0: ret 1 len 3 skip 0 used 0 bytes 555555 | NULL buffer ret 1 len 3
+decode "-----BEGIN -----VVVV-----END -----" fmt 1: ret 1 len 24 skip 0 used 13 bytes fbefbef8110620dfbefbef9555557efbefbe10d0fefbefbe | NULL buffer ret 1 len 24
+decode "-----BEGIN -----VVVV-----END -----" fmt 2: ret 1 len 64 skip 0 used 2 bytes 2d2d2d2d2d424547494e202d2d2d2d2d565656562d2d2d2d2d454e44202d2d2d2d2d00006a756e6b2d2d2d2d2d424547494e20666f6f2d2d2d2d2d562d2d2d2d | NULL buffer ret 1 len 34
+decode "-----BEGIN -----VVVV-----END -----" fmt 3: ret 1 len 3 skip 0 used 3 bytes 555555 | NULL buffer ret 1 len 3
+decode "-----BEGIN -----VVVV-----END -----" fmt 6: ret 1 len 3 skip 0 used 0 bytes 555555 | NULL buffer ret 1 len 3
+decode "-----BEGIN -----VVVV-----END -----" fmt 7: ret 1 len 3 skip 0 used 0 bytes 555555 | NULL buffer ret 1 len 3
+decode "junk-----BEGIN foo-----V-----END foo-----" fmt 0: ret 1 len 1 skip 4 used 0 bytes 54 | NULL buffer ret 1 len 1
+decode "junk-----BEGIN foo-----V-----END foo-----" fmt 1: ret 1 len 29 skip 0 used 13 bytes 8ee9e4fbefbef8110620d7e8a3efbefbe57efbefbe10d0dfa28fbefbef | NULL buffer ret 1 len 29
+decode "junk-----BEGIN foo-----V-----END foo-----" fmt 2: ret 1 len 64 skip 0 used 2 bytes 6a756e6b2d2d2d2d2d424547494e20666f6f2d2d2d2d2d562d2d2d2d2d454e4420666f6f2d2d2d2d2d0000002d2d2d2d2d424547494e20583530392043524c2d | NULL buffer ret 1 len 41
+decode "junk-----BEGIN foo-----V-----END foo-----" fmt 3: ret 1 len 1 skip 4 used 3 bytes 54 | NULL buffer ret 1 len 1
+decode "junk-----BEGIN foo-----V-----END foo-----" fmt 6: ret 1 len 1 skip 4 used 0 bytes 54 | NULL buffer ret 1 len 1
+decode "junk-----BEGIN foo-----V-----END foo-----" fmt 7: ret 1 len 1 skip 4 used 0 bytes 54 | NULL buffer ret 1 len 1
+decode "-----BEGIN X509 CRL-----\r\nAA==\r\n" fmt 0: ret 0 err 13 len 64 first cc skip 0 used 0 | NULL buffer ret 0 len 0
+decode "-----BEGIN X509 CRL-----\r\nAA==\r\n" fmt 1: ret 0 err 13 len 64 first cc skip 0 used 0 | NULL buffer ret 0 len 0
+decode "-----BEGIN X509 CRL-----\r\nAA==\r\n" fmt 2: ret 1 len 64 skip 0 used 2 bytes 2d2d2d2d2d424547494e20583530392043524c2d2d2d2d2d0d0a41413d3d0d0a00676172626167650d0a414141410d0a00560056560056565600563d0056563d | NULL buffer ret 1 len 32
+decode "-----BEGIN X509 CRL-----\r\nAA==\r\n" fmt 3: ret 0 err 13 len 64 first cc skip 0 used 0 | NULL buffer ret 0 len 0
+decode "-----BEGIN X509 CRL-----\r\nAA==\r\n" fmt 6: ret 0 err 13 len 64 first cc skip 0 used 0 | NULL buffer ret 0 len 0
+decode "-----BEGIN X509 CRL-----\r\nAA==\r\n" fmt 7: ret 1 len 64 skip 0 used 2 bytes 2d2d2d2d2d424547494e20583530392043524c2d2d2d2d2d0d0a41413d3d0d0a00676172626167650d0a414141410d0a00560056560056565600563d0056563d | NULL buffer ret 1 len 32
+decode "x\r\n-----BEGIN CERTIFICATE-----\r\nAQI=\r\n-----END CERTIFICATE-----\r\n" fmt 0: ret 1 len 2 skip 3 used 0 bytes 0102 | NULL buffer ret 1 len 2
+decode "x\r\n-----BEGIN CERTIFICATE-----\r\nAQI=\r\n-----END CERTIFICATE-----\r\n" fmt 1: ret 0 err 13 len 64 first cc skip 0 used 0 | NULL buffer ret 0 len 0
+decode "x\r\n-----BEGIN CERTIFICATE-----\r\nAQI=\r\n-----END CERTIFICATE-----\r\n" fmt 2: ret 1 len 64 skip 0 used 2 bytes 780d0a2d2d2d2d2d424547494e2043455254494649434154452d2d2d2d2d0d0a4151493d0d0a2d2d2d2d2d454e442043455254494649434154452d2d2d2d2d0d | NULL buffer ret 1 len 65
+decode "x\r\n-----BEGIN CERTIFICATE-----\r\nAQI=\r\n-----END CERTIFICATE-----\r\n" fmt 3: ret 1 len 2 skip 3 used 3 bytes 0102 | NULL buffer ret 1 len 2
+decode "x\r\n-----BEGIN CERTIFICATE-----\r\nAQI=\r\n-----END CERTIFICATE-----\r\n" fmt 6: ret 1 len 2 skip 3 used 0 bytes 0102 | NULL buffer ret 1 len 2
+decode "x\r\n-----BEGIN CERTIFICATE-----\r\nAQI=\r\n-----END CERTIFICATE-----\r\n" fmt 7: ret 1 len 2 skip 3 used 0 bytes 0102 | NULL buffer ret 1 len 2
+decode "" fmt 4: ret 1 len 0 skip 0 used 4 bytes  | NULL buffer ret 1 len 0
+decode "" fmt 12: ret 1 len 0 skip 0 used 12 bytes  | NULL buffer ret 1 len 0
+decode "" fmt 8: ret 1 len 0 skip 0 used 4 bytes  | NULL buffer ret 1 len 0
+decode "-" fmt 4: ret 1 len 0 skip 0 used 4 bytes  | NULL buffer ret 1 len 0
+decode "-" fmt 12: ret 1 len 0 skip 0 used 12 bytes  | NULL buffer ret 1 len 0
+decode "-" fmt 8: ret 1 len 0 skip 0 used 4 bytes  | NULL buffer ret 1 len 0
+decode "0" fmt 4: ret 0 err 13 len 64 first cc skip 0 used 0 | NULL buffer ret 0 len 0
+decode "0" fmt 12: ret 0 err 13 len 64 first cc skip 0 used 0 | NULL buffer ret 0 len 0
+decode "0" fmt 8: ret 0 err 13 len 64 first cc skip 0 used 0 | NULL buffer ret 0 len 0
+decode "000" fmt 4: ret 0 err 13 len 64 first 00 skip 0 used 0 | NULL buffer ret 0 len 0
+decode "000" fmt 12: ret 0 err 13 len 64 first 00 skip 0 used 0 | NULL buffer ret 0 len 0
+decode "000" fmt 8: ret 0 err 13 len 64 first 00 skip 0 used 0 | NULL buffer ret 0 len 0
+decode "0102" fmt 4: ret 1 len 2 skip 0 used 4 bytes 0102 | NULL buffer ret 1 len 2
+decode "0102" fmt 12: ret 1 len 2 skip 0 used 12 bytes 0102 | NULL buffer ret 1 len 2
+decode "0102" fmt 8: ret 1 len 2 skip 0 used 4 bytes 0102 | NULL buffer ret 1 len 2
+decode " aE\x09\n\r\n" fmt 4: ret 1 len 1 skip 0 used 4 bytes ae | NULL buffer ret 1 len 1
+decode " aE\x09\n\r\n" fmt 12: ret 1 len 1 skip 0 used 12 bytes ae | NULL buffer ret 1 len 1
+decode " aE\x09\n\r\n" fmt 8: ret 1 len 1 skip 0 used 4 bytes ae | NULL buffer ret 1 len 1
+decode "01-02" fmt 4: ret 1 len 2 skip 0 used 4 bytes 0102 | NULL buffer ret 1 len 2
+decode "01-02" fmt 12: ret 1 len 2 skip 0 used 12 bytes 0102 | NULL buffer ret 1 len 2
+decode "01-02" fmt 8: ret 1 len 2 skip 0 used 4 bytes 0102 | NULL buffer ret 1 len 2
+decode "aa,,-BB---ff,-," fmt 4: ret 1 len 3 skip 0 used 4 bytes aabbff | NULL buffer ret 1 len 3
+decode "aa,,-BB---ff,-," fmt 12: ret 1 len 3 skip 0 used 12 bytes aabbff | NULL buffer ret 1 len 3
+decode "aa,,-BB---ff,-," fmt 8: ret 1 len 3 skip 0 used 4 bytes aabbff | NULL buffer ret 1 len 3
+decode "1-2" fmt 4: ret 0 err 13 len 64 first cc skip 0 used 0 | NULL buffer ret 0 len 0
+decode "1-2" fmt 12: ret 0 err 13 len 64 first cc skip 0 used 0 | NULL buffer ret 0 len 0
+decode "1-2" fmt 8: ret 0 err 13 len 64 first cc skip 0 used 0 | NULL buffer ret 0 len 0
+decode "0102q" fmt 4: ret 0 err 13 len 64 first 01 skip 0 used 0 | NULL buffer ret 0 len 0
+decode "0102q" fmt 12: ret 0 err 13 len 64 first 01 skip 0 used 0 | NULL buffer ret 0 len 0
+decode "0102q" fmt 8: ret 0 err 13 len 64 first 01 skip 0 used 0 | NULL buffer ret 0 len 0
+decode "01 02" fmt 4: ret 1 len 2 skip 0 used 4 bytes 0102 | NULL buffer ret 1 len 2
+decode "01 02" fmt 12: ret 1 len 2 skip 0 used 12 bytes 0102 | NULL buffer ret 1 len 2
+decode "01 02" fmt 8: ret 1 len 2 skip 0 used 4 bytes 0102 | NULL buffer ret 1 len 2
+decode "00 01 02 03 04 05 06 07  08 09\r\n" fmt 4: ret 1 len 10 skip 0 used 4 bytes 00010203040506070809 | NULL buffer ret 1 len 10
+decode "00 01 02 03 04 05 06 07  08 09\r\n" fmt 12: ret 1 len 10 skip 0 used 12 bytes 00010203040506070809 | NULL buffer ret 1 len 10
+decode "00 01 02 03 04 05 06 07  08 09\r\n" fmt 8: ret 1 len 10 skip 0 used 4 bytes 00010203040506070809 | NULL buffer ret 1 len 10
+decode "0a0b\r\n" fmt 4: ret 1 len 2 skip 0 used 4 bytes 0a0b | NULL buffer ret 1 len 2
+decode "0a0b\r\n" fmt 12: ret 1 len 2 skip 0 used 12 bytes 0a0b | NULL buffer ret 1 len 2
+decode "0a0b\r\n" fmt 8: ret 1 len 2 skip 0 used 4 bytes 0a0b | NULL buffer ret 1 len 2
+decode "01\x00 " fmt 4: ret 0 err 13 len 64 first 01 skip 0 used 0 | NULL buffer ret 0 len 0
+decode "AA==" fmt 2147483649: ret 0 err 13 len 64 first cc skip 0 used 0 | NULL buffer ret 0 len 0
