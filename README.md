@@ -90,6 +90,7 @@ curl -fsSL https://raw.githubusercontent.com/a-kaibu/ippai/main/install.sh | sh
 ippai serve                       # バックグラウンドで起動して http://localhost:8656 を表示
 ippai status | ippai logs --follow | ippai stop
 ippai add ./games/sample --exe game.exe   # パック + 一覧に登録 + 作品情報 (--id --title --cover は任意)
+ippai add ./trial.zip                     # 配布物のまま: zip/lzh/rar/7z、InstallShield・Inno Setup・msi・自己展開形式を展開 (--exe 省略時は一番大きいゲーム exe)
 ippai remove sample
 ippai meta sample | ippai meta --all
 ```

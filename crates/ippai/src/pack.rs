@@ -15,6 +15,7 @@
 //! brand, release date, score, tags, story and cover; `ippai meta` does that again or for older entries.
 
 use crate::meta;
+use crate::unpack;
 
 use anyhow::{bail, Context, Result};
 use clap::Subcommand;
@@ -29,11 +30,14 @@ use std::path::{Path, PathBuf};
 pub enum Cmd {
     /// Pack a game folder into the store and add it to the launcher's list (or replace it).
     Add {
-        /// The game folder.
+        /// The game folder, or its download: a zip, lzh, rar or 7z archive, or an installer
+        /// (InstallShield, Inno Setup, Windows Installer, self-extracting archives), unpacked
+        /// here, installers inside it too.
         dir: PathBuf,
-        /// Executable to start, relative to the folder.
+        /// Executable to start, relative to the folder (also found one folder further down)
+        /// [default: the biggest .exe that is not a tool or installer]
         #[arg(long)]
-        exe: String,
+        exe: Option<String>,
         /// Short name: letters, digits, `_`, `-` (the URL's `?game=`) [default: from the folder's name]
         #[arg(long)]
         id: Option<String>,
@@ -65,6 +69,9 @@ pub enum Cmd {
         #[arg(long)]
         follow: bool,
     },
+    /// Unpack an archive or installer as `add` does (prints the exe it would start).
+    #[command(hide = true)]
+    Unpack { src: PathBuf, out: PathBuf },
     /// Pack a directory tree for the wasm runtime's file system (crates/kura/src/vfs.rs).
     #[command(hide = true)]
     Pack {
@@ -355,15 +362,52 @@ pub fn run(store: &Path, cmd: Cmd) -> Result<()> {
                 write_game(store, &g)?;
             }
         }
+        Cmd::Unpack { src, out } => {
+            if out.exists() && fs::read_dir(&out)?.next().is_some() {
+                bail!("{}: not empty", out.display());
+            }
+            unpack::unpack(&src, &out)?;
+            println!("{}", unpack::pick_exe(&out, None).unwrap_or_default());
+        }
         Cmd::Add { dir, exe, id, title, engine, cover, args, env, mount, meta_id, no_meta, follow } => {
-            let name = dir.canonicalize().with_context(|| dir.display().to_string())?.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let path = dir.canonicalize().with_context(|| dir.display().to_string())?;
+            let package = unpack::is_package(&path);
+            let name = if package { path.file_stem() } else { path.file_name() }.map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             let id = id.unwrap_or_else(|| default_id(&name));
             if !valid_id(&id) {
                 bail!("id {id:?}: use letters, digits, _ and - (--id)");
             }
-            let list = pack_tree(store, &dir, &id, follow, 256 << 10)?;
-            let tree_name = id.clone();
-            add_game(store, id, title.unwrap_or(name), tree_name, exe, engine, cover, args, env, mount, meta_id, no_meta, Some(list))?
+            // a download: unpacked into the store's tmp, packed from there, then removed
+            let staged = store.join("tmp").join(format!("unpack-{id}-{}", std::process::id()));
+            let r = (|| {
+                let mut root = path.clone();
+                if package {
+                    let _ = fs::remove_dir_all(&staged);
+                    unpack::unpack(&path, &staged)?;
+                    root = staged.clone();
+                    // (the usual one folder holding the game: its files at the tree's top)
+                    let top: Vec<_> = fs::read_dir(&root)?.collect::<Result<_, _>>()?;
+                    if let [one] = &top[..] {
+                        if one.file_type()?.is_dir() {
+                            root = one.path();
+                        }
+                    }
+                } else if !path.is_dir() {
+                    bail!("{}: not a folder, archive or installer", dir.display());
+                }
+                let exe = match &exe {
+                    Some(e) if root.join(e.replace('\\', "/")).is_file() => e.clone(),
+                    Some(e) => unpack::pick_exe(&root, Some(e)).with_context(|| format!("{e} is not in {}", dir.display()))?,
+                    None => unpack::pick_exe(&root, None).with_context(|| format!("no program in {} (--exe)", dir.display()))?,
+                };
+                let list = pack_tree(store, &root, &id, follow, 256 << 10)?;
+                add_game(store, id.clone(), title.unwrap_or(name), id.clone(), exe, engine, cover, args, env, mount, meta_id, no_meta, Some(list))
+            })();
+            if package {
+                let _ = fs::remove_dir_all(&staged);
+                let _ = fs::remove_dir(store.join("tmp"));
+            }
+            r?
         }
         Cmd::Remove { id } => {
             if !valid_id(&id) {
@@ -586,7 +630,7 @@ mod tests {
             store,
             Cmd::Add {
                 dir: dir.to_path_buf(),
-                exe: exe.into(),
+                exe: Some(exe.into()),
                 id: Some("sample".into()),
                 title: None,
                 engine: None,

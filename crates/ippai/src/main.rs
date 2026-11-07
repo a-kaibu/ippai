@@ -26,6 +26,7 @@ mod portable;
 mod saves;
 mod serve;
 mod treefiles;
+mod unpack;
 mod ttc;
 mod webassets;
 
