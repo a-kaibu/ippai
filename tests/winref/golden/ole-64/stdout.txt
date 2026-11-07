@@ -83,8 +83,8 @@ SafeArrayDestroy(v1)                                                   = 0000000
 SafeArrayDestroy(sa)                                                   = 00000000
 SafeArrayDestroy(NULL)                                                 = 00000000
 create bad vt 0
-realloc 1 len 3
-realloclen 1 len 13
+realloc 1 len 13
+realloclen 1 len 5
 VarBstrCmp 0 1 0 1 2
 VarBstrCat(a1, NULL, &cat)                                             = 00000000
 cat len 3

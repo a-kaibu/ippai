@@ -5,93 +5,93 @@ idiv overflow
   veh code c0000095 flags 0 addr f+11 ip f+11 n 0 ax 80000000 cx ffffffff dx ffffffff tf 0
   back
 read 0x10
-  veh code c0000005 flags 0 addr f+5 ip f+5 n 2 p0=0 p1 10 ax 0 cx 10 dx d70000 tf 0
+  veh code c0000005 flags 0 addr f+5 ip f+5 n 2 p0=0 p1 10 cx 10 tf 0
   back
 write 0x24
-  veh code c0000005 flags 0 addr f+5 ip f+5 n 2 p0=1 p1 24 ax 0 cx 24 dx d70000 tf 0
+  veh code c0000005 flags 0 addr f+5 ip f+5 n 2 p0=1 p1 24 cx 24 tf 0
   back
 exec 0x10
-  veh code c0000005 flags 0 addr 10 ip 10 n 2 p0=8 p1 10 ax 10 cx 3eac51e0 dx d70000 tf 0
+  veh code c0000005 flags 0 addr 10 ip 10 n 2 p0=8 p1 10 ax 10 tf 0
   back
 ud2
-  veh code c000001d flags 0 addr f+5 ip f+5 n 0 ax 11 cx 3eac51e0 dx d70000 tf 0
+  veh code c000001d flags 0 addr f+5 ip f+5 n 0 ax 11 tf 0
   back
 hlt
-  veh code c0000096 flags 0 addr f+0 ip f+0 n 0 ax 0 cx 3eac51e0 dx d70000 tf 0
+  veh code c0000096 flags 0 addr f+0 ip f+0 n 0 tf 0
   back
 cli
-  veh code c0000096 flags 0 addr f+0 ip f+0 n 0 ax 0 cx 3eac51e0 dx d70000 tf 0
+  veh code c0000096 flags 0 addr f+0 ip f+0 n 0 tf 0
   back
 in
-  veh code c0000096 flags 0 addr f+2 ip f+2 n 0 ax 0 cx 3eac51e0 dx 0 tf 0
+  veh code c0000096 flags 0 addr f+2 ip f+2 n 0 dx 0 tf 0
   back
 int 2c
-  veh code c0000420 flags 0 addr f+0 ip f+0 n 0 ax 0 cx 3eac51e0 dx d70000 tf 0
+  veh code c0000420 flags 0 addr f+0 ip f+0 n 0 tf 0
   back
 int 41
-  veh code c0000005 flags 0 addr f+0 ip f+0 n 2 p0=0 p1 ffffffff ax 0 cx 3eac51e0 dx d70000 tf 0
+  veh code c0000005 flags 0 addr f+0 ip f+0 n 2 p0=0 p1 ffffffff tf 0
   back
 mov cr0
-  veh code c0000096 flags 0 addr f+0 ip f+0 n 0 ax 0 cx 3eac51e0 dx d70000 tf 0
+  veh code c0000096 flags 0 addr f+0 ip f+0 n 0 tf 0
   back
 into
-  veh code c0000095 flags 0 addr f+8 ip f+9 n 0 ax 80000000 cx 3eac51e0 dx d70000 tf 0
+  veh code c0000095 flags 0 addr f+8 ip f+9 n 0 ax 80000000 tf 0
   back
 bound
-  veh code c000008c flags 0 addr f+9 ip f+9 n 0 ax 5 cx 11ffd20 dx d70000 tf 0
+  veh code c000008c flags 0 addr f+9 ip f+9 n 0 ax 5 tf 0
   back
 single step
-  veh code 80000004 flags 0 addr f+10 ip f+10 n 0 ax 0 cx 3eac51e0 dx d70000 tf 0
+  veh code 80000004 flags 0 addr f+10 ip f+10 n 0 tf 0
   back
 int3
-  veh code 80000003 flags 0 addr f+5 ip f+5 n 1 p0=0 ax 22 cx 3eac51e0 dx d70000 tf 0
+  veh code 80000003 flags 0 addr f+5 ip f+5 n 1 p0=0 ax 22 tf 0
   back
 int 3 (cd 03)
-  veh code 80000003 flags 0 addr f+6 ip f+6 n 1 p0=0 ax 33 cx 3eac51e0 dx d70000 tf 0
+  veh code 80000003 flags 0 addr f+6 ip f+6 n 1 p0=0 ax 33 tf 0
   back
 sse divide by zero
-  veh code c00002b5 flags 0 addr f+12 ip f+12 n 2 p0=0 p1=1d84 ax 3f800000 cx 3eac51e0 dx d70000 tf 0
+  veh code c00002b5 flags 0 addr f+12 ip f+12 n 2 p0=0 p1=1d84 ax 3f800000 tf 0
   back
 sse invalid cvt
-  veh code c00002b5 flags 0 addr f+9 ip f+9 n 2 p0=0 p1=1f01 ax 4f800000 cx 3eac51e0 dx d70000 tf 0
+  veh code c00002b5 flags 0 addr f+9 ip f+9 n 2 p0=0 p1=1f01 ax 4f800000 tf 0
   back
 sse masked cvt
   back
 guard read (page+8)
-  veh code 80000001 flags 0 addr f+4 ip f+4 n 2 p0=0 p1 page+8 ax 12154b cx 1680008 dx d70000 tf 0
+  veh code 80000001 flags 0 addr f+4 ip f+4 n 2 p0=0 p1 page+8 tf 0
   back
 guard read again (page+8)
   back
 readonly write (page+1004)
-  veh code c0000005 flags 0 addr f+4 ip f+4 n 2 p0=1 p1 page+1004 ax 121552 cx 1681004 dx d70000 tf 0
+  veh code c0000005 flags 0 addr f+4 ip f+4 n 2 p0=1 p1 page+1004 tf 0
   back
 readonly read (page+1004)
   back
 noaccess read (page+100c)
   back
 decommitted write (page+10)
-  veh code c0000005 flags 0 addr f+4 ip f+4 n 2 p0=1 p1 page+10 ax 121552 cx 1680010 dx d70000 tf 0
+  veh code c0000005 flags 0 addr f+4 ip f+4 n 2 p0=1 p1 page+10 tf 0
   back
 raise 3 params
-  veh code e0000002 flags 0 n 3 p0=100 p1=101 p2=102 ax 11ffc90 cx 3 dx 0 tf 0
+  veh code e0000002 flags 0 n 3 p0=100 p1=101 p2=102 tf 0
   back
 raise 20 params
-  veh code e0000002 flags 0 n 15 p0=100 p1=101 p2=102 p3=103 p4=104 p5=105 p6=106 p7=107 p8=108 p9=109 p10=10a p11=10b p12=10c p13=10d p14=10e ax 11ffc90 cx 0 dx 0 tf 0
+  veh code e0000002 flags 0 n 15 p0=100 p1=101 p2=102 p3=103 p4=104 p5=105 p6=106 p7=107 p8=108 p9=109 p10=10a p11=10b p12=10c p13=10d p14=10e tf 0
   back
 raise null params
-  veh code e0000002 flags 0 n 0 ax 11ffc90 cx 0 dx d70000 tf 0
+  veh code e0000002 flags 0 n 0 tf 0
   back
 raise flags
-  veh code e0000002 flags 0 n 0 ax 11ffc90 cx 0 dx d70000 tf 0
+  veh code e0000002 flags 0 n 0 tf 0
   back
 order
-  veh code e0000001 flags 0 n 0 ax 11ffc90 cx 0 dx d70000 tf 0
+  veh code e0000001 flags 0 n 0 tf 0
   second e0000001
   continue handler e0000001
   back
-remove 0 1 1
+remove 1 0 1
 raise after remove
-  veh code e0000002 flags 0 n 0 ax 11ffc90 cx 0 dx d70000 tf 0
+  veh code e0000002 flags 0 n 0 tf 0
   back
 remove first 1
 previous filter set 1

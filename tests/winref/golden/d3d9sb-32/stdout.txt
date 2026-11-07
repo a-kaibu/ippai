@@ -401,7 +401,7 @@ light 2 all 1 pixel 0 vertex 1
 lightenable 2 all 1 pixel 0 vertex 1
 clipplane 1 all 1 pixel 0 vertex 0
 npatch 0 all 1 pixel 0 vertex 1
-light made after the block: GetLight 0 range 0
+light made after the block: GetLight 0 range 6
 BeginStateBlock 0
 BeginStateBlock again 0x8876086c
 CreateStateBlock while recording 0x8876086c

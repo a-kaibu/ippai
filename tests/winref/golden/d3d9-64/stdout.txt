@@ -35,6 +35,7 @@ image clear 64 64 0
 image raster 64 64 2
 image sampling 64 64 10
 image address 64 64 0
+image address2 64 64 10
 texture A8R8G8B8 ok
 texture X8R8G8B8 ok
 texture R5G6B5 ok
@@ -50,6 +51,23 @@ texture DXT5 ok
 texture A8B8G8R8 ok
 texture X4R4G4B4 ok
 image formats 64 64 1
+texture A2R10G10B10 check 0 ok
+texture A2B10G10R10 check 0 ok
+texture G16R16 check 0 ok
+texture A16B16G16R16 check 0 ok
+texture L16 check 0 ok
+texture V8U8 check 0 ok
+texture Q8W8V8U8 check 0 ok
+texture V16U16 check 0 ok
+texture X8L8V8U8 check 0x8876086a failed
+texture L6V5U5 check 0x8876086a failed
+texture A2W10V10U10 check 0x8876086a failed
+texture Q16W16V16U16 check 0 ok
+texture R16F check 0 ok
+texture G16R16F check 0 ok
+texture R32F check 0 ok
+texture G32R32F check 0 ok
+image formats2 64 64 1
 image blend 64 64 2
 image stages 64 64 2
 image depth_scissor 64 64 1

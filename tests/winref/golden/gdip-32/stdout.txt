@@ -1,0 +1,96 @@
+startup 0
+bmp32
+  load 0
+  2x2 format 00022009 type 1 flags 0:13010 palette size 12 pflags 0 count 0:
+  pixels ffff0000 ffc08040 ff302010 ffffffff
+  lock 0026200a mode 1: 0 2x2 stride 8 format 0026200a: 0000ffff4080c0ff 102030ffffffffff unlock 0
+  lock 000e200b mode 1: 0 2x2 stride 8 format 000e200b: 0000ffff4080c0ff 102030ffffffffff unlock 0
+  lock 00022009 mode 1: 0 2x2 stride 8 format 00022009: 0000ffff4080c001 10203080ffffff00 unlock 0
+  lock 00021808 mode 1: 0 2x2 stride 8 format 00021808: 0000ff4080c0 102030ffffff unlock 0
+  lock 00021005 mode 1: 0 2x2 stride 4 format 00021005: 007c0862 8218ff7f unlock 0
+bmp32 zero alpha
+  load 0
+  2x2 format 00022009 type 1 flags 0:13010 palette size 12 pflags 0 count 0:
+  pixels ffff0000 ffc08040 ff302010 ffffffff
+bmp24 bottom-up
+  load 0
+  2x2 format 00021808 type 1 flags 0:13010 palette size 12 pflags 0 count 0:
+  pixels ff090807 ff0c0b0a ff030201 ff060504
+  lock 0026200a mode 1: 0 2x2 stride 8 format 0026200a: 070809ff0a0b0cff 010203ff040506ff unlock 0
+  lock 000e200b mode 1: 0 2x2 stride 8 format 000e200b: 070809ff0a0b0cff 010203ff040506ff unlock 0
+  lock 00022009 mode 1: 0 2x2 stride 8 format 00022009: 070809ff0a0b0cff 010203ff040506ff unlock 0
+  lock 00021808 mode 1: 0 2x2 stride 8 format 00021808: 0708090a0b0c 010203040506 unlock 0
+  lock 00021005 mode 1: 0 2x2 stride 4 format 00021005: 20042104 00000000 unlock 0
+bmp24 top-down
+  load 0
+  2x2 format 00021808 type 1 flags 0:13010 palette size 12 pflags 0 count 0:
+  pixels ff030201 ff060504 ff090807 ff0c0b0a
+bmp8
+  load 0
+  4x2 format 00030803 type 1 flags 0:13010 palette size 24 pflags 0 count 4: ff000000 ffff0000 ff00ff00 ff0000ff
+  pixels ff0000ff ff00ff00 ffff0000 ff000000 ff000000 ffff0000 ff00ff00 ff0000ff
+  lock 0026200a mode 1: 0 4x2 stride 16 format 0026200a: ff0000ff00ff00ff0000ffff000000ff 000000ff0000ffff00ff00ffff0000ff unlock 0
+  lock 000e200b mode 1: 0 4x2 stride 16 format 000e200b: ff0000ff00ff00ff0000ffff000000ff 000000ff0000ffff00ff00ffff0000ff unlock 0
+  lock 00022009 mode 1: 0 4x2 stride 16 format 00022009: ff0000ff00ff00ff0000ffff000000ff 000000ff0000ffff00ff00ffff0000ff unlock 0
+  lock 00021808 mode 1: 0 4x2 stride 12 format 00021808: ff000000ff000000ff000000 0000000000ff00ff00ff0000 unlock 0
+  lock 00021005 mode 1: 0 4x2 stride 8 format 00021005: 1f00e003007c0000 0000007ce0031f00 unlock 0
+  lock 00030803 mode 1: 0 4x2 stride 4 format 00030803: 03020100 00010203 unlock 0
+bmp1
+  load 0
+  4x2 format 00030101 type 1 flags 0:13010 palette size 16 pflags 0 count 2: ff112233 ffffeedd
+  pixels ff112233 ffffeedd ff112233 ffffeedd ffffeedd ff112233 ffffeedd ff112233
+  lock 0026200a mode 1: 0 4x2 stride 16 format 0026200a: 332211ffddeeffff332211ffddeeffff ddeeffff332211ffddeeffff332211ff unlock 0
+png rgba
+  load 0
+  6x1 format 0026200a type 1 flags 0:12012 palette size 12 pflags 0 count 0:
+  pixels 00ff8001 01ff8001 7fff8001 80ff8001
+  lock 0026200a mode 1: 0 6x1 stride 24 format 0026200a: 0180ff000180ff010180ff7f0180ff80 unlock 0
+  lock 000e200b mode 1: 0 6x1 stride 24 format 000e200b: 000000000001010100407f7f01408080 unlock 0
+  lock 00022009 mode 1: 0 6x1 stride 24 format 00022009: 0180ff000180ff010180ff7f0180ff80 unlock 0
+  lock 00021808 mode 1: 0 6x1 stride 20 format 00021808: 0180ff0180ff0180ff0180ff0364c8c7 unlock 0
+  lock 00021005 mode 1: 0 6x1 stride 12 format 00021005: 007e007e007e007e80659805 unlock 0
+  lock 000e200b mode 1 rect: 0 3x1 stride 12 format 000e200b: 00407f7f014080800364c7fe unlock 0
+  lock 0026200a mode 1 rect: 2
+  lock 000e200b mode 3: 0 6x1 stride 24 format 000e200b: 000000000001010100407f7f01408080 unlock 0
+  6x1 format 0026200a type 1 flags 0:12012 palette size 12 pflags 0 count 0:
+  pixels 80ff0000 01ffff00 7ffe8000 80ff7f01
+  lock 0026200a mode 3: 0 6x1 stride 24 format 0026200a: 0000ff8000ffff010080fe7f017fff80 unlock 0
+  6x1 format 0026200a type 1 flags 0:12012 palette size 12 pflags 0 count 0:
+  pixels 80ff0000 01ffff00 7ffe8000 80ff7f01
+  double lock 0 8 unlock 0 7
+  hbitmap 0 6x1 bpp 32 bits 1: 8099334c 01346798 7f99734d 8099734d fec66404 ff0963c7
+  clone 0
+  6x1 format 0026200a type 1 flags 0:12012 palette size 12 pflags 0 count 0:
+  pixels 80ff0000 01ffff00 7ffe8000 80ff7f01
+png gray alpha
+  load 0
+  2x1 format 0026200a type 1 flags 0:12012 palette size 12 pflags 0 count 0:
+  pixels 40808080 ffffffff
+png palette trns
+  load 0
+  3x1 format 0026200a type 1 flags 0:12012 palette size 12 pflags 0 count 0:
+  pixels 00ff0000 8000ff00 ff0000ff
+  lock 0026200a mode 1: 0 3x1 stride 12 format 0026200a: 0000ff0000ff0080ff0000ff unlock 0
+png gray16
+  load 0
+  2x1 format 0026200a type 1 flags 0:12042 palette size 12 pflags 0 count 0:
+  pixels ff121212 fffefefe
+garbage
+  load 2
+scan0
+  create 0
+  3x2 format 0026200a type 1 flags 0:2 palette size 12 pflags 0 count 0:
+  pixels 00000000 00000000 00000000 00000000 00000000 00000000
+  setpixel 0 2
+  3x2 format 0026200a type 1 flags 0:2 palette size 12 pflags 0 count 0:
+  pixels 80ff8040 00000000 00000000 00000000 00000000 00000000
+  create pargb 0
+  setpixel 0
+  2x1 format 000e200b type 1 flags 0:2 palette size 12 pflags 0 count 0:
+  pixels 80ff7f3f 00000000
+  lock 000e200b mode 1: 0 2x1 stride 8 format 000e200b: 2040808000000000 unlock 0
+  create 565 0
+  2x1 format 00021005 type 1 flags 0:0 palette size 12 pflags 0 count 0:
+  pixels ff103152 ff000000
+  bad stride 2 bad size 2
+decoders nonzero 1

@@ -1,0 +1,81 @@
+no auto depth: GetDepthStencilSurface 0x88760866 0
+count 0 NULL: 0 ff0000
+count 1 NULL: 0 00ff00
+count 0 list: 0 00ff00
+count 1 list: 0 000000 ffffff ffffff 000000
+inverted: 0 000000 000000
+outside: 0 112233 000000
+past the end: 0 445566 000000
+two: 0 778899 778899 000000
+flags 0: 0x8876086c
+flags 0x10: 0x8876086c
+flags target|0x10: 0 0a0b0c
+viewport: 0 000000 ff8000 ff8000 000000
+viewport rect: 0 000000 00ff80 00ff80
+scissor: 0 8000ff 000000
+scissor off: 0 8000ff
+no depth: z 0x8876086c stencil 0x8876086c
+no depth: target|z 0x8876086c 000000
+D24S8: set 0
+D24S8: z 0 stencil 0 z|stencil 0
+D24S8: target|z 0 203040
+D24S8: target|stencil 0 405060
+D24S8: z 0.25 0, quad at 0.5 000000
+D24S8: z 1 in a rect 0, quad 000000 00ff00
+D24S8: z 2 0, quad 0000ff
+D24S8: z 2 in a rect 0, quad 00ff00
+D24S8: zwrite with z off, then quad at 0.5 22ff22
+D24S8: z -1 0, quad at 0 0000ff
+D24S8: stencil 0x105 0, ref 5 000000 ref 4 000000
+D24S8: stencil 9 in a rect 0, ref 9 000000 00ffff
+D24S8: incr twice, equal 2 ff00ff
+D24S8: z fail replace 3 80ff80
+D24S8: write mask 0x0f 4080c0, read mask 0x0f ref 0x1f c08040
+D24S8: two-sided 0: equal 7 60a0e0 then equal 0 60a0e0
+D24S8: two-sided 1: equal 7 60a0e0 then equal 0 60a0e0
+D24X8: set 0
+D24X8: z 0 stencil 0x8876086c z|stencil 0x8876086c
+D24X8: target|z 0 203040
+D24X8: target|stencil 0x8876086c 203040
+D24X8: z 0.25 0, quad at 0.5 000000
+D24X8: z 1 in a rect 0, quad 000000 00ff00
+D24X8: z 2 0, quad 0000ff
+D24X8: z 2 in a rect 0, quad 00ff00
+D24X8: zwrite with z off, then quad at 0.5 22ff22
+D24X8: z -1 0, quad at 0 0000ff
+D16 smaller: set 0
+D16 smaller: z 0 stencil 0x8876086c z|stencil 0x8876086c
+D16 smaller: target|z 0 203040
+D16 smaller: target|stencil 0x8876086c 203040
+D16 smaller: z 0.25 0, quad at 0.5 000000
+D16 smaller: z 1 in a rect 0, quad 000000 00ff00
+D16 smaller: z 2 0, quad 0000ff
+D16 smaller: z 2 in a rect 0, quad 00ff00
+D16 smaller: zwrite with z off, then quad at 0.5 22ff22
+D16 smaller: z -1 0, quad at 0 0000ff
+D24S8 larger: set 0
+D24S8 larger: z 0 stencil 0 z|stencil 0
+D24S8 larger: target|z 0 203040
+D24S8 larger: target|stencil 0 405060
+D24S8 larger: z 0.25 0, quad at 0.5 000000
+D24S8 larger: z 1 in a rect 0, quad 000000 00ff00
+D24S8 larger: z 2 0, quad 0000ff
+D24S8 larger: z 2 in a rect 0, quad 00ff00
+D24S8 larger: zwrite with z off, then quad at 0.5 22ff22
+D24S8 larger: z -1 0, quad at 0 0000ff
+D24S8 larger: stencil 0x105 0, ref 5 000000 ref 4 000000
+D24S8 larger: stencil 9 in a rect 0, ref 9 000000 00ffff
+D24S8 larger: incr twice, equal 2 ff00ff
+D24S8 larger: z fail replace 3 80ff80
+D24S8 larger: write mask 0x0f 4080c0, read mask 0x0f ref 0x1f c08040
+D24S8 larger: two-sided 0: equal 7 60a0e0 then equal 0 60a0e0
+D24S8 larger: two-sided 1: equal 7 60a0e0 then equal 0 60a0e0
+rt1: set 0
+rt1: clear 0 5a6b7c 5a6b7c
+rt1: rect 0 010203 5a6b7c
+rt1: oC0 oC1 ff8000 0040ff, red only ff8000 008080
+rt1 unset: clear 0 008080
+rt0 texture: set 0
+rt0 texture: viewport 0 0 16 16
+rt0 texture: clear 0 abcdef 0f0f0f
+Release 0

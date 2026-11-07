@@ -39,7 +39,8 @@ position at the end 20000000
 state at the end 2
 notify lParam 1234
 notify lParam 1234
-notifications 2
+notify lParam 1234
+notifications 3
 WaitForCompletion running 80040227 0
 Stop 00000000
 position after stop 20000000
