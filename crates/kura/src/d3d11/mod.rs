@@ -2990,6 +2990,30 @@ unsafe fn update_subresource(d: &mut D11, res: u32, sub: u32, bx: u32, data: u32
     }
 }
 
+/// A 2D texture's width, height and DXGI format, by a guest pointer to it (Media Foundation's
+/// Media Engine draws its frames into the game's textures: sake's mf.rs).
+pub fn texture_desc(res: u32) -> Option<(u32, u32, u32)> {
+    let g = D11S.lock().unwrap_or_else(|e| e.into_inner());
+    let d = g.as_ref()?;
+    match d.objs.get(&d.id_of(res)).map(|o| &o.data) {
+        Some(Data::Texture(t)) if t.dim == 2 => Some((t.w, t.h, t.fmt)),
+        _ => None,
+    }
+}
+
+/// Writes guest texels (rows of `pitch` bytes from `data`) into box `bx` (left top right bottom)
+/// of texture `res`'s first subresource, as UpdateSubresource. Whether it is one.
+pub unsafe fn write_texture(res: u32, data: u32, pitch: u32, bx: [u32; 4]) -> bool {
+    let mut g = D11S.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(d) = g.as_mut() else { return false };
+    let id = d.id_of(res);
+    let Some(Data::Texture(t)) = d.objs.get_mut(&id).map(|o| &mut o.data) else { return false };
+    t.clean.clear();
+    t.pristine = false;
+    upload_texture(t, 0, data, pitch, pitch * (bx[3] - bx[1]), Some([bx[0], bx[1], 0, bx[2], bx[3], 1]));
+    true
+}
+
 unsafe fn copy_resource(d: &mut D11, dst: u32, src: u32) {
     let (di, si) = (d.id_of(dst), d.id_of(src));
     texture_written(d, di);

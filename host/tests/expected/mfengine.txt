@@ -1,0 +1,100 @@
+MFStartup 00000000
+MFCreateAttributes 00000000
+SetUnknown took a reference 1
+count 7
+item 0: 00000000 key 1 vt 19 type 19 7, compares 1
+item 1: 00000000 key 2 vt 21 type 21 123456789abcdef, compares 1
+item 2: 00000000 key 3 vt 5 type 5 2.50, compares 1
+item 3: 00000000 key 4 vt 72 type 72 98a1b0bb, compares 1
+item 4: 00000000 key 5 vt 31 type 31 hello, compares 1
+item 5: 00000000 key 6 vt 4113 type 4113 3 bytes, last 3, compares 1
+item 6: 00000000 key 7 vt 13 type 13 same 1, compares 1
+GetItemByIndex past the end 80070057
+unknown references after the PROPVARIANTs went 2
+GetUINT32 00000000 7
+GetUINT64 of a UINT32 c00d36b4, missing c00d36e6
+GetDouble 00000000 2.50
+GetGUID 00000000 1
+GetStringLength 00000000 5
+GetString short 8007007a, fits 00000000 hello 5
+GetAllocatedString 00000000 hello 5
+GetBlob short 8007007a, fits 00000000 3 2
+GetAllocatedBlob 00000000 3 3
+GetUnknown 00000000 same 1
+GetString of a UINT32 c00d36b4
+compare (b within a): ours 0 theirs 1 all 0 intersection 1 smaller 1
+intersection with another value 0
+replaced in place 1
+SetItem 00000000
+SetItem's value 11
+SetItem VT_I2 c00d36b4
+CopyAllItems 00000000
+copied 7, unknown references 3
+DeleteItem released it 2
+DeleteAllItems 0
+released 0
+released the copy 0, unknown references 1
+MFCreateDXGIDeviceManager 00000000 token 1
+OpenDeviceHandle before a device c00d36b6
+ResetDevice wrong token 80070057
+ResetDevice 00000000 device references 2
+OpenDeviceHandle 00000000
+LockDevice 00000000 same 1
+factory 00000000
+factory as IMFMediaEngine 80004002
+CreateInstance without a callback 80070057 out cleared 1
+CreateInstance 00000000
+notify held 1
+QueryInterface IMFMediaEngineEx 00000000 same 1
+empty: ready 0 network 0 paused 1 ended 0 seeking 0 time 0.00
+empty: duration nan 1, video 0
+empty: GetNativeVideoSize 80004005
+empty: tick 00000001 pts -1
+empty: SetCurrentTime c00d36b2
+SetSource missing 00000000
+missing events: 1 5
+missing: error event's code 4, 80070002
+GetError 00000000 code 4 hr 80070002
+missing: ready 0 network 3 paused 1 ended 0 seeking 0 time 0.00
+SetSource 00000000
+loaded events: 6 1 21 10 11 1009 14 15
+GetCurrentSource same 1
+error cleared 1
+loaded: ready 4 network 1 paused 1 ended 0 seeking 0 time 0.00
+loaded: duration 2.00, size 00000000 64x48, aspect 00000000 4:3, video 1, audio 0
+characteristics 00000000 6, streams 00000000 1
+loaded: tick 00000000 pts 0
+loaded again: tick 00000001 pts -1
+TransferVideoFrame into no texture 80070057
+SetCurrentTime 00000000
+seeked events: 16 18 17
+seeked: ready 4 network 1 paused 1 ended 0 seeking 0 time 0.75
+seeked: tick 00000000 pts 7000000
+SetCurrentTime past the end 00000000
+past the end: ready 4 network 1 paused 1 ended 0 seeking 0 time 2.00
+Play 00000000
+ended 1 in time 1
+played events: 16 18 17 8 13 18 9 19
+ended: ready 4 network 1 paused 1 ended 1 seeking 0 time 2.00
+ended: tick 00000000 pts 19000000
+Play again 00000000
+again events: 16 18 17 8 13
+again: ready 4 network 1 paused 0 ended 0 seeking 0
+Pause 00000000, again 00000000
+paused events: 18 9
+paused: the clock stands 1
+SetLoop 00000000
+looping: ended 0, paused 0, from the start 1
+looped events: 16 18 17 8 13 16 18 17 18 9
+SetVolume 00000000, SetMuted 00000000, SetPlaybackRate 00000000, negative 80070057
+volume events: 22 22 20
+Load 00000000
+autoplay events: 6 1 21 10 11 1009 14 8 13 15
+autoplay: ready 4 network 1 paused 0 ended 0 seeking 0
+Shutdown 00000000
+after shutdown: Play c00d3e85 SetSource c00d3e85 GetNativeVideoSize c00d3e85 Shutdown c00d3e85 tick c00d3e85
+no events after shutdown 1
+released 1
+notify let go 1
+device let go 1
+MFShutdown 00000000

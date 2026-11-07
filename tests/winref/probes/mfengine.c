@@ -329,8 +329,11 @@ int main(void) {
     printf("Pause again %08lx\n", M(e, Pause, F0)(e));
     printf("SetVolume %08lx\n", M(e, SetVolume, Fsd)(e, 0.5));
     printf("volume %.2f\n", M(e, GetVolume, Fd)(e));
-    printf("SetLoop %08lx loop %d\n", M(e, SetLoop, Fu)(e, TRUE), M(e, GetLoop, Fb)(e));
-    printf("SetAutoPlay %08lx autoplay %d\n", M(e, SetAutoPlay, Fu)(e, TRUE), M(e, GetAutoPlay, Fb)(e));
+    /* (one call a statement: the order arguments are evaluated in is not C's to say) */
+    hr = M(e, SetLoop, Fu)(e, TRUE);
+    printf("SetLoop %08lx loop %d\n", hr, M(e, GetLoop, Fb)(e));
+    hr = M(e, SetAutoPlay, Fu)(e, TRUE);
+    printf("SetAutoPlay %08lx autoplay %d\n", hr, M(e, GetAutoPlay, Fb)(e));
 
     printf("Shutdown %08lx\n", M(e, Shutdown, F0)(e));
     printf("after shutdown: Play %08lx\n", M(e, Play, F0)(e));

@@ -1100,6 +1100,10 @@ fn create_object(c: &mut Ctx, clsid: u32, iid: u32, out: u32) -> u32 {
         mem::putp(out, obj);
         return 0;
     }
+    if let Some(obj) = crate::mf::create_instance(clsid, iid) {
+        mem::putp(out, obj);
+        return if obj == 0 { 0x8000_4002 } else { 0 };
+    }
     if let Some(obj) = crate::dshow::create_instance(clsid, iid) {
         mem::putp(out, obj);
         return 0;
@@ -1640,6 +1644,14 @@ fn PropVariantClear(c: &mut Ctx) -> u32 {
             if o != 0 {
                 let release = mem::rp(mem::rp(o) + 2 * p);
                 c.call(release, &[o]);
+            }
+        }
+        // VT_VECTOR of numbers, dates, GUIDs (MF's blobs are VT_VECTOR | VT_UI1): { ULONG n,
+        // elements* } (their elements need nothing freed)
+        0x1002..=0x1007 | 0x100b | 0x1010..=0x1015 | 0x1040 | 0x1048 => {
+            let q = mem::rp(v + 8 + p);
+            if q != 0 {
+                mem::heap_free(q);
             }
         }
         _ if t > 0x0fff && t & 0x4000 == 0 => {

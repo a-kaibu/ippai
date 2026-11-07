@@ -605,11 +605,12 @@ pub unsafe extern "C" fn vnhost_video_chunk(id: u32, t: u32, n: u32, size: *mut 
     c.as_ptr() as u32
 }
 
-/// The page cannot decode stream `id`.
+/// The page cannot decode stream `id`. (An uncompressed one needs no page: the page's WebCodecs
+/// has no "raw-i420", and its frames still come from the file.)
 #[no_mangle]
 pub extern "C" fn vnhost_video_fail(id: u32) {
     with(|m| {
-        if let Some(s) = m.get_mut(&id) {
+        if let Some(s) = m.get_mut(&id).filter(|s| !s.raw) {
             s.failed = true;
         }
     });
@@ -810,6 +811,9 @@ mod tests {
         assert_eq!(&CHUNK.lock().unwrap()[..], &d[off as usize..(off + sz) as usize]);
         assert_eq!(unsafe { vnhost_video_chunk(id, 0, 4, &mut size) }, 0, "no frame 4");
         assert_eq!(unsafe { vnhost_video_chunk(id, 1, 0, &mut size) }, 0, "no track 1");
+        // (the page, which has no decoder for it, gives up on it: still there)
+        vnhost_video_fail(id);
+        assert!(!failed(id));
         let mut px = vec![0xeeu8; 6 * 4 * 3];
         for n in [0, 3, 2, 9, -1] {
             assert!(unsafe { frame(id, n, px.as_mut_ptr(), 24, 5, 3, Out::Ycc) });

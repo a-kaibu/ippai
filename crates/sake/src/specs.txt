@@ -16882,6 +16882,8 @@ dxgi DXGIDeclareAdapterRemovalSupport stdcall 0 -
 mfplat MFStartup stdcall 8 -
 mfplat MFShutdown stdcall 0 -
 mfplat MFCreateSourceResolver stdcall 4 -
+mfplat MFCreateAttributes stdcall 8 -
+mfplat MFCreateDXGIDeviceManager stdcall 8 -
 mf MFCreateMediaSession stdcall 8 -
 mf MFCreateTopology stdcall 4 -
 mf MFCreateTopologyNode stdcall 8 -
