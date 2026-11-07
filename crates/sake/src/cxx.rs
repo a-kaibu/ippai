@@ -183,7 +183,11 @@ fn frame_handler(c: &mut Ctx) -> u32 {
     if tries == 0 {
         return 1;
     }
-    let (obj, info) = if cxx { (r32(rec + 24), r32(rec + 28)) } else { (0, 0) };
+    let (obj, info) = if cxx {
+        (r32(rec + 24), r32(rec + 28))
+    } else {
+        (0, 0)
+    };
     let level = r32(frame + 8) as i32;
     for i in 0..tries {
         let t = try_table + 20 * i;
@@ -197,7 +201,9 @@ fn frame_handler(c: &mut Ctx) -> u32 {
             let b = blocks + 16 * k;
             let (cflags, cti, off, h) = (r32(b), r32(b + 4), r32(b + 8), r32(b + 12));
             if cxx && info != 0 {
-                let Some(ty) = caught_type(info, cti, cflags) else { continue };
+                let Some(ty) = caught_type(info, cti, cflags) else {
+                    continue;
+                };
                 if cti != 0 && crate::mem::r8(cti + 8) != 0 && off != 0 {
                     copy_object(c, obj, frame + 12 + off, cflags, ty);
                 }
@@ -242,7 +248,11 @@ pub fn init() {
     }
     for d in ["msvcrt", "ucrtbase"] {
         implement(d, "_CxxThrowException", throw);
-        for n in ["__CxxFrameHandler", "__CxxFrameHandler2", "__CxxFrameHandler3"] {
+        for n in [
+            "__CxxFrameHandler",
+            "__CxxFrameHandler2",
+            "__CxxFrameHandler3",
+        ] {
             implement(d, n, frame_handler);
         }
     }

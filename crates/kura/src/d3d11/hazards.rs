@@ -19,14 +19,22 @@ fn span(d: &D11, view: u32) -> Option<(u32, u32, u32, u32, u32)> {
 }
 
 fn overlap(a: (u32, u32, u32, u32, u32), b: (u32, u32, u32, u32, u32)) -> bool {
-    let meet = |s0: u32, n0: u32, s1: u32, n1: u32| s0 < s1.saturating_add(n1) && s1 < s0.saturating_add(n0);
+    let meet = |s0: u32, n0: u32, s1: u32, n1: u32| {
+        s0 < s1.saturating_add(n1) && s1 < s0.saturating_add(n0)
+    };
     a.0 == b.0 && meet(a.1, a.2, b.1, b.2) && meet(a.3, a.4, b.3, b.4)
 }
 
 /// The views bound for output: render targets, the depth view unless read-only for depth,
 /// the output merger's and the compute shader's UAVs.
 fn outputs(d: &D11, st: &State) -> Vec<(u32, u32, u32, u32, u32)> {
-    let mut v: Vec<u32> = st.rtvs.iter().chain(st.uavs[0].iter()).chain(st.uavs[1].iter()).copied().collect();
+    let mut v: Vec<u32> = st
+        .rtvs
+        .iter()
+        .chain(st.uavs[0].iter())
+        .chain(st.uavs[1].iter())
+        .copied()
+        .collect();
     let dsv_ro = match d.objs.get(&st.dsv).map(|o| &o.data) {
         Some(Data::View(x)) => x.desc.get(2).is_some_and(|f| f & 1 != 0),
         _ => false,
@@ -34,7 +42,10 @@ fn outputs(d: &D11, st: &State) -> Vec<(u32, u32, u32, u32, u32)> {
     if !dsv_ro {
         v.push(st.dsv);
     }
-    v.into_iter().filter(|&x| x != 0).filter_map(|x| span(d, x)).collect()
+    v.into_iter()
+        .filter(|&x| x != 0)
+        .filter_map(|x| span(d, x))
+        .collect()
 }
 
 /// An input view that must not be bound now (it reads what is bound for output).

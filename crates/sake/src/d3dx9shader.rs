@@ -84,7 +84,11 @@ static TABLES: Mutex<Vec<Table>> = Mutex::new(Vec::new());
 /// registers one element of a type takes
 fn regs_of(t: &Table, k: &K) -> u32 {
     match k.class {
-        5 => k.members.iter().map(|&m| regs_of(t, &t.ks[m]) * t.ks[m].elems.max(1)).sum(),
+        5 => k
+            .members
+            .iter()
+            .map(|&m| regs_of(t, &t.ks[m]) * t.ks[m].elems.max(1))
+            .sum(),
         2 => k.rows,
         3 => k.cols,
         _ => 1,
@@ -93,18 +97,72 @@ fn regs_of(t: &Table, k: &K) -> u32 {
 
 /// Parses a CTAB body into a table.
 fn parse(d: &[u8], vs: bool) -> Table {
-    let r16 = |o: usize| d.get(o..o + 2).map_or(0, |b| u16::from_le_bytes([b[0], b[1]])) as u32;
-    let r32 = |o: usize| d.get(o..o + 4).map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()));
-    let s = |o: usize| String::from_utf8_lossy(d.get(o..).unwrap_or(&[]).split(|&x| x == 0).next().unwrap_or(&[])).into_owned();
-    let mut t = Table { vs, version: r32(8), ks: Vec::new(), top: Vec::new(), base: 0, creator: 0 };
+    let r16 = |o: usize| {
+        d.get(o..o + 2)
+            .map_or(0, |b| u16::from_le_bytes([b[0], b[1]])) as u32
+    };
+    let r32 = |o: usize| {
+        d.get(o..o + 4)
+            .map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()))
+    };
+    let s = |o: usize| {
+        String::from_utf8_lossy(
+            d.get(o..)
+                .unwrap_or(&[])
+                .split(|&x| x == 0)
+                .next()
+                .unwrap_or(&[]),
+        )
+        .into_owned()
+    };
+    let mut t = Table {
+        vs,
+        version: r32(8),
+        ks: Vec::new(),
+        top: Vec::new(),
+        base: 0,
+        creator: 0,
+    };
     let creator = s(r32(4) as usize);
     t.creator = guest_str(&creator);
     // (type info at `ti` for a constant named `name` at register `reg`)
-    fn add(t: &mut Table, d: &[u8], name: String, set: u32, reg: u32, count: u32, ti: usize, depth: u32) -> usize {
-        let r16 = |o: usize| d.get(o..o + 2).map_or(0, |b| u16::from_le_bytes([b[0], b[1]])) as u32;
-        let r32 = |o: usize| d.get(o..o + 4).map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()));
-        let s = |o: usize| String::from_utf8_lossy(d.get(o..).unwrap_or(&[]).split(|&x| x == 0).next().unwrap_or(&[])).into_owned();
-        let (class, ty, rows, cols, elems, nm, mi) = (r16(ti), r16(ti + 2), r16(ti + 4), r16(ti + 6), r16(ti + 8), r16(ti + 10), r32(ti + 12) as usize);
+    fn add(
+        t: &mut Table,
+        d: &[u8],
+        name: String,
+        set: u32,
+        reg: u32,
+        count: u32,
+        ti: usize,
+        depth: u32,
+    ) -> usize {
+        let r16 = |o: usize| {
+            d.get(o..o + 2)
+                .map_or(0, |b| u16::from_le_bytes([b[0], b[1]])) as u32
+        };
+        let r32 = |o: usize| {
+            d.get(o..o + 4)
+                .map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()))
+        };
+        let s = |o: usize| {
+            String::from_utf8_lossy(
+                d.get(o..)
+                    .unwrap_or(&[])
+                    .split(|&x| x == 0)
+                    .next()
+                    .unwrap_or(&[]),
+            )
+            .into_owned()
+        };
+        let (class, ty, rows, cols, elems, nm, mi) = (
+            r16(ti),
+            r16(ti + 2),
+            r16(ti + 4),
+            r16(ti + 6),
+            r16(ti + 8),
+            r16(ti + 10),
+            r32(ti + 12) as usize,
+        );
         let idx = t.ks.len();
         t.ks.push(K {
             name: name.clone(),
@@ -141,7 +199,16 @@ fn parse(d: &[u8], vs: bool) -> Table {
             let per = regs_of(t, &t.ks[idx]);
             let mut els = Vec::new();
             for e in 0..elems.min(256) {
-                let k = add(t, d, format!("{name}[{e}]"), set, reg + e * per, per, ti, depth + 1);
+                let k = add(
+                    t,
+                    d,
+                    format!("{name}[{e}]"),
+                    set,
+                    reg + e * per,
+                    per,
+                    ti,
+                    depth + 1,
+                );
                 t.ks[k].elems = 1;
                 els.push(k);
             }
@@ -152,7 +219,16 @@ fn parse(d: &[u8], vs: bool) -> Table {
     let (n, info) = (r32(12) as usize, r32(16) as usize);
     for k in 0..n {
         let e = info + 20 * k;
-        let i = add(&mut t, d, s(r32(e) as usize), r16(e + 4), r16(e + 6), r16(e + 8), r32(e + 12) as usize, 0);
+        let i = add(
+            &mut t,
+            d,
+            s(r32(e) as usize),
+            r16(e + 4),
+            r16(e + 6),
+            r16(e + 8),
+            r32(e + 12) as usize,
+            0,
+        );
         t.top.push(i);
     }
     t.base = mem::heap_alloc(4 * t.ks.len().max(1) as u32, true);
@@ -205,7 +281,9 @@ fn table_vt() -> u32 {
 
 /// A new ID3DXConstantTable for shader bytecode; None without a CTAB.
 fn new_table(code: &[u8]) -> Option<u32> {
-    let (_, d) = crate::d3dx9fx::comments(code).into_iter().find(|(f, _)| f == b"CTAB")?;
+    let (_, d) = crate::d3dx9fx::comments(code)
+        .into_iter()
+        .find(|(f, _)| f == b"CTAB")?;
     let vs = code.get(2..4) == Some(&[0xfe, 0xff]);
     let t = parse(d, vs);
     let data = mem::heap_alloc(d.len() as u32 + 4, true);
@@ -245,7 +323,11 @@ fn by_name(t: &Table, parent: Option<usize>, name: &str) -> Option<usize> {
             let i: usize = name[1..close].trim().parse().ok()?;
             let k = *t.ks[parent?].elements.get(i)?;
             let r = name[close + 1..].trim_start_matches('.');
-            return if r.is_empty() { Some(k) } else { by_name(t, Some(k), r) };
+            return if r.is_empty() {
+                Some(k)
+            } else {
+                by_name(t, Some(k), r)
+            };
         }
         Some(i) => (&name[..i], &name[i..]),
         None => (name, ""),
@@ -298,7 +380,20 @@ fn ct_const_desc(c: &mut Ctx) -> u32 {
             w32(n, 1);
         }
         if d != 0 {
-            let v = [x.name_ptr, x.set, x.reg, x.count, x.class, x.ty, x.rows, x.cols, x.elems.max(1), x.members.len() as u32, x.bytes(t), 0];
+            let v = [
+                x.name_ptr,
+                x.set,
+                x.reg,
+                x.count,
+                x.class,
+                x.ty,
+                x.rows,
+                x.cols,
+                x.elems.max(1),
+                x.members.len() as u32,
+                x.bytes(t),
+                0,
+            ];
             for (i, w) in v.iter().enumerate() {
                 w32(d + 4 * i as u32, *w);
             }
@@ -319,7 +414,11 @@ fn ct_sampler_index(c: &mut Ctx) -> u32 {
 fn ct_constant(c: &mut Ctx) -> u32 {
     let (p, i) = (c.a(1), c.a(2) as usize);
     with(c.a(0), |t| {
-        let list = if p == 0 { Some(&t.top) } else { lookup(t, None, p).map(|k| &t.ks[k].members) };
+        let list = if p == 0 {
+            Some(&t.top)
+        } else {
+            lookup(t, None, p).map(|k| &t.ks[k].members)
+        };
         list.and_then(|l| l.get(i)).map_or(0, |&k| handle(t, k))
     })
     .unwrap_or(0)
@@ -360,14 +459,24 @@ fn ct_defaults(_c: &mut Ctx) -> u32 {
 
 /// Register writes for constant `k` from values in its packed order (each element's rows by
 /// columns, members in order); (set, register, values of 4 per register).
-fn layout(t: &Table, k: usize, vals: &[f64], out: &mut Vec<(u32, u32, [f64; 4])>, used: &mut usize) {
+fn layout(
+    t: &Table,
+    k: usize,
+    vals: &[f64],
+    out: &mut Vec<(u32, u32, [f64; 4])>,
+    used: &mut usize,
+) {
     let x = &t.ks[k];
     let elems = x.elems.max(1);
     let per = regs_of(t, x);
     for e in 0..elems {
         let base = x.reg + e * per;
         if x.class == 5 {
-            let ms = if x.elements.is_empty() { x.members.clone() } else { t.ks[x.elements[e as usize]].members.clone() };
+            let ms = if x.elements.is_empty() {
+                x.members.clone()
+            } else {
+                t.ks[x.elements[e as usize]].members.clone()
+            };
             for m in ms {
                 layout(t, m, vals, out, used);
             }
@@ -442,18 +551,28 @@ fn set(c: &mut Ctx, this: u32, dev: u32, h: u32, vals: Vec<f64>) -> u32 {
 }
 
 fn ints(p: u32, n: u32) -> Vec<f64> {
-    (0..n.min(1 << 16)).map(|i| r32(p + 4 * i) as i32 as f64).collect()
+    (0..n.min(1 << 16))
+        .map(|i| r32(p + 4 * i) as i32 as f64)
+        .collect()
 }
 fn floats(p: u32, n: u32) -> Vec<f64> {
-    (0..n.min(1 << 16)).map(|i| f32::from_bits(r32(p + 4 * i)) as f64).collect()
+    (0..n.min(1 << 16))
+        .map(|i| f32::from_bits(r32(p + 4 * i)) as f64)
+        .collect()
 }
 fn bools(p: u32, n: u32) -> Vec<f64> {
-    (0..n.min(1 << 16)).map(|i| (r32(p + 4 * i) != 0) as u32 as f64).collect()
+    (0..n.min(1 << 16))
+        .map(|i| (r32(p + 4 * i) != 0) as u32 as f64)
+        .collect()
 }
 
 /// the packed component count of one element (rows x columns; vectors their columns)
 fn comps_of(c: &Ctx, h: u32) -> (u32, u32, u32) {
-    with(c.a(0), |t| lookup(t, None, h).map(|k| (t.ks[k].rows.max(1), t.ks[k].cols.max(1), t.ks[k].ty))).flatten().unwrap_or((1, 4, 3))
+    with(c.a(0), |t| {
+        lookup(t, None, h).map(|k| (t.ks[k].rows.max(1), t.ks[k].cols.max(1), t.ks[k].ty))
+    })
+    .flatten()
+    .unwrap_or((1, 4, 3))
 }
 
 /// SetValue(device, handle, data, bytes): data in the constant's own type
@@ -517,7 +636,11 @@ fn matrices(c: &Ctx, h: u32, ptrs: &[u32], transpose: bool) -> Vec<f64> {
         let m = floats(p, 16);
         for i in 0..r.min(4) {
             for j in 0..cc.min(4) {
-                v.push(if transpose { m[(j * 4 + i) as usize] } else { m[(i * 4 + j) as usize] });
+                v.push(if transpose {
+                    m[(j * 4 + i) as usize]
+                } else {
+                    m[(i * 4 + j) as usize]
+                });
             }
         }
     }
@@ -554,15 +677,38 @@ fn ct_set_matrix_t_pointer_array(c: &mut Ctx) -> u32 {
 
 /// D3DXSHADER_PACKMATRIX_ROWMAJOR is D3DCOMPILE_PACK_MATRIX_ROW_MAJOR
 #[allow(clippy::too_many_arguments)]
-fn compile(c: &mut Ctx, src: &[u8], name: &str, defs: u32, inc: u32, entry: u32, target: u32, flags: u32, out: u32, errs: u32, table: u32) -> u32 {
+fn compile(
+    c: &mut Ctx,
+    src: &[u8],
+    name: &str,
+    defs: u32,
+    inc: u32,
+    entry: u32,
+    target: u32,
+    flags: u32,
+    out: u32,
+    errs: u32,
+    table: u32,
+) -> u32 {
     let src = String::from_utf8_lossy(src).into_owned();
     let src = src.trim_end_matches('\0');
-    let entry = if entry == 0 { "main".to_string() } else { crate::k32::arg_str(entry, false) };
+    let entry = if entry == 0 {
+        "main".to_string()
+    } else {
+        crate::k32::arg_str(entry, false)
+    };
     let target = crate::k32::arg_str(target, false);
     let defines = crate::d3dcompiler::defines(defs);
     let base = crate::d3dcompiler::dir_of(name);
     let mut include = |n: &str, sys: bool| crate::d3dcompiler::open_include(c, inc, &base, n, sys);
-    let r = hlslc::compile(src, &defines, &mut include, &entry, &target, flags & hlslc::PACK_MATRIX_ROW_MAJOR);
+    let r = hlslc::compile(
+        src,
+        &defines,
+        &mut include,
+        &entry,
+        &target,
+        flags & hlslc::PACK_MATRIX_ROW_MAJOR,
+    );
     for p in [out, errs, table] {
         if p != 0 {
             w32(p, 0);
@@ -579,7 +725,10 @@ fn compile(c: &mut Ctx, src: &[u8], name: &str, defs: u32, inc: u32, entry: u32,
             0
         }
         Err(e) => {
-            let msg = format!("{}: error X3000: {e}", if name.is_empty() { "memory" } else { name });
+            let msg = format!(
+                "{}: error X3000: {e}",
+                if name.is_empty() { "memory" } else { name }
+            );
             eprintln!("sake: D3DXCompileShader({entry}, {target}): {msg}");
             if std::env::var_os("SAKE_HLSL_DUMP").is_some() {
                 eprintln!("{src}");
@@ -612,7 +761,9 @@ fn from_file(c: &mut Ctx, wide: bool) -> u32 {
         }
         return 0x8007_0002;
     };
-    compile(c, &src, &name, a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7])
+    compile(
+        c, &src, &name, a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7],
+    )
 }
 fn D3DXCompileShaderFromFileA(c: &mut Ctx) -> u32 {
     from_file(c, false)
@@ -694,7 +845,10 @@ fn D3DXFindShaderComment(c: &mut Ctx) -> u32 {
 fn D3DXGetShaderSamplers(c: &mut Ctx) -> u32 {
     let (names, count) = (c.a(1), c.a(2));
     let code = shader_at(c.a(0));
-    let Some((_, d)) = crate::d3dx9fx::comments(&code).into_iter().find(|(f, _)| f == b"CTAB") else {
+    let Some((_, d)) = crate::d3dx9fx::comments(&code)
+        .into_iter()
+        .find(|(f, _)| f == b"CTAB")
+    else {
         if count != 0 {
             w32(count, 0);
         }
@@ -720,7 +874,10 @@ fn D3DXGetShaderSamplers(c: &mut Ctx) -> u32 {
 fn semantics(c: &mut Ctx, output: bool) -> u32 {
     let (out, count) = (c.a(1), c.a(2));
     let code = shader_at(c.a(0));
-    let w = |i: usize| code.get(4 * i..4 * i + 4).map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()));
+    let w = |i: usize| {
+        code.get(4 * i..4 * i + 4)
+            .map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()))
+    };
     let ver = w(0);
     let pixel = ver >> 16 == 0xffff;
     let major = (ver >> 8) & 0xff;
@@ -806,12 +963,18 @@ mod tests {
                    float4 main(float2 uv : TEXCOORD0) : COLOR { return tex2D(tex, uv) * tint + mul(float4(uv, 0, 1), wvp) + lights[1].col + lights[0].dir.x; }";
         let mut inc = |_: &str, _: bool| None;
         let code = hlslc::compile(src, &[], &mut inc, "main", "ps_3_0", 0).unwrap();
-        let (_, d) = crate::d3dx9fx::comments(&code).into_iter().find(|(f, _)| f == b"CTAB").unwrap();
+        let (_, d) = crate::d3dx9fx::comments(&code)
+            .into_iter()
+            .find(|(f, _)| f == b"CTAB")
+            .unwrap();
         // (parse without guest memory: names only)
         let names = super::ctab_names(d);
         assert!(names.contains(&("tint".to_string(), 2, 20, 1)), "{names:?}");
         assert!(names.contains(&("tex".to_string(), 3, 0, 1)), "{names:?}");
-        assert!(names.iter().any(|n| n.0 == "lights" && n.3 == 4), "{names:?}");
+        assert!(
+            names.iter().any(|n| n.0 == "lights" && n.3 == 4),
+            "{names:?}"
+        );
         assert!(names.iter().any(|n| n.0 == "wvp" && n.3 == 4), "{names:?}");
     }
 }
@@ -821,7 +984,8 @@ mod tests {
 fn ctab_names(d: &[u8]) -> Vec<(String, u32, u32, u32)> {
     let r16 = |o: usize| u16::from_le_bytes([d[o], d[o + 1]]) as u32;
     let r32 = |o: usize| u32::from_le_bytes(d[o..o + 4].try_into().unwrap());
-    let s = |o: usize| String::from_utf8_lossy(d[o..].split(|&x| x == 0).next().unwrap()).into_owned();
+    let s =
+        |o: usize| String::from_utf8_lossy(d[o..].split(|&x| x == 0).next().unwrap()).into_owned();
     (0..r32(12) as usize)
         .map(|k| {
             let e = r32(16) as usize + 20 * k;

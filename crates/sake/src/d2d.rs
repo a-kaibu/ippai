@@ -10,9 +10,9 @@ use crate::api::{implement, Ctx, Handler};
 use crate::com;
 use crate::dwrite;
 use crate::mem::{self, r32, w32};
+use kura::d3d11::d2d::{self as gpu2d, Item};
 use std::collections::HashMap;
 use std::sync::Mutex;
-use kura::d3d11::d2d::{self as gpu2d, Item};
 
 type Xf = [f32; 6];
 const IDENTITY: Xf = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
@@ -65,7 +65,11 @@ impl Drawing {
         if self.drawing {
             self.fail(WRONG_STATE);
         } else {
-            *self = Drawing { drawing: true, error: self.error, clips: 0 };
+            *self = Drawing {
+                drawing: true,
+                error: self.error,
+                clips: 0,
+            };
         }
     }
     /// Whether a drawing call may draw.
@@ -104,7 +108,13 @@ impl Drawing {
             *self = Drawing::default();
             return WRONG_STATE;
         }
-        let r = if self.error != 0 { self.error } else if self.clips != 0 { PUSH_POP_UNBALANCED } else { 0 };
+        let r = if self.error != 0 {
+            self.error
+        } else if self.clips != 0 {
+            PUSH_POP_UNBALANCED
+        } else {
+            0
+        };
         *self = Drawing::default();
         r
     }
@@ -136,7 +146,13 @@ struct Brush {
 #[derive(Clone)]
 enum Paint {
     Solid([f32; 4]),
-    Linear { a: [f32; 2], d: [f32; 2], len2: f32, stops: Vec<(f32, [f32; 4])>, opacity: f32 },
+    Linear {
+        a: [f32; 2],
+        d: [f32; 2],
+        len2: f32,
+        stops: Vec<(f32, [f32; 4])>,
+        opacity: f32,
+    },
 }
 
 impl Paint {
@@ -144,7 +160,13 @@ impl Paint {
     fn gpu(&self) -> Option<([f32; 4], u32)> {
         match self {
             Paint::Solid(c) => Some((*c, 0)),
-            Paint::Linear { a, d, len2, stops, opacity } => {
+            Paint::Linear {
+                a,
+                d,
+                len2,
+                stops,
+                opacity,
+            } => {
                 let mut texels = [0u8; 1024];
                 for k in 0..256 {
                     let t = k as f32 / 255.0;
@@ -152,7 +174,9 @@ impl Paint {
                     for w in stops.windows(2) {
                         let ((p0, c0), (p1, c1)) = (w[0], w[1]);
                         if t >= p0 {
-                            c = if t >= p1 { c1 } else {
+                            c = if t >= p1 {
+                                c1
+                            } else {
                                 let k = (t - p0) / (p1 - p0).max(1e-6);
                                 [0, 1, 2, 3].map(|i| c0[i] + (c1[i] - c0[i]) * k)
                             };
@@ -164,7 +188,11 @@ impl Paint {
                     }
                 }
                 let row = gpu2d::ramp(&texels)?;
-                let dir = if *len2 > 0.0 { [d[0] / len2, d[1] / len2] } else { [0.0; 2] };
+                let dir = if *len2 > 0.0 {
+                    [d[0] / len2, d[1] / len2]
+                } else {
+                    [0.0; 2]
+                };
                 Some(([a[0], a[1], dir[0], dir[1]], row + 1))
             }
         }
@@ -214,7 +242,10 @@ fn factory() -> u32 {
         FACTORY,
         &[
             ("CreateDevice", CreateDevice as Handler),
-            ("CreateDxgiSurfaceRenderTarget", CreateDxgiSurfaceRenderTarget),
+            (
+                "CreateDxgiSurfaceRenderTarget",
+                CreateDxgiSurfaceRenderTarget,
+            ),
             ("CreateHwndRenderTarget", CreateHwndRenderTarget),
             ("GetDesktopDpi", GetDpi),
             ("CreatePathGeometry", CreatePathGeometry),
@@ -232,8 +263,17 @@ fn factory() -> u32 {
 fn back_buffer(c: &mut Ctx, sc: u32) -> u32 {
     // IID_ID3D11Texture2D {6f15aaf2-d208-4e89-9ab4-489535d34f9c}
     let iid = mem::heap_alloc(24, true);
-    mem::write(iid, &[0xf2, 0xaa, 0x15, 0x6f, 0x08, 0xd2, 0x89, 0x4e, 0x9a, 0xb4, 0x48, 0x95, 0x35, 0xd3, 0x4f, 0x9c]);
-    c.call(mem::rp(mem::rp(sc) + mem::ps() * 9), &[sc, 0, iid, iid + 16]);
+    mem::write(
+        iid,
+        &[
+            0xf2, 0xaa, 0x15, 0x6f, 0x08, 0xd2, 0x89, 0x4e, 0x9a, 0xb4, 0x48, 0x95, 0x35, 0xd3,
+            0x4f, 0x9c,
+        ],
+    );
+    c.call(
+        mem::rp(mem::rp(sc) + mem::ps() * 9),
+        &[sc, 0, iid, iid + 16],
+    );
     let tex = r32(iid + 16);
     mem::heap_free(iid);
     new_bitmap(tex)
@@ -252,12 +292,24 @@ fn CreateHwndRenderTarget(c: &mut Ctx) -> u32 {
     // DXGI_SWAP_CHAIN_DESC: w, h, refresh, B8G8R8A8, ..., 1 sample, render target output, 1
     // buffer, the window, windowed, discard
     let desc = mem::heap_alloc(60 + 16, true);
-    for (o, v) in [(0, w), (4, h), (16, 87), (28, 1), (36, 0x20), (40, 1), (44, hwnd), (48, 1)] {
+    for (o, v) in [
+        (0, w),
+        (4, h),
+        (16, 87),
+        (28, 1),
+        (36, 0x20),
+        (40, 1),
+        (44, hwnd),
+        (48, 1),
+    ] {
         w32(desc + o, v);
     }
     let (sc_out, dev_out, ctx_out) = (desc + 60, desc + 64, desc + 68);
     let create = crate::api::export("d3d11", "D3D11CreateDeviceAndSwapChain");
-    let hr = c.call(create, &[0, 1, 0, 0x20, 0, 0, 7, desc, sc_out, dev_out, 0, ctx_out]);
+    let hr = c.call(
+        create,
+        &[0, 1, 0, 0x20, 0, 0, 7, desc, sc_out, dev_out, 0, ctx_out],
+    );
     let (sc, d3d) = (r32(sc_out), r32(dev_out));
     mem::heap_free(desc);
     if hr != 0 || sc == 0 {
@@ -283,7 +335,13 @@ fn CreateHwndRenderTarget(c: &mut Ctx) -> u32 {
     let o = com::object("ID2D1HwndRenderTarget", &methods, 8);
     st(|s| {
         s.parents.insert(o, device);
-        s.dcs.insert(o, Dc { device, ..Default::default() });
+        s.dcs.insert(
+            o,
+            Dc {
+                device,
+                ..Default::default()
+            },
+        );
         s.hwnds.insert(o, (sc, hwnd));
         s.d3d.insert(o, d3d);
     });
@@ -298,7 +356,10 @@ fn CreateHwndRenderTarget(c: &mut Ctx) -> u32 {
 fn CreateCompatibleRenderTarget(c: &mut Ctx) -> u32 {
     let (parent, ps, pp, out) = (c.a(0), c.a(1), c.a(2), c.a(5));
     let (pw, ph, device, d3d) = st(|s| {
-        let (w, h, dev) = s.dcs.get(&parent).map_or((1, 1, 0), |d| (d.w, d.h, d.device));
+        let (w, h, dev) = s
+            .dcs
+            .get(&parent)
+            .map_or((1, 1, 0), |d| (d.w, d.h, d.device));
         (w, h, dev, s.d3d.get(&parent).copied().unwrap_or(0))
     });
     let (w, h) = if pp != 0 {
@@ -316,10 +377,21 @@ fn CreateCompatibleRenderTarget(c: &mut Ctx) -> u32 {
     // ID3D11Device::CreateTexture2D(D3D11_TEXTURE2D_DESC: w, h, 1 mip, 1 layer, B8G8R8A8, 1
     // sample, default usage, render target | shader resource)
     let desc = mem::heap_alloc(44 + 8, true);
-    for (o, v) in [(0, w), (4, h), (8, 1), (12, 1), (16, 87), (20, 1), (32, 0x28)] {
+    for (o, v) in [
+        (0, w),
+        (4, h),
+        (8, 1),
+        (12, 1),
+        (16, 87),
+        (20, 1),
+        (32, 0x28),
+    ] {
         w32(desc + o, v);
     }
-    c.call(mem::rp(mem::rp(d3d) + mem::ps() * 5), &[d3d, desc, 0, desc + 44]);
+    c.call(
+        mem::rp(mem::rp(d3d) + mem::ps() * 5),
+        &[d3d, desc, 0, desc + 44],
+    );
     let tex = r32(desc + 44);
     mem::heap_free(desc);
     if tex == 0 {
@@ -328,15 +400,34 @@ fn CreateCompatibleRenderTarget(c: &mut Ctx) -> u32 {
     }
     let bmp = new_bitmap(tex);
     if let Some(gpu) = gpu2d::texture_gpu(tex) {
-        st(|s| s.images.insert(bmp, Image { gpu, w, h, opaque: false }));
+        st(|s| {
+            s.images.insert(
+                bmp,
+                Image {
+                    gpu,
+                    w,
+                    h,
+                    opaque: false,
+                },
+            )
+        });
     }
     gpu2d::clear(tex, [0.0; 4]);
-    let mut methods: Vec<(&str, Handler)> = vec![("GetBitmap", GetBitmap as Handler), ("CreateCompatibleRenderTarget", CreateCompatibleRenderTarget)];
+    let mut methods: Vec<(&str, Handler)> = vec![
+        ("GetBitmap", GetBitmap as Handler),
+        ("CreateCompatibleRenderTarget", CreateCompatibleRenderTarget),
+    ];
     methods.extend(context_methods());
     let o = com::object("ID2D1BitmapRenderTarget", &methods, 8);
     st(|s| {
         s.parents.insert(o, device);
-        s.dcs.insert(o, Dc { device, ..Default::default() });
+        s.dcs.insert(
+            o,
+            Dc {
+                device,
+                ..Default::default()
+            },
+        );
         s.d3d.insert(o, d3d);
     });
     set_target(o, bmp);
@@ -363,10 +454,15 @@ fn HwndEndDraw(c: &mut Ctx) -> u32 {
 /// Resize(D2D1_SIZE_U*)
 fn Resize(c: &mut Ctx) -> u32 {
     let (o, p) = (c.a(0), c.a(1));
-    let Some((sc, _)) = st(|s| s.hwnds.get(&o).copied()) else { return 0x8007_0057 };
+    let Some((sc, _)) = st(|s| s.hwnds.get(&o).copied()) else {
+        return 0x8007_0057;
+    };
     flush(o);
     // IDXGISwapChain::ResizeBuffers(0 = keep the count, w, h, keep the format, flags)
-    c.call(mem::rp(mem::rp(sc) + mem::ps() * 13), &[sc, 0, r32(p), r32(p + 4), 0, 0]);
+    c.call(
+        mem::rp(mem::rp(sc) + mem::ps() * 13),
+        &[sc, 0, r32(p), r32(p + 4), 0, 0],
+    );
     let bmp = back_buffer(c, sc);
     set_target(o, bmp);
     0
@@ -392,7 +488,12 @@ fn D2D1CreateFactory(c: &mut Ctx) -> u32 {
 fn new_device(factory: u32, out: u32) -> u32 {
     let d = com::object(
         DEVICE,
-        &[("CreateDeviceContext", CreateDeviceContext as Handler), ("GetFactory", GetFactory), ("ClearResources", ok), ("SetMaximumTextureMemory", ok)],
+        &[
+            ("CreateDeviceContext", CreateDeviceContext as Handler),
+            ("GetFactory", GetFactory),
+            ("ClearResources", ok),
+            ("SetMaximumTextureMemory", ok),
+        ],
         8,
     );
     st(|s| s.parents.insert(d, factory));
@@ -475,11 +576,22 @@ fn CreateDeviceContext(c: &mut Ctx) -> u32 {
     let device = c.a(0);
     // (D2D1_RENDER_TARGET_PROPERTIES: dpiX, dpiY after the type and pixel format; 0 is 96)
     let props = c.a(2);
-    let dpi = if props != 0 { (rf(props, 3), rf(props, 4)) } else { (0.0, 0.0) };
+    let dpi = if props != 0 {
+        (rf(props, 3), rf(props, 4))
+    } else {
+        (0.0, 0.0)
+    };
     let dpi = Some(dpi).filter(|&(x, y)| x > 0.0 && y > 0.0 && (x, y) != (96.0, 96.0));
     st(|s| {
         s.parents.insert(o, device);
-        s.dcs.insert(o, Dc { device, dpi, ..Default::default() })
+        s.dcs.insert(
+            o,
+            Dc {
+                device,
+                dpi,
+                ..Default::default()
+            },
+        )
     });
     mem::putp(c.a(2), o);
     0
@@ -496,11 +608,22 @@ fn D2D1CreateDeviceContext(c: &mut Ctx) -> u32 {
     let bmp = new_bitmap(surface);
     // (D2D1_RENDER_TARGET_PROPERTIES: dpiX, dpiY after the type and pixel format; 0 is 96)
     let props = c.a(2);
-    let dpi = if props != 0 { (rf(props, 3), rf(props, 4)) } else { (0.0, 0.0) };
+    let dpi = if props != 0 {
+        (rf(props, 3), rf(props, 4))
+    } else {
+        (0.0, 0.0)
+    };
     let dpi = Some(dpi).filter(|&(x, y)| x > 0.0 && y > 0.0 && (x, y) != (96.0, 96.0));
     st(|s| {
         s.parents.insert(o, device);
-        s.dcs.insert(o, Dc { device, dpi, ..Default::default() })
+        s.dcs.insert(
+            o,
+            Dc {
+                device,
+                dpi,
+                ..Default::default()
+            },
+        )
     });
     set_target(o, bmp);
     mem::putp(c.a(2), o);
@@ -517,11 +640,22 @@ fn CreateDxgiSurfaceRenderTarget(c: &mut Ctx) -> u32 {
     let bmp = new_bitmap(c.a(1));
     // (D2D1_RENDER_TARGET_PROPERTIES: dpiX, dpiY after the type and pixel format; 0 is 96)
     let props = c.a(2);
-    let dpi = if props != 0 { (rf(props, 3), rf(props, 4)) } else { (0.0, 0.0) };
+    let dpi = if props != 0 {
+        (rf(props, 3), rf(props, 4))
+    } else {
+        (0.0, 0.0)
+    };
     let dpi = Some(dpi).filter(|&(x, y)| x > 0.0 && y > 0.0 && (x, y) != (96.0, 96.0));
     st(|s| {
         s.parents.insert(o, device);
-        s.dcs.insert(o, Dc { device, dpi, ..Default::default() })
+        s.dcs.insert(
+            o,
+            Dc {
+                device,
+                dpi,
+                ..Default::default()
+            },
+        )
     });
     set_target(o, bmp);
     mem::putp(c.a(3), o);
@@ -556,7 +690,11 @@ fn SetDpi(c: &mut Ctx) -> u32 {
     } else {
         return 0;
     };
-    st(|s| s.dcs.get_mut(&c.a(0)).map(|d| d.dpi = dpi.filter(|&v| v != (96.0, 96.0))));
+    st(|s| {
+        s.dcs
+            .get_mut(&c.a(0))
+            .map(|d| d.dpi = dpi.filter(|&v| v != (96.0, 96.0)))
+    });
     0
 }
 /// The transform drawing goes by: the target's, then DIPs to pixels.
@@ -564,7 +702,14 @@ fn eff(d: &Dc) -> Option<Xf> {
     let Some((dx, dy)) = d.dpi else { return d.xf };
     let (sx, sy) = (dx / 96.0, dy / 96.0);
     let m = d.xf.unwrap_or(IDENTITY);
-    Some([m[0] * sx, m[1] * sy, m[2] * sx, m[3] * sy, m[4] * sx, m[5] * sy])
+    Some([
+        m[0] * sx,
+        m[1] * sy,
+        m[2] * sx,
+        m[3] * sy,
+        m[4] * sx,
+        m[5] * sy,
+    ])
 }
 
 // ---- resources ----
@@ -576,10 +721,26 @@ fn CreateSolidColorBrush(c: &mut Ctx) -> u32 {
     let opacity = if props != 0 { rf(props, 0) } else { 1.0 };
     let o = com::object(
         "ID2D1SolidColorBrush",
-        &[("SetColor", SetColor as Handler), ("GetColor", GetColor), ("SetOpacity", SetOpacity), ("GetOpacity", GetOpacity), ("SetTransform", ok), ("GetTransform", GetIdentity)],
+        &[
+            ("SetColor", SetColor as Handler),
+            ("GetColor", GetColor),
+            ("SetOpacity", SetOpacity),
+            ("GetOpacity", GetOpacity),
+            ("SetTransform", ok),
+            ("GetTransform", GetIdentity),
+        ],
         8,
     );
-    st(|s| s.brushes.insert(o, Brush { color, opacity, linear: None }));
+    st(|s| {
+        s.brushes.insert(
+            o,
+            Brush {
+                color,
+                opacity,
+                linear: None,
+            },
+        )
+    });
     mem::putp(c.a(3), o);
     0
 }
@@ -661,7 +822,15 @@ fn CreateBitmap(c: &mut Ctx) -> u32 {
         return 0x8007_0057; // E_INVALIDARG
     }
     let px = (data != 0).then(|| mem::slice(data, pitch * (h - 1) + w * 4).to_vec());
-    mem::putp(out, new_image(w, h, px.as_deref().map(|p| (p, pitch)), alpha_ignored(props)));
+    mem::putp(
+        out,
+        new_image(
+            w,
+            h,
+            px.as_deref().map(|p| (p, pitch)),
+            alpha_ignored(props),
+        ),
+    );
     0
 }
 
@@ -672,15 +841,24 @@ fn CreateBitmapFromWicBitmap(c: &mut Ctx) -> u32 {
         mem::putp(out, 0);
         return 0x8000_4005; // E_FAIL
     };
-    mem::putp(out, new_image(w, h, Some((&px, w * 4)), alpha_ignored(props)));
+    mem::putp(
+        out,
+        new_image(w, h, Some((&px, w * 4)), alpha_ignored(props)),
+    );
     0
 }
 
 fn CopyFromMemory(c: &mut Ctx) -> u32 {
     // (this, D2D1_RECT_U * or NULL, data, pitch)
     let (this, pr, data, pitch) = (c.a(0), c.a(1), c.a(2), c.a(3));
-    let Some(im) = st(|s| s.images.get(&this).copied()) else { return 0x8000_4005 };
-    let (x, y, r, b) = if pr != 0 { (r32(pr), r32(pr + 4), r32(pr + 8), r32(pr + 12)) } else { (0, 0, im.w, im.h) };
+    let Some(im) = st(|s| s.images.get(&this).copied()) else {
+        return 0x8000_4005;
+    };
+    let (x, y, r, b) = if pr != 0 {
+        (r32(pr), r32(pr + 4), r32(pr + 8), r32(pr + 12))
+    } else {
+        (0, 0, im.w, im.h)
+    };
     let (r, b) = (r.min(im.w), b.min(im.h));
     if data == 0 || r <= x || b <= y {
         return 0x8007_0057;
@@ -709,7 +887,13 @@ fn BitmapRelease(c: &mut Ctx) -> u32 {
             s.images.remove(&this)
         }) {
             // (drawn first if a context still has it in its items)
-            let users: Vec<u32> = st(|s| s.dcs.iter().filter(|d| d.1.bitmap == Some(im.gpu)).map(|d| *d.0).collect());
+            let users: Vec<u32> = st(|s| {
+                s.dcs
+                    .iter()
+                    .filter(|d| d.1.bitmap == Some(im.gpu))
+                    .map(|d| *d.0)
+                    .collect()
+            });
             users.into_iter().for_each(flush);
             gpu2d::bitmap_free(im.gpu);
         }
@@ -730,11 +914,24 @@ fn DrawBitmap(c: &mut Ctx) -> u32 {
         return 0;
     };
     // a compatible render target's bitmap: what was drawn into it first
-    if let Some(owner) = st(|s| s.dcs.iter().find(|(&k, d)| k != dc && d.target == bmp && !d.items.is_empty()).map(|(&k, _)| k)) {
+    if let Some(owner) = st(|s| {
+        s.dcs
+            .iter()
+            .find(|(&k, d)| k != dc && d.target == bmp && !d.items.is_empty())
+            .map(|(&k, _)| k)
+    }) {
         flush(owner);
     }
-    let src = if ps != 0 { [rf(ps, 0), rf(ps, 1), rf(ps, 2), rf(ps, 3)] } else { [0.0, 0.0, im.w as f32, im.h as f32] };
-    let dst = if pd != 0 { [rf(pd, 0), rf(pd, 1), rf(pd, 2), rf(pd, 3)] } else { [0.0, 0.0, src[2] - src[0], src[3] - src[1]] };
+    let src = if ps != 0 {
+        [rf(ps, 0), rf(ps, 1), rf(ps, 2), rf(ps, 3)]
+    } else {
+        [0.0, 0.0, im.w as f32, im.h as f32]
+    };
+    let dst = if pd != 0 {
+        [rf(pd, 0), rf(pd, 1), rf(pd, 2), rf(pd, 3)]
+    } else {
+        [0.0, 0.0, src[2] - src[0], src[3] - src[1]]
+    };
     let xf = st(|s| s.dcs.get(&dc).and_then(eff));
     if xf.is_some_and(|m| m[1] != 0.0 || m[2] != 0.0) {
         com::warn_once("sake: d2d DrawBitmap under a rotation: drawn in its bounding box");
@@ -751,19 +948,36 @@ fn DrawBitmap(c: &mut Ctx) -> u32 {
         shape.swap(1, 3);
         tex.swap(1, 3);
     }
-    let Some(r) = st(|s| s.dcs.get(&dc).map(|d| clip_rect(d, shape))) else { return 0 };
+    let Some(r) = st(|s| s.dcs.get(&dc).map(|d| clip_rect(d, shape))) else {
+        return 0;
+    };
     if r[2] <= r[0] || r[3] <= r[1] || opacity <= 0.0 {
         return 0;
     }
     // one bitmap a draw: what shows another goes first
-    if st(|s| s.dcs.get(&dc).is_some_and(|d| d.bitmap.is_some_and(|g| g != im.gpu))) {
+    if st(|s| {
+        s.dcs
+            .get(&dc)
+            .is_some_and(|d| d.bitmap.is_some_and(|g| g != im.gpu))
+    }) {
         flush(dc);
     }
-    let paint = [opacity.min(1.0), (interp != 0) as u32 as f32, im.opaque as u32 as f32, 0.0];
+    let paint = [
+        opacity.min(1.0),
+        (interp != 0) as u32 as f32,
+        im.opaque as u32 as f32,
+        0.0,
+    ];
     st(|s| {
         if let Some(d) = s.dcs.get_mut(&dc) {
             d.bitmap = Some(im.gpu);
-            d.items.push(Item { rect: r, shape, extra: tex, paint, kind: [gpu2d::BITMAP, 0, 0, 0] });
+            d.items.push(Item {
+                rect: r,
+                shape,
+                extra: tex,
+                paint,
+                kind: [gpu2d::BITMAP, 0, 0, 0],
+            });
         }
     });
     0
@@ -772,14 +986,23 @@ fn DrawBitmap(c: &mut Ctx) -> u32 {
 fn CreateBitmapFromDxgiSurface(c: &mut Ctx) -> u32 {
     // (this, surface, properties, out)
     if gpu2d::size(c.a(1)).is_none() {
-        eprintln!("sake: d2d CreateBitmapFromDxgiSurface {:#x}: not a texture", c.a(1));
+        eprintln!(
+            "sake: d2d CreateBitmapFromDxgiSurface {:#x}: not a texture",
+            c.a(1)
+        );
     }
     mem::putp(c.a(3), new_bitmap(c.a(1)));
     0
 }
 /// A bitmap's size in pixels (either kind).
 fn bitmap_size(b: u32) -> (u32, u32) {
-    st(|s| s.images.get(&b).map(|i| (i.w, i.h)).or_else(|| s.bitmaps.get(&b).map(|v| (v.1, v.2))).unwrap_or_default())
+    st(|s| {
+        s.images
+            .get(&b)
+            .map(|i| (i.w, i.h))
+            .or_else(|| s.bitmaps.get(&b).map(|v| (v.1, v.2)))
+            .unwrap_or_default()
+    })
 }
 fn BitmapSize(c: &mut Ctx) -> u32 {
     let (w, h) = bitmap_size(c.a(0));
@@ -819,7 +1042,11 @@ fn GetTarget(c: &mut Ctx) -> u32 {
 }
 fn GetSize(c: &mut Ctx) -> u32 {
     // (in DIPs)
-    let (w, h, (dx, dy)) = st(|s| s.dcs.get(&c.a(0)).map_or((0, 0, (96.0, 96.0)), |d| (d.w, d.h, d.dpi.unwrap_or((96.0, 96.0)))));
+    let (w, h, (dx, dy)) = st(|s| {
+        s.dcs.get(&c.a(0)).map_or((0, 0, (96.0, 96.0)), |d| {
+            (d.w, d.h, d.dpi.unwrap_or((96.0, 96.0)))
+        })
+    });
     w32(c.a(1), (w as f32 * 96.0 / dx).to_bits());
     w32(c.a(1) + 4, (h as f32 * 96.0 / dy).to_bits());
     c.a(1)
@@ -835,7 +1062,11 @@ fn GetPixelSize(c: &mut Ctx) -> u32 {
 
 /// Draws what was collected over the target texture.
 fn flush(dc: u32) {
-    let job = st(|s| s.dcs.get_mut(&dc).map(|d| (d.surface, std::mem::take(&mut d.items), d.bitmap.take())));
+    let job = st(|s| {
+        s.dcs
+            .get_mut(&dc)
+            .map(|d| (d.surface, std::mem::take(&mut d.items), d.bitmap.take()))
+    });
     if let Some((surface, items, bitmap)) = job {
         gpu2d::draw(surface, &items, bitmap);
     }
@@ -855,7 +1086,17 @@ fn room<T>(dc: u32, mut f: impl FnMut() -> Option<T>) -> T {
 /// Adds an item painted with `paint`.
 fn push(dc: u32, kind: u32, rect: [f32; 4], shape: [f32; 4], extra: [f32; 4], paint: &Paint) {
     let (p, row) = room(dc, || paint.gpu());
-    st(|s| s.dcs.get_mut(&dc).map(|d| d.items.push(Item { rect, shape, extra, paint: p, kind: [kind, row, 0, 0] })));
+    st(|s| {
+        s.dcs.get_mut(&dc).map(|d| {
+            d.items.push(Item {
+                rect,
+                shape,
+                extra,
+                paint: p,
+                kind: [kind, row, 0, 0],
+            })
+        })
+    });
 }
 
 fn BeginDraw(c: &mut Ctx) -> u32 {
@@ -901,11 +1142,19 @@ fn Clear(c: &mut Ctx) -> u32 {
         return 0;
     }
     let (dc, p) = (c.a(0), c.a(1));
-    let color = if p != 0 { [rf(p, 0), rf(p, 1), rf(p, 2), rf(p, 3)] } else { [0.0; 4] };
+    let color = if p != 0 {
+        [rf(p, 0), rf(p, 1), rf(p, 2), rf(p, 3)]
+    } else {
+        [0.0; 4]
+    };
     let clipped = st(|s| s.dcs.get(&dc).is_some_and(|d| !d.clips.is_empty()));
     if clipped {
         // (inside a clip: painted over what is there, an approximation of replacing it)
-        let r = st(|s| s.dcs.get(&dc).map(|d| clip_rect(d, [0.0, 0.0, d.w as f32, d.h as f32])));
+        let r = st(|s| {
+            s.dcs
+                .get(&dc)
+                .map(|d| clip_rect(d, [0.0, 0.0, d.w as f32, d.h as f32]))
+        });
         if let Some(r) = r {
             fill(dc, r, &Paint::Solid(color));
         }
@@ -927,7 +1176,11 @@ fn Clear(c: &mut Ctx) -> u32 {
 fn SetTransform(c: &mut Ctx) -> u32 {
     let p = c.a(1);
     let m = [rf(p, 0), rf(p, 1), rf(p, 2), rf(p, 3), rf(p, 4), rf(p, 5)];
-    st(|s| s.dcs.get_mut(&c.a(0)).map(|d| d.xf = if m == IDENTITY { None } else { Some(m) }));
+    st(|s| {
+        s.dcs
+            .get_mut(&c.a(0))
+            .map(|d| d.xf = if m == IDENTITY { None } else { Some(m) })
+    });
     0
 }
 fn GetTransform(c: &mut Ctx) -> u32 {
@@ -947,7 +1200,12 @@ fn apply(xf: Option<Xf>, x: f32, y: f32) -> (f32, f32) {
 
 /// A rectangle (l, t, r, b) through the transform: its bounding box.
 fn xf_rect(xf: Option<Xf>, r: [f32; 4]) -> [f32; 4] {
-    let pts = [apply(xf, r[0], r[1]), apply(xf, r[2], r[1]), apply(xf, r[0], r[3]), apply(xf, r[2], r[3])];
+    let pts = [
+        apply(xf, r[0], r[1]),
+        apply(xf, r[2], r[1]),
+        apply(xf, r[0], r[3]),
+        apply(xf, r[2], r[3]),
+    ];
     let (mut a, mut b) = ((f32::MAX, f32::MAX), (f32::MIN, f32::MIN));
     for p in pts {
         a = (a.0.min(p.0), a.1.min(p.1));
@@ -958,9 +1216,19 @@ fn xf_rect(xf: Option<Xf>, r: [f32; 4]) -> [f32; 4] {
 
 /// Device pixels a rectangle covers inside the target and the clips.
 fn clip_rect(d: &Dc, r: [f32; 4]) -> [f32; 4] {
-    let mut r = [r[0].max(0.0), r[1].max(0.0), r[2].min(d.w as f32), r[3].min(d.h as f32)];
+    let mut r = [
+        r[0].max(0.0),
+        r[1].max(0.0),
+        r[2].min(d.w as f32),
+        r[3].min(d.h as f32),
+    ];
     for c in &d.clips {
-        r = [r[0].max(c[0]), r[1].max(c[1]), r[2].min(c[2]), r[3].min(c[3])];
+        r = [
+            r[0].max(c[0]),
+            r[1].max(c[1]),
+            r[2].min(c[2]),
+            r[3].min(c[3]),
+        ];
     }
     r
 }
@@ -981,12 +1249,21 @@ fn brush(dc: u32, b: u32) -> Paint {
     st(|s| {
         s.brushes.get(&b).map(|b| match &b.linear {
             // (Direct2D keeps a solid color in 8 bits a channel: an alpha of 0.5 is 128/255)
-            None => Paint::Solid([b.color[0], b.color[1], b.color[2], b.color[3] * b.opacity].map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5).floor() / 255.0)),
+            None => Paint::Solid(
+                [b.color[0], b.color[1], b.color[2], b.color[3] * b.opacity]
+                    .map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5).floor() / 255.0),
+            ),
             Some((p0, p1, stops)) => {
                 let (a0, a1) = apply(xf, p0[0], p0[1]);
                 let (b0, b1) = apply(xf, p1[0], p1[1]);
                 let d = [b0 - a0, b1 - a1];
-                Paint::Linear { a: [a0, a1], d, len2: d[0] * d[0] + d[1] * d[1], stops: stops.clone(), opacity: b.opacity }
+                Paint::Linear {
+                    a: [a0, a1],
+                    d,
+                    len2: d[0] * d[0] + d[1] * d[1],
+                    stops: stops.clone(),
+                    opacity: b.opacity,
+                }
             }
         })
     })
@@ -1001,11 +1278,17 @@ fn brush(dc: u32, b: u32) -> Paint {
 fn CreateGradientStopCollection(c: &mut Ctx) -> u32 {
     // (this, stops, count, gamma, extend mode, out)
     let (p, n) = (c.a(1), c.a(2));
-    let stops: Vec<(f32, [f32; 4])> = (0..n).map(|i| {
-        let q = p + 20 * i;
-        (rf(q, 0), [rf(q, 1), rf(q, 2), rf(q, 3), rf(q, 4)])
-    }).collect();
-    let o = com::object("ID2D1GradientStopCollection", &[("GetGradientStopCount", StopCount as Handler)], 8);
+    let stops: Vec<(f32, [f32; 4])> = (0..n)
+        .map(|i| {
+            let q = p + 20 * i;
+            (rf(q, 0), [rf(q, 1), rf(q, 2), rf(q, 3), rf(q, 4)])
+        })
+        .collect();
+    let o = com::object(
+        "ID2D1GradientStopCollection",
+        &[("GetGradientStopCount", StopCount as Handler)],
+        8,
+    );
     st(|s| s.stops.insert(o, stops));
     mem::putp(c.a(5), o);
     0
@@ -1019,9 +1302,25 @@ fn CreateLinearGradientBrush(c: &mut Ctx) -> u32 {
     let (lp, bp, sc) = (c.a(1), c.a(2), c.a(3));
     let opacity = if bp != 0 { rf(bp, 0) } else { 1.0 };
     let stops = st(|s| s.stops.get(&sc).cloned()).unwrap_or_default();
-    let o = com::object("ID2D1LinearGradientBrush", &[("SetOpacity", SetOpacity as Handler), ("GetOpacity", GetOpacity)], 8);
+    let o = com::object(
+        "ID2D1LinearGradientBrush",
+        &[
+            ("SetOpacity", SetOpacity as Handler),
+            ("GetOpacity", GetOpacity),
+        ],
+        8,
+    );
     let linear = Some(([rf(lp, 0), rf(lp, 1)], [rf(lp, 2), rf(lp, 3)], stops));
-    st(|s| s.brushes.insert(o, Brush { color: [0.0; 4], opacity, linear }));
+    st(|s| {
+        s.brushes.insert(
+            o,
+            Brush {
+                color: [0.0; 4],
+                opacity,
+                linear,
+            },
+        )
+    });
     mem::putp(c.a(4), o);
     0
 }
@@ -1039,12 +1338,21 @@ fn ellipse(dc: u32, c: [f32; 2], r: [f32; 2], paint: &Paint, ring: Option<f32>) 
     let (ox, oy) = (r[0] + h, r[1] + h);
     let (ix, iy) = (r[0] - h, r[1] - h);
     let bbox = [c[0] - ox, c[1] - oy, c[0] + ox, c[1] + oy];
-    let Some(rr) = st(|s| s.dcs.get(&dc).map(|d| clip_rect(d, bbox))) else { return };
+    let Some(rr) = st(|s| s.dcs.get(&dc).map(|d| clip_rect(d, bbox))) else {
+        return;
+    };
     if rr[2] <= rr[0] || rr[3] <= rr[1] {
         return;
     }
     let aliased = st(|s| s.dcs.get(&dc).is_some_and(|d| d.aliased));
-    push(dc, gpu2d::ELLIPSE, rr, [c[0], c[1], ox, oy], [ix, iy, ring.is_some() as u32 as f32, aliased as u32 as f32], paint);
+    push(
+        dc,
+        gpu2d::ELLIPSE,
+        rr,
+        [c[0], c[1], ox, oy],
+        [ix, iy, ring.is_some() as u32 as f32, aliased as u32 as f32],
+        paint,
+    );
 }
 
 fn SetAntialiasMode(c: &mut Ctx) -> u32 {
@@ -1059,11 +1367,20 @@ fn GetAntialiasMode(c: &mut Ctx) -> u32 {
 /// Fills rectangle `r` (l, t, r, b) under the target's transform as a QUAD item (rotated or
 /// skewed, or aliased), or the circle inscribed in it: false when the transform is singular.
 fn quad(dc: u32, r: [f32; 4], circle: bool, paint: &Paint) -> bool {
-    let Some((m, aliased)) = st(|s| s.dcs.get(&dc).map(|d| (eff(d).unwrap_or(IDENTITY), d.aliased))) else { return true };
+    let Some((m, aliased)) = st(|s| {
+        s.dcs
+            .get(&dc)
+            .map(|d| (eff(d).unwrap_or(IDENTITY), d.aliased))
+    }) else {
+        return true;
+    };
     let (w, h) = (r[2] - r[0], r[3] - r[1]);
     // unit square -> device: x = a u + c v + e, y = b u + d v + f
     let (a, b, cc, d) = (w * m[0], w * m[1], h * m[2], h * m[3]);
-    let (e, f) = (r[0] * m[0] + r[1] * m[2] + m[4], r[0] * m[1] + r[1] * m[3] + m[5]);
+    let (e, f) = (
+        r[0] * m[0] + r[1] * m[2] + m[4],
+        r[0] * m[1] + r[1] * m[3] + m[5],
+    );
     let det = a * d - b * cc;
     if det == 0.0 || !det.is_finite() {
         return false;
@@ -1072,16 +1389,34 @@ fn quad(dc: u32, r: [f32; 4], circle: bool, paint: &Paint) -> bool {
     let (ie, iff) = (-(ia * e + ic * f), -(ib * e + id * f));
     let xs = [e, e + a, e + cc, e + a + cc];
     let ys = [f, f + b, f + d, f + b + d];
-    let bbox = [xs.iter().copied().fold(f32::MAX, f32::min), ys.iter().copied().fold(f32::MAX, f32::min), xs.iter().copied().fold(f32::MIN, f32::max), ys.iter().copied().fold(f32::MIN, f32::max)];
-    let Some(rr) = st(|s| s.dcs.get(&dc).map(|d| clip_rect(d, bbox))) else { return true };
+    let bbox = [
+        xs.iter().copied().fold(f32::MAX, f32::min),
+        ys.iter().copied().fold(f32::MAX, f32::min),
+        xs.iter().copied().fold(f32::MIN, f32::max),
+        ys.iter().copied().fold(f32::MIN, f32::max),
+    ];
+    let Some(rr) = st(|s| s.dcs.get(&dc).map(|d| clip_rect(d, bbox))) else {
+        return true;
+    };
     if rr[2] > rr[0] && rr[3] > rr[1] {
-        push(dc, gpu2d::QUAD, rr, [ia, ib, ic, id], [ie, iff, aliased as u32 as f32, circle as u32 as f32], paint);
+        push(
+            dc,
+            gpu2d::QUAD,
+            rr,
+            [ia, ib, ic, id],
+            [ie, iff, aliased as u32 as f32, circle as u32 as f32],
+            paint,
+        );
     }
     true
 }
 /// Whether shapes need QUAD items: a transform that turns or skews them, or aliased drawing.
 fn needs_quad(dc: u32) -> bool {
-    st(|s| s.dcs.get(&dc).is_some_and(|d| d.aliased || eff(d).is_some_and(|m| m[1] != 0.0 || m[2] != 0.0)))
+    st(|s| {
+        s.dcs
+            .get(&dc)
+            .is_some_and(|d| d.aliased || eff(d).is_some_and(|m| m[1] != 0.0 || m[2] != 0.0))
+    })
 }
 
 fn FillEllipse(c: &mut Ctx) -> u32 {
@@ -1118,7 +1453,9 @@ fn FillRectangle(c: &mut Ctx) -> u32 {
     if needs_quad(dc) && quad(dc, r, false, &brush(dc, b)) {
         return 0;
     }
-    let Some(r) = st(|s| s.dcs.get(&dc).map(|d| clip_rect(d, xf_rect(eff(d), r)))) else { return 0 };
+    let Some(r) = st(|s| s.dcs.get(&dc).map(|d| clip_rect(d, xf_rect(eff(d), r)))) else {
+        return 0;
+    };
     fill(dc, r, &brush(dc, b));
     0
 }
@@ -1170,7 +1507,17 @@ fn PopAxisAlignedClip(c: &mut Ctx) -> u32 {
 }
 
 /// Draws laid-out text with its box's top left at (x, y) (before the transform).
-fn draw_text(dc: u32, text: &[u16], fmt: &dwrite::Format, w: f32, h: f32, x: f32, y: f32, b: u32, clip_box: bool) {
+fn draw_text(
+    dc: u32,
+    text: &[u16],
+    fmt: &dwrite::Format,
+    w: f32,
+    h: f32,
+    x: f32,
+    y: f32,
+    b: u32,
+    clip_box: bool,
+) {
     let paint = brush(dc, b);
     let xf = st(|s| s.dcs.get(&dc).and_then(eff));
     // (a scaling transform scales the font; glyphs stay upright)
@@ -1178,12 +1525,29 @@ fn draw_text(dc: u32, text: &[u16], fmt: &dwrite::Format, w: f32, h: f32, x: f32
     let mut f = fmt.clone();
     f.size *= scale;
     let laid = dwrite::layout(text, fmt, w, h);
-    let Some(font) = dwrite::layout(&[], &f, 0.0, 0.0).font else { return };
+    let Some(font) = dwrite::layout(&[], &f, 0.0, 0.0).font else {
+        return;
+    };
     let chars = dwrite::chars(text);
-    let clip_extra = if clip_box { Some(xf_rect(xf, [x, y, x + w, y + h])) } else { None };
-    let Some(mut lim) = st(|s| s.dcs.get(&dc).map(|d| clip_rect(d, [0.0, 0.0, d.w as f32, d.h as f32]))) else { return };
+    let clip_extra = if clip_box {
+        Some(xf_rect(xf, [x, y, x + w, y + h]))
+    } else {
+        None
+    };
+    let Some(mut lim) = st(|s| {
+        s.dcs
+            .get(&dc)
+            .map(|d| clip_rect(d, [0.0, 0.0, d.w as f32, d.h as f32]))
+    }) else {
+        return;
+    };
     if let Some(c) = clip_extra {
-        lim = [lim[0].max(c[0]), lim[1].max(c[1]), lim[2].min(c[2]), lim[3].min(c[3])];
+        lim = [
+            lim[0].max(c[0]),
+            lim[1].max(c[1]),
+            lim[2].min(c[2]),
+            lim[3].min(c[3]),
+        ];
     }
     for l in &laid.lines {
         for i in l.from..l.to {
@@ -1196,14 +1560,26 @@ fn draw_text(dc: u32, text: &[u16], fmt: &dwrite::Format, w: f32, h: f32, x: f32
             font.glyph(ch, |gx, top, gw, gh, cov| {
                 let (ox, oy) = (px + gx, py - top);
                 let (x0, y0) = (ox.max(lim[0].ceil() as i32), oy.max(lim[1].ceil() as i32));
-                let (x1, y1) = ((ox + gw).min(lim[2].floor() as i32), (oy + gh).min(lim[3].floor() as i32));
+                let (x1, y1) = (
+                    (ox + gw).min(lim[2].floor() as i32),
+                    (oy + gh).min(lim[3].floor() as i32),
+                );
                 if x1 <= x0 || y1 <= y0 {
                     return;
                 }
                 let key = font.glyph_key(ch);
-                let at = room(dc, || gpu2d::glyph(key, gw as u32, gh as u32, || cov.to_vec()));
+                let at = room(dc, || {
+                    gpu2d::glyph(key, gw as u32, gh as u32, || cov.to_vec())
+                });
                 let shape = [at[0] as f32 - ox as f32, at[1] as f32 - oy as f32, 0.0, 0.0];
-                push(dc, gpu2d::GLYPH, [x0 as f32, y0 as f32, x1 as f32, y1 as f32], shape, [0.0; 4], &paint);
+                push(
+                    dc,
+                    gpu2d::GLYPH,
+                    [x0 as f32, y0 as f32, x1 as f32, y1 as f32],
+                    shape,
+                    [0.0; 4],
+                    &paint,
+                );
             });
         }
     }
@@ -1222,11 +1598,19 @@ fn DrawGlyphRun(c: &mut Ctx) -> u32 {
     let face = dwrite::face_index(mem::rp(run));
     let em = f32::from_bits(r32(run + ps));
     let n = r32(run + ps + 4);
-    let (idx, adv, off) = (mem::rp(run + ps + 8), mem::rp(run + 2 * ps + 8), mem::rp(run + 3 * ps + 8));
+    let (idx, adv, off) = (
+        mem::rp(run + ps + 8),
+        mem::rp(run + 2 * ps + 8),
+        mem::rp(run + 3 * ps + 8),
+    );
     let mut pen = 0.0;
     let mut glyphs = Vec::with_capacity(n as usize);
     for i in 0..n {
-        let (dx, dy) = if off != 0 { (rf(off, 2 * i), rf(off, 2 * i + 1)) } else { (0.0, 0.0) };
+        let (dx, dy) = if off != 0 {
+            (rf(off, 2 * i), rf(off, 2 * i + 1))
+        } else {
+            (0.0, 0.0)
+        };
         glyphs.push((mem::r16(idx + 2 * i), x + pen + dx, y - dy));
         pen += if adv != 0 { rf(adv, i) } else { 0.0 };
     }
@@ -1240,8 +1624,16 @@ fn draw_glyphs(dc: u32, face: usize, em: f32, glyphs: &[(u16, f32, f32)], b: u32
     let paint = brush(dc, b);
     let xf = st(|s| s.dcs.get(&dc).and_then(eff));
     let scale = xf.map_or(1.0, |m| (m[0] * m[3] - m[1] * m[2]).abs().sqrt());
-    let Some(font) = crate::gdi::face_font(face, em * scale) else { return };
-    let Some(lim) = st(|s| s.dcs.get(&dc).map(|d| clip_rect(d, [0.0, 0.0, d.w as f32, d.h as f32]))) else { return };
+    let Some(font) = crate::gdi::face_font(face, em * scale) else {
+        return;
+    };
+    let Some(lim) = st(|s| {
+        s.dcs
+            .get(&dc)
+            .map(|d| clip_rect(d, [0.0, 0.0, d.w as f32, d.h as f32]))
+    }) else {
+        return;
+    };
     for &(gi, gx0, gy0) in glyphs {
         let (px, py) = apply(xf, gx0, gy0);
         let (px, py) = (px.round() as i32, py.round() as i32);
@@ -1256,14 +1648,26 @@ fn draw_glyphs(dc: u32, face: usize, em: f32, glyphs: &[(u16, f32, f32)], b: u32
             };
             let (ox, oy) = (px + gx, py - top);
             let (x0, y0) = (ox.max(lim[0].ceil() as i32), oy.max(lim[1].ceil() as i32));
-            let (x1, y1) = ((ox + gw).min(lim[2].floor() as i32), (oy + gh).min(lim[3].floor() as i32));
+            let (x1, y1) = (
+                (ox + gw).min(lim[2].floor() as i32),
+                (oy + gh).min(lim[3].floor() as i32),
+            );
             if x1 <= x0 || y1 <= y0 {
                 return;
             }
             let key = font.index_key(gi) ^ (r.to_bits() as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-            let at = room(dc, || gpu2d::glyph(key, gw as u32, gh as u32, || cov.to_vec()));
+            let at = room(dc, || {
+                gpu2d::glyph(key, gw as u32, gh as u32, || cov.to_vec())
+            });
             let shape = [at[0] as f32 - ox as f32, at[1] as f32 - oy as f32, 0.0, 0.0];
-            push(dc, gpu2d::GLYPH, [x0 as f32, y0 as f32, x1 as f32, y1 as f32], shape, [0.0; 4], &paint);
+            push(
+                dc,
+                gpu2d::GLYPH,
+                [x0 as f32, y0 as f32, x1 as f32, y1 as f32],
+                shape,
+                [0.0; 4],
+                &paint,
+            );
         });
     }
 }
@@ -1280,7 +1684,11 @@ pub fn dilate(cov: &[u8], w: i32, h: i32, r: f32) -> (i32, i32, Vec<u8>) {
     for dy in -k..=k {
         for dx in -k..=k {
             // (the pixel itself keeps all its coverage, however thin the pen)
-            let wgt = if dx == 0 && dy == 0 { 1.0 } else { (r + 0.5 - ((dx * dx + dy * dy) as f32).sqrt()).clamp(0.0, 1.0) };
+            let wgt = if dx == 0 && dy == 0 {
+                1.0
+            } else {
+                (r + 0.5 - ((dx * dx + dy * dy) as f32).sqrt()).clamp(0.0, 1.0)
+            };
             if wgt > 0.0 {
                 ker.push((dx, dy, wgt));
             }
@@ -1309,8 +1717,14 @@ pub fn dilate(cov: &[u8], w: i32, h: i32, r: f32) -> (i32, i32, Vec<u8>) {
 /// A path geometry holds the glyphs outlined into it (face, em, index, x, y), and whether
 /// other figures went in (not drawn); a transformed geometry its source and matrix.
 enum Geom {
-    Path { glyphs: Vec<(usize, f32, u16, f32, f32)>, figures: bool },
-    Xformed { src: u32, m: Xf },
+    Path {
+        glyphs: Vec<(usize, f32, u16, f32, f32)>,
+        figures: bool,
+    },
+    Xformed {
+        src: u32,
+        m: Xf,
+    },
 }
 static GEOMS: Mutex<Option<HashMap<u32, Geom>>> = Mutex::new(None);
 fn geoms<R>(f: impl FnOnce(&mut HashMap<u32, Geom>) -> R) -> R {
@@ -1318,12 +1732,23 @@ fn geoms<R>(f: impl FnOnce(&mut HashMap<u32, Geom>) -> R) -> R {
 }
 
 fn geom_methods() -> Vec<(&'static str, Handler)> {
-    vec![("Open", GeomOpen as Handler), ("GetFactory", GetFactoryOfGeom)]
+    vec![
+        ("Open", GeomOpen as Handler),
+        ("GetFactory", GetFactoryOfGeom),
+    ]
 }
 fn CreatePathGeometry(c: &mut Ctx) -> u32 {
     let o = com::object("ID2D1PathGeometry1", &geom_methods(), 16);
     w32(o + mem::ps(), c.a(0));
-    geoms(|m| m.insert(o, Geom::Path { glyphs: Vec::new(), figures: false }));
+    geoms(|m| {
+        m.insert(
+            o,
+            Geom::Path {
+                glyphs: Vec::new(),
+                figures: false,
+            },
+        )
+    });
     mem::putp(c.a(1), o);
     0
 }
@@ -1337,7 +1762,11 @@ fn CreateTransformedGeometry(c: &mut Ctx) -> u32 {
     // (this, source, matrix *, out)
     let (src, m, out) = (c.a(1), c.a(2), c.a(3));
     let xf = [rf(m, 0), rf(m, 1), rf(m, 2), rf(m, 3), rf(m, 4), rf(m, 5)];
-    let o = com::object("ID2D1TransformedGeometry", &[("GetFactory", GetFactoryOfGeom as Handler)], 16);
+    let o = com::object(
+        "ID2D1TransformedGeometry",
+        &[("GetFactory", GetFactoryOfGeom as Handler)],
+        16,
+    );
     w32(o + mem::ps(), c.a(0));
     com::add_ref_obj(src);
     geoms(|g| g.insert(o, Geom::Xformed { src, m: xf }));
@@ -1412,7 +1841,18 @@ fn geom_glyphs(g: u32) -> (Vec<(usize, f32, u16, f32, f32)>, bool) {
             }
             Some(Err((glyphs, figures))) => {
                 let s = (m[0] * m[3] - m[1] * m[2]).abs().sqrt();
-                let v = glyphs.into_iter().map(|(f, em, gi, x, y)| (f, em * s, gi, m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5])).collect();
+                let v = glyphs
+                    .into_iter()
+                    .map(|(f, em, gi, x, y)| {
+                        (
+                            f,
+                            em * s,
+                            gi,
+                            m[0] * x + m[2] * y + m[4],
+                            m[1] * x + m[3] * y + m[5],
+                        )
+                    })
+                    .collect();
                 return (v, figures);
             }
             None => break,
@@ -1472,7 +1912,9 @@ fn DrawText(c: &mut Ctx) -> u32 {
     }
     // (this, string, length, format, layout rect, brush, options, measuring mode)
     let (dc, s, n, fmt, r, b, opts) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6));
-    let Some(f) = dwrite::format_of(fmt) else { return 0 };
+    let Some(f) = dwrite::format_of(fmt) else {
+        return 0;
+    };
     let text: Vec<u16> = (0..n).map(|i| mem::r16(s + 2 * i)).collect();
     let (l, t, rr, bb) = (rf(r, 0), rf(r, 1), rf(r, 2), rf(r, 3));
     // D2D1_DRAW_TEXT_OPTIONS_CLIP (2)
@@ -1487,7 +1929,9 @@ fn DrawTextLayout(c: &mut Ctx) -> u32 {
     // (this, origin (by value), layout, brush, options)
     let ((x, y), o) = c.pt_f(1);
     let (dc, lay, b, opts) = (c.a(0), c.a(o), c.a(o + 1), c.a(o + 2));
-    let Some((text, f, w, h)) = dwrite::layout_of(lay) else { return 0 };
+    let Some((text, f, w, h)) = dwrite::layout_of(lay) else {
+        return 0;
+    };
     draw_text(dc, &text, &f, w, h, x, y, b, opts & 2 != 0);
     0
 }
@@ -1509,12 +1953,19 @@ fn D2D1MakeRotateMatrix(c: &mut Ctx) -> u32 {
     } else {
         deg.to_radians().sin_cos()
     };
-    put_matrix(out, [co, s, -s, co, cx - cx * co + cy * s, cy - cx * s - cy * co]);
+    put_matrix(
+        out,
+        [co, s, -s, co, cx - cx * co + cy * s, cy - cx * s - cy * co],
+    );
     0
 }
 /// D2D1MakeSkewMatrix(angle x, angle y, center, out)
 fn D2D1MakeSkewMatrix(c: &mut Ctx) -> u32 {
-    let (tx, ty, ((cx, cy), o)) = (fl(c, 0).to_radians().tan(), fl(c, 1).to_radians().tan(), c.pt_f(2));
+    let (tx, ty, ((cx, cy), o)) = (
+        fl(c, 0).to_radians().tan(),
+        fl(c, 1).to_radians().tan(),
+        c.pt_f(2),
+    );
     let out = c.a(o);
     put_matrix(out, [1.0, ty, tx, 1.0, -cy * tx, -cx * ty]);
     0
@@ -1532,7 +1983,17 @@ fn D2D1InvertMatrix(c: &mut Ctx) -> u32 {
         return 0;
     }
     let [a, b, cc, dd, x, y] = [rf(m, 0), rf(m, 1), rf(m, 2), rf(m, 3), rf(m, 4), rf(m, 5)];
-    put_matrix(m, [dd / d, -b / d, -cc / d, a / d, (cc * y - dd * x) / d, (b * x - a * y) / d]);
+    put_matrix(
+        m,
+        [
+            dd / d,
+            -b / d,
+            -cc / d,
+            a / d,
+            (cc * y - dd * x) / d,
+            (b * x - a * y) / d,
+        ],
+    );
     1
 }
 

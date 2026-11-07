@@ -32,7 +32,11 @@ pub struct Info {
 impl Info {
     /// Frames of the movie (of its shortest track).
     pub fn frames(&self) -> u32 {
-        self.tracks.iter().map(|t| t.1.len() as u32).min().unwrap_or(0)
+        self.tracks
+            .iter()
+            .map(|t| t.1.len() as u32)
+            .min()
+            .unwrap_or(0)
     }
 }
 
@@ -45,7 +49,9 @@ pub const TRAILER_LEN: usize = 28;
 pub fn info(data: &[u8]) -> Option<Info> {
     let mut at = |o: u64, buf: &mut [u8]| {
         let o = o as usize;
-        let Some(s) = o.checked_add(buf.len()).and_then(|e| data.get(o..e)) else { return false };
+        let Some(s) = o.checked_add(buf.len()).and_then(|e| data.get(o..e)) else {
+            return false;
+        };
         buf.copy_from_slice(s);
         true
     };
@@ -102,9 +108,17 @@ pub fn read_info(len: u64, at: &mut dyn FnMut(u64, &mut [u8]) -> bool) -> Option
         o += 12 * n;
         tracks.push((codec, frames));
     }
-    let mut i = Info { w, h, tracks, rate: None, duration: 0, audio: None };
+    let mut i = Info {
+        w,
+        h,
+        tracks,
+        rate: None,
+        duration: 0,
+        audio: None,
+    };
     let mut t = [0u8; TRAILER_LEN];
-    if len >= o + TRAILER_LEN as u64 && at(len - TRAILER_LEN as u64, &mut t) && &t[24..] == TRAILER {
+    if len >= o + TRAILER_LEN as u64 && at(len - TRAILER_LEN as u64, &mut t) && &t[24..] == TRAILER
+    {
         let tpos = len - TRAILER_LEN as u64;
         let (num, den) = (u(&t, 0), u(&t, 4));
         let dur = u(&t, 8) as u64 | (u(&t, 12) as u64) << 32;
@@ -122,10 +136,12 @@ pub fn read_info(len: u64, at: &mut dyn FnMut(u64, &mut [u8]) -> bool) -> Option
 /// The size of an uncompressed I420 frame ("raw-i420") of a `w` x `h` movie (rounded up to
 /// even sizes, as the encoder pads).
 pub fn raw_size(w: u32, h: u32) -> usize {
-    let (w, h) = (w.next_multiple_of(2) as usize, h.next_multiple_of(2) as usize);
+    let (w, h) = (
+        w.next_multiple_of(2) as usize,
+        h.next_multiple_of(2) as usize,
+    );
     w * h + 2 * (w / 2) * (h / 2)
 }
-
 
 /// One track for `write`: its codec and frames (bytes, key frame).
 pub type Track = (String, Vec<(Vec<u8>, bool)>);
@@ -141,12 +157,25 @@ pub struct Trailer {
 /// whether it is a key frame; cut to the shortest track) to `out`; the caller writes the frames
 /// next, track after track, and then, for the trailer, the sound and `write_tail`. Returns where
 /// the frames end. Err when the file would not fit the format's 32-bit offsets (4 GiB).
-pub fn write_head(out: &mut impl std::io::Write, w: u32, h: u32, tracks: &[(&str, &[(u32, bool)])]) -> std::io::Result<u64> {
+pub fn write_head(
+    out: &mut impl std::io::Write,
+    w: u32,
+    h: u32,
+    tracks: &[(&str, &[(u32, bool)])],
+) -> std::io::Result<u64> {
     let n = tracks.iter().map(|t| t.1.len()).min().unwrap_or(0);
-    let table: u64 = tracks.iter().map(|t| 8 + t.0.len() as u64 + 12 * n as u64).sum();
+    let table: u64 = tracks
+        .iter()
+        .map(|t| 8 + t.0.len() as u64 + 12 * n as u64)
+        .sum();
     let mut at = 16 + table;
     let mut head = Vec::with_capacity(at as usize);
-    for v in [*b"VNV1", w.to_le_bytes(), h.to_le_bytes(), (tracks.len() as u32).to_le_bytes()] {
+    for v in [
+        *b"VNV1",
+        w.to_le_bytes(),
+        h.to_le_bytes(),
+        (tracks.len() as u32).to_le_bytes(),
+    ] {
         head.extend(v);
     }
     for (codec, frames) in tracks {
@@ -166,9 +195,22 @@ pub fn write_head(out: &mut impl std::io::Write, w: u32, h: u32, tracks: &[(&str
 }
 
 /// The trailer, after the sound (`audio_len` bytes at `audio_off`, where the frames end).
-pub fn write_tail(out: &mut impl std::io::Write, rate: (u32, u32), duration: u64, audio_off: u64, audio_len: u64) -> std::io::Result<()> {
+pub fn write_tail(
+    out: &mut impl std::io::Write,
+    rate: (u32, u32),
+    duration: u64,
+    audio_off: u64,
+    audio_len: u64,
+) -> std::io::Result<()> {
     too_big(audio_off + audio_len + TRAILER_LEN as u64)?;
-    for v in [rate.0, rate.1, duration as u32, (duration >> 32) as u32, audio_off as u32, audio_len as u32] {
+    for v in [
+        rate.0,
+        rate.1,
+        duration as u32,
+        (duration >> 32) as u32,
+        audio_off as u32,
+        audio_len as u32,
+    ] {
         out.write_all(&v.to_le_bytes())?;
     }
     out.write_all(TRAILER)
@@ -176,7 +218,10 @@ pub fn write_tail(out: &mut impl std::io::Write, rate: (u32, u32), duration: u64
 
 fn too_big(end: u64) -> std::io::Result<()> {
     if end > u32::MAX as u64 {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("a .vnv holds at most 4 GiB ({end} bytes)")));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("a .vnv holds at most 4 GiB ({end} bytes)"),
+        ));
     }
     Ok(())
 }
@@ -185,8 +230,15 @@ fn too_big(end: u64) -> std::io::Result<()> {
 /// panics past 4 GiB).
 pub fn write(w: u32, h: u32, tracks: &[Track], trailer: Option<&Trailer>) -> Vec<u8> {
     let n = tracks.iter().map(|t| t.1.len()).min().unwrap_or(0);
-    let sizes: Vec<Vec<(u32, bool)>> = tracks.iter().map(|t| t.1[..n].iter().map(|(f, k)| (f.len() as u32, *k)).collect()).collect();
-    let index: Vec<(&str, &[(u32, bool)])> = tracks.iter().zip(&sizes).map(|(t, s)| (t.0.as_str(), &s[..])).collect();
+    let sizes: Vec<Vec<(u32, bool)>> = tracks
+        .iter()
+        .map(|t| t.1[..n].iter().map(|(f, k)| (f.len() as u32, *k)).collect())
+        .collect();
+    let index: Vec<(&str, &[(u32, bool)])> = tracks
+        .iter()
+        .zip(&sizes)
+        .map(|(t, s)| (t.0.as_str(), &s[..]))
+        .collect();
     let mut out = Vec::new();
     let end = write_head(&mut out, w, h, &index).expect("a .vnv in memory under 4 GiB");
     for (_, frames) in tracks {
@@ -197,7 +249,8 @@ pub fn write(w: u32, h: u32, tracks: &[Track], trailer: Option<&Trailer>) -> Vec
     debug_assert_eq!(out.len() as u64, end);
     if let Some(t) = trailer {
         out.extend_from_slice(&t.audio);
-        write_tail(&mut out, t.rate, t.duration, end, t.audio.len() as u64).expect("a .vnv in memory under 4 GiB");
+        write_tail(&mut out, t.rate, t.duration, end, t.audio.len() as u64)
+            .expect("a .vnv in memory under 4 GiB");
     }
     out
 }
@@ -208,7 +261,10 @@ mod tests {
     use proptest::prelude::*;
 
     fn tracks() -> impl Strategy<Value = Vec<Track>> {
-        let frames = prop::collection::vec((prop::collection::vec(any::<u8>(), 0..40), any::<bool>()), 0..12);
+        let frames = prop::collection::vec(
+            (prop::collection::vec(any::<u8>(), 0..40), any::<bool>()),
+            0..12,
+        );
         prop::collection::vec(("[a-z0-9.\\-]{0,12}", frames), 1..=2)
     }
 
@@ -321,14 +377,32 @@ mod tests {
 
     #[test]
     fn trailer_fields() {
-        let tr = Trailer { rate: (30000, 1001), duration: 0x1_0000_0005, audio: b"OggS".to_vec() };
-        let d = write(2, 2, &[("raw-i420".into(), vec![(vec![0; 6], true)])], Some(&tr));
+        let tr = Trailer {
+            rate: (30000, 1001),
+            duration: 0x1_0000_0005,
+            audio: b"OggS".to_vec(),
+        };
+        let d = write(
+            2,
+            2,
+            &[("raw-i420".into(), vec![(vec![0; 6], true)])],
+            Some(&tr),
+        );
         let i = info(&d).unwrap();
         assert_eq!(i.rate, Some((30000, 1001)));
         assert_eq!(i.duration, 0x1_0000_0005);
         assert_eq!(&d[i.audio.unwrap().0..][..4], b"OggS");
         // a zero rate is no movie
-        let bad = write(2, 2, &[("raw-i420".into(), vec![])], Some(&Trailer { rate: (0, 1), duration: 0, audio: vec![] }));
+        let bad = write(
+            2,
+            2,
+            &[("raw-i420".into(), vec![])],
+            Some(&Trailer {
+                rate: (0, 1),
+                duration: 0,
+                audio: vec![],
+            }),
+        );
         assert!(info(&bad).is_none());
         // (odd sizes padded to even: 4x4 luma, two 2x2 chroma planes)
         assert_eq!(raw_size(3, 3), 24);

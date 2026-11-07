@@ -42,7 +42,10 @@ unsafe impl<const N: usize> Sync for Ring<N> {}
 
 impl<const N: usize> Ring<N> {
     const fn new() -> Self {
-        Ring { buf: UnsafeCell::new([0; N]), head: AtomicU32::new(0) }
+        Ring {
+            buf: UnsafeCell::new([0; N]),
+            head: AtomicU32::new(0),
+        }
     }
 
     fn put(&self, b: &[u8]) {
@@ -141,7 +144,9 @@ impl<const N: usize> Write for Line<N> {
 
 /// "hh:mm:ss.mmm" (UTC) and the thread: the prefix of every record.
 fn stamp(w: &mut impl Write) {
-    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64);
     let s = ms / 1000;
     let _ = write!(
         w,
@@ -201,7 +206,9 @@ pub fn output(fd: i32, b: &[u8]) {
 
 /// The calling guest thread's state (at its current syscall), deep, in EV.
 fn thread_state(why: &str) {
-    let Some(t) = CUR.with(|c| c.get()) else { return };
+    let Some(t) = CUR.with(|c| c.get()) else {
+        return;
+    };
     let c = t.cpu.load(Relaxed);
     if c == 0 {
         return;
@@ -209,10 +216,19 @@ fn thread_state(why: &str) {
     let cpu = unsafe { &*(c as *const Cpu) };
     let mut l = Line::<16384>::new();
     stamp(&mut l);
-    let mods = &mut [Module { base: 0, size: 0, name: [0; 40], len: 0 }; MAX_MODULES];
+    let mods = &mut [Module {
+        base: 0,
+        size: 0,
+        name: [0; 40],
+        len: 0,
+    }; MAX_MODULES];
     let n = modules(cpu, mods);
     let mods = &mods[..n];
-    let _ = write!(l, "{why}: at its syscall from {:08x}", rd32(cpu.regs[4]).unwrap_or(0));
+    let _ = write!(
+        l,
+        "{why}: at its syscall from {:08x}",
+        rd32(cpu.regs[4]).unwrap_or(0)
+    );
     sym(&mut l, mods, rd32(cpu.regs[4]).unwrap_or(0));
     regs(&mut l, cpu);
     detail(&mut l, cpu, mods, true, DEEP);
@@ -303,7 +319,14 @@ pub fn trap(cpu: &Cpu, addr: u32) {
         let Some(t) = c.get() else { return };
         let esp = cpu.regs[4];
         let n = t.n.load(Relaxed);
-        unsafe { (*t.traps.get())[n as usize % TRAPS] = [addr, cpu.regs[0], rd32(esp).unwrap_or(0), rd32(esp.wrapping_add(4)).unwrap_or(0)] };
+        unsafe {
+            (*t.traps.get())[n as usize % TRAPS] = [
+                addr,
+                cpu.regs[0],
+                rd32(esp).unwrap_or(0),
+                rd32(esp.wrapping_add(4)).unwrap_or(0),
+            ]
+        };
         t.n.store(n.wrapping_add(1), Relaxed);
     });
 }
@@ -327,11 +350,15 @@ fn readable(a: u32, n: u32) -> bool {
 }
 
 fn rd32(a: u32) -> Option<u32> {
-    readable(a, 4).then(|| unsafe { std::ptr::read_volatile(a as usize as *const [u8; 4]) }).map(u32::from_le_bytes)
+    readable(a, 4)
+        .then(|| unsafe { std::ptr::read_volatile(a as usize as *const [u8; 4]) })
+        .map(u32::from_le_bytes)
 }
 
 fn rd16(a: u32) -> Option<u16> {
-    readable(a, 2).then(|| unsafe { std::ptr::read_volatile(a as usize as *const [u8; 2]) }).map(u16::from_le_bytes)
+    readable(a, 2)
+        .then(|| unsafe { std::ptr::read_volatile(a as usize as *const [u8; 2]) })
+        .map(u16::from_le_bytes)
 }
 
 fn rd8(a: u32) -> Option<u8> {
@@ -358,7 +385,12 @@ const MAX_MODULES: usize = 128;
 static EXTRA: Mutex<Vec<Module>> = Mutex::new(Vec::new());
 
 fn make_module(base: u32, size: u32, name: impl Iterator<Item = u8>) -> Module {
-    let mut m = Module { base, size, name: [0; 40], len: 0 };
+    let mut m = Module {
+        base,
+        size,
+        name: [0; 40],
+        len: 0,
+    };
     for c in name.take(40) {
         m.name[m.len as usize] = c;
         m.len += 1;
@@ -368,7 +400,11 @@ fn make_module(base: u32, size: u32, name: impl Iterator<Item = u8>) -> Module {
 
 /// sake: an image it mapped at `base` from `path`.
 pub fn add_module(base: u32, path: &str) {
-    let size = rd32(base.wrapping_add(rd32(base + 0x3c).unwrap_or(0)).wrapping_add(0x50)).unwrap_or(0x1000);
+    let size = rd32(
+        base.wrapping_add(rd32(base + 0x3c).unwrap_or(0))
+            .wrapping_add(0x50),
+    )
+    .unwrap_or(0x1000);
     let name = path.rsplit(['\\', '/']).next().unwrap_or(path);
     let m = make_module(base, size, name.bytes().filter(|c| c.is_ascii_graphic()));
     let mut g = EXTRA.lock().unwrap_or_else(|e| e.into_inner());
@@ -380,8 +416,11 @@ pub fn add_module(base: u32, path: &str) {
 /// The loaded modules of the process `cpu` runs in: its PEB's loader list.
 fn modules(cpu: &Cpu, out: &mut [Module; MAX_MODULES]) -> usize {
     let long = cpu.mode64 != 0;
-    let (teb, peb_at, ldr_at, head_at, base_at, size_at, name_at, buf_at) =
-        if long { (cpu.gs_base, 0x60, 0x18, 0x10, 0x30, 0x40, 0x58, 0x60) } else { (cpu.fs_base, 0x30, 0x0c, 0x0c, 0x18, 0x20, 0x2c, 0x30) };
+    let (teb, peb_at, ldr_at, head_at, base_at, size_at, name_at, buf_at) = if long {
+        (cpu.gs_base, 0x60, 0x18, 0x10, 0x30, 0x40, 0x58, 0x60)
+    } else {
+        (cpu.fs_base, 0x30, 0x0c, 0x0c, 0x18, 0x20, 0x2c, 0x30)
+    };
     let mut n = 0;
     (|| -> Option<()> {
         let peb = rd32(teb.wrapping_add(peb_at))?;
@@ -391,8 +430,14 @@ fn modules(cpu: &Cpu, out: &mut [Module; MAX_MODULES]) -> usize {
         while e != head && n < MAX_MODULES {
             let len = rd16(e.wrapping_add(name_at))? as u32 / 2;
             let buf = rd32(e.wrapping_add(buf_at))?;
-            let name = (0..len.min(40)).map(|i| rd16(buf.wrapping_add(2 * i)).unwrap_or(b'?' as u16)).map(|c| if c < 0x80 && c >= 0x20 { c as u8 } else { b'?' });
-            out[n] = make_module(rd32(e.wrapping_add(base_at))?, rd32(e.wrapping_add(size_at))?, name);
+            let name = (0..len.min(40))
+                .map(|i| rd16(buf.wrapping_add(2 * i)).unwrap_or(b'?' as u16))
+                .map(|c| if c < 0x80 && c >= 0x20 { c as u8 } else { b'?' });
+            out[n] = make_module(
+                rd32(e.wrapping_add(base_at))?,
+                rd32(e.wrapping_add(size_at))?,
+                name,
+            );
             n += 1;
             e = rd32(e)?;
         }
@@ -418,14 +463,22 @@ fn export_near(m: &Module, addr: u32) -> Option<(u32, u32)> {
         return None;
     }
     let oh = pe + 24;
-    let dir = if rd16(oh)? == 0x20b { oh + 112 } else { oh + 96 };
+    let dir = if rd16(oh)? == 0x20b {
+        oh + 112
+    } else {
+        oh + 96
+    };
     let exp = rd32(dir)?;
     if exp == 0 || exp >= m.size {
         return None;
     }
     let ed = base + exp;
     let names = rd32(ed + 0x18)?.min(20000);
-    let (funcs, name_tab, ords) = (base + rd32(ed + 0x1c)?, base + rd32(ed + 0x20)?, base + rd32(ed + 0x24)?);
+    let (funcs, name_tab, ords) = (
+        base + rd32(ed + 0x1c)?,
+        base + rd32(ed + 0x20)?,
+        base + rd32(ed + 0x24)?,
+    );
     let mut best: Option<(u32, u32)> = None;
     for i in 0..names {
         let ord = rd16(ords + 2 * i)? as u32;
@@ -439,7 +492,12 @@ fn export_near(m: &Module, addr: u32) -> Option<(u32, u32)> {
 
 /// `addr` as "module+rva (export+off)", or nothing outside the modules.
 fn sym(w: &mut impl Write, mods: &[Module], addr: u32) {
-    let Some(m) = mods.iter().find(|m| addr >= m.base && addr - m.base < m.size) else { return };
+    let Some(m) = mods
+        .iter()
+        .find(|m| addr >= m.base && addr - m.base < m.size)
+    else {
+        return;
+    };
     let _ = write!(w, " {}+{:x}", m.name(), addr - m.base);
     if let Some((name, off)) = export_near(m, addr) {
         let _ = w.write_str(" (");
@@ -468,11 +526,27 @@ pub fn set_trap_namer(f: fn(u32) -> Option<String>) {
 fn regs(w: &mut impl Write, cpu: &Cpu) {
     let r = &cpu.regs;
     if cpu.mode64 != 0 {
-        const N: [&str; 16] = ["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"];
+        const N: [&str; 16] = [
+            "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11",
+            "r12", "r13", "r14", "r15",
+        ];
         for (i, n) in N.iter().enumerate() {
-            let _ = write!(w, "{}{n} {:016x}", if i % 4 == 0 { "\n  " } else { " " }, cpu.gpr(i));
+            let _ = write!(
+                w,
+                "{}{n} {:016x}",
+                if i % 4 == 0 { "\n  " } else { " " },
+                cpu.gpr(i)
+            );
         }
-        let _ = write!(w, "\n  rip {:08x}{:08x} rflags {:08x} gs {:08x} fs {:08x}", cpu.rip_hi, cpu.eip, cpu.flags(), cpu.gs_base, cpu.fs_base);
+        let _ = write!(
+            w,
+            "\n  rip {:08x}{:08x} rflags {:08x} gs {:08x} fs {:08x}",
+            cpu.rip_hi,
+            cpu.eip,
+            cpu.flags(),
+            cpu.gs_base,
+            cpu.fs_base
+        );
     } else {
         let _ = write!(
             w,
@@ -490,15 +564,27 @@ struct Depth {
     frames: u32,
 }
 
-const NORMAL: Depth = Depth { scan: 0x800, found: 24, frames: 16 };
+const NORMAL: Depth = Depth {
+    scan: 0x800,
+    found: 24,
+    frames: 16,
+};
 /// The thread that reports an unhandled exception: its stack holds the dispatcher's frames
 /// (records, contexts) above the code that raised it.
-const DEEP: Depth = Depth { scan: 0x6000, found: 64, frames: 40 };
+const DEEP: Depth = Depth {
+    scan: 0x6000,
+    found: 64,
+    frames: 40,
+};
 
 fn detail(w: &mut impl Write, cpu: &Cpu, mods: &[Module], own_thread: bool, depth: Depth) {
     let long = cpu.mode64 != 0;
     let f = &cpu.fpu;
-    let _ = write!(w, "\n  fpu cw {:04x} sw {:04x} top {} empty {:02x} mxcsr {:08x}", f.cw, f.sw, f.top, f.empty, cpu.mxcsr);
+    let _ = write!(
+        w,
+        "\n  fpu cw {:04x} sw {:04x} top {} empty {:02x} mxcsr {:08x}",
+        f.cw, f.sw, f.top, f.empty, cpu.mxcsr
+    );
     for (i, x) in cpu.xmm.iter().enumerate() {
         if *x != 0 {
             let _ = write!(w, " xmm{i} {x:032x}");
@@ -542,7 +628,9 @@ fn detail(w: &mut impl Write, cpu: &Cpu, mods: &[Module], own_thread: bool, dept
         let _ = w.write_str("\n  frames (ebp chain):");
         let mut ebp = cpu.regs[5];
         for _ in 0..depth.frames {
-            let (Some(ret), Some(next)) = (rd32(ebp.wrapping_add(4)), rd32(ebp)) else { break };
+            let (Some(ret), Some(next)) = (rd32(ebp.wrapping_add(4)), rd32(ebp)) else {
+                break;
+            };
             let _ = write!(w, "\n    {ret:08x}");
             sym(w, mods, ret);
             if next <= ebp {
@@ -562,7 +650,10 @@ fn detail(w: &mut impl Write, cpu: &Cpu, mods: &[Module], own_thread: bool, dept
             a += step;
             continue;
         }
-        if mods.iter().any(|m| v >= m.base && v - m.base < m.size && v - m.base >= 0x1000) {
+        if mods
+            .iter()
+            .any(|m| v >= m.base && v - m.base < m.size && v - m.base >= 0x1000)
+        {
             let _ = write!(w, "\n    [{:x}] {v:08x}", a - esp);
             sym(w, mods, v);
             found += 1;
@@ -582,25 +673,51 @@ fn detail(w: &mut impl Write, cpu: &Cpu, mods: &[Module], own_thread: bool, dept
             let size = koji::jit::RING_SIZE;
             for k in 0..n.min(size).min(16) {
                 let i = (n.wrapping_sub(1 + k)) & (size - 1);
-                let (a, b) = (rd32(ring + 4 + 8 * i).unwrap_or(0), rd32(ring + 8 + 8 * i).unwrap_or(0));
+                let (a, b) = (
+                    rd32(ring + 4 + 8 * i).unwrap_or(0),
+                    rd32(ring + 8 + 8 * i).unwrap_or(0),
+                );
                 let _ = write!(w, " {a:x}>{b:x}");
             }
         }
     }
     let c = crate::jit::compiled_totals();
-    let _ = write!(w, "\n  jit: on {} (x64 {}), regions built {}, functions {}, rebuilt {}, call depth {}", crate::jit::enabled(), crate::jit::enabled64(), c[0], c[1], c[2], cpu.jit_depth);
+    let _ = write!(
+        w,
+        "\n  jit: on {} (x64 {}), regions built {}, functions {}, rebuilt {}, call depth {}",
+        crate::jit::enabled(),
+        crate::jit::enabled64(),
+        c[0],
+        c[1],
+        c[2],
+        cpu.jit_depth
+    );
     let m = crate::jit::jit_modules();
-    let _ = write!(w, "\n  jit modules: loaded {} ({} KiB, {} ms), freed {} ({} KiB), table {}", m[0], m[1] >> 10, m[5] / 1000, m[3], m[4] >> 10, m[2]);
+    let _ = write!(
+        w,
+        "\n  jit modules: loaded {} ({} KiB, {} ms), freed {} ({} KiB), table {}",
+        m[0],
+        m[1] >> 10,
+        m[5] / 1000,
+        m[3],
+        m[4] >> 10,
+        m[2]
+    );
 }
 
 fn find_thread(cpu: &Cpu) -> Option<&'static ThreadLog> {
     let g = THREADS.try_lock().ok()?;
-    g.iter().find(|t| t.cpu.load(Relaxed) == cpu as *const Cpu as usize).copied()
+    g.iter()
+        .find(|t| t.cpu.load(Relaxed) == cpu as *const Cpu as usize)
+        .copied()
 }
 
 fn traps(w: &mut impl Write, t: &ThreadLog, mods: &[Module], name: bool, max: u32) {
     let n = t.n.load(Relaxed);
-    let _ = write!(w, "\n  last syscalls/API calls (newest first, {n} in all): trap eax [esp] [esp+4]");
+    let _ = write!(
+        w,
+        "\n  last syscalls/API calls (newest first, {n} in all): trap eax [esp] [esp+4]"
+    );
     // (a call repeated, or two alternating — a loop's — is shown once with a count)
     let mut shown: [[u32; 4]; 2] = [[0; 4]; 2];
     let mut repeats = 0;
@@ -641,7 +758,9 @@ fn traps(w: &mut impl Write, t: &ThreadLog, mods: &[Module], name: bool, max: u3
 static LISTED: Mutex<u32> = Mutex::new(0);
 
 fn module_list(w: &mut impl Write, mods: &[Module], always: bool) {
-    let h = mods.iter().fold(0x811c9dc5u32, |h, m| (h ^ m.base ^ m.size).wrapping_mul(0x0100_0193));
+    let h = mods.iter().fold(0x811c9dc5u32, |h, m| {
+        (h ^ m.base ^ m.size).wrapping_mul(0x0100_0193)
+    });
     if !always {
         let mut g = LISTED.lock().unwrap_or_else(|e| e.into_inner());
         if *g == h {
@@ -652,7 +771,14 @@ fn module_list(w: &mut impl Write, mods: &[Module], always: bool) {
     }
     let _ = write!(w, "\n  modules ({}):", mods.len());
     for (i, m) in mods.iter().enumerate() {
-        let _ = write!(w, "{}{:08x}-{:08x} {}", if i % 3 == 0 { "\n   " } else { "  " }, m.base, m.base.wrapping_add(m.size), m.name());
+        let _ = write!(
+            w,
+            "{}{:08x}-{:08x} {}",
+            if i % 3 == 0 { "\n   " } else { "  " },
+            m.base,
+            m.base.wrapping_add(m.size),
+            m.name()
+        );
     }
 }
 
@@ -663,7 +789,12 @@ pub fn exception(cpu: &Cpu, what: &str, access: Option<(u32, bool)>, from_jit: b
     let k = t.map_or(0, |t| t.exceptions.fetch_add(1, Relaxed));
     let mut l = Line::<12288>::new();
     stamp(&mut l);
-    let mods = &mut [Module { base: 0, size: 0, name: [0; 40], len: 0 }; MAX_MODULES];
+    let mods = &mut [Module {
+        base: 0,
+        size: 0,
+        name: [0; 40],
+        len: 0,
+    }; MAX_MODULES];
     let n = modules(cpu, mods);
     let mods = &mods[..n];
     let _ = write!(l, "exception #{} {what} at {:08x}", k + 1, cpu.eip);
@@ -713,21 +844,35 @@ pub extern "C" fn vnhost_crashlog_snapshot() -> u32 {
             continue;
         }
         let cpu = unsafe { &*(c as *const Cpu) };
-        let mods = &mut [Module { base: 0, size: 0, name: [0; 40], len: 0 }; MAX_MODULES];
+        let mods = &mut [Module {
+            base: 0,
+            size: 0,
+            name: [0; 40],
+            len: 0,
+        }; MAX_MODULES];
         let n = modules(cpu, mods);
         let mods = &mods[..n];
         let _ = write!(
             w,
             "\n\nthread t{} {} at {:08x}",
             t.tid,
-            if t.guest.load(Relaxed) != 0 { "in guest code" } else { "in a syscall/API (host side)" },
+            if t.guest.load(Relaxed) != 0 {
+                "in guest code"
+            } else {
+                "in a syscall/API (host side)"
+            },
             cpu.eip
         );
         sym(&mut w, mods, cpu.eip);
         let _ = write!(w, ", exceptions {}", t.exceptions.load(Relaxed));
         regs(&mut w, cpu);
         detail(&mut w, cpu, mods, false, NORMAL);
-        let peb = if cpu.mode64 != 0 { rd32(cpu.gs_base + 0x60) } else { rd32(cpu.fs_base + 0x30) }.unwrap_or(0);
+        let peb = if cpu.mode64 != 0 {
+            rd32(cpu.gs_base + 0x60)
+        } else {
+            rd32(cpu.fs_base + 0x30)
+        }
+        .unwrap_or(0);
         if peb != last_teb {
             last_teb = peb;
             module_list(&mut w, mods, true);

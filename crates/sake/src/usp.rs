@@ -63,12 +63,26 @@ fn ScriptItemize(c: &mut Ctx) -> u32 {
 }
 
 fn ScriptShape(c: &mut Ctx) -> u32 {
-    let (dc, psc, s, n, max, out, clust, vis, count) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(6), c.a(7), c.a(8), c.a(9));
+    let (dc, psc, s, n, max, out, clust, vis, count) = (
+        c.a(0),
+        c.a(1),
+        c.a(2),
+        c.a(3),
+        c.a(4),
+        c.a(6),
+        c.a(7),
+        c.a(8),
+        c.a(9),
+    );
     if n > max {
         return E_OUTOFMEMORY;
     }
-    let Some(f) = cache_font(dc, psc) else { return E_PENDING };
-    let Some(g) = gdi::font_glyphs(dc, f, &wchars(s, n)) else { return E_PENDING };
+    let Some(f) = cache_font(dc, psc) else {
+        return E_PENDING;
+    };
+    let Some(g) = gdi::font_glyphs(dc, f, &wchars(s, n)) else {
+        return E_PENDING;
+    };
     for (i, gi) in g.iter().enumerate() {
         let i = i as u32;
         w16(out + 2 * i, *gi);
@@ -85,12 +99,17 @@ fn put16(base: u32, i: u32, v: u16) {
 }
 
 fn ScriptPlace(c: &mut Ctx) -> u32 {
-    let (dc, psc, glyphs, n, adv, goff, abc) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(6), c.a(7), c.a(8));
+    let (dc, psc, glyphs, n, adv, goff, abc) =
+        (c.a(0), c.a(1), c.a(2), c.a(3), c.a(6), c.a(7), c.a(8));
     if (n as i32) <= 0 || n > 1 << 20 {
         return E_INVALIDARG;
     }
-    let Some(f) = cache_font(dc, psc) else { return E_PENDING };
-    let Some(w) = gdi::font_abc(dc, f, &wchars(glyphs, n)) else { return E_PENDING };
+    let Some(f) = cache_font(dc, psc) else {
+        return E_PENDING;
+    };
+    let Some(w) = gdi::font_abc(dc, f, &wchars(glyphs, n)) else {
+        return E_PENDING;
+    };
     let (mut ta, mut tb, mut tc) = (0, 0, 0);
     for (i, (a, b, cc)) in w.iter().enumerate() {
         let i = i as u32;
@@ -115,7 +134,9 @@ fn ScriptPlace(c: &mut Ctx) -> u32 {
 
 fn ScriptGetFontProperties(c: &mut Ctx) -> u32 {
     let (dc, psc, p) = (c.a(0), c.a(1), c.a(2));
-    let Some(f) = cache_font(dc, psc) else { return E_PENDING };
+    let Some(f) = cache_font(dc, psc) else {
+        return E_PENDING;
+    };
     if p == 0 || r32(p) < 16 {
         return E_INVALIDARG;
     }
@@ -185,7 +206,16 @@ fn ScriptApplyDigitSubstitution(c: &mut Ctx) -> u32 {
 
 /// ScriptTextOut: the glyphs are drawn with ExtTextOutW's ETO_GLYPH_INDEX.
 fn ScriptTextOut(c: &mut Ctx) -> u32 {
-    let (dc, x, y, opts, rect, glyphs, n, adv) = (c.a(0), c.a(2), c.a(3), c.a(4), c.a(5), c.a(9), c.a(10), c.a(11));
+    let (dc, x, y, opts, rect, glyphs, n, adv) = (
+        c.a(0),
+        c.a(2),
+        c.a(3),
+        c.a(4),
+        c.a(5),
+        c.a(9),
+        c.a(10),
+        c.a(11),
+    );
     let f = crate::api::export("gdi32", "ExtTextOutW");
     c.call(f, &[dc, x, y, opts & 6 | 0x10, rect, glyphs, n, adv]);
     0
@@ -198,7 +228,9 @@ fn ScriptStringAnalyse(c: &mut Ctx) -> u32 {
         return E_INVALIDARG;
     }
     let text = wchars(s, n);
-    let Some(g) = gdi::font_glyphs(dc, 0, &text) else { return E_INVALIDARG };
+    let Some(g) = gdi::font_glyphs(dc, 0, &text) else {
+        return E_INVALIDARG;
+    };
     let w = gdi::font_abc(dc, 0, &g).unwrap_or_default();
     let blk = mem::heap_alloc(20 + 2 * n + 4 * n, true);
     let chars = blk + 20;
@@ -224,7 +256,11 @@ fn ScriptStringAnalyse(c: &mut Ctx) -> u32 {
 }
 fn ScriptString_pSize(c: &mut Ctx) -> u32 {
     let blk = c.a(0);
-    if blk == 0 { 0 } else { blk + 8 }
+    if blk == 0 {
+        0
+    } else {
+        blk + 8
+    }
 }
 fn ScriptStringCPtoX(c: &mut Ctx) -> u32 {
     let (blk, cp, trailing, out) = (c.a(0), c.a(1), c.a(2), c.a(3));
@@ -243,7 +279,10 @@ fn ScriptStringOut(c: &mut Ctx) -> u32 {
         return E_INVALIDARG;
     }
     let f = crate::api::export("gdi32", "ExtTextOutW");
-    c.call(f, &[r32(blk), x, y, opts & 6, rect, blk + 20, r32(blk + 4), 0]);
+    c.call(
+        f,
+        &[r32(blk), x, y, opts & 6, rect, blk + 20, r32(blk + 4), 0],
+    );
     0
 }
 fn ScriptStringFree(c: &mut Ctx) -> u32 {
@@ -265,7 +304,10 @@ pub fn init() {
         ("ScriptGetProperties", ScriptGetProperties),
         ("ScriptBreak", ScriptBreak),
         ("ScriptJustify", ScriptJustify),
-        ("ScriptRecordDigitSubstitution", ScriptRecordDigitSubstitution),
+        (
+            "ScriptRecordDigitSubstitution",
+            ScriptRecordDigitSubstitution,
+        ),
         ("ScriptApplyDigitSubstitution", ScriptApplyDigitSubstitution),
         ("ScriptTextOut", ScriptTextOut),
         ("ScriptStringAnalyse", ScriptStringAnalyse),

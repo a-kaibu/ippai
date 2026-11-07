@@ -52,7 +52,10 @@ fn access_bits(access: u32) -> u32 {
 /// this one does not share what that one has.
 fn share_conflict(host: &str, want: u32, share: u32) -> bool {
     let key = host.to_lowercase();
-    OPEN.lock().unwrap().iter().any(|o| o.1 == key && (want & !o.3 & 7 != 0 || o.2 & !share & 7 != 0))
+    OPEN.lock()
+        .unwrap()
+        .iter()
+        .any(|o| o.1 == key && (want & !o.3 & 7 != 0 || o.2 & !share & 7 != 0))
 }
 
 /// Whether some handle keeps `host` from being deleted or renamed (opened without FILE_SHARE_DELETE).
@@ -83,7 +86,12 @@ pub fn set_attrs(host: &str, a: u32) {
 }
 pub fn extra_attrs(host: &str) -> u32 {
     let key = host.to_lowercase();
-    ATTRS.lock().unwrap().iter().find(|x| x.0 == key).map_or(0, |x| x.1)
+    ATTRS
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|x| x.0 == key)
+        .map_or(0, |x| x.1)
 }
 
 pub struct Find {
@@ -112,7 +120,8 @@ pub fn set_cwd(d: &str) {
 
 fn c_root() -> String {
     static C: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    C.get_or_init(|| drive_root(std::env::var("SAKE_C").unwrap_or_else(|_| "/tmp/sake-c".into()))).clone()
+    C.get_or_init(|| drive_root(std::env::var("SAKE_C").unwrap_or_else(|_| "/tmp/sake-c".into())))
+        .clone()
 }
 
 /// The host directory of a drive, made when missing: C:\ is always there on Windows (stat,
@@ -151,14 +160,25 @@ fn full_path_trim(p: &str, trim: bool) -> String {
         } else {
             p
         }
-    } else if let Some(rest) = p.strip_prefix("\\\\?\\").or_else(|| p.strip_prefix("\\??\\")) {
+    } else if let Some(rest) = p
+        .strip_prefix("\\\\?\\")
+        .or_else(|| p.strip_prefix("\\??\\"))
+    {
         // (an NT or long path; an empty or driveless one is taken from the current directory)
-        let rest = if rest.len() >= 2 && rest.as_bytes()[1] == b':' { rest.to_string() } else { format!("{}{}", cwd(), rest) };
+        let rest = if rest.len() >= 2 && rest.as_bytes()[1] == b':' {
+            rest.to_string()
+        } else {
+            format!("{}{}", cwd(), rest)
+        };
         return full_path_trim(&rest, false);
     } else if let Some(rest) = p.strip_prefix("\\\\") {
         // UNC: \\server\share stays the root (".." does not go above it)
         let mut it = rest.splitn(3, '\\');
-        let (srv, share, tail) = (it.next().unwrap_or(""), it.next().unwrap_or(""), it.next().unwrap_or(""));
+        let (srv, share, tail) = (
+            it.next().unwrap_or(""),
+            it.next().unwrap_or(""),
+            it.next().unwrap_or(""),
+        );
         let mut parts: Vec<&str> = Vec::new();
         for c in tail.split('\\') {
             match c {
@@ -204,7 +224,12 @@ fn full_path_trim(p: &str, trim: bool) -> String {
         }
     }
     let trailing = abs.ends_with('\\') && !parts.is_empty();
-    let mut out = format!("{}{}\\{}", if kept { "\\\\?\\" } else { "" }, drive.to_ascii_uppercase(), parts.join("\\"));
+    let mut out = format!(
+        "{}{}\\{}",
+        if kept { "\\\\?\\" } else { "" },
+        drive.to_ascii_uppercase(),
+        parts.join("\\")
+    );
     if trailing {
         out.push('\\');
     }
@@ -218,7 +243,13 @@ pub fn to_host(w: &str) -> String {
     let (drive, rest) = w.split_at(2);
     let rest = rest.replace('\\', "/");
     match drive {
-        "Z:" => if rest.is_empty() { "/".into() } else { rest },
+        "Z:" => {
+            if rest.is_empty() {
+                "/".into()
+            } else {
+                rest
+            }
+        }
         "C:" => format!("{}{}", c_root(), rest),
         d => format!("{}/{}{}", c_root(), &d[..1].to_ascii_lowercase(), rest),
     }
@@ -236,13 +267,21 @@ pub fn resolve(w: &str) -> Option<String> {
     }
     let mut at = String::from("/");
     for comp in h.split('/').filter(|c| !c.is_empty()) {
-        let cand = if at == "/" { format!("/{comp}") } else { format!("{at}/{comp}") };
+        let cand = if at == "/" {
+            format!("/{comp}")
+        } else {
+            format!("{at}/{comp}")
+        };
         if exists(&cand) {
             at = cand;
             continue;
         }
         let found = kura::fs::name_nocase(&at, comp)?;
-        at = if at == "/" { format!("/{found}") } else { format!("{at}/{found}") };
+        at = if at == "/" {
+            format!("/{found}")
+        } else {
+            format!("{at}/{found}")
+        };
     }
     Some(at)
 }
@@ -271,14 +310,29 @@ pub fn open(w: &str, access: u32, disposition: u32) -> Result<File, u32> {
 }
 
 /// CreateFile with its share mode (None: no sharing checks): (handle object, whether it existed)
-pub fn open_shared(w: &str, access: u32, disposition: u32, share: Option<u32>) -> Result<(File, bool), u32> {
+pub fn open_shared(
+    w: &str,
+    access: u32,
+    disposition: u32,
+    share: Option<u32>,
+) -> Result<(File, bool), u32> {
     let write = access & 0x4000_0000 != 0 || access & 0x1000_0000 != 0 || access & 2 != 0;
     let existing = resolve(w);
     let host = existing.clone().unwrap_or_else(|| resolve_new(w));
     if let Some(h) = &existing {
         if kura::fs::metadata(h).is_ok_and(|m| m.is_dir()) {
             let f = kura::fs::File::open(h).map_err(|_| ERROR_ACCESS_DENIED)?;
-            return Ok((File { f: Mutex::new(f), path: h.clone(), dir: true, write: false, scan: Mutex::new(None), share: 0 }, true));
+            return Ok((
+                File {
+                    f: Mutex::new(f),
+                    path: h.clone(),
+                    dir: true,
+                    write: false,
+                    scan: Mutex::new(None),
+                    share: 0,
+                },
+                true,
+            ));
         }
         if share.is_some_and(|s| share_conflict(h, access_bits(access), s)) {
             return Err(32);
@@ -323,14 +377,27 @@ pub fn open_shared(w: &str, access: u32, disposition: u32, share: Option<u32>) -
         Ok(f) => {
             let id = match share {
                 Some(s) => {
-                    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+                    static NEXT: std::sync::atomic::AtomicU64 =
+                        std::sync::atomic::AtomicU64::new(1);
                     let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    OPEN.lock().unwrap().push((id, host.to_lowercase(), access_bits(access), s));
+                    OPEN.lock()
+                        .unwrap()
+                        .push((id, host.to_lowercase(), access_bits(access), s));
                     id
                 }
                 None => 0,
             };
-            Ok((File { f: Mutex::new(f), path: host, dir: false, write, scan: Mutex::new(None), share: id }, existing.is_some()))
+            Ok((
+                File {
+                    f: Mutex::new(f),
+                    path: host,
+                    dir: false,
+                    write,
+                    scan: Mutex::new(None),
+                    share: id,
+                },
+                existing.is_some(),
+            ))
         }
         Err(e) => Err(match e.kind() {
             std::io::ErrorKind::NotFound => {
@@ -424,7 +491,10 @@ pub fn wild(pat: &str, name: &str) -> bool {
             None => n.is_empty(),
             Some('*') => (0..=n.len()).any(|i| m(&p[1..], &n[i..])),
             // (DOS: '?' also matches nothing at the end of the name or before its dot)
-            Some('?') => !n.is_empty() && m(&p[1..], &n[1..]) || (n.is_empty() || n[0] == '.') && m(&p[1..], n),
+            Some('?') => {
+                !n.is_empty() && m(&p[1..], &n[1..])
+                    || (n.is_empty() || n[0] == '.') && m(&p[1..], n)
+            }
             Some(c) => n.first() == Some(c) && m(&p[1..], &n[1..]),
         }
     }
@@ -433,7 +503,10 @@ pub fn wild(pat: &str, name: &str) -> bool {
         return true;
     }
     // "name." and "*.": names without an extension
-    if let Some(base) = pat.strip_suffix('.').filter(|b| !b.is_empty() && !b.ends_with('.')) {
+    if let Some(base) = pat
+        .strip_suffix('.')
+        .filter(|b| !b.is_empty() && !b.ends_with('.'))
+    {
         return (name == "." || name == ".." || !name.contains('.')) && wild(base, name);
     }
     m(&p, &n)
@@ -457,7 +530,10 @@ pub fn find(w: &str) -> Option<Find> {
         let h = resolve(&full)?;
         let m = kura::fs::metadata(&h).ok()?;
         let name = h.rsplit('/').next().unwrap_or("").to_string();
-        return Some(Find { entries: vec![(name, m)], at: 0 });
+        return Some(Find {
+            entries: vec![(name, m)],
+            at: 0,
+        });
     }
     if let Ok(m) = kura::fs::metadata(&hd) {
         // ("." and ".." as listed entries: only where the pattern takes them, as "*", not "*.ttf")
@@ -489,7 +565,9 @@ mod tests {
 
     #[test]
     fn a_drive_root_is_made_when_missing() {
-        let h = std::env::temp_dir().join(format!("sake-drive-{}", std::process::id())).join("c");
+        let h = std::env::temp_dir()
+            .join(format!("sake-drive-{}", std::process::id()))
+            .join("c");
         let h = h.to_string_lossy().into_owned();
         let _ = std::fs::remove_dir_all(&h);
         assert_eq!(drive_root(h.clone()), h);
@@ -507,7 +585,10 @@ mod tests {
     fn attributes_made_and_set_as_windows() {
         let f = std::env::temp_dir().join(format!("sake-attrs-{}", std::process::id()));
         std::fs::write(&f, b"abc").unwrap();
-        let (h, m) = (f.to_string_lossy().into_owned(), kura::fs::metadata(&f).unwrap());
+        let (h, m) = (
+            f.to_string_lossy().into_owned(),
+            kura::fs::metadata(&f).unwrap(),
+        );
         assert_eq!(attrs_of(&h, &m), 0x20);
         // made hidden by CreateFile / CreateFile2: hidden and archive (winref files: 34)
         set_attrs(&h, 2 | 0x20);

@@ -12,8 +12,8 @@ use crate::api::{implement, Ctx};
 use crate::files::File;
 use crate::mem::{self, cstr, ps, putp, r16, r32, r8, rp, w16, w32, w8, wp, wstr};
 use crate::misc::VaArgs;
-use crt::Unit;
 use crate::text::a2s;
+use crt::Unit;
 
 macro_rules! reg {
     ($($f:ident),* $(,)?) => { $( implement("msvcrt", stringify!($f), $f); )* };
@@ -55,17 +55,29 @@ impl Args {
     }
     fn f32(&mut self, c: &Ctx) -> f32 {
         self.0 += 1;
-        f32::from_bits(if mem::x64() { c.xmm(self.0 - 1) as u32 } else { c.a(self.0 - 1) })
+        f32::from_bits(if mem::x64() {
+            c.xmm(self.0 - 1) as u32
+        } else {
+            c.a(self.0 - 1)
+        })
     }
 }
 
 /// size_t argument `i` (x64: saturated to 32 bits, so _TRUNCATE and SIZE_MAX stay the maximum)
 fn size(c: &Ctx, i: u32) -> u32 {
-    if mem::x64() { c.a64(i).min(u32::MAX as u64) as u32 } else { c.a(i) }
+    if mem::x64() {
+        c.a64(i).min(u32::MAX as u64) as u32
+    } else {
+        c.a(i)
+    }
 }
 /// A float result: x86 ST0, x64 the low single of XMM0.
 fn ret_f32(c: &mut Ctx, v: f32) -> u32 {
-    c.st0 = Some(if mem::x64() { f64::from_bits(v.to_bits() as u64) } else { v as f64 });
+    c.st0 = Some(if mem::x64() {
+        f64::from_bits(v.to_bits() as u64)
+    } else {
+        v as f64
+    });
     0
 }
 /// Whether the call went to the UCRT (ucrtbase, api-ms-win-crt-*) rather than msvcrt / msvcr*.
@@ -74,18 +86,38 @@ fn is_ucrt(c: &Ctx) -> bool {
 }
 /// The guest string at `p` (without its NUL) as units of T.
 fn gstr<T: Unit>(p: u32) -> Vec<T> {
-    if T::WIDE { wstr(p).into_iter().map(|u| T::from_code(u as u32)).collect() } else { cstr(p).into_iter().map(|b| T::from_code(b as u32)).collect() }
+    if T::WIDE {
+        wstr(p)
+            .into_iter()
+            .map(|u| T::from_code(u as u32))
+            .collect()
+    } else {
+        cstr(p)
+            .into_iter()
+            .map(|b| T::from_code(b as u32))
+            .collect()
+    }
 }
 /// At most `n` units of the guest string at `p`.
 fn gstrn<T: Unit>(p: u32, n: u32) -> Vec<T> {
     if T::WIDE {
-        mem::wstrn(p, n).into_iter().map(|u| T::from_code(u as u32)).collect()
+        mem::wstrn(p, n)
+            .into_iter()
+            .map(|u| T::from_code(u as u32))
+            .collect()
     } else {
-        mem::cstrn(p, n).into_iter().map(|b| T::from_code(b as u32)).collect()
+        mem::cstrn(p, n)
+            .into_iter()
+            .map(|b| T::from_code(b as u32))
+            .collect()
     }
 }
 fn unit<T: Unit>() -> u32 {
-    if T::WIDE { 2 } else { 1 }
+    if T::WIDE {
+        2
+    } else {
+        1
+    }
 }
 /// Writes `s` (no NUL added) at `p`.
 fn put_units<T: Unit>(p: u32, s: &[T]) {
@@ -99,7 +131,11 @@ fn put_units<T: Unit>(p: u32, s: &[T]) {
     }
 }
 fn put_nul<T: Unit>(p: u32) {
-    if T::WIDE { w16(p, 0) } else { w8(p, 0) }
+    if T::WIDE {
+        w16(p, 0)
+    } else {
+        w8(p, 0)
+    }
 }
 fn errno_of(e: i32) {
     if e != 0 {
@@ -114,9 +150,34 @@ static DATA: Mutex<Option<HashMap<String, u32>>> = Mutex::new(None);
 
 /// The address of msvcrt's data export `name`, if it is one.
 pub fn data(name: &str) -> Option<u32> {
-    const NAMES: &[&str] = &["_adjust_fdiv", "_fmode", "_commode", "__argc", "__argv", "__wargv", "_environ", "_wenviron",
-        "__initenv", "__winitenv", "_acmdln", "_wcmdln", "_osver", "_winver", "_winmajor", "_winminor", "__mb_cur_max",
-        "_pctype", "_pwctype", "_timezone", "_daylight", "_dstbias", "_tzname", "_mbctype", "_HUGE", "_iob"];
+    const NAMES: &[&str] = &[
+        "_adjust_fdiv",
+        "_fmode",
+        "_commode",
+        "__argc",
+        "__argv",
+        "__wargv",
+        "_environ",
+        "_wenviron",
+        "__initenv",
+        "__winitenv",
+        "_acmdln",
+        "_wcmdln",
+        "_osver",
+        "_winver",
+        "_winmajor",
+        "_winminor",
+        "__mb_cur_max",
+        "_pctype",
+        "_pwctype",
+        "_timezone",
+        "_daylight",
+        "_dstbias",
+        "_tzname",
+        "_mbctype",
+        "_HUGE",
+        "_iob",
+    ];
     if !NAMES.contains(&name) {
         return None;
     }
@@ -180,7 +241,13 @@ pub fn crtdll_data(name: &str) -> Option<u32> {
         "_daylight_dll" => "_daylight",
         "_basemajor_dll" | "_baseminor_dll" | "_cpumode_dll" | "_osmode_dll" => {
             static OWN: Mutex<Option<HashMap<String, u32>>> = Mutex::new(None);
-            return Some(*OWN.lock().unwrap().get_or_insert_with(HashMap::default).entry(name.into()).or_insert_with(|| var(0)));
+            return Some(
+                *OWN.lock()
+                    .unwrap()
+                    .get_or_insert_with(HashMap::default)
+                    .entry(name.into())
+                    .or_insert_with(|| var(0)),
+            );
         }
         n => n.strip_suffix("_dll").unwrap_or(n),
     };
@@ -282,7 +349,10 @@ fn wargs() -> (u32, u32) {
     if g.1 == 0 {
         let words = split_words(&mem::wstr(crate::k32::cmdline().1));
         let n = words.len() as u32;
-        let bytes = words.into_iter().map(|w| w.iter().flat_map(|c| c.to_le_bytes()).collect()).collect();
+        let bytes = words
+            .into_iter()
+            .map(|w| w.iter().flat_map(|c| c.to_le_bytes()).collect())
+            .collect();
         *g = (n, string_array(bytes, 2));
     }
     *g
@@ -337,7 +407,9 @@ fn __dllonexit(c: &mut Ctx) -> u32 {
 fn exit(c: &mut Ctx) -> u32 {
     let code = c.a(0);
     loop {
-        let Some(f) = ATEXIT.lock().unwrap().pop() else { break };
+        let Some(f) = ATEXIT.lock().unwrap().pop() else {
+            break;
+        };
         c.call(f, &[]);
     }
     unsafe { libc::exit(code as i32) }
@@ -408,15 +480,28 @@ fn __pctype_func(_: &mut Ctx) -> u32 {
 /// The CRT's control word (_MCW_EM | _MCW_RC | _MCW_PC | _MCW_IC bits) over the guest's own
 /// x87 control word and MXCSR: x86 sets and reports the x87 one (and the SSE rounding and
 /// masks with it), x64 only MXCSR (no precision control there: Windows' answer is 0x8001f).
-const EM_BITS: [(u32, u32); 6] = [(0x10, 0), (0x80000, 1), (0x8, 2), (0x4, 3), (0x2, 4), (0x1, 5)];
+const EM_BITS: [(u32, u32); 6] = [
+    (0x10, 0),
+    (0x80000, 1),
+    (0x8, 2),
+    (0x4, 3),
+    (0x2, 4),
+    (0x1, 5),
+];
 pub fn fp_control(c: &Ctx) -> u32 {
     if mem::x64() {
         let m = c.cpu.mxcsr;
-        let em = EM_BITS.iter().filter(|&&(_, b)| m >> (7 + b) & 1 != 0).fold(0, |a, &(f, _)| a | f);
+        let em = EM_BITS
+            .iter()
+            .filter(|&&(_, b)| m >> (7 + b) & 1 != 0)
+            .fold(0, |a, &(f, _)| a | f);
         return em | (m >> 13 & 3) << 8;
     }
     let cw = c.cpu.fpu.cw as u32;
-    let em = EM_BITS.iter().filter(|&&(_, b)| cw >> b & 1 != 0).fold(0, |a, &(f, _)| a | f);
+    let em = EM_BITS
+        .iter()
+        .filter(|&&(_, b)| cw >> b & 1 != 0)
+        .fold(0, |a, &(f, _)| a | f);
     let pc = match cw >> 8 & 3 {
         0 => 0x20000,
         2 => 0x10000,
@@ -426,7 +511,12 @@ pub fn fp_control(c: &Ctx) -> u32 {
 }
 pub fn set_fp_control(c: &mut Ctx, new: u32, mask: u32) -> u32 {
     let v = (fp_control(c) & !mask) | (new & mask);
-    let em = |shift: u32| EM_BITS.iter().filter(|&&(f, _)| v & f != 0).fold(0, |a, &(_, b)| a | 1 << (b + shift));
+    let em = |shift: u32| {
+        EM_BITS
+            .iter()
+            .filter(|&&(f, _)| v & f != 0)
+            .fold(0, |a, &(_, b)| a | 1 << (b + shift))
+    };
     let rc = v >> 8 & 3;
     c.cpu.mxcsr = (c.cpu.mxcsr & !(0x3f << 7 | 3 << 13)) | em(7) | rc << 13;
     if !mem::x64() {
@@ -435,7 +525,10 @@ pub fn set_fp_control(c: &mut Ctx, new: u32, mask: u32) -> u32 {
             0x10000 => 2,
             _ => 3,
         };
-        c.cpu.fpu.cw = (c.cpu.fpu.cw & 0xe0c0) as u16 | em(0) as u16 | (pc << 8 | rc << 10 | (v >> 18 & 1) << 12) as u16 | 0x40;
+        c.cpu.fpu.cw = (c.cpu.fpu.cw & 0xe0c0) as u16
+            | em(0) as u16
+            | (pc << 8 | rc << 10 | (v >> 18 & 1) << 12) as u16
+            | 0x40;
     }
     fp_control(c)
 }
@@ -452,12 +545,27 @@ fn _control87(c: &mut Ctx) -> u32 {
 /// The program reads the MXCSR flags: the JIT keeps them from now on (koji::jit::mx_read).
 fn fp_status(c: &mut Ctx) -> u32 {
     koji::jit::mx_read(0);
-    let f = (c.cpu.mxcsr & 0x3f) | if mem::x64() { 0 } else { c.cpu.fpu.sw as u32 & 0x3f };
+    let f = (c.cpu.mxcsr & 0x3f)
+        | if mem::x64() {
+            0
+        } else {
+            c.cpu.fpu.sw as u32 & 0x3f
+        };
     sw_bits(f)
 }
 /// IE ZE OE UE PE -> _SW_INVALID _SW_ZERODIVIDE _SW_OVERFLOW _SW_UNDERFLOW _SW_INEXACT, DE -> _SW_DENORMAL
 fn sw_bits(f: u32) -> u32 {
-    [(1, 0x10), (2, 0x80000), (4, 8), (8, 4), (0x10, 2), (0x20, 1)].iter().filter(|&&(b, _)| f & b != 0).fold(0, |a, &(_, s)| a | s)
+    [
+        (1, 0x10),
+        (2, 0x80000),
+        (4, 8),
+        (8, 4),
+        (0x10, 2),
+        (0x20, 1),
+    ]
+    .iter()
+    .filter(|&&(b, _)| f & b != 0)
+    .fold(0, |a, &(_, s)| a | s)
 }
 fn _statusfp(c: &mut Ctx) -> u32 {
     fp_status(c)
@@ -466,7 +574,11 @@ fn _statusfp(c: &mut Ctx) -> u32 {
 /// msvcrt's answers the x87's flags alone (Windows: 0 after SSE raised some, winref fpflags),
 /// though it clears MXCSR's too.
 fn _clearfp(c: &mut Ctx) -> u32 {
-    let s = if mem::x64() { fp_status(c) } else { sw_bits(c.cpu.fpu.sw as u32 & 0x3f) };
+    let s = if mem::x64() {
+        fp_status(c)
+    } else {
+        sw_bits(c.cpu.fpu.sw as u32 & 0x3f)
+    };
     koji::jit::mx_read(0);
     c.cpu.mxcsr &= !0x3f;
     if !mem::x64() {
@@ -571,10 +683,20 @@ fn _aligned_msize(c: &mut Ctx) -> u32 {
     r32(c.a(0) - 4)
 }
 fn _mkdir(c: &mut Ctx) -> u32 {
-    if crate::k32::mkdir(&crate::k32::arg_str(c.a(0), false)) != 0 { 0 } else { set_errno(17); u32::MAX }
+    if crate::k32::mkdir(&crate::k32::arg_str(c.a(0), false)) != 0 {
+        0
+    } else {
+        set_errno(17);
+        u32::MAX
+    }
 }
 fn _wmkdir(c: &mut Ctx) -> u32 {
-    if crate::k32::mkdir(&crate::k32::arg_str(c.a(0), true)) != 0 { 0 } else { set_errno(17); u32::MAX }
+    if crate::k32::mkdir(&crate::k32::arg_str(c.a(0), true)) != 0 {
+        0
+    } else {
+        set_errno(17);
+        u32::MAX
+    }
 }
 fn _msize(c: &mut Ctx) -> u32 {
     mem::heap_size(c.a(0))
@@ -586,7 +708,13 @@ fn _msize(c: &mut Ctx) -> u32 {
 fn memcpy(c: &mut Ctx) -> u32 {
     let (d, s, n) = (c.a(0), c.a(1), c.a(2));
     if n != 0 {
-        unsafe { std::ptr::copy(mem::slice(s, n).as_ptr(), mem::slice_mut(d, n).as_mut_ptr(), n as usize) };
+        unsafe {
+            std::ptr::copy(
+                mem::slice(s, n).as_ptr(),
+                mem::slice_mut(d, n).as_mut_ptr(),
+                n as usize,
+            )
+        };
     }
     d
 }
@@ -603,7 +731,10 @@ fn memcmp(c: &mut Ctx) -> u32 {
 }
 fn memchr(c: &mut Ctx) -> u32 {
     let (p, ch, n) = (c.a(0), c.a(1) as u8, c.a(2));
-    mem::slice(p, n).iter().position(|&b| b == ch).map_or(0, |i| p + i as u32)
+    mem::slice(p, n)
+        .iter()
+        .position(|&b| b == ch)
+        .map_or(0, |i| p + i as u32)
 }
 fn strlen(c: &mut Ctx) -> u32 {
     cstr(c.a(0)).len() as u32
@@ -685,7 +816,9 @@ fn strrchr(c: &mut Ctx) -> u32 {
 /// strspn / strcspn: the length of the prefix made of (not made of) `set`'s bytes
 fn span(c: &mut Ctx, inside: bool) -> u32 {
     let (s, set) = (cstr(c.a(0)), cstr(c.a(1)));
-    s.iter().position(|b| set.contains(b) != inside).unwrap_or(s.len()) as u32
+    s.iter()
+        .position(|b| set.contains(b) != inside)
+        .unwrap_or(s.len()) as u32
 }
 fn strspn(c: &mut Ctx) -> u32 {
     span(c, true)
@@ -695,14 +828,18 @@ fn strcspn(c: &mut Ctx) -> u32 {
 }
 fn strpbrk(c: &mut Ctx) -> u32 {
     let (s, set) = (cstr(c.a(0)), cstr(c.a(1)));
-    s.iter().position(|b| set.contains(b)).map_or(0, |i| c.a(0) + i as u32)
+    s.iter()
+        .position(|b| set.contains(b))
+        .map_or(0, |i| c.a(0) + i as u32)
 }
 fn strstr(c: &mut Ctx) -> u32 {
     let (p, n) = (cstr(c.a(0)), cstr(c.a(1)));
     if n.is_empty() {
         return c.a(0);
     }
-    p.windows(n.len()).position(|w| w == n.as_slice()).map_or(0, |i| c.a(0) + i as u32)
+    p.windows(n.len())
+        .position(|w| w == n.as_slice())
+        .map_or(0, |i| c.a(0) + i as u32)
 }
 fn _strdup(c: &mut Ctx) -> u32 {
     if c.a(0) == 0 {
@@ -739,7 +876,11 @@ fn wcs_map(c: &mut Ctx, f: fn(char) -> char) -> u32 {
     for (i, &u) in s.iter().enumerate() {
         let m = char::from_u32(u as u32).map_or(u, |ch| {
             let m = f(ch) as u32;
-            if m < 0x10000 { m as u16 } else { u }
+            if m < 0x10000 {
+                m as u16
+            } else {
+                u
+            }
         });
         w16(c.a(0) + 2 * i as u32, m);
     }
@@ -755,7 +896,10 @@ fn _wcsupr(c: &mut Ctx) -> u32 {
 fn tok(w: u32, s: u32, delim: u32, ctx: u32) -> u32 {
     let rd = |a: u32| if w == 2 { r16(a) as u32 } else { r8(a) as u32 };
     let wr = |a: u32| if w == 2 { w16(a, 0) } else { w8(a, 0) };
-    let ds: Vec<u32> = (0..).map(|i| rd(delim + w * i)).take_while(|&ch| ch != 0).collect();
+    let ds: Vec<u32> = (0..)
+        .map(|i| rd(delim + w * i))
+        .take_while(|&ch| ch != 0)
+        .collect();
     let mut p = if s != 0 { s } else { rp(ctx) };
     if p == 0 {
         return 0;
@@ -810,7 +954,9 @@ fn wcschr(c: &mut Ctx) -> u32 {
     if ch == 0 {
         return p + 2 * s.len() as u32;
     }
-    s.iter().position(|&u| u == ch).map_or(0, |i| p + 2 * i as u32)
+    s.iter()
+        .position(|&u| u == ch)
+        .map_or(0, |i| p + 2 * i as u32)
 }
 fn wcsrchr(c: &mut Ctx) -> u32 {
     let (p, ch) = (c.a(0), c.a(1) as u16);
@@ -818,7 +964,9 @@ fn wcsrchr(c: &mut Ctx) -> u32 {
     if ch == 0 {
         return p + 2 * s.len() as u32;
     }
-    s.iter().rposition(|&u| u == ch).map_or(0, |i| p + 2 * i as u32)
+    s.iter()
+        .rposition(|&u| u == ch)
+        .map_or(0, |i| p + 2 * i as u32)
 }
 fn wput(dst: u32, s: &[u16]) {
     for (i, &u) in s.iter().chain([0u16].iter()).enumerate() {
@@ -849,7 +997,9 @@ fn wcsstr(c: &mut Ctx) -> u32 {
     if n.is_empty() {
         return c.a(0);
     }
-    h.windows(n.len()).position(|w| w == n.as_slice()).map_or(0, |i| c.a(0) + 2 * i as u32)
+    h.windows(n.len())
+        .position(|w| w == n.as_slice())
+        .map_or(0, |i| c.a(0) + 2 * i as u32)
 }
 fn wcsspn(c: &mut Ctx) -> u32 {
     let set = wstr(c.a(1));
@@ -861,15 +1011,22 @@ fn wcscspn(c: &mut Ctx) -> u32 {
 }
 fn wcspbrk(c: &mut Ctx) -> u32 {
     let set = wstr(c.a(1));
-    wstr(c.a(0)).iter().position(|u| set.contains(u)).map_or(0, |i| c.a(0) + 2 * i as u32)
+    wstr(c.a(0))
+        .iter()
+        .position(|u| set.contains(u))
+        .map_or(0, |i| c.a(0) + 2 * i as u32)
 }
 fn towlower(c: &mut Ctx) -> u32 {
     let u = c.a(0) & 0xffff;
-    char::from_u32(u).and_then(|ch| ch.to_lowercase().next()).map_or(u, |l| if (l as u32) < 0x10000 { l as u32 } else { u })
+    char::from_u32(u)
+        .and_then(|ch| ch.to_lowercase().next())
+        .map_or(u, |l| if (l as u32) < 0x10000 { l as u32 } else { u })
 }
 fn towupper(c: &mut Ctx) -> u32 {
     let u = c.a(0) & 0xffff;
-    char::from_u32(u).and_then(|ch| ch.to_uppercase().next()).map_or(u, |l| if (l as u32) < 0x10000 { l as u32 } else { u })
+    char::from_u32(u)
+        .and_then(|ch| ch.to_uppercase().next())
+        .map_or(u, |l| if (l as u32) < 0x10000 { l as u32 } else { u })
 }
 fn iswspace(c: &mut Ctx) -> u32 {
     char::from_u32(c.a(0) & 0xffff).is_some_and(|ch| ch.is_whitespace()) as u32
@@ -899,7 +1056,11 @@ fn strto_int<T: Unit>(c: &mut Ctx, signed: bool, bits: u32) -> u32 {
     };
     putp(end, s + unit::<T>() * used as u32);
     errno_of(e);
-    if bits == 64 { c.ret64(v) } else { v as u32 }
+    if bits == 64 {
+        c.ret64(v)
+    } else {
+        v as u32
+    }
 }
 macro_rules! strto_ints {
     ($($name:ident = $t:ty, $signed:expr, $bits:expr;)*) => { $( fn $name(c: &mut Ctx) -> u32 { strto_int::<$t>(c, $signed, $bits) } )* };
@@ -916,7 +1077,11 @@ fn ato_int<T: Unit>(c: &mut Ctx, bits: u32) -> u32 {
     }
     let (v, _, e) = crt::num::atoi(&gstr::<T>(c.a(0)), bits);
     errno_of(e);
-    if bits == 64 { c.ret64(v as u64) } else { v as u32 }
+    if bits == 64 {
+        c.ret64(v as u64)
+    } else {
+        v as u32
+    }
 }
 fn _atoi64(c: &mut Ctx) -> u32 {
     ato_int::<u8>(c, 64)
@@ -957,7 +1122,15 @@ fn _wtof(c: &mut Ctx) -> u32 {
     strto_float::<u16>(c, crt::num::Float::F64, false)
 }
 fn wlower(s: Vec<u16>) -> Vec<u16> {
-    s.into_iter().map(|u| if (b'A' as u16..=b'Z' as u16).contains(&u) { u + 32 } else { u }).collect()
+    s.into_iter()
+        .map(|u| {
+            if (b'A' as u16..=b'Z' as u16).contains(&u) {
+                u + 32
+            } else {
+                u
+            }
+        })
+        .collect()
 }
 fn _wcsicmp(c: &mut Ctx) -> u32 {
     wlower(wstr(c.a(0))).cmp(&wlower(wstr(c.a(1)))) as i32 as u32
@@ -972,11 +1145,19 @@ fn wcscmp(c: &mut Ctx) -> u32 {
 }
 fn toupper(c: &mut Ctx) -> u32 {
     let v = c.a(0);
-    if (b'a' as u32..=b'z' as u32).contains(&v) { v - 32 } else { v }
+    if (b'a' as u32..=b'z' as u32).contains(&v) {
+        v - 32
+    } else {
+        v
+    }
 }
 fn tolower(c: &mut Ctx) -> u32 {
     let v = c.a(0);
-    if (b'A' as u32..=b'Z' as u32).contains(&v) { v + 32 } else { v }
+    if (b'A' as u32..=b'Z' as u32).contains(&v) {
+        v + 32
+    } else {
+        v
+    }
 }
 fn ctype(c: &mut Ctx, mask: u16) -> u32 {
     let v = c.a(0);
@@ -1032,7 +1213,13 @@ fn strtod(c: &mut Ctx) -> u32 {
 /// (a radix outside 2..36: an empty string and EINVAL)
 fn xtoa<T: Unit>(c: &mut Ctx, signed: bool, bits: u32) -> u32 {
     let mut a = Args(0);
-    let v = if bits == 64 { a.u64(c) as i64 } else if signed { a.p(c) as i32 as i64 } else { a.p(c) as i64 };
+    let v = if bits == 64 {
+        a.u64(c) as i64
+    } else if signed {
+        a.p(c) as i32 as i64
+    } else {
+        a.p(c) as i64
+    };
     let (buf, radix) = (a.p(c), a.p(c));
     if buf == 0 {
         set_errno(22);
@@ -1043,7 +1230,10 @@ fn xtoa<T: Unit>(c: &mut Ctx, signed: bool, bits: u32) -> u32 {
         set_errno(22);
         return buf;
     }
-    let d: Vec<T> = crt::num::to_radix(v, bits, signed, radix).into_iter().map(T::from_ascii).collect();
+    let d: Vec<T> = crt::num::to_radix(v, bits, signed, radix)
+        .into_iter()
+        .map(T::from_ascii)
+        .collect();
     put_units(buf, &d);
     put_nul::<T>(buf + unit::<T>() * d.len() as u32);
     buf
@@ -1051,11 +1241,21 @@ fn xtoa<T: Unit>(c: &mut Ctx, signed: bool, bits: u32) -> u32 {
 /// the _s forms (value, buf, size in units, radix): 0 or the error (crt::num::xtoa_s)
 fn xtoa_s<T: Unit>(c: &mut Ctx, signed: bool, bits: u32) -> u32 {
     let mut a = Args(0);
-    let v = if bits == 64 { a.u64(c) as i64 } else if signed { a.p(c) as i32 as i64 } else { a.p(c) as i64 };
+    let v = if bits == 64 {
+        a.u64(c) as i64
+    } else if signed {
+        a.p(c) as i32 as i64
+    } else {
+        a.p(c) as i64
+    };
     let (buf, n, radix) = (a.p(c), a.size(c), a.p(c));
     // (no result is longer than 66 units: a view that big decides it alike)
     let n = n.min(80);
-    let mut v_buf: Vec<T> = if buf == 0 { Vec::new() } else { gstrn_raw::<T>(buf, n) };
+    let mut v_buf: Vec<T> = if buf == 0 {
+        Vec::new()
+    } else {
+        gstrn_raw::<T>(buf, n)
+    };
     let e = crt::num::xtoa_s(v, bits, signed, (buf != 0).then_some(&mut v_buf[..]), radix);
     if buf != 0 {
         put_units(buf, &v_buf);
@@ -1065,7 +1265,15 @@ fn xtoa_s<T: Unit>(c: &mut Ctx, signed: bool, bits: u32) -> u32 {
 }
 /// The `n` units at `p` as they are (NULs included).
 fn gstrn_raw<T: Unit>(p: u32, n: u32) -> Vec<T> {
-    (0..n).map(|i| T::from_code(if T::WIDE { r16(p + 2 * i) as u32 } else { r8(p + i) as u32 })).collect()
+    (0..n)
+        .map(|i| {
+            T::from_code(if T::WIDE {
+                r16(p + 2 * i) as u32
+            } else {
+                r8(p + i) as u32
+            })
+        })
+        .collect()
 }
 macro_rules! xtoas {
     ($($name:ident, $name_s:ident = $t:ty, $signed:expr, $bits:expr;)*) => { $(
@@ -1120,50 +1328,80 @@ fn qsort(c: &mut Ctx) -> u32 {
             }
         } else {
             let mut mid = lo + (size / 2) * w;
-            if cmp(c, lo, mid) > 0 { swap(lo, mid); }
-            if cmp(c, lo, hi) > 0 { swap(lo, hi); }
-            if cmp(c, mid, hi) > 0 { swap(mid, hi); }
+            if cmp(c, lo, mid) > 0 {
+                swap(lo, mid);
+            }
+            if cmp(c, lo, hi) > 0 {
+                swap(lo, hi);
+            }
+            if cmp(c, mid, hi) > 0 {
+                swap(mid, hi);
+            }
             let (mut loguy, mut higuy) = (lo, hi);
             loop {
                 if mid > loguy {
                     loop {
                         loguy += w;
-                        if !(loguy < mid && cmp(c, loguy, mid) <= 0) { break; }
+                        if !(loguy < mid && cmp(c, loguy, mid) <= 0) {
+                            break;
+                        }
                     }
                 }
                 if mid <= loguy {
                     loop {
                         loguy += w;
-                        if !(loguy <= hi && cmp(c, loguy, mid) <= 0) { break; }
+                        if !(loguy <= hi && cmp(c, loguy, mid) <= 0) {
+                            break;
+                        }
                     }
                 }
                 loop {
                     higuy -= w;
-                    if !(higuy > mid && cmp(c, higuy, mid) > 0) { break; }
+                    if !(higuy > mid && cmp(c, higuy, mid) > 0) {
+                        break;
+                    }
                 }
-                if higuy < loguy { break; }
+                if higuy < loguy {
+                    break;
+                }
                 swap(loguy, higuy);
-                if mid == higuy { mid = loguy; }
+                if mid == higuy {
+                    mid = loguy;
+                }
             }
             higuy += w;
             if mid < higuy {
                 loop {
                     higuy -= w;
-                    if !(higuy > mid && cmp(c, higuy, mid) == 0) { break; }
+                    if !(higuy > mid && cmp(c, higuy, mid) == 0) {
+                        break;
+                    }
                 }
             }
             if mid >= higuy {
                 loop {
                     higuy -= w;
-                    if !(higuy > lo && cmp(c, higuy, mid) == 0) { break; }
+                    if !(higuy > lo && cmp(c, higuy, mid) == 0) {
+                        break;
+                    }
                 }
             }
             if higuy.wrapping_sub(lo) as i32 >= hi.wrapping_sub(loguy) as i32 {
-                if lo < higuy { stack.push((lo, higuy)); }
-                if loguy < hi { lo = loguy; continue; }
+                if lo < higuy {
+                    stack.push((lo, higuy));
+                }
+                if loguy < hi {
+                    lo = loguy;
+                    continue;
+                }
             } else {
-                if loguy < hi { stack.push((loguy, hi)); }
-                if lo < higuy { hi = higuy; continue; }
+                if loguy < hi {
+                    stack.push((loguy, hi));
+                }
+                if lo < higuy {
+                    hi = higuy;
+                    continue;
+                }
             }
         }
         match stack.pop() {
@@ -1194,7 +1432,11 @@ fn bsearch(c: &mut Ctx) -> u32 {
                 num = half;
             }
         } else if num != 0 {
-            return if c.call(f, &[key, lo as u32]) != 0 { 0 } else { lo as u32 };
+            return if c.call(f, &[key, lo as u32]) != 0 {
+                0
+            } else {
+                lo as u32
+            };
         } else {
             break;
         }
@@ -1214,7 +1456,9 @@ fn rand(_: &mut Ctx) -> u32 {
 }
 /// time / _time32 (x86 msvcrt's time_t) and _time64 (x64's time)
 fn now() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
 }
 fn _time32(c: &mut Ctx) -> u32 {
     let t = now() as u32;
@@ -1222,7 +1466,11 @@ fn _time32(c: &mut Ctx) -> u32 {
     t
 }
 fn time(c: &mut Ctx) -> u32 {
-    if mem::x64() { _time64(c) } else { _time32(c) }
+    if mem::x64() {
+        _time64(c)
+    } else {
+        _time32(c)
+    }
 }
 fn _time64(c: &mut Ctx) -> u32 {
     let t = now() as u64;
@@ -1235,16 +1483,31 @@ fn _time64(c: &mut Ctx) -> u32 {
 /// _splitpath(_s) / _wsplitpath(_s): path -> drive, dir, fname, ext (each pointer may be 0;
 /// the _s forms give each one's size after it)
 fn splitpath(c: &mut Ctx, wide: bool, sized: bool) -> u32 {
-    let path: Vec<u16> = if wide { wstr(c.a(0)) } else { crate::text::a2w(&cstr(c.a(0))) };
+    let path: Vec<u16> = if wide {
+        wstr(c.a(0))
+    } else {
+        crate::text::a2w(&cstr(c.a(0)))
+    };
     let is_sep = |ch: u16| ch == b'\\' as u16 || ch == b'/' as u16;
-    let drive = if path.len() >= 2 && path[1] == b':' as u16 { 2 } else { 0 };
+    let drive = if path.len() >= 2 && path[1] == b':' as u16 {
+        2
+    } else {
+        0
+    };
     let rest = &path[drive..];
     let dir_end = rest.iter().rposition(|&ch| is_sep(ch)).map_or(0, |i| i + 1);
     let name = &rest[dir_end..];
-    let dot = name.iter().rposition(|&ch| ch == b'.' as u16).unwrap_or(name.len());
+    let dot = name
+        .iter()
+        .rposition(|&ch| ch == b'.' as u16)
+        .unwrap_or(name.len());
     let parts: [&[u16]; 4] = [&path[..drive], &rest[..dir_end], &name[..dot], &name[dot..]];
     for (k, part) in parts.iter().enumerate() {
-        let (ptr, cap) = if sized { (c.a(1 + 2 * k as u32), c.a(2 + 2 * k as u32)) } else { (c.a(1 + k as u32), 260) };
+        let (ptr, cap) = if sized {
+            (c.a(1 + 2 * k as u32), c.a(2 + 2 * k as u32))
+        } else {
+            (c.a(1 + k as u32), 260)
+        };
         if ptr == 0 {
             continue;
         }
@@ -1340,7 +1603,11 @@ fn put_count<T: Unit>(out: u32, count: u32, s: Option<Vec<T>>) -> u32 {
     if s.len() < count as usize {
         put_nul::<T>(out + unit::<T>() * n as u32);
     }
-    if s.len() <= count as usize { s.len() as u32 } else { u32::MAX }
+    if s.len() <= count as usize {
+        s.len() as u32
+    } else {
+        u32::MAX
+    }
 }
 /// the secure forms (buf, size[, count]): sprintf_s / swprintf_s without a count; _snprintf_s
 /// with one, _TRUNCATE (-1) writing what fits. What does not fit: an empty buffer, ERANGE, -1
@@ -1372,7 +1639,11 @@ fn put_s<T: Unit>(out: u32, size: u32, count: Option<u32>, s: Option<Vec<T>>) ->
     }
     put_units(out, &s[..want]);
     put_nul::<T>(out + unit::<T>() * want as u32);
-    if want < s.len() { u32::MAX } else { want as u32 }
+    if want < s.len() {
+        u32::MAX
+    } else {
+        want as u32
+    }
 }
 fn sprintf(c: &mut Ctx) -> u32 {
     let s = legacy::<u8>(c.a(1), &mut VaArgs::arg(c, 2));
@@ -1460,36 +1731,115 @@ fn _scwprintf(c: &mut Ctx) -> u32 {
 // The _printf_p family (msvcr80+, msvcrt): printf with `%n$` positions (crt::fmt::format_p).
 // The _l forms take a locale after the format, which changes nothing here.
 fn legacy_p<T: Unit>(fmt: u32, va: &mut VaArgs) -> Option<Vec<T>> {
-    pf(fmt, va, crt::fmt::Mode { positional: true, ..crate::misc::legacy_mode() })
+    pf(
+        fmt,
+        va,
+        crt::fmt::Mode {
+            positional: true,
+            ..crate::misc::legacy_mode()
+        },
+    )
 }
 /// The variable arguments of a _p call: after argument `at` (`...`), or the va_list there
 fn p_args(c: &Ctx, at: u32, list: bool) -> VaArgs {
-    if list { VaArgs::stack(c.a(at)) } else { VaArgs::arg(c, at) }
+    if list {
+        VaArgs::stack(c.a(at))
+    } else {
+        VaArgs::arg(c, at)
+    }
 }
-/// _sprintf_p(buf, size, fmt, ...) and its v / _l / wide forms: as sprintf_s, what does not fit
-/// leaves an empty string, ERANGE and -1
+/// _sprintf_p(buf, size, fmt, ...) and its v / _l / wide forms: -1 leaving the buffer as it was
+/// for an invalid format or what does not fit (Windows' msvcrt, winref crt_printfp)
 fn sprintf_p<T: Unit>(c: &mut Ctx, locale: bool, list: bool) -> u32 {
+    let (out, n) = (c.a(0), size(c, 1));
     let s = legacy_p::<T>(c.a(2), &mut p_args(c, 3 + locale as u32, list));
-    put_s(c.a(0), size(c, 1), None, s)
+    match s {
+        Some(s) if out != 0 && s.len() >= n as usize => {
+            set_errno(34);
+            u32::MAX
+        }
+        None if out != 0 && n != 0 => u32::MAX,
+        s => put_s(out, n, None, s),
+    }
+}
+/// Whether a format's first conversion has a position ("%1$d", "%*1$d"; "%%" is none)
+fn first_positional<T: Unit>(fmt: u32) -> bool {
+    positional_first(
+        &gstr::<T>(fmt)
+            .iter()
+            .map(|u| u.code())
+            .collect::<Vec<u32>>(),
+    )
+}
+fn positional_first(f: &[u32]) -> bool {
+    let mut i = 0;
+    while i < f.len() {
+        if f[i] == b'%' as u32 {
+            if f.get(i + 1) == Some(&(b'%' as u32)) {
+                i += 2;
+                continue;
+            }
+            // (a "$" before its letters)
+            return f[i + 1..]
+                .iter()
+                .take_while(|&&u| !(u < 128 && (u as u8).is_ascii_alphabetic()))
+                .any(|&u| u == b'$' as u32);
+        }
+        i += 1;
+    }
+    false
+}
+#[cfg(test)]
+mod positional_first_tests {
+    /// The formats of winref crt_printfp whose UCRT failure empties the buffer (first conversion
+    /// positional) or leaves it (not), as Windows answered.
+    #[test]
+    fn as_windows_answered() {
+        let p = |s: &str| super::positional_first(&s.bytes().map(|b| b as u32).collect::<Vec<_>>());
+        for f in [
+            "%1$d %d",
+            "%1$d %3$d",
+            "%0$d",
+            "%1$d %1$f",
+            "%2$*d",
+            "%*1$d",
+            "100%% %1$d",
+            "%1$s",
+        ] {
+            assert!(p(f), "{f}");
+        }
+        for f in ["%d %1$d", "%d %s", "plain", "100%%", "%-5d $1", "%ld$"] {
+            assert!(!p(f), "{f}");
+        }
+    }
 }
 /// _scprintf_p(fmt, ...): the length
 fn scprintf_p<T: Unit>(c: &mut Ctx, locale: bool, list: bool) -> u32 {
-    legacy_p::<T>(c.a(0), &mut p_args(c, 1 + locale as u32, list)).map_or(u32::MAX, |s| s.len() as u32)
+    legacy_p::<T>(c.a(0), &mut p_args(c, 1 + locale as u32, list))
+        .map_or(u32::MAX, |s| s.len() as u32)
 }
 /// _fprintf_p(stream, fmt, ...): wide output goes out in the ANSI code page
 fn fprintf_p<T: Unit>(c: &mut Ctx, locale: bool, list: bool) -> u32 {
-    let Some(s) = legacy_p::<T>(c.a(1), &mut p_args(c, 2 + locale as u32, list)) else { return u32::MAX };
+    let Some(s) = legacy_p::<T>(c.a(1), &mut p_args(c, 2 + locale as u32, list)) else {
+        return u32::MAX;
+    };
     write_stream(c.a(0), &units_to_ansi(&s));
     s.len() as u32
 }
 /// _printf_p(fmt, ...): the console
 fn printf_p<T: Unit>(c: &mut Ctx, locale: bool, list: bool) -> u32 {
-    let Some(s) = legacy_p::<T>(c.a(0), &mut p_args(c, 1 + locale as u32, list)) else { return u32::MAX };
+    let Some(s) = legacy_p::<T>(c.a(0), &mut p_args(c, 1 + locale as u32, list)) else {
+        return u32::MAX;
+    };
     eprint!("{}", a2s(&units_to_ansi(&s)));
     s.len() as u32
 }
 fn units_to_ansi<T: Unit>(s: &[T]) -> Vec<u8> {
-    if T::WIDE { crate::text::w2a(&s.iter().map(|u| u.code() as u16).collect::<Vec<u16>>()) } else { s.iter().map(|u| u.code() as u8).collect() }
+    if T::WIDE {
+        crate::text::w2a(&s.iter().map(|u| u.code() as u16).collect::<Vec<u16>>())
+    } else {
+        s.iter().map(|u| u.code() as u8).collect()
+    }
 }
 fn p_init() {
     type H = crate::api::Handler;
@@ -1527,23 +1877,42 @@ fn p_init() {
         ("_vwprintf_p", |c| printf_p::<u16>(c, false, true)),
         ("_vwprintf_p_l", |c| printf_p::<u16>(c, true, true)),
     ];
+    // (msvcrt.dll has some, msvcr80 and later all: _sprintf_p is not msvcrt's, winref crt_printfp)
     for (n, f) in list {
-        implement("msvcrt", n, f);
+        if crate::api::exports("msvcrt", n) {
+            implement("msvcrt", n, f);
+        } else {
+            for d in ["msvcr80", "msvcr90", "msvcr100", "msvcr110", "msvcr120"] {
+                implement(d, n, f);
+            }
+        }
     }
     // the UCRT's: (options, buffer, size, format, locale, va_list) and (options, FILE*, ...)
-    implement("ucrtbase", "__stdio_common_vsprintf_p", |c| ucrt_pf_p::<u8>(c));
-    implement("ucrtbase", "__stdio_common_vswprintf_p", |c| ucrt_pf_p::<u16>(c));
-    implement("ucrtbase", "__stdio_common_vfprintf_p", |c| ucrt_fpf_p::<u8>(c));
-    implement("ucrtbase", "__stdio_common_vfwprintf_p", |c| ucrt_fpf_p::<u16>(c));
+    implement("ucrtbase", "__stdio_common_vsprintf_p", |c| {
+        ucrt_pf_p::<u8>(c)
+    });
+    implement("ucrtbase", "__stdio_common_vswprintf_p", |c| {
+        ucrt_pf_p::<u16>(c)
+    });
+    implement("ucrtbase", "__stdio_common_vfprintf_p", |c| {
+        ucrt_fpf_p::<u8>(c)
+    });
+    implement("ucrtbase", "__stdio_common_vfwprintf_p", |c| {
+        ucrt_fpf_p::<u16>(c)
+    });
 }
 
 fn printf(c: &mut Ctx) -> u32 {
-    let Some(s) = legacy::<u8>(c.a(0), &mut VaArgs::arg(c, 1)) else { return u32::MAX };
+    let Some(s) = legacy::<u8>(c.a(0), &mut VaArgs::arg(c, 1)) else {
+        return u32::MAX;
+    };
     eprint!("{}", a2s(&s));
     s.len() as u32
 }
 fn vprintf(c: &mut Ctx) -> u32 {
-    let Some(s) = legacy::<u8>(c.a(0), &mut VaArgs::stack(c.a(1))) else { return u32::MAX };
+    let Some(s) = legacy::<u8>(c.a(0), &mut VaArgs::stack(c.a(1))) else {
+        return u32::MAX;
+    };
     eprint!("{}", a2s(&s));
     s.len() as u32
 }
@@ -1562,7 +1931,11 @@ impl crt::scan::Sink for GuestSink {
         mem::write(p as u32, &v.to_le_bytes()[..bytes.min(8) as usize]);
     }
     fn float(&mut self, p: u64, bytes: u32, v: f64) {
-        if bytes == 4 { mem::write(p as u32, &(v as f32).to_le_bytes()) } else { mem::write(p as u32, &v.to_le_bytes()) }
+        if bytes == 4 {
+            mem::write(p as u32, &(v as f32).to_le_bytes())
+        } else {
+            mem::write(p as u32, &v.to_le_bytes())
+        }
     }
     fn narrow(&mut self, p: u64, s: &[u8]) {
         mem::write(p as u32, s);
@@ -1578,7 +1951,12 @@ impl crt::scan::Sink for GuestSink {
     }
 }
 fn scan_mode(secure: bool) -> crt::scan::Mode {
-    crt::scan::Mode { ptr64: mem::x64(), secure, legacy: true, legacy_wide: true }
+    crt::scan::Mode {
+        ptr64: mem::x64(),
+        secure,
+        legacy: true,
+        legacy_wide: true,
+    }
 }
 /// sscanf / swscanf and the _s forms (input, fmt, ...); vsscanf (input, fmt, va)
 fn scanf<T: Unit>(input: u32, fmt: u32, va: VaArgs, m: crt::scan::Mode) -> u32 {
@@ -1630,8 +2008,21 @@ fn math_errno(args: &[f64], r: f64) {
 macro_rules! math1e {
     ($($name:ident = $f:expr),* $(,)?) => { $( fn $name(c: &mut Ctx) -> u32 { let x = c.f64(0); let r = $f(x); math_errno(&[x], r); ret(c, r) } )* };
 }
-math1e!(sqrt = f64::sqrt, sin = f64::sin, cos = f64::cos, tan = f64::tan, asin = f64::asin, acos = f64::acos,
-    atan = f64::atan, exp = f64::exp, log = f64::ln, log10 = f64::log10, sinh = f64::sinh, cosh = f64::cosh, tanh = f64::tanh);
+math1e!(
+    sqrt = f64::sqrt,
+    sin = f64::sin,
+    cos = f64::cos,
+    tan = f64::tan,
+    asin = f64::asin,
+    acos = f64::acos,
+    atan = f64::atan,
+    exp = f64::exp,
+    log = f64::ln,
+    log10 = f64::log10,
+    sinh = f64::sinh,
+    cosh = f64::cosh,
+    tanh = f64::tanh
+);
 fn pow(c: &mut Ctx) -> u32 {
     let mut a = Args(0);
     let (x, y) = (a.f64(c), a.f64(c));
@@ -1687,7 +2078,11 @@ fn frexp_of(x: f64) -> (f64, i32) {
     if x == 0.0 || !x.is_finite() {
         return (x, 0);
     }
-    let (x, bias) = if x.is_normal() { (x, 0) } else { (x * 2f64.powi(64), -64) };
+    let (x, bias) = if x.is_normal() {
+        (x, 0)
+    } else {
+        (x * 2f64.powi(64), -64)
+    };
     let b = x.to_bits();
     let e = ((b >> 52) & 0x7ff) as i32 - 1022;
     (f64::from_bits(b & !(0x7ff << 52) | 1022 << 52), e + bias)
@@ -1698,43 +2093,106 @@ fn modf(c: &mut Ctx) -> u32 {
     let i = x.trunc();
     mem::write(p, &i.to_le_bytes());
     // (infinities: a fraction of +-0; NaN: NaN)
-    ret(c, if x.is_infinite() { 0f64.copysign(x) } else { (x - i).copysign(x) })
+    ret(
+        c,
+        if x.is_infinite() {
+            0f64.copysign(x)
+        } else {
+            (x - i).copysign(x)
+        },
+    )
 }
 fn modff(c: &mut Ctx) -> u32 {
     let mut a = Args(0);
     let (x, p) = (a.f32(c), a.p(c));
     let i = x.trunc();
     mem::write(p, &i.to_le_bytes());
-    ret_f32(c, if x.is_infinite() { 0f32.copysign(x) } else { (x - i).copysign(x) })
+    ret_f32(
+        c,
+        if x.is_infinite() {
+            0f32.copysign(x)
+        } else {
+            (x - i).copysign(x)
+        },
+    )
 }
 // the float forms (x64's ucrtbase exports them; x86 code mostly widens to double)
 macro_rules! mathf1 {
     ($($name:ident = $f:expr),* $(,)?) => { $( fn $name(c: &mut Ctx) -> u32 { let x = Args(0).f32(c); ret_f32(c, $f(x)) } )* };
 }
-mathf1!(floorf = f32::floor, ceilf = f32::ceil, sqrtf = f32::sqrt, sinf = f32::sin, cosf = f32::cos, tanf = f32::tan,
-    asinf = f32::asin, acosf = f32::acos, atanf = f32::atan, expf = f32::exp, logf = f32::ln, log10f = f32::log10,
-    fabsf = f32::abs, sinhf = f32::sinh, coshf = f32::cosh, tanhf = f32::tanh, log2f = f32::log2, exp2f = f32::exp2,
-    roundf = f32::round, truncf = f32::trunc, cbrtf = f32::cbrt);
+mathf1!(
+    floorf = f32::floor,
+    ceilf = f32::ceil,
+    sqrtf = f32::sqrt,
+    sinf = f32::sin,
+    cosf = f32::cos,
+    tanf = f32::tan,
+    asinf = f32::asin,
+    acosf = f32::acos,
+    atanf = f32::atan,
+    expf = f32::exp,
+    logf = f32::ln,
+    log10f = f32::log10,
+    fabsf = f32::abs,
+    sinhf = f32::sinh,
+    coshf = f32::cosh,
+    tanhf = f32::tanh,
+    log2f = f32::log2,
+    exp2f = f32::exp2,
+    roundf = f32::round,
+    truncf = f32::trunc,
+    cbrtf = f32::cbrt
+);
 macro_rules! mathf2 {
     ($($name:ident = $f:expr),* $(,)?) => { $( fn $name(c: &mut Ctx) -> u32 { let mut a = Args(0); let (x, y) = (a.f32(c), a.f32(c)); ret_f32(c, $f(x, y)) } )* };
 }
-mathf2!(powf = f32::powf, atan2f = f32::atan2, fmodf = |x: f32, y: f32| x % y, hypotf = f32::hypot,
-    fmaxf = f32::max, fminf = f32::min, copysignf = f32::copysign);
+mathf2!(
+    powf = f32::powf,
+    atan2f = f32::atan2,
+    fmodf = |x: f32, y: f32| x % y,
+    hypotf = f32::hypot,
+    fmaxf = f32::max,
+    fminf = f32::min,
+    copysignf = f32::copysign
+);
 // C99 doubles
-math1!(round = f64::round, trunc = f64::trunc, log2 = f64::log2, exp2 = f64::exp2, cbrt = f64::cbrt,
-    log1p = f64::ln_1p, expm1 = f64::exp_m1, asinh = f64::asinh, acosh = f64::acosh, atanh = f64::atanh);
+math1!(
+    round = f64::round,
+    trunc = f64::trunc,
+    log2 = f64::log2,
+    exp2 = f64::exp2,
+    cbrt = f64::cbrt,
+    log1p = f64::ln_1p,
+    expm1 = f64::exp_m1,
+    asinh = f64::asinh,
+    acosh = f64::acosh,
+    atanh = f64::atanh
+);
 macro_rules! math2 {
     ($($name:ident = $f:expr),* $(,)?) => { $( fn $name(c: &mut Ctx) -> u32 { let mut a = Args(0); let (x, y) = (a.f64(c), a.f64(c)); ret(c, $f(x, y)) } )* };
 }
-math2!(hypot = f64::hypot, fmax = f64::max, fmin = f64::min, copysign = f64::copysign);
+math2!(
+    hypot = f64::hypot,
+    fmax = f64::max,
+    fmin = f64::min,
+    copysign = f64::copysign
+);
 /// lround / lrint-likes: the long result (out of range: LONG_MIN, as the UCRT's)
 fn lround(c: &mut Ctx) -> u32 {
     let x = Args(0).f64(c).round();
-    if x >= -2147483648.0 && x < 2147483648.0 { x as i32 as u32 } else { 0x8000_0000 }
+    if x >= -2147483648.0 && x < 2147483648.0 {
+        x as i32 as u32
+    } else {
+        0x8000_0000
+    }
 }
 fn llround(c: &mut Ctx) -> u32 {
     let x = Args(0).f64(c).round();
-    let v = if x >= -9.223372036854776e18 && x < 9.223372036854776e18 { x as i64 } else { i64::MIN };
+    let v = if x >= -9.223372036854776e18 && x < 9.223372036854776e18 {
+        x as i64
+    } else {
+        i64::MIN
+    };
     c.ret64(v as u64)
 }
 
@@ -1746,9 +2204,21 @@ fn st_pop(c: &mut Ctx) -> f64 {
 macro_rules! ci1 {
     ($($name:ident = $f:expr),* $(,)?) => { $( fn $name(c: &mut Ctx) -> u32 { let x = st_pop(c); ret(c, $f(x)) } )* };
 }
-ci1!(_CIsqrt = f64::sqrt, _CIsin = f64::sin, _CIcos = f64::cos, _CItan = f64::tan, _CIasin = f64::asin,
-    _CIacos = f64::acos, _CIatan = f64::atan, _CIexp = f64::exp, _CIlog = f64::ln, _CIlog10 = f64::log10,
-    _CIsinh = f64::sinh, _CIcosh = f64::cosh, _CItanh = f64::tanh);
+ci1!(
+    _CIsqrt = f64::sqrt,
+    _CIsin = f64::sin,
+    _CIcos = f64::cos,
+    _CItan = f64::tan,
+    _CIasin = f64::asin,
+    _CIacos = f64::acos,
+    _CIatan = f64::atan,
+    _CIexp = f64::exp,
+    _CIlog = f64::ln,
+    _CIlog10 = f64::log10,
+    _CIsinh = f64::sinh,
+    _CIcosh = f64::cosh,
+    _CItanh = f64::tanh
+);
 /// _libm_sse2_*_precise: the argument and result are in xmm0 (pow: xmm0, xmm1)
 fn xmm_f64(c: &mut Ctx, i: usize) -> f64 {
     f64::from_bits(c.cpu.xmm[i] as u64)
@@ -1760,10 +2230,18 @@ fn xmm_ret(c: &mut Ctx, v: f64) -> u32 {
 macro_rules! sse1 {
     ($($name:ident = $f:expr),* $(,)?) => { $( fn $name(c: &mut Ctx) -> u32 { let x = xmm_f64(c, 0); xmm_ret(c, $f(x)) } )* };
 }
-sse1!(_libm_sse2_sin_precise = f64::sin, _libm_sse2_cos_precise = f64::cos, _libm_sse2_tan_precise = f64::tan,
-    _libm_sse2_asin_precise = f64::asin, _libm_sse2_acos_precise = f64::acos, _libm_sse2_atan_precise = f64::atan,
-    _libm_sse2_exp_precise = f64::exp, _libm_sse2_log_precise = f64::ln, _libm_sse2_log10_precise = f64::log10,
-    _libm_sse2_sqrt_precise = f64::sqrt);
+sse1!(
+    _libm_sse2_sin_precise = f64::sin,
+    _libm_sse2_cos_precise = f64::cos,
+    _libm_sse2_tan_precise = f64::tan,
+    _libm_sse2_asin_precise = f64::asin,
+    _libm_sse2_acos_precise = f64::acos,
+    _libm_sse2_atan_precise = f64::atan,
+    _libm_sse2_exp_precise = f64::exp,
+    _libm_sse2_log_precise = f64::ln,
+    _libm_sse2_log10_precise = f64::log10,
+    _libm_sse2_sqrt_precise = f64::sqrt
+);
 fn _libm_sse2_pow_precise(c: &mut Ctx) -> u32 {
     let (x, y) = (xmm_f64(c, 0), xmm_f64(c, 1));
     xmm_ret(c, x.powf(y))
@@ -1785,7 +2263,11 @@ fn _CIfmod(c: &mut Ctx) -> u32 {
 }
 fn _ftol(c: &mut Ctx) -> u32 {
     let v = st_pop(c);
-    let i = if v.is_finite() && v.abs() < 9.2e18 { v.trunc() as i64 } else { i64::MIN };
+    let i = if v.is_finite() && v.abs() < 9.2e18 {
+        v.trunc() as i64
+    } else {
+        i64::MIN
+    };
     c.ret64(i as u64)
 }
 
@@ -1794,7 +2276,11 @@ fn _ftol(c: &mut Ctx) -> u32 {
 
 /// msvcrt's FILE: 32 bytes (x64: 48)
 fn file_size() -> u32 {
-    if mem::x64() { 48 } else { 32 }
+    if mem::x64() {
+        48
+    } else {
+        32
+    }
 }
 
 struct Stream {
@@ -1866,7 +2352,11 @@ fn msvcrt_text_tell(raw_at: impl Fn(u64, usize) -> Vec<u8>, size: u64, b0: u64, 
     if used >= t {
         return filepos;
     }
-    let held = if filepos >= size { t + nl + ctrlz as u64 } else { BUF + crlf as u64 };
+    let held = if filepos >= size {
+        t + nl + ctrlz as u64
+    } else {
+        BUF + crlf as u64
+    };
     (filepos - held.min(filepos)) + used + used_nl
 }
 
@@ -1883,7 +2373,15 @@ impl Stream {
     fn new(at: u32, f: Option<Arc<File>>, fd: u32, flag: u32, eof: bool) -> Stream {
         w32(at + flag_off(), flag);
         w32(at + flag_off() + 4, fd);
-        Stream { at, f, fd, eof, unget: None, text: false, chunk: None }
+        Stream {
+            at,
+            f,
+            fd,
+            eof,
+            unget: None,
+            text: false,
+            chunk: None,
+        }
     }
     /// One character: the ungot one, else the file's (text mode translated); None at the end
     fn getc(&mut self) -> Option<u8> {
@@ -2012,14 +2510,25 @@ fn iob() -> u32 {
     let m = g.get_or_insert_with(HashMap::default);
     for i in 0..3 {
         // (sake's stdin reads nothing: at its end, but feof says so only once read)
-        let st = Stream::new(p + file_size() * i, None, i, if i == 0 { IOREAD } else { IOWRT }, false);
+        let st = Stream::new(
+            p + file_size() * i,
+            None,
+            i,
+            if i == 0 { IOREAD } else { IOWRT },
+            false,
+        );
         m.insert(p + file_size() * i, Stream { eof: true, ..st });
     }
     p
 }
 
 fn with_file<R>(fp: u32, f: impl FnOnce(&mut Stream) -> R) -> Option<R> {
-    FILES.lock().unwrap().get_or_insert_with(HashMap::default).get_mut(&fp).map(f)
+    FILES
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::default)
+        .get_mut(&fp)
+        .map(f)
 }
 
 fn fopen_mode(path: &str, mode: &[u8]) -> Option<File> {
@@ -2050,7 +2559,11 @@ fn new_stream_of(f: Arc<File>, fd: u32, mode: &[u8]) -> u32 {
     let fp = mem::heap_alloc(file_size(), true);
     let mut st = Stream::new(fp, Some(f), fd, mode_flag(mode), false);
     st.text = text_mode(mode);
-    FILES.lock().unwrap().get_or_insert_with(HashMap::default).insert(fp, st);
+    FILES
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::default)
+        .insert(fp, st);
     fp
 }
 /// _get_stream_buffer_pointers(stream, &base, &ptr, &cnt): the FILE's buffer fields (UCRT
@@ -2089,7 +2602,12 @@ fn remove(c: &mut Ctx) -> u32 {
         set_errno(2);
         return u32::MAX;
     };
-    if kura::fs::remove_file(path).is_ok() { 0 } else { set_errno(13); u32::MAX }
+    if kura::fs::remove_file(path).is_ok() {
+        0
+    } else {
+        set_errno(13);
+        u32::MAX
+    }
 }
 fn rename(c: &mut Ctx) -> u32 {
     let from = a2s(&cstr(c.a(0)));
@@ -2102,11 +2620,20 @@ fn rename(c: &mut Ctx) -> u32 {
         set_errno(17); // EEXIST
         return u32::MAX;
     }
-    if kura::fs::rename(from, crate::files::resolve_new(&to)).is_ok() { 0 } else { set_errno(13); u32::MAX }
+    if kura::fs::rename(from, crate::files::resolve_new(&to)).is_ok() {
+        0
+    } else {
+        set_errno(13);
+        u32::MAX
+    }
 }
 fn fclose(c: &mut Ctx) -> u32 {
     let fp = c.a(0);
-    let had = FILES.lock().unwrap().get_or_insert_with(HashMap::default).remove(&fp);
+    let had = FILES
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::default)
+        .remove(&fp);
     if let Some(s) = had {
         if s.fd > 2 {
             io::close_fd(s.fd);
@@ -2152,7 +2679,13 @@ fn fwrite(c: &mut Ctx) -> u32 {
     if total == 0 {
         return 0;
     }
-    with_file(fp, |s| if s.write(mem::slice(buf, total)) { n } else { 0 })
+    with_file(fp, |s| {
+        if s.write(mem::slice(buf, total)) {
+            n
+        } else {
+            0
+        }
+    })
     .unwrap_or(0)
 }
 fn fseek(c: &mut Ctx) -> u32 {
@@ -2223,10 +2756,16 @@ fn _fseeki64(c: &mut Ctx) -> u32 {
 fn fsetpos(c: &mut Ctx) -> u32 {
     let (fp, off) = (c.a(0), mem::r64(c.a(1)));
     with_file(fp, |s| {
-        let Some(f) = s.f.clone() else { return u32::MAX };
+        let Some(f) = s.f.clone() else {
+            return u32::MAX;
+        };
         s.unget = None;
         s.set_eof(false);
-        if f.seek(SeekFrom::Start(off)).is_some() { 0 } else { u32::MAX }
+        if f.seek(SeekFrom::Start(off)).is_some() {
+            0
+        } else {
+            u32::MAX
+        }
     })
     .unwrap_or(u32::MAX)
 }
@@ -2238,7 +2777,11 @@ fn ___lc_collate_cp_func(_: &mut Ctx) -> u32 {
 
 /// (time 64-bit, size 64-bit, wide)
 fn find_write(p: u32, (t64, s64, wide): (bool, bool, bool), name: &str, m: &kura::fs::Metadata) {
-    let t = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
+    let t = m
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_secs());
     let size = if m.is_dir() { 0 } else { m.len() };
     w32(p, crate::files::attrs(m) & 0x37);
     let mut o = if t64 { 8 } else { 4 };
@@ -2266,7 +2809,11 @@ fn find_write(p: u32, (t64, s64, wide): (bool, bool, bool), name: &str, m: &kura
     }
 }
 fn find_first(c: &mut Ctx, kind: (bool, bool, bool)) -> u32 {
-    let pat = if kind.2 { String::from_utf16_lossy(&wstr(c.a(0))) } else { a2s(&cstr(c.a(0))) };
+    let pat = if kind.2 {
+        String::from_utf16_lossy(&wstr(c.a(0)))
+    } else {
+        a2s(&cstr(c.a(0)))
+    };
     match crate::files::find(&pat) {
         Some(mut f) if !f.entries.is_empty() => {
             let (n, m) = &f.entries[0];
@@ -2297,7 +2844,11 @@ fn find_next(c: &mut Ctx, kind: (bool, bool, bool)) -> u32 {
     0
 }
 fn _findclose(c: &mut Ctx) -> u32 {
-    if crate::obj::close(c.a(0)) { 0 } else { u32::MAX }
+    if crate::obj::close(c.a(0)) {
+        0
+    } else {
+        u32::MAX
+    }
 }
 macro_rules! finds {
     ($($first:ident, $next:ident = $k:expr;)*) => { $(
@@ -2399,12 +2950,16 @@ fn write_stream(fp: u32, s: &[u8]) {
     with_file(fp, |st| st.write(s));
 }
 fn fprintf(c: &mut Ctx) -> u32 {
-    let Some(s) = legacy::<u8>(c.a(1), &mut VaArgs::arg(c, 2)) else { return u32::MAX };
+    let Some(s) = legacy::<u8>(c.a(1), &mut VaArgs::arg(c, 2)) else {
+        return u32::MAX;
+    };
     write_stream(c.a(0), &s);
     s.len() as u32
 }
 fn vfprintf(c: &mut Ctx) -> u32 {
-    let Some(s) = legacy::<u8>(c.a(1), &mut VaArgs::stack(c.a(2))) else { return u32::MAX };
+    let Some(s) = legacy::<u8>(c.a(1), &mut VaArgs::stack(c.a(2))) else {
+        return u32::MAX;
+    };
     write_stream(c.a(0), &s);
     s.len() as u32
 }
@@ -2437,7 +2992,9 @@ fn getenv(c: &mut Ctx) -> u32 {
     // the CRT's environment (io::env_get), kept in a guest buffer per name
     static VALS: Mutex<Option<HashMap<Vec<u8>, u32>>> = Mutex::new(None);
     let name = cstr(c.a(0));
-    let Some(v) = io::env_get(&a2s(&name)) else { return 0 };
+    let Some(v) = io::env_get(&a2s(&name)) else {
+        return 0;
+    };
     let bytes = crate::text::s2a(&v);
     let mut g = VALS.lock().unwrap();
     let m = g.get_or_insert_with(HashMap::default);
@@ -2465,8 +3022,13 @@ fn mem_s(c: &mut Ctx, f: fn(Option<&mut [u8]>, Option<&[u8]>, usize) -> i32) -> 
     let (d, dn, s, n) = (c.a(0), size(c, 1), c.a(2), size(c, 3));
     let dn = dn.min(0u32.wrapping_sub(d.max(1)));
     // (the source as a copy: memmove_s's overlap is then no matter)
-    let src = (s != 0).then(|| mem::slice(s, n.min(dn.saturating_add(1)).min(0u32.wrapping_sub(s))).to_vec());
-    let e = f((d != 0).then(|| mem::slice_mut(d, dn)), src.as_deref(), n as usize);
+    let src = (s != 0)
+        .then(|| mem::slice(s, n.min(dn.saturating_add(1)).min(0u32.wrapping_sub(s))).to_vec());
+    let e = f(
+        (d != 0).then(|| mem::slice_mut(d, dn)),
+        src.as_deref(),
+        n as usize,
+    );
     errno_of(e);
     e as u32
 }
@@ -2491,7 +3053,11 @@ fn fopen_s(c: &mut Ctx) -> u32 {
     }
     let fp = fopen_mode(&path, &mode).map_or(0, |f| new_stream(f, &mode));
     wp(pf, fp);
-    if fp == 0 { 2 } else { 0 }
+    if fp == 0 {
+        2
+    } else {
+        0
+    }
 }
 fn _wfopen_s(c: &mut Ctx) -> u32 {
     if c.a(0) == 0 {
@@ -2501,7 +3067,11 @@ fn _wfopen_s(c: &mut Ctx) -> u32 {
     let mode: Vec<u8> = wstr(c.a(2)).iter().map(|&u| u as u8).collect();
     let fp = fopen_mode(&path, &mode).map_or(0, |f| new_stream(f, &mode));
     wp(c.a(0), fp);
-    if fp == 0 { 2 } else { 0 }
+    if fp == 0 {
+        2
+    } else {
+        0
+    }
 }
 
 // setjmp/longjmp: jmp_buf = ebp, ebx, edi, esi, esp, SEH frame, eip (as msvcrt's first fields)
@@ -2513,7 +3083,18 @@ fn _setjmp3(c: &mut Ctx) -> u32 {
     }
     let b = c.a(0);
     let r = &c.cpu.regs;
-    for (i, v) in [r[koji::EBP], r[koji::EBX], r[koji::EDI], r[koji::ESI], c.esp + 4, r32(crate::cur().teb), r32(c.esp)].into_iter().enumerate() {
+    for (i, v) in [
+        r[koji::EBP],
+        r[koji::EBX],
+        r[koji::EDI],
+        r[koji::ESI],
+        c.esp + 4,
+        r32(crate::cur().teb),
+        r32(c.esp),
+    ]
+    .into_iter()
+    .enumerate()
+    {
         w32(b + 4 * i as u32, v);
     }
     0
@@ -2562,7 +3143,29 @@ fn ucrt_pf_m<T: Unit>(c: &mut Ctx, sized: bool, secure: bool, positional: bool) 
         set_errno(22);
         return u32::MAX;
     }
-    let s = pf::<T>(fmt, &mut VaArgs::stack(va), crt::fmt::Mode { positional, ..crt::fmt::Mode::ucrt(mem::x64(), opts) });
+    let s = pf::<T>(
+        fmt,
+        &mut VaArgs::stack(va),
+        crt::fmt::Mode {
+            positional,
+            ..crt::fmt::Mode::ucrt(mem::x64(), opts)
+        },
+    );
+    // (the positional forms, Windows' answers in winref crt_printfp: an invalid format whose
+    // first conversion has no position fails part way, the buffer not emptied; what does not fit
+    // is cut, NUL-terminated, and -2)
+    if positional && buf != 0 && size != 0 {
+        match &s {
+            None if !first_positional::<T>(fmt) => return u32::MAX,
+            Some(v) if v.len() >= size as usize => {
+                put_units(buf, &v[..size as usize - 1]);
+                put_nul::<T>(buf + unit::<T>() * (size - 1));
+                set_errno(34);
+                return u32::MAX - 1;
+            }
+            _ => {}
+        }
+    }
     if secure {
         return put_s(buf, size, sized.then_some(count), s);
     }
@@ -2586,7 +3189,11 @@ fn ucrt_pf_m<T: Unit>(c: &mut Ctx, sized: bool, secure: bool, positional: bool) 
         return s.len() as u32;
     }
     if opts & 1 != 0 {
-        return if s.len() == size as usize { s.len() as u32 } else { u32::MAX };
+        return if s.len() == size as usize {
+            s.len() as u32
+        } else {
+            u32::MAX
+        };
     }
     if size != 0 {
         put_nul::<T>(buf + unit::<T>() * (size - 1));
@@ -2631,8 +3238,21 @@ fn ucrt_fpf_m<T: Unit>(c: &mut Ctx, positional: bool) -> u32 {
     let mut a = Args(0);
     let opts = a.u64(c);
     let (fp, fmt, _locale, va) = (a.p(c), a.p(c), a.p(c), a.p(c));
-    let Some(s) = pf::<T>(fmt, &mut VaArgs::stack(va), crt::fmt::Mode { positional, ..crt::fmt::Mode::ucrt(mem::x64(), opts) }) else { return u32::MAX };
-    let bytes: Vec<u8> = if T::WIDE { crate::text::w2a(&s.iter().map(|u| u.code() as u16).collect::<Vec<u16>>()) } else { s.iter().map(|u| u.code() as u8).collect() };
+    let Some(s) = pf::<T>(
+        fmt,
+        &mut VaArgs::stack(va),
+        crt::fmt::Mode {
+            positional,
+            ..crt::fmt::Mode::ucrt(mem::x64(), opts)
+        },
+    ) else {
+        return u32::MAX;
+    };
+    let bytes: Vec<u8> = if T::WIDE {
+        crate::text::w2a(&s.iter().map(|u| u.code() as u16).collect::<Vec<u16>>())
+    } else {
+        s.iter().map(|u| u.code() as u8).collect()
+    };
     write_stream(fp, &bytes);
     s.len() as u32
 }
@@ -2652,8 +3272,17 @@ fn ucrt_scan<T: Unit>(c: &mut Ctx) -> u32 {
         set_errno(22);
         return u32::MAX;
     }
-    let text = if n == u32::MAX { gstr::<T>(input) } else { gstrn::<T>(input, n) };
-    let m = crt::scan::Mode { ptr64: mem::x64(), secure: opts & 1 != 0, legacy: opts & 4 != 0, legacy_wide: opts & 2 != 0 };
+    let text = if n == u32::MAX {
+        gstr::<T>(input)
+    } else {
+        gstrn::<T>(input, n)
+    };
+    let m = crt::scan::Mode {
+        ptr64: mem::x64(),
+        secure: opts & 1 != 0,
+        legacy: opts & 4 != 0,
+        legacy_wide: opts & 2 != 0,
+    };
     crt::scan::scan(&text, &gstr::<T>(fmt), m, &mut GuestSink(VaArgs::stack(va))) as u32
 }
 fn __stdio_common_vsscanf(c: &mut Ctx) -> u32 {
@@ -2683,7 +3312,11 @@ fn sec_call<T: Unit>(d: u32, size: u32, need: u32, f: impl FnOnce(Option<&mut [T
 }
 /// How much of a destination of `size` units a copy of `src_len` units can touch.
 fn reach<T: Unit>(d: u32, size: u32, src_len: usize, append: bool) -> u32 {
-    let have = if append && d != 0 { gstrn::<T>(d, size).len() as u32 } else { 0 };
+    let have = if append && d != 0 {
+        gstrn::<T>(d, size).len() as u32
+    } else {
+        0
+    };
     have.saturating_add(src_len as u32).saturating_add(2)
 }
 
@@ -2691,18 +3324,34 @@ fn copy_s<T: Unit>(c: &mut Ctx, append: bool) -> u32 {
     let (d, sz, s) = (c.a(0), size(c, 1), c.a(2));
     let src = (s != 0).then(|| gstr::<T>(s));
     let need = reach::<T>(d, sz, src.as_ref().map_or(0, |v| v.len()), append);
-    sec_call::<T>(d, sz, need, |dst| if append { crt::sec::strcat_s(dst, src.as_deref()) } else { crt::sec::strcpy_s(dst, src.as_deref()) })
+    sec_call::<T>(d, sz, need, |dst| {
+        if append {
+            crt::sec::strcat_s(dst, src.as_deref())
+        } else {
+            crt::sec::strcpy_s(dst, src.as_deref())
+        }
+    })
 }
 fn ncopy_s<T: Unit>(c: &mut Ctx, append: bool) -> u32 {
     let (d, sz, s, n) = (c.a(0), size(c, 1), c.a(2), size(c, 3));
-    let count = if n == u32::MAX { crt::sec::TRUNCATE } else { n as usize };
+    let count = if n == u32::MAX {
+        crt::sec::TRUNCATE
+    } else {
+        n as usize
+    };
     let src = (s != 0).then(|| gstrn::<T>(s, n.min(sz.saturating_add(1))));
     if d == 0 && sz != 0 {
         set_errno(22);
         return 22;
     }
     let need = reach::<T>(d, sz, src.as_ref().map_or(0, |v| v.len()), append);
-    sec_call::<T>(d, sz, need, |dst| if append { crt::sec::strncat_s(dst, src.as_deref(), count) } else { crt::sec::strncpy_s(dst, src.as_deref(), count) })
+    sec_call::<T>(d, sz, need, |dst| {
+        if append {
+            crt::sec::strncat_s(dst, src.as_deref(), count)
+        } else {
+            crt::sec::strncpy_s(dst, src.as_deref(), count)
+        }
+    })
 }
 /// strncpy_s(dst, size, src, count): count _TRUNCATE (-1) copies what fits
 fn strncpy_s(c: &mut Ctx) -> u32 {
@@ -2765,7 +3414,11 @@ fn _seh_filter_exe(_: &mut Ctx) -> u32 {
 /// _setmaxstdio(n): the new limit (msvcrt allows 20..=2048), else -1
 fn _setmaxstdio(c: &mut Ctx) -> u32 {
     let n = c.a(0);
-    if (20..=2048).contains(&n) { n } else { u32::MAX }
+    if (20..=2048).contains(&n) {
+        n
+    } else {
+        u32::MAX
+    }
 }
 
 /// the "C" locale's struct lconv: 10 char* fields, 8 chars (CHAR_MAX), then (msvcr100+ / the
@@ -2912,7 +3565,11 @@ fn _register_onexit_function(c: &mut Ctx) -> u32 {
     let s = ps();
     let (first, last, end) = (rp(t), rp(t + s), rp(t + 2 * s));
     if first == 0 || last >= end {
-        let n = if first == 0 { 32 } else { (end - first) / s * 2 };
+        let n = if first == 0 {
+            32
+        } else {
+            (end - first) / s * 2
+        };
         let p = mem::heap_alloc(n * s, true);
         if first != 0 {
             mem::copy(p, first, last - first);
@@ -2951,7 +3608,9 @@ fn _execute_onexit_table(c: &mut Ctx) -> u32 {
 }
 fn _cexit(c: &mut Ctx) -> u32 {
     loop {
-        let Some(f) = ATEXIT.lock().unwrap().pop() else { break };
+        let Some(f) = ATEXIT.lock().unwrap().pop() else {
+            break;
+        };
         c.call(f, &[]);
     }
     0
@@ -2961,7 +3620,11 @@ fn _invalid_parameter_noinfo_noreturn(_: &mut Ctx) -> u32 {
     unsafe { libc::exit(0xc0000417u32 as i32) }
 }
 fn terminate(c: &mut Ctx) -> u32 {
-    let from = if mem::x64() { mem::r64(c.esp) } else { r32(c.esp) as u64 };
+    let from = if mem::x64() {
+        mem::r64(c.esp)
+    } else {
+        r32(c.esp) as u64
+    };
     eprintln!("sake: terminate() from {from:#x}");
     unsafe { libc::exit(3) }
 }
@@ -3045,7 +3708,11 @@ fn tm_buf() -> u32 {
 }
 /// the time_t at `p`: 64-bit or 32-bit
 fn read_time(p: u32, t64: bool) -> i64 {
-    if t64 { mem::r64(p) as i64 } else { r32(p) as i32 as i64 }
+    if t64 {
+        mem::r64(p) as i64
+    } else {
+        r32(p) as i32 as i64
+    }
 }
 /// (localtime | gmtime)(&t): the shared buffer, NULL (EINVAL) outside the range
 fn time_tm(c: &mut Ctx, t64: bool, local: bool) -> u32 {
@@ -3055,7 +3722,11 @@ fn time_tm(c: &mut Ctx, t64: bool, local: bool) -> u32 {
         return 0;
     }
     let (t, bits) = (read_time(p, t64), if t64 { 64 } else { 32 });
-    let tm = if local { crt::time::localtime(t, bits, crate::k32::tz_bias()) } else { crt::time::gmtime(t, bits) };
+    let tm = if local {
+        crt::time::localtime(t, bits, crate::k32::tz_bias())
+    } else {
+        crt::time::gmtime(t, bits)
+    };
     let Some(tm) = tm else {
         set_errno(22);
         return 0;
@@ -3094,7 +3765,11 @@ fn time_tm_s(c: &mut Ctx, t64: bool, local: bool) -> u32 {
         None
     } else {
         let t = read_time(p, t64);
-        if local { crt::time::localtime(t, bits, crate::k32::tz_bias()) } else { crt::time::gmtime(t, bits) }
+        if local {
+            crt::time::localtime(t, bits, crate::k32::tz_bias())
+        } else {
+            crt::time::gmtime(t, bits)
+        }
     };
     match tm {
         Some(tm) => {
@@ -3168,11 +3843,14 @@ fn _difftime64(c: &mut Ctx) -> u32 {
     0
 }
 
-
 /// wcsftime's C locale text of `fmt` for the tm at `tm` (None: an invalid field)
 pub(crate) fn strftime_w(fmt: &[u16], tm: u32) -> Option<Vec<u16>> {
     let bias = crate::k32::tz_bias();
-    let name = if bias == 9 * 3600 { "Tokyo Standard Time" } else { "Coordinated Universal Time" };
+    let name = if bias == 9 * 3600 {
+        "Tokyo Standard Time"
+    } else {
+        "Coordinated Universal Time"
+    };
     crt::time::strftime(fmt, &read_tm(tm), (bias, name))
 }
 /// strftime / wcsftime (buf, max, fmt, tm): crt::time's C locale output and its length, or 0
@@ -3181,16 +3859,32 @@ fn strftime_into(c: &mut Ctx, wide: bool) -> u32 {
     let (buf, max, fmt, tm) = (c.a(0), size(c, 1), c.a(2), c.a(3));
     if buf == 0 || max == 0 || fmt == 0 || tm == 0 {
         if buf != 0 && max != 0 {
-            if wide { w16(buf, 0) } else { w8(buf, 0) }
+            if wide {
+                w16(buf, 0)
+            } else {
+                w8(buf, 0)
+            }
         }
         set_errno(22);
         return 0;
     }
-    let f = if wide { wstr(fmt) } else { crate::text::a2w(&cstr(fmt)) };
+    let f = if wide {
+        wstr(fmt)
+    } else {
+        crate::text::a2w(&cstr(fmt))
+    };
     let bias = crate::k32::tz_bias();
-    let name = if bias == 9 * 3600 { "Tokyo Standard Time" } else { "Coordinated Universal Time" };
+    let name = if bias == 9 * 3600 {
+        "Tokyo Standard Time"
+    } else {
+        "Coordinated Universal Time"
+    };
     let Some(out) = crt::time::strftime(&f, &read_tm(tm), (bias, name)) else {
-        if wide { w16(buf, 0) } else { w8(buf, 0) }
+        if wide {
+            w16(buf, 0)
+        } else {
+            w8(buf, 0)
+        }
         set_errno(22);
         return 0;
     };
@@ -3327,11 +4021,41 @@ fn _fpclass(c: &mut Ctx) -> u32 {
     let neg = x.is_sign_negative();
     use std::num::FpCategory::*;
     match x.classify() {
-        Nan => if x.to_bits() & (1 << 51) != 0 { 2 } else { 1 },
-        Infinite => if neg { 4 } else { 0x200 },
-        Normal => if neg { 8 } else { 0x100 },
-        Subnormal => if neg { 0x10 } else { 0x80 },
-        Zero => if neg { 0x20 } else { 0x40 },
+        Nan => {
+            if x.to_bits() & (1 << 51) != 0 {
+                2
+            } else {
+                1
+            }
+        }
+        Infinite => {
+            if neg {
+                4
+            } else {
+                0x200
+            }
+        }
+        Normal => {
+            if neg {
+                8
+            } else {
+                0x100
+            }
+        }
+        Subnormal => {
+            if neg {
+                0x10
+            } else {
+                0x80
+            }
+        }
+        Zero => {
+            if neg {
+                0x20
+            } else {
+                0x40
+            }
+        }
     }
 }
 fn _hypot(c: &mut Ctx) -> u32 {
@@ -3357,7 +4081,10 @@ fn ecvt_digits(v: f64, n: usize) -> (Vec<u8>, i32) {
     }
     let s = format!("{:.*e}", n - 1, v.abs());
     let (m, e) = s.split_once('e').unwrap();
-    (m.bytes().filter(|b| b.is_ascii_digit()).collect(), e.parse::<i32>().unwrap() + 1)
+    (
+        m.bytes().filter(|b| b.is_ascii_digit()).collect(),
+        e.parse::<i32>().unwrap() + 1,
+    )
 }
 fn cvt_out(c: &mut Ctx, d: &[u8], dec: i32, neg: bool, pdec: u32, psign: u32) -> u32 {
     let b = cvt_buf();
@@ -3424,12 +4151,22 @@ fn _gcvt(c: &mut Ctx) -> u32 {
         s.push_str("0.");
     } else if dec < -1 || dec > n as i32 {
         let e = dec - 1;
-        s.push_str(&format!("{}.{}e{}{:03}", &d[..1], &d[1..], if e < 0 { '-' } else { '+' }, e.abs()));
+        s.push_str(&format!(
+            "{}.{}e{}{:03}",
+            &d[..1],
+            &d[1..],
+            if e < 0 { '-' } else { '+' },
+            e.abs()
+        ));
     } else if dec <= 0 {
         s.push_str(&format!("0.{}{}", "0".repeat((-dec) as usize), d));
     } else {
         let k = dec as usize;
-        let ip = if d.len() >= k { d[..k].to_string() } else { format!("{d}{}", "0".repeat(k - d.len())) };
+        let ip = if d.len() >= k {
+            d[..k].to_string()
+        } else {
+            format!("{d}{}", "0".repeat(k - d.len()))
+        };
         s.push_str(&format!("{ip}.{}", if d.len() > k { &d[k..] } else { "" }));
     }
     s.push('\0');
@@ -3440,7 +4177,11 @@ fn _mbslen(c: &mut Ctx) -> u32 {
     let s = cstr(c.a(0));
     let (mut i, mut n) = (0, 0);
     while i < s.len() {
-        i += if crate::text::is_lead(s[i]) && i + 1 < s.len() { 2 } else { 1 };
+        i += if crate::text::is_lead(s[i]) && i + 1 < s.len() {
+            2
+        } else {
+            1
+        };
         n += 1;
     }
     n
@@ -3466,7 +4207,10 @@ fn _mbschr(c: &mut Ctx) -> u32 {
     if ch == 0 {
         return p + s.len() as u32;
     }
-    mb_chars(&s).iter().find(|x| x.1 == ch).map_or(0, |x| p + x.0 as u32)
+    mb_chars(&s)
+        .iter()
+        .find(|x| x.1 == ch)
+        .map_or(0, |x| p + x.0 as u32)
 }
 fn _mbsrchr(c: &mut Ctx) -> u32 {
     let (p, ch) = (c.a(0), c.a(1) & 0xffff);
@@ -3474,16 +4218,28 @@ fn _mbsrchr(c: &mut Ctx) -> u32 {
     if ch == 0 {
         return p + s.len() as u32;
     }
-    mb_chars(&s).iter().rev().find(|x| x.1 == ch).map_or(0, |x| p + x.0 as u32)
+    mb_chars(&s)
+        .iter()
+        .rev()
+        .find(|x| x.1 == ch)
+        .map_or(0, |x| p + x.0 as u32)
 }
 fn _mbsinc(c: &mut Ctx) -> u32 {
     let p = c.a(0);
-    p + if crate::text::is_lead(r8(p)) && r8(p + 1) != 0 { 2 } else { 1 }
+    p + if crate::text::is_lead(r8(p)) && r8(p + 1) != 0 {
+        2
+    } else {
+        1
+    }
 }
 fn _mbsnextc(c: &mut Ctx) -> u32 {
     let p = c.a(0);
     let b = r8(p);
-    if crate::text::is_lead(b) && r8(p + 1) != 0 { (b as u32) << 8 | r8(p + 1) as u32 } else { b as u32 }
+    if crate::text::is_lead(b) && r8(p + 1) != 0 {
+        (b as u32) << 8 | r8(p + 1) as u32
+    } else {
+        b as u32
+    }
 }
 fn _ismbcspace(c: &mut Ctx) -> u32 {
     let ch = c.a(0);
@@ -3510,7 +4266,11 @@ fn _mbcjistojms(c: &mut Ctx) -> u32 {
         return 0;
     }
     let s1 = (hi + 1) / 2 + if hi <= 0x5e { 0x70 } else { 0xb0 };
-    let s2 = if hi & 1 != 0 { lo + if lo <= 0x5f { 0x1f } else { 0x20 } } else { lo + 0x7e };
+    let s2 = if hi & 1 != 0 {
+        lo + if lo <= 0x5f { 0x1f } else { 0x20 }
+    } else {
+        lo + 0x7e
+    };
     s1 << 8 | s2
 }
 fn _mbcjmstojis(c: &mut Ctx) -> u32 {
@@ -3559,9 +4319,19 @@ fn _getmbcp(_: &mut Ctx) -> u32 {
 fn asctime(c: &mut Ctx) -> u32 {
     let tm = read_tm(c.a(0));
     const DAY: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    const MON: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    let s = format!("{} {} {:02} {:02}:{:02}:{:02} {}\n\0", DAY[tm[6].rem_euclid(7) as usize],
-        MON[tm[4].rem_euclid(12) as usize], tm[3], tm[2], tm[1], tm[0], tm[5] + 1900);
+    const MON: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let s = format!(
+        "{} {} {:02} {:02}:{:02}:{:02} {}\n\0",
+        DAY[tm[6].rem_euclid(7) as usize],
+        MON[tm[4].rem_euclid(12) as usize],
+        tm[3],
+        tm[2],
+        tm[1],
+        tm[0],
+        tm[5] + 1900
+    );
     let b = cvt_buf();
     mem::write(b, s.as_bytes());
     b
@@ -3613,16 +4383,33 @@ pub fn init() {
     ] {
         implement("msvcrt", alias, f);
     }
-    reg!(_itow, _itow_s, _ultow, _ultow_s, _i64tow, _i64tow_s, _ui64tow, _ui64tow_s, _i64toa, _ui64toa, _ultoa);
-    reg!(sscanf_s, swscanf, swscanf_s, vsscanf, vswscanf, vprintf, vfprintf, strncat_s, wcsncat_s, _ftelli64, _fseeki64);
-    reg!(modff, floorf, ceilf, sqrtf, sinf, cosf, tanf, asinf, acosf, atanf, expf, logf, log10f, fabsf, sinhf, coshf,
-        tanhf, log2f, exp2f, roundf, truncf, cbrtf, powf, atan2f, fmodf, hypotf, fmaxf, fminf, copysignf,
-        round, trunc, log2, exp2, cbrt, log1p, expm1, asinh, acosh, atanh, hypot, fmax, fmin, copysign, lround, llround);
-    for (alias, f) in [("_hypot", hypot as crate::api::Handler), ("_copysign", copysign), ("_hypotf", hypotf), ("_copysignf", copysignf)] {
+    reg!(
+        _itow, _itow_s, _ultow, _ultow_s, _i64tow, _i64tow_s, _ui64tow, _ui64tow_s, _i64toa,
+        _ui64toa, _ultoa
+    );
+    reg!(
+        sscanf_s, swscanf, swscanf_s, vsscanf, vswscanf, vprintf, vfprintf, strncat_s, wcsncat_s,
+        _ftelli64, _fseeki64
+    );
+    reg!(
+        modff, floorf, ceilf, sqrtf, sinf, cosf, tanf, asinf, acosf, atanf, expf, logf, log10f,
+        fabsf, sinhf, coshf, tanhf, log2f, exp2f, roundf, truncf, cbrtf, powf, atan2f, fmodf,
+        hypotf, fmaxf, fminf, copysignf, round, trunc, log2, exp2, cbrt, log1p, expm1, asinh,
+        acosh, atanh, hypot, fmax, fmin, copysign, lround, llround
+    );
+    for (alias, f) in [
+        ("_hypot", hypot as crate::api::Handler),
+        ("_copysign", copysign),
+        ("_hypotf", hypotf),
+        ("_copysignf", copysignf),
+    ] {
         implement("msvcrt", alias, f);
     }
     for (name, f) in [
-        ("__stdio_common_vsnprintf_s", __stdio_common_vsnprintf_s as crate::api::Handler),
+        (
+            "__stdio_common_vsnprintf_s",
+            __stdio_common_vsnprintf_s as crate::api::Handler,
+        ),
         ("__stdio_common_vsnwprintf_s", __stdio_common_vsnwprintf_s),
         ("__stdio_common_vfprintf", __stdio_common_vfprintf),
         ("__stdio_common_vfwprintf", __stdio_common_vfwprintf),
@@ -3631,11 +4418,37 @@ pub fn init() {
     ] {
         implement("ucrtbase", name, f);
     }
-    reg!(_set_fmode, _get_initial_narrow_environment, _get_initial_wide_environment, _initialize_onexit_table,
-        _register_onexit_function, _execute_onexit_table, _cexit, _invalid_parameter_noinfo_noreturn, terminate,
-        wcsnlen, __std_exception_copy, __std_exception_destroy, __std_type_info_compare, __std_type_info_hash,
-        _localtime64, _gmtime64, _localtime32_s, _localtime64_s, _gmtime32_s, _gmtime64_s, _mktime64, _difftime64,
-        strftime, wcsftime, _Getdays, _Getmonths, _W_Getdays, _W_Getmonths, _Gettnames);
+    reg!(
+        _set_fmode,
+        _get_initial_narrow_environment,
+        _get_initial_wide_environment,
+        _initialize_onexit_table,
+        _register_onexit_function,
+        _execute_onexit_table,
+        _cexit,
+        _invalid_parameter_noinfo_noreturn,
+        terminate,
+        wcsnlen,
+        __std_exception_copy,
+        __std_exception_destroy,
+        __std_type_info_compare,
+        __std_type_info_hash,
+        _localtime64,
+        _gmtime64,
+        _localtime32_s,
+        _localtime64_s,
+        _gmtime32_s,
+        _gmtime64_s,
+        _mktime64,
+        _difftime64,
+        strftime,
+        wcsftime,
+        _Getdays,
+        _Getmonths,
+        _W_Getdays,
+        _W_Getmonths,
+        _Gettnames
+    );
     for (alias, f) in [
         ("_set_app_type", ucrt_zero as crate::api::Handler),
         ("_set_new_mode", ucrt_zero),
@@ -3671,7 +4484,10 @@ pub fn init() {
         implement("msvcrt", alias, f);
     }
     implement("msvcrt", "_strtod_l", strtod);
-    reg!(_wcsicmp, _wcsnicmp, wcschr, wcsrchr, wcscat, wcsncat, wcsncpy, wcsstr, wcsspn, wcscspn, wcspbrk);
+    reg!(
+        _wcsicmp, _wcsnicmp, wcschr, wcsrchr, wcscat, wcsncat, wcsncpy, wcsstr, wcsspn, wcscspn,
+        wcspbrk
+    );
     reg!(towlower, towupper, iswspace, iswdigit, iswalpha, wcstol, wcstoul, _wtoi, wcstod);
     implement("msvcrt", "_wtol", _wtoi);
     reg!(_wcsdup, _wcslwr, _wcsupr, wcstok_s, strtok_s, strtok, wcstok);
@@ -3680,19 +4496,89 @@ pub fn init() {
     reg!(localeconv);
     reg!(strcpy_s, wcscpy_s, strcat_s, wcscat_s, wcsncpy_s);
     reg!(_itoa_s, _ultoa_s, _i64toa_s, _ui64toa_s);
-    reg!(puts, putchar, setvbuf, _strrev, _ultoa, _i64toa, _ui64toa, _atoi64, div, _isnan, _finite, _fpclass, _hypot,
-        _ecvt, _fcvt, _gcvt, _mbslen, _mbschr, _mbsrchr, _mbsinc, _mbsnextc, _ismbcspace, _mbctohira, _mbctokata,
-        _mbcjistojms, _mbcjmstojis, _mbsupr, _mbslwr, _setmbcp, _getmbcp, asctime);
+    reg!(
+        puts,
+        putchar,
+        setvbuf,
+        _strrev,
+        _ultoa,
+        _i64toa,
+        _ui64toa,
+        _atoi64,
+        div,
+        _isnan,
+        _finite,
+        _fpclass,
+        _hypot,
+        _ecvt,
+        _fcvt,
+        _gcvt,
+        _mbslen,
+        _mbschr,
+        _mbsrchr,
+        _mbsinc,
+        _mbsnextc,
+        _ismbcspace,
+        _mbctohira,
+        _mbctokata,
+        _mbcjistojms,
+        _mbcjmstojis,
+        _mbsupr,
+        _mbslwr,
+        _setmbcp,
+        _getmbcp,
+        asctime
+    );
     implement("msvcrt", "ldiv", div);
-    reg!(strncpy_s, ___lc_codepage_func, ___lc_locale_name_func, ___lc_handle_func, _seh_filter_exe);
-    implement("ucrtbase", "__stdio_common_vsprintf_s", __stdio_common_vsprintf_s);
-    implement("ucrtbase", "__stdio_common_vswprintf_s", __stdio_common_vswprintf_s);
-    reg!(_libm_sse2_sin_precise, _libm_sse2_cos_precise, _libm_sse2_tan_precise, _libm_sse2_asin_precise,
-        _libm_sse2_acos_precise, _libm_sse2_atan_precise, _libm_sse2_exp_precise, _libm_sse2_log_precise,
-        _libm_sse2_log10_precise, _libm_sse2_sqrt_precise, _libm_sse2_pow_precise);
-    reg!(_findclose, _findfirst32, _findnext32, _findfirst32i64, _findnext32i64, _findfirst64i32, _findnext64i32,
-        _findfirst64, _findnext64, _wfindfirst32, _wfindnext32, _wfindfirst32i64, _wfindnext32i64,
-        _wfindfirst64i32, _wfindnext64i32, _wfindfirst64, _wfindnext64);
+    reg!(
+        strncpy_s,
+        ___lc_codepage_func,
+        ___lc_locale_name_func,
+        ___lc_handle_func,
+        _seh_filter_exe
+    );
+    implement(
+        "ucrtbase",
+        "__stdio_common_vsprintf_s",
+        __stdio_common_vsprintf_s,
+    );
+    implement(
+        "ucrtbase",
+        "__stdio_common_vswprintf_s",
+        __stdio_common_vswprintf_s,
+    );
+    reg!(
+        _libm_sse2_sin_precise,
+        _libm_sse2_cos_precise,
+        _libm_sse2_tan_precise,
+        _libm_sse2_asin_precise,
+        _libm_sse2_acos_precise,
+        _libm_sse2_atan_precise,
+        _libm_sse2_exp_precise,
+        _libm_sse2_log_precise,
+        _libm_sse2_log10_precise,
+        _libm_sse2_sqrt_precise,
+        _libm_sse2_pow_precise
+    );
+    reg!(
+        _findclose,
+        _findfirst32,
+        _findnext32,
+        _findfirst32i64,
+        _findnext32i64,
+        _findfirst64i32,
+        _findnext64i32,
+        _findfirst64,
+        _findnext64,
+        _wfindfirst32,
+        _wfindnext32,
+        _wfindfirst32i64,
+        _wfindnext32i64,
+        _wfindfirst64i32,
+        _wfindnext64i32,
+        _wfindfirst64,
+        _wfindnext64
+    );
     // (msvcrt's old names: 32-bit time)
     implement("msvcrt", "_findfirst", _findfirst32);
     implement("msvcrt", "_findnext", _findnext32);
@@ -3706,36 +4592,244 @@ pub fn init() {
     reg!(fgetpos, fsetpos, ___lc_collate_cp_func);
     implement("msvcrt", "_fsopen", fopen);
     implement("msvcrt", "_wfsopen", _wfopen);
-    reg!(_aligned_malloc, _aligned_free, _aligned_realloc, _aligned_msize, _mkdir, _wmkdir);
-    reg!(fread_s, _time64, _splitpath, _wsplitpath, _splitpath_s, _wsplitpath_s);
-    reg!(_get_narrow_winmain_command_line, _get_wide_winmain_command_line);
+    reg!(
+        _aligned_malloc,
+        _aligned_free,
+        _aligned_realloc,
+        _aligned_msize,
+        _mkdir,
+        _wmkdir
+    );
+    reg!(
+        fread_s,
+        _time64,
+        _splitpath,
+        _wsplitpath,
+        _splitpath_s,
+        _wsplitpath_s
+    );
+    reg!(
+        _get_narrow_winmain_command_line,
+        _get_wide_winmain_command_line
+    );
     implement("msvcrt", "_time32", _time32);
-    reg!(fputc, __acrt_iob_func, _create_locale, _free_locale, _fdclass, _dclass, _fdsign, _dsign, strnlen);
-    implement("ucrtbase", "__stdio_common_vsprintf", __stdio_common_vsprintf);
-    implement("ucrtbase", "__stdio_common_vswprintf", __stdio_common_vswprintf);
+    reg!(
+        fputc,
+        __acrt_iob_func,
+        _create_locale,
+        _free_locale,
+        _fdclass,
+        _dclass,
+        _fdsign,
+        _dsign,
+        strnlen
+    );
+    implement(
+        "ucrtbase",
+        "__stdio_common_vsprintf",
+        __stdio_common_vsprintf,
+    );
+    implement(
+        "ucrtbase",
+        "__stdio_common_vswprintf",
+        __stdio_common_vswprintf,
+    );
     reg!(_setmaxstdio);
-    reg!(wcsncmp, getenv, _ismbblead, memcpy_s, memmove_s, _controlfp_s, __iob_func, __p__iob, fopen_s, _wfopen_s, _setjmp3, longjmp, remove, rename);
+    reg!(
+        wcsncmp,
+        getenv,
+        _ismbblead,
+        memcpy_s,
+        memmove_s,
+        _controlfp_s,
+        __iob_func,
+        __p__iob,
+        fopen_s,
+        _wfopen_s,
+        _setjmp3,
+        longjmp,
+        remove,
+        rename
+    );
     implement("msvcrt", "_setjmp", _setjmp3);
-    reg!(_encode_pointer, _encoded_null, _crt_debugger_hook, _configthreadlocale, ___mb_cur_max_l_func);
-    reg!(_initterm, _initterm_e, _onexit, atexit, __dllonexit, exit, _exit, abort, __getmainargs, __set_app_type,
-        __p__fmode, __p__commode, __p___argc, __p___argv, __p___wargv, __p__wcmdln, __p__wenviron, __wgetmainargs,
-        __p__environ, __p___initenv, __p__acmdln,
-        __p___mb_cur_max, ___mb_cur_max_func, __pctype_func, _controlfp, _control87, _clearfp, _statusfp, _purecall,
-        _XcptFilter, signal, _lock, _unlock, _errno, __doserrno,
-        malloc, calloc, realloc, free, _msize,
-        memcpy, memmove, memset, memcmp, memchr, strlen, strcpy, strncpy, strcat, strncat, strcmp, strncmp,
-        _stricmp, _strnicmp, strchr, strrchr, strstr, strspn, strcspn, strpbrk, _strdup, _strlwr, _strupr, wcslen, wcscpy, wcscmp,
-        toupper, tolower, isalpha, isupper, islower, isdigit, isspace, ispunct, isalnum, isxdigit, isprint, iscntrl, isgraph,
-        atoi, strtol, strtoul, atof, strtod, _itoa, abs, qsort, bsearch, srand, rand, time, clock,
-        sprintf, vsprintf, _snprintf, _vsnprintf, swprintf, printf, vprintf, sscanf, sprintf_s, vsprintf_s, _snprintf_s,
-        _vsnprintf_s, _vscprintf, _scprintf, swprintf_s, vswprintf_s, _snwprintf, _vsnwprintf, _snwprintf_s,
-        _vsnwprintf_s, vswprintf, _vscwprintf,
-        floor, ceil, sqrt, sin, cos, tan, asin, acos, atan, exp, log, log10, fabs, sinh, cosh, tanh, pow, atan2,
-        fmod, ldexp, frexp, modf,
-        _CIsqrt, _CIsin, _CIcos, _CItan, _CIasin, _CIacos, _CIatan, _CIexp, _CIlog, _CIlog10, _CIsinh, _CIcosh,
-        _CItanh, _CIpow, _CIatan2, _CIfmod, _ftol,
-        fopen, _wfopen, fclose, fread, fwrite, fseek, ftell, rewind, feof, ferror, fflush, fgetc, ungetc, fgets,
-        fputs, fprintf);
+    reg!(
+        _encode_pointer,
+        _encoded_null,
+        _crt_debugger_hook,
+        _configthreadlocale,
+        ___mb_cur_max_l_func
+    );
+    reg!(
+        _initterm,
+        _initterm_e,
+        _onexit,
+        atexit,
+        __dllonexit,
+        exit,
+        _exit,
+        abort,
+        __getmainargs,
+        __set_app_type,
+        __p__fmode,
+        __p__commode,
+        __p___argc,
+        __p___argv,
+        __p___wargv,
+        __p__wcmdln,
+        __p__wenviron,
+        __wgetmainargs,
+        __p__environ,
+        __p___initenv,
+        __p__acmdln,
+        __p___mb_cur_max,
+        ___mb_cur_max_func,
+        __pctype_func,
+        _controlfp,
+        _control87,
+        _clearfp,
+        _statusfp,
+        _purecall,
+        _XcptFilter,
+        signal,
+        _lock,
+        _unlock,
+        _errno,
+        __doserrno,
+        malloc,
+        calloc,
+        realloc,
+        free,
+        _msize,
+        memcpy,
+        memmove,
+        memset,
+        memcmp,
+        memchr,
+        strlen,
+        strcpy,
+        strncpy,
+        strcat,
+        strncat,
+        strcmp,
+        strncmp,
+        _stricmp,
+        _strnicmp,
+        strchr,
+        strrchr,
+        strstr,
+        strspn,
+        strcspn,
+        strpbrk,
+        _strdup,
+        _strlwr,
+        _strupr,
+        wcslen,
+        wcscpy,
+        wcscmp,
+        toupper,
+        tolower,
+        isalpha,
+        isupper,
+        islower,
+        isdigit,
+        isspace,
+        ispunct,
+        isalnum,
+        isxdigit,
+        isprint,
+        iscntrl,
+        isgraph,
+        atoi,
+        strtol,
+        strtoul,
+        atof,
+        strtod,
+        _itoa,
+        abs,
+        qsort,
+        bsearch,
+        srand,
+        rand,
+        time,
+        clock,
+        sprintf,
+        vsprintf,
+        _snprintf,
+        _vsnprintf,
+        swprintf,
+        printf,
+        vprintf,
+        sscanf,
+        sprintf_s,
+        vsprintf_s,
+        _snprintf_s,
+        _vsnprintf_s,
+        _vscprintf,
+        _scprintf,
+        swprintf_s,
+        vswprintf_s,
+        _snwprintf,
+        _vsnwprintf,
+        _snwprintf_s,
+        _vsnwprintf_s,
+        vswprintf,
+        _vscwprintf,
+        floor,
+        ceil,
+        sqrt,
+        sin,
+        cos,
+        tan,
+        asin,
+        acos,
+        atan,
+        exp,
+        log,
+        log10,
+        fabs,
+        sinh,
+        cosh,
+        tanh,
+        pow,
+        atan2,
+        fmod,
+        ldexp,
+        frexp,
+        modf,
+        _CIsqrt,
+        _CIsin,
+        _CIcos,
+        _CItan,
+        _CIasin,
+        _CIacos,
+        _CIatan,
+        _CIexp,
+        _CIlog,
+        _CIlog10,
+        _CIsinh,
+        _CIcosh,
+        _CItanh,
+        _CIpow,
+        _CIatan2,
+        _CIfmod,
+        _ftol,
+        fopen,
+        _wfopen,
+        fclose,
+        fread,
+        fwrite,
+        fseek,
+        ftell,
+        rewind,
+        feof,
+        ferror,
+        fflush,
+        fgetc,
+        ungetc,
+        fgets,
+        fputs,
+        fprintf
+    );
     for (alias, f) in [
         ("_strcmpi", _stricmp as crate::api::Handler),
         ("_strdup", _strdup),
@@ -3794,7 +4888,10 @@ mod tests {
             // a CR LF across the first buffer's end: that buffer takes the LF too
             let mut d = vec![b'a'; 4095];
             d.extend_from_slice(b"\r\nb\r\nc\r\n");
-            assert_eq!([4097, 4100, 4103].map(|p| tell(&d, 0, p)), [4097, 4100, 4103]);
+            assert_eq!(
+                [4097, 4100, 4103].map(|p| tell(&d, 0, p)),
+                [4097, 4100, 4103]
+            );
         }
 
         proptest! {
@@ -3820,7 +4917,15 @@ mod tests {
     #[test]
     fn split_like_crt() {
         let w = split_words(br#"a.exe  "b c"  d"e"f """#);
-        assert_eq!(w, [b"a.exe".to_vec(), b"b c".to_vec(), b"def".to_vec(), b"".to_vec()]);
+        assert_eq!(
+            w,
+            [
+                b"a.exe".to_vec(),
+                b"b c".to_vec(),
+                b"def".to_vec(),
+                b"".to_vec()
+            ]
+        );
     }
 
     proptest! {

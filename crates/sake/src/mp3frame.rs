@@ -15,7 +15,9 @@ pub struct Header {
     pub samples: u32,
 }
 
-const V1: [u32; 15] = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
+const V1: [u32; 15] = [
+    0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320,
+];
 const V2: [u32; 15] = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
 
 /// The header at the start of `b` (4 bytes), if it is one of a layer III frame this can split
@@ -86,7 +88,9 @@ impl Splitter {
                 }
                 self.started = true;
                 if rest.starts_with(b"ID3") && rest[6..10].iter().all(|&x| x < 0x80) {
-                    let size = rest[6..10].iter().fold(0usize, |a, &x| a << 7 | x as usize) + 10 + if rest[5] & 0x10 != 0 { 10 } else { 0 };
+                    let size = rest[6..10].iter().fold(0usize, |a, &x| a << 7 | x as usize)
+                        + 10
+                        + if rest[5] & 0x10 != 0 { 10 } else { 0 };
                     let here = size.min(rest.len());
                     at += here;
                     self.skip = size - here;
@@ -100,11 +104,16 @@ impl Splitter {
                 at += 1;
                 continue;
             };
-            if rest.len() < h.len || rest.len() < h.len + 4 && !end && !rest[h.len..].starts_with(b"TAG") {
+            if rest.len() < h.len
+                || rest.len() < h.len + 4 && !end && !rest[h.len..].starts_with(b"TAG")
+            {
                 break;
             }
             // (a header the next 4 bytes do not follow up is junk that looked like one)
-            if rest.len() >= h.len + 4 && header(&rest[h.len..]).is_none() && !rest[h.len..].starts_with(b"TAG") {
+            if rest.len() >= h.len + 4
+                && header(&rest[h.len..]).is_none()
+                && !rest[h.len..].starts_with(b"TAG")
+            {
                 at += 1;
                 continue;
             }
@@ -128,7 +137,12 @@ mod tests {
     /// A frame: MPEG-1 layer III 44.1 kHz at `kbps` (V1 table index `bri`), stereo or mono,
     /// padded or not, its body bytes from `fill`.
     fn frame(bri: usize, pad: bool, mono: bool, fill: u8) -> Vec<u8> {
-        let h = [0xff, 0xfb, (bri as u8) << 4 | (pad as u8) << 1, if mono { 0xc0 } else { 0x00 }];
+        let h = [
+            0xff,
+            0xfb,
+            (bri as u8) << 4 | (pad as u8) << 1,
+            if mono { 0xc0 } else { 0x00 },
+        ];
         let len = 144_000 * V1[bri] as usize / 44100 + pad as usize;
         let mut f = h.to_vec();
         // (no 0xff in the body: no false header inside it)
@@ -148,7 +162,10 @@ mod tests {
                 samples: 1152
             })
         );
-        assert_eq!(header(&[0xff, 0xfb, 0x92, 0xc0]).map(|h| (h.len, h.channels)), Some((418, 1)));
+        assert_eq!(
+            header(&[0xff, 0xfb, 0x92, 0xc0]).map(|h| (h.len, h.channels)),
+            Some((418, 1))
+        );
         // MPEG-2 22.05 kHz 64 kbps: 72000 * 64 / 22050 = 208; MPEG-2.5 11.025 kHz 32 kbps: 208
         assert_eq!(
             header(&[0xff, 0xf3, 0x80, 0x00]),
@@ -159,7 +176,10 @@ mod tests {
                 samples: 576
             })
         );
-        assert_eq!(header(&[0xff, 0xe3, 0x40, 0x00]).map(|h| (h.rate, h.len)), Some((11025, 208)));
+        assert_eq!(
+            header(&[0xff, 0xe3, 0x40, 0x00]).map(|h| (h.rate, h.len)),
+            Some((11025, 208))
+        );
         // free format, bad bitrate, reserved rate / version, layer II, no sync
         for b in [
             [0xff, 0xfb, 0x00, 0],

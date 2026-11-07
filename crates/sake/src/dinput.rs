@@ -75,7 +75,12 @@ pub fn input(kind: u32, x: i32, y: i32, data: u32) {
                 if d.buf.len() >= d.cap as usize {
                     d.buf.pop_front();
                 }
-                d.buf.push_back([ofs, v, time, SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)]);
+                d.buf.push_back([
+                    ofs,
+                    v,
+                    time,
+                    SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                ]);
             }
         }
     });
@@ -232,14 +237,31 @@ fn create_device(guid: u32, out: u32) -> u32 {
     let o = mem::heap_alloc(8, true);
     mem::wp(o, dev_vtbl());
     let at = crate::user::cursor_pos();
-    devices(|ds| ds.insert(o, Dev { kind, last: at, wheel: 0, cap: 0, buf: VecDeque::new(), at }));
+    devices(|ds| {
+        ds.insert(
+            o,
+            Dev {
+                kind,
+                last: at,
+                wheel: 0,
+                cap: 0,
+                buf: VecDeque::new(),
+                at,
+            },
+        )
+    });
     mem::putp(out, o);
     0
 }
 
 fn write_guid(p: u32, first: u32) {
     w32(p, first);
-    mem::write(p + 4, &[0xa0, 0xd5, 0xcf, 0x11, 0xbf, 0xc7, 0x44, 0x45, 0x53, 0x54, 0, 0]);
+    mem::write(
+        p + 4,
+        &[
+            0xa0, 0xd5, 0xcf, 0x11, 0xbf, 0xc7, 0x44, 0x45, 0x53, 0x54, 0, 0,
+        ],
+    );
 }
 
 /// DIDEVICEINSTANCEA
@@ -250,7 +272,11 @@ fn device_instance(p: u32, kind: u32) {
     write_guid(p + 4, kind);
     write_guid(p + 20, kind);
     w32(p + 36, if kind == KEYBOARD { 0x413 } else { 0x212 });
-    let name: &[u8] = if kind == KEYBOARD { b"Keyboard" } else { b"Mouse" };
+    let name: &[u8] = if kind == KEYBOARD {
+        b"Keyboard"
+    } else {
+        b"Mouse"
+    };
     mem::write(p + 40, name);
     mem::write(p + 300, name);
 }
@@ -309,7 +335,11 @@ fn GetCapabilities(c: &mut Ctx) -> u32 {
 fn GetProperty(c: &mut Ctx) -> u32 {
     let (o, prop, p) = (c.a(0), c.a(1), c.a(2));
     if r32(p) >= 20 {
-        let v = if prop == 1 { devices(|ds| ds.get(&o).map_or(0, |d| d.cap)) } else { 0 };
+        let v = if prop == 1 {
+            devices(|ds| ds.get(&o).map_or(0, |d| d.cap))
+        } else {
+            0
+        };
         w32(p + 16, v);
     }
     0
@@ -390,7 +420,10 @@ fn GetDeviceState(c: &mut Ctx) -> u32 {
             let now = crate::user::cursor_pos();
             let (last, wheel) = devices(|ds| {
                 let d = ds.get_mut(&o).unwrap();
-                (std::mem::replace(&mut d.last, now), std::mem::take(&mut d.wheel))
+                (
+                    std::mem::replace(&mut d.last, now),
+                    std::mem::take(&mut d.wheel),
+                )
             });
             if n >= 12 {
                 w32(p, (now.0 - last.0) as u32);
@@ -424,7 +457,11 @@ fn GetDeviceData(c: &mut Ctx) -> u32 {
             return None;
         }
         let n = want.min(d.buf.len());
-        let items: Vec<[u32; 4]> = if flags & 1 != 0 { d.buf.iter().take(n).copied().collect() } else { d.buf.drain(..n).collect() };
+        let items: Vec<[u32; 4]> = if flags & 1 != 0 {
+            d.buf.iter().take(n).copied().collect()
+        } else {
+            d.buf.drain(..n).collect()
+        };
         Some(items)
     });
     let Some(items) = got else {

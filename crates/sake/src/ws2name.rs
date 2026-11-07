@@ -45,19 +45,37 @@ pub struct Addr {
 
 impl Addr {
     pub fn v4(ip: [u8; 4], port: u16) -> Addr {
-        Addr { ip: ip.to_vec(), port, flow: 0, scope: 0 }
+        Addr {
+            ip: ip.to_vec(),
+            port,
+            flow: 0,
+            scope: 0,
+        }
     }
     pub fn v6(ip: [u8; 16], port: u16) -> Addr {
-        Addr { ip: ip.to_vec(), port, flow: 0, scope: 0 }
+        Addr {
+            ip: ip.to_vec(),
+            port,
+            flow: 0,
+            scope: 0,
+        }
     }
     pub fn is_v6(&self) -> bool {
         self.ip.len() == 16
     }
     pub fn family(&self) -> u32 {
-        if self.is_v6() { AF_INET6 } else { AF_INET }
+        if self.is_v6() {
+            AF_INET6
+        } else {
+            AF_INET
+        }
     }
     pub fn size(&self) -> u32 {
-        if self.is_v6() { 28 } else { 16 }
+        if self.is_v6() {
+            28
+        } else {
+            16
+        }
     }
     pub fn any(&self) -> bool {
         self.ip.iter().all(|&b| b == 0)
@@ -67,7 +85,8 @@ impl Addr {
         if !self.is_v6() {
             return Some(self.ip[..4].try_into().unwrap());
         }
-        (self.ip[..10].iter().all(|&b| b == 0) && self.ip[10] == 0xff && self.ip[11] == 0xff).then(|| self.ip[12..].try_into().unwrap())
+        (self.ip[..10].iter().all(|&b| b == 0) && self.ip[10] == 0xff && self.ip[11] == 0xff)
+            .then(|| self.ip[12..].try_into().unwrap())
     }
     pub fn mapped(v4: [u8; 4], port: u16) -> Addr {
         let mut ip = [0u8; 16];
@@ -98,7 +117,11 @@ impl Addr {
     }
     pub fn text(&self) -> String {
         if self.is_v6() {
-            netaddr::v6_text(self.ip.as_slice().try_into().unwrap(), self.scope, self.port.to_be())
+            netaddr::v6_text(
+                self.ip.as_slice().try_into().unwrap(),
+                self.scope,
+                self.port.to_be(),
+            )
         } else {
             netaddr::v4_text(self.ip.as_slice().try_into().unwrap(), self.port.to_be())
         }
@@ -116,14 +139,22 @@ pub fn read_sa(p: u32, len: u32) -> Result<Addr, u32> {
             if len < 16 {
                 return Err(WSAEFAULT);
             }
-            Ok(Addr::v4(mem::slice(p + 4, 4).try_into().unwrap(), u16::from_be(r16(p + 2))))
+            Ok(Addr::v4(
+                mem::slice(p + 4, 4).try_into().unwrap(),
+                u16::from_be(r16(p + 2)),
+            ))
         }
         AF_INET6 => {
             if len < 24 {
                 return Err(WSAEFAULT);
             }
             let scope = if len >= 28 { r32(p + 24) } else { 0 };
-            Ok(Addr { ip: mem::slice(p + 8, 16).to_vec(), port: u16::from_be(r16(p + 2)), flow: r32(p + 4), scope })
+            Ok(Addr {
+                ip: mem::slice(p + 8, 16).to_vec(),
+                port: u16::from_be(r16(p + 2)),
+                flow: r32(p + 4),
+                scope,
+            })
         }
         _ => Err(WSAEAFNOSUPPORT),
     }
@@ -199,7 +230,9 @@ fn thread_buf(kind: u8, size: u32) -> u32 {
     static BUFS: Mutex<Option<HashMap<(u32, u8), u32>>> = Mutex::new(None);
     let tid = crate::cur().tid;
     let mut g = BUFS.lock().unwrap();
-    *g.get_or_insert_with(HashMap::default).entry((tid, kind)).or_insert_with(|| mem::heap_alloc(size, true))
+    *g.get_or_insert_with(HashMap::default)
+        .entry((tid, kind))
+        .or_insert_with(|| mem::heap_alloc(size, true))
 }
 
 fn inet_ntoa(c: &mut Ctx) -> u32 {
@@ -308,7 +341,12 @@ fn string_to_address(c: &mut Ctx, wide: bool) -> u32 {
                 }
                 return err(WSAEINVAL);
             }
-            Addr { ip: ip.to_vec(), port: u16::from_be(r.port), flow: 0, scope: r.scope }
+            Addr {
+                ip: ip.to_vec(),
+                port: u16::from_be(r.port),
+                flow: 0,
+                scope: r.scope,
+            }
         }
         _ => return err(WSAEINVAL),
     };
@@ -695,7 +733,10 @@ fn getprotobyname(c: &mut Ctx) -> u32 {
 }
 fn proto_by_name(p: u32) -> u32 {
     let n = cstr_lossy(p);
-    match PROTOCOLS.iter().find(|p| p.1.eq_ignore_ascii_case(&n) || p.2.eq_ignore_ascii_case(&n)) {
+    match PROTOCOLS
+        .iter()
+        .find(|p| p.1.eq_ignore_ascii_case(&n) || p.2.eq_ignore_ascii_case(&n))
+    {
         Some(p) => protoent(p),
         None => {
             last(WSANO_DATA);
@@ -741,8 +782,14 @@ fn servent(e: &(&str, u16, &str, &[&str])) -> u32 {
     }
     b
 }
-fn service_by_name(name: &str, proto: Option<&str>) -> Option<&'static (&'static str, u16, &'static str, &'static [&'static str])> {
-    SERVICES.iter().find(|s| (s.0.eq_ignore_ascii_case(name) || s.3.iter().any(|a| a.eq_ignore_ascii_case(name))) && proto.is_none_or(|p| s.2.eq_ignore_ascii_case(p)))
+fn service_by_name(
+    name: &str,
+    proto: Option<&str>,
+) -> Option<&'static (&'static str, u16, &'static str, &'static [&'static str])> {
+    SERVICES.iter().find(|s| {
+        (s.0.eq_ignore_ascii_case(name) || s.3.iter().any(|a| a.eq_ignore_ascii_case(name)))
+            && proto.is_none_or(|p| s.2.eq_ignore_ascii_case(p))
+    })
 }
 fn getservbyname(c: &mut Ctx) -> u32 {
     serv_by_name(c.a(0), c.a(1))
@@ -764,7 +811,10 @@ fn getservbyport(c: &mut Ctx) -> u32 {
 fn serv_by_port(port: u32, p: u32) -> u32 {
     let port = u16::from_be(port as u16);
     let proto = (p != 0).then(|| cstr_lossy(p));
-    match SERVICES.iter().find(|s| s.1 == port && proto.as_deref().is_none_or(|p| s.2.eq_ignore_ascii_case(p))) {
+    match SERVICES
+        .iter()
+        .find(|s| s.1 == port && proto.as_deref().is_none_or(|p| s.2.eq_ignore_ascii_case(p)))
+    {
         Some(s) => servent(s),
         None => {
             last(WSANO_DATA);
@@ -793,12 +843,15 @@ pub fn resolve(name: &str) -> Option<Vec<Addr>> {
     let mut lo6 = [0u8; 16];
     lo6[15] = 1;
     let lo6 = Addr::v6(lo6, 0);
-    if name.is_empty() || name.eq_ignore_ascii_case(HOSTNAME) || name.eq_ignore_ascii_case("localhost") || name.eq_ignore_ascii_case(&format!("{HOSTNAME}.")) {
+    if name.is_empty()
+        || name.eq_ignore_ascii_case(HOSTNAME)
+        || name.eq_ignore_ascii_case("localhost")
+        || name.eq_ignore_ascii_case(&format!("{HOSTNAME}."))
+    {
         return Some(vec![lo6, lo4]);
     }
     literal(name).map(|a| vec![a]).or_else(|| hosts(name))
 }
-
 
 const AI_DISABLE_IDN_ENCODING: u32 = 0x80000;
 
@@ -806,14 +859,26 @@ const AI_DISABLE_IDN_ENCODING: u32 = 0x80000;
 /// Punycode (RFC 3492), lower-cased first
 pub fn idna(name: &str) -> String {
     name.split('.')
-        .map(|l| if l.is_ascii() { l.to_string() } else { format!("xn--{}", punycode(&l.to_lowercase())) })
+        .map(|l| {
+            if l.is_ascii() {
+                l.to_string()
+            } else {
+                format!("xn--{}", punycode(&l.to_lowercase()))
+            }
+        })
         .collect::<Vec<_>>()
         .join(".")
 }
 
 fn punycode(label: &str) -> String {
     const BASE: u32 = 36;
-    let digit = |d: u32| (if d < 26 { b'a' + d as u8 } else { b'0' + (d - 26) as u8 }) as char;
+    let digit = |d: u32| {
+        (if d < 26 {
+            b'a' + d as u8
+        } else {
+            b'0' + (d - 26) as u8
+        }) as char
+    };
     let adapt = |mut delta: u32, n: u32, first: bool| {
         delta /= if first { 700 } else { 2 };
         delta += delta / n;
@@ -843,7 +908,13 @@ fn punycode(label: &str) -> String {
                 let mut q = delta;
                 let mut k = BASE;
                 loop {
-                    let t = if k <= bias { 1 } else if k >= bias + 26 { 26 } else { k - bias };
+                    let t = if k <= bias {
+                        1
+                    } else if k >= bias + 26 {
+                        26
+                    } else {
+                        k - bias
+                    };
                     if q < t {
                         break;
                     }
@@ -883,13 +954,17 @@ fn literal(name: &str) -> Option<Addr> {
 /// There is no DNS: a name resolves only through the hosts file (drivers\etc\hosts, lines of
 /// "address name [aliases] # comment"), every matching line in order
 fn hosts(name: &str) -> Option<Vec<Addr>> {
-    let text = std::fs::read(crate::files::to_host("C:\\windows\\system32\\drivers\\etc\\hosts")).ok()?;
+    let text = std::fs::read(crate::files::to_host(
+        "C:\\windows\\system32\\drivers\\etc\\hosts",
+    ))
+    .ok()?;
     let found: Vec<Addr> = String::from_utf8_lossy(&text)
         .lines()
         .filter_map(|l| {
             let mut w = l.split('#').next()?.split_whitespace();
             let a = literal(w.next()?)?;
-            w.any(|n| n.eq_ignore_ascii_case(name.trim_end_matches('.'))).then_some(a)
+            w.any(|n| n.eq_ignore_ascii_case(name.trim_end_matches('.')))
+                .then_some(a)
         })
         .collect();
     (!found.is_empty()).then_some(found)
@@ -926,16 +1001,31 @@ fn host_by_name(p: u32) -> u32 {
         last(WSANOTINITIALISED);
         return 0;
     }
-    let name = if p == 0 { HOSTNAME.to_string() } else { cstr_lossy(p) };
+    let name = if p == 0 {
+        HOSTNAME.to_string()
+    } else {
+        cstr_lossy(p)
+    };
     match resolve(&name) {
         Some(v) => {
-            let v4: Vec<Vec<u8>> = v.iter().filter(|a| !a.is_v6()).map(|a| a.ip.clone()).collect();
+            let v4: Vec<Vec<u8>> = v
+                .iter()
+                .filter(|a| !a.is_v6())
+                .map(|a| a.ip.clone())
+                .collect();
             if v4.is_empty() {
                 last(WSANO_DATA);
                 return 0;
             }
-            let shown = if name.is_empty() || name.eq_ignore_ascii_case("localhost") || name.eq_ignore_ascii_case(HOSTNAME) {
-                if name.eq_ignore_ascii_case("localhost") { HOSTNAME.to_string() } else { HOSTNAME.to_string() }
+            let shown = if name.is_empty()
+                || name.eq_ignore_ascii_case("localhost")
+                || name.eq_ignore_ascii_case(HOSTNAME)
+            {
+                if name.eq_ignore_ascii_case("localhost") {
+                    HOSTNAME.to_string()
+                } else {
+                    HOSTNAME.to_string()
+                }
             } else {
                 name.clone()
             };
@@ -972,7 +1062,12 @@ fn host_by_addr(a: u32, len: u32, af: u32) -> u32 {
         return 0;
     }
     let ip = mem::slice(a, want).to_vec();
-    let addr = Addr { ip: ip.clone(), port: 0, flow: 0, scope: 0 };
+    let addr = Addr {
+        ip: ip.clone(),
+        port: 0,
+        flow: 0,
+        scope: 0,
+    };
     if !addr.loopback() {
         last(WSAHOST_NOT_FOUND);
         return 0;
@@ -1006,12 +1101,38 @@ pub struct Hints {
 
 /// The entries for (node, service, hints): Ok((canonical name, [(addr, socktype, protocol)]))
 /// or the error
-pub fn addrinfo(node: Option<&str>, service: Option<&str>, h: &Hints) -> Result<(String, Vec<(Addr, u32, u32)>), u32> {
+pub fn addrinfo(
+    node: Option<&str>,
+    service: Option<&str>,
+    h: &Hints,
+) -> Result<(String, Vec<(Addr, u32, u32)>), u32> {
     if node.is_none() && service.is_none() {
         return Err(WSAHOST_NOT_FOUND);
     }
-    let known = AI_PASSIVE | AI_CANONNAME | AI_NUMERICHOST | AI_NUMERICSERV | AI_ALL | AI_ADDRCONFIG | AI_V4MAPPED | AI_NON_AUTHORITATIVE | AI_SECURE | AI_RETURN_PREFERRED_NAMES | AI_FQDN | AI_FILESERVER | AI_DISABLE_IDN_ENCODING | AI_EXTENDED | AI_RESOLUTION_HANDLE | 0x10 | 0x1000 | 0x2000 | 0x100000 | 0x200000;
-    if h.flags & !known != 0 || (h.flags & AI_CANONNAME != 0 && node.is_none()) || (h.flags & AI_FQDN != 0 && h.flags & AI_CANONNAME != 0) {
+    let known = AI_PASSIVE
+        | AI_CANONNAME
+        | AI_NUMERICHOST
+        | AI_NUMERICSERV
+        | AI_ALL
+        | AI_ADDRCONFIG
+        | AI_V4MAPPED
+        | AI_NON_AUTHORITATIVE
+        | AI_SECURE
+        | AI_RETURN_PREFERRED_NAMES
+        | AI_FQDN
+        | AI_FILESERVER
+        | AI_DISABLE_IDN_ENCODING
+        | AI_EXTENDED
+        | AI_RESOLUTION_HANDLE
+        | 0x10
+        | 0x1000
+        | 0x2000
+        | 0x100000
+        | 0x200000;
+    if h.flags & !known != 0
+        || (h.flags & AI_CANONNAME != 0 && node.is_none())
+        || (h.flags & AI_FQDN != 0 && h.flags & AI_CANONNAME != 0)
+    {
         return Err(WSAEINVAL);
     }
     if !matches!(h.family, AF_UNSPEC | AF_INET | AF_INET6) {
@@ -1028,7 +1149,11 @@ pub fn addrinfo(node: Option<&str>, service: Option<&str>, h: &Hints) -> Result<
             Ok(_) => return Err(WSATYPE_NOT_FOUND),
             Err(_) if h.flags & AI_NUMERICSERV != 0 => return Err(WSATYPE_NOT_FOUND),
             Err(_) => {
-                let proto = if h.socktype == 2 || h.protocol == 17 { "udp" } else { "tcp" };
+                let proto = if h.socktype == 2 || h.protocol == 17 {
+                    "udp"
+                } else {
+                    "tcp"
+                };
                 match service_by_name(s, Some(proto)) {
                     Some(e) => e.1,
                     None => return Err(WSATYPE_NOT_FOUND),
@@ -1052,7 +1177,11 @@ pub fn addrinfo(node: Option<&str>, service: Option<&str>, h: &Hints) -> Result<
                 return Err(WSAHOST_NOT_FOUND);
             }
             // (a name in other scripts is looked up as its IDNA "xn--" form)
-            let n = if h.flags & AI_DISABLE_IDN_ENCODING == 0 { idna(n) } else { n.to_string() };
+            let n = if h.flags & AI_DISABLE_IDN_ENCODING == 0 {
+                idna(n)
+            } else {
+                n.to_string()
+            };
             resolve(&n).ok_or(WSAHOST_NOT_FOUND)?
         }
     };
@@ -1071,7 +1200,13 @@ pub fn addrinfo(node: Option<&str>, service: Option<&str>, h: &Hints) -> Result<
     }
     if out.is_empty() {
         // (a name known only by addresses of the other family)
-        return Err(if node.is_some_and(|n| !n.is_empty() && literal(n).is_none()) { WSANO_DATA } else { WSAHOST_NOT_FOUND });
+        return Err(
+            if node.is_some_and(|n| !n.is_empty() && literal(n).is_none()) {
+                WSANO_DATA
+            } else {
+                WSAHOST_NOT_FOUND
+            },
+        );
     }
     let canon = match node {
         Some(n) if !n.is_empty() && !n.eq_ignore_ascii_case("localhost") => n.to_string(),
@@ -1082,9 +1217,19 @@ pub fn addrinfo(node: Option<&str>, service: Option<&str>, h: &Hints) -> Result<
 
 fn hints_at(p: u32) -> Hints {
     if p == 0 {
-        return Hints { flags: 0, family: 0, socktype: 0, protocol: 0 };
+        return Hints {
+            flags: 0,
+            family: 0,
+            socktype: 0,
+            protocol: 0,
+        };
     }
-    Hints { flags: r32(p), family: r32(p + 4), socktype: r32(p + 8), protocol: r32(p + 12) }
+    Hints {
+        flags: r32(p),
+        family: r32(p + 4),
+        socktype: r32(p + 8),
+        protocol: r32(p + 12),
+    }
 }
 
 /// Builds the result list: ADDRINFOA/W { flags, family, socktype, protocol, addrlen (size_t),
@@ -1096,7 +1241,11 @@ fn build_ai(canon: &str, v: &[(Addr, u32, u32)], flags: u32, wide: bool, ex: boo
     let mut head = 0;
     let mut prev = 0;
     for (i, (a, t, p)) in v.iter().enumerate() {
-        let cn = if i == 0 && flags & AI_CANONNAME != 0 { Some(canon) } else { None };
+        let cn = if i == 0 && flags & AI_CANONNAME != 0 {
+            Some(canon)
+        } else {
+            None
+        };
         let cn_len = cn.map_or(0, |s| (s.len() as u32 + 1) * if wide { 2 } else { 1 });
         let e = mem::heap_alloc(hdr + 28 + cn_len, true);
         w32(e, flags & (AI_PASSIVE | AI_CANONNAME | AI_NUMERICHOST));
@@ -1137,7 +1286,13 @@ fn free_ai(c: &mut Ctx, ex: bool) -> u32 {
 }
 
 fn ostr(p: u32, wide: bool) -> Option<String> {
-    (p != 0).then(|| if wide { String::from_utf16_lossy(&mem::wstr(p)) } else { cstr_lossy(p) })
+    (p != 0).then(|| {
+        if wide {
+            String::from_utf16_lossy(&mem::wstr(p))
+        } else {
+            cstr_lossy(p)
+        }
+    })
 }
 
 /// getaddrinfo(node, service, hints, &result) / GetAddrInfoW
@@ -1262,7 +1417,8 @@ pub fn on_thread(f: u32, args: Vec<u32>, before: impl FnOnce() + Send + 'static)
 
 /// getnameinfo(sa, salen, host, hostlen, serv, servlen, flags) / GetNameInfoW
 fn getnameinfo(c: &mut Ctx, wide: bool) -> u32 {
-    let (sa, salen, host, hlen, serv, slen, flags) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6));
+    let (sa, salen, host, hlen, serv, slen, flags) =
+        (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6));
     const NI_NOFQDN: u32 = 1;
     const NI_NUMERICHOST: u32 = 2;
     const NI_NAMEREQD: u32 = 4;
@@ -1277,7 +1433,13 @@ fn getnameinfo(c: &mut Ctx, wide: bool) -> u32 {
     }
     let a = match read_sa(sa, salen) {
         Ok(a) => a,
-        Err(e) => return fail(if e == WSAEAFNOSUPPORT { WSAEAFNOSUPPORT } else { WSAEFAULT }),
+        Err(e) => {
+            return fail(if e == WSAEAFNOSUPPORT {
+                WSAEAFNOSUPPORT
+            } else {
+                WSAEFAULT
+            })
+        }
     };
     if (host == 0 || hlen == 0) && (serv == 0 || slen == 0) {
         return fail(WSAHOST_NOT_FOUND);
@@ -1286,7 +1448,11 @@ fn getnameinfo(c: &mut Ctx, wide: bool) -> u32 {
         let numeric = {
             let mut x = a.clone();
             x.port = 0;
-            if x.is_v6() { netaddr::v6_text(x.ip.as_slice().try_into().unwrap(), x.scope, 0) } else { x.text() }
+            if x.is_v6() {
+                netaddr::v6_text(x.ip.as_slice().try_into().unwrap(), x.scope, 0)
+            } else {
+                x.text()
+            }
         };
         let name = if flags & NI_NUMERICHOST != 0 {
             numeric
@@ -1308,7 +1474,10 @@ fn getnameinfo(c: &mut Ctx, wide: bool) -> u32 {
         let s = if flags & NI_NUMERICSERV != 0 {
             a.port.to_string()
         } else {
-            SERVICES.iter().find(|s| s.1 == a.port && s.2 == proto).map_or(a.port.to_string(), |s| s.0.to_string())
+            SERVICES
+                .iter()
+                .find(|s| s.1 == a.port && s.2 == proto)
+                .map_or(a.port.to_string(), |s| s.0.to_string())
         };
         if s.len() as u32 >= slen {
             return fail(WSAEFAULT);
@@ -1389,18 +1558,27 @@ fn async_host(c: &mut Ctx) -> u32 {
     async_reply(hwnd, msg, buf, blen, r, 3)
 }
 fn async_addr(c: &mut Ctx) -> u32 {
-    let (hwnd, msg, a, len, ty, buf, blen) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6));
+    let (hwnd, msg, a, len, ty, buf, blen) =
+        (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6));
     let r = host_by_addr(a, len, ty);
     async_reply(hwnd, msg, buf, blen, r, 3)
 }
 fn async_proto(c: &mut Ctx, by_name: bool) -> u32 {
     let (hwnd, msg, key, buf, blen) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
-    let r = if by_name { proto_by_name(key) } else { proto_by_number(key) };
+    let r = if by_name {
+        proto_by_name(key)
+    } else {
+        proto_by_number(key)
+    };
     async_reply(hwnd, msg, buf, blen, r, 1)
 }
 fn async_serv(c: &mut Ctx, by_name: bool) -> u32 {
     let (hwnd, msg, key, proto, buf, blen) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5));
-    let r = if by_name { serv_by_name(key, proto) } else { serv_by_port(key, proto) };
+    let r = if by_name {
+        serv_by_name(key, proto)
+    } else {
+        serv_by_port(key, proto)
+    };
     async_reply(hwnd, msg, buf, blen, r, 2)
 }
 
@@ -1411,10 +1589,20 @@ pub const CATALOG: &[(u32, u32, u32, &str, u32, u32, u32)] = &[
     (AF_INET, 1, 6, "MSAFD Tcpip [TCP/IP]", 0x20066, 0, 1001),
     (AF_INET, 2, 17, "MSAFD Tcpip [UDP/IP]", 0x20609, 65527, 1002),
     (AF_INET6, 1, 6, "MSAFD Tcpip [TCP/IPv6]", 0x20066, 0, 1003),
-    (AF_INET6, 2, 17, "MSAFD Tcpip [UDP/IPv6]", 0x20609, 65527, 1004),
+    (
+        AF_INET6,
+        2,
+        17,
+        "MSAFD Tcpip [UDP/IPv6]",
+        0x20609,
+        65527,
+        1004,
+    ),
 ];
 /// {E70F1AA0-AB8B-11CF-8CA3-00805F48A192}, MSAFD's provider id
-pub const PROVIDER: [u8; 16] = [0xa0, 0x1a, 0x0f, 0xe7, 0x8b, 0xab, 0xcf, 0x11, 0x8c, 0xa3, 0x00, 0x80, 0x5f, 0x48, 0xa1, 0x92];
+pub const PROVIDER: [u8; 16] = [
+    0xa0, 0x1a, 0x0f, 0xe7, 0x8b, 0xab, 0xcf, 0x11, 0x8c, 0xa3, 0x00, 0x80, 0x5f, 0x48, 0xa1, 0x92,
+];
 
 /// WSAPROTOCOL_INFOA (372 bytes) or W (628) for catalog entry `e`; `reserved` goes in
 /// dwProviderReserved (a duplicated socket's handle)
@@ -1440,8 +1628,14 @@ pub fn protocol_info(p: u32, e: &(u32, u32, u32, &str, u32, u32, u32), wide: boo
 }
 
 /// The catalog entry a socket of (family, type, protocol) comes from
-pub fn catalog_entry(af: u32, ty: u32, proto: u32) -> Option<&'static (u32, u32, u32, &'static str, u32, u32, u32)> {
-    CATALOG.iter().find(|e| e.0 == af && e.1 == ty && (proto == 0 || proto == e.2))
+pub fn catalog_entry(
+    af: u32,
+    ty: u32,
+    proto: u32,
+) -> Option<&'static (u32, u32, u32, &'static str, u32, u32, u32)> {
+    CATALOG
+        .iter()
+        .find(|e| e.0 == af && e.1 == ty && (proto == 0 || proto == e.2))
 }
 
 /// WSAEnumProtocols(protocols (0-ended) or NULL, buf, &len)
@@ -1464,7 +1658,10 @@ fn enum_protocols_at(list: u32, buf: u32, lenp: u32, wide: bool) -> u32 {
             i += 1;
         }
     }
-    let v: Vec<_> = CATALOG.iter().filter(|e| list == 0 || want.contains(&e.2)).collect();
+    let v: Vec<_> = CATALOG
+        .iter()
+        .filter(|e| list == 0 || want.contains(&e.2))
+        .collect();
     let each = if wide { 628 } else { 372 };
     let need = each * v.len() as u32;
     if buf == 0 || r32(lenp) < need {
@@ -1492,7 +1689,13 @@ fn enum_namespaces(c: &mut Ctx, wide: bool) -> u32 {
         return err(WSAEFAULT);
     }
     // {22059D40-7E9E-11CF-AE5A-00AA00A7112B}, the DNS name space provider
-    mem::write(buf, &[0x40, 0x9d, 0x05, 0x22, 0x9e, 0x7e, 0xcf, 0x11, 0xae, 0x5a, 0x00, 0xaa, 0x00, 0xa7, 0x11, 0x2b]);
+    mem::write(
+        buf,
+        &[
+            0x40, 0x9d, 0x05, 0x22, 0x9e, 0x7e, 0xcf, 0x11, 0xae, 0x5a, 0x00, 0xaa, 0x00, 0xa7,
+            0x11, 0x2b,
+        ],
+    );
     w32(buf + 16, 12);
     w32(buf + 20, 1);
     w32(buf + 24, 0);
@@ -1547,7 +1750,13 @@ pub fn init() {
         implement(d, "WSAAsyncGetProtoByNumber", |c| async_proto(c, false));
         implement(d, "WSAAsyncGetServByName", |c| async_serv(c, true));
         implement(d, "WSAAsyncGetServByPort", |c| async_serv(c, false));
-        implement(d, "WSACancelAsyncRequest", |c| if c.a(0) == 0 { err(WSAEINVAL) } else { err(WSAEINVAL) });
+        implement(d, "WSACancelAsyncRequest", |c| {
+            if c.a(0) == 0 {
+                err(WSAEINVAL)
+            } else {
+                err(WSAEINVAL)
+            }
+        });
     }
     let d = "ws2_32";
     implement(d, "WSAHtonl", |c| wsa_order(c, true));
@@ -1566,8 +1775,20 @@ pub fn init() {
     implement(d, "getaddrinfo", |c| getaddrinfo(c, false));
     implement(d, "GetAddrInfoW", |c| getaddrinfo(c, true));
     implement(d, "GetAddrInfoExW", GetAddrInfoExW);
-    implement(d, "GetAddrInfoExOverlappedResult", |c| if c.a(0) == 0 { WSAEINVAL } else { mem::rp(c.a(0)) });
-    implement(d, "GetAddrInfoExCancel", |c| if c.a(0) == 0 { WSAEINVAL } else { 6 });
+    implement(d, "GetAddrInfoExOverlappedResult", |c| {
+        if c.a(0) == 0 {
+            WSAEINVAL
+        } else {
+            mem::rp(c.a(0))
+        }
+    });
+    implement(d, "GetAddrInfoExCancel", |c| {
+        if c.a(0) == 0 {
+            WSAEINVAL
+        } else {
+            6
+        }
+    });
     implement(d, "freeaddrinfo", |c| free_ai(c, false));
     implement(d, "FreeAddrInfoW", |c| free_ai(c, false));
     implement(d, "FreeAddrInfoEx", |c| free_ai(c, true));
@@ -1584,13 +1805,24 @@ pub fn init() {
         }
         r
     });
-    implement(d, "WSAEnumNameSpaceProvidersA", |c| enum_namespaces(c, false));
-    implement(d, "WSAEnumNameSpaceProvidersW", |c| enum_namespaces(c, true));
+    implement(d, "WSAEnumNameSpaceProvidersA", |c| {
+        enum_namespaces(c, false)
+    });
+    implement(d, "WSAEnumNameSpaceProvidersW", |c| {
+        enum_namespaces(c, true)
+    });
     implement(d, "WSCGetProviderPath", WSCGetProviderPath);
     implement(d, "WSCGetProviderInfo", |c| {
         let (id, info, size, errp) = (c.a(0), c.a(2), c.a(3), c.a(5));
         if errp != 0 {
-            w32(errp, if id == 0 || info == 0 && size == 0 { WSAEFAULT } else { WSANO_RECOVERY });
+            w32(
+                errp,
+                if id == 0 || info == 0 && size == 0 {
+                    WSAEFAULT
+                } else {
+                    WSANO_RECOVERY
+                },
+            );
         }
         SOCKET_ERROR
     });
@@ -1605,7 +1837,13 @@ pub fn init() {
     implement(d, "WSALookupServiceBeginW", lookup_begin);
     implement(d, "WSALookupServiceNextA", |_| err(WSA_E_NO_MORE));
     implement(d, "WSALookupServiceNextW", |_| err(WSA_E_NO_MORE));
-    implement(d, "WSALookupServiceEnd", |c| if c.a(0) == 0 { err(6) } else { 0 });
+    implement(d, "WSALookupServiceEnd", |c| {
+        if c.a(0) == 0 {
+            err(6)
+        } else {
+            0
+        }
+    });
     let _ = (w8, WSASERVICE_NOT_FOUND);
 }
 
@@ -1627,23 +1865,47 @@ mod tests {
     #[test]
     fn punycode() {
         // RFC 3492 7.1 samples and the Wine test's name
-        assert_eq!(super::idna("\u{30c6}\u{30b9}\u{30c8}.winehq.org"), "xn--zckzah.winehq.org");
-        assert_eq!(super::punycode("\u{4ed6}\u{4eec}\u{4e3a}\u{4ec0}\u{4e48}\u{4e0d}\u{8bf4}\u{4e2d}\u{6587}"), "ihqwcrb4cv8a8dqg056pqjye");
+        assert_eq!(
+            super::idna("\u{30c6}\u{30b9}\u{30c8}.winehq.org"),
+            "xn--zckzah.winehq.org"
+        );
+        assert_eq!(
+            super::punycode(
+                "\u{4ed6}\u{4eec}\u{4e3a}\u{4ec0}\u{4e48}\u{4e0d}\u{8bf4}\u{4e2d}\u{6587}"
+            ),
+            "ihqwcrb4cv8a8dqg056pqjye"
+        );
         assert_eq!(super::punycode("b\u{fc}cher"), "bcher-kva");
         assert_eq!(super::idna("example.com"), "example.com");
     }
     #[test]
     fn ai() {
-        let h = Hints { flags: 0, family: 0, socktype: 0, protocol: 0 };
+        let h = Hints {
+            flags: 0,
+            family: 0,
+            socktype: 0,
+            protocol: 0,
+        };
         assert_eq!(addrinfo(None, None, &h).err(), Some(WSAHOST_NOT_FOUND));
         let (_, v) = addrinfo(Some("localhost"), Some("80"), &h).unwrap();
         assert_eq!(v.len(), 2);
         assert_eq!(v[1].0, Addr::v4([127, 0, 0, 1], 80));
-        let h4 = Hints { flags: AI_NUMERICHOST, family: AF_INET, socktype: 1, protocol: 0 };
-        assert_eq!(addrinfo(Some("localhost"), None, &h4).err(), Some(WSAHOST_NOT_FOUND));
+        let h4 = Hints {
+            flags: AI_NUMERICHOST,
+            family: AF_INET,
+            socktype: 1,
+            protocol: 0,
+        };
+        assert_eq!(
+            addrinfo(Some("localhost"), None, &h4).err(),
+            Some(WSAHOST_NOT_FOUND)
+        );
         let (_, v) = addrinfo(Some("1.2.3.4"), Some("http"), &h4).unwrap();
         assert_eq!((v[0].0.port, v[0].1, v[0].2), (80, 1, 0));
-        assert_eq!(addrinfo(Some("example.invalid"), None, &h).err(), Some(WSAHOST_NOT_FOUND));
+        assert_eq!(
+            addrinfo(Some("example.invalid"), None, &h).err(),
+            Some(WSAHOST_NOT_FOUND)
+        );
     }
     #[test]
     fn addr() {

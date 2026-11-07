@@ -27,7 +27,10 @@ pub unsafe extern "C" fn __wrap_writev(f: c_int, iov: *const iovec, cnt: c_int) 
         let mut l = crate::crashlog::Line::<4096>::new();
         for v in std::slice::from_raw_parts(iov, cnt.max(0) as usize) {
             if !v.iov_base.is_null() {
-                l.push(std::slice::from_raw_parts(v.iov_base as *const u8, v.iov_len));
+                l.push(std::slice::from_raw_parts(
+                    v.iov_base as *const u8,
+                    v.iov_len,
+                ));
             }
         }
         crate::crashlog::output(f, l.bytes());
@@ -49,11 +52,16 @@ extern "C" {
 /// every call box BigInts in JS. Every wait reads the clock, thousands of times
 /// a second.
 #[no_mangle]
-pub unsafe extern "C" fn __wrap_clock_gettime(clk: libc::clockid_t, ts: *mut libc::timespec) -> c_int {
+pub unsafe extern "C" fn __wrap_clock_gettime(
+    clk: libc::clockid_t,
+    ts: *mut libc::timespec,
+) -> c_int {
     // (plus what a restored save state adds: the program's time goes on from the save, see snap.rs)
     let ms = match clk {
         libc::CLOCK_REALTIME => emscripten_date_now() + crate::snap::offset(1),
-        libc::CLOCK_MONOTONIC | libc::CLOCK_MONOTONIC_RAW | libc::CLOCK_BOOTTIME => emscripten_get_now() + crate::snap::offset(0),
+        libc::CLOCK_MONOTONIC | libc::CLOCK_MONOTONIC_RAW | libc::CLOCK_BOOTTIME => {
+            emscripten_get_now() + crate::snap::offset(0)
+        }
         _ => return __real_clock_gettime(clk, ts),
     };
     let ns = (ms * 1e6) as i64;
@@ -77,7 +85,11 @@ struct Load {
 }
 const LOAD_THREADS: usize = 256;
 static LOAD: [Load; LOAD_THREADS] = [const {
-    Load { busy: AtomicU64::new(0), woke: AtomicU64::new(0), waits: AtomicU64::new(0) }
+    Load {
+        busy: AtomicU64::new(0),
+        woke: AtomicU64::new(0),
+        waits: AtomicU64::new(0),
+    }
 }; LOAD_THREADS];
 static LOAD_N: AtomicUsize = AtomicUsize::new(0);
 /// Longest run between waits counted (ms): some thread (in the page) blocks somewhere other
@@ -108,7 +120,9 @@ struct LoadSlot(Option<&'static Load>, std::cell::Cell<f64>);
 fn load_key() -> libc::pthread_key_t {
     static KEY: std::sync::OnceLock<libc::pthread_key_t> = std::sync::OnceLock::new();
     unsafe extern "C" fn retire(v: *mut c_void) {
-        let Some(l) = LOAD.get((v as usize).wrapping_sub(1)) else { return };
+        let Some(l) = LOAD.get((v as usize).wrapping_sub(1)) else {
+            return;
+        };
         let woke = f64::from_bits(l.woke.swap(0, Ordering::Relaxed));
         let mut busy = f64::from_bits(l.busy.swap(0, Ordering::Relaxed));
         if woke != 0.0 {
@@ -126,14 +140,21 @@ fn load_key() -> libc::pthread_key_t {
 /// Every block of a thread here ends up in emscripten_futex_wait (pthread mutexes and condition
 /// variables, Rust's too); with IPPAI_LOAD set, the time outside it is counted per thread.
 #[no_mangle]
-pub unsafe extern "C" fn __wrap_emscripten_futex_wait(addr: *mut c_void, val: u32, max_ms: f64) -> c_int {
+pub unsafe extern "C" fn __wrap_emscripten_futex_wait(
+    addr: *mut c_void,
+    val: u32,
+    max_ms: f64,
+) -> c_int {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     extern "C" {
         fn emscripten_is_main_browser_thread() -> c_int;
     }
     // (not the page's own thread: it waits in its event loop, not here, so all of its time
     // would look busy)
-    if !*ON.get_or_init(|| std::env::var_os("IPPAI_LOAD").is_some()) || emscripten_is_main_browser_thread() != 0 || NO_LOAD.with(|c| c.get()) {
+    if !*ON.get_or_init(|| std::env::var_os("IPPAI_LOAD").is_some())
+        || emscripten_is_main_browser_thread() != 0
+        || NO_LOAD.with(|c| c.get())
+    {
         return __real_emscripten_futex_wait(addr, val, max_ms);
     }
     thread_local!(static SLOT: LoadSlot = {
@@ -150,27 +171,41 @@ pub unsafe extern "C" fn __wrap_emscripten_futex_wait(addr: *mut c_void, val: u3
     // IPPAI_LOAD_LOG: every 5 s, the threads running for over a second (a check of the counting)
     static LOGGER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     static LOG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if *LOG.get_or_init(|| std::env::var_os("IPPAI_LOAD_LOG").is_some()) && !LOGGER.swap(true, Ordering::Relaxed) {
+    if *LOG.get_or_init(|| std::env::var_os("IPPAI_LOAD_LOG").is_some())
+        && !LOGGER.swap(true, Ordering::Relaxed)
+    {
         std::thread::spawn(|| loop {
             std::thread::sleep(std::time::Duration::from_secs(5));
             let now = unsafe { emscripten_date_now() };
             let n = LOAD_N.load(Ordering::Relaxed).min(LOAD_THREADS);
-            let long: Vec<String> = (0..n).filter_map(|k| {
-                let w = f64::from_bits(LOAD[k].woke.load(Ordering::Relaxed));
-                (w != 0.0 && now - w > 1000.0).then(|| format!("{k}:{:.0}s", (now - w) / 1000.0))
-            }).collect();
-            eprintln!("vnload: {n} threads, running for over 1 s: {}", long.join(" "));
+            let long: Vec<String> = (0..n)
+                .filter_map(|k| {
+                    let w = f64::from_bits(LOAD[k].woke.load(Ordering::Relaxed));
+                    (w != 0.0 && now - w > 1000.0)
+                        .then(|| format!("{k}:{:.0}s", (now - w) / 1000.0))
+                })
+                .collect();
+            eprintln!(
+                "vnload: {n} threads, running for over 1 s: {}",
+                long.join(" ")
+            );
         });
     }
-    let Ok(Some((l, woke))) = SLOT.try_with(|s| s.0.map(|l| (l, s.1.get()))) else { return __real_emscripten_futex_wait(addr, val, max_ms) };
+    let Ok(Some((l, woke))) = SLOT.try_with(|s| s.0.map(|l| (l, s.1.get()))) else {
+        return __real_emscripten_futex_wait(addr, val, max_ms);
+    };
     let idle = LOAD_IDLE.with(|c| c.replace(0.0));
-    add_f64(&l.busy, (emscripten_get_now() - woke - idle).clamp(0.0, LOAD_RUN_MAX));
+    add_f64(
+        &l.busy,
+        (emscripten_get_now() - woke - idle).clamp(0.0, LOAD_RUN_MAX),
+    );
     l.waits.fetch_add(1, Ordering::Relaxed);
     l.woke.store(0, Ordering::Relaxed);
     LOAD_SLOT.with(|c| c.set(Some(l)));
     let r = __real_emscripten_futex_wait(addr, val, max_ms);
     let _ = SLOT.try_with(|s| s.1.set(emscripten_get_now()));
-    l.woke.store(emscripten_date_now().to_bits(), Ordering::Relaxed);
+    l.woke
+        .store(emscripten_date_now().to_bits(), Ordering::Relaxed);
     r
 }
 
@@ -184,7 +219,9 @@ pub fn load_exclude() {
 
 /// Runs `f` (a synchronous XHR) as a wait: the thread is blocked on the network, not busy.
 pub fn load_idle<R>(f: impl FnOnce() -> R) -> R {
-    let Some(l) = LOAD_SLOT.with(|c| c.get()) else { return f() };
+    let Some(l) = LOAD_SLOT.with(|c| c.get()) else {
+        return f();
+    };
     let woke = f64::from_bits(l.woke.swap(0, Ordering::Relaxed));
     let t = unsafe { emscripten_get_now() };
     let r = f();
@@ -219,7 +256,9 @@ pub unsafe extern "C" fn vnhost_load_busy() -> f64 {
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_load_slot(i: u32, out: *mut f64) -> bool {
     let n = LOAD_N.load(Ordering::Relaxed).min(LOAD_THREADS);
-    let Some(l) = LOAD[..n].get(i as usize) else { return false };
+    let Some(l) = LOAD[..n].get(i as usize) else {
+        return false;
+    };
     let mut busy = f64::from_bits(l.busy.load(Ordering::Relaxed));
     let woke = f64::from_bits(l.woke.load(Ordering::Relaxed));
     if woke != 0.0 {

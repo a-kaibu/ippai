@@ -29,17 +29,64 @@ mod ffi {
         pub fn vngpu_bind_group(layout: Id, entries: *const u32, n: u32) -> Id;
         pub fn vngpu_write_buffer(buf: Id, at: u32, p: *const u8, n: usize);
         #[allow(clippy::too_many_arguments)]
-        pub fn vngpu_write_texture(tex: Id, mip: u32, x: u32, y: u32, z: u32, p: *const u8, n: usize, bpr: u32, rows: u32, w: u32, h: u32, d: u32);
+        pub fn vngpu_write_texture(
+            tex: Id,
+            mip: u32,
+            x: u32,
+            y: u32,
+            z: u32,
+            p: *const u8,
+            n: usize,
+            bpr: u32,
+            rows: u32,
+            w: u32,
+            h: u32,
+            d: u32,
+        );
         pub fn vngpu_submit();
         pub fn vngpu_on_done(token: u32);
         pub fn vngpu_read_buffer(buf: Id, size: u32, dst: *mut u8, token: u32);
         #[allow(clippy::too_many_arguments)]
-        pub fn vngpu_copy_texture(src: Id, smip: u32, sx: u32, sy: u32, sz: u32, dst: Id, dmip: u32, dx: u32, dy: u32, dz: u32, w: u32, h: u32, d: u32);
+        pub fn vngpu_copy_texture(
+            src: Id,
+            smip: u32,
+            sx: u32,
+            sy: u32,
+            sz: u32,
+            dst: Id,
+            dmip: u32,
+            dx: u32,
+            dy: u32,
+            dz: u32,
+            w: u32,
+            h: u32,
+            d: u32,
+        );
         #[allow(clippy::too_many_arguments)]
-        pub fn vngpu_copy_to_buffer(tex: Id, mip: u32, x: u32, y: u32, z: u32, buf: Id, bpr: u32, w: u32, h: u32);
+        pub fn vngpu_copy_to_buffer(
+            tex: Id,
+            mip: u32,
+            x: u32,
+            y: u32,
+            z: u32,
+            buf: Id,
+            bpr: u32,
+            w: u32,
+            h: u32,
+        );
         pub fn vngpu_copy_buffer(src: Id, dst: Id, size: u32);
         #[allow(clippy::too_many_arguments)]
-        pub fn vngpu_copy_from_buffer(buf: Id, bpr: u32, tex: Id, mip: u32, x: u32, y: u32, z: u32, w: u32, h: u32);
+        pub fn vngpu_copy_from_buffer(
+            buf: Id,
+            bpr: u32,
+            tex: Id,
+            mip: u32,
+            x: u32,
+            y: u32,
+            z: u32,
+            w: u32,
+            h: u32,
+        );
         pub fn vngpu_begin_pass(p: *const u8, n: usize);
         pub fn vngpu_end_pass();
         pub fn vngpu_set_pipeline(p: Id);
@@ -78,7 +125,11 @@ pub fn start() {
 }
 /// The canvas's format: "bgra8unorm" or "rgba8unorm".
 pub fn canvas_format() -> &'static str {
-    if unsafe { ffi::vngpu_canvas_format() } == 1 { "rgba8unorm" } else { "bgra8unorm" }
+    if unsafe { ffi::vngpu_canvas_format() } == 1 {
+        "rgba8unorm"
+    } else {
+        "bgra8unorm"
+    }
 }
 pub fn canvas_size(w: u32, h: u32) {
     unsafe { ffi::vngpu_canvas_size(w, h) }
@@ -128,7 +179,10 @@ pub fn pipeline_layout(json: &str) -> Id {
 pub fn render_pipeline(json: &str) -> Id {
     let t = std::time::Instant::now();
     let id = unsafe { ffi::vngpu_render_pipeline(json.as_ptr(), json.len()) };
-    PIPELINES.lock().unwrap_or_else(|e| e.into_inner()).made(t.elapsed().as_micros() as u32);
+    PIPELINES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .made(t.elapsed().as_micros() as u32);
     id
 }
 
@@ -145,8 +199,12 @@ pub struct PipelineStats {
 
 const RECENT: usize = 512;
 pub static PIPELINE_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-pub static PIPELINES: std::sync::Mutex<PipelineStats> =
-    std::sync::Mutex::new(PipelineStats { made: 0, total_us: 0, max_us: 0, recent: std::collections::VecDeque::new() });
+pub static PIPELINES: std::sync::Mutex<PipelineStats> = std::sync::Mutex::new(PipelineStats {
+    made: 0,
+    total_us: 0,
+    max_us: 0,
+    recent: std::collections::VecDeque::new(),
+});
 
 /// An API's pipeline cache had the pipeline.
 pub fn pipeline_hit() {
@@ -201,18 +259,32 @@ mod pipeline_stats_tests {
         for us in 1..=100 {
             s.made(us);
         }
-        assert_eq!((s.quantile(0.0), s.quantile(0.5), s.quantile(0.95), s.quantile(1.0)), (1, 51, 95, 100));
+        assert_eq!(
+            (
+                s.quantile(0.0),
+                s.quantile(0.5),
+                s.quantile(0.95),
+                s.quantile(1.0)
+            ),
+            (1, 51, 95, 100)
+        );
         for _ in 0..RECENT {
             s.made(7);
         }
-        assert_eq!((s.quantile(0.5), s.quantile(1.0), s.max_us, s.made), (7, 7, 100, 100 + RECENT as u64));
+        assert_eq!(
+            (s.quantile(0.5), s.quantile(1.0), s.max_us, s.made),
+            (7, 7, 100, 100 + RECENT as u64)
+        );
         assert_eq!(s.total_us, 5050 + 7 * RECENT as u64);
     }
 }
 pub fn compute_pipeline(json: &str) -> Id {
     let t = std::time::Instant::now();
     let id = unsafe { ffi::vngpu_compute_pipeline(json.as_ptr(), json.len()) };
-    PIPELINES.lock().unwrap_or_else(|e| e.into_inner()).made(t.elapsed().as_micros() as u32);
+    PIPELINES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .made(t.elapsed().as_micros() as u32);
     id
 }
 /// A compute pass of its own: `pipe` with bind group 0 `group`, x*y*z workgroups.
@@ -247,8 +319,21 @@ pub fn write_buffer(buf: Id, at: u32, bytes: &[u8]) {
 }
 /// `bytes` at `p` (any memory: guest memory too).
 #[allow(clippy::too_many_arguments)]
-pub fn write_texture(tex: Id, mip: u32, origin: [u32; 3], p: *const u8, n: usize, bpr: u32, rows: u32, size: [u32; 3]) {
-    unsafe { ffi::vngpu_write_texture(tex, mip, origin[0], origin[1], origin[2], p, n, bpr, rows, size[0], size[1], size[2]) }
+pub fn write_texture(
+    tex: Id,
+    mip: u32,
+    origin: [u32; 3],
+    p: *const u8,
+    n: usize,
+    bpr: u32,
+    rows: u32,
+    size: [u32; 3],
+) {
+    unsafe {
+        ffi::vngpu_write_texture(
+            tex, mip, origin[0], origin[1], origin[2], p, n, bpr, rows, size[0], size[1], size[2],
+        )
+    }
 }
 pub fn submit() {
     unsafe { ffi::vngpu_submit() }
@@ -262,8 +347,20 @@ pub fn read_buffer(buf: Id, size: u32, dst: *mut u8, token: u32) {
     unsafe { ffi::vngpu_read_buffer(buf, size, dst, token) }
 }
 #[allow(clippy::too_many_arguments)]
-pub fn copy_texture(src: Id, smip: u32, so: [u32; 3], dst: Id, dmip: u32, d: [u32; 3], size: [u32; 3]) {
-    unsafe { ffi::vngpu_copy_texture(src, smip, so[0], so[1], so[2], dst, dmip, d[0], d[1], d[2], size[0], size[1], size[2]) }
+pub fn copy_texture(
+    src: Id,
+    smip: u32,
+    so: [u32; 3],
+    dst: Id,
+    dmip: u32,
+    d: [u32; 3],
+    size: [u32; 3],
+) {
+    unsafe {
+        ffi::vngpu_copy_texture(
+            src, smip, so[0], so[1], so[2], dst, dmip, d[0], d[1], d[2], size[0], size[1], size[2],
+        )
+    }
 }
 #[allow(clippy::too_many_arguments)]
 pub fn copy_to_buffer(tex: Id, mip: u32, x: u32, y: u32, buf: Id, bpr: u32, w: u32, h: u32) {
@@ -282,7 +379,17 @@ pub fn copy_buffer(src: Id, dst: Id, size: u32) {
 /// copyBufferToTexture: rows of `bpr` bytes from the start of `buf` into a box of mip `mip`
 /// (layer or 3D slice `z`).
 #[allow(clippy::too_many_arguments)]
-pub fn copy_from_buffer(buf: Id, bpr: u32, tex: Id, mip: u32, x: u32, y: u32, z: u32, w: u32, h: u32) {
+pub fn copy_from_buffer(
+    buf: Id,
+    bpr: u32,
+    tex: Id,
+    mip: u32,
+    x: u32,
+    y: u32,
+    z: u32,
+    w: u32,
+    h: u32,
+) {
     unsafe { ffi::vngpu_copy_from_buffer(buf, bpr, tex, mip, x, y, z, w, h) }
 }
 

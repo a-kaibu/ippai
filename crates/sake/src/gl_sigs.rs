@@ -241,43 +241,231 @@ pub const SIGS: &[(&str, char)] = &[
     ("iiiiiiiii", 'v'),
 ];
 
-pub enum Ret { V, I(u32), F(f64) }
+pub enum Ret {
+    V,
+    I(u32),
+    F(f64),
+}
 
 /// Calls `f` (signature `sig`) with the arguments already split into words (a d: two).
 pub unsafe fn call(sig: u16, f: *const (), w: &[u32]) -> Ret {
     match sig {
         0 => Ret::I(std::mem::transmute::<*const (), extern "C" fn() -> u32>(f)()),
-        1 => { std::mem::transmute::<*const (), extern "C" fn() -> ()>(f)(); Ret::V },
-        2 => { std::mem::transmute::<*const (), extern "C" fn(u32) -> ()>(f)(w[0] & 0xff); Ret::V },
-        3 => { std::mem::transmute::<*const (), extern "C" fn(u32, u32, u32) -> ()>(f)(w[0] & 0xff, w[1] & 0xff, w[2] & 0xff); Ret::V },
-        4 => { std::mem::transmute::<*const (), extern "C" fn(u32, u32, u32, u32) -> ()>(f)(w[0] & 0xff, w[1] & 0xff, w[2] & 0xff, w[3] & 0xff); Ret::V },
-        5 => { std::mem::transmute::<*const (), extern "C" fn(f64) -> ()>(f)(f64::from_bits(w[0] as u64 | (w[1] as u64) << 32)); Ret::V },
-        6 => { std::mem::transmute::<*const (), extern "C" fn(f64, f64) -> ()>(f)(f64::from_bits(w[0] as u64 | (w[1] as u64) << 32), f64::from_bits(w[2] as u64 | (w[3] as u64) << 32)); Ret::V },
-        7 => { std::mem::transmute::<*const (), extern "C" fn(f64, f64, f64) -> ()>(f)(f64::from_bits(w[0] as u64 | (w[1] as u64) << 32), f64::from_bits(w[2] as u64 | (w[3] as u64) << 32), f64::from_bits(w[4] as u64 | (w[5] as u64) << 32)); Ret::V },
-        8 => { std::mem::transmute::<*const (), extern "C" fn(f64, f64, f64, f64) -> ()>(f)(f64::from_bits(w[0] as u64 | (w[1] as u64) << 32), f64::from_bits(w[2] as u64 | (w[3] as u64) << 32), f64::from_bits(w[4] as u64 | (w[5] as u64) << 32), f64::from_bits(w[6] as u64 | (w[7] as u64) << 32)); Ret::V },
-        9 => { std::mem::transmute::<*const (), extern "C" fn(f64, f64, f64, f64, f64, f64) -> ()>(f)(f64::from_bits(w[0] as u64 | (w[1] as u64) << 32), f64::from_bits(w[2] as u64 | (w[3] as u64) << 32), f64::from_bits(w[4] as u64 | (w[5] as u64) << 32), f64::from_bits(w[6] as u64 | (w[7] as u64) << 32), f64::from_bits(w[8] as u64 | (w[9] as u64) << 32), f64::from_bits(w[10] as u64 | (w[11] as u64) << 32)); Ret::V },
-        10 => { std::mem::transmute::<*const (), extern "C" fn(f32) -> ()>(f)(f32::from_bits(w[0])); Ret::V },
-        11 => { std::mem::transmute::<*const (), extern "C" fn(f32, f32) -> ()>(f)(f32::from_bits(w[0]), f32::from_bits(w[1])); Ret::V },
-        12 => { std::mem::transmute::<*const (), extern "C" fn(f32, f32, f32) -> ()>(f)(f32::from_bits(w[0]), f32::from_bits(w[1]), f32::from_bits(w[2])); Ret::V },
-        13 => { std::mem::transmute::<*const (), extern "C" fn(f32, f32, f32, f32) -> ()>(f)(f32::from_bits(w[0]), f32::from_bits(w[1]), f32::from_bits(w[2]), f32::from_bits(w[3])); Ret::V },
-        14 => Ret::I(std::mem::transmute::<*const (), extern "C" fn(u32) -> u32>(f)(w[0])),
-        15 => { std::mem::transmute::<*const (), extern "C" fn(u32) -> ()>(f)(w[0]); Ret::V },
-        16 => { std::mem::transmute::<*const (), extern "C" fn(u32, f32) -> ()>(f)(w[0], f32::from_bits(w[1])); Ret::V },
-        17 => { std::mem::transmute::<*const (), extern "C" fn(u32, f32, f32) -> ()>(f)(w[0], f32::from_bits(w[1]), f32::from_bits(w[2])); Ret::V },
-        18 => { std::mem::transmute::<*const (), extern "C" fn(u32, f32, f32, f32) -> ()>(f)(w[0], f32::from_bits(w[1]), f32::from_bits(w[2]), f32::from_bits(w[3])); Ret::V },
-        19 => { std::mem::transmute::<*const (), extern "C" fn(u32, f32, f32, f32, f32) -> ()>(f)(w[0], f32::from_bits(w[1]), f32::from_bits(w[2]), f32::from_bits(w[3]), f32::from_bits(w[4])); Ret::V },
-        20 => Ret::I(std::mem::transmute::<*const (), extern "C" fn(u32, u32) -> u32>(f)(w[0], w[1])),
-        21 => { std::mem::transmute::<*const (), extern "C" fn(u32, u32) -> ()>(f)(w[0], w[1]); Ret::V },
-        22 => { std::mem::transmute::<*const (), extern "C" fn(u32, u32, u32, u32) -> ()>(f)(w[0], w[1], w[2] & 0xff, w[3]); Ret::V },
-        23 => { std::mem::transmute::<*const (), extern "C" fn(u32, u32, f32) -> ()>(f)(w[0], w[1], f32::from_bits(w[2])); Ret::V },
-        24 => { std::mem::transmute::<*const (), extern "C" fn(u32, u32, u32) -> ()>(f)(w[0], w[1], w[2]); Ret::V },
-        25 => { std::mem::transmute::<*const (), extern "C" fn(u32, u32, u32, u32, u32, u32) -> ()>(f)(w[0], w[1], w[2], w[3] & 0xff, w[4], w[5]); Ret::V },
-        26 => { std::mem::transmute::<*const (), extern "C" fn(u32, u32, u32, u32) -> ()>(f)(w[0], w[1], w[2], w[3]); Ret::V },
-        27 => { std::mem::transmute::<*const (), extern "C" fn(u32, u32, u32, u32, u32) -> ()>(f)(w[0], w[1], w[2], w[3], w[4]); Ret::V },
-        28 => { std::mem::transmute::<*const (), extern "C" fn(u32, u32, u32, u32, u32, u32) -> ()>(f)(w[0], w[1], w[2], w[3], w[4], w[5]); Ret::V },
-        29 => { std::mem::transmute::<*const (), extern "C" fn(u32, u32, u32, u32, u32, u32, u32) -> ()>(f)(w[0], w[1], w[2], w[3], w[4], w[5], w[6]); Ret::V },
-        30 => { std::mem::transmute::<*const (), extern "C" fn(u32, u32, u32, u32, u32, u32, u32, u32) -> ()>(f)(w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]); Ret::V },
-        31 => { std::mem::transmute::<*const (), extern "C" fn(u32, u32, u32, u32, u32, u32, u32, u32, u32) -> ()>(f)(w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8]); Ret::V },
+        1 => {
+            std::mem::transmute::<*const (), extern "C" fn() -> ()>(f)();
+            Ret::V
+        }
+        2 => {
+            std::mem::transmute::<*const (), extern "C" fn(u32) -> ()>(f)(w[0] & 0xff);
+            Ret::V
+        }
+        3 => {
+            std::mem::transmute::<*const (), extern "C" fn(u32, u32, u32) -> ()>(f)(
+                w[0] & 0xff,
+                w[1] & 0xff,
+                w[2] & 0xff,
+            );
+            Ret::V
+        }
+        4 => {
+            std::mem::transmute::<*const (), extern "C" fn(u32, u32, u32, u32) -> ()>(f)(
+                w[0] & 0xff,
+                w[1] & 0xff,
+                w[2] & 0xff,
+                w[3] & 0xff,
+            );
+            Ret::V
+        }
+        5 => {
+            std::mem::transmute::<*const (), extern "C" fn(f64) -> ()>(f)(f64::from_bits(
+                w[0] as u64 | (w[1] as u64) << 32,
+            ));
+            Ret::V
+        }
+        6 => {
+            std::mem::transmute::<*const (), extern "C" fn(f64, f64) -> ()>(f)(
+                f64::from_bits(w[0] as u64 | (w[1] as u64) << 32),
+                f64::from_bits(w[2] as u64 | (w[3] as u64) << 32),
+            );
+            Ret::V
+        }
+        7 => {
+            std::mem::transmute::<*const (), extern "C" fn(f64, f64, f64) -> ()>(f)(
+                f64::from_bits(w[0] as u64 | (w[1] as u64) << 32),
+                f64::from_bits(w[2] as u64 | (w[3] as u64) << 32),
+                f64::from_bits(w[4] as u64 | (w[5] as u64) << 32),
+            );
+            Ret::V
+        }
+        8 => {
+            std::mem::transmute::<*const (), extern "C" fn(f64, f64, f64, f64) -> ()>(f)(
+                f64::from_bits(w[0] as u64 | (w[1] as u64) << 32),
+                f64::from_bits(w[2] as u64 | (w[3] as u64) << 32),
+                f64::from_bits(w[4] as u64 | (w[5] as u64) << 32),
+                f64::from_bits(w[6] as u64 | (w[7] as u64) << 32),
+            );
+            Ret::V
+        }
+        9 => {
+            std::mem::transmute::<*const (), extern "C" fn(f64, f64, f64, f64, f64, f64) -> ()>(f)(
+                f64::from_bits(w[0] as u64 | (w[1] as u64) << 32),
+                f64::from_bits(w[2] as u64 | (w[3] as u64) << 32),
+                f64::from_bits(w[4] as u64 | (w[5] as u64) << 32),
+                f64::from_bits(w[6] as u64 | (w[7] as u64) << 32),
+                f64::from_bits(w[8] as u64 | (w[9] as u64) << 32),
+                f64::from_bits(w[10] as u64 | (w[11] as u64) << 32),
+            );
+            Ret::V
+        }
+        10 => {
+            std::mem::transmute::<*const (), extern "C" fn(f32) -> ()>(f)(f32::from_bits(w[0]));
+            Ret::V
+        }
+        11 => {
+            std::mem::transmute::<*const (), extern "C" fn(f32, f32) -> ()>(f)(
+                f32::from_bits(w[0]),
+                f32::from_bits(w[1]),
+            );
+            Ret::V
+        }
+        12 => {
+            std::mem::transmute::<*const (), extern "C" fn(f32, f32, f32) -> ()>(f)(
+                f32::from_bits(w[0]),
+                f32::from_bits(w[1]),
+                f32::from_bits(w[2]),
+            );
+            Ret::V
+        }
+        13 => {
+            std::mem::transmute::<*const (), extern "C" fn(f32, f32, f32, f32) -> ()>(f)(
+                f32::from_bits(w[0]),
+                f32::from_bits(w[1]),
+                f32::from_bits(w[2]),
+                f32::from_bits(w[3]),
+            );
+            Ret::V
+        }
+        14 => Ret::I(std::mem::transmute::<*const (), extern "C" fn(u32) -> u32>(
+            f,
+        )(w[0])),
+        15 => {
+            std::mem::transmute::<*const (), extern "C" fn(u32) -> ()>(f)(w[0]);
+            Ret::V
+        }
+        16 => {
+            std::mem::transmute::<*const (), extern "C" fn(u32, f32) -> ()>(f)(
+                w[0],
+                f32::from_bits(w[1]),
+            );
+            Ret::V
+        }
+        17 => {
+            std::mem::transmute::<*const (), extern "C" fn(u32, f32, f32) -> ()>(f)(
+                w[0],
+                f32::from_bits(w[1]),
+                f32::from_bits(w[2]),
+            );
+            Ret::V
+        }
+        18 => {
+            std::mem::transmute::<*const (), extern "C" fn(u32, f32, f32, f32) -> ()>(f)(
+                w[0],
+                f32::from_bits(w[1]),
+                f32::from_bits(w[2]),
+                f32::from_bits(w[3]),
+            );
+            Ret::V
+        }
+        19 => {
+            std::mem::transmute::<*const (), extern "C" fn(u32, f32, f32, f32, f32) -> ()>(f)(
+                w[0],
+                f32::from_bits(w[1]),
+                f32::from_bits(w[2]),
+                f32::from_bits(w[3]),
+                f32::from_bits(w[4]),
+            );
+            Ret::V
+        }
+        20 => Ret::I(std::mem::transmute::<
+            *const (),
+            extern "C" fn(u32, u32) -> u32,
+        >(f)(w[0], w[1])),
+        21 => {
+            std::mem::transmute::<*const (), extern "C" fn(u32, u32) -> ()>(f)(w[0], w[1]);
+            Ret::V
+        }
+        22 => {
+            std::mem::transmute::<*const (), extern "C" fn(u32, u32, u32, u32) -> ()>(f)(
+                w[0],
+                w[1],
+                w[2] & 0xff,
+                w[3],
+            );
+            Ret::V
+        }
+        23 => {
+            std::mem::transmute::<*const (), extern "C" fn(u32, u32, f32) -> ()>(f)(
+                w[0],
+                w[1],
+                f32::from_bits(w[2]),
+            );
+            Ret::V
+        }
+        24 => {
+            std::mem::transmute::<*const (), extern "C" fn(u32, u32, u32) -> ()>(f)(
+                w[0], w[1], w[2],
+            );
+            Ret::V
+        }
+        25 => {
+            std::mem::transmute::<*const (), extern "C" fn(u32, u32, u32, u32, u32, u32) -> ()>(f)(
+                w[0],
+                w[1],
+                w[2],
+                w[3] & 0xff,
+                w[4],
+                w[5],
+            );
+            Ret::V
+        }
+        26 => {
+            std::mem::transmute::<*const (), extern "C" fn(u32, u32, u32, u32) -> ()>(f)(
+                w[0], w[1], w[2], w[3],
+            );
+            Ret::V
+        }
+        27 => {
+            std::mem::transmute::<*const (), extern "C" fn(u32, u32, u32, u32, u32) -> ()>(f)(
+                w[0], w[1], w[2], w[3], w[4],
+            );
+            Ret::V
+        }
+        28 => {
+            std::mem::transmute::<*const (), extern "C" fn(u32, u32, u32, u32, u32, u32) -> ()>(f)(
+                w[0], w[1], w[2], w[3], w[4], w[5],
+            );
+            Ret::V
+        }
+        29 => {
+            std::mem::transmute::<*const (), extern "C" fn(u32, u32, u32, u32, u32, u32, u32) -> ()>(
+                f,
+            )(w[0], w[1], w[2], w[3], w[4], w[5], w[6]);
+            Ret::V
+        }
+        30 => {
+            std::mem::transmute::<
+                *const (),
+                extern "C" fn(u32, u32, u32, u32, u32, u32, u32, u32) -> (),
+            >(f)(w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
+            Ret::V
+        }
+        31 => {
+            std::mem::transmute::<
+                *const (),
+                extern "C" fn(u32, u32, u32, u32, u32, u32, u32, u32, u32) -> (),
+            >(f)(w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8]);
+            Ret::V
+        }
         _ => Ret::V,
     }
 }
@@ -2440,8 +2628,14 @@ pub const STUBS: &[(&str, u8)] = &[
     ("glReplacementCodeuiNormal3fVertex3fSUN", 28),
     ("glReplacementCodeuiNormal3fVertex3fvSUN", 12),
     ("glReplacementCodeuiSUN", 4),
-    ("glReplacementCodeuiTexCoord2fColor4fNormal3fVertex3fSUN", 52),
-    ("glReplacementCodeuiTexCoord2fColor4fNormal3fVertex3fvSUN", 20),
+    (
+        "glReplacementCodeuiTexCoord2fColor4fNormal3fVertex3fSUN",
+        52,
+    ),
+    (
+        "glReplacementCodeuiTexCoord2fColor4fNormal3fVertex3fvSUN",
+        20,
+    ),
     ("glReplacementCodeuiTexCoord2fNormal3fVertex3fSUN", 36),
     ("glReplacementCodeuiTexCoord2fNormal3fVertex3fvSUN", 16),
     ("glReplacementCodeuiTexCoord2fVertex3fSUN", 24),

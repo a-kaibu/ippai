@@ -18,7 +18,10 @@ fn blob_qi(c: &mut Ctx) -> u32 {
     // IUnknown and ID3D10Blob {8BA5FB08-5195-40e2-AC58-0D989C3A0102}
     let g = mem::slice(c.a(1), 16).to_vec();
     const UNK: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0xc0, 0, 0, 0, 0, 0, 0, 0x46];
-    const BLOB: [u8; 16] = [0x08, 0xfb, 0xa5, 0x8b, 0x95, 0x51, 0xe2, 0x40, 0xac, 0x58, 0x0d, 0x98, 0x9c, 0x3a, 0x01, 0x02];
+    const BLOB: [u8; 16] = [
+        0x08, 0xfb, 0xa5, 0x8b, 0x95, 0x51, 0xe2, 0x40, 0xac, 0x58, 0x0d, 0x98, 0x9c, 0x3a, 0x01,
+        0x02,
+    ];
     if g == UNK || g == BLOB {
         blob_add_ref(c);
         mem::putp(c.a(2), c.a(0));
@@ -42,7 +45,16 @@ fn blob_release(c: &mut Ctx) -> u32 {
 pub fn blob(data: &[u8]) -> u32 {
     static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     let vt = *V.get_or_init(|| {
-        crate::api::vtable("ID3DBlob", &[(blob_qi, 12), (blob_add_ref, 4), (blob_release, 4), (blob_ptr, 4), (blob_size, 4)])
+        crate::api::vtable(
+            "ID3DBlob",
+            &[
+                (blob_qi, 12),
+                (blob_add_ref, 4),
+                (blob_release, 4),
+                (blob_ptr, 4),
+                (blob_size, 4),
+            ],
+        )
     });
     let o = mem::heap_alloc(24, true);
     let p = mem::heap_alloc((data.len() as u32).max(4), true);
@@ -75,7 +87,11 @@ pub(crate) fn defines(p: u32) -> Vec<(String, String)> {
         }
         let d = mem::rp(at + k);
         let name = crate::k32::arg_str(n, false);
-        let def = if d == 0 { "1".to_string() } else { crate::k32::arg_str(d, false) };
+        let def = if d == 0 {
+            "1".to_string()
+        } else {
+            crate::k32::arg_str(d, false)
+        };
         v.push((name, def));
         at += 2 * k;
     }
@@ -95,7 +111,13 @@ pub(crate) fn dir_of(name: &str) -> String {
 
 /// An include handler: the guest's ID3DInclude, or files beside `base` for
 /// D3D_COMPILE_STANDARD_FILE_INCLUDE (1).
-pub(crate) fn open_include(c: &mut Ctx, inc: u32, base: &str, name: &str, system: bool) -> Option<String> {
+pub(crate) fn open_include(
+    c: &mut Ctx,
+    inc: u32,
+    base: &str,
+    name: &str,
+    system: bool,
+) -> Option<String> {
     if inc == 0 {
         return None;
     }
@@ -109,7 +131,10 @@ pub(crate) fn open_include(c: &mut Ctx, inc: u32, base: &str, name: &str, system
     mem::write(scratch + 2 * k, name.as_bytes());
     let open = mem::rp(mem::rp(inc));
     let close = mem::rp(mem::rp(inc) + k);
-    let hr = c.call(open, &[inc, system as u32, scratch + 2 * k, 0, scratch, scratch + k]);
+    let hr = c.call(
+        open,
+        &[inc, system as u32, scratch + 2 * k, 0, scratch, scratch + k],
+    );
     if hr & 0x8000_0000 != 0 {
         return None;
     }
@@ -136,10 +161,25 @@ fn angle_point_sprite_gs(src: &str) -> Vec<u8> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn compile(c: &mut Ctx, src: &[u8], name: &str, defs: u32, inc: u32, entry: u32, target: u32, flags: u32, out: u32, errs: u32) -> u32 {
+fn compile(
+    c: &mut Ctx,
+    src: &[u8],
+    name: &str,
+    defs: u32,
+    inc: u32,
+    entry: u32,
+    target: u32,
+    flags: u32,
+    out: u32,
+    errs: u32,
+) -> u32 {
     let src = String::from_utf8_lossy(src).into_owned();
     let src = src.trim_end_matches('\0');
-    let entry = if entry == 0 { "main".to_string() } else { crate::k32::arg_str(entry, false) };
+    let entry = if entry == 0 {
+        "main".to_string()
+    } else {
+        crate::k32::arg_str(entry, false)
+    };
     let target = crate::k32::arg_str(target, false);
     let defines = defines(defs);
     let base = dir_of(name);
@@ -156,7 +196,10 @@ fn compile(c: &mut Ctx, src: &[u8], name: &str, defs: u32, inc: u32, entry: u32,
             0
         }
         Err(e) => {
-            let msg = format!("{}: error X3000: {e}", if name.is_empty() { "memory" } else { name });
+            let msg = format!(
+                "{}: error X3000: {e}",
+                if name.is_empty() { "memory" } else { name }
+            );
             eprintln!("sake: D3DCompile({entry}, {target}): {msg}");
             if std::env::var_os("SAKE_HLSL_DUMP").is_some() {
                 eprintln!("{src}");
@@ -171,7 +214,11 @@ fn compile(c: &mut Ctx, src: &[u8], name: &str, defs: u32, inc: u32, entry: u32,
 /// D3DCompile(data, size, name, defines, include, entry, target, flags1, flags2, code, errors)
 fn D3DCompile(c: &mut Ctx) -> u32 {
     let src = mem::slice(c.a(0), c.a(1)).to_vec();
-    let name = if c.a(2) == 0 { String::new() } else { crate::k32::arg_str(c.a(2), false) };
+    let name = if c.a(2) == 0 {
+        String::new()
+    } else {
+        crate::k32::arg_str(c.a(2), false)
+    };
     let (d, i, e, t, f, o, er) = (c.a(3), c.a(4), c.a(5), c.a(6), c.a(7), c.a(9), c.a(10));
     compile(c, &src, &name, d, i, e, t, f, o, er)
 }
@@ -179,7 +226,11 @@ fn D3DCompile(c: &mut Ctx) -> u32 {
 /// D3DCompile2(.., flags2, secondary flags, secondary data, its size, code, errors)
 fn D3DCompile2(c: &mut Ctx) -> u32 {
     let src = mem::slice(c.a(0), c.a(1)).to_vec();
-    let name = if c.a(2) == 0 { String::new() } else { crate::k32::arg_str(c.a(2), false) };
+    let name = if c.a(2) == 0 {
+        String::new()
+    } else {
+        crate::k32::arg_str(c.a(2), false)
+    };
     let (d, i, e, t, f, o, er) = (c.a(3), c.a(4), c.a(5), c.a(6), c.a(7), c.a(12), c.a(13));
     compile(c, &src, &name, d, i, e, t, f, o, er)
 }
@@ -199,7 +250,11 @@ fn D3DCompileFromFile(c: &mut Ctx) -> u32 {
 /// D3DPreprocess(data, size, name, defines, include, text, errors)
 fn D3DPreprocess(c: &mut Ctx) -> u32 {
     let src = String::from_utf8_lossy(mem::slice(c.a(0), c.a(1))).into_owned();
-    let name = if c.a(2) == 0 { String::new() } else { crate::k32::arg_str(c.a(2), false) };
+    let name = if c.a(2) == 0 {
+        String::new()
+    } else {
+        crate::k32::arg_str(c.a(2), false)
+    };
     let (defs, inc, out, errs) = (c.a(3), c.a(4), c.a(5), c.a(6));
     let defines = defines(defs);
     let base = dir_of(&name);
@@ -318,7 +373,11 @@ fn D3DDisassemble(c: &mut Ctx) -> u32 {
 /// D3D10CompileShader(data, size, name, defines, include, entry, profile, flags, code, errors)
 fn D3D10CompileShader(c: &mut Ctx) -> u32 {
     let src = mem::slice(c.a(0), c.a(1)).to_vec();
-    let name = if c.a(2) == 0 { String::new() } else { crate::k32::arg_str(c.a(2), false) };
+    let name = if c.a(2) == 0 {
+        String::new()
+    } else {
+        crate::k32::arg_str(c.a(2), false)
+    };
     let (d, i, e, t, f, o, er) = (c.a(3), c.a(4), c.a(5), c.a(6), c.a(7), c.a(8), c.a(9));
     compile(c, &src, &name, d, i, e, t, f, o, er)
 }
@@ -368,7 +427,10 @@ pub fn init() {
         ("D3DCreateBlob", D3DCreateBlob),
         ("D3DGetInputSignatureBlob", D3DGetInputSignatureBlob),
         ("D3DGetOutputSignatureBlob", D3DGetOutputSignatureBlob),
-        ("D3DGetInputAndOutputSignatureBlob", D3DGetInputAndOutputSignatureBlob),
+        (
+            "D3DGetInputAndOutputSignatureBlob",
+            D3DGetInputAndOutputSignatureBlob,
+        ),
         ("D3DGetBlobPart", D3DGetBlobPart),
         ("D3DStripShader", D3DStripShader),
         ("D3DReadFileToBlob", D3DReadFileToBlob),
@@ -380,10 +442,16 @@ pub fn init() {
         ("D3D10CreateBlob", D3DCreateBlob),
         ("D3D10GetInputSignatureBlob", D3DGetInputSignatureBlob),
         ("D3D10GetOutputSignatureBlob", D3DGetOutputSignatureBlob),
-        ("D3D10GetInputAndOutputSignatureBlob", D3DGetInputAndOutputSignatureBlob),
+        (
+            "D3D10GetInputAndOutputSignatureBlob",
+            D3DGetInputAndOutputSignatureBlob,
+        ),
         ("D3D10GetVertexShaderProfile", D3D10GetVertexShaderProfile),
         ("D3D10GetPixelShaderProfile", D3D10GetPixelShaderProfile),
-        ("D3D10GetGeometryShaderProfile", D3D10GetGeometryShaderProfile),
+        (
+            "D3D10GetGeometryShaderProfile",
+            D3D10GetGeometryShaderProfile,
+        ),
         ("D3D10DisassembleShader", D3D10DisassembleShader),
         ("D3D10ReflectShader", D3D10ReflectShader),
         ("D3D10CreateEffectFromMemory", D3D10CreateEffectFromMemory),

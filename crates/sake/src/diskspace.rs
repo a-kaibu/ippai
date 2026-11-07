@@ -44,7 +44,11 @@ pub fn file_key(path: &str, full: impl Fn(&str) -> String) -> Result<String, u32
     if path.is_empty() {
         return Err(ERROR_INVALID_NAME);
     }
-    if path.starts_with("\\\\") || path.starts_with("//") || path.ends_with('/') || path.ends_with('\\') {
+    if path.starts_with("\\\\")
+        || path.starts_with("//")
+        || path.ends_with('/')
+        || path.ends_with('\\')
+    {
         return Err(ERROR_INVALID_PARAMETER);
     }
     let f = full(path).to_ascii_lowercase();
@@ -56,15 +60,29 @@ pub fn file_key(path: &str, full: impl Fn(&str) -> String) -> Result<String, u32
 
 impl List {
     /// Adds an operation; `existing` is the file's size now (None: no such file)
-    pub fn add(&mut self, key: String, size: i64, op: u32, existing: Option<i64>) -> Result<(), u32> {
+    pub fn add(
+        &mut self,
+        key: String,
+        size: i64,
+        op: u32,
+        existing: Option<i64>,
+    ) -> Result<(), u32> {
         if op != FILEOP_COPY && op != FILEOP_DELETE {
             return Err(ERROR_INVALID_PARAMETER);
         }
-        let have = if self.flags & SPDSL_IGNORE_DISK != 0 { 0 } else { clusters(existing.unwrap_or(0)) };
+        let have = if self.flags & SPDSL_IGNORE_DISK != 0 {
+            0
+        } else {
+            clusters(existing.unwrap_or(0))
+        };
         if op == FILEOP_DELETE && self.files.get(&key).is_some_and(|e| e.0 == FILEOP_COPY) {
             return Ok(());
         }
-        let space = if op == FILEOP_COPY { clusters(size) - have } else { -have };
+        let space = if op == FILEOP_COPY {
+            clusters(size) - have
+        } else {
+            -have
+        };
         self.files.insert(key, (op, space));
         Ok(())
     }
@@ -79,10 +97,19 @@ impl List {
     /// The space needed on `drive` ("x:"), Err(ERROR_INVALID_DRIVE)
     pub fn required(&self, drive: &str) -> Result<i64, u32> {
         let d = drive.to_ascii_lowercase();
-        if d.len() != 2 || !d.as_bytes()[0].is_ascii_alphabetic() || d.as_bytes()[1] != b':' || !self.drives().contains(&d) {
+        if d.len() != 2
+            || !d.as_bytes()[0].is_ascii_alphabetic()
+            || d.as_bytes()[1] != b':'
+            || !self.drives().contains(&d)
+        {
             return Err(ERROR_INVALID_DRIVE);
         }
-        Ok(self.files.iter().filter(|(k, _)| k.starts_with(&d)).map(|(_, v)| v.1).sum())
+        Ok(self
+            .files
+            .iter()
+            .filter(|(k, _)| k.starts_with(&d))
+            .map(|(_, v)| v.1)
+            .sum())
     }
 }
 
@@ -131,7 +158,10 @@ fn create(c: &mut Ctx) -> u32 {
     if r1 != 0 || r2 != 0 || flags & !(SPDSL_IGNORE_DISK | SPDSL_DISALLOW_NEGATIVE_ADJUST) != 0 {
         return fail(ERROR_INVALID_PARAMETER);
     }
-    new_list(List { flags, ..Default::default() })
+    new_list(List {
+        flags,
+        ..Default::default()
+    })
 }
 
 /// SetupDuplicateDiskSpaceList(list, reserved1, reserved2, flags)
@@ -150,7 +180,11 @@ fn duplicate(c: &mut Ctx) -> u32 {
 fn add(c: &mut Ctx, wide: bool) -> u32 {
     let x64 = mem::x64();
     let (h, file) = (c.a(0), c.a(1));
-    let (size, op) = if x64 { (c.a64(2) as i64, c.a(3)) } else { ((c.a(2) as u64 | (c.a(3) as u64) << 32) as i64, c.a(4)) };
+    let (size, op) = if x64 {
+        (c.a64(2) as i64, c.a(3))
+    } else {
+        ((c.a(2) as u64 | (c.a(3) as u64) << 32) as i64, c.a(4))
+    };
     if !with(|m| m.contains_key(&h)) {
         return fail(ERROR_INVALID_HANDLE);
     }
@@ -162,7 +196,10 @@ fn add(c: &mut Ctx, wide: bool) -> u32 {
         Ok(k) => k,
         Err(e) => return fail(e),
     };
-    let existing = crate::files::resolve(&path).and_then(|p| kura::fs::metadata(p).ok()).filter(|m| !m.is_dir()).map(|m| m.len() as i64);
+    let existing = crate::files::resolve(&path)
+        .and_then(|p| kura::fs::metadata(p).ok())
+        .filter(|m| !m.is_dir())
+        .map(|m| m.len() as i64);
     match with(|m| m.get_mut(&h).map(|l| l.add(key, size, op, existing))) {
         Some(Ok(())) => {
             last_error(0);
@@ -203,7 +240,9 @@ fn query(c: &mut Ctx, wide: bool) -> u32 {
 /// SetupQueryDrivesInDiskSpaceList(list, buffer, size, &needed)
 fn drives(c: &mut Ctx, wide: bool) -> u32 {
     let (h, buf, size, pneed) = (c.a(0), c.a(1), c.a(2), c.a(3));
-    let Some(d) = with(|m| m.get(&h).map(|l| l.drives())) else { return fail(ERROR_INVALID_HANDLE) };
+    let Some(d) = with(|m| m.get(&h).map(|l| l.drives())) else {
+        return fail(ERROR_INVALID_HANDLE);
+    };
     let (s, need, fits) = drives_multi_sz(&d, if buf == 0 { usize::MAX } else { size as usize });
     mem::put32(pneed, need as u32);
     if buf != 0 {
@@ -228,7 +267,13 @@ pub fn init() {
     implement(d, "SetupCreateDiskSpaceListW", create);
     implement(d, "SetupDuplicateDiskSpaceListA", duplicate);
     implement(d, "SetupDuplicateDiskSpaceListW", duplicate);
-    implement(d, "SetupDestroyDiskSpaceList", |c| if with(|m| m.remove(&c.a(0))).is_some() { 1 } else { fail(ERROR_INVALID_HANDLE) });
+    implement(d, "SetupDestroyDiskSpaceList", |c| {
+        if with(|m| m.remove(&c.a(0))).is_some() {
+            1
+        } else {
+            fail(ERROR_INVALID_HANDLE)
+        }
+    });
     implement(d, "SetupAddToDiskSpaceListA", |c| add(c, false));
     implement(d, "SetupAddToDiskSpaceListW", |c| add(c, true));
     implement(d, "SetupQuerySpaceRequiredOnDriveA", |c| query(c, false));
@@ -244,7 +289,11 @@ mod tests {
 
     fn full(p: &str) -> String {
         let p = p.replace('/', "\\");
-        if p.as_bytes().get(1) == Some(&b':') { p } else { format!("C:\\d\\{p}") }
+        if p.as_bytes().get(1) == Some(&b':') {
+            p
+        } else {
+            format!("C:\\d\\{p}")
+        }
     }
 
     #[test]
@@ -272,7 +321,10 @@ mod tests {
         assert_eq!(l.required("c:"), Ok(4096));
         l.add(k("C:/t"), 10000, FILEOP_DELETE, Some(1025)).unwrap();
         assert_eq!(l.required("c:"), Ok(4096));
-        let mut l = List { flags: SPDSL_IGNORE_DISK, ..Default::default() };
+        let mut l = List {
+            flags: SPDSL_IGNORE_DISK,
+            ..Default::default()
+        };
         l.add(k("C:/t"), 4097, FILEOP_COPY, Some(1025)).unwrap();
         assert_eq!(l.required("c:"), Ok(8192));
         assert_eq!(l.add(k("C:/t"), 0, 1, None), Err(ERROR_INVALID_PARAMETER));
@@ -284,7 +336,10 @@ mod tests {
         for bad in ["W:/dir/", "\\\\unc\\file1", "\\\\.\\file1", "\\\\?\\file1"] {
             assert_eq!(file_key(bad, full), Err(ERROR_INVALID_PARAMETER), "{bad}");
         }
-        assert_eq!(file_key("../file1", full).map(|k| k[..2].to_string()), Ok("c:".into()));
+        assert_eq!(
+            file_key("../file1", full).map(|k| k[..2].to_string()),
+            Ok("c:".into())
+        );
     }
 
     #[test]
@@ -292,7 +347,10 @@ mod tests {
         let d: Vec<String> = ["h:", "p:", "r:"].map(String::from).to_vec();
         assert_eq!(drives_multi_sz(&d, 4), (b"h:\0".to_vec(), 7, false));
         assert_eq!(drives_multi_sz(&d, 8), (b"h:\0p:\0".to_vec(), 10, false));
-        assert_eq!(drives_multi_sz(&d, 20), (b"h:\0p:\0r:\0\0".to_vec(), 10, true));
+        assert_eq!(
+            drives_multi_sz(&d, 20),
+            (b"h:\0p:\0r:\0\0".to_vec(), 10, true)
+        );
         assert_eq!(drives_multi_sz(&[], 1), (b"\0".to_vec(), 1, true));
         assert_eq!(drives_multi_sz(&[], 0), (vec![], 1, false));
     }

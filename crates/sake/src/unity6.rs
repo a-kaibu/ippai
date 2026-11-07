@@ -66,38 +66,63 @@ fn decode(code: &[u8], ip: u64, from: usize, to: usize) -> Vec<Instruction> {
 
 fn imm(i: &Instruction) -> Option<u64> {
     (0..i.op_count()).find_map(|k| match i.op_kind(k) {
-        OpKind::Immediate8 | OpKind::Immediate8to64 | OpKind::Immediate32 | OpKind::Immediate32to64 | OpKind::Immediate8to32 => Some(i.immediate(k)),
+        OpKind::Immediate8
+        | OpKind::Immediate8to64
+        | OpKind::Immediate32
+        | OpKind::Immediate32to64
+        | OpKind::Immediate8to32 => Some(i.immediate(k)),
         _ => None,
     })
 }
 
 /// `shr r64, 28`
 fn is_shift(i: &Instruction) -> bool {
-    matches!(i.mnemonic(), Mnemonic::Shr | Mnemonic::Shl) && i.op0_kind() == OpKind::Register && gpr64(i.op0_register()) && imm(i) == Some(OLD as u64)
+    matches!(i.mnemonic(), Mnemonic::Shr | Mnemonic::Shl)
+        && i.op0_kind() == OpKind::Register
+        && gpr64(i.op0_register())
+        && imm(i) == Some(OLD as u64)
 }
 
 /// `and r32/r64, 0xfffffff`: the low 28 bits of a bit field (Unity packs 4 + 28 bit handles
 /// next to the allocator in some builds); its shifts by 28 are not about buckets.
 fn is_field_mask(i: &Instruction) -> bool {
-    i.mnemonic() == Mnemonic::And && i.op0_kind() == OpKind::Register && imm(i).is_some_and(|v| v as u32 == 0x0fff_ffff)
+    i.mnemonic() == Mnemonic::And
+        && i.op0_kind() == OpKind::Register
+        && imm(i).is_some_and(|v| v as u32 == 0x0fff_ffff)
 }
 
 /// The registration loop: from a `shr r64, 28` on, an `and r32, 0xffffff` (the id) and a
 /// `cmp r32, 0xff000000` (the continuation mark) within the function.
 fn is_anchor(ins: &[Instruction]) -> bool {
     // (up to the function's end: a ret or padding)
-    let body = || ins[1..].iter().take(70).take_while(|i| !matches!(i.mnemonic(), Mnemonic::Ret | Mnemonic::Int3));
+    let body = || {
+        ins[1..]
+            .iter()
+            .take(70)
+            .take_while(|i| !matches!(i.mnemonic(), Mnemonic::Ret | Mnemonic::Int3))
+    };
     is_shift(&ins[0])
         && ins[0].mnemonic() == Mnemonic::Shr
-        && body().any(|i| i.mnemonic() == Mnemonic::And && i.op0_kind() == OpKind::Register && imm(i) == Some(0xff_ffff))
-        && body().any(|i| i.mnemonic() == Mnemonic::Cmp && imm(i).is_some_and(|v| v as u32 == 0xff00_0000))
+        && body().any(|i| {
+            i.mnemonic() == Mnemonic::And
+                && i.op0_kind() == OpKind::Register
+                && imm(i) == Some(0xff_ffff)
+        })
+        && body().any(|i| {
+            i.mnemonic() == Mnemonic::Cmp && imm(i).is_some_and(|v| v as u32 == 0xff00_0000)
+        })
 }
 
 /// Finds the registration function: candidates by their bytes (REX.W C1 /5 1C), each checked
 /// by decoding from there.
 fn anchor(code: &[u8], ip: u64) -> Option<usize> {
-    (0..code.len().saturating_sub(4))
-        .find(|&o| matches!(code[o], 0x48 | 0x49) && code[o + 1] == 0xc1 && (0xe8..=0xef).contains(&code[o + 2]) && code[o + 3] == OLD as u8 && is_anchor(&decode(code, ip, o, o + 0x200)))
+    (0..code.len().saturating_sub(4)).find(|&o| {
+        matches!(code[o], 0x48 | 0x49)
+            && code[o + 1] == 0xc1
+            && (0xe8..=0xef).contains(&code[o + 2])
+            && code[o + 3] == OLD as u8
+            && is_anchor(&decode(code, ip, o, o + 0x200))
+    })
 }
 
 /// Where linear decoding can start at or before `o`: after a run of int3 padding.
@@ -148,20 +173,41 @@ pub fn plan(code: &[u8], ip: u64) -> Option<(Vec<Edit>, Found)> {
         if is_shift(i) && offs.immediate_size() == 1 && !near.iter().any(is_field_mask) {
             edits.push(put_imm(SHIFT, 1));
             found.shifts += 1;
-        } else if matches!(i.mnemonic(), Mnemonic::Mov | Mnemonic::Cmp) && imm(i) == Some(0x1000_0000) && offs.immediate_size() == 4 {
+        } else if matches!(i.mnemonic(), Mnemonic::Mov | Mnemonic::Cmp)
+            && imm(i) == Some(0x1000_0000)
+            && offs.immediate_size() == 4
+        {
             edits.push(put_imm(new_size, 4));
             found.sizes += 1;
-            div_size |= i.mnemonic() == Mnemonic::Mov && ins.get(k + 1).is_some_and(|n| n.mnemonic() == Mnemonic::Div);
+            div_size |= i.mnemonic() == Mnemonic::Mov
+                && ins
+                    .get(k + 1)
+                    .is_some_and(|n| n.mnemonic() == Mnemonic::Div);
             // (stored by 6000.x's region constructor, handed to it as the third argument by
             // 2022.3's)
-            region_size |= i.mnemonic() == Mnemonic::Mov && (i.op0_kind() == OpKind::Memory || matches!(i.op0_register(), Register::R8D | Register::R8));
-        } else if i.mnemonic() == Mnemonic::And && i.op0_kind() == OpKind::Register && gpr64(i.op0_register()) && imm(i) == Some(!0x0fff_ffffu64) && offs.immediate_size() == 4 {
+            region_size |= i.mnemonic() == Mnemonic::Mov
+                && (i.op0_kind() == OpKind::Memory
+                    || matches!(i.op0_register(), Register::R8D | Register::R8));
+        } else if i.mnemonic() == Mnemonic::And
+            && i.op0_kind() == OpKind::Register
+            && gpr64(i.op0_register())
+            && imm(i) == Some(!0x0fff_ffffu64)
+            && offs.immediate_size() == 4
+        {
             edits.push(put_imm(new_size.wrapping_neg(), 4));
             found.masks += 1;
-        } else if i.mnemonic() == Mnemonic::Add && i.op0_kind() == OpKind::Register && gpr64(i.op0_register()) && imm(i) == Some(0x0fff_ffff) && offs.immediate_size() == 4 {
+        } else if i.mnemonic() == Mnemonic::Add
+            && i.op0_kind() == OpKind::Register
+            && gpr64(i.op0_register())
+            && imm(i) == Some(0x0fff_ffff)
+            && offs.immediate_size() == 4
+        {
             edits.push(put_imm(new_size - 1, 4));
             found.rounds += 1;
-        } else if i.mnemonic() == Mnemonic::Lea && i.memory_displacement64() == 0x0fff_ffff && offs.displacement_size() == 4 {
+        } else if i.mnemonic() == Mnemonic::Lea
+            && i.memory_displacement64() == 0x0fff_ffff
+            && offs.displacement_size() == 4
+        {
             let o = offs.displacement_offset();
             let mut b = raw.to_vec();
             b[o..o + 4].copy_from_slice(&(new_size - 1).to_le_bytes());
@@ -171,7 +217,8 @@ pub fn plan(code: &[u8], ip: u64) -> Option<(Vec<Edit>, Found)> {
     }
     // registration (2 shifts) and lookup (shift right, shifts left), the reservation's alignment
     // (divided by the page size), a region's size (stored), the block mask, a round-up
-    let whole = found.shifts >= 4 && div_size && region_size && found.masks >= 2 && found.rounds >= 1;
+    let whole =
+        found.shifts >= 4 && div_size && region_size && found.masks >= 2 && found.rounds >= 1;
     if !whole {
         return None;
     }
@@ -189,14 +236,25 @@ pub fn same_instructions(code: &[u8], ip: u64, edits: &[Edit]) -> bool {
     sorted.sort_by_key(|e| e.at);
     sorted.iter().all(|e| {
         let ok = e.at >= end && e.at + e.bytes.len() <= code.len() && {
-            let old = Decoder::with_ip(64, &code[e.at..e.at + e.bytes.len()], ip + e.at as u64, DecoderOptions::NONE).decode();
-            let new = Decoder::with_ip(64, &e.bytes, ip + e.at as u64, DecoderOptions::NONE).decode();
+            let old = Decoder::with_ip(
+                64,
+                &code[e.at..e.at + e.bytes.len()],
+                ip + e.at as u64,
+                DecoderOptions::NONE,
+            )
+            .decode();
+            let new =
+                Decoder::with_ip(64, &e.bytes, ip + e.at as u64, DecoderOptions::NONE).decode();
             !new.is_invalid()
                 && new.len() == e.bytes.len()
                 && old.len() == new.len()
                 && new.mnemonic() == old.mnemonic()
                 && new.op_count() == old.op_count()
-                && (0..new.op_count()).all(|k| new.op_kind(k) == old.op_kind(k) && (new.op_kind(k) != OpKind::Register || new.op_register(k) == old.op_register(k)))
+                && (0..new.op_count()).all(|k| {
+                    new.op_kind(k) == old.op_kind(k)
+                        && (new.op_kind(k) != OpKind::Register
+                            || new.op_register(k) == old.op_register(k))
+                })
                 && new.memory_base() == old.memory_base()
                 && new.memory_index() == old.memory_index()
         };
@@ -207,11 +265,17 @@ pub fn same_instructions(code: &[u8], ip: u64, edits: &[Edit]) -> bool {
 
 /// Patches UnityPlayer.dll of a 64-bit Unity 6 program, mapped at `base` (`size` bytes).
 pub fn patch(name: &str, base: u32, size: u32) {
-    if !wanted(name, crate::mem::x64(), std::env::var_os("SAKE_NO_UNITY6").is_some()) {
+    if !wanted(
+        name,
+        crate::mem::x64(),
+        std::env::var_os("SAKE_NO_UNITY6").is_some(),
+    ) {
         return;
     }
     let img = unsafe { std::slice::from_raw_parts(base as usize as *const u8, size as usize) };
-    let Some((edits, f)) = image_plan(img, crate::mem::widen(base)) else { return };
+    let Some((edits, f)) = image_plan(img, crate::mem::widen(base)) else {
+        return;
+    };
     for e in &edits {
         crate::mem::write(base + e.at as u32, &e.bytes);
     }
@@ -237,19 +301,40 @@ fn wanted(name: &str, x64: bool, off: bool) -> bool {
 fn image_plan(img: &[u8], ip: u64) -> Option<(Vec<Edit>, Found)> {
     code_sections(img).into_iter().find_map(|(va, end)| {
         let (edits, f) = plan(&img[va..end], ip + va as u64)?;
-        Some((edits.into_iter().map(|e| Edit { at: va + e.at, bytes: e.bytes }).collect(), f))
+        Some((
+            edits
+                .into_iter()
+                .map(|e| Edit {
+                    at: va + e.at,
+                    bytes: e.bytes,
+                })
+                .collect(),
+            f,
+        ))
     })
 }
 
 /// [start, end) of a mapped image's code sections.
 fn code_sections(img: &[u8]) -> Vec<(usize, usize)> {
-    let rd32 = |o: usize| img.get(o..o + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize);
-    let rd16 = |o: usize| img.get(o..o + 2).map(|b| u16::from_le_bytes(b.try_into().unwrap()) as usize);
-    let (Some(pe), mut v) = (rd32(0x3c), Vec::new()) else { return Vec::new() };
-    let (Some(n), Some(opt)) = (rd16(pe + 6), rd16(pe + 20)) else { return v };
+    let rd32 = |o: usize| {
+        img.get(o..o + 4)
+            .map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize)
+    };
+    let rd16 = |o: usize| {
+        img.get(o..o + 2)
+            .map(|b| u16::from_le_bytes(b.try_into().unwrap()) as usize)
+    };
+    let (Some(pe), mut v) = (rd32(0x3c), Vec::new()) else {
+        return Vec::new();
+    };
+    let (Some(n), Some(opt)) = (rd16(pe + 6), rd16(pe + 20)) else {
+        return v;
+    };
     for k in 0..n {
         let s = pe + 24 + opt + 40 * k;
-        let (Some(vsize), Some(va), Some(ch)) = (rd32(s + 8), rd32(s + 12), rd32(s + 36)) else { break };
+        let (Some(vsize), Some(va), Some(ch)) = (rd32(s + 8), rd32(s + 12), rd32(s + 36)) else {
+            break;
+        };
         if ch & 0x20 != 0 && va < img.len() {
             v.push((va, (va + vsize).min(img.len())));
         }
@@ -266,7 +351,8 @@ pub mod samples {
     pub const REG: &str = "405357415441574883ec28418bd94e8d2402488bfa49c1ec1c81e3ffffff0048c1ef1c4c8bf9413bfc0f83c800000048896c24504c89742420488974246066904863ef448bf748c1ed0c4181e6ff0f00008bc549837cc760007559ba10000000b900400000e8baae9200488bf04885c0740cf048810532f4ee000040000033d241b800400000488bcee832d394008bcd33c0f0490fb174cf6074194885f67414488bcee860ae9200f0488105fcf3ee0000c0ffff8bc5498b44c76042891cb08bc325000000ff3d000000ff74108d8b0000000133d981e3ffffff0033d9ffc7413bfc0f8258ffffff4c8b742420488b742460488b6c24504883c428415f415c5f5bc3";
     pub const LOOKUP: &str = "4881e2000000f04c8bd14c8bc249c1e81c4963c048c1e80c8bc04c8b4cc1604d85c9747d418bc025ff0f0000418b04818bc881e1000000ff81f9000000ff75498bc84181e8ff00000048c1e91848f7d94963c048c1e11c48c1e80c4803d18bc0498b4cc2604885c9741d418bc025ff0f00008b04818bc881e1000000ff81f9000000ff74bbeb0233c0a9ff07000074118bc848c1e91848c1e11c482bd1488bc2c333c0c3";
     pub const RESERVE: &str = "33d2488bf0b80000001049f7f5c3";
-    pub const CTOR: &str = "b900000010483d0000001077028bc84881f90000001049898ee000000049c786e800000000000010c3";
+    pub const CTOR: &str =
+        "b900000010483d0000001077028bc84881f90000001049898ee000000049c786e800000000000010c3";
     pub const ROUND: &str = "498dbeffffff0f440fb746084881e7000000f0c3";
     // 2022.3.22f1: the region's size passed in a register (0x18035771c), a request clamped to it
     // (0x1803615a3)
@@ -274,7 +360,8 @@ pub mod samples {
     // 2022.3.22f1 0x180357b6e: a round-up by add (6000.x rounds with lea)
     pub const ADD22: &str = "4881c1ffffff0f4803f9498bc94881e7000000f0c3";
     // 6000.5.4f1 0x18172170f: a 4 + 28 bit field next to the allocator code (not buckets)
-    pub const FIELD: &str = "81e2ffffff0f49c1ea1c8910418bd2488b810002000081e2ffffff0f49c1ea1c8910c3";
+    pub const FIELD: &str =
+        "81e2ffffff0f49c1ea1c8910418bd2488b810002000081e2ffffff0f49c1ea1c8910c3";
     // a flag test with the same constant
     pub const FLAG: &str = "f7430400000010c3";
 }
@@ -284,7 +371,10 @@ mod tests {
     use super::*;
 
     fn hex(s: &str) -> Vec<u8> {
-        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
     }
 
     use super::samples::*;
@@ -316,7 +406,11 @@ mod tests {
     /// The instructions as mnemonic and operands, in a form of our own (an iced formatter's text
     /// depends on which of its formatters the build's features bring in)
     fn listing(code: &[u8]) -> Vec<String> {
-        decode(code, IP, 0, code.len()).iter().filter(|i| i.mnemonic() != Mnemonic::Int3).map(canon).collect()
+        decode(code, IP, 0, code.len())
+            .iter()
+            .filter(|i| i.mnemonic() != Mnemonic::Int3)
+            .map(canon)
+            .collect()
     }
 
     fn canon(i: &Instruction) -> String {
@@ -324,13 +418,17 @@ mod tests {
             .map(|k| match i.op_kind(k) {
                 OpKind::Register => format!("{:?}", i.op_register(k)).to_lowercase(),
                 OpKind::Memory => {
-                    let mut m = format!("{:?}[{:?}", i.memory_size(), i.memory_base()).to_lowercase();
+                    let mut m =
+                        format!("{:?}[{:?}", i.memory_size(), i.memory_base()).to_lowercase();
                     if i.memory_index() != Register::None {
-                        m += &format!("+{:?}*{}", i.memory_index(), i.memory_index_scale()).to_lowercase();
+                        m += &format!("+{:?}*{}", i.memory_index(), i.memory_index_scale())
+                            .to_lowercase();
                     }
                     format!("{m}+{:#x}]", i.memory_displacement64())
                 }
-                OpKind::NearBranch16 | OpKind::NearBranch32 | OpKind::NearBranch64 => format!("{:#x}", i.near_branch_target()),
+                OpKind::NearBranch16 | OpKind::NearBranch32 | OpKind::NearBranch64 => {
+                    format!("{:#x}", i.near_branch_target())
+                }
                 OpKind::Immediate8
                 | OpKind::Immediate8_2nd
                 | OpKind::Immediate16
@@ -362,7 +460,12 @@ mod tests {
         );
         let before = listing(&code);
         let after = listing(&apply(&code, &edits));
-        let changed: Vec<(String, String)> = before.iter().zip(&after).filter(|(a, b)| a != b).map(|(a, b)| (a.clone(), b.clone())).collect();
+        let changed: Vec<(String, String)> = before
+            .iter()
+            .zip(&after)
+            .filter(|(a, b)| a != b)
+            .map(|(a, b)| (a.clone(), b.clone()))
+            .collect();
         let want = [
             ("shr r12,0x1c", "shr r12,0x1a"),
             ("shr rdi,0x1c", "shr rdi,0x1a"),
@@ -374,11 +477,20 @@ mod tests {
             ("mov ecx,0x10000000", "mov ecx,0x4000000"),
             ("cmp rax,0x10000000", "cmp rax,0x4000000"),
             ("cmp rcx,0x10000000", "cmp rcx,0x4000000"),
-            ("mov uint64[r14+0xe8],0x10000000", "mov uint64[r14+0xe8],0x4000000"),
-            ("lea rdi,unknown[r14+0xfffffff]", "lea rdi,unknown[r14+0x3ffffff]"),
+            (
+                "mov uint64[r14+0xe8],0x10000000",
+                "mov uint64[r14+0xe8],0x4000000",
+            ),
+            (
+                "lea rdi,unknown[r14+0xfffffff]",
+                "lea rdi,unknown[r14+0x3ffffff]",
+            ),
             ("and rdi,0xfffffffff0000000", "and rdi,0xfffffffffc000000"),
         ];
-        let want: Vec<(String, String)> = want.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+        let want: Vec<(String, String)> = want
+            .iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect();
         assert_eq!(changed, want);
         // the same instructions, only constants differ
         assert_eq!(before.len(), after.len());
@@ -387,7 +499,11 @@ mod tests {
     #[test]
     fn leaves_code_out_of_reach_alone() {
         // the round-up past the window: no round-up found, so nothing at all
-        assert!(plan(&module(&[REG, LOOKUP, RESERVE, CTOR], ROUND, WINDOW as usize), IP).is_none());
+        assert!(plan(
+            &module(&[REG, LOOKUP, RESERVE, CTOR], ROUND, WINDOW as usize),
+            IP
+        )
+        .is_none());
         assert!(plan(&module(&[REG, LOOKUP, RESERVE, CTOR], ROUND, 0), IP).is_some());
     }
 
@@ -395,8 +511,16 @@ mod tests {
     fn wants_every_kind_of_site() {
         let all = [REG, LOOKUP, RESERVE, CTOR, ROUND];
         for skip in 0..all.len() {
-            let parts: Vec<&str> = all.iter().enumerate().filter(|&(k, _)| k != skip).map(|(_, p)| *p).collect();
-            assert!(plan(&module(&parts, FLAG, 0), IP).is_none(), "without part {skip}");
+            let parts: Vec<&str> = all
+                .iter()
+                .enumerate()
+                .filter(|&(k, _)| k != skip)
+                .map(|(_, p)| *p)
+                .collect();
+            assert!(
+                plan(&module(&parts, FLAG, 0), IP).is_none(),
+                "without part {skip}"
+            );
         }
     }
 
@@ -406,8 +530,14 @@ mod tests {
         let code = module(&[REG, LOOKUP, RESERVE, CTOR22], ROUND, 0);
         let (edits, f) = plan(&code, IP).expect("recognized");
         let after = listing(&apply(&code, &edits));
-        assert!(after.contains(&"mov r8d,0x4000000".to_string()), "{after:?}");
-        assert!(after.contains(&"mov eax,0x4000000".to_string()), "{after:?}");
+        assert!(
+            after.contains(&"mov r8d,0x4000000".to_string()),
+            "{after:?}"
+        );
+        assert!(
+            after.contains(&"mov eax,0x4000000".to_string()),
+            "{after:?}"
+        );
         assert_eq!(f.sizes, 3);
         // the clamp alone (no size handed on) is not enough
         let clamp_only = "b800000010483bd0480f47d0c3";
@@ -416,13 +546,23 @@ mod tests {
 
     #[test]
     fn round_up_by_add() {
-        let (edits, f) = plan(&module(&[REG, LOOKUP, RESERVE, CTOR], ADD22, 0), IP).expect("recognized");
+        let (edits, f) =
+            plan(&module(&[REG, LOOKUP, RESERVE, CTOR], ADD22, 0), IP).expect("recognized");
         assert_eq!((f.rounds, f.masks), (1, 2));
-        let after = listing(&apply(&module(&[REG, LOOKUP, RESERVE, CTOR], ADD22, 0), &edits));
-        assert!(after.contains(&"add rcx,0x3ffffff".to_string()), "{after:?}");
+        let after = listing(&apply(
+            &module(&[REG, LOOKUP, RESERVE, CTOR], ADD22, 0),
+            &edits,
+        ));
+        assert!(
+            after.contains(&"add rcx,0x3ffffff".to_string()),
+            "{after:?}"
+        );
         // a 32-bit add of the constant, or one to memory, is no round-up of a pointer
         for other in ["81c1ffffff0fc3", "4881410cffffff0fc3"] {
-            assert!(plan(&module(&[REG, LOOKUP, RESERVE, CTOR], other, 0), IP).is_none(), "{other}");
+            assert!(
+                plan(&module(&[REG, LOOKUP, RESERVE, CTOR], other, 0), IP).is_none(),
+                "{other}"
+            );
         }
     }
 
@@ -430,15 +570,24 @@ mod tests {
     fn only_64_bit_registers() {
         // 32-bit shifts, masks and adds of the same constants are not about pointers: the
         // same edits with them next to the allocator as without
-        let (want, _) = plan(&module(&[REG, LOOKUP, RESERVE, CTOR], ROUND, 0), IP).expect("recognized");
+        let (want, _) =
+            plan(&module(&[REG, LOOKUP, RESERVE, CTOR], ROUND, 0), IP).expect("recognized");
         // shr eax,0x1c; shl edx,0x1c; add ecx,0xfffffff; and ecx,0xf0000000
         let decoy = "c1e81cc1e21c81c1ffffff0f81e1000000f0c3";
         let code = module(&[REG, LOOKUP, RESERVE, CTOR, decoy], ROUND, 0);
         let (edits, f) = plan(&code, IP).expect("recognized");
         assert_eq!((f.shifts, f.rounds, f.masks), (5, 1, 2));
-        assert_eq!(edits.iter().map(|e| &e.bytes).collect::<Vec<_>>(), want.iter().map(|e| &e.bytes).collect::<Vec<_>>());
+        assert_eq!(
+            edits.iter().map(|e| &e.bytes).collect::<Vec<_>>(),
+            want.iter().map(|e| &e.bytes).collect::<Vec<_>>()
+        );
         let after = listing(&apply(&code, &edits));
-        for d in ["shr eax,0x1c", "shl edx,0x1c", "add ecx,0xfffffff", "and ecx,0xf0000000"] {
+        for d in [
+            "shr eax,0x1c",
+            "shl edx,0x1c",
+            "add ecx,0xfffffff",
+            "and ecx,0xf0000000",
+        ] {
             assert!(after.contains(&d.to_string()), "{d} {after:?}");
         }
     }
@@ -449,14 +598,14 @@ mod tests {
         // another form) are not the anchor
         let decoys = [
             FIELD,
-            "48c1e81c25ffffff00c3",             // shr rax,28; and eax,0xffffff (no cmp)
-            "48c1e81c3d000000ffc3",             // shr rax,28; cmp eax,0xff000000 (no and)
+            "48c1e81c25ffffff00c3", // shr rax,28; and eax,0xffffff (no cmp)
+            "48c1e81c3d000000ffc3", // shr rax,28; cmp eax,0xff000000 (no and)
             "48c1e81c8120ffffff003d000000ffc3", // and dword [rax],0xffffff; cmp
-            "48c1e81c25feffff003d000000ffc3",   // and eax,0xfffffe; cmp
-            "48c1e01c25ffffff003d000000ffc3",   // shl, not shr
-            "48c1e81cb8ffffff003d000000ffc3",   // mov eax,0xffffff; cmp
-            "48c1e81c25ffffff0083f801c3",       // and; cmp eax,1
-            "48c1e81c25ffffff0025000000ffc3",   // and; and eax,0xff000000 (no cmp)
+            "48c1e81c25feffff003d000000ffc3", // and eax,0xfffffe; cmp
+            "48c1e01c25ffffff003d000000ffc3", // shl, not shr
+            "48c1e81cb8ffffff003d000000ffc3", // mov eax,0xffffff; cmp
+            "48c1e81c25ffffff0083f801c3", // and; cmp eax,1
+            "48c1e81c25ffffff0025000000ffc3", // and; and eax,0xff000000 (no cmp)
         ];
         for d in decoys {
             let code = module(&[d, REG, LOOKUP, RESERVE, CTOR], ROUND, 0);
@@ -474,7 +623,10 @@ mod tests {
         assert_eq!(sync_point(&[0x90; 8], 7), 0);
         assert_eq!(sync_point(&[0xcc, 0x90, 0xcc, 0x90], 4), 0);
         let ins = decode(&code, IP, 3, 6);
-        assert_eq!(ins.iter().map(|i| i.ip()).collect::<Vec<_>>(), [IP + 3, IP + 4, IP + 5]);
+        assert_eq!(
+            ins.iter().map(|i| i.ip()).collect::<Vec<_>>(),
+            [IP + 3, IP + 4, IP + 5]
+        );
         // far into a section: decoding starts after the padding before the window, and the
         // edits land where they belong
         let mut big = vec![0x90; 0x2_0000];
@@ -489,15 +641,25 @@ mod tests {
         let (near, _) = plan(&body, IP + 0x2_0000).unwrap();
         assert_eq!(f.anchor, IP + 0x2_0000 + 16 + 0x15);
         assert_eq!(
-            edits.iter().map(|e| (e.at - 0x2_0000, e.bytes.clone())).collect::<Vec<_>>(),
-            near.iter().map(|e| (e.at, e.bytes.clone())).collect::<Vec<_>>()
+            edits
+                .iter()
+                .map(|e| (e.at - 0x2_0000, e.bytes.clone()))
+                .collect::<Vec<_>>(),
+            near.iter()
+                .map(|e| (e.at, e.bytes.clone()))
+                .collect::<Vec<_>>()
         );
     }
 
     /// A mapped image with a header page and the given sections (virtual address, size,
     /// characteristics, contents)
     fn image(sections: &[(usize, usize, u32, &[u8])]) -> Vec<u8> {
-        let end = sections.iter().map(|s| s.0 + s.1).max().unwrap_or(0x1000).max(0x1000);
+        let end = sections
+            .iter()
+            .map(|s| s.0 + s.1)
+            .max()
+            .unwrap_or(0x1000)
+            .max(0x1000);
         let mut img = vec![0u8; end];
         let pe = 0x80;
         img[0x3c..0x40].copy_from_slice(&(pe as u32).to_le_bytes());
@@ -519,13 +681,21 @@ mod tests {
         let body = module(&[REG, LOOKUP, FIELD, RESERVE, FLAG, CTOR], ROUND, 0);
         let (near, nf) = plan(&body, IP + 0x3000).unwrap();
         // data first (not code: the same bytes there are not looked at), then the code section
-        let img = image(&[(0x1000, 0x2000, 0x4000_0040, &body), (0x3000, body.len(), 0x6000_0020, &body)]);
+        let img = image(&[
+            (0x1000, 0x2000, 0x4000_0040, &body),
+            (0x3000, body.len(), 0x6000_0020, &body),
+        ]);
         assert_eq!(code_sections(&img), [(0x3000, 0x3000 + body.len())]);
         let (edits, f) = image_plan(&img, IP).expect("found");
         assert_eq!(f, nf);
         assert_eq!(
-            edits.iter().map(|e| (e.at, e.bytes.clone())).collect::<Vec<_>>(),
-            near.iter().map(|e| (0x3000 + e.at, e.bytes.clone())).collect::<Vec<_>>()
+            edits
+                .iter()
+                .map(|e| (e.at, e.bytes.clone()))
+                .collect::<Vec<_>>(),
+            near.iter()
+                .map(|e| (0x3000 + e.at, e.bytes.clone()))
+                .collect::<Vec<_>>()
         );
         // a section reaching past the image is cut at its end; one starting at the end is left out
         let img = image(&[(0x1000, 0x1000, 0x20, &body), (0x2000, 0x10, 0x20, &[])]);
@@ -552,8 +722,16 @@ mod tests {
         // and rdx, 0xfffffffff0000000 at 0, shr r8, 0x1c at 7
         let code = hex("4881e2000000f049c1e81c");
         let e = |at: usize, b: &str| Edit { at, bytes: hex(b) };
-        assert!(same_instructions(&code, IP, &[e(0, "4881e2000000fc"), e(7, "49c1e81a")]));
-        assert!(same_instructions(&code, IP, &[e(7, "49c1e81a"), e(0, "4881e2000000fc")]));
+        assert!(same_instructions(
+            &code,
+            IP,
+            &[e(0, "4881e2000000fc"), e(7, "49c1e81a")]
+        ));
+        assert!(same_instructions(
+            &code,
+            IP,
+            &[e(7, "49c1e81a"), e(0, "4881e2000000fc")]
+        ));
         assert!(same_instructions(&code, IP, &[]));
         // another register, another mnemonic, another length, an invalid encoding
         assert!(!same_instructions(&code, IP, &[e(7, "49c1e91a")]));
@@ -561,18 +739,38 @@ mod tests {
         assert!(!same_instructions(&code, IP, &[e(0, "4883e2f0")]));
         assert!(!same_instructions(&code, IP, &[e(7, "0f0b0f0b")]));
         // overlapping, reaching past the end of the code
-        assert!(!same_instructions(&code, IP, &[e(0, "4881e2000000fc"), e(6, "fc49c1e81a")]));
+        assert!(!same_instructions(
+            &code,
+            IP,
+            &[e(0, "4881e2000000fc"), e(6, "fc49c1e81a")]
+        ));
         assert!(!same_instructions(&code, IP, &[e(9, "c1e81a00")]));
         // memory operands: the base and index stay
         let m = hex("49c786e800000000000010");
         assert!(same_instructions(&m, IP, &[e(0, "49c786e800000000000004")]));
-        assert!(!same_instructions(&m, IP, &[e(0, "49c787e800000000000004")]));
-        assert!(!same_instructions(&hex("488d3c88"), IP, &[e(0, "488d3c89")]));
+        assert!(!same_instructions(
+            &m,
+            IP,
+            &[e(0, "49c787e800000000000004")]
+        ));
+        assert!(!same_instructions(
+            &hex("488d3c88"),
+            IP,
+            &[e(0, "488d3c89")]
+        ));
         // a branch: the target moves (its operand stays a near branch)
-        assert!(same_instructions(&hex("e800000000"), IP, &[e(0, "e810000000")]));
+        assert!(same_instructions(
+            &hex("e800000000"),
+            IP,
+            &[e(0, "e810000000")]
+        ));
         // the edit's address: a RIP-relative operand decodes the same anywhere, a second
         // instruction's offset is its own
-        assert!(same_instructions(&hex("90488b0500000000"), IP, &[e(1, "488b0510000000")]));
+        assert!(same_instructions(
+            &hex("90488b0500000000"),
+            IP,
+            &[e(1, "488b0510000000")]
+        ));
     }
 
     #[test]
@@ -595,7 +793,8 @@ mod tests {
         img[0x86] = 2; // sections
         img[0x94] = 0xf0; // optional header size
         let s = 0x80 + 24 + 0xf0;
-        let put = |img: &mut Vec<u8>, o: usize, v: u32| img[o..o + 4].copy_from_slice(&v.to_le_bytes());
+        let put =
+            |img: &mut Vec<u8>, o: usize, v: u32| img[o..o + 4].copy_from_slice(&v.to_le_bytes());
         put(&mut img, s + 8, 0x100);
         put(&mut img, s + 12, 0x200);
         put(&mut img, s + 36, 0x6000_0020);
@@ -693,13 +892,18 @@ mod tests {
     #[test]
     #[ignore]
     fn real_dlls() {
-        let Ok(list) = std::env::var("SAKE_UNITY_DLLS") else { return };
+        let Ok(list) = std::env::var("SAKE_UNITY_DLLS") else {
+            return;
+        };
         for path in list.split(':') {
             let file = std::fs::read(path).unwrap();
             // map the sections as the loader does
             let rd = |o: usize| u32::from_le_bytes(file[o..o + 4].try_into().unwrap()) as usize;
             let pe = rd(0x3c);
-            let (n, opt) = (u16::from_le_bytes([file[pe + 6], file[pe + 7]]) as usize, u16::from_le_bytes([file[pe + 20], file[pe + 21]]) as usize);
+            let (n, opt) = (
+                u16::from_le_bytes([file[pe + 6], file[pe + 7]]) as usize,
+                u16::from_le_bytes([file[pe + 20], file[pe + 21]]) as usize,
+            );
             let mut img = vec![0u8; rd(pe + 24 + 56)];
             img[..rd(pe + 24 + 60)].copy_from_slice(&file[..rd(pe + 24 + 60)]);
             for k in 0..n {
@@ -708,7 +912,10 @@ mod tests {
                 let n = raw.min(img.len() - va);
                 img[va..va + n].copy_from_slice(&file[ptr..ptr + n]);
             }
-            let found: Vec<_> = code_sections(&img).into_iter().filter_map(|(a, b)| plan(&img[a..b], IP + a as u64).map(|p| p.1)).collect();
+            let found: Vec<_> = code_sections(&img)
+                .into_iter()
+                .filter_map(|(a, b)| plan(&img[a..b], IP + a as u64).map(|p| p.1))
+                .collect();
             eprintln!("{path}: {found:x?}");
             assert_eq!(found.len(), 1);
         }
@@ -751,11 +958,20 @@ mod tests {
 
         /// The first instruction after int3 padding or a ret (2022.3 does not align it) in the
         /// window that `is` accepts.
-        fn function_starting(code: &[u8], ip: u64, a: usize, is: impl Fn(&Instruction) -> bool) -> u64 {
+        fn function_starting(
+            code: &[u8],
+            ip: u64,
+            a: usize,
+            is: impl Fn(&Instruction) -> bool,
+        ) -> u64 {
             let lo = sync_point(code, a - WINDOW as usize);
             let ins = decode(code, ip, lo, a + WINDOW as usize);
             ins.windows(3)
-                .find(|w| matches!(w[0].mnemonic(), Mnemonic::Int3 | Mnemonic::Ret) && w[1].mnemonic() != Mnemonic::Int3 && is(&w[1]))
+                .find(|w| {
+                    matches!(w[0].mnemonic(), Mnemonic::Int3 | Mnemonic::Ret)
+                        && w[1].mnemonic() != Mnemonic::Int3
+                        && is(&w[1])
+                })
                 .unwrap()[1]
                 .ip()
         }
@@ -780,7 +996,10 @@ mod tests {
                 };
                 assert_eq!(p as u64, base, "the image's base is taken");
                 let img = unsafe { std::slice::from_raw_parts_mut(base as *mut u8, size) };
-                let (n, opt) = (u16::from_le_bytes([f[pe + 6], f[pe + 7]]) as usize, u16::from_le_bytes([f[pe + 20], f[pe + 21]]) as usize);
+                let (n, opt) = (
+                    u16::from_le_bytes([f[pe + 6], f[pe + 7]]) as usize,
+                    u16::from_le_bytes([f[pe + 20], f[pe + 21]]) as usize,
+                );
                 img[..rd(&f, pe + 24 + 60)].copy_from_slice(&f[..rd(&f, pe + 24 + 60)]);
                 for k in 0..n {
                     let s = pe + 24 + opt + 40 * k;
@@ -797,34 +1016,62 @@ mod tests {
                 let from = sync_point(code, a);
                 let register = decode(code, ip, from, a)
                     .windows(2)
-                    .filter(|w| matches!(w[0].mnemonic(), Mnemonic::Ret | Mnemonic::Int3) && w[1].mnemonic() != Mnemonic::Int3)
+                    .filter(|w| {
+                        matches!(w[0].mnemonic(), Mnemonic::Ret | Mnemonic::Int3)
+                            && w[1].mnemonic() != Mnemonic::Int3
+                    })
                     .map(|w| w[1].ip())
                     .last()
                     .unwrap_or(from as u64 + ip);
-                let lookup = function_starting(code, ip, a, |i| i.mnemonic() == Mnemonic::And && i.op0_register() == Register::RDX && imm(i) == Some(!0x0fff_ffffu64));
-                let entry = function_starting(code, ip, a, |i| is_shift(i) && i.mnemonic() == Mnemonic::Shr && i.op0_register() == Register::R8);
+                let lookup = function_starting(code, ip, a, |i| {
+                    i.mnemonic() == Mnemonic::And
+                        && i.op0_register() == Register::RDX
+                        && imm(i) == Some(!0x0fff_ffffu64)
+                });
+                let entry = function_starting(code, ip, a, |i| {
+                    is_shift(i) && i.mnemonic() == Mnemonic::Shr && i.op0_register() == Register::R8
+                });
                 // the registration's calls: allocate, clear, free (an inner table that lost a race)
                 let ro = (register - ip) as usize;
                 let calls: Vec<u64> = decode(code, ip, ro, ro + 0x200)
                     .iter()
                     .take_while(|i| i.mnemonic() != Mnemonic::Ret)
-                    .filter(|i| i.mnemonic() == Mnemonic::Call && i.op0_kind() == OpKind::NearBranch64)
+                    .filter(|i| {
+                        i.mnemonic() == Mnemonic::Call && i.op0_kind() == OpKind::NearBranch64
+                    })
                     .map(|i| i.near_branch64())
                     .collect();
                 assert_eq!(calls.len(), 3, "{calls:x?}");
-                for (t, f) in calls.iter().zip([alloc as *const () as u64, memset as *const () as u64, free as *const () as u64]) {
+                for (t, f) in calls.iter().zip([
+                    alloc as *const () as u64,
+                    memset as *const () as u64,
+                    free as *const () as u64,
+                ]) {
                     let o = (t - base) as usize;
                     img[o..o + 2].copy_from_slice(&[0x48, 0xb8]);
                     img[o + 2..o + 10].copy_from_slice(&f.to_le_bytes());
                     img[o + 10..o + 12].copy_from_slice(&[0xff, 0xe0]);
                 }
-                eprintln!("register {register:#x} lookup {lookup:#x} entry {entry:#x} calls {calls:x?}");
-                Mutex::new(Img { base, text, register, lookup, entry })
+                eprintln!(
+                    "register {register:#x} lookup {lookup:#x} entry {entry:#x} calls {calls:x?}"
+                );
+                Mutex::new(Img {
+                    base,
+                    text,
+                    register,
+                    lookup,
+                    entry,
+                })
             })
         }
 
         fn patch_in_place(img: &Img) {
-            let code = unsafe { std::slice::from_raw_parts_mut((img.base + img.text.0 as u64) as *mut u8, img.text.1 - img.text.0) };
+            let code = unsafe {
+                std::slice::from_raw_parts_mut(
+                    (img.base + img.text.0 as u64) as *mut u8,
+                    img.text.1 - img.text.0,
+                )
+            };
             let (edits, _) = plan(code, img.base + img.text.0 as u64).unwrap();
             for e in edits {
                 code[e.at..e.at + e.bytes.len()].copy_from_slice(&e.bytes);
@@ -849,7 +1096,10 @@ mod tests {
                 }
             }
             fn entry(&self, p: u64) -> u32 {
-                self.t.get(&((p >> self.shift) as u32 as u64)).copied().unwrap_or(0)
+                self.t
+                    .get(&((p >> self.shift) as u32 as u64))
+                    .copied()
+                    .unwrap_or(0)
             }
             /// The region's start, 0: none
             fn lookup(&self, p: u64) -> u64 {
@@ -876,8 +1126,15 @@ mod tests {
         fn ops(shift: u32) -> impl Strategy<Value = Vec<Op>> {
             let b = 1u64 << shift;
             // (regions in the first 256 buckets, most on bucket boundaries as Unity makes them)
-            let at = (0u64..256, any::<bool>(), 0u64..b).prop_map(move |(k, aligned, off)| k * b + if aligned { 0 } else { off });
-            let len = (1u64..300, any::<bool>(), 0u64..b).prop_map(move |(k, whole, off)| if whole { k * b } else { k * b / 3 + off });
+            let at = (0u64..256, any::<bool>(), 0u64..b)
+                .prop_map(move |(k, aligned, off)| k * b + if aligned { 0 } else { off });
+            let len = (1u64..300, any::<bool>(), 0u64..b).prop_map(move |(k, whole, off)| {
+                if whole {
+                    k * b
+                } else {
+                    k * b / 3 + off
+                }
+            });
             let op = prop_oneof![
                 3 => (at.clone(), len.clone(), 1u32..0x80_0000).prop_map(|(p, n, id)| Op::Register(p, n, id)),
                 1 => (at, len).prop_map(|(p, n)| Op::Release(p, n)),
@@ -891,9 +1148,18 @@ mod tests {
             type Reg = extern "win64" fn(*mut u8, u64, u64, u32);
             type Look = extern "win64" fn(*mut u8, u64) -> u64;
             type Entry = extern "win64" fn(*mut u8, *mut u32, u64) -> *mut u32;
-            let (reg, look, entry): (Reg, Look, Entry) = unsafe { (std::mem::transmute(img.register), std::mem::transmute(img.lookup), std::mem::transmute(img.entry)) };
+            let (reg, look, entry): (Reg, Look, Entry) = unsafe {
+                (
+                    std::mem::transmute(img.register),
+                    std::mem::transmute(img.lookup),
+                    std::mem::transmute(img.entry),
+                )
+            };
             let mut this = vec![0u8; 0x1_0000];
-            let mut m = Model { shift, ..Model::default() };
+            let mut m = Model {
+                shift,
+                ..Model::default()
+            };
             let mut probes = Vec::new();
             for op in ops {
                 let (p, n, id) = match *op {
@@ -902,12 +1168,24 @@ mod tests {
                 };
                 reg(this.as_mut_ptr(), p, n, id);
                 m.register(p, n, id);
-                for q in [p, p + n / 2, (p + n).saturating_sub(1), p + n, p.saturating_sub(1)] {
+                for q in [
+                    p,
+                    p + n / 2,
+                    (p + n).saturating_sub(1),
+                    p + n,
+                    p.saturating_sub(1),
+                ] {
                     probes.push(q);
                 }
             }
             for q in probes {
-                prop_assert_eq!(look(this.as_mut_ptr(), q), m.lookup(q), "lookup {:#x} ({}-bit buckets)", q, shift);
+                prop_assert_eq!(
+                    look(this.as_mut_ptr(), q),
+                    m.lookup(q),
+                    "lookup {:#x} ({}-bit buckets)",
+                    q,
+                    shift
+                );
                 let mut out = 0xdead_beef_u32;
                 entry(this.as_mut_ptr(), &mut out, q);
                 prop_assert_eq!(out, m.entry(q), "entry {:#x}", q);

@@ -106,7 +106,11 @@ pub fn store(k: &Kern) {
     #[cfg(target_os = "emscripten")]
     {
         let ok = unsafe { sys::vnhost_kern_put(v.as_ptr(), v.len()) };
-        assert!(ok != 0, "sake: the shared kernel state outgrew its buffer ({} bytes)", v.len());
+        assert!(
+            ok != 0,
+            "sake: the shared kernel state outgrew its buffer ({} bytes)",
+            v.len()
+        );
     }
 }
 /// The host's `i`th ended process: (id, exit code).

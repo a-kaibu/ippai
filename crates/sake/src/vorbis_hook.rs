@@ -68,10 +68,14 @@ fn readable(a: u32, n: u32) -> bool {
     if a < 0x1_0000 {
         return false;
     }
-    let Some(end) = a.checked_add(n) else { return false };
+    let Some(end) = a.checked_add(n) else {
+        return false;
+    };
     let mut p = a;
     loop {
-        let Some((_, _, start, len, state, _)) = mem::query(p) else { return false };
+        let Some((_, _, start, len, state, _)) = mem::query(p) else {
+            return false;
+        };
         if state != 0x1000 {
             return false;
         }
@@ -93,12 +97,17 @@ struct Image<'a> {
 
 impl Image<'_> {
     fn new(base: u32, size: u32) -> Option<Image<'static>> {
-        Image::of(base, unsafe { std::slice::from_raw_parts(base as usize as *const u8, size as usize) })
+        Image::of(base, unsafe {
+            std::slice::from_raw_parts(base as usize as *const u8, size as usize)
+        })
     }
 
     /// A mapped image's sections, from its headers.
     fn of(base: u32, img: &[u8]) -> Option<Image<'_>> {
-        let rd = |o: usize| img.get(o..o + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+        let rd = |o: usize| {
+            img.get(o..o + 4)
+                .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+        };
         let pe = rd(0x3c)? as usize;
         let nsec = u16::from_le_bytes(img.get(pe + 6..pe + 8)?.try_into().ok()?) as usize;
         let opt = u16::from_le_bytes(img.get(pe + 20..pe + 22)?.try_into().ok()?) as usize;
@@ -107,7 +116,12 @@ impl Image<'_> {
         let (mut code, mut data) = (Vec::new(), Vec::new());
         for i in 0..nsec {
             let s = pe + 24 + opt + 40 * i;
-            let (vsize, va, raw, ch) = (rd(s + 8)? as usize, rd(s + 12)? as usize, rd(s + 16)? as usize, rd(s + 36)?);
+            let (vsize, va, raw, ch) = (
+                rd(s + 8)? as usize,
+                rd(s + 12)? as usize,
+                rd(s + 16)? as usize,
+                rd(s + 36)?,
+            );
             let end = (va + vsize.max(raw)).min(img.len());
             if va >= end {
                 continue;
@@ -119,7 +133,12 @@ impl Image<'_> {
                 data.push((va, end));
             }
         }
-        Some(Image { base, img, code, data })
+        Some(Image {
+            base,
+            img,
+            code,
+            data,
+        })
     }
 
     fn in_code(&self, a: u32) -> bool {
@@ -170,9 +189,16 @@ impl Image<'_> {
 
 /// The functions to patch in a module: (headerin candidates, mapping0_inverse).
 fn locate(m: &Image) -> Option<(Vec<u32>, u32)> {
-    let table: Vec<u8> = vorbis::floor1_table::INVERSE_DB.iter().flat_map(|f| f.to_le_bytes()).collect();
+    let table: Vec<u8> = vorbis::floor1_table::INVERSE_DB
+        .iter()
+        .flat_map(|f| f.to_le_bytes())
+        .collect();
     // (a game may hold two copies: libvorbis's and another decoder's)
-    let lut_refs: Vec<u32> = [m.find(&table, &m.data), m.find(&table, &m.code)].concat().into_iter().flat_map(|l| m.refs(l, &m.code)).collect();
+    let lut_refs: Vec<u32> = [m.find(&table, &m.data), m.find(&table, &m.code)]
+        .concat()
+        .into_iter()
+        .flat_map(|l| m.refs(l, &m.code))
+        .collect();
     // (a build may compute the table instead: KiriKiri's wuvorbis.dll. Then a module that has
     // the string is searched through the registry's tables, below)
     if lut_refs.is_empty() && m.find(b"vorbis\0", &m.data).is_empty() {
@@ -209,21 +235,38 @@ fn locate(m: &Image) -> Option<(Vec<u32>, u32)> {
     // packs functions with constants between them)
     let is_start = |f: u32| {
         let o = (f - m.base) as usize;
-        f % 16 == 0 || matches!(m.img.get(o.wrapping_sub(1)), Some(0xcc | 0x90 | 0xc3)) || m.img.get(o..o + 3) == Some(&[0x55, 0x8b, 0xec][..])
+        f % 16 == 0
+            || matches!(m.img.get(o.wrapping_sub(1)), Some(0xcc | 0x90 | 0xc3))
+            || m.img.get(o..o + 3) == Some(&[0x55, 0x8b, 0xec][..])
     };
     // the functions that may hold `a`: starts a little before it (the tables below sort out
     // which)
     let funcs_of = |a: u32| -> Vec<u32> {
         let i = starts.partition_point(|&s| s <= a);
-        starts[..i].iter().rev().take_while(|&&f| a - f < 0x2000).copied().filter(|&f| is_start(f)).collect()
+        starts[..i]
+            .iter()
+            .rev()
+            .take_while(|&&f| a - f < 0x2000)
+            .copied()
+            .filter(|&f| is_start(f))
+            .collect()
     };
     // a function's code: up to the next function (a call target, or a start in a table)
     let body = |f: u32| -> (usize, usize) {
         let i = starts.partition_point(|&s| s <= f);
         let j = calls.partition_point(|&s| s <= f);
-        let next_t = starts[i..].iter().copied().find(|&s| is_start(s)).unwrap_or(u32::MAX);
-        let end = next_t.min(calls.get(j).copied().unwrap_or(u32::MAX)).min(f + 0x2000);
-        ((f - m.base) as usize, ((end - m.base) as usize).min(m.img.len()))
+        let next_t = starts[i..]
+            .iter()
+            .copied()
+            .find(|&s| is_start(s))
+            .unwrap_or(u32::MAX);
+        let end = next_t
+            .min(calls.get(j).copied().unwrap_or(u32::MAX))
+            .min(f + 0x2000);
+        (
+            (f - m.base) as usize,
+            ((end - m.base) as usize).min(m.img.len()),
+        )
     };
     let uses = |f: u32, v: u32| -> bool {
         let (s, e) = body(f);
@@ -233,7 +276,14 @@ fn locate(m: &Image) -> Option<(Vec<u32>, u32)> {
     // functions in a build without it)
     let table_or_null = |at: u32, n: usize, null: u32| -> Option<Vec<u32>> {
         let o = at.checked_sub(m.base)? as usize;
-        (0..n).map(|k| m.img.get(o + 4 * k..o + 4 * k + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap())).filter(|&v| (m.in_code(v) && is_start(v)) || (v == 0 && null >> k & 1 != 0))).collect()
+        (0..n)
+            .map(|k| {
+                m.img
+                    .get(o + 4 * k..o + 4 * k + 4)
+                    .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+                    .filter(|&v| (m.in_code(v) && is_start(v)) || (v == 0 && null >> k & 1 != 0))
+            })
+            .collect()
     };
     let table_at = |at: u32, n: usize| table_or_null(at, n, 0);
     // floor 1's table: entry 6 is the function using the dB table
@@ -252,7 +302,13 @@ fn locate(m: &Image) -> Option<(Vec<u32>, u32)> {
     // a residue table (vorbis_func_residue): unpack, look, free_info, free_look and inverse
     // (entries 1-4, 7) always there, the encoder's (pack, class, forward) may be null
     let residue_table = |t: u32| -> bool {
-        let Some(o) = t.checked_sub(m.base).map(|o| o as usize).filter(|&o| o + 32 <= m.img.len()) else { return false };
+        let Some(o) = t
+            .checked_sub(m.base)
+            .map(|o| o as usize)
+            .filter(|&o| o + 32 <= m.img.len())
+        else {
+            return false;
+        };
         (0..8).all(|k| {
             let v = m.u32_at(o + 4 * k);
             (m.in_code(v) && is_start(v)) || (v == 0 && matches!(k, 0 | 5 | 6))
@@ -275,7 +331,10 @@ fn locate(m: &Image) -> Option<(Vec<u32>, u32)> {
     if lut_refs.is_empty() {
         for &r in &residue_p {
             let t = m.u32_at((r - 4 - m.base) as usize);
-            if !m.in_code(t) && table_or_null(t, 7, 1).is_some() && table_or_null(m.u32_at((r - 8 - m.base) as usize), 7, 1).is_some() {
+            if !m.in_code(t)
+                && table_or_null(t, 7, 1).is_some()
+                && table_or_null(m.u32_at((r - 8 - m.base) as usize), 7, 1).is_some()
+            {
                 floor1.push(t);
             }
         }
@@ -316,7 +375,13 @@ fn locate(m: &Image) -> Option<(Vec<u32>, u32)> {
     mapping.sort_unstable();
     mapping.dedup();
     // a build with the encoder: mapping0_forward (entry 3, just before inverse) passes too
-    let next_is_candidate = |f: &u32| ptrs[f].iter().any(|&loc| m.img.get((loc + 4 - m.base) as usize..).is_some_and(|_| mapping.contains(&m.u32_at((loc + 4 - m.base) as usize))));
+    let next_is_candidate = |f: &u32| {
+        ptrs[f].iter().any(|&loc| {
+            m.img
+                .get((loc + 4 - m.base) as usize..)
+                .is_some_and(|_| mapping.contains(&m.u32_at((loc + 4 - m.base) as usize)))
+        })
+    };
     let forward: Vec<u32> = mapping.iter().copied().filter(next_is_candidate).collect();
     mapping.retain(|f| !forward.contains(f));
     if mapping.len() != 1 {
@@ -327,7 +392,11 @@ fn locate(m: &Image) -> Option<(Vec<u32>, u32)> {
     }
     // headerin: called directly (no table), so its start is the nearest call target before
     // the string (or newer compilers' inlined memcmp: cmp dword [r], 'vorb')
-    let mut refs: Vec<u32> = m.find(b"vorbis\0", &m.data).into_iter().flat_map(|s| m.refs(s, &m.code)).collect();
+    let mut refs: Vec<u32> = m
+        .find(b"vorbis\0", &m.data)
+        .into_iter()
+        .flat_map(|s| m.refs(s, &m.code))
+        .collect();
     refs.extend(m.refs(u32::from_le_bytes(*b"vorb"), &m.code));
     let mut headerin = Vec::new();
     for r in refs {
@@ -352,7 +421,10 @@ fn hook(f: u32, kind: Kind) -> Option<()> {
     let mut len = 0usize;
     while len < 5 {
         let ins = d.decode();
-        if ins.is_invalid() || ins.flow_control() != FlowControl::Next || ins.is_ip_rel_memory_operand() {
+        if ins.is_invalid()
+            || ins.flow_control() != FlowControl::Next
+            || ins.is_ip_rel_memory_operand()
+        {
             return None;
         }
         len += ins.len();
@@ -360,11 +432,26 @@ fn hook(f: u32, kind: Kind) -> Option<()> {
     let mut tr = code[..len].to_vec();
     let t = api::stub(&vec![0; len + 5]);
     tr.push(0xe9);
-    tr.extend((f + len as u32).wrapping_sub(t + len as u32 + 5).to_le_bytes());
+    tr.extend(
+        (f + len as u32)
+            .wrapping_sub(t + len as u32 + 5)
+            .to_le_bytes(),
+    );
     mem::write(t, &tr);
-    let name = format!("vorbis_{}_{f:x}", if matches!(kind, Kind::Mapping { .. }) { "mapping0_inverse" } else { "headerin" });
+    let name = format!(
+        "vorbis_{}_{f:x}",
+        if matches!(kind, Kind::Mapping { .. }) {
+            "mapping0_inverse"
+        } else {
+            "headerin"
+        }
+    );
     let h = api::host_fn(&name, handler, 0);
-    HOOKS.lock().unwrap().get_or_insert_with(HashMap::new).insert(h, (kind, t));
+    HOOKS
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .insert(h, (kind, t));
     let mut jmp = vec![0xe9];
     jmp.extend(h.wrapping_sub(f + 5).to_le_bytes());
     mem::write(f, &jmp);
@@ -376,15 +463,31 @@ pub fn patch(base: u32, size: u32) {
     if std::env::var_os("SAKE_NO_VORBIS").is_some() || mem::x64() {
         return;
     }
-    let Some(m) = Image::new(base, size) else { return };
-    let Some((headerin, mapping)) = locate(&m) else { return };
+    let Some(m) = Image::new(base, size) else {
+        return;
+    };
+    let Some((headerin, mapping)) = locate(&m) else {
+        return;
+    };
     let code = |f: u32| unsafe { std::slice::from_raw_parts(f as usize as *const u8, 96) };
     let fastcall = reads(code(mapping), Register::ECX) && reads(code(mapping), Register::EDX);
     if hook(mapping, Kind::Mapping { fastcall }).is_none() {
         eprintln!("sake: vorbis: mapping0_inverse at {mapping:#x} could not be patched");
         return;
     }
-    let n = headerin.iter().filter(|&&f| hook(f, Kind::Headerin { ecx: reads(code(f), Register::ECX), edx: reads(code(f), Register::EDX) }).is_some()).count();
+    let n = headerin
+        .iter()
+        .filter(|&&f| {
+            hook(
+                f,
+                Kind::Headerin {
+                    ecx: reads(code(f), Register::ECX),
+                    edx: reads(code(f), Register::EDX),
+                },
+            )
+            .is_some()
+        })
+        .count();
     eprintln!("sake: vorbis: decoding natively (mapping0_inverse {mapping:#x}, {n} header readers {headerin:x?})");
 }
 
@@ -407,7 +510,10 @@ fn reads(code: &[u8], reg: Register) -> bool {
                 continue;
             }
             match r.access() {
-                OpAccess::Read | OpAccess::CondRead | OpAccess::ReadWrite | OpAccess::ReadCondWrite => return true,
+                OpAccess::Read
+                | OpAccess::CondRead
+                | OpAccess::ReadWrite
+                | OpAccess::ReadCondWrite => return true,
                 OpAccess::Write | OpAccess::CondWrite => return false,
                 _ => {}
             }
@@ -426,7 +532,12 @@ fn on_to(c: &mut Ctx, t: u32) -> u32 {
 }
 
 fn handler(c: &mut Ctx) -> u32 {
-    let Some((kind, t)) = HOOKS.lock().unwrap().as_ref().and_then(|h| h.get(&c.trap).copied()) else {
+    let Some((kind, t)) = HOOKS
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|h| h.get(&c.trap).copied())
+    else {
         panic!("vorbis hook without an entry");
     };
     match kind {
@@ -468,7 +579,9 @@ fn headerin(vi: u32, op: u32) {
             m.insert(vi, pkt.to_vec());
         }
         5 => {
-            let Some(ident) = IDENTS.lock().unwrap().as_mut().and_then(|m| m.remove(&vi)) else { return };
+            let Some(ident) = IDENTS.lock().unwrap().as_mut().and_then(|m| m.remove(&vi)) else {
+                return;
+            };
             let key = (ident, pkt.to_vec());
             let setup = {
                 let mut c = SETUPS.lock().unwrap();
@@ -487,7 +600,9 @@ fn headerin(vi: u32, op: u32) {
                                 Some(s)
                             }
                             Err(e) => {
-                                eprintln!("sake: vorbis: a stream left to the game's decoder ({e:?})");
+                                eprintln!(
+                                    "sake: vorbis: a stream left to the game's decoder ({e:?})"
+                                );
                                 None
                             }
                         }
@@ -509,13 +624,23 @@ fn headerin(vi: u32, op: u32) {
             let m = g.get_or_insert_with(HashMap::new);
             if m.len() >= MAX_STREAMS {
                 // those whose codec_setup is gone or another's, then the oldest
-                m.retain(|&k, s| s.seen.is_none_or(|seen| readable(k, 36) && mem::slice(k, 36) == seen));
+                m.retain(|&k, s| {
+                    s.seen
+                        .is_none_or(|seen| readable(k, 36) && mem::slice(k, 36) == seen)
+                });
                 while m.len() >= MAX_STREAMS {
                     let oldest = *m.iter().min_by_key(|(_, s)| s.born).unwrap().0;
                     m.remove(&oldest);
                 }
             }
-            m.insert(cs, Stream { dec: Some(dec), seen: None, born });
+            m.insert(
+                cs,
+                Stream {
+                    dec: Some(dec),
+                    seen: None,
+                    born,
+                },
+            );
         }
         _ => {}
     }
@@ -543,7 +668,9 @@ static IDENTS: Mutex<Option<HashMap<u32, Vec<u8>>>> = Mutex::new(None);
 /// The codec_setup of a vorbis_info whose identification header is in: its blocksizes are
 /// that header's.
 fn codec_setup(vi: u32, setup: &Setup) -> Option<u32> {
-    VI_SETUP.iter().map(|&o| r32(vi + o)).find(|&cs| readable(cs, 8) && [r32(cs) as usize, r32(cs + 4) as usize] == setup.ident.blocksize)
+    VI_SETUP.iter().map(|&o| r32(vi + o)).find(|&cs| {
+        readable(cs, 8) && [r32(cs) as usize, r32(cs + 4) as usize] == setup.ident.blocksize
+    })
 }
 
 /// What a build's mapping0_inverse leaves in vb->pcm: libvorbis 1.0.x windows the block there,
@@ -565,7 +692,12 @@ enum Shape {
 static SHAPES: Mutex<Option<HashMap<u32, Shape>>> = Mutex::new(None);
 
 fn shape(tramp: u32) -> Shape {
-    SHAPES.lock().unwrap().as_ref().and_then(|m| m.get(&tramp).copied()).unwrap_or(Shape::Unknown(0))
+    SHAPES
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|m| m.get(&tramp).copied())
+        .unwrap_or(Shape::Unknown(0))
 }
 
 fn largest_diff(a: &[Vec<f32>], outs: &[u32]) -> (f32, f32) {
@@ -592,15 +724,31 @@ fn original(c: &mut Ctx, tramp: u32, vb: u32, map: u32, fastcall: bool) -> u32 {
     }
 }
 
-fn learn(c: &mut Ctx, tramp: u32, vb: u32, map: u32, fastcall: bool, shapes: &[(Shape, Vec<Vec<f32>>)], outs: &[u32], misses: u8) -> u32 {
+fn learn(
+    c: &mut Ctx,
+    tramp: u32,
+    vb: u32,
+    map: u32,
+    fastcall: bool,
+    shapes: &[(Shape, Vec<Vec<f32>>)],
+    outs: &[u32],
+    misses: u8,
+) -> u32 {
     let r = original(c, tramp, vb, map, fastcall);
     let peak = largest_diff(&shapes[0].1, outs).1;
     if peak < 1e-2 {
         // too quiet to tell
         return r;
     }
-    let diffs: Vec<f32> = shapes.iter().map(|(_, b)| largest_diff(b, outs).0).collect();
-    let s = match shapes.iter().zip(&diffs).find(|((_, _), &d)| d < 1e-4 * peak.max(1.0)) {
+    let diffs: Vec<f32> = shapes
+        .iter()
+        .map(|(_, b)| largest_diff(b, outs).0)
+        .collect();
+    let s = match shapes
+        .iter()
+        .zip(&diffs)
+        .find(|((_, _), &d)| d < 1e-4 * peak.max(1.0))
+    {
         Some(((s, _), _)) => *s,
         None if misses >= 3 => Shape::Off,
         None => Shape::Unknown(misses + 1),
@@ -610,7 +758,11 @@ fn learn(c: &mut Ctx, tramp: u32, vb: u32, map: u32, fastcall: bool, shapes: &[(
         Shape::Off => eprintln!("sake: vorbis: decoder at {tramp:#x} left to the game (its samples match no shape: {diffs:?})"),
         _ => eprintln!("sake: vorbis: decoder at {tramp:#x} gives {s:?} blocks"),
     }
-    SHAPES.lock().unwrap().get_or_insert_with(HashMap::new).insert(tramp, s);
+    SHAPES
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .insert(tramp, s);
     r
 }
 
@@ -621,7 +773,12 @@ struct Check {
     worst: f32,
     peak: f32,
 }
-static CHECK: Mutex<Check> = Mutex::new(Check { packets: 0, bad: 0, worst: 0.0, peak: 0.0 });
+static CHECK: Mutex<Check> = Mutex::new(Check {
+    packets: 0,
+    bad: 0,
+    worst: 0.0,
+    peak: 0.0,
+});
 
 /// A block left to the game's code; with SAKE_VORBIS_CHECK, says why (the first few times).
 fn pass(why: &'static str) -> Option<u32> {
@@ -639,7 +796,11 @@ fn pass(why: &'static str) -> Option<u32> {
 /// mapping0_inverse(vb, map): the block's samples (before windowing) into vb->pcm. None: the
 /// game's own code is to do it.
 fn mapping(c: &mut Ctx, tramp: u32, fastcall: bool) -> Option<u32> {
-    let (vb, map) = if fastcall { (c.cpu.regs[1], c.cpu.regs[2]) } else { (c.a(0), c.a(1)) };
+    let (vb, map) = if fastcall {
+        (c.cpu.regs[1], c.cpu.regs[2])
+    } else {
+        (c.a(0), c.a(1))
+    };
     let sh = shape(tramp);
     if sh == Shape::Off || !readable(vb, VB_VD + 4) {
         return pass("off or vb unreadable");
@@ -654,8 +815,14 @@ fn mapping(c: &mut Ctx, tramp: u32, fastcall: bool) -> Option<u32> {
     }
     let dec = {
         let mut g = STREAMS.lock().unwrap();
-        let Some(m) = g.as_mut() else { return pass("no headers for its vorbis_info") };
-        let Some(key) = VI_SETUP.iter().map(|&o| r32(vi + o)).find(|k| m.contains_key(k)) else {
+        let Some(m) = g.as_mut() else {
+            return pass("no headers for its vorbis_info");
+        };
+        let Some(key) = VI_SETUP
+            .iter()
+            .map(|&o| r32(vi + o))
+            .find(|k| m.contains_key(k))
+        else {
             return pass("no headers for its vorbis_info");
         };
         if !readable(key, 36) {
@@ -686,7 +853,12 @@ fn mapping(c: &mut Ctx, tramp: u32, fastcall: bool) -> Option<u32> {
         return pass("mode/blocksize");
     }
     let n = setup.ident.blocksize[w];
-    let (endbyte, endbit, buffer, storage) = (r32(vb + VB_OPB), r32(vb + VB_OPB + 4), r32(vb + VB_OPB + 8), r32(vb + VB_OPB + 16));
+    let (endbyte, endbit, buffer, storage) = (
+        r32(vb + VB_OPB),
+        r32(vb + VB_OPB + 4),
+        r32(vb + VB_OPB + 8),
+        r32(vb + VB_OPB + 16),
+    );
     if endbit > 7 || endbyte > storage || storage > 1 << 24 || !readable(buffer, storage) {
         return pass("bit reader");
     }
@@ -701,7 +873,10 @@ fn mapping(c: &mut Ctx, tramp: u32, fastcall: bool) -> Option<u32> {
     let mut decode_as = |down: bool| {
         st.lines_round_down = down;
         let mut bufs = vec![vec![0f32; n]; ch];
-        let mut b = Bits::at(mem::slice(buffer, storage), endbyte as usize * 8 + endbit as usize);
+        let mut b = Bits::at(
+            mem::slice(buffer, storage),
+            endbyte as usize * 8 + endbit as usize,
+        );
         let mut v: Vec<&mut [f32]> = bufs.iter_mut().map(|b| &mut b[..]).collect();
         decode::mapping_inverse(setup, st, &mut b, mode, &mut v);
         bufs
@@ -723,7 +898,11 @@ fn mapping(c: &mut Ctx, tramp: u32, fastcall: bool) -> Option<u32> {
             window(&mut windowed);
             let fixed = scaled16(decode_as(true));
             drop(g);
-            let shapes = [(Shape::Raw, bufs), (Shape::Windowed, windowed), (Shape::Scaled16, fixed)];
+            let shapes = [
+                (Shape::Raw, bufs),
+                (Shape::Windowed, windowed),
+                (Shape::Scaled16, fixed),
+            ];
             return Some(learn(c, tramp, vb, map, fastcall, &shapes, &outs, misses));
         }
         Shape::Windowed => window(&mut bufs),
@@ -796,7 +975,9 @@ mod tests {
 
     fn hex(s: &str) -> Vec<u8> {
         let s: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-        (0..s.len() / 2).map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap()).collect()
+        (0..s.len() / 2)
+            .map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap())
+            .collect()
     }
 
     /// A PE file laid out as the loader maps it.
@@ -805,12 +986,20 @@ mod tests {
         let pe = rd(0x3c) as usize;
         let nsec = u16::from_le_bytes(file[pe + 6..pe + 8].try_into().unwrap()) as usize;
         let opt = u16::from_le_bytes(file[pe + 20..pe + 22].try_into().unwrap()) as usize;
-        let (base, size, hdr) = (rd(pe + 24 + 28), rd(pe + 24 + 56) as usize, rd(pe + 24 + 60) as usize);
+        let (base, size, hdr) = (
+            rd(pe + 24 + 28),
+            rd(pe + 24 + 56) as usize,
+            rd(pe + 24 + 60) as usize,
+        );
         let mut img = vec![0u8; size];
         img[..hdr].copy_from_slice(&file[..hdr]);
         for i in 0..nsec {
             let s = pe + 24 + opt + 40 * i;
-            let (va, raw, ptr) = (rd(s + 12) as usize, rd(s + 16) as usize, rd(s + 20) as usize);
+            let (va, raw, ptr) = (
+                rd(s + 12) as usize,
+                rd(s + 16) as usize,
+                rd(s + 20) as usize,
+            );
             let n = raw.min(file.len().saturating_sub(ptr)).min(size - va);
             img[va..va + n].copy_from_slice(&file[ptr..ptr + n]);
         }

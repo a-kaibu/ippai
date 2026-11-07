@@ -29,7 +29,10 @@ pub fn split_command(cmd: &str) -> (String, String) {
     let cmd = cmd.trim_start();
     if let Some(q) = cmd.strip_prefix('"') {
         let end = q.find('"').unwrap_or(q.len());
-        (q[..end].to_string(), q.get(end + 1..).unwrap_or("").trim().to_string())
+        (
+            q[..end].to_string(),
+            q.get(end + 1..).unwrap_or("").trim().to_string(),
+        )
     } else {
         let end = cmd.find([' ', '\t']).unwrap_or(cmd.len());
         (cmd[..end].to_string(), cmd[end..].trim().to_string())
@@ -49,7 +52,13 @@ fn find_program(prog: &str, app: bool) -> Result<(String, String), u32> {
     let bare = !name.contains(['\\', '/']);
     let mut tries = Vec::new();
     if bare {
-        let exe = crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.path.clone()).unwrap_or_default();
+        let exe = crate::pe::MODULES
+            .read()
+            .unwrap()
+            .iter()
+            .find(|m| !m.dll)
+            .map(|m| m.path.clone())
+            .unwrap_or_default();
         if let Some((d, _)) = exe.rsplit_once('\\') {
             tries.push(format!("{d}\\{name}"));
         }
@@ -67,15 +76,25 @@ fn find_program(prog: &str, app: bool) -> Result<(String, String), u32> {
         }
     }
     let full = files::full_path(&name);
-    let dir_there = full.rsplit_once('\\').is_none_or(|(d, _)| d.len() <= 2 || files::resolve(d).is_some());
+    let dir_there = full
+        .rsplit_once('\\')
+        .is_none_or(|(d, _)| d.len() <= 2 || files::resolve(d).is_some());
     Err(if bare || dir_there { 2 } else { 3 })
 }
 
 /// What a handle of this process is to another process (None: nothing another can use).
 fn kref(o: &Obj) -> Option<KRef> {
     match o {
-        Obj::Pipe(p) => Some(KRef::Pipe { end: p.end, read: p.read, write: p.write, ovl: p.ovl }),
-        Obj::Process { access, pid } => Some(KRef::Process { pid: *pid, access: *access }),
+        Obj::Pipe(p) => Some(KRef::Pipe {
+            end: p.end,
+            read: p.read,
+            write: p.write,
+            ovl: p.ovl,
+        }),
+        Obj::Process { access, pid } => Some(KRef::Process {
+            pid: *pid,
+            access: *access,
+        }),
         Obj::Shared(id) => Some(KRef::Sync { id: *id }),
         _ => None,
     }
@@ -91,7 +110,11 @@ fn startup_std(si: u32) -> Option<(u32, u32, u32)> {
         return None;
     }
     let ps = mem::ps();
-    Some((mem::rp(si + std), mem::rp(si + std + ps), mem::rp(si + std + 2 * ps)))
+    Some((
+        mem::rp(si + std),
+        mem::rp(si + std + ps),
+        mem::rp(si + std + 2 * ps),
+    ))
 }
 
 /// CreateProcessA/W(app, command line, process sa, thread sa, inherit, flags, environment,
@@ -137,8 +160,25 @@ pub fn create_process(c: &mut Ctx, wide: bool) -> u32 {
         Some(d) => files::full_path(&d),
         None => files::cwd(),
     };
-    let list: Vec<(u32, KRef)> = if inherit { obj::with(|t| t.inheritable().filter_map(|(h, o)| Some((h, kref(o)?))).collect()) } else { Vec::new() };
-    let p = Proc { parent: crate::pid(), image: win.clone(), cmdline, cwd, suspend: (flags & 4 != 0) as u32, inherit: list, std: startup_std(si), ..Proc::default() };
+    let list: Vec<(u32, KRef)> = if inherit {
+        obj::with(|t| {
+            t.inheritable()
+                .filter_map(|(h, o)| Some((h, kref(o)?)))
+                .collect()
+        })
+    } else {
+        Vec::new()
+    };
+    let p = Proc {
+        parent: crate::pid(),
+        image: win.clone(),
+        cmdline,
+        cwd,
+        suspend: (flags & 4 != 0) as u32,
+        inherit: list,
+        std: startup_std(si),
+        ..Proc::default()
+    };
     let pid = kern::with(|k| k.new_process(p)).0;
     if crate::env_on!("SAKE_TRACE_EXIT") {
         eprintln!("sake: CreateProcess {win} -> process {pid:#x}");
@@ -148,8 +188,14 @@ pub fn create_process(c: &mut Ctx, wide: bool) -> u32 {
         last_error(2);
         return 0;
     }
-    let hp = obj::add(Obj::Process { access: PROCESS_ALL_ACCESS, pid });
-    let ht = obj::add(Obj::RemoteThread { pid, tid: first_tid(pid) });
+    let hp = obj::add(Obj::Process {
+        access: PROCESS_ALL_ACCESS,
+        pid,
+    });
+    let ht = obj::add(Obj::RemoteThread {
+        pid,
+        tid: first_tid(pid),
+    });
     if pi != 0 {
         let ps = mem::ps();
         mem::wp(pi, hp);
@@ -178,7 +224,17 @@ pub fn record() -> Option<Proc> {
 pub fn start_child(r: &Proc) {
     for &(h, o) in &r.inherit {
         let o = match o {
-            KRef::Pipe { end, read, write, ovl } => Obj::Pipe(crate::pipe::Handle { end, read, write, ovl }),
+            KRef::Pipe {
+                end,
+                read,
+                write,
+                ovl,
+            } => Obj::Pipe(crate::pipe::Handle {
+                end,
+                read,
+                write,
+                ovl,
+            }),
             KRef::Process { pid, access } => Obj::Process { access, pid },
             KRef::Sync { id } => Obj::Shared(id),
         };
@@ -264,6 +320,15 @@ pub fn resume(pid: u32) -> u32 {
 pub fn running() -> Vec<u32> {
     let me = crate::pid();
     let mut v = vec![me];
-    v.extend(kern::with(|k| k.procs.iter().filter(|(&p, r)| p != me && r.exit.is_none()).map(|(&p, _)| p).collect::<Vec<_>>()).0);
+    v.extend(
+        kern::with(|k| {
+            k.procs
+                .iter()
+                .filter(|(&p, r)| p != me && r.exit.is_none())
+                .map(|(&p, _)| p)
+                .collect::<Vec<_>>()
+        })
+        .0,
+    );
     v
 }

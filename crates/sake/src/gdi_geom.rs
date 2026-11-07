@@ -63,7 +63,11 @@ pub fn poly_spans(polys: &[Vec<(i32, i32)>], winding: bool) -> Vec<Span> {
     // GDI coordinates are 28-bit (+-2^27); a polygon beyond them makes an empty region (as
     // on Windows, Wine's gdi32 clipping test) instead of 2^31 rows of edge table
     const LIM: i32 = 1 << 27;
-    if polys.iter().flatten().any(|&(x, y)| !(-LIM..LIM).contains(&x) || !(-LIM..LIM).contains(&y)) {
+    if polys
+        .iter()
+        .flatten()
+        .any(|&(x, y)| !(-LIM..LIM).contains(&x) || !(-LIM..LIM).contains(&y))
+    {
         return Vec::new();
     }
     let mut edges = Vec::new();
@@ -75,7 +79,10 @@ pub fn poly_spans(polys: &[Vec<(i32, i32)>], winding: bool) -> Vec<Span> {
             }
         }
     }
-    let (Some(y0), Some(y1)) = (edges.iter().map(|e| e.0 .1.min(e.1 .1)).min(), edges.iter().map(|e| e.0 .1.max(e.1 .1)).max()) else {
+    let (Some(y0), Some(y1)) = (
+        edges.iter().map(|e| e.0 .1.min(e.1 .1)).min(),
+        edges.iter().map(|e| e.0 .1.max(e.1 .1)).max(),
+    ) else {
         return Vec::new();
     };
     let mut out = Vec::new();
@@ -88,7 +95,8 @@ pub fn poly_spans(polys: &[Vec<(i32, i32)>], winding: bool) -> Vec<Span> {
                 continue;
             }
             // x = top.x + (y - top.y) * (bot.x - top.x) / (bot.y - top.y), as a fraction
-            let num = top.0 as i64 * (bot.1 - top.1) as i64 + (y - top.1) as i64 * (bot.0 - top.0) as i64;
+            let num =
+                top.0 as i64 * (bot.1 - top.1) as i64 + (y - top.1) as i64 * (bot.0 - top.0) as i64;
             xs.push((num, (bot.1 - top.1) as i64, dir));
         }
         xs.sort_by(|p, q| (p.0 as i128 * q.1 as i128).cmp(&(q.0 as i128 * p.1 as i128)));
@@ -154,7 +162,13 @@ pub fn round_rect_spans(l: i32, t: i32, r: i32, b: i32, ew: i32, eh: i32) -> Vec
     let mut out = Vec::new();
     for y in t..b {
         // corner rows use the ellipse's half rows
-        let ey = if y - t < eh / 2 { Some(y - t) } else if b - 1 - y < eh / 2 { Some(eh - (b - y)) } else { None };
+        let ey = if y - t < eh / 2 {
+            Some(y - t)
+        } else if b - 1 - y < eh / 2 {
+            Some(eh - (b - y))
+        } else {
+            None
+        };
         match ey.and_then(|ey| e.iter().find(|s| s.0 == ey)) {
             Some(&(_, x0, x1)) => {
                 let (il, ir) = (x0, ew - x1);
@@ -181,7 +195,10 @@ pub fn outline(s: &[Span]) -> (Vec<(i32, i32)>, Vec<Span>) {
     for &(y, x0, x1) in s {
         rows.entry(y).or_default().push((x0, x1));
     }
-    let has = |x: i32, y: i32| rows.get(&y).is_some_and(|v| v.iter().any(|&(a, b)| x >= a && x < b));
+    let has = |x: i32, y: i32| {
+        rows.get(&y)
+            .is_some_and(|v| v.iter().any(|&(a, b)| x >= a && x < b))
+    };
     let mut edge = Vec::new();
     let mut inner = Vec::new();
     for &(y, x0, x1) in s {
@@ -225,14 +242,25 @@ pub fn on_arc(a: f64, s: f64, e: f64) -> bool {
 
 /// Points of a cubic Bezier, flattened.
 pub fn bezier(p: [(i32, i32); 4]) -> Vec<(i32, i32)> {
-    let len = p.windows(2).map(|w| ((w[1].0 - w[0].0).abs() + (w[1].1 - w[0].1).abs()) as usize).sum::<usize>();
+    let len = p
+        .windows(2)
+        .map(|w| ((w[1].0 - w[0].0).abs() + (w[1].1 - w[0].1).abs()) as usize)
+        .sum::<usize>();
     let n = (len / 2).clamp(1, 512);
     let mut v = Vec::with_capacity(n + 1);
     for i in 0..=n {
         let t = i as f64 / n as f64;
         let u = 1.0 - t;
-        let f = |a: i32, b: i32, c: i32, d: i32| u * u * u * a as f64 + 3.0 * u * u * t * b as f64 + 3.0 * u * t * t * c as f64 + t * t * t * d as f64;
-        let q = (f(p[0].0, p[1].0, p[2].0, p[3].0).round() as i32, f(p[0].1, p[1].1, p[2].1, p[3].1).round() as i32);
+        let f = |a: i32, b: i32, c: i32, d: i32| {
+            u * u * u * a as f64
+                + 3.0 * u * u * t * b as f64
+                + 3.0 * u * t * t * c as f64
+                + t * t * t * d as f64
+        };
+        let q = (
+            f(p[0].0, p[1].0, p[2].0, p[3].0).round() as i32,
+            f(p[0].1, p[1].1, p[2].1, p[3].1).round() as i32,
+        );
         if v.last() != Some(&q) {
             v.push(q);
         }
@@ -275,7 +303,13 @@ fn ivs_op(a: &[(i32, i32)], b: &[(i32, i32)], f: fn(bool, bool) -> bool) -> Vec<
 }
 
 fn bands(rects: &[Rect], y0: i32, y1: i32) -> Vec<(i32, i32)> {
-    ivs_union(rects.iter().filter(|r| r.t <= y0 && r.b >= y1).map(|r| (r.l, r.r)).collect())
+    ivs_union(
+        rects
+            .iter()
+            .filter(|r| r.t <= y0 && r.b >= y1)
+            .map(|r| (r.l, r.r))
+            .collect(),
+    )
 }
 
 fn banded(ys: &[i32], mut row: impl FnMut(i32, i32) -> Vec<(i32, i32)>) -> Vec<Rect> {
@@ -294,14 +328,27 @@ fn banded(ys: &[i32], mut row: impl FnMut(i32, i32) -> Vec<(i32, i32)>) -> Vec<R
             }
         }
         let start = out.len();
-        out.extend(iv.iter().map(|&(l, r)| Rect { l, t: w[0], r, b: w[1] }));
-        prev = if iv.is_empty() { None } else { Some((w[1], iv, start)) };
+        out.extend(iv.iter().map(|&(l, r)| Rect {
+            l,
+            t: w[0],
+            r,
+            b: w[1],
+        }));
+        prev = if iv.is_empty() {
+            None
+        } else {
+            Some((w[1], iv, start))
+        };
     }
     out
 }
 
 fn edges_y(r: &[Rect]) -> Vec<i32> {
-    let mut ys: Vec<i32> = r.iter().filter(|r| !r.empty()).flat_map(|r| [r.t, r.b]).collect();
+    let mut ys: Vec<i32> = r
+        .iter()
+        .filter(|r| !r.empty())
+        .flat_map(|r| [r.t, r.b])
+        .collect();
     ys.sort();
     ys.dedup();
     ys
@@ -326,12 +373,23 @@ pub fn combine(a: &[Rect], b: &[Rect], mode: u32) -> Vec<Rect> {
     all.extend_from_slice(b);
     let a: Vec<Rect> = a.iter().copied().filter(|r| !r.empty()).collect();
     let b: Vec<Rect> = b.iter().copied().filter(|r| !r.empty()).collect();
-    banded(&edges_y(&all), |y0, y1| ivs_op(&bands(&a, y0, y1), &bands(&b, y0, y1), f))
+    banded(&edges_y(&all), |y0, y1| {
+        ivs_op(&bands(&a, y0, y1), &bands(&b, y0, y1), f)
+    })
 }
 
 /// Spans -> a banded region.
 pub fn spans_region(s: &[Span]) -> Vec<Rect> {
-    normalize(&s.iter().map(|&(y, l, r)| Rect { l, t: y, r, b: y + 1 }).collect::<Vec<_>>())
+    normalize(
+        &s.iter()
+            .map(|&(y, l, r)| Rect {
+                l,
+                t: y,
+                r,
+                b: y + 1,
+            })
+            .collect::<Vec<_>>(),
+    )
 }
 
 #[cfg(test)]
@@ -344,15 +402,36 @@ mod tests {
         assert!(line_pts((32, 32), (50, 0), false).contains(&(45, 8)));
         assert!(line_pts((32, 32), (13, 0), false).contains(&(22, 16)));
         assert!(line_pts((32, 32), (0, 45), false).contains(&(16, 38)));
-        assert_eq!(line_pts((0, 0), (3, 0), false), vec![(0, 0), (1, 0), (2, 0)]);
+        assert_eq!(
+            line_pts((0, 0), (3, 0), false),
+            vec![(0, 0), (1, 0), (2, 0)]
+        );
     }
 
     #[test]
     fn regions_banded() {
-        let a = vec![Rect { l: 0, t: 0, r: 10, b: 10 }];
-        let b = vec![Rect { l: 5, t: 5, r: 15, b: 15 }];
+        let a = vec![Rect {
+            l: 0,
+            t: 0,
+            r: 10,
+            b: 10,
+        }];
+        let b = vec![Rect {
+            l: 5,
+            t: 5,
+            r: 15,
+            b: 15,
+        }];
         assert_eq!(combine(&a, &b, 2).len(), 3);
-        assert_eq!(combine(&a, &b, 1), vec![Rect { l: 5, t: 5, r: 10, b: 10 }]);
+        assert_eq!(
+            combine(&a, &b, 1),
+            vec![Rect {
+                l: 5,
+                t: 5,
+                r: 10,
+                b: 10
+            }]
+        );
         assert_eq!(combine(&a, &b, 3).len(), 4);
         assert_eq!(normalize(&[a[0], a[0]]), a);
     }

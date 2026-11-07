@@ -6,10 +6,42 @@ use super::*;
 use proptest::prelude::*;
 
 /// nls.c's `ws`, in code page 932 as the probe's manifest makes it
-const WS: [&[u8]; 22] = [b"a", b"A", b"b", b"B", b"-a", b"a-b", b"ab", b"co-op", b"coop", b"a'b", b"_a", b"1", b"10", b"2", b"", b"\x82\xa0", b"\x83\x41", b"\xb1", b"z", b"Z", b"\xe9", b"\xc9"];
+const WS: [&[u8]; 22] = [
+    b"a",
+    b"A",
+    b"b",
+    b"B",
+    b"-a",
+    b"a-b",
+    b"ab",
+    b"co-op",
+    b"coop",
+    b"a'b",
+    b"_a",
+    b"1",
+    b"10",
+    b"2",
+    b"",
+    b"\x82\xa0",
+    b"\x83\x41",
+    b"\xb1",
+    b"z",
+    b"Z",
+    b"\xe9",
+    b"\xc9",
+];
 
 fn golden() -> Vec<String> {
-    ["32", "64"].iter().filter_map(|b| std::fs::read_to_string(format!("{}/../../tests/winref/golden/nls-{b}/stdout.txt", env!("CARGO_MANIFEST_DIR"))).ok()).collect()
+    ["32", "64"]
+        .iter()
+        .filter_map(|b| {
+            std::fs::read_to_string(format!(
+                "{}/../../tests/winref/golden/nls-{b}/stdout.txt",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .ok()
+        })
+        .collect()
 }
 
 fn digit(o: Ordering) -> u8 {
@@ -23,18 +55,36 @@ fn orders_as_windows() {
     let w: Vec<Vec<u16>> = WS.iter().map(|s| crate::text::mb2w(932, s)).collect();
     for out in g {
         for i in 0..WS.len() {
-            let row = out.lines().find(|l| l.starts_with(&format!("cmp {i}:"))).unwrap();
+            let row = out
+                .lines()
+                .find(|l| l.starts_with(&format!("cmp {i}:")))
+                .unwrap();
             let cells: Vec<&str> = row.split_whitespace().skip(2).collect();
             for j in 0..WS.len() {
                 let (a, b) = (&w[i], &w[j]);
                 // CompareString 0, NORM_IGNORECASE, SORT_STRINGSORT, lstrcmp, lstrcmpi
-                let got: Vec<u8> = [0, NORM_IGNORECASE, SORT_STRINGSORT, 0, NORM_IGNORECASE].iter().map(|&f| digit(compare(a, b, f))).collect();
-                assert_eq!(std::str::from_utf8(&got).unwrap(), cells[j], "{:?} vs {:?}", WS[i], WS[j]);
+                let got: Vec<u8> = [0, NORM_IGNORECASE, SORT_STRINGSORT, 0, NORM_IGNORECASE]
+                    .iter()
+                    .map(|&f| digit(compare(a, b, f)))
+                    .collect();
+                assert_eq!(
+                    std::str::from_utf8(&got).unwrap(),
+                    cells[j],
+                    "{:?} vs {:?}",
+                    WS[i],
+                    WS[j]
+                );
             }
         }
         // CompareStringW kana 2 width 2: あ = ア ignoring kana type, A = Ａ ignoring width
-        assert_eq!(compare(&[0x3042], &[0x30a2], NORM_IGNOREKANATYPE), Ordering::Equal);
-        assert_eq!(compare(&[0x41], &[0xff21], NORM_IGNOREWIDTH), Ordering::Equal);
+        assert_eq!(
+            compare(&[0x3042], &[0x30a2], NORM_IGNOREKANATYPE),
+            Ordering::Equal
+        );
+        assert_eq!(
+            compare(&[0x41], &[0xff21], NORM_IGNOREWIDTH),
+            Ordering::Equal
+        );
         assert!(out.contains("CompareStringW kana 2 width 2"));
     }
 }
@@ -57,7 +107,16 @@ fn text() -> impl Strategy<Value = Vec<u16>> {
 }
 
 fn flags() -> impl Strategy<Value = u32> {
-    prop::sample::select(vec![0, NORM_IGNORECASE, SORT_STRINGSORT, NORM_IGNOREKANATYPE, NORM_IGNOREWIDTH, NORM_IGNORENONSPACE, NORM_IGNORESYMBOLS, NORM_IGNORECASE | NORM_IGNOREKANATYPE | NORM_IGNOREWIDTH])
+    prop::sample::select(vec![
+        0,
+        NORM_IGNORECASE,
+        SORT_STRINGSORT,
+        NORM_IGNOREKANATYPE,
+        NORM_IGNOREWIDTH,
+        NORM_IGNORENONSPACE,
+        NORM_IGNORESYMBOLS,
+        NORM_IGNORECASE | NORM_IGNOREKANATYPE | NORM_IGNOREWIDTH,
+    ])
 }
 
 proptest! {

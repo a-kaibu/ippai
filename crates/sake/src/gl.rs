@@ -22,12 +22,18 @@ static PROCS: Mutex<Option<HashMap<String, u32>>> = Mutex::new(None);
 static STRS: Mutex<Option<HashMap<usize, u32>>> = Mutex::new(None);
 
 fn sig_of(name: &str) -> Option<u16> {
-    gl_sigs::FUNCS.binary_search_by(|(n, _)| n.cmp(&name)).ok().map(|i| gl_sigs::FUNCS[i].1)
+    gl_sigs::FUNCS
+        .binary_search_by(|(n, _)| n.cmp(&name))
+        .ok()
+        .map(|i| gl_sigs::FUNCS[i].1)
 }
 
 /// kura's function (by its name or the ARB/EXT one's core name) and signature
 fn host_proc(name: &str) -> Option<(usize, u16)> {
-    let base = name.strip_suffix("ARB").or_else(|| name.strip_suffix("EXT")).unwrap_or(name);
+    let base = name
+        .strip_suffix("ARB")
+        .or_else(|| name.strip_suffix("EXT"))
+        .unwrap_or(name);
     let proc = |n: &str| {
         let c = std::ffi::CString::new(n).ok()?;
         let f = unsafe { kura::gl::vngl_proc(c.as_ptr()) } as usize;
@@ -38,16 +44,29 @@ fn host_proc(name: &str) -> Option<(usize, u16)> {
 }
 
 fn stack_bytes(sig: u16) -> u32 {
-    gl_sigs::SIGS[sig as usize].0.chars().map(|k| if k == 'd' { 8 } else { 4 }).sum()
+    gl_sigs::SIGS[sig as usize]
+        .0
+        .chars()
+        .map(|k| if k == 'd' { 8 } else { 4 })
+        .sum()
 }
 
 fn dispatch(c: &mut Ctx) -> u32 {
-    let entry = TRAPS.lock().unwrap().get_or_insert_with(HashMap::default).get(&c.trap).copied();
+    let entry = TRAPS
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::default)
+        .get(&c.trap)
+        .copied();
     let entry = entry.or_else(|| {
         // an opengl32 export: by its name
         let n = crate::api::name_of(c.trap)?;
         let e = host_proc(n.split('!').nth(1)?)?;
-        TRAPS.lock().unwrap().get_or_insert_with(HashMap::default).insert(c.trap, e);
+        TRAPS
+            .lock()
+            .unwrap()
+            .get_or_insert_with(HashMap::default)
+            .insert(c.trap, e);
         Some(e)
     });
     let Some((f, sig)) = entry else {
@@ -77,7 +96,11 @@ fn dispatch(c: &mut Ctx) -> u32 {
         Ret::V => 0,
         Ret::I(v) => {
             let name = crate::api::name_of(c.trap).unwrap_or_default();
-            if v != 0 && (name.ends_with("!glGetString") || name.ends_with("!glGetStringi") || c.trap == string_i_trap()) {
+            if v != 0
+                && (name.ends_with("!glGetString")
+                    || name.ends_with("!glGetStringi")
+                    || c.trap == string_i_trap())
+            {
                 guest_str(v as usize)
             } else {
                 v
@@ -93,7 +116,9 @@ fn dispatch(c: &mut Ctx) -> u32 {
 /// Calls kura's GL function `name` with the stdcall argument words `w` (doubles as two words,
 /// low first; floats as their bits): its integer result, or 0 (none, or no such function).
 pub fn call_gl(name: &str, w: &[u32]) -> u32 {
-    let Some((f, sig)) = host_proc(name) else { return 0 };
+    let Some((f, sig)) = host_proc(name) else {
+        return 0;
+    };
     match unsafe { gl_sigs::call(sig, f as *const (), w) } {
         Ret::I(v) => v,
         _ => 0,
@@ -101,22 +126,38 @@ pub fn call_gl(name: &str, w: &[u32]) -> u32 {
 }
 
 fn string_i_trap() -> u32 {
-    PROCS.lock().unwrap().get_or_insert_with(HashMap::default).get("glGetStringi").copied().unwrap_or(0)
+    PROCS
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::default)
+        .get("glGetStringi")
+        .copied()
+        .unwrap_or(0)
 }
 
 /// a NUL-terminated host string, copied into guest memory (once)
 fn guest_str(p: usize) -> u32 {
-    *STRS.lock().unwrap().get_or_insert_with(HashMap::default).entry(p).or_insert_with(|| {
-        let s = unsafe { std::ffi::CStr::from_ptr(p as *const std::ffi::c_char) }.to_bytes();
-        let g = mem::heap_alloc(s.len() as u32 + 1, true);
-        mem::write(g, s);
-        g
-    })
+    *STRS
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::default)
+        .entry(p)
+        .or_insert_with(|| {
+            let s = unsafe { std::ffi::CStr::from_ptr(p as *const std::ffi::c_char) }.to_bytes();
+            let g = mem::heap_alloc(s.len() as u32 + 1, true);
+            mem::write(g, s);
+            g
+        })
 }
 
 /// A trap for GL function `name` (wglGetProcAddress), 0 if kura has none.
 fn proc_trap(name: &str) -> u32 {
-    if let Some(&t) = PROCS.lock().unwrap().get_or_insert_with(HashMap::default).get(name) {
+    if let Some(&t) = PROCS
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::default)
+        .get(name)
+    {
         return t;
     }
     let t = match name {
@@ -132,7 +173,11 @@ fn proc_trap(name: &str) -> u32 {
         _ => match host_proc(name) {
             Some(e) => {
                 let t = host_fn(name, dispatch, stack_bytes(e.1));
-                TRAPS.lock().unwrap().get_or_insert_with(HashMap::default).insert(t, e);
+                TRAPS
+                    .lock()
+                    .unwrap()
+                    .get_or_insert_with(HashMap::default)
+                    .insert(t, e);
                 t
             }
             // one kura does not have: does nothing (as on Wine's winebrowser.drv)
@@ -142,7 +187,11 @@ fn proc_trap(name: &str) -> u32 {
             },
         },
     };
-    PROCS.lock().unwrap().get_or_insert_with(HashMap::default).insert(name.into(), t);
+    PROCS
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::default)
+        .insert(name.into(), t);
     t
 }
 
@@ -178,7 +227,9 @@ fn make_current(dc: u32, ctx: u32) -> u32 {
         return kura::gl::vngl_make_current(0, 0, 0, 0) as u32;
     }
     let hwnd = crate::gdi::dc_window(dc);
-    let (w, h) = crate::user::client_rect_screen(hwnd).map_or((1, 1), |r| ((r.r - r.l).max(1) as u32, (r.b - r.t).max(1) as u32));
+    let (w, h) = crate::user::client_rect_screen(hwnd).map_or((1, 1), |r| {
+        ((r.r - r.l).max(1) as u32, (r.b - r.t).max(1) as u32)
+    });
     CUR.with(|x| x.set((ctx, dc)));
     kura::gl::vngl_make_current(ctx, hwnd, w, h) as u32
 }
@@ -198,7 +249,10 @@ fn wglGetProcAddress(c: &mut Ctx) -> u32 {
     let name = String::from_utf8_lossy(&mem::cstr(c.a(0))).into_owned();
     let t = proc_trap(&name);
     if crate::env_on!("SAKE_TRACE_GL") && host_proc(&name).is_none() {
-        eprintln!("sake: wglGetProcAddress({name}): {}", if t == 0 { "none" } else { "does nothing" });
+        eprintln!(
+            "sake: wglGetProcAddress({name}): {}",
+            if t == 0 { "none" } else { "does nothing" }
+        );
     }
     t
 }
@@ -239,14 +293,14 @@ fn wglGetPixelFormatAttribivARB(c: &mut Ctx) -> u32 {
     let (n, attrs, vals) = (c.a(3), c.a(4), c.a(5));
     for i in 0..n {
         let v = match r32(attrs + 4 * i) {
-            0x2000 => 1,                  // NUMBER_PIXEL_FORMATS
+            0x2000 => 1,                   // NUMBER_PIXEL_FORMATS
             0x2001 | 0x2010 | 0x2011 => 1, // DRAW_TO_WINDOW, SUPPORT_OPENGL, DOUBLE_BUFFER
-            0x2003 => 0x2027,             // ACCELERATION: FULL
-            0x2013 => 0x202b,             // PIXEL_TYPE: RGBA
-            0x2014 => 32,                 // COLOR_BITS
+            0x2003 => 0x2027,              // ACCELERATION: FULL
+            0x2013 => 0x202b,              // PIXEL_TYPE: RGBA
+            0x2014 => 32,                  // COLOR_BITS
             0x2015 | 0x2017 | 0x2019 | 0x201b => 8,
-            0x2022 => 24,                 // DEPTH_BITS
-            0x2023 => 8,                  // STENCIL_BITS
+            0x2022 => 24, // DEPTH_BITS
+            0x2023 => 8,  // STENCIL_BITS
             _ => 0,
         };
         w32(vals + 4 * i, v);
@@ -257,7 +311,9 @@ fn wglGetPixelFormatAttribivARB(c: &mut Ctx) -> u32 {
 /// SwapBuffers / wglSwapBuffers(dc)
 fn SwapBuffers(c: &mut Ctx) -> u32 {
     let hwnd = crate::gdi::dc_window(c.a(0));
-    let Some(r) = crate::user::client_rect_screen(hwnd) else { return 1 };
+    let Some(r) = crate::user::client_rect_screen(hwnd) else {
+        return 1;
+    };
     let rect = [r.l, r.t, r.r, r.b];
     unsafe { kura::gl::vngl_swap(hwnd, rect.as_ptr()) };
     1
@@ -284,7 +340,18 @@ fn DescribePixelFormat(c: &mut Ctx) -> u32 {
         w32(p + 4, 0x4 | 0x20 | 0x1); // DRAW_TO_WINDOW, SUPPORT_OPENGL, DOUBLEBUFFER
         mem::w8(p + 8, 0); // RGBA
         mem::w8(p + 9, 32);
-        for (o, v) in [(10, 8), (11, 16), (12, 8), (13, 8), (14, 8), (15, 0), (16, 8), (17, 24), (23, 24), (24, 8)] {
+        for (o, v) in [
+            (10, 8),
+            (11, 16),
+            (12, 8),
+            (13, 8),
+            (14, 8),
+            (15, 0),
+            (16, 8),
+            (17, 24),
+            (23, 24),
+            (24, 8),
+        ] {
             mem::w8(p + o, v);
         }
     }
@@ -312,7 +379,10 @@ pub fn init() {
         implement("opengl32", n, f);
     }
     for (n, f) in [
-        ("ChoosePixelFormat", ChoosePixelFormat as crate::api::Handler),
+        (
+            "ChoosePixelFormat",
+            ChoosePixelFormat as crate::api::Handler,
+        ),
         ("SetPixelFormat", SetPixelFormat),
         ("GetPixelFormat", GetPixelFormat),
         ("DescribePixelFormat", DescribePixelFormat),

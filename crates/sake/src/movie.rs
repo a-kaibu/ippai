@@ -21,11 +21,16 @@ use kura::video;
 
 /// The method's code up to its first branch on the frame (0x100: any byte).
 const SIG: &[u16] = &[
-    0x53, 0x8b, 0xdc, 0x83, 0xec, 0x08, 0x83, 0xe4, 0xf8, 0x83, 0xc4, 0x04, 0x55, 0x8b, 0x6b, 0x04, //
-    0x89, 0x6c, 0x24, 0x04, 0x8b, 0xec, 0x6a, 0xff, 0x68, 0x100, 0x100, 0x100, 0x100, // push handler
-    0x64, 0xa1, 0, 0, 0, 0, 0x50, 0x53, 0x83, 0xec, 0x68, 0xa1, 0x100, 0x100, 0x100, 0x100, // cookie
-    0x33, 0xc5, 0x89, 0x45, 0xec, 0x56, 0x57, 0x50, 0x8d, 0x45, 0xf4, 0x64, 0xa3, 0, 0, 0, 0, //
-    0x8b, 0xf9, 0x80, 0x7b, 0x18, 0x00, 0x8b, 0x4b, 0x08, 0x8b, 0x43, 0x0c, 0x89, 0x4d, 0x9c, //
+    0x53, 0x8b, 0xdc, 0x83, 0xec, 0x08, 0x83, 0xe4, 0xf8, 0x83, 0xc4, 0x04, 0x55, 0x8b, 0x6b,
+    0x04, //
+    0x89, 0x6c, 0x24, 0x04, 0x8b, 0xec, 0x6a, 0xff, 0x68, 0x100, 0x100, 0x100,
+    0x100, // push handler
+    0x64, 0xa1, 0, 0, 0, 0, 0x50, 0x53, 0x83, 0xec, 0x68, 0xa1, 0x100, 0x100, 0x100,
+    0x100, // cookie
+    0x33, 0xc5, 0x89, 0x45, 0xec, 0x56, 0x57, 0x50, 0x8d, 0x45, 0xf4, 0x64, 0xa3, 0, 0, 0,
+    0, //
+    0x8b, 0xf9, 0x80, 0x7b, 0x18, 0x00, 0x8b, 0x4b, 0x08, 0x8b, 0x43, 0x0c, 0x89, 0x4d,
+    0x9c, //
     0x89, 0x45, 0x8c, 0x75, 0x0c, 0x3b, 0x8f, 0x24, 0x01, 0x00, 0x00, 0x0f, 0x84,
 ];
 /// The first instructions (moved into the trampoline whole).
@@ -43,7 +48,11 @@ pub fn patch(base: u32, size: u32) {
         return;
     }
     let img = unsafe { std::slice::from_raw_parts(base as usize as *const u8, size as usize) };
-    let at = img.windows(SIG.len()).position(|w| w.iter().zip(SIG).all(|(&b, &s)| s == 0x100 || b as u16 == s));
+    let at = img.windows(SIG.len()).position(|w| {
+        w.iter()
+            .zip(SIG)
+            .all(|(&b, &s)| s == 0x100 || b as u16 == s)
+    });
     let Some(off) = at else { return };
     let f = base + off as u32;
     let mut tr = img[off..off + PROLOGUE].to_vec();
@@ -67,12 +76,15 @@ const HEADER_LEN: usize = 0xa8;
 /// The movie file a player reads: the open `.omv` whose header is the player's copy (the player
 /// keeps the handle elsewhere). Returns the handle and the path.
 fn movie_of(this: u32) -> Option<(u32, String)> {
-    let copy = unsafe { std::slice::from_raw_parts((this + HEADER) as usize as *const u8, HEADER_LEN) };
+    let copy =
+        unsafe { std::slice::from_raw_parts((this + HEADER) as usize as *const u8, HEADER_LEN) };
     let open: Vec<(u32, String)> = crate::obj::with(|t| {
         t.objs
             .iter()
             .filter_map(|(&h, (o, _))| match o {
-                crate::obj::Obj::File(f) if f.path.to_ascii_lowercase().ends_with(".omv") => Some((h, f.path.clone())),
+                crate::obj::Obj::File(f) if f.path.to_ascii_lowercase().ends_with(".omv") => {
+                    Some((h, f.path.clone()))
+                }
                 _ => None,
             })
             .collect()
@@ -80,7 +92,10 @@ fn movie_of(this: u32) -> Option<(u32, String)> {
     open.into_iter().find(|(_, p)| {
         use std::io::Read;
         let mut head = [0u8; HEADER_LEN];
-        kura::fs::File::open(p).and_then(|mut f| f.read_exact(&mut head)).is_ok() && head[..] == copy[..]
+        kura::fs::File::open(p)
+            .and_then(|mut f| f.read_exact(&mut head))
+            .is_ok()
+            && head[..] == copy[..]
     })
 }
 
@@ -91,7 +106,9 @@ fn frame(c: &mut Ctx) -> u32 {
         let mut g = PLAYERS.lock().unwrap();
         let m = g.get_or_insert_with(HashMap::new);
         // (a player may open another movie: its header copy changes)
-        let key = (0..HEADER_LEN as u32 / 4).fold(0x811c_9dc5u32, |k, i| (k ^ r32(this + HEADER + 4 * i)).wrapping_mul(0x0100_0193));
+        let key = (0..HEADER_LEN as u32 / 4).fold(0x811c_9dc5u32, |k, i| {
+            (k ^ r32(this + HEADER + 4 * i)).wrapping_mul(0x0100_0193)
+        });
         let known = m.get(&this).copied().filter(|&(k, _)| k == key);
         match known {
             Some((_, s)) => s,
@@ -100,12 +117,22 @@ fn frame(c: &mut Ctx) -> u32 {
                     video::close(old);
                 }
                 let found = movie_of(this);
-                let s = found.as_ref().filter(|_| video::available()).and_then(|(_, p)| {
-                    video::open_file(format!("{p}.vnv")).map(|(s, _)| s)
-                });
+                let s = found
+                    .as_ref()
+                    .filter(|_| video::available())
+                    .and_then(|(_, p)| video::open_file(format!("{p}.vnv")).map(|(s, _)| s));
                 match &found {
-                    Some((_, p)) => eprintln!("sake: movie {p}: {}", if s.is_some() { "WebCodecs" } else { "the game's decoder" }),
-                    None => eprintln!("sake: movie player {this:#x}: its .omv not found (the game's decoder)"),
+                    Some((_, p)) => eprintln!(
+                        "sake: movie {p}: {}",
+                        if s.is_some() {
+                            "WebCodecs"
+                        } else {
+                            "the game's decoder"
+                        }
+                    ),
+                    None => eprintln!(
+                        "sake: movie player {this:#x}: its .omv not found (the game's decoder)"
+                    ),
                 }
                 m.insert(this, (key, s));
                 s
@@ -118,9 +145,16 @@ fn frame(c: &mut Ctx) -> u32 {
         if !video::failed(id) {
             return true;
         }
-        eprintln!("sake: movie player {this:#x}: WebCodecs failed, the game's decoder from here on");
+        eprintln!(
+            "sake: movie player {this:#x}: WebCodecs failed, the game's decoder from here on"
+        );
         video::close(id);
-        if let Some(e) = PLAYERS.lock().unwrap().as_mut().and_then(|m| m.get_mut(&this)) {
+        if let Some(e) = PLAYERS
+            .lock()
+            .unwrap()
+            .as_mut()
+            .and_then(|m| m.get_mut(&this))
+        {
             e.1 = None;
         }
         false
@@ -135,7 +169,11 @@ fn frame(c: &mut Ctx) -> u32 {
         return 1;
     }
     let (mode, w, h) = (r32(this + 0xc4), r32(this + 0xc8), r32(this + 0xcc));
-    let out = if mode == 2 { video::Out::Rgb } else { video::Out::Ycc };
+    let out = if mode == 2 {
+        video::Out::Rgb
+    } else {
+        video::Out::Ycc
+    };
     unsafe { video::frame(id, n, dst as usize as *mut u8, pitch as usize, w, h, out) };
     w32(this + 0x124, n as u32);
     w32(this + 0x120, n as u32);

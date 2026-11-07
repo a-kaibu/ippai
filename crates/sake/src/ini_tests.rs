@@ -7,7 +7,16 @@ use proptest::prelude::*;
 
 /// Windows' stdout for the ini probe (32- and 64-bit), or nothing when the golden is missing
 fn golden() -> Vec<String> {
-    ["32", "64"].iter().filter_map(|b| std::fs::read_to_string(format!("{}/../../tests/winref/golden/ini-{b}/stdout.txt", env!("CARGO_MANIFEST_DIR"))).ok()).collect()
+    ["32", "64"]
+        .iter()
+        .filter_map(|b| {
+            std::fs::read_to_string(format!(
+                "{}/../../tests/winref/golden/ini-{b}/stdout.txt",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .ok()
+        })
+        .collect()
 }
 
 /// The probe's file (ini.c's `text`)
@@ -34,7 +43,9 @@ fn reads_as_windows() {
     for out in &g {
         for l in out.lines() {
             // get [sec] key def d cap 64: n err e [value|#]
-            let Some(r) = l.strip_prefix("get [") else { continue };
+            let Some(r) = l.strip_prefix("get [") else {
+                continue;
+            };
             let (sec, r) = r.split_once("] ").unwrap();
             let (key, r) = r.split_once(" def ").unwrap();
             let (_, r) = r.rsplit_once(" cap ").unwrap();
@@ -49,7 +60,11 @@ fn reads_as_windows() {
             if sec == "(null)" {
                 assert_eq!(list_of(&ini.names()), shown[..n].to_string(), "{l}");
             } else if key == "(null)" {
-                assert_eq!(list_of(&ini.keys(sec).unwrap_or_default()), shown[..n].to_string(), "{l}");
+                assert_eq!(
+                    list_of(&ini.keys(sec).unwrap_or_default()),
+                    shown[..n].to_string(),
+                    "{l}"
+                );
             } else {
                 match ini.value(sec, key) {
                     Some(v) => assert!(err == "0" && v == shown[..n], "{l}: sake {v:?}"),
@@ -58,7 +73,10 @@ fn reads_as_windows() {
             }
         }
         // section Main 170 [...]
-        let l = out.lines().find(|l| l.starts_with("section Main ") && !l.contains("cap")).unwrap();
+        let l = out
+            .lines()
+            .find(|l| l.starts_with("section Main ") && !l.contains("cap"))
+            .unwrap();
         let shown = l.split_once(" [").unwrap().1;
         assert_eq!(list_of(&ini.section("Main").unwrap()) + "|]", shown, "{l}");
         // int <key> = <n> (default 5)

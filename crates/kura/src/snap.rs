@@ -155,7 +155,9 @@ fn raw_clocks() -> [f64; 2] {
     }
     #[cfg(not(target_os = "emscripten"))]
     {
-        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64() * 1000.0);
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |d| d.as_secs_f64() * 1000.0);
         [t, t]
     }
 }
@@ -200,7 +202,9 @@ static RETIRED: Mutex<Vec<&'static Part>> = Mutex::new(Vec::new());
 pub fn register(name: &'static str, guest: bool, user: usize) -> &'static Part {
     let reused = {
         let mut r = RETIRED.lock().unwrap_or_else(|e| e.into_inner());
-        r.iter().position(|p| std::ptr::eq(p.name, name) && p.guest == guest).map(|i| r.swap_remove(i))
+        r.iter()
+            .position(|p| std::ptr::eq(p.name, name) && p.guest == guest)
+            .map(|i| r.swap_remove(i))
     };
     let p: &'static Part = match reused {
         Some(p) => {
@@ -227,7 +231,10 @@ pub fn register(name: &'static str, guest: bool, user: usize) -> &'static Part {
 /// The calling thread ends (or no longer takes part).
 pub fn unregister() {
     if let Some(p) = ME.with(|m| m.take()) {
-        PARTS.lock().unwrap_or_else(|e| e.into_inner()).retain(|&x| !std::ptr::eq(x, p));
+        PARTS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|&x| !std::ptr::eq(x, p));
         RETIRED.lock().unwrap_or_else(|e| e.into_inner()).push(p);
         COORD_CV.notify_all();
     }
@@ -237,7 +244,12 @@ pub fn unregister() {
 /// and go meanwhile)
 #[cfg(test)]
 fn retired(name: &str) -> usize {
-    RETIRED.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|p| std::ptr::eq(p.name, name)).count()
+    RETIRED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|p| std::ptr::eq(p.name, name))
+        .count()
 }
 
 pub fn me() -> Option<&'static Part> {
@@ -404,7 +416,9 @@ pub fn merge_ranges(mut v: Vec<(u32, u32)>) -> Vec<u32> {
             _ => out.push((lo, hi)),
         }
     }
-    out.iter().flat_map(|&(lo, hi)| [lo as u32, (hi - lo).min(u32::MAX as u64) as u32]).collect()
+    out.iter()
+        .flat_map(|&(lo, hi)| [lo as u32, (hi - lo).min(u32::MAX as u64) as u32])
+        .collect()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -523,7 +537,10 @@ fn resume_all(paused_at: Option<f64>) {
 fn notify_page() {
     #[cfg(target_arch = "wasm32")]
     unsafe {
-        emscripten_futex_wake(VNHOST_SNAP.state.as_ptr() as *const std::ffi::c_void, i32::MAX);
+        emscripten_futex_wake(
+            VNHOST_SNAP.state.as_ptr() as *const std::ffi::c_void,
+            i32::MAX,
+        );
     }
 }
 
@@ -531,7 +548,11 @@ fn notify_page() {
 fn take() {
     let t0 = raw_clocks()[0];
     VNHOST_SNAP.msg_len.store(0, SeqCst);
-    if let Some(why) = REFUSE.lock().unwrap_or_else(|e| e.into_inner()).and_then(|f| f()) {
+    if let Some(why) = REFUSE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .and_then(|f| f())
+    {
         VNHOST_SNAP.state.store(ST_PAUSING, SeqCst);
         return fail(why);
     }
@@ -558,7 +579,10 @@ fn take() {
             return fail(format!("still running: {}", b.join(", ")));
         }
         g = GATE.lock().unwrap_or_else(|e| e.into_inner());
-        g = COORD_CV.wait_timeout(g, Duration::from_millis(10)).unwrap_or_else(|e| e.into_inner()).0;
+        g = COORD_CV
+            .wait_timeout(g, Duration::from_millis(10))
+            .unwrap_or_else(|e| e.into_inner())
+            .0;
     }
     // the GPU's textures and buffers into memory
     if GPU_THREAD.load(SeqCst) != 0 {
@@ -568,7 +592,9 @@ fn take() {
             match VNHOST_SNAP.gpu.load(SeqCst) {
                 GPU_DONE => break,
                 GPU_FAILED => return fail("the GPU could not be read back".into()),
-                _ if t.elapsed() > GPU_TIMEOUT => return fail("the GPU took too long to read back".into()),
+                _ if t.elapsed() > GPU_TIMEOUT => {
+                    return fail("the GPU took too long to read back".into())
+                }
                 _ => std::thread::sleep(Duration::from_millis(2)),
             }
         }
@@ -591,14 +617,20 @@ fn take() {
         std::thread::sleep(Duration::from_millis(1));
     }
     let list = Box::leak(build_ranges().into_boxed_slice());
-    VNHOST_SNAP.ranges.store(list.as_ptr() as usize as u32, SeqCst);
+    VNHOST_SNAP
+        .ranges
+        .store(list.as_ptr() as usize as u32, SeqCst);
     VNHOST_SNAP.nranges.store(list.len() as u32 / 2, SeqCst);
     let c = raw_clocks();
     for (i, &v) in c.iter().enumerate() {
         VNHOST_SNAP.clock[i].store((v + offset(i)).to_bits(), SeqCst);
     }
     VNHOST_SNAP.saves.fetch_add(1, SeqCst);
-    eprintln!("snap: stopped in {:.0} ms, {} ranges", c[0] - t0, list.len() / 2);
+    eprintln!(
+        "snap: stopped in {:.0} ms, {} ranges",
+        c[0] - t0,
+        list.len() / 2
+    );
     VNHOST_SNAP.stirred.store(0, SeqCst);
     let stirs = STIRS.load(SeqCst);
     VNHOST_SNAP.state.store(ST_READY, SeqCst);
@@ -607,7 +639,9 @@ fn take() {
     wait_cmd(CMD_RESUME);
     let stirred = STIRS.load(SeqCst).wrapping_sub(stirs);
     if stirred != 0 {
-        eprintln!("snap: stirred: {stirred} wakes while the page copied (the state is not to be kept)");
+        eprintln!(
+            "snap: stirred: {stirred} wakes while the page copied (the state is not to be kept)"
+        );
         VNHOST_SNAP.stirred.store(stirred, SeqCst);
     }
     let _ = unsafe { Box::from_raw(list as *mut [u32]) };
@@ -651,14 +685,32 @@ mod tests {
     #[test]
     fn ranges_merge_and_align() {
         assert_eq!(merge_ranges(vec![]), Vec::<u32>::new());
-        assert_eq!(merge_ranges(vec![(0x30000, 0x1000)]), vec![0x30000, 0x10000]);
-        assert_eq!(merge_ranges(vec![(0x31000, 0x1000), (0x30000, 0x100)]), vec![0x30000, 0x10000]);
+        assert_eq!(
+            merge_ranges(vec![(0x30000, 0x1000)]),
+            vec![0x30000, 0x10000]
+        );
+        assert_eq!(
+            merge_ranges(vec![(0x31000, 0x1000), (0x30000, 0x100)]),
+            vec![0x30000, 0x10000]
+        );
         // touching ranges merge, gaps stay
-        assert_eq!(merge_ranges(vec![(0x40000, 0x10000), (0x50000, 0x10)]), vec![0x40000, 0x20000]);
-        assert_eq!(merge_ranges(vec![(0x40000, 0x10000), (0x70000, 0x10)]), vec![0x40000, 0x10000, 0x70000, 0x10000]);
+        assert_eq!(
+            merge_ranges(vec![(0x40000, 0x10000), (0x50000, 0x10)]),
+            vec![0x40000, 0x20000]
+        );
+        assert_eq!(
+            merge_ranges(vec![(0x40000, 0x10000), (0x70000, 0x10)]),
+            vec![0x40000, 0x10000, 0x70000, 0x10000]
+        );
         // up to the top of the address space
-        assert_eq!(merge_ranges(vec![(0xffff_0000, 0xffff)]), vec![0xffff_0000, 0x10000]);
-        assert_eq!(merge_ranges(vec![(0x10000, 0), (0x20000, 1)]), vec![0x20000, 0x10000]);
+        assert_eq!(
+            merge_ranges(vec![(0xffff_0000, 0xffff)]),
+            vec![0xffff_0000, 0x10000]
+        );
+        assert_eq!(
+            merge_ranges(vec![(0x10000, 0), (0x20000, 1)]),
+            vec![0x20000, 0x10000]
+        );
     }
 
     #[test]
@@ -701,7 +753,10 @@ mod tests {
     fn until(what: &str, f: impl Fn() -> bool) {
         let t = std::time::Instant::now();
         while !f() {
-            assert!(t.elapsed() < Duration::from_secs(20), "waited for ever for {what}");
+            assert!(
+                t.elapsed() < Duration::from_secs(20),
+                "waited for ever for {what}"
+            );
             std::thread::sleep(Duration::from_millis(1));
         }
     }
@@ -742,7 +797,10 @@ mod tests {
                 while STOP.load(SeqCst) == 0 {
                     idle();
                     let g = HOST_LOCK.lock().unwrap();
-                    let mut g = HOST_CV.wait_timeout(g, Duration::from_millis(ms)).unwrap().0;
+                    let mut g = HOST_CV
+                        .wait_timeout(g, Duration::from_millis(ms))
+                        .unwrap()
+                        .0;
                     *g += 1;
                     drop(g);
                     busy();
@@ -756,21 +814,45 @@ mod tests {
             let w = WORK.load(SeqCst);
             until("work", || WORK.load(SeqCst) > w + 10);
             VNHOST_SNAP.cmd.store(CMD_SAVE, SeqCst);
-            until("READY", || matches!(VNHOST_SNAP.state.load(SeqCst), ST_READY | ST_FAILED));
-            assert_eq!(VNHOST_SNAP.state.load(SeqCst), ST_READY, "round {round}: no state");
+            until("READY", || {
+                matches!(VNHOST_SNAP.state.load(SeqCst), ST_READY | ST_FAILED)
+            });
+            assert_eq!(
+                VNHOST_SNAP.state.load(SeqCst),
+                ST_READY,
+                "round {round}: no state"
+            );
             // (the page copying)
             let (w, h) = (WORK.load(SeqCst), *HOST_LOCK.lock().unwrap());
             let t = std::time::Instant::now();
             while t.elapsed() < Duration::from_millis(80) {
-                assert!(GATE.try_lock().is_ok(), "round {round}: GATE held while copied");
-                assert!(HOST_LOCK.try_lock().is_ok(), "round {round}: a host thread's lock held while copied");
+                assert!(
+                    GATE.try_lock().is_ok(),
+                    "round {round}: GATE held while copied"
+                );
+                assert!(
+                    HOST_LOCK.try_lock().is_ok(),
+                    "round {round}: a host thread's lock held while copied"
+                );
                 std::thread::sleep(Duration::from_micros(200));
             }
-            assert_eq!(WORK.load(SeqCst), w, "round {round}: a thread ran while copied");
-            assert_eq!(*HOST_LOCK.lock().unwrap(), h, "round {round}: a host thread ran while copied");
+            assert_eq!(
+                WORK.load(SeqCst),
+                w,
+                "round {round}: a thread ran while copied"
+            );
+            assert_eq!(
+                *HOST_LOCK.lock().unwrap(),
+                h,
+                "round {round}: a host thread ran while copied"
+            );
             VNHOST_SNAP.cmd.store(CMD_RESUME, SeqCst);
             until("RUNNING", || VNHOST_SNAP.state.load(SeqCst) == ST_RUNNING);
-            assert_eq!(VNHOST_SNAP.stirred.load(SeqCst), 0, "round {round}: stirred");
+            assert_eq!(
+                VNHOST_SNAP.stirred.load(SeqCst),
+                0,
+                "round {round}: stirred"
+            );
         }
         STOP.store(1, SeqCst);
         threads.into_iter().for_each(|t| t.join().unwrap());
@@ -823,7 +905,10 @@ mod tests {
                         let p = register(NAME, true, round * 10 + k);
                         assert_eq!(p.state.load(SeqCst), BUSY);
                         assert_eq!(p.user.load(SeqCst), round * 10 + k);
-                        assert!(p.resume.iter().all(|x| x.load(SeqCst) == 0) && p.doing.load(SeqCst) == 0);
+                        assert!(
+                            p.resume.iter().all(|x| x.load(SeqCst) == 0)
+                                && p.doing.load(SeqCst) == 0
+                        );
                         assert!(std::ptr::eq(me().unwrap(), p));
                         p.resume[0].store(7, SeqCst);
                         p.doing.store(9, SeqCst);
@@ -834,8 +919,16 @@ mod tests {
                 })
                 .collect();
             ts.into_iter().for_each(|t| t.join().unwrap());
-            assert!(retired(NAME) <= 4, "round {round}: {} parts kept", retired(NAME));
-            assert!(!PARTS.lock().unwrap().iter().any(|p| std::ptr::eq(p.name, NAME)));
+            assert!(
+                retired(NAME) <= 4,
+                "round {round}: {} parts kept",
+                retired(NAME)
+            );
+            assert!(!PARTS
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|p| std::ptr::eq(p.name, NAME)));
         }
         // (another name or kind gets a part of its own)
         let t = std::thread::spawn(|| {

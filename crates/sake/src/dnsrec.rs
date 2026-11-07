@@ -99,7 +99,10 @@ pub fn get_name(msg: &[u8], mut pos: usize) -> Option<(String, usize)> {
     if out.is_empty() {
         out.push(b'.');
     }
-    Some((String::from_utf8_lossy(&out).into_owned(), next.unwrap_or(pos)))
+    Some((
+        String::from_utf8_lossy(&out).into_owned(),
+        next.unwrap_or(pos),
+    ))
 }
 
 fn be16(m: &[u8], p: usize) -> Option<u16> {
@@ -130,7 +133,12 @@ fn rdata(msg: &[u8], pos: usize, len: usize, ty: u16) -> Result<Data, u32> {
             if len < 6 {
                 return Err(bad);
             }
-            Data::Srv(be16(rd, 0).unwrap(), be16(rd, 2).unwrap(), be16(rd, 4).unwrap(), name(pos + 6)?.0)
+            Data::Srv(
+                be16(rd, 0).unwrap(),
+                be16(rd, 2).unwrap(),
+                be16(rd, 4).unwrap(),
+                name(pos + 6)?.0,
+            )
         }
         t if is_txt_type(t) => {
             let mut v = Vec::new();
@@ -236,7 +244,15 @@ pub fn extract(msg: &[u8], charset: u32) -> Result<Vec<Rec>, u32> {
         }
         *pos = p + len;
         let data = rdata(msg, p, len, ty)?;
-        let mut r = Rec { name: Some(name), ty, data_len: 0, flags: section | charset << 3, ttl, reserved: 0, data };
+        let mut r = Rec {
+            name: Some(name),
+            ty,
+            data_len: 0,
+            flags: section | charset << 3,
+            ttl,
+            reserved: 0,
+            data,
+        };
         r.data_len = data_len(&r, charset, ps());
         out.push(r);
         Ok(())
@@ -324,10 +340,22 @@ pub fn read(p: u32, wide: bool) -> Rec {
             let n = r32(d).min(1024);
             Data::Txt((0..n).map(|i| s(d + k + k * i)).collect())
         }
-        6 => Data::Soa(s(d), s(d + k), std::array::from_fn(|i| r32(d + 2 * k + 4 * i as u32))),
+        6 => Data::Soa(
+            s(d),
+            s(d + k),
+            std::array::from_fn(|i| r32(d + 2 * k + 4 * i as u32)),
+        ),
         _ => Data::Raw(mem::slice(d, data_len as u32).to_vec()),
     };
-    Rec { name: read_str(rp(p + k), wide), ty, data_len, flags: r32(p + 2 * k + 4), ttl: r32(p + 2 * k + 8), reserved: r32(p + 2 * k + 12), data }
+    Rec {
+        name: read_str(rp(p + k), wide),
+        ty,
+        data_len,
+        flags: r32(p + 2 * k + 4),
+        ttl: r32(p + 2 * k + 8),
+        reserved: r32(p + 2 * k + 12),
+        data,
+    }
 }
 
 /// `r` as a new heap block (the record, then its strings in `charset`); pNext is 0.
@@ -346,7 +374,11 @@ pub fn write(r: &Rec, charset: u32) -> u32 {
             _ => vec![],
         })
         .collect();
-    let total = fixed.next_multiple_of(2) + strs.iter().map(|s| str_bytes(s, charset) as u32).sum::<u32>();
+    let total = fixed.next_multiple_of(2)
+        + strs
+            .iter()
+            .map(|s| str_bytes(s, charset) as u32)
+            .sum::<u32>();
     let p = mem::heap_alloc(total, true);
     let mut at = p + fixed.next_multiple_of(2);
     let mut put = |s: &str| -> u32 {
@@ -423,18 +455,29 @@ fn ieq(a: &str, b: &str) -> bool {
 pub fn compare(a: &Rec, b: &Rec) -> bool {
     // Section (bits 0-1), Delete (2), Unused (5-7), Reserved (8-31): everything but CharSet
     let m = !0x18u32;
-    if a.ty != b.ty || a.data_len != b.data_len || a.flags & m != b.flags & m || a.reserved != b.reserved {
+    if a.ty != b.ty
+        || a.data_len != b.data_len
+        || a.flags & m != b.flags & m
+        || a.reserved != b.reserved
+    {
         return false;
     }
-    if !ieq(a.name.as_deref().unwrap_or(""), b.name.as_deref().unwrap_or("")) {
+    if !ieq(
+        a.name.as_deref().unwrap_or(""),
+        b.name.as_deref().unwrap_or(""),
+    ) {
         return false;
     }
     match (&a.data, &b.data) {
         (Data::Name(x), Data::Name(y)) => ieq(x, y),
         (Data::Two(x1, x2), Data::Two(y1, y2)) => ieq(x1, y1) && ieq(x2, y2),
         (Data::Mx(p, x), Data::Mx(q, y)) => p == q && ieq(x, y),
-        (Data::Srv(a1, a2, a3, x), Data::Srv(b1, b2, b3, y)) => (a1, a2, a3) == (b1, b2, b3) && ieq(x, y),
-        (Data::Txt(x), Data::Txt(y)) => x.len() == y.len() && x.iter().zip(y).all(|(x, y)| ieq(x, y)),
+        (Data::Srv(a1, a2, a3, x), Data::Srv(b1, b2, b3, y)) => {
+            (a1, a2, a3) == (b1, b2, b3) && ieq(x, y)
+        }
+        (Data::Txt(x), Data::Txt(y)) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(x, y)| ieq(x, y))
+        }
         (Data::Soa(x1, x2, n), Data::Soa(y1, y2, m)) => n == m && ieq(x1, y1) && ieq(x2, y2),
         (x, y) => x == y,
     }
@@ -474,7 +517,8 @@ mod tests {
 
     // messages from Wine's dnsapi record tests
     const WINEHQ: &[u8] = &[
-        0x12, 0x34, 0x81, 0x80, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, b'w', b'i', b'n', b'e', b'h', b'q', 0x03, b'o', b'r', b'g', 0x00, 0x00, 0x01, 0x00, 0x01, 0xc0, 0x0c,
+        0x12, 0x34, 0x81, 0x80, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, b'w', b'i',
+        b'n', b'e', b'h', b'q', 0x03, b'o', b'r', b'g', 0x00, 0x00, 0x01, 0x00, 0x01, 0xc0, 0x0c,
         0x00, 0x01, 0x00, 0x01, 0x04, 0x05, 0x06, 0x07, 0x00, 0x04, 0x04, 0x04, 0x51, 0x7c,
     ];
 
@@ -499,54 +543,98 @@ mod tests {
         assert_eq!(extract(&empty_answer, 2), Err(DNS_ERROR_BAD_PACKET));
         let question = [0x12, 0x34, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1];
         assert_eq!(extract(&question, 2), Ok(vec![]));
-        let label = [0x12, 0x34, 0x81, 0x80, 1, 0, 1, 0, 0, 0, 0, 0, 3, b'a', b'b', b'c', 0x41, 1, 0x34, 0, 0, 1, 0, 1, 0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 1, 0, 4, 4, 4, 0x51, 0x7c];
+        let label = [
+            0x12, 0x34, 0x81, 0x80, 1, 0, 1, 0, 0, 0, 0, 0, 3, b'a', b'b', b'c', 0x41, 1, 0x34, 0,
+            0, 1, 0, 1, 0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 1, 0, 4, 4, 4, 0x51, 0x7c,
+        ];
         assert_eq!(extract(&label, 2), Err(DNS_ERROR_BAD_PACKET));
-        let lp = [0x12, 0x34, 0x81, 0x80, 1, 0, 1, 0, 0, 0, 0, 0, 0xc0, 0x0c, 0, 1, 0, 1, 0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 1, 0, 4, 4, 4, 0x51, 0x7c];
+        let lp = [
+            0x12, 0x34, 0x81, 0x80, 1, 0, 1, 0, 0, 0, 0, 0, 0xc0, 0x0c, 0, 1, 0, 1, 0xc0, 0x0c, 0,
+            1, 0, 1, 0, 0, 0, 1, 0, 4, 4, 4, 0x51, 0x7c,
+        ];
         assert_eq!(extract(&lp, 2), Err(DNS_ERROR_BAD_PACKET));
     }
 
     #[test]
     fn raw_names() {
         let inv = [
-            0x12, 0x34, 0x81, 0x80, 1, 0, 1, 0, 0, 0, 0, 0, 2, b'a', b'$', 2, b'b', b'\\', 2, b'c', b'.', 2, 9, b'd', 0, 0, 1, 0, 1, 0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 1, 0, 4, 4, 4, 0x51, 0x7c,
+            0x12, 0x34, 0x81, 0x80, 1, 0, 1, 0, 0, 0, 0, 0, 2, b'a', b'$', 2, b'b', b'\\', 2, b'c',
+            b'.', 2, 9, b'd', 0, 0, 1, 0, 1, 0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 1, 0, 4, 4, 4, 0x51,
+            0x7c,
         ];
-        assert_eq!(extract(&inv, 2).unwrap()[0].name.as_deref(), Some("a$.b\\.c..\td"));
-        let root = [0x12, 0x34, 0x81, 0x80, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 1, 0, 4, 4, 4, 0x51, 0x7c];
+        assert_eq!(
+            extract(&inv, 2).unwrap()[0].name.as_deref(),
+            Some("a$.b\\.c..\td")
+        );
+        let root = [
+            0x12, 0x34, 0x81, 0x80, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0xc0, 0x0c, 0, 1, 0, 1,
+            0, 0, 0, 1, 0, 4, 4, 4, 0x51, 0x7c,
+        ];
         assert_eq!(extract(&root, 2).unwrap()[0].name.as_deref(), Some("."));
     }
 
     #[test]
     fn record_types() {
-        let mut m = vec![0x12, 0x34, 0x81, 0x80, 0x01, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 6];
+        let mut m = vec![
+            0x12, 0x34, 0x81, 0x80, 0x01, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 6,
+        ];
         m.extend_from_slice(b"winehq\x03org\x00\x00\x01\x00\x01");
-        m.extend_from_slice(&[0xc0, 0x0c, 0x00, 0x05, 0x00, 0x01, 4, 5, 6, 7, 0x00, 0x05, 1, b'a', 1, b'b', 0]);
-        m.extend_from_slice(&[0xc0, 0x0c, 0x00, 0x0f, 0x00, 0x01, 4, 5, 6, 7, 0x00, 0x07, 3, 4, 1, b'c', 1, b'd', 0]);
+        m.extend_from_slice(&[
+            0xc0, 0x0c, 0x00, 0x05, 0x00, 0x01, 4, 5, 6, 7, 0x00, 0x05, 1, b'a', 1, b'b', 0,
+        ]);
+        m.extend_from_slice(&[
+            0xc0, 0x0c, 0x00, 0x0f, 0x00, 0x01, 4, 5, 6, 7, 0x00, 0x07, 3, 4, 1, b'c', 1, b'd', 0,
+        ]);
         m.extend_from_slice(&[0xc0, 0x0c, 0x00, 0x1c, 0x00, 0x01, 4, 5, 6, 7, 0x00, 0x10]);
         m.extend_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0]);
-        m.extend_from_slice(&[0xc0, 0x0c, 0x00, 0x19, 0x00, 0x01, 4, 5, 6, 7, 0x00, 0x06, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
-        m.extend_from_slice(&[1, b't', 1, b'x', 0, 0x00, 0x10, 0x00, 0x01, 4, 5, 6, 7, 0x00, 0x09, 2, b'z', b'y', 0, 4, b'X', b'Y', 0xc3, 0xa9]);
+        m.extend_from_slice(&[
+            0xc0, 0x0c, 0x00, 0x19, 0x00, 0x01, 4, 5, 6, 7, 0x00, 0x06, 0x11, 0x22, 0x33, 0x44,
+            0x55, 0x66,
+        ]);
+        m.extend_from_slice(&[
+            1, b't', 1, b'x', 0, 0x00, 0x10, 0x00, 0x01, 4, 5, 6, 7, 0x00, 0x09, 2, b'z', b'y', 0,
+            4, b'X', b'Y', 0xc3, 0xa9,
+        ]);
         let r = extract(&m, 2).unwrap();
         assert_eq!(r.len(), 5);
         assert_eq!(r[0].data, Data::Name("a.b".into()));
         assert_eq!(r[0].data_len as u32, ps() + 4);
         assert_eq!(r[1].data, Data::Mx(0x0304, "c.d".into()));
         assert_eq!(r[1].data_len as u32, 2 * ps() + 4);
-        assert_eq!(r[2].data, Data::Aaaa([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0]));
-        assert_eq!(r[3].data, Data::Raw(vec![0x22, 0x11, 0x33, 0x44, 2, 0, 0, 0, 0x55, 0x66]));
+        assert_eq!(
+            r[2].data,
+            Data::Aaaa([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0])
+        );
+        assert_eq!(
+            r[3].data,
+            Data::Raw(vec![0x22, 0x11, 0x33, 0x44, 2, 0, 0, 0, 0x55, 0x66])
+        );
         assert_eq!(r[3].data_len, 10);
         assert_eq!(r[4].name.as_deref(), Some("t.x"));
-        assert_eq!(r[4].data, Data::Txt(vec!["zy".into(), "".into(), "XY\u{e9}".into()]));
+        assert_eq!(
+            r[4].data,
+            Data::Txt(vec!["zy".into(), "".into(), "XY\u{e9}".into()])
+        );
         assert_eq!(r[4].data_len as u32, ps() + 3 * ps());
     }
 
     #[test]
     fn srv_message() {
-        let mut m = vec![0x12, 0x34, 0x81, 0x80, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00];
-        m.extend_from_slice(b"\x05_ldap\x04_tcp\x02dc\x06_msdcs\x06winehq\x03org\x00\x00\x21\x00\x01");
-        m.extend_from_slice(&[0xc0, 0x0c, 0x00, 0x21, 0x00, 0x01, 4, 5, 6, 7, 0x00, 0x15, 0, 0, 0, 0, 1, 0x85]);
+        let mut m = vec![
+            0x12, 0x34, 0x81, 0x80, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        m.extend_from_slice(
+            b"\x05_ldap\x04_tcp\x02dc\x06_msdcs\x06winehq\x03org\x00\x00\x21\x00\x01",
+        );
+        m.extend_from_slice(&[
+            0xc0, 0x0c, 0x00, 0x21, 0x00, 0x01, 4, 5, 6, 7, 0x00, 0x15, 0, 0, 0, 0, 1, 0x85,
+        ]);
         m.extend_from_slice(b"\x02dc\x06winehq\x03org\x00");
         let r = extract(&m, 2).unwrap();
-        assert_eq!(r[0].name.as_deref(), Some("_ldap._tcp.dc._msdcs.winehq.org"));
+        assert_eq!(
+            r[0].name.as_deref(),
+            Some("_ldap._tcp.dc._msdcs.winehq.org")
+        );
         assert_eq!(r[0].data, Data::Srv(0, 0, 0x185, "dc.winehq.org".into()));
         assert_eq!(r[0].data_len as u32, ps() + 8 + 14);
         assert_eq!(extract(&m, 1).unwrap()[0].data_len as u32, ps() + 8 + 28);
@@ -554,7 +642,15 @@ mod tests {
 
     #[test]
     fn compare_rules() {
-        let a = Rec { name: Some("localhost".into()), ty: 1, data_len: 4, flags: 0x2019, ttl: 1200, reserved: 0, data: Data::A([255; 4]) };
+        let a = Rec {
+            name: Some("localhost".into()),
+            ty: 1,
+            data_len: 4,
+            flags: 0x2019,
+            ttl: 1200,
+            reserved: 0,
+            data: Data::A([255; 4]),
+        };
         let mut b = a.clone();
         b.name = Some("LOCALHOST".into());
         b.ttl = 0;

@@ -54,7 +54,11 @@ fn run(seed: u64) {
             }
         };
         let (a, b) = (pick(&mut r, &names), pick(&mut r, &names));
-        let mut t = Step { a: a as i64, b: b as i64, ..Default::default() };
+        let mut t = Step {
+            a: a as i64,
+            b: b as i64,
+            ..Default::default()
+        };
         match r.below(20) {
             0 | 1 => {
                 let pixel = r.chance(50);
@@ -73,20 +77,44 @@ fn run(seed: u64) {
                     steps.push(t);
                     for pixel in [false, true] {
                         let x = glCreateShader(if pixel { 0x8B30 } else { GL_VERTEX_SHADER });
-                        unsafe { glShaderSource(x, 1, if pixel { fs } else { vs }, std::ptr::null()) };
+                        unsafe {
+                            glShaderSource(x, 1, if pixel { fs } else { vs }, std::ptr::null())
+                        };
                         names.push(x);
-                        steps.push(Step { op: "CreateShader", a: pixel as i64, got: x as i64, ..Default::default() });
+                        steps.push(Step {
+                            op: "CreateShader",
+                            a: pixel as i64,
+                            got: x as i64,
+                            ..Default::default()
+                        });
                         glCompileShader(x);
-                        steps.push(Step { op: "Compile", a: x as i64, ..Default::default() });
+                        steps.push(Step {
+                            op: "Compile",
+                            a: x as i64,
+                            ..Default::default()
+                        });
                         glAttachShader(n, x);
-                        steps.push(Step { op: "Attach", a: n as i64, b: x as i64, ..Default::default() });
+                        steps.push(Step {
+                            op: "Attach",
+                            a: n as i64,
+                            b: x as i64,
+                            ..Default::default()
+                        });
                     }
                     glLinkProgram(n);
-                    t = Step { op: "Link", a: n as i64, ..Default::default() };
+                    t = Step {
+                        op: "Link",
+                        a: n as i64,
+                        ..Default::default()
+                    };
                     if r.chance(70) {
                         steps.push(t);
                         glUseProgram(n);
-                        t = Step { op: "Use", a: n as i64, ..Default::default() };
+                        t = Step {
+                            op: "Use",
+                            a: n as i64,
+                            ..Default::default()
+                        };
                     }
                 }
             }
@@ -100,7 +128,11 @@ fn run(seed: u64) {
             }
             6 => {
                 // (often the program in use: flagged, it lives on)
-                let a = if r.chance(50) { with(|_, c| c.program) } else { a };
+                let a = if r.chance(50) {
+                    with(|_, c| c.program)
+                } else {
+                    a
+                };
                 glDeleteProgram(a);
                 (t.op, t.a) = ("DeleteProgram", a as i64);
             }
@@ -124,9 +156,19 @@ fn run(seed: u64) {
             14 => (t.op, t.got) = (["IsShader", "IsProgram"][r.below(2)], 0),
             15 => {
                 let k = r.below(5);
-                let a = if r.chance(40) { with(|_, c| c.program) } else { a };
+                let a = if r.chance(40) {
+                    with(|_, c| c.program)
+                } else {
+                    a
+                };
                 t.a = a as i64;
-                t.op = ["ShaderDeleted", "Compiled", "ProgramDeleted", "Linked", "Attached"][k];
+                t.op = [
+                    "ShaderDeleted",
+                    "Compiled",
+                    "ProgramDeleted",
+                    "Linked",
+                    "Attached",
+                ][k];
                 t.got = match k {
                     0 => iv(glGetShaderiv, a, 0x8B80),
                     1 => iv(glGetShaderiv, a, 0x8B81),
@@ -143,7 +185,11 @@ fn run(seed: u64) {
             _ => (t.op, t.got) = ("GetError", glGetError() as i64),
         }
         if t.op.starts_with("Is") {
-            t.got = if t.op == "IsShader" { glIsShader(a) } else { glIsProgram(a) } as i64;
+            t.got = if t.op == "IsShader" {
+                glIsShader(a)
+            } else {
+                glIsProgram(a)
+            } as i64;
         }
         steps.push(t);
     }
@@ -151,7 +197,15 @@ fn run(seed: u64) {
     vngl_context_destroy(ctx);
     let mut s = String::from("---- MODULE GlpData ----\nEXTENDS Integers\nTrace == <<\n");
     for (i, t) in steps.iter().enumerate() {
-        let _ = writeln!(s, "  [op |-> \"{}\", a |-> {}, b |-> {}, got |-> {}]{}", t.op, t.a, t.b, t.got, if i + 1 < steps.len() { "," } else { "" });
+        let _ = writeln!(
+            s,
+            "  [op |-> \"{}\", a |-> {}, b |-> {}, got |-> {}]{}",
+            t.op,
+            t.a,
+            t.b,
+            t.got,
+            if i + 1 < steps.len() { "," } else { "" }
+        );
     }
     s.push_str(">>\n====\n");
     write_module(&format!("glp-{seed}"), "GlPrograms", "GlpData", &s);
@@ -204,9 +258,23 @@ fn check(steps: &[Step], seed: u64) {
                     panic!("seed {seed} step {n}: {} gave {}, in use", t.op, t.got);
                 }
                 if t.op == "CreateShader" {
-                    sh.insert(t.got, Sh { pixel: t.a == 1, compiled: false, deleted: false });
+                    sh.insert(
+                        t.got,
+                        Sh {
+                            pixel: t.a == 1,
+                            compiled: false,
+                            deleted: false,
+                        },
+                    );
                 } else {
-                    pr.insert(t.got, Pr { att: BTreeSet::new(), linked: false, deleted: false });
+                    pr.insert(
+                        t.got,
+                        Pr {
+                            att: BTreeSet::new(),
+                            linked: false,
+                            deleted: false,
+                        },
+                    );
                 }
             }
             "Compile" => match kind(&sh, &pr, t.a, true) {
@@ -242,7 +310,11 @@ fn check(steps: &[Step], seed: u64) {
             "Link" => match kind(&sh, &pr, t.a, false) {
                 0 => {
                     let ok = [false, true].iter().all(|&px| {
-                        let of: Vec<&i64> = pr[&t.a].att.iter().filter(|x| sh.get(x).is_some_and(|s| s.pixel == px)).collect();
+                        let of: Vec<&i64> = pr[&t.a]
+                            .att
+                            .iter()
+                            .filter(|x| sh.get(x).is_some_and(|s| s.pixel == px))
+                            .collect();
                         of.len() == 1 && sh[of[0]].compiled
                     });
                     pr.get_mut(&t.a).unwrap().linked = ok;

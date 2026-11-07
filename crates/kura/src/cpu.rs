@@ -15,7 +15,10 @@ const NULL_PAGES: u32 = 0x10000;
 pub enum Stop {
     /// Reached a trap address (in [trap_lo, trap_hi)).
     Trap(u32),
-    Fault { addr: u32, write: bool },
+    Fault {
+        addr: u32,
+        write: bool,
+    },
     Divide,
     /// An invalid opcode at EIP.
     Invalid,
@@ -51,7 +54,10 @@ fn mem_end() -> u64 {
 
 #[inline(always)]
 fn check(addr: u32, len: u32, write: bool) -> Result<*mut u8, Fault> {
-    if addr < NULL_PAGES || addr as u64 + len as u64 > mem_end() || crate::jit::faults(addr, len, write) {
+    if addr < NULL_PAGES
+        || addr as u64 + len as u64 > mem_end()
+        || crate::jit::faults(addr, len, write)
+    {
         return Err(Fault { addr, write });
     }
     if write {
@@ -110,17 +116,27 @@ impl Memory for Linear {
             unsafe { std::ptr::copy_nonoverlapping(p, cur.as_mut_ptr(), bytes as usize) };
             let cur = u64::from_le_bytes(cur);
             if cur == old {
-                unsafe { std::ptr::copy_nonoverlapping(new.to_le_bytes().as_ptr(), p, bytes as usize) };
+                unsafe {
+                    std::ptr::copy_nonoverlapping(new.to_le_bytes().as_ptr(), p, bytes as usize)
+                };
             }
             return Ok(cur);
         }
         let ord = Ordering::SeqCst;
         Ok(unsafe {
             match bytes {
-                1 => (*(p as *const AtomicU8)).compare_exchange(old as u8, new as u8, ord, ord).unwrap_or_else(|v| v) as u64,
-                2 if addr % 2 == 0 => (*(p as *const AtomicU16)).compare_exchange(old as u16, new as u16, ord, ord).unwrap_or_else(|v| v) as u64,
-                4 if addr % 4 == 0 => (*(p as *const AtomicU32)).compare_exchange(old as u32, new as u32, ord, ord).unwrap_or_else(|v| v) as u64,
-                8 => (*(p as *const AtomicU64)).compare_exchange(old, new, ord, ord).unwrap_or_else(|v| v),
+                1 => (*(p as *const AtomicU8))
+                    .compare_exchange(old as u8, new as u8, ord, ord)
+                    .unwrap_or_else(|v| v) as u64,
+                2 if addr % 2 == 0 => (*(p as *const AtomicU16))
+                    .compare_exchange(old as u16, new as u16, ord, ord)
+                    .unwrap_or_else(|v| v) as u64,
+                4 if addr % 4 == 0 => (*(p as *const AtomicU32))
+                    .compare_exchange(old as u32, new as u32, ord, ord)
+                    .unwrap_or_else(|v| v) as u64,
+                8 => (*(p as *const AtomicU64))
+                    .compare_exchange(old, new, ord, ord)
+                    .unwrap_or_else(|v| v),
                 _ => {
                     // inside one aligned u64: swap the whole word
                     let w = &*(word as usize as *const AtomicU64);
@@ -234,7 +250,10 @@ fn exit_code(cpu: &Cpu, mem: &mut Linear, exit: Exit, from_jit: bool) -> Option<
             if *ON.get_or_init(|| std::env::var_os("IPPAI_TRACE_FAULT").is_some()) {
                 let r = &cpu.regs;
                 let ok = (koji::jit::GUEST_LO..koji::jit::GUEST_HI - 8).contains(&cpu.eip);
-                let code: Vec<String> = (0..if ok { 8 } else { 0 }).map(|i| unsafe { *((cpu.eip as usize + i) as *const u8) }).map(|b| format!("{b:02x}")).collect();
+                let code: Vec<String> = (0..if ok { 8 } else { 0 })
+                    .map(|i| unsafe { *((cpu.eip as usize + i) as *const u8) })
+                    .map(|b| format!("{b:02x}"))
+                    .collect();
                 eprintln!(
                     "fault {} {:08x} at eip {:08x} [{}] | eax {:08x} ecx {:08x} edx {:08x} ebx {:08x} esp {:08x} ebp {:08x} esi {:08x} edi {:08x} eflags {:08x}",
                     if f.write { "write" } else { "read" }, f.addr, cpu.eip, code.join(" "), r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], cpu.eflags
@@ -245,11 +264,24 @@ fn exit_code(cpu: &Cpu, mem: &mut Linear, exit: Exit, from_jit: bool) -> Option<
             // ("null": any fault below 64K)
             static AT: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
             let at = *AT.get_or_init(|| {
-                std::env::var("IPPAI_DUMP_FAULT").ok().and_then(|v| if v == "null" { Some(0) } else { u32::from_str_radix(v.trim_start_matches("0x"), 16).ok() })
+                std::env::var("IPPAI_DUMP_FAULT").ok().and_then(|v| {
+                    if v == "null" {
+                        Some(0)
+                    } else {
+                        u32::from_str_radix(v.trim_start_matches("0x"), 16).ok()
+                    }
+                })
             });
-            if at == Some(cpu.eip) || (at == Some(0) && (f.addr < 0x10000 || f.addr >= 0x8000_0000)) {
-                eprintln!("vnfault at {:x}:{:08x} addr {:x} write {}", cpu.rip_hi, cpu.eip, f.addr, f.write);
-                let names = ["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"];
+            if at == Some(cpu.eip) || (at == Some(0) && (f.addr < 0x10000 || f.addr >= 0x8000_0000))
+            {
+                eprintln!(
+                    "vnfault at {:x}:{:08x} addr {:x} write {}",
+                    cpu.rip_hi, cpu.eip, f.addr, f.write
+                );
+                let names = [
+                    "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10",
+                    "r11", "r12", "r13", "r14", "r15",
+                ];
                 for (i, n) in names.iter().enumerate() {
                     let v = cpu.gpr(i);
                     let a = v as u32;
@@ -263,10 +295,20 @@ fn exit_code(cpu: &Cpu, mem: &mut Linear, exit: Exit, from_jit: bool) -> Option<
                     eprintln!("{line}");
                 }
                 let rsp = cpu.gpr(4) as u32;
-                let st: Vec<String> = (0..48u32).map(|k| format!("{:x}", mem.read64(rsp.wrapping_add(k * 8)).unwrap_or(0xdead))).collect();
+                let st: Vec<String> = (0..48u32)
+                    .map(|k| {
+                        format!(
+                            "{:x}",
+                            mem.read64(rsp.wrapping_add(k * 8)).unwrap_or(0xdead)
+                        )
+                    })
+                    .collect();
                 eprintln!("vnfault stack {}", st.join(" "));
             }
-            Some(Stop::Fault { addr: f.addr, write: f.write })
+            Some(Stop::Fault {
+                addr: f.addr,
+                write: f.write,
+            })
         }
         Exit::DivideError => {
             exception(cpu, "divide error", None, from_jit);
@@ -290,7 +332,12 @@ fn exit_code(cpu: &Cpu, mem: &mut Linear, exit: Exit, from_jit: bool) -> Option<
             };
             let mut l = crate::crashlog::Line::<32>::new();
             let _ = std::fmt::Write::write_fmt(&mut l, format_args!("{what} {n:#x}"));
-            exception(cpu, std::str::from_utf8(l.bytes()).unwrap_or(what), None, from_jit);
+            exception(
+                cpu,
+                std::str::from_utf8(l.bytes()).unwrap_or(what),
+                None,
+                from_jit,
+            );
             Some(Stop::Int(n as u32))
         }
         Exit::Halt => {
@@ -324,15 +371,22 @@ fn trace_eip(cpu: *mut Cpu) -> Option<impl Drop> {
                 .map(|(tid, e)| {
                     let c = e.cpu as *const Cpu;
                     let eip = unsafe { std::ptr::read_volatile(std::ptr::addr_of!((*c).eip)) };
-                    let at = if e.inside.load(Ordering::Relaxed) { "" } else { "*" };
+                    let at = if e.inside.load(Ordering::Relaxed) {
+                        ""
+                    } else {
+                        "*"
+                    };
                     // and the return addresses: [esp], then the EBP chain
                     let rd = |a: u32| -> Option<u32> {
-                        (a >= koji::jit::GUEST_LO && a < koji::jit::GUEST_HI - 4).then(|| unsafe { std::ptr::read_volatile(a as usize as *const u32) })
+                        (a >= koji::jit::GUEST_LO && a < koji::jit::GUEST_HI - 4)
+                            .then(|| unsafe { std::ptr::read_volatile(a as usize as *const u32) })
                     };
                     let (esp, mut ebp) = unsafe { ((*c).regs[4], (*c).regs[5]) };
                     let mut stack = vec![rd(esp).unwrap_or(0)];
                     for _ in 0..8 {
-                        let (Some(r), Some(next)) = (rd(ebp.wrapping_add(4)), rd(ebp)) else { break };
+                        let (Some(r), Some(next)) = (rd(ebp.wrapping_add(4)), rd(ebp)) else {
+                            break;
+                        };
                         stack.push(r);
                         if next <= ebp {
                             break;
@@ -353,7 +407,10 @@ fn trace_eip(cpu: *mut Cpu) -> Option<impl Drop> {
     let e = match list.iter().find(|(t, _)| *t == tid) {
         Some((_, e)) => e.clone(),
         None => {
-            let e = Arc::new(Entry { cpu: cpu as usize, inside: AtomicBool::new(false) });
+            let e = Arc::new(Entry {
+                cpu: cpu as usize,
+                inside: AtomicBool::new(false),
+            });
             list.push((tid, e.clone()));
             e
         }
@@ -382,14 +439,18 @@ pub fn run(cpu: &mut Cpu) -> Stop {
 fn unmasked_note(mx: u32) {
     static ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if !ONCE.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        eprintln!("kura: MXCSR {mx:#x} unmasks SSE exceptions: the interpreter runs the code meanwhile");
+        eprintln!(
+            "kura: MXCSR {mx:#x} unmasks SSE exceptions: the interpreter runs the code meanwhile"
+        );
     }
 }
 
 fn cpu_run(cpu: &mut Cpu) -> Stop {
     let mut mem = Linear;
     // long mode: IPPAI_JIT64=0 leaves it to the interpreter
-    let jit = crate::jit::enabled() && (cpu.mode64 == 0 || crate::jit::enabled64()) && (cpu.mode16 == 0 || crate::jit::enabled16());
+    let jit = crate::jit::enabled()
+        && (cpu.mode64 == 0 || crate::jit::enabled64())
+        && (cpu.mode16 == 0 || crate::jit::enabled16());
     crate::jit::count_entry(cpu.eip);
     loop {
         if crate::snap::pausing() && crate::snap::parkable() {
@@ -451,7 +512,11 @@ fn cpu_run(cpu: &mut Cpu) -> Stop {
 /// memcpy's destination: compare JIT and interpreter runs to find the first copy that differs).
 fn trace_call(cpu: &Cpu) {
     static AT: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
-    let Some(at) = *AT.get_or_init(|| u32::from_str_radix(&std::env::var("IPPAI_TRACE_CALL").ok()?, 16).ok()) else { return };
+    let Some(at) =
+        *AT.get_or_init(|| u32::from_str_radix(&std::env::var("IPPAI_TRACE_CALL").ok()?, 16).ok())
+    else {
+        return;
+    };
     if cpu.eip != at {
         return;
     }
@@ -470,7 +535,11 @@ fn trace_call(cpu: &Cpu) {
         c = (c ^ unsafe { *((at + i) as usize as *const u8) } as u32).wrapping_mul(0x0100_0193);
     }
     let r = &cpu.regs;
-    let ret = if ok(r[4]) { unsafe { *(r[4] as usize as *const u32) } } else { 0 };
+    let ret = if ok(r[4]) {
+        unsafe { *(r[4] as usize as *const u32) }
+    } else {
+        0
+    };
     eprintln!("call {k} prev-dst-hash {h:08x} code {c:08x} | eax {:08x} ecx {:08x} edx {:08x} esi {:08x} edi {:08x} esp {:08x} [esp] {ret:08x} r8 {:x} r9 {:x}", r[0], r[1], r[2], r[6], r[7], r[4], cpu.r8[0], cpu.r8[1]);
     PREV.with(|p| p.set((k + 1, r[2], r[1])));
 }

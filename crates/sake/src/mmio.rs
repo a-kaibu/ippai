@@ -48,9 +48,29 @@ struct Info {
 }
 fn info() -> Info {
     if mem::ps() == 8 {
-        Info { err: 16, cch: 28, buf: 32, next: 40, end_read: 48, disk: 68, adw: 72, hmmio: 92, size: 100 }
+        Info {
+            err: 16,
+            cch: 28,
+            buf: 32,
+            next: 40,
+            end_read: 48,
+            disk: 68,
+            adw: 72,
+            hmmio: 92,
+            size: 100,
+        }
     } else {
-        Info { err: 12, cch: 20, buf: 24, next: 28, end_read: 32, disk: 44, adw: 48, hmmio: 68, size: 72 }
+        Info {
+            err: 12,
+            cch: 20,
+            buf: 24,
+            next: 28,
+            end_read: 32,
+            disk: 44,
+            adw: 48,
+            hmmio: 68,
+            size: 72,
+        }
     }
 }
 
@@ -126,7 +146,9 @@ impl Mmio {
             return None;
         }
         Some(match &self.data {
-            Data::File(v) => u32::from_le_bytes(v[off as usize..off as usize + 4].try_into().unwrap()),
+            Data::File(v) => {
+                u32::from_le_bytes(v[off as usize..off as usize + 4].try_into().unwrap())
+            }
             Data::Mem(a, _) => r32(a + off),
         })
     }
@@ -136,7 +158,12 @@ static FILES: Mutex<Option<HashMap<u32, Mmio>>> = Mutex::new(None);
 static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x6d00);
 
 fn with<R>(h: u32, f: impl FnOnce(&mut Mmio) -> R) -> Option<R> {
-    FILES.lock().unwrap().get_or_insert_with(HashMap::default).get_mut(&h).map(f)
+    FILES
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::default)
+        .get_mut(&h)
+        .map(f)
 }
 
 /// mmioOpen(name, MMIOINFO*, flags)
@@ -156,7 +183,10 @@ fn open(c: &mut Ctx, wide: bool) -> u32 {
     let writing = flags & 3 != 0;
     let mut out = None;
     if crate::env_on!("SAKE_TRACE_FILES") && info != 0 {
-        eprintln!("sake: mmioOpen({name:#x}, {info:#x}, flags {flags:#x}) {:x?}", (0..18).map(|i| r32(info + 4 * i)).collect::<Vec<_>>());
+        eprintln!(
+            "sake: mmioOpen({name:#x}, {info:#x}, flags {flags:#x}) {:x?}",
+            (0..18).map(|i| r32(info + 4 * i)).collect::<Vec<_>>()
+        );
     }
     let proc = io_proc(name, info, wide);
     let data = if let Some(p) = proc {
@@ -180,14 +210,17 @@ fn open(c: &mut Ctx, wide: bool) -> u32 {
         let old = crate::files::resolve(&path).and_then(|h| kura::fs::read(h).ok());
         if flags & 0x1000 != 0 {
             // MMIO_CREATE: a new, empty file
-            let h = crate::files::resolve(&path).unwrap_or_else(|| crate::files::resolve_new(&path));
+            let h =
+                crate::files::resolve(&path).unwrap_or_else(|| crate::files::resolve_new(&path));
             if kura::fs::write(h, Vec::new()).is_err() {
                 return fail(MMIOERR_CANNOTOPEN);
             }
             out = Some(path);
             Data::File(Vec::new())
         } else {
-            let Some(v) = old else { return fail(MMIOERR_CANNOTOPEN) };
+            let Some(v) = old else {
+                return fail(MMIOERR_CANNOTOPEN);
+            };
             if flags & 0x4000 != 0 {
                 // MMIO_EXIST: only whether it is there
                 return 1;
@@ -199,7 +232,19 @@ fn open(c: &mut Ctx, wide: bool) -> u32 {
         }
     };
     let h = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    FILES.lock().unwrap().get_or_insert_with(HashMap::default).insert(h, Mmio { data, pos: 0, out, dirty: false });
+    FILES
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::default)
+        .insert(
+            h,
+            Mmio {
+                data,
+                pos: 0,
+                out,
+                dirty: false,
+            },
+        );
     if info != 0 {
         w32(info + mi.err, 0);
         mem::wp(info + mi.hmmio, h);
@@ -213,7 +258,11 @@ fn from_handle(h: u32) -> Option<Vec<u8>> {
     let at = f.seek(SeekFrom::Current(0))?;
     let tmp = mem::alloc(8)?;
     let got = f.read_into(tmp, 8);
-    let n = if got == 8 && r32(tmp) == FOURCC_RIFF { r32(tmp + 4).saturating_add(8) } else { (f.size().saturating_sub(at)).min(64 << 20) as u32 };
+    let n = if got == 8 && r32(tmp) == FOURCC_RIFF {
+        r32(tmp + 4).saturating_add(8)
+    } else {
+        (f.size().saturating_sub(at)).min(64 << 20) as u32
+    };
     mem::release(tmp);
     f.seek(SeekFrom::Start(at))?;
     let buf = mem::alloc(n.max(1))?;
@@ -251,7 +300,8 @@ fn io_proc(name: u32, info: u32, wide: bool) -> Option<u32> {
         for (i, ch) in ext.bytes().take(4).enumerate() {
             b[i] = ch;
         }
-        return find(u32::from_le_bytes(b)).or_else(|| find(u32::from_le_bytes(b.map(|c| c.to_ascii_uppercase()))));
+        return find(u32::from_le_bytes(b))
+            .or_else(|| find(u32::from_le_bytes(b.map(|c| c.to_ascii_uppercase()))));
     }
     None
 }
@@ -290,7 +340,9 @@ fn mmioInstallIOProcA(c: &mut Ctx) -> u32 {
         procs.push((fcc, proc));
         return proc;
     }
-    let i = procs.iter().rposition(|&(k, p)| k == fcc && (flags & 0x20000 == 0 || p == proc || proc == 0));
+    let i = procs
+        .iter()
+        .rposition(|&(k, p)| k == fcc && (flags & 0x20000 == 0 || p == proc || proc == 0));
     match i {
         Some(i) if flags & 0x20000 != 0 => {
             procs.remove(i);
@@ -307,10 +359,18 @@ fn mmioOpenW(c: &mut Ctx) -> u32 {
     open(c, true)
 }
 fn mmioClose(c: &mut Ctx) -> u32 {
-    let f = FILES.lock().unwrap().get_or_insert_with(HashMap::default).remove(&c.a(0));
+    let f = FILES
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::default)
+        .remove(&c.a(0));
     match f {
         Some(mut f) => {
-            if f.flush() { 0 } else { MMIOERR_CANNOTWRITE }
+            if f.flush() {
+                0
+            } else {
+                MMIOERR_CANNOTWRITE
+            }
         }
         None => MMIOERR_INVALIDFILE,
     }
@@ -324,7 +384,14 @@ fn mmioRead(c: &mut Ctx) -> u32 {
 }
 fn mmioWrite(c: &mut Ctx) -> u32 {
     let (h, buf, n) = (c.a(0), c.a(1), c.i(2));
-    with(h, |f| if f.out.is_none() && matches!(f.data, Data::File(_)) { u32::MAX } else { f.write(buf, n.max(0) as u32) }).unwrap_or(u32::MAX)
+    with(h, |f| {
+        if f.out.is_none() && matches!(f.data, Data::File(_)) {
+            u32::MAX
+        } else {
+            f.write(buf, n.max(0) as u32)
+        }
+    })
+    .unwrap_or(u32::MAX)
 }
 /// mmioSeek(h, offset, origin) -> new position
 fn mmioSeek(c: &mut Ctx) -> u32 {
@@ -354,33 +421,41 @@ fn mmioSeek(c: &mut Ctx) -> u32 {
 fn mmioDescend(c: &mut Ctx) -> u32 {
     let (h, ck, parent, flags) = (c.a(0), c.a(1), c.a(2), c.a(3));
     let (want_id, want_type) = (r32(ck), r32(ck + 8));
-    let end_limit = if parent != 0 { r32(parent + 12) + r32(parent + 4) } else { u32::MAX };
-    with(h, |f| {
-        loop {
-            let at = f.pos;
-            if at + 8 > end_limit.min(f.len()) {
-                return MMIOERR_CHUNKNOTFOUND;
-            }
-            let (Some(id), Some(size)) = (f.u32_at(at), f.u32_at(at + 4)) else { return MMIOERR_CHUNKNOTFOUND };
-            let list = id == FOURCC_RIFF || id == FOURCC_LIST;
-            let ty = if list { f.u32_at(at + 8).unwrap_or(0) } else { 0 };
-            let found = match flags & 0x70 {
-                0x10 => id == want_id,
-                0x20 => id == FOURCC_RIFF && ty == want_type,
-                0x40 => id == FOURCC_LIST && ty == want_type,
-                _ => true,
-            };
-            if found {
-                w32(ck, id);
-                w32(ck + 4, size);
-                w32(ck + 8, ty);
-                w32(ck + 12, at + 8);
-                w32(ck + 16, 0);
-                f.pos = at + 8 + if list { 4 } else { 0 };
-                return 0;
-            }
-            f.pos = at + 8 + ((size + 1) & !1);
+    let end_limit = if parent != 0 {
+        r32(parent + 12) + r32(parent + 4)
+    } else {
+        u32::MAX
+    };
+    with(h, |f| loop {
+        let at = f.pos;
+        if at + 8 > end_limit.min(f.len()) {
+            return MMIOERR_CHUNKNOTFOUND;
         }
+        let (Some(id), Some(size)) = (f.u32_at(at), f.u32_at(at + 4)) else {
+            return MMIOERR_CHUNKNOTFOUND;
+        };
+        let list = id == FOURCC_RIFF || id == FOURCC_LIST;
+        let ty = if list {
+            f.u32_at(at + 8).unwrap_or(0)
+        } else {
+            0
+        };
+        let found = match flags & 0x70 {
+            0x10 => id == want_id,
+            0x20 => id == FOURCC_RIFF && ty == want_type,
+            0x40 => id == FOURCC_LIST && ty == want_type,
+            _ => true,
+        };
+        if found {
+            w32(ck, id);
+            w32(ck + 4, size);
+            w32(ck + 8, ty);
+            w32(ck + 12, at + 8);
+            w32(ck + 16, 0);
+            f.pos = at + 8 + if list { 4 } else { 0 };
+            return 0;
+        }
+        f.pos = at + 8 + ((size + 1) & !1);
     })
     .unwrap_or(MMIOERR_CHUNKNOTFOUND)
 }
@@ -450,7 +525,18 @@ fn mmioCreateChunk(c: &mut Ctx) -> u32 {
 fn mmioGetInfo(c: &mut Ctx) -> u32 {
     let (h, info) = (c.a(0), c.a(1));
     let mi = self::info();
-    let Some((pos, mem_buf)) = with(h, |f| (f.pos, if let Data::Mem(a, n) = f.data { Some((a, n)) } else { None })) else { return MMIOERR_INVALIDFILE };
+    let Some((pos, mem_buf)) = with(h, |f| {
+        (
+            f.pos,
+            if let Data::Mem(a, n) = f.data {
+                Some((a, n))
+            } else {
+                None
+            },
+        )
+    }) else {
+        return MMIOERR_INVALIDFILE;
+    };
     mem::fill(info, mi.size, 0);
     match mem_buf {
         Some((a, n)) => {
@@ -474,7 +560,11 @@ fn fourcc(c: &mut Ctx, wide: bool) -> u32 {
     let s = crate::k32::arg_str(c.a(0), wide);
     let mut b = [b' '; 4];
     for (i, ch) in s.bytes().take(4).enumerate() {
-        b[i] = if c.a(1) & 0x10 != 0 { ch.to_ascii_uppercase() } else { ch };
+        b[i] = if c.a(1) & 0x10 != 0 {
+            ch.to_ascii_uppercase()
+        } else {
+            ch
+        };
     }
     u32::from_le_bytes(b)
 }

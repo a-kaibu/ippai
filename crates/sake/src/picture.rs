@@ -63,7 +63,14 @@ pub const ALL: [Fmt; 23] = [
 
 impl Fmt {
     pub fn guid(self) -> Guid {
-        let base = |last: u8| (0x6fdd_c324, 0x4e03, 0x4bfe, [0xb1, 0x85, 0x3d, 0x77, 0x76, 0x8d, 0xc9, last]);
+        let base = |last: u8| {
+            (
+                0x6fdd_c324,
+                0x4e03,
+                0x4bfe,
+                [0xb1, 0x85, 0x3d, 0x77, 0x76, 0x8d, 0xc9, last],
+            )
+        };
         match self {
             Fmt::Idx1 => base(0x01),
             Fmt::Idx2 => base(0x02),
@@ -84,10 +91,30 @@ impl Fmt {
             Fmt::Rgb48 => base(0x15),
             Fmt::Rgba64 => base(0x16),
             Fmt::Cmyk => base(0x1c),
-            Fmt::Rgba => (0xf5c7_ad2d, 0x6a8d, 0x43dd, [0xa7, 0xa8, 0xa2, 0x99, 0x35, 0x26, 0x1a, 0xe9]),
-            Fmt::Prgba => (0x3cc4_a650, 0xa527, 0x4d37, [0xa9, 0x16, 0x31, 0x42, 0xc7, 0xeb, 0xed, 0xba]),
-            Fmt::Rgb32 => (0xd98c_6b95, 0x3efe, 0x47d6, [0xbb, 0x25, 0xeb, 0x17, 0x48, 0xab, 0x0c, 0xf1]),
-            Fmt::Alpha8 => (0xe6cd_0116, 0xeeba, 0x4161, [0xaa, 0x85, 0x27, 0xdd, 0x9f, 0xb3, 0xa8, 0x95]),
+            Fmt::Rgba => (
+                0xf5c7_ad2d,
+                0x6a8d,
+                0x43dd,
+                [0xa7, 0xa8, 0xa2, 0x99, 0x35, 0x26, 0x1a, 0xe9],
+            ),
+            Fmt::Prgba => (
+                0x3cc4_a650,
+                0xa527,
+                0x4d37,
+                [0xa9, 0x16, 0x31, 0x42, 0xc7, 0xeb, 0xed, 0xba],
+            ),
+            Fmt::Rgb32 => (
+                0xd98c_6b95,
+                0x3efe,
+                0x47d6,
+                [0xbb, 0x25, 0xeb, 0x17, 0x48, 0xab, 0x0c, 0xf1],
+            ),
+            Fmt::Alpha8 => (
+                0xe6cd_0116,
+                0xeeba,
+                0x4161,
+                [0xaa, 0x85, 0x27, 0xdd, 0x9f, 0xb3, 0xa8, 0x95],
+            ),
         }
     }
 
@@ -210,15 +237,26 @@ pub fn cmyk_to_bgr(c: u8, m: u8, y: u8, k: u8) -> [u8; 3] {
 /// The first 16bppGray level of each 8-bit gray 1..=255 in Windows' conversion (measured:
 /// tests/winref/golden/wicconv-32/gray16_ramp.png).
 const GRAY16_TO_8: [u16; 255] = [
-    127, 379, 632, 884, 1137, 1389, 1641, 1894, 2146, 2399, 2649, 2892, 3122, 3551, 3752, 3946, 4315, 4490, 4827, 4988, 5298, 5595, 5737, 6015, 6281, 6538, 6786, 7026, 7373, 7596, 7812, 8127, 8330,
-    8626, 8913, 9099, 9371, 9635, 9893, 10143, 10387, 10704, 10935, 11161, 11456, 11671, 11952, 12226, 12493, 12690, 12947, 13261, 13506, 13746, 13982, 14270, 14497, 14774, 15046, 15312, 15573,
-    15829, 16081, 16328, 16571, 16810, 17091, 17368, 17594, 17862, 18124, 18383, 18637, 18887, 19133, 19416, 19655, 19929, 20160, 20426, 20688, 20946, 21201, 21452, 21734, 21977, 22218, 22489, 22755,
-    22986, 23246, 23503, 23787, 24037, 24283, 24557, 24797, 25064, 25328, 25559, 25816, 26098, 26349, 26597, 26869, 27111, 27377, 27640, 27874, 28131, 28410, 28661, 28909, 29179, 29422, 29687, 29948,
-    30207, 30462, 30716, 30966, 31237, 31482, 31747, 31988, 32248, 32505, 32759, 33032, 33282, 33529, 33795, 34057, 34317, 34575, 34830, 35083, 35334, 35601, 35847, 36110, 36370, 36627, 36883, 37136,
-    37387, 37654, 37901, 38163, 38422, 38680, 38935, 39189, 39456, 39705, 39969, 40214, 40473, 40730, 40985, 41254, 41505, 41769, 42016, 42276, 42534, 42791, 43045, 43312, 43562, 43825, 44072, 44331,
-    44588, 44844, 45097, 45363, 45612, 45874, 46134, 46392, 46648, 46902, 47154, 47418, 47680, 47927, 48185, 48442, 48697, 48962, 49214, 49476, 49724, 49982, 50239, 50506, 50760, 51011, 51273, 51534,
-    51781, 52037, 52304, 52558, 52810, 53072, 53332, 53590, 53847, 54102, 54356, 54608, 54870, 55129, 55388, 55644, 55899, 56153, 56416, 56666, 56926, 57183, 57440, 57695, 57958, 58210, 58471, 58729,
-    58977, 59243, 59497, 59751, 60012, 60262, 60520, 60777, 61042, 61297, 61549, 61810, 62069, 62327, 62583, 62838, 63092, 63353, 63604, 63862, 64119, 64375, 64638, 64891, 65152, 65411,
+    127, 379, 632, 884, 1137, 1389, 1641, 1894, 2146, 2399, 2649, 2892, 3122, 3551, 3752, 3946,
+    4315, 4490, 4827, 4988, 5298, 5595, 5737, 6015, 6281, 6538, 6786, 7026, 7373, 7596, 7812, 8127,
+    8330, 8626, 8913, 9099, 9371, 9635, 9893, 10143, 10387, 10704, 10935, 11161, 11456, 11671,
+    11952, 12226, 12493, 12690, 12947, 13261, 13506, 13746, 13982, 14270, 14497, 14774, 15046,
+    15312, 15573, 15829, 16081, 16328, 16571, 16810, 17091, 17368, 17594, 17862, 18124, 18383,
+    18637, 18887, 19133, 19416, 19655, 19929, 20160, 20426, 20688, 20946, 21201, 21452, 21734,
+    21977, 22218, 22489, 22755, 22986, 23246, 23503, 23787, 24037, 24283, 24557, 24797, 25064,
+    25328, 25559, 25816, 26098, 26349, 26597, 26869, 27111, 27377, 27640, 27874, 28131, 28410,
+    28661, 28909, 29179, 29422, 29687, 29948, 30207, 30462, 30716, 30966, 31237, 31482, 31747,
+    31988, 32248, 32505, 32759, 33032, 33282, 33529, 33795, 34057, 34317, 34575, 34830, 35083,
+    35334, 35601, 35847, 36110, 36370, 36627, 36883, 37136, 37387, 37654, 37901, 38163, 38422,
+    38680, 38935, 39189, 39456, 39705, 39969, 40214, 40473, 40730, 40985, 41254, 41505, 41769,
+    42016, 42276, 42534, 42791, 43045, 43312, 43562, 43825, 44072, 44331, 44588, 44844, 45097,
+    45363, 45612, 45874, 46134, 46392, 46648, 46902, 47154, 47418, 47680, 47927, 48185, 48442,
+    48697, 48962, 49214, 49476, 49724, 49982, 50239, 50506, 50760, 51011, 51273, 51534, 51781,
+    52037, 52304, 52558, 52810, 53072, 53332, 53590, 53847, 54102, 54356, 54608, 54870, 55129,
+    55388, 55644, 55899, 56153, 56416, 56666, 56926, 57183, 57440, 57695, 57958, 58210, 58471,
+    58729, 58977, 59243, 59497, 59751, 60012, 60262, 60520, 60777, 61042, 61297, 61549, 61810,
+    62069, 62327, 62583, 62838, 63092, 63353, 63604, 63862, 64119, 64375, 64638, 64891, 65152,
+    65411,
 ];
 
 /// One pixel of `f` (its bytes or, below 8 bits, the value) as straight BGRA.
@@ -257,10 +295,20 @@ fn pixel_to_bgra(f: Fmt, s: &[u8], v: u32, palette: &[u32]) -> [u8; 4] {
         Fmt::Rgb24 => [s[2], s[1], s[0], 255],
         Fmt::Bgr32 => [s[0], s[1], s[2], 255],
         Fmt::Bgra => [s[0], s[1], s[2], s[3]],
-        Fmt::Pbgra => [unpremultiply(s[0], s[3]), unpremultiply(s[1], s[3]), unpremultiply(s[2], s[3]), s[3]],
+        Fmt::Pbgra => [
+            unpremultiply(s[0], s[3]),
+            unpremultiply(s[1], s[3]),
+            unpremultiply(s[2], s[3]),
+            s[3],
+        ],
         Fmt::Rgb32 => [s[2], s[1], s[0], 255],
         Fmt::Rgba => [s[2], s[1], s[0], s[3]],
-        Fmt::Prgba => [unpremultiply(s[2], s[3]), unpremultiply(s[1], s[3]), unpremultiply(s[0], s[3]), s[3]],
+        Fmt::Prgba => [
+            unpremultiply(s[2], s[3]),
+            unpremultiply(s[1], s[3]),
+            unpremultiply(s[0], s[3]),
+            s[3],
+        ],
         Fmt::Rgb48 => [s[5], s[3], s[1], 255],
         Fmt::Rgba64 => [s[5], s[3], s[1], s[7]],
         Fmt::Cmyk => {
@@ -293,7 +341,11 @@ pub fn to_bgra(f: Fmt, w: u32, h: u32, stride: u32, data: &[u8], palette: &[u32]
             } else {
                 0
             };
-            let s = if bits >= 8 { &row[x * n..x * n + n] } else { &row[..0] };
+            let s = if bits >= 8 {
+                &row[x * n..x * n + n]
+            } else {
+                &row[..0]
+            };
             dst[x * 4..x * 4 + 4].copy_from_slice(&pixel_to_bgra(f, s, v, palette));
         }
     }
@@ -320,7 +372,15 @@ fn nearest(palette: &[u32], bits: u32, b: u8, g: u8, r: u8) -> u32 {
 
 /// Straight BGRA pixels `src` (`sw` pixels a row) of rectangle (x, y, w, h) written in `f`
 /// to `out`, rows of `stride` bytes. Indexed formats take the nearest entry of `palette`.
-pub fn from_bgra(src: &[u8], sw: u32, f: Fmt, (x, y, w, h): (u32, u32, u32, u32), stride: u32, out: &mut [u8], palette: &[u32]) {
+pub fn from_bgra(
+    src: &[u8],
+    sw: u32,
+    f: Fmt,
+    (x, y, w, h): (u32, u32, u32, u32),
+    stride: u32,
+    out: &mut [u8],
+    palette: &[u32],
+) {
     let bits = f.bits();
     let n = (bits / 8) as usize;
     for row in 0..h {
@@ -328,7 +388,8 @@ pub fn from_bgra(src: &[u8], sw: u32, f: Fmt, (x, y, w, h): (u32, u32, u32, u32)
         let d = &mut out[(row * stride) as usize..][..f.row_bytes(w) as usize];
         for (i, p) in s.chunks_exact(4).enumerate() {
             let (b, g, r, a) = (p[0], p[1], p[2], p[3]);
-            let w16 = |d: &mut [u8], o: usize, v: u16| d[o..o + 2].copy_from_slice(&v.to_le_bytes());
+            let w16 =
+                |d: &mut [u8], o: usize, v: u16| d[o..o + 2].copy_from_slice(&v.to_le_bytes());
             let v = match f {
                 Fmt::Idx1 | Fmt::Idx2 | Fmt::Idx4 | Fmt::Idx8 => nearest(palette, bits, b, g, r),
                 Fmt::BlackWhite => (gray(b, g, r) >= 128) as u32,
@@ -346,16 +407,34 @@ pub fn from_bgra(src: &[u8], sw: u32, f: Fmt, (x, y, w, h): (u32, u32, u32, u32)
                 Fmt::Gray8 => d[o] = gray(b, g, r),
                 Fmt::Alpha8 => d[o] = a,
                 Fmt::Gray16 => w16(d, o, gray16(b, g, r)),
-                Fmt::Bgr555 => w16(d, o, ((r as u16 >> 3) << 10) | ((g as u16 >> 3) << 5) | (b as u16 >> 3)),
-                Fmt::Bgr565 => w16(d, o, ((r as u16 >> 3) << 11) | ((g as u16 >> 2) << 5) | (b as u16 >> 3)),
+                Fmt::Bgr555 => w16(
+                    d,
+                    o,
+                    ((r as u16 >> 3) << 10) | ((g as u16 >> 3) << 5) | (b as u16 >> 3),
+                ),
+                Fmt::Bgr565 => w16(
+                    d,
+                    o,
+                    ((r as u16 >> 3) << 11) | ((g as u16 >> 2) << 5) | (b as u16 >> 3),
+                ),
                 Fmt::Bgr24 => d[o..o + 3].copy_from_slice(&[b, g, r]),
                 Fmt::Rgb24 => d[o..o + 3].copy_from_slice(&[r, g, b]),
                 // (the fourth byte is copied, not set: what Windows does)
                 Fmt::Bgr32 | Fmt::Bgra => d[o..o + 4].copy_from_slice(&[b, g, r, a]),
                 Fmt::Rgba => d[o..o + 4].copy_from_slice(&[r, g, b, a]),
                 Fmt::Rgb32 => d[o..o + 4].copy_from_slice(&[r, g, b, 255]),
-                Fmt::Pbgra => d[o..o + 4].copy_from_slice(&[premultiply(b, a), premultiply(g, a), premultiply(r, a), a]),
-                Fmt::Prgba => d[o..o + 4].copy_from_slice(&[premultiply(r, a), premultiply(g, a), premultiply(b, a), a]),
+                Fmt::Pbgra => d[o..o + 4].copy_from_slice(&[
+                    premultiply(b, a),
+                    premultiply(g, a),
+                    premultiply(r, a),
+                    a,
+                ]),
+                Fmt::Prgba => d[o..o + 4].copy_from_slice(&[
+                    premultiply(r, a),
+                    premultiply(g, a),
+                    premultiply(b, a),
+                    a,
+                ]),
                 Fmt::Rgb48 => {
                     for (k, c) in [r, g, b].into_iter().enumerate() {
                         w16(d, o + 2 * k, c as u16 * 257);
@@ -385,7 +464,14 @@ pub fn from_bgra(src: &[u8], sw: u32, f: Fmt, (x, y, w, h): (u32, u32, u32, u32)
 
 /// Rectangle (x, y, w, h) of rows `src` (`src_stride` bytes each) of format `f` to `out`
 /// (rows of `stride`), bit-exact (sub-byte formats shifted to start each row).
-pub fn copy_rect(f: Fmt, src: &[u8], src_stride: u32, (x, y, w, h): (u32, u32, u32, u32), stride: u32, out: &mut [u8]) {
+pub fn copy_rect(
+    f: Fmt,
+    src: &[u8],
+    src_stride: u32,
+    (x, y, w, h): (u32, u32, u32, u32),
+    stride: u32,
+    out: &mut [u8],
+) {
     let bits = f.bits();
     for row in 0..h {
         let s = &src[((y + row) * src_stride) as usize..];
@@ -429,7 +515,14 @@ impl Frame {
 
     /// The pixels as straight BGRA.
     pub fn bgra(&self) -> Vec<u8> {
-        to_bgra(self.fmt, self.w, self.h, self.stride(), &self.bits, &self.palette)
+        to_bgra(
+            self.fmt,
+            self.w,
+            self.h,
+            self.stride(),
+            &self.bits,
+            &self.palette,
+        )
     }
 }
 
@@ -482,7 +575,11 @@ pub fn decode(data: &[u8]) -> Option<Picture> {
     } else {
         return None;
     };
-    Some(Picture { kind, frames, palette })
+    Some(Picture {
+        kind,
+        frames,
+        palette,
+    })
 }
 
 /// The first frame as straight BGRA (OleLoadPicture, D3DX, GDI+'s pixels).
@@ -509,7 +606,11 @@ fn png_frame(data: &[u8]) -> Option<Frame> {
     let info = r.info();
     let depth = info.bit_depth as u8 as u32;
     let dpi = match info.pixel_dims {
-        Some(png::PixelDimensions { xppu, yppu, unit: png::Unit::Meter }) => (xppu as f64 * 0.0254, yppu as f64 * 0.0254),
+        Some(png::PixelDimensions {
+            xppu,
+            yppu,
+            unit: png::Unit::Meter,
+        }) => (xppu as f64 * 0.0254, yppu as f64 * 0.0254),
         _ => (96.0, 96.0),
     };
     let trns = info.trns.as_ref().map(|t| t.to_vec());
@@ -520,7 +621,16 @@ fn png_frame(data: &[u8]) -> Option<Frame> {
         (ColorType::Indexed, _) => {
             let p = info.palette.as_ref()?;
             let t = trns.clone().unwrap_or_default();
-            palette = p.chunks_exact(3).enumerate().map(|(i, c)| (*t.get(i).unwrap_or(&255) as u32) << 24 | (c[0] as u32) << 16 | (c[1] as u32) << 8 | c[2] as u32).collect();
+            palette = p
+                .chunks_exact(3)
+                .enumerate()
+                .map(|(i, c)| {
+                    (*t.get(i).unwrap_or(&255) as u32) << 24
+                        | (c[0] as u32) << 16
+                        | (c[1] as u32) << 8
+                        | c[2] as u32
+                })
+                .collect();
             let f = match depth {
                 1 => Fmt::Idx1,
                 2 => Fmt::Idx2,
@@ -528,10 +638,20 @@ fn png_frame(data: &[u8]) -> Option<Frame> {
                 _ => Fmt::Idx8,
             };
             let rb = f.row_bytes(w) as usize;
-            (f, (0..h as usize).flat_map(|y| rows(y)[..rb].to_vec()).collect())
+            (
+                f,
+                (0..h as usize)
+                    .flat_map(|y| rows(y)[..rb].to_vec())
+                    .collect(),
+            )
         }
         (ColorType::Grayscale, _) if trns.is_none() => match out.bit_depth {
-            BitDepth::Sixteen => (Fmt::Gray16, (0..h as usize).flat_map(|y| (0..w as usize).flat_map(move |x| be16(rows(y), x).to_le_bytes())).collect()),
+            BitDepth::Sixteen => (
+                Fmt::Gray16,
+                (0..h as usize)
+                    .flat_map(|y| (0..w as usize).flat_map(move |x| be16(rows(y), x).to_le_bytes()))
+                    .collect(),
+            ),
             _ => {
                 let f = match depth {
                     1 => Fmt::BlackWhite,
@@ -540,16 +660,38 @@ fn png_frame(data: &[u8]) -> Option<Frame> {
                     _ => Fmt::Gray8,
                 };
                 let rb = f.row_bytes(w) as usize;
-                (f, (0..h as usize).flat_map(|y| rows(y)[..rb].to_vec()).collect())
+                (
+                    f,
+                    (0..h as usize)
+                        .flat_map(|y| rows(y)[..rb].to_vec())
+                        .collect(),
+                )
             }
         },
-        (ColorType::Rgb, BitDepth::Eight) if trns.is_none() => {
-            (Fmt::Bgr24, (0..h as usize).flat_map(|y| rows(y)[..w as usize * 3].chunks_exact(3).flat_map(|p| [p[2], p[1], p[0]]).collect::<Vec<_>>()).collect())
-        }
-        (ColorType::Rgb, BitDepth::Sixteen) if trns.is_none() => (Fmt::Rgb48, (0..h as usize).flat_map(|y| (0..w as usize * 3).flat_map(move |i| be16(rows(y), i).to_le_bytes())).collect()),
+        (ColorType::Rgb, BitDepth::Eight) if trns.is_none() => (
+            Fmt::Bgr24,
+            (0..h as usize)
+                .flat_map(|y| {
+                    rows(y)[..w as usize * 3]
+                        .chunks_exact(3)
+                        .flat_map(|p| [p[2], p[1], p[0]])
+                        .collect::<Vec<_>>()
+                })
+                .collect(),
+        ),
+        (ColorType::Rgb, BitDepth::Sixteen) if trns.is_none() => (
+            Fmt::Rgb48,
+            (0..h as usize)
+                .flat_map(|y| (0..w as usize * 3).flat_map(move |i| be16(rows(y), i).to_le_bytes()))
+                .collect(),
+        ),
         (ct, BitDepth::Sixteen) => {
             // gray+alpha, RGBA, or gray/RGB with a tRNS color: 64bppRGBA
-            let key: Option<Vec<u16>> = trns.as_ref().map(|t| t.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect());
+            let key: Option<Vec<u16>> = trns.as_ref().map(|t| {
+                t.chunks_exact(2)
+                    .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                    .collect()
+            });
             let mut v = Vec::with_capacity((w * h * 8) as usize);
             for y in 0..h as usize {
                 let r = rows(y);
@@ -557,7 +699,14 @@ fn png_frame(data: &[u8]) -> Option<Frame> {
                     let (c, a) = match ct {
                         ColorType::Grayscale => {
                             let g = be16(r, x);
-                            ([g, g, g], if key.as_deref() == Some(&[g]) { 0 } else { 65535 })
+                            (
+                                [g, g, g],
+                                if key.as_deref() == Some(&[g]) {
+                                    0
+                                } else {
+                                    65535
+                                },
+                            )
                         }
                         ColorType::GrayscaleAlpha => {
                             let g = be16(r, 2 * x);
@@ -565,9 +714,19 @@ fn png_frame(data: &[u8]) -> Option<Frame> {
                         }
                         ColorType::Rgb => {
                             let c = [be16(r, 3 * x), be16(r, 3 * x + 1), be16(r, 3 * x + 2)];
-                            (c, if key.as_deref() == Some(&c[..]) { 0 } else { 65535 })
+                            (
+                                c,
+                                if key.as_deref() == Some(&c[..]) {
+                                    0
+                                } else {
+                                    65535
+                                },
+                            )
                         }
-                        _ => ([be16(r, 4 * x), be16(r, 4 * x + 1), be16(r, 4 * x + 2)], be16(r, 4 * x + 3)),
+                        _ => (
+                            [be16(r, 4 * x), be16(r, 4 * x + 1), be16(r, 4 * x + 2)],
+                            be16(r, 4 * x + 3),
+                        ),
                     };
                     for k in [c[0], c[1], c[2], a] {
                         v.extend_from_slice(&k.to_le_bytes());
@@ -585,9 +744,19 @@ fn png_frame(data: &[u8]) -> Option<Frame> {
                 for x in 0..w as usize {
                     let px = match ct {
                         ColorType::Grayscale => {
-                            let raw = if depth < 8 { get_bits(r, x as u32, depth) } else { r[x] as u32 };
+                            let raw = if depth < 8 {
+                                get_bits(r, x as u32, depth)
+                            } else {
+                                r[x] as u32
+                            };
                             let g = (raw * 255 / max) as u8;
-                            let t = trns.as_ref().map(|t| if t.len() >= 2 { u16::from_be_bytes([t[0], t[1]]) as u32 } else { t.first().copied().unwrap_or(0) as u32 });
+                            let t = trns.as_ref().map(|t| {
+                                if t.len() >= 2 {
+                                    u16::from_be_bytes([t[0], t[1]]) as u32
+                                } else {
+                                    t.first().copied().unwrap_or(0) as u32
+                                }
+                            });
                             [g, g, g, if t == Some(raw) { 0 } else { 255 }]
                         }
                         ColorType::GrayscaleAlpha => [r[2 * x], r[2 * x], r[2 * x], r[2 * x + 1]],
@@ -609,7 +778,14 @@ fn png_frame(data: &[u8]) -> Option<Frame> {
             (Fmt::Bgra, v)
         }
     };
-    Some(Frame { w, h, fmt, bits, palette, dpi })
+    Some(Frame {
+        w,
+        h,
+        fmt,
+        bits,
+        palette,
+        dpi,
+    })
 }
 
 fn jpeg_frame(data: &[u8]) -> Option<Frame> {
@@ -625,10 +801,22 @@ fn jpeg_frame(data: &[u8]) -> Option<Frame> {
     let (fmt, bits) = match info.pixel_format {
         PixelFormat::L8 => (Fmt::Gray8, px),
         PixelFormat::L16 => (Fmt::Gray8, px.chunks_exact(2).map(|c| c[0]).collect()),
-        PixelFormat::RGB24 => (Fmt::Bgr24, px.chunks_exact(3).flat_map(|p| [p[2], p[1], p[0]]).collect()),
+        PixelFormat::RGB24 => (
+            Fmt::Bgr24,
+            px.chunks_exact(3)
+                .flat_map(|p| [p[2], p[1], p[0]])
+                .collect(),
+        ),
         PixelFormat::CMYK32 => (Fmt::Cmyk, px),
     };
-    Some(Frame { w, h, fmt, bits, palette: Vec::new(), dpi: jfif_dpi(data) })
+    Some(Frame {
+        w,
+        h,
+        fmt,
+        bits,
+        palette: Vec::new(),
+        dpi: jfif_dpi(data),
+    })
 }
 
 /// The JFIF APP0 density (units 1: dpi, 2: dots per cm); 96 without one.
@@ -638,7 +826,11 @@ fn jfif_dpi(data: &[u8]) -> (f64, f64) {
         let m = data[i + 1];
         let len = u16::from_be_bytes([data[i + 2], data[i + 3]]) as usize;
         if m == 0xe0 && data.get(i + 4..i + 9) == Some(b"JFIF\0") && i + 16 <= data.len() {
-            let (u, x, y) = (data[i + 11], u16::from_be_bytes([data[i + 12], data[i + 13]]) as f64, u16::from_be_bytes([data[i + 14], data[i + 15]]) as f64);
+            let (u, x, y) = (
+                data[i + 11],
+                u16::from_be_bytes([data[i + 12], data[i + 13]]) as f64,
+                u16::from_be_bytes([data[i + 14], data[i + 15]]) as f64,
+            );
             return match u {
                 1 => (x, y),
                 2 => (x * 2.54, y * 2.54),
@@ -660,9 +852,23 @@ fn bmp_frame(data: &[u8]) -> Option<Frame> {
     let hdr = u32le(14)? as usize;
     let core = hdr == 12;
     let (w, hraw, bpp, comp, ppm, clr_used) = if core {
-        (u16le(18)? as i32, u16le(20)? as i16 as i32, u16le(24)? as u32, 0, (0, 0), 0)
+        (
+            u16le(18)? as i32,
+            u16le(20)? as i16 as i32,
+            u16le(24)? as u32,
+            0,
+            (0, 0),
+            0,
+        )
     } else {
-        (u32le(18)? as i32, u32le(22)? as i32, u16le(28)? as u32, u32le(30)?, (u32le(38)? as i32, u32le(42)? as i32), u32le(46)?)
+        (
+            u32le(18)? as i32,
+            u32le(22)? as i32,
+            u16le(28)? as u32,
+            u32le(30)?,
+            (u32le(38)? as i32, u32le(42)? as i32),
+            u32le(46)?,
+        )
     };
     if w <= 0 || hraw == 0 || (w as u64) * (hraw.unsigned_abs() as u64) > PIXELS_MAX {
         return None;
@@ -675,7 +881,16 @@ fn bmp_frame(data: &[u8]) -> Option<Frame> {
         3 | 6 => {
             let at = 14 + 40;
             let m = |k: usize| u32le(at + 4 * k);
-            Some([m(0)?, m(1)?, m(2)?, if hdr >= 56 || comp == 6 { m(3).unwrap_or(0) } else { 0 }])
+            Some([
+                m(0)?,
+                m(1)?,
+                m(2)?,
+                if hdr >= 56 || comp == 6 {
+                    m(3).unwrap_or(0)
+                } else {
+                    0
+                },
+            ])
         }
         _ => None,
     };
@@ -691,7 +906,11 @@ fn bmp_frame(data: &[u8]) -> Option<Frame> {
         };
     let entry = if core { 3 } else { 4 };
     let max = if bpp <= 8 { 1usize << bpp } else { 0 };
-    let n = if clr_used != 0 && bpp <= 8 { (clr_used as usize).min(256) } else { max };
+    let n = if clr_used != 0 && bpp <= 8 {
+        (clr_used as usize).min(256)
+    } else {
+        max
+    };
     let n = n.min(off.saturating_sub(pal_at) / entry);
     // a file cut inside its palette has no pixels either (off lies past its end): not a picture
     if pal_at + n * entry > data.len() {
@@ -705,8 +924,22 @@ fn bmp_frame(data: &[u8]) -> Option<Frame> {
         .collect();
     if comp == 1 || comp == 2 {
         // RLE8 / RLE4: decoded to 32bppBGR
-        let bits = rle(data.get(off..)?, w, h, if comp == 1 { 8 } else { 4 }, &palette, top_down);
-        return Some(Frame { w, h, fmt: Fmt::Bgr32, bits, palette, dpi });
+        let bits = rle(
+            data.get(off..)?,
+            w,
+            h,
+            if comp == 1 { 8 } else { 4 },
+            &palette,
+            top_down,
+        );
+        return Some(Frame {
+            w,
+            h,
+            fmt: Fmt::Bgr32,
+            bits,
+            palette,
+            dpi,
+        });
     }
     let stride = (w as usize * bpp as usize).div_ceil(32) * 4;
     if off as u64 + stride as u64 * h as u64 > data.len() as u64 {
@@ -732,25 +965,55 @@ fn bmp_frame(data: &[u8]) -> Option<Frame> {
             for y in 0..h {
                 let r = row(y);
                 for x in 0..w as usize {
-                    let v = if bpp == 16 { u16::from_le_bytes([r[2 * x], r[2 * x + 1]]) as u32 } else { u32::from_le_bytes(r[4 * x..4 * x + 4].try_into().unwrap()) };
+                    let v = if bpp == 16 {
+                        u16::from_le_bytes([r[2 * x], r[2 * x + 1]]) as u32
+                    } else {
+                        u32::from_le_bytes(r[4 * x..4 * x + 4].try_into().unwrap())
+                    };
                     let ch = |m: u32| {
                         if m == 0 {
                             return None;
                         }
-                        let (s, n) = (m.trailing_zeros(), (m >> m.trailing_zeros()).trailing_ones());
+                        let (s, n) = (
+                            m.trailing_zeros(),
+                            (m >> m.trailing_zeros()).trailing_ones(),
+                        );
                         let c = (v & m) >> s;
-                        Some(if n >= 8 { (c >> (n - 8)) as u8 } else { (c * 255 / ((1 << n) - 1)) as u8 })
+                        Some(if n >= 8 {
+                            (c >> (n - 8)) as u8
+                        } else {
+                            (c * 255 / ((1 << n) - 1)) as u8
+                        })
                     };
-                    bits.extend_from_slice(&[ch(m[2]).unwrap_or(0), ch(m[1]).unwrap_or(0), ch(m[0]).unwrap_or(0), ch(m[3]).unwrap_or(255)]);
+                    bits.extend_from_slice(&[
+                        ch(m[2]).unwrap_or(0),
+                        ch(m[1]).unwrap_or(0),
+                        ch(m[0]).unwrap_or(0),
+                        ch(m[3]).unwrap_or(255),
+                    ]);
                 }
             }
-            return Some(Frame { w, h, fmt: if m[3] != 0 { Fmt::Bgra } else { Fmt::Bgr32 }, bits, palette, dpi });
+            return Some(Frame {
+                w,
+                h,
+                fmt: if m[3] != 0 { Fmt::Bgra } else { Fmt::Bgr32 },
+                bits,
+                palette,
+                dpi,
+            });
         }
         _ => return None,
     };
     let rb = fmt.row_bytes(w) as usize;
     let bits = (0..h).flat_map(|y| row(y)[..rb].to_vec()).collect();
-    Some(Frame { w, h, fmt, bits, palette, dpi })
+    Some(Frame {
+        w,
+        h,
+        fmt,
+        bits,
+        palette,
+        dpi,
+    })
 }
 
 /// RLE8/RLE4 rows as 32bppBGR (pixels the runs skip stay black).
@@ -760,7 +1023,11 @@ fn rle(src: &[u8], w: u32, h: u32, bits: u32, palette: &[u32], top_down: bool) -
     let mut put = |x: u32, y: u32, v: u8| {
         if x < w && y < h {
             let row = if top_down { y } else { h - 1 - y };
-            let c = palette.get(v as usize).copied().unwrap_or(0xff00_0000).to_le_bytes();
+            let c = palette
+                .get(v as usize)
+                .copied()
+                .unwrap_or(0xff00_0000)
+                .to_le_bytes();
             out[((row * w + x) * 4) as usize..][..4].copy_from_slice(&[c[0], c[1], c[2], 255]);
         }
     };
@@ -796,7 +1063,11 @@ fn rle(src: &[u8], w: u32, h: u32, bits: u32, palette: &[u32], top_down: bool) -
                 i += 2;
             }
             n => {
-                let bytes = if bits == 8 { n as usize } else { (n as usize).div_ceil(2) };
+                let bytes = if bits == 8 {
+                    n as usize
+                } else {
+                    (n as usize).div_ceil(2)
+                };
                 for k in 0..n as usize {
                     let Some(&b) = src.get(i + if bits == 8 { k } else { k / 2 }) else {
                         break;
@@ -825,7 +1096,11 @@ fn gif(data: &[u8]) -> Option<(Vec<Frame>, Vec<u32>)> {
     let flags = *data.get(10)?;
     let table = |at: usize, n: usize| -> Option<Vec<u32>> {
         let t = data.get(at..at + 3 * n)?;
-        Some(t.chunks_exact(3).map(|c| 0xff00_0000 | (c[0] as u32) << 16 | (c[1] as u32) << 8 | c[2] as u32).collect())
+        Some(
+            t.chunks_exact(3)
+                .map(|c| 0xff00_0000 | (c[0] as u32) << 16 | (c[1] as u32) << 8 | c[2] as u32)
+                .collect(),
+        )
     };
     let mut i = 13;
     let global = if flags & 0x80 != 0 {
@@ -887,13 +1162,21 @@ fn gif(data: &[u8]) -> Option<(Vec<Frame>, Vec<u32>)> {
                     let mut src = 0;
                     for (start, step) in [(0, 8), (4, 8), (2, 4), (1, 2)] {
                         for y in (start..h).step_by(step) {
-                            rows[(y * w) as usize..][..w as usize].copy_from_slice(&px[src..src + w as usize]);
+                            rows[(y * w) as usize..][..w as usize]
+                                .copy_from_slice(&px[src..src + w as usize]);
                             src += w as usize;
                         }
                     }
                     px = rows;
                 }
-                frames.push(Frame { w, h, fmt: Fmt::Idx8, bits: px, palette, dpi: (96.0, 96.0) });
+                frames.push(Frame {
+                    w,
+                    h,
+                    fmt: Fmt::Idx8,
+                    bits: px,
+                    palette,
+                    dpi: (96.0, 96.0),
+                });
             }
             _ => break,
         }
@@ -1005,7 +1288,13 @@ mod tests {
         assert_eq!(conv(Fmt::Bgr555), [0x40, 0x7c, 0xa5, 0x79]);
         assert_eq!(conv(Fmt::Gray8), [0x80, 0x96]);
         assert_eq!(conv(Fmt::Alpha8), [0x00, 0x87]);
-        assert_eq!(conv(Fmt::Rgba64), [0xff, 0xff, 0x11, 0x11, 0x05, 0x05, 0, 0, 0xf7, 0xf7, 0x6c, 0x6c, 0x2a, 0x2a, 0x87, 0x87]);
+        assert_eq!(
+            conv(Fmt::Rgba64),
+            [
+                0xff, 0xff, 0x11, 0x11, 0x05, 0x05, 0, 0, 0xf7, 0xf7, 0x6c, 0x6c, 0x2a, 0x2a, 0x87,
+                0x87
+            ]
+        );
         assert_eq!(conv(Fmt::BlackWhite), [0xc0]);
     }
 
@@ -1042,7 +1331,10 @@ mod tests {
     #[test]
     fn sub_byte_rows() {
         let row = [0b1011_0001u8, 0b1100_0000];
-        assert_eq!((0..10).map(|x| get_bits(&row, x, 1)).collect::<Vec<_>>(), [1, 0, 1, 1, 0, 0, 0, 1, 1, 1]);
+        assert_eq!(
+            (0..10).map(|x| get_bits(&row, x, 1)).collect::<Vec<_>>(),
+            [1, 0, 1, 1, 0, 0, 0, 1, 1, 1]
+        );
         let mut out = [0u8; 2];
         copy_rect(Fmt::Idx1, &row, 2, (3, 0, 7, 1), 2, &mut out);
         assert_eq!(out, [0b1000_1110, 0]);

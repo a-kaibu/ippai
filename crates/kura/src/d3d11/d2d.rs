@@ -161,7 +161,13 @@ impl Shadow {
     fn new(w: u32, h: u32, page: u32, bpp: u32) -> Shadow {
         let gpu = page_id();
         gpu::record(|q| q.cmd(&[gpu::CREATE_TEXTURE2, gpu, w, h, 1, 1, page, 0]));
-        Shadow { gpu, w, bpp, px: vec![0; (w * h * bpp) as usize], dirty: None }
+        Shadow {
+            gpu,
+            w,
+            bpp,
+            px: vec![0; (w * h * bpp) as usize],
+            dirty: None,
+        }
     }
 
     fn put(&mut self, x: u32, y: u32, w: u32, h: u32, src: &[u8]) {
@@ -170,11 +176,16 @@ impl Shadow {
             let at = (((y + k) * self.w + x) * self.bpp) as usize;
             self.px[at..at + row].copy_from_slice(&src[k as usize * row..][..row]);
         }
-        self.dirty = Some(self.dirty.map_or((y, y + h), |(a, b)| (a.min(y), b.max(y + h))));
+        self.dirty = Some(
+            self.dirty
+                .map_or((y, y + h), |(a, b)| (a.min(y), b.max(y + h))),
+        );
     }
 
     fn upload(&mut self) {
-        let Some((y0, y1)) = self.dirty.take() else { return };
+        let Some((y0, y1)) = self.dirty.take() else {
+            return;
+        };
         let bpr = self.w * self.bpp;
         let rows = &self.px[(y0 * bpr) as usize..(y1 * bpr) as usize];
         let (gpu, w) = (self.gpu, self.w);
@@ -310,7 +321,9 @@ fn texture(d: &D11, addr: u32) -> Option<(u32, u32, u32)> {
 /// A texture's (or surface's) size.
 pub fn size(addr: u32) -> Option<(u32, u32)> {
     let g = D11S.lock().unwrap_or_else(|e| e.into_inner());
-    g.as_ref().and_then(|d| texture(d, addr)).map(|t| (t.1, t.2))
+    g.as_ref()
+        .and_then(|d| texture(d, addr))
+        .map(|t| (t.1, t.2))
 }
 
 /// The GPU texture behind a D3D11 texture or DXGI surface address (to draw it as a bitmap).
@@ -328,8 +341,12 @@ pub fn texture_gpu(addr: u32) -> Option<u32> {
 pub fn clear(addr: u32, rgba: [f32; 4]) {
     let mut g = D11S.lock().unwrap_or_else(|e| e.into_inner());
     let Some(d) = g.as_mut() else { return };
-    let Some((id, _, _)) = texture(d, addr) else { return };
-    let Some(Data::Texture(t)) = d.objs.get(&id).map(|o| &o.data) else { return };
+    let Some((id, _, _)) = texture(d, addr) else {
+        return;
+    };
+    let Some(Data::Texture(t)) = d.objs.get(&id).map(|o| &o.data) else {
+        return;
+    };
     let c = rgba.map(f32::to_bits);
     let tex = t.gpu;
     gpu::record(|q| q.cmd(&[gpu::CLEAR_VIEW, tex, 0, 0, 1, c[0], c[1], c[2], c[3], 0, 0]));
@@ -339,7 +356,18 @@ pub fn clear(addr: u32, rgba: [f32; 4]) {
 /// A bitmap of its own (BGRA, premultiplied): its texture id.
 pub fn bitmap(w: u32, h: u32) -> u32 {
     let id = page_id();
-    gpu::record(|q| q.cmd(&[gpu::CREATE_TEXTURE2, id, w.max(1), h.max(1), 1, 1, format::P_BGRA8, 0]));
+    gpu::record(|q| {
+        q.cmd(&[
+            gpu::CREATE_TEXTURE2,
+            id,
+            w.max(1),
+            h.max(1),
+            1,
+            1,
+            format::P_BGRA8,
+            0,
+        ])
+    });
     id
 }
 
@@ -372,19 +400,59 @@ pub fn draw(addr: u32, items: &[Item], bitmap: Option<u32>) {
     }
     let mut g = D11S.lock().unwrap_or_else(|e| e.into_inner());
     let Some(d) = g.as_mut() else { return };
-    let Some((target, tw, th)) = texture(d, addr) else { return };
-    let Some(Data::Texture(tt)) = d.objs.get(&target).map(|o| &o.data) else { return };
+    let Some((target, tw, th)) = texture(d, addr) else {
+        return;
+    };
+    let Some(Data::Texture(tt)) = d.objs.get(&target).map(|o| &o.data) else {
+        return;
+    };
     let (tgpu, tpage) = (tt.gpu, tt.page);
     let (vs, ps, atlas, ramps) = d2(|s| {
         s.atlas.upload();
         s.ramps.upload();
-        (s.vs, if bitmap.is_some() { s.ps_bitmap } else { s.ps }, s.atlas.gpu, s.ramps.gpu)
+        (
+            s.vs,
+            if bitmap.is_some() { s.ps_bitmap } else { s.ps },
+            s.atlas.gpu,
+            s.ramps.gpu,
+        )
     });
     // pipeline: triangle strip, no culling, no depth, one instance buffer, one target blended
     // ONE, INV_SRC_ALPHA
     let mut key = vec![vs, ps, 4, 0, 1, 0, 0, 0, 0, 0xffff];
-    key.extend_from_slice(&[1, std::mem::size_of::<Item>() as u32, 1, 5, 3, 0, 0, 3, 16, 1, 3, 32, 2, 3, 48, 3, 7, 64, 4]);
-    key.extend_from_slice(&[1, tpage, 1, blend_factor(2, false), blend_factor(6, false), 1, blend_factor(2, true), blend_factor(6, true), 1, 0xf]);
+    key.extend_from_slice(&[
+        1,
+        std::mem::size_of::<Item>() as u32,
+        1,
+        5,
+        3,
+        0,
+        0,
+        3,
+        16,
+        1,
+        3,
+        32,
+        2,
+        3,
+        48,
+        3,
+        7,
+        64,
+        4,
+    ]);
+    key.extend_from_slice(&[
+        1,
+        tpage,
+        1,
+        blend_factor(2, false),
+        blend_factor(6, false),
+        1,
+        blend_factor(2, true),
+        blend_factor(6, true),
+        1,
+        0xf,
+    ]);
     let pipe = match d.pipelines.get(&key) {
         Some(&p) => {
             crate::render::gpu::pipeline_hit();
@@ -403,7 +471,13 @@ pub fn draw(addr: u32, items: &[Item], bitmap: Option<u32>) {
     for it in items {
         let mut it = *it;
         (it.kind[2], it.kind[3]) = (tw, th);
-        for v in it.rect.iter().chain(&it.shape).chain(&it.extra).chain(&it.paint) {
+        for v in it
+            .rect
+            .iter()
+            .chain(&it.shape)
+            .chain(&it.extra)
+            .chain(&it.paint)
+        {
             bytes.extend_from_slice(&v.to_le_bytes());
         }
         for v in it.kind {
@@ -439,9 +513,19 @@ mod tests {
     fn shaders_validate() {
         let plain = super::plain_ps();
         assert!(!plain.contains("bmp") && !plain.contains("// }"));
-        for (code, what) in [(super::VS, "vs"), (super::PS, "ps"), (plain.as_str(), "plain ps")] {
-            let m = naga::front::wgsl::parse_str(code).unwrap_or_else(|e| panic!("{what}: {}", e.emit_to_string(code)));
-            naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&m).unwrap_or_else(|e| panic!("{what}: {e:?}"));
+        for (code, what) in [
+            (super::VS, "vs"),
+            (super::PS, "ps"),
+            (plain.as_str(), "plain ps"),
+        ] {
+            let m = naga::front::wgsl::parse_str(code)
+                .unwrap_or_else(|e| panic!("{what}: {}", e.emit_to_string(code)));
+            naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::all(),
+            )
+            .validate(&m)
+            .unwrap_or_else(|e| panic!("{what}: {e:?}"));
         }
     }
 }

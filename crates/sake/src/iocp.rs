@@ -65,7 +65,12 @@ pub fn nt_to_win32(s: u32) -> u32 {
 
 /// Queues a packet on `port` and wakes its waiters
 pub fn post(port: u32, bytes: u32, key: u64, ov: u32, status: u32) {
-    with(|s| s.ports.entry(port).or_default().push_back((bytes, key, ov, status)));
+    with(|s| {
+        s.ports
+            .entry(port)
+            .or_default()
+            .push_back((bytes, key, ov, status))
+    });
     obj::signal();
 }
 
@@ -80,7 +85,12 @@ pub fn complete(h: u32, ov: u32, status: u32, bytes: u32, sync: bool) {
     wp(ov, status);
     wp(ov + k, bytes);
     let ev = rp(ov + 2 * k + 8);
-    let (assoc, mode) = with(|s| (s.assoc.get(&h).copied(), s.modes.get(&h).copied().unwrap_or(0)));
+    let (assoc, mode) = with(|s| {
+        (
+            s.assoc.get(&h).copied(),
+            s.modes.get(&h).copied().unwrap_or(0),
+        )
+    });
     if ev & !1 != 0 && !(sync && mode & 2 != 0) {
         crate::k32::set_event(ev & !1);
     }
@@ -132,7 +142,11 @@ fn is_port(h: u32) -> bool {
 
 /// CreateIoCompletionPort(file, port, key, threads)
 fn CreateIoCompletionPort(c: &mut Ctx) -> u32 {
-    let (file, port, key) = (c.a(0), c.a(1), if mem::x64() { c.a64(2) } else { c.a(2) as u64 });
+    let (file, port, key) = (
+        c.a(0),
+        c.a(1),
+        if mem::x64() { c.a64(2) } else { c.a(2) as u64 },
+    );
     let invalid = file == u32::MAX;
     if invalid && port != 0 {
         last_error(87);
@@ -146,11 +160,7 @@ fn CreateIoCompletionPort(c: &mut Ctx) -> u32 {
         last_error(6);
         return 0;
     }
-    let port = if port == 0 {
-        new_port()
-    } else {
-        port
-    };
+    let port = if port == 0 { new_port() } else { port };
     if !invalid {
         with(|s| s.assoc.insert(file, (port, key)));
     }
@@ -167,7 +177,8 @@ fn wait_packet(c: &mut Ctx, port: u32, ms: u32, alertable: bool) -> Result<Packe
         return Err(6);
     }
     let tid = crate::cur().tid;
-    let deadline = (ms != u32::MAX).then(|| std::time::Instant::now() + std::time::Duration::from_millis(ms as u64));
+    let deadline = (ms != u32::MAX)
+        .then(|| std::time::Instant::now() + std::time::Duration::from_millis(ms as u64));
     loop {
         if let Some(p) = take(port) {
             return Ok(p);
@@ -189,7 +200,10 @@ fn wait_packet(c: &mut Ctx, port: u32, ms: u32, alertable: bool) -> Result<Packe
                 (d - now).as_millis().max(1) as u32
             }
         };
-        let ready = || with(|s| s.ports.get(&port).is_none_or(|q| !q.is_empty())) || (alertable && crate::apc::pending(tid));
+        let ready = || {
+            with(|s| s.ports.get(&port).is_none_or(|q| !q.is_empty()))
+                || (alertable && crate::apc::pending(tid))
+        };
         obj::wait(&[], false, left, Some(&ready));
     }
 }
@@ -229,7 +243,8 @@ fn GetQueuedCompletionStatus(c: &mut Ctx) -> u32 {
 /// GetQueuedCompletionStatusEx(port, entries, count, &removed, ms, alertable):
 /// OVERLAPPED_ENTRY { key, overlapped, Internal, bytes }
 fn GetQueuedCompletionStatusEx(c: &mut Ctx) -> u32 {
-    let (port, ents, count, rp_, ms, alertable) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5) != 0);
+    let (port, ents, count, rp_, ms, alertable) =
+        (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5) != 0);
     if count == 0 || ents == 0 {
         last_error(87);
         return 0;
@@ -265,7 +280,12 @@ fn GetQueuedCompletionStatusEx(c: &mut Ctx) -> u32 {
 
 /// PostQueuedCompletionStatus(port, bytes, key, overlapped)
 fn PostQueuedCompletionStatus(c: &mut Ctx) -> u32 {
-    let (port, bytes, key, ov) = (c.a(0), c.a(1), if mem::x64() { c.a64(2) } else { c.a(2) as u64 }, c.a(3));
+    let (port, bytes, key, ov) = (
+        c.a(0),
+        c.a(1),
+        if mem::x64() { c.a64(2) } else { c.a(2) as u64 },
+        c.a(3),
+    );
     if !is_port(port) {
         last_error(6);
         return 0;
@@ -301,7 +321,11 @@ pub fn wait_overlapped(c: &mut Ctx, ov: u32, ms: u32, alertable: bool) -> u32 {
 /// GetOverlappedResult(h, ov, &bytes, wait) / GetOverlappedResultEx(h, ov, &bytes, ms, alertable)
 fn overlapped_result(c: &mut Ctx, ex: bool) -> u32 {
     let (ov, bp) = (c.a(1), c.a(2));
-    let (ms, alertable) = if ex { (c.a(3), c.a(4) != 0) } else { (if c.a(3) != 0 { u32::MAX } else { 0 }, false) };
+    let (ms, alertable) = if ex {
+        (c.a(3), c.a(4) != 0)
+    } else {
+        (if c.a(3) != 0 { u32::MAX } else { 0 }, false)
+    };
     if ov == 0 {
         last_error(87);
         return 0;
@@ -358,7 +382,13 @@ pub fn init_nt() {
         0
     });
     let set = |c: &mut Ctx| {
-        let (port, key, value, status, info) = (c.a(0), if mem::x64() { c.a64(1) } else { c.a(1) as u64 }, c.a(2), c.a(3), c.a(4));
+        let (port, key, value, status, info) = (
+            c.a(0),
+            if mem::x64() { c.a64(1) } else { c.a(1) as u64 },
+            c.a(2),
+            c.a(3),
+            c.a(4),
+        );
         if !is_port(port) {
             return 0xc000_0008;
         }
@@ -367,7 +397,13 @@ pub fn init_nt() {
     };
     implement(d, "NtSetIoCompletion", set);
     implement(d, "NtRemoveIoCompletion", |c| {
-        let (port, pkey, pval, iosb, ms) = (c.a(0), c.a(1), c.a(2), c.a(3), crate::ntsync::timeout_ms(c.a(4)));
+        let (port, pkey, pval, iosb, ms) = (
+            c.a(0),
+            c.a(1),
+            c.a(2),
+            c.a(3),
+            crate::ntsync::timeout_ms(c.a(4)),
+        );
         match wait_packet(c, port, ms, false) {
             Ok((bytes, key, ov, status)) => {
                 wp(pkey, key as u32);
@@ -383,7 +419,14 @@ pub fn init_nt() {
         }
     });
     implement(d, "NtRemoveIoCompletionEx", |c| {
-        let (port, info, count, removed, ms, alertable) = (c.a(0), c.a(1), c.a(2), c.a(3), crate::ntsync::timeout_ms(c.a(4)), c.a(5) & 0xff != 0);
+        let (port, info, count, removed, ms, alertable) = (
+            c.a(0),
+            c.a(1),
+            c.a(2),
+            c.a(3),
+            crate::ntsync::timeout_ms(c.a(4)),
+            c.a(5) & 0xff != 0,
+        );
         let k = ps();
         match wait_packet(c, port, ms, alertable) {
             Ok(first) => {
@@ -405,7 +448,11 @@ pub fn init_nt() {
             }
             Err(e) => {
                 mem::put32(removed, 0);
-                if e == crate::apc::WAIT_IO_COMPLETION { 0xc0 } else { status_of(e) }
+                if e == crate::apc::WAIT_IO_COMPLETION {
+                    0xc0
+                } else {
+                    status_of(e)
+                }
             }
         }
     });
@@ -415,7 +462,11 @@ pub fn init() {
     let d = "kernel32";
     implement(d, "CreateIoCompletionPort", CreateIoCompletionPort);
     implement(d, "GetQueuedCompletionStatus", GetQueuedCompletionStatus);
-    implement(d, "GetQueuedCompletionStatusEx", GetQueuedCompletionStatusEx);
+    implement(
+        d,
+        "GetQueuedCompletionStatusEx",
+        GetQueuedCompletionStatusEx,
+    );
     implement(d, "PostQueuedCompletionStatus", PostQueuedCompletionStatus);
     implement(d, "GetOverlappedResult", |c| overlapped_result(c, false));
     implement(d, "GetOverlappedResultEx", |c| overlapped_result(c, true));

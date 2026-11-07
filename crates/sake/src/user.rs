@@ -8,8 +8,8 @@
 
 use crate::HashMap;
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::api::{implement, Ctx};
@@ -31,7 +31,12 @@ pub struct Rect {
 
 impl Rect {
     pub fn read(p: u32) -> Rect {
-        Rect { l: r32(p) as i32, t: r32(p + 4) as i32, r: r32(p + 8) as i32, b: r32(p + 12) as i32 }
+        Rect {
+            l: r32(p) as i32,
+            t: r32(p + 4) as i32,
+            r: r32(p + 8) as i32,
+            b: r32(p + 12) as i32,
+        }
     }
     pub fn write(&self, p: u32) {
         if p == 0 {
@@ -52,7 +57,12 @@ impl Rect {
         self.l >= self.r || self.t >= self.b
     }
     pub fn and(&self, o: &Rect) -> Rect {
-        Rect { l: self.l.max(o.l), t: self.t.max(o.t), r: self.r.min(o.r), b: self.b.min(o.b) }
+        Rect {
+            l: self.l.max(o.l),
+            t: self.t.max(o.t),
+            r: self.r.min(o.r),
+            b: self.b.min(o.b),
+        }
     }
     pub fn or(&self, o: &Rect) -> Rect {
         if self.empty() {
@@ -61,10 +71,20 @@ impl Rect {
         if o.empty() {
             return *self;
         }
-        Rect { l: self.l.min(o.l), t: self.t.min(o.t), r: self.r.max(o.r), b: self.b.max(o.b) }
+        Rect {
+            l: self.l.min(o.l),
+            t: self.t.min(o.t),
+            r: self.r.max(o.r),
+            b: self.b.max(o.b),
+        }
     }
     pub fn off(&self, x: i32, y: i32) -> Rect {
-        Rect { l: self.l + x, t: self.t + y, r: self.r + x, b: self.b + y }
+        Rect {
+            l: self.l + x,
+            t: self.t + y,
+            r: self.r + x,
+            b: self.b + y,
+        }
     }
     pub fn has(&self, x: i32, y: i32) -> bool {
         x >= self.l && x < self.r && y >= self.t && y < self.b
@@ -102,7 +122,12 @@ pub struct Surface {
 
 impl Surface {
     fn new(w: i32, h: i32) -> Surface {
-        Surface { w, h, px: vec![0xff00_0000; (w * h) as usize], shown_by: 0 }
+        Surface {
+            w,
+            h,
+            px: vec![0xff00_0000; (w * h) as usize],
+            shown_by: 0,
+        }
     }
     /// before `px` is freed or moved: the display stops reading it
     fn unshare(&mut self) {
@@ -226,7 +251,11 @@ impl Msg {
 
 /// A MSG's (hwnd, message, wParam, lParam).
 fn msg_at(p: u32) -> (u32, u32, u32, u32) {
-    if mem::x64() { (r32(p), r32(p + 8), r32(p + 16), r32(p + 24)) } else { (r32(p), r32(p + 4), r32(p + 8), r32(p + 12)) }
+    if mem::x64() {
+        (r32(p), r32(p + 8), r32(p + 16), r32(p + 24))
+    } else {
+        (r32(p), r32(p + 4), r32(p + 8), r32(p + 12))
+    }
 }
 
 struct Timer {
@@ -401,9 +430,19 @@ fn frame(style: u32, exstyle: u32, menu: bool) -> (i32, i32, i32, i32) {
 
 fn client_of(rect: &Rect, style: u32, exstyle: u32, menu: bool) -> Rect {
     let (l, t, r, b) = frame(style, exstyle, menu);
-    let c = Rect { l, t, r: rect.w() - r, b: rect.h() - b };
+    let c = Rect {
+        l,
+        t,
+        r: rect.w() - r,
+        b: rect.h() - b,
+    };
     if c.empty() {
-        Rect { l, t, r: l.max(c.r), b: t.max(c.b) }
+        Rect {
+            l,
+            t,
+            r: l.max(c.r),
+            b: t.max(c.b),
+        }
     } else {
         c
     }
@@ -441,16 +480,25 @@ pub fn client_rect_screen(h: u32) -> Option<Rect> {
 
 pub fn client_screen(s: &State, h: u32) -> Rect {
     if h == DESKTOP || h == 0 {
-        return Rect { l: 0, t: 0, r: s.screen.0, b: s.screen.1 };
+        return Rect {
+            l: 0,
+            t: 0,
+            r: s.screen.0,
+            b: s.screen.1,
+        };
     }
-    let Some(w) = s.wins.get(&h) else { return Rect::default() };
+    let Some(w) = s.wins.get(&h) else {
+        return Rect::default();
+    };
     let (x, y) = window_origin(s, h);
     w.client.off(x, y)
 }
 
 /// Screen position of a window's top-left corner.
 fn window_origin(s: &State, h: u32) -> (i32, i32) {
-    let Some(w) = s.wins.get(&h) else { return (0, 0) };
+    let Some(w) = s.wins.get(&h) else {
+        return (0, 0);
+    };
     if w.parent == 0 || w.parent == DESKTOP {
         return (w.rect.l, w.rect.t);
     }
@@ -473,31 +521,64 @@ pub fn target(h: u32) -> Option<Target> {
         let (top, x, y) = toplevel_offset(s, h)?;
         let surface = s.wins.get(&top)?.surface.clone()?;
         let w = s.wins.get(&h)?;
-        let mut clip = Rect { l: 0, t: 0, r: w.client.w(), b: w.client.h() }.off(x, y);
+        let mut clip = Rect {
+            l: 0,
+            t: 0,
+            r: w.client.w(),
+            b: w.client.h(),
+        }
+        .off(x, y);
         // a CS_PARENTDC child draws anywhere in its parent's client area
         let child = w.parent != 0 && w.parent != DESKTOP;
         if child && s.classes[w.class].style & 0x80 != 0 {
             let (_, px, py) = toplevel_offset(s, w.parent)?;
             let p = s.wins.get(&w.parent)?;
-            clip = Rect { l: 0, t: 0, r: p.client.w(), b: p.client.h() }.off(px, py);
+            clip = Rect {
+                l: 0,
+                t: 0,
+                r: p.client.w(),
+                b: p.client.h(),
+            }
+            .off(px, py);
         }
         // clipped by the client areas of the windows it is in
         let mut p = w.parent;
         while p != 0 && p != DESKTOP {
             let (_, px, py) = toplevel_offset(s, p)?;
             let pw = s.wins.get(&p)?;
-            clip = clip.and(&Rect { l: 0, t: 0, r: pw.client.w(), b: pw.client.h() }.off(px, py));
+            clip = clip.and(
+                &Rect {
+                    l: 0,
+                    t: 0,
+                    r: pw.client.w(),
+                    b: pw.client.h(),
+                }
+                .off(px, py),
+            );
             p = pw.parent;
         }
-        Some(Target { surface, top, x, y, clip })
+        Some(Target {
+            surface,
+            top,
+            x,
+            y,
+            clip,
+        })
     })
 }
 
 /// Sends part of a top-level window's surface to the display.
 pub fn flush(top: u32, r: Rect) {
-    let Some(surf) = with(|s| s.wins.get(&top).and_then(|w| w.surface.clone())) else { return };
+    let Some(surf) = with(|s| s.wins.get(&top).and_then(|w| w.surface.clone())) else {
+        return;
+    };
     let mut g = surf.lock().unwrap();
-    let r = r.and(&Rect { l: 0, t: 0, r: g.w, b: g.h });
+    let r = r.and(&Rect {
+        l: 0,
+        t: 0,
+        r: g.w,
+        b: g.h,
+    });
     if r.empty() {
         return;
     }
@@ -513,7 +594,10 @@ pub fn flush(top: u32, r: Rect) {
 /// What the display gets of a client area (screen coordinates): at most the 8192x8192 its
 /// surface has (resize_surface), whatever size a program gave the window.
 fn shown_rect(c: Rect) -> [i32; 8] {
-    let (r, b) = (c.l.saturating_add(c.w().clamp(0, 8192)), c.t.saturating_add(c.h().clamp(0, 8192)));
+    let (r, b) = (
+        c.l.saturating_add(c.w().clamp(0, 8192)),
+        c.t.saturating_add(c.h().clamp(0, 8192)),
+    );
     [c.l, c.t, r, b, c.l, c.t, r, b]
 }
 
@@ -524,13 +608,20 @@ fn update_display(s: &State, h: u32) {
         return;
     }
     let r = shown_rect(w.client.off(w.rect.l, w.rect.t));
-    let c = Rect { l: r[0], t: r[1], r: r[2], b: r[3] };
+    let c = Rect {
+        l: r[0],
+        t: r[1],
+        r: r[2],
+        b: r[3],
+    };
     let shown = w.visible && w.style & 0x4000_0000 == 0 && c.w() > 0 && c.h() > 0;
     unsafe { kura::display::vnhost_window_pos(h, r.as_ptr(), shown as i32, 0, 0) };
     // owned windows (dialogs) stay above their owner, as on Windows: RealLive's fullscreen
     // settings dialog is shown before its topmost fullscreen owner
     if shown {
-        for (&o, ow) in s.wins.iter().filter(|(_, ow)| ow.owner == h && ow.visible && (ow.parent == 0 || ow.parent == DESKTOP)) {
+        for (&o, ow) in s.wins.iter().filter(|(_, ow)| {
+            ow.owner == h && ow.visible && (ow.parent == 0 || ow.parent == DESKTOP)
+        }) {
             let r = shown_rect(ow.client.off(ow.rect.l, ow.rect.t));
             unsafe { kura::display::vnhost_window_pos(o, r.as_ptr(), 1, 1, 0) };
         }
@@ -551,7 +642,8 @@ fn resize_surface(w: &mut Window) {
                 let mut px = vec![0xff00_0000u32; (cw * ch) as usize];
                 for y in 0..g.h.min(ch) {
                     let n = g.w.min(cw) as usize;
-                    px[(y * cw) as usize..(y * cw) as usize + n].copy_from_slice(&g.px[(y * g.w) as usize..(y * g.w) as usize + n]);
+                    px[(y * cw) as usize..(y * cw) as usize + n]
+                        .copy_from_slice(&g.px[(y * g.w) as usize..(y * g.w) as usize + n]);
                 }
                 g.px = px;
                 g.w = cw;
@@ -564,10 +656,15 @@ fn resize_surface(w: &mut Window) {
 
 fn class_index(s: &State, name: u32, wide: bool) -> Option<usize> {
     if name < 0x10000 {
-        return s.classes.iter().position(|c| c.atom == name && !c.unregistered);
+        return s
+            .classes
+            .iter()
+            .position(|c| c.atom == name && !c.unregistered);
     }
     let n = arg_str(name, wide).to_lowercase();
-    s.classes.iter().position(|c| c.name.to_lowercase() == n && !c.unregistered)
+    s.classes
+        .iter()
+        .position(|c| c.name.to_lowercase() == n && !c.unregistered)
 }
 
 fn builtin_proc() -> u32 {
@@ -602,10 +699,20 @@ struct Ctl {
 static CTLS: Mutex<Option<HashMap<u32, Ctl>>> = Mutex::new(None);
 
 fn ctl(h: u32) -> Ctl {
-    CTLS.lock().unwrap().get_or_insert_with(HashMap::default).get(&h).copied().unwrap_or_default()
+    CTLS.lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::default)
+        .get(&h)
+        .copied()
+        .unwrap_or_default()
 }
 fn set_ctl(h: u32, f: impl FnOnce(&mut Ctl)) {
-    f(CTLS.lock().unwrap().get_or_insert_with(HashMap::default).entry(h).or_default());
+    f(CTLS
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::default)
+        .entry(h)
+        .or_default());
 }
 
 /// Combo boxes (settings dialogs): their items and selection, drawn as a box with the selected
@@ -622,20 +729,45 @@ fn combo_proc() -> u32 {
 }
 fn combo<R>(h: u32, f: impl FnOnce(&mut Combo) -> R) -> R {
     let mut g = COMBOS.lock().unwrap();
-    let e = g.get_or_insert_with(HashMap::default).entry(h).or_insert_with(|| Combo { items: Vec::new(), sel: -1 });
+    let e = g
+        .get_or_insert_with(HashMap::default)
+        .entry(h)
+        .or_insert_with(|| Combo {
+            items: Vec::new(),
+            sel: -1,
+        });
     f(e)
 }
 fn combo_proc_fn(c: &mut Ctx) -> u32 {
     const CB_ERR: u32 = u32::MAX;
     let (h, m, wp, lp) = (c.a(0), c.a(1), c.a(2), c.a(3));
     let wide = msg_wide();
-    let text = |p: u32| -> Vec<u16> { if p == 0 { Vec::new() } else { crate::k32::arg_str(p, wide).encode_utf16().collect() } };
+    let text = |p: u32| -> Vec<u16> {
+        if p == 0 {
+            Vec::new()
+        } else {
+            crate::k32::arg_str(p, wide).encode_utf16().collect()
+        }
+    };
     let find = |items: &[(Vec<u16>, u32)], from: u32, s: &[u16], exact: bool| -> u32 {
         let lower = |v: &[u16]| String::from_utf16_lossy(v).to_lowercase();
         let want = lower(s);
         let n = items.len();
-        let start = if from as i32 >= 0 && (from as usize) < n { from as usize + 1 } else { 0 };
-        (0..n).map(|k| (start + k) % n.max(1)).find(|&i| if exact { lower(&items[i].0) == want } else { lower(&items[i].0).starts_with(&want) }).map_or(CB_ERR, |i| i as u32)
+        let start = if from as i32 >= 0 && (from as usize) < n {
+            from as usize + 1
+        } else {
+            0
+        };
+        (0..n)
+            .map(|k| (start + k) % n.max(1))
+            .find(|&i| {
+                if exact {
+                    lower(&items[i].0) == want
+                } else {
+                    lower(&items[i].0).starts_with(&want)
+                }
+            })
+            .map_or(CB_ERR, |i| i as u32)
     };
     let changed = |c: &mut Ctx| {
         invalidate(h, None, true);
@@ -649,7 +781,11 @@ fn combo_proc_fn(c: &mut Ctx) -> u32 {
         0x143 | 0x14a => {
             let t = text(lp);
             let r = combo(h, |cb| {
-                let at = if m == 0x14a && (wp as usize) < cb.items.len() { wp as usize } else { cb.items.len() };
+                let at = if m == 0x14a && (wp as usize) < cb.items.len() {
+                    wp as usize
+                } else {
+                    cb.items.len()
+                };
                 cb.items.insert(at, (t, 0));
                 at as u32
             });
@@ -672,11 +808,21 @@ fn combo_proc_fn(c: &mut Ctx) -> u32 {
         0x147 => combo(h, |cb| cb.sel as u32),
         // CB_GETLBTEXT, CB_GETLBTEXTLEN
         0x148 | 0x149 => {
-            let Some(t) = combo(h, |cb| cb.items.get(wp as usize).map(|i| i.0.clone())) else { return CB_ERR };
+            let Some(t) = combo(h, |cb| cb.items.get(wp as usize).map(|i| i.0.clone())) else {
+                return CB_ERR;
+            };
             let bytes = if wide { t.clone() } else { Vec::new() };
-            let a = if wide { Vec::new() } else { crate::text::s2a(&String::from_utf16_lossy(&t)) };
+            let a = if wide {
+                Vec::new()
+            } else {
+                crate::text::s2a(&String::from_utf16_lossy(&t))
+            };
             if m == 0x149 {
-                return if wide { bytes.len() as u32 } else { a.len() as u32 };
+                return if wide {
+                    bytes.len() as u32
+                } else {
+                    a.len() as u32
+                };
             }
             if wide {
                 mem::put_wstr(lp, bytes.len() as u32 + 1, &bytes);
@@ -761,15 +907,29 @@ fn combo_proc_fn(c: &mut Ctx) -> u32 {
             0
         }
         0x2 => {
-            COMBOS.lock().unwrap().get_or_insert_with(HashMap::default).remove(&h);
+            COMBOS
+                .lock()
+                .unwrap()
+                .get_or_insert_with(HashMap::default)
+                .remove(&h);
             def_proc(c, wide)
         }
         _ => def_proc(c, wide),
     }
 }
 fn combo_paint(c: &mut Ctx, h: u32) {
-    let (w, hh, enabled) = with(|s| s.wins.get(&h).map_or((0, 0, true), |w| (w.client.w(), w.client.h(), w.enabled)));
-    let text = combo(h, |cb| cb.items.get(cb.sel.max(0) as usize).filter(|_| cb.sel >= 0).map(|i| i.0.clone()).unwrap_or_default());
+    let (w, hh, enabled) = with(|s| {
+        s.wins
+            .get(&h)
+            .map_or((0, 0, true), |w| (w.client.w(), w.client.h(), w.enabled))
+    });
+    let text = combo(h, |cb| {
+        cb.items
+            .get(cb.sel.max(0) as usize)
+            .filter(|_| cb.sel >= 0)
+            .map(|i| i.0.clone())
+            .unwrap_or_default()
+    });
     let ps = mem::heap_alloc(64 + 16, true);
     let rc = ps + 64;
     let dc = gcall(c, "user32", "BeginPaint", &[h, ps]);
@@ -778,18 +938,54 @@ fn combo_paint(c: &mut Ctx, h: u32) {
         gcall(c, "gdi32", "SelectObject", &[dc, font]);
     }
     gcall(c, "gdi32", "SetBkMode", &[dc, 1]);
-    gcall(c, "gdi32", "SetTextColor", &[dc, if enabled { 0 } else { 0x6d6d6d }]);
+    gcall(
+        c,
+        "gdi32",
+        "SetTextColor",
+        &[dc, if enabled { 0 } else { 0x6d6d6d }],
+    );
     // (the box: the top of the window, whose height includes the list's)
     let bh = hh.min(22);
-    let fill = |r: Rect, color: u32| crate::gdi::fill_rect_brush(dc, r, crate::gdi::solid_brush(color));
-    fill(Rect { l: 0, t: 0, r: w, b: bh }, 0x7a7a7a);
-    fill(Rect { l: 1, t: 1, r: w - 1, b: bh - 1 }, if enabled { 0xffffff } else { 0xf0f0f0 });
+    let fill =
+        |r: Rect, color: u32| crate::gdi::fill_rect_brush(dc, r, crate::gdi::solid_brush(color));
+    fill(
+        Rect {
+            l: 0,
+            t: 0,
+            r: w,
+            b: bh,
+        },
+        0x7a7a7a,
+    );
+    fill(
+        Rect {
+            l: 1,
+            t: 1,
+            r: w - 1,
+            b: bh - 1,
+        },
+        if enabled { 0xffffff } else { 0xf0f0f0 },
+    );
     // the arrow
     let ax = w - 12;
     for k in 0..4 {
-        fill(Rect { l: ax - 3 + k, t: bh / 2 - 2 + k, r: ax + 4 - k, b: bh / 2 - 1 + k }, 0x404040);
+        fill(
+            Rect {
+                l: ax - 3 + k,
+                t: bh / 2 - 2 + k,
+                r: ax + 4 - k,
+                b: bh / 2 - 1 + k,
+            },
+            0x404040,
+        );
     }
-    Rect { l: 4, t: 0, r: w - 20, b: bh }.write(rc);
+    Rect {
+        l: 4,
+        t: 0,
+        r: w - 20,
+        b: bh,
+    }
+    .write(rc);
     crate::gdi::draw_text(dc, &text, rc, 0x4 | 0x20);
     gcall(c, "user32", "EndPaint", &[h, ps]);
     mem::heap_free(ps);
@@ -814,7 +1010,14 @@ fn gcall(c: &mut Ctx, dll: &str, name: &str, args: &[u32]) -> u32 {
 fn ctl_paint(c: &mut Ctx, h: u32, button: bool) {
     let (style, text, id, parent, (w, hh), enabled) = with(|s| {
         let w = &s.wins[&h];
-        (w.style, w.text.clone(), w.id, w.parent, (w.client.w(), w.client.h()), w.enabled)
+        (
+            w.style,
+            w.text.clone(),
+            w.id,
+            w.parent,
+            (w.client.w(), w.client.h()),
+            w.enabled,
+        )
     });
     let st = ctl(h);
     let ps = mem::heap_alloc(64 + 16, true);
@@ -824,29 +1027,80 @@ fn ctl_paint(c: &mut Ctx, h: u32, button: bool) {
         gcall(c, "gdi32", "SelectObject", &[dc, st.font]);
     }
     gcall(c, "gdi32", "SetBkMode", &[dc, 1]);
-    gcall(c, "gdi32", "SetTextColor", &[dc, if enabled { 0 } else { 0x6d6d6d }]);
+    gcall(
+        c,
+        "gdi32",
+        "SetTextColor",
+        &[dc, if enabled { 0 } else { 0x6d6d6d }],
+    );
     // the parent may give the background (WM_CTLCOLORSTATIC / WM_CTLCOLORBTN)
-    let mut bg = if parent != 0 { send(c, parent, if button { 0x135 } else { 0x138 }, dc, h) } else { 0 };
+    let mut bg = if parent != 0 {
+        send(c, parent, if button { 0x135 } else { 0x138 }, dc, h)
+    } else {
+        0
+    };
     if bg == 0 {
         bg = crate::gdi::solid_brush(0xf0f0f0);
     }
-    let full = Rect { l: 0, t: 0, r: w, b: hh };
+    let full = Rect {
+        l: 0,
+        t: 0,
+        r: w,
+        b: hh,
+    };
     let kind = style & 0xf;
     // (a group box leaves its inside alone: the controls in it may be under it)
     let group = button && kind == 7;
     if !group {
         crate::gdi::fill_rect_brush(dc, full, bg);
     }
-    let fill = |r: Rect, color: u32| crate::gdi::fill_rect_brush(dc, r, crate::gdi::solid_brush(color));
+    let fill =
+        |r: Rect, color: u32| crate::gdi::fill_rect_brush(dc, r, crate::gdi::solid_brush(color));
     let frame = |r: Rect, color: u32| {
-        fill(Rect { l: r.l, t: r.t, r: r.r, b: r.t + 1 }, color);
-        fill(Rect { l: r.l, t: r.b - 1, r: r.r, b: r.b }, color);
-        fill(Rect { l: r.l, t: r.t, r: r.l + 1, b: r.b }, color);
-        fill(Rect { l: r.r - 1, t: r.t, r: r.r, b: r.b }, color);
+        fill(
+            Rect {
+                l: r.l,
+                t: r.t,
+                r: r.r,
+                b: r.t + 1,
+            },
+            color,
+        );
+        fill(
+            Rect {
+                l: r.l,
+                t: r.b - 1,
+                r: r.r,
+                b: r.b,
+            },
+            color,
+        );
+        fill(
+            Rect {
+                l: r.l,
+                t: r.t,
+                r: r.l + 1,
+                b: r.b,
+            },
+            color,
+        );
+        fill(
+            Rect {
+                l: r.r - 1,
+                t: r.t,
+                r: r.r,
+                b: r.b,
+            },
+            color,
+        );
     };
     let mut tr = full;
     let mut flags;
-    let edit = with(|s| s.wins.get(&h).is_some_and(|w| s.classes[w.class].name.eq_ignore_ascii_case("edit")));
+    let edit = with(|s| {
+        s.wins
+            .get(&h)
+            .is_some_and(|w| s.classes[w.class].name.eq_ignore_ascii_case("edit"))
+    });
     if edit {
         // a white box, the text left and centred vertically
         fill(full, 0xffffff);
@@ -858,7 +1112,12 @@ fn ctl_paint(c: &mut Ctx, h: u32, button: bool) {
             // SS_SUNKEN: a one-pixel sunken edge (WS_EX_STATICEDGE)
             let mut e = full;
             draw_edge(dc, &mut e, 2, 0xf);
-            tr = Rect { l: 1, t: 1, r: w - 1, b: hh - 1 };
+            tr = Rect {
+                l: 1,
+                t: 1,
+                r: w - 1,
+                b: hh - 1,
+            };
         }
         flags = match style & 3 {
             1 => 0x1,
@@ -871,11 +1130,24 @@ fn ctl_paint(c: &mut Ctx, h: u32, button: bool) {
     } else if matches!(kind, 2 | 3 | 4 | 5 | 6 | 9) && kind != 7 {
         // check box / radio button: a box, then the text
         let by = (hh - 13) / 2;
-        let b = Rect { l: 0, t: by, r: 13, b: by + 13 };
+        let b = Rect {
+            l: 0,
+            t: by,
+            r: 13,
+            b: by + 13,
+        };
         fill(b, 0xffffff);
         frame(b, 0x333333);
         if st.check == 1 {
-            fill(Rect { l: 3, t: by + 3, r: 10, b: by + 10 }, 0x202020);
+            fill(
+                Rect {
+                    l: 3,
+                    t: by + 3,
+                    r: 10,
+                    b: by + 10,
+                },
+                0x202020,
+            );
         }
         tr.l = 17;
         flags = 0x4 | 0x20;
@@ -886,19 +1158,49 @@ fn ctl_paint(c: &mut Ctx, h: u32, button: bool) {
         gcall(c, "gdi32", "GetTextMetricsW", &[dc, tm]);
         let th = r32(tm) as i32;
         mem::heap_free(tm);
-        let mut f = Rect { t: th / 2 - 1, ..full };
-        draw_edge(dc, &mut f, 6, 0xf | if style & 0x8000 != 0 { 0x4000 } else { 0 });
+        let mut f = Rect {
+            t: th / 2 - 1,
+            ..full
+        };
+        draw_edge(
+            dc,
+            &mut f,
+            6,
+            0xf | if style & 0x8000 != 0 { 0x4000 } else { 0 },
+        );
         if !text.is_empty() {
-            let mut ext = Rect { l: 7, t: 0, r: w - 7, b: hh }; // DT_CALCRECT of the label
+            let mut ext = Rect {
+                l: 7,
+                t: 0,
+                r: w - 7,
+                b: hh,
+            }; // DT_CALCRECT of the label
             ext.write(rc);
             crate::gdi::draw_text(dc, &text, rc, 0x20 | 0x400);
             ext = Rect::read(rc);
-            crate::gdi::fill_rect_brush(dc, Rect { l: ext.l - 1, t: ext.t, r: ext.r + 1, b: ext.b + 1 }, bg);
+            crate::gdi::fill_rect_brush(
+                dc,
+                Rect {
+                    l: ext.l - 1,
+                    t: ext.t,
+                    r: ext.r + 1,
+                    b: ext.b + 1,
+                },
+                bg,
+            );
             tr = ext;
         }
         flags = 0x20;
     } else {
-        fill(Rect { l: 1, t: 1, r: w - 1, b: hh - 1 }, if st.pressed { 0xf7e4cc } else { 0xe1e1e1 });
+        fill(
+            Rect {
+                l: 1,
+                t: 1,
+                r: w - 1,
+                b: hh - 1,
+            },
+            if st.pressed { 0xf7e4cc } else { 0xe1e1e1 },
+        );
         frame(full, if st.pressed { 0xd77800 } else { 0xadadad });
         flags = 0x1 | 0x4 | 0x20;
     }
@@ -910,13 +1212,22 @@ fn ctl_paint(c: &mut Ctx, h: u32, button: bool) {
 }
 
 fn ctl_click(c: &mut Ctx, h: u32) {
-    let (style, id, parent) = with(|s| s.wins.get(&h).map_or((0, 0, 0), |w| (w.style, w.id, w.parent)));
+    let (style, id, parent) = with(|s| {
+        s.wins
+            .get(&h)
+            .map_or((0, 0, 0), |w| (w.style, w.id, w.parent))
+    });
     match style & 0xf {
         3 | 6 => set_ctl(h, |t| t.check = if t.check == 1 { 0 } else { 1 }),
         5 => set_ctl(h, |t| t.check = (t.check + 1) % 3),
         9 => {
             // auto radio: this one on, its siblings off
-            let sibs: Vec<u32> = with(|s| s.wins.get(&parent).map(|p| p.children.clone()).unwrap_or_default());
+            let sibs: Vec<u32> = with(|s| {
+                s.wins
+                    .get(&parent)
+                    .map(|p| p.children.clone())
+                    .unwrap_or_default()
+            });
             for k in sibs {
                 let radio = with(|s| s.wins.get(&k).is_some_and(|w| w.style & 0xf == 9));
                 if radio && k != h {
@@ -936,7 +1247,11 @@ fn ctl_click(c: &mut Ctx, h: u32) {
 
 fn control_proc_fn(c: &mut Ctx) -> u32 {
     let (h, m, wp, lp) = (c.a(0), c.a(1), c.a(2), c.a(3));
-    let button = with(|s| s.wins.get(&h).is_some_and(|w| s.classes[w.class].name.eq_ignore_ascii_case("button")));
+    let button = with(|s| {
+        s.wins
+            .get(&h)
+            .is_some_and(|w| s.classes[w.class].name.eq_ignore_ascii_case("button"))
+    });
     match m {
         0xf => {
             ctl_paint(c, h, button);
@@ -968,18 +1283,29 @@ fn control_proc_fn(c: &mut Ctx) -> u32 {
             });
             invalidate(h, None, true);
             let (x, y) = ((lp & 0xffff) as i16 as i32, (lp >> 16) as i16 as i32);
-            let inside = with(|s| s.wins.get(&h).is_some_and(|w| x >= 0 && y >= 0 && x < w.client.w() && y < w.client.h()));
+            let inside = with(|s| {
+                s.wins
+                    .get(&h)
+                    .is_some_and(|w| x >= 0 && y >= 0 && x < w.client.w() && y < w.client.h())
+            });
             if was && inside {
                 ctl_click(c, h);
             }
             0
         }
         // the edit control: typed characters (no caret, no selection)
-        0x7 | 0x8 | 0x102 | 0x201 | 0x87 if with(|s| s.wins.get(&h).is_some_and(|w| s.classes[w.class].name.eq_ignore_ascii_case("edit"))) => {
+        0x7 | 0x8 | 0x102 | 0x201 | 0x87
+            if with(|s| {
+                s.wins
+                    .get(&h)
+                    .is_some_and(|w| s.classes[w.class].name.eq_ignore_ascii_case("edit"))
+            }) =>
+        {
             match m {
                 // EN_SETFOCUS / EN_KILLFOCUS to the parent (winref msgwait)
                 0x7 | 0x8 => {
-                    let (id, parent) = with(|s| s.wins.get(&h).map_or((0, 0), |w| (w.id, w.parent)));
+                    let (id, parent) =
+                        with(|s| s.wins.get(&h).map_or((0, 0), |w| (w.id, w.parent)));
                     if parent != 0 {
                         let code = if m == 7 { 0x100 } else { 0x200 };
                         send(c, parent, 0x111, code << 16 | (id & 0xffff), h);
@@ -1003,7 +1329,8 @@ fn control_proc_fn(c: &mut Ctx) -> u32 {
                     });
                     if changed {
                         invalidate(h, None, true);
-                        let (id, parent) = with(|s| s.wins.get(&h).map_or((0, 0), |w| (w.id, w.parent)));
+                        let (id, parent) =
+                            with(|s| s.wins.get(&h).map_or((0, 0), |w| (w.id, w.parent)));
                         if parent != 0 {
                             send(c, parent, 0x111, 0x300 << 16 | (id & 0xffff), h);
                         }
@@ -1029,7 +1356,10 @@ fn control_proc_fn(c: &mut Ctx) -> u32 {
             r
         }
         0x2 => {
-            CTLS.lock().unwrap().get_or_insert_with(HashMap::default).remove(&h);
+            CTLS.lock()
+                .unwrap()
+                .get_or_insert_with(HashMap::default)
+                .remove(&h);
             def_proc(c, msg_wide())
         }
         _ => def_proc(c, msg_wide()),
@@ -1041,7 +1371,31 @@ fn system_classes(s: &mut State) {
     if !s.classes.is_empty() {
         return;
     }
-    for n in ["Button", "Edit", "Static", "ListBox", "ComboBox", "ScrollBar", "#32770", "MDIClient", "ComboLBox", "#32768", "msctls_progress32", "SysListView32", "SysTreeView32", "msctls_statusbar32", "ToolbarWindow32", "tooltips_class32", "RichEdit20A", "RichEdit20W", "RICHEDIT50W", "IME", "SysTabControl32", "msctls_trackbar32", "msctls_updown32"] {
+    for n in [
+        "Button",
+        "Edit",
+        "Static",
+        "ListBox",
+        "ComboBox",
+        "ScrollBar",
+        "#32770",
+        "MDIClient",
+        "ComboLBox",
+        "#32768",
+        "msctls_progress32",
+        "SysListView32",
+        "SysTreeView32",
+        "msctls_statusbar32",
+        "ToolbarWindow32",
+        "tooltips_class32",
+        "RichEdit20A",
+        "RichEdit20W",
+        "RICHEDIT50W",
+        "IME",
+        "SysTabControl32",
+        "msctls_trackbar32",
+        "msctls_updown32",
+    ] {
         let atom = crate::k32::atom(n);
         s.classes.push(Class {
             name: n.into(),
@@ -1074,7 +1428,19 @@ fn system_classes(s: &mut State) {
 /// hCursor, hbrBackground, lpszMenuName, lpszClassName (and hIconSm after them in EX).
 fn wndclass_offsets(ex: bool) -> [u32; 11] {
     if mem::x64() {
-        [if ex { 4 } else { 0 }, 8, 16, 20, 24, 32, 40, 48, 56, 64, 72]
+        [
+            if ex { 4 } else { 0 },
+            8,
+            16,
+            20,
+            24,
+            32,
+            40,
+            48,
+            56,
+            64,
+            72,
+        ]
     } else {
         let o = if ex { 4 } else { 0 };
         std::array::from_fn(|i| o + 4 * i as u32)
@@ -1084,7 +1450,11 @@ fn wndclass_offsets(ex: bool) -> [u32; 11] {
 fn register_class(c: &mut Ctx, p: u32, wide: bool, ex: bool) -> u32 {
     let f = wndclass_offsets(ex);
     let name_p = r32(p + f[9]);
-    let name = if name_p < 0x10000 { format!("#{name_p}") } else { arg_str(name_p, wide) };
+    let name = if name_p < 0x10000 {
+        format!("#{name_p}")
+    } else {
+        arg_str(name_p, wide)
+    };
     let atom = crate::k32::atom(&name);
     let cls = Class {
         name: name.clone(),
@@ -1109,7 +1479,11 @@ fn register_class(c: &mut Ctx, p: u32, wide: bool, ex: bool) -> u32 {
         // (an application class of the same module again: ERROR_CLASS_ALREADY_EXISTS; the
         // system classes may be replaced)
         match s.classes.iter().position(|k| k.name.to_lowercase() == low) {
-            Some(i) if s.classes[i].inst == cls.inst && s.classes[i].inst != 0 && !s.classes[i].unregistered => {
+            Some(i)
+                if s.classes[i].inst == cls.inst
+                    && s.classes[i].inst != 0
+                    && !s.classes[i].unregistered =>
+            {
                 w32(crate::cur().teb + crate::teb_last_error(), 1410);
                 return 0;
             }
@@ -1139,7 +1513,9 @@ fn RegisterClassExW(c: &mut Ctx) -> u32 {
 fn unregister_class(name: u32, wide: bool) -> u32 {
     let r = with(|s| {
         system_classes(s);
-        let i = class_index(s, name, wide).filter(|&i| s.classes[i].inst != 0).ok_or(1411u32)?;
+        let i = class_index(s, name, wide)
+            .filter(|&i| s.classes[i].inst != 0)
+            .ok_or(1411u32)?;
         if s.wins.values().any(|w| w.class == i) {
             return Err(1412);
         }
@@ -1166,7 +1542,18 @@ fn class_info(c: &mut Ctx, wide: bool, ex: bool) -> u32 {
         system_classes(s);
         let i = class_index(s, name, wide)?;
         let k = &s.classes[i];
-        Some((k.style, k.proc_, k.cls_extra, k.wnd_extra, k.inst, k.icon, k.cursor, k.brush, k.menu, k.atom))
+        Some((
+            k.style,
+            k.proc_,
+            k.cls_extra,
+            k.wnd_extra,
+            k.inst,
+            k.icon,
+            k.cursor,
+            k.brush,
+            k.menu,
+            k.atom,
+        ))
     });
     let Some((style, proc_, ce, we, inst, icon, cursor, brush, menu, atom)) = r else {
         w32(crate::cur().teb + crate::teb_last_error(), 1411);
@@ -1176,7 +1563,21 @@ fn class_info(c: &mut Ctx, wide: bool, ex: bool) -> u32 {
     if ex {
         w32(out, if mem::x64() { 80 } else { 48 });
     }
-    for (k, v) in [style, proc_, ce, we, inst, icon, cursor, brush, menu, if name < 0x10000 { name } else { 0 }].iter().enumerate() {
+    for (k, v) in [
+        style,
+        proc_,
+        ce,
+        we,
+        inst,
+        icon,
+        cursor,
+        brush,
+        menu,
+        if name < 0x10000 { name } else { 0 },
+    ]
+    .iter()
+    .enumerate()
+    {
         if k == 0 || k == 2 || k == 3 {
             w32(out + f[k], *v);
         } else {
@@ -1215,7 +1616,17 @@ pub fn send_cpu(cpu: &mut koji::Cpu, hwnd: u32, msg: u32, wp: u32, lp: u32) -> u
     };
     let me = crate::cur().tid;
     if tid != me {
-        return send_other_thread(cpu, tid, Msg { hwnd, msg, w: wp, l: lp, ..Default::default() });
+        return send_other_thread(
+            cpu,
+            tid,
+            Msg {
+                hwnd,
+                msg,
+                w: wp,
+                l: lp,
+                ..Default::default()
+            },
+        );
     }
     if trace_msgs() {
         eprintln!("sake msg {hwnd:x} {msg:04x} {wp:x} {lp:x}");
@@ -1232,7 +1643,11 @@ fn send_other_thread(cpu: &mut koji::Cpu, tid: u32, msg: Msg) -> u32 {
     let result = Arc::new((Mutex::new(None), std::sync::Condvar::new()));
     with(|s| {
         let q = s.queues.entry(tid).or_default();
-        q.sent.push_back(Sent { msg, result: result.clone(), remote: None });
+        q.sent.push_back(Sent {
+            msg,
+            result: result.clone(),
+            remote: None,
+        });
         q.fresh |= 0x40;
     });
     crate::obj::signal();
@@ -1249,7 +1664,9 @@ fn send_other_thread(cpu: &mut koji::Cpu, tid: u32, msg: Msg) -> u32 {
             }
         }
         process_sent(cpu);
-        if !with(|s| s.wins.values().any(|w| w.tid == tid)) && !with(|s| s.queues.contains_key(&tid)) {
+        if !with(|s| s.wins.values().any(|w| w.tid == tid))
+            && !with(|s| s.queues.contains_key(&tid))
+        {
             return 0;
         }
     }
@@ -1296,7 +1713,13 @@ pub fn publish() {
         s.wins
             .iter()
             .filter(|(_, w)| w.parent == 0)
-            .map(|(&h, w)| crate::kern::KWin { hwnd: h, pid: me, tid: w.tid, class: s.classes[w.class].name.to_lowercase(), title: String::from_utf16_lossy(&w.text) })
+            .map(|(&h, w)| crate::kern::KWin {
+                hwnd: h,
+                pid: me,
+                tid: w.tid,
+                class: s.classes[w.class].name.to_lowercase(),
+                title: String::from_utf16_lossy(&w.text),
+            })
             .collect()
     });
     list.sort_by_key(|w| w.hwnd);
@@ -1316,11 +1739,27 @@ fn remote(hwnd: u32) -> Option<crate::kern::KWin> {
 fn to_remote(w: &crate::kern::KWin, msg: u32, wp: u32, lp: u32, send: bool) -> u32 {
     let data = (msg == 0x4a && lp != 0).then(|| {
         let ps = mem::ps();
-        let d = if mem::x64() { mem::r64(lp) } else { r32(lp) as u64 };
+        let d = if mem::x64() {
+            mem::r64(lp)
+        } else {
+            r32(lp) as u64
+        };
         (d, mem::slice(mem::rp(lp + 2 * ps), r32(lp + ps)).to_vec())
     });
     let to = w.pid;
-    let id = crate::kern::with(|k| k.put_msg(crate::kern::XMsg { to, hwnd: w.hwnd, msg, w: wp, l: lp, data, send, ..Default::default() })).0;
+    let id = crate::kern::with(|k| {
+        k.put_msg(crate::kern::XMsg {
+            to,
+            hwnd: w.hwnd,
+            msg,
+            w: wp,
+            l: lp,
+            data,
+            send,
+            ..Default::default()
+        })
+    })
+    .0;
     if !send {
         return 1;
     }
@@ -1352,11 +1791,21 @@ pub fn deliver_remote() {
                 w32(buf, *d as u32);
             }
             w32(buf + ps, bytes.len() as u32);
-            mem::wp(buf + 2 * ps, if bytes.is_empty() { 0 } else { buf + 3 * ps });
+            mem::wp(
+                buf + 2 * ps,
+                if bytes.is_empty() { 0 } else { buf + 3 * ps },
+            );
             mem::write(buf + 3 * ps, bytes);
             l = buf;
         }
-        let m = Msg { hwnd: x.hwnd, msg: x.msg, w: x.w, l, time: now_ms(), ..Default::default() };
+        let m = Msg {
+            hwnd: x.hwnd,
+            msg: x.msg,
+            w: x.w,
+            l,
+            time: now_ms(),
+            ..Default::default()
+        };
         if !x.send {
             post_thread(tid, m);
             continue;
@@ -1364,7 +1813,11 @@ pub fn deliver_remote() {
         let result = Arc::new((Mutex::new(None), std::sync::Condvar::new()));
         with(|s| {
             let q = s.queues.entry(tid).or_default();
-            q.sent.push_back(Sent { msg: m, result, remote: Some((x.id, buf)) });
+            q.sent.push_back(Sent {
+                msg: m,
+                result,
+                remote: Some((x.id, buf)),
+            });
             q.fresh |= 0x40;
         });
         crate::obj::signal();
@@ -1405,7 +1858,12 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
         let h = s.next;
         s.next += 0x10;
         let has_menu = !child && menu != 0;
-        let rect = Rect { l: x, t: y, r: x + cx, b: y + cy };
+        let rect = Rect {
+            l: x,
+            t: y,
+            r: x + cx,
+            b: y + cy,
+        };
         let w = Window {
             class: ci,
             proc_: k.proc_,
@@ -1418,7 +1876,15 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
             user: 0,
             rect,
             client: client_of(&rect, style, ex, has_menu),
-            text: if name_p >= 0x10000 { if wide { wstr(name_p) } else { a2w(&cstr(name_p)) } } else { Vec::new() },
+            text: if name_p >= 0x10000 {
+                if wide {
+                    wstr(name_p)
+                } else {
+                    a2w(&cstr(name_p))
+                }
+            } else {
+                Vec::new()
+            },
             visible: false,
             enabled: style & 0x0800_0000 == 0,
             tid,
@@ -1443,7 +1909,14 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
         Some((h, s.classes[ci].name.clone()))
     });
     let Some((h, cname)) = made else {
-        eprintln!("sake: CreateWindowEx: no class {}", if cls_p < 0x10000 { format!("#{cls_p}") } else { arg_str(cls_p, wide) });
+        eprintln!(
+            "sake: CreateWindowEx: no class {}",
+            if cls_p < 0x10000 {
+                format!("#{cls_p}")
+            } else {
+                arg_str(cls_p, wide)
+            }
+        );
         w32(crate::cur().teb + crate::teb_last_error(), 1407);
         return 0;
     };
@@ -1458,12 +1931,22 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
     let x64 = mem::x64();
     let cs = (save - if x64 { 0x100 } else { 0x80 }) & !15;
     c.cpu.regs[koji::ESP] = cs - 16;
-    let fields = [param, inst, menu, parent, cy as u32, cx as u32, y as u32, x as u32, style, name_p, cls_p, ex];
+    let fields = [
+        param, inst, menu, parent, cy as u32, cx as u32, y as u32, x as u32, style, name_p, cls_p,
+        ex,
+    ];
     if x64 {
         // (lpCreateParams, hInstance, hMenu, hwndParent: 8 bytes; cy cx y x style; name and
         // class: 8 bytes; dwExStyle)
-        for (k, o) in [0u32, 8, 16, 24, 32, 36, 40, 44, 48, 56, 64, 72].iter().enumerate() {
-            if matches!(k, 0..=3 | 9 | 10) { mem::wp(cs + o, fields[k]) } else { w32(cs + o, fields[k]) }
+        for (k, o) in [0u32, 8, 16, 24, 32, 36, 40, 44, 48, 56, 64, 72]
+            .iter()
+            .enumerate()
+        {
+            if matches!(k, 0..=3 | 9 | 10) {
+                mem::wp(cs + o, fields[k])
+            } else {
+                w32(cs + o, fields[k])
+            }
         }
     } else {
         for (k, v) in fields.iter().enumerate() {
@@ -1483,7 +1966,10 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
     let mmi = cs + if x64 { 0x60 } else { 0x40 };
     if !child {
         let (sw, sh) = screen();
-        for (k, v) in [0, 0, sw, sh, 0, 0, 112, 27, sw + 12, sh + 12].iter().enumerate() {
+        for (k, v) in [0, 0, sw, sh, 0, 0, 112, 27, sw + 12, sh + 12]
+            .iter()
+            .enumerate()
+        {
             w32(mmi + 4 * k as u32, *v as u32);
         }
         send(c, h, 0x24, 0, mmi);
@@ -1511,7 +1997,11 @@ fn create_window(c: &mut Ctx, wide: bool) -> u32 {
     // top-level windows get WM_SIZE / WM_MOVE when first shown (games keep the window in a
     // global only once CreateWindowEx returns), child windows now
     if child {
-        let (cw, ch) = with(|s| s.wins.get(&h).map_or((0, 0), |w| (w.client.w(), w.client.h())));
+        let (cw, ch) = with(|s| {
+            s.wins
+                .get(&h)
+                .map_or((0, 0), |w| (w.client.w(), w.client.h()))
+        });
         send(c, h, 0x5, 0, (ch as u32) << 16 | (cw as u32 & 0xffff));
         send(c, h, 0x3, 0, (y as u32) << 16 | (x as u32 & 0xffff));
         with(|s| s.wins.get_mut(&h).map(|w| w.shown = true));
@@ -1535,7 +2025,12 @@ fn destroy(c: &mut Ctx, h: u32) -> bool {
     if !is_window(h) || h == DESKTOP {
         return false;
     }
-    let children = with(|s| s.wins.get(&h).map(|w| w.children.clone()).unwrap_or_default());
+    let children = with(|s| {
+        s.wins
+            .get(&h)
+            .map(|w| w.children.clone())
+            .unwrap_or_default()
+    });
     for ch in children {
         destroy(c, ch);
     }
@@ -1571,13 +2066,22 @@ fn DestroyWindow(c: &mut Ctx) -> u32 {
     let h = c.a(0);
     let was_active = with(|s| s.active == h);
     let ok = destroy(c, h);
-    w32(crate::cur().teb + crate::teb_last_error(), if ok { 0 } else { 1400 });
+    w32(
+        crate::cur().teb + crate::teb_last_error(),
+        if ok { 0 } else { 1400 },
+    );
     if ok {
         publish();
     }
     // the active window gone: another visible top-level window takes over, as on Windows
     if ok && was_active {
-        let next = with(|s| s.wins.iter().filter(|(&k, w)| k != DESKTOP && w.parent == 0 && w.visible).map(|(&k, _)| k).max());
+        let next = with(|s| {
+            s.wins
+                .iter()
+                .filter(|(&k, w)| k != DESKTOP && w.parent == 0 && w.visible)
+                .map(|(&k, _)| k)
+                .max()
+        });
         if let Some(n) = next {
             activate(c, n);
         }
@@ -1590,7 +2094,12 @@ fn show(c: &mut Ctx, h: u32, cmd: u32) -> u32 {
     let Some(was) = was else { return 0 };
     // SW_(SHOW)MAXIMIZE: a top-level window's client area covers the screen (its frame
     // outside it)
-    let top = with(|s| s.wins.get(&h).filter(|w| w.parent == 0 && w.style & 0x4000_0000 == 0).map(|w| (w.style, w.exstyle, w.menu != 0)));
+    let top = with(|s| {
+        s.wins
+            .get(&h)
+            .filter(|w| w.parent == 0 && w.style & 0x4000_0000 == 0)
+            .map(|w| (w.style, w.exstyle, w.menu != 0))
+    });
     if let (3, Some((style, ex, menu))) = (cmd, top) {
         let (l, t, r, b) = frame(style, ex, menu);
         let (sw, sh) = screen();
@@ -1601,14 +2110,37 @@ fn show(c: &mut Ctx, h: u32, cmd: u32) -> u32 {
         send(c, h, 0x18, vis as u32, 0);
         // SetWindowPos(SWP_SHOWWINDOW or SWP_HIDEWINDOW, nothing else), then for the first show
         // WM_SIZE and WM_MOVE
-        let f = 0x17 | if vis { 0x40 | SWP_BY_SHOWWINDOW } else { 0x80 | SWP_BY_HIDEWINDOW };
+        let f = 0x17
+            | if vis {
+                0x40 | SWP_BY_SHOWWINDOW
+            } else {
+                0x80 | SWP_BY_HIDEWINDOW
+            };
         set_pos(c, h, 0, 0, 0, 0, 0, f);
-        let first = with(|s| s.wins.get_mut(&h).is_some_and(|w| vis && !std::mem::replace(&mut w.shown, true)));
+        let first = with(|s| {
+            s.wins
+                .get_mut(&h)
+                .is_some_and(|w| vis && !std::mem::replace(&mut w.shown, true))
+        });
         if first {
-            let Some((r, cl)) = with(|s| s.wins.get(&h).map(|w| (w.rect, w.client))) else { return 0 };
-            send(c, h, 0x5, 0, (cl.h() as u32) << 16 | (cl.w() as u32 & 0xffff));
+            let Some((r, cl)) = with(|s| s.wins.get(&h).map(|w| (w.rect, w.client))) else {
+                return 0;
+            };
+            send(
+                c,
+                h,
+                0x5,
+                0,
+                (cl.h() as u32) << 16 | (cl.w() as u32 & 0xffff),
+            );
             let (x, y) = (r.l + cl.l, r.t + cl.t);
-            send(c, h, 0x3, 0, (y as u32 & 0xffff) << 16 | (x as u32 & 0xffff));
+            send(
+                c,
+                h,
+                0x3,
+                0,
+                (y as u32 & 0xffff) << 16 | (x as u32 & 0xffff),
+            );
         }
         let top = with(|s| s.wins.get(&h).is_some_and(|w| w.parent == 0));
         if vis && top && !matches!(cmd, 4 | 8) {
@@ -1708,10 +2240,18 @@ fn EnableWindow(c: &mut Ctx) -> u32 {
     (!was.unwrap_or(true)) as u32
 }
 fn IsIconic(c: &mut Ctx) -> u32 {
-    with(|s| s.wins.get(&c.a(0)).is_some_and(|w| w.style & 0x2000_0000 != 0) as u32)
+    with(|s| {
+        s.wins
+            .get(&c.a(0))
+            .is_some_and(|w| w.style & 0x2000_0000 != 0) as u32
+    })
 }
 fn IsZoomed(c: &mut Ctx) -> u32 {
-    with(|s| s.wins.get(&c.a(0)).is_some_and(|w| w.style & 0x0100_0000 != 0) as u32)
+    with(|s| {
+        s.wins
+            .get(&c.a(0))
+            .is_some_and(|w| w.style & 0x0100_0000 != 0) as u32
+    })
 }
 fn IsChild(c: &mut Ctx) -> u32 {
     let (p, mut h) = (c.a(0), c.a(1));
@@ -1733,13 +2273,22 @@ fn windowpos_write(p: u32, h: u32, after: u32, x: i32, y: i32, cx: i32, cy: i32,
     let ps = mem::ps();
     mem::wp(p, h);
     mem::wp(p + ps, after);
-    for (k, v) in [x as u32, y as u32, cx as u32, cy as u32, flags].iter().enumerate() {
+    for (k, v) in [x as u32, y as u32, cx as u32, cy as u32, flags]
+        .iter()
+        .enumerate()
+    {
         w32(p + 2 * ps + 4 * k as u32, *v);
     }
 }
 fn windowpos_read(p: u32) -> (i32, i32, i32, i32, u32) {
     let o = p + 2 * mem::ps();
-    (r32(o) as i32, r32(o + 4) as i32, r32(o + 8) as i32, r32(o + 12) as i32, r32(o + 16))
+    (
+        r32(o) as i32,
+        r32(o + 4) as i32,
+        r32(o + 8) as i32,
+        r32(o + 12) as i32,
+        r32(o + 16),
+    )
 }
 // SWP_ flags Windows keeps for itself in WM_WINDOWPOSCHANGED: the client area did not move /
 // change size (DefWindowProc sends WM_MOVE / WM_SIZE otherwise), shown or hidden by ShowWindow
@@ -1769,7 +2318,12 @@ fn set_pos(c: &mut Ctx, h: u32, after: u32, x: i32, y: i32, cx: i32, cy: i32, fl
         let old = w.rect;
         let mut r = w.rect;
         if flags & 2 == 0 {
-            r = Rect { l: x, t: y, r: x + r.w(), b: y + r.h() };
+            r = Rect {
+                l: x,
+                t: y,
+                r: x + r.w(),
+                b: y + r.h(),
+            };
         }
         if flags & 1 == 0 {
             r.r = r.l + cx.max(0);
@@ -1787,7 +2341,12 @@ fn set_pos(c: &mut Ctx, h: u32, after: u32, x: i32, y: i32, cx: i32, cy: i32, fl
         }
         let resized = old.w() != r.w() || old.h() != r.h();
         if resized || (w.visible && !vis) {
-            w.update = Rect { l: 0, t: 0, r: w.client.w(), b: w.client.h() };
+            w.update = Rect {
+                l: 0,
+                t: 0,
+                r: w.client.w(),
+                b: w.client.h(),
+            };
             w.erase = true;
         }
         resize_surface(w);
@@ -1851,14 +2410,29 @@ fn set_pos(c: &mut Ctx, h: u32, after: u32, x: i32, y: i32, cx: i32, cy: i32, fl
 /// WM_MOVE (the client area's position) and WM_SIZE, as DefWindowProc sends them for
 /// WM_WINDOWPOSCHANGED
 fn send_move_size(c: &mut Ctx, h: u32, mv: bool, size: bool) {
-    let Some((r, cl, child)) = with(|s| s.wins.get(&h).map(|w| (w.rect, w.client, w.parent != 0))) else { return };
+    let Some((r, cl, child)) = with(|s| s.wins.get(&h).map(|w| (w.rect, w.client, w.parent != 0)))
+    else {
+        return;
+    };
     let _ = child;
     if mv {
         let (x, y) = (r.l + cl.l, r.t + cl.t);
-        send(c, h, 0x3, 0, (y as u32 & 0xffff) << 16 | (x as u32 & 0xffff));
+        send(
+            c,
+            h,
+            0x3,
+            0,
+            (y as u32 & 0xffff) << 16 | (x as u32 & 0xffff),
+        );
     }
     if size {
-        send(c, h, 0x5, 0, (cl.h() as u32) << 16 | (cl.w() as u32 & 0xffff));
+        send(
+            c,
+            h,
+            0x5,
+            0,
+            (cl.h() as u32) << 16 | (cl.w() as u32 & 0xffff),
+        );
     }
 }
 fn SetWindowPos(c: &mut Ctx) -> u32 {
@@ -1873,7 +2447,16 @@ fn BeginDeferWindowPos(_: &mut Ctx) -> u32 {
     crate::mem::heap_alloc(4, true)
 }
 fn DeferWindowPos(c: &mut Ctx) -> u32 {
-    let (hdwp, h, after, x, y, cx, cy, f) = (c.a(0), c.a(1), c.a(2), c.i(3), c.i(4), c.i(5), c.i(6), c.a(7));
+    let (hdwp, h, after, x, y, cx, cy, f) = (
+        c.a(0),
+        c.a(1),
+        c.a(2),
+        c.i(3),
+        c.i(4),
+        c.i(5),
+        c.i(6),
+        c.a(7),
+    );
     set_pos(c, h, after, x, y, cx, cy, f);
     hdwp
 }
@@ -1884,11 +2467,21 @@ fn GetWindowRect(c: &mut Ctx) -> u32 {
     let h = c.a(0);
     let r = with(|s| {
         if h == DESKTOP {
-            return Some(Rect { l: 0, t: 0, r: s.screen.0, b: s.screen.1 });
+            return Some(Rect {
+                l: 0,
+                t: 0,
+                r: s.screen.0,
+                b: s.screen.1,
+            });
         }
         let w = s.wins.get(&h)?;
         let (x, y) = window_origin(s, h);
-        Some(Rect { l: x, t: y, r: x + w.rect.w(), b: y + w.rect.h() })
+        Some(Rect {
+            l: x,
+            t: y,
+            r: x + w.rect.w(),
+            b: y + w.rect.h(),
+        })
     });
     match r {
         Some(r) => {
@@ -1902,9 +2495,19 @@ fn GetClientRect(c: &mut Ctx) -> u32 {
     let h = c.a(0);
     let r = with(|s| {
         if h == DESKTOP || h == 0 {
-            return Some(Rect { l: 0, t: 0, r: s.screen.0, b: s.screen.1 });
+            return Some(Rect {
+                l: 0,
+                t: 0,
+                r: s.screen.0,
+                b: s.screen.1,
+            });
         }
-        s.wins.get(&h).map(|w| Rect { l: 0, t: 0, r: w.client.w(), b: w.client.h() })
+        s.wins.get(&h).map(|w| Rect {
+            l: 0,
+            t: 0,
+            r: w.client.w(),
+            b: w.client.h(),
+        })
     });
     match r {
         Some(r) => {
@@ -1976,13 +2579,24 @@ fn adjust(p: u32, style: u32, ex: u32, menu: bool) -> u32 {
     1
 }
 fn GetParent(c: &mut Ctx) -> u32 {
-    with(|s| s.wins.get(&c.a(0)).map_or(0, |w| if w.style & 0x4000_0000 != 0 { w.parent } else { w.owner }))
+    with(|s| {
+        s.wins.get(&c.a(0)).map_or(0, |w| {
+            if w.style & 0x4000_0000 != 0 {
+                w.parent
+            } else {
+                w.owner
+            }
+        })
+    })
 }
 fn GetAncestor(c: &mut Ctx) -> u32 {
     let (mut h, flags) = (c.a(0), c.a(1));
     with(|s| {
         if flags == 1 {
-            return s.wins.get(&h).map_or(0, |w| if w.parent == 0 { DESKTOP } else { w.parent });
+            return s
+                .wins
+                .get(&h)
+                .map_or(0, |w| if w.parent == 0 { DESKTOP } else { w.parent });
         }
         loop {
             match s.wins.get(&h) {
@@ -1996,7 +2610,9 @@ fn GetAncestor(c: &mut Ctx) -> u32 {
 fn SetParent(c: &mut Ctx) -> u32 {
     let (h, p) = (c.a(0), c.a(1));
     with(|s| {
-        let Some(w) = s.wins.get_mut(&h) else { return 0 };
+        let Some(w) = s.wins.get_mut(&h) else {
+            return 0;
+        };
         let old = w.parent;
         w.parent = if p == DESKTOP { 0 } else { p };
         if let Some(o) = s.wins.get_mut(&old) {
@@ -2009,7 +2625,11 @@ fn SetParent(c: &mut Ctx) -> u32 {
             resize_surface(s.wins.get_mut(&h).unwrap());
             update_display(s, h);
         }
-        if old == 0 { DESKTOP } else { old }
+        if old == 0 {
+            DESKTOP
+        } else {
+            old
+        }
     })
 }
 fn GetDesktopWindow(_: &mut Ctx) -> u32 {
@@ -2022,14 +2642,23 @@ fn GetWindow(c: &mut Ctx) -> u32 {
     let (h, cmd) = (c.a(0), c.a(1));
     with(|s| {
         let tops: Vec<u32> = {
-            let mut v: Vec<u32> = s.wins.iter().filter(|(_, w)| w.parent == 0).map(|(&h, _)| h).collect();
+            let mut v: Vec<u32> = s
+                .wins
+                .iter()
+                .filter(|(_, w)| w.parent == 0)
+                .map(|(&h, _)| h)
+                .collect();
             v.sort();
             v.reverse();
             v
         };
         let siblings = |h: u32| -> Vec<u32> {
             match s.wins.get(&h) {
-                Some(w) if w.parent != 0 => s.wins.get(&w.parent).map(|p| p.children.clone()).unwrap_or_default(),
+                Some(w) if w.parent != 0 => s
+                    .wins
+                    .get(&w.parent)
+                    .map(|p| p.children.clone())
+                    .unwrap_or_default(),
                 _ => tops.clone(),
             }
         };
@@ -2038,7 +2667,9 @@ fn GetWindow(c: &mut Ctx) -> u32 {
             1 => siblings(h).last().copied().unwrap_or(0),
             2 | 3 => {
                 let v = siblings(h);
-                let Some(i) = v.iter().position(|&x| x == h) else { return 0 };
+                let Some(i) = v.iter().position(|&x| x == h) else {
+                    return 0;
+                };
                 let j = if cmd == 2 { i + 1 } else { i.wrapping_sub(1) };
                 v.get(j).copied().unwrap_or(0)
             }
@@ -2047,7 +2678,10 @@ fn GetWindow(c: &mut Ctx) -> u32 {
                 if h == DESKTOP {
                     tops.first().copied().unwrap_or(0)
                 } else {
-                    s.wins.get(&h).and_then(|w| w.children.first().copied()).unwrap_or(0)
+                    s.wins
+                        .get(&h)
+                        .and_then(|w| w.children.first().copied())
+                        .unwrap_or(0)
                 }
             }
             _ => 0,
@@ -2058,9 +2692,17 @@ fn GetTopWindow(c: &mut Ctx) -> u32 {
     let h = c.a(0);
     with(|s| {
         if h == 0 || h == DESKTOP {
-            s.wins.iter().filter(|(_, w)| w.parent == 0 && w.visible).map(|(&h, _)| h).max().unwrap_or(0)
+            s.wins
+                .iter()
+                .filter(|(_, w)| w.parent == 0 && w.visible)
+                .map(|(&h, _)| h)
+                .max()
+                .unwrap_or(0)
         } else {
-            s.wins.get(&h).and_then(|w| w.children.first().copied()).unwrap_or(0)
+            s.wins
+                .get(&h)
+                .and_then(|w| w.children.first().copied())
+                .unwrap_or(0)
         }
     })
 }
@@ -2069,14 +2711,31 @@ fn GetLastActivePopup(c: &mut Ctx) -> u32 {
 }
 fn GetDlgItem(c: &mut Ctx) -> u32 {
     let (h, id) = (c.a(0), c.a(1));
-    with(|s| s.wins.get(&h).and_then(|w| w.children.iter().copied().find(|ch| s.wins.get(ch).is_some_and(|x| x.id == id))).unwrap_or(0))
+    with(|s| {
+        s.wins
+            .get(&h)
+            .and_then(|w| {
+                w.children
+                    .iter()
+                    .copied()
+                    .find(|ch| s.wins.get(ch).is_some_and(|x| x.id == id))
+            })
+            .unwrap_or(0)
+    })
 }
 fn GetDlgCtrlID(c: &mut Ctx) -> u32 {
     with(|s| s.wins.get(&c.a(0)).map_or(0, |w| w.id))
 }
 fn SendDlgItemMessageA(c: &mut Ctx) -> u32 {
     let (h, id, m, wp, lp) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
-    let ch = with(|s| s.wins.get(&h).and_then(|w| w.children.iter().copied().find(|ch| s.wins.get(ch).is_some_and(|x| x.id == id))));
+    let ch = with(|s| {
+        s.wins.get(&h).and_then(|w| {
+            w.children
+                .iter()
+                .copied()
+                .find(|ch| s.wins.get(ch).is_some_and(|x| x.id == id))
+        })
+    });
     ch.map_or(0, |ch| send(c, ch, m, wp, lp))
 }
 fn GetWindowThreadProcessId(c: &mut Ctx) -> u32 {
@@ -2101,21 +2760,38 @@ fn enum_windows(c: &mut Ctx, list: Vec<u32>, f: u32, lp: u32) -> u32 {
     1
 }
 fn EnumWindows(c: &mut Ctx) -> u32 {
-    let mut v: Vec<u32> = with(|s| s.wins.iter().filter(|(_, w)| w.parent == 0).map(|(&h, _)| h).collect());
+    let mut v: Vec<u32> = with(|s| {
+        s.wins
+            .iter()
+            .filter(|(_, w)| w.parent == 0)
+            .map(|(&h, _)| h)
+            .collect()
+    });
     v.sort();
     let (f, lp) = (c.a(0), c.a(1));
     enum_windows(c, v, f, lp)
 }
 fn EnumThreadWindows(c: &mut Ctx) -> u32 {
     let tid = c.a(0);
-    let mut v: Vec<u32> = with(|s| s.wins.iter().filter(|(_, w)| w.parent == 0 && w.tid == tid).map(|(&h, _)| h).collect());
+    let mut v: Vec<u32> = with(|s| {
+        s.wins
+            .iter()
+            .filter(|(_, w)| w.parent == 0 && w.tid == tid)
+            .map(|(&h, _)| h)
+            .collect()
+    });
     v.sort();
     let (f, lp) = (c.a(1), c.a(2));
     enum_windows(c, v, f, lp)
 }
 fn EnumChildWindows(c: &mut Ctx) -> u32 {
     let p = c.a(0);
-    let v = with(|s| s.wins.get(&p).map(|w| w.children.clone()).unwrap_or_default());
+    let v = with(|s| {
+        s.wins
+            .get(&p)
+            .map(|w| w.children.clone())
+            .unwrap_or_default()
+    });
     let (f, lp) = (c.a(1), c.a(2));
     enum_windows(c, v, f, lp)
 }
@@ -2123,14 +2799,26 @@ fn EnumChildWindows(c: &mut Ctx) -> u32 {
 /// newest first; HWND_MESSAGE: message-only windows; a window: its children in their order)
 /// after `after` whose class and title match (the class without case, the title exactly)
 fn find_window(parent: u32, after: u32, cls: u32, title: u32, wide: bool) -> u32 {
-    let cls_name = (cls != 0).then(|| if cls < 0x10000 { crate::k32::atom_name(cls).unwrap_or_default() } else { arg_str(cls, wide) }.to_lowercase());
+    let cls_name = (cls != 0).then(|| {
+        if cls < 0x10000 {
+            crate::k32::atom_name(cls).unwrap_or_default()
+        } else {
+            arg_str(cls, wide)
+        }
+        .to_lowercase()
+    });
     let t = (title != 0).then(|| arg_str(title, wide));
     const MESSAGE: u32 = 0xffff_fffd;
     let top = parent == 0 || parent == DESKTOP || parent == MESSAGE;
     let found = with(|s| {
         let list: Vec<u32> = if top {
             let msg_only = parent == MESSAGE;
-            let mut v: Vec<u32> = s.wins.iter().filter(|(_, w)| w.parent == 0 && (w.owner == MESSAGE) == msg_only).map(|(&h, _)| h).collect();
+            let mut v: Vec<u32> = s
+                .wins
+                .iter()
+                .filter(|(_, w)| w.parent == 0 && (w.owner == MESSAGE) == msg_only)
+                .map(|(&h, _)| h)
+                .collect();
             v.sort_unstable_by(|a, b| b.cmp(a));
             v
         } else {
@@ -2139,14 +2827,21 @@ fn find_window(parent: u32, after: u32, cls: u32, title: u32, wide: bool) -> u32
                 None => return Err(()),
             }
         };
-        let from = if after == 0 { 0 } else { list.iter().position(|&h| h == after).map_or(list.len(), |i| i + 1) };
-        Ok(list[from..]
-            .iter()
-            .copied()
-            .find(|h| {
-                let w = &s.wins[h];
-                cls_name.as_ref().is_none_or(|n| s.classes[w.class].name.to_lowercase() == *n) && t.as_ref().is_none_or(|t| String::from_utf16_lossy(&w.text) == *t)
-            }))
+        let from = if after == 0 {
+            0
+        } else {
+            list.iter()
+                .position(|&h| h == after)
+                .map_or(list.len(), |i| i + 1)
+        };
+        Ok(list[from..].iter().copied().find(|h| {
+            let w = &s.wins[h];
+            cls_name
+                .as_ref()
+                .is_none_or(|n| s.classes[w.class].name.to_lowercase() == *n)
+                && t.as_ref()
+                    .is_none_or(|t| String::from_utf16_lossy(&w.text) == *t)
+        }))
     });
     let found = match found {
         Ok(f) => f,
@@ -2160,7 +2855,11 @@ fn find_window(parent: u32, after: u32, cls: u32, title: u32, wide: bool) -> u32
             if parent != 0 && parent != DESKTOP || after != 0 || !crate::kern::host::shared() {
                 return None;
             }
-            crate::kern::with(|k| k.find_win(crate::pid(), cls_name.as_deref(), t.as_deref()).map(|w| w.hwnd)).0
+            crate::kern::with(|k| {
+                k.find_win(crate::pid(), cls_name.as_deref(), t.as_deref())
+                    .map(|w| w.hwnd)
+            })
+            .0
         })
         .unwrap_or(0)
 }
@@ -2177,15 +2876,31 @@ fn FindWindowExW(c: &mut Ctx) -> u32 {
     find_window(c.a(0), c.a(1), c.a(2), c.a(3), true)
 }
 fn window_at(s: &State, x: i32, y: i32) -> u32 {
-    let mut tops: Vec<u32> = s.wins.iter().filter(|(_, w)| w.parent == 0 && w.visible).map(|(&h, _)| h).collect();
+    let mut tops: Vec<u32> = s
+        .wins
+        .iter()
+        .filter(|(_, w)| w.parent == 0 && w.visible)
+        .map(|(&h, _)| h)
+        .collect();
     // the most recently activated first (with the windows it owns), owned windows above their
     // owner, then newest
-    let owners = |h: u32| std::iter::successors(Some(h), |o| s.wins.get(o).map(|w| w.owner).filter(|&o| o != 0)).take(8);
+    let owners = |h: u32| {
+        std::iter::successors(Some(h), |o| {
+            s.wins.get(o).map(|w| w.owner).filter(|&o| o != 0)
+        })
+        .take(8)
+    };
     tops.sort_by_key(|&h| (owners(h).any(|o| o == s.active), owners(h).count(), h));
     let Some(&top) = tops.iter().rev().find(|&&h| {
         let (ox, oy) = window_origin(s, h);
         let w = &s.wins[&h];
-        Rect { l: ox, t: oy, r: ox + w.rect.w(), b: oy + w.rect.h() }.has(x, y)
+        Rect {
+            l: ox,
+            t: oy,
+            r: ox + w.rect.w(),
+            b: oy + w.rect.h(),
+        }
+        .has(x, y)
     }) else {
         return DESKTOP;
     };
@@ -2199,7 +2914,14 @@ fn window_at(s: &State, x: i32, y: i32) -> u32 {
                 continue;
             }
             let (ox, oy) = window_origin(s, ch);
-            if (Rect { l: ox, t: oy, r: ox + cw.rect.w(), b: oy + cw.rect.h() }).has(x, y) {
+            if (Rect {
+                l: ox,
+                t: oy,
+                r: ox + cw.rect.w(),
+                b: oy + cw.rect.h(),
+            })
+            .has(x, y)
+            {
                 h = ch;
                 continue 'down;
             }
@@ -2235,7 +2957,14 @@ pub(crate) fn set_prop(h: u32, key: &str, v: Option<u32>) -> Option<u32> {
     })
 }
 pub(crate) fn prop(h: u32, key: &str) -> Option<u32> {
-    with(|s| s.wins.get(&h)?.props.iter().find(|(k, _)| k == key).map(|p| p.1))
+    with(|s| {
+        s.wins
+            .get(&h)?
+            .props
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|p| p.1)
+    })
 }
 pub(crate) fn window_from_point(x: i32, y: i32) -> u32 {
     with(|s| window_at(s, x, y))
@@ -2256,7 +2985,15 @@ fn ChildWindowFromPoint(c: &mut Ctx) -> u32 {
         for &ch in w.children.iter().rev() {
             if let Some(cw) = s.wins.get(&ch) {
                 let (ox, oy) = window_origin(s, ch);
-                if cw.visible && (Rect { l: ox, t: oy, r: ox + cw.rect.w(), b: oy + cw.rect.h() }).has(sx, sy) {
+                if cw.visible
+                    && (Rect {
+                        l: ox,
+                        t: oy,
+                        r: ox + cw.rect.w(),
+                        b: oy + cw.rect.h(),
+                    })
+                    .has(sx, sy)
+                {
                     return ch;
                 }
             }
@@ -2316,7 +3053,12 @@ fn set_long(h: u32, i: i32, v: u32) -> u32 {
             -21 => std::mem::replace(&mut w.user, v),
             i if i >= 0 && (i as usize + 4) <= w.extra.len() => {
                 let o = i as usize;
-                let old = u32::from_le_bytes([w.extra[o], w.extra[o + 1], w.extra[o + 2], w.extra[o + 3]]);
+                let old = u32::from_le_bytes([
+                    w.extra[o],
+                    w.extra[o + 1],
+                    w.extra[o + 2],
+                    w.extra[o + 3],
+                ]);
                 w.extra[o..o + 4].copy_from_slice(&v.to_le_bytes());
                 old
             }
@@ -2337,7 +3079,11 @@ fn GetWindowLongW(c: &mut Ctx) -> u32 {
 /// ERROR_INVALID_INDEX. A style change clears the last error (other fields leave it).
 fn set_long_msg(c: &mut Ctx, h: u32, i: i32, v: u32) -> u32 {
     let err = |e: u32| w32(crate::cur().teb + crate::teb_last_error(), e);
-    let Some((extra, top)) = with(|s| s.wins.get(&h).map(|w| (w.extra.len(), w.parent == 0 && w.style & 0x4000_0000 == 0))) else {
+    let Some((extra, top)) = with(|s| {
+        s.wins
+            .get(&h)
+            .map(|w| (w.extra.len(), w.parent == 0 && w.style & 0x4000_0000 == 0))
+    }) else {
         err(1400);
         return 0;
     };
@@ -2442,12 +3188,14 @@ fn SetClassLongPtrW(c: &mut Ctx) -> u32 {
     SetClassLongW(c)
 }
 fn GetClassNameA(c: &mut Ctx) -> u32 {
-    let n = with(|s| s.wins.get(&c.a(0)).map(|w| s.classes[w.class].name.clone())).unwrap_or_default();
+    let n =
+        with(|s| s.wins.get(&c.a(0)).map(|w| s.classes[w.class].name.clone())).unwrap_or_default();
     let r = ret_str(c.a(1), c.a(2), &n, false);
     r.min(c.a(2).saturating_sub(1))
 }
 fn GetClassNameW(c: &mut Ctx) -> u32 {
-    let n = with(|s| s.wins.get(&c.a(0)).map(|w| s.classes[w.class].name.clone())).unwrap_or_default();
+    let n =
+        with(|s| s.wins.get(&c.a(0)).map(|w| s.classes[w.class].name.clone())).unwrap_or_default();
     let r = ret_str(c.a(1), c.a(2), &n, true);
     r.min(c.a(2).saturating_sub(1))
 }
@@ -2455,7 +3203,9 @@ fn SetPropA(c: &mut Ctx) -> u32 {
     let (h, k, v) = (c.a(0), c.a(1), c.a(2));
     let key = prop_key(k, false);
     with(|s| {
-        let Some(w) = s.wins.get_mut(&h) else { return 0 };
+        let Some(w) = s.wins.get_mut(&h) else {
+            return 0;
+        };
         w.props.retain(|(x, _)| *x != key);
         w.props.push((key, v));
         1
@@ -2465,7 +3215,9 @@ fn SetPropW(c: &mut Ctx) -> u32 {
     let (h, k, v) = (c.a(0), c.a(1), c.a(2));
     let key = prop_key(k, true);
     with(|s| {
-        let Some(w) = s.wins.get_mut(&h) else { return 0 };
+        let Some(w) = s.wins.get_mut(&h) else {
+            return 0;
+        };
         w.props.retain(|(x, _)| *x != key);
         w.props.push((key, v));
         1
@@ -2481,7 +3233,11 @@ fn prop_key(k: u32, wide: bool) -> String {
 }
 /// GetProp: a name that is no property is ERROR_FILE_NOT_FOUND (its atom is not there)
 fn get_prop(h: u32, key: &str) -> u32 {
-    let v = with(|s| s.wins.get(&h).and_then(|w| w.props.iter().find(|(x, _)| x == key).map(|p| p.1)));
+    let v = with(|s| {
+        s.wins
+            .get(&h)
+            .and_then(|w| w.props.iter().find(|(x, _)| x == key).map(|p| p.1))
+    });
     if v.is_none() && !key.starts_with('#') {
         w32(crate::cur().teb + crate::teb_last_error(), 2);
     }
@@ -2498,7 +3254,9 @@ fn GetPropW(c: &mut Ctx) -> u32 {
 fn RemovePropA(c: &mut Ctx) -> u32 {
     let key = prop_key(c.a(1), false);
     with(|s| {
-        let Some(w) = s.wins.get_mut(&c.a(0)) else { return 0 };
+        let Some(w) = s.wins.get_mut(&c.a(0)) else {
+            return 0;
+        };
         let v = w.props.iter().find(|(x, _)| *x == key).map_or(0, |p| p.1);
         w.props.retain(|(x, _)| *x != key);
         v
@@ -2507,7 +3265,9 @@ fn RemovePropA(c: &mut Ctx) -> u32 {
 fn RemovePropW(c: &mut Ctx) -> u32 {
     let key = prop_key(c.a(1), true);
     with(|s| {
-        let Some(w) = s.wins.get_mut(&c.a(0)) else { return 0 };
+        let Some(w) = s.wins.get_mut(&c.a(0)) else {
+            return 0;
+        };
         let v = w.props.iter().find(|(x, _)| *x == key).map_or(0, |p| p.1);
         w.props.retain(|(x, _)| *x != key);
         v
@@ -2566,7 +3326,13 @@ fn def_proc(c: &mut Ctx, proc_wide: bool) -> u32 {
             1
         }
         0xc => {
-            let t = if lp == 0 { Vec::new() } else if wide { wstr(lp) } else { a2w(&cstr(lp)) };
+            let t = if lp == 0 {
+                Vec::new()
+            } else if wide {
+                wstr(lp)
+            } else {
+                a2w(&cstr(lp))
+            };
             let top = with(|s| {
                 s.wins.get_mut(&h).is_some_and(|w| {
                     w.text = t;
@@ -2591,7 +3357,11 @@ fn def_proc(c: &mut Ctx, proc_wide: bool) -> u32 {
         }
         0xe => {
             let t = with(|s| s.wins.get(&h).map(|w| w.text.clone())).unwrap_or_default();
-            if wide { t.len() as u32 } else { w2a(&t).len() as u32 }
+            if wide {
+                t.len() as u32
+            } else {
+                w2a(&t).len() as u32
+            }
         }
         0x10 => {
             destroy(c, h);
@@ -2617,7 +3387,15 @@ fn def_proc(c: &mut Ctx, proc_wide: bool) -> u32 {
         0x14 => {
             let brush = with(|s| s.wins.get(&h).map_or(0, |w| s.classes[w.class].brush));
             if brush != 0 {
-                let r = with(|s| s.wins.get(&h).map(|w| Rect { l: 0, t: 0, r: w.client.w(), b: w.client.h() })).unwrap_or_default();
+                let r = with(|s| {
+                    s.wins.get(&h).map(|w| Rect {
+                        l: 0,
+                        t: 0,
+                        r: w.client.w(),
+                        b: w.client.h(),
+                    })
+                })
+                .unwrap_or_default();
                 crate::gdi::fill_rect_brush(wp, r, brush);
                 return 1;
             }
@@ -2664,7 +3442,13 @@ fn def_proc(c: &mut Ctx, proc_wide: bool) -> u32 {
             0
         }
         0x7f => 0,
-        0x55 => if proc_wide { 2 } else { 1 },
+        0x55 => {
+            if proc_wide {
+                2
+            } else {
+                1
+            }
+        }
         0x7b | 0x205 => {
             let p = GetParent_raw(h);
             if p != 0 && m == 0x7b {
@@ -2691,11 +3475,21 @@ fn DefDlgProcA(c: &mut Ctx) -> u32 {
     if m == 0x7 {
         // WM_SETFOCUS: on to the control that had it (or the first tab stop)
         let to = with(|s| {
-            let kids = s.wins.get(&h).map(|w| w.children.clone()).unwrap_or_default();
+            let kids = s
+                .wins
+                .get(&h)
+                .map(|w| w.children.clone())
+                .unwrap_or_default();
             if kids.contains(&wp) {
                 return wp;
             }
-            kids.into_iter().find(|k| s.wins.get(k).is_some_and(|w| w.visible && w.enabled && w.style & 0x1_0000 != 0)).unwrap_or(0)
+            kids.into_iter()
+                .find(|k| {
+                    s.wins
+                        .get(k)
+                        .is_some_and(|w| w.visible && w.enabled && w.style & 0x1_0000 != 0)
+                })
+                .unwrap_or(0)
         });
         if to != 0 {
             set_focus(c, to);
@@ -2704,7 +3498,15 @@ fn DefDlgProcA(c: &mut Ctx) -> u32 {
     }
     if m == 0x14 {
         // dialogs erase with the 3D face colour
-        let r = with(|s| s.wins.get(&h).map(|w| Rect { l: 0, t: 0, r: w.client.w(), b: w.client.h() })).unwrap_or_default();
+        let r = with(|s| {
+            s.wins.get(&h).map(|w| Rect {
+                l: 0,
+                t: 0,
+                r: w.client.w(),
+                b: w.client.h(),
+            })
+        })
+        .unwrap_or_default();
         crate::gdi::fill_rect_brush(wp, r, crate::gdi::solid_brush(0xf0f0f0));
         return 1;
     }
@@ -2744,13 +3546,26 @@ fn now_ms() -> u32 {
 }
 
 pub fn post(hwnd: u32, msg: u32, w: u32, l: u32) -> bool {
-    let tid = if hwnd == 0 { crate::cur().tid } else {
+    let tid = if hwnd == 0 {
+        crate::cur().tid
+    } else {
         match with(|s| s.wins.get(&hwnd).map(|w| w.tid)) {
             Some(t) => t,
             None => return remote(hwnd).is_some_and(|rw| to_remote(&rw, msg, w, l, false) != 0),
         }
     };
-    post_thread(tid, Msg { hwnd, msg, w, l, time: now_ms(), x: 0, y: 0 });
+    post_thread(
+        tid,
+        Msg {
+            hwnd,
+            msg,
+            w,
+            l,
+            time: now_ms(),
+            x: 0,
+            y: 0,
+        },
+    );
     true
 }
 fn post_thread(tid: u32, mut m: Msg) {
@@ -2767,7 +3582,13 @@ fn PostMessageA(c: &mut Ctx) -> u32 {
     let h = c.a(0);
     if h == 0xffff {
         // HWND_BROADCAST: the top-level windows
-        let v: Vec<u32> = with(|s| s.wins.iter().filter(|(_, w)| w.parent == 0).map(|(&h, _)| h).collect());
+        let v: Vec<u32> = with(|s| {
+            s.wins
+                .iter()
+                .filter(|(_, w)| w.parent == 0)
+                .map(|(&h, _)| h)
+                .collect()
+        });
         for h in v {
             post(h, c.a(1), c.a(2), c.a(3));
         }
@@ -2782,15 +3603,28 @@ fn PostMessageW(c: &mut Ctx) -> u32 {
 // connect, find nobody and go on as the server)
 static DDE_NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
 fn DdeInitializeA(c: &mut Ctx) -> u32 {
-    put32(c.a(0), DDE_NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    put32(
+        c.a(0),
+        DDE_NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+    );
     0
 }
 static DDE_STR: Mutex<Vec<(u32, Vec<u16>)>> = Mutex::new(Vec::new());
 /// String handles are atoms: the same text in any case is the same handle (with the first text's case)
 fn dde_string(c: &mut Ctx, wide: bool) -> u32 {
     let p = c.a(1);
-    let t = if p == 0 { Vec::new() } else if wide { wstr(p) } else { a2w(&cstr(p)) };
-    let low = |v: &[u16]| v.iter().map(|&ch| crate::text::lower16(ch)).collect::<Vec<_>>();
+    let t = if p == 0 {
+        Vec::new()
+    } else if wide {
+        wstr(p)
+    } else {
+        a2w(&cstr(p))
+    };
+    let low = |v: &[u16]| {
+        v.iter()
+            .map(|&ch| crate::text::lower16(ch))
+            .collect::<Vec<_>>()
+    };
     let mut g = DDE_STR.lock().unwrap();
     if let Some(x) = g.iter().find(|x| low(&x.1) == low(&t)) {
         return x.0;
@@ -2809,7 +3643,15 @@ fn DdeCreateStringHandleW(c: &mut Ctx) -> u32 {
 /// else the characters copied (at most cch-1, and a NUL)
 fn dde_query(c: &mut Ctx, wide: bool) -> u32 {
     let (h, buf, cch) = (c.a(1), c.a(2), c.a(3));
-    let Some(t) = DDE_STR.lock().unwrap().iter().find(|x| x.0 == h).map(|x| x.1.clone()) else { return 0 };
+    let Some(t) = DDE_STR
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|x| x.0 == h)
+        .map(|x| x.1.clone())
+    else {
+        return 0;
+    };
     let len = if wide { t.len() } else { w2a(&t).len() } as u32;
     if buf == 0 || cch == 0 {
         return len;
@@ -2845,10 +3687,32 @@ fn DdeGetLastError(_: &mut Ctx) -> u32 {
     0x400a // DMLERR_NO_CONV_ESTABLISHED
 }
 pub fn post_thread_msg(tid: u32, msg: u32, w: u32, l: u32) {
-    post_thread(tid, Msg { hwnd: 0, msg, w, l, time: now_ms(), x: 0, y: 0 });
+    post_thread(
+        tid,
+        Msg {
+            hwnd: 0,
+            msg,
+            w,
+            l,
+            time: now_ms(),
+            x: 0,
+            y: 0,
+        },
+    );
 }
 fn PostThreadMessageA(c: &mut Ctx) -> u32 {
-    post_thread(c.a(0), Msg { hwnd: 0, msg: c.a(1), w: c.a(2), l: c.a(3), time: now_ms(), x: 0, y: 0 });
+    post_thread(
+        c.a(0),
+        Msg {
+            hwnd: 0,
+            msg: c.a(1),
+            w: c.a(2),
+            l: c.a(3),
+            time: now_ms(),
+            x: 0,
+            y: 0,
+        },
+    );
     1
 }
 fn PostThreadMessageW(c: &mut Ctx) -> u32 {
@@ -2863,7 +3727,13 @@ fn PostQuitMessage(c: &mut Ctx) -> u32 {
 fn send_message(c: &mut Ctx) -> u32 {
     let (h, m, wp, lp) = (c.a(0), c.a(1), c.a(2), c.a(3));
     if h == 0xffff {
-        let v: Vec<u32> = with(|s| s.wins.iter().filter(|(_, w)| w.parent == 0).map(|(&h, _)| h).collect());
+        let v: Vec<u32> = with(|s| {
+            s.wins
+                .iter()
+                .filter(|(_, w)| w.parent == 0)
+                .map(|(&h, _)| h)
+                .collect()
+        });
         for h in v {
             send(c, h, m, wp, lp);
         }
@@ -2894,7 +3764,8 @@ fn ReplyMessage(_: &mut Ctx) -> u32 {
 }
 
 fn matches(m: &Msg, hwnd: u32, lo: u32, hi: u32) -> bool {
-    (hwnd == 0 || m.hwnd == hwnd || hwnd == 0xffff_ffff && m.hwnd == 0) && (lo == 0 && hi == 0 || m.msg >= lo && m.msg <= hi)
+    (hwnd == 0 || m.hwnd == hwnd || hwnd == 0xffff_ffff && m.hwnd == 0)
+        && (lo == 0 && hi == 0 || m.msg >= lo && m.msg <= hi)
 }
 
 /// The next message for this thread (PeekMessage); `remove` takes it off the queue.
@@ -2903,10 +3774,18 @@ fn next_msg(hwnd: u32, lo: u32, hi: u32, remove: bool) -> Option<Msg> {
     with(|s| {
         let q = s.queues.entry(me).or_default();
         if let Some(i) = q.posted.iter().position(|m| matches(m, hwnd, lo, hi)) {
-            return Some(if remove { q.posted.remove(i).unwrap() } else { q.posted[i] });
+            return Some(if remove {
+                q.posted.remove(i).unwrap()
+            } else {
+                q.posted[i]
+            });
         }
         if let Some(i) = q.input.iter().position(|m| matches(m, hwnd, lo, hi)) {
-            let m = if remove { q.input.remove(i).unwrap() } else { q.input[i] };
+            let m = if remove {
+                q.input.remove(i).unwrap()
+            } else {
+                q.input[i]
+            };
             return Some(m);
         }
         if let Some(code) = q.quit {
@@ -2914,7 +3793,15 @@ fn next_msg(hwnd: u32, lo: u32, hi: u32, remove: bool) -> Option<Msg> {
                 if remove {
                     q.quit = None;
                 }
-                return Some(Msg { hwnd: 0, msg: 0x12, w: code, l: 0, time: now_ms(), x: 0, y: 0 });
+                return Some(Msg {
+                    hwnd: 0,
+                    msg: 0x12,
+                    w: code,
+                    l: 0,
+                    time: now_ms(),
+                    x: 0,
+                    y: 0,
+                });
             }
         }
         // WM_PAINT for a window of ours with an update region
@@ -2922,20 +3809,43 @@ fn next_msg(hwnd: u32, lo: u32, hi: u32, remove: bool) -> Option<Msg> {
             let mut ws: Vec<u32> = s
                 .wins
                 .iter()
-                .filter(|(&h, w)| w.tid == me && !w.update.empty() && (hwnd == 0 || hwnd == h) && shown_tree(s, h))
+                .filter(|(&h, w)| {
+                    w.tid == me && !w.update.empty() && (hwnd == 0 || hwnd == h) && shown_tree(s, h)
+                })
                 .map(|(&h, _)| h)
                 .collect();
             ws.sort();
             if let Some(&h) = ws.first() {
-                return Some(Msg { hwnd: h, msg: 0xf, w: 0, l: 0, time: now_ms(), x: 0, y: 0 });
+                return Some(Msg {
+                    hwnd: h,
+                    msg: 0xf,
+                    w: 0,
+                    l: 0,
+                    time: now_ms(),
+                    x: 0,
+                    y: 0,
+                });
             }
         }
         // timers
         if lo == 0 && hi == 0 || (lo..=hi).contains(&0x113) {
             let now = Instant::now();
             let q = s.queues.get_mut(&me).unwrap();
-            if let Some(t) = q.timers.iter_mut().filter(|t| t.due <= now && (hwnd == 0 || t.hwnd == hwnd)).min_by_key(|t| t.due) {
-                let m = Msg { hwnd: t.hwnd, msg: 0x113, w: t.id, l: t.proc_, time: now_ms(), x: 0, y: 0 };
+            if let Some(t) = q
+                .timers
+                .iter_mut()
+                .filter(|t| t.due <= now && (hwnd == 0 || t.hwnd == hwnd))
+                .min_by_key(|t| t.due)
+            {
+                let m = Msg {
+                    hwnd: t.hwnd,
+                    msg: 0x113,
+                    w: t.id,
+                    l: t.proc_,
+                    time: now_ms(),
+                    x: 0,
+                    y: 0,
+                };
                 if remove {
                     t.due = now + Duration::from_millis(t.ms.max(10) as u64);
                 }
@@ -2952,7 +3862,10 @@ fn next_timer() -> Option<Duration> {
     with(|s| {
         let q = s.queues.get(&me)?;
         let now = Instant::now();
-        q.timers.iter().map(|t| t.due.saturating_duration_since(now)).min()
+        q.timers
+            .iter()
+            .map(|t| t.due.saturating_duration_since(now))
+            .min()
     })
 }
 
@@ -2968,7 +3881,10 @@ fn queued(s: &State, me: u32, mask: u32) -> bool {
         mask & 0x108 != 0 && (!q.posted.is_empty() || q.quit.is_some())
             || mask & 0x407 != 0 && !q.input.is_empty()
             || mask & 0x40 != 0 && !q.sent.is_empty()
-    }) || mask & 0x20 != 0 && s.wins.iter().any(|(&h, w)| w.tid == me && !w.update.empty() && shown_tree(s, h))
+    }) || mask & 0x20 != 0
+        && s.wins
+            .iter()
+            .any(|(&h, w)| w.tid == me && !w.update.empty() && shown_tree(s, h))
 }
 fn has_work_of(mask: u32) -> bool {
     let me = crate::cur().tid;
@@ -3068,24 +3984,36 @@ fn WaitMessage(_: &mut Ctx) -> u32 {
 }
 fn MsgWaitForMultipleObjects(c: &mut Ctx) -> u32 {
     let (n, hs, all, ms, mask) = (c.a(0), c.a(1), c.a(2) != 0, c.a(3), c.a(4));
-    let hs: Vec<u32> = (0..n.min(64)).map(|i| mem::rp(hs + mem::ps() * i)).collect();
+    let hs: Vec<u32> = (0..n.min(64))
+        .map(|i| mem::rp(hs + mem::ps() * i))
+        .collect();
     msg_wait(c, &hs, all, ms, mask, false)
 }
 fn MsgWaitForMultipleObjectsEx(c: &mut Ctx) -> u32 {
     let (n, hs, ms, mask, flags) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
-    let hs: Vec<u32> = (0..n.min(64)).map(|i| mem::rp(hs + mem::ps() * i)).collect();
+    let hs: Vec<u32> = (0..n.min(64))
+        .map(|i| mem::rp(hs + mem::ps() * i))
+        .collect();
     let alertable = flags & 2 != 0; // MWMO_ALERTABLE
     if alertable && crate::apc::run(c) {
         return crate::apc::WAIT_IO_COMPLETION;
     }
     let r = msg_wait(c, &hs, flags & 1 != 0, ms, mask, alertable);
-    if alertable && r == n && crate::apc::run(c) { crate::apc::WAIT_IO_COMPLETION } else { r }
+    if alertable && r == n && crate::apc::run(c) {
+        crate::apc::WAIT_IO_COMPLETION
+    } else {
+        r
+    }
 }
 /// A due timer of this thread's (QS_TIMER: its WM_TIMER is as good as posted)
 fn timer_due() -> bool {
     let me = crate::cur().tid;
     let now = Instant::now();
-    with(|s| s.queues.get(&me).is_some_and(|q| q.timers.iter().any(|t| t.due <= now)))
+    with(|s| {
+        s.queues
+            .get(&me)
+            .is_some_and(|q| q.timers.iter().any(|t| t.due <= now))
+    })
 }
 /// MsgWaitForMultipleObjects(Ex): input of the `mask` kinds (a message ends the wait before a
 /// signaled handle, as on Windows) or a handle; with `all` (MWMO_WAITALL), every handle AND
@@ -3115,12 +4043,18 @@ fn msg_wait(c: &mut Ctx, hs: &[u32], all: bool, ms: u32, mask: u32, apc: bool) -
                 return r;
             }
         }
-        let left = deadline.map_or(0xffff_ffff, |d| d.saturating_duration_since(Instant::now()).as_millis() as u32);
+        let left = deadline.map_or(0xffff_ffff, |d| {
+            d.saturating_duration_since(Instant::now()).as_millis() as u32
+        });
         if left == 0 {
             return TIMEOUT;
         }
         // (with `all` the handles are looked at between short waits for input)
-        let r = if all { wait_msgs_of(&[], false, left.min(10), mask, apc) } else { wait_msgs_of(hs, false, left, mask, apc) };
+        let r = if all {
+            wait_msgs_of(&[], false, left.min(10), mask, apc)
+        } else {
+            wait_msgs_of(hs, false, left, mask, apc)
+        };
         if !all && r != TIMEOUT && r != n {
             return r;
         }
@@ -3133,7 +4067,10 @@ fn GetQueueStatus(c: &mut Ctx) -> u32 {
     let me = crate::cur().tid;
     let now = Instant::now();
     with(|s| {
-        let paint = s.wins.iter().any(|(&h, w)| w.tid == me && !w.update.empty() && shown_tree(s, h));
+        let paint = s
+            .wins
+            .iter()
+            .any(|(&h, w)| w.tid == me && !w.update.empty() && shown_tree(s, h));
         let q = s.queues.entry(me).or_default();
         let mut st = 0;
         if !q.posted.is_empty() || q.quit.is_some() {
@@ -3243,11 +4180,22 @@ fn is_dialog_message(c: &mut Ctx, wide: bool) -> u32 {
         // caller's loop skips its own TranslateMessage/DispatchMessage for them)
         let t = crate::api::export("user32", "TranslateMessage");
         c.call(t, &[msg]);
-        let d = crate::api::export("user32", if wide { "DispatchMessageW" } else { "DispatchMessageA" });
+        let d = crate::api::export(
+            "user32",
+            if wide {
+                "DispatchMessageW"
+            } else {
+                "DispatchMessageA"
+            },
+        );
         c.call(d, &[msg]);
         return 1;
     }
-    let (id, b) = if key == 0x0d { default_button(dlg) } else { (2, dlg_item(dlg, 2)) };
+    let (id, b) = if key == 0x0d {
+        default_button(dlg)
+    } else {
+        (2, dlg_item(dlg, 2))
+    };
     let f = crate::api::export("user32", if wide { "SendMessageW" } else { "SendMessageA" });
     c.call(f, &[dlg, 0x111, id, b]);
     1
@@ -3288,16 +4236,34 @@ fn RegisterWindowMessageW(c: &mut Ctx) -> u32 {
 fn SetTimer(c: &mut Ctx) -> u32 {
     let (h, id, ms, f) = (c.a(0), c.a(1), c.a(2), c.a(3));
     let me = crate::cur().tid;
-    let tid = if h == 0 { me } else { with(|s| s.wins.get(&h).map_or(me, |w| w.tid)) };
+    let tid = if h == 0 {
+        me
+    } else {
+        with(|s| s.wins.get(&h).map_or(me, |w| w.tid))
+    };
     let id = with(|s| {
         let q = s.queues.entry(tid).or_default();
-        let id = if h == 0 && id == 0 { 0x7f00 + q.timers.len() as u32 } else { id };
+        let id = if h == 0 && id == 0 {
+            0x7f00 + q.timers.len() as u32
+        } else {
+            id
+        };
         q.timers.retain(|t| !(t.hwnd == h && t.id == id));
-        q.timers.push(Timer { hwnd: h, id, ms, proc_: f, due: Instant::now() + Duration::from_millis(ms.max(10) as u64) });
+        q.timers.push(Timer {
+            hwnd: h,
+            id,
+            ms,
+            proc_: f,
+            due: Instant::now() + Duration::from_millis(ms.max(10) as u64),
+        });
         id
     });
     crate::obj::signal();
-    if h == 0 { id } else { id.max(1) }
+    if h == 0 {
+        id
+    } else {
+        id.max(1)
+    }
 }
 fn KillTimer(c: &mut Ctx) -> u32 {
     let (h, id) = (c.a(0), c.a(1));
@@ -3335,7 +4301,12 @@ fn invalidate_tree(s: &mut State, h: u32) {
     let mut todo = vec![h];
     while let Some(h) = todo.pop() {
         if let Some(w) = s.wins.get_mut(&h) {
-            w.update = Rect { l: 0, t: 0, r: w.client.w(), b: w.client.h() };
+            w.update = Rect {
+                l: 0,
+                t: 0,
+                r: w.client.w(),
+                b: w.client.h(),
+            };
             w.erase = true;
             todo.extend(w.children.iter().copied());
         }
@@ -3345,10 +4316,19 @@ fn invalidate_tree(s: &mut State, h: u32) {
 fn invalidate(h: u32, r: Option<Rect>, erase: bool) {
     with(|s| {
         let all = h == 0;
-        let hs: Vec<u32> = if all { s.wins.keys().copied().collect() } else { vec![h] };
+        let hs: Vec<u32> = if all {
+            s.wins.keys().copied().collect()
+        } else {
+            vec![h]
+        };
         for h in hs {
             if let Some(w) = s.wins.get_mut(&h) {
-                let full = Rect { l: 0, t: 0, r: w.client.w(), b: w.client.h() };
+                let full = Rect {
+                    l: 0,
+                    t: 0,
+                    r: w.client.w(),
+                    b: w.client.h(),
+                };
                 let r = r.map_or(full, |r| r.and(&full));
                 w.update = w.update.or(&r);
                 w.erase |= erase;
@@ -3363,7 +4343,9 @@ fn InvalidateRect(c: &mut Ctx) -> u32 {
     1
 }
 fn InvalidateRgn(c: &mut Ctx) -> u32 {
-    let r = (c.a(1) != 0).then(|| crate::gdi::region_bounds(c.a(1))).flatten();
+    let r = (c.a(1) != 0)
+        .then(|| crate::gdi::region_bounds(c.a(1)))
+        .flatten();
     invalidate(c.a(0), r, c.a(2) != 0);
     1
 }
@@ -3383,14 +4365,25 @@ fn ValidateRect(c: &mut Ctx) -> u32 {
     1
 }
 fn ValidateRgn(c: &mut Ctx) -> u32 {
-    validate(c.a(0), (c.a(1) != 0).then(|| crate::gdi::region_bounds(c.a(1))).flatten());
+    validate(
+        c.a(0),
+        (c.a(1) != 0)
+            .then(|| crate::gdi::region_bounds(c.a(1)))
+            .flatten(),
+    );
     1
 }
 /// RedrawWindow(h, rect, region, flags): RDW_INVALIDATE 1, RDW_ERASE 4, RDW_VALIDATE 8,
 /// RDW_NOERASE 0x20, RDW_UPDATENOW 0x100
 fn RedrawWindow(c: &mut Ctx) -> u32 {
     let (h, r, rgn, flags) = (c.a(0), c.a(1), c.a(2), c.a(3));
-    let area = if r != 0 { Some(Rect::read(r)) } else if rgn != 0 { crate::gdi::region_bounds(rgn) } else { None };
+    let area = if r != 0 {
+        Some(Rect::read(r))
+    } else if rgn != 0 {
+        crate::gdi::region_bounds(rgn)
+    } else {
+        None
+    };
     if flags & 1 != 0 {
         invalidate(h, area, flags & 4 != 0);
     } else if flags & 8 != 0 {
@@ -3418,13 +4411,23 @@ fn GetUpdateRect(c: &mut Ctx) -> u32 {
 }
 fn GetUpdateRgn(c: &mut Ctx) -> u32 {
     let e = with(|s| s.wins.get(&c.a(0)).is_none_or(|w| w.update.empty()));
-    if e { 1 } else { 2 }
+    if e {
+        1
+    } else {
+        2
+    }
 }
 fn BeginPaint(c: &mut Ctx) -> u32 {
     let (h, ps) = (c.a(0), c.a(1));
     let (upd, erase) = with(|s| {
-        let Some(w) = s.wins.get_mut(&h) else { return (Rect::default(), false) };
-        let u = if w.update.empty() { Rect::default() } else { w.update };
+        let Some(w) = s.wins.get_mut(&h) else {
+            return (Rect::default(), false);
+        };
+        let u = if w.update.empty() {
+            Rect::default()
+        } else {
+            w.update
+        };
         let e = w.erase;
         w.update = Rect::default();
         w.erase = false;
@@ -3441,8 +4444,18 @@ fn BeginPaint(c: &mut Ctx) -> u32 {
     }
     // without WS_CLIPCHILDREN the parent paints over its children: they paint again after it
     let kids: Vec<u32> = with(|s| {
-        let Some(w) = s.wins.get(&h).filter(|w| w.style & 0x0200_0000 == 0) else { return Vec::new() };
-        w.children.iter().copied().filter(|k| s.wins.get(k).is_some_and(|x| x.visible && !x.rect.and(&upd).empty())).collect()
+        let Some(w) = s.wins.get(&h).filter(|w| w.style & 0x0200_0000 == 0) else {
+            return Vec::new();
+        };
+        w.children
+            .iter()
+            .copied()
+            .filter(|k| {
+                s.wins
+                    .get(k)
+                    .is_some_and(|x| x.visible && !x.rect.and(&upd).empty())
+            })
+            .collect()
     });
     for k in kids {
         invalidate(k, None, true);
@@ -3467,7 +4480,11 @@ pub fn dc_info(h: u32) -> Option<(u32, usize)> {
 }
 
 fn is_parent_dc(h: u32) -> bool {
-    with(|s| s.wins.get(&h).is_some_and(|w| w.parent != 0 && w.parent != DESKTOP && s.classes[w.class].style & 0x80 != 0))
+    with(|s| {
+        s.wins.get(&h).is_some_and(|w| {
+            w.parent != 0 && w.parent != DESKTOP && s.classes[w.class].style & 0x80 != 0
+        })
+    })
 }
 
 fn get_dc_ex(h: u32, rgn: u32, flags: u32) -> u32 {
@@ -3495,7 +4512,15 @@ fn WindowFromDC(c: &mut Ctx) -> u32 {
 /// rectangle. The pixels are not moved: the whole area is painted again (the program draws its
 /// content where it now is), a superset of the strip Windows asks for.
 fn scrolled_area(h: u32, scroll: u32, clip: u32, org: (i32, i32)) -> Rect {
-    let client = with(|s| s.wins.get(&h).map(|w| Rect { l: 0, t: 0, r: w.client.w(), b: w.client.h() })).unwrap_or_default();
+    let client = with(|s| {
+        s.wins.get(&h).map(|w| Rect {
+            l: 0,
+            t: 0,
+            r: w.client.w(),
+            b: w.client.h(),
+        })
+    })
+    .unwrap_or_default();
     let mut a = client;
     if scroll != 0 {
         a = a.and(&Rect::read(scroll).off(org.0, org.1));
@@ -3529,7 +4554,11 @@ fn ScrollWindowEx(c: &mut Ctx) -> u32 {
     if flags & 2 != 0 {
         invalidate(h, Some(a), flags & 4 != 0);
     }
-    if a.empty() { 1 } else { 2 }
+    if a.empty() {
+        1
+    } else {
+        2
+    }
 }
 fn LockWindowUpdate(_: &mut Ctx) -> u32 {
     1
@@ -3587,20 +4616,31 @@ fn SendInput(c: &mut Ctx) -> u32 {
         let u = e + k; // the union, pointer-aligned
         match r32(e) {
             0 => {
-                let (dx, dy, data, flags) = (r32(u) as i32, r32(u + 4) as i32, r32(u + 8), r32(u + 12));
+                let (dx, dy, data, flags) =
+                    (r32(u) as i32, r32(u + 4) as i32, r32(u + 8), r32(u + 12));
                 if flags & 1 != 0 {
                     let (cx, cy) = with(|s| s.cursor);
                     let (x, y) = if flags & 0x8000 != 0 {
                         // MOUSEEVENTF_ABSOLUTE: 0..65535 over the screen
                         let (w, h) = screen();
-                        ((dx as i64 * w as i64 / 65536) as i32, (dy as i64 * h as i64 / 65536) as i32)
+                        (
+                            (dx as i64 * w as i64 / 65536) as i32,
+                            (dy as i64 * h as i64 / 65536) as i32,
+                        )
                     } else {
                         (cx + dx, cy + dy)
                     };
                     input(1, x, y, 0);
                 }
                 let (x, y) = with(|s| s.cursor);
-                for (bit, kind, b) in [(2, 2, 0), (4, 3, 0), (8, 2, 1), (0x10, 3, 1), (0x20, 2, 2), (0x40, 3, 2)] {
+                for (bit, kind, b) in [
+                    (2, 2, 0),
+                    (4, 3, 0),
+                    (8, 2, 1),
+                    (0x10, 3, 1),
+                    (0x20, 2, 2),
+                    (0x40, 3, 2),
+                ] {
                     if flags & bit != 0 {
                         input(kind, x, y, b);
                     }
@@ -3614,7 +4654,12 @@ fn SendInput(c: &mut Ctx) -> u32 {
                 if flags & 4 != 0 {
                     continue; // KEYEVENTF_UNICODE: no key
                 }
-                input(if flags & 2 != 0 { 6 } else { 5 }, 0, 0, vk & 0xff | (scan & 0xff) << 16);
+                input(
+                    if flags & 2 != 0 { 6 } else { 5 },
+                    0,
+                    0,
+                    vk & 0xff | (scan & 0xff) << 16,
+                );
             }
             _ => {}
         }
@@ -3668,7 +4713,11 @@ fn GetAsyncKeyState(c: &mut Ctx) -> u32 {
         let down = s.keys[k] & 0x80 != 0;
         let pressed = std::mem::take(&mut s.pressed[k]);
         // (a press already released counts as down once)
-        if down || pressed { 0x8000 | pressed as u32 } else { 0 }
+        if down || pressed {
+            0x8000 | pressed as u32
+        } else {
+            0
+        }
     })
 }
 fn GetKeyboardState(c: &mut Ctx) -> u32 {
@@ -3685,18 +4734,41 @@ fn SetKeyboardState(c: &mut Ctx) -> u32 {
 fn GetKeyboardType(c: &mut Ctx) -> u32 {
     let ja = crate::text::acp() == 932;
     match c.a(0) {
-        0 => if ja { 7 } else { 4 },
-        1 => if ja { 2 } else { 0 },
+        0 => {
+            if ja {
+                7
+            } else {
+                4
+            }
+        }
+        1 => {
+            if ja {
+                2
+            } else {
+                0
+            }
+        }
         2 => 12,
         _ => 0,
     }
 }
 fn GetKeyboardLayout(_: &mut Ctx) -> u32 {
-    if crate::text::acp() == 932 { 0x0411_0411 } else { 0x0409_0409 }
+    if crate::text::acp() == 932 {
+        0x0411_0411
+    } else {
+        0x0409_0409
+    }
 }
 fn GetKeyboardLayoutList(c: &mut Ctx) -> u32 {
     if c.a(0) > 0 {
-        w32(c.a(1), if crate::text::acp() == 932 { 0x0411_0411 } else { 0x0409_0409 });
+        w32(
+            c.a(1),
+            if crate::text::acp() == 932 {
+                0x0411_0411
+            } else {
+                0x0409_0409
+            },
+        );
     }
     1
 }
@@ -3727,7 +4799,26 @@ fn MapVirtualKeyW(c: &mut Ctx) -> u32 {
     MapVirtualKeyA(c)
 }
 fn vk_to_scan(vk: u32) -> u32 {
-    const T: &[(u32, u32)] = &[(0x1b, 1), (0x08, 14), (0x09, 15), (0x0d, 28), (0x11, 29), (0x10, 42), (0x12, 56), (0x20, 57), (0x25, 75), (0x26, 72), (0x27, 77), (0x28, 80), (0x2d, 82), (0x2e, 83), (0x24, 71), (0x23, 79), (0x21, 73), (0x22, 81)];
+    const T: &[(u32, u32)] = &[
+        (0x1b, 1),
+        (0x08, 14),
+        (0x09, 15),
+        (0x0d, 28),
+        (0x11, 29),
+        (0x10, 42),
+        (0x12, 56),
+        (0x20, 57),
+        (0x25, 75),
+        (0x26, 72),
+        (0x27, 77),
+        (0x28, 80),
+        (0x2d, 82),
+        (0x2e, 83),
+        (0x24, 71),
+        (0x23, 79),
+        (0x21, 73),
+        (0x22, 81),
+    ];
     if let Some(&(_, s)) = T.iter().find(|(v, _)| *v == vk) {
         return s;
     }
@@ -3736,7 +4827,10 @@ fn vk_to_scan(vk: u32) -> u32 {
         return 2 + i as u32;
     }
     const L: &str = "QWERTYUIOPASDFGHJKLZXCVBNM";
-    const S: [u32; 26] = [16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 30, 31, 32, 33, 34, 35, 36, 37, 38, 44, 45, 46, 47, 48, 49, 50];
+    const S: [u32; 26] = [
+        16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 30, 31, 32, 33, 34, 35, 36, 37, 38, 44, 45, 46, 47,
+        48, 49, 50,
+    ];
     if let Some(i) = L.find(char::from_u32(vk).unwrap_or('\0')) {
         return S[i];
     }
@@ -3783,7 +4877,11 @@ fn MessageBoxExA(c: &mut Ctx) -> u32 {
 }
 fn MessageBoxIndirectA(c: &mut Ctx) -> u32 {
     let p = c.a(0);
-    eprintln!("sake: MessageBox [{}] {}", arg_str(r32(p + 12), false), arg_str(r32(p + 8), false));
+    eprintln!(
+        "sake: MessageBox [{}] {}",
+        arg_str(r32(p + 12), false),
+        arg_str(r32(p + 8), false)
+    );
     1
 }
 /// CBT hooks (MFC's CWnd::CreateEx attaches the window and subclasses it in HCBT_CREATEWND):
@@ -3793,7 +4891,11 @@ static NEXT_HOOK: AtomicU32 = AtomicU32::new(0x5000);
 fn set_hook(c: &mut Ctx) -> u32 {
     let h = NEXT_HOOK.fetch_add(4, Ordering::Relaxed);
     if c.a(0) == 5 {
-        let tid = if c.a(3) != 0 { c.a(3) } else { crate::cur().tid };
+        let tid = if c.a(3) != 0 {
+            c.a(3)
+        } else {
+            crate::cur().tid
+        };
         CBT_HOOKS.lock().unwrap().push((h, c.a(1), tid));
     }
     h
@@ -3811,8 +4913,17 @@ fn UnhookWindowsHookEx(c: &mut Ctx) -> u32 {
 /// The thread's CBT hooks with (code, wparam, lparam); true when one refuses.
 fn cbt(c: &mut Ctx, code: u32, wp: u32, lp: u32) -> bool {
     let tid = crate::cur().tid;
-    let procs: Vec<u32> = CBT_HOOKS.lock().unwrap().iter().filter(|x| x.2 == tid).map(|x| x.1).collect();
-    procs.into_iter().rev().any(|p| c.call(p, &[code, wp, lp]) != 0)
+    let procs: Vec<u32> = CBT_HOOKS
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|x| x.2 == tid)
+        .map(|x| x.1)
+        .collect();
+    procs
+        .into_iter()
+        .rev()
+        .any(|p| c.call(p, &[code, wp, lp]) != 0)
 }
 fn CallNextHookEx(_: &mut Ctx) -> u32 {
     0
@@ -3868,7 +4979,13 @@ fn spi(c: &mut Ctx, wide: bool) -> u32 {
     match a {
         0x30 => {
             let (w, h) = screen();
-            Rect { l: 0, t: 0, r: w, b: h }.write(p);
+            Rect {
+                l: 0,
+                t: 0,
+                r: w,
+                b: h,
+            }
+            .write(p);
         }
         0x29 => {
             // NONCLIENTMETRICS: sizes and fonts. cbSize must be the pre-Vista size (A 340,
@@ -3894,7 +5011,8 @@ fn spi(c: &mut Ctx, wide: bool) -> u32 {
             }
         }
         0x1f => crate::gdi::default_logfont(p, wide),
-        0x26 | 0x10 | 0x0e | 0x16 | 0x0a | 0x68 | 0x1006 | 0x100a | 0x2000 | 0x2002 | 0x1002 | 0x1012 => {
+        0x26 | 0x10 | 0x0e | 0x16 | 0x0a | 0x68 | 0x1006 | 0x100a | 0x2000 | 0x2002 | 0x1002
+        | 0x1012 => {
             if p != 0 {
                 w32(p, 0);
             }
@@ -3924,7 +5042,10 @@ fn set_display(c: &mut Ctx, w: i32, h: i32) {
     kura::display::vnhost_display_set_size(w, h);
     if with(|s| std::mem::replace(&mut s.screen, (w, h))) != (w, h) {
         let f = crate::api::export("user32", "SendMessageA");
-        c.call(f, &[0xffff, 0x7e, 32, (h as u32) << 16 | (w as u32 & 0xffff)]);
+        c.call(
+            f,
+            &[0xffff, 0x7e, 32, (h as u32) << 16 | (w as u32 & 0xffff)],
+        );
     }
 }
 /// ChangeDisplaySettingsEx{A,W}(device, mode, hwnd, flags, param): the primary display's
@@ -3959,8 +5080,20 @@ fn ChangeDisplaySettingsW(c: &mut Ctx) -> u32 {
 /// whatever dmSize says, and sets dmSize to that (tests/winref/probes/sizes.c): RealLive passes
 /// that short one on its stack, and the rest is its return address (e170d29).
 fn display_mode(n: u32, p: u32, wide: bool) -> u32 {
-    let modes = [(640, 480), (800, 600), (1024, 768), (1280, 720), (1280, 960)];
-    let (w, h) = if n == 0xffff_ffff || n == 0xffff_fffe { screen() } else if (n as usize) < modes.len() { modes[n as usize] } else { return 0 };
+    let modes = [
+        (640, 480),
+        (800, 600),
+        (1024, 768),
+        (1280, 720),
+        (1280, 960),
+    ];
+    let (w, h) = if n == 0xffff_ffff || n == 0xffff_fffe {
+        screen()
+    } else if (n as usize) < modes.len() {
+        modes[n as usize]
+    } else {
+        return 0;
+    };
     let (d, e) = if wide { (32, 64) } else { (0, 0) };
     let size = 124 + e;
     mem::fill(p, size, 0);
@@ -4003,7 +5136,11 @@ fn display_device(device: u32, n: u32, p: u32, wide: bool) -> u32 {
         }
         return 0;
     }
-    let (name, desc) = if device == 0 { ("\\\\.\\DISPLAY1", "vnvm display") } else { ("\\\\.\\DISPLAY1\\Monitor0", "Generic PnP Monitor") };
+    let (name, desc) = if device == 0 {
+        ("\\\\.\\DISPLAY1", "vnvm display")
+    } else {
+        ("\\\\.\\DISPLAY1\\Monitor0", "Generic PnP Monitor")
+    };
     let u = if wide { 2 } else { 1 };
     let mut b = vec![0u8; ((32 + 128 + 128 + 128) * u + 4) as usize];
     let put = |b: &mut [u8], at: usize, s: &str, cap: usize| {
@@ -4129,7 +5266,11 @@ fn DisplayConfigGetDeviceInfo(c: &mut Ctx) -> u32 {
             w32(p + 28, 0x1c82_10ac);
             w32(p + 32, 1);
             wide(p + 36, 64, "Generic PnP Monitor");
-            wide(p + 164, 128, "\\\\?\\DISPLAY#VNV0001#1&0&UID0#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}");
+            wide(
+                p + 164,
+                128,
+                "\\\\?\\DISPLAY#VNV0001#1&0&UID0#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}",
+            );
         }
         3 if size >= 32 => {
             // ..._GET_TARGET_PREFERRED_MODE: the screen's size
@@ -4137,7 +5278,11 @@ fn DisplayConfigGetDeviceInfo(c: &mut Ctx) -> u32 {
             w32(p + 20, w as u32);
             w32(p + 24, h as u32);
         }
-        4 if size >= 276 => wide(p + 20, 128, "\\\\?\\PCI#VEN_10DE&DEV_1C82#0#{5b45201d-f2f2-4f3b-85bb-30ff1f953599}"), // ..._GET_ADAPTER_NAME
+        4 if size >= 276 => wide(
+            p + 20,
+            128,
+            "\\\\?\\PCI#VEN_10DE&DEV_1C82#0#{5b45201d-f2f2-4f3b-85bb-30ff1f953599}",
+        ), // ..._GET_ADAPTER_NAME
         1..=4 => return 87,
         _ => return 50, // ERROR_NOT_SUPPORTED
     }
@@ -4162,13 +5307,22 @@ fn monitor_info(p: u32, wide: bool) -> u32 {
         return 0;
     }
     let (w, h) = screen();
-    let r = Rect { l: 0, t: 0, r: w, b: h };
+    let r = Rect {
+        l: 0,
+        t: 0,
+        r: w,
+        b: h,
+    };
     r.write(p + 4);
     r.write(p + 20);
     w32(p + 36, 1);
     if size == ex {
         if wide {
-            mem::put_wstr(p + 40, 32, &"\\\\.\\DISPLAY1".encode_utf16().collect::<Vec<_>>());
+            mem::put_wstr(
+                p + 40,
+                32,
+                &"\\\\.\\DISPLAY1".encode_utf16().collect::<Vec<_>>(),
+            );
         } else {
             mem::put_cstr(p + 40, 32, b"\\\\.\\DISPLAY1");
         }
@@ -4186,7 +5340,13 @@ fn EnumDisplayMonitors(c: &mut Ctx) -> u32 {
     let save = c.cpu.regs[koji::ESP];
     let r = (save - 0x20) & !15;
     let (w, h) = screen();
-    Rect { l: 0, t: 0, r: w, b: h }.write(r);
+    Rect {
+        l: 0,
+        t: 0,
+        r: w,
+        b: h,
+    }
+    .write(r);
     c.cpu.regs[koji::ESP] = r - 16;
     c.call(f, &[0x10001, 0, r, lp]);
     c.cpu.regs[koji::ESP] = save;
@@ -4195,7 +5355,13 @@ fn EnumDisplayMonitors(c: &mut Ctx) -> u32 {
 
 // rectangles
 fn SetRect(c: &mut Ctx) -> u32 {
-    Rect { l: c.i(1), t: c.i(2), r: c.i(3), b: c.i(4) }.write(c.a(0));
+    Rect {
+        l: c.i(1),
+        t: c.i(2),
+        r: c.i(3),
+        b: c.i(4),
+    }
+    .write(c.a(0));
     1
 }
 fn SetRectEmpty(c: &mut Ctx) -> u32 {
@@ -4279,7 +5445,12 @@ fn FrameRect(c: &mut Ctx) -> u32 {
     if r.empty() {
         return 0;
     }
-    for e in [Rect { b: r.t + 1, ..r }, Rect { t: r.b - 1, ..r }, Rect { r: r.l + 1, ..r }, Rect { l: r.r - 1, ..r }] {
+    for e in [
+        Rect { b: r.t + 1, ..r },
+        Rect { t: r.b - 1, ..r },
+        Rect { r: r.l + 1, ..r },
+        Rect { l: r.r - 1, ..r },
+    ] {
         crate::gdi::fill_rect_brush(dc, e, b);
     }
     1
@@ -4319,12 +5490,23 @@ pub(crate) fn draw_edge(dc: u32, rc: &mut Rect, edge: u32, flags: u32) -> bool {
     const LT_OUTER_SOFT: [i8; 16] = [N, 20, 21, N, 22, 20, 21, N, 16, 20, 21, N, N, 20, 21, N];
     const OUTER_MONO: [i8; 16] = [N, 6, 6, 6, 5, 6, 6, 6, 5, 6, 6, 6, 5, 6, 6, 6];
     const INNER_MONO: [i8; 16] = [N, N, N, N, N, 5, 5, 5, N, 5, 5, 5, N, 5, 5, 5];
-    const OUTER_FLAT: [i8; 16] = [N, 16, 16, 16, 15, 16, 16, 16, 15, 16, 16, 16, 15, 16, 16, 16];
+    const OUTER_FLAT: [i8; 16] = [
+        N, 16, 16, 16, 15, 16, 16, 16, 15, 16, 16, 16, 15, 16, 16, 16,
+    ];
     const INNER_FLAT: [i8; 16] = [N, N, N, N, N, 15, 15, 15, N, 15, 15, 15, N, 15, 15, 15];
-    let (left, top, right, bottom) = (flags & 1 != 0, flags & 2 != 0, flags & 4 != 0, flags & 8 != 0);
+    let (left, top, right, bottom) = (
+        flags & 1 != 0,
+        flags & 2 != 0,
+        flags & 4 != 0,
+        flags & 8 != 0,
+    );
     let e = (edge & 0xf) as usize;
     let (inner, outer) = (edge & 0xc, edge & 3);
-    let (soft, flat, mono) = (flags & 0x1000 != 0, flags & 0x4000 != 0, flags & 0x8000 != 0);
+    let (soft, flat, mono) = (
+        flags & 0x1000 != 0,
+        flags & 0x4000 != 0,
+        flags & 0x8000 != 0,
+    );
     let ok = !((inner == 0xc || outer == 3) && !(flat || mono));
     if flags & 0x10 != 0 {
         return ok; // BF_DIAGONAL
@@ -4335,9 +5517,19 @@ pub(crate) fn draw_edge(dc: u32, rc: &mut Rect, edge: u32, flags: u32) -> bool {
         let i = if INNER_FLAT[e] != N { 15 } else { N };
         (i, OUTER_FLAT[e], i, OUTER_FLAT[e])
     } else if soft {
-        (LT_INNER_SOFT[e], LT_OUTER_SOFT[e], RB_INNER_NORMAL[e], RB_OUTER_NORMAL[e])
+        (
+            LT_INNER_SOFT[e],
+            LT_OUTER_SOFT[e],
+            RB_INNER_NORMAL[e],
+            RB_OUTER_NORMAL[e],
+        )
     } else {
-        (LT_INNER_NORMAL[e], LT_OUTER_NORMAL[e], RB_INNER_NORMAL[e], RB_OUTER_NORMAL[e])
+        (
+            LT_INNER_NORMAL[e],
+            LT_OUTER_NORMAL[e],
+            RB_INNER_NORMAL[e],
+            RB_OUTER_NORMAL[e],
+        )
     };
     let fill = |r: Rect, color: i8| {
         if color != N {
@@ -4346,7 +5538,12 @@ pub(crate) fn draw_edge(dc: u32, rc: &mut Rect, edge: u32, flags: u32) -> bool {
     };
     let r = *rc;
     let off = |a: bool, b: bool| if a && b { 1 } else { 0 };
-    let (lbi, rti, rbi_o, lti_o) = (off(bottom, left), off(top, right), off(bottom, right), off(top, left));
+    let (lbi, rti, rbi_o, lti_o) = (
+        off(bottom, left),
+        off(top, right),
+        off(bottom, right),
+        off(top, left),
+    );
     if top {
         fill(Rect { b: r.t + 1, ..r }, lto);
     }
@@ -4360,16 +5557,48 @@ pub(crate) fn draw_edge(dc: u32, rc: &mut Rect, edge: u32, flags: u32) -> bool {
         fill(Rect { l: r.r - 1, ..r }, rbo);
     }
     if top {
-        fill(Rect { l: r.l + lti_o, t: r.t + 1, r: r.r - rti, b: r.t + 2 }, lti);
+        fill(
+            Rect {
+                l: r.l + lti_o,
+                t: r.t + 1,
+                r: r.r - rti,
+                b: r.t + 2,
+            },
+            lti,
+        );
     }
     if left {
-        fill(Rect { l: r.l + 1, t: r.t + lti_o, r: r.l + 2, b: r.b - lbi }, lti);
+        fill(
+            Rect {
+                l: r.l + 1,
+                t: r.t + lti_o,
+                r: r.l + 2,
+                b: r.b - lbi,
+            },
+            lti,
+        );
     }
     if bottom {
-        fill(Rect { l: r.l + lbi, t: r.b - 2, r: r.r - rbi_o, b: r.b - 1 }, rbi);
+        fill(
+            Rect {
+                l: r.l + lbi,
+                t: r.b - 2,
+                r: r.r - rbi_o,
+                b: r.b - 1,
+            },
+            rbi,
+        );
     }
     if right {
-        fill(Rect { l: r.r - 2, t: r.t + rti, r: r.r - 1, b: r.b - rbi_o }, rbi);
+        fill(
+            Rect {
+                l: r.r - 2,
+                t: r.t + rti,
+                r: r.r - 1,
+                b: r.b - rbi_o,
+            },
+            rbi,
+        );
     }
     let (middle, adjust) = (flags & 0x800 != 0, flags & 0x2000 != 0);
     if (middle && ok) || adjust {
@@ -4407,12 +5636,20 @@ fn DrawIconEx(_: &mut Ctx) -> u32 {
 }
 fn DrawTextA(c: &mut Ctx) -> u32 {
     let (dc, s, n, r, f) = (c.a(0), c.a(1), c.i(2), c.a(3), c.a(4));
-    let t = if n < 0 { cstr(s) } else { mem::cstrn(s, n as u32) };
+    let t = if n < 0 {
+        cstr(s)
+    } else {
+        mem::cstrn(s, n as u32)
+    };
     crate::gdi::draw_text(dc, &a2w(&t), r, f)
 }
 fn DrawTextW(c: &mut Ctx) -> u32 {
     let (dc, s, n, r, f) = (c.a(0), c.a(1), c.i(2), c.a(3), c.a(4));
-    let t: Vec<u16> = if n < 0 { wstr(s) } else { (0..n as u32).map(|i| r16(s + 2 * i)).collect() };
+    let t: Vec<u16> = if n < 0 {
+        wstr(s)
+    } else {
+        (0..n as u32).map(|i| r16(s + 2 * i)).collect()
+    };
     crate::gdi::draw_text(dc, &t, r, f)
 }
 fn DrawTextExW(c: &mut Ctx) -> u32 {
@@ -4602,8 +5839,14 @@ fn item_index(m: &Menu, item: u32, by_pos: bool) -> Option<usize> {
 }
 fn insert_item(h: u32, pos: u32, by_pos: bool, it: MenuItem) -> u32 {
     with(|s| {
-        let Some(m) = s.menus.get_mut(&h) else { return 0 };
-        let i = if pos == 0xffff_ffff { m.items.len() } else { item_index(m, pos, by_pos).unwrap_or(m.items.len()) };
+        let Some(m) = s.menus.get_mut(&h) else {
+            return 0;
+        };
+        let i = if pos == 0xffff_ffff {
+            m.items.len()
+        } else {
+            item_index(m, pos, by_pos).unwrap_or(m.items.len())
+        };
         m.items.insert(i, it);
         1
     })
@@ -4620,21 +5863,58 @@ fn menu_text(flags: u32, p: u32, wide: bool) -> Vec<u16> {
 fn InsertMenuA(c: &mut Ctx) -> u32 {
     let (h, pos, flags, id, p) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
     let sub = if flags & 0x10 != 0 { id } else { 0 };
-    insert_item(h, pos, flags & 0x400 != 0, MenuItem { id: if sub != 0 { 0xffff_ffff } else { id }, flags, text: menu_text(flags, p, false), sub, data: 0 })
+    insert_item(
+        h,
+        pos,
+        flags & 0x400 != 0,
+        MenuItem {
+            id: if sub != 0 { 0xffff_ffff } else { id },
+            flags,
+            text: menu_text(flags, p, false),
+            sub,
+            data: 0,
+        },
+    )
 }
 fn AppendMenuA(c: &mut Ctx) -> u32 {
     let (h, flags, id, p) = (c.a(0), c.a(1), c.a(2), c.a(3));
     let sub = if flags & 0x10 != 0 { id } else { 0 };
-    insert_item(h, 0xffff_ffff, true, MenuItem { id: if sub != 0 { 0xffff_ffff } else { id }, flags, text: menu_text(flags, p, false), sub, data: 0 })
+    insert_item(
+        h,
+        0xffff_ffff,
+        true,
+        MenuItem {
+            id: if sub != 0 { 0xffff_ffff } else { id },
+            flags,
+            text: menu_text(flags, p, false),
+            sub,
+            data: 0,
+        },
+    )
 }
 fn AppendMenuW(c: &mut Ctx) -> u32 {
     let (h, flags, id, p) = (c.a(0), c.a(1), c.a(2), c.a(3));
     let sub = if flags & 0x10 != 0 { id } else { 0 };
-    insert_item(h, 0xffff_ffff, true, MenuItem { id: if sub != 0 { 0xffff_ffff } else { id }, flags, text: menu_text(flags, p, true), sub, data: 0 })
+    insert_item(
+        h,
+        0xffff_ffff,
+        true,
+        MenuItem {
+            id: if sub != 0 { 0xffff_ffff } else { id },
+            flags,
+            text: menu_text(flags, p, true),
+            sub,
+            data: 0,
+        },
+    )
 }
 /// MENUITEMINFO offsets: (wID, hSubMenu, dwItemData, dwTypeData, cch); handles are 8 bytes on x64.
 fn mii() -> (u32, u32, u32, u32, u32) {
-    if mem::x64() { (16, 24, 48, 56, 64) } else { (16, 20, 32, 36, 40) }
+    if mem::x64() {
+        (16, 24, 48, 56, 64)
+    } else {
+        (16, 20, 32, 36, 40)
+    }
 }
 fn read_mii(p: u32, wide: bool) -> (u32, MenuItem) {
     let (o_id, o_sub, o_data, o_text, _) = mii();
@@ -4680,7 +5960,9 @@ fn set_menu_item_info(c: &mut Ctx, wide: bool) -> u32 {
     let (h, item, by_pos, p) = (c.a(0), c.a(1), c.a(2) != 0, c.a(3));
     let (mask, it) = read_mii(p, wide);
     with(|s| {
-        let Some((h, i)) = locate(&s.menus, h, item, by_pos) else { return 0 };
+        let Some((h, i)) = locate(&s.menus, h, item, by_pos) else {
+            return 0;
+        };
         let x = &mut s.menus.get_mut(&h).unwrap().items[i];
         if mask & 0x101 != 0 {
             x.flags = it.flags;
@@ -4742,21 +6024,43 @@ fn get_menu_item_info(c: &mut Ctx, wide: bool) -> u32 {
     1
 }
 fn GetMenuItemCount(c: &mut Ctx) -> u32 {
-    with(|s| s.menus.get(&c.a(0)).map_or(0xffff_ffff, |m| m.items.len() as u32))
+    with(|s| {
+        s.menus
+            .get(&c.a(0))
+            .map_or(0xffff_ffff, |m| m.items.len() as u32)
+    })
 }
 fn GetMenuItemID(c: &mut Ctx) -> u32 {
-    with(|s| s.menus.get(&c.a(0)).and_then(|m| m.items.get(c.a(1) as usize)).map_or(0xffff_ffff, |i| if i.sub != 0 { 0xffff_ffff } else { i.id }))
+    with(|s| {
+        s.menus
+            .get(&c.a(0))
+            .and_then(|m| m.items.get(c.a(1) as usize))
+            .map_or(0xffff_ffff, |i| if i.sub != 0 { 0xffff_ffff } else { i.id })
+    })
 }
 fn GetSubMenu(c: &mut Ctx) -> u32 {
-    with(|s| s.menus.get(&c.a(0)).and_then(|m| m.items.get(c.a(1) as usize)).map_or(0, |i| i.sub))
+    with(|s| {
+        s.menus
+            .get(&c.a(0))
+            .and_then(|m| m.items.get(c.a(1) as usize))
+            .map_or(0, |i| i.sub)
+    })
 }
 fn GetMenuState(c: &mut Ctx) -> u32 {
     let (h, item, flags) = (c.a(0), c.a(1), c.a(2));
-    with(|s| locate(&s.menus, h, item, flags & 0x400 != 0).map(|(m, i)| s.menus[&m].items[i].flags & 0xffff)).unwrap_or(0xffff_ffff)
+    with(|s| {
+        locate(&s.menus, h, item, flags & 0x400 != 0)
+            .map(|(m, i)| s.menus[&m].items[i].flags & 0xffff)
+    })
+    .unwrap_or(0xffff_ffff)
 }
 fn GetMenuStringA(c: &mut Ctx) -> u32 {
     let (h, item, buf, cap, flags) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
-    let t = with(|s| locate(&s.menus, h, item, flags & 0x400 != 0).map(|(m, i)| s.menus[&m].items[i].text.clone())).unwrap_or_default();
+    let t = with(|s| {
+        locate(&s.menus, h, item, flags & 0x400 != 0)
+            .map(|(m, i)| s.menus[&m].items[i].text.clone())
+    })
+    .unwrap_or_default();
     let a = w2a(&t);
     if buf == 0 {
         return a.len() as u32;
@@ -4765,7 +6069,9 @@ fn GetMenuStringA(c: &mut Ctx) -> u32 {
 }
 fn modify_flags(h: u32, item: u32, flags: u32, set: u32, clear: u32) -> u32 {
     with(|s| {
-        let Some((h, i)) = locate(&s.menus, h, item, flags & 0x400 != 0) else { return 0xffff_ffff };
+        let Some((h, i)) = locate(&s.menus, h, item, flags & 0x400 != 0) else {
+            return 0xffff_ffff;
+        };
         let m = s.menus.get_mut(&h).unwrap();
         let old = m.items[i].flags;
         m.items[i].flags = (old & !clear) | set;
@@ -4794,14 +6100,12 @@ fn EnableMenuItem(c: &mut Ctx) -> u32 {
 }
 fn DeleteMenu(c: &mut Ctx) -> u32 {
     let (h, item, f) = (c.a(0), c.a(1), c.a(2));
-    with(|s| {
-        match locate(&s.menus, h, item, f & 0x400 != 0) {
-            Some((h, i)) => {
-                s.menus.get_mut(&h).unwrap().items.remove(i);
-                1
-            }
-            None => 0,
+    with(|s| match locate(&s.menus, h, item, f & 0x400 != 0) {
+        Some((h, i)) => {
+            s.menus.get_mut(&h).unwrap().items.remove(i);
+            1
         }
+        None => 0,
     })
 }
 fn RemoveMenu(c: &mut Ctx) -> u32 {
@@ -4810,10 +6114,20 @@ fn RemoveMenu(c: &mut Ctx) -> u32 {
 fn ModifyMenuA(c: &mut Ctx) -> u32 {
     let (h, pos, flags, id, p) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
     with(|s| {
-        let Some(m) = s.menus.get_mut(&h) else { return 0 };
-        let Some(i) = item_index(m, pos, flags & 0x400 != 0) else { return 0 };
+        let Some(m) = s.menus.get_mut(&h) else {
+            return 0;
+        };
+        let Some(i) = item_index(m, pos, flags & 0x400 != 0) else {
+            return 0;
+        };
         let sub = if flags & 0x10 != 0 { id } else { 0 };
-        m.items[i] = MenuItem { id: if sub != 0 { 0xffff_ffff } else { id }, flags, text: menu_text(flags, p, false), sub, data: 0 };
+        m.items[i] = MenuItem {
+            id: if sub != 0 { 0xffff_ffff } else { id },
+            flags,
+            text: menu_text(flags, p, false),
+            sub,
+            data: 0,
+        };
         1
     })
 }
@@ -4823,7 +6137,9 @@ fn GetMenu(c: &mut Ctx) -> u32 {
 fn SetMenu(c: &mut Ctx) -> u32 {
     let (h, m) = (c.a(0), c.a(1));
     let changed = with(|s| {
-        let Some(w) = s.wins.get_mut(&h) else { return None };
+        let Some(w) = s.wins.get_mut(&h) else {
+            return None;
+        };
         let had = w.menu != 0;
         w.menu = m;
         if had != (m != 0) {
@@ -4870,12 +6186,29 @@ fn load_string(c: &mut Ctx, wide: bool) -> u32 {
     if !wide && cap == 0 {
         return 0xffff_ffff;
     }
-    let inst = if inst == 0 { crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map_or(0, |m| m.base) } else { inst };
-    let Some(e) = crate::pe::find_resource(inst, &crate::pe::ResId::Int(6), &crate::pe::ResId::Int(id / 16 + 1)) else {
+    let inst = if inst == 0 {
+        crate::pe::MODULES
+            .read()
+            .unwrap()
+            .iter()
+            .find(|m| !m.dll)
+            .map_or(0, |m| m.base)
+    } else {
+        inst
+    };
+    let Some(e) = crate::pe::find_resource(
+        inst,
+        &crate::pe::ResId::Int(6),
+        &crate::pe::ResId::Int(id / 16 + 1),
+    ) else {
         // no block: ERROR_RESOURCE_NAME_NOT_FOUND and an empty string
         crate::k32::last_error(1814);
         if cap > 0 {
-            if wide { mem::w16(buf, 0) } else { mem::w8(buf, 0) }
+            if wide {
+                mem::w16(buf, 0)
+            } else {
+                mem::w8(buf, 0)
+            }
         }
         return 0;
     };
@@ -4927,14 +6260,26 @@ fn LoadCursorW(_: &mut Ctx) -> u32 {
 static HOTSPOTS: Mutex<Option<HashMap<u32, (u16, u16)>>> = Mutex::new(None);
 fn cursor_from_file(name: u32, wide: bool) -> u32 {
     let n = arg_str(name, wide);
-    let data = if name == 0 { None } else { crate::files::resolve(&n).and_then(|h| kura::fs::read(h).ok()) };
+    let data = if name == 0 {
+        None
+    } else {
+        crate::files::resolve(&n).and_then(|h| kura::fs::read(h).ok())
+    };
     let Some(data) = data else {
-        crate::k32::last_error(if name == 0 { 87 } else { crate::files::missing(&n) });
+        crate::k32::last_error(if name == 0 {
+            87
+        } else {
+            crate::files::missing(&n)
+        });
         return 0;
     };
     let h = fake_handle();
     if let Some(hot) = cur_hotspot(&data) {
-        HOTSPOTS.lock().unwrap().get_or_insert_with(HashMap::default).insert(h, hot);
+        HOTSPOTS
+            .lock()
+            .unwrap()
+            .get_or_insert_with(HashMap::default)
+            .insert(h, hot);
     }
     h
 }
@@ -4995,7 +6340,12 @@ fn GetIconInfo(c: &mut Ctx) -> u32 {
     let p = c.a(1);
     let (size, mask) = if mem::x64() { (32, 16) } else { (20, 12) };
     mem::fill(p, size, 0);
-    if let Some((x, y)) = HOTSPOTS.lock().unwrap().get_or_insert_with(HashMap::default).get(&c.a(0)) {
+    if let Some((x, y)) = HOTSPOTS
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::default)
+        .get(&c.a(0))
+    {
         w32(p + 4, *x as u32);
         w32(p + 8, *y as u32);
     }
@@ -5012,8 +6362,16 @@ fn LoadBitmapW(c: &mut Ctx) -> u32 {
 }
 /// A resource's data (module 0: the exe), or None with ERROR_RESOURCE_NAME_NOT_FOUND.
 fn resource(inst: u32, name: u32, ty: u32, wide: bool) -> Option<(u32, u32)> {
-    let m = if inst == 0 { crate::k32::module_handle(0, false) } else { inst };
-    let r = crate::pe::find_resource(m, &crate::pe::ResId::Int(ty), &crate::pe::ResId::from_arg(name, wide));
+    let m = if inst == 0 {
+        crate::k32::module_handle(0, false)
+    } else {
+        inst
+    };
+    let r = crate::pe::find_resource(
+        m,
+        &crate::pe::ResId::Int(ty),
+        &crate::pe::ResId::from_arg(name, wide),
+    );
     match r {
         Some(e) => Some(crate::pe::resource_data(m, e)),
         None => {
@@ -5027,12 +6385,18 @@ fn resource(inst: u32, name: u32, ty: u32, wide: bool) -> Option<(u32, u32)> {
 static ACCELS: Mutex<Option<HashMap<u32, Vec<(u8, u16, u16)>>>> = Mutex::new(None);
 fn new_accel(t: Vec<(u8, u16, u16)>) -> u32 {
     let h = fake_handle();
-    ACCELS.lock().unwrap().get_or_insert_with(HashMap::default).insert(h, t);
+    ACCELS
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::default)
+        .insert(h, t);
     h
 }
 /// LoadAccelerators: RT_ACCELERATOR entries are 8 bytes (flags, key, id, pad); 0x80 ends them
 fn load_accelerators(c: &mut Ctx, wide: bool) -> u32 {
-    let Some((p, size)) = resource(c.a(0), c.a(1), 9, wide) else { return 0 };
+    let Some((p, size)) = resource(c.a(0), c.a(1), 9, wide) else {
+        return 0;
+    };
     let mut t = Vec::new();
     for i in 0..size / 8 {
         let e = p + 8 * i;
@@ -5057,19 +6421,42 @@ fn CreateAcceleratorTableA(c: &mut Ctx) -> u32 {
         crate::k32::last_error(87);
         return 0;
     }
-    new_accel((0..n).map(|i| (crate::mem::r8(p + 6 * i), r16(p + 6 * i + 2), r16(p + 6 * i + 4))).collect())
+    new_accel(
+        (0..n)
+            .map(|i| {
+                (
+                    crate::mem::r8(p + 6 * i),
+                    r16(p + 6 * i + 2),
+                    r16(p + 6 * i + 4),
+                )
+            })
+            .collect(),
+    )
 }
 fn CreateAcceleratorTableW(c: &mut Ctx) -> u32 {
     CreateAcceleratorTableA(c)
 }
 fn DestroyAcceleratorTable(c: &mut Ctx) -> u32 {
-    ACCELS.lock().unwrap().get_or_insert_with(HashMap::default).remove(&c.a(0)).is_some() as u32
+    ACCELS
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::default)
+        .remove(&c.a(0))
+        .is_some() as u32
 }
 /// CopyAcceleratorTable(h, ACCEL*, n): the entry count with a null buffer, else how many
 /// were copied
 fn CopyAcceleratorTableA(c: &mut Ctx) -> u32 {
     let (h, p, n) = (c.a(0), c.a(1), c.a(2));
-    let Some(t) = ACCELS.lock().unwrap().get_or_insert_with(HashMap::default).get(&h).cloned() else { return 0 };
+    let Some(t) = ACCELS
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::default)
+        .get(&h)
+        .cloned()
+    else {
+        return 0;
+    };
     if p == 0 {
         return t.len() as u32;
     }
@@ -5094,9 +6481,19 @@ fn TranslateAcceleratorA(c: &mut Ctx) -> u32 {
         return 0;
     }
     let (msg, wp) = (r32(m + 4), r32(m + 8));
-    let Some(t) = ACCELS.lock().unwrap().get_or_insert_with(HashMap::default).get(&h).cloned() else { return 0 };
+    let Some(t) = ACCELS
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::default)
+        .get(&h)
+        .cloned()
+    else {
+        return 0;
+    };
     let down = |k: usize| with(|s| s.keys[k] & 0x80 != 0);
-    let mods = (if down(0x10) { 4 } else { 0 }) | (if down(0x11) { 8 } else { 0 }) | (if down(0x12) { 16 } else { 0 });
+    let mods = (if down(0x10) { 4 } else { 0 })
+        | (if down(0x11) { 8 } else { 0 })
+        | (if down(0x12) { 16 } else { 0 });
     let hit = t.iter().find(|&&(f, key, _)| {
         if f & 1 != 0 {
             matches!(msg, 0x100 | 0x104) && key as u32 == wp & 0xffff && (f & 0x1c) == mods
@@ -5135,9 +6532,31 @@ fn menu_items(h: u32, mut p: u32) -> u32 {
             let sub = new_menu();
             p = menu_items(sub, p);
             // (a popup's id is its menu handle)
-            insert_item(h, 0xffff_ffff, true, MenuItem { id: sub, flags, text, sub, data: 0 });
+            insert_item(
+                h,
+                0xffff_ffff,
+                true,
+                MenuItem {
+                    id: sub,
+                    flags,
+                    text,
+                    sub,
+                    data: 0,
+                },
+            );
         } else {
-            insert_item(h, 0xffff_ffff, true, MenuItem { id, flags, text, sub: 0, data: 0 });
+            insert_item(
+                h,
+                0xffff_ffff,
+                true,
+                MenuItem {
+                    id,
+                    flags,
+                    text,
+                    sub: 0,
+                    data: 0,
+                },
+            );
         }
         if f & 0x80 != 0 {
             return p;
@@ -5155,9 +6574,31 @@ fn menuex_items(h: u32, mut p: u32) -> u32 {
         if res & 1 != 0 {
             let sub = new_menu();
             p = menuex_items(sub, p + 4);
-            insert_item(h, 0xffff_ffff, true, MenuItem { id, flags, text, sub, data: 0 });
+            insert_item(
+                h,
+                0xffff_ffff,
+                true,
+                MenuItem {
+                    id,
+                    flags,
+                    text,
+                    sub,
+                    data: 0,
+                },
+            );
         } else {
-            insert_item(h, 0xffff_ffff, true, MenuItem { id, flags, text, sub: 0, data: 0 });
+            insert_item(
+                h,
+                0xffff_ffff,
+                true,
+                MenuItem {
+                    id,
+                    flags,
+                    text,
+                    sub: 0,
+                    data: 0,
+                },
+            );
         }
         if res & 0x80 != 0 {
             return p;
@@ -5195,7 +6636,11 @@ fn char_case(c: &mut Ctx, upper: bool) -> u32 {
     let p = c.a(0);
     if p < 0x10000 {
         let b = p as u8;
-        return if upper { b.to_ascii_uppercase() } else { b.to_ascii_lowercase() } as u32;
+        return if upper {
+            b.to_ascii_uppercase()
+        } else {
+            b.to_ascii_lowercase()
+        } as u32;
     }
     let mut s = cstr(p);
     crate::text::case_a(&mut s, upper);
@@ -5210,7 +6655,13 @@ fn CharUpperA(c: &mut Ctx) -> u32 {
 }
 fn char_case_w(c: &mut Ctx, upper: bool) -> u32 {
     let p = c.a(0);
-    let f = |ch: u16| if upper { crate::text::upper16(ch) } else { crate::text::lower16(ch) };
+    let f = |ch: u16| {
+        if upper {
+            crate::text::upper16(ch)
+        } else {
+            crate::text::lower16(ch)
+        }
+    };
     if p < 0x10000 {
         return f(p as u16) as u32;
     }
@@ -5247,7 +6698,14 @@ fn char_buff_w(c: &mut Ctx, upper: bool) -> u32 {
     let (p, n) = (c.a(0), c.a(1));
     for i in 0..n {
         let ch = r16(p + 2 * i);
-        w16(p + 2 * i, if upper { crate::text::upper16(ch) } else { crate::text::lower16(ch) });
+        w16(
+            p + 2 * i,
+            if upper {
+                crate::text::upper16(ch)
+            } else {
+                crate::text::lower16(ch)
+            },
+        );
     }
     n
 }
@@ -5282,7 +6740,11 @@ fn CharNextExA(c: &mut Ctx) -> u32 {
 }
 fn CharNextW(c: &mut Ctx) -> u32 {
     let p = c.a(0);
-    if r16(p) == 0 { p } else { p + 2 }
+    if r16(p) == 0 {
+        p
+    } else {
+        p + 2
+    }
 }
 fn CharPrevA(c: &mut Ctx) -> u32 {
     char_prev(0, c.a(0), c.a(1))
@@ -5297,7 +6759,11 @@ fn char_prev(cp: u32, start: u32, p: u32) -> u32 {
     }
     let mut q = start;
     loop {
-        let n = if crate::text::is_lead_cp(cp, mem::r8(q)) { q + 2 } else { q + 1 };
+        let n = if crate::text::is_lead_cp(cp, mem::r8(q)) {
+            q + 2
+        } else {
+            q + 1
+        };
         if n >= p {
             return q;
         }
@@ -5349,7 +6815,10 @@ pub fn wsprintf_format(f: &[u16]) -> Vec<u16> {
         }
         let start = i;
         i += 1;
-        let is = |i: usize, set: &[u8]| f.get(i).is_some_and(|&ch| ch < 0x80 && set.contains(&(ch as u8)));
+        let is = |i: usize, set: &[u8]| {
+            f.get(i)
+                .is_some_and(|&ch| ch < 0x80 && set.contains(&(ch as u8)))
+        };
         while is(i, b"-#0 +") {
             i += 1;
         }
@@ -5371,7 +6840,9 @@ pub fn wsprintf_format(f: &[u16]) -> Vec<u16> {
             None => {
                 out.extend_from_slice(&f[start..]);
             }
-            Some(&t) if t < 0x80 && b"%cCdisSuxXp".contains(&(t as u8)) => out.extend_from_slice(&f[start..=i]),
+            Some(&t) if t < 0x80 && b"%cCdisSuxXp".contains(&(t as u8)) => {
+                out.extend_from_slice(&f[start..=i])
+            }
             Some(&t) => out.push(t),
         }
         i += 1;
@@ -5381,7 +6852,10 @@ pub fn wsprintf_format(f: &[u16]) -> Vec<u16> {
 /// The output: 1024 characters at most, and a NUL
 const WSPRINTF_MAX: usize = 1024;
 fn wsprintf_a(dst: u32, fmt: u32, va: &mut crate::misc::VaArgs) -> u32 {
-    let f: Vec<u8> = wsprintf_format(&cstr(fmt).iter().map(|&b| b as u16).collect::<Vec<_>>()).iter().map(|&u| u as u8).collect();
+    let f: Vec<u8> = wsprintf_format(&cstr(fmt).iter().map(|&b| b as u16).collect::<Vec<_>>())
+        .iter()
+        .map(|&u| u as u8)
+        .collect();
     let out = crate::misc::format(&f, va, false);
     let out = &out[..out.len().min(WSPRINTF_MAX)];
     mem::write(dst, out);
@@ -5475,10 +6949,26 @@ fn start_input() {
 
 /// WM_INPUT with raw input event `h`, to `hwnd` (0: the window with the focus)
 fn raw_post(s: &mut State, hwnd: u32, h: u32, t: u32) {
-    let hwnd = if hwnd != 0 { hwnd } else if s.focus != 0 { s.focus } else { s.active };
-    let Some(tid) = s.wins.get(&hwnd).map(|w| w.tid) else { return };
+    let hwnd = if hwnd != 0 {
+        hwnd
+    } else if s.focus != 0 {
+        s.focus
+    } else {
+        s.active
+    };
+    let Some(tid) = s.wins.get(&hwnd).map(|w| w.tid) else {
+        return;
+    };
     let (x, y) = s.cursor;
-    s.queues.entry(tid).or_default().input.push_back(Msg { hwnd, msg: crate::rawinput::WM_INPUT, w: 0, l: h, time: t, x, y });
+    s.queues.entry(tid).or_default().input.push_back(Msg {
+        hwnd,
+        msg: crate::rawinput::WM_INPUT,
+        w: 0,
+        l: h,
+        time: t,
+        x,
+        y,
+    });
 }
 
 fn input(kind: u32, x: i32, y: i32, data: u32) {
@@ -5495,7 +6985,12 @@ fn input(kind: u32, x: i32, y: i32, data: u32) {
                         4 => (0x400, data as u16 as i16), // RI_MOUSE_WHEEL
                         _ => (0, 0),
                     };
-                    raw_post(s, rw, crate::rawinput::mouse_event(buttons, wheel, dx, dy), t);
+                    raw_post(
+                        s,
+                        rw,
+                        crate::rawinput::mouse_event(buttons, wheel, dx, dy),
+                        t,
+                    );
                     if nolegacy {
                         // (the button state still changes)
                         match (kind, data) {
@@ -5506,7 +7001,11 @@ fn input(kind: u32, x: i32, y: i32, data: u32) {
                         return;
                     }
                 }
-                let target = if s.capture != 0 { s.capture } else { window_at(s, x, y) };
+                let target = if s.capture != 0 {
+                    s.capture
+                } else {
+                    window_at(s, x, y)
+                };
                 let Some(w) = s.wins.get(&target) else { return };
                 let tid = w.tid;
                 let c = client_screen(s, target);
@@ -5514,7 +7013,15 @@ fn input(kind: u32, x: i32, y: i32, data: u32) {
                 if crate::env_on!("SAKE_TRACE_INPUT") {
                     eprintln!("sake input: {kind} at {x},{y} -> {target:x} client {cx},{cy} (client {c:?}, window {:?})", w.rect);
                     for (h, w) in s.wins.iter() {
-                        eprintln!("  win {h:x} parent {:x} vis {} style {:x} ex {:x} rect {:?} active {}", w.parent, w.visible, w.style, w.exstyle, w.rect, s.active == *h);
+                        eprintln!(
+                            "  win {h:x} parent {:x} vis {} style {:x} ex {:x} rect {:?} active {}",
+                            w.parent,
+                            w.visible,
+                            w.style,
+                            w.exstyle,
+                            w.rect,
+                            s.active == *h
+                        );
                     }
                 }
                 let mut flags = 0u32;
@@ -5547,19 +7054,47 @@ fn input(kind: u32, x: i32, y: i32, data: u32) {
                     }
                     _ => (0x20a, flags | (data << 16)),
                 };
-                let lp = if msg == 0x20a { ((y as u32) << 16) | (x as u32 & 0xffff) } else { ((cy as u32) << 16) | (cx as u32 & 0xffff) };
+                let lp = if msg == 0x20a {
+                    ((y as u32) << 16) | (x as u32 & 0xffff)
+                } else {
+                    ((cy as u32) << 16) | (cx as u32 & 0xffff)
+                };
                 let q = s.queues.entry(tid).or_default();
                 // coalesce moves
                 if msg == 0x200 {
                     if let Some(last) = q.input.back_mut() {
                         if last.msg == 0x200 && last.hwnd == target {
-                            *last = Msg { hwnd: target, msg, w: wp, l: lp, time: t, x, y };
+                            *last = Msg {
+                                hwnd: target,
+                                msg,
+                                w: wp,
+                                l: lp,
+                                time: t,
+                                x,
+                                y,
+                            };
                             return;
                         }
                     }
-                    q.input.push_back(Msg { hwnd: target, msg: 0x20, w: target, l: 0x200 << 16 | 1, time: t, x, y });
+                    q.input.push_back(Msg {
+                        hwnd: target,
+                        msg: 0x20,
+                        w: target,
+                        l: 0x200 << 16 | 1,
+                        time: t,
+                        x,
+                        y,
+                    });
                 }
-                q.input.push_back(Msg { hwnd: target, msg, w: wp, l: lp, time: t, x, y });
+                q.input.push_back(Msg {
+                    hwnd: target,
+                    msg,
+                    w: wp,
+                    l: lp,
+                    time: t,
+                    x,
+                    y,
+                });
             }
             5 | 6 => {
                 let vk = (data & 0xff) as usize;
@@ -5580,15 +7115,27 @@ fn input(kind: u32, x: i32, y: i32, data: u32) {
                     (5, true) => 0x104,
                     _ => 0x105,
                 };
-                let lp = 1 | scan << 16 | if kind == 6 { 0xc000_0000 } else { 0 } | if alt { 0x2000_0000 } else { 0 };
+                let lp = 1
+                    | scan << 16
+                    | if kind == 6 { 0xc000_0000 } else { 0 }
+                    | if alt { 0x2000_0000 } else { 0 };
                 if let Some((rw, nolegacy)) = crate::rawinput::registered(false) {
-                    let h = crate::rawinput::key_event(scan as u16, (kind == 6) as u16, vk as u16, msg);
+                    let h =
+                        crate::rawinput::key_event(scan as u16, (kind == 6) as u16, vk as u16, msg);
                     raw_post(s, rw, h, t);
                     if nolegacy {
                         return;
                     }
                 }
-                s.queues.entry(tid).or_default().input.push_back(Msg { hwnd: target, msg, w: vk as u32, l: lp, time: t, x: s.cursor.0, y: s.cursor.1 });
+                s.queues.entry(tid).or_default().input.push_back(Msg {
+                    hwnd: target,
+                    msg,
+                    w: vk as u32,
+                    l: lp,
+                    time: t,
+                    x: s.cursor.0,
+                    y: s.cursor.1,
+                });
             }
             _ => {}
         }
@@ -5614,11 +7161,22 @@ fn dlg_wndproc() -> u32 {
 }
 
 fn extra32(h: u32, off: usize) -> u32 {
-    with(|s| s.wins.get(&h).and_then(|w| w.extra.get(off..off + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap())))).unwrap_or(0)
+    with(|s| {
+        s.wins.get(&h).and_then(|w| {
+            w.extra
+                .get(off..off + 4)
+                .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+        })
+    })
+    .unwrap_or(0)
 }
 fn set_extra32(h: u32, off: usize, v: u32) {
     with(|s| {
-        if let Some(b) = s.wins.get_mut(&h).and_then(|w| w.extra.get_mut(off..off + 4)) {
+        if let Some(b) = s
+            .wins
+            .get_mut(&h)
+            .and_then(|w| w.extra.get_mut(off..off + 4))
+        {
             b.copy_from_slice(&v.to_le_bytes());
         }
     });
@@ -5631,7 +7189,14 @@ fn dlg_wndproc_fn(c: &mut Ctx) -> u32 {
         let r = c.call(p, &[h, m, wp, lp]);
         if r != 0 {
             // (these return their value, the rest in DWL_MSGRESULT)
-            return if matches!(m, 0x110 | 0x19 | 0x2b | 0x133..=0x138 | 0x87 | 0x56 | 0x37 | 0x39) { r } else { extra32(h, 0) };
+            return if matches!(
+                m,
+                0x110 | 0x19 | 0x2b | 0x133..=0x138 | 0x87 | 0x56 | 0x37 | 0x39
+            ) {
+                r
+            } else {
+                extra32(h, 0)
+            };
         }
     }
     match m {
@@ -5670,10 +7235,15 @@ fn default_button(dlg: u32) -> (u32, u32) {
     // DM_GETDEFID's, else IDOK; winref msgwait: a plain push button with the focus is not taken)
     let focused = with(|s| {
         let w = s.wins.get(&s.focus)?;
-        let button = s.classes.get(w.class).is_some_and(|c| c.name.eq_ignore_ascii_case("Button"));
+        let button = s
+            .classes
+            .get(w.class)
+            .is_some_and(|c| c.name.eq_ignore_ascii_case("Button"));
         (w.parent == dlg && button && w.style & 0xf == 1).then(|| (w.id & 0xffff, s.focus))
     });
-    focused.or_else(|| def_button(dlg)).unwrap_or_else(|| (1, dlg_item(dlg, 1)))
+    focused
+        .or_else(|| def_button(dlg))
+        .unwrap_or_else(|| (1, dlg_item(dlg, 1)))
 }
 
 /// The dialog's BS_DEFPUSHBUTTON child: (id, window)
@@ -5681,13 +7251,30 @@ fn def_button(dlg: u32) -> Option<(u32, u32)> {
     with(|s| {
         let kids = s.wins.get(&dlg)?.children.clone();
         kids.into_iter()
-            .find(|k| s.wins.get(k).is_some_and(|w| s.classes.get(w.class).is_some_and(|c| c.name.eq_ignore_ascii_case("Button")) && w.style & 0xf == 1))
+            .find(|k| {
+                s.wins.get(k).is_some_and(|w| {
+                    s.classes
+                        .get(w.class)
+                        .is_some_and(|c| c.name.eq_ignore_ascii_case("Button"))
+                        && w.style & 0xf == 1
+                })
+            })
             .map(|k| (s.wins[&k].id & 0xffff, k))
     })
 }
 
 fn dlg_item(h: u32, id: u32) -> u32 {
-    with(|s| s.wins.get(&h).and_then(|w| w.children.iter().copied().find(|ch| s.wins.get(ch).is_some_and(|x| x.id & 0xffff == id & 0xffff))).unwrap_or(0))
+    with(|s| {
+        s.wins
+            .get(&h)
+            .and_then(|w| {
+                w.children
+                    .iter()
+                    .copied()
+                    .find(|ch| s.wins.get(ch).is_some_and(|x| x.id & 0xffff == id & 0xffff))
+            })
+            .unwrap_or(0)
+    })
 }
 
 /// A string or ordinal in a template: (Some(string address) or None, ordinal) and the next field.
@@ -5710,10 +7297,27 @@ fn du(x: i32, y: i32) -> (i32, i32) {
     ((x * 6 + 2) / 4, (y * 13 + 4) / 8)
 }
 
-fn create_dialog(c: &mut Ctx, inst: u32, t: u32, owner: u32, proc_: u32, param: u32, modal: bool) -> u32 {
+fn create_dialog(
+    c: &mut Ctx,
+    inst: u32,
+    t: u32,
+    owner: u32,
+    proc_: u32,
+    param: u32,
+    modal: bool,
+) -> u32 {
     let ex = r16(t) == 1 && r16(t + 2) == 0xffff;
-    let (style, exstyle, n, mut p) = if ex { (r32(t + 12), r32(t + 8), r16(t + 16) as u32, t + 18) } else { (r32(t), r32(t + 4), r16(t + 8) as u32, t + 10) };
-    let (x, y, cx, cy) = (r16(p) as i16 as i32, r16(p + 2) as i16 as i32, r16(p + 4) as i16 as i32, r16(p + 6) as i16 as i32);
+    let (style, exstyle, n, mut p) = if ex {
+        (r32(t + 12), r32(t + 8), r16(t + 16) as u32, t + 18)
+    } else {
+        (r32(t), r32(t + 4), r16(t + 8) as u32, t + 10)
+    };
+    let (x, y, cx, cy) = (
+        r16(p) as i16 as i32,
+        r16(p + 2) as i16 as i32,
+        r16(p + 4) as i16 as i32,
+        r16(p + 6) as i16 as i32,
+    );
     p += 8;
     let (_, _, q) = sz_or_ord(p); // menu
     let (cls_s, cls_o, q) = sz_or_ord(q);
@@ -5721,10 +7325,39 @@ fn create_dialog(c: &mut Ctx, inst: u32, t: u32, owner: u32, proc_: u32, param: 
     let mut font = 0;
     if style & 0x40 != 0 {
         let pt = r16(q) as i32;
-        let (weight, italic, charset, face) = if ex { (r16(q + 2) as u32, r16(q + 4) as u32 & 0xff, r16(q + 4) as u32 >> 8, q + 6) } else { (400, 0, 1, q + 2) };
+        let (weight, italic, charset, face) = if ex {
+            (
+                r16(q + 2) as u32,
+                r16(q + 4) as u32 & 0xff,
+                r16(q + 4) as u32 >> 8,
+                q + 6,
+            )
+        } else {
+            (400, 0, 1, q + 2)
+        };
         let (_, _, next) = sz_or_ord(face);
         q = next;
-        font = gcall(c, "gdi32", "CreateFontW", &[(-(pt * 96 + 36) / 72) as u32, 0, 0, 0, weight, italic, 0, 0, charset, 0, 0, 0, 0, face]);
+        font = gcall(
+            c,
+            "gdi32",
+            "CreateFontW",
+            &[
+                (-(pt * 96 + 36) / 72) as u32,
+                0,
+                0,
+                0,
+                weight,
+                italic,
+                0,
+                0,
+                charset,
+                0,
+                0,
+                0,
+                0,
+                face,
+            ],
+        );
     }
     let (w, h) = du(cx, cy);
     let (fl, ft, fr, fb) = frame(style, exstyle, false);
@@ -5733,10 +7366,17 @@ fn create_dialog(c: &mut Ctx, inst: u32, t: u32, owner: u32, proc_: u32, param: 
         du(x, y)
     } else {
         // centred on the owner (or the screen)
-        let r = with(|s| s.wins.get(&owner).filter(|_| owner != 0).map(|w| w.rect)).unwrap_or_else(|| {
-            let (sw, sh) = screen();
-            Rect { l: 0, t: 0, r: sw, b: sh }
-        });
+        let r = with(|s| s.wins.get(&owner).filter(|_| owner != 0).map(|w| w.rect)).unwrap_or_else(
+            || {
+                let (sw, sh) = screen();
+                Rect {
+                    l: 0,
+                    t: 0,
+                    r: sw,
+                    b: sh,
+                }
+            },
+        );
         (r.l + (r.w() - ww) / 2, r.t + (r.h() - wh) / 2)
     };
     let cls = match (cls_s, cls_o) {
@@ -5744,7 +7384,25 @@ fn create_dialog(c: &mut Ctx, inst: u32, t: u32, owner: u32, proc_: u32, param: 
         (None, 0) => crate::k32::atom("#32770"),
         (None, o) => o,
     };
-    let dlg = gcall(c, "user32", "CreateWindowExW", &[exstyle, cls, 0, style & !0x1000_0000, ox as u32, oy as u32, ww as u32, wh as u32, owner, 0, inst, param]);
+    let dlg = gcall(
+        c,
+        "user32",
+        "CreateWindowExW",
+        &[
+            exstyle,
+            cls,
+            0,
+            style & !0x1000_0000,
+            ox as u32,
+            oy as u32,
+            ww as u32,
+            wh as u32,
+            owner,
+            0,
+            inst,
+            param,
+        ],
+    );
     if dlg == 0 {
         return 0;
     }
@@ -5760,7 +7418,11 @@ fn create_dialog(c: &mut Ctx, inst: u32, t: u32, owner: u32, proc_: u32, param: 
     let mut first = 0;
     for _ in 0..n {
         q = (q + 3) & !3;
-        let (st, ex2, id, mut r) = if ex { (r32(q + 8), r32(q + 4), r32(q + 20), q + 24) } else { (r32(q), r32(q + 4), r16(q + 16) as u32, q + 18) };
+        let (st, ex2, id, mut r) = if ex {
+            (r32(q + 8), r32(q + 4), r32(q + 20), q + 24)
+        } else {
+            (r32(q), r32(q + 4), r16(q + 16) as u32, q + 18)
+        };
         let o = if ex { q + 12 } else { q + 8 };
         let (ix, iy) = du(r16(o) as i16 as i32, r16(o + 2) as i16 as i32);
         let (iw, ih) = du(r16(o + 4) as i16 as i32, r16(o + 6) as i16 as i32);
@@ -5780,7 +7442,25 @@ fn create_dialog(c: &mut Ctx, inst: u32, t: u32, owner: u32, proc_: u32, param: 
                 _ => "ComboBox",
             }),
         };
-        let ctl = gcall(c, "user32", "CreateWindowExW", &[ex2, cls, 0, st | 0x4000_0000, ix as u32, iy as u32, iw as u32, ih as u32, dlg, id, inst, if extra != 0 { r3 + 2 } else { 0 }]);
+        let ctl = gcall(
+            c,
+            "user32",
+            "CreateWindowExW",
+            &[
+                ex2,
+                cls,
+                0,
+                st | 0x4000_0000,
+                ix as u32,
+                iy as u32,
+                iw as u32,
+                ih as u32,
+                dlg,
+                id,
+                inst,
+                if extra != 0 { r3 + 2 } else { 0 },
+            ],
+        );
         if ctl == 0 {
             continue;
         }
@@ -5798,7 +7478,14 @@ fn create_dialog(c: &mut Ctx, inst: u32, t: u32, owner: u32, proc_: u32, param: 
     if send(c, dlg, 0x110, first, param) != 0 && first != 0 {
         set_focus(c, first);
     }
-    if is_window(dlg) && (modal || style & 0x1000_0000 != 0) && !DLG_END.lock().unwrap().get_or_insert_with(HashMap::default).contains_key(&dlg) {
+    if is_window(dlg)
+        && (modal || style & 0x1000_0000 != 0)
+        && !DLG_END
+            .lock()
+            .unwrap()
+            .get_or_insert_with(HashMap::default)
+            .contains_key(&dlg)
+    {
         show(c, dlg, 5);
     }
     dlg
@@ -5834,9 +7521,19 @@ fn dialog_box(c: &mut Ctx, inst: u32, t: u32, owner: u32, proc_: u32, param: u32
     if dlg == 0 {
         return u32::MAX;
     }
-    let was_enabled = with(|s| s.wins.get_mut(&owner).map(|w| std::mem::replace(&mut w.enabled, false))).unwrap_or(false);
+    let was_enabled = with(|s| {
+        s.wins
+            .get_mut(&owner)
+            .map(|w| std::mem::replace(&mut w.enabled, false))
+    })
+    .unwrap_or(false);
     let r = loop {
-        if let Some(r) = DLG_END.lock().unwrap().get_or_insert_with(HashMap::default).remove(&dlg) {
+        if let Some(r) = DLG_END
+            .lock()
+            .unwrap()
+            .get_or_insert_with(HashMap::default)
+            .remove(&dlg)
+        {
             break r;
         }
         if !is_window(dlg) {
@@ -5849,9 +7546,14 @@ fn dialog_box(c: &mut Ctx, inst: u32, t: u32, owner: u32, proc_: u32, param: u32
                 break 0;
             }
             Some(m) => {
-                let mine = m.hwnd == dlg || with(|s| s.wins.get(&m.hwnd).is_some_and(|w| w.parent == dlg));
+                let mine =
+                    m.hwnd == dlg || with(|s| s.wins.get(&m.hwnd).is_some_and(|w| w.parent == dlg));
                 if m.msg == 0x100 && mine && (m.w == 0x0d || m.w == 0x1b) {
-                    let (id, b) = if m.w == 0x0d { default_button(dlg) } else { (2, dlg_item(dlg, 2)) };
+                    let (id, b) = if m.w == 0x0d {
+                        default_button(dlg)
+                    } else {
+                        (2, dlg_item(dlg, 2))
+                    };
                     send(c, dlg, 0x111, id, b);
                 } else {
                     dispatch_msg(c, &m);
@@ -5876,8 +7578,16 @@ fn dialog_box(c: &mut Ctx, inst: u32, t: u32, owner: u32, proc_: u32, param: u32
 
 fn dlg_template(c: &mut Ctx, inst: u32, name: u32, wide: bool) -> Option<u32> {
     let _ = c;
-    let m = if inst == 0 { crate::k32::module_handle(0, false) } else { inst };
-    let e = crate::pe::find_resource(m, &crate::pe::ResId::Int(5), &crate::pe::ResId::from_arg(name, wide))?;
+    let m = if inst == 0 {
+        crate::k32::module_handle(0, false)
+    } else {
+        inst
+    };
+    let e = crate::pe::find_resource(
+        m,
+        &crate::pe::ResId::Int(5),
+        &crate::pe::ResId::from_arg(name, wide),
+    )?;
     Some(crate::pe::resource_data(m, e).0)
 }
 
@@ -5925,7 +7635,11 @@ fn CreateDialogIndirectParamW(c: &mut Ctx) -> u32 {
 }
 fn EndDialog(c: &mut Ctx) -> u32 {
     let (h, r) = (c.a(0), c.a(1));
-    DLG_END.lock().unwrap().get_or_insert_with(HashMap::default).insert(h, r);
+    DLG_END
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::default)
+        .insert(h, r);
     show(c, h, 0);
     1
 }
@@ -5971,7 +7685,11 @@ fn GetDlgItemTextW(c: &mut Ctx) -> u32 {
 fn GetDlgItemInt(c: &mut Ctx) -> u32 {
     let (h, id, ok, signed) = (c.a(0), c.a(1), c.a(2), c.a(3));
     let s = String::from_utf16_lossy(&item_text(h, id));
-    let v = s.trim().parse::<i64>().ok().filter(|v| signed != 0 || *v >= 0);
+    let v = s
+        .trim()
+        .parse::<i64>()
+        .ok()
+        .filter(|v| signed != 0 || *v >= 0);
     if ok != 0 {
         w32(ok, v.is_some() as u32);
     }
@@ -5979,7 +7697,11 @@ fn GetDlgItemInt(c: &mut Ctx) -> u32 {
 }
 fn SetDlgItemInt(c: &mut Ctx) -> u32 {
     let (h, id, v, signed) = (c.a(0), c.a(1), c.a(2), c.a(3));
-    let s = if signed != 0 { (v as i32).to_string() } else { v.to_string() };
+    let s = if signed != 0 {
+        (v as i32).to_string()
+    } else {
+        v.to_string()
+    };
     set_item_text(c, h, id, s.encode_utf16().collect())
 }
 fn CheckDlgButton(c: &mut Ctx) -> u32 {
@@ -5993,7 +7715,11 @@ fn CheckDlgButton(c: &mut Ctx) -> u32 {
 fn IsDlgButtonChecked(c: &mut Ctx) -> u32 {
     let (h, id) = (c.a(0), c.a(1));
     let ch = dlg_item(h, id);
-    if ch == 0 { 0 } else { send(c, ch, 0xf0, 0, 0) }
+    if ch == 0 {
+        0
+    } else {
+        send(c, ch, 0xf0, 0, 0)
+    }
 }
 fn CheckRadioButton(c: &mut Ctx) -> u32 {
     let (h, first, last, on) = (c.a(0), c.a(1), c.a(2), c.a(3));
@@ -6083,7 +7809,11 @@ pub fn init() {
     implement("user32", "DdeInitializeW", DdeInitializeA);
     // per-monitor DPI: everything is 96 dpi
     implement("user32", "AdjustWindowRectExForDpi", AdjustWindowRectEx);
-    for n in ["GetDpiForSystem", "GetDpiForWindow", "GetSystemDpiForProcess"] {
+    for n in [
+        "GetDpiForSystem",
+        "GetDpiForWindow",
+        "GetSystemDpiForProcess",
+    ] {
         implement("user32", n, |_| 96);
     }
     for n in ["SetProcessDpiAwarenessContext", "EnableNonClientDpiScaling"] {
@@ -6124,7 +7854,10 @@ pub fn init() {
     });
     implement("shcore", "GetCurrentProcessExplicitAppUserModelID", |c| {
         let (flags, title) = app_id_params();
-        let (n, buf) = (crate::mem::r16(title) as u32 / 2, crate::mem::rp(title + crate::mem::ps()));
+        let (n, buf) = (
+            crate::mem::r16(title) as u32 / 2,
+            crate::mem::rp(title + crate::mem::ps()),
+        );
         if c.a(0) == 0 {
             return 0x8007_0057;
         }
@@ -6146,7 +7879,15 @@ pub fn init() {
         }
         0x8000_4005
     });
-    for n in ["DdeNameService", "DdeFreeStringHandle", "DdeUninitialize", "DdeKeepStringHandle", "DdeDisconnect", "DdeFreeDataHandle", "DdeEnableCallback"] {
+    for n in [
+        "DdeNameService",
+        "DdeFreeStringHandle",
+        "DdeUninitialize",
+        "DdeKeepStringHandle",
+        "DdeDisconnect",
+        "DdeFreeDataHandle",
+        "DdeEnableCallback",
+    ] {
         implement("user32", n, dde_true);
     }
     reg!("user32";
@@ -6180,7 +7921,12 @@ mod tests {
     }
 
     fn rect() -> impl Strategy<Value = Rect> {
-        (-20i32..20, -20i32..20, 0i32..30, 0i32..30).prop_map(|(l, t, w, h)| Rect { l, t, r: l + w, b: t + h })
+        (-20i32..20, -20i32..20, 0i32..30, 0i32..30).prop_map(|(l, t, w, h)| Rect {
+            l,
+            t,
+            r: l + w,
+            b: t + h,
+        })
     }
 
     proptest! {
@@ -6200,18 +7946,67 @@ mod tests {
 
     #[test]
     fn minus_trims_edges() {
-        let a = Rect { l: 0, t: 0, r: 100, b: 100 };
-        assert!(a.minus(&Rect { l: -5, t: -5, r: 200, b: 200 }).empty());
-        assert_eq!(a.minus(&Rect { l: 0, t: 0, r: 100, b: 30 }), Rect { l: 0, t: 30, r: 100, b: 100 });
-        assert_eq!(a.minus(&Rect { l: 60, t: -1, r: 101, b: 101 }), Rect { l: 0, t: 0, r: 60, b: 100 });
-        assert_eq!(a.minus(&Rect { l: 10, t: 10, r: 20, b: 20 }), a);
+        let a = Rect {
+            l: 0,
+            t: 0,
+            r: 100,
+            b: 100,
+        };
+        assert!(a
+            .minus(&Rect {
+                l: -5,
+                t: -5,
+                r: 200,
+                b: 200
+            })
+            .empty());
+        assert_eq!(
+            a.minus(&Rect {
+                l: 0,
+                t: 0,
+                r: 100,
+                b: 30
+            }),
+            Rect {
+                l: 0,
+                t: 30,
+                r: 100,
+                b: 100
+            }
+        );
+        assert_eq!(
+            a.minus(&Rect {
+                l: 60,
+                t: -1,
+                r: 101,
+                b: 101
+            }),
+            Rect {
+                l: 0,
+                t: 0,
+                r: 60,
+                b: 100
+            }
+        );
+        assert_eq!(
+            a.minus(&Rect {
+                l: 10,
+                t: 10,
+                r: 20,
+                b: 20
+            }),
+            a
+        );
     }
 
     #[test]
     fn wsprintf_drops_unknown_conversions() {
         // (winref strapis: "%f|%e|%I64d" prints "f|e|" and the first double's bits)
         assert_eq!(wsprintf_format(&u("%f|%e|%I64d")), u("f|e|%I64d"));
-        assert_eq!(wsprintf_format(&u("%-08.3ls %5lu %hc %% %ws %p")), u("%-08.3ls %5lu %hc %% %ws %p"));
+        assert_eq!(
+            wsprintf_format(&u("%-08.3ls %5lu %hc %% %ws %p")),
+            u("%-08.3ls %5lu %hc %% %ws %p")
+        );
         assert_eq!(wsprintf_format(&u("%5.2g%n%q")), u("gnq"));
         assert_eq!(wsprintf_format(&u("tail %")), u("tail %"));
         assert_eq!(wsprintf_format(&u("%05")), u("%05"));

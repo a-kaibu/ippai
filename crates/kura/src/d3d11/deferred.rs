@@ -50,7 +50,17 @@ pub struct Deferred {
 pub(super) fn state_objects(s: &State) -> Vec<u32> {
     let mut held: Vec<u32> = Vec::new();
     held.extend(s.vbs.iter().map(|v| v.0));
-    held.extend([s.ib.0, s.layout, s.vs, s.ps, s.dsv, s.blend, s.depth, s.raster, s.predicate.0]);
+    held.extend([
+        s.ib.0,
+        s.layout,
+        s.vs,
+        s.ps,
+        s.dsv,
+        s.blend,
+        s.depth,
+        s.raster,
+        s.predicate.0,
+    ]);
     held.extend(s.shaders);
     held.extend(s.uavs.iter().flatten());
     held.extend(s.so);
@@ -73,7 +83,11 @@ fn clone_state(d: &mut D11, s: &State) -> State {
 }
 
 fn new_list(d: &mut D11, start: &State) -> CmdList {
-    CmdList { start: clone_state(d, start), recs: Default::default(), held: Vec::new() }
+    CmdList {
+        start: clone_state(d, start),
+        recs: Default::default(),
+        held: Vec::new(),
+    }
 }
 
 /// Lets go of what a list holds.
@@ -103,7 +117,14 @@ pub(super) unsafe fn create(d: &mut D11, flags: u32, out: u32) -> u32 {
     }
     let st = default_state();
     let list = new_list(d, &st);
-    let o = d.new_obj(IF_CONTEXT, Data::Deferred(Box::new(Deferred { st, list, maps: Vec::new() })));
+    let o = d.new_obj(
+        IF_CONTEXT,
+        Data::Deferred(Box::new(Deferred {
+            st,
+            list,
+            maps: Vec::new(),
+        })),
+    );
     // (a device child: it holds the device while it is held)
     let dev = d.device;
     d.add_ref(dev);
@@ -118,14 +139,20 @@ unsafe fn pointed(d: &D11, m: u32, a: &dyn Fn(usize) -> u32) -> Option<Vec<(usiz
     let n = |i: usize| a(i).min(128);
     Some(match m {
         // *Set{ConstantBuffers, ShaderResources, Samplers}(start, n, objects)
-        7 | 8 | 10 | 16 | 22 | 25 | 26 | 31 | 32 | 59 | 61 | 62 | 63 | 65 | 66 | 67 | 70 | 71 => vec![(3, n(2) * ps)],
+        7 | 8 | 10 | 16 | 22 | 25 | 26 | 31 | 32 | 59 | 61 | 62 | 63 | 65 | 66 | 67 | 70 | 71 => {
+            vec![(3, n(2) * ps)]
+        }
         // *SetShader(shader, class instances, n)
         9 | 11 | 23 | 60 | 64 | 69 => vec![(2, n(3) * ps)],
         18 => vec![(3, n(2) * ps), (4, 4 * n(2)), (5, 4 * n(2))],
         33 => vec![(2, n(1).min(8) * ps)],
         34 => {
             let keep = |v: u32| if v == 0xffff_ffff { 0 } else { v.min(8) };
-            vec![(2, keep(a(1)) * ps), (6, keep(a(5)) * ps), (7, 4 * keep(a(5)))]
+            vec![
+                (2, keep(a(1)) * ps),
+                (6, keep(a(5)) * ps),
+                (7, 4 * keep(a(5))),
+            ]
         }
         35 | 50 | 51 | 52 => vec![(2, 16)],
         37 => vec![(2, n(1).min(4) * ps), (3, 4 * n(1).min(4))],
@@ -143,17 +170,36 @@ unsafe fn pointed(d: &D11, m: u32, a: &dyn Fn(usize) -> u32) -> Option<Vec<(usiz
 /// The bytes UpdateSubresource(resource, sub, box, data, row pitch, depth pitch) reads: as
 /// update_subresource and upload_texture read them (a texture's box from its block's corner).
 unsafe fn update_size(d: &D11, a: &dyn Fn(usize) -> u32) -> Option<u32> {
-    let bx = (a(3) != 0).then(|| [rd(a(3), 0), rd(a(3), 1), rd(a(3), 2), rd(a(3), 3), rd(a(3), 4), rd(a(3), 5)]);
+    let bx = (a(3) != 0).then(|| {
+        [
+            rd(a(3), 0),
+            rd(a(3), 1),
+            rd(a(3), 2),
+            rd(a(3), 3),
+            rd(a(3), 4),
+            rd(a(3), 5),
+        ]
+    });
     let size: u64 = match d.objs.get(&d.id_of(a(1))).map(|o| &o.data) {
-        Some(Data::Buffer(b)) => bx.map_or(b.size, |x| x[3].min(b.size).saturating_sub(x[0])) as u64,
+        Some(Data::Buffer(b)) => {
+            bx.map_or(b.size, |x| x[3].min(b.size).saturating_sub(x[0])) as u64
+        }
         Some(Data::Texture(t)) => {
             let level = a(2) % t.mips.max(1);
             let (lw, lh) = ((t.w >> level).max(1), (t.h >> level).max(1));
-            let ld = if t.dim == 3 { (t.layers >> level).max(1) } else { 1 };
+            let ld = if t.dim == 3 {
+                (t.layers >> level).max(1)
+            } else {
+                1
+            };
             let block = format::info(t.fmt).map_or(1, |f| f.block.max(1));
             let [x0, y0, z0, x1, y1, z1] = bx.unwrap_or([0, 0, 0, lw, lh, ld]);
             let (x0, y0) = (x0 / block * block, y0 / block * block);
-            let (w, h, dp) = (x1.min(lw).saturating_sub(x0), y1.min(lh).saturating_sub(y0), z1.min(ld).saturating_sub(z0));
+            let (w, h, dp) = (
+                x1.min(lw).saturating_sub(x0),
+                y1.min(lh).saturating_sub(y0),
+                z1.min(ld).saturating_sub(z0),
+            );
             if w == 0 || h == 0 || dp == 0 {
                 return Some(0);
             }
@@ -188,7 +234,10 @@ unsafe fn record(d: &mut D11, this: u32, m: u32, a: &dyn Fn(usize) -> u32) {
     let mut blobs = Vec::new();
     for (i, size) in ptrs {
         if a(i) != 0 && size != 0 {
-            blobs.push((i, Box::from(std::slice::from_raw_parts(a(i) as *const u8, size as usize))));
+            blobs.push((
+                i,
+                Box::from(std::slice::from_raw_parts(a(i) as *const u8, size as usize)),
+            ));
         }
     }
     hold(d, this, m, &args, &blobs);
@@ -200,12 +249,48 @@ unsafe fn record(d: &mut D11, this: u32, m: u32, a: &dyn Fn(usize) -> u32) {
 /// Which arguments of a call are objects, and which of its pointers point to arrays of them.
 fn objects(m: u32) -> (&'static [usize], &'static [usize]) {
     match m {
-        7 | 8 | 10 | 16 | 22 | 25 | 26 | 31 | 32 | 59 | 61 | 62 | 63 | 65 | 66 | 67 | 70 | 71 | 18 | 68 | 119..=124 => (&[], &[3]),
+        7
+        | 8
+        | 10
+        | 16
+        | 22
+        | 25
+        | 26
+        | 31
+        | 32
+        | 59
+        | 61
+        | 62
+        | 63
+        | 65
+        | 66
+        | 67
+        | 70
+        | 71
+        | 18
+        | 68
+        | 119..=124 => (&[], &[3]),
         9 | 11 | 23 | 60 | 64 | 69 => (&[1], &[2]),
         33 => (&[3], &[2]),
         34 => (&[3], &[2, 6]),
         37 => (&[], &[2]),
-        17 | 19 | 27 | 28 | 30 | 35 | 36 | 39 | 40 | 42 | 43 | 48 | 50..=55 | 58 | 116..=118 | 132 | 133 => (&[1], &[]),
+        17
+        | 19
+        | 27
+        | 28
+        | 30
+        | 35
+        | 36
+        | 39
+        | 40
+        | 42
+        | 43
+        | 48
+        | 50..=55
+        | 58
+        | 116..=118
+        | 132
+        | 133 => (&[1], &[]),
         46 | 115 => (&[1, 6], &[]),
         47 => (&[1, 2], &[]),
         49 | 57 => (&[1, 3], &[]),
@@ -220,7 +305,10 @@ fn hold(d: &mut D11, this: u32, m: u32, args: &[u32; 16], blobs: &[(usize, Box<[
     let mut ids: Vec<u32> = singles.iter().map(|&i| d.id_of(args[i])).collect();
     for (i, b) in blobs {
         if arrays.contains(i) {
-            ids.extend(b.chunks_exact(ps).map(|c| d.id_of(u32::from_le_bytes([c[0], c[1], c[2], c[3]]))));
+            ids.extend(
+                b.chunks_exact(ps)
+                    .map(|c| d.id_of(u32::from_le_bytes([c[0], c[1], c[2], c[3]]))),
+            );
         }
     }
     ids.retain(|&i| i != 0 && i != this);
@@ -233,7 +321,11 @@ fn hold(d: &mut D11, this: u32, m: u32, args: &[u32; 16], blobs: &[(usize, Box<[
 }
 
 /// Takes the deferred context's data out (to work on it with `d`), and puts it back.
-fn with_deferred<R>(d: &mut D11, this: u32, f: impl FnOnce(&mut D11, &mut Deferred) -> R) -> Option<R> {
+fn with_deferred<R>(
+    d: &mut D11,
+    this: u32,
+    f: impl FnOnce(&mut D11, &mut Deferred) -> R,
+) -> Option<R> {
     let o = d.objs.get_mut(&this)?;
     let Data::Deferred(x) = std::mem::replace(&mut o.data, Data::Other) else {
         return None;
@@ -247,7 +339,13 @@ fn with_deferred<R>(d: &mut D11, this: u32, f: impl FnOnce(&mut D11, &mut Deferr
 }
 
 /// A method of a deferred context.
-pub(super) unsafe fn call(d: &mut D11, this: u32, m: u32, a: &dyn Fn(usize) -> u32, after: &mut After) -> u32 {
+pub(super) unsafe fn call(
+    d: &mut D11,
+    this: u32,
+    m: u32,
+    a: &dyn Fn(usize) -> u32,
+    after: &mut After,
+) -> u32 {
     match m {
         3 => {
             let dev = d.device;
@@ -258,11 +356,15 @@ pub(super) unsafe fn call(d: &mut D11, this: u32, m: u32, a: &dyn Fn(usize) -> u
         4..=6 => private_data(d, m, this, a),
         // state: set (and recorded), read
         7..=11 | 16..=19 | 22..=26 | 30..=37 | 43..=45 | 59..=71 | 110 | 119..=124 => {
-            let r = with_deferred(d, this, |d, x| context_call2(d, &mut x.st, m, a, after)).unwrap_or(E_FAIL);
+            let r = with_deferred(d, this, |d, x| context_call2(d, &mut x.st, m, a, after))
+                .unwrap_or(E_FAIL);
             record(d, this, m, a);
             r
         }
-        72..=109 | 125..=130 => with_deferred(d, this, |d, x| context_call2(d, &mut x.st, m, a, after)).unwrap_or(E_FAIL),
+        72..=109 | 125..=130 => {
+            with_deferred(d, this, |d, x| context_call2(d, &mut x.st, m, a, after))
+                .unwrap_or(E_FAIL)
+        }
         14 => map(d, this, a(1), a(2), a(3), a(5)),
         15 => {
             unmap(d, this, a(1), a(2));
@@ -272,7 +374,10 @@ pub(super) unsafe fn call(d: &mut D11, this: u32, m: u32, a: &dyn Fn(usize) -> u
         29 => DXGI_ERROR_INVALID_CALL,
         58 => {
             // ExecuteCommandList(list, restore): recorded; the state is cleared unless restore
-            if !matches!(d.objs.get(&d.id_of(a(1))).map(|o| &o.data), Some(Data::CmdList(_))) {
+            if !matches!(
+                d.objs.get(&d.id_of(a(1))).map(|o| &o.data),
+                Some(Data::CmdList(_))
+            ) {
                 return S_OK;
             }
             record(d, this, m, a);
@@ -340,9 +445,17 @@ unsafe fn finish(d: &mut D11, this: u32, restore: u32, out: u32) -> u32 {
 }
 
 /// ExecuteCommandList(list, restore) on the immediate context (`st` its state).
-pub(super) unsafe fn execute(d: &mut D11, st: &mut State, list: u32, restore: u32, after: &mut After) {
+pub(super) unsafe fn execute(
+    d: &mut D11,
+    st: &mut State,
+    list: u32,
+    restore: u32,
+    after: &mut After,
+) {
     let id = d.id_of(list);
-    let Some(Data::CmdList(l)) = d.objs.get(&id).map(|o| &o.data) else { return };
+    let Some(Data::CmdList(l)) = d.objs.get(&id).map(|o| &o.data) else {
+        return;
+    };
     let (start, recs) = (l.start.clone(), l.recs.clone());
     // (the list is held while it runs: a call in it may let go of the last reference)
     d.bind(id);
@@ -374,7 +487,14 @@ unsafe fn replay(d: &mut D11, st: &mut State, r: &Rec, after: &mut After) {
     }
     // (an update reads no more than was copied for it: its box is the copy's)
     let a = |i: usize| args[i];
-    let fits = !matches!(r.m, 48 | 116) || update_size(d, &a).is_some_and(|n| n <= r.blobs.iter().find(|b| b.0 == 4).map_or(0, |b| b.1.len() as u32));
+    let fits = !matches!(r.m, 48 | 116)
+        || update_size(d, &a).is_some_and(|n| {
+            n <= r
+                .blobs
+                .iter()
+                .find(|b| b.0 == 4)
+                .map_or(0, |b| b.1.len() as u32)
+        });
     if fits {
         context_call2(d, st, r.m, &a, after);
     }
@@ -392,7 +512,11 @@ unsafe fn map(d: &mut D11, this: u32, res: u32, sub: u32, ty: u32, out: u32) -> 
             let level = sub % t.mips.max(1);
             let (lw, lh) = ((t.w >> level).max(1), (t.h >> level).max(1));
             let (pitch, rows) = format::pitch_rows(t.fmt, lw, lh);
-            let ld = if t.dim == 3 { (t.layers >> level).max(1) } else { 1 };
+            let ld = if t.dim == 3 {
+                (t.layers >> level).max(1)
+            } else {
+                1
+            };
             // (in 64 bits: a 2048^3 texture's level 0 does not fit in 32)
             let size = pitch as u64 * rows as u64 * ld as u64;
             if size > MAX_BLOB {
@@ -439,12 +563,20 @@ unsafe fn map(d: &mut D11, this: u32, res: u32, sub: u32, ty: u32, out: u32) -> 
 /// Unmap on a deferred context: what was written, recorded as an update of the subresource.
 unsafe fn unmap(d: &mut D11, this: u32, res: u32, sub: u32) {
     let id = d.id_of(res);
-    let Some(Some((mem, size, pitch, depth))) = with_deferred(d, this, |_, x| x.maps.iter().find(|m| m.0 == id && m.1 == sub).map(|m| (m.2, m.3, m.4, m.5))) else {
+    let Some(Some((mem, size, pitch, depth))) = with_deferred(d, this, |_, x| {
+        x.maps
+            .iter()
+            .find(|m| m.0 == id && m.1 == sub)
+            .map(|m| (m.2, m.3, m.4, m.5))
+    }) else {
         // (not mapped here: nothing, as Windows does)
         return;
     };
     let args = [0, res, sub, 0, 0, pitch, depth, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-    let blobs: Vec<(usize, Box<[u8]>)> = vec![(4, Box::from(std::slice::from_raw_parts(mem as *const u8, size as usize)))];
+    let blobs: Vec<(usize, Box<[u8]>)> = vec![(
+        4,
+        Box::from(std::slice::from_raw_parts(mem as *const u8, size as usize)),
+    )];
     hold(d, this, 48, &args, &blobs);
     if let Some(Data::Deferred(x)) = d.objs.get_mut(&this).map(|o| &mut o.data) {
         push(&mut x.list, Rec { m: 48, args, blobs });
@@ -455,7 +587,15 @@ unsafe fn unmap(d: &mut D11, this: u32, res: u32, sub: u32) {
 #[cfg(test)]
 pub(super) fn recorded(d: &D11, this: u32) -> (usize, usize) {
     match d.objs.get(&this).map(|o| &o.data) {
-        Some(Data::Deferred(x)) => (x.list.recs.len(), x.list.recs.iter().flat_map(|r| r.blobs.iter()).map(|b| b.1.len()).sum()),
+        Some(Data::Deferred(x)) => (
+            x.list.recs.len(),
+            x.list
+                .recs
+                .iter()
+                .flat_map(|r| r.blobs.iter())
+                .map(|b| b.1.len())
+                .sum(),
+        ),
         _ => (0, 0),
     }
 }

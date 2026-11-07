@@ -6,10 +6,15 @@
 
 /// Little-endian f32 / u32 field `i` (4-byte units) of a parameter block, or `def`
 fn f(p: &[u8], i: usize, def: f32) -> f32 {
-    p.get(4 * i..4 * i + 4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).filter(|v| v.is_finite()).unwrap_or(def)
+    p.get(4 * i..4 * i + 4)
+        .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
+        .filter(|v| v.is_finite())
+        .unwrap_or(def)
 }
 fn u(p: &[u8], i: usize, def: u32) -> u32 {
-    p.get(4 * i..4 * i + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap())).unwrap_or(def)
+    p.get(4 * i..4 * i + 4)
+        .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+        .unwrap_or(def)
 }
 fn db(v: f32) -> f32 {
     10f32.powf(v / 20.0)
@@ -33,7 +38,13 @@ impl Biquad {
         let (s, cs) = w0.sin_cos();
         let alpha = s * ((2f64.ln() / 2.0) * bw * w0 / s).sinh();
         let a0 = 1.0 + alpha / a;
-        self.c = [(1.0 + alpha * a) / a0, (-2.0 * cs) / a0, (1.0 - alpha * a) / a0, (-2.0 * cs) / a0, (1.0 - alpha / a) / a0];
+        self.c = [
+            (1.0 + alpha * a) / a0,
+            (-2.0 * cs) / a0,
+            (1.0 - alpha * a) / a0,
+            (-2.0 * cs) / a0,
+            (1.0 - alpha / a) / a0,
+        ];
     }
     fn run(&mut self, buf: &mut [f32], ch: usize) {
         if self.z.len() != ch {
@@ -62,7 +73,9 @@ impl Eq {
     pub fn run(&mut self, p: &[u8], buf: &mut [f32], ch: usize, rate: u32) {
         let fs = rate as f32;
         for (i, b) in self.bands.iter_mut().enumerate() {
-            let f0 = f(p, 3 * i, EQ_CENTRES[i]).clamp(20.0, 20000.0).min(fs * 0.49);
+            let f0 = f(p, 3 * i, EQ_CENTRES[i])
+                .clamp(20.0, 20000.0)
+                .min(fs * 0.49);
             let g = f(p, 3 * i + 1, 1.0).clamp(0.126, 7.94);
             let bw = f(p, 3 * i + 2, 1.0).clamp(0.1, 2.0);
             // (a band at unity gain is the identity: skipped)
@@ -95,7 +108,11 @@ impl Limiter {
         for fr in buf.chunks_exact_mut(ch) {
             let peak = fr.iter().fold(0f32, |m, x| m.max((x * loud).abs()));
             let want = if peak > 1.0 { 1.0 / peak } else { 1.0 };
-            self.gain = if want < self.gain { want } else { want + (self.gain - want) * k };
+            self.gain = if want < self.gain {
+                want
+            } else {
+                want + (self.gain - want) * k
+            };
             for x in fr.iter_mut() {
                 *x = (*x * loud * self.gain).clamp(-1.0, 1.0);
             }
@@ -113,10 +130,17 @@ pub struct Echo {
 }
 impl Echo {
     pub fn with_max(max_delay_ms: f32) -> Echo {
-        Echo { max_delay_ms, ..Default::default() }
+        Echo {
+            max_delay_ms,
+            ..Default::default()
+        }
     }
     pub fn run(&mut self, p: &[u8], buf: &mut [f32], ch: usize, rate: u32) {
-        let max = if self.max_delay_ms > 0.0 { self.max_delay_ms.clamp(1.0, 2000.0) } else { 2000.0 };
+        let max = if self.max_delay_ms > 0.0 {
+            self.max_delay_ms.clamp(1.0, 2000.0)
+        } else {
+            2000.0
+        };
         let wet = f(p, 0, 0.5).clamp(0.0, 1.0);
         let fb = f(p, 1, 0.5).clamp(0.0, 1.0);
         let delay = f(p, 2, 500.0).clamp(1.0, max);
@@ -175,7 +199,14 @@ impl ReverbShape {
     pub fn fx(p: &[u8]) -> ReverbShape {
         let diffusion = f(p, 0, 0.9).clamp(0.0, 1.0);
         let room = f(p, 1, 0.6).clamp(0.0001, 1.0);
-        ReverbShape { scale: 0.5 + room, decay_s: 0.3 + 2.7 * room, damp: 0.25, diffusion, dry: 1.0, wet: 0.5 }
+        ReverbShape {
+            scale: 0.5 + room,
+            decay_s: 0.3 + 2.7 * room,
+            damp: 0.25,
+            diffusion,
+            dry: 1.0,
+            wet: 0.5,
+        }
     }
     /// XAUDIO2FX_REVERB_PARAMETERS: WetDryMix (%), then (after the delays and the byte
     /// fields, from offset 20) RoomFilterFreq, RoomFilterMain, RoomFilterHF, ReflectionsGain,
@@ -189,7 +220,14 @@ impl ReverbShape {
         let decay = f(p, 10, 1.0).clamp(0.1, 1000.0);
         let density = f(p, 11, 100.0).clamp(0.0, 100.0) / 100.0;
         let room = f(p, 12, 100.0).clamp(1.0, 100.0);
-        ReverbShape { scale: 0.4 + 0.6 * room / 100.0, decay_s: decay, damp: (1.0 - hf).clamp(0.0, 0.95), diffusion: density, dry: 1.0 - mix, wet: mix * gain * main }
+        ReverbShape {
+            scale: 0.4 + 0.6 * room / 100.0,
+            decay_s: decay,
+            damp: (1.0 - hf).clamp(0.0, 0.95),
+            diffusion: density,
+            dry: 1.0 - mix,
+            wet: mix * gain * main,
+        }
     }
 }
 
@@ -199,13 +237,47 @@ impl Reverb {
         let key = (ch, rate, (s.scale * 1000.0) as u32);
         if self.key != key || self.combs.len() != ch {
             let len = |n: usize, c: usize| (((n + SPREAD * (c % 2)) as f32 * sc) as usize).max(1);
-            self.combs = (0..ch).map(|c| COMBS.iter().map(|&n| Line { buf: vec![0.0; len(n, c)], at: 0, lp: 0.0 }).collect()).collect();
-            self.alls = (0..ch).map(|c| ALLPASSES.iter().map(|&n| Line { buf: vec![0.0; len(n, c)], at: 0, lp: 0.0 }).collect()).collect();
+            self.combs = (0..ch)
+                .map(|c| {
+                    COMBS
+                        .iter()
+                        .map(|&n| Line {
+                            buf: vec![0.0; len(n, c)],
+                            at: 0,
+                            lp: 0.0,
+                        })
+                        .collect()
+                })
+                .collect();
+            self.alls = (0..ch)
+                .map(|c| {
+                    ALLPASSES
+                        .iter()
+                        .map(|&n| Line {
+                            buf: vec![0.0; len(n, c)],
+                            at: 0,
+                            lp: 0.0,
+                        })
+                        .collect()
+                })
+                .collect();
             self.key = key;
         }
         let ap = 0.3 + 0.4 * s.diffusion;
         // a comb of n samples falls by 60 dB over the decay time
-        let fbs: Vec<Vec<f32>> = self.combs.iter().map(|cs| cs.iter().map(|l| 10f32.powf(-3.0 * l.buf.len() as f32 / (s.decay_s * rate as f32)).min(0.98)).collect()).collect();
+        let fbs: Vec<Vec<f32>> = self
+            .combs
+            .iter()
+            .map(|cs| {
+                cs.iter()
+                    .map(|l| {
+                        10f32
+                            .powf(-3.0 * l.buf.len() as f32 / (s.decay_s * rate as f32))
+                            .min(0.98)
+                    })
+                    .collect()
+            })
+            .collect();
         for fr in buf.chunks_exact_mut(ch) {
             for (c, x) in fr.iter_mut().enumerate() {
                 let input = *x * 0.015;
@@ -239,7 +311,9 @@ mod tests {
         v.iter().flat_map(|x| x.to_le_bytes()).collect()
     }
     fn sine(hz: f32, rate: u32, n: usize, ch: usize) -> Vec<f32> {
-        (0..n * ch).map(|i| (2.0 * std::f32::consts::PI * hz * (i / ch) as f32 / rate as f32).sin()).collect()
+        (0..n * ch)
+            .map(|i| (2.0 * std::f32::consts::PI * hz * (i / ch) as f32 / rate as f32).sin())
+            .collect()
     }
     fn peak(v: &[f32]) -> f32 {
         v.iter().fold(0f32, |m, x| m.max(x.abs()))
@@ -259,7 +333,9 @@ mod tests {
     fn eq_band_gain_at_centre() {
         for (g, f0) in [(2.0f32, 1000.0f32), (0.5, 800.0), (4.0, 3000.0)] {
             let mut e = Eq::default();
-            let p = params(&[f0, g, 1.0, 800.0, 1.0, 1.0, 2000.0, 1.0, 1.0, 10000.0, 1.0, 1.0]);
+            let p = params(&[
+                f0, g, 1.0, 800.0, 1.0, 1.0, 2000.0, 1.0, 1.0, 10000.0, 1.0, 1.0,
+            ]);
             let mut y = sine(f0, 48000, 48000, 1);
             e.run(&p, &mut y, 1, 48000);
             let got = peak(&y[24000..]);
@@ -284,7 +360,10 @@ mod tests {
 
     #[test]
     fn echo_max_delay() {
-        let mut e = Echo { max_delay_ms: 5.0, ..Default::default() };
+        let mut e = Echo {
+            max_delay_ms: 5.0,
+            ..Default::default()
+        };
         let p = params(&[1.0, 0.0, 100.0]);
         let mut y = vec![0.0; 20];
         y[0] = 1.0;
@@ -296,11 +375,17 @@ mod tests {
     #[test]
     fn limiter_holds_full_scale() {
         let mut l = Limiter::default();
-        let mut y: Vec<f32> = sine(100.0, 48000, 4800, 2).iter().map(|x| x * 4.0).collect();
+        let mut y: Vec<f32> = sine(100.0, 48000, 4800, 2)
+            .iter()
+            .map(|x| x * 4.0)
+            .collect();
         l.run(&[], &mut y, 2, 48000);
         assert!(peak(&y) <= 1.0);
         // quiet audio passes unchanged at the default loudness
-        let x = sine(100.0, 48000, 480, 2).iter().map(|v| v * 0.25).collect::<Vec<_>>();
+        let x = sine(100.0, 48000, 480, 2)
+            .iter()
+            .map(|v| v * 0.25)
+            .collect::<Vec<_>>();
         let mut l = Limiter::default();
         let mut y = x.clone();
         l.run(&[], &mut y, 2, 48000);
@@ -310,7 +395,9 @@ mod tests {
     #[test]
     fn reverb_tail_decays() {
         let mut r = Reverb::default();
-        let s = ReverbShape::audio(&params(&[100.0, 0.0, 0.0, 0.0, 0.0, 5000.0, 0.0, 0.0, 0.0, 0.0, 0.5, 100.0, 100.0]));
+        let s = ReverbShape::audio(&params(&[
+            100.0, 0.0, 0.0, 0.0, 0.0, 5000.0, 0.0, 0.0, 0.0, 0.0, 0.5, 100.0, 100.0,
+        ]));
         let mut y = vec![0.0; 48000 * 2];
         y[0] = 1.0;
         y[1] = 1.0;
@@ -318,7 +405,12 @@ mod tests {
         let e = |a: usize, b: usize| y[a..b].iter().map(|v| v * v).sum::<f32>();
         // (the impulse itself is gone: fully wet)
         assert!(e(4000, 12000) > 0.0);
-        assert!(e(4000, 12000) > 100.0 * e(80000, 88000), "{} {}", e(4000, 12000), e(80000, 88000));
+        assert!(
+            e(4000, 12000) > 100.0 * e(80000, 88000),
+            "{} {}",
+            e(4000, 12000),
+            e(80000, 88000)
+        );
         // and the channels differ (the stereo spread)
         assert!(y.chunks_exact(2).any(|f| (f[0] - f[1]).abs() > 1e-6));
     }
@@ -337,7 +429,9 @@ mod tests {
     /// octave away it is near unity
     #[test]
     fn eq_low_narrow_band() {
-        let p = params(&[20.0, 7.94, 0.1, 800.0, 1.0, 1.0, 2000.0, 1.0, 1.0, 10000.0, 1.0, 1.0]);
+        let p = params(&[
+            20.0, 7.94, 0.1, 800.0, 1.0, 1.0, 2000.0, 1.0, 1.0, 10000.0, 1.0, 1.0,
+        ]);
         for (hz, want) in [(20.0, 7.94f32), (40.0, 1.0)] {
             let mut y = sine(hz, 48000, 480000, 1);
             Eq::default().run(&p, &mut y, 1, 48000);
@@ -349,12 +443,18 @@ mod tests {
     /// Three bands at +18 dB stacked (the case the old bound of 64 refused): about x500 at most
     #[test]
     fn eq_stacked_gains() {
-        let p = params(&[6619.6245, 334.06134, 408.64935, 7706.5713, 7584.405, 6331.9116, 0.0, 0.0, 0.0, 4396.2837, 3334.7468]);
+        let p = params(&[
+            6619.6245, 334.06134, 408.64935, 7706.5713, 7584.405, 6331.9116, 0.0, 0.0, 0.0,
+            4396.2837, 3334.7468,
+        ]);
         let mut y = sine(6619.6245, 48000, 4800, 1);
         Eq::default().run(&p, &mut y, 1, 48000);
         let peak = y[2400..].iter().fold(0f32, |m, v| m.max(v.abs()));
         // band 0 alone gives 7.94 at its centre; the others add their skirts there
-        assert!(peak.is_finite() && peak > 7.94 && peak < 7.94f32.powi(3), "{peak}");
+        assert!(
+            peak.is_finite() && peak > 7.94 && peak < 7.94f32.powi(3),
+            "{peak}"
+        );
     }
 
     proptest! {

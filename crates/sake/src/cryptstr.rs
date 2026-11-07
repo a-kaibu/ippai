@@ -55,9 +55,15 @@ fn eol(flags: u32) -> &'static str {
 fn base64_lines(data: &[u8], eol: &str, out: &mut String) {
     let mut line = 0;
     for chunk in data.chunks(3) {
-        let v = (chunk[0] as u32) << 16 | (*chunk.get(1).unwrap_or(&0) as u32) << 8 | *chunk.get(2).unwrap_or(&0) as u32;
+        let v = (chunk[0] as u32) << 16
+            | (*chunk.get(1).unwrap_or(&0) as u32) << 8
+            | *chunk.get(2).unwrap_or(&0) as u32;
         for i in 0..4 {
-            out.push(if i <= chunk.len() { B64[(v >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+            out.push(if i <= chunk.len() {
+                B64[(v >> (18 - 6 * i) & 63) as usize] as char
+            } else {
+                '='
+            });
         }
         line += 4;
         if line == 64 {
@@ -141,7 +147,9 @@ fn b64url_value(c: u16) -> Option<u32> {
 /// Base64 as CRYPT_STRING_BASE64 reads it: the standard alphabet, else the URL one
 /// (CRYPT_STRING_BASE64URI, 13): (bytes, the format it was)
 pub fn decode_base64_any(s: &[u16]) -> Option<(Vec<u8>, u32)> {
-    decode_base64(s).map(|d| (d, BASE64)).or_else(|| decode_base64url(s).map(|d| (d, BASE64URI)))
+    decode_base64(s)
+        .map(|d| (d, BASE64))
+        .or_else(|| decode_base64url(s).map(|d| (d, BASE64URI)))
 }
 
 /// URL base64 (white space skipped): no padding; an unfinished last group decodes what it has
@@ -255,7 +263,10 @@ pub fn decode_hex(s: &[u16]) -> Hex {
     let mut bytes = Vec::new();
     while let Some(d1) = c.and_then(hex_digit) {
         let Some(d2) = it.next().and_then(hex_digit) else {
-            return Hex { bytes, error: Some(ERROR_INVALID_DATA) };
+            return Hex {
+                bytes,
+                error: Some(ERROR_INVALID_DATA),
+            };
         };
         bytes.push(d1 << 4 | d2);
         c = it.next();
@@ -265,7 +276,10 @@ pub fn decode_hex(s: &[u16]) -> Hex {
     }
     while let Some(ch) = c {
         if !hex_separator(ch) {
-            return Hex { bytes, error: Some(ERROR_INVALID_DATA) };
+            return Hex {
+                bytes,
+                error: Some(ERROR_INVALID_DATA),
+            };
         }
         c = it.next();
     }
@@ -277,7 +291,9 @@ pub fn decode(s: &[u16], raw: &[u8], fmt: u32) -> Result<(Vec<u8>, u32, u32), u3
     let header = || decode_header(s).map(|(skip, d)| (d, skip, BASE64HEADER));
     let bare = || decode_base64_any(s).map(|(d, f)| (d, 0, f));
     let r = match fmt {
-        BASE64HEADER | BASE64REQUESTHEADER | BASE64X509CRLHEADER => decode_header(s).map(|(skip, d)| (d, skip, fmt)),
+        BASE64HEADER | BASE64REQUESTHEADER | BASE64X509CRLHEADER => {
+            decode_header(s).map(|(skip, d)| (d, skip, fmt))
+        }
         BASE64 => bare(),
         BINARY => Some((raw.to_vec(), 0, BINARY)),
         BASE64_ANY => header().or_else(bare),
@@ -346,7 +362,11 @@ fn binary_to_string(c: &mut Ctx, wide: bool) -> u32 {
         }
     }
     mem::w32(plen, need);
-    last_error(if wide && cap == 0 { ERROR_INVALID_PARAMETER } else { ERROR_MORE_DATA });
+    last_error(if wide && cap == 0 {
+        ERROR_INVALID_PARAMETER
+    } else {
+        ERROR_MORE_DATA
+    });
     0
 }
 
@@ -378,17 +398,26 @@ pub fn too_small(data: &[u8], fmt: u32, s: &str, cap: u32) -> (Option<Vec<u8>>, 
 }
 
 fn string_to_binary(c: &mut Ctx, wide: bool) -> u32 {
-    let (p, n, fmt, out, plen, pskip, pflags) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6));
+    let (p, n, fmt, out, plen, pskip, pflags) =
+        (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6));
     if p == 0 || plen == 0 {
         last_error(ERROR_INVALID_PARAMETER);
         return 0;
     }
     let (s, raw): (Vec<u16>, Vec<u8>) = if wide {
-        let s = if n == 0 { mem::wstr(p) } else { (0..n).map(|i| mem::r16(p + 2 * i)).collect() };
+        let s = if n == 0 {
+            mem::wstr(p)
+        } else {
+            (0..n).map(|i| mem::r16(p + 2 * i)).collect()
+        };
         let raw = s.iter().flat_map(|u| u.to_le_bytes()).collect();
         (s, raw)
     } else {
-        let raw = if n == 0 { mem::cstr(p) } else { mem::slice(p, n).to_vec() };
+        let raw = if n == 0 {
+            mem::cstr(p)
+        } else {
+            mem::slice(p, n).to_vec()
+        };
         (raw.iter().map(|&b| b as u16).collect(), raw)
     };
     let cap = mem::r32(plen);
@@ -459,10 +488,18 @@ fn string_to_binary(c: &mut Ctx, wide: bool) -> u32 {
 }
 
 pub fn init() {
-    implement("crypt32", "CryptBinaryToStringA", |c| binary_to_string(c, false));
-    implement("crypt32", "CryptBinaryToStringW", |c| binary_to_string(c, true));
-    implement("crypt32", "CryptStringToBinaryA", |c| string_to_binary(c, false));
-    implement("crypt32", "CryptStringToBinaryW", |c| string_to_binary(c, true));
+    implement("crypt32", "CryptBinaryToStringA", |c| {
+        binary_to_string(c, false)
+    });
+    implement("crypt32", "CryptBinaryToStringW", |c| {
+        binary_to_string(c, true)
+    });
+    implement("crypt32", "CryptStringToBinaryA", |c| {
+        string_to_binary(c, false)
+    });
+    implement("crypt32", "CryptStringToBinaryW", |c| {
+        string_to_binary(c, true)
+    });
 }
 
 #[cfg(test)]
@@ -485,7 +522,10 @@ mod tests {
         assert_eq!(lines[1], "YQ==");
         // exactly 48 bytes: one full line, no empty one after it
         assert_eq!(encode(&[0; 48], BASE64).unwrap().matches("\r\n").count(), 1);
-        assert_eq!(encode(&[0], BASE64X509CRLHEADER | NOCR).unwrap(), "-----BEGIN X509 CRL-----\nAA==\n-----END X509 CRL-----\n");
+        assert_eq!(
+            encode(&[0], BASE64X509CRLHEADER | NOCR).unwrap(),
+            "-----BEGIN X509 CRL-----\nAA==\n-----END X509 CRL-----\n"
+        );
     }
 
     /// Windows' lengths for spaced hex (the formula Wine's tests check against).
@@ -513,7 +553,11 @@ mod tests {
         assert_eq!(encode(&[0xab, 0xcd], HEXRAW | NOCR).unwrap(), "abcd\n");
         for n in [3, 4, 7, 8, 12, 15, 16, 17, 256] {
             for f in [0, NOCR, NOCRLF] {
-                assert_eq!(encode(&vec![0; n], HEX | f).unwrap().len() + 1, hex_len(n, f), "n {n} flags {f:#x}");
+                assert_eq!(
+                    encode(&vec![0; n], HEX | f).unwrap().len() + 1,
+                    hex_len(n, f),
+                    "n {n} flags {f:#x}"
+                );
             }
         }
     }
@@ -540,9 +584,15 @@ mod tests {
         assert_eq!(a("VV-V"), Some((vec![0x55, 0x5f, 0x95], BASE64URI)));
         assert_eq!(a("V_"), Some((vec![0x57], BASE64URI)));
         assert_eq!(a("VVVV").map(|x| x.1), Some(BASE64));
-        assert_eq!(a("-----BEGIN-----VVVV-----END-----").map(|x| x.0.len()), Some(24));
+        assert_eq!(
+            a("-----BEGIN-----VVVV-----END-----").map(|x| x.0.len()),
+            Some(24)
+        );
         assert_eq!(a("-----BEGIN X509 CRL-----\r\nAA==\r\n"), None);
-        assert_eq!(a("junk-----BEGIN foo-----V-----END foo-----").map(|x| (x.0.len(), x.1)), Some((29, BASE64URI)));
+        assert_eq!(
+            a("junk-----BEGIN foo-----V-----END foo-----").map(|x| (x.0.len(), x.1)),
+            Some((29, BASE64URI))
+        );
     }
 
     /// Windows' answers for 3 bytes and small buffers (winref cryptstr, A functions)
@@ -557,11 +607,28 @@ mod tests {
         assert_eq!(run(BASE64, 1), (Some(b"A".to_vec()), 1));
         assert_eq!(run(BASE64, 5), (Some(b"AQgP\r".to_vec()), 5));
         assert_eq!(run(BASE64, 6), (Some(b"AQgP\r\n".to_vec()), 7));
-        for (cap, want) in [(1, None), (2, None), (3, Some(&b"01\0"[..])), (5, Some(b"01\0")), (6, Some(b"01 08\0")), (7, Some(b"01 08\0"))] {
+        for (cap, want) in [
+            (1, None),
+            (2, None),
+            (3, Some(&b"01\0"[..])),
+            (5, Some(b"01\0")),
+            (6, Some(b"01 08\0")),
+            (7, Some(b"01 08\0")),
+        ] {
             assert_eq!(run(HEX, cap), (want.map(|w| w.to_vec()), cap), "hex {cap}");
         }
-        for (cap, want) in [(2, None), (3, Some(&b"01\0"[..])), (4, Some(b"01\0")), (5, Some(b"0108\0")), (7, Some(b"01080f\0"))] {
-            assert_eq!(run(HEXRAW, cap), (want.map(|w| w.to_vec()), cap), "hexraw {cap}");
+        for (cap, want) in [
+            (2, None),
+            (3, Some(&b"01\0"[..])),
+            (4, Some(b"01\0")),
+            (5, Some(b"0108\0")),
+            (7, Some(b"01080f\0")),
+        ] {
+            assert_eq!(
+                run(HEXRAW, cap),
+                (want.map(|w| w.to_vec()), cap),
+                "hexraw {cap}"
+            );
         }
     }
 
@@ -571,32 +638,99 @@ mod tests {
         assert_eq!(h("-----BEGIN-----VVVV-----END-----"), None);
         assert_eq!(h("-----BEGIN-----VVVV-----END -----"), None);
         assert_eq!(h("-----BEGIN -----VVVV-----END-----"), None);
-        assert_eq!(h("-----BEGIN -----VVVV-----END -----"), Some((0, "UUU".into())));
-        assert_eq!(h("junk-----BEGIN foo-----V-----END foo-----"), Some((4, "T".into())));
+        assert_eq!(
+            h("-----BEGIN -----VVVV-----END -----"),
+            Some((0, "UUU".into()))
+        );
+        assert_eq!(
+            h("junk-----BEGIN foo-----V-----END foo-----"),
+            Some((4, "T".into()))
+        );
         assert_eq!(h("-----BEGIN X509 CRL-----\r\nAA==\r\n"), None);
         // the any formats: a header first, then bare base64
-        let s = w("garbage\r\n-----BEGIN CERTIFICATE-----\r\nAA==\r\n-----END CERTIFICATE-----\r\n");
+        let s =
+            w("garbage\r\n-----BEGIN CERTIFICATE-----\r\nAA==\r\n-----END CERTIFICATE-----\r\n");
         assert_eq!(decode(&s, &[], ANY), Ok((vec![0], 9, BASE64HEADER)));
-        assert_eq!(decode(&w("AA=="), &[], BASE64_ANY), Ok((vec![0], 0, BASE64)));
-        assert_eq!(decode(&w("garbage\r\nAA==\r\n"), &[], BASE64), Err(ERROR_INVALID_DATA));
+        assert_eq!(
+            decode(&w("AA=="), &[], BASE64_ANY),
+            Ok((vec![0], 0, BASE64))
+        );
+        assert_eq!(
+            decode(&w("garbage\r\nAA==\r\n"), &[], BASE64),
+            Err(ERROR_INVALID_DATA)
+        );
     }
 
     #[test]
     fn hex_decoding() {
         let h = |s: &str| decode_hex(&w(s));
-        assert_eq!(h(""), Hex { bytes: vec![], error: None });
-        assert_eq!(h(",-"), Hex { bytes: vec![], error: None });
+        assert_eq!(
+            h(""),
+            Hex {
+                bytes: vec![],
+                error: None
+            }
+        );
+        assert_eq!(
+            h(",-"),
+            Hex {
+                bytes: vec![],
+                error: None
+            }
+        );
         assert_eq!(h("0").error, Some(ERROR_INVALID_DATA));
-        assert_eq!(h("000"), Hex { bytes: vec![0], error: Some(ERROR_INVALID_DATA) });
-        assert_eq!(h(" aE\t\n\r\n"), Hex { bytes: vec![0xae], error: None });
-        assert_eq!(h("aa,,-BB---ff,-,"), Hex { bytes: vec![0xaa, 0xbb, 0xff], error: None });
+        assert_eq!(
+            h("000"),
+            Hex {
+                bytes: vec![0],
+                error: Some(ERROR_INVALID_DATA)
+            }
+        );
+        assert_eq!(
+            h(" aE\t\n\r\n"),
+            Hex {
+                bytes: vec![0xae],
+                error: None
+            }
+        );
+        assert_eq!(
+            h("aa,,-BB---ff,-,"),
+            Hex {
+                bytes: vec![0xaa, 0xbb, 0xff],
+                error: None
+            }
+        );
         // a separator only goes between bytes, not inside one
         assert_eq!(h("1-2").error, Some(ERROR_INVALID_DATA));
-        assert_eq!(h("aa,BBff,-,"), Hex { bytes: vec![0xaa, 0xbb, 0xff], error: None });
-        assert_eq!(h("0102q"), Hex { bytes: vec![1, 2], error: Some(ERROR_INVALID_DATA) });
-        assert_eq!(h("01 02"), Hex { bytes: vec![1, 2], error: None });
+        assert_eq!(
+            h("aa,BBff,-,"),
+            Hex {
+                bytes: vec![0xaa, 0xbb, 0xff],
+                error: None
+            }
+        );
+        assert_eq!(
+            h("0102q"),
+            Hex {
+                bytes: vec![1, 2],
+                error: Some(ERROR_INVALID_DATA)
+            }
+        );
+        assert_eq!(
+            h("01 02"),
+            Hex {
+                bytes: vec![1, 2],
+                error: None
+            }
+        );
         assert_eq!(h("00 01 02 03 04 05 06 07  08 09\r\n").bytes.len(), 10);
-        assert_eq!(decode_hex(&[0x30, 0x31, 0, 0x20, 0x30, 0x32]), Hex { bytes: vec![1], error: Some(ERROR_INVALID_DATA) });
+        assert_eq!(
+            decode_hex(&[0x30, 0x31, 0, 0x20, 0x30, 0x32]),
+            Hex {
+                bytes: vec![1],
+                error: Some(ERROR_INVALID_DATA)
+            }
+        );
     }
 
     proptest! {

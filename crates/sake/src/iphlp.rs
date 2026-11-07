@@ -70,7 +70,10 @@ pub fn ifaces() -> &'static [Iface] {
             luid_index: 32769,
             ty: 6,
             // {5341d8c2-6b3e-4a2f-9a50-6f2e0d1c7b21}
-            guid: [0xc2, 0xd8, 0x41, 0x53, 0x3e, 0x6b, 0x2f, 0x4a, 0x9a, 0x50, 0x6f, 0x2e, 0x0d, 0x1c, 0x7b, 0x21],
+            guid: [
+                0xc2, 0xd8, 0x41, 0x53, 0x3e, 0x6b, 0x2f, 0x4a, 0x9a, 0x50, 0x6f, 0x2e, 0x0d, 0x1c,
+                0x7b, 0x21,
+            ],
             alias: "Ethernet",
             descr: "sake Virtual Ethernet Adapter",
             mac: &[0x02, 0x00, 0x4c, 0x4f, 0x4f, 0x50],
@@ -86,7 +89,10 @@ pub fn ifaces() -> &'static [Iface] {
             luid_index: 0,
             ty: 24,
             // {f8e3a1c0-5a5b-11ee-8000-000000000001}
-            guid: [0xc0, 0xa1, 0xe3, 0xf8, 0x5b, 0x5a, 0xee, 0x11, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01],
+            guid: [
+                0xc0, 0xa1, 0xe3, 0xf8, 0x5b, 0x5a, 0xee, 0x11, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x01,
+            ],
             alias: "Loopback Pseudo-Interface 1",
             descr: "Software Loopback Interface 1",
             mac: &[],
@@ -119,13 +125,25 @@ pub fn guid_string(g: &[u8; 16]) -> String {
     let d1 = u32::from_le_bytes(g[0..4].try_into().unwrap());
     let d2 = u16::from_le_bytes([g[4], g[5]]);
     let d3 = u16::from_le_bytes([g[6], g[7]]);
-    format!("{{{d1:08X}-{d2:04X}-{d3:04X}-{:02X}{:02X}-{}}}", g[8], g[9], g[10..].iter().map(|b| format!("{b:02X}")).collect::<String>())
+    format!(
+        "{{{d1:08X}-{d2:04X}-{d3:04X}-{:02X}{:02X}-{}}}",
+        g[8],
+        g[9],
+        g[10..]
+            .iter()
+            .map(|b| format!("{b:02X}"))
+            .collect::<String>()
+    )
 }
 
 /// The reverse of guid_string (braces required, hex of either case)
 pub fn parse_guid(s: &str) -> Option<[u8; 16]> {
     let b = s.as_bytes();
-    if b.len() != 38 || b[0] != b'{' || b[37] != b'}' || [9, 14, 19, 24].iter().any(|&i| b[i] != b'-') {
+    if b.len() != 38
+        || b[0] != b'{'
+        || b[37] != b'}'
+        || [9, 14, 19, 24].iter().any(|&i| b[i] != b'-')
+    {
         return None;
     }
     let hex = |r: std::ops::Range<usize>| u64::from_str_radix(&s[r], 16).ok();
@@ -259,7 +277,7 @@ fn fill_ifrow2(p: u32, f: &Iface) {
     w32(p + 1140, if f.loopback() { 0 } else { 14 }); // PhysicalMediumType: unspecified / 802_3
     w32(p + 1144, if f.loopback() { 1 } else { 2 }); // AccessType: loopback / broadcast
     w32(p + 1148, 0); // DirectionType: send and receive
-    // InterfaceAndOperStatusFlags: HardwareInterface, ConnectorPresent for the Ethernet
+                      // InterfaceAndOperStatusFlags: HardwareInterface, ConnectorPresent for the Ethernet
     w8(p + 1152, if f.loopback() { 0 } else { 0x1 | 0x4 });
     w32(p + 1156, if f.up { 1 } else { 2 }); // IfOperStatusUp / Down
     w32(p + 1160, 1); // NET_IF_ADMIN_STATUS_UP
@@ -306,7 +324,13 @@ fn GetIfEntry2(c: &mut Ctx) -> u32 {
         return ERROR_INVALID_PARAMETER;
     }
     let (l, i) = (mem::r64(p), r32(p + 8));
-    let f = if l != 0 { by_luid(l) } else if i != 0 { by_index(i) } else { return ERROR_INVALID_PARAMETER };
+    let f = if l != 0 {
+        by_luid(l)
+    } else if i != 0 {
+        by_index(i)
+    } else {
+        return ERROR_INVALID_PARAMETER;
+    };
     match f {
         Some(f) => {
             fill_ifrow2(p, f);
@@ -372,8 +396,18 @@ fn routes(family: u32) -> Vec<Route> {
     let lo = by_index(1).unwrap();
     let mut v = Vec::new();
     if family != AF_INET6 {
-        for (d, l) in [([127, 0, 0, 0], 8), ([127, 0, 0, 1], 32), ([127, 255, 255, 255], 32), ([224, 0, 0, 0], 4), ([255, 255, 255, 255], 32)] {
-            v.push(Route { iface: lo, dest: d.to_vec(), len: l });
+        for (d, l) in [
+            ([127, 0, 0, 0], 8),
+            ([127, 0, 0, 1], 32),
+            ([127, 255, 255, 255], 32),
+            ([224, 0, 0, 0], 4),
+            ([255, 255, 255, 255], 32),
+        ] {
+            v.push(Route {
+                iface: lo,
+                dest: d.to_vec(),
+                len: l,
+            });
         }
     }
     if family != AF_INET {
@@ -381,8 +415,16 @@ fn routes(family: u32) -> Vec<Route> {
         one[15] = 1;
         let mut ff = [0u8; 16];
         ff[0] = 0xff;
-        v.push(Route { iface: lo, dest: one.to_vec(), len: 128 });
-        v.push(Route { iface: lo, dest: ff.to_vec(), len: 8 });
+        v.push(Route {
+            iface: lo,
+            dest: one.to_vec(),
+            len: 128,
+        });
+        v.push(Route {
+            iface: lo,
+            dest: ff.to_vec(),
+            len: 8,
+        });
     }
     v
 }
@@ -395,8 +437,11 @@ fn fill_forward_row(r: u32, rt: &Route) {
     w32(r, dest);
     w32(r + 4, v4_mask(rt.len));
     w32(r + 8, 0); // dwForwardPolicy
-    // next hop: for a direct route, the interface's own address
-    w32(r + 12, rt.iface.v4.map_or(0, |(a, _)| u32::from_le_bytes(a)));
+                   // next hop: for a direct route, the interface's own address
+    w32(
+        r + 12,
+        rt.iface.v4.map_or(0, |(a, _)| u32::from_le_bytes(a)),
+    );
     w32(r + 16, rt.iface.index);
     w32(r + 20, 3); // MIB_IPROUTE_TYPE_DIRECT
     w32(r + 24, 2); // MIB_IPPROTO_LOCAL
@@ -504,7 +549,19 @@ fn ip_stats(p: u32, family: u32) {
     w32(p, 2); // dwForwarding: MIB_IP_NOT_FORWARDING
     w32(p + 4, 128); // dwDefaultTTL
     w32(p + 76, ifaces().len() as u32); // dwNumIf
-    w32(p + 80, ifaces().iter().filter(|f| if family == AF_INET6 { f.v6.is_some() } else { f.v4.is_some() }).count() as u32);
+    w32(
+        p + 80,
+        ifaces()
+            .iter()
+            .filter(|f| {
+                if family == AF_INET6 {
+                    f.v6.is_some()
+                } else {
+                    f.v4.is_some()
+                }
+            })
+            .count() as u32,
+    );
     w32(p + 84, routes(family).len() as u32);
 }
 fn tcp_stats(p: u32) {
@@ -574,11 +631,23 @@ fn addr4(a: &crate::ws2name::Addr) -> [u8; 4] {
 
 /// The rows of a table: this family's sockets of that kind, which `class_ok` keeps, in
 /// order (local address, local port, remote address, remote port)
-fn conn_rows(tcp: bool, v6: bool, keep: impl Fn(&crate::ws2::ConnRow) -> bool) -> Vec<crate::ws2::ConnRow> {
+fn conn_rows(
+    tcp: bool,
+    v6: bool,
+    keep: impl Fn(&crate::ws2::ConnRow) -> bool,
+) -> Vec<crate::ws2::ConnRow> {
     let af = if v6 { AF_INET6 } else { AF_INET };
-    let mut v: Vec<_> = crate::ws2::conn_rows().into_iter().filter(|r| r.tcp == tcp && r.af == af && keep(r)).collect();
+    let mut v: Vec<_> = crate::ws2::conn_rows()
+        .into_iter()
+        .filter(|r| r.tcp == tcp && r.af == af && keep(r))
+        .collect();
     let key = |r: &crate::ws2::ConnRow| {
-        let rem = r.remote.clone().unwrap_or(crate::ws2name::Addr { ip: vec![0; if v6 { 16 } else { 4 }], port: 0, flow: 0, scope: 0 });
+        let rem = r.remote.clone().unwrap_or(crate::ws2name::Addr {
+            ip: vec![0; if v6 { 16 } else { 4 }],
+            port: 0,
+            flow: 0,
+            scope: 0,
+        });
         (r.local.ip.clone(), r.local.port, rem.ip, rem.port)
     };
     v.sort_by_key(key);
@@ -587,7 +656,12 @@ fn conn_rows(tcp: bool, v6: bool, keep: impl Fn(&crate::ws2::ConnRow) -> bool) -
 
 /// Writes one row
 fn put_row(p: u32, tcp: bool, v6: bool, k: RowKind, r: &crate::ws2::ConnRow) {
-    let none = crate::ws2name::Addr { ip: Vec::new(), port: 0, flow: 0, scope: 0 };
+    let none = crate::ws2name::Addr {
+        ip: Vec::new(),
+        port: 0,
+        flow: 0,
+        scope: 0,
+    };
     let rem = r.remote.as_ref().unwrap_or(&none);
     let pid = crate::pid();
     match (tcp, v6) {
@@ -637,7 +711,14 @@ fn put_row(p: u32, tcp: bool, v6: bool, k: RowKind, r: &crate::ws2::ConnRow) {
 }
 
 /// A TCP / UDP table into (buf, &size)
-fn conn_table(buf: u32, size: u32, tcp: bool, v6: bool, k: RowKind, keep: impl Fn(&crate::ws2::ConnRow) -> bool) -> u32 {
+fn conn_table(
+    buf: u32,
+    size: u32,
+    tcp: bool,
+    v6: bool,
+    k: RowKind,
+    keep: impl Fn(&crate::ws2::ConnRow) -> bool,
+) -> u32 {
     let rows = conn_rows(tcp, v6, keep);
     let (hdr, row) = row_layout(tcp, v6, k);
     table(buf, size, hdr + row * rows.len() as u32, |b| {
@@ -704,9 +785,20 @@ fn owner_module(c: &mut Ctx, pid_at: u32) -> u32 {
         // TCPIP_OWNER_MODULE_INFO_BASIC only
         return ERROR_INVALID_PARAMETER;
     }
-    let path = crate::pe::MODULES.read().unwrap().iter().find(|m| !m.dll).map(|m| m.path.clone()).unwrap_or_default();
+    let path = crate::pe::MODULES
+        .read()
+        .unwrap()
+        .iter()
+        .find(|m| !m.dll)
+        .map(|m| m.path.clone())
+        .unwrap_or_default();
     let name = path.rsplit('\\').next().unwrap_or(&path).to_string();
-    let w = |s: &str| s.encode_utf16().chain([0]).flat_map(|u| u.to_le_bytes()).collect::<Vec<u8>>();
+    let w = |s: &str| {
+        s.encode_utf16()
+            .chain([0])
+            .flat_map(|u| u.to_le_bytes())
+            .collect::<Vec<u8>>()
+    };
     let (nw, pw) = (w(&name), w(&path));
     let hdr = 2 * ps();
     let need = hdr + (nw.len() + pw.len()) as u32;
@@ -790,12 +882,20 @@ fn addrs(family: u32) -> Vec<Addr> {
     for f in sorted() {
         if family != AF_INET6 {
             if let Some((a, l)) = f.v4 {
-                v.push(Addr { iface: f, a: a.to_vec(), len: l });
+                v.push(Addr {
+                    iface: f,
+                    a: a.to_vec(),
+                    len: l,
+                });
             }
         }
         if family != AF_INET {
             if let Some((a, l)) = f.v6 {
-                v.push(Addr { iface: f, a: a.to_vec(), len: l });
+                v.push(Addr {
+                    iface: f,
+                    a: a.to_vec(),
+                    len: l,
+                });
             }
         }
     }
@@ -833,9 +933,18 @@ fn GetUnicastIpAddressEntry(c: &mut Ctx) -> u32 {
     }
     let (l, i) = (mem::r64(p + 32), r32(p + 40));
     let iface = if l != 0 { by_luid(l) } else { by_index(i) };
-    let Some(iface) = iface else { return ERROR_FILE_NOT_FOUND };
-    let want = if fam == AF_INET { mem::slice(p + 4, 4).to_vec() } else { mem::slice(p + 8, 16).to_vec() };
-    match addrs(fam).into_iter().find(|a| a.iface.index == iface.index && a.a == want) {
+    let Some(iface) = iface else {
+        return ERROR_FILE_NOT_FOUND;
+    };
+    let want = if fam == AF_INET {
+        mem::slice(p + 4, 4).to_vec()
+    } else {
+        mem::slice(p + 8, 16).to_vec()
+    };
+    match addrs(fam)
+        .into_iter()
+        .find(|a| a.iface.index == iface.index && a.a == want)
+    {
         Some(a) => {
             fill_unicast_row(p, &a);
             NO_ERROR
@@ -859,7 +968,14 @@ fn fill_ipif_row(p: u32, f: &Iface, fam: u32) {
         w8(p + 47, 1);
     }
     w32(p + 52, if f.loopback() { 0 } else { 2 }); // RouterDiscoveryBehavior: disabled / DHCP
-    w32(p + 56, if fam == AF_INET6 && !f.loopback() { 1 } else { 0 });
+    w32(
+        p + 56,
+        if fam == AF_INET6 && !f.loopback() {
+            1
+        } else {
+            0
+        },
+    );
     w32(p + 60, 30000);
     w32(p + 64, 1000);
     w32(p + 68, 600000);
@@ -889,7 +1005,9 @@ fn GetIpInterfaceTable(c: &mut Ctx) -> u32 {
             }
         }
     }
-    table2(c.a(1), 168, v.len(), |p, i| fill_ipif_row(p, v[i].0, v[i].1))
+    table2(c.a(1), 168, v.len(), |p, i| {
+        fill_ipif_row(p, v[i].0, v[i].1)
+    })
 }
 fn GetIpInterfaceEntry(c: &mut Ctx) -> u32 {
     let p = c.a(0);
@@ -1008,7 +1126,9 @@ fn GetAdaptersAddresses(c: &mut Ctx) -> u32 {
         }
         let mut pfx = Vec::new();
         if include_prefix {
-            for r in routes(fam).into_iter().filter(|r| r.iface.index == f.index && (r.len == 8 || r.len == 128) && r.dest[0] != 0xff) {
+            for r in routes(fam).into_iter().filter(|r| {
+                r.iface.index == f.index && (r.len == 8 || r.len == 128) && r.dest[0] != 0xff
+            }) {
                 pfx.push((need, r));
                 need += pre + 28;
             }
@@ -1017,7 +1137,12 @@ fn GetAdaptersAddresses(c: &mut Ctx) -> u32 {
         need += (guid_string(&f.guid).len() as u32 + 1 + 1) & !1;
         let strs = need;
         let descr_w = 2 * (f.descr.encode_utf16().count() as u32 + 1);
-        let alias_w = 2 * (if skip_friendly { 0 } else { f.alias.encode_utf16().count() as u32 } + 1);
+        let alias_w = 2
+            * (if skip_friendly {
+                0
+            } else {
+                f.alias.encode_utf16().count() as u32
+            } + 1);
         need += 2 + descr_w + alias_w;
         need = (need + 7) & !7;
         plan.push((f, ad, uni, pfx, name, strs, descr_w));
@@ -1105,7 +1230,10 @@ fn GetAdaptersAddresses(c: &mut Ctx) -> u32 {
         mem::write(p + o(44, 80), f.mac);
         w32(p + o(52, 88), f.mac.len() as u32);
         // Flags: DDNS enabled, DHCP (the Ethernet), IPv4 and IPv6 enabled
-        w32(p + o(56, 92), 0x1 | if f.loopback() { 0 } else { 0x4 } | 0x80 | 0x100);
+        w32(
+            p + o(56, 92),
+            0x1 | if f.loopback() { 0 } else { 0x4 } | 0x80 | 0x100,
+        );
         w32(p + o(60, 96), f.mtu);
         w32(p + o(64, 100), f.ty);
         w32(p + o(68, 104), if f.up { 1 } else { 2 });
@@ -1128,13 +1256,29 @@ fn GetAdaptersAddresses(c: &mut Ctx) -> u32 {
         offs.push(at);
         let mut sz = aa;
         if !skip_unicast {
-            sz += addrs(fam).iter().filter(|a| a.iface.index == f.index).count() as u32 * (ua + 28);
+            sz += addrs(fam)
+                .iter()
+                .filter(|a| a.iface.index == f.index)
+                .count() as u32
+                * (ua + 28);
         }
         if include_prefix {
-            sz += routes(fam).iter().filter(|r| r.iface.index == f.index && (r.len == 8 || r.len == 128) && r.dest[0] != 0xff).count() as u32 * (pre + 28);
+            sz += routes(fam)
+                .iter()
+                .filter(|r| {
+                    r.iface.index == f.index && (r.len == 8 || r.len == 128) && r.dest[0] != 0xff
+                })
+                .count() as u32
+                * (pre + 28);
         }
         sz += (guid_string(&f.guid).len() as u32 + 2) & !1;
-        sz += 2 + 2 * (f.descr.encode_utf16().count() as u32 + 1) + 2 * (if skip_friendly { 0 } else { f.alias.encode_utf16().count() as u32 } + 1);
+        sz += 2
+            + 2 * (f.descr.encode_utf16().count() as u32 + 1)
+            + 2 * (if skip_friendly {
+                0
+            } else {
+                f.alias.encode_utf16().count() as u32
+            } + 1);
         at = (at + sz + 7) & !7;
     }
     for w in offs.windows(2) {
@@ -1176,7 +1320,9 @@ fn GetPerAdapterInfo(c: &mut Ctx) -> u32 {
         w32(size, need);
         return ERROR_BUFFER_OVERFLOW;
     }
-    let Some(f) = by_index(i) else { return ERROR_INVALID_PARAMETER };
+    let Some(f) = by_index(i) else {
+        return ERROR_INVALID_PARAMETER;
+    };
     mem::write(buf, &vec![0; need as usize]);
     w32(buf, (!f.loopback()) as u32); // AutoconfigEnabled
     put_addr_string(buf + if mem::x64() { 16 } else { 12 }, "", "", 0);
@@ -1213,7 +1359,10 @@ fn GetAdapterIndex(c: &mut Ctx) -> u32 {
         return ERROR_INVALID_PARAMETER;
     }
     let s = String::from_utf16_lossy(&mem::wstr(n));
-    match ifaces().iter().find(|f| device_name(f).eq_ignore_ascii_case(&s)) {
+    match ifaces()
+        .iter()
+        .find(|f| device_name(f).eq_ignore_ascii_case(&s))
+    {
         Some(f) => {
             w32(out, f.index);
             NO_ERROR
@@ -1318,15 +1467,31 @@ fn GetBestRoute2(c: &mut Ctx) -> u32 {
         Some(Ok(f)) => Some(f),
         None => None,
     };
-    let Some(f) = reaches(&a) else { return ERROR_NETWORK_UNREACHABLE };
+    let Some(f) = reaches(&a) else {
+        return ERROR_NETWORK_UNREACHABLE;
+    };
     if want.is_some_and(|w| w.index != f.index) {
         return ERROR_INVALID_PARAMETER;
     }
     let len = if fam == AF_INET { 8 } else { 128 };
-    let dest = if fam == AF_INET { vec![127, 0, 0, 0] } else { a.clone() };
-    fill_forward_row2(row, &Route { iface: f, dest, len });
+    let dest = if fam == AF_INET {
+        vec![127, 0, 0, 0]
+    } else {
+        a.clone()
+    };
+    fill_forward_row2(
+        row,
+        &Route {
+            iface: f,
+            dest,
+            len,
+        },
+    );
     // the best source: the interface's address, as a SOCKADDR_INET
-    let ad = addrs(fam).into_iter().find(|x| x.iface.index == f.index).unwrap();
+    let ad = addrs(fam)
+        .into_iter()
+        .find(|x| x.iface.index == f.index)
+        .unwrap();
     mem::write(src, &[0; 28]);
     w16(src, fam as u16);
     mem::write(if fam == AF_INET { src + 4 } else { src + 8 }, &ad.a);
@@ -1411,7 +1576,9 @@ fn luid_to_name(c: &mut Ctx, wide: bool) -> u32 {
     if l == 0 || (wide && buf == 0) {
         return ERROR_INVALID_PARAMETER;
     }
-    let Some(f) = by_luid(mem::r64(l)) else { return ERROR_FILE_NOT_FOUND };
+    let Some(f) = by_luid(mem::r64(l)) else {
+        return ERROR_FILE_NOT_FOUND;
+    };
     let n = if_name(f);
     if buf == 0 || (len as usize) < n.len() + 1 {
         return ERROR_NOT_ENOUGH_MEMORY;
@@ -1438,7 +1605,11 @@ fn name_to_luid_guest(c: &mut Ctx, wide: bool) -> u32 {
     if out == 0 {
         return ERROR_INVALID_PARAMETER;
     }
-    let s = if wide { String::from_utf16_lossy(&mem::wstr(n)) } else { String::from_utf8_lossy(&mem::cstr(n)).into_owned() };
+    let s = if wide {
+        String::from_utf16_lossy(&mem::wstr(n))
+    } else {
+        String::from_utf8_lossy(&mem::cstr(n)).into_owned()
+    };
     w64(out, 0);
     match name_to_luid(&s) {
         Some(l) => {
@@ -1468,7 +1639,9 @@ fn ConvertInterfaceLuidToAlias(c: &mut Ctx) -> u32 {
     if l == 0 || buf == 0 {
         return ERROR_INVALID_PARAMETER;
     }
-    let Some(f) = by_luid(mem::r64(l)) else { return ERROR_FILE_NOT_FOUND };
+    let Some(f) = by_luid(mem::r64(l)) else {
+        return ERROR_FILE_NOT_FOUND;
+    };
     if (len as usize) < f.alias.encode_utf16().count() + 1 {
         return ERROR_NOT_ENOUGH_MEMORY;
     }
@@ -1615,7 +1788,14 @@ fn send_echo(c: &mut Ctx, h: u32, e: Echo) -> u32 {
             w16(e.reply + 12, size as u16);
             w16(e.reply + 14, (status == 0) as u16); // Reserved: the number of replies
             wp(e.reply + 16, if size != 0 { d } else { 0 });
-            w8(e.reply + 16 + k, if status == 0 { e.ttl.filter(|&t| t != 0).unwrap_or(128) } else { 0 });
+            w8(
+                e.reply + 16 + k,
+                if status == 0 {
+                    e.ttl.filter(|&t| t != 0).unwrap_or(128)
+                } else {
+                    0
+                },
+            );
         }
         if size != 0 {
             mem::write(d, &e.data);
@@ -1641,7 +1821,14 @@ fn send_echo(c: &mut Ctx, h: u32, e: Echo) -> u32 {
         let k = ps();
         let iosb = mem::heap_alloc(2 * k, true);
         // STATUS_SUCCESS; an IPv6 echo with a TTL of 0 is STATUS_INVALID_PARAMETER
-        wp(iosb, if e.v6 && e.ttl == Some(0) { 0xC000_000D } else { 0 });
+        wp(
+            iosb,
+            if e.v6 && e.ttl == Some(0) {
+                0xC000_000D
+            } else {
+                0
+            },
+        );
         wp(iosb + k, hdr + size);
         crate::apc::queue_args(crate::cur().tid, e.apc, &[e.apc_ctx, iosb, 0]);
     }
@@ -1650,7 +1837,11 @@ fn send_echo(c: &mut Ctx, h: u32, e: Echo) -> u32 {
 }
 
 fn echo_data(p: u32, n: u32) -> Vec<u8> {
-    if p == 0 || n == 0 { Vec::new() } else { mem::slice(p, n).to_vec() }
+    if p == 0 || n == 0 {
+        Vec::new()
+    } else {
+        mem::slice(p, n).to_vec()
+    }
 }
 /// IP_OPTION_INFORMATION's Ttl, if options are given
 fn echo_ttl(o: u32) -> Option<u8> {
@@ -1659,8 +1850,27 @@ fn echo_ttl(o: u32) -> Option<u8> {
 
 /// IcmpSendEcho(handle, dest, data, size, options, reply, replySize, timeout)
 fn IcmpSendEcho(c: &mut Ctx) -> u32 {
-    let (h, d, data, size, o, reply, rsize) = (c.a(0), c.a(1), c.a(2), c.a(3) & 0xffff, c.a(4), c.a(5), c.a(6));
-    let e = Echo { v6: false, dst: d.to_le_bytes().to_vec(), src: None, data: echo_data(data, size), ttl: echo_ttl(o), reply, rsize, event: 0, apc: 0, apc_ctx: 0 };
+    let (h, d, data, size, o, reply, rsize) = (
+        c.a(0),
+        c.a(1),
+        c.a(2),
+        c.a(3) & 0xffff,
+        c.a(4),
+        c.a(5),
+        c.a(6),
+    );
+    let e = Echo {
+        v6: false,
+        dst: d.to_le_bytes().to_vec(),
+        src: None,
+        data: echo_data(data, size),
+        ttl: echo_ttl(o),
+        reply,
+        rsize,
+        event: 0,
+        apc: 0,
+        apc_ctx: 0,
+    };
     send_echo(c, h, e)
 }
 /// IcmpSendEcho2(handle, event, apc, ctx, dest, data, size, options, reply, replySize,
@@ -1668,9 +1878,30 @@ fn IcmpSendEcho(c: &mut Ctx) -> u32 {
 fn IcmpSendEcho2(c: &mut Ctx, ex: bool) -> u32 {
     let s = ex as u32;
     let (h, event, apc, apc_ctx) = (c.a(0), c.a(1), c.a(2), c.a(3));
-    let src = ex.then(|| c.a(4)).filter(|&a| a != 0).map(|a| a.to_le_bytes().to_vec());
-    let (d, data, size, o, reply, rsize) = (c.a(4 + s), c.a(5 + s), c.a(6 + s) & 0xffff, c.a(7 + s), c.a(8 + s), c.a(9 + s));
-    let e = Echo { v6: false, dst: d.to_le_bytes().to_vec(), src, data: echo_data(data, size), ttl: echo_ttl(o), reply, rsize, event, apc, apc_ctx };
+    let src = ex
+        .then(|| c.a(4))
+        .filter(|&a| a != 0)
+        .map(|a| a.to_le_bytes().to_vec());
+    let (d, data, size, o, reply, rsize) = (
+        c.a(4 + s),
+        c.a(5 + s),
+        c.a(6 + s) & 0xffff,
+        c.a(7 + s),
+        c.a(8 + s),
+        c.a(9 + s),
+    );
+    let e = Echo {
+        v6: false,
+        dst: d.to_le_bytes().to_vec(),
+        src,
+        data: echo_data(data, size),
+        ttl: echo_ttl(o),
+        reply,
+        rsize,
+        event,
+        apc,
+        apc_ctx,
+    };
     send_echo(c, h, e)
 }
 /// Icmp6SendEcho2(handle, event, apc, ctx, &src sockaddr_in6, &dst, data, size, options, reply,
@@ -1684,7 +1915,18 @@ fn Icmp6SendEcho2(c: &mut Ctx) -> u32 {
     }
     let src = mem::slice(sa + 8, 16).to_vec();
     let src = (!src.iter().all(|&b| b == 0)).then_some(src);
-    let e = Echo { v6: true, dst: mem::slice(da + 8, 16).to_vec(), src, data: echo_data(data, size), ttl: echo_ttl(o), reply, rsize, event, apc, apc_ctx };
+    let e = Echo {
+        v6: true,
+        dst: mem::slice(da + 8, 16).to_vec(),
+        src,
+        data: echo_data(data, size),
+        ttl: echo_ttl(o),
+        reply,
+        rsize,
+        event,
+        apc,
+        apc_ctx,
+    };
     send_echo(c, h, e)
 }
 /// IcmpParseReplies(reply, size): the reply count kept in Reserved (which it clears); with
@@ -1746,7 +1988,9 @@ fn NotifyChange(c: &mut Ctx) -> u32 {
 fn CancelIPChangeNotify(c: &mut Ctx) -> u32 {
     let ov = c.a(0);
     let mut p = PENDING.lock().unwrap();
-    let Some(i) = p.iter().position(|&(o, _)| o == ov && ov != 0) else { return 0 };
+    let Some(i) = p.iter().position(|&(o, _)| o == ov && ov != 0) else {
+        return 0;
+    };
     let (_, h) = p.remove(i);
     drop(p);
     crate::iocp::complete(h, ov, 0xC000_0120, 0, false);
@@ -1903,7 +2147,8 @@ fn ParseNetworkString(c: &mut Ctx) -> u32 {
 /// CreateSortedAddressPairs(sources, nSources, dests, nDests, options, &pairs, &count): each
 /// destination with the loopback address of its family as the source, in the given order
 fn CreateSortedAddressPairs(c: &mut Ctx) -> u32 {
-    let (src, nsrc, dst, n, opts, out, count) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6));
+    let (src, nsrc, dst, n, opts, out, count) =
+        (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6));
     if src != 0 || nsrc != 0 || dst == 0 || n == 0 || opts != 0 || out == 0 || count == 0 {
         return ERROR_INVALID_PARAMETER;
     }
@@ -1972,7 +2217,9 @@ pub fn init() {
     implement(d, "GetIpNetTable2", GetIpNetTable2);
     implement(d, "GetIcmpStatistics", |c| stats(c, 104, |_| {}));
     implement(d, "GetIcmpStatisticsEx", |c| stats_ex(c, 2064, |_| {}));
-    implement(d, "GetIpStatistics", |c| stats(c, 92, |p| ip_stats(p, AF_INET)));
+    implement(d, "GetIpStatistics", |c| {
+        stats(c, 92, |p| ip_stats(p, AF_INET))
+    });
     implement(d, "GetIpStatisticsEx", |c| {
         let f = c.a(1);
         stats_ex(c, 92, |p| ip_stats(p, f))
@@ -1982,20 +2229,44 @@ pub fn init() {
     implement(d, "GetTcpStatisticsEx", |c| stats_ex(c, 60, tcp_stats));
     implement(d, "GetUdpStatistics", |c| stats(c, 20, |_| {}));
     implement(d, "GetUdpStatisticsEx", |c| stats_ex(c, 20, |_| {}));
-    implement(d, "GetTcpTable", |c| plain_table(c, true, false, RowKind::Basic));
-    implement(d, "GetTcp6Table", |c| plain_table(c, true, true, RowKind::Basic));
-    implement(d, "GetTcpTable2", |c| plain_table(c, true, false, RowKind::Row2));
-    implement(d, "GetTcp6Table2", |c| plain_table(c, true, true, RowKind::Row2));
-    implement(d, "GetUdpTable", |c| plain_table(c, false, false, RowKind::Basic));
-    implement(d, "GetUdp6Table", |c| plain_table(c, false, true, RowKind::Basic));
+    implement(d, "GetTcpTable", |c| {
+        plain_table(c, true, false, RowKind::Basic)
+    });
+    implement(d, "GetTcp6Table", |c| {
+        plain_table(c, true, true, RowKind::Basic)
+    });
+    implement(d, "GetTcpTable2", |c| {
+        plain_table(c, true, false, RowKind::Row2)
+    });
+    implement(d, "GetTcp6Table2", |c| {
+        plain_table(c, true, true, RowKind::Row2)
+    });
+    implement(d, "GetUdpTable", |c| {
+        plain_table(c, false, false, RowKind::Basic)
+    });
+    implement(d, "GetUdp6Table", |c| {
+        plain_table(c, false, true, RowKind::Basic)
+    });
     implement(d, "GetExtendedTcpTable", |c| GetExtendedTable(c, true));
     implement(d, "GetExtendedUdpTable", |c| GetExtendedTable(c, false));
-    implement(d, "AllocateAndGetIfTableFromStack", |c| alloc_from_stack(c, fill_if_table));
-    implement(d, "AllocateAndGetIpAddrTableFromStack", |c| alloc_from_stack(c, fill_addr_table));
-    implement(d, "AllocateAndGetIpForwardTableFromStack", |c| alloc_from_stack(c, fill_forward_table));
-    implement(d, "AllocateAndGetIpNetTableFromStack", |c| alloc_from_stack(c, fill_empty));
-    implement(d, "AllocateAndGetTcpTableFromStack", |c| alloc_from_stack(c, |b| conn_fill(b, true, false, RowKind::Basic)));
-    implement(d, "AllocateAndGetUdpTableFromStack", |c| alloc_from_stack(c, |b| conn_fill(b, false, false, RowKind::Basic)));
+    implement(d, "AllocateAndGetIfTableFromStack", |c| {
+        alloc_from_stack(c, fill_if_table)
+    });
+    implement(d, "AllocateAndGetIpAddrTableFromStack", |c| {
+        alloc_from_stack(c, fill_addr_table)
+    });
+    implement(d, "AllocateAndGetIpForwardTableFromStack", |c| {
+        alloc_from_stack(c, fill_forward_table)
+    });
+    implement(d, "AllocateAndGetIpNetTableFromStack", |c| {
+        alloc_from_stack(c, fill_empty)
+    });
+    implement(d, "AllocateAndGetTcpTableFromStack", |c| {
+        alloc_from_stack(c, |b| conn_fill(b, true, false, RowKind::Basic))
+    });
+    implement(d, "AllocateAndGetUdpTableFromStack", |c| {
+        alloc_from_stack(c, |b| conn_fill(b, false, false, RowKind::Basic))
+    });
     implement(d, "AllocateAndGetTcpExTableFromStack", |c| {
         let f = c.a(4);
         if f != AF_INET && f != AF_INET6 {
@@ -2040,16 +2311,36 @@ pub fn init() {
     implement(d, "GetBestInterfaceEx", GetBestInterfaceEx);
     implement(d, "GetBestRoute", GetBestRoute);
     implement(d, "GetBestRoute2", GetBestRoute2);
-    implement(d, "ConvertInterfaceIndexToLuid", ConvertInterfaceIndexToLuid);
-    implement(d, "ConvertInterfaceLuidToIndex", ConvertInterfaceLuidToIndex);
+    implement(
+        d,
+        "ConvertInterfaceIndexToLuid",
+        ConvertInterfaceIndexToLuid,
+    );
+    implement(
+        d,
+        "ConvertInterfaceLuidToIndex",
+        ConvertInterfaceLuidToIndex,
+    );
     implement(d, "ConvertInterfaceLuidToGuid", ConvertInterfaceLuidToGuid);
     implement(d, "ConvertInterfaceGuidToLuid", ConvertInterfaceGuidToLuid);
     implement(d, "ConvertInterfaceLuidToNameW", |c| luid_to_name(c, true));
     implement(d, "ConvertInterfaceLuidToNameA", |c| luid_to_name(c, false));
-    implement(d, "ConvertInterfaceNameToLuidW", |c| name_to_luid_guest(c, true));
-    implement(d, "ConvertInterfaceNameToLuidA", |c| name_to_luid_guest(c, false));
-    implement(d, "ConvertInterfaceAliasToLuid", ConvertInterfaceAliasToLuid);
-    implement(d, "ConvertInterfaceLuidToAlias", ConvertInterfaceLuidToAlias);
+    implement(d, "ConvertInterfaceNameToLuidW", |c| {
+        name_to_luid_guest(c, true)
+    });
+    implement(d, "ConvertInterfaceNameToLuidA", |c| {
+        name_to_luid_guest(c, false)
+    });
+    implement(
+        d,
+        "ConvertInterfaceAliasToLuid",
+        ConvertInterfaceAliasToLuid,
+    );
+    implement(
+        d,
+        "ConvertInterfaceLuidToAlias",
+        ConvertInterfaceLuidToAlias,
+    );
     implement(d, "if_nametoindex", if_nametoindex);
     implement(d, "if_indextoname", if_indextoname);
     implement(d, "ConvertLengthToIpv4Mask", ConvertLengthToIpv4Mask);
@@ -2059,12 +2350,24 @@ pub fn init() {
     implement(d, "ParseNetworkString", ParseNetworkString);
     implement(d, "CreateSortedAddressPairs", CreateSortedAddressPairs);
     implement(d, "GetCurrentThreadCompartmentId", |_| 1);
-    implement(d, "SetCurrentThreadCompartmentId", |c| if c.a(0) == 1 { NO_ERROR } else { ERROR_INVALID_PARAMETER });
+    implement(d, "SetCurrentThreadCompartmentId", |c| {
+        if c.a(0) == 1 {
+            NO_ERROR
+        } else {
+            ERROR_INVALID_PARAMETER
+        }
+    });
     // ICMP
     static ICMP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x1c40);
-    implement(d, "IcmpCreateFile", |_| ICMP.fetch_add(4, std::sync::atomic::Ordering::Relaxed));
-    implement(d, "Icmp6CreateFile", |_| ICMP.fetch_add(4, std::sync::atomic::Ordering::Relaxed));
-    implement(d, "IcmpCloseHandle", |c| (c.a(0) != 0 && c.a(0) != u32::MAX) as u32);
+    implement(d, "IcmpCreateFile", |_| {
+        ICMP.fetch_add(4, std::sync::atomic::Ordering::Relaxed)
+    });
+    implement(d, "Icmp6CreateFile", |_| {
+        ICMP.fetch_add(4, std::sync::atomic::Ordering::Relaxed)
+    });
+    implement(d, "IcmpCloseHandle", |c| {
+        (c.a(0) != 0 && c.a(0) != u32::MAX) as u32
+    });
     implement(d, "IcmpSendEcho", IcmpSendEcho);
     implement(d, "IcmpSendEcho2", |c| IcmpSendEcho2(c, false));
     implement(d, "IcmpSendEcho2Ex", |c| IcmpSendEcho2(c, true));
@@ -2085,15 +2388,41 @@ pub fn init() {
     implement(d, "NotifyAddrChange", NotifyChange);
     implement(d, "NotifyRouteChange", NotifyChange);
     implement(d, "CancelIPChangeNotify", CancelIPChangeNotify);
-    for n in ["NotifyIpInterfaceChange", "NotifyRouteChange2", "NotifyUnicastIpAddressChange"] {
+    for n in [
+        "NotifyIpInterfaceChange",
+        "NotifyRouteChange2",
+        "NotifyUnicastIpAddressChange",
+    ] {
         implement(d, n, NotifyChange2);
     }
-    implement(d, "CancelMibChangeNotify2", |c| if c.a(0) == 0 { ERROR_INVALID_HANDLE } else { NO_ERROR });
+    implement(d, "CancelMibChangeNotify2", |c| {
+        if c.a(0) == 0 {
+            ERROR_INVALID_HANDLE
+        } else {
+            NO_ERROR
+        }
+    });
     // changes to the configuration are refused (no administrator, no network to change)
     for n in [
-        "AddIPAddress", "DeleteIPAddress", "CreateIpForwardEntry", "DeleteIpForwardEntry", "SetIpForwardEntry", "CreateIpNetEntry", "DeleteIpNetEntry",
-        "SetIpNetEntry", "FlushIpNetTable", "CreateProxyArpEntry", "DeleteProxyArpEntry", "SetIfEntry", "SetIpTTL", "EnableRouter",
-        "UnenableRouter", "IpReleaseAddress", "IpRenewAddress", "SetPerTcpConnectionEStats", "SetPerTcp6ConnectionEStats",
+        "AddIPAddress",
+        "DeleteIPAddress",
+        "CreateIpForwardEntry",
+        "DeleteIpForwardEntry",
+        "SetIpForwardEntry",
+        "CreateIpNetEntry",
+        "DeleteIpNetEntry",
+        "SetIpNetEntry",
+        "FlushIpNetTable",
+        "CreateProxyArpEntry",
+        "DeleteProxyArpEntry",
+        "SetIfEntry",
+        "SetIpTTL",
+        "EnableRouter",
+        "UnenableRouter",
+        "IpReleaseAddress",
+        "IpRenewAddress",
+        "SetPerTcpConnectionEStats",
+        "SetPerTcp6ConnectionEStats",
     ] {
         implement(d, n, |_| ERROR_NOT_SUPPORTED);
     }
@@ -2178,18 +2507,40 @@ mod tests {
 
     #[test]
     fn network_strings() {
-        assert_eq!(parse_net("192.168.1.1", NS_IPV4_ADDRESS), Some(Net::V4([192, 168, 1, 1], None, None)));
-        assert_eq!(parse_net("192.168.1.1:80", NS_IPV4_SERVICE), Some(Net::V4([192, 168, 1, 1], Some(80), None)));
+        assert_eq!(
+            parse_net("192.168.1.1", NS_IPV4_ADDRESS),
+            Some(Net::V4([192, 168, 1, 1], None, None))
+        );
+        assert_eq!(
+            parse_net("192.168.1.1:80", NS_IPV4_SERVICE),
+            Some(Net::V4([192, 168, 1, 1], Some(80), None))
+        );
         // port 0 is no service
         assert_eq!(parse_net("1.2.3.4:0", NS_IPV4_SERVICE), None);
         assert_eq!(parse_net("192.168.1.1:80", NS_IPV4_ADDRESS), None);
         assert_eq!(parse_net("192.168.1.256", NS_IPV4_ADDRESS), None);
-        assert_eq!(parse_net("1.2.3.4/24", NS_IPV4_NETWORK), Some(Net::V4([1, 2, 3, 4], None, Some(24))));
+        assert_eq!(
+            parse_net("1.2.3.4/24", NS_IPV4_NETWORK),
+            Some(Net::V4([1, 2, 3, 4], None, Some(24)))
+        );
         assert_eq!(parse_net("1.2.3.4/33", NS_IPV4_NETWORK), None);
-        let one = { let mut a = [0u8; 16]; a[15] = 1; a };
-        assert_eq!(parse_net("::1", NS_IPV6_ADDRESS), Some(Net::V6(one, None, None, 0)));
+        let one = {
+            let mut a = [0u8; 16];
+            a[15] = 1;
+            a
+        };
+        assert_eq!(
+            parse_net("::1", NS_IPV6_ADDRESS),
+            Some(Net::V6(one, None, None, 0))
+        );
         assert_eq!(parse_net("::1%5", NS_IPV6_ADDRESS_NO_SCOPE), None);
-        assert_eq!(parse_net("[::1]:443", NS_IPV6_SERVICE), Some(Net::V6(one, Some(443), None, 0)));
-        assert_eq!(parse_net("::1/64", NS_IPV6_NETWORK), Some(Net::V6(one, None, Some(64), 0)));
+        assert_eq!(
+            parse_net("[::1]:443", NS_IPV6_SERVICE),
+            Some(Net::V6(one, Some(443), None, 0))
+        );
+        assert_eq!(
+            parse_net("::1/64", NS_IPV6_NETWORK),
+            Some(Net::V6(one, None, Some(64), 0))
+        );
     }
 }

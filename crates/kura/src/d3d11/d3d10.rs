@@ -47,7 +47,21 @@ pub const PAIRS: &[(u32, u32)] = &[
 ];
 
 const ALL10: &[u32] = &[
-    IF10_BUFFER, IF10_TEX1D, IF10_TEX2D, IF10_TEX3D, IF10_SRV, IF10_RTV, IF10_DSV, IF10_VS, IF10_GS, IF10_PS, IF10_LAYOUT, IF10_SAMPLER, IF10_BLEND, IF10_DEPTH, IF10_RASTER,
+    IF10_BUFFER,
+    IF10_TEX1D,
+    IF10_TEX2D,
+    IF10_TEX3D,
+    IF10_SRV,
+    IF10_RTV,
+    IF10_DSV,
+    IF10_VS,
+    IF10_GS,
+    IF10_PS,
+    IF10_LAYOUT,
+    IF10_SAMPLER,
+    IF10_BLEND,
+    IF10_DEPTH,
+    IF10_RASTER,
     IF10_QUERY,
 ];
 
@@ -56,7 +70,10 @@ pub const IIDS10: &[(u32, &[u32])] = &[
     (0x9b7e4c0f, &[IF10_DEVICE]),
     (0x9b7e4c8f, &[IF10_DEVICE]),
     (0x9b7e4c00, ALL10), // ID3D10DeviceChild
-    (0x9b7e4c01, &[IF10_BUFFER, IF10_TEX1D, IF10_TEX2D, IF10_TEX3D]),
+    (
+        0x9b7e4c01,
+        &[IF10_BUFFER, IF10_TEX1D, IF10_TEX2D, IF10_TEX3D],
+    ),
     (0x9b7e4c02, &[IF10_BUFFER]),
     (0x9b7e4c03, &[IF10_TEX1D]),
     (0x9b7e4c04, &[IF10_TEX2D]),
@@ -135,27 +152,85 @@ fn misc10(m: u32) -> u32 {
 }
 
 /// ID3D10Device1 methods.
-pub(super) unsafe fn device(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32, after: &mut After) -> u32 {
+pub(super) unsafe fn device(
+    d: &mut D11,
+    m: u32,
+    this: u32,
+    a: &dyn Fn(usize) -> u32,
+    after: &mut After,
+) -> u32 {
     let args = super::args_of(IF10_DEVICE, m, a, 12);
-    let ctx = |d: &mut D11, m11: u32, v: &[u32], after: &mut After| with(v, |b| context_call(d, m11, b, after));
+    let ctx = |d: &mut D11, m11: u32, v: &[u32], after: &mut After| {
+        with(v, |b| context_call(d, m11, b, after))
+    };
     let dev = |d: &mut D11, m11: u32, v: &[u32]| with(v, |b| device_call(d, m11, this, b));
     // same arguments as the D3D11 context's
     const CTX: &[(u32, u32)] = &[
-        (3, 7), (4, 8), (6, 10), (8, 12), (9, 13), (10, 16), (11, 17), (12, 18), (13, 19), (14, 20), (15, 21), (16, 22), (18, 24), (19, 25), (20, 26), (21, 30), (22, 31),
-        (23, 32), (24, 33), (25, 35), (26, 36), (27, 37), (28, 38), (29, 43), (31, 45), (32, 46), (33, 47), (34, 48), (35, 50), (36, 53), (37, 54), (38, 57), (50, 83),
-        (62, 96), (69, 110), (70, 111),
+        (3, 7),
+        (4, 8),
+        (6, 10),
+        (8, 12),
+        (9, 13),
+        (10, 16),
+        (11, 17),
+        (12, 18),
+        (13, 19),
+        (14, 20),
+        (15, 21),
+        (16, 22),
+        (18, 24),
+        (19, 25),
+        (20, 26),
+        (21, 30),
+        (22, 31),
+        (23, 32),
+        (24, 33),
+        (25, 35),
+        (26, 36),
+        (27, 37),
+        (28, 38),
+        (29, 43),
+        (31, 45),
+        (32, 46),
+        (33, 47),
+        (34, 48),
+        (35, 50),
+        (36, 53),
+        (37, 54),
+        (38, 57),
+        (50, 83),
+        (62, 96),
+        (69, 110),
+        (70, 111),
     ];
     if let Some(&(_, m11)) = CTX.iter().find(|x| x.0 == m) {
         return ctx(d, m11, &args, after);
     }
     // getters of objects: (D3D10 method, D3D11 method, where the objects are: argument, count)
     const GET: &[(u32, u32, usize, i32)] = &[
-        (39, 72, 3, -2), (40, 73, 3, -2), (42, 75, 3, -2), (44, 77, 3, -2), (45, 78, 1, 1), (47, 80, 1, 1), (48, 81, 3, -2), (51, 84, 3, -2), (52, 85, 3, -2),
-        (54, 87, 3, -2), (55, 88, 3, -2), (57, 91, 1, 1), (58, 92, 1, 1), (59, 93, 2, -1), (60, 94, 1, 1),
+        (39, 72, 3, -2),
+        (40, 73, 3, -2),
+        (42, 75, 3, -2),
+        (44, 77, 3, -2),
+        (45, 78, 1, 1),
+        (47, 80, 1, 1),
+        (48, 81, 3, -2),
+        (51, 84, 3, -2),
+        (52, 85, 3, -2),
+        (54, 87, 3, -2),
+        (55, 88, 3, -2),
+        (57, 91, 1, 1),
+        (58, 92, 1, 1),
+        (59, 93, 2, -1),
+        (60, 94, 1, 1),
     ];
     if let Some(&(_, m11, slot, count)) = GET.iter().find(|x| x.0 == m) {
         let r = ctx(d, m11, &args, after);
-        let n = if count > 0 { count as u32 } else { args[(-count) as usize] };
+        let n = if count > 0 {
+            count as u32
+        } else {
+            args[(-count) as usize]
+        };
         reface(d, args[slot], n);
         return r;
     }
@@ -163,7 +238,12 @@ pub(super) unsafe fn device(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) ->
     let z = at(&mut zero);
     match m {
         // *SetShader(shader): no class instances
-        5 | 7 | 17 => ctx(d, [9, 11, 23][[5, 7, 17].iter().position(|&x| x == m).unwrap()], &[args[0], args[1], 0, 0], after),
+        5 | 7 | 17 => ctx(
+            d,
+            [9, 11, 23][[5, 7, 17].iter().position(|&x| x == m).unwrap()],
+            &[args[0], args[1], 0, 0],
+            after,
+        ),
         // *GetShader(out)
         41 | 43 | 49 => {
             let m11 = [74, 76, 82][[41, 43, 49].iter().position(|&x| x == m).unwrap()];
@@ -194,7 +274,11 @@ pub(super) unsafe fn device(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) ->
             for k in 0..n {
                 for i in 0..4 {
                     let x = rd(p, 6 * k + i);
-                    v[6 * k + i] = if i < 2 { (x as i32 as f32).to_bits() } else { (x as f32).to_bits() };
+                    v[6 * k + i] = if i < 2 {
+                        (x as i32 as f32).to_bits()
+                    } else {
+                        (x as f32).to_bits()
+                    };
                 }
                 v[6 * k + 4] = rd(p, 6 * k + 4);
                 v[6 * k + 5] = rd(p, 6 * k + 5);
@@ -204,12 +288,21 @@ pub(super) unsafe fn device(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) ->
         61 => {
             // RSGetViewports(n*, out)
             let mut v = scratch(6 * 16);
-            let r = ctx(d, 95, &[args[0], args[1], if args[2] != 0 { at(&mut v) } else { 0 }], after);
+            let r = ctx(
+                d,
+                95,
+                &[args[0], args[1], if args[2] != 0 { at(&mut v) } else { 0 }],
+                after,
+            );
             if args[2] != 0 && args[1] != 0 {
                 for k in 0..(rd(args[1], 0) as usize).min(16) {
                     for i in 0..4 {
                         let f = f32::from_bits(v[6 * k + i]);
-                        wr(args[2], 6 * k + i, if i < 2 { f as i32 as u32 } else { f as u32 });
+                        wr(
+                            args[2],
+                            6 * k + i,
+                            if i < 2 { f as i32 as u32 } else { f as u32 },
+                        );
                     }
                     wr(args[2], 6 * k + 4, v[6 * k + 4]);
                     wr(args[2], 6 * k + 5, v[6 * k + 5]);
@@ -352,8 +445,17 @@ pub(super) unsafe fn device(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) ->
 }
 
 /// Methods of the D3D10 faces of resources, views, shaders, states and queries.
-pub(super) unsafe fn child(d: &mut D11, iface: u32, m: u32, this: u32, a: &dyn Fn(usize) -> u32, after: &mut After) -> u32 {
-    let Some(i11) = eleven(iface) else { return E_NOTIMPL };
+pub(super) unsafe fn child(
+    d: &mut D11,
+    iface: u32,
+    m: u32,
+    this: u32,
+    a: &dyn Fn(usize) -> u32,
+    after: &mut After,
+) -> u32 {
+    let Some(i11) = eleven(iface) else {
+        return E_NOTIMPL;
+    };
     let args = super::args_of(iface, m, a, 8);
     let me = d.face(this, iface);
     match (iface, m) {
@@ -369,11 +471,17 @@ pub(super) unsafe fn child(d: &mut D11, iface: u32, m: u32, this: u32, a: &dyn F
             S_OK
         }
         (_, 4..=6) => private_data(d, m, this, a),
-        (IF10_BUFFER | IF10_TEX1D | IF10_TEX2D | IF10_TEX3D, 7..=9) => child_call(d, i11, m, this, a),
+        (IF10_BUFFER | IF10_TEX1D | IF10_TEX2D | IF10_TEX3D, 7..=9) => {
+            child_call(d, i11, m, this, a)
+        }
         (IF10_BUFFER | IF10_TEX1D | IF10_TEX2D | IF10_TEX3D, 10) => {
             // Map: buffers (type, flags, void**), textures (sub, type, flags, out): 1D a pointer,
             // 2D { pData, RowPitch }, 3D { pData, RowPitch, DepthPitch }
-            let (sub, ty, out) = if iface == IF10_BUFFER { (0, args[1], args[3]) } else { (args[1], args[2], args[4]) };
+            let (sub, ty, out) = if iface == IF10_BUFFER {
+                (0, args[1], args[3])
+            } else {
+                (args[1], args[2], args[4])
+            };
             let mut m11 = scratch(4);
             let r = map(d, me, sub, ty, at(&mut m11), false, after);
             if r != S_OK || out == 0 {
@@ -422,7 +530,9 @@ pub(super) unsafe fn child(d: &mut D11, iface: u32, m: u32, this: u32, a: &dyn F
         (IF10_SRV | IF10_RTV, 8 | 9) => child_call(d, i11, 8, this, a),
         (IF10_BLEND, 7) => {
             // GetDesc: D3D10_BLEND_DESC from the D3D11 description
-            let Some(Data::State(s)) = d.objs.get(&this).map(|o| &o.data) else { return E_FAIL };
+            let Some(Data::State(s)) = d.objs.get(&this).map(|o| &o.data) else {
+                return E_FAIL;
+            };
             let p = args[1];
             wr(p, 0, s[0]);
             for t in 0..8 {
@@ -437,10 +547,14 @@ pub(super) unsafe fn child(d: &mut D11, iface: u32, m: u32, this: u32, a: &dyn F
             }
             S_OK
         }
-        (IF10_BLEND, 8) | (IF10_SAMPLER | IF10_DEPTH | IF10_RASTER, 7) => child_call(d, i11, 7, this, a),
+        (IF10_BLEND, 8) | (IF10_SAMPLER | IF10_DEPTH | IF10_RASTER, 7) => {
+            child_call(d, i11, 7, this, a)
+        }
         // queries: Begin, End, GetData(data, size, flags), GetDataSize, GetDesc
         (IF10_QUERY, 7 | 8) => with(&[0, me], |b| context_call(d, 20 + m, b, after)),
-        (IF10_QUERY, 9) => with(&[0, me, args[1], args[2], args[3]], |b| context_call(d, 29, b, after)),
+        (IF10_QUERY, 9) => with(&[0, me, args[1], args[2], args[3]], |b| {
+            context_call(d, 29, b, after)
+        }),
         (IF10_QUERY, 10) => child_call(d, i11, 7, this, a),
         (IF10_QUERY, 11) => child_call(d, i11, 8, this, a),
         _ => E_NOTIMPL,

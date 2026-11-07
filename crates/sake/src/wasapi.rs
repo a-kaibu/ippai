@@ -49,7 +49,15 @@ const LOOPBACK: u32 = 0x2_0000;
 const EVENTCALLBACK: u32 = 0x4_0000;
 const RATEADJUST: u32 = 0x10_0000;
 const AUTOCONVERTPCM: u32 = 0x8000_0000;
-const VALID_FLAGS: u32 = 0x1_0000 | LOOPBACK | EVENTCALLBACK | 0x8_0000 | RATEADJUST | 0x100_0000 | 0x800_0000 | AUTOCONVERTPCM | 0x7000_0000;
+const VALID_FLAGS: u32 = 0x1_0000
+    | LOOPBACK
+    | EVENTCALLBACK
+    | 0x8_0000
+    | RATEADJUST
+    | 0x100_0000
+    | 0x800_0000
+    | AUTOCONVERTPCM
+    | 0x7000_0000;
 /// AUDCLNT_BUFFERFLAGS_SILENT
 const SILENT: u32 = 2;
 
@@ -70,7 +78,13 @@ fn b(n: u32) -> u32 {
 // formats
 
 /// The mix format: what the engine renders (32-bit float stereo at kura's rate)
-pub(crate) const MIX: Fmt = Fmt { rate: RATE, channels: 2, bits: 32, float: true, law: 0 };
+pub(crate) const MIX: Fmt = Fmt {
+    rate: RATE,
+    channels: 2,
+    bits: 32,
+    float: true,
+    law: 0,
+};
 
 /// A WAVEFORMATEX(TENSIBLE)'s fields as the rules look at them
 #[derive(Clone, Copy, Debug)]
@@ -89,7 +103,9 @@ pub(crate) struct Wave {
 }
 
 fn read_wave(p: u32) -> Wave {
-    let base = r16(p + 28) == 0 && r16(p + 30) == 0x10 && mem::slice(p + 32, 8) == [0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71];
+    let base = r16(p + 28) == 0
+        && r16(p + 30) == 0x10
+        && mem::slice(p + 32, 8) == [0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71];
     let ext = r16(p) == 0xfffe;
     Wave {
         tag: r16(p),
@@ -131,10 +147,18 @@ pub(crate) fn check(w: &Wave, compatible: bool) -> Result<Fmt, u32> {
         }
         (Some(float), w.bits)
     };
-    if w.channels == 0 || w.rate == 0 || w.block as u32 != w.channels as u32 * w.bits as u32 / 8 || w.avg != w.block as u32 * w.rate || valid == 0 || valid > w.bits {
+    if w.channels == 0
+        || w.rate == 0
+        || w.block as u32 != w.channels as u32 * w.bits as u32 / 8
+        || w.avg != w.block as u32 * w.rate
+        || valid == 0
+        || valid > w.bits
+    {
         return Err(E_INVALIDARG);
     }
-    let Some(float) = float else { return Err(UNSUPPORTED_FORMAT) };
+    let Some(float) = float else {
+        return Err(UNSUPPORTED_FORMAT);
+    };
     if float {
         match w.bits {
             32 if valid == 32 => {}
@@ -151,7 +175,13 @@ pub(crate) fn check(w: &Wave, compatible: bool) -> Result<Fmt, u32> {
     if !compatible {
         return Err(UNSUPPORTED_FORMAT);
     }
-    Ok(Fmt { rate: w.rate, channels: w.channels as u32, bits: w.bits as u32, float, law: 0 })
+    Ok(Fmt {
+        rate: w.rate,
+        channels: w.channels as u32,
+        bits: w.bits as u32,
+        float,
+        law: 0,
+    })
 }
 
 /// What shared mode does with a format: Initialize's answer (`flags`: its stream flags) and
@@ -265,7 +295,16 @@ static WAKE: Condvar = Condvar::new();
 
 fn with<R>(f: impl FnOnce(&mut Engine) -> R) -> R {
     let mut g = ENGINE.lock().unwrap_or_else(|e| e.into_inner());
-    f(g.get_or_insert_with(|| Engine { clients: HashMap::default(), sessions: Vec::new(), endpoint: Endpoint { db: MAX_DB, mute: false, channel: [MAX_DB; 2] }, stream: 0 }))
+    f(g.get_or_insert_with(|| Engine {
+        clients: HashMap::default(),
+        sessions: Vec::new(),
+        endpoint: Endpoint {
+            db: MAX_DB,
+            mute: false,
+            channel: [MAX_DB; 2],
+        },
+        stream: 0,
+    }))
 }
 
 /// `f` on client `this` (an IAudioClient), or None when it is not one
@@ -276,7 +315,12 @@ fn client<R>(this: u32, f: impl FnOnce(&mut Client) -> R) -> Option<R> {
 /// A grouping GUID for a new session (not GUID_NULL, as Windows gives)
 fn new_guid(seed: u32) -> [u32; 4] {
     let t = crate::k32::qpc();
-    [0x5a4b_0000 | (seed & 0xffff), t as u32 | 1, (t >> 32) as u32, 0x8000_0000 | seed]
+    [
+        0x5a4b_0000 | (seed & 0xffff),
+        t as u32 | 1,
+        (t >> 32) as u32,
+        0x8000_0000 | seed,
+    ]
 }
 
 /// The session of `guid` (all zeros: the process's default session, as NULL is), made the
@@ -286,23 +330,43 @@ fn session_of(e: &mut Engine, guid: [u32; 4]) -> usize {
         return i;
     }
     let n = e.sessions.len();
-    e.sessions.push(Session { guid, name: Vec::new(), icon: Vec::new(), group: new_guid(n as u32), volume: 1.0, mute: false, channel: [1.0; 8] });
+    e.sessions.push(Session {
+        guid,
+        name: Vec::new(),
+        icon: Vec::new(),
+        group: new_guid(n as u32),
+        volume: 1.0,
+        mute: false,
+        channel: [1.0; 8],
+    });
     n
 }
 fn guid_arg(p: u32) -> [u32; 4] {
-    if p == 0 { [0; 4] } else { std::array::from_fn(|i| r32(p + 4 * i as u32)) }
+    if p == 0 {
+        [0; 4]
+    } else {
+        std::array::from_fn(|i| r32(p + 4 * i as u32))
+    }
 }
 
 fn endpoint_gain(ep: &Endpoint, ch: usize) -> f32 {
     let db = ep.db + ep.channel[ch.min(1)];
-    if ep.mute || db <= MIN_DB { 0.0 } else { 10f32.powf(db / 20.0) }
+    if ep.mute || db <= MIN_DB {
+        0.0
+    } else {
+        10f32.powf(db / 20.0)
+    }
 }
 
 /// Takes one period (`out`: stereo frames at RATE) from client `c`, resampled and scaled by
 /// `gain` (left, right); returns whether it ran dry.
 fn render(c: &mut Client, gain: [f32; 2], out: &mut [f32]) -> bool {
     let Some(f) = c.fmt else { return false };
-    let rate = if c.rate > 0.0 { c.rate as f64 } else { f.rate as f64 };
+    let rate = if c.rate > 0.0 {
+        c.rate as f64
+    } else {
+        f.rate as f64
+    };
     let step = rate / RATE as f64;
     let mut dry = false;
     for o in out.chunks_exact_mut(2) {
@@ -331,20 +395,33 @@ fn gain_of(e: &Engine, c: &Client) -> [f32; 2] {
     let mono = c.fmt.is_some_and(|f| f.channels == 1);
     std::array::from_fn(|k| {
         let ch = if mono { 0 } else { k };
-        let sv = if s.mute { 0.0 } else { s.volume * s.channel[ch] };
+        let sv = if s.mute {
+            0.0
+        } else {
+            s.volume * s.channel[ch]
+        };
         c.channel[ch] * sv * endpoint_gain(&e.endpoint, k)
     })
 }
 
 /// One period of every running client into `out`; the event handles to signal.
 fn mix(e: &mut Engine, out: &mut [f32]) -> Vec<u32> {
-    let gains: Vec<(u32, [f32; 2])> = e.clients.iter().filter(|(_, c)| c.running).map(|(&k, c)| (k, gain_of(e, c))).collect();
+    let gains: Vec<(u32, [f32; 2])> = e
+        .clients
+        .iter()
+        .filter(|(_, c)| c.running)
+        .map(|(&k, c)| (k, gain_of(e, c)))
+        .collect();
     for (k, g) in gains {
         if let Some(c) = e.clients.get_mut(&k) {
             render(c, g, out);
         }
     }
-    e.clients.values().filter(|c| c.started && c.event != 0).map(|c| c.event).collect()
+    e.clients
+        .values()
+        .filter(|c| c.started && c.event != 0)
+        .map(|c| c.event)
+        .collect()
 }
 
 pub(crate) fn snap_wake() {
@@ -375,7 +452,10 @@ fn spawn_engine() {
             let lock = Mutex::new(());
             loop {
                 kura::snap::idle();
-                drop(WAKE.wait_timeout(lock.lock().unwrap(), Duration::from_millis(10)).unwrap());
+                drop(
+                    WAKE.wait_timeout(lock.lock().unwrap(), Duration::from_millis(10))
+                        .unwrap(),
+                );
                 kura::snap::busy();
                 let id = with(|e| e.stream);
                 while kura::audio::queued(id) < AHEAD {
@@ -409,7 +489,11 @@ fn put_f32(p: u32, v: f32) {
 }
 /// A REFERENCE_TIME argument: x86 two stack slots from `i`, x64 argument `x64`
 fn time_arg(c: &Ctx, i: u32, x64: u32) -> u64 {
-    if mem::x64() { c.a64(x64) } else { c.a(i) as u64 | (c.a(i + 1) as u64) << 32 }
+    if mem::x64() {
+        c.a64(x64)
+    } else {
+        c.a(i) as u64 | (c.a(i + 1) as u64) << 32
+    }
 }
 /// A CoTaskMemAlloc'd copy of `s` (NUL-terminated)
 fn task_wstr(s: &[u16]) -> u32 {
@@ -493,7 +577,9 @@ fn svc_qi(c: &mut Ctx, own: &[Iid]) -> u32 {
 
 fn release_client(this: u32) -> u32 {
     with(|e| {
-        let Some(c) = e.clients.get_mut(&this) else { return 0 };
+        let Some(c) = e.clients.get_mut(&this) else {
+            return 0;
+        };
         c.refs = c.refs.saturating_sub(1);
         let n = c.refs;
         if n == 0 {
@@ -528,8 +614,16 @@ pub(crate) fn new_client() -> u32 {
             (ac_set_event, b(2)),
             (ac_service, b(3)),
         ];
-        let a: &[(Handler, u32)] = &[(adj_qi, b(3)), (adj_addref, b(1)), (adj_release, b(1)), (adj_rate, b(2))];
-        (vtable("IAudioClient", m), vtable("IAudioClockAdjustment", a))
+        let a: &[(Handler, u32)] = &[
+            (adj_qi, b(3)),
+            (adj_addref, b(1)),
+            (adj_release, b(1)),
+            (adj_rate, b(2)),
+        ];
+        (
+            vtable("IAudioClient", m),
+            vtable("IAudioClockAdjustment", a),
+        )
     });
     let o = mem::heap_alloc(2 * ps(), true);
     wp(o, v);
@@ -538,7 +632,24 @@ pub(crate) fn new_client() -> u32 {
         let session = session_of(e, [0; 4]);
         e.clients.insert(
             o,
-            Client { refs: 1, fmt: None, flags: 0, frames: 0, event: 0, running: false, started: false, queue: VecDeque::new(), frac: 0.0, rate: 0.0, played: 0, taken: None, mem: 0, channel: [1.0; 8], session, ctl: 0 },
+            Client {
+                refs: 1,
+                fmt: None,
+                flags: 0,
+                frames: 0,
+                event: 0,
+                running: false,
+                started: false,
+                queue: VecDeque::new(),
+                frac: 0.0,
+                rate: 0.0,
+                played: 0,
+                taken: None,
+                mem: 0,
+                channel: [1.0; 8],
+                session,
+                ctl: 0,
+            },
         )
     });
     o
@@ -608,7 +719,11 @@ fn adj_rate(c: &mut Ctx) -> u32 {
 fn ac_initialize(c: &mut Ctx) -> u32 {
     let (this, mode, flags) = (c.a(0), c.a(1), c.a(2));
     let duration = time_arg(c, 3, 3);
-    let (fmt, guid) = if mem::x64() { (c.a(5), c.a(6)) } else { (c.a(7), c.a(8)) };
+    let (fmt, guid) = if mem::x64() {
+        (c.a(5), c.a(6))
+    } else {
+        (c.a(7), c.a(8))
+    };
     if mode > 1 {
         return E_INVALIDARG;
     }
@@ -621,12 +736,18 @@ fn ac_initialize(c: &mut Ctx) -> u32 {
     let w = read_wave(fmt);
     let guid = guid_arg(guid);
     let r = with(|e| {
-        let Some(cl) = e.clients.get(&this) else { return E_INVALIDARG };
+        let Some(cl) = e.clients.get(&this) else {
+            return E_INVALIDARG;
+        };
         if cl.fmt.is_some() {
             return ALREADY_INITIALIZED;
         }
         if mode == 1 {
-            return if flags & AUTOCONVERTPCM != 0 { E_INVALIDARG } else { EXCLUSIVE_MODE_NOT_ALLOWED };
+            return if flags & AUTOCONVERTPCM != 0 {
+                E_INVALIDARG
+            } else {
+                EXCLUSIVE_MODE_NOT_ALLOWED
+            };
         }
         // (no capture endpoint to loop back)
         if flags & LOOPBACK != 0 {
@@ -808,7 +929,11 @@ fn ac_service(c: &mut Ctx) -> u32 {
         return E_POINTER;
     }
     putp(out, 0);
-    let Some(Some((session, flags, ctl))) = client(this, |cl| cl.fmt.map(|_| (cl.session, cl.flags, cl.ctl))) else { return NOT_INITIALIZED };
+    let Some(Some((session, flags, ctl))) =
+        client(this, |cl| cl.fmt.map(|_| (cl.session, cl.flags, cl.ctl)))
+    else {
+        return NOT_INITIALIZED;
+    };
     let is = |g: Iid| guid_is(iid, g);
     let o = if is(IID_RENDER) {
         service(render_vtbl(), this, session)
@@ -848,7 +973,18 @@ fn ac_service(c: &mut Ctx) -> u32 {
 
 fn render_vtbl() -> u32 {
     static V: OnceLock<u32> = OnceLock::new();
-    *V.get_or_init(|| vtable("IAudioRenderClient", &[(rc_qi, b(3)), (svc_addref, b(1)), (svc_release, b(1)), (rc_get, b(3)), (rc_release, b(3))]))
+    *V.get_or_init(|| {
+        vtable(
+            "IAudioRenderClient",
+            &[
+                (rc_qi, b(3)),
+                (svc_addref, b(1)),
+                (svc_release, b(1)),
+                (rc_get, b(3)),
+                (rc_release, b(3)),
+            ],
+        )
+    })
 }
 fn rc_qi(c: &mut Ctx) -> u32 {
     svc_qi(c, &[IID_RENDER])
@@ -897,7 +1033,9 @@ fn rc_release(c: &mut Ctx) -> u32 {
             cl.taken = None;
             return S_OK;
         }
-        let Some(taken) = cl.taken else { return OUT_OF_ORDER };
+        let Some(taken) = cl.taken else {
+            return OUT_OF_ORDER;
+        };
         if n > taken {
             return INVALID_SIZE;
         }
@@ -907,7 +1045,11 @@ fn rc_release(c: &mut Ctx) -> u32 {
         cl.taken = None;
         let f = cl.fmt.unwrap_or(MIX);
         for i in 0..n as usize {
-            let (l, r) = if flags & SILENT != 0 { (0.0, 0.0) } else { sample_at(cl.mem, &f, i) };
+            let (l, r) = if flags & SILENT != 0 {
+                (0.0, 0.0)
+            } else {
+                sample_at(cl.mem, &f, i)
+            };
             cl.queue.push_back([l, r]);
         }
         S_OK
@@ -920,7 +1062,19 @@ fn rc_release(c: &mut Ctx) -> u32 {
 
 fn clock_vtbl() -> u32 {
     static V: OnceLock<u32> = OnceLock::new();
-    *V.get_or_init(|| vtable("IAudioClock", &[(ck_qi, b(3)), (svc_addref, b(1)), (svc_release, b(1)), (ck_freq, b(2)), (ck_pos, b(3)), (ck_chars, b(2))]))
+    *V.get_or_init(|| {
+        vtable(
+            "IAudioClock",
+            &[
+                (ck_qi, b(3)),
+                (svc_addref, b(1)),
+                (svc_release, b(1)),
+                (ck_freq, b(2)),
+                (ck_pos, b(3)),
+                (ck_chars, b(2)),
+            ],
+        )
+    })
 }
 fn ck_qi(c: &mut Ctx) -> u32 {
     svc_qi(c, &[IID_CLOCK])
@@ -941,7 +1095,8 @@ fn ck_pos(c: &mut Ctx) -> u32 {
     if pos == 0 {
         return E_POINTER;
     }
-    let (played, block) = client(owner(this), |cl| (cl.played, cl.fmt.unwrap_or(MIX).block())).unwrap_or((0, MIX.block()));
+    let (played, block) = client(owner(this), |cl| (cl.played, cl.fmt.unwrap_or(MIX).block()))
+        .unwrap_or((0, MIX.block()));
     put64(pos, played * block as u64);
     if qpc != 0 {
         put64(qpc, crate::k32::qpc());
@@ -964,7 +1119,16 @@ fn stream_vtbl() -> u32 {
     *V.get_or_init(|| {
         vtable(
             "IAudioStreamVolume",
-            &[(st_qi, b(3)), (svc_addref, b(1)), (svc_release, b(1)), (st_count, b(2)), (st_set, b(3)), (st_get, b(3)), (st_set_all, b(3)), (st_get_all, b(3))],
+            &[
+                (st_qi, b(3)),
+                (svc_addref, b(1)),
+                (svc_release, b(1)),
+                (st_count, b(2)),
+                (st_set, b(3)),
+                (st_get, b(3)),
+                (st_set_all, b(3)),
+                (st_get_all, b(3)),
+            ],
         )
     })
 }
@@ -1000,7 +1164,10 @@ fn st_get(c: &mut Ctx) -> u32 {
     if i >= channels_of(this) {
         return E_INVALIDARG;
     }
-    put_f32(out, client(owner(this), |cl| cl.channel[i as usize]).unwrap_or(1.0));
+    put_f32(
+        out,
+        client(owner(this), |cl| cl.channel[i as usize]).unwrap_or(1.0),
+    );
     S_OK
 }
 fn st_set_all(c: &mut Ctx) -> u32 {
@@ -1054,7 +1221,15 @@ fn simple_vtbl() -> u32 {
     *V.get_or_init(|| {
         vtable(
             "ISimpleAudioVolume",
-            &[(sv_qi, b(3)), (svc_addref, b(1)), (svc_release, b(1)), (sv_set_volume, b(3)), (sv_get_volume, b(2)), (sv_set_mute, b(3)), (sv_get_mute, b(2))],
+            &[
+                (sv_qi, b(3)),
+                (svc_addref, b(1)),
+                (svc_release, b(1)),
+                (sv_set_volume, b(3)),
+                (sv_get_volume, b(2)),
+                (sv_set_mute, b(3)),
+                (sv_get_mute, b(2)),
+            ],
         )
     })
 }
@@ -1094,7 +1269,16 @@ fn channel_vtbl() -> u32 {
     *V.get_or_init(|| {
         vtable(
             "IChannelAudioVolume",
-            &[(cv_qi, b(3)), (svc_addref, b(1)), (svc_release, b(1)), (cv_count, b(2)), (cv_set, b(4)), (cv_get, b(3)), (cv_set_all, b(4)), (cv_get_all, b(3))],
+            &[
+                (cv_qi, b(3)),
+                (svc_addref, b(1)),
+                (svc_release, b(1)),
+                (cv_count, b(2)),
+                (cv_set, b(4)),
+                (cv_get, b(3)),
+                (cv_set_all, b(4)),
+                (cv_get_all, b(3)),
+            ],
         )
     })
 }
@@ -1265,7 +1449,11 @@ fn se_set_group(c: &mut Ctx) -> u32 {
 }
 /// Register / UnregisterAudioSessionNotification(IAudioSessionEvents*): none are sent
 fn se_notify(c: &mut Ctx) -> u32 {
-    if c.a(1) == 0 { NULL_REF } else { S_OK }
+    if c.a(1) == 0 {
+        NULL_REF
+    } else {
+        S_OK
+    }
 }
 /// "<device id>|<exe>%b<session guid>", as Windows forms them
 fn identifier(this: u32) -> Vec<u16> {
@@ -1285,7 +1473,9 @@ fn identifier(this: u32) -> Vec<u16> {
         (g[3] >> 16) as u8,
         (g[3] >> 24) as u8
     );
-    format!("{}|{exe}%b{guid}", crate::mmdevapi::DEVICE_ID).encode_utf16().collect()
+    format!("{}|{exe}%b{guid}", crate::mmdevapi::DEVICE_ID)
+        .encode_utf16()
+        .collect()
 }
 fn se_identifier(c: &mut Ctx) -> u32 {
     if c.a(1) == 0 {
@@ -1389,7 +1579,18 @@ fn sm_enum(c: &mut Ctx) -> u32 {
         return NULL_REF;
     }
     static V: OnceLock<u32> = OnceLock::new();
-    let v = *V.get_or_init(|| vtable("IAudioSessionEnumerator", &[(en_qi, b(3)), (svc_addref, b(1)), (svc_release, b(1)), (en_count, b(2)), (en_get, b(3))]));
+    let v = *V.get_or_init(|| {
+        vtable(
+            "IAudioSessionEnumerator",
+            &[
+                (en_qi, b(3)),
+                (svc_addref, b(1)),
+                (svc_release, b(1)),
+                (en_count, b(2)),
+                (en_get, b(3)),
+            ],
+        )
+    });
     let n = with(|e| e.sessions.len()) as u32;
     // (the count where the session index goes)
     let o = service(v, 0, n as usize);
@@ -1397,11 +1598,19 @@ fn sm_enum(c: &mut Ctx) -> u32 {
     S_OK
 }
 fn sm_notify(c: &mut Ctx) -> u32 {
-    if c.a(1) == 0 { NULL_REF } else { S_OK }
+    if c.a(1) == 0 {
+        NULL_REF
+    } else {
+        S_OK
+    }
 }
 /// RegisterDuckNotification(session id, IAudioVolumeDuckNotification*)
 fn sm_duck(c: &mut Ctx) -> u32 {
-    if c.a(2) == 0 { NULL_REF } else { S_OK }
+    if c.a(2) == 0 {
+        NULL_REF
+    } else {
+        S_OK
+    }
 }
 fn en_qi(c: &mut Ctx) -> u32 {
     svc_qi(c, &[IID_ENUMERATOR])
@@ -1562,7 +1771,11 @@ fn ev_get_ch_scalar(c: &mut Ctx) -> u32 {
 /// SetMute(mute, event context): S_FALSE when it was so already
 fn ev_set_mute(c: &mut Ctx) -> u32 {
     let m = c.a(1) != 0;
-    if with(|e| std::mem::replace(&mut e.endpoint.mute, m)) == m { S_FALSE } else { S_OK }
+    if with(|e| std::mem::replace(&mut e.endpoint.mute, m)) == m {
+        S_FALSE
+    } else {
+        S_OK
+    }
 }
 fn ev_get_mute(c: &mut Ctx) -> u32 {
     if c.a(1) == 0 {
@@ -1625,7 +1838,17 @@ mod tests {
 
     fn wave(tag: u16, channels: u16, rate: u32, bits: u16, valid: u16, sub: Option<u32>) -> Wave {
         let block = (channels as u32 * bits as u32 / 8) as u16;
-        Wave { tag, channels, rate, avg: block as u32 * rate, block, bits, cb: if tag == 0xfffe { 22 } else { 0 }, valid, sub }
+        Wave {
+            tag,
+            channels,
+            rate,
+            avg: block as u32 * rate,
+            block,
+            bits,
+            cb: if tag == 0xfffe { 22 } else { 0 },
+            valid,
+            sub,
+        }
     }
     fn ext(channels: u16, rate: u32, bits: u16, valid: u16, sub: u32) -> Wave {
         wave(0xfffe, channels, rate, bits, valid, Some(sub))
@@ -1645,7 +1868,13 @@ mod tests {
         assert_eq!(shared_supported(&ext(2, r, 24, 24, 1)), S_OK);
         assert_eq!(shared_supported(&ext(2, r, 8, 8, 1)), S_OK);
         // valid formats of another rate or channel count: S_FALSE (a closest match)
-        for w in [ext(2, 48000, 32, 32, 3), ext(1, r, 32, 32, 3), ext(6, r, 16, 16, 1), wave(1, 1, 22050, 16, 0, None), ext(8, 96000, 32, 32, 3)] {
+        for w in [
+            ext(2, 48000, 32, 32, 3),
+            ext(1, r, 32, 32, 3),
+            ext(6, r, 16, 16, 1),
+            wave(1, 1, 22050, 16, 0, None),
+            ext(8, 96000, 32, 32, 3),
+        ] {
             assert_eq!(shared_supported(&w), S_FALSE, "{w:?}");
         }
         // malformed: E_INVALIDARG
@@ -1661,11 +1890,28 @@ mod tests {
         // (another SubFormat: malformed fields first; A-law with no valid bits)
         assert_eq!(shared_supported(&ext(2, r, 8, 0, 6)), E_INVALIDARG);
         assert_eq!(shared_supported(&ext(2, r, 16, 17, 7)), E_INVALIDARG);
-        for w in [ext(0, r, 32, 32, 3), ext(2, 0, 32, 32, 3), ext(2, r, 32, 0, 3), ext(2, r, 32, 33, 3), ext(2, r, 15, 15, 1), ext(2, r, 16, 16, 3), ext(2, r, 96, 96, 3), wave(1, 4, r, 16, 0, None)] {
+        for w in [
+            ext(0, r, 32, 32, 3),
+            ext(2, 0, 32, 32, 3),
+            ext(2, r, 32, 0, 3),
+            ext(2, r, 32, 33, 3),
+            ext(2, r, 15, 15, 1),
+            ext(2, r, 16, 16, 3),
+            ext(2, r, 96, 96, 3),
+            wave(1, 4, r, 16, 0, None),
+        ] {
             assert_eq!(shared_supported(&w), E_INVALIDARG, "{w:?}");
         }
         // well-formed but not played: AUDCLNT_E_UNSUPPORTED_FORMAT
-        for w in [ext(2, r, 16, 15, 1), ext(2, r, 32, 16, 1), ext(2, r, 32, 31, 3), ext(2, r, 64, 64, 3), ext(2, r, 8, 8, 6), wave(6, 2, r, 8, 0, None), wave(2, 2, r, 16, 0, None)] {
+        for w in [
+            ext(2, r, 16, 15, 1),
+            ext(2, r, 32, 16, 1),
+            ext(2, r, 32, 31, 3),
+            ext(2, r, 64, 64, 3),
+            ext(2, r, 8, 8, 6),
+            wave(6, 2, r, 8, 0, None),
+            wave(2, 2, r, 16, 0, None),
+        ] {
             assert_eq!(shared_supported(&w), UNSUPPORTED_FORMAT, "{w:?}");
         }
     }
@@ -1674,16 +1920,31 @@ mod tests {
     fn initialize_flags_widen_what_shared_mode_takes() {
         let other_rate = ext(2, 48000, 16, 16, 1);
         let mono = ext(1, RATE, 32, 32, 3);
-        assert_eq!(shared_initialize(&other_rate, 0).err(), Some(UNSUPPORTED_FORMAT));
+        assert_eq!(
+            shared_initialize(&other_rate, 0).err(),
+            Some(UNSUPPORTED_FORMAT)
+        );
         assert!(shared_initialize(&other_rate, RATEADJUST).is_ok());
         assert!(shared_initialize(&other_rate, AUTOCONVERTPCM).is_ok());
-        assert_eq!(shared_initialize(&mono, RATEADJUST).err(), Some(UNSUPPORTED_FORMAT));
+        assert_eq!(
+            shared_initialize(&mono, RATEADJUST).err(),
+            Some(UNSUPPORTED_FORMAT)
+        );
         assert!(shared_initialize(&mono, AUTOCONVERTPCM).is_ok());
         // (not a valid format: the same error with any flags)
-        assert_eq!(shared_initialize(&ext(2, RATE, 32, 31, 3), AUTOCONVERTPCM).err(), Some(UNSUPPORTED_FORMAT));
-        assert_eq!(shared_initialize(&ext(2, 0, 32, 32, 3), AUTOCONVERTPCM).err(), Some(E_INVALIDARG));
+        assert_eq!(
+            shared_initialize(&ext(2, RATE, 32, 31, 3), AUTOCONVERTPCM).err(),
+            Some(UNSUPPORTED_FORMAT)
+        );
+        assert_eq!(
+            shared_initialize(&ext(2, 0, 32, 32, 3), AUTOCONVERTPCM).err(),
+            Some(E_INVALIDARG)
+        );
         let f = shared_initialize(&ext(6, 22050, 24, 24, 1), AUTOCONVERTPCM).unwrap();
-        assert_eq!((f.rate, f.channels, f.bits, f.float, f.block()), (22050, 6, 24, false, 18));
+        assert_eq!(
+            (f.rate, f.channels, f.bits, f.float, f.block()),
+            (22050, 6, 24, false, 18)
+        );
     }
 
     #[test]
@@ -1694,8 +1955,14 @@ mod tests {
         for rate in [8000u32, 22050, 44100, 48000, 96000] {
             let muldiv = |d: u64| ((d * rate as u64 + 5_000_000) / 10_000_000) as u32;
             assert_eq!(buffer_frames(rate, 0), muldiv(2 * PERIOD));
-            for d in [1u64, 100_000, 200_000, 200_001, 333_333, 10_000_000, 20_000_000] {
-                assert_eq!(buffer_frames(rate, d), muldiv(d).max(muldiv(2 * PERIOD)), "{rate} {d}");
+            for d in [
+                1u64, 100_000, 200_000, 200_001, 333_333, 10_000_000, 20_000_000,
+            ] {
+                assert_eq!(
+                    buffer_frames(rate, d),
+                    muldiv(d).max(muldiv(2 * PERIOD)),
+                    "{rate} {d}"
+                );
             }
         }
     }
@@ -1703,7 +1970,13 @@ mod tests {
     fn test_client(rate: u32) -> Client {
         Client {
             refs: 1,
-            fmt: Some(Fmt { rate, channels: 2, bits: 32, float: true, law: 0 }),
+            fmt: Some(Fmt {
+                rate,
+                channels: 2,
+                bits: 32,
+                float: true,
+                law: 0,
+            }),
             flags: 0,
             frames: 0,
             event: 0,
@@ -1735,7 +2008,11 @@ mod tests {
                 assert!(!render(&mut c, [1.0; 2], &mut out));
             }
             // 100 periods = 1 s of output = `rate` frames of the stream's (within one frame)
-            assert!((c.played as i64 - rate as i64).abs() <= 1, "{rate}: {}", c.played);
+            assert!(
+                (c.played as i64 - rate as i64).abs() <= 1,
+                "{rate}: {}",
+                c.played
+            );
             assert_eq!(c.queue.len() as u64 + c.played, total as u64);
         }
         // SetSampleRate's rate instead of the format's
@@ -1752,7 +2029,8 @@ mod tests {
     #[test]
     fn render_at_the_engine_rate_is_exact_and_runs_dry() {
         let mut c = test_client(RATE);
-        c.queue.extend((0..STEP + 10).map(|i| [i as f32 / 1000.0, 0.5]));
+        c.queue
+            .extend((0..STEP + 10).map(|i| [i as f32 / 1000.0, 0.5]));
         let mut out = vec![0f32; STEP * 2];
         assert!(!render(&mut c, [1.0; 2], &mut out));
         for i in 0..STEP {
@@ -1769,7 +2047,16 @@ mod tests {
     /// Stream, session and endpoint volumes multiply; mute silences.
     #[test]
     fn gains_multiply_stream_session_and_endpoint_volumes() {
-        let mut e = Engine { clients: HashMap::default(), sessions: Vec::new(), endpoint: Endpoint { db: MAX_DB, mute: false, channel: [MAX_DB; 2] }, stream: 0 };
+        let mut e = Engine {
+            clients: HashMap::default(),
+            sessions: Vec::new(),
+            endpoint: Endpoint {
+                db: MAX_DB,
+                mute: false,
+                channel: [MAX_DB; 2],
+            },
+            stream: 0,
+        };
         session_of(&mut e, [0; 4]);
         let mut c = test_client(RATE);
         c.channel[1] = 0.25;
@@ -1789,13 +2076,28 @@ mod tests {
         assert_eq!(gain_of(&e, &c), [0.0, 0.0]);
         // a mono stream: its one channel's volumes on both sides
         e.endpoint.mute = false;
-        c.fmt = Some(Fmt { rate: RATE, channels: 1, bits: 16, float: false, law: 0 });
+        c.fmt = Some(Fmt {
+            rate: RATE,
+            channels: 1,
+            bits: 16,
+            float: false,
+            law: 0,
+        });
         assert_eq!(gain_of(&e, &c), [0.25, 0.25]);
     }
 
     #[test]
     fn sessions_by_guid_and_null_is_the_default() {
-        let mut e = Engine { clients: HashMap::default(), sessions: Vec::new(), endpoint: Endpoint { db: MAX_DB, mute: false, channel: [MAX_DB; 2] }, stream: 0 };
+        let mut e = Engine {
+            clients: HashMap::default(),
+            sessions: Vec::new(),
+            endpoint: Endpoint {
+                db: MAX_DB,
+                mute: false,
+                channel: [MAX_DB; 2],
+            },
+            stream: 0,
+        };
         let d = session_of(&mut e, [0; 4]);
         let a = session_of(&mut e, [1, 2, 3, 4]);
         assert_ne!(d, a);

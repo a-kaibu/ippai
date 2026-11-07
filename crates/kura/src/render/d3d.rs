@@ -69,7 +69,12 @@ fn tex_format(i: u32) -> &'static str {
 }
 /// 32-bit floats (little-endian bytes) as halves.
 fn halves(f32s: &[u8]) -> Vec<u8> {
-    f32s.chunks_exact(4).flat_map(|f| crate::d3d11::format::f16_bits(f32::from_le_bytes([f[0], f[1], f[2], f[3]])).to_le_bytes()).collect()
+    f32s.chunks_exact(4)
+        .flat_map(|f| {
+            crate::d3d11::format::f16_bits(f32::from_le_bytes([f[0], f[1], f[2], f[3]]))
+                .to_le_bytes()
+        })
+        .collect()
 }
 
 /// Whether texels of page format `i` arrive as 32-bit floats but are kept as halves.
@@ -79,7 +84,8 @@ fn halved(i: u32) -> bool {
 fn bpp(f: &str) -> u32 {
     match f {
         "r8unorm" | "r8snorm" | "r8uint" | "r8sint" => 1,
-        "rg8unorm" | "rg8snorm" | "r16float" | "depth16unorm" | "rg8uint" | "rg8sint" | "r16uint" | "r16sint" => 2,
+        "rg8unorm" | "rg8snorm" | "r16float" | "depth16unorm" | "rg8uint" | "rg8sint"
+        | "r16uint" | "r16sint" => 2,
         "rgba16float" | "rg32float" | "rg32uint" | "rg32sint" | "rgba16uint" | "rgba16sint" => 8,
         "rgba32float" | "rgba32uint" | "rgba32sint" => 16,
         _ => 4,
@@ -90,12 +96,30 @@ fn bpp(f: &str) -> u32 {
 pub(crate) fn storable(f: &str) -> bool {
     matches!(
         f,
-        "rgba8unorm" | "rgba8snorm" | "rgba8uint" | "rgba8sint" | "rgba16uint" | "rgba16sint" | "rgba16float" | "r32uint" | "r32sint" | "r32float" | "rg32uint" | "rg32sint" | "rg32float" | "rgba32uint" | "rgba32sint" | "rgba32float"
+        "rgba8unorm"
+            | "rgba8snorm"
+            | "rgba8uint"
+            | "rgba8sint"
+            | "rgba16uint"
+            | "rgba16sint"
+            | "rgba16float"
+            | "r32uint"
+            | "r32sint"
+            | "r32float"
+            | "rg32uint"
+            | "rg32sint"
+            | "rg32float"
+            | "rgba32uint"
+            | "rgba32sint"
+            | "rgba32float"
     ) || (f == "bgra8unorm" && gpu::has_feature("bgra8unorm-storage"))
 }
 /// Whether WebGPU draws to a color format (crates/kura/src/render/model.rs format_info).
 fn renderable(f: &str) -> bool {
-    !f.ends_with("snorm") && !is_depth(f) && f != "rgb9e5ufloat" && (f != "rg11b10ufloat" || gpu::has_feature("rg11b10ufloat-renderable"))
+    !f.ends_with("snorm")
+        && !is_depth(f)
+        && f != "rgb9e5ufloat"
+        && (f != "rg11b10ufloat" || gpu::has_feature("rg11b10ufloat-renderable"))
 }
 /// Whether WebGPU multisamples a format (core: the renderable and depth ones but rg32* and
 /// rgba32*, crates/kura/src/render/model.rs multisamplable).
@@ -108,10 +132,16 @@ fn resolvable(f: &str) -> bool {
 }
 /// Whether WebGPU blends into a color format (without the float32-blendable feature).
 fn blendable(f: &str) -> bool {
-    !f.ends_with("uint") && !f.ends_with("sint") && (!f.ends_with("32float") || gpu::has_feature("float32-blendable"))
+    !f.ends_with("uint")
+        && !f.ends_with("sint")
+        && (!f.ends_with("32float") || gpu::has_feature("float32-blendable"))
 }
 fn f16_to_f32(h: u16) -> f32 {
-    let (s, e, m) = ((h as u32 & 0x8000) << 16, (h >> 10) as u32 & 31, h as u32 & 0x3ff);
+    let (s, e, m) = (
+        (h as u32 & 0x8000) << 16,
+        (h >> 10) as u32 & 31,
+        h as u32 & 0x3ff,
+    );
     f32::from_bits(match (e, m) {
         (0, 0) => s,
         (0, _) => {
@@ -130,10 +160,38 @@ const DS: &str = "depth24plus-stencil8";
 
 // (crates/kura/src/d3d11/format.rs vertex_format)
 const VERTEX_FORMATS2: [&str; 32] = [
-    "float32", "float32x2", "float32x3", "float32x4", "uint32", "uint32x2", "uint32x3", "uint32x4", "sint32", "sint32x2",
-    "sint32x3", "sint32x4", "unorm8x4", "snorm8x4", "uint8x4", "sint8x4", "unorm16x2", "unorm16x4", "snorm16x2",
-    "snorm16x4", "uint16x2", "uint16x4", "sint16x2", "sint16x4", "float16x2", "float16x4", "unorm8x2", "uint8x2",
-    "unorm10-10-10-2", "unorm8x4-bgra", "snorm8x2", "sint8x2",
+    "float32",
+    "float32x2",
+    "float32x3",
+    "float32x4",
+    "uint32",
+    "uint32x2",
+    "uint32x3",
+    "uint32x4",
+    "sint32",
+    "sint32x2",
+    "sint32x3",
+    "sint32x4",
+    "unorm8x4",
+    "snorm8x4",
+    "uint8x4",
+    "sint8x4",
+    "unorm16x2",
+    "unorm16x4",
+    "snorm16x2",
+    "snorm16x4",
+    "uint16x2",
+    "uint16x4",
+    "sint16x2",
+    "sint16x4",
+    "float16x2",
+    "float16x4",
+    "unorm8x2",
+    "uint8x2",
+    "unorm10-10-10-2",
+    "unorm8x4-bgra",
+    "snorm8x2",
+    "sint8x2",
 ];
 const BLEND2: [&str; 14] = [
     "zero",
@@ -151,16 +209,53 @@ const BLEND2: [&str; 14] = [
     "one-minus-constant",
     "one",
 ];
-const STENCIL_OP: [&str; 9] =
-    ["keep", "keep", "zero", "replace", "increment-clamp", "decrement-clamp", "invert", "increment-wrap", "decrement-wrap"];
+const STENCIL_OP: [&str; 9] = [
+    "keep",
+    "keep",
+    "zero",
+    "replace",
+    "increment-clamp",
+    "decrement-clamp",
+    "invert",
+    "increment-wrap",
+    "decrement-wrap",
+];
 const ADDRESS2: [&str; 4] = ["repeat", "mirror-repeat", "clamp-to-edge", "clamp-to-edge"];
 const VIEW_DIM: [&str; 6] = ["1d", "2d", "2d-array", "cube", "cube-array", "3d"];
 const VERTEX_FORMATS: [&str; 14] = [
-    "float32", "float32x2", "float32x3", "float32x4", "unorm8x4", "uint8x4", "sint16x2", "sint16x4", "snorm16x2",
-    "snorm16x4", "unorm16x2", "unorm16x4", "float16x2", "float16x4",
+    "float32",
+    "float32x2",
+    "float32x3",
+    "float32x4",
+    "unorm8x4",
+    "uint8x4",
+    "sint16x2",
+    "sint16x4",
+    "snorm16x2",
+    "snorm16x4",
+    "unorm16x2",
+    "unorm16x4",
+    "float16x2",
+    "float16x4",
 ];
-const TOPOLOGY: [&str; 5] = ["point-list", "line-list", "line-strip", "triangle-list", "triangle-strip"];
-const COMPARE: [&str; 9] = ["always", "never", "less", "equal", "less-equal", "greater", "not-equal", "greater-equal", "always"];
+const TOPOLOGY: [&str; 5] = [
+    "point-list",
+    "line-list",
+    "line-strip",
+    "triangle-list",
+    "triangle-strip",
+];
+const COMPARE: [&str; 9] = [
+    "always",
+    "never",
+    "less",
+    "equal",
+    "less-equal",
+    "greater",
+    "not-equal",
+    "greater-equal",
+    "always",
+];
 const BLEND: [&str; 16] = [
     "one",
     "zero",
@@ -198,7 +293,14 @@ const BLEND_ALPHA: [&str; 16] = [
     "one-minus-constant",
 ];
 const BLEND_OP: [&str; 6] = ["add", "add", "subtract", "reverse-subtract", "min", "max"];
-const ADDRESS: [&str; 6] = ["repeat", "repeat", "mirror-repeat", "clamp-to-edge", "clamp-to-edge", "mirror-repeat"];
+const ADDRESS: [&str; 6] = [
+    "repeat",
+    "repeat",
+    "mirror-repeat",
+    "clamp-to-edge",
+    "clamp-to-edge",
+    "mirror-repeat",
+];
 
 fn pick<'a>(t: &[&'a str], i: u32, or: &'a str) -> &'a str {
     t.get(i as usize).copied().unwrap_or(or)
@@ -208,7 +310,11 @@ fn f32of(u: u32) -> f32 {
 }
 /// A JSON number (finite).
 fn num(f: f32) -> String {
-    if f.is_finite() { format!("{f}") } else { "0".into() }
+    if f.is_finite() {
+        format!("{f}")
+    } else {
+        "0".into()
+    }
 }
 
 /// The first line of a save state's sample copy shader (d3d/snap.rs; the model copies texels
@@ -462,7 +568,11 @@ impl DrawKey {
             return None;
         }
         let d = [x0.max(b[0]), y0.max(b[1]), x1.min(b[2]), y1.min(b[3])];
-        Some(if d[2] > d[0] && d[3] > d[1] { d } else { [b[0], b[1], b[0], b[1]] })
+        Some(if d[2] > d[0] && d[3] > d[1] {
+            d
+        } else {
+            [b[0], b[1], b[0], b[1]]
+        })
     }
 }
 
@@ -604,12 +714,22 @@ impl D3d {
         );
         let mut e1 = Vec::new();
         for s in 0..8 {
-            e1.push(format!(r#"{{"binding":{},"visibility":2,"texture":{{"sampleType":"float"}}}}"#, s * 2));
-            e1.push(format!(r#"{{"binding":{},"visibility":2,"sampler":{{"type":"filtering"}}}}"#, s * 2 + 1));
+            e1.push(format!(
+                r#"{{"binding":{},"visibility":2,"texture":{{"sampleType":"float"}}}}"#,
+                s * 2
+            ));
+            e1.push(format!(
+                r#"{{"binding":{},"visibility":2,"sampler":{{"type":"filtering"}}}}"#,
+                s * 2 + 1
+            ));
         }
         let layout1 = gpu::bind_group_layout(&format!(r#"{{"entries":[{}]}}"#, e1.join(",")));
-        let layout = gpu::pipeline_layout(&format!(r#"{{"bindGroupLayouts":[{layout0},{layout1}]}}"#));
-        let white = gpu::texture(&format!(r#"{{"size":[1,1],"format":"bgra8unorm","usage":{}}}"#, usage::T_BINDING | usage::T_COPY_DST));
+        let layout =
+            gpu::pipeline_layout(&format!(r#"{{"bindGroupLayouts":[{layout0},{layout1}]}}"#));
+        let white = gpu::texture(&format!(
+            r#"{{"size":[1,1],"format":"bgra8unorm","usage":{}}}"#,
+            usage::T_BINDING | usage::T_COPY_DST
+        ));
         let px = [255u8; 4];
         gpu::write_texture(white, 0, [0; 3], px.as_ptr(), 4, 4, 1, [1, 1, 1]);
         D3d {
@@ -728,25 +848,42 @@ impl D3d {
                 }
                 Some(a) => {
                     let diff = a.iter().zip(&px).filter(|(x, y)| x != y).count();
-                    eprintln!("skipcheck: {} ({diff} bytes differ{})", if diff == 0 { "same" } else { "DIFFERENT" }, if ok { "" } else { ", map failed" });
+                    eprintln!(
+                        "skipcheck: {} ({diff} bytes differ{})",
+                        if diff == 0 { "same" } else { "DIFFERENT" },
+                        if ok { "" } else { ", map failed" }
+                    );
                 }
             }
             return;
         }
-        let Some(r) = self.readbacks.remove(&token) else { return };
+        let Some(r) = self.readbacks.remove(&token) else {
+            return;
+        };
         // (not after the guest stopped waiting: it may have freed dst)
         if ok && vnhost_d3d9_readback_begin(r.req) != 0 {
             for y in 0..r.h as usize {
                 let src = &r.data[y * r.bpr as usize..y * r.bpr as usize + r.row as usize];
                 if r.halved {
-                    let f: Vec<u8> = src.chunks_exact(2).flat_map(|h| f16_to_f32(u16::from_le_bytes([h[0], h[1]])).to_le_bytes()).collect();
+                    let f: Vec<u8> = src
+                        .chunks_exact(2)
+                        .flat_map(|h| f16_to_f32(u16::from_le_bytes([h[0], h[1]])).to_le_bytes())
+                        .collect();
                     unsafe {
-                        std::ptr::copy_nonoverlapping(f.as_ptr(), (r.dst as usize + y * r.pitch as usize) as *mut u8, f.len());
+                        std::ptr::copy_nonoverlapping(
+                            f.as_ptr(),
+                            (r.dst as usize + y * r.pitch as usize) as *mut u8,
+                            f.len(),
+                        );
                     }
                     continue;
                 }
                 unsafe {
-                    std::ptr::copy_nonoverlapping(src.as_ptr(), (r.dst as usize + y * r.pitch as usize) as *mut u8, r.row as usize);
+                    std::ptr::copy_nonoverlapping(
+                        src.as_ptr(),
+                        (r.dst as usize + y * r.pitch as usize) as *mut u8,
+                        r.row as usize,
+                    );
                 }
             }
         }
@@ -777,7 +914,11 @@ impl D3d {
             let blob_cmp = &*blob_cmp;
             if let (Some((n, _, _)), Some((lc, ld, lb))) = (&norm, &self.last) {
                 if lc == n && same(ld, data) && same(lb, blob_cmp) && self.skip_check {
-                    let tex = if c.len() >= 9 && matches!(c[c.len() - 9], PRESENT | PRESENT_FLIP) { c[c.len() - 8] } else { 0 };
+                    let tex = if c.len() >= 9 && matches!(c[c.len() - 9], PRESENT | PRESENT_FLIP) {
+                        c[c.len() - 8]
+                    } else {
+                        0
+                    };
                     let pair = self.next_token;
                     self.snap(tex, pair);
                     self.run_batch(c, data, blob);
@@ -805,7 +946,9 @@ impl D3d {
 
     /// IPPAI_SKIPCHECK: reads texture `tex` back; the second read of a pair compares.
     fn snap(&mut self, tex: u32, pair: u32) {
-        let Some(t) = self.textures.get(&tex) else { return };
+        let Some(t) = self.textures.get(&tex) else {
+            return;
+        };
         let (w, h, id, bpp) = (t.w, t.h, t.tex, bpp(t.format));
         self.end_pass();
         let bpr = (w * bpp).div_ceil(256) * 256;
@@ -826,7 +969,10 @@ impl D3d {
             if self.data_buf == 0 || self.data_size < size {
                 gpu::destroy(self.data_buf);
                 self.data_size = size.max(self.data_size * 2).max(1 << 20);
-                self.data_buf = gpu::buffer(self.data_size, usage::VERTEX | usage::INDEX | usage::UNIFORM | usage::COPY_DST);
+                self.data_buf = gpu::buffer(
+                    self.data_size,
+                    usage::VERTEX | usage::INDEX | usage::UNIFORM | usage::COPY_DST,
+                );
                 drop_all(&mut self.groups0);
                 self.clear_groups2();
             }
@@ -846,14 +992,27 @@ impl D3d {
                 self.settle_for(op, &c[i..]);
             }
             self.touch_for(op, &c[i..]);
-            if op == CLEAR && a(10) == 0 && a(1) & 1 != 0 && self.target[0] != 0 && !self.no_pass_opt && !self.no_seg {
+            if op == CLEAR
+                && a(10) == 0
+                && a(1) & 1 != 0
+                && self.target[0] != 0
+                && !self.no_pass_opt
+                && !self.no_seg
+            {
                 if let Some(j) = self.segment(c, i, false) {
                     i = j;
                     continue;
                 }
             }
             // (a draw covering a rectangle opaque, not in a segment: one starts there)
-            if op == DRAW && self.seg_open.is_none() && self.target[0] != 0 && self.targets2.is_none() && !self.no_pass_opt && !self.no_seg && draw_flags(c, i) & 1 != 0 {
+            if op == DRAW
+                && self.seg_open.is_none()
+                && self.target[0] != 0
+                && self.targets2.is_none()
+                && !self.no_pass_opt
+                && !self.no_seg
+                && draw_flags(c, i) & 1 != 0
+            {
                 if let Some(j) = self.segment(c, i, true) {
                     i = j;
                     continue;
@@ -866,9 +1025,23 @@ impl D3d {
                     let depth = fmt == DS;
                     // (StretchRect/ColorFill can draw into any renderable color texture)
                     let _ = rt;
-                    let u = usage::T_BINDING | usage::T_COPY_DST | usage::T_COPY_SRC | if depth || renderable(fmt) { usage::T_RENDER } else { 0 };
-                    let levels = if depth { 1 } else { levels.max(1).min(32 - w.max(h).max(1).leading_zeros()) };
-                    let tex = gpu::texture(&format!(r#"{{"size":[{w},{h}],"format":{},"mipLevelCount":{levels},"usage":{u}}}"#, q(fmt)));
+                    let u = usage::T_BINDING
+                        | usage::T_COPY_DST
+                        | usage::T_COPY_SRC
+                        | if depth || renderable(fmt) {
+                            usage::T_RENDER
+                        } else {
+                            0
+                        };
+                    let levels = if depth {
+                        1
+                    } else {
+                        levels.max(1).min(32 - w.max(h).max(1).leading_zeros())
+                    };
+                    let tex = gpu::texture(&format!(
+                        r#"{{"size":[{w},{h}],"format":{},"mipLevelCount":{levels},"usage":{u}}}"#,
+                        q(fmt)
+                    ));
                     if let Some(old) = self.textures.remove(&id) {
                         old.free(self.shown());
                         self.tex_gen += 1;
@@ -876,7 +1049,29 @@ impl D3d {
                     self.clear_groups2();
                     self.created.set(self.created.get() + 1);
                     let view = gpu::view(tex, "");
-                    self.textures.insert(id, Tex { tex, w, h, levels, format: fmt, view, layers: 1, dim: "2d", views: HashMap::new(), fits: HashMap::new(), zclear: None, zused: 0, halved: halved(format), storage: false, make: c[i..i + 7].to_vec(), samples: 1, shown: None, d24: false });
+                    self.textures.insert(
+                        id,
+                        Tex {
+                            tex,
+                            w,
+                            h,
+                            levels,
+                            format: fmt,
+                            view,
+                            layers: 1,
+                            dim: "2d",
+                            views: HashMap::new(),
+                            fits: HashMap::new(),
+                            zclear: None,
+                            zused: 0,
+                            halved: halved(format),
+                            storage: false,
+                            make: c[i..i + 7].to_vec(),
+                            samples: 1,
+                            shown: None,
+                            d24: false,
+                        },
+                    );
                     i += 7;
                 }
                 DESTROY_TEXTURE => {
@@ -892,7 +1087,8 @@ impl D3d {
                     i += 2;
                 }
                 WRITE_TEXTURE => {
-                    let (id, level, x, y, w, h, bpr, off) = (a(1), a(2), a(3), a(4), a(5), a(6), a(7), a(8));
+                    let (id, level, x, y, w, h, bpr, off) =
+                        (a(1), a(2), a(3), a(4), a(5), a(6), a(7), a(8));
                     if let Some(t) = self.textures.get(&id).filter(|t| t.format != DS) {
                         let (fmt, tw, th, tex, halved) = (t.format, t.w, t.h, t.tex, t.halved);
                         self.flush_if_used(id);
@@ -903,13 +1099,36 @@ impl D3d {
                         // detach_mem); 32-bit floats as they come, halved for a page without
                         // float32-filterable)
                         let src_bpp = if halved { 16 } else { bpp(fmt) };
-                        if cw > 0 && ch > 0 && bpr >= cw * src_bpp && bpr % 4 == 0 && off as usize + len <= blob.len() {
+                        if cw > 0
+                            && ch > 0
+                            && bpr >= cw * src_bpp
+                            && bpr % 4 == 0
+                            && off as usize + len <= blob.len()
+                        {
                             STATS[3].fetch_add(len as u64, Relaxed);
                             if halved {
                                 let half = halves(&blob[off as usize..off as usize + len]);
-                                gpu::write_texture(tex, level, [x, y, 0], half.as_ptr(), len / 2, bpr / 2, ch, [cw, ch, 1]);
+                                gpu::write_texture(
+                                    tex,
+                                    level,
+                                    [x, y, 0],
+                                    half.as_ptr(),
+                                    len / 2,
+                                    bpr / 2,
+                                    ch,
+                                    [cw, ch, 1],
+                                );
                             } else {
-                                gpu::write_texture(tex, level, [x, y, 0], blob[off as usize..].as_ptr(), len, bpr, ch, [cw, ch, 1]);
+                                gpu::write_texture(
+                                    tex,
+                                    level,
+                                    [x, y, 0],
+                                    blob[off as usize..].as_ptr(),
+                                    len,
+                                    bpr,
+                                    ch,
+                                    [cw, ch, 1],
+                                );
                             }
                         }
                     }
@@ -917,7 +1136,8 @@ impl D3d {
                 }
                 WRITE_TEXTURE_MEM => {
                     // rows straight from guest memory (the guest leaves them alone until this batch ran)
-                    let (id, level, x, y, w, h, pitch, ptr) = (a(1), a(2), a(3), a(4), a(5), a(6), a(7), a(8));
+                    let (id, level, x, y, w, h, pitch, ptr) =
+                        (a(1), a(2), a(3), a(4), a(5), a(6), a(7), a(8));
                     if let Some(t) = self.textures.get(&id).filter(|t| t.format != DS) {
                         let (fmt, tw, th, tex, halved) = (t.format, t.w, t.h, t.tex, t.halved);
                         self.flush_if_used(id);
@@ -930,12 +1150,35 @@ impl D3d {
                             if halved {
                                 let mut half = Vec::with_capacity((cw * 8 * ch) as usize);
                                 for r in 0..ch as usize {
-                                    let row = unsafe { std::slice::from_raw_parts((ptr as usize + r * pitch as usize) as *const u8, (cw * 16) as usize) };
+                                    let row = unsafe {
+                                        std::slice::from_raw_parts(
+                                            (ptr as usize + r * pitch as usize) as *const u8,
+                                            (cw * 16) as usize,
+                                        )
+                                    };
                                     half.extend(halves(row));
                                 }
-                                gpu::write_texture(tex, level, [x, y, 0], half.as_ptr(), half.len(), cw * 8, ch, [cw, ch, 1]);
+                                gpu::write_texture(
+                                    tex,
+                                    level,
+                                    [x, y, 0],
+                                    half.as_ptr(),
+                                    half.len(),
+                                    cw * 8,
+                                    ch,
+                                    [cw, ch, 1],
+                                );
                             } else {
-                                gpu::write_texture(tex, level, [x, y, 0], ptr as usize as *const u8, len, pitch, ch, [cw, ch, 1]);
+                                gpu::write_texture(
+                                    tex,
+                                    level,
+                                    [x, y, 0],
+                                    ptr as usize as *const u8,
+                                    len,
+                                    pitch,
+                                    ch,
+                                    [cw, ch, 1],
+                                );
                             }
                         }
                     }
@@ -946,7 +1189,12 @@ impl D3d {
                     let code = String::from_utf8_lossy(&blob[off..off + len]);
                     // (a storage texture of 32-bit floats, kept as halves: a module that says so)
                     let halves = code.contains("@compute") && halved(P_RGBA32F);
-                    let code = if halves { code.replace("<rgba32float, write>", "<rgba16float, write>").into() } else { code };
+                    let code = if halves {
+                        code.replace("<rgba32float, write>", "<rgba16float, write>")
+                            .into()
+                    } else {
+                        code
+                    };
                     if let Some(old) = self.shaders.insert(id as u32, gpu::shader(&code)) {
                         gpu::drop(old);
                         self.computes.retain(|k, &mut (p, l)| {
@@ -1005,13 +1253,24 @@ impl D3d {
                         let view = self.present_view(tex);
                         let old = self.shown();
                         // (a view kept for the screen after its texture went: now unused)
-                        if old != view && old != 0 && !self.textures.values().any(|t| t.view == old || t.shown.is_some_and(|s| s.1 == old)) {
+                        if old != view
+                            && old != 0
+                            && !self
+                                .textures
+                                .values()
+                                .any(|t| t.view == old || t.shown.is_some_and(|s| s.1 == old))
+                        {
                             gpu::drop(old);
                         }
                         if old != view {
                             self.tex_gen += 1;
                         }
-                        self.overlay = Some(Overlay { view, rect, flip: op == PRESENT_FLIP, hwnd: a(8) });
+                        self.overlay = Some(Overlay {
+                            view,
+                            rect,
+                            flip: op == PRESENT_FLIP,
+                            hwnd: a(8),
+                        });
                         self.overlay_tex = tex;
                     }
                     self.frames += 1;
@@ -1032,12 +1291,18 @@ impl D3d {
                     i += 10;
                 }
                 FILL => {
-                    let (tex, level, x, y, w, h, color) = (a(1), a(2), a(3), a(4), a(5), a(6), a(7));
+                    let (tex, level, x, y, w, h, color) =
+                        (a(1), a(2), a(3), a(4), a(5), a(6), a(7));
                     let saved = self.target;
                     let saved2 = self.targets2.take();
                     self.end_pass();
                     self.target = [tex, level, 0];
-                    let col = [((color >> 16) & 255) as f32 / 255.0, ((color >> 8) & 255) as f32 / 255.0, (color & 255) as f32 / 255.0, (color >> 24) as f32 / 255.0];
+                    let col = [
+                        ((color >> 16) & 255) as f32 / 255.0,
+                        ((color >> 8) & 255) as f32 / 255.0,
+                        (color & 255) as f32 / 255.0,
+                        (color >> 24) as f32 / 255.0,
+                    ];
                     self.clear_rect(1, col, 0.0, 0, x, y, w, h);
                     self.end_pass();
                     self.target = saved;
@@ -1051,9 +1316,12 @@ impl D3d {
                     i += 8;
                 }
                 WRITE_TEXTURE2 => {
-                    let (id, level, layer, x, y, w, h, bpr, off) = (a(1), a(2), a(3), a(4), a(5), a(6), a(7), a(8), a(9));
+                    let (id, level, layer, x, y, w, h, bpr, off) =
+                        (a(1), a(2), a(3), a(4), a(5), a(6), a(7), a(8), a(9));
                     // (of depth only 16-bit: WebGPU writes into no other)
-                    if let Some(t) = self.textures.get(&id).filter(|t| (!is_depth(t.format) || t.format == "depth16unorm") && t.samples == 1) {
+                    if let Some(t) = self.textures.get(&id).filter(|t| {
+                        (!is_depth(t.format) || t.format == "depth16unorm") && t.samples == 1
+                    }) {
                         let (tw, th, levels, tex, halved) = (t.w, t.h, t.levels, t.tex, t.halved);
                         self.flush_if_used(id);
                         let (lw, lh) = ((tw >> level).max(1), (th >> level).max(1));
@@ -1063,18 +1331,47 @@ impl D3d {
                             STATS[3].fetch_add(len as u64, Relaxed);
                             if halved {
                                 let half = halves(&blob[off as usize..off as usize + len]);
-                                gpu::write_texture(tex, level, [x, y, layer], half.as_ptr(), len / 2, bpr / 2, h, [cw, ch, 1]);
+                                gpu::write_texture(
+                                    tex,
+                                    level,
+                                    [x, y, layer],
+                                    half.as_ptr(),
+                                    len / 2,
+                                    bpr / 2,
+                                    h,
+                                    [cw, ch, 1],
+                                );
                             } else {
-                                gpu::write_texture(tex, level, [x, y, layer], blob[off as usize..].as_ptr(), len, bpr, h, [cw, ch, 1]);
+                                gpu::write_texture(
+                                    tex,
+                                    level,
+                                    [x, y, layer],
+                                    blob[off as usize..].as_ptr(),
+                                    len,
+                                    bpr,
+                                    h,
+                                    [cw, ch, 1],
+                                );
                             }
                         }
                     }
                     i += 10;
                 }
-                CREATE_BUFFER | DESTROY_BUFFER | WRITE_BUFFER => i += self.buffer_cmd(&c[i..], blob),
+                CREATE_BUFFER | DESTROY_BUFFER | WRITE_BUFFER => {
+                    i += self.buffer_cmd(&c[i..], blob)
+                }
                 CREATE_PIPELINE2 => {
                     let (id, n) = (a(1), a(2) as usize);
-                    if let Some(old) = self.pipelines2.insert(id, Pipe2 { key: c[i + 3..i + 3 + n].to_vec(), pipeline: 0, layouts: Vec::new(), kinds: Vec::new(), zuse: 0 }) {
+                    if let Some(old) = self.pipelines2.insert(
+                        id,
+                        Pipe2 {
+                            key: c[i + 3..i + 3 + n].to_vec(),
+                            pipeline: 0,
+                            layouts: Vec::new(),
+                            kinds: Vec::new(),
+                            zuse: 0,
+                        },
+                    ) {
                         gpu::drop(old.pipeline);
                         old.layouts.iter().for_each(|&l| gpu::drop(l));
                     }
@@ -1154,7 +1451,12 @@ impl D3d {
             let r = r?;
             b = Some(match b {
                 None => r,
-                Some(o) => [o[0].min(r[0]), o[1].min(r[1]), o[2].max(r[2]), o[3].max(r[3])],
+                Some(o) => [
+                    o[0].min(r[0]),
+                    o[1].min(r[1]),
+                    o[2].max(r[2]),
+                    o[3].max(r[3]),
+                ],
             });
         }
         b
@@ -1168,8 +1470,17 @@ impl D3d {
     fn touch_for(&mut self, op: u32, c: &[u32]) {
         match op {
             // (level 0, x y w h)
-            WRITE_TEXTURE | WRITE_TEXTURE_MEM if c[2] == 0 => self.touch_box(c[1], Some([c[3], c[4], c[3].saturating_add(c[5]), c[4].saturating_add(c[6])])),
-            CREATE_TEXTURE | CREATE_TEXTURE2 | DESTROY_TEXTURE | WRITE_TEXTURE | WRITE_TEXTURE_MEM | WRITE_TEXTURE2 | FILL | GEN_MIPS => self.touch(c[1]),
+            WRITE_TEXTURE | WRITE_TEXTURE_MEM if c[2] == 0 => self.touch_box(
+                c[1],
+                Some([
+                    c[3],
+                    c[4],
+                    c[3].saturating_add(c[5]),
+                    c[4].saturating_add(c[6]),
+                ]),
+            ),
+            CREATE_TEXTURE | CREATE_TEXTURE2 | DESTROY_TEXTURE | WRITE_TEXTURE
+            | WRITE_TEXTURE_MEM | WRITE_TEXTURE2 | FILL | GEN_MIPS => self.touch(c[1]),
             COPY => self.touch(c[7]),
             RESOLVE => self.touch(c[1]),
             _ => {}
@@ -1189,7 +1500,10 @@ impl D3d {
         for (k, &w) in c[i..end - 9].iter().enumerate() {
             let at = i + k;
             // (data offsets: vso, pso, vertex buffers, indices)
-            let offset = at == i + 12 || at == i + 14 || (at > p && at <= p + nbuf) || at == p + 1 + nbuf + 1;
+            let offset = at == i + 12
+                || at == i + 14
+                || (at > p && at <= p + nbuf)
+                || at == p + 1 + nbuf + 1;
             h = add(h, if offset { 0 } else { w as u64 });
         }
         let base = h;
@@ -1207,11 +1521,37 @@ impl D3d {
         }
         let bbox = [c[end - 9], c[end - 8], c[end - 7], c[end - 6]];
         let flags = c[end - 5];
-        let map = (flags & 2 != 0 && tex0 != 0).then(|| [f32of(c[end - 4]), f32of(c[end - 3]), f32of(c[end - 2]), f32of(c[end - 1])]);
+        let map = (flags & 2 != 0 && tex0 != 0).then(|| {
+            [
+                f32of(c[end - 4]),
+                f32of(c[end - 3]),
+                f32of(c[end - 2]),
+                f32of(c[end - 1]),
+            ]
+        });
         // (the box is the vertices' rounded out with a pixel of margin: two pixels in from it are
         // covered whatever the rounding)
-        let cover = (flags & 1 != 0 && bbox[0] != u32::MAX).then(|| [bbox[0] + 2, bbox[1] + 2, bbox[2].saturating_sub(2), bbox[3].saturating_sub(2)]);
-        (DrawKey { key: h, base, bbox, tex0, stamp0, others, map, cover }, end)
+        let cover = (flags & 1 != 0 && bbox[0] != u32::MAX).then(|| {
+            [
+                bbox[0] + 2,
+                bbox[1] + 2,
+                bbox[2].saturating_sub(2),
+                bbox[3].saturating_sub(2),
+            ]
+        });
+        (
+            DrawKey {
+                key: h,
+                base,
+                bbox,
+                tex0,
+                stamp0,
+                others,
+                map,
+                cover,
+            },
+            end,
+        )
     }
 
     /// Direct3D 9: at a clear of the whole color target (`c[i]`), its segment: the clear and the
@@ -1231,14 +1571,26 @@ impl D3d {
         let t = self.target[0];
         let level = self.target[1];
         // (cleared again at once, as Siglus does: only the depth part of this one counts)
-        if !cover && c.get(i + 12) == Some(&CLEAR) && c.get(i + 22) == Some(&0) && c[i + 13] & 1 != 0 {
+        if !cover
+            && c.get(i + 12) == Some(&CLEAR)
+            && c.get(i + 22) == Some(&0)
+            && c[i + 13] & 1 != 0
+        {
             if c[i + 1] & 6 != 0 {
                 self.clear_whole(c[i + 1] & 6, [0.0; 4], f32of(c[i + 6]), c[i + 7]);
             }
             return Some(i + 12);
         }
-        let covered = if cover { self.draw_key(c, i).0.cover? } else { [0; 4] };
-        let clear: [u32; 5] = if cover { [2, covered[0], covered[1], covered[2], covered[3]] } else { [c[i + 1] & 1, c[i + 2], c[i + 3], c[i + 4], c[i + 5]] };
+        let covered = if cover {
+            self.draw_key(c, i).0.cover?
+        } else {
+            [0; 4]
+        };
+        let clear: [u32; 5] = if cover {
+            [2, covered[0], covered[1], covered[2], covered[3]]
+        } else {
+            [c[i + 1] & 1, c[i + 2], c[i + 3], c[i + 4], c[i + 5]]
+        };
         let start = if cover { i } else { i + 12 };
         // the segment
         let mut draws = Vec::new();
@@ -1263,9 +1615,21 @@ impl D3d {
             }
         }
         let end = k;
-        let new = Seg { clear, level, draws, after: u64::MAX };
+        let new = Seg {
+            clear,
+            level,
+            draws,
+            after: u64::MAX,
+        };
         let usable = match self.segs.get(&t) {
-            Some(old) => old.after != u64::MAX && old.after == self.stamp_of(t) && old.clear == new.clear && old.level == level && old.draws.len().max(new.draws.len()) <= 1024 && !self.clears.contains_key(&t),
+            Some(old) => {
+                old.after != u64::MAX
+                    && old.after == self.stamp_of(t)
+                    && old.clear == new.clear
+                    && old.level == level
+                    && old.draws.len().max(new.draws.len()) <= 1024
+                    && !self.clears.contains_key(&t)
+            }
             None => false,
         };
         // the box that changed
@@ -1277,19 +1641,41 @@ impl D3d {
             // (gone, new, or moved past another) are where it changed. (In order by what they
             // are but their textures' stamps: one whose texture at stage 0 alone changed
             // changed where that shows, when known.)
-            let bases = |v: &[DrawKey]| v.iter().map(|d| (d.base, d.others, d.tex0)).collect::<Vec<_>>();
+            let bases = |v: &[DrawKey]| {
+                v.iter()
+                    .map(|d| (d.base, d.others, d.tex0))
+                    .collect::<Vec<_>>()
+            };
             let (keep_old, keep_new) = common(&bases(&old.draws), &bases(&new.draws));
             let mut boxes: Vec<Option<[u32; 4]>> = Vec::new();
-            for (d, _) in old.draws.iter().zip(&keep_old).chain(new.draws.iter().zip(&keep_new)).filter(|(_, k)| !**k) {
+            for (d, _) in old
+                .draws
+                .iter()
+                .zip(&keep_old)
+                .chain(new.draws.iter().zip(&keep_new))
+                .filter(|(_, k)| !**k)
+            {
                 boxes.push((d.bbox[0] != u32::MAX).then_some(d.bbox));
             }
-            let kept_old = old.draws.iter().zip(&keep_old).filter(|(_, k)| **k).map(|(d, _)| d);
-            let kept_new = new.draws.iter().zip(&keep_new).filter(|(_, k)| **k).map(|(d, _)| d);
+            let kept_old = old
+                .draws
+                .iter()
+                .zip(&keep_old)
+                .filter(|(_, k)| **k)
+                .map(|(d, _)| d);
+            let kept_new = new
+                .draws
+                .iter()
+                .zip(&keep_new)
+                .filter(|(_, k)| **k)
+                .map(|(d, _)| d);
             for (o, n) in kept_old.zip(kept_new) {
                 if o.key == n.key {
                     continue;
                 }
-                let r = self.changed_since(n.tex0, o.stamp0).filter(|_| o.stamp0 <= n.stamp0);
+                let r = self
+                    .changed_since(n.tex0, o.stamp0)
+                    .filter(|_| o.stamp0 <= n.stamp0);
                 boxes.push(match r {
                     Some(r) if r[2] <= r[0] || r[3] <= r[1] => continue,
                     Some(r) => n.damage(r).or((n.bbox[0] != u32::MAX).then_some(n.bbox)),
@@ -1306,7 +1692,12 @@ impl D3d {
                 }
                 dirty = Some(match dirty {
                     None => b,
-                    Some(d) => [d[0].min(b[0]), d[1].min(b[1]), d[2].max(b[2]), d[3].max(b[3])],
+                    Some(d) => [
+                        d[0].min(b[0]),
+                        d[1].min(b[1]),
+                        d[2].max(b[2]),
+                        d[3].max(b[3]),
+                    ],
                 });
             }
         }
@@ -1316,9 +1707,23 @@ impl D3d {
             _ if !known => None,
             None => Some(None),
             // (most of the target: drawn whole, a clear is cheaper than a load on a tiler)
-            Some(d) if ((d[2].saturating_sub(d[0])) as u64 * (d[3].saturating_sub(d[1])) as u64) * 10 > tw as u64 * th as u64 * 6 => None,
+            Some(d)
+                if ((d[2].saturating_sub(d[0])) as u64 * (d[3].saturating_sub(d[1])) as u64)
+                    * 10
+                    > tw as u64 * th as u64 * 6 =>
+            {
+                None
+            }
             // (a draw starts it: only inside what it covers is nothing left from before)
-            Some(d) if cover && !(d[0] >= covered[0] && d[1] >= covered[1] && d[2] <= covered[2] && d[3] <= covered[3]) => None,
+            Some(d)
+                if cover
+                    && !(d[0] >= covered[0]
+                        && d[1] >= covered[1]
+                        && d[2] <= covered[2]
+                        && d[3] <= covered[3]) =>
+            {
+                None
+            }
             Some(d) => Some(Some(d)),
         };
         let Some(part) = part else {
@@ -1335,7 +1740,14 @@ impl D3d {
         }
         let (skipped, parts) = self.seg_stats.get();
         // (the box is cleared to the clear's color first; a covering draw covers it itself)
-        let color = (!cover).then(|| [f32of(c[i + 2]), f32of(c[i + 3]), f32of(c[i + 4]), f32of(c[i + 5])]);
+        let color = (!cover).then(|| {
+            [
+                f32of(c[i + 2]),
+                f32of(c[i + 3]),
+                f32of(c[i + 4]),
+                f32of(c[i + 5]),
+            ]
+        });
         match part {
             // the same: the target keeps what it has
             None => self.seg_stats.set((skipped + 1, parts)),
@@ -1363,14 +1775,27 @@ impl D3d {
             self.end_pass();
             self.target = last;
         }
-        self.segs.insert(t, Seg { after: self.stamp_of(t), ..new });
+        self.segs.insert(
+            t,
+            Seg {
+                after: self.stamp_of(t),
+                ..new
+            },
+        );
         Some(end)
     }
 
     /// The target changes, depth clears and draws of a segment (`c[k..end]`, its draws
     /// `draws`), only those that draw into the box of `part` (cleared first to its color, in
     /// the pass of the first draw; clipped to it), or all.
-    fn replay(&mut self, c: &[u32], mut k: usize, end: usize, draws: &[DrawKey], part: Option<([u32; 4], Option<[f32; 4]>)>) {
+    fn replay(
+        &mut self,
+        c: &[u32],
+        mut k: usize,
+        end: usize,
+        draws: &[DrawKey],
+        part: Option<([u32; 4], Option<[f32; 4]>)>,
+    ) {
         let clip = part.map(|p| p.0);
         let mut box_clear = part.and_then(|(d, color)| Some((d, color?)));
         let color_target = self.target;
@@ -1393,7 +1818,10 @@ impl D3d {
                 _ => {
                     let b = draws[n].bbox;
                     n += 1;
-                    let hit = clip.is_none_or(|d| b[0] == u32::MAX || (b[0] < d[2] && b[2] > d[0] && b[1] < d[3] && b[3] > d[1]));
+                    let hit = clip.is_none_or(|d| {
+                        b[0] == u32::MAX
+                            || (b[0] < d[2] && b[2] > d[0] && b[1] < d[3] && b[3] > d[1])
+                    });
                     if hit {
                         if let Some((d, color)) = box_clear.take() {
                             self.clip = None;
@@ -1449,7 +1877,9 @@ impl D3d {
         let mut cleared: Vec<(u32, u32, u32)> = Vec::new();
         // (a texture read: cleared whole, every level and layer)
         let all_clear = |cleared: &[(u32, u32, u32)], t: u32| {
-            self.textures.get(&t).is_some_and(|x| (0..x.levels).all(|l| (0..x.layers).all(|y| cleared.contains(&(t, l, y)))))
+            self.textures.get(&t).is_some_and(|x| {
+                (0..x.levels).all(|l| (0..x.layers).all(|y| cleared.contains(&(t, l, y))))
+            })
         };
         let mut target = [0u32; 3];
         let mut targets2: Option<&[u32]> = None;
@@ -1459,7 +1889,11 @@ impl D3d {
         let mut gone: Vec<u32> = Vec::new();
         // textures draws read, and whether they had been cleared then
         let mut reads: Vec<(u32, bool)> = Vec::new();
-        let renum = |id: u32, made: &[u32]| made.iter().position(|&m| m == id).map(|k| 0x8000_0000 | k as u32);
+        let renum = |id: u32, made: &[u32]| {
+            made.iter()
+                .position(|&m| m == id)
+                .map(|k| 0x8000_0000 | k as u32)
+        };
         let mut i = 0;
         while i < c.len() {
             match c[i] {
@@ -1493,7 +1927,9 @@ impl D3d {
                     i += 11;
                 }
                 DRAW => {
-                    if !cleared.contains(&(target[0], target[1], 0)) || (target[2] != 0 && !cleared.contains(&(target[2], 0, 0))) {
+                    if !cleared.contains(&(target[0], target[1], 0))
+                        || (target[2] != 0 && !cleared.contains(&(target[2], 0, 0)))
+                    {
                         return None;
                     }
                     let ntex = c[i + 17] as usize;
@@ -1621,7 +2057,10 @@ impl D3d {
         }
         // (a texture it draws to or clears, read before it clears it, holds what the last run
         // left)
-        if reads.iter().any(|&(t, clear)| !clear && (drawn.contains(&t) || cleared.iter().any(|c| c.0 == t))) {
+        if reads
+            .iter()
+            .any(|&(t, clear)| !clear && (drawn.contains(&t) || cleared.iter().any(|c| c.0 == t)))
+        {
             return None;
         }
         if !hashed {
@@ -1637,7 +2076,14 @@ impl D3d {
             CREATE_BUFFER => {
                 let (id, size) = (a(1), a(2).div_ceil(4) * 4);
                 // (ids are not used again: no cached bind group has it)
-                let b = gpu::buffer(size.max(4), usage::VERTEX | usage::INDEX | usage::UNIFORM | usage::COPY_DST | usage::COPY_SRC);
+                let b = gpu::buffer(
+                    size.max(4),
+                    usage::VERTEX
+                        | usage::INDEX
+                        | usage::UNIFORM
+                        | usage::COPY_DST
+                        | usage::COPY_SRC,
+                );
                 if let Some((old, _)) = self.buffers.insert(id, (b, size.max(4))) {
                     self.doomed.push(old);
                 }
@@ -1657,13 +2103,22 @@ impl D3d {
                 let unused = a(2) & WRITE_UNUSED != 0;
                 if let Some(&(mut b, size)) = self.buffers.get(&id) {
                     // (the bytes the command names that the blob and the buffer hold)
-                    let n = (len as usize).min(size.saturating_sub(at) as usize).min(blob.len().saturating_sub(off));
+                    let n = (len as usize)
+                        .min(size.saturating_sub(at) as usize)
+                        .min(blob.len().saturating_sub(off));
                     if n > 0 {
                         if self.bused.contains(&id) && !unused {
                             if at == 0 && n as u32 + 16 > size {
                                 // all of it (but the padding to 16): a new GPU buffer, draws before keep the old one
                                 self.doomed.push(b);
-                                b = gpu::buffer(size, usage::VERTEX | usage::INDEX | usage::UNIFORM | usage::COPY_DST | usage::COPY_SRC);
+                                b = gpu::buffer(
+                                    size,
+                                    usage::VERTEX
+                                        | usage::INDEX
+                                        | usage::UNIFORM
+                                        | usage::COPY_DST
+                                        | usage::COPY_SRC,
+                                );
                                 self.buffers.insert(id, (b, size));
                                 self.drop_groups_with(id);
                                 self.bused.retain(|&x| x != id);
@@ -1687,7 +2142,9 @@ impl D3d {
     /// Drops the cached Direct3D 11 bind groups that bind buffer `id`.
     fn drop_groups_with(&mut self, id: u32) {
         self.groups2.retain(|k, (_, g, _)| {
-            let hit = k[2..].chunks(8).any(|e| e.len() == 8 && e[1] == 0 && e[2] == id);
+            let hit = k[2..]
+                .chunks(8)
+                .any(|e| e.len() == 8 && e[1] == 0 && e[2] == id);
             if hit {
                 gpu::drop(*g);
             }
@@ -1735,10 +2192,30 @@ impl D3d {
     fn clear_whole(&mut self, flags: u32, color: [f32; 4], z: f32, stencil: u32) {
         let [rt, level, ds] = self.target;
         if flags & 1 != 0 && rt != 0 {
-            self.defer_clear(rt, Clear { level, layer: 0, flags: 1, color, z, stencil });
+            self.defer_clear(
+                rt,
+                Clear {
+                    level,
+                    layer: 0,
+                    flags: 1,
+                    color,
+                    z,
+                    stencil,
+                },
+            );
         }
         if flags & 6 != 0 && ds != 0 {
-            self.defer_clear(ds, Clear { level: 0, layer: 0, flags: flags & 6, color, z: z.clamp(0.0, 1.0), stencil });
+            self.defer_clear(
+                ds,
+                Clear {
+                    level: 0,
+                    layer: 0,
+                    flags: flags & 6,
+                    color,
+                    z: z.clamp(0.0, 1.0),
+                    stencil,
+                },
+            );
         }
     }
 
@@ -1765,7 +2242,11 @@ impl D3d {
                 flags: p.flags | c.flags,
                 color: if c.flags & 1 != 0 { c.color } else { p.color },
                 z: if c.flags & 2 != 0 { c.z } else { p.z },
-                stencil: if c.flags & 4 != 0 { c.stencil } else { p.stencil },
+                stencil: if c.flags & 4 != 0 {
+                    c.stencil
+                } else {
+                    p.stencil
+                },
                 ..c
             },
             Some(_) => {
@@ -1783,12 +2264,24 @@ impl D3d {
     /// Direct3D 9: from now on passes load and store the stencil of depth buffer `z` (see
     /// `zused`). The passes before discarded it, so the next one starts from the last clear's.
     fn keep_stencil(&mut self, z: u32) {
-        let Some(t) = self.textures.get_mut(&z).filter(|t| t.zused & 2 == 0) else { return };
+        let Some(t) = self.textures.get_mut(&z).filter(|t| t.zused & 2 == 0) else {
+            return;
+        };
         t.zused |= 2;
         let (zd, zs) = t.zclear.unwrap_or((1.0, 0));
         self.end_pass();
         if !self.no_pass_opt {
-            self.defer_clear(z, Clear { level: 0, layer: 0, flags: 4, color: [0.0; 4], z: zd, stencil: zs });
+            self.defer_clear(
+                z,
+                Clear {
+                    level: 0,
+                    layer: 0,
+                    flags: 4,
+                    color: [0.0; 4],
+                    z: zd,
+                    stencil: zs,
+                },
+            );
         }
     }
 
@@ -1818,7 +2311,8 @@ impl D3d {
             DESTROY_TEXTURE | CREATE_TEXTURE | CREATE_TEXTURE2 => {
                 self.clears.remove(&c[1]);
             }
-            WRITE_TEXTURE | WRITE_TEXTURE_MEM | FILL | PRESENT | PRESENT_FLIP | GEN_MIPS | WRITE_TEXTURE2 => self.settle(c[1]),
+            WRITE_TEXTURE | WRITE_TEXTURE_MEM | FILL | PRESENT | PRESENT_FLIP | GEN_MIPS
+            | WRITE_TEXTURE2 => self.settle(c[1]),
             READBACK => self.settle(c[2]),
             COPY => {
                 self.settle(c[1]);
@@ -1839,7 +2333,9 @@ impl D3d {
     /// Counts a pass attachment's traffic on a tile-based GPU: what it loads into tile memory and
     /// stores back (`&d3dstats`: tile load/store).
     fn traffic(&self, tex: u32, level: u32, load: bool, store: bool) {
-        let Some(t) = self.textures.get(&tex) else { return };
+        let Some(t) = self.textures.get(&tex) else {
+            return;
+        };
         let bytes = ((t.w >> level).max(1) * (t.h >> level).max(1) * bpp(t.format)) as u64;
         if load {
             STATS[4].fetch_add(bytes, Relaxed);
@@ -1863,19 +2359,32 @@ impl D3d {
         if let Some(t) = self.targets2.clone() {
             return self.begin_pass2(&t);
         }
-        let Some(t) = self.textures.get(&self.target[0]) else { return false };
+        let Some(t) = self.textures.get(&self.target[0]) else {
+            return false;
+        };
         let level = self.target[1].min(t.levels - 1);
         let (tw, th, tex) = ((t.w >> level).max(1), (t.h >> level).max(1), t.tex);
-        let z = if self.target[2] != 0 { self.depth_for(self.target[2], tw, th) } else { None };
+        let z = if self.target[2] != 0 {
+            self.depth_for(self.target[2], tw, th)
+        } else {
+            None
+        };
         let cc = self.take_clear(self.target[0], self.target[1], 0);
-        let zc = if z.is_some() { self.take_clear(self.target[2], 0, 0) } else { None };
+        let zc = if z.is_some() {
+            self.take_clear(self.target[2], 0, 0)
+        } else {
+            None
+        };
         self.use_tex(self.target[0]);
         self.touch(self.target[0]);
         if z.is_some() {
             self.use_tex(self.target[2]);
         }
         let ccolor = cc.map_or([0.0; 4], |c| c.color);
-        let view = gpu::view(tex, &format!(r#"{{"baseMipLevel":{level},"mipLevelCount":1}}"#));
+        let view = gpu::view(
+            tex,
+            &format!(r#"{{"baseMipLevel":{level},"mipLevelCount":1}}"#),
+        );
         let color = format!(
             r#"{{"view":{view},"loadOp":{},"clearValue":[{},{},{},{}],"storeOp":"store"}}"#,
             q(if cc.is_some() { "clear" } else { "load" }),
@@ -1887,7 +2396,10 @@ impl D3d {
         self.traffic(self.target[0], level, cc.is_none(), true);
         let depth = match z {
             Some(zv) => {
-                let (dclear, sclear) = (zc.is_some_and(|c| c.flags & 2 != 0), zc.is_some_and(|c| c.flags & 4 != 0));
+                let (dclear, sclear) = (
+                    zc.is_some_and(|c| c.flags & 2 != 0),
+                    zc.is_some_and(|c| c.flags & 4 != 0),
+                );
                 // (until a Direct3D 9 draw tests stencil, the buffer holds what the last clear
                 // left: cleared to that, not loaded or stored; see `draw`)
                 let zt = self.textures.get(&self.target[2]);
@@ -1926,7 +2438,11 @@ impl D3d {
         }
         let (format, samples) = (z.format, z.samples);
         let (depth, stencil) = z.zclear.unwrap_or((1.0, 0));
-        let tex = gpu::texture(&format!(r#"{{"size":[{w},{h}],"format":{},"sampleCount":{samples},"usage":{}}}"#, q(format), usage::T_RENDER));
+        let tex = gpu::texture(&format!(
+            r#"{{"size":[{w},{h}],"format":{},"sampleCount":{samples},"usage":{}}}"#,
+            q(format),
+            usage::T_RENDER
+        ));
         let view = gpu::view(tex, "");
         self.textures.get_mut(&id)?.fits.insert((w, h), (tex, view));
         // starts as the depth buffer was last cleared (not 0, which fails every LESS test)
@@ -1939,7 +2455,13 @@ impl D3d {
         gpu::begin_pass(&format!(
             r#"{{"colorAttachments":[],"depthStencilAttachment":{{"view":{view},"depthLoadOp":"clear","depthClearValue":{},"depthStoreOp":"store"{}}}}}"#,
             num(depth),
-            if format == DS { format!(r#","stencilLoadOp":"clear","stencilClearValue":{stencil},"stencilStoreOp":"store""#) } else { String::new() }
+            if format == DS {
+                format!(
+                    r#","stencilLoadOp":"clear","stencilClearValue":{stencil},"stencilStoreOp":"store""#
+                )
+            } else {
+                String::new()
+            }
         ));
         gpu::end_pass();
         Some(view)
@@ -1947,7 +2469,10 @@ impl D3d {
 
     fn target_size(&self) -> (u32, u32) {
         match self.textures.get(&self.target[0]) {
-            Some(t) => ((t.w >> self.target[1]).max(1), (t.h >> self.target[1]).max(1)),
+            Some(t) => (
+                (t.w >> self.target[1]).max(1),
+                (t.h >> self.target[1]).max(1),
+            ),
             None => (0, 0),
         }
     }
@@ -1961,11 +2486,25 @@ impl D3d {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn clear_rect(&mut self, flags: u32, color: [f32; 4], z: f32, stencil: u32, x: u32, y: u32, w: u32, h: u32) {
+    fn clear_rect(
+        &mut self,
+        flags: u32,
+        color: [f32; 4],
+        z: f32,
+        stencil: u32,
+        x: u32,
+        y: u32,
+        w: u32,
+        h: u32,
+    ) {
         // (the views: the D3D9 target, or the first color and the depth of a `SET_TARGETS2` set)
         let (rt, ds, (tw, th)) = match &self.targets2 {
             Some(tg) if tg[0] > 1 => return,
-            Some(tg) => (if tg[0] == 1 { tg[1] } else { 0 }, tg[1 + tg[0] as usize * 3], self.target_size2()),
+            Some(tg) => (
+                if tg[0] == 1 { tg[1] } else { 0 },
+                tg[1 + tg[0] as usize * 3],
+                self.target_size2(),
+            ),
             None => (self.target[0], self.target[2], self.target_size()),
         };
         let (x0, y0) = (x.min(tw), y.min(th));
@@ -2012,13 +2551,24 @@ impl D3d {
                     } else {
                         r#","stencilWriteMask":0"#.to_string()
                     };
-                    format!(r#","depthStencil":{{"format":"depth24plus-stencil8","depthWriteEnabled":{},"depthCompare":"always"{st}}}"#, flags & 2 != 0)
+                    format!(
+                        r#","depthStencil":{{"format":"depth24plus-stencil8","depthWriteEnabled":{},"depthCompare":"always"{st}}}"#,
+                        flags & 2 != 0
+                    )
                 } else {
                     String::new()
                 };
                 let p = gpu::render_pipeline(&format!(
                     r#"{{"layout":"auto","vertex":{{"module":{m},"entryPoint":"vs"}},"fragment":{{"module":{m},"entryPoint":"fs","targets":[{}]}},"primitive":{{"topology":"triangle-list"}}{ds}}}"#,
-                    if rt != 0 { format!(r#"{{"format":{},"writeMask":{}}}"#, q(fmt), if flags & 1 != 0 { 15 } else { 0 }) } else { String::new() }
+                    if rt != 0 {
+                        format!(
+                            r#"{{"format":{},"writeMask":{}}}"#,
+                            q(fmt),
+                            if flags & 1 != 0 { 15 } else { 0 }
+                        )
+                    } else {
+                        String::new()
+                    }
                 ));
                 self.clear_pipes.insert(key, p);
                 p
@@ -2026,7 +2576,10 @@ impl D3d {
         };
         let slot = self.uniform_slot(&[color[0], color[1], color[2], color[3], z, 0.0, 0.0, 0.0]);
         let layout = gpu::pipeline_group_layout(pipe, 0);
-        let group = gpu::bind_group(layout, &[(0, Res::Buffer(self.clear_uniform, slot * 256, 32))]);
+        let group = gpu::bind_group(
+            layout,
+            &[(0, Res::Buffer(self.clear_uniform, slot * 256, 32))],
+        );
         gpu::drop(layout);
         gpu::set_pipeline(pipe);
         if flags & 4 != 0 {
@@ -2045,7 +2598,8 @@ impl D3d {
     }
 
     fn create_pipeline(&mut self, k: &[u32]) -> Pipe {
-        let (vs, ps, topo, strip, cull, color_fmt, depth_fmt, depth_write, depth_cmp) = (k[0], k[1], k[2], k[3], k[4], k[5], k[6], k[7], k[8]);
+        let (vs, ps, topo, strip, cull, color_fmt, depth_fmt, depth_write, depth_cmp) =
+            (k[0], k[1], k[2], k[3], k[4], k[5], k[6], k[7], k[8]);
         let blend = &k[9..16];
         let wmask = k[16] & 0xf;
         let mut p = 17;
@@ -2058,50 +2612,94 @@ impl D3d {
             p += 2;
             let mut attrs = Vec::new();
             for _ in 0..n {
-                attrs.push(format!(r#"{{"format":{},"offset":{},"shaderLocation":{}}}"#, q(pick(&VERTEX_FORMATS, k[p], "float32x4")), k[p + 1], k[p + 2]));
+                attrs.push(format!(
+                    r#"{{"format":{},"offset":{},"shaderLocation":{}}}"#,
+                    q(pick(&VERTEX_FORMATS, k[p], "float32x4")),
+                    k[p + 1],
+                    k[p + 2]
+                ));
                 p += 3;
             }
             // (bit 31: per-instance data)
-            let step = if stride & 0x8000_0000 != 0 { r#","stepMode":"instance""# } else { "" };
-            buffers.push(format!(r#"{{"arrayStride":{}{step},"attributes":[{}]}}"#, (stride & 0x7fff_ffff).div_ceil(4) * 4, attrs.join(",")));
+            let step = if stride & 0x8000_0000 != 0 {
+                r#","stepMode":"instance""#
+            } else {
+                ""
+            };
+            buffers.push(format!(
+                r#"{{"arrayStride":{}{step},"attributes":[{}]}}"#,
+                (stride & 0x7fff_ffff).div_ceil(4) * 4,
+                attrs.join(",")
+            ));
         }
         // the stencil test (see the d3d9 device's key), then the other render targets: their
         // count, (page format, write mask) each
         let stencil = (k.get(p) == Some(&1) && k.len() >= p + 12).then(|| &k[p + 1..p + 12]);
         let q_ = p + if stencil.is_some() { 12 } else { 1 };
         let more: Vec<(u32, u32)> = match k.get(q_) {
-            Some(&n) if k.len() >= q_ + 1 + 2 * n as usize => (0..n as usize).map(|t| (k[q_ + 1 + 2 * t], k[q_ + 2 + 2 * t] & 0xf)).collect(),
+            Some(&n) if k.len() >= q_ + 1 + 2 * n as usize => (0..n as usize)
+                .map(|t| (k[q_ + 1 + 2 * t], k[q_ + 2 + 2 * t] & 0xf))
+                .collect(),
             _ => Vec::new(),
         };
         let format = tex_format(color_fmt);
         let depth = depth_fmt != 0xff;
         // (no blending into formats WebGPU does not blend: 32-bit floats, integers)
-        let blend_of = |format: &str| if blend[0] != 0 && blendable(format) {
-            let comp = |s: &str, d: &str, o: &str| {
-                if o == "min" || o == "max" {
-                    format!(r#"{{"srcFactor":"one","dstFactor":"one","operation":{}}}"#, q(o))
-                } else {
-                    format!(r#"{{"srcFactor":{},"dstFactor":{},"operation":{}}}"#, q(s), q(d), q(o))
-                }
-            };
-            format!(
-                r#","blend":{{"color":{},"alpha":{}}}"#,
-                comp(pick(&BLEND, blend[1], "one"), pick(&BLEND, blend[2], "zero"), pick(&BLEND_OP, blend[3], "add")),
-                comp(pick(&BLEND_ALPHA, blend[4], "one"), pick(&BLEND_ALPHA, blend[5], "zero"), pick(&BLEND_OP, blend[6], "add"))
-            )
-        } else {
-            String::new()
+        let blend_of = |format: &str| {
+            if blend[0] != 0 && blendable(format) {
+                let comp = |s: &str, d: &str, o: &str| {
+                    if o == "min" || o == "max" {
+                        format!(
+                            r#"{{"srcFactor":"one","dstFactor":"one","operation":{}}}"#,
+                            q(o)
+                        )
+                    } else {
+                        format!(
+                            r#"{{"srcFactor":{},"dstFactor":{},"operation":{}}}"#,
+                            q(s),
+                            q(d),
+                            q(o)
+                        )
+                    }
+                };
+                format!(
+                    r#","blend":{{"color":{},"alpha":{}}}"#,
+                    comp(
+                        pick(&BLEND, blend[1], "one"),
+                        pick(&BLEND, blend[2], "zero"),
+                        pick(&BLEND_OP, blend[3], "add")
+                    ),
+                    comp(
+                        pick(&BLEND_ALPHA, blend[4], "one"),
+                        pick(&BLEND_ALPHA, blend[5], "zero"),
+                        pick(&BLEND_OP, blend[6], "add")
+                    )
+                )
+            } else {
+                String::new()
+            }
         };
         let blend_state = blend_of(format);
-        let mut targets = vec![format!(r#"{{"format":{}{blend_state},"writeMask":{wmask}}}"#, q(format))];
+        let mut targets = vec![format!(
+            r#"{{"format":{}{blend_state},"writeMask":{wmask}}}"#,
+            q(format)
+        )];
         for &(f, m) in &more {
             let f = tex_format(f);
-            targets.push(format!(r#"{{"format":{}{},"writeMask":{m}}}"#, q(f), blend_of(f)));
+            targets.push(format!(
+                r#"{{"format":{}{},"writeMask":{m}}}"#,
+                q(f),
+                blend_of(f)
+            ));
         }
         // (a strip index format only on a strip topology)
         let strip_fmt = match strip {
-            2 if pick(&TOPOLOGY, topo, "triangle-list").ends_with("strip") => r#","stripIndexFormat":"uint16""#,
-            4 if pick(&TOPOLOGY, topo, "triangle-list").ends_with("strip") => r#","stripIndexFormat":"uint32""#,
+            2 if pick(&TOPOLOGY, topo, "triangle-list").ends_with("strip") => {
+                r#","stripIndexFormat":"uint16""#
+            }
+            4 if pick(&TOPOLOGY, topo, "triangle-list").ends_with("strip") => {
+                r#","stripIndexFormat":"uint32""#
+            }
             _ => "",
         };
         let cull = match cull {
@@ -2120,7 +2718,13 @@ impl D3d {
                         q(pick(&COMPARE, st[o + 3], "always"))
                     )
                 };
-                format!(r#","stencilFront":{},"stencilBack":{},"stencilReadMask":{},"stencilWriteMask":{}"#, face(3), face(7), st[1], st[2])
+                format!(
+                    r#","stencilFront":{},"stencilBack":{},"stencilReadMask":{},"stencilWriteMask":{}"#,
+                    face(3),
+                    face(7),
+                    st[1],
+                    st[2]
+                )
             }
             _ => String::new(),
         };
@@ -2134,7 +2738,12 @@ impl D3d {
             String::new()
         };
         let stencil_ref = stencil.filter(|_| depth).map(|st| st[0]);
-        let (Some(&vm), Some(&pm)) = (self.shaders.get(&vs), self.shaders.get(&ps)) else { return Pipe { pipeline: 0, stencil_ref } };
+        let (Some(&vm), Some(&pm)) = (self.shaders.get(&vs), self.shaders.get(&ps)) else {
+            return Pipe {
+                pipeline: 0,
+                stencil_ref,
+            };
+        };
         let pipeline = gpu::render_pipeline(&format!(
             r#"{{"layout":{},"vertex":{{"module":{vm},"entryPoint":"main","buffers":[{}]}},"fragment":{{"module":{pm},"entryPoint":"main","targets":[{}]}},"primitive":{{"topology":{}{strip_fmt},"cullMode":{},"frontFace":"ccw"}}{ds}}}"#,
             self.layout,
@@ -2143,7 +2752,10 @@ impl D3d {
             q(pick(&TOPOLOGY, topo, "triangle-list")),
             q(cull)
         ));
-        Pipe { pipeline, stencil_ref }
+        Pipe {
+            pipeline,
+            stencil_ref,
+        }
     }
 
     fn sampler(&mut self, key: u32) -> Id {
@@ -2166,14 +2778,19 @@ impl D3d {
     }
 
     fn draw(&mut self, c: &[u32], i: usize) -> usize {
-        let (pipe, stencil_ref) = self.pipelines.get(&c[i + 1]).map_or((0, None), |p| (p.pipeline, p.stencil_ref));
+        let (pipe, stencil_ref) = self
+            .pipelines
+            .get(&c[i + 1])
+            .map_or((0, None), |p| (p.pipeline, p.stencil_ref));
         let [vx, vy, vw, vh, minz, maxz] = std::array::from_fn(|k| f32of(c[i + 2 + k]));
         let (sx, sy, sw, sh) = (c[i + 8], c[i + 9], c[i + 10], c[i + 11]);
         let (vso, vss, pso, pss) = (c[i + 12], c[i + 13], c[i + 14], c[i + 15]);
         let blend_factor = c[i + 16];
         let ntex = c[i + 17] as usize;
         let mut p = i + 18;
-        let texs: Vec<[u32; 3]> = (0..ntex).map(|t| [c[p + 3 * t], c[p + 3 * t + 1], c[p + 3 * t + 2]]).collect();
+        let texs: Vec<[u32; 3]> = (0..ntex)
+            .map(|t| [c[p + 3 * t], c[p + 3 * t + 1], c[p + 3 * t + 2]])
+            .collect();
         p += 3 * ntex;
         let nbuf = c[p] as usize;
         p += 1;
@@ -2187,8 +2804,20 @@ impl D3d {
             return p;
         }
         // (Direct3D 9 with more render targets: a SET_TARGETS2 set)
-        let (tw, th) = if self.targets2.is_some() { self.target_size2() } else { self.target_size() };
-        let Some((vpt, sci)) = rects9(tw, th, [vx, vy, vw, vh, minz, maxz], [sx, sy, sw, sh], self.clip) else { return p };
+        let (tw, th) = if self.targets2.is_some() {
+            self.target_size2()
+        } else {
+            self.target_size()
+        };
+        let Some((vpt, sci)) = rects9(
+            tw,
+            th,
+            [vx, vy, vw, vh, minz, maxz],
+            [sx, sy, sw, sh],
+            self.clip,
+        ) else {
+            return p;
+        };
         if !self.clears.is_empty() {
             for t in &texs {
                 self.settle(t[1]);
@@ -2225,7 +2854,13 @@ impl D3d {
         let g0 = match self.groups0.get(&(vss, pss)) {
             Some(&g) => g,
             None => {
-                let g = gpu::bind_group(self.layout0, &[(0, Res::Buffer(self.data_buf, 0, vss)), (1, Res::Buffer(self.data_buf, 0, pss))]);
+                let g = gpu::bind_group(
+                    self.layout0,
+                    &[
+                        (0, Res::Buffer(self.data_buf, 0, vss)),
+                        (1, Res::Buffer(self.data_buf, 0, pss)),
+                    ],
+                );
                 self.groups0.insert((vss, pss), g);
                 g
             }
@@ -2249,7 +2884,11 @@ impl D3d {
                 for s in 0..8u32 {
                     let t = texs.iter().find(|x| x[0] == s);
                     let view = t
-                        .and_then(|t| self.textures.get(&t[1]).filter(|tex| tex.format != DS && !drawn_to(t[1])))
+                        .and_then(|t| {
+                            self.textures
+                                .get(&t[1])
+                                .filter(|tex| tex.format != DS && !drawn_to(t[1]))
+                        })
                         .map_or(self.white, |tex| tex.view);
                     let smp = self.sampler(t.map_or(0x5, |t| t[2]));
                     entries.push((s * 2, Res::Obj(view)));
@@ -2304,8 +2943,19 @@ impl D3d {
     /// holds 0..1: values out of it are clamped, NaN undefined.) The box is inside the level, as
     /// copy_rect checked.
     #[allow(clippy::too_many_arguments)]
-    fn draw_depth(&mut self, id: u32, level: u32, layer: u32, [x, y, w, h]: [u32; 4], src: Id, kind: char, o: [i32; 2]) {
-        let Some(t) = self.textures.get(&id) else { return };
+    fn draw_depth(
+        &mut self,
+        id: u32,
+        level: u32,
+        layer: u32,
+        [x, y, w, h]: [u32; 4],
+        src: Id,
+        kind: char,
+        o: [i32; 2],
+    ) {
+        let Some(t) = self.textures.get(&id) else {
+            return;
+        };
         let (lw, lh) = ((t.w >> level).max(1), (t.h >> level).max(1));
         self.end_pass();
         let (pipe, layout) = match self.zwrite_pipes.get(&kind) {
@@ -2322,7 +2972,9 @@ impl D3d {
                     'i' => "sint",
                     _ => "unfilterable-float",
                 };
-                let layout = gpu::bind_group_layout(&format!(r#"{{"entries":[{{"binding":0,"visibility":2,"texture":{{"sampleType":"{st}","viewDimension":"2d"}}}},{{"binding":1,"visibility":2,"buffer":{{"type":"uniform"}}}}]}}"#));
+                let layout = gpu::bind_group_layout(&format!(
+                    r#"{{"entries":[{{"binding":0,"visibility":2,"texture":{{"sampleType":"{st}","viewDimension":"2d"}}}},{{"binding":1,"visibility":2,"buffer":{{"type":"uniform"}}}}]}}"#
+                ));
                 let pl = gpu::pipeline_layout(&format!(r#"{{"bindGroupLayouts":[{layout}]}}"#));
                 let p = gpu::render_pipeline(&format!(
                     r#"{{"layout":{pl},"vertex":{{"module":{m},"entryPoint":"vs"}},"fragment":{{"module":{m},"entryPoint":"fs","targets":[]}},"primitive":{{"topology":"triangle-list"}},"depthStencil":{{"format":"depth32float","depthWriteEnabled":true,"depthCompare":"always"}}}}"#
@@ -2333,12 +2985,20 @@ impl D3d {
             }
         };
         let slot = self.uniform_slot(&[o[0] as f32, o[1] as f32, 0.0, 0.0]);
-        let group = gpu::bind_group(layout, &[(0, Res::Obj(src)), (1, Res::Buffer(self.clear_uniform, slot * 256, 16))]);
+        let group = gpu::bind_group(
+            layout,
+            &[
+                (0, Res::Obj(src)),
+                (1, Res::Buffer(self.clear_uniform, slot * 256, 16)),
+            ],
+        );
         self.touch(id);
         self.use_tex(id);
         let view = self.view2(id, 1, level, 1, layer, 1, false);
         self.open = true;
-        gpu::begin_pass(&format!(r#"{{"colorAttachments":[],"depthStencilAttachment":{{"view":{view},"depthLoadOp":"load","depthStoreOp":"store"}}}}"#));
+        gpu::begin_pass(&format!(
+            r#"{{"colorAttachments":[],"depthStencilAttachment":{{"view":{view},"depthLoadOp":"load","depthStoreOp":"store"}}}}"#
+        ));
         gpu::set_pipeline(pipe);
         gpu::set_bind_group(0, group, &[]);
         gpu::set_viewport(0.0, 0.0, lw as f32, lh as f32, 0.0, 1.0);
@@ -2356,22 +3016,37 @@ impl D3d {
         // (Direct3D 11's: level | layer (or 3D slice) << 16, filter | slices << 16)
         let ((sl, sz), (dl, dz)) = ((sl & 0xffff, sl >> 16), (dl & 0xffff, dl >> 16));
         let (filter, depth) = (filter & 0xffff, (filter >> 16).max(1));
-        let (Some(s), Some(t)) = (self.textures.get(&st), self.textures.get(&dt)) else { return };
+        let (Some(s), Some(t)) = (self.textures.get(&st), self.textures.get(&dt)) else {
+            return;
+        };
         if sw == 0 || sh == 0 || dw == 0 || dh == 0 || sw > 1 << 15 || dw > 1 << 15 {
             return;
         }
         // (levels and boxes inside the textures, as WebGPU wants them; Direct3D fails such a
         // StretchRect too)
         let size = |t: &Tex, l: u32| ((t.w >> l).max(1), (t.h >> l).max(1));
-        let slices = |t: &Tex, l: u32| if t.dim == "3d" { (t.layers >> l).max(1) } else { t.layers.max(1) };
+        let slices = |t: &Tex, l: u32| {
+            if t.dim == "3d" {
+                (t.layers >> l).max(1)
+            } else {
+                t.layers.max(1)
+            }
+        };
         if sl >= s.levels || dl >= t.levels {
             return;
         }
         let ((slw, slh), (dlw, dlh)) = (size(s, sl), size(t, dl));
-        if sx as u64 + sw as u64 > slw as u64 || sy as u64 + sh as u64 > slh as u64 || dx as u64 + dw as u64 > dlw as u64 || dy as u64 + dh as u64 > dlh as u64 {
+        if sx as u64 + sw as u64 > slw as u64
+            || sy as u64 + sh as u64 > slh as u64
+            || dx as u64 + dw as u64 > dlw as u64
+            || dy as u64 + dh as u64 > dlh as u64
+        {
             return;
         }
-        if sz as u64 + depth as u64 > slices(s, sl) as u64 || dz as u64 + depth as u64 > slices(t, dl) as u64 || ((sz | dz) != 0 || depth > 1) && filter != 0 && filter != 2 {
+        if sz as u64 + depth as u64 > slices(s, sl) as u64
+            || dz as u64 + depth as u64 > slices(t, dl) as u64
+            || ((sz | dz) != 0 || depth > 1) && filter != 0 && filter != 2
+        {
             return;
         }
         let (s_tex, s_fmt, s_w, s_h) = (s.tex, s.format, s.w, s.h);
@@ -2383,8 +3058,16 @@ impl D3d {
         // group (all Direct3D 11 copies of them; WebGPU neither samples nor partly copies them)
         if s.samples > 1 || t.samples > 1 {
             let base = |f: &str| f.trim_end_matches("-srgb").to_string();
-            let whole = [sl, dl, sx, sy, dx, dy] == [0; 6] && (sw, sh) == (s.w, s.h) && (dw, dh) == (t.w, t.h) && (s.w, s.h) == (t.w, t.h);
-            if s.samples != t.samples || !whole || st == dt || base(s_fmt) != base(t_fmt) || s_fmt == DS {
+            let whole = [sl, dl, sx, sy, dx, dy] == [0; 6]
+                && (sw, sh) == (s.w, s.h)
+                && (dw, dh) == (t.w, t.h)
+                && (s.w, s.h) == (t.w, t.h);
+            if s.samples != t.samples
+                || !whole
+                || st == dt
+                || base(s_fmt) != base(t_fmt)
+                || s_fmt == DS
+            {
                 return;
             }
             self.end_pass();
@@ -2398,7 +3081,15 @@ impl D3d {
         // (WebGPU copies no depth-stencil texture of depth24plus-stencil8)
         if sw == dw && sh == dh && s_fmt == t_fmt && apart && s_fmt != DS {
             self.open = true;
-            gpu::copy_texture(s_tex, sl, [sx, sy, sz], t_tex, dl, [dx, dy, dz], [sw, sh, depth]);
+            gpu::copy_texture(
+                s_tex,
+                sl,
+                [sx, sy, sz],
+                t_tex,
+                dl,
+                [dx, dy, dz],
+                [sw, sh, depth],
+            );
             self.use_tex(st);
             self.use_tex(dt);
             return;
@@ -2410,23 +3101,53 @@ impl D3d {
             let base = |f: &str| f.trim_end_matches("-srgb").to_string();
             // (depth: 16-bit UNORM and 32-bit float ones, the only ones WebGPU copies out of)
             let copyable = |f: &str| !is_depth(f) || matches!(f, "depth16unorm" | "depth32float");
-            if sw != dw || sh != dh || !copyable(s_fmt) || !copyable(t_fmt) || bpp(s_fmt) != bpp(t_fmt) {
+            if sw != dw
+                || sh != dh
+                || !copyable(s_fmt)
+                || !copyable(t_fmt)
+                || bpp(s_fmt) != bpp(t_fmt)
+            {
                 return;
             }
             if t_fmt == "depth32float" {
                 // (drawn from the source's level and layer: its texels' bits; from depth, none)
-                let kind = if s_fmt.ends_with("uint") { 'u' } else if s_fmt.ends_with("sint") { 'i' } else { 'f' };
-                if is_depth(s_fmt) || depth != 1 || self.textures.get(&st).is_none_or(|x| x.dim != "2d") {
+                let kind = if s_fmt.ends_with("uint") {
+                    'u'
+                } else if s_fmt.ends_with("sint") {
+                    'i'
+                } else {
+                    'f'
+                };
+                if is_depth(s_fmt)
+                    || depth != 1
+                    || self.textures.get(&st).is_none_or(|x| x.dim != "2d")
+                {
                     return;
                 }
                 let view = self.view2(st, 1, sl, 1, sz, 1, false);
-                self.draw_depth(dt, dl, dz, [dx, dy, sw, sh], view, kind, [dx as i32 - sx as i32, dy as i32 - sy as i32]);
+                self.draw_depth(
+                    dt,
+                    dl,
+                    dz,
+                    [dx, dy, sw, sh],
+                    view,
+                    kind,
+                    [dx as i32 - sx as i32, dy as i32 - sy as i32],
+                );
                 self.use_tex(st);
                 return;
             }
             if apart && base(s_fmt) == base(t_fmt) {
                 self.open = true;
-                gpu::copy_texture(s_tex, sl, [sx, sy, sz], t_tex, dl, [dx, dy, dz], [sw, sh, depth]);
+                gpu::copy_texture(
+                    s_tex,
+                    sl,
+                    [sx, sy, sz],
+                    t_tex,
+                    dl,
+                    [dx, dy, dz],
+                    [sw, sh, depth],
+                );
             } else {
                 let bpr = (sw * bpp(s_fmt)).div_ceil(256) * 256;
                 self.open = true;
@@ -2444,16 +3165,42 @@ impl D3d {
         // (stretching blits draw a level of one 2D layer: none of array or 3D textures, which no
         // Direct3D 11 copy stretches; their views would be arrays, invalid for the blit, and take
         // the command buffer with them)
-        if st == dt || t_fmt == DS || [st, dt].iter().any(|i| self.textures.get(i).is_none_or(|x| x.layers > 1 || x.dim != "2d")) {
+        if st == dt
+            || t_fmt == DS
+            || [st, dt].iter().any(|i| {
+                self.textures
+                    .get(i)
+                    .is_none_or(|x| x.layers > 1 || x.dim != "2d")
+            })
+        {
             return;
         }
         let pipe = self.blit_pipe(t_fmt);
         let (lw, lh) = ((s_w >> sl).max(1) as f32, (s_h >> sl).max(1) as f32);
-        let slot = self.uniform_slot(&[sx as f32 / lw, sy as f32 / lh, sw as f32 / lw, sh as f32 / lh]);
-        let smp = self.sampler(if filter != 0 { 0x3 | (3 << 3) | (2 << 6) | (2 << 8) } else { 0x1b });
-        let view = gpu::view(s_tex, &format!(r#"{{"baseMipLevel":{sl},"mipLevelCount":1}}"#));
+        let slot = self.uniform_slot(&[
+            sx as f32 / lw,
+            sy as f32 / lh,
+            sw as f32 / lw,
+            sh as f32 / lh,
+        ]);
+        let smp = self.sampler(if filter != 0 {
+            0x3 | (3 << 3) | (2 << 6) | (2 << 8)
+        } else {
+            0x1b
+        });
+        let view = gpu::view(
+            s_tex,
+            &format!(r#"{{"baseMipLevel":{sl},"mipLevelCount":1}}"#),
+        );
         let layout = gpu::pipeline_group_layout(pipe, 0);
-        let group = gpu::bind_group(layout, &[(0, Res::Obj(view)), (1, Res::Obj(smp)), (2, Res::Buffer(self.clear_uniform, slot * 256, 16))]);
+        let group = gpu::bind_group(
+            layout,
+            &[
+                (0, Res::Obj(view)),
+                (1, Res::Obj(smp)),
+                (2, Res::Buffer(self.clear_uniform, slot * 256, 16)),
+            ],
+        );
         let saved = self.target;
         let saved2 = self.targets2.take();
         self.target = [dt, dl, 0];
@@ -2480,9 +3227,26 @@ impl D3d {
         // (Direct3D 11's: level | layer (or 3D slice) << 16)
         let (level, z) = (level & 0xffff, level >> 16);
         // (a box inside the level: WebGPU's copy wants it so)
-        let slices = |t: &Tex| if t.dim == "3d" { (t.layers >> level).max(1) } else { t.layers.max(1) };
-        let inside = |t: &Tex| level < t.levels && x as u64 + w as u64 <= (t.w >> level).max(1) as u64 && y as u64 + h as u64 <= (t.h >> level).max(1) as u64 && z < slices(t);
-        let Some(t) = self.textures.get(&id).filter(|t| (matches!(t.format, "depth16unorm" | "depth32float") || !is_depth(t.format)) && t.samples == 1 && w > 0 && h > 0 && inside(t)) else {
+        let slices = |t: &Tex| {
+            if t.dim == "3d" {
+                (t.layers >> level).max(1)
+            } else {
+                t.layers.max(1)
+            }
+        };
+        let inside = |t: &Tex| {
+            level < t.levels
+                && x as u64 + w as u64 <= (t.w >> level).max(1) as u64
+                && y as u64 + h as u64 <= (t.h >> level).max(1) as u64
+                && z < slices(t)
+        };
+        let Some(t) = self.textures.get(&id).filter(|t| {
+            (matches!(t.format, "depth16unorm" | "depth32float") || !is_depth(t.format))
+                && t.samples == 1
+                && w > 0
+                && h > 0
+                && inside(t)
+        }) else {
             vnhost_d3d9_readback_done(req);
             return;
         };
@@ -2498,7 +3262,20 @@ impl D3d {
         let token = self.next_token;
         self.next_token = self.next_token.wrapping_add(1).max(1);
         gpu::read_buffer(buf, bpr * h, data.as_mut_ptr(), token);
-        self.readbacks.insert(token, Readback { req, buf, data, bpr, row: w * bpp, h, dst, pitch, halved });
+        self.readbacks.insert(
+            token,
+            Readback {
+                req,
+                buf,
+                data,
+                bpr,
+                row: w * bpp,
+                h,
+                dst,
+                pitch,
+                halved,
+            },
+        );
     }
 
     // ---- Direct3D 11 ----
@@ -2514,7 +3291,11 @@ impl D3d {
         let (stex, sview) = match t.shown {
             Some(s) => s,
             None => {
-                let tex = gpu::texture(&format!(r#"{{"size":[{w},{h}],"format":{},"usage":{}}}"#, q(format), usage::T_RENDER | usage::T_BINDING | usage::T_COPY_SRC));
+                let tex = gpu::texture(&format!(
+                    r#"{{"size":[{w},{h}],"format":{},"usage":{}}}"#,
+                    q(format),
+                    usage::T_RENDER | usage::T_BINDING | usage::T_COPY_SRC
+                ));
                 let view = gpu::view(tex, "");
                 self.textures.get_mut(&id).unwrap().shown = Some((tex, view));
                 (tex, view)
@@ -2531,11 +3312,23 @@ impl D3d {
     /// layer `dly` of `dst`, of the same size. Where the page did not multisample `src` (a
     /// format WebGPU does not), a copy.
     fn resolve(&mut self, dst: u32, dl: u32, dly: u32, src: u32, sly: u32) {
-        let (Some(s), Some(t)) = (self.textures.get(&src), self.textures.get(&dst)) else { return };
-        if src == dst || dl >= t.levels || dly >= t.layers || sly >= s.layers || t.dim == "3d" || t.samples != 1 || ((t.w >> dl).max(1), (t.h >> dl).max(1)) != (s.w, s.h) || is_depth(s.format) || is_depth(t.format) {
+        let (Some(s), Some(t)) = (self.textures.get(&src), self.textures.get(&dst)) else {
+            return;
+        };
+        if src == dst
+            || dl >= t.levels
+            || dly >= t.layers
+            || sly >= s.layers
+            || t.dim == "3d"
+            || t.samples != 1
+            || ((t.w >> dl).max(1), (t.h >> dl).max(1)) != (s.w, s.h)
+            || is_depth(s.format)
+            || is_depth(t.format)
+        {
             return;
         }
-        let (w, h, sfmt, tfmt, samples, stex, ttex) = (s.w, s.h, s.format, t.format, s.samples, s.tex, t.tex);
+        let (w, h, sfmt, tfmt, samples, stex, ttex) =
+            (s.w, s.h, s.format, t.format, s.samples, s.tex, t.tex);
         self.settle(src);
         self.settle(dst);
         self.end_pass();
@@ -2567,12 +3360,16 @@ impl D3d {
         self.traffic(src, 0, true, false);
         self.open = true;
         if sfmt == fmt && resolvable(fmt) {
-            gpu::begin_pass(&format!(r#"{{"colorAttachments":[{{"view":{sview},"resolveTarget":{dv},"loadOp":"load","storeOp":"store"}}]}}"#));
+            gpu::begin_pass(&format!(
+                r#"{{"colorAttachments":[{{"view":{sview},"resolveTarget":{dv},"loadOp":"load","storeOp":"store"}}]}}"#
+            ));
             gpu::end_pass();
         } else if renderable(fmt) && !sfmt.ends_with("int") && !fmt.ends_with("int") {
             let (pipe, layout) = self.resolve_pipe(fmt);
             let group = gpu::bind_group(layout, &[(0, Res::Obj(sview))]);
-            gpu::begin_pass(&format!(r#"{{"colorAttachments":[{{"view":{dv},"loadOp":"clear","storeOp":"store"}}]}}"#));
+            gpu::begin_pass(&format!(
+                r#"{{"colorAttachments":[{{"view":{dv},"loadOp":"clear","storeOp":"store"}}]}}"#
+            ));
             gpu::set_pipeline(pipe);
             gpu::set_bind_group(0, group, &[]);
             gpu::draw(3, 1, 0, 0);
@@ -2589,7 +3386,10 @@ impl D3d {
     /// its passes': between passes, after the texture's last draw (Direct3D unbinds a view of
     /// the depth buffer being drawn to, see d3d11::hazards).
     fn depth_twin(&mut self, id: u32) -> Option<u32> {
-        let t = self.textures.get(&id).filter(|t| is_depth(t.format) && t.dim == "2d" && t.samples == 1)?;
+        let t = self
+            .textures
+            .get(&id)
+            .filter(|t| is_depth(t.format) && t.dim == "2d" && t.samples == 1)?;
         let (w, h, layers) = (t.w, t.h, t.layers);
         // (a clear not done yet: done now, it changes the stamp)
         self.settle(id);
@@ -2614,9 +3414,18 @@ impl D3d {
             // (24-bit: the UNORM value k / (2^24 - 1) of k = round(z * (2^24 - 1)), as
             // k 2^-24 + k 2^-48 (the series' first terms) rounded as k / (2^24 - 1): a tie
             // rounded down goes up, the rest being above it)
-            let src = if q == 1 { TWIN_SHADER.replace("textureLoad(z, vec2<i32>(p.xy), 0)", "q24(textureLoad(z, vec2<i32>(p.xy), 0))") + TWIN_Q24 } else { TWIN_SHADER.to_string() };
+            let src = if q == 1 {
+                TWIN_SHADER.replace(
+                    "textureLoad(z, vec2<i32>(p.xy), 0)",
+                    "q24(textureLoad(z, vec2<i32>(p.xy), 0))",
+                ) + TWIN_Q24
+            } else {
+                TWIN_SHADER.to_string()
+            };
             let m = gpu::shader(&src);
-            let layout = gpu::bind_group_layout(r#"{"entries":[{"binding":0,"visibility":2,"texture":{"sampleType":"depth","viewDimension":"2d"}}]}"#);
+            let layout = gpu::bind_group_layout(
+                r#"{"entries":[{"binding":0,"visibility":2,"texture":{"sampleType":"depth","viewDimension":"2d"}}]}"#,
+            );
             let pl = gpu::pipeline_layout(&format!(r#"{{"bindGroupLayouts":[{layout}]}}"#));
             let p = gpu::render_pipeline(&format!(
                 r#"{{"layout":{pl},"vertex":{{"module":{m},"entryPoint":"vs"}},"fragment":{{"module":{m},"entryPoint":"fs","targets":[{{"format":"r32float"}}]}},"primitive":{{"topology":"triangle-list"}}}}"#
@@ -2627,7 +3436,9 @@ impl D3d {
         let t = &self.textures[&id];
         // (depth no draw has used yet: what its last clear left, see `zused`; its passes may not
         // have stored it)
-        let cleared = (t.zused & 1 == 0 && !self.no_pass_opt).then(|| t.zclear.map_or(1.0, |z| z.0)).map(|z| if t.d24 { q24(z) } else { z });
+        let cleared = (t.zused & 1 == 0 && !self.no_pass_opt)
+            .then(|| t.zclear.map_or(1.0, |z| z.0))
+            .map(|z| if t.d24 { q24(z) } else { z });
         self.use_tex(id);
         self.use_tex(tid);
         self.open = true;
@@ -2635,13 +3446,18 @@ impl D3d {
             let dv = self.view2(tid, 1, 0, 1, layer, 1, false);
             match cleared {
                 Some(d) => {
-                    gpu::begin_pass(&format!(r#"{{"colorAttachments":[{{"view":{dv},"loadOp":"clear","clearValue":[{},0,0,1],"storeOp":"store"}}]}}"#, num(d)));
+                    gpu::begin_pass(&format!(
+                        r#"{{"colorAttachments":[{{"view":{dv},"loadOp":"clear","clearValue":[{},0,0,1],"storeOp":"store"}}]}}"#,
+                        num(d)
+                    ));
                     gpu::end_pass();
                 }
                 None => {
                     let zv = self.view2(id, 1, 0, 1, layer, 1, true);
                     let group = gpu::bind_group(self.twin_pipe[q].1, &[(0, Res::Obj(zv))]);
-                    gpu::begin_pass(&format!(r#"{{"colorAttachments":[{{"view":{dv},"loadOp":"clear","storeOp":"store"}}]}}"#));
+                    gpu::begin_pass(&format!(
+                        r#"{{"colorAttachments":[{{"view":{dv},"loadOp":"clear","storeOp":"store"}}]}}"#
+                    ));
                     gpu::set_pipeline(self.twin_pipe[q].0);
                     gpu::set_bind_group(0, group, &[]);
                     gpu::draw(3, 1, 0, 0);
@@ -2676,7 +3492,9 @@ impl D3d {
             self.resolve_module = gpu::shader(RESOLVE_SHADER);
         }
         let m = self.resolve_module;
-        let layout = gpu::bind_group_layout(r#"{"entries":[{"binding":0,"visibility":2,"texture":{"sampleType":"unfilterable-float","viewDimension":"2d","multisampled":true}}]}"#);
+        let layout = gpu::bind_group_layout(
+            r#"{"entries":[{"binding":0,"visibility":2,"texture":{"sampleType":"unfilterable-float","viewDimension":"2d","multisampled":true}}]}"#,
+        );
         let pl = gpu::pipeline_layout(&format!(r#"{{"bindGroupLayouts":[{layout}]}}"#));
         let p = gpu::render_pipeline(&format!(
             r#"{{"layout":{pl},"vertex":{{"module":{m},"entryPoint":"vs"}},"fragment":{{"module":{m},"entryPoint":"fs","targets":[{{"format":{}}}]}},"primitive":{{"topology":"triangle-list"}}}}"#,
@@ -2691,7 +3509,12 @@ impl D3d {
         let [id, w, h, layers, mips, format, dim_code] = a;
         self.drop_twin(id);
         // (bit 8: bound for unordered access; bit 9: multisampled; bit 10: 24-bit UNORM depth)
-        let (uav, ms, d24, dim_code) = (dim_code & 0x100 != 0, dim_code & 0x200 != 0, dim_code & 0x400 != 0, dim_code & 0xff);
+        let (uav, ms, d24, dim_code) = (
+            dim_code & 0x100 != 0,
+            dim_code & 0x200 != 0,
+            dim_code & 0x400 != 0,
+            dim_code & 0xff,
+        );
         let fmt = tex_format(format);
         // 1D textures are 2D ones of height 1: WebGPU's 1D textures have neither array layers
         // nor mips (dxwgsl declares Texture1D[Array] as texture_2d[_array] to match)
@@ -2701,19 +3524,47 @@ impl D3d {
             _ => ("2d", h),
         };
         // (WebGPU has no 3D depth textures: one of the same texel size that no shader samples as depth)
-        let fmt = if dim == "3d" && is_depth(fmt) { if fmt == "depth16unorm" { "r16float" } else { "r32float" } } else { fmt };
+        let fmt = if dim == "3d" && is_depth(fmt) {
+            if fmt == "depth16unorm" {
+                "r16float"
+            } else {
+                "r32float"
+            }
+        } else {
+            fmt
+        };
         let depth = is_depth(fmt);
-        let renderable = dim == "2d" && !fmt.ends_with("snorm") && fmt != "rgb9e5ufloat" && (fmt != "rg11b10ufloat" || gpu::has_feature("rg11b10ufloat-renderable"));
+        let renderable = dim == "2d"
+            && !fmt.ends_with("snorm")
+            && fmt != "rgb9e5ufloat"
+            && (fmt != "rg11b10ufloat" || gpu::has_feature("rg11b10ufloat-renderable"));
         // (no more levels than the size has)
-        let biggest = if dim == "3d" { w.max(h).max(layers) } else { w.max(h) };
+        let biggest = if dim == "3d" {
+            w.max(h).max(layers)
+        } else {
+            w.max(h)
+        };
         let levels = mips.max(1).min(32 - biggest.max(1).leading_zeros());
         // Multisampled: 4 samples, WebGPU's only count above 1 (for Direct3D's 2, 4, 8 and 16),
         // where WebGPU has it (2D, one level and layer, a format it multisamples, no UAV);
         // else 1 sample, and resolving it is a copy
-        let samples = if ms && dim == "2d" && layers <= 1 && mips <= 1 && !uav && multisamplable(fmt) { 4 } else { 1 };
+        let samples =
+            if ms && dim == "2d" && layers <= 1 && mips <= 1 && !uav && multisamplable(fmt) {
+                4
+            } else {
+                1
+            };
         let levels = if samples > 1 { 1 } else { levels };
         let storage = uav && storable(fmt) && samples == 1;
-        let u = usage::T_BINDING | usage::T_COPY_DST | usage::T_COPY_SRC | if renderable || (depth && dim == "2d") { usage::T_RENDER } else { 0 } | if storage { usage::T_STORAGE } else { 0 };
+        let u = usage::T_BINDING
+            | usage::T_COPY_DST
+            | usage::T_COPY_SRC
+            | if renderable || (depth && dim == "2d") {
+                usage::T_RENDER
+            } else {
+                0
+            }
+            | if storage { usage::T_STORAGE } else { 0 };
         let tex = gpu::texture(&format!(
             r#"{{"size":[{w},{h},{}],"dimension":{},"format":{},"mipLevelCount":{levels},"sampleCount":{samples},"usage":{u}}}"#,
             layers.max(1),
@@ -2741,11 +3592,42 @@ impl D3d {
         self.created.set(self.created.get() + 1);
         let view = gpu::view(
             tex,
-            &format!(r#"{{"dimension":{}{},"aspect":{}}}"#, q(dim), if dim == "2d" { r#","arrayLayerCount":1"# } else { "" }, q(if depth { "depth-only" } else { "all" })),
+            &format!(
+                r#"{{"dimension":{}{},"aspect":{}}}"#,
+                q(dim),
+                if dim == "2d" {
+                    r#","arrayLayerCount":1"#
+                } else {
+                    ""
+                },
+                q(if depth { "depth-only" } else { "all" })
+            ),
         );
         let mut make = vec![CREATE_TEXTURE2];
         make.extend_from_slice(&a);
-        self.textures.insert(id, Tex { tex, w, h, levels, format: fmt, view, layers: layers.max(1), dim, views: HashMap::new(), fits: HashMap::new(), zclear: None, zused: 0, halved: halved(format), storage, make, samples, shown: None, d24 });
+        self.textures.insert(
+            id,
+            Tex {
+                tex,
+                w,
+                h,
+                levels,
+                format: fmt,
+                view,
+                layers: layers.max(1),
+                dim,
+                views: HashMap::new(),
+                fits: HashMap::new(),
+                zclear: None,
+                zused: 0,
+                halved: halved(format),
+                storage,
+                make,
+                samples,
+                shown: None,
+                d24,
+            },
+        );
         // A depth buffer starts at depth 1 (what Direct3D leaves undefined; WebGPU's zeros fail
         // every LESS test), and the passes that clear rather than load an aspect no draw used
         // yet (see `zused`) start from that too.
@@ -2760,7 +3642,16 @@ impl D3d {
 
     /// A view of texture `id` for binding or rendering (cached on the texture).
     #[allow(clippy::too_many_arguments)]
-    fn view2(&mut self, id: u32, dim: u8, mip: u32, mips: u32, layer: u32, layers: u32, depth_only: bool) -> Id {
+    fn view2(
+        &mut self,
+        id: u32,
+        dim: u8,
+        mip: u32,
+        mips: u32,
+        layer: u32,
+        layers: u32,
+        depth_only: bool,
+    ) -> Id {
         let t = self.textures.get_mut(&id).unwrap();
         let k = (dim, mip, mips, layer, layers, depth_only);
         if let Some(&v) = t.views.get(&k) {
@@ -2769,7 +3660,11 @@ impl D3d {
         let dname = VIEW_DIM.get(dim as usize).copied().unwrap_or("2d");
         let all = t.layers;
         let base = layer.min(all - 1);
-        let mut count = if matches!(dname, "2d" | "1d" | "3d") { 1 } else { layers.min(all - base).max(1) };
+        let mut count = if matches!(dname, "2d" | "1d" | "3d") {
+            1
+        } else {
+            layers.min(all - base).max(1)
+        };
         if dname == "cube" {
             count = 6;
         }
@@ -2798,7 +3693,10 @@ impl D3d {
         let n = tg[0] as usize;
         let mut ids: Vec<u32> = (0..n).map(|k| tg[1 + k * 3]).collect();
         ids.push(tg[1 + n * 3]);
-        let mut it = ids.iter().filter_map(|id| self.textures.get(id)).map(|t| t.samples);
+        let mut it = ids
+            .iter()
+            .filter_map(|id| self.textures.get(id))
+            .map(|t| t.samples);
         let first = it.next().unwrap_or(1);
         it.all(|x| x == first).then_some(first)
     }
@@ -2817,7 +3715,9 @@ impl D3d {
             self.use_tex(id);
             self.touch(id);
             let v = self.view2(id, 1, tg[2 + k * 3], 1, tg[3 + k * 3], 1, false);
-            let cc = self.take_clear(id, tg[2 + k * 3], tg[3 + k * 3]).filter(|c| c.flags & 1 != 0);
+            let cc = self
+                .take_clear(id, tg[2 + k * 3], tg[3 + k * 3])
+                .filter(|c| c.flags & 1 != 0);
             self.traffic(id, tg[2 + k * 3], cc.is_none(), true);
             colors.push(match cc {
                 Some(c) => format!(
@@ -2832,7 +3732,11 @@ impl D3d {
         }
         let zi = 1 + n * 3;
         let zid = tg[zi];
-        let z = if zid != 0 && self.textures.contains_key(&zid) { Some(zid) } else { None };
+        let z = if zid != 0 && self.textures.contains_key(&zid) {
+            Some(zid)
+        } else {
+            None
+        };
         if colors.is_empty() && z.is_none() {
             return false;
         }
@@ -2891,11 +3795,17 @@ impl D3d {
                 }
             );
             // (depth and stencil share their memory: either one loaded or stored moves it all)
-            let (load, store) = (!dclear || (stencil && !sclear), !fresh(1) || (stencil && !fresh(2)));
+            let (load, store) = (
+                !dclear || (stencil && !sclear),
+                !fresh(1) || (stencil && !fresh(2)),
+            );
             self.traffic(zid, tg[zi + 1], load, store);
         }
         self.open = true;
-        gpu::begin_pass(&format!(r#"{{"colorAttachments":[{}]{depth}}}"#, colors.join(",")));
+        gpu::begin_pass(&format!(
+            r#"{{"colorAttachments":[{}]{depth}}}"#,
+            colors.join(",")
+        ));
         self.pass = true;
         STATS[2].fetch_add(1, Relaxed);
         true
@@ -2903,9 +3813,15 @@ impl D3d {
 
     /// The size of the Direct3D 11 targets' first level.
     fn target_size2(&self) -> (u32, u32) {
-        let Some(tg) = &self.targets2 else { return (0, 0) };
+        let Some(tg) = &self.targets2 else {
+            return (0, 0);
+        };
         let n = tg[0] as usize;
-        let (id, level) = if n > 0 { (tg[1], tg[2]) } else { (tg[1 + n * 3], tg[2 + n * 3]) };
+        let (id, level) = if n > 0 {
+            (tg[1], tg[2])
+        } else {
+            (tg[1 + n * 3], tg[2 + n * 3])
+        };
         match self.textures.get(&id) {
             Some(t) => ((t.w >> level).max(1), (t.h >> level).max(1)),
             None => (0, 0),
@@ -2913,15 +3829,40 @@ impl D3d {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn clear_view(&mut self, tex: u32, level: u32, layer: u32, flags: u32, color: [f32; 4], depth: f32, stencil: u32) {
+    fn clear_view(
+        &mut self,
+        tex: u32,
+        level: u32,
+        layer: u32,
+        flags: u32,
+        color: [f32; 4],
+        depth: f32,
+        stencil: u32,
+    ) {
         // (a texture WebGPU does not draw to: 3D ones, snorm and the like; a clear pass of
         // one is invalid and took the whole command buffer with it)
-        let Some(t) = self.textures.get(&tex).filter(|t| t.dim == "2d" && (renderable(t.format) || is_depth(t.format))) else { return };
+        let Some(t) = self
+            .textures
+            .get(&tex)
+            .filter(|t| t.dim == "2d" && (renderable(t.format) || is_depth(t.format)))
+        else {
+            return;
+        };
         let (dep, fits) = (is_depth(t.format), !t.fits.is_empty());
         let flags = if dep { flags & 6 } else { flags & 1 };
         // (a depth buffer with stand-ins of other sizes: all of them now, see depth_for)
         if flags != 0 && !(dep && fits) {
-            self.defer_clear(tex, Clear { level, layer, flags, color, z: depth.clamp(0.0, 1.0), stencil });
+            self.defer_clear(
+                tex,
+                Clear {
+                    level,
+                    layer,
+                    flags,
+                    color,
+                    z: depth.clamp(0.0, 1.0),
+                    stencil,
+                },
+            );
             return;
         }
         self.clear_now(tex, level, layer, flags, color, depth, stencil);
@@ -2929,8 +3870,21 @@ impl D3d {
 
     /// A clear of a whole view as a pass of its own.
     #[allow(clippy::too_many_arguments)]
-    fn clear_now(&mut self, tex: u32, level: u32, layer: u32, flags: u32, color: [f32; 4], depth: f32, stencil: u32) {
-        if !self.textures.get(&tex).is_some_and(|t| t.dim == "2d" && (renderable(t.format) || is_depth(t.format))) {
+    fn clear_now(
+        &mut self,
+        tex: u32,
+        level: u32,
+        layer: u32,
+        flags: u32,
+        color: [f32; 4],
+        depth: f32,
+        stencil: u32,
+    ) {
+        if !self
+            .textures
+            .get(&tex)
+            .is_some_and(|t| t.dim == "2d" && (renderable(t.format) || is_depth(t.format)))
+        {
             return;
         }
         self.end_pass();
@@ -2950,13 +3904,22 @@ impl D3d {
             if flags & 4 != 0 {
                 t.zclear = Some((t.zclear.map_or(1.0, |z| z.0), stencil));
             }
-            let views: Vec<Id> = std::iter::once(view).chain(t.fits.values().map(|f| f.1)).collect();
+            let views: Vec<Id> = std::iter::once(view)
+                .chain(t.fits.values().map(|f| f.1))
+                .collect();
             for v in views {
                 gpu::begin_pass(&format!(
                     r#"{{"colorAttachments":[],"depthStencilAttachment":{{"view":{v},"depthLoadOp":{},"depthClearValue":{},"depthStoreOp":"store"{}}}}}"#,
                     q(if flags & 2 != 0 { "clear" } else { "load" }),
                     num(d),
-                    if s { format!(r#","stencilLoadOp":{},"stencilClearValue":{stencil},"stencilStoreOp":"store""#, q(if flags & 4 != 0 { "clear" } else { "load" })) } else { String::new() }
+                    if s {
+                        format!(
+                            r#","stencilLoadOp":{},"stencilClearValue":{stencil},"stencilStoreOp":"store""#,
+                            q(if flags & 4 != 0 { "clear" } else { "load" })
+                        )
+                    } else {
+                        String::new()
+                    }
                 ));
                 gpu::end_pass();
             }
@@ -2974,7 +3937,13 @@ impl D3d {
     }
 
     fn gen_mips(&mut self, tex: u32) {
-        let Some(t) = self.textures.get(&tex).filter(|t| t.levels >= 2 && t.dim == "2d" && !is_depth(t.format)) else { return };
+        let Some(t) = self
+            .textures
+            .get(&tex)
+            .filter(|t| t.levels >= 2 && t.dim == "2d" && !is_depth(t.format))
+        else {
+            return;
+        };
         let (format, layers, levels) = (t.format, t.layers, t.levels);
         self.end_pass();
         let pipe = self.blit_pipe(format);
@@ -2986,8 +3955,17 @@ impl D3d {
             for l in 1..levels {
                 let src = self.view2(tex, 1, l - 1, 1, layer, 1, false);
                 let dst = self.view2(tex, 1, l, 1, layer, 1, false);
-                let group = gpu::bind_group(layout, &[(0, Res::Obj(src)), (1, Res::Obj(smp)), (2, Res::Buffer(self.clear_uniform, slot * 256, 16))]);
-                gpu::begin_pass(&format!(r#"{{"colorAttachments":[{{"view":{dst},"loadOp":"clear","storeOp":"store"}}]}}"#));
+                let group = gpu::bind_group(
+                    layout,
+                    &[
+                        (0, Res::Obj(src)),
+                        (1, Res::Obj(smp)),
+                        (2, Res::Buffer(self.clear_uniform, slot * 256, 16)),
+                    ],
+                );
+                gpu::begin_pass(&format!(
+                    r#"{{"colorAttachments":[{{"view":{dst},"loadOp":"clear","storeOp":"store"}}]}}"#
+                ));
                 gpu::set_pipeline(pipe);
                 gpu::set_bind_group(0, group, &[]);
                 gpu::draw(3, 1, 0, 0);
@@ -3008,7 +3986,13 @@ impl D3d {
             return s;
         }
         let aniso = (key >> 12) & 1 != 0;
-        let lin = |b: u32| if aniso || (key >> b) & 1 != 0 { "linear" } else { "nearest" };
+        let lin = |b: u32| {
+            if aniso || (key >> b) & 1 != 0 {
+                "linear"
+            } else {
+                "nearest"
+            }
+        };
         let func = (key >> 13) & 15;
         let finite = |f: f32| if f.is_nan() { 0.0 } else { f };
         let lo = finite(f32of(min_lod)).clamp(0.0, 32.0);
@@ -3020,11 +4004,23 @@ impl D3d {
             q(pick(&ADDRESS2, (key >> 6) & 7, "repeat")),
             q(lin(9)),
             q(lin(10)),
-            q(if aniso || (key >> 11) & 1 != 0 { "linear" } else { "nearest" }),
+            q(if aniso || (key >> 11) & 1 != 0 {
+                "linear"
+            } else {
+                "nearest"
+            }),
             num(lo),
             num(hi),
-            if aniso { ((key >> 17) & 31).clamp(1, 16) } else { 1 },
-            if func != 0 { format!(r#","compare":{}"#, q(pick(&COMPARE, func, "always"))) } else { String::new() }
+            if aniso {
+                ((key >> 17) & 31).clamp(1, 16)
+            } else {
+                1
+            },
+            if func != 0 {
+                format!(r#","compare":{}"#, q(pick(&COMPARE, func, "always")))
+            } else {
+                String::new()
+            }
         ));
         self.samplers2.insert((key, min_lod, max_lod), s);
         s
@@ -3042,7 +4038,11 @@ impl D3d {
             6 => "depth32float",
             _ => "rgba8unorm",
         };
-        let layers = if dim == "cube" || dim == "cube-array" { 6 } else { 1 };
+        let layers = if dim == "cube" || dim == "cube-array" {
+            6
+        } else {
+            1
+        };
         let tdim = match dim {
             "1d" => "1d",
             "3d" => "3d",
@@ -3055,7 +4055,12 @@ impl D3d {
             q(tdim),
             q(format),
             if ms { 4 } else { 1 },
-            usage::T_BINDING | if kind == 6 || ms { usage::T_RENDER } else { usage::T_COPY_DST }
+            usage::T_BINDING
+                | if kind == 6 || ms {
+                    usage::T_RENDER
+                } else {
+                    usage::T_COPY_DST
+                }
         ));
         let v = gpu::view(tex, &format!(r#"{{"dimension":{}}}"#, q(dim)));
         self.dummies.insert((vdim, kind), v);
@@ -3074,11 +4079,21 @@ impl D3d {
         let mut kinds = vec![samples];
         for g in groups {
             for e in g.chunks(8) {
-                kinds.extend_from_slice(&[e[0], e[1], if e[1] == 1 || e[1] >= 4 { e[3] } else { u32::MAX }]);
+                kinds.extend_from_slice(&[
+                    e[0],
+                    e[1],
+                    if e[1] == 1 || e[1] >= 4 {
+                        e[3]
+                    } else {
+                        u32::MAX
+                    },
+                ]);
             }
             kinds.push(u32::MAX - 1);
         }
-        let Some(p) = self.pipelines2.get(&id) else { return false };
+        let Some(p) = self.pipelines2.get(&id) else {
+            return false;
+        };
         if p.pipeline != 0 && p.kinds == kinds {
             return true;
         }
@@ -3108,7 +4123,10 @@ impl D3d {
                     }
                 });
             }
-            layouts.push(gpu::bind_group_layout(&format!(r#"{{"entries":[{}]}}"#, entries.join(","))));
+            layouts.push(gpu::bind_group_layout(&format!(
+                r#"{{"entries":[{}]}}"#,
+                entries.join(",")
+            )));
         }
         // key: crates/kura/src/d3d11 draw()
         let mut q_ = 0;
@@ -3117,14 +4135,16 @@ impl D3d {
             k.get(q_ - 1).copied().unwrap_or(0)
         };
         let (vs, ps, topo, strip) = (next(), next(), next(), next());
-        let (cull, ccw, bias, slope, clamp) = (next(), next(), next() as i32, f32of(next()), f32of(next()));
+        let (cull, ccw, bias, slope, clamp) =
+            (next(), next(), next() as i32, f32of(next()), f32of(next()));
         let mut qi = 9;
         let mut ds = String::new();
         let mut zuse = 0;
         if k.get(qi) == Some(&0xffff) {
             qi += 1;
         } else {
-            let (fmt, en, write, func, sen, masks) = (k[qi], k[qi + 1], k[qi + 2], k[qi + 3], k[qi + 4], k[qi + 5]);
+            let (fmt, en, write, func, sen, masks) =
+                (k[qi], k[qi + 1], k[qi + 2], k[qi + 3], k[qi + 4], k[qi + 5]);
             zuse = (en != 0 || write != 0) as u32 | ((sen != 0) as u32) << 1;
             let face = |o: usize| {
                 if sen != 0 {
@@ -3156,7 +4176,11 @@ impl D3d {
                 r#","depthStencil":{{"format":{},"depthWriteEnabled":{},"depthCompare":{}{stencil},"depthBias":{},"depthBiasSlopeScale":{},"depthBiasClamp":{}}}"#,
                 q(format),
                 en != 0 && write != 0,
-                q(if en != 0 { pick(&COMPARE, func, "less") } else { "always" }),
+                q(if en != 0 {
+                    pick(&COMPARE, func, "less")
+                } else {
+                    "always"
+                }),
                 if tri { bias } else { 0 },
                 num(if tri { slope } else { 0.0 }),
                 num(if tri { clamp } else { 0.0 })
@@ -3171,7 +4195,12 @@ impl D3d {
             qi += 3;
             let mut attrs = Vec::new();
             for _ in 0..n {
-                attrs.push(format!(r#"{{"format":{},"offset":{},"shaderLocation":{}}}"#, q(pick(&VERTEX_FORMATS2, k[qi], "float32x4")), k[qi + 1], k[qi + 2]));
+                attrs.push(format!(
+                    r#"{{"format":{},"offset":{},"shaderLocation":{}}}"#,
+                    q(pick(&VERTEX_FORMATS2, k[qi], "float32x4")),
+                    k[qi + 1],
+                    k[qi + 2]
+                ));
                 qi += 3;
             }
             buffers.push(format!(
@@ -3197,20 +4226,50 @@ impl D3d {
             let comp = |s: u32, d: u32, o: u32| {
                 let op = pick(&BLEND_OP, o, "add");
                 if op == "min" || op == "max" {
-                    format!(r#"{{"operation":{},"srcFactor":"one","dstFactor":"one"}}"#, q(op))
+                    format!(
+                        r#"{{"operation":{},"srcFactor":"one","dstFactor":"one"}}"#,
+                        q(op)
+                    )
                 } else {
-                    format!(r#"{{"operation":{},"srcFactor":{},"dstFactor":{}}}"#, q(op), q(pick(&BLEND2, s, "one")), q(pick(&BLEND2, d, "zero")))
+                    format!(
+                        r#"{{"operation":{},"srcFactor":{},"dstFactor":{}}}"#,
+                        q(op),
+                        q(pick(&BLEND2, s, "one")),
+                        q(pick(&BLEND2, d, "zero"))
+                    )
                 }
             };
-            let blend = if t[1] != 0 && blendable(format) { format!(r#","blend":{{"color":{},"alpha":{}}}"#, comp(t[2], t[3], t[4]), comp(t[5], t[6], t[7])) } else { String::new() };
-            targets.push(format!(r#"{{"format":{}{blend},"writeMask":{}}}"#, q(format), if ps != 0 { t[8] & 0xf } else { 0 }));
+            let blend = if t[1] != 0 && blendable(format) {
+                format!(
+                    r#","blend":{{"color":{},"alpha":{}}}"#,
+                    comp(t[2], t[3], t[4]),
+                    comp(t[5], t[6], t[7])
+                )
+            } else {
+                String::new()
+            };
+            targets.push(format!(
+                r#"{{"format":{}{blend},"writeMask":{}}}"#,
+                q(format),
+                if ps != 0 { t[8] & 0xf } else { 0 }
+            ));
         }
         // the blend state's AlphaToCoverageEnable and OMSetBlendState's sample mask (with 4
         // samples; alpha to coverage needs a target 0 and a pixel shader)
-        let (a2c, mask) = (k.get(qi).copied().unwrap_or(0), k.get(qi + 1).copied().unwrap_or(u32::MAX));
+        let (a2c, mask) = (
+            k.get(qi).copied().unwrap_or(0),
+            k.get(qi + 1).copied().unwrap_or(u32::MAX),
+        );
         let a2c = a2c != 0 && samples > 1 && nt > 0 && ps != 0;
         let mask = if samples > 1 { mask & 0xf } else { mask & 1 };
-        let multisample = format!(r#","multisample":{{"count":{samples},"mask":{mask}{}}}"#, if a2c { r#","alphaToCoverageEnabled":true"# } else { "" });
+        let multisample = format!(
+            r#","multisample":{{"count":{samples},"mask":{mask}{}}}"#,
+            if a2c {
+                r#","alphaToCoverageEnabled":true"#
+            } else {
+                ""
+            }
+        );
         let fragment = if ps != 0 {
             self.shaders.get(&ps).copied()
         } else {
@@ -3223,10 +4282,21 @@ impl D3d {
             layouts.iter().for_each(|&l| gpu::drop(l));
             return false;
         };
-        let pl = gpu::pipeline_layout(&format!(r#"{{"bindGroupLayouts":[{}]}}"#, layouts.iter().map(|l| l.to_string()).collect::<Vec<_>>().join(",")));
+        let pl = gpu::pipeline_layout(&format!(
+            r#"{{"bindGroupLayouts":[{}]}}"#,
+            layouts
+                .iter()
+                .map(|l| l.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
         let strip_fmt = match strip {
-            1 if pick(&TOPOLOGY, topo, "triangle-list").ends_with("strip") => r#","stripIndexFormat":"uint16""#,
-            2 if pick(&TOPOLOGY, topo, "triangle-list").ends_with("strip") => r#","stripIndexFormat":"uint32""#,
+            1 if pick(&TOPOLOGY, topo, "triangle-list").ends_with("strip") => {
+                r#","stripIndexFormat":"uint16""#
+            }
+            2 if pick(&TOPOLOGY, topo, "triangle-list").ends_with("strip") => {
+                r#","stripIndexFormat":"uint32""#
+            }
             _ => "",
         };
         let pipeline = gpu::render_pipeline(&format!(
@@ -3241,7 +4311,11 @@ impl D3d {
             }),
             q(if ccw & 1 != 0 { "ccw" } else { "cw" }),
             // (DepthClipEnable off: depth clamped, not clipped, where the device can)
-            if ccw & 2 != 0 && gpu::has_feature("depth-clip-control") { r#","unclippedDepth":true"# } else { "" }
+            if ccw & 2 != 0 && gpu::has_feature("depth-clip-control") {
+                r#","unclippedDepth":true"#
+            } else {
+                ""
+            }
         ));
         gpu::drop(pl);
         let p = self.pipelines2.get_mut(&id).unwrap();
@@ -3263,7 +4337,9 @@ impl D3d {
         let (sid, x, y, z, n) = (c[i + 1], c[i + 2], c[i + 3], c[i + 4], c[i + 5] as usize);
         let next = i + 6 + n * 8;
         let es = &c[i + 6..next];
-        let Some(&module) = self.shaders.get(&sid) else { return next };
+        let Some(&module) = self.shaders.get(&sid) else {
+            return next;
+        };
         if x == 0 || y == 0 || z == 0 {
             return next;
         }
@@ -3277,18 +4353,33 @@ impl D3d {
         // would take the command buffer with it)
         let stored: Vec<u32> = es.chunks(8).filter(|e| e[1] == 7).map(|e| e[2]).collect();
         for e in es.chunks(8).filter(|e| e[1] == 7) {
-            let ok = self.textures.get(&e[2]).is_some_and(|t| t.storage && t.format == tex_format(e[5]) && (t.dim == "3d") == (e[3] == 5));
+            let ok = self.textures.get(&e[2]).is_some_and(|t| {
+                t.storage && t.format == tex_format(e[5]) && (t.dim == "3d") == (e[3] == 5)
+            });
             if !ok {
                 if !self.warned_dispatch {
                     self.warned_dispatch = true;
-                    eprintln!("d3d11: dispatch: UAV texture {} is not a {} storage texture", e[2], tex_format(e[5]));
+                    eprintln!(
+                        "d3d11: dispatch: UAV texture {} is not a {} storage texture",
+                        e[2],
+                        tex_format(e[5])
+                    );
                 }
                 return next;
             }
         }
         let mut key = vec![sid];
         for e in es.chunks(8) {
-            key.extend_from_slice(&[e[0], e[1], if matches!(e[1], 1 | 4 | 5 | 7 | 8) { e[3] } else { 0 }, if e[1] == 7 { e[5] } else { 0 }]);
+            key.extend_from_slice(&[
+                e[0],
+                e[1],
+                if matches!(e[1], 1 | 4 | 5 | 7 | 8) {
+                    e[3]
+                } else {
+                    0
+                },
+                if e[1] == 7 { e[5] } else { 0 },
+            ]);
         }
         let (pipe, layout) = match self.computes.get(&key) {
             Some(&p) => {
@@ -3318,9 +4409,12 @@ impl D3d {
                         }
                     });
                 }
-                let l = gpu::bind_group_layout(&format!(r#"{{"entries":[{}]}}"#, entries.join(",")));
+                let l =
+                    gpu::bind_group_layout(&format!(r#"{{"entries":[{}]}}"#, entries.join(",")));
                 let pl = gpu::pipeline_layout(&format!(r#"{{"bindGroupLayouts":[{l}]}}"#));
-                let p = gpu::compute_pipeline(&format!(r#"{{"layout":{pl},"compute":{{"module":{module},"entryPoint":"main"}}}}"#));
+                let p = gpu::compute_pipeline(&format!(
+                    r#"{{"layout":{pl},"compute":{{"module":{module},"entryPoint":"main"}}}}"#
+                ));
                 gpu::drop(pl);
                 self.computes.insert(key, (p, l));
                 (p, l)
@@ -3329,7 +4423,8 @@ impl D3d {
         let mut entries = Vec::new();
         let mut views = Vec::new();
         for e in es.chunks(8) {
-            let (binding, kind, a, b, cc, dd, ee, ff) = (e[0], e[1], e[2], e[3], e[4], e[5], e[6], e[7]);
+            let (binding, kind, a, b, cc, dd, ee, ff) =
+                (e[0], e[1], e[2], e[3], e[4], e[5], e[6], e[7]);
             match kind {
                 0 => {
                     let want = (dd.div_ceil(16) * 16).max(16);
@@ -3337,7 +4432,9 @@ impl D3d {
                         self.bused.push(a);
                     }
                     match self.buffers.get(&a).copied() {
-                        Some((buf, size)) if size >= want => entries.push((binding, Res::Buffer(buf, 0, size.min(65536)))),
+                        Some((buf, size)) if size >= want => {
+                            entries.push((binding, Res::Buffer(buf, 0, size.min(65536))))
+                        }
                         _ => {
                             let zb = self.zero();
                             entries.push((binding, Res::Buffer(zb, 0, want.min(65536))));
@@ -3359,7 +4456,15 @@ impl D3d {
                     let v = match self.textures.get(&a).filter(|t| t.dim != "3d" || b == 5) {
                         Some(t) => {
                             let m = cc.min(t.levels - 1);
-                            let (w, h, layers) = ((t.w >> m).max(1), (t.h >> m).max(1), if t.dim == "3d" { (t.layers >> m).max(1) } else { t.layers });
+                            let (w, h, layers) = (
+                                (t.w >> m).max(1),
+                                (t.h >> m).max(1),
+                                if t.dim == "3d" {
+                                    (t.layers >> m).max(1)
+                                } else {
+                                    t.layers
+                                },
+                            );
                             let (src, dim, format) = (t.tex, t.dim, t.format);
                             self.use_tex(a);
                             let copy = gpu::texture(&format!(
@@ -3368,18 +4473,41 @@ impl D3d {
                                 q(format),
                                 usage::T_BINDING | usage::T_COPY_DST
                             ));
-                            gpu::copy_texture(src, m, [0, 0, 0], copy, 0, [0, 0, 0], [w, h, layers]);
+                            gpu::copy_texture(
+                                src,
+                                m,
+                                [0, 0, 0],
+                                copy,
+                                0,
+                                [0, 0, 0],
+                                [w, h, layers],
+                            );
                             self.doomed.push(copy);
                             let dname = pick(&VIEW_DIM, b, "2d");
-                            let count = if matches!(dname, "2d" | "3d") { 1 } else { ff.max(1).min(layers - ee.min(layers - 1)) };
+                            let count = if matches!(dname, "2d" | "3d") {
+                                1
+                            } else {
+                                ff.max(1).min(layers - ee.min(layers - 1))
+                            };
                             let v = gpu::view(
                                 copy,
-                                &format!(r#"{{"dimension":{},"baseArrayLayer":{},"arrayLayerCount":{count}}}"#, q(dname), if dname == "3d" { 0 } else { ee.min(layers - 1) }),
+                                &format!(
+                                    r#"{{"dimension":{},"baseArrayLayer":{},"arrayLayerCount":{count}}}"#,
+                                    q(dname),
+                                    if dname == "3d" { 0 } else { ee.min(layers - 1) }
+                                ),
                             );
                             views.push(v);
                             v
                         }
-                        None => self.dummy(b, match dd { 1 => 4, 2 => 5, _ => 1 }),
+                        None => self.dummy(
+                            b,
+                            match dd {
+                                1 => 4,
+                                2 => 5,
+                                _ => 1,
+                            },
+                        ),
                     };
                     entries.push((binding, Res::Obj(v)));
                 }
@@ -3433,7 +4561,9 @@ impl D3d {
         q_ += 1;
         let nvb = c[q_] as usize;
         q_ += 1;
-        let vbs: Vec<(u32, u32)> = (0..nvb).map(|b| (c[q_ + 2 * b], c[q_ + 2 * b + 1])).collect();
+        let vbs: Vec<(u32, u32)> = (0..nvb)
+            .map(|b| (c[q_ + 2 * b], c[q_ + 2 * b + 1]))
+            .collect();
         q_ += 2 * nvb;
         let (ib, ioff, ifmt) = (c[q_], c[q_ + 1], c[q_ + 2]);
         q_ += 3;
@@ -3444,13 +4574,22 @@ impl D3d {
             groups.push(&c[q_..q_ + n * 8]);
             q_ += n * 8;
         }
-        let (indexed, count, instances, start, base, first) = (c[q_], c[q_ + 1], c[q_ + 2], c[q_ + 3], c[q_ + 4] as i32, c[q_ + 5]);
+        let (indexed, count, instances, start, base, first) = (
+            c[q_],
+            c[q_ + 1],
+            c[q_ + 2],
+            c[q_ + 3],
+            c[q_ + 4] as i32,
+            c[q_ + 5],
+        );
         // (and the hash of what it reads from its buffers)
         q_ += 7;
         if !self.pipelines2.contains_key(&pid) || count == 0 || instances == 0 {
             return q_;
         }
-        let Some(samples) = self.targets2.as_ref().and_then(|tg| self.samples_of2(tg)) else { return q_ };
+        let Some(samples) = self.targets2.as_ref().and_then(|tg| self.samples_of2(tg)) else {
+            return q_;
+        };
         if !self.pipeline2(pid, &groups, samples) {
             return q_;
         }
@@ -3476,7 +4615,10 @@ impl D3d {
         // the first draw that uses the depth buffer's depth or stencil: a pass that keeps it
         // (it starts from what the last clear left)
         let zuse = self.pipelines2[&pid].zuse;
-        let zid = self.targets2.as_ref().map_or(0, |tg| tg[1 + tg[0] as usize * 3]);
+        let zid = self
+            .targets2
+            .as_ref()
+            .map_or(0, |tg| tg[1 + tg[0] as usize * 3]);
         if zuse != 0 {
             if let Some(z) = self.textures.get_mut(&zid) {
                 let new = zuse & !z.zused;
@@ -3488,7 +4630,14 @@ impl D3d {
                     if !self.no_pass_opt && !fits {
                         let tg = self.targets2.as_ref().unwrap();
                         let zi = 1 + tg[0] as usize * 3;
-                        let c = Clear { level: tg[zi + 1], layer: tg[zi + 2], flags: new << 1, color: [0.0; 4], z: zd, stencil: zs };
+                        let c = Clear {
+                            level: tg[zi + 1],
+                            layer: tg[zi + 2],
+                            flags: new << 1,
+                            color: [0.0; 4],
+                            z: zd,
+                            stencil: zs,
+                        };
                         match self.clears.get_mut(&zid) {
                             None => {
                                 self.clears.insert(zid, c);
@@ -3512,7 +4661,15 @@ impl D3d {
             return q_;
         }
         let (tw, th) = self.target_size2();
-        let Some((vpt, sci)) = rects11(tw, th, [vx, vy, vw, vh, minz, maxz], [sx, sy, sw, sh], s_on != 0) else { return q_ };
+        let Some((vpt, sci)) = rects11(
+            tw,
+            th,
+            [vx, vy, vw, vh, minz, maxz],
+            [sx, sy, sw, sh],
+            s_on != 0,
+        ) else {
+            return q_;
+        };
         let (pipeline, layouts) = {
             let p = &self.pipelines2[&pid];
             (p.pipeline, p.layouts.clone())
@@ -3552,13 +4709,16 @@ impl D3d {
             let mut used = Vec::new();
             let mut entries = Vec::new();
             for e in g.chunks(8) {
-                let (binding, kind, a, b, cc, dd, ee, ff) = (e[0], e[1], e[2], e[3], e[4], e[5], e[6], e[7]);
+                let (binding, kind, a, b, cc, dd, ee, ff) =
+                    (e[0], e[1], e[2], e[3], e[4], e[5], e[6], e[7]);
                 if kind == 0 && a == DATA {
                     entries.push((binding, Res::Buffer(self.data_buf, b, cc.max(16))));
                 } else if kind == 0 {
                     let want = (dd.div_ceil(16) * 16).max(16);
                     match self.buffers.get(&a).copied() {
-                        Some((buf, size)) if size >= want => entries.push((binding, Res::Buffer(buf, 0, size.min(65536)))),
+                        Some((buf, size)) if size >= want => {
+                            entries.push((binding, Res::Buffer(buf, 0, size.min(65536))))
+                        }
                         _ => {
                             // (not kept: the buffer may come later)
                             key.clear();
@@ -3573,7 +4733,11 @@ impl D3d {
                     // (a view of another dimension than the texture's, or a cube of fewer
                     // than 6 square layers, is invalid in WebGPU and takes the command buffer
                     // with it: unbound instead; a depth texture read as floats: its copy)
-                    let a = if kind == 1 { self.twins.get(&a).map_or(a, |t| t.0) } else { a };
+                    let a = if kind == 1 {
+                        self.twins.get(&a).map_or(a, |t| t.0)
+                    } else {
+                        a
+                    };
                     let ok = self.textures.get(&a).filter(|t| {
                         let depth = is_depth(t.format);
                         depth == (kind == 6)
@@ -3618,7 +4782,11 @@ impl D3d {
             if b != DATA && !self.bused.contains(&b) {
                 self.bused.push(b);
             }
-            let buf = if b == DATA { Some((self.data_buf, self.data_size)) } else { self.buffers.get(&b).copied() };
+            let buf = if b == DATA {
+                Some((self.data_buf, self.data_size))
+            } else {
+                self.buffers.get(&b).copied()
+            };
             match buf {
                 Some((buf, size)) => gpu::set_vertex_buffer(k as u32, buf, off.min(size)),
                 None => {
@@ -3631,7 +4799,11 @@ impl D3d {
             if ib != DATA && !self.bused.contains(&ib) {
                 self.bused.push(ib);
             }
-            let buf = if ib == DATA { Some((self.data_buf, self.data_size)) } else { self.buffers.get(&ib).copied() };
+            let buf = if ib == DATA {
+                Some((self.data_buf, self.data_size))
+            } else {
+                self.buffers.get(&ib).copied()
+            };
             let Some((buf, size)) = buf else { return q_ };
             gpu::set_index_buffer(buf, ifmt == 2, ioff.min(size));
             gpu::draw_indexed(count, instances, start, base, first);
@@ -3644,10 +4816,20 @@ impl D3d {
 
 /// A Direct3D 11 / OpenGL draw's viewport (x y w h minz maxz; w or h 0: the whole target) and
 /// scissor (x y w h, when `scissor`) as WebGPU takes them, as `rects9`.
-pub(crate) fn rects11(tw: u32, th: u32, vp: [f32; 6], sc: [u32; 4], scissor: bool) -> Option<([f32; 6], [u32; 4])> {
+pub(crate) fn rects11(
+    tw: u32,
+    th: u32,
+    vp: [f32; 6],
+    sc: [u32; 4],
+    scissor: bool,
+) -> Option<([f32; 6], [u32; 4])> {
     let [vx, vy, vw, vh, minz, maxz] = vp;
     let whole = !(vw > 0.0 && vh > 0.0);
-    let vp = if whole { [0.0, 0.0, tw as f32, th as f32, minz, maxz] } else { [vx, vy, vw, vh, minz, maxz] };
+    let vp = if whole {
+        [0.0, 0.0, tw as f32, th as f32, minz, maxz]
+    } else {
+        [vx, vy, vw, vh, minz, maxz]
+    };
     let sc = if scissor { sc } else { [0, 0, tw, th] };
     rects9(tw, th, vp, sc, None)
 }
@@ -3655,12 +4837,21 @@ pub(crate) fn rects11(tw: u32, th: u32, vp: [f32; 6], sc: [u32; 4], scissor: boo
 /// A Direct3D 9 draw's viewport (x y w h minz maxz) and scissor (x y w h) as WebGPU takes them
 /// on a `tw` x `th` target: the viewport inside the target, depths in 0..1 (NaN: 0 and 1), the
 /// scissor inside both and `clip` (a segment drawn again in part). None: nothing to draw.
-pub(crate) fn rects9(tw: u32, th: u32, vp: [f32; 6], sc: [u32; 4], clip: Option<[u32; 4]>) -> Option<([f32; 6], [u32; 4])> {
+pub(crate) fn rects9(
+    tw: u32,
+    th: u32,
+    vp: [f32; 6],
+    sc: [u32; 4],
+    clip: Option<[u32; 4]>,
+) -> Option<([f32; 6], [u32; 4])> {
     let [vx, vy, vw, vh, minz, maxz] = vp;
     let [sx, sy, sw, sh] = sc;
     // scissor inside the target
     let (x0, y0) = (sx.min(tw), sy.min(th));
-    let (x1, y1) = (x0.max(sx.saturating_add(sw).min(tw)), y0.max(sy.saturating_add(sh).min(th)));
+    let (x1, y1) = (
+        x0.max(sx.saturating_add(sw).min(tw)),
+        y0.max(sy.saturating_add(sh).min(th)),
+    );
     if x1 <= x0 || y1 <= y0 {
         return None;
     }
@@ -3696,11 +4887,19 @@ pub(crate) fn rects9(tw: u32, th: u32, vp: [f32; 6], sc: [u32; 4], clip: Option<
     if w <= 0.0 || h <= 0.0 {
         return None;
     }
-    Some(([cx0, cy0, w, h, z0.min(z1), z0.max(z1)], [sx0, sy0, sx1 - sx0, sy1 - sy0]))
+    Some((
+        [cx0, cy0, w, h, z0.min(z1), z0.max(z1)],
+        [sx0, sy0, sx1 - sx0, sy1 - sy0],
+    ))
 }
 
 fn color_of(c: u32) -> [f64; 4] {
-    [((c >> 16) & 255) as f64 / 255.0, ((c >> 8) & 255) as f64 / 255.0, (c & 255) as f64 / 255.0, (c >> 24) as f64 / 255.0]
+    [
+        ((c >> 16) & 255) as f64 / 255.0,
+        ((c >> 8) & 255) as f64 / 255.0,
+        (c & 255) as f64 / 255.0,
+        (c >> 24) as f64 / 255.0,
+    ]
 }
 
 fn drop_all<K>(m: &mut HashMap<K, Id>) {
@@ -3729,7 +4928,11 @@ fn common<T: PartialEq>(a: &[T], b: &[T]) -> (Vec<bool>, Vec<bool>) {
     let mut l = vec![0u16; (n + 1) * (m + 1)];
     for i in (0..n).rev() {
         for j in (0..m).rev() {
-            l[i * (m + 1) + j] = if a[i] == b[j] { l[(i + 1) * (m + 1) + j + 1] + 1 } else { l[(i + 1) * (m + 1) + j].max(l[i * (m + 1) + j + 1]) };
+            l[i * (m + 1) + j] = if a[i] == b[j] {
+                l[(i + 1) * (m + 1) + j + 1] + 1
+            } else {
+                l[(i + 1) * (m + 1) + j].max(l[i * (m + 1) + j + 1])
+            };
         }
     }
     let (mut ka, mut kb) = (vec![false; n], vec![false; m]);
@@ -3759,7 +4962,12 @@ fn same(a: &[u8], b: &[u8]) -> bool {
     let (ca, cb) = (a.chunks_exact(32), b.chunks_exact(32));
     let (ta, tb) = (ca.remainder(), cb.remainder());
     for (x, y) in ca.zip(cb) {
-        if (word(x, 0) ^ word(y, 0)) | (word(x, 1) ^ word(y, 1)) | (word(x, 2) ^ word(y, 2)) | (word(x, 3) ^ word(y, 3)) != 0 {
+        if (word(x, 0) ^ word(y, 0))
+            | (word(x, 1) ^ word(y, 1))
+            | (word(x, 2) ^ word(y, 2))
+            | (word(x, 3) ^ word(y, 3))
+            != 0
+        {
             return false;
         }
     }
@@ -3810,7 +5018,10 @@ mod padded_tests {
             });
             let padded = len.div_ceil(4) * 4;
             assert_eq!(&out[4..4 + len], &data[..]);
-            assert!(out[4 + len..4 + padded].iter().all(|&b| b == 0), "len {len}: padding is zeros");
+            assert!(
+                out[4 + len..4 + padded].iter().all(|&b| b == 0),
+                "len {len}: padding is zeros"
+            );
             assert!(out[4 + padded..].iter().all(|&b| b == 0xee));
         }
     }
@@ -3837,10 +5048,14 @@ mod proofs {
         if let Some((v, s)) = super::rects9(tw, th, vp, sc, clip) {
             assert!(v.iter().all(|x| x.is_finite()));
             assert!(v[0] >= 0.0 && v[1] >= 0.0 && v[2] > 0.0 && v[3] > 0.0);
-            assert!(v[0] as f64 + v[2] as f64 <= tw as f64 && v[1] as f64 + v[3] as f64 <= th as f64);
+            assert!(
+                v[0] as f64 + v[2] as f64 <= tw as f64 && v[1] as f64 + v[3] as f64 <= th as f64
+            );
             assert!(0.0 <= v[4] && v[4] <= v[5] && v[5] <= 1.0);
             assert!(s[2] > 0 && s[3] > 0);
-            assert!(s[0] as u64 + s[2] as u64 <= tw as u64 && s[1] as u64 + s[3] as u64 <= th as u64);
+            assert!(
+                s[0] as u64 + s[2] as u64 <= tw as u64 && s[1] as u64 + s[3] as u64 <= th as u64
+            );
         }
     }
 }
@@ -3850,16 +5065,51 @@ mod rect_tests {
     #[test]
     fn rects9_edges() {
         // NaN depths: the whole range; out-of-range depths clamped
-        let (v, _) = super::rects9(16, 16, [0.0, 0.0, 16.0, 16.0, f32::NAN, f32::NAN], [0, 0, 16, 16], None).unwrap();
+        let (v, _) = super::rects9(
+            16,
+            16,
+            [0.0, 0.0, 16.0, 16.0, f32::NAN, f32::NAN],
+            [0, 0, 16, 16],
+            None,
+        )
+        .unwrap();
         assert_eq!((v[4], v[5]), (0.0, 1.0));
-        let (v, _) = super::rects9(16, 16, [0.0, 0.0, 16.0, 16.0, -1.0, 2.0], [0, 0, 16, 16], None).unwrap();
+        let (v, _) = super::rects9(
+            16,
+            16,
+            [0.0, 0.0, 16.0, 16.0, -1.0, 2.0],
+            [0, 0, 16, 16],
+            None,
+        )
+        .unwrap();
         assert_eq!((v[4], v[5]), (0.0, 1.0));
         // a viewport past the target: clipped; wholly outside: nothing
-        let (v, s) = super::rects9(16, 16, [-8.0, 4.0, 32.0, 32.0, 0.0, 1.0], [0, 0, 100, 100], None).unwrap();
+        let (v, s) = super::rects9(
+            16,
+            16,
+            [-8.0, 4.0, 32.0, 32.0, 0.0, 1.0],
+            [0, 0, 100, 100],
+            None,
+        )
+        .unwrap();
         assert_eq!((v[0], v[1], v[2], v[3]), (0.0, 4.0, 16.0, 12.0));
         assert_eq!(s, [0, 4, 16, 12]);
-        assert!(super::rects9(16, 16, [20.0, 0.0, 4.0, 4.0, 0.0, 1.0], [0, 0, 16, 16], None).is_none());
-        assert!(super::rects9(16, 16, [0.0, 0.0, 16.0, 16.0, 0.0, 1.0], [0, 0, 16, 16], Some([3, 3, 3, 9])).is_none());
+        assert!(super::rects9(
+            16,
+            16,
+            [20.0, 0.0, 4.0, 4.0, 0.0, 1.0],
+            [0, 0, 16, 16],
+            None
+        )
+        .is_none());
+        assert!(super::rects9(
+            16,
+            16,
+            [0.0, 0.0, 16.0, 16.0, 0.0, 1.0],
+            [0, 0, 16, 16],
+            Some([3, 3, 3, 9])
+        )
+        .is_none());
     }
 }
 
@@ -3868,7 +5118,16 @@ mod damage_tests {
     use super::DrawKey;
 
     fn quad(map: Option<[f32; 4]>) -> DrawKey {
-        DrawKey { key: 1, base: 1, bbox: [0, 0, 1282, 722], tex0: 7, stamp0: 0, others: 0, map, cover: Some([2, 2, 1280, 720]) }
+        DrawKey {
+            key: 1,
+            base: 1,
+            bbox: [0, 0, 1282, 722],
+            tex0: 7,
+            stamp0: 0,
+            others: 0,
+            map,
+            cover: Some([2, 2, 1280, 720]),
+        }
     }
 
     #[test]
@@ -3885,7 +5144,10 @@ mod damage_tests {
         assert_eq!(d.damage([10, 0, 20, 1]), Some([78, 0, 92, 3]));
         // inside the draw's box only; no map: not known
         let d = quad(Some([1.0, 0.0, 1.0, 0.0]));
-        assert_eq!(d.damage([1270, 700, 1300, 800]), Some([1268, 698, 1282, 722]));
+        assert_eq!(
+            d.damage([1270, 700, 1300, 800]),
+            Some([1268, 698, 1282, 722])
+        );
         assert_eq!(quad(None).damage([0, 0, 1, 1]), None);
     }
 
@@ -3916,9 +5178,21 @@ mod q24_tests {
     /// R24_UNORM_X8_TYPELESS after a clear to 0.25 and a draw at 0.5).
     #[test]
     fn as_windows_reads_it() {
-        assert_eq!(super::q24(0.5).to_bits(), 0x3f00_0001, "0.5: 3fe0000020000000 as a double");
+        assert_eq!(
+            super::q24(0.5).to_bits(),
+            0x3f00_0001,
+            "0.5: 3fe0000020000000 as a double"
+        );
         assert_eq!(super::q24(0.25).to_bits(), 0x3e80_0001);
-        assert_eq!((super::q24(0.0), super::q24(1.0), super::q24(-3.0), super::q24(7.0)), (0.0, 1.0, 0.0, 1.0));
+        assert_eq!(
+            (
+                super::q24(0.0),
+                super::q24(1.0),
+                super::q24(-3.0),
+                super::q24(7.0)
+            ),
+            (0.0, 1.0, 0.0, 1.0)
+        );
     }
 
     /// TWIN_Q24's shader formula (k 2^-24 + k 2^-48 in f32, a tie rounded down moved up) is k / (2^24 - 1)
@@ -3931,11 +5205,19 @@ mod q24_tests {
             let (a, b) = (kf * 5.960_464_5e-8, kf * 3.552_713_7e-15);
             let s = a + b;
             let e = (a - s) + b;
-            let shader = if e > 0.0 && (s + 2.0 * e) - s == 2.0 * e { s + 2.0 * e } else { s };
+            let shader = if e > 0.0 && (s + 2.0 * e) - s == 2.0 * e {
+                s + 2.0 * e
+            } else {
+                s
+            };
             let exact = (k as f64 / 16777215.0) as f32;
             assert_eq!(shader.to_bits(), exact.to_bits(), "k {k}");
             if k % 4099 == 0 {
-                assert_eq!(super::q24(exact).to_bits(), exact.to_bits(), "q24 keeps k {k}");
+                assert_eq!(
+                    super::q24(exact).to_bits(),
+                    exact.to_bits(),
+                    "q24 keeps k {k}"
+                );
             }
         }
     }

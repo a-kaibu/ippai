@@ -43,14 +43,34 @@ struct Tab {
 impl Default for Tab {
     fn default() -> Tab {
         // (the width of a fixed-width tab before TCM_SETITEMSIZE is LOGPIXELSX)
-        Tab { items: Vec::new(), sel: -1, focus: -1, font: 0, pad: (6, 3), pad_set: (6, 3), dirty: false, min_width: -1, width: 96, height: 0, extra: 4, ex_style: 0, images: 0, tooltips: 0 }
+        Tab {
+            items: Vec::new(),
+            sel: -1,
+            focus: -1,
+            font: 0,
+            pad: (6, 3),
+            pad_set: (6, 3),
+            dirty: false,
+            min_width: -1,
+            width: 96,
+            height: 0,
+            extra: 4,
+            ex_style: 0,
+            images: 0,
+            tooltips: 0,
+        }
     }
 }
 
 static TABS: Mutex<Option<HashMap<u32, Tab>>> = Mutex::new(None);
 
 fn tab<R>(h: u32, f: impl FnOnce(&mut Tab) -> R) -> R {
-    f(TABS.lock().unwrap().get_or_insert_with(HashMap::default).entry(h).or_default())
+    f(TABS
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::default)
+        .entry(h)
+        .or_default())
 }
 
 const TCS_BOTTOM: u32 = 0x2;
@@ -76,7 +96,11 @@ pub(super) struct Layout {
 /// tmHeight, tmAveCharWidth and each item's text width with the control's font.
 fn measure(c: &mut Ctx, h: u32, font: u32, texts: &[Option<Vec<u16>>]) -> (i32, i32, Vec<i32>) {
     let dc = gcall(c, "user32", "GetDC", &[h]);
-    let f = if font != 0 { font } else { gcall(c, "gdi32", "GetStockObject", &[13]) };
+    let f = if font != 0 {
+        font
+    } else {
+        gcall(c, "gdi32", "GetStockObject", &[13])
+    };
     let old = gcall(c, "gdi32", "SelectObject", &[dc, f]);
     let len = texts.iter().flatten().map(|t| t.len()).max().unwrap_or(0) as u32;
     let buf = mem::heap_alloc(64 + 2 * len + 2, true);
@@ -90,7 +114,12 @@ fn measure(c: &mut Ctx, h: u32, font: u32, texts: &[Option<Vec<u16>>]) -> (i32, 
                 w16(buf + 8 + 2 * i as u32, ch);
             }
             w32(buf, 0);
-            gcall(c, "gdi32", "GetTextExtentPoint32W", &[dc, buf + 8, t.len() as u32, buf]);
+            gcall(
+                c,
+                "gdi32",
+                "GetTextExtentPoint32W",
+                &[dc, buf + 8, t.len() as u32, buf],
+            );
             r32(buf) as i32
         })
         .collect();
@@ -101,12 +130,32 @@ fn measure(c: &mut Ctx, h: u32, font: u32, texts: &[Option<Vec<u16>>]) -> (i32, 
 }
 
 pub(super) fn layout(c: &mut Ctx, h: u32) -> Layout {
-    let (style, client) = with(|s| s.wins.get(&h).map_or((0, Rect::default()), |w| (w.style, Rect { l: 0, t: 0, r: w.client.w(), b: w.client.h() })));
+    let (style, client) = with(|s| {
+        s.wins.get(&h).map_or((0, Rect::default()), |w| {
+            (
+                w.style,
+                Rect {
+                    l: 0,
+                    t: 0,
+                    r: w.client.w(),
+                    b: w.client.h(),
+                },
+            )
+        })
+    });
     let (font, texts, pad, min_width, width, height, sel) = tab(h, |t| {
         if std::mem::take(&mut t.dirty) {
             t.pad = t.pad_set;
         }
-        (t.font, t.items.iter().map(|i| i.text.clone()).collect::<Vec<_>>(), t.pad, t.min_width, t.width, t.height, t.sel)
+        (
+            t.font,
+            t.items.iter().map(|i| i.text.clone()).collect::<Vec<_>>(),
+            t.pad,
+            t.min_width,
+            t.width,
+            t.height,
+            t.sel,
+        )
     });
     let (tm_h, ave, text_w) = measure(c, h, font, &texts);
     let buttons = style & TCS_BUTTONS != 0;
@@ -114,7 +163,13 @@ pub(super) fn layout(c: &mut Ctx, h: u32) -> Layout {
     let default_min = ave * 6 + pad.0 * 2;
     // (Windows: tmHeight + 5 with the default vertical padding 3, + 9 with 5, never below + 3:
     // padding 0..2 all give + 3, winref tabctl)
-    let tab_h = if height != 0 { height } else if buttons { tm_h + 2 + 2 * pad.1 } else { tm_h + (2 * pad.1 - 1).max(3) };
+    let tab_h = if height != 0 {
+        height
+    } else if buttons {
+        tm_h + 2 + 2 * pad.1
+    } else {
+        tm_h + (2 * pad.1 - 1).max(3)
+    };
     let n = texts.len();
     // (left, right, row) with every row starting at 0
     let mut cells: Vec<(i32, i32, i32)> = Vec::with_capacity(n);
@@ -123,9 +178,17 @@ pub(super) fn layout(c: &mut Ctx, h: u32) -> Layout {
         let w = if style & TCS_FIXEDWIDTH != 0 {
             width
         } else if t.is_none() {
-            if min_width < 0 { default_min } else { min_width }
+            if min_width < 0 {
+                default_min
+            } else {
+                min_width
+            }
         } else {
-            (text_w[i] + 2 * pad.0).max(if min_width < 0 { default_min } else { min_width })
+            (text_w[i] + 2 * pad.0).max(if min_width < 0 {
+                default_min
+            } else {
+                min_width
+            })
         };
         let (mut l, mut r) = (x, x + w);
         if multi && r > client.r - BORDER - BORDER {
@@ -134,7 +197,11 @@ pub(super) fn layout(c: &mut Ctx, h: u32) -> Layout {
             row += 1;
         }
         cells.push((l, r, row));
-        x = if buttons { r + 3 + if style & TCS_FLATBUTTONS != 0 { 8 } else { 0 } } else { r };
+        x = if buttons {
+            r + 3 + if style & TCS_FLATBUTTONS != 0 { 8 } else { 0 }
+        } else {
+            r
+        };
     }
     let rows = if n == 0 { 0 } else { row + 1 };
     if multi && style & TCS_RAGGEDRIGHT == 0 && rows > 1 {
@@ -198,10 +265,20 @@ pub(super) fn layout(c: &mut Ctx, h: u32) -> Layout {
                 let t = row * tab_h + if buttons { row * 3 } else { SELECTED };
                 (t, t + tab_h)
             };
-            Rect { l: l + SELECTED, t, r: r + SELECTED, b }
+            Rect {
+                l: l + SELECTED,
+                t,
+                r: r + SELECTED,
+                b,
+            }
         })
         .collect();
-    Layout { items, tab_h, rows, default_min }
+    Layout {
+        items,
+        tab_h,
+        rows,
+        default_min,
+    }
 }
 
 fn notify(c: &mut Ctx, h: u32, code: i32) -> u32 {
@@ -290,7 +367,11 @@ fn set_cur_focus(c: &mut Ctx, h: u32, i: i32) {
 
 /// TCITEM's pszText, cchTextMax, iImage and lParam offsets
 fn item_offsets() -> (u32, u32, u32, u32) {
-    if mem::x64() { (16, 24, 28, 32) } else { (12, 16, 20, 24) }
+    if mem::x64() {
+        (16, 24, 28, 32)
+    } else {
+        (12, 16, 20, 24)
+    }
 }
 
 fn read_item(lp: u32, wide: bool, item: &mut Item, extra: usize, set: bool) {
@@ -300,7 +381,11 @@ fn read_item(lp: u32, wide: bool, item: &mut Item, extra: usize, set: bool) {
         let p = mem::rp(lp + o_text);
         // (LPSTR_TEXTCALLBACK, -1, is kept as no text)
         item.text = if p == 0 || p == u32::MAX && !mem::x64() {
-            if set { Some(Vec::new()) } else { None }
+            if set {
+                Some(Vec::new())
+            } else {
+                None
+            }
         } else if wide {
             Some(wstr(p))
         } else {
@@ -311,7 +396,9 @@ fn read_item(lp: u32, wide: bool, item: &mut Item, extra: usize, set: bool) {
         item.image = r32(lp + o_image) as i32;
     }
     if mask & 8 != 0 {
-        item.extra = (0..extra as u32).map(|i| mem::r8(lp + o_param + i)).collect();
+        item.extra = (0..extra as u32)
+            .map(|i| mem::r8(lp + o_param + i))
+            .collect();
     }
     if set && mask & 0x10 != 0 {
         let (state, smask) = (r32(lp + 4), r32(lp + 8));
@@ -320,13 +407,35 @@ fn read_item(lp: u32, wide: bool, item: &mut Item, extra: usize, set: bool) {
 }
 
 fn paint(c: &mut Ctx, h: u32, given_dc: u32) {
-    let (style, w, hh) = with(|s| s.wins.get(&h).map_or((0, 0, 0), |w| (w.style, w.client.w(), w.client.h())));
+    let (style, w, hh) = with(|s| {
+        s.wins
+            .get(&h)
+            .map_or((0, 0, 0), |w| (w.style, w.client.w(), w.client.h()))
+    });
     let lay = layout(c, h);
-    let (font, sel, texts, focus) = tab(h, |t| (t.font, t.sel, t.items.iter().map(|i| i.text.clone().unwrap_or_default()).collect::<Vec<_>>(), t.focus));
+    let (font, sel, texts, focus) = tab(h, |t| {
+        (
+            t.font,
+            t.sel,
+            t.items
+                .iter()
+                .map(|i| i.text.clone().unwrap_or_default())
+                .collect::<Vec<_>>(),
+            t.focus,
+        )
+    });
     let ps = mem::heap_alloc(64 + 16, true);
     let rc = ps + 64;
-    let dc = if given_dc != 0 { given_dc } else { gcall(c, "user32", "BeginPaint", &[h, ps]) };
-    let f = if font != 0 { font } else { gcall(c, "gdi32", "GetStockObject", &[13]) };
+    let dc = if given_dc != 0 {
+        given_dc
+    } else {
+        gcall(c, "user32", "BeginPaint", &[h, ps])
+    };
+    let f = if font != 0 {
+        font
+    } else {
+        gcall(c, "gdi32", "GetStockObject", &[13])
+    };
     let old = gcall(c, "gdi32", "SelectObject", &[dc, f]);
     let old_mode = gcall(c, "gdi32", "SetBkMode", &[dc, 1]);
     let old_color = gcall(c, "gdi32", "SetTextColor", &[dc, sys_color(18)]);
@@ -341,12 +450,26 @@ fn paint(c: &mut Ctx, h: u32, given_dc: u32) {
         if buttons {
             let mut r = r0;
             draw_edge(dc, &mut r, if i as i32 == sel { 0xa } else { 5 }, 0x100f);
-            text = Rect { l: r0.l + 2, t: r0.t + 2, r: r0.r - 2, b: r0.b - 2 };
+            text = Rect {
+                l: r0.l + 2,
+                t: r0.t + 2,
+                r: r0.r - 2,
+                b: r0.b - 2,
+            };
         } else {
             let selected = i as i32 == sel;
             // a selected tab is 2 pixels wider on each side and 2 higher, and covers the
             // display area's top edge; the bottom row's tabs reach down to it
-            let mut r = if selected { Rect { l: r0.l - SELECTED, t: r0.t - SELECTED, r: r0.r + SELECTED, b: r0.b - 1 } } else { r0 };
+            let mut r = if selected {
+                Rect {
+                    l: r0.l - SELECTED,
+                    t: r0.t - SELECTED,
+                    r: r0.r + SELECTED,
+                    b: r0.b - 1,
+                }
+            } else {
+                r0
+            };
             let mut fill = r;
             if selected {
                 if r.l == 0 {
@@ -363,9 +486,28 @@ fn paint(c: &mut Ctx, h: u32, given_dc: u32) {
             face(fill);
             draw_edge(dc, &mut r, 5, 0x1000 | 1 | 2 | 4);
             // the rounded corners: the face colour over the outer corner pixels
-            face(Rect { l: r.l, t: r.t, r: r.l + 1, b: r.t + 1 });
-            face(Rect { l: r.r - 1, t: r.t, r: r.r, b: r.t + 1 });
-            text = if selected { Rect { b: r.b + 1, ..r } } else { Rect { l: r.l + 2, t: r.t, r: r.r - 2, b: r.b - 2 } };
+            face(Rect {
+                l: r.l,
+                t: r.t,
+                r: r.l + 1,
+                b: r.t + 1,
+            });
+            face(Rect {
+                l: r.r - 1,
+                t: r.t,
+                r: r.r,
+                b: r.t + 1,
+            });
+            text = if selected {
+                Rect { b: r.b + 1, ..r }
+            } else {
+                Rect {
+                    l: r.l + 2,
+                    t: r.t,
+                    r: r.r - 2,
+                    b: r.b - 2,
+                }
+            };
         }
         let s = &texts[i];
         if !s.is_empty() {
@@ -381,8 +523,26 @@ fn paint(c: &mut Ctx, h: u32, given_dc: u32) {
             }
         }
         // the display area's raised border, then the selected tab over its top
-        let top = if lay.items.is_empty() { 0 } else { lay.tab_h * lay.rows + BORDER };
-        let mut b = if style & TCS_BOTTOM != 0 { Rect { l: 0, t: 0, r: w, b: hh - top } } else { Rect { l: 0, t: top, r: w, b: hh } };
+        let top = if lay.items.is_empty() {
+            0
+        } else {
+            lay.tab_h * lay.rows + BORDER
+        };
+        let mut b = if style & TCS_BOTTOM != 0 {
+            Rect {
+                l: 0,
+                t: 0,
+                r: w,
+                b: hh - top,
+            }
+        } else {
+            Rect {
+                l: 0,
+                t: top,
+                r: w,
+                b: hh,
+            }
+        };
         draw_edge(dc, &mut b, 5, 0x1000 | 0xf);
         if sel >= 0 && (sel as usize) < lay.items.len() {
             draw_item(c, sel as usize);
@@ -403,7 +563,10 @@ fn paint(c: &mut Ctx, h: u32, given_dc: u32) {
 
 fn hit_test(c: &mut Ctx, h: u32, x: i32, y: i32) -> i32 {
     let lay = layout(c, h);
-    lay.items.iter().position(|r| x >= r.l && x < r.r && y >= r.t && y < r.b).map_or(-1, |i| i as i32)
+    lay.items
+        .iter()
+        .position(|r| x >= r.l && x < r.r && y >= r.t && y < r.b)
+        .map_or(-1, |i| i as i32)
 }
 
 pub(super) fn proc_fn(c: &mut Ctx) -> u32 {
@@ -433,7 +596,12 @@ pub(super) fn proc_fn(c: &mut Ctx) -> u32 {
             let mask = r32(lp);
             let (text, extra, state, image) = tab(h, |t| {
                 let i = &t.items[wp as usize];
-                (i.text.clone().unwrap_or_default(), i.extra.clone(), i.state, i.image)
+                (
+                    i.text.clone().unwrap_or_default(),
+                    i.extra.clone(),
+                    i.state,
+                    i.image,
+                )
             });
             if mask & 8 != 0 {
                 mem::write(lp + o_param, &extra);
@@ -446,7 +614,11 @@ pub(super) fn proc_fn(c: &mut Ctx) -> u32 {
             }
             if mask & 1 != 0 {
                 let (p, max) = (mem::rp(lp + o_text), r32(lp + o_max));
-                if m == 0x133c { mem::put_wstr(p, max, &text) } else { mem::put_cstr(p, max, &w2a(&text)) };
+                if m == 0x133c {
+                    mem::put_wstr(p, max, &text)
+                } else {
+                    mem::put_cstr(p, max, &w2a(&text))
+                };
             }
             1
         }
@@ -469,7 +641,12 @@ pub(super) fn proc_fn(c: &mut Ctx) -> u32 {
             }
             let i = wp.min(n);
             let focus = tab(h, |t| {
-                let mut it = Item { text: None, extra: vec![0; t.extra], state: 0, image: -1 };
+                let mut it = Item {
+                    text: None,
+                    extra: vec![0; t.extra],
+                    state: 0,
+                    image: -1,
+                };
                 read_item(lp, m == 0x133e, &mut it, t.extra, false);
                 if r32(lp) & 2 == 0 {
                     it.image = -1;
@@ -523,7 +700,13 @@ pub(super) fn proc_fn(c: &mut Ctx) -> u32 {
                     1
                 }
                 None => {
-                    Rect { l: 0, t: 0, r: 0, b: lay.tab_h }.write(lp);
+                    Rect {
+                        l: 0,
+                        t: 0,
+                        r: 0,
+                        b: lay.tab_h,
+                    }
+                    .write(lp);
                     0
                 }
             }
@@ -545,7 +728,11 @@ pub(super) fn proc_fn(c: &mut Ctx) -> u32 {
             } else {
                 let r = layout(c, h).items.swap_remove(i as usize);
                 let (px, _) = tab(h, |t| t.pad);
-                if x > r.l + px && x < r.r - px && y >= r.t && y < r.b { 4 } else { 6 }
+                if x > r.l + px && x < r.r - px && y >= r.t && y < r.b {
+                    4
+                } else {
+                    6
+                }
             };
             w32(lp + 8, flags);
             i as u32
@@ -565,14 +752,37 @@ pub(super) fn proc_fn(c: &mut Ctx) -> u32 {
             }
             let lay = layout(c, h);
             let mut r = Rect::read(lp);
-            let tabs = lay.tab_h * lay.rows + if style & TCS_BUTTONS != 0 { 3 * (lay.rows - 1).max(0) } else { 0 };
+            let tabs = lay.tab_h * lay.rows
+                + if style & TCS_BUTTONS != 0 {
+                    3 * (lay.rows - 1).max(0)
+                } else {
+                    0
+                };
             let d = 2 * BORDER;
             if wp != 0 {
-                if style & TCS_BOTTOM != 0 { r.b += lay.tab_h * lay.rows } else { r.t -= tabs }
-                r = Rect { l: r.l - d, t: r.t - d, r: r.r + d, b: r.b + d };
+                if style & TCS_BOTTOM != 0 {
+                    r.b += lay.tab_h * lay.rows
+                } else {
+                    r.t -= tabs
+                }
+                r = Rect {
+                    l: r.l - d,
+                    t: r.t - d,
+                    r: r.r + d,
+                    b: r.b + d,
+                };
             } else {
-                r = Rect { l: r.l + d, t: r.t + d, r: r.r - d, b: r.b - d };
-                if style & TCS_BOTTOM != 0 { r.b -= lay.tab_h * lay.rows } else { r.t += tabs }
+                r = Rect {
+                    l: r.l + d,
+                    t: r.t + d,
+                    r: r.r - d,
+                    b: r.b - d,
+                };
+                if style & TCS_BOTTOM != 0 {
+                    r.b -= lay.tab_h * lay.rows
+                } else {
+                    r.t += tabs
+                }
             }
             r.write(lp);
             0
@@ -615,7 +825,11 @@ pub(super) fn proc_fn(c: &mut Ctx) -> u32 {
                 std::mem::replace(&mut t.min_width, lp as i32)
             });
             invalidate(h, None, true);
-            if prev < 0 { lay.default_min as u32 } else { prev as u32 }
+            if prev < 0 {
+                lay.default_min as u32
+            } else {
+                prev as u32
+            }
         }
         // TCM_DESELECTALL (buttons only)
         0x1332 => {
@@ -635,7 +849,11 @@ pub(super) fn proc_fn(c: &mut Ctx) -> u32 {
         0x1333 => {
             let ok = tab(h, |t| match t.items.get_mut(wp as usize) {
                 Some(it) => {
-                    if lp & 0xffff != 0 { it.state |= 2 } else { it.state &= !2 }
+                    if lp & 0xffff != 0 {
+                        it.state |= 2
+                    } else {
+                        it.state &= !2
+                    }
                     true
                 }
                 None => false,
@@ -719,7 +937,10 @@ pub(super) fn proc_fn(c: &mut Ctx) -> u32 {
             def_proc(c, wide)
         }
         0x2 => {
-            TABS.lock().unwrap().get_or_insert_with(HashMap::default).remove(&h);
+            TABS.lock()
+                .unwrap()
+                .get_or_insert_with(HashMap::default)
+                .remove(&h);
             def_proc(c, wide)
         }
         _ => def_proc(c, wide),

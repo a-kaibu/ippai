@@ -82,10 +82,12 @@ enum Obj {
 static OBJS: Mutex<Vec<Obj>> = Mutex::new(Vec::new());
 
 fn rd(b: &[u8], at: usize) -> u32 {
-    b.get(at..at + 4).map_or(0, |s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+    b.get(at..at + 4)
+        .map_or(0, |s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
 }
 fn rd16(b: &[u8], at: usize) -> u32 {
-    b.get(at..at + 2).map_or(0, |s| u16::from_le_bytes([s[0], s[1]]) as u32)
+    b.get(at..at + 2)
+        .map_or(0, |s| u16::from_le_bytes([s[0], s[1]]) as u32)
 }
 fn cstr_at(b: &[u8], at: usize) -> String {
     let s = b.get(at..).unwrap_or(&[]);
@@ -147,7 +149,16 @@ fn vt(which: u8) -> u32 {
                 (zero, 8),
             ],
         };
-        v[which as usize] = crate::api::vtable(["ID3D11ShaderReflection", "ID3D11ShaderReflectionConstantBuffer", "ID3D11ShaderReflectionVariable", "ID3D11ShaderReflectionType", ""][which as usize], &t);
+        v[which as usize] = crate::api::vtable(
+            [
+                "ID3D11ShaderReflection",
+                "ID3D11ShaderReflectionConstantBuffer",
+                "ID3D11ShaderReflectionVariable",
+                "ID3D11ShaderReflectionType",
+                "",
+            ][which as usize],
+            &t,
+        );
     }
     v[which as usize]
 }
@@ -285,7 +296,15 @@ fn parse(code: &[u8]) -> Option<Refl> {
             r.binds.push(BindR {
                 name_p: gstr(&name),
                 name,
-                vals: [rd(b, at + 4), rd(b, at + 20), rd(b, at + 24), rd(b, at + 28), rd(b, at + 8), rd(b, at + 12), rd(b, at + 16)],
+                vals: [
+                    rd(b, at + 4),
+                    rd(b, at + 20),
+                    rd(b, at + 24),
+                    rd(b, at + 28),
+                    rd(b, at + 8),
+                    rd(b, at + 12),
+                    rd(b, at + 16),
+                ],
             });
         }
         for i in 0..ncb.min(64) {
@@ -293,13 +312,27 @@ fn parse(code: &[u8]) -> Option<Refl> {
             let name = cstr_at(b, rd(b, at) as usize);
             let nv = rd(b, at + 4) as usize;
             let voff = rd(b, at + 8) as usize;
-            let mut cb = CbR { name_p: gstr(&name), name, ty: rd(b, at + 20), size: rd(b, at + 12), flags: rd(b, at + 16), vars: Vec::new() };
+            let mut cb = CbR {
+                name_p: gstr(&name),
+                name,
+                ty: rd(b, at + 20),
+                size: rd(b, at + 12),
+                flags: rd(b, at + 16),
+                vars: Vec::new(),
+            };
             let cb_obj = new_obj(1, Obj::Cb(cb.clone()));
             for k in 0..nv.min(1024) {
                 let va = voff + vsize * k;
                 let vname = cstr_at(b, rd(b, va) as usize);
                 let ty = parse_type(b, rd(b, va + 16) as usize, sm5);
-                let v = VarR { name_p: gstr(&vname), name: vname, offset: rd(b, va + 4), size: rd(b, va + 8), flags: rd(b, va + 12), ty };
+                let v = VarR {
+                    name_p: gstr(&vname),
+                    name: vname,
+                    offset: rd(b, va + 4),
+                    size: rd(b, va + 8),
+                    flags: rd(b, va + 12),
+                    ty,
+                };
                 cb.vars.push(new_obj(2, Obj::Var(v, cb_obj)));
             }
             OBJS.lock().unwrap()[r32(cb_obj + 12) as usize] = Obj::Cb(cb);
@@ -350,7 +383,13 @@ fn refl_release(c: &mut Ctx) -> u32 {
 fn refl_desc(c: &mut Ctx) -> u32 {
     let out = c.a(1);
     let Some(f) = with_refl(c, |r| {
-        let mut v = vec![(false, r.version), (true, r.creator), (false, r.flags), (false, r.cbs.len() as u32), (false, r.binds.len() as u32)];
+        let mut v = vec![
+            (false, r.version),
+            (true, r.creator),
+            (false, r.flags),
+            (false, r.cbs.len() as u32),
+            (false, r.binds.len() as u32),
+        ];
         v.push((false, r.ins.len() as u32));
         v.push((false, r.outs.len() as u32));
         v.push((false, r.insts));
@@ -370,8 +409,25 @@ fn null_obj(which: u8) -> u32 {
     let mut n = N.lock().unwrap();
     if n[which as usize] == 0 {
         let o = match which {
-            1 => Obj::Cb(CbR { name: String::new(), name_p: 0, ty: 0, size: 0, flags: 0, vars: Vec::new() }),
-            2 => Obj::Var(VarR { name: String::new(), name_p: 0, offset: 0, size: 0, flags: 0, ty: 0 }, 0),
+            1 => Obj::Cb(CbR {
+                name: String::new(),
+                name_p: 0,
+                ty: 0,
+                size: 0,
+                flags: 0,
+                vars: Vec::new(),
+            }),
+            2 => Obj::Var(
+                VarR {
+                    name: String::new(),
+                    name_p: 0,
+                    offset: 0,
+                    size: 0,
+                    flags: 0,
+                    ty: 0,
+                },
+                0,
+            ),
             _ => Obj::Type(TypeR::default()),
         };
         n[which as usize] = new_obj(which, o);
@@ -381,7 +437,9 @@ fn null_obj(which: u8) -> u32 {
 
 fn refl_cb_index(c: &mut Ctx) -> u32 {
     let i = c.a(1) as usize;
-    with_refl(c, |r| r.cbs.get(i).copied()).flatten().unwrap_or_else(|| null_obj(1))
+    with_refl(c, |r| r.cbs.get(i).copied())
+        .flatten()
+        .unwrap_or_else(|| null_obj(1))
 }
 fn refl_cb_name(c: &mut Ctx) -> u32 {
     let n = crate::k32::arg_str(c.a(1), false);
@@ -399,7 +457,19 @@ fn refl_cb_name(c: &mut Ctx) -> u32 {
 }
 
 fn put_bind(out: u32, b: &BindR) {
-    put(out, &[(true, b.name_p), (false, b.vals[0]), (false, b.vals[1]), (false, b.vals[2]), (false, b.vals[3]), (false, b.vals[4]), (false, b.vals[5]), (false, b.vals[6])]);
+    put(
+        out,
+        &[
+            (true, b.name_p),
+            (false, b.vals[0]),
+            (false, b.vals[1]),
+            (false, b.vals[2]),
+            (false, b.vals[3]),
+            (false, b.vals[4]),
+            (false, b.vals[5]),
+            (false, b.vals[6]),
+        ],
+    );
 }
 
 fn refl_bind(c: &mut Ctx) -> u32 {
@@ -424,7 +494,16 @@ fn refl_bind_name(c: &mut Ctx) -> u32 {
 }
 
 fn put_sig(out: u32, s: &SigR) {
-    put(out, &[(true, s.name_p), (false, s.index), (false, s.reg), (false, s.sysval), (false, s.ctype)]);
+    put(
+        out,
+        &[
+            (true, s.name_p),
+            (false, s.index),
+            (false, s.reg),
+            (false, s.sysval),
+            (false, s.ctype),
+        ],
+    );
     let o = out + if mem::x64() { 24 } else { 20 };
     w32(o, s.mask as u32 | (s.rw as u32) << 8);
     w32(o + 4, s.stream);
@@ -495,11 +574,19 @@ fn refl_threads(c: &mut Ctx) -> u32 {
 fn cb_desc(c: &mut Ctx) -> u32 {
     let out = c.a(1);
     let g = OBJS.lock().unwrap();
-    let Obj::Cb(cb) = &g[id(c)] else { return 0x8000_4005 };
+    let Obj::Cb(cb) = &g[id(c)] else {
+        return 0x8000_4005;
+    };
     if cb.name_p == 0 {
         return 0x8000_4005;
     }
-    let f = [(true, cb.name_p), (false, cb.ty), (false, cb.vars.len() as u32), (false, cb.size), (false, cb.flags)];
+    let f = [
+        (true, cb.name_p),
+        (false, cb.ty),
+        (false, cb.vars.len() as u32),
+        (false, cb.size),
+        (false, cb.flags),
+    ];
     drop(g);
     put(out, &f);
     0
@@ -534,11 +621,23 @@ fn cb_var_name(c: &mut Ctx) -> u32 {
 fn var_desc(c: &mut Ctx) -> u32 {
     let out = c.a(1);
     let g = OBJS.lock().unwrap();
-    let Obj::Var(v, _) = &g[id(c)] else { return 0x8000_4005 };
+    let Obj::Var(v, _) = &g[id(c)] else {
+        return 0x8000_4005;
+    };
     if v.name_p == 0 {
         return 0x8000_4005;
     }
-    let f = [(true, v.name_p), (false, v.offset), (false, v.size), (false, v.flags), (true, 0), (false, u32::MAX), (false, 0), (false, u32::MAX), (false, 0)];
+    let f = [
+        (true, v.name_p),
+        (false, v.offset),
+        (false, v.size),
+        (false, v.flags),
+        (true, 0),
+        (false, u32::MAX),
+        (false, 0),
+        (false, u32::MAX),
+        (false, 0),
+    ];
     drop(g);
     put(out, &f);
     0
@@ -550,7 +649,11 @@ fn var_type(c: &mut Ctx) -> u32 {
         _ => 0,
     };
     drop(g);
-    if t == 0 { null_obj(3) } else { t }
+    if t == 0 {
+        null_obj(3)
+    } else {
+        t
+    }
 }
 fn var_buffer(c: &mut Ctx) -> u32 {
     let g = OBJS.lock().unwrap();
@@ -559,13 +662,19 @@ fn var_buffer(c: &mut Ctx) -> u32 {
         _ => 0,
     };
     drop(g);
-    if b == 0 { null_obj(1) } else { b }
+    if b == 0 {
+        null_obj(1)
+    } else {
+        b
+    }
 }
 
 fn type_desc(c: &mut Ctx) -> u32 {
     let out = c.a(1);
     let g = OBJS.lock().unwrap();
-    let Obj::Type(t) = &g[id(c)] else { return 0x8000_4005 };
+    let Obj::Type(t) = &g[id(c)] else {
+        return 0x8000_4005;
+    };
     let f = [
         (false, t.class),
         (false, t.ty),
@@ -594,7 +703,11 @@ fn type_member_name(c: &mut Ctx) -> u32 {
     let n = crate::k32::arg_str(c.a(1), false);
     let g = OBJS.lock().unwrap();
     let r = match &g[id(c)] {
-        Obj::Type(t) => t.members.iter().find(|m| mem::cstr(m.0) == n.as_bytes()).map(|m| m.1),
+        Obj::Type(t) => t
+            .members
+            .iter()
+            .find(|m| mem::cstr(m.0) == n.as_bytes())
+            .map(|m| m.1),
         _ => None,
     };
     drop(g);
@@ -632,7 +745,14 @@ mod tests {
         assert_eq!(super::rd(r, cb + 12), 112);
         let vars = super::rd(r, cb + 8) as usize;
         // m at 0 (64), v at 64 (12), s at 76, k at 80 (k[0] 80, k[1] 96: size 20)
-        let off: Vec<(u32, u32)> = (0..4).map(|i| (super::rd(r, vars + 40 * i + 4), super::rd(r, vars + 40 * i + 8))).collect();
+        let off: Vec<(u32, u32)> = (0..4)
+            .map(|i| {
+                (
+                    super::rd(r, vars + 40 * i + 4),
+                    super::rd(r, vars + 40 * i + 8),
+                )
+            })
+            .collect();
         assert_eq!(off, [(0, 64), (64, 12), (76, 4), (80, 20)]);
     }
 }

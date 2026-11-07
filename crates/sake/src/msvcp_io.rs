@@ -126,24 +126,48 @@ fn i64_(a: u32) -> i64 {
 }
 
 fn es<const W: bool>() -> u32 {
-    if W { 2 } else { 1 }
+    if W {
+        2
+    } else {
+        1
+    }
 }
 fn eof<const W: bool>() -> u32 {
-    if W { 0xffff } else { u32::MAX }
+    if W {
+        0xffff
+    } else {
+        u32::MAX
+    }
 }
 /// An int_type a function returned (wint_t: its low half).
 fn meta<const W: bool>(v: u64) -> u32 {
-    if W { v as u32 & 0xffff } else { v as u32 }
+    if W {
+        v as u32 & 0xffff
+    } else {
+        v as u32
+    }
 }
 fn rd<const W: bool>(a: u32) -> u32 {
-    if W { r16(a) as u32 } else { r8(a) as u32 }
+    if W {
+        r16(a) as u32
+    } else {
+        r8(a) as u32
+    }
 }
 fn wr<const W: bool>(a: u32, v: u32) {
-    if W { w16(a, v as u16) } else { w8(a, v as u8) }
+    if W {
+        w16(a, v as u16)
+    } else {
+        w8(a, v as u8)
+    }
 }
 /// to_char_type (an element from an argument register)
 fn ch<const W: bool>(v: u32) -> u32 {
-    if W { v & 0xffff } else { v & 0xff }
+    if W {
+        v & 0xffff
+    } else {
+        v & 0xff
+    }
 }
 
 fn call(c: &mut Ctx, f: u32, args: &[u64]) -> u64 {
@@ -166,7 +190,10 @@ pub(crate) fn vcall(c: &mut Ctx, obj: u32, slot: u32, args: &[u64]) -> u64 {
 fn table(name: &str, fs: &[Handler]) -> u32 {
     let t = mem::heap_alloc(8 * fs.len() as u32, true);
     for (i, f) in fs.iter().enumerate() {
-        wq(t + 8 * i as u32, host_fn(&format!("msvcp::{name}::{i}"), *f, 0));
+        wq(
+            t + 8 * i as u32,
+            host_fn(&format!("msvcp::{name}::{i}"), *f, 0),
+        );
     }
     t
 }
@@ -536,7 +563,16 @@ fn base_swap_at(this: u32, o: u32) {
     if this == o {
         return;
     }
-    for (off, n) in [(STATE, 4), (EXCEPT, 4), (FMTFL, 4), (PREC, 8), (WIDE, 8), (ARR, 8), (CALLS, 8), (PLOC, 8)] {
+    for (off, n) in [
+        (STATE, 4),
+        (EXCEPT, 4),
+        (FMTFL, 4),
+        (PREC, 8),
+        (WIDE, 8),
+        (ARR, 8),
+        (CALLS, 8),
+        (PLOC, 8),
+    ] {
         let a = mem::slice(this + off, n).to_vec();
         mem::copy(this + off, o + off, n);
         mem::write(o + off, &a);
@@ -627,10 +663,18 @@ fn epptr<const W: bool>(sb: u32) -> u32 {
     pptr(sb).wrapping_add((pcount(sb) as u32).wrapping_mul(es::<W>()))
 }
 fn gnavail(sb: u32) -> i64 {
-    if gptr(sb) != 0 { gcount(sb) as i64 } else { 0 }
+    if gptr(sb) != 0 {
+        gcount(sb) as i64
+    } else {
+        0
+    }
 }
 fn pnavail(sb: u32) -> i64 {
-    if pptr(sb) != 0 { pcount(sb) as i64 } else { 0 }
+    if pptr(sb) != 0 {
+        pcount(sb) as i64
+    } else {
+        0
+    }
 }
 fn gbump<const W: bool>(sb: u32, n: i32) {
     let gc = rp(sb + IGCOUNT);
@@ -647,12 +691,18 @@ fn pbump<const W: bool>(sb: u32, n: i32) {
 fn setg<const W: bool>(sb: u32, first: u32, next: u32, last: u32) {
     wq(rp(sb + IGFIRST), first);
     wq(rp(sb + IGNEXT), next);
-    w32(rp(sb + IGCOUNT), (last.wrapping_sub(next) as i32 / es::<W>() as i32) as u32);
+    w32(
+        rp(sb + IGCOUNT),
+        (last.wrapping_sub(next) as i32 / es::<W>() as i32) as u32,
+    );
 }
 fn setp<const W: bool>(sb: u32, first: u32, next: u32, last: u32) {
     wq(rp(sb + IPFIRST), first);
     wq(rp(sb + IPNEXT), next);
-    w32(rp(sb + IPCOUNT), (last.wrapping_sub(next) as i32 / es::<W>() as i32) as u32);
+    w32(
+        rp(sb + IPCOUNT),
+        (last.wrapping_sub(next) as i32 / es::<W>() as i32) as u32,
+    );
 }
 /// _Init(): the buffer pointers point at the object's own fields, no buffers
 fn sb_init<const W: bool>(sb: u32) {
@@ -667,7 +717,11 @@ fn sb_init<const W: bool>(sb: u32) {
 }
 
 fn sgetc<const W: bool>(c: &mut Ctx, sb: u32) -> u32 {
-    if gnavail(sb) > 0 { rd::<W>(gptr(sb)) } else { meta::<W>(vcall(c, sb, V_UNDERFLOW, &[])) }
+    if gnavail(sb) > 0 {
+        rd::<W>(gptr(sb))
+    } else {
+        meta::<W>(vcall(c, sb, V_UNDERFLOW, &[]))
+    }
 }
 fn sbumpc<const W: bool>(c: &mut Ctx, sb: u32) -> u32 {
     if gnavail(sb) > 0 {
@@ -725,7 +779,12 @@ fn sungetc<const W: bool>(c: &mut Ctx, sb: u32) -> u32 {
 /// pubseekoff / pubseekpos into a fresh pos_type; its streamoff (_Myoff + _Fpos)
 fn seekoff(c: &mut Ctx, sb: u32, off: i64, way: u32, mode: u32) -> i64 {
     let r = mem::heap_alloc(24, true);
-    vcall(c, sb, V_SEEKOFF, &[wide(r), off as u64, way as u64, mode as u64]);
+    vcall(
+        c,
+        sb,
+        V_SEEKOFF,
+        &[wide(r), off as u64, way as u64, mode as u64],
+    );
     let v = i64_(r).wrapping_add(i64_(r + 8));
     mem::heap_free(r);
     v
@@ -935,7 +994,12 @@ fn sb_getloc(c: &mut Ctx) -> u32 {
 }
 fn sb_pubseekoff(c: &mut Ctx) -> u32 {
     let (this, ret, off, way, mode) = (c.a(0), c.a(1), c.a64(2), c.a(3), c.a(4));
-    vcall(c, this, V_SEEKOFF, &[wide(ret), off, way as u64, mode as u64]);
+    vcall(
+        c,
+        this,
+        V_SEEKOFF,
+        &[wide(ret), off, way as u64, mode as u64],
+    );
     ret
 }
 fn sb_pubseekpos(c: &mut Ctx) -> u32 {
@@ -954,7 +1018,11 @@ fn sb_pubsync(c: &mut Ctx) -> u32 {
 fn sb_in_avail(c: &mut Ctx) -> u32 {
     let this = c.a(0);
     let n = gnavail(this);
-    let v = if n > 0 { n as u64 } else { vcall(c, this, V_SHOWMANYC, &[]) };
+    let v = if n > 0 {
+        n as u64
+    } else {
+        vcall(c, this, V_SHOWMANYC, &[])
+    };
     c.ret64(v)
 }
 fn sb_sbumpc<const W: bool>(c: &mut Ctx) -> u32 {
@@ -1199,7 +1267,11 @@ fn ios_fill_set<const W: bool>(c: &mut Ctx) -> u32 {
 /// narrow(ch, default) / widen(byte): the "C" locale's ctype (wchar_t above 0xff: default)
 fn ios_narrow<const W: bool>(c: &mut Ctx) -> u32 {
     let (v, d) = (ch::<W>(c.a(1)), c.a(2) & 0xff);
-    if v < 0x100 { v } else { d }
+    if v < 0x100 {
+        v
+    } else {
+        d
+    }
 }
 fn ios_widen(c: &mut Ctx) -> u32 {
     c.a(1) & 0xff
@@ -1288,7 +1360,8 @@ fn ostream_vtable<const W: bool>() -> u32 {
 }
 fn iostream_vtable<const W: bool>() -> u32 {
     static V: [OnceLock<u32>; 2] = [OnceLock::new(), OnceLock::new()];
-    *V[W as usize].get_or_init(|| table(if W { "wiostream" } else { "iostream" }, &[iostream_delete]))
+    *V[W as usize]
+        .get_or_init(|| table(if W { "wiostream" } else { "iostream" }, &[iostream_delete]))
 }
 
 /// A stream constructor's own part: the vbtable (most derived: also the basic_ios), then the
@@ -1307,15 +1380,33 @@ fn stream_begin<const W: bool>(this: u32, vbt: u32, most_derived: bool, vft: u32
 /// basic_istream(streambuf, isstd) [, most derived]
 fn istream_ctor<const W: bool>(c: &mut Ctx) -> u32 {
     let (this, sb, isstd, md) = (c.a(0), c.a(1), c.a(2) & 0xff != 0, c.a(3) != 0);
-    let ios = stream_begin::<W>(this, istream_vbtable::<W>(), md, istream_vtable::<W>(), ISTREAM_VB);
+    let ios = stream_begin::<W>(
+        this,
+        istream_vbtable::<W>(),
+        md,
+        istream_vtable::<W>(),
+        ISTREAM_VB,
+    );
     w64(this + CHCOUNT, 0);
     ios_init::<W>(c, ios, sb, isstd);
     this
 }
 /// basic_istream(streambuf, isstd, skip init) [, most derived]
 fn istream_ctor3<const W: bool>(c: &mut Ctx) -> u32 {
-    let (this, sb, isstd, skip, md) = (c.a(0), c.a(1), c.a(2) & 0xff != 0, c.a(3) & 0xff != 0, c.a(4) != 0);
-    let ios = stream_begin::<W>(this, istream_vbtable::<W>(), md, istream_vtable::<W>(), ISTREAM_VB);
+    let (this, sb, isstd, skip, md) = (
+        c.a(0),
+        c.a(1),
+        c.a(2) & 0xff != 0,
+        c.a(3) & 0xff != 0,
+        c.a(4) != 0,
+    );
+    let ios = stream_begin::<W>(
+        this,
+        istream_vbtable::<W>(),
+        md,
+        istream_vtable::<W>(),
+        ISTREAM_VB,
+    );
     w64(this + CHCOUNT, 0);
     if !skip {
         ios_init::<W>(c, ios, sb, isstd);
@@ -1325,14 +1416,26 @@ fn istream_ctor3<const W: bool>(c: &mut Ctx) -> u32 {
 /// basic_istream(_Uninitialized) [, most derived]
 fn istream_ctor_uninit<const W: bool>(c: &mut Ctx) -> u32 {
     let (this, md) = (c.a(0), c.a(2) != 0);
-    let ios = stream_begin::<W>(this, istream_vbtable::<W>(), md, istream_vtable::<W>(), ISTREAM_VB);
+    let ios = stream_begin::<W>(
+        this,
+        istream_vbtable::<W>(),
+        md,
+        istream_vtable::<W>(),
+        ISTREAM_VB,
+    );
     addstd(ios);
     this
 }
 /// basic_istream(basic_istream&&) [, most derived]
 fn istream_ctor_move<const W: bool>(c: &mut Ctx) -> u32 {
     let (this, o, md) = (c.a(0), c.a(1), c.a(2) != 0);
-    let ios = stream_begin::<W>(this, istream_vbtable::<W>(), md, istream_vtable::<W>(), ISTREAM_VB);
+    let ios = stream_begin::<W>(
+        this,
+        istream_vbtable::<W>(),
+        md,
+        istream_vtable::<W>(),
+        ISTREAM_VB,
+    );
     w64(this + CHCOUNT, r64(o + CHCOUNT));
     ios_init::<W>(c, ios, 0, false);
     move_ios::<W>(ios, vb(o));
@@ -1348,14 +1451,26 @@ fn move_ios<const W: bool>(ios: u32, o: u32) {
 }
 fn ostream_ctor<const W: bool>(c: &mut Ctx) -> u32 {
     let (this, sb, isstd, md) = (c.a(0), c.a(1), c.a(2) & 0xff != 0, c.a(3) != 0);
-    let ios = stream_begin::<W>(this, ostream_vbtable::<W>(), md, ostream_vtable::<W>(), OSTREAM_VB);
+    let ios = stream_begin::<W>(
+        this,
+        ostream_vbtable::<W>(),
+        md,
+        ostream_vtable::<W>(),
+        OSTREAM_VB,
+    );
     ios_init::<W>(c, ios, sb, isstd);
     this
 }
 /// basic_ostream(_Uninitialized, addit) [, most derived]
 fn ostream_ctor_uninit<const W: bool>(c: &mut Ctx) -> u32 {
     let (this, addit, md) = (c.a(0), c.a(2) & 0xff != 0, c.a(3) != 0);
-    let ios = stream_begin::<W>(this, ostream_vbtable::<W>(), md, ostream_vtable::<W>(), OSTREAM_VB);
+    let ios = stream_begin::<W>(
+        this,
+        ostream_vbtable::<W>(),
+        md,
+        ostream_vtable::<W>(),
+        OSTREAM_VB,
+    );
     if addit {
         addstd(ios);
     }
@@ -1363,7 +1478,13 @@ fn ostream_ctor_uninit<const W: bool>(c: &mut Ctx) -> u32 {
 }
 fn ostream_ctor_move<const W: bool>(c: &mut Ctx) -> u32 {
     let (this, o, md) = (c.a(0), c.a(1), c.a(2) != 0);
-    let ios = stream_begin::<W>(this, ostream_vbtable::<W>(), md, ostream_vtable::<W>(), OSTREAM_VB);
+    let ios = stream_begin::<W>(
+        this,
+        ostream_vbtable::<W>(),
+        md,
+        ostream_vtable::<W>(),
+        OSTREAM_VB,
+    );
     ios_init::<W>(c, ios, 0, false);
     move_ios::<W>(ios, vb(o));
     this
@@ -1578,7 +1699,11 @@ fn os_seekp_pos(c: &mut Ctx) -> u32 {
     let ios = vb(this);
     lock(c, ios);
     if !fail(ios) {
-        let st = if seekpos(c, rp(ios + STRBUF), pos, OUT) == -1 { FAILBIT } else { 0 };
+        let st = if seekpos(c, rp(ios + STRBUF), pos, OUT) == -1 {
+            FAILBIT
+        } else {
+            0
+        };
         setstate(c, ios, st);
     }
     osentry_end(c, ios);
@@ -1589,7 +1714,11 @@ fn os_seekp_off(c: &mut Ctx) -> u32 {
     let ios = vb(this);
     lock(c, ios);
     if !fail(ios) {
-        let st = if seekoff(c, rp(ios + STRBUF), off, way, OUT) == -1 { FAILBIT } else { 0 };
+        let st = if seekoff(c, rp(ios + STRBUF), off, way, OUT) == -1 {
+            FAILBIT
+        } else {
+            0
+        };
         setstate(c, ios, st);
     }
     osentry_end(c, ios);
@@ -1602,7 +1731,12 @@ fn os_tellp(c: &mut Ctx) -> u32 {
     put_pos(ret, -1);
     if !fail(ios) {
         let sb = rp(ios + STRBUF);
-        vcall(c, sb, V_SEEKOFF, &[wide(ret), 0, SEEK_CUR as u64, OUT as u64]);
+        vcall(
+            c,
+            sb,
+            V_SEEKOFF,
+            &[wide(ret), 0, SEEK_CUR as u64, OUT as u64],
+        );
     }
     osentry_end(c, ios);
     ret
@@ -1627,7 +1761,11 @@ fn os_from_sb<const W: bool>(c: &mut Ctx) -> u32 {
     if osentry::<W>(c, ios) && src != 0 {
         let mut m = eof::<W>();
         loop {
-            m = if m == eof::<W>() { sgetc::<W>(c, src) } else { snextc::<W>(c, src) };
+            m = if m == eof::<W>() {
+                sgetc::<W>(c, src)
+            } else {
+                snextc::<W>(c, src)
+            };
             if m == eof::<W>() {
                 break;
             }
@@ -1640,7 +1778,13 @@ fn os_from_sb<const W: bool>(c: &mut Ctx) -> u32 {
     }
     osentry_end(c, ios);
     w64(ios + WIDE, 0);
-    let st = if src == 0 { BADBIT } else if copied { st } else { st | FAILBIT };
+    let st = if src == 0 {
+        BADBIT
+    } else if copied {
+        st
+    } else {
+        st | FAILBIT
+    };
     setstate(c, ios, st);
     this
 }
@@ -1649,7 +1793,11 @@ fn os_from_sb<const W: bool>(c: &mut Ctx) -> u32 {
 /// characters (sign, 0x) before internal fill. False when the buffer refused a character.
 fn put_field<const W: bool>(c: &mut Ctx, ios: u32, field: &[u8], prefix: usize) -> bool {
     let w = r64(ios + WIDE) as i64;
-    let mut fill = if w <= 0 || w as usize <= field.len() { 0 } else { w as usize - field.len() };
+    let mut fill = if w <= 0 || w as usize <= field.len() {
+        0
+    } else {
+        w as usize - field.len()
+    };
     let fc = rd::<W>(ios + FILLCH);
     let sb = rp(ios + STRBUF);
     let adj = flags(ios) & ADJUSTFIELD;
@@ -1694,11 +1842,23 @@ fn put_field<const W: bool>(c: &mut Ctx, ios: u32, field: &[u8], prefix: usize) 
 struct Args(Vec<u64>, Vec<f64>);
 impl crt::fmt::Args for Args {
     fn int(&mut self, bytes: u32) -> u64 {
-        let v = if self.0.is_empty() { 0 } else { self.0.remove(0) };
-        if bytes >= 8 { v } else { v & ((1u64 << (8 * bytes)) - 1) }
+        let v = if self.0.is_empty() {
+            0
+        } else {
+            self.0.remove(0)
+        };
+        if bytes >= 8 {
+            v
+        } else {
+            v & ((1u64 << (8 * bytes)) - 1)
+        }
     }
     fn float(&mut self) -> f64 {
-        if self.1.is_empty() { 0.0 } else { self.1.remove(0) }
+        if self.1.is_empty() {
+            0.0
+        } else {
+            self.1.remove(0)
+        }
     }
     fn narrow(&mut self, _: u64, _: Option<usize>) -> Vec<u8> {
         Vec::new()
@@ -1718,7 +1878,12 @@ impl crt::fmt::Args for Args {
     fn store(&mut self, _: u64, _: u32, _: u64) {}
 }
 fn sprintf(fmt: &str, ints: Vec<u64>, floats: Vec<f64>) -> Vec<u8> {
-    crt::fmt::format(fmt.as_bytes(), crt::fmt::Mode::ucrt(true, 0), &mut Args(ints, floats)).unwrap_or_default()
+    crt::fmt::format(
+        fmt.as_bytes(),
+        crt::fmt::Mode::ucrt(true, 0),
+        &mut Args(ints, floats),
+    )
+    .unwrap_or_default()
 }
 
 /// num_put's integer field: _Ifmt's conversion (spec "ld", "lu", "Ld", "Lu")
@@ -1735,7 +1900,11 @@ fn int_field(fl: u32, v: u64, signed: bool, long64: bool) -> (Vec<u8>, usize) {
     f.push(if base == OCT {
         'o'
     } else if base != HEX {
-        if signed { 'd' } else { 'u' }
+        if signed {
+            'd'
+        } else {
+            'u'
+        }
     } else if fl & UPPERCASE != 0 {
         'X'
     } else {
@@ -1781,7 +1950,11 @@ fn float_field(fl: u32, prec: i64, v: f64) -> (Vec<u8>, usize) {
 }
 
 /// operator<<(number) after the sentry: the field put, badbit when that failed
-fn insert<const W: bool>(c: &mut Ctx, this: u32, field: impl FnOnce(u32, u32) -> (Vec<u8>, usize)) -> u32 {
+fn insert<const W: bool>(
+    c: &mut Ctx,
+    this: u32,
+    field: impl FnOnce(u32, u32) -> (Vec<u8>, usize),
+) -> u32 {
     let ios = vb(this);
     let mut st = 0;
     if osentry::<W>(c, ios) {
@@ -1799,7 +1972,11 @@ fn os_short<const W: bool>(c: &mut Ctx) -> u32 {
     let (this, v) = (c.a(0), c.a(1) as u16);
     insert::<W>(c, this, |_, fl| {
         let b = fl & BASEFIELD;
-        let x = if b == OCT || b == HEX { v as u64 } else { v as i16 as i64 as u64 };
+        let x = if b == OCT || b == HEX {
+            v as u64
+        } else {
+            v as i16 as i64 as u64
+        };
         int_field(fl, x, true, false)
     })
 }
@@ -1811,7 +1988,11 @@ fn os_int<const W: bool>(c: &mut Ctx) -> u32 {
     let (this, v) = (c.a(0), c.a(1));
     insert::<W>(c, this, |_, fl| {
         let b = fl & BASEFIELD;
-        let x = if b == OCT || b == HEX { v as u64 } else { v as i32 as i64 as u64 };
+        let x = if b == OCT || b == HEX {
+            v as u64
+        } else {
+            v as i32 as i64 as u64
+        };
         int_field(fl, x, true, false)
     })
 }
@@ -1821,7 +2002,9 @@ fn os_uint<const W: bool>(c: &mut Ctx) -> u32 {
 }
 fn os_long<const W: bool>(c: &mut Ctx) -> u32 {
     let (this, v) = (c.a(0), c.a(1));
-    insert::<W>(c, this, |_, fl| int_field(fl, v as i32 as i64 as u64, true, false))
+    insert::<W>(c, this, |_, fl| {
+        int_field(fl, v as i32 as i64 as u64, true, false)
+    })
 }
 fn os_i64<const W: bool>(c: &mut Ctx) -> u32 {
     let (this, v) = (c.a(0), c.a64(1));
@@ -1843,11 +2026,15 @@ fn os_bool<const W: bool>(c: &mut Ctx) -> u32 {
 }
 fn os_float<const W: bool>(c: &mut Ctx) -> u32 {
     let (this, v) = (c.a(0), f32::from_bits(c.xmm(1) as u32) as f64);
-    insert::<W>(c, this, |ios, fl| float_field(fl, r64(ios + PREC) as i64, v))
+    insert::<W>(c, this, |ios, fl| {
+        float_field(fl, r64(ios + PREC) as i64, v)
+    })
 }
 fn os_double<const W: bool>(c: &mut Ctx) -> u32 {
     let (this, v) = (c.a(0), f64::from_bits(c.xmm(1)));
-    insert::<W>(c, this, |ios, fl| float_field(fl, r64(ios + PREC) as i64, v))
+    insert::<W>(c, this, |ios, fl| {
+        float_field(fl, r64(ios + PREC) as i64, v)
+    })
 }
 fn os_ptr<const W: bool>(c: &mut Ctx) -> u32 {
     let (this, v) = (c.a(0), c.a64(1));
@@ -2089,7 +2276,11 @@ fn is_readsome<const W: bool>(c: &mut Ctx) -> u32 {
     } else {
         let sb = rp(ios + STRBUF);
         let g = gnavail(sb);
-        let avail = if g > 0 { g } else { vcall(c, sb, V_SHOWMANYC, &[]) as i64 };
+        let avail = if g > 0 {
+            g
+        } else {
+            vcall(c, sb, V_SHOWMANYC, &[]) as i64
+        };
         if avail < 0 {
             st |= EOFBIT;
         } else if n > 0 && avail > 0 {
@@ -2198,7 +2389,12 @@ fn is_tellg<const W: bool>(c: &mut Ctx) -> u32 {
     put_pos(ret, -1);
     if !fail(ios) {
         let sb = rp(ios + STRBUF);
-        vcall(c, sb, V_SEEKOFF, &[wide(ret), 0, SEEK_CUR as u64, IN as u64]);
+        vcall(
+            c,
+            sb,
+            V_SEEKOFF,
+            &[wide(ret), 0, SEEK_CUR as u64, IN as u64],
+        );
     }
     unlock(c, ios);
     ret
@@ -2374,7 +2570,11 @@ fn parse_fp<const W: bool>(r: &mut In<W>) -> Option<Vec<u8>> {
         r.next();
     }
     if lost {
-        let k = if ac.last() == Some(&b'.') { ac.len() - 2 } else { ac.len() - 1 };
+        let k = if ac.last() == Some(&b'.') {
+            ac.len() - 2
+        } else {
+            ac.len() - 1
+        };
         if ac[k] == b'0' || ac[k] == if hex { b'8' } else { b'5' } {
             ac[k] += 1;
         }
@@ -2396,7 +2596,11 @@ fn parse_fp<const W: bool>(r: &mut In<W>) -> Option<Vec<u8>> {
             r.next();
         }
         while let Some(i) = r.peek().and_then(|v| atom(v, 10)) {
-            exp = if exp < i64::MAX / 10 || (exp == i64::MAX / 10 && i as i64 <= i64::MAX % 10) { exp * 10 + i as i64 } else { i64::MAX };
+            exp = if exp < i64::MAX / 10 || (exp == i64::MAX / 10 && i as i64 <= i64::MAX % 10) {
+                exp * 10 + i as i64
+            } else {
+                i64::MAX
+            };
             seen = true;
             r.next();
         }
@@ -2407,7 +2611,11 @@ fn parse_fp<const W: bool>(r: &mut In<W>) -> Option<Vec<u8>> {
     if !seen {
         return None;
     }
-    let (bound, rep_bound) = if hex { (4200i64, 1050i64) } else { (1100, 1100) };
+    let (bound, rep_bound) = if hex {
+        (4200i64, 1050i64)
+    } else {
+        (1100, 1100)
+    };
     let mut adj = pow;
     loop {
         if exp >= 0 && adj >= 0 && (exp >= bound || adj >= rep_bound) {
@@ -2421,7 +2629,11 @@ fn parse_fp<const W: bool>(r: &mut In<W>) -> Option<Vec<u8>> {
             exp = exp.clamp(-bound, bound);
             break;
         } else {
-            let up = if hex { (exp.abs() - 1) / 4 + 1 } else { exp.abs() };
+            let up = if hex {
+                (exp.abs() - 1) / 4 + 1
+            } else {
+                exp.abs()
+            };
             let k = up.min(pow.abs());
             if exp >= 0 {
                 exp -= if hex { k * 4 } else { k };
@@ -2484,15 +2696,31 @@ fn get_num<const W: bool>(r: &mut In<W>, fl: u32, kind: Num, p: u32) -> u32 {
     match kind {
         Num::Float | Num::Double => {
             let Some(ac) = parse_fp(r) else {
-                if matches!(kind, Num::Float) { w32(p, 0) } else { w64(p, 0) }
+                if matches!(kind, Num::Float) {
+                    w32(p, 0)
+                } else {
+                    w64(p, 0)
+                }
                 return FAILBIT;
             };
-            let (v, used, err) = strtod(&ac, if matches!(kind, Num::Float) { Float::F32 } else { Float::F64 }, false);
+            let (v, used, err) = strtod(
+                &ac,
+                if matches!(kind, Num::Float) {
+                    Float::F32
+                } else {
+                    Float::F64
+                },
+                false,
+            );
             match kind {
                 Num::Float => w32(p, (v as f32).to_bits()),
                 _ => w64(p, v.to_bits()),
             }
-            if used == 0 || err != 0 { FAILBIT } else { 0 }
+            if used == 0 || err != 0 {
+                FAILBIT
+            } else {
+                0
+            }
         }
         Num::Bool if fl & BOOLALPHA != 0 => {
             // "false" / "true": the longest match of the two names
@@ -2562,7 +2790,11 @@ fn get_num<const W: bool>(r: &mut In<W>, fl: u32, kind: Num, p: u32) -> u32 {
                                 (v, false)
                             };
                             w16(p, x as u16);
-                            if f { FAILBIT } else { 0 }
+                            if f {
+                                FAILBIT
+                            } else {
+                                0
+                            }
                         }
                         Num::Bool => {
                             if bad {
@@ -2570,12 +2802,20 @@ fn get_num<const W: bool>(r: &mut In<W>, fl: u32, kind: Num, p: u32) -> u32 {
                                 FAILBIT
                             } else {
                                 w8(p, (v != 0) as u8);
-                                if v != 0 && v != 1 { FAILBIT } else { 0 }
+                                if v != 0 && v != 1 {
+                                    FAILBIT
+                                } else {
+                                    0
+                                }
                             }
                         }
                         _ => {
                             w32(p, v as u32);
-                            if bad { FAILBIT } else { 0 }
+                            if bad {
+                                FAILBIT
+                            } else {
+                                0
+                            }
                         }
                     }
                 }
@@ -2587,19 +2827,34 @@ fn get_num<const W: bool>(r: &mut In<W>, fl: u32, kind: Num, p: u32) -> u32 {
                         w16(p, 0xffff);
                         FAILBIT
                     } else {
-                        w16(p, if minus { (v as u16).wrapping_neg() } else { v as u16 });
+                        w16(
+                            p,
+                            if minus {
+                                (v as u16).wrapping_neg()
+                            } else {
+                                v as u16
+                            },
+                        );
                         0
                     }
                 }
                 Num::UInt | Num::ULong => {
                     let (v, used, err) = strtoul(&ac, base, 32);
                     w32(p, v as u32);
-                    if used == 0 || err != 0 { FAILBIT } else { 0 }
+                    if used == 0 || err != 0 {
+                        FAILBIT
+                    } else {
+                        0
+                    }
                 }
                 Num::I64 => {
                     let (v, used, err) = signed(64);
                     w64(p, v as u64);
-                    if used == 0 || err != 0 { FAILBIT } else { 0 }
+                    if used == 0 || err != 0 {
+                        FAILBIT
+                    } else {
+                        0
+                    }
                 }
                 _ => {
                     let (v, used, err) = strtoul(&ac, base, 64);
@@ -2608,7 +2863,11 @@ fn get_num<const W: bool>(r: &mut In<W>, fl: u32, kind: Num, p: u32) -> u32 {
                         return FAILBIT;
                     }
                     w64(p, v);
-                    if used == 0 || err != 0 { FAILBIT } else { 0 }
+                    if used == 0 || err != 0 {
+                        FAILBIT
+                    } else {
+                        0
+                    }
                 }
             }
         }
@@ -2662,7 +2921,11 @@ fn stdio_overflow<const W: bool>(c: &mut Ctx) -> u32 {
         return eof::<W>();
     }
     let f = stdio_file(c, this);
-    if crt(c, "fputc", &[(v & 0xff) as u64, f]) == -1 { eof::<W>() } else { v }
+    if crt(c, "fputc", &[(v & 0xff) as u64, f]) == -1 {
+        eof::<W>()
+    } else {
+        v
+    }
 }
 /// The next byte, left in the FILE (underflow) or taken (uflow)
 fn stdio_get<const W: bool>(c: &mut Ctx, take: bool) -> u32 {
@@ -2690,12 +2953,20 @@ fn stdio_pbackfail<const W: bool>(c: &mut Ctx) -> u32 {
         return eof::<W>();
     }
     let f = stdio_file(c, this);
-    if crt(c, "ungetc", &[(v & 0xff) as u64, f]) == -1 { eof::<W>() } else { v }
+    if crt(c, "ungetc", &[(v & 0xff) as u64, f]) == -1 {
+        eof::<W>()
+    } else {
+        v
+    }
 }
 fn stdio_sync(c: &mut Ctx) -> u32 {
     let this = c.a(0);
     let f = stdio_file(c, this);
-    if crt(c, "fflush", &[f]) == 0 { 0 } else { u32::MAX }
+    if crt(c, "fflush", &[f]) == 0 {
+        0
+    } else {
+        u32::MAX
+    }
 }
 fn stdio_vtable<const W: bool>() -> u32 {
     static V: [OnceLock<u32>; 2] = [OnceLock::new(), OnceLock::new()];
@@ -2755,22 +3026,54 @@ fn make_std(k: usize) -> u32 {
     let wide_ = k >= 4;
     let input = k % 4 == 2;
     let (size, vbt, vft, st) = match (input, wide_) {
-        (true, false) => (ISTREAM_VB + IOS_SIZE, istream_vbtable::<false>(), istream_vtable::<false>(), ISTREAM_VB),
-        (true, true) => (ISTREAM_VB + IOS_SIZE, istream_vbtable::<true>(), istream_vtable::<true>(), ISTREAM_VB),
-        (false, false) => (OSTREAM_VB + IOS_SIZE, ostream_vbtable::<false>(), ostream_vtable::<false>(), OSTREAM_VB),
-        (false, true) => (OSTREAM_VB + IOS_SIZE, ostream_vbtable::<true>(), ostream_vtable::<true>(), OSTREAM_VB),
+        (true, false) => (
+            ISTREAM_VB + IOS_SIZE,
+            istream_vbtable::<false>(),
+            istream_vtable::<false>(),
+            ISTREAM_VB,
+        ),
+        (true, true) => (
+            ISTREAM_VB + IOS_SIZE,
+            istream_vbtable::<true>(),
+            istream_vtable::<true>(),
+            ISTREAM_VB,
+        ),
+        (false, false) => (
+            OSTREAM_VB + IOS_SIZE,
+            ostream_vbtable::<false>(),
+            ostream_vtable::<false>(),
+            OSTREAM_VB,
+        ),
+        (false, true) => (
+            OSTREAM_VB + IOS_SIZE,
+            ostream_vbtable::<true>(),
+            ostream_vtable::<true>(),
+            OSTREAM_VB,
+        ),
     };
     let o = mem::heap_alloc(size, true);
-    let ios = if wide_ { stream_begin::<true>(o, vbt, true, vft, st) } else { stream_begin::<false>(o, vbt, true, vft, st) };
+    let ios = if wide_ {
+        stream_begin::<true>(o, vbt, true, vft, st)
+    } else {
+        stream_begin::<false>(o, vbt, true, vft, st)
+    };
     // (cout: stdout, cerr and clog: stderr, cin: stdin)
     let fd = [1, 2, 0, 2][k % 4];
-    let sb = if wide_ { new_stdiobuf::<true>(fd) } else { new_stdiobuf::<false>(fd) };
+    let sb = if wide_ {
+        new_stdiobuf::<true>(fd)
+    } else {
+        new_stdiobuf::<false>(fd)
+    };
     // (basic_ios::init without a Ctx: nothing can throw or call back here)
     w32(ios + FMTFL, SKIPWS | DEC);
     w64(ios + PREC, 6);
     wq(ios + PLOC, crate::msvcp::new_locale());
     wq(ios + STRBUF, sb);
-    if wide_ { w16(ios + FILLCH, b' ' as u16) } else { w8(ios + FILLCH, b' ') };
+    if wide_ {
+        w16(ios + FILLCH, b' ' as u16)
+    } else {
+        w8(ios + FILLCH, b' ')
+    };
     addstd(ios);
     o
 }
@@ -2847,8 +3150,14 @@ fn resetiosflags(c: &mut Ctx) -> u32 {
 /// _Fiopen(name, openmode, prot): fopen's mode for the openmode (fiopen.cpp), _fsopen /
 /// _wfsopen, at the end for ate.
 fn fiopen(c: &mut Ctx, wide_name: bool) -> u32 {
-    const VALID: [u32; 20] = [1, 2, 0x12, 0xa, 0x21, 0x22, 0x32, 0x2a, 3, 0x13, 0xb, 0x23, 0x33, 0x2b, 0x82, 0x92, 0x93, 0xa2, 0xb2, 0xb3];
-    const MODS: [&str; 20] = ["r", "w", "w", "a", "rb", "wb", "wb", "ab", "r+", "w+", "a+", "r+b", "w+b", "a+b", "wx", "wx", "w+x", "wbx", "wbx", "w+bx"];
+    const VALID: [u32; 20] = [
+        1, 2, 0x12, 0xa, 0x21, 0x22, 0x32, 0x2a, 3, 0x13, 0xb, 0x23, 0x33, 0x2b, 0x82, 0x92, 0x93,
+        0xa2, 0xb2, 0xb3,
+    ];
+    const MODS: [&str; 20] = [
+        "r", "w", "w", "a", "rb", "wb", "wb", "ab", "r+", "w+", "a+", "r+b", "w+b", "a+b", "wx",
+        "wx", "w+x", "wbx", "wbx", "w+bx",
+    ];
     let (name, mut mode, prot) = (c.a(0), c.a(1), c.a(2));
     let at_end = mode & 4 != 0;
     if mode & 0x40 != 0 {
@@ -2858,7 +3167,9 @@ fn fiopen(c: &mut Ctx, wide_name: bool) -> u32 {
         mode |= OUT;
     }
     mode &= !(4 | 0x40);
-    let Some(n) = VALID.iter().position(|&v| v == mode) else { return 0 };
+    let Some(n) = VALID.iter().position(|&v| v == mode) else {
+        return 0;
+    };
     let m = MODS[n];
     let ms = if wide_name {
         let p = mem::heap_alloc(2 * m.len() as u32 + 2, true);
@@ -2901,12 +3212,17 @@ pub fn data(name: &str) -> Option<u32> {
     const STD: [&str; 4] = ["cout", "cerr", "cin", "clog"];
     for (k, s) in STD.iter().enumerate() {
         for (w, e) in [(0, "D"), (4, "_W")] {
-            let cls = if *s == "cin" { "basic_istream" } else { "basic_ostream" };
+            let cls = if *s == "cin" {
+                "basic_istream"
+            } else {
+                "basic_ostream"
+            };
             let pre = if w == 0 { "" } else { "w" };
             if name == format!("?{pre}{s}@std@@3V?${cls}@{e}U?$char_traits@{e}@std@@@1@A") {
                 return Some(std_stream(w + k));
             }
-            if name == format!("?_Ptr_{pre}{s}@std@@3PEAV?${cls}@{e}U?$char_traits@{e}@std@@@1@EA") {
+            if name == format!("?_Ptr_{pre}{s}@std@@3PEAV?${cls}@{e}U?$char_traits@{e}@std@@@1@EA")
+            {
                 return Some(ptr_cell(w + k));
             }
         }
@@ -2916,27 +3232,59 @@ pub fn data(name: &str) -> Option<u32> {
         let v = |cls: &str| format!("??_7?$basic_{cls}@{t}6B@");
         let table_of = Some;
         if name == v("ios") {
-            return table_of(if w { ios_vtable::<true>() } else { ios_vtable::<false>() });
+            return table_of(if w {
+                ios_vtable::<true>()
+            } else {
+                ios_vtable::<false>()
+            });
         }
         if name == v("streambuf") {
-            return table_of(if w { sb_vtable::<true>() } else { sb_vtable::<false>() });
+            return table_of(if w {
+                sb_vtable::<true>()
+            } else {
+                sb_vtable::<false>()
+            });
         }
         if name == v("istream") {
-            return table_of(if w { istream_vtable::<true>() } else { istream_vtable::<false>() });
+            return table_of(if w {
+                istream_vtable::<true>()
+            } else {
+                istream_vtable::<false>()
+            });
         }
         if name == v("ostream") {
-            return table_of(if w { ostream_vtable::<true>() } else { ostream_vtable::<false>() });
+            return table_of(if w {
+                ostream_vtable::<true>()
+            } else {
+                ostream_vtable::<false>()
+            });
         }
         if name == v("iostream") {
-            return table_of(if w { iostream_vtable::<true>() } else { iostream_vtable::<false>() });
+            return table_of(if w {
+                iostream_vtable::<true>()
+            } else {
+                iostream_vtable::<false>()
+            });
         }
         if name == format!("??_8?$basic_istream@{t}7B@") {
-            return Some(if w { istream_vbtable::<true>() } else { istream_vbtable::<false>() });
+            return Some(if w {
+                istream_vbtable::<true>()
+            } else {
+                istream_vbtable::<false>()
+            });
         }
         if name == format!("??_8?$basic_ostream@{t}7B@") {
-            return Some(if w { ostream_vbtable::<true>() } else { ostream_vbtable::<false>() });
+            return Some(if w {
+                ostream_vbtable::<true>()
+            } else {
+                ostream_vbtable::<false>()
+            });
         }
-        let (vi, vo) = if w { iostream_vbtables::<true>() } else { iostream_vbtables::<false>() };
+        let (vi, vo) = if w {
+            iostream_vbtables::<true>()
+        } else {
+            iostream_vbtables::<false>()
+        };
         if name == format!("??_8?$basic_iostream@{t}7B?$basic_istream@{t}1@@") {
             return Some(vi);
         }
@@ -3001,7 +3349,10 @@ fn members<const W: bool>() -> Vec<(String, Handler)> {
         (format!("?setp@{s}IEAAXPEA{e}00@Z"), sb_setp3::<W>),
         (format!("?setp@{s}IEAAXPEA{e}0@Z"), sb_setp2::<W>),
         (format!("?getloc@{s}QEBA?AVlocale@2@XZ"), sb_getloc),
-        (format!("?pubimbue@{s}QEAA?AVlocale@2@AEBV32@@Z"), sb_pubimbue),
+        (
+            format!("?pubimbue@{s}QEAA?AVlocale@2@AEBV32@@Z"),
+            sb_pubimbue,
+        ),
         (format!("?imbue@{s}MEAAXAEBVlocale@2@@Z"), nothing),
         (format!("?in_avail@{s}QEAA_JXZ"), sb_in_avail),
         (format!("?overflow@{s}MEAA{i}{i}@Z"), sb_eof::<W>),
@@ -3038,7 +3389,10 @@ fn members<const W: bool>() -> Vec<(String, Handler)> {
         (format!("?clear@{ios}QEAAXI@Z"), ios_clear1),
         (format!("?setstate@{ios}QEAAXH_N@Z"), ios_setstate2),
         (format!("?setstate@{ios}QEAAXI@Z"), ios_setstate1),
-        (format!("?copyfmt@{ios}QEAAAEAV12@AEBV12@@Z"), ios_copyfmt::<W>),
+        (
+            format!("?copyfmt@{ios}QEAAAEAV12@AEBV12@@Z"),
+            ios_copyfmt::<W>,
+        ),
         (format!("?fill@{ios}QEAA{e}{e}@Z"), ios_fill_set::<W>),
         (format!("?fill@{ios}QEBA{e}XZ"), ios_fill_get::<W>),
         (format!("?imbue@{ios}QEAA?AVlocale@2@AEBV32@@Z"), ios_imbue),
@@ -3047,16 +3401,28 @@ fn members<const W: bool>() -> Vec<(String, Handler)> {
         (format!("?move@{ios}QEAAXAEAV12@@Z"), ios_move::<W>),
         (format!("?narrow@{ios}QEBAD{e}D@Z"), ios_narrow::<W>),
         (format!("?widen@{ios}QEBA{e}D@Z"), ios_widen),
-        (format!("?rdbuf@{ios}QEAAPEAV{sb}2@PEAV32@@Z"), ios_rdbuf_set),
+        (
+            format!("?rdbuf@{ios}QEAAPEAV{sb}2@PEAV32@@Z"),
+            ios_rdbuf_set,
+        ),
         (format!("?rdbuf@{ios}QEBAPEAV{sb}2@XZ"), ios_rdbuf_get),
         (format!("?set_rdbuf@{ios}QEAAXPEAV{sb}2@@Z"), ios_set_rdbuf),
         (format!("?swap@{ios}QEAAXAEAV12@@Z"), ios_swap::<W>),
-        (format!("?tie@{ios}QEAAPEAV?$basic_ostream@{e}U?$char_traits@{e}@std@@@2@PEAV32@@Z"), ios_tie_set),
-        (format!("?tie@{ios}QEBAPEAV?$basic_ostream@{e}U?$char_traits@{e}@std@@@2@XZ"), ios_tie_get),
+        (
+            format!("?tie@{ios}QEAAPEAV?$basic_ostream@{e}U?$char_traits@{e}@std@@@2@PEAV32@@Z"),
+            ios_tie_set,
+        ),
+        (
+            format!("?tie@{ios}QEBAPEAV?$basic_ostream@{e}U?$char_traits@{e}@std@@@2@XZ"),
+            ios_tie_get,
+        ),
         // basic_istream
         (format!("??0{is}QEAA@PEAV{sb}1@_N@Z"), istream_ctor::<W>),
         (format!("??0{is}QEAA@PEAV{sb}1@_N1@Z"), istream_ctor3::<W>),
-        (format!("??0{is}QEAA@W4_Uninitialized@1@@Z"), istream_ctor_uninit::<W>),
+        (
+            format!("??0{is}QEAA@W4_Uninitialized@1@@Z"),
+            istream_ctor_uninit::<W>,
+        ),
         (format!("??0{is}IEAA@$$QEAV01@@Z"), istream_ctor_move::<W>),
         (format!("??1{is}UEAA@XZ"), stream_dtor),
         (format!("??_D{is}QEAAXXZ"), stream_vbase_dtor),
@@ -3069,11 +3435,23 @@ fn members<const W: bool>() -> Vec<(String, Handler)> {
         (format!("?get@{is}QEAA{i}XZ"), is_get0::<W>),
         (format!("?get@{is}QEAAAEAV12@AEA{e}@Z"), is_get_ch::<W>),
         (format!("?get@{is}QEAAAEAV12@PEA{e}_J@Z"), is_get_str2::<W>),
-        (format!("?get@{is}QEAAAEAV12@PEA{e}_J{e}@Z"), is_get_str3::<W>),
+        (
+            format!("?get@{is}QEAAAEAV12@PEA{e}_J{e}@Z"),
+            is_get_str3::<W>,
+        ),
         (format!("?get@{is}QEAAAEAV12@AEAV{sb}2@@Z"), is_get_sb1::<W>),
-        (format!("?get@{is}QEAAAEAV12@AEAV{sb}2@{e}@Z"), is_get_sb2::<W>),
-        (format!("?getline@{is}QEAAAEAV12@PEA{e}_J@Z"), is_getline2::<W>),
-        (format!("?getline@{is}QEAAAEAV12@PEA{e}_J{e}@Z"), is_getline3::<W>),
+        (
+            format!("?get@{is}QEAAAEAV12@AEAV{sb}2@{e}@Z"),
+            is_get_sb2::<W>,
+        ),
+        (
+            format!("?getline@{is}QEAAAEAV12@PEA{e}_J@Z"),
+            is_getline2::<W>,
+        ),
+        (
+            format!("?getline@{is}QEAAAEAV12@PEA{e}_J{e}@Z"),
+            is_getline3::<W>,
+        ),
         (format!("?ignore@{is}QEAAAEAV12@_J{i}@Z"), is_ignore::<W>),
         (format!("?read@{is}QEAAAEAV12@PEA{e}_J@Z"), is_read::<W>),
         (format!("?readsome@{is}QEAA_JPEA{e}_J@Z"), is_readsome::<W>),
@@ -3081,7 +3459,10 @@ fn members<const W: bool>() -> Vec<(String, Handler)> {
         (format!("?putback@{is}QEAAAEAV12@{e}@Z"), is_putback::<W>),
         (format!("?unget@{is}QEAAAEAV12@XZ"), is_unget::<W>),
         (format!("?sync@{is}QEAAHXZ"), is_sync::<W>),
-        (format!("?seekg@{is}QEAAAEAV12@V?$fpos@U_Mbstatet@@@2@@Z"), is_seekg_pos::<W>),
+        (
+            format!("?seekg@{is}QEAAAEAV12@V?$fpos@U_Mbstatet@@@2@@Z"),
+            is_seekg_pos::<W>,
+        ),
         (format!("?seekg@{is}QEAAAEAV12@_JH@Z"), is_seekg_off::<W>),
         (format!("?tellg@{is}QEAA{fpos}XZ"), is_tellg::<W>),
         (format!("??5{is}QEAAAEAV01@AEAF@Z"), is_short::<W>),
@@ -3097,13 +3478,25 @@ fn members<const W: bool>() -> Vec<(String, Handler)> {
         (format!("??5{is}QEAAAEAV01@AEA_J@Z"), is_i64::<W>),
         (format!("??5{is}QEAAAEAV01@AEA_K@Z"), is_u64::<W>),
         (format!("??5{is}QEAAAEAV01@AEA_N@Z"), is_bool::<W>),
-        (format!("??5{is}QEAAAEAV01@P6AAEAV01@AEAV01@@Z@Z"), os_manip_self),
-        (format!("??5{is}QEAAAEAV01@P6AAEAV{ios}1@AEAV21@@Z@Z"), manip_ios),
-        (format!("??5{is}QEAAAEAV01@P6AAEAVios_base@1@AEAV21@@Z@Z"), manip_ios),
+        (
+            format!("??5{is}QEAAAEAV01@P6AAEAV01@AEAV01@@Z@Z"),
+            os_manip_self,
+        ),
+        (
+            format!("??5{is}QEAAAEAV01@P6AAEAV{ios}1@AEAV21@@Z@Z"),
+            manip_ios,
+        ),
+        (
+            format!("??5{is}QEAAAEAV01@P6AAEAVios_base@1@AEAV21@@Z@Z"),
+            manip_ios,
+        ),
         (format!("??5{is}QEAAAEAV01@PEAV{sb}1@@Z"), is_to_sb::<W>),
         // basic_ostream
         (format!("??0{os}QEAA@PEAV{sb}1@_N@Z"), ostream_ctor::<W>),
-        (format!("??0{os}QEAA@W4_Uninitialized@1@_N@Z"), ostream_ctor_uninit::<W>),
+        (
+            format!("??0{os}QEAA@W4_Uninitialized@1@_N@Z"),
+            ostream_ctor_uninit::<W>,
+        ),
         (format!("??0{os}IEAA@$$QEAV01@@Z"), ostream_ctor_move::<W>),
         (format!("??1{os}UEAA@XZ"), stream_dtor),
         (format!("??_D{os}QEAAXXZ"), stream_vbase_dtor),
@@ -3115,7 +3508,10 @@ fn members<const W: bool>() -> Vec<(String, Handler)> {
         (format!("?flush@{os}QEAAAEAV12@XZ"), os_flush::<W>),
         (format!("?put@{os}QEAAAEAV12@{e}@Z"), os_put::<W>),
         (format!("?write@{os}QEAAAEAV12@PEB{e}_J@Z"), os_write::<W>),
-        (format!("?seekp@{os}QEAAAEAV12@V?$fpos@U_Mbstatet@@@2@@Z"), os_seekp_pos),
+        (
+            format!("?seekp@{os}QEAAAEAV12@V?$fpos@U_Mbstatet@@@2@@Z"),
+            os_seekp_pos,
+        ),
         (format!("?seekp@{os}QEAAAEAV12@_JH@Z"), os_seekp_off),
         (format!("?tellp@{os}QEAA{fpos}XZ"), os_tellp),
         (format!("??6{os}QEAAAEAV01@F@Z"), os_short::<W>),
@@ -3131,9 +3527,18 @@ fn members<const W: bool>() -> Vec<(String, Handler)> {
         (format!("??6{os}QEAAAEAV01@_J@Z"), os_i64::<W>),
         (format!("??6{os}QEAAAEAV01@_K@Z"), os_u64::<W>),
         (format!("??6{os}QEAAAEAV01@_N@Z"), os_bool::<W>),
-        (format!("??6{os}QEAAAEAV01@P6AAEAV01@AEAV01@@Z@Z"), os_manip_self),
-        (format!("??6{os}QEAAAEAV01@P6AAEAV{ios}1@AEAV21@@Z@Z"), manip_ios),
-        (format!("??6{os}QEAAAEAV01@P6AAEAVios_base@1@AEAV21@@Z@Z"), manip_ios),
+        (
+            format!("??6{os}QEAAAEAV01@P6AAEAV01@AEAV01@@Z@Z"),
+            os_manip_self,
+        ),
+        (
+            format!("??6{os}QEAAAEAV01@P6AAEAV{ios}1@AEAV21@@Z@Z"),
+            manip_ios,
+        ),
+        (
+            format!("??6{os}QEAAAEAV01@P6AAEAVios_base@1@AEAV21@@Z@Z"),
+            manip_ios,
+        ),
         (format!("??6{os}QEAAAEAV01@PEAV{sb}1@@Z"), os_from_sb::<W>),
         // basic_iostream
         (format!("??0{io}QEAA@PEAV{sb}1@@Z"), iostream_ctor::<W>),
@@ -3155,7 +3560,10 @@ pub fn init() {
         ("?_Init@ios_base@std@@IEAAXXZ", base_Init),
         ("?_Tidy@ios_base@std@@AEAAXXZ", base_Tidy),
         ("?_Callfns@ios_base@std@@AEAAXW4event@12@@Z", base_Callfns),
-        ("?_Findarr@ios_base@std@@AEAAAEAU_Iosarray@12@H@Z", base_Findarr),
+        (
+            "?_Findarr@ios_base@std@@AEAAAEAU_Iosarray@12@H@Z",
+            base_Findarr,
+        ),
         ("??7ios_base@std@@QEBA_NXZ", base_not),
         ("??Bios_base@std@@QEBA_NXZ", base_bool),
         ("?bad@ios_base@std@@QEBA_NXZ", base_bad),
@@ -3186,10 +3594,16 @@ pub fn init() {
         ("?imbue@ios_base@std@@QEAA?AVlocale@2@AEBV32@@Z", base_imbue),
         ("?iword@ios_base@std@@QEAAAEAJH@Z", base_iword),
         ("?pword@ios_base@std@@QEAAAEAPEAXH@Z", base_pword),
-        ("?register_callback@ios_base@std@@QEAAXP6AXW4event@12@AEAV12@H@ZH@Z", base_register_callback),
+        (
+            "?register_callback@ios_base@std@@QEAAXP6AXW4event@12@AEAV12@H@ZH@Z",
+            base_register_callback,
+        ),
         ("?swap@ios_base@std@@QEAAXAEAV12@@Z", base_swap),
         ("?xalloc@ios_base@std@@SAHXZ", base_xalloc),
-        ("?sync_with_stdio@ios_base@std@@SA_N_N@Z", base_sync_with_stdio),
+        (
+            "?sync_with_stdio@ios_base@std@@SA_N_N@Z",
+            base_sync_with_stdio,
+        ),
         ("??0Init@ios_base@std@@QEAA@XZ", Init_ctor_obj),
         ("??1Init@ios_base@std@@QEAA@XZ", Init_dtor_obj),
         ("?_Init_ctor@Init@ios_base@std@@CAXPEAV123@@Z", Init_ctor),
@@ -3209,7 +3623,11 @@ pub fn init() {
         implement("msvcp140", n, f);
     }
     implement("msvcp140", "?_Fiopen@std@@YAPEAU_iobuf@@PEBDHH@Z", Fiopen_a);
-    implement("msvcp140", "?_Fiopen@std@@YAPEAU_iobuf@@PEB_WHH@Z", Fiopen_w);
+    implement(
+        "msvcp140",
+        "?_Fiopen@std@@YAPEAU_iobuf@@PEB_WHH@Z",
+        Fiopen_w,
+    );
     implement("msvcp140", "?_Fiopen@std@@YAPEAU_iobuf@@PEBGHH@Z", Fiopen_w);
     for (n, f) in members::<false>().into_iter().chain(members::<true>()) {
         implement("msvcp140", &n, f);

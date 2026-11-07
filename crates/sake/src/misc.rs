@@ -38,9 +38,13 @@ impl VaArgs {
             for k in 0..4 {
                 crate::mem::w64(c.esp + 8 + 8 * k, c.a64(k));
             }
-            return VaArgs { at: c.esp + 8 + 8 * i };
+            return VaArgs {
+                at: c.esp + 8 + 8 * i,
+            };
         }
-        VaArgs { at: c.esp + 4 + 4 * i }
+        VaArgs {
+            at: c.esp + 4 + 4 * i,
+        }
     }
     pub fn u32(&mut self) -> u32 {
         let v = r32(self.at);
@@ -82,7 +86,11 @@ pub fn format_w(fmt: &[u16], va: &mut VaArgs) -> Vec<u16> {
 }
 
 /// printf of `fmt` (ANSI bytes or UTF-16 units) with guest variable arguments.
-pub fn printf<T: crt::Unit>(fmt: &[T], va: &mut VaArgs, m: crt::fmt::Mode) -> Result<Vec<T>, crt::fmt::Error> {
+pub fn printf<T: crt::Unit>(
+    fmt: &[T],
+    va: &mut VaArgs,
+    m: crt::fmt::Mode,
+) -> Result<Vec<T>, crt::fmt::Error> {
     if m.positional {
         return crt::fmt::format_p(fmt, m, &mut GuestArgs(va));
     }
@@ -95,7 +103,11 @@ pub struct GuestArgs<'a>(pub &'a mut VaArgs);
 
 impl crt::fmt::Args for GuestArgs<'_> {
     fn int(&mut self, bytes: u32) -> u64 {
-        if bytes == 8 { self.0.u64() } else { self.0.u32() as u64 }
+        if bytes == 8 {
+            self.0.u64()
+        } else {
+            self.0.u32() as u64
+        }
     }
     fn float(&mut self) -> f64 {
         self.0.f64()
@@ -115,7 +127,10 @@ impl crt::fmt::Args for GuestArgs<'_> {
     fn counted(&mut self, p: u64) -> (usize, u64) {
         // ANSI_STRING / UNICODE_STRING: Length, MaximumLength, then the Buffer pointer
         let p = p as u32;
-        (crate::mem::r16(p) as usize, crate::mem::rp(p + crate::mem::ps()) as u64)
+        (
+            crate::mem::r16(p) as usize,
+            crate::mem::rp(p + crate::mem::ps()) as u64,
+        )
     }
     fn a2w(&self, s: &[u8]) -> Vec<u16> {
         a2w(s)
@@ -154,7 +169,9 @@ fn hex(b: &[u8]) -> String {
 
 /// The saved keys: "key" lines, then "key<TAB>name<TAB>type<TAB>hex" for each value.
 fn load_reg(m: &mut HashMap<String, KeyData>) {
-    let Some(h) = crate::files::resolve(REG_FILE) else { return };
+    let Some(h) = crate::files::resolve(REG_FILE) else {
+        return;
+    };
     let Ok(t) = kura::fs::read(h) else { return };
     let t = String::from_utf8_lossy(&t);
     for l in t.lines() {
@@ -162,10 +179,13 @@ fn load_reg(m: &mut HashMap<String, KeyData>) {
         let k = m.entry(f[0].to_string()).or_default();
         k.ours = true;
         if let [_, name, ty, data] = f[..] {
-            let bytes = (0..data.len() / 2).filter_map(|i| u8::from_str_radix(&data[2 * i..2 * i + 2], 16).ok()).collect();
+            let bytes = (0..data.len() / 2)
+                .filter_map(|i| u8::from_str_radix(&data[2 * i..2 * i + 2], 16).ok())
+                .collect();
             let lname = name.to_lowercase();
             k.values.retain(|v| v.0.to_lowercase() != lname);
-            k.values.push((name.to_string(), ty.parse().unwrap_or(3), bytes));
+            k.values
+                .push((name.to_string(), ty.parse().unwrap_or(3), bytes));
         }
     }
 }
@@ -203,23 +223,57 @@ fn with_reg<R>(f: impl FnOnce(&mut HashMap<String, KeyData>) -> R) -> R {
             data.extend([0, 0]);
             e.values.push((n.to_string(), 1, data));
         };
-        set("hklm\\software\\microsoft\\windows nt\\currentversion", "CurrentVersion", "6.1");
-        set("hklm\\software\\microsoft\\windows nt\\currentversion", "ProductName", "Microsoft Windows 7");
-        set("hklm\\software\\microsoft\\windows\\currentversion", "ProgramFilesDir", "C:\\Program Files");
-        set("hklm\\software\\microsoft\\directx", "Version", "4.09.00.0904");
+        set(
+            "hklm\\software\\microsoft\\windows nt\\currentversion",
+            "CurrentVersion",
+            "6.1",
+        );
+        set(
+            "hklm\\software\\microsoft\\windows nt\\currentversion",
+            "ProductName",
+            "Microsoft Windows 7",
+        );
+        set(
+            "hklm\\software\\microsoft\\windows\\currentversion",
+            "ProgramFilesDir",
+            "C:\\Program Files",
+        );
+        set(
+            "hklm\\software\\microsoft\\directx",
+            "Version",
+            "4.09.00.0904",
+        );
         // the installed fonts (DirectWrite's system collection reads this list)
         if let Some(dir) = crate::files::resolve("C:\\windows\\Fonts\\") {
-            let mut files: Vec<String> = kura::fs::read_dir(dir).into_iter().flatten().flatten().filter_map(|e| e.file_name().into_string().ok()).collect();
+            let mut files: Vec<String> = kura::fs::read_dir(dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|e| e.file_name().into_string().ok())
+                .collect();
             files.sort();
-            for f in files.iter().filter(|f| [".ttf", ".ttc", ".otf"].iter().any(|x| f.to_ascii_lowercase().ends_with(x))) {
+            for f in files.iter().filter(|f| {
+                [".ttf", ".ttc", ".otf"]
+                    .iter()
+                    .any(|x| f.to_ascii_lowercase().ends_with(x))
+            }) {
                 let stem = f.rsplit_once('.').map_or(f.as_str(), |x| x.0);
-                set("hklm\\software\\microsoft\\windows nt\\currentversion\\fonts", &format!("{stem} (TrueType)"), f);
+                set(
+                    "hklm\\software\\microsoft\\windows nt\\currentversion\\fonts",
+                    &format!("{stem} (TrueType)"),
+                    f,
+                );
             }
         }
         m.entry("hkcu\\software".into()).or_default();
         // the event logs (eventlog.rs) and the event log service's own source
         for l in ["Application", "Security", "System", "System\\EventLog"] {
-            let k = m.entry(format!("hklm\\system\\currentcontrolset\\services\\eventlog\\{}", l.to_lowercase())).or_default();
+            let k = m
+                .entry(format!(
+                    "hklm\\system\\currentcontrolset\\services\\eventlog\\{}",
+                    l.to_lowercase()
+                ))
+                .or_default();
             k.name = l.rsplit('\\').next().unwrap_or(l).into();
         }
         load_reg(&mut m);
@@ -263,7 +317,8 @@ fn create_key_ex(h: u32, sub: &str, out: u32, disp: u32) -> u32 {
     let existed = key_path(h).is_some_and(|base| {
         let path = join(&base, sub);
         let pre = format!("{path}\\");
-        root_name(h).is_some() && sub.trim_matches('\\').is_empty() || with_reg(|m| m.contains_key(&path) || m.keys().any(|k| k.starts_with(&pre)))
+        root_name(h).is_some() && sub.trim_matches('\\').is_empty()
+            || with_reg(|m| m.contains_key(&path) || m.keys().any(|k| k.starts_with(&pre)))
     });
     let r = open_key(h, sub, true, out);
     if r == 0 {
@@ -292,10 +347,16 @@ fn open_key(h: u32, sub: &str, create: bool, out: u32) -> u32 {
             let given: Vec<&str> = sub.split('\\').filter(|x| !x.is_empty()).collect();
             let parts: Vec<&str> = path.split('\\').collect();
             for (i, part) in parts.iter().enumerate() {
-                p = if p.is_empty() { (*part).into() } else { format!("{p}\\{part}") };
+                p = if p.is_empty() {
+                    (*part).into()
+                } else {
+                    format!("{p}\\{part}")
+                };
                 let e = m.entry(p.clone()).or_default();
                 // (the name as the program spelled it, for RegEnumKey)
-                let g = (i + given.len()).checked_sub(parts.len()).and_then(|j| given.get(j));
+                let g = (i + given.len())
+                    .checked_sub(parts.len())
+                    .and_then(|j| given.get(j));
                 if e.name.is_empty() {
                     e.name = g.map_or(part.to_string(), |g| g.to_string());
                 }
@@ -319,19 +380,35 @@ fn open_key(h: u32, sub: &str, create: bool, out: u32) -> u32 {
 }
 
 fn RegOpenKeyExA(c: &mut Ctx) -> u32 {
-    let s = if c.a(1) == 0 { String::new() } else { arg_str(c.a(1), false) };
+    let s = if c.a(1) == 0 {
+        String::new()
+    } else {
+        arg_str(c.a(1), false)
+    };
     open_key(c.a(0), &s, false, c.a(4))
 }
 fn RegOpenKeyExW(c: &mut Ctx) -> u32 {
-    let s = if c.a(1) == 0 { String::new() } else { arg_str(c.a(1), true) };
+    let s = if c.a(1) == 0 {
+        String::new()
+    } else {
+        arg_str(c.a(1), true)
+    };
     open_key(c.a(0), &s, false, c.a(4))
 }
 fn RegOpenKeyA(c: &mut Ctx) -> u32 {
-    let s = if c.a(1) == 0 { String::new() } else { arg_str(c.a(1), false) };
+    let s = if c.a(1) == 0 {
+        String::new()
+    } else {
+        arg_str(c.a(1), false)
+    };
     open_key(c.a(0), &s, false, c.a(2))
 }
 fn RegOpenKeyW(c: &mut Ctx) -> u32 {
-    let s = if c.a(1) == 0 { String::new() } else { arg_str(c.a(1), true) };
+    let s = if c.a(1) == 0 {
+        String::new()
+    } else {
+        arg_str(c.a(1), true)
+    };
     open_key(c.a(0), &s, false, c.a(2))
 }
 fn RegCreateKeyExA(c: &mut Ctx) -> u32 {
@@ -343,11 +420,19 @@ fn RegCreateKeyExW(c: &mut Ctx) -> u32 {
     create_key_ex(c.a(0), &s, c.a(7), c.a(8))
 }
 fn RegCreateKeyA(c: &mut Ctx) -> u32 {
-    let s = if c.a(1) == 0 { String::new() } else { arg_str(c.a(1), false) };
+    let s = if c.a(1) == 0 {
+        String::new()
+    } else {
+        arg_str(c.a(1), false)
+    };
     open_key(c.a(0), &s, true, c.a(2))
 }
 fn RegCreateKeyW(c: &mut Ctx) -> u32 {
-    let s = if c.a(1) == 0 { String::new() } else { arg_str(c.a(1), true) };
+    let s = if c.a(1) == 0 {
+        String::new()
+    } else {
+        arg_str(c.a(1), true)
+    };
     open_key(c.a(0), &s, true, c.a(2))
 }
 fn RegCloseKey(c: &mut Ctx) -> u32 {
@@ -364,13 +449,31 @@ fn is_str(ty: u32) -> bool {
     matches!(ty, 1 | 2 | 7)
 }
 
-fn query_value(c: &mut Ctx, key: u32, name: &str, pty: u32, data: u32, plen: u32, wide: bool) -> u32 {
+fn query_value(
+    c: &mut Ctx,
+    key: u32,
+    name: &str,
+    pty: u32,
+    data: u32,
+    plen: u32,
+    wide: bool,
+) -> u32 {
     let Some(path) = key_path(key) else { return 6 };
     let lname = name.to_lowercase();
-    let v = with_reg(|m| m.get(&path).and_then(|k| k.values.iter().find(|v| v.0.to_lowercase() == lname).map(|v| (v.1, v.2.clone()))));
+    let v = with_reg(|m| {
+        m.get(&path).and_then(|k| {
+            k.values
+                .iter()
+                .find(|v| v.0.to_lowercase() == lname)
+                .map(|v| (v.1, v.2.clone()))
+        })
+    });
     let _ = c;
     if crate::env_on!("SAKE_TRACE_REG") {
-        eprintln!("sake reg: query {path}\\{name}: {:?}", v.as_ref().map(|x| x.1.len()));
+        eprintln!(
+            "sake reg: query {path}\\{name}: {:?}",
+            v.as_ref().map(|x| x.1.len())
+        );
     }
     let Some((ty, mut bytes)) = v else {
         // (Windows clears the type, and the size only of a size query)
@@ -382,7 +485,10 @@ fn query_value(c: &mut Ctx, key: u32, name: &str, pty: u32, data: u32, plen: u32
     };
     let have = if plen != 0 { r32(plen) } else { 0 };
     if is_str(ty) && !wide {
-        let u: Vec<u16> = bytes.chunks(2).map(|b| u16::from_le_bytes([b[0], *b.get(1).unwrap_or(&0)])).collect();
+        let u: Vec<u16> = bytes
+            .chunks(2)
+            .map(|b| u16::from_le_bytes([b[0], *b.get(1).unwrap_or(&0)]))
+            .collect();
         // (the A function converts in place: past the text, the caller's buffer keeps the UTF-16
         // bytes that were there)
         if data != 0 && have as usize >= bytes.len() {
@@ -402,12 +508,20 @@ fn query_value(c: &mut Ctx, key: u32, name: &str, pty: u32, data: u32, plen: u32
     0
 }
 fn RegQueryValueExA(c: &mut Ctx) -> u32 {
-    let name = if c.a(1) == 0 { String::new() } else { arg_str(c.a(1), false) };
+    let name = if c.a(1) == 0 {
+        String::new()
+    } else {
+        arg_str(c.a(1), false)
+    };
     let (k, t, d, l) = (c.a(0), c.a(3), c.a(4), c.a(5));
     query_value(c, k, &name, t, d, l, false)
 }
 fn RegQueryValueExW(c: &mut Ctx) -> u32 {
-    let name = if c.a(1) == 0 { String::new() } else { arg_str(c.a(1), true) };
+    let name = if c.a(1) == 0 {
+        String::new()
+    } else {
+        arg_str(c.a(1), true)
+    };
     let (k, t, d, l) = (c.a(0), c.a(3), c.a(4), c.a(5));
     query_value(c, k, &name, t, d, l, true)
 }
@@ -430,7 +544,11 @@ fn RegQueryValueA(c: &mut Ctx) -> u32 {
 /// applied)
 fn reg_get_value(c: &mut Ctx, wide: bool) -> u32 {
     let (k, sub, name, t, d, l) = (c.a(0), c.a(1), c.a(2), c.a(4), c.a(5), c.a(6));
-    let name = if name == 0 { String::new() } else { arg_str(name, wide) };
+    let name = if name == 0 {
+        String::new()
+    } else {
+        arg_str(name, wide)
+    };
     let mut h = k;
     if sub != 0 && r8(sub) != 0 {
         let tmp = mem::heap_alloc(8, true);
@@ -446,7 +564,16 @@ fn reg_get_value(c: &mut Ctx, wide: bool) -> u32 {
     let flags = c.a(3);
     let path = key_path(h);
     let lname = name.to_lowercase();
-    let ty = path.and_then(|p| with_reg(|m| m.get(&p).and_then(|k| k.values.iter().find(|v| v.0.to_lowercase() == lname).map(|v| v.1))));
+    let ty = path.and_then(|p| {
+        with_reg(|m| {
+            m.get(&p).and_then(|k| {
+                k.values
+                    .iter()
+                    .find(|v| v.0.to_lowercase() == lname)
+                    .map(|v| v.1)
+            })
+        })
+    });
     if let Some(ty) = ty {
         let bit = match ty {
             0..=4 => 1 << ty,
@@ -454,7 +581,9 @@ fn reg_get_value(c: &mut Ctx, wide: bool) -> u32 {
             11 => 0x40,
             _ => 0,
         };
-        let allowed = flags & 0xffff == 0xffff || flags & bit != 0 || ty == 2 && flags & 2 != 0 && flags & 0x1000_0000 == 0;
+        let allowed = flags & 0xffff == 0xffff
+            || flags & bit != 0
+            || ty == 2 && flags & 2 != 0 && flags & 0x1000_0000 == 0;
         if !allowed {
             return 1630; // ERROR_UNSUPPORTED_TYPE
         }
@@ -474,7 +603,11 @@ fn set_value(key: u32, name: &str, ty: u32, data: u32, len: u32, wide: bool) -> 
     if is_str(ty) && !wide {
         // all of it converted (MULTI_SZ: every string), with a NUL added when the text has none
         let nul = bytes.last().is_some_and(|&b| b != 0);
-        let mut u: Vec<u16> = bytes.split(|&b| b == 0).enumerate().flat_map(|(i, s)| (i > 0).then_some(0).into_iter().chain(a2w(s))).collect();
+        let mut u: Vec<u16> = bytes
+            .split(|&b| b == 0)
+            .enumerate()
+            .flat_map(|(i, s)| (i > 0).then_some(0).into_iter().chain(a2w(s)))
+            .collect();
         if nul {
             u.push(0);
         }
@@ -497,11 +630,19 @@ fn set_value(key: u32, name: &str, ty: u32, data: u32, len: u32, wide: bool) -> 
     0
 }
 fn RegSetValueExA(c: &mut Ctx) -> u32 {
-    let name = if c.a(1) == 0 { String::new() } else { arg_str(c.a(1), false) };
+    let name = if c.a(1) == 0 {
+        String::new()
+    } else {
+        arg_str(c.a(1), false)
+    };
     set_value(c.a(0), &name, c.a(3), c.a(4), c.a(5), false)
 }
 fn RegSetValueExW(c: &mut Ctx) -> u32 {
-    let name = if c.a(1) == 0 { String::new() } else { arg_str(c.a(1), true) };
+    let name = if c.a(1) == 0 {
+        String::new()
+    } else {
+        arg_str(c.a(1), true)
+    };
     set_value(c.a(0), &name, c.a(3), c.a(4), c.a(5), true)
 }
 /// RegSetValueA(key, subkey, REG_SZ, text, len): the default value of the subkey (made if
@@ -541,11 +682,19 @@ fn delete_value(key: u32, name: &str) -> u32 {
     })
 }
 fn RegDeleteValueA(c: &mut Ctx) -> u32 {
-    let name = if c.a(1) == 0 { String::new() } else { arg_str(c.a(1), false) };
+    let name = if c.a(1) == 0 {
+        String::new()
+    } else {
+        arg_str(c.a(1), false)
+    };
     delete_value(c.a(0), &name)
 }
 fn RegDeleteValueW(c: &mut Ctx) -> u32 {
-    let name = if c.a(1) == 0 { String::new() } else { arg_str(c.a(1), true) };
+    let name = if c.a(1) == 0 {
+        String::new()
+    } else {
+        arg_str(c.a(1), true)
+    };
     delete_value(c.a(0), &name)
 }
 fn delete_key(key: u32, sub: &str) -> u32 {
@@ -556,13 +705,13 @@ fn delete_key(key: u32, sub: &str) -> u32 {
         // a key with subkeys stays (ERROR_ACCESS_DENIED): RegDeleteTree removes those
         true => 5,
         false => match m.remove(&p) {
-        Some(k) => {
-            if k.ours {
-                save_reg(m);
+            Some(k) => {
+                if k.ours {
+                    save_reg(m);
+                }
+                0
             }
-            0
-        }
-        None => 2,
+            None => 2,
         },
     })
 }
@@ -572,7 +721,11 @@ fn delete_tree(key: u32, sub: Option<&str>) -> u32 {
     let p = join(&base, sub.unwrap_or(""));
     let pre = format!("{p}\\");
     with_reg(|m| {
-        let doomed: Vec<String> = m.keys().filter(|k| k.starts_with(&pre) || sub.is_some() && **k == p).cloned().collect();
+        let doomed: Vec<String> = m
+            .keys()
+            .filter(|k| k.starts_with(&pre) || sub.is_some() && **k == p)
+            .cloned()
+            .collect();
         let exists = m.contains_key(&p) || !doomed.is_empty();
         if !exists {
             return 2;
@@ -622,10 +775,21 @@ pub(crate) fn reg_subkeys(path: &str) -> Vec<String> {
 fn subkeys(path: &str) -> Vec<String> {
     let pre = format!("{path}\\");
     let mut v: Vec<String> = with_reg(|m| {
-        let mut low: Vec<String> = m.keys().filter_map(|k| k.strip_prefix(&pre)).map(|r| r.split('\\').next().unwrap_or("").to_string()).collect();
+        let mut low: Vec<String> = m
+            .keys()
+            .filter_map(|k| k.strip_prefix(&pre))
+            .map(|r| r.split('\\').next().unwrap_or("").to_string())
+            .collect();
         low.sort();
         low.dedup();
-        low.into_iter().map(|l| m.get(&format!("{pre}{l}")).map(|k| k.name.clone()).filter(|n| !n.is_empty()).unwrap_or(l)).collect()
+        low.into_iter()
+            .map(|l| {
+                m.get(&format!("{pre}{l}"))
+                    .map(|k| k.name.clone())
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or(l)
+            })
+            .collect()
     });
     let key = |s: &String| -> Vec<u16> { s.to_uppercase().encode_utf16().collect() };
     v.sort_by_key(key);
@@ -633,12 +797,18 @@ fn subkeys(path: &str) -> Vec<String> {
 }
 /// A name's length as the A or W function counts it
 fn name_len(s: &str, wide: bool) -> u32 {
-    if wide { s.encode_utf16().count() as u32 } else { crate::text::s2a(s).len() as u32 }
+    if wide {
+        s.encode_utf16().count() as u32
+    } else {
+        crate::text::s2a(s).len() as u32
+    }
 }
 fn enum_key(c: &mut Ctx, wide: bool, ex: bool) -> u32 {
     let (k, i, name) = (c.a(0), c.a(1), c.a(2));
     let Some(path) = key_path(k) else { return 6 };
-    let Some(s) = subkeys(&path).into_iter().nth(i as usize) else { return 259 };
+    let Some(s) = subkeys(&path).into_iter().nth(i as usize) else {
+        return 259;
+    };
     if ex {
         let pn = c.a(3);
         let cap = r32(pn);
@@ -665,9 +835,13 @@ fn RegEnumKeyW(c: &mut Ctx) -> u32 {
     enum_key(c, true, false)
 }
 fn enum_value(c: &mut Ctx, wide: bool) -> u32 {
-    let (k, i, name, pn, pty, data, plen) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(5), c.a(6), c.a(7));
+    let (k, i, name, pn, pty, data, plen) =
+        (c.a(0), c.a(1), c.a(2), c.a(3), c.a(5), c.a(6), c.a(7));
     let Some(path) = key_path(k) else { return 6 };
-    let v = with_reg(|m| m.get(&path).and_then(|kd| kd.values.get(i as usize).map(|v| v.0.clone())));
+    let v = with_reg(|m| {
+        m.get(&path)
+            .and_then(|kd| kd.values.get(i as usize).map(|v| v.0.clone()))
+    });
     let Some(vn) = v else { return 259 };
     let cap = r32(pn);
     if name_len(&vn, wide) >= cap {
@@ -688,13 +862,27 @@ fn query_info(c: &mut Ctx) -> u32 {
     let subs = subkeys(&path);
     let (nv, maxn, maxd) = with_reg(|m| {
         m.get(&path).map_or((0, 0, 0), |kd| {
-            (kd.values.len(), kd.values.iter().map(|v| v.0.encode_utf16().count()).max().unwrap_or(0), kd.values.iter().map(|v| v.2.len()).max().unwrap_or(0))
+            (
+                kd.values.len(),
+                kd.values
+                    .iter()
+                    .map(|v| v.0.encode_utf16().count())
+                    .max()
+                    .unwrap_or(0),
+                kd.values.iter().map(|v| v.2.len()).max().unwrap_or(0),
+            )
         })
     });
     put32(c.a(1), 0);
     put32(c.a(2), 0);
     put32(c.a(4), subs.len() as u32);
-    put32(c.a(5), subs.iter().map(|s| s.encode_utf16().count()).max().unwrap_or(0) as u32);
+    put32(
+        c.a(5),
+        subs.iter()
+            .map(|s| s.encode_utf16().count())
+            .max()
+            .unwrap_or(0) as u32,
+    );
     put32(c.a(6), 0);
     put32(c.a(7), nv as u32);
     put32(c.a(8), maxn as u32);
@@ -730,10 +918,15 @@ fn version_resource(path: &str) -> Option<Vec<u8>> {
         .map(|m| m.base);
     // a DLL we implement (no resources): a Japanese Windows 7 one (RealLive checks kernel32's
     // language)
-    let ours = || name.strip_suffix(".dll").filter(|d| crate::api::is_system(d)).map(|_| system_version_info(&name));
+    let ours = || {
+        name.strip_suffix(".dll")
+            .filter(|d| crate::api::is_system(d))
+            .map(|_| system_version_info(&name))
+    };
     let Some(base) = base else { return ours() };
-    let Some(e) = crate::pe::find_resource(base, &crate::pe::ResId::Int(16), &crate::pe::ResId::Int(1))
-        .or_else(|| crate::pe::first_resource(base, 16))
+    let Some(e) =
+        crate::pe::find_resource(base, &crate::pe::ResId::Int(16), &crate::pe::ResId::Int(1))
+            .or_else(|| crate::pe::first_resource(base, 16))
     else {
         return ours();
     };
@@ -762,10 +955,29 @@ fn ver_node(key: &str, value: &[u8], text: bool, children: &[Vec<u8>]) -> Vec<u8
     v
 }
 fn system_version_info(file: &str) -> Vec<u8> {
-    let w = |s: &str| -> Vec<u8> { s.encode_utf16().chain([0]).flat_map(|u| u.to_le_bytes()).collect() };
+    let w = |s: &str| -> Vec<u8> {
+        s.encode_utf16()
+            .chain([0])
+            .flat_map(|u| u.to_le_bytes())
+            .collect()
+    };
     // VS_FIXEDFILEINFO, version 6.1.7601.17514
     let mut fixed = Vec::new();
-    for d in [0xfeef04bdu32, 0x10000, 0x60001, 7601 << 16 | 17514, 0x60001, 7601 << 16 | 17514, 0x3f, 0, 0x40004, 2, 0, 0, 0] {
+    for d in [
+        0xfeef04bdu32,
+        0x10000,
+        0x60001,
+        7601 << 16 | 17514,
+        0x60001,
+        7601 << 16 | 17514,
+        0x3f,
+        0,
+        0x40004,
+        2,
+        0,
+        0,
+        0,
+    ] {
         fixed.extend(d.to_le_bytes());
     }
     let strings = ver_node(
@@ -789,7 +1001,13 @@ fn system_version_info(file: &str) -> Vec<u8> {
 fn version_or_error(path: &str) -> Option<Vec<u8>> {
     let v = version_resource(path);
     if v.is_none() {
-        crate::k32::last_error(if crate::files::resolve(&crate::files::full_path(path)).is_some() { 1813 } else { 2 });
+        crate::k32::last_error(
+            if crate::files::resolve(&crate::files::full_path(path)).is_some() {
+                1813
+            } else {
+                2
+            },
+        );
     }
     v
 }
@@ -802,7 +1020,9 @@ fn GetFileVersionInfoSizeW(c: &mut Ctx) -> u32 {
     version_or_error(&arg_str(c.a(0), true)).map_or(0, |v| v.len() as u32 * 2)
 }
 fn get_version_info(path: &str, len: u32, out: u32) -> u32 {
-    let Some(v) = version_or_error(path) else { return 0 };
+    let Some(v) = version_or_error(path) else {
+        return 0;
+    };
     crate::k32::last_error(0);
     mem::fill(out, len, 0);
     let n = (v.len() as u32).min(len);
@@ -819,7 +1039,11 @@ fn GetFileVersionInfoW(c: &mut Ctx) -> u32 {
 /// Finds `sub` ("\\StringFileInfo\\041104b0\\FileVersion") in a VS_VERSIONINFO block:
 /// (value address, value length in its units, is text).
 fn ver_find(block: u32, sub: &str) -> Option<(u32, u32, bool)> {
-    let parts: Vec<String> = sub.split('\\').filter(|s| !s.is_empty()).map(|s| s.to_lowercase()).collect();
+    let parts: Vec<String> = sub
+        .split('\\')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_lowercase())
+        .collect();
     let mut node = block;
     for part in &parts {
         let len = r16(node) as u32;
@@ -853,7 +1077,9 @@ fn ver_find(block: u32, sub: &str) -> Option<(u32, u32, bool)> {
 
 fn ver_query(c: &mut Ctx, wide: bool) -> u32 {
     let (block, sub, pp, plen) = (c.a(0), arg_str(c.a(1), wide), c.a(2), c.a(3));
-    let Some((val, n, text)) = ver_find(block, &sub) else { return 0 };
+    let Some((val, n, text)) = ver_find(block, &sub) else {
+        return 0;
+    };
     if text && !wide {
         // the ANSI copy goes in the second half of the buffer (sized twice the resource)
         let total = r16(block) as u32;
@@ -885,7 +1111,12 @@ fn VerQueryValueW(c: &mut Ctx) -> u32 {
 /// repeated initialization is S_FALSE, and drag and drop needs both
 static COM: Mutex<Option<HashMap<u32, (u32, u32)>>> = Mutex::new(None);
 fn com<R>(f: impl FnOnce(&mut (u32, u32)) -> R) -> R {
-    f(COM.lock().unwrap().get_or_insert_with(HashMap::default).entry(crate::cur().tid).or_default())
+    f(COM
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::default)
+        .entry(crate::cur().tid)
+        .or_default())
 }
 /// Whether the current thread has COM (or WinRT, RoInitialize) initialized.
 pub fn com_initialized() -> bool {
@@ -943,7 +1174,14 @@ fn dx_node(path: &str) -> Option<(Vec<&'static str>, Vec<(&'static str, DxProp)>
     use DxProp::*;
     let (sw, sh) = crate::user::screen();
     Some(match path {
-        "" => (vec!["DxDiag_SystemInfo", "DxDiag_DisplayDevices", "DxDiag_DirectSound"], vec![]),
+        "" => (
+            vec![
+                "DxDiag_SystemInfo",
+                "DxDiag_DisplayDevices",
+                "DxDiag_DirectSound",
+            ],
+            vec![],
+        ),
         "DxDiag_SystemInfo" => (
             vec![],
             vec![
@@ -961,7 +1199,10 @@ fn dx_node(path: &str) -> Option<(Vec<&'static str>, Vec<(&'static str, DxProp)>
                 ("szPhysicalMemoryEnglish", Str("4096MB RAM")),
                 ("szProcessorEnglish", Str("vnvm x86")),
                 ("szOSEnglish", Str("Windows 7")),
-                ("szOSExEnglish", Str("Windows 7 Professional 32-bit (6.1, Build 7601)")),
+                (
+                    "szOSExEnglish",
+                    Str("Windows 7 Professional 32-bit (6.1, Build 7601)"),
+                ),
                 ("szLanguagesEnglish", Str("Japanese")),
                 ("bDebug", Bool(false)),
                 ("bNECPC98", Bool(false)),
@@ -1012,17 +1253,30 @@ fn dx_container(path: &str) -> u32 {
         ];
         let v = mem::heap_alloc(mem::ps() * m.len() as u32, true);
         for (i, (f, b)) in m.iter().enumerate() {
-            mem::wp(v + mem::ps() * i as u32, crate::api::host_fn(&format!("IDxDiagContainer::{i}"), *f, *b));
+            mem::wp(
+                v + mem::ps() * i as u32,
+                crate::api::host_fn(&format!("IDxDiagContainer::{i}"), *f, *b),
+            );
         }
         v
     });
     let o = mem::heap_alloc(2 * mem::ps(), true);
     mem::wp(o, vt);
-    DX_NODES.lock().unwrap().get_or_insert_with(HashMap::default).insert(o, path.to_string());
+    DX_NODES
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::default)
+        .insert(o, path.to_string());
     o
 }
 fn dx_path(o: u32) -> String {
-    DX_NODES.lock().unwrap().get_or_insert_with(HashMap::default).get(&o).cloned().unwrap_or_default()
+    DX_NODES
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::default)
+        .get(&o)
+        .cloned()
+        .unwrap_or_default()
 }
 fn dx_qi(c: &mut Ctx) -> u32 {
     mem::putp(c.a(2), c.a(0));
@@ -1052,7 +1306,9 @@ fn put_wname(buf: u32, cch: u32, s: &str) -> u32 {
     0
 }
 fn dxc_enum_children(c: &mut Ctx) -> u32 {
-    let Some((ch, _)) = dx_node(&dx_path(c.a(0))) else { return 0x8007_0057 };
+    let Some((ch, _)) = dx_node(&dx_path(c.a(0))) else {
+        return 0x8007_0057;
+    };
     match ch.get(c.a(1) as usize) {
         Some(n) => put_wname(c.a(2), c.a(3), n),
         None => 0x8007_0057,
@@ -1061,7 +1317,11 @@ fn dxc_enum_children(c: &mut Ctx) -> u32 {
 fn dxc_get_child(c: &mut Ctx) -> u32 {
     let base = dx_path(c.a(0));
     let name = String::from_utf16_lossy(&wstr(c.a(1)));
-    let path = if base.is_empty() { name } else { format!("{base}.{name}") };
+    let path = if base.is_empty() {
+        name
+    } else {
+        format!("{base}.{name}")
+    };
     if dx_node(&path).is_none() {
         mem::putp(c.a(2), 0);
         return 0x8007_0057;
@@ -1075,7 +1335,9 @@ fn dxc_num_props(c: &mut Ctx) -> u32 {
     0
 }
 fn dxc_enum_props(c: &mut Ctx) -> u32 {
-    let Some((_, props)) = dx_node(&dx_path(c.a(0))) else { return 0x8007_0057 };
+    let Some((_, props)) = dx_node(&dx_path(c.a(0))) else {
+        return 0x8007_0057;
+    };
     match props.get(c.a(1) as usize) {
         Some((n, _)) => put_wname(c.a(2), c.a(3), n),
         None => 0x8007_0057,
@@ -1084,8 +1346,12 @@ fn dxc_enum_props(c: &mut Ctx) -> u32 {
 fn dxc_get_prop(c: &mut Ctx) -> u32 {
     let name = String::from_utf16_lossy(&wstr(c.a(1)));
     let v = c.a(2);
-    let Some((_, props)) = dx_node(&dx_path(c.a(0))) else { return 0x8007_0057 };
-    let Some((_, p)) = props.iter().find(|(n, _)| *n == name) else { return 0x8007_0057 };
+    let Some((_, props)) = dx_node(&dx_path(c.a(0))) else {
+        return 0x8007_0057;
+    };
+    let Some((_, p)) = props.iter().find(|(n, _)| *n == name) else {
+        return 0x8007_0057;
+    };
     // (a VARIANT: the type, then the value at 8; 24 bytes on x64)
     mem::fill(v, 2 * mem::ps() + 8, 0);
     match p {
@@ -1114,10 +1380,19 @@ fn dxc_get_prop(c: &mut Ctx) -> u32 {
 fn dxdiag_provider() -> u32 {
     static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     let vt = *V.get_or_init(|| {
-        let m: &[(crate::api::Handler, u32)] = &[(dx_qi, 12), (dx_addref, 4), (dx_addref, 4), (dxp_initialize, 8), (dxp_root, 8)];
+        let m: &[(crate::api::Handler, u32)] = &[
+            (dx_qi, 12),
+            (dx_addref, 4),
+            (dx_addref, 4),
+            (dxp_initialize, 8),
+            (dxp_root, 8),
+        ];
         let v = mem::heap_alloc(mem::ps() * m.len() as u32, true);
         for (i, (f, b)) in m.iter().enumerate() {
-            mem::wp(v + mem::ps() * i as u32, crate::api::host_fn(&format!("IDxDiagProvider::{i}"), *f, *b));
+            mem::wp(
+                v + mem::ps() * i as u32,
+                crate::api::host_fn(&format!("IDxDiagProvider::{i}"), *f, *b),
+            );
         }
         v
     });
@@ -1184,7 +1459,11 @@ fn create_object(c: &mut Ctx, clsid: u32, iid: u32, out: u32) -> u32 {
         mem::putp(out, obj);
         return 0;
     }
-    eprintln!("sake: CoCreateInstance {{{}}} iid {{{}}}: not registered", g(clsid), g(iid));
+    eprintln!(
+        "sake: CoCreateInstance {{{}}} iid {{{}}}: not registered",
+        g(clsid),
+        g(iid)
+    );
     mem::putp(out, 0);
     0x8004_0154
 }
@@ -1196,7 +1475,10 @@ fn dll_classes(dll: &str) -> &'static [u32] {
         // CLSID_XAudio2, CLSID_XAudio2_Debug, CLSID_AudioVolumeMeter, CLSID_AudioReverb (2.7)
         "xaudio2_7" => &[0x5a50_8685, 0xdb05_ea35, 0xcac1_105f, 0x6a93_130e],
         // CLSID_WICImagingFactory, CLSID_WICImagingFactory2
-        "windowscodecs" => &[crate::com::CLSID_WIC_FACTORY, crate::com::CLSID_WIC_FACTORY2],
+        "windowscodecs" => &[
+            crate::com::CLSID_WIC_FACTORY,
+            crate::com::CLSID_WIC_FACTORY2,
+        ],
         _ => &[],
     }
 }
@@ -1213,7 +1495,12 @@ fn dll_get_class_object(c: &mut Ctx, dll: &str) -> u32 {
         return 0x8004_0111;
     }
     // IUnknown or IClassFactory {00000001-0000-0000-c000-000000000046}
-    if !(matches!(r32(iid), 0 | 1) && r16(iid + 4) == 0 && r16(iid + 6) == 0 && r32(iid + 8) == 0xc0 && r32(iid + 12) == 0x4600_0000) {
+    if !(matches!(r32(iid), 0 | 1)
+        && r16(iid + 4) == 0
+        && r16(iid + 6) == 0
+        && r32(iid + 8) == 0xc0
+        && r32(iid + 12) == 0x4600_0000)
+    {
         return 0x8000_4002; // E_NOINTERFACE
     }
     mem::putp(out, class_factory(clsid));
@@ -1226,7 +1513,11 @@ fn class_factory(clsid: u32) -> u32 {
     use crate::api::Handler;
     fn qi(c: &mut Ctx) -> u32 {
         let (this, iid, out) = (c.a(0), c.a(1), c.a(2));
-        let unk_or_cf = matches!(r32(iid), 0 | 1) && r16(iid + 4) == 0 && r16(iid + 6) == 0 && r32(iid + 8) == 0xc0 && r32(iid + 12) == 0x4600_0000;
+        let unk_or_cf = matches!(r32(iid), 0 | 1)
+            && r16(iid + 4) == 0
+            && r16(iid + 6) == 0
+            && r32(iid + 8) == 0xc0
+            && r32(iid + 12) == 0x4600_0000;
         if !unk_or_cf {
             mem::putp(out, 0);
             return 0x8000_4002;
@@ -1263,7 +1554,13 @@ fn class_factory(clsid: u32) -> u32 {
     }
     static VT: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     let vt = *VT.get_or_init(|| {
-        let m: [(Handler, u32); 5] = [(qi, 12), (add_ref, 4), (release, 4), (create, 16), (lock, 8)];
+        let m: [(Handler, u32); 5] = [
+            (qi, 12),
+            (add_ref, 4),
+            (release, 4),
+            (create, 16),
+            (lock, 8),
+        ];
         crate::api::vtable("IClassFactory", &m)
     });
     let o = mem::heap_alloc(mem::ps() + 4 + 16, true);
@@ -1311,7 +1608,11 @@ fn malloc_obj() -> u32 {
             0
         }
         fn size(c: &mut Ctx) -> u32 {
-            if c.a(1) == 0 { u32::MAX } else { mem::heap_size(c.a(1)) }
+            if c.a(1) == 0 {
+                u32::MAX
+            } else {
+                mem::heap_size(c.a(1))
+            }
         }
         fn did(c: &mut Ctx) -> u32 {
             mem::heap_owns(c.a(1)) as u32
@@ -1319,13 +1620,25 @@ fn malloc_obj() -> u32 {
         fn nothing(_: &mut Ctx) -> u32 {
             0
         }
-        let m: [(crate::api::Handler, u32); 9] =
-            [(qi, 12), (one, 4), (one, 4), (alloc, 8), (realloc, 12), (free, 8), (size, 8), (did, 8), (nothing, 4)];
+        let m: [(crate::api::Handler, u32); 9] = [
+            (qi, 12),
+            (one, 4),
+            (one, 4),
+            (alloc, 8),
+            (realloc, 12),
+            (free, 8),
+            (size, 8),
+            (did, 8),
+            (nothing, 4),
+        ];
         // (x64: a table of 8-byte entries, the object a pointer to it)
         let ps = mem::ps();
         let v = mem::heap_alloc(ps * m.len() as u32, true);
         for (i, (f, n)) in m.iter().enumerate() {
-            mem::wp(v + ps * i as u32, crate::api::host_fn(&format!("IMalloc::{i}"), *f, *n));
+            mem::wp(
+                v + ps * i as u32,
+                crate::api::host_fn(&format!("IMalloc::{i}"), *f, *n),
+            );
         }
         let o = mem::heap_alloc(ps, true);
         mem::wp(o, v);
@@ -1507,11 +1820,17 @@ fn guid_from_string(c: &mut Ctx, err: u32) -> u32 {
             }
             i += 1;
         }
-        let (Some(h), Some(l)) = (hex(i), hex(i + 1)) else { return err };
+        let (Some(h), Some(l)) = (hex(i), hex(i + 1)) else {
+            return err;
+        };
         mem::w8(out + 8 + k, (h << 4 | l) as u8);
         i += 2;
     }
-    if at(37) == b'}' as u16 && w.len() == 38 { 0 } else { err }
+    if at(37) == b'}' as u16 && w.len() == 38 {
+        0
+    } else {
+        err
+    }
 }
 /// CLSIDFromProgID: the script engines' names (other ProgIDs are not registered).
 fn CLSIDFromProgID(c: &mut Ctx) -> u32 {
@@ -1553,7 +1872,11 @@ fn uuid_to_string(c: &mut Ctx, wide: bool) -> u32 {
     let t = uuid_text(u);
     let p = mem::heap_alloc(2 * (t.len() as u32 + 1), true);
     for (i, b) in t.bytes().enumerate() {
-        if wide { w16(p + 2 * i as u32, b as u16) } else { mem::w8(p + i as u32, b) }
+        if wide {
+            w16(p + 2 * i as u32, b as u16)
+        } else {
+            mem::w8(p + i as u32, b)
+        }
     }
     mem::wp(out, p);
     0
@@ -1593,7 +1916,16 @@ pub fn parse_uuid(t: &[u16]) -> Option<[u8; 16]> {
     let byte = |k: usize| digits[2 * k] << 4 | digits[2 * k + 1];
     let mut u = [0u8; 16];
     // Data1 (4 bytes), Data2, Data3 little-endian; Data4 as written
-    for (k, at) in [(0, 3), (1, 2), (2, 1), (3, 0), (4, 5), (5, 4), (6, 7), (7, 6)] {
+    for (k, at) in [
+        (0, 3),
+        (1, 2),
+        (2, 1),
+        (3, 0),
+        (4, 5),
+        (5, 4),
+        (6, 7),
+        (7, 6),
+    ] {
         u[at] = byte(k);
     }
     for k in 8..16 {
@@ -1607,7 +1939,11 @@ fn uuid_from_string(c: &mut Ctx, wide: bool) -> u32 {
         mem::fill(out, 16, 0);
         return 0;
     }
-    let t: Vec<u16> = if wide { wstr(s) } else { cstr(s).into_iter().map(u16::from).collect() };
+    let t: Vec<u16> = if wide {
+        wstr(s)
+    } else {
+        cstr(s).into_iter().map(u16::from).collect()
+    };
     match parse_uuid(&t) {
         Some(u) => {
             mem::write(out, &u);
@@ -1627,8 +1963,16 @@ fn UuidEqual(c: &mut Ctx) -> u32 {
     put32(c.a(2), 0);
     let z = [0u8; 16];
     let (a, b) = (c.a(0), c.a(1));
-    let va = if a == 0 { z.to_vec() } else { mem::slice(a, 16).to_vec() };
-    let vb = if b == 0 { z.to_vec() } else { mem::slice(b, 16).to_vec() };
+    let va = if a == 0 {
+        z.to_vec()
+    } else {
+        mem::slice(a, 16).to_vec()
+    };
+    let vb = if b == 0 {
+        z.to_vec()
+    } else {
+        mem::slice(b, 16).to_vec()
+    };
     (va == vb) as u32
 }
 fn UuidIsNil(c: &mut Ctx) -> u32 {
@@ -1710,7 +2054,9 @@ fn RevokeDragDrop(c: &mut Ctx) -> u32 {
     if h == 0 || !crate::user::is_window(h) {
         return DRAGDROP_E_INVALIDHWND;
     }
-    let Some(t) = crate::user::set_prop(h, DROP_PROP, None) else { return DRAGDROP_E_NOTREGISTERED };
+    let Some(t) = crate::user::set_prop(h, DROP_PROP, None) else {
+        return DRAGDROP_E_NOTREGISTERED;
+    };
     method(c, t, 2, &[]);
     0
 }
@@ -1719,7 +2065,14 @@ fn drag_keys() -> (u32, bool) {
     let k = crate::user::key_states();
     let down = |vk: usize| k[vk] & 0x80 != 0;
     let mut m = 0;
-    for (vk, bit) in [(1, 1), (2, 2), (0x10, 4), (0x11, 8), (4, 0x10), (0x12, 0x20)] {
+    for (vk, bit) in [
+        (1, 1),
+        (2, 2),
+        (0x10, 4),
+        (0x11, 8),
+        (4, 0x10),
+        (0x12, 0x20),
+    ] {
         if down(vk) {
             m |= bit;
         }
@@ -1852,7 +2205,11 @@ fn SysAllocString(c: &mut Ctx) -> u32 {
 }
 fn SysAllocStringLen(c: &mut Ctx) -> u32 {
     let (p, n) = (c.a(0), c.a(1));
-    let v: Vec<u16> = if p == 0 { vec![0; n as usize] } else { (0..n).map(|i| r16(p + 2 * i)).collect() };
+    let v: Vec<u16> = if p == 0 {
+        vec![0; n as usize]
+    } else {
+        (0..n).map(|i| r16(p + 2 * i)).collect()
+    };
     bstr_alloc(&v)
 }
 fn SysAllocStringByteLen(c: &mut Ctx) -> u32 {
@@ -1873,7 +2230,11 @@ fn SysReAllocString(c: &mut Ctx) -> u32 {
 }
 fn SysReAllocStringLen(c: &mut Ctx) -> u32 {
     let (pb, s, n) = (c.a(0), c.a(1), c.a(2));
-    let v: Vec<u16> = if s == 0 { vec![0; n as usize] } else { (0..n).map(|i| r16(s + 2 * i)).collect() };
+    let v: Vec<u16> = if s == 0 {
+        vec![0; n as usize]
+    } else {
+        (0..n).map(|i| r16(s + 2 * i)).collect()
+    };
     let nb = bstr_alloc(&v);
     bstr_free(r32(pb));
     w32(pb, nb);
@@ -2009,7 +2370,11 @@ enum Val {
 }
 fn variant_val(v: u32) -> Option<Val> {
     let ty = r16(v);
-    let (ty, p) = if ty & 0x4000 != 0 { (ty & !0x4000, r32(v + 8)) } else { (ty, v + 8) };
+    let (ty, p) = if ty & 0x4000 != 0 {
+        (ty & !0x4000, r32(v + 8))
+    } else {
+        (ty, v + 8)
+    };
     Some(match ty {
         0 | 1 => Val::Empty,
         2 => Val::Int(r16(p) as i16 as i64),
@@ -2020,7 +2385,9 @@ fn variant_val(v: u32) -> Option<Val> {
         8 => {
             let b = r32(p);
             let n = if b == 0 { 0 } else { r32(b - 4) / 2 };
-            Val::Str(String::from_utf16_lossy(&(0..n).map(|i| r16(b + 2 * i)).collect::<Vec<_>>()))
+            Val::Str(String::from_utf16_lossy(
+                &(0..n).map(|i| r16(b + 2 * i)).collect::<Vec<_>>(),
+            ))
         }
         11 => Val::Int(if r16(p) != 0 { -1 } else { 0 }),
         16 => Val::Int(r8(p) as i8 as i64),
@@ -2056,7 +2423,11 @@ fn parse_num(s: &str) -> Option<f64> {
     let n = body.find(['.', 'e', 'E']).unwrap_or(body.len());
     let (int_part, rest) = body.split_at(n);
     // (separators only between digits of the integer part)
-    if rest.contains(',') || int_part.starts_with(',') || int_part.ends_with(',') || int_part.contains(",,") {
+    if rest.contains(',')
+        || int_part.starts_with(',')
+        || int_part.ends_with(',')
+        || int_part.contains(",,")
+    {
         return None;
     }
     let plain: String = t.chars().filter(|&c| c != ',').collect();
@@ -2066,14 +2437,20 @@ fn parse_num(s: &str) -> Option<f64> {
 fn parse_date(s: &str) -> Option<f64> {
     let s = s.trim();
     let (d, t) = s.split_once(' ').map_or((s, ""), |(a, b)| (a, b.trim()));
-    let f: Vec<i64> = d.split(['/', '-', '.']).map(|x| x.parse().ok()).collect::<Option<_>>()?;
+    let f: Vec<i64> = d
+        .split(['/', '-', '.'])
+        .map(|x| x.parse().ok())
+        .collect::<Option<_>>()?;
     let [y, m, dd] = f[..] else { return None };
     if !(1..=12).contains(&m) || !(1..=31).contains(&dd) || !(100..=9999).contains(&y) {
         return None;
     }
     let mut v = (crate::k32::days_from_civil(y, m, dd) + 25569) as f64;
     if !t.is_empty() {
-        let h: Vec<u32> = t.split(':').map(|x| x.parse().ok()).collect::<Option<_>>()?;
+        let h: Vec<u32> = t
+            .split(':')
+            .map(|x| x.parse().ok())
+            .collect::<Option<_>>()?;
         let (hh, mm, ss) = (h[0], *h.get(1).unwrap_or(&0), *h.get(2).unwrap_or(&0));
         if h.len() > 3 || hh > 23 || mm > 59 || ss > 59 {
             return None;
@@ -2086,17 +2463,29 @@ fn parse_date(s: &str) -> Option<f64> {
 /// dropped, an exponent ("1E+20") past them
 fn real_str(f: f64, digits: usize) -> String {
     if f == 0.0 {
-        return if f.is_sign_negative() { "-0".into() } else { "0".into() };
+        return if f.is_sign_negative() {
+            "-0".into()
+        } else {
+            "0".into()
+        };
     }
     let e = format!("{:.*e}", digits - 1, f);
     let (m, x) = e.split_once('e').unwrap();
     let x: i32 = x.parse().unwrap();
     if x < -(digits as i32) || x >= digits as i32 {
-        let m = if m.contains('.') { m.trim_end_matches('0').trim_end_matches('.') } else { m };
+        let m = if m.contains('.') {
+            m.trim_end_matches('0').trim_end_matches('.')
+        } else {
+            m
+        };
         return format!("{m}E{}{:02}", if x < 0 { '-' } else { '+' }, x.abs());
     }
     let s = format!("{:.*}", (digits as i32 - 1 - x).max(0) as usize, f);
-    if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s }
+    if s.contains('.') {
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        s
+    }
 }
 /// VariantChangeType(dst, src, flags, vt): the numeric, boolean, date and string conversions.
 fn variant_change(dst: u32, src: u32, flags: u32, vt: u16) -> u32 {
@@ -2104,7 +2493,9 @@ fn variant_change(dst: u32, src: u32, flags: u32, vt: u16) -> u32 {
     if sty == vt || vt == 0x0c {
         return variant_copy(dst, src);
     }
-    let Some(val) = variant_val(src) else { return 0x8002_0005 };
+    let Some(val) = variant_val(src) else {
+        return 0x8002_0005;
+    };
     let num = |v: &Val| -> Option<f64> {
         match v {
             Val::Empty => Some(0.0),
@@ -2129,7 +2520,13 @@ fn variant_change(dst: u32, src: u32, flags: u32, vt: u16) -> u32 {
             let s = match &val {
                 Val::Empty => String::new(),
                 // (VARIANT_ALPHABOOL, VARIANT_LOCALBOOL: words; else -1 / 0)
-                Val::Int(i) if sty == 11 && flags & 0x12 != 0 => if *i != 0 { "True".into() } else { "False".into() },
+                Val::Int(i) if sty == 11 && flags & 0x12 != 0 => {
+                    if *i != 0 {
+                        "True".into()
+                    } else {
+                        "False".into()
+                    }
+                }
                 Val::Int(i) => i.to_string(),
                 Val::F(f) if sty == 4 => real_str(*f, 7),
                 Val::F(f) => real_str(*f, 15),
@@ -2139,12 +2536,21 @@ fn variant_change(dst: u32, src: u32, flags: u32, vt: u16) -> u32 {
             out[8..12].copy_from_slice(&bstr_alloc(&w).to_le_bytes());
         }
         _ => {
-            let Some(f) = num(&val) else { return 0x8002_0005 };
-            if f.is_infinite() || vt == 4 && f.abs() > f32::MAX as f64 || vt == 7 && !(-657434.0..2958466.0).contains(&f) {
+            let Some(f) = num(&val) else {
+                return 0x8002_0005;
+            };
+            if f.is_infinite()
+                || vt == 4 && f.abs() > f32::MAX as f64
+                || vt == 7 && !(-657434.0..2958466.0).contains(&f)
+            {
                 return 0x8002_000a; // DISP_E_OVERFLOW
             }
             // (a boolean to a byte is its low byte: True is 255)
-            let f = if sty == 11 && vt == 17 { (f as i64 & 0xff) as f64 } else { f };
+            let f = if sty == 11 && vt == 17 {
+                (f as i64 & 0xff) as f64
+            } else {
+                f
+            };
             let r = |f: f64| f.round_ties_even();
             let i = r(f) as i64;
             let range = |lo: i64, hi: i64| (lo..=hi).contains(&i);
@@ -2168,7 +2574,8 @@ fn variant_change(dst: u32, src: u32, flags: u32, vt: u16) -> u32 {
                 4 => out[8..12].copy_from_slice(&(f as f32).to_bits().to_le_bytes()),
                 5 | 7 => out[8..16].copy_from_slice(&f.to_bits().to_le_bytes()),
                 6 => out[8..16].copy_from_slice(&((f * 10000.0).round() as i64).to_le_bytes()),
-                11 => out[8..10].copy_from_slice(&(if f != 0.0 { 0xffffu16 } else { 0 }).to_le_bytes()),
+                11 => out[8..10]
+                    .copy_from_slice(&(if f != 0.0 { 0xffffu16 } else { 0 }).to_le_bytes()),
                 _ => return 0x8002_0005,
             }
         }
@@ -2216,7 +2623,9 @@ fn special_folder(csidl: u32) -> Option<&'static str> {
         0x27 => "C:\\users\\user\\Pictures",
         0x0d => "C:\\users\\user\\Music",
         0x0e => "C:\\users\\user\\Videos",
-        0x02 | 0x07 | 0x0b | 0x15 | 0x08 | 0x06 | 0x09 | 0x13 => "C:\\users\\user\\AppData\\Roaming\\Microsoft\\Windows",
+        0x02 | 0x07 | 0x0b | 0x15 | 0x08 | 0x06 | 0x09 | 0x13 => {
+            "C:\\users\\user\\AppData\\Roaming\\Microsoft\\Windows"
+        }
         _ => return None,
     })
 }
@@ -2235,7 +2644,11 @@ fn sh_mkdir(path: &str) -> u32 {
         return 183;
     }
     let h = crate::files::resolve_new(path);
-    if kura::fs::create_dir_all(&h).is_ok() { 0 } else { 3 }
+    if kura::fs::create_dir_all(&h).is_ok() {
+        0
+    } else {
+        3
+    }
 }
 fn SHCreateDirectoryExA(c: &mut Ctx) -> u32 {
     sh_mkdir(&arg_str(c.a(1), false))
@@ -2287,7 +2700,11 @@ fn sh_str_dup(c: &mut Ctx, wide: bool) -> u32 {
         mem::putp(out, 0);
         return 0x8007_0057;
     }
-    let w: Vec<u16> = if wide { mem::wstr(src) } else { crate::text::a2w(&mem::cstr(src)) };
+    let w: Vec<u16> = if wide {
+        mem::wstr(src)
+    } else {
+        crate::text::a2w(&mem::cstr(src))
+    };
     let p = mem::heap_alloc(2 * w.len() as u32 + 2, true);
     for (i, v) in w.iter().enumerate() {
         mem::w16(p + 2 * i as u32, *v);
@@ -2402,8 +2819,19 @@ fn ILFree(c: &mut Ctx) -> u32 {
 /// ShellExecute(verb, file, params, dir): "open" of one of the game's programs runs it
 /// (k32::exec); anything else (pages, documents) is only logged.
 fn shell_execute(verb: u32, file: u32, params: u32, dir: u32, wide: bool) -> u32 {
-    let verb = if verb == 0 { "open".to_string() } else { arg_str(verb, wide) };
-    let (f, p) = (arg_str(file, wide), if params == 0 { String::new() } else { arg_str(params, wide) });
+    let verb = if verb == 0 {
+        "open".to_string()
+    } else {
+        arg_str(verb, wide)
+    };
+    let (f, p) = (
+        arg_str(file, wide),
+        if params == 0 {
+            String::new()
+        } else {
+            arg_str(params, wide)
+        },
+    );
     let d = (dir != 0).then(|| arg_str(dir, wide));
     if verb.eq_ignore_ascii_case("open") {
         crate::k32::exec(&f, &p, d.as_deref());
@@ -2466,7 +2894,11 @@ fn CommandLineToArgvW(c: &mut Ctx) -> u32 {
         args.push(cur);
     }
     let n = args.len() as u32;
-    let size: u32 = 4 * (n + 1) + args.iter().map(|a| 2 * (a.encode_utf16().count() as u32 + 1)).sum::<u32>();
+    let size: u32 = 4 * (n + 1)
+        + args
+            .iter()
+            .map(|a| 2 * (a.encode_utf16().count() as u32 + 1))
+            .sum::<u32>();
     let p = mem::heap_alloc(size, true);
     let mut at = p + 4 * (n + 1);
     for (i, a) in args.iter().enumerate() {
@@ -2509,7 +2941,11 @@ fn skip_bitmap(c: &mut Ctx, stream: u32, buf: u32) -> bool {
         return false;
     }
     let bi = buf + 14;
-    let (w, h, bpp) = (r32(bi + 4), (r32(bi + 8) as i32).unsigned_abs(), r16(bi + 14) as u32);
+    let (w, h, bpp) = (
+        r32(bi + 4),
+        (r32(bi + 8) as i32).unsigned_abs(),
+        r16(bi + 14) as u32,
+    );
     let pal = if bpp <= 8 { (1u32 << bpp) * 4 } else { 0 };
     let bits = h * ((w * bpp + 31) / 32) * 4;
     let rest = pal + bits;
@@ -2612,7 +3048,15 @@ static NEXT_TIMER: AtomicU32 = AtomicU32::new(1);
 /// The thread of one multimedia timer (its start "function" is this trap).
 fn mm_timer_thread(c: &mut Ctx) -> u32 {
     let id = c.a(0);
-    let Some(t) = TIMERS.lock().unwrap().iter().find(|x| x.0 == id).map(|x| x.1.clone()) else { return 0 };
+    let Some(t) = TIMERS
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|x| x.0 == id)
+        .map(|x| x.1.clone())
+    else {
+        return 0;
+    };
     let period = Duration::from_millis(t.delay.max(1) as u64);
     let mut next = std::time::Instant::now() + period;
     loop {
@@ -2649,7 +3093,13 @@ fn mm_timer_thread(c: &mut Ctx) -> u32 {
 fn timeSetEvent(c: &mut Ctx) -> u32 {
     let (delay, _res, proc_, user, flags) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
     let id = NEXT_TIMER.fetch_add(1, Ordering::Relaxed);
-    let t = Arc::new(MmTimer { delay, proc_, user, flags, stop: AtomicBool::new(false) });
+    let t = Arc::new(MmTimer {
+        delay,
+        proc_,
+        user,
+        flags,
+        stop: AtomicBool::new(false),
+    });
     TIMERS.lock().unwrap().push((id, t));
     static ENTRY: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     let entry = *ENTRY.get_or_init(|| crate::api::host_fn("mm_timer_thread", mm_timer_thread, 4));
@@ -2833,7 +3283,11 @@ fn PathUnquoteSpacesW(c: &mut Ctx) -> u32 {
     path_op(c, true, unquote)
 }
 fn add_backslash(s: &str) -> Option<String> {
-    Some(if s.ends_with('\\') || s.is_empty() { s.to_string() } else { format!("{s}\\") })
+    Some(if s.ends_with('\\') || s.is_empty() {
+        s.to_string()
+    } else {
+        format!("{s}\\")
+    })
 }
 fn PathAddBackslashA(c: &mut Ctx) -> u32 {
     path_op(c, false, add_backslash);
@@ -2875,7 +3329,11 @@ fn PathStripPathW(c: &mut Ctx) -> u32 {
     strip_path(c, true)
 }
 fn path_add_extension(c: &mut Ctx, wide: bool) -> u32 {
-    let ext = if c.a(1) == 0 { ".exe".to_string() } else { arg_str(c.a(1), wide) };
+    let ext = if c.a(1) == 0 {
+        ".exe".to_string()
+    } else {
+        arg_str(c.a(1), wide)
+    };
     path_op(c, wide, |s| {
         let name = s.rsplit('\\').next().unwrap_or(s);
         (!name.contains('.')).then(|| format!("{s}{ext}"))
@@ -2898,7 +3356,9 @@ fn remove_file_spec(c: &mut Ctx, wide: bool) -> u32 {
         return 0;
     }
     let pc = path_chars(p, wide);
-    let Some(at) = file_spec_at(&pc.ch) else { return 0 };
+    let Some(at) = file_spec_at(&pc.ch) else {
+        return 0;
+    };
     put_nul(p, pc.off[at], wide);
     1
 }
@@ -2915,10 +3375,12 @@ fn PathFileExistsW(c: &mut Ctx) -> u32 {
     crate::files::resolve(&arg_str(c.a(0), true)).is_some() as u32
 }
 fn PathIsDirectoryA(c: &mut Ctx) -> u32 {
-    crate::files::resolve(&arg_str(c.a(0), false)).is_some_and(|h| crate::files::is_dir(&h)) as u32 * 16
+    crate::files::resolve(&arg_str(c.a(0), false)).is_some_and(|h| crate::files::is_dir(&h)) as u32
+        * 16
 }
 fn PathIsDirectoryW(c: &mut Ctx) -> u32 {
-    crate::files::resolve(&arg_str(c.a(0), true)).is_some_and(|h| crate::files::is_dir(&h)) as u32 * 16
+    crate::files::resolve(&arg_str(c.a(0), true)).is_some_and(|h| crate::files::is_dir(&h)) as u32
+        * 16
 }
 fn is_relative(s: &str) -> bool {
     !(s.starts_with('\\') || s.as_bytes().get(1) == Some(&b':'))
@@ -2932,7 +3394,11 @@ fn combine(dir: Option<&str>, file: Option<&str>) -> Option<String> {
         (None | Some(""), Some(f)) => f.to_string(),
         (Some(d), Some(f)) if !is_relative(f) => {
             if f.starts_with('\\') && !f.starts_with("\\\\") {
-                format!("{}{}", strip_to_root(d).unwrap_or_default().trim_end_matches('\\'), f)
+                format!(
+                    "{}{}",
+                    strip_to_root(d).unwrap_or_default().trim_end_matches('\\'),
+                    f
+                )
             } else {
                 f.to_string()
             }
@@ -2947,9 +3413,17 @@ fn opt_str(p: u32, wide: bool) -> Option<String> {
 /// PathAppend: PathCombine of the path and the more part without its leading backslashes
 fn path_append(c: &mut Ctx, wide: bool) -> u32 {
     let (p, more) = (c.a(0), opt_str(c.a(1), wide));
-    let (Some(more), true) = (more, p != 0) else { return 0 };
-    let more = if more.starts_with("\\\\") { &more[..] } else { more.trim_start_matches('\\') };
-    let Some(r) = combine(Some(&arg_str(p, wide)), Some(more)) else { return 0 };
+    let (Some(more), true) = (more, p != 0) else {
+        return 0;
+    };
+    let more = if more.starts_with("\\\\") {
+        &more[..]
+    } else {
+        more.trim_start_matches('\\')
+    };
+    let Some(r) = combine(Some(&arg_str(p, wide)), Some(more)) else {
+        return 0;
+    };
     ret_str(p, 260, &r, wide);
     1
 }
@@ -2964,7 +3438,10 @@ fn path_combine(c: &mut Ctx, wide: bool) -> u32 {
     if d == 0 {
         return 0;
     }
-    match combine(opt_str(c.a(1), wide).as_deref(), opt_str(c.a(2), wide).as_deref()) {
+    match combine(
+        opt_str(c.a(1), wide).as_deref(),
+        opt_str(c.a(2), wide).as_deref(),
+    ) {
         Some(r) => {
             ret_str(d, 260, &r, wide);
             d
@@ -2990,7 +3467,11 @@ fn canonicalize(p: &str) -> String {
         return "\\".into();
     }
     let (mut root, rest) = if p.as_bytes().get(1) == Some(&b':') {
-        let n = if p.as_bytes().get(2) == Some(&b'\\') { 3 } else { 2 };
+        let n = if p.as_bytes().get(2) == Some(&b'\\') {
+            3
+        } else {
+            2
+        };
         p.split_at(n)
     } else if let Some(r) = p.strip_prefix("\\\\") {
         ("\\\\", r)
@@ -3069,7 +3550,12 @@ fn PathFindExtensionW(c: &mut Ctx) -> u32 {
 fn PathRenameExtensionA(c: &mut Ctx) -> u32 {
     let (p, mut s, ext) = (c.a(0), cstr(c.a(0)), cstr(c.a(1)));
     let start = s.iter().rposition(|&b| b == b'\\').map_or(0, |k| k + 1);
-    s.truncate(s[start..].iter().rposition(|&b| b == b'.').map_or(s.len(), |k| start + k));
+    s.truncate(
+        s[start..]
+            .iter()
+            .rposition(|&b| b == b'.')
+            .map_or(s.len(), |k| start + k),
+    );
     if s.len() + ext.len() >= 260 {
         return 0;
     }
@@ -3080,8 +3566,16 @@ fn PathRenameExtensionA(c: &mut Ctx) -> u32 {
 }
 fn PathRenameExtensionW(c: &mut Ctx) -> u32 {
     let (p, mut s, ext) = (c.a(0), wstr(c.a(0)), wstr(c.a(1)));
-    let start = s.iter().rposition(|&b| b == b'\\' as u16).map_or(0, |k| k + 1);
-    s.truncate(s[start..].iter().rposition(|&b| b == b'.' as u16).map_or(s.len(), |k| start + k));
+    let start = s
+        .iter()
+        .rposition(|&b| b == b'\\' as u16)
+        .map_or(0, |k| k + 1);
+    s.truncate(
+        s[start..]
+            .iter()
+            .rposition(|&b| b == b'.' as u16)
+            .map_or(s.len(), |k| start + k),
+    );
     if s.len() + ext.len() >= 260 {
         return 0;
     }
@@ -3120,8 +3614,15 @@ static NEXT_HASH: AtomicU32 = AtomicU32::new(0x4a00_0000);
 /// (no name is the Strong provider since Vista: SRPG Studio)
 static KEY_BITS: AtomicU32 = AtomicU32::new(128);
 fn acquire(c: &mut Ctx, wide: bool) -> u32 {
-    let name = if c.a(2) == 0 { String::new() } else { arg_str(c.a(2), wide) };
-    KEY_BITS.store(if name.contains(" Base ") { 40 } else { 128 }, Ordering::Relaxed);
+    let name = if c.a(2) == 0 {
+        String::new()
+    } else {
+        arg_str(c.a(2), wide)
+    };
+    KEY_BITS.store(
+        if name.contains(" Base ") { 40 } else { 128 },
+        Ordering::Relaxed,
+    );
     mem::putp(c.a(0), 0x4a7f_0001); // (HCRYPTPROV: a ULONG_PTR)
     1
 }
@@ -3157,7 +3658,11 @@ fn CryptCreateHash(c: &mut Ctx) -> u32 {
         }
     };
     let id = NEXT_HASH.fetch_add(1, Ordering::Relaxed);
-    HASHES.lock().unwrap().get_or_insert_with(HashMap::default).insert(id, (h, false));
+    HASHES
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::default)
+        .insert(id, (h, false));
     mem::putp(c.a(4), id);
     1
 }
@@ -3210,7 +3715,12 @@ fn CryptGetHashParam(c: &mut Ctx) -> u32 {
     1
 }
 fn CryptDestroyHash(c: &mut Ctx) -> u32 {
-    let ok = HASHES.lock().unwrap().get_or_insert_with(HashMap::default).remove(&c.a(0)).is_some();
+    let ok = HASHES
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::default)
+        .remove(&c.a(0))
+        .is_some();
     if !ok {
         crate::k32::last_error(87);
     }
@@ -3229,7 +3739,13 @@ struct Rc4 {
 }
 impl Rc4 {
     fn new(key: Vec<u8>, bits: u32) -> Rc4 {
-        let mut r = Rc4 { bits, key, s: [0; 256], i: 0, j: 0 };
+        let mut r = Rc4 {
+            bits,
+            key,
+            s: [0; 256],
+            i: 0,
+            j: 0,
+        };
         r.reset();
         r
     }
@@ -3239,7 +3755,9 @@ impl Rc4 {
         }
         let mut j = 0u8;
         for i in 0..256 {
-            j = j.wrapping_add(self.s[i]).wrapping_add(self.key[i % self.key.len()]);
+            j = j
+                .wrapping_add(self.s[i])
+                .wrapping_add(self.key[i % self.key.len()]);
             self.s.swap(i, j as usize);
         }
         (self.i, self.j) = (0, 0);
@@ -3285,7 +3803,10 @@ fn CryptDeriveKey(c: &mut Ctx) -> u32 {
         key.resize(16, 0);
     }
     let id = NEXT_HASH.fetch_add(1, Ordering::Relaxed);
-    KEYS.lock().unwrap().get_or_insert_with(HashMap::default).insert(id, Rc4::new(key, bits));
+    KEYS.lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::default)
+        .insert(id, Rc4::new(key, bits));
     mem::putp(out, id);
     1
 }
@@ -3315,7 +3836,12 @@ fn CryptEncrypt(c: &mut Ctx) -> u32 {
     rc4_call(c)
 }
 fn CryptDestroyKey(c: &mut Ctx) -> u32 {
-    let ok = KEYS.lock().unwrap().get_or_insert_with(HashMap::default).remove(&c.a(0)).is_some();
+    let ok = KEYS
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::default)
+        .remove(&c.a(0))
+        .is_some();
     if !ok {
         crate::k32::last_error(87);
     }
@@ -3325,7 +3851,13 @@ fn CryptDestroyKey(c: &mut Ctx) -> u32 {
 /// stream cipher), KP_KEYLEN (9)
 fn CryptGetKeyParam(c: &mut Ctx) -> u32 {
     let (key, param, out, plen) = (c.a(0), c.a(1), c.a(2), c.a(3));
-    let Some(bits) = KEYS.lock().unwrap().get_or_insert_with(HashMap::default).get(&key).map(|k| k.bits) else {
+    let Some(bits) = KEYS
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::default)
+        .get(&key)
+        .map(|k| k.bits)
+    else {
         crate::k32::last_error(87);
         return 0;
     };
@@ -3383,7 +3915,12 @@ impl Sha1 {
                     40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1BBCDC),
                     _ => (b ^ c ^ d, 0xCA62C1D6),
                 };
-                let t = a.rotate_left(5).wrapping_add(f).wrapping_add(e).wrapping_add(k).wrapping_add(wi);
+                let t = a
+                    .rotate_left(5)
+                    .wrapping_add(f)
+                    .wrapping_add(e)
+                    .wrapping_add(k)
+                    .wrapping_add(wi);
                 e = d;
                 d = c;
                 c = b.rotate_left(30);
@@ -3409,12 +3946,78 @@ fn WinVerifyTrust(_: &mut Ctx) -> u32 {
 /// XInput: each DLL's exports as Windows has them (xinput9_1_0 has no XInputEnable, xinputuap
 /// none of xinput1_4's undocumented ordinals)
 const XINPUT: &[(&str, &[&str])] = &[
-    ("xinput1_1", &["XInputEnable", "XInputGetCapabilities", "XInputGetDSoundAudioDeviceGuids", "XInputSetState", "XInputGetState"]),
-    ("xinput1_2", &["XInputEnable", "XInputGetCapabilities", "XInputGetDSoundAudioDeviceGuids", "XInputSetState", "XInputGetState"]),
-    ("xinput1_3", &["XInputEnable", "XInputGetCapabilities", "XInputGetDSoundAudioDeviceGuids", "XInputSetState", "XInputGetState", "XInputGetBatteryInformation", "XInputGetKeystroke", "XInputGetStateEx"]),
-    ("xinput1_4", &["XInputEnable", "XInputGetCapabilities", "XInputSetState", "XInputGetState", "XInputGetBatteryInformation", "XInputGetKeystroke", "XInputGetAudioDeviceIds", "XInputGetStateEx", "XInputWaitForGuideButton", "XInputCancelGuideButtonWait", "XInputPowerOffController", "XInputGetBaseBusInformation", "XInputGetCapabilitiesEx"]),
-    ("xinput9_1_0", &["XInputGetCapabilities", "XInputGetDSoundAudioDeviceGuids", "XInputSetState", "XInputGetState"]),
-    ("xinputuap", &["XInputEnable", "XInputGetCapabilities", "XInputSetState", "XInputGetState", "XInputGetBatteryInformation", "XInputGetKeystroke", "XInputGetAudioDeviceIds"]),
+    (
+        "xinput1_1",
+        &[
+            "XInputEnable",
+            "XInputGetCapabilities",
+            "XInputGetDSoundAudioDeviceGuids",
+            "XInputSetState",
+            "XInputGetState",
+        ],
+    ),
+    (
+        "xinput1_2",
+        &[
+            "XInputEnable",
+            "XInputGetCapabilities",
+            "XInputGetDSoundAudioDeviceGuids",
+            "XInputSetState",
+            "XInputGetState",
+        ],
+    ),
+    (
+        "xinput1_3",
+        &[
+            "XInputEnable",
+            "XInputGetCapabilities",
+            "XInputGetDSoundAudioDeviceGuids",
+            "XInputSetState",
+            "XInputGetState",
+            "XInputGetBatteryInformation",
+            "XInputGetKeystroke",
+            "XInputGetStateEx",
+        ],
+    ),
+    (
+        "xinput1_4",
+        &[
+            "XInputEnable",
+            "XInputGetCapabilities",
+            "XInputSetState",
+            "XInputGetState",
+            "XInputGetBatteryInformation",
+            "XInputGetKeystroke",
+            "XInputGetAudioDeviceIds",
+            "XInputGetStateEx",
+            "XInputWaitForGuideButton",
+            "XInputCancelGuideButtonWait",
+            "XInputPowerOffController",
+            "XInputGetBaseBusInformation",
+            "XInputGetCapabilitiesEx",
+        ],
+    ),
+    (
+        "xinput9_1_0",
+        &[
+            "XInputGetCapabilities",
+            "XInputGetDSoundAudioDeviceGuids",
+            "XInputSetState",
+            "XInputGetState",
+        ],
+    ),
+    (
+        "xinputuap",
+        &[
+            "XInputEnable",
+            "XInputGetCapabilities",
+            "XInputSetState",
+            "XInputGetState",
+            "XInputGetBatteryInformation",
+            "XInputGetKeystroke",
+            "XInputGetAudioDeviceIds",
+        ],
+    ),
 ];
 
 /// What an XInput call answers with no controller attached (winref xinput): every user index
@@ -3446,7 +4049,17 @@ pub fn init() {
     // (xinputuap: the Windows 10 one, AdvHD imports it)
     for &(d, names) in XINPUT {
         for &n in names {
-            implement(d, n, if n == "XInputEnable" { xinput_ok } else if d == "xinputuap" { xinputuap_none } else { xinput_none });
+            implement(
+                d,
+                n,
+                if n == "XInputEnable" {
+                    xinput_ok
+                } else if d == "xinputuap" {
+                    xinputuap_none
+                } else {
+                    xinput_none
+                },
+            );
         }
     }
     reg!("advapi32";
@@ -3466,10 +4079,23 @@ pub fn init() {
     implement("rpcrt4", "UuidCreateSequential", UuidCreate);
     // the COM DLLs' class objects (CoCreateInstance's classes; programs that load the DLL
     // themselves, or check for it, get them here)
-    implement("xaudio2_7", "DllGetClassObject", |c| dll_get_class_object(c, "xaudio2_7"));
-    implement("windowscodecs", "DllGetClassObject", |c| dll_get_class_object(c, "windowscodecs"));
-    implement("olepro32", "DllGetClassObject", |c| dll_get_class_object(c, "olepro32"));
-    for d in ["xaudio2_7", "windowscodecs", "olepro32", "ksproxy", "hhctrl", "msdmo"] {
+    implement("xaudio2_7", "DllGetClassObject", |c| {
+        dll_get_class_object(c, "xaudio2_7")
+    });
+    implement("windowscodecs", "DllGetClassObject", |c| {
+        dll_get_class_object(c, "windowscodecs")
+    });
+    implement("olepro32", "DllGetClassObject", |c| {
+        dll_get_class_object(c, "olepro32")
+    });
+    for d in [
+        "xaudio2_7",
+        "windowscodecs",
+        "olepro32",
+        "ksproxy",
+        "hhctrl",
+        "msdmo",
+    ] {
         implement(d, "DllCanUnloadNow", |_| 1); // S_FALSE
         implement(d, "DllRegisterServer", |_| 0);
         implement(d, "DllUnregisterServer", |_| 0);
@@ -3515,9 +4141,27 @@ fn str_str(c: &mut Ctx, wide: bool, fold: bool) -> u32 {
     if h == 0 || n == 0 {
         return 0;
     }
-    let get = |p: u32| if wide { wstr(p) } else { cstr(p).into_iter().map(|b| b as u16).collect() };
+    let get = |p: u32| {
+        if wide {
+            wstr(p)
+        } else {
+            cstr(p).into_iter().map(|b| b as u16).collect()
+        }
+    };
     let low = |v: Vec<u16>| -> Vec<u16> {
-        if fold { v.into_iter().map(|u| if (b'A' as u16..=b'Z' as u16).contains(&u) { u + 32 } else { u }).collect() } else { v }
+        if fold {
+            v.into_iter()
+                .map(|u| {
+                    if (b'A' as u16..=b'Z' as u16).contains(&u) {
+                        u + 32
+                    } else {
+                        u
+                    }
+                })
+                .collect()
+        } else {
+            v
+        }
     };
     let (hs, ns) = (low(get(h)), low(get(n)));
     if ns.is_empty() {
@@ -3529,7 +4173,11 @@ fn str_str(c: &mut Ctx, wide: bool, fold: bool) -> u32 {
         if hs[i..i + ns.len()] == ns[..] {
             return h + i as u32 * if wide { 2 } else { 1 };
         }
-        i += if !wide && crate::text::is_lead(hs[i] as u8) { 2 } else { 1 };
+        i += if !wide && crate::text::is_lead(hs[i] as u8) {
+            2
+        } else {
+            1
+        };
     }
     0
 }
@@ -3557,7 +4205,11 @@ fn wts_str(s: &str, wide: bool) -> (u32, u32) {
     let n = s.len() as u32 + 1;
     let p = mem::heap_alloc(if wide { 2 * n } else { n }, true);
     for (i, b) in s.bytes().enumerate() {
-        if wide { w16(p + 2 * i as u32, b as u16) } else { mem::write(p + i as u32, &[b]) }
+        if wide {
+            w16(p + 2 * i as u32, b as u16)
+        } else {
+            mem::write(p + i as u32, &[b])
+        }
     }
     (p, if wide { 2 * n } else { n })
 }
@@ -3670,31 +4322,73 @@ fn ProcessPrng(c: &mut Ctx) -> u32 {
 
 /// SecurityFunctionTable (version 1) entries, in order; None: reserved.
 const SSPI_TABLE: [Option<&str>; 26] = [
-    Some("EnumerateSecurityPackages"), Some("QueryCredentialsAttributes"), Some("AcquireCredentialsHandle"),
-    Some("FreeCredentialsHandle"), None, Some("InitializeSecurityContext"), Some("AcceptSecurityContext"),
-    Some("CompleteAuthToken"), Some("DeleteSecurityContext"), Some("ApplyControlToken"), Some("QueryContextAttributes"),
-    Some("ImpersonateSecurityContext"), Some("RevertSecurityContext"), Some("MakeSignature"), Some("VerifySignature"),
-    Some("FreeContextBuffer"), Some("QuerySecurityPackageInfo"), None, None, Some("ExportSecurityContext"),
-    Some("ImportSecurityContext"), Some("AddCredentials"), None, Some("QuerySecurityContextToken"),
-    Some("EncryptMessage"), Some("DecryptMessage"),
+    Some("EnumerateSecurityPackages"),
+    Some("QueryCredentialsAttributes"),
+    Some("AcquireCredentialsHandle"),
+    Some("FreeCredentialsHandle"),
+    None,
+    Some("InitializeSecurityContext"),
+    Some("AcceptSecurityContext"),
+    Some("CompleteAuthToken"),
+    Some("DeleteSecurityContext"),
+    Some("ApplyControlToken"),
+    Some("QueryContextAttributes"),
+    Some("ImpersonateSecurityContext"),
+    Some("RevertSecurityContext"),
+    Some("MakeSignature"),
+    Some("VerifySignature"),
+    Some("FreeContextBuffer"),
+    Some("QuerySecurityPackageInfo"),
+    None,
+    None,
+    Some("ExportSecurityContext"),
+    Some("ImportSecurityContext"),
+    Some("AddCredentials"),
+    None,
+    Some("QuerySecurityContextToken"),
+    Some("EncryptMessage"),
+    Some("DecryptMessage"),
 ];
 /// The A/W-less names of [`SSPI_TABLE`] that have no A and W forms
 const SSPI_PLAIN: [&str; 14] = [
-    "FreeCredentialsHandle", "AcceptSecurityContext", "CompleteAuthToken", "DeleteSecurityContext", "ApplyControlToken",
-    "ImpersonateSecurityContext", "RevertSecurityContext", "MakeSignature", "VerifySignature", "FreeContextBuffer",
-    "ExportSecurityContext", "QuerySecurityContextToken", "EncryptMessage", "DecryptMessage",
+    "FreeCredentialsHandle",
+    "AcceptSecurityContext",
+    "CompleteAuthToken",
+    "DeleteSecurityContext",
+    "ApplyControlToken",
+    "ImpersonateSecurityContext",
+    "RevertSecurityContext",
+    "MakeSignature",
+    "VerifySignature",
+    "FreeContextBuffer",
+    "ExportSecurityContext",
+    "QuerySecurityContextToken",
+    "EncryptMessage",
+    "DecryptMessage",
 ];
 
 /// The exported name of table entry `n` in the A or W table.
 fn sspi_name(n: &str, wide: bool) -> String {
-    if SSPI_PLAIN.contains(&n) { n.to_string() } else { format!("{n}{}", if wide { 'W' } else { 'A' }) }
+    if SSPI_PLAIN.contains(&n) {
+        n.to_string()
+    } else {
+        format!("{n}{}", if wide { 'W' } else { 'A' })
+    }
 }
 
 fn sspi_init() {
     for n in SSPI_TABLE.iter().flatten() {
         for wide in [false, true] {
             // SEC_E_UNSUPPORTED_FUNCTION (FreeContextBuffer: nothing was handed out to free)
-            implement("secur32", &sspi_name(n, wide), if *n == "FreeContextBuffer" { |_| 0 } else { |_| 0x8009_0302 });
+            implement(
+                "secur32",
+                &sspi_name(n, wide),
+                if *n == "FreeContextBuffer" {
+                    |_| 0
+                } else {
+                    |_| 0x8009_0302
+                },
+            );
         }
     }
     implement("secur32", "InitSecurityInterfaceA", |_| sspi_table(false));
@@ -3709,13 +4403,17 @@ fn sspi_table(wide: bool) -> u32 {
         let ps = mem::ps();
         let p = mem::heap_alloc(ps * (1 + SSPI_TABLE.len() as u32), true);
         mem::w32(p, 1); // SECURITY_SUPPORT_PROVIDER_INTERFACE_VERSION
-        // (the addresses GetProcAddress gives for secur32's exports: programs compare them)
+                        // (the addresses GetProcAddress gives for secur32's exports: programs compare them)
         let module = crate::pe::by_name("secur32.dll");
         for (i, n) in SSPI_TABLE.iter().enumerate() {
             if let Some(n) = n {
                 let name = sspi_name(n, wide);
-                let f = module.and_then(|m| crate::pe::proc_address(m, crate::pe::Import::Name(&name)));
-                mem::wp(p + ps * (1 + i as u32), f.unwrap_or_else(|| crate::api::export("secur32", &name)));
+                let f =
+                    module.and_then(|m| crate::pe::proc_address(m, crate::pe::Import::Name(&name)));
+                mem::wp(
+                    p + ps * (1 + i as u32),
+                    f.unwrap_or_else(|| crate::api::export("secur32", &name)),
+                );
             }
         }
         t[wide as usize] = p;
@@ -3725,12 +4423,21 @@ fn sspi_table(wide: bool) -> u32 {
 
 fn wts_init() {
     // session change notifications: registered, and none come (the session never changes)
-    for n in ["WTSRegisterSessionNotification", "WTSUnRegisterSessionNotification", "WTSRegisterSessionNotificationEx", "WTSUnRegisterSessionNotificationEx"] {
+    for n in [
+        "WTSRegisterSessionNotification",
+        "WTSUnRegisterSessionNotification",
+        "WTSRegisterSessionNotificationEx",
+        "WTSUnRegisterSessionNotificationEx",
+    ] {
         implement("wtsapi32", n, |_| 1);
     }
     reg!("wtsapi32"; WTSQuerySessionInformationA, WTSQuerySessionInformationW, WTSEnumerateSessionsA, WTSEnumerateSessionsW, WTSFreeMemory);
     // no user tokens or other servers' processes
-    for n in ["WTSQueryUserToken", "WTSEnumerateProcessesA", "WTSEnumerateProcessesW"] {
+    for n in [
+        "WTSQueryUserToken",
+        "WTSEnumerateProcessesA",
+        "WTSEnumerateProcessesW",
+    ] {
         implement("wtsapi32", n, |_| {
             crate::k32::last_error(1314); // ERROR_PRIVILEGE_NOT_HELD
             0
@@ -3755,9 +4462,25 @@ fn wts_init() {
         0x8000_4001 // E_NOTIMPL
     }
     let outs: [(Handler, &[&str]); 3] = [
-        (|c| not_made(c, 0), &["WMCreateEditor", "WMCreateProfileManager", "WMCreateIndexer", "WMCreateWriterFileSink", "WMCreateWriterNetworkSink", "WMCreateWriterPushSink"]),
-        (|c| not_made(c, 1), &["WMCreateWriter", "WMCreateBackupRestorer"]),
-        (|c| not_made(c, 2), &["WMCreateSyncReader", "WMCreateReader"]),
+        (
+            |c| not_made(c, 0),
+            &[
+                "WMCreateEditor",
+                "WMCreateProfileManager",
+                "WMCreateIndexer",
+                "WMCreateWriterFileSink",
+                "WMCreateWriterNetworkSink",
+                "WMCreateWriterPushSink",
+            ],
+        ),
+        (
+            |c| not_made(c, 1),
+            &["WMCreateWriter", "WMCreateBackupRestorer"],
+        ),
+        (
+            |c| not_made(c, 2),
+            &["WMCreateSyncReader", "WMCreateReader"],
+        ),
     ];
     for (f, names) in outs {
         for n in names {
@@ -3802,8 +4525,20 @@ mod tests {
         let d1 = u32::from_le_bytes([u[0], u[1], u[2], u[3]]);
         let d2 = u16::from_le_bytes([u[4], u[5]]);
         let d3 = u16::from_le_bytes([u[6], u[7]]);
-        let t = format!("{d1:08x}-{d2:04x}-{d3:04x}-{:02x}{:02x}-{}", u[8], u[9], u[10..].iter().map(|b| format!("{b:02x}")).collect::<String>());
-        if upper { t.to_ascii_uppercase() } else { t }
+        let t = format!(
+            "{d1:08x}-{d2:04x}-{d3:04x}-{:02x}{:02x}-{}",
+            u[8],
+            u[9],
+            u[10..]
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        );
+        if upper {
+            t.to_ascii_uppercase()
+        } else {
+            t
+        }
     }
     fn w(s: &str) -> Vec<u16> {
         s.encode_utf16().collect()
@@ -3814,15 +4549,27 @@ mod tests {
     /// RoInitialize where Windows' answers have those lines)
     fn xinput_probe(com: bool) -> Vec<String> {
         let mut out = vec![];
-        for (dll, file) in [("xinput1_4", "xinput1_4.dll"), ("xinput9_1_0", "xinput9_1_0.dll"), ("xinputuap", "XINPUTUAP.dll")] {
+        for (dll, file) in [
+            ("xinput1_4", "xinput1_4.dll"),
+            ("xinput9_1_0", "xinput9_1_0.dll"),
+            ("xinputuap", "XINPUTUAP.dll"),
+        ] {
             let names = XINPUT.iter().find(|e| e.0 == dll).unwrap().1;
             let has = |n: &str| names.contains(&n) as u32;
             out.push(format!("{file}: loaded"));
-            out.push(format!("  exports: GetState {} SetState {} GetCapabilities {} Enable {}", has("XInputGetState"), has("XInputSetState"), has("XInputGetCapabilities"), has("XInputEnable")));
+            out.push(format!(
+                "  exports: GetState {} SetState {} GetCapabilities {} Enable {}",
+                has("XInputGetState"),
+                has("XInputSetState"),
+                has("XInputGetCapabilities"),
+                has("XInputEnable")
+            ));
             for pass in ["enabled", "disabled"] {
                 for i in 0..5 {
                     let r = xinput_answer(dll == "xinputuap", i, com);
-                    out.push(format!("  {pass} user {i}: GetState {r} SetState {r} GetCapabilities {r}"));
+                    out.push(format!(
+                        "  {pass} user {i}: GetState {r} SetState {r} GetCapabilities {r}"
+                    ));
                 }
             }
         }
@@ -3830,23 +4577,35 @@ mod tests {
     }
     #[test]
     fn xinput_as_windows() {
-        for golden in [include_str!("../../../tests/winref/golden/xinput-32/stdout.txt"), include_str!("../../../tests/winref/golden/xinput-64/stdout.txt")] {
+        for golden in [
+            include_str!("../../../tests/winref/golden/xinput-32/stdout.txt"),
+            include_str!("../../../tests/winref/golden/xinput-64/stdout.txt"),
+        ] {
             let lines: Vec<&str> = golden.lines().collect();
             // the part without COM, then (once Windows answered them) the "com:" part
             let (plain, with_com) = match lines.iter().position(|l| l.starts_with("com:")) {
                 Some(at) => (&lines[..at], Some(&lines[at + 1..])),
                 None => (&lines[..], None),
             };
-            assert_eq!(xinput_probe(false), plain.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+            assert_eq!(
+                xinput_probe(false),
+                plain.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+            );
             if let Some(w) = with_com {
-                assert_eq!(xinput_probe(true), w.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+                assert_eq!(
+                    xinput_probe(true),
+                    w.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+                );
             }
         }
         // every DLL's exports are in specs.txt (what the loader binds) and implemented
         let specs = include_str!("specs.txt");
         for &(d, names) in XINPUT {
             for n in names {
-                assert!(specs.lines().any(|l| l.starts_with(&format!("{d} {n} "))), "{d}!{n} not in specs.txt");
+                assert!(
+                    specs.lines().any(|l| l.starts_with(&format!("{d} {n} "))),
+                    "{d}!{n} not in specs.txt"
+                );
             }
         }
     }
@@ -3867,8 +4626,17 @@ mod tests {
     #[test]
     fn uuid_strings_parse_strictly() {
         let u = parse_uuid(&w("6B29FC40-CA47-1067-B31D-00DD010662DA")).unwrap();
-        assert_eq!(u, [0x40, 0xfc, 0x29, 0x6b, 0x47, 0xca, 0x67, 0x10, 0xb3, 0x1d, 0, 0xdd, 1, 6, 0x62, 0xda]);
-        assert_eq!(parse_uuid(&w("6b29fc40-ca47-1067-b31d-00dd010662da")), Some(u));
+        assert_eq!(
+            u,
+            [
+                0x40, 0xfc, 0x29, 0x6b, 0x47, 0xca, 0x67, 0x10, 0xb3, 0x1d, 0, 0xdd, 1, 6, 0x62,
+                0xda
+            ]
+        );
+        assert_eq!(
+            parse_uuid(&w("6b29fc40-ca47-1067-b31d-00dd010662da")),
+            Some(u)
+        );
         for bad in [
             "{6B29FC40-CA47-1067-B31D-00DD010662DA}",
             "6B29FC40-CA47-1067-B31D-00DD010662D",
@@ -3934,7 +4702,10 @@ mod tests {
         assert_eq!(c(Some("C:\\dir"), Some("D:\\abs")).unwrap(), "D:\\abs");
         assert_eq!(c(Some("C:\\dir"), Some("")).unwrap(), "C:\\dir");
         assert_eq!(c(None, Some("file")).unwrap(), "file");
-        assert_eq!(c(Some("C:\\a\\b"), Some(".\\..\\..\\..\\c")).unwrap(), "C:\\c");
+        assert_eq!(
+            c(Some("C:\\a\\b"), Some(".\\..\\..\\..\\c")).unwrap(),
+            "C:\\c"
+        );
         assert_eq!(c(Some("rel"), Some("x")).unwrap(), "rel\\x");
         assert!(c(None, None).is_none());
         let ch = |s: &str| s.bytes().map(u32::from).collect::<Vec<_>>();
@@ -4036,7 +4807,24 @@ mod safearray {
         w32(sa - 4, vt);
         if f & F_HAVEIID != 0 {
             // IID_IUnknown / IID_IDispatch
-            let iid: [u8; 16] = [if vt == 9 { 4 } else { 0 }, if vt == 9 { 4 } else { 0 }, 2, 0, 0, 0, 0, 0, 0xc0, 0, 0, 0, 0, 0, 0, 0x46];
+            let iid: [u8; 16] = [
+                if vt == 9 { 4 } else { 0 },
+                if vt == 9 { 4 } else { 0 },
+                2,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0xc0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0x46,
+            ];
             mem::write(sa - 16, &iid);
         }
         sa
@@ -4146,10 +4934,18 @@ mod safearray {
         0
     }
     pub(super) fn SafeArrayGetDim(c: &mut Ctx) -> u32 {
-        if c.a(0) == 0 { 0 } else { dims(c.a(0)) }
+        if c.a(0) == 0 {
+            0
+        } else {
+            dims(c.a(0))
+        }
     }
     pub(super) fn SafeArrayGetElemsize(c: &mut Ctx) -> u32 {
-        if c.a(0) == 0 { 0 } else { r32(c.a(0) + 4) }
+        if c.a(0) == 0 {
+            0
+        } else {
+            r32(c.a(0) + 4)
+        }
     }
     pub(super) fn SafeArrayGetVartype(c: &mut Ctx) -> u32 {
         let (sa, out) = (c.a(0), c.a(1));
@@ -4183,7 +4979,14 @@ mod safearray {
         }
         let b = bound(sa, d);
         let lb = r32(b + 4);
-        w32(out, if upper { lb.wrapping_add(r32(b)).wrapping_sub(1) } else { lb });
+        w32(
+            out,
+            if upper {
+                lb.wrapping_add(r32(b)).wrapping_sub(1)
+            } else {
+                lb
+            },
+        );
         0
     }
     pub(super) fn SafeArrayGetLBound(c: &mut Ctx) -> u32 {
@@ -4250,7 +5053,9 @@ mod safearray {
         if sa == 0 || ix == 0 {
             return INVALIDARG;
         }
-        let Some(p) = index(sa, ix) else { return BADINDEX };
+        let Some(p) = index(sa, ix) else {
+            return BADINDEX;
+        };
         let (f, es) = (r16(sa + 2), r32(sa + 4));
         if f & F_BSTR != 0 {
             bstr_free(mem::rp(p));
@@ -4282,7 +5087,9 @@ mod safearray {
         if sa == 0 || ix == 0 || v == 0 {
             return INVALIDARG;
         }
-        let Some(p) = index(sa, ix) else { return BADINDEX };
+        let Some(p) = index(sa, ix) else {
+            return BADINDEX;
+        };
         let (f, es) = (r16(sa + 2), r32(sa + 4));
         if f & F_BSTR != 0 {
             let b = mem::rp(p);
@@ -4359,7 +5166,11 @@ mod safearray {
         let old_cells = cells(sa);
         let b = bounds(sa);
         let (old_n, new_n) = (r32(b), r32(nb));
-        let new_cells = if old_n == 0 { 0 } else { old_cells / old_n * new_n };
+        let new_cells = if old_n == 0 {
+            0
+        } else {
+            old_cells / old_n * new_n
+        };
         if new_cells < old_cells {
             free_elems_from(sa, new_cells);
         }
@@ -4432,11 +5243,23 @@ mod vararith {
         };
         Ok(Some(match variant_val(v).ok_or(BADVARTYPE)? {
             Val::Empty => Num { rank, i: 0, f: 0.0 },
-            Val::Int(i) => Num { rank, i, f: i as f64 },
-            Val::F(f) => Num { rank, i: f.round_ties_even() as i64, f },
+            Val::Int(i) => Num {
+                rank,
+                i,
+                f: i as f64,
+            },
+            Val::F(f) => Num {
+                rank,
+                i: f.round_ties_even() as i64,
+                f,
+            },
             Val::Str(s) => {
                 let f = parse_num(&s).ok_or(TYPEMISMATCH)?;
-                Num { rank, i: f.round_ties_even() as i64, f }
+                Num {
+                    rank,
+                    i: f.round_ties_even() as i64,
+                    f,
+                }
             }
         }))
     }
@@ -4566,7 +5389,11 @@ mod vararith {
             // (x86's oleaut32 divides on the x87 and sees an overflow; x64's checks first)
             return if mem::x64() { DIVBYZERO } else { OVERFLOW };
         }
-        let k = if a.rank == Rank::R4 && b.rank == Rank::R4 { Rank::R4 } else { Rank::R8 };
+        let k = if a.rank == Rank::R4 && b.rank == Rank::R4 {
+            Rank::R4
+        } else {
+            Rank::R8
+        };
         put_real(out, k, a.f / b.f)
     }
     /// VarIdiv / VarMod: both rounded to integers (I4, I8 if either is), DISP_E_DIVBYZERO
@@ -4583,7 +5410,11 @@ mod vararith {
         if b.i == 0 {
             return DIVBYZERO;
         }
-        let v = if rem { a.i.wrapping_rem(b.i) } else { a.i.wrapping_div(b.i) };
+        let v = if rem {
+            a.i.wrapping_rem(b.i)
+        } else {
+            a.i.wrapping_div(b.i)
+        };
         let k = if a.rank == Rank::I8 || b.rank == Rank::I8 {
             Rank::I8
         } else if a.rank <= Rank::I2 && b.rank <= Rank::I2 && a.rank == b.rank {
@@ -4621,7 +5452,11 @@ mod vararith {
                 0
             }
             _ => {
-                put_int(out, if a.rank == Rank::U1 { Rank::I2 } else { a.rank }, -a.i);
+                put_int(
+                    out,
+                    if a.rank == Rank::U1 { Rank::I2 } else { a.rank },
+                    -a.i,
+                );
                 0
             }
         }
@@ -4635,18 +5470,40 @@ mod vararith {
                 std::cmp::Ordering::Equal
             } else {
                 // a lower-case letter sorts before its capital
-                let inv = |s: &[u16]| s.iter().map(|&c| if (b'a' as u16..=b'z' as u16).contains(&c) { 0 } else { 1 }).collect::<Vec<u8>>();
+                let inv = |s: &[u16]| {
+                    s.iter()
+                        .map(|&c| {
+                            if (b'a' as u16..=b'z' as u16).contains(&c) {
+                                0
+                            } else {
+                                1
+                            }
+                        })
+                        .collect::<Vec<u8>>()
+                };
                 inv(a).cmp(&inv(b))
             }
         });
         o as i32 as u32 + 1
     }
     pub(super) fn VarBstrCmp(c: &mut Ctx) -> u32 {
-        let s = |b: u32| -> Vec<u16> { if b == 0 { Vec::new() } else { (0..r32(b - 4) / 2).map(|i| r16(b + 2 * i)).collect() } };
+        let s = |b: u32| -> Vec<u16> {
+            if b == 0 {
+                Vec::new()
+            } else {
+                (0..r32(b - 4) / 2).map(|i| r16(b + 2 * i)).collect()
+            }
+        };
         cmp_str(&s(c.a(0)), &s(c.a(1)), c.a(3))
     }
     pub(super) fn VarBstrCat(c: &mut Ctx) -> u32 {
-        let s = |b: u32| -> Vec<u16> { if b == 0 { Vec::new() } else { (0..r32(b - 4) / 2).map(|i| r16(b + 2 * i)).collect() } };
+        let s = |b: u32| -> Vec<u16> {
+            if b == 0 {
+                Vec::new()
+            } else {
+                (0..r32(b - 4) / 2).map(|i| r16(b + 2 * i)).collect()
+            }
+        };
         let out = c.a(2);
         if out == 0 {
             return 0x8007_0057;
@@ -4700,11 +5557,19 @@ mod sspi_tests {
                 assert!(names.contains(&e), "{e}");
             }
         }
-        let reserved: Vec<usize> = SSPI_TABLE.iter().enumerate().filter(|e| e.1.is_none()).map(|e| e.0).collect();
+        let reserved: Vec<usize> = SSPI_TABLE
+            .iter()
+            .enumerate()
+            .filter(|e| e.1.is_none())
+            .map(|e| e.0)
+            .collect();
         assert_eq!(reserved, [4, 17, 18, 22]);
         assert_eq!(SSPI_TABLE[15], Some("FreeContextBuffer"));
         assert_eq!(SSPI_TABLE[25], Some("DecryptMessage"));
-        assert_eq!(sspi_name("InitializeSecurityContext", true), "InitializeSecurityContextW");
+        assert_eq!(
+            sspi_name("InitializeSecurityContext", true),
+            "InitializeSecurityContextW"
+        );
         assert_eq!(sspi_name("MakeSignature", true), "MakeSignature");
     }
 }

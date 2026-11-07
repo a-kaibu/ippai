@@ -41,7 +41,9 @@ fn entry(l: &str) -> Option<(&str, Option<&str>)> {
 }
 
 fn unquote(v: &str) -> &str {
-    if v.len() >= 2 && (v.starts_with('"') && v.ends_with('"') || v.starts_with('\'') && v.ends_with('\'')) {
+    if v.len() >= 2
+        && (v.starts_with('"') && v.ends_with('"') || v.starts_with('\'') && v.ends_with('\''))
+    {
         &v[1..v.len() - 1]
     } else {
         v
@@ -51,14 +53,21 @@ fn unquote(v: &str) -> &str {
 impl Ini {
     pub(crate) fn parse(text: &str) -> Ini {
         let mut ini = Ini::default();
-        let mut lines: Vec<&str> = text.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).collect();
+        let mut lines: Vec<&str> = text
+            .split('\n')
+            .map(|l| l.strip_suffix('\r').unwrap_or(l))
+            .collect();
         if lines.last() == Some(&"") {
             lines.pop();
         }
         for l in lines {
             if let Some(h) = l.trim_start().strip_prefix('[') {
                 let name = h.split(']').next().unwrap_or("").trim().to_string();
-                ini.secs.push(Sec { header: l.to_string(), name, lines: Vec::new() });
+                ini.secs.push(Sec {
+                    header: l.to_string(),
+                    name,
+                    lines: Vec::new(),
+                });
             } else if let Some(s) = ini.secs.last_mut() {
                 s.lines.push(l.to_string());
             } else {
@@ -70,7 +79,11 @@ impl Ini {
 
     pub(crate) fn text(&self) -> String {
         let mut s = String::new();
-        for l in self.pre.iter().chain(self.secs.iter().flat_map(|x| std::iter::once(&x.header).chain(&x.lines))) {
+        for l in self.pre.iter().chain(
+            self.secs
+                .iter()
+                .flat_map(|x| std::iter::once(&x.header).chain(&x.lines)),
+        ) {
             s += l;
             s += "\r\n";
         }
@@ -79,7 +92,9 @@ impl Ini {
 
     /// The first section called `name` (later ones of the same name are never seen)
     fn sec(&self, name: &str) -> Option<usize> {
-        self.secs.iter().position(|x| x.name.eq_ignore_ascii_case(name.trim()))
+        self.secs
+            .iter()
+            .position(|x| x.name.eq_ignore_ascii_case(name.trim()))
     }
 
     pub(crate) fn names(&self) -> Vec<String> {
@@ -89,24 +104,45 @@ impl Ini {
     /// The keys that have values, in file order (duplicates too)
     pub(crate) fn keys(&self, sec: &str) -> Option<Vec<String>> {
         let s = &self.secs[self.sec(sec)?];
-        Some(s.lines.iter().filter_map(|l| entry(l)).filter(|e| e.1.is_some()).map(|e| e.0.to_string()).collect())
+        Some(
+            s.lines
+                .iter()
+                .filter_map(|l| entry(l))
+                .filter(|e| e.1.is_some())
+                .map(|e| e.0.to_string())
+                .collect(),
+        )
     }
 
     /// GetPrivateProfileSection's lines: "key=value" trimmed (quotes kept), bare keys as they are
     pub(crate) fn section(&self, sec: &str) -> Option<Vec<String>> {
         let s = &self.secs[self.sec(sec)?];
-        Some(s.lines.iter().filter_map(|l| entry(l)).map(|(k, v)| v.map_or(k.to_string(), |v| format!("{k}={v}"))).collect())
+        Some(
+            s.lines
+                .iter()
+                .filter_map(|l| entry(l))
+                .map(|(k, v)| v.map_or(k.to_string(), |v| format!("{k}={v}")))
+                .collect(),
+        )
     }
 
     /// The value of `key`: trimmed, and unquoted when quoted at both ends
     pub(crate) fn value(&self, sec: &str, key: &str) -> Option<String> {
         let s = &self.secs[self.sec(sec)?];
-        s.lines.iter().filter_map(|l| entry(l)).find(|e| e.1.is_some() && e.0.eq_ignore_ascii_case(key.trim())).map(|e| unquote(e.1.unwrap()).to_string())
+        s.lines
+            .iter()
+            .filter_map(|l| entry(l))
+            .find(|e| e.1.is_some() && e.0.eq_ignore_ascii_case(key.trim()))
+            .map(|e| unquote(e.1.unwrap()).to_string())
     }
 
     fn sec_or_new(&mut self, sec: &str) -> usize {
         self.sec(sec).unwrap_or_else(|| {
-            self.secs.push(Sec { header: format!("[{sec}]"), name: sec.trim().to_string(), lines: Vec::new() });
+            self.secs.push(Sec {
+                header: format!("[{sec}]"),
+                name: sec.trim().to_string(),
+                lines: Vec::new(),
+            });
             self.secs.len() - 1
         })
     }
@@ -116,7 +152,11 @@ impl Ini {
     pub(crate) fn set(&mut self, sec: &str, key: &str, val: Option<&str>) {
         let Some(val) = val else {
             if let Some(i) = self.sec(sec) {
-                if let Some(j) = self.secs[i].lines.iter().position(|l| entry(l).is_some_and(|e| e.0.eq_ignore_ascii_case(key.trim()))) {
+                if let Some(j) = self.secs[i]
+                    .lines
+                    .iter()
+                    .position(|l| entry(l).is_some_and(|e| e.0.eq_ignore_ascii_case(key.trim())))
+                {
                     self.secs[i].lines.remove(j);
                 }
             }
@@ -124,13 +164,19 @@ impl Ini {
         };
         let i = self.sec_or_new(sec);
         let lines = &mut self.secs[i].lines;
-        match lines.iter().position(|l| entry(l).is_some_and(|e| e.0.eq_ignore_ascii_case(key.trim()))) {
+        match lines
+            .iter()
+            .position(|l| entry(l).is_some_and(|e| e.0.eq_ignore_ascii_case(key.trim())))
+        {
             Some(j) => {
                 let k = entry(&lines[j]).unwrap().0.to_string();
                 lines[j] = format!("{k}={val}");
             }
             None => {
-                let at = lines.iter().rposition(|l| !l.trim().is_empty()).map_or(0, |j| j + 1);
+                let at = lines
+                    .iter()
+                    .rposition(|l| !l.trim().is_empty())
+                    .map_or(0, |j| j + 1);
                 lines.insert(at, format!("{}={val}", key.trim()));
             }
         }
@@ -152,7 +198,10 @@ impl Ini {
 /// GetPrivateProfileStruct's text: the bytes in hex, then their sum's low byte
 pub(crate) fn struct_hex(b: &[u8]) -> String {
     let sum = b.iter().fold(0u8, |s, &x| s.wrapping_add(x));
-    b.iter().chain([sum].iter()).map(|x| format!("{x:02X}")).collect()
+    b.iter()
+        .chain([sum].iter())
+        .map(|x| format!("{x:02X}"))
+        .collect()
 }
 
 /// The `size` bytes of a struct value, or the Win32 error: 24 (ERROR_BAD_LENGTH) when the text
@@ -212,7 +261,12 @@ fn load(name: &str) -> Option<Ini> {
     let mut wide = false;
     let text = if b.starts_with(&[0xff, 0xfe]) {
         wide = true;
-        String::from_utf16_lossy(&b[2..].chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect::<Vec<_>>())
+        String::from_utf16_lossy(
+            &b[2..]
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect::<Vec<_>>(),
+        )
     } else if let Some(u) = b.strip_prefix(&[0xef, 0xbb, 0xbf]) {
         String::from_utf8_lossy(u).into_owned()
     } else {
@@ -225,7 +279,14 @@ fn load(name: &str) -> Option<Ini> {
 
 fn save(name: &str, ini: &Ini) -> bool {
     let s = ini.text();
-    let bytes = if ini.wide { [0xff, 0xfe].into_iter().chain(s.encode_utf16().flat_map(|u| u.to_le_bytes())).collect() } else { crate::text::s2a(&s) };
+    let bytes = if ini.wide {
+        [0xff, 0xfe]
+            .into_iter()
+            .chain(s.encode_utf16().flat_map(|u| u.to_le_bytes()))
+            .collect()
+    } else {
+        crate::text::s2a(&s)
+    };
     let w = path(name);
     let h = files::resolve(&w).unwrap_or_else(|| files::resolve_new(&w));
     kura::fs::write(h, bytes).is_ok()
@@ -234,7 +295,11 @@ fn save(name: &str, ini: &Ini) -> bool {
 /// Copies `s` into a buffer of `cap` characters (truncated, NUL-terminated): returns the length
 /// and whether it was cut (Windows counts filling the buffer exactly as cut).
 fn put(dst: u32, cap: u32, s: &str, wide: bool) -> (u32, bool) {
-    let full = if wide { s.encode_utf16().count() } else { crate::text::s2a(s).len() } as u32;
+    let full = if wide {
+        s.encode_utf16().count()
+    } else {
+        crate::text::s2a(s).len()
+    } as u32;
     if cap == 0 {
         return (0, true);
     }
@@ -269,7 +334,13 @@ fn put_list(dst: u32, cap: u32, items: &[String], wide: bool) -> (u32, bool) {
     }
     let cut = n + 1 > cap;
     let len = if cut { cap - 2 } else { n };
-    let z = |at: u32, v: u16| if wide { crate::mem::w16(dst + 2 * at, v) } else { crate::mem::w8(dst + at, v as u8) };
+    let z = |at: u32, v: u16| {
+        if wide {
+            crate::mem::w16(dst + 2 * at, v)
+        } else {
+            crate::mem::w8(dst + at, v as u8)
+        }
+    };
     for i in 0..len {
         z(i, out[i as usize]);
     }
@@ -303,7 +374,11 @@ fn get_string(c: &mut Ctx, wide: bool, file: &str) -> u32 {
             n
         }
         None => {
-            let v = if def != 0 { arg_str(def, wide).trim_end().to_string() } else { String::new() };
+            let v = if def != 0 {
+                arg_str(def, wide).trim_end().to_string()
+            } else {
+                String::new()
+            };
             crate::k32::last_error(2);
             put(buf, cap, &v, wide).0
         }
@@ -357,7 +432,11 @@ fn arg_list(p: u32, wide: bool) -> Vec<String> {
     let mut at = p;
     loop {
         let s = arg_str(at, wide);
-        let n = if wide { s.encode_utf16().count() } else { crate::text::s2a(&s).len() } as u32;
+        let n = if wide {
+            s.encode_utf16().count()
+        } else {
+            crate::text::s2a(&s).len()
+        } as u32;
         if n == 0 {
             return v;
         }
@@ -377,12 +456,22 @@ fn write_section(c: &mut Ctx, wide: bool, file: &str) -> u32 {
 
 fn get_section(c: &mut Ctx, wide: bool, file: &str) -> u32 {
     let ini = load(file).unwrap_or_default();
-    put_list(c.a(1), c.a(2), &ini.section(&arg_str(c.a(0), wide)).unwrap_or_default(), wide).0
+    put_list(
+        c.a(1),
+        c.a(2),
+        &ini.section(&arg_str(c.a(0), wide)).unwrap_or_default(),
+        wide,
+    )
+    .0
 }
 
 fn get_struct(c: &mut Ctx, wide: bool) -> u32 {
     let (sec, key, buf, size) = (arg_str(c.a(0), wide), arg_str(c.a(1), wide), c.a(2), c.a(3));
-    let file = if c.a(4) != 0 { arg_str(c.a(4), wide) } else { "win.ini".to_string() };
+    let file = if c.a(4) != 0 {
+        arg_str(c.a(4), wide)
+    } else {
+        "win.ini".to_string()
+    };
     let Some(v) = load(&file).unwrap_or_default().value(&sec, &key) else {
         crate::k32::last_error(2);
         return 0;
@@ -401,7 +490,11 @@ fn get_struct(c: &mut Ctx, wide: bool) -> u32 {
 
 fn write_struct(c: &mut Ctx, wide: bool) -> u32 {
     let (sec, key, buf, size) = (arg_str(c.a(0), wide), arg_str(c.a(1), wide), c.a(2), c.a(3));
-    let file = if c.a(4) != 0 { arg_str(c.a(4), wide) } else { "win.ini".to_string() };
+    let file = if c.a(4) != 0 {
+        arg_str(c.a(4), wide)
+    } else {
+        "win.ini".to_string()
+    };
     let v = (buf != 0).then(|| struct_hex(crate::mem::slice(buf, size)));
     modify(&file, |ini| ini.set(&sec, &key, v.as_deref()))
 }
@@ -487,7 +580,10 @@ fn WritePrivateProfileStructW(c: &mut Ctx) -> u32 {
 
 pub fn init() {
     for (n, f) in [
-        ("GetPrivateProfileStringA", GetPrivateProfileStringA as fn(&mut Ctx) -> u32),
+        (
+            "GetPrivateProfileStringA",
+            GetPrivateProfileStringA as fn(&mut Ctx) -> u32,
+        ),
         ("GetPrivateProfileStringW", GetPrivateProfileStringW),
         ("GetProfileStringA", GetProfileStringA),
         ("GetProfileStringW", GetProfileStringW),
@@ -501,8 +597,14 @@ pub fn init() {
         ("WriteProfileStringW", WriteProfileStringW),
         ("GetPrivateProfileSectionA", GetPrivateProfileSectionA),
         ("GetPrivateProfileSectionW", GetPrivateProfileSectionW),
-        ("GetPrivateProfileSectionNamesA", GetPrivateProfileSectionNamesA),
-        ("GetPrivateProfileSectionNamesW", GetPrivateProfileSectionNamesW),
+        (
+            "GetPrivateProfileSectionNamesA",
+            GetPrivateProfileSectionNamesA,
+        ),
+        (
+            "GetPrivateProfileSectionNamesW",
+            GetPrivateProfileSectionNamesW,
+        ),
         ("WritePrivateProfileSectionA", WritePrivateProfileSectionA),
         ("WritePrivateProfileSectionW", WritePrivateProfileSectionW),
         ("GetPrivateProfileStructA", GetPrivateProfileStructA),

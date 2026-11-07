@@ -40,7 +40,14 @@ pub struct Timeline {
 
 impl Timeline {
     pub fn new(duration: u64) -> Timeline {
-        Timeline { duration, stop: duration, rate: 1.0, pos: 0, since: None, done: false }
+        Timeline {
+            duration,
+            stop: duration,
+            rate: 1.0,
+            pos: 0,
+            since: None,
+            done: false,
+        }
     }
     pub fn running(&self) -> bool {
         self.since.is_some()
@@ -49,8 +56,14 @@ impl Timeline {
         match self.since {
             // (a position past the stop stays where it was set: seeking there)
             Some(t) => {
-                let p = self.pos.saturating_add((now.saturating_sub(t) as f64 * self.rate) as u64);
-                if self.pos >= self.stop { self.pos } else { p.min(self.stop) }
+                let p = self
+                    .pos
+                    .saturating_add((now.saturating_sub(t) as f64 * self.rate) as u64);
+                if self.pos >= self.stop {
+                    self.pos
+                } else {
+                    p.min(self.stop)
+                }
             }
             None => self.pos,
         }
@@ -140,7 +153,11 @@ pub fn letterbox(dst: R, src_w: i32, src_h: i32) -> R {
 /// pixel, black around it: into `out`, the window's part `view` (rows of `view.2` pixels).
 pub fn blit(frame: &[u32], fw: i32, fh: i32, src: R, out: &mut [u32], view: R, dst: R) {
     let src = clip(src, (0, 0, fw, fh));
-    let on = if src.2 <= 0 || src.3 <= 0 || dst.2 <= 0 || dst.3 <= 0 { (0, 0, 0, 0) } else { clip(dst, view) };
+    let on = if src.2 <= 0 || src.3 <= 0 || dst.2 <= 0 || dst.3 <= 0 {
+        (0, 0, 0, 0)
+    } else {
+        clip(dst, view)
+    };
     // (black around the picture only: a picture over all of the view leaves none)
     if on != view {
         out.fill(0xff00_0000);
@@ -149,7 +166,9 @@ pub fn blit(frame: &[u32], fw: i32, fh: i32, src: R, out: &mut [u32], view: R, d
         return;
     }
     // the source column of each column, the same on every row
-    let xs: Vec<usize> = (on.0..on.0 + on.2).map(|x| (src.0 + ((x - dst.0) as i64 * src.2 as i64 / dst.2 as i64) as i32) as usize).collect();
+    let xs: Vec<usize> = (on.0..on.0 + on.2)
+        .map(|x| (src.0 + ((x - dst.0) as i64 * src.2 as i64 / dst.2 as i64) as i32) as usize)
+        .collect();
     for y in on.1..on.1 + on.3 {
         let sy = src.1 + ((y - dst.1) as i64 * src.3 as i64 / dst.3 as i64) as i32;
         let row = &frame[(sy * fw) as usize..];
@@ -215,7 +234,19 @@ impl Sound {
     }
     /// The `len` bytes of sound `read` reads.
     pub fn read(len: u64, read: ReadAt) -> Option<Sound> {
-        let mut s = Sound { read, len, step: SOUND_READ, pos: 0, ogg: Default::default(), heads: Default::default(), dec: None, channels: 0, rate: 0, pcm: VecDeque::new(), base: 0 };
+        let mut s = Sound {
+            read,
+            len,
+            step: SOUND_READ,
+            pos: 0,
+            ogg: Default::default(),
+            heads: Default::default(),
+            dec: None,
+            channels: 0,
+            rate: 0,
+            pcm: VecDeque::new(),
+            base: 0,
+        };
         let id = s.packet()?;
         let _comment = s.packet()?;
         let setup = s.packet()?;
@@ -279,7 +310,13 @@ impl Sound {
             buf.clear();
             self.dec.as_mut().unwrap().packet(&p, &mut buf);
             let ch = self.channels.max(1);
-            self.pcm.extend(buf.chunks_exact(ch).map(|f| if ch == 1 { [f[0], f[0]] } else { [f[0], f[1]] }));
+            self.pcm.extend(buf.chunks_exact(ch).map(|f| {
+                if ch == 1 {
+                    [f[0], f[0]]
+                } else {
+                    [f[0], f[1]]
+                }
+            }));
             // (far behind what is wanted: not kept)
             let keep = from.saturating_sub(self.rate as u64);
             if keep > self.base + self.pcm.len() as u64 {
@@ -288,7 +325,11 @@ impl Sound {
             }
         }
         for i in 0..n as u64 {
-            let f = (from + i).checked_sub(self.base).and_then(|k| self.pcm.get(k as usize)).copied().unwrap_or([0.0; 2]);
+            let f = (from + i)
+                .checked_sub(self.base)
+                .and_then(|k| self.pcm.get(k as usize))
+                .copied()
+                .unwrap_or([0.0; 2]);
             out.extend(f);
         }
     }
@@ -324,11 +365,22 @@ impl Movie {
                     video::close(stream);
                     return None;
                 };
-                Sound::read(l as u64, Box::new(move |at, b| video::read_at(&mut f, o as u64 + at, b)))
+                Sound::read(
+                    l as u64,
+                    Box::new(move |at, b| video::read_at(&mut f, o as u64 + at, b)),
+                )
             }
             None => None,
         };
-        Some(Movie { stream, w: i.w, h: i.h, frames: i.frames(), rate, duration: i.duration, sound })
+        Some(Movie {
+            stream,
+            w: i.w,
+            h: i.h,
+            frames: i.frames(),
+            rate,
+            duration: i.duration,
+            sound,
+        })
     }
 }
 
@@ -370,7 +422,19 @@ impl Play {
     pub fn new(movie: Movie) -> Play {
         let tl = Timeline::new(movie.duration);
         let src = (0, 0, movie.w as i32, movie.h as i32);
-        Play { movie, tl, place: Place { src, ..Place::default() }, volume: 0, disp: 0, shown: None, restacked: None, audio: None }
+        Play {
+            movie,
+            tl,
+            place: Place {
+                src,
+                ..Place::default()
+            },
+            volume: 0,
+            disp: 0,
+            shown: None,
+            restacked: None,
+            audio: None,
+        }
     }
 }
 
@@ -438,7 +502,10 @@ fn thread() {
                     let wait = turn();
                     kura::snap::idle();
                     g = PLAYS.lock().unwrap_or_else(|e| e.into_inner());
-                    g = WAKE.wait_timeout(g, wait).unwrap_or_else(|e| e.into_inner()).0;
+                    g = WAKE
+                        .wait_timeout(g, wait)
+                        .unwrap_or_else(|e| e.into_inner())
+                        .0;
                 }
             })
             .expect("movie thread");
@@ -454,7 +521,19 @@ fn turn() -> Duration {
     let mut draws = Vec::new();
     let keys: Vec<(u32, u32)> = with(|m| m.iter().map(|(&k, p)| (k, p.place.hwnd)).collect());
     // the windows' places on the screen (user32's lock, not under ours)
-    let screens: HashMap<u32, Option<crate::user::Rect>> = keys.iter().map(|&(_, h)| (h, if h == 0 { None } else { crate::user::client_rect_screen(h) })).collect();
+    let screens: HashMap<u32, Option<crate::user::Rect>> = keys
+        .iter()
+        .map(|&(_, h)| {
+            (
+                h,
+                if h == 0 {
+                    None
+                } else {
+                    crate::user::client_rect_screen(h)
+                },
+            )
+        })
+        .collect();
     with(|m| {
         for (&k, p) in m.iter_mut() {
             if p.tl.complete(t) {
@@ -466,9 +545,13 @@ fn turn() -> Duration {
             let n = frame_at(p.tl.position(t), p.movie.rate, p.movie.frames);
             if p.tl.running() {
                 // to the next frame
-                let next = (n as u128 + 1) * p.movie.rate.1 as u128 * SEC as u128 / p.movie.rate.0 as u128;
+                let next =
+                    (n as u128 + 1) * p.movie.rate.1 as u128 * SEC as u128 / p.movie.rate.0 as u128;
                 let to = (next as u64).saturating_sub(p.tl.position(t));
-                wait = wait.min(Duration::from_nanos((to as f64 / p.tl.rate.max(0.01) * 100.0) as u64).max(Duration::from_millis(2)));
+                wait = wait.min(
+                    Duration::from_nanos((to as f64 / p.tl.rate.max(0.01) * 100.0) as u64)
+                        .max(Duration::from_millis(2)),
+                );
             }
             sound(p, t);
             // the window's part of the screen, clipped to it
@@ -477,7 +560,11 @@ fn turn() -> Duration {
                 None if p.place.hwnd == 0 => (0, 0, 1 << 20, 1 << 20),
                 None => (0, 0, 0, 0),
             };
-            let dst = if p.place.letterbox { letterbox(p.place.dst, p.place.src.2, p.place.src.3) } else { p.place.dst };
+            let dst = if p.place.letterbox {
+                letterbox(p.place.dst, p.place.src.2, p.place.src.3)
+            } else {
+                p.place.dst
+            };
             let on = clip((client.0 + dst.0, client.1 + dst.1, dst.2, dst.3), client);
             let rect = [on.0, on.1, on.0 + on.2, on.1 + on.3];
             if !p.place.visible || on.2 <= 0 || on.3 <= 0 {
@@ -488,7 +575,10 @@ fn turn() -> Duration {
                 }
                 continue;
             }
-            if p.shown == Some((n, rect)) && p.restacked.is_some_and(|r| r.elapsed() < Duration::from_millis(500)) {
+            if p.shown == Some((n, rect))
+                && p.restacked
+                    .is_some_and(|r| r.elapsed() < Duration::from_millis(500))
+            {
                 continue;
             }
             if p.disp == 0 {
@@ -496,16 +586,30 @@ fn turn() -> Duration {
                 p.disp = 0x7ffe_0000 + NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
             // (on top of the game's windows, again now and then: the game may raise its own)
-            let restack = p.shown.map(|s| s.1) != Some(rect) || p.restacked.is_none_or(|r| r.elapsed() >= Duration::from_millis(500));
+            let restack = p.shown.map(|s| s.1) != Some(rect)
+                || p.restacked
+                    .is_none_or(|r| r.elapsed() >= Duration::from_millis(500));
             if restack {
-                let r8 = [rect[0], rect[1], rect[2], rect[3], rect[0], rect[1], rect[2], rect[3]];
+                let r8 = [
+                    rect[0], rect[1], rect[2], rect[3], rect[0], rect[1], rect[2], rect[3],
+                ];
                 unsafe { kura::display::vnhost_window_pos(p.disp, r8.as_ptr(), 1, 1, 0) };
                 p.restacked = Some(Instant::now());
             }
             if p.shown.map(|s| s.0) != Some(n) || p.shown.map(|s| s.1) != Some(rect) {
                 // the window's part in the picture's coordinates: dst moved by the clip
                 let view = (on.0 - client.0, on.1 - client.1, on.2, on.3);
-                draws.push((k, p.movie.stream, n, p.movie.w, p.movie.h, p.place.src, dst, view, p.disp));
+                draws.push((
+                    k,
+                    p.movie.stream,
+                    n,
+                    p.movie.w,
+                    p.movie.h,
+                    p.place.src,
+                    dst,
+                    view,
+                    p.disp,
+                ));
             }
             p.shown = Some((n, rect));
         }
@@ -516,10 +620,26 @@ fn turn() -> Duration {
         let (mut px, mut out) = BUFS.with(|b| b.borrow_mut().remove(&k)).unwrap_or_default();
         out.resize((view.2 * view.3) as usize, 0);
         // the picture as it is, all of it: straight into what the display gets
-        let whole = src == (0, 0, w as i32, h as i32) && dst == view && (dst.2, dst.3) == (w as i32, h as i32);
-        let (buf, pitch) = if whole { (&mut out, view.2 as usize) } else { (&mut px, w as usize) };
+        let whole = src == (0, 0, w as i32, h as i32)
+            && dst == view
+            && (dst.2, dst.3) == (w as i32, h as i32);
+        let (buf, pitch) = if whole {
+            (&mut out, view.2 as usize)
+        } else {
+            (&mut px, w as usize)
+        };
         buf.resize(pitch * h as usize, 0);
-        let ok = unsafe { video::frame(stream, n as i32, buf.as_mut_ptr() as *mut u8, 4 * pitch, w, h, video::Out::Rgb601) };
+        let ok = unsafe {
+            video::frame(
+                stream,
+                n as i32,
+                buf.as_mut_ptr() as *mut u8,
+                4 * pitch,
+                w,
+                h,
+                video::Out::Rgb601,
+            )
+        };
         let t1 = Instant::now();
         if !ok {
             // (nothing yet: drawn again next turn)
@@ -605,13 +725,18 @@ fn stats(k: u32, n: u32, t: [Duration; 3], pixels: usize) {
             s.pixels as f64 / since.elapsed().as_secs_f64() / 1e6
         );
         let last = std::mem::take(&mut s.last);
-        *s = S { last, ..Default::default() };
+        *s = S {
+            last,
+            ..Default::default()
+        };
     }
 }
 
 /// Keeps the sound queued for where the movie is (only while it runs at its own rate).
 fn sound(p: &mut Play, t: u64) {
-    let Some(s) = p.movie.sound.as_mut() else { return };
+    let Some(s) = p.movie.sound.as_mut() else {
+        return;
+    };
     let playing = p.tl.running() && p.tl.rate == 1.0 && !p.tl.done;
     let want = p.tl.position(t) as u128 * s.rate as u128 / SEC as u128;
     if !playing {
@@ -622,7 +747,12 @@ fn sound(p: &mut Play, t: u64) {
     }
     let (a, next) = match p.audio {
         // (out of step by more than 60 ms, after a seek or a pause: queued again from here)
-        Some((a, next)) if (next as i128 - kura::audio::queued(a) as i128 - want as i128).abs() <= s.rate as i128 * 60 / 1000 => (a, next),
+        Some((a, next))
+            if (next as i128 - kura::audio::queued(a) as i128 - want as i128).abs()
+                <= s.rate as i128 * 60 / 1000 =>
+        {
+            (a, next)
+        }
         old => {
             if let Some((a, _)) = old {
                 kura::audio::close(a);
@@ -636,7 +766,11 @@ fn sound(p: &mut Play, t: u64) {
         let n = (AHEAD - q) as usize + 441;
         let mut buf = Vec::with_capacity(2 * n);
         s.take(next, n, &mut buf);
-        let gain = if p.volume >= 0 { 1.0 } else { 10f32.powf(p.volume.max(-10000) as f32 / 2000.0) };
+        let gain = if p.volume >= 0 {
+            1.0
+        } else {
+            10f32.powf(p.volume.max(-10000) as f32 / 2000.0)
+        };
         if gain != 1.0 {
             buf.iter_mut().for_each(|x| *x *= gain);
         }
@@ -795,15 +929,33 @@ mod tests {
                 p.take(0, 200_000, &mut got);
                 assert!(got == whole, "{name} read {step} bytes at a time");
             }
-            let total = whole.chunks(2).rposition(|f| f[0] != 0.0 || f[1] != 0.0).unwrap_or(0) as u64 + 1;
+            let total = whole
+                .chunks(2)
+                .rposition(|f| f[0] != 0.0 || f[1] != 0.0)
+                .unwrap_or(0) as u64
+                + 1;
             assert!(total > 10_000, "{name}: {total} frames");
-            for (from, n) in [(0u64, 1000usize), (5000, 3000), (100, 50), (total - 10, 100), (2000, 7000), (0, 10), (total + 5, 10)] {
+            for (from, n) in [
+                (0u64, 1000usize),
+                (5000, 3000),
+                (100, 50),
+                (total - 10, 100),
+                (2000, 7000),
+                (0, 10),
+                (total + 5, 10),
+            ] {
                 let mut got = Vec::new();
                 s.take(from, n, &mut got);
-                let want: Vec<f32> = (0..n as u64).flat_map(|i| {
-                    let k = (from + i) as usize;
-                    if 2 * k + 1 < whole.len() { [whole[2 * k], whole[2 * k + 1]] } else { [0.0, 0.0] }
-                }).collect();
+                let want: Vec<f32> = (0..n as u64)
+                    .flat_map(|i| {
+                        let k = (from + i) as usize;
+                        if 2 * k + 1 < whole.len() {
+                            [whole[2 * k], whole[2 * k + 1]]
+                        } else {
+                            [0.0, 0.0]
+                        }
+                    })
+                    .collect();
                 assert_eq!(got, want, "{name} from {from}");
             }
             if name == "mono-q0" {

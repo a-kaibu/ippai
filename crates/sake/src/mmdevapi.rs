@@ -130,7 +130,10 @@ fn en_register(c: &mut Ctx) -> u32 {
     if c.a(1) == 0 {
         return E_POINTER;
     }
-    CLIENTS.lock().unwrap_or_else(|e| e.into_inner()).push(c.a(1));
+    CLIENTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(c.a(1));
     S_OK
 }
 /// UnregisterEndpointNotificationCallback(IMMNotificationClient*): one registration of it
@@ -155,7 +158,9 @@ fn en_addref(_: &mut Ctx) -> u32 {
 // (fetch_update is try_update on newer toolchains, as in mem.rs)
 #[allow(deprecated)]
 fn en_release(_: &mut Ctx) -> u32 {
-    let r = ENUM_REFS.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |r| Some(r.saturating_sub(1).max(1)));
+    let r = ENUM_REFS.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |r| {
+        Some(r.saturating_sub(1).max(1))
+    });
     r.unwrap_or(1).saturating_sub(1).max(1)
 }
 fn en_qi_ref(c: &mut Ctx) -> u32 {
@@ -167,7 +172,20 @@ fn en_qi_ref(c: &mut Ctx) -> u32 {
 }
 fn enumerator_object() -> u32 {
     static O: OnceLock<u32> = OnceLock::new();
-    singleton("IMMDeviceEnumerator", &[(en_qi_ref, b(3)), (en_addref, b(1)), (en_release, b(1)), (en_enum, b(4)), (en_default, b(4)), (en_get, b(3)), (en_register, b(2)), (en_unregister, b(2))], &O)
+    singleton(
+        "IMMDeviceEnumerator",
+        &[
+            (en_qi_ref, b(3)),
+            (en_addref, b(1)),
+            (en_release, b(1)),
+            (en_enum, b(4)),
+            (en_default, b(4)),
+            (en_get, b(3)),
+            (en_register, b(2)),
+            (en_unregister, b(2)),
+        ],
+        &O,
+    )
 }
 /// The enumerator with a new reference for the caller
 pub fn enumerator() -> u32 {
@@ -226,7 +244,18 @@ fn col_item(c: &mut Ctx) -> u32 {
 }
 fn collection(has: bool) -> u32 {
     static V: OnceLock<u32> = OnceLock::new();
-    let v = *V.get_or_init(|| crate::api::vtable("IMMDeviceCollection", &[(col_qi, b(3)), (col_addref, b(1)), (col_release, b(1)), (col_count, b(2)), (col_item, b(3))]));
+    let v = *V.get_or_init(|| {
+        crate::api::vtable(
+            "IMMDeviceCollection",
+            &[
+                (col_qi, b(3)),
+                (col_addref, b(1)),
+                (col_release, b(1)),
+                (col_count, b(2)),
+                (col_item, b(3)),
+            ],
+        )
+    });
     let o = mem::heap_alloc(3 * ps(), true);
     wp(o, v);
     w32(o + ps(), has as u32);
@@ -283,7 +312,10 @@ fn dev_activate(c: &mut Ctx) -> u32 {
         putp(out, o);
         return S_OK;
     }
-    crate::com::warn_once(&format!("IMMDevice::Activate {:08x}: not available", r32(iid)));
+    crate::com::warn_once(&format!(
+        "IMMDevice::Activate {:08x}: not available",
+        r32(iid)
+    ));
     putp(out, 0);
     E_NOINTERFACE
 }
@@ -316,7 +348,19 @@ fn dev_state(c: &mut Ctx) -> u32 {
 }
 fn device() -> u32 {
     static O: OnceLock<u32> = OnceLock::new();
-    singleton("IMMDevice", &[(dev_qi, b(3)), (one, b(1)), (one, b(1)), (dev_activate, b(5)), (dev_store, b(3)), (dev_id, b(2)), (dev_state, b(2))], &O)
+    singleton(
+        "IMMDevice",
+        &[
+            (dev_qi, b(3)),
+            (one, b(1)),
+            (one, b(1)),
+            (dev_activate, b(5)),
+            (dev_store, b(3)),
+            (dev_id, b(2)),
+            (dev_state, b(2)),
+        ],
+        &O,
+    )
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -350,7 +394,11 @@ fn ep_flow(c: &mut Ctx) -> u32 {
 }
 fn endpoint() -> u32 {
     static O: OnceLock<u32> = OnceLock::new();
-    singleton("IMMEndpoint", &[(ep_qi, b(3)), (one, b(1)), (one, b(1)), (ep_flow, b(2))], &O)
+    singleton(
+        "IMMEndpoint",
+        &[(ep_qi, b(3)), (one, b(1)), (one, b(1)), (ep_flow, b(2))],
+        &O,
+    )
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -369,13 +417,76 @@ enum Val {
 /// PKEY_AudioEndpoint_GUID, PKEY_AudioEngine_DeviceFormat and the device interface path
 /// {233164c8-1b2c-4c7d-bc68-b671687a2567},1
 const KEYS: [([u8; 16], u32, Val); 7] = [
-    (guid(0xa45c_254e, 0xdf1c, 0x4efd, [0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0]), 14, Val::Str(FRIENDLY_NAME)),
-    (guid(0xa45c_254e, 0xdf1c, 0x4efd, [0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0]), 2, Val::Str("スピーカー")),
-    (guid(0x026e_516e, 0xb814, 0x414b, [0x83, 0xcd, 0x85, 0x6d, 0x6f, 0xef, 0x48, 0x22]), 2, Val::Str("sake Audio")),
-    (guid(0x1da5_d803, 0xd492, 0x4edd, [0x8c, 0x23, 0xe0, 0xc0, 0xff, 0xee, 0x7f, 0x0e]), 0, Val::U4(1)),
-    (guid(0x1da5_d803, 0xd492, 0x4edd, [0x8c, 0x23, 0xe0, 0xc0, 0xff, 0xee, 0x7f, 0x0e]), 4, Val::Str(ENDPOINT_GUID)),
-    (guid(0xf19f_064d, 0x082c, 0x4e27, [0xbc, 0x73, 0x68, 0x82, 0xa1, 0xbb, 0x8e, 0x4c]), 0, Val::DeviceFormat),
-    (guid(0x2331_64c8, 0x1b2c, 0x4c7d, [0xbc, 0x68, 0xb6, 0x71, 0x68, 0x7a, 0x25, 0x67]), 1, Val::Str(INTERFACE_PATH)),
+    (
+        guid(
+            0xa45c_254e,
+            0xdf1c,
+            0x4efd,
+            [0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0],
+        ),
+        14,
+        Val::Str(FRIENDLY_NAME),
+    ),
+    (
+        guid(
+            0xa45c_254e,
+            0xdf1c,
+            0x4efd,
+            [0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0],
+        ),
+        2,
+        Val::Str("スピーカー"),
+    ),
+    (
+        guid(
+            0x026e_516e,
+            0xb814,
+            0x414b,
+            [0x83, 0xcd, 0x85, 0x6d, 0x6f, 0xef, 0x48, 0x22],
+        ),
+        2,
+        Val::Str("sake Audio"),
+    ),
+    (
+        guid(
+            0x1da5_d803,
+            0xd492,
+            0x4edd,
+            [0x8c, 0x23, 0xe0, 0xc0, 0xff, 0xee, 0x7f, 0x0e],
+        ),
+        0,
+        Val::U4(1),
+    ),
+    (
+        guid(
+            0x1da5_d803,
+            0xd492,
+            0x4edd,
+            [0x8c, 0x23, 0xe0, 0xc0, 0xff, 0xee, 0x7f, 0x0e],
+        ),
+        4,
+        Val::Str(ENDPOINT_GUID),
+    ),
+    (
+        guid(
+            0xf19f_064d,
+            0x082c,
+            0x4e27,
+            [0xbc, 0x73, 0x68, 0x82, 0xa1, 0xbb, 0x8e, 0x4c],
+        ),
+        0,
+        Val::DeviceFormat,
+    ),
+    (
+        guid(
+            0x2331_64c8,
+            0x1b2c,
+            0x4c7d,
+            [0xbc, 0x68, 0xb6, 0x71, 0x68, 0x7a, 0x25, 0x67],
+        ),
+        1,
+        Val::Str(INTERFACE_PATH),
+    ),
 ];
 /// The endpoint's guid, as DEVICE_ID ends
 const ENDPOINT_GUID: &str = "{5a2c1e0b-7f3d-4e8a-9c61-3b8d0f4a2e17}";
@@ -384,7 +495,10 @@ const fn guid(d1: u32, d2: u16, d3: u16, d4: [u8; 8]) -> [u8; 16] {
     let a = d1.to_le_bytes();
     let b = d2.to_le_bytes();
     let c = d3.to_le_bytes();
-    [a[0], a[1], a[2], a[3], b[0], b[1], c[0], c[1], d4[0], d4[1], d4[2], d4[3], d4[4], d4[5], d4[6], d4[7]]
+    [
+        a[0], a[1], a[2], a[3], b[0], b[1], c[0], c[1], d4[0], d4[1], d4[2], d4[3], d4[4], d4[5],
+        d4[6], d4[7],
+    ]
 }
 /// The device format Windows reports for a typical stereo output: 16-bit PCM, 44.1 kHz
 /// (the engine mixes in float, wasapi.rs's mix format)
@@ -401,7 +515,11 @@ fn device_format() -> [u8; 40] {
     put(&mut f, 18, &16u16.to_le_bytes());
     put(&mut f, 20, &3u32.to_le_bytes());
     // KSDATAFORMAT_SUBTYPE_PCM {00000001-0000-0010-8000-00aa00389b71}
-    put(&mut f, 24, &guid(1, 0, 0x10, [0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71]));
+    put(
+        &mut f,
+        24,
+        &guid(1, 0, 0x10, [0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71]),
+    );
     f
 }
 fn ps_qi(c: &mut Ctx) -> u32 {
@@ -420,7 +538,9 @@ fn ps_at(c: &mut Ctx) -> u32 {
     if key == 0 {
         return E_POINTER;
     }
-    let Some((g, pid, _)) = KEYS.get(i) else { return E_INVALIDARG };
+    let Some((g, pid, _)) = KEYS.get(i) else {
+        return E_INVALIDARG;
+    };
     mem::write(key, g);
     w32(key + 16, *pid);
     S_OK
@@ -434,7 +554,11 @@ fn ps_get(c: &mut Ctx) -> u32 {
     mem::fill(v, 8 + 2 * ps(), 0);
     let k = mem::slice(key, 16);
     let pid = r32(key + 16);
-    match KEYS.iter().find(|(g, p, _)| g[..] == *k && *p == pid).map(|e| &e.2) {
+    match KEYS
+        .iter()
+        .find(|(g, p, _)| g[..] == *k && *p == pid)
+        .map(|e| &e.2)
+    {
         Some(Val::Str(s)) => {
             w16(v, 31);
             putp(v + 8, task_wstr(s));
@@ -461,14 +585,26 @@ fn ps_denied(_: &mut Ctx) -> u32 {
 }
 fn store() -> u32 {
     static O: OnceLock<u32> = OnceLock::new();
-    singleton("IPropertyStore", &[(ps_qi, b(3)), (one, b(1)), (one, b(1)), (ps_count, b(2)), (ps_at, b(3)), (ps_get, b(3)), (ps_denied, b(3)), (ps_denied, b(1))], &O)
+    singleton(
+        "IPropertyStore",
+        &[
+            (ps_qi, b(3)),
+            (one, b(1)),
+            (one, b(1)),
+            (ps_count, b(2)),
+            (ps_at, b(3)),
+            (ps_get, b(3)),
+            (ps_denied, b(3)),
+            (ps_denied, b(1)),
+        ],
+        &O,
+    )
 }
 
 /// CoCreateInstance of CLSID_MMDeviceEnumerator {bcde0395-e52f-467c-8e3d-c4579291692e}
 pub fn create_instance(clsid: u32) -> Option<u32> {
     guid_is(clsid, 0xbcde_0395, 0xe52f, 0x467c).then(enumerator)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -479,7 +615,13 @@ mod tests {
     #[test]
     fn property_keys_are_windows_bytes_and_unique() {
         // PKEY_Device_FriendlyName {a45c254e-df1c-4efd-8020-67d146a850e0},14 as stored in memory
-        assert_eq!(KEYS[0].0, [0x4e, 0x25, 0x5c, 0xa4, 0x1c, 0xdf, 0xfd, 0x4e, 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0]);
+        assert_eq!(
+            KEYS[0].0,
+            [
+                0x4e, 0x25, 0x5c, 0xa4, 0x1c, 0xdf, 0xfd, 0x4e, 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8,
+                0x50, 0xe0
+            ]
+        );
         assert_eq!(KEYS[0].1, 14);
         for (i, a) in KEYS.iter().enumerate() {
             for b in &KEYS[i + 1..] {
@@ -511,7 +653,8 @@ mod tests {
             bits: u16_(14),
             cb: u16_(16),
             valid: u16_(18),
-            sub: (f[28..40] == [0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71]).then(|| u32_(24)),
+            sub: (f[28..40] == [0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71])
+                .then(|| u32_(24)),
         };
         assert_eq!((w.tag, w.cb, w.sub, u32_(20)), (0xfffe, 22, Some(1), 3));
         assert_eq!(crate::wasapi::shared_supported(&w), 0);

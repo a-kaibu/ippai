@@ -72,7 +72,8 @@ fn ring() {
 /// says so in the environment (IPPAI_ADEC=1: the guest starts before the page first lists
 /// streams), or by listing them. IPPAI_ADEC_OFF: none.
 pub fn available() -> bool {
-    (PAGE.load(Ordering::Relaxed) || crate::env_on!("IPPAI_ADEC")) && !crate::env_on!("IPPAI_ADEC_OFF")
+    (PAGE.load(Ordering::Relaxed) || crate::env_on!("IPPAI_ADEC"))
+        && !crate::env_on!("IPPAI_ADEC_OFF")
 }
 
 /// A stream of `codec` (WebCodecs' name: "mp3", "opus", "mp4a.40.2" ...); None without a page.
@@ -135,7 +136,9 @@ pub fn failed(id: u32) -> bool {
 /// Pushes chunks (one encoded frame each) of stream `id`.
 pub fn push<'a>(id: u32, chunks: impl IntoIterator<Item = &'a [u8]>) {
     let any = with(|m| {
-        let Some(s) = m.get_mut(&id).filter(|s| !s.closed && !s.failed) else { return false };
+        let Some(s) = m.get_mut(&id).filter(|s| !s.closed && !s.failed) else {
+            return false;
+        };
         let n0 = s.pushed;
         for c in chunks {
             s.queue.push_back(c.to_vec());
@@ -154,7 +157,9 @@ pub fn wait(id: u32, timeout: Duration) -> bool {
     let end = Instant::now() + timeout;
     let mut g = STREAMS.lock().unwrap_or_else(|e| e.into_inner());
     loop {
-        let Some(s) = g.get_or_insert_with(HashMap::new).get(&id) else { return false };
+        let Some(s) = g.get_or_insert_with(HashMap::new).get(&id) else {
+            return false;
+        };
         if s.failed || s.closed {
             return false;
         }
@@ -166,7 +171,10 @@ pub fn wait(id: u32, timeout: Duration) -> bool {
             return false;
         }
         // (in slices: a page woken late still gets its doorbell)
-        g = WAKE.wait_timeout(g, (end - now).min(Duration::from_millis(5))).unwrap_or_else(|e| e.into_inner()).0;
+        g = WAKE
+            .wait_timeout(g, (end - now).min(Duration::from_millis(5)))
+            .unwrap_or_else(|e| e.into_inner())
+            .0;
     }
 }
 
@@ -182,7 +190,12 @@ pub fn take(id: u32, max: usize, out: &mut Vec<f32>) -> usize {
 
 /// Pushes `chunks`, waits for them, and moves every decoded sample to `out`: the samples
 /// (interleaved), or None when the page failed or did not answer in `timeout`.
-pub fn decode<'a>(id: u32, chunks: impl IntoIterator<Item = &'a [u8]>, timeout: Duration, out: &mut Vec<f32>) -> Option<usize> {
+pub fn decode<'a>(
+    id: u32,
+    chunks: impl IntoIterator<Item = &'a [u8]>,
+    timeout: Duration,
+    out: &mut Vec<f32>,
+) -> Option<usize> {
     push(id, chunks);
     let ok = wait(id, timeout);
     let n = take(id, usize::MAX, out);
@@ -266,8 +279,15 @@ static CHUNK: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 /// # Safety
 /// `size` and `seq` must be writable.
 #[no_mangle]
-pub unsafe extern "C" fn vnhost_adec_chunk(id: u32, gen: u32, size: *mut u32, seq: *mut u32) -> u32 {
-    let Some((b, n)) = next_chunk(id, gen) else { return 0 };
+pub unsafe extern "C" fn vnhost_adec_chunk(
+    id: u32,
+    gen: u32,
+    size: *mut u32,
+    seq: *mut u32,
+) -> u32 {
+    let Some((b, n)) = next_chunk(id, gen) else {
+        return 0;
+    };
     let mut c = CHUNK.lock().unwrap_or_else(|e| e.into_inner());
     *c = b;
     *size = c.len() as u32;
@@ -293,13 +313,21 @@ fn next_chunk(id: u32, gen: u32) -> Option<(Vec<u8>, u32)> {
 /// # Safety
 /// `pcm` must hold `frames * channels` floats.
 #[no_mangle]
-pub unsafe extern "C" fn vnhost_adec_pcm(id: u32, gen: u32, pcm: *const f32, frames: u32, channels: u32) {
+pub unsafe extern "C" fn vnhost_adec_pcm(
+    id: u32,
+    gen: u32,
+    pcm: *const f32,
+    frames: u32,
+    channels: u32,
+) {
     if channels == 0 {
         return;
     }
     let src = std::slice::from_raw_parts(pcm, frames as usize * channels as usize);
     with(|m| {
-        let Some(s) = m.get_mut(&id).filter(|s| s.gen == gen && !s.closed) else { return };
+        let Some(s) = m.get_mut(&id).filter(|s| s.gen == gen && !s.closed) else {
+            return;
+        };
         put(&mut s.pcm, src, channels as usize, s.channels as usize);
     });
 }
@@ -349,7 +377,15 @@ pub fn test_page_pass(dec: &mut dyn FnMut(&[u8], u32) -> Vec<f32>) {
         let mut last = 0;
         while let Some((b, seq)) = next_chunk(r.id, r.gen) {
             let pcm = dec(&b, r.channels);
-            unsafe { vnhost_adec_pcm(r.id, r.gen, pcm.as_ptr(), (pcm.len() / r.channels.max(1) as usize) as u32, r.channels) };
+            unsafe {
+                vnhost_adec_pcm(
+                    r.id,
+                    r.gen,
+                    pcm.as_ptr(),
+                    (pcm.len() / r.channels.max(1) as usize) as u32,
+                    r.channels,
+                )
+            };
             last = seq;
         }
         if last > 0 {
@@ -392,7 +428,10 @@ pub(crate) mod tests {
                     let (id, gen) = (row.id, row.gen);
                     let mut last = 0;
                     while let Some((b, seq)) = chunk(id, gen) {
-                        let pcm: Vec<f32> = b.iter().flat_map(|&v| (0..ch).map(move |_| v as f32 / 256.0 + seq as f32)).collect();
+                        let pcm: Vec<f32> = b
+                            .iter()
+                            .flat_map(|&v| (0..ch).map(move |_| v as f32 / 256.0 + seq as f32))
+                            .collect();
                         unsafe { vnhost_adec_pcm(id, gen, pcm.as_ptr(), b.len() as u32, ch) };
                         last = seq;
                     }
@@ -425,13 +464,23 @@ pub(crate) mod tests {
         let row = list().into_iter().find(|r| r.id == id).unwrap();
         let codec = unsafe { std::slice::from_raw_parts(row.codec.0 as *const u8, row.codec.1) };
         let desc = unsafe { std::slice::from_raw_parts(row.desc.0 as *const u8, row.desc.1) };
-        assert_eq!((codec, desc, row.rate, row.channels, row.queued, row.failed), (&b"opus"[..], &[1u8, 2, 3][..], 48000, 2, 2, false));
+        assert_eq!(
+            (codec, desc, row.rate, row.channels, row.queued, row.failed),
+            (&b"opus"[..], &[1u8, 2, 3][..], 48000, 2, 2, false)
+        );
         assert_eq!(chunk(id, row.gen), Some((vec![9, 9], 1)));
-        assert_eq!(chunk(id, row.gen + 1), None, "another generation's page takes nothing");
+        assert_eq!(
+            chunk(id, row.gen + 1),
+            None,
+            "another generation's page takes nothing"
+        );
         assert_eq!(chunk(id, row.gen), Some((vec![8], 2)));
         assert_eq!(chunk(id, row.gen), None);
         close(id);
-        assert!(list().iter().all(|r| r.id != id), "a closed stream is not listed");
+        assert!(
+            list().iter().all(|r| r.id != id),
+            "a closed stream is not listed"
+        );
         assert_eq!(chunk(id, 0), None);
     }
 
@@ -442,12 +491,23 @@ pub(crate) mod tests {
         let page = fake_page(2, stop.clone());
         let id = open("mp3", 44100, 2, &[]).unwrap();
         let mut out = Vec::new();
-        assert_eq!(decode(id, [&[0u8, 128][..], &[64][..]], Duration::from_secs(5), &mut out), Some(6));
+        assert_eq!(
+            decode(
+                id,
+                [&[0u8, 128][..], &[64][..]],
+                Duration::from_secs(5),
+                &mut out
+            ),
+            Some(6)
+        );
         assert_eq!(out, [1.0, 1.0, 1.5, 1.5, 2.25, 2.25]);
         // a reset: the old chunks' numbering starts again
         reset(id);
         out.clear();
-        assert_eq!(decode(id, [&[0u8][..]], Duration::from_secs(5), &mut out), Some(2));
+        assert_eq!(
+            decode(id, [&[0u8][..]], Duration::from_secs(5), &mut out),
+            Some(2)
+        );
         assert_eq!(out, [1.0, 1.0]);
         stop.store(true, Ordering::Relaxed);
         page.join().unwrap();
@@ -460,7 +520,10 @@ pub(crate) mod tests {
         let id = open("mp3", 44100, 1, &[]).unwrap();
         let t = Instant::now();
         let mut out = Vec::new();
-        assert_eq!(decode(id, [&[1u8][..]], Duration::from_millis(30), &mut out), None);
+        assert_eq!(
+            decode(id, [&[1u8][..]], Duration::from_millis(30), &mut out),
+            None
+        );
         assert!(t.elapsed() >= Duration::from_millis(30));
         // a failed stream ends its waits at once and takes nothing more
         vnhost_adec_fail(id, 0);

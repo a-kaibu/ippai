@@ -33,7 +33,12 @@ static CARD: Mutex<Option<Card>> = Mutex::new(None);
 
 fn with<T>(f: impl FnOnce(&mut Card) -> T) -> T {
     let mut g = CARD.lock().unwrap_or_else(|e| e.into_inner());
-    let c = g.get_or_insert_with(|| Card { streams: HashMap::new(), next_id: 1, clock: Instant::now(), out: VecDeque::new() });
+    let c = g.get_or_insert_with(|| Card {
+        streams: HashMap::new(),
+        next_id: 1,
+        clock: Instant::now(),
+        out: VecDeque::new(),
+    });
     c.advance();
     f(c)
 }
@@ -96,17 +101,25 @@ pub fn queued(id: i32) -> u32 {
 /// Queues interleaved stereo frames.
 pub fn write(id: i32, frames: &[f32]) {
     with(|c| {
-        let Some(s) = c.streams.get_mut(&id) else { return };
+        let Some(s) = c.streams.get_mut(&id) else {
+            return;
+        };
         let before = s.q.len();
         s.q.extend(frames.chunks_exact(2).map(|f| [f[0], f[1]]));
         if stats() {
-            let (sum, n) = s.q.range(before..).fold((0f64, 0usize), |(a, n), f| (a + (f[0] * f[0]) as f64, n + 1));
+            let (sum, n) = s.q.range(before..).fold((0f64, 0usize), |(a, n), f| {
+                (a + (f[0] * f[0]) as f64, n + 1)
+            });
             static ACC: Mutex<(f64, usize)> = Mutex::new((0.0, 0));
             let mut acc = ACC.lock().unwrap_or_else(|e| e.into_inner());
             acc.0 += sum;
             acc.1 += n;
             if acc.1 >= RATE as usize * 5 {
-                eprintln!("vnvm audio: rms {:.4} over {} frames", (acc.0 / acc.1 as f64).sqrt(), acc.1);
+                eprintln!(
+                    "vnvm audio: rms {:.4} over {} frames",
+                    (acc.0 / acc.1 as f64).sqrt(),
+                    acc.1
+                );
                 *acc = (0.0, 0);
             }
         }
@@ -134,7 +147,11 @@ struct Ring {
 }
 unsafe impl Sync for Ring {}
 
-static RING: Ring = Ring { head: AtomicU32::new(0), _pad: 0, data: std::cell::UnsafeCell::new([0.0; RING_FRAMES * 2]) };
+static RING: Ring = Ring {
+    head: AtomicU32::new(0),
+    _pad: 0,
+    data: std::cell::UnsafeCell::new([0.0; RING_FRAMES * 2]),
+};
 static RING_ON: AtomicBool = AtomicBool::new(false);
 
 fn ring_put(out: &mut VecDeque<[f32; 2]>) {

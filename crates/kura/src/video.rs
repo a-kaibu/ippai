@@ -38,7 +38,11 @@ enum Source {
     Mem(Vec<u8>),
     /// read as its frames are wanted (`fill`): the header and tables (what the page parses),
     /// and per track the bytes of a run of its frames (offset in the file, bytes)
-    File { file: Arc<Mutex<crate::fs::File>>, head: Vec<u8>, wins: Vec<(u64, Vec<u8>)> },
+    File {
+        file: Arc<Mutex<crate::fs::File>>,
+        head: Vec<u8>,
+        wins: Vec<(u64, Vec<u8>)>,
+    },
 }
 
 impl Source {
@@ -121,7 +125,14 @@ pub fn open_file(path: impl AsRef<std::path::Path>) -> Option<(u32, Info)> {
         return None;
     }
     let wins = vec![(0, Vec::new()); i.tracks.len()];
-    let id = add(Source::File { file: Arc::new(Mutex::new(f)), head, wins }, i.clone())?;
+    let id = add(
+        Source::File {
+            file: Arc::new(Mutex::new(f)),
+            head,
+            wins,
+        },
+        i.clone(),
+    )?;
     Some((id, i))
 }
 
@@ -136,7 +147,9 @@ fn add(src: Source, i: Info) -> Option<u32> {
     // (raw: one track of whole frames)
     let raw = match &i.tracks[..] {
         [(c, f)] if c == "raw-i420" => {
-            if f.iter().any(|&(_, size, _)| (size as usize) < raw_size(w, h)) {
+            if f.iter()
+                .any(|&(_, size, _)| (size as usize) < raw_size(w, h))
+            {
                 return None;
             }
             true
@@ -148,11 +161,35 @@ fn add(src: Source, i: Info) -> Option<u32> {
     static NEXT: AtomicI32 = AtomicI32::new(1);
     let id = NEXT.fetch_add(1, Ordering::Relaxed) as u32;
     let slots = (0..SLOTS)
-        .map(|_| Slot { buf: Vec::new(), frame: -1, writing: false, reading: 0, layout: [[0; 7]; 2] })
+        .map(|_| Slot {
+            buf: Vec::new(),
+            frame: -1,
+            writing: false,
+            reading: 0,
+            layout: [[0; 7]; 2],
+        })
         .collect();
     // (IPPAI_VIDEO_FAIL: every stream fails, as on a phone without decoders: tests the fallback)
     let failed = std::env::var_os("IPPAI_VIDEO_FAIL").is_some();
-    with(|m| m.insert(id, Stream { src, index, w, h, tracks, want: -1, slots, closed: false, failed, shown: -1, opened: Instant::now(), raw }));
+    with(|m| {
+        m.insert(
+            id,
+            Stream {
+                src,
+                index,
+                w,
+                h,
+                tracks,
+                want: -1,
+                slots,
+                closed: false,
+                failed,
+                shown: -1,
+                opened: Instant::now(),
+                raw,
+            },
+        )
+    });
     Some(id)
 }
 
@@ -170,7 +207,9 @@ const READ_MAX: u64 = 64 << 20;
 fn fill(id: u32, n: i32) {
     let plan = with(|m| {
         let s = m.get(&id).filter(|s| !s.closed)?;
-        let Source::File { file, wins, .. } = &s.src else { return None };
+        let Source::File { file, wins, .. } = &s.src else {
+            return None;
+        };
         let mut ahead = (u64::MAX, 0u64);
         let reads: Vec<Option<(u64, u64, u64)>> = s
             .index
@@ -193,13 +232,19 @@ fn fill(id: u32, n: i32) {
                 }
                 let end = end_of(n + READ_HIGH).clamp(start, start + READ_MAX);
                 // (what is here of it stays: only the rest is read)
-                let from = if have.0 <= start && start <= have.1 && have.1 <= end { have.1 } else { start };
+                let from = if have.0 <= start && start <= have.1 && have.1 <= end {
+                    have.1
+                } else {
+                    start
+                };
                 Some((start, from, end))
             })
             .collect();
         Some((file.clone(), reads, ahead))
     });
-    let Some((file, reads, ahead)) = plan else { return };
+    let Some((file, reads, ahead)) = plan else {
+        return;
+    };
     let mut f = file.lock().unwrap_or_else(|e| e.into_inner());
     if ahead.0 < ahead.1 {
         f.prefetch(ahead.0, ahead.1 - ahead.0);
@@ -217,9 +262,13 @@ fn fill(id: u32, n: i32) {
         .collect();
     drop(f);
     with(|m| {
-        let Some(Source::File { wins, .. }) = m.get_mut(&id).map(|s| &mut s.src) else { return };
+        let Some(Source::File { wins, .. }) = m.get_mut(&id).map(|s| &mut s.src) else {
+            return;
+        };
         for ((o, b), g) in wins.iter_mut().zip(got) {
-            let Some((start, from, tail)) = g else { continue };
+            let Some((start, from, tail)) = g else {
+                continue;
+            };
             if from == start || from != *o + b.len() as u64 || start < *o {
                 // (another thread changed it meanwhile: what was read alone)
                 (*o, *b) = (from, tail);
@@ -256,7 +305,9 @@ pub fn close(id: u32) {
 
 /// Drops stream `id` when it is closed and no slot of it is written or read any more.
 fn release(m: &mut HashMap<u32, Stream>, id: u32) {
-    if m.get(&id).is_some_and(|s| s.closed && !s.slots.iter().any(|sl| sl.writing || sl.reading > 0)) {
+    if m.get(&id)
+        .is_some_and(|s| s.closed && !s.slots.iter().any(|sl| sl.writing || sl.reading > 0))
+    {
         m.remove(&id);
     }
 }
@@ -301,28 +352,63 @@ pub unsafe fn frame(id: u32, n: i32, dst: *mut u8, pitch: usize, w: u32, h: u32,
     fill(id, n);
     let mut g = STREAMS.lock().unwrap_or_else(|e| e.into_inner());
     // uncompressed: straight from the file (frames past the end: the last one)
-    if let Some(s) = g.get_or_insert_with(HashMap::new).get_mut(&id).filter(|s| !s.closed && !s.failed && s.raw) {
+    if let Some(s) = g
+        .get_or_insert_with(HashMap::new)
+        .get_mut(&id)
+        .filter(|s| !s.closed && !s.failed && s.raw)
+    {
         let f = &s.index[0];
-        let Some(&(off, _, _)) = f.get((n.max(0) as usize).min(f.len().saturating_sub(1))) else { return false };
+        let Some(&(off, _, _)) = f.get((n.max(0) as usize).min(f.len().saturating_sub(1))) else {
+            return false;
+        };
         let (sw, sh) = (s.w, s.h);
         s.shown = n;
-        let Some(bytes) = s.src.bytes(off as u64, raw_size(sw, sh)) else { return false };
+        let Some(bytes) = s.src.bytes(off as u64, raw_size(sw, sh)) else {
+            return false;
+        };
         let (pw, ph) = (sw.next_multiple_of(2), sh.next_multiple_of(2));
         let (y, c) = (pw * ph, (pw / 2) * (ph / 2));
         let layout = [[I420, 0, pw, y, pw / 2, y + c, pw / 2], [0; 7]];
         // (the stream stays while this reads it: the lock is held)
-        convert(bytes.as_ptr(), &layout, 1, sw, sh, dst, pitch, w.min(sw), h.min(sh), out);
+        convert(
+            bytes.as_ptr(),
+            &layout,
+            1,
+            sw,
+            sh,
+            dst,
+            pitch,
+            w.min(sw),
+            h.min(sh),
+            out,
+        );
         return true;
     }
     loop {
-        let Some(s) = g.get_or_insert_with(HashMap::new).get_mut(&id).filter(|s| !s.closed && !s.failed) else { return false };
+        let Some(s) = g
+            .get_or_insert_with(HashMap::new)
+            .get_mut(&id)
+            .filter(|s| !s.closed && !s.failed)
+        else {
+            return false;
+        };
         if s.want != n {
             s.want = n;
             ring();
         }
         let late = start.elapsed() > WAIT && (s.shown >= 0 || s.opened.elapsed() > FIRST);
-        let ready = |sl: &Slot| !sl.writing && sl.frame >= 0 && if late { sl.frame <= n && sl.frame > s.shown } else { sl.frame == n };
-        let k = (0..s.slots.len()).filter(|&k| ready(&s.slots[k])).max_by_key(|&k| s.slots[k].frame);
+        let ready = |sl: &Slot| {
+            !sl.writing
+                && sl.frame >= 0
+                && if late {
+                    sl.frame <= n && sl.frame > s.shown
+                } else {
+                    sl.frame == n
+                }
+        };
+        let k = (0..s.slots.len())
+            .filter(|&k| ready(&s.slots[k]))
+            .max_by_key(|&k| s.slots[k].frame);
         if let Some(k) = k {
             stat(start.elapsed(), n, s.slots[k].frame != n);
             s.shown = s.slots[k].frame;
@@ -330,7 +416,18 @@ pub unsafe fn frame(id: u32, n: i32, dst: *mut u8, pitch: usize, w: u32, h: u32,
             let (sw, sh, tracks) = (s.w, s.h, s.tracks);
             let (buf, layout) = (s.slots[k].buf.as_ptr(), s.slots[k].layout);
             drop(g);
-            convert(buf, &layout, tracks, sw, sh, dst, pitch, w.min(sw), h.min(sh), out);
+            convert(
+                buf,
+                &layout,
+                tracks,
+                sw,
+                sh,
+                dst,
+                pitch,
+                w.min(sw),
+                h.min(sh),
+                out,
+            );
             let mut g = STREAMS.lock().unwrap_or_else(|e| e.into_inner());
             let m = g.get_or_insert_with(HashMap::new);
             if let Some(s) = m.get_mut(&id) {
@@ -348,7 +445,10 @@ pub unsafe fn frame(id: u32, n: i32, dst: *mut u8, pitch: usize, w: u32, h: u32,
             stat(start.elapsed(), n, true);
             return s.shown >= 0;
         }
-        g = WAKE.wait_timeout(g, Duration::from_millis(2)).unwrap_or_else(|e| e.into_inner()).0;
+        g = WAKE
+            .wait_timeout(g, Duration::from_millis(2))
+            .unwrap_or_else(|e| e.into_inner())
+            .0;
     }
 }
 
@@ -358,7 +458,8 @@ fn stat(waited: Duration, n: i32, late: bool) {
     if !*ON.get_or_init(|| std::env::var_os("IPPAI_VIDEO_STATS").is_some()) {
         return;
     }
-    static S: Mutex<(Option<Instant>, u32, Duration, Duration, i32, u32)> = Mutex::new((None, 0, Duration::ZERO, Duration::ZERO, -1, 0));
+    static S: Mutex<(Option<Instant>, u32, Duration, Duration, i32, u32)> =
+        Mutex::new((None, 0, Duration::ZERO, Duration::ZERO, -1, 0));
     let mut g = S.lock().unwrap();
     let t0 = *g.0.get_or_insert_with(Instant::now);
     g.1 += 1;
@@ -381,12 +482,30 @@ fn stat(waited: Duration, n: i32, late: bool) {
             g.3,
             g.5
         );
-        *g = (Some(Instant::now()), 0, Duration::ZERO, Duration::ZERO, n, 0);
+        *g = (
+            Some(Instant::now()),
+            0,
+            Duration::ZERO,
+            Duration::ZERO,
+            n,
+            0,
+        );
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-unsafe fn convert(buf: *const u8, layout: &[[u32; 7]; 2], tracks: u32, sw: u32, sh: u32, dst: *mut u8, pitch: usize, w: u32, h: u32, out: Out) {
+unsafe fn convert(
+    buf: *const u8,
+    layout: &[[u32; 7]; 2],
+    tracks: u32,
+    sw: u32,
+    sh: u32,
+    dst: *mut u8,
+    pitch: usize,
+    w: u32,
+    h: u32,
+    out: Out,
+) {
     let c = &layout[0];
     if tracks == 1 && matches!(c[0], I420 | NV12) && out == Out::Rgb601 {
         return to_rgb(buf, c, dst, pitch, w, h, out);
@@ -409,13 +528,28 @@ fn terms(out: Out) -> &'static Terms {
     static T: OnceLock<[Terms; 2]> = OnceLock::new();
     let t = T.get_or_init(|| {
         let make = |video: bool| {
-            let mut t = Terms { y: [0; 256], rv: [0; 256], gu: [0; 256], gv: [0; 256], bu: [0; 256] };
+            let mut t = Terms {
+                y: [0; 256],
+                rv: [0; 256],
+                gu: [0; 256],
+                gv: [0; 256],
+                bu: [0; 256],
+            };
             let f = |x: f64| (x * (1 << FRAC) as f64).round() as i32;
             for i in 0..256 {
                 let x = i as f64;
-                let (y, u) = if video { ((x - 16.0) * 255.0 / 219.0, (x - 128.0) * 255.0 / 224.0) } else { (x, x - 128.0) };
-                let (gu, gv) = if video { (0.344136, 0.714136) } else { (0.34414, 0.71414) };
-                (t.y[i], t.rv[i], t.gu[i], t.gv[i], t.bu[i]) = (f(y), f(1.402 * u), f(gu * u), f(gv * u), f(1.772 * u));
+                let (y, u) = if video {
+                    ((x - 16.0) * 255.0 / 219.0, (x - 128.0) * 255.0 / 224.0)
+                } else {
+                    (x, x - 128.0)
+                };
+                let (gu, gv) = if video {
+                    (0.344136, 0.714136)
+                } else {
+                    (0.34414, 0.71414)
+                };
+                (t.y[i], t.rv[i], t.gu[i], t.gv[i], t.bu[i]) =
+                    (f(y), f(1.402 * u), f(gu * u), f(gv * u), f(1.772 * u));
             }
             t
         };
@@ -426,13 +560,25 @@ fn terms(out: Out) -> &'static Terms {
 
 /// [`convert_any`] of one I420 / NV12 track to BGRX: the same bytes, in fixed point from
 /// tables (a movie frame's conversion, every frame).
-unsafe fn to_rgb(buf: *const u8, c: &[u32; 7], dst: *mut u8, pitch: usize, w: u32, h: u32, out: Out) {
+unsafe fn to_rgb(
+    buf: *const u8,
+    c: &[u32; 7],
+    dst: *mut u8,
+    pitch: usize,
+    w: u32,
+    h: u32,
+    out: Out,
+) {
     let t = terms(out);
     let p = |i: usize| buf.add(c[1 + 2 * i] as usize);
     let st = |i: usize| c[2 + 2 * i] as usize;
     let nv12 = c[0] == NV12;
     // (rounding: half added; truncating: none, values below 0 clamp either way)
-    let half = if out == Out::Rgb601 { 1 << (FRAC - 1) } else { 0 };
+    let half = if out == Out::Rgb601 {
+        1 << (FRAC - 1)
+    } else {
+        0
+    };
     let q = |x: i32| ((x + half) >> FRAC).clamp(0, 255) as u8;
     for y in 0..h as usize {
         let row = dst.add(y * pitch);
@@ -456,7 +602,18 @@ unsafe fn to_rgb(buf: *const u8, c: &[u32; 7], dst: *mut u8, pitch: usize, w: u3
     }
 }
 
-unsafe fn convert_any(buf: *const u8, layout: &[[u32; 7]; 2], tracks: u32, sw: u32, _sh: u32, dst: *mut u8, pitch: usize, w: u32, h: u32, out: Out) {
+unsafe fn convert_any(
+    buf: *const u8,
+    layout: &[[u32; 7]; 2],
+    tracks: u32,
+    sw: u32,
+    _sh: u32,
+    dst: *mut u8,
+    pitch: usize,
+    w: u32,
+    h: u32,
+    out: Out,
+) {
     let _ = sw;
     let c = &layout[0];
     let a = (tracks > 1).then_some(&layout[1]);
@@ -470,8 +627,18 @@ unsafe fn convert_any(buf: *const u8, layout: &[[u32; 7]; 2], tracks: u32, sw: u
                 let uv = p(c, 1).add((y / 2) * st(c, 1));
                 (p(c, 0).add(y * st(c, 0)), uv, uv.add(1), 2)
             }
-            I420 => (p(c, 0).add(y * st(c, 0)), p(c, 1).add((y / 2) * st(c, 1)), p(c, 2).add((y / 2) * st(c, 2)), 1),
-            _ => (p(c, 0).add(y * st(c, 0)), std::ptr::null(), std::ptr::null(), 0),
+            I420 => (
+                p(c, 0).add(y * st(c, 0)),
+                p(c, 1).add((y / 2) * st(c, 1)),
+                p(c, 2).add((y / 2) * st(c, 2)),
+                1,
+            ),
+            _ => (
+                p(c, 0).add(y * st(c, 0)),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+            ),
         };
         let ar: *const u8 = match a {
             Some(l) => p(l, 0).add(y * st(l, 0)),
@@ -503,7 +670,11 @@ unsafe fn convert_any(buf: *const u8, layout: &[[u32; 7]; 2], tracks: u32, sw: u
                     *o.add(3) = al;
                 }
                 Out::Rgb | Out::Rgb601 => {
-                    let (r, g, b) = if out == Out::Rgb { ycc_to_rgb(yy, cb, cr) } else { ycc601_to_rgb(yy, cb, cr) };
+                    let (r, g, b) = if out == Out::Rgb {
+                        ycc_to_rgb(yy, cb, cr)
+                    } else {
+                        ycc601_to_rgb(yy, cb, cr)
+                    };
                     *o = b;
                     *o.add(1) = g;
                     *o.add(2) = r;
@@ -518,14 +689,26 @@ unsafe fn convert_any(buf: *const u8, layout: &[[u32; 7]; 2], tracks: u32, sw: u
 fn ycc_to_rgb(y: u8, cb: u8, cr: u8) -> (u8, u8, u8) {
     let (y, u, v) = (y as f64, cb as f64 - 128.0, cr as f64 - 128.0);
     let c = |x: f64| (x as i32).clamp(0, 255) as u8;
-    (c(y + 1.402 * v), c(y - 0.34414 * u - 0.71414 * v), c(y + 1.772 * u))
+    (
+        c(y + 1.402 * v),
+        c(y - 0.34414 * u - 0.71414 * v),
+        c(y + 1.772 * u),
+    )
 }
 
 /// BT.601 from video range (as Windows' decoders give RGB of such a movie), rounded.
 pub fn ycc601_to_rgb(y: u8, cb: u8, cr: u8) -> (u8, u8, u8) {
-    let (y, u, v) = ((y as f64 - 16.0) * 255.0 / 219.0, (cb as f64 - 128.0) * 255.0 / 224.0, (cr as f64 - 128.0) * 255.0 / 224.0);
+    let (y, u, v) = (
+        (y as f64 - 16.0) * 255.0 / 219.0,
+        (cb as f64 - 128.0) * 255.0 / 224.0,
+        (cr as f64 - 128.0) * 255.0 / 224.0,
+    );
     let c = |x: f64| x.round().clamp(0.0, 255.0) as u8;
-    (c(y + 1.402 * v), c(y - 0.344136 * u - 0.714136 * v), c(y + 1.772 * u))
+    (
+        c(y + 1.402 * v),
+        c(y - 0.344136 * u - 0.714136 * v),
+        c(y + 1.772 * u),
+    )
 }
 
 fn rgb_to_ycc(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
@@ -561,7 +744,12 @@ pub unsafe extern "C" fn vnhost_video_list(out: *mut u32, max: u32) -> u32 {
             if n == max as usize {
                 break;
             }
-            let held: Vec<i32> = s.slots.iter().filter(|sl| sl.frame >= 0).map(|sl| sl.frame).collect();
+            let held: Vec<i32> = s
+                .slots
+                .iter()
+                .filter(|sl| sl.frame >= 0)
+                .map(|sl| sl.frame)
+                .collect();
             out[n * 6..n * 6 + 6].copy_from_slice(&[
                 id,
                 s.src.head().as_ptr() as u32,
@@ -620,7 +808,10 @@ pub extern "C" fn vnhost_video_fail(id: u32) {
 /// Whether stream `id` holds frame `n` in a slot.
 #[no_mangle]
 pub extern "C" fn vnhost_video_has(id: u32, n: i32) -> u32 {
-    with(|m| m.get(&id).is_some_and(|s| s.slots.iter().any(|sl| sl.frame == n)) as u32)
+    with(|m| {
+        m.get(&id)
+            .is_some_and(|s| s.slots.iter().any(|sl| sl.frame == n)) as u32
+    })
 }
 
 /// The page is about to copy frame `n` of stream `id`: a slot's buffer (0: none free now, or
@@ -632,14 +823,22 @@ pub extern "C" fn vnhost_video_has(id: u32, n: i32) -> u32 {
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_video_begin(id: u32, n: i32, size: *mut u32) -> u32 {
     with(|m| {
-        let Some(s) = m.get_mut(&id).filter(|s| !s.closed) else { return 0 };
+        let Some(s) = m.get_mut(&id).filter(|s| !s.closed) else {
+            return 0;
+        };
         let want = s.want;
         let free = s
             .slots
             .iter()
             .enumerate()
             .filter(|(_, sl)| sl.reading == 0 && !sl.writing)
-            .min_by_key(|(_, sl)| if sl.frame < 0 || sl.frame < want { i32::MIN + sl.frame.max(0) } else { sl.frame })
+            .min_by_key(|(_, sl)| {
+                if sl.frame < 0 || sl.frame < want {
+                    i32::MIN + sl.frame.max(0)
+                } else {
+                    sl.frame
+                }
+            })
             .map(|(k, _)| k);
         let Some(k) = free else { return 0 };
         let sl = &mut s.slots[k];
@@ -705,7 +904,11 @@ mod tests {
         assert_ne!(buf, 0);
         close(id);
         assert!(exists(id), "dropped while the page writes into it");
-        assert_eq!(unsafe { vnhost_video_begin(id, 1, &mut size) }, 0, "a closed stream takes no new writes");
+        assert_eq!(
+            unsafe { vnhost_video_begin(id, 1, &mut size) },
+            0,
+            "a closed stream takes no new writes"
+        );
         let layout = [RGBA, 0, 64, 0, 0, 0, 0, RGBA, 0, 64, 0, 0, 0, 0];
         unsafe { vnhost_video_ready(id, buf, layout.as_ptr(), 1) };
         assert!(!exists(id));
@@ -721,7 +924,10 @@ mod tests {
         with(|m| release(m, id));
         assert!(exists(id));
         let mut px = [0u8; 4];
-        assert!(!unsafe { frame(id, 0, px.as_mut_ptr(), 4, 1, 1, Out::Rgb) }, "a closed stream gives no frames");
+        assert!(
+            !unsafe { frame(id, 0, px.as_mut_ptr(), 4, 1, 1, Out::Rgb) },
+            "a closed stream gives no frames"
+        );
         with(|m| {
             m.get_mut(&id).unwrap().slots[0].reading -= 1;
             release(m, id);
@@ -741,7 +947,11 @@ mod tests {
         with(|m| m.get_mut(&id).unwrap().slots[0].reading += 1);
         let mut px = vec![0u8; 16 * 16 * 4];
         assert!(unsafe { frame(id, 0, px.as_mut_ptr(), 64, 16, 16, Out::Rgb) });
-        assert_eq!(with(|m| m.get(&id).unwrap().slots[0].reading), 1, "the first reader still holds it");
+        assert_eq!(
+            with(|m| m.get(&id).unwrap().slots[0].reading),
+            1,
+            "the first reader still holds it"
+        );
         for n in 1..4 {
             let b = unsafe { vnhost_video_begin(id, n, &mut size) };
             assert_ne!(b, buf, "the page must not write the slot a guest reads");
@@ -787,7 +997,10 @@ mod tests {
 
     /// A raw I420 movie of `n` frames, frame k all Y = 16 + k, Cb Cr given.
     fn raw(w: u32, h: u32, n: u32, cb: u8, cr: u8) -> Vec<u8> {
-        let (pw, ph) = (w.next_multiple_of(2) as usize, h.next_multiple_of(2) as usize);
+        let (pw, ph) = (
+            w.next_multiple_of(2) as usize,
+            h.next_multiple_of(2) as usize,
+        );
         let frames = (0..n)
             .map(|k| {
                 let mut f = vec![16u8.wrapping_add(k as u8); pw * ph];
@@ -808,9 +1021,20 @@ mod tests {
         let mut size = 0;
         assert_ne!(unsafe { vnhost_video_chunk(id, 0, 1, &mut size) }, 0);
         let (off, sz, _) = info(&d).unwrap().tracks[0].1[1];
-        assert_eq!(&CHUNK.lock().unwrap()[..], &d[off as usize..(off + sz) as usize]);
-        assert_eq!(unsafe { vnhost_video_chunk(id, 0, 4, &mut size) }, 0, "no frame 4");
-        assert_eq!(unsafe { vnhost_video_chunk(id, 1, 0, &mut size) }, 0, "no track 1");
+        assert_eq!(
+            &CHUNK.lock().unwrap()[..],
+            &d[off as usize..(off + sz) as usize]
+        );
+        assert_eq!(
+            unsafe { vnhost_video_chunk(id, 0, 4, &mut size) },
+            0,
+            "no frame 4"
+        );
+        assert_eq!(
+            unsafe { vnhost_video_chunk(id, 1, 0, &mut size) },
+            0,
+            "no track 1"
+        );
         // (the page, which has no decoder for it, gives up on it: still there)
         vnhost_video_fail(id);
         assert!(!failed(id));
@@ -820,7 +1044,11 @@ mod tests {
             let want = 16 + n.clamp(0, 3) as u8;
             for y in 0..3 {
                 for x in 0..5 {
-                    assert_eq!(px[y * 24 + 4 * x..][..4], [want, 128, 128, 255], "frame {n} at {x},{y}");
+                    assert_eq!(
+                        px[y * 24 + 4 * x..][..4],
+                        [want, 128, 128, 255],
+                        "frame {n} at {x},{y}"
+                    );
                 }
                 assert_eq!(px[y * 24 + 20..y * 24 + 24], [0xee; 4], "past the row");
             }
@@ -831,9 +1059,25 @@ mod tests {
         let mut d = raw(4, 4, 1, 128, 128);
         let i = info(&d).unwrap();
         let (off, _, _) = i.tracks[0].1[0];
-        d = crate::vnv::write(4, 4, &[("raw-i420".into(), vec![(d[off as usize..off as usize + 20].to_vec(), true)])], None);
+        d = crate::vnv::write(
+            4,
+            4,
+            &[(
+                "raw-i420".into(),
+                vec![(d[off as usize..off as usize + 20].to_vec(), true)],
+            )],
+            None,
+        );
         assert!(open(d).is_none());
-        let two = crate::vnv::write(4, 4, &[("raw-i420".into(), vec![(vec![0; 24], true)]), ("vp09".into(), vec![(vec![0; 3], true)])], None);
+        let two = crate::vnv::write(
+            4,
+            4,
+            &[
+                ("raw-i420".into(), vec![(vec![0; 24], true)]),
+                ("vp09".into(), vec![(vec![0; 3], true)]),
+            ],
+            None,
+        );
         assert!(open(two).is_none());
     }
 
@@ -842,7 +1086,11 @@ mod tests {
     impl TempVnv {
         fn new(d: &[u8]) -> TempVnv {
             static N: AtomicI32 = AtomicI32::new(0);
-            let p = std::env::temp_dir().join(format!("kura-video-{}-{}.vnv", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+            let p = std::env::temp_dir().join(format!(
+                "kura-video-{}-{}.vnv",
+                std::process::id(),
+                N.fetch_add(1, Ordering::Relaxed)
+            ));
             std::fs::write(&p, d).unwrap();
             TempVnv(p)
         }
@@ -863,8 +1111,15 @@ mod tests {
         let mut px = vec![0u8; 6 * 4 * 3];
         // (in order, a jump far ahead, back to the start, past the end)
         for n in [0, 1, 2, 40, 41, 250, 3, 0, 299, 400, -1] {
-            assert!(unsafe { frame(id, n, px.as_mut_ptr(), 24, 5, 3, Out::Ycc) }, "frame {n}");
-            assert_eq!(px[..4], [16u8.wrapping_add(n.clamp(0, 299) as u8), 128, 128, 255], "frame {n}");
+            assert!(
+                unsafe { frame(id, n, px.as_mut_ptr(), 24, 5, 3, Out::Ycc) },
+                "frame {n}"
+            );
+            assert_eq!(
+                px[..4],
+                [16u8.wrapping_add(n.clamp(0, 299) as u8), 128, 128, 255],
+                "frame {n}"
+            );
         }
         close(id);
         assert!(open_file(std::env::temp_dir().join("kura-video-none.vnv")).is_none());
@@ -939,10 +1194,18 @@ mod tests {
         assert_eq!(ycc601_to_rgb(235, 128, 128), (255, 255, 255));
         assert_eq!(ycc601_to_rgb(0, 128, 128), (0, 0, 0));
         assert_eq!(ycc601_to_rgb(255, 128, 128), (255, 255, 255));
-        for (ycc, rgb) in [((65, 100, 212), (191, 0, 0)), ((112, 72, 58), (0, 191, 0)), ((35, 212, 114), (0, 0, 191)), ((162, 44, 142), (191, 191, 0))] {
+        for (ycc, rgb) in [
+            ((65, 100, 212), (191, 0, 0)),
+            ((112, 72, 58), (0, 191, 0)),
+            ((35, 212, 114), (0, 0, 191)),
+            ((162, 44, 142), (191, 191, 0)),
+        ] {
             let got = ycc601_to_rgb(ycc.0, ycc.1, ycc.2);
             let d = |a: u8, b: u8| (a as i32 - b as i32).abs();
-            assert!(d(got.0, rgb.0) <= 2 && d(got.1, rgb.1) <= 2 && d(got.2, rgb.2) <= 2, "{ycc:?} -> {got:?}, want {rgb:?}");
+            assert!(
+                d(got.0, rgb.0) <= 2 && d(got.1, rgb.1) <= 2 && d(got.2, rgb.2) <= 2,
+                "{ycc:?} -> {got:?}, want {rgb:?}"
+            );
         }
         let id = open(raw(2, 2, 1, 128, 128)).unwrap();
         let mut px = [0u8; 16];
@@ -1105,7 +1368,17 @@ mod tests {
                 let mut b: Vec<u8> = (0..=255u8).collect();
                 b.extend((0..128).flat_map(|_| [cb, cr]));
                 let mut d = vec![0u8; 1024];
-                unsafe { to_rgb(b.as_ptr(), &[NV12, 0, 256, 256, 256, 0, 0], d.as_mut_ptr(), 1024, 256, 1, Out::Rgb601) };
+                unsafe {
+                    to_rgb(
+                        b.as_ptr(),
+                        &[NV12, 0, 256, 256, 256, 0, 0],
+                        d.as_mut_ptr(),
+                        1024,
+                        256,
+                        1,
+                        Out::Rgb601,
+                    )
+                };
                 for y in 0..256 {
                     let (r, g, bl) = ycc601_to_rgb(y as u8, cb, cr);
                     for (got, want) in d[4 * y..4 * y + 3].iter().zip([bl, g, r]) {
@@ -1127,12 +1400,31 @@ mod tests {
         let buf: Vec<u8> = (0..w * h * 3 / 2).map(|i| (i * 37 % 251) as u8).collect();
         let layout = [[I420, 0, w, w * h, w / 2, w * h * 5 / 4, w / 2], [0; 7]];
         let mut d = vec![0u8; (4 * w * h) as usize];
-        for (name, f) in [("table", convert as unsafe fn(_, _, _, _, _, _, _, _, _, _)), ("general", convert_any)] {
+        for (name, f) in [
+            ("table", convert as unsafe fn(_, _, _, _, _, _, _, _, _, _)),
+            ("general", convert_any),
+        ] {
             let t = Instant::now();
             for _ in 0..20 {
-                unsafe { f(buf.as_ptr(), &layout, 1, w, h, d.as_mut_ptr(), 4 * w as usize, w, h, Out::Rgb601) };
+                unsafe {
+                    f(
+                        buf.as_ptr(),
+                        &layout,
+                        1,
+                        w,
+                        h,
+                        d.as_mut_ptr(),
+                        4 * w as usize,
+                        w,
+                        h,
+                        Out::Rgb601,
+                    )
+                };
             }
-            eprintln!("{name}: {:.2} ms a 1280x720 frame", t.elapsed().as_secs_f64() * 1000.0 / 20.0);
+            eprintln!(
+                "{name}: {:.2} ms a 1280x720 frame",
+                t.elapsed().as_secs_f64() * 1000.0 / 20.0
+            );
         }
     }
 

@@ -79,7 +79,11 @@ impl Sid {
 
 /// "S-1-<authority>-<sub>...": the authority in decimal below 2^32, else 0x and 12 hex digits
 pub fn sid_to_string(s: &Sid) -> String {
-    let mut t = if s.0 < 1 << 32 { format!("S-1-{}", s.0) } else { format!("S-1-0x{:012X}", s.0) };
+    let mut t = if s.0 < 1 << 32 {
+        format!("S-1-{}", s.0)
+    } else {
+        format!("S-1-0x{:012X}", s.0)
+    };
     for x in &s.1 {
         t += &format!("-{x}");
     }
@@ -99,17 +103,24 @@ pub fn parse_sid(t: &str) -> Option<Sid> {
     }
     let num = |p: &str| -> Option<u64> {
         if let Some(h) = p.strip_prefix("0x").or_else(|| p.strip_prefix("0X")) {
-            (!h.is_empty() && h.len() <= 12 && h.bytes().all(|b| b.is_ascii_hexdigit())).then(|| u64::from_str_radix(h, 16).ok())?
+            (!h.is_empty() && h.len() <= 12 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+                .then(|| u64::from_str_radix(h, 16).ok())?
         } else {
-            (!p.is_empty() && p.len() <= 20 && p.bytes().all(|b| b.is_ascii_digit())).then(|| p.parse().ok())?
+            (!p.is_empty() && p.len() <= 20 && p.bytes().all(|b| b.is_ascii_digit()))
+                .then(|| p.parse().ok())?
         }
     };
-    let mut parts = t.strip_prefix("S-").or_else(|| t.strip_prefix("s-"))?.split('-');
+    let mut parts = t
+        .strip_prefix("S-")
+        .or_else(|| t.strip_prefix("s-"))?
+        .split('-');
     if parts.next()? != "1" {
         return None;
     }
     let auth = num(parts.next()?).filter(|&a| a < 1 << 48)?;
-    let subs: Vec<u32> = parts.map(|p| num(p).and_then(|v| u32::try_from(v).ok())).collect::<Option<_>>()?;
+    let subs: Vec<u32> = parts
+        .map(|p| num(p).and_then(|v| u32::try_from(v).ok()))
+        .collect::<Option<_>>()?;
     (subs.len() <= 15).then_some(Sid(auth, subs))
 }
 fn ConvertSidToStringSidA(c: &mut Ctx) -> u32 {
@@ -179,7 +190,7 @@ fn groups() -> Vec<(Sid, u32)> {
         (Sid(5, vec![11]), MANDATORY),            // Authenticated Users
         (Sid(5, vec![15]), MANDATORY),            // This Organization
         (Sid(2, vec![0]), MANDATORY),             // LOCAL
-        (Sid(16, vec![0x3000]), 0x60),            // Mandatory Label\High (SE_GROUP_INTEGRITY(_ENABLED))
+        (Sid(16, vec![0x3000]), 0x60), // Mandatory Label\High (SE_GROUP_INTEGRITY(_ENABLED))
     ]
 }
 fn member(sid: &Sid) -> bool {
@@ -277,20 +288,20 @@ fn GetSidIdentifierAuthority(c: &mut Ctx) -> u32 {
 /// CreateWellKnownSid: the ones programs ask for (WELL_KNOWN_SID_TYPE)
 fn well_known(t: u32) -> Option<Sid> {
     Some(match t {
-        0 => Sid(0, vec![0]),     // Null
-        1 => everyone(),          // World
-        2 => Sid(2, vec![0]),     // Local
-        11 => Sid(5, vec![4]),    // Interactive
-        13 => Sid(5, vec![6]),    // Service
-        17 => Sid(5, vec![11]),   // Authenticated users
-        22 => Sid(5, vec![18]),   // LocalSystem
-        23 => Sid(5, vec![19]),   // LocalService
-        24 => Sid(5, vec![20]),   // NetworkService
-        25 => Sid(5, vec![32]),   // BuiltinDomain
-        26 => admins(),           // BuiltinAdministrators
+        0 => Sid(0, vec![0]),   // Null
+        1 => everyone(),        // World
+        2 => Sid(2, vec![0]),   // Local
+        11 => Sid(5, vec![4]),  // Interactive
+        13 => Sid(5, vec![6]),  // Service
+        17 => Sid(5, vec![11]), // Authenticated users
+        22 => Sid(5, vec![18]), // LocalSystem
+        23 => Sid(5, vec![19]), // LocalService
+        24 => Sid(5, vec![20]), // NetworkService
+        25 => Sid(5, vec![32]), // BuiltinDomain
+        26 => admins(),         // BuiltinAdministrators
         27 => Sid(5, vec![32, 545]),
         28 => Sid(5, vec![32, 546]),
-        66 => Sid(16, vec![0]),   // untrusted
+        66 => Sid(16, vec![0]), // untrusted
         67 => Sid(16, vec![0x1000]),
         68 => Sid(16, vec![0x2000]),
         69 => Sid(16, vec![0x3000]),
@@ -537,7 +548,11 @@ fn set_sd(c: &mut Ctx, i: u32, present_flag: u16, default_flag: u16, has_present
         last_error(ERROR_INVALID_SECURITY_DESCR);
         return 0;
     }
-    let (present, v, defaulted) = if has_present { (c.a(1) != 0, c.a(2), c.a(3) != 0) } else { (true, c.a(1), c.a(2) != 0) };
+    let (present, v, defaulted) = if has_present {
+        (c.a(1) != 0, c.a(2), c.a(3) != 0)
+    } else {
+        (true, c.a(1), c.a(2) != 0)
+    };
     let mut ctl = r16(sd + 2) & !(present_flag | default_flag);
     if present {
         ctl |= present_flag;
@@ -635,7 +650,12 @@ fn GetSecurityDescriptorLength(c: &mut Ctx) -> u32 {
 /// GENERIC_* bits mapped through a GENERIC_MAPPING (read, write, execute, all)
 fn map_generic(mask: u32, gm: u32) -> u32 {
     let mut m = mask & 0x0fff_ffff;
-    for (bit, i) in [(0x8000_0000u32, 0), (0x4000_0000, 1), (0x2000_0000, 2), (0x1000_0000, 3)] {
+    for (bit, i) in [
+        (0x8000_0000u32, 0),
+        (0x4000_0000, 1),
+        (0x2000_0000, 2),
+        (0x1000_0000, 3),
+    ] {
         if mask & bit != 0 && gm != 0 {
             m |= r32(gm + 4 * i);
         }
@@ -650,7 +670,11 @@ fn granted(sd: u32, want: u32) -> u32 {
     let ctl = r16(sd + 2);
     let dacl = sd_field(sd, 3);
     if ctl & 4 == 0 || dacl == 0 {
-        return if want & 0x0200_0000 != 0 { 0x1f_01ff } else { want };
+        return if want & 0x0200_0000 != 0 {
+            0x1f_01ff
+        } else {
+            want
+        };
     }
     let mut ok = 0u32;
     let mut denied = 0u32;
@@ -671,7 +695,16 @@ fn granted(sd: u32, want: u32) -> u32 {
 }
 
 fn AccessCheck(c: &mut Ctx) -> u32 {
-    let (sd, token, want, gm, privs, privlen, grant_p, status_p) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6), c.a(7));
+    let (sd, token, want, gm, privs, privlen, grant_p, status_p) = (
+        c.a(0),
+        c.a(1),
+        c.a(2),
+        c.a(3),
+        c.a(4),
+        c.a(5),
+        c.a(6),
+        c.a(7),
+    );
     if !is_token(token) {
         last_error(ERROR_INVALID_HANDLE);
         return 0;
@@ -721,7 +754,13 @@ fn new_token(kind: &'static str) -> u32 {
 }
 fn is_token(h: u32) -> bool {
     // (GetCurrentProcessToken, GetCurrentThreadToken, GetCurrentThreadEffectiveToken)
-    matches!(h as i32, -4 | -5 | -6) || obj::with(|t| matches!(t.objs.get(&h), Some((Obj::Other("token" | "impersonation token"), _))))
+    matches!(h as i32, -4 | -5 | -6)
+        || obj::with(|t| {
+            matches!(
+                t.objs.get(&h),
+                Some((Obj::Other("token" | "impersonation token"), _))
+            )
+        })
 }
 fn impersonation_token(h: u32) -> bool {
     obj::with(|t| matches!(t.objs.get(&h), Some((Obj::Other("impersonation token"), _))))
@@ -739,7 +778,11 @@ fn OpenProcessToken(c: &mut Ctx) -> u32 {
 fn OpenThreadToken(c: &mut Ctx) -> u32 {
     let out = c.a(3);
     let tid = crate::cur().tid;
-    let imp = IMPERSONATING.lock().unwrap().as_ref().is_some_and(|s| s.contains(&tid));
+    let imp = IMPERSONATING
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|s| s.contains(&tid));
     if !imp {
         // (the handle is cleared through WoW64's thunk; 64-bit Windows leaves it, winref security)
         if !mem::x64() {
@@ -752,7 +795,11 @@ fn OpenThreadToken(c: &mut Ctx) -> u32 {
     1
 }
 fn ImpersonateSelf(_: &mut Ctx) -> u32 {
-    IMPERSONATING.lock().unwrap().get_or_insert_with(HashSet::new).insert(crate::cur().tid);
+    IMPERSONATING
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashSet::new)
+        .insert(crate::cur().tid);
     1
 }
 fn RevertToSelf(_: &mut Ctx) -> u32 {
@@ -775,7 +822,14 @@ fn DuplicateTokenEx(c: &mut Ctx) -> u32 {
         return 0;
     }
     // TokenType: 1 primary, 2 impersonation
-    putp(c.a(5), new_token(if c.a(4) == 2 { "impersonation token" } else { "token" }));
+    putp(
+        c.a(5),
+        new_token(if c.a(4) == 2 {
+            "impersonation token"
+        } else {
+            "token"
+        }),
+    );
     1
 }
 
@@ -809,11 +863,19 @@ const PRIVILEGES: &[(u32, &str, bool)] = &[
 ];
 static ENABLED: Mutex<Option<HashSet<u32>>> = Mutex::new(None);
 fn enabled(luid: u32) -> bool {
-    ENABLED.lock().unwrap().as_ref().map_or(false, |s| s.contains(&luid)) || PRIVILEGES.iter().any(|p| p.0 == luid && p.2)
+    ENABLED
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map_or(false, |s| s.contains(&luid))
+        || PRIVILEGES.iter().any(|p| p.0 == luid && p.2)
 }
 
 fn lookup_privilege(name: &str) -> Option<u32> {
-    PRIVILEGES.iter().find(|p| p.1.eq_ignore_ascii_case(name)).map(|p| p.0)
+    PRIVILEGES
+        .iter()
+        .find(|p| p.1.eq_ignore_ascii_case(name))
+        .map(|p| p.0)
 }
 fn LookupPrivilegeValueA(c: &mut Ctx) -> u32 {
     let name = String::from_utf8_lossy(&cstr(c.a(1))).into_owned();
@@ -839,7 +901,10 @@ fn put_luid(p: u32, l: Option<u32>) -> u32 {
 }
 fn LookupPrivilegeNameW(c: &mut Ctx) -> u32 {
     let (luid, out, lenp) = (c.a(1), c.a(2), c.a(3));
-    let Some(p) = PRIVILEGES.iter().find(|p| p.0 == r32(luid) && r32(luid + 4) == 0) else {
+    let Some(p) = PRIVILEGES
+        .iter()
+        .find(|p| p.0 == r32(luid) && r32(luid + 4) == 0)
+    else {
         last_error(ERROR_NO_SUCH_PRIVILEGE);
         return 0;
     };
@@ -859,7 +924,8 @@ fn LookupPrivilegeNameW(c: &mut Ctx) -> u32 {
 /// AdjustTokenPrivileges: TOKEN_PRIVILEGES (count, then LUID + attributes each); the previous
 /// state if asked; ERROR_NOT_ALL_ASSIGNED (1300) for a privilege the token does not hold.
 fn AdjustTokenPrivileges(c: &mut Ctx) -> u32 {
-    let (token, disable_all, new, buflen, prev, retlen) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5));
+    let (token, disable_all, new, buflen, prev, retlen) =
+        (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5));
     if !is_token(token) {
         last_error(ERROR_INVALID_HANDLE);
         return 0;
@@ -879,7 +945,11 @@ fn AdjustTokenPrivileges(c: &mut Ctx) -> u32 {
             changes.push((luid, attr & 2 != 0)); // SE_PRIVILEGE_ENABLED
         }
     }
-    let changed: Vec<(u32, bool)> = changes.iter().filter(|(l, on)| enabled(*l) != *on).map(|(l, _)| (*l, enabled(*l))).collect();
+    let changed: Vec<(u32, bool)> = changes
+        .iter()
+        .filter(|(l, on)| enabled(*l) != *on)
+        .map(|(l, _)| (*l, enabled(*l)))
+        .collect();
     if prev != 0 {
         let need = 4 + 12 * changed.len() as u32;
         put32(retlen, need);
@@ -959,17 +1029,24 @@ fn GetTokenInformation(c: &mut Ctx) -> u32 {
             for p in PRIVILEGES {
                 v.extend_from_slice(&p.0.to_le_bytes());
                 v.extend_from_slice(&0u32.to_le_bytes());
-                v.extend_from_slice(&(if enabled(p.0) { 2u32 } else { 0 } | if p.2 { 1 } else { 0 }).to_le_bytes());
+                v.extend_from_slice(
+                    &(if enabled(p.0) { 2u32 } else { 0 } | if p.2 { 1 } else { 0 }).to_le_bytes(),
+                );
             }
             (v, Vec::new())
         }
         4 => (vec![0; ps as usize], vec![(0, admins().bytes())]),
         5 => (vec![0; ps as usize], vec![(0, the_user().bytes())]),
-        8 => ((if impersonation_token(token) { 2u32 } else { 1 }).to_le_bytes().to_vec(), Vec::new()),
+        8 => (
+            (if impersonation_token(token) { 2u32 } else { 1 })
+                .to_le_bytes()
+                .to_vec(),
+            Vec::new(),
+        ),
         9 if impersonation_token(token) => (2u32.to_le_bytes().to_vec(), Vec::new()), // SecurityImpersonation
-        12 => (1u32.to_le_bytes().to_vec(), Vec::new()),                               // TokenSessionId
-        18 => (2u32.to_le_bytes().to_vec(), Vec::new()),                               // TokenElevationTypeFull
-        20 => (1u32.to_le_bytes().to_vec(), Vec::new()),                               // TokenIsElevated
+        12 => (1u32.to_le_bytes().to_vec(), Vec::new()), // TokenSessionId
+        18 => (2u32.to_le_bytes().to_vec(), Vec::new()), // TokenElevationTypeFull
+        20 => (1u32.to_le_bytes().to_vec(), Vec::new()), // TokenIsElevated
         25 => sid_and_attr(&[(Sid(16, vec![0x3000]), 0x60)], false),
         29 => (0u32.to_le_bytes().to_vec(), Vec::new()), // TokenIsAppContainer
         _ => {
@@ -993,7 +1070,6 @@ fn GetTokenInformation(c: &mut Ctx) -> u32 {
     1
 }
 
-
 // ---------------------------------------------------------------------------------------------
 // the service control manager
 
@@ -1015,7 +1091,13 @@ fn scm<R>(f: impl FnOnce(&mut Scm) -> R) -> R {
     f(SCM.lock().unwrap().get_or_insert_with(Scm::default))
 }
 fn arg(p: u32, wide: bool) -> Option<String> {
-    (p != 0).then(|| if wide { String::from_utf16_lossy(&wstr(p)) } else { crate::text::a2s(&cstr(p)) })
+    (p != 0).then(|| {
+        if wide {
+            String::from_utf16_lossy(&wstr(p))
+        } else {
+            crate::text::a2s(&cstr(p))
+        }
+    })
 }
 
 fn open_manager() -> u32 {
@@ -1072,7 +1154,15 @@ fn create_service(c: &mut Ctx, wide: bool) -> u32 {
     }
     let h = obj::add(Obj::Other("service"));
     scm(|s| {
-        s.services.insert(key.clone(), Service { display, ty, start, path });
+        s.services.insert(
+            key.clone(),
+            Service {
+                display,
+                ty,
+                start,
+                path,
+            },
+        );
         s.open.insert(h, key);
     });
     put32(c.a(10), 0);
@@ -1085,7 +1175,12 @@ fn CreateServiceW(c: &mut Ctx) -> u32 {
     create_service(c, true)
 }
 fn service_of(h: u32) -> Option<(u32, u32)> {
-    scm(|s| s.open.get(&h).and_then(|k| s.services.get(k)).map(|v| (v.ty, v.start)))
+    scm(|s| {
+        s.open
+            .get(&h)
+            .and_then(|k| s.services.get(k))
+            .map(|v| (v.ty, v.start))
+    })
 }
 fn start_service(c: &mut Ctx) -> u32 {
     let Some((ty, start)) = service_of(c.a(0)) else {
@@ -1093,7 +1188,13 @@ fn start_service(c: &mut Ctx) -> u32 {
         return 0;
     };
     // SERVICE_KERNEL_DRIVER / SERVICE_FILE_SYSTEM_DRIVER: no kernel here
-    last_error(if ty & 3 != 0 { ERROR_DRIVER_BLOCKED } else if start == 4 { ERROR_SERVICE_DISABLED } else { ERROR_SERVICE_DISABLED });
+    last_error(if ty & 3 != 0 {
+        ERROR_DRIVER_BLOCKED
+    } else if start == 4 {
+        ERROR_SERVICE_DISABLED
+    } else {
+        ERROR_SERVICE_DISABLED
+    });
     0
 }
 fn StartServiceA(c: &mut Ctx) -> u32 {
@@ -1167,7 +1268,12 @@ fn CloseServiceHandle(c: &mut Ctx) -> u32 {
 }
 fn query_config(c: &mut Ctx, wide: bool) -> u32 {
     let (h, buf, len, need) = (c.a(0), c.a(1), c.a(2), c.a(3));
-    let Some((ty, start, path, display)) = scm(|s| s.open.get(&h).and_then(|k| s.services.get(k)).map(|v| (v.ty, v.start, v.path.clone(), v.display.clone()))) else {
+    let Some((ty, start, path, display)) = scm(|s| {
+        s.open
+            .get(&h)
+            .and_then(|k| s.services.get(k))
+            .map(|v| (v.ty, v.start, v.path.clone(), v.display.clone()))
+    }) else {
         last_error(ERROR_INVALID_HANDLE);
         return 0;
     };
@@ -1175,14 +1281,24 @@ fn query_config(c: &mut Ctx, wide: bool) -> u32 {
     let fixed = 4 * 3 + ps * 6;
     let enc = |s: &str| -> Vec<u8> {
         if wide {
-            s.encode_utf16().chain([0]).flat_map(|u| u.to_le_bytes()).collect()
+            s.encode_utf16()
+                .chain([0])
+                .flat_map(|u| u.to_le_bytes())
+                .collect()
         } else {
             let mut v = crate::text::w2a(&s.encode_utf16().collect::<Vec<_>>());
             v.push(0);
             v
         }
     };
-    let strs = [enc(&path), enc(""), enc(""), enc(""), enc(""), enc(&display)];
+    let strs = [
+        enc(&path),
+        enc(""),
+        enc(""),
+        enc(""),
+        enc(""),
+        enc(&display),
+    ];
     let total = fixed + strs.iter().map(|s| s.len() as u32).sum::<u32>();
     put32(need, total);
     if len < total || buf == 0 {
@@ -1233,15 +1349,32 @@ mod tests {
     #[test]
     fn sid_strings() {
         assert_eq!(sid_to_string(&admins()), "S-1-5-32-544");
-        assert_eq!(sid_to_string(&Sid(0x1234_5678_9abc, vec![1])), "S-1-0x123456789ABC-1");
+        assert_eq!(
+            sid_to_string(&Sid(0x1234_5678_9abc, vec![1])),
+            "S-1-0x123456789ABC-1"
+        );
         assert_eq!(parse_sid("S-1-5-32-544"), Some(admins()));
         assert_eq!(parse_sid("BA"), Some(admins()));
         assert_eq!(parse_sid("S-1-0x5-0x20"), Some(Sid(5, vec![32])));
         assert_eq!(parse_sid("S-1-5"), Some(Sid(5, vec![])));
-        for bad in ["", "S-", "S-1", "S-2-5-32", "S-1-5-", "S-1--5", "S-1-5-4294967296", "S-1-x", "S-1-281474976710656", "S-1-5-+1"] {
+        for bad in [
+            "",
+            "S-",
+            "S-1",
+            "S-2-5-32",
+            "S-1-5-",
+            "S-1--5",
+            "S-1-5-4294967296",
+            "S-1-x",
+            "S-1-281474976710656",
+            "S-1-5-+1",
+        ] {
             assert_eq!(parse_sid(bad), None, "{bad}");
         }
-        assert_eq!(parse_sid(&format!("S-1-5{}", "-1".repeat(15))).map(|s| s.1.len()), Some(15));
+        assert_eq!(
+            parse_sid(&format!("S-1-5{}", "-1".repeat(15))).map(|s| s.1.len()),
+            Some(15)
+        );
         assert_eq!(parse_sid(&format!("S-1-5{}", "-1".repeat(16))), None);
     }
 
@@ -1264,7 +1397,10 @@ mod tests {
 
     #[test]
     fn sid_bytes() {
-        assert_eq!(admins().bytes(), [1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 0x20, 2, 0, 0]);
+        assert_eq!(
+            admins().bytes(),
+            [1, 2, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0, 0x20, 2, 0, 0]
+        );
         assert_eq!(everyone().len(), 12);
         assert!(member(&admins()) && member(&everyone()) && !member(&Sid(5, vec![18])));
     }

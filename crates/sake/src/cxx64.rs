@@ -72,7 +72,9 @@ fn info(rec: u32, i: u32) -> u64 {
     r64(rec + 0x20 + 8 * i)
 }
 fn is_cxx(rec: u32) -> bool {
-    code(rec) == CXX_EXCEPTION && nparams(rec) == 4 && (info(rec, 0) as u32).wrapping_sub(MAGIC_VC6) <= 2
+    code(rec) == CXX_EXCEPTION
+        && nparams(rec) == 4
+        && (info(rec, 0) as u32).wrapping_sub(MAGIC_VC6) <= 2
 }
 
 /// DISPATCHER_CONTEXT (x64)
@@ -88,7 +90,15 @@ struct Disp {
 
 impl Disp {
     fn read(d: u32) -> Disp {
-        Disp { pc: r64(d), base: r64(d + 8), func: r64(d + 0x10) as u32, target_ip: r64(d + 0x20), ctx: r64(d + 0x28) as u32, data: r64(d + 0x38) as u32, at: d }
+        Disp {
+            pc: r64(d),
+            base: r64(d + 8),
+            func: r64(d + 0x10) as u32,
+            target_ip: r64(d + 0x20),
+            ctx: r64(d + 0x28) as u32,
+            data: r64(d + 0x38) as u32,
+            at: d,
+        }
     }
     /// guest address of an RVA (images above 4G: their low alias)
     fn rva(&self, r: u32) -> u32 {
@@ -109,7 +119,9 @@ fn catch_trap() -> u32 {
 }
 
 fn is_consolidate(rec: u32, n: u32) -> bool {
-    code(rec) == STATUS_UNWIND_CONSOLIDATE && nparams(rec) == n && info(rec, 0) == catch_trap() as u64
+    code(rec) == STATUS_UNWIND_CONSOLIDATE
+        && nparams(rec) == n
+        && info(rec, 0) == catch_trap() as u64
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -119,7 +131,12 @@ fn is_consolidate(rec: u32, n: u32) -> bool {
 
 /// The image base that holds `addr` (the thrown type's RVAs are from it).
 pub fn image_base_of(addr: u32) -> u64 {
-    crate::pe::MODULES.read().unwrap().iter().find(|m| addr.wrapping_sub(m.base) < m.size).map_or(0, |m| crate::mem::widen(m.base))
+    crate::pe::MODULES
+        .read()
+        .unwrap()
+        .iter()
+        .find(|m| addr.wrapping_sub(m.base) < m.size)
+        .map_or(0, |m| crate::mem::widen(m.base))
 }
 
 fn mangled(ti: u32) -> Vec<u8> {
@@ -131,7 +148,8 @@ fn this_ptr(ty: u32, object: u64) -> u64 {
     if object == 0 {
         return 0;
     }
-    let (this_off, vbase_descr, vbase_off) = (r32(ty + 8) as i32, r32(ty + 12) as i32, r32(ty + 16) as i32);
+    let (this_off, vbase_descr, vbase_off) =
+        (r32(ty + 8) as i32, r32(ty + 12) as i32, r32(ty + 16) as i32);
     let mut o = object;
     if vbase_descr >= 0 {
         o = o.wrapping_add(vbase_descr as i64 as u64);
@@ -213,7 +231,11 @@ enum Kind {
     /// FH3: the function's unwind help (state, try level), reset after the catch
     Fh3 { unwind_help: u32 },
     /// FH4: the try levels for a search / an unwind through the catch, its continuations
-    Fh4 { search: i32, unwind: i32, ret: [u64; 2] },
+    Fh4 {
+        search: i32,
+        unwind: i32,
+        ret: [u64; 2],
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -254,7 +276,11 @@ fn set_current() {
 /// Ends catch `a` (taken off the list): its object goes unless rethrown or caught again.
 fn end_catch(cpu: &mut koji::Cpu, a: Active) {
     let object = info(a.rec, 1);
-    let in_use = ACTIVE.with(|l| l.borrow().iter().any(|o| is_cxx(o.rec) && info(o.rec, 1) == object));
+    let in_use = ACTIVE.with(|l| {
+        l.borrow()
+            .iter()
+            .any(|o| is_cxx(o.rec) && info(o.rec, 1) == object)
+    });
     if !a.rethrown && !in_use {
         destroy(cpu, a.rec);
     }
@@ -270,14 +296,28 @@ fn catch_entry(c: &mut Ctx) -> u32 {
     let (prev, ctx) = (info(rec, 6) as u32, info(rec, 7) as u32);
     let kind = if nparams(rec) == FH3_PARAMS {
         let descr = info(rec, 2) as u32;
-        Kind::Fh3 { unwind_help: (frame as u32).wrapping_add(r32(descr + 28)) }
+        Kind::Fh3 {
+            unwind_help: (frame as u32).wrapping_add(r32(descr + 28)),
+        }
     } else {
-        Kind::Fh4 { search: info(rec, 2) as i32, unwind: info(rec, 3) as i32, ret: [info(rec, 8), info(rec, 9)] }
+        Kind::Fh4 {
+            search: info(rec, 2) as i32,
+            unwind: info(rec, 3) as i32,
+            ret: [info(rec, 8), info(rec, 9)],
+        }
     };
     if trace() {
         eprintln!("sake: x64 C++: catch block {handler:#x} frame {frame:#x}");
     }
-    ACTIVE.with(|a| a.borrow_mut().push(Active { key: c.esp + 8, rec: prev, ctx, rethrown: false, kind }));
+    ACTIVE.with(|a| {
+        a.borrow_mut().push(Active {
+            key: c.esp + 8,
+            rec: prev,
+            ctx,
+            rethrown: false,
+            kind,
+        })
+    });
     set_current();
     // (the funclet as Wine's call_exc_handler calls it: RCX the handler, RDX the frame)
     c.cpu.set_gpr(1, handler);
@@ -294,7 +334,11 @@ fn catch_entry(c: &mut Ctx) -> u32 {
 pub fn catch_done(cpu: &mut koji::Cpu, sp: u32, rax: u64) -> u64 {
     let Some(a) = ACTIVE.with(|l| {
         let mut l = l.borrow_mut();
-        if l.last().is_some_and(|a| a.key == sp) { l.pop() } else { None }
+        if l.last().is_some_and(|a| a.key == sp) {
+            l.pop()
+        } else {
+            None
+        }
     }) else {
         return rax;
     };
@@ -322,7 +366,9 @@ pub fn catch_done(cpu: &mut koji::Cpu, sp: u32, rax: u64) -> u64 {
 /// exception `rec`: searching, a rethrow of the catch's object is noted; unwinding, the catch
 /// is left (as the __finally around Wine's funclet call).
 pub fn through_catch(cpu: &mut koji::Cpu, sp: u32, unwinding: bool, rec: u32) {
-    let Some(i) = ACTIVE.with(|l| l.borrow().iter().rposition(|a| a.key == sp)) else { return };
+    let Some(i) = ACTIVE.with(|l| l.borrow().iter().rposition(|a| a.key == sp)) else {
+        return;
+    };
     let a = ACTIVE.with(|l| l.borrow()[i]);
     if !unwinding {
         if let Kind::Fh4 { search, .. } = a.kind {
@@ -350,7 +396,12 @@ fn throw(c: &mut Ctx) -> u32 {
         let Some(a) = ACTIVE.with(|l| l.borrow().last().copied()) else {
             crate::fatal(c.cpu, "C++ rethrow without an exception (terminate)");
         };
-        [info(a.rec, 0), info(a.rec, 1), info(a.rec, 2), info(a.rec, 3)]
+        [
+            info(a.rec, 0),
+            info(a.rec, 1),
+            info(a.rec, 2),
+            info(a.rec, 3),
+        ]
     } else {
         [MAGIC_VC6 as u64, object, ti as u64, image_base_of(ti)]
     };
@@ -363,7 +414,15 @@ pub fn rethrow(c: &mut Ctx) {
     let Some(a) = ACTIVE.with(|l| l.borrow().last().copied()) else {
         crate::fatal(c.cpu, "C++ rethrow without an exception (terminate)");
     };
-    raise_cxx(c, [info(a.rec, 0), info(a.rec, 1), info(a.rec, 2), info(a.rec, 3)]);
+    raise_cxx(
+        c,
+        [
+            info(a.rec, 0),
+            info(a.rec, 1),
+            info(a.rec, 2),
+            info(a.rec, 3),
+        ],
+    );
 }
 
 /// Throws `object` of ThrowInfo `ti` from a trap (msvcp's _X* functions).
@@ -373,14 +432,23 @@ pub fn throw_object(c: &mut Ctx, object: u64, ti: u32) {
 
 fn raise_cxx(c: &mut Ctx, params: [u64; 4]) {
     if trace() {
-        eprintln!("sake: x64 C++ throw object {:#x} type {:#x}", params[1], params[2]);
+        eprintln!(
+            "sake: x64 C++ throw object {:#x} type {:#x}",
+            params[1], params[2]
+        );
     }
     // the context: as if the call had returned
     let ret = r64(c.esp);
     c.cpu.eip = ret as u32;
     c.cpu.rip_hi = (ret >> 32) as u32;
     c.cpu.set_gpr(4, c.esp as u64 + 8);
-    crate::seh64::raise(c.cpu, CXX_EXCEPTION, EXCEPTION_NONCONTINUABLE, ret as u32, &params);
+    crate::seh64::raise(
+        c.cpu,
+        CXX_EXCEPTION,
+        EXCEPTION_NONCONTINUABLE,
+        ret as u32,
+        &params,
+    );
     c.jumped = true;
 }
 
@@ -425,7 +493,11 @@ impl Fh3 {
             ip_count: r32(p + 20),
             ipmap: d.rva(r32(p + 24)),
             unwind_help: r32(p + 28) as i32,
-            flags: if r32(p) & 0x1fff_ffff >= MAGIC_VC8 { r32(p + 36) } else { 0 },
+            flags: if r32(p) & 0x1fff_ffff >= MAGIC_VC8 {
+                r32(p + 36)
+            } else {
+                0
+            },
         }
     }
     fn ip_to_state(&self, d: &Disp, ip: u64) -> i32 {
@@ -442,7 +514,13 @@ impl Fh3 {
     /// try block i: (start, end, catch level, catch count, catch blocks)
     fn tryblock(&self, d: &Disp, i: u32) -> (i32, i32, i32, u32, u32) {
         let t = self.tryblocks + 20 * i;
-        (r32(t) as i32, r32(t + 4) as i32, r32(t + 8) as i32, r32(t + 12), d.rva(r32(t + 16)))
+        (
+            r32(t) as i32,
+            r32(t + 4) as i32,
+            r32(t + 8) as i32,
+            r32(t + 12),
+            d.rva(r32(t + 16)),
+        )
     }
 }
 
@@ -454,7 +532,10 @@ fn local_unwind3(c: &mut Ctx, frame: u64, d: &Disp, f: &Fh3, last: i32) {
     }
     while level > last {
         if level < 0 || level as u32 >= f.unwind_count {
-            crate::fatal(c.cpu, &format!("C++ unwind: invalid state {level} (terminate)"));
+            crate::fatal(
+                c.cpu,
+                &format!("C++ unwind: invalid state {level} (terminate)"),
+            );
         }
         let e = f.unwind_table + 8 * level as u32;
         let h = r32(e + 4);
@@ -466,7 +547,17 @@ fn local_unwind3(c: &mut Ctx, frame: u64, d: &Disp, f: &Fh3, last: i32) {
     w32(help, level as u32);
 }
 
-fn find_catch3(c: &mut Ctx, rec: u32, ctx: u32, frame: u64, d: &Disp, f: &Fh3, descr: u32, exc_type: u32, orig_frame: u64) {
+fn find_catch3(
+    c: &mut Ctx,
+    rec: u32,
+    ctx: u32,
+    frame: u64,
+    d: &Disp,
+    f: &Fh3,
+    descr: u32,
+    exc_type: u32,
+    orig_frame: u64,
+) {
     let exc_base = if nparams(rec) == 4 { info(rec, 3) } else { 0 };
     let object = info(rec, 1);
     let mut level = f.ip_to_state(d, d.pc);
@@ -497,12 +588,22 @@ fn find_catch3(c: &mut Ctx, rec: u32, ctx: u32, frame: u64, d: &Disp, f: &Fh3, d
         }
         for j in 0..count {
             let cb = blocks + 20 * j;
-            let (cflags, cti, offset, handler) = (r32(cb), r32(cb + 4), r32(cb + 8) as i32, r32(cb + 12));
+            let (cflags, cti, offset, handler) =
+                (r32(cb), r32(cb + 4), r32(cb + 8) as i32, r32(cb + 12));
             let catch_ti = if cti != 0 { d.rva(cti) } else { 0 };
             if exc_type != 0 {
-                let Some(ty) = find_caught_type(exc_type, exc_base, catch_ti, cflags) else { continue };
+                let Some(ty) = find_caught_type(exc_type, exc_base, catch_ti, cflags) else {
+                    continue;
+                };
                 if catch_ti != 0 && crate::mem::r8(catch_ti + 16) != 0 && offset != 0 {
-                    copy_exception(c, object, (orig_frame as u32).wrapping_add(offset as u32), cflags, ty, exc_base);
+                    copy_exception(
+                        c,
+                        object,
+                        (orig_frame as u32).wrapping_add(offset as u32),
+                        cflags,
+                        ty,
+                        exc_base,
+                    );
                 }
             } else if cti != 0 {
                 continue;
@@ -550,7 +651,9 @@ fn frame_handler3(c: &mut Ctx) -> u32 {
     for i in (0..f.try_count).rev() {
         let (_, end, catch_level, count, blocks) = f.tryblock(&d, i);
         if level > end && level <= catch_level {
-            let tf = *throw_func.get_or_insert_with(|| crate::seh64::lookup(d.pc as u32).map(|(e, b)| b.wrapping_add(r32(e))));
+            let tf = *throw_func.get_or_insert_with(|| {
+                crate::seh64::lookup(d.pc as u32).map(|(e, b)| b.wrapping_add(r32(e)))
+            });
             for j in 0..count {
                 let cb = blocks + 20 * j;
                 if Some(d.rva(r32(cb + 12))) == tf {
@@ -562,7 +665,11 @@ fn frame_handler3(c: &mut Ctx) -> u32 {
     }
     if flags(rec) & (EXCEPTION_UNWINDING | EXCEPTION_EXIT_UNWIND) != 0 {
         let last = if flags(rec) & EXCEPTION_TARGET_UNWIND != 0 {
-            if is_consolidate(rec, FH3_PARAMS) { info(rec, 3) as i32 } else { level }
+            if is_consolidate(rec, FH3_PARAMS) {
+                info(rec, 3) as i32
+            } else {
+                level
+            }
         } else {
             unwind_level
         };
@@ -571,15 +678,26 @@ fn frame_handler3(c: &mut Ctx) -> u32 {
     }
     let nested = orig_frame != frame;
     let noexcept = |c: &mut Ctx| {
-        if !nested && code(rec) == CXX_EXCEPTION && f.magic >= MAGIC_VC8 && f.flags & FUNC_DESCR_NOEXCEPT != 0 {
-            crate::fatal(c.cpu, "noexcept function propagating an exception (terminate)");
+        if !nested
+            && code(rec) == CXX_EXCEPTION
+            && f.magic >= MAGIC_VC8
+            && f.flags & FUNC_DESCR_NOEXCEPT != 0
+        {
+            crate::fatal(
+                c.cpu,
+                "noexcept function propagating an exception (terminate)",
+            );
         }
     };
     if f.try_count == 0 {
         noexcept(c);
         return CONTINUE_SEARCH;
     }
-    let exc_type = if code(rec) == CXX_EXCEPTION { info(rec, 2) as u32 } else { 0 };
+    let exc_type = if code(rec) == CXX_EXCEPTION {
+        info(rec, 2) as u32
+    } else {
+        0
+    };
     find_catch3(c, rec, ctx, frame, &d, &f, descr, exc_type, orig_frame);
     if c.jumped {
         return 0;
@@ -647,7 +765,11 @@ fn read_unwind4(p: &mut u32) -> (u32, u32, u32, u32) {
 
 /// A try block: (start, end, catch level, catch count, catch blocks)
 fn read_try4(p: &mut u32, d: &Disp) -> (i32, i32, i32, u32, u32) {
-    let (start, end, catch_level) = (decode_uint(p) as i32, decode_uint(p) as i32, decode_uint(p) as i32);
+    let (start, end, catch_level) = (
+        decode_uint(p) as i32,
+        decode_uint(p) as i32,
+        decode_uint(p) as i32,
+    );
     let cb = read_rva(p);
     if cb == 0 {
         return (start, end, catch_level, 0, 0);
@@ -675,7 +797,11 @@ fn read_catch4(p: &mut u32, func_rva: u32) -> Option<(u32, u32, u32, u32, [u32; 
         _ => 0,
     };
     for r in ret.iter_mut().take(n) {
-        *r = if h & 8 != 0 { read_rva(p) } else { decode_uint(p) + func_rva };
+        *r = if h & 8 != 0 {
+            read_rva(p)
+        } else {
+            decode_uint(p) + func_rva
+        };
     }
     Some((flags, ti, offset, handler, ret))
 }
@@ -688,7 +814,16 @@ impl Fh4 {
         if header & FH4_BBT != 0 {
             return None;
         }
-        let mut f = Fh4 { header, unwind_count: 0, unwind_map: 0, try_count: 0, try_map: 0, ip_count: 0, ip_map: 0, frame: 0 };
+        let mut f = Fh4 {
+            header,
+            unwind_count: 0,
+            unwind_map: 0,
+            try_count: 0,
+            try_map: 0,
+            ip_count: 0,
+            ip_map: 0,
+            frame: 0,
+        };
         if header & FH4_UNWIND_MAP != 0 {
             let mut q = d.rva(read_rva(&mut p));
             f.unwind_count = decode_uint(&mut q);
@@ -740,9 +875,16 @@ impl Fh4 {
 }
 
 fn local_unwind4(c: &mut Ctx, frame: u64, d: &Disp, f: &Fh4, level: i32, last: i32) {
-    let level = if level == -2 { f.ip_to_state(d, d.pc) } else { level };
+    let level = if level == -2 {
+        f.ip_to_state(d, d.pc)
+    } else {
+        level
+    };
     if level < -1 || level >= f.unwind_count as i32 {
-        crate::fatal(c.cpu, &format!("C++ unwind (FH4): invalid state {level} (terminate)"));
+        crate::fatal(
+            c.cpu,
+            &format!("C++ unwind (FH4): invalid state {level} (terminate)"),
+        );
     }
     if level <= last {
         return;
@@ -770,9 +912,23 @@ fn local_unwind4(c: &mut Ctx, frame: u64, d: &Disp, f: &Fh4, level: i32, last: i
     }
 }
 
-fn find_catch4(c: &mut Ctx, rec: u32, ctx: u32, frame: u64, d: &Disp, f: &Fh4, exc_type: u32, orig_frame: u64, level: i32) {
+fn find_catch4(
+    c: &mut Ctx,
+    rec: u32,
+    ctx: u32,
+    frame: u64,
+    d: &Disp,
+    f: &Fh4,
+    exc_type: u32,
+    orig_frame: u64,
+    level: i32,
+) {
     let exc_base = if nparams(rec) == 4 { info(rec, 3) } else { 0 };
-    let level = if level == -2 { f.ip_to_state(d, d.pc) } else { level };
+    let level = if level == -2 {
+        f.ip_to_state(d, d.pc)
+    } else {
+        level
+    };
     let mut tp = f.try_map;
     for _ in 0..f.try_count {
         let (start, end, catch_level, count, blocks) = read_try4(&mut tp, d);
@@ -781,12 +937,24 @@ fn find_catch4(c: &mut Ctx, rec: u32, ctx: u32, frame: u64, d: &Disp, f: &Fh4, e
         }
         let mut cp = blocks;
         for _ in 0..count {
-            let Some((cflags, cti, offset, handler, ret)) = read_catch4(&mut cp, d.func_begin()) else { return };
+            let Some((cflags, cti, offset, handler, ret)) = read_catch4(&mut cp, d.func_begin())
+            else {
+                return;
+            };
             let catch_ti = if cti != 0 { d.rva(cti) } else { 0 };
             if exc_type != 0 {
-                let Some(ty) = find_caught_type(exc_type, exc_base, catch_ti, cflags) else { continue };
+                let Some(ty) = find_caught_type(exc_type, exc_base, catch_ti, cflags) else {
+                    continue;
+                };
                 if catch_ti != 0 && crate::mem::r8(catch_ti + 16) != 0 && offset != 0 {
-                    copy_exception(c, info(rec, 1), (orig_frame as u32).wrapping_add(offset), cflags, ty, exc_base);
+                    copy_exception(
+                        c,
+                        info(rec, 1),
+                        (orig_frame as u32).wrapping_add(offset),
+                        cflags,
+                        ty,
+                        exc_base,
+                    );
                 }
             } else if cti != 0 {
                 continue;
@@ -814,14 +982,22 @@ fn frame_handler4(c: &mut Ctx) -> u32 {
     let d = Disp::read(dp);
     let level = TRYLEVEL4.with(|t| t.replace(-2));
     let header = crate::mem::r8(d.rva(r32(d.data)));
-    if header & FH4_EHS != 0 && code(rec) != CXX_EXCEPTION && !is_consolidate(rec, FH4_PARAMS) && code(rec) != STATUS_LONGJUMP {
+    if header & FH4_EHS != 0
+        && code(rec) != CXX_EXCEPTION
+        && !is_consolidate(rec, FH4_PARAMS)
+        && code(rec) != STATUS_LONGJUMP
+    {
         return CONTINUE_SEARCH;
     }
     let Some(f) = Fh4::read(&d) else {
         eprintln!("sake: __CxxFrameHandler4: FuncInfo4 header {header:#x} not supported");
         return CONTINUE_SEARCH;
     };
-    let orig_frame = if f.header & FH4_IS_CATCH != 0 { r64((frame as u32).wrapping_add(f.frame)) } else { frame };
+    let orig_frame = if f.header & FH4_IS_CATCH != 0 {
+        r64((frame as u32).wrapping_add(f.frame))
+    } else {
+        frame
+    };
     if flags(rec) & (EXCEPTION_UNWINDING | EXCEPTION_EXIT_UNWIND) != 0 {
         let mut last = -1;
         if flags(rec) & EXCEPTION_TARGET_UNWIND != 0 {
@@ -835,15 +1011,25 @@ fn frame_handler4(c: &mut Ctx) -> u32 {
         return CONTINUE_SEARCH;
     }
     let noexcept = |c: &mut Ctx| {
-        if f.header & FH4_IS_CATCH == 0 && code(rec) == CXX_EXCEPTION && f.header & FH4_NO_EXCEPT != 0 {
-            crate::fatal(c.cpu, "noexcept function propagating an exception (terminate)");
+        if f.header & FH4_IS_CATCH == 0
+            && code(rec) == CXX_EXCEPTION
+            && f.header & FH4_NO_EXCEPT != 0
+        {
+            crate::fatal(
+                c.cpu,
+                "noexcept function propagating an exception (terminate)",
+            );
         }
     };
     if f.try_map == 0 {
         noexcept(c);
         return CONTINUE_SEARCH;
     }
-    let exc_type = if code(rec) == CXX_EXCEPTION { info(rec, 2) as u32 } else { 0 };
+    let exc_type = if code(rec) == CXX_EXCEPTION {
+        info(rec, 2) as u32
+    } else {
+        0
+    };
     find_catch4(c, rec, ctx, frame, &d, &f, exc_type, orig_frame, level);
     if c.jumped {
         return 0;
@@ -927,7 +1113,11 @@ pub fn register() {
         implement(d, "__CxxFrameHandler4", frame_handler4);
         implement(d, "__C_specific_handler", C_specific_handler);
         implement(d, "__current_exception", __current_exception);
-        implement(d, "__current_exception_context", __current_exception_context);
+        implement(
+            d,
+            "__current_exception_context",
+            __current_exception_context,
+        );
         implement(d, "__uncaught_exceptions", __uncaught_exceptions);
     }
     implement("ntdll", "__C_specific_handler", C_specific_handler);
