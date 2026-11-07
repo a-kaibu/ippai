@@ -129,12 +129,10 @@ fn vconst(c: &mut Code, b64: bool, v: i64) {
 pub(super) fn emit(c: &mut Code, (g, bits, lanes, _): (G, u32, u32, bool), a: Option<u32>, b: u32, t: (u32, u32), cpu: u32, mxcsr: u32) {
     let b64 = bits == 64;
     let (ra, rb) = ranges(g, b64);
-    // (a zero lane where zero is fine: replaced by 2.0, which every range holds)
-    let two: i64 = if b64 { 1 << 62 } else { 1 << 30 };
     if g == G::Inexact {
         c.i32c(0);
     } else {
-        exact(c, b64, ra, rb, two, lanes, bits, a, b, t);
+        exact(c, b64, ra, rb, lanes, bits, a, b, t);
     }
     if g != G::Special {
         // PE not set yet
@@ -144,7 +142,7 @@ pub(super) fn emit(c: &mut Code, (g, bits, lanes, _): (G, u32, u32, bool), a: Op
 
 /// The check: pushes an i32, nonzero when a lane is outside its range.
 #[allow(clippy::too_many_arguments)]
-fn exact(c: &mut Code, b64: bool, ra: R, rb: R, two: i64, lanes: u32, bits: u32, a: Option<u32>, b: u32, t: (u32, u32)) {
+fn exact(c: &mut Code, b64: bool, ra: R, rb: R, lanes: u32, bits: u32, a: Option<u32>, b: u32, t: (u32, u32)) {
     if lanes == 1 {
         // a scalar: on the low lane as an integer, x - lo >=u hi - lo
         let mut first = true;
@@ -177,31 +175,27 @@ fn exact(c: &mut Code, b64: bool, ra: R, rb: R, two: i64, lanes: u32, bits: u32,
             first = false;
         }
     } else {
+        // (float compares: lo <= |x| < hi; the bits of non-negative floats order as their
+        // values, NaNs compare false. V8 has no native i64x2 ordered compare on x64: it
+        // emulated them, 4-7x on SSE loops.)
+        let (abs, ge, lt, feq, ieq) = if b64 { (0xec, 0x4c, 0x49, 0x47, 0xd6) } else { (0xe0, 0x46, 0x43, 0x41, 0x37) };
         let mut first = true;
         for (x, r) in [(Some(b), rb), (a, ra)] {
             let Some(x) = x else { continue };
             c.get(x);
             if r.abs {
-                vconst(c, b64, if b64 { i64::MAX } else { i32::MAX as i64 });
-                c.simd(0x4e); // v128.and
+                c.simd(abs);
             }
-            if r.zero {
-                c.set(x).get(x).get(x).v128zero().simd(if b64 { 0xd6 } else { 0x37 }); // eq
-                vconst(c, b64, two);
-                c.simd(0x4e).simd(0x50); // and, or
-            }
+            c.set(x).get(x);
             vconst(c, b64, r.lo);
-            c.simd(if b64 { 0xd1 } else { 0xb1 }); // sub
-            if b64 {
-                // (no unsigned i64x2 compare: below lo is negative)
-                c.set(x).get(x).v128zero().simd(0xd8); // i64x2.lt_s
-                c.get(x);
-                vconst(c, b64, r.hi - r.lo);
-                c.simd(0xdb).simd(0x50); // i64x2.ge_s, or
-            } else {
-                vconst(c, b64, r.hi - r.lo);
-                c.simd(0x40); // i32x4.ge_u
+            c.simd(ge).get(x);
+            vconst(c, b64, r.hi);
+            c.simd(lt).simd(0x4e); // and
+            if r.zero {
+                // (|x| == 0; not abs: +0 only, as bits)
+                c.get(x).v128zero().simd(if r.abs { feq } else { ieq }).simd(0x50);
             }
+            c.simd(0x4d); // not: outside
             if !first {
                 c.simd(0x50);
             }
