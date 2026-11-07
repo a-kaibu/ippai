@@ -42,7 +42,7 @@ comctl32:tooltips	fail	210	375
 comctl32:trackbar	crash	91	0
 comctl32:treeview	crash	223	0
 comctl32:updown	fail	70	306
-crypt32:base64	fail	3033	3936
+crypt32:base64	ok	0	4113
 crypt32:cert	crash	61	0
 crypt32:chain	crash	21	0
 crypt32:crl	crash	40	0

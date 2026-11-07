@@ -90,6 +90,7 @@ pub mod x3daudio;
 pub mod mmio;
 pub mod gl;
 pub mod glu;
+pub mod cryptstr;
 pub mod dnsrec;
 pub mod smalldlls;
 pub mod security;
@@ -660,6 +661,7 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     gl::init();
     glu::init();
     smalldlls::init();
+    cryptstr::init();
     security::init();
     sysinfo::init();
     pipe::register();
