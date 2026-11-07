@@ -39,6 +39,16 @@ crates=$(for f in $files; do echo "$f"; done | sed -n 's#^crates/\([^/]*\)/.*#\1
 if echo "$crates" | grep -qxE 'hlslc|dxwgsl|glwgsl'; then crates="$crates shaderconf"; fi
 [ -z "$crates" ] || args+=(--test-package "$(echo $crates | tr ' ' ',')")
 rc=0
+# (on CI: where the disk goes, every 5 minutes: the root's room, the biggest trees under the
+# temp dir (cargo-mutants' copies) and target; #83)
+if [ -n "${CI:-}" ]; then
+  (while sleep 300; do
+    df -h / | tail -1 || true
+    du -xsh "${TMPDIR:-/tmp}"/* target 2>/dev/null | sort -h | tail -4 || true
+  done) &
+  watch=$!
+  trap 'kill $watch 2>/dev/null' EXIT
+fi
 cargo mutants "${args[@]}" -j "$JOBS" -o target || rc=$?
 # 0: all caught, 2: missed, 3: timeouts; others (baseline failed, usage) are errors
 case $rc in 0 | 2 | 3) ;; *) exit $rc ;; esac
