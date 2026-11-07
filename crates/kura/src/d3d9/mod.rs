@@ -14,6 +14,8 @@ pub mod format;
 pub mod gpu;
 #[cfg(test)]
 pub(crate) mod trace_tests;
+#[cfg(test)]
+pub(crate) mod lock_tests;
 
 use std::collections::HashMap;
 use std::sync::Mutex;

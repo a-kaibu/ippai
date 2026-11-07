@@ -6,8 +6,8 @@
    An object lives while something reaches it: the application's references, an object that holds
    one (a view its resource, a device its IDirect3D9, a swap chain its buffer), or a binding of a
    live object (what a device's state, a state block or a swap chain binds). A texture's levels
-   live as long as their texture, and their references count on it. AddRef and Release return
-   the public count: the application's references to the group plus those live objects hold.
+   live as long as their texture, and their references and bindings count on it. AddRef and
+   Release return the public count: the application's references to the group plus those live objects hold.
 
    Left out on purpose, as kura does them: resources do not hold a reference on their device (a
    game that releases its device first destroys it at once), and Reset and ResizeBuffers do not
@@ -46,8 +46,8 @@ Reaches(st, S, o) ==
     IF st.parent[o] # 0 THEN st.parent[o] \in S
     ELSE \/ st.kind[o] \in Permanent
          \/ AppCount(st, o) > 0
-         \/ \E h \in S : o \in st.held[h]
-         \/ \E h \in S : \E s \in Slots : st.slots[h][s] = o
+         \/ \E h \in S : \E x \in st.held[h] : x \in st.known /\ Group(st, x) = o
+         \/ \E h \in S : \E s \in Slots : st.slots[h][s] \in st.known /\ Group(st, st.slots[h][s]) = o
 
 RECURSIVE Fix(_, _, _)
 Fix(st, cand, S) ==

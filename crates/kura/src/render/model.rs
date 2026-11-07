@@ -8,9 +8,10 @@
 //!   and the page's own rule that a dropped table index is not used again;
 //! * an abstract meaning of the commands: every texel holds a value (u64), queue writes take
 //!   effect at once and encoded commands at submit, in order; a clear (loadOp or the clear
-//!   shader of render/d3d.rs) makes the value of its color, a write the value of its bytes, a
-//!   copy moves values, and any other draw gives every pixel it covers (viewport ∩ scissor ∩
-//!   the box `set_bounds` gave, the pass's attachment) a hash of everything it reads: pipeline,
+//!   shader of render/d3d.rs) makes the value of its color (in 8-bit UNORM formats: its bytes),
+//!   a write the value of its bytes (the bytes themselves, up to 8: a readback gives back what
+//!   was written, as on a GPU), a copy moves values, and any other draw gives every pixel it
+//!   covers (viewport ∩ scissor ∩ the box `set_bounds` gave, the pass's attachment) a hash of everything it reads: pipeline,
 //!   bound buffer bytes, sampled textures' values, vertex and index bytes, arguments, the
 //!   pixel's position and its old color and depth. storeOp "discard" leaves zeros.
 //!
@@ -281,6 +282,30 @@ fn clear_value(color: [f32; 4]) -> u64 {
         h = mix(h, if c == 0.0 { 0 } else { c.to_bits() as u64 });
     }
     h
+}
+
+/// What a clear leaves in a texel of `format`: 8-bit UNORM formats hold the bytes (as writes
+/// do: a readback gives them back and uploading those bytes gives the same value), others the
+/// value of the color.
+pub(crate) fn clear_texel(format: &str, c: [f32; 4]) -> u64 {
+    let u = |x: f32| if x.is_nan() { 0 } else { (x.clamp(0.0, 1.0) * 255.0).round() as u64 };
+    match format {
+        "rgba8unorm" => u(c[0]) | u(c[1]) << 8 | u(c[2]) << 16 | u(c[3]) << 24,
+        "bgra8unorm" => u(c[2]) | u(c[1]) << 8 | u(c[0]) << 16 | u(c[3]) << 24,
+        _ => clear_value(c),
+    }
+}
+
+/// What a write of a texel's bytes leaves: up to 8 bytes the bytes themselves (so a readback
+/// gives them back, as on a GPU), more a hash of them.
+fn write_texel(b: &[u8]) -> u64 {
+    if b.len() <= 8 {
+        let mut w = [0u8; 8];
+        w[..b.len()].copy_from_slice(b);
+        u64::from_le_bytes(w)
+    } else {
+        hash_bytes(0x77, b)
+    }
 }
 
 fn depth_value(z: f32) -> u64 {
@@ -1171,7 +1196,7 @@ impl Model {
             for y in 0..size[1] {
                 for x in 0..size[0] {
                     let at = (z * rows * bpr + y * bpr + x * bpp) as usize;
-                    tm.texels[s][((o[1] + y) * lw + o[0] + x) as usize] = hash_bytes(0x77, &data[at..at + bpp as usize]);
+                    tm.texels[s][((o[1] + y) * lw + o[0] + x) as usize] = write_texel(&data[at..at + bpp as usize]);
                 }
             }
         }
@@ -1332,7 +1357,8 @@ impl Model {
             }
             let cv: Vec<f32> = c.arr("clearValue").iter().map(|x| if let J::Num(n) = x { *n as f32 } else { 0.0 }).collect();
             let color = [cv.first().copied().unwrap_or(0.0), cv.get(1).copied().unwrap_or(0.0), cv.get(2).copied().unwrap_or(0.0), cv.get(3).copied().unwrap_or(0.0)];
-            colors.push(Attachment { view: a, load_clear: (load == "clear").then(|| clear_value(color)), store: store == "store", stencil_clear: None, stencil_store: true });
+            let format = self.view_of(a).map(|v| self.tex(v.tex).format.clone()).unwrap_or_default();
+            colors.push(Attachment { view: a, load_clear: (load == "clear").then(|| clear_texel(&format, color)), store: store == "store", stencil_clear: None, stencil_store: true });
         }
         let mut depth = None;
         if let Some(d) = j.get("depthStencilAttachment") {
@@ -1732,7 +1758,7 @@ impl Model {
                         let old = self.tex(t).texels[si][at];
                         let oz = zatt.map_or(0, |(zt, zs, _)| self.tex(zt).texels[zs][at]);
                         let new = match clear {
-                            Some((c, _)) if p.clear_shader => clear_value(c),
+                            Some((c, _)) if p.clear_shader => clear_texel(&self.tex(t).format, c),
                             _ => mix(mix(mix(sig, (x as u64) << 32 | y as u64), if blends { old } else { 0 }), if p.depth.as_ref().is_some_and(|d| d.2 != "always") { oz } else { 0 }),
                         };
                         if mask != 0 {

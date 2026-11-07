@@ -162,6 +162,53 @@ fn with<R>(f: impl FnOnce(&mut Queue) -> R) -> R {
     }))
 }
 
+// Tests: the page's executor in the same thread, run where the guest would wait for it.
+#[cfg(test)]
+thread_local! {
+    static PUMP: std::cell::RefCell<Option<Box<dyn FnMut()>>> = std::cell::RefCell::new(None);
+}
+
+/// (tests) Runs `f` as the page whenever the guest waits for it; None: no page. Starts from an
+/// empty queue (what other tests left is dropped).
+#[cfg(test)]
+pub fn set_pump(f: Option<Box<dyn FnMut()>>) {
+    *QUEUE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    // (a page from the start: the guest then waits for it where it must)
+    if f.is_some() {
+        with(|q| q.last_poll = Some(now()));
+    }
+    PUMP.with(|p| *p.borrow_mut() = f);
+}
+
+/// (tests) Lets the page run what was recorded so far.
+#[cfg(test)]
+pub fn pump() {
+    flush();
+    let f = PUMP.with(|p| p.borrow_mut().take());
+    if let Some(mut f) = f {
+        f();
+        PUMP.with(|p| *p.borrow_mut() = Some(f));
+    }
+}
+
+/// (tests) The page: takes the next closed batch and runs `f` on it (as vnhost_d3d9_poll and
+/// vnhost_d3d9_done, with host pointers that need not fit 32 bits). False: there was none.
+#[cfg(test)]
+pub fn run_next(f: impl FnOnce(&[u32], &[u8], &[u8])) -> bool {
+    let Some(b) = with(|q| {
+        q.last_poll = Some(now());
+        let b = q.closed.pop_front()?;
+        q.shown += b.presents as u64;
+        Some(b)
+    }) else {
+        return false;
+    };
+    f(&b.cmds, &b.data, &b.blob);
+    with(|q| q.done = q.done.max(b.gen + 1));
+    WAKE.notify_all();
+    true
+}
+
 /// A batch whose blob grew past this is closed after the command that grew it: a game loading
 /// its images before the first Present put them all in one batch (Artemis: a 1 GB blob, out of
 /// memory).
@@ -261,6 +308,8 @@ pub fn present() {
 /// Waits until the batch recorded in generation `gen` (see `batch_gen`) is done: guest memory
 /// its commands read (WRITE_TEXTURE_MEM) may change after that.
 pub fn wait_done(gen: u64) {
+    #[cfg(test)]
+    pump();
     let mut g = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
     let deadline = now() + 1000.0;
     loop {
@@ -315,6 +364,8 @@ pub extern "C" fn vnhost_d3d9_done() {
 /// Waits until the page has done readback `id` (or gave up).
 pub fn wait_readback(id: u32) -> bool {
     flush();
+    #[cfg(test)]
+    pump();
     let mut g = QUEUE.lock().unwrap_or_else(|e| e.into_inner());
     // (10 s without the page finishing a batch: a slow GPU with frames queued before the
     // readback, or shaders compiling, is still making progress)

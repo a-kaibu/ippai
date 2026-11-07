@@ -35,6 +35,80 @@ struct Dc {
     clips: Vec<[f32; 4]>,
     /// the bitmap texture the BITMAP items in `items` show
     bitmap: Option<u32>,
+    drawing: Drawing,
+}
+
+pub(crate) const WRONG_STATE: u32 = 0x8899_0001;
+pub(crate) const PUSH_POP_UNBALANCED: u32 = 0x8899_0016;
+pub(crate) const POP_MISMATCH: u32 = 0x8899_0017;
+
+/// A context between BeginDraw and EndDraw (formal/tla/D2dDraw.tla): drawing outside them, a
+/// second BeginDraw or a Pop with no Push puts the context in error and EndDraw (or Flush) says
+/// so; EndDraw with clips still pushed fails with D2DERR_PUSH_POP_UNBALANCED and drops them.
+#[derive(Default, Clone, Copy, PartialEq, Debug)]
+pub(crate) struct Drawing {
+    pub drawing: bool,
+    /// the first error since BeginDraw (0: none)
+    pub error: u32,
+    /// axis-aligned clips pushed
+    pub clips: u32,
+}
+
+impl Drawing {
+    fn fail(&mut self, e: u32) {
+        if self.error == 0 {
+            self.error = e;
+        }
+    }
+    pub fn begin(&mut self) {
+        if self.drawing {
+            self.fail(WRONG_STATE);
+        } else {
+            *self = Drawing { drawing: true, ..Default::default() };
+        }
+    }
+    /// Whether a drawing call may draw.
+    pub fn draw(&mut self) -> bool {
+        if !self.drawing {
+            self.fail(WRONG_STATE);
+        }
+        self.drawing
+    }
+    pub fn push(&mut self) -> bool {
+        let ok = self.draw();
+        self.clips += ok as u32;
+        ok
+    }
+    /// Whether a clip comes off.
+    pub fn pop(&mut self) -> bool {
+        if !self.draw() {
+            return false;
+        }
+        if self.clips == 0 {
+            self.fail(POP_MISMATCH);
+            return false;
+        }
+        self.clips -= 1;
+        true
+    }
+    pub fn flush(&self) -> u32 {
+        if self.drawing { self.error } else { WRONG_STATE }
+    }
+    pub fn end(&mut self) -> u32 {
+        if !self.drawing {
+            // (an error recorded outside drawing is lost with it)
+            *self = Drawing::default();
+            return WRONG_STATE;
+        }
+        let r = if self.error != 0 { self.error } else if self.clips != 0 { PUSH_POP_UNBALANCED } else { 0 };
+        *self = Drawing::default();
+        r
+    }
+}
+
+/// `dc`'s drawing state after `f` (false for no such context).
+fn drawing(dc: u32, f: impl FnOnce(&mut Drawing) -> bool) -> bool {
+    st(|s| s.dcs.get_mut(&dc).is_some_and(|d| f(&mut d.drawing)))
 }
 
 /// A bitmap of its own (CreateBitmap, CreateBitmapFromWicBitmap): its texture, size in pixels,
@@ -190,7 +264,7 @@ fn CreateHwndRenderTarget(c: &mut Ctx) -> u32 {
     // (first match wins: these before the device context's)
     let mut methods: Vec<(&str, Handler)> = vec![
         ("EndDraw", HwndEndDraw as Handler),
-        ("Flush", EndDraw),
+        ("Flush", Flush),
         ("CheckWindowState", zero),
         ("Resize", Resize),
         ("GetHwnd", GetHwnd),
@@ -349,9 +423,9 @@ fn context_methods() -> Vec<(&'static str, Handler)> {
         ("DrawBitmap", DrawBitmap),
         ("SetTarget", SetTarget),
         ("GetTarget", GetTarget),
-        ("BeginDraw", ok),
+        ("BeginDraw", BeginDraw),
         ("EndDraw", EndDraw),
-        ("Flush", EndDraw),
+        ("Flush", Flush),
         ("Clear", Clear),
         ("SetTransform", SetTransform),
         ("GetTransform", GetTransform),
@@ -632,6 +706,9 @@ fn BitmapRelease(c: &mut Ctx) -> u32 {
 }
 
 fn DrawBitmap(c: &mut Ctx) -> u32 {
+    if !drawing(c.a(0), Drawing::draw) {
+        return 0;
+    }
     // (this, bitmap, destination D2D1_RECT_F * or NULL, opacity, interpolation, source * or NULL)
     let (dc, bmp, pd, opacity, interp, ps) = (c.a(0), c.a(1), c.a(2), fl(c, 3), c.a(4), c.a(5));
     let Some(im) = st(|s| s.images.get(&bmp).copied()) else {
@@ -769,18 +846,48 @@ fn push(dc: u32, kind: u32, rect: [f32; 4], shape: [f32; 4], extra: [f32; 4], pa
     st(|s| s.dcs.get_mut(&dc).map(|d| d.items.push(Item { rect, shape, extra, paint: p, kind: [kind, row, 0, 0] })));
 }
 
+fn BeginDraw(c: &mut Ctx) -> u32 {
+    drawing(c.a(0), |d| {
+        d.begin();
+        true
+    });
+    0
+}
+
+/// (EndDraw and Flush: this, tag1 *, tag2 *)
 fn EndDraw(c: &mut Ctx) -> u32 {
-    flush(c.a(0));
+    let dc = c.a(0);
+    flush(dc);
+    let r = st(|s| {
+        let d = s.dcs.get_mut(&dc)?;
+        let r = d.drawing.end();
+        d.clips.clear();
+        Some(r)
+    });
+    tags(c);
+    r.unwrap_or(0)
+}
+
+fn Flush(c: &mut Ctx) -> u32 {
+    let dc = c.a(0);
+    flush(dc);
+    tags(c);
+    st(|s| s.dcs.get(&dc).map_or(0, |d| d.drawing.flush()))
+}
+
+fn tags(c: &Ctx) {
     for p in [c.a(1), c.a(2)] {
         if p != 0 {
             w32(p, 0);
             w32(p + 4, 0);
         }
     }
-    0
 }
 
 fn Clear(c: &mut Ctx) -> u32 {
+    if !drawing(c.a(0), Drawing::draw) {
+        return 0;
+    }
     let (dc, p) = (c.a(0), c.a(1));
     let color = if p != 0 { [rf(p, 0), rf(p, 1), rf(p, 2), rf(p, 3)] } else { [0.0; 4] };
     let clipped = st(|s| s.dcs.get(&dc).is_some_and(|d| !d.clips.is_empty()));
@@ -966,6 +1073,9 @@ fn needs_quad(dc: u32) -> bool {
 }
 
 fn FillEllipse(c: &mut Ctx) -> u32 {
+    if !drawing(c.a(0), Drawing::draw) {
+        return 0;
+    }
     let (dc, p, b) = (c.a(0), c.a(1), c.a(2));
     if needs_quad(dc) {
         let (x, y, rx, ry) = (rf(p, 0), rf(p, 1), rf(p, 2), rf(p, 3));
@@ -978,6 +1088,9 @@ fn FillEllipse(c: &mut Ctx) -> u32 {
     0
 }
 fn DrawEllipse(c: &mut Ctx) -> u32 {
+    if !drawing(c.a(0), Drawing::draw) {
+        return 0;
+    }
     let (dc, p, b, w) = (c.a(0), c.a(1), c.a(2), fl(c, 3));
     let (ctr, r) = xf_ellipse(dc, p);
     ellipse(dc, ctr, r, &brush(dc, b), Some(w));
@@ -985,6 +1098,9 @@ fn DrawEllipse(c: &mut Ctx) -> u32 {
 }
 
 fn FillRectangle(c: &mut Ctx) -> u32 {
+    if !drawing(c.a(0), Drawing::draw) {
+        return 0;
+    }
     let (dc, p, b) = (c.a(0), c.a(1), c.a(2));
     let r = [rf(p, 0), rf(p, 1), rf(p, 2), rf(p, 3)];
     if needs_quad(dc) && quad(dc, r, false, &brush(dc, b)) {
@@ -996,6 +1112,9 @@ fn FillRectangle(c: &mut Ctx) -> u32 {
 }
 
 fn DrawRectangle(c: &mut Ctx) -> u32 {
+    if !drawing(c.a(0), Drawing::draw) {
+        return 0;
+    }
     let (dc, p, b, w) = (c.a(0), c.a(1), c.a(2), fl(c, 3));
     let r = [rf(p, 0), rf(p, 1), rf(p, 2), rf(p, 3)];
     let h = w / 2.0;
@@ -1019,6 +1138,9 @@ fn DrawRectangle(c: &mut Ctx) -> u32 {
 
 fn PushAxisAlignedClip(c: &mut Ctx) -> u32 {
     let (dc, p) = (c.a(0), c.a(1));
+    if !drawing(dc, Drawing::push) {
+        return 0;
+    }
     let r = [rf(p, 0), rf(p, 1), rf(p, 2), rf(p, 3)];
     st(|s| {
         if let Some(d) = s.dcs.get_mut(&dc) {
@@ -1029,7 +1151,9 @@ fn PushAxisAlignedClip(c: &mut Ctx) -> u32 {
     0
 }
 fn PopAxisAlignedClip(c: &mut Ctx) -> u32 {
-    st(|s| s.dcs.get_mut(&c.a(0)).map(|d| d.clips.pop()));
+    if drawing(c.a(0), Drawing::pop) {
+        st(|s| s.dcs.get_mut(&c.a(0)).map(|d| d.clips.pop()));
+    }
     0
 }
 
@@ -1074,6 +1198,9 @@ fn draw_text(dc: u32, text: &[u16], fmt: &dwrite::Format, w: f32, h: f32, x: f32
 }
 
 fn DrawText(c: &mut Ctx) -> u32 {
+    if !drawing(c.a(0), Drawing::draw) {
+        return 0;
+    }
     // (this, string, length, format, layout rect, brush, options, measuring mode)
     let (dc, s, n, fmt, r, b, opts) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5), c.a(6));
     let Some(f) = dwrite::format_of(fmt) else { return 0 };
@@ -1085,6 +1212,9 @@ fn DrawText(c: &mut Ctx) -> u32 {
 }
 
 fn DrawTextLayout(c: &mut Ctx) -> u32 {
+    if !drawing(c.a(0), Drawing::draw) {
+        return 0;
+    }
     // (this, origin x, origin y, layout, brush, options)
     let (dc, x, y, lay, b, opts) = (c.a(0), fl(c, 1), fl(c, 2), c.a(3), c.a(4), c.a(5));
     let Some((text, f, w, h)) = dwrite::layout_of(lay) else { return 0 };
@@ -1156,3 +1286,6 @@ pub fn init() {
     implement("d2d1", "D2D1CreateDevice", D2D1CreateDevice);
     implement("d2d1", "D2D1CreateDeviceContext", D2D1CreateDeviceContext);
 }
+
+#[cfg(test)]
+mod draw_tests;

@@ -2155,6 +2155,10 @@ unsafe fn stretch_rect(d: &mut D3d, src: u32, srect: u32, dst: u32, drect: u32, 
 
 unsafe fn color_fill(d: &mut D3d, s: u32, rect: u32, color: u32) -> u32 {
     let s = d.id_of(s);
+    // (D3DPOOL_DEFAULT surfaces only: a managed texture's level is not filled on Windows)
+    if !matches!(d.objs.get(&s).map(|o| &o.data), Some(Data::Surface(sf)) if sf.pool == POOL_DEFAULT) {
+        return D3DERR_INVALIDCALL;
+    }
     let Some(g) = surface_gpu(d, s) else { return D3DERR_INVALIDCALL };
     let r = if rect != 0 { [rd(rect, 0), rd(rect, 1), rd(rect, 2), rd(rect, 3)] } else { [0, 0, g.2, g.3] };
     gpu::record(|b| b.cmd(&[gpu::FILL, g.0, g.1, r[0], r[1], r[2] - r[0], r[3] - r[1], color]));

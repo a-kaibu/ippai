@@ -35,9 +35,16 @@ jobs:
           mkdir -p ~/.local/bin && tar xzf /tmp/tlc.tgz -C ~/.local/bin tlc
       - name: Model checks
         run: TLC=~/.local/bin/tlc formal/run.sh
-      # (kura's real Direct3D 9/11 object tables, random calls, each run checked against ComRefs.tla)
+      # (kura's real D3D9/D3D11/GL code, random calls, each run checked against its spec in formal/tla)
       - name: Trace checks
-        run: IPPAI_TRACE_SEEDS=200 TLC=~/.local/bin/tlc formal/trace.sh
+        run: IPPAI_TRACE_SEEDS=200 KEEP=$RUNNER_TEMP/failed-traces TLC=~/.local/bin/tlc formal/trace.sh
+      - name: Keep failing traces
+        if: failure()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: failed-traces
+          path: ${{ runner.temp }}/failed-traces
+          if-no-files-found: ignore
 
   kani:
     runs-on: ubuntu-24.04

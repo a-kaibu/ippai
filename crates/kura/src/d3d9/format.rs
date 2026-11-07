@@ -482,7 +482,7 @@ mod tests {
             (D24FS8, true, false, false, false),
             (A16B16G16R16F, false, true, false, true),
             (A32B32G32R32F, false, true, false, false),
-            (DXT1, false, false, true, false),
+            (DXT1, false, false, false, false),
             (DXT2, false, false, false, false),
             (DXT3, false, false, false, false),
             (DXT4, false, false, false, false),

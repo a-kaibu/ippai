@@ -581,7 +581,7 @@ impl D3d {
         vnhost_d3d9_readback_done(r.req);
     }
 
-    fn run(&mut self, c: &[u32], data: &[u8], blob: &[u8]) {
+    pub(crate) fn run(&mut self, c: &[u32], data: &[u8], blob: &[u8]) {
         // A still screen: games draw the same frame again and again (a title, a message waiting
         // for a click). The same batch as the last one, which redraws everything it draws from
         // scratch, leaves the same pixels: not run (no GPU work at all, and the screen is not

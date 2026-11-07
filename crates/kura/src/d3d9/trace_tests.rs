@@ -30,7 +30,7 @@ static ARENA: Mutex<(u32, u32)> = Mutex::new((0, 0));
 pub(crate) unsafe extern "C" fn alloc(n: u32) -> *mut u8 {
     let mut a = ARENA.lock().unwrap();
     if a.0 == 0 {
-        let size = 256 << 20;
+        let size = 512 << 20;
         let p = libc::mmap(std::ptr::null_mut(), size, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_32BIT, -1, 0);
         assert!(p != libc::MAP_FAILED);
         *a = (p as usize as u32, p as usize as u32 + size as u32);
@@ -80,10 +80,17 @@ pub(crate) fn hr(r: u32) -> String {
     }
 }
 
-pub(crate) fn write_trace(name: &str, steps: &[Step]) {
+/// Writes `dir/name/<module>.tla` (the trace) and `dir/name/SPEC` (the spec it is checked
+/// against: formal/tla/<spec>.tla with <spec>Trace.tla and .cfg) when IPPAI_TRACE_DIR is set.
+pub(crate) fn write_module(name: &str, spec: &str, module: &str, text: &str) {
     let Some(dir) = std::env::var_os("IPPAI_TRACE_DIR") else { return };
     let dir = std::path::Path::new(&dir).join(name);
     std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(format!("{module}.tla")), text).unwrap();
+    std::fs::write(dir.join("SPEC"), spec).unwrap();
+}
+
+pub(crate) fn write_trace(name: &str, steps: &[Step]) {
     let set = |v: &[u32]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", ");
     let mut s = String::from("---- MODULE ComTrace ----\nEXTENDS Sequences\nTrace == <<\n");
     for (i, t) in steps.iter().enumerate() {
@@ -95,11 +102,28 @@ pub(crate) fn write_trace(name: &str, steps: &[Step]) {
         );
     }
     s.push_str(">>\n====\n");
-    std::fs::write(dir.join("ComTrace.tla"), s).unwrap();
+    write_module(name, "ComRefs", "ComTrace", &s);
 }
 
 pub(crate) fn seeds() -> u64 {
     std::env::var("IPPAI_TRACE_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(20)
+}
+
+/// The page's executor (render/d3d.rs) on a fresh model of WebGPU (render/model.rs), run in this
+/// thread whenever the guest waits for it (and at gpu::pump).
+pub(crate) fn attach_page() {
+    crate::render::model::reset();
+    let page = std::rc::Rc::new(std::cell::RefCell::new(crate::render::d3d::D3d::new()));
+    let pg = page.clone();
+    gpu::set_pump(Some(Box::new(move || {
+        while gpu::run_next(|c, data, blob| {
+            let mut d = pg.borrow_mut();
+            d.run(c, data, blob);
+            for t in crate::render::model::with(|m| m.finish_maps()) {
+                d.mapped(t, true);
+            }
+        }) {}
+    })));
 }
 
 /// (one test at a time drives the global tables)

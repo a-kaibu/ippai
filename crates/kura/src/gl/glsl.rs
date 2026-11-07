@@ -78,8 +78,7 @@ fn gl() -> std::sync::MutexGuard<'static, Option<Gl>> {
 extern "C" fn glCreateShader(ty: u32) -> u32 {
     let mut g = gl();
     let g = g.as_mut().unwrap();
-    let id = g.next_name;
-    g.next_name += 1;
+    let id = g.next_free();
     g.shaders.insert(id, Shader { pixel: ty != GL_VERTEX_SHADER, source: String::new(), ok: false, log: String::new(), deleted: false });
     id
 }
@@ -159,8 +158,7 @@ extern "C" fn glIsShader(sh: u32) -> u8 {
 extern "C" fn glCreateProgram() -> u32 {
     let mut g = gl();
     let g = g.as_mut().unwrap();
-    let id = g.next_name;
-    g.next_name += 1;
+    let id = g.next_free();
     g.programs.insert(id, Program::default());
     id
 }

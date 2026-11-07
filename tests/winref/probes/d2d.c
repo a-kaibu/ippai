@@ -221,6 +221,32 @@ int main(void) {
             ID2D1Bitmap_Release(bm);
         }
     }
+    /* drawing state (formal/tla/D2dDraw.tla): what EndDraw and Flush return out of order */
+    {
+        D2D1_TAG t1, t2;
+        D2D1_RECT_F r = rect(0, 0, 8, 8), cl = rect(0, 0, 32, 32);
+        printf("state: EndDraw alone %#lx\n", ID2D1RenderTarget_EndDraw(rt, NULL, NULL));
+        printf("state: Flush alone %#lx\n", ID2D1RenderTarget_Flush(rt, &t1, &t2));
+        ID2D1RenderTarget_BeginDraw(rt);
+        ID2D1RenderTarget_BeginDraw(rt);
+        printf("state: Begin Begin End %#lx\n", ID2D1RenderTarget_EndDraw(rt, NULL, NULL));
+        ID2D1RenderTarget_BeginDraw(rt);
+        ID2D1RenderTarget_PopAxisAlignedClip(rt);
+        printf("state: Begin Pop Flush %#lx\n", ID2D1RenderTarget_Flush(rt, &t1, &t2));
+        printf("state: ... End %#lx\n", ID2D1RenderTarget_EndDraw(rt, NULL, NULL));
+        ID2D1RenderTarget_BeginDraw(rt);
+        ID2D1RenderTarget_PushAxisAlignedClip(rt, &cl, D2D1_ANTIALIAS_MODE_ALIASED);
+        printf("state: Begin Push End %#lx\n", ID2D1RenderTarget_EndDraw(rt, NULL, NULL));
+        ID2D1RenderTarget_BeginDraw(rt);
+        printf("state: then Begin End %#lx\n", ID2D1RenderTarget_EndDraw(rt, NULL, NULL));
+        ID2D1RenderTarget_FillRectangle(rt, &r, (ID2D1Brush *)red);
+        ID2D1RenderTarget_BeginDraw(rt);
+        printf("state: Fill Begin End %#lx\n", ID2D1RenderTarget_EndDraw(rt, NULL, NULL));
+        ID2D1RenderTarget_BeginDraw(rt);
+        ID2D1RenderTarget_PushAxisAlignedClip(rt, &cl, D2D1_ANTIALIAS_MODE_ALIASED);
+        ID2D1RenderTarget_PopAxisAlignedClip(rt);
+        printf("state: Begin Push Pop End %#lx\n", ID2D1RenderTarget_EndDraw(rt, NULL, NULL));
+    }
     ID2D1SolidColorBrush_Release(red);
     ID2D1SolidColorBrush_Release(green);
     ID2D1SolidColorBrush_Release(blue);

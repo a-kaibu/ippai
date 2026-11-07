@@ -15,6 +15,8 @@ pub mod format;
 pub mod names;
 #[cfg(test)]
 mod trace_tests;
+#[cfg(test)]
+mod map_tests;
 
 use crate::d3d9::gpu;
 use crate::d3d9::HostCalls;
@@ -2153,6 +2155,23 @@ fn view_target(d: &D11, v: u32) -> Option<(u32, u32, u32)> {
 unsafe fn map(d: &mut D11, res: u32, sub: u32, ty: u32, out: u32, dxgi: bool, after: &mut After) -> u32 {
     let id = d.id_of(res);
     let mut req = 0;
+    // (what the runtime allows: staging resources read and write, dynamic ones write discard,
+    // and buffers no overwrite too; default and immutable ones are not mapped)
+    let usage = match d.objs.get(&id).map(|o| &o.data) {
+        Some(Data::Buffer(b)) => Some((b.usage, true)),
+        Some(Data::Texture(t)) => Some((t.usage, false)),
+        _ => None,
+    };
+    if let Some((usage, buffer)) = usage.filter(|_| !dxgi) {
+        let ok = match usage {
+            3 => (1..=3).contains(&ty),
+            2 => ty == 4 || (ty == 5 && buffer),
+            _ => false,
+        };
+        if !ok {
+            return E_INVALIDARG;
+        }
+    }
     let r = match d.objs.get_mut(&id).map(|o| &mut o.data) {
         Some(Data::Buffer(b)) => {
             b.dirty = true;
@@ -2184,13 +2203,15 @@ unsafe fn map(d: &mut D11, res: u32, sub: u32, ty: u32, out: u32, dxgi: bool, af
                 mem
             };
             if let Some(Data::Texture(t)) = d.objs.get(&id).map(|o| &o.data) {
-                // reading: the page's pixels (formats the page keeps as they are: the page writes
+                // reading or writing part: the page's pixels (formats the page keeps as they are: the page writes
                 // lw * its bpp bytes a row, past the end of a smaller guest copy, e.g. A8 or BC)
                 let same = match format::info(t.fmt) {
                     Some(f) => f.bpp == format::page_bpp(t.page) && f.block == 1 && f.conv == 0,
                     None => format::page_bpp(t.page) == 4,
                 };
-                if ty != 2 && ty != 4 && same && t.dim != 3 {
+                // (D3D11_MAP_WRITE keeps what is there too: a part written goes back with the
+                // rest as the page has it, a copy into the texture included)
+                if ty != 4 && same && t.dim != 3 {
                     d.next_gpu += 1;
                     req = 0x4000_0000 | d.next_gpu;
                     let (g, l) = (t.gpu, level);
