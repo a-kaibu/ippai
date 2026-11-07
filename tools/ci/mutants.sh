@@ -4,14 +4,17 @@
 #   tools/ci/mutants.sh gate        every mutant of the files in tools/ci/mutants-gate.txt
 # Writes target/mutants.out and a Markdown report (also to $GITHUB_STEP_SUMMARY). A missed
 # mutant fails the run only in a gate file (those have no missed mutants left: a new one is a
-# test gap of the change); elsewhere it is reported. A diff of more than MUTANTS_MAX (400)
+# test gap of the change); elsewhere it is reported. A diff of more than MUTANTS_MAX (30)
 # mutants runs a round-robin sample of them. Each mutant runs the tests of the crates mutated, and
 # shaderconf's (conformance cases, reference interpreters) when a translator crate is among them.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER=$PWD/tools/ci/memcap.sh
 JOBS=${MUTANTS_JOBS:-2}
-MAX=${MUTANTS_MAX:-400}
+# (30: a mutant takes about 6 minutes here, build and tests, two at a time, so 30 and the
+# baseline fit the job's 120 minutes; with 400 no run finished, so the next run's base never
+# moved on; #83)
+MAX=${MUTANTS_MAX:-30}
 mkdir -p target
 args=()
 case "${1:-}" in
