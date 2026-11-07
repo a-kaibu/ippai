@@ -37,7 +37,9 @@ d3d9-* ^image surfaces:
 # the d3d9 probe's trace played back (tests/replay): its pictures in the probe's order are r<call>;
 # sampling (r307) and address2 (r443) take tolerance 10 in the probe (WARP's 1/16 filter weights),
 # the replay's pictures 2; r1023 is surfaces (above), and so is the back buffer at its Present (f0)
-replay_d3d9-32-32 ^image (r307|r443|r1023|f0):
+replay_d3d9-* ^image (r307|r443|r1023|f0):
+# (and the d3d8 probe's: its sampling picture, read back by its LockRect l175, the same weights)
+replay_d3d8-32-32 ^image l175:
 # Direct3D 11 on the runner is WARP. Its format list and flags are its own; sake answers WARP's
 # multisample quality levels (and draws 4x on WebGPU, which has no 2x/8x/16x: those run at 4x)
 # but has none of the video formats of planes or pixel pairs (NV12, P010, P016, 420_OPAQUE,
