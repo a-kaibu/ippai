@@ -1,0 +1,116 @@
+A8R8G8B8 rendertarget 1 blending 1 create 0
+  clear 0
+  GetRenderTargetData 0 0080ffc0 20604080 90b02080 c060c040
+  color ff8000 406020 20b090 c060c0
+  alpha c0c0c0 808080 808080 404040
+X8R8G8B8 rendertarget 1 blending 1 create 0
+  clear 0
+  GetRenderTargetData 0 0080ff00 20604080 90b02000 c060c000
+  color ff8000 406020 20b090 c060c0
+  alpha ffffff ffffff ffffff ffffff
+R5G6B5 rendertarget 1 blending 1 create 0
+  clear 0
+  GetRenderTargetData 0 00fc 0443 9225 17bb
+  color ff8200 426121 21b294 bd61bd
+  alpha ffffff ffffff ffffff ffffff
+X1R5G5B5 rendertarget 1 blending 1 create 0
+  clear 0
+  GetRenderTargetData 0 007e 84a1 d212 975d
+  color ff8400 426321 21b594 bd63bd
+  alpha ffffff ffffff ffffff ffffff
+A1R5G5B5 rendertarget 1 blending 1 create 0
+  clear 0
+  GetRenderTargetData 0 00fe 84a1 d292 975d
+  color ff8400 426321 21b594 bd63bd
+  alpha ffffff ffffff ffffff 000000
+A4R4G4B4 rendertarget 1 blending 1 create 0
+  clear 0
+  GetRenderTargetData 0 80bf 6284 b982 6b4b
+  color ff8800 446622 22bb99 bb66bb
+  alpha bbbbbb 888888 888888 444444
+A8 rendertarget 1 blending 1 create 0
+  clear 0
+  GetRenderTargetData 0 c0 80 80 40
+  color 000000 000000 000000 000000
+  alpha c0c0c0 808080 808080 404040
+L8 rendertarget 1 blending 1 create 0
+  clear 0
+  GetRenderTargetData 0 ff 40 20 c0
+  color ffffff 404040 202020 c0c0c0
+  alpha ffffff ffffff ffffff ffffff
+A8L8 rendertarget 1 blending 1 create 0
+  clear 0
+  GetRenderTargetData 0 ffc0 4080 2080 c040
+  color ffffff 404040 202020 c0c0c0
+  alpha c0c0c0 808080 808080 404040
+A8B8G8R8 rendertarget 1 blending 1 create 0
+  clear 0
+  GetRenderTargetData 0 ff8000c0 40602080 20b09080 c060c040
+  color ff8000 406020 20b090 c060c0
+  alpha c0c0c0 808080 808080 404040
+X8B8G8R8 rendertarget 0 blending 0 create 0x8876086c
+A2R10G10B10 rendertarget 1 blending 1 create 0
+  clear 0
+  GetRenderTargetData 0 0008f8bf 80041690 41060b88 02072670
+  color ff8000 406020 20b090 c060c0
+  alpha aaaaaa aaaaaa aaaaaa 555555
+A2B10G10R10 rendertarget 1 blending 1 create 0
+  clear 0
+  GetRenderTargetData 0 ff0b0880 01050688 80041ba4 02072670
+  color ff8000 406020 20b090 c060c0
+  alpha aaaaaa aaaaaa aaaaaa 555555
+G16R16 rendertarget 1 blending 1 create 0
+  clear 0
+  GetRenderTargetData 0 ffff8080 40406060 002080b0 c0c06060
+  color ff80ff 4060ff 20b0ff c060ff
+  alpha ffffff ffffff ffffff ffffff
+A16B16G16R16 rendertarget 1 blending 1 create 0
+  clear 0
+  GetRenderTargetData 0 ffff80800000c0c0 4040606020208080 002080b080908080 c0c06060c0c04040
+  color ff8000 406020 20b090 c060c0
+  alpha c0c0c0 808080 808080 404040
+R16F rendertarget 1 blending 1 create 0
+  clear 0
+  GetRenderTargetData 0 003c 0434 ff2f 063a
+  color ffffff 40ffff 20ffff c0ffff
+  alpha ffffff ffffff ffffff ffffff
+G16R16F rendertarget 1 blending 1 create 0
+  clear 0
+  GetRenderTargetData 0 003c0438 04340636 ff2f8439 063a0636
+  color ff80ff 4060ff 20b0ff c060ff
+  alpha ffffff ffffff ffffff ffffff
+A16B16G16R16F rendertarget 1 blending 1 create 0
+  clear 0
+  GetRenderTargetData 0 003c04380000063a 0434063604300438 ff2f843984380438 063a0636063a0434
+  color ff8000 406020 20b090 c060c0
+  alpha c0c0c0 808080 808080 404040
+R32F rendertarget 1 blending 1 create 0
+  clear 0
+  GetRenderTargetData 0 0000803f 8180803e fefeff3d c1c0403f
+  color ffffff 40ffff 20ffff c0ffff
+  alpha ffffff ffffff ffffff ffffff
+G32R32F rendertarget 1 blending 1 create 0
+  clear 0
+  GetRenderTargetData 0 0000803f8180003f 8180803ec1c0c03e fefeff3d5080303f c1c0403fc1c0c03e
+  color ff80ff 4060ff 20b0ff c060ff
+  alpha ffffff ffffff ffffff ffffff
+A32B32G32R32F rendertarget 1 blending 1 create 0
+  clear 0
+  GetRenderTargetData 0 0000803f8180003f00000000c1c0403f 8180803ec1c0c03e8180003e8180003f fefeff3d5080303f7180103f8180003f c1c0403fc1c0c03ec1c0403f8180803e
+  color ff8000 406020 20b090 c060c0
+  alpha c0c0c0 808080 808080 404040
+V8U8 rendertarget 1 blending 1 create 0
+  clear 0
+  GetRenderTargetData 0 7f40 2030 1058 6030
+  color ff81ff 4060ff 20b1ff c160ff
+  alpha ffffff ffffff ffffff ffffff
+Q8W8V8U8 rendertarget 1 blending 1 create 0
+  clear 0
+  GetRenderTargetData 0 7f400060 20301040 10584840 60306020
+  color ff8100 406020 20b191 c160c1
+  alpha c1c1c1 818181 818181 404040
+L16 rendertarget 1 blending 1 create 0
+  clear 0
+  GetRenderTargetData 0 ffff 4040 0020 c0c0
+  color ffffff 404040 202020 c0c0c0
+  alpha ffffff ffffff ffffff ffffff
