@@ -40,7 +40,9 @@ def size(p):
 
 
 def prune(target, own):
-    pat = re.compile(r"^(lib)?(%s)-[0-9a-f]{16}" % "|".join(sorted(map(re.escape, own))))
+    # (<name>-<hash>..., or a directory <name> in the newer build-dir layout:
+    # <profile>/build/<name>/<hash>/, which nightly cargo uses)
+    pat = re.compile(r"^(lib)?(%s)(-[0-9a-f]{16}|$)" % "|".join(sorted(map(re.escape, own))))
     before = size(target)
     for d, subs, _ in os.walk(target):
         if ".fingerprint" not in subs:
