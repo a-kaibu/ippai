@@ -1,0 +1,43 @@
+CreateDXGIFactory1 IDXGIFactory0 0
+CreateDXGIFactory1 IDXGIFactory1 0
+CreateDXGIFactory1 IDXGIFactory2 0
+CreateDXGIFactory1 IDXGIFactory3 0
+CreateDXGIFactory1 IDXGIFactory4 0
+CreateDXGIFactory1 IDXGIFactory5 0
+CreateDXGIFactory1 IDXGIFactory6 0
+CreateDXGIFactory1 IDXGIFactory7 0
+factory QueryInterface: 0= 0= 0= 0= 0= 0= 0= 0=
+factory as adapter QueryInterface: 80004002 80004002 80004002 80004002 80004002
+EnumAdapters1 2 887a0002 null 1
+adapters 2
+adapter display: flags 0 outputs 1
+  EnumAdapters same 0
+  adapter QueryInterface: 0= 0= 0= 0= 0=
+  output QueryInterface: 0= 0= 0= 0= 0= 0= 0=
+  GetDesc1 0 bits 8 colorspace 0 attached 1
+  GetDisplayModeList1 0 same count 1
+  CheckHardwareCompositionSupport 0
+adapter last: flags 2 outputs 0 "Microsoft Basic Render Driver" vendor 1414 device 8c dedicated 0
+  EnumAdapters same 0
+  adapter QueryInterface: 0= 0= 0= 0= 0=
+EnumAdapterByGpuPreference 0 pref 0 0 is EnumAdapters1 -1
+EnumAdapterByGpuPreference 1 pref 0 0 is EnumAdapters1 -1
+EnumAdapterByGpuPreference 2 pref 0 887a0002 null 1
+EnumAdapterByGpuPreference 0 pref 1 0 is EnumAdapters1 -1
+EnumAdapterByGpuPreference 1 pref 1 0 is EnumAdapters1 -1
+EnumAdapterByGpuPreference 2 pref 1 887a0002 null 1
+EnumAdapterByGpuPreference 0 pref 2 0 is EnumAdapters1 -1
+EnumAdapterByGpuPreference 1 pref 2 0 is EnumAdapters1 -1
+EnumAdapterByGpuPreference 2 pref 2 887a0002 null 1
+EnumAdapterByGpuPreference 0 pref 3 0 is EnumAdapters1 -1
+EnumAdapterByGpuPreference 1 pref 3 0 is EnumAdapters1 -1
+EnumAdapterByGpuPreference 2 pref 3 887a0002 null 1
+EnumWarpAdapter 0 is EnumAdapters1 -1
+EnumAdapterByLuid 0 0 same 0
+EnumAdapterByLuid unknown 887a0002 null 1
+CheckFeatureSupport tearing 0
+CheckFeatureSupport size 8 887a0001
+GetCreationFlags 0
+adapter 0 Release 0
+adapter 1 Release 0
+factory Release 0

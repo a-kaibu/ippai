@@ -1,0 +1,42 @@
+msvcrt _sprintf_p_l 1 _scprintf_p_l 1 _sprintf_p 0; ucrt 1
+msvcrt "%1$s %2$s", L, "November", "10" 11 |November 10|
+ucrt   "%1$s %2$s", L, "November", "10" 11 |November 10|
+msvcrt "%2$s %1$s", L, "November", "10" 11 |10 November|
+ucrt   "%2$s %1$s", L, "November", "10" 11 |10 November|
+msvcrt "%2$d %1$d %2$d", L, 7, 9      5 |9 7 9|
+ucrt   "%2$d %1$d %2$d", L, 7, 9      5 |9 7 9|
+msvcrt "%2$.2f/%1$d", L, 3, 2.5       6 |2.50/3|
+ucrt   "%2$.2f/%1$d", L, 3, 2.5       6 |2.50/3|
+msvcrt "%1$.2f/%2$I64x", L, 0.25, (__int64)1 << 40 16 |0.25/10000000000|
+ucrt   "%1$.2f/%2$I64x", L, 0.25, (__int64)1 << 40 16 |0.25/10000000000|
+msvcrt "%3$I64d %1$d %2$.1f", L, -5, 0.5, (__int64)-1 9 |-1 -5 0.5|
+ucrt   "%3$I64d %1$d %2$.1f", L, -5, 0.5, (__int64)-1 9 |-1 -5 0.5|
+msvcrt "[%2$*1$d]", L, 5, 42          7 |[   42]|
+ucrt   "[%2$*1$d]", L, 5, 42          7 |[   42]|
+msvcrt "[%3$-*1$.*2$f]", L, 8, 1, 3.14159 10 |[3.1     ]|
+ucrt   "[%3$-*1$.*2$f]", L, 8, 1, 3.14159 10 |[3.1     ]|
+msvcrt "100%% %1$d", L, 5             6 |100% 5|
+ucrt   "100%% %1$d", L, 5             6 |100% 5|
+msvcrt "%1$c%1$c%1$c", L, 'z'         3 |zzz|
+ucrt   "%1$c%1$c%1$c", L, 'z'         3 |zzz|
+msvcrt "%d %s", L, 1, "plain"         7 |1 plain|
+ucrt   "%d %s", L, 1, "plain"         7 |1 plain|
+msvcrt "%1$d %d", L, 1, 2             -1 |?|
+ucrt   "%1$d %d", L, 1, 2             -1 ||
+msvcrt "%d %1$d", L, 1, 2             -1 |?|
+ucrt   "%d %1$d", L, 1, 2             -1 |?|
+msvcrt "%1$d %3$d", L, 1, 2, 3        -1 |?|
+ucrt   "%1$d %3$d", L, 1, 2, 3        -1 ||
+msvcrt "%0$d", L, 1                   -1 |?|
+ucrt   "%0$d", L, 1                   -1 ||
+msvcrt "%1$d %1$f", L, 1, 2.0         -1 |?|
+ucrt   "%1$d %1$f", L, 1, 2.0         -1 ||
+msvcrt "%2$*d", L, 1, 2               -1 |?|
+ucrt   "%2$*d", L, 1, 2               -1 ||
+msvcrt "%*1$d", L, 1, 2               -1 |?|
+ucrt   "%*1$d", L, 1, 2               -1 ||
+msvcrt "%1$s", L, "abcdef"            -1 |?|
+ucrt   "%1$s", L, "abcdef"            -2 |?|
+msvcrt "%1$s", L, "abcdef"            6 |abcdef|
+ucrt   "%1$s", L, "abcdef"            6 |abcdef|
+msvcrt _scprintf_p_l 5 -1

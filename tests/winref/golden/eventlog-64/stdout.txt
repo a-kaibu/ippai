@@ -1,0 +1,53 @@
+CloseEventLog(NULL): 0 6
+DeregisterEventSource(NULL): 0 6
+OpenEventLogA(NULL, NULL): 0 87
+OpenEventLogA("NoSuchServer", "Application"): 0 1722
+RegisterEventSourceA(NULL, NULL): 0 87
+GetNumberOfEventLogRecords(NULL, NULL): 0 6
+GetNumberOfEventLogRecords(NULL, &n): 0 6
+GetOldestEventLogRecord(NULL, &n): 0 6
+BackupEventLogA(NULL, NULL): 0 6
+OpenBackupEventLogA(NULL, NULL): 0 87
+OpenBackupEventLogA(NULL, "no-such.evt"): 0 2
+ClearEventLogA(NULL, NULL): 0 6
+ReportEventA(s, 0x20, 0, 1, NULL, 0, 0, NULL, NULL): 0 23
+ReportEventA(s, EVENTLOG_WARNING_TYPE, 0, 1, NULL, 1, 0, NULL, NULL): 0 87
+ReportEventA(s, EVENTLOG_WARNING_TYPE, 3, 0x1234, sidbuf, 2, sizeof data, strs, data): 1 0
+DeregisterEventSource(s): 1 0
+open: 1
+GetEventLogInformation(h, 1, info, sizeof info, &need): 0 124
+GetEventLogInformation(h, EVENTLOG_FULL_INFO, NULL, 0, &need): 0 1780
+GetEventLogInformation(h, EVENTLOG_FULL_INFO, info, 2, &need): 0 122
+needed 4
+GetEventLogInformation(h, EVENTLOG_FULL_INFO, info, sizeof info, &need): 1 0
+ReadEventLogA(h, EVENTLOG_SEQUENTIAL_READ, 0, info, sizeof info, &read, &need): 0 87
+ReadEventLogA(h, EVENTLOG_SEEK_READ | EVENTLOG_FORWARDS_READ, 0, info, sizeof info, &read, &need): 0 87
+small buffer: 0 122 read 0 need>56 1
+read: 1 read==size 1 need 0
+record: len==tail 1 reserved 654c664c id 1234 type 2 cat 3 nstr 2 flags 0 closing 0 time 1
+source 1 sid after the names 1, at a multiple of 8 1, len 12, strings at sid+12, data at strings+20 len 5, end at data+7
+ [first string] [second] data 01 02 03 04 05
+newest is oldest+count-1 1
+small buffer: 0 122 read 0 need>56 1
+read: 1 read==size 1 need 0
+record: len==tail 1 reserved 654c664c id 1234 type 2 cat 3 nstr 2 flags 0 closing 0 time 1
+source 1 sid after the names 1, at a multiple of 8 1, len 12, strings at sid+12, data at strings+40 len 5, end at data+7
+ [first string] [second] data 01 02 03 04 05
+seek: 1 same number 1 more than one 1
+second is the one before 1
+BackupEventLogA(h, NULL): 0 87
+BackupEventLogA(h, backup): 1 0
+BackupEventLogA(h, backup): 0 183
+backup exists 1
+open backup 1 1 distinct 1
+ClearEventLogA(b, NULL): 0 6
+small buffer: 0 122 read 0 need>56 1
+read: 1 read==size 1 need 0
+backup has the record 0
+OpenBackupEventLogA(NULL, backup): 0 1500
+props size 120
+start: no size 24
+start: long name 24
+start: no props 87 no handle 87
+start: two modes 87
+start: no file 161
