@@ -147,7 +147,7 @@ fn d3d9_session() -> Vec<u8> {
     w.leave(n, &[(1, Value::Array(vec![Value::Blob(vec![1; 8])]))], Some(&Value::UInt(0)), false);
 
     let ct = f("IDirect3DDevice9::CreateTexture", &["this", "Width", "Height", "Levels", "Usage", "Format", "Pool", "ppTexture", "pSharedHandle"]);
-    let n = w.enter(0, &ct, &[(0, Value::Opaque(0x2000)), (1, Value::UInt(4)), (2, Value::UInt(2)), (3, Value::UInt(1)), (4, Value::UInt(0)), (5, Value::UInt(21)), (6, Value::UInt(1)), (8, Value::Null)]);
+    let n = w.enter(0, &ct, &[(0, Value::Opaque(0x2000)), (1, Value::UInt(4)), (2, Value::UInt(2)), (3, Value::UInt(1)), (4, Value::UInt(0)), (5, Value::UInt(21)), (6, Value::UInt(1))]);
     w.leave(n, &[(7, Value::Array(vec![Value::Opaque(0x3000)]))], Some(&Value::UInt(0)), false);
 
     let lr = f("IDirect3DTexture9::LockRect", &["this", "Level", "pLockedRect", "pRect", "Flags"]);

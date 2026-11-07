@@ -168,7 +168,9 @@ impl Converter {
     fn arg(&mut self, call: &Call, method: &str, i: usize, arg_name: &str, vin: Option<&Value>, vout: Option<&Value>) -> Result<Arg, String> {
         if vin.is_none() {
             // an out argument
-            let Some(v) = vout else { return Ok(Arg::Scratch) };
+            // (neither in nor out: an argument apitrace does not record, e.g. pSharedHandle, which
+            // a non-Ex device wants NULL)
+            let Some(v) = vout else { return Ok(Arg::Word(0)) };
             let inner = v.deref();
             let level = call.arg("Level").and_then(|v| v.int()).unwrap_or(0) as u32;
             let face = call.arg("FaceType").and_then(|v| v.int()).map(|f| f as u32);
