@@ -139,19 +139,23 @@ pub fn letterbox(dst: R, src_w: i32, src_h: i32) -> R {
 /// Draws part `src` of a picture (`fw` x `fh`) stretched onto `dst` of a window, nearest
 /// pixel, black around it: into `out`, the window's part `view` (rows of `view.2` pixels).
 pub fn blit(frame: &[u32], fw: i32, fh: i32, src: R, out: &mut [u32], view: R, dst: R) {
-    out.fill(0xff00_0000);
     let src = clip(src, (0, 0, fw, fh));
-    if src.2 <= 0 || src.3 <= 0 || dst.2 <= 0 || dst.3 <= 0 {
+    let on = if src.2 <= 0 || src.3 <= 0 || dst.2 <= 0 || dst.3 <= 0 { (0, 0, 0, 0) } else { clip(dst, view) };
+    // (black around the picture only: a picture over all of the view leaves none)
+    if on != view {
+        out.fill(0xff00_0000);
+    }
+    if on.2 <= 0 || on.3 <= 0 {
         return;
     }
-    let on = clip(dst, view);
+    // the source column of each column, the same on every row
+    let xs: Vec<usize> = (on.0..on.0 + on.2).map(|x| (src.0 + ((x - dst.0) as i64 * src.2 as i64 / dst.2 as i64) as i32) as usize).collect();
     for y in on.1..on.1 + on.3 {
         let sy = src.1 + ((y - dst.1) as i64 * src.3 as i64 / dst.3 as i64) as i32;
         let row = &frame[(sy * fw) as usize..];
-        let o = ((y - view.1) * view.2) as usize;
-        for x in on.0..on.0 + on.2 {
-            let sx = src.0 + ((x - dst.0) as i64 * src.2 as i64 / dst.2 as i64) as i32;
-            out[o + (x - view.0) as usize] = row[sx as usize] | 0xff00_0000;
+        let o = ((y - view.1) * view.2 + (on.0 - view.0)) as usize;
+        for (d, &sx) in out[o..o + xs.len()].iter_mut().zip(&xs) {
+            *d = row[sx] | 0xff00_0000;
         }
     }
 }
@@ -490,8 +494,16 @@ fn turn() -> Duration {
         }
     });
     for (k, stream, n, w, h, src, dst, view, disp) in draws {
-        let mut px = vec![0u32; (w * h) as usize];
-        let ok = unsafe { video::frame(stream, n as i32, px.as_mut_ptr() as *mut u8, 4 * w as usize, w, h, video::Out::Rgb601) };
+        let t0 = Instant::now();
+        // (the buffers stay for the next frame: no allocation per frame)
+        let (mut px, mut out) = BUFS.with(|b| b.borrow_mut().remove(&k)).unwrap_or_default();
+        out.resize((view.2 * view.3) as usize, 0);
+        // the picture as it is, all of it: straight into what the display gets
+        let whole = src == (0, 0, w as i32, h as i32) && dst == view && (dst.2, dst.3) == (w as i32, h as i32);
+        let (buf, pitch) = if whole { (&mut out, view.2 as usize) } else { (&mut px, w as usize) };
+        buf.resize(pitch * h as usize, 0);
+        let ok = unsafe { video::frame(stream, n as i32, buf.as_mut_ptr() as *mut u8, 4 * pitch, w, h, video::Out::Rgb601) };
+        let t1 = Instant::now();
         if !ok {
             // (nothing yet: drawn again next turn)
             with(|m| {
@@ -499,17 +511,82 @@ fn turn() -> Duration {
                     p.shown = None;
                 }
             });
+            BUFS.with(|b| b.borrow_mut().insert(k, (px, out)));
             continue;
         }
-        let mut out = vec![0u32; (view.2 * view.3) as usize];
-        blit(&px, w as i32, h as i32, src, &mut out, view, dst);
+        if !whole {
+            blit(&px, w as i32, h as i32, src, &mut out, view, dst);
+        }
+        let t2 = Instant::now();
         let d = [0, 0, view.2, view.3];
         unsafe { kura::display::vnhost_window_draw(disp, d.as_ptr(), out.as_ptr(), view.2, 0, 0) };
+        stats(k, n, [t1 - t0, t2 - t1, t2.elapsed()], out.len());
+        BUFS.with(|b| b.borrow_mut().insert(k, (px, out)));
     }
+    // (the buffers of movies no longer playing go)
+    let live: Vec<u32> = with(|m| m.keys().copied().collect());
+    BUFS.with(|b| b.borrow_mut().retain(|k, _| live.contains(k)));
     for k in ended {
         crate::dshow::completed(k);
     }
     wait
+}
+
+thread_local! {
+    /// The movie thread's picture buffers per graph: the frame, and the window's part.
+    static BUFS: std::cell::RefCell<HashMap<u32, (Vec<u32>, Vec<u32>)>> = Default::default();
+}
+
+/// SAKE_MOVIE_STATS: every 5 s, the frames drawn and skipped, and the time per frame to have it
+/// (WebCodecs' frame: wait and conversion to RGB), to scale it into the window's part and to
+/// hand it to the display, and the pixels handed over.
+fn stats(k: u32, n: u32, t: [Duration; 3], pixels: usize) {
+    static ON: OnceLock<bool> = OnceLock::new();
+    if !*ON.get_or_init(|| std::env::var_os("SAKE_MOVIE_STATS").is_some()) {
+        return;
+    }
+    #[derive(Default)]
+    struct S {
+        since: Option<Instant>,
+        frames: u32,
+        skipped: u32,
+        last: HashMap<u32, u32>,
+        sum: [Duration; 3],
+        max: [Duration; 3],
+        pixels: usize,
+    }
+    static S: Mutex<Option<S>> = Mutex::new(None);
+    let mut g = S.lock().unwrap_or_else(|e| e.into_inner());
+    let s = g.get_or_insert_with(S::default);
+    let since = *s.since.get_or_insert_with(Instant::now);
+    s.frames += 1;
+    if let Some(&l) = s.last.get(&k) {
+        s.skipped += n.saturating_sub(l + 1);
+    }
+    s.last.insert(k, n);
+    for i in 0..3 {
+        s.sum[i] += t[i];
+        s.max[i] = s.max[i].max(t[i]);
+    }
+    s.pixels += pixels;
+    if since.elapsed() >= Duration::from_secs(5) {
+        let f = s.frames.max(1);
+        let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+        eprintln!(
+            "sake: movie {} frames drawn, {} skipped; per frame ms (avg/max): frame {:.2}/{:.2} scale {:.2}/{:.2} display {:.2}/{:.2}; {:.1} Mpixel/s",
+            s.frames,
+            s.skipped,
+            ms(s.sum[0]) / f as f64,
+            ms(s.max[0]),
+            ms(s.sum[1]) / f as f64,
+            ms(s.max[1]),
+            ms(s.sum[2]) / f as f64,
+            ms(s.max[2]),
+            s.pixels as f64 / since.elapsed().as_secs_f64() / 1e6
+        );
+        let last = std::mem::take(&mut s.last);
+        *s = S { last, ..Default::default() };
+    }
 }
 
 /// Keeps the sound queued for where the movie is (only while it runs at its own rate).
