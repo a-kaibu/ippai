@@ -136,15 +136,22 @@ jobs:
         with:
           path: ~/dxredist.exe
           key: directx-jun2010-redist
+      # (PowerShell: Git Bash would turn /Q and /silent into paths. The self-extractor and
+      # DXSETUP each get a time limit; a game that brings its own d3dx9 DLLs goes on without it)
       - name: DirectX runtime
         if: steps.meta.outputs.api != 'none'
-        shell: bash
+        shell: pwsh
+        timeout-minutes: 10
+        continue-on-error: true
         run: |
-          [ -s ~/dxredist.exe ] || curl -sSfL -o ~/dxredist.exe https://download.microsoft.com/download/8/4/A/84A35BF1-DAFE-4AE8-82AF-AD2AE20B6B14/directx_Jun2010_redist.exe
-          sha256sum ~/dxredist.exe
-          ~/dxredist.exe /Q "/T:C:\\dxredist"
-          /c/dxredist/DXSETUP.exe /silent || echo "DXSETUP exit $?"
-          ls /c/Windows/SysWOW64/d3dx9_43.dll /c/Windows/System32/d3dx9_43.dll || true
+          if (-not (Test-Path ~/dxredist.exe)) { Invoke-WebRequest -Uri https://download.microsoft.com/download/8/4/A/84A35BF1-DAFE-4AE8-82AF-AD2AE20B6B14/directx_Jun2010_redist.exe -OutFile ~/dxredist.exe }
+          (Get-FileHash ~/dxredist.exe).Hash
+          $x = Start-Process -FilePath (Resolve-Path ~/dxredist.exe) -ArgumentList '/Q', '/T:C:\dxredist' -PassThru
+          if (-not $x.WaitForExit(180000)) { Stop-Process -Id $x.Id -Force; throw "the redistributable did not unpack" }
+          $d = Start-Process -FilePath C:\dxredist\DXSETUP.exe -ArgumentList '/silent' -PassThru
+          if (-not $d.WaitForExit(300000)) { Stop-Process -Id $d.Id -Force; throw "DXSETUP did not finish" }
+          "DXSETUP exit $($d.ExitCode)"
+          Get-Item C:\Windows\SysWOW64\d3dx9_43.dll, C:\Windows\System32\d3dx9_43.dll -ErrorAction SilentlyContinue | Select-Object FullName, Length
       - name: apitrace
         if: steps.meta.outputs.api != 'none'
         shell: bash
