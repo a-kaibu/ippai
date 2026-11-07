@@ -535,6 +535,8 @@ fn overlapped_result(ov: u32, pn: u32, ms: u32) -> u32 {
     let s = mem::rp(ov);
     put32(pn, mem::rp(ov + mem::ps()));
     if s == SUCCESS {
+        // (Windows clears the last error then: tests/winref/golden/pipes-32)
+        last_error(0);
         1
     } else {
         fail(s)
