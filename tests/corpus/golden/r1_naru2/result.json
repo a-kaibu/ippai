@@ -1,0 +1,21 @@
+{
+ "crashed": false,
+ "errors": [],
+ "firstWindow": 1.0531070232391357,
+ "leftTitle": true,
+ "manifests": [
+  "nana25w.exe"
+ ],
+ "shots": [
+  "title",
+  "steps"
+ ],
+ "size": [
+  800,
+  600
+ ],
+ "steps": "click:180,390 wait:6",
+ "storyFrames": 1,
+ "title": 2.0832653045654297,
+ "titleStill": 5.170200347900391
+}

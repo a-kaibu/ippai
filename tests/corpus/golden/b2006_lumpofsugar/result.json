@@ -1,0 +1,21 @@
+{
+ "crashed": false,
+ "errors": [],
+ "firstWindow": 2.0298285484313965,
+ "leftTitle": true,
+ "manifests": [
+  "Itsusora.exe"
+ ],
+ "shots": [
+  "title",
+  "steps"
+ ],
+ "size": [
+  800,
+  600
+ ],
+ "steps": "click:610,272 wait:6",
+ "storyFrames": 1,
+ "title": 21.625607013702393,
+ "titleStill": 24.70252776145935
+}

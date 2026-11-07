@@ -1,0 +1,22 @@
+{
+ "crashed": false,
+ "errors": [],
+ "firstWindow": 1.0461475849151611,
+ "leftTitle": true,
+ "manifests": [
+  "sennokoro_tr.exe",
+  "ファイル破損チェックツール.exe"
+ ],
+ "shots": [
+  "title",
+  "steps"
+ ],
+ "size": [
+  1280,
+  720
+ ],
+ "steps": "key:Return wait:3",
+ "storyFrames": 1,
+ "title": 5.261863470077515,
+ "titleStill": 8.361910104751587
+}

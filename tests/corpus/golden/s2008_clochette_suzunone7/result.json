@@ -1,0 +1,25 @@
+{
+ "crashed": false,
+ "errors": [],
+ "firstWindow": 3.02457332611084,
+ "leftTitle": true,
+ "manifests": [
+  "BootMenu.exe",
+  "cs2conf.exe",
+  "INSTALL.exe",
+  "suzunone7_trial.exe",
+  "UNINST.exe"
+ ],
+ "shots": [
+  "title",
+  "steps"
+ ],
+ "size": [
+  800,
+  600
+ ],
+ "steps": "key:Return wait:3",
+ "storyFrames": 1,
+ "title": 8.48558521270752,
+ "titleStill": 13.652090549468994
+}

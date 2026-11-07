@@ -1,0 +1,21 @@
+{
+ "crashed": false,
+ "errors": [],
+ "firstWindow": 1.0426931381225586,
+ "leftTitle": true,
+ "manifests": [
+  "ck.exe"
+ ],
+ "shots": [
+  "title",
+  "steps"
+ ],
+ "size": [
+  1024,
+  768
+ ],
+ "steps": "key:Return wait:3",
+ "storyFrames": 1,
+ "title": 4.159816265106201,
+ "titleStill": 7.278331279754639
+}
