@@ -1,0 +1,42 @@
+SHGetKnownFolderPath: ret 0 half 0 null 0
+SHGetFolderLocation: ret 0 half 0 null 0
+SHGetSpecialFolderLocation: ret 0 half 0 null 0
+SHGetMalloc: ret 0 half 0 null 0
+CoGetMalloc: ret 0 half 0 null 0
+RegisterWaitForSingleObject: ret 1 half 0 null 0
+CreateTimerQueueTimer: ret 1 half 0 null 0
+CreatePipe write end: ret 1 half 0 null 0
+CreatePipe read end: half 0
+DuplicateHandle: ret 1 half 0 null 0
+GetModuleHandleExA: ret 1 half 0 null 0
+GetModuleHandleExW from address: ret 1 half 0 null 0
+GetFullPathNameA file part: ret 1 half 0 null 0
+GetFullPathNameA dir file part: ret 1 half 0 null 1
+SearchPathA file part: ret 1 half 0 null 0
+FormatMessageA ALLOCATE_BUFFER: ret 1 half 0 null 0
+GetQueuedCompletionStatus overlapped: ret 1 half 0 null 1
+GetQueuedCompletionStatus key: half 0 value 77
+InitOnceBeginInitialize context: ret 1 half 1 null 0
+InitOnceBeginInitialize done context: ret 1 half 0 null 0
+context value 1230
+OpenProcessToken: ret 1 half 0 null 0
+ReadProcessMemory count: half 0 value 3
+RegOpenKeyExA: ret 1 half 0 null 0
+RegCreateKeyExA: ret 1 half 0 null 0
+RegOpenKeyA: ret 1 half 0 null 0
+CryptAcquireContextA: ret 1 half 0 null 0
+CryptCreateHash: ret 1 half 0 null 0
+CryptDeriveKey: ret 1 half 0 null 0
+UuidToStringA: ret 1 half 0 null 0
+RpcStringFreeA: null 1
+StringFromCLSID: ret 1 half 0 null 0
+CreateStreamOnHGlobal: ret 1 half 0 null 0
+GetHGlobalFromStream: half 0
+SafeArrayAccessData: ret 1 half 0 null 0
+SysAllocString: ret 1 half 0 null 0
+VerQueryValueA root: ret 1 half 0 null 0
+VerQueryValueA translation: ret 1 half 0 null 0
+AllocateAndInitializeSid: ret 1 half 0 null 0
+ConvertSidToStringSidA: ret 1 half 0 null 0
+sid S-1-5-32-544
+ConvertStringSidToSidA: ret 1 half 0 null 0

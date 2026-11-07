@@ -8,6 +8,7 @@ wsprintfA 3 k=5
 VerLanguageNameA 0411: 1 terminated 1
 VerLanguageNameA 0411 4 chars: ret==full 0 strlen 3 after 1
 VerLanguageNameA 0411 NULL buffer: ret==full 0
+VerLanguageNameA 0411 returns: 4 chars full-13, NULL buffer full-16
 VerLanguageNameW 0409: 1 terminated 1
 VerLanguageNameA 9999: 1
 GetThreadPreferredUILanguages size query: ret 1 count>0 1 size>2 1 short buffer ret 0 err 122 list ret 1 double-terminated 1
