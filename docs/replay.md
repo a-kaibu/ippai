@@ -75,8 +75,13 @@ seconds, the trace's sha256: `games.py`). The trace ends where the game was kill
 converter keeps the calls up to the last whole one (`-strict`, which build.sh uses for the
 probes' traces, refuses such a trace).
 
-A title with no trace goes to `testdata/apitrace/skipped.tsv` with why (`none`: it draws
-without D3D8/9/11; `notrace`: it made none, with how far winplay got; `noconvert`: its trace
+gameapi.py's API is a guess from the DLL names a game carries: a watcher lists the graphics
+DLLs the game loaded, and with no trace the game is played again with the API whose system DLL
+it did load (`gameapi.py next`: run 42380412096 found suzunone7 naming d3d9 and drawing with
+d3d8, and hook, haruka and appetite drawing with DirectDraw only).
+
+A title with no trace goes to `testdata/apitrace/skipped.tsv` with why (`none`: it names no
+D3D8/9/11; `ddraw`: it drew with DirectDraw, which the replay does not take; `notrace`: it made none, with how far winplay got; `noconvert`: its trace
 does not convert) and is not downloaded again; `again`, or naming it in `only`, tries it anew.
 A download that failed is tried again next time.
 

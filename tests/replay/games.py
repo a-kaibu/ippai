@@ -7,8 +7,9 @@ trace, zstd-compressed, in parts of at most 90 MiB (GitHub refuses a file over 1
     games.py todo [--again=true] [id ...]     the titles to record: those given, else
                                              tests/replay/games.txt's without a trace yet and not
                                              skipped (--again: all of them)
-    games.py skip <id> <reason> [detail]      a title with no trace to keep (none: it draws without
-                                             D3D8/9/11; notrace: it made none; noconvert: its trace
+    games.py skip <id> <reason> [detail]      a title with no trace to keep (none: it names no
+                                             D3D8/9/11; ddraw: it drew with DirectDraw; notrace:
+                                             it made none; noconvert: its trace
                                              does not convert) in skipped.tsv, not tried again
     games.py took <id>                        a title whose trace was committed: off skipped.tsv
     games.py pack <x.trace> <dir/name> --api A --exe E --seconds S [--part BYTES]
@@ -37,7 +38,7 @@ def titles(path=TITLES):
     return {l.split("\t")[0] for l in open(path, encoding="utf-8").read().splitlines()[1:] if l}
 
 
-REASONS = ("none", "notrace", "noconvert")
+REASONS = ("none", "ddraw", "notrace", "noconvert")
 
 
 def skipped(d=GAMES):

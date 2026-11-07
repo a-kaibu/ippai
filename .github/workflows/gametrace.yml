@@ -245,11 +245,14 @@ jobs:
         run: |
           mkdir -p pack
           if [ -f out/game.trace ]; then
+            # (the API it was recorded with: record-game.ps1 may have tried another than gameapi's)
+            api=$(cat out/game.trace.api 2>/dev/null || echo "$API")
             mv out/game.trace "pack/$ID-$BITS.trace"
-            printf '%s\n' "$API" "$EXE" "$SECONDS_" > "pack/$ID-$BITS.rec"
+            printf '%s\n' "$api" "$EXE" "$SECONDS_" > "pack/$ID-$BITS.rec"
           else
             how=$(python3 -c 'import json, sys; r = json.load(open(sys.argv[1], encoding="utf-8")); print("title screen at %ss" % round(r["title"]) if r.get("title") else "no title screen" + (", ended" if r.get("crashed") else ""))' shots/result.json 2>/dev/null || echo "winplay wrote nothing")
-            printf 'notrace\t%s: %s, %s\n' "$EXE" "$API" "$how" > "pack/$ID.skip"
+            IFS=$'\t' read -r why what < out/game.trace.why 2>/dev/null || { why=notrace; what="record-game.ps1 said nothing"; }
+            printf '%s\t%s: %s; %s\n' "$why" "$EXE" "$how" "$what" > "pack/$ID.skip"
           fi
           ls -l pack; cat pack/*.skip 2>/dev/null || true
       - if: ${{ !cancelled() && hashFiles('pack/*') != '' }}

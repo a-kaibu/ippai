@@ -3,6 +3,10 @@
 
     gameapi.py <game dir> <exe inside it>     prints "<api> <bits>": api d3d8, d3d9, dxgi (D3D11
                                               and DXGI) or none; bits 32 or 64
+    gameapi.py next <loaded.txt> <tried api>...   after a recording that left no trace: the API
+                                              the game did draw with (the system DLLs it
+                                              loaded, record-game.ps1's list), or "ddraw" (only
+                                              DirectDraw), or "" (nothing to try)
 
 The exe's own names of the D3D DLLs (its imports, or a LoadLibrary string), else those of the
 DLLs beside it (an engine's renderer plugin, krkr's or Unity's); among several, the newest API
@@ -52,7 +56,33 @@ def game(root, exe):
     return pick(found), bits(data)
 
 
+SYSTEM = re.compile(r"\\windows\\(?:system32|syswow64)\\(d3d9|d3d8|d3d11|ddraw)\.dll$", re.I)
+
+
+def next_api(loaded, tried):
+    """loaded: record-game.ps1's lines "<process>: <path>". The real DLL of an API is loaded from
+    the system folder when the game used it (the wrapper beside the game loads it only when the
+    game calls it). DirectDraw on Windows 10+ itself loads dxgi and d3d11 (and d3d8thk for
+    D3D7): d3d11 counts only without ddraw."""
+    sys_dlls = set()
+    for l in loaded:
+        m = SYSTEM.search(l.strip())
+        if m:
+            sys_dlls.add(m.group(1).lower())
+    for api, dll in (("d3d9", "d3d9"), ("d3d8", "d3d8"), ("dxgi", "d3d11")):
+        if api in tried or dll not in sys_dlls:
+            continue
+        if api == "dxgi" and "ddraw" in sys_dlls:
+            continue
+        return api
+    return "ddraw" if "ddraw" in sys_dlls else ""
+
+
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["next"]:
+        lines = open(sys.argv[2], encoding="utf-8-sig", errors="replace").read().splitlines() if os.path.exists(sys.argv[2]) else []
+        print(next_api(lines, set(sys.argv[3:])))
+        sys.exit(0)
     a, b = game(sys.argv[1], sys.argv[2])
     if b is None:
         sys.exit(f"{sys.argv[2]}: not a 32- or 64-bit PE")

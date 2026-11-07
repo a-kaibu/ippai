@@ -64,6 +64,20 @@ with tempfile.TemporaryDirectory() as d:
     open(os.path.join(d, "g", "game.exe"), "wb").write(pe(0x8664, b"d3d8.dll\0"))
     expect("the exe's own first", gameapi.game(d, "g/game.exe"), ("d3d8", 64))
 
+# next: what run 42380412096's watcher saw (record-game.ps1's lines)
+W = "D:\\a\\ippai\\ippai\\game\\x\\g\\"
+S = "C:\\Windows\\SYSTEM32\\"
+suzu = [f"s: {S}d3d12.dll", f"s: {S}dxgi.dll", f"s: {S}d3d11.dll", f"s: {S}d3d8.dll", f"s: {S}d3d8thk.dll", f"s: {S}DDRAW.dll", f"s: {S}D3DIM700.DLL"]
+expect("next: d3d9 guessed, d3d8 used (suzunone7)", gameapi.next_api(suzu, {"d3d9"}), "d3d8")
+expect("next: d3d8 tried too", gameapi.next_api(suzu, {"d3d9", "d3d8"}), "ddraw")
+hook = [f"h: {W}d3d8.dll", f"h: {S}ddraw.dll", f"h: {S}dxgi.dll", f"h: {S}d3d10warp.dll"]
+expect("next: the wrapper loaded, DirectDraw drew (hook)", gameapi.next_api(hook, {"d3d8"}), "ddraw")
+expect("next: only the wrapper (alicesoft)", gameapi.next_api([f"a: {W}d3d9.dll"], {"d3d9"}), "")
+expect("next: nothing seen", gameapi.next_api([], {"d3d9"}), "")
+expect("next: d3d11 without ddraw", gameapi.next_api([f"x: {S}dxgi.dll", f"x: {S}d3d11.dll"], {"d3d9"}), "dxgi")
+expect("next: SysWOW64, any case", gameapi.next_api(["x: c:\\windows\\syswow64\\D3D9.DLL"], {"d3d8"}), "d3d9")
+expect("next: a d3d9.dll elsewhere is not the system's", gameapi.next_api([f"x: {W}d3d9.dll", "x: C:\\Program Files\\x\\d3d9.dll"], {"d3d8"}), "")
+
 # (the replay's exes, when built: replay-32.exe names them all)
 rp = os.environ.get("REPLAY_EXE")
 if rp:

@@ -7,6 +7,12 @@
 # ended. The trace stops where the game did (the converter keeps its calls up to the last whole
 # one). winplay's pictures and result.json go to -Shots (what the game got to; not committed).
 #
+# The API gameapi.py guessed may not be the one the game draws with (a game naming d3d9 and d3d8
+# draws with d3d8, or with DirectDraw): a watcher lists the graphics DLLs the game loaded, and
+# when no trace was left the game is played again with the API whose system DLL it loaded
+# (gameapi.py next). <Out>.api names the API of the trace; with none, <Out>.why says why
+# ("ddraw: ..." when it drew with DirectDraw only, "notrace: ..." otherwise).
+#
 #   record-game.ps1 -Apitrace <apitrace.exe> -Api d3d9|d3d8|dxgi -Game <dir: meta.json, x/> -Out <x.trace> -Shots <dir> [-Story 30]
 param(
   [Parameter(Mandatory)] [string] $Apitrace,
@@ -21,31 +27,20 @@ $m = Get-Content -LiteralPath (Join-Path $Game 'meta.json') -Encoding utf8 | Con
 $Exe = (Resolve-Path -LiteralPath (Join-Path (Join-Path $Game 'x') $m.exe)).Path
 $dir = Split-Path -Parent $Exe
 $Out = [IO.Path]::GetFullPath($Out)
-Remove-Item -LiteralPath $Out -ErrorAction SilentlyContinue
+$Shots = [IO.Path]::GetFullPath($Shots)
+foreach ($f in @($Out, "$Out.api", "$Out.why")) { Remove-Item -LiteralPath $f -ErrorAction SilentlyContinue }
 $wrappers = Join-Path (Split-Path -Parent $Apitrace) '..\lib\wrappers'
 Write-Host "wrappers: $((Get-ChildItem $wrappers -Filter *.dll).Name -join ' ')"
-$names = @{ d3d9 = @('d3d9.dll'); d3d8 = @('d3d8.dll'); dxgi = @('dxgi.dll', 'd3d11.dll', 'dxgitrace.dll') }[$Api]
-if (-not $names) { throw "api $Api" }
-$copied = @()
-foreach ($n in $names) {
-  $w = Join-Path $wrappers $n
-  if (-not (Test-Path -LiteralPath $w)) { continue }
-  $to = Join-Path $dir $n
-  if (Test-Path -LiteralPath $to) { throw "the game has its own $n" }
-  Copy-Item -LiteralPath $w -Destination $to
-  $copied += $to
-}
-if (-not $copied) { throw "no wrapper for $Api in $wrappers" }
-Write-Host "beside the game: $(($copied | ForEach-Object { Split-Path -Leaf $_ }) -join ' ')"
+$gameapi = Join-Path $PSScriptRoot 'gameapi.py'
+$winplay = Join-Path $PSScriptRoot '..\corpus\winplay.py'
 $env:TRACE_FILE = $Out
 $env:STORY = "$Story"
-# (what the game loaded, every 5 s: which D3D / DirectDraw / OpenGL DLLs, from where; a game that
-# made no trace shows whether the wrapper was loaded and which API it draws with. A process of the
-# other width shows only its own kind of modules: a 32-bit game is watched from 32-bit PowerShell)
+
+# (the watcher: a process of the other width shows only its own kind of modules, so a 32-bit
+# game is watched from 32-bit PowerShell)
 $pe = [IO.File]::ReadAllBytes($Exe)
 $machine = [BitConverter]::ToUInt16($pe, [BitConverter]::ToInt32($pe, 0x3c) + 4)
 $ps = if ($machine -eq 0x14c) { "$env:WINDIR\SysWOW64\WindowsPowerShell\v1.0\powershell.exe" } else { "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" }
-$watchLog = [IO.Path]::GetTempFileName()
 $watchPs1 = [IO.Path]::ChangeExtension([IO.Path]::GetTempFileName(), '.ps1')
 Set-Content -LiteralPath $watchPs1 -Encoding utf8 -Value @'
 param($dir, $log)
@@ -63,17 +58,55 @@ while ($true) {
   Start-Sleep -Seconds 5
 }
 '@
-$watch = Start-Process -FilePath $ps -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$watchPs1`"", "`"$dir`"", "`"$watchLog`"" -PassThru -WindowStyle Hidden
-try {
-  python (Join-Path $PSScriptRoot '..\corpus\winplay.py') play $Game $Shots
-} finally {
-  Stop-Process -Id $watch.Id -Force -ErrorAction SilentlyContinue
+
+# one play of the game with the wrapper of $a beside it; returns the watcher's log
+function Play([string] $a) {
+  $names = @{ d3d9 = @('d3d9.dll'); d3d8 = @('d3d8.dll'); dxgi = @('dxgi.dll', 'd3d11.dll', 'dxgitrace.dll') }[$a]
+  if (-not $names) { throw "api $a" }
+  $copied = @()
+  foreach ($n in $names) {
+    $w = Join-Path $wrappers $n
+    if (-not (Test-Path -LiteralPath $w)) { continue }
+    $to = Join-Path $dir $n
+    if (Test-Path -LiteralPath $to) { throw "the game has its own $n" }
+    Copy-Item -LiteralPath $w -Destination $to
+    $copied += $to
+  }
+  if (-not $copied) { throw "no wrapper for $a in $wrappers" }
+  Write-Host "== $a: beside the game: $(($copied | ForEach-Object { Split-Path -Leaf $_ }) -join ' ')"
+  $log = [IO.Path]::GetTempFileName()
+  $watch = Start-Process -FilePath $ps -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$watchPs1`"", "`"$dir`"", "`"$log`"" -PassThru -WindowStyle Hidden
+  Remove-Item -LiteralPath $Shots -Recurse -ErrorAction SilentlyContinue
+  try {
+    python $winplay play $Game $Shots | Write-Host
+  } finally {
+    Stop-Process -Id $watch.Id -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+    foreach ($c in $copied) { Remove-Item -LiteralPath $c -ErrorAction SilentlyContinue }
+  }
   Write-Host "loaded:"
-  Get-Content -LiteralPath $watchLog -Encoding utf8 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $_" }
-  Start-Sleep -Seconds 2
-  foreach ($c in $copied) { Remove-Item -LiteralPath $c -ErrorAction SilentlyContinue }
+  Get-Content -LiteralPath $log -Encoding utf8 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $_" }
+  $r = Join-Path $Shots 'result.json'
+  if (Test-Path -LiteralPath $r) { Get-Content -LiteralPath $r -Encoding utf8 | Write-Host }
+  return $log
 }
-$r = Join-Path $Shots 'result.json'
-if (Test-Path -LiteralPath $r) { Get-Content -LiteralPath $r -Encoding utf8 }
-if (-not (Test-Path -LiteralPath $Out)) { Write-Host "no trace (the game made no $Api device)"; exit 1 }
-Write-Host "trace $((Get-Item -LiteralPath $Out).Length) bytes"
+
+$tried = @()
+$a = $Api
+while ($true) {
+  $tried += $a
+  $log = Play $a
+  if (Test-Path -LiteralPath $Out) {
+    Set-Content -LiteralPath "$Out.api" -Value $a -NoNewline
+    Write-Host "trace ($a) $((Get-Item -LiteralPath $Out).Length) bytes"
+    exit 0
+  }
+  $next = (python $gameapi next $log @tried | Out-String).Trim()
+  Write-Host "no trace with $a; next: $(if ($next) { $next } else { 'nothing' })"
+  if ($next -and $next -ne 'ddraw') { $a = $next; continue }
+  $sys = @(Get-Content -LiteralPath $log -Encoding utf8 -ErrorAction SilentlyContinue | ForEach-Object { ($_ -split '\\')[-1].ToLower() } | Sort-Object -Unique) -join ' '
+  $why = if ($next -eq 'ddraw') { "ddraw" } else { "notrace" }
+  Set-Content -LiteralPath "$Out.why" -Value "$why`ttried $($tried -join ', '); loaded: $(if ($sys) { $sys } else { 'no graphics DLL' })" -NoNewline -Encoding utf8
+  Write-Host "no trace: $why"
+  exit 1
+}
