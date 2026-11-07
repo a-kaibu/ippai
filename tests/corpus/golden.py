@@ -21,7 +21,7 @@ GOLDEN = os.environ.get('CORPUS_GOLDEN') or os.path.join(HERE, 'golden')
 SHOTS = ('title', 'steps')
 # the levels of the `look` column: none (not compared, or it differs) < title < steps
 LOOK = {'': 0, 'none': 0, 'title': 1, 'steps': 2}
-KEEP = ('title', 'titleStill', 'firstWindow', 'size', 'shots', 'leftTitle', 'storyFrames', 'crashed', 'errors', 'manifests', 'steps', 'prep_error')
+KEEP = ('dialogs', 'title', 'titleStill', 'firstWindow', 'size', 'shots', 'leftTitle', 'storyFrames', 'crashed', 'errors', 'manifests', 'steps', 'prep_error')
 
 
 def todo(titles, kind='smoke', again=False, only=(), golden=GOLDEN):
@@ -43,6 +43,11 @@ def import_runs(out, golden=GOLDEN):
             # (no title screen on Windows either: most often the runner's fault, a dialog it
             # cannot answer; not an answer, so the title is played again next time)
             print(f'{tid}: no title screen on Windows, not taken', file=sys.stderr)
+            continue
+        bad = {k: v for k, v in (r.get('dialogs') or {}).items() if k in SHOTS}
+        if bad:
+            # (an error box over the game, "DirectSound could not start": the runner's, not the game's)
+            print(f'{tid}: a dialog on Windows, not taken: {bad}', file=sys.stderr)
             continue
         dst = os.path.join(golden, tid)
         shutil.rmtree(dst, ignore_errors=True)

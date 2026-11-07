@@ -114,7 +114,8 @@ if os.name == 'nt':
                     (u32.ClientToScreen, [W.HWND, ctypes.POINTER(W.POINT)], W.BOOL), (u32.GetDC, [W.HWND], H), (u32.ReleaseDC, [W.HWND, H], ctypes.c_int),
                     (u32.SetForegroundWindow, [W.HWND], W.BOOL), (u32.GetForegroundWindow, [], W.HWND), (u32.SetCursorPos, [ctypes.c_int, ctypes.c_int], W.BOOL),
                     (u32.ShowWindow, [W.HWND, ctypes.c_int], W.BOOL), (u32.IsIconic, [W.HWND], W.BOOL), (u32.MapVirtualKeyW, [W.UINT, W.UINT], W.UINT),
-                    (u32.GetWindowLongW, [W.HWND, ctypes.c_int], W.LONG), (u32.PostMessageW, [W.HWND, W.UINT, W.WPARAM, W.LPARAM], W.BOOL),
+                    (u32.GetWindowLongW, [W.HWND, ctypes.c_int], W.LONG), (u32.GetClassNameW, [W.HWND, W.LPWSTR, ctypes.c_int], ctypes.c_int),
+                    (u32.GetWindowTextW, [W.HWND, W.LPWSTR, ctypes.c_int], ctypes.c_int), (u32.EnumChildWindows, [W.HWND, ENUMPROC, W.LPARAM], W.BOOL), (u32.PostMessageW, [W.HWND, W.UINT, W.WPARAM, W.LPARAM], W.BOOL),
                     (g32.CreateCompatibleDC, [H], H), (g32.CreateDIBSection, [H, ctypes.c_void_p, W.UINT, ctypes.POINTER(ctypes.c_void_p), H, W.DWORD], H),
                     (g32.SelectObject, [H, H], H), (g32.BitBlt, [H] + [ctypes.c_int] * 4 + [H, ctypes.c_int, ctypes.c_int, W.DWORD], W.BOOL),
                     (g32.DeleteObject, [H], W.BOOL), (g32.DeleteDC, [H], W.BOOL), (g32.GdiFlush, [], W.BOOL),
@@ -251,6 +252,33 @@ def game_window(pids):
     return found[0][1], found[0][2]
 
 
+def dialogs(pids):
+    """the visible dialog boxes (#32770: message boxes, error boxes) of those processes, as
+    "caption: text" (a shot with one over the game is no answer)"""
+    out = []
+    def text(h):
+        b = ctypes.create_unicode_buffer(512)
+        u32.GetWindowTextW(h, b, 512)
+        return b.value
+    def cb(hwnd, _):
+        pid = W.DWORD()
+        u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value in pids and u32.IsWindowVisible(hwnd):
+            c = ctypes.create_unicode_buffer(64)
+            u32.GetClassNameW(hwnd, c, 64)
+            if c.value == '#32770':
+                parts = []
+                def child(h, _):
+                    t = text(h)
+                    if t: parts.append(t)
+                    return True
+                u32.EnumChildWindows(hwnd, ENUMPROC(child), 0)
+                out.append(f"{text(hwnd)}: {' / '.join(parts)}"[:300])
+        return True
+    u32.EnumWindows(ENUMPROC(cb), 0)
+    return out
+
+
 def front(hwnd):
     if u32.GetForegroundWindow() != hwnd:
         # (Windows lets the process that got the last input set the foreground: an Alt press first)
@@ -334,6 +362,8 @@ def run(exe, out, steps):
         if not f: return None
         shots.write(os.path.join(out, name + '.png'), *f)
         res['shots'].append(name)
+        dl = dialogs(pids_under(d) | ({p.pid} if p.poll() is None else set()))
+        if dl: res.setdefault('dialogs', {})[name] = dl
         return f
 
     def click(x, y):

@@ -51,7 +51,12 @@ class Golden(unittest.TestCase):
         put(self.win, 'a', dict(OK, size=[640, 480], junk='x' * 100), {'title': TITLE, 'steps': STEPS, 'story-20': STEPS})
         put(self.win, 'b', {'title': None}, {'notitle': BLACK})
         put(self.win, 'c', dict(OK), {'title': TITLE})
-        self.assertEqual(golden.import_runs(self.win, self.g), ['a', 'c'])
+        # d: an error box over the title on Windows (the runner's): no answer; e: one over a story
+        # shot only (not compared): taken
+        put(self.win, 'd', dict(OK, dialogs={'title': ['x: DirectSound']}), {'title': TITLE})
+        put(self.win, 'e', dict(OK, dialogs={'story-20': ['x: y']}), {'title': TITLE})
+        self.assertEqual(golden.import_runs(self.win, self.g), ['a', 'c', 'e'])
+        shutil.rmtree(f'{self.g}/e'); shutil.rmtree(f'{self.win}/d'); shutil.rmtree(f'{self.win}/e')
 
     def tearDown(self):
         self.tmp.cleanup()
