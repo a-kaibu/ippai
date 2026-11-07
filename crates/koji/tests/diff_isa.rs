@@ -82,12 +82,13 @@ fn codes() -> Vec<Code> {
             if !matches!(op.encoding(), EncodingKind::Legacy | EncodingKind::VEX) || !op.mode64() || op.op_count() == 0 && !matches!(c.mnemonic(), Mn::Vzeroupper | Mn::Vzeroall | Mn::Emms) {
                 return false;
             }
-            let ins = Instruction::with(c);
-            let f = ins.cpuid_features();
+            // from the Code itself: Instruction::with is only for codes without operands
+            // (iced debug_asserts it, which failed every debug build and so cargo-mutants)
+            let f = c.cpuid_features();
             if !f.iter().any(|x| TARGET.contains(x)) || !f.iter().all(|x| TARGET.contains(x) || OK.contains(x)) {
                 return false;
             }
-            if skipped(c.mnemonic()) || ins.flow_control() != iced_x86::FlowControl::Next {
+            if skipped(c.mnemonic()) || c.flow_control() != iced_x86::FlowControl::Next {
                 return false;
             }
             (0..op.op_count()).all(|i| kind_ok(op.op_kind(i)))
