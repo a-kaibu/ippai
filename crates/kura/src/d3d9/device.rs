@@ -2437,6 +2437,45 @@ unsafe fn clear(d: &mut D3d, count: u32, rects: u32, flags: u32, color: u32, z: 
     S_OK
 }
 
+/// A draw's scissor within the depth buffer of size `z`, bound whether the depth test is on or
+/// not: Windows' WARP draws nothing past a depth buffer smaller than the target (winref
+/// replay_d3d9clear r483..r515, a D16 of 8x8 under a 16x16 target, #63)
+fn depth_clip(sc: [i32; 4], z: Option<(u32, u32)>) -> [i32; 4] {
+    match z {
+        Some((w, h)) => [sc[0], sc[1], sc[2].min(w as i32), sc[3].min(h as i32)],
+        None => sc,
+    }
+}
+#[cfg(test)]
+mod depth_clip_tests {
+    use super::depth_clip;
+    #[test]
+    fn as_windows() {
+        assert_eq!(depth_clip([0, 0, 16, 16], Some((8, 8))), [0, 0, 8, 8]);
+        assert_eq!(depth_clip([0, 0, 16, 16], Some((32, 32))), [0, 0, 16, 16]);
+        assert_eq!(depth_clip([0, 0, 16, 16], None), [0, 0, 16, 16]);
+        assert_eq!(depth_clip([4, 4, 12, 12], Some((32, 8))), [4, 4, 12, 8]);
+        // (a scissor past the depth buffer: empty, nothing drawn)
+        let c = depth_clip([10, 10, 16, 16], Some((8, 8)));
+        assert!(c[2] <= c[0] && c[3] <= c[1]);
+    }
+    /// whatever the sizes, what is left is inside the scissor and the depth buffer
+    #[test]
+    fn inside_both() {
+        let mut x = 0x2545_f491u32;
+        for _ in 0..50_000 {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            let sc = [(x % 40) as i32, ((x >> 6) % 40) as i32, ((x >> 12) % 80) as i32, ((x >> 19) % 80) as i32];
+            let (zw, zh) = (1 + (x >> 3) % 64, 1 + (x >> 9) % 64);
+            let c = depth_clip(sc, Some((zw, zh)));
+            assert_eq!((c[0], c[1]), (sc[0], sc[1]));
+            assert!(c[2] <= sc[2] && c[3] <= sc[3] && c[2] <= zw as i32 && c[3] <= zh as i32);
+        }
+    }
+}
+
 /// Makes the page draw into render target 0 and `more` (1-3) at once.
 fn ensure_targets(d: &mut D3d, rt: u32, more: &[u32], ds: u32) {
     if more.is_empty() {
@@ -2634,6 +2673,8 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     // (the depth buffer for the depth test or the stencil test)
     let ds = if st.rs[7] != 0 || st.rs[52] != 0 { dev.ds } else { 0 };
     let rts = dev.rt;
+    // (the depth buffer's size, whether its tests are on or not: see depth_clip)
+    let zsize = surface_gpu(d, dev.ds).map(|z| (z.2, z.3));
     // the vertex layout
     let (elems, fvf_stride) = if st.decl != 0 {
         match d.objs.get(&st.decl).map(|o| &o.data) {
@@ -3089,6 +3130,7 @@ unsafe fn draw(d: &mut D3d, prim: u32, src: Src, prims: u32, _x: Option<()>) -> 
     } else {
         [0, 0, target.2 as i32, target.3 as i32]
     };
+    let scissor = depth_clip(scissor, zsize);
     let blend_factor = st.rs[193];
 
     // What the draw reads from guest memory (its vertices, indices, constants), hashed, and

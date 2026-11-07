@@ -26,6 +26,31 @@ static DWORD px(IDirect3DSurface9 *t, int x, int y) {
     return v;
 }
 
+/* What of the whole target is drawn (not black): "drawn N in x0,y0-x1,y1" (#63: a depth buffer
+ * smaller than the target, and nothing drawn past it whatever the depth test) */
+static const char *drawn(void) {
+    static char out[64];
+    D3DLOCKED_RECT lr;
+    D3DSURFACE_DESC d;
+    if (FAILED(IDirect3DDevice9_GetRenderTargetData(dev, back, sys))) return "bad";
+    IDirect3DSurface9_GetDesc(sys, &d);
+    if (FAILED(IDirect3DSurface9_LockRect(sys, &lr, NULL, D3DLOCK_READONLY))) return "bad";
+    int n = 0, x0 = 99999, y0 = 99999, x1 = -1, y1 = -1;
+    for (UINT y = 0; y < d.Height; y++)
+        for (UINT x = 0; x < d.Width; x++)
+            if (((DWORD *)((char *)lr.pBits + y * lr.Pitch))[x] & 0xffffff) {
+                n++;
+                if ((int)x < x0) x0 = x;
+                if ((int)y < y0) y0 = y;
+                if ((int)x > x1) x1 = x;
+                if ((int)y > y1) y1 = y;
+            }
+    IDirect3DSurface9_UnlockRect(sys);
+    if (!n) return "drawn 0";
+    snprintf(out, sizeof out, "drawn %d in %d,%d-%d,%d", n, x0, y0, x1, y1);
+    return out;
+}
+
 static HRESULT clr(DWORD n, const D3DRECT *r, DWORD flags, DWORD c, float z, DWORD s) {
     return IDirect3DDevice9_Clear(dev, n, r, flags, c, z, s);
 }
@@ -145,22 +170,22 @@ int main(void) {
         clr(0, NULL, D3DCLEAR_TARGET, 0, 1, 0);
         hr = clr(0, NULL, D3DCLEAR_ZBUFFER, 0, 2.0f, 0);
         quad(0.5f, 0x0000ff);
-        printf("%s: z 2 %#lx, quad %06lx\n", dz[i].n, hr, px(0, 1, 1));
+        printf("%s: z 2 %#lx, quad %06lx %s\n", dz[i].n, hr, px(0, 1, 1), drawn());
         clr(0, NULL, D3DCLEAR_TARGET, 0, 1, 0);
         hr = clr(1, &r, D3DCLEAR_ZBUFFER, 0, 2.0f, 0);
         quad(0.5f, 0x00ff00);
-        printf("%s: z 2 in a rect %#lx, quad %06lx\n", dz[i].n, hr, px(0, 5, 5));
+        printf("%s: z 2 in a rect %#lx, quad %06lx %s\n", dz[i].n, hr, px(0, 5, 5), drawn());
         /* ZWRITEENABLE without ZENABLE */
         clr(0, NULL, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, 0, 1, 0);
         IDirect3DDevice9_SetRenderState(dev, D3DRS_ZENABLE, D3DZB_FALSE);
         quad(0.25f, 0x111111);
         IDirect3DDevice9_SetRenderState(dev, D3DRS_ZENABLE, D3DZB_TRUE);
         quad(0.5f, 0x22ff22);
-        printf("%s: zwrite with z off, then quad at 0.5 %06lx\n", dz[i].n, px(0, 1, 1));
+        printf("%s: zwrite with z off, then quad at 0.5 %06lx %s\n", dz[i].n, px(0, 1, 1), drawn());
         clr(0, NULL, D3DCLEAR_TARGET, 0, 1, 0);
         hr = clr(0, NULL, D3DCLEAR_ZBUFFER, 0, -1.0f, 0);
         quad(0.0f, 0x0000ff);
-        printf("%s: z -1 %#lx, quad at 0 %06lx\n", dz[i].n, hr, px(0, 1, 1));
+        printf("%s: z -1 %#lx, quad at 0 %06lx %s\n", dz[i].n, hr, px(0, 1, 1), drawn());
         /* stencil: equal to 5 */
         if (dz[i].f == D3DFMT_D24S8) {
             clr(0, NULL, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, 0, 1, 0);
