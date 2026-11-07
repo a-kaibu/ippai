@@ -1,0 +1,217 @@
+# Windows' answers for the trial-game corpus (tests/corpus/golden, tests/corpus/golden.py): each
+# title of tests/corpus/titles.tsv played on real Windows the way tests/corpus.mjs plays it on
+# sake (tests/corpus/winplay.py: title screen, the title's steps, story clicks), its screens
+# halved into tests/corpus/golden/<id> (a commit on main). Corpus then compares sake's screens of
+# the same moments with them (check.py, the `look` column). Nobody plays a title again unless asked
+# (`again`): the answers stay until the harness or the row changes.
+#   plan    the titles without an answer (push: the smoke rows; by hand: `set` / `only`)
+#   prep    downloads and unpacks each trial on Linux (tests/corpus-prep.sh with no store)
+#   play    on windows-2025: DirectX 9 runtime, Japan's time zone, code page 932 for the game
+#           (external manifest), the display at 1920x1080 at most; winplay.py play
+#   commit  golden.py import, one commit on main
+name: Corpus answers
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tests/corpus/winplay.py'
+      - 'tests/corpus/titles.tsv'
+      - '.github/workflows/corpusref.yml'
+  workflow_dispatch:
+    inputs:
+      set:
+        description: "smoke or full"
+        default: smoke
+        type: choice
+        options: [smoke, full]
+      only:
+        description: "only these title ids (space-separated; overrides set)"
+        default: ""
+      again:
+        description: "play the titles that have an answer already too"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: corpusref
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      ids: ${{ steps.p.outputs.ids }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - id: p
+        env:
+          SET: ${{ inputs.set || 'smoke' }}
+          ONLY: ${{ inputs.only }}
+          AGAIN: ${{ inputs.again }}
+        run: |
+          python3 tests/corpus/shots_test.py
+          python3 tests/corpus/winplay_test.py
+          python3 tests/corpus/golden_test.py
+          ids=$(python3 tests/corpus/golden.py todo tests/corpus/titles.tsv --set "$SET" ${AGAIN:+--again=$AGAIN} $ONLY)
+          echo "ids=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' $ids)" >> "$GITHUB_OUTPUT"
+          echo "to play: $ids"
+
+  prep:
+    needs: plan
+    if: needs.plan.outputs.ids != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      # (most trials come from one home-run mirror: tests/corpus/ci.sh)
+      max-parallel: 4
+      matrix:
+        id: ${{ fromJSON(needs.plan.outputs.ids) }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: tools/ci/cache-keys.sh
+      - id: cache-1
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: ~/.apt-cache
+          key: apt-${{ env.CI_IMAGE }}-unar-unrar-innoextract-convmv-p7zip-full-msitools
+      - run: tools/ci/apt.sh unar unrar innoextract convmv p7zip-full msitools
+      - if: steps.cache-1.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ~/.apt-cache
+          key: apt-${{ env.CI_IMAGE }}-unar-unrar-innoextract-convmv-p7zip-full-msitools
+      - name: Download ${{ matrix.id }}
+        env:
+          ID: ${{ matrix.id }}
+        run: |
+          IFS=$'\t' read -r url exe < <(awk -F'\t' -v i="$ID" '$1 == i { print $5 "\t" $6 }' tests/corpus/titles.tsv)
+          export TRIALS=$RUNNER_TEMP/trials DL_TRIES=3
+          mkdir -p game
+          if e=$(bash tests/corpus-prep.sh "$ID" "$url" "$exe" ""); then
+            mv "$TRIALS/$ID/x" game/x
+            python3 tests/corpus/winplay.py meta tests/corpus/titles.tsv "$ID" "$e" game/meta.json
+            cat game/meta.json
+          else
+            # (Windows' answer is then "the download failed": not committed, tried again next time)
+            echo "$ID: download or unpacking failed"
+          fi
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: corpus-game-${{ matrix.id }}
+          path: game
+          retention-days: 1
+          if-no-files-found: ignore
+
+  play:
+    needs: [plan, prep]
+    if: ${{ !cancelled() && needs.plan.outputs.ids != '[]' }}
+    runs-on: windows-2025
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        id: ${{ fromJSON(needs.plan.outputs.ids) }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - id: game
+        uses: actions/download-artifact@v8.0.2
+        continue-on-error: true
+        with:
+          name: corpus-game-${{ matrix.id }}
+          path: game
+      - id: meta
+        shell: bash
+        run: |
+          if [ -f game/meta.json ]; then echo "ok=1" >> "$GITHUB_OUTPUT"; cat game/meta.json; else echo "no game (its download failed)"; fi
+      # (d3dx9_*.dll and the other DirectX 9 runtime DLLs games bring no copy of: Microsoft's
+      # June 2010 redistributable, cached. PowerShell: Git Bash would turn /Q and /silent into
+      # paths. Each part has a time limit; a game that brings its own DLLs goes on without it)
+      - if: steps.meta.outputs.ok
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/dxredist.exe
+          key: directx-jun2010-redist
+      - name: DirectX runtime
+        if: steps.meta.outputs.ok
+        shell: pwsh
+        timeout-minutes: 10
+        continue-on-error: true
+        run: |
+          if (-not (Test-Path ~/dxredist.exe)) { Invoke-WebRequest -Uri https://download.microsoft.com/download/8/4/A/84A35BF1-DAFE-4AE8-82AF-AD2AE20B6B14/directx_Jun2010_redist.exe -OutFile ~/dxredist.exe }
+          $x = Start-Process -FilePath (Resolve-Path ~/dxredist.exe) -ArgumentList '/Q', '/T:C:\dxredist' -PassThru
+          if (-not $x.WaitForExit(180000)) { Stop-Process -Id $x.Id -Force; throw "the redistributable did not unpack" }
+          $d = Start-Process -FilePath C:\dxredist\DXSETUP.exe -ArgumentList '/silent' -PassThru
+          if (-not $d.WaitForExit(300000)) { Stop-Process -Id $d.Id -Force; throw "DXSETUP did not finish" }
+          "DXSETUP exit $($d.ExitCode)"
+      # (MS Gothic and the other Japanese fonts are a feature on demand on an English Windows)
+      - name: Japanese fonts
+        if: steps.meta.outputs.ok
+        shell: pwsh
+        timeout-minutes: 12
+        continue-on-error: true
+        run: |
+          if (Test-Path C:\Windows\Fonts\msgothic.ttc) { "MS Gothic is there"; exit 0 }
+          $j = Start-Job { Add-WindowsCapability -Online -Name 'Language.Fonts.Jpan~~~und-JPAN~0.0.1.0' }
+          if (-not (Wait-Job $j -Timeout 600)) { Stop-Job $j; throw "the Japanese fonts did not install in 10 minutes" }
+          Receive-Job $j
+          "msgothic.ttc: $(Test-Path C:\Windows\Fonts\msgothic.ttc)"
+      - name: Windows
+        if: steps.meta.outputs.ok
+        shell: pwsh
+        run: python tests/corpus/winplay.py setup
+      - name: Play ${{ matrix.id }}
+        if: steps.meta.outputs.ok
+        shell: pwsh
+        timeout-minutes: 15
+        run: |
+          python tests/corpus/winplay.py play game "out/${{ matrix.id }}"
+          Get-Content "out/${{ matrix.id }}/result.json"
+      - if: steps.meta.outputs.ok
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: corpus-win-${{ matrix.id }}
+          path: out
+          retention-days: 14
+
+  # Windows' answers into tests/corpus/golden (a commit on main)
+  commit:
+    needs: [plan, play]
+    if: ${{ !cancelled() && needs.plan.outputs.ids != '[]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          pattern: corpus-win-*
+          path: out
+          merge-multiple: true
+      - name: Commit the answers
+        run: |
+          [ -d out ] || { echo "nothing played"; exit 0; }
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          M=$RUNNER_TEMP/main
+          for i in 1 2 3 4 5 6; do
+            git fetch -q origin main
+            git worktree remove --force "$M" 2>/dev/null || true
+            git worktree add -q --detach "$M" FETCH_HEAD
+            took=$(python3 "$M/tests/corpus/golden.py" import out)
+            echo "$took"
+            git -C "$M" add -A tests/corpus/golden
+            if git -C "$M" diff --cached --quiet; then echo "no change"; exit 0; fi
+            git -C "$M" commit -qm "corpus: Windows' answers for $(git -C "$M" diff --cached --name-only | sed -n 's|tests/corpus/golden/\([^/]*\)/result.json|\1|p' | tr '\n' ' ')(${GITHUB_SHA::7})"
+            git -C "$M" push -q origin HEAD:main && exit 0
+            sleep $((i * 5))
+          done
+          exit 1

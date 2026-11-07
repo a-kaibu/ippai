@@ -1,8 +1,9 @@
 # Trial-game corpus on sake: tests/corpus/titles.tsv (vnbox's trials, downloaded from their
 # original sites on the runner; no game file is ever stored on GitHub) run in headless Chromium
 # against the build CI made, sharded over parallel jobs. Each title must reach its `expect`
-# level (title screen / story); tests/corpus/check.py grades, lists the DLLs each title asked
-# for that sake does not have, and fails the run on a regression.
+# level (title screen / story) and its `look` level (sake's title / steps screens match Windows'
+# answers, tests/corpus/golden from corpusref.yml); tests/corpus/check.py grades, lists the DLLs
+# each title asked for that sake does not have, and fails the run on a regression.
 #   - after CI succeeds on main: the smoke rows (smoke=1)
 #   - nightly and by hand (workflow_dispatch): every title, 10 jobs at most at once
 # sake's C:\ is only fonts (tools/ci/sake-fonts.py, IPA fonts renamed), no Wine DLLs.
@@ -163,7 +164,8 @@ jobs:
         run: |
           export PLAYWRIGHT="$RUNNER_TEMP/pw/node_modules/playwright/index.js"
           tests/corpus/ci.sh "$RUNNER_TEMP/dist" "$RUNNER_TEMP/fonts" results
-      # results.json, console and server logs only: no screenshots of the games on GitHub
+      # results.json (look.json: sake's screens against Windows', tests/corpus/golden), logs, and
+      # the two shots compared with Windows' (title, steps: trial games, as the golden answers)
       - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
@@ -172,6 +174,8 @@ jobs:
             results/**/*.json
             results/**/*.log
             results/**/*.txt
+            results/**/title.png
+            results/**/steps.png
           retention-days: 14
           if-no-files-found: ignore
 

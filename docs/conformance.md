@@ -107,3 +107,26 @@ also through FXSAVE), comparing the flags in full once the program read them; th
 both ways; koji's tests/mx_lazy.rs the switch itself; the winref probe fpflags (a hot loop
 before any read, then the flags of each kind read through STMXCSR, _statusfp and _clearfp),
 against Windows.
+
+## Trial games against Windows (tests/corpus/golden)
+
+The corpus (tests/corpus/titles.tsv, `.github/workflows/corpus.yml`) used to grade a title only
+by how far it got on sake (title screen, story). Windows' answers make it grade the screens too:
+`.github/workflows/corpusref.yml` plays each title on a windows-2025 runner the way
+tests/corpus.mjs plays it on sake (tests/corpus/winplay.py: the same title-screen rule, the
+title's steps, story clicks; DirectX 9 runtime, Japan's time zone, code page 932 through an
+external manifest with activeCodePage, the display at 1920x1080 at most) and commits the title
+screen and the screen the steps lead to, halved, to tests/corpus/golden/<id>/ with result.json.
+Each corpus run compares sake's title.png / steps.png with them (tests/corpus/shots.py: 32x24
+cells of area averages; a cell differs by more than 24 in a channel; same screen when the mean
+difference is below 6 and at most 4% of the cells differ) and grades the `look` column: none <
+title < steps. Falling below it is a regression, as for `expect`; `check.py --update` raises it.
+
+    python3 tests/corpus/golden.py todo tests/corpus/titles.tsv --set full   (titles without an answer)
+    python3 tests/corpus/golden.py look ID OUT                              (one title, after a local run)
+    python3 tests/corpus/shots.py compare golden.png sake.png
+
+D3D8/9/11 titles are also recorded with apitrace (tests/replay/games.txt, docs/replay.md) and
+replayed frame by frame; the screen comparison is what covers the titles drawn with GDI,
+DirectDraw or OpenGL, and the game's own code (CPU, Win32, files, sound, scripts) that a replay
+never runs.

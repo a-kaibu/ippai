@@ -1,7 +1,7 @@
 // One corpus title in headless Chromium (play.html, &load): finds the title screen (first frame
 // whose middle band has many colours), runs the title's steps, then clicks through the story for
 // STORY seconds while measuring the program's CPU (vnhost_load_busy, as game.html). Writes OUT/result.json,
-// console.log and PNGs (title, story-N, last).
+// console.log and PNGs (title, steps, story-N, last).
 //
 //   node tests/corpus.mjs URL OUT [STEPS]
 //
@@ -233,6 +233,8 @@ for (const s of steps.split(/[ ;]+/).filter(Boolean)) {
   else if (op === "key") await key(a);
   else if (op === "shot") await shot(a);
 }
+// (the screen the steps lead to: compared with Windows' steps.png, tests/corpus/golden)
+await shot("steps");
 
 // 3. the story: clicks every 2 s, CPU over STORY seconds
 const [sx, sy] = (process.env.STORY_AT ?? "").split(",").map(Number);
