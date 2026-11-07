@@ -36,6 +36,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "x86_jit64"
+path = "fuzz_targets/x86_jit64.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "uuid"
 path = "fuzz_targets/uuid.rs"
 test = false

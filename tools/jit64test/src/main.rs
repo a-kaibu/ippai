@@ -769,7 +769,11 @@ impl Jit {
             self.entries.insert(a, (f, k, idx));
             // (the dispatcher's linear probing, newer regions taking over a block)
             let mut h = koji::jit::dispatch::slot(a, HASH_N - 1);
-            loop {
+            for probe in 0.. {
+                // (a full table: the program wrote over it, or more blocks than it holds)
+                if probe == HASH_N {
+                    return Err(format!("hash table full at {a:#x}"));
+                }
                 let e = (base + (HASH + 8 * h) as usize) as *mut u32;
                 let key = unsafe { e.read() };
                 if key == 0 || key == a {
@@ -1201,6 +1205,8 @@ fn main() {
         EXACT.store(t / 2 % 3 != 2, Relaxed);
         // (every other test in small regions: exits chain into other regions and back into a
         // region's own blocks through the hash table)
+        // (JALLREGS: regions load and store all sixteen registers, as before they named theirs)
+        koji::jit::long::DEBUG_ALL_REGS.store(std::env::var("JALLREGS").is_ok(), Relaxed);
         koji::jit::long::DEBUG_BLOCKS.store(if t % 2 == 1 { 1 + t / 2 % 3 } else { 0 }, std::sync::atomic::Ordering::Relaxed);
         let mut list = Vec::new();
         let n = 5 + rng.below(40) as usize;

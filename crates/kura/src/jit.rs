@@ -361,6 +361,17 @@ const FN_WINDOWS: u32 = 2;
 const FN_BUILDS: u32 = 8;
 /// Merges per thread, at most (each compiles a new region).
 const MAX_MERGES: u32 = 512;
+/// The hops of `n` samples out of a ring of `len`, `hops` hops since the last one.
+fn hop_share(hops: u32, n: usize, len: usize) -> u32 {
+    (hops as u64 * n as u64 / len.max(1) as u64).min(u32::MAX as u64) as u32
+}
+
+/// Hops out of a long-mode region that make merge_hot64 merge it with where they go
+/// (IPPAI_JIT_MERGE_HOPS).
+fn merge_hops64() -> u32 {
+    static N: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *N.get_or_init(|| std::env::var("IPPAI_JIT_MERGE_HOPS").ok().and_then(|v| v.parse().ok()).unwrap_or(1 << 18))
+}
 
 /// A region module any thread built, kept for the others: every thread (and every process,
 /// for the DLLs they share) would otherwise translate the same code again.
@@ -1386,11 +1397,11 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
             h.set((n, last, Some(t)));
         });
     }
-    st.ring[0] = 0;
+    let hops = std::mem::take(&mut st.ring[0]);
     // pairs by frequency (runs of equal ones once sorted)
     jumps.sort_unstable();
     if cpu.mode64 != 0 {
-        return merge_hot64(st, cpu, &jumps);
+        return merge_hot64(st, cpu, &jumps, hops);
     }
     // (only the runs that could matter: both users below need FN_SAMPLES or more; this runs
     // every RING_SIZE hops, so no allocation for the usual none)
@@ -1533,8 +1544,8 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
 
 /// merge_hot for long mode (jit::long): the region that left for others most (out of the
 /// ring's sorted samples `jumps`) is built again with the targets it went to more than once
-/// (a switch's cases, a callee, a virtual call's methods), once it topped MERGE_WINDOWS rings.
-fn merge_hot64(st: &mut State, cpu: &Cpu, jumps: &[u64]) {
+/// (a switch's cases, a callee, a virtual call's methods), once it left merge_hops64 times.
+fn merge_hot64(st: &mut State, cpu: &Cpu, jumps: &[u64], hops: u32) {
     let mut best = (0, 0u32);
     let mut i = 0;
     while i < jumps.len() {
@@ -1549,9 +1560,13 @@ fn merge_hot64(st: &mut State, cpu: &Cpu, jumps: &[u64]) {
     if n < MERGE_SAMPLES || st.merges >= MAX_MERGES {
         return;
     }
+    // (the hops out of `from` since the last ring, estimated from its share of the ring: a
+    // merge compiles the whole region again, bigger, and startup code has regions that are
+    // the top source of hops for a few thousand hops only. Counting rings instead, a Godot
+    // game merged 1300 regions on its way to the title, which took 70 s instead of 40 s)
     let w = st.hot.entry((from, u32::MAX)).or_insert(0);
-    *w += 1;
-    if *w < MERGE_WINDOWS {
+    *w = w.saturating_add(hop_share(hops, n, jumps.len()));
+    if *w < merge_hops64() {
         return;
     }
     st.hot.remove(&(from, u32::MAX));
@@ -2465,5 +2480,37 @@ mod save_tests {
         vnhost_jit_saved(c, 0);
         take_acks(&mut b);
         assert!(b.inflight.is_empty() && b.wanted(&[0x2000], 0) && b.fails == 1);
+    }
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    #[test]
+    fn hop_share_estimates_a_sources_hops() {
+        assert_eq!(hop_share(16384, 64, 64), 16384);
+        assert_eq!(hop_share(16384, 16, 64), 4096);
+        assert_eq!(hop_share(100, 12, 64), 18);
+        assert_eq!(hop_share(u32::MAX, 64, 64), u32::MAX);
+        assert_eq!(hop_share(5, 1, 0), 5); // (no ring: no division by zero)
+    }
+
+    /// The policy merge_hot64 follows: startup code that tops many short rings (each read after
+    /// 64 hops, at the next miss or API call) stays as it is; a loop that hops for a few
+    /// hundred thousand times gets merged.
+    #[test]
+    fn short_lived_sources_are_not_merged() {
+        let limit = merge_hops64();
+        // a Godot startup: 1300 rings of 64 hops, the source in 12 of each
+        let startup: u64 = (0..1300).map(|_| hop_share(64, 12, 64) as u64).sum();
+        assert!(startup < limit as u64);
+        // a sort's comparison calls: rings every 16384 hops (the budget), the source in half
+        let mut w = 0u32;
+        let rings = (0..100).take_while(|_| {
+            w = w.saturating_add(hop_share(16384, 32, 64));
+            w < limit
+        });
+        assert!(rings.count() < 40, "merged within a few hundred thousand hops");
     }
 }

@@ -4,7 +4,8 @@
 # host/tests/expected/<name>.txt (checksums of integer, MMX/SSE, atomics, self-modifying code
 # results; they match Windows). UPDATE=1 rewrites the expected files. Exits 1 on a failure.
 # Tests in X64 are also built for x86-64 (mingw-w64: msvcrt) and must print the same: sake's
-# C runtime has to behave alike in both. CLANG64 are x86-64 programs clang builds (SEH, and
+# C runtime has to behave alike in both; they run once more merging regions at the first hot
+# jump and reclaiming after every load (IPPAI_JIT_MERGE_HOPS=1 IPPAI_JIT_RECLAIM=1). CLANG64 are x86-64 programs clang builds (SEH, and
 # x64crt: an MSVC-ABI program on ucrtbase/vcruntime140; msvcpsync: msvcp140 threads/sync;
 # msvcstream: its iostreams and locale facets, built against Microsoft's STL headers; msvcrtti:
 # dynamic_cast and typeid (vcruntime140's __RTDynamicCast...); mmdev:
@@ -15,8 +16,8 @@ set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SAKE=${SAKE:-/home/user/work/sake-out/sake.js}
 OUT=${OUT:-$(mktemp -d)}
-TESTS=${*:-nullcall intops simd atomics smc cmp64 ssecvt dinputtest textbounds crtstdio fileseek crtfiles hlsltest d3dx9shader d3dx9effect struct64 guard sse4 xaudio2 winrt wtsapi fastpaths apc rawinput dxgidesc mmxblit sysdlls dshowend srwlock mfengine jitcode wasapi waveout}
-X64=" struct64 guard xaudio2 crtstdio fileseek crtfiles cmp64 winrt wtsapi atomics fastpaths apc rawinput dxgidesc mmxblit sysdlls srwlock mfengine wasapi waveout "
+TESTS=${*:-nullcall intops simd atomics smc cmp64 ssecvt dinputtest textbounds crtstdio fileseek crtfiles hlsltest d3dx9shader d3dx9effect struct64 guard sse4 xaudio2 winrt wtsapi fastpaths apc rawinput dxgidesc mmxblit sysdlls dshowend srwlock mfengine jitcode wasapi waveout hops}
+X64=" hops struct64 guard xaudio2 crtstdio fileseek crtfiles cmp64 winrt wtsapi atomics fastpaths apc rawinput dxgidesc mmxblit sysdlls srwlock mfengine wasapi waveout "
 CLANG64=${CLANG64-x64seh x64crt msvcpsync msvcstream msvcrtti mmdev}
 # C++ (g++, static libstdc++) built for x86 and x64, one expected output for both
 GXX=${GXX-gxxunwind}
@@ -71,6 +72,14 @@ for t in $TESTS; do
       echo "FAIL $t (x64):"; diff <(echo "$t64") "$want" | head -10; fail=1
     else
       echo "ok   $t (x64)"
+    fi
+    # (kura's merge_hot64 at the first hot jump, and reclaim after every load: regions are
+    # merged into bigger ones and their own modules go while the program runs)
+    tm=$( (cd "$(dirname "$SAKE")" && timeout 300 env IPPAI_JIT_MERGE_HOPS=1 IPPAI_JIT_RECLAIM=1 node "$SAKE" "$OUT/$t-64.exe" 2>&1 | grep -v '^sake:') )
+    if [ "$tm" != "$(cat "$want")" ]; then
+      echo "FAIL $t (x64, merging):"; diff <(echo "$tm") "$want" | head -10; fail=1
+    else
+      echo "ok   $t (x64, merging)"
     fi
   fi
 done

@@ -49,6 +49,9 @@ const MAX_RETURNS: usize = 8;
 pub static DEBUG_INS: AtomicUsize = AtomicUsize::new(0);
 pub static DEBUG_BLOCKS: AtomicUsize = AtomicUsize::new(0);
 pub static DEBUG_CHECK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// Debugging: every region moves all sixteen registers between the Cpu and its locals at its
+/// entry and exits (as before regions moved only the ones they name).
+pub static DEBUG_ALL_REGS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 pub static DEBUG_OFF: [AtomicU64; 32] = [const { AtomicU64::new(0) }; 32];
 
 /// Leaves mnemonic `m` to the interpreter (see DEBUG_OFF).
@@ -194,6 +197,87 @@ struct Gen<'a> {
     /// per XMM register, the (up to two) ranges it was checked for in this block and not
     /// written since (mxguard::key): not checked again
     mx_seen: [[Option<super::mxguard::Key>; 2]; 16],
+    /// load_regs / store_regs so far: (offset in c.b, index in c.locs, store)
+    marks: Vec<(usize, usize, bool)>,
+}
+
+/// The registers `code` reads or writes (bit i: register i's local, L_R + i), and the ones
+/// it writes (local.set / local.tee).
+fn regs_named(code: &Code) -> (u16, u16) {
+    let (mut named, mut written) = (0u16, 0u16);
+    for &p in &code.locs {
+        let p = p as usize;
+        let (mut l, mut shift, mut at) = (0u32, 0, p + 1);
+        loop {
+            let c = code.b[at];
+            l |= ((c & 0x7f) as u32) << shift;
+            at += 1;
+            shift += 7;
+            if c & 0x80 == 0 {
+                break;
+            }
+        }
+        if (L_R..L_R + 16).contains(&l) {
+            let bit = 1u16 << (l - L_R);
+            named |= bit;
+            if code.b[p] != 0x20 {
+                written |= bit;
+            }
+        }
+    }
+    (named, written)
+}
+
+/// Loads of the registers in `mask` from the Cpu into their locals.
+fn emit_loads(c: &mut Code, mask: u16) {
+    for i in (0..16).filter(|i| mask >> i & 1 != 0) {
+        if i < 8 {
+            c.get(L_CPU).load32(off_lo(i)).x(I64_EXT_U);
+            c.get(L_CPU).load32(off_hi(i)).x(I64_EXT_U).i64c(32).x(I64_SHL).x(I64_OR);
+        } else {
+            c.get(L_CPU).load64(off_lo(i));
+        }
+        c.set(L_R + i as u32);
+    }
+}
+
+/// Stores of the registers in `mask` from their locals to the Cpu.
+fn emit_stores(c: &mut Code, mask: u16) {
+    for i in (0..16).filter(|i| mask >> i & 1 != 0) {
+        let r = L_R + i as u32;
+        if i < 8 {
+            c.get(L_CPU).get(r).x(I32_WRAP).store32(off_lo(i));
+            c.get(L_CPU).get(r).i64c(32).x(I64_SHR_U).x(I32_WRAP).store32(off_hi(i));
+        } else {
+            c.get(L_CPU).get(r).store64(off_lo(i));
+        }
+    }
+}
+
+/// `code` with its load_regs / store_regs marks filled in: loads of every register the code
+/// names, stores of the ones it writes. A region that touches four registers moves four,
+/// not sixteen, at its entry and at each exit: the code between regions is what a hop runs,
+/// and with sixteen it was most of it (and too much for the instruction cache once a program
+/// hops among a thousand regions).
+fn splice_regs(code: Code, marks: &[(usize, usize, bool)], all: bool) -> Code {
+    let (named, written) = if all { (u16::MAX, u16::MAX) } else { regs_named(&code) };
+    let mut out = Code { b: Vec::with_capacity(code.b.len() + marks.len() * 64), locs: Vec::with_capacity(code.locs.len()) };
+    let (mut from, mut lfrom) = (0, 0);
+    for &(at, li, store) in marks {
+        out.b.extend_from_slice(&code.b[from..at]);
+        let delta = out.b.len() as i64 - at as i64;
+        out.locs.extend(code.locs[lfrom..li].iter().map(|&p| (p as i64 + delta) as u32));
+        if store {
+            emit_stores(&mut out, written);
+        } else {
+            emit_loads(&mut out, named);
+        }
+        (from, lfrom) = (at, li);
+    }
+    out.b.extend_from_slice(&code.b[from..]);
+    let delta = out.b.len() as i64 - code.b.len() as i64;
+    out.locs.extend(code.locs[lfrom..].iter().map(|&p| (p as i64 + delta) as u32));
+    out
 }
 
 impl<'a> Gen<'a> {
@@ -206,28 +290,17 @@ impl<'a> Gen<'a> {
 
     // ---- registers
 
+    /// Where the registers come from the Cpu: a mark that [`splice_regs`] fills with the
+    /// loads of the registers the region's code names (the rest stay in the Cpu: nothing here
+    /// reads or changes them).
     fn load_regs(&mut self) {
-        for i in 0..16 {
-            if i < 8 {
-                self.c.get(L_CPU).load32(off_lo(i)).x(I64_EXT_U);
-                self.c.get(L_CPU).load32(off_hi(i)).x(I64_EXT_U).i64c(32).x(I64_SHL).x(I64_OR);
-            } else {
-                self.c.get(L_CPU).load64(off_lo(i));
-            }
-            self.c.set(L_R + i as u32);
-        }
+        self.marks.push((self.c.b.len(), self.c.locs.len(), false));
     }
 
+    /// Where the registers go back to the Cpu: a mark for the stores of the ones the code
+    /// writes (see [`splice_regs`]).
     fn store_regs(&mut self) {
-        for i in 0..16 {
-            let r = L_R + i as u32;
-            if i < 8 {
-                self.c.get(L_CPU).get(r).x(I32_WRAP).store32(off_lo(i));
-                self.c.get(L_CPU).get(r).i64c(32).x(I64_SHR_U).x(I32_WRAP).store32(off_hi(i));
-            } else {
-                self.c.get(L_CPU).get(r).store64(off_lo(i));
-            }
-        }
+        self.marks.push((self.c.b.len(), self.c.locs.len(), true));
     }
 
     /// (register local, bits, high byte)
@@ -2137,7 +2210,7 @@ pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[
     returns.sort_unstable();
     returns.dedup();
     returns.truncate(MAX_RETURNS);
-    let mut g = Gen { c: Code::default(), blocks: &blocks, index: &index, returns: &returns, flags: Flags::Cpu, depth: 0, ins: blocks[0].ins[0], temps: 0, mx_checked: None, mx_seen: [[None; 2]; 16] };
+    let mut g = Gen { c: Code::default(), blocks: &blocks, index: &index, returns: &returns, flags: Flags::Cpu, depth: 0, ins: blocks[0].ins[0], temps: 0, mx_checked: None, mx_seen: [[None; 2]; 16], marks: Vec::new() };
     // the dispatcher's key is the low 32 bits: code at another 4GB alias is left to the interpreter
     g.c.get(L_CPU).load32(cpu_off!(rip_hi)).u32c((entry >> 32) as u32).ne().if_();
     g.c.i32c(RET_INTERP).ret();
@@ -2205,7 +2278,7 @@ pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[
     locals.extend_from_slice(&[I32; N_I32 as usize]);
     locals.extend_from_slice(&[V128; 2]);
     locals.push(V128);
-    let code = core::mem::take(&mut g.c);
+    let code = splice_regs(core::mem::take(&mut g.c), &g.marks, DEBUG_ALL_REGS.load(Relaxed));
     module.funcs.push(Func { ty: 2, locals, code });
     let starts = blocks.iter().enumerate().map(|(k, b)| (b.start as u32, k as u32)).collect();
     let code = blocks.iter().map(|b| {
@@ -2213,4 +2286,149 @@ pub fn translate_region64<M: Memory>(module: &mut Module, mem: &mut M, roots: &[
         (b.start as u32, (end - b.start) as u32)
     }).collect();
     Some(Region { starts, instructions: count, code, text: None, layout, profile: Vec::new(), sites: Vec::new(), exact })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// (local index, opcode) of every local.get/set/tee `code.locs` lists, checking that each
+    /// points at one
+    fn local_ops(code: &Code) -> Vec<(u32, u8)> {
+        code.locs
+            .iter()
+            .map(|&p| {
+                let p = p as usize;
+                let op = code.b[p];
+                assert!((0x20..=0x22).contains(&op), "locs entry at {p} is opcode {op:#x}");
+                let (mut l, mut shift, mut at) = (0u32, 0, p + 1);
+                loop {
+                    let c = code.b[at];
+                    l |= ((c & 0x7f) as u32) << shift;
+                    at += 1;
+                    shift += 7;
+                    if c & 0x80 == 0 {
+                        break;
+                    }
+                }
+                (l, op)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn regions_move_only_the_registers_they_name() {
+        // rax read, rcx written, r9 read and written; a load mark at the top, stores at two exits
+        let mut c = Code::default();
+        let mut marks = Vec::new();
+        marks.push((c.b.len(), c.locs.len(), false));
+        c.get(L_R).set(L_R + 1);
+        marks.push((c.b.len(), c.locs.len(), true));
+        c.get(L_R + 9).i64c(1).x(I64_ADD).set(L_R + 9).i32c(7).set(L_ST);
+        marks.push((c.b.len(), c.locs.len(), true));
+        let out = splice_regs(c, &marks, false);
+        let ops = local_ops(&out);
+        let loaded: Vec<u32> = ops.iter().filter(|o| o.1 == 0x21 && (L_R..L_R + 16).contains(&o.0)).map(|o| o.0 - L_R).collect();
+        // loads (local.set after the Cpu load) of rax, rcx, r9 first
+        assert_eq!(&loaded[..3], &[0, 1, 9]);
+        // the stores read rcx and r9 (written), never rax (only read) or anything else
+        let mut named = 0u16;
+        for &(l, op) in &ops {
+            if op == 0x20 && (L_R..L_R + 16).contains(&l) {
+                named |= 1 << (l - L_R);
+            }
+        }
+        assert_eq!(named, 1 | 1 << 1 | 1 << 9);
+        // (in the result every named register is written: its load)
+        assert_eq!(regs_named(&out).0, 1 | 1 << 1 | 1 << 9);
+        // all sixteen with DEBUG_ALL_REGS's flag
+        let mut c = Code::default();
+        let marks = [(0, 0, false), (0, 0, true)];
+        c.get(L_R);
+        let all = splice_regs(c, &marks, true);
+        assert_eq!(regs_named(&all), (u16::MAX, u16::MAX));
+    }
+
+    /// Property: for random code and marks, splicing keeps every other byte in order, keeps
+    /// `locs` pointing at the local ops (so compact_locals still works on the result), and
+    /// puts at each mark exactly the loads of the named registers or the stores of the
+    /// written ones.
+    #[test]
+    fn splice_regs_property() {
+        let mut seed = 0x1234_5678_9abc_def0u64;
+        let mut rnd = |n: u32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as u32
+        };
+        for _ in 0..500 {
+            let mut c = Code::default();
+            let mut marks = Vec::new();
+            let mut plain = Code::default(); // the same code without the marks
+            let mut at_marks = Vec::new(); // (offset in plain, store)
+            let n = 1 + rnd(40);
+            for _ in 0..n {
+                match rnd(6) {
+                    0 => {
+                        let store = rnd(2) == 1;
+                        marks.push((c.b.len(), c.locs.len(), store));
+                        at_marks.push((plain.b.len(), store));
+                    }
+                    1 => {
+                        let l = L_R + rnd(16);
+                        c.get(l);
+                        plain.get(l);
+                    }
+                    2 => {
+                        let l = L_R + rnd(16);
+                        c.set(l);
+                        plain.set(l);
+                    }
+                    3 => {
+                        let l = L_R + rnd(16);
+                        c.tee(l);
+                        plain.tee(l);
+                    }
+                    4 => {
+                        // other locals (and big indices: multi-byte LEBs)
+                        let l = [L_CPU, L_ST, L_NT, L_V2, 300][rnd(5) as usize];
+                        c.get(l);
+                        plain.get(l);
+                    }
+                    _ => {
+                        let v = rnd(1 << 20) as i32 - (1 << 19);
+                        c.i32c(v);
+                        plain.i32c(v);
+                    }
+                }
+            }
+            let (named, written) = regs_named(&plain);
+            assert_eq!(written & !named, 0);
+            let out = splice_regs(c, &marks, false);
+            // the reference: the plain code with each mark's code put in by hand
+            let mut want = Code::default();
+            let mut from = 0;
+            for &(at, store) in &at_marks {
+                want.b.extend_from_slice(&plain.b[from..at]);
+                if store {
+                    emit_stores(&mut want, written);
+                } else {
+                    emit_loads(&mut want, named);
+                }
+                from = at;
+            }
+            want.b.extend_from_slice(&plain.b[from..]);
+            assert_eq!(out.b, want.b);
+            // locs: one per local op of the plain code plus those of the marks' code
+            let ops = local_ops(&out);
+            // (rax..rdi: two 32-bit halves, two Cpu gets each way; r8..r15 one)
+            let ops_of = |mask: u16, low: usize, high: usize| (0..16).filter(|i| mask >> i & 1 != 0).map(|i| if i < 8 { low } else { high }).sum::<usize>();
+            let per_load = ops_of(named, 3, 2); // (cpu get [x2], local set)
+            let per_store = ops_of(written, 4, 2); // (cpu get, local get [x2])
+            let extra: usize = at_marks.iter().map(|m| if m.1 { per_store } else { per_load }).sum();
+            assert_eq!(ops.len(), plain.locs.len() + extra);
+            assert_eq!(regs_named(&out).0 & !named, 0);
+        }
+    }
 }

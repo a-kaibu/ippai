@@ -8,6 +8,7 @@ crates (`mod proptests`). The shader translators have their own mutation fuzzer
 | target | what | must hold |
 |---|---|---|
 | `x86_jit` | the JIT (koji::jit) against the interpreter: a register state and up to 1 KB of code, translated, validated (wasmparser), run in wasmtime with the dispatcher and kura's block helpers | valid wasm, no trap, and the interpreter reaches the JIT's state (registers, flags, x87/MMX/SSE, memory) |
+| `x86_jit64` | the long-mode JIT (koji::jit::long) against the interpreter: sixteen registers and up to 1 KB of x86-64 code run through the dispatcher in regions of 1 to 4 blocks, a module each (nearly every jump, call and return a hop between regions), translated where the dispatcher misses, with only the named registers moved per region or all sixteen | valid wasm, no trap, and the interpreter reaches the JIT's state (registers, RIP, flags, SSE, memory) |
 | `x86_interp` | koji::step on any bytes, 32-bit, 64-bit and 16-bit mode | no panic |
 | `uuid` | sake::misc::parse_uuid (UuidFromString) on any UTF-16 text | Some exactly for the 8-4-4-4-12 hex form, printing back as the same text |
 | `sid` | sake::security::parse_sid (ConvertStringSidToSid) on any text | 15 sub-authorities and 48-bit authority at most; the printed SID parses back the same |
