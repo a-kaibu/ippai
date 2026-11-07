@@ -18,17 +18,20 @@ fn db(v: f32) -> f32 {
 /// One biquad section per channel (direct form I)
 #[derive(Clone, Default)]
 struct Biquad {
-    c: [f32; 5],
-    z: Vec<[f32; 4]>,
+    c: [f64; 5],
+    z: Vec<[f64; 4]>,
 }
 
 impl Biquad {
-    /// RBJ peaking EQ: centre `f0` Hz, linear amplitude `gain` at the centre, `bw` octaves wide
+    /// RBJ peaking EQ: centre `f0` Hz, linear amplitude `gain` at the centre, `bw` octaves wide.
+    /// In f64: at 20 Hz with a narrow band the poles are within 1e-4 of 1, where f32 coefficients
+    /// and state lose the response
     fn peaking(&mut self, rate: f32, f0: f32, gain: f32, bw: f32) {
+        let (rate, f0, gain, bw) = (rate as f64, f0 as f64, gain as f64, bw as f64);
         let a = gain.sqrt();
-        let w0 = 2.0 * std::f32::consts::PI * f0 / rate;
+        let w0 = 2.0 * std::f64::consts::PI * f0 / rate;
         let (s, cs) = w0.sin_cos();
-        let alpha = s * ((2f32.ln() / 2.0) * bw * w0 / s).sinh();
+        let alpha = s * ((2f64.ln() / 2.0) * bw * w0 / s).sinh();
         let a0 = 1.0 + alpha / a;
         self.c = [(1.0 + alpha * a) / a0, (-2.0 * cs) / a0, (1.0 - alpha * a) / a0, (-2.0 * cs) / a0, (1.0 - alpha / a) / a0];
     }
@@ -39,9 +42,10 @@ impl Biquad {
         let [b0, b1, b2, a1, a2] = self.c;
         for fr in buf.chunks_exact_mut(ch) {
             for (x, z) in fr.iter_mut().zip(self.z.iter_mut()) {
-                let y = b0 * *x + b1 * z[0] + b2 * z[1] - a1 * z[2] - a2 * z[3];
-                *z = [*x, z[0], y, z[2]];
-                *x = y;
+                let xi = *x as f64;
+                let y = b0 * xi + b1 * z[0] + b2 * z[1] - a1 * z[2] - a2 * z[3];
+                *z = [xi, z[0], y, z[2]];
+                *x = y as f32;
             }
         }
     }
@@ -329,6 +333,30 @@ mod tests {
         assert_eq!(x, y);
     }
 
+    /// The narrowest, lowest band (20 Hz, 0.1 octave, +18 dB): its centre gain holds, and an
+    /// octave away it is near unity
+    #[test]
+    fn eq_low_narrow_band() {
+        let p = params(&[20.0, 7.94, 0.1, 800.0, 1.0, 1.0, 2000.0, 1.0, 1.0, 10000.0, 1.0, 1.0]);
+        for (hz, want) in [(20.0, 7.94f32), (40.0, 1.0)] {
+            let mut y = sine(hz, 48000, 480000, 1);
+            Eq::default().run(&p, &mut y, 1, 48000);
+            let peak = y[432000..].iter().fold(0f32, |m, v| m.max(v.abs()));
+            assert!((peak / want - 1.0).abs() < 0.02, "{hz} Hz: {peak}");
+        }
+    }
+
+    /// Three bands at +18 dB stacked (the case the old bound of 64 refused): about x500 at most
+    #[test]
+    fn eq_stacked_gains() {
+        let p = params(&[6619.6245, 334.06134, 408.64935, 7706.5713, 7584.405, 6331.9116, 0.0, 0.0, 0.0, 4396.2837, 3334.7468]);
+        let mut y = sine(6619.6245, 48000, 4800, 1);
+        Eq::default().run(&p, &mut y, 1, 48000);
+        let peak = y[2400..].iter().fold(0f32, |m, v| m.max(v.abs()));
+        // band 0 alone gives 7.94 at its centre; the others add their skirts there
+        assert!(peak.is_finite() && peak > 7.94 && peak < 7.94f32.powi(3), "{peak}");
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(64))]
 
@@ -339,9 +367,20 @@ mod tests {
             let p = params(&ps);
             let n = xs.len() / ch * ch;
             let x = &xs[..n];
+            // the EQ is linear: |y| <= ||h||_1 max|x| (four +18 dB bands may stack to +72 dB, so no
+            // fixed bound); its impulse response h decays (the filter is stable)
+            // (20 Hz, 0.1 octave, +18 dB has a time constant of ~31000 samples: 10 s is ~15 of them)
+            let mut h = vec![0f32; 480000];
+            h[0] = 1.0;
+            Eq::default().run(&p, &mut h, 1, 48000);
+            prop_assert!(h.iter().all(|v| v.is_finite()));
+            let tail = h[432000..].iter().fold(0f32, |m, v| m.max(v.abs()));
+            prop_assert!(tail < 1e-4, "impulse response still {} after 9 s", tail);
+            let l1: f64 = h.iter().map(|v| v.abs() as f64).sum();
+            let xmax = x.iter().fold(0f32, |m, v| m.max(v.abs())) as f64;
             let mut y = x.to_vec();
             Eq::default().run(&p, &mut y, ch, 48000);
-            prop_assert!(y.iter().all(|v| v.is_finite() && v.abs() < 64.0));
+            prop_assert!(y.iter().all(|v| v.is_finite() && (v.abs() as f64) <= l1 * xmax * 1.001 + 1e-6));
             let mut y = x.to_vec();
             Echo::default().run(&p, &mut y, ch, 48000);
             prop_assert!(y.iter().all(|v| v.is_finite() && v.abs() < 1e3));
