@@ -2085,9 +2085,8 @@ fn ReadProcessMemory(c: &mut Ctx) -> u32 {
         return 0;
     }
     mem::copy(b, a, n);
-    if c.a(4) != 0 {
-        w32(c.a(4), n);
-    }
+    // (the count is a SIZE_T: 8 bytes on x64)
+    mem::putp(c.a(4), n);
     1
 }
 fn WriteProcessMemory(c: &mut Ctx) -> u32 {
@@ -2098,9 +2097,7 @@ fn WriteProcessMemory(c: &mut Ctx) -> u32 {
     }
     mem::copy(a, b, n);
     kura::jit::code_changed(a as usize, n.max(1) as usize);
-    if c.a(4) != 0 {
-        w32(c.a(4), n);
-    }
+    mem::putp(c.a(4), n);
     1
 }
 fn IsBadReadPtr(c: &mut Ctx) -> u32 {
@@ -5133,7 +5130,13 @@ fn write_find_data(p: u32, name: &str, m: &kura::fs::Metadata, wide: bool) {
     }
 }
 fn find_first(c: &mut Ctx, wide: bool) -> u32 {
-    let pat = arg_str(c.a(0), wide);
+    let (pat, data) = (c.a(0), c.a(1));
+    find_first_at(pat, data, wide)
+}
+/// FindFirstFile(Ex): the pattern and where its WIN32_FIND_DATA goes (FindFirstFileEx's is its
+/// third argument: in R8 on x64, so it cannot be moved into the second's stack slot)
+fn find_first_at(pat: u32, data: u32, wide: bool) -> u32 {
+    let pat = arg_str(pat, wide);
     if crate::env_on!("SAKE_TRACE_FILES") {
         let r = files::find(&pat).map(|f| f.entries.iter().map(|e| e.0.clone()).collect::<Vec<_>>().join(" "));
         eprintln!("sake: FindFirstFile({pat}) -> {r:?}");
@@ -5141,7 +5144,7 @@ fn find_first(c: &mut Ctx, wide: bool) -> u32 {
     match files::find(&pat) {
         Some(f) => {
             let (n, m) = &f.entries[0];
-            write_find_data(c.a(1), n, m, wide);
+            write_find_data(data, n, m, wide);
             let mut f = f;
             f.at = 1;
             obj::add(Obj::Find(std::sync::Arc::new(Mutex::new(f))))
@@ -5175,16 +5178,20 @@ fn FindFirstFileA(c: &mut Ctx) -> u32 {
 fn FindFirstFileW(c: &mut Ctx) -> u32 {
     find_first(c, true)
 }
+/// FindFirstFileEx(pattern, level, data, search op, filter, flags): FindExInfoStandard (0) and
+/// FindExInfoBasic (1, no short name: sake has none anyway); the search op only advises
+fn find_first_ex(c: &mut Ctx, wide: bool) -> u32 {
+    if c.a(1) > 1 || c.a(3) > 2 || c.a(4) != 0 {
+        last_error(87);
+        return u32::MAX;
+    }
+    find_first_at(c.a(0), c.a(2), wide)
+}
 fn FindFirstFileExA(c: &mut Ctx) -> u32 {
-    let (p, d) = (c.a(0), c.a(2));
-    w32(c.esp + 8, d);
-    let _ = p;
-    find_first(c, false)
+    find_first_ex(c, false)
 }
 fn FindFirstFileExW(c: &mut Ctx) -> u32 {
-    let d = c.a(2);
-    w32(c.esp + 8, d);
-    find_first(c, true)
+    find_first_ex(c, true)
 }
 fn FindNextFileA(c: &mut Ctx) -> u32 {
     find_next(c, false)

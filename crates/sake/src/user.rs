@@ -2049,38 +2049,62 @@ fn EnumChildWindows(c: &mut Ctx) -> u32 {
     let (f, lp) = (c.a(1), c.a(2));
     enum_windows(c, v, f, lp)
 }
-fn find_window(cls: u32, title: u32, wide: bool) -> u32 {
+/// FindWindow(Ex): the first window under `parent` (0 or the desktop: top-level windows, the
+/// newest first; HWND_MESSAGE: message-only windows; a window: its children in their order)
+/// after `after` whose class and title match (the class without case, the title exactly)
+fn find_window(parent: u32, after: u32, cls: u32, title: u32, wide: bool) -> u32 {
     let cls_name = (cls != 0).then(|| if cls < 0x10000 { crate::k32::atom_name(cls).unwrap_or_default() } else { arg_str(cls, wide) }.to_lowercase());
     let t = (title != 0).then(|| arg_str(title, wide));
-    with(|s| {
-        s.wins
+    const MESSAGE: u32 = 0xffff_fffd;
+    let top = parent == 0 || parent == DESKTOP || parent == MESSAGE;
+    let found = with(|s| {
+        let list: Vec<u32> = if top {
+            let msg_only = parent == MESSAGE;
+            let mut v: Vec<u32> = s.wins.iter().filter(|(_, w)| w.parent == 0 && (w.owner == MESSAGE) == msg_only).map(|(&h, _)| h).collect();
+            v.sort_unstable_by(|a, b| b.cmp(a));
+            v
+        } else {
+            match s.wins.get(&parent) {
+                Some(p) => p.children.clone(),
+                None => return Err(()),
+            }
+        };
+        let from = if after == 0 { 0 } else { list.iter().position(|&h| h == after).map_or(list.len(), |i| i + 1) };
+        Ok(list[from..]
             .iter()
-            .find(|(_, w)| {
-                w.parent == 0
-                    && cls_name.as_ref().is_none_or(|n| s.classes[w.class].name.to_lowercase() == *n)
-                    && t.as_ref().is_none_or(|t| String::from_utf16_lossy(&w.text) == *t)
-            })
-            .map(|(&h, _)| h)
-    })
-    .or_else(|| {
-        if !crate::kern::host::shared() {
-            return None;
+            .copied()
+            .find(|h| {
+                let w = &s.wins[h];
+                cls_name.as_ref().is_none_or(|n| s.classes[w.class].name.to_lowercase() == *n) && t.as_ref().is_none_or(|t| String::from_utf16_lossy(&w.text) == *t)
+            }))
+    });
+    let found = match found {
+        Ok(f) => f,
+        Err(()) => {
+            crate::k32::last_error(1400); // ERROR_INVALID_WINDOW_HANDLE
+            return 0;
         }
-        crate::kern::with(|k| k.find_win(crate::pid(), cls_name.as_deref(), t.as_deref()).map(|w| w.hwnd)).0
-    })
-    .unwrap_or(0)
+    };
+    found
+        .or_else(|| {
+            if parent != 0 && parent != DESKTOP || after != 0 || !crate::kern::host::shared() {
+                return None;
+            }
+            crate::kern::with(|k| k.find_win(crate::pid(), cls_name.as_deref(), t.as_deref()).map(|w| w.hwnd)).0
+        })
+        .unwrap_or(0)
 }
 fn FindWindowA(c: &mut Ctx) -> u32 {
-    find_window(c.a(0), c.a(1), false)
+    find_window(0, 0, c.a(0), c.a(1), false)
 }
 fn FindWindowW(c: &mut Ctx) -> u32 {
-    find_window(c.a(0), c.a(1), true)
+    find_window(0, 0, c.a(0), c.a(1), true)
 }
 fn FindWindowExA(c: &mut Ctx) -> u32 {
-    find_window(c.a(2), c.a(3), false)
+    find_window(c.a(0), c.a(1), c.a(2), c.a(3), false)
 }
 fn FindWindowExW(c: &mut Ctx) -> u32 {
-    find_window(c.a(2), c.a(3), true)
+    find_window(c.a(0), c.a(1), c.a(2), c.a(3), true)
 }
 fn window_at(s: &State, x: i32, y: i32) -> u32 {
     let mut tops: Vec<u32> = s.wins.iter().filter(|(_, w)| w.parent == 0 && w.visible).map(|(&h, _)| h).collect();
@@ -3041,12 +3065,12 @@ fn DispatchMessageA(c: &mut Ctx) -> u32 {
 fn DispatchMessageW(c: &mut Ctx) -> u32 {
     DispatchMessageA(c)
 }
-/// IsDialogMessage(dlg, msg): Enter / Escape pressed in the dialog become IDOK / IDCANCEL; the
-/// rest is left to the caller's TranslateMessage / DispatchMessage.
+/// IsDialogMessage(dlg, msg): Enter / Escape pressed in the dialog become IDOK / IDCANCEL; its
+/// other messages are translated and dispatched (TRUE); messages of other windows are FALSE.
 fn is_dialog_message(c: &mut Ctx, wide: bool) -> u32 {
     let (dlg, msg) = (c.a(0), c.a(1));
     let (h, m, key, _) = msg_at(msg);
-    if m != 0x100 || !(key == 0x0d || key == 0x1b) || dlg == 0 {
+    if dlg == 0 || h == 0 {
         return 0;
     }
     let inside = h == dlg
@@ -3066,6 +3090,15 @@ fn is_dialog_message(c: &mut Ctx, wide: bool) -> u32 {
         });
     if !inside {
         return 0;
+    }
+    if m != 0x100 || !(key == 0x0d || key == 0x1b) {
+        // the dialog's other messages: translated and dispatched here, as Windows does (the
+        // caller's loop skips its own TranslateMessage/DispatchMessage for them)
+        let t = crate::api::export("user32", "TranslateMessage");
+        c.call(t, &[msg]);
+        let d = crate::api::export("user32", if wide { "DispatchMessageW" } else { "DispatchMessageA" });
+        c.call(d, &[msg]);
+        return 1;
     }
     let (id, b) = if key == 0x0d { default_button(dlg) } else { (2, dlg_item(dlg, 2)) };
     let f = crate::api::export("user32", if wide { "SendMessageW" } else { "SendMessageA" });
@@ -4589,11 +4622,20 @@ fn LoadCursorA(_: &mut Ctx) -> u32 {
 fn LoadCursorW(_: &mut Ctx) -> u32 {
     fake_handle()
 }
-fn LoadCursorFromFileA(_: &mut Ctx) -> u32 {
+/// LoadCursorFromFile(name): a cursor when the file is there (its pictures are not used)
+fn cursor_from_file(name: u32, wide: bool) -> u32 {
+    let n = arg_str(name, wide);
+    if name == 0 || crate::files::resolve(&n).and_then(|h| kura::fs::metadata(&h).ok()).is_none() {
+        crate::k32::last_error(if name == 0 { 87 } else { crate::files::missing(&n) });
+        return 0;
+    }
     fake_handle()
 }
-fn LoadCursorFromFileW(_: &mut Ctx) -> u32 {
-    fake_handle()
+fn LoadCursorFromFileA(c: &mut Ctx) -> u32 {
+    cursor_from_file(c.a(0), false)
+}
+fn LoadCursorFromFileW(c: &mut Ctx) -> u32 {
+    cursor_from_file(c.a(0), true)
 }
 fn LoadIconA(_: &mut Ctx) -> u32 {
     fake_handle()
@@ -4634,11 +4676,12 @@ fn DestroyIcon(_: &mut Ctx) -> u32 {
     1
 }
 fn GetIconInfo(c: &mut Ctx) -> u32 {
-    // a 32x32 monochrome cursor: AND mask over XOR mask, no color bitmap
+    // a 32x32 monochrome cursor: AND mask over XOR mask, no color bitmap. ICONINFO: fIcon,
+    // the hotspot, then the two bitmap handles (pointer-sized and 8-aligned on x64: 32 bytes)
     let p = c.a(1);
-    mem::fill(p, 20, 0);
-    w32(p, 0);
-    w32(p + 12, crate::gdi::new_bitmap(32, 64, 1));
+    let (size, mask) = if mem::x64() { (32, 16) } else { (20, 12) };
+    mem::fill(p, size, 0);
+    mem::wp(p + mask, crate::gdi::new_bitmap(32, 64, 1));
     1
 }
 fn LoadBitmapA(c: &mut Ctx) -> u32 {
@@ -5200,7 +5243,13 @@ fn input(kind: u32, x: i32, y: i32, data: u32) {
 
 // ---------------------------------------------------------------------------------------------
 // dialogs: windows built from DLGTEMPLATE(EX) resources, a guest DLGPROC called from our window
-// procedure (DWL_DLGPROC = window extra +4), and DialogBox's modal loop
+// procedure (DWLP_DLGPROC = window extra +4, +8 on x64: after the pointer-sized DWLP_MSGRESULT),
+// and DialogBox's modal loop
+
+/// DWLP_DLGPROC
+fn dwlp_dlgproc() -> usize {
+    mem::ps() as usize
+}
 
 /// Return values of ended modal dialogs (EndDialog).
 static DLG_END: Mutex<Option<HashMap<u32, u32>>> = Mutex::new(None);
@@ -5223,7 +5272,7 @@ fn set_extra32(h: u32, off: usize, v: u32) {
 
 fn dlg_wndproc_fn(c: &mut Ctx) -> u32 {
     let (h, m, wp, lp) = (c.a(0), c.a(1), c.a(2), c.a(3));
-    let p = extra32(h, 4);
+    let p = extra32(h, dwlp_dlgproc());
     if p != 0 {
         let r = c.call(p, &[h, m, wp, lp]);
         if r != 0 {
@@ -5234,6 +5283,22 @@ fn dlg_wndproc_fn(c: &mut Ctx) -> u32 {
     match m {
         0x14 => DefDlgProcA(c),
         0x110 => 1,
+        // DM_GETDEFID: MAKELONG(id, DC_HASDEFID) of the BS_DEFPUSHBUTTON child
+        0x400 => def_button(h).map_or(0, |(id, _)| 0x534b_0000 | id),
+        // DM_SETDEFID(id): that button takes BS_DEFPUSHBUTTON from the old one
+        0x401 => {
+            let old = def_button(h);
+            let new = dlg_item(h, wp);
+            with(|s| {
+                if let Some(w) = old.and_then(|(_, b)| s.wins.get_mut(&b)) {
+                    w.style = w.style & !0xf;
+                }
+                if let Some(w) = s.wins.get_mut(&new).filter(|w| w.style & 0xf == 0) {
+                    w.style |= 1;
+                }
+            });
+            1
+        }
         0x10 => {
             // WM_CLOSE: as the Cancel button
             let b = dlg_item(h, 2);
@@ -5261,6 +5326,16 @@ fn default_button(dlg: u32) -> (u32, u32) {
         kids.iter().find(|&&k| push(k, true)).map(|&k| (s.wins[&k].id & 0xffff, k))
     });
     found.unwrap_or_else(|| (1, dlg_item(dlg, 1)))
+}
+
+/// The dialog's BS_DEFPUSHBUTTON child: (id, window)
+fn def_button(dlg: u32) -> Option<(u32, u32)> {
+    with(|s| {
+        let kids = s.wins.get(&dlg)?.children.clone();
+        kids.into_iter()
+            .find(|k| s.wins.get(k).is_some_and(|w| s.classes.get(w.class).is_some_and(|c| c.name.eq_ignore_ascii_case("Button")) && w.style & 0xf == 1))
+            .map(|k| (s.wins[&k].id & 0xffff, k))
+    })
 }
 
 fn dlg_item(h: u32, id: u32) -> u32 {
@@ -5329,7 +5404,7 @@ fn create_dialog(c: &mut Ctx, inst: u32, t: u32, owner: u32, proc_: u32, param: 
         let s = wstr(t);
         with(|st| st.wins.get_mut(&dlg).map(|w| w.text = s));
     }
-    set_extra32(dlg, 4, proc_);
+    set_extra32(dlg, dwlp_dlgproc(), proc_);
     if font != 0 {
         send(c, dlg, 0x30, font, 0);
     }

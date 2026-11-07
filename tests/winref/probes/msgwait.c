@@ -22,9 +22,10 @@ static const char *wait_name(DWORD r) {
     return b;
 }
 
+/* (dispatched: a WM_PAINT stays in the queue until the window is painted) */
 static void drain(void) {
     MSG m;
-    while (PeekMessageA(&m, NULL, 0, 0, PM_REMOVE)) {}
+    while (PeekMessageA(&m, NULL, 0, 0, PM_REMOVE)) DispatchMessageA(&m);
 }
 
 static int commands[8], ncommands;
