@@ -433,6 +433,18 @@ pub fn support(dxgi: u32) -> u32 {
     s
 }
 
+/// The page format of a texture of `dxgi` bound as `bind` (D3D11_BIND_*): a typeless format
+/// bound for depth (0x40) is a depth page, which its depth views write and its shader views
+/// (R16_UNORM, R32_FLOAT) sample (Unity's R16_TYPELESS and R32_TYPELESS depth textures).
+pub fn page(dxgi: u32, bind: u32) -> Option<u32> {
+    let p = info(dxgi)?.page;
+    Some(match dxgi {
+        53 if bind & 0x40 != 0 => P_D16,
+        39 if bind & 0x40 != 0 => P_D32F,
+        _ => p,
+    })
+}
+
 pub fn is_depth(page: u32) -> bool {
     matches!(page, P_D24S8 | P_D32F | P_D16)
 }
@@ -503,6 +515,28 @@ pub fn vertex_format(dxgi: u32) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every format a depth view can be made of is a depth page when bound for depth, the same
+    /// format bound otherwise keeps its own page, and other formats never change.
+    #[test]
+    fn depth_bound_typeless_formats_are_depth_pages() {
+        // (texture format, its depth view format: the pairs D3D11 accepts)
+        for (tex, dsv) in [(55, 55), (53, 55), (40, 40), (39, 40), (45, 45), (44, 45), (20, 20), (19, 20)] {
+            let p = page(tex, 0x40).unwrap();
+            assert!(is_depth(p), "{tex} bound for depth: page {p}");
+            assert_eq!(p, page(dsv, 0x40 | 8).unwrap(), "{tex} and its view {dsv}");
+        }
+        assert_eq!(page(53, 8), Some(P_R16F));
+        assert_eq!(page(39, 8 | 0x80), Some(P_R32F));
+        for dxgi in 0..=200 {
+            if matches!(dxgi, 53 | 39) {
+                continue;
+            }
+            for bind in [0, 8, 0x20, 0x40, 0x48] {
+                assert_eq!(page(dxgi, bind), info(dxgi).map(|f| f.page), "{dxgi} bind {bind:#x}");
+            }
+        }
+    }
 
     /// Every f32 against the `half` crate (IEEE 754 binary16, round to nearest even).
     #[test]

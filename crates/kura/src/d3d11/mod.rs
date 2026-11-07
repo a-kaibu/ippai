@@ -1207,7 +1207,7 @@ fn new_backbuffer(d: &mut D11, w: u32, h: u32, fmt: u32, samples: (u32, u32)) ->
 /// can, see render::d3d create_texture2).
 #[allow(clippy::too_many_arguments)]
 fn new_texture(d: &mut D11, dim: u32, w: u32, h: u32, layers: u32, mips: u32, fmt: u32, usage: u32, bind: u32, cube: bool, samples: u32) -> u32 {
-    let page = format::info(fmt).map_or(format::P_BGRA8, |f| f.page);
+    let page = format::page(fmt, bind).unwrap_or(format::P_BGRA8);
     let max = 32 - w.max(h).max(1).leading_zeros();
     let mips = if mips == 0 { max } else { mips.min(max) };
     let gpu = page_id();
@@ -3640,6 +3640,11 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
                     let mut e = e;
                     if *sample != 0 {
                         e[1] = 3 + *sample; // uint/sint/depth textures
+                    }
+                    // (a stencil view, X32_TYPELESS_G8X24_UINT or X24_TYPELESS_G8_UINT: not the
+                    // page's float copy of the depth, which depth views read: unbound)
+                    if e[1] == 1 && matches!(d.objs.get(&sv).map(|o| &o.data), Some(Data::View(v)) if matches!(v.fmt, 22 | 46)) {
+                        e[2] = 0;
                     }
                     entries.push(e);
                 }

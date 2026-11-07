@@ -227,6 +227,22 @@ struct C { color: vec4f, z: vec4f };
 
 /// A multisampled texture's samples averaged (Direct3D's resolve of a format into another of its
 /// typeless group, or an sRGB twin: the values of the source's format, written in the target's).
+/// Ids of the depth textures' float copies (see depth_twin), counting down: none of the page's
+const TWIN_IDS: u32 = 0xffff_0000;
+
+/// A depth texture's depth as floats (D3D11: an R16_UNORM, R32_FLOAT, R24_UNORM_X8_TYPELESS or
+/// R32_FLOAT_X8X24_TYPELESS view loads (depth, 0, 0, 1)).
+const TWIN_SHADER: &str = r#"
+@group(0) @binding(0) var z: texture_depth_2d;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+  let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
+  return vec4f(p * 2.0 - 1.0, 0.0, 1.0);
+}
+@fragment fn fs(@builtin(position) p: vec4f) -> @location(0) vec4f {
+  return vec4f(textureLoad(z, vec2<i32>(p.xy), 0), 0.0, 0.0, 1.0);
+}
+"#;
+
 const RESOLVE_SHADER: &str = r#"
 @group(0) @binding(0) var tex: texture_multisampled_2d<f32>;
 @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
@@ -526,6 +542,13 @@ pub struct D3d {
     /// the shader resolve (resolve_into): module, pipeline and layout per target format
     resolve_module: Id,
     resolve_pipes: HashMap<&'static str, (Id, Id)>,
+    /// Direct3D 11 depth textures a shader reads as floats (R16_UNORM, R32_FLOAT and the like
+    /// views of typeless ones): depth texture -> (its r32float copy, the depth texture's stamp
+    /// when copied); see depth_twin
+    twins: HashMap<u32, (u32, u64)>,
+    next_twin: u32,
+    /// the copy's pipeline and layout (0: not made yet)
+    twin_pipe: (Id, Id),
 }
 
 impl D3d {
@@ -610,6 +633,9 @@ impl D3d {
             snap_tokens: HashMap::new(),
             resolve_module: 0,
             resolve_pipes: HashMap::new(),
+            twins: HashMap::new(),
+            next_twin: TWIN_IDS,
+            twin_pipe: (0, 0),
         }
     }
 
@@ -808,6 +834,7 @@ impl D3d {
                 }
                 DESTROY_TEXTURE => {
                     let id = a(1);
+                    self.drop_twin(id);
                     if self.textures.contains_key(&id) {
                         self.flush_if_used(id);
                         self.textures.remove(&id).unwrap().free(self.shown());
@@ -2441,6 +2468,86 @@ impl D3d {
         STATS[2].fetch_add(1, Relaxed);
     }
 
+    /// Depth texture `id`'s depth as an r32float texture (its twin, made the first time), up to
+    /// date: what a shader that reads it as floats binds instead. WebGPU binds depth textures
+    /// only to depth bindings, which shaders declare only for comparisons; Direct3D 11 reads
+    /// them through R16_UNORM, R32_FLOAT, ... views (Unity's depth textures). A copy, not one of
+    /// its passes': between passes, after the texture's last draw (Direct3D unbinds a view of
+    /// the depth buffer being drawn to, see d3d11::hazards).
+    fn depth_twin(&mut self, id: u32) -> Option<u32> {
+        let t = self.textures.get(&id).filter(|t| is_depth(t.format) && t.dim == "2d" && t.samples == 1)?;
+        let (w, h, layers) = (t.w, t.h, t.layers);
+        // (a clear not done yet: done now, it changes the stamp)
+        self.settle(id);
+        let stamp = self.stamp_of(id);
+        let tid = match self.twins.get(&id) {
+            Some(&(tid, s)) if s == stamp && self.textures.contains_key(&tid) => return Some(tid),
+            Some(&(tid, _)) if self.textures.contains_key(&tid) => tid,
+            _ => {
+                self.next_twin -= 1;
+                let tid = self.next_twin;
+                let r32 = TEX_FORMATS.iter().position(|&f| f == "r32float").unwrap() as u32;
+                self.create_texture2([tid, w, h, layers, 1, r32, 0]);
+                // (not kept in save states: made again from the depth texture)
+                self.textures.get_mut(&tid)?.make.clear();
+                tid
+            }
+        };
+        self.end_pass();
+        self.flush_if_used(tid);
+        if self.twin_pipe.0 == 0 {
+            let m = gpu::shader(TWIN_SHADER);
+            let layout = gpu::bind_group_layout(r#"{"entries":[{"binding":0,"visibility":2,"texture":{"sampleType":"depth","viewDimension":"2d"}}]}"#);
+            let pl = gpu::pipeline_layout(&format!(r#"{{"bindGroupLayouts":[{layout}]}}"#));
+            let p = gpu::render_pipeline(&format!(
+                r#"{{"layout":{pl},"vertex":{{"module":{m},"entryPoint":"vs"}},"fragment":{{"module":{m},"entryPoint":"fs","targets":[{{"format":"r32float"}}]}},"primitive":{{"topology":"triangle-list"}}}}"#
+            ));
+            gpu::drop(pl);
+            self.twin_pipe = (p, layout);
+        }
+        let t = &self.textures[&id];
+        // (depth no draw has used yet: what its last clear left, see `zused`; its passes may not
+        // have stored it)
+        let cleared = (t.zused & 1 == 0 && !self.no_pass_opt).then(|| t.zclear.map_or(1.0, |z| z.0));
+        self.use_tex(id);
+        self.use_tex(tid);
+        self.open = true;
+        for layer in 0..layers {
+            let dv = self.view2(tid, 1, 0, 1, layer, 1, false);
+            match cleared {
+                Some(d) => {
+                    gpu::begin_pass(&format!(r#"{{"colorAttachments":[{{"view":{dv},"loadOp":"clear","clearValue":[{},0,0,1],"storeOp":"store"}}]}}"#, num(d)));
+                    gpu::end_pass();
+                }
+                None => {
+                    let zv = self.view2(id, 1, 0, 1, layer, 1, true);
+                    let group = gpu::bind_group(self.twin_pipe.1, &[(0, Res::Obj(zv))]);
+                    gpu::begin_pass(&format!(r#"{{"colorAttachments":[{{"view":{dv},"loadOp":"clear","storeOp":"store"}}]}}"#));
+                    gpu::set_pipeline(self.twin_pipe.0);
+                    gpu::set_bind_group(0, group, &[]);
+                    gpu::draw(3, 1, 0, 0);
+                    gpu::end_pass();
+                    gpu::drop(group);
+                }
+            }
+            STATS[2].fetch_add(1, Relaxed);
+        }
+        self.touch(tid);
+        self.twins.insert(id, (tid, stamp));
+        Some(tid)
+    }
+
+    /// Forgets the float copy of depth texture `id` (destroyed or made again).
+    fn drop_twin(&mut self, id: u32) {
+        if let Some((tid, _)) = self.twins.remove(&id) {
+            self.flush_if_used(tid);
+            if let Some(t) = self.textures.remove(&tid) {
+                t.free(self.shown());
+                self.clear_groups2();
+            }
+        }
+    }
+
     /// The shader resolve into `format` (see resolve_into): pipeline, its bind group layout.
     fn resolve_pipe(&mut self, format: &'static str) -> (Id, Id) {
         if let Some(&p) = self.resolve_pipes.get(format) {
@@ -2463,6 +2570,7 @@ impl D3d {
 
     fn create_texture2(&mut self, a: [u32; 7]) {
         let [id, w, h, layers, mips, format, dim_code] = a;
+        self.drop_twin(id);
         // (bit 8: bound for unordered access; bit 9: multisampled)
         let (uav, ms, dim_code) = (dim_code & 0x100 != 0, dim_code & 0x200 != 0, dim_code & 0xff);
         let fmt = tex_format(format);
@@ -2612,6 +2720,7 @@ impl D3d {
         let mut depth = String::new();
         if let Some(zid) = z {
             self.use_tex(zid);
+            self.touch(zid);
             let zt = &self.textures[&zid];
             let stencil = zt.format == DS;
             let (zw, zh) = (zt.w, zt.h);
@@ -3235,6 +3344,16 @@ impl D3d {
                 }
             }
         }
+        // (depth textures it reads as floats: their copies, up to date)
+        let depths: Vec<u32> = groups
+            .iter()
+            .flat_map(|g| g.chunks(8))
+            .filter(|e| e[1] == 1 && self.textures.get(&e[2]).is_some_and(|t| is_depth(t.format)))
+            .map(|e| e[2])
+            .collect();
+        for z in depths {
+            self.depth_twin(z);
+        }
         // the first draw that uses the depth buffer's depth or stencil: a pass that keeps it
         // (it starts from what the last clear left)
         let zuse = self.pipelines2[&pid].zuse;
@@ -3334,7 +3453,8 @@ impl D3d {
                 } else {
                     // (a view of another dimension than the texture's, or a cube of fewer
                     // than 6 square layers, is invalid in WebGPU and takes the command buffer
-                    // with it: unbound instead)
+                    // with it: unbound instead; a depth texture read as floats: its copy)
+                    let a = if kind == 1 { self.twins.get(&a).map_or(a, |t| t.0) } else { a };
                     let ok = self.textures.get(&a).filter(|t| {
                         let depth = is_depth(t.format);
                         depth == (kind == 6)
