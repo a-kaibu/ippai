@@ -2755,6 +2755,24 @@ impl<'a> Gen<'a> {
                     self.fc_get(0);
                     self.fc_slot(0)
                 } else {
+                    // two exact integers (FILD'ed, written by nothing since: the slot is not
+                    // valid in the block) one of which a double does not hold: the
+                    // interpreter rounds the exact result once (crate::fpu::set_exact_result)
+                    let (sd, ss) = (self.fc_slot(st_index(ins.op_register(0))), self.fc_slot(st_index(ins.op_register(1))));
+                    if !matches!(mn, Fdiv | Fdivp | Fdivr | Fdivrp) && (self.fc.valid | self.fc.empty) & (1 << sd | 1 << ss) == 0 {
+                        let (pd, ps) = (self.fc_phys(sd), self.fc_phys(ss));
+                        self.c.get(L_CPU).load8u(Off::fexact()).get(pd).shr_u();
+                        self.c.get(L_CPU).load8u(Off::fexact()).get(ps).shr_u().and().i32c(1).and();
+                        for p in [pd, ps] {
+                            self.freg_at(p, 3);
+                            self.c.load64(Off::fints()).i64c(1 << 53).op(0x7c /* i64.add */).i64c(1 << 54).op(0x56 /* i64.gt_u */);
+                        }
+                        self.c.or().and().if_();
+                        self.depth += 1;
+                        self.bail();
+                        self.depth -= 1;
+                        self.c.end();
+                    }
                     let l = self.fc_get(st_index(ins.op_register(1)));
                     self.c.get(l).set(L_F1);
                     self.fc_get(st_index(ins.op_register(0)));

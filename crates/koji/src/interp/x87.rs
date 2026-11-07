@@ -198,6 +198,27 @@ impl<'a, M: Memory> X<'a, M> {
 
             Fadd | Faddp | Fsub | Fsubp | Fsubr | Fsubrp | Fmul | Fmulp | Fdiv | Fdivp | Fdivr | Fdivrp => {
                 let (d, s, _) = tryf!(self.farith_operands());
+                // two exact integers (FILD'ed): the exact result rounded once (an int64 is
+                // more than 53 bits: rounding it first and the sum again would round twice)
+                if ins.op_kind(0) != OpKind::Memory && !matches!(mn, Fdiv | Fdivp | Fdivr | Fdivrp) {
+                    let si = if ins.op_count() == 2 { st_index(ins.op_register(1)) } else { 0 };
+                    let f = &self.cpu.fpu;
+                    if let (Some(a), Some(b)) = (f.exact_st(d), f.exact_st(si)) {
+                        let (a, b) = (a as i128, b as i128);
+                        let v = match mn {
+                            Fadd | Faddp => a + b,
+                            Fsub | Fsubp => a - b,
+                            Fsubr | Fsubrp => b - a,
+                            _ => a * b,
+                        };
+                        if self.cpu.fpu.set_exact_result(d, v).is_some() {
+                            if matches!(mn, Faddp | Fsubp | Fsubrp | Fmulp) {
+                                self.cpu.fpu.pop();
+                            }
+                            return self.done();
+                        }
+                    }
+                }
                 let x = self.cpu.fpu.st(d);
                 let r = match mn {
                     Fadd | Faddp => x + s,

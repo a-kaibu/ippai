@@ -58,6 +58,35 @@ impl Fpu {
         self.ints[p] = v;
         self.exact |= 1 << p;
     }
+    /// The exact integer in ST(i), if it was loaded by FILD and not changed.
+    pub fn exact_st(&self, i: u32) -> Option<i64> {
+        let p = self.phys(i);
+        if self.exact & (1 << p) != 0 { Some(self.ints[p]) } else { None }
+    }
+    /// Sets ST(i) to the exact integer result `v` of an operation on exact integers, rounded
+    /// once to 53 bits by the rounding control, as the FPU does at 53-bit precision (the
+    /// registers here are doubles: at 64-bit precision too). None at 24-bit precision (the
+    /// caller rounds as usual).
+    pub fn set_exact_result(&mut self, i: u32, v: i128) -> Option<()> {
+        match (self.cw >> 8) & 3 {
+            2 | 3 => {
+                let f = v as f64; // (to nearest, ties to even)
+                let back = f as i128;
+                let up = |f: f64| f64::from_bits(if f > 0.0 { f.to_bits() + 1 } else { f.to_bits() - 1 });
+                let down = |f: f64| f64::from_bits(if f > 0.0 { f.to_bits() - 1 } else { f.to_bits() + 1 });
+                let r = match (self.cw >> 10) & 3 {
+                    _ if back == v => f,
+                    0 => f,
+                    1 => if back > v { down(f) } else { f },
+                    2 => if back < v { up(f) } else { f },
+                    _ => if back.abs() > v.abs() { if f > 0.0 { down(f) } else { up(f) } } else { f },
+                };
+                self.set_st(i, r);
+            }
+            _ => return None,
+        }
+        Some(())
+    }
     /// The exact integer in ST(0), if it was loaded by FILD and not changed.
     pub fn exact_int(&self) -> Option<i64> {
         let p = self.phys(0);
