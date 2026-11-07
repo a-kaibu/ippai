@@ -1,0 +1,6 @@
+api d3d8
+exe dl/スズノネセブン！体験版/suzunone7_trial.exe
+seconds 30
+bytes 304283650
+sha256 0aa0cd291d96b89534bd19f94e3cf2fdf0a4d6b60c56307174066a3e0060e3c3
+parts 1

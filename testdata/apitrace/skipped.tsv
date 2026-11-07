@@ -1,1 +1,6 @@
 # trial games with no trace, not recorded again unless asked (games.py; gametrace.yml's again)
+b2008_hook	ddraw	FairlyLife WEB体験版02 H_Only/FairlyLife.exe: title screen at 22s; tried d3d8; loaded: d3d10warp.dll d3d8.dll ddraw.dll dxgi.dll
+b2012_alicesoft	notrace	dl/母娘乱館体験版/OyakorankanTrial.exe: title screen at 2s; tried d3d9; loaded: d3d9.dll
+b2023_appetite	ddraw	apt246_tr/sennokoro_tr.exe: title screen at 6s; tried d3d9; loaded: d3d10warp.dll d3dim700.dll ddraw.dll dinput.dll dxgi.dll
+s2006_giga_ab	notrace	angelbreath_trial/angelbreath.exe: no title screen, ended; tried d3d9; loaded: d3d9.dll dinput8.dll
+s2006_pulltop_haruka	ddraw	『遥かに仰ぎ、麗しの』体験版/haruuru_t.exe: no title screen; tried d3d8; loaded: ddraw.dll dinput8.dll dxgi.dll
