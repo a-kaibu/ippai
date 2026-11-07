@@ -2,7 +2,7 @@
 """Tests of the platform-free parts of tests/corpus/winplay.py: the steps grammar (every row of
 titles.tsv must parse, and parse as corpus.mjs splits it), client coordinates, the title-screen
 statistics, and the activeCodePage manifest rewrite (well-formed XML, exactly one
-activeCodePage 932, the embedded manifest's other settings kept).
+activeCodePage ja-JP, the embedded manifest's other settings kept).
 
   python3 tests/corpus/winplay_test.py
 """
@@ -101,6 +101,11 @@ def acps(xml):
 
 
 class Manifest(unittest.TestCase):
+    def test_same_value_as_winref(self):
+        # (the value the winref probes carry, which Windows' answers show working)
+        _, found = acps(open(f'{HERE}/../winref/ja.manifest', encoding='utf-8').read())
+        self.assertEqual(found, ['ja-JP'])
+
     CASES = {
         'none': None,
         'empty': '',
@@ -128,7 +133,7 @@ class Manifest(unittest.TestCase):
         for name, src in self.CASES.items():
             out = winplay.with_codepage(src)
             root, found = acps(out)
-            self.assertEqual(found, ['932'], name)
+            self.assertEqual(found, ['ja-JP'], name)
             # (in an asm.v3 windowsSettings, never in compatibility's <application>)
             parents = {c: p for p in root.iter() for c in p}
             e = next(root.iter(NS + 'activeCodePage'))
@@ -144,7 +149,7 @@ class Manifest(unittest.TestCase):
     def test_idempotent(self):
         for name, src in self.CASES.items():
             once = winplay.with_codepage(src)
-            self.assertEqual(acps(winplay.with_codepage(once))[1], ['932'], name)
+            self.assertEqual(acps(winplay.with_codepage(once))[1], ['ja-JP'], name)
 
 
 if __name__ == '__main__':

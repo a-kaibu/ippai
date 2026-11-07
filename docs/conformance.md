@@ -114,8 +114,9 @@ The corpus (tests/corpus/titles.tsv, `.github/workflows/corpus.yml`) used to gra
 by how far it got on sake (title screen, story). Windows' answers make it grade the screens too:
 `.github/workflows/corpusref.yml` plays each title on a windows-2025 runner the way
 tests/corpus.mjs plays it on sake (tests/corpus/winplay.py: the same title-screen rule, the
-title's steps, story clicks; DirectX 9 runtime, Japan's time zone, code page 932 through an
-external manifest with activeCodePage, the display at 1920x1080 at most) and commits the title
+title's steps, story clicks; DirectX 9 runtime, a virtual sound card (Scream: without one
+DirectSound fails and games stop at an error box), Japan's time zone, code page 932 through an
+external manifest with activeCodePage ja-JP, the display at 1920x1080 at most) and commits the title
 screen and the screen the steps lead to, halved, to tests/corpus/golden/<id>/ with result.json.
 Each corpus run compares sake's title.png / steps.png with them (tests/corpus/shots.py: 32x24
 cells of area averages; a cell differs by more than 24 in a channel; same screen when the mean

@@ -8,8 +8,8 @@ moments (tests/corpus.mjs) are compared with them (shots.compare) by tests/corpu
   golden.py import OUT_DIR                                        Windows' runs into golden/
   golden.py look ID SAKE_OUT_DIR                                   the comparison of one title
 
-A title Windows could not show (no title screen there either: a launcher it needs, a download that
-failed) gets result.json without pictures, and is not compared.
+A title Windows could not bring to its title screen (a dialog the runner cannot answer, a launcher,
+a download that failed) gets no answer: it is played again by the next `todo`, never compared.
 """
 import csv, json, os, shutil, sys
 
@@ -39,6 +39,11 @@ def import_runs(out, golden=GOLDEN):
         src = os.path.join(out, tid)
         if not os.path.isfile(os.path.join(src, 'result.json')): continue
         r = json.load(open(os.path.join(src, 'result.json'), encoding='utf-8'))
+        if r.get('title') is None or not os.path.exists(os.path.join(src, 'title.png')):
+            # (no title screen on Windows either: most often the runner's fault, a dialog it
+            # cannot answer; not an answer, so the title is played again next time)
+            print(f'{tid}: no title screen on Windows, not taken', file=sys.stderr)
+            continue
         dst = os.path.join(golden, tid)
         shutil.rmtree(dst, ignore_errors=True)
         os.makedirs(dst)

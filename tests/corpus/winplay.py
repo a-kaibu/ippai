@@ -14,7 +14,7 @@ Writes OUT/result.json with the fields corpus.mjs writes. Standard library only 
                                                   TITLE_MAX (120)
 
 Japanese games on an English Windows: `run` gives the game (and every exe beside it) an external
-manifest with activeCodePage 932, the embedded manifest's other settings kept
+manifest with activeCodePage ja-JP (code page 932), the embedded manifest's other settings kept
 (PreferExternalManifest, set by `setup`), so the game sees code page 932 as on a Japanese PC.
 
 STEPS as corpus.mjs: "click:x,y wait:3 key:Return move:x,y shot:name" in client pixels of the
@@ -75,8 +75,9 @@ MANIFEST_NS = 'http://schemas.microsoft.com/SMI/2019/WindowsSettings'
 
 
 def with_codepage(xml):
-    """a manifest (text, or None for an exe without one) with activeCodePage 932"""
-    acp = f'<activeCodePage xmlns="{MANIFEST_NS}">932</activeCodePage>'
+    """a manifest (text, or None for an exe without one) with activeCodePage ja-JP (code page
+    932; a number is not a value Windows takes: tests/winref/ja.manifest is what works)"""
+    acp = f'<activeCodePage xmlns="{MANIFEST_NS}">ja-JP</activeCodePage>'
     if not xml or '<assembly' not in xml:
         return ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
                 '<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">\n'
@@ -174,6 +175,8 @@ def setup():
     fonts = os.path.join(os.environ.get('WINDIR', r'C:\Windows'), 'Fonts')
     print('fonts', {f: os.path.exists(os.path.join(fonts, f)) for f in ('msgothic.ttc', 'msmincho.ttc', 'meiryo.ttc', 'YuGothR.ttc')})
     print('ACP', k32.GetACP(), 'OEMCP', k32.GetOEMCP())
+    # (no sound device: DirectSound fails and games stop at an error box; corpusref.yml installs one)
+    print('waveOut devices', ctypes.WinDLL('winmm').waveOutGetNumDevs())
 
 
 def embedded_manifest(exe):
@@ -196,7 +199,7 @@ def embedded_manifest(exe):
 
 
 def give_codepage(exe):
-    """external manifests with activeCodePage 932 for every exe in the game's folder (a launcher
+    """external manifests with activeCodePage ja-JP for every exe in the game's folder (a launcher
     starts the game beside it); one already there stays (the game's own)"""
     d = os.path.dirname(exe)
     done = []

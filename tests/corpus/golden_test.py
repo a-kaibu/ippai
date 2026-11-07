@@ -6,7 +6,7 @@ standing in for PNGs the corpus artifact does not carry, and `todo`.
 
   python3 tests/corpus/golden_test.py
 """
-import csv, json, os, random, subprocess, sys, tempfile, unittest
+import csv, json, os, random, shutil, subprocess, sys, tempfile, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -51,7 +51,7 @@ class Golden(unittest.TestCase):
         put(self.win, 'a', dict(OK, size=[640, 480], junk='x' * 100), {'title': TITLE, 'steps': STEPS, 'story-20': STEPS})
         put(self.win, 'b', {'title': None}, {'notitle': BLACK})
         put(self.win, 'c', dict(OK), {'title': TITLE})
-        self.assertEqual(golden.import_runs(self.win, self.g), ['a', 'b', 'c'])
+        self.assertEqual(golden.import_runs(self.win, self.g), ['a', 'c'])
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -62,11 +62,17 @@ class Golden(unittest.TestCase):
         self.assertNotIn('junk', ra)
         self.assertEqual(sorted(os.listdir(f'{self.g}/a')), ['result.json', 'steps.png', 'title.png'])
         self.assertEqual(shots.read(f'{self.g}/a/title.png'), shots.half(*TITLE))
-        self.assertEqual(os.listdir(f'{self.g}/b'), ['result.json'])
-        # imported again: the old answer goes
+        # no title screen on Windows: no answer (played again next time)
+        self.assertFalse(os.path.exists(f'{self.g}/b'))
+        # imported again: the new answer replaces the old one; a failed replay keeps the old one
+        shutil.rmtree(f'{self.win}/a')
+        put(self.win, 'a', dict(OK), {'title': STEPS})
+        golden.import_runs(self.win, self.g)
+        self.assertEqual(sorted(os.listdir(f'{self.g}/a')), ['result.json', 'title.png'])
+        self.assertEqual(shots.read(f'{self.g}/a/title.png'), shots.half(*STEPS))
         put(self.win, 'a', {'title': None}, {})
         golden.import_runs(self.win, self.g)
-        self.assertEqual(os.listdir(f'{self.g}/a'), ['result.json'])
+        self.assertEqual(shots.read(f'{self.g}/a/title.png'), shots.half(*STEPS))
 
     def test_look_levels(self):
         put(self.out, 'a', OK, {'title': TITLE, 'steps': STEPS})
@@ -81,8 +87,9 @@ class Golden(unittest.TestCase):
         put(self.out, 'z', {'title': None}, {})
         os.makedirs(f'{self.g}/z'); json.dump({'shots': ['title']}, open(f'{self.g}/z/result.json', 'w'))
         self.assertEqual(golden.look('z', self.out, self.g)['level'], 'none')
-        # nothing to compare with
+        # nothing to compare with (an answer without pictures, or none)
         put(self.out, 'b', OK, {'title': TITLE})
+        os.makedirs(f'{self.g}/b'); json.dump({'shots': []}, open(f'{self.g}/b/result.json', 'w'))
         self.assertIsNone(golden.look('b', self.out, self.g))
         self.assertIsNone(golden.look('nope', self.out, self.g))
 
@@ -121,6 +128,10 @@ class Golden(unittest.TestCase):
         tsv = f'{self.d}/titles.tsv'
         titles(tsv, [{'id': 'a', 'smoke': '1'}, {'id': 'x', 'smoke': '1'}, {'id': 'y'}])
         self.assertEqual(golden.todo(tsv, 'smoke', golden=self.g), ['x'])
+        # b had no title screen on Windows: still to play
+        titles(tsv, [{'id': 'b', 'smoke': '1'}])
+        self.assertEqual(golden.todo(tsv, 'smoke', golden=self.g), ['b'])
+        titles(tsv, [{'id': 'a', 'smoke': '1'}, {'id': 'x', 'smoke': '1'}, {'id': 'y'}])
         self.assertEqual(golden.todo(tsv, 'full', golden=self.g), ['x', 'y'])
         self.assertEqual(golden.todo(tsv, 'full', again=True, golden=self.g), ['a', 'x', 'y'])
         self.assertEqual(golden.todo(tsv, only=['a', 'y'], golden=self.g), ['y'])
