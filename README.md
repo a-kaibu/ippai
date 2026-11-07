@@ -1,18 +1,6 @@
 # ippai
 
-ビジュアルノベルをブラウザの中で動かすためのリポジトリです。ゲームの x86 (i386) コードは
-x86→wasm JIT (`crates/koji`) で動かし、Windows API は Rust で一から書いた Win32 層
-sake (`crates/sake`、[docs/sake.md](docs/sake.md)) が受け持ちます。表示・音声・ファイル・
-Direct3D/OpenGL (WebGPU) はブラウザ側のホスト `crates/kura` です。
-
-Wine 11.20 の Unix 側を wasm にする Hangover 方式の経路は 2026-11-02 に廃止を決め、実装・設計
-メモ (docs/hangover.md など)・実験結果ごと [a-kaibu/vnvm-wine](https://github.com/a-kaibu/vnvm-wine)
-に移しました (履歴もそちらに全部あります)。
-先行研究の調査は [docs/prior-work.md](docs/prior-work.md)、翻訳器は [docs/translator.md](docs/translator.md)、
-実行ごとの詳細ログ (クラッシュの原因調査用) は [docs/crashlog.md](docs/crashlog.md) にあります。
-
-以前の QEMU 版 (フルシステム QEMU で Ubuntu 26.04 + Wine を起動する方式) は
-[a-kaibu/vnqemu](https://github.com/a-kaibu/vnqemu) に移しました。
+ビジュアルノベルをブラウザの中で動かすためのリポジトリです。ゲームの x86 (i386) コードはx86→wasm JIT (`crates/koji`) で動かし、Windows API は Rust で一から書いた Win32 層sake (`crates/sake`、[docs/sake.md](docs/sake.md)) が受け持ちます。表示・音声・ファイル・Direct3D/OpenGL (WebGPU) はブラウザ側のホスト `crates/kura` です。
 
 ## アーキテクチャ
 
@@ -119,15 +107,6 @@ Service Worker (`web/src/sw.ts`) がアプリのファイルを端末に残す�
 と出るので再読み込みします。プレイ中のゲームはそのまま続きます。Web ゲーム (NW.js) は別オリジンで動くため
 オフラインには対応していません。
 
-## リリース
-
-GitHub の Web 画面だけでできます: **Actions → Release → Run workflow** で patch / minor / major を選ぶと、
-svu で次の `vX.Y.Z` を決めて main にタグを打ちます。手で `v*` タグを push しても同じようにリリースされます
-(`.github/workflows/release.yml`)。どちらも CI (テスト、sake.wasm と Web のビルド、host/tests) のあと、GoReleaser
-(`.goreleaser.yaml`) が Linux x86-64 / ARM64 のバイナリ (cargo zigbuild、Web を rust-embed で内蔵) を作って
-スモークテストし、アーカイブ・`checksums.txt`・SBOM を Releases に公開します。ベンチ用ページ (bench.html、
-game.html、benchwasm/) はリリースのバイナリには入りません。
-
 ## 開発時のビルド
 
 ```sh
@@ -137,10 +116,6 @@ cargo build --release -p ippai    # web/dist を埋め込む (debug ビルドは
 target/release/ippai pack ~/prefix32 prefix32   # sake の C:\ (フォント)
 target/release/ippai serve --foreground --web web/dist --listen 127.0.0.1:8080
 ```
-
-sake の C:\ はフォントだけです (`tools/ci/sake-fonts.py`)。Wine の DLL は使いません: Windows の DLL は
-すべて sake 自身の実装で、`windows\system32` に何か置いてあっても読みません。
-Direct3D 10/11 のシェーダーは DXBC から WGSL へ直接翻訳します (`crates/dxwgsl`)。
 
 ## 制約
 
