@@ -22,10 +22,10 @@ D24S8: target|z 0 203040
 D24S8: target|stencil 0 405060
 D24S8: z 0.25 0, quad at 0.5 000000
 D24S8: z 1 in a rect 0, quad 000000 00ff00
-D24S8: z 2 0, quad 0000ff
-D24S8: z 2 in a rect 0, quad 00ff00
-D24S8: zwrite with z off, then quad at 0.5 22ff22
-D24S8: z -1 0, quad at 0 0000ff
+D24S8: z 2 0, quad 0000ff drawn 256 in 0,0-15,15
+D24S8: z 2 in a rect 0, quad 00ff00 drawn 256 in 0,0-15,15
+D24S8: zwrite with z off, then quad at 0.5 22ff22 drawn 256 in 0,0-15,15
+D24S8: z -1 0, quad at 0 0000ff drawn 256 in 0,0-15,15
 D24S8: stencil 0x105 0, ref 5 000000 ref 4 000000
 D24S8: stencil 9 in a rect 0, ref 9 000000 00ffff
 D24S8: incr twice, equal 2 ff00ff
@@ -39,30 +39,30 @@ D24X8: target|z 0 203040
 D24X8: target|stencil 0x8876086c 203040
 D24X8: z 0.25 0, quad at 0.5 000000
 D24X8: z 1 in a rect 0, quad 000000 00ff00
-D24X8: z 2 0, quad 0000ff
-D24X8: z 2 in a rect 0, quad 00ff00
-D24X8: zwrite with z off, then quad at 0.5 22ff22
-D24X8: z -1 0, quad at 0 0000ff
+D24X8: z 2 0, quad 0000ff drawn 256 in 0,0-15,15
+D24X8: z 2 in a rect 0, quad 00ff00 drawn 256 in 0,0-15,15
+D24X8: zwrite with z off, then quad at 0.5 22ff22 drawn 256 in 0,0-15,15
+D24X8: z -1 0, quad at 0 0000ff drawn 256 in 0,0-15,15
 D16 smaller: set 0
 D16 smaller: z 0 stencil 0x8876086c z|stencil 0x8876086c
 D16 smaller: target|z 0 203040
 D16 smaller: target|stencil 0x8876086c 203040
 D16 smaller: z 0.25 0, quad at 0.5 000000
 D16 smaller: z 1 in a rect 0, quad 000000 00ff00
-D16 smaller: z 2 0, quad 0000ff
-D16 smaller: z 2 in a rect 0, quad 00ff00
-D16 smaller: zwrite with z off, then quad at 0.5 22ff22
-D16 smaller: z -1 0, quad at 0 0000ff
+D16 smaller: z 2 0, quad 0000ff drawn 64 in 0,0-7,7
+D16 smaller: z 2 in a rect 0, quad 00ff00 drawn 64 in 0,0-7,7
+D16 smaller: zwrite with z off, then quad at 0.5 22ff22 drawn 64 in 0,0-7,7
+D16 smaller: z -1 0, quad at 0 0000ff drawn 64 in 0,0-7,7
 D24S8 larger: set 0
 D24S8 larger: z 0 stencil 0 z|stencil 0
 D24S8 larger: target|z 0 203040
 D24S8 larger: target|stencil 0 405060
 D24S8 larger: z 0.25 0, quad at 0.5 000000
 D24S8 larger: z 1 in a rect 0, quad 000000 00ff00
-D24S8 larger: z 2 0, quad 0000ff
-D24S8 larger: z 2 in a rect 0, quad 00ff00
-D24S8 larger: zwrite with z off, then quad at 0.5 22ff22
-D24S8 larger: z -1 0, quad at 0 0000ff
+D24S8 larger: z 2 0, quad 0000ff drawn 256 in 0,0-15,15
+D24S8 larger: z 2 in a rect 0, quad 00ff00 drawn 256 in 0,0-15,15
+D24S8 larger: zwrite with z off, then quad at 0.5 22ff22 drawn 256 in 0,0-15,15
+D24S8 larger: z -1 0, quad at 0 0000ff drawn 256 in 0,0-15,15
 D24S8 larger: stencil 0x105 0, ref 5 000000 ref 4 000000
 D24S8 larger: stencil 9 in a rect 0, ref 9 000000 00ffff
 D24S8 larger: incr twice, equal 2 ff00ff
