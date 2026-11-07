@@ -36,6 +36,8 @@ struct Fmt {
     bits: u16,
     /// samples per block (ADPCM)
     spb: u32,
+    /// MP3: MPEGLAYER3WAVEFORMAT's nBlockSize (0 when not given)
+    block: u16,
     /// IMA ADPCM with a samples-per-block field that doesn't fit its block size (imaadp32
     /// refuses those)
     bad: bool,
@@ -52,7 +54,9 @@ fn read_fmt(p: u32) -> Fmt {
         MSADPCM => ((align as u32).saturating_sub(7 * ch)) * 8 / (4 * ch) + 2,
         _ => 1,
     };
-    Fmt { tag, channels, rate, avg: r32(p + 8), align, bits, spb, bad }
+    // MPEGLAYER3WAVEFORMAT: cbSize 12, wID, fdwFlags, nBlockSize, ...
+    let block = if tag == MP3 && r16(p + 16) >= 12 { r16(p + 24) } else { 0 };
+    Fmt { tag, channels, rate, avg: r32(p + 8), align, bits, spb, block, bad }
 }
 
 struct Stream {
@@ -66,6 +70,12 @@ struct Mp3 {
     dec: u32,
     split: crate::mp3frame::Splitter,
     pending: std::collections::VecDeque<i16>,
+    /// samples owed for the frames taken (l3codecp gives each frame's, whatever the
+    /// decoder's delay), not handed out yet
+    due: usize,
+    channels: usize,
+    /// the decoder has given samples since the stream began (its delay is made up only before)
+    heard: bool,
 }
 
 impl Drop for Mp3 {
@@ -90,8 +100,19 @@ fn supported(s: &Fmt, d: &Fmt) -> bool {
         || pcm_ok(s) && pcm_ok(d)
         || mp3_pair(s, d)
 }
+/// MP3 to PCM: Windows takes 8-bit, mono and half the rate as well (winref acmmp3); those go
+/// through the PCM converter after the decoder.
 fn mp3_pair(s: &Fmt, d: &Fmt) -> bool {
-    s.tag == MP3 && matches!(s.channels, 1 | 2) && s.rate != 0 && d.tag == PCM && d.bits == 16 && d.channels == s.channels && d.rate == s.rate && mp3_ok()
+    s.tag == MP3 && matches!(s.channels, 1 | 2) && s.rate != 0 && pcm_ok(d) && mp3_ok()
+}
+/// MP3's samples per frame: MPEG-1 1152, MPEG-2 and 2.5 (under 32 kHz) 576
+fn mp3_spf(s: &Fmt) -> u32 {
+    if s.rate >= 32000 { 1152 } else { 576 }
+}
+/// The 16-bit PCM the decoder gives (before any conversion to the stream's output)
+fn mp3_native(s: &Fmt) -> Fmt {
+    let ch = s.channels.max(1);
+    Fmt { tag: PCM, channels: ch, rate: s.rate, avg: s.rate * ch as u32 * 2, align: ch * 2, bits: 16, spb: 1, block: 0, bad: false }
 }
 
 /// Whether every block header is one the codec takes: Windows' imaadp32/msadp32 convert
@@ -410,7 +431,7 @@ fn acmStreamOpen(c: &mut Ctx) -> u32 {
             putp(ph, 0);
             return ACMERR_NOTPOSSIBLE;
         };
-        Some(std::sync::Arc::new(Mutex::new(Mp3 { dec, split: Default::default(), pending: Default::default() })))
+        Some(std::sync::Arc::new(Mutex::new(Mp3 { dec, split: Default::default(), pending: Default::default(), due: 0, channels: s.channels as usize, heard: false })))
     } else {
         None
     };
@@ -450,20 +471,22 @@ fn acmStreamSize(c: &mut Ctx) -> u32 {
     put32(out, v);
     if v == 0 { ACMERR_NOTPOSSIBLE } else { 0 }
 }
-/// MP3's sizes as l3codecp gives them (Wine's mpeg3.c works them out the same way): whole
-/// 1152-sample frames at the source's average byte rate, and 3000 bytes more of output.
+/// MP3's sizes as l3codecp gives them (winref acmmp3): a frame's output for each block of
+/// the source begun (nBlockSize, else a frame at the average byte rate), and for an output
+/// size the source of the whole frames it holds.
 fn mp3_size(s: &Fmt, d: &Fmt, n: u32, from_dst: bool) -> u32 {
-    let src_frame = ((s.avg as u64 * 1152 / s.rate.max(1) as u64) as u32).max(1);
-    let dst_frame = d.align as u32 * 1152;
-    if from_dst {
-        n.saturating_sub(3000) / dst_frame.max(1) * src_frame
-    } else {
-        let frames = n / src_frame;
-        if frames == 0 { 0 } else { 3000 + frames * dst_frame }
-    }
+    let spf = mp3_spf(s) as u64;
+    let block = if s.block != 0 { s.block as u32 } else { ((s.avg as u64 * spf / s.rate.max(1) as u64) as u32).max(1) };
+    let dst_frame = ((spf * d.rate as u64).div_ceil(s.rate.max(1) as u64) * d.align as u64).max(1) as u32;
+    if from_dst { n / dst_frame * block } else { n.div_ceil(block).saturating_mul(dst_frame) }
 }
 fn acmStreamPrepareHeader(c: &mut Ctx) -> u32 {
     let h = c.a(1);
+    // (l3codecp refuses a header with no source: winref acmmp3, its probe's last call)
+    let p = mem::ps();
+    if with(c.a(0), |st| st.src.tag == MP3).unwrap_or(false) && r32(h + 8 + 2 * p) == 0 {
+        return MMSYSERR_INVALPARAM;
+    }
     w32(h + 4, r32(h + 4) | 0x0002_0000);
     0
 }
@@ -485,8 +508,15 @@ fn acmStreamConvert(c: &mut Ctx) -> u32 {
     let (o_sused, o_dused) = (o_src + p + 4, o_dst + p + 4);
     let (used_in, used_out) = if let Some(m) = mp3 {
         let input: Vec<u8> = (0..slen).map(|i| r8(src + i)).collect();
-        let out = mp3_convert(&mut m.lock().unwrap_or_else(|e| e.into_inner()), &input, (dlen / d.align.max(1) as u32 * d.align as u32) as usize / 2, flags & 0x10 != 0);
-        let bytes: Vec<u8> = out.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let n = mp3_native(&s);
+        // (the decoder's frames that fit, at its rate)
+        let frames = (dlen / d.align.max(1) as u32) as u64 * s.rate as u64 / d.rate.max(1) as u64;
+        let out = mp3_convert(&mut m.lock().unwrap_or_else(|e| e.into_inner()), &input, frames as usize * n.channels as usize, flags & 0x10 != 0, flags & 0x20 != 0);
+        let mut bytes: Vec<u8> = out.iter().flat_map(|v| v.to_le_bytes()).collect();
+        if (d.bits, d.channels, d.rate) != (16, n.channels, n.rate) {
+            bytes = pcm_convert(&n, &d, &bytes);
+            bytes.truncate((dlen / d.align.max(1) as u32 * d.align as u32) as usize);
+        }
         mem::write(dst, &bytes);
         (slen, bytes.len() as u32)
     } else if s.tag == PCM {
@@ -533,22 +563,43 @@ fn acmStreamConvert(c: &mut Ctx) -> u32 {
     0
 }
 
-/// Takes MP3 bytes (`start`: ACM_STREAMCONVERTF_START, a new stream); up to `max` samples out.
-fn mp3_convert(m: &mut Mp3, input: &[u8], max: usize, start: bool) -> Vec<i16> {
+/// Takes MP3 bytes (`start`: ACM_STREAMCONVERTF_START, a new stream; `end`:
+/// ACM_STREAMCONVERTF_END, the last frame goes too); up to `max` samples out. As l3codecp,
+/// each frame gives its samples once the next one's header is here: what the decoder holds
+/// back for its delay (FFmpeg's first 529, or a chunk it answers only with the next) comes as
+/// silence first.
+fn mp3_convert(m: &mut Mp3, input: &[u8], max: usize, start: bool, end: bool) -> Vec<i16> {
     if start {
         m.split.reset();
         m.pending.clear();
+        m.due = 0;
+        m.heard = false;
         kura::adec::reset(m.dec);
     }
     let mut frames = Vec::new();
     m.split.push(input, &mut frames);
+    if end {
+        m.split.finish(&mut frames);
+    }
+    m.due += frames.iter().map(|f| f.0.samples as usize * m.channels).sum::<usize>();
     let mut pcm = Vec::new();
-    if kura::adec::decode(m.dec, frames.iter().map(|f| &f.1[..]), MP3_WAIT, &mut pcm).is_none() && !frames.is_empty() {
+    let answered = kura::adec::decode(m.dec, frames.iter().map(|f| &f.1[..]), MP3_WAIT, &mut pcm).is_some();
+    if !answered && !frames.is_empty() {
         eprintln!("sake: acm: mp3: the page's decoder did not answer");
     }
     // (as FFmpeg's float to 16-bit: rounded, clipped)
     m.pending.extend(pcm.iter().map(|&x| (x * 32768.0).round().clamp(-32768.0, 32767.0) as i16));
-    let n = max.min(m.pending.len());
+    // (only at the start: later a decoder that answers a chunk late, as Chrome's can, is
+    // waited for, not filled in, or the sound would have gaps)
+    if answered && !m.heard && m.pending.len() < m.due {
+        let short = m.due - m.pending.len();
+        for _ in 0..short {
+            m.pending.push_front(0);
+        }
+    }
+    m.heard |= !pcm.is_empty();
+    let n = max.min(m.pending.len()).min(m.due);
+    m.due -= n;
     m.pending.drain(..n).collect()
 }
 
@@ -726,7 +777,7 @@ mod mp3_tests {
 
     fn stream(ch: u32) -> Mp3 {
         let dec = kura::adec::open("mp3", 44100, ch, &[]).expect("a page");
-        Mp3 { dec, split: Default::default(), pending: Default::default() }
+        Mp3 { dec, split: Default::default(), pending: Default::default(), due: 0, channels: ch as usize, heard: false }
     }
 
     #[test]
@@ -738,15 +789,17 @@ mod mp3_tests {
         let p = page(stop.clone());
         let mut m = stream(2);
         let bytes: Vec<u8> = (1..=4).flat_map(|k| frame(k, false)).collect();
-        // a frame and a half: one frame out, the half waits
-        let out = mp3_convert(&mut m, &bytes[..417 + 200], usize::MAX, false);
+        // a frame alone: nothing yet (it waits for the next header)
+        assert!(mp3_convert(&mut m, &bytes[..417], usize::MAX, false, false).is_empty());
+        // and a half more: one frame out, the half waits
+        let out = mp3_convert(&mut m, &bytes[417..417 + 200], usize::MAX, false, false);
         assert_eq!(out.len(), 1152 * 2);
         assert!(out.chunks(2).all(|f| f == [sample(1, 0), sample(1, 1)]));
         // the rest, into a buffer of 1000 samples: the others come on later calls, in order
-        let mut got = mp3_convert(&mut m, &bytes[417 + 200..], 1000, false);
+        let mut got = mp3_convert(&mut m, &bytes[417 + 200..], 1000, false, true);
         assert_eq!(got.len(), 1000);
         loop {
-            let more = mp3_convert(&mut m, &[], 1000, false);
+            let more = mp3_convert(&mut m, &[], 1000, false, false);
             if more.is_empty() {
                 break;
             }
@@ -756,8 +809,8 @@ mod mp3_tests {
         let want: Vec<i16> = (2..=4).flat_map(|k| (0..1152).flat_map(move |_| [sample(k, 0), sample(k, 1)])).collect();
         assert_eq!(got, want);
         // START: what was waiting goes; the stream begins again
-        mp3_convert(&mut m, &bytes[..417 + 9], 10, false);
-        let out = mp3_convert(&mut m, &frame(9, false), usize::MAX, true);
+        mp3_convert(&mut m, &bytes[..417 + 9], 10, false, false);
+        let out = mp3_convert(&mut m, &frame(9, false), usize::MAX, true, true);
         assert_eq!(out.len(), 1152 * 2);
         assert_eq!(&out[..2], [sample(9, 0), sample(9, 1)]);
         stop.store(true, Ordering::Relaxed);
@@ -771,23 +824,99 @@ mod mp3_tests {
         let mut m = stream(1);
         // no page running: the wait ends, nothing out, nothing lost later
         let t = std::time::Instant::now();
-        assert!(mp3_convert(&mut m, &frame(3, true), usize::MAX, false).is_empty());
+        assert!(mp3_convert(&mut m, &frame(3, true), usize::MAX, false, true).is_empty());
         assert!(t.elapsed() >= MP3_WAIT);
         kura::adec::test_page_pass(&mut |b, ch| vec![b[4] as f32 / 256.0; 1152 * ch as usize]);
-        let out = mp3_convert(&mut m, &[], usize::MAX, false);
+        let out = mp3_convert(&mut m, &[], usize::MAX, false, false);
         assert_eq!(out.len(), 1152);
         assert_eq!(out[0], sample(3, 0));
     }
 
     #[test]
+    fn decoder_delay_comes_as_silence() {
+        let _g = crate::ADEC_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        kura::adec::test_page_pass(&mut |_, _| Vec::new());
+        let stop = Arc::new(AtomicBool::new(false));
+        // a decoder that drops its first 529 samples (as FFmpeg's)
+        let first = Arc::new(AtomicBool::new(true));
+        let f2 = first.clone();
+        let st = stop.clone();
+        let p = std::thread::spawn(move || {
+            while !st.load(Ordering::Relaxed) {
+                kura::adec::test_page_pass(&mut |b, ch| {
+                    let n = if f2.swap(false, Ordering::Relaxed) { 1152 - 529 } else { 1152 };
+                    vec![b[4] as f32 / 256.0; n * ch as usize]
+                });
+                std::thread::sleep(std::time::Duration::from_micros(200));
+            }
+        });
+        let mut m = stream(1);
+        let bytes: Vec<u8> = (1..=3).flat_map(|k| frame(k, true)).collect();
+        // each frame gives 1152 once the next header is here, the first led by 529 zeros
+        let a = mp3_convert(&mut m, &bytes[..417 + 4], usize::MAX, true, false);
+        assert_eq!(a.len(), 1152);
+        assert!(a[..529].iter().all(|&v| v == 0));
+        assert!(a[529..].iter().all(|&v| v == sample(1, 0)));
+        let b = mp3_convert(&mut m, &bytes[417 + 4..], usize::MAX, false, true);
+        assert_eq!(b.len(), 2 * 1152);
+        assert_eq!(b[0], sample(2, 0));
+        assert_eq!(b[1152], sample(3, 0));
+        stop.store(true, Ordering::Relaxed);
+        p.join().unwrap();
+    }
+
+    #[test]
+    fn decoder_a_chunk_late_has_no_gaps() {
+        let _g = crate::ADEC_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        kura::adec::test_page_pass(&mut |_, _| Vec::new());
+        let stop = Arc::new(AtomicBool::new(false));
+        let st = stop.clone();
+        // a decoder that answers each chunk with the one before's samples (nothing for the first)
+        let p = std::thread::spawn(move || {
+            let mut last: Option<u8> = None;
+            while !st.load(Ordering::Relaxed) {
+                kura::adec::test_page_pass(&mut |b, ch| {
+                    let out = last.map(|k| vec![k as f32 / 256.0; 1152 * ch as usize]).unwrap_or_default();
+                    last = Some(b[4]);
+                    out
+                });
+                std::thread::sleep(std::time::Duration::from_micros(200));
+            }
+        });
+        let mut m = stream(1);
+        let bytes: Vec<u8> = (1..=6).flat_map(|k| frame(k, true)).collect();
+        let mut got = Vec::new();
+        for (k, piece) in bytes.chunks(300).enumerate() {
+            got.extend(mp3_convert(&mut m, piece, usize::MAX, k == 0, false));
+        }
+        // a frame of silence, then frames 1.. each whole and in order
+        assert!(got.len() >= 4 * 1152, "{}", got.len());
+        assert!(got[..1152].iter().all(|&v| v == 0));
+        for (i, f) in got[1152..].chunks(1152).enumerate() {
+            assert!(f.iter().all(|&v| v == sample(i as u8 + 1, 0)), "frame {i}");
+        }
+        stop.store(true, Ordering::Relaxed);
+        p.join().unwrap();
+    }
+
+    #[test]
     fn sizes_as_l3codecp() {
-        // 128 kbps 44.1 kHz stereo: 16000 bytes/s, 417 per frame; 16-bit stereo out: 4608 per frame
-        let s = Fmt { tag: MP3, channels: 2, rate: 44100, avg: 16000, align: 1, bits: 0, spb: 1, bad: false };
-        let d = Fmt { tag: PCM, channels: 2, rate: 44100, avg: 176400, align: 4, bits: 16, spb: 1, bad: false };
-        assert_eq!(mp3_size(&s, &d, 417, false), 3000 + 4608);
-        assert_eq!(mp3_size(&s, &d, 4170, false), 3000 + 10 * 4608);
-        assert_eq!(mp3_size(&s, &d, 416, false), 0);
-        assert_eq!(mp3_size(&s, &d, 3000 + 2 * 4608, true), 2 * 417);
-        assert_eq!(mp3_size(&s, &d, 100, true), 0);
+        // winref acmmp3 on Windows: 64 kbps 44.1 kHz stereo, nBlockSize 208, 16-bit stereo out
+        let mut s = Fmt { tag: MP3, channels: 2, rate: 44100, avg: 8000, align: 1, bits: 0, spb: 1, block: 208, bad: false };
+        let d = Fmt { tag: PCM, channels: 2, rate: 44100, avg: 176400, align: 4, bits: 16, spb: 1, block: 0, bad: false };
+        for (n, want) in [(1, 4608), (208, 4608), (209, 9216), (4096, 92160), (100000, 2216448), (1000, 23040), (4388, 101376)] {
+            assert_eq!(mp3_size(&s, &d, n, false), want, "{n}");
+        }
+        for (n, want) in [(1, 0), (4608, 208), (7608, 208), (20000, 832)] {
+            assert_eq!(mp3_size(&s, &d, n, true), want, "{n}");
+        }
+        // 22.05 kHz mono 32 kbps, nBlockSize 104: 576-sample frames
+        let m = Fmt { tag: MP3, channels: 1, rate: 22050, avg: 4000, align: 1, bits: 0, spb: 1, block: 104, bad: false };
+        let md = Fmt { tag: PCM, channels: 1, rate: 22050, avg: 44100, align: 2, bits: 16, spb: 1, block: 0, bad: false };
+        assert_eq!(mp3_size(&m, &md, 4096, false), 46080);
+        // no nBlockSize: a frame at the average byte rate (8000 * 1152 / 44100 = 208)
+        s.block = 0;
+        assert_eq!(mp3_size(&s, &d, 209, false), 9216);
+        assert_eq!(mp3_size(&s, &d, 4608, true), 208);
     }
 }

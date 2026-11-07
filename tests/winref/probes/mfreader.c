@@ -64,6 +64,7 @@ static void read_all(const char *name, IMFSourceReader *r, int ch, int bits, int
     BYTE *all = malloc(16 << 20);
     DWORD total = 0, n = 0, flags = 0, idx = 0;
     LONGLONG first = -1, last = 0, t;
+    DWORD first_len = 0;
     for (;;) {
         IMFSample *s = NULL;
         HRESULT hr = IMFSourceReader_ReadSample(r, FIRST_AUDIO, 0, &idx, &flags, &t, &s);
@@ -82,6 +83,7 @@ static void read_all(const char *name, IMFSourceReader *r, int ch, int bits, int
             DWORD len;
             IMFMediaBuffer_Lock(b, &p, NULL, &len);
             if (total + len <= (16u << 20)) memcpy(all + total, p, len);
+            if (!n) first_len = len;
             total += len;
             IMFMediaBuffer_Unlock(b);
             IMFMediaBuffer_Release(b);
@@ -91,6 +93,8 @@ static void read_all(const char *name, IMFSourceReader *r, int ch, int bits, int
     }
     int frames = total / (ch * bits / 8);
     printf("  %s: first at %ld ms, %ld frames of %lu, last sample before %ld ms\n", name, (long)(first / 10000), lround((double)frames / per), per, lround((last + 1) / 1e4 / 50) * 50);
+    /* (how the sound comes in samples: their count, the first one's length in frames of the codec) */
+    printf("  %s: %lu samples, the first %ld frames of %lu\n", name, n, lround((double)first_len / (ch * bits / 8) / per), per);
     shape(name, all, total, ch, bits, fl, rate);
     free(all);
 }
@@ -170,7 +174,7 @@ static void open_one(const char *name, IMFSourceReader *r, DWORD per) {
 }
 
 /* An IMFByteStream over bytes in memory (as games wrap their archives) */
-typedef struct { IMFByteStream b; LONG refs; const BYTE *d; QWORD len, pos; } Mem;
+typedef struct { IMFByteStream b; LONG refs; const BYTE *d; QWORD len, pos; ULONG got; } Mem;
 static HRESULT WINAPI m_qi(IMFByteStream *t, REFIID iid, void **o) {
     if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IMFByteStream)) { *o = t; IMFByteStream_AddRef(t); return S_OK; }
     *o = NULL;
@@ -193,19 +197,17 @@ static HRESULT WINAPI m_read(IMFByteStream *t, BYTE *b, ULONG n, ULONG *got) {
     return S_OK;
 }
 static HRESULT WINAPI m_bread(IMFByteStream *t, BYTE *b, ULONG n, IMFAsyncCallback *cb, IUnknown *st) {
-    /* (Windows' sources read asynchronously: done at once, the callback told) */
-    ULONG got;
-    m_read(t, b, n, &got);
+    /* (Windows' sources read asynchronously: done at once, the callback told; the count
+     * kept for EndRead, the result holding no object) */
+    m_read(t, b, n, &((Mem *)t)->got);
     IMFAsyncResult *r;
-    MFCreateAsyncResult((IUnknown *)(ULONG_PTR)got, cb, st, &r);
+    MFCreateAsyncResult(NULL, cb, st, &r);
     MFInvokeCallback(r);
     IMFAsyncResult_Release(r);
     return S_OK;
 }
 static HRESULT WINAPI m_eread(IMFByteStream *t, IMFAsyncResult *r, ULONG *got) {
-    IUnknown *o = NULL;
-    IMFAsyncResult_GetObject(r, &o);
-    *got = (ULONG)(ULONG_PTR)o;
+    *got = ((Mem *)t)->got;
     return S_OK;
 }
 static HRESULT WINAPI m_write(IMFByteStream *t, const BYTE *b, ULONG n, ULONG *w) { return E_NOTIMPL; }

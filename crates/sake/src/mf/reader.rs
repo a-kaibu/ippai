@@ -20,7 +20,6 @@ const MF_E_INVALIDSTREAMNUMBER: u32 = 0xc00d_36b3;
 const MF_E_NO_MORE_TYPES: u32 = 0xc00d_36b9;
 const MF_E_UNSUPPORTED_SERVICE: u32 = 0xc00d_36ba;
 const MF_E_NOTACCEPTING: u32 = 0xc00d_36b5;
-const FILE_NOT_FOUND: u32 = 0x8007_0002;
 
 const FIRST_AUDIO: u32 = 0xffff_fffd;
 const ALL_STREAMS: u32 = 0xffff_fffe;
@@ -130,6 +129,10 @@ pub fn native_type(t: &Track) -> Store {
             s.set(k_avg(), Val::U32(t.avg));
             s.set(k_align(), Val::U32(1));
             if *subtype == audiofile::AAC {
+                // (Windows' MP4 source: 16 bits and independent samples, so not "compressed" to
+                // IsCompressedFormat; its MP3 source gives neither: winref mfreader)
+                s.set(k_bits(), Val::U32(16));
+                s.set(k_independent(), Val::U32(1));
                 // HEAACWAVEINFO after its WAVEFORMATEX: payload type 0 (raw), profile 0xfe
                 // (not given), then the AudioSpecificConfig
                 let mut u = vec![0u8, 0, 0xfe, 0, 0, 0, 0, 0, 0, 0, 0, 0];
@@ -142,16 +145,21 @@ pub fn native_type(t: &Track) -> Store {
 }
 
 /// The current type for samples of `bits` (16-bit PCM, or 32-bit float).
+#[cfg(test)]
 pub fn pcm_type(t: &Track, bits: u32, float: bool) -> Store {
+    pcm_type_at(t.rate, t.channels, bits, float)
+}
+/// The same at a rate and channel count of its own (the reader's resampler's output).
+pub fn pcm_type_at(rate: u32, channels: u32, bits: u32, float: bool) -> Store {
     let mut s = Store::default();
-    let align = t.channels * bits / 8;
+    let align = channels * bits / 8;
     s.set(k_major(), Val::Guid(major_audio()));
     s.set(k_subtype(), Val::Guid(audio_format(if float { audiofile::FLOAT } else { audiofile::PCM })));
-    s.set(k_channels(), Val::U32(t.channels));
-    s.set(k_rate(), Val::U32(t.rate));
+    s.set(k_channels(), Val::U32(channels));
+    s.set(k_rate(), Val::U32(rate));
     s.set(k_bits(), Val::U32(bits));
     s.set(k_align(), Val::U32(align));
-    s.set(k_avg(), Val::U32(align * t.rate));
+    s.set(k_avg(), Val::U32(align * rate));
     s.set(k_independent(), Val::U32(1));
     s
 }
@@ -161,8 +169,78 @@ pub fn pcm_type(t: &Track, bits: u32, float: bool) -> Store {
 pub enum Out {
     /// the packets as they are (the current type is the native one)
     Native,
-    /// samples: 8/16/24/32-bit PCM or 32-bit float
-    Pcm { bits: u32, float: bool },
+    /// samples: 8/16/24/32-bit PCM or 32-bit float, at a rate and channel count (the
+    /// track's, or other ones: Windows' reader puts its resampler in, winref mfreader)
+    Pcm { bits: u32, float: bool, rate: u32, channels: u32 },
+}
+
+impl Out {
+    /// PCM at the track's own rate and channels
+    #[cfg(test)]
+    pub fn pcm(t: &Track, bits: u32, float: bool) -> Out {
+        Out::Pcm {
+            bits,
+            float,
+            rate: t.rate,
+            channels: t.channels,
+        }
+    }
+}
+
+/// A linear resampler and channel mixer kept across pieces (stereo to mono the mean, mono to
+/// stereo both the same).
+struct Resample {
+    from_ch: usize,
+    to_ch: usize,
+    step: f64,
+    /// where the next output falls, in input frames from the first of the next piece (-1: the
+    /// last of the one before, `prev`)
+    t: f64,
+    prev: Vec<f32>,
+}
+
+impl Resample {
+    fn new(from: (u32, u32), to: (u32, u32)) -> Resample {
+        Resample {
+            from_ch: from.1.max(1) as usize,
+            to_ch: to.1.max(1) as usize,
+            step: from.0 as f64 / to.0.max(1) as f64,
+            t: 0.0,
+            prev: Vec::new(),
+        }
+    }
+
+    fn run(&mut self, v: &[f32]) -> Vec<f32> {
+        let (fc, tc) = (self.from_ch, self.to_ch);
+        let mixed: Vec<f32> = match (fc, tc) {
+            (a, b) if a == b => v.to_vec(),
+            (_, 1) => v.chunks_exact(fc).map(|f| f.iter().sum::<f32>() / fc as f32).collect(),
+            (1, _) => v.iter().flat_map(|&x| std::iter::repeat_n(x, tc)).collect(),
+            _ => v.chunks_exact(fc).flat_map(|f| (0..tc).map(move |c| f[c.min(fc - 1)])).collect(),
+        };
+        if self.step == 1.0 {
+            return mixed;
+        }
+        let n = mixed.len() / tc;
+        let mut out = Vec::new();
+        let get = |prev: &[f32], i: i64, c: usize| if i < 0 { prev[c] } else { mixed[i as usize * tc + c] };
+        loop {
+            let i0 = self.t.floor() as i64;
+            if i0 + 1 >= n as i64 || i0 < 0 && self.prev.is_empty() {
+                break;
+            }
+            let f = (self.t - i0 as f64) as f32;
+            for c in 0..tc {
+                out.push(get(&self.prev, i0, c) * (1.0 - f) + get(&self.prev, i0 + 1, c) * f);
+            }
+            self.t += self.step;
+        }
+        if n > 0 {
+            self.t -= n as f64;
+            self.prev = mixed[(n - 1) * tc..].to_vec();
+        }
+        out
+    }
 }
 
 /// One stream of a reader, kept free of the guest: packets in order, decoded as needed.
@@ -177,6 +255,10 @@ pub struct Stream {
     /// decoded samples not handed out, interleaved; the frame the first of them is
     pending: VecDeque<f32>,
     at: u64,
+    /// frames of packet `next` already gone (a PCM seek lands inside a packet)
+    into: u64,
+    /// to another rate or channel count
+    rs: Option<Resample>,
     pub ended: bool,
 }
 
@@ -206,6 +288,8 @@ impl Stream {
             dec: None,
             pending: VecDeque::new(),
             at: 0,
+            into: 0,
+            rs: None,
             ended: false,
         }
     }
@@ -215,12 +299,24 @@ impl Stream {
     }
 
     pub fn duration(&self) -> u64 {
-        self.time(self.track.total_frames())
+        self.track.duration.unwrap_or_else(|| self.time(self.track.total_frames()))
     }
 
-    /// Goes to `t` (100 ns): from the packet it falls in.
+    /// Sets what reads hand out.
+    pub fn set_out(&mut self, out: Out) {
+        self.out = out;
+        self.rs = match out {
+            Out::Pcm { rate, channels, .. } if (rate, channels) != (self.track.rate, self.track.channels) => Some(Resample::new((self.track.rate, self.track.channels), (rate, channels))),
+            _ => None,
+        };
+    }
+
+    /// Goes to `t` (100 ns): from the packet it falls in; PCM to the frame, rounded up
+    /// (Windows' WAVE source: a seek to 250 ms reads from just past it, winref mfreader).
     pub fn seek(&mut self, t: u64) {
-        let want = (t as u128 * self.track.rate as u128 / 10_000_000) as u64;
+        let pcm = matches!(self.track.codec, Codec::Pcm { .. });
+        let exact = t as u128 * self.track.rate as u128;
+        let want = if pcm { exact.div_ceil(10_000_000) } else { exact / 10_000_000 } as u64;
         let mut f = 0u64;
         let mut k = 0;
         while k < self.track.frames.len() && f + self.track.frames[k] as u64 <= want {
@@ -229,8 +325,14 @@ impl Stream {
         }
         self.next = k;
         self.at = f;
+        self.into = 0;
+        if pcm && k < self.track.frames.len() {
+            self.into = want - f;
+            self.at = want;
+        }
         self.pending.clear();
         self.ended = false;
+        self.set_out(self.out);
         if let Some(d) = self.dec {
             kura::adec::reset(d);
         }
@@ -246,16 +348,23 @@ impl Stream {
                     self.ended = true;
                     return Ok(None);
                 };
-                let frames = t.frames[self.next] as u64;
-                let raw = &self.data[o as usize..(o + n as u64) as usize];
+                let all = t.frames[self.next] as u64;
+                let skip = self.into.min(all);
+                let frames = all - skip;
+                let per = if all > 0 { n as u64 / all } else { 0 };
+                let raw = &self.data[(o + skip * per) as usize..(o + n as u64) as usize];
                 let bytes = match (self.out, &t.codec) {
-                    (Out::Pcm { bits, float }, Codec::Pcm { bits: from, float: ffloat }) if (bits, float) != (*from as u32, *ffloat) => {
+                    (Out::Pcm { bits, float, .. }, Codec::Pcm { bits: from, float: ffloat }) if (bits, float) != (*from as u32, *ffloat) || self.rs.is_some() => {
                         let mut v = Vec::new();
                         decode_pcm(raw, *from, *ffloat, &mut v);
+                        if let Some(r) = &mut self.rs {
+                            v = r.run(&v);
+                        }
                         encode(&v, bits, float)
                     }
                     _ => raw.to_vec(),
                 };
+                self.into = 0;
                 let p = Piece {
                     time: self.time(self.at),
                     dur: self.time(self.at + frames) - self.time(self.at),
@@ -265,7 +374,7 @@ impl Stream {
                 self.at += frames;
                 Ok(Some(p))
             }
-            (Out::Pcm { bits, float }, Codec::Page { codec, desc, .. }) => {
+            (Out::Pcm { bits, float, .. }, Codec::Page { codec, desc, .. }) => {
                 let per = t.frames.first().copied().unwrap_or(1152).max(1) as usize;
                 if self.dec.is_none() {
                     self.dec = Some(kura::adec::open(codec, t.rate, t.channels, desc).ok_or(MF_E_INVALIDMEDIATYPE)?);
@@ -293,8 +402,11 @@ impl Stream {
                 }
                 let n = (per * ch).min(self.pending.len()) / ch * ch;
                 let n = if n == 0 { self.pending.len() } else { n };
-                let v: Vec<f32> = self.pending.drain(..n).collect();
+                let mut v: Vec<f32> = self.pending.drain(..n).collect();
                 let frames = (n / ch) as u64;
+                if let Some(r) = &mut self.rs {
+                    v = r.run(&v);
+                }
                 let p = Piece {
                     time: self.time(self.at),
                     dur: self.time(self.at + frames) - self.time(self.at),
@@ -338,17 +450,26 @@ pub fn out_for(t: &Track, want: &Store) -> Option<Out> {
         return None;
     }
     let sub = guid_of(want, &k_subtype())?;
-    if u32_of(want, &k_channels()).is_some_and(|c| c != t.channels) || u32_of(want, &k_rate()).is_some_and(|r| r != t.rate) {
+    // (PCM and float at another rate or 1 / 2 channels: through the resampler)
+    let channels = u32_of(want, &k_channels()).unwrap_or(t.channels);
+    let rate = u32_of(want, &k_rate()).unwrap_or(t.rate);
+    let same = channels == t.channels && rate == t.rate;
+    if !(1..=8).contains(&channels) || channels != t.channels && channels > 2 || !(1000..=384_000).contains(&rate) {
         return None;
     }
     let native = guid_of(&native_type(t), &k_subtype());
     match tag_of(&sub)? {
         audiofile::PCM => {
             let bits = u32_of(want, &k_bits()).unwrap_or(16);
-            matches!(bits, 8 | 16 | 24 | 32).then_some(Out::Pcm { bits, float: false })
+            matches!(bits, 8 | 16 | 24 | 32).then_some(Out::Pcm { bits, float: false, rate, channels })
         }
-        audiofile::FLOAT => matches!(u32_of(want, &k_bits()), None | Some(32)).then_some(Out::Pcm { bits: 32, float: true }),
-        _ if Some(sub) == native => Some(Out::Native),
+        audiofile::FLOAT => matches!(u32_of(want, &k_bits()), None | Some(32)).then_some(Out::Pcm {
+            bits: 32,
+            float: true,
+            rate,
+            channels,
+        }),
+        _ if Some(sub) == native && same => Some(Out::Native),
         _ => None,
     }
 }
@@ -409,8 +530,9 @@ fn mt_compressed(c: &mut Ctx) -> u32 {
         return E_POINTER;
     }
     let s = store_of(c.a(0)).unwrap_or_default();
-    let raw = guid_of(&s, &k_subtype()).and_then(|g| tag_of(&g)).is_some_and(|t| t == audiofile::PCM || t == audiofile::FLOAT);
-    w32(c.a(1), !raw as u32);
+    // (as Windows: compressed unless MF_MT_ALL_SAMPLES_INDEPENDENT is set, whatever the
+    // subtype; AAC's native type has it, MP3's not: winref mfreader)
+    w32(c.a(1), (u32_of(&s, &k_independent()).unwrap_or(0) == 0) as u32);
     0
 }
 /// IsEqual(IMFMediaType *, DWORD *flags): MF_MEDIATYPE_EQUAL_MAJOR_TYPES 1, FORMAT_TYPES 2,
@@ -1050,10 +1172,10 @@ fn sr_set_current(c: &mut Ctx) -> u32 {
     if matches!((out, &st.track.codec), (Out::Pcm { .. }, Codec::Page { .. })) && !kura::adec::available() {
         return MF_E_INVALIDMEDIATYPE;
     }
-    st.out = out;
+    st.set_out(out);
     let store = match out {
         Out::Native => native_type(&st.track),
-        Out::Pcm { bits, float } => pcm_type(&st.track, bits, float),
+        Out::Pcm { bits, float, rate, channels } => pcm_type_at(rate, channels, bits, float),
     };
     drop(st);
     let nt = new_type(store);
@@ -1203,8 +1325,10 @@ fn MFCreateSourceReaderFromURL(c: &mut Ctx) -> u32 {
     putp(out, 0);
     let w = String::from_utf16_lossy(&mem::wstr(url));
     let path = file_url_path(&w);
-    let Some(host) = crate::files::resolve(&path) else { return FILE_NOT_FOUND };
-    let Ok(data) = kura::fs::read(&host) else { return FILE_NOT_FOUND };
+    // (HRESULT_FROM_WIN32: ERROR_PATH_NOT_FOUND when the folder is missing too, winref mfreader)
+    let missing = || 0x8007_0000 | crate::files::missing(&path);
+    let Some(host) = crate::files::resolve(&path) else { return missing() };
+    let Ok(data) = kura::fs::read(&host) else { return missing() };
     new_reader(c, at, data, out)
 }
 
@@ -1303,6 +1427,7 @@ mod tests {
                 packets,
                 frames: fr,
                 avg: 48000 * ch * 2,
+                duration: None,
             },
             Arc::new(data),
         )
@@ -1312,7 +1437,7 @@ mod tests {
     fn pcm_in_order_with_times_and_seek() {
         let (t, d) = pcm_track(10000, 2);
         let mut s = Stream::new(t.clone(), d.clone());
-        s.out = Out::Pcm { bits: 16, float: false };
+        s.set_out(Out::pcm(&s.track.clone(), 16, false));
         let mut all = Vec::new();
         let mut times = Vec::new();
         while let Some(p) = s.read().unwrap() {
@@ -1323,12 +1448,19 @@ mod tests {
         assert_eq!(all, *d);
         assert_eq!(times, [(0, 853_333), (853_333, 853_333), (1_706_666, 376_667)]);
         assert_eq!(s.duration(), 2_083_333);
-        // to 0.1 s: from the packet it is in
+        // to 0.1 s: PCM from that frame (rounded up: 1 / 48000 s past 0.1 s when it falls
+        // between frames), the packet's rest
         s.seek(1_000_000);
-        assert_eq!(s.read().unwrap().unwrap().time, 853_333);
+        let p = s.read().unwrap().unwrap();
+        assert_eq!((p.time, p.bytes.len()), (1_000_000, (8192 - 4800) * 4));
+        assert_eq!(&p.bytes[..], &d[4800 * 4..8192 * 4]);
+        s.seek(1_000_001);
+        assert_eq!(s.read().unwrap().unwrap().time, 4801 * 10_000_000 / 48000);
+        // then on as before
+        assert_eq!(s.read().unwrap().unwrap().time, 1_706_666);
         // floats out
         s.seek(0);
-        s.out = Out::Pcm { bits: 32, float: true };
+        s.set_out(Out::pcm(&s.track.clone(), 32, true));
         let p = s.read().unwrap().unwrap();
         assert_eq!(p.bytes.len(), 4096 * 2 * 4);
         assert_eq!(f32::from_le_bytes(p.bytes[4..8].try_into().unwrap()), 7.0 / 32768.0);
@@ -1359,9 +1491,10 @@ mod tests {
             packets: (0..20).map(|k| (k * 10, 10)).collect(),
             frames: vec![1152; 20],
             avg: 16000,
+            duration: None,
         };
         let mut s = Stream::new(t, Arc::new(data));
-        s.out = Out::Pcm { bits: 16, float: false };
+        s.set_out(Out::pcm(&s.track.clone(), 16, false));
         let mut n = 0;
         while let Some(p) = s.read().unwrap() {
             assert_eq!(p.bytes.len(), 1152 * 4);
@@ -1379,6 +1512,43 @@ mod tests {
     }
 
     #[test]
+    fn resampled_and_mixed() {
+        // 48 kHz stereo (sample i of the file 7 i) to 24 kHz mono: every other frame's mean;
+        // to 96 kHz: the frames between in a line; across pieces as in one
+        let (t, d) = pcm_track(10000, 2);
+        let mut s = Stream::new(t.clone(), d.clone());
+        s.set_out(Out::Pcm {
+            bits: 32,
+            float: true,
+            rate: 24000,
+            channels: 1,
+        });
+        let mut n = 0;
+        while let Some(p) = s.read().unwrap() {
+            if n == 0 {
+                for (j, x) in p.bytes.chunks(4).take(1000).enumerate() {
+                    let want = (8 * j + 1) as f32 * 3.5 / 32768.0;
+                    assert!((f32::from_le_bytes(x.try_into().unwrap()) - want).abs() < 1e-6, "{j}");
+                }
+            }
+            n += p.bytes.len() / 4;
+        }
+        assert!((4999..=5000).contains(&n), "{n}");
+        let mut r = Resample::new((48000, 1), (96000, 1));
+        let v: Vec<f32> = (0..100).map(|i| i as f32).collect();
+        let mut got = r.run(&v[..37]);
+        got.extend(r.run(&v[37..]));
+        // (the last input frame waits for the next piece: the line to it is not known yet)
+        let want: Vec<f32> = (0..198).map(|i| i as f32 / 2.0).collect();
+        assert_eq!(got, want);
+        let mut r = Resample::new((44100, 1), (8000, 1));
+        let v: Vec<f32> = (0..44100).map(|i| i as f32).collect();
+        let a = r.run(&v);
+        assert!((7999..=8000).contains(&a.len()));
+        assert!(a.windows(2).all(|w| (w[1] - w[0] - 44100.0 / 8000.0).abs() < 1e-2));
+    }
+
+    #[test]
     fn types() {
         let (t, _) = pcm_track(10, 2);
         let n = native_type(&t);
@@ -1386,11 +1556,35 @@ mod tests {
         let mut want = Store::default();
         want.set(k_major(), Val::Guid(major_audio()));
         want.set(k_subtype(), Val::Guid(audio_format(audiofile::FLOAT)));
-        assert_eq!(out_for(&t, &want), Some(Out::Pcm { bits: 32, float: true }));
+        assert_eq!(out_for(&t, &want), Some(Out::pcm(&t, 32, true)));
         want.set(k_subtype(), Val::Guid(audio_format(audiofile::PCM)));
-        assert_eq!(out_for(&t, &want), Some(Out::Pcm { bits: 16, float: false }));
+        assert_eq!(out_for(&t, &want), Some(Out::pcm(&t, 16, false)));
+        // another rate or channel count: resampled (as Windows' reader), within bounds
         want.set(k_rate(), Val::U32(44100));
-        assert_eq!(out_for(&t, &want), None, "no resampling");
+        assert_eq!(
+            out_for(&t, &want),
+            Some(Out::Pcm {
+                bits: 16,
+                float: false,
+                rate: 44100,
+                channels: 2
+            })
+        );
+        want.set(k_channels(), Val::U32(1));
+        assert_eq!(
+            out_for(&t, &want),
+            Some(Out::Pcm {
+                bits: 16,
+                float: false,
+                rate: 44100,
+                channels: 1
+            })
+        );
+        want.set(k_channels(), Val::U32(6));
+        assert_eq!(out_for(&t, &want), None);
+        want.delete(&k_channels());
+        want.set(k_rate(), Val::U32(10));
+        assert_eq!(out_for(&t, &want), None);
         want.delete(&k_rate());
         want.set(k_subtype(), Val::Guid(audio_format(audiofile::AAC)));
         assert_eq!(out_for(&t, &want), None);
@@ -1411,6 +1605,8 @@ mod tests {
             },
             ..t
         };
+        // (16 bits, independent: not compressed to IsCompressedFormat, as Windows has it)
+        assert_eq!((u32_of(&native_type(&aac), &k_bits()), u32_of(&native_type(&aac), &k_independent())), (Some(16), Some(1)));
         let w = wave_format(&native_type(&aac), false).unwrap();
         assert_eq!(&w[16..18], &14u16.to_le_bytes());
         assert_eq!(&w[w.len() - 2..], &[0x12, 0x10]);

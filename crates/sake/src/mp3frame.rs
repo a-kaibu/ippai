@@ -58,12 +58,24 @@ pub struct Splitter {
 }
 
 impl Splitter {
-    /// Adds `b`; whole frames out (each `Header` with its bytes). A frame whose end is here but
-    /// with fewer than 4 bytes after it is let out (the stream's last, likely), not held.
+    /// Adds `b`; whole frames out (each `Header` with its bytes). A frame is let out once the 4
+    /// bytes after it are here too (the next header, or "TAG"), as l3codecp does (winref
+    /// acmmp3: a 208-byte frame alone gives nothing until the next one's header comes); the
+    /// stream's last goes with `finish`.
     pub fn push(&mut self, b: &[u8], out: &mut Vec<(Header, Vec<u8>)>) {
         let skip = self.skip.min(b.len());
         self.skip -= skip;
         self.buf.extend_from_slice(&b[skip..]);
+        self.run(out, false);
+    }
+
+    /// The end of the stream: the whole frames still held out (what is left of a frame goes).
+    pub fn finish(&mut self, out: &mut Vec<(Header, Vec<u8>)>) {
+        self.run(out, true);
+        self.buf.clear();
+    }
+
+    fn run(&mut self, out: &mut Vec<(Header, Vec<u8>)>, end: bool) {
         let mut at = 0;
         loop {
             let rest = &self.buf[at..];
@@ -88,7 +100,7 @@ impl Splitter {
                 at += 1;
                 continue;
             };
-            if rest.len() < h.len {
+            if rest.len() < h.len || rest.len() < h.len + 4 && !end && !rest[h.len..].starts_with(b"TAG") {
                 break;
             }
             // (a header the next 4 bytes do not follow up is junk that looked like one)
@@ -187,9 +199,36 @@ mod tests {
         s.extend(&a);
         s.extend(&a);
         let mut out = Vec::new();
-        Splitter::default().push(&s, &mut out);
+        let mut sp = Splitter::default();
+        sp.push(&s, &mut out);
+        // (the last waits for what comes after it, or the end)
+        assert_eq!(out.len(), 1);
+        sp.finish(&mut out);
         assert_eq!(out.len(), 2);
         assert!(out.iter().all(|f| f.1 == a));
+    }
+
+    #[test]
+    fn frame_waits_for_the_next_header() {
+        // l3codecp (winref acmmp3): a frame whose bytes are all here but nothing after it
+        // gives nothing yet; the next header's 4 bytes let it out
+        let (a, b) = (frame(5, false, false, 1), frame(5, true, false, 2));
+        let mut sp = Splitter::default();
+        let mut out = Vec::new();
+        sp.push(&a, &mut out);
+        assert!(out.is_empty());
+        sp.push(&b[..3], &mut out);
+        assert!(out.is_empty());
+        sp.push(&b[3..4], &mut out);
+        assert_eq!(out.len(), 1);
+        sp.push(&b[4..], &mut out);
+        assert_eq!(out.len(), 1);
+        sp.finish(&mut out);
+        assert_eq!(out.into_iter().map(|f| f.1).collect::<Vec<_>>(), [a, b]);
+        // after finish, a new stream's frames come as before
+        let mut out = Vec::new();
+        sp.finish(&mut out);
+        assert!(out.is_empty());
     }
 
     proptest! {
@@ -219,6 +258,7 @@ mod tests {
                 sp.push(&s[last..c], &mut out);
                 last = c;
             }
+            sp.finish(&mut out);
             let got: Vec<Vec<u8>> = out.into_iter().map(|f| f.1).collect();
             prop_assert_eq!(got, frames);
         }
@@ -231,6 +271,7 @@ mod tests {
             let mut out = Vec::new();
             sp.push(&b[..cut], &mut out);
             sp.push(&b[cut..], &mut out);
+            sp.finish(&mut out);
             for (h, f) in out {
                 prop_assert_eq!(header(&f), Some(h));
                 prop_assert_eq!(f.len(), h.len);

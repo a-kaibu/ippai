@@ -30,6 +30,10 @@ pub struct Track {
     pub frames: Vec<u32>,
     /// the file's bit rate, bytes a second (MF_MT_AUDIO_AVG_BYTES_PER_SECOND of the native type)
     pub avg: u32,
+    /// the container's own length (100 ns) where it gives one: MP4's movie duration, which
+    /// Windows' MP4 source has as MF_PD_DURATION (winref mfreader: 500 ms for a track whose
+    /// samples, AAC's 1024 of priming among them, last 523 ms)
+    pub duration: Option<u64>,
 }
 
 impl Track {
@@ -117,6 +121,7 @@ fn wave(b: &[u8]) -> Option<Track> {
                         packets,
                         frames,
                         avg,
+                        duration: None,
                     })
                 }
                 (MP3, _) => mp3(b, body, end),
@@ -135,6 +140,7 @@ fn mp3(b: &[u8], from: usize, to: usize) -> Option<Track> {
     let mut sp = crate::mp3frame::Splitter::default();
     let mut out = Vec::new();
     sp.push(&b[from..to], &mut out);
+    sp.finish(&mut out);
     let first = out.first()?.0;
     // (every frame's offset: the splitter hands out bytes, found again in order)
     let (mut packets, mut frames) = (Vec::new(), Vec::new());
@@ -167,6 +173,7 @@ fn mp3(b: &[u8], from: usize, to: usize) -> Option<Track> {
         packets,
         frames,
         avg,
+        duration: None,
     })
 }
 
@@ -217,9 +224,22 @@ fn mp4(b: &[u8]) -> Option<Track> {
         let timescale = if b[mds] == 1 { u32be(b, mds + 20)? } else { u32be(b, mds + 12)? };
         let (ns, ne) = child(b, ds, de, b"minf")?;
         let (ss, se) = child(b, ns, ne, b"stbl")?;
-        return sound_track(b, ss, se, timescale);
+        let mut t = sound_track(b, ss, se, timescale)?;
+        t.duration = movie_duration(b, ms, me);
+        return Some(t);
     }
     None
+}
+
+/// mvhd's duration (100 ns): none when it gives none (0, all ones, no timescale)
+fn movie_duration(b: &[u8], ms: usize, me: usize) -> Option<u64> {
+    let (o, _) = child(b, ms, me, b"mvhd")?;
+    let (scale, d) = if *b.get(o)? == 1 {
+        (u32be(b, o + 20)?, (u32be(b, o + 24)? as u64) << 32 | u32be(b, o + 28)? as u64)
+    } else {
+        (u32be(b, o + 12)?, u32be(b, o + 16)? as u64)
+    };
+    (scale != 0 && d != 0 && d != u32::MAX as u64 && d != u64::MAX).then(|| (d as u128 * 10_000_000 / scale as u128) as u64)
 }
 
 /// The descriptor at `o` in an esds: (tag, body start, body end); sizes are 7 bits a byte.
@@ -383,6 +403,7 @@ fn sound_track(b: &[u8], ss: usize, se: usize, timescale: u32) -> Option<Track> 
         packets,
         frames,
         avg,
+        duration: None,
     })
 }
 
@@ -537,6 +558,16 @@ mod tests {
         let t = open(&f).unwrap();
         assert_eq!((t.rate, t.channels), (22050, 1));
         assert!(matches!(t.codec, Codec::Page { ref codec, .. } if codec == "mp4a.40.5"));
+        // no movie duration (mvhd all zeros): none; one: it, as Windows' MP4 source has it
+        assert_eq!(t.duration, None);
+        let (mut f, _) = m4a(&sizes, 2, 44100, &[0x12, 0x10], false);
+        let at = f.windows(4).position(|w| w == b"mvhd").unwrap() + 4;
+        f[at + 12..at + 20].copy_from_slice(&[0, 0, 3, 0xe8, 0, 0, 1, 0xf4]);
+        assert_eq!(open(&f).unwrap().duration, Some(5_000_000));
+        // version 1: 64-bit times
+        f[at] = 1;
+        f[at + 20..at + 32].copy_from_slice(&[0, 0, 0x03, 0xe8, 0, 0, 0, 0, 0, 0, 0x01, 0xf4]);
+        assert_eq!(open(&f).unwrap().duration, Some(5_000_000));
     }
 
     proptest! {
