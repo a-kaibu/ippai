@@ -85,13 +85,12 @@ fn is_field_mask(i: &Instruction) -> bool {
 /// The registration loop: from a `shr r64, 28` on, an `and r32, 0xffffff` (the id) and a
 /// `cmp r32, 0xff000000` (the continuation mark) within the function.
 fn is_anchor(ins: &[Instruction]) -> bool {
+    // (up to the function's end: a ret or padding)
+    let body = || ins[1..].iter().take(70).take_while(|i| !matches!(i.mnemonic(), Mnemonic::Ret | Mnemonic::Int3));
     is_shift(&ins[0])
         && ins[0].mnemonic() == Mnemonic::Shr
-        && ins[1..]
-            .iter()
-            .take(70)
-            .any(|i| i.mnemonic() == Mnemonic::And && i.op0_kind() == OpKind::Register && imm(i) == Some(0xff_ffff))
-        && ins[1..].iter().take(70).any(|i| i.mnemonic() == Mnemonic::Cmp && imm(i).is_some_and(|v| v as u32 == 0xff00_0000))
+        && body().any(|i| i.mnemonic() == Mnemonic::And && i.op0_kind() == OpKind::Register && imm(i) == Some(0xff_ffff))
+        && body().any(|i| i.mnemonic() == Mnemonic::Cmp && imm(i).is_some_and(|v| v as u32 == 0xff00_0000))
 }
 
 /// Finds the registration function: candidates by their bytes (REX.W C1 /5 1C), each checked
@@ -261,6 +260,8 @@ pub mod samples {
     // 2022.3.22f1: the region's size passed in a register (0x18035771c), a request clamped to it
     // (0x1803615a3)
     pub const CTOR22: &str = "41b8000000100fb6442460b800000010483bd0480f47d0c3";
+    // 2022.3.22f1 0x180357b6e: a round-up by add (6000.x rounds with lea)
+    pub const ADD22: &str = "4881c1ffffff0f4803f9498bc94881e7000000f0c3";
     // 6000.5.4f1 0x18172170f: a 4 + 28 bit field next to the allocator code (not buckets)
     pub const FIELD: &str = "81e2ffffff0f49c1ea1c8910418bd2488b810002000081e2ffffff0f49c1ea1c8910c3";
     // a flag test with the same constant
@@ -400,6 +401,66 @@ mod tests {
         // the clamp alone (no size handed on) is not enough
         let clamp_only = "b800000010483bd0480f47d0c3";
         assert!(plan(&module(&[REG, LOOKUP, RESERVE, clamp_only], ROUND, 0), IP).is_none());
+    }
+
+    #[test]
+    fn round_up_by_add() {
+        let (edits, f) = plan(&module(&[REG, LOOKUP, RESERVE, CTOR], ADD22, 0), IP).expect("recognized");
+        assert_eq!((f.rounds, f.masks), (1, 2));
+        let after = listing(&apply(&module(&[REG, LOOKUP, RESERVE, CTOR], ADD22, 0), &edits));
+        assert!(after.contains(&"add rcx,0x3ffffff".to_string()), "{after:?}");
+        // a 32-bit add of the constant, or one to memory, is no round-up of a pointer
+        for other in ["81c1ffffff0fc3", "4881410cffffff0fc3"] {
+            assert!(plan(&module(&[REG, LOOKUP, RESERVE, CTOR], other, 0), IP).is_none(), "{other}");
+        }
+    }
+
+    #[test]
+    fn anchor_is_the_registration_loop() {
+        // shifts by 28 before it that lack the id mask or the continuation mark (or have them in
+        // another form) are not the anchor
+        let decoys = [
+            FIELD,
+            "48c1e81c25ffffff00c3",             // shr rax,28; and eax,0xffffff (no cmp)
+            "48c1e81c3d000000ffc3",             // shr rax,28; cmp eax,0xff000000 (no and)
+            "48c1e81c8120ffffff003d000000ffc3", // and dword [rax],0xffffff; cmp
+            "48c1e81c25feffff003d000000ffc3",   // and eax,0xfffffe; cmp
+            "48c1e01c25ffffff003d000000ffc3",   // shl, not shr
+        ];
+        for d in decoys {
+            let code = module(&[d, REG, LOOKUP, RESERVE, CTOR], ROUND, 0);
+            let (_, f) = plan(&code, IP).expect(d);
+            assert_eq!(f.anchor, IP + 16 + (hex(d).len() + 16) as u64 + 0x15, "{d}");
+        }
+    }
+
+    #[test]
+    fn sync_points_and_addresses() {
+        let code = [0x90, 0xcc, 0xcc, 0x90, 0x90, 0x90];
+        assert_eq!(sync_point(&code, 5), 3);
+        assert_eq!(sync_point(&code, 3), 3);
+        assert_eq!(sync_point(&code, 2), 0);
+        assert_eq!(sync_point(&[0x90; 8], 7), 0);
+        assert_eq!(sync_point(&[0xcc, 0x90, 0xcc, 0x90], 4), 0);
+        let ins = decode(&code, IP, 3, 6);
+        assert_eq!(ins.iter().map(|i| i.ip()).collect::<Vec<_>>(), [IP + 3, IP + 4, IP + 5]);
+        // far into a section: decoding starts after the padding before the window, and the
+        // edits land where they belong
+        let mut big = vec![0x90; 0x2_0000];
+        big[0x100] = 0xcc;
+        big[0x101] = 0xcc;
+        // (a movabs whose immediate would swallow the padding, were decoding to start at 0)
+        big[0xfe] = 0x48;
+        big[0xff] = 0xb8;
+        let body = module(&[REG, LOOKUP, FIELD, RESERVE, FLAG, CTOR], ROUND, 0);
+        big.extend(&body);
+        let (edits, f) = plan(&big, IP).expect("recognized");
+        let (near, _) = plan(&body, IP + 0x2_0000).unwrap();
+        assert_eq!(f.anchor, IP + 0x2_0000 + 16 + 0x15);
+        assert_eq!(
+            edits.iter().map(|e| (e.at - 0x2_0000, e.bytes.clone())).collect::<Vec<_>>(),
+            near.iter().map(|e| (e.at, e.bytes.clone())).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -595,8 +656,15 @@ mod tests {
                 let code = &img[text.0..text.1];
                 let ip = base + text.0 as u64;
                 let a = anchor(code, ip).unwrap();
-                // (the last function start before the anchor)
-                let register = sync_point(code, a) as u64 + ip;
+                // (the last function start before the anchor: after padding or a ret, as 6000.4
+                // has one int3 only before it)
+                let from = sync_point(code, a);
+                let register = decode(code, ip, from, a)
+                    .windows(2)
+                    .filter(|w| matches!(w[0].mnemonic(), Mnemonic::Ret | Mnemonic::Int3) && w[1].mnemonic() != Mnemonic::Int3)
+                    .map(|w| w[1].ip())
+                    .last()
+                    .unwrap_or(from as u64 + ip);
                 let lookup = function_starting(code, ip, a, |i| i.mnemonic() == Mnemonic::And && i.op0_register() == Register::RDX && imm(i) == Some(!0x0fff_ffffu64));
                 let entry = function_starting(code, ip, a, |i| is_shift(i) && i.mnemonic() == Mnemonic::Shr && i.op0_register() == Register::R8);
                 // the registration's calls: allocate, clear, free (an inner table that lost a race)
