@@ -124,12 +124,40 @@ pub struct Dc {
     pub paint: Option<Rect>,
     pub s: DcState,
     pub saved: Vec<DcState>,
+    /// which window DC it is (GetDCEx)
+    pub dce: Dce,
+    /// the region GetDCEx was given (the DC owns it: deleted with the next one, or when a
+    /// cache DC is released)
+    pub rgn: Option<u32>,
+    /// DCX_INTERSECTRGN's region: its box, screen coordinates
+    pub vis: Option<Rect>,
+    /// a released cache DC, or one of a destroyed window: it answers nothing
+    pub disabled: bool,
+}
+
+/// The kinds of window DC (user32's DCEs): a cache DC is lent by GetDC and reset by ReleaseDC;
+/// CS_OWNDC windows keep their own, CS_CLASSDC classes share one
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Dce {
+    #[default]
+    None,
+    Cache { busy: bool, noreset: bool },
+    Own,
+    Class(usize),
+}
+
+#[derive(Default)]
+struct DceTable {
+    own: HashMap<u32, u32>,
+    class: HashMap<usize, u32>,
+    cache: Vec<u32>,
 }
 
 struct Objs {
     m: HashMap<u32, G>,
     next: u32,
     solid: HashMap<u32, u32>,
+    dce: DceTable,
 }
 
 static OBJS: Mutex<Option<Objs>> = Mutex::new(None);
@@ -140,16 +168,18 @@ fn objs() -> MutexGuard<'static, Option<Objs>> {
 
 fn with<R>(f: impl FnOnce(&mut Objs) -> R) -> R {
     let mut g = objs();
-    f(g.get_or_insert_with(|| Objs { m: HashMap::default(), next: 0x0a00_0100, solid: HashMap::default() }))
+    f(g.get_or_insert_with(|| Objs { m: HashMap::default(), next: 0x0a00_0100, solid: HashMap::default(), dce: DceTable::default() }))
 }
 
 fn add(o: G) -> u32 {
-    with(|t| {
-        let h = t.next;
-        t.next += 4;
-        t.m.insert(h, o);
-        h
-    })
+    with(|t| add_in(t, o))
+}
+
+fn add_in(t: &mut Objs, o: G) -> u32 {
+    let h = t.next;
+    t.next += 4;
+    t.m.insert(h, o);
+    h
 }
 
 /// Stock objects: GetStockObject(i) is STOCK + 4*i.
@@ -537,7 +567,15 @@ impl Canvas {
 // DCs
 
 fn new_dc(kind: Kind, paint: Option<Rect>) -> u32 {
-    let s = DcState {
+    add(dc_obj(kind, paint, Dce::None))
+}
+
+fn dc_obj(kind: Kind, paint: Option<Rect>, dce: Dce) -> G {
+    G::Dc(Box::new(Dc { kind, paint, s: fresh_state(), saved: Vec::new(), dce, rgn: None, vis: None, disabled: false }))
+}
+
+fn fresh_state() -> DcState {
+    DcState {
         bitmap: DEFAULT_BITMAP,
         brush: STOCK,
         pen: STOCK + 4 * 7,
@@ -559,29 +597,200 @@ fn new_dc(kind: Kind, paint: Option<Rect>) -> u32 {
         char_extra: 0,
         dc_brush: 0xffffff,
         dc_pen: 0,
-    };
-    add(G::Dc(Box::new(Dc { kind, paint, s, saved: Vec::new() })))
-}
-
-pub fn window_dc(hwnd: u32, paint: Option<Rect>) -> u32 {
-    let paint = paint.filter(|r| !r.empty());
-    new_dc(Kind::Window(hwnd), paint)
+    }
 }
 
 pub fn screen_dc() -> u32 {
     new_dc(Kind::Screen, None)
 }
 
-pub fn release_dc(dc: u32) {
+pub const DCX_CACHE: u32 = 2;
+pub const DCX_NORESETATTRS: u32 = 4;
+pub const DCX_EXCLUDERGN: u32 = 0x40;
+pub const DCX_INTERSECTRGN: u32 = 0x80;
+
+fn drop_region(t: &mut Objs, r: Option<u32>) {
+    if let Some(r) = r.filter(|r| matches!(t.m.get(r), Some(G::Region(_)))) {
+        t.m.remove(&r);
+    }
+}
+
+/// GetDCEx(hwnd, region, flags). `win`: the window's class style and class (None: no such
+/// window); hwnd 0 is the screen. As Windows (Wine's user32 dce tests): an own or class DC
+/// keeps its state and region across GetDC/ReleaseDC; a class DC moving to another window
+/// forgets (without deleting) its region; a region given replaces (deletes) the previous one.
+pub fn get_dce(hwnd: u32, win: Option<(u32, usize)>, rgn: u32, flags: u32) -> u32 {
+    let (style, class) = match (hwnd, win) {
+        (0, _) => (0, 0),
+        (_, Some(x)) => x,
+        _ => return 0,
+    };
+    let kind = if hwnd == 0 { Kind::Screen } else { Kind::Window(hwnd) };
+    let rgn_box = if rgn != 0 && flags & DCX_INTERSECTRGN != 0 { region(rgn).map(|r| bound(&r)) } else { None };
     with(|t| {
-        if matches!(t.m.get(&dc), Some(G::Dc(d)) if d.kind != Kind::Mem) {
-            t.m.remove(&dc);
+        let want = if hwnd == 0 || flags & DCX_CACHE != 0 || style & 0x60 == 0 {
+            Dce::Cache { busy: false, noreset: false }
+        } else if style & 0x20 != 0 {
+            Dce::Own
+        } else {
+            Dce::Class(class)
+        };
+        let dc = match want {
+            Dce::Own => match t.dce.own.get(&hwnd) {
+                Some(&d) => d,
+                None => {
+                    let d = add_in(t, dc_obj(kind, None, Dce::Own));
+                    t.dce.own.insert(hwnd, d);
+                    d
+                }
+            },
+            Dce::Class(k) => match t.dce.class.get(&k) {
+                Some(&d) => d,
+                None => {
+                    let d = add_in(t, dc_obj(kind, None, Dce::Class(k)));
+                    t.dce.class.insert(k, d);
+                    d
+                }
+            },
+            _ => {
+                let free = t.dce.cache.iter().copied().find(|d| matches!(t.m.get(d), Some(G::Dc(x)) if x.dce == Dce::Cache { busy: false, noreset: false }));
+                match free {
+                    Some(d) => d,
+                    None => {
+                        let d = add_in(t, dc_obj(kind, None, want));
+                        t.dce.cache.push(d);
+                        d
+                    }
+                }
+            }
+        };
+        let mut old = None;
+        if let Some(G::Dc(d)) = t.m.get_mut(&dc) {
+            if let Dce::Cache { .. } = d.dce {
+                d.dce = Dce::Cache { busy: true, noreset: flags & DCX_NORESETATTRS != 0 };
+                (d.rgn, d.vis, d.paint) = (None, None, None);
+            }
+            if d.kind != kind {
+                d.kind = kind;
+                (d.rgn, d.vis, d.paint) = (None, None, None);
+            }
+            d.disabled = false;
+            if flags & (DCX_EXCLUDERGN | DCX_INTERSECTRGN) != 0 {
+                old = d.rgn.filter(|&o| o != rgn);
+                d.rgn = (rgn != 0).then_some(rgn);
+                d.vis = rgn_box;
+            }
         }
-    });
+        drop_region(t, old);
+        dc
+    })
+}
+
+/// Puts a cache DC back: reset (unless DCX_NORESETATTRS) and disabled, its region deleted
+fn release_in(t: &mut Objs, dc: u32) -> u32 {
+    let Some(G::Dc(d)) = t.m.get_mut(&dc) else { return 0 };
+    if d.disabled {
+        return 0;
+    }
+    match d.dce {
+        Dce::Cache { busy: true, noreset } => {
+            let r = d.rgn.take();
+            (d.vis, d.paint, d.disabled) = (None, None, true);
+            d.dce = Dce::Cache { busy: false, noreset: false };
+            if !noreset {
+                d.s = fresh_state();
+                d.saved.clear();
+            }
+            drop_region(t, r);
+            1
+        }
+        Dce::Own | Dce::Class(_) => (d.kind != Kind::Window(0)) as u32,
+        _ => 0,
+    }
+}
+
+/// ReleaseDC(hwnd, dc) (the window is not checked, as on Windows)
+pub fn release_dce(dc: u32) -> u32 {
+    with(|t| release_in(t, dc))
+}
+
+/// BeginPaint's update rectangle on the DC it returns
+pub fn set_paint(dc: u32, r: Option<Rect>) {
+    with_dc(dc, |d| d.paint = r.filter(|r| !r.empty()));
+}
+
+/// EndPaint: a cache DC goes back, an own or class one loses the update rectangle
+pub fn end_paint(dc: u32) {
+    with(|t| {
+        if matches!(t.m.get(&dc), Some(G::Dc(d)) if matches!(d.dce, Dce::Cache { .. })) {
+            release_in(t, dc);
+        } else if let Some(G::Dc(d)) = t.m.get_mut(&dc) {
+            d.paint = None;
+        }
+    })
+}
+
+/// A window resized: its DCs' visible region is the whole client area again
+pub fn window_resized(h: u32) {
+    with(|t| {
+        for g in t.m.values_mut() {
+            if let G::Dc(d) = g {
+                if d.kind == Kind::Window(h) && d.dce != Dce::None {
+                    d.paint = None;
+                }
+            }
+        }
+    })
+}
+
+/// A window destroyed: its cache DCs go back, its own DC is deleted, a class DC on it is left
+/// on no window (it keeps its state; ReleaseDC fails)
+pub fn window_destroyed(h: u32) {
+    with(|t| {
+        if let Some(d) = t.dce.own.remove(&h) {
+            if let Some(G::Dc(x)) = t.m.remove(&d) {
+                drop_region(t, x.rgn);
+            }
+        }
+        let dcs: Vec<u32> = t.m.iter().filter(|(_, g)| matches!(g, G::Dc(d) if d.kind == Kind::Window(h) && d.dce != Dce::None)).map(|(&k, _)| k).collect();
+        for dc in dcs {
+            let class = matches!(t.m.get(&dc), Some(G::Dc(d)) if matches!(d.dce, Dce::Class(_)));
+            if class {
+                if let Some(G::Dc(d)) = t.m.get_mut(&dc) {
+                    d.kind = Kind::Window(0);
+                    (d.paint, d.vis) = (None, None);
+                }
+            } else {
+                release_in(t, dc);
+            }
+        }
+    })
+}
+
+/// The logical-to-device offset of a window's own or class DC ((0, 0) without one)
+pub fn own_dc_origin(h: u32) -> (i32, i32) {
+    with(|t| {
+        let dc = t.dce.own.get(&h).copied().or_else(|| t.m.iter().find(|(_, g)| matches!(g, G::Dc(d) if matches!(d.dce, Dce::Class(_)) && d.kind == Kind::Window(h))).map(|(&k, _)| k));
+        match dc.and_then(|d| t.m.get(&d)) {
+            Some(G::Dc(d)) => (d.s.vp.0 - d.s.win.0, d.s.vp.1 - d.s.win.1),
+            _ => (0, 0),
+        }
+    })
+}
+
+/// A region's bounding box (None: not a region)
+pub fn region_bounds(h: u32) -> Option<Rect> {
+    region(h).map(|r| bound(&r))
+}
+
+/// Makes a region one rectangle
+pub fn set_region_rect(h: u32, r: Rect) {
+    set_region(h, if r.empty() { vec![] } else { vec![r] });
 }
 
 pub fn dc_window(dc: u32) -> u32 {
     with(|t| match t.m.get(&dc) {
+        Some(G::Dc(d)) if d.disabled => 0,
         Some(G::Dc(d)) => match d.kind {
             Kind::Window(h) => h,
             _ => 0,
@@ -592,14 +801,14 @@ pub fn dc_window(dc: u32) -> u32 {
 
 fn dc_state(dc: u32) -> Option<DcState> {
     with(|t| match t.m.get(&dc) {
-        Some(G::Dc(d)) => Some(d.s),
+        Some(G::Dc(d)) if !d.disabled => Some(d.s),
         _ => None,
     })
 }
 
 fn with_dc<R>(dc: u32, f: impl FnOnce(&mut Dc) -> R) -> Option<R> {
     with(|t| match t.m.get_mut(&dc) {
-        Some(G::Dc(d)) => Some(f(d)),
+        Some(G::Dc(d)) if !d.disabled => Some(f(d)),
         _ => None,
     })
 }
@@ -623,6 +832,11 @@ fn target_of(t: &Objs, d: &Dc) -> Tgt {
                 if let Some(p) = d.paint {
                     clip = clip.and(&p.off(tg.x, tg.y));
                 }
+                if let Some(v) = d.vis {
+                    if let Some(cs) = user::client_rect_screen(h) {
+                        clip = clip.and(&v.off(tg.x - cs.l, tg.y - cs.t));
+                    }
+                }
                 Tgt::Win { surf: tg.surface, top: tg.top, x: tg.x, y: tg.y, clip }
             }
             None => Tgt::None,
@@ -645,7 +859,7 @@ fn draw(dc: u32, f: impl FnOnce(&Objs, &DcState, &mut Canvas) -> Rect) -> bool {
     {
         let mut g = objs();
         let Some(t) = g.as_mut() else { return false };
-        let Some(G::Dc(d)) = t.m.get(&dc) else { return false };
+        let Some(G::Dc(d)) = t.m.get(&dc).filter(|g| !matches!(g, G::Dc(d) if d.disabled)) else { return false };
         let s = d.s;
         let tg = target_of(t, d);
         let org = (s.vp.0 - s.win.0, s.vp.1 - s.win.1);
@@ -2347,6 +2561,9 @@ fn RestoreDC(c: &mut Ctx) -> u32 {
 }
 
 fn GetDeviceCaps(c: &mut Ctx) -> u32 {
+    if with(|t| matches!(t.m.get(&c.a(0)), Some(G::Dc(d)) if d.disabled)) {
+        return 0;
+    }
     let (w, h) = user::screen();
     let bpp = with(|t| {
         let Some(G::Dc(d)) = t.m.get(&c.a(0)) else { return 32 };
@@ -3618,7 +3835,7 @@ fn OffsetClipRgn(c: &mut Ctx) -> u32 {
 fn GetClipBox(c: &mut Ctx) -> u32 {
     let (dc, p) = (c.a(0), c.a(1));
     let r = with(|t| {
-        let Some(G::Dc(d)) = t.m.get(&dc) else { return None };
+        let Some(G::Dc(d)) = t.m.get(&dc).filter(|g| !matches!(g, G::Dc(d) if d.disabled)) else { return None };
         let org = (d.s.vp.0 - d.s.win.0, d.s.vp.1 - d.s.win.1);
         let full = match target_of(t, d) {
             Tgt::Bmp(v) => v.bounds(),

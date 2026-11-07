@@ -341,7 +341,7 @@ user32:class	crash	84	0
 user32:clipboard	fail	699	54692
 user32:combo	crash	173	0
 user32:cursoricon	timeout	779	0
-user32:dce	fail	72	205
+user32:dce	ok	0	204
 user32:dde	timeout	2	0
 user32:dialog	crash	61	0
 user32:edit	crash	131487	0

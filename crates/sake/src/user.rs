@@ -69,6 +69,27 @@ impl Rect {
     pub fn has(&self, x: i32, y: i32) -> bool {
         x >= self.l && x < self.r && y >= self.t && y < self.b
     }
+    /// The bounding box of what is left of self once o is taken away
+    pub fn minus(&self, o: &Rect) -> Rect {
+        let mut r = *self;
+        if r.empty() || o.l <= r.l && o.t <= r.t && o.r >= r.r && o.b >= r.b {
+            return Rect::default();
+        }
+        if o.l <= r.l && o.r >= r.r {
+            if o.t <= r.t && o.b > r.t {
+                r.t = o.b;
+            } else if o.b >= r.b && o.t < r.b {
+                r.b = o.t;
+            }
+        } else if o.t <= r.t && o.b >= r.b {
+            if o.l <= r.l && o.r > r.l {
+                r.l = o.r;
+            } else if o.r >= r.r && o.l < r.r {
+                r.r = o.l;
+            }
+        }
+        r
+    }
 }
 
 pub struct Surface {
@@ -452,7 +473,22 @@ pub fn target(h: u32) -> Option<Target> {
         let (top, x, y) = toplevel_offset(s, h)?;
         let surface = s.wins.get(&top)?.surface.clone()?;
         let w = s.wins.get(&h)?;
-        let clip = Rect { l: 0, t: 0, r: w.client.w(), b: w.client.h() }.off(x, y);
+        let mut clip = Rect { l: 0, t: 0, r: w.client.w(), b: w.client.h() }.off(x, y);
+        // a CS_PARENTDC child draws anywhere in its parent's client area
+        let child = w.parent != 0 && w.parent != DESKTOP;
+        if child && s.classes[w.class].style & 0x80 != 0 {
+            let (_, px, py) = toplevel_offset(s, w.parent)?;
+            let p = s.wins.get(&w.parent)?;
+            clip = Rect { l: 0, t: 0, r: p.client.w(), b: p.client.h() }.off(px, py);
+        }
+        // clipped by the client areas of the windows it is in
+        let mut p = w.parent;
+        while p != 0 && p != DESKTOP {
+            let (_, px, py) = toplevel_offset(s, p)?;
+            let pw = s.wins.get(&p)?;
+            clip = clip.and(&Rect { l: 0, t: 0, r: pw.client.w(), b: pw.client.h() }.off(px, py));
+            p = pw.parent;
+        }
         Some(Target { surface, top, x, y, clip })
     })
 }
@@ -1528,6 +1564,7 @@ fn destroy(c: &mut Ctx, h: u32) -> bool {
             s.capture = 0;
         }
     });
+    crate::gdi::window_destroyed(h);
     true
 }
 fn DestroyWindow(c: &mut Ctx) -> u32 {
@@ -1775,6 +1812,9 @@ fn set_pos(c: &mut Ctx, h: u32, after: u32, x: i32, y: i32, cx: i32, cy: i32, fl
         c.cpu.regs[koji::ESP] = save;
         return 0;
     };
+    if resized {
+        crate::gdi::window_resized(h);
+    }
     let changed = resized || moved || shown || flags & 0x24 != 0x4;
     if changed {
         if resized || flags & 0x20 != 0 {
@@ -3323,24 +3363,45 @@ fn InvalidateRect(c: &mut Ctx) -> u32 {
     1
 }
 fn InvalidateRgn(c: &mut Ctx) -> u32 {
-    invalidate(c.a(0), None, c.a(2) != 0);
+    let r = (c.a(1) != 0).then(|| crate::gdi::region_bounds(c.a(1))).flatten();
+    invalidate(c.a(0), r, c.a(2) != 0);
     1
 }
-fn ValidateRect(c: &mut Ctx) -> u32 {
+/// Takes `r` (None: all) out of the update region (its bounding box)
+fn validate(h: u32, r: Option<Rect>) {
     with(|s| {
-        if let Some(w) = s.wins.get_mut(&c.a(0)) {
-            w.update = Rect::default();
+        if let Some(w) = s.wins.get_mut(&h) {
+            w.update = r.map_or(Rect::default(), |r| w.update.minus(&r));
+            if w.update.empty() {
+                w.erase = false;
+            }
         }
     });
+}
+fn ValidateRect(c: &mut Ctx) -> u32 {
+    validate(c.a(0), (c.a(1) != 0).then(|| Rect::read(c.a(1))));
     1
 }
 fn ValidateRgn(c: &mut Ctx) -> u32 {
-    ValidateRect(c)
+    validate(c.a(0), (c.a(1) != 0).then(|| crate::gdi::region_bounds(c.a(1))).flatten());
+    1
 }
+/// RedrawWindow(h, rect, region, flags): RDW_INVALIDATE 1, RDW_ERASE 4, RDW_VALIDATE 8,
+/// RDW_NOERASE 0x20, RDW_UPDATENOW 0x100
 fn RedrawWindow(c: &mut Ctx) -> u32 {
-    let (h, r, flags) = (c.a(0), c.a(1), c.a(3));
+    let (h, r, rgn, flags) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    let area = if r != 0 { Some(Rect::read(r)) } else if rgn != 0 { crate::gdi::region_bounds(rgn) } else { None };
     if flags & 1 != 0 {
-        invalidate(h, (r != 0).then(|| Rect::read(r)), flags & 4 != 0);
+        invalidate(h, area, flags & 4 != 0);
+    } else if flags & 8 != 0 {
+        validate(h, area);
+    }
+    if flags & 0x20 != 0 {
+        with(|s| {
+            if let Some(w) = s.wins.get_mut(&h) {
+                w.erase = false;
+            }
+        });
     }
     if flags & 0x100 != 0 {
         let dirty = with(|s| s.wins.get(&h).is_some_and(|w| !w.update.empty()));
@@ -3369,7 +3430,12 @@ fn BeginPaint(c: &mut Ctx) -> u32 {
         w.erase = false;
         (u, e)
     });
-    let dc = crate::gdi::window_dc(h, Some(upd));
+    // (a CS_PARENTDC child paints with its parent's visible region)
+    let info = dc_info(h);
+    let dc = crate::gdi::get_dce(h, info, 0, DCX_USESTYLE);
+    if !is_parent_dc(h) {
+        crate::gdi::set_paint(dc, Some(upd));
+    }
     if erase {
         send(c, h, 0x14, dc, 0);
     }
@@ -3390,34 +3456,80 @@ fn BeginPaint(c: &mut Ctx) -> u32 {
 }
 fn EndPaint(c: &mut Ctx) -> u32 {
     let ps = c.a(1);
-    crate::gdi::release_dc(r32(ps));
+    crate::gdi::end_paint(mem::rp(ps));
     1
+}
+const DCX_USESTYLE: u32 = 0x1_0000;
+
+/// A window's class style and class (for its DCs)
+pub fn dc_info(h: u32) -> Option<(u32, usize)> {
+    with(|s| s.wins.get(&h).map(|w| (s.classes[w.class].style, w.class)))
+}
+
+fn is_parent_dc(h: u32) -> bool {
+    with(|s| s.wins.get(&h).is_some_and(|w| w.parent != 0 && w.parent != DESKTOP && s.classes[w.class].style & 0x80 != 0))
+}
+
+fn get_dc_ex(h: u32, rgn: u32, flags: u32) -> u32 {
+    if h == 0 || h == DESKTOP {
+        return crate::gdi::get_dce(0, None, rgn, flags | crate::gdi::DCX_CACHE);
+    }
+    crate::gdi::get_dce(h, dc_info(h), rgn, flags)
 }
 fn GetDC(c: &mut Ctx) -> u32 {
-    let h = c.a(0);
-    if h == 0 || h == DESKTOP {
-        return crate::gdi::screen_dc();
-    }
-    crate::gdi::window_dc(h, None)
+    get_dc_ex(c.a(0), 0, DCX_USESTYLE)
 }
 fn GetDCEx(c: &mut Ctx) -> u32 {
-    GetDC(c)
+    get_dc_ex(c.a(0), c.a(1), c.a(2))
 }
 fn GetWindowDC(c: &mut Ctx) -> u32 {
-    GetDC(c)
+    get_dc_ex(c.a(0), 0, DCX_USESTYLE)
 }
 fn ReleaseDC(c: &mut Ctx) -> u32 {
-    crate::gdi::release_dc(c.a(1));
-    1
+    crate::gdi::release_dce(c.a(1))
 }
 fn WindowFromDC(c: &mut Ctx) -> u32 {
     crate::gdi::dc_window(c.a(0))
 }
-fn ScrollWindow(_: &mut Ctx) -> u32 {
+/// What a scroll leaves to paint: the scrolled area (client coordinates) inside the clip
+/// rectangle. The pixels are not moved: the whole area is painted again (the program draws its
+/// content where it now is), a superset of the strip Windows asks for.
+fn scrolled_area(h: u32, scroll: u32, clip: u32, org: (i32, i32)) -> Rect {
+    let client = with(|s| s.wins.get(&h).map(|w| Rect { l: 0, t: 0, r: w.client.w(), b: w.client.h() })).unwrap_or_default();
+    let mut a = client;
+    if scroll != 0 {
+        a = a.and(&Rect::read(scroll).off(org.0, org.1));
+    }
+    if clip != 0 {
+        a = a.and(&Rect::read(clip).off(org.0, org.1));
+    }
+    a
+}
+/// ScrollWindow(h, dx, dy, scroll, clip): the rectangles are in the logical coordinates of the
+/// window's own DC (CS_OWNDC / CS_CLASSDC), which it scrolls with
+fn ScrollWindow(c: &mut Ctx) -> u32 {
+    let h = c.a(0);
+    let a = scrolled_area(h, c.a(3), c.a(4), crate::gdi::own_dc_origin(h));
+    invalidate(h, Some(a), true);
     1
 }
-fn ScrollWindowEx(_: &mut Ctx) -> u32 {
-    1
+/// ScrollWindowEx(h, dx, dy, scroll, clip, update rgn, update rect, flags): SW_INVALIDATE 2,
+/// SW_ERASE 4; client coordinates
+fn ScrollWindowEx(c: &mut Ctx) -> u32 {
+    let h = c.a(0);
+    if !is_window(h) {
+        return 0;
+    }
+    let a = scrolled_area(h, c.a(3), c.a(4), (0, 0));
+    let flags = c.a(7);
+    if c.a(5) != 0 {
+        crate::gdi::set_region_rect(c.a(5), a);
+    }
+    a.write(c.a(6));
+    if flags & 2 != 0 {
+        invalidate(h, Some(a), flags & 4 != 0);
+    }
+    if a.empty() { 1 } else { 2 }
 }
 fn LockWindowUpdate(_: &mut Ctx) -> u32 {
     1
@@ -6065,6 +6177,34 @@ mod tests {
 
     fn u(s: &str) -> Vec<u16> {
         s.encode_utf16().collect()
+    }
+
+    fn rect() -> impl Strategy<Value = Rect> {
+        (-20i32..20, -20i32..20, 0i32..30, 0i32..30).prop_map(|(l, t, w, h)| Rect { l, t, r: l + w, b: t + h })
+    }
+
+    proptest! {
+        /// What validating leaves: inside the old update area, and every point not validated
+        /// is still in it
+        #[test]
+        fn minus_keeps_what_is_left(a in rect(), o in rect(), x in -25i32..55, y in -25i32..55) {
+            let m = a.minus(&o);
+            if !m.empty() {
+                prop_assert_eq!(m.and(&a), m);
+            }
+            if a.has(x, y) && !o.has(x, y) {
+                prop_assert!(m.has(x, y));
+            }
+        }
+    }
+
+    #[test]
+    fn minus_trims_edges() {
+        let a = Rect { l: 0, t: 0, r: 100, b: 100 };
+        assert!(a.minus(&Rect { l: -5, t: -5, r: 200, b: 200 }).empty());
+        assert_eq!(a.minus(&Rect { l: 0, t: 0, r: 100, b: 30 }), Rect { l: 0, t: 30, r: 100, b: 100 });
+        assert_eq!(a.minus(&Rect { l: 60, t: -1, r: 101, b: 101 }), Rect { l: 0, t: 0, r: 60, b: 100 });
+        assert_eq!(a.minus(&Rect { l: 10, t: 10, r: 20, b: 20 }), a);
     }
 
     #[test]
