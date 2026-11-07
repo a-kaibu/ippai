@@ -20,6 +20,8 @@ pub mod winfmt;
 mod trace_tests;
 #[cfg(test)]
 mod map_tests;
+#[cfg(test)]
+mod bind_tests;
 
 use crate::d3d9::gpu;
 use crate::d3d9::HostCalls;
