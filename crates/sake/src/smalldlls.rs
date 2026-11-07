@@ -4,7 +4,8 @@
 //! dhcpcsvc (no DHCP adapter), tbs (no TPM), ncrypt (the software key storage provider opens;
 //! keys are not supported), dxva2 (the Direct3D 9 device manager, monitor configuration; no video
 //! services), ksuser (no kernel-streaming devices), msdmo (an in-process DMO registry and the
-//! media type helpers), hhctrl (no HTML Help).
+//! media type helpers), hhctrl (no HTML Help), ETW providers (advapi32 / ntdll Event*: they
+//! register, nothing consumes their events).
 //!
 //! Behaviour follows Wine's conformance tests (dlls/<dll>/tests, Windows' answers), and the pure
 //! parts are tested below with their tables.
@@ -25,6 +26,7 @@ const E_NOINTERFACE: u32 = 0x8000_4002;
 const E_HANDLE: u32 = 0x8007_0006;
 const E_OUTOFMEMORY: u32 = 0x8007_000e;
 const S_FALSE: u32 = 1;
+const ERROR_INVALID_PARAMETER: u32 = 87;
 
 fn guid(p: u32) -> [u8; 16] {
     let mut g = [0u8; 16];
@@ -1489,7 +1491,60 @@ fn WICConvertBitmapSource(c: &mut Ctx) -> u32 {
     0
 }
 
+/// The registered ETW providers (REGHANDLEs, 64-bit on x86 too)
+static ETW: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+static ETW_NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// A 64-bit argument that starts at x86 stack slot `slot` (x64: argument `arg`)
+fn arg64(c: &Ctx, slot: u32, arg: u32) -> u64 {
+    if mem::x64() { c.a64(arg) } else { c.a(slot) as u64 | (c.a(slot + 1) as u64) << 32 }
+}
+
+/// EventRegister(guid, callback, context, &handle)
+fn etw_register(c: &mut Ctx) -> u32 {
+    if c.a(0) == 0 || c.a(3) == 0 {
+        return ERROR_INVALID_PARAMETER;
+    }
+    let h = ETW_NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    ETW.lock().unwrap().push(h);
+    mem::w64(c.a(3), h);
+    0
+}
+/// EventUnregister(handle)
+fn etw_unregister(c: &mut Ctx) -> u32 {
+    let h = arg64(c, 0, 0);
+    let mut g = ETW.lock().unwrap();
+    match g.iter().position(|&x| x == h) {
+        Some(i) => {
+            g.remove(i);
+            0
+        }
+        None => 6, // ERROR_INVALID_HANDLE
+    }
+}
+/// EventWriteString(handle, level, keyword, text)
+fn etw_write_string(c: &mut Ctx) -> u32 {
+    let (h, text) = (arg64(c, 0, 0), if mem::x64() { c.a(3) } else { c.a(5) });
+    if h == 0 {
+        return 6;
+    }
+    if text == 0 {
+        return ERROR_INVALID_PARAMETER;
+    }
+    0
+}
+
 pub fn init() {
+    for d in ["advapi32", "ntdll"] {
+        let n = |s: &str| if d == "ntdll" { format!("Etw{s}") } else { s.to_string() };
+        implement(d, &n("EventRegister"), etw_register);
+        implement(d, &n("EventUnregister"), etw_unregister);
+        implement(d, &n("EventWriteString"), etw_write_string);
+        // nobody listens: written events go nowhere, no provider is enabled
+        for f in ["EventWrite", "EventWriteEx", "EventWriteTransfer", "EventSetInformation", "EventActivityIdControl", "EventEnabled", "EventProviderEnabled"] {
+            implement(d, &n(f), |_| 0);
+        }
+    }
     // dnsapi
     implement("dnsapi", "DnsValidateName_W", |c| if c.a(0) == 0 { ERROR_INVALID_NAME } else { validate_name(&wstr(c.a(0)), c.a(1)) });
     for n in ["DnsValidateName_A", "DnsValidateName_UTF8", "DnsValidateName"] {
