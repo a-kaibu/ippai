@@ -191,6 +191,37 @@ class Compare(unittest.TestCase):
             self.assertEqual(shots.compare(a, b)['ok'], shots.compare(b, a)['ok'])
 
 
+class Blank(unittest.TestCase):
+    def test_one_colour(self):
+        r = random.Random(13)
+        for col in ((0, 0, 0), (255, 255, 255), (30, 60, 90)):
+            p = (320, 240, bytes(col) * (320 * 240))
+            self.assertTrue(shots.blank(*p), col)
+            self.assertTrue(shots.blank(*shots.half(*p)), col)
+            # dithering or a faint gradient is still one colour
+            noisy = (320, 240, bytes(max(0, min(255, v + r.randrange(-4, 5))) for v in p[2]))
+            self.assertTrue(shots.blank(*noisy), col)
+
+    def test_anything_drawn(self):
+        r = random.Random(14)
+        for _ in range(5):
+            self.assertFalse(shots.blank(*rand_pic(r, 320, 240, True)))
+        white = (640, 480, b'\xff' * (640 * 480 * 3))
+        # a white page with three lines of text (lumpofsugar's notice), a logo on black
+        text = white
+        for y in (60, 80, 100): text = paint(text, 40, y, 600, y + 8, (0, 0, 0))
+        self.assertFalse(shots.blank(*text))
+        self.assertFalse(shots.blank(*paint((640, 480, bytes(640 * 480 * 3)), 280, 200, 360, 280, (200, 120, 0))))
+
+    def test_goldens_that_are_blank(self):
+        # (the answers in the repository: Windows' black fades after the steps, and nothing else)
+        g = os.path.join(HERE, 'golden')
+        if not os.path.isdir(g): self.skipTest('no goldens')
+        found = sorted(f'{t}/{s}' for t in os.listdir(g) for s in ('title', 'steps')
+                       if os.path.exists(f'{g}/{t}/{s}.png') and shots.blank(*shots.read(f'{g}/{t}/{s}.png')))
+        for f in found: self.assertTrue(f.endswith('/steps'), f)
+
+
 def _double(p):
     w, h, rgb = p
     out = bytearray()

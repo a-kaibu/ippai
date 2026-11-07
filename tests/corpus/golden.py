@@ -81,11 +81,19 @@ def look(tid, out, golden=GOLDEN):
     res = {'level': 'none', 'why': ''}
     for s in SHOTS:
         if s not in gr['shots']: break
+        gp = os.path.join(g, s + '.png')
+        want = shots.read(gp) if os.path.exists(gp) else None
+        if want and shots.blank(*want):
+            # (Windows showed one colour there, a fade: every dark screen of sake would match)
+            res['why'] = f"{s}: Windows' shot is one colour, not compared"
+            break
         p = os.path.join(out, tid, s + '.png')
-        if not os.path.exists(p):
+        if want is None:
+            res[s] = {'ok': False, 'why': 'no shot of Windows'}
+        elif not os.path.exists(p):
             res[s] = {'ok': False, 'why': 'no shot on sake'}
         else:
-            try: res[s] = shots.compare(shots.read(os.path.join(g, s + '.png')), shots.read(p))
+            try: res[s] = shots.compare(want, shots.read(p))
             except ValueError as e: res[s] = {'ok': False, 'why': str(e)}
         if not res[s]['ok']:
             res['why'] = f"{s}: {res[s]['why']}"

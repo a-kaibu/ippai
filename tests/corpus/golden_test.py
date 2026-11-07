@@ -98,6 +98,19 @@ class Golden(unittest.TestCase):
         self.assertIsNone(golden.look('b', self.out, self.g))
         self.assertIsNone(golden.look('nope', self.out, self.g))
 
+    def test_blank_answer_not_compared(self):
+        # Windows' steps shot is a black fade: sake's black (or anything) says nothing, the level
+        # stops at the title
+        put(self.win, 'f', dict(OK), {'title': TITLE, 'steps': BLACK})
+        golden.import_runs(self.win, self.g)
+        for steps in (BLACK, STEPS):
+            put(self.out, 'f', OK, {'title': TITLE, 'steps': steps})
+            r = golden.look('f', self.out, self.g)
+            self.assertEqual(r['level'], 'title')
+            self.assertIn('one colour', r['why'])
+        put(self.out, 'f', OK, {'title': BLACK, 'steps': BLACK})
+        self.assertEqual(golden.look('f', self.out, self.g)['level'], 'none')
+
     def test_cache_stands_in_for_pngs(self):
         put(self.out, 'a', OK, {'title': TITLE, 'steps': STEPS})
         first = golden.look('a', self.out, self.g)

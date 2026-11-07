@@ -13,6 +13,7 @@ and a cell differs when its average colour is more than CELL_TOL away in any cha
 match when the size (aspect) agrees, the mean difference over all cells is below MEAN_TOL and
 at most BAD_MAX of the cells differ. Animation, a blinking cursor or a different text speed
 moves a few cells; a missing layer, wrong colours, a black screen or another screen move many.
+A golden that is one colour all over (blank) is not compared: anything dark would match it.
 """
 import struct, sys, zlib
 
@@ -20,6 +21,7 @@ CELLS_X, CELLS_Y = 32, 24
 CELL_TOL = 24
 MEAN_TOL = 6.0
 BAD_MAX = 0.04
+BLANK_TOL = CELL_TOL / 4
 
 
 def _chunks(b):
@@ -138,6 +140,14 @@ def cells(w, h, rgb, nx=CELLS_X, ny=CELLS_Y):
                 n[cx] += (x1 - x0 + step - 1) // step
         out.append([tuple(v / n[cx] for v in acc[cx]) for cx in range(nx)])
     return out
+
+
+def blank(w, h, rgb):
+    """one colour all over (a black fade, a white page): no cell's average more than BLANK_TOL
+    away from the picture's. Such a shot of Windows says nothing about how sake draws"""
+    c = [x for row in cells(w, h, rgb) for x in row]
+    m = [sum(x[i] for x in c) / len(c) for i in range(3)]
+    return all(abs(x[i] - m[i]) <= BLANK_TOL for x in c for i in range(3))
 
 
 def compare(want, got):
