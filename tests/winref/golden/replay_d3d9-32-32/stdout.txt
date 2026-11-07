@@ -1,36 +1,6 @@
-hr 3 IDirect3DDevice9::CreateOffscreenPlainSurface 0x8876086c want 0
-hr 186 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-no object IDirect3DSurface9::LockRect
-no object IDirect3DSurface9::UnlockRect
-hr 245 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 248 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-no object IDirect3DTexture9::LockRect
-memcpy into no lock (object 8 key 0)
-no object IDirect3DTexture9::UnlockRect
-hr 307 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 371 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 443 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-no object IDirect3DTexture9::Release
-hr 452 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 459 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 466 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 473 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 480 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 487 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 494 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 501 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 508 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 515 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 522 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 529 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 536 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 543 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 592 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 601 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 609 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 617 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 625 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 633 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 641 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 649 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 657 IDirect3DDevice9::CreateTexture 0x8876086c want 0
+image r186 64 64 2
+image r245 64 64 2
+image r307 64 64 2
+image r371 64 64 2
+image r443 64 64 2
+image r592 64 64 2

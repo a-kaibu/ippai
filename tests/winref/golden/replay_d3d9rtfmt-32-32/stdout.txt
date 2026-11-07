@@ -1,126 +1,90 @@
-hr 3 IDirect3DDevice9::CreateOffscreenPlainSurface 0x8876086c want 0
-hr 10 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-no object IDirect3DTexture9::GetSurfaceLevel
-hr 12 IDirect3DDevice9::SetRenderTarget 0x8876086c want 0
-hr 34 IDirect3DDevice9::CreateOffscreenPlainSurface 0x8876086c want 0
-hr 35 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-no object IDirect3DSurface9::LockRect
-no object IDirect3DSurface9::UnlockRect
-no object IDirect3DSurface9::Release
-hr 49 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 52 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 55 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 58 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 69 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 72 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 75 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 78 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-no object IDirect3DTexture9::Release
-hr 88 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 90 IDirect3DDevice9::SetRenderTarget 0x8876086c want 0
-hr 112 IDirect3DDevice9::CreateOffscreenPlainSurface 0x8876086c want 0
-hr 113 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 127 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 130 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 133 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 136 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 147 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 150 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 153 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 156 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 166 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 168 IDirect3DDevice9::SetRenderTarget 0x8876086c want 0
-hr 190 IDirect3DDevice9::CreateOffscreenPlainSurface 0x8876086c want 0
-hr 191 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 205 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 208 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 211 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 214 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 225 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 228 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 231 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 234 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 244 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 246 IDirect3DDevice9::SetRenderTarget 0x8876086c want 0
-hr 268 IDirect3DDevice9::CreateOffscreenPlainSurface 0x8876086c want 0
-hr 269 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 283 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 286 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 289 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 292 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 303 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 306 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 309 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 312 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 322 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 324 IDirect3DDevice9::SetRenderTarget 0x8876086c want 0
-hr 346 IDirect3DDevice9::CreateOffscreenPlainSurface 0x8876086c want 0
-hr 347 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 361 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 364 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 367 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 370 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 381 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 384 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 387 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 390 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 400 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 402 IDirect3DDevice9::SetRenderTarget 0x8876086c want 0
-hr 424 IDirect3DDevice9::CreateOffscreenPlainSurface 0x8876086c want 0
-hr 425 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 439 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 442 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 445 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 448 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 459 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 462 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 465 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 468 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 478 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 480 IDirect3DDevice9::SetRenderTarget 0x8876086c want 0
-hr 502 IDirect3DDevice9::CreateOffscreenPlainSurface 0x8876086c want 0
-hr 503 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 517 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 520 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 523 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 526 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 537 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 540 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 543 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 546 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 556 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 558 IDirect3DDevice9::SetRenderTarget 0x8876086c want 0
-hr 580 IDirect3DDevice9::CreateOffscreenPlainSurface 0x8876086c want 0
-hr 581 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 595 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 598 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 601 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 604 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 615 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 618 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 621 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 624 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 634 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 636 IDirect3DDevice9::SetRenderTarget 0x8876086c want 0
-hr 658 IDirect3DDevice9::CreateOffscreenPlainSurface 0x8876086c want 0
-hr 659 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 673 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 676 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 679 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 682 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 693 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 696 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 699 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 702 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 712 IDirect3DDevice9::CreateTexture 0x8876086c want 0
-hr 714 IDirect3DDevice9::SetRenderTarget 0x8876086c want 0
-hr 736 IDirect3DDevice9::CreateOffscreenPlainSurface 0x8876086c want 0
-hr 737 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 751 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 754 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 757 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 760 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 771 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 774 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 777 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
-hr 780 IDirect3DDevice9::GetRenderTargetData 0x8876086c want 0
+image r35 8 8 2
+image r49 8 8 2
+image r52 8 8 2
+image r55 8 8 2
+image r58 8 8 2
+image r69 8 8 2
+image r72 8 8 2
+image r75 8 8 2
+image r78 8 8 2
+image r113 8 8 2
+image r127 8 8 2
+image r130 8 8 2
+image r133 8 8 2
+image r136 8 8 2
+image r147 8 8 2
+image r150 8 8 2
+image r153 8 8 2
+image r156 8 8 2
+image r191 8 8 2
+image r205 8 8 2
+image r208 8 8 2
+image r211 8 8 2
+image r214 8 8 2
+image r225 8 8 2
+image r228 8 8 2
+image r231 8 8 2
+image r234 8 8 2
+image r269 8 8 2
+image r283 8 8 2
+image r286 8 8 2
+image r289 8 8 2
+image r292 8 8 2
+image r303 8 8 2
+image r306 8 8 2
+image r309 8 8 2
+image r312 8 8 2
+image r347 8 8 2
+image r361 8 8 2
+image r364 8 8 2
+image r367 8 8 2
+image r370 8 8 2
+image r381 8 8 2
+image r384 8 8 2
+image r387 8 8 2
+image r390 8 8 2
+image r425: format 26
+image r439 8 8 2
+image r442 8 8 2
+image r445 8 8 2
+image r448 8 8 2
+image r459 8 8 2
+image r462 8 8 2
+image r465 8 8 2
+image r468 8 8 2
+image r503: format 28
+image r517 8 8 2
+image r520 8 8 2
+image r523 8 8 2
+image r526 8 8 2
+image r537 8 8 2
+image r540 8 8 2
+image r543 8 8 2
+image r546 8 8 2
+image r581: format 50
+image r595 8 8 2
+image r598 8 8 2
+image r601 8 8 2
+image r604 8 8 2
+image r615 8 8 2
+image r618 8 8 2
+image r621 8 8 2
+image r624 8 8 2
+image r659: format 51
+image r673 8 8 2
+image r676 8 8 2
+image r679 8 8 2
+image r682 8 8 2
+image r693 8 8 2
+image r696 8 8 2
+image r699 8 8 2
+image r702 8 8 2
+image r737: format 32
+image r751 8 8 2
+image r754 8 8 2
+image r757 8 8 2
+image r760 8 8 2
+image r771 8 8 2
+image r774 8 8 2
+image r777 8 8 2
+image r780 8 8 2
