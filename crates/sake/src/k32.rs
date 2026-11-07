@@ -253,6 +253,8 @@ pub fn exit_thread(code: u32) -> ! {
         }
     });
     obj::signal();
+    obj::close(h);
+    crate::apc::forget(t.tid);
     if t.tid == 0x20 {
         // the main thread: the process
         unsafe { libc::exit(code as i32) }
@@ -410,6 +412,9 @@ fn SetProcessAffinityMask(_: &mut Ctx) -> u32 {
     1
 }
 fn ncpu() -> u32 {
+    if let Some(n) = std::env::var("SAKE_NCPU").ok().and_then(|v| v.parse::<u32>().ok()) {
+        return n.clamp(1, 64);
+    }
     std::thread::available_parallelism().map_or(4, |n| n.get() as u32).clamp(1, 8)
 }
 fn GetProcessAffinityMask(c: &mut Ctx) -> u32 {
@@ -430,9 +435,60 @@ fn Sleep(c: &mut Ctx) -> u32 {
     }
     0
 }
-fn SleepEx(c: &mut Ctx) -> u32 {
-    Sleep(c);
+// WaitOnAddress: one generation counter for all addresses; any wake wakes every waiter, which
+// returns TRUE (Windows allows that: callers check the value again)
+static ADDR_GEN: Mutex<u64> = Mutex::new(0);
+static ADDR_CV: Condvar = Condvar::new();
+
+/// The `size`-byte value at `a` (1, 2, 4, 8; else None)
+fn value_at(a: u32, size: u32) -> Option<u64> {
+    Some(match size {
+        1 => mem::r8(a) as u64,
+        2 => r16(a) as u64,
+        4 => r32(a) as u64,
+        8 => mem::r64(a),
+        _ => return None,
+    })
+}
+/// WaitOnAddress(address, &compare, size, ms): TRUE once woken (or the value already differs),
+/// FALSE with ERROR_TIMEOUT
+fn WaitOnAddress(c: &mut Ctx) -> u32 {
+    let (a, cmp, size, ms) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    let (Some(_), Some(want)) = (value_at(a, size), value_at(cmp, size)) else {
+        last_error(87);
+        return 0;
+    };
+    let g = ADDR_GEN.lock().unwrap_or_else(|e| e.into_inner());
+    // (checked under the lock: a waker changes the value, then takes it to wake)
+    if value_at(a, size) != Some(want) {
+        return 1;
+    }
+    let start = *g;
+    let woken = |g: &mut u64| *g == start;
+    if ms == 0xffff_ffff {
+        drop(ADDR_CV.wait_while(g, woken));
+        return 1;
+    }
+    let (_g, r) = ADDR_CV.wait_timeout_while(g, std::time::Duration::from_millis(ms as u64), woken).unwrap_or_else(|e| e.into_inner());
+    if r.timed_out() {
+        last_error(1460);
+        return 0;
+    }
+    1
+}
+fn WakeByAddressAll(_: &mut Ctx) -> u32 {
+    *ADDR_GEN.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+    ADDR_CV.notify_all();
     0
+}
+
+fn SleepEx(c: &mut Ctx) -> u32 {
+    if c.a(1) == 0 {
+        Sleep(c);
+        return 0;
+    }
+    let r = crate::apc::wait(c, &[], false, c.a(0));
+    if r == crate::apc::WAIT_IO_COMPLETION { r } else { 0 }
 }
 fn SwitchToThread(_: &mut Ctx) -> u32 {
     std::thread::yield_now();
@@ -649,18 +705,29 @@ fn WaitForSingleObject(c: &mut Ctx) -> u32 {
     obj::wait(&[c.a(0)], false, c.a(1), None)
 }
 fn WaitForSingleObjectEx(c: &mut Ctx) -> u32 {
-    WaitForSingleObject(c)
+    if c.a(2) == 0 {
+        return WaitForSingleObject(c);
+    }
+    crate::apc::wait(c, &[c.a(0)], false, c.a(1))
 }
 fn WaitForMultipleObjects(c: &mut Ctx) -> u32 {
     if c.a(0) == 0 || c.a(0) > 64 {
         last_error(87);
         return obj::WAIT_FAILED;
     }
-    let hs: Vec<u32> = (0..c.a(0).min(64)).map(|i| mem::rp(c.a(1) + mem::ps() * i)).collect();
+    let hs: Vec<u32> = (0..c.a(0)).map(|i| mem::rp(c.a(1) + mem::ps() * i)).collect();
     obj::wait(&hs, c.a(2) != 0, c.a(3), None)
 }
 fn WaitForMultipleObjectsEx(c: &mut Ctx) -> u32 {
-    WaitForMultipleObjects(c)
+    if c.a(4) == 0 {
+        return WaitForMultipleObjects(c);
+    }
+    if c.a(0) == 0 || c.a(0) > 64 {
+        last_error(87);
+        return obj::WAIT_FAILED;
+    }
+    let hs: Vec<u32> = (0..c.a(0)).map(|i| r32(c.a(1) + mem::ps() * i)).collect();
+    crate::apc::wait(c, &hs, c.a(2) != 0, c.a(3))
 }
 fn CloseHandle(c: &mut Ctx) -> u32 {
     let h = c.a(0);
@@ -675,7 +742,8 @@ fn DuplicateHandle(c: &mut Ctx) -> u32 {
     } else {
         obj::dup(src)
     };
-    put32(c.a(3), h);
+    // (a HANDLE: 8 bytes on x64)
+    mem::putp(c.a(3), h);
     ok(h != 0)
 }
 
@@ -959,12 +1027,19 @@ fn InitOnceExecuteOnce(c: &mut Ctx) -> u32 {
         match a.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst) {
             Ok(_) => {
                 let r = c.call(f, &[once, param, ctx]);
-                a.store(if r != 0 { 2 } else { 0 }, Ordering::SeqCst);
+                // (done: the context the function gave, with 2 in its low bits)
+                let got = if ctx != 0 { r32(ctx) & !3 } else { 0 };
+                a.store(if r != 0 { got | 2 } else { 0 }, Ordering::SeqCst);
                 let _g = SYNC.lock().unwrap();
                 SYNC_CV.notify_all();
                 return r;
             }
-            Err(2) => return 1,
+            Err(v) if v & 3 == 2 => {
+                if ctx != 0 {
+                    mem::putp(ctx, v & !3);
+                }
+                return 1;
+            }
             Err(_) => {
                 let g = SYNC.lock().unwrap();
                 if a.load(Ordering::SeqCst) == 1 {
@@ -983,6 +1058,48 @@ fn GetThreadContext(c: &mut Ctx) -> u32 {
     1
 }
 fn SetThreadContext(_: &mut Ctx) -> u32 {
+    1
+}
+/// InitOnceBeginInitialize(once, flags, &pending, &context). The INIT_ONCE: 0, 1 while one
+/// thread initializes, then the context with 2 in its low bits (as Windows keeps it).
+fn InitOnceBeginInitialize(c: &mut Ctx) -> u32 {
+    let (once, flags, pending, ctx) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    const CHECK_ONLY: u32 = 1;
+    let a = atomic(once);
+    loop {
+        let v = a.load(Ordering::SeqCst);
+        if v & 3 == 2 {
+            put32(pending, 0);
+            if ctx != 0 {
+                mem::putp(ctx, v & !3);
+            }
+            return 1;
+        }
+        if flags & CHECK_ONLY != 0 {
+            last_error(31); // ERROR_GEN_FAILURE: not done yet
+            return 0;
+        }
+        if v == 0 && a.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+            put32(pending, 1);
+            return 1;
+        }
+        let g = SYNC.lock().unwrap();
+        if a.load(Ordering::SeqCst) == 1 {
+            let _ = SYNC_CV.wait_timeout(g, std::time::Duration::from_millis(20));
+        }
+    }
+}
+/// InitOnceComplete(once, flags, context): INIT_ONCE_INIT_FAILED (4) lets the next caller try
+fn InitOnceComplete(c: &mut Ctx) -> u32 {
+    let (once, flags, ctx) = (c.a(0), c.a(1), c.a(2));
+    let a = atomic(once);
+    if a.load(Ordering::SeqCst) != 1 || ctx & 3 != 0 {
+        last_error(87);
+        return 0;
+    }
+    a.store(if flags & 4 != 0 { 0 } else { ctx | 2 }, Ordering::SeqCst);
+    let _g = SYNC.lock().unwrap();
+    SYNC_CV.notify_all();
     1
 }
 fn InitOnceInitialize(c: &mut Ctx) -> u32 {
@@ -1089,6 +1206,24 @@ fn SetErrorMode(_: &mut Ctx) -> u32 {
 fn GetErrorMode(_: &mut Ctx) -> u32 {
     0
 }
+thread_local!(static THREAD_ERROR_MODE: std::cell::Cell<u32> = const { std::cell::Cell::new(0) });
+/// SetThreadErrorMode(mode, &old): only SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX and
+/// SEM_NOOPENFILEERRORBOX are taken
+fn SetThreadErrorMode(c: &mut Ctx) -> u32 {
+    let (m, old) = (c.a(0), c.a(1));
+    if m & !0x8003 != 0 {
+        last_error(87);
+        return 0;
+    }
+    let prev = THREAD_ERROR_MODE.with(|t| t.replace(m));
+    if old != 0 {
+        w32(old, prev);
+    }
+    1
+}
+fn GetThreadErrorMode(_: &mut Ctx) -> u32 {
+    THREAD_ERROR_MODE.with(|t| t.get())
+}
 
 fn RtlUnwind(c: &mut Ctx) -> u32 {
     crate::seh::rtl_unwind(c)
@@ -1157,7 +1292,16 @@ fn VirtualAlloc(c: &mut Ctx) -> u32 {
         last_error(87);
         return 0;
     }
-    let Some(b) = mem::reserve(addr, size, prot, 0x20000, ty & 0x10_0000 != 0) else {
+    // the guest has 2 GB of address space, not 128 TB: a reservation that only wants an aligned
+    // block inside (twice the block less a page) gets that block, aligned; else Unity 6, which
+    // reserves 512 MB for each 256 MB allocator block, runs out after three (it wants 14 and
+    // more such blocks: 7 fit, which is not enough yet)
+    let over = mem::over_reserved_block(size).filter(|_| addr == 0 && !commit);
+    let b = over.and_then(|s| mem::reserve_aligned(s, s, prot, 0x20000)).or_else(|| mem::reserve(addr, size, prot, 0x20000, ty & 0x10_0000 != 0));
+    let Some(b) = b else {
+        if crate::env_on!("SAKE_TRACE_MEM") {
+            eprintln!("sake: VirtualAlloc({addr:#x}, {size:#x}, {ty:#x}) failed; the address space:\n{}", mem::dump());
+        }
         last_error(if addr != 0 { 487 } else { 8 });
         return 0;
     };
@@ -4725,7 +4869,7 @@ pub fn init() {
         DeleteCriticalSection, EnterCriticalSection, LeaveCriticalSection, TryEnterCriticalSection,
         InterlockedIncrement, InterlockedDecrement, InterlockedExchange, InterlockedExchangeAdd, InterlockedCompareExchange,
         TlsAlloc, TlsFree, TlsGetValue, TlsSetValue, FlsAlloc, FlsFree, FlsGetValue, FlsSetValue,
-        GetLastError, SetLastError, SetErrorMode, GetErrorMode, RtlUnwind, RaiseException, SetUnhandledExceptionFilter,
+        GetLastError, SetLastError, SetErrorMode, GetErrorMode, SetThreadErrorMode, GetThreadErrorMode, RtlUnwind, RaiseException, SetUnhandledExceptionFilter,
         UnhandledExceptionFilter, IsDebuggerPresent, OutputDebugStringA, OutputDebugStringW, SetConsoleCtrlHandler,
         DebugBreak, EncodePointer, DecodePointer,
         VirtualAlloc, VirtualFree, VirtualQuery, VirtualProtect, VirtualLock, VirtualUnlock, FlushInstructionCache,
@@ -4789,6 +4933,16 @@ pub fn init() {
         implement(d, "SetThreadInformation", true_);
     }
     implement("kernelbase", "VirtualAllocFromApp", VirtualAlloc);
+    implement("kernelbase", "WaitOnAddress", WaitOnAddress);
+    for d in ["kernel32", "kernelbase"] {
+        implement(d, "InitOnceBeginInitialize", InitOnceBeginInitialize);
+        implement(d, "InitOnceComplete", InitOnceComplete);
+        implement(d, "QueueUserAPC", crate::apc::QueueUserAPC);
+    }
+    implement("kernelbase", "WakeByAddressAll", WakeByAddressAll);
+    implement("kernelbase", "WakeByAddressSingle", WakeByAddressAll);
+    implement("ntdll", "RtlWakeAddressAll", WakeByAddressAll);
+    implement("ntdll", "RtlWakeAddressSingle", WakeByAddressAll);
     implement("kernelbase", "VirtualProtectFromApp", VirtualProtect);
     reg!("bcrypt"; BCryptOpenAlgorithmProvider, BCryptCloseAlgorithmProvider, BCryptGenRandom, BCryptGetProperty);
     for n in ["PdhOpenQueryA", "PdhOpenQueryW", "PdhOpenQuery"] {

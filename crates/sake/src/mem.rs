@@ -12,6 +12,8 @@ use std::sync::Mutex;
 /// every access: Borland's memory manager put its table at 0x10000)
 pub const LO: u32 = 0x3_0000;
 pub const HI: u32 = 0x7ff0_0000;
+/// Where sake's own data starts (crates/sake/build.sh GLOBAL_BASE, koji::jit::GUEST_HI)
+pub const GUEST_TOP: u32 = 0x8000_0000;
 const GRAN: u32 = 0x1_0000;
 pub const PAGE: u32 = 0x1000;
 
@@ -89,12 +91,12 @@ pub fn w64(a: u32, v: u64) {
     }
 }
 
-/// Guest memory is below 2G (HI); sake's own heap and stacks are above it (emscripten's
+/// Guest memory is below 2G (GUEST_TOP); sake's own heap and stacks are above it (emscripten's
 /// GLOBAL_BASE). A write the guest asks for there (a bad pointer passed to an API: Wine's tests
 /// pass some on purpose) would corrupt sake itself: it is dropped (Windows would fault).
 #[inline(always)]
 fn guest(a: u32, n: u32) -> bool {
-    if a as u64 + n as u64 <= 0x8000_0000 {
+    if a as u64 + n as u64 <= GUEST_TOP as u64 {
         return true;
     }
     refused(a, n);
@@ -279,17 +281,7 @@ pub fn reserve(want: u32, size: u32, prot: u32, kind: u32, top: bool) -> Option<
         }
         b
     } else {
-        let mut holes = Vec::new();
-        let mut at = LO;
-        for (&a, r) in sp.iter() {
-            if a >= at + size {
-                holes.push((at, a));
-            }
-            at = at.max(align_up(a + r.size, GRAN));
-        }
-        if HI >= at + size {
-            holes.push((at, HI));
-        }
+        let holes = holes(&sp, size);
         if top {
             let &(_, hi) = holes.iter().rev().find(|(lo, hi)| (hi - size) & !(GRAN - 1) >= *lo)?;
             (hi - size) & !(GRAN - 1)
@@ -297,9 +289,53 @@ pub fn reserve(want: u32, size: u32, prot: u32, kind: u32, top: bool) -> Option<
             holes.first()?.0
         }
     };
+    insert(&mut sp, base, size, prot, kind);
+    Some(base)
+}
+
+/// The free ranges [lo, hi) of the address space that hold `size` bytes.
+fn holes(sp: &BTreeMap<u32, Region>, size: u32) -> Vec<(u32, u32)> {
+    let mut holes = Vec::new();
+    let mut at = LO;
+    for (&a, r) in sp.iter() {
+        if a >= at.saturating_add(size) {
+            holes.push((at, a));
+        }
+        at = at.max(align_up(a + r.size, GRAN));
+    }
+    if HI >= at.saturating_add(size) {
+        holes.push((at, HI));
+    }
+    holes
+}
+
+fn insert(sp: &mut BTreeMap<u32, Region>, base: u32, size: u32, prot: u32, kind: u32) {
     sp.insert(base, Region { size, prot, state: 0x2000, alloc_base: base, alloc_prot: prot, kind });
     PAGES.lock().unwrap().insert(base, vec![0; (size / PAGE) as usize]);
+}
+
+/// Reserves `size` bytes at an `align`-aligned address (a power of two, at least GRAN), the
+/// lowest one free.
+pub fn reserve_aligned(size: u32, align: u32, prot: u32, kind: u32) -> Option<u32> {
+    let size = align_up(size.max(1), PAGE);
+    let mut sp = SPACE.lock().unwrap();
+    let fit = |min: u32| {
+        holes(&sp, min).into_iter().find_map(|(lo, hi)| {
+            let b = (lo as u64 + align as u64 - 1) & !(align as u64 - 1);
+            (b + min as u64 <= hi as u64).then(|| (b as u32, (hi as u64 - b).min(size as u64) as u32))
+        })
+    };
+    let (base, size) = fit(size).or_else(|| fit(size / 4))?;
+    insert(&mut sp, base, size, prot, kind);
     Some(base)
+}
+
+/// The size a program reserves to find an aligned block inside (twice the block less a page,
+/// Unity 6's allocators: 512 MB - 4 KB for a 256 MB block on a 256 MB boundary): the block
+/// size, when `size` is that (blocks of 16 MB and up).
+pub fn over_reserved_block(size: u32) -> Option<u32> {
+    let s = size.checked_add(PAGE)?;
+    (s.is_power_of_two() && s >= 32 << 20).then_some(s / 2)
 }
 
 /// Per-page commit state of each allocation: 0 reserved, COMMITTED | protection.
@@ -455,11 +491,26 @@ pub fn release(base: u32) -> bool {
     true
 }
 
+/// The allocations, for logs (SAKE_TRACE_MEM): base, size, kind; adjacent small ones merged.
+pub fn dump() -> String {
+    let sp = SPACE.lock().unwrap();
+    let mut out = String::new();
+    let pages = PAGES.lock().unwrap();
+    for (&b, r) in sp.iter() {
+        // (pages committed, and the end of the last one, in KB from the start)
+        let (n, top) = pages.get(&b).map_or((0, 0), |p| {
+            (p.iter().filter(|&&x| x & COMMITTED != 0).count(), p.iter().rposition(|&x| x & COMMITTED != 0).map_or(0, |i| i + 1))
+        });
+        out += &format!("  {b:08x}-{:08x} {:6} KB kind {:x} state {:x}, committed {} KB up to +{} KB\n", b + r.size, r.size >> 10, r.kind, r.state, n * 4, top * 4);
+    }
+    out
+}
+
 /// The free range at `a` (for VirtualQuery): (start, size).
 pub fn free_at(a: u32) -> (u32, u32) {
     let sp = SPACE.lock().unwrap();
     let lo = sp.range(..=a).next_back().map_or(0, |(&b, r)| b + r.size);
-    let hi = sp.range(a..).next().map_or(0x8000_0000, |(&b, _)| b);
+    let hi = sp.range(a..).next().map_or(GUEST_TOP, |(&b, _)| b);
     (lo & !(PAGE - 1), hi - (lo & !(PAGE - 1)))
 }
 
@@ -698,7 +749,27 @@ pub(crate) fn rmw32_at(p: usize, f: impl Fn(u32) -> u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::rmw32_at;
+    use super::{over_reserved_block, rmw32_at, GUEST_TOP};
+
+    /// sake's data starts where the JIT's direct guest range ends (build.sh's GLOBAL_BASE too)
+    #[test]
+    fn guest_top_is_the_jits() {
+        assert_eq!(GUEST_TOP, koji::jit::GUEST_HI);
+        let build = include_str!("../build.sh");
+        assert!(build.contains(&format!("-sGLOBAL_BASE={}", GUEST_TOP)), "build.sh GLOBAL_BASE");
+    }
+
+    #[test]
+    fn over_reserve_idiom() {
+        assert_eq!(over_reserved_block(0x1fff_f000), Some(0x1000_0000));
+        assert_eq!(over_reserved_block(0x01ff_f000), Some(0x0100_0000));
+        // a plain power of two, small blocks and other sizes: not the idiom
+        assert_eq!(over_reserved_block(0x2000_0000), None);
+        assert_eq!(over_reserved_block(0x00ff_f000), None);
+        assert_eq!(over_reserved_block(0x1fff_e000), None);
+        assert_eq!(over_reserved_block(0xffff_f000), None); // (4 GB)
+        assert_eq!(over_reserved_block(u32::MAX), None);
+    }
 
     /// every offset in a 16-byte buffer: the dword changes, its neighbours don't
     #[test]

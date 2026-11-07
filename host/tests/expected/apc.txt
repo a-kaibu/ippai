@@ -1,0 +1,29 @@
+queue to self: 1
+SleepEx not alertable: 0, ran ''
+SleepEx alertable: WAIT_IO_COMPLETION, ran 'ab'
+SleepEx alertable, nothing queued: 0
+signaled, not alertable: 0, ran 'ab'
+signaled, alertable with an APC queued: WAIT_IO_COMPLETION, ran 'abcz'
+signaled, alertable, nothing queued: 0
+wait-any, alertable: WAIT_IO_COMPLETION, ran 'abczd'
+wait-any after: 1
+MsgWait, not alertable: 258, ran 'abczd'
+MsgWait, alertable: WAIT_IO_COMPLETION, ran 'abczde'
+queue to a bad handle: 0
+thread: alertable wait woken by an APC: WAIT_IO_COMPLETION, ran 1
+thread: SleepEx woken by an APC: WAIT_IO_COMPLETION, ran 11
+thread ended: 0
+SetThreadErrorMode: 1, old 0
+SetThreadErrorMode again: 1, old 8001
+SetThreadErrorMode bad flags: 0, error 87
+GetThreadErrorMode: 0
+buffer sizes: 0, 1 paths 2 modes
+buffer sizes, no flags: 87
+query, too few modes: 122
+query: 0, 1 paths 2 modes
+path: source mode 0, target mode 1, refresh 60/1, flags 1
+source mode: type 1, 1366x768, format 4, at 0,0
+target mode: type 2, active 1366x768 = source 1, vsync 60/1
+same screen as GetSystemMetrics: 1
+source name: 0 '\\.\DISPLAY1'
+source name, short: 87

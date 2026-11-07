@@ -529,6 +529,32 @@ fn RtlAddFunctionTable(c: &mut Ctx) -> u32 {
     DYNAMIC.lock().unwrap().push((c.a(0), c.a(1), c.a(2)));
     1
 }
+
+/// RtlAddGrowableFunctionTable(&handle, table, count, max count, range base, range end) ->
+/// NTSTATUS: a table JIT compilers (mono) append sorted entries to; the handle is the table.
+fn RtlAddGrowableFunctionTable(c: &mut Ctx) -> u32 {
+    let (out, t, n, base) = (c.a(0), c.a(1), c.a(2), c.a(4));
+    if out == 0 || t == 0 {
+        return 0xc000_000d; // STATUS_INVALID_PARAMETER
+    }
+    DYNAMIC.lock().unwrap().push((t, n, base));
+    crate::mem::put64(out, crate::mem::widen(t));
+    0
+}
+/// RtlGrowFunctionTable(handle, new count)
+fn RtlGrowFunctionTable(c: &mut Ctx) -> u32 {
+    let (t, n) = (c.a(0), c.a(1));
+    if let Some(e) = DYNAMIC.lock().unwrap().iter_mut().find(|e| e.0 == t) {
+        e.1 = n;
+    }
+    0
+}
+/// RtlDeleteGrowableFunctionTable(handle)
+fn RtlDeleteGrowableFunctionTable(c: &mut Ctx) -> u32 {
+    let t = c.a(0);
+    DYNAMIC.lock().unwrap().retain(|e| e.0 != t);
+    0
+}
 fn RtlDeleteFunctionTable(c: &mut Ctx) -> u32 {
     let t = c.a(0);
     let mut g = DYNAMIC.lock().unwrap();
@@ -814,6 +840,11 @@ pub fn longjmp(c: &mut Ctx) -> u32 {
 pub fn register() {
     if !crate::mem::x64() {
         return;
+    }
+    for d in ["ntdll", "kernelbase"] {
+        implement(d, "RtlAddGrowableFunctionTable", RtlAddGrowableFunctionTable);
+        implement(d, "RtlGrowFunctionTable", RtlGrowFunctionTable);
+        implement(d, "RtlDeleteGrowableFunctionTable", RtlDeleteGrowableFunctionTable);
     }
     for d in ["ntdll", "kernel32"] {
         implement(d, "RtlCaptureContext", RtlCaptureContext);

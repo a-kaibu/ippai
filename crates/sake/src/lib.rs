@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use koji::{Cpu, EAX, ESP};
 
 pub mod acm;
+pub mod apc;
 pub mod api;
 pub mod d3d9;
 pub mod d3d11;
@@ -380,7 +381,9 @@ pub fn spawn_gated(start: u32, param: u32, stack: u32, obj: u32, gated: bool) ->
         .stack_size(1 << 20)
         .spawn(move || {
             let t = enter(stack);
-            t.obj = obj;
+            // (the thread's own reference: the creator closing its handle doesn't end the
+            // object while the thread runs; GetCurrentThread duplicates it, mono's GC does)
+            t.obj = obj::dup(obj);
             tx.send(t.tid).unwrap();
             if gated {
                 k32::wait_gate(obj);
@@ -453,6 +456,20 @@ pub fn main(exe: &str, args: &[String]) -> ! {
     cxx::init();
     d3d11::register();
     guest::bind_host();
+    // SAKE_MEMINFO=<seconds>: sake's own heap (above the guest's 2 GB) now and then, on stderr
+    #[cfg(target_os = "emscripten")]
+    if let Some(secs) = std::env::var("SAKE_MEMINFO").ok().and_then(|s| s.parse::<f64>().ok()) {
+        std::thread::spawn(move || {
+            let mut max = 0.0f64;
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs_f64(secs.max(0.1)));
+                let mut m = [0f64; 2];
+                unsafe { kura::wrap::vnhost_mem_info(m.as_mut_ptr()) };
+                max = max.max(m[0]);
+                eprintln!("sake: heap top {:.0} MB (max {:.0}), in use {:.0} MB", m[0] / 1048576.0, max / 1048576.0, m[1] / 1048576.0);
+            }
+        });
+    }
     kura::crashlog::set_trap_namer(api::name_of);
     let peb = mem::reserve(0, 0x2000, 4, 0x20000, true).expect("PEB");
     mem::commit(peb, 4);

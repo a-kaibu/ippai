@@ -42,4 +42,4 @@ pub mod display;
 pub mod render;
 pub mod vfs;
 pub mod fs;
-mod wrap;
+pub mod wrap;

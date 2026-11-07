@@ -2604,9 +2604,10 @@ fn has_work_of(mask: u32) -> bool {
 
 /// Blocks until this thread has a message, a handle is signaled or `ms` passes.
 fn wait_msgs(handles: &[u32], all: bool, ms: u32) -> u32 {
-    wait_msgs_of(handles, all, ms, QS_ALL)
+    wait_msgs_of(handles, all, ms, QS_ALL, false)
 }
-fn wait_msgs_of(handles: &[u32], all: bool, ms: u32, mask: u32) -> u32 {
+/// (`apc`: an APC queued for the thread ends the wait too)
+fn wait_msgs_of(handles: &[u32], all: bool, ms: u32, mask: u32, apc: bool) -> u32 {
     start_input();
     let timer = next_timer();
     let ms = match timer {
@@ -2617,10 +2618,11 @@ fn wait_msgs_of(handles: &[u32], all: bool, ms: u32, mask: u32) -> u32 {
     let check = move || {
         // (called with the object table locked: the USER lock is taken inside, never the other way)
         let s = STATE.try_lock();
-        match s {
-            Ok(g) => g.as_ref().is_some_and(|s| queued(s, me, mask)),
-            Err(_) => true,
-        }
+        apc && crate::apc::pending(me)
+            || match s {
+                Ok(g) => g.as_ref().is_some_and(|s| queued(s, me, mask)),
+                Err(_) => true,
+            }
     };
     crate::obj::wait(handles, all, ms, Some(&check))
 }
@@ -2698,16 +2700,21 @@ fn MsgWaitForMultipleObjects(c: &mut Ctx) -> u32 {
     if has_work_of(mask) {
         return n;
     }
-    wait_msgs_of(&hs, all, ms, mask)
+    wait_msgs_of(&hs, all, ms, mask, false)
 }
 fn MsgWaitForMultipleObjectsEx(c: &mut Ctx) -> u32 {
     let (n, hs, ms, mask, flags) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4));
     let hs: Vec<u32> = (0..n.min(64)).map(|i| mem::rp(hs + mem::ps() * i)).collect();
+    let alertable = flags & 2 != 0; // MWMO_ALERTABLE
+    if alertable && crate::apc::run(c) {
+        return crate::apc::WAIT_IO_COMPLETION;
+    }
     process_sent(c.cpu);
     if has_work_of(mask) {
         return n;
     }
-    wait_msgs_of(&hs, flags & 1 != 0, ms, mask)
+    let r = wait_msgs_of(&hs, flags & 1 != 0, ms, mask, alertable);
+    if alertable && r == n && crate::apc::run(c) { crate::apc::WAIT_IO_COMPLETION } else { r }
 }
 fn GetQueueStatus(_: &mut Ctx) -> u32 {
     if has_work() { 0x00ff_00ff } else { 0 }
@@ -3402,6 +3409,119 @@ fn EnumDisplayDevicesA(c: &mut Ctx) -> u32 {
 }
 fn EnumDisplayDevicesW(c: &mut Ctx) -> u32 {
     display_device(c.a(0), c.a(1), c.a(2), true)
+}
+/// The display configuration (Windows 7+): one active path, display 1's source (mode 0) on its
+/// monitor (mode 1), at the screen's size and 60 Hz.
+const DISPLAY_LUID: u32 = 0x1c82;
+fn GetDisplayConfigBufferSizes(c: &mut Ctx) -> u32 {
+    let (flags, paths, modes) = (c.a(0), c.a(1), c.a(2));
+    if paths == 0 || modes == 0 {
+        return 87;
+    }
+    if flags & 7 == 0 {
+        return 87; // QDC_ALL_PATHS / QDC_ONLY_ACTIVE_PATHS / QDC_DATABASE_CURRENT
+    }
+    w32(paths, 1);
+    w32(modes, 2);
+    0
+}
+fn QueryDisplayConfig(c: &mut Ctx) -> u32 {
+    let (flags, np, paths, nm, modes, topology) = (c.a(0), c.a(1), c.a(2), c.a(3), c.a(4), c.a(5));
+    if np == 0 || nm == 0 || paths == 0 || modes == 0 || flags & 7 == 0 {
+        return 87;
+    }
+    // (only QDC_DATABASE_CURRENT takes a topology id, and wants one)
+    if (flags & 4 != 0) != (topology != 0) {
+        return 87;
+    }
+    if r32(np) < 1 || r32(nm) < 2 {
+        return 122; // ERROR_INSUFFICIENT_BUFFER
+    }
+    let (w, h) = screen();
+    let mut path = [0u32; 18];
+    // source: adapter, id 0, mode 0, in use
+    path[0] = DISPLAY_LUID;
+    path[4] = 1;
+    // target: adapter, id 0, mode 1, HDMI, no rotation or scaling, 60/1 Hz, progressive,
+    // available, in use; the path is active
+    path[5] = DISPLAY_LUID;
+    path[7] = 0;
+    path[8] = 1;
+    path[9] = 5;
+    path[10] = 1;
+    path[11] = 1;
+    path[12] = 60;
+    path[13] = 1;
+    path[14] = 1;
+    path[15] = 1;
+    path[16] = 1;
+    path[17] = 1;
+    let mut m = [0u32; 32];
+    // source mode: width, height, 32 bpp, at (0, 0)
+    m[0] = 1;
+    m[2] = DISPLAY_LUID;
+    m[4] = w as u32;
+    m[5] = h as u32;
+    m[6] = 4;
+    // target mode: the video signal (pixel rate, h/v sync, active and total size, standard, progressive)
+    let (tw, th) = (w as u32 + 160, h as u32 + 45);
+    let rate = tw as u64 * th as u64 * 60;
+    m[16] = 2;
+    m[18] = DISPLAY_LUID;
+    m[20] = rate as u32;
+    m[21] = (rate >> 32) as u32;
+    m[22] = (rate / tw as u64) as u32;
+    m[23] = 1;
+    m[24] = 60;
+    m[25] = 1;
+    m[26] = w as u32;
+    m[27] = h as u32;
+    m[28] = tw;
+    m[29] = th;
+    m[30] = 255; // D3DKMDT_VSS_OTHER
+    m[31] = 1;
+    let b = |v: &[u32]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
+    mem::write(paths, &b(&path));
+    mem::write(modes, &b(&m));
+    w32(np, 1);
+    w32(nm, 2);
+    if topology != 0 {
+        w32(topology, 1); // DISPLAYCONFIG_TOPOLOGY_INTERNAL
+    }
+    0
+}
+/// DisplayConfigGetDeviceInfo(header): the names of display 1's source and monitor
+fn DisplayConfigGetDeviceInfo(c: &mut Ctx) -> u32 {
+    let p = c.a(0);
+    if p == 0 {
+        return 87;
+    }
+    let (ty, size) = (r32(p), r32(p + 4));
+    let wide = |at: u32, cap: u32, s: &str| {
+        mem::put_wstr(at, cap, &s.encode_utf16().collect::<Vec<_>>());
+    };
+    match ty {
+        1 if size >= 84 => wide(p + 20, 32, "\\\\.\\DISPLAY1"), // DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME
+        2 if size >= 420 => {
+            // ..._GET_TARGET_NAME: flags (friendly name from EDID), HDMI, EDID ids, connector 1
+            w32(p + 20, 1);
+            w32(p + 24, 5);
+            w32(p + 28, 0x1c82_10ac);
+            w32(p + 32, 1);
+            wide(p + 36, 64, "Generic PnP Monitor");
+            wide(p + 164, 128, "\\\\?\\DISPLAY#VNV0001#1&0&UID0#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}");
+        }
+        3 if size >= 32 => {
+            // ..._GET_TARGET_PREFERRED_MODE: the screen's size
+            let (w, h) = screen();
+            w32(p + 20, w as u32);
+            w32(p + 24, h as u32);
+        }
+        4 if size >= 276 => wide(p + 20, 128, "\\\\?\\PCI#VEN_10DE&DEV_1C82#0#{5b45201d-f2f2-4f3b-85bb-30ff1f953599}"), // ..._GET_ADAPTER_NAME
+        1..=4 => return 87,
+        _ => return 50, // ERROR_NOT_SUPPORTED
+    }
+    0
 }
 fn MonitorFromWindow(_: &mut Ctx) -> u32 {
     0x10001
@@ -4786,7 +4906,7 @@ pub fn init() {
         GetDoubleClickTime, MessageBeep, MessageBoxA, MessageBoxW, MessageBoxExA, MessageBoxIndirectA,
         SetWindowsHookExA, SetWindowsHookExW, UnhookWindowsHookEx, CallNextHookEx, WinHelpA, GetSysColor,
         GetSysColorBrush, GetSystemMetrics, SystemParametersInfoA, SystemParametersInfoW, ChangeDisplaySettingsA,
-        ChangeDisplaySettingsW, ChangeDisplaySettingsExA, ChangeDisplaySettingsExW, EnumDisplaySettingsA, EnumDisplaySettingsW, EnumDisplaySettingsExA, EnumDisplaySettingsExW, EnumDisplayDevicesA, EnumDisplayDevicesW, MonitorFromWindow, MonitorFromPoint,
+        ChangeDisplaySettingsW, ChangeDisplaySettingsExA, ChangeDisplaySettingsExW, EnumDisplaySettingsA, EnumDisplaySettingsW, EnumDisplaySettingsExA, EnumDisplaySettingsExW, EnumDisplayDevicesA, EnumDisplayDevicesW, GetDisplayConfigBufferSizes, QueryDisplayConfig, DisplayConfigGetDeviceInfo, MonitorFromWindow, MonitorFromPoint,
         MonitorFromRect, GetMonitorInfoA, GetMonitorInfoW, EnumDisplayMonitors,
         SetRect, SetRectEmpty, CopyRect, IsRectEmpty, EqualRect, PtInRect, OffsetRect, InflateRect, IntersectRect,
         UnionRect, SubtractRect, FillRect, FrameRect, InvertRect, DrawFocusRect, DrawEdge, DrawFrameControl,
