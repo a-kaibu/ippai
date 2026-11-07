@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""ippai serve behind a reverse proxy on the same machine (auth.rs): a proxy that connects from
-loopback, sets `Host: 127.0.0.1:<port>` and adds no forwarding header (nginx's proxy_pass
-defaults) must not let anyone in without the token. Then the ways in: a bearer token, the
-sign-in page's POST (a session cookie, not the token), a pre-run's ticket is unit-tested.
-With --trust-loopback a proxy that says it forwards still needs the token.
+"""ippai serve's sign-in (auth.rs). By default this machine's browser and `tailscale serve` need
+nothing, a proxy that says it forwards needs the token. With --strict-auth, a reverse proxy on
+the same machine that connects from loopback, sets `Host: 127.0.0.1:<port>` and adds no
+forwarding header (nginx's proxy_pass defaults) must not let anyone in without the token; then
+the ways in: a bearer token, the sign-in page's POST (a session cookie, not the token).
 
     tests/auth-proxy.py [path to ippai]
 """
@@ -18,7 +18,7 @@ def free_port():
         return s.getsockname()[1]
 
 
-def proxy(upstream, add_forwarded):
+def proxy(upstream, add_forwarded, tailscale=False):
     """A reverse proxy to 127.0.0.1:upstream on a port of its own: Host rewritten to the
     upstream's, the client's headers otherwise passed on (and X-Forwarded-For if asked)."""
     class H(http.server.BaseHTTPRequestHandler):
@@ -28,6 +28,8 @@ def proxy(upstream, add_forwarded):
             h['Host'] = f'127.0.0.1:{upstream}'
             if add_forwarded:
                 h['X-Forwarded-For'] = self.client_address[0]
+            if tailscale:
+                h['Tailscale-User-Login'] = 'kota@example.com'
             c = http.client.HTTPConnection('127.0.0.1', upstream, timeout=10)
             c.request(self.command, self.path, body=body or None, headers=h)
             r = c.getresponse()
@@ -82,9 +84,20 @@ home = tempfile.mkdtemp(prefix='ippai-auth-')
 port = free_port()
 srv, token = serve(home, port)
 try:
+    check('this machine', req(port)[0], 200)
+    check('tailscale serve', req(proxy(port, True, tailscale=True))[0], 200)
+    check('a proxy that says it forwards', req(proxy(port, True))[0], 401)
+finally:
+    srv.kill()
+    srv.wait()
+
+port = free_port()
+srv, token = serve(home, port, '--strict-auth')
+try:
     plain = proxy(port, False)
-    check('through a proxy with no forwarding headers, no token', req(plain)[0], 401)
-    check('this machine, no token', req(port, headers={'Host': f'127.0.0.1:{port}'})[0], 401)
+    check('strict: through a proxy with no forwarding headers, no token', req(plain)[0], 401)
+    check('strict: this machine, no token', req(port, headers={'Host': f'127.0.0.1:{port}'})[0], 401)
+    check('strict: tailscale serve, no token', req(proxy(port, True, tailscale=True))[0], 401)
     check('through the proxy, a wrong bearer token', req(plain, headers={'Authorization': 'Bearer ' + '0' * 32})[0], 401)
     check('through the proxy, the bearer token', req(plain, headers={'Authorization': f'Bearer {token}'})[0], 200)
     check('the token in the query signs nothing in', 'set-cookie' in req(plain, path=f'/login?token={token}')[1], False)
@@ -100,12 +113,4 @@ finally:
     srv.kill()
     srv.wait()
 
-port = free_port()
-srv, token = serve(home, port, '--trust-loopback')
-try:
-    check('--trust-loopback: this machine', req(port)[0], 200)
-    check('--trust-loopback: a proxy that says it forwards', req(proxy(port, True))[0], 401)
-finally:
-    srv.kill()
-    srv.wait()
 print('auth-proxy: ok')

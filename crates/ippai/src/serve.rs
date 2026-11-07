@@ -85,10 +85,13 @@ pub struct Args {
     /// No pre-runs (see prerun_games): a game's first run translates its code itself.
     #[arg(long)]
     no_prerun: bool,
-    /// Requests from this machine (a loopback address and name, no proxy headers) need no
-    /// token. Only where nothing proxies to this server: a reverse proxy here connects from
-    /// loopback too (see auth.rs) [default: trust_loopback in config.toml, else off]
+    /// The token from everyone, this machine's browser and `tailscale serve` too (who need
+    /// none by default): for a machine with another reverse proxy in front of the server
+    /// (see auth.rs) [default: strict_auth in config.toml, else off]
     #[arg(long)]
+    strict_auth: bool,
+    /// (the default now; kept for scripts that pass it)
+    #[arg(long, hide = true)]
     trust_loopback: bool,
     /// Run in this process (for systemd and the like) instead of in the background.
     #[arg(long)]
@@ -787,7 +790,7 @@ struct Resolved {
     game_listen: SocketAddr,
     game_url: Option<String>,
     no_prerun: bool,
-    trust_loopback: bool,
+    strict_auth: bool,
 }
 
 pub fn run(dirs: &crate::dirs::Dirs, a: Args) -> anyhow::Result<()> {
@@ -806,7 +809,7 @@ pub fn run(dirs: &crate::dirs::Dirs, a: Args) -> anyhow::Result<()> {
         }),
         game_url: a.game_url,
         no_prerun: a.no_prerun,
-        trust_loopback: a.trust_loopback || dirs.trust_loopback,
+        strict_auth: (a.strict_auth || dirs.strict_auth) && !a.trust_loopback,
     };
     for d in [&dirs.store, &args.jit, &args.logs] {
         std::fs::create_dir_all(d)?;
@@ -819,7 +822,7 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
     if let Some(storage) = crate::storage::Storage::configured(crate::library::Library::new(&store)?)? {
         storage.hydrate_catalog(&store).await?;
     }
-    let auth = crate::auth::Auth::load(&dirs.token, args.trust_loopback)?;
+    let auth = crate::auth::Auth::load(&dirs.token, args.strict_auth)?;
     let jit: Jit = Arc::new((args.jit.clone(), tokio::sync::Mutex::new(())));
     let pre = Arc::new(Prerun {
         store: store.clone(),
@@ -889,7 +892,7 @@ async fn serve(dirs: &crate::dirs::Dirs, store: PathBuf, args: Resolved) -> anyh
         args.game_listen,
         store.display(),
         args.web.display(),
-        if args.trust_loopback { "this machine needs no token, others " } else { "" }
+        if args.strict_auth { "strict: everyone " } else { "this machine and tailscale serve need no token, others " }
     );
     tokio::spawn(prerun_games(pre));
     use std::future::IntoFuture;

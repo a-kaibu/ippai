@@ -1,19 +1,25 @@
-//! Who may use `ippai serve`.
+//! Who may use `ippai serve`. By default nobody signs in where it is used as meant (こた
+//! 2026-11-07: a server for one person, no logins):
 //!
-//! - everyone needs the server's token, `~/.config/ippai/token` (made at the first start;
-//!   `ippai token` prints it and the URL to sign in with), once per browser: the sign-in page
-//!   (`/login`, the token typed in or in the URL's fragment, `/login#<token>`, which no request,
-//!   history entry of the server's or proxy log carries; the page posts it) sets a session
-//!   cookie (HttpOnly, SameSite=Lax, ten years): a session id and its HMAC under the token, not
-//!   the token. Scripts send `Authorization: Bearer <token>`. Without either: 401, the page.
+//! - this machine's own browser: a request from a loopback address for a loopback name
+//!   (`Host: localhost:8656`, `127.0.0.1`, `[::1]`; not a name that only resolves there: DNS
+//!   rebinding) with no proxy's forwarding headers needs nothing
+//! - through `tailscale serve` on this machine: needs nothing either; Tailscale has already
+//!   said who it is (the request comes from loopback with `Tailscale-User-Login`, which
+//!   `tailscale serve` sets for tailnet users and drops from what clients send; Funnel's
+//!   public requests carry none)
+//! - everyone else (`--listen 0.0.0.0` from another device, another proxy, a tunnel, Funnel)
+//!   needs the server's token, `~/.config/ippai/token` (`ippai token` prints it and the URL to
+//!   sign in with), once per browser: the sign-in page (`/login`, the token typed in or in the
+//!   URL's fragment, `/login#<token>`, which no request or log carries; the page posts it) sets
+//!   a session cookie (HttpOnly, SameSite=Lax, ten years): a session id and its HMAC under the
+//!   token, not the token. Scripts send `Authorization: Bearer <token>`. Else 401, the page.
+//! - `--strict-auth` (`strict_auth = true` in config.toml): the token from everyone, loopback
+//!   and Tailscale too. For a machine with another reverse proxy in front of the server: one
+//!   that connects from loopback with `Host: 127.0.0.1` and no forwarding header (nginx's
+//!   proxy_pass defaults), or passes a client's `Tailscale-User-Login` on, looks like the above.
 //! - the server's own headless Chromium (pre-runs) signs in with a ticket (`/login?ticket=`:
-//!   an expiry and its HMAC, good for a few minutes) instead of the token on its command line
-//! - with `--trust-loopback` (or `trust_loopback = true` in config.toml), a request from a
-//!   loopback address for a loopback name (`Host: localhost:8656`, `127.0.0.1`, `[::1]`; not a
-//!   name that only resolves there: DNS rebinding) with no proxy's forwarding headers needs
-//!   nothing: for a machine nothing proxies to. Off by default: a reverse proxy on this
-//!   machine connects from loopback, and one that sets `Host: 127.0.0.1` and adds no
-//!   forwarding header (nginx's defaults do both) is not told apart from a local browser.
+//!   an expiry and its HMAC, good for a few minutes) when the token is needed
 //! - on top of that, writes only from this origin's own pages (see `same_origin_write`)
 //!
 //! `ippai token --new` makes another (the server reads it at its start: restart it); it ends
@@ -37,7 +43,8 @@ const TICKET_SECS: u64 = 300;
 pub struct Auth {
     token: String,
     key: hmac::Key,
-    trust_loopback: bool,
+    /// the token from everyone (--strict-auth)
+    strict: bool,
 }
 
 /// The token in `path`, made (random, 128 bits, readable by this user only) when there is none
@@ -86,12 +93,12 @@ fn now() -> u64 {
 }
 
 impl Auth {
-    pub fn load(path: &Path, trust_loopback: bool) -> Result<Arc<Auth>> {
-        Ok(Self::with(&token(path, false)?, trust_loopback))
+    pub fn load(path: &Path, strict: bool) -> Result<Arc<Auth>> {
+        Ok(Self::with(&token(path, false)?, strict))
     }
 
-    fn with(token: &str, trust_loopback: bool) -> Arc<Auth> {
-        Arc::new(Auth { token: token.into(), key: hmac::Key::new(hmac::HMAC_SHA256, token.as_bytes()), trust_loopback })
+    fn with(token: &str, strict: bool) -> Arc<Auth> {
+        Arc::new(Auth { token: token.into(), key: hmac::Key::new(hmac::HMAC_SHA256, token.as_bytes()), strict })
     }
 
     fn matches(&self, given: &str) -> bool {
@@ -158,6 +165,11 @@ fn local(peer: SocketAddr, h: &HeaderMap) -> bool {
         && FORWARDED.iter().all(|f| !h.contains_key(*f))
 }
 
+/// A request `tailscale serve` on this machine forwarded for a tailnet user.
+fn tailnet(peer: SocketAddr, h: &HeaderMap) -> bool {
+    peer.ip().is_loopback() && h.get("tailscale-user-login").and_then(|v| v.to_str().ok()).is_some_and(|v| !v.trim().is_empty())
+}
+
 /// Where to go after signing in: a path of this server's (not `//host`, which is another one).
 fn next_path(next: Option<String>) -> String {
     next.filter(|n| n.starts_with('/') && !n.starts_with("//") && !n.starts_with("/\\") && !n.contains(['\r', '\n'])).unwrap_or_else(|| "/".into())
@@ -212,14 +224,14 @@ async fn login(auth: &Auth, req: Request) -> Response {
     page(StatusCode::OK, "サインインしてください。", &next)
 }
 
-/// The server's front door (both listeners): `/login`, then everything only signed in (or, with
-/// --trust-loopback, from this machine).
+/// The server's front door (both listeners): `/login`, then everything from this machine or
+/// the tailnet (unless --strict-auth), or signed in.
 pub async fn guard(State(auth): State<Arc<Auth>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, req: Request<Body>, next: Next) -> Response {
     if req.uri().path() == "/login" {
         return login(&auth, req).await;
     }
     let h = req.headers();
-    if (auth.trust_loopback && local(peer, h)) || auth.signed_in(h) {
+    if (!auth.strict && (local(peer, h) || tailnet(peer, h))) || auth.signed_in(h) {
         return next.run(req).await;
     }
     let back = req.uri().path_and_query().map_or("/", |p| p.as_str()).to_string();
@@ -247,7 +259,7 @@ mod tests {
     }
 
     async fn status_with(trust: bool, peer: &str, req: axum::http::request::Builder) -> StatusCode {
-        send(Auth::with(T, trust), peer, req, "").await.0
+        send(Auth::with(T, !trust), peer, req, "").await.0
     }
 
     async fn status(peer: &str, req: axum::http::request::Builder) -> StatusCode {
@@ -270,16 +282,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn loopback_needs_the_token_unless_trusted() {
-        // a reverse proxy on this machine that sets Host: 127.0.0.1 and no forwarding header
-        // (nginx's proxy_pass defaults) looks exactly like a browser here: so by default
-        // nothing goes without the token, from loopback either
+    async fn this_machine_needs_nothing_unless_strict() {
         for host in ["localhost:8656", "127.0.0.1:8656", "[::1]:8656", "app.localhost", "127.0.0.1"] {
-            assert_eq!(status("127.0.0.1:5000", get_(host, "/x")).await, StatusCode::UNAUTHORIZED, "{host}");
-            assert_eq!(status_with(true, "127.0.0.1:5000", get_(host, "/x")).await, StatusCode::OK, "{host} trusted");
+            assert_eq!(status_with(true, "127.0.0.1:5000", get_(host, "/x")).await, StatusCode::OK, "{host}");
+            // --strict-auth: a reverse proxy that sets Host: 127.0.0.1 and no forwarding header
+            // (nginx's proxy_pass defaults) looks exactly like this
+            assert_eq!(status("127.0.0.1:5000", get_(host, "/x")).await, StatusCode::UNAUTHORIZED, "{host} strict");
         }
-        assert_eq!(status("[::1]:5000", get_("[::1]:8656", "/x")).await, StatusCode::UNAUTHORIZED);
         assert_eq!(status_with(true, "[::1]:5000", get_("[::1]:8656", "/x")).await, StatusCode::OK);
+        assert_eq!(status("[::1]:5000", get_("[::1]:8656", "/x")).await, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn tailscale_serve_needs_nothing_unless_strict() {
+        let ts = || get_("box.example.ts.net", "/x").header("tailscale-user-login", "kota@example.com").header("x-forwarded-for", "100.64.0.2");
+        assert_eq!(status_with(true, "127.0.0.1:5000", ts()).await, StatusCode::OK);
+        assert_eq!(status_with(true, "127.0.0.1:5000", ts().method("PUT")).await, StatusCode::OK);
+        assert_eq!(status("127.0.0.1:5000", ts()).await, StatusCode::UNAUTHORIZED, "strict");
+        // the header from elsewhere than this machine (a device sending it itself), or empty
+        assert_eq!(status_with(true, "100.64.0.2:5000", ts()).await, StatusCode::UNAUTHORIZED);
+        let empty = get_("box.example.ts.net", "/x").header("tailscale-user-login", " ").header("x-forwarded-for", "100.64.0.2");
+        assert_eq!(status_with(true, "127.0.0.1:5000", empty).await, StatusCode::UNAUTHORIZED);
+        // Funnel (public): forwarded, no user
+        let funnel = get_("box.example.ts.net", "/x").header("x-forwarded-for", "8.8.8.8").header("tailscale-funnel-request", "?1");
+        assert_eq!(status_with(true, "127.0.0.1:5000", funnel).await, StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
@@ -288,8 +314,8 @@ mod tests {
         // another device
         assert_eq!(t("100.64.0.2:5000", get_("100.64.0.1:8656", "/x")).await, StatusCode::UNAUTHORIZED);
         assert_eq!(t("100.64.0.2:5000", get_("127.0.0.1:8656", "/x")).await, StatusCode::UNAUTHORIZED, "a Host of loopback from elsewhere");
-        // a proxy that says it forwards (tailscale serve, a tunnel)
-        for fwd in ["x-forwarded-for", "forwarded", "x-real-ip", "x-forwarded-host", "tailscale-user-login"] {
+        // a proxy that says it forwards (a tunnel, another proxy)
+        for fwd in ["x-forwarded-for", "forwarded", "x-real-ip", "x-forwarded-host"] {
             let r = get_("127.0.0.1:8656", "/x").header(fwd, "100.64.0.2");
             assert_eq!(t("127.0.0.1:5000", r).await, StatusCode::UNAUTHORIZED, "{fwd}");
         }
@@ -314,7 +340,7 @@ mod tests {
 
     #[tokio::test]
     async fn sign_in_posts_the_token_for_a_session() {
-        let auth = Auth::with(T, false);
+        let auth = Auth::with(T, true);
         let host = "box.example.ts.net";
         let r = post_login(host).header("x-forwarded-for", "1.2.3.4").header("x-forwarded-proto", "https");
         let (s, h, _) = send(auth.clone(), "127.0.0.1:5000", r, &format!("token={T}&next=%2Fplay.html%3Fgame%3Dg")).await;
@@ -331,7 +357,7 @@ mod tests {
         assert_ne!(cookie, cookie2);
         assert_eq!(to2, "/");
         // a session of another token's (`ippai token --new` ends them), a forged or cut one
-        assert_eq!(send(Auth::with("fedcba9876543210fedcba9876543210", false), "127.0.0.1:5000", with(&cookie), "").await.0, StatusCode::UNAUTHORIZED);
+        assert_eq!(send(Auth::with("fedcba9876543210fedcba9876543210", true), "127.0.0.1:5000", with(&cookie), "").await.0, StatusCode::UNAUTHORIZED);
         let v = cookie.split_once('=').unwrap().1;
         let (id, tag) = v.split_once('.').unwrap();
         let flipped = format!("{COOKIE}={id}.{}{}", if tag.starts_with('0') { '1' } else { '0' }, &tag[1..]);
@@ -350,7 +376,7 @@ mod tests {
 
     #[tokio::test]
     async fn sign_in_goes_back_to_this_server_only() {
-        let auth = Auth::with(T, false);
+        let auth = Auth::with(T, true);
         for (next, to) in [("%2F%2Fevil.example%2F", "/"), ("https%3A%2F%2Fevil.example", "/"), ("%2F%5Cevil.example", "/"), ("%2Fa%0D%0ASet-Cookie%3A%20x", "/"), ("%2Fplay.html", "/play.html")] {
             let (_, h, _) = send(auth.clone(), "100.64.0.2:5000", post_login("h"), &format!("token={T}&next={next}")).await;
             assert_eq!(session(&h).1, to, "{next}");
@@ -365,7 +391,7 @@ mod tests {
 
     #[tokio::test]
     async fn pre_runs_sign_in_with_a_ticket() {
-        let auth = Auth::with(T, false);
+        let auth = Auth::with(T, true);
         let t = auth.ticket(60);
         assert!(!t.contains(T));
         let (s, h, _) = send(auth.clone(), "127.0.0.1:5000", get_("127.0.0.1:8656", &format!("/login?ticket={t}&next=%2Fplay.html%3Fgame%3Dg%26autostart")), "").await;
@@ -375,7 +401,7 @@ mod tests {
         let old = auth.signed("ticket", &(now() - 1).to_string());
         let far = auth.signed("ticket", &(now() + TICKET_SECS + 60).to_string());
         let forged = format!("{}.{}", now() + 60, "0".repeat(32));
-        let other = Auth::with("fedcba9876543210fedcba9876543210", false).ticket(60);
+        let other = Auth::with("fedcba9876543210fedcba9876543210", true).ticket(60);
         let session_as_ticket = auth.new_session();
         for bad in [old, far, forged, other, session_as_ticket] {
             let (s, h, _) = send(auth.clone(), "127.0.0.1:5000", get_("127.0.0.1:8656", &format!("/login?ticket={bad}")), "").await;
