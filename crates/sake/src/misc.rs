@@ -862,19 +862,37 @@ fn VerQueryValueW(c: &mut Ctx) -> u32 {
 // ---------------------------------------------------------------------------------------------
 // ole32 / oleaut32
 
-fn CoInitialize(_: &mut Ctx) -> u32 {
-    0
+/// Each thread's CoInitialize and OleInitialize counts (OleInitialize counts for both): a
+/// repeated initialization is S_FALSE, and drag and drop needs both
+static COM: Mutex<Option<HashMap<u32, (u32, u32)>>> = Mutex::new(None);
+fn com<R>(f: impl FnOnce(&mut (u32, u32)) -> R) -> R {
+    f(COM.lock().unwrap().get_or_insert_with(HashMap::default).entry(crate::cur().tid).or_default())
 }
-fn CoInitializeEx(_: &mut Ctx) -> u32 {
-    0
+fn CoInitialize(_: &mut Ctx) -> u32 {
+    com(|n| {
+        n.0 += 1;
+        (n.0 > 1) as u32
+    })
+}
+fn CoInitializeEx(c: &mut Ctx) -> u32 {
+    CoInitialize(c)
 }
 fn OleInitialize(_: &mut Ctx) -> u32 {
-    0
+    com(|n| {
+        n.0 += 1;
+        n.1 += 1;
+        (n.1 > 1) as u32
+    })
 }
 fn CoUninitialize(_: &mut Ctx) -> u32 {
+    com(|n| n.0 = n.0.saturating_sub(1));
     0
 }
 fn OleUninitialize(_: &mut Ctx) -> u32 {
+    com(|n| {
+        n.0 = n.0.saturating_sub(1);
+        n.1 = n.1.saturating_sub(1);
+    });
     0
 }
 
@@ -1587,11 +1605,200 @@ fn UuidIsNil(c: &mut Ctx) -> u32 {
     put32(c.a(1), 0);
     (c.a(0) == 0 || mem::slice(c.a(0), 16).iter().all(|&b| b == 0)) as u32
 }
-fn RegisterDragDrop(_: &mut Ctx) -> u32 {
+// OLE drag and drop: a window's IDropTarget is its property "OleDropTargetInterface"
+const DROP_PROP: &str = "oledroptargetinterface";
+const DRAGDROP_S_DROP: u32 = 0x0004_0100;
+const DRAGDROP_E_NOTREGISTERED: u32 = 0x8004_0100;
+const DRAGDROP_E_ALREADYREGISTERED: u32 = 0x8004_0101;
+const DRAGDROP_E_INVALIDHWND: u32 = 0x8004_0102;
+const CO_E_NOTINITIALIZED: u32 = 0x8004_01f0;
+
+/// An argument of a COM call: a pointer or DWORD, or a POINTL by value (two DWORDs on x86,
+/// one register on x64)
+#[derive(Clone, Copy)]
+enum Arg {
+    P(u32),
+    Pt(i32, i32),
+}
+/// Calls method `index` of COM object `obj`
+fn method(c: &mut Ctx, obj: u32, index: u32, args: &[Arg]) -> u32 {
+    let f = mem::rp(mem::rp(obj) + index * mem::ps());
+    if mem::x64() {
+        let mut a = vec![mem::widen(obj)];
+        for &x in args {
+            a.push(match x {
+                Arg::P(p) => mem::widen(p),
+                Arg::Pt(x, y) => x as u32 as u64 | (y as u32 as u64) << 32,
+            });
+        }
+        return crate::call64(c.cpu, mem::widen(f), &a) as u32;
+    }
+    let mut a = vec![obj];
+    for &x in args {
+        match x {
+            Arg::P(p) => a.push(p),
+            Arg::Pt(x, y) => a.extend([x as u32, y as u32]),
+        }
+    }
+    c.call(f, &a)
+}
+
+/// Drag and drop needs OleInitialize (without it E_OUTOFMEMORY, without COM
+/// CO_E_NOTINITIALIZED, as Windows)
+fn drag_ready() -> Result<(), u32> {
+    let (com_n, ole_n) = com(|n| *n);
+    if ole_n == 0 {
+        Err(0x8007_000e)
+    } else if com_n == 0 {
+        Err(CO_E_NOTINITIALIZED)
+    } else {
+        Ok(())
+    }
+}
+/// RegisterDragDrop(hwnd, IDropTarget*): the target, AddRef'd, as the window's property
+fn RegisterDragDrop(c: &mut Ctx) -> u32 {
+    let (h, t) = (c.a(0), c.a(1));
+    if let Err(e) = drag_ready() {
+        return e;
+    }
+    if t == 0 {
+        return 0x8007_0057;
+    }
+    if h == 0 || !crate::user::is_window(h) {
+        return DRAGDROP_E_INVALIDHWND;
+    }
+    if crate::user::prop(h, DROP_PROP).is_some() {
+        return DRAGDROP_E_ALREADYREGISTERED;
+    }
+    method(c, t, 1, &[]);
+    crate::user::set_prop(h, DROP_PROP, Some(t));
     0
 }
-fn RevokeDragDrop(_: &mut Ctx) -> u32 {
+/// RevokeDragDrop(hwnd): the target released
+fn RevokeDragDrop(c: &mut Ctx) -> u32 {
+    let h = c.a(0);
+    if h == 0 || !crate::user::is_window(h) {
+        return DRAGDROP_E_INVALIDHWND;
+    }
+    let Some(t) = crate::user::set_prop(h, DROP_PROP, None) else { return DRAGDROP_E_NOTREGISTERED };
+    method(c, t, 2, &[]);
     0
+}
+/// The MK_* state of the mouse buttons and modifier keys, and whether Escape is down
+fn drag_keys() -> (u32, bool) {
+    let k = crate::user::key_states();
+    let down = |vk: usize| k[vk] & 0x80 != 0;
+    let mut m = 0;
+    for (vk, bit) in [(1, 1), (2, 2), (0x10, 4), (0x11, 8), (4, 0x10), (0x12, 0x20)] {
+        if down(vk) {
+            m |= bit;
+        }
+    }
+    (m, down(0x1b))
+}
+/// DoDragDrop(IDataObject*, IDropSource*, allowed effects, &effect): until the source's
+/// QueryContinueDrag says to drop or cancel, the target under the cursor gets DragEnter
+/// (a new one; the one left DragLeave) and DragOver, the source GiveFeedback of what the
+/// target accepts (within the allowed effects). On a drop the target gets Drop when it accepts
+/// something, else DragLeave; its failure is the answer. As Windows (Wine's dragdrop test).
+fn DoDragDrop(c: &mut Ctx) -> u32 {
+    let (data, src, allowed, out) = (c.a(0), c.a(1), c.a(2), c.a(3));
+    if drag_ready().is_err() {
+        return CO_E_NOTINITIALIZED;
+    }
+    if data == 0 || src == 0 || out == 0 {
+        return 0x8007_0057;
+    }
+    // (first the data's formats: Windows enumerates them twice, then asks for each)
+    let e = mem::heap_alloc(8 + 64 * 8, true);
+    if method(c, data, 8, &[Arg::P(1), Arg::P(e)]) == 0 && mem::rp(e) != 0 {
+        let en = mem::rp(e);
+        let mut n = 0;
+        for pass in 0..2 {
+            if pass == 1 {
+                method(c, en, 5, &[]);
+            }
+            n = 0;
+            while n < 8 && method(c, en, 3, &[Arg::P(1), Arg::P(e + 8 + 64 * n), Arg::P(0)]) == 0 {
+                n += 1;
+            }
+        }
+        for i in 0..n {
+            method(c, data, 5, &[Arg::P(e + 8 + 64 * i)]);
+        }
+        method(c, en, 2, &[]);
+    }
+    mem::heap_free(e);
+    // (the mouse captured meanwhile, by the window the drag starts over)
+    let (x0, y0) = crate::user::cursor_pos();
+    let prev = crate::user::capture(crate::user::window_from_point(x0, y0));
+    let ef = mem::heap_alloc(4, true);
+    // (the target entered and what it accepts)
+    let mut cur: Option<(u32, u32)> = None;
+    let mut accepted = 0;
+    let hr = loop {
+        let (keys, esc) = drag_keys();
+        let hr = method(c, src, 3, &[Arg::P(esc as u32), Arg::P(keys)]);
+        let (x, y) = crate::user::cursor_pos();
+        let pt = Arg::Pt(x, y);
+        let at = crate::user::prop_at(x, y, DROP_PROP);
+        if hr == 0 || hr == DRAGDROP_S_DROP {
+            if cur.is_some() && cur != at {
+                method(c, cur.unwrap().1, 5, &[]);
+                cur = None;
+            }
+            if cur.is_none() {
+                if let Some((_, t)) = at {
+                    w32(ef, allowed);
+                    method(c, t, 3, &[Arg::P(data), Arg::P(keys), pt, Arg::P(ef)]);
+                    accepted = r32(ef) & allowed;
+                    cur = at;
+                } else {
+                    accepted = 0;
+                }
+                method(c, src, 4, &[Arg::P(accepted)]);
+            }
+        }
+        match hr {
+            0 => {
+                if let Some((_, t)) = cur {
+                    w32(ef, allowed);
+                    method(c, t, 4, &[Arg::P(keys), pt, Arg::P(ef)]);
+                    accepted = r32(ef) & allowed;
+                }
+                method(c, src, 4, &[Arg::P(accepted)]);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            DRAGDROP_S_DROP => {
+                let mut effect = 0;
+                let mut hr = DRAGDROP_S_DROP;
+                if let Some((_, t)) = cur {
+                    if accepted != 0 {
+                        w32(ef, allowed);
+                        let r = method(c, t, 6, &[Arg::P(data), Arg::P(keys), pt, Arg::P(ef)]);
+                        effect = r32(ef) & allowed;
+                        if r & 0x8000_0000 != 0 {
+                            hr = r;
+                        }
+                    } else {
+                        method(c, t, 5, &[]);
+                    }
+                }
+                w32(out, effect);
+                break hr;
+            }
+            _ => {
+                if let Some((_, t)) = cur {
+                    method(c, t, 5, &[]);
+                }
+                w32(out, 0);
+                break hr;
+            }
+        }
+    };
+    mem::heap_free(ef);
+    crate::user::capture(prev);
+    hr
 }
 
 pub(crate) fn bstr_alloc(chars: &[u16]) -> u32 {
@@ -3219,7 +3426,7 @@ pub fn init() {
     implement("rpcrt4", "RpcStringFreeW", RpcStringFreeA);
     reg!("ole32"; CoInitialize, CoInitializeEx, OleInitialize, CoUninitialize, OleUninitialize, CoCreateInstance,
         CoTaskMemAlloc, CoTaskMemRealloc, CoTaskMemFree, PropVariantClear, CoGetMalloc, CoCreateGuid, CoMarshalInterface, CoUnmarshalInterface, CoReleaseMarshalData, IsEqualGUID, StringFromGUID2, StringFromCLSID, StringFromIID, CLSIDFromString, CLSIDFromProgID, IIDFromString,
-        RegisterDragDrop, RevokeDragDrop);
+        RegisterDragDrop, RevokeDragDrop, DoDragDrop);
     reg!("oleaut32"; SysAllocString, SysAllocStringLen, SysAllocStringByteLen, SysReAllocString,
         SysReAllocStringLen, SysFreeString, SysStringLen, SysStringByteLen, VariantInit, VariantClear, VariantCopy,
         VariantCopyInd, VariantChangeTypeEx, VariantChangeType, GetErrorInfo, SetErrorInfo);

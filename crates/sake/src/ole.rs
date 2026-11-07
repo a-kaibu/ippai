@@ -11,6 +11,7 @@ use crate::mem::{self, put32, r32, w32};
 
 const E_NOTIMPL: u32 = 0x8000_4001;
 const E_FAIL: u32 = 0x8000_4005;
+const E_OUTOFMEMORY: u32 = 0x8007_000e;
 
 use crate::api::vtable;
 
@@ -51,7 +52,7 @@ fn s_release(c: &mut Ctx) -> u32 {
     w32(this + 28, n);
     if n == 0 {
         if r32(this + 16) != 0 && r32(this + 4) != 0 {
-            mem::heap_free(r32(this + 4));
+            crate::k32::global_free(r32(this + 4));
         }
         mem::heap_free(this);
     }
@@ -62,7 +63,7 @@ fn s_read(c: &mut Ctx) -> u32 {
     let (h, size, pos) = (r32(this + 4), r32(this + 8), r32(this + 12));
     let n = cb.min(size.saturating_sub(pos));
     if n > 0 {
-        mem::copy(pv, h + pos, n);
+        mem::copy(pv, crate::k32::global_ptr(h) + pos, n);
     }
     w32(this + 12, pos + n);
     put32(got, n);
@@ -71,16 +72,17 @@ fn s_read(c: &mut Ctx) -> u32 {
 }
 fn s_write(c: &mut Ctx) -> u32 {
     let (this, pv, cb, done) = (c.a(0), c.a(1), c.a(2), c.a(3));
-    let (mut h, size, pos) = (r32(this + 4), r32(this + 8), r32(this + 12));
+    let (size, pos) = (r32(this + 8), r32(this + 12));
     let end = pos + cb;
     if end > size {
-        if h == 0 || end > mem::heap_size(h) {
-            h = if h == 0 { mem::heap_alloc(end.max(64), true) } else { mem::heap_realloc(h, end * 2, true) };
-            w32(this + 4, h);
+        // (room for twice as much: writes in small pieces stay linear)
+        let h = r32(this + 4);
+        if (crate::k32::global_ptr(h) == 0 || end > crate::k32::global_size(h)) && !grow(this, end.saturating_mul(2).max(64)) {
+            return E_OUTOFMEMORY;
         }
         w32(this + 8, end);
     }
-    mem::copy(h + pos, pv, cb);
+    mem::copy(crate::k32::global_ptr(r32(this + 4)) + pos, pv, cb);
     w32(this + 12, end);
     put32(done, cb);
     0
@@ -108,13 +110,24 @@ fn s_seek(c: &mut Ctx) -> u32 {
 }
 fn s_set_size(c: &mut Ctx) -> u32 {
     let (this, n) = (c.a(0), c.a(1));
-    let h = r32(this + 4);
-    if n > mem::heap_size(h) || h == 0 {
-        let h = if h == 0 { mem::heap_alloc(n.max(64), true) } else { mem::heap_realloc(h, n, true) };
-        w32(this + 4, h);
+    if !grow(this, n) {
+        return E_OUTOFMEMORY;
     }
     w32(this + 8, n);
     0
+}
+/// Makes the stream's HGLOBAL hold at least `n` bytes (GlobalReAlloc, GMEM_MOVEABLE: a
+/// moveable handle stays, a fixed block may move); false: no memory
+fn grow(this: u32, n: u32) -> bool {
+    let h = r32(this + 4);
+    if crate::k32::global_ptr(h) != 0 && n <= crate::k32::global_size(h) {
+        return true;
+    }
+    let g = crate::k32::global_realloc(h, n, 2 | 0x40, true);
+    if g != 0 {
+        w32(this + 4, g);
+    }
+    g != 0
 }
 fn s_stat(c: &mut Ctx) -> u32 {
     let (this, p) = (c.a(0), c.a(1));
@@ -134,7 +147,7 @@ fn s_copy_to(c: &mut Ctx) -> u32 {
     let done = mem::heap_alloc(4, true);
     // (IStream::Write is the 5th method)
     let f = mem::rp(mem::rp(dst) + 4 * mem::ps());
-    let hr = c.call(f, &[dst, h + pos, n, done]);
+    let hr = c.call(f, &[dst, crate::k32::global_ptr(h) + pos, n, done]);
     let w = r32(done);
     mem::heap_free(done);
     w32(this + 12, pos + n);
@@ -194,14 +207,15 @@ fn CreateStreamOnHGlobal(c: &mut Ctx) -> u32 {
     if out == 0 {
         return 0x8007_0057; // E_INVALIDARG
     }
-    let (h, size) = if h == 0 { (mem::heap_alloc(64, true), 0) } else { (h, mem::heap_size(h)) };
+    // (no HGLOBAL: a new moveable one, empty, as Windows)
+    let (h, size) = if h == 0 { (crate::k32::global_alloc(2 | 0x2000, 0), 0) } else { (h, crate::k32::global_size(h)) };
     mem::wp(out, new_stream(h, size, del != 0 || c.a(0) == 0));
     0
 }
 /// SHCreateMemStream(data, size): an IStream over a copy of the data.
 fn SHCreateMemStream(c: &mut Ctx) -> u32 {
     let (p, n) = (c.a(0), c.a(1));
-    let h = mem::heap_alloc(n.max(64), true);
+    let h = crate::k32::global_alloc(0x40, n.max(64));
     if p != 0 && n != 0 {
         mem::write(h, &mem::slice(p, n));
     }

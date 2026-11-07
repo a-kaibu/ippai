@@ -175,6 +175,9 @@ fn seek_to(c: &mut Ctx, h: u32, off: u32) {
 /// NtReadFile(h, event, apc, apcctx, iosb, buf, len, &offset, key)
 fn nt_read_file(c: &mut Ctx) -> u32 {
     let (h, io, buf, len, off) = (c.a(0), c.a(4), c.a(5), c.a(6), c.a(7));
+    if let Some(p) = crate::pipe::handle(h) {
+        return crate::pipe::nt_read(h, p, crate::pipe::NtIo { iosb: io, event: c.a(1), apc: c.a(2), ctx: c.a(3) }, buf, len);
+    }
     seek_to(c, h, off);
     let n = mem::heap_alloc(4, true);
     let ok = k32(c, "ReadFile", &[h, buf, len, n, 0]);
@@ -194,6 +197,9 @@ fn nt_read_file(c: &mut Ctx) -> u32 {
 }
 fn nt_write_file(c: &mut Ctx) -> u32 {
     let (h, io, buf, len, off) = (c.a(0), c.a(4), c.a(5), c.a(6), c.a(7));
+    if let Some(p) = crate::pipe::handle(h) {
+        return crate::pipe::nt_write(h, p, crate::pipe::NtIo { iosb: io, event: c.a(1), apc: c.a(2), ctx: c.a(3) }, buf, len);
+    }
     seek_to(c, h, off);
     let n = mem::heap_alloc(4, true);
     let ok = k32(c, "WriteFile", &[h, buf, len, n, 0]);

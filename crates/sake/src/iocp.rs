@@ -305,6 +305,8 @@ fn overlapped_result(c: &mut Ctx, ex: bool) -> u32 {
         last_error(nt_to_win32(s));
         return 0;
     }
+    // (success clears the last error: tests/winref/golden/pipes-32)
+    last_error(0);
     1
 }
 
@@ -316,15 +318,16 @@ pub fn init() {
     implement(d, "PostQueuedCompletionStatus", PostQueuedCompletionStatus);
     implement(d, "GetOverlappedResult", |c| overlapped_result(c, false));
     implement(d, "GetOverlappedResultEx", |c| overlapped_result(c, true));
-    // CancelIo(h) / CancelIoEx(h, ov): only sockets have IO that waits
+    // CancelIo(h) / CancelIoEx(h, ov): sockets' and pipes' IO waits
     implement(d, "CancelIo", |c| {
         let h = c.a(0);
         crate::ws2::cancel(h, 0, true);
+        crate::pipe::cancel_io(h, 0, true);
         1
     });
     implement(d, "CancelIoEx", |c| {
         let (h, ov) = (c.a(0), c.a(1));
-        if crate::ws2::cancel(h, ov, false) {
+        if crate::ws2::cancel(h, ov, false) | crate::pipe::cancel_io(h, ov, false) {
             1
         } else {
             last_error(1168); // ERROR_NOT_FOUND

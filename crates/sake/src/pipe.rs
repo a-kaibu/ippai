@@ -130,9 +130,24 @@ type Op = Box<dyn FnMut(&mut Kern) -> Result<(u32, u32), u32> + Send>;
 struct Pending {
     h: u32,
     tid: u32,
-    ov: u32,
+    done: Done,
     cancel: bool,
     op: Op,
+}
+/// Where finished I/O goes: an OVERLAPPED (kernelbase's calls), or an NT call's
+/// IO_STATUS_BLOCK, event and APC
+#[derive(Clone, Copy)]
+enum Done {
+    Ov(u32),
+    Nt(NtIo),
+}
+/// NtReadFile / NtWriteFile's (iosb, event, APC routine, APC context)
+#[derive(Clone, Copy)]
+pub struct NtIo {
+    pub iosb: u32,
+    pub event: u32,
+    pub apc: u32,
+    pub ctx: u32,
 }
 static PENDING_IO: Mutex<Vec<Pending>> = Mutex::new(Vec::new());
 static WATCHING: AtomicBool = AtomicBool::new(false);
@@ -156,15 +171,18 @@ pub fn pump() {
             g.retain_mut(|p| match if p.cancel { Err(kern::CANCELLED) } else { (p.op)(k) } {
                 Err(PENDING) => true,
                 r => {
-                    done.push((p.ov, r));
+                    done.push((p.done, p.tid, r));
                     false
                 }
             })
         });
     }
-    for (ov, r) in done {
+    for (d, tid, r) in done {
         let (n, s) = r.unwrap_or_else(|e| (0, e));
-        ov_done(ov, s, n);
+        match d {
+            Done::Ov(ov) => ov_done(ov, s, n),
+            Done::Nt(nt) => nt_done(nt, tid, s, n),
+        }
     }
 }
 
@@ -209,7 +227,7 @@ fn io(h: u32, p: Handle, ov: u32, out: u32, mut op: Op) -> u32 {
     let mut r = kw(&mut op);
     if r == Err(PENDING) {
         if p.ovl && ov != 0 {
-            PENDING_IO.lock().unwrap().push(Pending { h, tid: crate::cur().tid, ov, cancel: false, op });
+            PENDING_IO.lock().unwrap().push(Pending { h, tid: crate::cur().tid, done: Done::Ov(ov), cancel: false, op });
             // (a change between the first try and now)
             pump();
             watch();
@@ -234,6 +252,73 @@ fn io(h: u32, p: Handle, ov: u32, out: u32, mut op: Op) -> u32 {
         // (a failure at once leaves the OVERLAPPED pending, as on Windows)
         Err(s) => fail(s),
     }
+}
+
+/// An NT call's I/O finished: its IO_STATUS_BLOCK (Status, Information), its event, its APC
+/// queued for the thread that asked (routine(context, iosb, 0))
+fn nt_done(nt: NtIo, tid: u32, status: u32, n: u32) {
+    if nt.iosb != 0 {
+        mem::wp(nt.iosb + mem::ps(), n);
+        mem::wp(nt.iosb, status);
+    }
+    if nt.event != 0 {
+        event_set(nt.event, true);
+    }
+    if nt.apc != 0 {
+        crate::apc::queue_args(tid, nt.apc, &[nt.ctx, nt.iosb, 0]);
+    }
+}
+/// `op` as NtReadFile / NtWriteFile run it: on a handle opened for overlapped I/O, I/O that
+/// has to wait is STATUS_PENDING (finished later: iosb, event, APC), otherwise it is waited
+/// for; the status. A failure at once leaves the iosb as it was.
+fn nt_io(h: u32, p: Handle, nt: NtIo, mut op: Op) -> u32 {
+    // (the event is reset first)
+    if nt.event != 0 {
+        event_set(nt.event, false);
+    }
+    let mut r = kw(&mut op);
+    if r == Err(PENDING) {
+        if p.ovl {
+            PENDING_IO.lock().unwrap().push(Pending { h, tid: crate::cur().tid, done: Done::Nt(nt), cancel: false, op });
+            pump();
+            watch();
+            return PENDING;
+        }
+        r = kern::block(None, &|| false, &mut op);
+        pump();
+    }
+    match r {
+        Ok((n, s)) => {
+            nt_done(nt, crate::cur().tid, s, n);
+            s
+        }
+        Err(s) => s,
+    }
+}
+/// NtReadFile on a pipe handle
+pub fn nt_read(h: u32, p: Handle, nt: NtIo, buf: u32, n: u32) -> u32 {
+    if !p.read {
+        return kern::ACCESS_DENIED;
+    }
+    let e = p.end;
+    nt_io(
+        h,
+        p,
+        nt,
+        Box::new(move |k| {
+            let (d, more) = k.read(e, n)?;
+            mem::write(buf, &d);
+            Ok((d.len() as u32, if more { kern::BUFFER_OVERFLOW } else { SUCCESS }))
+        }),
+    )
+}
+/// NtWriteFile on a pipe handle
+pub fn nt_write(h: u32, p: Handle, nt: NtIo, buf: u32, n: u32) -> u32 {
+    if !p.write {
+        return kern::ACCESS_DENIED;
+    }
+    let (e, data) = (p.end, mem::slice(buf, n).to_vec());
+    nt_io(h, p, nt, Box::new(move |k| k.write(e, &data).map(|n| (n, SUCCESS))))
 }
 
 /// ReadFile on a pipe handle
@@ -553,6 +638,12 @@ fn cancel(h: u32, pick: impl Fn(&Pending) -> bool) -> bool {
     pump();
     any
 }
+/// CancelIo / CancelIoEx of a pipe handle (iocp.rs's handle sockets too): this thread's I/O,
+/// or anyone's (only that OVERLAPPED's, if given); whether there was any
+pub fn cancel_io(h: u32, ov: u32, this_thread: bool) -> bool {
+    let tid = crate::cur().tid;
+    cancel(h, |p| if this_thread { p.tid == tid } else { ov == 0 || matches!(p.done, Done::Ov(o) if o == ov) })
+}
 /// CancelIo(h): this thread's I/O on it
 fn CancelIo(c: &mut Ctx) -> u32 {
     let tid = crate::cur().tid;
@@ -562,7 +653,7 @@ fn CancelIo(c: &mut Ctx) -> u32 {
 /// CancelIoEx(h, ov): anyone's (that one's, if given)
 fn CancelIoEx(c: &mut Ctx) -> u32 {
     let ov = c.a(1);
-    if cancel(c.a(0), |p| ov == 0 || p.ov == ov) {
+    if cancel(c.a(0), |p| ov == 0 || matches!(p.done, Done::Ov(o) if o == ov)) {
         1
     } else {
         last_error(1168); // ERROR_NOT_FOUND

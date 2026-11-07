@@ -2167,6 +2167,42 @@ fn window_at(s: &State, x: i32, y: i32) -> u32 {
         return h;
     }
 }
+/// The window under screen point (x, y) holding property `key` (lowercase), or its nearest
+/// ancestor that does: (window, value). For OLE drag and drop ("oledroptargetinterface").
+pub(crate) fn prop_at(x: i32, y: i32, key: &str) -> Option<(u32, u32)> {
+    with(|s| {
+        let mut h = window_at(s, x, y);
+        for _ in 0..64 {
+            let w = s.wins.get(&h)?;
+            if let Some(&(_, v)) = w.props.iter().find(|(k, _)| k == key) {
+                return Some((h, v));
+            }
+            h = w.parent;
+        }
+        None
+    })
+}
+/// A window's property `key` (lowercase): set (Some) or removed (None); the old value
+pub(crate) fn set_prop(h: u32, key: &str, v: Option<u32>) -> Option<u32> {
+    with(|s| {
+        let w = s.wins.get_mut(&h)?;
+        let old = w.props.iter().find(|(k, _)| k == key).map(|p| p.1);
+        w.props.retain(|(k, _)| k != key);
+        if let Some(v) = v {
+            w.props.push((key.to_string(), v));
+        }
+        old
+    })
+}
+pub(crate) fn prop(h: u32, key: &str) -> Option<u32> {
+    with(|s| s.wins.get(&h)?.props.iter().find(|(k, _)| k == key).map(|p| p.1))
+}
+pub(crate) fn window_from_point(x: i32, y: i32) -> u32 {
+    with(|s| window_at(s, x, y))
+}
+pub(crate) fn capture(h: u32) -> u32 {
+    with(|s| std::mem::replace(&mut s.capture, h))
+}
 fn WindowFromPoint(c: &mut Ctx) -> u32 {
     let (x, y) = c.pt(0);
     with(|s| window_at(s, x, y))

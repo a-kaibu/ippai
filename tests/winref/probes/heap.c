@@ -86,5 +86,43 @@ int main(void) {
         GetSystemInfo(&si);
         printf("page %lu granularity %lu\n", si.dwPageSize, si.dwAllocationGranularity);
     }
+    {
+        /* a moveable block's handle: the address of the pointer in a {flags, pointer} entry */
+        const ULONG_PTR ps = sizeof(void *);
+        HGLOBAL g = GlobalAlloc(GMEM_MOVEABLE | GMEM_DISCARDABLE, 10);
+        ULONG_PTR *e = (ULONG_PTR *)g - 1;
+        printf("moveable: handle mod %lu entry flags %lx ptr is block %d\n", (unsigned long)((ULONG_PTR)g & (2 * ps - 1)),
+               (unsigned long)e[0], (void *)e[1] == GlobalLock(g));
+        printf("  locked flags %lx GlobalFlags %x\n", (unsigned long)e[0], GlobalFlags(g));
+        for (int i = 0; i < 300; i++) GlobalLock(g);
+        printf("  300 more: flags %lx GlobalFlags %x\n", (unsigned long)e[0], GlobalFlags(g));
+        while (GlobalUnlock(g)) {}
+        printf("  unlocked flags %lx err %lu\n", (unsigned long)e[0], GetLastError());
+        E(GlobalReAlloc(g, 0, GMEM_MOVEABLE) == g);
+        printf("  discarded flags %lx ptr %d\n", (unsigned long)e[0], e[1] != 0);
+        E(GlobalSize(g));
+        E(GlobalFlags(g));
+        E(GlobalLock(g) == NULL);
+        E(GlobalReAlloc(g, 20, GMEM_MOVEABLE) == g);
+        printf("  back flags %lx\n", (unsigned long)e[0]);
+        E(GlobalFree(g) == NULL);
+        printf("  freed: flags used %d aligned %d ptr %d\n", (int)(e[0] & 1), (e[0] & (2 * ps - 1)) == 0, e[1] != 0);
+        HGLOBAL d = GlobalAlloc(GMEM_MOVEABLE | GMEM_DDESHARE, 0);
+        printf("ddeshare empty flags %lx\n", (unsigned long)((ULONG_PTR *)d)[-1]);
+        E(GlobalFlags(d));
+        E(LocalFlags(d));
+        E(GlobalFree(d) == NULL);
+        HLOCAL l = LocalAlloc(LMEM_MOVEABLE | LMEM_DISCARDABLE, 4);
+        E(LocalFlags(l));
+        E(LocalUnlock(l));
+        E(LocalFree(l) == NULL);
+        void *f = GlobalAlloc(GMEM_FIXED, 8);
+        E(GlobalUnlock(f));
+        E(LocalUnlock(f));
+        E(GlobalHandle(f) == f);
+        E(GlobalReAlloc(f, 8, GMEM_MODIFY | GMEM_DISCARDABLE) == f);
+        E(GlobalFree(f) == NULL);
+        E(GlobalHandle(NULL));
+    }
     return 0;
 }

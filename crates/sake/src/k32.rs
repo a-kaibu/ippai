@@ -2556,8 +2556,10 @@ fn HeapReAlloc(c: &mut Ctx) -> u32 {
 fn HeapSize(c: &mut Ctx) -> u32 {
     mem::heap_size(c.a(2))
 }
-fn HeapValidate(_: &mut Ctx) -> u32 {
-    1
+/// HeapValidate(heap, flags, block): a whole heap is valid; a block is one the heap gave
+fn HeapValidate(c: &mut Ctx) -> u32 {
+    let p = c.a(2);
+    (p == 0 || mem::heap_owns(p)) as u32
 }
 fn HeapCompact(_: &mut Ctx) -> u32 {
     0x10_0000
@@ -2577,82 +2579,367 @@ fn RtlAllocateHeap(c: &mut Ctx) -> u32 {
 fn RtlFreeHeap(c: &mut Ctx) -> u32 {
     ok(mem::heap_free(c.a(2)))
 }
-/// The lock counts of the moveable Global/Local blocks (GMEM_MOVEABLE = LMEM_MOVEABLE = 2):
-/// sake's handle of one is its address, as for a fixed block, so this tells the two apart
-static MOVEABLE: Mutex<Option<HashMap<u32, u32>>> = Mutex::new(None);
-fn moveable<R>(f: impl FnOnce(&mut HashMap<u32, u32>) -> R) -> R {
-    f(MOVEABLE.lock().unwrap().get_or_insert_with(HashMap::default))
-}
-fn global_alloc(flags: u32, size: u32) -> u32 {
-    let p = mem::heap_alloc(size.max(1), flags & 0x40 != 0);
-    if p != 0 && flags & 2 != 0 {
-        moveable(|m| m.insert(p, 0));
+/// Moveable Global/Local blocks as Windows keeps them: a handle is the address of the `ptr` of
+/// an entry {flags, ptr} (two pointers, aligned to their size: `handle & (2 * ps - 1) == ps`,
+/// which no heap pointer is) in a table of 0x10000. The flags word: 1 used, 2 moveable,
+/// 4 discardable, 8 discarded (no block), 0x8000 DDE share, the lock count in bits 16-23; a
+/// free entry's is the next free one. Programs look at these (Wine's heap test does).
+mod handles {
+    use super::*;
+    use crate::mem::rp;
+    pub const MAX: u32 = 0x1_0000;
+    pub const USED: u32 = 1;
+    pub const MOVEABLE: u32 = 2;
+    pub const DISCARDABLE: u32 = 4;
+    pub const DISCARDED: u32 = 8;
+    pub const DDESHARE: u32 = 0x8000;
+
+    #[derive(Default)]
+    struct Table {
+        base: u32,
+        /// entries handed out so far, then the free ones (the last freed first)
+        used: u32,
+        free: Vec<u32>,
+        /// a moveable block's handle, by its pointer (GlobalHandle)
+        owner: HashMap<u32, u32>,
     }
-    if p == 0 {
+    static T: Mutex<Option<Table>> = Mutex::new(None);
+    fn with<R>(f: impl FnOnce(&mut Table) -> R) -> R {
+        f(T.lock().unwrap().get_or_insert_with(Table::default))
+    }
+    fn size() -> u32 {
+        2 * mem::ps()
+    }
+    /// A new entry's handle (0: the table is full)
+    pub fn new(flags: u32) -> u32 {
+        with(|t| {
+            if t.base == 0 {
+                t.base = mem::alloc(MAX * size()).unwrap_or(0);
+            }
+            let e = match t.free.pop() {
+                Some(e) => e,
+                None if t.base != 0 && t.used < MAX => {
+                    t.used += 1;
+                    t.base + (t.used - 1) * size()
+                }
+                None => return 0,
+            };
+            mem::wp(e, flags);
+            mem::wp(e + mem::ps(), 0);
+            e + mem::ps()
+        })
+    }
+    /// The entry of handle `h` in use
+    pub fn entry(h: u32) -> Option<u32> {
+        let ps = mem::ps();
+        if h & (2 * ps - 1) != ps {
+            return None;
+        }
+        let e = h - ps;
+        let base = with(|t| t.base);
+        (base != 0 && e >= base && e < base + MAX * size() && rp(e) & USED != 0).then_some(e)
+    }
+    pub fn flags(e: u32) -> u32 {
+        rp(e)
+    }
+    pub fn set_flags(e: u32, f: u32) {
+        mem::wp(e, f);
+    }
+    pub fn ptr(e: u32) -> u32 {
+        rp(e + mem::ps())
+    }
+    pub fn set_ptr(e: u32, p: u32) {
+        let old = ptr(e);
+        mem::wp(e + mem::ps(), p);
+        with(|t| {
+            t.owner.remove(&old);
+            if p != 0 {
+                t.owner.insert(p, e + mem::ps());
+            }
+        });
+    }
+    pub fn release(e: u32) {
+        set_ptr(e, 0);
+        // (a free entry's flags word links the free ones: the next, or the table itself)
+        with(|t| {
+            mem::wp(e, t.free.last().copied().unwrap_or(t.base));
+            t.free.push(e);
+        });
+    }
+    /// The handle of a moveable block's pointer
+    pub fn owner(p: u32) -> Option<u32> {
+        with(|t| t.owner.get(&p).copied())
+    }
+}
+
+/// a block of the heap: a fixed Global/Local block is its pointer
+fn is_block(h: u32) -> bool {
+    h & (2 * mem::ps() - 1) == 0 && mem::heap_owns(h)
+}
+
+/// The memory of an HGLOBAL: a fixed block's pointer, a moveable one's block (0: discarded or
+/// no handle). For sake's own users of HGLOBALs (OLE streams).
+pub(crate) fn global_ptr(h: u32) -> u32 {
+    match handles::entry(h) {
+        Some(e) => handles::ptr(e),
+        None => h,
+    }
+}
+pub(crate) fn global_size(h: u32) -> u32 {
+    if is_block(h) {
+        return mem::heap_size(h);
+    }
+    match handles::entry(h) {
+        Some(e) if handles::ptr(e) != 0 => mem::heap_size(handles::ptr(e)),
+        Some(_) => 0,
+        None => {
+            last_error(6);
+            0
+        }
+    }
+}
+/// GlobalAlloc / LocalAlloc (GMEM_MOVEABLE 2, GMEM_ZEROINIT 0x40, GMEM_DISCARDABLE 0x100,
+/// GMEM_DDESHARE 0x2000): a moveable block of size 0 has no memory (discarded)
+pub(crate) fn global_alloc(flags: u32, size: u32) -> u32 {
+    let zero = flags & 0x40 != 0;
+    if flags & 2 == 0 {
+        let p = mem::heap_alloc(size, zero);
+        if p == 0 {
+            last_error(8);
+        }
+        return p;
+    }
+    let mut f = handles::USED | handles::MOVEABLE;
+    if flags & 0x100 != 0 {
+        f |= handles::DISCARDABLE;
+    }
+    if flags & 0x2000 != 0 {
+        f |= handles::DDESHARE;
+    }
+    if size == 0 {
+        f |= handles::DISCARDED;
+    }
+    let h = handles::new(f);
+    let Some(e) = handles::entry(h) else {
         last_error(8);
+        return 0;
+    };
+    if size != 0 {
+        let p = mem::heap_alloc(size, zero);
+        if p == 0 {
+            handles::release(e);
+            last_error(8);
+            return 0;
+        }
+        handles::set_ptr(e, p);
     }
-    p
-}
-fn global_free(h: u32) -> u32 {
-    moveable(|m| m.remove(&h));
-    mem::heap_free(h);
-    0
-}
-fn global_realloc(h: u32, size: u32, flags: u32) -> u32 {
-    if flags & 0x80 != 0 {
-        // GMEM_MODIFY
-        return h;
-    }
-    let n = mem::heap_realloc(h, size.max(1), flags & 0x40 != 0);
-    if n != 0 && n != h {
-        moveable(|m| m.remove(&h).map(|k| m.insert(n, k)));
-    }
-    n
-}
-fn global_lock(h: u32) -> u32 {
-    moveable(|m| m.get_mut(&h).map(|k| *k = (*k + 1).min(0xff)));
     h
 }
-/// Whether the block stays locked; unlocking one that is not locked is ERROR_NOT_LOCKED, the
-/// last unlock clears the error
-fn global_unlock(h: u32) -> u32 {
-    match moveable(|m| m.get_mut(&h).map(|k| std::mem::replace(k, k.saturating_sub(1)))) {
-        Some(0) => {
-            last_error(158);
+/// 0, or the handle when it is none (ERROR_INVALID_HANDLE)
+pub(crate) fn global_free(h: u32) -> u32 {
+    if h == 0 {
+        return 0;
+    }
+    if is_block(h) {
+        mem::heap_free(h);
+        return 0;
+    }
+    match handles::entry(h) {
+        Some(e) => {
+            mem::heap_free(handles::ptr(e));
+            handles::release(e);
             0
         }
-        Some(1) => {
-            last_error(0);
-            0
+        None => {
+            // (a pointer of another heap: freed as before, quietly)
+            if mem::heap_free(h) {
+                return 0;
+            }
+            last_error(6);
+            h
         }
-        Some(_) => 1,
-        None => 1,
     }
 }
-/// GMEM_* flags: the lock count in the low byte
+/// GlobalReAlloc / LocalReAlloc (`global`: GlobalReAlloc refuses a locked block's discard)
+pub(crate) fn global_realloc(h: u32, size: u32, flags: u32, global: bool) -> u32 {
+    let (zero, moveable, modify, discardable) = (flags & 0x40 != 0, flags & 2 != 0, flags & 0x80 != 0, flags & 0x100 != 0);
+    if is_block(h) {
+        if modify {
+            if global && moveable {
+                // (GMEM_MODIFY | GMEM_MOVEABLE: the fixed block gets a handle)
+                let n = handles::new(handles::USED | handles::MOVEABLE | if discardable { handles::DISCARDABLE } else { 0 });
+                let Some(e) = handles::entry(n) else {
+                    last_error(8);
+                    return 0;
+                };
+                handles::set_ptr(e, h);
+                return n;
+            }
+            return h;
+        }
+        if discardable {
+            last_error(87);
+            return 0;
+        }
+        let n = if moveable || mem::heap_fits(h, size) { mem::heap_realloc(h, size, zero) } else { 0 };
+        if n == 0 {
+            last_error(8);
+        }
+        return n;
+    }
+    let Some(e) = handles::entry(h) else {
+        last_error(6);
+        return 0;
+    };
+    let f = handles::flags(e);
+    let lock = f >> 16 & 0xff;
+    if modify {
+        if discardable {
+            handles::set_flags(e, f | handles::DISCARDABLE);
+        }
+        return h;
+    }
+    if global && lock != 0 && (size == 0 || discardable) {
+        return 0;
+    }
+    if discardable {
+        last_error(87);
+        return 0;
+    }
+    let p = handles::ptr(e);
+    if size != 0 {
+        let n = if p == 0 {
+            mem::heap_alloc(size, zero)
+        } else if lock != 0 && !moveable && !mem::heap_fits(p, size) {
+            0
+        } else {
+            mem::heap_realloc(p, size, zero)
+        };
+        if n == 0 {
+            last_error(8);
+            return 0;
+        }
+        handles::set_ptr(e, n);
+        handles::set_flags(e, handles::flags(e) & !handles::DISCARDED);
+        return h;
+    }
+    if moveable && lock == 0 {
+        mem::heap_free(p);
+        handles::set_ptr(e, 0);
+        handles::set_flags(e, f | handles::DISCARDED);
+        return h;
+    }
+    last_error(87);
+    0
+}
+/// GlobalLock: a fixed block is its own memory; a moveable one counts the lock (up to 255) and
+/// gives its block, or nothing when discarded (ERROR_DISCARDED)
+pub(crate) fn global_lock(h: u32) -> u32 {
+    if h == 0 {
+        return 0;
+    }
+    match handles::entry(h) {
+        Some(e) => {
+            let (f, p) = (handles::flags(e), handles::ptr(e));
+            if p == 0 {
+                last_error(157);
+                return 0;
+            }
+            if f >> 16 & 0xff != 0xff {
+                handles::set_flags(e, f + 0x1_0000);
+            }
+            p
+        }
+        None if h & (2 * mem::ps() - 1) == 0 => h,
+        None => {
+            last_error(6);
+            0
+        }
+    }
+}
+/// Whether the block stays locked: unlocking one that is not locked is ERROR_NOT_LOCKED, the
+/// last unlock clears the error. A fixed block: GlobalUnlock says TRUE, LocalUnlock FALSE
+/// with ERROR_NOT_LOCKED.
+fn global_unlock(h: u32, global: bool) -> u32 {
+    if h & (2 * mem::ps() - 1) == 0 {
+        if global {
+            return 1;
+        }
+        last_error(158);
+        return 0;
+    }
+    let Some(e) = handles::entry(h) else {
+        last_error(6);
+        return 0;
+    };
+    let f = handles::flags(e);
+    if f >> 16 & 0xff == 0 {
+        last_error(158);
+        return 0;
+    }
+    handles::set_flags(e, f - 0x1_0000);
+    if (f >> 16 & 0xff) == 1 {
+        last_error(0);
+        return 0;
+    }
+    1
+}
+/// GMEM_* flags: the lock count, GMEM_DISCARDABLE 0x100, GMEM_DISCARDED 0x4000, GMEM_DDESHARE
+/// 0x2000; a fixed block 0; no handle GMEM_INVALID_HANDLE 0x8000
 fn global_flags(h: u32) -> u32 {
-    moveable(|m| m.get(&h).copied()).unwrap_or(0)
+    if h & (2 * mem::ps() - 1) == 0 {
+        return 0;
+    }
+    let Some(e) = handles::entry(h) else {
+        last_error(6);
+        return 0x8000;
+    };
+    let f = handles::flags(e);
+    let mut r = f >> 16 & 0xff;
+    for (bit, g) in [(handles::DISCARDABLE, 0x100), (handles::DISCARDED, 0x4000), (handles::DDESHARE, 0x2000)] {
+        if f & bit != 0 {
+            r |= g;
+        }
+    }
+    r
+}
+/// GlobalHandle(pointer): a moveable block's handle, a fixed block itself
+fn global_handle(p: u32) -> u32 {
+    if p == 0 {
+        last_error(87);
+        return 0;
+    }
+    if let Some(h) = handles::owner(p) {
+        return h;
+    }
+    if handles::entry(p).is_some() || mem::heap_owns(p) {
+        return p;
+    }
+    last_error(6);
+    0
 }
 fn GlobalAlloc(c: &mut Ctx) -> u32 {
-    global_alloc(c.a(0), c.a(1))
+    // (a fixed block of 0 bytes takes 1)
+    let (f, n) = (c.a(0), c.a(1));
+    global_alloc(f, if f & 2 == 0 { n.max(1) } else { n })
 }
 fn GlobalFree(c: &mut Ctx) -> u32 {
     global_free(c.a(0))
 }
 fn GlobalReAlloc(c: &mut Ctx) -> u32 {
-    global_realloc(c.a(0), c.a(1), c.a(2))
+    global_realloc(c.a(0), c.a(1), c.a(2), true)
 }
 fn GlobalLock(c: &mut Ctx) -> u32 {
     global_lock(c.a(0))
 }
 fn GlobalUnlock(c: &mut Ctx) -> u32 {
-    global_unlock(c.a(0))
+    global_unlock(c.a(0), true)
 }
 fn GlobalHandle(c: &mut Ctx) -> u32 {
-    c.a(0)
+    global_handle(c.a(0))
 }
 fn GlobalSize(c: &mut Ctx) -> u32 {
-    mem::heap_size(c.a(0))
+    global_size(c.a(0))
 }
 fn GlobalFlags(c: &mut Ctx) -> u32 {
     global_flags(c.a(0))
@@ -2664,22 +2951,24 @@ fn LocalFree(c: &mut Ctx) -> u32 {
     global_free(c.a(0))
 }
 fn LocalReAlloc(c: &mut Ctx) -> u32 {
-    global_realloc(c.a(0), c.a(1), c.a(2))
+    global_realloc(c.a(0), c.a(1), c.a(2), false)
 }
 fn LocalLock(c: &mut Ctx) -> u32 {
     global_lock(c.a(0))
 }
 fn LocalUnlock(c: &mut Ctx) -> u32 {
-    global_unlock(c.a(0))
+    global_unlock(c.a(0), false)
 }
 fn LocalSize(c: &mut Ctx) -> u32 {
-    mem::heap_size(c.a(0))
+    global_size(c.a(0))
 }
+/// LocalFlags: GlobalFlags with LMEM_DISCARDABLE (0xf00) for a discardable block
 fn LocalFlags(c: &mut Ctx) -> u32 {
-    global_flags(c.a(0))
+    let f = global_flags(c.a(0));
+    if f != 0x8000 && f & 0x100 != 0 { f | 0xf00 } else { f }
 }
 fn LocalHandle(c: &mut Ctx) -> u32 {
-    c.a(0)
+    global_handle(c.a(0))
 }
 
 /// Physical memory reported to the game: 4 GB, like a modest PC (games check a minimum: 256 MB
