@@ -574,6 +574,30 @@ fn state_descriptions() {
     call1(m(IF_RASTER, 9), &[forced, out]);
     assert_eq!((rd1(out + 40), rd1(out + 44)), (4, 0));
     release(forced);
+    // ForcedSampleCount as Windows takes it (winref d3d11copy "raster1"): 0, 1, 4, 8, and 1
+    // only without MultisampleEnable
+    for forced in [0, 1, 4, 8, 16, 3, 32] {
+        for ms in [0, 1] {
+            let mut b = base;
+            b[8] = ms;
+            put(desc, &[&b[..], &[forced]].concat());
+            let ok = matches!(forced, 0 | 1 | 4 | 8) && !(forced == 1 && ms == 1);
+            let hr = call1(m(IF_DEVICE, 46), &[c.dev, desc, c.o]);
+            assert_eq!(hr == 0, ok, "forced {forced} ms {ms}");
+            if hr == 0 {
+                release(rd1(c.o));
+            }
+        }
+    }
+    // CreateRasterizerState2 with ConservativeRaster ON: refused (as WARP)
+    for (cons, ok) in [(0, true), (1, false), (2, false)] {
+        put(desc, &[&base[..], &[0, cons]].concat());
+        let hr = call1(m(IF_DEVICE, 56), &[c.dev, desc, c.o]);
+        assert_eq!(hr == 0, ok, "conservative {cons}");
+        if hr == 0 {
+            release(rd1(c.o));
+        }
+    }
     assert_eq!(release(rs), 0);
 
     // samplers (filter, U, V, W, bias, MaxAnisotropy, ComparisonFunc, border, min, max LOD)
@@ -602,19 +626,28 @@ fn state_descriptions() {
 
     // blend: CreateBlendState1's LogicOpEnable / LogicOp come back from GetDesc1, GetDesc
     // writes D3D11_BLEND_DESC only
-    // (IndependentBlendEnable: without it every target is target 0's, logic op included)
+    // (IndependentBlendEnable: without it every target is target 0's, logic op included; with
+    // it a logic op is refused, winref d3d11copy)
     let b1 = mem(82);
     let mut v = vec![0, 1];
     for t in 0..8 {
         v.extend([0, (t == 0) as u32, 2, 1, 1, 2, 1, 1, if t == 0 { 4 } else { 0 }, 0xf]);
     }
     put(b1, &v);
+    assert_eq!(call1(m(IF_DEVICE, 45), &[c.dev, b1, c.o]), E_INVALIDARG);
+    v[1] = 0;
+    put(b1, &v);
     assert_eq!(call1(m(IF_DEVICE, 45), &[c.dev, b1, c.o]), 0);
     let bs = rd1(c.o);
     let out = mem(83);
     put(out, &[0xcccccccc; 83]);
     call1(m(IF_BLEND, 8), &[bs, out]);
-    assert_eq!((0..82).map(|i| rd1(out + 4 * i)).collect::<Vec<_>>(), v);
+    let mut want = v.clone();
+    for t in 1..8 {
+        want[2 + t * 10 + 1] = 1;
+        want[2 + t * 10 + 8] = 4;
+    }
+    assert_eq!((0..82).map(|i| rd1(out + 4 * i)).collect::<Vec<_>>(), want);
     put(out, &[0xcccccccc; 83]);
     call1(m(IF_BLEND, 7), &[bs, out]);
     assert_eq!(rd1(out + 4 * 66), 0xcccccccc);
@@ -629,6 +662,7 @@ fn state_descriptions() {
     assert_eq!(call1(m(IF_DEVICE, 20), &[c.dev, b0, c.o]), 0);
     let plain = rd1(c.o);
     assert_ne!(plain, bs);
+    v[1] = 1;
     v[3] = 0;
     v[10] = 0;
     put(b1, &v);

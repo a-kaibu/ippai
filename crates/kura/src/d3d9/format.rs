@@ -440,7 +440,14 @@ fn decode_dxt(fmt: u32, b: &[u8]) -> [[u8; 4]; 16] {
     let col = if fmt == DXT1 { b } else { &b[8..] };
     let c0 = u16::from_le_bytes([col[0], col[1]]);
     let c1 = u16::from_le_bytes([col[2], col[3]]);
-    let (p0, p1) = (rgb565(c0), rgb565(c1));
+    // (565 to 8 bits by repeating the high bits, then the thirds truncated: WARP's BC1-BC3,
+    // winref d3d11tex 71-78)
+    let rep = |v: u32, n: u32| (v << (8 - n) | v >> (2 * n - 8)) as u8;
+    let rgb = |c: u16| {
+        let c = c as u32;
+        [rep(c & 31, 5), rep((c >> 5) & 63, 6), rep(c >> 11, 5)]
+    };
+    let (p0, p1) = (rgb(c0), rgb(c1));
     let mix = |a: u8, b: u8, wa: u32, wb: u32, d: u32| ((a as u32 * wa + b as u32 * wb) / d) as u8;
     let mut pal = [[0u8; 4]; 4];
     pal[0] = [p0[0], p0[1], p0[2], 255];
@@ -476,13 +483,14 @@ fn decode_dxt(fmt: u32, b: &[u8]) -> [[u8; 4]; 16] {
             let mut ap = [0u32; 8];
             ap[0] = a0;
             ap[1] = a1;
+            // (rounded to nearest, as WARP: winref d3d11tex BC3)
             if a0 > a1 {
                 for i in 1..7 {
-                    ap[i + 1] = ((7 - i as u32) * a0 + i as u32 * a1) / 7;
+                    ap[i + 1] = ((7 - i as u32) * a0 + i as u32 * a1 + 3) / 7;
                 }
             } else {
                 for i in 1..5 {
-                    ap[i + 1] = ((5 - i as u32) * a0 + i as u32 * a1) / 5;
+                    ap[i + 1] = ((5 - i as u32) * a0 + i as u32 * a1 + 2) / 5;
                 }
                 ap[6] = 0;
                 ap[7] = 255;
@@ -895,6 +903,35 @@ mod tests {
     }
 
     /// A region that ends inside a block: only its pixels are written, row by row.
+    /// BC1 and BC3 as WARP decodes them (winref d3d11tex 71 / 77, row 0 of the probe's random
+    /// blocks): ends widened by repeating their high bits, colour thirds truncated, alpha
+    /// sevenths and fifths rounded
+    #[test]
+    fn dxt_as_warp() {
+        // (the probe's xorshift fill of format f)
+        let fill = |f: u64| {
+            let mut xs = 0x9e37_79b9_7f4a_7c15u64 ^ f.wrapping_mul(0x0100_0000_01b3);
+            (0..128 * 4)
+                .map(|_| {
+                    xs ^= xs << 13;
+                    xs ^= xs >> 7;
+                    xs ^= xs << 17;
+                    (xs >> 16) as u8
+                })
+                .collect::<Vec<u8>>()
+        };
+        let want71 = [[247, 154, 107, 255], [231, 154, 140, 255], [239, 154, 123, 255], [239, 154, 123, 255], [109, 79, 150, 255], [41, 101, 214, 255], [41, 101, 214, 255], [178, 57, 87, 255]];
+        let want77 = [[74, 113, 49, 67], [74, 113, 49, 158], [106, 37, 148, 128], [106, 37, 148, 128], [148, 59, 93, 118], [123, 94, 145, 102], [173, 24, 41, 134], [173, 24, 41, 53]];
+        for (f, fmt, size, want) in [(71u64, DXT1, 8, want71), (77, DXT5, 16, want77)] {
+            let d = fill(f);
+            for x in 0..8 {
+                let px = decode_dxt(fmt, &d[x / 4 * size..x / 4 * size + size])[x % 4];
+                // (BGRA here, RGBA there)
+                assert_eq!([px[2], px[1], px[0], px[3]], want[x], "format {f} texel {x}");
+            }
+        }
+    }
+
     #[test]
     fn dxt_partial_blocks() {
         let mut blk = [0u8; 8];

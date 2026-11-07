@@ -58,9 +58,28 @@ d3d11tex-* ^(want|got) +format 115 row
 # 2^n - 1) are at most one float ulp above WARP's correctly rounded v / (2^n - 1); kura
 # uploads the bytes as they are (R16G16B16A16_SNORM 13, R10G10B10A2_UNORM 24,
 # R8G8B8A8_UNORM 28, R16G16_SNORM 37, R8G8_UNORM 49, R8_UNORM 61, A8_UNORM 65, the 2x1
-# R8G8_B8G8 / G8R8_G8B8 68 / 69, B8G8R8A8 / B8G8R8X8_UNORM 87 / 88, BC7_UNORM 98; measured
+# R8G8_B8G8 / G8R8_G8B8 68 / 69, B8G8R8A8 / B8G8R8X8_UNORM 87 / 88, BC7_UNORM 98, and BC1-3
+# UNORM 71 / 74 / 77, which kura decodes to the same 8-bit texels as WARP; measured
 # 2026-11-07 in headless Chromium: no texel more than 1 ulp off)
-d3d11tex-* ^(want|got) +format (13|24|28|37|49|61|65|68|69|87|88|98) row 
+d3d11tex-* ^(want|got) +format (13|24|28|37|49|61|65|68|69|71|74|77|87|88|98) row 
+# the sRGB formats (R8G8B8A8 29, BC1-3 72/75/78, B8G8R8A8/X8 91/93, BC7 99) decoded by the CI's GPU (SwiftShader: an approximation, up to
+# 8e-5 relative, measured 2026-11-07); WARP's decode is correctly rounded, as GPUs' tables are.
+# kura uploads the bytes as they are, the page's rgba8unorm-srgb decodes them
+d3d11tex-* ^(want|got) +format (29|72|75|78|91|93|99) row 
+# depth formats read as colour (R32_FLOAT_X8X24 21, X32_G8X24_UINT 22, R24_UNORM_X8 46,
+# X24_G8_UINT 47) from a texture made with initial data and SHADER_RESOURCE only: the page
+# keeps them as depth24plus-stencil8, which WebGPU uploads nothing into and which cannot hold
+# 32-bit float bits; games make such textures as depth buffers (rendered to, then read)
+d3d11tex-* ^(want|got) +format (21|22|46|47) row 
+# B5G6R5 / B5G5R5A1 (85 / 86): WebGPU has no 5- or 6-bit formats; kura widens them to 8 bits
+# by repeating the high bits (at most 1/510 off WARP's exact c / 31 and c / 63)
+d3d11tex-* ^(want|got) +format (85|86) row 
+# the planar and packed video formats (NV12, P010, P016, YUY2, Y210, Y216): kura makes no
+# texture of them (check.rs UNKEPT: the page keeps none), WARP makes one and refuses its view
+d3d11tex-* ^(want|got) +format 10[3-9]: 
+# OutputMergerLogicOp: the page has no logic ops (WebGPU has none), so kura says 0 (WARP 1);
+# CreateBlendState1 still takes them as Windows does
+d3d11copy-* ^(want|got) +options logic_op 
 d3d11copy-* ^(want|got) +depth R32_FLOAT D32_FLOAT   # WebGPU's depth32float holds 0..1 only (frag_depth clamps, NaN undefined): the probe's NaN/inf/out-of-range bits do not survive; 0..1 values do ("depth in01" lines)
 # WARP flushes float denormals on every operation (abs(denormal) = 0, clamp to -0); WebGPU
 # leaves denormals to the GPU and sake does not flush them but in log; log2 just below 1 is

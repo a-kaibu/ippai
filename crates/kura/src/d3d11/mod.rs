@@ -2073,12 +2073,14 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
         11 => {
             // CreateInputLayout(elems, n, code, len, out)
             let mut v = Vec::new();
+            let mut raw = Vec::new();
             let mut next = [0u32; 16];
             for i in 0..a(2) {
                 // D3D11_INPUT_ELEMENT_DESC { SemanticName, then six UINTs }
                 let e = a(1) + i * (ptr() + 24);
                 let name = std::ffi::CStr::from_ptr(rdp(e, 0) as *const std::ffi::c_char).to_string_lossy().into_owned();
                 let f = e + ptr();
+                raw.push((rd(f, 0), rd(f, 1), rd(f, 2), rd(f, 4), rd(f, 5)));
                 let (index, fmt, slot, off, class) = (rd(f, 0), rd(f, 1), rd(f, 2) & 15, rd(f, 3), rd(f, 4));
                 let off = if off == 0xffff_ffff { next[slot as usize] } else { off };
                 let size = format::vertex_format(fmt).map_or(4, vertex_size);
@@ -2088,7 +2090,8 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             let code = if a(3) == 0 { &[][..] } else { std::slice::from_raw_parts(a(3) as *const u8, a(4) as usize) };
             let names: Vec<(&str, u32)> = v.iter().map(|e| (e.name.as_str(), e.index)).collect();
             let slots: Vec<(u32, bool)> = v.iter().map(|e| (e.slot, e.instance)).collect();
-            if let Err(hr) = check::input_layout(a(1) != 0, &names, &slots, code) {
+            let elems: Vec<_> = v.iter().zip(&raw).map(|(e, r)| (e.name.as_str(), r.0, r.1, r.2, r.3, r.4)).collect();
+            if let Err(hr) = check::input_elements(&elems).and_then(|()| check::input_layout(a(1) != 0, &names, &slots, code)) {
                 wrp(a(5), 0, 0);
                 return hr;
             }
@@ -2263,9 +2266,15 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             if normalize_state(20, &mut desc).is_none() {
                 return E_INVALIDARG;
             }
+            // (winref d3d11copy: a logic op with IndependentBlendEnable is refused)
+            let logic = |t: usize| rd(a(1), 2 + t * 10 + 1) != 0;
+            if desc[1] != 0 && (0..8).any(logic) {
+                return E_INVALIDARG;
+            }
             for t in 0..8 {
                 let src = if desc[1] != 0 { t } else { 0 };
-                desc.extend([rd(a(1), 2 + src * 10 + 1), rd(a(1), 2 + src * 10 + 8)]);
+                let on = rd(a(1), 2 + src * 10 + 1);
+                desc.extend([on, if on != 0 { rd(a(1), 2 + src * 10 + 8) } else { 0 }]);
             }
             new_state(d, IF_BLEND, desc, a(2))
         }
@@ -2276,6 +2285,12 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
                 return E_INVALIDARG;
             }
             let mut desc: Vec<u32> = (0..if m == 46 { 11 } else { 12 }).map(|i| rd(a(1), i)).collect();
+            // ForcedSampleCount 0, 1, 4 or 8, and not 1 with MultisampleEnable (winref
+            // d3d11copy on Windows: 3, 16 and 32 are refused).
+            // ConservativeRaster ON: none on the page (WebGPU has none; WARP refuses it too)
+            if !matches!(desc[10], 0 | 1 | 4 | 8) || (desc[10] == 1 && desc[8] != 0) || desc.get(11).is_some_and(|&c| c != 0) {
+                return E_INVALIDARG;
+            }
             if normalize_state(22, &mut desc).is_none() {
                 return E_INVALIDARG;
             }
@@ -2585,7 +2600,8 @@ unsafe fn child_call(d: &mut D11, iface: u32, m: u32, this: u32, a: &dyn Fn(usiz
                 for k in 0..6 {
                     wr(a(1), b + 2 + k, s[o + 1 + k]);
                 }
-                wr(a(1), b + 8, s[67 + t * 2]);
+                // (a target without a logic op reads back NOOP, winref d3d11copy)
+                wr(a(1), b + 8, if s[66 + t * 2] != 0 { s[67 + t * 2] } else { 4 });
                 wr(a(1), b + 9, s[o + 7]);
             }
             0

@@ -981,6 +981,23 @@ mod shader_tests {
     }
 }
 
+/// CreateInputLayout's checks of each element (winref d3d11copy's layouts on Windows): an input
+/// slot below 32, a format (not UNKNOWN, not block compressed), per vertex (0, step rate 0) or
+/// per instance (1), and no semantic (name without case, index) twice. Elements are (name,
+/// index, format, slot, class, step rate).
+pub fn input_elements(elems: &[(&str, u32, u32, u32, u32, u32)]) -> Result<(), u32> {
+    for (k, &(name, index, fmt, slot, class, step)) in elems.iter().enumerate() {
+        let bc = matches!(fmt, 70..=84 | 94..=99);
+        if slot >= 32 || fmt == 0 || fmt > 132 || bc || class > 1 || (class == 0 && step != 0) {
+            return Err(E_INVALIDARG);
+        }
+        if elems[..k].iter().any(|e| e.1 == index && e.0.eq_ignore_ascii_case(name)) {
+            return Err(E_INVALIDARG);
+        }
+    }
+    Ok(())
+}
+
 /// CreateInputLayout's checks (Windows' answers in Wine's test_create_input_layout): a
 /// description array is needed even for no elements, at most 32 elements, and every input of
 /// the shader's signature (name without case, index) has an element but the system values
@@ -1035,6 +1052,37 @@ mod input_layout_tests {
         b.extend((c.len() as u32).to_le_bytes());
         b.extend(c);
         b
+    }
+
+    #[test]
+    fn elements_as_windows() {
+        // (winref d3d11copy-32: the layouts of shader 0)
+        let pos = |fmt, slot, class, step| ("POSITION", 0, fmt, slot, class, step);
+        assert_eq!(input_elements(&[pos(2, 0, 0, 0)]), Ok(()));
+        assert_eq!(input_elements(&[pos(2, 15, 0, 0)]), Ok(()));
+        assert_eq!(input_elements(&[pos(2, 31, 1, 7)]), Ok(()));
+        assert_eq!(input_elements(&[pos(2, 0, 0, 1)]), Err(E_INVALIDARG)); // pos_vert_step1
+        assert_eq!(input_elements(&[pos(2, 32, 0, 0)]), Err(E_INVALIDARG)); // pos_slot32
+        assert_eq!(input_elements(&[pos(0, 0, 0, 0)]), Err(E_INVALIDARG)); // pos_unknown_format
+        assert_eq!(input_elements(&[pos(71, 0, 0, 0)]), Err(E_INVALIDARG)); // pos_bc1
+        assert_eq!(input_elements(&[pos(2, 0, 0, 0), ("position", 0, 2, 0, 0, 0)]), Err(E_INVALIDARG)); // pos_twice
+        assert_eq!(input_elements(&[pos(2, 0, 0, 0), ("POSITION", 1, 2, 0, 0, 0)]), Ok(())); // pos_pos1
+        assert_eq!(input_elements(&[pos(2, 0, 2, 0)]), Err(E_INVALIDARG));
+        assert_eq!(input_elements(&[]), Ok(()));
+    }
+
+    proptest::proptest! {
+        /// Any element valid alone stays valid with others of other semantics, and an
+        /// invalid one makes any layout holding it invalid.
+        #[test]
+        fn one_bad_element_spoils_the_layout(fmt in 0u32..140, slot in 0u32..40, class in 0u32..3, step in 0u32..3, n in 0usize..4) {
+            let names = ["A", "B", "C", "D"];
+            let mut v: Vec<(&str, u32, u32, u32, u32, u32)> = (0..n).map(|i| (names[i], 0, 2, 0, 0, 0)).collect();
+            let e = ("E", 0, fmt, slot, class, step);
+            let alone = input_elements(&[e]);
+            v.push(e);
+            proptest::prop_assert_eq!(input_elements(&v), alone);
+        }
     }
 
     #[test]

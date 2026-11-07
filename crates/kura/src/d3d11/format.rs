@@ -165,27 +165,34 @@ pub unsafe fn to_floats(conv: u32, n: u32, src: *const u8, pitch: usize, w: u32,
 
 /// The 16 values of a BC4 block (BC5 is two of them), as the Direct3D spec interpolates.
 fn bc4_block(b: &[u8], signed: bool) -> [f32; 16] {
-    let (e0, e1, scale) = if signed {
-        ((b[0] as i8).max(-127) as f32, (b[1] as i8).max(-127) as f32, 127.0)
-    } else {
-        (b[0] as f32, b[1] as f32, 255.0)
-    };
-    let mut pal = [0f32; 8];
-    pal[0] = e0;
-    pal[1] = e1;
+    // As WARP (winref d3d11tex, BC4/BC5 UNORM and SNORM): each palette entry, (weights * ends)
+    // / (7 or 5), goes to 16 bits first: UNORM floor(v * 257) / 65535, SNORM
+    // trunc(v * 32767 / 127) times the float 1 / 32767
+    let (e0, e1) = if signed { ((b[0] as i8).max(-127) as i64, (b[1] as i8).max(-127) as i64) } else { (b[0] as i64, b[1] as i64) };
+    // (palette entries as num / den)
+    let mut pal = [(0i64, 1i64); 8];
+    pal[0] = (e0, 1);
+    pal[1] = (e1, 1);
     if e0 > e1 {
         for i in 1..7 {
-            pal[i + 1] = ((7 - i) as f32 * e0 + i as f32 * e1) / 7.0;
+            pal[i + 1] = ((7 - i as i64) * e0 + i as i64 * e1, 7);
         }
     } else {
         for i in 1..5 {
-            pal[i + 1] = ((5 - i) as f32 * e0 + i as f32 * e1) / 5.0;
+            pal[i + 1] = ((5 - i as i64) * e0 + i as i64 * e1, 5);
         }
-        pal[6] = if signed { -127.0 } else { 0.0 };
-        pal[7] = scale;
+        pal[6] = (if signed { -127 } else { 0 }, 1);
+        pal[7] = (if signed { 127 } else { 255 }, 1);
     }
+    let value = |(n, d): (i64, i64)| {
+        if signed {
+            (n * 32767 / (127 * d)) as f32 * (1.0f32 / 32767.0)
+        } else {
+            ((n * 257 / d) as f64 / 65535.0) as f32
+        }
+    };
     let bits = u64::from_le_bytes([b[2], b[3], b[4], b[5], b[6], b[7], 0, 0]);
-    std::array::from_fn(|i| pal[((bits >> (i * 3)) & 7) as usize] / scale)
+    std::array::from_fn(|i| value(pal[((bits >> (i * 3)) & 7) as usize]))
 }
 
 /// f32 to f16 bits (IEEE 754 round to nearest even, as D3D's float conversion rules ask; out of
@@ -622,7 +629,12 @@ mod conv_tests {
         let v = bc4_block(&[200, 10, 0b010_001_000, 0, 0, 0, 0, 0], false);
         assert_eq!(v[0], 200.0 / 255.0);
         assert_eq!(v[1], 10.0 / 255.0);
-        assert_eq!(v[2], (6.0 * 200.0 + 10.0) / 7.0 / 255.0);
+        assert_eq!(v[2], ((6 * 200 + 10) * 257 / 7) as f32 / 65535.0);
+        // WARP's answers (winref d3d11tex BC4_UNORM / BC4_SNORM): 16-bit palette entries
+        let v = bc4_block(&[210, 16, 0b101 | 0b011 << 3, 0, 0, 0, 0, 0], false);
+        assert_eq!((v[0].to_bits(), v[1].to_bits()), (0x3ec70ec7, 0x3f1b2c9b));
+        let v = bc4_block(&[5, 0xf5, 0b110 << 3, 0, 0, 0, 0, 0], true);
+        assert_eq!((v[0].to_bits(), v[1].to_bits()), (0x3d214142, 0xbd4f419e));
         // 6 values plus 0 and 1: e0 <= e1, indices 6 and 7
         let v = bc4_block(&[10, 200, 0b110 | 0b111 << 3, 0, 0, 0, 0, 0], false);
         assert_eq!((v[0], v[1]), (0.0, 1.0));
