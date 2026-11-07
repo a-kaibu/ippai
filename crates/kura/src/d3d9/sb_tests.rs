@@ -14,7 +14,10 @@ use super::trace_tests::{alloc, seeds, write_module, Rng, CALLS, SERIAL};
 use super::*;
 use std::fmt::Write as _;
 
-pub(crate) const KEYS: [&str; 15] = ["rsP", "rsV", "rsB", "tssP", "tssB", "ssP", "ssV", "tex", "vs", "ps", "vsf", "psf", "xf", "vp", "light"];
+pub(crate) const KEYS: [&str; 15] = [
+    "rsP", "rsV", "rsB", "tssP", "tssB", "ssP", "ssV", "tex", "vs", "ps", "vsf", "psf", "xf", "vp",
+    "light",
+];
 
 fn call(iface: u32, m: u32, args: &[u32]) -> u32 {
     unsafe { vnhost_d3d9_call(iface << 8 | m, args.as_ptr(), &CALLS) }
@@ -40,10 +43,20 @@ struct Dev {
 impl Dev {
     /// (an object value: 0 none, 1 / 2 the first / second; what an object reads as)
     fn obj(&self, set: &[u32; 2], v: u32) -> u32 {
-        if v == 0 { 0 } else { set[(v - 1) as usize % 2] }
+        if v == 0 {
+            0
+        } else {
+            set[(v - 1) as usize % 2]
+        }
     }
     fn which(&self, set: &[u32; 2], o: u32) -> i64 {
-        if o == 0 { 0 } else { set.iter().position(|&x| x == o).map_or(-1, |i| i as i64 + 1) }
+        if o == 0 {
+            0
+        } else {
+            set.iter()
+                .position(|&x| x == o)
+                .map_or(-1, |i| i as i64 + 1)
+        }
     }
     fn set(&self, k: usize, v: u32) {
         let (d, b) = (self.dev, self.buf);
@@ -60,7 +73,11 @@ impl Dev {
             "ps" => call(IF_DEVICE, 107, &[d, self.obj(&self.ps, v)]),
             "vsf" | "psf" => {
                 wr(b, 0, (v as f32).to_bits());
-                call(IF_DEVICE, if KEYS[k] == "vsf" { 94 } else { 109 }, &[d, 0, b, 1])
+                call(
+                    IF_DEVICE,
+                    if KEYS[k] == "vsf" { 94 } else { 109 },
+                    &[d, 0, b, 1],
+                )
             }
             "xf" => {
                 for i in 0..16 {
@@ -115,7 +132,11 @@ impl Dev {
             "vs" => self.which(&self.vs, obj(93, &[d, b])),
             "ps" => self.which(&self.ps, obj(108, &[d, b])),
             "vsf" | "psf" => {
-                call(IF_DEVICE, if KEYS[k] == "vsf" { 95 } else { 110 }, &[d, 0, b, 1]);
+                call(
+                    IF_DEVICE,
+                    if KEYS[k] == "vsf" { 95 } else { 110 },
+                    &[d, 0, b, 1],
+                );
                 f32::from_bits(rd(b, 0)) as i64
             }
             "xf" => {
@@ -159,14 +180,38 @@ fn run(seed: u64) -> Vec<Step> {
     unsafe { vnhost_d3d9_create(0x20, o as *mut u32, &CALLS) };
     let d3d = rd(o, 0);
     let pp = mem(14);
-    for (i, x) in [64, 64, 22, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0].into_iter().enumerate() {
+    for (i, x) in [64, 64, 22, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0]
+        .into_iter()
+        .enumerate()
+    {
         wr(pp, i as u32, x);
     }
     assert_eq!(call(IF_D3D9, 16, &[d3d, 0, 1, 1, 0x40, pp, o]), 0);
     let dev = rd(o, 0);
-    let mut d = Dev { dev, tex: [0; 2], vs: [0; 2], ps: [0; 2], buf: mem(32) };
-    let vs_code = [0xfffe0200u32, 0x0200001f, 0x80000000, 0x900f0000, 0x02000001, 0xc00f0000, 0x90e40000, 0x0000ffff];
-    let ps_code = [0xffff0200u32, 0x02000001, 0x800f0800, 0xa0e40000, 0x0000ffff];
+    let mut d = Dev {
+        dev,
+        tex: [0; 2],
+        vs: [0; 2],
+        ps: [0; 2],
+        buf: mem(32),
+    };
+    let vs_code = [
+        0xfffe0200u32,
+        0x0200001f,
+        0x80000000,
+        0x900f0000,
+        0x02000001,
+        0xc00f0000,
+        0x90e40000,
+        0x0000ffff,
+    ];
+    let ps_code = [
+        0xffff0200u32,
+        0x02000001,
+        0x800f0800,
+        0xa0e40000,
+        0x0000ffff,
+    ];
     let code_at = |c: &[u32]| {
         let p = mem(c.len() as u32);
         for (i, x) in c.iter().enumerate() {
@@ -187,7 +232,13 @@ fn run(seed: u64) -> Vec<Step> {
     // (every state known first)
     for k in 0..KEYS.len() {
         d.set(k, 0);
-        steps.push(Step { op: "Set", k: k as i64, v: 0, ret: "ok", ..Default::default() });
+        steps.push(Step {
+            op: "Set",
+            k: k as i64,
+            v: 0,
+            ret: "ok",
+            ..Default::default()
+        });
     }
     let mut blocks: Vec<u32> = Vec::new();
     let mut recording = false;
@@ -206,13 +257,22 @@ fn run(seed: u64) -> Vec<Step> {
             }
             50..=57 => {
                 // (types 1..3; 0 and 4 now and then)
-                let ty = if r.chance(10) { [0, 4][r.below(2)] } else { 1 + r.below(3) as u32 };
+                let ty = if r.chance(10) {
+                    [0, 4][r.below(2)]
+                } else {
+                    1 + r.below(3) as u32
+                };
                 wr(o, 0, 0);
                 let res = call(IF_DEVICE, 59, &[dev, ty, o]);
                 if res == 0 {
                     blocks.push(rd(o, 0));
                 }
-                (t.op, t.k, t.ret, t.got) = ("Create", ty as i64, code(res), if res == 0 { blocks.len() as i64 } else { 0 });
+                (t.op, t.k, t.ret, t.got) = (
+                    "Create",
+                    ty as i64,
+                    code(res),
+                    if res == 0 { blocks.len() as i64 } else { 0 },
+                );
             }
             58..=61 => {
                 let res = call(IF_DEVICE, 60, &[dev]);
@@ -226,16 +286,28 @@ fn run(seed: u64) -> Vec<Step> {
                     blocks.push(rd(o, 0));
                     recording = false;
                 }
-                (t.op, t.ret, t.got) = ("End", code(res), if res == 0 { blocks.len() as i64 } else { 0 });
+                (t.op, t.ret, t.got) = (
+                    "End",
+                    code(res),
+                    if res == 0 { blocks.len() as i64 } else { 0 },
+                );
             }
             _ if blocks.is_empty() || recording => continue,
             73..=84 => {
                 let b = r.below(blocks.len());
-                (t.op, t.k, t.ret) = ("Capture", b as i64 + 1, code(call(IF_STATEBLOCK, 4, &[blocks[b]])));
+                (t.op, t.k, t.ret) = (
+                    "Capture",
+                    b as i64 + 1,
+                    code(call(IF_STATEBLOCK, 4, &[blocks[b]])),
+                );
             }
             _ => {
                 let b = r.below(blocks.len());
-                (t.op, t.k, t.ret) = ("Apply", b as i64 + 1, code(call(IF_STATEBLOCK, 5, &[blocks[b]])));
+                (t.op, t.k, t.ret) = (
+                    "Apply",
+                    b as i64 + 1,
+                    code(call(IF_STATEBLOCK, 5, &[blocks[b]])),
+                );
             }
         }
         steps.push(t);
@@ -265,7 +337,10 @@ pub(crate) fn holds(ty: i64, k: usize) -> bool {
     match ty {
         0 => false,
         1 => true,
-        2 => matches!(KEYS[k], "rsP" | "rsB" | "tssP" | "tssB" | "ssP" | "ps" | "psf"),
+        2 => matches!(
+            KEYS[k],
+            "rsP" | "rsB" | "tssP" | "tssB" | "ssP" | "ps" | "psf"
+        ),
         _ => matches!(KEYS[k], "rsV" | "rsB" | "tssB" | "vs" | "vsf" | "light"),
     }
 }
@@ -296,7 +371,13 @@ fn check(steps: &[Step], seed: u64) {
                     ("invalid", 0)
                 } else {
                     let m: Vec<bool> = (0..n).map(|k| holds(t.k, k)).collect();
-                    blocks.push((dev.iter().zip(&m).map(|(v, h)| if *h { *v } else { -1 }).collect(), m));
+                    blocks.push((
+                        dev.iter()
+                            .zip(&m)
+                            .map(|(v, h)| if *h { *v } else { -1 })
+                            .collect(),
+                        m,
+                    ));
                     ("ok", blocks.len() as i64)
                 }
             }
@@ -311,7 +392,13 @@ fn check(steps: &[Step], seed: u64) {
             "End" => match rec.take() {
                 None => ("invalid", 0),
                 Some((st, m)) => {
-                    blocks.push((st.iter().zip(&m).map(|(v, h)| if *h { *v } else { -1 }).collect(), m));
+                    blocks.push((
+                        st.iter()
+                            .zip(&m)
+                            .map(|(v, h)| if *h { *v } else { -1 })
+                            .collect(),
+                        m,
+                    ));
                     ("ok", blocks.len() as i64)
                 }
             },
@@ -354,7 +441,11 @@ fn d3d9_state_block_trace() {
             let _ = writeln!(
                 s,
                 "  [op |-> \"{}\", k |-> {}, v |-> {}, ret |-> \"{}\", got |-> {}]{}",
-                t.op, t.k, t.v, t.ret, t.got,
+                t.op,
+                t.k,
+                t.v,
+                t.ret,
+                t.got,
                 if i + 1 < steps.len() { "," } else { "" }
             );
         }

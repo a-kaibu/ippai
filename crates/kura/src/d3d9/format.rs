@@ -59,23 +59,41 @@ pub fn supported(fmt: u32) -> bool {
 }
 
 pub fn is_depth(fmt: u32) -> bool {
-    matches!(fmt, D16_LOCKABLE | D32 | D15S1 | D24S8 | D24X8 | D24X4S4 | D16 | D32F_LOCKABLE | D24FS8)
+    matches!(
+        fmt,
+        D16_LOCKABLE | D32 | D15S1 | D24S8 | D24X8 | D24X4S4 | D16 | D32F_LOCKABLE | D24FS8
+    )
 }
 
 /// Formats a render target can have.
 pub fn renderable(fmt: u32) -> bool {
-    matches!(fmt, A8R8G8B8 | X8R8G8B8 | A8B8G8R8 | X8B8G8R8 | R5G6B5 | X1R5G5B5 | A1R5G5B5 | A16B16G16R16F | A32B32G32R32F)
+    matches!(
+        fmt,
+        A8R8G8B8
+            | X8R8G8B8
+            | A8B8G8R8
+            | X8B8G8R8
+            | R5G6B5
+            | X1R5G5B5
+            | A1R5G5B5
+            | A16B16G16R16F
+            | A32B32G32R32F
+    )
 }
 
 /// (bytes per block, block size in pixels)
 pub fn layout(fmt: u32) -> Option<(u32, u32)> {
     Some(match fmt {
-        A8R8G8B8 | X8R8G8B8 | A8B8G8R8 | X8B8G8R8 | D32 | D24S8 | D24X8 | D24X4S4 | D32F_LOCKABLE | D24FS8 => (4, 1),
-        A2B10G10R10 | A2R10G10B10 | G16R16 | X8L8V8U8 | Q8W8V8U8 | V16U16 | A2W10V10U10 | G16R16F | R32F => (4, 1),
+        A8R8G8B8 | X8R8G8B8 | A8B8G8R8 | X8B8G8R8 | D32 | D24S8 | D24X8 | D24X4S4
+        | D32F_LOCKABLE | D24FS8 => (4, 1),
+        A2B10G10R10 | A2R10G10B10 | G16R16 | X8L8V8U8 | Q8W8V8U8 | V16U16 | A2W10V10U10
+        | G16R16F | R32F => (4, 1),
         V8U8 | L6V5U5 | L16 | R16F => (2, 1),
         A16B16G16R16 | Q16W16V16U16 | G32R32F => (8, 1),
         R8G8B8 => (3, 1),
-        R5G6B5 | X1R5G5B5 | A1R5G5B5 | A4R4G4B4 | X4R4G4B4 | A8L8 | D16 | D16_LOCKABLE | D15S1 => (2, 1),
+        R5G6B5 | X1R5G5B5 | A1R5G5B5 | A4R4G4B4 | X4R4G4B4 | A8L8 | D16 | D16_LOCKABLE | D15S1 => {
+            (2, 1)
+        }
         A8 | L8 | A4L4 | P8 => (1, 1),
         A16B16G16R16F => (8, 1),
         A32B32G32R32F => (16, 1),
@@ -118,7 +136,8 @@ pub fn page_bpp(fmt: u32) -> u32 {
 /// 32-bit ones otherwise).
 fn wide(fmt: u32) -> Option<u32> {
     Some(match fmt {
-        A2B10G10R10 | A2R10G10B10 | V8U8 | L6V5U5 | X8L8V8U8 | Q8W8V8U8 | A2W10V10U10 | R16F | G16R16F => FMT_RGBA16F,
+        A2B10G10R10 | A2R10G10B10 | V8U8 | L6V5U5 | X8L8V8U8 | Q8W8V8U8 | A2W10V10U10 | R16F
+        | G16R16F => FMT_RGBA16F,
         G16R16 | A16B16G16R16 | V16U16 | L16 | Q16W16V16U16 | R32F | G32R32F => FMT_RGBA32F,
         _ => return None,
     })
@@ -141,11 +160,21 @@ pub fn texel(fmt: u32, p: &[u8]) -> [f32; 4] {
     match fmt {
         A2B10G10R10 => {
             let v = w32(0);
-            [u(v & 1023, 10), u((v >> 10) & 1023, 10), u((v >> 20) & 1023, 10), u(v >> 30, 2)]
+            [
+                u(v & 1023, 10),
+                u((v >> 10) & 1023, 10),
+                u((v >> 20) & 1023, 10),
+                u(v >> 30, 2),
+            ]
         }
         A2R10G10B10 => {
             let v = w32(0);
-            [u((v >> 20) & 1023, 10), u((v >> 10) & 1023, 10), u(v & 1023, 10), u(v >> 30, 2)]
+            [
+                u((v >> 20) & 1023, 10),
+                u((v >> 10) & 1023, 10),
+                u(v & 1023, 10),
+                u(v >> 30, 2),
+            ]
         }
         A2W10V10U10 => {
             let v = w32(0);
@@ -163,7 +192,12 @@ pub fn texel(fmt: u32, p: &[u8]) -> [f32; 4] {
             [s(v, 5), s(v >> 5, 5), u(v >> 10, 6), 1.0]
         }
         X8L8V8U8 => [s(p[0] as u32, 8), s(p[1] as u32, 8), u(p[2] as u32, 8), 1.0],
-        Q8W8V8U8 => [s(p[0] as u32, 8), s(p[1] as u32, 8), s(p[2] as u32, 8), s(p[3] as u32, 8)],
+        Q8W8V8U8 => [
+            s(p[0] as u32, 8),
+            s(p[1] as u32, 8),
+            s(p[2] as u32, 8),
+            s(p[3] as u32, 8),
+        ],
         V16U16 => [s(w16(0), 16), s(w16(1), 16), 1.0, 1.0],
         Q16W16V16U16 => [s(w16(0), 16), s(w16(1), 16), s(w16(2), 16), s(w16(3), 16)],
         R16F => [h(0), 1.0, 1.0, 1.0],
@@ -177,7 +211,10 @@ pub fn texel(fmt: u32, p: &[u8]) -> [f32; 4] {
 /// Whether the format has no alpha (samplers then read alpha as 1). (DXT1 has: its 1-bit
 /// transparent black, as Windows samples it.)
 pub fn no_alpha(fmt: u32) -> bool {
-    matches!(fmt, X8R8G8B8 | X8B8G8R8 | R5G6B5 | X1R5G5B5 | X4R4G4B4 | R8G8B8 | L8)
+    matches!(
+        fmt,
+        X8R8G8B8 | X8B8G8R8 | R5G6B5 | X1R5G5B5 | X4R4G4B4 | R8G8B8 | L8
+    )
 }
 
 /// An n-bit UNORM value as 8 bits: round(v * 255 / (2^n - 1)), what a GPU samples it as (D3D's
@@ -190,7 +227,11 @@ fn ext(v: u32, bits: u32) -> u32 {
 
 fn rgb565(c: u16) -> [u8; 3] {
     let c = c as u32;
-    [ext(c & 31, 5) as u8, ext((c >> 5) & 63, 6) as u8, ext(c >> 11, 5) as u8]
+    [
+        ext(c & 31, 5) as u8,
+        ext((c >> 5) & 63, 6) as u8,
+        ext(c >> 11, 5) as u8,
+    ]
 }
 
 /// One w x h region of `fmt` (rows `pitch` bytes apart; for block formats, block rows and a
@@ -253,7 +294,11 @@ pub unsafe fn convert(fmt: u32, src: *const u8, pitch: usize, w: u32, h: u32, ou
                     X1R5G5B5 | A1R5G5B5 => {
                         for x in 0..w {
                             let c = (s.add(x * 2) as *const u16).read_unaligned() as u32;
-                            let a = if fmt == A1R5G5B5 { ext(c >> 15, 1) } else { 255 };
+                            let a = if fmt == A1R5G5B5 {
+                                ext(c >> 15, 1)
+                            } else {
+                                255
+                            };
                             d[x * 4..][..4].copy_from_slice(&[
                                 ext(c & 31, 5) as u8,
                                 ext((c >> 5) & 31, 5) as u8,
@@ -265,7 +310,11 @@ pub unsafe fn convert(fmt: u32, src: *const u8, pitch: usize, w: u32, h: u32, ou
                     A4R4G4B4 | X4R4G4B4 => {
                         for x in 0..w {
                             let c = (s.add(x * 2) as *const u16).read_unaligned() as u32;
-                            let a = if fmt == A4R4G4B4 { ext(c >> 12, 4) } else { 255 };
+                            let a = if fmt == A4R4G4B4 {
+                                ext(c >> 12, 4)
+                            } else {
+                                255
+                            };
                             d[x * 4..][..4].copy_from_slice(&[
                                 ext(c & 15, 4) as u8,
                                 ext((c >> 4) & 15, 4) as u8,
@@ -301,12 +350,17 @@ pub unsafe fn convert(fmt: u32, src: *const u8, pitch: usize, w: u32, h: u32, ou
                     _ if wide(fmt).is_some() => {
                         let (bpp, _) = layout(fmt).unwrap();
                         for x in 0..w {
-                            let t = texel(fmt, std::slice::from_raw_parts(s.add(x * bpp as usize), bpp as usize));
+                            let t = texel(
+                                fmt,
+                                std::slice::from_raw_parts(s.add(x * bpp as usize), bpp as usize),
+                            );
                             for (c, v) in t.into_iter().enumerate() {
                                 if page == 16 {
                                     d[x * 16 + c * 4..][..4].copy_from_slice(&v.to_le_bytes());
                                 } else {
-                                    d[x * 8 + c * 2..][..2].copy_from_slice(&crate::d3d11::format::f16_bits(v).to_le_bytes());
+                                    d[x * 8 + c * 2..][..2].copy_from_slice(
+                                        &crate::d3d11::format::f16_bits(v).to_le_bytes(),
+                                    );
                                 }
                             }
                         }
@@ -424,8 +478,21 @@ mod tests {
             let src: Vec<u8> = (0..=u16::MAX).flat_map(|v| v.to_le_bytes()).collect();
             let out = conv(fmt, &src, 256, 256);
             for v in 0..=u16::MAX as u32 {
-                let want: Vec<u8> = ch.iter().map(|&(sh, bits)| if bits == 0 { 255 } else { byte(unorm((v >> sh) & ((1 << bits) - 1), bits)) }).collect();
-                assert_eq!(&out[v as usize * 4..][..4], &want[..], "format {fmt} texel {v:#06x}");
+                let want: Vec<u8> = ch
+                    .iter()
+                    .map(|&(sh, bits)| {
+                        if bits == 0 {
+                            255
+                        } else {
+                            byte(unorm((v >> sh) & ((1 << bits) - 1), bits))
+                        }
+                    })
+                    .collect();
+                assert_eq!(
+                    &out[v as usize * 4..][..4],
+                    &want[..],
+                    "format {fmt} texel {v:#06x}"
+                );
             }
         }
     }
@@ -439,18 +506,38 @@ mod tests {
         // (format, bytes, [(shift, bits, kind) of R, G, B, A]: kind 0 none (1.0), 1 unorm, 2 snorm, 3 f16, 4 f32)
         type Ch = (u32, u32, u8);
         let fmts: [(u32, u32, [Ch; 4]); 16] = [
-            (A2B10G10R10, 4, [(0, 10, 1), (10, 10, 1), (20, 10, 1), (30, 2, 1)]),
-            (A2R10G10B10, 4, [(20, 10, 1), (10, 10, 1), (0, 10, 1), (30, 2, 1)]),
-            (A2W10V10U10, 4, [(0, 10, 2), (10, 10, 2), (20, 10, 2), (30, 2, 1)]),
+            (
+                A2B10G10R10,
+                4,
+                [(0, 10, 1), (10, 10, 1), (20, 10, 1), (30, 2, 1)],
+            ),
+            (
+                A2R10G10B10,
+                4,
+                [(20, 10, 1), (10, 10, 1), (0, 10, 1), (30, 2, 1)],
+            ),
+            (
+                A2W10V10U10,
+                4,
+                [(0, 10, 2), (10, 10, 2), (20, 10, 2), (30, 2, 1)],
+            ),
             (G16R16, 4, [(0, 16, 1), (16, 16, 1), (0, 0, 0), (0, 0, 0)]),
-            (A16B16G16R16, 8, [(0, 16, 1), (16, 16, 1), (32, 16, 1), (48, 16, 1)]),
+            (
+                A16B16G16R16,
+                8,
+                [(0, 16, 1), (16, 16, 1), (32, 16, 1), (48, 16, 1)],
+            ),
             (L16, 2, [(0, 16, 1), (0, 16, 1), (0, 16, 1), (0, 0, 0)]),
             (V8U8, 2, [(0, 8, 2), (8, 8, 2), (0, 0, 0), (0, 0, 0)]),
             (L6V5U5, 2, [(0, 5, 2), (5, 5, 2), (10, 6, 1), (0, 0, 0)]),
             (X8L8V8U8, 4, [(0, 8, 2), (8, 8, 2), (16, 8, 1), (0, 0, 0)]),
             (Q8W8V8U8, 4, [(0, 8, 2), (8, 8, 2), (16, 8, 2), (24, 8, 2)]),
             (V16U16, 4, [(0, 16, 2), (16, 16, 2), (0, 0, 0), (0, 0, 0)]),
-            (Q16W16V16U16, 8, [(0, 16, 2), (16, 16, 2), (32, 16, 2), (48, 16, 2)]),
+            (
+                Q16W16V16U16,
+                8,
+                [(0, 16, 2), (16, 16, 2), (32, 16, 2), (48, 16, 2)],
+            ),
             (R16F, 2, [(0, 16, 3), (0, 0, 0), (0, 0, 0), (0, 0, 0)]),
             (G16R16F, 4, [(0, 16, 3), (16, 16, 3), (0, 0, 0), (0, 0, 0)]),
             (R32F, 4, [(0, 32, 4), (0, 0, 0), (0, 0, 0), (0, 0, 0)]),
@@ -474,24 +561,43 @@ mod tests {
                         seed ^= seed << 13;
                         seed ^= seed >> 7;
                         seed ^= seed << 17;
-                        let v = if bits == 32 { (v << 16) | (seed & 0xffff) } else { v };
-                        let mask = if bits == 64 { !0 } else { ((1u64 << bits) - 1) << sh };
+                        let v = if bits == 32 {
+                            (v << 16) | (seed & 0xffff)
+                        } else {
+                            v
+                        };
+                        let mask = if bits == 64 {
+                            !0
+                        } else {
+                            ((1u64 << bits) - 1) << sh
+                        };
                         texels.push((seed & !mask) | (v << sh) & mask);
                     }
                 }
             }
-            let src: Vec<u8> = texels.iter().flat_map(|t| t.to_le_bytes()[..bytes as usize].to_vec()).collect();
+            let src: Vec<u8> = texels
+                .iter()
+                .flat_map(|t| t.to_le_bytes()[..bytes as usize].to_vec())
+                .collect();
             let w = texels.len() as u32;
             let out = conv(fmt, &src, w, 1);
             let page = page_bpp(fmt) as usize;
             for (i, &t) in texels.iter().enumerate() {
                 for (c, &(sh, bits, kind)) in ch.iter().enumerate() {
-                    let v = if bits == 0 { 0 } else { (t >> sh) & ((1u64 << bits) - 1) };
+                    let v = if bits == 0 {
+                        0
+                    } else {
+                        (t >> sh) & ((1u64 << bits) - 1)
+                    };
                     let want: f64 = match kind {
                         0 => 1.0,
                         1 => v as f64 / ((1u64 << bits) - 1) as f64,
                         2 => {
-                            let x = if v >> (bits - 1) != 0 { v as i64 - (1i64 << bits) } else { v as i64 };
+                            let x = if v >> (bits - 1) != 0 {
+                                v as i64 - (1i64 << bits)
+                            } else {
+                                v as i64
+                            };
                             (x as f64 / ((1i64 << (bits - 1)) - 1) as f64).max(-1.0)
                         }
                         3 => crate::d3d11::format::f16_to_f32(v as u16) as f64,
@@ -500,12 +606,23 @@ mod tests {
                     let got = if page == 16 {
                         f32::from_le_bytes(out[i * 16 + c * 4..][..4].try_into().unwrap())
                     } else {
-                        crate::d3d11::format::f16_to_f32(u16::from_le_bytes(out[i * 8 + c * 2..][..2].try_into().unwrap()))
+                        crate::d3d11::format::f16_to_f32(u16::from_le_bytes(
+                            out[i * 8 + c * 2..][..2].try_into().unwrap(),
+                        ))
                     } as f64;
                     // (the page's float of the value: f16 for the formats of 10 bits and less, the
                     // f32 nearest for the others)
-                    let near = if page == 16 { want as f32 as f64 } else { crate::d3d11::format::f16_to_f32(crate::d3d11::format::f16_bits(want as f32)) as f64 };
-                    assert!(got == near || got.is_nan() && near.is_nan(), "format {fmt} texel {t:#x} channel {c}: {got} want {want}");
+                    let near = if page == 16 {
+                        want as f32 as f64
+                    } else {
+                        crate::d3d11::format::f16_to_f32(crate::d3d11::format::f16_bits(
+                            want as f32,
+                        )) as f64
+                    };
+                    assert!(
+                        got == near || got.is_nan() && near.is_nan(),
+                        "format {fmt} texel {t:#x} channel {c}: {got} want {want}"
+                    );
                 }
             }
         }
@@ -518,12 +635,18 @@ mod tests {
         for v in 0..=255u32 {
             let i = v as usize * 4;
             assert_eq!(conv(A8, &src, 256, 1)[i..i + 4], [0, 0, 0, v as u8]);
-            assert_eq!(conv(L8, &src, 256, 1)[i..i + 4], [v as u8, v as u8, v as u8, 255]);
+            assert_eq!(
+                conv(L8, &src, 256, 1)[i..i + 4],
+                [v as u8, v as u8, v as u8, 255]
+            );
             let (l, a) = (byte(unorm(v & 15, 4)), byte(unorm(v >> 4, 4)));
             assert_eq!(conv(A4L4, &src, 256, 1)[i..i + 4], [l, l, l, a]);
         }
         // D3DFMT_R8G8B8: B, G, R in memory; A8B8G8R8: R, G, B, A
-        assert_eq!(conv(R8G8B8, &[1, 2, 3, 4, 5, 6], 2, 1), [1, 2, 3, 255, 4, 5, 6, 255]);
+        assert_eq!(
+            conv(R8G8B8, &[1, 2, 3, 4, 5, 6], 2, 1),
+            [1, 2, 3, 255, 4, 5, 6, 255]
+        );
         assert_eq!(conv(A8B8G8R8, &[1, 2, 3, 4], 1, 1), [3, 2, 1, 4]);
         assert_eq!(conv(X8B8G8R8, &[1, 2, 3, 4], 1, 1), [3, 2, 1, 4]);
         assert_eq!(conv(A8R8G8B8, &[1, 2, 3, 4], 1, 1), [1, 2, 3, 4]);
@@ -534,9 +657,17 @@ mod tests {
         let col = if fmt == DXT1 { b } else { &b[8..] };
         let c0 = u16::from_le_bytes([col[0], col[1]]) as u32;
         let c1 = u16::from_le_bytes([col[2], col[3]]) as u32;
-        let e = |c: u32| [unorm(c & 31, 5), unorm((c >> 5) & 63, 6), unorm(c >> 11, 5), 1.0];
+        let e = |c: u32| {
+            [
+                unorm(c & 31, 5),
+                unorm((c >> 5) & 63, 6),
+                unorm(c >> 11, 5),
+                1.0,
+            ]
+        };
         let (p0, p1) = (e(c0), e(c1));
-        let lerp = |a: [f64; 4], b: [f64; 4], t: f64| [0, 1, 2, 3].map(|i| a[i] + (b[i] - a[i]) * t);
+        let lerp =
+            |a: [f64; 4], b: [f64; 4], t: f64| [0, 1, 2, 3].map(|i| a[i] + (b[i] - a[i]) * t);
         let pal = if c0 > c1 || fmt != DXT1 {
             [p0, p1, lerp(p0, p1, 1.0 / 3.0), lerp(p0, p1, 2.0 / 3.0)]
         } else {
@@ -550,7 +681,9 @@ mod tests {
                 DXT2 | DXT3 => o[3] = unorm(((b[i / 2] >> (4 * (i & 1))) & 15) as u32, 4),
                 DXT4 | DXT5 => {
                     let (a0, a1) = (b[0] as f64 / 255.0, b[1] as f64 / 255.0);
-                    let code = ((u64::from_le_bytes([b[2], b[3], b[4], b[5], b[6], b[7], 0, 0]) >> (3 * i)) & 7) as usize;
+                    let code = ((u64::from_le_bytes([b[2], b[3], b[4], b[5], b[6], b[7], 0, 0])
+                        >> (3 * i))
+                        & 7) as usize;
                     o[3] = match code {
                         0 => a0,
                         1 => a1,
@@ -573,7 +706,11 @@ mod tests {
         for (i, (g, r)) in got.iter().zip(ref_dxt(fmt, b)).enumerate() {
             for c in 0..4 {
                 let want = byte(r[c]) as i32;
-                assert!((g[c] as i32 - want).abs() <= 1, "format {fmt:#x} block {b:02x?} pixel {i} channel {c}: {} want {want}", g[c]);
+                assert!(
+                    (g[c] as i32 - want).abs() <= 1,
+                    "format {fmt:#x} block {b:02x?} pixel {i} channel {c}: {} want {want}",
+                    g[c]
+                );
             }
         }
     }
@@ -624,7 +761,6 @@ mod tests {
         check_block(DXT3, &b);
     }
 
-
     /// What each format is, as the D3D9 docs list them.
     #[test]
     fn format_table() {
@@ -663,16 +799,45 @@ mod tests {
             (DXT4, false, false, false, false),
             (DXT5, false, false, false, false),
         ];
-        let wide16 = [A2B10G10R10, A2R10G10B10, V8U8, L6V5U5, X8L8V8U8, Q8W8V8U8, A2W10V10U10, R16F, G16R16F];
-        let wide32 = [G16R16, A16B16G16R16, V16U16, L16, Q16W16V16U16, R32F, G32R32F];
+        let wide16 = [
+            A2B10G10R10,
+            A2R10G10B10,
+            V8U8,
+            L6V5U5,
+            X8L8V8U8,
+            Q8W8V8U8,
+            A2W10V10U10,
+            R16F,
+            G16R16F,
+        ];
+        let wide32 = [
+            G16R16,
+            A16B16G16R16,
+            V16U16,
+            L16,
+            Q16W16V16U16,
+            R32F,
+            G32R32F,
+        ];
         for f in wide16.into_iter().chain(wide32) {
-            assert!(supported(f) && !is_depth(f) && !renderable(f) && !no_alpha(f) && !same_on_page(f), "{f}");
-            let (page, bpp) = if wide16.contains(&f) { (FMT_RGBA16F, 8) } else { (FMT_RGBA32F, 16) };
+            assert!(
+                supported(f) && !is_depth(f) && !renderable(f) && !no_alpha(f) && !same_on_page(f),
+                "{f}"
+            );
+            let (page, bpp) = if wide16.contains(&f) {
+                (FMT_RGBA16F, 8)
+            } else {
+                (FMT_RGBA32F, 16)
+            };
             assert_eq!((page_format(f), page_bpp(f)), (page, bpp), "{f}");
         }
         for (f, depth, rt, no_a, same) in all {
             assert!(supported(f), "{f}");
-            assert_eq!((is_depth(f), renderable(f), no_alpha(f), same_on_page(f)), (depth, rt, no_a, same), "{f}");
+            assert_eq!(
+                (is_depth(f), renderable(f), no_alpha(f), same_on_page(f)),
+                (depth, rt, no_a, same),
+                "{f}"
+            );
             let (page, bpp) = match f {
                 _ if depth => (FMT_DEPTH24S8, 4),
                 A16B16G16R16F => (FMT_RGBA16F, 8),
@@ -682,7 +847,10 @@ mod tests {
             assert_eq!((page_format(f), page_bpp(f)), (page, bpp), "{f}");
         }
         for f in [0, 1, 27, 40, 100, INDEX16, INDEX32, 65, 117, u32::MAX] {
-            assert!(!supported(f) && !is_depth(f) && !renderable(f) && !no_alpha(f) && !same_on_page(f), "{f}");
+            assert!(
+                !supported(f) && !is_depth(f) && !renderable(f) && !no_alpha(f) && !same_on_page(f),
+                "{f}"
+            );
             assert_eq!(page_format(f), FMT_BGRA8);
         }
     }
@@ -704,8 +872,28 @@ mod tests {
     #[test]
     fn every_format_on_exact_buffers() {
         let fmts = [
-            R8G8B8, A8R8G8B8, X8R8G8B8, R5G6B5, X1R5G5B5, A1R5G5B5, A4R4G4B4, A8, X4R4G4B4, A8B8G8R8,
-            X8B8G8R8, L8, A8L8, A4L4, P8, A16B16G16R16F, A32B32G32R32F, DXT1, DXT2, DXT3, DXT4, DXT5,
+            R8G8B8,
+            A8R8G8B8,
+            X8R8G8B8,
+            R5G6B5,
+            X1R5G5B5,
+            A1R5G5B5,
+            A4R4G4B4,
+            A8,
+            X4R4G4B4,
+            A8B8G8R8,
+            X8B8G8R8,
+            L8,
+            A8L8,
+            A4L4,
+            P8,
+            A16B16G16R16F,
+            A32B32G32R32F,
+            DXT1,
+            DXT2,
+            DXT3,
+            DXT4,
+            DXT5,
         ];
         for fmt in fmts {
             let (bpb, bs) = layout(fmt).unwrap();
@@ -730,7 +918,15 @@ mod tests {
         assert_eq!(pitch_rows(L8, 1, 1), (4, 1));
         assert_eq!(pitch_rows(DXT1, 1, 1), (8, 1)); // a whole block for a 1x1 level
         assert_eq!(pitch_rows(DXT5, 9, 5), (48, 2));
-        for f in [A8R8G8B8, R5G6B5, A8, DXT1, DXT3, A16B16G16R16F, A32B32G32R32F] {
+        for f in [
+            A8R8G8B8,
+            R5G6B5,
+            A8,
+            DXT1,
+            DXT3,
+            A16B16G16R16F,
+            A32B32G32R32F,
+        ] {
             let (bpb, bs) = layout(f).unwrap();
             for w in 1..20 {
                 let (p, _) = pitch_rows(f, w, 1);
@@ -746,13 +942,35 @@ mod proofs {
     use super::*;
 
     const FORMATS: [u32; 22] = [
-        R8G8B8, A8R8G8B8, X8R8G8B8, R5G6B5, X1R5G5B5, A1R5G5B5, A4R4G4B4, A8, X4R4G4B4, A8B8G8R8,
-        X8B8G8R8, L8, A8L8, A4L4, P8, A16B16G16R16F, A32B32G32R32F, DXT1, DXT2, DXT3, DXT4, DXT5,
+        R8G8B8,
+        A8R8G8B8,
+        X8R8G8B8,
+        R5G6B5,
+        X1R5G5B5,
+        A1R5G5B5,
+        A4R4G4B4,
+        A8,
+        X4R4G4B4,
+        A8B8G8R8,
+        X8B8G8R8,
+        L8,
+        A8L8,
+        A4L4,
+        P8,
+        A16B16G16R16F,
+        A32B32G32R32F,
+        DXT1,
+        DXT2,
+        DXT3,
+        DXT4,
+        DXT5,
     ];
 
     #[kani::proof]
     fn ext_is_rounded_unorm() {
-        let bits: u32 = *[1u32, 4, 5, 6].get(kani::any_where(|&i: &usize| i < 4)).unwrap();
+        let bits: u32 = *[1u32, 4, 5, 6]
+            .get(kani::any_where(|&i: &usize| i < 4))
+            .unwrap();
         let v: u32 = kani::any_where(|&v| v < 1 << bits);
         let max = (1 << bits) - 1;
         let e = ext(v, bits);

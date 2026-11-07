@@ -14,7 +14,10 @@ fn device() -> u32 {
     unsafe { vnhost_d3d9_create(0x20, o as *mut u32, &CALLS) };
     let d3d = rd(o);
     let pp = unsafe { alloc(56) as u32 };
-    for (i, x) in [64, 64, 22, 1, 0, 0, 1, 1, 1, 1, 75, 0, 0, 0].into_iter().enumerate() {
+    for (i, x) in [64, 64, 22, 1, 0, 0, 1, 1, 1, 1, 75, 0, 0, 0]
+        .into_iter()
+        .enumerate()
+    {
         unsafe { *((pp + 4 * i as u32) as *mut u32) = x };
     }
     let o = out();
@@ -51,7 +54,9 @@ fn targets(from: usize) -> Vec<Vec<(String, u32)>> {
         m.objs[from..]
             .iter()
             .filter_map(|o| match o {
-                model::Obj::Pipeline(p) if !p.clear_shader && !p.buffers.is_empty() => Some(p.targets.iter().map(|t| (t.0.clone(), t.1)).collect()),
+                model::Obj::Pipeline(p) if !p.clear_shader && !p.buffers.is_empty() => {
+                    Some(p.targets.iter().map(|t| (t.0.clone(), t.1)).collect())
+                }
                 _ => None,
             })
             .collect()
@@ -70,15 +75,40 @@ fn stencil_and_more_render_targets_are_valid_webgpu() {
     // the stencil test, one- and two-sided, every function and operation; with the depth
     // test off too (stencil still tests)
     for (k, (func, op)) in (1..=8).zip([1, 2, 3, 4, 5, 6, 7, 8]).enumerate() {
-        for (rs, v) in [(52, 1), (56, func), (55, op), (53, 9 - op), (54, op), (57, k as u32), (58, 0x0f), (59, 0xf0), (185, (k & 1) as u32), (189, 9 - func), (188, op), (7, (k & 2 != 0) as u32)] {
+        for (rs, v) in [
+            (52, 1),
+            (56, func),
+            (55, op),
+            (53, 9 - op),
+            (54, op),
+            (57, k as u32),
+            (58, 0x0f),
+            (59, 0xf0),
+            (185, (k & 1) as u32),
+            (189, 9 - func),
+            (188, op),
+            (7, (k & 2 != 0) as u32),
+        ] {
             call(IF_DEVICE, 57, &[dev, rs, v]);
         }
         // (a stencil clear in a part, then the whole)
         let r = unsafe { alloc(16) as u32 };
-        put_bytes(r, &[4u32, 4, 20, 20].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>());
-        assert_eq!(call(IF_DEVICE, 43, &[dev, 1, r, 4, 0, 1f32.to_bits(), 3]), 0);
+        put_bytes(
+            r,
+            &[4u32, 4, 20, 20]
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            call(IF_DEVICE, 43, &[dev, 1, r, 4, 0, 1f32.to_bits(), 3]),
+            0
+        );
         quad(dev);
-        assert_eq!(call(IF_DEVICE, 43, &[dev, 0, 0, 7, 0, 1f32.to_bits(), 1]), 0);
+        assert_eq!(
+            call(IF_DEVICE, 43, &[dev, 0, 0, 7, 0, 1f32.to_bits(), 1]),
+            0
+        );
         quad(dev);
     }
     call(IF_DEVICE, 57, &[dev, 52, 0]);
@@ -92,14 +122,30 @@ fn stencil_and_more_render_targets_are_valid_webgpu() {
     assert_eq!(call(IF_TEXTURE, 18, &[rd(o), 0, o2]), 0);
     let s1 = rd(o2);
     assert_eq!(call(IF_DEVICE, 37, &[dev, 1, s1]), 0);
-    let code: [u32; 8] = [0xffff0200, 0x02000001, 0x800f0800, 0xa0e40000, 0x02000001, 0x800f0801, 0xa0e40001, 0x0000ffff];
+    let code: [u32; 8] = [
+        0xffff0200, 0x02000001, 0x800f0800, 0xa0e40000, 0x02000001, 0x800f0801, 0xa0e40001,
+        0x0000ffff,
+    ];
     let c = unsafe { alloc(32) as u32 };
-    put_bytes(c, &code.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>());
+    put_bytes(
+        c,
+        &code
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect::<Vec<_>>(),
+    );
     let o = out();
     assert_eq!(call(IF_DEVICE, 106, &[dev, c, o]), 0);
     let ps = rd(o);
     let from = model::with(|m| m.objs.len());
-    assert_eq!(call(IF_DEVICE, 43, &[dev, 0, 0, 7, 0x00ff_0000, 1f32.to_bits(), 0]), 0);
+    assert_eq!(
+        call(
+            IF_DEVICE,
+            43,
+            &[dev, 0, 0, 7, 0x00ff_0000, 1f32.to_bits(), 0]
+        ),
+        0
+    );
     call(IF_DEVICE, 107, &[dev, ps]);
     call(IF_DEVICE, 57, &[dev, 190, 1]);
     quad(dev);
@@ -117,7 +163,10 @@ fn stencil_and_more_render_targets_are_valid_webgpu() {
         assert_eq!(p.len(), 2, "{t:?}");
     }
     assert_eq!(t[0][1].1, 1, "COLORWRITEENABLE1 red: {t:?}");
-    assert_eq!(t[1][1].1, 0, "fixed function writes no render target 1: {t:?}");
+    assert_eq!(
+        t[1][1].1, 0,
+        "fixed function writes no render target 1: {t:?}"
+    );
     // render target 1 unset: one target again
     call(IF_DEVICE, 37, &[dev, 1, 0]);
     let from = model::with(|m| m.objs.len());
@@ -126,5 +175,133 @@ fn stencil_and_more_render_targets_are_valid_webgpu() {
     assert!(t.iter().all(|p| p.len() == 1), "{t:?}");
     let e = errors();
     assert!(e.is_empty(), "one target again: {:?}", &e[..e.len().min(8)]);
+    gpu::set_pump(None);
+}
+
+/// Textures of every format reach the page: what a lock wrote is what the page's texture holds
+/// (as format::convert makes it), for the 8-bit, 16-bit float and 32-bit float page formats.
+#[test]
+fn every_texture_format_reaches_the_page() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    unsafe {
+        let vt: Vec<u32> = (1..=64).map(|i| 0x1000 * i).collect();
+        vnhost_d3d9_init(vt.as_ptr(), vt.len() as u32);
+    }
+    let dev = device();
+    errors();
+    use super::format as f;
+    let fmts = [
+        f::A8R8G8B8,
+        f::X8R8G8B8,
+        f::R5G6B5,
+        f::A1R5G5B5,
+        f::A4R4G4B4,
+        f::A8,
+        f::L8,
+        f::A8L8,
+        f::A8B8G8R8,
+        f::A16B16G16R16F,
+        f::A32B32G32R32F,
+        f::A2R10G10B10,
+        f::A2B10G10R10,
+        f::G16R16,
+        f::A16B16G16R16,
+        f::L16,
+        f::V8U8,
+        f::Q8W8V8U8,
+        f::V16U16,
+        f::X8L8V8U8,
+        f::L6V5U5,
+        f::A2W10V10U10,
+        f::Q16W16V16U16,
+        f::R16F,
+        f::G16R16F,
+        f::R32F,
+        f::G32R32F,
+    ];
+    for fmt in fmts {
+        let from = model::with(|m| m.objs.len());
+        let o = out();
+        assert_eq!(
+            call(IF_DEVICE, 23, &[dev, 4, 4, 1, 0, fmt, 1, o, 0]),
+            0,
+            "format {fmt}"
+        );
+        let tex = rd(o);
+        let lr = out();
+        assert_eq!(call(IF_TEXTURE, 19, &[tex, 0, lr, 0, 0]), 0, "format {fmt}");
+        let (pitch, bits) = (rd(lr), rd(lr + 4));
+        let (bpp, _) = f::layout(fmt).unwrap();
+        // (values that are normal floats of every width, 32-bit ones within reach of halves:
+        // the top byte of each 4 stays 0x3c)
+        let mut src = Vec::new();
+        for y in 0..4u32 {
+            let row: Vec<u8> = (0..4 * bpp)
+                .map(|i| {
+                    [0x05, 0x21, 0x3e, 0x3c][(i % 4) as usize]
+                        ^ if i % 4 == 3 {
+                            0
+                        } else {
+                            (y * 4 * bpp + i) as u8 & 0x11
+                        }
+                })
+                .collect();
+            put_bytes(bits + y * pitch, &row);
+            src.extend(row);
+        }
+        assert_eq!(call(IF_TEXTURE, 20, &[tex, 0]), 0);
+        call(IF_DEVICE, 65, &[dev, 0, tex]);
+        quad(dev);
+        call(IF_DEVICE, 65, &[dev, 0, 0]);
+        let mut want = Vec::new();
+        unsafe { f::convert(fmt, src.as_ptr(), (4 * bpp) as usize, 4, 4, &mut want) };
+        let got = model::with(|m| {
+            m.objs[from..].iter().find_map(|o| match o {
+                model::Obj::Texture(t) if t.w == 4 && t.h == 4 => {
+                    Some((t.format.clone(), t.texels[0].clone()))
+                }
+                _ => None,
+            })
+        });
+        let Some((pf, texels)) = got else {
+            panic!("format {fmt}: no page texture")
+        };
+        assert!(
+            texels.iter().all(|&t| t != 0),
+            "format {fmt} ({pf}): texels not written {texels:x?}"
+        );
+        let page = f::page_bpp(fmt) as usize;
+        let want: Vec<u64> = match pf.as_str() {
+            // (halves of the 32-bit floats when the page has no float32-filterable)
+            "rgba16float" if page == 16 => want
+                .chunks_exact(16)
+                .map(|p| {
+                    let h: Vec<u8> = p
+                        .chunks_exact(4)
+                        .flat_map(|f| {
+                            crate::d3d11::format::f16_bits(f32::from_le_bytes(
+                                f.try_into().unwrap(),
+                            ))
+                            .to_le_bytes()
+                        })
+                        .collect();
+                    u64::from_le_bytes(h.try_into().unwrap())
+                })
+                .collect(),
+            _ if page <= 8 => want
+                .chunks_exact(page)
+                .map(|p| {
+                    let mut w = [0u8; 8];
+                    w[..page].copy_from_slice(p);
+                    u64::from_le_bytes(w)
+                })
+                .collect(),
+            _ => texels.clone(), // (16-byte texels are hashed in the model)
+        };
+        assert_eq!(texels, want, "format {fmt} ({pf})");
+        call(IF_TEXTURE, 2, &[tex]);
+    }
+    let e = errors();
+    assert!(e.is_empty(), "{:?}", &e[..e.len().min(8)]);
     gpu::set_pump(None);
 }

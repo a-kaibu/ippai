@@ -17,13 +17,13 @@
 //! module keeps V8's optimized code too.
 
 use crate::cpu::Linear;
-use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::{Duration, Instant};
 use koji::jit::{self, wasm::Module};
 use koji::{Cpu, Exit};
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// Misses at an address before its block is compiled (IPPAI_JIT_THRESHOLD overrides).
 const THRESHOLD: u32 = 50;
@@ -31,7 +31,12 @@ const THRESHOLD: u32 = 50;
 fn threshold() -> u32 {
     use std::sync::OnceLock;
     static T: OnceLock<u32> = OnceLock::new();
-    *T.get_or_init(|| std::env::var("IPPAI_JIT_THRESHOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(THRESHOLD))
+    *T.get_or_init(|| {
+        std::env::var("IPPAI_JIT_THRESHOLD")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(THRESHOLD)
+    })
 }
 /// Debugging a miscompile by bisection: IPPAI_JIT_ONLY=lo-hi (hex) compiles only code in [lo, hi),
 /// IPPAI_JIT_ONLY=!lo-hi all but that.
@@ -53,7 +58,10 @@ fn set_pages(map: &[AtomicU32], addr: usize, len: usize, on: bool) {
     if len == 0 || addr >= 1 << 31 {
         return;
     }
-    let (lo, hi) = (addr >> 12, (addr.saturating_add(len - 1) >> 12).min((1 << 19) - 1));
+    let (lo, hi) = (
+        addr >> 12,
+        (addr.saturating_add(len - 1) >> 12).min((1 << 19) - 1),
+    );
     for p in lo..=hi {
         if on {
             map[p >> 5].fetch_or(1 << (p & 31), Ordering::Relaxed);
@@ -76,7 +84,8 @@ fn wx_page(a: u32) -> bool {
 /// unseen, so only for programs known to keep their code there (ASProtect's decryptors).
 fn wx_jit() -> bool {
     static ENV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    WX_JIT.load(Ordering::Relaxed) || *ENV.get_or_init(|| std::env::var_os("IPPAI_JIT_WX").is_some())
+    WX_JIT.load(Ordering::Relaxed)
+        || *ENV.get_or_init(|| std::env::var_os("IPPAI_JIT_WX").is_some())
 }
 static WX_JIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub fn translate_wx_pages() {
@@ -111,7 +120,9 @@ pub(crate) fn smc_hit(a: u32) {
 /// a store rewrote translated code there): shared and saved builds are checked by their
 /// bytes, which data stores beside the code leave alone.
 fn code_kept(code: &[(u32, u32)]) -> bool {
-    code.iter().all(|&(a, n)| !page_set(&SMC_PAGES, a) && !page_set(&SMC_PAGES, a.saturating_add(n.max(1) - 1)))
+    code.iter().all(|&(a, n)| {
+        !page_set(&SMC_PAGES, a) && !page_set(&SMC_PAGES, a.saturating_add(n.max(1) - 1))
+    })
 }
 
 /// The interpreter's store to `a` (cpu.rs Linear): whether it hit translated code (then
@@ -147,7 +158,10 @@ fn debug_range(a: u32) -> bool {
         // ("!lo-hi": everything but [lo, hi))
         let v = std::env::var("IPPAI_JIT_ONLY").unwrap_or_default();
         let not = v.starts_with('!');
-        let mut it = v.trim_start_matches('!').split('-').map(|x| u32::from_str_radix(x.trim_start_matches("0x"), 16).ok());
+        let mut it = v
+            .trim_start_matches('!')
+            .split('-')
+            .map(|x| u32::from_str_radix(x.trim_start_matches("0x"), 16).ok());
         match (it.next().flatten(), it.next().flatten()) {
             (Some(lo), Some(hi)) => (lo, hi, not),
             _ => (0, u32::MAX, false),
@@ -164,7 +178,9 @@ fn fn_allowed(a: u32) -> bool {
         let v = std::env::var("IPPAI_JIT_FN_ONLY").unwrap_or_default();
         v.split('_')
             .filter_map(|r| {
-                let mut it = r.split('-').map(|x| u32::from_str_radix(x.trim_start_matches("0x"), 16).ok());
+                let mut it = r
+                    .split('-')
+                    .map(|x| u32::from_str_radix(x.trim_start_matches("0x"), 16).ok());
                 Some((it.next().flatten()?, it.next().flatten()?))
             })
             .collect::<Vec<_>>()
@@ -258,7 +274,8 @@ static SHARED: Mutex<Option<HashMap<Vec<u32>, Vec<Arc<Shared>>>>> = Mutex::new(N
 
 /// What the translations hold (IPPAI_JIT_COUNT prints it; never freed so far): modules loaded
 /// (each thread's own), their bytes, the highest table index they took (all threads).
-static MODULES: [std::sync::atomic::AtomicU64; 3] = [const { std::sync::atomic::AtomicU64::new(0) }; 3];
+static MODULES: [std::sync::atomic::AtomicU64; 3] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 3];
 
 #[cfg(target_os = "emscripten")]
 fn loaded(base: i32, n: u32, bytes: usize) -> i32 {
@@ -274,7 +291,15 @@ fn loaded(base: i32, n: u32, bytes: usize) -> i32 {
 fn shared_size() -> (usize, usize) {
     let g = SHARED.lock().unwrap();
     let Some(m) = g.as_ref() else { return (0, 0) };
-    m.values().flatten().fold((0, 0), |(n, b), r| (n + 1, b + r.bytes.len() + r.text.len() + (r.starts.len() + r.code.len()) * 8 + r.sites.len() * 4))
+    m.values().flatten().fold((0, 0), |(n, b), r| {
+        (
+            n + 1,
+            b + r.bytes.len()
+                + r.text.len()
+                + (r.starts.len() + r.code.len()) * 8
+                + r.sites.len() * 4,
+        )
+    })
 }
 
 fn code_bytes(mem: &mut Linear, code: &[(u32, u32)]) -> Option<Vec<u8>> {
@@ -292,7 +317,9 @@ fn code_bytes(mem: &mut Linear, code: &[(u32, u32)]) -> Option<Vec<u8>> {
 /// A region for `roots` some thread built from the same code as ours.
 fn shared(mem: &mut Linear, roots: &[u32]) -> Option<Arc<Shared>> {
     let list = SHARED.lock().unwrap().as_ref()?.get(roots)?.clone();
-    list.into_iter().rev().find(|r| code_kept(&r.code) && code_bytes(mem, &r.code).is_some_and(|t| t == r.text))
+    list.into_iter()
+        .rev()
+        .find(|r| code_kept(&r.code) && code_bytes(mem, &r.code).is_some_and(|t| t == r.text))
 }
 
 fn share(mem: &mut Linear, roots: &[u32], bytes: Vec<u8>, region: &jit::Region) {
@@ -300,9 +327,24 @@ fn share(mem: &mut Linear, roots: &[u32], bytes: Vec<u8>, region: &jit::Region) 
 }
 
 fn share_build(mem: &mut Linear, key: Vec<u32>, bytes: Vec<u8>, region: &jit::Region, build: u32) {
-    let Some(text) = code_bytes(mem, &region.code) else { return };
-    let r = Arc::new(Shared { bytes, starts: region.starts.clone(), code: region.code.clone(), text, build, sites: region.sites.clone() });
-    SHARED.lock().unwrap().get_or_insert_with(HashMap::new).entry(key).or_default().push(r);
+    let Some(text) = code_bytes(mem, &region.code) else {
+        return;
+    };
+    let r = Arc::new(Shared {
+        bytes,
+        starts: region.starts.clone(),
+        code: region.code.clone(),
+        text,
+        build,
+        sites: region.sites.clone(),
+    });
+    SHARED
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .entry(key)
+        .or_default()
+        .push(r);
 }
 
 /// The key of the function at `eip` among the shared modules (regions use their roots).
@@ -318,7 +360,9 @@ thread_local! {
 pub fn enabled() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| cfg!(target_os = "emscripten") && std::env::var("IPPAI_JIT").map_or(true, |v| v != "0"))
+    *ON.get_or_init(|| {
+        cfg!(target_os = "emscripten") && std::env::var("IPPAI_JIT").map_or(true, |v| v != "0")
+    })
 }
 
 pub fn enabled64() -> bool {
@@ -351,7 +395,11 @@ static CODE_RANGES: Mutex<BTreeMap<u32, u32>> = Mutex::new(BTreeMap::new());
 
 fn in_code(a: u32) -> bool {
     // (blocks are short: those starting up to 4 KB below)
-    CODE_RANGES.lock().unwrap().range(a.saturating_sub(0x1000)..=a).any(|(_, &e)| a < e)
+    CODE_RANGES
+        .lock()
+        .unwrap()
+        .range(a.saturating_sub(0x1000)..=a)
+        .any(|(_, &e)| a < e)
 }
 
 fn mark_code(code: &[(u32, u32)]) {
@@ -374,7 +422,8 @@ fn mark_code(code: &[(u32, u32)]) {
 /// A byte per guest page of [0, 2 GB): [`READ_FAULTS`] | [`WRITE_FAULTS`] where an access
 /// faults; made with the first such page (koji's PAGE_MAP points at it once a page that
 /// turns the checks on is marked).
-static FAULT_MAP: std::sync::OnceLock<&'static [std::sync::atomic::AtomicU8]> = std::sync::OnceLock::new();
+static FAULT_MAP: std::sync::OnceLock<&'static [std::sync::atomic::AtomicU8]> =
+    std::sync::OnceLock::new();
 
 /// A read of the page faults (and a write: PAGE_NOACCESS, PAGE_GUARD, decommitted).
 pub const READ_FAULTS: u8 = 1;
@@ -393,10 +442,17 @@ pub fn fault_pages(addr: u32, len: u32, kind: u8, checks: bool) {
         return;
     }
     let map = *FAULT_MAP.get_or_init(|| {
-        let m: &'static [std::sync::atomic::AtomicU8] = Box::leak((0..1 << 19).map(|_| std::sync::atomic::AtomicU8::new(0)).collect());
+        let m: &'static [std::sync::atomic::AtomicU8] = Box::leak(
+            (0..1 << 19)
+                .map(|_| std::sync::atomic::AtomicU8::new(0))
+                .collect(),
+        );
         m
     });
-    let (lo, hi) = (addr as usize >> 12, ((addr as usize + len as usize - 1) >> 12).min((1 << 19) - 1));
+    let (lo, hi) = (
+        addr as usize >> 12,
+        ((addr as usize + len as usize - 1) >> 12).min((1 << 19) - 1),
+    );
     for b in &map[lo..=hi] {
         b.store(kind, Ordering::Relaxed);
     }
@@ -412,10 +468,23 @@ pub fn fault_pages(addr: u32, len: u32, kind: u8, checks: bool) {
 /// Whether the access [addr, + len) touches a page marked by [`fault_pages`] for it.
 #[inline(always)]
 pub(crate) fn faults(addr: u32, len: u32, write: bool) -> bool {
-    let Some(map) = FAULT_MAP.get() else { return false };
-    let (lo, hi) = (addr as usize >> 12, (addr as usize + len.max(1) as usize - 1) >> 12);
-    let m = if write { READ_FAULTS | WRITE_FAULTS } else { READ_FAULTS };
-    map.get(lo).is_some_and(|b| b.load(Ordering::Relaxed) & m != 0) || map.get(hi).is_some_and(|b| b.load(Ordering::Relaxed) & m != 0)
+    let Some(map) = FAULT_MAP.get() else {
+        return false;
+    };
+    let (lo, hi) = (
+        addr as usize >> 12,
+        (addr as usize + len.max(1) as usize - 1) >> 12,
+    );
+    let m = if write {
+        READ_FAULTS | WRITE_FAULTS
+    } else {
+        READ_FAULTS
+    };
+    map.get(lo)
+        .is_some_and(|b| b.load(Ordering::Relaxed) & m != 0)
+        || map
+            .get(hi)
+            .is_some_and(|b| b.load(Ordering::Relaxed) & m != 0)
 }
 
 /// Every thread drops its translations (at its next entry into the run loop).
@@ -434,7 +503,10 @@ pub fn code_changed(addr: usize, len: usize) {
     if len == 0 || addr >= 1 << 31 {
         return;
     }
-    let (lo, hi) = (addr >> 12, (addr.saturating_add(len - 1) >> 12).min((1 << 19) - 1));
+    let (lo, hi) = (
+        addr >> 12,
+        (addr.saturating_add(len - 1) >> 12).min((1 << 19) - 1),
+    );
     let mut hit = false;
     for p in lo..=hi {
         if CODE_PAGES[p >> 5].load(Ordering::Relaxed) & (1 << (p & 31)) != 0 {
@@ -579,7 +651,10 @@ pub fn run(cpu: &mut Cpu) -> Ran {
     check_generation();
     // (saves come after builds; this covers a run whose builds were all done early)
     thread_local! { static RUNS: Cell<u32> = const { Cell::new(0) }; }
-    if RUNS.with(|r| { r.set(r.get().wrapping_add(1)); r.get() % 65536 == 0 }) {
+    if RUNS.with(|r| {
+        r.set(r.get().wrapping_add(1));
+        r.get() % 65536 == 0
+    }) {
         maybe_save();
     }
     with_state(|st| {
@@ -603,7 +678,18 @@ pub fn run(cpu: &mut Cpu) -> Ran {
         // now and then, checked against the interpreter
         thread_local! { static VN: Cell<u32> = const { Cell::new(0) }; }
         let mode = if cpu.mode64 != 0 { verify64() } else { 0 };
-        let verify = mode != 0 && debug_allowed(cpu.eip) && VN.with(|v| { v.set(v.get().wrapping_add(1)); v.get() % match mode { 1 => 4, 2 => 32, _ => 1 } == 0 });
+        let verify = mode != 0
+            && debug_allowed(cpu.eip)
+            && VN.with(|v| {
+                v.set(v.get().wrapping_add(1));
+                v.get()
+                    % match mode {
+                        1 => 4,
+                        2 => 32,
+                        _ => 1,
+                    }
+                    == 0
+            });
         verify.then(|| {
             cpu.jit_budget = 2;
             let mut c = cpu.clone();
@@ -644,7 +730,10 @@ fn verify64() -> u32 {
     use std::sync::OnceLock;
     static ON: OnceLock<u32> = OnceLock::new();
     *ON.get_or_init(|| {
-        let on = std::env::var("IPPAI_JIT64_VERIFY").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+        let on = std::env::var("IPPAI_JIT64_VERIFY")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
         if on == 1 {
             jit::long::DEBUG_INS.store(1, Ordering::Relaxed);
             jit::long::DEBUG_BLOCKS.store(1, Ordering::Relaxed);
@@ -687,7 +776,11 @@ fn diff64(want: &Cpu, got: &Cpu, writes: &[(u32, u8)]) -> Vec<String> {
         }
     }
     if w.eflags & 0x8d5 != g.eflags & 0x8d5 {
-        d.push(format!("flags want {:#x} got {:#x}", w.eflags & 0x8d5, g.eflags & 0x8d5));
+        d.push(format!(
+            "flags want {:#x} got {:#x}",
+            w.eflags & 0x8d5,
+            g.eflags & 0x8d5
+        ));
     }
     let mut last = HashMap::new();
     for &(a, v) in writes {
@@ -724,12 +817,24 @@ fn check64(before: &Cpu, states: &[(Cpu, usize)], got: &Cpu, writes: &[(u32, u8)
         }
         first.get_or_insert(d);
     }
-    let d = first.unwrap_or_else(|| vec![format!("rip {:x}{:08x} not reached in {} steps", got.rip_hi, got.eip, states.len())]);
+    let d = first.unwrap_or_else(|| {
+        vec![format!(
+            "rip {:x}{:08x} not reached in {} steps",
+            got.rip_hi,
+            got.eip,
+            states.len()
+        )]
+    });
     if arrivals == 0 && states.len() >= 400 {
         return; // (too far)
     }
     static SEEN: Mutex<Option<HashSet<u32>>> = Mutex::new(None);
-    if !SEEN.lock().unwrap().get_or_insert_with(HashSet::new).insert(before.eip) {
+    if !SEEN
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashSet::new)
+        .insert(before.eip)
+    {
         return;
     }
     let mut bf = before.clone();
@@ -770,9 +875,16 @@ fn load(st: &mut State, bytes: &[u8], roots: Vec<u32>, starts: &[(u32, u32)]) ->
         let _ = std::fs::write(std::path::Path::new(&dir).join(name), bytes);
     }
     #[cfg(target_os = "emscripten")]
-    let base = loaded(unsafe { vnvm_jit_load(bytes.as_ptr(), bytes.len(), 1) }, 1, bytes.len());
+    let base = loaded(
+        unsafe { vnvm_jit_load(bytes.as_ptr(), bytes.len(), 1) },
+        1,
+        bytes.len(),
+    );
     #[cfg(not(target_os = "emscripten"))]
-    let base = { let _ = bytes; -1 };
+    let base = {
+        let _ = bytes;
+        -1
+    };
     if base < 0 {
         return false;
     }
@@ -828,11 +940,24 @@ fn saved_regions() -> &'static Saved {
         };
         #[cfg(not(target_os = "emscripten"))]
         let entries: Vec<jit::saved::Entry> = Vec::new();
-        let (mut by_root, mut by_fn): (HashMap<u32, Vec<usize>>, HashMap<u32, Vec<usize>>) = (HashMap::new(), HashMap::new());
+        let (mut by_root, mut by_fn): (HashMap<u32, Vec<usize>>, HashMap<u32, Vec<usize>>) =
+            (HashMap::new(), HashMap::new());
         for (i, e) in entries.iter().enumerate() {
-            if e.build > 0 { &mut by_fn } else { &mut by_root }.entry(e.roots[0]).or_default().push(i);
+            if e.build > 0 {
+                &mut by_fn
+            } else {
+                &mut by_root
+            }
+            .entry(e.roots[0])
+            .or_default()
+            .push(i);
         }
-        Saved { offsets: jit::saved::offsets(&entries), entries, by_root, by_fn }
+        Saved {
+            offsets: jit::saved::offsets(&entries),
+            entries,
+            by_root,
+            by_fn,
+        }
     })
 }
 
@@ -848,15 +973,25 @@ fn find_saved(mem: &mut Linear, roots: &[u32], exact: bool, trap: (u32, u32)) ->
         .iter()
         .copied()
         .filter(|&i| !exact || s.entries[i].roots == roots)
-        .filter(|&i| s.entries[i].code.iter().all(|&(a, n)| a.saturating_add(n) <= trap.0 || a >= trap.1))
-        .filter(|&i| code_kept(&s.entries[i].code) && code_bytes(mem, &s.entries[i].code).is_some_and(|t| t == s.entries[i].text))
+        .filter(|&i| {
+            s.entries[i]
+                .code
+                .iter()
+                .all(|&(a, n)| a.saturating_add(n) <= trap.0 || a >= trap.1)
+        })
+        .filter(|&i| {
+            code_kept(&s.entries[i].code)
+                && code_bytes(mem, &s.entries[i].code).is_some_and(|t| t == s.entries[i].text)
+        })
         .max_by_key(|&i| s.entries[i].roots.len())
 }
 
 /// Puts saved region `i` in (instantiating the saved module on this thread first).
 fn load_saved(st: &mut State, i: usize) -> bool {
     #[cfg(target_os = "emscripten")]
-    let base = *st.saved.get_or_insert_with(|| unsafe { vnvm_jit_bundle_load() });
+    let base = *st
+        .saved
+        .get_or_insert_with(|| unsafe { vnvm_jit_bundle_load() });
     #[cfg(not(target_os = "emscripten"))]
     let base = -1;
     if base < 0 {
@@ -879,14 +1014,19 @@ fn find_saved_fn(mem: &mut Linear, eip: u32) -> Option<usize> {
         .get(&eip)?
         .iter()
         .copied()
-        .filter(|&i| code_kept(&s.entries[i].code) && code_bytes(mem, &s.entries[i].code).is_some_and(|t| t == s.entries[i].text))
+        .filter(|&i| {
+            code_kept(&s.entries[i].code)
+                && code_bytes(mem, &s.entries[i].code).is_some_and(|t| t == s.entries[i].text)
+        })
         .max_by_key(|&i| s.entries[i].build)
 }
 
 /// Puts saved function `i` in.
 fn load_saved_fn(st: &mut State, i: usize) -> bool {
     #[cfg(target_os = "emscripten")]
-    let base = *st.saved.get_or_insert_with(|| unsafe { vnvm_jit_bundle_load() });
+    let base = *st
+        .saved
+        .get_or_insert_with(|| unsafe { vnvm_jit_bundle_load() });
     #[cfg(not(target_os = "emscripten"))]
     let base = -1;
     if base < 0 {
@@ -895,7 +1035,14 @@ fn load_saved_fn(st: &mut State, i: usize) -> bool {
     let s = saved_regions();
     let e = &s.entries[i];
     st.fn_builds.insert(e.roots[0], e.build);
-    enter_fn(st, base as u32 + s.offsets[i], e.roots[0], &e.starts, &e.sites, &e.code);
+    enter_fn(
+        st,
+        base as u32 + s.offsets[i],
+        e.roots[0],
+        &e.starts,
+        &e.sites,
+        &e.code,
+    );
     true
 }
 
@@ -907,14 +1054,25 @@ fn maybe_save() {
     const SAVE_EVERY: Duration = Duration::from_secs(30);
     const SAVE_MIN: usize = 32;
     static URL: std::sync::OnceLock<Option<std::ffi::CString>> = std::sync::OnceLock::new();
-    static SAVE: Mutex<(Option<Instant>, Option<Instant>, Option<HashMap<Vec<u32>, u32>>, bool)> = Mutex::new((None, None, None, false));
-    let Some(url) = URL.get_or_init(|| std::env::var("IPPAI_JIT_URL").ok().and_then(|u| std::ffi::CString::new(u).ok())) else {
+    static SAVE: Mutex<(
+        Option<Instant>,
+        Option<Instant>,
+        Option<HashMap<Vec<u32>, u32>>,
+        bool,
+    )> = Mutex::new((None, None, None, false));
+    let Some(url) = URL.get_or_init(|| {
+        std::env::var("IPPAI_JIT_URL")
+            .ok()
+            .and_then(|u| std::ffi::CString::new(u).ok())
+    }) else {
         return;
     };
     if profiling() {
         return; // the counters' addresses are only this run's
     }
-    let Ok(mut guard) = SAVE.try_lock() else { return };
+    let Ok(mut guard) = SAVE.try_lock() else {
+        return;
+    };
     let g = &mut *guard;
     let now = Instant::now();
     let start = *g.0.get_or_insert(now);
@@ -941,15 +1099,23 @@ fn maybe_save() {
         done.insert(r.clone(), s.build);
     }
     // the first time, the store chunks the run read so far too (for the page to fetch ahead)
-    let chunks = if g.3 { None } else { Some(crate::vfs::fetched()) };
+    let chunks = if g.3 {
+        None
+    } else {
+        Some(crate::vfs::fetched())
+    };
     g.3 = true;
     drop(guard);
     // merged and sent on a thread of its own: the merge of a few hundred functions took the
     // game's thread tens of ms
-    static SAVER: std::sync::OnceLock<Option<std::sync::mpsc::Sender<Save>>> = std::sync::OnceLock::new();
+    static SAVER: std::sync::OnceLock<Option<std::sync::mpsc::Sender<Save>>> =
+        std::sync::OnceLock::new();
     let tx = SAVER.get_or_init(|| {
         let (tx, rx) = std::sync::mpsc::channel::<Save>();
-        std::thread::Builder::new().name("vnjit-save".into()).spawn(move || rx.into_iter().for_each(save)).ok()?;
+        std::thread::Builder::new()
+            .name("vnjit-save".into())
+            .spawn(move || rx.into_iter().for_each(save))
+            .ok()?;
         Some(tx)
     });
     let job = (url.as_c_str(), new, chunks);
@@ -962,13 +1128,21 @@ fn maybe_save() {
 }
 
 /// What [`save`] sends: the URL, the new regions, the chunks read (the first time).
-type Save = (&'static std::ffi::CStr, Vec<(Vec<u32>, Arc<Shared>)>, Option<Vec<u8>>);
+type Save = (
+    &'static std::ffi::CStr,
+    Vec<(Vec<u32>, Arc<Shared>)>,
+    Option<Vec<u8>>,
+);
 
 fn save((url, new, chunks): Save) {
     let entries: Vec<jit::saved::Entry> = new
         .iter()
         .map(|(r, s)| jit::saved::Entry {
-            roots: if s.build > 0 { r[..1].to_vec() } else { r.clone() },
+            roots: if s.build > 0 {
+                r[..1].to_vec()
+            } else {
+                r.clone()
+            },
             starts: s.starts.clone(),
             code: s.code.clone(),
             text: s.text.clone(),
@@ -984,7 +1158,11 @@ fn save((url, new, chunks): Save) {
     };
     let idx = jit::saved::encode(&entries);
     if stats() || crate::env_on!("IPPAI_JIT_SAVE_LOG") {
-        eprintln!("vnjit: saving {} regions ({} bytes)", entries.len(), wasm.len());
+        eprintln!(
+            "vnjit: saving {} regions ({} bytes)",
+            entries.len(),
+            wasm.len()
+        );
     }
     let mut body = (wasm.len() as u32).to_le_bytes().to_vec();
     body.extend_from_slice(&wasm);
@@ -993,7 +1171,8 @@ fn save((url, new, chunks): Save) {
     unsafe {
         vnvm_jit_save(url.as_ptr(), body.as_ptr(), body.len());
         if let Some(c) = &chunks {
-            let u = std::ffi::CString::new(format!("{}.chunks", url.to_str().unwrap_or(""))).unwrap();
+            let u =
+                std::ffi::CString::new(format!("{}.chunks", url.to_str().unwrap_or(""))).unwrap();
             vnvm_jit_save(u.as_ptr(), c.as_ptr(), c.len());
         }
     };
@@ -1063,8 +1242,15 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
     runs.sort_by(|a, b| b.0.cmp(&a.0));
     if stats() {
         thread_local! { static N: Cell<u32> = const { Cell::new(0) }; }
-        if N.with(|n| { n.set(n.get() + 1); n.get() % 4000 == 0 }) {
-            let top: Vec<String> = runs.iter().take(6).map(|(c, p)| format!("{:x}->{:x}:{c}", p >> 32, *p as u32)).collect();
+        if N.with(|n| {
+            n.set(n.get() + 1);
+            n.get() % 4000 == 0
+        }) {
+            let top: Vec<String> = runs
+                .iter()
+                .take(6)
+                .map(|(c, p)| format!("{:x}->{:x}:{c}", p >> 32, *p as u32))
+                .collect();
             eprintln!("vnjit ring {}", top.join(" "));
         }
     }
@@ -1107,7 +1293,8 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
             }
             continue;
         }
-        let fnish = (from == jit::FN_TAG && !st.fns.contains(&to)) || (from != jit::FN_TAG && st.fns.contains(&from) && !st.fns.contains(&to));
+        let fnish = (from == jit::FN_TAG && !st.fns.contains(&to))
+            || (from != jit::FN_TAG && st.fns.contains(&from) && !st.fns.contains(&to));
         if !fnish {
             continue;
         }
@@ -1137,7 +1324,9 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
     if *w < MERGE_WINDOWS || !st.merged.insert((from, to)) || !st.merged.insert((u32::MAX, to)) {
         return;
     }
-    let Some(roots) = st.roots.get(&from) else { return };
+    let Some(roots) = st.roots.get(&from) else {
+        return;
+    };
     let mut roots = roots.clone();
     roots.push(to);
     if let Some(r) = shared(&mut Linear, &roots) {
@@ -1155,8 +1344,14 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
     if cpu.mode64 != 0 {
         return merge_long(st, cpu, roots, from, to);
     }
-    let mut m = Module { name: Some(format!("x86_{:08x}_{}", roots[0], roots.len())), ..Module::default() };
-    if let Some(n) = std::env::var("IPPAI_JIT_SLOTS").ok().and_then(|v| v.parse::<u32>().ok()) {
+    let mut m = Module {
+        name: Some(format!("x86_{:08x}_{}", roots[0], roots.len())),
+        ..Module::default()
+    };
+    if let Some(n) = std::env::var("IPPAI_JIT_SLOTS")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+    {
         jit::SLOTS_MAX.store(n.min(6), std::sync::atomic::Ordering::Relaxed);
     }
     if crate::env_on!("IPPAI_JIT_LAYOUT") {
@@ -1174,7 +1369,12 @@ fn merge_hot(st: &mut State, cpu: &Cpu) {
     }
     st.merges += 1;
     if stats() {
-        eprintln!("vnjit merge {from:#x} -> {to:#x}: {} blocks, roots {:x?}\n{}", region.starts.len(), roots, region.layout);
+        eprintln!(
+            "vnjit merge {from:#x} -> {to:#x}: {} blocks, roots {:x?}\n{}",
+            region.starts.len(),
+            roots,
+            region.layout
+        );
     }
     let bytes = m.finish();
     mark_code(&region.code);
@@ -1193,7 +1393,10 @@ fn merge_hot64(st: &mut State, cpu: &Cpu, jumps: &[u64]) {
     let mut i = 0;
     while i < jumps.len() {
         let from = (jumps[i] >> 32) as u32;
-        let k = i + jumps[i..].iter().take_while(|j| (**j >> 32) as u32 == from).count();
+        let k = i + jumps[i..]
+            .iter()
+            .take_while(|j| (**j >> 32) as u32 == from)
+            .count();
         if k - i > best.0 {
             best = (k - i, from);
         }
@@ -1209,14 +1412,20 @@ fn merge_hot64(st: &mut State, cpu: &Cpu, jumps: &[u64]) {
         return;
     }
     st.hot.remove(&(from, u32::MAX));
-    let Some(roots) = st.roots.get(&from) else { return };
+    let Some(roots) = st.roots.get(&from) else {
+        return;
+    };
     let mut roots = roots.clone();
     let mut new = Vec::new();
     let mut i = 0;
     while i < jumps.len() {
         let k = i + jumps[i..].iter().take_while(|j| **j == jumps[i]).count();
         let to = jumps[i] as u32;
-        if (jumps[i] >> 32) as u32 == from && k - i >= 2 && !roots.contains(&to) && st.merged.insert((from, to)) {
+        if (jumps[i] >> 32) as u32 == from
+            && k - i >= 2
+            && !roots.contains(&to)
+            && st.merged.insert((from, to))
+        {
             new.push(to);
         }
         i = k;
@@ -1238,12 +1447,27 @@ fn merge_hot64(st: &mut State, cpu: &Cpu, jumps: &[u64]) {
 /// merge_hot's region for long mode (jit::long): the roots' blocks and the ones that ran.
 fn merge_long(st: &mut State, cpu: &Cpu, roots: Vec<u32>, from: u32, to: u32) {
     let (lo, hi) = (cpu.trap_lo, cpu.trap_hi);
-    let full: Vec<u64> = roots.iter().map(|&r| r as u64 | (cpu.rip_hi as u64) << 32).collect();
-    let mut m = Module { name: Some(format!("x64_{:x}{:08x}_{}", cpu.rip_hi, roots[0], roots.len())), ..Module::default() };
+    let full: Vec<u64> = roots
+        .iter()
+        .map(|&r| r as u64 | (cpu.rip_hi as u64) << 32)
+        .collect();
+    let mut m = Module {
+        name: Some(format!(
+            "x64_{:x}{:08x}_{}",
+            cpu.rip_hi,
+            roots[0],
+            roots.len()
+        )),
+        ..Module::default()
+    };
     let (misses, known, hash) = (&st.misses, &st.known, &st.hash);
-    let Some(region) = jit::long::translate_region64(&mut m, &mut Linear, &full, (lo, hi), |a, sure| {
-        debug_allowed(a) && !(a >= lo && a < hi) && (misses.contains_key(&a) || compiled(hash, a) || sure && !known.contains(&a))
-    }) else {
+    let Some(region) =
+        jit::long::translate_region64(&mut m, &mut Linear, &full, (lo, hi), |a, sure| {
+            debug_allowed(a)
+                && !(a >= lo && a < hi)
+                && (misses.contains_key(&a) || compiled(hash, a) || sure && !known.contains(&a))
+        })
+    else {
         return;
     };
     if !region.starts.iter().any(|s| s.0 == to) {
@@ -1251,7 +1475,12 @@ fn merge_long(st: &mut State, cpu: &Cpu, roots: Vec<u32>, from: u32, to: u32) {
     }
     st.merges += 1;
     if stats() || crate::env_on!("IPPAI_JIT_LAYOUT") {
-        eprintln!("vnjit64 merge {from:#x} -> {to:#x}: {} blocks, roots {:x?}\n{}", region.starts.len(), roots, region.layout);
+        eprintln!(
+            "vnjit64 merge {from:#x} -> {to:#x}: {} blocks, roots {:x?}\n{}",
+            region.starts.len(),
+            roots,
+            region.layout
+        );
     }
     let bytes = m.finish();
     mark_code(&region.code);
@@ -1264,7 +1493,10 @@ fn merge_long(st: &mut State, cpu: &Cpu, roots: Vec<u32>, from: u32, to: u32) {
 /// Counts a miss at cpu.eip and compiles its block once it is warm; true if it did.
 pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
     let eip = cpu.eip;
-    if !(jit::GUEST_LO..jit::GUEST_HI).contains(&eip) || (eip >= cpu.trap_lo && eip < cpu.trap_hi) || !debug_allowed(eip) {
+    if !(jit::GUEST_LO..jit::GUEST_HI).contains(&eip)
+        || (eip >= cpu.trap_lo && eip < cpu.trap_hi)
+        || !debug_allowed(eip)
+    {
         return false;
     }
     with_state(|st| {
@@ -1305,7 +1537,9 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         if *n < threshold() {
             return false;
         }
-        let fnm = jit::FN.load(std::sync::atomic::Ordering::Relaxed) && cpu.mode64 == 0 && fn_allowed(eip);
+        let fnm = jit::FN.load(std::sync::atomic::Ordering::Relaxed)
+            && cpu.mode64 == 0
+            && fn_allowed(eip);
         let part = fnm && !called(cpu, mem);
         // a block inside a function the compiler thread has yet to finish: most likely in it
         // (the interpreter runs its blocks meanwhile, each reaching the threshold), so not
@@ -1323,7 +1557,10 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
             return compile_fn(st, eip, (cpu.trap_lo, cpu.trap_hi), mem, part);
         }
         // the block and what it statically reaches, as one function
-        let mut m = Module { name: Some(format!("x86_{eip:08x}")), ..Module::default() };
+        let mut m = Module {
+            name: Some(format!("x86_{eip:08x}")),
+            ..Module::default()
+        };
         if crate::env_on!("IPPAI_JIT_LAYOUT") {
             jit::LAYOUT.store(true, std::sync::atomic::Ordering::Relaxed);
         }
@@ -1332,7 +1569,10 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         profiling();
         let t0 = std::time::Instant::now();
         let Some(mut region) = jit::translate_region(&mut m, mem, &[eip], MAX_BLOCKS, |a| {
-            debug_allowed(a) && !(a >= lo && a < hi) && !known.contains(&a) && (a == eip || misses.contains_key(&a))
+            debug_allowed(a)
+                && !(a >= lo && a < hi)
+                && !known.contains(&a)
+                && (a == eip || misses.contains_key(&a))
         }) else {
             if stats() {
                 eprintln!("vnjit refused {eip:#x}");
@@ -1349,7 +1589,12 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
         let ok = load(st, &bytes, vec![eip], &region.starts);
         count_compile(0, t0);
         if crate::env_on!("IPPAI_JIT_TIME") {
-            eprintln!("vnjit time {eip:#x}: {} ins, translate {:?}, load {:?}", region.instructions, t1 - t0, t1.elapsed());
+            eprintln!(
+                "vnjit time {eip:#x}: {} ins, translate {:?}, load {:?}",
+                region.instructions,
+                t1 - t0,
+                t1.elapsed()
+            );
         }
         if ok {
             keep_profile(&mut region);
@@ -1365,7 +1610,10 @@ pub(crate) fn maybe_compile(cpu: &mut Cpu, mem: &mut Linear) -> bool {
 /// Compiles the long-mode region at cpu.eip (jit::long; no FN mode or merges yet).
 fn compile_long(st: &mut State, cpu: &Cpu, mem: &mut Linear) -> bool {
     let eip = cpu.eip;
-    let mut m = Module { name: Some(format!("x64_{:x}{eip:08x}", cpu.rip_hi)), ..Module::default() };
+    let mut m = Module {
+        name: Some(format!("x64_{:x}{eip:08x}", cpu.rip_hi)),
+        ..Module::default()
+    };
     let (lo, hi) = (cpu.trap_lo, cpu.trap_hi);
     let (misses, known, hash) = (&st.misses, &st.known, &st.hash);
     let entry = eip as u64 | (cpu.rip_hi as u64) << 32;
@@ -1376,7 +1624,10 @@ fn compile_long(st: &mut State, cpu: &Cpu, mem: &mut Linear) -> bool {
     let Some(region) = jit::long::translate_region64(&mut m, mem, &[entry], (lo, hi), |a, sure| {
         // (a block reached by a call or a jump table may be in another region already: it is
         // taken in too, the jump staying inside; `known` has those and the refused ones)
-        debug_allowed(a) && !(a >= lo && a < hi) && (!known.contains(&a) || sure && compiled(hash, a)) && (a == eip || sure || misses.contains_key(&a))
+        debug_allowed(a)
+            && !(a >= lo && a < hi)
+            && (!known.contains(&a) || sure && compiled(hash, a))
+            && (a == eip || sure || misses.contains_key(&a))
     }) else {
         st.known.insert(eip);
         return false;
@@ -1388,7 +1639,12 @@ fn compile_long(st: &mut State, cpu: &Cpu, mem: &mut Linear) -> bool {
     let t1 = std::time::Instant::now();
     let ok = load(st, &bytes, vec![eip], &region.starts);
     if crate::env_on!("IPPAI_JIT_TIME") {
-        eprintln!("vnjit time {eip:#x}: {} ins, translate {:?}, load {:?}", region.instructions, t1 - t0, t1.elapsed());
+        eprintln!(
+            "vnjit time {eip:#x}: {} ins, translate {:?}, load {:?}",
+            region.instructions,
+            t1 - t0,
+            t1.elapsed()
+        );
     }
     if ok {
         mark_code(&region.code);
@@ -1414,13 +1670,21 @@ fn called(cpu: &Cpu, mem: &mut Linear) -> bool {
     if c[2] == 0xe8 && ra.wrapping_add(u32::from_le_bytes([c[3], c[4], c[5], c[6]])) == cpu.eip {
         return true;
     }
-    [2usize, 3, 4, 6, 7].iter().any(|&k| c[7 - k] == 0xff && (c[8 - k] >> 3) & 7 == 2)
+    [2usize, 3, 4, 6, 7]
+        .iter()
+        .any(|&k| c[7 - k] == 0xff && (c[8 - k] >> 3) & 7 == 2)
 }
 
 /// Compiles the function at cpu.eip (jit::FN): its adapter and itself, the hash entry tagged.
 static FN_INS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
 
-fn compile_fn(st: &mut State, eip: u32, (lo, hi): (u32, u32), mem: &mut Linear, part: bool) -> bool {
+fn compile_fn(
+    st: &mut State,
+    eip: u32,
+    (lo, hi): (u32, u32),
+    mem: &mut Linear,
+    part: bool,
+) -> bool {
     if st.pending.contains(&eip) {
         return false;
     }
@@ -1438,9 +1702,26 @@ fn compile_fn(st: &mut State, eip: u32, (lo, hi): (u32, u32), mem: &mut Linear, 
         // a few ms here, several times that on a phone: a dropped frame each, in the story's
         // scene changes)
         let tc = Instant::now();
-        let job = Job { eip, lo, hi, part, build, misses: st.misses.clone(), known: st.known.clone(), hints: st.hints.clone(), tid: std::thread::current().id(), done: st.done_tx.clone() };
+        let job = Job {
+            eip,
+            lo,
+            hi,
+            part,
+            build,
+            misses: st.misses.clone(),
+            known: st.known.clone(),
+            hints: st.hints.clone(),
+            tid: std::thread::current().id(),
+            done: st.done_tx.clone(),
+        };
         if crate::env_on!("IPPAI_JIT_TIME") {
-            eprintln!("vnjit job {eip:#x}: misses {} known {} hints {}, copied in {:?}", st.misses.len(), st.known.len(), st.hints.len(), tc.elapsed());
+            eprintln!(
+                "vnjit job {eip:#x}: misses {} known {} hints {}, copied in {:?}",
+                st.misses.len(),
+                st.known.len(),
+                st.hints.len(),
+                tc.elapsed()
+            );
         }
         if jobs.send(job).is_ok() {
             st.pending.insert(eip);
@@ -1448,7 +1729,16 @@ fn compile_fn(st: &mut State, eip: u32, (lo, hi): (u32, u32), mem: &mut Linear, 
         }
     }
     let t0 = Instant::now();
-    let built = build_fn(mem, eip, (lo, hi), part, build, &st.misses, &st.known, &st.hints);
+    let built = build_fn(
+        mem,
+        eip,
+        (lo, hi),
+        part,
+        build,
+        &st.misses,
+        &st.known,
+        &st.hints,
+    );
     finish_fn(st, eip, build, built, None, t0)
 }
 
@@ -1487,7 +1777,8 @@ const BATCH_MAX: usize = 16;
 /// The compiler thread's queue (IPPAI_JIT_ASYNC=0: none, functions are translated where they
 /// are needed).
 fn compiler() -> Option<&'static std::sync::mpsc::Sender<Job>> {
-    static Q: std::sync::OnceLock<Option<std::sync::mpsc::Sender<Job>>> = std::sync::OnceLock::new();
+    static Q: std::sync::OnceLock<Option<std::sync::mpsc::Sender<Job>>> =
+        std::sync::OnceLock::new();
     Q.get_or_init(|| {
         if std::env::var("IPPAI_JIT_ASYNC").is_ok_and(|v| v == "0") {
             return None;
@@ -1497,9 +1788,12 @@ fn compiler() -> Option<&'static std::sync::mpsc::Sender<Job>> {
             .name("vnjit".into())
             .spawn(move || {
                 // the jobs waiting when one is taken go with it, a batch per guest thread
-                let mut waiting: std::collections::VecDeque<Job> = std::collections::VecDeque::new();
+                let mut waiting: std::collections::VecDeque<Job> =
+                    std::collections::VecDeque::new();
                 loop {
-                    let Some(j) = waiting.pop_front().or_else(|| rx.recv().ok()) else { break };
+                    let Some(j) = waiting.pop_front().or_else(|| rx.recv().ok()) else {
+                        break;
+                    };
                     waiting.extend(rx.try_iter());
                     let mut jobs = vec![j];
                     let mut i = 0;
@@ -1514,11 +1808,37 @@ fn compiler() -> Option<&'static std::sync::mpsc::Sender<Job>> {
                     let checked = jit::page_check();
                     let items: Vec<(u32, u32, Built)> = jobs
                         .into_iter()
-                        .map(|j| (j.eip, j.build, build_fn(&mut Linear, j.eip, (j.lo, j.hi), j.part, j.build, &j.misses, &j.known, &j.hints)))
+                        .map(|j| {
+                            (
+                                j.eip,
+                                j.build,
+                                build_fn(
+                                    &mut Linear,
+                                    j.eip,
+                                    (j.lo, j.hi),
+                                    j.part,
+                                    j.build,
+                                    &j.misses,
+                                    &j.known,
+                                    &j.hints,
+                                ),
+                            )
+                        })
                         .collect();
-                    let mods: Vec<&[u8]> = items.iter().filter_map(|(_, _, b)| b.as_ref().map(|b| &b.0[..])).collect();
-                    let merged = if mods.len() > 1 { jit::wasm::merge(&mods, &[]) } else { None };
-                    let _ = done.send(Batch { items, merged, checked });
+                    let mods: Vec<&[u8]> = items
+                        .iter()
+                        .filter_map(|(_, _, b)| b.as_ref().map(|b| &b.0[..]))
+                        .collect();
+                    let merged = if mods.len() > 1 {
+                        jit::wasm::merge(&mods, &[])
+                    } else {
+                        None
+                    };
+                    let _ = done.send(Batch {
+                        items,
+                        merged,
+                        checked,
+                    });
                 }
             })
             .ok()?;
@@ -1529,7 +1849,12 @@ fn compiler() -> Option<&'static std::sync::mpsc::Sender<Job>> {
 
 /// Installs the functions the compiler thread finished for this thread.
 fn take_built(st: &mut State, mem: &mut Linear) {
-    while let Ok(Batch { items, merged, checked }) = st.done_rx.try_recv() {
+    while let Ok(Batch {
+        items,
+        merged,
+        checked,
+    }) = st.done_rx.try_recv()
+    {
         // (built before the page checks came on: dropped, translated again when hot)
         if jit::page_check() && !checked {
             for (eip, _, _) in &items {
@@ -1541,7 +1866,11 @@ fn take_built(st: &mut State, mem: &mut Linear) {
         // when hot)
         let kept: Vec<bool> = items
             .iter()
-            .map(|(_, _, b)| b.as_ref().is_none_or(|(_, r, text)| code_kept(&r.code) && code_bytes(mem, &r.code).is_some_and(|t| t == *text)))
+            .map(|(_, _, b)| {
+                b.as_ref().is_none_or(|(_, r, text)| {
+                    code_kept(&r.code) && code_bytes(mem, &r.code).is_some_and(|t| t == *text)
+                })
+            })
             .collect();
         // all of them at once when none was dropped
         let t0 = Instant::now();
@@ -1549,9 +1878,16 @@ fn take_built(st: &mut State, mem: &mut Linear) {
             Some(m) if kept.iter().all(|&k| k) => {
                 let n = 2 * items.iter().filter(|i| i.2.is_some()).count();
                 #[cfg(target_os = "emscripten")]
-                let b = loaded(unsafe { vnvm_jit_load(m.as_ptr(), m.len(), n as u32) }, n as u32, m.len());
+                let b = loaded(
+                    unsafe { vnvm_jit_load(m.as_ptr(), m.len(), n as u32) },
+                    n as u32,
+                    m.len(),
+                );
                 #[cfg(not(target_os = "emscripten"))]
-                let b = { let _ = (m, n); -1 };
+                let b = {
+                    let _ = (m, n);
+                    -1
+                };
                 if crate::env_on!("IPPAI_JIT_TIME") {
                     eprintln!("vnjit time batch of {}: load {:?}", n / 2, t0.elapsed());
                 }
@@ -1572,29 +1908,75 @@ fn take_built(st: &mut State, mem: &mut Linear) {
     }
 }
 
-fn build_fn(mem: &mut Linear, eip: u32, (lo, hi): (u32, u32), part: bool, build: u32, misses: &HashMap<u32, u32>, known: &HashSet<u32>, hints: &HashMap<u32, u32>) -> Built {
+fn build_fn(
+    mem: &mut Linear,
+    eip: u32,
+    (lo, hi): (u32, u32),
+    part: bool,
+    build: u32,
+    misses: &HashMap<u32, u32>,
+    known: &HashSet<u32>,
+    hints: &HashMap<u32, u32>,
+) -> Built {
     let t0 = Instant::now();
     if crate::env_on!("IPPAI_JIT_LAYOUT") {
         jit::LAYOUT.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     profiling();
-    let mut m = Module { name: Some(format!("x86_{eip:08x}_fn")), ..Module::default() };
+    let mut m = Module {
+        name: Some(format!("x86_{eip:08x}_fn")),
+        ..Module::default()
+    };
     // a function built again (it left its blocks often) may take more: twice per build
     // (big interpreters' loops, a C library's long switch), from IPPAI_JIT_FN_INS
-    let base = *FN_INS.get_or_init(|| std::env::var("IPPAI_JIT_FN_INS").ok().and_then(|v| v.parse().ok()).unwrap_or(1000));
-    let region = jit::translate_function(&mut m, mem, eip, jit::MAX_BLOCKS, base << (build.min(4) - 1), (lo, hi), &|a| hints.get(&a).copied(), &|a| debug_allowed(a) && ran(misses, known, a), |a| debug_allowed(a) && !(a >= lo && a < hi) && (a == eip || if part { !known.contains(&a) && misses.contains_key(&a) } else { ran(misses, known, a) }))?;
+    let base = *FN_INS.get_or_init(|| {
+        std::env::var("IPPAI_JIT_FN_INS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1000)
+    });
+    let region = jit::translate_function(
+        &mut m,
+        mem,
+        eip,
+        jit::MAX_BLOCKS,
+        base << (build.min(4) - 1),
+        (lo, hi),
+        &|a| hints.get(&a).copied(),
+        &|a| debug_allowed(a) && ran(misses, known, a),
+        |a| {
+            debug_allowed(a)
+                && !(a >= lo && a < hi)
+                && (a == eip
+                    || if part {
+                        !known.contains(&a) && misses.contains_key(&a)
+                    } else {
+                        ran(misses, known, a)
+                    })
+        },
+    )?;
     if crate::env_on!("IPPAI_JIT_LAYOUT") {
         eprintln!("vnjit fn {eip:#x}\n{}", region.layout);
     }
     if stats() {
-        eprintln!("vnjit fn {eip:#x} build {build}: {} instructions", region.instructions);
+        eprintln!(
+            "vnjit fn {eip:#x} build {build}: {} instructions",
+            region.instructions
+        );
     }
     let bytes = m.finish();
     if let Some(dir) = std::env::var_os("IPPAI_JIT_DUMP") {
-        let _ = std::fs::write(std::path::Path::new(&dir).join(format!("{eip:08x}-fn.wasm")), &bytes);
+        let _ = std::fs::write(
+            std::path::Path::new(&dir).join(format!("{eip:08x}-fn.wasm")),
+            &bytes,
+        );
     }
     if crate::env_on!("IPPAI_JIT_TIME") {
-        eprintln!("vnjit time {eip:#x}: {} ins, translate {:?} build {build} part {part}", region.instructions, t0.elapsed());
+        eprintln!(
+            "vnjit time {eip:#x}: {} ins, translate {:?} build {build} part {part}",
+            region.instructions,
+            t0.elapsed()
+        );
     }
     let text = code_bytes(mem, &region.code)?;
     Some((bytes, region, text))
@@ -1602,7 +1984,14 @@ fn build_fn(mem: &mut Linear, eip: u32, (lo, hi): (u32, u32), part: bool, build:
 
 /// Loads a translated function (or notes that it could not be); `at`: already loaded (with
 /// others) at that table index.
-fn finish_fn(st: &mut State, eip: u32, build: u32, built: Built, at: Option<u32>, t0: Instant) -> bool {
+fn finish_fn(
+    st: &mut State,
+    eip: u32,
+    build: u32,
+    built: Built,
+    at: Option<u32>,
+    t0: Instant,
+) -> bool {
     let Some((bytes, mut region, text)) = built else {
         st.known.insert(eip);
         return false;
@@ -1616,7 +2005,11 @@ fn finish_fn(st: &mut State, eip: u32, build: u32, built: Built, at: Option<u32>
         None => install_fn(st, eip, &bytes, &region.starts, &region.sites, &region.code),
     };
     if at.is_none() && crate::env_on!("IPPAI_JIT_TIME") {
-        eprintln!("vnjit time {eip:#x}: {} ins, load {:?}", region.instructions, t1.elapsed());
+        eprintln!(
+            "vnjit time {eip:#x}: {} ins, load {:?}",
+            region.instructions,
+            t1.elapsed()
+        );
     }
     count_compile(1, t0);
     if build > 1 {
@@ -1624,19 +2017,46 @@ fn finish_fn(st: &mut State, eip: u32, build: u32, built: Built, at: Option<u32>
     }
     if ok {
         keep_profile(&mut region);
-        let r = Arc::new(Shared { bytes, starts: region.starts, code: region.code, text, build, sites: region.sites });
-        SHARED.lock().unwrap().get_or_insert_with(HashMap::new).entry(fn_key(eip).to_vec()).or_default().push(r);
+        let r = Arc::new(Shared {
+            bytes,
+            starts: region.starts,
+            code: region.code,
+            text,
+            build,
+            sites: region.sites,
+        });
+        SHARED
+            .lock()
+            .unwrap()
+            .get_or_insert_with(HashMap::new)
+            .entry(fn_key(eip).to_vec())
+            .or_default()
+            .push(r);
         maybe_save();
     }
     ok
 }
 
 /// Compiles a function's module (adapter, function) and points the hash table at its blocks.
-fn install_fn(st: &mut State, eip: u32, bytes: &[u8], starts: &[(u32, u32)], sites: &[u32], code: &[(u32, u32)]) -> bool {
+fn install_fn(
+    st: &mut State,
+    eip: u32,
+    bytes: &[u8],
+    starts: &[(u32, u32)],
+    sites: &[u32],
+    code: &[(u32, u32)],
+) -> bool {
     #[cfg(target_os = "emscripten")]
-    let base = loaded(unsafe { vnvm_jit_load(bytes.as_ptr(), bytes.len(), 2) }, 2, bytes.len());
+    let base = loaded(
+        unsafe { vnvm_jit_load(bytes.as_ptr(), bytes.len(), 2) },
+        2,
+        bytes.len(),
+    );
     #[cfg(not(target_os = "emscripten"))]
-    let base = { let _ = bytes; -1 };
+    let base = {
+        let _ = bytes;
+        -1
+    };
     st.known.insert(eip);
     if base < 0 {
         return false;
@@ -1646,7 +2066,14 @@ fn install_fn(st: &mut State, eip: u32, bytes: &[u8], starts: &[(u32, u32)], sit
 }
 
 /// Points the hash table at the function (adapter at table index `base`, itself next).
-fn enter_fn(st: &mut State, base: u32, eip: u32, starts: &[(u32, u32)], sites: &[u32], code: &[(u32, u32)]) {
+fn enter_fn(
+    st: &mut State,
+    base: u32,
+    eip: u32,
+    starts: &[(u32, u32)],
+    sites: &[u32],
+    code: &[(u32, u32)],
+) {
     st.known.insert(eip);
     mark_code(code);
     for &a in sites {
@@ -1701,7 +2128,10 @@ pub(crate) fn step(cpu: &mut Cpu, mem: &mut Linear) -> (Exit, bool) {
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_jit_callmiss(cpu: u32, slot: u32, target: u32) -> u32 {
     let cpu = &*(cpu as usize as *const Cpu);
-    let hash = std::slice::from_raw_parts(cpu.jit_hash as usize as *const [u32; 2], cpu.jit_mask as usize + 1);
+    let hash = std::slice::from_raw_parts(
+        cpu.jit_hash as usize as *const [u32; 2],
+        cpu.jit_mask as usize + 1,
+    );
     let mut h = jit::dispatch::slot(target, cpu.jit_mask);
     while hash[h as usize][0] != 0 {
         if hash[h as usize][0] == target {
@@ -1733,10 +2163,26 @@ pub unsafe extern "C" fn vnhost_jit_step(cpu: u32) -> i32 {
     if stats() {
         count_step(&*cpu);
     }
-    if jit::PROBES[0].load(Ordering::Relaxed) != 0 && jit::PROBES.iter().any(|p| p.load(Ordering::Relaxed) == (*cpu).eip) {
+    if jit::PROBES[0].load(Ordering::Relaxed) != 0
+        && jit::PROBES
+            .iter()
+            .any(|p| p.load(Ordering::Relaxed) == (*cpu).eip)
+    {
         let c = &*cpu;
-        let f = |x: u128| (0..4).map(|i| f32::from_bits((x >> (32 * i)) as u32)).collect::<Vec<_>>();
-        eprintln!("vnjit probe {:#x}: regs {:x?} xmm0 {:?} xmm1 {:?} xmm2 {:?} xmm3 {:?}", c.eip, c.regs, f(c.xmm[0]), f(c.xmm[1]), f(c.xmm[2]), f(c.xmm[3]));
+        let f = |x: u128| {
+            (0..4)
+                .map(|i| f32::from_bits((x >> (32 * i)) as u32))
+                .collect::<Vec<_>>()
+        };
+        eprintln!(
+            "vnjit probe {:#x}: regs {:x?} xmm0 {:?} xmm1 {:?} xmm2 {:?} xmm3 {:?}",
+            c.eip,
+            c.regs,
+            f(c.xmm[0]),
+            f(c.xmm[1]),
+            f(c.xmm[2]),
+            f(c.xmm[3])
+        );
     }
     let g = GENERATION.load(Ordering::Relaxed);
     match step(&mut *cpu, &mut Linear).0 {
@@ -1744,7 +2190,11 @@ pub unsafe extern "C" fn vnhost_jit_step(cpu: u32) -> i32 {
         Exit::Continue if GENERATION.load(Ordering::Relaxed) != g => 2,
         // (POPF set TF, or LDMXCSR / FXRSTOR unmasked an SSE exception: from here on the
         // interpreter runs the code, see cpu_run)
-        Exit::Continue if (*cpu).eflags & koji::flags::TF != 0 || (*cpu).mxcsr & 0x1f80 != 0x1f80 => 2,
+        Exit::Continue
+            if (*cpu).eflags & koji::flags::TF != 0 || (*cpu).mxcsr & 0x1f80 != 0x1f80 =>
+        {
+            2
+        }
         Exit::Continue => 0,
         e => {
             EXIT.with(|x| x.set(Some(e)));
@@ -1763,7 +2213,19 @@ pub unsafe extern "C" fn vnhost_jit_eflags(cpu: u32) -> u32 {
 /// A region leaving with its x87 cache (koji::jit::x87_out).
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
-pub unsafe extern "C" fn vnhost_jit_x87(cpu: u32, top: u32, info: u32, a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, g: f64, h: f64) {
+pub unsafe extern "C" fn vnhost_jit_x87(
+    cpu: u32,
+    top: u32,
+    info: u32,
+    a: f64,
+    b: f64,
+    c: f64,
+    d: f64,
+    e: f64,
+    f: f64,
+    g: f64,
+    h: f64,
+) {
     let cpu = cpu as usize as *mut Cpu;
     jit::x87_out(&mut (*cpu).fpu, top, info, [a, b, c, d, e, f, g, h]);
 }
@@ -1781,7 +2243,14 @@ pub extern "C" fn vnhost_jit_status(op: u32, a: u32, b: u32, r: u32, c: u32) -> 
         eprintln!("vnjit64 check: condition {b} at {a:#x}: lazy {r}, eflags {c:#x}");
         return 0;
     }
-    koji::lazy::Lazy { op, a: a as u64, b: b as u64, r: r as u64, c }.status()
+    koji::lazy::Lazy {
+        op,
+        a: a as u64,
+        b: b as u64,
+        r: r as u64,
+        c,
+    }
+    .status()
 }
 
 /// IPPAI_JIT_PROFILE: every region's blocks (address, entry counter, instruction keys).
@@ -1796,16 +2265,23 @@ fn profiling() -> bool {
         // IPPAI_JIT_PROFILE=<seconds> (> 1): print the counts every that many seconds after the
         // first region (under node, where no page asks for them; counts add up, so the difference
         // of two prints is that window)
-        if let Some(secs) = std::env::var("IPPAI_JIT_PROFILE").ok().and_then(|v| v.parse::<u64>().ok()).filter(|&s| s > 1) {
+        if let Some(secs) = std::env::var("IPPAI_JIT_PROFILE")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|&s| s > 1)
+        {
             std::thread::spawn(move || loop {
                 std::thread::sleep(std::time::Duration::from_secs(secs));
                 vnhost_jit_profile();
             });
         }
         on
-    // (set on every call: a store made only once inside get_or_init was not seen by translate
-    // on other threads, and every region came back without counters)
-    }) && { jit::PROFILE.store(true, std::sync::atomic::Ordering::Relaxed); true }
+        // (set on every call: a store made only once inside get_or_init was not seen by translate
+        // on other threads, and every region came back without counters)
+    }) && {
+        jit::PROFILE.store(true, std::sync::atomic::Ordering::Relaxed);
+        true
+    }
 }
 
 fn keep_profile(region: &mut jit::Region) {
@@ -1839,7 +2315,10 @@ pub extern "C" fn vnhost_jit_profile() {
     keys.sort_unstable_by(|a, b| b.1.cmp(&a.1));
     let mut mn: HashMap<&str, u64> = HashMap::new();
     for (k, n) in &keys {
-        let m = k.trim_start_matches("lock ").trim_start_matches("rep ").trim_start_matches("repne ");
+        let m = k
+            .trim_start_matches("lock ")
+            .trim_start_matches("rep ")
+            .trim_start_matches("repne ");
         *mn.entry(m.split(' ').next().unwrap_or(m)).or_default() += n;
     }
     let mut mn: Vec<_> = mn.into_iter().collect();
@@ -1858,7 +2337,10 @@ pub extern "C" fn vnhost_jit_profile() {
         o += &format!("PROF key {k} {n}\n");
     }
     // IPPAI_PROF_BLOCKS=<n>: more of the hottest blocks (default 40)
-    let nblocks = std::env::var("IPPAI_PROF_BLOCKS").ok().and_then(|v| v.parse().ok()).unwrap_or(40);
+    let nblocks = std::env::var("IPPAI_PROF_BLOCKS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(40);
     for (n, a, len) in blocks.iter().take(nblocks) {
         o += &format!("PROF block {a:08x} {len} {n}\n");
     }
@@ -1877,9 +2359,17 @@ pub extern "C" fn vnhost_jit_profile() {
 }
 
 fn category(k: &str) -> &'static str {
-    let m = k.trim_start_matches("lock ").trim_start_matches("rep ").trim_start_matches("repne ");
+    let m = k
+        .trim_start_matches("lock ")
+        .trim_start_matches("rep ")
+        .trim_start_matches("repne ");
     let mn = m.split(' ').next().unwrap_or(m);
-    if k.contains("xmm") || mn.ends_with("ss") && mn != "cmpss" || mn.starts_with("cvt") || mn == "ldmxcsr" || mn == "stmxcsr" {
+    if k.contains("xmm")
+        || mn.ends_with("ss") && mn != "cmpss"
+        || mn.starts_with("cvt")
+        || mn == "ldmxcsr"
+        || mn == "stmxcsr"
+    {
         "sse"
     } else if k.contains("mm") || mn == "emms" {
         "mmx"
@@ -1889,7 +2379,11 @@ fn category(k: &str) -> &'static str {
         "string"
     } else if k.starts_with("lock") || mn == "xchg" || mn.starts_with("cmpxchg") {
         "atomic"
-    } else if matches!(mn, "call" | "ret" | "jmp" | "push" | "pop" | "leave" | "enter") || mn.starts_with('j') {
+    } else if matches!(
+        mn,
+        "call" | "ret" | "jmp" | "push" | "pop" | "leave" | "enter"
+    ) || mn.starts_with('j')
+    {
         "control/stack"
     } else {
         "int"
@@ -1910,7 +2404,12 @@ fn count_step(cpu: &Cpu) {
     let mut b = [0u8; 16];
     let n = koji::Memory::fetch(&mut Linear, cpu.eip, &mut b);
     let bits = if cpu.mode64 != 0 { 64 } else { 32 };
-    let mut d = koji::iced_x86::Decoder::with_ip(bits, &b[..n], cpu.eip as u64, koji::iced_x86::DecoderOptions::NONE);
+    let mut d = koji::iced_x86::Decoder::with_ip(
+        bits,
+        &b[..n],
+        cpu.eip as u64,
+        koji::iced_x86::DecoderOptions::NONE,
+    );
     let ins = d.decode();
     let pre = if ins.has_lock_prefix() {
         "lock "
@@ -1948,7 +2447,11 @@ pub(crate) fn count_miss(eip: u32) {
         if c.0 % (1 << 20) == 0 {
             let mut v: Vec<_> = c.1.iter().collect();
             v.sort_by(|a, b| b.1.cmp(a.1));
-            let top: Vec<String> = v.iter().take(12).map(|(k, n)| format!("{k:#x}:{n}")).collect();
+            let top: Vec<String> = v
+                .iter()
+                .take(12)
+                .map(|(k, n)| format!("{k:#x}:{n}"))
+                .collect();
             eprintln!("vnjit misses {}: {}", c.0, top.join(" "));
         }
     });
@@ -1971,9 +2474,18 @@ pub(crate) fn count_entry(eip: u32) {
         if c.0 % (1 << 16) == 0 {
             let mut v: Vec<_> = c.1.iter().collect();
             v.sort_by(|a, b| b.1.cmp(a.1));
-            let top: Vec<String> = v.iter().take(6).map(|(k, n)| format!("{k:#x}:{n}")).collect();
-            eprintln!("vnjit thread {:?}: {} entries in {:?}: {}", std::thread::current().id(), c.0, t0.elapsed(), top.join(" "));
+            let top: Vec<String> = v
+                .iter()
+                .take(6)
+                .map(|(k, n)| format!("{k:#x}:{n}"))
+                .collect();
+            eprintln!(
+                "vnjit thread {:?}: {} entries in {:?}: {}",
+                std::thread::current().id(),
+                c.0,
+                t0.elapsed(),
+                top.join(" ")
+            );
         }
     });
 }
-

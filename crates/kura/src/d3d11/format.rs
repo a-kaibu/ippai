@@ -19,7 +19,14 @@ pub const BC5S: u32 = 0xbc52;
 ///
 /// # Safety
 /// `src` must hold the box.
-pub unsafe fn to_floats(conv: u32, n: u32, src: *const u8, pitch: usize, w: u32, h: u32) -> Option<Vec<u8>> {
+pub unsafe fn to_floats(
+    conv: u32,
+    n: u32,
+    src: *const u8,
+    pitch: usize,
+    w: u32,
+    h: u32,
+) -> Option<Vec<u8>> {
     let (w, h) = (w as usize, h as usize);
     let n = n as usize;
     let mut out = vec![0f32; w * h * n];
@@ -29,7 +36,11 @@ pub unsafe fn to_floats(conv: u32, n: u32, src: *const u8, pitch: usize, w: u32,
                 let row = src.add(y * pitch);
                 for i in 0..w * n {
                     let v = u16::from_le_bytes([*row.add(2 * i), *row.add(2 * i + 1)]);
-                    out[y * w * n + i] = if conv == U16N { v as f32 / 65535.0 } else { ((v as i16) as f32 / 32767.0).max(-1.0) };
+                    out[y * w * n + i] = if conv == U16N {
+                        v as f32 / 65535.0
+                    } else {
+                        ((v as i16) as f32 / 32767.0).max(-1.0)
+                    };
                 }
             }
         }
@@ -60,7 +71,11 @@ pub unsafe fn to_floats(conv: u32, n: u32, src: *const u8, pitch: usize, w: u32,
 /// The 16 values of a BC4 block (BC5 is two of them), as the Direct3D spec interpolates.
 fn bc4_block(b: &[u8], signed: bool) -> [f32; 16] {
     let (e0, e1, scale) = if signed {
-        ((b[0] as i8).max(-127) as f32, (b[1] as i8).max(-127) as f32, 127.0)
+        (
+            (b[0] as i8).max(-127) as f32,
+            (b[1] as i8).max(-127) as f32,
+            127.0,
+        )
     } else {
         (b[0] as f32, b[1] as f32, 255.0)
     };
@@ -114,7 +129,11 @@ pub fn f16_bits(v: f32) -> u16 {
 
 /// f16 bits to f32 (exact)
 pub fn f16_to_f32(h: u16) -> f32 {
-    let (s, e, m) = ((h as u32 >> 15) << 31, (h as u32 >> 10) & 31, h as u32 & 1023);
+    let (s, e, m) = (
+        (h as u32 >> 15) << 31,
+        (h as u32 >> 10) & 31,
+        h as u32 & 1023,
+    );
     let bits = match e {
         0 if m == 0 => 0,
         // subnormal: normalize
@@ -183,11 +202,23 @@ pub struct Format {
 }
 
 const fn f(page: u32, bpp: u32) -> Format {
-    Format { page, bpp, block: 1, conv: 0, no_alpha: false }
+    Format {
+        page,
+        bpp,
+        block: 1,
+        conv: 0,
+        no_alpha: false,
+    }
 }
 
 const fn c(bpp: u32, block: u32, conv: u32) -> Format {
-    Format { page: P_BGRA8, bpp, block, conv, no_alpha: false }
+    Format {
+        page: P_BGRA8,
+        bpp,
+        block,
+        conv,
+        no_alpha: false,
+    }
 }
 
 pub fn info(dxgi: u32) -> Option<Format> {
@@ -234,16 +265,76 @@ pub fn info(dxgi: u32) -> Option<Format> {
         53 | 54 => f(P_R16F, 2),
         55 => f(P_D16, 2),
         51 => f(P_RG8SN, 2),
-        11 => Format { page: P_RGBA32F, bpp: 8, block: 1, conv: U16N, no_alpha: false },
-        13 => Format { page: P_RGBA32F, bpp: 8, block: 1, conv: S16N, no_alpha: false },
-        35 => Format { page: P_RG32F, bpp: 4, block: 1, conv: U16N, no_alpha: false },
-        37 => Format { page: P_RG32F, bpp: 4, block: 1, conv: S16N, no_alpha: false },
-        56 => Format { page: P_R32F, bpp: 2, block: 1, conv: U16N, no_alpha: false },
-        58 => Format { page: P_R32F, bpp: 2, block: 1, conv: S16N, no_alpha: false },
-        79 | 80 => Format { page: P_R32F, bpp: 8, block: 4, conv: BC4U, no_alpha: false },
-        81 => Format { page: P_R32F, bpp: 8, block: 4, conv: BC4S, no_alpha: false },
-        82 | 83 => Format { page: P_RG32F, bpp: 16, block: 4, conv: BC5U, no_alpha: false },
-        84 => Format { page: P_RG32F, bpp: 16, block: 4, conv: BC5S, no_alpha: false },
+        11 => Format {
+            page: P_RGBA32F,
+            bpp: 8,
+            block: 1,
+            conv: U16N,
+            no_alpha: false,
+        },
+        13 => Format {
+            page: P_RGBA32F,
+            bpp: 8,
+            block: 1,
+            conv: S16N,
+            no_alpha: false,
+        },
+        35 => Format {
+            page: P_RG32F,
+            bpp: 4,
+            block: 1,
+            conv: U16N,
+            no_alpha: false,
+        },
+        37 => Format {
+            page: P_RG32F,
+            bpp: 4,
+            block: 1,
+            conv: S16N,
+            no_alpha: false,
+        },
+        56 => Format {
+            page: P_R32F,
+            bpp: 2,
+            block: 1,
+            conv: U16N,
+            no_alpha: false,
+        },
+        58 => Format {
+            page: P_R32F,
+            bpp: 2,
+            block: 1,
+            conv: S16N,
+            no_alpha: false,
+        },
+        79 | 80 => Format {
+            page: P_R32F,
+            bpp: 8,
+            block: 4,
+            conv: BC4U,
+            no_alpha: false,
+        },
+        81 => Format {
+            page: P_R32F,
+            bpp: 8,
+            block: 4,
+            conv: BC4S,
+            no_alpha: false,
+        },
+        82 | 83 => Format {
+            page: P_RG32F,
+            bpp: 16,
+            block: 4,
+            conv: BC5U,
+            no_alpha: false,
+        },
+        84 => Format {
+            page: P_RG32F,
+            bpp: 16,
+            block: 4,
+            conv: BC5S,
+            no_alpha: false,
+        },
         60 | 61 => f(P_R8, 1),
         63 => f(P_R8SN, 1),
         67 => f(P_RGB9E5, 4),
@@ -252,13 +343,28 @@ pub fn info(dxgi: u32) -> Option<Format> {
         73 | 74 => c(16, 4, f9::DXT3),
         76 | 77 => c(16, 4, f9::DXT5),
         // (the _SRGB ones: decoded the same, sampled through sRGB)
-        72 => Format { page: P_BGRA8_SRGB, ..c(8, 4, f9::DXT1) },
-        75 => Format { page: P_BGRA8_SRGB, ..c(16, 4, f9::DXT3) },
-        78 => Format { page: P_BGRA8_SRGB, ..c(16, 4, f9::DXT5) },
+        72 => Format {
+            page: P_BGRA8_SRGB,
+            ..c(8, 4, f9::DXT1)
+        },
+        75 => Format {
+            page: P_BGRA8_SRGB,
+            ..c(16, 4, f9::DXT3)
+        },
+        78 => Format {
+            page: P_BGRA8_SRGB,
+            ..c(16, 4, f9::DXT5)
+        },
         85 => c(2, 1, f9::R5G6B5),
         86 => c(2, 1, f9::A1R5G5B5),
         87 | 90 => f(P_BGRA8, 4),
-        88 | 92 => Format { page: P_BGRA8, bpp: 4, block: 1, conv: 0, no_alpha: true },
+        88 | 92 => Format {
+            page: P_BGRA8,
+            bpp: 4,
+            block: 1,
+            conv: 0,
+            no_alpha: true,
+        },
         91 | 93 => f(P_BGRA8_SRGB, 4),
         115 => c(2, 1, f9::A4R4G4B4),
         _ => return None,
@@ -289,12 +395,16 @@ pub fn support(dxgi: u32) -> u32 {
         return s | 0x10 | 0x20 | 0x80 | MIP | DS | COMPARISON;
     }
     s |= TEX | LOAD | MIP | LOCK;
-    let int = matches!(f.page, P_RGBA8UI | P_RGBA8SI | P_R32UI | P_R32SI | P_RGBA32UI | P_RGBA32SI | P_RG32UI | P_RG32SI) || (P_RGBA16UI..=P_R8SI).contains(&f.page);
+    let int = matches!(
+        f.page,
+        P_RGBA8UI | P_RGBA8SI | P_R32UI | P_R32SI | P_RGBA32UI | P_RGBA32SI | P_RG32UI | P_RG32SI
+    ) || (P_RGBA16UI..=P_R8SI).contains(&f.page);
     if !int {
         s |= SAMPLE | 0x80_0000; // (and SHADER_GATHER)
     }
     // (what the page draws to: not block-compressed, converted, SNORM or shared-exponent texels)
-    let renderable = f.block == 1 && f.conv == 0 && !matches!(f.page, P_RGBA8SN | P_R8SN | P_RG8SN | P_RGB9E5);
+    let renderable =
+        f.block == 1 && f.conv == 0 && !matches!(f.page, P_RGBA8SN | P_R8SN | P_RG8SN | P_RGB9E5);
     if renderable {
         s |= RT;
         if !int {
@@ -390,7 +500,13 @@ mod tests {
             assert_eq!(super::f16_bits(f), h, "{h:#06x} -> {f}");
             // against the definition: (-1)^s 2^(e-15) (1 + m/1024), subnormals 2^-14 m/1024
             let (e, m) = ((h >> 10) & 31, (h & 1023) as f64);
-            let v = if e == 0 { m / 1024.0 * 2f64.powi(-14) } else if e == 31 { f64::INFINITY } else { (1.0 + m / 1024.0) * 2f64.powi(e as i32 - 15) };
+            let v = if e == 0 {
+                m / 1024.0 * 2f64.powi(-14)
+            } else if e == 31 {
+                f64::INFINITY
+            } else {
+                (1.0 + m / 1024.0) * 2f64.powi(e as i32 - 15)
+            };
             assert_eq!(f.abs() as f64, v, "{h:#06x}");
             assert_eq!(f.is_sign_negative(), h >> 15 != 0);
         }
@@ -407,10 +523,17 @@ mod tests {
                     for b in t * per..((t + 1) * per).min(1 << 32) {
                         let v = f32::from_bits(b as u32);
                         let got = f16_bits(v);
-                        let ok = if v.is_nan() { got & 0x7c00 == 0x7c00 && got & 0x3ff != 0 } else { got == half::f16::from_f32(v).to_bits() };
+                        let ok = if v.is_nan() {
+                            got & 0x7c00 == 0x7c00 && got & 0x3ff != 0
+                        } else {
+                            got == half::f16::from_f32(v).to_bits()
+                        };
                         if !ok {
                             if bad == 0 {
-                                eprintln!("f16_bits({v:e} = {b:#x}) = {got:#x}, want {:#x}", half::f16::from_f32(v).to_bits());
+                                eprintln!(
+                                    "f16_bits({v:e} = {b:#x}) = {got:#x}, want {:#x}",
+                                    half::f16::from_f32(v).to_bits()
+                                );
                             }
                             bad += 1;
                         }
@@ -487,7 +610,10 @@ mod conv_tests {
         let px: [u16; 4] = [0, 65535, 32768, 1];
         let b: Vec<u8> = px.iter().flat_map(|v| v.to_le_bytes()).collect();
         let f = unsafe { to_floats(U16N, 4, b.as_ptr(), 8, 1, 1) }.unwrap();
-        let f: Vec<f32> = f.chunks(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+        let f: Vec<f32> = f
+            .chunks(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
         assert_eq!(f, [0.0, 1.0, 32768.0 / 65535.0, 1.0 / 65535.0]);
     }
 }

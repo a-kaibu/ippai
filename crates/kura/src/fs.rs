@@ -68,7 +68,12 @@ impl From<Info> for Metadata {
 
 impl From<std::fs::Metadata> for Metadata {
     fn from(m: std::fs::Metadata) -> Metadata {
-        Metadata { dir: m.is_dir(), len: m.len(), modified: m.modified().unwrap_or(UNIX_EPOCH), readonly: m.permissions().readonly() }
+        Metadata {
+            dir: m.is_dir(),
+            len: m.len(),
+            modified: m.modified().unwrap_or(UNIX_EPOCH),
+            readonly: m.permissions().readonly(),
+        }
     }
 }
 
@@ -157,7 +162,11 @@ pub fn name_nocase(dir: &str, name: &str) -> Option<String> {
         At::Ours(r) => r.ok().flatten(),
         At::Outside(h) => {
             let lc = name.to_lowercase();
-            std::fs::read_dir(h).ok()?.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).find(|n| n.to_lowercase() == lc)
+            std::fs::read_dir(h)
+                .ok()?
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .find(|n| n.to_lowercase() == lc)
         }
     }
 }
@@ -199,10 +208,22 @@ pub fn read_dir<P: AsRef<Path>>(p: P) -> io::Result<ReadDir> {
         At::Ours(r) => r
             .map_err(os)?
             .into_iter()
-            .map(|(name, i)| Ok(DirEntry { path: Path::new(&dir).join(&name), name, meta: Some(i.into()) }))
+            .map(|(name, i)| {
+                Ok(DirEntry {
+                    path: Path::new(&dir).join(&name),
+                    name,
+                    meta: Some(i.into()),
+                })
+            })
             .collect(),
         At::Outside(h) => std::fs::read_dir(h)?
-            .map(|e| e.map(|e| DirEntry { name: e.file_name().to_string_lossy().into_owned(), path: e.path(), meta: None }))
+            .map(|e| {
+                e.map(|e| DirEntry {
+                    name: e.file_name().to_string_lossy().into_owned(),
+                    path: e.path(),
+                    meta: None,
+                })
+            })
             .collect(),
     };
     Ok(ReadDir(v.into_iter()))
@@ -292,11 +313,17 @@ impl File {
         OpenOptions::new().read(true).open(p)
     }
     pub fn create<P: AsRef<Path>>(p: P) -> io::Result<File> {
-        OpenOptions::new().write(true).create(true).truncate(true).open(p)
+        OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(p)
     }
     pub fn metadata(&self) -> io::Result<Metadata> {
         match &self.0 {
-            Inner::Vfs(h) => vfs::h_info(*h).map(Metadata::from).ok_or_else(|| os(libc::EBADF)),
+            Inner::Vfs(h) => vfs::h_info(*h)
+                .map(Metadata::from)
+                .ok_or_else(|| os(libc::EBADF)),
             Inner::Std(f) => f.metadata().map(Metadata::from),
         }
     }

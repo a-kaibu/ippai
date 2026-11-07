@@ -78,7 +78,9 @@ pub fn open(data: Vec<u8>) -> Option<u32> {
     // (raw: one track of whole frames)
     let raw = match &i.tracks[..] {
         [(c, f)] if c == "raw-i420" => {
-            if f.iter().any(|&(_, size, _)| (size as usize) < raw_size(w, h)) {
+            if f.iter()
+                .any(|&(_, size, _)| (size as usize) < raw_size(w, h))
+            {
                 return None;
             }
             Some(f.iter().map(|&(off, _, _)| off as usize).collect())
@@ -89,11 +91,34 @@ pub fn open(data: Vec<u8>) -> Option<u32> {
     static NEXT: AtomicI32 = AtomicI32::new(1);
     let id = NEXT.fetch_add(1, Ordering::Relaxed) as u32;
     let slots = (0..SLOTS)
-        .map(|_| Slot { buf: Vec::new(), frame: -1, writing: false, reading: 0, layout: [[0; 7]; 2] })
+        .map(|_| Slot {
+            buf: Vec::new(),
+            frame: -1,
+            writing: false,
+            reading: 0,
+            layout: [[0; 7]; 2],
+        })
         .collect();
     // (IPPAI_VIDEO_FAIL: every stream fails, as on a phone without decoders: tests the fallback)
     let failed = std::env::var_os("IPPAI_VIDEO_FAIL").is_some();
-    with(|m| m.insert(id, Stream { data, w, h, tracks, want: -1, slots, closed: false, failed, shown: -1, opened: Instant::now(), raw }));
+    with(|m| {
+        m.insert(
+            id,
+            Stream {
+                data,
+                w,
+                h,
+                tracks,
+                want: -1,
+                slots,
+                closed: false,
+                failed,
+                shown: -1,
+                opened: Instant::now(),
+                raw,
+            },
+        )
+    });
     Some(id)
 }
 
@@ -121,7 +146,9 @@ pub fn close(id: u32) {
 
 /// Drops stream `id` when it is closed and no slot of it is written or read any more.
 fn release(m: &mut HashMap<u32, Stream>, id: u32) {
-    if m.get(&id).is_some_and(|s| s.closed && !s.slots.iter().any(|sl| sl.writing || sl.reading > 0)) {
+    if m.get(&id)
+        .is_some_and(|s| s.closed && !s.slots.iter().any(|sl| sl.writing || sl.reading > 0))
+    {
         m.remove(&id);
     }
 }
@@ -165,27 +192,60 @@ pub unsafe fn frame(id: u32, n: i32, dst: *mut u8, pitch: usize, w: u32, h: u32,
     let start = Instant::now();
     let mut g = STREAMS.lock().unwrap_or_else(|e| e.into_inner());
     // uncompressed: straight from the file (frames past the end: the last one)
-    if let Some(s) = g.get_or_insert_with(HashMap::new).get_mut(&id).filter(|s| !s.closed && !s.failed && s.raw.is_some()) {
+    if let Some(s) = g
+        .get_or_insert_with(HashMap::new)
+        .get_mut(&id)
+        .filter(|s| !s.closed && !s.failed && s.raw.is_some())
+    {
         let offs = s.raw.as_ref().unwrap();
-        let Some(&off) = offs.get((n.max(0) as usize).min(offs.len().saturating_sub(1))) else { return false };
+        let Some(&off) = offs.get((n.max(0) as usize).min(offs.len().saturating_sub(1))) else {
+            return false;
+        };
         let (sw, sh) = (s.w, s.h);
         let (pw, ph) = (sw.next_multiple_of(2), sh.next_multiple_of(2));
         let (y, c) = (pw * ph, (pw / 2) * (ph / 2));
         let layout = [[I420, 0, pw, y, pw / 2, y + c, pw / 2], [0; 7]];
         s.shown = n;
         // (the stream stays while this reads it: the lock is held)
-        convert(s.data.as_ptr().add(off), &layout, 1, sw, sh, dst, pitch, w.min(sw), h.min(sh), out);
+        convert(
+            s.data.as_ptr().add(off),
+            &layout,
+            1,
+            sw,
+            sh,
+            dst,
+            pitch,
+            w.min(sw),
+            h.min(sh),
+            out,
+        );
         return true;
     }
     loop {
-        let Some(s) = g.get_or_insert_with(HashMap::new).get_mut(&id).filter(|s| !s.closed && !s.failed) else { return false };
+        let Some(s) = g
+            .get_or_insert_with(HashMap::new)
+            .get_mut(&id)
+            .filter(|s| !s.closed && !s.failed)
+        else {
+            return false;
+        };
         if s.want != n {
             s.want = n;
             ring();
         }
         let late = start.elapsed() > WAIT && (s.shown >= 0 || s.opened.elapsed() > FIRST);
-        let ready = |sl: &Slot| !sl.writing && sl.frame >= 0 && if late { sl.frame <= n && sl.frame > s.shown } else { sl.frame == n };
-        let k = (0..s.slots.len()).filter(|&k| ready(&s.slots[k])).max_by_key(|&k| s.slots[k].frame);
+        let ready = |sl: &Slot| {
+            !sl.writing
+                && sl.frame >= 0
+                && if late {
+                    sl.frame <= n && sl.frame > s.shown
+                } else {
+                    sl.frame == n
+                }
+        };
+        let k = (0..s.slots.len())
+            .filter(|&k| ready(&s.slots[k]))
+            .max_by_key(|&k| s.slots[k].frame);
         if let Some(k) = k {
             stat(start.elapsed(), n, s.slots[k].frame != n);
             s.shown = s.slots[k].frame;
@@ -193,7 +253,18 @@ pub unsafe fn frame(id: u32, n: i32, dst: *mut u8, pitch: usize, w: u32, h: u32,
             let (sw, sh, tracks) = (s.w, s.h, s.tracks);
             let (buf, layout) = (s.slots[k].buf.as_ptr(), s.slots[k].layout);
             drop(g);
-            convert(buf, &layout, tracks, sw, sh, dst, pitch, w.min(sw), h.min(sh), out);
+            convert(
+                buf,
+                &layout,
+                tracks,
+                sw,
+                sh,
+                dst,
+                pitch,
+                w.min(sw),
+                h.min(sh),
+                out,
+            );
             let mut g = STREAMS.lock().unwrap_or_else(|e| e.into_inner());
             let m = g.get_or_insert_with(HashMap::new);
             if let Some(s) = m.get_mut(&id) {
@@ -211,7 +282,10 @@ pub unsafe fn frame(id: u32, n: i32, dst: *mut u8, pitch: usize, w: u32, h: u32,
             stat(start.elapsed(), n, true);
             return s.shown >= 0;
         }
-        g = WAKE.wait_timeout(g, Duration::from_millis(2)).unwrap_or_else(|e| e.into_inner()).0;
+        g = WAKE
+            .wait_timeout(g, Duration::from_millis(2))
+            .unwrap_or_else(|e| e.into_inner())
+            .0;
     }
 }
 
@@ -221,7 +295,8 @@ fn stat(waited: Duration, n: i32, late: bool) {
     if !*ON.get_or_init(|| std::env::var_os("IPPAI_VIDEO_STATS").is_some()) {
         return;
     }
-    static S: Mutex<(Option<Instant>, u32, Duration, Duration, i32, u32)> = Mutex::new((None, 0, Duration::ZERO, Duration::ZERO, -1, 0));
+    static S: Mutex<(Option<Instant>, u32, Duration, Duration, i32, u32)> =
+        Mutex::new((None, 0, Duration::ZERO, Duration::ZERO, -1, 0));
     let mut g = S.lock().unwrap();
     let t0 = *g.0.get_or_insert_with(Instant::now);
     g.1 += 1;
@@ -244,12 +319,30 @@ fn stat(waited: Duration, n: i32, late: bool) {
             g.3,
             g.5
         );
-        *g = (Some(Instant::now()), 0, Duration::ZERO, Duration::ZERO, n, 0);
+        *g = (
+            Some(Instant::now()),
+            0,
+            Duration::ZERO,
+            Duration::ZERO,
+            n,
+            0,
+        );
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-unsafe fn convert(buf: *const u8, layout: &[[u32; 7]; 2], tracks: u32, sw: u32, _sh: u32, dst: *mut u8, pitch: usize, w: u32, h: u32, out: Out) {
+unsafe fn convert(
+    buf: *const u8,
+    layout: &[[u32; 7]; 2],
+    tracks: u32,
+    sw: u32,
+    _sh: u32,
+    dst: *mut u8,
+    pitch: usize,
+    w: u32,
+    h: u32,
+    out: Out,
+) {
     let _ = sw;
     let c = &layout[0];
     let a = (tracks > 1).then_some(&layout[1]);
@@ -263,8 +356,18 @@ unsafe fn convert(buf: *const u8, layout: &[[u32; 7]; 2], tracks: u32, sw: u32, 
                 let uv = p(c, 1).add((y / 2) * st(c, 1));
                 (p(c, 0).add(y * st(c, 0)), uv, uv.add(1), 2)
             }
-            I420 => (p(c, 0).add(y * st(c, 0)), p(c, 1).add((y / 2) * st(c, 1)), p(c, 2).add((y / 2) * st(c, 2)), 1),
-            _ => (p(c, 0).add(y * st(c, 0)), std::ptr::null(), std::ptr::null(), 0),
+            I420 => (
+                p(c, 0).add(y * st(c, 0)),
+                p(c, 1).add((y / 2) * st(c, 1)),
+                p(c, 2).add((y / 2) * st(c, 2)),
+                1,
+            ),
+            _ => (
+                p(c, 0).add(y * st(c, 0)),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+            ),
         };
         let ar: *const u8 = match a {
             Some(l) => p(l, 0).add(y * st(l, 0)),
@@ -296,7 +399,11 @@ unsafe fn convert(buf: *const u8, layout: &[[u32; 7]; 2], tracks: u32, sw: u32, 
                     *o.add(3) = al;
                 }
                 Out::Rgb | Out::Rgb601 => {
-                    let (r, g, b) = if out == Out::Rgb { ycc_to_rgb(yy, cb, cr) } else { ycc601_to_rgb(yy, cb, cr) };
+                    let (r, g, b) = if out == Out::Rgb {
+                        ycc_to_rgb(yy, cb, cr)
+                    } else {
+                        ycc601_to_rgb(yy, cb, cr)
+                    };
                     *o = b;
                     *o.add(1) = g;
                     *o.add(2) = r;
@@ -311,14 +418,26 @@ unsafe fn convert(buf: *const u8, layout: &[[u32; 7]; 2], tracks: u32, sw: u32, 
 fn ycc_to_rgb(y: u8, cb: u8, cr: u8) -> (u8, u8, u8) {
     let (y, u, v) = (y as f64, cb as f64 - 128.0, cr as f64 - 128.0);
     let c = |x: f64| (x as i32).clamp(0, 255) as u8;
-    (c(y + 1.402 * v), c(y - 0.34414 * u - 0.71414 * v), c(y + 1.772 * u))
+    (
+        c(y + 1.402 * v),
+        c(y - 0.34414 * u - 0.71414 * v),
+        c(y + 1.772 * u),
+    )
 }
 
 /// BT.601 from video range (as Windows' decoders give RGB of such a movie), rounded.
 pub fn ycc601_to_rgb(y: u8, cb: u8, cr: u8) -> (u8, u8, u8) {
-    let (y, u, v) = ((y as f64 - 16.0) * 255.0 / 219.0, (cb as f64 - 128.0) * 255.0 / 224.0, (cr as f64 - 128.0) * 255.0 / 224.0);
+    let (y, u, v) = (
+        (y as f64 - 16.0) * 255.0 / 219.0,
+        (cb as f64 - 128.0) * 255.0 / 224.0,
+        (cr as f64 - 128.0) * 255.0 / 224.0,
+    );
     let c = |x: f64| x.round().clamp(0.0, 255.0) as u8;
-    (c(y + 1.402 * v), c(y - 0.344136 * u - 0.714136 * v), c(y + 1.772 * u))
+    (
+        c(y + 1.402 * v),
+        c(y - 0.344136 * u - 0.714136 * v),
+        c(y + 1.772 * u),
+    )
 }
 
 fn rgb_to_ycc(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
@@ -353,7 +472,12 @@ pub unsafe extern "C" fn vnhost_video_list(out: *mut u32, max: u32) -> u32 {
             if n == max as usize {
                 break;
             }
-            let held: Vec<i32> = s.slots.iter().filter(|sl| sl.frame >= 0).map(|sl| sl.frame).collect();
+            let held: Vec<i32> = s
+                .slots
+                .iter()
+                .filter(|sl| sl.frame >= 0)
+                .map(|sl| sl.frame)
+                .collect();
             out[n * 6..n * 6 + 6].copy_from_slice(&[
                 id,
                 s.data.as_ptr() as u32,
@@ -382,7 +506,10 @@ pub extern "C" fn vnhost_video_fail(id: u32) {
 /// Whether stream `id` holds frame `n` in a slot.
 #[no_mangle]
 pub extern "C" fn vnhost_video_has(id: u32, n: i32) -> u32 {
-    with(|m| m.get(&id).is_some_and(|s| s.slots.iter().any(|sl| sl.frame == n)) as u32)
+    with(|m| {
+        m.get(&id)
+            .is_some_and(|s| s.slots.iter().any(|sl| sl.frame == n)) as u32
+    })
 }
 
 /// The page is about to copy frame `n` of stream `id`: a slot's buffer (0: none free now, or
@@ -394,14 +521,22 @@ pub extern "C" fn vnhost_video_has(id: u32, n: i32) -> u32 {
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_video_begin(id: u32, n: i32, size: *mut u32) -> u32 {
     with(|m| {
-        let Some(s) = m.get_mut(&id).filter(|s| !s.closed) else { return 0 };
+        let Some(s) = m.get_mut(&id).filter(|s| !s.closed) else {
+            return 0;
+        };
         let want = s.want;
         let free = s
             .slots
             .iter()
             .enumerate()
             .filter(|(_, sl)| sl.reading == 0 && !sl.writing)
-            .min_by_key(|(_, sl)| if sl.frame < 0 || sl.frame < want { i32::MIN + sl.frame.max(0) } else { sl.frame })
+            .min_by_key(|(_, sl)| {
+                if sl.frame < 0 || sl.frame < want {
+                    i32::MIN + sl.frame.max(0)
+                } else {
+                    sl.frame
+                }
+            })
             .map(|(k, _)| k);
         let Some(k) = free else { return 0 };
         let sl = &mut s.slots[k];
@@ -467,7 +602,11 @@ mod tests {
         assert_ne!(buf, 0);
         close(id);
         assert!(exists(id), "dropped while the page writes into it");
-        assert_eq!(unsafe { vnhost_video_begin(id, 1, &mut size) }, 0, "a closed stream takes no new writes");
+        assert_eq!(
+            unsafe { vnhost_video_begin(id, 1, &mut size) },
+            0,
+            "a closed stream takes no new writes"
+        );
         let layout = [RGBA, 0, 64, 0, 0, 0, 0, RGBA, 0, 64, 0, 0, 0, 0];
         unsafe { vnhost_video_ready(id, buf, layout.as_ptr(), 1) };
         assert!(!exists(id));
@@ -483,7 +622,10 @@ mod tests {
         with(|m| release(m, id));
         assert!(exists(id));
         let mut px = [0u8; 4];
-        assert!(!unsafe { frame(id, 0, px.as_mut_ptr(), 4, 1, 1, Out::Rgb) }, "a closed stream gives no frames");
+        assert!(
+            !unsafe { frame(id, 0, px.as_mut_ptr(), 4, 1, 1, Out::Rgb) },
+            "a closed stream gives no frames"
+        );
         with(|m| {
             m.get_mut(&id).unwrap().slots[0].reading -= 1;
             release(m, id);
@@ -503,7 +645,11 @@ mod tests {
         with(|m| m.get_mut(&id).unwrap().slots[0].reading += 1);
         let mut px = vec![0u8; 16 * 16 * 4];
         assert!(unsafe { frame(id, 0, px.as_mut_ptr(), 64, 16, 16, Out::Rgb) });
-        assert_eq!(with(|m| m.get(&id).unwrap().slots[0].reading), 1, "the first reader still holds it");
+        assert_eq!(
+            with(|m| m.get(&id).unwrap().slots[0].reading),
+            1,
+            "the first reader still holds it"
+        );
         for n in 1..4 {
             let b = unsafe { vnhost_video_begin(id, n, &mut size) };
             assert_ne!(b, buf, "the page must not write the slot a guest reads");
@@ -549,7 +695,10 @@ mod tests {
 
     /// A raw I420 movie of `n` frames, frame k all Y = 16 + k, Cb Cr given.
     fn raw(w: u32, h: u32, n: u32, cb: u8, cr: u8) -> Vec<u8> {
-        let (pw, ph) = (w.next_multiple_of(2) as usize, h.next_multiple_of(2) as usize);
+        let (pw, ph) = (
+            w.next_multiple_of(2) as usize,
+            h.next_multiple_of(2) as usize,
+        );
         let frames = (0..n)
             .map(|k| {
                 let mut f = vec![16 + k as u8; pw * ph];
@@ -571,7 +720,11 @@ mod tests {
             let want = 16 + n.clamp(0, 3) as u8;
             for y in 0..3 {
                 for x in 0..5 {
-                    assert_eq!(px[y * 24 + 4 * x..][..4], [want, 128, 128, 255], "frame {n} at {x},{y}");
+                    assert_eq!(
+                        px[y * 24 + 4 * x..][..4],
+                        [want, 128, 128, 255],
+                        "frame {n} at {x},{y}"
+                    );
                 }
                 assert_eq!(px[y * 24 + 20..y * 24 + 24], [0xee; 4], "past the row");
             }
@@ -582,9 +735,25 @@ mod tests {
         let mut d = raw(4, 4, 1, 128, 128);
         let i = info(&d).unwrap();
         let (off, _, _) = i.tracks[0].1[0];
-        d = crate::vnv::write(4, 4, &[("raw-i420".into(), vec![(d[off as usize..off as usize + 20].to_vec(), true)])], None);
+        d = crate::vnv::write(
+            4,
+            4,
+            &[(
+                "raw-i420".into(),
+                vec![(d[off as usize..off as usize + 20].to_vec(), true)],
+            )],
+            None,
+        );
         assert!(open(d).is_none());
-        let two = crate::vnv::write(4, 4, &[("raw-i420".into(), vec![(vec![0; 24], true)]), ("vp09".into(), vec![(vec![0; 3], true)])], None);
+        let two = crate::vnv::write(
+            4,
+            4,
+            &[
+                ("raw-i420".into(), vec![(vec![0; 24], true)]),
+                ("vp09".into(), vec![(vec![0; 3], true)]),
+            ],
+            None,
+        );
         assert!(open(two).is_none());
     }
 
@@ -595,10 +764,18 @@ mod tests {
         assert_eq!(ycc601_to_rgb(235, 128, 128), (255, 255, 255));
         assert_eq!(ycc601_to_rgb(0, 128, 128), (0, 0, 0));
         assert_eq!(ycc601_to_rgb(255, 128, 128), (255, 255, 255));
-        for (ycc, rgb) in [((65, 100, 212), (191, 0, 0)), ((112, 72, 58), (0, 191, 0)), ((35, 212, 114), (0, 0, 191)), ((162, 44, 142), (191, 191, 0))] {
+        for (ycc, rgb) in [
+            ((65, 100, 212), (191, 0, 0)),
+            ((112, 72, 58), (0, 191, 0)),
+            ((35, 212, 114), (0, 0, 191)),
+            ((162, 44, 142), (191, 191, 0)),
+        ] {
             let got = ycc601_to_rgb(ycc.0, ycc.1, ycc.2);
             let d = |a: u8, b: u8| (a as i32 - b as i32).abs();
-            assert!(d(got.0, rgb.0) <= 2 && d(got.1, rgb.1) <= 2 && d(got.2, rgb.2) <= 2, "{ycc:?} -> {got:?}, want {rgb:?}");
+            assert!(
+                d(got.0, rgb.0) <= 2 && d(got.1, rgb.1) <= 2 && d(got.2, rgb.2) <= 2,
+                "{ycc:?} -> {got:?}, want {rgb:?}"
+            );
         }
         let id = open(raw(2, 2, 1, 128, 128)).unwrap();
         let mut px = [0u8; 16];

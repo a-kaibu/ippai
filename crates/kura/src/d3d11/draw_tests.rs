@@ -11,8 +11,8 @@
 
 use super::*;
 use crate::d3d9::trace_tests::{alloc, attach_page, on_low_stack, Rng, CALLS, SERIAL};
-use d3d10::*;
 use crate::render::model;
+use d3d10::*;
 
 fn mem(n: u32) -> u32 {
     unsafe { alloc(4 * n) as u32 }
@@ -43,7 +43,12 @@ VO main(VI v) { VO o; o.p = float4(v.p, 1) + v.i; o.c = v.c + float4(v.t, 0, 0);
 const PS: &str = "float4 main(float4 p : SV_Position, float4 c : COLOR) : SV_Target { return c; }";
 
 /// (semantic, index, DXGI format, bytes)
-const ELEMS: [(&str, u32, u32, u32); 4] = [("POSITION", 0, 6, 12), ("TEXCOORD", 0, 16, 8), ("COLOR", 0, 28, 4), ("TEXCOORD", 1, 2, 16)];
+const ELEMS: [(&str, u32, u32, u32); 4] = [
+    ("POSITION", 0, 6, 12),
+    ("TEXCOORD", 0, 16, 8),
+    ("COLOR", 0, 28, 4),
+    ("TEXCOORD", 1, 2, 16),
+];
 
 /// D3D11's primitives of `topology` over vertex numbers (None: a strip cut).
 fn d3d_prims(topology: u32, v: &[Option<i64>]) -> Vec<Vec<i64>> {
@@ -55,7 +60,13 @@ fn d3d_prims(topology: u32, v: &[Option<i64>]) -> Vec<Vec<i64>> {
             2 => out.extend(run.chunks_exact(2).map(|c| c.to_vec())),
             3 => out.extend(run.windows(2).map(|c| c.to_vec())),
             4 => out.extend(run.chunks_exact(3).map(|c| c.to_vec())),
-            _ => out.extend(run.windows(3).enumerate().map(|(i, w)| if i % 2 == 0 { w.to_vec() } else { vec![w[1], w[0], w[2]] })),
+            _ => out.extend(run.windows(3).enumerate().map(|(i, w)| {
+                if i % 2 == 0 {
+                    w.to_vec()
+                } else {
+                    vec![w[1], w[0], w[2]]
+                }
+            })),
         }
     }
     out
@@ -69,16 +80,67 @@ fn run(seed: u64, vs: &[u8], ps: &[u8], ten: bool) {
     put(desc, &[64, 64, 60, 1, 28, 0, 0, 1, 0, 0x20, 1, 1, 1, 0, 0]);
     let (sc_out, dev_out, level, ctx_out) = (mem(2), mem(2), mem(2), mem(2));
     if ten {
-        assert_eq!(call1(CREATE_DEVICE10, &[0, 1, 0, 0, 0xa100, 0, desc, sc_out, dev_out]), 0);
+        assert_eq!(
+            call1(
+                CREATE_DEVICE10,
+                &[0, 1, 0, 0, 0xa100, 0, desc, sc_out, dev_out]
+            ),
+            0
+        );
     } else {
-        assert_eq!(call1(CREATE_DEVICE, &[0, 1, 0, 0, 0, 0, 7, desc, sc_out, dev_out, level, ctx_out]), 0);
+        assert_eq!(
+            call1(
+                CREATE_DEVICE,
+                &[0, 1, 0, 0, 0, 0, 7, desc, sc_out, dev_out, level, ctx_out]
+            ),
+            0
+        );
     }
     let (sc, dev) = (rd1(sc_out), rd1(dev_out));
     let ctx = if ten { dev } else { rd1(ctx_out) };
     // (the D3D11 interfaces and methods, or D3D10's)
-    let (idev, ictx, ibuf, ilayout) = if ten { (IF10_DEVICE, IF10_DEVICE, IF10_BUFFER, IF10_LAYOUT) } else { (IF_DEVICE, IF_CONTEXT, IF_BUFFER, IF_LAYOUT) };
-    let dm = |m11: u32| if !ten { m11 } else { [(3, 71), (5, 73), (9, 76), (11, 78), (12, 79), (15, 82)].iter().find(|x| x.0 == m11).unwrap().1 };
-    let cm = |m11: u32| if !ten { m11 } else { [(9, 5), (11, 7), (12, 8), (13, 9), (17, 11), (18, 12), (19, 13), (20, 14), (21, 15), (24, 18), (33, 24), (44, 30), (110, 69), (111, 70)].iter().find(|x| x.0 == m11).unwrap().1 };
+    let (idev, ictx, ibuf, ilayout) = if ten {
+        (IF10_DEVICE, IF10_DEVICE, IF10_BUFFER, IF10_LAYOUT)
+    } else {
+        (IF_DEVICE, IF_CONTEXT, IF_BUFFER, IF_LAYOUT)
+    };
+    let dm = |m11: u32| {
+        if !ten {
+            m11
+        } else {
+            [(3, 71), (5, 73), (9, 76), (11, 78), (12, 79), (15, 82)]
+                .iter()
+                .find(|x| x.0 == m11)
+                .unwrap()
+                .1
+        }
+    };
+    let cm = |m11: u32| {
+        if !ten {
+            m11
+        } else {
+            [
+                (9, 5),
+                (11, 7),
+                (12, 8),
+                (13, 9),
+                (17, 11),
+                (18, 12),
+                (19, 13),
+                (20, 14),
+                (21, 15),
+                (24, 18),
+                (33, 24),
+                (44, 30),
+                (110, 69),
+                (111, 70),
+            ]
+            .iter()
+            .find(|x| x.0 == m11)
+            .unwrap()
+            .1
+        }
+    };
     let dc = |m11: u32, a: &[u32]| call1(m(idev, dm(m11)), a);
     let cc = |m11: u32, a: &[u32]| call1(m(ictx, cm(m11)), a);
     let o = mem(2);
@@ -98,7 +160,10 @@ fn run(seed: u64, vs: &[u8], ps: &[u8], ten: bool) {
     if ten {
         put(vp, &[0, 0, 64, 64, 0, 1f32.to_bits()]);
     } else {
-        put(vp, &[0, 0, 64f32.to_bits(), 64f32.to_bits(), 0, 1f32.to_bits()]);
+        put(
+            vp,
+            &[0, 0, 64f32.to_bits(), 64f32.to_bits(), 0, 1f32.to_bits()],
+        );
     }
     cc(44, &[ctx, 1, vp]);
     // the shaders
@@ -109,9 +174,21 @@ fn run(seed: u64, vs: &[u8], ps: &[u8], ten: bool) {
     };
     let (vsc, psc) = (code(vs), code(ps));
     let linkage: &[u32] = if ten { &[] } else { &[0] };
-    assert_eq!(dc(12, &[&[dev, vsc, vs.len() as u32][..], linkage, &[o]].concat()), 0);
+    assert_eq!(
+        dc(
+            12,
+            &[&[dev, vsc, vs.len() as u32][..], linkage, &[o]].concat()
+        ),
+        0
+    );
     let vsh = rd1(o);
-    assert_eq!(dc(15, &[&[dev, psc, ps.len() as u32][..], linkage, &[o]].concat()), 0);
+    assert_eq!(
+        dc(
+            15,
+            &[&[dev, psc, ps.len() as u32][..], linkage, &[o]].concat()
+        ),
+        0
+    );
     let psh = rd1(o);
     cc(11, &[ctx, vsh, 0, 0]);
     cc(9, &[ctx, psh, 0, 0]);
@@ -119,7 +196,9 @@ fn run(seed: u64, vs: &[u8], ps: &[u8], ten: bool) {
     const VB: u32 = 4096;
     let mut vbs = Vec::new();
     for _ in 0..3 {
-        let bytes: Vec<u8> = (0..VB / 4).flat_map(|_| (((r.next() as u32) & 0x3fff_ffff) | 0x3000_0000).to_le_bytes()).collect();
+        let bytes: Vec<u8> = (0..VB / 4)
+            .flat_map(|_| (((r.next() as u32) & 0x3fff_ffff) | 0x3000_0000).to_le_bytes())
+            .collect();
         let init = mem(3);
         let p = unsafe { alloc(VB) as u32 };
         put_bytes(p, &bytes);
@@ -154,12 +233,31 @@ fn run(seed: u64, vs: &[u8], ps: &[u8], ten: bool) {
         for (k, e) in ELEMS.iter().enumerate() {
             let s = slots[k];
             let append = r.chance(50);
-            let off = if append { next[s as usize] } else { next[s as usize] + 4 * r.below(3) as u32 };
+            let off = if append {
+                next[s as usize]
+            } else {
+                next[s as usize] + 4 * r.below(3) as u32
+            };
             next[s as usize] = off + e.3;
             elems.push((s, off, e.3));
-            put(ed + 28 * k as u32, &[names[k], e.1, e.2, s, if append { 0xffff_ffff } else { off }, (k == 3 && inst) as u32, (k == 3 && inst) as u32]);
+            put(
+                ed + 28 * k as u32,
+                &[
+                    names[k],
+                    e.1,
+                    e.2,
+                    s,
+                    if append { 0xffff_ffff } else { off },
+                    (k == 3 && inst) as u32,
+                    (k == 3 && inst) as u32,
+                ],
+            );
         }
-        assert_eq!(dc(11, &[dev, ed, 4, vsc, vs.len() as u32, o]), 0, "seed {seed} step {step}: CreateInputLayout");
+        assert_eq!(
+            dc(11, &[dev, ed, 4, vsc, vs.len() as u32, o]),
+            0,
+            "seed {seed} step {step}: CreateInputLayout"
+        );
         let layout = rd1(o);
         cc(17, &[ctx, layout]);
         let mut stride = [0u32; 3];
@@ -184,11 +282,32 @@ fn run(seed: u64, vs: &[u8], ps: &[u8], ten: bool) {
         let base = r.below(10) as i32 - 3;
         let i32 = r.chance(50);
         let cut = if i32 { u32::MAX } else { 0xffff };
-        let ix: Vec<u32> = (0..start + count).map(|_| if r.chance(10) { cut } else { r.below(30) as u32 + 3 }).collect();
+        let ix: Vec<u32> = (0..start + count)
+            .map(|_| {
+                if r.chance(10) {
+                    cut
+                } else {
+                    r.below(30) as u32 + 3
+                }
+            })
+            .collect();
         let ib_off = 4 * r.below(4) as u32;
         // the vertex numbers D3D11 reads (None: a cut, in strips)
         let verts: Vec<Option<i64>> = if indexed {
-            ix[start as usize..].iter().map(|&i| if i == cut { if topology == 3 || topology == 5 { None } else { Some(-1) } } else { Some(base as i64 + i as i64) }).collect()
+            ix[start as usize..]
+                .iter()
+                .map(|&i| {
+                    if i == cut {
+                        if topology == 3 || topology == 5 {
+                            None
+                        } else {
+                            Some(-1)
+                        }
+                    } else {
+                        Some(base as i64 + i as i64)
+                    }
+                })
+                .collect()
         } else {
             (0..count).map(|k| Some(start as i64 + k as i64)).collect()
         };
@@ -197,7 +316,16 @@ fn run(seed: u64, vs: &[u8], ps: &[u8], ten: bool) {
             continue;
         }
         if indexed {
-            let bytes: Vec<u8> = ix.iter().flat_map(|&v| if i32 { v.to_le_bytes().to_vec() } else { (v as u16).to_le_bytes().to_vec() }).collect();
+            let bytes: Vec<u8> = ix
+                .iter()
+                .flat_map(|&v| {
+                    if i32 {
+                        v.to_le_bytes().to_vec()
+                    } else {
+                        (v as u16).to_le_bytes().to_vec()
+                    }
+                })
+                .collect();
             let mut all = vec![0u8; ib_off as usize];
             all.extend_from_slice(&bytes);
             let init = mem(3);
@@ -205,7 +333,10 @@ fn run(seed: u64, vs: &[u8], ps: &[u8], ten: bool) {
             put_bytes(p, &all);
             put(init, &[p, 0, 0]);
             let bd = mem(6);
-            put(bd, &[(all.len() as u32).next_multiple_of(4).max(4), 0, 2, 0, 0, 0]);
+            put(
+                bd,
+                &[(all.len() as u32).next_multiple_of(4).max(4), 0, 2, 0, 0, 0],
+            );
             assert_eq!(dc(3, &[dev, bd, init, o]), 0);
             let ib = rd1(o);
             cc(19, &[ctx, ib, if i32 { 42 } else { 57 }, ib_off]);
@@ -215,7 +346,10 @@ fn run(seed: u64, vs: &[u8], ps: &[u8], ten: bool) {
             (false, false) => cc(13, &[ctx, count, start]),
             (true, false) => cc(12, &[ctx, count, start, base as u32]),
             (false, true) => cc(21, &[ctx, count, instances, start, start_instance]),
-            (true, true) => cc(20, &[ctx, count, instances, start, base as u32, start_instance]),
+            (true, true) => cc(
+                20,
+                &[ctx, count, instances, start, base as u32, start_instance],
+            ),
         };
         cc(111, &[ctx]);
         gpu::pump();
@@ -225,8 +359,14 @@ fn run(seed: u64, vs: &[u8], ps: &[u8], ten: bool) {
                 .enumerate()
                 .map(|(k, &(s, off, n))| {
                     let v = if k == 3 && inst { instance } else { v };
-                    let at = (offset[s as usize] as i64 + v * stride[s as usize] as i64 + off as i64) as usize;
-                    vbs[s as usize].1.get(at..at + n as usize).map(|b| b.to_vec()).unwrap_or_default()
+                    let at = (offset[s as usize] as i64
+                        + v * stride[s as usize] as i64
+                        + off as i64) as usize;
+                    vbs[s as usize]
+                        .1
+                        .get(at..at + n as usize)
+                        .map(|b| b.to_vec())
+                        .unwrap_or_default()
                 })
                 .collect();
             a.sort();
@@ -235,7 +375,11 @@ fn run(seed: u64, vs: &[u8], ps: &[u8], ten: bool) {
         let mut want = Vec::new();
         for i in 0..instances as i64 {
             for p in d3d_prims(topology, &verts) {
-                want.push(p.iter().map(|&v| vertex(v, start_instance as i64 + i)).collect::<Vec<_>>());
+                want.push(
+                    p.iter()
+                        .map(|&v| vertex(v, start_instance as i64 + i))
+                        .collect::<Vec<_>>(),
+                );
             }
         }
         let got = model::with(|m| m.prims.as_mut().unwrap().drain(..).collect::<Vec<_>>());
@@ -256,7 +400,10 @@ fn run(seed: u64, vs: &[u8], ps: &[u8], ten: bool) {
         let what = format!("{api} seed {seed} step {step}: topology {topology} count {count} indexed {indexed} (start {start} base {base} 32-bit {i32} offset {ib_off} {ix:?}) instances {instances} from {start_instance} per-instance {inst}");
         assert_eq!(got.len(), want.len(), "{what}: primitives");
         for (k, (g, w)) in got.iter().zip(&want).enumerate() {
-            assert!(g == w, "{what}: primitive {k} differs\n got  {g:?}\n want {w:?}");
+            assert!(
+                g == w,
+                "{what}: primitive {k} differs\n got  {g:?}\n want {w:?}"
+            );
         }
         call1(m(ilayout, 2), &[layout]);
         drawn += 1;
@@ -264,7 +411,11 @@ fn run(seed: u64, vs: &[u8], ps: &[u8], ten: bool) {
     assert!(drawn > 50, "seed {seed}: {drawn} draws checked");
     gpu::set_pump(None);
     let errors = model::with(|m| std::mem::take(&mut m.errors));
-    assert!(errors.is_empty(), "seed {seed}: WebGPU errors {:?}", &errors[..errors.len().min(10)]);
+    assert!(
+        errors.is_empty(),
+        "seed {seed}: WebGPU errors {:?}",
+        &errors[..errors.len().min(10)]
+    );
     model::with(|m| m.prims = None);
     cc(110, &[ctx]);
     let _ = (sc, level);
@@ -311,11 +462,24 @@ fn d3d10_descriptions_and_viewports() {
         let desc = mem(16);
         put(desc, &[64, 64, 60, 1, 28, 0, 0, 1, 0, 0x20, 1, 1, 1, 0, 0]);
         let (sc_out, dev_out) = (mem(2), mem(2));
-        assert_eq!(call1(CREATE_DEVICE10, &[0, 1, 0, 0, 0xa100, 0, desc, sc_out, dev_out]), 0);
+        assert_eq!(
+            call1(
+                CREATE_DEVICE10,
+                &[0, 1, 0, 0, 0xa100, 0, desc, sc_out, dev_out]
+            ),
+            0
+        );
         let dev = rd1(dev_out);
         let o = mem(2);
         // a GDI compatible render target (B8G8R8A8), a keyed mutex texture, a plain one
-        for (fmt, misc, ok) in [(87, 0x20, true), (28, 0x20, false), (28, 0x10, true), (28, 0x12, false), (28, 0, true), (28, 0x4, false)] {
+        for (fmt, misc, ok) in [
+            (87, 0x20, true),
+            (28, 0x20, false),
+            (28, 0x10, true),
+            (28, 0x12, false),
+            (28, 0, true),
+            (28, 0x4, false),
+        ] {
             let d = mem(11);
             put(d, &[16, 16, 1, 1, fmt, 1, 0, 0, 0x28, 0, misc]);
             let r = call1(m(IF10_DEVICE, 73), &[dev, d, 0, o]);
@@ -324,7 +488,10 @@ fn d3d10_descriptions_and_viewports() {
                 let t = rd1(o);
                 let g = mem(11);
                 assert_eq!(call1(m(IF10_TEX2D, 12), &[t, g]), 0);
-                assert_eq!((0..11).map(|i| rd1(g + 4 * i)).collect::<Vec<_>>(), vec![16, 16, 1, 1, fmt, 1, 0, 0, 0x28, 0, misc]);
+                assert_eq!(
+                    (0..11).map(|i| rd1(g + 4 * i)).collect::<Vec<_>>(),
+                    vec![16, 16, 1, 1, fmt, 1, 0, 0, 0x28, 0, misc]
+                );
                 call1(m(IF10_TEX2D, 2), &[t]);
             }
         }
@@ -335,10 +502,15 @@ fn d3d10_descriptions_and_viewports() {
         let g = mem(6);
         put(g, &[7; 6]);
         assert_eq!(call1(m(IF10_BUFFER, 12), &[b, g]), 0);
-        assert_eq!((0..6).map(|i| rd1(g + 4 * i)).collect::<Vec<_>>(), vec![64, 0, 1, 0, 0, 7]);
+        assert_eq!(
+            (0..6).map(|i| rd1(g + 4 * i)).collect::<Vec<_>>(),
+            vec![64, 0, 1, 0, 0, 7]
+        );
         // three viewports: RSGetViewports gives each back
         let vp = mem(18);
-        let want: Vec<u32> = (0..3).flat_map(|k| [k, 2 * k, 10 + k, 20 + k, 0, 1f32.to_bits()]).collect();
+        let want: Vec<u32> = (0..3)
+            .flat_map(|k| [k, 2 * k, 10 + k, 20 + k, 0, 1f32.to_bits()])
+            .collect();
         put(vp, &want);
         call1(m(IF10_DEVICE, 30), &[dev, 3, vp]);
         let (n, back) = (mem(1), mem(24));
@@ -346,7 +518,10 @@ fn d3d10_descriptions_and_viewports() {
         call1(m(IF10_DEVICE, 61), &[dev, n, back]);
         assert_eq!(rd1(n), 3);
         assert_eq!((0..18).map(|i| rd1(back + 4 * i)).collect::<Vec<_>>(), want);
-        assert_eq!((18..24).map(|i| rd1(back + 4 * i)).collect::<Vec<_>>(), vec![0; 6]);
+        assert_eq!(
+            (18..24).map(|i| rd1(back + 4 * i)).collect::<Vec<_>>(),
+            vec![0; 6]
+        );
         gpu::set_pump(None);
     });
 }
@@ -363,7 +538,13 @@ fn state_descriptions_normalized() {
     let desc = mem(16);
     put(desc, &[64, 64, 60, 1, 28, 0, 0, 1, 0, 0x20, 1, 1, 1, 0, 0]);
     let (sc_out, dev_out, level, ctx_out) = (mem(2), mem(2), mem(2), mem(2));
-    assert_eq!(call1(CREATE_DEVICE, &[0, 1, 0, 0, 0, 0, 7, desc, sc_out, dev_out, level, ctx_out]), 0);
+    assert_eq!(
+        call1(
+            CREATE_DEVICE,
+            &[0, 1, 0, 0, 0, 0, 7, desc, sc_out, dev_out, level, ctx_out]
+        ),
+        0
+    );
     let dev = rd1(dev_out);
     let make = |m11: u32, d: &[u32]| {
         let p = mem(d.len() as u32);
@@ -387,7 +568,10 @@ fn state_descriptions_normalized() {
     b2[3] = 2;
     b2[10..18].copy_from_slice(&[1, 4, 4, 3, 4, 4, 3, 1]);
     let b2 = make(20, &b2);
-    assert_eq!(b1, b2, "blend: differs only in a disabled factor and an unused target");
+    assert_eq!(
+        b1, b2,
+        "blend: differs only in a disabled factor and an unused target"
+    );
     let mut want = vec![0u32; 66];
     for t in 0..8 {
         want[2 + t * 8..2 + t * 8 + 8].copy_from_slice(&[0, 2, 1, 1, 2, 1, 1, 0xf]);
@@ -398,14 +582,24 @@ fn state_descriptions_normalized() {
     let b3 = make(20, &b);
     assert_ne!(b3, b1);
     let got = get(IF_BLEND, b3, 66);
-    assert_eq!(&got[10..18], &[1, 5, 6, 1, 2, 1, 1, 0xf], "an independent target that blends keeps its factors");
+    assert_eq!(
+        &got[10..18],
+        &[1, 5, 6, 1, 2, 1, 1, 0xf],
+        "an independent target that blends keeps its factors"
+    );
     assert_eq!(&got[2..10], &[0, 2, 1, 1, 2, 1, 1, 0xf]);
     // depth stencil: no depth test, no stencil; the padding after the stencil masks
     let d1 = make(21, &[0, 0, 4, 0, 0xdead_0f0f, 2, 3, 4, 5, 6, 7, 8, 1]);
     let d2 = make(21, &[0, 1, 7, 0, 0x0000_1234, 1, 1, 1, 8, 1, 1, 1, 8]);
     assert_eq!(d1, d2);
-    assert_eq!(get(IF_DEPTH, d1, 13), vec![0, 1, 2, 0, 0xffff, 1, 1, 1, 8, 1, 1, 1, 8]);
+    assert_eq!(
+        get(IF_DEPTH, d1, 13),
+        vec![0, 1, 2, 0, 0xffff, 1, 1, 1, 8, 1, 1, 1, 8]
+    );
     let d3 = make(21, &[1, 0, 4, 1, 0xbeef_0f0f, 2, 3, 4, 5, 6, 7, 8, 1]);
-    assert_eq!(get(IF_DEPTH, d3, 13), vec![1, 0, 4, 1, 0x0f0f, 2, 3, 4, 5, 6, 7, 8, 1]);
+    assert_eq!(
+        get(IF_DEPTH, d3, 13),
+        vec![1, 0, 4, 1, 0x0f0f, 2, 3, 4, 5, 6, 7, 8, 1]
+    );
     gpu::set_pump(None);
 }

@@ -9,24 +9,24 @@
 //! shaders go DXBC -> WGSL (the dxwgsl crate), buffers are guest memory copied into a new page
 //! buffer whenever a draw needs them after the guest wrote them.
 
+#[cfg(test)]
+mod bind_tests;
+pub mod check;
 pub mod d2d;
 pub mod d3d10;
 mod deferred;
-pub mod check;
-pub mod format;
-mod hazards;
-pub mod names;
-pub mod winfmt;
-#[cfg(test)]
-mod trace_tests;
-#[cfg(test)]
-mod map_tests;
-#[cfg(test)]
-mod bind_tests;
-#[cfg(test)]
-mod draw_tests;
 #[cfg(test)]
 mod deferred_tests;
+#[cfg(test)]
+mod draw_tests;
+pub mod format;
+mod hazards;
+#[cfg(test)]
+mod map_tests;
+pub mod names;
+#[cfg(test)]
+mod trace_tests;
+pub mod winfmt;
 
 use crate::d3d9::gpu;
 use crate::d3d9::HostCalls;
@@ -91,7 +91,17 @@ pub const IF_ANNOTATION: u32 = 113;
 // IIDs (first dword) and the interfaces that answer them
 const IIDS: &[(u32, &[u32])] = &[
     (0x0000_0000, &[]), // IUnknown: any
-    (0xaec22fb8, &[IF_FACTORY, IF_ADAPTER, IF_OUTPUT, IF_SWAPCHAIN, IF_DXGIDEVICE, IF_SURFACE]), // IDXGIObject
+    (
+        0xaec22fb8,
+        &[
+            IF_FACTORY,
+            IF_ADAPTER,
+            IF_OUTPUT,
+            IF_SWAPCHAIN,
+            IF_DXGIDEVICE,
+            IF_SURFACE,
+        ],
+    ), // IDXGIObject
     (0x7b7166ec, &[IF_FACTORY]),
     (0x770aae78, &[IF_FACTORY]),
     (0x50c83a1c, &[IF_FACTORY]),
@@ -106,24 +116,31 @@ const IIDS: &[(u32, &[u32])] = &[
     (0x6007896c, &[IF_DXGIDEVICE]), // IDXGIDevice3
     (0xcafcb56c, &[IF_SURFACE]),
     (0x4ae63092, &[IF_SURFACE]),
-    (0x035f3ab4, &[IF_DXGIRES]), // IDXGIResource
+    (0x035f3ab4, &[IF_DXGIRES]),    // IDXGIResource
     (0xb2daad8b, &[IF_ANNOTATION]), // ID3DUserDefinedAnnotation
     (0x3d3e0379, &[IF_SWAPCHAIN, IF_SURFACE]),
     (0xdb6f6ddb, &[IF_DEVICE]),
-    (0xa04bfb29, &[IF_DEVICE]), // ID3D11Device1
-    (0x9d06dffa, &[IF_DEVICE]), // ID3D11Device2
-    (0xa05c8c37, &[IF_DEVICE]), // ID3D11Device3
-    (0x8992ab71, &[IF_DEVICE]), // ID3D11Device4
-    (0x8ffde202, &[IF_DEVICE]), // ID3D11Device5
+    (0xa04bfb29, &[IF_DEVICE]),  // ID3D11Device1
+    (0x9d06dffa, &[IF_DEVICE]),  // ID3D11Device2
+    (0xa05c8c37, &[IF_DEVICE]),  // ID3D11Device3
+    (0x8992ab71, &[IF_DEVICE]),  // ID3D11Device4
+    (0x8ffde202, &[IF_DEVICE]),  // ID3D11Device5
     (0xbb2c6faa, &[IF_CONTEXT]), // ID3D11DeviceContext1
     (0x420d5b32, &[IF_CONTEXT]), // ID3D11DeviceContext2
     (0xb4e3c01d, &[IF_CONTEXT]), // ID3D11DeviceContext3
     (0x917600da, &[IF_CONTEXT]), // ID3D11DeviceContext4
-    (0xcc86fabe, &[IF_BLEND]), // ID3D11BlendState1
-    (0x1217d7a6, &[IF_RASTER]), // ID3D11RasterizerState1
+    (0xcc86fabe, &[IF_BLEND]),   // ID3D11BlendState1
+    (0x1217d7a6, &[IF_RASTER]),  // ID3D11RasterizerState1
     (0x5c1e0d8a, &[IF_LINKAGE]), // ID3DDeviceContextState (a device child like the linkage)
     (0xc0bfa96c, &[IF_CONTEXT]),
-    (0x1841e5c8, &[IF_CONTEXT, IF_BUFFER, IF_TEX1D, IF_TEX2D, IF_TEX3D, IF_SRV, IF_RTV, IF_DSV, IF_UAV, IF_VS, IF_PS, IF_GS, IF_HS, IF_DS, IF_CS, IF_LAYOUT, IF_SAMPLER, IF_BLEND, IF_DEPTH, IF_RASTER, IF_QUERY, IF_LINKAGE, IF_CMDLIST]),
+    (
+        0x1841e5c8,
+        &[
+            IF_CONTEXT, IF_BUFFER, IF_TEX1D, IF_TEX2D, IF_TEX3D, IF_SRV, IF_RTV, IF_DSV, IF_UAV,
+            IF_VS, IF_PS, IF_GS, IF_HS, IF_DS, IF_CS, IF_LAYOUT, IF_SAMPLER, IF_BLEND, IF_DEPTH,
+            IF_RASTER, IF_QUERY, IF_LINKAGE, IF_CMDLIST,
+        ],
+    ),
     (0xdc8e63f3, &[IF_BUFFER, IF_TEX1D, IF_TEX2D, IF_TEX3D]),
     (0x48570b85, &[IF_BUFFER]),
     (0xf8fb5c27, &[IF_TEX1D]),
@@ -406,7 +423,11 @@ unsafe fn swap_desc(desc: u32) -> [u32; 15] {
     let mut p = [0u32; 15];
     for (i, v) in p.iter_mut().enumerate() {
         // (64-bit: OutputWindow is 8-byte aligned, at dword 12)
-        let k = if ptr() == 8 && i >= 11 { i + 1 + (i > 11) as usize } else { i };
+        let k = if ptr() == 8 && i >= 11 {
+            i + 1 + (i > 11) as usize
+        } else {
+            i
+        };
         *v = rd(desc, k);
     }
     p
@@ -414,7 +435,11 @@ unsafe fn swap_desc(desc: u32) -> [u32; 15] {
 
 unsafe fn put_swap_desc(desc: u32, p: [u32; 15]) {
     for (i, v) in p.into_iter().enumerate() {
-        let k = if ptr() == 8 && i >= 11 { i + 1 + (i > 11) as usize } else { i };
+        let k = if ptr() == 8 && i >= 11 {
+            i + 1 + (i > 11) as usize
+        } else {
+            i
+        };
         wr(desc, k, v);
     }
     if ptr() == 8 {
@@ -469,7 +494,11 @@ impl D11 {
         }
         let addr = self.free_blocks.pop().unwrap();
         unsafe {
-            wrp(addr, 0, self.vtbls.get(iface as usize).copied().unwrap_or(0));
+            wrp(
+                addr,
+                0,
+                self.vtbls.get(iface as usize).copied().unwrap_or(0),
+            );
             *((addr + ptr()) as *mut u32) = id;
         }
         addr
@@ -480,7 +509,17 @@ impl D11 {
         self.next += 1;
         let id = self.next;
         let addr = self.block(iface, id);
-        self.objs.insert(id, Obj { iface, refs: 1, binds: 0, faces: vec![(iface, addr)], data, private: Vec::new() });
+        self.objs.insert(
+            id,
+            Obj {
+                iface,
+                refs: 1,
+                binds: 0,
+                faces: vec![(iface, addr)],
+                data,
+                private: Vec::new(),
+            },
+        );
         if holds_device(iface) && iface != IF_CONTEXT && self.device != 0 {
             self.add_ref(self.device);
         }
@@ -489,7 +528,9 @@ impl D11 {
 
     /// The block of `id` for interface `iface` (made on first use).
     fn face(&mut self, id: u32, iface: u32) -> u32 {
-        let Some(o) = self.objs.get(&id) else { return 0 };
+        let Some(o) = self.objs.get(&id) else {
+            return 0;
+        };
         if let Some(&(_, a)) = o.faces.iter().find(|f| f.0 == iface) {
             return a;
         }
@@ -503,7 +544,15 @@ impl D11 {
             return 0;
         }
         let id = unsafe { *((addr + ptr()) as *const u32) };
-        if self.objs.get(&id).is_some_and(|o| o.faces.iter().any(|f| f.1 == addr)) { id } else { 0 }
+        if self
+            .objs
+            .get(&id)
+            .is_some_and(|o| o.faces.iter().any(|f| f.1 == addr))
+        {
+            id
+        } else {
+            0
+        }
     }
 
     fn addr_of(&self, id: u32) -> u32 {
@@ -526,7 +575,9 @@ impl D11 {
     }
 
     fn release(&mut self, id: u32) -> u32 {
-        let Some(o) = self.objs.get_mut(&id) else { return 0 };
+        let Some(o) = self.objs.get_mut(&id) else {
+            return 0;
+        };
         let was = o.refs;
         o.refs = o.refs.saturating_sub(1);
         let r = o.refs;
@@ -547,7 +598,18 @@ impl D11 {
         }
         if id == self.device && self.trace && r > 0 {
             // (who still holds the device: device children the application has not let go of)
-            let mut left: Vec<String> = self.objs.iter().filter(|(_, o)| o.refs > 0 && holds_device(o.iface) && o.iface != IF_CONTEXT).map(|(&k, o)| format!("{}#{k}x{}", name(o.iface, 0).split(':').next().unwrap_or(""), o.refs)).collect();
+            let mut left: Vec<String> = self
+                .objs
+                .iter()
+                .filter(|(_, o)| o.refs > 0 && holds_device(o.iface) && o.iface != IF_CONTEXT)
+                .map(|(&k, o)| {
+                    format!(
+                        "{}#{k}x{}",
+                        name(o.iface, 0).split(':').next().unwrap_or(""),
+                        o.refs
+                    )
+                })
+                .collect();
             left.sort();
             eprintln!("d3d11: device released, {r} left: {}", left.join(" "));
         }
@@ -567,7 +629,9 @@ impl D11 {
     }
 
     fn unbind(&mut self, id: u32) {
-        let Some(o) = self.objs.get_mut(&id) else { return };
+        let Some(o) = self.objs.get_mut(&id) else {
+            return;
+        };
         o.binds = o.binds.saturating_sub(1);
         if o.refs == 0 && o.binds == 0 {
             self.destroy(id);
@@ -586,7 +650,10 @@ impl D11 {
 
     fn destroy(&mut self, id: u32) {
         // (the device, its context and the DXGI objects live as long as the process)
-        if matches!(self.objs.get(&id).map(|o| o.iface), Some(IF_DEVICE | IF_CONTEXT | IF_FACTORY | IF_ADAPTER | IF_OUTPUT) | None) {
+        if matches!(
+            self.objs.get(&id).map(|o| o.iface),
+            Some(IF_DEVICE | IF_CONTEXT | IF_FACTORY | IF_ADAPTER | IF_OUTPUT) | None
+        ) {
             return;
         }
         let o = self.objs.remove(&id).unwrap();
@@ -719,7 +786,10 @@ pub unsafe fn call(id: u32, args: *const u32, calls: *const HostCalls) -> u32 {
                     *d.counts.entry(id).or_default() += 1;
                     let n = d.counts[&id];
                     if n <= 20 || n.is_power_of_two() {
-                        let nargs = (1..6).map(|i| format!("{:#x}", a(i))).collect::<Vec<_>>().join(",");
+                        let nargs = (1..6)
+                            .map(|i| format!("{:#x}", a(i)))
+                            .collect::<Vec<_>>()
+                            .join(",");
                         eprintln!("d3d11: {} [{n}] ({nargs}) -> {:#x}", name(iface, m), r);
                     }
                 }
@@ -778,7 +848,11 @@ unsafe fn query_interface(d: &mut D11, id: u32, iface: u32, riid: u32, out: u32)
                 iface
             } else if ifs.contains(&primary) {
                 primary
-            } else if let Some(&f) = ifs.iter().find(|&&f| other_face(primary, f) || ((d.ten_faces || d3d10::eleven(iface).is_some()) && d3d10::ten(primary) == Some(f))) {
+            } else if let Some(&f) = ifs.iter().find(|&&f| {
+                other_face(primary, f)
+                    || ((d.ten_faces || d3d10::eleven(iface).is_some())
+                        && d3d10::ten(primary) == Some(f))
+            }) {
                 f
             } else {
                 0
@@ -787,10 +861,17 @@ unsafe fn query_interface(d: &mut D11, id: u32, iface: u32, riid: u32, out: u32)
         None => 0,
     };
     // (a deferred context is no ID3D11Multithread)
-    let want = if want == IF_MULTITHREAD && primary == IF_CONTEXT && id != d.context { 0 } else { want };
+    let want = if want == IF_MULTITHREAD && primary == IF_CONTEXT && id != d.context {
+        0
+    } else {
+        want
+    };
     if want == 0 {
         if d.trace {
-            eprintln!("d3d11: QueryInterface({first:08x}) on {}: no", name(iface, 0));
+            eprintln!(
+                "d3d11: QueryInterface({first:08x}) on {}: no",
+                name(iface, 0)
+            );
         }
         wrp(out, 0, 0);
         return E_NOINTERFACE;
@@ -823,7 +904,8 @@ fn dxgi_objects(d: &mut D11) -> u32 {
 /// D3D11CreateDeviceAndSwapChain's arguments
 unsafe fn create_device(d: &mut D11, args: *const u32) -> u32 {
     let a = |i: usize| *args.add(i);
-    let (adapter, driver, levels, nlevels, desc, sc_out, dev_out, level_out, ctx_out) = (a(0), a(1), a(4), a(5), a(7), a(8), a(9), a(10), a(11));
+    let (adapter, driver, levels, nlevels, desc, sc_out, dev_out, level_out, ctx_out) =
+        (a(0), a(1), a(4), a(5), a(7), a(8), a(9), a(10), a(11));
     // (an adapter goes with D3D_DRIVER_TYPE_UNKNOWN, and only with it)
     if (adapter != 0) != (driver == 0) {
         for o in [sc_out, dev_out, ctx_out] {
@@ -854,7 +936,10 @@ unsafe fn create_device(d: &mut D11, args: *const u32) -> u32 {
     // feature level: the first asked for that is 11_0 or lower
     let mut level = 0xb000;
     if levels != 0 && nlevels > 0 {
-        match (0..nlevels as usize).map(|i| rd(levels, i)).find(|&l| l <= 0xb000) {
+        match (0..nlevels as usize)
+            .map(|i| rd(levels, i))
+            .find(|&l| l <= 0xb000)
+        {
             Some(l) => level = l,
             None => return E_INVALIDARG,
         }
@@ -871,12 +956,18 @@ unsafe fn create_device(d: &mut D11, args: *const u32) -> u32 {
         d.st = default_state();
     } else {
         // (a device nobody holds any more: the new one starts from the default state)
-        if d.objs.get(&d.device).is_some_and(|o| o.refs == 0) && d.objs.get(&d.context).is_some_and(|o| o.refs == 0) {
+        if d.objs.get(&d.device).is_some_and(|o| o.refs == 0)
+            && d.objs.get(&d.context).is_some_and(|o| o.refs == 0)
+        {
             let old = std::mem::replace(&mut d.st, default_state());
             unbind_state(d, &old);
             // (and without what the old one kept in its private data)
             for id in [d.device, d.context] {
-                let old = d.objs.get_mut(&id).map(|o| std::mem::take(&mut o.private)).unwrap_or_default();
+                let old = d
+                    .objs
+                    .get_mut(&id)
+                    .map(|o| std::mem::take(&mut o.private))
+                    .unwrap_or_default();
                 for (_, _, held) in old {
                     if held != 0 && held != id {
                         d.release(held);
@@ -955,7 +1046,20 @@ unsafe fn create_device10(d: &mut D11, args: *const u32) -> u32 {
     let dev_out = a(8);
     let mut dev = [0u32; 2];
     let mut level = 0u32;
-    let v = [a(0), a(1), a(2), a(3), 0, 0, 7, a(6), a(7), dev.as_mut_ptr() as usize as u32, &mut level as *mut u32 as usize as u32, 0];
+    let v = [
+        a(0),
+        a(1),
+        a(2),
+        a(3),
+        0,
+        0,
+        7,
+        a(6),
+        a(7),
+        dev.as_mut_ptr() as usize as u32,
+        &mut level as *mut u32 as usize as u32,
+        0,
+    ];
     let r = create_device(d, v.as_ptr());
     if r != S_OK {
         return r;
@@ -975,7 +1079,10 @@ unsafe fn create_device10(d: &mut D11, args: *const u32) -> u32 {
 /// device while the application holds one to it (as in Windows: "Device has N references left").
 fn holds_device(iface: u32) -> bool {
     // (a swap chain holds its device for as long as it lives: new_swapchain)
-    !matches!(iface, IF_DEVICE | IF_FACTORY | IF_ADAPTER | IF_OUTPUT | IF_SWAPCHAIN)
+    !matches!(
+        iface,
+        IF_DEVICE | IF_FACTORY | IF_ADAPTER | IF_OUTPUT | IF_SWAPCHAIN
+    )
 }
 
 /// The stage (2 GS, 3 HS, 4 DS, 5 CS) of a context method of the other stages.
@@ -1029,13 +1136,32 @@ unsafe fn new_swapchain(d: &mut D11, hwnd: u32, w: u32, h: u32, fmt: u32, count:
     let _ = count;
     let mut rect = [0i32; 4];
     (d.calls().client_rect)(hwnd, rect.as_mut_ptr());
-    let w = if w == 0 { (rect[2] - rect[0]).max(1) as u32 } else { w };
-    let h = if h == 0 { (rect[3] - rect[1]).max(1) as u32 } else { h };
+    let w = if w == 0 {
+        (rect[2] - rect[0]).max(1) as u32
+    } else {
+        w
+    };
+    let h = if h == 0 {
+        (rect[3] - rect[1]).max(1) as u32
+    } else {
+        h
+    };
     let fmt = if format::info(fmt).is_some() { fmt } else { 28 };
     let buffer = new_backbuffer(d, w, h, fmt);
     let bid = d.id_of(buffer);
     d.add_ref(d.device);
-    let sc = d.new_obj(IF_SWAPCHAIN, Data::SwapChain(SwapChain { device: d.device, hwnd, w, h, fmt, buffer: bid, presents: 0 }));
+    let sc = d.new_obj(
+        IF_SWAPCHAIN,
+        Data::SwapChain(SwapChain {
+            device: d.device,
+            hwnd,
+            w,
+            h,
+            fmt,
+            buffer: bid,
+            presents: 0,
+        }),
+    );
     if d.trace {
         eprintln!("d3d11: swap chain {w}x{h} format {fmt} window {hwnd:#x}");
     }
@@ -1054,44 +1180,69 @@ fn new_backbuffer(d: &mut D11, w: u32, h: u32, fmt: u32) -> u32 {
 }
 
 /// A texture object (address).
-fn new_texture(d: &mut D11, dim: u32, w: u32, h: u32, layers: u32, mips: u32, fmt: u32, usage: u32, bind: u32, cube: bool) -> u32 {
+fn new_texture(
+    d: &mut D11,
+    dim: u32,
+    w: u32,
+    h: u32,
+    layers: u32,
+    mips: u32,
+    fmt: u32,
+    usage: u32,
+    bind: u32,
+    cube: bool,
+) -> u32 {
     let page = format::info(fmt).map_or(format::P_BGRA8, |f| f.page);
     let max = 32 - w.max(h).max(1).leading_zeros();
     let mips = if mips == 0 { max } else { mips.min(max) };
     let gpu = page_id();
     let layers = layers.max(1);
-    gpu::record(|q| q.cmd(&[gpu::CREATE_TEXTURE2, gpu, w.max(1), h.max(1), layers, mips, page, match dim {
-        3 => 1,
-        1 => 2,
-        _ => 0,
-    }]));
+    gpu::record(|q| {
+        q.cmd(&[
+            gpu::CREATE_TEXTURE2,
+            gpu,
+            w.max(1),
+            h.max(1),
+            layers,
+            mips,
+            page,
+            match dim {
+                3 => 1,
+                1 => 2,
+                _ => 0,
+            },
+        ])
+    });
     let iface = match dim {
         1 => IF_TEX1D,
         3 => IF_TEX3D,
         _ => IF_TEX2D,
     };
-    d.new_obj(iface, Data::Texture(Texture {
-        dim,
-        w,
-        h,
-        layers,
-        mips,
-        fmt,
-        page,
-        usage,
-        bind,
-        cube,
-        cpu: match usage {
-            2 => 0x10000,
-            3 => 0x30000,
-            _ => 0,
-        },
-        misc: if cube { 4 } else { 0 },
-        samples: (1, 0),
-        backbuffer: false,
-        gpu,
-        maps: Vec::new(),
-    }))
+    d.new_obj(
+        iface,
+        Data::Texture(Texture {
+            dim,
+            w,
+            h,
+            layers,
+            mips,
+            fmt,
+            page,
+            usage,
+            bind,
+            cube,
+            cpu: match usage {
+                2 => 0x10000,
+                3 => 0x30000,
+                _ => 0,
+            },
+            misc: if cube { 4 } else { 0 },
+            samples: (1, 0),
+            backbuffer: false,
+            gpu,
+            maps: Vec::new(),
+        }),
+    )
 }
 
 /// Uploads a subresource from guest memory (`pitch` bytes per row) to the page texture.
@@ -1119,7 +1270,14 @@ unsafe fn upload_texture(t: &Texture, sub: u32, mem: u32, pitch: u32, bx: Option
             }
         }
         bpr = w * 8;
-    } else if let Some(v) = format::to_floats(f.conv, format::page_bpp(t.page) / 4, src, pitch as usize, w, h) {
+    } else if let Some(v) = format::to_floats(
+        f.conv,
+        format::page_bpp(t.page) / 4,
+        src,
+        pitch as usize,
+        w,
+        h,
+    ) {
         out = v;
         bpr = w * format::page_bpp(t.page);
     } else if f.conv != 0 {
@@ -1142,7 +1300,18 @@ unsafe fn upload_texture(t: &Texture, sub: u32, mem: u32, pitch: u32, bx: Option
         let lz = if t.dim == 3 { z } else { layer };
         gpu::record(|q| {
             let off = q.blob(&out);
-            q.cmd(&[gpu::WRITE_TEXTURE2, t.gpu, level, lz, x0, y0, w, h, bpr, off]);
+            q.cmd(&[
+                gpu::WRITE_TEXTURE2,
+                t.gpu,
+                level,
+                lz,
+                x0,
+                y0,
+                w,
+                h,
+                bpr,
+                off,
+            ]);
         });
         if t.dim != 3 {
             break;
@@ -1150,11 +1319,23 @@ unsafe fn upload_texture(t: &Texture, sub: u32, mem: u32, pitch: u32, bx: Option
     }
 }
 
-unsafe fn method(d: &mut D11, iface: u32, m: u32, this: u32, args: *const u32, after: &mut After) -> u32 {
+unsafe fn method(
+    d: &mut D11,
+    iface: u32,
+    m: u32,
+    this: u32,
+    args: *const u32,
+    after: &mut After,
+) -> u32 {
     let a = |i: usize| *args.add(i);
     match iface {
         // IDXGIObject: SetPrivateData, SetPrivateDataInterface, GetPrivateData
-        IF_FACTORY | IF_ADAPTER | IF_OUTPUT | IF_SWAPCHAIN | IF_DXGIDEVICE | IF_SURFACE | IF_DXGIRES if (3..=5).contains(&m) => private_data(d, [5, 6, 4][m as usize - 3], this, &a),
+        IF_FACTORY | IF_ADAPTER | IF_OUTPUT | IF_SWAPCHAIN | IF_DXGIDEVICE | IF_SURFACE
+        | IF_DXGIRES
+            if (3..=5).contains(&m) =>
+        {
+            private_data(d, [5, 6, 4][m as usize - 3], this, &a)
+        }
         IF_FACTORY => factory_call(d, m, this, &a),
         IF_ADAPTER => match m {
             6 => parent(d, d.factory, a(1), a(2)),
@@ -1189,7 +1370,10 @@ unsafe fn method(d: &mut D11, iface: u32, m: u32, this: u32, args: *const u32, a
             }
             9 => {
                 // CheckInterfaceSupport(iid, umd version): only the D3D10 devices answer
-                if a(1) == 0 || !matches!(rd(a(1), 0), 0x9b7e4c0f | 0x9b7e4c8f) || rd(a(1), 1) != 0x4106_342c {
+                if a(1) == 0
+                    || !matches!(rd(a(1), 0), 0x9b7e4c0f | 0x9b7e4c8f)
+                    || rd(a(1), 1) != 0x4106_342c
+                {
                     return DXGI_ERROR_UNSUPPORTED;
                 }
                 // (30.0.15.1179)
@@ -1227,7 +1411,9 @@ unsafe fn method(d: &mut D11, iface: u32, m: u32, this: u32, args: *const u32, a
                     return E_INVALIDARG;
                 }
                 let usage = a(3);
-                let bind = if usage & 0x20 != 0 { 0x20 } else { 0 } | if usage & 0x10 != 0 { 8 } else { 0 } | if usage & 0x400 != 0 { 0x80 } else { 0 };
+                let bind = if usage & 0x20 != 0 { 0x20 } else { 0 }
+                    | if usage & 0x10 != 0 { 8 } else { 0 }
+                    | if usage & 0x400 != 0 { 0x80 } else { 0 };
                 for i in 0..a(2) {
                     let o = new_texture(d, 2, w, h, 1, 1, fmt, 0, bind, false);
                     let f = d.face(d.id_of(o), IF_SURFACE);
@@ -1297,7 +1483,9 @@ unsafe fn method(d: &mut D11, iface: u32, m: u32, this: u32, args: *const u32, a
             6 | 7 => parent(d, d.device, a(1), a(2)),
             8 => {
                 // GetDesc: Width Height Format SampleDesc
-                let Some(Data::Texture(t)) = d.objs.get(&this).map(|o| &o.data) else { return E_FAIL };
+                let Some(Data::Texture(t)) = d.objs.get(&this).map(|o| &o.data) else {
+                    return E_FAIL;
+                };
                 for (i, v) in [t.w, t.h, t.fmt, 1, 0].into_iter().enumerate() {
                     wr(a(1), i, v);
                 }
@@ -1306,7 +1494,15 @@ unsafe fn method(d: &mut D11, iface: u32, m: u32, this: u32, args: *const u32, a
             // Map(rect, flags): DXGI_MAP_READ 1 / WRITE 2 / DISCARD 4 as D3D11_MAP 1 / 2 / 3 / 4
             9 => {
                 let f = a(2);
-                let ty = if f & 4 != 0 { 4 } else if f & 3 == 3 { 3 } else if f & 2 != 0 { 2 } else { 1 };
+                let ty = if f & 4 != 0 {
+                    4
+                } else if f & 3 == 3 {
+                    3
+                } else if f & 2 != 0 {
+                    2
+                } else {
+                    1
+                };
                 return map(d, d.addr_of(this), 0, ty, a(1), true, after);
             }
             10 => {
@@ -1356,7 +1552,11 @@ unsafe fn factory_call(d: &mut D11, m: u32, _this: u32, a: &dyn Fn(usize) -> u32
             let p = swap_desc(desc);
             let sc = new_swapchain(d, p[11], p[0], p[1], p[4], p[9]);
             wrp(a(3), 0, sc);
-            if sc == 0 { E_FAIL } else { S_OK }
+            if sc == 0 {
+                E_FAIL
+            } else {
+                S_OK
+            }
         }
         11 => DXGI_ERROR_UNSUPPORTED,
         13 => 1, // IsCurrent
@@ -1369,7 +1569,11 @@ unsafe fn factory_call(d: &mut D11, m: u32, _this: u32, a: &dyn Fn(usize) -> u32
             }
             let sc = new_swapchain(d, a(2), rd(desc, 0), rd(desc, 1), rd(desc, 2), rd(desc, 7));
             wrp(a(6), 0, sc);
-            if sc == 0 { E_FAIL } else { S_OK }
+            if sc == 0 {
+                E_FAIL
+            } else {
+                S_OK
+            }
         }
         16 | 24 => DXGI_ERROR_UNSUPPORTED,
         17..=23 => E_NOTIMPL,
@@ -1377,7 +1581,17 @@ unsafe fn factory_call(d: &mut D11, m: u32, _this: u32, a: &dyn Fn(usize) -> u32
     }
 }
 
-const MODES: [(u32, u32); 9] = [(640, 480), (800, 600), (1024, 768), (1280, 720), (1280, 960), (1280, 1024), (1366, 768), (1600, 900), (1920, 1080)];
+const MODES: [(u32, u32); 9] = [
+    (640, 480),
+    (800, 600),
+    (1024, 768),
+    (1280, 720),
+    (1280, 960),
+    (1280, 1024),
+    (1366, 768),
+    (1600, 900),
+    (1920, 1080),
+];
 
 unsafe fn output_call(d: &mut D11, m: u32, a: &dyn Fn(usize) -> u32) -> u32 {
     match m {
@@ -1424,7 +1638,10 @@ unsafe fn output_call(d: &mut D11, m: u32, a: &dyn Fn(usize) -> u32) -> u32 {
             // FindClosestMatchingMode(mode, closest, device)
             let (want, out) = (a(1), a(2));
             let (w, h) = (rd(want, 0), rd(want, 1));
-            let best = MODES.iter().min_by_key(|(x, y)| x.abs_diff(w) + y.abs_diff(h)).unwrap();
+            let best = MODES
+                .iter()
+                .min_by_key(|(x, y)| x.abs_diff(w) + y.abs_diff(h))
+                .unwrap();
             let f = if rd(want, 4) != 0 { rd(want, 4) } else { 28 };
             for (k, v) in [best.0, best.1, 60, 1, f, 0, 0].into_iter().enumerate() {
                 wr(out, k, v);
@@ -1440,8 +1657,16 @@ unsafe fn output_call(d: &mut D11, m: u32, a: &dyn Fn(usize) -> u32) -> u32 {
     }
 }
 
-unsafe fn swapchain_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32, after: &mut After) -> u32 {
-    let Some(Data::SwapChain(sc)) = d.objs.get(&this).map(|o| &o.data) else { return E_FAIL };
+unsafe fn swapchain_call(
+    d: &mut D11,
+    m: u32,
+    this: u32,
+    a: &dyn Fn(usize) -> u32,
+    after: &mut After,
+) -> u32 {
+    let Some(Data::SwapChain(sc)) = d.objs.get(&this).map(|o| &o.data) else {
+        return E_FAIL;
+    };
     let (device, hwnd, w, h, fmt, buffer) = (sc.device, sc.hwnd, sc.w, sc.h, sc.fmt, sc.buffer);
     match m {
         3..=5 => S_OK,
@@ -1458,7 +1683,19 @@ unsafe fn swapchain_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u3
                 Some(Data::Texture(t)) => t.gpu,
                 _ => 0,
             };
-            gpu::record(|q| q.cmd(&[gpu::PRESENT, tex, rect[0] as u32, rect[1] as u32, rect[2] as u32, rect[3] as u32, w, h, hwnd]));
+            gpu::record(|q| {
+                q.cmd(&[
+                    gpu::PRESENT,
+                    tex,
+                    rect[0] as u32,
+                    rect[1] as u32,
+                    rect[2] as u32,
+                    rect[3] as u32,
+                    w,
+                    h,
+                    hwnd,
+                ])
+            });
             d.targets = None;
             if let Some(Data::SwapChain(sc)) = d.objs.get_mut(&this).map(|o| &mut o.data) {
                 sc.presents += 1;
@@ -1485,8 +1722,16 @@ unsafe fn swapchain_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u3
             // ResizeBuffers(count, w, h, format, flags)
             let mut rect = [0i32; 4];
             (d.calls().client_rect)(hwnd, rect.as_mut_ptr());
-            let nw = if a(2) == 0 { (rect[2] - rect[0]).max(1) as u32 } else { a(2) };
-            let nh = if a(3) == 0 { (rect[3] - rect[1]).max(1) as u32 } else { a(3) };
+            let nw = if a(2) == 0 {
+                (rect[2] - rect[0]).max(1) as u32
+            } else {
+                a(2)
+            };
+            let nh = if a(3) == 0 {
+                (rect[3] - rect[1]).max(1) as u32
+            } else {
+                a(3)
+            };
             let nf = if a(4) == 0 { fmt } else { a(4) };
             let nb = new_backbuffer(d, nw, nh, nf);
             let nb = d.id_of(nb);
@@ -1516,7 +1761,10 @@ unsafe fn swapchain_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u3
         }
         18 => {
             let p = a(1);
-            for (k, v) in [w, h, fmt, 0, 1, 0, 0x20, 1, 0, 0, 0, 0].into_iter().enumerate() {
+            for (k, v) in [w, h, fmt, 0, 1, 0, 0x20, 1, 0, 0, 0, 0]
+                .into_iter()
+                .enumerate()
+            {
                 wr(p, k, v);
             }
             S_OK
@@ -1549,7 +1797,13 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
                 return E_INVALIDARG;
             }
             // D3D11_BUFFER_DESC { ByteWidth, Usage, BindFlags, CPUAccessFlags, MiscFlags, StructureByteStride }
-            let (size, usage, bind, cpu, misc) = (rd(desc, 0), rd(desc, 1), rd(desc, 2), rd(desc, 3), rd(desc, 4));
+            let (size, usage, bind, cpu, misc) = (
+                rd(desc, 0),
+                rd(desc, 1),
+                rd(desc, 2),
+                rd(desc, 3),
+                rd(desc, 4),
+            );
             let stride = match check::buffer(size, usage, bind, cpu, misc, rd(desc, 5), a(2) != 0) {
                 Ok(s) => s,
                 Err(hr) => return hr,
@@ -1566,11 +1820,30 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             }
             std::ptr::write_bytes(mem as *mut u8, 0, size as usize);
             if a(2) != 0 {
-                std::ptr::copy_nonoverlapping(rdp(a(2), 0) as *const u8, mem as *mut u8, size as usize);
+                std::ptr::copy_nonoverlapping(
+                    rdp(a(2), 0) as *const u8,
+                    mem as *mut u8,
+                    size as usize,
+                );
             }
-            let o = d.new_obj(IF_BUFFER, Data::Buffer(Buffer { size, usage, bind, cpu, misc, stride, mem, gpu: 0, dirty: true }));
+            let o = d.new_obj(
+                IF_BUFFER,
+                Data::Buffer(Buffer {
+                    size,
+                    usage,
+                    bind,
+                    cpu,
+                    misc,
+                    stride,
+                    mem,
+                    gpu: 0,
+                    dirty: true,
+                }),
+            );
             if d.trace && size <= 256 {
-                let f: Vec<f32> = (0..size / 4).map(|i| *((mem + 4 * i) as *const f32)).collect();
+                let f: Vec<f32> = (0..size / 4)
+                    .map(|i| *((mem + 4 * i) as *const f32))
+                    .collect();
                 eprintln!("d3d11: new buffer {o} bind {bind:#x} usage {usage} = {f:?}");
             }
             wrp(a(3), 0, o);
@@ -1585,9 +1858,48 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             // D3D11_TEXTURE1D/2D/3D_DESC
             let r = |i| rd(desc, i);
             let t = match m {
-                4 => check::Tex { dim: 1, w: r(0), h: 1, layers: r(2), mips: r(1), fmt: r(3), samples: 1, quality: 0, usage: r(4), bind: r(5), cpu: r(6), misc: r(7) },
-                5 => check::Tex { dim: 2, w: r(0), h: r(1), layers: r(3), mips: r(2), fmt: r(4), samples: r(5), quality: r(6), usage: r(7), bind: r(8), cpu: r(9), misc: r(10) },
-                _ => check::Tex { dim: 3, w: r(0), h: r(1), layers: r(2), mips: r(3), fmt: r(4), samples: 1, quality: 0, usage: r(5), bind: r(6), cpu: r(7), misc: r(8) },
+                4 => check::Tex {
+                    dim: 1,
+                    w: r(0),
+                    h: 1,
+                    layers: r(2),
+                    mips: r(1),
+                    fmt: r(3),
+                    samples: 1,
+                    quality: 0,
+                    usage: r(4),
+                    bind: r(5),
+                    cpu: r(6),
+                    misc: r(7),
+                },
+                5 => check::Tex {
+                    dim: 2,
+                    w: r(0),
+                    h: r(1),
+                    layers: r(3),
+                    mips: r(2),
+                    fmt: r(4),
+                    samples: r(5),
+                    quality: r(6),
+                    usage: r(7),
+                    bind: r(8),
+                    cpu: r(9),
+                    misc: r(10),
+                },
+                _ => check::Tex {
+                    dim: 3,
+                    w: r(0),
+                    h: r(1),
+                    layers: r(2),
+                    mips: r(3),
+                    fmt: r(4),
+                    samples: 1,
+                    quality: 0,
+                    usage: r(5),
+                    bind: r(6),
+                    cpu: r(7),
+                    misc: r(8),
+                },
             };
             let mips = match check::texture(&t, a(2) != 0) {
                 Ok(n) => n,
@@ -1598,7 +1910,17 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
                     return hr;
                 }
             };
-            let check::Tex { dim, w, h, layers, fmt, usage, bind, misc, .. } = t;
+            let check::Tex {
+                dim,
+                w,
+                h,
+                layers,
+                fmt,
+                usage,
+                bind,
+                misc,
+                ..
+            } = t;
             // (initial data with a missing level)
             if a(2) != 0 {
                 let n = mips * if dim == 3 { 1 } else { layers };
@@ -1615,7 +1937,9 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
                 (x.cpu, x.misc, x.samples) = (t.cpu, misc, (t.samples, t.quality));
             }
             if a(2) != 0 {
-                let Some(Data::Texture(t)) = d.objs.get(&id).map(|o| &o.data) else { return E_FAIL };
+                let Some(Data::Texture(t)) = d.objs.get(&id).map(|o| &o.data) else {
+                    return E_FAIL;
+                };
                 for sub in 0..t.mips * if dim == 3 { 1 } else { t.layers } {
                     // D3D11_SUBRESOURCE_DATA { pSysMem, SysMemPitch, SysMemSlicePitch }
                     let init = a(2) + sub * (ptr() + 8);
@@ -1640,20 +1964,42 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             for i in 0..a(2) {
                 // D3D11_INPUT_ELEMENT_DESC { SemanticName, then six UINTs }
                 let e = a(1) + i * (ptr() + 24);
-                let name = std::ffi::CStr::from_ptr(rdp(e, 0) as *const std::ffi::c_char).to_string_lossy().into_owned();
+                let name = std::ffi::CStr::from_ptr(rdp(e, 0) as *const std::ffi::c_char)
+                    .to_string_lossy()
+                    .into_owned();
                 let f = e + ptr();
-                let (index, fmt, slot, off, class) = (rd(f, 0), rd(f, 1), rd(f, 2) & 15, rd(f, 3), rd(f, 4));
-                let off = if off == 0xffff_ffff { next[slot as usize] } else { off };
+                let (index, fmt, slot, off, class) =
+                    (rd(f, 0), rd(f, 1), rd(f, 2) & 15, rd(f, 3), rd(f, 4));
+                let off = if off == 0xffff_ffff {
+                    next[slot as usize]
+                } else {
+                    off
+                };
                 let size = format::vertex_format(fmt).map_or(4, vertex_size);
                 next[slot as usize] = off + size;
-                v.push(Elem { name, index, fmt, slot, offset: off, instance: class == 1 });
+                v.push(Elem {
+                    name,
+                    index,
+                    fmt,
+                    slot,
+                    offset: off,
+                    instance: class == 1,
+                });
             }
             if a(5) == 0 {
                 return S_FALSE;
             }
             if d.trace {
                 for e in &v {
-                    eprintln!("d3d11:   layout {}{} format {} slot {} offset {}{}", e.name, e.index, e.fmt, e.slot, e.offset, if e.instance { " instance" } else { "" });
+                    eprintln!(
+                        "d3d11:   layout {}{} format {} slot {} offset {}{}",
+                        e.name,
+                        e.index,
+                        e.fmt,
+                        e.slot,
+                        e.offset,
+                        if e.instance { " instance" } else { "" }
+                    );
                 }
             }
             let o = d.new_obj(IF_LAYOUT, Data::Layout(v));
@@ -1680,7 +2026,14 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             if a(4) == 0 {
                 return S_FALSE;
             }
-            let o = d.new_obj(iface, Data::Shader(Shader { code, pixel: iface == IF_PS, wgsl: HashMap::new() }));
+            let o = d.new_obj(
+                iface,
+                Data::Shader(Shader {
+                    code,
+                    pixel: iface == IF_PS,
+                    wgsl: HashMap::new(),
+                }),
+            );
             wrp(a(4), 0, o);
             S_OK
         }
@@ -1689,7 +2042,9 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             // linkage, out): a geometry or vertex shader's bytecode (or none: SO of the VS)
             if a(1) != 0 {
                 let code = std::slice::from_raw_parts(a(1) as *const u8, a(2) as usize);
-                if check::shader(code, 13, d.level).is_err() && check::shader(code, 12, d.level).is_err() {
+                if check::shader(code, 13, d.level).is_err()
+                    && check::shader(code, 12, d.level).is_err()
+                {
                     if a(9) != 0 {
                         wrp(a(9), 0, 0);
                     }
@@ -1722,7 +2077,11 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
                 return S_FALSE;
             }
             // (one object per description while it lives, as Windows gives back)
-            let same = d.objs.iter().find(|(_, o)| o.iface == iface && matches!(&o.data, Data::State(x) if *x == desc)).map(|(&id, _)| id);
+            let same = d
+                .objs
+                .iter()
+                .find(|(_, o)| o.iface == iface && matches!(&o.data, Data::State(x) if *x == desc))
+                .map(|(&id, _)| id);
             if let Some(id) = same {
                 d.add_ref(id);
                 wrp(a(2), 0, d.addr_of(id));
@@ -1761,7 +2120,11 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
             }
             let bits = check::support(a(1));
             wr(a(2), 0, bits.unwrap_or(0));
-            if bits.is_some() { S_OK } else { E_FAIL }
+            if bits.is_some() {
+                S_OK
+            } else {
+                E_FAIL
+            }
         }
         30 => {
             // CheckMultisampleQualityLevels(format, count, out)
@@ -1786,7 +2149,11 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
                     return E_INVALIDARG;
                 }
                 let f = rd(a(2), 0);
-                let bits = if a(1) == 2 { check::support(f) } else { check::support2(f) };
+                let bits = if a(1) == 2 {
+                    check::support(f)
+                } else {
+                    check::support2(f)
+                };
                 wr(a(2), 1, bits.unwrap_or(0));
                 return if bits.is_some() { S_OK } else { E_FAIL };
             }
@@ -1833,7 +2200,13 @@ unsafe fn device_call(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32) 
         46 => device_call(d, 22, this, a), // CreateRasterizerState1 (ForcedSampleCount ignored)
         47 => {
             // CreateDeviceContextState(flags, levels, count, sdk, iid, level_out, state_out)
-            let level = if a(2) != 0 { (0..a(3) as usize).map(|i| rd(a(2), i)).find(|&l| l <= 0xb000) } else { None };
+            let level = if a(2) != 0 {
+                (0..a(3) as usize)
+                    .map(|i| rd(a(2), i))
+                    .find(|&l| l <= 0xb000)
+            } else {
+                None
+            };
             let Some(level) = level else {
                 wr(a(6), 0, 0);
                 wrp(a(7), 0, 0);
@@ -1909,7 +2282,9 @@ unsafe fn private_data(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32)
     }
     std::ptr::copy_nonoverlapping(a(1) as *const u8, guid.as_mut_ptr(), 16);
     let iface_obj = if m == 6 { d.id_of(a(2)) } else { 0 };
-    let Some(o) = d.objs.get_mut(&this) else { return E_FAIL };
+    let Some(o) = d.objs.get_mut(&this) else {
+        return E_FAIL;
+    };
     let found = o.private.iter().position(|x| x.0 == guid);
     match m {
         4 => {
@@ -1948,7 +2323,10 @@ unsafe fn private_data(d: &mut D11, m: u32, this: u32, a: &dyn Fn(usize) -> u32)
                     }
                     return S_OK;
                 }
-                (std::slice::from_raw_parts(a(3) as *const u8, a(2) as usize).to_vec(), 0)
+                (
+                    std::slice::from_raw_parts(a(3) as *const u8, a(2) as usize).to_vec(),
+                    0,
+                )
             } else {
                 let mut b = a(2).to_le_bytes().to_vec();
                 b.resize(ptr() as usize, 0);
@@ -1972,9 +2350,18 @@ unsafe fn create_view(d: &mut D11, m: u32, res: u32, desc: u32, out: u32) -> u32
     let rid = d.id_of(res);
     let kind = [check::SRV, check::UAV, check::RTV, check::DSV][m as usize - 7];
     // (the description's words: SRV 6, RTV and UAV 5, DSV 6)
-    let words: Option<Vec<u32>> = (desc != 0).then(|| (0..if kind == check::RTV || kind == check::UAV { 5 } else { 6 }).map(|i| rd(desc, i)).collect());
+    let words: Option<Vec<u32>> = (desc != 0).then(|| {
+        (0..if kind == check::RTV || kind == check::UAV {
+            5
+        } else {
+            6
+        })
+            .map(|i| rd(desc, i))
+            .collect()
+    });
     if let Some(Data::Buffer(b)) = d.objs.get(&rid).map(|o| &o.data) {
-        let bv = match check::buffer_view(kind, b.size, b.bind, b.misc, b.stride, words.as_deref()) {
+        let bv = match check::buffer_view(kind, b.size, b.bind, b.misc, b.stride, words.as_deref())
+        {
             Ok(v) => v,
             Err(hr) => return hr,
         };
@@ -1985,12 +2372,26 @@ unsafe fn create_view(d: &mut D11, m: u32, res: u32, desc: u32, out: u32) -> u32
             return create_buffer_srv(d, rid, bv, out);
         }
         // (buffer UAVs and render targets: kept, not drawn with)
-        let o = d.new_obj([IF_SRV, IF_UAV, IF_RTV, IF_DSV][m as usize - 7], Data::Other);
+        let o = d.new_obj(
+            [IF_SRV, IF_UAV, IF_RTV, IF_DSV][m as usize - 7],
+            Data::Other,
+        );
         wrp(out, 0, o);
         return S_OK;
     }
-    let Some(Data::Texture(t)) = d.objs.get(&rid).map(|o| &o.data) else { return E_INVALIDARG };
-    let r = check::Res { dim: t.dim, fmt: t.fmt, mips: t.mips, layers: t.layers, bind: t.bind, cube: t.cube, samples: t.samples.0, backbuffer: t.backbuffer };
+    let Some(Data::Texture(t)) = d.objs.get(&rid).map(|o| &o.data) else {
+        return E_INVALIDARG;
+    };
+    let r = check::Res {
+        dim: t.dim,
+        fmt: t.fmt,
+        mips: t.mips,
+        layers: t.layers,
+        bind: t.bind,
+        cube: t.cube,
+        samples: t.samples.0,
+        backbuffer: t.backbuffer,
+    };
     let c = match check::view(kind, &r, words.as_deref()) {
         Ok(c) => c,
         Err(hr) => {
@@ -2000,12 +2401,24 @@ unsafe fn create_view(d: &mut D11, m: u32, res: u32, desc: u32, out: u32) -> u32
             return hr;
         }
     };
-    let v = View { res: rid, fmt: c.desc[0], desc: c.desc, mip: c.mip, mips: c.mips, layer: c.layer, layers: c.layers, buf: None };
+    let v = View {
+        res: rid,
+        fmt: c.desc[0],
+        desc: c.desc,
+        mip: c.mip,
+        mips: c.mips,
+        layer: c.layer,
+        layers: c.layers,
+        buf: None,
+    };
     if out == 0 {
         return S_FALSE;
     }
     d.bind(rid);
-    let o = d.new_obj([IF_SRV, IF_UAV, IF_RTV, IF_DSV][m as usize - 7], Data::View(v));
+    let o = d.new_obj(
+        [IF_SRV, IF_UAV, IF_RTV, IF_DSV][m as usize - 7],
+        Data::View(v),
+    );
     wrp(out, 0, o);
     S_OK
 }
@@ -2015,7 +2428,15 @@ unsafe fn create_view(d: &mut D11, m: u32, res: u32, desc: u32, out: u32) -> u32
 unsafe fn create_buffer_srv(d: &mut D11, rid: u32, bv: check::BufView, out: u32) -> u32 {
     let fmt = if matches!(bv.fmt, 0 | 39) { 42 } else { bv.fmt };
     // (the 96-bit formats have no texels on the page: a view of nothing, as Windows takes it)
-    let f = format::info(fmt).filter(|f| f.block == 1).unwrap_or(format::Format { page: format::P_R32UI, bpp: 4, block: 1, conv: 0, no_alpha: false });
+    let f = format::info(fmt)
+        .filter(|f| f.block == 1)
+        .unwrap_or(format::Format {
+            page: format::P_R32UI,
+            bpp: 4,
+            block: 1,
+            conv: 0,
+            no_alpha: false,
+        });
     let n = (bv.bytes / f.bpp.max(1)).clamp(1, 8192);
     let tex = new_texture(d, 2, n, 1, 1, 1, fmt, 0, 8, false);
     let tid = d.id_of(tex);
@@ -2023,8 +2444,22 @@ unsafe fn create_buffer_srv(d: &mut D11, rid: u32, bv: check::BufView, out: u32)
     d.bind(tid);
     d.release(tid);
     d.bind(rid);
-    let buf = Some(BufSrc { buf: rid, off: bv.offset, bytes: n * f.bpp, last: Vec::new() });
-    let v = View { res: tid, fmt: bv.fmt, desc: bv.desc, mip: 0, mips: 1, layer: 0, layers: 1, buf };
+    let buf = Some(BufSrc {
+        buf: rid,
+        off: bv.offset,
+        bytes: n * f.bpp,
+        last: Vec::new(),
+    });
+    let v = View {
+        res: tid,
+        fmt: bv.fmt,
+        desc: bv.desc,
+        mip: 0,
+        mips: 1,
+        layer: 0,
+        layers: 1,
+        buf,
+    };
     let o = d.new_obj(IF_SRV, Data::View(v));
     wrp(out, 0, o);
     S_OK
@@ -2032,19 +2467,28 @@ unsafe fn create_buffer_srv(d: &mut D11, rid: u32, bv: check::BufView, out: u32)
 
 /// A buffer view's texture, brought up to date with its buffer.
 fn buffer_view_sync(d: &mut D11, view: u32) {
-    let Some(Data::View(v)) = d.objs.get(&view).map(|o| &o.data) else { return };
+    let Some(Data::View(v)) = d.objs.get(&view).map(|o| &o.data) else {
+        return;
+    };
     let Some(b) = &v.buf else { return };
-    let Some(Data::Buffer(buf)) = d.objs.get(&b.buf).map(|o| &o.data) else { return };
+    let Some(Data::Buffer(buf)) = d.objs.get(&b.buf).map(|o| &o.data) else {
+        return;
+    };
     if buf.mem == 0 {
         return;
     }
-    let now = unsafe { std::slice::from_raw_parts((buf.mem + b.off) as *const u8, b.bytes as usize) };
+    let now =
+        unsafe { std::slice::from_raw_parts((buf.mem + b.off) as *const u8, b.bytes as usize) };
     if now == b.last.as_slice() {
         return;
     }
     let now = now.to_vec();
     if d.trace {
-        eprintln!("d3d11: buffer view {view} <- {} bytes of buffer {}", now.len(), b.buf);
+        eprintln!(
+            "d3d11: buffer view {view} <- {} bytes of buffer {}",
+            now.len(),
+            b.buf
+        );
     }
     if let Some(Data::Texture(t)) = d.objs.get(&v.res).map(|o| &o.data) {
         unsafe { upload_texture(t, 0, now.as_ptr() as u32, b.bytes, None) };
@@ -2077,7 +2521,10 @@ unsafe fn child_call(d: &mut D11, iface: u32, m: u32, this: u32, a: &dyn Fn(usiz
         (IF_BUFFER | IF_TEX1D | IF_TEX2D | IF_TEX3D, 8, _) => S_OK,
         (IF_BUFFER | IF_TEX1D | IF_TEX2D | IF_TEX3D, 9, _) => 0,
         (IF_BUFFER, 10, Some(Data::Buffer(b))) => {
-            for (i, v) in [b.size, b.usage, b.bind, b.cpu, b.misc, b.stride].into_iter().enumerate() {
+            for (i, v) in [b.size, b.usage, b.bind, b.cpu, b.misc, b.stride]
+                .into_iter()
+                .enumerate()
+            {
                 wr(a(1), i, v);
             }
             S_OK
@@ -2086,8 +2533,22 @@ unsafe fn child_call(d: &mut D11, iface: u32, m: u32, this: u32, a: &dyn Fn(usiz
             let (cpu, misc) = (t.cpu, t.misc);
             let v: Vec<u32> = match iface {
                 IF_TEX1D => vec![t.w, t.mips, t.layers, t.fmt, t.usage, t.bind, cpu, misc],
-                IF_TEX2D => vec![t.w, t.h, t.mips, t.layers, t.fmt, t.samples.0, t.samples.1, t.usage, t.bind, cpu, misc],
-                _ => vec![t.w, t.h, t.layers, t.mips, t.fmt, t.usage, t.bind, cpu, misc],
+                IF_TEX2D => vec![
+                    t.w,
+                    t.h,
+                    t.mips,
+                    t.layers,
+                    t.fmt,
+                    t.samples.0,
+                    t.samples.1,
+                    t.usage,
+                    t.bind,
+                    cpu,
+                    misc,
+                ],
+                _ => vec![
+                    t.w, t.h, t.layers, t.mips, t.fmt, t.usage, t.bind, cpu, misc,
+                ],
             };
             for (i, x) in v.into_iter().enumerate() {
                 wr(a(1), i, x);
@@ -2126,12 +2587,12 @@ unsafe fn child_call(d: &mut D11, iface: u32, m: u32, this: u32, a: &dyn Fn(usiz
 
 fn query_size(t: u32) -> u32 {
     match t {
-        0 => 4,     // EVENT
-        1 => 8,     // OCCLUSION
-        2 => 8,     // TIMESTAMP
-        3 => 16,    // TIMESTAMP_DISJOINT
-        4 => 88,    // PIPELINE_STATISTICS
-        5 => 4,     // OCCLUSION_PREDICATE
+        0 => 4,  // EVENT
+        1 => 8,  // OCCLUSION
+        2 => 8,  // TIMESTAMP
+        3 => 16, // TIMESTAMP_DISJOINT
+        4 => 88, // PIPELINE_STATISTICS
+        5 => 4,  // OCCLUSION_PREDICATE
         // SO_OVERFLOW_PREDICATE(_STREAM0..3) at 7, 9, 11, 13, 15; SO_STATISTICS(_STREAM0..3)
         // at 6, 8, 10, 12, 14
         7..=15 if t % 2 == 1 => 4,
@@ -2149,7 +2610,11 @@ unsafe fn set_slots(d: &mut D11, slots: &mut [u32], start: u32, n: u32, p: u32) 
         if s >= slots.len() {
             break;
         }
-        let new = if p == 0 { 0 } else { d.id_of(rdp(p, i as usize)) };
+        let new = if p == 0 {
+            0
+        } else {
+            d.id_of(rdp(p, i as usize))
+        };
         let old = slots[s];
         slots[s] = new;
         d.rebind(new, old);
@@ -2196,7 +2661,13 @@ unsafe fn context_call(d: &mut D11, m: u32, a: &dyn Fn(usize) -> u32, after: &mu
     r
 }
 
-unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -> u32, after: &mut After) -> u32 {
+unsafe fn context_call2(
+    d: &mut D11,
+    st: &mut State,
+    m: u32,
+    a: &dyn Fn(usize) -> u32,
+    after: &mut After,
+) -> u32 {
     match m {
         3 => {
             d.add_ref(d.device);
@@ -2226,9 +2697,17 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
                 if s >= 32 {
                     break;
                 }
-                let new = if a(3) == 0 { 0 } else { d.id_of(rdp(a(3), i as usize)) };
+                let new = if a(3) == 0 {
+                    0
+                } else {
+                    d.id_of(rdp(a(3), i as usize))
+                };
                 let old = st.vbs[s].0;
-                st.vbs[s] = (new, if a(4) != 0 { rd(a(4), i as usize) } else { 0 }, if a(5) != 0 { rd(a(5), i as usize) } else { 0 });
+                st.vbs[s] = (
+                    new,
+                    if a(4) != 0 { rd(a(4), i as usize) } else { 0 },
+                    if a(5) != 0 { rd(a(5), i as usize) } else { 0 },
+                );
                 d.rebind(new, old);
             }
             hazards::after_buffers(d, st);
@@ -2261,7 +2740,9 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
             // GetData(query, data, size, flags): everything is done at once; the data only once
             // the query has ended, and only all of it
             let q = d.id_of(a(1));
-            let Some(&Data::Query(t, state, stamp)) = d.objs.get(&q).map(|o| &o.data) else { return E_INVALIDARG };
+            let Some(&Data::Query(t, state, stamp)) = d.objs.get(&q).map(|o| &o.data) else {
+                return E_INVALIDARG;
+            };
             if state != 2 {
                 return DXGI_ERROR_INVALID_CALL;
             }
@@ -2292,7 +2773,11 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
                 set_slots(d, &mut u, a(4), a(5).min(8), a(6));
                 st.uavs[0] = u;
             }
-            let n = if m == 34 && a(1) == 0xffff_ffff { u32::MAX } else { a(1) };
+            let n = if m == 34 && a(1) == 0xffff_ffff {
+                u32::MAX
+            } else {
+                a(1)
+            };
             if n != u32::MAX {
                 let mut rt = st.rtvs;
                 set_slots(d, &mut rt, 0, 8, 0);
@@ -2307,7 +2792,8 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
                 hazards::after_outputs(d, st);
                 // the viewport follows the first target when the game never set one
                 if st.viewport[0][2] == 0.0 {
-                    if let Some((w, h)) = view_size(d, st.rtvs[0]).or_else(|| view_size(d, st.dsv)) {
+                    if let Some((w, h)) = view_size(d, st.rtvs[0]).or_else(|| view_size(d, st.dsv))
+                    {
                         st.viewport[0] = [0.0, 0.0, w as f32, h as f32, 0.0, 1.0];
                     }
                 }
@@ -2315,7 +2801,11 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
         }
         35 => {
             set_one(d, &mut st.blend, a(1));
-            st.blend_factor = if a(2) != 0 { [rdf(a(2), 0), rdf(a(2), 1), rdf(a(2), 2), rdf(a(2), 3)] } else { [1.0; 4] };
+            st.blend_factor = if a(2) != 0 {
+                [rdf(a(2), 0), rdf(a(2), 1), rdf(a(2), 2), rdf(a(2), 3)]
+            } else {
+                [1.0; 4]
+            };
             st.sample_mask = a(3);
         }
         36 => {
@@ -2356,14 +2846,32 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
                 let mut c = [rd(a(2), 0), rd(a(2), 1), rd(a(2), 2), rd(a(2), 3)];
                 // 8-bit UNORM targets: the color as the runtime converts it (each channel
                 // clamped, times 255 in floats, rounded to even), not left to the GPU's own
-                if let Some(Data::View(View { fmt: 28 | 49 | 61 | 65 | 87 | 88, .. })) = d.objs.get(&v).map(|o| &o.data) {
+                if let Some(Data::View(View {
+                    fmt: 28 | 49 | 61 | 65 | 87 | 88,
+                    ..
+                })) = d.objs.get(&v).map(|o| &o.data)
+                {
                     for x in &mut c {
                         let f = f32::from_bits(*x);
                         let f = if f.is_nan() { 0.0 } else { f.clamp(0.0, 1.0) };
                         *x = ((f * 255.0).round_ties_even() / 255.0).to_bits();
                     }
                 }
-                gpu::record(|q| q.cmd(&[gpu::CLEAR_VIEW, tex, level, layer, 1, c[0], c[1], c[2], c[3], 0, 0]));
+                gpu::record(|q| {
+                    q.cmd(&[
+                        gpu::CLEAR_VIEW,
+                        tex,
+                        level,
+                        layer,
+                        1,
+                        c[0],
+                        c[1],
+                        c[2],
+                        c[3],
+                        0,
+                        0,
+                    ])
+                });
                 d.targets = None;
             }
         }
@@ -2371,7 +2879,21 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
             // ClearDepthStencilView(view, flags, depth, stencil)
             let v = d.id_of(a(1));
             if let Some((tex, level, layer)) = view_target(d, v) {
-                gpu::record(|q| q.cmd(&[gpu::CLEAR_VIEW, tex, level, layer, (a(2) & 3) << 1, 0, 0, 0, 0, a(3), a(4) & 0xff]));
+                gpu::record(|q| {
+                    q.cmd(&[
+                        gpu::CLEAR_VIEW,
+                        tex,
+                        level,
+                        layer,
+                        (a(2) & 3) << 1,
+                        0,
+                        0,
+                        0,
+                        0,
+                        a(3),
+                        a(4) & 0xff,
+                    ])
+                });
                 d.targets = None;
             }
         }
@@ -2484,13 +3006,23 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
             // RSGetViewports/RSGetScissorRects(count, out): the count set; the array gets those
             // and zeros after them
             if a(1) != 0 {
-                let (have, words) = if m == 95 { (st.nviewports, 6) } else { (st.nscissors, 4) };
+                let (have, words) = if m == 95 {
+                    (st.nviewports, 6)
+                } else {
+                    (st.nscissors, 4)
+                };
                 let room = rd(a(1), 0);
                 wr(a(1), 0, have);
                 if a(2) != 0 {
                     for k in 0..room as usize {
                         for i in 0..words {
-                            let v = if (k as u32) >= have { 0 } else if m == 95 { st.viewport[k][i].to_bits() } else { st.scissor[k][i] as u32 };
+                            let v = if (k as u32) >= have {
+                                0
+                            } else if m == 95 {
+                                st.viewport[k][i].to_bits()
+                            } else {
+                                st.scissor[k][i] as u32
+                            };
                             wr(a(2), k * words + i, v);
                         }
                     }
@@ -2509,10 +3041,20 @@ unsafe fn context_call2(d: &mut D11, st: &mut State, m: u32, a: &dyn Fn(usize) -
         // ID3D11DeviceContext1
         115 => return context_call2(d, st, 46, a, after), // CopySubresourceRegion1 (flags ignored)
         116 => return context_call2(d, st, 48, a, after), // UpdateSubresource1
-        117 | 118 | 133 => {}                           // Discard*
+        117 | 118 | 133 => {}                             // Discard*
         // *SetConstantBuffers1(start, n, buffers, first, count): whole buffers (offsets ignored)
-        119..=124 => return context_call2(d, st, [7, 62, 66, 22, 16, 71][m as usize - 119], a, after),
-        125..=130 => return context_call2(d, st, [72, 100, 104, 81, 77, 109][m as usize - 125], a, after),
+        119..=124 => {
+            return context_call2(d, st, [7, 62, 66, 22, 16, 71][m as usize - 119], a, after)
+        }
+        125..=130 => {
+            return context_call2(
+                d,
+                st,
+                [72, 100, 104, 81, 77, 109][m as usize - 125],
+                a,
+                after,
+            )
+        }
         131 => swap_state(d, st, a(1), a(2)),
         58 => deferred::execute(d, st, a(1), a(2), after),
         132 => {} // ClearView
@@ -2576,20 +3118,36 @@ unsafe fn swap_state(d: &mut D11, st: &mut State, state: u32, prev_out: u32) {
 }
 
 fn view_size(d: &D11, v: u32) -> Option<(u32, u32)> {
-    let Some(Data::View(v)) = d.objs.get(&v).map(|o| &o.data) else { return None };
-    let Some(Data::Texture(t)) = d.objs.get(&v.res).map(|o| &o.data) else { return None };
+    let Some(Data::View(v)) = d.objs.get(&v).map(|o| &o.data) else {
+        return None;
+    };
+    let Some(Data::Texture(t)) = d.objs.get(&v.res).map(|o| &o.data) else {
+        return None;
+    };
     Some(((t.w >> v.mip).max(1), (t.h >> v.mip).max(1)))
 }
 
 /// A render target or depth view's page texture, level and layer.
 fn view_target(d: &D11, v: u32) -> Option<(u32, u32, u32)> {
-    let Some(Data::View(v)) = d.objs.get(&v).map(|o| &o.data) else { return None };
-    let Some(Data::Texture(t)) = d.objs.get(&v.res).map(|o| &o.data) else { return None };
+    let Some(Data::View(v)) = d.objs.get(&v).map(|o| &o.data) else {
+        return None;
+    };
+    let Some(Data::Texture(t)) = d.objs.get(&v.res).map(|o| &o.data) else {
+        return None;
+    };
     Some((t.gpu, v.mip, v.layer))
 }
 
 /// Map(resource, subresource, type, flags, out); `dxgi`: IDXGISurface::Map's DXGI_MAPPED_RECT
-unsafe fn map(d: &mut D11, res: u32, sub: u32, ty: u32, out: u32, dxgi: bool, after: &mut After) -> u32 {
+unsafe fn map(
+    d: &mut D11,
+    res: u32,
+    sub: u32,
+    ty: u32,
+    out: u32,
+    dxgi: bool,
+    after: &mut After,
+) -> u32 {
     let id = d.id_of(res);
     let mut req = 0;
     // (what the runtime allows: staging resources read and write, dynamic ones write discard,
@@ -2619,9 +3177,16 @@ unsafe fn map(d: &mut D11, res: u32, sub: u32, ty: u32, out: u32, dxgi: bool, af
             let level = sub % t.mips.max(1);
             let (lw, lh) = ((t.w >> level).max(1), (t.h >> level).max(1));
             let (pitch, rows) = format::pitch_rows(t.fmt, lw, lh);
-            let depth = if t.dim == 3 { (t.layers >> level).max(1) } else { 1 };
+            let depth = if t.dim == 3 {
+                (t.layers >> level).max(1)
+            } else {
+                1
+            };
             // (in 64 bits: a 2048^3 texture's level 0 does not fit in 32)
-            let Some(size) = u32::try_from(pitch as u64 * rows as u64 * depth as u64).ok().filter(|&n| n < 0x8000_0000) else {
+            let Some(size) = u32::try_from(pitch as u64 * rows as u64 * depth as u64)
+                .ok()
+                .filter(|&n| n < 0x8000_0000)
+            else {
                 wrp(out, 0, 0);
                 return E_OUTOFMEMORY;
             };
@@ -2675,7 +3240,9 @@ unsafe fn unmap(d: &mut D11, res: u32, sub: u32) {
     if d.trace {
         if let Some(Data::Buffer(b)) = d.objs.get(&id).map(|o| &o.data) {
             if b.size <= 256 {
-                let f: Vec<f32> = (0..b.size / 4).map(|i| *((b.mem + 4 * i) as *const f32)).collect();
+                let f: Vec<f32> = (0..b.size / 4)
+                    .map(|i| *((b.mem + 4 * i) as *const f32))
+                    .collect();
                 eprintln!("d3d11: buffer {id} = {f:?}");
             }
         }
@@ -2692,15 +3259,32 @@ unsafe fn unmap(d: &mut D11, res: u32, sub: u32) {
 /// UpdateSubresource(resource, subresource, box, data, row pitch, depth pitch)
 unsafe fn update_subresource(d: &mut D11, res: u32, sub: u32, bx: u32, data: u32, pitch: u32) {
     let id = d.id_of(res);
-    let b = if bx != 0 { Some([rd(bx, 0), rd(bx, 1), rd(bx, 2), rd(bx, 3), rd(bx, 4), rd(bx, 5)]) } else { None };
+    let b = if bx != 0 {
+        Some([
+            rd(bx, 0),
+            rd(bx, 1),
+            rd(bx, 2),
+            rd(bx, 3),
+            rd(bx, 4),
+            rd(bx, 5),
+        ])
+    } else {
+        None
+    };
     match d.objs.get_mut(&id).map(|o| &mut o.data) {
         Some(Data::Buffer(buf)) => {
             let (x0, x1) = b.map_or((0, buf.size), |b| (b[0], b[3].min(buf.size)));
             if x1 > x0 {
-                std::ptr::copy(data as *const u8, (buf.mem + x0) as *mut u8, (x1 - x0) as usize);
+                std::ptr::copy(
+                    data as *const u8,
+                    (buf.mem + x0) as *mut u8,
+                    (x1 - x0) as usize,
+                );
                 buf.dirty = true;
                 if d.trace && buf.size <= 256 {
-                    let f: Vec<f32> = (0..buf.size / 4).map(|i| *((buf.mem + 4 * i) as *const f32)).collect();
+                    let f: Vec<f32> = (0..buf.size / 4)
+                        .map(|i| *((buf.mem + 4 * i) as *const f32))
+                        .collect();
                     eprintln!("d3d11: buffer {id} = {f:?}");
                 }
             }
@@ -2720,9 +3304,16 @@ unsafe fn update_subresource(d: &mut D11, res: u32, sub: u32, bx: u32, data: u32
 
 unsafe fn copy_resource(d: &mut D11, dst: u32, src: u32) {
     let (di, si) = (d.id_of(dst), d.id_of(src));
-    match (d.objs.get(&di).map(|o| &o.data), d.objs.get(&si).map(|o| &o.data)) {
+    match (
+        d.objs.get(&di).map(|o| &o.data),
+        d.objs.get(&si).map(|o| &o.data),
+    ) {
         (Some(Data::Buffer(a)), Some(Data::Buffer(b))) => {
-            std::ptr::copy(b.mem as *const u8, a.mem as *mut u8, a.size.min(b.size) as usize);
+            std::ptr::copy(
+                b.mem as *const u8,
+                a.mem as *mut u8,
+                a.size.min(b.size) as usize,
+            );
             if let Some(Data::Buffer(a)) = d.objs.get_mut(&di).map(|o| &mut o.data) {
                 a.dirty = true;
             }
@@ -2745,13 +3336,37 @@ unsafe fn copy_resource(d: &mut D11, dst: u32, src: u32) {
 }
 
 /// CopySubresourceRegion(dst, dst sub, x, y, z, src, src sub, box)
-unsafe fn copy_region(d: &mut D11, dst: u32, dsub: u32, x: u32, y: u32, _z: u32, src: u32, ssub: u32, bx: u32) {
+unsafe fn copy_region(
+    d: &mut D11,
+    dst: u32,
+    dsub: u32,
+    x: u32,
+    y: u32,
+    _z: u32,
+    src: u32,
+    ssub: u32,
+    bx: u32,
+) {
     let (di, si) = (d.id_of(dst), d.id_of(src));
-    match (d.objs.get(&di).map(|o| &o.data), d.objs.get(&si).map(|o| &o.data)) {
+    match (
+        d.objs.get(&di).map(|o| &o.data),
+        d.objs.get(&si).map(|o| &o.data),
+    ) {
         (Some(Data::Buffer(a)), Some(Data::Buffer(b))) => {
-            let (s0, s1) = if bx != 0 { (rd(bx, 0), rd(bx, 3)) } else { (0, b.size) };
-            let n = s1.min(b.size).saturating_sub(s0).min(a.size.saturating_sub(x));
-            std::ptr::copy((b.mem + s0) as *const u8, (a.mem + x) as *mut u8, n as usize);
+            let (s0, s1) = if bx != 0 {
+                (rd(bx, 0), rd(bx, 3))
+            } else {
+                (0, b.size)
+            };
+            let n = s1
+                .min(b.size)
+                .saturating_sub(s0)
+                .min(a.size.saturating_sub(x));
+            std::ptr::copy(
+                (b.mem + s0) as *const u8,
+                (a.mem + x) as *mut u8,
+                n as usize,
+            );
             if let Some(Data::Buffer(a)) = d.objs.get_mut(&di).map(|o| &mut o.data) {
                 a.dirty = true;
             }
@@ -2759,7 +3374,11 @@ unsafe fn copy_region(d: &mut D11, dst: u32, dsub: u32, x: u32, y: u32, _z: u32,
         (Some(Data::Texture(a)), Some(Data::Texture(b))) => {
             let (sl, dl) = (ssub % b.mips, dsub % a.mips);
             let (bw, bh) = ((b.w >> sl).max(1), (b.h >> sl).max(1));
-            let (x0, y0, x1, y1) = if bx != 0 { (rd(bx, 0), rd(bx, 1), rd(bx, 3), rd(bx, 4)) } else { (0, 0, bw, bh) };
+            let (x0, y0, x1, y1) = if bx != 0 {
+                (rd(bx, 0), rd(bx, 1), rd(bx, 3), rd(bx, 4))
+            } else {
+                (0, 0, bw, bh)
+            };
             let (w, h) = (x1.saturating_sub(x0), y1.saturating_sub(y0));
             let c = [gpu::COPY, b.gpu, sl, x0, y0, w, h, a.gpu, dl, x, y, w, h, 0];
             gpu::record(|q| q.cmd(&c));
@@ -2774,14 +3393,25 @@ unsafe fn copy_region(d: &mut D11, dst: u32, dsub: u32, x: u32, y: u32, _z: u32,
 
 /// A shader's page shader and bindings (translated on first use; vertex shaders per pixel shader).
 /// `samplers`: a pixel shader's (those with BORDER or MIRROR_ONCE addressing: the shader does it)
-fn shader_for(d: &mut D11, sh: u32, ps: u32, sprite: Option<f32>, samplers: &[u32]) -> Option<(u32, Vec<(u32, dxwgsl::Binding)>)> {
+fn shader_for(
+    d: &mut D11,
+    sh: u32,
+    ps: u32,
+    sprite: Option<f32>,
+    samplers: &[u32],
+) -> Option<(u32, Vec<(u32, dxwgsl::Binding)>)> {
     let mut addr = Vec::new();
     if matches!(d.objs.get(&sh).map(|o| &o.data), Some(Data::Shader(s)) if s.pixel) {
         for (n, &id) in samplers.iter().enumerate() {
             if let Some(desc) = state_desc(d, id) {
-                let flags = dxwgsl::addr::flags(desc[1], desc[2], desc[0] & 4 != 0 || desc[0] & 0x40 != 0);
+                let flags =
+                    dxwgsl::addr::flags(desc[1], desc[2], desc[0] & 4 != 0 || desc[0] & 0x40 != 0);
                 if flags != 0 {
-                    addr.push(dxwgsl::addr::Addr { sampler: n as u32, flags, border: [desc[7], desc[8], desc[9], desc[10]] });
+                    addr.push(dxwgsl::addr::Addr {
+                        sampler: n as u32,
+                        flags,
+                        border: [desc[7], desc[8], desc[9], desc[10]],
+                    });
                 }
             }
         }
@@ -2791,15 +3421,31 @@ fn shader_for(d: &mut D11, sh: u32, ps: u32, sprite: Option<f32>, samplers: &[u3
         _ => None,
     };
     let trace = d.trace;
-    let Some(Data::Shader(s)) = d.objs.get_mut(&sh).map(|o| &mut o.data) else { return None };
+    let Some(Data::Shader(s)) = d.objs.get_mut(&sh).map(|o| &mut o.data) else {
+        return None;
+    };
     // (point sprite variants of a vertex shader: the pixel shader's id with the top bit set)
-    let key = (if s.pixel { 0 } else if sprite.is_some() { ps | 0x8000_0000 } else { ps }, addr);
+    let key = (
+        if s.pixel {
+            0
+        } else if sprite.is_some() {
+            ps | 0x8000_0000
+        } else {
+            ps
+        },
+        addr,
+    );
     if let Some(r) = s.wgsl.get(&key) {
         return r.clone();
     }
     let w = match sprite {
         Some(max) if !s.pixel => dxwgsl::translate_point_sprite(&s.code, ps_code.as_deref(), max),
-        _ => dxwgsl::translate_addr(&s.code, s.pixel, if s.pixel { None } else { ps_code.as_deref() }, &key.1),
+        _ => dxwgsl::translate_addr(
+            &s.code,
+            s.pixel,
+            if s.pixel { None } else { ps_code.as_deref() },
+            &key.1,
+        ),
     };
     let r = match w {
         Ok(w) => {
@@ -2809,7 +3455,12 @@ fn shader_for(d: &mut D11, sh: u32, ps: u32, sprite: Option<f32>, samplers: &[u3
                 q.cmd(&[gpu::CREATE_SHADER, id, off, w.code.len() as u32]);
             });
             if trace {
-                eprintln!("d3d11: {} shader {sh} -> {} bindings {:?}", if s.pixel { "pixel" } else { "vertex" }, id, w.bindings);
+                eprintln!(
+                    "d3d11: {} shader {sh} -> {} bindings {:?}",
+                    if s.pixel { "pixel" } else { "vertex" },
+                    id,
+                    w.bindings
+                );
                 if std::env::var("IPPAI_D3D_TRACE").as_deref() == Ok("2") {
                     eprintln!("{}", w.code);
                 }
@@ -2839,14 +3490,38 @@ fn blend_factor(b: u32, alpha: bool) -> u32 {
     match b {
         1 => 0,
         2 => 1,
-        3 => if alpha { 4 } else { 2 },
-        4 => if alpha { 5 } else { 3 },
+        3 => {
+            if alpha {
+                4
+            } else {
+                2
+            }
+        }
+        4 => {
+            if alpha {
+                5
+            } else {
+                3
+            }
+        }
         5 => 4,
         6 => 5,
         7 => 6,
         8 => 7,
-        9 => if alpha { 6 } else { 8 },
-        10 => if alpha { 7 } else { 9 },
+        9 => {
+            if alpha {
+                6
+            } else {
+                8
+            }
+        }
+        10 => {
+            if alpha {
+                7
+            } else {
+                9
+            }
+        }
         11 => 10,
         14 => 11,
         15 => 12,
@@ -2856,7 +3531,9 @@ fn blend_factor(b: u32, alpha: bool) -> u32 {
 
 /// The page buffer with `id`'s current contents (made when the guest wrote it).
 fn buffer_gpu(d: &mut D11, id: u32) -> u32 {
-    let Some(Data::Buffer(b)) = d.objs.get_mut(&id).map(|o| &mut o.data) else { return 0 };
+    let Some(Data::Buffer(b)) = d.objs.get_mut(&id).map(|o| &mut o.data) else {
+        return 0;
+    };
     if b.dirty || b.gpu == 0 {
         // (written in place: the page moves it to a new GPU buffer when draws before use it)
         let made = b.gpu;
@@ -2881,7 +3558,10 @@ fn buffer_gpu(d: &mut D11, id: u32) -> u32 {
 /// same stride and step become one (offsets moved into the attributes) where the attributes
 /// still fit in a vertex. `slots`: (slot, step, attributes [format, offset, location]); the
 /// result: (buffer, stride, offset) per slot index used in `slots` afterwards.
-fn merge_vertex_buffers(vbs: &[(u32, u32, u32); 32], slots: &mut Vec<(u32, u32, Vec<[u32; 3]>)>) -> Vec<(u32, u32, u32)> {
+fn merge_vertex_buffers(
+    vbs: &[(u32, u32, u32); 32],
+    slots: &mut Vec<(u32, u32, Vec<[u32; 3]>)>,
+) -> Vec<(u32, u32, u32)> {
     let mut vbx = vbs.to_vec();
     if slots.len() <= 8 {
         return vbx;
@@ -2890,7 +3570,10 @@ fn merge_vertex_buffers(vbs: &[(u32, u32, u32); 32], slots: &mut Vec<(u32, u32, 
     for (slot, step, attrs) in std::mem::take(slots) {
         let (buf, stride, off) = vbs[slot as usize];
         let limit = if stride == 0 { 2048 } else { stride };
-        let fits = |base: u32, list: &[[u32; 3]], from: u32| list.iter().all(|a| from - base + a[1] + vertex_size(a[0]) <= limit);
+        let fits = |base: u32, list: &[[u32; 3]], from: u32| {
+            list.iter()
+                .all(|a| from - base + a[1] + vertex_size(a[0]) <= limit)
+        };
         let into = out.iter().position(|(s2, st2, a2)| {
             let (b2, str2, o2) = vbx[*s2 as usize];
             if b2 != buf || str2 != stride || *st2 != step || buf == 0 {
@@ -2907,7 +3590,9 @@ fn merge_vertex_buffers(vbs: &[(u32, u32, u32); 32], slots: &mut Vec<(u32, u32, 
                 for a in &mut out[i].2 {
                     a[1] += o2 - base;
                 }
-                out[i].2.extend(attrs.into_iter().map(|a| [a[0], a[1] + off - base, a[2]]));
+                out[i]
+                    .2
+                    .extend(attrs.into_iter().map(|a| [a[0], a[1] + off - base, a[2]]));
                 vbx[s2].2 = base;
             }
             None => out.push((slot, step, attrs)),
@@ -2918,29 +3603,56 @@ fn merge_vertex_buffers(vbs: &[(u32, u32, u32); 32], slots: &mut Vec<(u32, u32, 
 }
 
 #[allow(clippy::too_many_arguments)]
-unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u32, start: u32, base: i32, first_instance: u32) {
+unsafe fn draw(
+    d: &mut D11,
+    st: &State,
+    indexed: bool,
+    count: u32,
+    instances: u32,
+    start: u32,
+    base: i32,
+    first_instance: u32,
+) {
     if count == 0 || instances == 0 || st.vs == 0 {
         return;
     }
     // GL_POINTS through ANGLE: its point sprite geometry shader, done as an instance per point
     // (non-indexed, non-instanced point lists; see dxwgsl::translate_point_sprite)
     let sprite = match d.objs.get(&st.shaders[0]).map(|o| &o.data) {
-        Some(Data::Shader(s)) if st.topology == 1 && !indexed && instances <= 1 => dxwgsl::point_sprite_gs(&s.code),
+        Some(Data::Shader(s)) if st.topology == 1 && !indexed && instances <= 1 => {
+            dxwgsl::point_sprite_gs(&s.code)
+        }
         _ => None,
     };
-    let (count, instances, start, first_instance) = if sprite.is_some() { (6, count, 0, start) } else { (count, instances, start, first_instance) };
-    let Some((vs, vb)) = shader_for(d, st.vs, st.ps, sprite, &[]) else { return };
-    let ps = if st.ps != 0 { shader_for(d, st.ps, 0, None, &st.samplers[1]) } else { None };
+    let (count, instances, start, first_instance) = if sprite.is_some() {
+        (6, count, 0, start)
+    } else {
+        (count, instances, start, first_instance)
+    };
+    let Some((vs, vb)) = shader_for(d, st.vs, st.ps, sprite, &[]) else {
+        return;
+    };
+    let ps = if st.ps != 0 {
+        shader_for(d, st.ps, 0, None, &st.samplers[1])
+    } else {
+        None
+    };
     if std::env::var("IPPAI_D3D_TRACE").as_deref() == Ok("2") {
         // the first vertices and the vertex shader's constants
         let words = |id: u32, from: u32, n: u32| -> Vec<String> {
             match d.objs.get(&id).map(|o| &o.data) {
-                Some(Data::Buffer(b)) => (0..n).filter(|i| from + i * 4 + 4 <= b.size).map(|i| format!("{:08x}", rd(b.mem + from, i as usize))).collect(),
+                Some(Data::Buffer(b)) => (0..n)
+                    .filter(|i| from + i * 4 + 4 <= b.size)
+                    .map(|i| format!("{:08x}", rd(b.mem + from, i as usize)))
+                    .collect(),
                 _ => Vec::new(),
             }
         };
         let (vb0, stride, off) = st.vbs[0];
-        eprintln!("d3d11: draw {count} from {start} vb stride {stride} offset {off}: {}", words(vb0, off + start * stride, (stride / 4) * 2).join(" "));
+        eprintln!(
+            "d3d11: draw {count} from {start} vb stride {stride} offset {off}: {}",
+            words(vb0, off + start * stride, (stride / 4) * 2).join(" ")
+        );
         for (i, &c) in st.cbs[0].iter().enumerate().filter(|c| *c.1 != 0).take(4) {
             eprintln!("d3d11:   vs cb{i}: {}", words(c, 0, 16).join(" "));
         }
@@ -2979,7 +3691,10 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
     let (dt, dl, dly) = depth.unwrap_or((0, 0, 0));
     tw.extend_from_slice(&[dt, dl, dly]);
     let gen = gpu::batch_gen();
-    if d.targets.as_ref().is_none_or(|(g, t)| *g != gen || *t != tw) {
+    if d.targets
+        .as_ref()
+        .is_none_or(|(g, t)| *g != gen || *t != tw)
+    {
         let mut c = vec![gpu::SET_TARGETS2];
         c.extend_from_slice(&tw);
         gpu::record(|q| q.cmd(&c));
@@ -2987,7 +3702,10 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
     }
     // pipeline
     let layout = match d.objs.get(&st.layout).map(|o| &o.data) {
-        Some(Data::Layout(l)) => l.iter().map(|e| (e.name.clone(), e.index, e.fmt, e.slot, e.offset, e.instance)).collect::<Vec<_>>(),
+        Some(Data::Layout(l)) => l
+            .iter()
+            .map(|e| (e.name.clone(), e.index, e.fmt, e.slot, e.offset, e.instance))
+            .collect::<Vec<_>>(),
         _ => Vec::new(),
     };
     let vs_code = match d.objs.get(&st.vs).map(|o| &o.data) {
@@ -3001,12 +3719,23 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
         if inp.sysval != 0 {
             continue;
         }
-        let Some(e) = layout.iter().find(|e| e.0.eq_ignore_ascii_case(inp.name()) && e.1 == inp.index) else { continue };
-        let Some(vf) = format::vertex_format(e.2) else { continue };
+        let Some(e) = layout
+            .iter()
+            .find(|e| e.0.eq_ignore_ascii_case(inp.name()) && e.1 == inp.index)
+        else {
+            continue;
+        };
+        let Some(vf) = format::vertex_format(e.2) else {
+            continue;
+        };
         let i = match slots.iter().position(|s| s.0 == e.3) {
             Some(i) => i,
             None => {
-                slots.push((e.3, if sprite.is_some() { 1 } else { e.5 as u32 }, Vec::new()));
+                slots.push((
+                    e.3,
+                    if sprite.is_some() { 1 } else { e.5 as u32 },
+                    Vec::new(),
+                ));
                 slots.len() - 1
             }
         };
@@ -3031,12 +3760,26 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
         5 => 4,
         _ => 3,
     };
-    let strip = if indexed && matches!(topo, 2 | 4) { if st.ib.1 == 42 { 2 } else { 1 } } else { 0 };
+    let strip = if indexed && matches!(topo, 2 | 4) {
+        if st.ib.1 == 42 {
+            2
+        } else {
+            1
+        }
+    } else {
+        0
+    };
     let mut key = vec![vs, ps.as_ref().map_or(0, |p| p.0), topo, strip];
     // rasterizer: cull, front ccw, depth bias, slope, clamp
     let r = rs.unwrap_or_else(|| vec![3, 3, 0, 0, 0, 0, 1, 0, 0, 0]);
     // (front ccw in bit 0, DepthClipEnable off in bit 1)
-    key.extend_from_slice(&[r[1], (r[2] != 0) as u32 | ((r[6] == 0) as u32) << 1, r[3], r[5], r[4]]);
+    key.extend_from_slice(&[
+        r[1],
+        (r[2] != 0) as u32 | ((r[6] == 0) as u32) << 1,
+        r[3],
+        r[5],
+        r[4],
+    ]);
     // depth stencil
     match (depth_fmt, &ds) {
         (Some(f), Some(s)) => {
@@ -3066,7 +3809,17 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
     for (i, f) in formats.iter().enumerate() {
         let rt = if b[1] != 0 { i } else { 0 };
         let t = &b[2 + rt * 8..2 + rt * 8 + 8];
-        key.extend_from_slice(&[*f, t[0], blend_factor(t[1], false), blend_factor(t[2], false), t[3], blend_factor(t[4], true), blend_factor(t[5], true), t[6], t[7] & 0xf]);
+        key.extend_from_slice(&[
+            *f,
+            t[0],
+            blend_factor(t[1], false),
+            blend_factor(t[2], false),
+            t[3],
+            blend_factor(t[4], true),
+            blend_factor(t[5], true),
+            t[6],
+            t[7] & 0xf,
+        ]);
     }
     let pipe = match d.pipelines.get(&key) {
         Some(&p) => {
@@ -3088,14 +3841,23 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
     let scissor_on = r.get(7).copied().unwrap_or(0) != 0;
     if scissor_on {
         let s = st.scissor[0];
-        w.extend_from_slice(&[s[0].max(0) as u32, s[1].max(0) as u32, (s[2] - s[0]).max(0) as u32, (s[3] - s[1]).max(0) as u32, 1]);
+        w.extend_from_slice(&[
+            s[0].max(0) as u32,
+            s[1].max(0) as u32,
+            (s[2] - s[0]).max(0) as u32,
+            (s[3] - s[1]).max(0) as u32,
+            1,
+        ]);
     } else {
         w.extend_from_slice(&[0, 0, 0, 0, 0]);
     }
     w.extend(st.blend_factor.iter().map(|f| f.to_bits()));
     w.push(st.stencil_ref);
     w.push(slots.len() as u32);
-    let vbs: Vec<(u32, u32)> = slots.iter().map(|s| (vbx[s.0 as usize].0, vbx[s.0 as usize].2)).collect();
+    let vbs: Vec<(u32, u32)> = slots
+        .iter()
+        .map(|s| (vbx[s.0 as usize].0, vbx[s.0 as usize].2))
+        .collect();
     for (buf, off) in vbs {
         let g = buffer_gpu(d, buf);
         w.extend_from_slice(&[g, off]);
@@ -3108,7 +3870,10 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
     }
     // bindings: group 0 vertex, 1 pixel
     let mut cbs_read = Vec::new();
-    for (stage, binds) in [(0usize, &vb), (1usize, &ps.as_ref().map_or(Vec::new(), |p| p.1.clone()))] {
+    for (stage, binds) in [
+        (0usize, &vb),
+        (1usize, &ps.as_ref().map_or(Vec::new(), |p| p.1.clone())),
+    ] {
         let mut entries: Vec<[u32; 8]> = Vec::new();
         for (bi, kind) in binds.iter() {
             match kind {
@@ -3140,7 +3905,16 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
                         Some(Data::Buffer(b)) => b.size.next_multiple_of(16).max(16),
                         _ => 0,
                     };
-                    entries.push([*bi, 0, g, 0, bsize.min((*size).max(16).max(bsize)), *size, 0, 0]);
+                    entries.push([
+                        *bi,
+                        0,
+                        g,
+                        0,
+                        bsize.min((*size).max(16).max(bsize)),
+                        *size,
+                        0,
+                        0,
+                    ]);
                 }
                 dxwgsl::Binding::Texture(vdim, sample) => {
                     let t = bi - 16;
@@ -3148,7 +3922,16 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
                     buffer_view_sync(d, sv);
                     let e = match d.objs.get(&sv).map(|o| &o.data) {
                         Some(Data::View(v)) => match d.objs.get(&v.res).map(|o| &o.data) {
-                            Some(Data::Texture(tx)) => [*bi, 1, tx.gpu, *vdim, v.mip, v.mips.min(tx.mips - v.mip.min(tx.mips - 1)).max(1), v.layer, v.layers.max(1)],
+                            Some(Data::Texture(tx)) => [
+                                *bi,
+                                1,
+                                tx.gpu,
+                                *vdim,
+                                v.mip,
+                                v.mips.min(tx.mips - v.mip.min(tx.mips - 1)).max(1),
+                                v.layer,
+                                v.layers.max(1),
+                            ],
                             _ => [*bi, 1, 0, *vdim, 0, 1, 0, 1],
                         },
                         _ => [*bi, 1, 0, *vdim, 0, 1, 0, 1],
@@ -3162,9 +3945,20 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
                 dxwgsl::Binding::Sampler(cmp) => {
                     let s = bi - 160;
                     let id = st.samplers[stage].get(s as usize).copied().unwrap_or(0);
-                    let desc = state_desc(d, id).cloned().unwrap_or_else(|| vec![0x15, 3, 3, 3, 0, 1, 8, 0, 0, 0, 0, 0, 0x7f7f_ffff]);
+                    let desc = state_desc(d, id).cloned().unwrap_or_else(|| {
+                        vec![0x15, 3, 3, 3, 0, 1, 8, 0, 0, 0, 0, 0, 0x7f7f_ffff]
+                    });
                     let key = sampler_key(&desc, *cmp);
-                    entries.push([*bi, if *cmp { 3 } else { 2 }, key, desc[11], desc[12], 0, 0, 0]);
+                    entries.push([
+                        *bi,
+                        if *cmp { 3 } else { 2 },
+                        key,
+                        desc[11],
+                        desc[12],
+                        0,
+                        0,
+                        0,
+                    ]);
                 }
             }
         }
@@ -3173,7 +3967,14 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
             w.extend_from_slice(&e);
         }
     }
-    w.extend_from_slice(&[indexed as u32, count, instances, start, base as u32, first_instance]);
+    w.extend_from_slice(&[
+        indexed as u32,
+        count,
+        instances,
+        start,
+        base as u32,
+        first_instance,
+    ]);
     // What it reads from its buffers (vertices, indices, constants), hashed: the page tells a
     // frame that draws the same as the last one, though from another place in a ring buffer
     // and with other bytes written around it (0: unknown)
@@ -3193,9 +3994,20 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
     } else if indexed {
         let isz = if st.ib.1 == 42 { 4 } else { 2 };
         match mem(st.ib.0) {
-            Some((m, size)) if st.ib.2 as u64 + (start as u64 + count as u64) * isz <= size as u64 => {
+            Some((m, size))
+                if st.ib.2 as u64 + (start as u64 + count as u64) * isz <= size as u64 =>
+            {
                 let p = m + st.ib.2 + start * isz as u32;
-                (0..count as usize).map(|k| if isz == 4 { rd(p, k) } else { *(p as *const u16).add(k) as u32 }.wrapping_add(base as u32)).collect()
+                (0..count as usize)
+                    .map(|k| {
+                        if isz == 4 {
+                            rd(p, k)
+                        } else {
+                            *(p as *const u16).add(k) as u32
+                        }
+                        .wrapping_add(base as u32)
+                    })
+                    .collect()
             }
             _ => {
                 known = false;
@@ -3212,7 +4024,11 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
             break;
         };
         let at = |v: u32| off as u64 + v as u64 * stride as u64;
-        let vs: Vec<u32> = if s.1 != 0 { (first_instance..first_instance.saturating_add(instances)).collect() } else { verts.clone() };
+        let vs: Vec<u32> = if s.1 != 0 {
+            (first_instance..first_instance.saturating_add(instances)).collect()
+        } else {
+            verts.clone()
+        };
         if stride == 0 || vs.iter().any(|&v| at(v) + stride as u64 > size as u64) {
             known = false;
             break;
@@ -3236,16 +4052,24 @@ unsafe fn draw(d: &mut D11, st: &State, indexed: bool, count: u32, instances: u3
 fn sampler_key(s: &[u32], cmp: bool) -> u32 {
     let f = s[0];
     let addr = |a: u32| match a {
-        1 => 0, // wrap
-        2 => 1, // mirror
-        3 => 2, // clamp
+        1 => 0,     // wrap
+        2 => 1,     // mirror
+        3 => 2,     // clamp
         4 | 5 => 2, // border, mirror once: clamped, the pixel shader does the rest (dxwgsl::addr)
         _ => 0,
     };
     let (mip, mag, min) = (f & 1, (f >> 2) & 1, (f >> 4) & 1);
     let aniso = (f & 0x40 != 0) as u32;
     let func = if cmp { s[6] & 15 } else { 0 };
-    addr(s[1]) | addr(s[2]) << 3 | addr(s[3]) << 6 | mag << 9 | min << 10 | mip << 11 | aniso << 12 | func << 13 | (s[5].clamp(1, 16)) << 17
+    addr(s[1])
+        | addr(s[2]) << 3
+        | addr(s[3]) << 6
+        | mag << 9
+        | min << 10
+        | mip << 11
+        | aniso << 12
+        | func << 13
+        | (s[5].clamp(1, 16)) << 17
 }
 
 #[cfg(test)]

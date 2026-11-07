@@ -10,23 +10,23 @@
 
 pub mod d3d8;
 pub mod device;
-pub mod format;
-pub mod gpu;
-pub mod stateblock;
-#[cfg(test)]
-pub(crate) mod trace_tests;
-#[cfg(test)]
-pub(crate) mod lock_tests;
-#[cfg(test)]
-mod draw_tests;
-#[cfg(test)]
-mod target_tests;
 #[cfg(test)]
 mod draw8_tests;
 #[cfg(test)]
+mod draw_tests;
+pub mod format;
+#[cfg(test)]
 mod golden_tests;
+pub mod gpu;
+#[cfg(test)]
+pub(crate) mod lock_tests;
 #[cfg(test)]
 pub(crate) mod sb_tests;
+pub mod stateblock;
+#[cfg(test)]
+mod target_tests;
+#[cfg(test)]
+pub(crate) mod trace_tests;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -149,11 +149,34 @@ impl D3d {
         self.next += 1;
         let id = self.next;
         unsafe {
-            let v8 = if self.v8 { self.vtbls.get(iface as usize + 16).copied().unwrap_or(0) } else { 0 };
-            device::wrp(addr, 0, if v8 != 0 { v8 } else { self.vtbls[iface as usize] });
+            let v8 = if self.v8 {
+                self.vtbls.get(iface as usize + 16).copied().unwrap_or(0)
+            } else {
+                0
+            };
+            device::wrp(
+                addr,
+                0,
+                if v8 != 0 {
+                    v8
+                } else {
+                    self.vtbls[iface as usize]
+                },
+            );
             *((addr + device::ptr()) as *mut u32) = id;
         }
-        self.objs.insert(id, Obj { iface, refs: 1, binds: 0, parent, addr, data, private: Vec::new() });
+        self.objs.insert(
+            id,
+            Obj {
+                iface,
+                refs: 1,
+                binds: 0,
+                parent,
+                addr,
+                data,
+                private: Vec::new(),
+            },
+        );
         addr
     }
 
@@ -163,7 +186,11 @@ impl D3d {
             return 0;
         }
         let id = unsafe { *((addr + device::ptr()) as *const u32) };
-        if self.objs.get(&id).is_some_and(|o| o.addr == addr) { id } else { 0 }
+        if self.objs.get(&id).is_some_and(|o| o.addr == addr) {
+            id
+        } else {
+            0
+        }
     }
 
     pub fn addr_of(&self, id: u32) -> u32 {
@@ -191,7 +218,9 @@ impl D3d {
 
     pub fn release(&mut self, id: u32) -> u32 {
         let id = self.owner(id);
-        let Some(o) = self.objs.get_mut(&id) else { return 0 };
+        let Some(o) = self.objs.get_mut(&id) else {
+            return 0;
+        };
         o.refs = o.refs.saturating_sub(1);
         let r = o.refs;
         if r == 0 && o.binds == 0 {
@@ -209,7 +238,9 @@ impl D3d {
 
     pub fn unbind(&mut self, id: u32) {
         let id = self.owner(id);
-        let Some(o) = self.objs.get_mut(&id) else { return };
+        let Some(o) = self.objs.get_mut(&id) else {
+            return;
+        };
         o.binds = o.binds.saturating_sub(1);
         if o.refs == 0 && o.binds == 0 {
             self.destroy(id);
@@ -217,7 +248,9 @@ impl D3d {
     }
 
     fn destroy(&mut self, id: u32) {
-        let Some(o) = self.objs.remove(&id) else { return };
+        let Some(o) = self.objs.remove(&id) else {
+            return;
+        };
         self.free_blocks.push(o.addr);
         unsafe { *((o.addr + device::ptr()) as *mut u32) = 0 };
         match o.data {
@@ -293,7 +326,11 @@ pub unsafe extern "C" fn vnhost_d3d9_init(vtbls: *const u32, count: u32) -> u32 
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn vnhost_d3d9_create(sdk: u32, out: *mut u32, calls: *const HostCalls) -> u32 {
+pub unsafe extern "C" fn vnhost_d3d9_create(
+    sdk: u32,
+    out: *mut u32,
+    calls: *const HostCalls,
+) -> u32 {
     with(|d| {
         d.calls = calls;
         if d.trace {
@@ -301,13 +338,23 @@ pub unsafe extern "C" fn vnhost_d3d9_create(sdk: u32, out: *mut u32, calls: *con
         }
         let o = d.new_obj(IF_D3D9, 0, Data::D3d);
         device::wrp(out as u32, 0, o);
-        if o == 0 { E_OUTOFMEMORY } else { 0 }
+        if o == 0 {
+            E_OUTOFMEMORY
+        } else {
+            0
+        }
     })
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn vnhost_d3d9_call(id: u32, args: *const u32, calls: *const HostCalls) -> u32 {
-    if (crate::d3d11::INIT..=crate::d3d11::CREATE_FACTORY).contains(&id) || (64..0xffff).contains(&(id >> 8)) {
+pub unsafe extern "C" fn vnhost_d3d9_call(
+    id: u32,
+    args: *const u32,
+    calls: *const HostCalls,
+) -> u32 {
+    if (crate::d3d11::INIT..=crate::d3d11::CREATE_FACTORY).contains(&id)
+        || (64..0xffff).contains(&(id >> 8))
+    {
         return crate::d3d11::call(id, args, calls);
     }
     crate::usage::d3d(id);
@@ -319,7 +366,11 @@ pub unsafe extern "C" fn vnhost_d3d9_call(id: u32, args: *const u32, calls: *con
                 d.v8 = true;
                 let o = d.new_obj(IF_D3D9, 0, Data::D3d);
                 *(*args as *mut u32) = o;
-                if o == 0 { E_OUTOFMEMORY } else { 0 }
+                if o == 0 {
+                    E_OUTOFMEMORY
+                } else {
+                    0
+                }
             })
         }
         _ => {}
@@ -340,7 +391,10 @@ pub unsafe extern "C" fn vnhost_d3d9_call(id: u32, args: *const u32, calls: *con
         let d = g.as_mut().expect("d3d9 not initialized");
         d.calls = calls;
         if !d.deferred_free.is_empty() {
-            let (done, keep): (Vec<_>, Vec<_>) = d.deferred_free.drain(..).partition(|&(_, g)| gpu::is_done(g));
+            let (done, keep): (Vec<_>, Vec<_>) = d
+                .deferred_free
+                .drain(..)
+                .partition(|&(_, g)| gpu::is_done(g));
             d.deferred_free = keep;
             for (mem, _) in done {
                 d.guest_free(mem);
@@ -354,7 +408,11 @@ pub unsafe extern "C" fn vnhost_d3d9_call(id: u32, args: *const u32, calls: *con
         let mut after = After::None;
         let r = if this == 0 && method != 0xf0 {
             if d.trace {
-                eprintln!("d3d9: {} on a stale object {:#x}", name(iface, method), a(0));
+                eprintln!(
+                    "d3d9: {} on a stale object {:#x}",
+                    name(iface, method),
+                    a(0)
+                );
             }
             D3DERR_INVALIDCALL
         } else {
@@ -370,7 +428,10 @@ pub unsafe extern "C" fn vnhost_d3d9_call(id: u32, args: *const u32, calls: *con
             *d.counts.entry(id).or_default() += 1;
             let n = d.counts[&id];
             if n <= 20 || n.is_power_of_two() {
-                let nargs = (1..6).map(|i| format!("{:#x}", a(i))).collect::<Vec<_>>().join(",");
+                let nargs = (1..6)
+                    .map(|i| format!("{:#x}", a(i)))
+                    .collect::<Vec<_>>()
+                    .join(",");
                 eprintln!("d3d9: {} [{n}] ({nargs}) -> {:#x}", name(iface, method), r);
             }
         }
@@ -412,7 +473,13 @@ pub mod stats {
 
     fn with(f: impl FnOnce(&mut S)) {
         let mut g = S.lock().unwrap_or_else(|e| e.into_inner());
-        let s = g.get_or_insert_with(|| S { start: Instant::now(), calls: HashMap::new(), batches: 0, data: 0, blob: 0 });
+        let s = g.get_or_insert_with(|| S {
+            start: Instant::now(),
+            calls: HashMap::new(),
+            batches: 0,
+            data: 0,
+            blob: 0,
+        });
         f(s);
         let el = s.start.elapsed();
         if el >= Duration::from_secs(5) {
@@ -422,7 +489,13 @@ pub mod stats {
             let top: Vec<String> = v
                 .iter()
                 .take(8)
-                .map(|&(t, n, id)| format!("{} {n}x {:.0}ms", super::name(id >> 8, id & 0xff), t.as_secs_f64() * 1e3))
+                .map(|&(t, n, id)| {
+                    format!(
+                        "{} {n}x {:.0}ms",
+                        super::name(id >> 8, id & 0xff),
+                        t.as_secs_f64() * 1e3
+                    )
+                })
                 .collect();
             let secs = el.as_secs_f64();
             eprintln!(
@@ -433,7 +506,13 @@ pub mod stats {
                 s.blob as f64 / secs / 1e6,
                 top.join(", ")
             );
-            *s = S { start: Instant::now(), calls: HashMap::new(), batches: 0, data: 0, blob: 0 };
+            *s = S {
+                start: Instant::now(),
+                calls: HashMap::new(),
+                batches: 0,
+                data: 0,
+                blob: 0,
+            };
         }
     }
 
@@ -478,7 +557,10 @@ unsafe fn query_interface(d: &mut D3d, id: u32, iface: u32, riid: *const u8, out
         IID_IUNKNOWN => true,
         IID_D3D9 => iface == IF_D3D9,
         IID_DEVICE => iface == IF_DEVICE,
-        IID_RESOURCE => matches!(iface, IF_SURFACE | IF_TEXTURE | IF_CUBE | IF_VOLUMETEX | IF_VB | IF_IB),
+        IID_RESOURCE => matches!(
+            iface,
+            IF_SURFACE | IF_TEXTURE | IF_CUBE | IF_VOLUMETEX | IF_VB | IF_IB
+        ),
         IID_BASETEX => matches!(iface, IF_TEXTURE | IF_CUBE | IF_VOLUMETEX),
         IID_TEXTURE => iface == IF_TEXTURE,
         IID_CUBE => iface == IF_CUBE,
@@ -502,47 +584,200 @@ unsafe fn query_interface(d: &mut D3d, id: u32, iface: u32, riid: *const u8, out
 
 pub fn name(iface: u32, m: u32) -> String {
     const UNK: [&str; 3] = ["QueryInterface", "AddRef", "Release"];
-    const RES: [&str; 8] =
-        ["GetDevice", "SetPrivateData", "GetPrivateData", "FreePrivateData", "SetPriority", "GetPriority", "PreLoad", "GetType"];
+    const RES: [&str; 8] = [
+        "GetDevice",
+        "SetPrivateData",
+        "GetPrivateData",
+        "FreePrivateData",
+        "SetPriority",
+        "GetPriority",
+        "PreLoad",
+        "GetType",
+    ];
     const D3D9: [&str; 14] = [
-        "RegisterSoftwareDevice", "GetAdapterCount", "GetAdapterIdentifier", "GetAdapterModeCount", "EnumAdapterModes",
-        "GetAdapterDisplayMode", "CheckDeviceType", "CheckDeviceFormat", "CheckDeviceMultiSampleType",
-        "CheckDepthStencilMatch", "CheckDeviceFormatConversion", "GetDeviceCaps", "GetAdapterMonitor", "CreateDevice",
+        "RegisterSoftwareDevice",
+        "GetAdapterCount",
+        "GetAdapterIdentifier",
+        "GetAdapterModeCount",
+        "EnumAdapterModes",
+        "GetAdapterDisplayMode",
+        "CheckDeviceType",
+        "CheckDeviceFormat",
+        "CheckDeviceMultiSampleType",
+        "CheckDepthStencilMatch",
+        "CheckDeviceFormatConversion",
+        "GetDeviceCaps",
+        "GetAdapterMonitor",
+        "CreateDevice",
     ];
     const DEV: [&str; 116] = [
-        "TestCooperativeLevel", "GetAvailableTextureMem", "EvictManagedResources", "GetDirect3D", "GetDeviceCaps",
-        "GetDisplayMode", "GetCreationParameters", "SetCursorProperties", "SetCursorPosition", "ShowCursor",
-        "CreateAdditionalSwapChain", "GetSwapChain", "GetNumberOfSwapChains", "Reset", "Present", "GetBackBuffer",
-        "GetRasterStatus", "SetDialogBoxMode", "SetGammaRamp", "GetGammaRamp", "CreateTexture", "CreateVolumeTexture",
-        "CreateCubeTexture", "CreateVertexBuffer", "CreateIndexBuffer", "CreateRenderTarget",
-        "CreateDepthStencilSurface", "UpdateSurface", "UpdateTexture", "GetRenderTargetData", "GetFrontBufferData",
-        "StretchRect", "ColorFill", "CreateOffscreenPlainSurface", "SetRenderTarget", "GetRenderTarget",
-        "SetDepthStencilSurface", "GetDepthStencilSurface", "BeginScene", "EndScene", "Clear", "SetTransform",
-        "GetTransform", "MultiplyTransform", "SetViewport", "GetViewport", "SetMaterial", "GetMaterial", "SetLight",
-        "GetLight", "LightEnable", "GetLightEnable", "SetClipPlane", "GetClipPlane", "SetRenderState",
-        "GetRenderState", "CreateStateBlock", "BeginStateBlock", "EndStateBlock", "SetClipStatus", "GetClipStatus",
-        "GetTexture", "SetTexture", "GetTextureStageState", "SetTextureStageState", "GetSamplerState",
-        "SetSamplerState", "ValidateDevice", "SetPaletteEntries", "GetPaletteEntries", "SetCurrentTexturePalette",
-        "GetCurrentTexturePalette", "SetScissorRect", "GetScissorRect", "SetSoftwareVertexProcessing",
-        "GetSoftwareVertexProcessing", "SetNPatchMode", "GetNPatchMode", "DrawPrimitive", "DrawIndexedPrimitive",
-        "DrawPrimitiveUP", "DrawIndexedPrimitiveUP", "ProcessVertices", "CreateVertexDeclaration",
-        "SetVertexDeclaration", "GetVertexDeclaration", "SetFVF", "GetFVF", "CreateVertexShader", "SetVertexShader",
-        "GetVertexShader", "SetVertexShaderConstantF", "GetVertexShaderConstantF", "SetVertexShaderConstantI",
-        "GetVertexShaderConstantI", "SetVertexShaderConstantB", "GetVertexShaderConstantB", "SetStreamSource",
-        "GetStreamSource", "SetStreamSourceFreq", "GetStreamSourceFreq", "SetIndices", "GetIndices",
-        "CreatePixelShader", "SetPixelShader", "GetPixelShader", "SetPixelShaderConstantF", "GetPixelShaderConstantF",
-        "SetPixelShaderConstantI", "GetPixelShaderConstantI", "SetPixelShaderConstantB", "GetPixelShaderConstantB",
-        "DrawRectPatch", "DrawTriPatch", "DeletePatch", "CreateQuery",
+        "TestCooperativeLevel",
+        "GetAvailableTextureMem",
+        "EvictManagedResources",
+        "GetDirect3D",
+        "GetDeviceCaps",
+        "GetDisplayMode",
+        "GetCreationParameters",
+        "SetCursorProperties",
+        "SetCursorPosition",
+        "ShowCursor",
+        "CreateAdditionalSwapChain",
+        "GetSwapChain",
+        "GetNumberOfSwapChains",
+        "Reset",
+        "Present",
+        "GetBackBuffer",
+        "GetRasterStatus",
+        "SetDialogBoxMode",
+        "SetGammaRamp",
+        "GetGammaRamp",
+        "CreateTexture",
+        "CreateVolumeTexture",
+        "CreateCubeTexture",
+        "CreateVertexBuffer",
+        "CreateIndexBuffer",
+        "CreateRenderTarget",
+        "CreateDepthStencilSurface",
+        "UpdateSurface",
+        "UpdateTexture",
+        "GetRenderTargetData",
+        "GetFrontBufferData",
+        "StretchRect",
+        "ColorFill",
+        "CreateOffscreenPlainSurface",
+        "SetRenderTarget",
+        "GetRenderTarget",
+        "SetDepthStencilSurface",
+        "GetDepthStencilSurface",
+        "BeginScene",
+        "EndScene",
+        "Clear",
+        "SetTransform",
+        "GetTransform",
+        "MultiplyTransform",
+        "SetViewport",
+        "GetViewport",
+        "SetMaterial",
+        "GetMaterial",
+        "SetLight",
+        "GetLight",
+        "LightEnable",
+        "GetLightEnable",
+        "SetClipPlane",
+        "GetClipPlane",
+        "SetRenderState",
+        "GetRenderState",
+        "CreateStateBlock",
+        "BeginStateBlock",
+        "EndStateBlock",
+        "SetClipStatus",
+        "GetClipStatus",
+        "GetTexture",
+        "SetTexture",
+        "GetTextureStageState",
+        "SetTextureStageState",
+        "GetSamplerState",
+        "SetSamplerState",
+        "ValidateDevice",
+        "SetPaletteEntries",
+        "GetPaletteEntries",
+        "SetCurrentTexturePalette",
+        "GetCurrentTexturePalette",
+        "SetScissorRect",
+        "GetScissorRect",
+        "SetSoftwareVertexProcessing",
+        "GetSoftwareVertexProcessing",
+        "SetNPatchMode",
+        "GetNPatchMode",
+        "DrawPrimitive",
+        "DrawIndexedPrimitive",
+        "DrawPrimitiveUP",
+        "DrawIndexedPrimitiveUP",
+        "ProcessVertices",
+        "CreateVertexDeclaration",
+        "SetVertexDeclaration",
+        "GetVertexDeclaration",
+        "SetFVF",
+        "GetFVF",
+        "CreateVertexShader",
+        "SetVertexShader",
+        "GetVertexShader",
+        "SetVertexShaderConstantF",
+        "GetVertexShaderConstantF",
+        "SetVertexShaderConstantI",
+        "GetVertexShaderConstantI",
+        "SetVertexShaderConstantB",
+        "GetVertexShaderConstantB",
+        "SetStreamSource",
+        "GetStreamSource",
+        "SetStreamSourceFreq",
+        "GetStreamSourceFreq",
+        "SetIndices",
+        "GetIndices",
+        "CreatePixelShader",
+        "SetPixelShader",
+        "GetPixelShader",
+        "SetPixelShaderConstantF",
+        "GetPixelShaderConstantF",
+        "SetPixelShaderConstantI",
+        "GetPixelShaderConstantI",
+        "SetPixelShaderConstantB",
+        "GetPixelShaderConstantB",
+        "DrawRectPatch",
+        "DrawTriPatch",
+        "DeletePatch",
+        "CreateQuery",
     ];
-    const SC: [&str; 7] =
-        ["Present", "GetFrontBufferData", "GetBackBuffer", "GetRasterStatus", "GetDisplayMode", "GetDevice", "GetPresentParameters"];
-    const SURF: [&str; 6] = ["GetContainer", "GetDesc", "LockRect", "UnlockRect", "GetDC", "ReleaseDC"];
-    const BASE: [&str; 6] = ["SetLOD", "GetLOD", "GetLevelCount", "SetAutoGenFilterType", "GetAutoGenFilterType", "GenerateMipSubLevels"];
-    const TEX: [&str; 5] = ["GetLevelDesc", "GetSurfaceLevel", "LockRect", "UnlockRect", "AddDirtyRect"];
+    const SC: [&str; 7] = [
+        "Present",
+        "GetFrontBufferData",
+        "GetBackBuffer",
+        "GetRasterStatus",
+        "GetDisplayMode",
+        "GetDevice",
+        "GetPresentParameters",
+    ];
+    const SURF: [&str; 6] = [
+        "GetContainer",
+        "GetDesc",
+        "LockRect",
+        "UnlockRect",
+        "GetDC",
+        "ReleaseDC",
+    ];
+    const BASE: [&str; 6] = [
+        "SetLOD",
+        "GetLOD",
+        "GetLevelCount",
+        "SetAutoGenFilterType",
+        "GetAutoGenFilterType",
+        "GenerateMipSubLevels",
+    ];
+    const TEX: [&str; 5] = [
+        "GetLevelDesc",
+        "GetSurfaceLevel",
+        "LockRect",
+        "UnlockRect",
+        "AddDirtyRect",
+    ];
     const BUF: [&str; 3] = ["Lock", "Unlock", "GetDesc"];
     let ifname = [
-        "?", "IDirect3D9", "Device", "SwapChain", "Surface", "Texture", "CubeTexture", "VolumeTexture", "VertexBuffer",
-        "IndexBuffer", "VertexDeclaration", "VertexShader", "PixelShader", "StateBlock", "Query", "Volume",
+        "?",
+        "IDirect3D9",
+        "Device",
+        "SwapChain",
+        "Surface",
+        "Texture",
+        "CubeTexture",
+        "VolumeTexture",
+        "VertexBuffer",
+        "IndexBuffer",
+        "VertexDeclaration",
+        "VertexShader",
+        "PixelShader",
+        "StateBlock",
+        "Query",
+        "Volume",
     ]
     .get(iface as usize)
     .copied()
@@ -555,7 +790,9 @@ pub fn name(iface: u32, m: u32) -> String {
             IF_D3D9 => D3D9.get(m - 3).copied(),
             IF_DEVICE => DEV.get(m - 3).copied(),
             IF_SWAPCHAIN => SC.get(m - 3).copied(),
-            IF_SURFACE | IF_TEXTURE | IF_CUBE | IF_VOLUMETEX | IF_VB | IF_IB if m < 11 => RES.get(m - 3).copied(),
+            IF_SURFACE | IF_TEXTURE | IF_CUBE | IF_VOLUMETEX | IF_VB | IF_IB if m < 11 => {
+                RES.get(m - 3).copied()
+            }
             IF_SURFACE => SURF.get(m - 11).copied(),
             IF_TEXTURE | IF_CUBE | IF_VOLUMETEX if m < 17 => BASE.get(m - 11).copied(),
             IF_TEXTURE | IF_CUBE | IF_VOLUMETEX => TEX.get(m - 17).copied(),
@@ -563,7 +800,11 @@ pub fn name(iface: u32, m: u32) -> String {
             _ => None,
         }
     };
-    format!("{}::{}", ifname, n.map_or(format!("#{m}"), |s| s.to_string()))
+    format!(
+        "{}::{}",
+        ifname,
+        n.map_or(format!("#{m}"), |s| s.to_string())
+    )
 }
 
 /// The guest's pointer size (sake runs 64-bit programs in the same build: 8).

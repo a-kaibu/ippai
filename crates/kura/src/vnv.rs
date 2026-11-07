@@ -32,7 +32,11 @@ pub struct Info {
 impl Info {
     /// Frames of the movie (of its shortest track).
     pub fn frames(&self) -> u32 {
-        self.tracks.iter().map(|t| t.1.len() as u32).min().unwrap_or(0)
+        self.tracks
+            .iter()
+            .map(|t| t.1.len() as u32)
+            .min()
+            .unwrap_or(0)
     }
 }
 
@@ -46,7 +50,11 @@ pub fn info(data: &[u8]) -> Option<Info> {
     if data.len() < 16 || &data[..4] != b"VNV1" {
         return None;
     }
-    let u = |o: usize| -> Option<u32> { Some(u32::from_le_bytes(data.get(o..o.checked_add(4)?)?.try_into().unwrap())) };
+    let u = |o: usize| -> Option<u32> {
+        Some(u32::from_le_bytes(
+            data.get(o..o.checked_add(4)?)?.try_into().unwrap(),
+        ))
+    };
     let (w, h, nt) = (u(4)?, u(8)?, u(12)?);
     if w == 0 || h == 0 || w > 8192 || h > 8192 || !(1..=2).contains(&nt) {
         return None;
@@ -55,7 +63,9 @@ pub fn info(data: &[u8]) -> Option<Info> {
     let mut tracks = Vec::new();
     for _ in 0..nt {
         let cl = u(o)? as usize;
-        let codec = std::str::from_utf8(data.get(o + 4..(o + 4).checked_add(cl)?)?).ok()?.to_string();
+        let codec = std::str::from_utf8(data.get(o + 4..(o + 4).checked_add(cl)?)?)
+            .ok()?
+            .to_string();
         o += 4 + cl;
         let n = u(o)? as usize;
         o += 4;
@@ -73,7 +83,14 @@ pub fn info(data: &[u8]) -> Option<Info> {
         o += 12 * n;
         tracks.push((codec, frames));
     }
-    let mut i = Info { w, h, tracks, rate: None, duration: 0, audio: None };
+    let mut i = Info {
+        w,
+        h,
+        tracks,
+        rate: None,
+        duration: 0,
+        audio: None,
+    };
     if data.len() >= o + TRAILER_LEN && &data[data.len() - 4..] == TRAILER {
         let t = data.len() - TRAILER_LEN;
         let (num, den) = (u(t)?, u(t + 4)?);
@@ -92,10 +109,12 @@ pub fn info(data: &[u8]) -> Option<Info> {
 /// The size of an uncompressed I420 frame ("raw-i420") of a `w` x `h` movie (rounded up to
 /// even sizes, as the encoder pads).
 pub fn raw_size(w: u32, h: u32) -> usize {
-    let (w, h) = (w.next_multiple_of(2) as usize, h.next_multiple_of(2) as usize);
+    let (w, h) = (
+        w.next_multiple_of(2) as usize,
+        h.next_multiple_of(2) as usize,
+    );
     w * h + 2 * (w / 2) * (h / 2)
 }
-
 
 /// One track for `write`: its codec and frames (bytes, key frame).
 pub type Track = (String, Vec<(Vec<u8>, bool)>);
@@ -111,7 +130,12 @@ pub struct Trailer {
 pub fn write(w: u32, h: u32, tracks: &[Track], trailer: Option<&Trailer>) -> Vec<u8> {
     let n = tracks.iter().map(|t| t.1.len()).min().unwrap_or(0);
     let mut out = Vec::new();
-    for v in [*b"VNV1", w.to_le_bytes(), h.to_le_bytes(), (tracks.len() as u32).to_le_bytes()] {
+    for v in [
+        *b"VNV1",
+        w.to_le_bytes(),
+        h.to_le_bytes(),
+        (tracks.len() as u32).to_le_bytes(),
+    ] {
         out.extend(v);
     }
     let table: usize = tracks.iter().map(|t| 8 + t.0.len() + 12 * n).sum();
@@ -135,7 +159,14 @@ pub fn write(w: u32, h: u32, tracks: &[Track], trailer: Option<&Trailer>) -> Vec
     if let Some(t) = trailer {
         let ao = out.len();
         out.extend_from_slice(&t.audio);
-        for v in [t.rate.0, t.rate.1, t.duration as u32, (t.duration >> 32) as u32, ao as u32, t.audio.len() as u32] {
+        for v in [
+            t.rate.0,
+            t.rate.1,
+            t.duration as u32,
+            (t.duration >> 32) as u32,
+            ao as u32,
+            t.audio.len() as u32,
+        ] {
             out.extend(v.to_le_bytes());
         }
         out.extend(TRAILER);
@@ -149,7 +180,10 @@ mod tests {
     use proptest::prelude::*;
 
     fn tracks() -> impl Strategy<Value = Vec<Track>> {
-        let frames = prop::collection::vec((prop::collection::vec(any::<u8>(), 0..40), any::<bool>()), 0..12);
+        let frames = prop::collection::vec(
+            (prop::collection::vec(any::<u8>(), 0..40), any::<bool>()),
+            0..12,
+        );
         prop::collection::vec(("[a-z0-9.\\-]{0,12}", frames), 1..=2)
     }
 
@@ -229,14 +263,32 @@ mod tests {
 
     #[test]
     fn trailer_fields() {
-        let tr = Trailer { rate: (30000, 1001), duration: 0x1_0000_0005, audio: b"OggS".to_vec() };
-        let d = write(2, 2, &[("raw-i420".into(), vec![(vec![0; 6], true)])], Some(&tr));
+        let tr = Trailer {
+            rate: (30000, 1001),
+            duration: 0x1_0000_0005,
+            audio: b"OggS".to_vec(),
+        };
+        let d = write(
+            2,
+            2,
+            &[("raw-i420".into(), vec![(vec![0; 6], true)])],
+            Some(&tr),
+        );
         let i = info(&d).unwrap();
         assert_eq!(i.rate, Some((30000, 1001)));
         assert_eq!(i.duration, 0x1_0000_0005);
         assert_eq!(&d[i.audio.unwrap().0..][..4], b"OggS");
         // a zero rate is no movie
-        let bad = write(2, 2, &[("raw-i420".into(), vec![])], Some(&Trailer { rate: (0, 1), duration: 0, audio: vec![] }));
+        let bad = write(
+            2,
+            2,
+            &[("raw-i420".into(), vec![])],
+            Some(&Trailer {
+                rate: (0, 1),
+                duration: 0,
+                audio: vec![],
+            }),
+        );
         assert!(info(&bad).is_none());
         // (odd sizes padded to even: 4x4 luma, two 2x2 chroma planes)
         assert_eq!(raw_size(3, 3), 24);
