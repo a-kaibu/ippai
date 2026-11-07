@@ -32,6 +32,7 @@ pub fn nopace() -> bool {
 
 pub mod audio;
 pub mod video;
+pub mod vnv;
 pub mod d3d9;
 pub mod d3d11;
 pub mod gl;

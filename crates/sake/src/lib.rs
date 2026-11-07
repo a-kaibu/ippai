@@ -58,6 +58,7 @@ pub mod movie;
 pub mod vorbis_hook;
 pub mod obj;
 pub mod dshow;
+mod dshow_play;
 pub mod mf;
 pub mod usp;
 pub mod ole;

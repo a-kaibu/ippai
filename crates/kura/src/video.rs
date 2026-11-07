@@ -47,6 +47,9 @@ struct Stream {
     /// the frame handed out last (-1: none yet, -2: none in time)
     shown: i32,
     opened: Instant,
+    /// frames of uncompressed I420 ("raw-i420", for tests under node): `frame` reads them
+    /// itself, no page involved (where each frame is in `data`)
+    raw: Option<Vec<usize>>,
 }
 
 static STREAMS: Mutex<Option<HashMap<u32, Stream>>> = Mutex::new(None);
@@ -66,16 +69,23 @@ pub fn available() -> bool {
     PAGE.load(Ordering::Relaxed)
 }
 
+pub use crate::vnv::{info, raw_size, Info};
+
 /// Opens the `.vnv` in `data`; None when it is not one.
 pub fn open(data: Vec<u8>) -> Option<u32> {
-    if data.len() < 16 || &data[..4] != b"VNV1" {
-        return None;
-    }
-    let u = |o: usize| u32::from_le_bytes(data[o..o + 4].try_into().unwrap());
-    let (w, h, tracks) = (u(4), u(8), u(12));
-    if w == 0 || h == 0 || w > 8192 || h > 8192 || !(1..=2).contains(&tracks) {
-        return None;
-    }
+    let i = info(&data)?;
+    let (w, h, tracks) = (i.w, i.h, i.tracks.len() as u32);
+    // (raw: one track of whole frames)
+    let raw = match &i.tracks[..] {
+        [(c, f)] if c == "raw-i420" => {
+            if f.iter().any(|&(_, size, _)| (size as usize) < raw_size(w, h)) {
+                return None;
+            }
+            Some(f.iter().map(|&(off, _, _)| off as usize).collect())
+        }
+        t if t.iter().any(|(c, _)| c == "raw-i420") => return None,
+        _ => None,
+    };
     static NEXT: AtomicI32 = AtomicI32::new(1);
     let id = NEXT.fetch_add(1, Ordering::Relaxed) as u32;
     let slots = (0..SLOTS)
@@ -83,8 +93,13 @@ pub fn open(data: Vec<u8>) -> Option<u32> {
         .collect();
     // (IPPAI_VIDEO_FAIL: every stream fails, as on a phone without decoders: tests the fallback)
     let failed = std::env::var_os("IPPAI_VIDEO_FAIL").is_some();
-    with(|m| m.insert(id, Stream { data, w, h, tracks, want: -1, slots, closed: false, failed, shown: -1, opened: Instant::now() }));
+    with(|m| m.insert(id, Stream { data, w, h, tracks, want: -1, slots, closed: false, failed, shown: -1, opened: Instant::now(), raw }));
     Some(id)
+}
+
+/// Whether stream `id`'s frames can be had: a page decodes, or it is uncompressed.
+pub fn decodable(id: u32) -> bool {
+    available() || with(|m| m.get(&id).is_some_and(|s| s.raw.is_some()))
 }
 
 /// Whether the page gave up on stream `id` (no decoder for it, or the decoder failed: Android
@@ -129,6 +144,9 @@ pub enum Out {
     Ycc,
     /// RGB by BT.601 (Theora's), alpha 255
     Rgb,
+    /// RGB by BT.601 from video range (Y 16-235, Cb Cr 16-240: what `ippai pack` makes of other
+    /// movies), alpha 255
+    Rgb601,
 }
 
 /// How long the guest waits for the frame it asks for once the movie shows, before it takes the
@@ -146,6 +164,19 @@ const FIRST: Duration = Duration::from_millis(500);
 pub unsafe fn frame(id: u32, n: i32, dst: *mut u8, pitch: usize, w: u32, h: u32, out: Out) -> bool {
     let start = Instant::now();
     let mut g = STREAMS.lock().unwrap_or_else(|e| e.into_inner());
+    // uncompressed: straight from the file (frames past the end: the last one)
+    if let Some(s) = g.get_or_insert_with(HashMap::new).get_mut(&id).filter(|s| !s.closed && !s.failed && s.raw.is_some()) {
+        let offs = s.raw.as_ref().unwrap();
+        let Some(&off) = offs.get((n.max(0) as usize).min(offs.len().saturating_sub(1))) else { return false };
+        let (sw, sh) = (s.w, s.h);
+        let (pw, ph) = (sw.next_multiple_of(2), sh.next_multiple_of(2));
+        let (y, c) = (pw * ph, (pw / 2) * (ph / 2));
+        let layout = [[I420, 0, pw, y, pw / 2, y + c, pw / 2], [0; 7]];
+        s.shown = n;
+        // (the stream stays while this reads it: the lock is held)
+        convert(s.data.as_ptr().add(off), &layout, 1, sw, sh, dst, pitch, w.min(sw), h.min(sh), out);
+        return true;
+    }
     loop {
         let Some(s) = g.get_or_insert_with(HashMap::new).get_mut(&id).filter(|s| !s.closed && !s.failed) else { return false };
         if s.want != n {
@@ -264,8 +295,8 @@ unsafe fn convert(buf: *const u8, layout: &[[u32; 7]; 2], tracks: u32, sw: u32, 
                     *o.add(2) = cr;
                     *o.add(3) = al;
                 }
-                Out::Rgb => {
-                    let (r, g, b) = ycc_to_rgb(yy, cb, cr);
+                Out::Rgb | Out::Rgb601 => {
+                    let (r, g, b) = if out == Out::Rgb { ycc_to_rgb(yy, cb, cr) } else { ycc601_to_rgb(yy, cb, cr) };
                     *o = b;
                     *o.add(1) = g;
                     *o.add(2) = r;
@@ -281,6 +312,13 @@ fn ycc_to_rgb(y: u8, cb: u8, cr: u8) -> (u8, u8, u8) {
     let (y, u, v) = (y as f64, cb as f64 - 128.0, cr as f64 - 128.0);
     let c = |x: f64| (x as i32).clamp(0, 255) as u8;
     (c(y + 1.402 * v), c(y - 0.34414 * u - 0.71414 * v), c(y + 1.772 * u))
+}
+
+/// BT.601 from video range (as Windows' decoders give RGB of such a movie), rounded.
+pub fn ycc601_to_rgb(y: u8, cb: u8, cr: u8) -> (u8, u8, u8) {
+    let (y, u, v) = ((y as f64 - 16.0) * 255.0 / 219.0, (cb as f64 - 128.0) * 255.0 / 224.0, (cr as f64 - 128.0) * 255.0 / 224.0);
+    let c = |x: f64| x.round().clamp(0.0, 255.0) as u8;
+    (c(y + 1.402 * v), c(y - 0.344136 * u - 0.714136 * v), c(y + 1.772 * u))
 }
 
 fn rgb_to_ycc(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
@@ -411,7 +449,7 @@ mod tests {
 
     fn vnv() -> Vec<u8> {
         let mut d = b"VNV1".to_vec();
-        for v in [16u32, 16, 1, 0] {
+        for v in [16u32, 16, 1, 0, 0] {
             d.extend_from_slice(&v.to_le_bytes());
         }
         d
@@ -509,14 +547,78 @@ mod tests {
         d
     }
 
+    /// A raw I420 movie of `n` frames, frame k all Y = 16 + k, Cb Cr given.
+    fn raw(w: u32, h: u32, n: u32, cb: u8, cr: u8) -> Vec<u8> {
+        let (pw, ph) = (w.next_multiple_of(2) as usize, h.next_multiple_of(2) as usize);
+        let frames = (0..n)
+            .map(|k| {
+                let mut f = vec![16 + k as u8; pw * ph];
+                f.extend(std::iter::repeat_n(cb, pw / 2 * (ph / 2)));
+                f.extend(std::iter::repeat_n(cr, pw / 2 * (ph / 2)));
+                (f, true)
+            })
+            .collect();
+        crate::vnv::write(w, h, &[("raw-i420".into(), frames)], None)
+    }
+
+    #[test]
+    fn raw_frames_need_no_page() {
+        let id = open(raw(5, 3, 4, 128, 128)).unwrap();
+        assert!(decodable(id));
+        let mut px = vec![0xeeu8; 6 * 4 * 3];
+        for n in [0, 3, 2, 9, -1] {
+            assert!(unsafe { frame(id, n, px.as_mut_ptr(), 24, 5, 3, Out::Ycc) });
+            let want = 16 + n.clamp(0, 3) as u8;
+            for y in 0..3 {
+                for x in 0..5 {
+                    assert_eq!(px[y * 24 + 4 * x..][..4], [want, 128, 128, 255], "frame {n} at {x},{y}");
+                }
+                assert_eq!(px[y * 24 + 20..y * 24 + 24], [0xee; 4], "past the row");
+            }
+        }
+        close(id);
+        assert!(!unsafe { frame(id, 0, px.as_mut_ptr(), 24, 5, 3, Out::Ycc) });
+        // short frames, or raw mixed with another track: refused
+        let mut d = raw(4, 4, 1, 128, 128);
+        let i = info(&d).unwrap();
+        let (off, _, _) = i.tracks[0].1[0];
+        d = crate::vnv::write(4, 4, &[("raw-i420".into(), vec![(d[off as usize..off as usize + 20].to_vec(), true)])], None);
+        assert!(open(d).is_none());
+        let two = crate::vnv::write(4, 4, &[("raw-i420".into(), vec![(vec![0; 24], true)]), ("vp09".into(), vec![(vec![0; 3], true)])], None);
+        assert!(open(two).is_none());
+    }
+
+    #[test]
+    fn video_range_bt601() {
+        // black, white and the 75% bars (ITU-R BT.601 video levels -> RGB)
+        assert_eq!(ycc601_to_rgb(16, 128, 128), (0, 0, 0));
+        assert_eq!(ycc601_to_rgb(235, 128, 128), (255, 255, 255));
+        assert_eq!(ycc601_to_rgb(0, 128, 128), (0, 0, 0));
+        assert_eq!(ycc601_to_rgb(255, 128, 128), (255, 255, 255));
+        for (ycc, rgb) in [((65, 100, 212), (191, 0, 0)), ((112, 72, 58), (0, 191, 0)), ((35, 212, 114), (0, 0, 191)), ((162, 44, 142), (191, 191, 0))] {
+            let got = ycc601_to_rgb(ycc.0, ycc.1, ycc.2);
+            let d = |a: u8, b: u8| (a as i32 - b as i32).abs();
+            assert!(d(got.0, rgb.0) <= 2 && d(got.1, rgb.1) <= 2 && d(got.2, rgb.2) <= 2, "{ycc:?} -> {got:?}, want {rgb:?}");
+        }
+        let id = open(raw(2, 2, 1, 128, 128)).unwrap();
+        let mut px = [0u8; 16];
+        assert!(unsafe { frame(id, 0, px.as_mut_ptr(), 8, 2, 2, Out::Rgb601) });
+        assert_eq!(px[..4], [0, 0, 0, 255]);
+        close(id);
+    }
+
     #[test]
     fn open_checks_the_header() {
-        for (w, h, t, len) in [(16, 16, 1, 16), (8192, 8192, 2, 20), (1, 1, 1, 16)] {
+        // (each track: an empty codec name and no frames)
+        for (w, h, t, len) in [(16, 16, 1, 24), (8192, 8192, 2, 32), (1, 1, 1, 24)] {
             let id = open(header(w, h, t, len)).unwrap_or_else(|| panic!("{w}x{h} {t}"));
             close(id);
         }
         for (w, h, t, len) in [
             (16, 16, 1, 15),
+            (16, 16, 1, 16),
+            (16, 16, 1, 20),
+            (16, 16, 2, 24),
             (0, 16, 1, 16),
             (16, 0, 1, 16),
             (8193, 16, 1, 16),
@@ -627,7 +729,7 @@ mod tests {
     fn convert_planes() {
         for fmt in [I420, NV12, RGBA] {
             for alpha in [None, Some(I420), Some(RGBA)] {
-                for out in [Out::Ycc, Out::Rgb] {
+                for out in [Out::Ycc, Out::Rgb, Out::Rgb601] {
                     let (b, dst) = slot_pixels(fmt, alpha, out);
                     for y in 0..4 {
                         for x in 0..4 {
@@ -656,6 +758,10 @@ mod tests {
                                 Out::Ycc => [ycc.0, ycc.1, ycc.2, al],
                                 Out::Rgb => {
                                     let (r, g, bl) = ycc_to_rgb(ycc.0, ycc.1, ycc.2);
+                                    [bl, g, r, 255]
+                                }
+                                Out::Rgb601 => {
+                                    let (r, g, bl) = ycc601_to_rgb(ycc.0, ycc.1, ycc.2);
                                     [bl, g, r, 255]
                                 }
                             };

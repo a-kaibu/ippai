@@ -492,7 +492,7 @@ fn esc(s: &str) -> String {
 static MOVIES: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
     let ok = crate::movie::available();
     if !ok {
-        eprintln!("ffmpeg not found: Siglus movies (.omv) are left to the game's own decoder");
+        eprintln!("ffmpeg not found: no movies made playable (Siglus's .omv are left to the game's own decoder, DirectShow movies end at once)");
     }
     ok
 });
@@ -577,6 +577,17 @@ fn pack_tree(store: &Path, root: &Path, name: &str, follow: bool, chunk: u64) ->
                             files.push((lines.len() - 1, v, format!("{path}.vnv"), mode, meta.mtime(), len));
                         }
                         Err(e) => eprintln!("{path}: no VP9 copy: {e:#}"),
+                    }
+                }
+                // other movies (DirectShow, Media Foundation): VP9 and Vorbis (see movie.rs)
+                if crate::movie::is_movie(&fname) && *MOVIES {
+                    match crate::movie::movie_vnv_for(store, &disk) {
+                        Ok(v) => {
+                            let len = fs::metadata(&v)?.len();
+                            lines.push(String::new());
+                            files.push((lines.len() - 1, v, format!("{path}.vnv"), mode, meta.mtime(), len));
+                        }
+                        Err(e) => eprintln!("{path}: not made playable: {e:#}"),
                     }
                 }
             }
