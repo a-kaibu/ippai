@@ -7,16 +7,133 @@
 // IPPAI_GIVE_UP_MS (a 404 fails at once). While it retries it wakes the waiting pthread every
 // few seconds, so the pthread's own timeout only catches a dead worker. Store chunks are named by
 // their content: they are kept in Cache Storage (IPPAI_CHUNKS, web/src/net.ts uses the same one),
-// so a second play, or a game saved to the device beforehand, needs no network for them.
+// so a second play, or a game saved to the device beforehand, needs no network for them. A chunk
+// is checked against its name (BLAKE3, ippaiBlake3) before it is used or kept: one that does not
+// match (cut or damaged on the way, a wrong answer) is fetched again, at most IPPAI_BAD_CHUNK
+// times. Kept ones carry IPPAI_CHECKED; one kept before that (or by an older page) is checked
+// once when read, then kept again with it.
 // Retries are announced on the BroadcastChannel "ippai-net" (the page shows that it waits).
 var IPPAI_CHUNKS = 'ippai-chunks-v1';
 var IPPAI_STALL_MS = 20000;
 var IPPAI_GIVE_UP_MS = 15 * 60000;
 var IPPAI_RETRY_STATUS = [0, 408, 425, 429, 500, 502, 503, 504];
+var IPPAI_BAD_CHUNK = 3;
+var IPPAI_CHECKED = 'x-ippai-checked';
 
 /** A store chunk: content-addressed, the same bytes forever. */
 function ippaiIsChunk(url) {
   return /\/chunks\/[0-9a-f]{2}\/[0-9a-f]{32}$/.test(url);
+}
+
+/**
+ * The first 16 bytes of `data`'s BLAKE3 hash, as hex: a store chunk's name (crates/ippai/src/pack.rs).
+ * One-shot (chunks are 256 KiB at most), all of it in this function: the network worker gets
+ * it as source.
+ */
+function ippaiBlake3(data) {
+  const IV = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+  const PERM = [2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8];
+  const S = [];
+  let s = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+  for (let r = 0; r < 7; r++) {
+    S.push(s);
+    s = PERM.map((p) => s[p]);
+  }
+  const bytes = new Uint8Array(64);
+  const m = new Uint32Array(bytes.buffer);
+  const out = new Uint32Array(16);
+  // the compression function: out = the 16 words for chaining value `h` (8 words at `ho`), block m
+  const compress = (h, ho, counter, len, flags) => {
+    let v0 = h[ho], v1 = h[ho + 1], v2 = h[ho + 2], v3 = h[ho + 3], v4 = h[ho + 4], v5 = h[ho + 5], v6 = h[ho + 6], v7 = h[ho + 7];
+    let v8 = IV[0], v9 = IV[1], v10 = IV[2], v11 = IV[3], v12 = counter | 0, v13 = (counter / 0x100000000) | 0, v14 = len, v15 = flags;
+    for (let r = 0; r < 7; r++) {
+      const q = S[r];
+      // columns
+      v0 = (v0 + v4 + m[q[0]]) | 0; v12 ^= v0; v12 = (v12 >>> 16) | (v12 << 16);
+      v8 = (v8 + v12) | 0; v4 ^= v8; v4 = (v4 >>> 12) | (v4 << 20);
+      v0 = (v0 + v4 + m[q[1]]) | 0; v12 ^= v0; v12 = (v12 >>> 8) | (v12 << 24);
+      v8 = (v8 + v12) | 0; v4 ^= v8; v4 = (v4 >>> 7) | (v4 << 25);
+      v1 = (v1 + v5 + m[q[2]]) | 0; v13 ^= v1; v13 = (v13 >>> 16) | (v13 << 16);
+      v9 = (v9 + v13) | 0; v5 ^= v9; v5 = (v5 >>> 12) | (v5 << 20);
+      v1 = (v1 + v5 + m[q[3]]) | 0; v13 ^= v1; v13 = (v13 >>> 8) | (v13 << 24);
+      v9 = (v9 + v13) | 0; v5 ^= v9; v5 = (v5 >>> 7) | (v5 << 25);
+      v2 = (v2 + v6 + m[q[4]]) | 0; v14 ^= v2; v14 = (v14 >>> 16) | (v14 << 16);
+      v10 = (v10 + v14) | 0; v6 ^= v10; v6 = (v6 >>> 12) | (v6 << 20);
+      v2 = (v2 + v6 + m[q[5]]) | 0; v14 ^= v2; v14 = (v14 >>> 8) | (v14 << 24);
+      v10 = (v10 + v14) | 0; v6 ^= v10; v6 = (v6 >>> 7) | (v6 << 25);
+      v3 = (v3 + v7 + m[q[6]]) | 0; v15 ^= v3; v15 = (v15 >>> 16) | (v15 << 16);
+      v11 = (v11 + v15) | 0; v7 ^= v11; v7 = (v7 >>> 12) | (v7 << 20);
+      v3 = (v3 + v7 + m[q[7]]) | 0; v15 ^= v3; v15 = (v15 >>> 8) | (v15 << 24);
+      v11 = (v11 + v15) | 0; v7 ^= v11; v7 = (v7 >>> 7) | (v7 << 25);
+      // diagonals
+      v0 = (v0 + v5 + m[q[8]]) | 0; v15 ^= v0; v15 = (v15 >>> 16) | (v15 << 16);
+      v10 = (v10 + v15) | 0; v5 ^= v10; v5 = (v5 >>> 12) | (v5 << 20);
+      v0 = (v0 + v5 + m[q[9]]) | 0; v15 ^= v0; v15 = (v15 >>> 8) | (v15 << 24);
+      v10 = (v10 + v15) | 0; v5 ^= v10; v5 = (v5 >>> 7) | (v5 << 25);
+      v1 = (v1 + v6 + m[q[10]]) | 0; v12 ^= v1; v12 = (v12 >>> 16) | (v12 << 16);
+      v11 = (v11 + v12) | 0; v6 ^= v11; v6 = (v6 >>> 12) | (v6 << 20);
+      v1 = (v1 + v6 + m[q[11]]) | 0; v12 ^= v1; v12 = (v12 >>> 8) | (v12 << 24);
+      v11 = (v11 + v12) | 0; v6 ^= v11; v6 = (v6 >>> 7) | (v6 << 25);
+      v2 = (v2 + v7 + m[q[12]]) | 0; v13 ^= v2; v13 = (v13 >>> 16) | (v13 << 16);
+      v8 = (v8 + v13) | 0; v7 ^= v8; v7 = (v7 >>> 12) | (v7 << 20);
+      v2 = (v2 + v7 + m[q[13]]) | 0; v13 ^= v2; v13 = (v13 >>> 8) | (v13 << 24);
+      v8 = (v8 + v13) | 0; v7 ^= v8; v7 = (v7 >>> 7) | (v7 << 25);
+      v3 = (v3 + v4 + m[q[14]]) | 0; v14 ^= v3; v14 = (v14 >>> 16) | (v14 << 16);
+      v9 = (v9 + v14) | 0; v4 ^= v9; v4 = (v4 >>> 12) | (v4 << 20);
+      v3 = (v3 + v4 + m[q[15]]) | 0; v14 ^= v3; v14 = (v14 >>> 8) | (v14 << 24);
+      v9 = (v9 + v14) | 0; v4 ^= v9; v4 = (v4 >>> 7) | (v4 << 25);
+    }
+    out[0] = v0 ^ v8; out[1] = v1 ^ v9; out[2] = v2 ^ v10; out[3] = v3 ^ v11;
+    out[4] = v4 ^ v12; out[5] = v5 ^ v13; out[6] = v6 ^ v14; out[7] = v7 ^ v15;
+  };
+  // (words are little-endian: m is a Uint32Array over the block's bytes, as every browser is)
+  const chunk = (i, root) => {
+    const at = i * 1024;
+    const end = Math.min(data.length, at + 1024);
+    const blocks = Math.max(1, Math.ceil((end - at) / 64));
+    const cv = new Uint32Array(IV);
+    for (let b = 0; b < blocks; b++) {
+      const from = at + b * 64;
+      const n = Math.min(64, end - from);
+      if (n === 64) bytes.set(data.subarray(from, from + 64));
+      else {
+        bytes.fill(0);
+        if (n > 0) bytes.set(data.subarray(from, end));
+      }
+      const last = b === blocks - 1;
+      compress(cv, 0, i, Math.max(n, 0), (b === 0 ? 1 : 0) | (last ? 2 : 0) | (last && root ? 8 : 0));
+      cv.set(out.subarray(0, 8));
+    }
+    return cv;
+  };
+  const parent = (l, r, root) => {
+    m.set(l);
+    m.set(r, 8);
+    compress(IV, 0, 0, 64, 4 | (root ? 8 : 0));
+    return out.slice(0, 8);
+  };
+  const n = Math.max(1, Math.ceil(data.length / 1024));
+  let cv;
+  if (n === 1) cv = chunk(0, true);
+  else {
+    const stack = [];
+    for (let i = 0; i < n - 1; i++) {
+      let c = chunk(i, false);
+      for (let t = i + 1; (t & 1) === 0; t >>= 1) c = parent(stack.pop(), c, false);
+      stack.push(c);
+    }
+    cv = chunk(n - 1, false);
+    while (stack.length > 1) cv = parent(stack.pop(), cv, false);
+    cv = parent(stack.pop(), cv, true);
+  }
+  let hex = '';
+  for (let k = 0; k < 16; k++) hex += ((cv[k >> 2] >>> ((k & 3) * 8)) & 255).toString(16).padStart(2, '0');
+  return hex;
+}
+
+/** Whether `data` is store chunk `url`'s content (true for anything not a chunk). */
+function ippaiChunkOk(url, data) {
+  return !ippaiIsChunk(url) || ippaiBlake3(data) === url.slice(url.lastIndexOf('/') + 1);
 }
 
 /** The delay before retry `attempt` (from 0): exponential with jitter, at most 8 s. */
@@ -32,14 +149,14 @@ async function ippaiPause(ms) {
 }
 
 /** One try: the body read in pieces; aborted when no byte arrives for `stallMs`. */
-async function ippaiFetchOnce(url, stallMs) {
+async function ippaiFetchOnce(url, stallMs, reload) {
   const abort = new AbortController();
   let last = Date.now();
   const watch = setInterval(() => {
     if (Date.now() - last > stallMs) abort.abort(new Error('stalled'));
   }, Math.min(1000, stallMs / 4));
   try {
-    const response = await fetch(url, { signal: abort.signal });
+    const response = await fetch(url, reload ? { signal: abort.signal, cache: 'reload' } : { signal: abort.signal });
     last = Date.now();
     if (!response.ok) {
       response.body?.cancel?.().catch?.(() => {});
@@ -98,22 +215,34 @@ async function ippaiFetchRobust(url, opt = {}) {
   const hit = await cache?.match(url).catch(() => undefined);
   if (hit) {
     try {
-      return { data: new Uint8Array(await hit.arrayBuffer()), wire: 0, cached: 1 };
+      const data = new Uint8Array(await hit.arrayBuffer());
+      if (hit.headers.get(IPPAI_CHECKED) === '1') return { data, wire: 0, cached: 1 };
+      if (ippaiChunkOk(url, data)) {
+        cache.put(url, new Response(data, { headers: { [IPPAI_CHECKED]: '1', 'x-ippai-size': String(data.length) } })).catch(() => {});
+        return { data, wire: 0, cached: 1 };
+      }
+      await cache.delete(url).catch(() => {});
     } catch (_) {}
   }
   const start = Date.now();
   const key = {};
   let after = 0;
+  let bad = 0;
   try {
     for (let attempt = 0; ; attempt++) {
       let error;
       try {
-        const { response, data } = await ippaiFetchOnce(url, stallMs);
+        // (after a chunk that did not match, past the browser's HTTP cache: it keeps chunks for good)
+        const { response, data } = await ippaiFetchOnce(url, stallMs, bad > 0);
+        if (data && !ippaiChunkOk(url, data)) {
+          if (++bad >= IPPAI_BAD_CHUNK) throw Object.assign(new Error(`chunk does not match its name ${bad} times`), { final: true });
+          throw new Error('chunk does not match its name');
+        }
         if (data) {
           const timing = typeof performance !== 'undefined' && performance.getEntriesByName?.(url).at(-1);
           const wire = timing ? timing.transferSize : +(response.headers?.get?.('content-length') || data.length);
           const cached = timing && timing.transferSize === 0 && timing.decodedBodySize > 0 ? 1 : 0;
-          if (cache) cache.put(url, new Response(data)).catch(() => {});
+          if (cache) cache.put(url, new Response(data, { headers: { [IPPAI_CHECKED]: '1', 'x-ippai-size': String(data.length) } })).catch(() => {});
           return { data, wire, cached };
         }
         if (!IPPAI_RETRY_STATUS.includes(response.status)) throw Object.assign(new Error(`HTTP ${response.status}`), { final: true });
@@ -184,8 +313,8 @@ function ippaiFetchWorker(event) {
 
 /** The network worker's script: the functions above, `main` its message handler. */
 function ippaiFetchWorkerSource(main) {
-  const vars = { IPPAI_CHUNKS, IPPAI_STALL_MS, IPPAI_GIVE_UP_MS, IPPAI_RETRY_STATUS, IPPAI_BRIDGE_HEADER, IPPAI_BRIDGE_BYTES };
-  const fns = [ippaiIsChunk, ippaiBackoff, ippaiPause, ippaiFetchOnce, ippaiNetReport, ippaiCache, ippaiFetchRobust, ippaiFetchWorker];
+  const vars = { IPPAI_CHUNKS, IPPAI_STALL_MS, IPPAI_GIVE_UP_MS, IPPAI_RETRY_STATUS, IPPAI_BAD_CHUNK, IPPAI_CHECKED, IPPAI_BRIDGE_HEADER, IPPAI_BRIDGE_BYTES };
+  const fns = [ippaiIsChunk, ippaiBlake3, ippaiChunkOk, ippaiBackoff, ippaiPause, ippaiFetchOnce, ippaiNetReport, ippaiCache, ippaiFetchRobust, ippaiFetchWorker];
   return [
     ...Object.entries(vars).map(([k, v]) => `var ${k} = ${JSON.stringify(v)};`),
     'var ippaiNet = { retrying: new Map(), channel: undefined, id: Math.random().toString(36).slice(2) };',

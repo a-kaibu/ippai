@@ -2,10 +2,20 @@
 // reads (host/fetch-bridge.js, the network worker; that runs as a plain script inside sake.js, so
 // it has its own copy): retry dropped connections, stalled bodies and 5xx/408/429 with backoff,
 // wait while the browser is offline, fail at once for other statuses. Store chunks are kept in
-// Cache Storage (CHUNKS, shared with the worker): content-addressed, so never stale.
+// Cache Storage (CHUNKS, shared with the worker): content-addressed, so never stale. A chunk is
+// checked against its name (BLAKE3) before it is used or kept, as the worker does: kept ones
+// carry CHECKED, one kept without it (an older page's) is checked once when read.
+
+import { blake3Hex } from "./blake3";
 
 export const CHUNKS = "ippai-chunks-v1";
 const RETRY = new Set([0, 408, 425, 429, 500, 502, 503, 504]);
+const CHECKED = "x-ippai-checked";
+/** A kept chunk's length (trimChunks; one kept without it counts as CHUNK_MAX). */
+const SIZE = "x-ippai-size";
+const CHUNK_MAX = 256 << 10;
+/** Fetches of one chunk that may not match its name before it fails. */
+const BAD_CHUNK = 3;
 
 export interface RetryOptions {
   /** no byte for this long: abort and try again (ms) */
@@ -187,15 +197,40 @@ export async function getChunk(
 ): Promise<{ data: Uint8Array<ArrayBuffer>; cached: boolean }> {
   const url = new URL(chunkPath(hex), store).href;
   const cache = opt.cache === undefined ? await chunkCache() : opt.cache;
+  const keep = (data: Uint8Array<ArrayBuffer>) =>
+    cache
+      ?.put(url, new Response(data, { headers: { [CHECKED]: "1", [SIZE]: String(data.length) } }))
+      .catch(() => undefined);
   const hit = await cache?.match(url).catch(() => undefined);
-  if (hit) return { data: new Uint8Array(await hit.arrayBuffer()), cached: true };
-  const data = await fetchRetry(url, { priority: opt.priority ?? "auto" }, opt);
-  await cache?.put(url, new Response(data)).catch(() => undefined);
-  return { data, cached: false };
+  if (hit) {
+    const data = new Uint8Array(await hit.arrayBuffer());
+    if (hit.headers.get(CHECKED) === "1") return { data, cached: true };
+    if (blake3Hex(data) === hex) {
+      void keep(data);
+      return { data, cached: true };
+    }
+    await cache?.delete(url).catch(() => undefined);
+  }
+  for (let bad = 1; ; bad++) {
+    // (again past the browser's HTTP cache, which keeps chunks for good)
+    const init: RequestInit = {
+      priority: opt.priority ?? "auto",
+      ...(bad > 1 ? { cache: "reload" as const } : {}),
+    };
+    const data = await fetchRetry(url, init, opt);
+    if (blake3Hex(data) === hex) {
+      await keep(data);
+      return { data, cached: false };
+    }
+    if (bad >= BAD_CHUNK) throw new Error(`chunk ${hex} does not match its name (${bad} times)`);
+    await new Promise((r) => setTimeout(r, backoff(bad - 1)));
+  }
 }
 
-/** Chunks kept at most (about 256 KB each): the newest are kept. */
-const KEEP_BYTES = 2 << 30;
+/** Bytes of chunks kept at most: the newest are kept. */
+// (2 << 30 is negative in JS: until 2026-11-07 every trim emptied the cache of all but the
+// saved games' chunks)
+const KEEP_BYTES = 2 * 1024 ** 3;
 
 /**
  * Keeps the chunk cache within its share of the origin's storage (and 2 GB): the oldest go
@@ -210,16 +245,25 @@ export async function trimChunks(saved: () => Promise<Set<string>> = async () =>
   const { quota = 0 } = (await navigator.storage?.estimate?.().catch(() => undefined)) ?? {};
   const limit = Math.min(KEEP_BYTES, quota ? quota * 0.5 : KEEP_BYTES);
   const keys = await cache.keys();
-  let over = keys.length - Math.floor(limit / (256 << 10));
+  // (chunks are CHUNK_MAX at most: within the limit so counted, no need to look at each)
+  if (keys.length * CHUNK_MAX <= limit) return;
+  const sizes = await Promise.all(
+    keys.map(async (k) => {
+      const r = await cache.match(k).catch(() => undefined);
+      const n = Number(r?.headers.get(SIZE));
+      return n > 0 && n <= CHUNK_MAX ? n : CHUNK_MAX;
+    }),
+  );
+  let over = sizes.reduce((a, b) => a + b, 0) - limit;
   if (over <= 0) return;
   const keep = await saved().catch(() => null);
   // (the saved games' lists out of reach: nothing goes rather than their chunks)
   if (!keep) return;
-  for (const k of keys) {
+  for (const [i, k] of keys.entries()) {
     if (over <= 0) break;
     if (keep.has(k.url.slice(k.url.lastIndexOf("/") + 1))) continue;
     await cache.delete(k);
-    over--;
+    over -= sizes[i]!;
   }
 }
 

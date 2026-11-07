@@ -9,6 +9,8 @@ const pw = await import(process.env.PLAYWRIGHT ?? 'playwright');
 const { chromium } = pw.default ?? pw;
 const source = await readFile(new URL('../host/fetch-bridge.js', import.meta.url), 'utf8');
 const body = Buffer.from(Array.from({ length: 300000 }, (_, i) => i % 251));
+// (a store chunk is named by its content: see the chunk steps below)
+const name = new Function(`${source}; return ippaiBlake3;`)()(body);
 const hits = new Map();
 const server = createServer((req, res) => {
   const n = (hits.get(req.url) ?? 0) + 1;
@@ -32,6 +34,14 @@ const server = createServer((req, res) => {
   if (req.url === '/stall' && n === 1) {
     res.writeHead(200, { 'Content-Length': body.length, 'Cache-Control': 'no-store' });
     res.write(body.subarray(0, 100000));
+    return;
+  }
+  // a chunk damaged on the way the first time, kept by the browser's HTTP cache as chunks are
+  if (req.url.startsWith('/store/chunks/cd/') && n === 1) {
+    const bad = Buffer.from(body);
+    bad[5000] ^= 1;
+    res.writeHead(200, { 'Cache-Control': 'public, max-age=31536000, immutable', 'Content-Length': bad.length });
+    res.end(bad);
     return;
   }
   res.writeHead(200, { 'Cache-Control': 'no-store', 'Content-Length': body.length });
@@ -88,7 +98,7 @@ try {
   console.log('net: a read made offline completed once back online');
 
   // a store chunk: kept on the device, read again offline without the network
-  const chunk = `/store/chunks/ab/${'ab'.repeat(16)}`;
+  const chunk = `/store/chunks/ab/${name}`;
   assert.deepEqual(got(await page.evaluate((p) => window.request(p), chunk)), want);
   await new Promise((r) => setTimeout(r, 300));
   await context.setOffline(true);
@@ -98,6 +108,12 @@ try {
   assert.equal(hits.get(chunk), 1);
   await context.setOffline(false);
   console.log(`net: a chunk read again offline from Cache Storage (${((Date.now() - t0) / 1000).toFixed(1)} s)`);
+
+  // a chunk that does not match its name: fetched again (past the HTTP cache), the good one used
+  const damaged = `/store/chunks/cd/${name}`;
+  assert.deepEqual(got(await page.evaluate((p) => window.request(p), damaged)), want);
+  assert.equal(hits.get(damaged), 2);
+  console.log('net: a damaged chunk was fetched again past the HTTP cache');
 } finally {
   await browser.close();
   await new Promise((resolve) => server.close(resolve));

@@ -640,6 +640,37 @@ fn pack_tree(store: &Path, root: &Path, name: &str, follow: bool, chunk: u64) ->
 mod tests {
     use super::*;
 
+    /// testdata/blake3.tsv: chunk names (the first 16 bytes of BLAKE3) from the blake3 crate,
+    /// for the page's own BLAKE3 (web/src/blake3.ts, host/fetch-bridge.js) to be checked
+    /// against: `p` inputs are `i % 251`, `r` ones bytes of an LCG seeded with the length
+    /// (x = x * 1103515245 + 12345, byte = x >> 16 & 255). IPPAI_REGEN=1 writes it again.
+    #[test]
+    fn blake3_vectors_for_the_page() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/blake3.tsv");
+        let mut want = String::from("kind\tlength\tname\n");
+        let lens = [0usize, 1, 63, 64, 65, 127, 128, 1023, 1024, 1025, 2047, 2048, 2049, 3072, 3073, 4096, 4097, 5120, 8191, 8192, 8193, 16384, 31744, 65536, 102400, 200000, 262143, 262144];
+        let more = [7usize, 333, 1500, 7777, 12345, 33000, 99999, 131071, 131072, 131073, 180001, 250000];
+        for (kind, lens) in [("p", &lens[..]), ("r", &[&lens[..], &more[..]].concat()[..])] {
+            for &n in lens {
+                let mut x = n as u32;
+                let data: Vec<u8> = (0..n)
+                    .map(|i| {
+                        if kind == "p" {
+                            return (i % 251) as u8;
+                        }
+                        x = x.wrapping_mul(1103515245).wrapping_add(12345);
+                        (x >> 16) as u8
+                    })
+                    .collect();
+                want.push_str(&format!("{kind}\t{n}\t{}\n", &blake3::hash(&data).to_hex()[..32]));
+            }
+        }
+        if std::env::var_os("IPPAI_REGEN").is_some() {
+            std::fs::write(&path, &want).unwrap();
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), want, "IPPAI_REGEN=1 to write it");
+    }
+
     #[test]
     fn ids_from_names() {
         assert_eq!(default_id("My Game_2 (Trial)"), "my-game_2-trial");
