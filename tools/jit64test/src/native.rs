@@ -50,7 +50,7 @@ impl Rng {
 
 fn ok_feature(f: CpuidFeature) -> bool {
     use CpuidFeature as F;
-    matches!(f, F::INTEL8086 | F::INTEL186 | F::INTEL286 | F::INTEL386 | F::INTEL486 | F::X64 | F::CMOV | F::SSE | F::SSE2 | F::CX8 | F::CMPXCHG16B | F::SSSE3 | F::SSE4_1 | F::AVX | F::AVX2 | F::FMA)
+    matches!(f, F::INTEL8086 | F::INTEL186 | F::INTEL286 | F::INTEL386 | F::INTEL486 | F::X64 | F::CMOV | F::SSE | F::SSE2 | F::SSE3 | F::CX8 | F::CMPXCHG16B | F::SSSE3 | F::SSE4_1 | F::AVX | F::AVX2 | F::FMA)
 }
 
 /// Codes to test: legacy-encoded, 64-bit mode, plain flow, operands we can make.
