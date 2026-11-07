@@ -6,7 +6,7 @@
 //   node tests/winref/run-browser.mjs <exe dir> <out dir> [name-filter]
 //   IPPAI=path (default target/release/ippai), WEB=dir (web app instead of the built-in one),
 //   PLAYWRIGHT=module path, FONTS=dir (drive_c\windows\Fonts), IPPAI_JIT=0, PORT (default 8790),
-//   GUEST_ENV="NAME=value ..." (the program's environment), DEBUG_CONSOLE=1 (every console line
+//   GUEST_ENV="NAME=value ..." (the program's environment), TIMEOUT (seconds a program may run, default 180), DEBUG_CONSOLE=1 (every console line
 //   of the page into stderr.txt), BROWSER64=1, SYSTEM64=dir (x64 DLLs, e.g. the CRT, for the
 //   prefix's windows\system64)
 import { execFileSync, spawn } from "node:child_process";
@@ -79,7 +79,7 @@ for (const n of names) {
   const env = [...(process.env.IPPAI_JIT === "0" ? ["IPPAI_JIT=0"] : []), ...(process.env.GUEST_ENV ?? "").split(/\s+/).filter(Boolean)].map((e) => `&env=${encodeURIComponent(e)}`).join("");
   const t0 = Date.now();
   await page.goto(`${base}/play.html?autostart&headless${env}&mount=/vnvm/game=winref&run=Z:\\vnvm\\game\\${n}.exe`);
-  await Promise.race([done, new Promise((r) => setTimeout(r, 180000))]);
+  await Promise.race([done, new Promise((r) => setTimeout(r, Number(process.env.TIMEOUT ?? 180) * 1000))]);
   await page.close();
   writeFileSync(join(out, "stdout.txt"), lines.map((l) => l + "\n").join(""));
   writeFileSync(join(out, "stderr.txt"), sakeLines.map((l) => l + "\n").join(""));

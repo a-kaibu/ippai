@@ -61,7 +61,7 @@ jobs:
         run: tests/winref/build.sh "$RUNNER_TEMP/exe" && tests/winref/build-msvc.sh "$RUNNER_TEMP/exe"
       # (the replay's layouts are the headers' (clang) and gcc's; check.py's matching; asset.sh)
       - name: The replay's own checks
-        run: python3 tests/replay/layouts.py --check && python3 tests/replay/layouts_test.py && python3 tests/replay/check_test.py && sh tests/replay/asset_test.sh
+        run: python3 tests/replay/layouts.py --check && python3 tests/replay/layouts_test.py && python3 tests/replay/check_test.py && python3 tests/replay/gameapi_test.py && python3 tests/replay/games_test.py && sh tests/replay/asset_test.sh
       - name: Probes without a current Windows answer
         id: stale
         run: |
@@ -203,6 +203,8 @@ jobs:
         env:
           PLAYWRIGHT: ${{ runner.temp }}/pw/node_modules/playwright/index.mjs
           WEB: web/dist
+          # (a trial game's replay, tests/replay/games, is a minute of frames)
+          TIMEOUT: 900
         run: |
           node tests/winref/run-browser.mjs exe out/jit
           IPPAI_JIT=0 node tests/winref/run-browser.mjs exe out/interp

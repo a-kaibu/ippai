@@ -638,3 +638,49 @@ proptest! {
         let _ = replay::read(&b);
     }
 }
+
+/// A game's trace ends where the game was killed, in the middle of a chunk or of a call: what is
+/// converted is the calls up to the last whole one, the same records as the whole trace's up to
+/// there (at every byte it can be cut at); strictly read, a cut trace is an error.
+#[test]
+fn a_cut_trace_keeps_its_whole_calls() {
+    let file = d3d9_session();
+    let ev = unpack(&file).unwrap();
+    let (whole, _) = replay::convert(&ev, Some(32)).unwrap();
+    let whole = replay::read(&whole).unwrap().1;
+    // (the header, properties included, has to be there: a cut inside it is an error)
+    let hdr = Writer::new(&[("process.arch", "x86")]).b.len();
+    let prefix_of_whole = |ev: &[u8]| {
+        if ev.len() < hdr {
+            assert!(replay::convert_cut(ev, Some(32), true).is_err());
+            return 0;
+        }
+        let (out, _) = replay::convert_cut(ev, Some(32), true).unwrap();
+        let got = replay::read(&out).unwrap().1;
+        assert!(got.len() <= whole.len() && got[..] == whole[..got.len()], "a cut trace's records are not the whole one's");
+        got.len()
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    for n in 0..=file.len() {
+        let (cut_ev, cut) = unpack_cut(&file[..n.max(2)]).unwrap();
+        assert_eq!(unpack(&file[..n.max(2)]).is_err(), cut);
+        assert!(ev.starts_with(&cut_ev));
+        seen.insert(prefix_of_whole(&cut_ev));
+    }
+    let mut strict_ok = 0;
+    for n in 1..=ev.len() {
+        let k = prefix_of_whole(&ev[..n]);
+        seen.insert(k);
+        // (strictly: an error, unless the bytes stop between two events)
+        if let Ok((out, _)) = replay::convert(&ev[..n], Some(32)) {
+            assert_eq!(replay::read(&out).unwrap().1.len(), k);
+            strict_ok += 1;
+        }
+    }
+    assert!(strict_ok < ev.len() / 4, "strict reading took {strict_ok} cuts");
+    // (from nothing to all of it, one more call at a time: a call's records come with it)
+    let calls = whole.iter().filter(|r| matches!(r, Record::Call { .. })).count();
+    assert!(seen.contains(&0) && seen.contains(&whole.len()) && seen.len() > calls, "{seen:?}");
+    assert_eq!(prefix_of_whole(&ev), whole.len());
+    assert!(unpack_cut(b"xx").is_err() && unpack_cut(b"at") == Ok((vec![], false)));
+}

@@ -1,0 +1,20 @@
+# Trial games whose Direct3D calls .github/workflows/gametrace.yml records on Windows and replays
+# on Windows and on sake (ids of tests/corpus/titles.tsv; tests/replay/gameapi.py finds the API,
+# a title that draws without D3D8/9/11 is listed as such and skipped). These: the corpus's smoke
+# titles (they reach their title screen on sake).
+s2006_pulltop_haruka	# AdvWin32/WillPlus
+b2012_alicesoft	# AliceSoft System4
+b2006_lumpofsugar	# BGI/Ethornell
+dl_RJ01720376	# BGI?*
+b2007_bishop	# Bishop (BSA)
+s2008_clochette_suzunone7	# CatSystem2
+b2007_anim	# Crowd/Anim (PCK/GAX/EOG)
+b2007_marmalade	# EntisGLS
+b2008_escude	# Escude
+b2023_appetite	# KiriKiri
+b2007_lilim_darkness	# Lilim (AOS)
+s2011_waffle_sex_friend	# LiveMaker
+r1_naru2	# NScripter
+s2006_giga_ab	# NeXAS
+dl_RJ365650	# WolfRPG*
+b2008_hook	# Yuka (YKC)

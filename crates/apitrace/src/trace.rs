@@ -196,19 +196,30 @@ const FLAG_FAKE: u64 = 1;
 
 /// The decompressed event bytes of a .trace file (snappy, the format `apitrace trace` writes)
 pub fn unpack(file: &[u8]) -> Result<Vec<u8>, String> {
+    match unpack_cut(file)? {
+        (_, true) => Err("trace: chunk past the end".into()),
+        (out, false) => Ok(out),
+    }
+}
+
+/// unpack() of a file that may end in the middle of a chunk (the program was killed while
+/// apitrace wrote it): the whole chunks, and whether one was cut off. A whole chunk that does
+/// not decompress is still an error.
+pub fn unpack_cut(file: &[u8]) -> Result<(Vec<u8>, bool), String> {
     if file.get(..2) != Some(b"at") {
         return Err("not a snappy apitrace file (\"at\"); `apitrace repack` can make one".into());
     }
     let mut out = Vec::new();
     let mut i = 2;
     while i < file.len() {
-        let n = u32::from_le_bytes(file.get(i..i + 4).ok_or("trace: chunk length past the end")?.try_into().unwrap()) as usize;
+        let Some(n) = file.get(i..i + 4) else { return Ok((out, true)) };
+        let n = u32::from_le_bytes(n.try_into().unwrap()) as usize;
         i += 4;
-        let chunk = file.get(i..i + n).ok_or("trace: chunk past the end")?;
+        let Some(chunk) = file.get(i..i.saturating_add(n)) else { return Ok((out, true)) };
         out.extend(crate::snappy::decompress(chunk)?);
         i += n;
     }
-    Ok(out)
+    Ok((out, false))
 }
 
 /// Reads the calls of decompressed trace bytes, in the order they end
@@ -223,13 +234,18 @@ pub struct Parser<'a> {
     bitmasks: HashMap<u64, Rc<BitmaskSig>>,
     pending: HashMap<u64, Call>,
     next_no: u64,
+    /// the events may stop in the middle of one (a cut trace): running out of bytes ends the
+    /// calls instead of failing
+    pub cut: bool,
+    /// a read ran out of bytes
+    ended: bool,
 }
 
 type R<T> = Result<T, String>;
 
 impl<'a> Parser<'a> {
     pub fn new(b: &'a [u8]) -> R<Self> {
-        let mut p = Parser { b, i: 0, version: 0, properties: vec![], functions: HashMap::new(), structs: HashMap::new(), enums: HashMap::new(), bitmasks: HashMap::new(), pending: HashMap::new(), next_no: 0 };
+        let mut p = Parser { b, i: 0, version: 0, properties: vec![], functions: HashMap::new(), structs: HashMap::new(), enums: HashMap::new(), bitmasks: HashMap::new(), pending: HashMap::new(), next_no: 0, cut: false, ended: false };
         p.version = p.uint()?;
         if p.version > VERSION {
             return Err(format!("trace format version {} (this reader knows up to {VERSION})", p.version));
@@ -251,6 +267,18 @@ impl<'a> Parser<'a> {
     /// the next call that ended (None at the end; calls still open at the end are dropped, as
     /// apitrace does)
     pub fn next_call(&mut self) -> R<Option<Call>> {
+        match self.next_call_() {
+            // (a cut trace: the call being read when the bytes ran out is dropped, as are the
+            // calls still open)
+            Err(_) if self.cut && self.ended => {
+                self.i = self.b.len();
+                Ok(None)
+            }
+            r => r,
+        }
+    }
+
+    fn next_call_(&mut self) -> R<Option<Call>> {
         while self.i < self.b.len() {
             match self.byte()? {
                 EVENT_ENTER => {
@@ -420,13 +448,19 @@ impl<'a> Parser<'a> {
     }
 
     fn byte(&mut self) -> R<u8> {
-        let b = *self.b.get(self.i).ok_or("trace: unexpected end")?;
+        let Some(&b) = self.b.get(self.i) else {
+            self.ended = true;
+            return Err("trace: unexpected end".into());
+        };
         self.i += 1;
         Ok(b)
     }
 
     fn bytes(&mut self, n: usize) -> R<&'a [u8]> {
-        let s = self.b.get(self.i..self.i.checked_add(n).ok_or("trace: length overflow")?).ok_or("trace: unexpected end")?;
+        let Some(s) = self.b.get(self.i..self.i.checked_add(n).ok_or("trace: length overflow")?) else {
+            self.ended = true;
+            return Err("trace: unexpected end".into());
+        };
         self.i += n;
         Ok(s)
     }
@@ -453,6 +487,7 @@ impl<'a> Parser<'a> {
     fn count(&mut self) -> R<usize> {
         let n = self.uint()?;
         if n > (self.b.len() - self.i) as u64 {
+            self.ended = true;
             return Err(format!("trace: count {n} past the end"));
         }
         Ok(n as usize)

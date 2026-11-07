@@ -93,7 +93,12 @@ struct locked_box { INT RowPitch, SlicePitch; void *pBits; };
 struct mapped { void *pData; UINT RowPitch, DepthPitch; };
 
 /* options */
-int opt_draws, opt_every = 1, opt_from = 0, opt_to = 0x7fffffff, opt_tol = 2, opt_noimages;
+/* (EVERY: the default -every of an exe with its stream inside: a game's, built by
+ * tests/replay/game.sh, shows a frame in EVERY, not thousands) */
+#ifndef EVERY
+#define EVERY 1
+#endif
+int opt_draws, opt_every = EVERY, opt_from = 0, opt_to = 0x7fffffff, opt_tol = 2, opt_noimages;
 int frame;
 int frame_wanted(void) { return frame >= opt_from && frame <= opt_to && (frame - opt_from) % opt_every == 0; }
 

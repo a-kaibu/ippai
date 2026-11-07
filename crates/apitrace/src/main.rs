@@ -1,5 +1,5 @@
-//! apitrace [-32|-64] <trace> <stream>: an apitrace D3D8 / D3D9 / D3D11 trace (recorded on
-//! Windows) as the call stream tests/replay/replay.c plays back (docs/replay.md);
+//! apitrace [-32|-64] [-strict] <trace> <stream>: an apitrace D3D8 / D3D9 / D3D11 trace (recorded on
+//! Windows; cut short where the program was killed, unless -strict) as the call stream tests/replay/replay.c plays back (docs/replay.md);
 //! apitrace dump <trace>: its calls
 fn main() {
     let a: Vec<String> = std::env::args().collect();
@@ -15,14 +15,24 @@ fn main() {
     }
     // (-32 / -64: the trace's pointer width, found from its addresses otherwise)
     let bits = a.iter().find_map(|x| match x.as_str() { "-32" => Some(32), "-64" => Some(64), _ => None });
-    let a: Vec<String> = a.into_iter().filter(|x| x != "-32" && x != "-64").collect();
+    let a: Vec<String> = a.into_iter().filter(|x| x != "-32" && x != "-64" && x != "-strict").collect();
     if a.len() != 3 {
-        eprintln!("usage: apitrace [-32|-64] <in.trace> <out.rpl>");
+        eprintln!("usage: apitrace [-32|-64] [-strict] <in.trace> <out.rpl>");
         std::process::exit(2);
     }
     let run = || -> Result<(), String> {
         let file = std::fs::read(&a[1]).map_err(|e| format!("{}: {e}", a[1]))?;
-        let (out, stats) = apitrace::replay::convert(&apitrace::trace::unpack(&file)?, bits)?;
+        // (a game's trace ends where the game was killed: the calls up to the last whole one;
+        // -strict: an error)
+        let strict = std::env::args().any(|x| x == "-strict");
+        let (ev, cut) = apitrace::trace::unpack_cut(&file)?;
+        if strict && cut {
+            return Err("trace: chunk past the end".into());
+        }
+        let (out, stats) = apitrace::replay::convert_cut(&ev, bits, !strict)?;
+        if cut {
+            eprintln!("{}: cut short (its last chunk is incomplete): the calls before it", a[1]);
+        }
         std::fs::write(&a[2], out).map_err(|e| format!("{}: {e}", a[2]))?;
         eprintln!("{}: {}-bit, {} calls, {} replayed, {} memcpy", a[1], stats.ptrbits, stats.calls, stats.written, stats.memcpys);
         for (name, n) in &stats.dropped {

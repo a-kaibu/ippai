@@ -5,6 +5,9 @@
 #                                  inside, of the trace's width: winref probes named
 #                                  replay_<probe>-<bits>-<bits> (tests/winref/build.sh calls this
 #                                  with its exe dir; they draw, so they are listed in browser.txt)
+#                                  and one per trial game's trace in games/ (games.py; recorded by
+#                                  .github/workflows/gametrace.yml), the same, showing one frame
+#                                  in GAME_EVERY (default 900: 15 s at 60 fps)
 # The streams come from the apitrace crate (`cargo run -p apitrace`, or APITRACE=its binary).
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -29,7 +32,10 @@ if [ ! -f "$OUT/browser.txt" ]; then
 fi
 shopt -s nullglob
 traces=("$HERE"/traces/*.trace)
-if [ ${#traces[@]} -gt 0 ]; then
+games=($(python3 "$HERE/games.py" names))
+# (NO_TRACES=1: the replayers alone)
+[ -n "${NO_TRACES:-}" ] && traces=() games=()
+if [ $(( ${#traces[@]} + ${#games[@]} )) -gt 0 ]; then
   if [ -z "${APITRACE:-}" ]; then
     cargo build -q --release -p apitrace --manifest-path "$ROOT/Cargo.toml"
     APITRACE=$ROOT/target/release/apitrace
@@ -37,10 +43,22 @@ if [ ${#traces[@]} -gt 0 ]; then
   for t in "${traces[@]}"; do
     n=$(basename "$t" .trace)
     bits=${n##*-}
-    st=0; "$APITRACE" "-$bits" "$t" "$OUT/$n.rpl" || st=$?
+    st=0; "$APITRACE" -strict "-$bits" "$t" "$OUT/$n.rpl" || st=$?
     if [ $st = 3 ]; then echo "$n: not replayed yet"; continue; fi
     [ $st = 0 ] || exit $st
     cc "$bits" -DSTREAM="\"$OUT/$n.rpl\"" -o "$OUT/replay_$n-$bits.exe"
+    rm "$OUT/$n.rpl"
+    [ -f "$OUT/browser.txt" ] && echo "replay_$n-$bits" >> "$OUT/browser.txt"
+  done
+  # (a game's trace ends where the game was killed: not -strict)
+  for n in "${games[@]}"; do
+    bits=${n##*-}
+    python3 "$HERE/games.py" unpack "$HERE/games/$n" "$OUT/$n.trace"
+    st=0; "$APITRACE" "-$bits" "$OUT/$n.trace" "$OUT/$n.rpl" || st=$?
+    rm "$OUT/$n.trace"
+    if [ $st = 3 ]; then echo "$n: not replayed yet"; continue; fi
+    [ $st = 0 ] || exit $st
+    cc "$bits" -DSTREAM="\"$OUT/$n.rpl\"" -DEVERY="${GAME_EVERY:-900}" -o "$OUT/replay_$n-$bits.exe"
     rm "$OUT/$n.rpl"
     [ -f "$OUT/browser.txt" ] && echo "replay_$n-$bits" >> "$OUT/browser.txt"
   done

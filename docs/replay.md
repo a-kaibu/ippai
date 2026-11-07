@@ -58,9 +58,27 @@ be found, in order and pixel for pixel, among what the replay on Windows reads b
 (`check_test.py` tests that matching); `known.txt` names a probe's pictures the recording cannot
 replay (D3D8 CopyRects: apitrace records only its first rect).
 
-## Games (local only)
+## Trial games (CI)
 
-Games' traces hold the games' pictures: they never go to GitHub. Record on a Windows PC:
+`tests/replay/games.txt` lists trial games (ids of `tests/corpus/titles.tsv`, free downloads).
+`.github/workflows/gametrace.yml` (when games.txt changes, or by hand) records each one once on
+the Windows runner: the trial downloaded and unpacked (`tests/corpus-prep.sh`), its API and width
+found (`gameapi.py`: the D3D DLLs its exe or the DLLs beside it name), the DirectX 9 runtime
+installed, the game run under apitrace for 60 s to its title screen and then closed
+(`record-game.ps1`). A trace that converts goes to `tests/replay/games/<id>-<bits>`: zstd, in
+parts of at most 90 MiB (GitHub refuses files over 100 MB), with `<id>-<bits>.txt` (api, exe,
+seconds, the trace's sha256: `games.py`). The trace ends where the game was killed: the
+converter keeps the calls up to the last whole one (`-strict`, which build.sh uses for the
+probes' traces, refuses such a trace).
+
+From there it is a winref probe like the others: `build.sh` builds `replay_<id>-<bits>-<bits>.exe`
+(a frame in 900 read back), Windows answers once (its pictures go to `tests/winref/golden` as
+every probe's do), sake is checked against them on every push. Nobody runs the games again
+unless asked (the workflow's `again`).
+
+## Games of your own (local)
+
+A game that is not a free trial is recorded on a Windows PC and never goes to GitHub:
 
     apitrace trace --api d3d9 -o game.trace game.exe      (--api d3d8 / dxgi; apitrace's win32
                                                            build for 32-bit games, win64 for 64)

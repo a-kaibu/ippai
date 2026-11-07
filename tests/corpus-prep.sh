@@ -1,7 +1,7 @@
 #!/bin/bash
 # Downloads, extracts and packs one vnbox corpus title for tests/corpus.mjs:
 #   tests/corpus-prep.sh ID URL EXE_REL STORE
-# -> TRIALS/ID/x (extracted), STORE (hard-linked copy of BASE_STORE + tree "g")
+# -> TRIALS/ID/x (extracted), STORE (hard-linked copy of BASE_STORE + tree "g"; "": none)
 # prints the exe path inside the tree on success
 set -e
 id=$1 url=$2 exe=$3 store=$4
@@ -87,7 +87,8 @@ fi
 # share one address space, so the game can't get 0x400000 while the launcher holds it)
 g=$(find . -iname cs2.exe -printf '%P\n' | head -1)
 [ -n "$g" ] && e=$g
-if [ ! -d "$store" ]; then
+# (an empty STORE: only the tree, e.g. for recording on Windows: tests/replay/gametrace.sh)
+if [ -n "$store" ] && [ ! -d "$store" ]; then
   rm -rf "$store.part"
   cp -al "$BASE" "$store.part"
   ippai --store "$store.part" pack . g >/dev/null

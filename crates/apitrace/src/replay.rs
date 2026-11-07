@@ -101,7 +101,12 @@ pub struct Stats {
 /// The pointer width of a trace: 64 when any object or region it saw lies above 4 GiB (64-bit
 /// Windows puts its heaps there), 32 otherwise
 pub fn ptrbits(events: &[u8]) -> Result<u32, String> {
+    ptrbits_of(events, false)
+}
+
+fn ptrbits_of(events: &[u8], cut: bool) -> Result<u32, String> {
     let mut p = Parser::new(events)?;
+    p.cut = cut;
     fn high(v: &Value) -> bool {
         match v {
             Value::Opaque(a) => *a > u32::MAX as u64,
@@ -120,7 +125,13 @@ pub fn ptrbits(events: &[u8]) -> Result<u32, String> {
 
 /// Converts a whole decompressed trace (`bits`: its pointer width, None: found by `ptrbits`)
 pub fn convert(events: &[u8], bits: Option<u32>) -> Result<(Vec<u8>, Stats), String> {
-    let seen = ptrbits(events)?;
+    convert_cut(events, bits, false)
+}
+
+/// convert() of events that may stop in the middle of a call (`cut`: a trace of a program that
+/// was killed, trace::unpack_cut): the calls up to the last whole one
+pub fn convert_cut(events: &[u8], bits: Option<u32>, cut: bool) -> Result<(Vec<u8>, Stats), String> {
+    let seen = ptrbits_of(events, cut)?;
     let bits = bits.unwrap_or(seen);
     if bits != 32 && bits != 64 {
         return Err(format!("a pointer width of {bits}"));
@@ -129,6 +140,7 @@ pub fn convert(events: &[u8], bits: Option<u32>) -> Result<(Vec<u8>, Stats), Str
         return Err("a 64-bit trace (addresses above 4 GiB) converted as 32-bit".into());
     }
     let mut p = Parser::new(events)?;
+    p.cut = cut;
     let mut c = Converter::new(bits);
     c.out.extend_from_slice(MAGIC);
     c.out.extend_from_slice(&VERSION.to_le_bytes());
@@ -157,6 +169,7 @@ struct Converter {
     locks: BTreeMap<u64, (u32, u32, u32, u32)>,
     winsize: Option<(u32, u32)>,
 }
+
 
 /// methods that only read (their answers are what the game saw, not what it drew)
 fn no_effect(method: &str) -> bool {

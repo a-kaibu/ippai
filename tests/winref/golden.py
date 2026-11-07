@@ -12,6 +12,7 @@ locally and in CI without running Windows each time.
 golden/<probe>/ holds stdout.txt (an "image" line's rows go to <name>.png beside it), exit, and
 src: the sha256 of the probe's sources, so a changed probe shows up as stale.
 """
+import glob
 import hashlib
 import os
 import re
@@ -42,7 +43,10 @@ def sources(probe):
         # (a recorded D3D trace played back: tests/replay; the converter is part of it)
         rep = os.path.join(ROOT, "tests", "replay")
         conv = os.path.join(ROOT, "crates", "apitrace", "src")
-        return [os.path.join(rep, "traces", base[7:] + ".trace")] + [os.path.join(rep, f) for f in ("replay.c", "replay.h", "d3d9img.c", "d3d8img.c", "d3d11img.c", "build.sh")] + [os.path.join(conv, f) for f in ("replay.rs", "layout.rs", "layouts.txt", "trace.rs", "snappy.rs")] + [os.path.join(HERE, f) for f in COMMON]
+        # (a trial game's trace: its parts, tests/replay/games.py)
+        game = os.path.join(rep, "games", base[7:])
+        trace = sorted(glob.glob(glob.escape(game) + ".trace.zst.*")) + [game + ".txt"] if os.path.exists(game + ".txt") else [os.path.join(rep, "traces", base[7:] + ".trace")]
+        return trace + [os.path.join(rep, f) for f in ("replay.c", "replay.h", "d3d9img.c", "d3d8img.c", "d3d11img.c", "build.sh")] + [os.path.join(conv, f) for f in ("replay.rs", "layout.rs", "layouts.txt", "trace.rs", "snappy.rs")] + [os.path.join(HERE, f) for f in COMMON]
     else:
         main = os.path.join(HERE, "probes", base + ".c")
     # (a probe's data header, e.g. imaging_data.h)
