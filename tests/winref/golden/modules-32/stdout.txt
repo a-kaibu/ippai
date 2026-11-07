@@ -6,6 +6,7 @@ no process: 0, error 6
 SetThreadErrorMode found 1, kernel32's 1
 exe info: 1, base 1, size 1, entry 1
 module 0 info: 1, the exe 0, untouched 0, null 1, listed at -1, ntdll 0, kernel32 0, size 0 0, entry 0 0
+module 0 info: size the exe's 1, entry the exe's 1, size untouched 0, entry untouched 0
 info, short: 0, error 122
 info, no module: 0, error 6
 exe base name: 14 chars, the file name 1

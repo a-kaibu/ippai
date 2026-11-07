@@ -2,7 +2,7 @@ cache: rop 16 window 1
 release 1 again 0 null 0
 released: rop 0 set 0 horzres 0 window 0
 again: reset 1 same handle 1
-noresetattrs: found 1 rop kept 0
+noresetattrs: found 0 rop kept 0
 screen: horzres>0 1 released 0
 cache intersectrgn: clip 2 (10,10)-(20,20)
 region kept while used 1, deleted on release 1

@@ -27,3 +27,53 @@ round 2 k 3 value 60000000 mxcsr flags 0x24 _statusfp 0x9 _clearfp 0 after 0
 round 2 k 4 value a0000000 mxcsr flags 0x21 _statusfp 0x11 _clearfp 0 after 0
 round 2 k 5 value 60000000 mxcsr flags 0x28 _statusfp 0x5 _clearfp 0 after 0
 round 2 k 6 value 6ac97800 mxcsr flags 0x22 _statusfp 0x1 _clearfp 0 after 0
+frndint 2.5: x87 flags 0x20 mxcsr flags 0 -> _statusfp 0x1 _clearfp 0x1 after 0 0
+ftz daz 00000001 00000001: add 00000000 mul 00000000 sub 00000000 sqrt 00000000 mxcsr flags 0 _statusfp 0
+ftz daz 00000001 80000001: add 00000000 mul 80000000 sub 00000000 sqrt 00000000 mxcsr flags 0 _statusfp 0
+ftz daz 00000001 007fffff: add 00000000 mul 00000000 sub 00000000 sqrt 00000000 mxcsr flags 0 _statusfp 0
+ftz daz 00000001 00800000: add 00800000 mul 00000000 sub 80800000 sqrt 00000000 mxcsr flags 0 _statusfp 0
+ftz daz 00000001 3f800000: add 3f800000 mul 00000000 sub bf800000 sqrt 00000000 mxcsr flags 0 _statusfp 0
+ftz daz 00000001 0d000000: add 0d000000 mul 00000000 sub 8d000000 sqrt 00000000 mxcsr flags 0 _statusfp 0
+ftz daz 00000001 33000000: add 33000000 mul 00000000 sub b3000000 sqrt 00000000 mxcsr flags 0 _statusfp 0
+ftz daz 80000001 00000001: add 00000000 mul 80000000 sub 80000000 sqrt 80000000 mxcsr flags 0 _statusfp 0
+ftz daz 80000001 80000001: add 80000000 mul 00000000 sub 00000000 sqrt 80000000 mxcsr flags 0 _statusfp 0
+ftz daz 80000001 007fffff: add 00000000 mul 80000000 sub 80000000 sqrt 80000000 mxcsr flags 0 _statusfp 0
+ftz daz 80000001 00800000: add 00800000 mul 80000000 sub 80800000 sqrt 80000000 mxcsr flags 0 _statusfp 0
+ftz daz 80000001 3f800000: add 3f800000 mul 80000000 sub bf800000 sqrt 80000000 mxcsr flags 0 _statusfp 0
+ftz daz 80000001 0d000000: add 0d000000 mul 80000000 sub 8d000000 sqrt 80000000 mxcsr flags 0 _statusfp 0
+ftz daz 80000001 33000000: add 33000000 mul 80000000 sub b3000000 sqrt 80000000 mxcsr flags 0 _statusfp 0
+ftz daz 007fffff 00000001: add 00000000 mul 00000000 sub 00000000 sqrt 00000000 mxcsr flags 0 _statusfp 0
+ftz daz 007fffff 80000001: add 00000000 mul 80000000 sub 00000000 sqrt 00000000 mxcsr flags 0 _statusfp 0
+ftz daz 007fffff 007fffff: add 00000000 mul 00000000 sub 00000000 sqrt 00000000 mxcsr flags 0 _statusfp 0
+ftz daz 007fffff 00800000: add 00800000 mul 00000000 sub 80800000 sqrt 00000000 mxcsr flags 0 _statusfp 0
+ftz daz 007fffff 3f800000: add 3f800000 mul 00000000 sub bf800000 sqrt 00000000 mxcsr flags 0 _statusfp 0
+ftz daz 007fffff 0d000000: add 0d000000 mul 00000000 sub 8d000000 sqrt 00000000 mxcsr flags 0 _statusfp 0
+ftz daz 007fffff 33000000: add 33000000 mul 00000000 sub b3000000 sqrt 00000000 mxcsr flags 0 _statusfp 0
+ftz daz 00800000 00000001: add 00800000 mul 00000000 sub 00800000 sqrt 20000000 mxcsr flags 0 _statusfp 0
+ftz daz 00800000 80000001: add 00800000 mul 80000000 sub 00800000 sqrt 20000000 mxcsr flags 0 _statusfp 0
+ftz daz 00800000 007fffff: add 00800000 mul 00000000 sub 00800000 sqrt 20000000 mxcsr flags 0 _statusfp 0
+ftz daz 00800000 00800000: add 01000000 mul 00000000 sub 00000000 sqrt 20000000 mxcsr flags 0x30 _statusfp 0x3
+ftz daz 00800000 3f800000: add 3f800000 mul 00800000 sub bf800000 sqrt 20000000 mxcsr flags 0x20 _statusfp 0x1
+ftz daz 00800000 0d000000: add 0d000000 mul 00000000 sub 8d000000 sqrt 20000000 mxcsr flags 0x30 _statusfp 0x3
+ftz daz 00800000 33000000: add 33000000 mul 00000000 sub b3000000 sqrt 20000000 mxcsr flags 0x30 _statusfp 0x3
+ftz daz 3f800000 00000001: add 3f800000 mul 00000000 sub 3f800000 sqrt 3f800000 mxcsr flags 0 _statusfp 0
+ftz daz 3f800000 80000001: add 3f800000 mul 80000000 sub 3f800000 sqrt 3f800000 mxcsr flags 0 _statusfp 0
+ftz daz 3f800000 007fffff: add 3f800000 mul 00000000 sub 3f800000 sqrt 3f800000 mxcsr flags 0 _statusfp 0
+ftz daz 3f800000 00800000: add 3f800000 mul 00800000 sub 3f800000 sqrt 3f800000 mxcsr flags 0x20 _statusfp 0x1
+ftz daz 3f800000 3f800000: add 40000000 mul 3f800000 sub 00000000 sqrt 3f800000 mxcsr flags 0 _statusfp 0
+ftz daz 3f800000 0d000000: add 3f800000 mul 0d000000 sub 3f800000 sqrt 3f800000 mxcsr flags 0x20 _statusfp 0x1
+ftz daz 3f800000 33000000: add 3f800000 mul 33000000 sub 3f800000 sqrt 3f800000 mxcsr flags 0x20 _statusfp 0x1
+ftz daz 0d000000 00000001: add 0d000000 mul 00000000 sub 0d000000 sqrt 263504f3 mxcsr flags 0x20 _statusfp 0x1
+ftz daz 0d000000 80000001: add 0d000000 mul 80000000 sub 0d000000 sqrt 263504f3 mxcsr flags 0x20 _statusfp 0x1
+ftz daz 0d000000 007fffff: add 0d000000 mul 00000000 sub 0d000000 sqrt 263504f3 mxcsr flags 0x20 _statusfp 0x1
+ftz daz 0d000000 00800000: add 0d000000 mul 00000000 sub 0d000000 sqrt 263504f3 mxcsr flags 0x30 _statusfp 0x3
+ftz daz 0d000000 3f800000: add 3f800000 mul 0d000000 sub bf800000 sqrt 263504f3 mxcsr flags 0x20 _statusfp 0x1
+ftz daz 0d000000 0d000000: add 0d800000 mul 00000000 sub 00000000 sqrt 263504f3 mxcsr flags 0x30 _statusfp 0x3
+ftz daz 0d000000 33000000: add 33000000 mul 00800000 sub b3000000 sqrt 263504f3 mxcsr flags 0x20 _statusfp 0x1
+ftz daz 33000000 00000001: add 33000000 mul 00000000 sub 33000000 sqrt 393504f3 mxcsr flags 0x20 _statusfp 0x1
+ftz daz 33000000 80000001: add 33000000 mul 80000000 sub 33000000 sqrt 393504f3 mxcsr flags 0x20 _statusfp 0x1
+ftz daz 33000000 007fffff: add 33000000 mul 00000000 sub 33000000 sqrt 393504f3 mxcsr flags 0x20 _statusfp 0x1
+ftz daz 33000000 00800000: add 33000000 mul 00000000 sub 33000000 sqrt 393504f3 mxcsr flags 0x30 _statusfp 0x3
+ftz daz 33000000 3f800000: add 3f800000 mul 33000000 sub bf800000 sqrt 393504f3 mxcsr flags 0x20 _statusfp 0x1
+ftz daz 33000000 0d000000: add 33000000 mul 00800000 sub 33000000 sqrt 393504f3 mxcsr flags 0x20 _statusfp 0x1
+ftz daz 33000000 33000000: add 33800000 mul 26800000 sub 00000000 sqrt 393504f3 mxcsr flags 0x20 _statusfp 0x1
