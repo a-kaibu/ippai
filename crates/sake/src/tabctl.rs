@@ -112,8 +112,9 @@ pub(super) fn layout(c: &mut Ctx, h: u32) -> Layout {
     let buttons = style & TCS_BUTTONS != 0;
     let multi = style & (TCS_MULTILINE | TCS_VERTICAL) != 0;
     let default_min = ave * 6 + pad.0 * 2;
-    // (Windows: tmHeight + 5 with the default vertical padding 3, + 9 with 5)
-    let tab_h = if height != 0 { height } else if buttons { tm_h + 2 + 2 * pad.1 } else { tm_h + 2 * pad.1 - 1 };
+    // (Windows: tmHeight + 5 with the default vertical padding 3, + 9 with 5, never below + 3:
+    // padding 0..2 all give + 3, winref tabctl)
+    let tab_h = if height != 0 { height } else if buttons { tm_h + 2 + 2 * pad.1 } else { tm_h + (2 * pad.1 - 1).max(3) };
     let n = texts.len();
     // (left, right, row) with every row starting at 0
     let mut cells: Vec<(i32, i32, i32)> = Vec::with_capacity(n);
@@ -536,13 +537,15 @@ pub(super) fn proc_fn(c: &mut Ctx) -> u32 {
             }
             let (x, y) = (r32(lp) as i32, r32(lp + 4) as i32);
             let i = hit_test(c, h, x, y);
-            // TCHT_ONITEMLABEL inside the padding, TCHT_ONITEM on it, TCHT_NOWHERE
+            // TCHT_ONITEMLABEL between the horizontal paddings (the padding's own last pixel is
+            // still the item; the whole height counts), TCHT_ONITEM on them, TCHT_NOWHERE
+            // (winref tabctl)
             let flags = if i < 0 {
                 1
             } else {
                 let r = layout(c, h).items.swap_remove(i as usize);
-                let (px, py) = tab(h, |t| t.pad);
-                if x >= r.l + px && x < r.r - px && y >= r.t + py && y < r.b - py { 4 } else { 6 }
+                let (px, _) = tab(h, |t| t.pad);
+                if x > r.l + px && x < r.r - px && y >= r.t && y < r.b { 4 } else { 6 }
             };
             w32(lp + 8, flags);
             i as u32

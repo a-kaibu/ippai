@@ -190,16 +190,35 @@ thread_local! {
     static PARKABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// The parts of threads that ended, for the next threads of the same name and kind: a game
+/// that starts and ends threads all the time keeps as many parts as it has threads at once
+/// (they used to be leaked, one per thread: LeakSanitizer, 360 bytes in the snap tests). No one
+/// keeps a part past unregister: PARTS is read under its lock, ME is the thread's own.
+static RETIRED: Mutex<Vec<&'static Part>> = Mutex::new(Vec::new());
+
 /// Makes the calling thread a participant (busy). A host thread calls it at its start.
 pub fn register(name: &'static str, guest: bool, user: usize) -> &'static Part {
-    let p: &'static Part = Box::leak(Box::new(Part {
-        name,
-        guest,
-        state: AtomicU32::new(BUSY),
-        user: AtomicUsize::new(user),
-        resume: [const { AtomicU64::new(0) }; 4],
-        doing: AtomicU32::new(0),
-    }));
+    let reused = {
+        let mut r = RETIRED.lock().unwrap_or_else(|e| e.into_inner());
+        r.iter().position(|p| std::ptr::eq(p.name, name) && p.guest == guest).map(|i| r.swap_remove(i))
+    };
+    let p: &'static Part = match reused {
+        Some(p) => {
+            p.state.store(BUSY, SeqCst);
+            p.user.store(user, SeqCst);
+            p.resume.iter().for_each(|x| x.store(0, SeqCst));
+            p.doing.store(0, SeqCst);
+            p
+        }
+        None => Box::leak(Box::new(Part {
+            name,
+            guest,
+            state: AtomicU32::new(BUSY),
+            user: AtomicUsize::new(user),
+            resume: [const { AtomicU64::new(0) }; 4],
+            doing: AtomicU32::new(0),
+        })),
+    };
     PARTS.lock().unwrap_or_else(|e| e.into_inner()).push(p);
     ME.with(|m| m.set(Some(p)));
     p
@@ -209,8 +228,15 @@ pub fn register(name: &'static str, guest: bool, user: usize) -> &'static Part {
 pub fn unregister() {
     if let Some(p) = ME.with(|m| m.take()) {
         PARTS.lock().unwrap_or_else(|e| e.into_inner()).retain(|&x| !std::ptr::eq(x, p));
+        RETIRED.lock().unwrap_or_else(|e| e.into_inner()).push(p);
         COORD_CV.notify_all();
     }
+}
+
+/// (tests: how many parts wait for reuse)
+#[cfg(test)]
+fn retired() -> usize {
+    RETIRED.lock().unwrap_or_else(|e| e.into_inner()).len()
 }
 
 pub fn me() -> Option<&'static Part> {
@@ -780,6 +806,43 @@ mod tests {
             assert_eq!(VNHOST_SNAP.stirred.load(SeqCst) != 0, wake);
         }
         STOP.store(1, SeqCst);
+        t.join().unwrap();
+    }
+
+    /// Threads that come and go reuse the parts of the ones that ended: never more parts than
+    /// threads at once, each reused one fresh (busy, its own user value, nothing parked).
+    #[test]
+    fn parts_are_reused() {
+        let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+        static NAME: &str = "reuse test";
+        let before = retired();
+        for round in 0..50usize {
+            let ts: Vec<_> = (0..4usize)
+                .map(|k| {
+                    std::thread::spawn(move || {
+                        let p = register(NAME, true, round * 10 + k);
+                        assert_eq!(p.state.load(SeqCst), BUSY);
+                        assert_eq!(p.user.load(SeqCst), round * 10 + k);
+                        assert!(p.resume.iter().all(|x| x.load(SeqCst) == 0) && p.doing.load(SeqCst) == 0);
+                        assert!(std::ptr::eq(me().unwrap(), p));
+                        p.resume[0].store(7, SeqCst);
+                        p.doing.store(9, SeqCst);
+                        p.state.store(PARKED, SeqCst);
+                        unregister();
+                        assert!(me().is_none());
+                    })
+                })
+                .collect();
+            ts.into_iter().for_each(|t| t.join().unwrap());
+            assert!(retired() <= before + 4, "round {round}: {} parts kept", retired());
+            assert!(!PARTS.lock().unwrap().iter().any(|p| std::ptr::eq(p.name, NAME)));
+        }
+        // (another name or kind gets a part of its own)
+        let t = std::thread::spawn(|| {
+            let p = register("reuse test, host", false, 1);
+            assert!(!p.guest && p.name == "reuse test, host");
+            unregister();
+        });
         t.join().unwrap();
     }
 

@@ -933,6 +933,46 @@ mod tests {
             .collect()
     }
 
+    /// Loopback needs no token since 0f274c4, so the repository's own scripts start
+    /// `ippai serve` without --trust-loopback (a hidden no-op kept for old scripts; only the
+    /// bench's comparison of older builds may still pass it, to those that know it)
+    #[test]
+    fn scripts_need_no_trust_loopback() {
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+        let mut stack = vec![std::path::PathBuf::from(root).join("tests"), std::path::PathBuf::from(root).join("tools"), std::path::PathBuf::from(root).join(".github")];
+        let mut seen = 0;
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    if !p.ends_with("node_modules") && !p.ends_with("golden") {
+                        stack.push(p);
+                    }
+                    continue;
+                }
+                if !matches!(p.extension().and_then(|x| x.to_str()), Some("mjs" | "js" | "sh" | "yml" | "py")) {
+                    continue;
+                }
+                let Ok(text) = std::fs::read_to_string(&p) else { continue };
+                seen += 1;
+                for l in text.lines().filter(|l| l.contains("--trust-loopback")) {
+                    assert!(p.ends_with("tests/bench/ci.sh") && l.contains("serve --help"), "{}: {l}", p.display());
+                }
+            }
+        }
+        assert!(seen > 10);
+        // and the flag still parses (old scripts) without changing anything
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(flatten)]
+            a: super::Args,
+        }
+        let a = <Cli as clap::Parser>::try_parse_from(["serve", "--trust-loopback"]).unwrap();
+        assert!(a.a.trust_loopback);
+        let b = <Cli as clap::Parser>::try_parse_from(["serve"]).unwrap();
+        assert!(!b.a.trust_loopback && !b.a.strict_auth);
+    }
+
     fn scratch(what: &str) -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!("ippai-{what}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
