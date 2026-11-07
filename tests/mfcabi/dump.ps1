@@ -24,7 +24,7 @@ foreach ($lib in 'mfc140', 'mfc140u') {
   $rows | Sort-Object { [int]($_ -split "`t")[0] } | Set-Content -Encoding utf8 "$out\$lib.tsv"
 }
 Push-Location $env:RUNNER_TEMP
-cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" x86 && cl /nologo /EHsc /MD /D_AFXDLL /std:c++17 `"$PSScriptRoot\layout.cpp`" /Fe:layout.exe"
-if ($LASTEXITCODE) { throw "cl failed" }
-.\layout.exe | Set-Content -Encoding utf8 "$out\layout.tsv"
+# (a build error goes to layout-build.txt, committed with the rest, so the probe can be fixed)
+cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" x86 >nul && cl /nologo /EHsc /MD /D_AFXDLL /std:c++17 `"$PSScriptRoot\layout.cpp`" /Fe:layout.exe 2>&1" | Set-Content -Encoding utf8 "$out\layout-build.txt"
+if (Test-Path layout.exe) { .\layout.exe | Set-Content -Encoding utf8 "$out\layout.tsv" }
 Pop-Location
