@@ -5,7 +5,7 @@
 # (.goreleaser.yaml, .github/workflows/release.yml), from the web/dist this makes.
 # Used by .github/workflows/ci.yml and runnable anywhere with the same tools:
 #   apt: mingw-w64 zstd; rustup (rust-src,
-#   wasm32-unknown-emscripten); node 20+. Emscripten is downloaded into $EMSDK4.
+#   wasm32-unknown-emscripten); node 26+. Emscripten is downloaded into $EMSDK4.
 #
 #   tools/ci/build.sh [version]          (default: git describe)
 set -euo pipefail

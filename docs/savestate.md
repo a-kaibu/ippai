@@ -89,7 +89,7 @@ A state holds the game's own save files as they were then: loading one goes back
   clear them every frame).
 * Under node, files opened outside kura's file system (NODERAWFS) are not in a state.
 * Node 22's V8 loses `i32.atomic.store` to constant addresses at 2 GiB and up in its first tier,
-  where all of the host's statics are: run sake.js under node 24 or later.
+  where all of the host's statics are: run sake.js under node 26 (what CI uses).
 
 ## Under node, and the tests
 
