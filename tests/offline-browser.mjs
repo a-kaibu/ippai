@@ -71,8 +71,40 @@ const browser = await chromium.launchPersistentContext(join(work, "profile"), {
   viewport: { width: 1280, height: 720 },
 });
 const lines = [];
+// what reached the network for the file never saved (the page's own and the service worker's
+// requests: Chromium reports both to the context)
+const seen = [];
+const watch = (what) => (r) => r.url().includes("never-saved") && seen.push(`${what} ${r.serviceWorker() ? "sw" : "page"} ${r.failure()?.errorText ?? ""}`.trim());
+browser.on("request", watch("request"));
+browser.on("requestfailed", watch("failed"));
+browser.on("requestfinished", watch("finished"));
+let page;
+/** A file never fetched answers at once as offline (503 + x-ippai-offline); on a miss, what the
+ * page, its service worker and the network saw, to tell the worker's fault from the harness's. */
+async function neverFetched(phase) {
+  seen.length = 0;
+  const missed = await page.evaluate(async () => {
+    const t = performance.now();
+    const r = await fetch(`jit/never-saved.parts?${Math.random()}`);
+    const headers = Object.fromEntries(r.headers);
+    const ms = performance.now() - t;
+    const sw = navigator.serviceWorker.controller;
+    const state = await new Promise((resolve) => {
+      if (!sw) return resolve(null);
+      const ch = new MessageChannel();
+      ch.port1.onmessage = (e) => resolve(e.data);
+      setTimeout(() => resolve("no answer"), 1000);
+      sw.postMessage("state", [ch.port2]);
+    });
+    return { status: r.status, offline: r.headers.get("x-ippai-offline"), ms, headers, onLine: navigator.onLine, controlled: !!sw, swState: sw?.state, state };
+  });
+  const diag = `${phase}: ${JSON.stringify({ ...missed, network: seen })}`;
+  assert.equal(missed.status, 503, diag);
+  assert.equal(missed.offline, "1", diag);
+  assert.ok(missed.ms < 2000, `miss took ${missed.ms} ms: ${diag}`);
+}
 try {
-  const page = browser.pages()[0] ?? (await browser.newPage());
+  page = browser.pages()[0] ?? (await browser.newPage());
   page.on("console", (m) => lines.push(m.text()));
 
   // installable: Chrome reads the manifest (icons, start_url, display)
@@ -109,20 +141,15 @@ try {
   await dialog("オフラインのゲーム", (d) => d.getByText(/端末に保存済み/).waitFor({ timeout: 10000 }));
 
   await browser.setOffline(true);
+  // (Playwright 1.56 left the service worker online here: its fetches reached the server, which
+  // answered 404; 1.63 takes the worker offline with the page, CI's browser job pins it)
   await page.reload();
   assert.equal(await page.evaluate(() => crossOriginIsolated), true, "isolated offline");
   await page.getByText("オフラインのゲーム").first().waitFor({ timeout: 10000 });
 
   await page.getByText("オフラインです").waitFor({ timeout: 5000 });
   // never fetched: offline at once (503, x-ippai-offline), not a network error to retry
-  const missed = await page.evaluate(async () => {
-    const t = performance.now();
-    const r = await fetch("jit/never-saved.parts");
-    return { status: r.status, offline: r.headers.get("x-ippai-offline"), ms: performance.now() - t };
-  });
-  assert.equal(missed.status, 503);
-  assert.equal(missed.offline, "1");
-  assert.ok(missed.ms < 2000, `miss took ${missed.ms} ms`);
+  await neverFetched("offline");
 
   if (full) {
     const t = Date.now();
@@ -142,6 +169,7 @@ try {
   await page.goto(`${base}play.html`);
   await page.getByText("オフラインのゲーム").first().waitFor({ timeout: 15000 });
   await page.getByText("オフラインです").waitFor({ timeout: 5000 });
+  await neverFetched("server gone");
   console.log(`offline-browser: ok${full ? " (game run offline)" : ""}`);
 } catch (e) {
   console.log(lines.slice(-40).join("\n"));
