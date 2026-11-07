@@ -302,6 +302,13 @@ pub unsafe extern "C" fn vnhost_display_windows(out: *mut i32, max: c_int) -> c_
     with(|d| d.windows(std::slice::from_raw_parts_mut(out, 4 * max.max(0) as usize)) as c_int)
 }
 
+/// [`vnhost_display_windows`] of the windows above window `hwnd` (the one a Direct3D frame is
+/// shown in: a movie's window of the same size over it is above it); None when `hwnd` is not a
+/// visible window of the display.
+pub fn windows_above(hwnd: u32, out: &mut [i32]) -> Option<usize> {
+    with(|d| d.windows_above(hwnd, out))
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn vnhost_display_size(w: *mut c_int, h: *mut c_int) {
     with(|d| {
@@ -351,6 +358,27 @@ impl Display {
             n += 1;
         }
         n
+    }
+
+    /// The visible windows above window `hwnd`, topmost first (as `windows`); None when `hwnd` is
+    /// not a visible window.
+    fn windows_above(&self, hwnd: u32, out: &mut [i32]) -> Option<usize> {
+        if !self.wins.get(&hwnd).is_some_and(|w| w.visible && !w.rect.empty()) {
+            return None;
+        }
+        let mut n = 0;
+        for id in self.order.iter().rev() {
+            if *id == hwnd {
+                return Some(n);
+            }
+            let w = &self.wins[id];
+            if !w.visible || w.rect.empty() || 4 * n == out.len() {
+                continue;
+            }
+            out[4 * n..4 * n + 4].copy_from_slice(&[w.rect.l, w.rect.t, w.rect.r, w.rect.b]);
+            n += 1;
+        }
+        Some(n)
     }
 
     fn pos(&mut self, hwnd: u32, rect: Rect, client: Rect, visible: bool, restack: bool, above: u32) {
@@ -813,6 +841,58 @@ mod tests {
         assert_eq!(a.or(&rect(3, 0, 9, 4)), rect(1, 0, 9, 9));
         assert_eq!(a.or(&rect(7, 7, 7, 9)), a);
         assert_eq!(rect(7, 7, 7, 9).or(&a), a);
+    }
+
+    /// The windows above a Direct3D window, by the window: a movie's window exactly over the
+    /// game's client area is above it (it was taken for the game's own before, and hidden).
+    #[test]
+    fn windows_above_a_window() {
+        let mut d = disp(40, 30);
+        d.pos(1, rect(0, 0, 40, 30), rect(0, 0, 40, 30), true, false, 0);
+        d.pos(2, rect(0, 0, 40, 30), rect(0, 0, 40, 30), true, false, 0);
+        d.pos(3, rect(5, 5, 10, 10), rect(5, 5, 10, 10), true, false, 0);
+        let mut out = [0; 32];
+        assert_eq!(d.windows_above(1, &mut out), Some(2));
+        assert_eq!(out[..8], [5, 5, 10, 10, 0, 0, 40, 30]);
+        assert_eq!(d.windows_above(3, &mut out), Some(0));
+        assert_eq!(d.windows_above(9, &mut out), None, "not a window of the display");
+        d.pos(2, rect(0, 0, 40, 30), rect(0, 0, 40, 30), false, false, 0);
+        assert_eq!(d.windows_above(1, &mut out), Some(1), "hidden ones are not above");
+        assert_eq!(d.windows_above(2, &mut out), None, "a hidden window shows nothing");
+        // (as many as `out` holds)
+        assert_eq!(d.windows_above(1, &mut out[..0]), Some(0));
+    }
+
+    proptest::proptest! {
+        /// Any moves, hides and restacks of a few windows: windows_above is, topmost first, the
+        /// visible windows over the given one in a model of the z-order (a window restacked
+        /// goes under the one named, or on top).
+        #[test]
+        fn windows_above_as_a_model(ops in proptest::collection::vec((1u32..5, 0i32..30, 0i32..20, 0i32..20, proptest::prelude::any::<bool>(), proptest::prelude::any::<bool>(), 0u32..6), 1..30)) {
+            let mut d = disp(40, 30);
+            // (bottom first: hwnd, rect, visible)
+            let mut model: Vec<(u32, [i32; 4], bool)> = Vec::new();
+            for (h, x, y, w, vis, restack, above) in ops {
+                let r = [x, y, x + w, y + w / 2];
+                d.pos(h, rect(r[0], r[1], r[2], r[3]), rect(r[0], r[1], r[2], r[3]), vis, restack, above);
+                let known = model.iter().any(|m| m.0 == h);
+                if restack || !known {
+                    model.retain(|m| m.0 != h);
+                    let at = model.iter().position(|m| m.0 == above).unwrap_or(model.len());
+                    model.insert(at, (h, r, vis));
+                } else {
+                    model.iter_mut().find(|m| m.0 == h).unwrap().1 = r;
+                    model.iter_mut().find(|m| m.0 == h).unwrap().2 = vis;
+                }
+                let shown = |m: &(u32, [i32; 4], bool)| m.2 && m.1[2] > m.1[0] && m.1[3] > m.1[1];
+                for q in 1..6 {
+                    let mut out = [0; 32];
+                    let got = d.windows_above(q, &mut out).map(|n| out[..4 * n].to_vec());
+                    let want = model.iter().position(|m| m.0 == q && shown(m)).map(|i| model[i + 1..].iter().rev().filter(|m| shown(m)).flat_map(|m| m.1).collect::<Vec<_>>());
+                    proptest::prop_assert_eq!(got, want, "window {}", q);
+                }
+            }
+        }
     }
 
     #[test]

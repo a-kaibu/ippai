@@ -14,8 +14,8 @@ use super::*;
 pub struct Saved {
     pub c: Vec<u32>,
     pub blob: Vec<u8>,
-    /// the texture the page showed, where, flipped
-    overlay: Option<(u32, [i32; 4], bool)>,
+    /// the texture the page showed, where, flipped, in which window
+    overlay: Option<(u32, [i32; 4], bool, u32)>,
 }
 
 enum What {
@@ -170,18 +170,18 @@ impl D3d {
             c.push(SET_TARGETS2);
             c.extend_from_slice(t);
         }
-        let overlay = self.overlay.and_then(|o| self.textures.contains_key(&self.overlay_tex).then_some((self.overlay_tex, o.rect, o.flip)));
+        let overlay = self.overlay.and_then(|o| self.textures.contains_key(&self.overlay_tex).then_some((self.overlay_tex, o.rect, o.flip, o.hwnd)));
         Saved { c, blob, overlay }
     }
 
     /// A fresh D3d (a restored module's): makes what `s` holds.
     pub fn snap_restore(&mut self, s: &Saved) {
         self.run_batch(&s.c, &[], &s.blob);
-        if let Some((id, rect, flip)) = s.overlay {
+        if let Some((id, rect, flip, hwnd)) = s.overlay {
             if self.textures.contains_key(&id) {
                 // (a multisampled one shows its resolve: of zeros, until the game presents again)
                 let view = self.present_view(id);
-                self.overlay = Some(Overlay { view, rect, flip });
+                self.overlay = Some(Overlay { view, rect, flip, hwnd });
                 self.overlay_tex = id;
                 self.tex_gen += 1;
             }

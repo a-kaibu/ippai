@@ -409,11 +409,18 @@ impl Render {
         let mut above = Vec::new();
         if let Some(o) = self.d3d.overlay {
             let mut buf = [0i32; 32];
-            let n = unsafe { crate::display::vnhost_display_windows(buf.as_mut_ptr(), 8) } as usize;
-            let rs: Vec<[i32; 4]> = (0..n).map(|k| [buf[4 * k], buf[4 * k + 1], buf[4 * k + 2], buf[4 * k + 3]]).collect();
-            let [ol, ot, or, ob] = o.rect;
-            if let Some(i) = rs.iter().position(|&[l, t, r, b]| l <= ol && t <= ot && r >= or && b >= ob) {
-                above = rs[..i].to_vec();
+            let rect = |buf: &[i32], n: usize| -> Vec<[i32; 4]> { (0..n).map(|k| [buf[4 * k], buf[4 * k + 1], buf[4 * k + 2], buf[4 * k + 3]]).collect() };
+            if let Some(n) = crate::display::windows_above(o.hwnd, &mut buf) {
+                // (by its window: one of the same size over it, a movie's, is above it)
+                above = rect(&buf, n);
+            } else {
+                // (a window not the display's, a child: the topmost one covering it)
+                let n = unsafe { crate::display::vnhost_display_windows(buf.as_mut_ptr(), 8) } as usize;
+                let rs = rect(&buf, n);
+                let [ol, ot, or, ob] = o.rect;
+                if let Some(i) = rs.iter().position(|&[l, t, r, b]| l <= ol && t <= ot && r >= or && b >= ob) {
+                    above = rs[..i].to_vec();
+                }
             }
         }
         if above != self.above {

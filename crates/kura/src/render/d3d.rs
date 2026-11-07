@@ -334,6 +334,8 @@ pub struct Overlay {
     pub rect: [i32; 4],
     /// bottom row first (OpenGL)
     pub flip: bool,
+    /// the window it is shown in
+    pub hwnd: u32,
 }
 
 /// A clear of a whole view (flags 1 color, 2 depth, 4 stencil) not done yet: the next pass that
@@ -931,7 +933,7 @@ impl D3d {
                         if old != view {
                             self.tex_gen += 1;
                         }
-                        self.overlay = Some(Overlay { view, rect, flip: op == PRESENT_FLIP });
+                        self.overlay = Some(Overlay { view, rect, flip: op == PRESENT_FLIP, hwnd: a(8) });
                         self.overlay_tex = tex;
                     }
                     self.frames += 1;
