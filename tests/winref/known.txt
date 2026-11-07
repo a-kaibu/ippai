@@ -87,11 +87,6 @@ wicconv-* ^image cmyk_grid:
 wicconv-* ^(want|got) +32bppCMYK>32bppBGRA:
 wicconv-* ^(want|got) +32bppBGRA>(16bppGray|32bppCMYK|[248]bppIndexed):
 wicconv-* ^(want|got) +w [23] 
-# x87 precision control: koji's x87 computes in doubles whatever the precision field says (the
-# control word itself reads back as on Windows); single precision (_PC_24, or Direct3D's
-# CreateDevice without D3DCREATE_FPU_PRESERVE) rounds 1/3 to a float there
-crt_math-32 ^(want|got) +pc 0: 1/3 
-d3d8-32 ^(want|got) +fpu default: 1/3 
 # Direct2D (WARP): antialiased edges are Windows' own coverage (sake: 4x4 samples), an aliased
 # ellipse outline is its tessellated stroke (sake: a ring), and an antialiased clip still fades
 # an aliased fill at its edges (sake: clips by the pixel center there)

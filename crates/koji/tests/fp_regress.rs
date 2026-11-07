@@ -114,3 +114,18 @@ fn x87_loads_and_frndint_quiet_snans() {
     let rnd = |a: &mut CodeAssembler| { a.fld(qword_ptr(esi))?; a.frndint()?; a.fstp(qword_ptr(edi)) };
     assert_eq!(x87(0x037f, 0xfff0_7fff_ffff_bfff, rnd), 0xfff8_7fff_ffff_bfff);
 }
+
+#[test]
+fn single_precision_control_rounds_to_24_bits() {
+    // (winref crt_math-32 "pc 0: 1/3" and d3d8-32 "fpu default: 1/3": _PC_24, as Direct3D's
+    // CreateDevice leaves it, gives 0.3333333432674408 on Windows; _PC_53 and _PC_64 the double)
+    let third = |a: &mut CodeAssembler| { a.fld1()?; a.fld(qword_ptr(esi))?; a.fdivp(st1, st0)?; a.fstp(qword_ptr(edi)) };
+    let three = 3f64.to_bits();
+    assert_eq!(f64b(x87(0x007f, three, third)), 0.3333333432674408);
+    assert_eq!(f64b(x87(0x027f, three, third)), 1.0 / 3.0);
+    assert_eq!(f64b(x87(0x037f, three, third)), 1.0 / 3.0);
+    // the exponent stays the double's: 2^-200 / 3 is no f32 subnormal at 24 bits
+    let tiny = |a: &mut CodeAssembler| { a.fld(qword_ptr(esi))?; a.fld1()?; a.fadd_2(st0, st0)?; a.fld1()?; a.faddp(st1, st0)?; a.fdivp(st1, st0)?; a.fstp(qword_ptr(edi)) };
+    let r = f64b(x87(0x007f, f64::powi(2.0, -200).to_bits(), tiny));
+    assert_eq!(r, (1.0f32 / 3.0) as f64 * f64::powi(2.0, -200));
+}
