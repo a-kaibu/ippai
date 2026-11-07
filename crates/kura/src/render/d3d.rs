@@ -260,6 +260,24 @@ const RESOLVE_SHADER: &str = r#"
 }
 "#;
 
+/// Depth as the bits of a texture's 32-bit texels, whose texel (0, 0) is pixel `o.xy` (see `draw_depth`).
+/// (the first line of ZWRITE_SHADER: the model writes depth for it)
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) const ZWRITE: &str = "// ippai: depth from texels\n";
+const ZWRITE_SHADER: &str = r#"// ippai: depth from texels
+@group(0) @binding(0) var src: texture_2d<TY>;
+struct C { o: vec4f };
+@group(0) @binding(1) var<uniform> c: C;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+  let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
+  return vec4f(p * 2.0 - 1.0, 0.0, 1.0);
+}
+@fragment fn fs(@builtin(position) p: vec4f) -> @builtin(frag_depth) f32 {
+  let v = textureLoad(src, vec2i(p.xy) - vec2i(c.o.xy), 0);
+  return GET;
+}
+"#;
+
 const BLIT_SHADER: &str = r#"
 struct Out { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
 struct R { src: vec4f };
@@ -532,6 +550,8 @@ pub struct D3d {
     no_ps: Id,
     clear_module: Id,
     blit_module: Id,
+    /// the pipelines of `draw_depth`, by the source's sample type
+    zwrite_pipes: HashMap<char, (Id, Id)>,
     // save states (d3d/snap.rs): what made the shaders and Direct3D 9 pipelines, the texture
     // shown, the reads of a state being taken
     shader_src: HashMap<u32, String>,
@@ -626,6 +646,7 @@ impl D3d {
             no_ps: 0,
             clear_module: 0,
             blit_module: 0,
+            zwrite_pipes: HashMap::new(),
             shader_src: HashMap::new(),
             pipe_keys: HashMap::new(),
             overlay_tex: 0,
@@ -1005,7 +1026,8 @@ impl D3d {
                 }
                 WRITE_TEXTURE2 => {
                     let (id, level, layer, x, y, w, h, bpr, off) = (a(1), a(2), a(3), a(4), a(5), a(6), a(7), a(8), a(9));
-                    if let Some(t) = self.textures.get(&id).filter(|t| !is_depth(t.format) && t.samples == 1) {
+                    // (of depth only 16-bit: WebGPU writes into no other)
+                    if let Some(t) = self.textures.get(&id).filter(|t| (!is_depth(t.format) || t.format == "depth16unorm") && t.samples == 1) {
                         let (tw, th, levels, tex, halved) = (t.w, t.h, t.levels, t.tex, t.halved);
                         self.flush_if_used(id);
                         let (lw, lh) = ((tw >> level).max(1), (th >> level).max(1));
@@ -2250,6 +2272,59 @@ impl D3d {
         p
     }
 
+    /// A box of a depth32float texture's level and layer drawn as the bits of the 32-bit texels
+    /// of `src` (a 2D view; kind 'f', 'u' or 'i' of its sample type) whose texel (0, 0) is pixel
+    /// `o` of it: Direct3D 11's copies into D32_FLOAT, which WebGPU copies nothing into. (Depth
+    /// holds 0..1: values out of it are clamped, NaN undefined.) The box is inside the level, as
+    /// copy_rect checked.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_depth(&mut self, id: u32, level: u32, layer: u32, [x, y, w, h]: [u32; 4], src: Id, kind: char, o: [i32; 2]) {
+        let Some(t) = self.textures.get(&id) else { return };
+        let (lw, lh) = ((t.w >> level).max(1), (t.h >> level).max(1));
+        self.end_pass();
+        let (pipe, layout) = match self.zwrite_pipes.get(&kind) {
+            Some(&p) => p,
+            None => {
+                let (ty, get) = match kind {
+                    'u' => ("u32", "bitcast<f32>(v.r)"),
+                    'i' => ("i32", "bitcast<f32>(v.r)"),
+                    _ => ("f32", "v.r"),
+                };
+                let m = gpu::shader(&ZWRITE_SHADER.replace("TY", ty).replace("GET", get));
+                let st = match kind {
+                    'u' => "uint",
+                    'i' => "sint",
+                    _ => "unfilterable-float",
+                };
+                let layout = gpu::bind_group_layout(&format!(r#"{{"entries":[{{"binding":0,"visibility":2,"texture":{{"sampleType":"{st}","viewDimension":"2d"}}}},{{"binding":1,"visibility":2,"buffer":{{"type":"uniform"}}}}]}}"#));
+                let pl = gpu::pipeline_layout(&format!(r#"{{"bindGroupLayouts":[{layout}]}}"#));
+                let p = gpu::render_pipeline(&format!(
+                    r#"{{"layout":{pl},"vertex":{{"module":{m},"entryPoint":"vs"}},"fragment":{{"module":{m},"entryPoint":"fs","targets":[]}},"primitive":{{"topology":"triangle-list"}},"depthStencil":{{"format":"depth32float","depthWriteEnabled":true,"depthCompare":"always"}}}}"#
+                ));
+                gpu::drop(pl);
+                self.zwrite_pipes.insert(kind, (p, layout));
+                (p, layout)
+            }
+        };
+        let slot = self.uniform_slot(&[o[0] as f32, o[1] as f32, 0.0, 0.0]);
+        let group = gpu::bind_group(layout, &[(0, Res::Obj(src)), (1, Res::Buffer(self.clear_uniform, slot * 256, 16))]);
+        self.touch(id);
+        self.use_tex(id);
+        let view = self.view2(id, 1, level, 1, layer, 1, false);
+        self.open = true;
+        gpu::begin_pass(&format!(r#"{{"colorAttachments":[],"depthStencilAttachment":{{"view":{view},"depthLoadOp":"load","depthStoreOp":"store"}}}}"#));
+        gpu::set_pipeline(pipe);
+        gpu::set_bind_group(0, group, &[]);
+        gpu::set_viewport(0.0, 0.0, lw as f32, lh as f32, 0.0, 1.0);
+        gpu::set_scissor(x, y, w, h);
+        gpu::draw(3, 1, 0, 0);
+        gpu::end_pass();
+        gpu::drop(group);
+        if slot == 63 {
+            self.submit();
+        }
+    }
+
     fn copy_rect(&mut self, a: [u32; 13]) {
         let [st, sl, sx, sy, sw, sh, dt, dl, dx, dy, dw, dh, filter] = a;
         // (Direct3D 11's: level | layer (or 3D slice) << 16, filter | slices << 16)
@@ -2307,7 +2382,20 @@ impl D3d {
         // buffer (WebGPU copies textures of other formats no other way)
         if filter == 2 {
             let base = |f: &str| f.trim_end_matches("-srgb").to_string();
-            if sw != dw || sh != dh || is_depth(s_fmt) || is_depth(t_fmt) || bpp(s_fmt) != bpp(t_fmt) {
+            // (depth: 16-bit UNORM and 32-bit float ones, the only ones WebGPU copies out of)
+            let copyable = |f: &str| !is_depth(f) || matches!(f, "depth16unorm" | "depth32float");
+            if sw != dw || sh != dh || !copyable(s_fmt) || !copyable(t_fmt) || bpp(s_fmt) != bpp(t_fmt) {
+                return;
+            }
+            if t_fmt == "depth32float" {
+                // (drawn from the source's level and layer: its texels' bits; from depth, none)
+                let kind = if s_fmt.ends_with("uint") { 'u' } else if s_fmt.ends_with("sint") { 'i' } else { 'f' };
+                if is_depth(s_fmt) || depth != 1 || self.textures.get(&st).is_none_or(|x| x.dim != "2d") {
+                    return;
+                }
+                let view = self.view2(st, 1, sl, 1, sz, 1, false);
+                self.draw_depth(dt, dl, dz, [dx, dy, sw, sh], view, kind, [dx as i32 - sx as i32, dy as i32 - sy as i32]);
+                self.use_tex(st);
                 return;
             }
             if apart && base(s_fmt) == base(t_fmt) {
@@ -2368,7 +2456,7 @@ impl D3d {
         // (a box inside the level: WebGPU's copy wants it so)
         let slices = |t: &Tex| if t.dim == "3d" { (t.layers >> level).max(1) } else { t.layers.max(1) };
         let inside = |t: &Tex| level < t.levels && x as u64 + w as u64 <= (t.w >> level).max(1) as u64 && y as u64 + h as u64 <= (t.h >> level).max(1) as u64 && z < slices(t);
-        let Some(t) = self.textures.get(&id).filter(|t| !is_depth(t.format) && t.samples == 1 && w > 0 && h > 0 && inside(t)) else {
+        let Some(t) = self.textures.get(&id).filter(|t| (matches!(t.format, "depth16unorm" | "depth32float") || !is_depth(t.format)) && t.samples == 1 && w > 0 && h > 0 && inside(t)) else {
             vnhost_d3d9_readback_done(req);
             return;
         };

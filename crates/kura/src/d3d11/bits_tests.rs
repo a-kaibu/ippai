@@ -161,18 +161,6 @@ fn formats() -> Vec<u32> {
     (1..=132).filter(|&f| format::info(f).is_some_and(|i| !format::is_depth(i.page)) && check::format(f).is_some_and(|r| r.0) && !(19..=22).contains(&f) && !(44..=47).contains(&f)).collect()
 }
 
-/// What Windows gives back of `bytes` written as `fmt`: the bytes, but the X of B8G8R8X8 (the
-/// page keeps alpha 1 there; Windows' answer comes with the winref probe d3d11copy)
-fn seen(fmt: u32, bytes: &[u8]) -> Vec<u8> {
-    let mut v = bytes.to_vec();
-    if matches!(format::info(fmt), Some(f) if f.no_alpha) {
-        for px in v.chunks_exact_mut(4) {
-            px[3] = 0;
-        }
-    }
-    v
-}
-
 fn random_subs(rng: &mut Rng, s: Shape, fmt: u32) -> Vec<Vec<u8>> {
     (0..s.subs())
         .map(|sub| {
@@ -196,7 +184,7 @@ fn every_format_and_pair_keeps_the_bits() {
         // a staging texture's own initial data, and a default texture's copied to one
         let st = dev.tex(s, f, true, Some(&data));
         assert_ne!(st, 0, "staging texture of format {f}");
-        assert_eq!(seen(f, &dev.read(st, s, f, 0)), seen(f, &data[0]), "initial data of format {f}");
+        assert_eq!(dev.read(st, s, f, 0), data[0], "initial data of format {f}");
         let src = dev.tex(s, f, false, Some(&data));
         // (P8 and A8P8: no shader resource of them, a default texture bound to nothing)
         let src = if src == 0 && matches!(f, 113 | 114) { dev.tex_bound(s, f, 0, Some(&data)) } else { src };
@@ -205,8 +193,8 @@ fn every_format_and_pair_keeps_the_bits() {
             let dst = dev.tex(s, g, true, None);
             call1(m(IF_CONTEXT, 47), &[dev.ctx, dst, src]);
             let got = dev.read(dst, s, g, 0);
-            let want = if format::copy_compatible(f, g) { seen(g, &data[0]) } else { vec![0; got.len()] };
-            assert_eq!(seen(g, &got), want, "CopyResource {f} -> {g}");
+            let want = if format::copy_compatible(f, g) { data[0].clone() } else { vec![0; got.len()] };
+            assert_eq!(got, want, "CopyResource {f} -> {g}");
             dev.release(dst);
         }
         dev.release(st);
@@ -235,7 +223,7 @@ fn every_subresource_keeps_the_bits() {
             let dst = dev.tex(shape, g, true, None);
             call1(m(IF_CONTEXT, 47), &[dev.ctx, dst, src]);
             for sub in 0..shape.subs() {
-                assert_eq!(seen(g, &dev.read(dst, shape, g, sub)), seen(f, &data[sub as usize]), "CopyResource {f} -> {g}, {} sub {sub}", shape.0);
+                assert_eq!(dev.read(dst, shape, g, sub), data[sub as usize], "CopyResource {f} -> {g}, {} sub {sub}", shape.0);
             }
             // CopySubresourceRegion: the last layer's level 0 box (4, 0, 1)-(8, 4, 3) of the
             // source (whole blocks) to (0, dy, 0) of the first (dy 4, 0 for 8x4 3D ones)
@@ -259,7 +247,7 @@ fn every_subresource_keeps_the_bits() {
                     want[to..to + row as usize].copy_from_slice(&data[ssub as usize][from..from + row as usize]);
                 }
             }
-            assert_eq!(seen(g, &got), seen(f, &want), "CopySubresourceRegion {f} -> {g}, {}", shape.0);
+            assert_eq!(got, want, "CopySubresourceRegion {f} -> {g}, {}", shape.0);
             // UpdateSubresource of the same box into the staging copy's level 0
             let up = rng.bytes((row * n * depth) as usize);
             let p = mem(up.len() as u32);
@@ -274,7 +262,7 @@ fn every_subresource_keeps_the_bits() {
                     want[to..to + row as usize].copy_from_slice(&up[from..from + row as usize]);
                 }
             }
-            assert_eq!(seen(g, &dev.read(dst, shape, g, 0)), seen(f, &want), "UpdateSubresource {g}, {}", shape.0);
+            assert_eq!(dev.read(dst, shape, g, 0), want, "UpdateSubresource {g}, {}", shape.0);
             for t in [src, dst, dst2] {
                 dev.release(t);
             }
@@ -380,7 +368,7 @@ fn random_regions_move_the_bytes() {
         }
         dev.release(src);
         dev.release(dst);
-        prop_assert_eq!(seen(g, &got), seen(g, &want), "{} -> {} {}d sub {} -> {} box {:?} at {:?}", f, g, shape.0, ssub, dsub, (x0, y0, z0, w, h, depth), (ax, ay, az));
+        prop_assert_eq!(&got, &want, "{} -> {} {}d sub {} -> {} box {:?} at {:?}", f, g, shape.0, ssub, dsub, (x0, y0, z0, w, h, depth), (ax, ay, az));
     });
     assert!(ran.get() >= 96, "{} cases ran", ran.get());
     dev.done();
@@ -539,5 +527,154 @@ fn array_view_clears_its_layers() {
     }
     call1(m(IF_RTV, 2), &[rtv]);
     dev.release(t);
+    dev.done();
+}
+
+/// CopyResource between depth formats and their color ones (D16_UNORM / R16_UNORM, D32_FLOAT /
+/// R32_FLOAT, one typeless group each), as the winref probe d3d11copy shows Windows doing it: a
+/// depth texture's clear (0.375) comes out as its bits, and a color texture's bytes go into a
+/// depth texture and back.
+#[test]
+fn depth_copies_keep_the_bits() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    *D11S.lock().unwrap() = None;
+    let dev = Dev::new();
+    let s = Shape(2, 4, 4, 1, 1);
+    let data: Vec<u8> = (0..64u32).map(|i| (i * 37 + 5) as u8).collect();
+    for (depth, color, bpp, clear) in [(55u32, 56u32, 2usize, 0x6000u32), (40, 41, 4, 0.375f32.to_bits())] {
+        let want_clear: Vec<u8> = clear.to_le_bytes()[..bpp].repeat(16);
+        // (32-bit float depth in 0..1: WebGPU's depth holds no other; Windows keeps any bits)
+        let bytes = if bpp == 2 { data[..32].to_vec() } else { (0..16u32).flat_map(|k| (k as f32 / 15.0).to_bits().to_le_bytes()).collect() };
+        // a depth texture's clear, to its color format, to itself and to a staging one of each
+        let ds = dev.tex_bound(s, depth, 0x40, None);
+        assert_ne!(ds, 0, "depth texture {depth}");
+        let out = mem(8);
+        assert_eq!(call1(m(IF_DEVICE, 10), &[dev.dev, ds, 0, out]), 0);
+        let dsv = rd1(out);
+        call1(m(IF_CONTEXT, 53), &[dev.ctx, dsv, 1, 0.375f32.to_bits(), 0]);
+        for to in [color, depth] {
+            let st = dev.tex(s, to, true, None);
+            call1(m(IF_CONTEXT, 47), &[dev.ctx, st, ds]);
+            assert_eq!(dev.read(st, s, to, 0), want_clear, "the clear of {depth} copied to {to}");
+            dev.release(st);
+        }
+        let c = dev.tex(s, color, false, None);
+        call1(m(IF_CONTEXT, 47), &[dev.ctx, c, ds]);
+        let st = dev.tex(s, color, true, None);
+        call1(m(IF_CONTEXT, 47), &[dev.ctx, st, c]);
+        assert_eq!(dev.read(st, s, color, 0), want_clear, "the clear of {depth} through a default {color}");
+        dev.release(st);
+        // a color texture's bytes into a depth one, and back out
+        let src = dev.tex(s, color, false, Some(&[bytes.clone()]));
+        let ds2 = dev.tex_bound(s, depth, 0x40, None);
+        call1(m(IF_CONTEXT, 47), &[dev.ctx, ds2, src]);
+        for to in [color, depth] {
+            let st = dev.tex(s, to, true, None);
+            call1(m(IF_CONTEXT, 47), &[dev.ctx, st, ds2]);
+            assert_eq!(dev.read(st, s, to, 0), bytes, "{color}'s bytes through depth {depth} to {to}");
+            dev.release(st);
+        }
+        // a box of an integer texture of the group (its bits) to another place of the depth one
+        // (R32_UINT, and R32_SINT whole)
+        if depth == 40 {
+            let si = dev.tex(s, 43, false, Some(&[bytes.clone()]));
+            let ds3 = dev.tex_bound(s, depth, 0x40, None);
+            call1(m(IF_CONTEXT, 47), &[dev.ctx, ds3, si]);
+            let st = dev.tex(s, color, true, None);
+            call1(m(IF_CONTEXT, 47), &[dev.ctx, st, ds3]);
+            assert_eq!(dev.read(st, s, color, 0), bytes, "R32_SINT into D32_FLOAT");
+            for t in [st, ds3, si] {
+                dev.release(t);
+            }
+            // into level 1 of a depth texture of 2 levels (2x2): a box of 2x2 of the color one
+            let mips = Shape(2, 4, 4, 1, 2);
+            let dm = dev.tex_bound(mips, depth, 0x40, None);
+            let bx = mem(24);
+            put(bx, &[2, 2, 0, 4, 4, 1]);
+            call1(m(IF_CONTEXT, 46), &[dev.ctx, dm, 1, 0, 0, 0, src, 0, bx]);
+            let st = dev.tex(mips, color, true, None);
+            call1(m(IF_CONTEXT, 47), &[dev.ctx, st, dm]);
+            let want: Vec<u8> = [10, 11, 14, 15].iter().flat_map(|&k| bytes[k * 4..k * 4 + 4].to_vec()).collect();
+            assert_eq!(dev.read(st, mips, color, 1), want, "a box into level 1 of D32_FLOAT");
+            dev.release(st);
+            dev.release(dm);
+            let rev: Vec<u8> = (0..16u32).flat_map(|k| ((15 - k) as f32 / 30.0).to_bits().to_le_bytes()).collect();
+            let u = dev.tex(s, 42, false, Some(&[rev.clone()]));
+            let bx = mem(24);
+            put(bx, &[1, 1, 0, 3, 3, 1]);
+            call1(m(IF_CONTEXT, 46), &[dev.ctx, ds2, 0, 2, 0, 0, u, 0, bx]);
+            let st = dev.tex(s, color, true, None);
+            call1(m(IF_CONTEXT, 47), &[dev.ctx, st, ds2]);
+            let mut want = bytes.clone();
+            for (y, x) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
+                let (from, to) = (((y + 1) * 4 + x + 1) * 4, (y * 4 + x + 2) * 4);
+                want[to..to + 4].copy_from_slice(&rev[from..from + 4]);
+            }
+            assert_eq!(dev.read(st, s, color, 0), want, "a box of R32_UINT into D32_FLOAT");
+            dev.release(st);
+            dev.release(u);
+        }
+        call1(m(IF_DSV, 2), &[dsv]);
+        for t in [ds, ds2, c, src] {
+            dev.release(t);
+        }
+    }
+    dev.done();
+}
+
+/// The page's copies of bits (COPY filter 2) into and out of depth it cannot do, refused with no
+/// WebGPU error and nothing changed: of other texel sizes, from depth into 32-bit float depth,
+/// stretching, depth24plus-stencil8 either way, from a 3D texture, of more than one layer.
+#[test]
+fn depth_copies_the_page_refuses() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    *D11S.lock().unwrap() = None;
+    let dev = Dev::new();
+    let mut rng = Rng(0x00de_e9c0_f1e5_u64);
+    let s = Shape(2, 4, 4, 1, 1);
+    let arr = Shape(2, 4, 4, 2, 1);
+    let d32 = dev.tex_bound(s, 40, 0x40, None);
+    let d32a = dev.tex_bound(arr, 40, 0x40, None);
+    let d16 = dev.tex_bound(s, 55, 0x40, None);
+    let d24 = dev.tex_bound(s, 45, 0x40, None);
+    let r16f = dev.tex(s, 54, false, Some(&random_subs(&mut rng, s, 54)));
+    let r32f = dev.tex(s, 41, false, Some(&random_subs(&mut rng, s, 41)));
+    let r32a = dev.tex(arr, 41, false, Some(&random_subs(&mut rng, arr, 41)));
+    let vol = dev.tex(Shape(3, 4, 4, 1, 1), 41, false, Some(&random_subs(&mut rng, Shape(3, 4, 4, 1, 1), 41)));
+    for t in [d32, d32a, d16, d24, r16f, r32f, r32a, vol] {
+        assert_ne!(t, 0);
+    }
+    let out = mem(8);
+    for t in [d32, d32a] {
+        assert_eq!(call1(m(IF_DEVICE, 10), &[dev.dev, t, 0, out]), 0);
+        call1(m(IF_CONTEXT, 53), &[dev.ctx, rd1(out), 1, 0.5f32.to_bits(), 0]);
+        call1(m(IF_DSV, 2), &[rd1(out)]);
+    }
+    let g = gpu_of;
+    let n = std::cell::Cell::new(0x5600_0000u32);
+    let read = |t: u32, layer: u32| {
+        n.set(n.get() + 1);
+        page_read(g(t), layer << 16, 4, 4, n.get())
+    };
+    let before = [read(d32, 0), read(d32a, 0), read(d32a, 1), read(r32f, 0)];
+    assert_eq!(before[0].as_deref(), Some(&0.5f32.to_bits().to_le_bytes().repeat(16)[..]), "the clear of D32");
+    for c in [
+        [gpu::COPY, g(r16f), 0, 0, 0, 4, 4, g(d32), 0, 0, 0, 4, 4, 2],
+        [gpu::COPY, g(d16), 0, 0, 0, 4, 4, g(d32), 0, 0, 0, 4, 4, 2],
+        [gpu::COPY, g(r32f), 0, 0, 0, 4, 4, g(d32), 0, 0, 0, 2, 2, 2],
+        [gpu::COPY, g(r32f), 0, 0, 0, 4, 4, g(d32), 0, 0, 0, 4, 2, 2],
+        [gpu::COPY, g(r32f), 0, 0, 0, 4, 4, g(d32), 0, 0, 0, 2, 4, 2],
+        [gpu::COPY, g(d24), 0, 0, 0, 4, 4, g(r32f), 0, 0, 0, 4, 4, 2],
+        [gpu::COPY, g(r32f), 0, 0, 0, 4, 4, g(d24), 0, 0, 0, 4, 4, 2],
+        [gpu::COPY, g(vol), 0, 0, 0, 4, 4, g(d32), 0, 0, 0, 4, 4, 2],
+        [gpu::COPY, g(r32a), 0, 0, 0, 4, 4, g(d32a), 0, 0, 0, 4, 4, 2 | 2 << 16],
+    ] {
+        gpu::record(|b| b.cmd(&c));
+    }
+    let after = [read(d32, 0), read(d32a, 0), read(d32a, 1), read(r32f, 0)];
+    assert_eq!(before, after, "a refused copy changed a texture");
+    for t in [d32, d32a, d16, d24, r16f, r32f, r32a, vol] {
+        dev.release(t);
+    }
     dev.done();
 }

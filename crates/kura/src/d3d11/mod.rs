@@ -229,7 +229,7 @@ pub struct Texture {
 /// The page's texels are the guest's bytes (read back as they are).
 fn holds_bits(t: &Texture) -> bool {
     match format::info(t.fmt) {
-        Some(f) => f.bpp == format::page_bpp(t.page) && f.block == 1 && f.conv == 0,
+        Some(f) => f.bpp == format::page_bpp(t.page) && f.block == 1 && f.conv == 0 && !f.no_alpha,
         None => format::page_bpp(t.page) == 4,
     }
 }
@@ -1255,7 +1255,9 @@ fn new_texture(d: &mut D11, dim: u32, w: u32, h: u32, layers: u32, mips: u32, fm
 /// Uploads a subresource (a box of it) from guest memory (`pitch` bytes per row, `slice` per 3D
 /// slice) to the page texture, and keeps the bytes for formats the page converts.
 unsafe fn upload_texture(t: &mut Texture, sub: u32, mem: u32, pitch: u32, slice: u32, bx: Option<[u32; 6]>) {
-    if t.gpu == 0 || format::is_depth(t.page) || mem == 0 {
+    // (of depth only 16-bit: WebGPU writes into no other; copies into 32-bit float depth are
+    // drawn, see render/d3d.rs draw_depth)
+    if t.gpu == 0 || matches!(t.page, format::P_D24S8 | format::P_D32F) || mem == 0 {
         return;
     }
     let (level, layer, lw, lh, ld) = sub_size(t, sub);
@@ -3137,7 +3139,7 @@ unsafe fn copy_sub(d: &mut D11, di: u32, dsub: u32, at: [u32; 3], si: u32, ssub:
     // (the page's texels of both the same function of the guest's bytes; 32-bit float RGBA
     // possibly halves, of another size than the integer ones)
     let f32x4 = |t: &Texture| t.page == format::P_RGBA32F;
-    let on_page = (holds_bits(a) && holds_bits(b) && f32x4(a) == f32x4(b)) || (a.page == b.page && fa.conv == fb.conv && fa.bpp == fb.bpp && fa.block == fb.block);
+    let on_page = (holds_bits(a) && holds_bits(b) && f32x4(a) == f32x4(b)) || (a.page == b.page && fa.conv == fb.conv && fa.bpp == fb.bpp && fa.block == fb.block && fa.no_alpha == fb.no_alpha);
     let (ag, bg, keeps, bfmt) = (a.gpu, b.gpu, keeps_bits(a), b.fmt);
     let gpu_copy = |d: &mut D11| {
         // (the page's boxes inside its levels)

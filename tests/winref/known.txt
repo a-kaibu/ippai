@@ -51,6 +51,7 @@ d3d11api-* ^(want|got) +fmt 10[3-9]
 # B4G4R4A4 is widened to 8 bits a channel (WebGPU has no 4-bit format): c * 17 / 255 on the GPU
 # is a float ulp off WARP's c / 15 in places
 d3d11tex-* ^(want|got) +format 115 row 
+d3d11copy-* ^(want|got) +depth R32_FLOAT D32_FLOAT   # WebGPU's depth32float holds 0..1 only (frag_depth clamps, NaN undefined): the probe's NaN/inf/out-of-range bits do not survive; 0..1 values do ("depth in01" lines)
 # WARP flushes float denormals on every operation (abs(denormal) = 0, clamp to -0); WebGPU
 # leaves denormals to the GPU and sake does not flush them but in log; log2 just below 1 is
 # within the spec's 2^-21 absolute error, not the probe's ulps

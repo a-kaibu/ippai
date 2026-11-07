@@ -168,6 +168,29 @@ static void copies(void) {
         if (s) ID3D11Texture2D_Release(s);
         if (d) ID3D11Texture2D_Release(d);
     }
+    /* depth: 32-bit floats in 0..1 (what a depth buffer holds) into D32_FLOAT and back, whole and
+     * a box of R32_UINT to another place */
+    {
+        static float in01[TW * TH], rev[TW * TH];
+        for (int k = 0; k < TW * TH; k++) in01[k] = (float)k / (TW * TH - 1), rev[k] = (float)(TW * TH - 1 - k) / (2 * (TW * TH - 1));
+        ID3D11Texture2D *s = tex(DXGI_FORMAT_R32_FLOAT, D3D11_USAGE_DEFAULT, 0, 0, 4, in01);
+        ID3D11Texture2D *u = tex(DXGI_FORMAT_R32_UINT, D3D11_USAGE_DEFAULT, 0, 0, 4, rev);
+        ID3D11Texture2D *d = tex(DXGI_FORMAT_D32_FLOAT, D3D11_USAGE_DEFAULT, D3D11_BIND_DEPTH_STENCIL, 0, 4, NULL);
+        if (!s || !u || !d) {
+            printf("depth in01 failed\n");
+        } else {
+            ID3D11DeviceContext_CopyResource(ctx, (ID3D11Resource *)d, (ID3D11Resource *)s);
+            dump(a, d, DXGI_FORMAT_R32_FLOAT, 4);
+            printf("depth in01 R32_FLOAT D32_FLOAT %s\n", a);
+            D3D11_BOX box = {1, 1, 0, 3, 3, 1};
+            ID3D11DeviceContext_CopySubresourceRegion(ctx, (ID3D11Resource *)d, 0, 2, 0, 0, (ID3D11Resource *)u, 0, &box);
+            dump(a, d, DXGI_FORMAT_D32_FLOAT, 4);
+            printf("depth in01 R32_UINT box D32_FLOAT %s\n", a);
+        }
+        if (s) ID3D11Texture2D_Release(s);
+        if (u) ID3D11Texture2D_Release(u);
+        if (d) ID3D11Texture2D_Release(d);
+    }
     free(a);
     free(b);
 }
@@ -259,9 +282,11 @@ static void subresources(void) {
                 ID3D11DeviceContext_CopyResource(ctx, dst, src);
                 snprintf(what, sizeof what, "resource %s %dd", subfmts[i].n, dim);
                 for (int s = 0; s < n; s++) subhash(what, dst, dim, s, bpp, block);
-                /* the last layer's level 0 box (4, 0, 1)-(8, 4, 3) to (0, dy, 0) of the first */
+                /* the last layer's level 0 box (4, 0)-(8, 4) to (0, dy, 0) of the first; of 3D
+                 * slices 1-3 (a 2D box is of front 0 and back 1: another one took Windows' device
+                 * with it, DXGI_ERROR_DEVICE_REMOVED) */
                 UINT dy = dim == 3 ? 0 : 4, ssub = dim == 3 ? 0 : 8;
-                D3D11_BOX box = {4, 0, 1, 8, 4, 3};
+                D3D11_BOX box = {4, 0, dim == 3 ? 1 : 0, 8, 4, dim == 3 ? 3 : 1};
                 ID3D11DeviceContext_CopySubresourceRegion(ctx, dst2, 0, 0, dy, 0, src, ssub, &box);
                 snprintf(what, sizeof what, "region %s %dd", subfmts[i].n, dim);
                 subhash(what, dst2, dim, 0, bpp, block);

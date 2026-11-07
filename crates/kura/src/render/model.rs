@@ -373,8 +373,15 @@ thread_local! {
     static WIDE: RefCell<HashMap<u64, Vec<u8>>> = RefCell::new(HashMap::new());
 }
 
-fn depth_value(z: f32) -> u64 {
-    mix(0xde97, z.clamp(0.0, 1.0).to_bits() as u64)
+/// A depth value as a texel of `format` holds it: the bits of the copyable formats (16-bit
+/// UNORM, 32-bit float: what copyTextureToBuffer gives back), a value standing for it otherwise.
+fn depth_value(format: &str, z: f32) -> u64 {
+    let z = z.clamp(0.0, 1.0);
+    match format {
+        "depth16unorm" => (z * 65535.0).round() as u64,
+        "depth32float" => z.to_bits() as u64,
+        _ => mix(0xde97, z.to_bits() as u64),
+    }
 }
 
 fn stencil_value(s: u32) -> u64 {
@@ -462,6 +469,8 @@ pub struct Pipeline {
     pub clear_shader: bool,
     /// a save state's sample copy (Shader::copy)
     pub copy_shader: bool,
+    /// d3d.rs's draw_depth (Shader::zwrite)
+    pub zwrite_shader: bool,
     /// a stencil test or stencil writes: the draw reads the pass's stencil reference
     pub uses_stencil: bool,
     /// multisample.count
@@ -503,6 +512,9 @@ pub struct Shader {
     /// one of the save states' sample copies (d3d/snap.rs): writes what binding 0 holds at the
     /// fragment's pixel
     pub copy: bool,
+    /// d3d.rs's draw_depth: writes as depth the bits of binding 0's texel at the fragment's
+    /// pixel less binding 1's first two floats
+    pub zwrite: bool,
 }
 
 #[derive(Clone)]
@@ -833,7 +845,7 @@ impl Model {
     }
 
     pub fn shader(&mut self, code: &str) -> u32 {
-        let mut sh = Shader { clear: code == super::d3d::CLEAR_SHADER, copy: code.starts_with(super::d3d::SAMPLE_COPY), ..Default::default() };
+        let mut sh = Shader { clear: code == super::d3d::CLEAR_SHADER, copy: code.starts_with(super::d3d::SAMPLE_COPY), zwrite: code.starts_with(super::d3d::ZWRITE), ..Default::default() };
         match naga::front::wgsl::parse_str(code) {
             Err(e) => self.err(format!("createShaderModule: {}", e.emit_to_string(code))),
             Ok(m) => {
@@ -978,10 +990,12 @@ impl Model {
         let mut h = hash_desc(&j);
         let mut clear = false;
         let mut copy = false;
+        let mut zwrite = false;
         if let Some((mh, sh, u)) = &vs {
             h = mix(h, *mh);
             clear = sh.clear;
             copy = sh.copy;
+            zwrite = sh.zwrite;
             used.extend(u.iter().cloned());
         }
         if let Some((mh, _, u)) = &fs {
@@ -1204,7 +1218,7 @@ impl Model {
         let uses_stencil = depth.as_ref().is_some_and(|d| {
             ["stencilFront", "stencilBack"].iter().filter_map(|f| d.3.get(f)).any(|s| s.s("compare").unwrap_or("always") != "always" || ["failOp", "depthFailOp", "passOp"].iter().any(|k| s.s(k).unwrap_or("keep") != "keep"))
         });
-        let p = Pipeline { hash: h, groups, targets, depth: depth.map(|d| (d.0, d.1, d.2)), buffers, attrs, per_instance, topology: topo.to_string(), strip_format, clear_shader: clear, copy_shader: copy, uses_stencil, samples };
+        let p = Pipeline { hash: h, groups, targets, depth: depth.map(|d| (d.0, d.1, d.2)), buffers, attrs, per_instance, topology: topo.to_string(), strip_format, clear_shader: clear, copy_shader: copy, zwrite_shader: zwrite, uses_stencil, samples };
         self.put(Obj::Pipeline(p))
     }
 
@@ -1616,7 +1630,8 @@ impl Model {
             self.err(format!("{what}: into a multisampled texture"));
             return;
         }
-        if tx.format.starts_with("depth") {
+        // (of depth formats only into depth16unorm)
+        if tx.format.starts_with("depth") && tx.format != "depth16unorm" {
             self.err(format!("{what}: into {}", tx.format));
             return;
         }
@@ -1756,7 +1771,7 @@ impl Model {
                 depth = Some(Attachment {
                     view: a,
                     resolve: None,
-                    load_clear: (load == Some("clear")).then(|| depth_value(z.unwrap_or(0.0) as f32)),
+                    load_clear: (load == Some("clear")).then(|| depth_value(&vw.format, z.unwrap_or(0.0) as f32)),
                     store: store != Some("discard"),
                     stencil_clear: (sl == Some("clear")).then(|| stencil_value(d.u("stencilClearValue").unwrap_or(0))),
                     stencil_store: ss != Some("discard"),
@@ -2090,6 +2105,21 @@ impl Model {
         Some((vw.tex, t.sub(vw.mip, vw.layer), t.size(vw.mip).0))
     }
 
+    /// draw_depth's source: (texture, subresource, width, height, pixel of its texel 0)
+    fn zwrite_source(&self, d: &Draw) -> Option<(usize, usize, u32, u32, [i64; 2])> {
+        let (tex, sub, w) = self.copy_source(d)?;
+        let (g, _) = d.st.groups.first()?.as_ref()?;
+        let Obj::Group(_, entries) = &self.objs[*g] else { return None };
+        let (b, off) = entries.iter().find_map(|(k, e)| match e {
+            Entry::Buffer(b, off, _) if *k == 1 => Some((*b, *off as usize)),
+            _ => None,
+        })?;
+        let Obj::Buffer(bf) = &self.objs[b] else { return None };
+        let f = |k: usize| bf.data.get(off + 4 * k..off + 4 * k + 4).map(|x| f32::from_le_bytes(x.try_into().unwrap()) as i64);
+        let h = self.tex(tex).texels[sub].len() as u32 / w.max(1);
+        Some((tex, sub, w, h, [f(0)?, f(1)?]))
+    }
+
     /// What a draw reads, hashed (its "signature"), and for the clear shader: the color and
     /// depth it writes.
     fn draw_sig(&mut self, d: &Draw) -> (u64, Option<([f32; 4], f32)>) {
@@ -2220,6 +2250,7 @@ impl Model {
             // (a sample copy: the texels of the view bound at 0/0, one value per pixel as the
             // model keeps of a multisampled one)
             let copy_src = if p.copy_shader { self.copy_source(d) } else { None };
+            let zsrc = if p.zwrite_shader { self.zwrite_source(d) } else { None };
             for (ci, a) in colors.iter().enumerate() {
                 let (t, si, (w, h, _)) = sub(self, a);
                 let format = self.tex(t).format.clone();
@@ -2255,7 +2286,15 @@ impl Model {
                             let at = (y * w + x) as usize;
                             let oz = self.tex(zt).texels[zs][at];
                             let nz = match clear {
-                                Some((_, z)) if p.clear_shader => depth_value(z),
+                                _ if zsrc.is_some() => {
+                                    // (the bits of a float, as depth holds them: in 0..1)
+                                    let (st, ss, sw, sh, o) = zsrc.unwrap();
+                                    let (sx, sy) = (x as i64 - o[0], y as i64 - o[1]);
+                                    let v = if (0..sw as i64).contains(&sx) && (0..sh as i64).contains(&sy) { self.tex(st).texels[ss][(sy * sw as i64 + sx) as usize] } else { 0 };
+                                    let f = f32::from_bits(v as u32);
+                                    depth_value(&self.tex(zt).format, if f.is_nan() { 0.0 } else { f })
+                                }
+                                Some((_, z)) if p.clear_shader => depth_value(&self.tex(zt).format, z),
                                 _ => mix(mix(mix(sig ^ 0xde, (x as u64) << 32 | y as u64), oz), if pd.2 != "always" { 1 } else { 0 }),
                             };
                             let Obj::Texture(tx) = &mut self.objs[zt] else { continue };

@@ -28,3 +28,6 @@ crates/hlslc/src/pp.rs: replace > with >= in lex_line
 crates/hlslc/src/pp.rs: replace && with || in Pp<'_>::expand
 crates/hlslc/src/pp.rs: replace == with != in Pp<'_>::expand
 crates/hlslc/src/pp.rs: replace == with != in paste
+# render/d3d.rs: draw_depth submits when its uniform slot is the batch's last (64 per batch); a
+# submit sooner changes no texel
+crates/kura/src/render/d3d.rs: replace == with != in D3d::draw_depth
